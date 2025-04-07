@@ -43,26 +43,26 @@ def composite_quad(T, p):
     # T is the knot vector without multiplicity
     # using p points, we can integrate degree 2p-1 polynomials exactly
     if p == 1:
-        _x_q, _w_q = gauss_1_nodes, gauss_1_weights
+        _x_q, _w_q = nodes_and_weights(1)
     elif p == 2:
-        _x_q, _w_q = gauss_2_nodes, gauss_2_weights
+        _x_q, _w_q = nodes_and_weights(2)
     elif p == 3:
-        _x_q, _w_q = gauss_3_nodes, gauss_3_weights
+        _x_q, _w_q = nodes_and_weights(3)
     elif p == 4:
-        _x_q, _w_q = gauss_4_nodes, gauss_4_weights
+        _x_q, _w_q = nodes_and_weights(4)
     elif p == 5:
-        _x_q, _w_q = gauss_5_nodes, gauss_5_weights
+        _x_q, _w_q = nodes_and_weights(5)
     elif p == 6:
-        _x_q, _w_q = gauss_6_nodes, gauss_6_weights
+        _x_q, _w_q = nodes_and_weights(6)
     elif p == 7:
-        _x_q, _w_q = gauss_7_nodes, gauss_7_weights
+        _x_q, _w_q = nodes_and_weights(7)
     elif p == 8:
-        _x_q, _w_q = gauss_8_nodes, gauss_8_weights
+        _x_q, _w_q = nodes_and_weights(8)
     elif p == 9:
-        _x_q, _w_q = gauss_9_nodes, gauss_9_weights
+        _x_q, _w_q = nodes_and_weights(9)
     elif p == 10:
-        _x_q, _w_q = gauss_10_nodes, gauss_10_weights
-
+        _x_q, _w_q = nodes_and_weights(10)
+        
     def _rescale(a, b):
         return (_x_q + 1) / 2 * (b - a) + a, _w_q * (b - a) / 2
 
@@ -75,27 +75,26 @@ def composite_quad(T, p):
 def spectral_quad(p):
     # using p points, we can integrate degree 2p-1 polynomials exactly
     if p == 1:
-        _x_q, _w_q = gauss_1_nodes, gauss_1_weights
+        _x_q, _w_q = nodes_and_weights(1)
     elif p == 2:
-        _x_q, _w_q = gauss_2_nodes, gauss_2_weights
+        _x_q, _w_q = nodes_and_weights(2)
     elif p == 3:
-        _x_q, _w_q = gauss_3_nodes, gauss_3_weights
+        _x_q, _w_q = nodes_and_weights(3)
     elif p == 4:
-        _x_q, _w_q = gauss_4_nodes, gauss_4_weights
+        _x_q, _w_q = nodes_and_weights(4)
     elif p == 5:
-        _x_q, _w_q = gauss_5_nodes, gauss_5_weights
+        _x_q, _w_q = nodes_and_weights(5)
     elif p == 6:
-        _x_q, _w_q = gauss_6_nodes, gauss_6_weights
+        _x_q, _w_q = nodes_and_weights(6)
     elif p == 7:
-        _x_q, _w_q = gauss_7_nodes, gauss_7_weights
+        _x_q, _w_q = nodes_and_weights(7)
     elif p == 8:
-        _x_q, _w_q = gauss_8_nodes, gauss_8_weights
+        _x_q, _w_q = nodes_and_weights(8)
     elif p == 9:
-        _x_q, _w_q = gauss_9_nodes, gauss_9_weights
+        _x_q, _w_q = nodes_and_weights(9)
     elif p == 10:
-        _x_q, _w_q = gauss_10_nodes, gauss_10_weights
-    return (_x_q + 1) / 2, _w_q / 2
-
+        _x_q, _w_q = nodes_and_weights(10)
+    return (_x_q + 1) / 2,  _w_q / 2
 
 def select_quadrature(basis, n):
     if basis.type == 'clamped':
@@ -106,174 +105,243 @@ def select_quadrature(basis, n):
         return trapezoidal_quad(n)
     elif basis.type == 'constant':
         return spectral_quad(1)
+    
 
 
-gauss_1_nodes = jnp.array([
-    0.0
-])
+def nodes_and_weights(n):
+    if n==1:
+        points = jnp.array([0])
+        weights = jnp.array([2])
+    elif n==2:
+        coeffs = jnp.array([3/2, 0, -1/2])
+        points = jnp.roots(coeffs)
+        weights = jnp.array([1,1])
+    elif n==3:
+        coeffs = jnp.array([5/2, 0, -3/2, 0])
+        points = jnp.roots(coeffs)
+        # Order is 0, 0.77, -0.77
+        weights = jnp.array([8/9, 5/9, 5/9])
+    elif n==4:
+        coeffs = jnp.array([35/8, 0, -30/8, 0,3/8])
+        points = jnp.roots(coeffs)
+        # Order is 0.86, -0.86, -0.34, 0.34
+        a = (jnp.sqrt(30) + 18 )/36
+        b =(-jnp.sqrt(30) + 18 )/36
+        weights = jnp.array([b, b, a,a])
+    elif n==5:
+        coeffs = jnp.array([63/8, 0, -70/8, 0,15/8,0])
+        points = jnp.roots(coeffs)
+        # Order is 0, -0.91, -0.54, 0.91, 0.54
+        a = 128/225
+        b = (322 + 13*jnp.sqrt(70))/900
+        c = (322 - 13*jnp.sqrt(70))/900
+        weights = jnp.array([a,c,b,c,b])
+    elif n==6:
+        coeffs = jnp.array([231/16, 0, -315/16, 0, 105/16, 0 ,-5/16])
+        points = jnp.roots(coeffs)
+        # Order is 0.93, 0.66, -0.93, -0.66, -0.24, 0.24
+        d_coeffs = jnp.polyder(coeffs)
+        w = jnp.polyval(d_coeffs, points)
+        weights = 2/((1-points**2)*(w**2))
 
-gauss_1_weights = jnp.array([
-    2.0
-])
+    elif n==7:
+        coeffs = jnp.array([429/16, 0, -693/16, 0, 315/16, 0 ,-35/16,0])
+        points = jnp.roots(coeffs)
+        d_coeffs = jnp.polyder(coeffs)
+        w = jnp.polyval(d_coeffs,points)
+        weights = 2/((1-points**2)*(w**2))
 
-gauss_2_nodes = jnp.array([
-    -0.5773502691896258,
-    0.5773502691896258
-])
+    elif n==8:
+        coeffs = jnp.array([6435/128, 0, -12012/16, 0, 6930/16, 0 ,-1260/16,0, 35/128])
+        points = jnp.roots(coeffs)
+        d_coeffs = jnp.polyder(coeffs)
+        w = jnp.polyval(d_coeffs,points)
+        weights = 2/((1-points**2)*(w**2))
 
-gauss_2_weights = jnp.array([
-    1.0,
-    1.0
-])
+    elif n==9:
+        coeffs = jnp.array([12155/128, 0, -25740/128, 0, 18018/128, 0 ,-4620/128,0, 315/128,0])
+        points = jnp.roots(coeffs)
+        d_coeffs = jnp.polyder(coeffs)
+        w = jnp.polyval(d_coeffs,points)
+        weights = 2/((1-points**2)*(w**2))
 
-gauss_3_nodes = jnp.array([
-    -0.7745966692414834,
-    0.0,
-    0.7745966692414834
-])
+    # n=10
+    else:
+        coeffs = jnp.array([46189/256, 0, -109395/256, 0, 90090/256, 0 ,-30030/256,0, 3465/256,0,-63/256])
+        points = jnp.roots(coeffs)
+        d_coeffs = jnp.polyder(coeffs)
+        w = jnp.polyval(d_coeffs,points)
+        weights = 2/((1-points**2)*(w**2))
+    return points, weights
+    
 
-gauss_3_weights = jnp.array([
-    0.5555555555555556,
-    0.8888888888888888,
-    0.5555555555555556
-])
 
-gauss_4_nodes = jnp.array([
-    -0.8611363115940526,
-    -0.3399810435848563,
-    0.3399810435848563,
-    0.8611363115940526
-])
+# gauss_1_nodes = jnp.array([
+#         0.0
+#     ])
 
-gauss_4_weights = jnp.array([
-    0.3478548451374538,
-    0.6521451548625461,
-    0.6521451548625461,
-    0.3478548451374538
-])
+# gauss_1_weights = jnp.array([
+#         2.0
+#     ])
 
-gauss_5_nodes = jnp.array([
-    -0.9061798459386640,
-    -0.5384693101056831,
-    0.0,
-    0.5384693101056831,
-    0.9061798459386640
-])
+# gauss_2_nodes = jnp.array([
+#         -0.5773502691896258,
+#         0.5773502691896258
+#     ])
 
-gauss_5_weights = jnp.array([
-    0.2369268850561891,
-    0.4786286704993665,
-    0.5688888888888889,
-    0.4786286704993665,
-    0.2369268850561891
-])
+# gauss_2_weights = jnp.array([
+#         1.0,
+#         1.0
+#     ])
 
-gauss_6_nodes = jnp.array([
-    -0.9324695142031521,
-    -0.6612093864662645,
-    -0.2386191860831969,
-    0.2386191860831969,
-    0.6612093864662645,
-    0.9324695142031521
-])
+# gauss_3_nodes = jnp.array([
+#         -0.7745966692414834,
+#         0.0,
+#         0.7745966692414834
+#     ])
 
-gauss_6_weights = jnp.array([
-    0.1713244923791704,
-    0.3607615730481386,
-    0.4679139345726910,
-    0.4679139345726910,
-    0.3607615730481386,
-    0.1713244923791704
-])
+# gauss_3_weights = jnp.array([
+#         0.5555555555555556,
+#         0.8888888888888888,
+#         0.5555555555555556
+#     ])
 
-gauss_7_nodes = jnp.array([
-    -0.9491079123427585,
-    -0.7415311855993945,
-    -0.4058451513773972,
-    0.0,
-    0.4058451513773972,
-    0.7415311855993945,
-    0.9491079123427585
-])
+# gauss_4_nodes = jnp.array([
+#         -0.8611363115940526,
+#         -0.3399810435848563,
+#         0.3399810435848563,
+#         0.8611363115940526
+#     ])
 
-gauss_7_weights = jnp.array([
-    0.1294849661688697,
-    0.2797053914892766,
-    0.3818300505051189,
-    0.4179591836734694,
-    0.3818300505051189,
-    0.2797053914892766,
-    0.1294849661688697
-])
+# gauss_4_weights = jnp.array([
+#         0.3478548451374538,
+#         0.6521451548625461,
+#         0.6521451548625461,
+#         0.3478548451374538
+#     ])
 
-gauss_8_nodes = jnp.array([
-    -0.9602898564975363,
-    -0.7966664774136267,
-    -0.5255324099163290,
-    -0.1834346424956498,
-    0.1834346424956498,
-    0.5255324099163290,
-    0.7966664774136267,
-    0.9602898564975363
-])
+# gauss_5_nodes = jnp.array([
+#         -0.9061798459386640,
+#         -0.5384693101056831,
+#         0.0,
+#         0.5384693101056831,
+#         0.9061798459386640
+#     ])
 
-gauss_8_weights = jnp.array([
-    0.1012285362903763,
-    0.2223810344533745,
-    0.3137066458778873,
-    0.3626837833783620,
-    0.3626837833783620,
-    0.3137066458778873,
-    0.2223810344533745,
-    0.1012285362903763
-])
+# gauss_5_weights = jnp.array([
+#         0.2369268850561891,
+#         0.4786286704993665,
+#         0.5688888888888889,
+#         0.4786286704993665,
+#         0.2369268850561891
+#     ])
 
-gauss_9_nodes = jnp.array([
-    -0.9681602395076261,
-    -0.8360311073266358,
-    -0.6133714327005904,
-    -0.3242534234038089,
-    0.0,
-    0.3242534234038089,
-    0.6133714327005904,
-    0.8360311073266358,
-    0.9681602395076261
-])
+# gauss_6_nodes = jnp.array([
+#         -0.9324695142031521,
+#         -0.6612093864662645,
+#         -0.2386191860831969,
+#         0.2386191860831969,
+#         0.6612093864662645,
+#         0.9324695142031521
+#     ])
 
-gauss_9_weights = jnp.array([
-    0.0812743883615744,
-    0.1806481606948574,
-    0.2606106964029354,
-    0.3123470770400029,
-    0.3302393550012598,
-    0.3123470770400029,
-    0.2606106964029354,
-    0.1806481606948574,
-    0.0812743883615744
-])
+# gauss_6_weights = jnp.array([
+#         0.1713244923791704,
+#         0.3607615730481386,
+#         0.4679139345726910,
+#         0.4679139345726910,
+#         0.3607615730481386,
+#         0.1713244923791704
+#     ])
 
-gauss_10_nodes = jnp.array([
-    -0.9739065285171717,
-    -0.8650633666889845,
-    -0.6794095682990244,
-    -0.4333953941292472,
-    -0.1488743389816312,
-    0.1488743389816312,
-    0.4333953941292472,
-    0.6794095682990244,
-    0.8650633666889845,
-    0.9739065285171717
-])
+# gauss_7_nodes = jnp.array([
+#         -0.9491079123427585,
+#         -0.7415311855993945,
+#         -0.4058451513773972,
+#         0.0,
+#         0.4058451513773972,
+#         0.7415311855993945,
+#         0.9491079123427585
+#     ])
 
-gauss_10_weights = jnp.array([
-    0.0666713443086881,
-    0.1494513491505806,
-    0.2190863625159820,
-    0.2692667193099963,
-    0.2955242247147529,
-    0.2955242247147529,
-    0.2692667193099963,
-    0.2190863625159820,
-    0.1494513491505806,
-    0.0666713443086881
-])
+# gauss_7_weights = jnp.array([
+#         0.1294849661688697,
+#         0.2797053914892766,
+#         0.3818300505051189,
+#         0.4179591836734694,
+#         0.3818300505051189,
+#         0.2797053914892766,
+#         0.1294849661688697
+#     ])
+
+# gauss_8_nodes = jnp.array([
+#         -0.9602898564975363,
+#         -0.7966664774136267,
+#         -0.5255324099163290,
+#         -0.1834346424956498,
+#         0.1834346424956498,
+#         0.5255324099163290,
+#         0.7966664774136267,
+#         0.9602898564975363
+#     ])
+
+# gauss_8_weights = jnp.array([
+#         0.1012285362903763,
+#         0.2223810344533745,
+#         0.3137066458778873,
+#         0.3626837833783620,
+#         0.3626837833783620,
+#         0.3137066458778873,
+#         0.2223810344533745,
+#         0.1012285362903763
+#     ])
+
+# gauss_9_nodes = jnp.array([
+#         -0.9681602395076261,
+#         -0.8360311073266358,
+#         -0.6133714327005904,
+#         -0.3242534234038089,
+#         0.0,
+#         0.3242534234038089,
+#         0.6133714327005904,
+#         0.8360311073266358,
+#         0.9681602395076261
+#     ])
+
+# gauss_9_weights = jnp.array([
+#         0.0812743883615744,
+#         0.1806481606948574,
+#         0.2606106964029354,
+#         0.3123470770400029,
+#         0.3302393550012598,
+#         0.3123470770400029,
+#         0.2606106964029354,
+#         0.1806481606948574,
+#         0.0812743883615744
+#     ])
+
+# gauss_10_nodes = jnp.array([
+#         -0.9739065285171717,
+#         -0.8650633666889845,
+#         -0.6794095682990244,
+#         -0.4333953941292472,
+#         -0.1488743389816312,
+#         0.1488743389816312,
+#         0.4333953941292472,
+#         0.6794095682990244,
+#         0.8650633666889845,
+#         0.9739065285171717
+#     ])
+
+# gauss_10_weights = jnp.array([
+#         0.0666713443086881,
+#         0.1494513491505806,
+#         0.2190863625159820,
+#         0.2692667193099963,
+#         0.2955242247147529,
+#         0.2955242247147529,
+#         0.2692667193099963,
+#         0.2190863625159820,
+#         0.1494513491505806,
+#         0.0666713443086881
+#     ])
