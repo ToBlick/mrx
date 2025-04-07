@@ -1,8 +1,10 @@
 import jax
 import jax.numpy as jnp
 
+
 def jacobian(f):
     return lambda x: jnp.linalg.det(jax.jacfwd(f)(x))
+
 
 def inv33(mat):
     m1, m2, m3 = mat[0]
@@ -16,26 +18,30 @@ def inv33(mat):
             [m4 * m8 - m5 * m7, m2 * m7 - m1 * m8, m1 * m5 - m2 * m4],
         ]) / det
     )
-    
+
+
 def div(F):
     def div_F(x):
         DF = jax.jacfwd(F)(x)
         return jnp.trace(DF) * jnp.ones(1)
     return div_F
 
+
 def curl(F):
     def curl_F(x):
         DF = jax.jacfwd(F)(x)
-        return jnp.array([  DF[2, 1] - DF[1, 2], 
-                            DF[0, 2] - DF[2, 0], 
-                            DF[1, 0] - DF[0, 1] ])
+        return jnp.array([DF[2, 1] - DF[1, 2],
+                          DF[0, 2] - DF[2, 0],
+                          DF[1, 0] - DF[0, 1]])
     return curl_F
+
 
 def grad(F):
     def grad_F(x):
         DF = jax.jacfwd(F)(x)
         return jnp.ravel(DF)
     return grad_F
+
 
 def l2_product(f, g, Q, F=lambda x: x):
     Jj = jax.vmap(jacobian(F))(Q.x)

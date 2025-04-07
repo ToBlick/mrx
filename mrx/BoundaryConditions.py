@@ -5,6 +5,8 @@ import numpy as np
 from mrx.DifferentialForms import DifferentialForm
 
 # Bpundary extraction operator for cube-like domains
+
+
 class LazyBoundaryOperator:
     def __init__(self, Λ, types):
         # types can be:
@@ -34,15 +36,15 @@ class LazyBoundaryOperator:
             self.n2 = 0
             self.n3 = 0
         self.n = self.n1 + self.n2 + self.n3
-                 
+
         self.M = self.assemble()
-        
+
     def __getitem__(self, i):
         return self.M[i]
-    
+
     def __array__(self):
         return np.array(self.M)
-    
+
     def _vector_index(self, i):
         if self.k == 0 or self.k == 3:
             return 0, i
@@ -81,7 +83,7 @@ class LazyBoundaryOperator:
             return c, i, j, k
         elif self.k == 3:
             return 0, *jnp.unravel_index(I, (self.dr, self.dχ, self.dζ))
-    
+
     def _element(self, I, J):
         cI, i, j, k = self._unravel_index(I)
         cJ, l, m, n = self.Λ._unravel_index(J)
@@ -90,64 +92,64 @@ class LazyBoundaryOperator:
             # I ∈ [0, (nr-2) nχ (nζ-2)]
             # J ∈ [0,   nr   nχ   nζ  ]
             return (
-                (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == l) 
+                (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == l)
                     + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == l-1))
-                * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m) 
+                * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
                    + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
-                * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n) 
+                * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
                    + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1))
-                )
+            )
         elif self.k == 1:
             # for the x-component, it is dr x nχ x nζ
             return jnp.where(cI == cJ,
-                jnp.where(cI == 0,
-                    jnp.int32(i == l)
-                    * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m) 
-                    + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
-                    * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n) 
-                    + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1)),
-                    # for the y-component, it is nr x dχ x nζ
-                    jnp.where(cI == 1,
-                        (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == l) 
-                            + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == l-1))
-                        * jnp.int32(j == m)
-                        * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n) 
-                            + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1)),
-                        # for the z-component, it is nr x nχ x dζ
-                        (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == l) 
-                            + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == l-1))
-                        * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m) 
-                            + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
-                        * jnp.int32(k == n)
-                        )
-                    ),
-                0
-            )
+                             jnp.where(cI == 0,
+                                       jnp.int32(i == l)
+                                       * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
+                                          + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
+                                       * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
+                                           + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1)),
+                                       # for the y-component, it is nr x dχ x nζ
+                                       jnp.where(cI == 1,
+                                                 (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == l)
+                                                  + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == l-1))
+                                                 * jnp.int32(j == m)
+                                                 * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
+                                                     + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1)),
+                                                 # for the z-component, it is nr x nχ x dζ
+                                                 (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == l)
+                                                     + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == l-1))
+                                                 * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
+                                                     + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
+                                                 * jnp.int32(k == n)
+                                                 )
+                                       ),
+                             0
+                             )
         elif self.k == 2:
             # for the x-component, it is nr x dχ x dζ
             return jnp.where(cI == cJ,
-                jnp.where(cI == 0,
-                    (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == l) 
-                            + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == l-1))
-                    * jnp.int32(j == m) 
-                    * jnp.int32(k == n),
-                    # for the y-component, it is dr x nχ x dζ
-                    jnp.where(cI == 1,
-                        jnp.int32(i == l)
-                        * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m) 
-                            + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
-                        * jnp.int32(k == n),
-                        # for the z-component, it is nr x nχ x dζ
-                        jnp.int32(i == l) 
-                        * jnp.int32(j == m)
-                        * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n) 
-                            + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1))
-                        )
-                    ),
-                0
-            )
+                             jnp.where(cI == 0,
+                                       (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == l)
+                                        + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == l-1))
+                                       * jnp.int32(j == m)
+                                       * jnp.int32(k == n),
+                                       # for the y-component, it is dr x nχ x dζ
+                                       jnp.where(cI == 1,
+                                                 jnp.int32(i == l)
+                                                 * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
+                                                    + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
+                                                 * jnp.int32(k == n),
+                                                 # for the z-component, it is nr x nχ x dζ
+                                                 jnp.int32(i == l)
+                                                 * jnp.int32(j == m)
+                                                 * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
+                                                     + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1))
+                                                 )
+                                       ),
+                             0
+                             )
         elif self.k == 3:
             return jnp.int32(I == J)
-                
+
     def assemble(self):
         return jax.vmap(jax.vmap(self._element, (None, 0)), (0, None))(jnp.arange(self.n), jnp.arange(self.Λ.n))
