@@ -18,17 +18,17 @@ from functools import partial
 ###
 @partial(jax.jit, static_argnames=['n', 'p'])
 def get_err(n, p):
-    ns = (n, n, 1)
-    ps = (p, p, 0)
+    ns = (n, n, n)
+    ps = (p, p, p)
     
     def u(x):
         r, χ, z = x
-        return jnp.ones(1) * jnp.sin(2 * jnp.pi * r) * jnp.sin(2 * jnp.pi * χ)
+        return jnp.ones(1) * jnp.sin(2 * jnp.pi * r) * jnp.sin(2 * jnp.pi * χ) * jnp.sin(2 * jnp.pi * z)
     def f(x):
-        return 2 * (2*jnp.pi)**2 * u(x)
+        return 3 * (2*jnp.pi)**2 * u(x)
 
-    types = ('clamped', 'clamped', 'constant')
-    bcs = ('dirichlet', 'dirichlet', 'none')
+    types = ('clamped', 'clamped', 'clamped')
+    bcs = ('dirichlet', 'dirichlet', 'dirichlet')
 
     Λ0 = DifferentialForm(0, ns, ps, types)
     Q = QuadratureRule(Λ0, 10)
@@ -42,13 +42,9 @@ def get_err(n, p):
     u_h = DiscreteFunction(u_hat, Λ0, B0)
     err = lambda x: u(x) - u_h(x)
     return (l2_product(err, err, Q) / l2_product(u, u, Q))**0.5
-
-
-# %%
-print(get_err(8, 3))
 # %%
 import time
-ns = np.arange(5, 25, 2)
+ns = np.arange(4, 10)
 ps = np.arange(1, 4)
 err = np.zeros((len(ns), len(ps)))
 times = np.zeros((len(ns), len(ps)))
@@ -63,9 +59,9 @@ for i, n in enumerate(ns):
 plt.plot(ns, err[:,0], label='p=1', marker='o')
 plt.plot(ns, err[:,1], label='p=2', marker='*')
 plt.plot(ns, err[:,2], label='p=3', marker='s')
-plt.plot(ns, err[0,0] * (ns/ns[0])**(-2), label='O(n^-2)', linestyle='--')
-plt.plot(ns, err[0,1] * (ns/ns[0])**(-4), label='O(n^-4)', linestyle='--')
-plt.plot(ns, err[0,2] * (ns/ns[0])**(-6), label='O(n^-6)', linestyle='--')
+plt.plot(ns, err[-1,0] * (ns/ns[-1])**(-2), label='O(n^-2)', linestyle='--')
+plt.plot(ns, err[-1,1] * (ns/ns[-1])**(-4), label='O(n^-4)', linestyle='--')
+plt.plot(ns, err[-1,2] * (ns/ns[-1])**(-6), label='O(n^-6)', linestyle='--')
 plt.loglog()
 plt.xlabel('n')
 plt.ylabel('Error')
@@ -74,7 +70,7 @@ plt.legend()
 plt.plot(ns, times[:,0], label='p=1', marker='o')
 plt.plot(ns, times[:,1], label='p=2', marker='*')
 plt.plot(ns, times[:,2], label='p=3', marker='s')
-plt.plot(ns, times[0,0] * (ns/ns[0])**(4), label='O(n^4)', linestyle='--')
+plt.plot(ns, times[-1,0] * (ns/ns[-1])**(2*3), label='O(n^2d)', linestyle='--')
 plt.loglog()
 plt.xlabel('n')
 plt.ylabel('Time [s]')

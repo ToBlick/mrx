@@ -163,7 +163,7 @@ class TensorBasis:
         
     def evaluate(self, x, i):
         ijk = jnp.unravel_index(i, self.shape)
-        return jnp.prod(jnp.array([b(x[k], ijk[k]) for k, b in enumerate(self.bases)]))
+        return self.bases[0](x[0], ijk[0]) * self.bases[1](x[1], ijk[1]) * self.bases[2](x[2], ijk[2])
     
     def __call__(self, x, i):
         return self.evaluate(x, i)

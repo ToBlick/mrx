@@ -37,5 +37,6 @@ def grad(F):
         return jnp.ravel(DF)
     return grad_F
 
-def l2_product(f, g, Q):
-    return jnp.einsum("ij,ij,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Q.w)
+def l2_product(f, g, Q, F=lambda x: x):
+    Jj = jax.vmap(jacobian(F))(Q.x)
+    return jnp.einsum("ij,ij,i,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Jj, Q.w)

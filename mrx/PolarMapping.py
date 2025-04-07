@@ -158,9 +158,13 @@ def get_xi(_R, _Y, Λ0):
     cY = Y_hat.reshape(nr, nχ, nζ)
     ΔR = cR[1,:,0] - R0
     ΔY = cY[1,:,0] - Y0
-    τ = max([jnp.max(-2 * ΔR), 
+    τ = jnp.max(
+        jnp.array(
+            [jnp.max(-2 * ΔR), 
              jnp.max(ΔR - jnp.sqrt(3) * ΔY), 
-             jnp.max(ΔR + jnp.sqrt(3) * ΔY)])
+             jnp.max(ΔR + jnp.sqrt(3) * ΔY)]
+            )
+        )
     ξ00 = jnp.ones(nχ) / 3
     ξ01 = 1/3 + 2/(3*τ) * ΔR
     ξ10 = jnp.ones(nχ) / 3
