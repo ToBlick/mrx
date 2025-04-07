@@ -41,7 +41,8 @@ dependencies = [
     "optax",
     "ipywidgets",
     "chex",
-    "ruff"
+    "ruff",
+    "autopep8",
 ]
 
 [tool.setuptools.packages.find]
@@ -55,7 +56,7 @@ VIS = ["vtk >= 8.1.2", "PyQt5", "plotly", "networkx"]
 DOCS = ["sphinx", "sphinx-rtd-theme"]
 
 [project.urls]
-Homepage = "https://github.com/ToBlick/JCS"
-Download = "https://github.com/ToBlick/JCS"
-Issues = "https://github.com/ToBlick/JCS/issues"
-Repository = "https://github.com/ToBlick/JCS"
+Homepage = "https://github.com/ToBlick/mrx"
+Download = "https://github.com/ToBlick/mrx"
+Issues = "https://github.com/ToBlick/mrx/issues"
+Repository = "https://github.com/ToBlick/mrx"

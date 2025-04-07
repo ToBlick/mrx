@@ -1,16 +1,9 @@
 # %%
 import jax
 import jax.numpy as jnp
-import numpy as np
 import matplotlib.pyplot as plt
 
-from mrx.SplineBases import SplineBasis, DerivativeSpline, TensorBasis
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback, Pushforward
-from mrx.Quadrature import QuadratureRule
-from mrx.Projectors import Projector
-from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix
-from mrx.Utils import div, curl, inv33, jacobian, grad
+from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.BoundaryConditions import LazyBoundaryOperator
 
 # %%
@@ -32,7 +25,11 @@ plt.imshow(B0.M)
 plt.imshow(B1.M)
 
 # %%
-F = lambda x: x
+
+
+def F(x): return x
+
+
 ɛ = 1e-5
 nx = 64
 _x1 = jnp.linspace(ɛ, 1-ɛ, nx)
@@ -41,8 +38,8 @@ _x3 = jnp.zeros(1)
 _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
 _x = _x.transpose(1, 2, 3, 0).reshape(nx*nx*1, 3)
 _y = jax.vmap(F)(_x)
-_y1 = _y[:,0].reshape(nx, nx)
-_y2 = _y[:,1].reshape(nx, nx)
+_y1 = _y[:, 0].reshape(nx, nx)
+_y2 = _y[:, 1].reshape(nx, nx)
 _nx = 16
 __x1 = jnp.linspace(ɛ, 1-ɛ, _nx)
 __x2 = jnp.linspace(ɛ, 1-ɛ, _nx)
@@ -50,8 +47,8 @@ __x3 = jnp.zeros(1)
 __x = jnp.array(jnp.meshgrid(__x1, __x2, __x3))
 __x = __x.transpose(1, 2, 3, 0).reshape(_nx*_nx*1, 3)
 __y = jax.vmap(F)(__x)
-__y1 = __y[:,0].reshape(_nx, _nx)
-__y2 = __y[:,1].reshape(_nx, _nx)
+__y1 = __y[:, 0].reshape(_nx, _nx)
+__y2 = __y[:, 1].reshape(_nx, _nx)
 
 # %%# %%
 u_hat = jnp.ones(B0.n)
@@ -74,8 +71,8 @@ __z1 = jax.vmap(A_h)(__x).reshape(_nx, _nx, 3)
 plt.quiver(
     __y1,
     __y2,
-    __z1[:,:,0], 
-    __z1[:,:,1],
+    __z1[:, :, 0],
+    __z1[:, :, 1],
     color='w')
 # %%
 B_hat = jnp.ones(B2.n)
@@ -87,9 +84,9 @@ plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar()
 __z1 = jax.vmap(B_h)(__x).reshape(_nx, _nx, 3)
 plt.quiver(
-    __y1, 
+    __y1,
     __y2,
-    __z1[:,:,0], 
-    __z1[:,:,1],
+    __z1[:, :, 0],
+    __z1[:, :, 1],
     color='w')
 # %%
