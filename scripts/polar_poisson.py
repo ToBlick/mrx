@@ -4,14 +4,12 @@ import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
 
-from mrx.SplineBases import SplineBasis, DerivativeSpline, TensorBasis
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback, Pushforward
+from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
-from mrx.LazyMatrices import LazyMassMatrix, LazyStiffnessMatrix, LazyProjectionMatrix
+from mrx.LazyMatrices import LazyStiffnessMatrix
 from mrx.Utils import l2_product
-from mrx.BoundaryConditions import LazyBoundaryOperator
 from functools import partial
 
 # %%

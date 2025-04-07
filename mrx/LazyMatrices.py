@@ -3,9 +3,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.Utils import jacobian, inv33, curl, div, grad
-from mrx.DifferentialForms import DifferentialForm
-from mrx.Projectors import Projector
-from mrx.Quadrature import QuadratureRule
 
 
 class LazyMassMatrix:

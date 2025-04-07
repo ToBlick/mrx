@@ -2,7 +2,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.DifferentialForms import DifferentialForm
 
 # Bpundary extraction operator for cube-like domains
 

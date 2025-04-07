@@ -1,17 +1,15 @@
 # %%
 import jax
 import jax.numpy as jnp
-import numpy as np
 import matplotlib.pyplot as plt
 
-from mrx.SplineBases import SplineBasis, DerivativeSpline, TensorBasis
+from mrx.SplineBases import SplineBasis, DerivativeSpline
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback, Pushforward
+from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
-from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix
-from mrx.Utils import div, curl, inv33, jacobian, grad
-from mrx.BoundaryConditions import LazyBoundaryOperator
+from mrx.LazyMatrices import LazyMassMatrix
+from mrx.Utils import div, curl, grad
 
 # %%
 ns = (8, 8, 1)

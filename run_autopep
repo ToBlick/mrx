@@ -1,0 +1,12 @@
+#!/bin/bash
+# https://pycodestyle.pycqa.org/en/latest/intro.html#error-codes
+set -ex
+
+# EXCLUDE="E226,E265,E266,E4,E5,E7,W,F"
+EXCLUDE="E226,E265,E266,E4,E501,E722,F403,F405,F406,W5"
+flake8  --ignore $EXCLUDE scripts/ || (exit 0)
+flake8  --ignore $EXCLUDE mrx/ || (exit 0)
+find scripts/ -name '*.py' -exec autopep8 --ignore=$EXCLUDE --in-place '{}' \;
+find mrx/ -name '*.py' -exec autopep8 --ignore=$EXCLUDE --in-place '{}' \;
+flake8  --ignore $EXCLUDE scripts/
+flake8  --ignore $EXCLUDE mrx/
