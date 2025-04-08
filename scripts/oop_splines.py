@@ -11,6 +11,7 @@ from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix
 from mrx.Utils import div, curl, grad
 
+jax.config.update("jax_enable_x64", True)
 # %%
 ns = (8, 8, 1)
 ps = (3, 2, 0)

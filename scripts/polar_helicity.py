@@ -10,6 +10,8 @@ from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix
 from mrx.Utils import l2_product, grad, div, curl
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
+
+jax.config.update("jax_enable_x64", True)
 # %%
 p = 3
 
@@ -63,9 +65,9 @@ D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).M
 def A(x):
     r, χ, z = x
     a1 = jnp.sin(2 * jnp.pi * χ)
-    a2 = r**2
-    a3 = 1
-    return jnp.array([a1, a2, a3]) * (1-r)**2
+    a2 = 1
+    a3 = jnp.cos(2 * jnp.pi * χ)
+    return jnp.array([a1, a2, a3]) * jnp.sin(jnp.pi * r)**2
 B = curl(A)
 
 l2_product(A, B, Q)
@@ -105,7 +107,7 @@ plt.plot(S / S[0])
 plt.yscale('log')
 plt.xlabel('index')
 plt.ylabel('singular value')
-S_inv = jnp.where(S/S[0] > 5e-6, 1/S, 0)
+S_inv = jnp.where(S/S[0] > 1e-12, 1/S, 0)
 # %%
 A_hat_recon = U @ jnp.diag(S_inv) @ Vh @ D1.T @ B_hat
 # %%

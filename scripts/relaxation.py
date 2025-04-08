@@ -12,7 +12,7 @@ from mrx.Projectors import Projector, CurlProjection
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix, LazyStiffnessMatrix
 from mrx.Utils import div, curl, inv33, jacobian, grad
 
-# jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", True)
 
 # %%
 ns = (8, 8, 1)

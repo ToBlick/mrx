@@ -10,7 +10,7 @@ from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix
 from mrx.Utils import l2_product
 from functools import partial
-
+jax.config.update("jax_enable_x64", True)
 # %%
 ###
 # 2D Poisson problem, Dirichlet BCs

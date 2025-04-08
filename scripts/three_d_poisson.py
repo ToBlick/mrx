@@ -11,7 +11,7 @@ from mrx.LazyMatrices import LazyMassMatrix, LazyStiffnessMatrix
 from mrx.Utils import l2_product
 from mrx.BoundaryConditions import LazyBoundaryOperator
 from functools import partial
-
+jax.config.update("jax_enable_x64", True)
 # %%
 ###
 # 2D Poisson problem, Dirichlet BCs
@@ -49,7 +49,7 @@ def get_err(n, p):
 
 # %%
 import time
-ns = np.arange(4, 10)
+ns = np.arange(4, 9)
 ps = np.arange(1, 4)
 err = np.zeros((len(ns), len(ps)))
 times = np.zeros((len(ns), len(ps)))

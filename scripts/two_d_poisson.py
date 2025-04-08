@@ -11,7 +11,7 @@ from mrx.LazyMatrices import LazyMassMatrix, LazyStiffnessMatrix
 from mrx.Utils import l2_product
 from mrx.BoundaryConditions import LazyBoundaryOperator
 from functools import partial
-
+jax.config.update("jax_enable_x64", True)
 # %%
 ###
 # 2D Poisson problem, Dirichlet BCs

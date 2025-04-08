@@ -11,7 +11,7 @@ from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyStiffnessMatrix
 from mrx.Utils import l2_product
 from functools import partial
-
+jax.config.update("jax_enable_x64", True)
 # %%
 ###
 # 2D Poisson problem, Dirichlet BCs
@@ -39,8 +39,6 @@ def get_err(n, p):
         return jnp.ravel(jnp.array([_R(r, χ),
                                     _Y(r, χ),
                                     jnp.ones(1) * z]))
-    n = 8
-    p = 3
     ns = (n, n, 1)
     ps = (p, p, 0)
 
@@ -64,39 +62,6 @@ def get_err(n, p):
     def err(x): return (u(x) - u_h(x))
     error = (l2_product(err, err, Q, F) / l2_product(u, u, Q, F))**0.5
     return error
-
-
-# %%
-print(get_err(6, 3))
-# %%
-ɛ = 1e-5
-nx = 64
-_x1 = jnp.linspace(ɛ, 1-ɛ, nx)
-_x2 = jnp.linspace(ɛ, 1-ɛ, nx)
-_x3 = jnp.zeros(1)
-_x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
-_x = _x.transpose(1, 2, 3, 0).reshape(nx*nx*1, 3)
-_y = jax.vmap(F)(_x)
-_y1 = _y[:, 0].reshape(nx, nx)
-_y2 = _y[:, 1].reshape(nx, nx)
-_nx = 16
-__x1 = jnp.linspace(ɛ, 1-ɛ, _nx)
-__x2 = jnp.linspace(ɛ, 1-ɛ, _nx)
-__x3 = jnp.zeros(1)
-__x = jnp.array(jnp.meshgrid(__x1, __x2, __x3))
-__x = __x.transpose(1, 2, 3, 0).reshape(_nx*_nx*1, 3)
-__y = jax.vmap(F)(__x)
-__y1 = __y[:, 0].reshape(_nx, _nx)
-__y2 = __y[:, 1].reshape(_nx, _nx)
-
-
-_z1 = jax.vmap(Pullback(u_h, F, 0))(_x).reshape(nx, nx, 1)
-_z1_norm = jnp.linalg.norm(_z1, axis=2)
-_z2 = jax.vmap(Pullback(f, F, 0))(_x).reshape(nx, nx, 1)
-_z2_norm = jnp.linalg.norm(_z2, axis=2)
-plt.contourf(_y1, _y2, _z1_norm)
-plt.colorbar()
-
 
 # %%
 import time

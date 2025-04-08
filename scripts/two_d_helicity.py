@@ -9,7 +9,7 @@ from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix
 from mrx.Utils import l2_product, grad, div, curl
-
+jax.config.update("jax_enable_x64", True)
 # %%
 n = 10
 p = 3
@@ -60,7 +60,7 @@ plt.plot(S / S[0])
 plt.yscale('log')
 plt.xlabel('index')
 plt.ylabel('singular value')
-S_inv = jnp.where(S > 1e-6 * S[0] * S.shape[0], 1/S, 0)
+S_inv = jnp.where(S/S[0] > 1e-12, 1/S, 0)
 
 # %%
 A_hat_recon = U @ jnp.diag(S_inv) @ Vh @ D.T @ B_hat
