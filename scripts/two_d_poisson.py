@@ -51,7 +51,7 @@ def get_err(n, p):
 print(get_err(8, 3))
 # %%
 import time
-ns = np.arange(5, 25, 2)
+ns = np.arange(5, 21, 2)
 ps = np.arange(1, 4)
 err = np.zeros((len(ns), len(ps)))
 times = np.zeros((len(ns), len(ps)))
@@ -66,9 +66,9 @@ for i, n in enumerate(ns):
 plt.plot(ns, err[:, 0], label='p=1', marker='o')
 plt.plot(ns, err[:, 1], label='p=2', marker='*')
 plt.plot(ns, err[:, 2], label='p=3', marker='s')
-plt.plot(ns, err[0, 0] * (ns/ns[0])**(-2), label='O(n^-2)', linestyle='--')
-plt.plot(ns, err[0, 1] * (ns/ns[0])**(-4), label='O(n^-4)', linestyle='--')
-plt.plot(ns, err[0, 2] * (ns/ns[0])**(-6), label='O(n^-6)', linestyle='--')
+plt.plot(ns, err[-1, 0] * (ns/ns[-1])**(-2), label='O(n^-2)', linestyle='--')
+plt.plot(ns, err[-1, 1] * (ns/ns[-1])**(-4), label='O(n^-4)', linestyle='--')
+plt.plot(ns, err[-1, 2] * (ns/ns[-1])**(-6), label='O(n^-6)', linestyle='--')
 plt.loglog()
 plt.xlabel('n')
 plt.ylabel('Error')
