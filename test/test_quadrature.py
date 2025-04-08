@@ -5,7 +5,6 @@ from mrx.SplineBases import *
 from mrx.DifferentialForms import *
 import numpy.testing as npt
 from jax import numpy as jnp
-from jax import jit, vmap
 import jax
 jax.config.update("jax_enable_x64", True)
 

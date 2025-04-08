@@ -1,14 +1,13 @@
 # %%
 import jax
 import jax.numpy as jnp
-import numpy as np
 import matplotlib.pyplot as plt
 
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback, Pushforward
+from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix
-from mrx.Utils import l2_product, grad, div, curl
+from mrx.Utils import l2_product, curl
 jax.config.update("jax_enable_x64", True)
 # %%
 n = 10

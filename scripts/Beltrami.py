@@ -1,12 +1,7 @@
 # %%
-import jax
 import jax.numpy as jnp
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
+from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
-from mrx.Projectors import Projector
-from mrx.LazyMatrices import LazyMassMatrix, LazyStiffnessMatrix
-from mrx.Utils import l2_product
-from mrx.BoundaryConditions import LazyBoundaryOperator
 
 
 # Case of Beltrami field with homogenous Dirichlet boundary conditions
