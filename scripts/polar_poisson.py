@@ -63,6 +63,7 @@ def get_err(n, p):
     error = (l2_product(err, err, Q, F) / l2_product(u, u, Q, F))**0.5
     return error
 
+
 # %%
 import time
 ns = np.arange(5, 20, 2)
