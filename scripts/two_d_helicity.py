@@ -54,8 +54,6 @@ A_hat = jnp.linalg.solve(M1, P1(A))
 B_hat = jnp.linalg.solve(M2, P2(B))
 # %%
 A_hat @ M12 @ B_hat
-
-
 # %%
 U, S, Vh = jnp.linalg.svd(C)
 plt.plot(S / S[0])
