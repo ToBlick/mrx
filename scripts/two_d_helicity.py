@@ -3,18 +3,19 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
+from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix
-from mrx.Utils import l2_product, grad, div, curl
+from mrx.Utils import curl
 from functools import partial
 jax.config.update("jax_enable_x64", True)
 # %%
 
+
 @partial(jax.jit, static_argnames=['n', 'p'])
 def get_error(n, p):
-    
+
     # print("n:", n)
     # print("p:", p)
 
@@ -22,7 +23,7 @@ def get_error(n, p):
 
     ns = (n, n, 1)
     ps = (p, p, 0)
-    
+
     Λ0 = DifferentialForm(0, ns, ps, types)
     Λ1 = DifferentialForm(1, ns, ps, types)
     Λ2 = DifferentialForm(2, ns, ps, types)
@@ -42,7 +43,7 @@ def get_error(n, p):
 
     def A(x):
         r, χ, z = x
-        a1 =  jnp.sin(m1 * jnp.pi * r) * jnp.cos(m2 * jnp.pi * χ) * jnp.sqrt(m2**2/(m2**2 + m1**2))
+        a1 = jnp.sin(m1 * jnp.pi * r) * jnp.cos(m2 * jnp.pi * χ) * jnp.sqrt(m2**2/(m2**2 + m1**2))
         a2 = -jnp.cos(m1 * jnp.pi * r) * jnp.sin(m2 * jnp.pi * χ) * jnp.sqrt(m1**2/(m2**2 + m1**2))
         a3 = jnp.sin(m1 * jnp.pi * r) * jnp.sin(m2 * jnp.pi * χ)
         return jnp.array([a1, a2, a3])
@@ -56,16 +57,17 @@ def get_error(n, p):
 
     A_hat_recon = Vh.T @ jnp.diag(S_inv) @ U.T @ D.T @ B_hat
 
-    A_err = ( (A_hat - A_hat_recon) @ M1 @ (A_hat - A_hat_recon) / (A_hat @ M1 @ A_hat) )**0.5
+    A_err = ((A_hat - A_hat_recon) @ M1 @ (A_hat - A_hat_recon) / (A_hat @ M1 @ A_hat))**0.5
     # print("error in A:", A_err)
 
-    H_err = (A_hat - A_hat_recon) @ M12 @ B_hat / (A_hat @ M12 @ B_hat) 
+    H_err = (A_hat - A_hat_recon) @ M12 @ B_hat / (A_hat @ M12 @ B_hat)
     # print("error in Helicity:", H_err)
 
-    curl_A_err = ( jnp.linalg.solve(M2, D @ (A_hat - A_hat_recon)) @ M2 @ jnp.linalg.solve(M2, D @ (A_hat - A_hat_recon)) / ( jnp.linalg.solve(M2, D @ A_hat) @ M2 @ jnp.linalg.solve(M2, D @ A_hat) ) )**0.5
+    curl_A_err = (jnp.linalg.solve(M2, D @ (A_hat - A_hat_recon)) @ M2 @ jnp.linalg.solve(M2, D @ (A_hat - A_hat_recon)) / (jnp.linalg.solve(M2, D @ A_hat) @ M2 @ jnp.linalg.solve(M2, D @ A_hat)))**0.5
     # print("error in curl A:", curl_A_err)
 
     return A_err, H_err, curl_A_err
+
 
 # %%
 import time
@@ -84,7 +86,7 @@ for i, n in enumerate(ns):
         curl_A_err[i, j] = _curl_A_err
         end = time.time()
         times[i, j] = end - start
-        print(f"n={n}, p={p}, A_err={A_err[i,j]}, H_err={H_err[i,j]}, curl_A_err={curl_A_err[i,j]}, time={times[i,j]}") 
+        print(f"n={n}, p={p}, A_err={A_err[i,j]}, H_err={H_err[i,j]}, curl_A_err={curl_A_err[i,j]}, time={times[i,j]}")
 # %%
 plt.plot(ns, A_err[:, 0], label='p=1', marker='o')
 plt.plot(ns, A_err[:, 1], label='p=2', marker='*')
@@ -170,9 +172,9 @@ plt.legend()
 # plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
 # __z1 = jax.vmap(F_u_h)(__x).reshape(_nx, _nx, 3)
 # plt.quiver(
-#     __y1, 
+#     __y1,
 #     __y2,
-#     __z1[:,:,0], 
+#     __z1[:,:,0],
 #     __z1[:,:,1],
 #     color='w')
 # # %%
@@ -188,9 +190,9 @@ plt.legend()
 # plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
 # __z1 = jax.vmap(F_u_h)(__x).reshape(_nx, _nx, 3)
 # plt.quiver(
-#     __y1, 
+#     __y1,
 #     __y2,
-#     __z1[:,:,0], 
+#     __z1[:,:,0],
 #     __z1[:,:,1],
 #     color='w')
 # %%

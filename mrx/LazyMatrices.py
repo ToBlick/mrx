@@ -4,6 +4,7 @@ import numpy as np
 
 from mrx.Utils import jacobian, inv33, curl, div, grad
 
+
 class LazyMassMatrix:
     def __init__(self, Λ, Q, F=None, E=None):
         self.Λ = Λ

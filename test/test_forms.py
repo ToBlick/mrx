@@ -9,9 +9,7 @@ from mrx.Projectors import *
 from mrx.PolarMapping import *
 
 
-import numpy.testing as npt
 from jax import numpy as jnp
-from jax import vmap, jit, grad, hessian, jacfwd, jacrev
 import jax
 jax.config.update("jax_enable_x64", True)
 
