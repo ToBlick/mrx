@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
+from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyStiffnessMatrix
@@ -62,6 +62,7 @@ def get_err(n, p):
     def err(x): return (u(x) - u_h(x))
     error = (l2_product(err, err, Q, F) / l2_product(u, u, Q, F))**0.5
     return error
+
 
 # %%
 import time
