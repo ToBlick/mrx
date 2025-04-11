@@ -34,7 +34,7 @@ def get_err(n, p):
     bcs = ('dirichlet', 'dirichlet', 'dirichlet')
 
     Λ0 = DifferentialForm(0, ns, ps, types)
-    Q = QuadratureRule(Λ0, 10)
+    Q = QuadratureRule(Λ0, 4)
 
     B0 = LazyBoundaryOperator(Λ0, bcs).M
     M0 = LazyMassMatrix(Λ0, Q, F=None, E=B0).M

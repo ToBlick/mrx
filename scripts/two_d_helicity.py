@@ -30,7 +30,7 @@ def get_error(n, p):
 
     M2 = LazyMassMatrix(Λ2, Q).M
     M1 = LazyMassMatrix(Λ1, Q).M
-    C = LazyDoubleCurlMatrix(Λ1, Q).M
+    # C = LazyDoubleCurlMatrix(Λ1, Q).M
     D = LazyDerivativeMatrix(Λ1, Λ2, Q).M
     P2 = Projector(Λ2, Q)
     P1 = Projector(Λ1, Q)
@@ -193,4 +193,61 @@ plt.legend()
 #     __z1[:,:,0], 
 #     __z1[:,:,1],
 #     color='w')
+# %%
+types = ('periodic', 'periodic', 'constant')
+
+n = 6
+p = 3
+
+ns = (n, n, 1)
+ps = (p, p, 0)
+
+Λ0 = DifferentialForm(0, ns, ps, types)
+Λ1 = DifferentialForm(1, ns, ps, types)
+Λ2 = DifferentialForm(2, ns, ps, types)
+Q = QuadratureRule(Λ0, 3)
+M2 = LazyMassMatrix(Λ2, Q).M
+M1 = LazyMassMatrix(Λ1, Q).M
+# C = LazyDoubleCurlMatrix(Λ1, Q).M
+D = LazyDerivativeMatrix(Λ1, Λ2, Q).M
+P2 = Projector(Λ2, Q)
+P1 = Projector(Λ1, Q)
+M12 = LazyProjectionMatrix(Λ1, Λ2, Q).M
+
+C = D.T @ jnp.linalg.solve(M2, D)
+_C = LazyDoubleCurlMatrix(Λ1, Q).M
+
+m1 = 2
+m2 = 2
+def A(x):
+    r, χ, z = x
+    a1 =  jnp.sin(m1 * jnp.pi * r) * jnp.cos(m2 * jnp.pi * χ) * jnp.sqrt(m2**2/(m2**2 + m1**2))
+    a2 = -jnp.cos(m1 * jnp.pi * r) * jnp.sin(m2 * jnp.pi * χ) * jnp.sqrt(m1**2/(m2**2 + m1**2))
+    a3 = jnp.sin(m1 * jnp.pi * r) * jnp.sin(m2 * jnp.pi * χ)
+    return jnp.array([a1, a2, a3])
+B = curl(A)
+A_hat = jnp.linalg.solve(M1, P1(A))
+B_hat = jnp.linalg.solve(M2, P2(B))
+U, S, Vh = jnp.linalg.svd(C)
+
+# %%
+plt.plot(S/S[0], label='singular values', marker='o')
+plt.yscale('log')
+
+# %%
+
+S_inv = jnp.where(S/S[0] > 1e-12, 1/S, 0)
+C_inv = Vh.T @ jnp.diag(S_inv) @ U.T
+A_hat_recon = C_inv @ D.T @ B_hat
+A_err = ( (A_hat - A_hat_recon) @ M1 @ (A_hat - A_hat_recon) / (A_hat @ M1 @ A_hat) )**0.5
+print("error in A:", A_err)
+H_err = (A_hat - A_hat_recon) @ M12 @ B_hat / (A_hat @ M12 @ B_hat) 
+print("error in Helicity:", H_err)
+curl_A_err = ( jnp.linalg.solve(M2, D @ (A_hat - A_hat_recon)) @ M2 @ jnp.linalg.solve(M2, D @ (A_hat - A_hat_recon)) / ( jnp.linalg.solve(M2, D @ A_hat) @ M2 @ jnp.linalg.solve(M2, D @ A_hat) ) )**0.5
+print("error in curl A:", curl_A_err)
+# %%
+((C @ A_hat - D.T @ B_hat) @ M1 @ (C @ A_hat - D.T @ B_hat))**0.5
+# %%
+v1 = M12 @ B_hat- D.T @ jnp.linalg.solve(M2, M12.T @ A_hat)
+(v1 @ M1 @ v1)**0.5
 # %%

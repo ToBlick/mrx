@@ -18,8 +18,8 @@ jax.config.update("jax_enable_x64", True)
 ###
 
 
-@partial(jax.jit, static_argnames=['n', 'p'])
-def get_err(n, p):
+@partial(jax.jit, static_argnames=['n', 'p', 'q'])
+def get_err(n, p, q):
 
     ###
     # Mapping definition
@@ -53,7 +53,7 @@ def get_err(n, p):
     bcs = ('dirichlet', 'dirichlet', 'none')
     Λ0 = DifferentialForm(0, ns, ps, types)
     ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
-    Q = QuadratureRule(Λ0, 10)
+    Q = QuadratureRule(Λ0, q)
     E0 = LazyExtractionOperator(Λ0, ξ, True).M
     K = LazyStiffnessMatrix(Λ0, Q, F=F, E=E0).M
     P0 = Projector(Λ0, Q, F=F, E=E0)
@@ -66,33 +66,46 @@ def get_err(n, p):
 
 # %%
 import time
-ns = np.arange(5, 20, 2)
+ns = np.arange(4, 18, 2)
 ps = np.arange(1, 4)
-err = np.zeros((len(ns), len(ps)))
-times = np.zeros((len(ns), len(ps)))
+qs = np.arange(4, 11, 1)
+err = np.zeros((len(ns), len(ps), len(qs)))
+times = np.zeros((len(ns), len(ps), len(qs)))
 for i, n in enumerate(ns):
     for j, p in enumerate(ps):
-        start = time.time()
-        err[i, j] = get_err(n, p)
-        end = time.time()
-        times[i, j] = end - start
-        print(f"n={n}, p={p}, err={err[i,j]}, time={times[i,j]}")
+        for k, q in enumerate(qs):
+            start = time.time()
+            err[i, j, k] = get_err(n, p, q)
+            end = time.time()
+            times[i, j,k] = end - start
+            print(f"n={n}, p={p}, q={q}, err={err[i,j,k]}, time={times[i,j,k]}")
 # %%
-plt.plot(ns, err[:, 0], label='p=1', marker='o')
-plt.plot(ns, err[:, 1], label='p=2', marker='*')
-plt.plot(ns, err[:, 2], label='p=3', marker='s')
-plt.plot(ns, err[-1, 0] * (ns/ns[-1])**(-2), label='O(n^-2)', linestyle='--')
-plt.plot(ns, err[-1, 1] * (ns/ns[-1])**(-4), label='O(n^-4)', linestyle='--')
-plt.plot(ns, err[-1, 2] * (ns/ns[-1])**(-6), label='O(n^-6)', linestyle='--')
+base_markers = [
+        'o', 'v', '*', '<', '>', '1', '2', '3', '4',
+        's', 'p', '^', 'h', 'H', '+', 'x', 'D', 'd', '|', '_'
+    ]
+markers = [base_markers[i % len(base_markers)] for i in range(len(ps))]
+cm = plt.cm.get_cmap('viridis', len(qs))
+for j, p in enumerate(ps):
+    for k, q in enumerate(qs):
+        if k==0:
+            plt.plot(ns, err[:, j, k], label=f'p={p}, q={q}', marker=markers[j], color=cm(k), markersize=8)
+        else:
+            plt.plot(ns, err[:, j, k], label=None, marker=markers[j], color=cm(k), markersize=8)
+    plt.plot(ns, err[-1, j, 0] * (ns/ns[-1])**(-2*p), label=f'O(1/n^{2*p})', linestyle='--', color='k')
+
 plt.loglog()
 plt.xlabel('n')
 plt.ylabel('Error')
 plt.legend()
 # %%
-plt.plot(ns, times[:, 0], label='p=1', marker='o')
-plt.plot(ns, times[:, 1], label='p=2', marker='*')
-plt.plot(ns, times[:, 2], label='p=3', marker='s')
-plt.plot(ns, times[0, 0] * (ns/ns[0])**(4), label='O(n^4)', linestyle='--')
+cm = plt.cm.get_cmap('viridis', len(qs))
+for j, p in enumerate(ps):
+    for k, q in enumerate(qs):
+        if k==0:
+            plt.plot(ns, times[:, j, k], label=f'p={p}', marker=markers[j], color=cm(k), markersize=8)
+        else:
+            plt.plot(ns, times[:, j, k], label=None, marker=markers[j], color=cm(k), markersize=8)
 plt.loglog()
 plt.xlabel('n')
 plt.ylabel('Time [s]')
