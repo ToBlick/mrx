@@ -11,6 +11,9 @@ from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyStiffnessMatrix
 from mrx.Utils import l2_product
 from functools import partial
+
+from mrx.Plotting import converge_plot
+
 jax.config.update("jax_enable_x64", True)
 # %%
 ###
@@ -79,35 +82,28 @@ for i, n in enumerate(ns):
             end = time.time()
             times[i, j,k] = end - start
             print(f"n={n}, p={p}, q={q}, err={err[i,j,k]}, time={times[i,j,k]}")
-# %%
-base_markers = [
-        'o', 'v', '*', '<', '>', '1', '2', '3', '4',
-        's', 'p', '^', 'h', 'H', '+', 'x', 'D', 'd', '|', '_'
-    ]
-markers = [base_markers[i % len(base_markers)] for i in range(len(ps))]
-cm = plt.cm.get_cmap('viridis', len(qs))
-for j, p in enumerate(ps):
-    for k, q in enumerate(qs):
-        if k==0:
-            plt.plot(ns, err[:, j, k], label=f'p={p}, q={q}', marker=markers[j], color=cm(k), markersize=8)
-        else:
-            plt.plot(ns, err[:, j, k], label=None, marker=markers[j], color=cm(k), markersize=8)
-    plt.plot(ns, err[-1, j, 0] * (ns/ns[-1])**(-2*p), label=f'O(1/n^{2*p})', linestyle='--', color='k')
 
-plt.loglog()
-plt.xlabel('n')
-plt.ylabel('Error')
-plt.legend()
 # %%
-cm = plt.cm.get_cmap('viridis', len(qs))
-for j, p in enumerate(ps):
-    for k, q in enumerate(qs):
-        if k==0:
-            plt.plot(ns, times[:, j, k], label=f'p={p}', marker=markers[j], color=cm(k), markersize=8)
-        else:
-            plt.plot(ns, times[:, j, k], label=None, marker=markers[j], color=cm(k), markersize=8)
-plt.loglog()
-plt.xlabel('n')
-plt.ylabel('Time [s]')
-plt.legend()
+fig = converge_plot(err, ns, ps, qs)
+fig.update_layout(
+    xaxis_type="log",
+    yaxis_type="log",
+    yaxis_tickformat=".1e",
+    xaxis_title='n',
+    yaxis_title='Error',
+    # legend_title='Legend'
+)
+fig.show()
+# %%
+fig = converge_plot(times, ns, ps, qs)
+fig.update_layout(
+    xaxis_type="log",
+    yaxis_type="log",
+    yaxis_tickformat=".1e",
+    xaxis_title='n',
+    yaxis_title='Time',
+    # legend_title='Legend'
+)
+fig.show()
+
 # %%

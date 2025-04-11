@@ -2,15 +2,19 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
-import matplotlib.pyplot as plt
+
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix, LazyStiffnessMatrix
+
 from mrx.Utils import l2_product
 from mrx.BoundaryConditions import LazyBoundaryOperator
 from functools import partial
+
+from mrx.Plotting import converge_plot
+
 jax.config.update("jax_enable_x64", True)
 # %%
 ###
@@ -54,7 +58,7 @@ print(get_err(8, 3, 3))
 import time
 ns = np.arange(4, 18, 2)
 ps = np.arange(1, 4)
-qs = np.arange(4, 11, 1)
+qs = np.arange(4, 11, 3)
 err = np.zeros((len(ns), len(ps), len(qs)))
 times = np.zeros((len(ns), len(ps), len(qs)))
 for i, n in enumerate(ns):
@@ -66,34 +70,26 @@ for i, n in enumerate(ns):
             times[i, j,k] = end - start
             print(f"n={n}, p={p}, q={q}, err={err[i,j,k]}, time={times[i,j,k]}")
 # %%
-base_markers = [
-        'o', 'v', '*', '<', '>', '1', '2', '3', '4',
-        's', 'p', '^', 'h', 'H', '+', 'x', 'D', 'd', '|', '_'
-    ]
-markers = [base_markers[i % len(base_markers)] for i in range(len(ps))]
-cm = plt.cm.get_cmap('viridis', len(qs))
-for j, p in enumerate(ps):
-    for k, q in enumerate(qs):
-        if k==0:
-            plt.plot(ns, err[:, j, k], label=f'p={p}, q={q}', marker=markers[j], color=cm(k), markersize=8)
-        else:
-            plt.plot(ns, err[:, j, k], label=None, marker=markers[j], color=cm(k), markersize=8)
-    plt.plot(ns, err[-1, j, 0] * (ns/ns[-1])**(-2*p), label=f'O(1/n^{2*p})', linestyle='--', color='k')
 
-plt.loglog()
-plt.xlabel('n')
-plt.ylabel('Error')
-plt.legend()
+fig = converge_plot(err, ns, ps, qs)
+fig.update_layout(
+    xaxis_type="log",
+    yaxis_type="log",
+    yaxis_tickformat=".1e",
+    xaxis_title='n',
+    yaxis_title='Error',
+    legend_title='Legend'
+)
+fig.show()
 # %%
-cm = plt.cm.get_cmap('viridis', len(qs))
-for j, p in enumerate(ps):
-    for k, q in enumerate(qs):
-        if k==0:
-            plt.plot(ns, times[:, j, k], label=f'p={p}', marker=markers[j], color=cm(k), markersize=8)
-        else:
-            plt.plot(ns, times[:, j, k], label=None, marker=markers[j], color=cm(k), markersize=8)
-plt.loglog()
-plt.xlabel('n')
-plt.ylabel('Time [s]')
-plt.legend()
+fig = converge_plot(times, ns, ps, qs)
+fig.update_layout(
+    xaxis_type="log",
+    yaxis_type="log",
+    yaxis_tickformat=".1e",
+    xaxis_title='n',
+    yaxis_title='Time',
+    legend_title='Legend'
+)
+fig.show()
 # %%
