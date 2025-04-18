@@ -12,18 +12,16 @@ from mrx.Utils import curl
 jax.config.update("jax_enable_x64", True)
 
 # %%
-ns = (8, 8, 1)
+ns = (10, 10, 1)
 ps = (3, 3, 1)
 types = ('periodic', 'periodic', 'constant')
 
-Λ0 = DifferentialForm(0, ns, ps, types)  # functions in H1
-Λ1 = DifferentialForm(1, ns, ps, types)  # vector fields in H(curl)
-Λ2 = DifferentialForm(2, ns, ps, types)  # vector fields in H(div)
-Λ3 = DifferentialForm(3, ns, ps, types)  # densities in L2
-Q = QuadratureRule(Λ0, 10)              # Quadrature
-def F(x): return x                         # identity mapping
-
-
+Λ0 = DifferentialForm(0, ns, ps, types) # functions in H1
+Λ1 = DifferentialForm(1, ns, ps, types) # vector fields in H(curl)
+Λ2 = DifferentialForm(2, ns, ps, types) # vector fields in H(div)
+Λ3 = DifferentialForm(3, ns, ps, types) # densities in L2
+Q = QuadratureRule(Λ0, 3)              # Quadrature
+F = lambda x: x                         # identity mapping
 # %%
 M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q).M
                   for Λ in [Λ0, Λ1, Λ2, Λ3]]                  # assembled mass matries
@@ -66,6 +64,27 @@ S_inv = jnp.where(S > 1e-6 * S[0] * S.shape[0], 1/S, 0)
 C_inv = Vh.T @ jnp.diag(S_inv) @ U.T
 A_hat_recon = C_inv @ D1.T @ B0_hat
 
+@jax.jit
+def force(B_hat):
+    H_hat = jnp.linalg.solve(M1, M12 @ B_hat)
+    J_hat = jnp.linalg.solve(M1, D1.T @ B_hat)
+    J_h = DiscreteFunction(J_hat, Λ1)
+    H_h = DiscreteFunction(H_hat, Λ1)
+    def JcrossH(x):
+        return jnp.cross(J_h(x), H_h(x))
+    u_hat = jnp.linalg.solve(M2, P2(JcrossH))           # u = J x H
+    return u_hat
+
+@jax.jit
+def force_residual(B_hat):
+    u_hat = force(B_hat)
+    return (u_hat @ M2 @ u_hat)**0.5
+
+@jax.jit
+def divergence_residual(B_hat):
+    divB = ((D2 @ B_hat) @ jnp.linalg.solve(M3, D2 @ B_hat))**0.5
+    return divB
+
 # %%
 print("Helicity before perturbation: ", A_hat_recon @ M12 @ B0_hat)
 print("Energy before perturbation: ", B0_hat @ M2 @ B0_hat / 2)
@@ -88,9 +107,10 @@ B_hat = B0_hat
 
 
 @jax.jit
-def _perturb_B_hat(B_guess, B_hat_0, dt):
-    H_hat = jnp.linalg.solve(M1, M12 @ (B_guess + B_hat_0)/2)  # H = Proj(B)
+def _perturb_B_hat(B_guess, B_hat_0, dt, u_hat):
+    H_hat = jnp.linalg.solve(M1, M12 @ (B_guess + B_hat_0)/2) # H = Proj(B)
     H_h = DiscreteFunction(H_hat, Λ1)
+           
     u_h = DiscreteFunction(u_hat, Λ2)
     E_hat = jnp.linalg.solve(M1, Pc(H_h, u_h))          # E = u x H
     ẟB_hat = jnp.linalg.solve(M2, D1 @ E_hat)           # ẟB = curl E
@@ -99,35 +119,49 @@ def _perturb_B_hat(B_guess, B_hat_0, dt):
 
 
 @jax.jit
-def perturb_B_hat(B_hat_0, dt):
+def perturb_B_hat(B_hat_0, dt, key):
+    u_hat = jax.random.normal(key, shape=B_hat_0.shape)
     def cond_fun(B_guess):
-        B_hat_1 = _perturb_B_hat(B_guess, B_hat_0, dt)
+        B_hat_1 = _perturb_B_hat(B_guess, B_hat_0, dt, u_hat)
         err = ((B_hat_1 - B_guess) @ M2 @ (B_hat_1 - B_guess))**0.5
         return err > 1e-12
 
     def body_fun(B_guess):
-        B_hat_1 = _perturb_B_hat(B_guess, B_hat_0, dt)
+        B_hat_1 = _perturb_B_hat(B_guess, B_hat_0, dt, u_hat)
         return B_hat_1
     B_hat = jax.lax.while_loop(cond_fun, body_fun, B_hat_0)
     return B_hat
 
-# %%
-
-
 @jax.jit
-def f(B_hat, x):
-    B_hat = perturb_B_hat(B_hat, 1e-3)
+def f(B_hat, key):
+    B_hat = perturb_B_hat(B_hat, 1e-4, key)
+    
     helicity = (C_inv @ D1.T @ B_hat) @ M12 @ B_hat
     energy = B_hat @ M2 @ B_hat / 2
-    divB = ((D2 @ B_hat) @ jnp.linalg.solve(M3, D2 @ B_hat))**0.5
-    return B_hat, (helicity, energy, divB)
+    divB = divergence_residual(B_hat)
+    normF = force_residual(B_hat)
+
+    # jax.debug.print("Energy: {energy}", energy=energy)
+    # jax.debug.print("Helicity: {helicity}", helicity=helicity)
+    # jax.debug.print("Div B: {divB}", divB=divB)
+    # jax.debug.print("Force residual: {normF}", normF=normF)
+    
+    return B_hat, (helicity, energy, divB, normF)
 
 
 # %%
-BN_hat, trace = jax.lax.scan(f, B0_hat, None, length=25)
+key = jax.random.PRNGKey(0)
+traces = []
+BN_hat = B0_hat
+# %%
+for key in range(jax.random.split(key, 10)):
+    BN_hat, trace = jax.lax.scan(f, BN_hat, jax.random.split(key, 10))
+    traces.append(trace)
+# %%
+trace = jnp.hstack(jnp.array(traces))
 
 # %%
-helicity, energy, divB = trace
+helicity, energy, divB, normF = trace
 plt.plot(energy - energy[0], label='Energy')
 plt.xlabel('Iteration')
 plt.legend()
@@ -136,14 +170,20 @@ plt.plot(helicity - helicity[0], label='Helicity')
 plt.xlabel('Iteration')
 plt.legend()
 # %%
-plt.plot(divB - divB[0], label='Div B')
+plt.plot(divB - divB[0], label='|Div B|')
+plt.xlabel('Iteration')
+plt.legend()
+# %%
+plt.plot(normF, label='|F|')
 plt.xlabel('Iteration')
 plt.legend()
 
 # %%
+b = 0.0
+dt = 1e-5
 
-
-def ẟB_hat(B_guess, B_hat_0, dt):
+@jax.jit
+def ẟB_hat(B_guess, B_hat_0, u_hat_0):
     H_hat = jnp.linalg.solve(M1, M12 @ (B_guess + B_hat_0)/2)  # H = Proj(B)
     J_hat = jnp.linalg.solve(M1, D1.T @ (B_guess + B_hat_0)/2)  # J = curl H
     J_h = DiscreteFunction(J_hat, Λ1)
@@ -152,6 +192,10 @@ def ẟB_hat(B_guess, B_hat_0, dt):
     def JcrossH(x):
         return jnp.cross(J_h(x), H_h(x))
     u_hat = jnp.linalg.solve(M2, P2(JcrossH))           # u = J x H
+    if b != 0:
+        F_1 = u_hat @ M2 @ u_hat
+        F_0 = u_hat_0 @ M2 @ u_hat_0
+        u_hat += b * F_1/F_0 * u_hat_0
     u_h = DiscreteFunction(u_hat, Λ2)
     E_hat = jnp.linalg.solve(M1, Pc(H_h, u_h))          # E = u x H
     ẟB_hat = jnp.linalg.solve(M2, D1 @ E_hat)           # ẟB = curl E
@@ -159,27 +203,14 @@ def ẟB_hat(B_guess, B_hat_0, dt):
     B_diff = B_hat_1 - B_guess
     return B_diff
 
-
-def force_residual(B_hat):
-    H_hat = jnp.linalg.solve(M1, M12 @ B_hat)
-    J_hat = jnp.linalg.solve(M1, D1.T @ B_hat)
-    J_h = DiscreteFunction(J_hat, Λ1)
-    H_h = DiscreteFunction(H_hat, Λ1)
-
-    def JcrossH(x):
-        return jnp.cross(J_h(x), H_h(x))
-    u_hat = jnp.linalg.solve(M2, P2(JcrossH))           # u = J x H
-    return (u_hat @ M2 @ u_hat)**0.5
-
-
-def update_B_hat(B_hat_0, dt):
+@jax.jit
+def update_B_hat(B_hat_0, u_hat_0):
     def ẟB(B_guess):
-        return ẟB_hat(B_guess, B_hat_0, dt)
-
+        return ẟB_hat(B_guess, B_hat_0, u_hat_0)
     def cond_fun(B_guess):
         B_diff = ẟB(B_guess)
         err = (B_diff @ M2 @ B_diff)**0.5
-        jax.debug.print("Residual: {err}", err=err)
+        # jax.debug.print("Residual: {err}", err=err)
         return err > 1e-12
 
     def body_fun(B_guess):
@@ -188,47 +219,71 @@ def update_B_hat(B_hat_0, dt):
         return B_guess + B_diff
         ### Newton method
         # J = jax.jacrev(ẟB)(B_guess)
+        # J = jax.lax.stop_gradient(J)
         # return B_guess - jnp.linalg.solve(J, B_diff)
     B_hat = jax.lax.while_loop(cond_fun, body_fun, B_hat_0)
     return B_hat
 
 
 @jax.jit
-def f(B_hat, x):
+def f(x, i):
+    B_hat, u_hat = jnp.split(x, 2)
+    u_hat = jax.lax.stop_gradient(u_hat)
+    # B_hat, u_hat = x
+    
     helicity = (C_inv @ D1.T @ B_hat) @ M12 @ B_hat
     energy = B_hat @ M2 @ B_hat / 2
-    divB = ((D2 @ B_hat) @ jnp.linalg.solve(M3, D2 @ B_hat))**0.5
-    force = force_residual(B_hat)
-    dt = 1e-4 / force
-
+    divB = divergence_residual(B_hat)
+    normF = force_residual(B_hat)
+    
+    jax.debug.print("Iteration: {i}", i=i)
     jax.debug.print("Energy: {energy}", energy=energy)
-    jax.debug.print("Helicity: {helicity}", helicity=helicity)
-    jax.debug.print("Div B: {divB}", divB=divB)
-    jax.debug.print("Force residual: {force}", force=force)
-    jax.debug.print("time step: {dt}", dt=dt)
-    B_hat = update_B_hat(B_hat, dt)
-    return B_hat, (helicity, energy, divB)
+    # jax.debug.print("Helicity: {helicity}", helicity=helicity)
+    # jax.debug.print("Div B: {divB}", divB=divB)
+    jax.debug.print("Force residual: {normF}", normF=normF)
+    
+    B_hat = update_B_hat(B_hat, u_hat)
+    u_hat = force(B_hat)
+    # x = (B_hat, u_hat)
+    x = jnp.concatenate((B_hat, u_hat), axis=0)
+    
+    return x, (helicity, energy, divB, normF)
 
 
 # %%
-B_hat, trace = jax.lax.scan(f, BN_hat, None, length=100)
+x = jnp.concatenate((BN_hat, force(BN_hat)), axis=0)
+traces = []
+# %%
+for i in range(1):
+    x, trace = jax.lax.scan(f, x, jnp.arange(50))
+    B_hat, u_hat = jnp.split(x, 2)
+    traces.append(trace)
+# %%
+trace = jnp.hstack(jnp.array(traces))
+__helicity, __energy, __divB, __force_res = trace
 
 # %%
-_helicity, _energy, _divB = trace
-# %%
-plt.plot(energy, label='Energy')
-plt.plot(_energy, label='Energy')
+plt.plot(__energy - B0_hat @ M2 @ B0_hat / 2)
 plt.xlabel('Iteration')
+plt.ylabel('Energy - Energy(0)')
+plt.yscale('log')
 plt.legend()
 # %%
-plt.plot(helicity, label='Helicity')
-plt.plot(_helicity, label='Helicity')
+plt.plot(__helicity - __helicity[0])
 plt.xlabel('Iteration')
+plt.ylabel('Helicity - Helicity(0)')
 plt.legend()
 # %%
-plt.plot(divB, label='Div B')
-plt.plot(_divB, label='Div B')
+plt.plot(__divB)
 plt.xlabel('Iteration')
+plt.ylabel('|Div B|')
+plt.legend()
+
+# %%
+plt.plot(__force_res )
+plt.xlabel('Iteration')
+plt.ylabel('| J x B |')
+plt.yscale('log')
 plt.legend()
 
 # %%
@@ -239,6 +294,11 @@ print("B(0) - B(T): ", ((B0_hat - B_hat) @ M2 @ (B0_hat - B_hat) / (B0_hat @ M2 
 print("F(0): ", force_residual(B0_hat))
 print("F(1): ", force_residual(BN_hat))
 print("F(T): ", force_residual(B_hat))
+
+# %%
+print("E(0): ", B0_hat @ M2 @ B0_hat / 2)
+print("E(1): ", BN_hat @ M2 @ BN_hat / 2)
+print("E(T): ", B_hat @ M2 @ B_hat / 2)
 # %%
 ɛ = 1e-5
 nx = 64
@@ -269,6 +329,7 @@ _z1_norm = jnp.linalg.norm(_z1, axis=2)
 _z2 = jax.vmap(F_B)(_x).reshape(nx, nx, 3)
 _z2_norm = jnp.linalg.norm(_z2, axis=2)
 plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
+plt.clim(0, 20)
 plt.colorbar()
 plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
 __z1 = jax.vmap(F_B_h)(__x).reshape(_nx, _nx, 3)
@@ -288,6 +349,7 @@ _z1_norm = jnp.linalg.norm(_z1, axis=2)
 _z2 = jax.vmap(F_B)(_x).reshape(nx, nx, 3)
 _z2_norm = jnp.linalg.norm(_z2, axis=2)
 plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
+plt.clim(0, 20)
 plt.colorbar()
 plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
 __z1 = jax.vmap(F_B_h)(__x).reshape(_nx, _nx, 3)
@@ -308,6 +370,7 @@ _z2 = jax.vmap(F_B)(_x).reshape(nx, nx, 3)
 _z2_norm = jnp.linalg.norm(_z2, axis=2)
 plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar()
+plt.clim(0, 20)
 plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
 __z1 = jax.vmap(F_B_h)(__x).reshape(_nx, _nx, 3)
 plt.quiver(
@@ -315,5 +378,23 @@ plt.quiver(
     __y2,
     __z1[:, :, 0],
     __z1[:, :, 1],
+    color='w')
+# %%
+B_h = DiscreteFunction(u_hat, Λ2)
+F_B = Pullback(B0, F, 2)
+F_B_h = Pullback(B_h, F, 2)
+_z1 = jax.vmap(F_B_h)(_x).reshape(nx, nx, 3)
+_z1_norm = jnp.linalg.norm(_z1, axis=2)
+_z2 = jax.vmap(F_B)(_x).reshape(nx, nx, 3)
+_z2_norm = jnp.linalg.norm(_z2, axis=2)
+plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
+plt.colorbar()
+# plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
+__z1 = jax.vmap(F_B_h)(__x).reshape(_nx, _nx, 3)
+plt.quiver(
+    __y1, 
+    __y2,
+    __z1[:,:,0], 
+    __z1[:,:,1],
     color='w')
 # %%
