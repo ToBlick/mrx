@@ -43,7 +43,7 @@ def converge_plot(err, ns, ps, qs):
             x=[None], y=[None],
             mode='lines',
             marker=dict(symbol=None, color=color, size=8),
-            name=f'q = {j}',
+            name=f'q = {qs[j]}',
             showlegend=True
         ))
         # Asymptotic line

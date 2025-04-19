@@ -48,7 +48,7 @@ def F(x):
 E0, E1, E2, E3 = [LazyExtractionOperator(Λ, ξ, True).M for Λ in [Λ0, Λ1, Λ2, Λ3]]
 M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q, F, E).M for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
 P0, P1, P2, P3 = [Projector(Λ, Q, F, E) for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
-M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F, E1, E2).M
+M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F, E1, E2).M.T
 C = LazyDoubleCurlMatrix(Λ1, Q, F, E1).M
 D2 = LazyDerivativeMatrix(Λ2, Λ3, Q, F, E2, E3).M
 D1 = LazyDerivativeMatrix(Λ1, Λ2, Q, F, E1, E2).M

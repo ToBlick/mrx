@@ -33,8 +33,8 @@ P0, P1, P2, P3 = [Projector(Λ, Q)
 Pc = CurlProjection(Λ1, Q)                      # given A and B, computes (B, A x Λ[i])
 D0, D1, D2 = [LazyDerivativeMatrix(Λk, Λkplus1, Q).M
               for Λk, Λkplus1 in zip([Λ0, Λ1, Λ2], [Λ1, Λ2, Λ3])]  # grad, curl, div
-M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F).M      # L2 projection from H(curl) to H(div)
-M03 = LazyProjectionMatrix(Λ0, Λ3, Q, F).M      # L2 projection from H1 to L2
+M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F).M.T      # L2 projection from H(curl) to H(div)
+M03 = LazyProjectionMatrix(Λ0, Λ3, Q, F).M.T      # L2 projection from H1 to L2
 C = LazyDoubleCurlMatrix(Λ1, Q).M               # bilinear form (A, E) → (curl A, curl E)
 K = LazyStiffnessMatrix(Λ0, Q).M                # bilinear form (q, p) → (grad q, grad p)
 

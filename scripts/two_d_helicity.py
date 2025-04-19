@@ -1,6 +1,7 @@
 # %%
 import jax
 import jax.numpy as jnp
+import numpy as np
 import matplotlib.pyplot as plt
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
@@ -30,12 +31,12 @@ def get_error(n, p):
 
     M2 = LazyMassMatrix(Λ2, Q).M
     M1 = LazyMassMatrix(Λ1, Q).M
-    # C = LazyDoubleCurlMatrix(Λ1, Q).M
+    C = LazyDoubleCurlMatrix(Λ1, Q).M
     D = LazyDerivativeMatrix(Λ1, Λ2, Q).M
     P2 = Projector(Λ2, Q)
     P1 = Projector(Λ1, Q)
 
-    M12 = LazyProjectionMatrix(Λ1, Λ2, Q).M
+    M12 = LazyProjectionMatrix(Λ1, Λ2, Q).M.T
 
     m1 = 2
     m2 = 2
