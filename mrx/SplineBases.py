@@ -101,19 +101,19 @@ class SplineBasis:
                 self._quad_spline(x, jax.lax.dynamic_slice(self.T, (i,), (4,))),
                 0)
         elif self.p == 3:
-            N_i_2 = jnp.where(
-                jnp.logical_and(self.T[i] <= x, x <= self.T[i+3]),
-                self._quad_spline(x, jax.lax.dynamic_slice(self.T, (i,), (4,))),
-                0)
-            N_iplus1_2 = jnp.where(
-                jnp.logical_and(self.T[i+1] <= x, x <= self.T[i+4]),
-                self._quad_spline(x, jax.lax.dynamic_slice(self.T, (i+1,), (4,))),
-                0)
-            return self.__safe_divide(x - self.T[i], self.T[i+3] - self.T[i]) * N_i_2 + \
-                self.__safe_divide(self.T[i+4] - x, self.T[i+4] - self.T[i+1]) * N_iplus1_2
+            # N_i_2 = jnp.where(
+            #     jnp.logical_and(self.T[i] <= x, x <= self.T[i+3]),
+            #     self._quad_spline(x, jax.lax.dynamic_slice(self.T, (i,), (4,))),
+            #     0)
+            # N_iplus1_2 = jnp.where(
+            #     jnp.logical_and(self.T[i+1] <= x, x <= self.T[i+4]),
+            #     self._quad_spline(x, jax.lax.dynamic_slice(self.T, (i+1,), (4,))),
+            #     0)
+            # return self.__safe_divide(x - self.T[i], self.T[i+3] - self.T[i]) * N_i_2 + \
+            #     self.__safe_divide(self.T[i+4] - x, self.T[i+4] - self.T[i+1]) * N_iplus1_2
         
-        # New cubic implementation
-        elif self.p == 4:
+        # # New cubic implementation
+        # elif self.p == 4:
 
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+4]),
