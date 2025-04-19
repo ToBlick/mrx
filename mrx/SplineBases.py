@@ -202,7 +202,7 @@ class SplineBasis:
                     x < t[3],
                     self.__safe_divide((x - t[0])*((t[3] - x))**2, (t[3] - t[0])*(t[3] - t[1])*(t[3] - t[2])) +
                     self.__safe_divide((x - t[1])*(t[4] - x)*(t[3]-x), (t[4] - t[1])*(t[3] - t[1])*(t[3] - t[2]))+
-                    self.__safe_divide(((t[4] - x)**2)*(x-t[2])**2, (t[4] - t[1])*(t[4] - t[2])*(t[3] - t[2])),
+                    self.__safe_divide(((t[4] - x)**2)*(x-t[2]), (t[4] - t[1])*(t[4] - t[2])*(t[3] - t[2])),
                     # if x>t[3], then t[4]>x>t[3] or x>t[4]
                         self.__safe_divide((t[4] - x)**3, (t[4] - t[1])*(t[4] - t[2])*(t[4] - t[3])) )
             )
