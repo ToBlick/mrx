@@ -1,9 +1,11 @@
+.DS_Store
+.vscode
+scripts/experimental
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-.DS_Store
-.vscode
 
 docs/latex
 # C extensions
