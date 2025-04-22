@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 import jax
+from functools import partial
 
 def picard_solver(f, z_init, tol=1e-12, norm=jnp.linalg.norm):
     """
@@ -18,14 +19,17 @@ def picard_solver(f, z_init, tol=1e-12, norm=jnp.linalg.norm):
                                     Default is `jnp.linalg.norm`.
 
     Returns:
-        Any: The fixed-point solution `z_star` such that z_star ≈ f(z_star).
+        Any: The fixed-point solution `z_star` such that |z_star - f(z_star)| < tol.
     """
     def cond_fun(carry):
         z_prev, z = carry
-        return norm(z_prev - z) > tol
+        err = norm(z_prev - z)
+        # jax.debug.print("err: {err}", err=err)
+        return err > tol
 
     def body_fun(carry):
         _, z = carry
+        # jax.debug.print("z: {z}", z=z)
         return z, f(z)
 
     init_carry = (z_init, f(z_init))
@@ -33,6 +37,22 @@ def picard_solver(f, z_init, tol=1e-12, norm=jnp.linalg.norm):
     return z_star
 
 def newton_solver(f, z_init, tol=1e-12, norm=jnp.linalg.norm):
+    """
+    Solve a fixed-point problem using Newton's method.
+    Parameters:
+        f (callable): The function for which the fixed point is to be found. 
+                      It should take a single argument and return a value of the same shape.
+        z_init (array-like): The initial guess for the fixed point.
+        tol (float, optional): The tolerance for convergence. The iteration stops when the norm 
+                               of the difference between successive approximations is less than `tol`. 
+                               Default is 1e-12.
+        norm (callable, optional): A function to compute the norm of a vector. 
+                                   Default is `jnp.linalg.norm`.
+    Returns:
+        array-like: The computed fixed point of the function `f`.
+    Notes:
+        - The function `picard_solver` is used internally to perform the iterative process.
+    """
     f_root = lambda z: f(z) - z
-    g = lambda z: z - jnp.linalg.solve(jax.jacobian(f_root)(z), f_root(z))
+    g = lambda z: z - jnp.linalg.solve(jax.jacrev(f_root)(z), f_root(z))
     return picard_solver(g, z_init, tol, norm)

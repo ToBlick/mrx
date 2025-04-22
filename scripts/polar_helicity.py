@@ -2,8 +2,8 @@
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-
-from mrx.DifferentialForms import DifferentialForm
+import numpy as np
+from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix
@@ -52,7 +52,7 @@ def get_error(n, p):
     M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q, F, E).M for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
     P0, P1, P2, P3 = [Projector(Λ, Q, F, E) for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
 
-    M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F, E1, E2).M
+    M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F, E1, E2).M.T
     C = LazyDoubleCurlMatrix(Λ1, Q, F, E1).M
     D1 = LazyDerivativeMatrix(Λ1, Λ2, Q, F, E1, E2).M
     D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).M
@@ -253,3 +253,5 @@ plt.legend()
 #     color='w')
 
 # # %%
+
+# %%

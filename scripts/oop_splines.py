@@ -329,8 +329,8 @@ def err(x): return div_Bh(x) - divB_h(x)
 # D2 = jnp.linalg.solve(M3, LazyDerivativeMatrix(Λ2, Λ3, Q, F, E2, E3).M)
 
 # %%
-# M03 = LazyProjectionMatrix(Λ0, Λ3, Q, F, E0, E3).M
-# M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F, E1, E2).M
+# M03 = LazyProjectionMatrix(Λ0, Λ3, Q, F, E0, E3).M.T
+# M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F, E1, E2).M.T
 
 # # %%
 # 𝚷30 = jnp.linalg.solve(M3, M03.T)
