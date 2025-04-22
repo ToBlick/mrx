@@ -77,12 +77,13 @@ class FormsTests(unittest.TestCase):
 
         # Define test functions
         def f(x):
-            """Source function for projection."""
-            return 2 * (2 * jnp.pi)**2 * jnp.sin(2 * jnp.pi * x[0]) * jnp.sin(2 * jnp.pi * x[1])
+            """Source function for projection (3-form)."""
+            # Return a scalar value for 3-form projection
+            return jnp.array([2 * (2 * jnp.pi)**2 * jnp.sin(2 * jnp.pi * x[0]) * jnp.sin(2 * jnp.pi * x[1])])
 
         def u(x):
-            """Solution function for verification."""
-            return jnp.sin(jnp.pi * 2 * x[0]) * jnp.sin(2 * jnp.pi * x[1])
+            """Solution function for verification (0-form)."""
+            return jnp.array([jnp.sin(jnp.pi * 2 * x[0]) * jnp.sin(2 * jnp.pi * x[1])])
 
         # Test projection
         Proj = Projector(Λ3, Q, F).threeform_projection(f)
@@ -91,6 +92,7 @@ class FormsTests(unittest.TestCase):
         self.assertIsNotNone(D.M, "Derivative matrix should not be None")
         self.assertIsNotNone(M.M, "Mass matrix should not be None")
         self.assertIsNotNone(Proj, "Projection should not be None")
+        self.assertEqual(Proj.shape[0], Λ3.n, "Projection should have correct size")
 
     def test_boundary_conditions(self):
         """Test handling of different boundary conditions."""
