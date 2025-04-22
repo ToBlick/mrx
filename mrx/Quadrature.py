@@ -1,27 +1,64 @@
+"""
+Quadrature rules for numerical integration in finite element analysis.
+
+This module provides various quadrature rules for numerical integration in the
+context of finite element analysis. It includes:
+- Composite Gauss quadrature for clamped and periodic bases
+- Trapezoidal rule for Fourier bases
+- Spectral quadrature for constant bases
+- Pre-computed Gauss quadrature nodes and weights up to order 10
+
+The module supports different types of basis functions and provides efficient
+implementations using JAX for automatic differentiation and GPU acceleration.
+"""
+
 import jax.numpy as jnp
 import jax
 
 
 class QuadratureRule:
+    """
+    A class for handling quadrature rules in finite element analysis.
+
+    This class implements various quadrature rules for numerical integration
+    in three-dimensional space. It supports different types of basis functions
+    and provides efficient computation of quadrature points and weights.
+
+    Attributes:
+        x_x (array): Quadrature points in x-direction
+        x_y (array): Quadrature points in y-direction
+        x_z (array): Quadrature points in z-direction
+        w_x (array): Quadrature weights in x-direction
+        w_y (array): Quadrature weights in y-direction
+        w_z (array): Quadrature weights in z-direction
+        x (array): Combined quadrature points in 3D space
+        w (array): Combined quadrature weights
+    """
 
     def __init__(self, form, p):
-        # Quadratures:
-        # 'clamped' - composite Gauss quadrature
-        # 'periodic' - composite Gauss quadrature
-        # 'fourier' - trapezoidal rule
-        # 'constant' - single evaluation
+        """
+        Initialize the quadrature rule.
+
+        Args:
+            form: The differential form defining the basis functions
+            p (int): Number of quadrature points per direction
+        """
+        # Select appropriate quadrature rules for each direction
         (x_x, w_x), (x_y, w_y), (x_z, w_z) = [select_quadrature(b, p) for b in form.bases[0].bases]
 
+        # Combine quadrature points and weights in 3D
         x_s = [x_x, x_y, x_z]
         w_s = [w_x, w_y, w_z]
         d = 3
         N = w_x.size * w_y.size * w_z.size
 
+        # Create 3D grid of quadrature points and weights
         x_q = jnp.array(jnp.meshgrid(*x_s))  # shape d, n1, n2, n3, ...
         x_q = x_q.transpose(*range(1, d+1), 0).reshape(N, d)
         w_q = jnp.array(jnp.meshgrid(*w_s)).transpose(*range(1, d+1), 0).reshape(N, d)
         w_q = jnp.prod(w_q, 1)
 
+        # Store quadrature points and weights
         self.x_x = x_x
         self.x_y = x_y
         self.x_z = x_z
@@ -33,6 +70,17 @@ class QuadratureRule:
 
 
 def trapezoidal_quad(n):
+    """
+    Generate trapezoidal quadrature rule.
+
+    Args:
+        n (int): Number of quadrature points
+
+    Returns:
+        tuple: (x_q, w_q) where:
+            - x_q: Quadrature points
+            - w_q: Quadrature weights
+    """
     h = 1 / n
     x_q = jnp.linspace(0, 1 - h, n)
     w_q = h * jnp.ones(n)
@@ -40,40 +88,51 @@ def trapezoidal_quad(n):
 
 
 def composite_quad(T, p):
-    # T is the knot vector without multiplicity
-    # using p points, we can integrate degree 2p-1 polynomials exactly
-    if p == 1:
-        _x_q, _w_q = nodes_and_weights(1)
-    elif p == 2:
-        _x_q, _w_q = nodes_and_weights(2)
-    elif p == 3:
-        _x_q, _w_q = nodes_and_weights(3)
-    elif p == 4:
-        _x_q, _w_q = nodes_and_weights(4)
-    elif p == 5:
-        _x_q, _w_q = nodes_and_weights(5)
-    elif p == 6:
-        _x_q, _w_q = nodes_and_weights(6)
-    elif p == 7:
-        _x_q, _w_q = nodes_and_weights(7)
-    elif p == 8:
-        _x_q, _w_q = nodes_and_weights(8)
-    elif p == 9:
-        _x_q, _w_q = nodes_and_weights(9)
-    elif p == 10:
-        _x_q, _w_q = nodes_and_weights(10)
+    """
+    Generate composite Gauss quadrature rule.
+
+    Args:
+        T (array): Knot vector without multiplicity
+        p (int): Number of quadrature points per interval
+
+    Returns:
+        tuple: (x_q, w_q) where:
+            - x_q: Quadrature points
+            - w_q: Quadrature weights
+    """
+    # Get Gauss quadrature nodes and weights
+    _x_q, _w_q = nodes_and_weights(p)
 
     def _rescale(a, b):
-        return (_x_q + 1) / 2 * (b - a) + a, _w_q * (b - a) / 2
+        """Rescale quadrature points and weights from [-1,1] to [a,b]."""
+        x = (_x_q + 1) / 2 * (b - a) + a
+        w = _w_q * (b - a) / 2
+        return x, w
 
+    # Get interval endpoints
     a_s = T[:-1]
     b_s = T[1:]
+    
+    # Apply rescaling to each interval
     x_q, w_q = jax.vmap(_rescale)(a_s, b_s)
+    
+    # Flatten arrays to get final points and weights
     return jnp.ravel(x_q), jnp.ravel(w_q)
 
 
 def spectral_quad(p):
-    # using p points, we can integrate degree 2p-1 polynomials exactly
+    """
+    Generate spectral quadrature rule.
+
+    Args:
+        p (int): Number of quadrature points
+
+    Returns:
+        tuple: (x_q, w_q) where:
+            - x_q: Quadrature points
+            - w_q: Quadrature weights
+    """
+    # Using p points, we can integrate degree 2p-1 polynomials exactly
     if p == 1:
         _x_q, _w_q = nodes_and_weights(1)
     elif p == 2:
@@ -98,6 +157,18 @@ def spectral_quad(p):
 
 
 def select_quadrature(basis, n):
+    """
+    Select appropriate quadrature rule based on basis type.
+
+    Args:
+        basis: The basis function object
+        n (int): Number of quadrature points
+
+    Returns:
+        tuple: (x_q, w_q) where:
+            - x_q: Quadrature points
+            - w_q: Quadrature weights
+    """
     if basis.type == 'clamped':
         return composite_quad(basis.T[basis.p:-basis.p], n)
     elif basis.type == 'periodic':
@@ -109,6 +180,17 @@ def select_quadrature(basis, n):
 
 
 def exact_nodes_and_weights(n):
+    """
+    Compute exact Gauss quadrature nodes and weights.
+
+    Args:
+        n (int): Number of quadrature points
+
+    Returns:
+        tuple: (points, weights) where:
+            - points: Gauss quadrature nodes
+            - weights: Gauss quadrature weights
+    """
     if n == 1:
         points = jnp.array([0])
         weights = jnp.array([2])
@@ -143,28 +225,24 @@ def exact_nodes_and_weights(n):
         d_coeffs = jnp.polyder(coeffs)
         w = jnp.polyval(d_coeffs, points)
         weights = 2/((1-points**2)*(w**2))
-
     elif n == 7:
         coeffs = jnp.array([429/16, 0, -693/16, 0, 315/16, 0, -35/16, 0])
         points = jnp.roots(coeffs)
         d_coeffs = jnp.polyder(coeffs)
         w = jnp.polyval(d_coeffs, points)
         weights = 2/((1-points**2)*(w**2))
-
     elif n == 8:
         coeffs = jnp.array([6435/128, 0, -12012/16, 0, 6930/16, 0, -1260/16, 0, 35/128])
         points = jnp.roots(coeffs)
         d_coeffs = jnp.polyder(coeffs)
         w = jnp.polyval(d_coeffs, points)
         weights = 2/((1-points**2)*(w**2))
-
     elif n == 9:
         coeffs = jnp.array([12155/128, 0, -25740/128, 0, 18018/128, 0, -4620/128, 0, 315/128, 0])
         points = jnp.roots(coeffs)
         d_coeffs = jnp.polyder(coeffs)
         w = jnp.polyval(d_coeffs, points)
         weights = 2/((1-points**2)*(w**2))
-
     # n=10
     else:
         coeffs = jnp.array([46189/256, 0, -109395/256, 0, 90090/256, 0, -30030/256, 0, 3465/256, 0, -63/256])
@@ -172,18 +250,27 @@ def exact_nodes_and_weights(n):
         d_coeffs = jnp.polyder(coeffs)
         w = jnp.polyval(d_coeffs, points)
         weights = 2/((1-points**2)*(w**2))
-        # points = gauss_10_nodes
-        # weights = gauss_10_weights
     return jnp.real(points), jnp.real(weights)
 
 
 def nodes_and_weights(n):
+    """
+    Get pre-computed Gauss quadrature nodes and weights.
+
+    Args:
+        n (int): Number of quadrature points (1-10)
+
+    Returns:
+        tuple: (points, weights) where:
+            - points: Gauss quadrature nodes
+            - weights: Gauss quadrature weights
+    """
     if n == 1:
         points = gauss_1_nodes
         weights = gauss_1_weights
     elif n == 2:
         points = gauss_2_nodes
-        weights = gauss_2_nodes
+        weights = gauss_2_weights
     elif n == 3:
         points = gauss_3_nodes
         weights = gauss_3_weights
@@ -211,6 +298,9 @@ def nodes_and_weights(n):
         weights = gauss_10_weights
     return points, weights
 
+
+# Pre-computed Gauss quadrature nodes and weights
+# These values are exact and used for efficient computation
 
 gauss_1_nodes = jnp.array([
     0.0
