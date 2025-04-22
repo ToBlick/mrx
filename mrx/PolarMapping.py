@@ -117,44 +117,44 @@ class LazyExtractionOperator:
         if self.k == 0:
             # Handle 0-forms
             return jnp.where(row_idx < 3 * self.nζ,
-                           self._inner_zeroform(row_idx, col_idx, self.nr, self.nχ, self.nζ),
-                           self._outer_zeroform(row_idx - 3 * self.nζ, col_idx, self.nr, self.nχ, self.nζ))
+                             self._inner_zeroform(row_idx, col_idx, self.nr, self.nχ, self.nζ),
+                             self._outer_zeroform(row_idx - 3 * self.nζ, col_idx, self.nr, self.nχ, self.nζ))
         if self.k == 1:
             # Handle 1-forms
             cat_row, row_idx = self._vector_index(row_idx)
             cat_col, col_idx = self.Λ._vector_index(col_idx)
             return jnp.where(cat_row == 0,
-                           # r-component
-                           self._threeform(row_idx, col_idx, self.dr, self.nχ, self.nζ) * jnp.int32(cat_row == cat_col),
-                           jnp.where(cat_row == 1,
-                                   # χ-component
-                                   jnp.where(row_idx < 2 * self.nζ,
-                                           self.inner_oneform_r(row_idx, col_idx, self.dr, self.nχ, self.nζ) * jnp.int32(cat_col == 0) +
-                                           self.inner_oneform_χ(row_idx, col_idx, self.nr, self.dχ, self.nζ) * jnp.int32(cat_col == 1),
-                                           self._outer_zeroform(row_idx - 2 * self.nζ, col_idx, self.nr, self.dχ, self.nζ) * jnp.int32(cat_row == cat_col)),
-                                   # ζ-component
-                                   jnp.where(row_idx < 3 * self.dζ,
-                                           self._inner_zeroform(row_idx, col_idx, self.nr, self.nχ, self.dζ) * jnp.int32(cat_row == cat_col),
-                                           self._outer_zeroform(row_idx - 3 * self.dζ, col_idx, self.nr, self.nχ, self.dζ) * jnp.int32(cat_row == cat_col))
-                                   )
-                           )
+                             # r-component
+                             self._threeform(row_idx, col_idx, self.dr, self.nχ, self.nζ) * jnp.int32(cat_row == cat_col),
+                             jnp.where(cat_row == 1,
+                                       # χ-component
+                                       jnp.where(row_idx < 2 * self.nζ,
+                                                 self.inner_oneform_r(row_idx, col_idx, self.dr, self.nχ, self.nζ) * jnp.int32(cat_col == 0) +
+                                                 self.inner_oneform_χ(row_idx, col_idx, self.nr, self.dχ, self.nζ) * jnp.int32(cat_col == 1),
+                                                 self._outer_zeroform(row_idx - 2 * self.nζ, col_idx, self.nr, self.dχ, self.nζ) * jnp.int32(cat_row == cat_col)),
+                                       # ζ-component
+                                       jnp.where(row_idx < 3 * self.dζ,
+                                                 self._inner_zeroform(row_idx, col_idx, self.nr, self.nχ, self.dζ) * jnp.int32(cat_row == cat_col),
+                                                 self._outer_zeroform(row_idx - 3 * self.dζ, col_idx, self.nr, self.nχ, self.dζ) * jnp.int32(cat_row == cat_col))
+                                       )
+                             )
         if self.k == 2:
             # Handle 2-forms
             cat_row, row_idx = self._vector_index(row_idx)
             cat_col, col_idx = self.Λ._vector_index(col_idx)
             return jnp.where(cat_row == 0,
-                           # r-component
-                           jnp.where(row_idx < 2 * self.nζ,
-                                   self.inner_oneform_χ(row_idx, col_idx, self.nr, self.dχ, self.dζ) * jnp.int32(cat_col == 0) -
-                                   self.inner_oneform_r(row_idx, col_idx, self.dr, self.nχ, self.dζ) * jnp.int32(cat_col == 1),
-                                   self._outer_zeroform(row_idx - 2 * self.nζ, col_idx, self.nr, self.dχ, self.dζ) * jnp.int32(cat_row == cat_col)),
-                           jnp.where(cat_row == 1,
-                                   # χ-component
-                                   self._threeform(row_idx, col_idx, self.dr, self.nχ, self.dζ) * jnp.int32(cat_row == cat_col),
-                                   # ζ-component
-                                   self._threeform(row_idx, col_idx, self.dr, self.dχ, self.nζ) * jnp.int32(cat_row == cat_col),
-                                   )
-                           )
+                             # r-component
+                             jnp.where(row_idx < 2 * self.nζ,
+                                       self.inner_oneform_χ(row_idx, col_idx, self.nr, self.dχ, self.dζ) * jnp.int32(cat_col == 0) -
+                                       self.inner_oneform_r(row_idx, col_idx, self.dr, self.nχ, self.dζ) * jnp.int32(cat_col == 1),
+                                       self._outer_zeroform(row_idx - 2 * self.nζ, col_idx, self.nr, self.dχ, self.dζ) * jnp.int32(cat_row == cat_col)),
+                             jnp.where(cat_row == 1,
+                                       # χ-component
+                                       self._threeform(row_idx, col_idx, self.dr, self.nχ, self.dζ) * jnp.int32(cat_row == cat_col),
+                                       # ζ-component
+                                       self._threeform(row_idx, col_idx, self.dr, self.dχ, self.nζ) * jnp.int32(cat_row == cat_col),
+                                       )
+                             )
         if self.k == 3:
             # Handle 3-forms
             return self._threeform(row_idx, col_idx, self.nr, self.nχ, self.nζ)
@@ -195,8 +195,8 @@ class LazyExtractionOperator:
         return (
             jnp.int32(col_idx == jnp.ravel_multi_index((i + 2, j, k), (nr, nχ, nζ), mode='clip'))
             * jnp.where(self.o == 1,
-                       jnp.int32(i != nr-1),
-                       1)
+                        jnp.int32(i != nr-1),
+                        1)
         )
 
     def inner_oneform_r(self, row_idx, col_idx, nr, nχ, nζ):

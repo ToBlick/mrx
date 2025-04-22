@@ -17,8 +17,6 @@ The tests verify:
 import unittest
 import jax
 import jax.numpy as jnp
-import numpy.testing as npt
-import numpy as np
 from mrx.IterativeSolvers import picard_solver, newton_solver
 
 

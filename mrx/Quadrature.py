@@ -112,10 +112,10 @@ def composite_quad(T, p):
     # Get interval endpoints
     a_s = T[:-1]
     b_s = T[1:]
-    
+
     # Apply rescaling to each interval
     x_q, w_q = jax.vmap(_rescale)(a_s, b_s)
-    
+
     # Flatten arrays to get final points and weights
     return jnp.ravel(x_q), jnp.ravel(w_q)
 

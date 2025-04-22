@@ -158,7 +158,7 @@ class LazyBoundaryOperator:
         """
         cat_row, i, j, k = self._unravel_index(row_idx)
         cat_col, r_idx, m, n = self.Λ._unravel_index(col_idx)
-        
+
         if self.k == 0:
             # Handle 0-forms with boundary conditions
             return (

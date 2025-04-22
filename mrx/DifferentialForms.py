@@ -90,21 +90,21 @@ class DifferentialForm:
             self.n3 = 0
         elif k == 1:
             self.bases = (TensorBasis([self.dΛ[0], self.Λ[1], self.Λ[2]]),
-                         TensorBasis([self.Λ[0], self.dΛ[1], self.Λ[2]]),
-                         TensorBasis([self.Λ[0], self.Λ[1], self.dΛ[2]]))
+                          TensorBasis([self.Λ[0], self.dΛ[1], self.Λ[2]]),
+                          TensorBasis([self.Λ[0], self.Λ[1], self.dΛ[2]]))
             self.shape = ((self.dr, self.nχ, self.nζ),
-                         (self.nr, self.dχ, self.nζ),
-                         (self.nr, self.nχ, self.dζ))
+                          (self.nr, self.dχ, self.nζ),
+                          (self.nr, self.nχ, self.dζ))
             self.n1 = self.dr * self.nχ * self.nζ
             self.n2 = self.nr * self.dχ * self.nζ
             self.n3 = self.nr * self.nχ * self.dζ
         elif k == 2:
             self.bases = (TensorBasis([self.Λ[0], self.dΛ[1], self.dΛ[2]]),
-                         TensorBasis([self.dΛ[0], self.Λ[1], self.dΛ[2]]),
-                         TensorBasis([self.dΛ[0], self.dΛ[1], self.Λ[2]]))
+                          TensorBasis([self.dΛ[0], self.Λ[1], self.dΛ[2]]),
+                          TensorBasis([self.dΛ[0], self.dΛ[1], self.Λ[2]]))
             self.shape = ((self.nr, self.dχ, self.dζ),
-                         (self.dr, self.nχ, self.dζ),
-                         (self.dr, self.dχ, self.nζ))
+                          (self.dr, self.nχ, self.dζ),
+                          (self.dr, self.dχ, self.nζ))
             self.n1 = self.nr * self.dχ * self.dζ
             self.n2 = self.dr * self.nχ * self.dζ
             self.n3 = self.dr * self.dχ * self.nζ
