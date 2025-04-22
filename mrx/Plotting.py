@@ -1,20 +1,54 @@
+"""
+Plotting utilities for finite element analysis results.
+
+This module provides functions for creating visualizations of convergence plots
+and other analysis results using Plotly.
+"""
+
 import plotly.graph_objects as go
-import numpy as np
 import plotly.colors as pc
 
-base_markers = [
-        'circle', 'triangle-down', 'star', 'triangle-left', 'triangle-right',
-        'triangle-ne', 'triangle-se', 'triangle-sw', 'triangle-nw',
-        'square', 'pentagon', 'triangle-up', 'hexagon', 'hexagon2',
-        'cross', 'x', 'diamond', 'diamond-open', 'line-ns', 'line-ew'
-    ]
 
+# Base marker styles for different data series
+base_markers = [
+    'circle', 'triangle-down', 'star', 'triangle-left', 'triangle-right',
+    'triangle-ne', 'triangle-se', 'triangle-sw', 'triangle-nw',
+    'square', 'pentagon', 'triangle-up', 'hexagon', 'hexagon2',
+    'cross', 'x', 'diamond', 'diamond-open', 'line-ns', 'line-ew'
+]
+
+# Default color scale for plots
 colorbar = 'Viridis'
+
+
 def converge_plot(err, ns, ps, qs):
-    
+    """
+    Create a convergence plot showing error vs. number of elements for different polynomial orders.
+
+    This function generates a plotly figure showing the convergence behavior of
+    numerical solutions for different polynomial orders (p) and quadrature rules (q).
+
+    Args:
+        err (numpy.ndarray): Error values of shape (len(ns), len(ps), len(qs))
+        ns (numpy.ndarray): Array of number of elements
+        ps (numpy.ndarray): Array of polynomial orders
+        qs (numpy.ndarray): Array of quadrature rule orders
+
+    Returns:
+        plotly.graph_objects.Figure: A plotly figure showing the convergence plot
+            with separate markers for polynomial orders and colors for quadrature rules.
+
+    Notes:
+        - Each polynomial order (p) is represented by a different marker style
+        - Each quadrature rule (q) is represented by a different color
+        - The plot includes both lines and markers for better visualization
+        - Legend entries are added separately for markers and colors
+    """
     markers = [base_markers[i % len(base_markers)] for i in range(len(ps))]
     colors = pc.sample_colorscale(colorbar, len(qs))
     fig = go.Figure()
+
+    # Add main traces with both lines and markers
     for j, p in enumerate(ps):
         for k, q in enumerate(qs):
             fig.add_trace(go.Scatter(
@@ -24,11 +58,10 @@ def converge_plot(err, ns, ps, qs):
                 name=f'p={p}',
                 marker=dict(symbol=markers[j], size=8, color=colors[k]),
                 line=dict(color=colors[k], width=2),
-                # marker_color=go.scatter.marker.colorscale(colorscale, color_indices[k]),
                 showlegend=False,
             ))
-    
-    #
+
+    # Add legend entries for polynomial orders (markers)
     for j, marker in enumerate(markers):
         fig.add_trace(go.Scatter(
             x=[None], y=[None],
@@ -38,6 +71,7 @@ def converge_plot(err, ns, ps, qs):
             showlegend=True
         ))
 
+    # Add legend entries for quadrature rules (colors)
     for j, color in enumerate(colors):
         fig.add_trace(go.Scatter(
             x=[None], y=[None],
@@ -46,15 +80,5 @@ def converge_plot(err, ns, ps, qs):
             name=f'q = {qs[j]}',
             showlegend=True
         ))
-        # Asymptotic line
-        # asymptotic = err[-1, j, 0] * (ns/ns[-1])**(-2*p)
-        # fig.add_trace(go.Scatter(
-        #     x=ns,
-        #     y=asymptotic,
-        #     mode='lines',
-        #     name=f'O(1/n^{2*p})',
-        #     line=dict(dash='dash', color='black'),
-        #     showlegend=True
-        # ))
 
     return fig

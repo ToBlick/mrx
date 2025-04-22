@@ -2,6 +2,7 @@
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import time
 
 from mrx.SplineBases import SplineBasis, DerivativeSpline
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
@@ -425,7 +426,6 @@ def get_err():
 
 
 # %%
-import time
 start = time.time()
 get_err()
 print(time.time() - start)

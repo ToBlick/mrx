@@ -1,3 +1,15 @@
+"""
+Differential forms implementation for finite element analysis.
+
+This module provides classes for working with differential forms in finite element
+analysis, including discrete differential forms, pushforward and pullback operations,
+and discrete function representations.
+
+The implementation supports forms of different degrees (k = 0, 1, 2, 3) in
+three-dimensional space and includes functionality for evaluation, transformation,
+and basis manipulation.
+"""
+
 import jax.numpy as jnp
 import jax
 
@@ -6,6 +18,27 @@ from mrx.Utils import inv33
 
 
 class DifferentialForm:
+    """
+    A class representing differential forms of various degrees.
+
+    This class implements differential forms using spline bases and supports
+    operations like evaluation, indexing, and basis transformations.
+
+    Attributes:
+        d (int): Dimension of the space
+        k (int): Degree of the differential form (0, 1, 2, or 3)
+        n (int): Total number of basis functions
+        nr (int): Number of basis functions in r direction
+        nχ (int): Number of basis functions in χ direction
+        nζ (int): Number of basis functions in ζ direction
+        ns (jnp.ndarray): Array of indices for basis functions
+        Λ (list): List of SplineBasis objects for each direction
+        dΛ (list): List of derivative spline bases
+        types (list): Boundary condition types for each direction
+        bases (tuple): Tensor bases for the form
+        shape (tuple): Shape of the form in each direction
+    """
+
     d: int
     k: int
     n: int
@@ -15,6 +48,16 @@ class DifferentialForm:
     ns: jnp.ndarray
 
     def __init__(self, k, ns, ps, types, Ts=None):
+        """
+        Initialize a differential form.
+
+        Args:
+            k (int): Degree of the form
+            ns (list): Number of basis functions in each direction
+            ps (list): Polynomial degrees for each direction
+            types (list): Boundary condition types for each direction
+            Ts (list, optional): Knot vectors for each direction
+        """
         self.d = len(ns)
         self.k = k
         if Ts is None:
@@ -72,31 +115,44 @@ class DifferentialForm:
             self.n2 = 0
             self.n3 = 0
         self.n = self.n1 + self.n2 + self.n3
-
-        # if k == 0 or k == 3:
-        #     self.n = self.bases[0].n
-        # else:
-        #     self.n = self.bases[0].n + self.bases[1].n + self.bases[2].n
         self.ns = jnp.arange(self.n)
 
-    # def _get_tensor(self, derivs):
-    #     return TensorBasis(tuple([self.Λ[i] if derivs[i]==0 else self.dΛ[i] for i in range(self.d)]))
+    def _vector_index(self, idx):
+        """
+        Convert linear index to vector component and local index.
 
-    def _vector_index(self, i):
+        Args:
+            idx (int): Linear index into the form
+
+        Returns:
+            tuple: (category, index) where category indicates the vector
+                  component and index is the local index within that component
+        """
         if self.k == 0 or self.k == 3:
-            return 0, i
+            return 0, idx
         elif self.k == 1 or self.k == 2:
-            n1, n2 = self.n1, self.n2  # self.bases[0].n, self.bases[1].n, self.bases[2].n
-            # translate a 1D index into a 3D index
-            category = jnp.int32(i >= n1) + jnp.int32(i >= n1 + n2)
-            index = i - n1 * jnp.int32(i >= n1) - n2 * jnp.int32(i >= n1 + n2)
+            n1, n2 = self.n1, self.n2
+            category = jnp.int32(idx >= n1) + jnp.int32(idx >= n1 + n2)
+            index = idx - n1 * jnp.int32(idx >= n1) - n2 * jnp.int32(idx >= n1 + n2)
             return category, index
 
     def _ravel_index(self, c, i, j, k):
+        """
+        Convert multi-dimensional indices to linear index.
+
+        Args:
+            c (int): Component index
+            i (int): Index in r direction
+            j (int): Index in χ direction
+            k (int): Index in ζ direction
+
+        Returns:
+            int: Linear index into the form
+        """
         if self.k == 0:
-            return jnp.ravel_multi_index((i, j, k), (self.nr, self.nχ, self.nζ), mode='clip')  # c is always zero
+            return jnp.ravel_multi_index((i, j, k), (self.nr, self.nχ, self.nζ), mode='clip')
         elif self.k == 1:
-            n1, n2, n3 = self.n1, self.n2, self.n3  # self.bases[0].n, self.bases[1].n, self.bases[2].n
+            n1, n2 = self.n1, self.n2
             return jnp.where(
                 c == 0,
                 jnp.ravel_multi_index((i, j, k), (self.dr, self.nχ, self.nζ), mode='clip'),
@@ -107,7 +163,7 @@ class DifferentialForm:
                 )
             )
         elif self.k == 2:
-            n1, n2, n3 = self.n1, self.n2, self.n3  # self.bases[0].n, self.bases[1].n, self.bases[2].n
+            n1, n2 = self.n1, self.n2
             return jnp.where(
                 c == 0,
                 jnp.ravel_multi_index((i, j, k), (self.nr, self.dχ, self.dζ), mode='clip'),
@@ -120,18 +176,21 @@ class DifferentialForm:
         elif self.k == 3:
             return jnp.ravel_multi_index((i, j, k), (self.dr, self.dχ, self.dζ), mode='clip')
 
-            # if c == 0:
-            #     return jnp.ravel_multi_index((i,j,k), self.shape[0])
-            # elif c == 1:
-            #     return n1 + jnp.ravel_multi_index((i,j,k), self.shape[1])
-            # elif c == 2:
-            #     return n1 + n2 + jnp.ravel_multi_index((i,j,k), self.shape[2])
+    def _unravel_index(self, idx):
+        """
+        Convert linear index to multi-dimensional indices.
 
-    def _unravel_index(self, I):
+        Args:
+            idx (int): Linear index into the form
+
+        Returns:
+            tuple: (category, i, j, k) where category is the component index
+                  and (i,j,k) are the indices in each direction
+        """
         if self.k == 0:
-            return 0, *jnp.unravel_index(I, (self.nr, self.nχ, self.nζ))
+            return 0, *jnp.unravel_index(idx, (self.nr, self.nχ, self.nζ))
         elif self.k == 1:
-            c, ijk = self._vector_index(I)
+            c, ijk = self._vector_index(idx)
             i, j, k = jnp.where(
                 c == 0,
                 jnp.array(jnp.unravel_index(ijk, (self.dr, self.nχ, self.nζ))),
@@ -143,7 +202,7 @@ class DifferentialForm:
             )
             return c, i, j, k
         elif self.k == 2:
-            c, ijk = self._vector_index(I)
+            c, ijk = self._vector_index(idx)
             i, j, k = jnp.where(
                 c == 0,
                 jnp.array(jnp.unravel_index(ijk, (self.nr, self.dχ, self.dζ))),
@@ -155,42 +214,77 @@ class DifferentialForm:
             )
             return c, i, j, k
         elif self.k == 3:
-            return 0, *jnp.unravel_index(I, (self.dr, self.dχ, self.dζ))
+            return 0, *jnp.unravel_index(idx, (self.dr, self.dχ, self.dζ))
 
     def __call__(self, x, i):
+        """Evaluate the form at point x with basis function i."""
         return self.evaluate(x, i)
 
     def __getitem__(self, i):
+        """Get the i-th basis function of the form."""
         return lambda x: self.evaluate(x, i)
 
     def __iter__(self):
+        """Iterate over all basis functions of the form."""
         for i in range(self.n):
             yield self[i]
 
     def __len__(self):
+        """Get the total number of basis functions."""
         return self.n
 
     def evaluate(self, x, i):
+        """
+        Evaluate the form at point x with basis function i.
+
+        Args:
+            x (array-like): Point at which to evaluate
+            i (int): Index of basis function to evaluate
+
+        Returns:
+            array-like: Value of the form at x
+        """
         category, index = self._vector_index(i)
         if self.k == 0 or self.k == 3:
             return jnp.ones(1) * self.bases[0](x, index)
         elif self.k == 1 or self.k == 2:
             e = jnp.zeros(3).at[category].set(1)
-            # vals = jnp.array([b(x, index) for b in self.bases])
             val = jnp.where(
                 category == 0,
-                self.bases[0](x, index),  # lambda x: self.bases[0][index](x) = self.bases[0][index]
+                self.bases[0](x, index),
                 jnp.where(
                     category == 1,
                     self.bases[1](x, index),
                     self.bases[2](x, index)
                 )
             )
-            return e * val  # s[category]
+            return e * val
 
 
 class DiscreteFunction:
+    """
+    A class representing discrete functions using differential forms.
+
+    This class implements discrete functions as linear combinations of basis
+    functions from a differential form.
+
+    Attributes:
+        dof (array-like): Degrees of freedom (coefficients)
+        Λ (DifferentialForm): The underlying differential form
+        n (int): Number of basis functions
+        ns (array-like): Array of indices
+        E (array-like): Transformation matrix
+    """
+
     def __init__(self, dof, Λ, E=None):
+        """
+        Initialize a discrete function.
+
+        Args:
+            dof (array-like): Degrees of freedom (coefficients)
+            Λ (DifferentialForm): The underlying differential form
+            E (array-like, optional): Transformation matrix
+        """
         self.dof = dof
         self.Λ = Λ
         self.n = Λ.n
@@ -198,34 +292,101 @@ class DiscreteFunction:
         self.E = E if E is not None else jnp.eye(self.n)
 
     def __call__(self, x):
+        """
+        Evaluate the function at point x.
+
+        Args:
+            x (array-like): Point at which to evaluate
+
+        Returns:
+            array-like: Value of the function at x
+        """
         return self.dof @ self.E @ jax.vmap(self.Λ, (None, 0))(x, self.ns)
 
 
 class Pushforward:
+    """
+    A class implementing pushforward operations on differential forms.
+
+    This class implements the pushforward of differential forms under a
+    given transformation.
+
+    Attributes:
+        k (int): Degree of the form
+        f (callable): The form to push forward
+        F (callable): The transformation function
+    """
+
     def __init__(self, f, F, k):
+        """
+        Initialize a pushforward operation.
+
+        Args:
+            f (callable): The form to push forward
+            F (callable): The transformation function
+            k (int): Degree of the form
+        """
         self.k = k
         self.f = f
         self.F = F
 
     def __call__(self, x):
+        """
+        Apply the pushforward at point x.
+
+        Args:
+            x (array-like): Point at which to evaluate
+
+        Returns:
+            array-like: Value of the pushed-forward form at x
+        """
         y = self.F(x)
         if self.k == 0:
             return self.f(y)
         elif self.k == 1:
             return jax.jacfwd(self.F)(x).T @ self.f(y)
         elif self.k == 2:
-            inv33(jax.jacfwd(self.F)(x)) @ self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))
+            return inv33(jax.jacfwd(self.F)(x)) @ self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))
         elif self.k == 3:
             return self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))
 
 
 class Pullback:
+    """
+    A class implementing pullback operations on differential forms.
+
+    This class implements the pullback of differential forms under a
+    given transformation.
+
+    Attributes:
+        k (int): Degree of the form
+        f (callable): The form to pull back
+        F (callable): The transformation function
+    """
+
     def __init__(self, f, F, k):
+        """
+        Initialize a pullback operation.
+
+        Args:
+            f (callable): The form to pull back
+            F (callable): The transformation function
+            k (int): Degree of the form
+        """
         self.k = k
         self.f = f
         self.F = F
 
     def __call__(self, x):
+        """
+        Apply the pullback at point x.
+
+        Args:
+            x (array-like): Point at which to evaluate
+
+        Returns:
+            array-like: Value of the pulled-back form at x
+        """
         if self.k == 0:
             return self.f(x)
         elif self.k == 1:

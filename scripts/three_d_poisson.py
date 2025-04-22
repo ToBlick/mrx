@@ -3,11 +3,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
-from mrx.LazyMatrices import LazyMassMatrix, LazyStiffnessMatrix
+from mrx.LazyMatrices import LazyStiffnessMatrix
 from mrx.Utils import l2_product
 from mrx.BoundaryConditions import LazyBoundaryOperator
 from functools import partial
@@ -37,7 +38,7 @@ def get_err(n, p):
     Q = QuadratureRule(Λ0, 4)
 
     B0 = LazyBoundaryOperator(Λ0, bcs).M
-    M0 = LazyMassMatrix(Λ0, Q, F=None, E=B0).M
+    # M0 = LazyMassMatrix(Λ0, Q, F=None, E=B0).M
     K = LazyStiffnessMatrix(Λ0, Q, F=None, E=B0).M
 
     P0 = Projector(Λ0, Q, E=B0)
@@ -48,7 +49,6 @@ def get_err(n, p):
 
 
 # %%
-import time
 ns = np.arange(4, 9)
 ps = np.arange(1, 4)
 err = np.zeros((len(ns), len(ps)))
