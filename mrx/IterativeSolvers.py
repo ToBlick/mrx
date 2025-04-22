@@ -1,6 +1,5 @@
 import jax.numpy as jnp
 import jax
-from functools import partial
 
 def picard_solver(f, z_init, tol=1e-12, norm=jnp.linalg.norm):
     """

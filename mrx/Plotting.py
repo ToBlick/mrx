@@ -1,5 +1,4 @@
 import plotly.graph_objects as go
-import numpy as np
 import plotly.colors as pc
 
 base_markers = [

@@ -1,4 +1,3 @@
-import unittest
 
 import jax.experimental
 import jax.experimental.sparse
@@ -9,7 +8,6 @@ from mrx.Projectors import *
 from mrx.PolarMapping import *
 
 
-from jax import numpy as jnp
 import jax
 jax.config.update("jax_enable_x64", True)
 

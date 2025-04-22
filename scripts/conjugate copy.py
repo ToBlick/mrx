@@ -4,15 +4,12 @@ import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
 
-from mrx.SplineBases import SplineBasis, DerivativeSpline, TensorBasis
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback, Pushforward
+from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector, CurlProjection
-from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix, LazyStiffnessMatrix
-from mrx.Utils import div, curl, inv33, jacobian, grad
-from mrx.IterativeSolvers import picard_solver, newton_solver
-from functools import partial
+from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix
+from mrx.Utils import curl
+from mrx.IterativeSolvers import picard_solver
 jax.config.update("jax_enable_x64", True)
 # %%
 # %%

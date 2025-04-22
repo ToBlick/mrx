@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
+from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix
