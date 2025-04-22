@@ -79,7 +79,9 @@ def E(x, m, n):
     return jnp.array([a1, a2, a3]) * h
 
 
-A = (lambda x: E(x, 2, 2))
+def A(x):
+    return E(x, 2, 2)
+
 
 # %%
 l2_product(A, curl(A), Q)

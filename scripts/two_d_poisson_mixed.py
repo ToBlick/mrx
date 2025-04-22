@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
@@ -19,6 +20,7 @@ jax.config.update("jax_enable_x64", True)
 
 @partial(jax.jit, static_argnames=['n', 'p'])
 def get_err(n, p):
+    """Compute error for mixed Poisson problem."""
     ns = (n, n, 1)
     ps = (p, p, 0)
 
@@ -29,7 +31,6 @@ def get_err(n, p):
     def f(x):
         return 2 * (2*jnp.pi)**2 * u(x)
     types = ('clamped', 'clamped', 'constant')
-    bcs = ('dirichlet', 'dirichlet', 'none')
     Λ0 = DifferentialForm(0, ns, ps, types)
     Λ2 = DifferentialForm(2, ns, ps, types)
     Λ3 = DifferentialForm(3, ns, ps, types)
@@ -48,7 +49,6 @@ def get_err(n, p):
 # %%
 print(get_err(8, 3))
 # %%
-import time
 ns = np.arange(7, 21, 2)
 ps = np.arange(1, 4)
 err = np.zeros((len(ns), len(ps)))

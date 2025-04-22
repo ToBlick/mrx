@@ -205,7 +205,7 @@ def f_loop_perturb(i, B_hat):
 # %%
 # # Check that Beltrami field is indeed force-free:
 # print("Force residual: ", force_residual(B0_hat))
-B_hat = BT_hat
+B_hat = B0_hat  # BT_HAT??
 B_h = DiscreteFunction(B_hat, Λ2)
 
 # %%

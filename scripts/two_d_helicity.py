@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 
 from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
@@ -71,7 +72,6 @@ def get_error(n, p):
 
 
 # %%
-import time
 ns = np.arange(4, 15, 2)
 ps = np.arange(1, 4)
 A_err = np.zeros((len(ns), len(ps)))

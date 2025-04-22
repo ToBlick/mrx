@@ -3,6 +3,8 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
+import time
+
 from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
@@ -55,7 +57,7 @@ def get_error(n, p):
     M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F, E1, E2).M.T
     C = LazyDoubleCurlMatrix(Λ1, Q, F, E1).M
     D1 = LazyDerivativeMatrix(Λ1, Λ2, Q, F, E1, E2).M
-    D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).M
+    # D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).M
 
     def A(x):
         r, χ, z = x
@@ -86,7 +88,6 @@ def get_error(n, p):
 
 
 # %%
-import time
 ns = np.arange(4, 14, 2)
 ps = np.arange(1, 4)
 A_err = np.zeros((len(ns), len(ps)))

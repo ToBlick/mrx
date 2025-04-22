@@ -25,15 +25,14 @@ def eta(x):
 
 
 # Return integrand
-def I(m, n, x):
+def integrand(m, n, x):
     return (eta(x)**2)*jnp.linalg.norm(u(x))
 
 
 # Return magnetic helicity
 def H(m, n, A_0):
     # Integrate I(m,n,x) over the domain, and multiply by mu
-
-    integral = integral * mu(m, n)
+    integral = A_0 * integrand(m, n) * mu(m, n)  # A_0 is the prefactor?
     return integral
 
 

@@ -64,11 +64,9 @@ class FormsTests(unittest.TestCase):
         # Create differential forms of different degrees
         Λ0 = DifferentialForm(0, self.ns, self.ps, self.types)
         Λ1 = DifferentialForm(1, self.ns, self.ps, self.types)
-        Λ2 = DifferentialForm(2, self.ns, self.ps, self.types)
         Λ3 = DifferentialForm(3, self.ns, self.ps, self.types)
 
-        # Create spline basis
-        s = SplineBasis(self.ns[0], self.ps[0], self.types[0])
+        # Create quadrature rule
         Q = QuadratureRule(Λ0, self.quad_order)
 
         # Test matrix assembly
@@ -104,7 +102,6 @@ class FormsTests(unittest.TestCase):
         ]
 
         for boundary in boundary_types:
-            Λ0 = DifferentialForm(0, self.ns, self.ps, self.types)
             s = SplineBasis(self.ns[0], self.ps[0], boundary[0])
             self.assertIsNotNone(s, f"Spline basis should be created for boundary {boundary}")
 

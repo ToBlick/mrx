@@ -2,6 +2,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import time
 
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
@@ -52,7 +53,7 @@ def get_err(n, p, q):
         r, χ, z = x
         return -jnp.ones(1) * r * jnp.log(r)
     types = ('clamped', 'clamped', 'constant')
-    bcs = ('dirichlet', 'dirichlet', 'none')
+    # bcs = ('dirichlet', 'dirichlet', 'none')
     Λ0 = DifferentialForm(0, ns, ps, types)
     ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
     Q = QuadratureRule(Λ0, q)
@@ -67,7 +68,6 @@ def get_err(n, p, q):
 
 
 # %%
-import time
 ns = np.arange(4, 18, 2)
 ps = np.arange(1, 4)
 qs = np.arange(4, 11, 1)
