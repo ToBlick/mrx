@@ -2,15 +2,17 @@ import plotly.graph_objects as go
 import plotly.colors as pc
 
 base_markers = [
-        'circle', 'triangle-down', 'star', 'triangle-left', 'triangle-right',
-        'triangle-ne', 'triangle-se', 'triangle-sw', 'triangle-nw',
-        'square', 'pentagon', 'triangle-up', 'hexagon', 'hexagon2',
-        'cross', 'x', 'diamond', 'diamond-open', 'line-ns', 'line-ew'
-    ]
+    'circle', 'triangle-down', 'star', 'triangle-left', 'triangle-right',
+    'triangle-ne', 'triangle-se', 'triangle-sw', 'triangle-nw',
+    'square', 'pentagon', 'triangle-up', 'hexagon', 'hexagon2',
+    'cross', 'x', 'diamond', 'diamond-open', 'line-ns', 'line-ew'
+]
 
 colorbar = 'Viridis'
+
+
 def converge_plot(err, ns, ps, qs):
-    
+
     markers = [base_markers[i % len(base_markers)] for i in range(len(ps))]
     colors = pc.sample_colorscale(colorbar, len(qs))
     fig = go.Figure()
@@ -26,7 +28,7 @@ def converge_plot(err, ns, ps, qs):
                 # marker_color=go.scatter.marker.colorscale(colorscale, color_indices[k]),
                 showlegend=False,
             ))
-    
+
     #
     for j, marker in enumerate(markers):
         fig.add_trace(go.Scatter(

@@ -16,12 +16,14 @@ ns = (7, 7, 1)
 ps = (3, 3, 1)
 types = ('periodic', 'periodic', 'constant')
 
-Λ0 = DifferentialForm(0, ns, ps, types) # functions in H1
-Λ1 = DifferentialForm(1, ns, ps, types) # vector fields in H(curl)
-Λ2 = DifferentialForm(2, ns, ps, types) # vector fields in H(div)
-Λ3 = DifferentialForm(3, ns, ps, types) # densities in L2
+Λ0 = DifferentialForm(0, ns, ps, types)  # functions in H1
+Λ1 = DifferentialForm(1, ns, ps, types)  # vector fields in H(curl)
+Λ2 = DifferentialForm(2, ns, ps, types)  # vector fields in H(div)
+Λ3 = DifferentialForm(3, ns, ps, types)  # densities in L2
 Q = QuadratureRule(Λ0, 3)              # Quadrature
-F = lambda x: x                         # identity mapping
+def F(x): return x                         # identity mapping
+
+
 # %%
 M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q).M
                   for Λ in [Λ0, Λ1, Λ2, Λ3]]                  # assembled mass matries
@@ -29,7 +31,7 @@ P0, P1, P2, P3 = [Projector(Λ, Q)
                   for Λ in [Λ0, Λ1, Λ2, Λ3]]                 # L2 projectors
 Pc = CurlProjection(Λ1, Q)                      # given A and B, computes (B, A x Λ[i])
 D0, D1, D2 = [LazyDerivativeMatrix(Λk, Λkplus1, Q).M
-    for Λk, Λkplus1 in zip([Λ0, Λ1, Λ2], [Λ1, Λ2, Λ3])] # grad, curl, div
+              for Λk, Λkplus1 in zip([Λ0, Λ1, Λ2], [Λ1, Λ2, Λ3])]  # grad, curl, div
 M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F).M.T      # L2 projection from H(curl) to H(div)
 M03 = LazyProjectionMatrix(Λ0, Λ3, Q, F).M.T      # L2 projection from H1 to L2
 C = LazyDoubleCurlMatrix(Λ1, Q).M               # bilinear form (A, E) → (curl A, curl E)
@@ -64,26 +66,31 @@ S_inv = jnp.where(S > 1e-6 * S[0] * S.shape[0], 1/S, 0)
 C_inv = Vh.T @ jnp.diag(S_inv) @ U.T
 A_hat_recon = C_inv @ D1.T @ B0_hat
 
+
 @jax.jit
 def force(B_hat):
     H_hat = jnp.linalg.solve(M1, M12 @ B_hat)
     J_hat = jnp.linalg.solve(M1, D1.T @ B_hat)
     J_h = DiscreteFunction(J_hat, Λ1)
     H_h = DiscreteFunction(H_hat, Λ1)
+
     def JcrossH(x):
         return jnp.cross(J_h(x), H_h(x))
     u_hat = jnp.linalg.solve(M2, P2(JcrossH))           # u = J x H
     return u_hat
+
 
 @jax.jit
 def force_residual(B_hat):
     u_hat = force(B_hat)
     return (u_hat @ M2 @ u_hat)**0.5
 
+
 @jax.jit
 def divergence_residual(B_hat):
     divB = ((D2 @ B_hat) @ jnp.linalg.solve(M3, D2 @ B_hat))**0.5
     return divB
+
 
 # %%
 print("Helicity before perturbation: ", A_hat_recon @ M12 @ B0_hat)
@@ -108,7 +115,7 @@ B_hat = B0_hat
 
 @jax.jit
 def _perturb_B_hat(B_guess, B_hat_0, dt, u_hat):
-    H_hat = jnp.linalg.solve(M1, M12 @ (B_guess + B_hat_0)/2) # H = Proj(B)
+    H_hat = jnp.linalg.solve(M1, M12 @ (B_guess + B_hat_0)/2)  # H = Proj(B)
     H_h = DiscreteFunction(H_hat, Λ1)
     u_h = DiscreteFunction(u_hat, Λ2)
     E_hat = jnp.linalg.solve(M1, Pc(H_h, u_h))          # E = u x H
@@ -120,6 +127,7 @@ def _perturb_B_hat(B_guess, B_hat_0, dt, u_hat):
 @jax.jit
 def perturb_B_hat(B_hat_0, dt, key):
     u_hat = jax.random.normal(key, shape=B_hat_0.shape)
+
     def cond_fun(B_guess):
         B_hat_1 = _perturb_B_hat(B_guess, B_hat_0, dt, u_hat)
         err = ((B_hat_1 - B_guess) @ M2 @ (B_hat_1 - B_guess))**0.5
@@ -131,10 +139,11 @@ def perturb_B_hat(B_hat_0, dt, key):
     B_hat = jax.lax.while_loop(cond_fun, body_fun, B_hat_0)
     return B_hat
 
+
 @jax.jit
 def f(B_hat, key):
     B_hat = perturb_B_hat(B_hat, 1e-4, key)
-    
+
     helicity = (C_inv @ D1.T @ B_hat) @ M12 @ B_hat
     energy = B_hat @ M2 @ B_hat / 2
     divB = divergence_residual(B_hat)
@@ -144,7 +153,7 @@ def f(B_hat, key):
     # jax.debug.print("Helicity: {helicity}", helicity=helicity)
     # jax.debug.print("Div B: {divB}", divB=divB)
     # jax.debug.print("Force residual: {normF}", normF=normF)
-    
+
     return B_hat, (helicity, energy, divB, normF)
 
 
@@ -181,6 +190,7 @@ plt.legend()
 b = 0.0
 dt = 1e-5
 
+
 @jax.jit
 def ẟB_hat(B_guess, B_hat_0, u_hat_0):
     H_hat = jnp.linalg.solve(M1, M12 @ (B_guess + B_hat_0)/2)  # H = Proj(B)
@@ -202,10 +212,12 @@ def ẟB_hat(B_guess, B_hat_0, u_hat_0):
     B_diff = B_hat_1 - B_guess
     return B_diff
 
+
 @jax.jit
 def update_B_hat(B_hat_0, u_hat_0):
     def ẟB(B_guess):
         return ẟB_hat(B_guess, B_hat_0, u_hat_0)
+
     def cond_fun(B_guess):
         B_diff = ẟB(B_guess)
         err = (B_diff @ M2 @ B_diff)**0.5
@@ -229,23 +241,23 @@ def f(x, i):
     B_hat, u_hat = jnp.split(x, 2)
     u_hat = jax.lax.stop_gradient(u_hat)
     # B_hat, u_hat = x
-    
+
     helicity = (C_inv @ D1.T @ B_hat) @ M12 @ B_hat
     energy = B_hat @ M2 @ B_hat / 2
     divB = divergence_residual(B_hat)
     normF = force_residual(B_hat)
-    
+
     jax.debug.print("Iteration: {i}", i=i)
     jax.debug.print("Energy: {energy}", energy=energy)
     # jax.debug.print("Helicity: {helicity}", helicity=helicity)
     # jax.debug.print("Div B: {divB}", divB=divB)
     jax.debug.print("Force residual: {normF}", normF=normF)
-    
+
     B_hat = update_B_hat(B_hat, u_hat)
     u_hat = force(B_hat)
     # x = (B_hat, u_hat)
     x = jnp.concatenate((B_hat, u_hat), axis=0)
-    
+
     return x, (helicity, energy, divB, normF)
 
 
@@ -279,7 +291,7 @@ plt.ylabel('|Div B|')
 plt.legend()
 
 # %%
-plt.plot(__force_res )
+plt.plot(__force_res)
 plt.xlabel('Iteration')
 plt.ylabel('| J x B |')
 plt.yscale('log')
@@ -391,9 +403,9 @@ plt.colorbar()
 # plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
 __z1 = jax.vmap(F_B_h)(__x).reshape(_nx, _nx, 3)
 plt.quiver(
-    __y1, 
+    __y1,
     __y2,
-    __z1[:,:,0], 
-    __z1[:,:,1],
+    __z1[:, :, 0],
+    __z1[:, :, 1],
     color='w')
 # %%

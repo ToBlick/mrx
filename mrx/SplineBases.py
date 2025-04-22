@@ -111,9 +111,9 @@ class SplineBasis:
             #     0)
             # return self.__safe_divide(x - self.T[i], self.T[i+3] - self.T[i]) * N_i_2 + \
             #     self.__safe_divide(self.T[i+4] - x, self.T[i+4] - self.T[i+1]) * N_iplus1_2
-        
-        # # New cubic implementation
-        # elif self.p == 4:
+
+            # # New cubic implementation
+            # elif self.p == 4:
 
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+4]),
@@ -161,53 +161,51 @@ class SplineBasis:
                 self.__safe_divide((t[3] - x)**2, (t[3] - t[1])*(t[3] - t[2]))
             )
         )
-    
 
     # def _cubic_spline(self,x,t):
     #     # t is a vector of five elements
     #     # S₃(x) = (x - t₀)³/(t₁ - t₀)(t₂ - t₀)(t₃ - t₀) if t₀ ≤ x < t₁,
     #     #        = (x - t₀)²(t₂ - x)/(t₃-t₀)(t₂ - t₁)(t₂ - t₀) + (x - t₀)(t₃ - x)(x-t₁)/(t₃-t₀)(t₂ - t₁)(t₃ - t₁) + (t₄-t₀)(x-t₁)^2/(t₄-t₁)(t₃-t₁)(t₂-t₁), if t₁ ≤ x < t₂,
-    #     #        =(x - t₀)(t₃ - x)^2/(t₃ - t₁)(t₃ - t₀)(t₃ - t₂) + (t₄ -x)(x-t₁)(t₃-x)/(t₄-t₁)(t₃-t₂)(t₃ - t₁) + (t₄-x)^2(x-t₂)/(t₄-t₁)(t₃-t₂)(t₄-t₂), if t₂ ≤ x < t₃, 
-    #     #        = (t₄ - x)^3/(t₄ - t₁)(t₄ - t₂)(t₄ - t₃), if t₃ ≤ x < t₄, 
-    #     #        = 0 otherwise   
-    #     #       
-    #     # 
+    #     #        =(x - t₀)(t₃ - x)^2/(t₃ - t₁)(t₃ - t₀)(t₃ - t₂) + (t₄ -x)(x-t₁)(t₃-x)/(t₄-t₁)(t₃-t₂)(t₃ - t₁) + (t₄-x)^2(x-t₂)/(t₄-t₁)(t₃-t₂)(t₄-t₂), if t₂ ≤ x < t₃,
+    #     #        = (t₄ - x)^3/(t₄ - t₁)(t₄ - t₂)(t₄ - t₃), if t₃ ≤ x < t₄,
+    #     #        = 0 otherwise
+    #     #
+    #     #
     #     condlist = [t[0]<=x<t[1], t[1]<=x<t[2], t[2]<=x<t[3], t[3]<=x<t[4]]
     #     funclist = [ lambda x:self.__safe_divide((x - t[0])**3, (t[1] - t[0])*(t[2] - t[0])*(t[3] - t[0])) , lambda x:  self.__safe_divide(((x - t[0])**2)*(t[2] - x), (t[3] - t[0])*(t[2] - t[0])*(t[2] - t[1])) + self.__safe_divide((x - t[0])*(t[3] - x)*(x-t[1]), (t[3] - t[0])*(t[3] - t[1])*(t[2] - t[1]))+ self.__safe_divide((t[4] - x)*(x-t[1])**2, (t[4] - t[1])*(t[3] - t[1])*(t[2] - t[1])) ,  lambda x:self.__safe_divide((x - t[0])*((t[3] - x))**2, (t[3] - t[0])*(t[3] - t[1])*(t[3] - t[2])) + self.__safe_divide((x - t[1])*(t[4] - x)*(t[3]-x), (t[4] - t[1])*(t[3] - t[1])*(t[3] - t[2])), self.__safe_divide(((t[4] - x)**2)*(x-t[2])**2, (t[4] - t[1])*(t[4] - t[2])*(t[3] - t[2])) , lambda x:    self.__safe_divide((t[4] - x)**3, (t[4] - t[1])*(t[4] - t[2])*(t[4] - t[3]))]
-        
+
     #     return jnp.piecewise(x, condlist, funclist)
 
-    def _cubic_spline(self,x,t):
+    def _cubic_spline(self, x, t):
         # t is a vector of five elements
         # S₃(x) = (x - t₀)³/(t₁ - t₀)(t₂ - t₀)(t₃ - t₀) if t₀ ≤ x < t₁,
         #        = (x - t₀)²(t₂ - x)/(t₃-t₀)(t₂ - t₁)(t₂ - t₀) + (x - t₀)(t₃ - x)(x-t₁)/(t₃-t₀)(t₂ - t₁)(t₃ - t₁) + (t₄-t₀)(x-t₁)^2/(t₄-t₁)(t₃-t₁)(t₂-t₁), if t₁ ≤ x < t₂,
-        #        =(x - t₀)(t₃ - x)^2/(t₃ - t₁)(t₃ - t₀)(t₃ - t₂) + (t₄ -x)(x-t₁)(t₃-x)/(t₄-t₁)(t₃-t₂)(t₃ - t₁) + (t₄-x)^2(x-t₂)/(t₄-t₁)(t₃-t₂)(t₄-t₂), if t₂ ≤ x < t₃, 
-        #        = (t₄ - x)^3/(t₄ - t₁)(t₄ - t₂)(t₄ - t₃), if t₃ ≤ x < t₄, 
-        #        = 0 otherwise   
-        #       
-        # 
+        #        =(x - t₀)(t₃ - x)^2/(t₃ - t₁)(t₃ - t₀)(t₃ - t₂) + (t₄ -x)(x-t₁)(t₃-x)/(t₄-t₁)(t₃-t₂)(t₃ - t₁) + (t₄-x)^2(x-t₂)/(t₄-t₁)(t₃-t₂)(t₄-t₂), if t₂ ≤ x < t₃,
+        #        = (t₄ - x)^3/(t₄ - t₁)(t₄ - t₂)(t₄ - t₃), if t₃ ≤ x < t₄,
+        #        = 0 otherwise
+        #
+        #
         return jnp.where(
             x < t[1],
             self.__safe_divide((x - t[0])**3, (t[1] - t[0])*(t[2] - t[0])*(t[3] - t[0])),
             # if x> t[1], then two cases: t[2]>x> t[1] and x>t[2]
             jnp.where(
-               # t[2]>x
+                # t[2]>x
                 x < t[2],
                 self.__safe_divide(((x - t[0])**2)*(t[2] - x), (t[3] - t[0])*(t[2] - t[0])*(t[2] - t[1])) +
-                self.__safe_divide((x - t[0])*(t[3] - x)*(x-t[1]), (t[3] - t[0])*(t[3] - t[1])*(t[2] - t[1]))+
+                self.__safe_divide((x - t[0])*(t[3] - x)*(x-t[1]), (t[3] - t[0])*(t[3] - t[1])*(t[2] - t[1])) +
                 self.__safe_divide((t[4] - x)*(x-t[1])**2, (t[4] - t[1])*(t[3] - t[1])*(t[2] - t[1])),
                 # if x>t[2], then two cases: t[3]>x>t[2] and x>t[3]
                 jnp.where(
                     # t[3]>x
                     x < t[3],
                     self.__safe_divide((x - t[0])*((t[3] - x))**2, (t[3] - t[0])*(t[3] - t[1])*(t[3] - t[2])) +
-                    self.__safe_divide((x - t[1])*(t[4] - x)*(t[3]-x), (t[4] - t[1])*(t[3] - t[1])*(t[3] - t[2]))+
+                    self.__safe_divide((x - t[1])*(t[4] - x)*(t[3]-x), (t[4] - t[1])*(t[3] - t[1])*(t[3] - t[2])) +
                     self.__safe_divide(((t[4] - x)**2)*(x-t[2]), (t[4] - t[1])*(t[4] - t[2])*(t[3] - t[2])),
                     # if x>t[3], then t[4]>x>t[3] or x>t[4]
-                        self.__safe_divide((t[4] - x)**3, (t[4] - t[1])*(t[4] - t[2])*(t[4] - t[3])) )
+                    self.__safe_divide((t[4] - x)**3, (t[4] - t[1])*(t[4] - t[2])*(t[4] - t[3])))
             )
         )
-    
 
 
 class TensorBasis:

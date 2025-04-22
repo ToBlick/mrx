@@ -67,7 +67,7 @@ for i, n in enumerate(ns):
             start = time.time()
             err[i, j, k] = get_err(n, p, q)
             end = time.time()
-            times[i, j,k] = end - start
+            times[i, j, k] = end - start
             print(f"n={n}, p={p}, q={q}, err={err[i,j,k]}, time={times[i,j,k]}")
 # %%
 

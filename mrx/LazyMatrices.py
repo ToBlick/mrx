@@ -8,10 +8,11 @@ from mrx.Quadrature import QuadratureRule
 
 from mrx.Utils import jacobian, inv33, curl, div, grad
 
+
 class LazyMatrix:
     """
     A class to represent a lazy matrix assembly for finite element computations.
-    
+
     In all generality, i,j-th entries of this class will be something like: ∫ L(Λ0[i])·K(Λ1[j]) dx, where L and K are (differential) operators that usually depend on F.
 
     Attributes that can be passed to the constructor:
@@ -44,11 +45,11 @@ class LazyMatrix:
     E0: jnp.ndarray
     E1: jnp.ndarray
     n0: int
-    n1: int  
+    n1: int
     ns0: jnp.ndarray
     ns1: jnp.ndarray
     M: jnp.ndarray
-    
+
     def __init__(self, Λ0, Λ1, Q, F=None, E0=None, E1=None):
         self.Λ0 = Λ0
         self.Λ1 = Λ1
@@ -67,25 +68,26 @@ class LazyMatrix:
 
     def __array__(self):
         return np.array(self.M)
-    
+
     @abstractmethod
     def assemble(self):
         pass
 
+
 class LazyMassMatrix(LazyMatrix):
     """
     This class supports the assembly of mass matrices for different forms (0-form, 1-form, 2-form, and 3-form).
-    
+
     More precisely:
         - for 0-forms the i,j-th element is ∫ Λ0[i] Λ1[j] detDF dx.
         - for 1-forms the i,j-th element is ∫ DF.-T Λ0[i] · DF.-T Λ1[j] detDF dx.
         - for 2-forms the i,j-th element is ∫ DF Λ0[i] · DF Λ1[j] 1/detDF dx.
         - for 3-forms the i,j-th element is ∫ Λ0[i] Λ1[j] 1/detDF dx.
-        
+
     Notes:
         - provides a convenience constructor that takes fewer arguments since Λ0 = Λ1.
     """
-    
+
     def __init__(self, Λ, Q, F=None, E=None):
         super().__init__(Λ, Λ, Q, F, E, E)
 
@@ -138,15 +140,15 @@ class LazyMassMatrix(LazyMatrix):
 class LazyDerivativeMatrix(LazyMatrix):
     """
     Class representing a matrix for computing derivatives of differential forms.
-    
+
     It represents gradient, curl, and divergence operations depending on the degree of the input differential form.
-    
+
     More precisely:
         - for (Λ0, Λ1) = (0-form, 1-form), the i,j-th element is ∫ DF.-T grad Λ0[i] · DF.-T Λ1[j] detDF dx.
         - for (Λ0, Λ1) = (1-form, 2-form), the i,j-th element is ∫ DF curl Λ0[i] · DF Λ1[j] 1/detDF dx.
         - for (Λ0, Λ1) = (2-form, 3-form), the i,j-th element is ∫ div Λ0[i] Λ1[j] 1/detDF dx.
     """
-    
+
     def assemble(self):
         match self.Λ0.k:
             case 0:
@@ -210,12 +212,12 @@ class LazyProjectionMatrix(LazyMatrix):
 class LazyDoubleCurlMatrix(LazyMatrix):
     """
     Class representing a matrix that is half a vector Laplace operator.
-    
+
     More precisely, the i,j-th element is ∫ DF curl Λ0[i] · DF curl Λ1[j] 1/detDF dx.
     """
+
     def __init__(self, Λ, Q, F=None, E=None):
         super().__init__(Λ, Λ, Q, F, E, E)
-
 
     def assemble(self):
         # evaluate the jacobian of F at all quadrature points
@@ -228,12 +230,14 @@ class LazyDoubleCurlMatrix(LazyMatrix):
         wj = self.Q.w
         return jnp.einsum("ijk,ljk,j,j->li", Λ_ijk, Λ_ijk, 1/Jj, wj)
 
+
 class LazyStiffnessMatrix(LazyMatrix):
     """
     Class representing a Laplace operator matrix.
-    
+
     More precisely, the i,j-th element is ∫ DF.-T grad Λ0[i] · DF.-T grad Λ1[j] detDF dx.
     """
+
     def __init__(self, Λ, Q, F=None, E=None):
         super().__init__(Λ, Λ, Q, F, E, E)
 

@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 import jax
 
+
 def picard_solver(f, z_init, tol=1e-12, norm=jnp.linalg.norm):
     """
     Solves a fixed-point problem using the Picard iteration method.
@@ -35,6 +36,7 @@ def picard_solver(f, z_init, tol=1e-12, norm=jnp.linalg.norm):
     _, z_star = jax.lax.while_loop(cond_fun, body_fun, init_carry)
     return z_star
 
+
 def newton_solver(f, z_init, tol=1e-12, norm=jnp.linalg.norm):
     """
     Solve a fixed-point problem using Newton's method.
@@ -52,6 +54,6 @@ def newton_solver(f, z_init, tol=1e-12, norm=jnp.linalg.norm):
     Notes:
         - The function `picard_solver` is used internally to perform the iterative process.
     """
-    f_root = lambda z: f(z) - z
-    g = lambda z: z - jnp.linalg.solve(jax.jacrev(f_root)(z), f_root(z))
+    def f_root(z): return f(z) - z
+    def g(z): return z - jnp.linalg.solve(jax.jacrev(f_root)(z), f_root(z))
     return picard_solver(g, z_init, tol, norm)
