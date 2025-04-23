@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import time
-from typing import Callable, List, Tuple, Any
+from typing import Callable, Any
 
 from mrx.SplineBases import SplineBasis, DerivativeSpline
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
@@ -98,8 +98,8 @@ P0, P1, P2, P3 = [Projector(Λ, Q, F, E) for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], 
 # %%
 
 
-def l2_product(f: Callable[[jnp.ndarray], jnp.ndarray], 
-               g: Callable[[jnp.ndarray], jnp.ndarray], 
+def l2_product(f: Callable[[jnp.ndarray], jnp.ndarray],
+               g: Callable[[jnp.ndarray], jnp.ndarray],
                Q: Any) -> jnp.ndarray:
     return jnp.einsum("ij,ij,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Q.w)
 
@@ -144,6 +144,7 @@ f_hat = jnp.linalg.solve(M0, P0(compute_f))
 f_h = DiscreteFunction(f_hat, Λ0, E0)
 def compute_f_error(x): return compute_f(x) - f_h(x)
 
+
 (l2_product(compute_f_error, compute_f_error, Q) / l2_product(compute_f, compute_f, Q))**0.5
 
 # %%
@@ -153,6 +154,7 @@ A_hat = jnp.linalg.solve(M1, P1(A))
 A_h = DiscreteFunction(A_hat, Λ1, E1)
 def compute_A_error(x): return A(x) - A_h(x)
 
+
 (l2_product(compute_A_error, compute_A_error, Q) / l2_product(A, A, Q))**0.5
 
 # %%
@@ -160,8 +162,11 @@ def compute_A_error(x): return A(x) - A_h(x)
 grad_fh = jax.grad(lambda x: (f_h)(x).sum())
 grad_f_hat = jnp.linalg.solve(M1, P1(grad_fh))
 gradf_h = DiscreteFunction(grad_f_hat, Λ1, E1)
+
+
 def compute_error_1(x: jnp.ndarray) -> jnp.ndarray:
     return grad_fh(x) - gradf_h(x)
+
 
 (l2_product(compute_error_1, compute_error_1, Q) / l2_product(grad_fh, grad_fh, Q))**0.5
 
@@ -219,8 +224,11 @@ plt.quiver(
 curl_Ah = curl(A_h)
 curl_A_hat = jnp.linalg.solve(M2, P2(curl_Ah))
 curlA_h = DiscreteFunction(curl_A_hat, Λ2, E2)
+
+
 def compute_error_2(x: jnp.ndarray) -> jnp.ndarray:
     return curl(A)(x) - curl(A_h)(x)
+
 
 (l2_product(compute_error_2, compute_error_2, Q) / l2_product(curl(A), curl(A), Q))**0.5
 
@@ -229,6 +237,8 @@ g = div(B)
 g = compute_f
 g_hat = jnp.linalg.solve(M3, P3(g))
 g_h = DiscreteFunction(g_hat, Λ3, E3)
+
+
 def compute_error_4(x: jnp.ndarray) -> jnp.ndarray:
     return g(x) - g_h(x)
 
@@ -252,8 +262,11 @@ plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
 div_Bh = div(B_h)
 div_B_hat = jnp.linalg.solve(M3, P3(div_Bh))
 divB_h = DiscreteFunction(div_B_hat, Λ3, E3)
+
+
 def compute_error_3(x: jnp.ndarray) -> jnp.ndarray:
     return div(A)(x) - div(A_h)(x)
+
 
 (l2_product(compute_error_3, compute_error_3, Q) / l2_product(div(A), div(A), Q))**0.5
 

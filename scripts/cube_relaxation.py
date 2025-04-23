@@ -1,9 +1,8 @@
 # %%
 import jax
 import jax.numpy as jnp
-import numpy as np
 import matplotlib.pyplot as plt
-from typing import Callable, List, Tuple, Any, Union
+from typing import Tuple
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.Quadrature import QuadratureRule

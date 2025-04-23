@@ -103,7 +103,7 @@ for i, n in enumerate(ns):
         curl_A_err[i, j] = _curl_A_err
         end = time.time()
         times[i, j] = end - start
-        print(f"n={n}, p={p}, A_err={A_err[i,j]}, H_err={H_err[i,j]}, curl_A_err={curl_A_err[i,j]}, time={times[i,j]}")
+        print(f"n={n}, p={p}, A_err={A_err[i, j]}, H_err={H_err[i, j]}, curl_A_err={curl_A_err[i, j]}, time={times[i, j]}")
 # %%
 plt.plot(ns, A_err[:, 0], label='p=1', marker='o')
 plt.plot(ns, A_err[:, 1], label='p=2', marker='*')

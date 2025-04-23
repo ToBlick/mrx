@@ -5,14 +5,10 @@ This module provides functions for creating visualizations of convergence plots
 and other analysis results using Plotly.
 """
 
-import numpy as np
-import jax.numpy as jnp
-from typing import Callable, List, Tuple, Optional, Union, Any
 # type: ignore
 import plotly.graph_objects as go
 # type: ignore
 import plotly.colors as pc
-from plotly.subplots import make_subplots
 
 
 # Base marker styles for different data series

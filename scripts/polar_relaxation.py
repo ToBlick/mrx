@@ -3,12 +3,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import List, Tuple, Any
-from matplotlib import cm
-import matplotlib.colors as mcolors
+from typing import List
 
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
+from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector, CurlProjection
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix
@@ -106,6 +104,7 @@ A_hat = jnp.linalg.solve(M1, P1(A))
 A_h = DiscreteFunction(A_hat, Λ1, E1)
 def compute_A_error(x): return A(x) - A_h(x)
 
+
 (l2_product(compute_A_error, compute_A_error, Q) / l2_product(A, A, Q))**0.5
 
 # %%
@@ -115,10 +114,14 @@ B_h = DiscreteFunction(B0_hat, Λ2, E2)
 B0_h = DiscreteFunction(B0_hat, Λ2, E2)
 def compute_B_error(x): return B0(x) - B_h(x)
 
+
 (l2_product(compute_B_error, compute_B_error, Q) / l2_product(B0, B0, Q))**0.5
 
 # %%
+
+
 def compute_curl_error(x): return curl(A)(x) - curl(A_h)(x)
+
 
 print("error in curl A:", (l2_product(compute_curl_error, compute_curl_error, Q) / l2_product(curl(A), curl(A), Q))**0.5)
 

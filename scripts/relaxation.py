@@ -104,6 +104,7 @@ A_hat = jnp.linalg.solve(M1, P1(A))
 A_h = DiscreteFunction(A_hat, Λ1)
 def compute_A_error(x): return A(x) - A_h(x)
 
+
 (l2_product(compute_A_error, compute_A_error, Q) / l2_product(A, A, Q))**0.5
 
 # %%
@@ -128,6 +129,7 @@ B0_hat = jnp.linalg.solve(M2, P2(B0))
 B_h = DiscreteFunction(B0_hat, Λ2)
 B0_h = DiscreteFunction(B0_hat, Λ2)
 def compute_B_error(x): return B0(x) - B_h(x)
+
 
 (l2_product(compute_B_error, compute_B_error, Q) / l2_product(B0, B0, Q))**0.5
 
@@ -180,6 +182,7 @@ plt.quiver(
 # %%
 def compute_curl_error(x): return curl(A)(x) - curl(A_h)(x)
 
+
 (l2_product(compute_curl_error, compute_curl_error, Q) / l2_product(curl(A), curl(A), Q))**0.5
 # %%
 A_h = DiscreteFunction(A_hat, Λ1)
@@ -224,6 +227,7 @@ B_hat = B0_hat
 dt = 0.001
 max_iterations = int(0.05/dt)
 
+
 @jax.jit
 def perturb_B_hat(B_hat, B_hat_0, dt):
     H_hat_1 = jnp.linalg.solve(M1, M12 @ B_hat)         # H = Proj(B)
@@ -235,6 +239,7 @@ def perturb_B_hat(B_hat, B_hat_0, dt):
     B_hat_1 = B_hat_0 + dt * ẟB_hat
     error = (B_hat_1 - B_hat) @ M2 @ (B_hat_1 - B_hat)
     return error, B_hat_1, u_hat
+
 
 # %%
 for i in range(max_iterations):

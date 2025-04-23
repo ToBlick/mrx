@@ -59,7 +59,7 @@ for i, n in enumerate(ns):
         err[i, j] = get_err(n, p)
         end = time.time()
         times[i, j] = end - start
-        print(f"n={n}, p={p}, err={err[i,j]}, time={times[i,j]}")
+        print(f"n={n}, p={p}, err={err[i, j]}, time={times[i, j]}")
 # %%
 plt.plot(ns, err[:, 0], label='p=1', marker='o')
 plt.plot(ns, err[:, 1], label='p=2', marker='*')
