@@ -52,12 +52,12 @@ def get_err(n, p, q):
     def f(x):
         r, χ, z = x
         return -jnp.ones(1) * r * jnp.log(r)
-    types = ('clamped', 'clamped', 'constant')
+    types = ('clamped', 'periodic', 'constant')
     # bcs = ('dirichlet', 'dirichlet', 'none')
     Λ0 = DifferentialForm(0, ns, ps, types)
     ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
     Q = QuadratureRule(Λ0, q)
-    E0 = LazyExtractionOperator(Λ0, ξ, True).M
+    E0 = LazyExtractionOperator(Λ0, ξ, zero_bc=True).M
     K = LazyStiffnessMatrix(Λ0, Q, F=F, E=E0).M
     P0 = Projector(Λ0, Q, F=F, E=E0)
     u_hat = jnp.linalg.solve(K, P0(f))
