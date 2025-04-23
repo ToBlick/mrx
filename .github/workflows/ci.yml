@@ -55,7 +55,7 @@ jobs:
         
     - name: Run tests
       run: |
-        pytest mrx/test/ --cov=mrx --cov-report=xml
+        pytest test/ --cov=mrx --cov-report=xml
         
     - name: Upload coverage
       uses: codecov/codecov-action@v4
