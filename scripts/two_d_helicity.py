@@ -23,10 +23,13 @@ def get_error(n, p):
 
     types = ('periodic', 'periodic', 'constant')
 
-    ns = (n, n, 1)
-    ps = (p, p, 0)
+    n = jnp.array(n, dtype=jnp.int32)
+    p = jnp.array(p, dtype=jnp.int32)
 
-    Λ0 = DifferentialForm(0, ns, ps, types)
+    ns = jnp.array((n, n, 1), dtype=jnp.int32)
+    ps = jnp.array((p, p, 0), dtype=jnp.int32)
+
+    Λ0 = DifferentialForm(0, tuple(ns), tuple(ps), types)
     Λ1 = DifferentialForm(1, ns, ps, types)
     Λ2 = DifferentialForm(2, ns, ps, types)
     Q = QuadratureRule(Λ0, 10)
@@ -205,7 +208,7 @@ p = 3
 ns = (n, n, 1)
 ps = (p, p, 0)
 
-Λ0 = DifferentialForm(0, ns, ps, types)
+Λ0 = DifferentialForm(0, tuple(ns), tuple(ps), types)
 Λ1 = DifferentialForm(1, ns, ps, types)
 Λ2 = DifferentialForm(2, ns, ps, types)
 Q = QuadratureRule(Λ0, 3)

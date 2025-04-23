@@ -102,10 +102,9 @@ plt.quiver(
 # %%
 A_hat = jnp.linalg.solve(M1, P1(A))
 A_h = DiscreteFunction(A_hat, Λ1)
-def err(x): return A(x) - A_h(x)
+def compute_A_error(x): return A(x) - A_h(x)
 
-
-(l2_product(err, err, Q) / l2_product(A, A, Q))**0.5
+(l2_product(compute_A_error, compute_A_error, Q) / l2_product(A, A, Q))**0.5
 
 # %%
 F_A_h = Pullback(A_h, F, 1)
@@ -128,10 +127,9 @@ B0 = curl(A)
 B0_hat = jnp.linalg.solve(M2, P2(B0))
 B_h = DiscreteFunction(B0_hat, Λ2)
 B0_h = DiscreteFunction(B0_hat, Λ2)
-def err(x): return B0(x) - B_h(x)
+def compute_B_error(x): return B0(x) - B_h(x)
 
-
-(l2_product(err, err, Q) / l2_product(B0, B0, Q))**0.5
+(l2_product(compute_B_error, compute_B_error, Q) / l2_product(B0, B0, Q))**0.5
 
 # %%
 F_B = Pullback(B0, F, 2)
@@ -180,15 +178,9 @@ plt.quiver(
     __z1[:, :, 1],
     color='w')
 # %%
-def err(x): return (A)(x) - (A_h)(x)
+def compute_curl_error(x): return curl(A)(x) - curl(A_h)(x)
 
-
-(l2_product(err, err, Q) / l2_product(A, A, Q))**0.5
-# %%
-def err(x): return curl(A)(x) - curl(A_h)(x)
-
-
-(l2_product(err, err, Q) / l2_product(curl(A), curl(A), Q))**0.5
+(l2_product(compute_curl_error, compute_curl_error, Q) / l2_product(curl(A), curl(A), Q))**0.5
 # %%
 A_h = DiscreteFunction(A_hat, Λ1)
 F_A_h = Pullback(curl(A_h), F, 2)
@@ -230,7 +222,7 @@ u_h = DiscreteFunction(u_hat, Λ2)
 
 B_hat = B0_hat
 dt = 0.001
-
+max_iterations = int(0.05/dt)
 
 @jax.jit
 def perturb_B_hat(B_hat, B_hat_0, dt):
@@ -241,22 +233,17 @@ def perturb_B_hat(B_hat, B_hat_0, dt):
     E_hat = jnp.linalg.solve(M1, Pc(H_h, u_h))          # E = u x H
     ẟB_hat = jnp.linalg.solve(M2, D1 @ E_hat)           # ẟB = curl E
     B_hat_1 = B_hat_0 + dt * ẟB_hat
-    err = (B_hat_1 - B_hat) @ M2 @ (B_hat_1 - B_hat)
-    return err, B_hat_1, u_hat
-
+    error = (B_hat_1 - B_hat) @ M2 @ (B_hat_1 - B_hat)
+    return error, B_hat_1, u_hat
 
 # %%
-for i in range(int(0.05/dt)):
-    err = 1
+for i in range(max_iterations):
+    error_val = 1.0
     B_hat_1 = B_hat
-    it = 0
-    while err > 1e-11:
-        err, B_hat_1, _u_hat = perturb_B_hat(B_hat_1, B_hat, dt)
-        it += 1
-    # if it < 5:
-    #     dt *= 1.2
-    # else:
-    #     dt *= 0.8
+    iteration_count = 0
+    while error_val > 1e-11:
+        error_val, B_hat_1, _u_hat = perturb_B_hat(B_hat_1, B_hat, dt)
+        iteration_count += 1
     B_hat = B_hat_1
     print("Iteration: ", i+1)
     print("Magnetic Energy: ", (B_hat @ M2 @ B_hat) / 2)
@@ -264,7 +251,7 @@ for i in range(int(0.05/dt)):
     A_hat = U @ jnp.diag(S_inv) @ Vh @ D1.T @ B_hat
     print("Helicity: ", A_hat @ M12 @ B_hat)
     print("Div B: ", (D2 @ B_hat) @ jnp.linalg.solve(M3, D2 @ B_hat))
-    print("Picard iterations: ", it)
+    print("Picard iterations: ", iteration_count)
     print("dt: ", dt)
 
 B_h = DiscreteFunction(B_hat, Λ2)

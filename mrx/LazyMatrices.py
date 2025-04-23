@@ -2,6 +2,7 @@ from abc import abstractmethod
 import jax
 import jax.numpy as jnp
 import numpy as np
+from typing import Callable
 
 from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
@@ -47,7 +48,7 @@ class LazyMatrix:
     Λ0: DifferentialForm
     Λ1: DifferentialForm
     Q: QuadratureRule
-    F: callable
+    F: Callable[[jnp.ndarray], jnp.ndarray]
     E0: jnp.ndarray
     E1: jnp.ndarray
     n0: int

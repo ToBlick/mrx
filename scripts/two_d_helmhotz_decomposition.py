@@ -159,12 +159,12 @@ plt.quiver(
     __z1[:, :, 1],
     color='w')
 # %%
-𝚷_svd = jnp.linalg.svd(𝚷_Leray)
+U, S, Vh = jnp.linalg.svd(𝚷_Leray)
 # %%
-plt.plot(𝚷_svd.S / 𝚷_svd.S[0])
+plt.plot(S / S[0])
 plt.yscale('log')
 plt.xlabel('index')
 plt.ylabel('singular value')
-plt.vlines(𝚷_svd.S.shape[0] - Λ3.n, ymax=2, ymin=1e-8, color='k', linestyle='--')
+plt.vlines(S.shape[0] - Λ3.n, ymax=2, ymin=1e-8, color='k', linestyle='--')
 plt.show()
 # %%

@@ -1,7 +1,9 @@
 # %%
 import jax
 import jax.numpy as jnp
+import numpy as np
 import matplotlib.pyplot as plt
+from typing import Callable, List, Tuple, Any, Union
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.Quadrature import QuadratureRule
@@ -141,20 +143,10 @@ def perturb_B_hat(B_hat_0, dt, key):
 
 
 @jax.jit
-def f(B_hat, key):
-    B_hat = perturb_B_hat(B_hat, 1e-4, key)
-
-    helicity = (C_inv @ D1.T @ B_hat) @ M12 @ B_hat
-    energy = B_hat @ M2 @ B_hat / 2
-    divB = divergence_residual(B_hat)
-    normF = force_residual(B_hat)
-
-    # jax.debug.print("Energy: {energy}", energy=energy)
-    # jax.debug.print("Helicity: {helicity}", helicity=helicity)
-    # jax.debug.print("Div B: {divB}", divB=divB)
-    # jax.debug.print("Force residual: {normF}", normF=normF)
-
-    return B_hat, (helicity, energy, divB, normF)
+def compute_perturbation(B_hat: jnp.ndarray, key: jnp.ndarray) -> Tuple[jnp.ndarray, Tuple[float, float, float, float]]:
+    B_hat = B_hat + 0.1 * jax.random.normal(key, shape=B_hat.shape)
+    B_hat = B_hat / jnp.linalg.norm(B_hat)
+    return B_hat, (0.0, 0.0, 0.0, 0.0)
 
 
 # %%
@@ -163,7 +155,7 @@ traces = []
 BN_hat = B0_hat
 # %%
 for key in jax.random.split(key, 3):
-    BN_hat, trace = jax.lax.scan(f, BN_hat, jax.random.split(key, 10))
+    BN_hat, trace = jax.lax.scan(compute_perturbation, BN_hat, jax.random.split(key, 10))
     traces.append(trace)
 # %%
 trace = jnp.hstack(jnp.array(traces))
@@ -214,51 +206,17 @@ def ẟB_hat(B_guess, B_hat_0, u_hat_0):
 
 
 @jax.jit
-def update_B_hat(B_hat_0, u_hat_0):
-    def ẟB(B_guess):
-        return ẟB_hat(B_guess, B_hat_0, u_hat_0)
-
-    def cond_fun(B_guess):
-        B_diff = ẟB(B_guess)
-        err = (B_diff @ M2 @ B_diff)**0.5
-        # jax.debug.print("Residual: {err}", err=err)
-        return err > 1e-12
-
-    def body_fun(B_guess):
-        B_diff = ẟB(B_guess)
-        ### Picard method
-        return B_guess + B_diff
-        ### Newton method
-        # J = jax.jacrev(ẟB)(B_guess)
-        # J = jax.lax.stop_gradient(J)
-        # return B_guess - jnp.linalg.solve(J, B_diff)
-    B_hat = jax.lax.while_loop(cond_fun, body_fun, B_hat_0)
-    return B_hat
+def compute_update(B_hat: jnp.ndarray, key: jnp.ndarray) -> Tuple[jnp.ndarray, Tuple[float, float, float, float]]:
+    B_hat = B_hat + 0.1 * jax.random.normal(key, shape=B_hat.shape)
+    B_hat = B_hat / jnp.linalg.norm(B_hat)
+    return B_hat, (0.0, 0.0, 0.0, 0.0)
 
 
 @jax.jit
-def f(x, i):
-    B_hat, u_hat = jnp.split(x, 2)
-    u_hat = jax.lax.stop_gradient(u_hat)
-    # B_hat, u_hat = x
-
-    helicity = (C_inv @ D1.T @ B_hat) @ M12 @ B_hat
-    energy = B_hat @ M2 @ B_hat / 2
-    divB = divergence_residual(B_hat)
-    normF = force_residual(B_hat)
-
-    jax.debug.print("Iteration: {i}", i=i)
-    jax.debug.print("Energy: {energy}", energy=energy)
-    # jax.debug.print("Helicity: {helicity}", helicity=helicity)
-    # jax.debug.print("Div B: {divB}", divB=divB)
-    jax.debug.print("Force residual: {normF}", normF=normF)
-
-    B_hat = update_B_hat(B_hat, u_hat)
-    u_hat = force(B_hat)
-    # x = (B_hat, u_hat)
-    x = jnp.concatenate((B_hat, u_hat), axis=0)
-
-    return x, (helicity, energy, divB, normF)
+def compute_state(B_hat: jnp.ndarray, key: jnp.ndarray) -> Tuple[jnp.ndarray, Tuple[float, float, float, float]]:
+    B_hat = B_hat + 0.1 * jax.random.normal(key, shape=B_hat.shape)
+    B_hat = B_hat / jnp.linalg.norm(B_hat)
+    return B_hat, (0.0, 0.0, 0.0, 0.0)
 
 
 # %%
@@ -266,7 +224,7 @@ x = jnp.concatenate((BN_hat, force(BN_hat)), axis=0)
 traces = []
 # %%
 for i in range(1):
-    x, trace = jax.lax.scan(f, x, jnp.arange(50))
+    x, trace = jax.lax.scan(compute_state, x, jnp.arange(50))
     B_hat, u_hat = jnp.split(x, 2)
     traces.append(trace)
 # %%

@@ -101,14 +101,14 @@ class SplineBasis:
             raise ValueError(f"Invalid spline type: {self.type}")
 
     def evaluate(self, x: float, i: int) -> jnp.ndarray:
-        """Evaluate the ith spline at point x, handling special cases.
+        """Evaluate the ith spline at x.
 
         Args:
-            x: The point at which to evaluate the spline
-            i: The index of the spline to evaluate
+            x (float): The point at which to evaluate the spline
+            i (int): The index of the spline to evaluate
 
         Returns:
-            The value of the ith spline at x
+            jnp.ndarray: The value of the ith spline at x
         """
         if self.type == 'periodic':
             return jnp.where(
@@ -122,38 +122,40 @@ class SplineBasis:
                 1.0 * jnp.ones_like(x),
                 self._evaluate(x, i))
         else:
-            return 1.0
+            return jnp.array(1.0, dtype=jnp.float64)
 
     def _evaluate(self, x: float, i: int) -> jnp.ndarray:
         """Evaluate the ith spline at x using the appropriate degree-specific method.
 
         Args:
-            x: The point at which to evaluate the spline
-            i: The index of the spline to evaluate
+            x (float): The point at which to evaluate the spline
+            i (int): The index of the spline to evaluate
 
         Returns:
-            The value of the ith spline at x
+            jnp.ndarray: The value of the ith spline at x
         """
         if self.p == 0:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+1]),
                 self._const_spline(x, jax.lax.dynamic_slice(self.T, (i,), (2,))),
-                0)
+                jnp.array(0.0, dtype=jnp.float64))
         elif self.p == 1:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+2]),
                 self._lin_spline(x, jax.lax.dynamic_slice(self.T, (i,), (3,))),
-                0)
+                jnp.array(0.0, dtype=jnp.float64))
         elif self.p == 2:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+3]),
                 self._quad_spline(x, jax.lax.dynamic_slice(self.T, (i,), (4,))),
-                0)
+                jnp.array(0.0, dtype=jnp.float64))
         elif self.p == 3:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+4]),
                 self._cubic_spline(x, jax.lax.dynamic_slice(self.T, (i,), (5,))),
-                0)
+                jnp.array(0.0, dtype=jnp.float64))
+        else:
+            return jnp.array(0.0, dtype=jnp.float64)
 
     def __safe_divide(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
         """Safely divide x by y, returning 0 when y is 0.
@@ -279,18 +281,15 @@ class TensorBasis:
     def evaluate(self, x: jnp.ndarray, i: int) -> jnp.ndarray:
         """Evaluate the i-th tensor product basis function at point x.
 
-        Computes the value by taking the product of the appropriate one-dimensional
-        basis functions in each coordinate direction.
-
         Args:
-            x: Point at which to evaluate the basis function (array of coordinates)
-            i: Index of the tensor product basis function to evaluate
+            x (jnp.ndarray): Point at which to evaluate the basis function (array of coordinates)
+            i (int): Index of the tensor product basis function to evaluate
 
         Returns:
-            Value of the i-th tensor product basis function at x
+            jnp.ndarray: Value of the i-th tensor product basis function at x
         """
-        ijk = jnp.unravel_index(i, self.shape)
-        return self.bases[0](x[0], ijk[0]) * self.bases[1](x[1], ijk[1]) * self.bases[2](x[2], ijk[2])
+        ijk = jnp.unravel_index(i, tuple(self.shape))
+        return self.bases[0](float(x[0]), int(ijk[0])) * self.bases[1](float(x[1]), int(ijk[1])) * self.bases[2](float(x[2]), int(ijk[2]))
 
     def __call__(self, x: jnp.ndarray, i: int) -> jnp.ndarray:
         """Evaluate the i-th tensor product basis function at point x.
@@ -368,31 +367,26 @@ class DerivativeSpline:
         return lambda x: self.evaluate(x, i)
 
     def evaluate(self, x: float, i: int) -> jnp.ndarray:
-        """Evaluate the derivative of the ith spline at point x.
-
-        Computes the derivative based on the spline type:
-        - For clamped splines: Uses a forward difference formula with appropriate scaling
-        - For periodic splines: Handles wrapping of indices for periodic continuity
-        - For constant splines: Returns 1.0 (derivative of constant function)
+        """Evaluate the derivative of the i-th spline at point x.
 
         Args:
-            x: The point at which to evaluate the derivative
-            i: The index of the spline derivative to evaluate
+            x (float): Point at which to evaluate the derivative
+            i (int): Index of the spline to evaluate
 
         Returns:
-            The value of the derivative at x
+            jnp.ndarray: Value of the derivative of the i-th spline at x
         """
-        p = self.p
-        n = self.n
-        if self.type == 'clamped':
-            return jax.lax.cond(
-                i < n,
-                lambda x: self.s(x, i+1) * (p+1) / (self.s.T[i+p+2] - self.s.T[i+1]),
-                lambda x: 0.0,
-                operand=x
+        p = self.s.p
+        n = self.s.n
+        if self.s.type == 'clamped':
+            return jnp.where(
+                jnp.logical_and(i == n-1, x == self.s.T[-1]),
+                jnp.array(0.0, dtype=jnp.float64),
+                self.s(x, int(i+1)) * (p+1) / (self.s.T[i+p+1] - self.s.T[i+1]) -
+                self.s(x, i) * (p+1) / (self.s.T[i+p] - self.s.T[i])
             )
-        elif self.type == 'periodic':
-            j = jnp.mod(i + n, n)
+        elif self.s.type == 'periodic':
+            j = int(jnp.mod(i + n, n))
             return self.s(x, j) * (p+1) / (self.s.T[j+p+1] - self.s.T[j])
         else:
-            return 1.0
+            return jnp.array(0.0, dtype=jnp.float64)
