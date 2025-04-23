@@ -399,32 +399,21 @@ class DerivativeSpline:
         p = self.s.p
         n = self.s.n
 
-        if self.s.type == 'clamped':
-            # Handle edge cases for clamped splines
-            # At the boundaries (x=0 or x=1), all derivatives should be zero
-            is_boundary = jnp.logical_or(x <= 0.0, x >= 1.0)
-
-            # Compute denominators safely
-            denom1 = self.s.T[i+p+1] - self.s.T[i+1]
-            denom2 = self.s.T[i+p] - self.s.T[i]
-
-            # Handle division by zero cases
-            safe_denom1 = jnp.where(denom1 == 0, 1.0, denom1)
-            safe_denom2 = jnp.where(denom2 == 0, 1.0, denom2)
-
-            # Compute derivative with safe denominators
-            derivative = p * (
-                self.s(x, i+1) / safe_denom1 -
-                self.s(x, i) / safe_denom2
+        if self.type == 'clamped':
+            return jax.lax.cond(
+                i < n,
+                lambda x: self.s(x, i+1) * (p+1) / (self.s.T[i+p+2] - self.s.T[i+1]),
+                lambda x: 0.0,
+                operand=x
             )
-
-            # Return zero at boundaries
-            return jnp.where(is_boundary, 0.0, derivative)
-
-        elif self.s.type == 'periodic':
-            j = jnp.mod(i, n).astype(jnp.int32)
-            denom = self.s.T[j+p+1] - self.s.T[j+1]
-            safe_denom = jnp.where(denom == 0, 1.0, denom)
-            return p * self.s(x, j) / safe_denom
+        elif self.type == 'periodic':
+            j = jnp.mod(i + n, n)
+            return self.s(x, j) * (p+1) / (self.s.T[j+p+1] - self.s.T[j])
+            # return jnp.where(
+            #     i + 1 - p > 0,
+            #     self.s(x, i+1-p) * (p+1) / (self.s.T[i+p+2-p] - self.s.T[i+1-p]),
+            #     self.s(x, 0) * (p+1) / (self.s.T[p+1] - self.s.T[0])
+            # )
+        # the derivative right now is not exact on the edge - but these functions should never be evaluated there anyway.
         else:
-            return jnp.array(0.0, dtype=jnp.float64)
+            return 1.0
