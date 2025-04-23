@@ -280,7 +280,7 @@ def get_xi(_R, _Y, Λ0):
             - τ: Scaling parameter
     """
     nr, nχ, nζ = Λ0.nr, Λ0.nχ, Λ0.nζ
-    Q = QuadratureRule(Λ0, 10)
+    Q = QuadratureRule(Λ0, q)
     P = Projector(Λ0, Q)
     M = LazyMassMatrix(Λ0, Q).M
 

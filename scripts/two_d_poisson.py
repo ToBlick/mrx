@@ -35,11 +35,12 @@ def get_err(n, p, q):
         return 2 * (2*jnp.pi)**2 * u(x)
 
     types = ('clamped', 'clamped', 'constant')
-    bcs = ('dirichlet', 'dirichlet', 'none')
+
 
     Λ0 = DifferentialForm(0, ns, ps, types)
     Q = QuadratureRule(Λ0, q)
 
+    bcs = ('dirichlet', 'dirichlet', 'none')
     B0 = LazyBoundaryOperator(Λ0, bcs).M
     K = LazyStiffnessMatrix(Λ0, Q, F=None, E=B0).M
 

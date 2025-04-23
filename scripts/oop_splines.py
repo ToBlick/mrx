@@ -16,7 +16,7 @@ from mrx.Utils import div, curl, grad
 jax.config.update("jax_enable_x64", True)
 # %%
 ns = (8, 8, 1)
-ps = (3, 2, 0)
+ps = (4, 4, 0)
 types = ('clamped', 'periodic', 'constant')
 _T = jnp.array([0, 0.2, 0.4, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0])
 T = jnp.concatenate([
@@ -36,6 +36,10 @@ s = SplineBasis(ns[1], ps[1], 'periodic', T)
 d = DerivativeSpline(s)
 x = jnp.linspace(0, 1, 1000)
 
+# %%
+plt.plot(x, jax.vmap(s, (0, None))(x, 0))
+# %%
+plt.plot(x, jax.vmap(d, (0, None))(x, 0))
 # %%
 for i in range(ns[1]):
     plt.plot(x, jax.vmap(lambda x: s(float(x), i))(x))
