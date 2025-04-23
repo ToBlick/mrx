@@ -37,9 +37,9 @@ d = DerivativeSpline(s)
 x = jnp.linspace(0, 1, 1000)
 
 # %%
-plt.plot(x, jax.vmap(s, (0, None))(x, 0))
+plt.plot(x, jax.vmap(lambda x: s(float(x), 0))(x))
 # %%
-plt.plot(x, jax.vmap(d, (0, None))(x, 0))
+plt.plot(x, jax.vmap(lambda x: d(float(x), 0))(x))
 # %%
 for i in range(ns[1]):
     plt.plot(x, jax.vmap(lambda x: s(float(x), i))(x))

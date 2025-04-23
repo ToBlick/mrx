@@ -36,7 +36,6 @@ def get_err(n, p, q):
 
     types = ('clamped', 'clamped', 'constant')
 
-
     Λ0 = DifferentialForm(0, ns, ps, types)
     Q = QuadratureRule(Λ0, q)
 
