@@ -342,49 +342,22 @@ class LazyStiffnessMatrix(LazyMatrix):
         """
         super().__init__(Λ0, Λ0, Q, F, E, E)
 
-    def assemble(self) -> jnp.ndarray:
-        """Assemble stiffness matrix.
+    def assemble(self):
+        # evaluate the jacobian of F at all quadrature points
+        DF = jax.jacfwd(self.F)
 
-        Returns:
-            jnp.ndarray: Assembled stiffness matrix
-        """
-        # Get quadrature points and weights
-        x = self.Q.x  # Shape: (n_q, 3)
-        w = self.Q.w  # Shape: (n_q,)
+        # compute the gradient of the basis functions
+        def _Λ(x, i):
+            return inv33(DF(x)).T @ grad(lambda y: self.Λ0(y, i))(x)
 
-        # Initialize matrix
-        n = self.Λ0.n
+        # evaluate the gradient of the basis functions at all quadrature points
+        Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(self.Q.x, jnp.arange(self.n0))  # n x n_q x d
 
-        # Evaluate basis functions at quadrature points
-        # Shape: (n, n_q, 1)
-        # For each basis function, compute derivatives in each direction
-        def compute_derivatives(x_q, i):
-            # Get the tensor basis for 0-form
-            basis = self.Λ0.bases[0]
-            # Compute derivatives in each direction
-            dr = basis.bases[0].dΛ(x_q[0], i)  # r derivative
-            dχ = basis.bases[1].dΛ(x_q[1], i)  # χ derivative
-            dζ = basis.bases[2].dΛ(x_q[2], i)  # ζ derivative
-            return jnp.array([dr, dχ, dζ])
+        # evaluate the jacobian of F at all quadrature points
+        Jj = jax.vmap(jacobian(self.F))(self.Q.x)
 
-        basis_derivs = jax.vmap(jax.vmap(compute_derivatives, (0, None)), (None, 0))(x, jnp.arange(n))
+        # evaluate the weight of the quadrature points
+        wj = self.Q.w
 
-        # If mapping is provided, transform derivatives
-        if self.F is not None:
-            # Compute Jacobian at quadrature points
-            # Shape: (n_q, 3, 3)
-            J = jax.vmap(jax.jacfwd(self.F))(x)
-            J_inv = jnp.linalg.inv(J)
-
-            # Transform derivatives
-            # Shape: (n, n_q, 3)
-            basis_derivs = jnp.einsum('qij,nqj->nqi', J_inv, basis_derivs)
-
-            # Include Jacobian determinant in weights
-            w = w * jnp.abs(jnp.linalg.det(J))
-
-        # Compute stiffness matrix entries
-        # S[i,j] = ∫ ∇φᵢ · ∇φⱼ dx
-        S = jnp.einsum('nqi,mqi,q->nm', basis_derivs, basis_derivs, w)
-
-        return S
+        # compute the stiffness matrix
+        return jnp.einsum("ijk,ljk,j,j->li", Λ_ijk, Λ_ijk, Jj, wj)

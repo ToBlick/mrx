@@ -38,7 +38,7 @@ class SplineBasis:
         self.p = p
         if p < 0 or p > 3:
             raise NotImplementedError(f"Invalid spline degree: {p}")
-        if p >= n:
+        if p >= n and p != 1:  # n = p = 1 is allowed for ignoring the third dimension
             raise ValueError(f"Spline degree must be less than number of splines: {p} >= {n}")
         if type not in ['clamped', 'periodic', 'constant', 'fourier']:
             raise ValueError(f"Invalid spline type: {type}")

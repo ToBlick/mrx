@@ -203,63 +203,70 @@ class LazyBoundaryOperator:
         """
         cI, i, j, k = self._unravel_index(row_idx)
         cJ, r_idx, m, n = self.Λ._unravel_index(col_idx)
-        
         if self.k == 0:
-            # For 0-forms, check if point is interior in each direction
-            is_interior_r = (self.nr == self.Λ.nr) or (i == r_idx - 1)
-            is_interior_χ = (self.nχ == self.Λ.nχ) or (j == m - 1)
-            is_interior_ζ = (self.nζ == self.Λ.nζ) or (k == n - 1)
-            return jnp.int32(is_interior_r) * jnp.int32(is_interior_χ) * jnp.int32(is_interior_ζ)
-            
+            # for example: dirichlet boundary condition in r and ζ:
+            # row_idx ∈ [0, (nr-2) nχ (nζ-2)]
+            # col_idx ∈ [0,   nr   nχ   nζ  ]
+            return (
+                (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
+                    + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
+                * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
+                   + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
+                * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
+                   + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1))
+            )
         elif self.k == 1:
-            # For 1-forms, handle each component separately
-            if cI != cJ:
-                return 0
-                
-            if cI == 0:  # r-component
-                # r-component is dr x nχ x nζ
-                is_interior_χ = (self.nχ == self.Λ.nχ) or (j == m - 1)
-                is_interior_ζ = (self.nζ == self.Λ.nζ) or (k == n - 1)
-                return jnp.int32(i == r_idx) * jnp.int32(is_interior_χ) * jnp.int32(is_interior_ζ)
-                
-            elif cI == 1:  # χ-component
-                # χ-component is nr x dχ x nζ
-                is_interior_r = (self.nr == self.Λ.nr) or (i == r_idx - 1)
-                is_interior_ζ = (self.nζ == self.Λ.nζ) or (k == n - 1)
-                # For periodic boundaries, wrap the index
-                m_wrapped = jnp.where(self.nχ == self.Λ.nχ, m % (self.nχ - 1), m)
-                return jnp.int32(is_interior_r) * jnp.int32(j == m_wrapped) * jnp.int32(is_interior_ζ)
-                
-            else:  # ζ-component
-                # ζ-component is nr x nχ x dζ
-                is_interior_r = (self.nr == self.Λ.nr) or (i == r_idx - 1)
-                is_interior_χ = (self.nχ == self.Λ.nχ) or (j == m - 1)
-                # For periodic boundaries, wrap the index
-                n_wrapped = jnp.where(self.nζ == self.Λ.nζ, n % (self.nζ - 1), n)
-                return jnp.int32(is_interior_r) * jnp.int32(is_interior_χ) * jnp.int32(k == n_wrapped)
-                
+            # for the x-component, it is dr x nχ x nζ
+            return jnp.where(cI == cJ,
+                             jnp.where(cI == 0,
+                                       jnp.int32(i == r_idx)
+                                       * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
+                                          + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
+                                       * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
+                                           + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1)),
+                                       # for the y-component, it is nr x dχ x nζ
+                                       jnp.where(cI == 1,
+                                                 (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
+                                                  + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
+                                                 * jnp.int32(j == m)
+                                                 * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
+                                                     + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1)),
+                                                 # for the z-component, it is nr x nχ x dζ
+                                                 (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
+                                                     + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
+                                                 * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
+                                                     + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
+                                                 * jnp.int32(k == n)
+                                                 )
+                                       ),
+                             0
+                             )
         elif self.k == 2:
-            # For 2-forms, handle each component separately
-            if cI != cJ:
-                return 0
-                
-            if cI == 0:  # rχ-component
-                is_interior_r = (self.nr == self.Λ.nr) or (i == r_idx - 1)
-                return jnp.int32(is_interior_r) * jnp.int32(j == m) * jnp.int32(k == n)
-                
-            elif cI == 1:  # rζ-component
-                is_interior_r = (self.nr == self.Λ.nr) or (i == r_idx - 1)
-                is_interior_χ = (self.nχ == self.Λ.nχ) or (j == m - 1)
-                return jnp.int32(is_interior_r) * jnp.int32(is_interior_χ) * jnp.int32(k == n)
-                
-            else:  # χζ-component
-                is_interior_r = (self.nr == self.Λ.nr) or (i == r_idx - 1)
-                is_interior_χ = (self.nχ == self.Λ.nχ) or (j == m - 1)
-                is_interior_ζ = (self.nζ == self.Λ.nζ) or (k == n - 1)
-                return jnp.int32(is_interior_r) * jnp.int32(is_interior_χ) * jnp.int32(is_interior_ζ)
-                
+            # for the x-component, it is nr x dχ x dζ
+            return jnp.where(cI == cJ,
+                             jnp.where(cI == 0,
+                                       (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
+                                        + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
+                                       * jnp.int32(j == m)
+                                       * jnp.int32(k == n),
+                                       # for the y-component, it is dr x nχ x dζ
+                                       jnp.where(cI == 1,
+                                                 jnp.int32(i == r_idx)
+                                                 * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
+                                                    + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
+                                                 * jnp.int32(k == n),
+                                                 # for the z-component, it is nr x nχ x dζ
+                                                 jnp.int32(i == r_idx)
+                                                 * jnp.int32(j == m)
+                                                 * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
+                                                     + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1))
+                                                 )
+                                       ),
+                             0
+                             )
         elif self.k == 3:
-            # For 3-forms, identity mapping as they are already in reduced space
+            # Handle 3-forms (volume forms)
+            # Identity mapping as 3-forms are already in reduced space
             return jnp.int32(row_idx == col_idx)
 
     def assemble(self):
