@@ -8,6 +8,7 @@ using JAX for automatic differentiation and efficient computation.
 
 import jax.numpy as jnp
 import jax
+import warnings
 
 
 def picard_solver(f, z_init, tol=1e-6, max_iter=1000, norm=jnp.linalg.norm):
@@ -49,6 +50,8 @@ def picard_solver(f, z_init, tol=1e-6, max_iter=1000, norm=jnp.linalg.norm):
     # Verify solution
     err = norm(f(z_star) - z_star)
     success = err <= tol
+    if not success:
+        warnings.warn(f"Picard solver failed to converge in {max_iter} iterations")
 
     return z_star
 

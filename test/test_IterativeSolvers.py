@@ -252,7 +252,6 @@ class TestIterativeSolvers(unittest.TestCase):
         """Test Picard solver scaling with high-dimensional linear systems."""
         # Test dimensions to try
         dimensions = jnp.logspace(1, 2, 2, dtype=int)
-        max_iterations = []
         solve_times_first = []
         solve_times_second = []
         errors = []
