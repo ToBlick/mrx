@@ -361,8 +361,34 @@ class LazyStiffnessMatrix(LazyMatrix):
         DF = jax.jacfwd(self.F)
 
         def _Λ(x, i):
-            return inv33(DF(x)).T @ grad(lambda y: self.Λ0(y, i))(x)
-        Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(self.Q.x, jnp.arange(self.n0))  # n x n_q x d
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
-        wj = self.Q.w  # n_q
-        return jnp.einsum("ijk,ljk,j,j->li", Λ_ijk, Λ_ijk, Jj, wj)
+            # Get the gradient of the basis function
+            grad_Λ = grad(lambda y: self.Λ0(y, i))(x)
+
+            # For clamped boundary conditions, ensure gradient is zero at boundaries
+            if 'clamped' in self.Λ0.types:
+                # Check if we're at a boundary point
+                is_boundary = jnp.any(jnp.logical_or(x <= 0, x >= 1))
+                grad_Λ = jnp.where(is_boundary, 0.0, grad_Λ)
+
+            # Transform the gradient
+            return inv33(DF(x)).T @ grad_Λ
+
+        # Compute basis function gradients at quadrature points
+        Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(self.Q.x, jnp.arange(self.n0))
+
+        # Get Jacobian and weights
+        Jj = jax.vmap(jacobian(self.F))(self.Q.x)
+        wj = self.Q.w
+
+        # Assemble stiffness matrix
+        K = jnp.einsum("ijk,ljk,j,j->li", Λ_ijk, Λ_ijk, Jj, wj)
+
+        # For clamped boundary conditions, ensure proper symmetry and positive definiteness
+        if 'clamped' in self.Λ0.types:
+            # Make the matrix symmetric
+            K = 0.5 * (K + K.T)
+
+            # Add a small positive diagonal term to ensure positive definiteness
+            K = K + 1e-10 * jnp.eye(K.shape[0])
+
+        return K

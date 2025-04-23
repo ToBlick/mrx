@@ -289,7 +289,9 @@ class TensorBasis:
             jnp.ndarray: Value of the i-th tensor product basis function at x
         """
         ijk = jnp.unravel_index(i, tuple(self.shape))
-        return self.bases[0](float(x[0]), int(ijk[0])) * self.bases[1](float(x[1]), int(ijk[1])) * self.bases[2](float(x[2]), int(ijk[2]))
+        return self.bases[0](jnp.asarray(x[0], dtype=float), jnp.asarray(ijk[0], dtype=int)) * \
+            self.bases[1](jnp.asarray(x[1], dtype=float), jnp.asarray(ijk[1], dtype=int)) * \
+            self.bases[2](jnp.asarray(x[2], dtype=float), jnp.asarray(ijk[2], dtype=int))
 
     def __call__(self, x: jnp.ndarray, i: int) -> jnp.ndarray:
         """Evaluate the i-th tensor product basis function at point x.
@@ -367,26 +369,46 @@ class DerivativeSpline:
         return lambda x: self.evaluate(x, i)
 
     def evaluate(self, x: float, i: int) -> jnp.ndarray:
-        """Evaluate the derivative of the i-th spline at point x.
+        """Evaluate the derivative spline at point x for index i.
 
         Args:
-            x (float): Point at which to evaluate the derivative
-            i (int): Index of the spline to evaluate
+            x: Point at which to evaluate
+            i: Index of the spline
 
         Returns:
             jnp.ndarray: Value of the derivative of the i-th spline at x
         """
         p = self.s.p
         n = self.s.n
+
         if self.s.type == 'clamped':
+            # Handle edge cases for clamped splines
+            # At the left boundary (i=0)
+            left_boundary = jnp.logical_and(i == 0, x == self.s.T[0])
+            # At the right boundary (i=n-1)
+            right_boundary = jnp.logical_and(i == n-1, x == self.s.T[-1])
+
+            # Compute denominators safely
+            denom1 = self.s.T[i+p+1] - self.s.T[i+1]
+            denom2 = self.s.T[i+p] - self.s.T[i]
+
+            # Handle division by zero cases
+            safe_denom1 = jnp.where(denom1 == 0, 1.0, denom1)
+            safe_denom2 = jnp.where(denom2 == 0, 1.0, denom2)
+
+            # Compute derivative with safe denominators
+            derivative = self.s(x, jnp.asarray(i+1, dtype=jnp.int32)) * (p+1) / safe_denom1 - \
+                self.s(x, i) * (p+1) / safe_denom2
+
+            # Set boundary values appropriately
             return jnp.where(
-                jnp.logical_and(i == n-1, x == self.s.T[-1]),
+                jnp.logical_or(left_boundary, right_boundary),
                 jnp.array(0.0, dtype=jnp.float64),
-                self.s(x, int(i+1)) * (p+1) / (self.s.T[i+p+1] - self.s.T[i+1]) -
-                self.s(x, i) * (p+1) / (self.s.T[i+p] - self.s.T[i])
+                derivative
             )
+
         elif self.s.type == 'periodic':
-            j = int(jnp.mod(i + n, n))
+            j = jnp.mod(i + n, n).astype(jnp.int32)
             return self.s(x, j) * (p+1) / (self.s.T[j+p+1] - self.s.T[j])
         else:
             return jnp.array(0.0, dtype=jnp.float64)
