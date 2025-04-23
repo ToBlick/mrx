@@ -34,7 +34,7 @@ def get_err(n, p):
     Λ0 = DifferentialForm(0, ns, ps, types)
     Λ2 = DifferentialForm(2, ns, ps, types)
     Λ3 = DifferentialForm(3, ns, ps, types)
-    Q = QuadratureRule(Λ0, 10)
+    Q = QuadratureRule(Λ0, 3)
 
     D = LazyDerivativeMatrix(Λ2, Λ3, Q).M
     M2 = LazyMassMatrix(Λ2, Q).M
