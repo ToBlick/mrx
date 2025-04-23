@@ -6,10 +6,8 @@ and other analysis results using Plotly.
 """
 
 # type: ignore
-import plotly.graph_objects as go
-# type: ignore
-import plotly.colors as pc
-
+import plotly.graph_objects as go  # type: ignore
+import plotly.colors as pc  # type: ignore
 
 # Base marker styles for different data series
 base_markers = [

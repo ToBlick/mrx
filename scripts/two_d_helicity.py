@@ -202,15 +202,15 @@ plt.legend()
 # %%
 types = ('periodic', 'periodic', 'constant')
 
-n = 6
-p = 3
+nn = 6
+pp = 3
 
-ns = (n, n, 1)
-ps = (p, p, 0)
+nns = (nn, nn, 1)
+pps = (pp, pp, 0)
 
-Λ0 = DifferentialForm(0, tuple(ns), tuple(ps), types)
-Λ1 = DifferentialForm(1, ns, ps, types)
-Λ2 = DifferentialForm(2, ns, ps, types)
+Λ0 = DifferentialForm(0, tuple(nns), tuple(pps), types)
+Λ1 = DifferentialForm(1, nns, pps, types)
+Λ2 = DifferentialForm(2, nns, pps, types)
 Q = QuadratureRule(Λ0, 3)
 M2 = LazyMassMatrix(Λ2, Q).M
 M1 = LazyMassMatrix(Λ1, Q).M

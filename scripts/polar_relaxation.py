@@ -266,7 +266,8 @@ for i in range(10):
         ẟB = -jnp.linalg.solve(J, B_diff)
         B_hat_1 += ẟB
         iteration_count += 1
-    dt = jnp.array(0.01 / (_u_hat @ M2 @ _u_hat)**0.5)
+    dt = 0.01 / (_u_hat @ M2 @ _u_hat)**0.5
+    # jnp.array(0.01 / (_u_hat @ M2 @ _u_hat)**0.5)
     #     if it > 10:
     #         dt *= 0.9
     #         continue
@@ -338,7 +339,7 @@ x_traj = jax.vmap(integrate)(_x)
 # %%
 x_plot = jax.vmap(lambda i: jax.vmap(F)(x_traj[i]))(jnp.arange(x_traj.shape[0]))
 # %%
-colors = plt.cm.viridis(np.linspace(0, 1, len(x_plot)))
+colors = plt.get_cmap('viridis')(np.linspace(0, 1, len(x_plot)))
 for i in range(len(x_plot)):
     _x_plot = x_plot[i, jnp.where(jnp.abs(x_traj[i, :, -1] < 1e-2))]
     plt.scatter(_x_plot[0, :, 0], _x_plot[0, :, 1], s=0.1, color=colors[i], alpha=1)
