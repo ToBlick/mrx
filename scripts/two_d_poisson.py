@@ -1,94 +1,216 @@
-# %%
+"""
+2D Poisson Problem with Dirichlet Boundary Conditions
+
+This script solves a 2D Poisson problem using finite element methods with Dirichlet boundary conditions.
+The problem is defined on a square domain [0,1]^2.
+
+The script demonstrates:
+1. Solution of the 2D Poisson equation
+2. Convergence analysis with respect to:
+   - Number of elements (n)
+   - Polynomial degree (p)
+   - Quadrature order (q)
+3. JIT compilation speedup comparison
+4. Error and timing analysis
+
+The exact solution is given by:
+u(x,y) = sin(2πx) * sin(2πy)
+with source term:
+f(x,y) = 2*(2π)^2 * u(x,y)
+"""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
+import matplotlib.pyplot as plt
 import time
+import os
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyStiffnessMatrix
-
 from mrx.Utils import l2_product
 from mrx.BoundaryConditions import LazyBoundaryOperator
 from functools import partial
 
-from mrx.Plotting import converge_plot
 
+# Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
-# %%
-###
-# 2D Poisson problem, Dirichlet BCs
-###
+
+# Create output directory for figures
+os.makedirs('script_outputs', exist_ok=True)
 
 
 @partial(jax.jit, static_argnames=['n', 'p', 'q'])
 def get_err(n, p, q):
+    """
+    Compute the error in the solution of the 2D Poisson problem.
+
+    Args:
+        n: Number of elements in each direction
+        p: Polynomial degree
+        q: Quadrature order
+
+    Returns:
+        float: Relative L2 error of the solution
+    """
+    # Set up finite element spaces
     ns = (n, n, 1)
     ps = (p, p, 0)
+    types = ('clamped', 'clamped', 'constant')
+    bcs = ('dirichlet', 'dirichlet', 'none')
 
+    # Define exact solution and source term
     def u(x):
+        """Exact solution of the Poisson problem."""
         r, χ, z = x
         return jnp.ones(1) * jnp.sin(2 * jnp.pi * r) * jnp.sin(2 * jnp.pi * χ)
 
     def f(x):
+        """Source term of the Poisson problem."""
         return 2 * (2*jnp.pi)**2 * u(x)
 
-    types = ('clamped', 'clamped', 'constant')
-
-
+    # Set up operators and solve system
     Λ0 = DifferentialForm(0, ns, ps, types)
     Q = QuadratureRule(Λ0, q)
-
-    bcs = ('dirichlet', 'dirichlet', 'none')
     B0 = LazyBoundaryOperator(Λ0, bcs).M
     K = LazyStiffnessMatrix(Λ0, Q, F=None, E=B0).M
-
     P0 = Projector(Λ0, Q, E=B0)
+
+    # Solve the system
     u_hat = jnp.linalg.solve(K, P0(f))
     u_h = DiscreteFunction(u_hat, Λ0, B0)
+
+    # Compute error using higher order quadrature
     def err(x): return u(x) - u_h(x)
     Q_high = QuadratureRule(Λ0, 10)
     return (l2_product(err, err, Q_high) / l2_product(u, u, Q_high))**0.5
 
 
-# %%
-print(get_err(8, 3, 3))
-# %%
-ns = np.arange(4, 18, 2)
-ps = np.arange(1, 4)
-qs = np.arange(4, 11, 3)
-err = np.zeros((len(ns), len(ps), len(qs)))
-times = np.zeros((len(ns), len(ps), len(qs)))
-for i, n in enumerate(ns):
+def run_convergence_analysis():
+    """Run convergence analysis for different parameters."""
+    # Parameter ranges
+    ns = np.arange(4, 18, 2)
+    ps = np.arange(1, 4)
+    qs = np.arange(4, 11, 3)
+
+    # Arrays to store results
+    err = np.zeros((len(ns), len(ps), len(qs)))
+    times = np.zeros((len(ns), len(ps), len(qs)))
+
+    # First run (with JIT compilation)
+    print("First run (with JIT compilation):")
+    for i, n in enumerate(ns):
+        for j, p in enumerate(ps):
+            for k, q in enumerate(qs):
+                start = time.time()
+                err[i, j, k] = get_err(n, p, q)
+                end = time.time()
+                times[i, j, k] = end - start
+                print(f"n={n}, p={p}, q={q}, err={err[i, j, k]:.2e}, time={times[i, j, k]:.2f}s")
+
+    # Second run (after JIT compilation)
+    print("\nSecond run (after JIT compilation):")
+    times2 = np.zeros((len(ns), len(ps), len(qs)))
+    for i, n in enumerate(ns):
+        for j, p in enumerate(ps):
+            for k, q in enumerate(qs):
+                start = time.time()
+                _ = get_err(n, p, q)  # We don't need to store the error again
+                end = time.time()
+                times2[i, j, k] = end - start
+                print(f"n={n}, p={p}, q={q}, time={times2[i, j, k]:.2f}s")
+
+    return err, times, times2
+
+
+def plot_results(err, times, times2, ns, ps, qs):
+    """Plot the results of the convergence analysis."""
+    # Create figures
+    figures = []
+
+    # Error convergence plot
+    fig1 = plt.figure(figsize=(10, 6))
     for j, p in enumerate(ps):
         for k, q in enumerate(qs):
-            start = time.time()
-            err[i, j, k] = get_err(n, p, q)
-            end = time.time()
-            times[i, j, k] = end - start
-            print(f"n={n}, p={p}, q={q}, err={err[i,j,k]}, time={times[i,j,k]}")
-# %%
+            plt.loglog(ns, err[:, j, k],
+                       label=f'p={p}, q={q}',
+                       marker='o')
+    plt.xlabel('Number of elements (n)')
+    plt.ylabel('Relative L2 error')
+    plt.title('Error Convergence')
+    plt.grid(True)
+    plt.legend()
+    figures.append(fig1)
+    plt.savefig('script_outputs/2d_poisson_error.png', dpi=300, bbox_inches='tight')
 
-fig = converge_plot(err, ns, ps, qs)
-fig.update_layout(
-    xaxis_type="log",
-    yaxis_type="log",
-    yaxis_tickformat=".1e",
-    xaxis_title='n',
-    yaxis_title='Error',
-    legend_title='Legend'
-)
-fig.show()
-# %%
-fig = converge_plot(times, ns, ps, qs)
-fig.update_layout(
-    xaxis_type="log",
-    yaxis_type="log",
-    yaxis_tickformat=".1e",
-    xaxis_title='n',
-    yaxis_title='Time',
-    legend_title='Legend'
-)
-fig.show()
-# %%
+    # Timing plot (first run)
+    fig2 = plt.figure(figsize=(10, 6))
+    for j, p in enumerate(ps):
+        for k, q in enumerate(qs):
+            plt.loglog(ns, times[:, j, k],
+                       label=f'p={p}, q={q}',
+                       marker='o')
+    plt.xlabel('Number of elements (n)')
+    plt.ylabel('Computation time (s)')
+    plt.title('Timing (First Run)')
+    plt.grid(True)
+    plt.legend()
+    figures.append(fig2)
+    plt.savefig('script_outputs/2d_poisson_time1.png', dpi=300, bbox_inches='tight')
+
+    # Timing plot (second run)
+    fig3 = plt.figure(figsize=(10, 6))
+    for j, p in enumerate(ps):
+        for k, q in enumerate(qs):
+            plt.loglog(ns, times2[:, j, k],
+                       label=f'p={p}, q={q}',
+                       marker='o')
+    plt.xlabel('Number of elements (n)')
+    plt.ylabel('Computation time (s)')
+    plt.title('Timing (Second Run)')
+    plt.grid(True)
+    plt.legend()
+    figures.append(fig3)
+    plt.savefig('script_outputs/2d_poisson_time2.png', dpi=300, bbox_inches='tight')
+
+    # Speedup plot
+    fig4 = plt.figure(figsize=(10, 6))
+    for j, p in enumerate(ps):
+        for k, q in enumerate(qs):
+            speedup = times[:, j, k] / times2[:, j, k]
+            plt.semilogy(ns, speedup,
+                         label=f'p={p}, q={q}',
+                         marker='o')
+    plt.xlabel('Number of elements (n)')
+    plt.ylabel('Speedup factor')
+    plt.title('JIT Compilation Speedup')
+    plt.grid(True)
+    plt.legend()
+    figures.append(fig4)
+    plt.savefig('script_outputs/2d_poisson_speedup.png', dpi=300, bbox_inches='tight')
+
+    return figures
+
+
+def main():
+    """Main function to run the analysis."""
+    # Run convergence analysis
+    err, times, times2 = run_convergence_analysis()
+
+    # Plot results
+    ns = np.arange(4, 18, 2)
+    ps = np.arange(1, 4)
+    qs = np.arange(4, 11, 3)
+    plot_results(err, times, times2, ns, ps, qs)
+
+    # Show all figures
+    plt.show()
+
+    # Clean up
+    plt.close('all')
+
+
+if __name__ == "__main__":
+    main()

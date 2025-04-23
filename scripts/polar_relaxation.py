@@ -3,9 +3,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
+from typing import List
 
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
+from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector, CurlProjection
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix
@@ -101,55 +102,29 @@ B = curl(A)
 # %%
 A_hat = jnp.linalg.solve(M1, P1(A))
 A_h = DiscreteFunction(A_hat, Λ1, E1)
-def err(x): return A(x) - A_h(x)
+def compute_A_error(x): return A(x) - A_h(x)
 
 
-(l2_product(err, err, Q) / l2_product(A, A, Q))**0.5
+(l2_product(compute_A_error, compute_A_error, Q) / l2_product(A, A, Q))**0.5
 
 # %%
 B0 = curl(A)
 B0_hat = jnp.linalg.solve(M2, P2(B0))
 B_h = DiscreteFunction(B0_hat, Λ2, E2)
 B0_h = DiscreteFunction(B0_hat, Λ2, E2)
-def err(x): return B0(x) - B_h(x)
+def compute_B_error(x): return B0(x) - B_h(x)
 
 
-(l2_product(err, err, Q) / l2_product(B0, B0, Q))**0.5
-
-# %%
-F_B = Pullback(B0, F, 2)
-F_B_h = Pullback(B_h, F, 2)
-_z1 = jax.vmap(F_B_h)(_x).reshape(nx, nx, 3)
-_z1_norm = jnp.linalg.norm(_z1, axis=2)
-_z2 = jax.vmap(F_B)(_x).reshape(nx, nx, 3)
-_z2_norm = jnp.linalg.norm(_z2, axis=2)
-plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
-plt.colorbar()
-plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
-__z1 = jax.vmap(F_B_h)(__x).reshape(_nx, _nx, 3)
-plt.quiver(
-    __y1,
-    __y2,
-    __z1[:, :, 0],
-    __z1[:, :, 1],
-    color='w')
-plt.xlabel('x')
-plt.ylabel('y')
+(l2_product(compute_B_error, compute_B_error, Q) / l2_product(B0, B0, Q))**0.5
 
 # %%
-A_hat @ M12 @ B0_hat
-# %%
-U, S, Vh = jnp.linalg.svd(C)
-S_inv = jnp.where(S/S[0] > 1e-11, 1/S, 0)
-A_hat_recon = U @ jnp.diag(S_inv) @ Vh @ D1.T @ B0_hat
-
-# %%
-print("error in Helicity:", (A_hat - A_hat_recon) @ M12 @ B0_hat / (A_hat @ M12 @ B0_hat))
-# %%
-def err(x): return curl(A)(x) - curl(A_h)(x)
 
 
-print("error in curl A:", (l2_product(err, err, Q) / l2_product(curl(A), curl(A), Q))**0.5)
+def compute_curl_error(x): return curl(A)(x) - curl(A_h)(x)
+
+
+print("error in curl A:", (l2_product(compute_curl_error, compute_curl_error, Q) / l2_product(curl(A), curl(A), Q))**0.5)
+
 # %%
 print("Helicity before perturbation: ", A_hat @ M12 @ B0_hat)
 print("Energy before perturbation: ", B0_hat @ M2 @ B0_hat / 2)
@@ -258,17 +233,22 @@ def ẟB_hat(B_hat, B_hat_0, dt):
     ẟB_hat = jnp.linalg.solve(M2, D1 @ E_hat)           # ẟB = curl E
     B_hat_1 = B_hat_0 + dt * ẟB_hat
     B_diff = B_hat_1 - B_hat
-    err = (B_diff @ M2 @ B_diff)**0.5
-    return B_diff, err, B_hat_1, u_hat
+    error = jnp.array((B_diff @ M2 @ B_diff)**0.5, dtype=jnp.float64)
+    return B_diff, error, B_hat_1, u_hat
 
 
 # %%
-helicities = []
-energies = []
-forces = []
-critical_as = []
-divBs = []
-dts = []
+# Calculate SVD for reconstruction
+U, S, Vh = jnp.linalg.svd(C)
+S_inv = jnp.where(S/S[0] > 1e-11, 1/S, 0)
+
+# %%
+helicities: List[float] = []
+energies: List[float] = []
+forces: List[float] = []
+critical_as: List[int] = []
+divBs: List[float] = []
+dts: List[float] = []
 B_hat = B0_hat
 
 # %%
@@ -277,20 +257,17 @@ dt = dt0
 B_hat_1 = B_hat
 # %%
 for i in range(10):
-    err = 1
-    it = 0
-    while err > 1e-12:
-        # Picard iteration
-        # _, err, B_hat_1, _u_hat = ẟB_hat(B_hat_1, B_hat, dt)
-
+    error_val = float(1.0)
+    iteration_count = 0
+    while error_val > 1e-12:
         # Newton update step
-        B_diff, err, _, _u_hat = ẟB_hat(B_hat_1, B_hat, dt)
+        B_diff, error_val, _, _u_hat = ẟB_hat(B_hat_1, B_hat, dt)
         J = jax.jacrev(lambda B: ẟB_hat(B, B_hat, dt)[0])(B_hat_1)
         ẟB = -jnp.linalg.solve(J, B_diff)
         B_hat_1 += ẟB
-
-        it += 1
+        iteration_count += 1
     dt = 0.01 / (_u_hat @ M2 @ _u_hat)**0.5
+    # jnp.array(0.01 / (_u_hat @ M2 @ _u_hat)**0.5)
     #     if it > 10:
     #         dt *= 0.9
     #         continue
@@ -306,7 +283,7 @@ for i in range(10):
     A_hat = U @ jnp.diag(S_inv) @ Vh @ D1.T @ B_hat
     print("Helicity: ", A_hat @ M12 @ B_hat)
     print("Div B: ", (D2 @ B_hat) @ jnp.linalg.solve(M3, D2 @ B_hat))
-    print("Iterations: ", it)
+    print("Iterations: ", iteration_count)
     print("dt: ", dt)
 
     # a = dt
@@ -319,7 +296,7 @@ for i in range(10):
     helicities.append(A_hat @ M12 @ B_hat)
     energies.append((B_hat @ M2 @ B_hat) / 2)
     forces.append((_u_hat @ M2 @ _u_hat))
-    critical_as.append(it)
+    critical_as.append(iteration_count)
     divBs.append((D2 @ B_hat) @ jnp.linalg.solve(M3, D2 @ B_hat))
     dts.append(dt)
 
@@ -362,7 +339,7 @@ x_traj = jax.vmap(integrate)(_x)
 # %%
 x_plot = jax.vmap(lambda i: jax.vmap(F)(x_traj[i]))(jnp.arange(x_traj.shape[0]))
 # %%
-colors = plt.cm.viridis(np.linspace(0, 1, len(x_plot)))
+colors = plt.get_cmap('viridis')(np.linspace(0, 1, len(x_plot)))
 for i in range(len(x_plot)):
     _x_plot = x_plot[i, jnp.where(jnp.abs(x_traj[i, :, -1] < 1e-2))]
     plt.scatter(_x_plot[0, :, 0], _x_plot[0, :, 1], s=0.1, color=colors[i], alpha=1)

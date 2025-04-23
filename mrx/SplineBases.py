@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from typing import Optional, Callable
+from typing import Optional, Callable, Union
 
 
 class SplineBasis:
@@ -36,25 +36,31 @@ class SplineBasis:
         self.n = n
         self.ns = jnp.arange(self.n)
         self.p = p
+        if p < 0 or p > 3:
+            raise NotImplementedError(f"Invalid spline degree: {p}")
+        if p >= n and p != 1:  # n = p = 1 is allowed for ignoring the third dimension
+            raise ValueError(f"Spline degree must be less than number of splines: {p} >= {n}")
+        if type not in ['clamped', 'periodic', 'constant', 'fourier']:
+            raise ValueError(f"Invalid spline type: {type}")
         self.type = type
         if T is not None:
             self.T = T
         else:
             self.T = self._init_knots()
 
-    def __call__(self, x: float, i: int) -> jnp.ndarray:
+    def __call__(self, x: Union[float, jnp.ndarray], i: Union[int, jnp.ndarray]) -> jnp.ndarray:
         """Evaluate the ith spline at point x.
 
         Args:
-            x: The point at which to evaluate the spline
-            i: The index of the spline to evaluate
+            x: The point(s) at which to evaluate the spline
+            i: The index(ices) of the spline to evaluate
 
         Returns:
-            The value of the ith spline at x
+            The value(s) of the ith spline at x
         """
         return self.evaluate(x, i)
 
-    def __getitem__(self, i: int) -> Callable[[float], jnp.ndarray]:
+    def __getitem__(self, i: int) -> Callable[[Union[float, jnp.ndarray]], jnp.ndarray]:
         """Return a function that evaluates the ith spline.
 
         Args:
@@ -100,15 +106,15 @@ class SplineBasis:
         else:
             raise ValueError(f"Invalid spline type: {self.type}")
 
-    def evaluate(self, x: float, i: int) -> jnp.ndarray:
-        """Evaluate the ith spline at point x, handling special cases.
+    def evaluate(self, x: Union[float, jnp.ndarray], i: Union[int, jnp.ndarray]) -> jnp.ndarray:
+        """Evaluate the ith spline at x.
 
         Args:
-            x: The point at which to evaluate the spline
-            i: The index of the spline to evaluate
+            x: The point(s) at which to evaluate the spline
+            i: The index(ices) of the spline to evaluate
 
         Returns:
-            The value of the ith spline at x
+            The value(s) of the ith spline at x
         """
         if self.type == 'periodic':
             return jnp.where(
@@ -122,38 +128,40 @@ class SplineBasis:
                 1.0 * jnp.ones_like(x),
                 self._evaluate(x, i))
         else:
-            return 1.0
+            return jnp.array(1.0, dtype=jnp.float64)
 
-    def _evaluate(self, x: float, i: int) -> jnp.ndarray:
+    def _evaluate(self, x: Union[float, jnp.ndarray], i: Union[int, jnp.ndarray]) -> jnp.ndarray:
         """Evaluate the ith spline at x using the appropriate degree-specific method.
 
         Args:
-            x: The point at which to evaluate the spline
-            i: The index of the spline to evaluate
+            x: The point(s) at which to evaluate the spline
+            i: The index(ices) of the spline to evaluate
 
         Returns:
-            The value of the ith spline at x
+            The value(s) of the ith spline at x
         """
         if self.p == 0:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+1]),
                 self._const_spline(x, jax.lax.dynamic_slice(self.T, (i,), (2,))),
-                0)
+                jnp.array(0.0, dtype=jnp.float64))
         elif self.p == 1:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+2]),
                 self._lin_spline(x, jax.lax.dynamic_slice(self.T, (i,), (3,))),
-                0)
+                jnp.array(0.0, dtype=jnp.float64))
         elif self.p == 2:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+3]),
                 self._quad_spline(x, jax.lax.dynamic_slice(self.T, (i,), (4,))),
-                0)
+                jnp.array(0.0, dtype=jnp.float64))
         elif self.p == 3:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+4]),
                 self._cubic_spline(x, jax.lax.dynamic_slice(self.T, (i,), (5,))),
-                0)
+                jnp.array(0.0, dtype=jnp.float64))
+        else:
+            return jnp.array(0.0, dtype=jnp.float64)
 
     def __safe_divide(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
         """Safely divide x by y, returning 0 when y is 0.
@@ -171,11 +179,11 @@ class SplineBasis:
             lambda x: x/y,
             operand=x)
 
-    def _const_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
+    def _const_spline(self, x: Union[float, jnp.ndarray], t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a constant (degree 0) spline.
 
         Args:
-            x: The point at which to evaluate
+            x: The point(s) at which to evaluate
             t: A vector of two elements - the start and end of the interval
 
         Returns:
@@ -183,15 +191,15 @@ class SplineBasis:
         """
         return jnp.where(jnp.logical_and(t[0] <= x, x < t[1]), 1.0, 0.0)
 
-    def _lin_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
+    def _lin_spline(self, x: Union[float, jnp.ndarray], t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a linear (degree 1) spline.
 
         Args:
-            x: The point at which to evaluate
+            x: The point(s) at which to evaluate
             t: A vector of three elements defining the knot sequence
 
         Returns:
-            The value of the linear spline at x
+            The value(s) of the linear spline at x
         """
         return jnp.where(
             x < t[1],
@@ -199,15 +207,15 @@ class SplineBasis:
             self.__safe_divide(t[2] - x, t[2] - t[1])
         )
 
-    def _quad_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
+    def _quad_spline(self, x: Union[float, jnp.ndarray], t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a quadratic (degree 2) spline.
 
         Args:
-            x: The point at which to evaluate
+            x: The point(s) at which to evaluate
             t: A vector of four elements defining the knot sequence
 
         Returns:
-            The value of the quadratic spline at x
+            The value(s) of the quadratic spline at x
         """
         return jnp.where(
             x < t[1],
@@ -220,15 +228,15 @@ class SplineBasis:
             )
         )
 
-    def _cubic_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
+    def _cubic_spline(self, x: Union[float, jnp.ndarray], t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a cubic (degree 3) spline.
 
         Args:
-            x: The point at which to evaluate
+            x: The point(s) at which to evaluate
             t: A vector of five elements defining the knot sequence
 
         Returns:
-            The value of the cubic spline at x
+            The value(s) of the cubic spline at x
         """
         return jnp.where(
             x < t[1],
@@ -270,7 +278,13 @@ class TensorBasis:
 
         Args:
             bases: List of one-dimensional SplineBasis objects to form the tensor product
+
+        Raises:
+            ValueError: If the number of bases is not exactly 3
         """
+        if len(bases) != 3:
+            raise ValueError(f"TensorBasis requires exactly 3 bases, got {len(bases)}")
+
         self.bases = bases
         self.shape = jnp.array([b.n for b in bases])
         self.n = bases[0].n * bases[1].n * bases[2].n
@@ -279,18 +293,23 @@ class TensorBasis:
     def evaluate(self, x: jnp.ndarray, i: int) -> jnp.ndarray:
         """Evaluate the i-th tensor product basis function at point x.
 
-        Computes the value by taking the product of the appropriate one-dimensional
-        basis functions in each coordinate direction.
-
         Args:
-            x: Point at which to evaluate the basis function (array of coordinates)
-            i: Index of the tensor product basis function to evaluate
+            x (jnp.ndarray): Point at which to evaluate the basis function (array of coordinates)
+            i (int): Index of the tensor product basis function to evaluate
 
         Returns:
-            Value of the i-th tensor product basis function at x
+            jnp.ndarray: Value of the i-th tensor product basis function at x
+
+        Raises:
+            ValueError: If the input point x has wrong dimension
         """
-        ijk = jnp.unravel_index(i, self.shape)
-        return self.bases[0](x[0], ijk[0]) * self.bases[1](x[1], ijk[1]) * self.bases[2](x[2], ijk[2])
+        if x.shape[0] != len(self.bases):
+            raise ValueError(f"Input point dimension {x.shape[0]} does not match number of bases {len(self.bases)}")
+
+        ijk = jnp.unravel_index(i, tuple(self.shape))
+        return self.bases[0](jnp.asarray(x[0], dtype=float), jnp.asarray(ijk[0], dtype=int)) * \
+            self.bases[1](jnp.asarray(x[1], dtype=float), jnp.asarray(ijk[1], dtype=int)) * \
+            self.bases[2](jnp.asarray(x[2], dtype=float), jnp.asarray(ijk[2], dtype=int))
 
     def __call__(self, x: jnp.ndarray, i: int) -> jnp.ndarray:
         """Evaluate the i-th tensor product basis function at point x.
@@ -368,31 +387,44 @@ class DerivativeSpline:
         return lambda x: self.evaluate(x, i)
 
     def evaluate(self, x: float, i: int) -> jnp.ndarray:
-        """Evaluate the derivative of the ith spline at point x.
-
-        Computes the derivative based on the spline type:
-        - For clamped splines: Uses a forward difference formula with appropriate scaling
-        - For periodic splines: Handles wrapping of indices for periodic continuity
-        - For constant splines: Returns 1.0 (derivative of constant function)
+        """Evaluate the derivative spline at point x for index i.
 
         Args:
-            x: The point at which to evaluate the derivative
-            i: The index of the spline derivative to evaluate
+            x: Point at which to evaluate
+            i: Index of the spline
 
         Returns:
-            The value of the derivative at x
+            jnp.ndarray: Value of the derivative of the i-th spline at x
         """
-        p = self.p
-        n = self.n
-        if self.type == 'clamped':
-            return jax.lax.cond(
-                i < n,
-                lambda x: self.s(x, i+1) * (p+1) / (self.s.T[i+p+2] - self.s.T[i+1]),
-                lambda x: 0.0,
-                operand=x
+        p = self.s.p
+        n = self.s.n
+
+        if self.s.type == 'clamped':
+            # Handle edge cases for clamped splines
+            # At the boundaries (x=0 or x=1), all derivatives should be zero
+            is_boundary = jnp.logical_or(x <= 0.0, x >= 1.0)
+
+            # Compute denominators safely
+            denom1 = self.s.T[i+p+1] - self.s.T[i+1]
+            denom2 = self.s.T[i+p] - self.s.T[i]
+
+            # Handle division by zero cases
+            safe_denom1 = jnp.where(denom1 == 0, 1.0, denom1)
+            safe_denom2 = jnp.where(denom2 == 0, 1.0, denom2)
+
+            # Compute derivative with safe denominators
+            derivative = p * (
+                self.s(x, i+1) / safe_denom1 -
+                self.s(x, i) / safe_denom2
             )
-        elif self.type == 'periodic':
-            j = jnp.mod(i + n, n)
-            return self.s(x, j) * (p+1) / (self.s.T[j+p+1] - self.s.T[j])
+
+            # Return zero at boundaries
+            return jnp.where(is_boundary, 0.0, derivative)
+
+        elif self.s.type == 'periodic':
+            j = jnp.mod(i, n).astype(jnp.int32)
+            denom = self.s.T[j+p+1] - self.s.T[j+1]
+            safe_denom = jnp.where(denom == 0, 1.0, denom)
+            return p * self.s(x, j) / safe_denom
         else:
-            return 1.0
+            return jnp.array(0.0, dtype=jnp.float64)

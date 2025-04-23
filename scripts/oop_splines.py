@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import time
+from typing import Callable, Any
 
 from mrx.SplineBases import SplineBasis, DerivativeSpline
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
@@ -36,14 +37,14 @@ d = DerivativeSpline(s)
 x = jnp.linspace(0, 1, 1000)
 
 # %%
-plt.plot(x, jax.vmap(s, (0, None))(x, 0))
+plt.plot(x, jax.vmap(lambda x: s(float(x), 0))(x))
 # %%
-plt.plot(x, jax.vmap(d, (0, None))(x, 0))
+plt.plot(x, jax.vmap(lambda x: d(float(x), 0))(x))
 # %%
 for i in range(ns[1]):
-    plt.plot(x, jax.vmap(s, (0, None))(x, i))
+    plt.plot(x, jax.vmap(lambda x: s(float(x), i))(x))
 for i in range(ns[1]):
-    plt.plot(x, jax.vmap(d, (0, None))(x, i))
+    plt.plot(x, jax.vmap(lambda x: d(float(x), i))(x))
 
 
 # %%
@@ -101,7 +102,9 @@ P0, P1, P2, P3 = [Projector(Λ, Q, F, E) for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], 
 # %%
 
 
-def l2_product(f, g, Q):
+def l2_product(f: Callable[[jnp.ndarray], jnp.ndarray],
+               g: Callable[[jnp.ndarray], jnp.ndarray],
+               Q: Any) -> jnp.ndarray:
     return jnp.einsum("ij,ij,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Q.w)
 
 
@@ -127,7 +130,7 @@ __y1 = __y[:, 0].reshape(_nx, _nx)
 __y2 = __y[:, 1].reshape(_nx, _nx)
 
 
-def f(x):
+def compute_f(x):
     r, χ, z = x
     return jnp.ones(1) * r**2 * jnp.sin(4 * jnp.pi * χ) * (1 - r)**2
 
@@ -141,101 +144,35 @@ plt.contourf(_y1, _y2, _z1_norm)
 plt.colorbar()
 
 # %%
-f_hat = jnp.linalg.solve(M0, P0(f))
+f_hat = jnp.linalg.solve(M0, P0(compute_f))
 f_h = DiscreteFunction(f_hat, Λ0, E0)
-def err(x): return f(x) - f_h(x)
+def compute_f_error(x): return compute_f(x) - f_h(x)
 
 
-(l2_product(err, err, Q) / l2_product(f, f, Q))**0.5
-
-# %%
-# Λi = jax.vmap(jax.vmap(Λ0, (0, None)), (None, 0))(_x, jnp.arange(Λ0.n))
-# Λi_polar = np.einsum('ij,jkm->ikm', E0, Λi)
-# _z1_norm = jnp.linalg.norm(Λi_polar, axis=2)
-# idx = 0
-# _z1 = Λi_polar[idx].reshape(nx, nx, 1)
-# plt.contourf(_y1, _y2, _z1_norm[idx].reshape(nx, nx))
-# %%
-# f_hat = jnp.zeros(E0.shape[0]).at[0:3].set(1)
-# f_h = DiscreteFunction(f_hat, Λ0, E0)
-_z1 = jax.vmap(Pullback(f_h, F, 0))(_x).reshape(nx, nx, 1)
-_z1_norm = jnp.linalg.norm(_z1, axis=2)
-_z2 = jax.vmap(Pullback(f, F, 0))(_x).reshape(nx, nx, 1)
-_z2_norm = jnp.linalg.norm(_z2, axis=2)
-plt.contourf(_y1, _y2, _z1_norm)
-plt.colorbar()
-plt.contour(_y1, _y2, _z2_norm, colors='k')
+(l2_product(compute_f_error, compute_f_error, Q) / l2_product(compute_f, compute_f, Q))**0.5
 
 # %%
-_z1 = jax.vmap(f_h)(_x).reshape(nx, nx, 1)
-_z1_norm = jnp.linalg.norm(_z1, axis=2)
-_z2 = jax.vmap(f)(_x).reshape(nx, nx, 1)
-_z2_norm = jnp.linalg.norm(_z2, axis=2)
-plt.contourf(_x1, _x2, _z1_norm)
-plt.colorbar()
-plt.contour(_x1, _x2, _z2_norm, colors='k')
-
-# %%
-A_hat = jnp.ones(E1.shape[0])
-B_h = DiscreteFunction(A_hat, Λ1, E1)
-F_B_h = Pullback(B_h, F, 1)
-_z1 = jax.vmap(F_B_h)(_x).reshape(nx, nx, 3)
-_z1_norm = jnp.linalg.norm(_z1, axis=2)
-plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
-plt.colorbar()
-__z1 = jax.vmap(F_B_h)(__x).reshape(_nx, _nx, 3)
-plt.quiver(
-    __y1,
-    __y2,
-    __z1[:, :, 0],
-    __z1[:, :, 1],
-    color='w')
-
-# %%
-# def A(x):
-#     r, χ, z = x
-#     a1 = r * jnp.sin(2 * jnp.pi * χ) * jnp.pi
-#     a2 = r**2 * 10
-#     a3 = 0
-#     return jnp.array([a1, a2, a3])
-
-A = grad(f)
+A = grad(compute_f)
 F_A = Pullback(A, F, 1)
 A_hat = jnp.linalg.solve(M1, P1(A))
 A_h = DiscreteFunction(A_hat, Λ1, E1)
-def err(x): return A(x) - A_h(x)
+def compute_A_error(x): return A(x) - A_h(x)
 
 
-(l2_product(err, err, Q) / l2_product(A, A, Q))**0.5
-
-# %%
-F_A_h = Pullback(A_h, F, 1)
-# A_h = DiscreteFunction(jnp.zeros_like(A_hat).at[16].set(1), Λ1, E1)
-_z1 = jax.vmap(F_A_h)(_x).reshape(nx, nx, 3)
-_z1_norm = jnp.linalg.norm(_z1, axis=2)
-_z2 = jax.vmap(F_A)(_x).reshape(nx, nx, 3)
-_z2_norm = jnp.linalg.norm(_z2, axis=2)
-plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
-plt.colorbar()
-plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
-__z1 = jax.vmap(F_A_h)(__x).reshape(_nx, _nx, 3)
-plt.quiver(
-    __y1,
-    __y2,
-    __z1[:, :, 0],
-    __z1[:, :, 1],
-    color='w')
-# %%
+(l2_product(compute_A_error, compute_A_error, Q) / l2_product(A, A, Q))**0.5
 
 # %%
 ## Exact gradient
 grad_fh = jax.grad(lambda x: (f_h)(x).sum())
 grad_f_hat = jnp.linalg.solve(M1, P1(grad_fh))
 gradf_h = DiscreteFunction(grad_f_hat, Λ1, E1)
-def err(x): return grad_fh(x) - gradf_h(x)
 
 
-(l2_product(err, err, Q) / l2_product(grad_fh, grad_fh, Q))**0.5
+def compute_error_1(x: jnp.ndarray) -> jnp.ndarray:
+    return grad_fh(x) - gradf_h(x)
+
+
+(l2_product(compute_error_1, compute_error_1, Q) / l2_product(grad_fh, grad_fh, Q))**0.5
 
 # %%
 B_hat = jnp.ones(E2.shape[0])
@@ -291,20 +228,26 @@ plt.quiver(
 curl_Ah = curl(A_h)
 curl_A_hat = jnp.linalg.solve(M2, P2(curl_Ah))
 curlA_h = DiscreteFunction(curl_A_hat, Λ2, E2)
-def err(x): return curl_Ah(x) - curlA_h(x)
 
 
-(l2_product(err, err, Q) / l2_product(curl_Ah, curl_Ah, Q))**0.5
+def compute_error_2(x: jnp.ndarray) -> jnp.ndarray:
+    return curl(A)(x) - curl(A_h)(x)
+
+
+(l2_product(compute_error_2, compute_error_2, Q) / l2_product(curl(A), curl(A), Q))**0.5
 
 # %%
 g = div(B)
-g = f
+g = compute_f
 g_hat = jnp.linalg.solve(M3, P3(g))
 g_h = DiscreteFunction(g_hat, Λ3, E3)
-def err(x): return g(x) - g_h(x)
 
 
-(l2_product(err, err, Q) / l2_product(g, g, Q))**0.5
+def compute_error_4(x: jnp.ndarray) -> jnp.ndarray:
+    return g(x) - g_h(x)
+
+
+(l2_product(compute_error_4, compute_error_4, Q) / l2_product(g, g, Q))**0.5
 
 # %%
 F_g = Pullback(g, F, 3)
@@ -323,10 +266,13 @@ plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
 div_Bh = div(B_h)
 div_B_hat = jnp.linalg.solve(M3, P3(div_Bh))
 divB_h = DiscreteFunction(div_B_hat, Λ3, E3)
-def err(x): return div_Bh(x) - divB_h(x)
 
 
-(l2_product(err, err, Q) / l2_product(div_Bh, div_Bh, Q))**0.5
+def compute_error_3(x: jnp.ndarray) -> jnp.ndarray:
+    return div(A)(x) - div(A_h)(x)
+
+
+(l2_product(compute_error_3, compute_error_3, Q) / l2_product(div(A), div(A), Q))**0.5
 
 # %%
 # D0 = jnp.linalg.solve(M1, LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).M)
@@ -391,17 +337,13 @@ def test():
 test()
 
 
-def f(x):
+def test_function(x: jnp.ndarray) -> jnp.ndarray:
     return jnp.ones(1) * jnp.sqrt(2 * x[0]**3 * jnp.sin(jnp.pi * x[1]) * jnp.pi)
 
 
-print(jnp.einsum("ij,ij,i->", jax.vmap(f)(Q.x), jax.vmap(f)(Q.x), Q.w))
+print(jnp.einsum("ij,ij,i->", jax.vmap(test_function)(Q.x), jax.vmap(test_function)(Q.x), Q.w))
 
 # %%
-
-
-def l2_product(f, g, Q):
-    return jnp.einsum("ij,ij,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Q.w)
 
 
 @jax.jit

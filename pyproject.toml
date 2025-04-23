@@ -42,6 +42,8 @@ dependencies = [
     "ipywidgets",
     "chex",
     "ruff",
+    "pytest",
+    "flake8",
     "autopep8",
     "mypy",
 ]

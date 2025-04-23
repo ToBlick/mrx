@@ -2,6 +2,7 @@ from abc import abstractmethod
 import jax
 import jax.numpy as jnp
 import numpy as np
+from typing import Callable
 
 from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
@@ -47,7 +48,7 @@ class LazyMatrix:
     Λ0: DifferentialForm
     Λ1: DifferentialForm
     Q: QuadratureRule
-    F: callable
+    F: Callable[[jnp.ndarray], jnp.ndarray]
     E0: jnp.ndarray
     E1: jnp.ndarray
     n0: int
@@ -328,40 +329,35 @@ class LazyDoubleCurlMatrix(LazyMatrix):
 
 
 class LazyStiffnessMatrix(LazyMatrix):
-    """
-    A class representing a Laplace operator matrix.
+    """Stiffness matrix for differential forms."""
 
-    The matrix entries are computed as ∫ DF.-T grad Λ0[i] · DF.-T grad Λ1[j] detDF dx.
-
-    Attributes:
-        Inherits all attributes from LazyMatrix.
-
-    Methods:
-        __init__(Λ, Q, F=None, E=None):
-            Initialize the stiffness matrix with a single differential form.
-        assemble():
-            Assemble the stiffness matrix.
-    """
-
-    def __init__(self, Λ, Q, F=None, E=None):
-        """
-        Initialize the stiffness matrix with a single differential form.
+    def __init__(self, Λ0, Q, F=None, E=None):
+        """Initialize stiffness matrix.
 
         Args:
-            Λ (DifferentialForm): The differential form.
-            Q (QuadratureRule): The quadrature rule.
-            F (callable, optional): Map from logical to physical domain. Defaults to identity.
-            E (jnp.ndarray, optional): Transformation matrix. Defaults to identity.
+            Λ0: Domain operator for 0-forms
+            Q: Quadrature rule
+            F: Optional mapping function
+            E: Optional boundary operator
         """
-        super().__init__(Λ, Λ, Q, F, E, E)
+        super().__init__(Λ0, Λ0, Q, F, E, E)
 
     def assemble(self):
-        """Assemble the stiffness matrix."""
+        # evaluate the jacobian of F at all quadrature points
         DF = jax.jacfwd(self.F)
 
+        # compute the gradient of the basis functions
         def _Λ(x, i):
             return inv33(DF(x)).T @ grad(lambda y: self.Λ0(y, i))(x)
+
+        # evaluate the gradient of the basis functions at all quadrature points
         Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(self.Q.x, jnp.arange(self.n0))  # n x n_q x d
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
-        wj = self.Q.w  # n_q
+
+        # evaluate the jacobian of F at all quadrature points
+        Jj = jax.vmap(jacobian(self.F))(self.Q.x)
+
+        # evaluate the weight of the quadrature points
+        wj = self.Q.w
+
+        # compute the stiffness matrix
         return jnp.einsum("ijk,ljk,j,j->li", Λ_ijk, Λ_ijk, Jj, wj)
