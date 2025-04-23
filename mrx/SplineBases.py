@@ -383,10 +383,8 @@ class DerivativeSpline:
 
         if self.s.type == 'clamped':
             # Handle edge cases for clamped splines
-            # At the left boundary (i=0)
-            left_boundary = jnp.logical_and(i == 0, x == self.s.T[0])
-            # At the right boundary (i=n-1)
-            right_boundary = jnp.logical_and(i == n-1, x == self.s.T[-1])
+            # At the boundaries (x=0 or x=1), all derivatives should be zero
+            is_boundary = jnp.logical_or(x <= 0.0, x >= 1.0)
 
             # Compute denominators safely
             denom1 = self.s.T[i+p+1] - self.s.T[i+1]
@@ -397,18 +395,18 @@ class DerivativeSpline:
             safe_denom2 = jnp.where(denom2 == 0, 1.0, denom2)
 
             # Compute derivative with safe denominators
-            derivative = self.s(x, jnp.asarray(i+1, dtype=jnp.int32)) * (p+1) / safe_denom1 - \
-                self.s(x, i) * (p+1) / safe_denom2
-
-            # Set boundary values appropriately
-            return jnp.where(
-                jnp.logical_or(left_boundary, right_boundary),
-                jnp.array(0.0, dtype=jnp.float64),
-                derivative
+            derivative = p * (
+                self.s(x, i+1) / safe_denom1 -
+                self.s(x, i) / safe_denom2
             )
 
+            # Return zero at boundaries
+            return jnp.where(is_boundary, 0.0, derivative)
+
         elif self.s.type == 'periodic':
-            j = jnp.mod(i + n, n).astype(jnp.int32)
-            return self.s(x, j) * (p+1) / (self.s.T[j+p+1] - self.s.T[j])
+            j = jnp.mod(i, n).astype(jnp.int32)
+            denom = self.s.T[j+p+1] - self.s.T[j+1]
+            safe_denom = jnp.where(denom == 0, 1.0, denom)
+            return p * self.s(x, j) / safe_denom
         else:
             return jnp.array(0.0, dtype=jnp.float64)
