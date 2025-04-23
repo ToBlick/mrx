@@ -44,7 +44,7 @@ def F(x):
                                 _Y(r, χ),
                                 jnp.ones(1) * z]))
 
-ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
+ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
 ```
 
 Since polar splines are linear combination of cartesian ones, they can be evaluated using an extraction matrix $\mathbb E$ that functions much the same as the boundary matrix we already know:
@@ -68,3 +68,5 @@ u_hat = jnp.linalg.solve(K, P0(f))
 u_h = DiscreteFunction(u_hat, Λ0, E0)
 ```
 The discrete function `u_h` is defined on the logical domain, i.e. it represents $\hat u_h: \hat \Omega \to \mathbb R$. To get the solution in the physical domain, we need to apply a push-forward, $u_h(x) := \hat u_h \circ F^{-1}(x)$.
+
+Lastly, note that the solution `u` is not smooth, we only have $u \in H^s(\Omega)$ for all $s < 4$. This limits the order of convergence we can expect to see.

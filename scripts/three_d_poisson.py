@@ -18,7 +18,6 @@ jax.config.update("jax_enable_x64", True)
 # 2D Poisson problem, Dirichlet BCs
 ###
 
-
 @partial(jax.jit, static_argnames=['n', 'p'])
 def get_err(n, p):
     ns = (n, n, n)
@@ -49,7 +48,7 @@ def get_err(n, p):
 
 
 # %%
-ns = np.arange(4, 9)
+ns = np.arange(4, 12)
 ps = np.arange(1, 4)
 err = np.zeros((len(ns), len(ps)))
 times = np.zeros((len(ns), len(ps)))

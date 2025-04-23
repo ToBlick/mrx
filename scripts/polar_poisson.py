@@ -55,8 +55,8 @@ def get_err(n, p, q):
     types = ('clamped', 'periodic', 'constant')
     # bcs = ('dirichlet', 'dirichlet', 'none')
     Λ0 = DifferentialForm(0, ns, ps, types)
-    ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
     Q = QuadratureRule(Λ0, q)
+    ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
     E0 = LazyExtractionOperator(Λ0, ξ, zero_bc=True).M
     K = LazyStiffnessMatrix(Λ0, Q, F=F, E=E0).M
     P0 = Projector(Λ0, Q, F=F, E=E0)
@@ -70,7 +70,7 @@ def get_err(n, p, q):
 # %%
 ns = np.arange(4, 18, 2)
 ps = np.arange(1, 4)
-qs = np.arange(4, 11, 1)
+qs = np.arange(3, 11, 3)
 err = np.zeros((len(ns), len(ps), len(qs)))
 times = np.zeros((len(ns), len(ps), len(qs)))
 for i, n in enumerate(ns):
