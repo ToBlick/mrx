@@ -2,12 +2,12 @@ import unittest
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
-
 from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector, CurlProjection
 from mrx.Utils import jacobian, inv33
+
+jax.config.update("jax_enable_x64", True)
 
 
 class TestProjectors(unittest.TestCase):

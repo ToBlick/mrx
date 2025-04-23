@@ -225,7 +225,7 @@ def main():
     ns = np.arange(4, 18, 2)
     ps = np.arange(1, 4)
     qs = np.arange(4, 11, 1)
-    figures = plot_results(err, times, times2, ns, ps, qs)
+    plot_results(err, times, times2, ns, ps, qs)
 
     # Show all figures
     plt.show()

@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as jnp
-from typing import Optional, Callable
+from typing import Optional, Callable, Union
 
 
 class SplineBasis:
@@ -42,19 +42,19 @@ class SplineBasis:
         else:
             self.T = self._init_knots()
 
-    def __call__(self, x: float, i: int) -> jnp.ndarray:
+    def __call__(self, x: Union[float, jnp.ndarray], i: Union[int, jnp.ndarray]) -> jnp.ndarray:
         """Evaluate the ith spline at point x.
 
         Args:
-            x: The point at which to evaluate the spline
-            i: The index of the spline to evaluate
+            x: The point(s) at which to evaluate the spline
+            i: The index(ices) of the spline to evaluate
 
         Returns:
-            The value of the ith spline at x
+            The value(s) of the ith spline at x
         """
         return self.evaluate(x, i)
 
-    def __getitem__(self, i: int) -> Callable[[float], jnp.ndarray]:
+    def __getitem__(self, i: int) -> Callable[[Union[float, jnp.ndarray]], jnp.ndarray]:
         """Return a function that evaluates the ith spline.
 
         Args:
@@ -100,15 +100,15 @@ class SplineBasis:
         else:
             raise ValueError(f"Invalid spline type: {self.type}")
 
-    def evaluate(self, x: float, i: int) -> jnp.ndarray:
+    def evaluate(self, x: Union[float, jnp.ndarray], i: Union[int, jnp.ndarray]) -> jnp.ndarray:
         """Evaluate the ith spline at x.
 
         Args:
-            x (float): The point at which to evaluate the spline
-            i (int): The index of the spline to evaluate
+            x: The point(s) at which to evaluate the spline
+            i: The index(ices) of the spline to evaluate
 
         Returns:
-            jnp.ndarray: The value of the ith spline at x
+            The value(s) of the ith spline at x
         """
         if self.type == 'periodic':
             return jnp.where(
@@ -124,15 +124,15 @@ class SplineBasis:
         else:
             return jnp.array(1.0, dtype=jnp.float64)
 
-    def _evaluate(self, x: float, i: int) -> jnp.ndarray:
+    def _evaluate(self, x: Union[float, jnp.ndarray], i: Union[int, jnp.ndarray]) -> jnp.ndarray:
         """Evaluate the ith spline at x using the appropriate degree-specific method.
 
         Args:
-            x (float): The point at which to evaluate the spline
-            i (int): The index of the spline to evaluate
+            x: The point(s) at which to evaluate the spline
+            i: The index(ices) of the spline to evaluate
 
         Returns:
-            jnp.ndarray: The value of the ith spline at x
+            The value(s) of the ith spline at x
         """
         if self.p == 0:
             return jnp.where(
@@ -173,11 +173,11 @@ class SplineBasis:
             lambda x: x/y,
             operand=x)
 
-    def _const_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
+    def _const_spline(self, x: Union[float, jnp.ndarray], t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a constant (degree 0) spline.
 
         Args:
-            x: The point at which to evaluate
+            x: The point(s) at which to evaluate
             t: A vector of two elements - the start and end of the interval
 
         Returns:
@@ -185,15 +185,15 @@ class SplineBasis:
         """
         return jnp.where(jnp.logical_and(t[0] <= x, x < t[1]), 1.0, 0.0)
 
-    def _lin_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
+    def _lin_spline(self, x: Union[float, jnp.ndarray], t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a linear (degree 1) spline.
 
         Args:
-            x: The point at which to evaluate
+            x: The point(s) at which to evaluate
             t: A vector of three elements defining the knot sequence
 
         Returns:
-            The value of the linear spline at x
+            The value(s) of the linear spline at x
         """
         return jnp.where(
             x < t[1],
@@ -201,15 +201,15 @@ class SplineBasis:
             self.__safe_divide(t[2] - x, t[2] - t[1])
         )
 
-    def _quad_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
+    def _quad_spline(self, x: Union[float, jnp.ndarray], t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a quadratic (degree 2) spline.
 
         Args:
-            x: The point at which to evaluate
+            x: The point(s) at which to evaluate
             t: A vector of four elements defining the knot sequence
 
         Returns:
-            The value of the quadratic spline at x
+            The value(s) of the quadratic spline at x
         """
         return jnp.where(
             x < t[1],
@@ -222,15 +222,15 @@ class SplineBasis:
             )
         )
 
-    def _cubic_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
+    def _cubic_spline(self, x: Union[float, jnp.ndarray], t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a cubic (degree 3) spline.
 
         Args:
-            x: The point at which to evaluate
+            x: The point(s) at which to evaluate
             t: A vector of five elements defining the knot sequence
 
         Returns:
-            The value of the cubic spline at x
+            The value(s) of the cubic spline at x
         """
         return jnp.where(
             x < t[1],

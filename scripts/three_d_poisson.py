@@ -200,9 +200,9 @@ def main():
     err, times, times2 = run_convergence_analysis()
 
     # Plot results
-    ns = np.array([4, 6, 8, 10, 12, 14, 16])
-    ps = np.array([1, 2, 3])
-    figures = plot_results(err, times, times2, ns, ps)
+    ns = np.arange(4, 18, 2)
+    ps = np.arange(1, 4)
+    plot_results(err, times, times2, ns, ps)
 
     # Show all figures
     plt.show()

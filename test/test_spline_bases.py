@@ -2,10 +2,9 @@ import unittest
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
+from mrx.SplineBases import SplineBasis, TensorBasis, DerivativeSpline
 
 jax.config.update("jax_enable_x64", True)
-
-from mrx.SplineBases import SplineBasis, TensorBasis, DerivativeSpline
 
 
 class TestSplineBases(unittest.TestCase):

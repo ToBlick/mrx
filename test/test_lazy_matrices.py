@@ -347,7 +347,7 @@ class TestLazyMatrices(unittest.TestCase):
         B0 = LazyBoundaryOperator(Λ0, bcs)
         
         # Create mass and stiffness matrices with boundary conditions
-        M = LazyMassMatrix(Λ0, Q, E=B0.M).M
+        # M = LazyMassMatrix(Λ0, Q, E=B0.M).M
         K = LazyStiffnessMatrix(Λ0, Q, E=B0.M).M
         
         # Test 1: Check that the boundary operator reduces degrees of freedom

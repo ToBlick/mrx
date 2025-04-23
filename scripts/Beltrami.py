@@ -14,7 +14,7 @@ The script includes:
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import os
-from typing import List
+from typing import List, Tuple
 from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
 
@@ -22,7 +22,7 @@ from mrx.Quadrature import QuadratureRule
 os.makedirs('script_outputs', exist_ok=True)
 
 
-def mu(m: int, n: int) -> float:
+def mu(m: int, n: int) -> jnp.ndarray:
     """
     Compute the eigenvalue for the Beltrami field.
 
@@ -31,7 +31,7 @@ def mu(m: int, n: int) -> float:
         n: Second mode number
 
     Returns:
-        float: The eigenvalue mu(m,n)
+        jnp.ndarray: The eigenvalue mu(m,n)
     """
     return jnp.pi * jnp.sqrt(m**2 + n**2)
 
@@ -57,7 +57,7 @@ def u(A_0: float, x: jnp.ndarray, m: int, n: int) -> jnp.ndarray:
     ])
 
 
-def eta(x: jnp.ndarray) -> float:
+def eta(x: jnp.ndarray) -> jnp.ndarray:
     """
     Compute the weight function for the domain.
 
@@ -65,13 +65,13 @@ def eta(x: jnp.ndarray) -> float:
         x: Position vector (x1, x2, x3)
 
     Returns:
-        float: Weight value at position x
+        jnp.ndarray: Weight value at position x
     """
     x_1, x_2, x_3 = x
     return ((x_1**2) * ((1-x_1))**2) * ((x_2**2) * ((1-x_2))**2) * ((x_3**2) * ((1-x_3))**2)
 
 
-def integrand(m: int, n: int, x: jnp.ndarray, A_0: float) -> float:
+def integrand(m: int, n: int, x: jnp.ndarray, A_0: float) -> jnp.ndarray:
     """
     Compute the integrand for magnetic helicity calculation.
 
@@ -82,7 +82,7 @@ def integrand(m: int, n: int, x: jnp.ndarray, A_0: float) -> float:
         A_0: Amplitude factor
 
     Returns:
-        float: Value of the integrand
+        jnp.ndarray: Value of the integrand
     """
     field = u(A_0, x, m, n)
     # The magnetic helicity is the integral of A·B where B = curl A
@@ -91,7 +91,7 @@ def integrand(m: int, n: int, x: jnp.ndarray, A_0: float) -> float:
     return eta(x) * jnp.dot(field, field) * mu_val
 
 
-def compute_helicity(m: int, n: int, A_0: float, Q: QuadratureRule) -> float:
+def compute_helicity(m: int, n: int, A_0: float, Q: QuadratureRule) -> jnp.ndarray:
     """
     Compute the magnetic helicity for given modes.
 
@@ -102,7 +102,7 @@ def compute_helicity(m: int, n: int, A_0: float, Q: QuadratureRule) -> float:
         Q: Quadrature rule for integration
 
     Returns:
-        float: Magnetic helicity value
+        jnp.ndarray: Magnetic helicity value
     """
     # Compute integrand at quadrature points
     integrand_values = jnp.array([integrand(m, n, x, A_0) for x in Q.x])
@@ -124,15 +124,15 @@ def plot_field_components(m: int, n: int, A_0: float, nx: int = 100) -> None:
         A_0: Amplitude factor
         nx: Number of points in each direction
     """
-    x = jnp.linspace(0, 1, nx)
-    y = jnp.linspace(0, 1, nx)
+    x: jnp.ndarray = jnp.linspace(0, 1, nx)
+    y: jnp.ndarray = jnp.linspace(0, 1, nx)
     X, Y = jnp.meshgrid(x, y)
-    z = 0.5  # Fixed z value for 2D slice
+    z: float = 0.5  # Fixed z value for 2D slice
 
     # Initialize arrays
-    U = jnp.zeros((nx, nx))
-    V = jnp.zeros((nx, nx))
-    W = jnp.zeros((nx, nx))
+    U: jnp.ndarray = jnp.zeros((nx, nx))
+    V: jnp.ndarray = jnp.zeros((nx, nx))
+    W: jnp.ndarray = jnp.zeros((nx, nx))
 
     # Compute field components using JAX's immutable operations
     for i in range(nx):
@@ -188,13 +188,13 @@ def analyze_convergence(m_range: List[int], n_range: List[int], A_0: float, Q: Q
         A_0: Amplitude factor
         Q: Quadrature rule for integration
     """
-    helicity_values = []
-    modes = []
+    helicity_values: List[float] = []
+    modes: List[str] = []
 
     for m in m_range:
         for n in n_range:
             H = compute_helicity(m, n, A_0, Q)
-            helicity_values.append(H)
+            helicity_values.append(float(H))  # Convert jnp.ndarray to float for plotting
             modes.append(f'({m},{n})')
 
     # Plot helicity values
@@ -215,26 +215,25 @@ def analyze_convergence(m_range: List[int], n_range: List[int], A_0: float, Q: Q
     plt.show()
 
 
-def main():
+def main() -> None:
     """Main function to run the Beltrami field analysis."""
     # Set parameters
-    n = 5
-    p = 3
-    ns = (n, n, n)
-    ps = (p, p, p)
-    types = ('clamped', 'clamped', 'constant')
-    bcs = ('dirichlet', 'dirichlet', 'none')
+    n: int = 5
+    p: int = 3
+    ns: Tuple[int, int, int] = (n, n, n)
+    ps: Tuple[int, int, int] = (p, p, p)
+    types: Tuple[str, str, str] = ('clamped', 'clamped', 'constant')
 
     # Initialize differential form and quadrature rule
     Λ0 = DifferentialForm(0, ns, ps, types)
     Q = QuadratureRule(Λ0, 15)
 
     # Set amplitude
-    A_0 = 1.0
+    A_0: float = 1.0
 
     # Analyze different modes
-    m_range = [1, 2, 3]
-    n_range = [1, 2, 3]
+    m_range: List[int] = [1, 2, 3]
+    n_range: List[int] = [1, 2, 3]
 
     # Plot field components for first mode
     plot_field_components(m_range[0], n_range[0], A_0)
@@ -247,7 +246,7 @@ def main():
     for m in m_range:
         for n in n_range:
             H = compute_helicity(m, n, A_0, Q)
-            print(f"Mode ({m},{n}): H = {H:.6f}")
+            print(f"Mode ({m},{n}): H = {float(H):.6f}")  # Convert jnp.ndarray to float for printing
 
 
 if __name__ == "__main__":

@@ -6,10 +6,9 @@ import numpy.testing as npt
 import time
 import matplotlib.pyplot as plt
 import os
+from mrx.Utils import jacobian, inv33, div, curl, grad, l2_product
 
 jax.config.update("jax_enable_x64", True)
-
-from mrx.Utils import jacobian, inv33, div, curl, grad, l2_product
 
 
 class TestUtils(unittest.TestCase):
@@ -85,8 +84,8 @@ class TestUtils(unittest.TestCase):
     def test_inv33(self):
         """Test the 3x3 matrix inverse function."""
         # Test with identity matrix
-        I = jnp.eye(3)
-        npt.assert_allclose(inv33(I), I, rtol=1e-15, atol=1e-15)
+        identity_matrix = jnp.eye(3)
+        npt.assert_allclose(inv33(identity_matrix), identity_matrix, rtol=1e-15, atol=1e-15)
         
         # Test with a general 3x3 matrix
         A_inv = inv33(self.A)

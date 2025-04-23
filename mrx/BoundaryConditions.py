@@ -58,20 +58,25 @@ class LazyBoundaryOperator:
         self.nζ = Λ.nζ - 2 if types[2] == 'dirichlet' else Λ.nζ
         self.dr, self.dχ, self.dζ = Λ.dr, Λ.dχ, Λ.dζ
 
+        # Compute component sizes based on form degree and boundary conditions
         if self.k == 0:
+            # For 0-forms, preserve one basis function in each direction
             self.n1 = self.nr * self.nχ * self.nζ
             self.n2 = 0
             self.n3 = 0
-        if self.k == 1:
-            self.n1 = self.dr * self.nχ * self.nζ
-            self.n2 = self.nr * self.dχ * self.nζ
-            self.n3 = self.nr * self.nχ * self.dζ
+        elif self.k == 1:
+            # For 1-forms, preserve one basis function in each component
+            self.n1 = (self.nr - 1) * self.nχ * self.nζ
+            self.n2 = self.nr * (self.nχ - 1) * self.nζ
+            self.n3 = self.nr * self.nχ * (self.nζ - 1)
         elif self.k == 2:
-            self.n1 = self.nr * self.dχ * self.dζ
-            self.n2 = self.dr * self.nχ * self.dζ
-            self.n3 = self.dr * self.dχ * self.nζ
+            # For 2-forms, preserve one basis function in each component
+            self.n1 = self.nr * (self.nχ - 1) * (self.nζ - 1)
+            self.n2 = (self.nr - 1) * self.nχ * (self.nζ - 1)
+            self.n3 = (self.nr - 1) * (self.nχ - 1) * self.nζ
         elif self.k == 3:
-            self.n1 = self.dr * self.dχ * self.dζ
+            # For 3-forms, preserve one basis function
+            self.n1 = (self.nr - 1) * (self.nχ - 1) * (self.nζ - 1)
             self.n2 = 0
             self.n3 = 0
         self.n = self.n1 + self.n2 + self.n3
@@ -160,22 +165,23 @@ class LazyBoundaryOperator:
         cat_col, r_idx, m, n = self.Λ._unravel_index(col_idx)
 
         if self.k == 0:
-            # Handle 0-forms with boundary conditions
-            return (
+            # For 0-forms, preserve one basis function in each direction
+            return jnp.where(
                 (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
                  + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
                 * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
                    + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
                 * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
-                   + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1))
+                   + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1)),
+                1, 0
             )
         elif self.k == 1:
-            # Handle 1-forms with boundary conditions
+            # For 1-forms, preserve one basis function in each component
             return jnp.where(
                 cat_row == cat_col,
                 jnp.where(
                     cat_row == 0,
-                    jnp.int32(i == r_idx)
+                    jnp.int32(i == r_idx-1)
                     * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
                        + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
                     * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
@@ -184,36 +190,36 @@ class LazyBoundaryOperator:
                         cat_row == 1,
                         (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
                          + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
-                        * jnp.int32(j == m)
+                        * jnp.int32(j == m-1)
                         * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
                            + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1)),
                         (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
                          + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
                         * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
                            + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
-                        * jnp.int32(k == n)
+                        * jnp.int32(k == n-1)
                     )
                 ),
                 0
             )
         elif self.k == 2:
-            # Handle 2-forms with boundary conditions
+            # For 2-forms, preserve one basis function in each component
             return jnp.where(
                 cat_row == cat_col,
                 jnp.where(
                     cat_row == 0,
                     (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
                      + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
-                    * jnp.int32(j == m)
-                    * jnp.int32(k == n),
+                    * jnp.int32(j == m-1)
+                    * jnp.int32(k == n-1),
                     jnp.where(
                         cat_row == 1,
-                        jnp.int32(i == r_idx)
+                        jnp.int32(i == r_idx-1)
                         * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
                            + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
-                        * jnp.int32(k == n),
-                        jnp.int32(i == r_idx)
-                        * jnp.int32(j == m)
+                        * jnp.int32(k == n-1),
+                        jnp.int32(i == r_idx-1)
+                        * jnp.int32(j == m-1)
                         * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
                            + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1))
                     )
@@ -221,7 +227,16 @@ class LazyBoundaryOperator:
                 0
             )
         elif self.k == 3:
-            return jnp.int32(row_idx == col_idx)
+            # For 3-forms, preserve one basis function
+            return jnp.where(
+                (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
+                 + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
+                * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
+                   + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
+                * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
+                   + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1)),
+                1, 0
+            )
 
     def assemble(self):
         """

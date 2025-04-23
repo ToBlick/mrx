@@ -72,7 +72,6 @@ def get_err(n, p):
         return 2 * (2*jnp.pi)**2 * u(x)
 
     # Set up differential forms and quadrature
-    Λ0 = DifferentialForm(0, ns, ps, types)
     Λ2 = DifferentialForm(2, ns, ps, types)
     Λ3 = DifferentialForm(3, ns, ps, types)
     Q = QuadratureRule(Λ3, 10)  # Use Λ3 quadrature for error computation
@@ -212,7 +211,7 @@ def main():
     # Plot results
     ns = np.arange(7, 21, 2)
     ps = np.arange(1, 4)
-    figures = plot_results(err, times, times2, ns, ps)
+    plot_results(err, times, times2, ns, ps)
 
     # Show all figures
     plt.show()

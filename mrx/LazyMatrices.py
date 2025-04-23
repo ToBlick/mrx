@@ -357,10 +357,7 @@ class LazyStiffnessMatrix(LazyMatrix):
 
         # Evaluate basis functions at quadrature points
         # Shape: (n, n_q, 1)
-        basis_vals = jax.vmap(jax.vmap(self.Λ0, (0, None)), (None, 0))(x, jnp.arange(n))
-
         # For each basis function, compute derivatives in each direction
-        # Shape: (n, n_q, 3)
         def compute_derivatives(x_q, i):
             # Get the tensor basis for 0-form
             basis = self.Λ0.bases[0]
