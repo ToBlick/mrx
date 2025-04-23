@@ -36,6 +36,12 @@ class SplineBasis:
         self.n = n
         self.ns = jnp.arange(self.n)
         self.p = p
+        if p < 0 or p > 3:
+            raise NotImplementedError(f"Invalid spline degree: {p}")
+        if p >= n:
+            raise ValueError(f"Spline degree must be less than number of splines: {p} >= {n}")
+        if type not in ['clamped', 'periodic', 'constant', 'fourier']:
+            raise ValueError(f"Invalid spline type: {type}")
         self.type = type
         if T is not None:
             self.T = T
@@ -272,7 +278,13 @@ class TensorBasis:
 
         Args:
             bases: List of one-dimensional SplineBasis objects to form the tensor product
+
+        Raises:
+            ValueError: If the number of bases is not exactly 3
         """
+        if len(bases) != 3:
+            raise ValueError(f"TensorBasis requires exactly 3 bases, got {len(bases)}")
+
         self.bases = bases
         self.shape = jnp.array([b.n for b in bases])
         self.n = bases[0].n * bases[1].n * bases[2].n
@@ -287,7 +299,13 @@ class TensorBasis:
 
         Returns:
             jnp.ndarray: Value of the i-th tensor product basis function at x
+
+        Raises:
+            ValueError: If the input point x has wrong dimension
         """
+        if x.shape[0] != len(self.bases):
+            raise ValueError(f"Input point dimension {x.shape[0]} does not match number of bases {len(self.bases)}")
+
         ijk = jnp.unravel_index(i, tuple(self.shape))
         return self.bases[0](jnp.asarray(x[0], dtype=float), jnp.asarray(ijk[0], dtype=int)) * \
             self.bases[1](jnp.asarray(x[1], dtype=float), jnp.asarray(ijk[1], dtype=int)) * \

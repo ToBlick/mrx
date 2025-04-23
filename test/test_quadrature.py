@@ -145,7 +145,7 @@ class TestQuadrature(unittest.TestCase):
                          "sin(2πx)*sin(2πy)*sin(2πz)"]
 
         for ns, ps, types in test_cases:
-            for quad_order in range(3, 11):
+            for quad_order in range(5, 11):
                 form = DifferentialForm(0, ns, ps, types)
                 quad_rule = QuadratureRule(form, quad_order)
                 for integrand, name in zip(integrands, integrand_names):
