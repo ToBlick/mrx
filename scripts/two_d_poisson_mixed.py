@@ -72,6 +72,7 @@ def get_err(n, p):
         return 2 * (2*jnp.pi)**2 * u(x)
 
     # Set up differential forms and quadrature
+    Λ0 = DifferentialForm(0, ns, ps, types)
     Λ2 = DifferentialForm(2, ns, ps, types)
     Λ3 = DifferentialForm(3, ns, ps, types)
     Q = QuadratureRule(Λ0, 3)

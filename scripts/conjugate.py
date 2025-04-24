@@ -25,7 +25,6 @@ Key components:
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import os
 from pathlib import Path
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
@@ -50,6 +49,7 @@ types = ('periodic', 'periodic', 'constant')  # Boundary condition types
 Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(i, ns, ps, types) for i in range(4)]  # H1, H(curl), H(div), L2
 Q = QuadratureRule(Λ0, 4)  # Quadrature rule
 def F(x): return x  # Identity mapping
+
 
 # Assemble matrices
 M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q).M for Λ in [Λ0, Λ1, Λ2, Λ3]]  # Mass matrices
@@ -336,18 +336,17 @@ def f_relax(x, key):
 
     F_n = force(B_n)
     normF_n = F_n @ M2 @ F_n
-    
 
     u_n = F_n + b * normF_n / normF_nminus1 * u_nminus1
-    
+
     B_s = B_n + ds * ẟB(B_n, B_n, u_n)
-    
+
     F_s = force(B_s)
     ẟW_s = F_s @ M2 @ u_n
     ẟW_n = F_n @ M2 @ u_n
-    
+
     dt = - ds * a * ẟW_n / (ẟW_s - ẟW_n)
-    
+
     B_n = advect_B(B_n, u_n, dt)
 
     helicity = (C_inv @ D1.T @ B_n) @ M12 @ B_n
@@ -433,26 +432,29 @@ print("\nFirst analysis completed successfully!")
 print(f"Figures saved to: {output_dir}")
 
 # Second analysis run with non-equispaced timesteps
+
+
 @jax.jit
 def f_relax(B_n, dt):
     """Perform a single relaxation step with given timestep.
-    
+
     Args:
         B_n: Current magnetic field
         dt: Timestep size
-        
+
     Returns:
         tuple: (Updated field, (helicity, energy, divergence, force norm))
     """
     F_n = force(B_n)
     B_n = advect_B(B_n, F_n, dt)
-    
+
     helicity = (C_inv @ D1.T @ B_n) @ M12 @ B_n
     energy = B_n @ M2 @ B_n / 2
     divB = divergence_residual(B_n)
     normF_n = force_residual(B_n)
-    
+
     return B_n, (helicity, energy, divB, normF_n)
+
 
 # Setup non-equispaced timesteps using Chebyshev nodes
 N = 5000  # Total number of timesteps

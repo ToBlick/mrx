@@ -50,7 +50,7 @@ def picard_solver(f, z_init, tol=1e-6, max_iter=1000, norm=jnp.linalg.norm):
     # Verify solution
     err = norm(f(z_star) - z_star)
     success = err <= tol
-    
+
     def warn_if_failed(success):
         jax.lax.cond(
             jnp.any(~success),
@@ -58,7 +58,7 @@ def picard_solver(f, z_init, tol=1e-6, max_iter=1000, norm=jnp.linalg.norm):
             lambda _: None,
             operand=None
         )
-    
+
     warn_if_failed(success)
     return z_star
 
