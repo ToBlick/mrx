@@ -13,8 +13,6 @@ from mrx.Utils import curl
 from functools import partial
 jax.config.update("jax_enable_x64", True)
 # %%
-
-
 @partial(jax.jit, static_argnames=['n', 'p'])
 def get_error(n, p):
 

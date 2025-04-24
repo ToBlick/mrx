@@ -387,11 +387,12 @@ class Pullback:
         Returns:
             array-like: Value of the pulled-back form at x
         """
+        y = self.F(x)
         if self.k == 0:
-            return self.f(x)
+            return self.f(y)
         elif self.k == 1:
-            return inv33(jax.jacfwd(self.F)(x)).T @ self.f(x)
+            return jax.jacfwd(self.F)(x).T @ self.f(y)
         elif self.k == 2:
-            return jax.jacfwd(self.F)(x) @ self.f(x) / jnp.linalg.det(jax.jacfwd(self.F)(x))
+            return inv33(jax.jacfwd(self.F)(x)) @ self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))
         elif self.k == 3:
-            return self.f(x) / jnp.linalg.det(jax.jacfwd(self.F)(x))
+            return self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))

@@ -18,7 +18,7 @@ types = ('clamped', 'periodic', 'constant')
 ns = (8, 8, 1)
 ps = (3, 3, 0)
 Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(i, ns, ps, types) for i in range(4)]
-Q = QuadratureRule(Λ0, 10)
+Q = QuadratureRule(Λ0, 3)
 ###
 # Mapping definition
 ###
@@ -49,7 +49,7 @@ def F(x):
 
 
 # %%
-ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
+ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
 E0, E1, E2, E3 = [LazyExtractionOperator(Λ, ξ, True).M for Λ in [Λ0, Λ1, Λ2, Λ3]]
 M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q, F, E).M for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
 P0, P1, P2, P3 = [Projector(Λ, Q, F, E) for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
