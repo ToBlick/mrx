@@ -33,12 +33,6 @@ def get_err(n, p, q):
     def F(p):
         r, χ, z = p
         return jnp.squeeze(jnp.array([_R(r, χ), _Y(r, χ), jnp.ones(1) * z]))
-    def F_inv(p):
-        x, y, z = p
-        r = jnp.sqrt(x**2 + y**2)
-        χ = jnp.arctan2(y, x) # in [-π, π]
-        χ = jnp.where(χ < 0, χ + 2 * jnp.pi, χ) / (2 * jnp.pi) # in [0, 1]
-        return jnp.array([r, χ, z])
 
     ns = (n, p, 1)
     ps = (p, p, 0)
@@ -72,9 +66,9 @@ def get_err(n, p, q):
 
 # %%
 import time
-ns = np.arange(4, 18, 2)
+ns = np.arange(4, 20, 2)
 ps = np.arange(1, 4)
-qs = np.arange(3,5) # np.arange(4, 11, 1)
+qs = np.arange(3,7) # np.arange(4, 11, 1)
 err = np.zeros((len(ns), len(ps), len(qs)))
 times = np.zeros((len(ns), len(ps), len(qs)))
 for i, n in enumerate(ns):

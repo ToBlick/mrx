@@ -45,6 +45,8 @@ Q = QuadratureRule(Λ0, 4)
 E0, E1, E2, E3 = [LazyExtractionOperator(Λ, ξ, False).M for Λ in [Λ0, Λ1, Λ2, Λ3]]
 M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q, F, E).M for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
 P0, P1, P2, P3 = [Projector(Λ, Q, F, E) for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
+M03 = LazyProjectionMatrix(Λ0, Λ3, Q, F, E0, E3).M
+M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F, E1, E2).M
 # %%
 ɛ = 1e-6
 nx = 64
@@ -101,9 +103,20 @@ plt.contourf(_y1, _y2, jax.vmap(F_f_h)(_y).reshape(nx, nx))
 plt.colorbar()
 
 # %%
+f_hat = jnp.linalg.solve(M3, P3(f0_logical))
+f_hat = jnp.linalg.solve(M0, M03.T @ f_hat)
+f_h = DiscreteFunction(f_hat, Λ0, E0)
+plt.contourf(_x1, _x2, jax.vmap(f_h)(_x).reshape(nx, nx))
+plt.colorbar()
+
+# %%
+F_f_h = Pullback(f_h, F_inv, 0)
+plt.contourf(_y1, _y2, jax.vmap(F_f_h)(_y).reshape(nx, nx))
+plt.colorbar()
+# %%
 def A(r):
     x, y, z = r
-    return jnp.array([jnp.cos(jnp.pi*x), 0, 0])
+    return jnp.array([x, 0, 0])
 
 # def A_logical(x):
 #     r, χ, z = x

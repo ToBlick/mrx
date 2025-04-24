@@ -45,9 +45,6 @@ def get_err(n, p):
     def err(x): return u(x) - u_h(x)
     return (l2_product(err, err, Q) / l2_product(u, u, Q))**0.5
 
-
-# %%
-print(get_err(8, 3))
 # %%
 ns = np.arange(7, 21, 2)
 ps = np.arange(1, 4)

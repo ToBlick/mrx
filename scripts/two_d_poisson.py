@@ -51,9 +51,6 @@ def get_err(n, p, q):
     Q_high = QuadratureRule(Λ0, 10)
     return (l2_product(err, err, Q_high) / l2_product(u, u, Q_high))**0.5
 
-
-# %%
-print(get_err(8, 3, 3))
 # %%
 ns = np.arange(4, 18, 2)
 ps = np.arange(1, 4)

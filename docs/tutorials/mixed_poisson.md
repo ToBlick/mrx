@@ -65,7 +65,7 @@ To test this case, we need a solution to Poisson's equation on a disc that satis
 
 $$
 \begin{align}
-u(r) &= \frac 1 4 \left( \frac 1 3 r^3 - \frac 1 4 r^4 \right) - \frac 1 {48} \\
+u(r) &= \frac 1 4 \left( \frac 1 3 r^3 - \frac 1 4 r^4 - \frac 1 {12} \right) \\
 f(r) &= r \left( r - \frac 3 4 \right)
 \end{align}
 $$
@@ -82,7 +82,7 @@ def F(p):
     r, χ, z = p
     return jnp.squeeze(jnp.array([_R(r, χ), _Y(r, χ), jnp.ones(1) * z]))
 def F_inv(p):
-    x, y, z = p
+    x, y, z = p 
     r = jnp.sqrt(x**2 + y**2)
     χ = jnp.arctan2(y, x)
     χ = jnp.where(χ < 0, χ + 2 * jnp.pi, χ) / (2 * jnp.pi)
