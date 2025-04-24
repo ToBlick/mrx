@@ -2,9 +2,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
-import matplotlib.pyplot as plt
 
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
@@ -66,8 +64,8 @@ for i, n in enumerate(ns):
             start = time.time()
             err[i, j, k] = get_err(n, p, q)
             end = time.time()
-            times[i, j,k] = end - start
-            print(f"n={n}, p={p}, q={q}, err={err[i,j,k]}, time={times[i,j,k]}")
+            times[i, j, k] = end - start
+            print(f"n={n}, p={p}, q={q}, err={err[i, j, k]}, time={times[i, j, k]}")
 
 # %%
 fig = converge_plot(err, ns, ps, qs)

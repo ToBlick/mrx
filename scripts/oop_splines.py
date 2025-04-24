@@ -115,13 +115,13 @@ Q = QuadratureRule(Λ0, 10)  # Quadrature rule for integration
 
 # Define mapping parameters
 a = 1    # Deformation amplitude
-R0 = 3.0 # Major radius
-Y0 = 0.0 # Vertical shift
+R0 = 3.0  # Major radius
+Y0 = 0.0  # Vertical shift
 
 
 def θ(x):
     """Compute the poloidal angle in the mapped geometry.
-    
+
     Args:
         x: Array of coordinates (r, χ, z)
     Returns:
@@ -133,7 +133,7 @@ def θ(x):
 
 def _R(r, χ):
     """Compute the major radius in the mapped geometry.
-    
+
     Args:
         r: Radial coordinate
         χ: Poloidal coordinate
@@ -145,7 +145,7 @@ def _R(r, χ):
 
 def _Y(r, χ):
     """Compute the vertical coordinate in the mapped geometry.
-    
+
     Args:
         r: Radial coordinate
         χ: Poloidal coordinate
@@ -157,7 +157,7 @@ def _Y(r, χ):
 
 def F(x):
     """Map from reference coordinates to physical space.
-    
+
     Args:
         x: Array of reference coordinates (r, χ, z)
     Returns:
@@ -192,7 +192,7 @@ def l2_product(f: Callable[[jnp.ndarray], jnp.ndarray],
                g: Callable[[jnp.ndarray], jnp.ndarray],
                Q: Any) -> jnp.ndarray:
     """Compute the L2 inner product of two functions.
-    
+
     Args:
         f: First function
         g: Second function
@@ -227,7 +227,7 @@ __y2 = __y[:, 1].reshape(_nx, _nx)
 
 def compute_f(x):
     """Test function for scalar field.
-    
+
     Args:
         x: Array of coordinates (r, χ, z)
     Returns:
@@ -255,9 +255,11 @@ plt.close()
 # Project continuous function onto discrete space and compute error
 f_hat = jnp.linalg.solve(M0, P0(compute_f))  # L2 projection
 f_h = DiscreteFunction(f_hat, Λ0, E0)
-def compute_f_error(x): 
+
+
+def compute_f_error(x):
     """Compute pointwise error between exact and discrete scalar fields.
-    
+
     Args:
         x: Coordinate point
     Returns:
@@ -265,18 +267,21 @@ def compute_f_error(x):
     """
     return compute_f(x) - f_h(x)
 
+
 # Compute relative L2 error for scalar field
-scalar_error = (l2_product(compute_f_error, compute_f_error, Q) / 
-               l2_product(compute_f, compute_f, Q))**0.5
+scalar_error = (l2_product(compute_f_error, compute_f_error, Q) /
+                l2_product(compute_f, compute_f, Q))**0.5
 
 # Compute gradient field and its discrete approximation
 A = grad(compute_f)  # Exact gradient
 F_A = Pullback(A, F, 1)  # Pulled back gradient
 A_hat = jnp.linalg.solve(M1, P1(A))  # L2 projection of gradient
 A_h = DiscreteFunction(A_hat, Λ1, E1)  # Discrete gradient field
-def compute_A_error(x): 
+
+
+def compute_A_error(x):
     """Compute pointwise error between exact and discrete gradient fields.
-    
+
     Args:
         x: Coordinate point
     Returns:
@@ -284,18 +289,20 @@ def compute_A_error(x):
     """
     return A(x) - A_h(x)
 
+
 # Compute relative L2 error for gradient field
-gradient_error = (l2_product(compute_A_error, compute_A_error, Q) / 
-                 l2_product(A, A, Q))**0.5
+gradient_error = (l2_product(compute_A_error, compute_A_error, Q) /
+                  l2_product(A, A, Q))**0.5
 
 # Compute discrete gradient and compare with exact gradient
 grad_fh = jax.grad(lambda x: (f_h)(x).sum())  # Gradient of discrete function
 grad_f_hat = jnp.linalg.solve(M1, P1(grad_fh))  # Project discrete gradient
 gradf_h = DiscreteFunction(grad_f_hat, Λ1, E1)  # Create discrete gradient field
 
+
 def compute_error_1(x: jnp.ndarray) -> jnp.ndarray:
     """Compute error between discrete gradient and gradient of discrete function.
-    
+
     Args:
         x: Coordinate point
     Returns:
@@ -303,9 +310,10 @@ def compute_error_1(x: jnp.ndarray) -> jnp.ndarray:
     """
     return grad_fh(x) - gradf_h(x)
 
+
 # Compute relative L2 error between gradient approaches
-gradient_consistency_error = (l2_product(compute_error_1, compute_error_1, Q) / 
-                            l2_product(grad_fh, grad_fh, Q))**0.5
+gradient_consistency_error = (l2_product(compute_error_1, compute_error_1, Q) /
+                              l2_product(grad_fh, grad_fh, Q))**0.5
 
 # Initialize and visualize a 2-form field
 B_hat = jnp.ones(E2.shape[0])  # Uniform coefficients
@@ -331,9 +339,10 @@ plt.ylabel('Y')
 plt.savefig(output_dir / 'two_form_field.png')
 plt.close()
 
+
 def B(x):
     """Create a test 2-form by permuting components of gradient field.
-    
+
     Args:
         x: Coordinate point
     Returns:
@@ -342,18 +351,22 @@ def B(x):
     v = A(x)
     return jnp.array([v[1], v[0], v[2]])
 
+
 # Project and discretize the 2-form
 B_hat = jnp.linalg.solve(M2, P2(B))  # L2 projection
 B_h = DiscreteFunction(B_hat, Λ2, E2)  # Create discrete 2-form
-def err(x): 
+
+
+def err(x):
     """Compute pointwise error in 2-form approximation.
-    
+
     Args:
         x: Coordinate point
     Returns:
         Difference between exact and discrete 2-forms at x
     """
     return B(x) - B_h(x)
+
 
 # Compute relative L2 error for 2-form
 two_form_error = (l2_product(err, err, Q) / l2_product(B, B, Q))**0.5
@@ -391,9 +404,10 @@ curl_Ah = curl(A_h)  # Curl of discrete vector field
 curl_A_hat = jnp.linalg.solve(M2, P2(curl_Ah))  # Project curl
 curlA_h = DiscreteFunction(curl_A_hat, Λ2, E2)  # Create discrete curl field
 
+
 def compute_error_2(x: jnp.ndarray) -> jnp.ndarray:
     """Compute error between exact and discrete curl.
-    
+
     Args:
         x: Coordinate point
     Returns:
@@ -401,18 +415,20 @@ def compute_error_2(x: jnp.ndarray) -> jnp.ndarray:
     """
     return curl(A)(x) - curl(A_h)(x)
 
+
 # Compute relative L2 error for curl
-curl_error = (l2_product(compute_error_2, compute_error_2, Q) / 
-             l2_product(curl(A), curl(A), Q))**0.5
+curl_error = (l2_product(compute_error_2, compute_error_2, Q) /
+              l2_product(curl(A), curl(A), Q))**0.5
 
 # Define and project a 3-form
 g = div(B)  # Divergence of 2-form field
 g_hat = jnp.linalg.solve(M3, P3(g))  # L2 projection
 g_h = DiscreteFunction(g_hat, Λ3, E3)  # Create discrete 3-form
 
+
 def compute_error_4(x: jnp.ndarray) -> jnp.ndarray:
     """Compute error in 3-form approximation.
-    
+
     Args:
         x: Coordinate point
     Returns:
@@ -420,9 +436,10 @@ def compute_error_4(x: jnp.ndarray) -> jnp.ndarray:
     """
     return g(x) - g_h(x)
 
+
 # Compute relative L2 error for 3-form
-three_form_error = (l2_product(compute_error_4, compute_error_4, Q) / 
-                   l2_product(g, g, Q))**0.5
+three_form_error = (l2_product(compute_error_4, compute_error_4, Q) /
+                    l2_product(g, g, Q))**0.5
 
 # Pull back 3-forms for visualization
 F_g = Pullback(g, F, 3)
@@ -450,9 +467,10 @@ div_Bh = div(B_h)  # Divergence of discrete 2-form
 div_B_hat = jnp.linalg.solve(M3, P3(div_Bh))  # Project divergence
 divB_h = DiscreteFunction(div_B_hat, Λ3, E3)  # Create discrete divergence field
 
+
 def compute_error_3(x: jnp.ndarray) -> jnp.ndarray:
     """Compute error between exact and discrete divergence.
-    
+
     Args:
         x: Coordinate point
     Returns:
@@ -460,9 +478,10 @@ def compute_error_3(x: jnp.ndarray) -> jnp.ndarray:
     """
     return div(A)(x) - div(A_h)(x)
 
+
 # Compute relative L2 error for divergence
-div_error = (l2_product(compute_error_3, compute_error_3, Q) / 
-            l2_product(div(A), div(A), Q))**0.5
+div_error = (l2_product(compute_error_3, compute_error_3, Q) /
+             l2_product(div(A), div(A), Q))**0.5
 
 # Print error summary
 print("\nNumerical Errors:")
@@ -478,9 +497,9 @@ print(f"Divergence L2 error: {div_error:.2e}")
 # %%
 plt.scatter(R_hat, Y_hat, s=5)
 plt.scatter([τ + R0, R0 - τ/2, R0 - τ/2], [0, Y0 + jnp.sqrt(3) * τ/2, Y0 - jnp.sqrt(3) * τ/2], s=10, c='k')
-plt.plot([τ + R0, R0 - τ/2, R0 - τ/2, τ + R0], 
-        [0, Y0 + jnp.sqrt(3) * τ/2, Y0 - jnp.sqrt(3) * τ/2, 0], 
-        'k:')
+plt.plot([τ + R0, R0 - τ/2, R0 - τ/2, τ + R0],
+         [0, Y0 + jnp.sqrt(3) * τ/2, Y0 - jnp.sqrt(3) * τ/2, 0],
+         'k:')
 # %%
 
 # %%
@@ -511,7 +530,7 @@ test()
 
 def test_function(x: jnp.ndarray) -> jnp.ndarray:
     """Test function for numerical integration.
-    
+
     Args:
         x: Array of coordinates
     Returns:
@@ -528,7 +547,7 @@ print(jnp.einsum("ij,ij,i->", jax.vmap(test_function)(Q.x), jax.vmap(test_functi
 @jax.jit
 def get_err():
     """Compute L2 error for a test case.
-    
+
     Returns:
         L2 error between exact and approximated function
     """
@@ -565,12 +584,12 @@ print((time.time() - start)/100)
 # Save final visualization
 plt.figure(figsize=(10, 8))
 plt.scatter(R_hat, Y_hat, s=5, label='Grid Points')
-plt.scatter([τ + R0, R0 - τ/2, R0 - τ/2], 
-           [0, Y0 + jnp.sqrt(3) * τ/2, Y0 - jnp.sqrt(3) * τ/2], 
-           s=10, c='k', label='Reference Points')
-plt.plot([τ + R0, R0 - τ/2, R0 - τ/2, τ + R0], 
-        [0, Y0 + jnp.sqrt(3) * τ/2, Y0 - jnp.sqrt(3) * τ/2, 0], 
-        'k:', label='Reference Triangle')
+plt.scatter([τ + R0, R0 - τ/2, R0 - τ/2],
+            [0, Y0 + jnp.sqrt(3) * τ/2, Y0 - jnp.sqrt(3) * τ/2],
+            s=10, c='k', label='Reference Points')
+plt.plot([τ + R0, R0 - τ/2, R0 - τ/2, τ + R0],
+         [0, Y0 + jnp.sqrt(3) * τ/2, Y0 - jnp.sqrt(3) * τ/2, 0],
+         'k:', label='Reference Triangle')
 plt.title('Domain Mapping Visualization')
 plt.xlabel('R')
 plt.ylabel('Y')

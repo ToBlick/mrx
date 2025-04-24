@@ -8,9 +8,8 @@ from mrx.PolarMapping import LazyExtractionOperator, get_xi
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
-from mrx.LazyMatrices import LazyStiffnessMatrix, LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix
+from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix
 from mrx.Utils import l2_product
-from functools import partial
 
 from mrx.Plotting import converge_plot
 
@@ -30,23 +29,37 @@ q = 3
 a = 1
 R0 = 0.0
 Y0 = 0.0
+
+
 def _R(r, χ):
     return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * jnp.pi * χ))
+
+
 def _Y(r, χ):
     return jnp.ones(1) * (Y0 + a * r * jnp.sin(2 * jnp.pi * χ))
+
+
 def F(x):
     r, χ, z = x
     return jnp.ravel(jnp.array([_R(r, χ),
                                 _Y(r, χ),
                                 jnp.ones(1) * z]))
+
+
 ns = (n, 4, 1)
 ps = (p, p, 0)
+
+
 def u(x):
     r, χ, z = x
     return -jnp.ones(1) * (1/16 * r**4 - 1/12 * r**3)
+
+
 def f(x):
     r, χ, z = x
     return jnp.ones(1) * (r**2 - 3/4 * r)
+
+
 types = ('clamped', 'periodic', 'constant')
 Λ0 = DifferentialForm(0, ns, ps, types)
 Λ2 = DifferentialForm(2, ns, ps, types)
@@ -73,6 +86,8 @@ u_hat = jnp.linalg.solve(K, P3(f))
 u_h = DiscreteFunction(u_hat, Λ3, E3)
 f_h = DiscreteFunction(f_hat, Λ3, E3)
 def err(x): return (u(x) - u_h(x))
+
+
 error = (l2_product(err, err, Q, F) / l2_product(u, u, Q, F))**0.5
 
 # %%
@@ -87,8 +102,8 @@ _y = jax.vmap(F)(_x)
 
 F_f_h = Pullback(f_h, F, 3)
 F_f = Pullback(f, F, 3)
-plt.plot(_y[:,0], jax.vmap(F_f_h)(_x), label='f_h (as 3form)')
-plt.plot(_y[:,0], jax.vmap(F_f)(_x), label='f (as 3form)')
+plt.plot(_y[:, 0], jax.vmap(F_f_h)(_x), label='f_h (as 3form)')
+plt.plot(_y[:, 0], jax.vmap(F_f)(_x), label='f (as 3form)')
 plt.xlabel('r')
 plt.legend()
 plt.show()
@@ -96,8 +111,8 @@ plt.show()
 # %%
 F_f_h = Pullback(DiscreteFunction(f_hat_0, Λ0, E0), F, 0)
 F_f = Pullback(f, F, 0)
-plt.plot(_y[:,0], jax.vmap(F_f_h)(_x), label='f_h (as 0form)')
-plt.plot(_y[:,0], jax.vmap(F_f)(_x), label='f (as 0form)')
+plt.plot(_y[:, 0], jax.vmap(F_f_h)(_x), label='f_h (as 0form)')
+plt.plot(_y[:, 0], jax.vmap(F_f)(_x), label='f (as 0form)')
 plt.xlabel('r')
 plt.legend()
 plt.show()
@@ -107,8 +122,8 @@ plt.show()
 F_u_h = Pullback(u_h, F, 3)
 F_u = Pullback(u, F, 3)
 
-plt.plot(_y[:,0], jax.vmap(F_u_h)(_x), label='u_h')
-plt.plot(_y[:,0], jax.vmap(F_u)(_x), label='u')
+plt.plot(_y[:, 0], jax.vmap(F_u_h)(_x), label='u_h')
+plt.plot(_y[:, 0], jax.vmap(F_u)(_x), label='u')
 plt.xlabel('r')
 plt.legend()
 
@@ -116,7 +131,7 @@ plt.legend()
 import time
 ns = np.arange(4, 18, 2)
 ps = np.arange(1, 4)
-qs = np.arange(4,5) # np.arange(4, 11, 1)
+qs = np.arange(4, 5)  # np.arange(4, 11, 1)
 err = np.zeros((len(ns), len(ps), len(qs)))
 times = np.zeros((len(ns), len(ps), len(qs)))
 for i, n in enumerate(ns):
@@ -125,8 +140,8 @@ for i, n in enumerate(ns):
             start = time.time()
             err[i, j, k] = get_err(n, p, q)
             end = time.time()
-            times[i, j,k] = end - start
-            print(f"n={n}, p={p}, q={q}, err={err[i,j,k]}, time={times[i,j,k]}")
+            times[i, j, k] = end - start
+            print(f"n={n}, p={p}, q={q}, err={err[i, j, k]}, time={times[i, j, k]}")
 
 # %%
 fig = converge_plot(err, ns, ps, qs)

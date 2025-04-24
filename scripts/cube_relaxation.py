@@ -19,7 +19,6 @@ The script demonstrates:
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-from typing import Tuple
 import os
 from pathlib import Path
 
@@ -198,7 +197,7 @@ def perturb_B_hat(B_hat_0, dt, key):
 @jax.jit
 def f(B_hat, key):
     B_hat = perturb_B_hat(B_hat, 1e-4, key)
-    
+
     helicity = (C_inv @ D1.T @ B_hat) @ M12 @ B_hat
     energy = B_hat @ M2 @ B_hat / 2
     divB = divergence_residual(B_hat)
@@ -294,15 +293,18 @@ def ẟB_hat(B_guess, B_hat_0, u_hat_0):
     B_diff = B_hat_1 - B_guess
     return B_diff
 
+
 @jax.jit
 def update_B_hat(B_hat_0, u_hat_0):
     def ẟB(B_guess):
         return ẟB_hat(B_guess, B_hat_0, u_hat_0)
+
     def cond_fun(B_guess):
         B_diff = ẟB(B_guess)
         err = (B_diff @ M2 @ B_diff)**0.5
         # jax.debug.print("Residual: {err}", err=err)
         return err > 1e-12
+
     def body_fun(B_guess):
         B_diff = ẟB(B_guess)
         ### Picard method
@@ -314,29 +316,31 @@ def update_B_hat(B_hat_0, u_hat_0):
     B_hat = jax.lax.while_loop(cond_fun, body_fun, B_hat_0)
     return B_hat
 
+
 @jax.jit
 def f(x, i):
     B_hat, u_hat = jnp.split(x, 2)
     u_hat = jax.lax.stop_gradient(u_hat)
     # B_hat, u_hat = x
-    
+
     helicity = (C_inv @ D1.T @ B_hat) @ M12 @ B_hat
     energy = B_hat @ M2 @ B_hat / 2
     divB = divergence_residual(B_hat)
     normF = force_residual(B_hat)
-    
+
     jax.debug.print("Iteration: {i}", i=i)
     jax.debug.print("Energy: {energy}", energy=energy)
     # jax.debug.print("Helicity: {helicity}", helicity=helicity)
     # jax.debug.print("Div B: {divB}", divB=divB)
     jax.debug.print("Force residual: {normF}", normF=normF)
-    
+
     B_hat = update_B_hat(B_hat, u_hat)
     u_hat = force(B_hat)
     # x = (B_hat, u_hat)
     x = jnp.concatenate((B_hat, u_hat), axis=0)
-    
+
     return x, (helicity, energy, divB, normF)
+
 
 # Initialize state
 x = jnp.concatenate((BN_hat, force(BN_hat)), axis=0)
@@ -398,13 +402,13 @@ figures.append(fig8)
 plt.savefig(output_dir / 'force_evolution_log.png', dpi=300, bbox_inches='tight')
 
 # Print final state information
-print("B(0) - B(1): ", ((B0_hat - B0_hat) @ M2 @ (B0_hat - B0_hat) / (B0_hat @ M2 @ B0_hat))**0.5)
+print("B(0) - B(1): ", ((B0_hat - BN_hat) @ M2 @ (B0_hat - BN_hat) / (B0_hat @ M2 @ B0_hat))**0.5)
 print("B(0) - B(T): ", ((B0_hat - B_hat) @ M2 @ (B0_hat - B_hat) / (B0_hat @ M2 @ B0_hat))**0.5)
 print("F(0): ", force_residual(B0_hat))
-print("F(1): ", force_residual(B0_hat))
+print("F(1): ", force_residual(BN_hat))
 print("F(T): ", force_residual(B_hat))
 print("E(0): ", B0_hat @ M2 @ B0_hat / 2)
-print("E(1): ", B0_hat @ M2 @ B0_hat / 2)
+print("E(1): ", B0_hat @ M2 @ BN_hat / 2)
 print("E(T): ", B_hat @ M2 @ B_hat / 2)
 
 # Set up grid for field visualization

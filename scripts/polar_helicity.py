@@ -39,14 +39,15 @@ jax.config.update("jax_enable_x64", True)
 output_dir = Path("scripts_output")
 output_dir.mkdir(parents=True, exist_ok=True)
 
+
 @partial(jax.jit, static_argnames=['n', 'p'])
 def get_error(n, p):
     """Compute error metrics for magnetic helicity calculations.
-    
+
     Args:
         n: Number of elements in each direction
         p: Polynomial degree
-        
+
     Returns:
         tuple: (A_err, H_err, curl_A_err)
             A_err: Relative L2 error in vector potential reconstruction
