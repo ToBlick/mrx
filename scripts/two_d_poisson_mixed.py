@@ -72,9 +72,10 @@ def get_err(n, p):
         return 2 * (2*jnp.pi)**2 * u(x)
 
     # Set up differential forms and quadrature
+    Λ0 = DifferentialForm(0, ns, ps, types)
     Λ2 = DifferentialForm(2, ns, ps, types)
     Λ3 = DifferentialForm(3, ns, ps, types)
-    Q = QuadratureRule(Λ3, 10)  # Use Λ3 quadrature for error computation
+    Q = QuadratureRule(Λ0, 3)
 
     # Set up operators
     D = LazyDerivativeMatrix(Λ2, Λ3, Q).M

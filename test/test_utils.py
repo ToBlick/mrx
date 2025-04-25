@@ -10,6 +10,8 @@ from mrx.Utils import jacobian, inv33, div, curl, grad, l2_product
 
 jax.config.update("jax_enable_x64", True)
 
+# Create output directory if it doesn't exist
+os.makedirs('test_outputs', exist_ok=True)
 
 class TestUtils(unittest.TestCase):
     """Test cases for utility functions in Utils.py."""
@@ -341,16 +343,11 @@ class TestUtils(unittest.TestCase):
         plt.grid(True, which="both", ls="-")
         plt.legend()
         
-        # Create output directory if it doesn't exist
-        os.makedirs('output_scripts', exist_ok=True)
-        
         # Save the plot
-        plt.savefig('output_scripts/performance_comparison.png')
+        plt.savefig('test_outputs/performance_comparison.png')
         plt.show()
-        plt.close()
         
-        print("\nPerformance plot saved as 'output_scripts/performance_comparison.png'")
-
+        print("\nPerformance plot saved as 'test_outputs/performance_comparison.png'")
 
 if __name__ == '__main__':
     unittest.main() 

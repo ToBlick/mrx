@@ -19,8 +19,8 @@ The script demonstrates:
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-from typing import Tuple
 import os
+from pathlib import Path
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.Quadrature import QuadratureRule
@@ -31,8 +31,11 @@ from mrx.Utils import curl
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
-# Create output directory for figures
-os.makedirs('script_outputs', exist_ok=True)
+# Get the absolute path to the script's directory
+script_dir = Path(__file__).parent.absolute()
+# Create the output directory in the same directory as the script
+output_dir = script_dir / 'script_outputs'
+os.makedirs(output_dir, exist_ok=True)
 
 # Initialize differential forms and operators
 ns = (7, 7, 1)  # Number of elements in each direction
@@ -143,7 +146,6 @@ def divergence_residual(B_hat):
 
 
 # Print initial conditions
-print(A_hat_recon, M12, M2, B0_hat)
 print("Helicity before perturbation: ", A_hat_recon @ M12 @ B0_hat)
 print("Energy before perturbation: ", B0_hat @ M2 @ B0_hat / 2)
 
@@ -193,11 +195,14 @@ def perturb_B_hat(B_hat_0, dt, key):
 
 
 @jax.jit
-def compute_perturbation(B_hat: jnp.ndarray, key: jnp.ndarray) -> Tuple[jnp.ndarray, Tuple[float, float, float, float]]:
-    """Compute a single perturbation step."""
-    B_hat = B_hat + 0.1 * jax.random.normal(key, shape=B_hat.shape)
-    B_hat = B_hat / jnp.linalg.norm(B_hat)
-    return B_hat, (0.0, 0.0, 0.0, 0.0)
+def f(B_hat, key):
+    B_hat = perturb_B_hat(B_hat, 1e-4, key)
+
+    helicity = (C_inv @ D1.T @ B_hat) @ M12 @ B_hat
+    energy = B_hat @ M2 @ B_hat / 2
+    divB = divergence_residual(B_hat)
+    normF = force_residual(B_hat)
+    return B_hat, (helicity, energy, divB, normF)
 
 
 # Initialize random number generator
@@ -207,7 +212,7 @@ BN_hat = B0_hat
 
 # Compute perturbations
 for key in jax.random.split(key, 3):
-    BN_hat, trace = jax.lax.scan(compute_perturbation, BN_hat, jax.random.split(key, 10))
+    BN_hat, trace = jax.lax.scan(f, BN_hat, jax.random.split(key, 10))
     traces.append(trace)
 
 # Combine traces
@@ -226,7 +231,7 @@ plt.title('Energy Evolution')
 plt.legend()
 plt.grid(True)
 figures.append(fig1)
-plt.savefig('script_outputs/energy_evolution.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'energy_evolution.png', dpi=300, bbox_inches='tight')
 
 # Helicity evolution
 fig2 = plt.figure(figsize=(10, 6))
@@ -237,7 +242,7 @@ plt.title('Helicity Evolution')
 plt.legend()
 plt.grid(True)
 figures.append(fig2)
-plt.savefig('script_outputs/helicity_evolution.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'helicity_evolution.png', dpi=300, bbox_inches='tight')
 
 # Divergence evolution
 fig3 = plt.figure(figsize=(10, 6))
@@ -248,7 +253,7 @@ plt.title('Divergence Evolution')
 plt.legend()
 plt.grid(True)
 figures.append(fig3)
-plt.savefig('script_outputs/divergence_evolution.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'divergence_evolution.png', dpi=300, bbox_inches='tight')
 
 # Force evolution
 fig4 = plt.figure(figsize=(10, 6))
@@ -259,7 +264,7 @@ plt.title('Force Evolution')
 plt.legend()
 plt.grid(True)
 figures.append(fig4)
-plt.savefig('script_outputs/force_evolution.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'force_evolution.png', dpi=300, bbox_inches='tight')
 
 # Additional analysis parameters
 b = 0.0
@@ -331,7 +336,7 @@ plt.yscale('log')
 plt.title('Energy Evolution (Log Scale)')
 plt.grid(True)
 figures.append(fig5)
-plt.savefig('script_outputs/energy_evolution_log.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'energy_evolution_log.png', dpi=300, bbox_inches='tight')
 
 # Helicity evolution
 fig6 = plt.figure(figsize=(10, 6))
@@ -341,7 +346,7 @@ plt.ylabel('Helicity - Helicity(0)')
 plt.title('Helicity Evolution')
 plt.grid(True)
 figures.append(fig6)
-plt.savefig('script_outputs/helicity_evolution_2.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'helicity_evolution_2.png', dpi=300, bbox_inches='tight')
 
 # Divergence evolution
 fig7 = plt.figure(figsize=(10, 6))
@@ -351,7 +356,7 @@ plt.ylabel('|Div B|')
 plt.title('Divergence Evolution')
 plt.grid(True)
 figures.append(fig7)
-plt.savefig('script_outputs/divergence_evolution_2.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'divergence_evolution_2.png', dpi=300, bbox_inches='tight')
 
 # Force evolution (log scale)
 fig8 = plt.figure(figsize=(10, 6))
@@ -362,7 +367,7 @@ plt.yscale('log')
 plt.title('Force Evolution (Log Scale)')
 plt.grid(True)
 figures.append(fig8)
-plt.savefig('script_outputs/force_evolution_log.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'force_evolution_log.png', dpi=300, bbox_inches='tight')
 
 # Print final state information
 print("B(0) - B(1): ", ((B0_hat - BN_hat) @ M2 @ (B0_hat - BN_hat) / (B0_hat @ M2 @ B0_hat))**0.5)
@@ -371,7 +376,7 @@ print("F(0): ", force_residual(B0_hat))
 print("F(1): ", force_residual(BN_hat))
 print("F(T): ", force_residual(B_hat))
 print("E(0): ", B0_hat @ M2 @ B0_hat / 2)
-print("E(1): ", BN_hat @ M2 @ BN_hat / 2)
+print("E(1): ", B0_hat @ M2 @ BN_hat / 2)
 print("E(T): ", B_hat @ M2 @ B_hat / 2)
 
 # Set up grid for field visualization
@@ -416,11 +421,11 @@ plt.title('Initial Magnetic Field')
 plt.xlabel('x')
 plt.ylabel('y')
 figures.append(fig9)
-plt.savefig('script_outputs/initial_field.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'initial_field.png', dpi=300, bbox_inches='tight')
 
 # Plot perturbed field
 fig10 = plt.figure(figsize=(10, 8))
-B_h = DiscreteFunction(BN_hat, Λ2)
+B_h = DiscreteFunction(B0_hat, Λ2)
 F_B = Pullback(B0, F, 2)
 F_B_h = Pullback(B_h, F, 2)
 _z1 = jax.vmap(F_B_h)(_x).reshape(nx, nx, 3)

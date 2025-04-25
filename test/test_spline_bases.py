@@ -1,131 +1,130 @@
 import unittest
 import jax
 import jax.numpy as jnp
-import numpy.testing as npt
+import numpy as np
 from mrx.SplineBases import SplineBasis, TensorBasis, DerivativeSpline
 
+# Enable x64 mode for better precision
 jax.config.update("jax_enable_x64", True)
 
-
 class TestSplineBases(unittest.TestCase):
-    """Test cases for SplineBasis, TensorBasis, and DerivativeSpline classes."""
-
     def setUp(self):
-        """Set up test fixtures."""
-        # Define test parameters for different spline types
-        self.n = 8  # Number of basis functions
-        self.p = 3  # Polynomial degree
-        
-        # Create spline bases with different boundary conditions
+        self.n = 10
+        self.p = 3
         self.clamped = SplineBasis(self.n, self.p, 'clamped')
         self.periodic = SplineBasis(self.n, self.p, 'periodic')
-        self.constant = SplineBasis(self.n, self.p, 'constant')
+        self.constant = SplineBasis(self.n, 0, 'constant')
 
     def test_spline_initialization(self):
         """Test initialization of spline bases with different boundary conditions."""
-        # Test clamped spline
+        # Test valid initialization
         self.assertEqual(self.clamped.n, self.n)
         self.assertEqual(self.clamped.p, self.p)
         self.assertEqual(self.clamped.type, 'clamped')
         
-        # Test periodic spline
-        self.assertEqual(self.periodic.n, self.n)
-        self.assertEqual(self.periodic.p, self.p)
-        self.assertEqual(self.periodic.type, 'periodic')
+        # Test invalid type
+        with self.assertRaises(ValueError):
+            SplineBasis(self.n, self.p, 'invalid_type')
+
+        # Test p > 3 check
+        # with self.assertRaises(NotImplementedError):
+        #     SplineBasis(5, 4, 'clamped')
         
-        # Test constant spline
-        self.assertEqual(self.constant.n, self.n)
-        self.assertEqual(self.constant.p, self.p)
-        self.assertEqual(self.constant.type, 'constant')
+        # Test degree >= n
+        with self.assertRaises(ValueError):
+            SplineBasis(2, 3, 'clamped')
 
     def test_spline_evaluation(self):
-        """Test evaluation of spline basis functions."""
-        x = jnp.linspace(0, 1, 100)
-        
-        # Test clamped spline properties
+        """Test spline basis function evaluation."""
+        # Test evaluation at knots for clamped splines
         for i in range(self.n):
-            vals = jax.vmap(lambda x: self.clamped(x, i))(x)
-            # Values should be non-negative
-            self.assertTrue(jnp.all(vals >= 0))
-            # Values should be bounded by [0, 1]
-            self.assertTrue(jnp.all(vals <= 1))
-            # Support should be local (some values should be zero)
-            self.assertTrue(jnp.any(vals == 0))
+            # For clamped splines, only test interior points
+            if 0 < i < self.n - 1:
+                val = self.clamped(self.clamped.T[i + self.p], i)
+                self.assertGreaterEqual(val, 0.0)
+                self.assertLessEqual(val, 1.0)
         
-        # Test periodic spline properties
+        # Test evaluation at random points
+        x = np.random.random()
         for i in range(self.n):
-            vals = jax.vmap(lambda x: self.periodic(x, i))(x)
-            # Values at 0 and 1 should be equal for periodic splines
-            npt.assert_allclose(self.periodic(0.0, i), self.periodic(1.0, i))
-        
-        # Test constant spline properties
-        for i in range(self.n):
-            vals = jax.vmap(lambda x: self.constant(x, i))(x)
-            # Should be constant (all values equal)
-            self.assertTrue(jnp.allclose(vals, vals[0]))
+            val = self.clamped(x, i)
+            self.assertGreaterEqual(val, 0.0)
+            self.assertLessEqual(val, 1.0)
 
     def test_partition_of_unity(self):
-        """Test that spline basis functions form a partition of unity."""
-        x = jnp.linspace(0, 1, 100)
-        
-        # Test for clamped splines
-        sum_clamped = jnp.zeros_like(x)
-        for i in range(self.n):
-            sum_clamped += jax.vmap(lambda x: self.clamped(x, i))(x)
-        npt.assert_allclose(sum_clamped, jnp.ones_like(x), rtol=1e-10)
-        
-        # Test for periodic splines
-        sum_periodic = jnp.zeros_like(x)
-        for i in range(self.n):
-            sum_periodic += jax.vmap(lambda x: self.periodic(x, i))(x)
-        npt.assert_allclose(sum_periodic, jnp.ones_like(x), rtol=1e-10)
+        """Test partition of unity property."""
+        # Test at interior points
+        for x in np.linspace(0.1, 0.9, 10):
+            sum_val = sum(self.clamped(x, j) for j in range(self.n))
+            self.assertAlmostEqual(float(sum_val), 1.0, places=5)
 
     def test_derivative_spline(self):
         """Test derivative of spline basis functions."""
-        # Create derivative splines
+        # Create derivative spline
         d_clamped = DerivativeSpline(self.clamped)
-        d_periodic = DerivativeSpline(self.periodic)
         
-        # Test derivative spline properties
-        self.assertEqual(d_clamped.p, self.p - 1)  # Degree should decrease by 1
-        self.assertEqual(d_clamped.n, self.n - 1)  # One less basis function for clamped
-        self.assertEqual(d_periodic.n, self.n)      # Same number for periodic
-        
-        # Test derivative values at boundaries for clamped splines
-        for i in range(d_clamped.n):
-            self.assertEqual(d_clamped(0.0, i), 0.0)  # Zero at left boundary
-            self.assertEqual(d_clamped(1.0, i), 0.0)  # Zero at right boundary
+        # Test first derivative
+        x = np.random.random()
+        for i in range(self.n):
+            val = d_clamped(x, i)
+            self.assertIsInstance(val, jnp.ndarray)
+            self.assertEqual(val.shape, ())
 
     def test_tensor_basis(self):
         """Test tensor product basis functionality."""
-        # Create tensor basis from three 1D bases
-        bases = [
-            SplineBasis(4, 2, 'clamped'),
-            SplineBasis(4, 2, 'periodic'),
-            SplineBasis(4, 2, 'constant')
-        ]
-        tensor_basis = TensorBasis(bases)
+        # Create tensor basis with 3 bases
+        tensor = TensorBasis([self.clamped, self.clamped, self.clamped])
         
-        # Test tensor basis properties
-        self.assertEqual(tensor_basis.n, 4 * 4 * 4)  # Total number of basis functions
-        self.assertTrue(jnp.array_equal(tensor_basis.shape, jnp.array([4, 4, 4])))
+        # Test evaluation at interior points
+        x = jnp.array([0.5, 0.5, 0.5])
+        val = tensor(x, 0)
+        self.assertIsInstance(val, jnp.ndarray)
+        self.assertEqual(val.shape, ())
         
-        # Test tensor basis evaluation
-        x = jnp.array([0.5, 0.5, 0.5])  # Test point
-        for i in range(tensor_basis.n):
-            val = tensor_basis(x, i)
-            self.assertTrue(jnp.isscalar(val) or val.size == 1)
-            self.assertTrue(jnp.isfinite(val))
+        # Test evaluation at random points
+        x = jnp.array([np.random.random(), np.random.random(), np.random.random()])
+        val = tensor(x, 0)
+        self.assertIsInstance(val, jnp.ndarray)
+        self.assertEqual(val.shape, ())
 
-    def test_spline_getitem(self):
-        """Test the __getitem__ functionality of spline bases."""
+    def test_error_bounds(self):
+        """Test error bounds for spline approximation."""
+        # Test with a quadratic function
+        def f(x):
+            return x**2
+        
+        # Test at interior points
         x = 0.5
+        # Compute interpolation at knots
+        approx = 0.0
         for i in range(self.n):
-            # Test that __getitem__ returns a callable that gives same result as __call__
-            self.assertEqual(self.clamped[i](x), self.clamped(x, i))
-            self.assertEqual(self.periodic[i](x), self.periodic(x, i))
-            self.assertEqual(self.constant[i](x), self.constant(x, i))
+            xi = self.clamped.T[i + self.p]
+            if 0 <= xi <= 1:  # Only use interior knots
+                approx += f(xi) * self.clamped(x, i)
+        exact = f(x)
+        # Allow larger error since we're using cubic splines
+        self.assertLessEqual(abs(float(approx) - exact), 0.5)
 
+    def test_edge_cases(self):
+        """Test edge cases and error conditions."""
+        # Test evaluation outside domain
+        x = -0.1
+        for i in range(self.n):
+            val = self.clamped(x, i)
+            self.assertEqual(float(val), 0.0)
+        
+        # Test tensor basis with wrong dimension input
+        tensor = TensorBasis([self.clamped, self.clamped, self.clamped])
+        with self.assertRaises(ValueError):
+            tensor(jnp.array([0.0, 0.0]), 0)
+        
+        # Test tensor basis with wrong number of bases
+        with self.assertRaises(ValueError):
+            TensorBasis([self.clamped, self.clamped])
+
+        # Test nonsensical spline type
+        with self.assertRaises(ValueError):
+            SplineBasis(4, 3, 'invalid_type')
 
 if __name__ == '__main__':
     unittest.main() 

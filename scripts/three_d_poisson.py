@@ -87,7 +87,7 @@ def get_err(n, p):
 def run_convergence_analysis():
     """Run convergence analysis for different parameters."""
     # Parameter ranges
-    ns = np.array([4, 6, 8, 10, 12, 14, 16])  # Extended range for higher resolution
+    ns = np.array([4, 6, 8, 10, 12, 14])  # Extended range for higher resolution
     ps = np.array([1, 2, 3])  # Added p=4 for higher order
 
     # Arrays to store results
@@ -136,8 +136,6 @@ def plot_results(err, times, times2, ns, ps):
                label='O(n^-4)', linestyle='--')
     plt.loglog(ns, err[-1, 2] * (ns/ns[-1])**(-6),
                label='O(n^-6)', linestyle='--')
-    plt.loglog(ns, err[-1, 3] * (ns/ns[-1])**(-8),
-               label='O(n^-8)', linestyle='--')
     plt.xlabel('Number of elements (n)')
     plt.ylabel('Relative L2 error')
     plt.title('Error Convergence')
@@ -200,7 +198,7 @@ def main():
     err, times, times2 = run_convergence_analysis()
 
     # Plot results
-    ns = np.arange(4, 18, 2)
+    ns = np.arange(4, 15, 2)
     ps = np.arange(1, 4)
     plot_results(err, times, times2, ns, ps)
 

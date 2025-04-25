@@ -41,7 +41,12 @@ class SplineBasis:
         else:
             self.T = self._init_knots()
 
-    def __call__(self, x: Union[float, jnp.ndarray], i: Union[int, jnp.ndarray]) -> jnp.ndarray:
+        if p >= n and p != 1:  # n = p = 1 is allowed for ignoring the third dimension
+            raise ValueError(f"Degree {p} is greater than or equal to the number of splines {n}")
+        if type not in ['clamped', 'periodic', 'constant', 'fourier']:
+            raise ValueError(f"Invalid spline type: {type}")
+
+    def __call__(self, x: float, i: int) -> jnp.ndarray:
         """Evaluate the ith spline at point x.
 
         Args:
@@ -162,7 +167,7 @@ class SplineBasis:
         else:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+self.p+1]),
-                self._abitrary(x, jax.lax.dynamic_slice(self.T, (i,), (self.p+2,)), self.p, i),
+                self._arbitrary(x, jax.lax.dynamic_slice(self.T, (i,), (self.p+2,)), self.p, i),
                 jnp.array(0.0, dtype=jnp.float64)
             )
 
@@ -261,7 +266,7 @@ class SplineBasis:
             )
         )
 
-    def _abitrary(self, x: Union[float, jnp.ndarray], t: jnp.ndarray, p:float,i:float) -> jnp.ndarray:
+    def _arbitrary(self, x: Union[float, jnp.ndarray], t: jnp.ndarray, p:float,i:float) -> jnp.ndarray:
 
         """Evaluate an arbitrary degree spline.
 
@@ -282,10 +287,10 @@ class SplineBasis:
             
         else:
             # Recursive definition of the B-spline basis functions
-            return (self.__safe_divide((x - t[i])*(t[i + p + 1] - t[i + 1])*self._abitrary(x, t, i, p - 1) + (t[i + p + 1] - x)*(t[i + p] - t[i])*self._abitrary(x, t, i + 1, p - 1), (t[i + p] - t[i])*(t[i + p + 1] - t[i + 1]))) 
+            return (self.__safe_divide((x - t[i])*(t[i + p + 1] - t[i + 1])*self._arbitrary(x, t, i, p - 1) + (t[i + p + 1] - x)*(t[i + p] - t[i])*self._arbitrary(x, t, i + 1, p - 1), (t[i + p] - t[i])*(t[i + p + 1] - t[i + 1]))) 
 
-            # return (self.__safe_divide((x - t[i]), (t[i + p] - t[i]))) * self._abitrary(x, t, i, p - 1) + \
-            #     (self.__safe_divide((t[i + p + 1] - x), (t[i + p + 1] - t[i + 1]))) * self._abitrary(x, t, i + 1, p - 1)
+            # return (self.__safe_divide((x - t[i]), (t[i + p] - t[i]))) * self._arbitrary(x, t, i, p - 1) + \
+            #     (self.__safe_divide((t[i + p + 1] - x), (t[i + p + 1] - t[i + 1]))) * self._arbitrary(x, t, i + 1, p - 1)
         # B_i,p = (x - t_i)/(t_{i+p} - t_i) * B_i,p-1 + (t_{i+p+1} - x)/(t_{i+p+1} - t_{i+1}) * B_{i+1},p-1
 
 
@@ -313,7 +318,11 @@ class TensorBasis:
 
         Args:
             bases: List of one-dimensional SplineBasis objects to form the tensor product
+        Raises:
+            ValueError: If the number of bases is not exactly 3
         """
+        if len(bases) != 3:
+            raise ValueError(f"TensorBasis requires exactly 3 bases, got {len(bases)}")
         self.bases = bases
         self.shape = jnp.array([b.n for b in bases])
         self.n = bases[0].n * bases[1].n * bases[2].n
@@ -329,10 +338,11 @@ class TensorBasis:
         Returns:
             jnp.ndarray: Value of the i-th tensor product basis function at x
         """
-        ijk = jnp.unravel_index(i, tuple(self.shape))
-        return self.bases[0](jnp.asarray(x[0], dtype=float), jnp.asarray(ijk[0], dtype=int)) * \
-            self.bases[1](jnp.asarray(x[1], dtype=float), jnp.asarray(ijk[1], dtype=int)) * \
-            self.bases[2](jnp.asarray(x[2], dtype=float), jnp.asarray(ijk[2], dtype=int))
+        if x.shape[0] != len(self.bases):
+            raise ValueError(f"Input point dimension {x.shape[0]} does not match number of bases {len(self.bases)}")
+
+        ijk = jnp.unravel_index(i, self.shape)
+        return self.bases[0](x[0], ijk[0]) * self.bases[1](x[1], ijk[1]) * self.bases[2](x[2], ijk[2])
 
     def __call__(self, x: jnp.ndarray, i: int) -> jnp.ndarray:
         """Evaluate the i-th tensor product basis function at point x.

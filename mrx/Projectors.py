@@ -142,18 +142,19 @@ class Projector:
         Returns:
             array: Projection coefficients for the 2-form
         """
-        DF = jax.jacfwd(self.F)
+        # DF = jax.jacfwd(self.F)
 
         def _B(x):
-            return DF(x) @ B(x)
+            return B(x)
 
         def _Λ(x, i):
-            return DF(x) @ self.Λ(x, i)
+            return self.Λ(x, i)
         Bjk = jax.vmap(_B)(self.Q.x)  # n_q x d
         Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
+        # Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w
-        return jnp.einsum("ijk,jk,j,j->i", Λijk, Bjk, 1/Jj, wj)
+        return jnp.einsum("ijk,jk,j->i", Λijk, Bjk, wj)
+        # return jnp.einsum("ijk,jk,j,j->i", Λijk, Bjk, 1/Jj, wj)
 
     def threeform_projection(self, f):
         """
@@ -168,9 +169,10 @@ class Projector:
         # Evaluate all basis functions at quadrature points
         Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x 1
         fjk = jax.vmap(f)(self.Q.x)  # n_q x 1
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
-        return jnp.einsum("ijk,jk,j,j->i", Λijk, fjk, 1/Jj, wj)
+        return jnp.einsum("ijk,jk,j->i", Λijk, fjk, wj)
+        # Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
+        # return jnp.einsum("ijk,jk,j,j->i", Λijk, fjk, 1/Jj, wj)
 
 
 class CurlProjection:

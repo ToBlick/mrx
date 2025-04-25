@@ -1,9 +1,29 @@
+"""Polar Helicity Analysis Script
+
+This script analyzes the convergence properties of magnetic helicity calculations in a polar geometry.
+It computes and visualizes errors in vector potential (A), magnetic helicity (H), and curl of A for
+different polynomial degrees and mesh resolutions.
+
+The script demonstrates:
+1. Error convergence rates for different polynomial degrees
+2. Computational time scaling with mesh resolution
+3. Comparison of exact vs reconstructed fields
+4. Visualization of error metrics in log-log plots
+
+Key components:
+- Differential forms for field representation
+- Polar mapping for geometry definition
+- Lazy matrices for efficient computation
+- Error analysis for different field quantities
+"""
+
 # %%
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import time
+from pathlib import Path
 
 from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
@@ -15,16 +35,33 @@ from functools import partial
 jax.config.update("jax_enable_x64", True)
 # %%
 
+# Create output directory for figures
+output_dir = Path("scripts_output")
+output_dir.mkdir(parents=True, exist_ok=True)
+
 
 @partial(jax.jit, static_argnames=['n', 'p'])
 def get_error(n, p):
+    """Compute error metrics for magnetic helicity calculations.
 
+    Args:
+        n: Number of elements in each direction
+        p: Polynomial degree
+
+    Returns:
+        tuple: (A_err, H_err, curl_A_err)
+            A_err: Relative L2 error in vector potential reconstruction
+            H_err: Relative error in magnetic helicity
+            curl_A_err: Relative L2 error in curl of vector potential
+    """
     types = ('clamped', 'periodic', 'constant')
     ns = (n, n, 1)
     ps = (p, p, 0)
 
     Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(i, ns, ps, types) for i in range(4)]
-    Q = QuadratureRule(Λ0, 10)
+
+    # Warning: this works with q = 3 but appears NOT to work with q = 10
+    Q = QuadratureRule(Λ0, 3)
 
     ###
     # Mapping definition
@@ -49,7 +86,8 @@ def get_error(n, p):
                                     _Y(r, χ),
                                     _R(r, χ) * jnp.sin(2 * jnp.pi * z)]))
 
-    ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
+    ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
+    Q = QuadratureRule(Λ0, 10)  # Redefine at higher order
     E0, E1, E2, E3 = [LazyExtractionOperator(Λ, ξ, True).M for Λ in [Λ0, Λ1, Λ2, Λ3]]
     M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q, F, E).M for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
     P0, P1, P2, P3 = [Projector(Λ, Q, F, E) for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
@@ -94,17 +132,49 @@ A_err = np.zeros((len(ns), len(ps)))
 H_err = np.zeros((len(ns), len(ps)))
 curl_A_err = np.zeros((len(ns), len(ps)))
 times = np.zeros((len(ns), len(ps)))
+
+# Main analysis loop - first run (includes JIT compilation)
+print("\nRunning first analysis (includes JIT compilation)...")
+times_first = np.zeros((len(ns), len(ps)))
 for i, n in enumerate(ns):
     for j, p in enumerate(ps):
         start = time.time()
         _A_err, _H_err, _curl_A_err = get_error(n, p)
+        end = time.time()
+        times_first[i, j] = end - start
         A_err[i, j] = _A_err
         H_err[i, j] = _H_err
         curl_A_err[i, j] = _curl_A_err
+        print(f"n={n}, p={p}, A_err={A_err[i, j]:.2e}, H_err={H_err[i, j]:.2e}, curl_A_err={curl_A_err[i, j]:.2e}, time={times_first[i, j]:.2f}s")
+
+# Main analysis loop - second run (after JIT compilation)
+print("\nRunning second analysis (after JIT compilation)...")
+times_second = np.zeros((len(ns), len(ps)))
+for i, n in enumerate(ns):
+    for j, p in enumerate(ps):
+        start = time.time()
+        _A_err, _H_err, _curl_A_err = get_error(n, p)
         end = time.time()
-        times[i, j] = end - start
-        print(f"n={n}, p={p}, A_err={A_err[i, j]}, H_err={H_err[i, j]}, curl_A_err={curl_A_err[i, j]}, time={times[i, j]}")
-# %%
+        times_second[i, j] = end - start
+        print(f"n={n}, p={p}, A_err={_A_err:.2e}, H_err={_H_err:.2e}, curl_A_err={_curl_A_err:.2e}, time={times_second[i, j]:.2f}s")
+
+# Calculate speedup
+speedup = times_first / times_second
+
+# Plot and save speedup
+plt.figure(figsize=(10, 6))
+plt.plot(ns, speedup[:, 0], label='p=1', marker='o')
+plt.plot(ns, speedup[:, 1], label='p=2', marker='*')
+plt.plot(ns, speedup[:, 2], label='p=3', marker='s')
+plt.xlabel('n')
+plt.ylabel('Speedup')
+plt.title('JIT Compilation Speedup')
+plt.grid(True)
+plt.legend()
+plt.savefig(output_dir / 'jit_speedup.png', dpi=300, bbox_inches='tight')
+
+# Plot and save vector potential error convergence
+plt.figure(figsize=(10, 6))
 plt.plot(ns, A_err[:, 0], label='p=1', marker='o')
 plt.plot(ns, A_err[:, 1], label='p=2', marker='*')
 plt.plot(ns, A_err[:, 2], label='p=3', marker='s')
@@ -114,9 +184,13 @@ plt.plot(ns, A_err[-1, 2] * (ns/ns[-1])**(-6), label='O(n^-6)', linestyle='--')
 plt.loglog()
 plt.xlabel('n')
 plt.ylabel('A Error')
+plt.title('Vector Potential Error Convergence')
+plt.grid(True)
 plt.legend()
+plt.savefig(output_dir / 'vector_potential_error.png', dpi=300, bbox_inches='tight')
 
-# %%
+# Plot and save curl error convergence
+plt.figure(figsize=(10, 6))
 plt.plot(ns, curl_A_err[:, 0], label='p=1', marker='o')
 plt.plot(ns, curl_A_err[:, 1], label='p=2', marker='*')
 plt.plot(ns, curl_A_err[:, 2], label='p=3', marker='s')
@@ -126,9 +200,13 @@ plt.plot(ns, curl_A_err[-1, 2] * (ns/ns[-1])**(-6), label='O(n^-6)', linestyle='
 plt.loglog()
 plt.xlabel('n')
 plt.ylabel('curl A Error')
+plt.title('Curl Error Convergence')
+plt.grid(True)
 plt.legend()
+plt.savefig(output_dir / 'curl_error.png', dpi=300, bbox_inches='tight')
 
-# %%
+# Plot and save helicity error convergence
+plt.figure(figsize=(10, 6))
 plt.plot(ns, H_err[:, 0], label='p=1', marker='o')
 plt.plot(ns, H_err[:, 1], label='p=2', marker='*')
 plt.plot(ns, H_err[:, 2], label='p=3', marker='s')
@@ -138,8 +216,13 @@ plt.plot(ns, H_err[-1, 2] * (ns/ns[-1])**(-6), label='O(n^-6)', linestyle='--')
 plt.loglog()
 plt.xlabel('n')
 plt.ylabel('H Error')
+plt.title('Helicity Error Convergence')
+plt.grid(True)
 plt.legend()
-# %%
+plt.savefig(output_dir / 'helicity_error.png', dpi=300, bbox_inches='tight')
+
+# Plot and save computational time scaling
+plt.figure(figsize=(10, 6))
 plt.plot(ns, times[:, 0], label='p=1', marker='o')
 plt.plot(ns, times[:, 1], label='p=2', marker='*')
 plt.plot(ns, times[:, 2], label='p=3', marker='s')
@@ -147,112 +230,16 @@ plt.plot(ns, times[0, 0] * (ns/ns[0])**(4), label='O(n^4)', linestyle='--')
 plt.loglog()
 plt.xlabel('n')
 plt.ylabel('Time [s]')
+plt.title('Computational Time Scaling')
+plt.grid(True)
 plt.legend()
+plt.savefig(output_dir / 'time_scaling.png', dpi=300, bbox_inches='tight')
 
-# # %%
-# A_hat @ M12 @ B_hat
-# # %%
-# # Op = jnp.block([[C, D0],
-# #                [D0.T, jnp.zeros((D0.shape[1], D0.shape[1]))]])
-# # U, S, Vh = jnp.linalg.svd(Op)
-# # plt.plot(S / S[0])
-# # plt.yscale('log')
-# # plt.xlabel('index')
-# # plt.ylabel('singular value')
-# # # %%
-# # S_inv = jnp.where(S > 1e-4, 1/S, 0)
-# # rhs = jnp.concatenate([D1.T @ B_hat, jnp.zeros(D0.shape[1])])
-# # Aq_hat = U @ jnp.diag(S_inv) @ Vh @ rhs
-# # A_hat_recon, q_hat = jnp.split(Aq_hat, [D0.shape[0]])
-# # %%
+# Show all plots
+plt.show()
 
-# U, S, Vh = jnp.linalg.svd(C)
-# plt.plot(S / S[0], marker='o', markersize=3)
-# plt.yscale('log')
-# plt.xlabel('index')
-# plt.ylabel('singular value')
-# S_inv = jnp.where(S/S[0] > 1e-12, 1/S, 0)
-# # %%
-# A_hat_recon = Vh.T @ jnp.diag(S_inv) @ U.T @ D1.T @ B_hat
-# # %%
-# A_err = ( (A_hat - A_hat_recon) @ M1 @ (A_hat - A_hat_recon) / (A_hat @ M1 @ A_hat) )**0.5
-# print("error in A:", A_err)
-# # %%
-# print("error in Helicity:", (A_hat - A_hat_recon) @ M12 @ B_hat / (A_hat @ M12 @ B_hat) )
-# # %%
-# curl_A_err = ( jnp.linalg.solve(M2, D1 @ (A_hat - A_hat_recon)) @ M2 @ jnp.linalg.solve(M2, D1 @ (A_hat - A_hat_recon)) / ( jnp.linalg.solve(M2, D1 @ A_hat) @ M2 @ jnp.linalg.solve(M2, D1 @ A_hat) ) )**0.5
-# print("error in curl A:", curl_A_err)
-# # %%
-# plt.plot(A_hat, label = 'A')
-# plt.plot(A_hat_recon, label = 'A recon')
-# plt.legend()
-# # %%
-# plt.plot(jnp.linalg.solve(M2, D1 @ A_hat), label = 'curl A')
-# plt.plot(jnp.linalg.solve(M2, D1 @ A_hat_recon), label = 'curl A recon')
-# plt.legend()
-# # %%
-# A_h = DiscreteFunction(A_hat, Λ1, E1)
-# B_h = DiscreteFunction(B_hat, Λ2, E2)
-# A_h_recon = DiscreteFunction(A_hat_recon, Λ1, E1)
-# curlA_h_recon = DiscreteFunction(jnp.linalg.solve(M2, D1 @ A_hat_recon), Λ2, E2)
-
-# # %%
-# F = lambda x: x
-# ɛ = 1e-5
-# nx = 64
-# _x1 = jnp.linspace(ɛ, 1-ɛ, nx)
-# _x2 = jnp.linspace(ɛ, 1-ɛ, nx)
-# _x3 = jnp.ones(1)/2
-# _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
-# _x = _x.transpose(1, 2, 3, 0).reshape(nx*nx*1, 3)
-# _y = jax.vmap(F)(_x)
-# _y1 = _y[:,0].reshape(nx, nx)
-# _y2 = _y[:,1].reshape(nx, nx)
-# _nx = 16
-# __x1 = jnp.linspace(ɛ, 1-ɛ, _nx)
-# __x2 = jnp.linspace(ɛ, 1-ɛ, _nx)
-# __x3 = jnp.ones(1)/2
-# __x = jnp.array(jnp.meshgrid(__x1, __x2, __x3))
-# __x = __x.transpose(1, 2, 3, 0).reshape(_nx*_nx*1, 3)
-# __y = jax.vmap(F)(__x)
-# __y1 = __y[:,0].reshape(_nx, _nx)
-# __y2 = __y[:,1].reshape(_nx, _nx)
-
-# # %%
-# F_u = Pullback(curlA_h_recon, F, 2)
-# F_u_h = Pullback(B_h, F, 2)
-# _z1 = jax.vmap(F_u_h)(_x).reshape(nx, nx, 3)
-# _z1_norm = jnp.linalg.norm(_z1, axis=2)
-# _z2 = jax.vmap(F_u)(_x).reshape(nx, nx, 3)
-# _z2_norm = jnp.linalg.norm(_z2, axis=2)
-# plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
-# plt.colorbar()
-# plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
-# __z1 = jax.vmap(F_u_h)(__x).reshape(_nx, _nx, 3)
-# plt.quiver(
-#     __y1,
-#     __y2,
-#     __z1[:,:,0],
-#     __z1[:,:,1],
-#     color='w')
-# # %%
-# F_u = Pullback(A_h_recon, F, 1)
-# F_u_h = Pullback(A_h, F, 1)
-# _z1 = jax.vmap(F_u_h)(_x).reshape(nx, nx, 3)
-# _z1_norm = jnp.linalg.norm(_z1, axis=2)
-# _z2 = jax.vmap(F_u)(_x).reshape(nx, nx, 3)
-# _z2_norm = jnp.linalg.norm(_z2, axis=2)
-# plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
-# plt.colorbar()
-# plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
-# __z1 = jax.vmap(F_u_h)(__x).reshape(_nx, _nx, 3)
-# plt.quiver(
-#     __y1,
-#     __y2,
-#     __z1[:,:,0],
-#     __z1[:,:,1],
-#     color='w')
-
-# # %%
-
-# %%
+print("\nAnalysis completed successfully!")
+print(f"Figures saved to: {output_dir}")
+print("\nAverage speedup after JIT compilation:")
+for j, p in enumerate(ps):
+    print(f"p={p}: {np.mean(speedup[:, j]):.2f}x")

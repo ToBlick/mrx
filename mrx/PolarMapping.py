@@ -10,7 +10,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.Projectors import Projector
-from mrx.Quadrature import QuadratureRule
 from mrx.LazyMatrices import LazyMassMatrix
 
 
@@ -259,7 +258,7 @@ class LazyExtractionOperator:
         return jax.vmap(jax.vmap(self._element, (None, 0)), (0, None))(jnp.arange(self.n), jnp.arange(self.Λ.n))
 
 
-def get_xi(_R, _Y, Λ0):
+def get_xi(_R, _Y, Λ0, Q):
     """
     Compute polar mapping coefficients.
 
@@ -280,7 +279,6 @@ def get_xi(_R, _Y, Λ0):
             - τ: Scaling parameter
     """
     nr, nχ, nζ = Λ0.nr, Λ0.nχ, Λ0.nζ
-    Q = QuadratureRule(Λ0, 3)  # Hardcoded quadrature rule, should this function accept q
     P = Projector(Λ0, Q)
     M = LazyMassMatrix(Λ0, Q).M
 
