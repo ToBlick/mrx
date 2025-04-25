@@ -21,7 +21,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import os
 from pathlib import Path
-
+from typing import Tuple
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector, CurlProjection

@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 from typing import Optional, Callable, Union
 
+
 class SplineBasis:
     """A class representing a basis of spline functions.
 
@@ -148,9 +149,6 @@ class SplineBasis:
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+2]),
                 self._lin_spline(x, jax.lax.dynamic_slice(self.T, (i,), (3,))),
                 jnp.array(0.0, dtype=jnp.float64))
-        
-    
-
         elif self.p == 2:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+3]),
@@ -162,8 +160,6 @@ class SplineBasis:
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+4]),
                 self._cubic_spline(x, jax.lax.dynamic_slice(self.T, (i,), (5,))),
                 jnp.array(0.0, dtype=jnp.float64))
-        
-
         else:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+self.p+1]),
@@ -266,8 +262,7 @@ class SplineBasis:
             )
         )
 
-    def _arbitrary(self, x: Union[float, jnp.ndarray], t: jnp.ndarray, p:float,i:float) -> jnp.ndarray:
-
+    def _arbitrary(self, x: Union[float, jnp.ndarray], t: jnp.ndarray, p: float, i: float) -> jnp.ndarray:
         """Evaluate an arbitrary degree spline.
 
         Args:
@@ -284,17 +279,15 @@ class SplineBasis:
         # B_i,0
         if p == 0:
             return self._const_spline(x, t)
-            
+
         else:
             # Recursive definition of the B-spline basis functions
-            return (self.__safe_divide((x - t[i])*(t[i + p + 1] - t[i + 1])*self._arbitrary(x, t, i, p - 1) + (t[i + p + 1] - x)*(t[i + p] - t[i])*self._arbitrary(x, t, i + 1, p - 1), (t[i + p] - t[i])*(t[i + p + 1] - t[i + 1]))) 
+            return (self.__safe_divide((x - t[i])*(t[i + p + 1] - t[i + 1])*self._arbitrary(x, t, i, p - 1) + (t[i + p + 1] - x)*(t[i + p] - t[i])*self._arbitrary(x, t, i + 1, p - 1), (t[i + p] - t[i])*(t[i + p + 1] - t[i + 1])))
 
             # return (self.__safe_divide((x - t[i]), (t[i + p] - t[i]))) * self._arbitrary(x, t, i, p - 1) + \
             #     (self.__safe_divide((t[i + p + 1] - x), (t[i + p + 1] - t[i + 1]))) * self._arbitrary(x, t, i + 1, p - 1)
         # B_i,p = (x - t_i)/(t_{i+p} - t_i) * B_i,p-1 + (t_{i+p+1} - x)/(t_{i+p+1} - t_{i+1}) * B_{i+1},p-1
 
-
-     
 
 class TensorBasis:
     """A class representing a tensor product of spline bases.
