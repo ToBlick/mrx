@@ -10,7 +10,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.Projectors import Projector
-from mrx.Quadrature import QuadratureRule
 from mrx.LazyMatrices import LazyMassMatrix
 
 
@@ -100,7 +99,8 @@ class LazyExtractionOperator:
             return 0, idx
         elif self.k == 1 or self.k == 2:
             category = jnp.int32(idx >= n1) + jnp.int32(idx >= n1 + n2)
-            index = idx - n1 * jnp.int32(idx >= n1) - n2 * jnp.int32(idx >= n1 + n2)
+            index = idx - n1 * jnp.int32(idx >= n1) - \
+                n2 * jnp.int32(idx >= n1 + n2)
             return category, index
 
     def _element(self, row_idx, col_idx):
@@ -116,45 +116,87 @@ class LazyExtractionOperator:
         """
         if self.k == 0:
             # Handle 0-forms
-            return jnp.where(row_idx < 3 * self.nζ,
-                             self._inner_zeroform(row_idx, col_idx, self.nr, self.nχ, self.nζ),
-                             self._outer_zeroform(row_idx - 3 * self.nζ, col_idx, self.nr, self.nχ, self.nζ))
+            return jnp.where(
+                row_idx < 3 * self.nζ,
+                self._inner_zeroform(
+                    row_idx, col_idx, self.nr, self.nχ, self.nζ),
+                self._outer_zeroform(
+                    row_idx - 3 * self.nζ, col_idx, self.nr, self.nχ, self.nζ
+                ),
+            )
         if self.k == 1:
             # Handle 1-forms
             cat_row, row_idx = self._vector_index(row_idx)
             cat_col, col_idx = self.Λ._vector_index(col_idx)
-            return jnp.where(cat_row == 0,
-                             # r-component
-                             self._threeform(row_idx, col_idx, self.dr, self.nχ, self.nζ) * jnp.int32(cat_row == cat_col),
-                             jnp.where(cat_row == 1,
-                                       # χ-component
-                                       jnp.where(row_idx < 2 * self.nζ,
-                                                 self.inner_oneform_r(row_idx, col_idx, self.dr, self.nχ, self.nζ) * jnp.int32(cat_col == 0) +
-                                                 self.inner_oneform_χ(row_idx, col_idx, self.nr, self.dχ, self.nζ) * jnp.int32(cat_col == 1),
-                                                 self._outer_zeroform(row_idx - 2 * self.nζ, col_idx, self.nr, self.dχ, self.nζ) * jnp.int32(cat_row == cat_col)),
-                                       # ζ-component
-                                       jnp.where(row_idx < 3 * self.dζ,
-                                                 self._inner_zeroform(row_idx, col_idx, self.nr, self.nχ, self.dζ) * jnp.int32(cat_row == cat_col),
-                                                 self._outer_zeroform(row_idx - 3 * self.dζ, col_idx, self.nr, self.nχ, self.dζ) * jnp.int32(cat_row == cat_col))
-                                       )
-                             )
+            return jnp.where(
+                cat_row == 0,
+                # r-component
+                self._threeform(row_idx, col_idx, self.dr, self.nχ, self.nζ)
+                * jnp.int32(cat_row == cat_col),
+                jnp.where(
+                    cat_row == 1,
+                    # χ-component
+                    jnp.where(
+                        row_idx < 2 * self.nζ,
+                        self.inner_oneform_r(
+                            row_idx, col_idx, self.dr, self.nχ, self.nζ
+                        )
+                        * jnp.int32(cat_col == 0)
+                        + self.inner_oneform_χ(
+                            row_idx, col_idx, self.nr, self.dχ, self.nζ
+                        )
+                        * jnp.int32(cat_col == 1),
+                        self._outer_zeroform(
+                            row_idx - 2 * self.nζ, col_idx, self.nr, self.dχ, self.nζ
+                        )
+                        * jnp.int32(cat_row == cat_col),
+                    ),
+                    # ζ-component
+                    jnp.where(
+                        row_idx < 3 * self.dζ,
+                        self._inner_zeroform(
+                            row_idx, col_idx, self.nr, self.nχ, self.dζ
+                        )
+                        * jnp.int32(cat_row == cat_col),
+                        self._outer_zeroform(
+                            row_idx - 3 * self.dζ, col_idx, self.nr, self.nχ, self.dζ
+                        )
+                        * jnp.int32(cat_row == cat_col),
+                    ),
+                ),
+            )
         if self.k == 2:
             # Handle 2-forms
             cat_row, row_idx = self._vector_index(row_idx)
             cat_col, col_idx = self.Λ._vector_index(col_idx)
-            return jnp.where(cat_row == 0,
-                             # r-component
-                             jnp.where(row_idx < 2 * self.nζ,
-                                       self.inner_oneform_χ(row_idx, col_idx, self.nr, self.dχ, self.dζ) * jnp.int32(cat_col == 0) -
-                                       self.inner_oneform_r(row_idx, col_idx, self.dr, self.nχ, self.dζ) * jnp.int32(cat_col == 1),
-                                       self._outer_zeroform(row_idx - 2 * self.nζ, col_idx, self.nr, self.dχ, self.dζ) * jnp.int32(cat_row == cat_col)),
-                             jnp.where(cat_row == 1,
-                                       # χ-component
-                                       self._threeform(row_idx, col_idx, self.dr, self.nχ, self.dζ) * jnp.int32(cat_row == cat_col),
-                                       # ζ-component
-                                       self._threeform(row_idx, col_idx, self.dr, self.dχ, self.nζ) * jnp.int32(cat_row == cat_col),
-                                       )
-                             )
+            return jnp.where(
+                cat_row == 0,
+                # r-component
+                jnp.where(
+                    row_idx < 2 * self.nζ,
+                    self.inner_oneform_χ(
+                        row_idx, col_idx, self.nr, self.dχ, self.dζ)
+                    * jnp.int32(cat_col == 0)
+                    - self.inner_oneform_r(row_idx, col_idx,
+                                           self.dr, self.nχ, self.dζ)
+                    * jnp.int32(cat_col == 1),
+                    self._outer_zeroform(
+                        row_idx - 2 * self.nζ, col_idx, self.nr, self.dχ, self.dζ
+                    )
+                    * jnp.int32(cat_row == cat_col),
+                ),
+                jnp.where(
+                    cat_row == 1,
+                    # χ-component
+                    self._threeform(row_idx, col_idx,
+                                    self.dr, self.nχ, self.dζ)
+                    * jnp.int32(cat_row == cat_col),
+                    # ζ-component
+                    self._threeform(row_idx, col_idx,
+                                    self.dr, self.dχ, self.nζ)
+                    * jnp.int32(cat_row == cat_col),
+                ),
+            )
         if self.k == 3:
             # Handle 3-forms
             return self._threeform(row_idx, col_idx, self.nr, self.nχ, self.nζ)
@@ -173,9 +215,9 @@ class LazyExtractionOperator:
         Returns:
             jnp.ndarray: The basis function value
         """
-        level, mode = jnp.unravel_index(row_idx, (3, nζ))
+        p, m = jnp.unravel_index(row_idx, (3, nζ))
         i, j, k = jnp.unravel_index(col_idx, (nr, nχ, nζ))
-        return jnp.int32(k == mode) * jnp.int32(i < 2) * self.ξ[level, i, j]
+        return jnp.int32(k == m) * jnp.int32(i < 2) * self.ξ[p, i, j]
 
     def _outer_zeroform(self, row_idx, col_idx, nr, nχ, nζ):
         """
@@ -192,12 +234,10 @@ class LazyExtractionOperator:
             jnp.ndarray: The basis function value
         """
         i, j, k = jnp.unravel_index(row_idx, (nr, nχ, nζ))
-        return (
-            jnp.int32(col_idx == jnp.ravel_multi_index((i + 2, j, k), (nr, nχ, nζ), mode='clip'))
-            * jnp.where(self.o == 1,
-                        jnp.int32(i != nr-1),
-                        1)
-        )
+        return jnp.int32(
+            col_idx == jnp.ravel_multi_index(
+                (i + 2, j, k), (nr, nχ, nζ), mode="clip")
+        ) * jnp.where(self.o == 1, jnp.int32(i != nr - 1), 1)
 
     def inner_oneform_r(self, row_idx, col_idx, nr, nχ, nζ):
         """
@@ -213,10 +253,13 @@ class LazyExtractionOperator:
         Returns:
             jnp.ndarray: The basis function value
         """
-        level, mode = jnp.unravel_index(row_idx, (2, nζ))
-        level += 1
+        p, m = jnp.unravel_index(row_idx, (2, nζ))
+        p += 1
         i, j, k = jnp.unravel_index(col_idx, (nr, nχ, nζ))
-        return jnp.int32(k == mode) * jnp.int32(i == 0) * (self.ξ[level, 1, j] - self.ξ[level, 0, j])
+        return (
+            jnp.int32(k == m) * jnp.int32(i == 0) *
+            (self.ξ[p, 1, j] - self.ξ[p, 0, j])
+        )
 
     def inner_oneform_χ(self, row_idx, col_idx, nr, nχ, nζ):
         """
@@ -232,10 +275,14 @@ class LazyExtractionOperator:
         Returns:
             jnp.ndarray: The basis function value
         """
-        level, mode = jnp.unravel_index(row_idx, (2, nζ))
-        level += 1
+        p, m = jnp.unravel_index(row_idx, (2, nζ))
+        p += 1
         i, j, k = jnp.unravel_index(col_idx, (nr, nχ, nζ))
-        return jnp.int32(k == mode) * jnp.int32(i == 1) * (self.ξ[level, 1, jnp.mod(j+1, nχ)] - self.ξ[level, 1, j])
+        return (
+            jnp.int32(k == m)
+            * jnp.int32(i == 1)
+            * (self.ξ[p, 1, jnp.mod(j + 1, nχ)] - self.ξ[p, 1, j])
+        )
 
     def _threeform(self, row_idx, col_idx, nr, nχ, nζ):
         """
@@ -252,11 +299,16 @@ class LazyExtractionOperator:
             jnp.ndarray: The basis function value
         """
         i, j, k = jnp.unravel_index(row_idx, (nr, nχ, nζ))
-        return jnp.int32(col_idx == jnp.ravel_multi_index((i + 1, j, k), (nr, nχ, nζ), mode='clip'))
+        return jnp.int32(
+            col_idx == jnp.ravel_multi_index(
+                (i + 1, j, k), (nr, nχ, nζ), mode="clip")
+        )
 
     def assemble(self):
         """Assemble the complete operator matrix."""
-        return jax.vmap(jax.vmap(self._element, (None, 0)), (0, None))(jnp.arange(self.n), jnp.arange(self.Λ.n))
+        return jax.vmap(jax.vmap(self._element, (None, 0)), (0, None))(
+            jnp.arange(self.n), jnp.arange(self.Λ.n)
+        )
 
 
 def get_xi(_R, _Y, Λ0, Q):
@@ -301,16 +353,19 @@ def get_xi(_R, _Y, Λ0, Q):
     ΔY = cY[1, :, 0] - Y0
     τ = jnp.max(
         jnp.array(
-            [jnp.max(-2 * ΔR),
-             jnp.max(ΔR - jnp.sqrt(3) * ΔY),
-             jnp.max(ΔR + jnp.sqrt(3) * ΔY)]
+            [
+                jnp.max(-2 * ΔR),
+                jnp.max(ΔR - jnp.sqrt(3) * ΔY),
+                jnp.max(ΔR + jnp.sqrt(3) * ΔY),
+            ]
         )
     )
     ξ00 = jnp.ones(nχ) / 3
-    ξ01 = 1/3 + 2/(3*τ) * ΔR
+    ξ01 = 1 / 3 + 2 / (3 * τ) * ΔR
     ξ10 = jnp.ones(nχ) / 3
-    ξ11 = 1/3 - 1/(3*τ) * ΔR + jnp.sqrt(3)/(3*τ) * ΔY
+    ξ11 = 1 / 3 - 1 / (3 * τ) * ΔR + jnp.sqrt(3) / (3 * τ) * ΔY
     ξ20 = jnp.ones(nχ) / 3
-    ξ21 = 1/3 - 1/(3*τ) * ΔR - jnp.sqrt(3)/(3*τ) * ΔY
-    ξ = jnp.array([[ξ00, ξ01], [ξ10, ξ11], [ξ20, ξ21]])  # (3, 2, nχ) -> level, i, j
+    ξ21 = 1 / 3 - 1 / (3 * τ) * ΔR - jnp.sqrt(3) / (3 * τ) * ΔY
+    # (3, 2, nχ) -> l, i, j
+    ξ = jnp.array([[ξ00, ξ01], [ξ10, ξ11], [ξ20, ξ21]])
     return ξ, R_hat, Y_hat, Λ0, τ

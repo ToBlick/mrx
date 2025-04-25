@@ -11,6 +11,7 @@ from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix
 from mrx.Utils import l2_product
 from functools import partial
+
 jax.config.update("jax_enable_x64", True)
 # %%
 ###
@@ -18,7 +19,7 @@ jax.config.update("jax_enable_x64", True)
 ###
 
 
-@partial(jax.jit, static_argnames=['n', 'p'])
+@partial(jax.jit, static_argnames=["n", "p"])
 def get_err(n, p):
     """Compute error for mixed Poisson problem."""
     ns = (n, n, 1)
@@ -29,8 +30,9 @@ def get_err(n, p):
         return jnp.ones(1) * jnp.sin(2 * jnp.pi * r) * jnp.sin(2 * jnp.pi * χ)
 
     def f(x):
-        return 2 * (2*jnp.pi)**2 * u(x)
-    types = ('clamped', 'clamped', 'constant')
+        return 2 * (2 * jnp.pi) ** 2 * u(x)
+
+    types = ("clamped", "clamped", "constant")
     Λ0 = DifferentialForm(0, ns, ps, types)
     Λ2 = DifferentialForm(2, ns, ps, types)
     Λ3 = DifferentialForm(3, ns, ps, types)
@@ -42,8 +44,12 @@ def get_err(n, p):
     P3 = Projector(Λ3, Q)
     u_hat = jnp.linalg.solve(K, P3(f))
     u_h = DiscreteFunction(u_hat, Λ3)
-    def err(x): return u(x) - u_h(x)
-    return (l2_product(err, err, Q) / l2_product(u, u, Q))**0.5
+
+    def err(x):
+        return u(x) - u_h(x)
+
+    return (l2_product(err, err, Q) / l2_product(u, u, Q)) ** 0.5
+
 
 # %%
 ns = np.arange(7, 21, 2)
@@ -56,25 +62,25 @@ for i, n in enumerate(ns):
         err[i, j] = get_err(n, p)
         end = time.time()
         times[i, j] = end - start
-        print(f"n={n}, p={p}, err={err[i,j]}, time={times[i,j]}")
+        print(f"n={n}, p={p}, err={err[i, j]}, time={times[i, j]}")
 # %%
-plt.plot(ns, err[:, 0], label='p=1', marker='o')
-plt.plot(ns, err[:, 1], label='p=2', marker='*')
-plt.plot(ns, err[:, 2], label='p=3', marker='s')
-plt.plot(ns, err[-1, 0] * (ns/ns[-1])**(-1), label='O(n^-1)', linestyle='--')
-plt.plot(ns, err[-1, 1] * (ns/ns[-1])**(-2), label='O(n^-2)', linestyle='--')
-plt.plot(ns, err[-1, 2] * (ns/ns[-1])**(-4), label='O(n^-4)', linestyle='--')
+plt.plot(ns, err[:, 0], label="p=1", marker="o")
+plt.plot(ns, err[:, 1], label="p=2", marker="*")
+plt.plot(ns, err[:, 2], label="p=3", marker="s")
+plt.plot(ns, err[-1, 0] * (ns / ns[-1]) ** (-1), label="O(n^-1)", linestyle="--")
+plt.plot(ns, err[-1, 1] * (ns / ns[-1]) ** (-2), label="O(n^-2)", linestyle="--")
+plt.plot(ns, err[-1, 2] * (ns / ns[-1]) ** (-4), label="O(n^-4)", linestyle="--")
 plt.loglog()
-plt.xlabel('n')
-plt.ylabel('Error')
+plt.xlabel("n")
+plt.ylabel("Error")
 plt.legend()
 # %%
-plt.plot(ns, times[:, 0], label='p=1', marker='o')
-plt.plot(ns, times[:, 1], label='p=2', marker='*')
-plt.plot(ns, times[:, 2], label='p=3', marker='s')
-plt.plot(ns, times[0, 0] * (ns/ns[0])**(4), label='O(n^4)', linestyle='--')
+plt.plot(ns, times[:, 0], label="p=1", marker="o")
+plt.plot(ns, times[:, 1], label="p=2", marker="*")
+plt.plot(ns, times[:, 2], label="p=3", marker="s")
+plt.plot(ns, times[0, 0] * (ns / ns[0]) ** (4), label="O(n^4)", linestyle="--")
 plt.loglog()
-plt.xlabel('n')
-plt.ylabel('Time [s]')
+plt.xlabel("n")
+plt.ylabel("Time [s]")
 plt.legend()
 # %%
