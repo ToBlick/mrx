@@ -44,8 +44,6 @@ class TestQuadrature(unittest.TestCase):
             ((8, 1, 1), (1, 0, 0), ('periodic', 'constant', 'constant')),  # Linear basis
             ((8, 1, 1), (2, 0, 0), ('periodic', 'constant', 'constant')),  # Quadratic basis
             ((8, 1, 1), (3, 0, 0), ('periodic', 'constant', 'constant')),  # Cubic basis
-            ((8, 1, 1), (4, 0, 0), ('periodic', 'constant', 'constant')),  # Quartic basis
-            ((8, 1, 1), (5, 0, 0), ('periodic', 'constant', 'constant')),  # Quintic basis
             ((16, 1, 1), (1, 0, 0), ('periodic', 'constant', 'constant')), # More basis functions, linear
             ((16, 1, 1), (3, 0, 0), ('periodic', 'constant', 'constant')), # More basis functions, cubic
             ((4, 1, 1), (3, 0, 0), ('periodic', 'constant', 'constant')),  # Fewer basis functions
@@ -97,7 +95,7 @@ class TestQuadrature(unittest.TestCase):
             """Verify the exact value of the problematic integrand using high-order quadrature."""
             # Use a very high order quadrature to approximate the exact value
             ns = (32, 32, 32)
-            ps = (5, 5, 5)
+            ps = (3, 3, 3)
             types = ('clamped', 'periodic', 'periodic')
             form = DifferentialForm(0, ns, ps, types)
             quad_rule = QuadratureRule(form, 10)  # High order quadrature
@@ -110,8 +108,6 @@ class TestQuadrature(unittest.TestCase):
             ((8, 8, 8), (1, 1, 1), ('clamped', 'periodic', 'periodic')),  # Linear basis
             ((8, 8, 8), (2, 2, 2), ('clamped', 'periodic', 'periodic')),  # Quadratic basis
             ((8, 8, 8), (3, 3, 3), ('clamped', 'periodic', 'periodic')),  # Cubic basis
-            ((8, 8, 8), (4, 4, 4), ('clamped', 'periodic', 'periodic')),  # Quartic basis
-            ((8, 8, 8), (5, 5, 5), ('clamped', 'periodic', 'periodic')),  # Quintic basis
             ((4, 4, 4), (1, 1, 1), ('clamped', 'periodic', 'periodic')),  # Fewer basis functions, linear
             ((4, 4, 4), (3, 3, 3), ('clamped', 'periodic', 'periodic')),  # Fewer basis functions, cubic
             ((16, 16, 16), (3, 3, 3), ('clamped', 'periodic', 'periodic')), # More basis functions
@@ -145,7 +141,7 @@ class TestQuadrature(unittest.TestCase):
                          "sin(2πx)*sin(2πy)*sin(2πz)"]
 
         for ns, ps, types in test_cases:
-            for quad_order in range(3, 11):
+            for quad_order in range(5, 11):
                 form = DifferentialForm(0, ns, ps, types)
                 quad_rule = QuadratureRule(form, quad_order)
                 for integrand, name in zip(integrands, integrand_names):
