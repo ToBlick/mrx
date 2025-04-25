@@ -26,18 +26,25 @@ The simulation outputs include:
 - Divergence error plots
 """
 
+from pathlib import Path
+
 # %%
 import jax
 import jax.numpy as jnp
-import numpy as np
 import matplotlib.pyplot as plt
-from pathlib import Path
+import numpy as np
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
+from mrx.LazyMatrices import (
+    LazyDerivativeMatrix,
+    LazyDoubleCurlMatrix,
+    LazyMassMatrix,
+    LazyProjectionMatrix,
+    LazyStiffnessMatrix,
+)
+from mrx.Projectors import CurlProjection, Projector
 from mrx.Quadrature import QuadratureRule
-from mrx.Projectors import Projector, CurlProjection
-from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix, LazyStiffnessMatrix
-from mrx.Utils import curl
+from mrx.Utils import curl, l2_product
 
 # Ensure output directory exists
 output_dir = Path("script_outputs")
@@ -51,49 +58,43 @@ jax.config.update("jax_enable_x64", True)
 # %%
 ns = (8, 8, 1)
 ps = (3, 3, 1)
-types = ('periodic', 'periodic', 'constant')
+types = ("periodic", "periodic", "constant")
 
 Λ0 = DifferentialForm(0, ns, ps, types)  # functions in H1
 Λ1 = DifferentialForm(1, ns, ps, types)  # vector fields in H(curl)
 Λ2 = DifferentialForm(2, ns, ps, types)  # vector fields in H(div)
 Λ3 = DifferentialForm(3, ns, ps, types)  # densities in L2
-Q = QuadratureRule(Λ0, 10)              # Quadrature
-def F(x): return x                         # identity mapping
+Q = QuadratureRule(Λ0, 10)  # Quadrature
+
+
+def F(x):
+    return x  # identity mapping
 
 
 # %% [markdown]
 # ## Assemble Matrices and Operators
 # Construct the necessary matrices for the finite element discretization
 # %%
-M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q).M
-                  for Λ in [Λ0, Λ1, Λ2, Λ3]]                  # assembled mass matries
-P0, P1, P2, P3 = [Projector(Λ, Q)
-                  for Λ in [Λ0, Λ1, Λ2, Λ3]]                 # L2 projectors
-Pc = CurlProjection(Λ1, Q)                      # given A and B, computes (B, A x Λ[i])
-D0, D1, D2 = [LazyDerivativeMatrix(Λk, Λkplus1, Q).M
-              for Λk, Λkplus1 in zip([Λ0, Λ1, Λ2], [Λ1, Λ2, Λ3])]  # grad, curl, div
-M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F).M.T      # L2 projection from H(curl) to H(div)
-M03 = LazyProjectionMatrix(Λ0, Λ3, Q, F).M.T      # L2 projection from H1 to L2
-C = LazyDoubleCurlMatrix(Λ1, Q).M               # bilinear form (A, E) → (curl A, curl E)
-K = LazyStiffnessMatrix(Λ0, Q).M                # bilinear form (q, p) → (grad q, grad p)
-
-# %% [markdown]
-# ## Helper Functions
-# %%
-
-
-def l2_product(f, g, Q):
-    """Compute the L2 inner product of two functions f and g over the domain.
-
-    Args:
-        f: First function
-        g: Second function
-        Q: Quadrature rule
-
-    Returns:
-        float: L2 inner product
-    """
-    return jnp.einsum("ij,ij,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Q.w)
+M0, M1, M2, M3 = [
+    LazyMassMatrix(Λ, Q).M
+    # assembled mass matries
+    for Λ in [Λ0, Λ1, Λ2, Λ3]
+]
+P0, P1, P2, P3 = [Projector(Λ, Q) for Λ in [Λ0, Λ1, Λ2, Λ3]]  # L2 projectors
+# given A and B, computes (B, A x Λ[i])
+Pc = CurlProjection(Λ1, Q)
+D0, D1, D2 = [
+    LazyDerivativeMatrix(Λk, Λkplus1, Q).M
+    # grad, curl, div
+    for Λk, Λkplus1 in zip([Λ0, Λ1, Λ2], [Λ1, Λ2, Λ3])
+]
+# L2 projection from H(curl) to H(div)
+M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F).M.T
+M03 = LazyProjectionMatrix(Λ0, Λ3, Q, F).M.T  # L2 projection from H1 to L2
+# bilinear form (A, E) → (curl A, curl E)
+C = LazyDoubleCurlMatrix(Λ1, Q).M
+# bilinear form (q, p) → (grad q, grad p)
+K = LazyStiffnessMatrix(Λ0, Q).M
 
 
 # %% [markdown]
@@ -102,20 +103,20 @@ def l2_product(f, g, Q):
 # %%
 ɛ = 1e-5
 nx = 64
-_x1 = jnp.linspace(ɛ, 1-ɛ, nx)
-_x2 = jnp.linspace(ɛ, 1-ɛ, nx)
-_x3 = jnp.ones(1)/2
+_x1 = jnp.linspace(ɛ, 1 - ɛ, nx)
+_x2 = jnp.linspace(ɛ, 1 - ɛ, nx)
+_x3 = jnp.ones(1) / 2
 _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
-_x = _x.transpose(1, 2, 3, 0).reshape(nx*nx*1, 3)
+_x = _x.transpose(1, 2, 3, 0).reshape(nx * nx * 1, 3)
 _y = jax.vmap(F)(_x)
 _y1 = _y[:, 0].reshape(nx, nx)
 _y2 = _y[:, 1].reshape(nx, nx)
 _nx = 16
-__x1 = jnp.linspace(ɛ, 1-ɛ, _nx)
-__x2 = jnp.linspace(ɛ, 1-ɛ, _nx)
-__x3 = jnp.ones(1)/2
+__x1 = jnp.linspace(ɛ, 1 - ɛ, _nx)
+__x2 = jnp.linspace(ɛ, 1 - ɛ, _nx)
+__x3 = jnp.ones(1) / 2
 __x = jnp.array(jnp.meshgrid(__x1, __x2, __x3))
-__x = __x.transpose(1, 2, 3, 0).reshape(_nx*_nx*1, 3)
+__x = __x.transpose(1, 2, 3, 0).reshape(_nx * _nx * 1, 3)
 __y = jax.vmap(F)(__x)
 __y1 = __y[:, 0].reshape(_nx, _nx)
 __y2 = __y[:, 1].reshape(_nx, _nx)
@@ -133,9 +134,17 @@ def E(x, m, n):
         jnp.array: Magnetic field vector
     """
     r, χ, z = x
-    h = (1 + 0.0 * jnp.exp(-((r - 0.5)**2 + (χ - 0.5)**2) / 0.3**2))
-    a1 = jnp.sin(m * jnp.pi * r) * jnp.cos(n * jnp.pi * χ) * jnp.sqrt(n**2/(n**2 + m**2))
-    a2 = -jnp.cos(m * jnp.pi * r) * jnp.sin(n * jnp.pi * χ) * jnp.sqrt(m**2/(n**2 + m**2))
+    h = 1 + 0.0 * jnp.exp(-((r - 0.5) ** 2 + (χ - 0.5) ** 2) / 0.3**2)
+    a1 = (
+        jnp.sin(m * jnp.pi * r)
+        * jnp.cos(n * jnp.pi * χ)
+        * jnp.sqrt(n**2 / (n**2 + m**2))
+    )
+    a2 = (
+        -jnp.cos(m * jnp.pi * r)
+        * jnp.sin(n * jnp.pi * χ)
+        * jnp.sqrt(m**2 / (n**2 + m**2))
+    )
     a3 = jnp.sin(m * jnp.pi * r) * jnp.sin(n * jnp.pi * χ)
     return jnp.array([a1, a2, a3]) * h
 
@@ -165,14 +174,9 @@ plt.figure(figsize=(10, 8))
 plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar()
 __z1 = jax.vmap(F_A)(__x).reshape(_nx, _nx, 3)
-plt.quiver(
-    __y1,
-    __y2,
-    __z1[:, :, 0],
-    __z1[:, :, 1],
-    color='w')
-plt.title('Initial Magnetic Field')
-plt.savefig(output_dir / 'initial_field.png')
+plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color="w")
+plt.title("Initial Magnetic Field")
+plt.savefig(output_dir / "initial_field.png")
 
 
 # %% [markdown]
@@ -180,10 +184,13 @@ plt.savefig(output_dir / 'initial_field.png')
 # %%
 A_hat = jnp.linalg.solve(M1, P1(A))
 A_h = DiscreteFunction(A_hat, Λ1)
-def compute_A_error(x): return A(x) - A_h(x)
 
 
-(l2_product(compute_A_error, compute_A_error, Q) / l2_product(A, A, Q))**0.5
+def compute_A_error(x):
+    return A(x) - A_h(x)
+
+
+(l2_product(compute_A_error, compute_A_error, Q) / l2_product(A, A, Q)) ** 0.5
 
 # %% [markdown]
 # ## Field Evolution Visualization
@@ -196,16 +203,11 @@ _z2_norm = jnp.linalg.norm(_z2, axis=2)
 plt.figure(figsize=(10, 8))
 plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar()
-plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
+plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors="k")
 __z1 = jax.vmap(F_A_h)(__x).reshape(_nx, _nx, 3)
-plt.quiver(
-    __y1,
-    __y2,
-    __z1[:, :, 0],
-    __z1[:, :, 1],
-    color='w')
-plt.title('Field Evolution')
-plt.savefig(output_dir / 'field_evolution.png')
+plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color="w")
+plt.title("Field Evolution")
+plt.savefig(output_dir / "field_evolution.png")
 
 
 # %% [markdown]
@@ -218,11 +220,12 @@ B_h = DiscreteFunction(B0_hat, Λ2)  # Create discrete function
 B0_h = DiscreteFunction(B0_hat, Λ2)  # Store initial state
 
 
-def compute_B_error(x): return B0(x) - B_h(x)  # Compute pointwise error
+def compute_B_error(x):
+    return B0(x) - B_h(x)  # Compute pointwise error
 
 
 # Compute relative L2 error in magnetic field
-(l2_product(compute_B_error, compute_B_error, Q) / l2_product(B0, B0, Q))**0.5
+(l2_product(compute_B_error, compute_B_error, Q) / l2_product(B0, B0, Q)) ** 0.5
 
 # %% [markdown]
 # ## Magnetic Field Visualization
@@ -237,16 +240,11 @@ _z2_norm = jnp.linalg.norm(_z2, axis=2)
 plt.figure(figsize=(10, 8))
 plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar()
-plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
+plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors="k")
 __z1 = jax.vmap(F_B_h)(__x).reshape(_nx, _nx, 3)
-plt.quiver(
-    __y1,
-    __y2,
-    __z1[:, :, 0],
-    __z1[:, :, 1],
-    color='w')
-plt.title('Initial Magnetic Field Configuration')
-plt.savefig(output_dir / 'initial_magnetic_field.png')
+plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color="w")
+plt.title("Initial Magnetic Field Configuration")
+plt.savefig(output_dir / "initial_magnetic_field.png")
 
 
 # %% [markdown]
@@ -261,11 +259,15 @@ print("Energy before perturbation: ", B0_hat @ M2 @ B0_hat / 2)
 # Perform singular value decomposition for field reconstruction
 # %%
 U, S, Vh = jnp.linalg.svd(C)  # SVD of curl-curl matrix
-S_inv = jnp.where(S > 1e-6 * S[0] * S.shape[0], 1/S, 0)  # Regularized inverse
-A_hat_recon = U @ jnp.diag(S_inv) @ Vh @ D1.T @ B0_hat  # Reconstruct vector potential
+S_inv = jnp.where(S > 1e-6 * S[0] * S.shape[0],
+                  1 / S, 0)  # Regularized inverse
+# Reconstruct vector potential
+A_hat_recon = U @ jnp.diag(S_inv) @ Vh @ D1.T @ B0_hat
 
 # Compute reconstruction error
-A_err = ((A_hat - A_hat_recon) @ M1 @ (A_hat - A_hat_recon) / (A_hat @ M1 @ A_hat))**0.5
+A_err = (
+    (A_hat - A_hat_recon) @ M1 @ (A_hat - A_hat_recon) / (A_hat @ M1 @ A_hat)
+) ** 0.5
 print("error in A:", A_err)
 
 # Verify helicity preservation
@@ -280,20 +282,21 @@ _z2_norm = jnp.linalg.norm(_z2, axis=2)
 plt.figure(figsize=(10, 8))
 plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar()
-plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
+plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors="k")
 __z1 = jax.vmap(F_A_h)(__x).reshape(_nx, _nx, 3)
-plt.quiver(
-    __y1,
-    __y2,
-    __z1[:, :, 0],
-    __z1[:, :, 1],
-    color='w')
+plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color="w")
+
+
 # %%
-def compute_curl_error(x): return curl(A)(x) - curl(A_h)(x)
+def compute_curl_error(x):
+    return curl(A)(x) - curl(A_h)(x)
 
 
 # Compute relative L2 error in curl
-(l2_product(compute_curl_error, compute_curl_error, Q) / l2_product(curl(A), curl(A), Q))**0.5
+(
+    l2_product(compute_curl_error, compute_curl_error, Q)
+    / l2_product(curl(A), curl(A), Q)
+) ** 0.5
 # %%
 A_h = DiscreteFunction(A_hat, Λ1)
 F_A_h = Pullback(curl(A_h), F, 2)
@@ -304,14 +307,9 @@ _z2_norm = jnp.linalg.norm(_z2, axis=2)
 plt.figure(figsize=(10, 8))
 plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar()
-plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
+plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors="k")
 __z1 = jax.vmap(F_A_h)(__x).reshape(_nx, _nx, 3)
-plt.quiver(
-    __y1,
-    __y2,
-    __z1[:, :, 0],
-    __z1[:, :, 1],
-    color='w')
+plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color="w")
 # %%
 
 # %% [markdown]
@@ -345,7 +343,7 @@ u_h = DiscreteFunction(u_hat, Λ2)
 
 B_hat = B0_hat
 dt = 0.001
-max_iterations = int(0.05/dt)
+max_iterations = int(0.05 / dt)
 
 # %% [markdown]
 # ## Evolution Loop
@@ -365,12 +363,12 @@ def perturb_B_hat(B_hat, B_hat_0, dt):
     Returns:
         tuple: (error, new B_hat, velocity field)
     """
-    H_hat_1 = jnp.linalg.solve(M1, M12 @ B_hat)         # H = Proj(B)
+    H_hat_1 = jnp.linalg.solve(M1, M12 @ B_hat)  # H = Proj(B)
     H_hat_0 = jnp.linalg.solve(M1, M12 @ B_hat_0)
-    H_h = DiscreteFunction((H_hat_0 + H_hat_1)/2, Λ1)
+    H_h = DiscreteFunction((H_hat_0 + H_hat_1) / 2, Λ1)
     u_h = DiscreteFunction(u_hat, Λ2)
-    E_hat = jnp.linalg.solve(M1, Pc(H_h, u_h))          # E = u x H
-    ẟB_hat = jnp.linalg.solve(M2, D1 @ E_hat)           # ẟB = curl E
+    E_hat = jnp.linalg.solve(M1, Pc(H_h, u_h))  # E = u x H
+    ẟB_hat = jnp.linalg.solve(M2, D1 @ E_hat)  # ẟB = curl E
     B_hat_1 = B_hat_0 + dt * ẟB_hat
     error = (B_hat_1 - B_hat) @ M2 @ (B_hat_1 - B_hat)
     return error, B_hat_1, u_hat
@@ -388,7 +386,7 @@ for i in range(max_iterations):
         error_val, B_hat_1, _u_hat = perturb_B_hat(B_hat_1, B_hat, dt)
         iteration_count += 1
     B_hat = B_hat_1
-    print("Iteration: ", i+1)
+    print("Iteration: ", i + 1)
     print("Magnetic Energy: ", (B_hat @ M2 @ B_hat) / 2)
     print("Force: ", (_u_hat @ M2 @ _u_hat))
     A_hat = U @ jnp.diag(S_inv) @ Vh @ D1.T @ B_hat
@@ -412,16 +410,11 @@ _z2_norm = jnp.linalg.norm(_z2, axis=2)
 plt.figure(figsize=(10, 8))
 plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar()
-plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
+plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors="k")
 __z1 = jax.vmap(F_B_h)(__x).reshape(_nx, _nx, 3)
-plt.quiver(
-    __y1,
-    __y2,
-    __z1[:, :, 0],
-    __z1[:, :, 1],
-    color='w')
-plt.title('Final Magnetic Field Configuration')
-plt.savefig(output_dir / 'final_field.png')
+plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color="w")
+plt.title("Final Magnetic Field Configuration")
+plt.savefig(output_dir / "final_field.png")
 
 
 # %% [markdown]
@@ -466,19 +459,20 @@ def ẟB_hat(B_hat, B_hat_0, dt):
     Returns:
         tuple: (error, new B_hat, velocity field)
     """
-    H_hat_1 = jnp.linalg.solve(M1, M12 @ B_hat)         # H = Proj(B)
+    H_hat_1 = jnp.linalg.solve(M1, M12 @ B_hat)  # H = Proj(B)
     H_hat_0 = jnp.linalg.solve(M1, M12 @ B_hat_0)
     J_hat_1 = jnp.linalg.solve(M1, D1.T @ B_hat)
-    J_hat_0 = jnp.linalg.solve(M1, D1.T @ B_hat_0)      # J = curl H
-    H_h = DiscreteFunction((H_hat_0 + H_hat_1)/2, Λ1)
-    J_h = DiscreteFunction((J_hat_0 + J_hat_1)/2, Λ1)
+    J_hat_0 = jnp.linalg.solve(M1, D1.T @ B_hat_0)  # J = curl H
+    H_h = DiscreteFunction((H_hat_0 + H_hat_1) / 2, Λ1)
+    J_h = DiscreteFunction((J_hat_0 + J_hat_1) / 2, Λ1)
 
     def JcrossH(x):
         return jnp.cross(J_h(x), H_h(x))
-    u_hat = jnp.linalg.solve(M2, P2(JcrossH))           # u = J x H
+
+    u_hat = jnp.linalg.solve(M2, P2(JcrossH))  # u = J x H
     u_h = DiscreteFunction(u_hat, Λ2)
-    E_hat = jnp.linalg.solve(M1, Pc(H_h, u_h))          # E = u x H
-    ẟB_hat = jnp.linalg.solve(M2, D1 @ E_hat)           # ẟB = curl E
+    E_hat = jnp.linalg.solve(M1, Pc(H_h, u_h))  # E = u x H
+    ẟB_hat = jnp.linalg.solve(M2, D1 @ E_hat)  # ẟB = curl E
     B_hat_1 = B_hat_0 + dt * ẟB_hat
     err = (B_hat_1 - B_hat) @ M2 @ (B_hat_1 - B_hat)
     return err, B_hat_1, u_hat
@@ -501,7 +495,7 @@ for i in range(100):
         it += 1
     B_hat = B_hat_1
 
-    print("Iteration: ", i+1)
+    print("Iteration: ", i + 1)
     print("Magnetic Energy: ", (B_hat @ M2 @ B_hat) / 2)
     print("Force: ", (_u_hat @ M2 @ _u_hat))
     A_hat = U @ jnp.diag(S_inv) @ Vh @ D1.T @ B_hat
@@ -522,63 +516,65 @@ for i in range(100):
 # Visualize the evolution results
 # %%
 plt.figure(figsize=(10, 6))
-plt.plot(np.abs(np.array(energies) - B0_hat @ M2 @ B0_hat / 2), label='Energy - E(0)')
-plt.xlabel('Iteration')
-plt.ylabel('Energy Difference')
-plt.yscale('log')
-plt.xscale('log')
+plt.plot(np.abs(np.array(energies) - B0_hat @
+         M2 @ B0_hat / 2), label="Energy - E(0)")
+plt.xlabel("Iteration")
+plt.ylabel("Energy Difference")
+plt.yscale("log")
+plt.xscale("log")
 plt.legend()
-plt.title('Energy Evolution')
-plt.savefig(output_dir / 'energy_evolution.png')
+plt.title("Energy Evolution")
+plt.savefig(output_dir / "energy_evolution.png")
 
 
 plt.figure(figsize=(10, 6))
-plt.plot(np.abs(np.array(helicities) - helicities[0]), label='|Helicity - H(0)|')
-plt.xlabel('Iteration')
-plt.ylabel('Helicity Difference')
+plt.plot(np.abs(np.array(helicities) -
+         helicities[0]), label="|Helicity - H(0)|")
+plt.xlabel("Iteration")
+plt.ylabel("Helicity Difference")
 plt.legend()
-plt.yscale('log')
-plt.title('Helicity Evolution')
-plt.savefig(output_dir / 'helicity_evolution.png')
+plt.yscale("log")
+plt.title("Helicity Evolution")
+plt.savefig(output_dir / "helicity_evolution.png")
 
 
 plt.figure(figsize=(10, 6))
-plt.plot(np.array(forces)/np.array(energies), label='force/energy')
-plt.xlabel('Iteration')
-plt.ylabel('Force/Energy Ratio')
-plt.yscale('log')
-plt.xscale('log')
+plt.plot(np.array(forces) / np.array(energies), label="force/energy")
+plt.xlabel("Iteration")
+plt.ylabel("Force/Energy Ratio")
+plt.yscale("log")
+plt.xscale("log")
 plt.legend()
-plt.title('Force to Energy Ratio')
-plt.savefig(output_dir / 'force_energy_ratio.png')
+plt.title("Force to Energy Ratio")
+plt.savefig(output_dir / "force_energy_ratio.png")
 
 
 plt.figure(figsize=(10, 6))
-plt.plot(np.abs(np.array(divBs) - divBs[0]), label='div B')
-plt.xlabel('Iteration')
-plt.ylabel('Divergence Error')
+plt.plot(np.abs(np.array(divBs) - divBs[0]), label="div B")
+plt.xlabel("Iteration")
+plt.ylabel("Divergence Error")
 plt.legend()
-plt.title('Divergence Error Evolution')
-plt.savefig(output_dir / 'divergence_error.png')
+plt.title("Divergence Error Evolution")
+plt.savefig(output_dir / "divergence_error.png")
 
 
 plt.figure(figsize=(10, 6))
-plt.plot(critical_as, label='Picard iterations')
-plt.xlabel('Iteration')
-plt.ylabel('Number of Picard Iterations')
+plt.plot(critical_as, label="Picard iterations")
+plt.xlabel("Iteration")
+plt.ylabel("Number of Picard Iterations")
 plt.legend()
-plt.title('Picard Iterations per Step')
-plt.savefig(output_dir / 'picard_iterations.png')
+plt.title("Picard Iterations per Step")
+plt.savefig(output_dir / "picard_iterations.png")
 
 
 plt.figure(figsize=(10, 6))
-plt.plot(dts, label='adaptive time-step')
-plt.xlabel('Iteration')
-plt.ylabel('Time Step')
-plt.yscale('log')
+plt.plot(dts, label="adaptive time-step")
+plt.xlabel("Iteration")
+plt.ylabel("Time Step")
+plt.yscale("log")
 plt.legend()
-plt.title('Adaptive Time Step Evolution')
-plt.savefig(output_dir / 'time_step_evolution.png')
+plt.title("Adaptive Time Step Evolution")
+plt.savefig(output_dir / "time_step_evolution.png")
 
 
 # %% [markdown]
@@ -595,16 +591,11 @@ _z1_norm = jnp.linalg.norm(_z1, axis=2)
 plt.figure(figsize=(10, 8))
 plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar()
-plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
+plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors="k")
 __z1 = jax.vmap(F_A_h)(__x).reshape(_nx, _nx, 3)
-plt.quiver(
-    __y1,
-    __y2,
-    __z1[:, :, 0],
-    __z1[:, :, 1],
-    color='w')
-plt.title('Final Magnetic Field Configuration')
-plt.savefig(output_dir / 'final_field.png')
+plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color="w")
+plt.title("Final Magnetic Field Configuration")
+plt.savefig(output_dir / "final_field.png")
 plt.show()
 
 # %%

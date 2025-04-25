@@ -12,8 +12,8 @@ The module supports different types of basis functions and provides efficient
 implementations using JAX for automatic differentiation and GPU acceleration.
 """
 
-import jax.numpy as jnp
 import jax
+import jax.numpy as jnp
 
 
 class QuadratureRule:
@@ -44,7 +44,8 @@ class QuadratureRule:
             p (int): Number of quadrature points per direction
         """
         # Select appropriate quadrature rules for each direction
-        (x_x, w_x), (x_y, w_y), (x_z, w_z) = [select_quadrature(b, p) for b in form.bases[0].bases]
+        (x_x, w_x), (x_y, w_y), (x_z, w_z) = [
+            select_quadrature(b, p) for b in form.bases[0].bases]
 
         # Combine quadrature points and weights in 3D
         x_s = [x_x, x_y, x_z]
@@ -55,7 +56,8 @@ class QuadratureRule:
         # Create 3D grid of quadrature points and weights
         x_q = jnp.array(jnp.meshgrid(*x_s))  # shape d, n1, n2, n3, ...
         x_q = x_q.transpose(*range(1, d+1), 0).reshape(N, d)
-        w_q = jnp.array(jnp.meshgrid(*w_s)).transpose(*range(1, d+1), 0).reshape(N, d)
+        w_q = jnp.array(jnp.meshgrid(*w_s)).transpose(*
+                                                      range(1, d+1), 0).reshape(N, d)
         w_q = jnp.prod(w_q, 1)
 
         # Store quadrature points and weights
@@ -232,20 +234,23 @@ def exact_nodes_and_weights(n):
         w = jnp.polyval(d_coeffs, points)
         weights = 2/((1-points**2)*(w**2))
     elif n == 8:
-        coeffs = jnp.array([6435/128, 0, -12012/16, 0, 6930/16, 0, -1260/16, 0, 35/128])
+        coeffs = jnp.array(
+            [6435/128, 0, -12012/16, 0, 6930/16, 0, -1260/16, 0, 35/128])
         points = jnp.roots(coeffs)
         d_coeffs = jnp.polyder(coeffs)
         w = jnp.polyval(d_coeffs, points)
         weights = 2/((1-points**2)*(w**2))
     elif n == 9:
-        coeffs = jnp.array([12155/128, 0, -25740/128, 0, 18018/128, 0, -4620/128, 0, 315/128, 0])
+        coeffs = jnp.array([12155/128, 0, -25740/128, 0,
+                           18018/128, 0, -4620/128, 0, 315/128, 0])
         points = jnp.roots(coeffs)
         d_coeffs = jnp.polyder(coeffs)
         w = jnp.polyval(d_coeffs, points)
         weights = 2/((1-points**2)*(w**2))
     # n=10
     else:
-        coeffs = jnp.array([46189/256, 0, -109395/256, 0, 90090/256, 0, -30030/256, 0, 3465/256, 0, -63/256])
+        coeffs = jnp.array([46189/256, 0, -109395/256, 0,
+                           90090/256, 0, -30030/256, 0, 3465/256, 0, -63/256])
         points = jnp.roots(coeffs)
         d_coeffs = jnp.polyder(coeffs)
         w = jnp.polyval(d_coeffs, points)

@@ -14,16 +14,17 @@ Example usage:
     python two_d_helmholtz_decomposition.py
 """
 
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-from pathlib import Path
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
-from mrx.Quadrature import QuadratureRule
+from mrx.LazyMatrices import LazyDerivativeMatrix, LazyMassMatrix
 from mrx.Projectors import Projector
-from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix
-from mrx.Utils import l2_product, grad, curl, div
+from mrx.Quadrature import QuadratureRule
+from mrx.Utils import curl, div, grad, l2_product
 
 # Enable 64-bit precision for better accuracy
 jax.config.update("jax_enable_x64", True)
@@ -54,7 +55,7 @@ def setup_problem(n=8, p=3):
     Λ3 = DifferentialForm(3, ns, ps, types)
 
     # Set up quadrature and operators
-    Q = QuadratureRule(Λ0, 10)
+    Q = QuadratureRule(Λ0, 4)
     D = LazyDerivativeMatrix(Λ2, Λ3, Q).M
     M2 = LazyMassMatrix(Λ2, Q).M
     K = D @ jnp.linalg.solve(M2, D.T)
@@ -81,7 +82,7 @@ def define_test_functions():
         v = ((0.5 - r)**2 + (χ - 0.5)**2)**0.5
         return 10 * jnp.array([0, 0, 1]) * jnp.exp(-v**2)
 
-    w = curl(_w)  # Solenoidal component
+    w = curl(_w)  # Solenoidal component of _w
     def u(x): return grad(q)(x) + w(x)  # Total field
 
     return q, w, u
@@ -107,7 +108,8 @@ def perform_decomposition(Λ2, M2, P2, D, K, u, grad_q, w):
     u_hat = jnp.linalg.solve(M2, P2(u))
 
     # Compute the Leray projector
-    𝚷_Leray = jnp.eye(Λ2.n) - jnp.linalg.solve(M2, D.T @ jnp.linalg.solve(K, D))
+    𝚷_Leray = jnp.eye(Λ2.n) - jnp.linalg.solve(M2,
+                                               D.T @ jnp.linalg.solve(K, D))
 
     # Decompose the field
     w_hat = 𝚷_Leray @ u_hat
@@ -178,7 +180,8 @@ def plot_field(x, y, field, title, filename):
 q, w, u = define_test_functions()
 
 # Perform the decomposition
-u_hat, grad_q_hat, w_hat = perform_decomposition(Λ2, M2, P2, D, K, u, grad(q), w)
+u_hat, grad_q_hat, w_hat = perform_decomposition(
+    Λ2, M2, P2, D, K, u, grad(q), w)
 
 # Create discrete functions
 u_h = DiscreteFunction(u_hat, Λ2)
@@ -191,7 +194,8 @@ grad_q_h_proj = DiscreteFunction(grad_q_hat_proj, Λ2)
 u_h_proj = DiscreteFunction(u_hat, Λ2)
 
 # Compute errors
-errors = compute_errors(u, grad(q), w, u_h, grad_q_h, w_h, Q, u_h_proj, grad_q_h_proj, w_h_proj)
+errors = compute_errors(u, grad(q), w, u_h, grad_q_h,
+                        w_h, Q, u_h_proj, grad_q_h_proj, w_h_proj)
 print("\nRelative L2 errors:")
 for component, error in errors.items():
     print(f"{component}: {error:.2e}")
@@ -230,9 +234,12 @@ Y2 = Y[:, 1].reshape(nx, nx)
 
 # Create plots
 plot_field(Y1, Y2, u_exact, "Exact Total Field", "total_field_exact.png")
-plot_field(Y1, Y2, u_approx, "Approximate Total Field", "total_field_approx.png")
-plot_field(Y1, Y2, grad_q_exact, "Exact Gradient Component", "gradient_exact.png")
-plot_field(Y1, Y2, grad_q_approx, "Approximate Gradient Component", "gradient_approx.png")
+plot_field(Y1, Y2, u_approx, "Approximate Total Field",
+           "total_field_approx.png")
+plot_field(Y1, Y2, grad_q_exact,
+           "Exact Gradient Component", "gradient_exact.png")
+plot_field(Y1, Y2, grad_q_approx,
+           "Approximate Gradient Component", "gradient_approx.png")
 plot_field(Y1, Y2, w_exact, "Exact Curl Component", "curl_exact.png")
 plot_field(Y1, Y2, w_approx, "Approximate Curl Component", "curl_approx.png")
 

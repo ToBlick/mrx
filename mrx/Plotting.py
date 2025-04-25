@@ -5,9 +5,8 @@ This module provides functions for creating visualizations of convergence plots
 and other analysis results using Plotly.
 """
 
-import plotly.graph_objects as go
 import plotly.colors as pc
-
+import plotly.graph_objects as go
 
 # Base marker styles for different data series
 base_markers = [

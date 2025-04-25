@@ -10,10 +10,10 @@ three-dimensional space and includes functionality for evaluation, transformatio
 and basis manipulation.
 """
 
-import jax.numpy as jnp
 import jax
+import jax.numpy as jnp
 
-from mrx.SplineBases import SplineBasis, DerivativeSpline, TensorBasis
+from mrx.SplineBases import DerivativeSpline, SplineBasis, TensorBasis
 from mrx.Utils import inv33
 
 
@@ -229,8 +229,10 @@ class DifferentialForm:
                 jnp.array(jnp.unravel_index(ijk, (self.dr, self.nχ, self.nζ))),
                 jnp.where(
                     c == 1,
-                    jnp.array(jnp.unravel_index(ijk, (self.nr, self.dχ, self.nζ))),
-                    jnp.array(jnp.unravel_index(ijk, (self.nr, self.nχ, self.dζ))),
+                    jnp.array(jnp.unravel_index(
+                        ijk, (self.nr, self.dχ, self.nζ))),
+                    jnp.array(jnp.unravel_index(
+                        ijk, (self.nr, self.nχ, self.dζ))),
                 ),
             )
             return c, i, j, k
@@ -241,8 +243,10 @@ class DifferentialForm:
                 jnp.array(jnp.unravel_index(ijk, (self.nr, self.dχ, self.dζ))),
                 jnp.where(
                     c == 1,
-                    jnp.array(jnp.unravel_index(ijk, (self.dr, self.nχ, self.dζ))),
-                    jnp.array(jnp.unravel_index(ijk, (self.dr, self.dχ, self.nζ))),
+                    jnp.array(jnp.unravel_index(
+                        ijk, (self.dr, self.nχ, self.dζ))),
+                    jnp.array(jnp.unravel_index(
+                        ijk, (self.dr, self.dχ, self.nζ))),
                 ),
             )
             return c, i, j, k
@@ -286,7 +290,8 @@ class DifferentialForm:
                 category == 0,
                 self.bases[0](x, index),
                 jnp.where(
-                    category == 1, self.bases[1](x, index), self.bases[2](x, index)
+                    category == 1, self.bases[1](
+                        x, index), self.bases[2](x, index)
                 ),
             )
             return e * val

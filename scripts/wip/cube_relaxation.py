@@ -16,16 +16,22 @@ The script demonstrates:
 - Force balance analysis
 """
 
-import jax
-import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import os
 from pathlib import Path
 
+import jax
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
+from mrx.LazyMatrices import (
+    LazyDerivativeMatrix,
+    LazyDoubleCurlMatrix,
+    LazyMassMatrix,
+    LazyProjectionMatrix,
+)
+from mrx.Projectors import CurlProjection, Projector
 from mrx.Quadrature import QuadratureRule
-from mrx.Projectors import Projector, CurlProjection
-from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix
 from mrx.Utils import curl
 
 # Enable 64-bit precision for numerical stability
@@ -95,8 +101,10 @@ def E(x, m, n):
     """
     r, χ, z = x
     h = (1 + 0.0 * jnp.exp(-((r - 0.5)**2 + (χ - 0.5)**2) / 0.3**2))
-    a1 = jnp.sin(m * jnp.pi * r) * jnp.cos(n * jnp.pi * χ) * jnp.sqrt(n**2/(n**2 + m**2))
-    a2 = -jnp.cos(m * jnp.pi * r) * jnp.sin(n * jnp.pi * χ) * jnp.sqrt(m**2/(n**2 + m**2))
+    a1 = jnp.sin(m * jnp.pi * r) * jnp.cos(n * jnp.pi * χ) * \
+        jnp.sqrt(n**2/(n**2 + m**2))
+    a2 = -jnp.cos(m * jnp.pi * r) * jnp.sin(n * jnp.pi * χ) * \
+        jnp.sqrt(m**2/(n**2 + m**2))
     a3 = jnp.sin(m * jnp.pi * r) * jnp.sin(n * jnp.pi * χ)
     return jnp.array([a1, a2, a3]) * h
 
@@ -242,7 +250,8 @@ plt.title('Helicity Evolution')
 plt.legend()
 plt.grid(True)
 figures.append(fig2)
-plt.savefig(output_dir / 'helicity_evolution.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'helicity_evolution.png',
+            dpi=300, bbox_inches='tight')
 
 # Divergence evolution
 fig3 = plt.figure(figsize=(10, 6))
@@ -253,7 +262,8 @@ plt.title('Divergence Evolution')
 plt.legend()
 plt.grid(True)
 figures.append(fig3)
-plt.savefig(output_dir / 'divergence_evolution.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'divergence_evolution.png',
+            dpi=300, bbox_inches='tight')
 
 # Force evolution
 fig4 = plt.figure(figsize=(10, 6))
@@ -307,9 +317,9 @@ def update_B_hat(B_hat_0, u_hat_0):
 
     def body_fun(B_guess):
         B_diff = ẟB(B_guess)
-        ### Picard method
+        # Picard method
         return B_guess + B_diff
-        ### Newton method
+        # Newton method
         # J = jax.jacrev(ẟB)(B_guess)
         # J = jax.lax.stop_gradient(J)
         # return B_guess - jnp.linalg.solve(J, B_diff)
@@ -368,7 +378,8 @@ plt.yscale('log')
 plt.title('Energy Evolution (Log Scale)')
 plt.grid(True)
 figures.append(fig5)
-plt.savefig(output_dir / 'energy_evolution_log.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'energy_evolution_log.png',
+            dpi=300, bbox_inches='tight')
 
 # Helicity evolution
 fig6 = plt.figure(figsize=(10, 6))
@@ -378,7 +389,8 @@ plt.ylabel('Helicity - Helicity(0)')
 plt.title('Helicity Evolution')
 plt.grid(True)
 figures.append(fig6)
-plt.savefig(output_dir / 'helicity_evolution_2.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'helicity_evolution_2.png',
+            dpi=300, bbox_inches='tight')
 
 # Divergence evolution
 fig7 = plt.figure(figsize=(10, 6))
@@ -388,7 +400,8 @@ plt.ylabel('|Div B|')
 plt.title('Divergence Evolution')
 plt.grid(True)
 figures.append(fig7)
-plt.savefig(output_dir / 'divergence_evolution_2.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'divergence_evolution_2.png',
+            dpi=300, bbox_inches='tight')
 
 # Force evolution (log scale)
 fig8 = plt.figure(figsize=(10, 6))
@@ -399,11 +412,14 @@ plt.yscale('log')
 plt.title('Force Evolution (Log Scale)')
 plt.grid(True)
 figures.append(fig8)
-plt.savefig(output_dir / 'force_evolution_log.png', dpi=300, bbox_inches='tight')
+plt.savefig(output_dir / 'force_evolution_log.png',
+            dpi=300, bbox_inches='tight')
 
 # Print final state information
-print("B(0) - B(1): ", ((B0_hat - BN_hat) @ M2 @ (B0_hat - BN_hat) / (B0_hat @ M2 @ B0_hat))**0.5)
-print("B(0) - B(T): ", ((B0_hat - B_hat) @ M2 @ (B0_hat - B_hat) / (B0_hat @ M2 @ B0_hat))**0.5)
+print("B(0) - B(1): ", ((B0_hat - BN_hat) @ M2 @
+      (B0_hat - BN_hat) / (B0_hat @ M2 @ B0_hat))**0.5)
+print("B(0) - B(T): ", ((B0_hat - B_hat) @ M2 @
+      (B0_hat - B_hat) / (B0_hat @ M2 @ B0_hat))**0.5)
 print("F(0): ", force_residual(B0_hat))
 print("F(1): ", force_residual(BN_hat))
 print("F(T): ", force_residual(B_hat))

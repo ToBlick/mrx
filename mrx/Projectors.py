@@ -14,7 +14,7 @@ The module implements two main classes:
 import jax
 import jax.numpy as jnp
 
-from mrx.Utils import jacobian, inv33
+from mrx.Utils import inv33, jacobian
 
 
 class Projector:
@@ -101,7 +101,8 @@ class Projector:
             array: Projection coefficients for the 0-form
         """
         # Evaluate all basis functions at quadrature points
-        Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(self.Q.x, self.ns)  # n x n_q x 1
+        Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(
+            self.Q.x, self.ns)  # n x n_q x 1
         # Evaluate the given function at quadrature points
         fjk = jax.vmap(f)(self.Q.x)  # n_q x 1
         # Evaluate the jacobian of F at quadrature points
@@ -127,7 +128,8 @@ class Projector:
         def _Λ(x, i):
             return inv33(DF(x)).T @ self.Λ(x, i)
         Ajk = jax.vmap(_A)(self.Q.x)  # n_q x d
-        Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
+        Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
+            self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
         Jj = jax.vmap(jacobian(self.F))(self.Q.x)
         wj = self.Q.w
         return jnp.einsum("ijk,jk,j,j->i", Λijk, Ajk, Jj, wj)
@@ -150,7 +152,8 @@ class Projector:
         def _Λ(x, i):
             return self.Λ(x, i)
         Bjk = jax.vmap(_B)(self.Q.x)  # n_q x d
-        Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
+        Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
+            self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
         # Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w
         return jnp.einsum("ijk,jk,j->i", Λijk, Bjk, wj)
@@ -167,7 +170,8 @@ class Projector:
             array: Projection coefficients for the 3-form
         """
         # Evaluate all basis functions at quadrature points
-        Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x 1
+        Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(
+            self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x 1
         fjk = jax.vmap(f)(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,jk,j->i", Λijk, fjk, wj)
@@ -255,7 +259,8 @@ class CurlProjection:
 
         # Compute projections
         Bjk = jax.vmap(_B)(self.Q.x)  # n_q x d
-        Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
+        Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
+            self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
         Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w
         return jnp.einsum("ijk,jk,j,j->i", Λijk, Bjk, 1/Jj, wj)

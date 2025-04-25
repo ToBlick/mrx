@@ -1,7 +1,8 @@
 .DS_Store
 .vscode
 scripts/experimental
-scripts/script_outputs
+script_outputs
+test_outputs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

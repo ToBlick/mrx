@@ -1,11 +1,16 @@
 """
-3D Poisson Problem with Dirichlet Boundary Conditions
+2D Mixed Poisson Problem
 
-This script solves a 3D Poisson problem using finite element methods with Dirichlet boundary conditions.
-The problem is defined on a cubic domain [0,1]^3.
+This script solves a 2D Poisson problem using a mixed finite element formulation.
+The problem is defined on a square domain [0,1]^2 with Dirichlet boundary conditions.
+
+The mixed formulation uses:
+- Λ2: 2-forms for the flux
+- Λ3: 3-forms for the potential
+- Λ0: 0-forms for quadrature
 
 The script demonstrates:
-1. Solution of the 3D Poisson equation
+1. Solution of the 2D Poisson equation using mixed formulation
 2. Convergence analysis with respect to:
    - Number of elements (n)
    - Polynomial degree (p)
@@ -13,25 +18,25 @@ The script demonstrates:
 4. Error and timing analysis
 
 The exact solution is given by:
-u(x,y,z) = sin(2πx) * sin(2πy) * sin(2πz)
+u(x,y) = sin(2πx) * sin(2πy)
 with source term:
-f(x,y,z) = 3*(2π)^2 * u(x,y,z)
+f(x,y) = 2*(2π)^2 * u(x,y)
 """
+
+import os
+import time
+from functools import partial
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import matplotlib.pyplot as plt
-import time
-import os
+import numpy as np
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
-from mrx.Quadrature import QuadratureRule
+from mrx.LazyMatrices import LazyDerivativeMatrix, LazyMassMatrix
 from mrx.Projectors import Projector
-from mrx.LazyMatrices import LazyStiffnessMatrix
+from mrx.Quadrature import QuadratureRule
 from mrx.Utils import l2_product
-from mrx.BoundaryConditions import LazyBoundaryOperator
-from functools import partial
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -40,10 +45,10 @@ jax.config.update("jax_enable_x64", True)
 os.makedirs('script_outputs', exist_ok=True)
 
 
-@partial(jax.jit, static_argnames=['n', 'p'])
+@partial(jax.jit, static_argnames=["n", "p"])
 def get_err(n, p):
     """
-    Compute the error in the solution of the 3D Poisson problem.
+    Compute error for mixed Poisson problem.
 
     Args:
         n: Number of elements in each direction
@@ -53,33 +58,41 @@ def get_err(n, p):
         float: Relative L2 error of the solution
     """
     # Set up finite element spaces
-    ns = (n, n, n)
-    ps = (p, p, p)
-    types = ('clamped', 'clamped', 'clamped')
-    bcs = ('dirichlet', 'dirichlet', 'dirichlet')
+    ns = (n, n, 1)
+    ps = (p, p, 0)
+    types = ('clamped', 'clamped', 'constant')
 
     # Define exact solution and source term
     def u(x):
         """Exact solution of the Poisson problem."""
         r, χ, z = x
-        return jnp.ones(1) * jnp.sin(2 * jnp.pi * r) * jnp.sin(2 * jnp.pi * χ) * jnp.sin(2 * jnp.pi * z)
+        return jnp.ones(1) * jnp.sin(2 * jnp.pi * r) * jnp.sin(2 * jnp.pi * χ)
 
     def f(x):
         """Source term of the Poisson problem."""
-        return 3 * (2*jnp.pi)**2 * u(x)
+        return 2 * (2*jnp.pi)**2 * u(x)
 
-    # Set up operators and solve system
+    # Set up differential forms and quadrature
     Λ0 = DifferentialForm(0, ns, ps, types)
-    Q = QuadratureRule(Λ0, 4)
-    B0 = LazyBoundaryOperator(Λ0, bcs).M
-    K = LazyStiffnessMatrix(Λ0, Q, F=None, E=B0).M
-    P0 = Projector(Λ0, Q, E=B0)
+    Λ2 = DifferentialForm(2, ns, ps, types)
+    Λ3 = DifferentialForm(3, ns, ps, types)
+    Q = QuadratureRule(Λ0, 3)
+
+    # Set up operators
+    D = LazyDerivativeMatrix(Λ2, Λ3, Q).M
+    M2 = LazyMassMatrix(Λ2, Q).M
+
+    # Add small regularization to prevent singular matrices
+    reg = 1e-10 * jnp.eye(M2.shape[0])
+    M2_reg = M2 + reg
 
     # Solve the system
-    u_hat = jnp.linalg.solve(K, P0(f))
-    u_h = DiscreteFunction(u_hat, Λ0, B0)
+    K = D @ jnp.linalg.solve(M2_reg, D.T)
+    P3 = Projector(Λ3, Q)
+    u_hat = jnp.linalg.solve(K, P3(f))
+    u_h = DiscreteFunction(u_hat, Λ3)
 
-    # Compute error
+    # Compute error using Λ3 quadrature
     def err(x): return u(x) - u_h(x)
     return (l2_product(err, err, Q) / l2_product(u, u, Q))**0.5
 
@@ -87,8 +100,8 @@ def get_err(n, p):
 def run_convergence_analysis():
     """Run convergence analysis for different parameters."""
     # Parameter ranges
-    ns = np.array([4, 6, 8, 10, 12, 14])  # Extended range for higher resolution
-    ps = np.array([1, 2, 3])  # Added p=4 for higher order
+    ns = np.arange(7, 21, 2)
+    ps = np.arange(1, 4)
 
     # Arrays to store results
     err = np.zeros((len(ns), len(ps)))
@@ -102,7 +115,8 @@ def run_convergence_analysis():
             err[i, j] = get_err(n, p)
             end = time.time()
             times[i, j] = end - start
-            print(f"n={n}, p={p}, err={err[i, j]:.2e}, time={times[i, j]:.2f}s")
+            print(
+                f"n={n}, p={p}, err={err[i, j]:.2e}, time={times[i, j]:.2f}s")
 
     # Second run (after JIT compilation)
     print("\nSecond run (after JIT compilation):")
@@ -130,19 +144,20 @@ def plot_results(err, times, times2, ns, ps):
                    label=f'p={p}',
                    marker='o')
     # Add theoretical convergence rates
-    plt.loglog(ns, err[-1, 0] * (ns/ns[-1])**(-2),
+    plt.loglog(ns, err[-1, 0] * (ns/ns[-1])**(-1),
+               label='O(n^-1)', linestyle='--')
+    plt.loglog(ns, err[-1, 1] * (ns/ns[-1])**(-2),
                label='O(n^-2)', linestyle='--')
-    plt.loglog(ns, err[-1, 1] * (ns/ns[-1])**(-4),
+    plt.loglog(ns, err[-1, 2] * (ns/ns[-1])**(-4),
                label='O(n^-4)', linestyle='--')
-    plt.loglog(ns, err[-1, 2] * (ns/ns[-1])**(-6),
-               label='O(n^-6)', linestyle='--')
     plt.xlabel('Number of elements (n)')
     plt.ylabel('Relative L2 error')
     plt.title('Error Convergence')
     plt.grid(True)
     plt.legend()
     figures.append(fig1)
-    plt.savefig('script_outputs/3d_poisson_error.png', dpi=300, bbox_inches='tight')
+    plt.savefig('script_outputs/2d_poisson_mixed_error.png',
+                dpi=300, bbox_inches='tight')
 
     # Timing plot (first run)
     fig2 = plt.figure(figsize=(10, 6))
@@ -150,15 +165,16 @@ def plot_results(err, times, times2, ns, ps):
         plt.loglog(ns, times[:, j],
                    label=f'p={p}',
                    marker='o')
-    plt.loglog(ns, times[-1, 0] * (ns/ns[-1])**(2*3),
-               label='O(n^2d)', linestyle='--')
+    plt.loglog(ns, times[0, 0] * (ns/ns[0])**(4),
+               label='O(n^4)', linestyle='--')
     plt.xlabel('Number of elements (n)')
     plt.ylabel('Computation time (s)')
     plt.title('Timing (First Run)')
     plt.grid(True)
     plt.legend()
     figures.append(fig2)
-    plt.savefig('script_outputs/3d_poisson_time1.png', dpi=300, bbox_inches='tight')
+    plt.savefig('script_outputs/2d_poisson_mixed_time1.png',
+                dpi=300, bbox_inches='tight')
 
     # Timing plot (second run)
     fig3 = plt.figure(figsize=(10, 6))
@@ -172,7 +188,8 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig3)
-    plt.savefig('script_outputs/3d_poisson_time2.png', dpi=300, bbox_inches='tight')
+    plt.savefig('script_outputs/2d_poisson_mixed_time2.png',
+                dpi=300, bbox_inches='tight')
 
     # Speedup plot
     fig4 = plt.figure(figsize=(10, 6))
@@ -187,7 +204,8 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig4)
-    plt.savefig('script_outputs/3d_poisson_speedup.png', dpi=300, bbox_inches='tight')
+    plt.savefig('script_outputs/2d_poisson_mixed_speedup.png',
+                dpi=300, bbox_inches='tight')
 
     return figures
 
@@ -198,7 +216,7 @@ def main():
     err, times, times2 = run_convergence_analysis()
 
     # Plot results
-    ns = np.arange(4, 15, 2)
+    ns = np.arange(7, 21, 2)
     ps = np.arange(1, 4)
     plot_results(err, times, times2, ns, ps)
 

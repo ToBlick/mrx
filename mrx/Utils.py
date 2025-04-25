@@ -7,9 +7,10 @@ It includes functions for computing Jacobians, matrix operations, and
 differential operators using JAX for automatic differentiation.
 """
 
+from typing import Any, Callable
+
 import jax
 import jax.numpy as jnp
-from typing import Callable, Any
 
 
 def jacobian(f: Callable[[jnp.ndarray], jnp.ndarray]) -> Callable[[jnp.ndarray], jnp.ndarray]:
@@ -39,7 +40,8 @@ def inv33(mat: jnp.ndarray) -> jnp.ndarray:
     m1, m2, m3 = mat[0]
     m4, m5, m6 = mat[1]
     m7, m8, m9 = mat[2]
-    det = m1 * (m5 * m9 - m6 * m8) + m4 * (m8 * m3 - m2 * m9) + m7 * (m2 * m6 - m3 * m5)
+    det = m1 * (m5 * m9 - m6 * m8) + m4 * \
+        (m8 * m3 - m2 * m9) + m7 * (m2 * m6 - m3 * m5)
     # Return zero matrix if determinant is zero
     return jnp.where(
         jnp.abs(det) < 1e-10,  # Careful with this tolerance

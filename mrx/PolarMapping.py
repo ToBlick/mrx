@@ -9,8 +9,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix
+from mrx.Projectors import Projector
 
 
 class LazyExtractionOperator:

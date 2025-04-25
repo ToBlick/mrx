@@ -1,6 +1,7 @@
+from typing import Callable, Optional
+
 import jax
 import jax.numpy as jnp
-from typing import Optional, Callable
 
 
 class SplineBasis:
@@ -43,7 +44,8 @@ class SplineBasis:
             self.T = self._init_knots()
 
         if p >= n and p != 1:  # n = p = 1 is allowed for ignoring the third dimension
-            raise ValueError(f"Degree {p} is greater than or equal to the number of splines {n}")
+            raise ValueError(
+                f"Degree {p} is greater than or equal to the number of splines {n}")
         if type not in ['clamped', 'periodic', 'constant', 'fourier']:
             raise ValueError(f"Invalid spline type: {type}")
 
@@ -141,9 +143,9 @@ class SplineBasis:
         """
         knot_slice = jax.lax.dynamic_slice(self.T, (i,), (self.p + 2,))
         return jnp.where(
-                jnp.logical_and(self.T[i] <= x, x <= self.T[i+self.p+1]),
-                self._p_spline(x, knot_slice, self.p),
-                0)
+            jnp.logical_and(self.T[i] <= x, x <= self.T[i+self.p+1]),
+            self._p_spline(x, knot_slice, self.p),
+            0)
 
     def __safe_divide(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
         """Safely divide x by y, returning 0 when y is 0.
@@ -174,14 +176,15 @@ class SplineBasis:
                                    jnp.ones_like(x),
                                    jnp.zeros_like(x))
                          )
-        
+
     def _p_spline(self, x, t, p):
         # jax.debug.print("Calling p_spline with p={p}, x={x}, t={t}", p=p, x=x, t=t)
         if p == 0:
             return self._const_spline(x, t)
         else:
-            return self.__safe_divide(x - t[0],t[p] - t[0]) * self._p_spline(x, t[:-1], p-1) + \
-                self.__safe_divide(t[p+1] - x, t[p+1] - t[1]) * self._p_spline(x, t[1:], p-1)
+            return self.__safe_divide(x - t[0], t[p] - t[0]) * self._p_spline(x, t[:-1], p-1) + \
+                self.__safe_divide(t[p+1] - x, t[p+1] - t[1]) * \
+                self._p_spline(x, t[1:], p-1)
 
 
 class TensorBasis:
@@ -210,7 +213,8 @@ class TensorBasis:
             ValueError: If the number of bases is not exactly 3
         """
         if len(bases) != 3:
-            raise ValueError(f"TensorBasis requires exactly 3 bases, got {len(bases)}")
+            raise ValueError(
+                f"TensorBasis requires exactly 3 bases, got {len(bases)}")
         self.bases = bases
         self.shape = jnp.array([b.n for b in bases])
         self.n = bases[0].n * bases[1].n * bases[2].n
@@ -230,7 +234,8 @@ class TensorBasis:
             Value of the i-th tensor product basis function at x
         """
         if x.shape[0] != len(self.bases):
-            raise ValueError(f"Input point dimension {x.shape[0]} does not match number of bases {len(self.bases)}")
+            raise ValueError(
+                f"Input point dimension {x.shape[0]} does not match number of bases {len(self.bases)}")
 
         ijk = jnp.unravel_index(i, self.shape)
         return self.bases[0](x[0], ijk[0]) * self.bases[1](x[1], ijk[1]) * self.bases[2](x[2], ijk[2])
@@ -330,7 +335,8 @@ class DerivativeSpline:
         if self.type == 'clamped':
             return jax.lax.cond(
                 i < n,
-                lambda x: self.s(x, i+1) * (p+1) / (self.s.T[i+p+2] - self.s.T[i+1]),
+                lambda x: self.s(x, i+1) * (p+1) /
+                (self.s.T[i+p+2] - self.s.T[i+1]),
                 lambda x: 0.0,
                 operand=x
             )
