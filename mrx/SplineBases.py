@@ -42,6 +42,11 @@ class SplineBasis:
         else:
             self.T = self._init_knots()
 
+        if p >= n and p != 1:  # n = p = 1 is allowed for ignoring the third dimension
+            raise ValueError(f"Degree {p} is greater than or equal to the number of splines {n}")
+        if type not in ['clamped', 'periodic', 'constant', 'fourier']:
+            raise ValueError(f"Invalid spline type: {type}")
+
     def __call__(self, x: float, i: int) -> jnp.ndarray:
         """Evaluate the ith spline at point x.
 
@@ -201,7 +206,11 @@ class TensorBasis:
 
         Args:
             bases: List of one-dimensional SplineBasis objects to form the tensor product
+        Raises:
+            ValueError: If the number of bases is not exactly 3
         """
+        if len(bases) != 3:
+            raise ValueError(f"TensorBasis requires exactly 3 bases, got {len(bases)}")
         self.bases = bases
         self.shape = jnp.array([b.n for b in bases])
         self.n = bases[0].n * bases[1].n * bases[2].n
@@ -220,6 +229,9 @@ class TensorBasis:
         Returns:
             Value of the i-th tensor product basis function at x
         """
+        if x.shape[0] != len(self.bases):
+            raise ValueError(f"Input point dimension {x.shape[0]} does not match number of bases {len(self.bases)}")
+
         ijk = jnp.unravel_index(i, self.shape)
         return self.bases[0](x[0], ijk[0]) * self.bases[1](x[1], ijk[1]) * self.bases[2](x[2], ijk[2])
 

@@ -40,7 +40,10 @@ def inv33(mat: jnp.ndarray) -> jnp.ndarray:
     m4, m5, m6 = mat[1]
     m7, m8, m9 = mat[2]
     det = m1 * (m5 * m9 - m6 * m8) + m4 * (m8 * m3 - m2 * m9) + m7 * (m2 * m6 - m3 * m5)
-    return (
+    # Return zero matrix if determinant is zero
+    return jnp.where(
+        jnp.abs(det) < 1e-10,  # Careful with this tolerance
+        jnp.zeros((3, 3)),
         jnp.array([
             [m5 * m9 - m6 * m8, m3 * m8 - m2 * m9, m2 * m6 - m3 * m5],
             [m6 * m7 - m4 * m9, m1 * m9 - m3 * m7, m3 * m4 - m1 * m6],
