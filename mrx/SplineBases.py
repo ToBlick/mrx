@@ -2,7 +2,6 @@ import jax
 import jax.numpy as jnp
 from typing import Optional, Callable, Union
 
-
 class SplineBasis:
     """A class representing a basis of spline functions.
 
@@ -144,18 +143,28 @@ class SplineBasis:
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+2]),
                 self._lin_spline(x, jax.lax.dynamic_slice(self.T, (i,), (3,))),
                 jnp.array(0.0, dtype=jnp.float64))
+        
+    
+
         elif self.p == 2:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+3]),
                 self._quad_spline(x, jax.lax.dynamic_slice(self.T, (i,), (4,))),
                 jnp.array(0.0, dtype=jnp.float64))
+
         elif self.p == 3:
             return jnp.where(
                 jnp.logical_and(self.T[i] <= x, x <= self.T[i+4]),
                 self._cubic_spline(x, jax.lax.dynamic_slice(self.T, (i,), (5,))),
                 jnp.array(0.0, dtype=jnp.float64))
+        
+
         else:
-            return jnp.array(0.0, dtype=jnp.float64)
+            return jnp.where(
+                jnp.logical_and(self.T[i] <= x, x <= self.T[i+self.p+1]),
+                self._abitrary(x, jax.lax.dynamic_slice(self.T, (i,), (self.p+2,)), self.p, i),
+                jnp.array(0.0, dtype=jnp.float64)
+            )
 
     def __safe_divide(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
         """Safely divide x by y, returning 0 when y is 0.
@@ -167,33 +176,35 @@ class SplineBasis:
         Returns:
             The result of the division, or 0 if y is 0
         """
-        return jax.lax.cond(
-            y == 0,
-            lambda x: jnp.zeros_like(x),
-            lambda x: x/y,
-            operand=x)
+        return jnp.where(jnp.isclose(y, 0.0), jnp.zeros_like(x), x / y)
 
-    def _const_spline(self, x: Union[float, jnp.ndarray], t: jnp.ndarray) -> jnp.ndarray:
+    def _const_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a constant (degree 0) spline.
 
         Args:
-            x: The point(s) at which to evaluate
+            x: The point at which to evaluate
             t: A vector of two elements - the start and end of the interval
 
         Returns:
             1.0 if t[0] ≤ x < t[1], 0.0 otherwise
         """
-        return jnp.where(jnp.logical_and(t[0] <= x, x < t[1]), 1.0, 0.0)
+        # If knots coincide, value is 0
+        return jnp.where(jnp.isclose(t[0], t[1]),
+                         jnp.zeros_like(x),
+                         jnp.where(jnp.logical_and(t[0] <= x, x < t[1]),
+                                   jnp.ones_like(x),
+                                   jnp.zeros_like(x))
+                         )
 
-    def _lin_spline(self, x: Union[float, jnp.ndarray], t: jnp.ndarray) -> jnp.ndarray:
+    def _lin_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a linear (degree 1) spline.
 
         Args:
-            x: The point(s) at which to evaluate
+            x: The point at which to evaluate
             t: A vector of three elements defining the knot sequence
 
         Returns:
-            The value(s) of the linear spline at x
+            The value of the linear spline at x
         """
         return jnp.where(
             x < t[1],
@@ -201,16 +212,17 @@ class SplineBasis:
             self.__safe_divide(t[2] - x, t[2] - t[1])
         )
 
-    def _quad_spline(self, x: Union[float, jnp.ndarray], t: jnp.ndarray) -> jnp.ndarray:
+    def _quad_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a quadratic (degree 2) spline.
 
         Args:
-            x: The point(s) at which to evaluate
+            x: The point at which to evaluate
             t: A vector of four elements defining the knot sequence
 
         Returns:
-            The value(s) of the quadratic spline at x
+            The value of the quadratic spline at x
         """
+
         return jnp.where(
             x < t[1],
             self.__safe_divide((x - t[0])**2, (t[1] - t[0])*(t[2] - t[0])),
@@ -222,15 +234,15 @@ class SplineBasis:
             )
         )
 
-    def _cubic_spline(self, x: Union[float, jnp.ndarray], t: jnp.ndarray) -> jnp.ndarray:
+    def _cubic_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a cubic (degree 3) spline.
 
         Args:
-            x: The point(s) at which to evaluate
+            x: The point at which to evaluate
             t: A vector of five elements defining the knot sequence
 
         Returns:
-            The value(s) of the cubic spline at x
+            The value of the cubic spline at x
         """
         return jnp.where(
             x < t[1],
@@ -249,6 +261,35 @@ class SplineBasis:
             )
         )
 
+    def _abitrary(self, x: Union[float, jnp.ndarray], t: jnp.ndarray, p:float,i:float) -> jnp.ndarray:
+
+        """Evaluate an arbitrary degree spline.
+
+        Args:
+            x: The point(s) at which to evaluate
+            t: A vector of p+2 elements defining the knot sequence
+            p: The degree of the spline
+            i: The index of the spline to evaluate
+
+        Returns:
+            The value(s) of the spline at x
+        """
+        # # t is a vector of p+2 elements
+        jax.debug.print("Calling p_spline with p={p}, x={x}, t={t}", p=p, x=x, t=t)
+        # B_i,0
+        if p == 0:
+            return self._const_spline(x, t)
+            
+        else:
+            # Recursive definition of the B-spline basis functions
+            return (self.__safe_divide((x - t[i])*(t[i + p + 1] - t[i + 1])*self._abitrary(x, t, i, p - 1) + (t[i + p + 1] - x)*(t[i + p] - t[i])*self._abitrary(x, t, i + 1, p - 1), (t[i + p] - t[i])*(t[i + p + 1] - t[i + 1]))) 
+
+            # return (self.__safe_divide((x - t[i]), (t[i + p] - t[i]))) * self._abitrary(x, t, i, p - 1) + \
+            #     (self.__safe_divide((t[i + p + 1] - x), (t[i + p + 1] - t[i + 1]))) * self._abitrary(x, t, i + 1, p - 1)
+        # B_i,p = (x - t_i)/(t_{i+p} - t_i) * B_i,p-1 + (t_{i+p+1} - x)/(t_{i+p+1} - t_{i+1}) * B_{i+1},p-1
+
+
+     
 
 class TensorBasis:
     """A class representing a tensor product of spline bases.
