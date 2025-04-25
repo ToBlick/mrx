@@ -134,25 +134,10 @@ class SplineBasis:
         Returns:
             The value of the ith spline at x
         """
-        if self.p == 0:
-            return jnp.where(
-                jnp.logical_and(self.T[i] <= x, x <= self.T[i+1]),
-                self._const_spline(x, jax.lax.dynamic_slice(self.T, (i,), (2,))),
-                0)
-        elif self.p == 1:
-            return jnp.where(
-                jnp.logical_and(self.T[i] <= x, x <= self.T[i+2]),
-                self._lin_spline(x, jax.lax.dynamic_slice(self.T, (i,), (3,))),
-                0)
-        elif self.p == 2:
-            return jnp.where(
-                jnp.logical_and(self.T[i] <= x, x <= self.T[i+3]),
-                self._quad_spline(x, jax.lax.dynamic_slice(self.T, (i,), (4,))),
-                0)
-        elif self.p == 3:
-            return jnp.where(
-                jnp.logical_and(self.T[i] <= x, x <= self.T[i+4]),
-                self._cubic_spline(x, jax.lax.dynamic_slice(self.T, (i,), (5,))),
+        knot_slice = jax.lax.dynamic_slice(self.T, (i,), (self.p + 2,))
+        return jnp.where(
+                jnp.logical_and(self.T[i] <= x, x <= self.T[i+self.p+1]),
+                self._p_spline(x, knot_slice, self.p),
                 0)
 
     def __safe_divide(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
@@ -165,11 +150,7 @@ class SplineBasis:
         Returns:
             The result of the division, or 0 if y is 0
         """
-        return jax.lax.cond(
-            y == 0,
-            lambda x: jnp.zeros_like(x),
-            lambda x: x/y,
-            operand=x)
+        return jnp.where(jnp.isclose(y, 0.0), jnp.zeros_like(x), x / y)
 
     def _const_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a constant (degree 0) spline.
@@ -181,71 +162,21 @@ class SplineBasis:
         Returns:
             1.0 if t[0] ≤ x < t[1], 0.0 otherwise
         """
-        return jnp.where(jnp.logical_and(t[0] <= x, x < t[1]), 1.0, 0.0)
-
-    def _lin_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
-        """Evaluate a linear (degree 1) spline.
-
-        Args:
-            x: The point at which to evaluate
-            t: A vector of three elements defining the knot sequence
-
-        Returns:
-            The value of the linear spline at x
-        """
-        return jnp.where(
-            x < t[1],
-            self.__safe_divide(x - t[0], t[1] - t[0]),
-            self.__safe_divide(t[2] - x, t[2] - t[1])
-        )
-
-    def _quad_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
-        """Evaluate a quadratic (degree 2) spline.
-
-        Args:
-            x: The point at which to evaluate
-            t: A vector of four elements defining the knot sequence
-
-        Returns:
-            The value of the quadratic spline at x
-        """
-        return jnp.where(
-            x < t[1],
-            self.__safe_divide((x - t[0])**2, (t[1] - t[0])*(t[2] - t[0])),
-            jnp.where(
-                x < t[2],
-                self.__safe_divide((x - t[0])*(t[2] - x), (t[2] - t[0])*(t[2] - t[1])) +
-                self.__safe_divide((x - t[1])*(t[3] - x), (t[2] - t[1])*(t[3] - t[1])),
-                self.__safe_divide((t[3] - x)**2, (t[3] - t[1])*(t[3] - t[2]))
-            )
-        )
-
-    def _cubic_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
-        """Evaluate a cubic (degree 3) spline.
-
-        Args:
-            x: The point at which to evaluate
-            t: A vector of five elements defining the knot sequence
-
-        Returns:
-            The value of the cubic spline at x
-        """
-        return jnp.where(
-            x < t[1],
-            self.__safe_divide((x - t[0])**3, (t[1] - t[0])*(t[2] - t[0])*(t[3] - t[0])),
-            jnp.where(
-                x < t[2],
-                self.__safe_divide(((x - t[0])**2)*(t[2] - x), (t[3] - t[0])*(t[2] - t[0])*(t[2] - t[1])) +
-                self.__safe_divide((x - t[0])*(t[3] - x)*(x-t[1]), (t[3] - t[0])*(t[3] - t[1])*(t[2] - t[1])) +
-                self.__safe_divide((t[4] - x)*(x-t[1])**2, (t[4] - t[1])*(t[3] - t[1])*(t[2] - t[1])),
-                jnp.where(
-                    x < t[3],
-                    self.__safe_divide((x - t[0])*((t[3] - x))**2, (t[3] - t[0])*(t[3] - t[1])*(t[3] - t[2])) +
-                    self.__safe_divide((x - t[1])*(t[4] - x)*(t[3]-x), (t[4] - t[1])*(t[3] - t[1])*(t[3] - t[2])) +
-                    self.__safe_divide(((t[4] - x)**2)*(x-t[2]), (t[4] - t[1])*(t[4] - t[2])*(t[3] - t[2])),
-                    self.__safe_divide((t[4] - x)**3, (t[4] - t[1])*(t[4] - t[2])*(t[4] - t[3])))
-            )
-        )
+        # If knots coincide, value is 0
+        return jnp.where(jnp.isclose(t[0], t[1]),
+                         jnp.zeros_like(x),
+                         jnp.where(jnp.logical_and(t[0] <= x, x < t[1]),
+                                   jnp.ones_like(x),
+                                   jnp.zeros_like(x))
+                         )
+        
+    def _p_spline(self, x, t, p):
+        # jax.debug.print("Calling p_spline with p={p}, x={x}, t={t}", p=p, x=x, t=t)
+        if p == 0:
+            return self._const_spline(x, t)
+        else:
+            return self.__safe_divide(x - t[0],t[p] - t[0]) * self._p_spline(x, t[:-1], p-1) + \
+                self.__safe_divide(t[p+1] - x, t[p+1] - t[1]) * self._p_spline(x, t[1:], p-1)
 
 
 class TensorBasis:
