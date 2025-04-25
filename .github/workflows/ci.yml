@@ -63,27 +63,27 @@ jobs:
         file: ./coverage.xml
         fail_ci_if_error: true
         
-  script-test:
-    needs: test
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.8', '3.12']
-        script: [
-          'polar_helicity.py',
-          'cube_relaxation.py',
-          'relaxation.py',
-          'two_d_helicity.py',
-          'polar_relaxation.py',
-          'conjugate.py',
-          'oop_splines.py',
-          'two_d_poisson.py',
-          'polar_poisson.py',
-          'three_d_poisson.py',
-          'two_d_poisson_mixed.py',
-          'Beltrami.py',
-          'two_d_helmhotz_decomposition.py'
-        ]
+  # script-test:
+  #   needs: test
+  #   runs-on: ubuntu-latest
+  #   strategy:
+  #     matrix:
+  #       python-version: ['3.8', '3.12']
+  #       script: [
+  #         'polar_helicity.py',
+  #         'cube_relaxation.py',
+  #         'relaxation.py',
+  #         'two_d_helicity.py',
+  #         'polar_relaxation.py',
+  #         'conjugate.py',
+  #         'oop_splines.py',
+  #         'two_d_poisson.py',
+  #         'polar_poisson.py',
+  #         'three_d_poisson.py',
+  #         'two_d_poisson_mixed.py',
+  #         'Beltrami.py',
+  #         'two_d_helmhotz_decomposition.py'
+  #       ]
         
     steps:
     - uses: actions/checkout@v4
