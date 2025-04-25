@@ -1,36 +1,40 @@
 # %%
 import jax
 import jax.numpy as jnp
-import numpy as np
 import matplotlib.pyplot as plt
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.Quadrature import QuadratureRule
-from mrx.Projectors import Projector, CurlProjection
+from mrx.Projectors import Projector
 from mrx.PolarMapping import get_xi, LazyExtractionOperator
-from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix, LazyStiffnessMatrix
-from mrx.Utils import curl, jacobian
+from mrx.LazyMatrices import LazyMassMatrix, LazyProjectionMatrix
 
 # %%
 n = 8
 p = 3
 
+
 def _R(r, χ):
     return jnp.ones(1) * r * jnp.cos(2 * jnp.pi * χ)
 
+
 def _Y(r, χ):
     return jnp.ones(1) * r * jnp.sin(2 * jnp.pi * χ)
+
 
 def F(p):
     r, χ, z = p
     return jnp.squeeze(jnp.array([_R(r, χ), _Y(r, χ), jnp.ones(1) * z]))
 
+
 def F_inv(p):
     x, y, z = p
     r = jnp.sqrt(x**2 + y**2)
-    χ = jnp.arctan2(y, x) # in [-π, π]
-    χ = jnp.where(χ < 0, χ + 2 * jnp.pi, χ) / (2 * jnp.pi) # in [0, 1]
+    χ = jnp.arctan2(y, x)  # in [-π, π]
+    χ = jnp.where(χ < 0, χ + 2 * jnp.pi, χ) / (2 * jnp.pi)  # in [0, 1]
     return jnp.array([r, χ, z])
+
+
 t = jnp.array([0.8, 0.25, 0])
 F(F_inv(t)), F_inv(F(t))
 # %%
@@ -69,6 +73,8 @@ __y1 = __y[:, 0].reshape(_nx, _nx)
 __y2 = __y[:, 1].reshape(_nx, _nx)
 
 # %%
+
+
 def f(x):
     x, y, z = x
     return jnp.ones(1) * jnp.cos(jnp.pi * x)
@@ -77,6 +83,7 @@ def f(x):
 #     r, χ, z = x
 #     return jnp.ones(1) * r
 # f = Pullback(f_logical, F_inv, 0)
+
 
 f0_logical = Pullback(f, F, 0)
 
@@ -114,6 +121,8 @@ F_f_h = Pullback(f_h, F_inv, 0)
 plt.contourf(_y1, _y2, jax.vmap(F_f_h)(_y).reshape(nx, nx))
 plt.colorbar()
 # %%
+
+
 def A(r):
     x, y, z = r
     return jnp.array([x, 0, 0])
@@ -123,6 +132,7 @@ def A(r):
 #     return jnp.array([1-r, 0, 0])
 
 # A = Pullback(A_logical, F_inv, 1)
+
 
 A1_logical = Pullback(A, F, 1)
 A2_logical = Pullback(A, F, 2)

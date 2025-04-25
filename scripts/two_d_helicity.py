@@ -44,6 +44,7 @@ output_dir.mkdir(parents=True, exist_ok=True)
 m1 = 2
 m2 = 2
 
+
 @jax.jit
 def A(x):
     """Analytical vector potential function."""
@@ -53,14 +54,15 @@ def A(x):
     a3 = jnp.sin(m1 * jnp.pi * r) * jnp.sin(m2 * jnp.pi * χ)
     return jnp.array([a1, a2, a3])
 
+
 @partial(jax.jit, static_argnames=['n', 'p'])
 def get_error(n, p):
     """Compute errors in vector potential reconstruction and helicity calculation.
-    
+
     Args:
         n: Number of elements in each direction
         p: Polynomial degree
-        
+
     Returns:
         tuple: (A_err, H_err, curl_A_err)
             A_err: Relative error in vector potential reconstruction
@@ -100,6 +102,7 @@ def get_error(n, p):
     curl_A_err = (jnp.linalg.solve(M2, D @ (A_hat - A_hat_recon)) @ M2 @ jnp.linalg.solve(M2, D @ (A_hat - A_hat_recon)) / (jnp.linalg.solve(M2, D @ A_hat) @ M2 @ jnp.linalg.solve(M2, D @ A_hat)))**0.5
 
     return A_err, H_err, curl_A_err
+
 
 # Run convergence analysis
 print("Running convergence analysis...")

@@ -4,7 +4,6 @@ import jax.numpy as jnp
 import numpy as np
 import time
 
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
@@ -14,7 +13,6 @@ from functools import partial
 
 from mrx.Plotting import converge_plot
 
-import matplotlib.pyplot as plt
 
 jax.config.update("jax_enable_x64", True)
 # %%
@@ -22,15 +20,19 @@ jax.config.update("jax_enable_x64", True)
 # 2D Poisson problem, Dirichlet BCs
 ###
 
+
 @partial(jax.jit, static_argnames=['n', 'p', 'q'])
 def get_err(n, p, q):
     a = 1
     R0 = 3.0
     Y0 = 0.0
+
     def _R(r, χ):
         return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * jnp.pi * χ))
+
     def _Y(r, χ):
         return jnp.ones(1) * (Y0 + a * r * jnp.sin(2 * jnp.pi * χ))
+
     def F(x):
         r, χ, z = x
         return jnp.ravel(jnp.array([_R(r, χ),
@@ -38,9 +40,11 @@ def get_err(n, p, q):
                                     jnp.ones(1) * z]))
     ns = (n, 1, 1)
     ps = (p, 0, 0)
+
     def u(x):
         r, χ, z = x
         return jnp.ones(1) * r**3 * (3 * jnp.log(r) - 2) / 27 + 2/27
+
     def f(x):
         r, χ, z = x
         return -jnp.ones(1) * r * jnp.log(r)

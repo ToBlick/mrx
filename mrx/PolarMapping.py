@@ -10,7 +10,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.Projectors import Projector
-from mrx.Quadrature import QuadratureRule
 from mrx.LazyMatrices import LazyMassMatrix
 
 
