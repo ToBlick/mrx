@@ -18,9 +18,12 @@ import unittest
 import jax
 import jax.numpy as jnp
 import time
+import os
 import matplotlib.pyplot as plt
 from mrx.IterativeSolvers import picard_solver, newton_solver
 
+# Create output directory if it doesn't exist
+os.makedirs('test_outputs', exist_ok=True)
 
 class TestIterativeSolvers(unittest.TestCase):
     """Test cases for iterative solvers."""
@@ -245,7 +248,6 @@ class TestIterativeSolvers(unittest.TestCase):
         # Save plots
         plt.tight_layout()
         plt.savefig('test_outputs/newton_scaling_plots.png')
-        plt.show()
         plt.close()
 
     def test_picard_high_dimensional_scaling(self):
@@ -355,3 +357,4 @@ if __name__ == '__main__':
     print("\n=== Starting MRX Iterative Solvers Test Suite ===")
     # Run all tests in the file
     unittest.main(verbosity=2)
+    plt.show()

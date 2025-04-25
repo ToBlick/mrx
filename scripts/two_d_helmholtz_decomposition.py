@@ -23,7 +23,7 @@ from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix
-from mrx.Utils import l2_product, grad, curl
+from mrx.Utils import l2_product, grad, curl, div
 
 # Enable 64-bit precision for better accuracy
 jax.config.update("jax_enable_x64", True)
@@ -116,7 +116,7 @@ def perform_decomposition(Λ2, M2, P2, D, K, u, grad_q, w):
     return u_hat, grad_q_hat, w_hat
 
 
-def compute_errors(u, grad_q, w, u_h, grad_q_h, w_h, Q):
+def compute_errors(u, grad_q, w, u_h, grad_q_h, w_h, Q, u_h_proj, grad_q_h_proj, w_h_proj):
     """Compute the L2 errors of the decomposition.
 
     Args:
@@ -127,14 +127,25 @@ def compute_errors(u, grad_q, w, u_h, grad_q_h, w_h, Q):
     Returns:
         dict: The relative L2 errors for each component
     """
-    def err(f, f_h):
-        return (l2_product(lambda x: f(x) - f_h(x), lambda x: f(x) - f_h(x), Q) /
-                l2_product(f, f, Q))**0.5
+    def err(err, val):
+        return (l2_product(err, err, Q) / l2_product(val, val, Q))**0.5
+    
+    def err_u(x): return u(x) - u_h(x)
+    def err_u_proj(x): return u(x) - u_h_proj(x)
+    def err_grad_q(x): return grad(q)(x) - grad_q_h(x)
+    def err_grad_q_proj(x): return grad(q)(x) - grad_q_h_proj(x)
+    def err_w(x): return w(x) - w_h(x)
+    def err_w_proj(x): return w(x) - w_h_proj(x)
 
     return {
-        'u': err(u, u_h),
-        'grad_q': err(grad_q, grad_q_h),
-        'w': err(w, w_h)
+        'u': err(err_u, u),
+        'grad_q': err(err_grad_q, grad_q),
+        'w': err(err_w, w),
+        'u (projection)': err(err_u_proj, u),
+        'grad_q (projection)': err(err_grad_q_proj, grad_q),
+        'w (projection)': err(err_w_proj, w),
+        'div_w': l2_product(div(w_h), div(w_h), Q)**0.5,
+        'curl_grad_q': l2_product(curl(grad_q_h), curl(grad_q_h), Q)**0.5
     }
 
 
@@ -160,76 +171,76 @@ def plot_field(x, y, field, title, filename):
     plt.xlabel('x')
     plt.ylabel('y')
     plt.savefig(output_dir / filename)
-    plt.close()
 
+# Set up the problem
+Λ0, Λ2, Λ3, Q, D, M2, K, P2 = setup_problem()
+q, w, u = define_test_functions()
 
-def main():
-    """Main function to run the Helmholtz decomposition."""
-    # Set up the problem
-    Λ0, Λ2, Λ3, Q, D, M2, K, P2 = setup_problem()
-    q, w, u = define_test_functions()
+# Perform the decomposition
+u_hat, grad_q_hat, w_hat = perform_decomposition(Λ2, M2, P2, D, K, u, grad(q), w)
 
-    # Perform the decomposition
-    u_hat, grad_q_hat, w_hat = perform_decomposition(Λ2, M2, P2, D, K, u, grad(q), w)
+# Create discrete functions
+u_h = DiscreteFunction(u_hat, Λ2)
+grad_q_h = DiscreteFunction(grad_q_hat, Λ2)
+w_h = DiscreteFunction(w_hat, Λ2)
+grad_q_hat_proj = jnp.linalg.solve(M2, P2(grad(q)))
+w_hat_proj = jnp.linalg.solve(M2, P2(w))
+w_h_proj = DiscreteFunction(w_hat_proj, Λ2)
+grad_q_h_proj = DiscreteFunction(grad_q_hat_proj, Λ2)
+u_h_proj = DiscreteFunction(u_hat, Λ2)
 
-    # Create discrete functions
-    u_h = DiscreteFunction(u_hat, Λ2)
-    grad_q_h = DiscreteFunction(grad_q_hat, Λ2)
-    w_h = DiscreteFunction(w_hat, Λ2)
+# Compute errors
+errors = compute_errors(u, grad(q), w, u_h, grad_q_h, w_h, Q, u_h_proj, grad_q_h_proj, w_h_proj)
+print("\nRelative L2 errors:")
+for component, error in errors.items():
+    print(f"{component}: {error:.2e}")
 
-    # Compute errors
-    errors = compute_errors(u, grad(q), w, u_h, grad_q_h, w_h, Q)
-    print("\nRelative L2 errors:")
-    for component, error in errors.items():
-        print(f"{component}: {error:.2e}")
+# Set up plotting grid
+nx = 64
+x1 = jnp.linspace(1e-5, 1-1e-5, nx)
+x2 = jnp.linspace(1e-5, 1-1e-5, nx)
+x3 = jnp.ones(1)/2
+X = jnp.array(jnp.meshgrid(x1, x2, x3))
+X = X.transpose(1, 2, 3, 0).reshape(nx*nx*1, 3)
 
-    # Set up plotting grid
-    nx = 64
-    x1 = jnp.linspace(1e-5, 1-1e-5, nx)
-    x2 = jnp.linspace(1e-5, 1-1e-5, nx)
-    x3 = jnp.ones(1)/2
-    X = jnp.array(jnp.meshgrid(x1, x2, x3))
-    X = X.transpose(1, 2, 3, 0).reshape(nx*nx*1, 3)
+# Plot the fields
+def F(x): return x  # Identity mapping
+F_u = Pullback(u, F, 2)
+F_u_h = Pullback(u_h, F, 2)
+F_grad_q = Pullback(grad(q), F, 2)
+F_grad_q_h = Pullback(grad_q_h, F, 2)
+F_w = Pullback(w, F, 2)
+F_w_h = Pullback(w_h, F, 2)
 
-    # Plot the fields
-    def F(x): return x  # Identity mapping
-    F_u = Pullback(u, F, 2)
-    F_u_h = Pullback(u_h, F, 2)
-    F_grad_q = Pullback(grad(q), F, 2)
-    F_grad_q_h = Pullback(grad_q_h, F, 2)
-    F_w = Pullback(w, F, 2)
-    F_w_h = Pullback(w_h, F, 2)
+# Evaluate fields on grid
+u_exact = jax.vmap(F_u)(X).reshape(nx, nx, 3)
+u_approx = jax.vmap(F_u_h)(X).reshape(nx, nx, 3)
+grad_q_exact = jax.vmap(F_grad_q)(X).reshape(nx, nx, 3)
+grad_q_approx = jax.vmap(F_grad_q_h)(X).reshape(nx, nx, 3)
+w_exact = jax.vmap(F_w)(X).reshape(nx, nx, 3)
+w_approx = jax.vmap(F_w_h)(X).reshape(nx, nx, 3)
+Y = jax.vmap(F)(X)
+Y1 = Y[:, 0].reshape(nx, nx)
+Y2 = Y[:, 1].reshape(nx, nx)
 
-    # Evaluate fields on grid
-    u_exact = jax.vmap(F_u)(X).reshape(nx, nx, 3)
-    u_approx = jax.vmap(F_u_h)(X).reshape(nx, nx, 3)
-    grad_q_exact = jax.vmap(F_grad_q)(X).reshape(nx, nx, 3)
-    grad_q_approx = jax.vmap(F_grad_q_h)(X).reshape(nx, nx, 3)
-    w_exact = jax.vmap(F_w)(X).reshape(nx, nx, 3)
-    w_approx = jax.vmap(F_w_h)(X).reshape(nx, nx, 3)
+# Create plots
+plot_field(Y1, Y2, u_exact, "Exact Total Field", "total_field_exact.png")
+plot_field(Y1, Y2, u_approx, "Approximate Total Field", "total_field_approx.png")
+plot_field(Y1, Y2, grad_q_exact, "Exact Gradient Component", "gradient_exact.png")
+plot_field(Y1, Y2, grad_q_approx, "Approximate Gradient Component", "gradient_approx.png")
+plot_field(Y1, Y2, w_exact, "Exact Curl Component", "curl_exact.png")
+plot_field(Y1, Y2, w_approx, "Approximate Curl Component", "curl_approx.png")
 
-    # Create plots
-    plot_field(x1, x2, u_exact, "Exact Total Field", "total_field_exact.png")
-    plot_field(x1, x2, u_approx, "Approximate Total Field", "total_field_approx.png")
-    plot_field(x1, x2, grad_q_exact, "Exact Gradient Component", "gradient_exact.png")
-    plot_field(x1, x2, grad_q_approx, "Approximate Gradient Component", "gradient_approx.png")
-    plot_field(x1, x2, w_exact, "Exact Curl Component", "curl_exact.png")
-    plot_field(x1, x2, w_approx, "Approximate Curl Component", "curl_approx.png")
+# Plot singular values of Leray projector
+𝚷_Leray = jnp.eye(Λ2.n) - jnp.linalg.solve(M2, D.T @ jnp.linalg.solve(K, D))
+U, S, Vh = jnp.linalg.svd(𝚷_Leray)
 
-    # Plot singular values of Leray projector
-    𝚷_Leray = jnp.eye(Λ2.n) - jnp.linalg.solve(M2, D.T @ jnp.linalg.solve(K, D))
-    U, S, Vh = jnp.linalg.svd(𝚷_Leray)
-
-    plt.figure(figsize=(8, 6))
-    plt.plot(S / S[0])
-    plt.yscale('log')
-    plt.xlabel('Index')
-    plt.ylabel('Singular Value')
-    plt.vlines(S.shape[0] - Λ3.n, ymax=2, ymin=1e-8, color='k', linestyle='--')
-    plt.title('Singular Values of Leray Projector')
-    plt.savefig(output_dir / "leray_singular_values.png")
-    plt.close()
-
-
-if __name__ == "__main__":
-    main()
+plt.figure(figsize=(8, 6))
+plt.plot(S / S[0])
+plt.yscale('log')
+plt.xlabel('Index')
+plt.ylabel('Singular Value')
+plt.vlines(S.shape[0] - Λ3.n, ymax=2, ymin=1e-8, color='k', linestyle='--')
+plt.title('Singular Values of Leray Projector')
+plt.savefig(output_dir / "leray_singular_values.png")
+plt.show()

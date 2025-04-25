@@ -366,7 +366,7 @@ traces = []
 # Initialize state
 x = B_hat, jnp.zeros_like(B_hat), 1.0
 # precompile f_relax
-B_hat, trace = f_relax(B_hat, 0)
+x, trace = f_relax(x, 0)
 
 for _ in range(50):  # Remove key splitting since we don't use it
     x, trace = f_relax(x, key)  # Use the updated x from previous iteration
