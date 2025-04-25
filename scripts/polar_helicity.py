@@ -61,7 +61,7 @@ def get_error(n, p):
     Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(i, ns, ps, types) for i in range(4)]
 
     # Warning: this works with q = 3 but appears NOT to work with q = 10
-    Q = QuadratureRule(Λ0, 3)   
+    Q = QuadratureRule(Λ0, 3)
 
     ###
     # Mapping definition

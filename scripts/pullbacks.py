@@ -48,18 +48,22 @@ output_dir.mkdir(parents=True, exist_ok=True)
 n = 8  # Number of elements in each direction
 p = 3  # Polynomial degree
 
+
 def _R(r, χ):
     """Convert polar radius to Cartesian x-coordinate"""
     return jnp.ones(1) * r * jnp.cos(2 * jnp.pi * χ)
+
 
 def _Y(r, χ):
     """Convert polar angle to Cartesian y-coordinate"""
     return jnp.ones(1) * r * jnp.sin(2 * jnp.pi * χ)
 
+
 def F(p):
     """Forward mapping from logical (polar) to physical (Cartesian) coordinates"""
     r, χ, z = p
     return jnp.squeeze(jnp.array([_R(r, χ), _Y(r, χ), jnp.ones(1) * z]))
+
 
 def F_inv(p):
     """Inverse mapping from physical (Cartesian) to logical (polar) coordinates"""
@@ -69,15 +73,18 @@ def F_inv(p):
     χ = jnp.where(χ < 0, χ + 2 * jnp.pi, χ) / (2 * jnp.pi)  # in [0, 1]
     return jnp.array([r, χ, z])
 
+
 def f(x):
     """Test scalar function in physical space: f(x,y,z) = cos(πx)"""
     x, y, z = x
     return jnp.ones(1) * jnp.cos(jnp.pi * x)
 
+
 def A(r):
     """Test vector field in physical space: A(x,y,z) = [x, 0, 0]"""
     x, y, z = r
     return jnp.array([x, 0, 0])
+
 
 # Set up finite element spaces
 ns = (n, n, 1)  # Number of elements in each direction

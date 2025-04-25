@@ -31,7 +31,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
-import os
 from pathlib import Path
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pullback
@@ -61,6 +60,7 @@ types = ('periodic', 'periodic', 'constant')
 Q = QuadratureRule(Λ0, 10)              # Quadrature
 def F(x): return x                         # identity mapping
 
+
 # %% [markdown]
 # ## Assemble Matrices and Operators
 # Construct the necessary matrices for the finite element discretization
@@ -80,18 +80,21 @@ K = LazyStiffnessMatrix(Λ0, Q).M                # bilinear form (q, p) → (gra
 # %% [markdown]
 # ## Helper Functions
 # %%
+
+
 def l2_product(f, g, Q):
     """Compute the L2 inner product of two functions f and g over the domain.
-    
+
     Args:
         f: First function
         g: Second function
         Q: Quadrature rule
-        
+
     Returns:
         float: L2 inner product
     """
     return jnp.einsum("ij,ij,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Q.w)
+
 
 # %% [markdown]
 # ## Initial Field Setup
@@ -117,14 +120,15 @@ __y = jax.vmap(F)(__x)
 __y1 = __y[:, 0].reshape(_nx, _nx)
 __y2 = __y[:, 1].reshape(_nx, _nx)
 
+
 def E(x, m, n):
     """Define the initial magnetic field configuration.
-    
+
     Args:
         x: Spatial coordinates (r, χ, z)
         m: Mode number in r direction
         n: Mode number in χ direction
-        
+
     Returns:
         jnp.array: Magnetic field vector
     """
@@ -135,16 +139,18 @@ def E(x, m, n):
     a3 = jnp.sin(m * jnp.pi * r) * jnp.sin(n * jnp.pi * χ)
     return jnp.array([a1, a2, a3]) * h
 
+
 def A(x):
     """Initial vector potential.
-    
+
     Args:
         x: Spatial coordinates
-        
+
     Returns:
         jnp.array: Vector potential
     """
     return E(x, 2, 2)
+
 
 # %% [markdown]
 # ## Initial Field Visualization
@@ -175,6 +181,7 @@ plt.savefig(output_dir / 'initial_field.png')
 A_hat = jnp.linalg.solve(M1, P1(A))
 A_h = DiscreteFunction(A_hat, Λ1)
 def compute_A_error(x): return A(x) - A_h(x)
+
 
 (l2_product(compute_A_error, compute_A_error, Q) / l2_product(A, A, Q))**0.5
 
@@ -210,7 +217,9 @@ B0_hat = jnp.linalg.solve(M2, P2(B0))  # Project onto the discrete space
 B_h = DiscreteFunction(B0_hat, Λ2)  # Create discrete function
 B0_h = DiscreteFunction(B0_hat, Λ2)  # Store initial state
 
+
 def compute_B_error(x): return B0(x) - B_h(x)  # Compute pointwise error
+
 
 # Compute relative L2 error in magnetic field
 (l2_product(compute_B_error, compute_B_error, Q) / l2_product(B0, B0, Q))**0.5
@@ -282,6 +291,7 @@ plt.quiver(
 # %%
 def compute_curl_error(x): return curl(A)(x) - curl(A_h)(x)
 
+
 # Compute relative L2 error in curl
 (l2_product(compute_curl_error, compute_curl_error, Q) / l2_product(curl(A), curl(A), Q))**0.5
 # %%
@@ -313,12 +323,13 @@ print(l2_product(A, curl(A), Q))
 print("Helicity before perturbation: ", A_hat @ M12 @ B0_hat)
 print("Energy before perturbation: ", B0_hat @ M2 @ B0_hat / 2)
 
+
 def u(x):
     """Define the perturbation field.
-    
+
     Args:
         x: Spatial coordinates
-        
+
     Returns:
         jnp.array: Perturbation vector field
     """
@@ -327,6 +338,7 @@ def u(x):
     a2 = jnp.cos(2 * jnp.pi * r) * jnp.sin(2 * jnp.pi * χ)
     a3 = jnp.sin(2 * jnp.pi * r) * jnp.cos(2 * jnp.pi * χ)
     return jnp.array([a1, a2, a3])
+
 
 u_hat = jnp.linalg.solve(M2, P2(u))
 u_h = DiscreteFunction(u_hat, Λ2)
@@ -339,15 +351,17 @@ max_iterations = int(0.05/dt)
 # ## Evolution Loop
 # Define the function to compute magnetic field changes
 # %%
+
+
 @jax.jit
 def perturb_B_hat(B_hat, B_hat_0, dt):
     """Compute the change in magnetic field.
-    
+
     Args:
         B_hat: Current magnetic field
         B_hat_0: Previous magnetic field
         dt: Time step
-        
+
     Returns:
         tuple: (error, new B_hat, velocity field)
     """
@@ -360,6 +374,7 @@ def perturb_B_hat(B_hat, B_hat_0, dt):
     B_hat_1 = B_hat_0 + dt * ẟB_hat
     error = (B_hat_1 - B_hat) @ M2 @ (B_hat_1 - B_hat)
     return error, B_hat_1, u_hat
+
 
 # %% [markdown]
 # ## Main Evolution Loop
@@ -437,15 +452,17 @@ dts = []
 # ## Evolution with Force
 # Perform evolution with force calculation
 # %%
+
+
 @jax.jit
 def ẟB_hat(B_hat, B_hat_0, dt):
     """Compute the change in magnetic field with force calculation.
-    
+
     Args:
         B_hat: Current magnetic field
         B_hat_0: Previous magnetic field
         dt: Time step
-        
+
     Returns:
         tuple: (error, new B_hat, velocity field)
     """
@@ -465,6 +482,7 @@ def ẟB_hat(B_hat, B_hat_0, dt):
     B_hat_1 = B_hat_0 + dt * ẟB_hat
     err = (B_hat_1 - B_hat) @ M2 @ (B_hat_1 - B_hat)
     return err, B_hat_1, u_hat
+
 
 # %% [markdown]
 # ## Main Evolution Loop with Force

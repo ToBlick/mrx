@@ -38,7 +38,6 @@ from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyStiffnessMatrix
 from mrx.Utils import l2_product
-from mrx.Plotting import converge_plot
 from functools import partial
 
 # Enable 64-bit precision for numerical stability
@@ -48,15 +47,16 @@ jax.config.update("jax_enable_x64", True)
 output_dir = Path("script_outputs")
 output_dir.mkdir(parents=True, exist_ok=True)
 
+
 @partial(jax.jit, static_argnames=['n', 'p', 'q'])
 def get_err(n, p, q):
     """
     Compute the relative L2 error for the 2D Poisson problem in polar coordinates
     with constant angle approximation.
-    
+
     This function solves the Poisson equation using a standard finite element formulation
     and computes the relative L2 error between the exact and numerical solutions.
-    
+
     Parameters
     ----------
     n : int
@@ -65,14 +65,14 @@ def get_err(n, p, q):
         Polynomial degree for the finite element spaces
     q : int
         Quadrature order for numerical integration
-        
+
     Returns
     -------
     float
         Relative L2 error between exact and numerical solutions, computed as:
         ||u - u_h||_L2 / ||u||_L2
         where u is the exact solution and u_h is the numerical solution
-        
+
     Notes
     -----
     - Uses standard finite element formulation with H1 space
@@ -120,6 +120,7 @@ def get_err(n, p, q):
     def err(x): return (u(x) - u_h(x))
     error = (l2_product(err, err, Q, F) / l2_product(u, u, Q, F))**0.5
     return error
+
 
 # Convergence analysis
 print("\nRunning convergence analysis...")

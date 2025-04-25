@@ -28,7 +28,6 @@ The script generates several plots:
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import matplotlib.pyplot as plt
 from typing import List
 from pathlib import Path

@@ -497,10 +497,12 @@ plt.plot([τ + R0, R0 - τ/2, R0 - τ/2, τ + R0],
          [0, Y0 + jnp.sqrt(3) * τ/2, Y0 - jnp.sqrt(3) * τ/2, 0],
          'k:')
 
+
 @jax.jit
 def f():
     """Test function to verify index mapping consistency."""
     return [jnp.all(jax.vmap(lambda i: jax.jit(Λ._ravel_index)(*jax.jit(Λ._unravel_index)(i)))(jnp.arange(Λ.n)) == jnp.arange(Λ.n)) for Λ in [Λ0, Λ1, Λ2, Λ3]]
+
 
 @jax.jit
 def test():
@@ -524,6 +526,7 @@ def test_function(x: jnp.ndarray) -> jnp.ndarray:
 
 
 print(jnp.einsum("ij,ij,i->", jax.vmap(test_function)(Q.x), jax.vmap(test_function)(Q.x), Q.w))
+
 
 @jax.jit
 def get_err():
