@@ -42,7 +42,6 @@ class LazyMatrix:
 
     Notes:
         - Any subclass must implement the assemble method.
-        - The matrix is assembled lazily, meaning entries are computed only when needed.
     """
     Λ0: DifferentialForm
     Λ1: DifferentialForm
