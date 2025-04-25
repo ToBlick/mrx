@@ -9,6 +9,7 @@ from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyStiffnessMatrix, LazyMassMatrix
+from mrx.BoundaryConditions import LazyBoundaryOperator
 from mrx.Utils import l2_product
 from functools import partial
 
@@ -24,30 +25,27 @@ jax.config.update("jax_enable_x64", True)
 
 @partial(jax.jit, static_argnames=['n', 'p', 'q'])
 def get_err(n, p, q):
-    a = 1
-    R0 = 3.0
-    Y0 = 0.0
     def _R(r, χ):
-        return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * jnp.pi * χ))
+        return r * jnp.cos(2 * jnp.pi * χ)
     def _Y(r, χ):
-        return jnp.ones(1) * (Y0 + a * r * jnp.sin(2 * jnp.pi * χ))
+        return r * jnp.sin(2 * jnp.pi * χ)
     def F(x):
         r, χ, z = x
         return jnp.ravel(jnp.array([_R(r, χ),
                                     _Y(r, χ),
-                                    jnp.ones(1) * z]))
-    ns = (n, 1, 1)
-    ps = (p, 0, 0)
+                                    z]))
+    ns = (n, 1, n)
+    ps = (p, 0, p)
     def u(x):
         r, χ, z = x
-        return jnp.ones(1) * r**3 * (3 * jnp.log(r) - 2) / 27 + 2/27
+        return jnp.ones(1) * (r**3 * (3 * jnp.log(r) - 2)  + 2) / 27 * jnp.sin(2 * jnp.pi * z)
     def f(x):
         r, χ, z = x
-        return -jnp.ones(1) * r * jnp.log(r)
-    types = ('clamped', 'constant', 'constant')
-
+        return jnp.ones(1) * ( - r * jnp.log(r) * jnp.sin(2 * jnp.pi * z) + (2*jnp.pi)**2 * u(x) )
+    types = ('clamped', 'constant', 'clamped')
+    bcs = ('half', 'none', 'dirichlet')
     Λ0 = DifferentialForm(0, ns, ps, types)
-    E0 = jnp.eye(Λ0.n - 1, Λ0.n)
+    E0 = LazyBoundaryOperator(Λ0, bcs).M
 
     Q = QuadratureRule(Λ0, q)
     M0 = LazyMassMatrix(Λ0, Q, F=F, E=E0).M
