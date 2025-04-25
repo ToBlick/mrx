@@ -62,20 +62,22 @@ class DifferentialForm:
         self.k = k
         if Ts is None:
             Ts = [None] * self.d
-        self.Λ = [SplineBasis(n, p, type, T) for n, p, type, T in zip(ns, ps, types, Ts)]
+        self.Λ = [
+            SplineBasis(n, p, type, T) for n, p, type, T in zip(ns, ps, types, Ts)
+        ]
         self.dΛ = [DerivativeSpline(b) for b in self.Λ]
         self.types = types
 
         self.nr, self.nχ, self.nζ = ns
-        if types[0] == 'clamped':
+        if types[0] == "clamped":
             self.dr = self.nr - 1
         else:
             self.dr = self.nr
-        if types[1] == 'clamped':
+        if types[1] == "clamped":
             self.dχ = self.nχ - 1
         else:
             self.dχ = self.nχ
-        if types[2] == 'clamped':
+        if types[2] == "clamped":
             self.dζ = self.nζ - 1
         else:
             self.dζ = self.nζ
@@ -83,34 +85,42 @@ class DifferentialForm:
         self.vecs = jnp.eye(self.d)
 
         if k == 0:
-            self.bases = (TensorBasis(self.Λ), )
-            self.shape = ((self.nr, self.nχ, self.nζ), )
+            self.bases = (TensorBasis(self.Λ),)
+            self.shape = ((self.nr, self.nχ, self.nζ),)
             self.n1 = self.nr * self.nχ * self.nζ
             self.n2 = 0
             self.n3 = 0
         elif k == 1:
-            self.bases = (TensorBasis([self.dΛ[0], self.Λ[1], self.Λ[2]]),
-                          TensorBasis([self.Λ[0], self.dΛ[1], self.Λ[2]]),
-                          TensorBasis([self.Λ[0], self.Λ[1], self.dΛ[2]]))
-            self.shape = ((self.dr, self.nχ, self.nζ),
-                          (self.nr, self.dχ, self.nζ),
-                          (self.nr, self.nχ, self.dζ))
+            self.bases = (
+                TensorBasis([self.dΛ[0], self.Λ[1], self.Λ[2]]),
+                TensorBasis([self.Λ[0], self.dΛ[1], self.Λ[2]]),
+                TensorBasis([self.Λ[0], self.Λ[1], self.dΛ[2]]),
+            )
+            self.shape = (
+                (self.dr, self.nχ, self.nζ),
+                (self.nr, self.dχ, self.nζ),
+                (self.nr, self.nχ, self.dζ),
+            )
             self.n1 = self.dr * self.nχ * self.nζ
             self.n2 = self.nr * self.dχ * self.nζ
             self.n3 = self.nr * self.nχ * self.dζ
         elif k == 2:
-            self.bases = (TensorBasis([self.Λ[0], self.dΛ[1], self.dΛ[2]]),
-                          TensorBasis([self.dΛ[0], self.Λ[1], self.dΛ[2]]),
-                          TensorBasis([self.dΛ[0], self.dΛ[1], self.Λ[2]]))
-            self.shape = ((self.nr, self.dχ, self.dζ),
-                          (self.dr, self.nχ, self.dζ),
-                          (self.dr, self.dχ, self.nζ))
+            self.bases = (
+                TensorBasis([self.Λ[0], self.dΛ[1], self.dΛ[2]]),
+                TensorBasis([self.dΛ[0], self.Λ[1], self.dΛ[2]]),
+                TensorBasis([self.dΛ[0], self.dΛ[1], self.Λ[2]]),
+            )
+            self.shape = (
+                (self.nr, self.dχ, self.dζ),
+                (self.dr, self.nχ, self.dζ),
+                (self.dr, self.dχ, self.nζ),
+            )
             self.n1 = self.nr * self.dχ * self.dζ
             self.n2 = self.dr * self.nχ * self.dζ
             self.n3 = self.dr * self.dχ * self.nζ
         elif k == 3:
-            self.bases = (TensorBasis(self.dΛ), )
-            self.shape = ((self.dr, self.dχ, self.dζ), )
+            self.bases = (TensorBasis(self.dΛ),)
+            self.shape = ((self.dr, self.dχ, self.dζ),)
             self.n1 = self.dr * self.dχ * self.dζ
             self.n2 = 0
             self.n3 = 0
@@ -129,11 +139,11 @@ class DifferentialForm:
                   component and index is the local index within that component
         """
         if self.k == 0 or self.k == 3:
-            return 0, idx
+            return jnp.int32(0), idx
         elif self.k == 1 or self.k == 2:
             n1, n2 = self.n1, self.n2
             category = jnp.int32(idx >= n1) + jnp.int32(idx >= n1 + n2)
-            index = idx - n1 * jnp.int32(idx >= n1) - n2 * jnp.int32(idx >= n1 + n2)
+            index = jnp.int32(idx - n1 * (idx >= n1) - n2 * (idx >= n1 + n2))
             return category, index
 
     def _ravel_index(self, c, i, j, k):
@@ -150,31 +160,54 @@ class DifferentialForm:
             int: Linear index into the form
         """
         if self.k == 0:
-            return jnp.ravel_multi_index((i, j, k), (self.nr, self.nχ, self.nζ), mode='clip')
+            rav = jnp.ravel_multi_index(
+                (i, j, k), (self.nr, self.nχ, self.nζ), mode="clip"
+            )
         elif self.k == 1:
             n1, n2 = self.n1, self.n2
-            return jnp.where(
+            rav = jnp.where(
                 c == 0,
-                jnp.ravel_multi_index((i, j, k), (self.dr, self.nχ, self.nζ), mode='clip'),
+                jnp.ravel_multi_index(
+                    (i, j, k), (self.dr, self.nχ, self.nζ), mode="clip"
+                ),
                 jnp.where(
                     c == 1,
-                    n1 + jnp.ravel_multi_index((i, j, k), (self.nr, self.dχ, self.nζ), mode='clip'),
-                    n1 + n2 + jnp.ravel_multi_index((i, j, k), (self.nr, self.nχ, self.dζ), mode='clip')
-                )
+                    n1
+                    + jnp.ravel_multi_index(
+                        (i, j, k), (self.nr, self.dχ, self.nζ), mode="clip"
+                    ),
+                    n1
+                    + n2
+                    + jnp.ravel_multi_index(
+                        (i, j, k), (self.nr, self.nχ, self.dζ), mode="clip"
+                    ),
+                ),
             )
         elif self.k == 2:
             n1, n2 = self.n1, self.n2
-            return jnp.where(
+            rav = jnp.where(
                 c == 0,
-                jnp.ravel_multi_index((i, j, k), (self.nr, self.dχ, self.dζ), mode='clip'),
+                jnp.ravel_multi_index(
+                    (i, j, k), (self.nr, self.dχ, self.dζ), mode="clip"
+                ),
                 jnp.where(
                     c == 1,
-                    n1 + jnp.ravel_multi_index((i, j, k), (self.dr, self.nχ, self.dζ), mode='clip'),
-                    n1 + n2 + jnp.ravel_multi_index((i, j, k), (self.dr, self.dχ, self.nζ), mode='clip')
-                )
+                    n1
+                    + jnp.ravel_multi_index(
+                        (i, j, k), (self.dr, self.nχ, self.dζ), mode="clip"
+                    ),
+                    n1
+                    + n2
+                    + jnp.ravel_multi_index(
+                        (i, j, k), (self.dr, self.dχ, self.nζ), mode="clip"
+                    ),
+                ),
             )
         elif self.k == 3:
-            return jnp.ravel_multi_index((i, j, k), (self.dr, self.dχ, self.dζ), mode='clip')
+            rav = jnp.ravel_multi_index(
+                (i, j, k), (self.dr, self.dχ, self.dζ), mode="clip"
+            )
+        return jnp.int32(rav)
 
     def _unravel_index(self, idx):
         """
@@ -188,7 +221,7 @@ class DifferentialForm:
                   and (i,j,k) are the indices in each direction
         """
         if self.k == 0:
-            return 0, *jnp.unravel_index(idx, (self.nr, self.nχ, self.nζ))
+            return jnp.int32(0), *jnp.unravel_index(idx, (self.nr, self.nχ, self.nζ))
         elif self.k == 1:
             c, ijk = self._vector_index(idx)
             i, j, k = jnp.where(
@@ -197,8 +230,8 @@ class DifferentialForm:
                 jnp.where(
                     c == 1,
                     jnp.array(jnp.unravel_index(ijk, (self.nr, self.dχ, self.nζ))),
-                    jnp.array(jnp.unravel_index(ijk, (self.nr, self.nχ, self.dζ)))
-                )
+                    jnp.array(jnp.unravel_index(ijk, (self.nr, self.nχ, self.dζ))),
+                ),
             )
             return c, i, j, k
         elif self.k == 2:
@@ -209,12 +242,12 @@ class DifferentialForm:
                 jnp.where(
                     c == 1,
                     jnp.array(jnp.unravel_index(ijk, (self.dr, self.nχ, self.dζ))),
-                    jnp.array(jnp.unravel_index(ijk, (self.dr, self.dχ, self.nζ)))
-                )
+                    jnp.array(jnp.unravel_index(ijk, (self.dr, self.dχ, self.nζ))),
+                ),
             )
             return c, i, j, k
         elif self.k == 3:
-            return 0, *jnp.unravel_index(idx, (self.dr, self.dχ, self.dζ))
+            return jnp.int32(0), *jnp.unravel_index(idx, (self.dr, self.dχ, self.dζ))
 
     def __call__(self, x, i):
         """Evaluate the form at point x with basis function i."""
@@ -253,10 +286,8 @@ class DifferentialForm:
                 category == 0,
                 self.bases[0](x, index),
                 jnp.where(
-                    category == 1,
-                    self.bases[1](x, index),
-                    self.bases[2](x, index)
-                )
+                    category == 1, self.bases[1](x, index), self.bases[2](x, index)
+                ),
             )
             return e * val
 
@@ -346,7 +377,11 @@ class Pushforward:
         elif self.k == 1:
             return jax.jacfwd(self.F)(x).T @ self.f(y)
         elif self.k == 2:
-            return inv33(jax.jacfwd(self.F)(x)) @ self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))
+            return (
+                inv33(jax.jacfwd(self.F)(x))
+                @ self.f(y)
+                * jnp.linalg.det(jax.jacfwd(self.F)(x))
+            )
         elif self.k == 3:
             return self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))
 
@@ -393,6 +428,10 @@ class Pullback:
         elif self.k == 1:
             return jax.jacfwd(self.F)(x).T @ self.f(y)
         elif self.k == 2:
-            return inv33(jax.jacfwd(self.F)(x)) @ self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))
+            return (
+                inv33(jax.jacfwd(self.F)(x))
+                @ self.f(y)
+                * jnp.linalg.det(jax.jacfwd(self.F)(x))
+            )
         elif self.k == 3:
             return self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))

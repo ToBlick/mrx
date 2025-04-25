@@ -14,9 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 
 
-# Bpundary extraction operator for cube-like domains
-
-
+# Boundary extraction operator for cube-like domains
 class LazyBoundaryOperator:
     """
     A lazy boundary operator for handling boundary conditions in differential forms.
@@ -28,6 +26,7 @@ class LazyBoundaryOperator:
     Attributes:
         k (int): Degree of the differential form (0, 1, 2, or 3)
         Λ: Reference to the domain operator
+        types (tuple): Tuple of boundary condition types for each direction.
         nr (int): Number of points in r-direction after boundary conditions
         nχ (int): Number of points in χ-direction after boundary conditions
         nζ (int): Number of points in ζ-direction after boundary conditions
@@ -48,15 +47,25 @@ class LazyBoundaryOperator:
         Args:
             Λ: Domain operator
             types (tuple): Tuple of boundary condition types for each direction.
-                          Can be 'dirichlet' (zero at boundaries) or other types
-                          (no boundary conditions).
+                          Can be 'dirichlet' (zero at boundaries), 'half' (zero only at x=1)
+                          or other types (no boundary conditions).
         """
         self.k = Λ.k
         self.Λ = Λ
-        self.nr = Λ.nr - 2 if types[0] == 'dirichlet' else Λ.nr
-        self.nχ = Λ.nχ - 2 if types[1] == 'dirichlet' else Λ.nχ
-        self.nζ = Λ.nζ - 2 if types[2] == 'dirichlet' else Λ.nζ
+
+        def get_dim(original_dim, bc_type):
+            if bc_type == "dirichlet":
+                return original_dim - 2
+            elif bc_type == "half":
+                return original_dim - 1
+            else:
+                return original_dim
+
+        self.nr = get_dim(Λ.nr, types[0])
+        self.nχ = get_dim(Λ.nχ, types[1])
+        self.nζ = get_dim(Λ.nζ, types[2])
         self.dr, self.dχ, self.dζ = Λ.dr, Λ.dχ, Λ.dζ
+        self.types = types
 
         if self.k == 0:
             self.n1 = self.nr * self.nχ * self.nζ
@@ -98,11 +107,12 @@ class LazyBoundaryOperator:
                   component and local_index is the index within that component
         """
         if self.k == 0 or self.k == 3:
-            return 0, idx
+            return jnp.int32(0), idx
         elif self.k == 1 or self.k == 2:
             n1, n2 = self.n1, self.n2
             category = jnp.int32(idx >= n1) + jnp.int32(idx >= n1 + n2)
-            local_idx = idx - n1 * jnp.int32(idx >= n1) - n2 * jnp.int32(idx >= n1 + n2)
+            local_idx = jnp.int32(
+                idx - n1 * (idx >= n1) - n2 * (idx >= n1 + n2))
             return category, local_idx
 
     def _unravel_index(self, idx):
@@ -117,7 +127,7 @@ class LazyBoundaryOperator:
                   component and (i,j,k) are the spatial coordinates
         """
         if self.k == 0:
-            return 0, *jnp.unravel_index(idx, (self.nr, self.nχ, self.nζ))
+            return jnp.int32(0), *jnp.unravel_index(idx, (self.nr, self.nχ, self.nζ))
         elif self.k == 1:
             category, ijk = self._vector_index(idx)
             i, j, k = jnp.where(
@@ -125,9 +135,11 @@ class LazyBoundaryOperator:
                 jnp.array(jnp.unravel_index(ijk, (self.dr, self.nχ, self.nζ))),
                 jnp.where(
                     category == 1,
-                    jnp.array(jnp.unravel_index(ijk, (self.nr, self.dχ, self.nζ))),
-                    jnp.array(jnp.unravel_index(ijk, (self.nr, self.nχ, self.dζ)))
-                )
+                    jnp.array(jnp.unravel_index(
+                        ijk, (self.nr, self.dχ, self.nζ))),
+                    jnp.array(jnp.unravel_index(
+                        ijk, (self.nr, self.nχ, self.dζ))),
+                ),
             )
             return category, i, j, k
         elif self.k == 2:
@@ -137,13 +149,15 @@ class LazyBoundaryOperator:
                 jnp.array(jnp.unravel_index(ijk, (self.nr, self.dχ, self.dζ))),
                 jnp.where(
                     category == 1,
-                    jnp.array(jnp.unravel_index(ijk, (self.dr, self.nχ, self.dζ))),
-                    jnp.array(jnp.unravel_index(ijk, (self.dr, self.dχ, self.nζ)))
-                )
+                    jnp.array(jnp.unravel_index(
+                        ijk, (self.dr, self.nχ, self.dζ))),
+                    jnp.array(jnp.unravel_index(
+                        ijk, (self.dr, self.dχ, self.nζ))),
+                ),
             )
             return category, i, j, k
         elif self.k == 3:
-            return 0, *jnp.unravel_index(idx, (self.dr, self.dχ, self.dζ))
+            return jnp.int32(0), *jnp.unravel_index(idx, (self.dr, self.dχ, self.dζ))
 
     def _element(self, row_idx, col_idx):
         """
@@ -157,68 +171,45 @@ class LazyBoundaryOperator:
             jnp.ndarray: The operator element value
         """
         cat_row, i, j, k = self._unravel_index(row_idx)
-        cat_col, r_idx, m, n = self.Λ._unravel_index(col_idx)
+        cat_col, p, m, n = self.Λ._unravel_index(col_idx)
+
+        target_l = jnp.where(self.types[0] == "dirichlet", p - 1, p)
+        target_m = jnp.where(self.types[1] == "dirichlet", m - 1, m)
+        target_n = jnp.where(self.types[2] == "dirichlet", n - 1, n)
 
         if self.k == 0:
-            # Handle 0-forms with boundary conditions
-            return (
-                (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
-                 + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
-                * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
-                   + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
-                * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
-                   + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1))
-            )
+            return jnp.int32((i == target_l) * (j == target_m) * (k == target_n))
         elif self.k == 1:
-            # Handle 1-forms with boundary conditions
-            return jnp.where(
-                cat_row == cat_col,
+            return jnp.int32(
                 jnp.where(
-                    cat_row == 0,
-                    jnp.int32(i == r_idx)
-                    * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
-                       + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
-                    * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
-                       + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1)),
+                    cat_row == cat_col,
                     jnp.where(
-                        cat_row == 1,
-                        (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
-                         + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
-                        * jnp.int32(j == m)
-                        * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
-                           + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1)),
-                        (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
-                         + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
-                        * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
-                           + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
-                        * jnp.int32(k == n)
-                    )
-                ),
-                0
+                        cat_row == 0,
+                        (i == p) * (j == target_m) * (k == target_n),
+                        jnp.where(
+                            cat_row == 1,
+                            (i == target_l) * (j == m) * (k == target_n),
+                            (i == target_l) * (j == target_m) * (k == n),
+                        ),
+                    ),
+                    0,
+                )
             )
         elif self.k == 2:
-            # Handle 2-forms with boundary conditions
-            return jnp.where(
-                cat_row == cat_col,
+            return jnp.int32(
                 jnp.where(
-                    cat_row == 0,
-                    (jnp.int32(self.nr == self.Λ.nr) * jnp.int32(i == r_idx)
-                     + jnp.int32(self.nr != self.Λ.nr) * jnp.int32(i == r_idx-1))
-                    * jnp.int32(j == m)
-                    * jnp.int32(k == n),
+                    cat_row == cat_col,
                     jnp.where(
-                        cat_row == 1,
-                        jnp.int32(i == r_idx)
-                        * (jnp.int32(self.nχ == self.Λ.nχ) * jnp.int32(j == m)
-                           + jnp.int32(self.nχ != self.Λ.nχ) * jnp.int32(j == m-1))
-                        * jnp.int32(k == n),
-                        jnp.int32(i == r_idx)
-                        * jnp.int32(j == m)
-                        * (jnp.int32(self.nζ == self.Λ.nζ) * jnp.int32(k == n)
-                           + jnp.int32(self.nζ != self.Λ.nζ) * jnp.int32(k == n-1))
-                    )
-                ),
-                0
+                        cat_row == 0,
+                        (i == target_l) * (j == m) * (k == n),
+                        jnp.where(
+                            cat_row == 1,
+                            (i == p) * (j == target_m) * (k == n),
+                            (i == p) * (j == m) * (k == target_n),
+                        ),
+                    ),
+                    0,
+                )
             )
         elif self.k == 3:
             return jnp.int32(row_idx == col_idx)
@@ -230,6 +221,6 @@ class LazyBoundaryOperator:
         Returns:
             jnp.ndarray: The assembled operator matrix
         """
-        return jax.vmap(
-            jax.vmap(self._element, (None, 0)), (0, None)
-        )(jnp.arange(self.n), jnp.arange(self.Λ.n))
+        return jax.vmap(jax.vmap(self._element, (None, 0)), (0, None))(
+            jnp.arange(self.n), jnp.arange(self.Λ.n)
+        )
