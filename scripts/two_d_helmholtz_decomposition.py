@@ -129,7 +129,7 @@ def compute_errors(u, grad_q, w, u_h, grad_q_h, w_h, Q, u_h_proj, grad_q_h_proj,
     """
     def err(err, val):
         return (l2_product(err, err, Q) / l2_product(val, val, Q))**0.5
-    
+
     def err_u(x): return u(x) - u_h(x)
     def err_u_proj(x): return u(x) - u_h_proj(x)
     def err_grad_q(x): return grad(q)(x) - grad_q_h(x)
@@ -172,6 +172,7 @@ def plot_field(x, y, field, title, filename):
     plt.ylabel('y')
     plt.savefig(output_dir / filename)
 
+
 # Set up the problem
 Λ0, Λ2, Λ3, Q, D, M2, K, P2 = setup_problem()
 q, w, u = define_test_functions()
@@ -204,7 +205,11 @@ X = jnp.array(jnp.meshgrid(x1, x2, x3))
 X = X.transpose(1, 2, 3, 0).reshape(nx*nx*1, 3)
 
 # Plot the fields
+
+
 def F(x): return x  # Identity mapping
+
+
 F_u = Pullback(u, F, 2)
 F_u_h = Pullback(u_h, F, 2)
 F_grad_q = Pullback(grad(q), F, 2)

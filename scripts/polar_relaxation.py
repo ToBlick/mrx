@@ -28,7 +28,6 @@ The script generates several plots:
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import matplotlib.pyplot as plt
 from typing import List
 from pathlib import Path
@@ -39,6 +38,7 @@ from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector, CurlProjection
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix
 from mrx.Utils import curl
+from mrx.DifferentialForms import Pullback
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -60,18 +60,23 @@ R0 = 3.0   # Major radius
 Y0 = 0.0   # Vertical offset
 
 # Define polar mapping functions
+
+
 def θ(x):
     """Convert polar coordinates to toroidal angle"""
     r, χ, z = x
     return 2 * jnp.atan(jnp.sqrt((1 + a*r/R0)/(1 - a*r/R0)) * jnp.tan(jnp.pi * χ))
 
+
 def _R(r, χ):
     """Convert polar to Cartesian x-coordinate"""
     return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * jnp.pi * χ))
 
+
 def _Y(r, χ):
     """Convert polar to Cartesian y-coordinate"""
     return jnp.ones(1) * (Y0 + a * r * jnp.sin(2 * jnp.pi * χ))
+
 
 @jax.jit
 def F(x):
@@ -81,8 +86,9 @@ def F(x):
                                _Y(r, χ),
                                _R(r, χ) * jnp.sin(2 * jnp.pi * z)]))
 
+
 # Set up extraction operators and matrices
-ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
+ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
 E0, E1, E2, E3 = [LazyExtractionOperator(Λ, ξ, True).M for Λ in [Λ0, Λ1, Λ2, Λ3]]
 M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q, F, E).M for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
 P0, P1, P2, P3 = [Projector(Λ, Q, F, E) for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
@@ -93,9 +99,11 @@ D1 = LazyDerivativeMatrix(Λ1, Λ2, Q, F, E1, E2).M
 D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).M
 Pc = CurlProjection(Λ1, Q, F, E1)  # Computes (B, A x Λ[i]) given A and B
 
+
 def l2_product(f, g, Q):
     """Compute the L2 inner product of two functions"""
     return jnp.einsum("ij,ij,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Q.w)
+
 
 # Set up plotting grid
 ɛ = 1e-5  # Small offset from boundaries
@@ -123,6 +131,8 @@ __y1 = __y[:, 0].reshape(_nx, _nx)
 __y2 = __y[:, 1].reshape(_nx, _nx)
 
 # Define initial vector potential and magnetic field
+
+
 def A(x):
     """Initial vector potential"""
     r, χ, z = x
@@ -130,6 +140,7 @@ def A(x):
     a2 = 1
     a3 = jnp.cos(2 * jnp.pi * χ)
     return jnp.array([a1, a2, a3]) * jnp.sin(jnp.pi * r)**2 * r
+
 
 B = curl(A)  # Initial magnetic field
 
@@ -142,15 +153,18 @@ B_h = DiscreteFunction(B0_hat, Λ2, E2)
 B0_h = DiscreteFunction(B0_hat, Λ2, E2)
 
 # Compute initial errors
+
+
 def compute_A_error(x): return A(x) - A_h(x)
 def compute_B_error(x): return B0(x) - B_h(x)
 def compute_curl_error(x): return curl(A)(x) - curl(A_h)(x)
 
+
 # Print initial diagnostics
 print("Initial field errors:")
 print(f"A error: {(l2_product(compute_A_error, compute_A_error, Q) / l2_product(A, A, Q))**0.5:.2e}")
-print(f"B error: {(l2_product(compute_B_error, compute_B_error, Q) / l2_product(B0, B0, Q))**0.2e}")
-print(f"Curl error: {(l2_product(compute_curl_error, compute_curl_error, Q) / l2_product(curl(A), curl(A), Q))**0.2e}")
+print(f"B error: {(l2_product(compute_B_error, compute_B_error, Q) / l2_product(B0, B0, Q))**0.5:.2e}")
+print(f"Curl error: {(l2_product(compute_curl_error, compute_curl_error, Q) / l2_product(curl(A), curl(A), Q))**0.5:.2e}")
 print(f"Initial helicity: {A_hat @ M12 @ B0_hat:.2e}")
 print(f"Initial energy: {B0_hat @ M2 @ B0_hat / 2:.2e}")
 
@@ -166,7 +180,7 @@ plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar(label='Field Magnitude')
 plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
 __z1 = jax.vmap(F_B_h)(__x).reshape(_nx, _nx, 3)
-plt.quiver(__y1, __y2, __z1[:,:,0], __z1[:,:,1], color='w')
+plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color='w')
 plt.title('Initial Magnetic Field Configuration')
 plt.xlabel('x')
 plt.ylabel('y')
@@ -185,15 +199,17 @@ critical_as: List[int] = []
 divBs: List[float] = []
 
 # %%
+
+
 @jax.jit
 def ẟB_hat(B_hat, B_hat_0, dt):
     """Compute the magnetic field update using the Lorentz force.
-    
+
     Args:
         B_hat: Current magnetic field coefficients
         B_hat_0: Previous magnetic field coefficients
         dt: Time step
-        
+
     Returns:
         tuple: (B_diff, error, B_hat_1, u_hat)
             B_diff: Field difference
@@ -217,12 +233,13 @@ def ẟB_hat(B_hat, B_hat_0, dt):
     error = jnp.array((B_diff @ M2 @ B_diff)**0.5, dtype=jnp.float64)
     return B_diff, error, B_hat_1, u_hat
 
+
 def rk4(y):
     """Fourth-order Runge-Kutta integration step.
-    
+
     Args:
         y: Current state vector
-        
+
     Returns:
         jnp.ndarray: Updated state vector
     """
@@ -232,13 +249,14 @@ def rk4(y):
     k4 = ẟB_hat(y + k3[0], y, dt)
     return y + (k1[0] + 2*k2[0] + 2*k3[0] + k4[0])/6
 
+
 @jax.jit
 def integrate(x):
     """Integrate the magnetic field evolution.
-    
+
     Args:
         x: Initial state vector
-        
+
     Returns:
         tuple: (final_state, diagnostics)
     """
@@ -246,6 +264,7 @@ def integrate(x):
         x = rk4(x)
         return x, x
     return jax.lax.scan(step, x, jnp.arange(n_steps))
+
 
 # Main relaxation loop
 n_steps = 1000
@@ -256,19 +275,19 @@ traces = []
 print("\nStarting relaxation...")
 for i in range(n_steps):
     B_diff, error, B_hat, u_hat = ẟB_hat(B_hat, B_hat, dt)
-    
+
     # Track diagnostics
     A_hat = U @ jnp.diag(S_inv) @ Vh @ D1.T @ B_hat
     helicity = A_hat @ M12 @ B_hat
     energy = B_hat @ M2 @ B_hat / 2
     force = u_hat @ M2 @ u_hat
     divB = (D2 @ B_hat) @ jnp.linalg.solve(M3, D2 @ B_hat)
-    
+
     helicities.append(helicity)
     energies.append(energy)
     forces.append(force)
     divBs.append(divB)
-    
+
     if i % 100 == 0:
         print(f"\nIteration {i}:")
         print(f"Helicity: {helicity:.2e}")
@@ -325,7 +344,7 @@ plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar(label='Field Magnitude')
 plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
 __z1 = jax.vmap(F_B_h)(__x).reshape(_nx, _nx, 3)
-plt.quiver(__y1, __y2, __z1[:,:,0], __z1[:,:,1], color='w')
+plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color='w')
 plt.title('Final Magnetic Field Configuration')
 plt.xlabel('x')
 plt.ylabel('y')
