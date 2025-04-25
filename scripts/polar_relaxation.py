@@ -39,6 +39,7 @@ from mrx.Quadrature import QuadratureRule
 from mrx.Projectors import Projector, CurlProjection
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix, LazyDoubleCurlMatrix
 from mrx.Utils import curl
+from mrx.DifferentialForms import Pullback
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -88,7 +89,7 @@ def F(x):
 
 
 # Set up extraction operators and matrices
-ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
+ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
 E0, E1, E2, E3 = [LazyExtractionOperator(Λ, ξ, True).M for Λ in [Λ0, Λ1, Λ2, Λ3]]
 M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q, F, E).M for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
 P0, P1, P2, P3 = [Projector(Λ, Q, F, E) for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
@@ -163,8 +164,8 @@ def compute_curl_error(x): return curl(A)(x) - curl(A_h)(x)
 # Print initial diagnostics
 print("Initial field errors:")
 print(f"A error: {(l2_product(compute_A_error, compute_A_error, Q) / l2_product(A, A, Q))**0.5:.2e}")
-print(f"B error: {(l2_product(compute_B_error, compute_B_error, Q) / l2_product(B0, B0, Q))**0.2e}")
-print(f"Curl error: {(l2_product(compute_curl_error, compute_curl_error, Q) / l2_product(curl(A), curl(A), Q))**0.2e}")
+print(f"B error: {(l2_product(compute_B_error, compute_B_error, Q) / l2_product(B0, B0, Q))**0.5:.2e}")
+print(f"Curl error: {(l2_product(compute_curl_error, compute_curl_error, Q) / l2_product(curl(A), curl(A), Q))**0.5:.2e}")
 print(f"Initial helicity: {A_hat @ M12 @ B0_hat:.2e}")
 print(f"Initial energy: {B0_hat @ M2 @ B0_hat / 2:.2e}")
 

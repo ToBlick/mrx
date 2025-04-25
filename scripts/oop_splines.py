@@ -176,7 +176,7 @@ def F(x):
 #         jnp.ones(1) * z]))
 
 
-ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
+ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
 # %%
 E0, E1, E2, E3 = [LazyExtractionOperator(Λ, ξ, True).M for Λ in [Λ0, Λ1, Λ2, Λ3]]
 M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q, F, E).M for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
@@ -250,7 +250,6 @@ plt.title('Discrete Scalar Field')
 plt.xlabel('R')
 plt.ylabel('Y')
 plt.savefig(output_dir / 'discrete_scalar.png')
-plt.close()
 
 # Project continuous function onto discrete space and compute error
 f_hat = jnp.linalg.solve(M0, P0(compute_f))  # L2 projection
@@ -337,7 +336,6 @@ plt.title('2-Form Field')
 plt.xlabel('R')
 plt.ylabel('Y')
 plt.savefig(output_dir / 'two_form_field.png')
-plt.close()
 
 
 def B(x):
@@ -384,7 +382,7 @@ _z2_norm = jnp.linalg.norm(_z2, axis=2)
 plt.figure(figsize=(10, 8))
 plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar(label='Discrete Field Magnitude')
-plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k', label='Exact Field')
+plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
 __z1 = jax.vmap(F_B_h)(__x).reshape(_nx, _nx, 3)
 plt.quiver(
     __y1,
@@ -397,7 +395,6 @@ plt.xlabel('R')
 plt.ylabel('Y')
 plt.legend()
 plt.savefig(output_dir / 'two_form_comparison.png')
-plt.close()
 
 # Compute curl of vector field
 curl_Ah = curl(A_h)  # Curl of discrete vector field
@@ -454,13 +451,12 @@ _z2_norm = jnp.linalg.norm(_z2, axis=2)
 plt.figure(figsize=(10, 8))
 plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
 plt.colorbar(label='Discrete Field Magnitude')
-plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k', label='Exact Field')
+plt.contour(_y1, _y2, _z2_norm.reshape(nx, nx), colors='k')
 plt.title('Comparison of Exact and Discrete 3-Form Fields')
 plt.xlabel('R')
 plt.ylabel('Y')
 plt.legend()
 plt.savefig(output_dir / 'three_form_comparison.png')
-plt.close()
 
 # Compute divergence of vector field
 div_Bh = div(B_h)  # Divergence of discrete 2-form
@@ -494,26 +490,17 @@ print(f"Curl L2 error: {curl_error:.2e}")
 print(f"3-form field L2 error: {three_form_error:.2e}")
 print(f"Divergence L2 error: {div_error:.2e}")
 
-# %%
+plt.figure(figsize=(10, 8))
 plt.scatter(R_hat, Y_hat, s=5)
 plt.scatter([τ + R0, R0 - τ/2, R0 - τ/2], [0, Y0 + jnp.sqrt(3) * τ/2, Y0 - jnp.sqrt(3) * τ/2], s=10, c='k')
 plt.plot([τ + R0, R0 - τ/2, R0 - τ/2, τ + R0],
          [0, Y0 + jnp.sqrt(3) * τ/2, Y0 - jnp.sqrt(3) * τ/2, 0],
          'k:')
-# %%
-
-# %%
-
 
 @jax.jit
 def f():
     """Test function to verify index mapping consistency."""
     return [jnp.all(jax.vmap(lambda i: jax.jit(Λ._ravel_index)(*jax.jit(Λ._unravel_index)(i)))(jnp.arange(Λ.n)) == jnp.arange(Λ.n)) for Λ in [Λ0, Λ1, Λ2, Λ3]]
-
-
-f()
-# %%
-
 
 @jax.jit
 def test():
@@ -523,9 +510,6 @@ def test():
     types = ('clamped', 'periodic', 'constant')
     Λ0 = DifferentialForm(0, ns, ps, types)
     return Λ0[0](jnp.array([0.5, 0.5, 0.5]))
-
-
-test()
 
 
 def test_function(x: jnp.ndarray) -> jnp.ndarray:
@@ -540,9 +524,6 @@ def test_function(x: jnp.ndarray) -> jnp.ndarray:
 
 
 print(jnp.einsum("ij,ij,i->", jax.vmap(test_function)(Q.x), jax.vmap(test_function)(Q.x), Q.w))
-
-# %%
-
 
 @jax.jit
 def get_err():
@@ -570,7 +551,6 @@ def get_err():
     return l2_product(err, err, Q)
 
 
-# %%
 start = time.time()
 get_err()
 print(time.time() - start)

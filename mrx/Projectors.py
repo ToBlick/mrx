@@ -142,7 +142,7 @@ class Projector:
         Returns:
             array: Projection coefficients for the 2-form
         """
-        DF = jax.jacfwd(self.F)
+        # DF = jax.jacfwd(self.F)
 
         def _B(x):
             return B(x)

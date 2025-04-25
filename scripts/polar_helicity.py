@@ -59,7 +59,9 @@ def get_error(n, p):
     ps = (p, p, 0)
 
     Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(i, ns, ps, types) for i in range(4)]
-    Q = QuadratureRule(Λ0, 10)
+
+    # Warning: this works with q = 3 but appears NOT to work with q = 10
+    Q = QuadratureRule(Λ0, 3)   
 
     ###
     # Mapping definition
@@ -84,7 +86,8 @@ def get_error(n, p):
                                     _Y(r, χ),
                                     _R(r, χ) * jnp.sin(2 * jnp.pi * z)]))
 
-    ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
+    ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
+    Q = QuadratureRule(Λ0, 10)  # Redefine at higher order
     E0, E1, E2, E3 = [LazyExtractionOperator(Λ, ξ, True).M for Λ in [Λ0, Λ1, Λ2, Λ3]]
     M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q, F, E).M for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
     P0, P1, P2, P3 = [Projector(Λ, Q, F, E) for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]

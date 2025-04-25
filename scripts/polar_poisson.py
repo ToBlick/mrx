@@ -94,8 +94,8 @@ def get_err(n, p, q):
     Λ0 = DifferentialForm(0, ns, ps, types)
 
     # Get polar mapping and set up operators
-    ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
     Q = QuadratureRule(Λ0, q)
+    ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
     E0 = LazyExtractionOperator(Λ0, ξ, zero_bc=True).M
     K = LazyStiffnessMatrix(Λ0, Q, F=F, E=E0).M
     P0 = Projector(Λ0, Q, F=F, E=E0)

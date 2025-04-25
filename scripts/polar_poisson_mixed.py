@@ -41,9 +41,86 @@ from mrx.Projectors import Projector
 from mrx.LazyMatrices import LazyMassMatrix, LazyDerivativeMatrix, LazyProjectionMatrix
 from mrx.Utils import l2_product
 from mrx.Plotting import converge_plot
+from functools import partial
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
+
+
+@partial(jax.jit, static_argnames=['n', 'p', 'q'])
+def get_err(n, p, q):
+    """
+    Compute the relative L2 error for the 2D Poisson problem in polar coordinates.
+    
+    This function solves the Poisson equation using a mixed finite element formulation
+    and computes the relative L2 error between the exact and numerical solutions.
+    
+    Parameters
+    ----------
+    n : int
+        Number of elements in the radial direction
+    p : int
+        Polynomial degree for the finite element spaces
+    q : int
+        Quadrature order for numerical integration
+        
+    Returns
+    -------
+    float
+        Relative L2 error between exact and numerical solutions, computed as:
+        ||u - u_h||_L2 / ||u||_L2
+        where u is the exact solution and u_h is the numerical solution
+        
+    Notes
+    -----
+    - Uses a mixed formulation with H1, H(div), and L2 spaces
+    - Implements polar mapping for the circular domain
+    - The exact solution is u(r,θ) = -(1/16)r⁴ + (1/12)r³
+    - The source term is f(r,θ) = r² - (3/4)r
+    - The domain is a unit circle centered at the origin
+    """
+
+    def _R(r, χ):
+        return jnp.ones(1) * r * jnp.cos(2 * jnp.pi * χ)
+
+    def _Y(r, χ):
+        return jnp.ones(1) * r * jnp.sin(2 * jnp.pi * χ)
+
+    def F(p):
+        r, χ, z = p
+        return jnp.squeeze(jnp.array([_R(r, χ), _Y(r, χ), jnp.ones(1) * z]))
+
+    ns = (n, p, 1)
+    ps = (p, p, 0)
+    types = ('clamped', 'periodic', 'constant')
+    Λ0, Λ2, Λ3 = [DifferentialForm(i, ns, ps, types) for i in [0, 2, 3]]
+    Q = QuadratureRule(Λ0, q)
+    ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
+    E0, E2, E3 = [LazyExtractionOperator(Λ, ξ, False).M for Λ in [Λ0, Λ2, Λ3]]
+    D = LazyDerivativeMatrix(Λ2, Λ3, Q, F, E2, E3).M
+    M2 = LazyMassMatrix(Λ2, Q, F, E2).M
+    K = D @ jnp.linalg.solve(M2, D.T)
+
+    def u(x):
+        r, χ, z = x
+        return -jnp.ones(1) * 1/4 * (1/4 * r**4 - 1/3 * r**3 + 1/12)
+
+    def f(x):
+        r, χ, z = x
+        return jnp.ones(1) * (r - 3/4) * r
+
+    P3 = Projector(Λ3, Q, F, E3)
+    u_hat = jnp.linalg.solve(K, P3(f))
+
+    M03 = LazyProjectionMatrix(Λ0, Λ3, Q, F, E0, E3).M
+    M0 = LazyMassMatrix(Λ0, Q, F, E0).M
+    u_hat = jnp.linalg.solve(M0, M03.T @ u_hat)
+    u_h = DiscreteFunction(u_hat, Λ0, E0)
+
+    def err(x): return (u(x) - u_h(x))
+    error = (l2_product(err, err, Q, F) / l2_product(u, u, Q, F))**0.5
+    return error
+
 
 # Create output directory
 output_dir = Path("script_outputs")
@@ -103,9 +180,10 @@ types = ('clamped', 'periodic', 'constant')  # Boundary conditions
 Λ0 = DifferentialForm(0, ns, ps, types)  # H1 space
 Λ2 = DifferentialForm(2, ns, ps, types)  # H(div) space
 Λ3 = DifferentialForm(3, ns, ps, types)  # L2 space
+Q = QuadratureRule(Λ0, q)
 
 # Set up extraction operators and quadrature
-ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0)
+ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
 Q = QuadratureRule(Λ0, q)
 E0 = LazyExtractionOperator(Λ0, ξ, False).M
 E2 = LazyExtractionOperator(Λ2, ξ, False).M
@@ -205,28 +283,30 @@ for i, n in enumerate(ns):
             print(f"n={n}, p={p}, q={q}, err={err[i, j, k]:.2e}, time={times[i, j, k]:.2f}s")
 
 # Plot convergence
-fig = converge_plot(err, ns, ps, qs)
-fig.update_layout(
-    xaxis_type="log",
-    yaxis_type="log",
-    yaxis_tickformat=".1e",
-    xaxis_title='Number of Elements (n)',
-    yaxis_title='Relative L2 Error',
-    title='Convergence Analysis'
-)
-fig.write_image(output_dir / 'convergence.png')
+plt.figure(figsize=(10, 6))
+for j, p in enumerate(ps):
+    plt.plot(ns, err[:, j, 0], 'o-', label=f'p={p}')
+plt.xscale('log')
+plt.yscale('log')
+plt.xlabel('Number of Elements (n)')
+plt.ylabel('Relative L2 Error')
+plt.title('Convergence Analysis')
+plt.grid(True)
+plt.legend()
+plt.savefig(output_dir / 'convergence.png', dpi=300, bbox_inches='tight')
 
 # Plot performance
-fig = converge_plot(times, ns, ps, qs)
-fig.update_layout(
-    xaxis_type="log",
-    yaxis_type="log",
-    yaxis_tickformat=".1e",
-    xaxis_title='Number of Elements (n)',
-    yaxis_title='Computation Time (s)',
-    title='Performance Analysis'
-)
-fig.write_image(output_dir / 'performance.png')
+plt.figure(figsize=(10, 6))
+for j, p in enumerate(ps):
+    plt.plot(ns, times[:, j, 0], 'o-', label=f'p={p}')
+plt.xscale('log')
+plt.yscale('log')
+plt.xlabel('Number of Elements (n)')
+plt.ylabel('Computation Time (s)')
+plt.title('Performance Analysis')
+plt.grid(True)
+plt.legend()
+plt.savefig(output_dir / 'performance.png', dpi=300, bbox_inches='tight')
 
 # Print final error
 print(f"\nFinal relative L2 error: {error:.2e}")
