@@ -344,10 +344,10 @@ class TestUtils(unittest.TestCase):
         plt.legend()
         
         # Save the plot
-        plt.savefig('output_scripts/performance_comparison.png')
+        plt.savefig('test_outputs/performance_comparison.png')
         plt.show()
         
-        print("\nPerformance plot saved as 'output_scripts/performance_comparison.png'")
+        print("\nPerformance plot saved as 'test_outputs/performance_comparison.png'")
 
 if __name__ == '__main__':
     unittest.main() 

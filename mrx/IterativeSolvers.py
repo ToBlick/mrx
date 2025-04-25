@@ -8,6 +8,7 @@ using JAX for automatic differentiation and efficient computation.
 
 import jax.numpy as jnp
 import jax
+import warnings
 
 
 def picard_solver(f, z_init, tol=1e-6, max_iter=1000, norm=jnp.linalg.norm):
@@ -29,16 +30,18 @@ def picard_solver(f, z_init, tol=1e-6, max_iter=1000, norm=jnp.linalg.norm):
     """
     z_init = jnp.asarray(z_init)
 
+    # JIT-compile the condition function
+    # @jax.jit
     def cond_fun(state):
         z_prev, z, i = state
         err = norm(z - z_prev)
         return jnp.logical_and(i < max_iter, err > tol)
 
+    # JIT-compile the body function
+    # @jax.jit
     def body_fun(state):
         z_prev, z, i = state
         z_next = f(z)
-        # Add damping to improve convergence
-        z_next = z + 0.8 * (z_next - z)
         return z, z_next, i + 1
 
     # Run Picard iterations
@@ -48,12 +51,16 @@ def picard_solver(f, z_init, tol=1e-6, max_iter=1000, norm=jnp.linalg.norm):
     err = norm(f(z_star) - z_star)
     success = err <= tol
 
-    return jax.lax.cond(
-        success,
-        lambda _: z_star,
-        lambda _: jnp.full_like(z_star, jnp.nan),
-        operand=None
-    )
+    def warn_if_failed(success):
+        jax.lax.cond(
+            jnp.any(~success),
+            lambda _: warnings.warn(f"Picard solver failed to converge in {max_iter} iterations"),
+            lambda _: None,
+            operand=None
+        )
+
+    warn_if_failed(success)
+    return z_star
 
 
 def newton_solver(f, z_init, tol=1e-6, max_iter=100):
@@ -73,10 +80,14 @@ def newton_solver(f, z_init, tol=1e-6, max_iter=100):
     """
     z_init = jnp.asarray(z_init)
 
+    # JIT-compile the fixed point form function
+    @jax.jit
     def fixed_point_form(z):
         """Convert to root finding form g(z) = f(z) - z"""
         return f(z) - z
 
+    # JIT-compile the Newton step function
+    @jax.jit
     def newton_step(z):
         """Compute one Newton step with safeguards"""
         # Compute function value and Jacobian
@@ -86,13 +97,11 @@ def newton_solver(f, z_init, tol=1e-6, max_iter=100):
         # Add small regularization to avoid division by zero
         safe_jac = jnp.where(jnp.abs(jac) < 1e-10, 1e-10, jac)
 
-        # Compute step with damping (careful - this factor is critical)
-        damping = 0.5  # Add damping factor for stability
-        step = damping * val / safe_jac
-
         # Return new z value
-        return z - step
+        return z - val / safe_jac
 
+    # JIT-compile the condition function
+    @jax.jit
     def cond_fn(state):
         """Continue while not converged and under max iterations"""
         z, z_prev, i = state
@@ -100,6 +109,8 @@ def newton_solver(f, z_init, tol=1e-6, max_iter=100):
         under_max_iter = i < max_iter
         return jnp.logical_and(not_converged, under_max_iter)
 
+    # JIT-compile the body function
+    @jax.jit
     def body_fn(state):
         """Perform one iteration"""
         z, z_prev, i = state
@@ -107,7 +118,7 @@ def newton_solver(f, z_init, tol=1e-6, max_iter=100):
         return z_new, z, i + 1
 
     # Initialize state
-    state = (z_init, z_init, 0)
+    state = (z_init, z_init * 0.1, 0)  # 0.1 is a dummy scaling to avoid giving z = z_prev which ends the while loop
 
     # Run the iteration
     z_final, z_prev, i = jax.lax.while_loop(cond_fn, body_fn, state)

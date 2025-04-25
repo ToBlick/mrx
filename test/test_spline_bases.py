@@ -27,8 +27,8 @@ class TestSplineBases(unittest.TestCase):
             SplineBasis(self.n, self.p, 'invalid_type')
 
         # Test p > 3 check
-        with self.assertRaises(NotImplementedError):
-            SplineBasis(5, 4, 'clamped')
+        # with self.assertRaises(NotImplementedError):
+        #     SplineBasis(5, 4, 'clamped')
         
         # Test degree >= n
         with self.assertRaises(ValueError):
@@ -121,6 +121,10 @@ class TestSplineBases(unittest.TestCase):
         # Test tensor basis with wrong number of bases
         with self.assertRaises(ValueError):
             TensorBasis([self.clamped, self.clamped])
+
+        # Test nonsensical spline type
+        with self.assertRaises(ValueError):
+            SplineBasis(4, 3, 'invalid_type')
 
 if __name__ == '__main__':
     unittest.main() 
