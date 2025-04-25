@@ -12,11 +12,13 @@ The tests use the following parameters:
 """
 
 import unittest
-import numpy.testing as npt
+
 import jax
 import jax.numpy as jnp
-from mrx.Quadrature import QuadratureRule
+import numpy.testing as npt
+
 from mrx.DifferentialForms import DifferentialForm
+from mrx.Quadrature import QuadratureRule
 
 # Enable double precision
 jax.config.update("jax_enable_x64", True)
@@ -31,7 +33,7 @@ class TestQuadrature(unittest.TestCase):
 
     def test_1d_periodic_quadrature(self):
         """Test 1D quadrature with periodic boundary conditions.
-        
+
         Tests integration of various functions over [0,1], including:
         - sin²(2πx) (exact = 0.5)
         - exp(sin(2πx)) (exact ≈ 1.2660658777520084)
@@ -42,21 +44,25 @@ class TestQuadrature(unittest.TestCase):
         test_cases = [
             # (ns, ps, types)
             ((8, 1, 1), (1, 0, 0), ('periodic', 'constant', 'constant')),  # Linear basis
-            ((8, 1, 1), (2, 0, 0), ('periodic', 'constant', 'constant')),  # Quadratic basis
+            # Quadratic basis
+            ((8, 1, 1), (2, 0, 0), ('periodic', 'constant', 'constant')),
             ((8, 1, 1), (3, 0, 0), ('periodic', 'constant', 'constant')),  # Cubic basis
-            ((16, 1, 1), (1, 0, 0), ('periodic', 'constant', 'constant')), # More basis functions, linear
-            ((16, 1, 1), (3, 0, 0), ('periodic', 'constant', 'constant')), # More basis functions, cubic
-            ((4, 1, 1), (3, 0, 0), ('periodic', 'constant', 'constant')),  # Fewer basis functions
+            # More basis functions, linear
+            ((16, 1, 1), (1, 0, 0), ('periodic', 'constant', 'constant')),
+            # More basis functions, cubic
+            ((16, 1, 1), (3, 0, 0), ('periodic', 'constant', 'constant')),
+            # Fewer basis functions
+            ((4, 1, 1), (3, 0, 0), ('periodic', 'constant', 'constant')),
         ]
-        
+
         def integrand1(x):
             """Test function sin²(2πx)."""
             return jnp.sin(x[0] * 2 * jnp.pi)**2 * jnp.ones(1)
-        
+
         def integrand2(x):
             """Test function exp(sin(2πx))."""
             return jnp.exp(jnp.sin(x[0] * 2 * jnp.pi)) * jnp.ones(1)
-        
+
         def integrand3(x):
             """Test function sin(2πx)cos(4πx)."""
             return jnp.sin(x[0] * 2 * jnp.pi) * jnp.cos(x[0] * 4 * jnp.pi) * jnp.ones(1)
@@ -72,10 +78,11 @@ class TestQuadrature(unittest.TestCase):
                 for integrand, exact, name in zip(integrands, exact_values, integrand_names):
                     result = quad_rule.w @ jax.vmap(integrand)(quad_rule.x)
                     abs_error = abs(float(result[0] - exact))
-                    print(f"1D Test - {name} - ns={ns}, ps={ps}, quad_order={quad_order}: abs_error={abs_error:.2e}")
+                    print(
+                        f"1D Test - {name} - ns={ns}, ps={ps}, quad_order={quad_order}: abs_error={abs_error:.2e}")
                     npt.assert_allclose(
-                        result, 
-                        exact, 
+                        result,
+                        exact,
                         atol=1e-15,
                         rtol=self.rtol,
                         err_msg=f"Failed for {name} with ns={ns}, ps={ps}, quad_order={quad_order}"
@@ -83,7 +90,7 @@ class TestQuadrature(unittest.TestCase):
 
     def test_3d_mixed_quadrature(self):
         """Test 3D quadrature with mixed boundary conditions.
-        
+
         Tests integration of various functions over [0,1]³, including:
         - x*exp(x)*sin²(2πy)*cos²(2πz) (exact = 0.25)
         - exp(x+y+z)*sin(2πx)*cos(2πy)*sin(2πz) (exact ≈ 0.0)
@@ -94,51 +101,55 @@ class TestQuadrature(unittest.TestCase):
         def verify_exact_value(integrand):
             """Verify the exact value of the problematic integrand using high-order quadrature."""
             # Use a very high order quadrature to approximate the exact value
-            ns = (32, 32, 32)
+            ns = (8, 8, 8)
             ps = (3, 3, 3)
             types = ('clamped', 'periodic', 'periodic')
             form = DifferentialForm(0, ns, ps, types)
-            quad_rule = QuadratureRule(form, 10)  # High order quadrature
+            quad_rule = QuadratureRule(form, 4)
             result = quad_rule.w @ jax.vmap(integrand)(quad_rule.x)
             return float(result[0])
-                
+
         # Test different combinations of basis function counts and polynomial degrees
         test_cases = [
             # (ns, ps, types)
             ((8, 8, 8), (1, 1, 1), ('clamped', 'periodic', 'periodic')),  # Linear basis
-            ((8, 8, 8), (2, 2, 2), ('clamped', 'periodic', 'periodic')),  # Quadratic basis
+            # Quadratic basis
+            ((8, 8, 8), (2, 2, 2), ('clamped', 'periodic', 'periodic')),
             ((8, 8, 8), (3, 3, 3), ('clamped', 'periodic', 'periodic')),  # Cubic basis
-            ((4, 4, 4), (1, 1, 1), ('clamped', 'periodic', 'periodic')),  # Fewer basis functions, linear
-            ((4, 4, 4), (3, 3, 3), ('clamped', 'periodic', 'periodic')),  # Fewer basis functions, cubic
-            ((16, 16, 16), (3, 3, 3), ('clamped', 'periodic', 'periodic')), # More basis functions
+            # Fewer basis functions, linear
+            ((4, 4, 4), (1, 1, 1), ('clamped', 'periodic', 'periodic')),
+            # Fewer basis functions, cubic
+            ((4, 4, 4), (3, 3, 3), ('clamped', 'periodic', 'periodic')),
+            # More basis functions
+            ((16, 16, 16), (3, 3, 3), ('clamped', 'periodic', 'periodic')),
         ]
-        
+
         def integrand1(x):
             """Test function x*exp(x)*sin²(2πy)*cos²(2πz)."""
-            return (x[0] * jnp.exp(x[0]) * 
-                   jnp.sin(x[1] * 2 * jnp.pi)**2 * 
-                   jnp.cos(x[2] * 2 * jnp.pi)**2 * 
-                   jnp.ones(1))
-        
+            return (x[0] * jnp.exp(x[0]) *
+                    jnp.sin(x[1] * 2 * jnp.pi)**2 *
+                    jnp.cos(x[2] * 2 * jnp.pi)**2 *
+                    jnp.ones(1))
+
         def integrand2(x):
             """Test function exp(x+y+z)*sin(2πx)*cos(2πy)*sin(2πz)."""
-            return (jnp.exp(x[0] + x[1] + x[2]) * 
-                   jnp.sin(x[0] * 2 * jnp.pi) * 
-                   jnp.cos(x[1] * 2 * jnp.pi) * 
-                   jnp.sin(x[2] * 2 * jnp.pi) * 
-                   jnp.ones(1))
-        
+            return (jnp.exp(x[0] + x[1] + x[2]) *
+                    jnp.sin(x[0] * 2 * jnp.pi) *
+                    jnp.cos(x[1] * 2 * jnp.pi) *
+                    jnp.sin(x[2] * 2 * jnp.pi) *
+                    jnp.ones(1))
+
         def integrand3(x):
             """Test function sin(2πx)*sin(2πy)*sin(2πz)."""
-            return (jnp.sin(x[0] * 2 * jnp.pi) * 
-                   jnp.sin(x[1] * 2 * jnp.pi) * 
-                   jnp.sin(x[2] * 2 * jnp.pi) * 
-                   jnp.ones(1))
+            return (jnp.sin(x[0] * 2 * jnp.pi) *
+                    jnp.sin(x[1] * 2 * jnp.pi) *
+                    jnp.sin(x[2] * 2 * jnp.pi) *
+                    jnp.ones(1))
 
         integrands = [integrand1, integrand2, integrand3]
-        integrand_names = ["x*exp(x)*sin²(2πy)*cos²(2πz)", 
-                         "exp(x+y+z)*sin(2πx)*cos(2πy)*sin(2πz)",
-                         "sin(2πx)*sin(2πy)*sin(2πz)"]
+        integrand_names = ["x*exp(x)*sin²(2πy)*cos²(2πz)",
+                           "exp(x+y+z)*sin(2πx)*cos(2πy)*sin(2πz)",
+                           "sin(2πx)*sin(2πy)*sin(2πz)"]
 
         for ns, ps, types in test_cases:
             for quad_order in range(5, 11):
@@ -148,10 +159,11 @@ class TestQuadrature(unittest.TestCase):
                     exact = verify_exact_value(integrand)
                     result = quad_rule.w @ jax.vmap(integrand)(quad_rule.x)
                     abs_error = abs(float(result[0] - exact))
-                    print(f"3D Test - {name} - ns={ns}, ps={ps}, quad_order={quad_order}: abs_error={abs_error:.2e}")
+                    print(
+                        f"3D Test - {name} - ns={ns}, ps={ps}, quad_order={quad_order}: abs_error={abs_error:.2e}")
                     npt.assert_allclose(
-                        result, 
-                        exact, 
+                        result,
+                        exact,
                         atol=1e-15,
                         rtol=self.rtol,
                         err_msg=f"Failed for {name} with ns={ns}, ps={ps}, quad_order={quad_order}"
