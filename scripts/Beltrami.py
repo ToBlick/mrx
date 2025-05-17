@@ -22,6 +22,33 @@ from mrx.Quadrature import QuadratureRule
 os.makedirs('script_outputs', exist_ok=True)
 
 
+
+def h(x:jnp.ndarray)-> jnp.ndarray:
+    """
+    Define h for eta
+
+    Args:
+        x: Position vector
+
+    Returns:
+        jnp.ndarray:h(x)
+    """
+    return (x**2)*(1-x)**2
+
+def h_p(x:jnp.ndarray)-> jnp.ndarray:
+    """
+    Define h' 
+
+    Args:
+        x: Position vector
+
+    Returns:
+        jnp.ndarray:h'(x)
+    """
+
+
+    return 2*x*(1-x)**2 -2*(x**2)*(1-x)
+
 def mu(m: int, n: int) -> jnp.ndarray:
     """
     Compute the eigenvalue for the Beltrami field.
@@ -57,6 +84,52 @@ def u(A_0: float, x: jnp.ndarray, m: int, n: int) -> jnp.ndarray:
     ])
 
 
+def A_prime(A_0: float, x: jnp.ndarray,m_ori: jnp.ndarray, n_ori: jnp.ndarray, m_high: jnp.ndarray, n_high: jnp.ndarray) -> jnp.ndarray:
+    """
+    Compute the value of A_0'
+
+    Args:
+        A_0: Amplitude factor
+        m_high: First mode number associated with high energy
+        n_high: Second mode number associated with high energy
+        m_ori: First mode number
+        n_ori: Second mode number
+        x: Position vector
+
+    Returns:
+        jnp.ndarray: A_0'
+    """
+    
+    return jnp.sqrt((integrand(m_ori,n_ori,x,A_0)*mu(m_ori,n_ori))/(integrand(m_high,n_high,x,A_0)*mu(m_high,n_high)))*A_0
+
+def energy_integrand(m: int, n: int, x: jnp.ndarray, A_0: float) -> jnp.ndarray:
+
+
+    x_1,x_2,x_3 = x
+    # Get integrand
+    return (u[1]*h(x_1)*h(x_2)*h_p(x_3)-u[2]*h(x_1)*h_p(x_2)*h(x_3))**2 + (u[2]*h_p(x_1)*h(x_2)*h(x_3)-u[0]*h(x_1)*h(x_2)*h_p(x_3))**2 + (u[0]*h(x_1)*h_p(x_2)*h(x_3)-u[1]*h_p(x_1)*h(x_2)*h(x_3))**2
+
+def compute_energy(m: int, n: int,u:jnp.ndarray,A_0: float, x: jnp.ndarray,Q: QuadratureRule) -> jnp.ndarray:
+    """
+    Compute the energy for given modes.
+
+    Args:
+
+    """
+    x_1,x_2,x_3 = x
+   
+
+  # Compute relevant integrand at quadrature points
+    integrand_values_energy = jnp.array([energy_integrand(m, n, x, A_0) for x in Q.x])
+
+    # Compute integral using quadrature weights
+    integral = jnp.sum(integrand_values_energy * Q.w)
+
+    return  integral+(mu(m,n)/2)*compute_helicity(m, n, A_0,Q)
+
+
+
+
 def eta(x: jnp.ndarray) -> jnp.ndarray:
     """
     Compute the weight function for the domain.
@@ -89,6 +162,9 @@ def integrand(m: int, n: int, x: jnp.ndarray, A_0: float) -> jnp.ndarray:
     # For Beltrami fields, B = mu × A
     mu_val = mu(m, n)
     return eta(x) * jnp.dot(field, field) * mu_val
+
+
+
 
 
 def compute_helicity(m: int, n: int, A_0: float, Q: QuadratureRule) -> jnp.ndarray:
