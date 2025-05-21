@@ -3,7 +3,8 @@ import jax
 from jax import numpy as jnp
 import numpy as np
 from jax import jit,grad,vmap
-from mrx.Utils import *
+from mrx.Utils import grad as Grad
+from mrx.Utils import curl as Curl
 from mrx.coordinate_transforms import *
 from mrx.DifferentialForms import *
 from mrx.Quadrature import *
@@ -40,6 +41,7 @@ def pushforward_p(ζ):
     r,  phi, z = ζ
     return Pushforward(p, F, 0).__call__(ζ)
 
+
 # Take gradient of pullback
 def grad_pullback(h):
     return jax.grad(h)
@@ -47,6 +49,33 @@ def grad_pullback(h):
 # Take gradient of pushforward
 def grad_pushforward(h):
     return jax.grad(h)
+
+
+
+# Define function to take curl of.
+def A_hat(ζ):
+    r, phi, z = ζ
+    return jnp.array([r**2,(r**2)*jnp.cos(phi)*jnp.sin(phi), z])
+
+# Define function to take curl of.
+def A(x):
+    x_1, x_2, x_3 = x
+    return jnp.array([x_1**2 + x_2**2,(x_1*x_2),x_3 ])
+
+
+# Pullback A_hat
+def pullback_A_hat(x):
+    # x is in cartesian coordinates
+    x_1,x_2,x_3 = x
+    return Pullback(A_hat, G, 0).__call__(x)
+
+
+# Pushforward A
+def pushforward_A(ζ):
+    # ζ is in cylindrical coordinates
+    r,  phi, z = ζ
+    return Pushforward(A, F, 0).__call__(ζ)
+
 # Unit test class
 
 
@@ -80,14 +109,27 @@ class TestDerivatives(unittest.TestCase):
     def test_grad_pullback(self):
         # Test gradient of pullback
         x_eval = jnp.array([1.0,2.0,3.0])
-        grad_pullback_eval = grad(pullback_p_hat)(x_eval)
+        grad_pullback_eval = Grad(pullback_p_hat)(x_eval)
         np.testing.assert_array_equal(grad_pullback_eval, jax.grad(p)(x_eval))
     
     def test_grad_pushforward(self):
         # Test gradient of pushforward
         ζ_eval = jnp.array([1.0,jnp.pi,1.0])
-        grad_pushforward_eval = grad(pushforward_p)(ζ_eval)
+        grad_pushforward_eval = Grad(pushforward_p)(ζ_eval)
         np.testing.assert_array_equal(grad_pushforward_eval, jax.grad(p_hat)(ζ_eval))
+
+
+    def test_curl_pullback(self):
+        # Test curl of pullback
+        x_eval = jnp.array([1.0,2.0,3.0])
+        curl_pullback_eval = Curl(pullback_A_hat)(x_eval)
+        np.testing.assert_allclose(curl_pullback_eval, Curl(A)(x_eval),atol=1e-7)
+
+    def test_curl_pushforward(self):
+        # Test curl of pushforward
+        ζ_eval = jnp.array([1.0,jnp.pi,1.0])
+        curl_pushforward_eval = Curl(pushforward_A)(ζ_eval)
+        np.testing.assert_allclose(curl_pushforward_eval, Curl(A_hat)(ζ_eval),atol=1e-7)
 
  
 if __name__ == '__main__':
