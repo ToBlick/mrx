@@ -56,7 +56,7 @@ Examples
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: Example Scripts:
 
    mixed_poisson
    poisson
@@ -82,6 +82,12 @@ Unit Tests
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: Unit Tests:
 
+   test_boundary_conditions
+   test_IterativeSolvers
+   test_lazy_matrices
+   test_projectors
+   test_quadrature
+   test_spline_bases
   
