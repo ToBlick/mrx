@@ -10,6 +10,7 @@ import warnings
 
 import jax
 import jax.numpy as jnp
+__all__ = ['picard_solver', 'newton_solver']
 
 
 def picard_solver(f, z_init, tol=1e-6, max_iter=1000, norm=jnp.linalg.norm):

@@ -12,6 +12,8 @@ import numpy as np
 from mrx.LazyMatrices import LazyMassMatrix
 from mrx.Projectors import Projector
 
+__all__ = ['LazyExtractionOperator', 'get_xi']
+
 
 class LazyExtractionOperator:
     """
