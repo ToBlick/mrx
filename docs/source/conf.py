@@ -13,6 +13,8 @@
 import os
 import sys
 import subprocess
+from importlib.metadata import version
+
 sys.path.insert(0, os.path.abspath('../../mrx'))
 sys.path.insert(0, os.path.abspath('../../'))
 sys.path.insert(0, os.path.abspath('.'))
@@ -28,7 +30,6 @@ copyright = '2025, MRX Development Team'
 author = 'MRX Development Team'
 
 # The full version, including alpha/beta/rc tags
-from importlib.metadata import version
 release = version('mrx')
 # for example take major/minor
 version = '.'.join(release.split('.')[:2])

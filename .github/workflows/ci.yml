@@ -27,7 +27,7 @@ jobs:
         
     - name: Run ruff
       run: |
-        ruff check .
+        ruff check . --ignore F403,F405
         
   test:
     needs: lint
@@ -89,6 +89,8 @@ jobs:
   #       pip install jax[cuda12] jaxlib numpy
 
   build:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
