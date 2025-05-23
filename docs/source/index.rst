@@ -33,6 +33,7 @@ and is designed to be used in a JAX-based optimization framework.
 
    overview
    installation
+   generate_docs
    tracing
    source
    publications
