@@ -7,6 +7,8 @@ from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
 from mrx.Utils import jacobian, inv33, curl, div, grad
 
+__all__ = ['LazyMatrix', 'LazyMassMatrix', 'LazyDerivativeMatrix', 'LazyProjectionMatrix', 'LazyDoubleCurlMatrix', 'LazyStiffnessMatrix']
+
 
 class LazyMatrix:
     """

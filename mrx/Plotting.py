@@ -8,6 +8,7 @@ and other analysis results using Plotly.
 import plotly.graph_objects as go
 import plotly.colors as pc
 
+__all__ = ['converge_plot']
 
 # Base marker styles for different data series
 base_markers = [

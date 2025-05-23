@@ -13,6 +13,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+__all__ = ['LazyBoundaryOperator']
+
 
 # Bpundary extraction operator for cube-like domains
 
