@@ -106,10 +106,11 @@ def energy_integrand(m: int, n: int, x: jnp.ndarray, A_0: float) -> jnp.ndarray:
 
 
     x_1,x_2,x_3 = x
+    u_e = u(A_0, x, m, n)
     # Get integrand
-    return (u[1]*h(x_1)*h(x_2)*h_p(x_3)-u[2]*h(x_1)*h_p(x_2)*h(x_3))**2 + (u[2]*h_p(x_1)*h(x_2)*h(x_3)-u[0]*h(x_1)*h(x_2)*h_p(x_3))**2 + (u[0]*h(x_1)*h_p(x_2)*h(x_3)-u[1]*h_p(x_1)*h(x_2)*h(x_3))**2
+    return (u_e[1]*h(x_1)*h(x_2)*h_p(x_3)-u_e[2]*h(x_1)*h_p(x_2)*h(x_3))**2 + (u_e[2]*h_p(x_1)*h(x_2)*h(x_3)-u_e[0]*h(x_1)*h(x_2)*h_p(x_3))**2 + (u_e[0]*h(x_1)*h_p(x_2)*h(x_3)-u_e[1]*h_p(x_1)*h(x_2)*h(x_3))**2
 
-def compute_energy(m: int, n: int,u:jnp.ndarray,A_0: float, x: jnp.ndarray,Q: QuadratureRule) -> jnp.ndarray:
+def compute_energy(m: int, n: int,A_0: float, Q: QuadratureRule) -> jnp.ndarray:
     """
     Compute the energy for given modes.
 
@@ -164,9 +165,6 @@ def integrand(m: int, n: int, x: jnp.ndarray, A_0: float) -> jnp.ndarray:
     return eta(x) * jnp.dot(field, field) * mu_val
 
 
-
-
-
 def compute_helicity(m: int, n: int, A_0: float, Q: QuadratureRule) -> jnp.ndarray:
     """
     Compute the magnetic helicity for given modes.
@@ -188,6 +186,49 @@ def compute_helicity(m: int, n: int, A_0: float, Q: QuadratureRule) -> jnp.ndarr
 
     # Multiply by eigenvalue
     return integral * mu(m, n)
+
+def find_extreme_energy_modes(max_m: int, max_n: int, A_0: float,Q: QuadratureRule) ->jnp.ndarray:
+    """
+    Find the modes (m,n) that produce high and low energy.
+
+    Args:
+        max_m: Maximum m value to search
+        max_n: Maximum n value to search
+        A_0: Amplitude factor
+
+    Returns:
+        Lowest mode combination
+        Highest mode combination
+    """
+
+
+    # Going to keep energies in a list
+    energies = {}
+    
+    # Compute energies for all mode combinations
+    for m in range(1, max_m + 1):
+        for n in range(1, max_n + 1):
+
+            E = jnp.float32(compute_energy(m, n, A_0,Q))
+            energies[m, n] = E
+    
+    # Find modes with highest and lowest energy
+    high_mode = max(energies.items())[0]
+    low_mode = min(energies.items())[0]
+
+    return high_mode, low_mode
+    
+
+
+#Example
+Q = QuadratureRule(DifferentialForm(0, (5, 5, 5), (3, 3, 3), ('clamped', 'clamped', 'constant')), 15)
+A_0 = 1.0
+x = jnp.array([0.5, 0.5, 0.5])  # Example position vector
+u_0 = u(A_0, x, 10, 10)
+
+C =find_extreme_energy_modes(5,5,1.0,Q)
+
+print(C)
 
 
 def plot_field_components(m: int, n: int, A_0: float, nx: int = 100) -> None:
