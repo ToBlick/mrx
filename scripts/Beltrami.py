@@ -217,18 +217,30 @@ def find_extreme_energy_modes(max_m: int, max_n: int, A_0: float,Q: QuadratureRu
     low_mode = min(energies.items())[0]
 
     return high_mode, low_mode
-    
 
 
-#Example
-Q = QuadratureRule(DifferentialForm(0, (5, 5, 5), (3, 3, 3), ('clamped', 'clamped', 'constant')), 15)
-A_0 = 1.0
-x = jnp.array([0.5, 0.5, 0.5])  # Example position vector
-u_0 = u(A_0, x, 10, 10)
+def beltrami_magnetic_relaxation(m: int, n: int, A_0: float, Q: QuadratureRule) -> jnp.ndarray:
+    """
+    Perform magnetic relaxation for a Beltrami field, with initial conditions given by mode numbers m_High and n_High.
 
-C =find_extreme_energy_modes(5,5,1.0,Q)
+    Args:
+        m: First mode number
+        n: Second mode number
+        A_0: Amplitude factor
+        Q: Quadrature rule for integration
 
-print(C)
+    Returns:
+        jnp.ndarray: Relaxed magnetic field value
+    """
+    # Compute the total magnetic energy of the field for high modes
+    energy = compute_energy(m, n, A_0, Q)
+
+    # Compute the helicity of the field (need to ensure it remains the same)
+    helicity = compute_helicity(m, n, A_0, Q)
+
+    # Relaxation process, for now just input holder function.
+
+    return jnp.sqrt(energy) * jnp.sqrt(helicity)
 
 
 def plot_field_components(m: int, n: int, A_0: float, nx: int = 100) -> None:
@@ -366,5 +378,9 @@ def main() -> None:
             print(f"Mode ({m},{n}): H = {float(H):.6f}")  # Convert jnp.ndarray to float for printing
 
 
+    # Perform magnetic relaxation
+    high_mode, low_mode = find_extreme_energy_modes(max_m=5, max_n=5, A_0=A_0, Q=Q)
+    print(f"High Energy Mode: {high_mode}, Low Energy Mode: {low_mode}")
+    #relaxed_field = beltrami_magnetic_relaxation(high_mode[0], high_mode[1], A_0, Q)
 if __name__ == "__main__":
     main()
