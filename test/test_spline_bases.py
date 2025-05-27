@@ -1,3 +1,19 @@
+"""
+Unit tests for the implementation of spline bases in the MRX package.
+
+This module contains tests for various spline properties including:
+- Nonnegativity of knot points 
+- Nonnegativity of basis functions
+- Partition of unity property
+
+The tests verify:
+1. Proper initialization and evaluation of spline bases
+2. Tensor product basis functionality
+3. Implementation of Derivative splines
+4. Edge cases and error conditions
+
+"""
+
 import unittest
 import jax
 import jax.numpy as jnp
@@ -58,6 +74,27 @@ class TestSplineBases(unittest.TestCase):
             sum_val = sum(self.clamped(x, j) for j in range(self.n))
             self.assertAlmostEqual(float(sum_val), 1.0, places=5)
 
+    def test_nonnegativity(self):
+        """Test nonnegativity of spline basis functions."""
+        # Test at interior points
+        for x in np.linspace(0.05, 0.95, 15):
+            for i in range(self.n):
+                val = self.clamped(x, i)
+                self.assertGreaterEqual(float(val), 0.0)
+
+        # Test at knots
+        for i in range(self.n):
+            val = self.clamped(self.clamped.T[i + self.p], i)
+            self.assertGreaterEqual(float(val), 0.0)
+
+    def test_nonnegativity_knots(self):
+        """Test nonnegativity of knot endpoints."""
+        # Test at knot endpoints
+        for i in range(self.n):
+            val = self.clamped(self.clamped.T[i + self.p], i)
+            self.assertGreaterEqual(float(val), 0.0)
+        
+
     def test_derivative_spline(self):
         """Test derivative of spline basis functions."""
         # Create derivative spline
@@ -67,6 +104,15 @@ class TestSplineBases(unittest.TestCase):
         x = np.random.random()
         for i in range(self.n):
             val = d_clamped(x, i)
+            self.assertIsInstance(val, jnp.ndarray)
+            self.assertEqual(val.shape, ())
+
+
+        # Test second derivative
+        d2_clamped = DerivativeSpline(d_clamped)
+
+        for i in range(self.n):
+            val = d2_clamped(x, i)
             self.assertIsInstance(val, jnp.ndarray)
             self.assertEqual(val.shape, ())
 
