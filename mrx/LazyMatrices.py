@@ -1,6 +1,7 @@
 from abc import abstractmethod
 import jax
 import jax.numpy as jnp
+import jax.scipy as jsp
 import numpy as np
 from typing import Callable
 
@@ -359,12 +360,13 @@ class LazyStiffnessMatrix(LazyMatrix):
         # Shape: (n, n_q, 1)
         # For each basis function, compute derivatives in each direction
         def compute_derivatives(x_q, i):
-            # Get the tensor basis for 0-form
-            basis = self.Λ0.bases[0]
+            # Get the tensor derivative spline basis for 0-form
+            dbasis = self.Λ0.bases[0]
             # Compute derivatives in each direction
-            dr = basis.bases[0].dΛ(x_q[0], i)  # r derivative
-            dχ = basis.bases[1].dΛ(x_q[1], i)  # χ derivative
-            dζ = basis.bases[2].dΛ(x_q[2], i)  # ζ derivative
+
+            dr = dbasis.bases[0](x_q[0], i)  # r derivative
+            dχ = dbasis.bases[1](x_q[1], i)  # χ derivative
+            dζ = dbasis.bases[2](x_q[2], i)  # ζ derivative
             return jnp.array([dr, dχ, dζ])
 
         basis_derivs = jax.vmap(jax.vmap(compute_derivatives, (0, None)), (None, 0))(x, jnp.arange(n))
@@ -388,3 +390,43 @@ class LazyStiffnessMatrix(LazyMatrix):
         S = jnp.einsum('nqi,mqi,q->nm', basis_derivs, basis_derivs, w)
 
         return S
+class Lazy_Boundary_Matrix(LazyMatrix):
+    """Boundary matrix for differential forms."""
+
+    def __init__(self, Λ0, Q, F=None, E=None):
+        """Initialize boundary matrix.
+        Args:
+            Λ0: Domain operator for 0-forms
+            Q: Quadrature rule
+            F: Optional mapping function
+            E: Optional boundary operator
+        """
+        super().__init__(Λ0, Λ0, Q, F, E, E)
+
+    def assemble(self) -> jnp.ndarray:
+        """Assemble boundary matrix from Florian Thesis, Page 41.
+        Returns:
+            jnp.ndarray: Assembled boundary matrix
+        """
+        B_s = jnp.concatenate([jnp.zeros((self.n_s-2, 1)), jnp.eye(self.n_s-2), jnp.zeros((self.n_s-2, 1))], axis=1)
+        #We now define the boundary operators, B_0,B_1,B_2, and B_3
+        #B_0 = B_s⊗I_{n_X}⊗I_2, where n_s - p_s = n_X
+        self.n_x = self.Λ0.n_s - self.Λ0.p_s
+        B_0 = jnp.kron(jnp.kron(B_s, jnp.eye(self.n_x)),jnp.eye(2))
+
+        #B_3 = I_{n^3}
+        B_3 = jnp.eye((self.n_x)**3)
+
+        #B_1
+
+        B_11 = jnp.kron(jnp.kron(jnp.eye(self.d_s), jnp.eye(self.n_x)),jnp.eye(2))
+        B_12 = jnp.kron(jnp.kron(B_s, jnp.eye(self.d_s)),jnp.eye(2))
+        B_13 = B_0
+        B_1 = jsp.linalg.block_diag(B_11, B_12, B_13)
+
+        #B_2
+
+        B_21 = jnp.kron(jnp.kron(B_s, jnp.eye(self.d_X)),jnp.eye(2))
+        B_22 = jnp.kron(jnp.kron(jnp.eye(self.d_s), jnp.eye(self.n_x)),jnp.eye(2))
+        B_23 = B_3
+        B_2 = jsp.linalg.block_diag(B_21, B_22, B_23)
