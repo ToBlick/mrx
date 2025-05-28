@@ -1,3 +1,16 @@
+"""
+Unit tests for the pullbacks implemented in Differntial Forms.
+
+The tests include:
+- Pullback of a scalar is a scalar
+- Linearity
+- Composition of pullback and pushforward returns the original form
+- Commutativity of pullback and exerior derivative
+"""
+
+
+
+
 import unittest
 import jax
 from jax import numpy as jnp
@@ -110,6 +123,33 @@ class PullbackTests(unittest.TestCase):
             err_msg="Pullback has to commute with exterior derivative"
         )
 
+    def test_pullback_linearity(self):
+        # Test linearity of pullback
+        x_star = jnp.array([1.0, 2.0, 3.0])
+        # Define two 0-forms
+        def f(ζ):
+            r, θ, z = ζ
+            return r*θ
+        def g(ζ):
+            r, θ, z = ζ
+            return θ + r 
+        # Make a linear combination of f and g:
+
+        def combo(ζ):
+            r, θ, z = ζ
+            return  f(ζ) -  g(ζ)
+        # Pullback the combo
+        pullback_combo = Pullback(combo, G, 0)
+        # Pullback the individual forms
+        pullback_f = Pullback(f, G, 0)
+        pullback_g = Pullback(g, G, 0)
+        # Check linearity
+        np.testing.assert_allclose(
+            pullback_combo(x_star),
+            pullback_f(x_star) - pullback_g(x_star),
+            atol=1e-8,
+            err_msg="Pullback needs to be linear"
+        )
 
 if __name__ == '__main__':
     unittest.main()
