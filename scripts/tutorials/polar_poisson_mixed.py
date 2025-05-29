@@ -90,7 +90,8 @@ def get_err(n, p, q):
     Λ0, Λ2, Λ3 = [DifferentialForm(i, ns, ps, types) for i in [0, 2, 3]]
     Q = QuadratureRule(Λ0, q)
     ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
-    E0, E2, E3 = [LazyExtractionOperator(Λ, ξ, False).M for Λ in [Λ0, Λ2, Λ3]]
+    E0, E2, E3 = [LazyExtractionOperator(
+        Λ, ξ, False).M for Λ in [Λ0, Λ2, Λ3]]
     D = LazyDerivativeMatrix(Λ2, Λ3, Q, F, E2, E3).M
     M2 = LazyMassMatrix(Λ2, Q, F, E2).M
     K = D @ jnp.linalg.solve(M2, D.T)

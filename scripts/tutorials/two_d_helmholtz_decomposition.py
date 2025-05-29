@@ -1,4 +1,5 @@
-"""Two-dimensional Helmholtz decomposition using finite element methods.
+# %%
+"""Two-dimensional Helmholtz decomposition.
 
 This script demonstrates the Helmholtz decomposition of a vector field into its
 irrotational (gradient) and solenoidal (curl) components using finite element

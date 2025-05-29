@@ -82,12 +82,8 @@ def get_err(n, p):
     D = LazyDerivativeMatrix(Λ2, Λ3, Q).M
     M2 = LazyMassMatrix(Λ2, Q).M
 
-    # Add small regularization to prevent singular matrices
-    reg = 1e-10 * jnp.eye(M2.shape[0])
-    M2_reg = M2 + reg
-
     # Solve the system
-    K = D @ jnp.linalg.solve(M2_reg, D.T)
+    K = D @ jnp.linalg.solve(M2, D.T)
     P3 = Projector(Λ3, Q)
     u_hat = jnp.linalg.solve(K, P3(f))
     u_h = DiscreteFunction(u_hat, Λ3)
