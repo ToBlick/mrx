@@ -175,7 +175,7 @@ def plot_eigenvectors_grid(
         _z1_vector_field = jax.vmap(F_u)(map_input_x)
         _z1_reshaped = _z1_vector_field.reshape(nx_grid, nx_grid, 3)
         _z1_norm = jnp.linalg.norm(_z1_reshaped, axis=2)
-        contour_plot = ax.contourf(y1_coords, y2_coords, _z1_norm)
+        ax.contourf(y1_coords, y2_coords, _z1_norm)
         ax.set_axis_off()
         ax.set_aspect('equal', adjustable='box')
     for j in range(num_to_plot, nrows * ncols):

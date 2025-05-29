@@ -1,34 +1,15 @@
 # %%
-import os
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
-from matplotlib.ticker import MaxNLocator
-from scipy.special import jn_zeros
 
-from mrx.BoundaryConditions import LazyBoundaryOperator
-from mrx.DifferentialForms import (
-    DifferentialForm,
-    DiscreteFunction,
-    Pullback,
-    Pushforward,
-    Sharp,
-)
-from mrx.LazyMatrices import (
-    LazyDerivativeMatrix,
-    LazyDoubleCurlMatrix,
-    LazyMassMatrix,
-    LazyProjectionMatrix,
-    LazyStiffnessMatrix,
-)
+from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pushforward
+from mrx.LazyMatrices import LazyDerivativeMatrix, LazyDoubleCurlMatrix, LazyMassMatrix
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.Projectors import CurlProjection, Projector
 from mrx.Quadrature import QuadratureRule
-from mrx.Utils import curl
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -318,7 +299,7 @@ def plot_eigenvectors_grid(
         _z1_reshaped = _z1_vector_field.reshape(nx_grid, nx_grid, 3)
         _z1_norm = jnp.linalg.norm(_z1_reshaped, axis=2)
 
-        contour_plot = ax.contourf(y1_coords, y2_coords, _z1_norm)
+        ax.contourf(y1_coords, y2_coords, _z1_norm)
 
         ax.set_axis_off()
         ax.set_aspect('equal', adjustable='box')  # Maintain aspect ratio

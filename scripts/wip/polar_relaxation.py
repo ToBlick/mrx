@@ -1,7 +1,6 @@
 # %%
 from functools import partial
 from pathlib import Path
-from typing import List
 
 import jax
 import jax.numpy as jnp
@@ -11,11 +10,9 @@ from mrx.DifferentialForms import (
     DifferentialForm,
     DiscreteFunction,
     Flat,
-    Pullback,
     Pushforward,
     Sharp,
 )
-from mrx.IterativeSolvers import picard_solver
 from mrx.LazyMatrices import (
     LazyDerivativeMatrix,
     LazyDoubleCurlMatrix,
@@ -25,7 +22,6 @@ from mrx.LazyMatrices import (
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
 from mrx.Projectors import CurlProjection, GradientProjection, Projector
 from mrx.Quadrature import QuadratureRule
-from mrx.Utils import curl, div, grad
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
