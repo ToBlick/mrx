@@ -371,24 +371,23 @@ class Pushforward:
         Apply the pushforward at point x.
 
         Args:
-            x (array-like): Point at which to evaluate
+            x (array-like): Point at which to evaluate - always in the logical domain
 
         Returns:
             array-like: Value of the pushed-forward form at x
         """
-        y = self.F(x)
         if self.k == 0:
-            return self.f(y)
+            return self.f(x)
         elif self.k == 1:
-            return jax.jacfwd(self.F)(x).T @ self.f(y)
+            return inv33(jax.jacfwd(self.F)(x)).T @ self.f(x)
         elif self.k == 2:
             return (
-                inv33(jax.jacfwd(self.F)(x))
-                @ self.f(y)
-                * jnp.linalg.det(jax.jacfwd(self.F)(x))
+                jax.jacfwd(self.F)(x)
+                @ self.f(x)
+                / jnp.linalg.det(jax.jacfwd(self.F)(x))
             )
         elif self.k == 3:
-            return self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))
+            return self.f(x) / jnp.linalg.det(jax.jacfwd(self.F)(x))
 
 
 class Pullback:
@@ -440,3 +439,40 @@ class Pullback:
             )
         elif self.k == 3:
             return self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))
+
+
+class Flat:
+    def __init__(self, A, F):
+        """
+        Initialize a musical operator.
+
+        Args:
+            A (callable): The 1-form to convert to a vector field
+            F (callable): The transformation function
+            k (int): Degree of the form
+        """
+        self.A = A
+        self.F = F
+
+    def __call__(self, x):
+        """
+        Apply the musical operator at point x.
+
+        Args:
+            x (array-like): Point at which to evaluate
+
+        Returns:
+            array-like: Value of the vector field at x
+        """
+        DF = jax.jacfwd(self.F)(x)
+        return jnp.real(jax.scipy.linalg.sqrtm(DF.T @ DF)) @ self.A(x)
+
+
+class Sharp:
+    def __init__(self, A, F):
+        self.A = A
+        self.F = F
+
+    def __call__(self, x):
+        DF = inv33(jax.jacfwd(self.F)(x))
+        return jnp.real(jax.scipy.linalg.sqrtm(DF @ DF.T)) @ self.A(x)
