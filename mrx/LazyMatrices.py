@@ -6,7 +6,7 @@ import numpy as np
 
 from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
-from mrx.Utils import curl, div, grad, inv33, jacobian
+from mrx.Utils import curl, div, grad, inv33, jacobian_determinant
 
 
 class LazyMatrix:
@@ -152,7 +152,7 @@ class LazyMassMatrix(LazyMatrix):
         """Assemble the mass matrix for 0-forms."""
         Λijk = jax.vmap(jax.vmap(self.Λ0, (0, None)), (None, 0))(
             self.Q.x, self.ns0)  # n x n_q x 1
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,ljk,j,j->li", Λijk, Λijk, Jj, wj)
 
@@ -164,7 +164,7 @@ class LazyMassMatrix(LazyMatrix):
             return inv33(DF(x)).T @ self.Λ0(x, i)
         Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))  # n x n_q x d
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,ljk,j,j->li", Λijk, Λijk, Jj, wj)
 
@@ -176,7 +176,7 @@ class LazyMassMatrix(LazyMatrix):
             return DF(x) @ self.Λ0(x, i)
         Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.Λ0.n))  # n x n_q x d
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w
         return jnp.einsum("ijk,ljk,j,j->li", Λijk, Λijk, 1/Jj, wj)
 
@@ -184,7 +184,7 @@ class LazyMassMatrix(LazyMatrix):
         """Assemble the mass matrix for 3-forms."""
         Λijk = jax.vmap(jax.vmap(self.Λ0, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.Λ0.n))  # n x n_q x 1
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,ljk,j,j->li", Λijk, Λijk, 1/Jj, wj)
 
@@ -240,7 +240,7 @@ class LazyDerivativeMatrix(LazyMatrix):
             self.Q.x, jnp.arange(self.n0))  # n0 x n_q x d
         Λ1_ijk = jax.vmap(jax.vmap(_Λ1, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n1))  # n1 x n_q x d
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,ljk,j,j->li", Λ0_ijk, Λ1_ijk, Jj, wj)
 
@@ -257,7 +257,7 @@ class LazyDerivativeMatrix(LazyMatrix):
             self.Q.x, jnp.arange(self.n0))  # n0 x n_q x d
         Λ1_ijk = jax.vmap(jax.vmap(_Λ1, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n1))  # n1 x n_q x d
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,ljk,j,j->li", Λ0_ijk, Λ1_ijk, 1/Jj, wj)
 
@@ -269,7 +269,7 @@ class LazyDerivativeMatrix(LazyMatrix):
             self.Q.x, jnp.arange(self.n0))  # n0 x n_q x 1
         Λ1_ijk = jax.vmap(jax.vmap(self.Λ1, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n1))  # n1 x n_q x 1
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,ljk,j,j->li", Λ0_ijk, Λ1_ijk, 1/Jj, wj)
 
@@ -335,7 +335,7 @@ class LazyDoubleCurlMatrix(LazyMatrix):
             return DF(x) @ curl(lambda y: self.Λ0(y, i))(x)
         Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))  # n x n_q x d
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
         wj = self.Q.w
         return jnp.einsum("ijk,ljk,j,j->li", Λ_ijk, Λ_ijk, 1/Jj, wj)
 
@@ -376,6 +376,6 @@ class LazyStiffnessMatrix(LazyMatrix):
             return inv33(DF(x)).T @ grad(lambda y: self.Λ0(y, i))(x)
         Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))  # n x n_q x d
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,ljk,j,j->li", Λ_ijk, Λ_ijk, Jj, wj)

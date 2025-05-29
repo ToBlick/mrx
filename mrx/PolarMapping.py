@@ -18,8 +18,7 @@ class LazyExtractionOperator:
     A class for extracting boundary conditions and handling polar mappings.
 
     This class implements operators for handling boundary conditions and polar
-    coordinate transformations in finite element computations. It supports different
-    form degrees (k = 0, 1, 2, 3) and handles both inner and outer boundaries.
+    coordinate transformations.
 
     Attributes:
         k (int): Degree of the differential form

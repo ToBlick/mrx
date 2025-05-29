@@ -13,7 +13,7 @@ import jax
 import jax.numpy as jnp
 
 
-def jacobian(f: Callable[[jnp.ndarray], jnp.ndarray]) -> Callable[[jnp.ndarray], jnp.ndarray]:
+def jacobian_determinant(f: Callable[[jnp.ndarray], jnp.ndarray]) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Compute the determinant of the Jacobian matrix for a given function.
 
     Args:
@@ -119,5 +119,5 @@ def l2_product(f: Callable[[jnp.ndarray], jnp.ndarray],
     Returns:
         The L2 inner product value
     """
-    Jj = jax.vmap(jacobian(F))(Q.x)
+    Jj = jax.vmap(jacobian_determinant(F))(Q.x)
     return jnp.einsum("ij,ij,i,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Jj, Q.w)

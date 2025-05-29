@@ -14,7 +14,7 @@ The module implements two main classes:
 import jax
 import jax.numpy as jnp
 
-from mrx.Utils import inv33, jacobian
+from mrx.Utils import div, grad, inv33, jacobian_determinant
 
 
 class Projector:
@@ -106,7 +106,7 @@ class Projector:
         # Evaluate the given function at quadrature points
         fjk = jax.vmap(f)(self.Q.x)  # n_q x 1
         # Evaluate the jacobian of F at quadrature points
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,jk,j,j->i", Λijk, fjk, Jj, wj)
 
@@ -130,7 +130,7 @@ class Projector:
         Ajk = jax.vmap(_A)(self.Q.x)  # n_q x d
         Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
         wj = self.Q.w
         return jnp.einsum("ijk,jk,j,j->i", Λijk, Ajk, Jj, wj)
 
@@ -181,19 +181,8 @@ class Projector:
 
 class CurlProjection:
     """
-    A class for projecting curl operations on differential forms.
-
-    This class implements projection operators specifically for curl operations
-    between differential forms. It supports coordinate transformations through
-    the mapping F and can handle extraction operators through E.
-
-    Attributes:
-        Λ: The domain operator defining the finite element space
-        Q: Quadrature rule for numerical integration
-        n (int): Total size of the operator
-        ns (array): Array of indices for the finite element space
-        F (callable): Coordinate transformation function, defaults to identity
-        M (array): Extraction operator matrix, defaults to identity
+    Given one-form A and two-form B, computes ∫ B·(A × Λ[i]) dx for all i,
+    where Λ[i] is the i-th basis function of the one-form space.
     """
 
     def __init__(self, Λ, Q, F=None, E=None):
@@ -261,6 +250,43 @@ class CurlProjection:
         Bjk = jax.vmap(_B)(self.Q.x)  # n_q x d
         Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
-        Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w
         return jnp.einsum("ijk,jk,j,j->i", Λijk, Bjk, 1/Jj, wj)
+
+
+class GradientProjection:
+    """
+    Given zero-form p and two-form u, computes 
+    ∫ ( grad(p)·u Λ[i] + Ɣ p div(u) Λ[i] ) dx 
+    for all i, where Λ[i] is the i-th basis function of the zero-form space.
+    """
+
+    def __init__(self, Λ, Q, F=None, E=None, Ɣ=5/3):
+        self.Λ = Λ
+        self.Q = Q
+        self.n = Λ.n
+        self.ns = Λ.ns
+        self.Ɣ = Ɣ
+        if F is None:
+            self.F = lambda x: x
+        else:
+            self.F = F
+        if E is None:
+            self.M = jnp.eye(self.n)
+        else:
+            self.M = E
+
+    def __call__(self, p, u):
+        return self.M @ self.projection(p, u)
+
+    def projection(self, p, u):
+        def q(x):
+            return grad(p)(x) @ u(x) + self.Ɣ * p(x) * div(u)(x)
+
+        # Compute projections
+        qjk = jax.vmap(q)(self.Q.x)  # n_q x 1
+        Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(
+            self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x 1
+        wj = self.Q.w
+        return jnp.einsum("ijk,jk,j->i", Λijk, qjk, wj)

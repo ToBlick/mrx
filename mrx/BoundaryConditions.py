@@ -25,7 +25,7 @@ class LazyBoundaryOperator:
 
     Attributes:
         k (int): Degree of the differential form (0, 1, 2, or 3)
-        Λ: Reference to the domain operator
+        Λ: Differential form
         types (tuple): Tuple of boundary condition types for each direction.
         nr (int): Number of points in r-direction after boundary conditions
         nχ (int): Number of points in χ-direction after boundary conditions
