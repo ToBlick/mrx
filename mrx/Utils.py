@@ -12,7 +12,9 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 
-__all__ = ['jacobian', 'inv33', 'div', 'curl', 'grad', 'l2_product']
+__all__ = ['jacobian_determinant', 'inv33',
+           'div', 'curl', 'grad', 'l2_product']
+
 
 def jacobian_determinant(f: Callable[[jnp.ndarray], jnp.ndarray]) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Compute the determinant of the Jacobian matrix for a given function.
