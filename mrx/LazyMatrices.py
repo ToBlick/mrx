@@ -195,8 +195,8 @@ class LazyDerivativeMatrix(LazyMatrix):
     degree of the input differential form. The matrix entries are computed as follows:
 
     - For (Λ0, Λ1) = (0-form, 1-form): ∫ DF.-T grad Λ0[i] · DF.-T Λ1[j] detDF dx
-    - For (Λ0, Λ1) = (1-form, 2-form): ∫ DF curl Λ0[i] · DF Λ1[j] 1/detDF dx
-    - For (Λ0, Λ1) = (2-form, 3-form): ∫ div Λ0[i] Λ1[j] 1/detDF dx
+    - For (Λ1, Λ2) = (1-form, 2-form): ∫ DF curl Λ0[i] · DF Λ1[j] 1/detDF dx
+    - For (Λ2, Λ3) = (2-form, 3-form): ∫ div Λ0[i] Λ1[j] 1/detDF dx
 
     Attributes:
         Inherits all attributes from LazyMatrix.
@@ -393,15 +393,27 @@ class LazyStiffnessMatrix(LazyMatrix):
 class Lazy_Boundary_Matrix(LazyMatrix):
     """Boundary matrix for differential forms."""
 
-    def __init__(self, Λ0, Q, F=None, E=None):
+    def __init__(self, Λ, Q, F=None, E=None):
         """Initialize boundary matrix.
         Args:
-            Λ0: Domain operator for 0-forms
-            Q: Quadrature rule
-            F: Optional mapping function
-            E: Optional boundary operator
+            Λ (DifferentialForm): The differential form.
+            Q (QuadratureRule): The quadrature rule.
+            F (callable, optional): Map from logical to physical domain. Defaults to identity.
         """
-        super().__init__(Λ0, Λ0, Q, F, E, E)
+        """
+        Λ0 (DifferentialForm): The input differential form.
+        Λ1 (DifferentialForm): The output differential form.
+        Q (QuadratureRule): The quadrature rule used for numerical integration.
+        F (callable): Map from logical to physical domain. Defaults to identity.
+        E0 (jnp.ndarray): Transformation matrix for Λ0. Defaults to identity matrix.
+        E1 (jnp.ndarray): Transformation matrix for Λ1. Defaults to identity matrix.
+        n0 (int): Number of basis functions for Λ0.
+        n1 (int): Number of basis functions for Λ1.
+        ns0 (jnp.ndarray): Array of indices for Λ0 basis functions.
+        ns1 (jnp.ndarray): Array of indices for Λ1 basis functions.
+        M (jnp.ndarray): The assembled matrix.
+        """
+        super().__init__(Λ, Q, F, E)
 
     def assemble(self) -> jnp.ndarray:
         """Assemble boundary matrix from Florian Thesis, Page 41.
@@ -411,7 +423,7 @@ class Lazy_Boundary_Matrix(LazyMatrix):
         B_s = jnp.concatenate([jnp.zeros((self.n_s-2, 1)), jnp.eye(self.n_s-2), jnp.zeros((self.n_s-2, 1))], axis=1)
         #We now define the boundary operators, B_0,B_1,B_2, and B_3
         #B_0 = B_s⊗I_{n_X}⊗I_2, where n_s - p_s = n_X
-        self.n_x = self.Λ0.n_s - self.Λ0.p_s
+        self.n_x = self.Λ.ns - self.Λ.ps
         B_0 = jnp.kron(jnp.kron(B_s, jnp.eye(self.n_x)),jnp.eye(2))
 
         #B_3 = I_{n^3}
@@ -430,3 +442,16 @@ class Lazy_Boundary_Matrix(LazyMatrix):
         B_22 = jnp.kron(jnp.kron(jnp.eye(self.d_s), jnp.eye(self.n_x)),jnp.eye(2))
         B_23 = B_3
         B_2 = jsp.linalg.block_diag(B_21, B_22, B_23)
+
+        # Return mass matrix for zero forms:
+        M_0 = LazyMassMatrix.zeroform_assemble()
+        M_1 = LazyMassMatrix.oneform_assemble()
+        M_2 = LazyMassMatrix.twoform_assemble()
+        M_3 = LazyMassMatrix.threeform_assemble()
+
+        # Return mass matrices with boundary conditions incorporated
+        M_00 = jnp.matmul(B_0,M_0,jnp.transpose(B_0))
+        M_01 = jnp.matmul(B_1,M_1,jnp.transpose(B_1))
+        M_02 = jnp.matmul(B_2,M_2,jnp.transpose(B_2))
+        M_03 = jnp.matmul(B_3,M_3,jnp.transpose(B_3))
+
