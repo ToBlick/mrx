@@ -15,6 +15,8 @@ implementations using JAX for automatic differentiation and GPU acceleration.
 import jax
 import jax.numpy as jnp
 
+__all__ = ['QuadratureRule']
+
 
 class QuadratureRule:
     """

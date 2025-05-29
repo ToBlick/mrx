@@ -16,6 +16,8 @@ import jax.numpy as jnp
 
 from mrx.Utils import div, grad, inv33, jacobian_determinant
 
+__all__ = ['Projector', 'CurlProjection']
+
 
 class Projector:
     """
