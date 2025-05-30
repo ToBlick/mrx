@@ -21,7 +21,29 @@ from mrx.Quadrature import QuadratureRule
 # Create output directory if it doesn't exist
 os.makedirs('script_outputs', exist_ok=True)
 
+def h(x:jnp.ndarray)-> jnp.ndarray:
+    """
+    Define h for eta
 
+    Args:
+        x: Position vector
+
+    Returns:
+        jnp.ndarray:h(x)
+    """
+    return (x**2)*(1-x)**2
+
+def h_p(x:jnp.ndarray)-> jnp.ndarray:
+    """
+    Define h' 
+
+    Args:
+        x: Position vector
+
+    Returns:
+        jnp.ndarray:h'(x)
+    """
+    return 2*x*(1-x)**2 - 2*(x**2)*(1-x)
 def mu(m: int, n: int) -> jnp.ndarray:
     """
     Compute the eigenvalue for the Beltrami field.
@@ -56,6 +78,37 @@ def u(A_0: float, x: jnp.ndarray, m: int, n: int) -> jnp.ndarray:
         jnp.sin(jnp.pi * m * x_1) * jnp.sin(jnp.pi * n * x_2)
     ])
 
+def A_prime(A_0: float, x: jnp.ndarray,m_ori: jnp.ndarray, n_ori: jnp.ndarray, m_high: jnp.ndarray, n_high: jnp.ndarray) -> jnp.ndarray:
+    """
+    Compute the value of A_0'
+
+    Args:
+        A_0: Amplitude factor
+        m_high: First mode number associated with high energy
+        n_high: Second mode number associated with high energy
+        m_ori: First mode number
+        n_ori: Second mode number
+        x: Position vector
+
+    Returns:
+        jnp.ndarray: A_0'
+    """
+    
+    return jnp.sqrt((energy_integrand(m_ori,n_ori,x,A_0)*mu(m_ori,n_ori))/(energy_integrand(m_high,n_high,x,A_0)*mu(m_high,n_high)))*A_0
+
+def energy_integrand(m: int, n: int, x: jnp.ndarray, A_0: float) -> jnp.ndarray:
+
+    """
+    Computer other relevant integrand for the energy calculation.
+    
+    
+    """
+
+
+    x_1,x_2,x_3 = x
+    u_e = u(A_0, x, m, n)
+    # Get integrand
+    return (u_e[1]*h(x_1)*h(x_2)*h_p(x_3)-u_e[2]*h(x_1)*h_p(x_2)*h(x_3))**2 + (u_e[2]*h_p(x_1)*h(x_2)*h(x_3)-u_e[0]*h(x_1)*h(x_2)*h_p(x_3))**2 + (u_e[0]*h(x_1)*h_p(x_2)*h(x_3)-u_e[1]*h_p(x_1)*h(x_2)*h(x_3))**2
 
 def eta(x: jnp.ndarray) -> jnp.ndarray:
     """
@@ -71,7 +124,7 @@ def eta(x: jnp.ndarray) -> jnp.ndarray:
     return ((x_1**2) * ((1-x_1))**2) * ((x_2**2) * ((1-x_2))**2) * ((x_3**2) * ((1-x_3))**2)
 
 
-def integrand(m: int, n: int, x: jnp.ndarray, A_0: float) -> jnp.ndarray:
+def integrand_helicity(m: int, n: int, x: jnp.ndarray, A_0: float) -> jnp.ndarray:
     """
     Compute the integrand for magnetic helicity calculation.
 
@@ -90,7 +143,23 @@ def integrand(m: int, n: int, x: jnp.ndarray, A_0: float) -> jnp.ndarray:
     mu_val = mu(m, n)
     return eta(x) * jnp.dot(field, field) * mu_val
 
+def compute_energy(m: int, n: int, x: jnp.ndarray,A_0: float, Q: QuadratureRule) -> jnp.ndarray:
+    """
+    Compute the energy for given modes.
 
+    Args:
+
+    """
+    x_1,x_2,x_3 = x
+   
+
+  # Compute relevant integrand at quadrature points
+    integrand_values_energy = jnp.array([energy_integrand(m, n, x, A_0) for x in Q.x])
+
+    # Compute integral using quadrature weights
+    integral = jnp.sum(integrand_values_energy * Q.w)
+
+    return  integral+(mu(m,n)/2)*compute_helicity(m, n, A_0,Q)
 def compute_helicity(m: int, n: int, A_0: float, Q: QuadratureRule) -> jnp.ndarray:
     """
     Compute the magnetic helicity for given modes.
@@ -105,13 +174,44 @@ def compute_helicity(m: int, n: int, A_0: float, Q: QuadratureRule) -> jnp.ndarr
         jnp.ndarray: Magnetic helicity value
     """
     # Compute integrand at quadrature points
-    integrand_values = jnp.array([integrand(m, n, x, A_0) for x in Q.x])
+    integrand_values = jnp.array([integrand_helicity(m, n, x, A_0) for x in Q.x])
 
     # Compute integral using quadrature weights
     integral = jnp.sum(integrand_values * Q.w)
 
     # Multiply by eigenvalue
     return integral * mu(m, n)
+
+def find_extreme_energy_modes(max_m: int, max_n: int, A_0: float,Q: QuadratureRule) ->jnp.ndarray:
+    """
+    Find the modes (m,n) that produce high and low energy.
+
+    Args:
+        max_m: Maximum m value to search
+        max_n: Maximum n value to search
+        A_0: Amplitude factor
+
+    Returns:
+        Lowest mode combination
+        Highest mode combination
+    """
+
+
+    # Going to keep energies in a list
+    energies = {}
+    
+    # Compute energies for all mode combinations
+    for m in range(1, max_m + 1):
+        for n in range(1, max_n + 1):
+
+            E = jnp.float32(compute_energy(m, n, A_0,Q))
+            energies[m, n] = E
+    
+    # Find modes with highest and lowest energy
+    high_mode = max(energies.items())[0]
+    low_mode = min(energies.items())[0]
+
+    return high_mode, low_mode
 
 
 def plot_field_components(m: int, n: int, A_0: float, nx: int = 100) -> None:
