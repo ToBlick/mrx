@@ -1,10 +1,9 @@
 """
-Unit tests for the pullbacks implemented in Differential Forms.
+Unit tests for the pushforwards implemented in Differential Forms.
 
 The tests include:
-- Pullback of a scalar is a scalar
+- Pushforward of a scalar is a scalar
 - Linearity
-- Commutativity of pullback and exerior derivative
 """
 
 
