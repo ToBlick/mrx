@@ -7,6 +7,7 @@ It computes the magnetic helicity and performs error analysis for different mode
 The script includes:
 1. Definition of Beltrami field components
 2. Computation of magnetic helicity
+3. Computation of energy
 3. Error analysis for different modes
 4. Visualization of results
 """
