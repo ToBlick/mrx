@@ -4,14 +4,15 @@ Unit tests for the pushforwards implemented in Differential Forms.
 The tests include:
 - Pushforward of a scalar is a scalar
 - Linearity
+- Pushforward of a 1-form is implemented correctly
 """
-
 
 import unittest
 import jax
 from jax import numpy as jnp
 import numpy as np
 from mrx.DifferentialForms import Pushforward
+from mrx.Utils import inv33
 
 # Mapping from cylindrical coordinates to Cartesian coordinates
 
@@ -43,15 +44,16 @@ def G(x):
         return jnp.ravel(jnp.array([_R(x_1, x_2), _χ(x_1, x_2), jnp.ones(1) * x_3]))
 
 class PushforwardTests(unittest.TestCase):
-    def test_pushforward(self):
-        # Test that the pushforward of a scalar is a scalar
-        ζ_star = jnp.array([1.0, 0.5, 1.0])
+    def test_pushforward_scalar(self):
+        """Test that the pushforward of a scalar is a scalar."""
+        ζ_star = jnp.array([1.0, 0.5, 1.0]) # Test cylindrical point
 
-        # Test 0-form pushforward
+        # Define a 0-form in cartesian coordinates
         def scalar(x):
             x_1, x_2, x_3 = x
             return x_3 * (x_1 - x_2)
         
+        # Pushforward the 0-form
         pushforward_scalar = Pushforward(scalar, F, 0)
 
         self.assertTrue(
@@ -59,8 +61,36 @@ class PushforwardTests(unittest.TestCase):
             "The pushforward of a scalar should be a scalar"
         )
 
-    def test_pushforward_linearity(self):
-        #Test that the pushforward map is linear
+
+    def test_pushforward_linearity_zero(self):
+        """Test that the pushforward of a 0-form is linear."""
+        ζ_star = jnp.array([1.0, 0.5, 1.0]) # Test point
+       
+        # Define two scalars in Cartesian coordinates
+        def f(x):
+            x_1, x_2, x_3 = x
+            return x_3 - x_1*x_2
+        def g(x):
+            x_1, x_2, x_3 = x
+            return x_1 + x_2 + x_3
+
+        # Define a linear combination of f and g
+        def combo(x):
+            return -2*f(x) + 5*g(x)   
+        
+        # Pushforward the linear combination
+        pushforward_combo = Pushforward(combo, F, 0)
+        
+        # Pushforward f and g
+        pushforward_f = Pushforward(f, F, 0)
+        pushforward_g = Pushforward(g, F, 0)
+
+        # Check linearity
+        np.testing.assert_allclose(pushforward_combo(ζ_star),-2*pushforward_f(ζ_star) + 5*pushforward_g(ζ_star), atol=1e-6, err_msg="Pushforward of a zero form must be linear"
+        )
+
+    def test_pushforward_linearity_one(self):
+        """Test that the pushforward of a 1-form is linear."""
         
         # Test point
         ζ_star = jnp.array([1.0, 0.5, 1.0])  # Cylindrical
@@ -74,41 +104,54 @@ class PushforwardTests(unittest.TestCase):
             x_1, x_2, x_3 = x
             return jnp.array([x_3-x_2, x_1*x_3, x_2**2]) 
         
+        # Define a linear combination of A and B
+        def combo(x):
+            return -2*A_cart(x) + 5*B_cart(x)
+        
+        # Pushforward the linear combination
+        pushforward_combo = Pushforward(combo, F, 1)
+
         # Pushforward A and B
         pushforward_A = Pushforward(A_cart, F, 1)
-        pushforward_B = Pushforward(B_cart, F, 1)
-
-        # Verify that the sum of pushforwards is pushforward of the sum
-
-        def sum_AB(x):
-            return A_cart(x) + B_cart(x)
+        pushforward_B = Pushforward(B_cart, F, 1) 
         
-        pushforward_sum = Pushforward(sum_AB, F, 1)
-        sum_star = pushforward_sum(ζ_star)
-        
-        # Add pushforwards separately 
-        separate_star = pushforward_A(ζ_star) + pushforward_B(ζ_star)
-        
-        # Verify additivity
-        np.testing.assert_allclose(sum_star,separate_star, atol=1e-6, err_msg="Pushforward isn't additive"
+        # Check linearity
+        np.testing.assert_allclose(pushforward_combo(ζ_star),-2*pushforward_A(ζ_star) + 5*pushforward_B(ζ_star), atol=1e-6, err_msg="Pushforward of a one form must be linear"
         )
-        
-        # Test scalar multiplication
+   
+    def test_pushforward_1form(self):
+        """Test that the pushforward of a 1-form is implemented correctly."""
+        # Test cylindrical point
+        ζ_star = jnp.array([1.0, 0.2, 0.0])
 
-        key = jax.random.PRNGKey(1) #1 as seed
-        C = jax.random.uniform(key, minval=-100.0, maxval=100.0) # Random number between -100 and 100
-
-        # Define scaled A
-        def scaled_A(x):
-            return C * A_cart(x)
-        pushforward_A_scaled = Pushforward(scaled_A, F, 1)
-        scaled_A_result = pushforward_A_scaled(ζ_star)
-        separate_A_scaled = C * pushforward_A(ζ_star)
+        # Define a 1-form in cartesian coordinates
+        def A_cart(x):
+            x_1, x_2, x_3 = x
+            return jnp.array([x_1+x_2, x_3-x_1, x_2])
         
-        # Verify scalar multiplication
-        np.testing.assert_allclose(scaled_A_result,separate_A_scaled, atol=1e-6, err_msg="Pushforward isn't scalar multiplicative"
+        # Pushforward A
+        pushforward_A = Pushforward(A_cart, F, 1)
+
+        # Evaluate the pushforward at ζ_star
+        A_cyl_star = pushforward_A(ζ_star)
+
+        # The pushforward of A at ζ_star should match the original form evaluated at the cartesian point, multiplied on the left by inv(DF.T)
+        # Get the Jacobian of F at ζ_star (evaluation must be in logical domain)
+        DF = jax.jacfwd(F)(ζ_star)
+
+        # Original form evaluated at cartesian point
+        A_orig = A_cart(ζ_star)
+
+        # Expected result after pushforward (DF^{-T} @ A)
+        expected_pushforward = inv33(DF.T)@A_orig
+
+        # Verify the transformation
+        np.testing.assert_allclose(
+            A_cyl_star,
+            expected_pushforward,
+            atol=1e-6,
+            err_msg="Pushforward of 1-form  was not implemented correctly"
         )
-
 
 if __name__ == '__main__':
     unittest.main()
