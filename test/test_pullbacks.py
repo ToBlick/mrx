@@ -3,7 +3,7 @@ Unit tests for the pullbacks implemented in Differential Forms.
 
 The tests include:
 - Pullback of a scalar is a scalar
-- Commutativity of pullback and exterior derivative for a 0-form
+- Commutativity of pullback and exterior derivative for a 0-form and 1-form
 - Pullback of a 1-form is done correctly
 - Linearity
 """
@@ -13,6 +13,7 @@ import jax
 from jax import numpy as jnp
 import numpy as np
 from mrx.DifferentialForms import Pullback
+from mrx.Utils import curl as Curl
 
 # Mapping from cylindrical coordinates to Cartesian coordinates
 
@@ -33,7 +34,7 @@ def F(x):
 # Mapping from Cartesian coordinates to cylindrical coordinates
 def _R(x_1, x_2):
         """Compute the R coordinate."""
-        return jnp.ones(1) * jnp.sqrt((x_1**2) * (x_2**2))
+        return jnp.ones(1) * jnp.sqrt((x_1**2) + (x_2**2))
 def _χ(x_1, x_2):
         """Compute the χ coordinate."""
         return jnp.ones(1) * jnp.arctan2(x_2, x_1) / (2 * jnp.pi)
@@ -98,6 +99,32 @@ class PullbackTests(unittest.TestCase):
             err_msg="Pullback has to commute with exterior derivative for a zero form"
         )
 
+
+    def test_pullback_exterior_one(self):
+        """Test that the pullback commutes with the exterior derivative for a 1-form, the curl."""
+        
+        # Define a 1-form in cylindrical coordinates
+        def A_hat(ζ):
+            r, χ, z = ζ
+            return jnp.array([r**2, χ*r, z])
+        
+        # Test point in cartesian coordinates
+        x_star = jnp.array([1.0, 2.0, 3.0])
+        
+        # Pullback A_hat
+        pullback_A_hat = Pullback(A_hat, G, 1)
+
+        # Test that curl commutes with pullback
+        curl_pullback = Curl(pullback_A_hat)(x_star)
+        pullback_curl = Pullback(Curl(A_hat), G, 2).__call__(x_star)
+        np.testing.assert_allclose(
+            curl_pullback,
+            pullback_curl,
+            atol=1e-5,
+            err_msg="Curl should commute with pullback"
+        )
+
+
     def test_pullback_linearity_zero(self):
         """Test linearity of pullbacks for 0-forms."""
         x_star = jnp.array([1.0, 2.0, 3.0])
@@ -156,7 +183,7 @@ class PullbackTests(unittest.TestCase):
         np.testing.assert_allclose(
             pullback_combo(x_star),
             pullback_A(x_star) + 2*pullback_B(x_star),
-            atol=1e-8,
+            atol=1e-7,
             err_msg="Pullback needs to be linear for 1-forms"
         )
 

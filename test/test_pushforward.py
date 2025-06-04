@@ -33,7 +33,7 @@ def F(x):
 # Mapping from Cartesian coordinates to cylindrical coordinates
 def _R(x_1, x_2):
         """Compute the R coordinate."""
-        return jnp.ones(1) * jnp.sqrt((x_1**2) * (x_2**2))
+        return jnp.ones(1) * jnp.sqrt((x_1**2) +(x_2**2))
 def _χ(x_1, x_2):
         """Compute the χ coordinate."""
         return jnp.ones(1) * jnp.arctan2(x_2, x_1) / (2 * jnp.pi)
