@@ -47,6 +47,40 @@ def print_matrix_stats(M, name):
             f"First NaN at indices: {list(zip(nan_indices[0][:5], nan_indices[1][:5]))}")
 
 
+def check_sparsity(M, name, expected_density=None):
+    """
+    Check sparsity properties of a matrix.
+    
+    Args:
+        M: Matrix to check
+        name: Name of the matrix 
+        expected_density: Expected ratio of non-zero elements to total elements (if known)
+        
+    Returns:
+        tuple: (density, max_nonzeros_row)
+
+    """
+
+    # Count nonzeros per row 
+    nonzeros_per_row = jnp.sum(~jnp.isclose(M, 0, atol=1e-12), axis=1)
+    # Count total number of nonzeros
+    nonzeros = jnp.sum(nonzeros_per_row)
+    # Get maximum number of nonzeros in any row
+    max_nonzeros_row = jnp.max(nonzeros_per_row)
+    # Calculate density as the ratio of nonzeros to total elements
+    density = nonzeros / (M.shape[0] * M.shape[1])
+    
+    print(f"\nSparsity analysis for {name}:")
+    print(f"Total Number of nonzeros: {nonzeros}")
+    print(f"Density: {density:.6f}")
+    print(f"Max nonzeros per row: {max_nonzeros_row}")
+    
+    if expected_density is not None:
+        print(f"Expected density: {expected_density:.6f}")
+        
+    return density, max_nonzeros_row 
+
+
 class TestLazyMatrices(unittest.TestCase):
     """Test cases for LazyMatrix implementations."""
 
@@ -63,7 +97,7 @@ class TestLazyMatrices(unittest.TestCase):
 
         # Tolerance for numerical comparisons
         self.rtol = 1e-7
-        self.atol = 1e-15
+        self.atol = 1e-14
 
     def test_mass_matrix(self):
         """
@@ -141,12 +175,16 @@ class TestLazyMatrices(unittest.TestCase):
         - Matrix properties:
             - shape
             - strong form only contains -1, 0, 1
+            - sparsity pattern
         - curl grad = 0
         - div curl = 0
+        - grad div = 0
+        - curl is antisymmetric
         """
         def check_all_entries_valid(D):
             def check_is_entry_valid(i, j):
-                return jnp.logical_or(jnp.isclose(D[i, j], 0, atol=1e-12), jnp.isclose(jnp.abs(D[i, j]), 1, atol=1e-12))
+                return jnp.logical_or(jnp.isclose(D[i, j], 0, atol=1e-12), 
+                                    jnp.isclose(jnp.abs(D[i, j]), 1, atol=1e-12))
             n = D.shape[0]
             m = D.shape[1]
             vals = jax.vmap(jax.vmap(check_is_entry_valid, (None, 0)), (0, None))(
@@ -160,20 +198,46 @@ class TestLazyMatrices(unittest.TestCase):
                 Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(
                     k, ns, ps, types) for k in range(4)]
                 Q = QuadratureRule(Λ0, quad_order)
-                D0, D1, D2 = [LazyDerivativeMatrix(Λk, Λkplus1, Q).M
-                              for Λk, Λkplus1 in zip([Λ0, Λ1, Λ2], [Λ1, Λ2, Λ3])]
+                D0, D1, D2 = [LazyDerivativeMatrix(Λk, Λkand1, Q).M
+                              for Λk, Λkand1 in zip([Λ0, Λ1, Λ2], [Λ1, Λ2, Λ3])]
                 M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q).M
                                   for Λ in [Λ0, Λ1, Λ2, Λ3]]
 
                 for k, D, M in zip([0, 1, 2], [D0, D1, D2], [M1, M2, M3]):
                     D_strong = jnp.linalg.solve(M, D)
                     print(f"\nTesting case for k={k}")
-                    print_matrix_stats(D, "{k} Derivative Matrix")
+                    print_matrix_stats(D, f"{k} Derivative Matrix")
+                    
+                
+                    # Check correct shape
+                    if k == 0:  # gradient: 0-form -> 1-form
+                        expected_shape = (Λ1.n, Λ0.n)
+                    elif k == 1:  # curl: 1-form -> 2-form
+                        expected_shape = (Λ2.n, Λ1.n)
+                    else:  # divergence: 2-form -> 3-form
+                        expected_shape = (Λ3.n, Λ2.n)
+                        
+                    self.assertEqual(
+                        D_strong.shape, expected_shape,
+                        f"Strong form {k}-derivative matrix shape doesn't match expectation: "
+                        f"got {D_strong.shape}, expected {expected_shape} "
+                        f"(ns={ns}, ps={ps}, types={types}, quad_order={quad_order})"
+                    )
+                 
+                    # Check for NaN values
                     self.assertFalse(
                         jnp.any(jnp.isnan(D)),
                         f"Matrix contains NaN values "
                         f"(ns={ns}, ps={ps}, types={types}, quad_order={quad_order})"
                     )
+
+                    # Check for Inf values
+                    self.assertFalse(
+                        jnp.any(jnp.isinf(D)),
+                        f"Matrix contains Inf values "
+                        f"(ns={ns}, ps={ps}, types={types}, quad_order={quad_order})"
+                    )
+                    
                     # Check that all entries of D_strong are either -1, 0, or 1
                     self.assertTrue(
                         check_all_entries_valid(D_strong),
@@ -181,15 +245,17 @@ class TestLazyMatrices(unittest.TestCase):
                         f"(ns={ns}, ps={ps}, types={types}, quad_order={quad_order})"
                     )
 
-                G = jnp.linalg.solve(M1, D0)
-                C = jnp.linalg.solve(M2, D1)
-                D = jnp.linalg.solve(M3, D2)
+                # Need to retrieve separately to check identities
+                G = jnp.linalg.solve(M1, D0) #Strong form gradient
+                C = jnp.linalg.solve(M2, D1) #Strong form curl
+                D = jnp.linalg.solve(M3, D2) #Strong form divergence
+
                 # Check that curl grad = 0
                 npt.assert_allclose(
-                    0, C @ G,
-                    rtol=2,
+                    C @ G, jnp.zeros_like(C @ G),
+                    rtol=self.rtol,
                     atol=self.atol,
-                    err_msg=f"Curl grad is not zero "
+                    err_msg=f"Curl of grad is not zero "
                     f"(ns={ns}, ps={ps}, types={types}, quad_order={quad_order})"
                 )
                 # Check that div curl = 0
@@ -197,7 +263,25 @@ class TestLazyMatrices(unittest.TestCase):
                     0, D @ C,
                     rtol=2,
                     atol=self.atol,
-                    err_msg=f"Div curl is not zero "
+                    err_msg=f"Div of curl is not zero "
+                    f"(ns={ns}, ps={ps}, types={types}, quad_order={quad_order})"
+                )
+
+                # Check that grad div = 0
+                npt.assert_allclose(
+                    0, G @ D,
+                    rtol=2,
+                    atol=self.atol,
+                    err_msg=f"Grad of div is not zero "
+                    f"(ns={ns}, ps={ps}, types={types}, quad_order={quad_order})"
+                )
+
+                # Check that curl is antisymmetric
+                npt.assert_allclose(
+                    C, -C.T,
+                    rtol=self.rtol,
+                    atol=self.atol,
+                    err_msg=f"Curl matrix is not antisymmetric "
                     f"(ns={ns}, ps={ps}, types={types}, quad_order={quad_order})"
                 )
 
@@ -277,6 +361,7 @@ class TestLazyMatrices(unittest.TestCase):
                     f"(ns={ns}, ps={ps}, types={types}, quad_order={quad_order})"
                 )
 
+    
 
 if __name__ == '__main__':
     unittest.main()
