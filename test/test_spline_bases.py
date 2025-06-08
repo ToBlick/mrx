@@ -34,22 +34,8 @@ class TestSplineBases(unittest.TestCase):
         with self.assertRaises(ValueError):
             SplineBasis(2, 3, 'clamped')
 
-    def test_spline_evaluation(self):
-        """Test spline basis function evaluation."""
-        # Test evaluation at knots for clamped splines
-        for i in range(self.n):
-            # For clamped splines, only test interior points
-            if 0 < i < self.n - 1:
-                val = self.clamped(self.clamped.T[i + self.p], i)
-                self.assertGreaterEqual(val, 0.0)
-                self.assertLessEqual(val, 1.0)
-        
-        # Test evaluation at random points
-        x = np.random.random()
-        for i in range(self.n):
-            val = self.clamped(x, i)
-            self.assertGreaterEqual(val, 0.0)
-            self.assertLessEqual(val, 1.0)
+   
+    
 
     def test_partition_of_unity(self):
         """Test partition of unity property."""
@@ -67,6 +53,13 @@ class TestSplineBases(unittest.TestCase):
         x = np.random.random()
         for i in range(self.n):
             val = d_clamped(x, i)
+            self.assertIsInstance(val, jnp.ndarray)
+            self.assertEqual(val.shape, ())
+
+        # Test second derivative
+        d2_clamped = DerivativeSpline(d_clamped)
+        for i in range(self.n):
+            val = d2_clamped(x, i)
             self.assertIsInstance(val, jnp.ndarray)
             self.assertEqual(val.shape, ())
 
@@ -107,11 +100,7 @@ class TestSplineBases(unittest.TestCase):
 
     def test_edge_cases(self):
         """Test edge cases and error conditions."""
-        # Test evaluation outside domain
-        x = -0.1
-        for i in range(self.n):
-            val = self.clamped(x, i)
-            self.assertEqual(float(val), 0.0)
+    
         
         # Test tensor basis with wrong dimension input
         tensor = TensorBasis([self.clamped, self.clamped, self.clamped])
@@ -126,5 +115,44 @@ class TestSplineBases(unittest.TestCase):
         with self.assertRaises(ValueError):
             SplineBasis(4, 3, 'invalid_type')
 
+    def test_spline_properties(self):
+        """Test properties of different types of spline bases. Based on Holderied thesis."""
+
+        # Test evaluation at knots for clamped splines
+        for i in range(self.n):
+            # For clamped splines, only test interior points
+            if 0 < i < self.n - 1:
+                val = self.clamped(self.clamped.T[i + self.p], i)
+                self.assertGreaterEqual(val, 0.0)
+                self.assertLessEqual(val, 1.0)
+
+        # Check that constant spline evaluates to 1 at all points in its support
+        for i in range(self.n):
+            self.assertAlmostEqual(self.constant(0.0, i), 1.0, places=5)
+            self.assertAlmostEqual(self.constant(0.5, i), 1.0, places=5)
+            self.assertAlmostEqual(self.constant(1.0, i), 1.0, places=5)
+
+        # Check that clamped spline is zero outside its support
+        for x in [-1.0,-0.01, 1.01,2.0]:
+            for i in range(self.n):
+                self.assertAlmostEqual(self.clamped(x, i), 0.0, places=5)
+
+        # Check that clamped spline has correct boundary conditions (i.e., first and last basis functions are 1 at their knots)
+        self.assertAlmostEqual(self.clamped(0.0, 0), 1.0, places=5)
+        self.assertAlmostEqual(self.clamped(1.0, self.n - 1), 1.0, places=5)
+
+
+        # Check that periodic spline repeats appropriately (i.e., same value at 0 and 1)
+        for i in range(self.n):
+            self.assertAlmostEqual(self.periodic(0.0, i), self.periodic(1.0, i), places=5)
+
+        # Test evaluation of clamped splines at random points
+        x = np.random.random()
+        for i in range(self.n):
+            val = self.clamped(x, i)
+            self.assertGreaterEqual(val, 0.0)
+            self.assertLessEqual(val, 1.0)
+
+  
 if __name__ == '__main__':
     unittest.main() 
