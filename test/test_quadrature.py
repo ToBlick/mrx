@@ -169,6 +169,97 @@ class TestQuadrature(unittest.TestCase):
                         err_msg=f"Failed for {name} with ns={ns}, ps={ps}, quad_order={quad_order}"
                     )
 
+    def test_strange_quadrature(self):
+        """Test quadrature behavior with sharp peak and rapid oscillation.
+        
+        This test verifies that the quadrature rules can handle:
+        1. Rapidly oscillating functions
+        2. Functions with sharp peaks
+        4. Different polynomial degrees
+        5. Convergence with increasing quadrature points
+        """
+        def oscillating_peak(x):
+            """Test function with rapid oscillations and a sharp peak."""
+            # Create a sharp peak at x[0]=0.25, y[0]=0.25
+            peak = jnp.exp(-100*((x[0]-0.25)**2 + (x[1]-0.25)**2))
+            # rapid oscillations
+            oscillations = jnp.sin(16*jnp.pi*x[1]) * jnp.cos(16*jnp.pi*x[0])
+            return peak * oscillations * jnp.ones(1)
+        
+        # Test cases with different configurations
+        test_cases = [
+            # (ns, ps, types)
+            ((8,8,1), (2,2,0), ('clamped', 'periodic', 'constant')),  
+            ((12,12,1), (3,3,0), ('clamped', 'periodic', 'constant')),  # Higher resolution
+                            ]
+        
+        # Get approximate solution computed with very high order quadrature
+        ns_approx = (32,32,1)
+        ps_approx = (5,5,0)
+        types_approx = ('clamped', 'periodic', 'constant')
+        form_approx = DifferentialForm(0, ns_approx, ps_approx, types_approx)
+        quad_approx = QuadratureRule(form_approx, 10)
+        reference = float((quad_approx.w @ jax.vmap(oscillating_peak)(quad_approx.x))[0])
+        
+
+        for ns, ps, types in test_cases:
+            form = DifferentialForm(0, ns, ps, types)
+            errors = []
+            
+            # Test convergence with increasing quadrature points and compare with high order quadrature
+            for quad_order in range(3, 11):
+                quad_rule = QuadratureRule(form, quad_order)
+                result = float((quad_rule.w @ jax.vmap(oscillating_peak)(quad_rule.x))[0])
+                error = abs(result - reference)
+                errors.append(error)
+                
+                print(f"\nConfiguration: ns={ns}, ps={ps}, quad_order={quad_order}")
+                print(f"Result: {result:.10f}")
+                print(f"Absolute Error: {error:.2e}")
+                
+                # Check error is within reasonable bounds
+                # More lenient for lower orders, stricter for higher orders
+                if quad_order <= 5:
+                    tol = 1e-3
+                elif 5< quad_order <= 8:
+                    tol = 1e-4
+                else:
+                    tol = 1e-5
+                    
+                self.assertLess(
+                    error, tol,
+                    f"Error is too large for ns={ns}, ps={ps}, quad_order={quad_order}"
+                )
+            
+            
+        
+        # Test exact integration of polynomials
+        def polynomial_test(x):
+            """Test polynomial that should be integrated exactly."""
+            # Construct a polynomial of degree 4 or less
+            p = (x[0]**2 + x[1]**2) * (1 - x[0]) * (1 - x[1])
+            return p * jnp.ones(1)
+        
+        # This polynomial should be integrated exactly with sufficient quadrature points
+        ns = (8,8,1)
+        ps = (4,4,0)
+        types = ('clamped', 'clamped', 'constant')
+        form = DifferentialForm(0, ns, ps, types)
+        
+        # Test with increasing quadrature orders
+        prev_result = None
+        for quad_order in range(5, 8):
+            quad_rule = QuadratureRule(form, quad_order)
+            result = float((quad_rule.w @ jax.vmap(polynomial_test)(quad_rule.x))[0])
+            
+            if prev_result is not None:
+                # Results should be identical (up to numerical precision)
+                self.assertTrue(
+                    jnp.allclose(result, prev_result, rtol=1e-10),
+                    "Exact polynomial integration failed"
+                )
+            prev_result = result
+
 
 if __name__ == '__main__':
     unittest.main()
