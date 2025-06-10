@@ -14,10 +14,9 @@ from mrx.Quadrature import QuadratureRule
 jax.config.update("jax_enable_x64", True)
 
 # Initialize differential forms and operators
-ns = (6, 6, 6)  # Number of elements in each direction
-ps = (3, 3, 3)  # Polynomial degree in each direction
+ns = (6, 6, 3)  # Number of elements in each direction
+ps = (3, 3, 2)  # Polynomial degree in each direction
 types = ('clamped', 'periodic', 'periodic')
-bcs = ('dirichlet', 'periodic', 'periodic')
 # Define differential forms for different function spaces
 Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(k, ns, ps, types) for k in range(4)]
 
@@ -25,7 +24,7 @@ bcs = ('dirichlet', 'periodic', 'periodic')
 Q = QuadratureRule(Λ0, 8)
 
 a = 1
-R0 = 100
+R0 = 3
 π = jnp.pi
 
 
@@ -182,8 +181,6 @@ def plot_eigenvectors_grid(
         fig.delaxes(axes[j])
 
     plt.tight_layout(pad=0.1, w_pad=0.1, h_pad=0.1)
-    plt.show()
-
     return fig
 
 
