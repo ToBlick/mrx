@@ -8,7 +8,8 @@ from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
 from mrx.Utils import curl, div, grad, inv33, jacobian_determinant
 
-__all__ = ['LazyMatrix', 'LazyMassMatrix', 'LazyDerivativeMatrix', 'LazyProjectionMatrix', 'LazyDoubleCurlMatrix', 'LazyStiffnessMatrix']
+__all__ = ['LazyMatrix', 'LazyMassMatrix', 'LazyDerivativeMatrix',
+           'LazyProjectionMatrix', 'LazyDoubleCurlMatrix', 'LazyDoubleDivergenceMatrix', 'LazyStiffnessMatrix']
 
 
 class LazyMatrix:
@@ -381,3 +382,42 @@ class LazyStiffnessMatrix(LazyMatrix):
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,ljk,j,j->li", Λ_ijk, Λ_ijk, Jj, wj)
+
+
+class LazyDoubleDivergenceMatrix(LazyMatrix):
+    """
+    A class representing a matrix that is half a vector Laplace operator.
+
+    The matrix entries are computed as ∫ div Λ0[i] ·div Λ1[j] 1/detDF dx.
+
+    Attributes:
+        Inherits all attributes from LazyMatrix.
+
+    Methods:
+        __init__(Λ, Q, F=None, E=None):
+            Initialize the double divergence matrix with a single differential form.
+        assemble():
+            Assemble the double divergence matrix.
+    """
+
+    def __init__(self, Λ, Q, F=None, E=None):
+        """
+        Initialize the double divergence matrix with a single differential form.
+
+        Args:
+            Λ (DifferentialForm): The differential form.
+            Q (QuadratureRule): The quadrature rule.
+            F (callable, optional): Map from logical to physical domain. Defaults to identity.
+            E (jnp.ndarray, optional): Transformation matrix. Defaults to identity.
+        """
+        super().__init__(Λ, Λ, Q, F, E, E)
+
+    def assemble(self):
+        """Assemble the double curl matrix."""
+        def _Λ(x, i):
+            return div(lambda y: self.Λ0(y, i))(x)
+        Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
+            self.Q.x, jnp.arange(self.n0))  # n x n_q x 1
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
+        wj = self.Q.w
+        return jnp.einsum("ijk,ljk,j,j->li", Λ_ijk, Λ_ijk, 1/Jj, wj)
