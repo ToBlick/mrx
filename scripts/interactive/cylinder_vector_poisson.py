@@ -8,12 +8,15 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
-from mrx.LazyMatrices import LazyStiffnessMatrix
+from mrx.DifferentialForms import DifferentialForm, Flat
+from mrx.LazyMatrices import (
+    LazyDerivativeMatrix,
+    LazyDoubleDivergenceMatrix,
+    LazyMassMatrix,
+)
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
 from mrx.Projectors import Projector
 from mrx.Quadrature import QuadratureRule
-from mrx.Utils import l2_product
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -26,61 +29,74 @@ os.makedirs("script_outputs", exist_ok=True)
 def get_err(n, p):
     # Set up finite element spaces
     q = 2*p
-    ns = (n, n, 1)
-    ps = (p, p, 0)
-    types = ("clamped", "periodic", "constant")
+    ns = (n, n, n)
+    ps = (p, p, p)
 
+    types = ("clamped", "periodic", "periodic")
     # Domain parameters
-    a = 1.13
-    R0 = 3.46
     π = jnp.pi
 
     def _X(r, χ):
-        return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
-
-    def _Z(r, χ):
-        return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
+        return jnp.ones(1) * r * jnp.cos(2 * π * χ)
 
     def _Y(r, χ):
-        return jnp.ones(1) * a * r * jnp.sin(2 * π * χ)
+        return jnp.ones(1) * r * jnp.sin(2 * π * χ)
+
+    def _Z(r, χ):
+        return jnp.ones(1)
 
     def F(x):
         """Polar coordinate mapping function."""
         r, χ, z = x
-        return jnp.ravel(jnp.array([_X(r, χ) * jnp.cos(2 * π * z),
+        return jnp.ravel(jnp.array([_X(r, χ),
                                     _Y(r, χ),
-                                    _Z(r, χ) * jnp.sin(2 * π * z)]))
+                                    _Z(r, χ) * z]))
     # Define exact solution and source term
 
     def u(x):
         """Exact solution of the Poisson problem."""
         r, χ, z = x
-        # return - jnp.ones(1) * r**2 * (1 - r**2)
-        return - jnp.ones(1) * jnp.sin(π * r**2)
+        u_theta = r**2 * (1 - r)**2 * jnp.cos(2*π*z)
+        return jnp.array([0, u_theta, 0])
 
     def f(x):
         """Source term of the Poisson problem."""
         r, χ, z = x
-        c = jnp.cos(2 * π * χ)
-        R = R0 + a * r * c
-        # return 1 / (a**2 * R) * (4*R0*(1 - 4*r**2) + 2*a*r*c*(3 - 10*r**2)) * jnp.ones(1)
-        return 4 * π / a**2 * (jnp.cos(π*r**2) * (1 + (R - R0) / R / 2)
-                               - π * r**2 * jnp.sin(π*r**2)) * jnp.ones(1)
-    Λ0 = DifferentialForm(0, ns, ps, types)
+        f_theta = (r**2 * (1 - r)**2 * 4*π**2 -
+                   (3 - 16*r + 15*r**2)) * jnp.cos(2*π*z)
+        return jnp.array([0, f_theta, 0])
+
+    Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(k, ns, ps, types) for k in range(4)]
+
     # Get polar mapping and set up operators
     Q = QuadratureRule(Λ0, q)
     ξ = get_xi(_X, _Z, Λ0, Q)[0]
-    E0 = LazyExtractionOperator(Λ0, ξ, zero_bc=True).M
-    K = LazyStiffnessMatrix(Λ0, Q, F=F, E=E0).M
-    P0 = Projector(Λ0, Q, F=F, E=E0)
-    # Solve the system
-    u_hat = jnp.linalg.solve(K, P0(f))
-    u_h = DiscreteFunction(u_hat, Λ0, E0)
-    # Compute error
+    E1 = LazyExtractionOperator(Λ1, ξ, zero_bc=False).M
+    E2 = LazyExtractionOperator(Λ2, ξ, zero_bc=True).M
 
-    def err(x):
-        return u(x) - u_h(x)
-    error = (l2_product(err, err, Q, F) / l2_product(u, u, Q, F)) ** 0.5
+    C = LazyDerivativeMatrix(Λ1, Λ2, Q, F, E1, E2).M
+    K = LazyDoubleDivergenceMatrix(Λ2, Q, F, E2).M
+    M1 = LazyMassMatrix(Λ1, Q, F, E1).M
+    M2 = LazyMassMatrix(Λ2, Q, F, E2).M
+
+    # block_matrix = jnp.block([[K, C], [-C.T, M1]])
+
+    L = C @ jnp.linalg.solve(M1, C.T) + K
+
+    tol = 1e-12
+    eigvals, eigvecs = jnp.linalg.eigh(L)
+    inv_eigvals = jnp.where(
+        jnp.abs(eigvals) > tol,
+        1.0 / eigvals,
+        0.0
+    )
+    L_pinv = (eigvecs * inv_eigvals) @ eigvecs.T
+
+    P2 = Projector(Λ2, Q, F, E2)
+    u_hat = L_pinv @ P2(Flat(f, F))
+    u_hat_analytic = jnp.linalg.solve(M2, P2(Flat(u, F)))
+    error = ((u_hat - u_hat_analytic) @ M2 @ (u_hat - u_hat_analytic) /
+             (u_hat_analytic @ M2 @ u_hat_analytic))**0.5
     return error
 
 
@@ -134,7 +150,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.title('Error Convergence')
     plt.grid(True)
     plt.legend()
-    plt.savefig('script_outputs/2d_toroid_poisson_mixed_error.png',
+    plt.savefig('script_outputs/toroid_vectorpoisson_mixed_error.png',
                 dpi=300, bbox_inches='tight')
 
     return fig1
@@ -143,8 +159,8 @@ def plot_results(err, times, times2, ns, ps):
 def main():
     """Main function to run the analysis."""
     # Run convergence analysis
-    ns = np.arange(8, 23, 4)
-    ps = np.arange(1, 5)
+    ns = np.arange(4, 6, 1)
+    ps = np.arange(1, 4)
     err, times, times2 = run_convergence_analysis(ns, ps)
 
     # Plot results
@@ -159,5 +175,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# %%

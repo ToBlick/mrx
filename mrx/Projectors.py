@@ -292,3 +292,301 @@ class GradientProjection:
             self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x 1
         wj = self.Q.w
         return jnp.einsum("ijk,jk,j->i", Λijk, qjk, wj)
+
+
+# class EFieldProjector:
+#     """
+#     Given four one-forms A, B, C and D,
+#     computes ∫ ((A × B - D) × C) · Λ[i] dx for all i,
+#     where Λ[i] is the i-th basis function of the one-form space.
+#     """
+
+#     def __init__(self, Λ, Q, F=None, E=None):
+#         """
+#         Initialize the curl projector.
+
+#         Args:
+#             Λ: Domain operator defining the finite element space
+#             Q: Quadrature rule for numerical integration
+#             F (callable, optional): Coordinate transformation function.
+#                                  Defaults to identity mapping.
+#             E (array, optional): Extraction operator matrix.
+#                               Defaults to identity matrix.
+#         """
+#         self.Λ = Λ
+#         self.Q = Q
+#         self.n = Λ.n
+#         self.ns = Λ.ns
+#         if F is None:
+#             self.F = lambda x: x
+#         else:
+#             self.F = F
+#         if E is None:
+#             self.M = jnp.eye(self.n)
+#         else:
+#             self.M = E
+
+#     def __call__(self, A, B, C, D):
+#         """
+#         Project the curl operation between forms A and B.
+
+#         Args:
+#             A (callable): One-form field
+#             B (callable): One-form field
+#             C (callable): One-form field
+
+#         Returns:
+#             array: Projection coefficients
+#         """
+#         return self.M @ self.projection(A, B, C, D)
+
+#     def projection(self, A, B, C, D):
+#         """
+#         Compute the projection of ∫ ((A × B - D) × C) · Λ[i] dx.
+
+#         Args:
+#             A (callable): One-form field
+#             B (callable): One-form field
+#             C (callable): One-form field
+#             D (callable): Zero-form field
+
+#         Returns:
+#             array: Projection coefficients
+#         """
+#         DF = jax.jacfwd(self.F)
+
+#         def u(x):
+#             DFx = DF(x)
+#             Jx = jnp.linalg.det(DFx)
+#             return jnp.cross(1/Jx * DFx.T @ DFx @ jnp.cross(A(x), B(x)) - D(x), C(x))
+
+#         # Compute projections
+#         ujk = jax.vmap(u)(self.Q.x)  # n_q x d
+#         Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(
+#             self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
+#         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
+#         wj = self.Q.w
+#         return jnp.einsum("ijk,jk,j,j->i", Λijk, ujk, 1/Jj, wj)
+
+
+# class ForceProjector:
+#     """
+#     Given three one-forms A, B and C,
+#     computes ∫ (A × B - C) · Λ[i] dx for all i,
+#     where Λ[i] is the i-th basis function of the one-form space.
+#     """
+
+#     def __init__(self, Λ, Q, F=None, E=None):
+#         """
+#         Initialize the curl projector.
+
+#         Args:
+#             Λ: Domain operator defining the finite element space
+#             Q: Quadrature rule for numerical integration
+#             F (callable, optional): Coordinate transformation function.
+#                                  Defaults to identity mapping.
+#             E (array, optional): Extraction operator matrix.
+#                               Defaults to identity matrix.
+#         """
+#         self.Λ = Λ
+#         self.Q = Q
+#         self.n = Λ.n
+#         self.ns = Λ.ns
+#         if F is None:
+#             self.F = lambda x: x
+#         else:
+#             self.F = F
+#         if E is None:
+#             self.M = jnp.eye(self.n)
+#         else:
+#             self.M = E
+
+#     def __call__(self, A, B, C):
+#         """
+#         Project the curl operation between forms A and B.
+
+#         Args:
+#             A (callable): One-form field
+#             B (callable): One-form field
+#             C (callable): One-form field
+
+#         Returns:
+#             array: Projection coefficients
+#         """
+#         return self.M @ self.projection(A, B, C)
+
+#     def projection(self, A, B, C):
+#         """
+#         Compute the projection of ∫ (A × B - C) · Λ[i] dx.
+
+#         Args:
+#             A (callable): One-form field
+#             B (callable): One-form field
+#             C (callable): One-form field
+
+#         Returns:
+#             array: Projection coefficients
+#         """
+#         DF = jax.jacfwd(self.F)
+
+#         def u(x):
+#             DFx = DF(x)
+#             Jx = jnp.linalg.det(DFx)
+#             return jnp.cross(1/Jx * DFx.T @ DFx @ jnp.cross(A(x), B(x)) - C(x), C(x))
+
+#         # Compute projections
+#         ujk = jax.vmap(u)(self.Q.x)  # n_q x d
+#         Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(
+#             self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
+#         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
+#         wj = self.Q.w
+#         return jnp.einsum("ijk,jk,j,j->i", Λijk, ujk, 1/Jj, wj)
+
+
+# class ForceProjector2:
+#     """
+#     Given three one-forms A, B and C,
+#     computes ∫ (A × B - C) · Λ[i] dx for all i,
+#     where Λ[i] is the i-th basis function of the two-form space.
+#     """
+
+#     def __init__(self, Λ, Q, F=None, E=None):
+#         """
+#         Initialize the curl projector.
+
+#         Args:
+#             Λ: Domain operator defining the finite element space
+#             Q: Quadrature rule for numerical integration
+#             F (callable, optional): Coordinate transformation function.
+#                                  Defaults to identity mapping.
+#             E (array, optional): Extraction operator matrix.
+#                               Defaults to identity matrix.
+#         """
+#         self.Λ = Λ
+#         self.Q = Q
+#         self.n = Λ.n
+#         self.ns = Λ.ns
+#         if F is None:
+#             self.F = lambda x: x
+#         else:
+#             self.F = F
+#         if E is None:
+#             self.M = jnp.eye(self.n)
+#         else:
+#             self.M = E
+
+#     def __call__(self, A, B, C):
+#         """
+#         Project the curl operation between forms A and B.
+
+#         Args:
+#             A (callable): One-form field
+#             B (callable): One-form field
+#             C (callable): One-form field
+
+#         Returns:
+#             array: Projection coefficients
+#         """
+#         return self.M @ self.projection(A, B, C)
+
+#     def projection(self, A, B, C):
+#         """
+#         Compute the projection of ∫ (A × B - C) · Λ[i] dx.
+
+#         Args:
+#             A (callable): One-form field
+#             B (callable): One-form field
+#             C (callable): One-form field
+
+#         Returns:
+#             array: Projection coefficients
+#         """
+#         DF = jax.jacfwd(self.F)
+
+#         def u(x):
+#             DFx = DF(x)
+#             Jx = jnp.linalg.det(DFx)
+#             return jnp.cross(1/Jx * DFx.T @ DFx @ jnp.cross(A(x), B(x)) - C(x),  C(x))
+
+#         # Compute projections
+#         ujk = jax.vmap(u)(self.Q.x)  # n_q x d
+#         Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(
+#             self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
+#         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
+#         wj = self.Q.w
+#         return jnp.einsum("ijk,jk,j,j->i", Λijk, ujk, 1/Jj, wj)
+
+
+# class EFieldProjector:
+#     """
+#     Given four one-forms A, B, C and D,
+#     computes ∫ ((A × B - D) × C) · Λ[i] dx for all i,
+#     where Λ[i] is the i-th basis function of the one-form space.
+#     """
+
+#     def __init__(self, Λ, Q, F=None, E=None):
+#         """
+#         Initialize the curl projector.
+
+#         Args:
+#             Λ: Domain operator defining the finite element space
+#             Q: Quadrature rule for numerical integration
+#             F (callable, optional): Coordinate transformation function.
+#                                  Defaults to identity mapping.
+#             E (array, optional): Extraction operator matrix.
+#                               Defaults to identity matrix.
+#         """
+#         self.Λ = Λ
+#         self.Q = Q
+#         self.n = Λ.n
+#         self.ns = Λ.ns
+#         if F is None:
+#             self.F = lambda x: x
+#         else:
+#             self.F = F
+#         if E is None:
+#             self.M = jnp.eye(self.n)
+#         else:
+#             self.M = E
+
+#     def __call__(self, A, B, C, D):
+#         """
+#         Project the curl operation between forms A and B.
+
+#         Args:
+#             A (callable): One-form field
+#             B (callable): One-form field
+#             C (callable): One-form field
+
+#         Returns:
+#             array: Projection coefficients
+#         """
+#         return self.M @ self.projection(A, B, C, D)
+
+#     def projection(self, A, B, C, D):
+#         """
+#         Compute the projection of ∫ ((A × B - D) × C) · Λ[i] dx.
+
+#         Args:
+#             A (callable): One-form field
+#             B (callable): One-form field
+#             C (callable): One-form field
+#             D (callable): Zero-form field
+
+#         Returns:
+#             array: Projection coefficients
+#         """
+#         DF = jax.jacfwd(self.F)
+
+#         def u(x):
+#             DFx = DF(x)
+#             Jx = jnp.linalg.det(DFx)
+#             return jnp.cross(1/Jx * DFx.T @ DFx @ jnp.cross(A(x), B(x)) - D(x), C(x))
+
+#         # Compute projections
+#         ujk = jax.vmap(u)(self.Q.x)  # n_q x d
+#         Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(
+#             self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
+#         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
+#         wj = self.Q.w
+#         return jnp.einsum("ijk,jk,j,j->i", Λijk, ujk, 1/Jj, wj)

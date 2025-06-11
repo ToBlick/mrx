@@ -10,7 +10,8 @@ from mrx.DifferentialForms import DifferentialForm
 from mrx.Quadrature import QuadratureRule
 from mrx.Utils import curl, div, grad, inv33, jacobian_determinant
 
-__all__ = ['LazyMatrix', 'LazyMassMatrix', 'LazyDerivativeMatrix', 'LazyProjectionMatrix', 'LazyDoubleCurlMatrix', 'LazyStiffnessMatrix','Lazy_Boundary_Matrix']
+__all__ = ['LazyMatrix', 'LazyMassMatrix', 'LazyDerivativeMatrix',
+           'LazyProjectionMatrix', 'LazyDoubleCurlMatrix', 'LazyDoubleDivergenceMatrix', 'LazyStiffnessMatrix']
 
 
 class LazyMatrix:
@@ -385,84 +386,40 @@ class LazyStiffnessMatrix(LazyMatrix):
         return jnp.einsum("ijk,ljk,j,j->li", Λ_ijk, Λ_ijk, Jj, wj)
 
 
-class Lazy_Boundary_Matrix(LazyMatrix):
-    """Boundary matrix for differential forms."""
+class LazyDoubleDivergenceMatrix(LazyMatrix):
+    """
+    A class representing a matrix that is half a vector Laplace operator.
+
+    The matrix entries are computed as ∫ div Λ0[i] ·div Λ1[j] 1/detDF dx.
+
+    Attributes:
+        Inherits all attributes from LazyMatrix.
+
+    Methods:
+        __init__(Λ, Q, F=None, E=None):
+            Initialize the double divergence matrix with a single differential form.
+        assemble():
+            Assemble the double divergence matrix.
+    """
 
     def __init__(self, Λ, Q, F=None, E=None):
-        """Initialize boundary matrix.
+        """
+        Initialize the double divergence matrix with a single differential form.
+
         Args:
             Λ (DifferentialForm): The differential form.
             Q (QuadratureRule): The quadrature rule.
             F (callable, optional): Map from logical to physical domain. Defaults to identity.
+            E (jnp.ndarray, optional): Transformation matrix. Defaults to identity.
         """
-        """
-        Λ0 (DifferentialForm): The input differential form.
-        Λ1 (DifferentialForm): The output differential form.
-        Q (QuadratureRule): The quadrature rule used for numerical integration.
-        F (callable): Map from logical to physical domain. Defaults to identity.
-        E0 (jnp.ndarray): Transformation matrix for Λ0. Defaults to identity matrix.
-        E1 (jnp.ndarray): Transformation matrix for Λ1. Defaults to identity matrix.
-        n0 (int): Number of basis functions for Λ0.
-        n1 (int): Number of basis functions for Λ1.
-        ns0 (jnp.ndarray): Array of indices for Λ0 basis functions.
-        ns1 (jnp.ndarray): Array of indices for Λ1 basis functions.
-        M (jnp.ndarray): The assembled matrix.
-        """
-        super().__init__(Λ, Q, F, E)
+        super().__init__(Λ, Λ, Q, F, E, E)
 
-    def assemble(self) -> jnp.ndarray:
-        """Assemble boundary matrix from Florian Thesis, Page 41.
-        Returns:
-            jnp.ndarray: Assembled boundary matrix
-        """
-        # Reminder that (s,X,phi) is the logical domain
-
-        # Still need to fix this
-        self.n_s = self.Λ.n_s #Number of basis functions in s direction
-        self.p_s = self.Λ.p_s #Basis degree
-        B_s = jnp.concatenate([jnp.zeros((self.n_s-2, 1)), jnp.eye(self.n_s-2), jnp.zeros((self.n_s-2, 1))], axis=1)
-        #We now define the boundary operators, B_0,B_1,B_2, and B_3
-        #B_0 = B_s⊗I_{n_X}⊗I_2, where n_s - p_s = n_X
-        self.n_x = self.n_s - self.p_s
-        self.d_s = self.n_s - 1
-        self.d_x = self.n_x
-        B_0 = jnp.kron(jnp.kron(B_s, jnp.eye(self.n_x)),jnp.eye(2))
-
-        #B_3 = I_{n^3}
-        B_3 = jnp.eye((self.n)**3)
-
-        #B_1
-
-        B_11 = jnp.kron(jnp.kron(jnp.eye(self.d_s), jnp.eye(self.n_x)),jnp.eye(2))
-        B_12 = jnp.kron(jnp.kron(B_s, jnp.eye(self.d_s)),jnp.eye(2))
-        B_13 = B_0
-        B_1 = jsp.linalg.block_diag(B_11, B_12, B_13)
-
-        #B_2
-
-        B_21 = jnp.kron(jnp.kron(B_s, jnp.eye(self.d_x)),jnp.eye(2))
-        B_22 = jnp.kron(jnp.kron(jnp.eye(self.d_s), jnp.eye(self.n_x)),jnp.eye(2))
-        B_23 = B_3
-        B_2 = jsp.linalg.block_diag(B_21, B_22, B_23)
-
-        # Return mass matrix for zero forms:
-        M_0 = LazyMassMatrix.zeroform_assemble()
-        M_1 = LazyMassMatrix.oneform_assemble()
-        M_2 = LazyMassMatrix.twoform_assemble()
-        M_3 = LazyMassMatrix.threeform_assemble()
-
-        # Return mass matrices with boundary conditions incorporated
-        M_00 = jnp.matmul(B_0,M_0,jnp.transpose(B_0))
-        M_01 = jnp.matmul(B_1,M_1,jnp.transpose(B_1))
-        M_02 = jnp.matmul(B_2,M_2,jnp.transpose(B_2))
-        M_03 = jnp.matmul(B_3,M_3,jnp.transpose(B_3))
-
-        if self.Λ0.k == 0:
-            return M_00
-        if self.Λ0.k == 1:
-            return M_01
-        if self.Λ0.k == 2:
-            return M_02
-        if self.Λ0.k == 3:
-            return M_03
-
+    def assemble(self):
+        """Assemble the double curl matrix."""
+        def _Λ(x, i):
+            return div(lambda y: self.Λ0(y, i))(x)
+        Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
+            self.Q.x, jnp.arange(self.n0))  # n x n_q x 1
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
+        wj = self.Q.w
+        return jnp.einsum("ijk,ljk,j,j->li", Λ_ijk, Λ_ijk, 1/Jj, wj)
