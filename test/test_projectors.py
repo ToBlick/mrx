@@ -17,6 +17,7 @@ import jax.numpy as jnp
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Projectors import Projector, CurlProjection, GradientProjection
 from mrx.Quadrature import QuadratureRule
+from mrx.Utils import div
 
         
 
@@ -119,6 +120,8 @@ class TestProjectorTypes(unittest.TestCase):
         
         # Project the curl
         coeffs = curl_proj(A, B)
+
+        
         
         # Vectorized computation of integral using jax.numpy, for each basis function
         def compute_integral(i):
@@ -227,7 +230,79 @@ class TestProjectorTypes(unittest.TestCase):
                 f"Discrete function produced non-finite values at x = {x_test} for γ = {gamma}")
             
           
-   
+    def test_gradient_projection_analytical(self):
+        """Test gradient projection against analytical integrals in cartesian coordinates."""
+        # Given zero-form p and two-form u, computes 
+        # ∫ ( grad(p)·u Λ[i] + Ɣ p div(u) Λ[i] ) dx
+        # p = x (0-form)
+        # u = dx∧dy (2-form)
+        # Then ∇p = [1, 0, 0]
+        # div(u) = 0
+        # And ∇p·u = 1, so the integral is ∫ Λ[i] dx
+        def p(x):
+            return jnp.array([x[0]])  # p = x
+
+        def u(x):
+            return jnp.array([1.0, 0.0, 0.0])  # dx∧dy
+
+        # Create gradient projector with identity map as F
+        grad_proj = GradientProjection(self.Λ0, self.Q, F=lambda x: x)
+        
+        # Project the gradient
+        coeffs = grad_proj(p, u)
+        gamma = 5/3
+
+        
+        # Vectorized computation of integral using jax.numpy, for each basis function
+        def compute_integral(i):
+            def integrand(x):
+                Λ_i = self.Λ0(x, i)
+                p_x = p(x)
+                u_x = u(x)
+                div_u = 0.0  # Since u = [1,0,0] is constant
+                grad = jnp.array([1.0, 0.0, 0.0])  # ∇p = [1, 0, 0]
+                dot = jnp.dot(grad, u_x)
+                term1 = dot * Λ_i[0]
+                term2 = gamma * p_x[0] * div_u * Λ_i[0]
+                return term1 + term2
+            
+            # Compute integral using quadrature weights
+            integrand_values = jax.vmap(integrand)(self.Q.x)
+            integral = jnp.sum(integrand_values * self.Q.w)
+            return integral
+        
+        # Compute integrals for all basis functions
+        integrals = jax.vmap(compute_integral)(jnp.arange(4))
+        
+        # Test points
+        test_points = [
+            jnp.array([0.0, 0.0, 0.0]),
+            jnp.array([0.25, 0.25, 0.25]),
+            jnp.array([0.5, 0.5, 0.5]),
+            jnp.array([0.75, 0.75, 0.75]),
+            jnp.array([1.0, 1.0, 1.0])
+        ]
+        for x in test_points:
+            Λ_0 = self.Λ0(x, 0)
+            p_x = p(x)
+            u_x = u(x)
+            div_u = div(u)(x)  # Call div(u) with current point x
+            grad = jnp.array([1.0, 0.0, 0.0])
+            dot = jnp.dot(u_x, grad)
+            print(f"\nPoint {x}:")
+            print(f"  Basis function: {Λ_0}")
+            print(f"  p: {p_x}")
+            print(f"  u: {u_x}")
+            print(f"  div(u): {div_u}")
+            print(f"  ∇p: {grad}")
+            print(f"  Dot product: {dot}")
+        
+        # Compare with coefficients from projection
+        print("\nAnalytical vs Projection Coefficients:")
+        for i in range(4):
+            print(f"i={i}: {integrals[i]} vs {coeffs[i]}")
+            self.assertTrue(jnp.allclose(integrals[i], coeffs[i], atol=1e-7),
+                          f"Integration doesn't match gradient projection coefficient for basis function {i}")
 
 if __name__ == "__main__":
     unittest.main()
