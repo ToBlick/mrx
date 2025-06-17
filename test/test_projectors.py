@@ -38,8 +38,8 @@ class TestProjectorTypes(unittest.TestCase):
         self.Λ2 = DifferentialForm(2, self.ns, self.ps, self.types)  # 2-forms
         self.Λ3 = DifferentialForm(3, self.ns, self.ps, self.types)  # 3-forms 
         
-        # Create quadrature rule
-        self.Q = QuadratureRule(self.Λ0, 5)
+        # Create quadrature rule with higher order
+        self.Q = QuadratureRule(self.Λ0, 8)  # Increased from 5 to 8
         
         # Create projectors for each form
         self.P0 = Projector(self.Λ0, self.Q)
@@ -87,7 +87,7 @@ class TestProjectorTypes(unittest.TestCase):
         # Create discrete function from coefficients
         q_h = DiscreteFunction(curl_coeffs, self.Λ1)
 
-        # Generate random test point
+        # Generate random test points using JAX
         key = jax.random.PRNGKey(0)
         key, subkey1, subkey2, subkey3 = jax.random.split(key, 4)
             
@@ -102,7 +102,72 @@ class TestProjectorTypes(unittest.TestCase):
         self.assertTrue(jnp.all(jnp.isfinite(q_h(x_test))),
             "Discrete function produced non-finite values at x = {x_test}")
 
+    def test_curl_projection_analytical(self):
+        """Test curl projection against analytical integral in cartesian coordinates."""
+        # A = dy (one-form with only y component)
+        # B = dx∧dz (two-form with only xz component)
+        # Then A × Λ[i] = [Λ[i]_z, 0, -Λ[i]_x]
+        # And B·(A × Λ[i]) = -Λ[i]_x
+        def A(x):
+            return jnp.array([0.0, 1.0, 0.0])  # dy
 
+        def B(x):
+            return jnp.array([0.0, 0.0, 1.0])  # dx∧dz
+
+        # Create curl projector with identity map as F
+        curl_proj = CurlProjection(self.Λ1, self.Q, F=lambda x: x)
+        
+        # Project the curl
+        coeffs = curl_proj(A, B)
+        
+        # Vectorized computation of integral using jax.numpy, for each basis function
+        def compute_integral(i):
+            def integrand(x):
+                Λ_i = self.Λ1(x, i)
+                A_x = A(x)
+                B_x = B(x)
+                cross = jnp.cross(A_x, Λ_i)
+                dot = jnp.dot(B_x, cross)
+                return dot
+            
+            # Compute integral using quadrature weights
+            integrand_values = jax.vmap(integrand)(self.Q.x)
+            return jnp.sum(integrand_values * self.Q.w)
+        
+        # Compute integrals for all basis functions
+        integrals = jax.vmap(compute_integral)(jnp.arange(4))
+        
+        # Test points
+        test_points = [
+            jnp.array([0.0, 0.0, 0.0]),
+            jnp.array([0.25, 0.25, 0.25]),
+            jnp.array([0.5, 0.5, 0.5]),
+            jnp.array([0.75, 0.75, 0.75]),
+            jnp.array([1.0, 1.0, 1.0])
+        ]
+        for x in test_points:
+            Λ_0 = self.Λ1(x, 0)
+            A_x = A(x)
+            B_x = B(x)
+            cross = jnp.cross(A_x, Λ_0)
+            dot = jnp.dot(B_x, cross)
+            # Ensuring outputs aren't all zero
+            print(f"\nPoint {x}:")
+            print(f"  Basis function: {Λ_0}")
+            print(f"  A: {A_x}")
+            print(f"  B: {B_x}")
+            print(f"  Cross product: {cross}")
+            print(f"  Dot product: {dot}")
+        
+        # Compare with coefficients from projection
+        print("\nAnalytical vs Projection Coefficients:")
+        for i in range(4):
+            print(f"i={i}: {integrals[i]} vs {coeffs[i]}")
+            self.assertTrue(jnp.allclose(integrals[i], coeffs[i], atol=1e-7),
+                          f"Integration doesn't match projection coefficient for basis function {i}")
+            
+
+            
     def test_gradient_projection(self):
         """Test the gradient projection operator."""
         # Define test functions
@@ -162,7 +227,7 @@ class TestProjectorTypes(unittest.TestCase):
                 f"Discrete function produced non-finite values at x = {x_test} for γ = {gamma}")
             
           
-
+   
 
 if __name__ == "__main__":
     unittest.main()
