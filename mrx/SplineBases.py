@@ -8,15 +8,15 @@ __all__ = ['SplineBasis', 'TensorBasis', 'DerivativeSpline']
 class SplineBasis:
     """A class representing a basis of spline functions.
 
-    This class implements various types of spline bases including clamped, periodic,
-    and constant splines of different degrees (0 to 3). The splines are evaluated
+    This class implements various types of spline bases including clamped, periodic, constant, and fourier splines 
+    of different degrees (0 to 3). The splines are evaluated
     using JAX for efficient computation and automatic differentiation.
 
     Attributes:
         n (int): The number of splines in the basis
         ns (jnp.ndarray): Array of spline indices
         p (int): The degree of the spline
-        type (str): The type of spline ('clamped', 'periodic', or 'constant')
+        type (str): The type of spline ('clamped', 'periodic', 'constant', or 'fourier')
         T (jnp.ndarray): The knot vector defining the spline basis
     """
 
@@ -129,6 +129,8 @@ class SplineBasis:
                 jnp.logical_and(i == self.n-1, x == self.T[-1]),
                 1.0 * jnp.ones_like(x),
                 self._evaluate(x, i))
+        elif self.type == 'fourier':
+            return self._evaluate_fourier(x, i)
         else:
             return 1.0
 
@@ -147,6 +149,40 @@ class SplineBasis:
             jnp.logical_and(self.T[i] <= x, x <= self.T[i+self.p+1]),
             self._p_spline(x, knot_slice, self.p),
             0)
+
+    def _evaluate_fourier(self, x: float, i: int) -> jnp.ndarray:
+        """Evaluate the ith Fourier basis function at x.
+
+        Recall this is of the form a_0 cos(0)+ sum_{k=1}^{n/2}(a_k cos(2π*k*x) + b_k sin(2π*k*x))
+
+        For n+1 (n even, n+1 odd) basis functions:
+        - Basis 0: constant term (cos(0) = 1)
+        - Basis 1 to n/2: cosine terms cos(2π*k*x) for k = 1 to n/2
+        - Basis n/2+1 to n: sine terms sin(2π*k*x) for k = 1 to n/2
+
+        Args:
+            x: The point at which to evaluate 
+            i: The index of the basis function
+
+        Returns:
+            The value of the ith Fourier basis function at x
+        """
+
+        
+        # Determine the number of cosine and sine terms
+        n_cos = self.n/2+1  # Number of cosine terms (including constant term)
+        
+        if i == 0:
+            # Constant term
+            return jnp.ones_like(x)
+        elif i < n_cos:
+            # Cosine terms
+            k = i
+            return jnp.cos(2 * jnp.pi * k * x)
+        else:
+            # Sine terms
+            k = i - n_cos + 1 # Want to be ordered 1,2...n/2
+            return jnp.sin(2 * jnp.pi * k * x)
 
     def __safe_divide(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
         """Safely divide x by y, returning 0 when y is 0.
@@ -323,6 +359,7 @@ class DerivativeSpline:
         - For clamped splines: Uses a forward difference formula with appropriate scaling
         - For periodic splines: Handles wrapping of indices for periodic continuity
         - For constant splines: Returns 1.0 (derivative of constant function)
+        - For fourier splines: Uses the derivative formula for fourier basis functions
 
         Args:
             x: The point at which to evaluate the derivative
@@ -344,5 +381,39 @@ class DerivativeSpline:
         elif self.type == 'periodic':
             j = jnp.mod(i + n, n)
             return self.s(x, j) * (p+1) / (self.s.T[j+p+1] - self.s.T[j])
+        elif self.type == 'fourier':
+            # d/dx[cos(2π*k*x)] = -2π*k*sin(2π*k*x)
+            # d/dx[sin(2π*k*x)] = 2π*k*cos(2π*k*x)
+            return self._evaluate_fourier_derivative(x, i)
         else:
             return 1.0
+
+    def _evaluate_fourier_derivative(self, x: float, i: int) -> jnp.ndarray:
+        """Evaluate the derivative of the ith Fourier basis function at x.
+
+        For Fourier basis functions:
+        - d/dx[cos(2π*k*x)] = -2π*k*sin(2π*k*x)
+        - d/dx[sin(2π*k*x)] = 2π*k*cos(2π*k*x)
+
+        Args:
+            x: The point at which to evaluate 
+            i: The index of the basis function
+
+        Returns:
+            The value of the derivative of the ith Fourier basis function at x
+        """
+
+        # Determine the number of cosine and sine terms
+        n_cos = self.n/2+1  # Number of cosine terms 
+        
+        if i == 0:
+            # Constant term derivative is 0
+            return jnp.zeros_like(x)
+        elif i < n_cos:
+            # Cosine terms
+            k = i
+            return -2 * jnp.pi * k * jnp.sin(2 * jnp.pi * k * x)
+        else:
+            # Sine terms
+            k = i - n_cos + 1
+            return 2 * jnp.pi * k * jnp.cos(2 * jnp.pi * k * x)
