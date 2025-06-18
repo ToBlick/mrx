@@ -170,19 +170,32 @@ class SplineBasis:
 
         
         # Determine the number of cosine and sine terms
-        n_cos = self.n/2+1  # Number of cosine terms (including constant term)
+        n_cos = (self.n + 1) // 2  # Number of cosine terms (including constant term)
         
-        if i == 0:
-            # Constant term
+        # Use JAX-compatible control flow
+        def constant_term(x):
             return jnp.ones_like(x)
-        elif i < n_cos:
-            # Cosine terms
+        
+        def cosine_term(x):
             k = i
             return jnp.cos(2 * jnp.pi * k * x)
-        else:
-            # Sine terms
-            k = i - n_cos + 1 # Want to be ordered 1,2...n/2
+        
+        def sine_term(x):
+            k = i - n_cos + 1  # Want to be ordered 1,2...n/2
             return jnp.sin(2 * jnp.pi * k * x)
+        
+        # Use nested cond for the three cases
+        return jax.lax.cond(
+            i == 0,
+            constant_term,
+            lambda x: jax.lax.cond(
+                i < n_cos,
+                cosine_term,
+                sine_term,
+                x
+            ),
+            x
+        )
 
     def __safe_divide(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
         """Safely divide x by y, returning 0 when y is 0.
@@ -404,16 +417,32 @@ class DerivativeSpline:
         """
 
         # Determine the number of cosine and sine terms
-        n_cos = self.n/2+1  # Number of cosine terms 
+        n_cos = (self.n + 1) // 2  # Number of cosine terms 
         
-        if i == 0:
+        # Use JAX-compatible control flow
+        def constant_derivative(x):
             # Constant term derivative is 0
             return jnp.zeros_like(x)
-        elif i < n_cos:
+        
+        def cosine_derivative(x):
             # Cosine terms
             k = i
             return -2 * jnp.pi * k * jnp.sin(2 * jnp.pi * k * x)
-        else:
+        
+        def sine_derivative(x):
             # Sine terms
             k = i - n_cos + 1
             return 2 * jnp.pi * k * jnp.cos(2 * jnp.pi * k * x)
+        
+        # Use nested cond for the three cases
+        return jax.lax.cond(
+            i == 0,
+            constant_derivative,
+            lambda x: jax.lax.cond(
+                i < n_cos,
+                cosine_derivative,
+                sine_derivative,
+                x
+            ),
+            x
+        )
