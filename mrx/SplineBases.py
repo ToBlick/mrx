@@ -16,7 +16,7 @@ class SplineBasis:
         n (int): The number of splines in the basis
         ns (jnp.ndarray): Array of spline indices
         p (int): The degree of the spline
-        type (str): The type of spline ('clamped', 'periodic', 'constant', or 'fourier')
+        type (str): The type of spline ('clamped', 'periodic', 'constant','fourier', or 'simple_fourier')
         T (jnp.ndarray): The knot vector defining the spline basis
     """
 
@@ -31,23 +31,34 @@ class SplineBasis:
 
         Args:
             n: The number of splines in the basis
-            p: The degree of the spline
-            type: The type of spline ('clamped', 'periodic', or 'constant')
+            p: The degree of the spline (for simple_fourier, negative p means wave number k = p, actual degree = |p|)
+            type: The type of spline ('clamped', 'periodic', 'constant', 'fourier', or 'simple_fourier')
             T: Optional knot vector. If None, knots will be initialized based on type
         """
         self.n = n
         self.ns = jnp.arange(self.n)
         self.p = p
         self.type = type
+        
+        # For simple_fourier, store the wave number k separately
+        if self.type == 'simple_fourier':
+            self.k = p  # Wave number (can be negative)
+            self.p = 1  # Fixed polynomial degree for simple_fourier
+
+        else:
+            self.k = p
+
+            
         if T is not None:
             self.T = T
         else:
             self.T = self._init_knots()
 
-        if p >= n and p != 1:  # n = p = 1 is allowed for ignoring the third dimension
+   
+        if self.p >= n and self.p != 1 and not (self.type == 'simple_fourier'):
             raise ValueError(
-                f"Degree {p} is greater than or equal to the number of splines {n}")
-        if type not in ['clamped', 'periodic', 'constant', 'fourier']:
+                f"Degree {self.p} is greater than or equal to the number of splines {n}")
+        if type not in ['clamped', 'periodic', 'constant', 'fourier', 'simple_fourier']:
             raise ValueError(f"Invalid spline type: {type}")
 
     def __call__(self, x: float, i: int) -> jnp.ndarray:
@@ -93,17 +104,26 @@ class SplineBasis:
             ])
             return T
         elif self.type == 'clamped':
+            
+            # For clamped splines, p_knots should be p+1
+            p_knots = self.p + 1
+            # Ensure p_knots is valid for the given n
+            if p_knots >= n:
+                p_knots = max(1, n - 1) 
             T = jnp.concatenate([
-                jnp.zeros(p),
-                jnp.linspace(0, 1, n-p+1),
-                jnp.ones(p)
+                jnp.zeros(p_knots),
+                jnp.linspace(0, 1, n-p_knots+1),
+                jnp.ones(p_knots)
             ])
             return T
         elif self.type == 'constant':
             T = jnp.array([0, 1])
             return T
         elif self.type == 'fourier':
-            T = jnp.linspace(0, 1, n+1)
+            T = jnp.linspace(0, 1, n+1) #Placeholder
+            return T
+        elif self.type == 'simple_fourier':
+            T = jnp.linspace(0, 1, n+1)  #Placeholder
             return T
         else:
             raise ValueError(f"Invalid spline type: {self.type}")
@@ -131,6 +151,8 @@ class SplineBasis:
                 self._evaluate(x, i))
         elif self.type == 'fourier':
             return self._evaluate_fourier(x, i)
+        elif self.type == 'simple_fourier':
+            return self._evaluate_simple_fourier(x, i)
         else:
             return 1.0
 
@@ -169,10 +191,10 @@ class SplineBasis:
         """
 
         
-        # Determine the number of cosine and sine terms
-        n_cos = (self.n + 1) // 2  # Number of cosine terms (including constant term)
+     
+        n_cos = (self.n + 1) // 2  # Number of cosine terms
         
-        # Use JAX-compatible control flow
+
         def constant_term(x):
             return jnp.ones_like(x)
         
@@ -228,13 +250,43 @@ class SplineBasis:
                          )
 
     def _p_spline(self, x, t, p):
-        # jax.debug.print("Calling p_spline with p={p}, x={x}, t={t}", p=p, x=x, t=t)
+    
         if p == 0:
             return self._const_spline(x, t)
         else:
             return self.__safe_divide(x - t[0], t[p] - t[0]) * self._p_spline(x, t[:-1], p-1) + \
                 self.__safe_divide(t[p+1] - x, t[p+1] - t[1]) * \
                 self._p_spline(x, t[1:], p-1)
+
+    def _evaluate_simple_fourier(self, x: float, i: int) -> jnp.ndarray:
+        """Evaluate the ith simple Fourier basis function at x.
+
+        For simple_fourier type:
+        - i = 0: cos(k*2π*x) where k = p (can be negative)
+        - i = 1: sin(k*2π*x) where k = p (can be negative)
+
+        Args:
+            x: The point at which to evaluate 
+            i: The index of the basis function (0 or 1)
+
+        Returns:
+            The value of the ith simple Fourier basis function at x
+        """
+        # Use the wave number k (can be negative)
+        k = self.k
+        
+        def cosine_term(x):
+            return jnp.cos(k * 2 * jnp.pi * x)
+        
+        def sine_term(x):
+            return jnp.sin(k * 2 * jnp.pi * x)
+        
+        return jax.lax.cond(
+            i == 0,
+            cosine_term,
+            sine_term,
+            x
+        )
 
 
 class TensorBasis:
@@ -336,11 +388,37 @@ class DerivativeSpline:
         Args:
             s: The original SplineBasis object to compute derivatives from
         """
-        self.n = s.n - 1 if s.type == 'clamped' else s.n
+        if s.type == 'clamped':
+            self.n = s.n - 1
+        elif s.type == 'constant':
+            self.n = 0  # Derivative of constant function has no basis functions
+        else:
+            self.n = s.n
         self.p = s.p if s.type == 'constant' else s.p - 1
         self.type = s.type
-        self.T = s.T[1:-1] if s.type == 'periodic' else s.T
-        self.s = SplineBasis(self.n, self.p, self.type, self.T)
+        
+        # For simple_fourier, preserve the wave number k
+        if s.type == 'simple_fourier':
+            self.k = s.k 
+        
+        if s.type == 'periodic':
+           
+            if len(s.T) <= 2:
+                self.T = s.T 
+            else:
+                self.T = s.T[1:-1] 
+        else:
+            self.T = s.T
+        
+        # Special cases for fourier types
+        if self.n > 0 and (self.p >= 0 or self.type in ['simple_fourier', 'fourier']):
+            if self.type in ['simple_fourier', 'fourier']:
+                # For Fourier types, we don't need a spline basis 
+                self.s = None
+            else:
+                self.s = SplineBasis(self.n, self.p, self.type, self.T)
+        else:
+            self.s = None  # No basis functions needed
 
     def __call__(self, x: float, i: int) -> jnp.ndarray:
         """Evaluate the derivative of the ith spline at point x.
@@ -371,8 +449,9 @@ class DerivativeSpline:
         Computes the derivative based on the spline type:
         - For clamped splines: Uses a forward difference formula with appropriate scaling
         - For periodic splines: Handles wrapping of indices for periodic continuity
-        - For constant splines: Returns 1.0 (derivative of constant function)
+        - For constant splines: Returns 0.0 (derivative of constant function)
         - For fourier splines: Uses the derivative formula for fourier basis functions
+        - For simple_fourier splines: Uses the derivative formula for simple fourier basis functions
 
         Args:
             x: The point at which to evaluate the derivative
@@ -381,6 +460,10 @@ class DerivativeSpline:
         Returns:
             The value of the derivative at x
         """
+        # If n=0, there are no basis functions, so return 0
+        if self.n == 0:
+            return jnp.zeros_like(x)
+        
         p = self.p
         n = self.n
         if self.type == 'clamped':
@@ -395,9 +478,14 @@ class DerivativeSpline:
             j = jnp.mod(i + n, n)
             return self.s(x, j) * (p+1) / (self.s.T[j+p+1] - self.s.T[j])
         elif self.type == 'fourier':
-            # d/dx[cos(2π*k*x)] = -2π*k*sin(2π*k*x)
-            # d/dx[sin(2π*k*x)] = 2π*k*cos(2π*k*x)
             return self._evaluate_fourier_derivative(x, i)
+        elif self.type == 'simple_fourier':
+            # d/dx[cos(k*2π*x)] = -k*2π*sin(k*2π*x)
+            # d/dx[sin(k*2π*x)] = k*2π*cos(k*2π*x)
+            return self._evaluate_simple_fourier_derivative(x, i)
+        elif self.type == 'constant':
+            # Derivative of constant function is 0
+            return jnp.zeros_like(x)
         else:
             return 1.0
 
@@ -416,10 +504,9 @@ class DerivativeSpline:
             The value of the derivative of the ith Fourier basis function at x
         """
 
-        # Determine the number of cosine and sine terms
+    
         n_cos = (self.n + 1) // 2  # Number of cosine terms 
         
-        # Use JAX-compatible control flow
         def constant_derivative(x):
             # Constant term derivative is 0
             return jnp.zeros_like(x)
@@ -444,5 +531,35 @@ class DerivativeSpline:
                 sine_derivative,
                 x
             ),
+            x
+        )
+
+    def _evaluate_simple_fourier_derivative(self, x: float, i: int) -> jnp.ndarray:
+        """Evaluate the derivative of the ith simple Fourier basis function at x.
+
+        For simple_fourier basis functions:
+        - d/dx[cos(k*2π*x)] = -k*2π*sin(k*2π*x)
+        - d/dx[sin(k*2π*x)] = k*2π*cos(k*2π*x)
+
+        Args:
+            x: The point at which to evaluate 
+            i: The index of the basis function (0 or 1)
+
+        Returns:
+            The value of the derivative of the ith simple Fourier basis function at x
+        """
+
+        k = self.k
+        
+        def cosine_derivative(x):
+            return -k * 2 * jnp.pi * jnp.sin(k * 2 * jnp.pi * x)
+        
+        def sine_derivative(x):
+            return k * 2 * jnp.pi * jnp.cos(k * 2 * jnp.pi * x)
+        
+        return jax.lax.cond(
+            i == 0,
+            cosine_derivative,
+            sine_derivative,
             x
         )
