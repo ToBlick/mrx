@@ -40,11 +40,12 @@ class SplineBasis:
         self.p = p
         self.type = type
         
-        # For simple_fourier, store the wave number k separately
+        # For simple_fourier, store the wave number k separately and fix n=2, p=1
         if self.type == 'simple_fourier':
             self.k = p  # Wave number (can be negative)
+            self.n = 2  # Fixed number of basis functions for simple_fourier
             self.p = 1  # Fixed polynomial degree for simple_fourier
-
+            self.ns = jnp.arange(self.n)  # Update ns array
         else:
             self.k = p
 
@@ -104,16 +105,10 @@ class SplineBasis:
             ])
             return T
         elif self.type == 'clamped':
-            
-            # For clamped splines, p_knots should be p+1
-            p_knots = self.p + 1
-            # Ensure p_knots is valid for the given n
-            if p_knots >= n:
-                p_knots = max(1, n - 1) 
             T = jnp.concatenate([
-                jnp.zeros(p_knots),
-                jnp.linspace(0, 1, n-p_knots+1),
-                jnp.ones(p_knots)
+                jnp.zeros(p),
+                jnp.linspace(0, 1, n-p+1),
+                jnp.ones(p)
             ])
             return T
         elif self.type == 'constant':
