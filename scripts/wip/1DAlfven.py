@@ -95,9 +95,13 @@ def get_hessian_components_fast():
         B0z_slab = B0
         B0y_slab = (B0*a)/(q_val*R0)
         
-     
+        # Transform B₀ back to logical coordinates
+        # For slab geometry: B_logical = B_slab / (scale factors)
+        B0x_logical = B0x_slab / a
+        B0y_logical = B0y_slab / (2*jnp.pi*a)
+        B0z_logical = B0z_slab / (2*jnp.pi*R0)
         
-        return jnp.array([B0x_slab, B0y_slab, B0z_slab])
+        return jnp.array([B0x_logical, B0y_logical, B0z_logical])
 
     # ============================================================================
     # COMPUTE MATRIX COMPONENTS OF HESSIAN
