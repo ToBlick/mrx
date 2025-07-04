@@ -19,12 +19,13 @@ import jax.numpy as jnp
 import jax
 import jax.lax
 import matplotlib
-matplotlib.use('Agg') 
+matplotlib.use('TkAgg')  # Use TkAgg backend for interactive plotting
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 import scipy.linalg
 from mrx.LazyMatrices import LazyMassMatrix, LazyWeightedDoubleDivergenceMatrix, LazyMagneticTensionMatrix, LazyPressureGradientForceMatrix, LazyCurrentDensityMatrix
 import time
+import matplotlib.pyplot as plt
 
 # Relevant parameters/constants
 R0 = 3.0
@@ -36,12 +37,12 @@ q1 = 1.85 # Figure 4.1
 gamma = 5/3
 
 # Mode number parameters 
-n = -1  
-m = 1
+n = -1   # Toroidal mode number
+m = 1    # Poloidal mode number
 
-# Wave numbers 
-k_y = m/(2*jnp.pi*a)
-k_z = n/(2*jnp.pi*R0)
+
+k_y = m/(2*jnp.pi*a)  # Wave number in logical y-coordinates
+k_z = n/(2*jnp.pi*R0)  # Wave number in logical z-coordinates
 
 # q-profile function
 def q_profile(x):
@@ -56,7 +57,7 @@ differential_1form = DifferentialForm(
 )
 
 # Quadrature rule
-Q = QuadratureRule(differential_1form, 7)
+Q = QuadratureRule(differential_1form, 10)  # Increased from 7 to 15 for better integration
 
 # Coordinate transformation
 def F(x):
@@ -123,7 +124,7 @@ def get_hessian_components_fast():
     D_divdiv_weighted = LazyWeightedDoubleDivergenceMatrix(differential_1form, Q, pressure_func, F=F)
     print(f"Term 2: {time.time() - start_time:.2f}s")
 
-    # Term 3: ∫ φ_i · [(∇×B₀) × (∇×(φ_j × B₀))] dx
+    # Term 3: ∫ φ_i · [(∇×B₀) × (∇×(φ_j × B₀))] dx (note(∇×B₀) is nearly zero)
     K_current_density = LazyCurrentDensityMatrix(differential_1form, Q, B0_field, F=F)
     print(f"Term 3: {time.time() - start_time:.2f}s")
 
@@ -351,6 +352,14 @@ if __name__ == "__main__":
     print("\n=== RESULTS SUMMARY ===")
     print(f"Found {len(continuum_eigenvalues)} eigenvalues within Alfvén continuum range")
     print(f"Total computation time: {time.time() - start_total:.2f}s")
+    
+    # Debug: Print some eigenvalues to see what we have
+    if len(continuum_eigenvalues) > 0:
+        print(f"First few continuum eigenvalues: {continuum_eigenvalues[:5]}")
+    else:
+        print("⚠️  No eigenvalues found in Alfvén continuum!")
+        print(f"All eigenvalues: {eigvals_normalized[:10]}")  # Show first 10 eigenvalues
+        print(f"Continuum range: [{continuum_min:.6f}, {continuum_max:.6f}]")
 
     # DIRECT DIVERGENCE ANALYSIS
     if len(continuum_eigenvalues) > 0:
@@ -365,7 +374,7 @@ if __name__ == "__main__":
             n_div_points = 50
             x_logical = np.linspace(0.0, 1.0, n_div_points)  
             x_physical = x_logical * a
-            y_fixed = 0.5 #Using fror now
+            y_fixed = 0.5 #Using for now
             z_fixed = 0.5
             eval_points = np.array([[x, y_fixed, z_fixed] for x in x_logical])
             
@@ -437,6 +446,58 @@ if __name__ == "__main__":
                     elif eigval_diff < 1e-6:
                         print(f"    ⚠️  NEAR-DEGENERATE: Very close eigenvalue (diff: {eigval_diff:.2e})")
                 
+                # PLOT THE FIRST INCOMPRESSIBLE ALFVÉN MODE
+                print(f"Checking incompressible mode in continuum ")
+                if div_norm_1d < 0.3:  # Only plot the first mode with low divergence
+                    try:
+                        print(f"\n=== PLOTTING INCOMPRESSIBLE ALFVÉN MODE ===")
+                        print(f"Mode index: {idx}")
+                        print(f"Eigenvalue: {eigval:.6f}")
+                        print(f"Divergence norm: {div_norm_1d:.6f}")
+                        
+                        # Create 1D plot of eigenfunction norm vs radial coordinate
+                        n_points = 100
+                        x_logical = np.linspace(0.0, 1.0, n_points)
+                        x_physical = x_logical * a  # Convert to physical coordinates
+                        
+                        # Fixed y and z for 1D slice
+                        y_fixed = 0.5
+                        z_fixed = 0.5
+                        
+                        print("Creating eigenfunction object...")
+                        eigenfunction = DiscreteFunction(eigvec, differential_1form)
+                        
+                        print("Evaluating eigenfunction along radial direction...")
+                        # Evaluate along x-direction (radial)
+                        eval_points_1d = np.array([[x, y_fixed, z_fixed] for x in x_logical])
+                        eigenfunction_values_1d = jax.vmap(eigenfunction)(eval_points_1d)
+                        
+                        # Compute the norm of the eigenfunction
+                        u_x_1d = eigenfunction_values_1d[:, 0]
+                        u_y_1d = eigenfunction_values_1d[:, 1]
+                        u_z_1d = eigenfunction_values_1d[:, 2]
+                        eigenfunction_norm = np.sqrt(u_x_1d**2 + u_y_1d**2 + u_z_1d**2)
+                        
+                        print("Creating 1D plot...")
+                        # Create the plot
+                        plt.figure(figsize=(10, 6))
+                        plt.plot(x_physical, eigenfunction_norm, 'b-', linewidth=2, label='|ξ|')
+                        plt.title(f'Alfvén Mode Eigenfunction Norm vs Radial Coordinate\n(λ = {eigval:.6f}, Mode {idx})')
+                        plt.xlabel('x (radial coordinate)')
+                        plt.ylabel('|ξ| (eigenfunction norm)')
+                        plt.grid(True, alpha=0.3)
+                        plt.legend()
+                        plt.tight_layout()
+                        
+                        # Save the plot
+                        plt.savefig('alfven_eigenfunction_norm.png', dpi=150, bbox_inches='tight')
+                        print("✓ Plot saved as 'alfven_eigenfunction_norm.png'")
+                        plt.show()
+                        
+                    except Exception as e:
+                        print(f"❌ Error during plotting: {e}")
+                        print("Continuing with analysis...")
+                    break
                
 
  

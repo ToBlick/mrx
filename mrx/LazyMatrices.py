@@ -511,10 +511,13 @@ class LazyMagneticTensionMatrix(LazyMatrix):
         """Assemble the magnetic tension matrix."""
         # Compute curl(φ_i × B₀) for all basis functions at all quadrature points
         def curl_phi_cross_B(x, i):
-            phi = self.Λ0(x, i)
-            B = self.B0_func(x)
-            cross_product = jnp.cross(phi, B)
-            return curl(lambda y: cross_product)(x)
+            # Define the cross product as a vector field function
+            def cross_product_field(y):
+                phi_y = self.Λ0(y, i)  # Basis function at point y
+                B_y = self.B0_func(y)  # B field at point y
+                return jnp.cross(phi_y, B_y)
+            
+            return curl(cross_product_field)(x)
         
         # Vectorize over quadrature points and basis functions
         curl_vals = jax.vmap(jax.vmap(curl_phi_cross_B, (0, None)), (None, 0))(
@@ -569,10 +572,13 @@ class LazyCurrentDensityMatrix(LazyMatrix):
         
         # Step 3: Compute ∇ × (φ_j × B₀) at all quadrature points
         def compute_curl_phi_cross_B(x, j):
-            phi = self.Λ0(x, j)
-            B = self.B0_func(x)
-            cross_product = jnp.cross(phi, B)
-            return curl(lambda y: cross_product)(x)
+            # Define the cross product as a vector field function
+            def cross_product_field(y):
+                phi_y = self.Λ0(y, j)  # Basis function at point y
+                B_y = self.B0_func(y)  # B field at point y
+                return jnp.cross(phi_y, B_y)
+            
+            return curl(cross_product_field)(x)
         
         curl_phi_cross_B_vals = jax.vmap(jax.vmap(compute_curl_phi_cross_B, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))
@@ -661,7 +667,7 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
         __init__(Λ, Q, pressure_func, F=None, E=None):
             Initialize the pressure gradient force matrix.
         assemble():
-            Assemble the pressure gradient force matrix using simple implementation.
+            Assemble the pressure gradient force matrix with proper coordinate transformations.
     """
 
     def __init__(self, Λ, Q, pressure_func, F=None, E=None):
@@ -681,31 +687,35 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
 
     def assemble(self):
         """Assemble the pressure gradient force matrix using simple implementation."""
-        # Step 1: Compute φ_i at all quadrature points
+        # Step 1: Compute φ_i at all quadrature points (in logical coordinates)
         phi_vals = jax.vmap(jax.vmap(self.Λ0, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))
         
-        # Step 2: Compute ∇(φ_j · ∇p) at all quadrature points
+        # Step 2: Compute ∇(φ_j · ∇p) at all quadrature points (in logical coordinates)
         def compute_grad_phi_dot_grad_p(x, j):
-            phi = self.Λ0(x, j)
-            grad_p = grad(self.pressure_func)(x)
-            dot_product = jnp.dot(phi, grad_p)
-            return grad(lambda y: dot_product)(x)
+            # Define the dot product as a scalar field function
+            def dot_product_field(y):
+                phi_y = self.Λ0(y, j)  # Basis function at point y (logical)
+                grad_p_y = grad(self.pressure_func)(y)  # Gradient of pressure at point y (logical)
+                return jnp.dot(phi_y, grad_p_y)
+            
+            # Compute gradient in logical coordinates
+            return grad(dot_product_field)(x)
         
         grad_phi_dot_grad_p_vals = jax.vmap(jax.vmap(compute_grad_phi_dot_grad_p, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))
         
-        # Step 3: Compute integrand φ_i · ∇(φ_j · ∇p)
+        # Step 3: Compute integrand φ_i · ∇(φ_j · ∇p) (all in logical coordinates)
         def compute_integrand(k, i, j):
-            phi_i = phi_vals[k, i]
-            grad_phi_j_dot_grad_p = grad_phi_dot_grad_p_vals[k, j]
+            phi_i = phi_vals[k, i]  # Basis function in logical coordinates
+            grad_phi_j_dot_grad_p = grad_phi_dot_grad_p_vals[k, j]  # Gradient in logical coordinates
             return jnp.dot(phi_i, grad_phi_j_dot_grad_p)
         
         # Step 4: Vectorize integrand computation
         integrand_vals = jax.vmap(jax.vmap(jax.vmap(compute_integrand, (0, None, None)), (None, 0, None)), (None, None, 0))(
             jnp.arange(len(self.Q.x)), jnp.arange(self.n0), jnp.arange(self.n0))
         
-        # Step 5: Integrate with Jacobian and weights
+        # Step 5: Integrate with Jacobian determinant and weights
         J = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
         result = jnp.einsum('ijk,k,k->ij', integrand_vals, J, self.Q.w)
         
