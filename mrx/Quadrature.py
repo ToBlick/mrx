@@ -58,9 +58,10 @@ class QuadratureRule:
         # Create 3D grid of quadrature points and weights
         x_q = jnp.array(jnp.meshgrid(*x_s))  # shape d, n1, n2, n3, ...
         x_q = x_q.transpose(*range(1, d+1), 0).reshape(N, d)
-        w_q = jnp.array(jnp.meshgrid(*w_s)).transpose(*
-                                                      range(1, d+1), 0).reshape(N, d)
-        w_q = jnp.prod(w_q, 1)
+        
+        # Create 3D grid of weights and combine them properly
+        w_grid = jnp.array(jnp.meshgrid(*w_s))  # shape d, n1, n2, n3, ...
+        w_q = jnp.prod(w_grid, 0).flatten()  # Take product along first axis and flatten
 
         # Store quadrature points and weights
         self.x_x = x_x
@@ -87,7 +88,8 @@ def trapezoidal_quad(n):
     """
     h = 1 / n
     x_q = jnp.linspace(0, 1 - h, n)
-    w_q = h * jnp.ones(n)
+    # Use proper trapezoidal weights that sum to 1
+    w_q = jnp.ones(n) / n
     return x_q, w_q
 
 
@@ -174,7 +176,10 @@ def select_quadrature(basis, n):
             - w_q: Quadrature weights
     """
     if basis.type == 'clamped':
-        return composite_quad(basis.T[basis.p:-basis.p], n)
+        # For clamped splines for now, exclude boundary points where basis functions are zero
+        T = basis.T[basis.p:-basis.p]
+        # Use interior intervals only
+        return composite_quad(T[1:-1], n)
     elif basis.type == 'periodic':
         return composite_quad(basis.T[basis.p:-basis.p], n)
     elif basis.type == 'fourier':
