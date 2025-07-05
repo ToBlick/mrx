@@ -51,13 +51,13 @@ def q_profile(x):
 
 differential_1form = DifferentialForm( 
     k=1,  # 1-form 
-    ns=[10, 2, 2],  # Increased x-resolution from 6 to ensure enough quadrature points
+    ns=[12, 2, 2],  # Increased x-resolution from 6 to ensure enough quadrature points
     ps=[4, k_y, k_z], 
     types=['clamped', 'simple_fourier', 'simple_fourier']  
 )
 
 # Quadrature rule
-Q = QuadratureRule(differential_1form, 10)  # Increased from 7 to 15 for better integration
+Q = QuadratureRule(differential_1form, 10)  # Increased from 7 to 10 for better integration
 
 # Coordinate transformation
 def F(x):
@@ -327,7 +327,59 @@ if __name__ == "__main__":
 
     # Normalized Alfvén continuum
     def w_2(x): return B0**2/R0**2 * (n + (m/q(x)))**2
-    
+
+    def plot_eigenfunction(eigvec, eigval, differential_1form, a, alfven_scale, mode_index):
+        """Plot eigenfunction components."""
+        print(f"\n=== PLOTTING EIGENFUNCTION FOR MODE {mode_index} ===")
+        
+        # Create fine grid for plotting (restricted to interior for now)
+        n_plot = 500
+        x_plot = np.linspace(0.01 * a, 0.99 * a, n_plot)
+        x_logical_plot = x_plot / a
+        
+        # Evaluate eigenfunction components
+        eigenfunction = DiscreteFunction(eigvec, differential_1form)
+        y_fixed = 0.5
+        z_fixed = 0.5
+        eval_points_plot = np.array([[x, y_fixed, z_fixed] for x in x_logical_plot])
+        
+        try:
+            eigenfunction_values_plot = jax.vmap(eigenfunction)(eval_points_plot)
+            
+            # Extract components
+            u_x_plot = eigenfunction_values_plot[:, 0]
+            u_y_plot = eigenfunction_values_plot[:, 1]
+            u_z_plot = eigenfunction_values_plot[:, 2]
+            eigenfunction_norm_plot = np.sqrt(u_x_plot**2 + u_y_plot**2 + u_z_plot**2)
+            
+       
+            
+            # Create the plot
+            fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+            
+            # Plot eigenfunction components
+            ax.plot(x_plot, u_x_plot, 'b-', label='u_x', linewidth=2)
+            ax.plot(x_plot, u_y_plot, 'r-', label='u_y', linewidth=2)
+            ax.plot(x_plot, u_z_plot, 'g-', label='u_z', linewidth=2)
+            ax.plot(x_plot, eigenfunction_norm_plot, 'k-', label='|u|', linewidth=3)
+            
+            ax.set_xlabel('Radial position x')
+            ax.set_ylabel('Eigenfunction components')
+            ax.set_title(f'Incompressible Alfvén Mode {mode_index} (λ = {eigval:.6f})')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(f'incompressible_alfven_mode_{mode_index}.png', dpi=300, bbox_inches='tight')
+            plt.show()
+            
+            print(f"✓ Plot saved as 'incompressible_alfven_mode_{mode_index}.png'")
+            
+        except Exception as e:
+            print(f"❌ Error plotting eigenfunction: {e}")
+            import traceback
+            traceback.print_exc()
+
     # CONTINUUM EVALUATION
     print("\n===CONTINUUM EVALUATION ===")
     x_vals = np.linspace(0, a, 50) 
@@ -446,58 +498,20 @@ if __name__ == "__main__":
                     elif eigval_diff < 1e-6:
                         print(f"    ⚠️  NEAR-DEGENERATE: Very close eigenvalue (diff: {eigval_diff:.2e})")
                 
-                # PLOT THE FIRST INCOMPRESSIBLE ALFVÉN MODE
-                print(f"Checking incompressible mode in continuum ")
-                if div_norm_1d < 0.3:  # Only plot the first mode with low divergence
-                    try:
-                        print(f"\n=== PLOTTING INCOMPRESSIBLE ALFVÉN MODE ===")
-                        print(f"Mode index: {idx}")
-                        print(f"Eigenvalue: {eigval:.6f}")
-                        print(f"Divergence norm: {div_norm_1d:.6f}")
-                        
-                        # Create 1D plot of eigenfunction norm vs radial coordinate
-                        n_points = 100
-                        x_logical = np.linspace(0.0, 1.0, n_points)
-                        x_physical = x_logical * a  # Convert to physical coordinates
-                        
-                        # Fixed y and z for 1D slice
-                        y_fixed = 0.5
-                        z_fixed = 0.5
-                        
-                        print("Creating eigenfunction object...")
-                        eigenfunction = DiscreteFunction(eigvec, differential_1form)
-                        
-                        print("Evaluating eigenfunction along radial direction...")
-                        # Evaluate along x-direction (radial)
-                        eval_points_1d = np.array([[x, y_fixed, z_fixed] for x in x_logical])
-                        eigenfunction_values_1d = jax.vmap(eigenfunction)(eval_points_1d)
-                        
-                        # Compute the norm of the eigenfunction
-                        u_x_1d = eigenfunction_values_1d[:, 0]
-                        u_y_1d = eigenfunction_values_1d[:, 1]
-                        u_z_1d = eigenfunction_values_1d[:, 2]
-                        eigenfunction_norm = np.sqrt(u_x_1d**2 + u_y_1d**2 + u_z_1d**2)
-                        
-                        print("Creating 1D plot...")
-                        # Create the plot
-                        plt.figure(figsize=(10, 6))
-                        plt.plot(x_physical, eigenfunction_norm, 'b-', linewidth=2, label='|ξ|')
-                        plt.title(f'Alfvén Mode Eigenfunction Norm vs Radial Coordinate\n(λ = {eigval:.6f}, Mode {idx})')
-                        plt.xlabel('x (radial coordinate)')
-                        plt.ylabel('|ξ| (eigenfunction norm)')
-                        plt.grid(True, alpha=0.3)
-                        plt.legend()
-                        plt.tight_layout()
-                        
-                        # Save the plot
-                        plt.savefig('alfven_eigenfunction_norm.png', dpi=150, bbox_inches='tight')
-                        print("✓ Plot saved as 'alfven_eigenfunction_norm.png'")
-                        plt.show()
-                        
-                    except Exception as e:
-                        print(f"❌ Error during plotting: {e}")
-                        print("Continuing with analysis...")
-                    break
+                # ANALYZE INCOMPRESSIBLE ALFVÉN MODES FOR SINGULARITIES
+                if div_norm_1d < 0.3:  # Incompressible modes
+                    print("\n=== ANALYZING INCOMPRESSIBLE ALFVÉN MODE ===")
+                    print(f"Mode index: {idx}")
+                    print(f"Eigenvalue: {eigval:.6f}")
+                    print(f"Divergence norm: {div_norm_1d:.6f}")
+                    
+                    # PLOT THE FIRST INCOMPRESSIBLE ALFVÉN MODE
+                    if i == 0:  # First incompressible mode
+                        plot_eigenfunction(eigvec, eigval, differential_1form, a, alfven_scale, idx)
+                    
+                    # Continue analyzing all incompressible Alfvén modes
+                    print(f"✓ Completed analysis for incompressible mode {idx}")
+                    print("-" * 60)
                
 
  
