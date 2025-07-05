@@ -509,12 +509,9 @@ class LazyMagneticTensionMatrix(LazyMatrix):
 
     def assemble(self):
         """Assemble the magnetic tension matrix."""
-        # Compute curl(φ_i × B₀) for all basis functions at all quadrature points
         def curl_phi_cross_B(x, i):
-            phi = self.Λ0(x, i)
-            B = self.B0_func(x)
-            cross_product = jnp.cross(phi, B)
-            return curl(lambda y: cross_product)(x)
+            # FIXED THIS: Compute cross product inside curl function
+            return curl(lambda y: jnp.cross(self.Λ0(y, i), self.B0_func(y)))(x)
         
         # Vectorize over quadrature points and basis functions
         curl_vals = jax.vmap(jax.vmap(curl_phi_cross_B, (0, None)), (None, 0))(
@@ -569,10 +566,7 @@ class LazyCurrentDensityMatrix(LazyMatrix):
         
         # Step 3: Compute ∇ × (φ_j × B₀) at all quadrature points
         def compute_curl_phi_cross_B(x, j):
-            phi = self.Λ0(x, j)
-            B = self.B0_func(x)
-            cross_product = jnp.cross(phi, B)
-            return curl(lambda y: cross_product)(x)
+            return curl(lambda y: jnp.cross(self.Λ0(y, j), self.B0_func(y)))(x)
         
         curl_phi_cross_B_vals = jax.vmap(jax.vmap(compute_curl_phi_cross_B, (0, None)), (None, 0))(
                 self.Q.x, jnp.arange(self.n0))
@@ -625,7 +619,6 @@ class LazyPressureGradientMatrix(LazyMatrix):
             F (callable, optional): Map from logical to physical domain. Defaults to identity.
             E (jnp.ndarray, optional): Transformation matrix. Defaults to identity.
         """
-        # Set pressure_func before calling super().__init__() so it's available in assemble()
         self.pressure_func = pressure_func
         super().__init__(Λ, Λ, Q, F, E, E)
 
@@ -652,6 +645,8 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
 
     The matrix entries are computed as ∫ φ_i · ∇(φ_j · ∇p) dx,
     which represents the pressure gradient force term in the Alfvén wave equation.
+    This implementation uses integration by parts to avoid numerical instabilities:
+    ∫ φ_i · ∇(φ_j · ∇p) dx = -∫ (φ_j · ∇p) ∇·φ_i dx + boundary_terms
 
     Attributes:
         Inherits all attributes from LazyMatrix.
@@ -661,7 +656,7 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
         __init__(Λ, Q, pressure_func, F=None, E=None):
             Initialize the pressure gradient force matrix.
         assemble():
-            Assemble the pressure gradient force matrix with proper coordinate transformations.
+            Assemble the pressure gradient force matrix using integration by parts.
     """
 
     def __init__(self, Λ, Q, pressure_func, F=None, E=None):
@@ -675,31 +670,37 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
             F (callable, optional): Map from logical to physical domain. Defaults to identity.
             E (jnp.ndarray, optional): Transformation matrix. Defaults to identity.
         """
-        # Set pressure_func before calling super().__init__() so it's available in assemble()
         self.pressure_func = pressure_func
         super().__init__(Λ, Λ, Q, F, E, E)
 
+        # This term was causing a lot of problems, so trying a different approach
+
     def assemble(self):
-        """Assemble the pressure gradient force matrix using simple implementation."""
-        # Step 1: Compute φ_i at all quadrature points
-        phi_vals = jax.vmap(jax.vmap(self.Λ0, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.n0))
+        """Assemble the pressure gradient force matrix using integration by parts."""
+        # Removed step 1, redundant
         
-        # Step 2: Compute ∇(φ_j · ∇p) at all quadrature points
-        def compute_grad_phi_dot_grad_p(x, j):
-            phi = self.Λ0(x, j)
-            grad_p = grad(self.pressure_func)(x)
-            dot_product = jnp.dot(phi, grad_p)
-            return grad(lambda y: dot_product)(x)
+        # Step 2: Compute ∇p at all quadrature points
+        grad_p_vals = jax.vmap(grad(self.pressure_func))(self.Q.x)
         
-        grad_phi_dot_grad_p_vals = jax.vmap(jax.vmap(compute_grad_phi_dot_grad_p, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.n0))
+        # Step 3: Use integration by parts: ∫ φ_i · ∇(φ_j · ∇p) dx = -∫ (φ_j · ∇p) ∇·φ_i dx + boundary_terms
+        # Assuming boundary terms vanish (periodic or zero boundary conditions)
         
-        # Step 3: Compute integrand φ_i · ∇(φ_j · ∇p)
         def compute_integrand(k, i, j):
-            phi_i = phi_vals[k, i]
-            grad_phi_j_dot_grad_p = grad_phi_dot_grad_p_vals[k, j]
-            return jnp.dot(phi_i, grad_phi_j_dot_grad_p)
+      
+            phi_j = self.Λ0(self.Q.x[k], j)
+            grad_p = grad_p_vals[k]
+            
+            # Compute φ_j · ∇p
+            dot_product = jnp.dot(phi_j, grad_p)
+            
+            # Compute ∇·φ_i (divergence of test function) using proper div function
+            def phi_i_func(x):
+                return self.Λ0(x, i)
+            
+            div_phi_i = div(phi_i_func)(self.Q.x[k])[0] 
+            
+            # Return -∫ (φ_j · ∇p) ∇·φ_i dx (negative sign from integration by parts)
+            return -dot_product * div_phi_i
         
         # Step 4: Vectorize integrand computation
         integrand_vals = jax.vmap(jax.vmap(jax.vmap(compute_integrand, (0, None, None)), (None, 0, None)), (None, None, 0))(
