@@ -16,7 +16,7 @@ class SplineBasis:
         n (int): The number of splines in the basis
         ns (jnp.ndarray): Array of spline indices
         p (int): The degree of the spline
-        type (str): The type of spline ('clamped', 'periodic', 'constant','fourier', or 'simple_fourier')
+        type (str): The type of spline ('clamped', 'periodic', 'constant','fourier', 'simple_fourier', or 'simple_complex_fourier')
         T (jnp.ndarray): The knot vector defining the spline basis
     """
 
@@ -31,8 +31,8 @@ class SplineBasis:
 
         Args:
             n: The number of splines in the basis
-            p: The degree of the spline (for simple_fourier, negative p means wave number k = p, actual degree = |p|)
-            type: The type of spline ('clamped', 'periodic', 'constant', 'fourier', or 'simple_fourier')
+            p: The degree of the spline (for simple_fourier and simple_complex_fourier, negative p means wave number k = p, actual degree = |p|)
+            type: The type of spline ('clamped', 'periodic', 'constant', 'fourier', 'simple_fourier', or 'simple_complex_fourier')
             T: Optional knot vector. If None, knots will be initialized based on type
         """
         self.n = n
@@ -40,8 +40,15 @@ class SplineBasis:
         self.p = p
         self.type = type
         
-        # For simple_fourier, store the wave number k separately and fix n=2, p=1
-        if self.type == 'simple_fourier':
+        # For simple_complex_fourier, only allow n=1
+        if self.type == 'simple_complex_fourier':
+            self.k = p  # Wave number (can be negative)
+            if n != 1:
+                raise ValueError("simple_complex_fourier only supports n=1")
+            self.n = 1
+            self.p = 1  # Fixed polynomial degree for simple_complex_fourier
+            self.ns = jnp.arange(self.n)  # Update ns array
+        elif self.type == 'simple_fourier':
             self.k = p  # Wave number (can be negative)
             self.n = 2  # Fixed number of basis functions for simple_fourier
             self.p = 1  # Fixed polynomial degree for simple_fourier
@@ -56,10 +63,10 @@ class SplineBasis:
             self.T = self._init_knots()
 
    
-        if self.p >= n and self.p != 1 and not (self.type == 'simple_fourier'):
+        if self.p >= n and self.p != 1 and not (self.type in ['simple_fourier', 'simple_complex_fourier']):
             raise ValueError(
                 f"Degree {self.p} is greater than or equal to the number of splines {n}")
-        if type not in ['clamped', 'periodic', 'constant', 'fourier', 'simple_fourier']:
+        if type not in ['clamped', 'periodic', 'constant', 'fourier', 'simple_fourier', 'simple_complex_fourier']:
             raise ValueError(f"Invalid spline type: {type}")
 
     def __call__(self, x: float, i: int) -> jnp.ndarray:
@@ -120,6 +127,9 @@ class SplineBasis:
         elif self.type == 'simple_fourier':
             T = jnp.linspace(0, 1, n+1)  #Placeholder
             return T
+        elif self.type == 'simple_complex_fourier':
+            T = jnp.linspace(0, 1, n+1)  #Placeholder
+            return T
         else:
             raise ValueError(f"Invalid spline type: {self.type}")
 
@@ -148,6 +158,8 @@ class SplineBasis:
             return self._evaluate_fourier(x, i)
         elif self.type == 'simple_fourier':
             return self._evaluate_simple_fourier(x, i)
+        elif self.type == 'simple_complex_fourier':
+            return self._evaluate_simple_complex_fourier(x, i)
         else:
             return 1.0
 
@@ -283,6 +295,22 @@ class SplineBasis:
             x
         )
 
+    def _evaluate_simple_complex_fourier(self, x: float, i: int) -> jnp.ndarray:
+        k = self.k
+        
+        def valid_index(x):
+            return jnp.exp(1j * k * x)
+        
+        def invalid_index(x):
+            return jnp.zeros_like(x, dtype=jnp.complex128)
+        
+        return jax.lax.cond(
+            i == 0,
+            valid_index,
+            invalid_index,
+            x
+        )
+
 
 class TensorBasis:
     """A class representing a tensor product of spline bases.
@@ -393,8 +421,8 @@ class DerivativeSpline:
         self.type = s.type
         
         # For simple_fourier, preserve the wave number k
-        if s.type == 'simple_fourier':
-            self.k = s.k 
+        if s.type in ['simple_fourier', 'simple_complex_fourier']:
+            self.k = s.k
         
         if s.type == 'periodic':
            
@@ -406,8 +434,8 @@ class DerivativeSpline:
             self.T = s.T
         
         # Special cases for fourier types
-        if self.n > 0 and (self.p >= 0 or self.type in ['simple_fourier', 'fourier']):
-            if self.type in ['simple_fourier', 'fourier']:
+        if self.n > 0 and (self.p >= 0 or self.type in ['simple_fourier', 'simple_complex_fourier', 'fourier']):
+            if self.type in ['simple_fourier', 'simple_complex_fourier', 'fourier']:
                 # For Fourier types, we don't need a spline basis 
                 self.s = None
             else:
@@ -478,6 +506,10 @@ class DerivativeSpline:
             # d/dx[cos(k*2π*x)] = -k*2π*sin(k*2π*x)
             # d/dx[sin(k*2π*x)] = k*2π*cos(k*2π*x)
             return self._evaluate_simple_fourier_derivative(x, i)
+        elif self.type == 'simple_complex_fourier':
+            # d/dx[exp(ik*x)] = ik*exp(ik*x)
+            # d/dx[exp(-ik*x)] = -ik*exp(-ik*x)
+            return self._evaluate_simple_complex_fourier_derivative(x, i)
         elif self.type == 'constant':
             # Derivative of constant function is 0
             return jnp.zeros_like(x)
@@ -556,5 +588,21 @@ class DerivativeSpline:
             i == 0,
             cosine_derivative,
             sine_derivative,
+            x
+        )
+
+    def _evaluate_simple_complex_fourier_derivative(self, x: float, i: int) -> jnp.ndarray:
+        k = self.k
+        
+        def valid_index_derivative(x):
+            return 1j * k * jnp.exp(1j * k * x)
+        
+        def invalid_index_derivative(x):
+            return jnp.zeros_like(x, dtype=jnp.complex128)
+        
+        return jax.lax.cond(
+            i == 0,
+            valid_index_derivative,
+            invalid_index_derivative,
             x
         )
