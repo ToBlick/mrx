@@ -479,7 +479,7 @@ class LazyWeightedDoubleDivergenceMatrix(LazyMatrix):
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
         qw = self.Q.w
         
-        # Use 1/Jj (inverse Jacobian) 
+        # Use 1/Jj
         return jnp.einsum("ijk,ljk,j,j,j->li", Λ_ijk, Λ_ijk, wj, 1/Jj, qw)
 
 
@@ -595,11 +595,11 @@ class LazyCurrentDensityMatrix(LazyMatrix):
             cross_product = jnp.cross(curl_B0_k, curl_phi_j_cross_B)
             return jnp.dot(phi_i, cross_product)
         
-        # Step 5: Vectorize integrand computation
+        # Step 5: Vectorize 
         integrand_vals = jax.vmap(jax.vmap(jax.vmap(compute_integrand, (0, None, None)), (None, 0, None)), (None, None, 0))(
             jnp.arange(len(self.Q.x)), jnp.arange(self.n0), jnp.arange(self.n0))
         
-        # Step 6: Integrate with Jacobian and weights
+        # Step 6: Integrate 
         J = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
         result = jnp.einsum('ijk,k,k->ij', integrand_vals, J, self.Q.w)
         
@@ -665,8 +665,9 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
     """
     A class representing the pressure gradient force matrix.
 
-    The matrix entries are computed as  ∫ φ_i · ∇(φ_j · ∇p) dx.
-    This is the full expression for the pressure gradient force matrix.
+    The matrix entries are computed as ∫ φ_i · ∇(φ_j · ∇p) dx using the 
+    complete vector calculus formula:
+    ∇(φ_j · ∇p) = (∇φ_j)^T @ ∇p + ∇²p @ φ_j + ∇p×(∇×φ_j)
 
     Attributes:
         Inherits all attributes from LazyMatrix.
@@ -676,7 +677,7 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
         __init__(Λ, Q, pressure_func, F=None, E=None):
             Initialize the pressure gradient force matrix.
         assemble():
-            Assemble the pressure gradient force matrix using a stable approximation.
+            Assemble the pressure gradient force matrix using the complete formula.
     """
 
     def __init__(self, Λ, Q, pressure_func, F=None, E=None):
@@ -696,7 +697,10 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
         # This term was causing a lot of problems, so trying a different approach
 
     def assemble(self):
-        """Assemble the pressure gradient force matrix using the full expression ∫ φ_i · ∇(φ_j · ∇p) dx."""
+        """Assemble the pressure gradient force matrix using the complete vector calculus formula.
+        
+        ∫ φ_i · ∇(φ_j · ∇p) dx
+        """
         DF = jax.jacfwd(self.F)
         
         def _phi_transformed(x, i):
@@ -725,35 +729,47 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
             return jax.hessian(self.pressure_func)(x)
         hess_p_vals = jax.vmap(hessian_p)(self.Q.x)
         
+                # Curl of transformed basis functions ∇ × φ_j
+        def _curl_phi_transformed(x, j):
+            """Compute curl of transformed basis function φ_j."""
+            def phi_func(y):
+                return inv33(DF(y)).T @ self.Λ0(y, j)
+            return curl(phi_func)(x)
+        
+        curl_phi_vals = jax.vmap(jax.vmap(_curl_phi_transformed, (0, None)), (None, 0))(
+            self.Q.x, jnp.arange(self.n0))
+
         # Step 2: Compute the integrand for each (i,j) pair at each quadrature point
         def compute_integrand(L, i, j):
             """
             Compute φ_i · ∇(φ_j · ∇p) at quadrature point L for basis functions i,j.
-            
-            Using the product rule, we get ∇(φ_j · ∇p) = (∇φ_j)^T @ ∇p + ∇²p @ φ_j
             """
             phi_i = phi_vals[L, i]          # φ_i at point L
             phi_j = phi_vals[L, j]          # φ_j at point L 
             grad_phi_j = grad_phi_vals[L, j] # ∇φ_j at point L (3x3)
             grad_p = grad_p_vals[L]         # ∇p at point L
             hess_p = hess_p_vals[L]         # ∇²p at point L (3x3)
+            curl_phi_j = curl_phi_vals[L, j] # ∇×φ_j at point L
             
-  
-            # ∇(φ_j · ∇p) = (∇φ_j)^T @ ∇p + ∇²p @ φ_j
-            term1 = grad_phi_j.T @ grad_p   # (∇φ_j)^T @ ∇p  
-            term2 = hess_p @ phi_j          # ∇²p @ φ_j
-            grad_phi_j_dot_grad_p = term1 + term2
+
+            # Product rule for gradient of dot product: ∇(φ_j · ∇p) = (∇φ_j)^T @ ∇p + ∇²p @ φ_j + ∇p×(∇×φ_j)
+            term1 = grad_phi_j.T @ grad_p   # (∇p·∇)φ_j = (∇φ_j)^T @ ∇p  
+            term2 = hess_p @ phi_j          # (φ_j·∇)∇p = ∇²p @ φ_j
+            term3 = jnp.cross(grad_p, curl_phi_j)  # ∇p×(∇×φ_j)
+            # term4 = φ_j×(∇×∇p) = 0 (curl of gradient vanishes)
+            
+            grad_phi_j_dot_grad_p = term1 + term2 + term3
             
             # Compute φ_i · ∇(φ_j · ∇p)
             result = jnp.dot(phi_i, grad_phi_j_dot_grad_p)
             
             return result
         
-        # Step 3: Vectorize the integrand computation 
+        # Step 3: Vectorize
         integrand_vals = jax.vmap(jax.vmap(jax.vmap(compute_integrand, (0, None, None)), (None, 0, None)), (None, None, 0))(
             jnp.arange(len(self.Q.x)), jnp.arange(self.n0), jnp.arange(self.n0))
         
-        # Step 4: Integrate with Jacobian and weights
+        # Step 4: Integrate
         J = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
         result = jnp.einsum('ijk,k,k->ij', integrand_vals, J, self.Q.w)
         
