@@ -186,6 +186,8 @@ def select_quadrature(basis, n):
         return trapezoidal_quad(2*n)
     elif basis.type == 'simple_fourier':
         return trapezoidal_quad(2*n)
+    elif basis.type == 'simple_complex_fourier':
+        return trapezoidal_quad(2*n)
     elif basis.type == 'constant':
         return spectral_quad(1)
 
@@ -264,7 +266,8 @@ def exact_nodes_and_weights(n):
         d_coeffs = jnp.polyder(coeffs)
         w = jnp.polyval(d_coeffs, points)
         weights = 2/((1-points**2)*(w**2))
-    return jnp.real(points), jnp.real(weights)
+    # Don't convert to real - preserve complex values if they exist
+    return points, weights
 
 
 def nodes_and_weights(n):
