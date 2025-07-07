@@ -503,47 +503,41 @@ class LazyWeightedDoubleDivergenceMatrix(LazyMatrix):
         super().__init__(Λ, Λ, Q, F, E, E)
 
     def assemble(self):
-        """Assemble the weighted double divergence matrix with ultra-fast implementation."""
+        """Assemble the weighted double divergence matrix using robust implementation."""
         
         def compute_div_for_basis_i(i):
-            """Compute divergence for a specific basis function i."""
+            """Compute divergence for a specific basis function i using Utils.div."""
+            def phi_i_func(y):
+                return self.Λ0(y, i)
+            
             def div_at_point(x):
-                # Compute divergence explicitly for 1-form
-                # For 1-form φ = [φₓ, φᵧ, φᵤ], div(φ) = ∂φₓ/∂x + ∂φᵧ/∂y + ∂φᵤ/∂z
-                
-                def phi_i_component(x_in, comp):
-                    """Get component comp of basis function i"""
-                    phi_val = self.Λ0(x_in, i)
-                    return phi_val[comp]
-                
-                # Compute partial derivatives
-                dphi_dx = jax.grad(lambda x_in: phi_i_component(x_in, 0))(x)
-                dphi_dy = jax.grad(lambda x_in: phi_i_component(x_in, 1))(x) 
-                dphi_dz = jax.grad(lambda x_in: phi_i_component(x_in, 2))(x)
-                
-                # Divergence in logical coordinates
-                logical_div = dphi_dx + dphi_dy + dphi_dz
-                
-                # Apply coordinate transformation
+                # Use the built-in div function from Utils - this is more robust
+                logical_div = div(phi_i_func)(x)
                 J = jacobian_determinant(self.F)(x)
+                # Ensure we return a scalar
+                if jnp.ndim(logical_div) > 0:
+                    logical_div = jnp.sum(logical_div)
                 return (1/J) * logical_div
             
             return jax.vmap(div_at_point)(self.Q.x)
         
-        print("Computing divergences with explicit implementation...")
+  
         
-        # Use explicit vectorization to avoid tracer issues  
-        div_vals = jax.vmap(compute_div_for_basis_i)(jnp.arange(self.n0))
+        # Use explicit loop to avoid tracer issues with basis function indices
+        Λ_vals = []
+        for i in range(self.n0):
+            Λ_vals.append(compute_div_for_basis_i(i))
+        Λ_vals = jnp.stack(Λ_vals)
         
         # Evaluate weight function at quadrature points
         weight_vals = jax.vmap(self.weight_func)(self.Q.x)  
         
-        # Jacobian determinant and quadrature weights  
-        J_vals = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
+        # Quadrature weights  
+    
         quad_weights = self.Q.w
         
-        # Assemble matrix efficiently
-        return jnp.einsum("ij,kj,j,j,j->ik", div_vals, div_vals, weight_vals, (1/J_vals**2), quad_weights)
+        # Assemble matrix
+        return jnp.einsum("ij,kj,j,j->ik", Λ_vals, Λ_vals, weight_vals, quad_weights)
 
 
 class LazyMagneticTensionMatrix(LazyMatrix):
@@ -765,7 +759,6 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
         
         # Step 4: Get pressure Hessian: (1/J) * div(inv33(DF).T @ grad(p))
         def compute_hess_p(x_log):
-            DF_x = DF(x_log)
             J_x = jacobian_determinant(self.F)(x_log)  # Evaluate J at the specific point
             
             # Transform gradient: inv33(DF).T @ grad(p)

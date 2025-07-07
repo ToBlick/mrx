@@ -25,7 +25,7 @@ from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 import scipy.linalg
 from mrx.Utils import inv33
-from mrx.LazyMatrices import LazyMassMatrix, LazyMagneticTensionMatrix, LazyPressureGradientForceMatrix, LazyCurrentDensityMatrix
+from mrx.LazyMatrices import LazyMassMatrix, LazyMagneticTensionMatrix, LazyPressureGradientForceMatrix, LazyCurrentDensityMatrix, LazyWeightedDoubleDivergenceMatrix
 import time
 import matplotlib.pyplot as plt
 
@@ -158,8 +158,7 @@ def get_hessian_components_fast():
     print(f"Term 1: {time.time() - start_time:.2f}s")
 
     # Term 2: ∫ γ*p*(∇·φ_i)*(∇·φ_j)
-    #D_divdiv_weighted = LazyWeightedDoubleDivergenceMatrix(differential_1form, Q, pressure_func, F=F)
-    D_divdiv_weighted = jnp.zeros((differential_1form.n, differential_1form.n))
+    D_divdiv_weighted = LazyWeightedDoubleDivergenceMatrix(differential_1form, Q, pressure_func, F=F).M
     print(f"Term 2: {time.time() - start_time:.2f}s")
 
     # Term 3: ∫ φ_i · [(∇×B₀) × (∇×(φ_j × B₀))] dx (note(∇×B₀) is nearly zero)
