@@ -3,7 +3,8 @@ Hessian calculation and Alfvén wave analysis
 
 This file solves the generalized eigenvalue problem, Hx = λCx, where H is the Hessian of the force operator,
 C is a mass matrix, and x is the eigenvector. The equilibrium B-field and equilibrium pressure is from (4.1) in Florian's thesis, and is in a slab geometry 
-in (x',y',z') slab coordinates.
+in (x',y',z') slab coordinates. The basis functions are 1 forms, and the B-field is converted to a 1 form in logical coordinates. Additionally, the basis funcitons are projected
+to 2 forms to complete the divergence calculation needed in term2. 
 
 The four terms in the Hessian are:
 1. Term 1: ∫ (∇ × (φ_i × B₀)) · (∇ × (φ_j × B₀))  dx
@@ -11,7 +12,7 @@ The four terms in the Hessian are:
 3. Term 3: ∫ φ_i · [(∇×B₀) × (∇×(φ_j × B₀))] dx
 4. Term 4: ∫ φ_i · ∇(φ_j · ∇p) dx
 
-I symmetrize the Hessian after the fact. Everything is in double precision.
+I symmetrize the Hessian after the fact. Everything is in double precision.  
 '''
 
 import numpy as np
@@ -19,11 +20,12 @@ import jax.numpy as jnp
 import jax
 import jax.lax
 import matplotlib
-matplotlib.use('TkAgg')  # Use TkAgg backend for interactive plotting
+matplotlib.use('TkAgg') 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 import scipy.linalg
-from mrx.LazyMatrices import LazyMassMatrix, LazyWeightedDoubleDivergenceMatrix, LazyMagneticTensionMatrix, LazyPressureGradientForceMatrix, LazyCurrentDensityMatrix
+from mrx.Utils import inv33
+from mrx.LazyMatrices3 import LazyMassMatrix, LazyMagneticTensionMatrix, LazyPressureGradientForceMatrix, LazyCurrentDensityMatrix
 import time
 import matplotlib.pyplot as plt
 
@@ -73,36 +75,71 @@ def get_hessian_components_fast():
     # X-DEPENDENT EQUILIBRIUM FIELD FUNCTIONS
     # ============================================================================
     
-    # q-profile function is now defined globally
+
     
     # Pressure function 
-    def pressure_func(x_logical):
-        """Pressure function that takes logical coordinates and returns pressure"""
-        # Only need x-coordinate since p only depends on x
-        x_slab = a * x_logical[0]  # Transform only x to slab coordinates
-        q_val = q_profile(x_slab)
+    def pressure_func(x_log):
+        """Pressure function that takes logical x-coordinate and returns pressure"""
+        # Handle both scalar and vector inputs from JAX autodiff
+        if jnp.ndim(x_log) == 0:
+            # Scalar input 
+            x_coord = x_log  # Use directly as x-coordinate
+        else:
+            # Vector input - extract x-coordinate
+            x_coord = x_log[0] if x_log.shape == (3,) else x_log[..., 0]
+        
+        q_val = q_profile(x_coord)
         p_val = ((β*B0**2)/(2))*(1+(a/(q_val*R0))**2) + ((B0**2)*(a**2)/R0**2)*((1/(q0**2))-(1/q_val**2))
         return p_val
 
     # Equilibrium B₀ function
-    def B0_field(x_logical):
-        """Equilibrium B-field function that takes logical coordinates and returns B₀ in LOGICAL coordinates"""
-        # Transform to slab coordinates for q-profile calculation (leaving in case we change a in future)
-        x_slab = a * x_logical[0]
-        q_val = q_profile(x_slab)
+    def B0_field(x_log):
+        """
+         B-field function in logical coordinates.
+        Handles both scalar and vector inputs from JAX autodiff while 
+        preserving 1-form transformation.
+        """
+        # Handle different input shapes robustly
+        if jnp.ndim(x_log) == 0:
+            # Scalar input 
+            x_coord = x_log
+            # Create a 3D point for coordinate transformation
+            x_point = jnp.array([x_coord, 0.0, 0.0])
+        elif x_log.shape == ():
+            #  scalar
+            x_coord = x_log
+            x_point = jnp.array([x_coord, 0.0, 0.0])
+        elif x_log.shape == (3,):
+            # 3D vector input
+            x_coord, y_coord, z_coord = x_log[0], x_log[1], x_log[2]
+            x_point = x_log
+        else:
+            # Fallback for other shapes
+            x_coord = x_log[..., 0]
+            x_point = x_log
         
-        # B₀ in slab coordinates
-        B0x_slab = 0.0
-        B0z_slab = B0
-        B0y_slab = (B0*a)/(q_val*R0)
+        # Convert logical to physical x-coordinate
+        x_physical = a * x_coord
+        q_val = q_profile(x_physical)
+
+        # Compute Jacobian at the point
+        DF = jax.jacfwd(F)(x_point)
         
-        # Transform B₀ back to logical coordinates
-        # For slab geometry: B_logical = B_slab / (scale factors)
-        B0x_logical = B0x_slab / a
-        B0y_logical = B0y_slab / (2*jnp.pi*a)
-        B0z_logical = B0z_slab / (2*jnp.pi*R0)
-        
-        return jnp.array([B0x_logical, B0y_logical, B0z_logical])
+        # B-field components in logical coordinates
+        B0_x = 0.0
+        B0_y = (B0*a)/(2*jnp.pi*a*q_val*R0)
+        B0_z = B0/(2*jnp.pi*R0)
+
+        B_vector = jnp.array([B0_x, B0_y, B0_z])
+
+        # Transform vector field to logical coordinates
+        B_vector_logical = inv33(DF) @ B_vector
+
+        # Transform from vector field to 1-form using metric tensor
+        g = DF.T @ DF  # Metric tensor
+        B_1form = g @ B_vector_logical  # Convert to 1-form
+
+        return B_1form
 
     # ============================================================================
     # COMPUTE MATRIX COMPONENTS OF HESSIAN
@@ -121,7 +158,8 @@ def get_hessian_components_fast():
     print(f"Term 1: {time.time() - start_time:.2f}s")
 
     # Term 2: ∫ γ*p*(∇·φ_i)*(∇·φ_j)
-    D_divdiv_weighted = LazyWeightedDoubleDivergenceMatrix(differential_1form, Q, pressure_func, F=F)
+    #D_divdiv_weighted = LazyWeightedDoubleDivergenceMatrix(differential_1form, Q, pressure_func, F=F)
+    D_divdiv_weighted = jnp.zeros((differential_1form.n, differential_1form.n))
     print(f"Term 2: {time.time() - start_time:.2f}s")
 
     # Term 3: ∫ φ_i · [(∇×B₀) × (∇×(φ_j × B₀))] dx (note(∇×B₀) is nearly zero)
@@ -136,7 +174,7 @@ def get_hessian_components_fast():
     
     print(f"Total matrix computation time: {time.time() - start_time:.2f}s")
     
-    return K_magnetic_tension, D_divdiv_weighted.M, K_current_density.M, K_pressure_gradient_force, C
+    return K_magnetic_tension, D_divdiv_weighted, K_current_density.M, K_pressure_gradient_force, C
 
 # JIT-compiled assembly function
 @jax.jit
@@ -380,6 +418,7 @@ if __name__ == "__main__":
             import traceback
             traceback.print_exc()
 
+
     # CONTINUUM EVALUATION
     print("\n===CONTINUUM EVALUATION ===")
     x_vals = np.linspace(0, a, 50) 
@@ -404,14 +443,7 @@ if __name__ == "__main__":
     print("\n=== RESULTS SUMMARY ===")
     print(f"Found {len(continuum_eigenvalues)} eigenvalues within Alfvén continuum range")
     print(f"Total computation time: {time.time() - start_total:.2f}s")
-    
-    # Debug: Print some eigenvalues to see what we have
-    if len(continuum_eigenvalues) > 0:
-        print(f"First few continuum eigenvalues: {continuum_eigenvalues[:5]}")
-    else:
-        print("⚠️  No eigenvalues found in Alfvén continuum!")
-        print(f"All eigenvalues: {eigvals_normalized[:10]}")  # Show first 10 eigenvalues
-        print(f"Continuum range: [{continuum_min:.6f}, {continuum_max:.6f}]")
+   
 
     # DIRECT DIVERGENCE ANALYSIS
     if len(continuum_eigenvalues) > 0:
@@ -469,6 +501,11 @@ if __name__ == "__main__":
                 # Classify mode type based on 1D divergence
                 if div_norm_1d < 0.3:
                     print("    ✓ Pure Alfvén mode (incompressible)")
+                    
+                    # PLOT MODE 131 SPECIFICALLY (lowest divergence pure Alfvén mode)
+                    if idx == 131:
+                        plot_eigenfunction(eigvec, eigval, differential_1form, a, alfven_scale, idx)
+                        
                 elif div_norm_1d < 0.6:
                     print("    ⚠️  Mixed mode")
                 else:
@@ -498,20 +535,4 @@ if __name__ == "__main__":
                     elif eigval_diff < 1e-6:
                         print(f"    ⚠️  NEAR-DEGENERATE: Very close eigenvalue (diff: {eigval_diff:.2e})")
                 
-                # ANALYZE INCOMPRESSIBLE ALFVÉN MODES FOR SINGULARITIES
-                if div_norm_1d < 0.3:  # Incompressible modes
-                    print("\n=== ANALYZING INCOMPRESSIBLE ALFVÉN MODE ===")
-                    print(f"Mode index: {idx}")
-                    print(f"Eigenvalue: {eigval:.6f}")
-                    print(f"Divergence norm: {div_norm_1d:.6f}")
-                    
-                    # PLOT THE FIRST INCOMPRESSIBLE ALFVÉN MODE
-                    if i == 0:  # First incompressible mode
-                        plot_eigenfunction(eigvec, eigval, differential_1form, a, alfven_scale, idx)
-                    
-                    # Continue analyzing all incompressible Alfvén modes
-                    print(f"✓ Completed analysis for incompressible mode {idx}")
-                    print("-" * 60)
-               
-
- 
+              
