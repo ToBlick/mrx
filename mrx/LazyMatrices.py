@@ -422,13 +422,50 @@ class LazyDoubleDivergenceMatrix(LazyMatrix):
 
     def assemble(self):
         """Assemble the double divergence matrix."""
-        def _Λ(x, i):
-            return div(lambda y: self.Λ0(y, i))(x)
-        Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.n0))  # n x n_q x 1
+        def compute_div_for_basis_i(i):
+            """Compute divergence for a specific basis function i."""
+            def phi_i_func(y):
+                return self.Λ0(y, i)
+            
+            def div_at_point(x):
+                logical_div = div(phi_i_func)(x)
+                J = jacobian_determinant(self.F)(x)
+                return (1/J) * logical_div
+            
+            return jax.vmap(div_at_point)(self.Q.x)
+        
+        # Use explicit loop to avoid tracer issues with basis function indices
+        Λ_vals = []
+        for i in range(self.n0):
+            Λ_vals.append(compute_div_for_basis_i(i))
+        Λ_vals = jnp.stack(Λ_vals)
+        
+        # Step 3: Evaluate weight function at quadrature points
+        wj = jax.vmap(self.weight_func)(self.Q.x)  
+        
+        # Step 4: Jacobian determinant and quadrature weights  
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
-        wj = self.Q.w
-        return jnp.einsum("ijk,ljk,j,j->li", Λ_ijk, Λ_ijk, 1/Jj, wj)
+        qw = self.Q.w
+        
+        # Step 5: Use J for integration
+        return jnp.einsum("ij,lj,j,j,j->il", Λ_vals, Λ_vals, wj, Jj, qw)
+
+#------------------------------------------------------------------------------------------------
+""" Hessian-related matrices respecting: 
+
+1. GRADIENT TRANSFORMATION:
+   ∇f = DF^(-T) ∇̂f₀
+   where f₀(x̂) = f(F(x̂)) and DF is the Jacobian 
+
+2. CURL TRANSFORMATION:
+   ∇×V = (1/|DF|) DF ∇̂×V₁
+   where V₁(x̂) = DF^(T) V(F(x̂))
+
+3. DIVERGENCE TRANSFORMATION:
+   ∇·V = (1/√g) ∇̂·V₂
+   where V₂(x̂) = √g DF^{-1}V(F(x̂)) and √g = |DF| """
+
+#------------------------------------------------------------------------------------------------
 
 
 
@@ -436,7 +473,7 @@ class LazyDoubleDivergenceMatrix(LazyMatrix):
 class LazyWeightedDoubleDivergenceMatrix(LazyMatrix):
     """
     A class representing a weighted double divergence matrix.
-    The matrix entries are computed as ∫ w(x) div Λ0[i] · div Λ1[j] 1/detDF dx,
+    The matrix entries are computed as ∫ w(x) div Λ0[i] · div Λ1[j]  dx,
     where w(x) is a weight function.
 
     Methods:
@@ -463,24 +500,30 @@ class LazyWeightedDoubleDivergenceMatrix(LazyMatrix):
 
     def assemble(self):
         """Assemble the weighted double divergence matrix."""
-        # Apply proper 1-form transformation before computing divergence DF_inv.T @ phi
-        def _Λ(x, i):
-            def phi_func(y):
-                DF_y = jax.jacfwd(self.F)
-                return inv33(DF_y(y)).T @ self.Λ0(y, i)
-            return div(phi_func)(x)
         
+        def _Λ(k, i):
+            """Compute divergence of basis function i at quadrature point k."""
+            x_log = self.Q.x[k]
+
+            # Direct divergence of 1-form basis function for now
+            def phi_i_func(x_log):
+                return self.Λ0(x_log, i)
+            
+            return div(phi_i_func)(x_log)
+        
+        #div Λ0[i] · div Λ1[j] 
         Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.n0)) 
+            jnp.arange(len(self.Q.x)), jnp.arange(self.n0)) 
         
         # Evaluate weight function at quadrature points
-        wj = jax.vmap(self.weight_func)(self.Q.x)  
+        wj = jax.vmap(self.weight_func)(self.Q.x)
         
+        # Jacobian and weights for integration
+  
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
         qw = self.Q.w
         
-        # Use 1/Jj
-        return jnp.einsum("ijk,ljk,j,j,j->li", Λ_ijk, Λ_ijk, wj, 1/Jj, qw)
+        return jnp.einsum("ijk,ljk,j,j,j->li", Λ_ijk, Λ_ijk, wj, 1/(Jj**2), qw)
 
 
 class LazyMagneticTensionMatrix(LazyMatrix):
@@ -513,24 +556,33 @@ class LazyMagneticTensionMatrix(LazyMatrix):
 
     def assemble(self):
         """Assemble the magnetic tension matrix."""
-        def curl_phi_cross_B(x, i):
-            # Apply proper 1-form transformation before cross product
-            def phi_cross_B_func(y):
-                DF_y = jax.jacfwd(self.F)
-                transformed_phi = inv33(DF_y(y)).T @ self.Λ0(y, i)
-                return jnp.cross(transformed_phi, self.B0_func(y))
-            return curl(phi_cross_B_func)(x)
+
+        DF = jax.jacfwd(self.F)
         
-        # Vectorize over quadrature points and basis functions
+        def curl_phi_cross_B(k, i):
+            # k is the quadrature point index, i is the basis function index
+            x_log = self.Q.x[k]
+            
+            # Phi and B0 both in logical coordinates, take cross product
+            def phi_cross_B_func(x_log):
+                phi_val = self.Λ0(x_log, i)
+                B0_val = self.B0_func(x_log)
+                return jnp.cross(phi_val, B0_val)
+            
+            # Get curl, and apply correct transformation
+            DF_x = DF(x_log)  # Evaluate DF at the specific point
+            return DF_x @ curl(phi_cross_B_func)(x_log)
+        
+        # Vectorize using quadrature point indices
         curl_vals = jax.vmap(jax.vmap(curl_phi_cross_B, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.n0))
+            jnp.arange(len(self.Q.x)), jnp.arange(self.n0))
         
         # Compute integrand: curl(φ_i × B₀) · curl(φ_j × B₀)
         integrand = jnp.einsum('ijk,ljk->ijl', curl_vals, curl_vals)
         
         # Integrate
         J = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
-        result = jnp.einsum('ijl,j,j->il', integrand, J, self.Q.w)
+        result = jnp.einsum('ijl,j,j->il', integrand, 1/(J**2), self.Q.w)
         
         return result
 
@@ -546,7 +598,7 @@ class LazyCurrentDensityMatrix(LazyMatrix):
         __init__(Λ, Q, B0_func, F=None, E=None):
             Initialize the current density matrix.
         assemble():
-            Assemble the current density matrix using simple implementation.
+            Assemble the current density matrix using logical coordinates.
     """
 
     def __init__(self, Λ, Q, B0_func, F=None, E=None):
@@ -564,28 +616,44 @@ class LazyCurrentDensityMatrix(LazyMatrix):
         super().__init__(Λ, Λ, Q, F, E, E)
 
     def assemble(self):
-        """Assemble the current density matrix using simple implementation."""
-        # Step 1: Pre-compute ∇ × B₀ at all quadrature points
-        curl_B0 = jax.vmap(curl(self.B0_func))(self.Q.x)
+        """Assemble the current density matrix using logical coordinates."""
         
-        # Step 2: Compute transformed φ_i at all quadrature points
-        def _phi(x, i):
-            DF_x = jax.jacfwd(self.F)
-            return inv33(DF_x(x)).T @ self.Λ0(x, i)
+        # Step 1: Pre-compute ∇ × B₀ at all logical quadrature points
+        DF = jax.jacfwd(self.F)
+        J = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
+        
+        # Fix: Evaluate DF at each quadrature point
+        def compute_curl_B0(k):
+            x_log = self.Q.x[k]
+            DF_x = DF(x_log)
+            J_x = J[k]
+            return (1/J_x) * DF_x @ curl(self.B0_func)(x_log)
+        
+        curl_B0 = jax.vmap(compute_curl_B0)(jnp.arange(len(self.Q.x)))
+        
+        # Step 2: Compute φ_i values at all quadrature points 
+        def _phi(k, i):
+            # k is quadrature point index, i is basis function index
+            return self.Λ0(self.Q.x[k], i)
         
         phi_vals = jax.vmap(jax.vmap(_phi, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.n0))
+            jnp.arange(len(self.Q.x)), jnp.arange(self.n0))
         
-        # Step 3: Compute ∇ × (φ_j × B₀) at all quadrature points with proper transformation
-        def compute_curl_phi_cross_B(x, j):
-            def phi_cross_B_func(y):
-                DF_y = jax.jacfwd(self.F)
-                transformed_phi = inv33(DF_y(y)).T @ self.Λ0(y, j)
-                return jnp.cross(transformed_phi, self.B0_func(y))
-            return curl(phi_cross_B_func)(x)
+        # Step 3: Compute ∇ × (φ_j × B₀) at all quadrature points in logical coordinates
+        def compute_curl_phi_cross_B(k, j):
+            # k is quadrature point index, j is basis function index
+            x_log = self.Q.x[k]
+            DF_x = DF(x_log)
+            J_x = J[k]
+            
+            def phi_cross_B_func(x_log):
+                phi_val = self.Λ0(x_log, j)
+                B0_val = self.B0_func(x_log)
+                return jnp.cross(phi_val, B0_val)
+            return (1/J_x) * DF_x @ curl(phi_cross_B_func)(x_log)
         
         curl_phi_cross_B_vals = jax.vmap(jax.vmap(compute_curl_phi_cross_B, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.n0))
+            jnp.arange(len(self.Q.x)), jnp.arange(self.n0))
         
         # Step 4: Compute integrand φ_i · [(∇ × B₀) × (∇ × (φ_j × B₀))]
         def compute_integrand(k, i, j):
@@ -600,65 +668,11 @@ class LazyCurrentDensityMatrix(LazyMatrix):
             jnp.arange(len(self.Q.x)), jnp.arange(self.n0), jnp.arange(self.n0))
         
         # Step 6: Integrate 
-        J = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
-        result = jnp.einsum('ijk,k,k->ij', integrand_vals, J, self.Q.w)
+        result = jnp.einsum('ijk,k->ij', integrand_vals, self.Q.w)
         
         return result
 
 
-class LazyPressureGradientMatrix(LazyMatrix):
-    """
-    A class representing the pressure gradient matrix.
-
-    The matrix entries are computed as ∫ p(x) transformed_phi_i · transformed_phi_j dx,
-    where p(x) is a pressure function.
-
-    Attributes:
-        Inherits all attributes from LazyMatrix.
-        pressure_func (callable): The pressure function p(x).
-
-    Methods:
-        __init__(Λ, Q, pressure_func, F=None, E=None):
-            Initialize the pressure gradient matrix.
-        assemble():
-            Assemble the pressure gradient matrix.
-    """
-
-    def __init__(self, Λ, Q, pressure_func, F=None, E=None):
-        """
-        Initialize the pressure gradient matrix.
-
-        Args:
-            Λ (DifferentialForm): The differential form.
-            Q (QuadratureRule): The quadrature rule.
-            pressure_func (callable): The pressure function p(x).
-            F (callable, optional): Map from logical to physical domain. Defaults to identity.
-            E (jnp.ndarray, optional): Transformation matrix. Defaults to identity.
-        """
-        self.pressure_func = pressure_func
-        super().__init__(Λ, Λ, Q, F, E, E)
-
-    def assemble(self):
-        """Assemble the pressure gradient matrix."""
-        # This should compute ∫ p(x) transformed_phi_i · transformed_phi_j dx
-        # Apply proper 1-form transformation to basis functions
-        DF = jax.jacfwd(self.F)
-        
-        def _Λ(x, i):
-            # Apply 1-form transformation to basis function
-            return inv33(DF(x)).T @ self.Λ0(x, i)
-        
-        Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.n0))  
-        
-        # Evaluate pressure function at quadrature points
-        pj = jax.vmap(self.pressure_func)(self.Q.x)
-        
-        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
-        qw = self.Q.w
-        
-        # Compute weighted inner product of transformed basis functions
-        return jnp.einsum("ijk,ljk,j,j,j->li", Λ_ijk, Λ_ijk, pj, Jj, qw)
 
 
 class LazyPressureGradientForceMatrix(LazyMatrix):
@@ -666,8 +680,9 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
     A class representing the pressure gradient force matrix.
 
     The matrix entries are computed as ∫ φ_i · ∇(φ_j · ∇p) dx using the 
-    complete vector calculus formula:
-    ∇(φ_j · ∇p) = (∇φ_j)^T @ ∇p + ∇²p @ φ_j + ∇p×(∇×φ_j)
+    complete vector calculus formula in logical coordinates:
+    ∇(φ_j · ∇p) = (∇ ·φ_j) ∇p + ∇²pφ_j + ∇p×(∇×φ_j) + φ_j×(∇×∇p) = (∇ ·φ_j) ∇p + ∇²pφ_j  + ∇p×(∇×φ_j), since the 
+    curl of a gradient vanishes.
 
     Attributes:
         Inherits all attributes from LazyMatrix.
@@ -677,7 +692,7 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
         __init__(Λ, Q, pressure_func, F=None, E=None):
             Initialize the pressure gradient force matrix.
         assemble():
-            Assemble the pressure gradient force matrix using the complete formula.
+            Assemble the pressure gradient force matrix using logical coordinates.
     """
 
     def __init__(self, Λ, Q, pressure_func, F=None, E=None):
@@ -694,69 +709,81 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
         self.pressure_func = pressure_func
         super().__init__(Λ, Λ, Q, F, E, E)
 
-        # This term was causing a lot of problems, so trying a different approach
-
     def assemble(self):
-        """Assemble the pressure gradient force matrix using the complete vector calculus formula.
+        """Assemble the pressure gradient force matrix in logical coordinates.
         
-        ∫ φ_i · ∇(φ_j · ∇p) dx
+        ∫ φ_i · ∇(φ_j · ∇p) dx = (∇ ·φ_j) ∇p + ∇²pφ_j  + ∇p×(∇×φ_j)
         """
-        DF = jax.jacfwd(self.F)
+        def DF(x):
+            return jax.jacfwd(self.F)(x)
         
-        def _phi_transformed(x, i):
-            """Apply 1-form transformation to basis function."""
-            return inv33(DF(x)).T @ self.Λ0(x, i)
+        def _phi(k, i):
+            """Get basis function value at logical coordinates."""
+            return self.Λ0(self.Q.x[k], i)
         
-        def _grad_phi_transformed(x, j):
-            """Compute gradient of transformed basis function φ_j."""
-            def phi_func(y):
-                return inv33(DF(y)).T @ self.Λ0(y, j)
-            return jax.jacfwd(phi_func)(x)
+        def _div_phi(k, j):
+            """Compute divergence of basis function φ_j in logical coordinates."""
+            def phi_j_func(x_log):
+                return self.Λ0(x_log, j)
+            return div(phi_j_func)(self.Q.x[k])
+        
+        def _curl_phi(k, j):
+            """Compute curl of basis function φ_j in logical coordinates."""
+            def phi_j_func(x_log):
+                return self.Λ0(x_log, j)
+            return curl(phi_j_func)(self.Q.x[k])
         
         # Step 1: Precompute values at all quadrature points
-        phi_vals = jax.vmap(jax.vmap(_phi_transformed, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.n0))
+        phi_vals = jax.vmap(jax.vmap(_phi, (0, None)), (None, 0))(
+            jnp.arange(len(self.Q.x)), jnp.arange(self.n0))
         
-        # Gradients of transformed basis functions ∇φ_j
-        grad_phi_vals = jax.vmap(jax.vmap(_grad_phi_transformed, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.n0))
+        # Step 2: Get divergence of basis functions ∇ · φ_j in logical coordinates
+        div_phi_vals = jax.vmap(jax.vmap(_div_phi, (0, None)), (None, 0))(
+            jnp.arange(len(self.Q.x)), jnp.arange(self.n0))
         
-        # Pressure gradient ∇p
+        # Step 3: Get pressure gradient ∇p at logical points
         grad_p_vals = jax.vmap(grad(self.pressure_func))(self.Q.x)
         
-        # Pressure Hessian ∇²p  
-        def hessian_p(x):
-            return jax.hessian(self.pressure_func)(x)
-        hess_p_vals = jax.vmap(hessian_p)(self.Q.x)
+        # Step 4: Get pressure Hessian: (1/J) * div(inv33(DF).T @ grad(p))
+        def compute_hess_p(x_log):
+  
+            J_x = jacobian_determinant(self.F)(x_log)  # Evaluate J at the specific point
+            
+            # Transform gradient: inv33(DF).T @ grad(p)
+            def transformed_grad_p(y_log):
+                DF_y = DF(y_log)
+                grad_p_y = grad(self.pressure_func)(y_log)
+                return inv33(DF_y).T @ grad_p_y
+            
+            # Take divergence and scale by 1/J
+            div_transformed_grad_p = div(transformed_grad_p)(x_log)
+            return (1/J_x) * div_transformed_grad_p
         
-                # Curl of transformed basis functions ∇ × φ_j
-        def _curl_phi_transformed(x, j):
-            """Compute curl of transformed basis function φ_j."""
-            def phi_func(y):
-                return inv33(DF(y)).T @ self.Λ0(y, j)
-            return curl(phi_func)(x)
+        hess_p_vals = jax.vmap(compute_hess_p)(self.Q.x)
         
-        curl_phi_vals = jax.vmap(jax.vmap(_curl_phi_transformed, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.n0))
+        # Step 5: Curl of basis functions ∇ × φ_j in logical coordinates
+        curl_phi_vals = jax.vmap(jax.vmap(_curl_phi, (0, None)), (None, 0))(
+            jnp.arange(len(self.Q.x)), jnp.arange(self.n0))
 
-        # Step 2: Compute the integrand for each (i,j) pair at each quadrature point
+        # Step 6: Now we have all of the relevant pieces. Compute the integrand for each (i,j) pair at each quadrature point
         def compute_integrand(L, i, j):
             """
             Compute φ_i · ∇(φ_j · ∇p) at quadrature point L for basis functions i,j.
+
+
             """
+            J_x = jacobian_determinant(self.F)(self.Q.x[L])
             phi_i = phi_vals[L, i]          # φ_i at point L
             phi_j = phi_vals[L, j]          # φ_j at point L 
-            grad_phi_j = grad_phi_vals[L, j] # ∇φ_j at point L (3x3)
+            div_phi_j = div_phi_vals[L, j]  # ∇ · φ_j at point L (scalar)
             grad_p = grad_p_vals[L]         # ∇p at point L
-            hess_p = hess_p_vals[L]         # ∇²p at point L (3x3)
+            hess_p = hess_p_vals[L]         # Hessian at point L
             curl_phi_j = curl_phi_vals[L, j] # ∇×φ_j at point L
             
-
-            # Product rule for gradient of dot product: ∇(φ_j · ∇p) = (∇φ_j)^T @ ∇p + ∇²p @ φ_j + ∇p×(∇×φ_j)
-            term1 = grad_phi_j.T @ grad_p   # (∇p·∇)φ_j = (∇φ_j)^T @ ∇p  
-            term2 = hess_p @ phi_j          # (φ_j·∇)∇p = ∇²p @ φ_j
-            term3 = jnp.cross(grad_p, curl_phi_j)  # ∇p×(∇×φ_j)
-            # term4 = φ_j×(∇×∇p) = 0 (curl of gradient vanishes)
+            # Formula: ∇(φ_j · ∇p) = (∇ · φ_j) ∇p + ∇²p φ_j + ∇p×(∇×φ_j)
+            term1 =  (1/J_x)*div_phi_j * (inv33(DF(self.Q.x[L])).T @ grad_p)       # (∇ · φ_j) ∇p  
+            term2 = hess_p * phi_j          # ∇²p φ_j  (already transformed)
+            term3 = jnp.cross(inv33(DF(self.Q.x[L])).T @ grad_p, (1/J_x) * DF(self.Q.x[L]) @ curl_phi_j)  # ∇p×(∇×φ_j)
             
             grad_phi_j_dot_grad_p = term1 + term2 + term3
             
@@ -765,13 +792,14 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
             
             return result
         
-        # Step 3: Vectorize
+        # Step 7: Vectorize
         integrand_vals = jax.vmap(jax.vmap(jax.vmap(compute_integrand, (0, None, None)), (None, 0, None)), (None, None, 0))(
             jnp.arange(len(self.Q.x)), jnp.arange(self.n0), jnp.arange(self.n0))
         
-        # Step 4: Integrate
-        J = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
-        result = jnp.einsum('ijk,k,k->ij', integrand_vals, J, self.Q.w)
+        # Step 8: Integrate without Jacobian scaling
+        result = jnp.einsum('ijk,k->ij', integrand_vals, self.Q.w)
         
         return result
+
+
 
