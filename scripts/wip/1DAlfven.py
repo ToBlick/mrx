@@ -25,7 +25,7 @@ from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 import scipy.linalg
 from mrx.Utils import inv33
-from mrx.LazyMatrices3 import LazyMassMatrix, LazyMagneticTensionMatrix, LazyPressureGradientForceMatrix, LazyCurrentDensityMatrix
+from mrx.LazyMatrices import LazyMassMatrix, LazyMagneticTensionMatrix, LazyPressureGradientForceMatrix, LazyCurrentDensityMatrix
 import time
 import matplotlib.pyplot as plt
 
