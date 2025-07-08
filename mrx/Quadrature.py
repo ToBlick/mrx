@@ -15,7 +15,7 @@ implementations using JAX for automatic differentiation and GPU acceleration.
 import jax
 import jax.numpy as jnp
 
-__all__ = ['QuadratureRule']
+__all__ = ['QuadratureRule', 'transform_quadrature_to_physical']
 
 
 class QuadratureRule:
@@ -37,17 +37,28 @@ class QuadratureRule:
         w (array): Combined quadrature weights
     """
 
-    def __init__(self, form, p):
+    def __init__(self, form_or_vector_field, p):
         """
         Initialize the quadrature rule.
 
         Args:
-            form: The differential form defining the basis functions
+            form_or_vector_field: Either a DifferentialForm or VectorField object
+                                 defining the basis functions
             p (int): Number of quadrature points per direction
         """
+        # Handle both DifferentialForm and VectorField objects
+        if hasattr(form_or_vector_field, 'bases'):
+            # DifferentialForm case - use first component basis
+            basis_list = form_or_vector_field.bases[0].bases
+        elif hasattr(form_or_vector_field, 'basis'):
+            # VectorField case - use the tensor basis directly
+            basis_list = form_or_vector_field.basis.bases
+        else:
+            raise ValueError("Expected DifferentialForm or VectorField object")
+        
         # Select appropriate quadrature rules for each direction
         (x_x, w_x), (x_y, w_y), (x_z, w_z) = [
-            select_quadrature(b, p) for b in form.bases[0].bases]
+            select_quadrature(b, p) for b in basis_list]
 
         # Combine quadrature points and weights in 3D
         x_s = [x_x, x_y, x_z]
@@ -72,6 +83,45 @@ class QuadratureRule:
         self.w_z = w_z
         self.x = x_q
         self.w = w_q
+
+
+def transform_quadrature_to_physical(logical_quadrature, F):
+    """
+    Transform logical quadrature points and weights to physical coordinates.
+    
+    This function takes a logical quadrature rule and transforms it to physical
+    coordinates using the provided transformation function. The weights are
+    properly scaled by the Jacobian determinant of the transformation.
+    
+    Args:
+        logical_quadrature (QuadratureRule): Quadrature rule in logical coordinates
+        F (callable): Transformation function from logical to physical coordinates
+                     F: [0,1]³ → Physical domain
+    
+    Returns:
+        tuple: (x_physical, w_physical) where:
+            - x_physical (jnp.ndarray): Quadrature points in physical coordinates
+            - w_physical (jnp.ndarray): Quadrature weights in physical coordinates
+    """
+    # Get logical quadrature points and weights
+    x_logical = logical_quadrature.x
+    w_logical = logical_quadrature.w
+    
+    # Transform points to physical coordinates
+    x_physical = jax.vmap(F)(x_logical)
+    
+    # Compute Jacobian determinant at each quadrature point
+    def jacobian_det(xi):
+        """Compute determinant of Jacobian matrix DF/Dxi"""
+        return jnp.linalg.det(jax.jacfwd(F)(xi))
+    
+    # Apply Jacobian scaling to weights
+    jacobian_dets = jax.vmap(jacobian_det)(x_logical)
+    w_physical = w_logical * jacobian_dets
+    
+    return x_physical, w_physical
+
+
 
 
 def trapezoidal_quad(n):
@@ -176,10 +226,8 @@ def select_quadrature(basis, n):
             - w_q: Quadrature weights
     """
     if basis.type == 'clamped':
-        # For clamped splines for now, exclude boundary points where basis functions are zero
         T = basis.T[basis.p:-basis.p]
-        # Use interior intervals only
-        return composite_quad(T[1:-1], n)
+        return composite_quad(T, n)  
     elif basis.type == 'periodic':
         return composite_quad(basis.T[basis.p:-basis.p], n)
     elif basis.type == 'fourier':

@@ -503,41 +503,39 @@ class LazyWeightedDoubleDivergenceMatrix(LazyMatrix):
         super().__init__(Λ, Λ, Q, F, E, E)
 
     def assemble(self):
-        """Assemble the weighted double divergence matrix using robust implementation."""
+        """Assemble the weighted double divergence matrix using fully vectorized implementation."""
         
-        def compute_div_for_basis_i(i):
-            """Compute divergence for a specific basis function i using Utils.div."""
-            def phi_i_func(y):
-                return self.Λ0(y, i)
+        # Step 1: Compute divergence for all basis functions at each quadrature point
+        def compute_div_for_all_basis_at_point(k):
+            """Compute divergence for all basis functions at quadrature point k."""
+            x_quad = self.Q.x[k]
             
-            def div_at_point(x):
-                # Use the built-in div function from Utils - this is more robust
-                logical_div = div(phi_i_func)(x)
-                J = jacobian_determinant(self.F)(x)
+            def compute_div_for_basis(i):
+                def phi_i_func(y):
+                    return self.Λ0(y, i)
+                
+                logical_div = div(phi_i_func)(x_quad)
+                J = jacobian_determinant(self.F)(x_quad)
+                
                 # Ensure we return a scalar
                 if jnp.ndim(logical_div) > 0:
                     logical_div = jnp.sum(logical_div)
                 return (1/J) * logical_div
             
-            return jax.vmap(div_at_point)(self.Q.x)
+            # Vectorize over all basis functions for this quadrature point
+            return jax.vmap(compute_div_for_basis)(jnp.arange(self.n0))
         
-  
+        # Vectorize over all quadrature points
+        div_vals = jax.vmap(compute_div_for_all_basis_at_point)(jnp.arange(len(self.Q.x)))
         
-        # Use explicit loop to avoid tracer issues with basis function indices
-        Λ_vals = []
-        for i in range(self.n0):
-            Λ_vals.append(compute_div_for_basis_i(i))
-        Λ_vals = jnp.stack(Λ_vals)
+        # Step 2: Evaluate weight function at quadrature points
+        weight_vals = jax.vmap(self.weight_func)(self.Q.x)
         
-        # Evaluate weight function at quadrature points
-        weight_vals = jax.vmap(self.weight_func)(self.Q.x)  
-        
-        # Quadrature weights  
-    
+        # Step 3: Get quadrature weights
         quad_weights = self.Q.w
         
-        # Assemble matrix
-        return jnp.einsum("ij,kj,j,j->ik", Λ_vals, Λ_vals, weight_vals, quad_weights)
+        # Step 4: Assemble matrix using efficient einsum
+        return jnp.einsum("qi,qj,q,q->ij", div_vals, div_vals, weight_vals, quad_weights)
 
 
 class LazyMagneticTensionMatrix(LazyMatrix):

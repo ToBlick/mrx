@@ -3,8 +3,7 @@ Hessian calculation and Alfvén wave analysis
 
 This file solves the generalized eigenvalue problem, Hx = λCx, where H is the Hessian of the force operator,
 C is a mass matrix, and x is the eigenvector. The equilibrium B-field and equilibrium pressure is from (4.1) in Florian's thesis, and is in a slab geometry 
-in (x',y',z') slab coordinates. The basis functions are 1 forms, and the B-field is converted to a 1 form in logical coordinates. Additionally, the basis funcitons are projected
-to 2 forms to complete the divergence calculation needed in term2. 
+in (x',y',z') slab coordinates. The basis functions are 1 forms, and the B-field is converted to a 1 form in logical coordinates.
 
 The four terms in the Hessian are:
 1. Term 1: ∫ (∇ × (φ_i × B₀)) · (∇ × (φ_j × B₀))  dx
@@ -53,13 +52,13 @@ def q_profile(x):
 
 differential_1form = DifferentialForm( 
     k=1,  # 1-form 
-    ns=[12, 2, 2],  # Increased x-resolution from 6 to ensure enough quadrature points
+    ns=[11, 1, 1], 
     ps=[4, k_y, k_z], 
     types=['clamped', 'simple_fourier', 'simple_fourier']  
 )
 
 # Quadrature rule
-Q = QuadratureRule(differential_1form, 10)  # Increased from 7 to 10 for better integration
+Q = QuadratureRule(differential_1form, 10)  
 
 # Coordinate transformation
 def F(x):
@@ -83,7 +82,7 @@ def get_hessian_components_fast():
         # Handle both scalar and vector inputs from JAX autodiff
         if jnp.ndim(x_log) == 0:
             # Scalar input 
-            x_coord = x_log  # Use directly as x-coordinate
+            x_coord = x_log 
         else:
             # Vector input - extract x-coordinate
             x_coord = x_log[0] if x_log.shape == (3,) else x_log[..., 0]
@@ -99,7 +98,7 @@ def get_hessian_components_fast():
         Handles both scalar and vector inputs from JAX autodiff while 
         preserving 1-form transformation.
         """
-        # Handle different input shapes robustly
+        # Handle different input shapes 
         if jnp.ndim(x_log) == 0:
             # Scalar input 
             x_coord = x_log
@@ -122,13 +121,13 @@ def get_hessian_components_fast():
         x_physical = a * x_coord
         q_val = q_profile(x_physical)
 
-        # Compute Jacobian at the point
+        # Compute Jacobian mapping at the point
         DF = jax.jacfwd(F)(x_point)
         
-        # B-field components in logical coordinates
+        # B-field components in slab
         B0_x = 0.0
-        B0_y = (B0*a)/(2*jnp.pi*a*q_val*R0)
-        B0_z = B0/(2*jnp.pi*R0)
+        B0_y = (B0*a)/(q_val*R0)
+        B0_z = B0
 
         B_vector = jnp.array([B0_x, B0_y, B0_z])
 
@@ -362,60 +361,162 @@ if __name__ == "__main__":
         
         return thermal_pressure  + magnetic_pressure
 
-    # Normalized Alfvén continuum
+    #  Alfvén continuum
     def w_2(x): return B0**2/R0**2 * (n + (m/q(x)))**2
 
     def plot_eigenfunction(eigvec, eigval, differential_1form, a, alfven_scale, mode_index):
-        """Plot eigenfunction components."""
+        """Plot eigenfunction magnitude with proper 1-form to vector transformation."""
         print(f"\n=== PLOTTING EIGENFUNCTION FOR MODE {mode_index} ===")
         
-        # Create fine grid for plotting (restricted to interior for now)
-        n_plot = 500
-        x_plot = np.linspace(0.01 * a, 0.99 * a, n_plot)
-        x_logical_plot = x_plot / a
+        # RESONANCE CONDITION CHECK
+        print("\n=== RESONANCE CONDITION CHECK ===")
+        print(f"Eigenvalue λ = {eigval:.6f}")
+        print(f"Mode numbers: m = {m}, n = {n}")
         
-        # Evaluate eigenfunction components
-        eigenfunction = DiscreteFunction(eigvec, differential_1form)
+        # For Alfvén continuum: λ = (n + m/q(x_res))**2 / alfven_scale  
+        # So: λ * alfven_scale = (n + m/q(x_res))**2
+        # This gives: sqrt(λ * alfven_scale) = |n + m/q(x_res)|
+        
+        lambda_scaled = eigval * alfven_scale
+        sqrt_lambda_scaled = np.sqrt(lambda_scaled)
+        
+        print(f"√(λ * alfven_scale) = {sqrt_lambda_scaled:.6f}")
+        print(f"This should equal |n + m/q(x_res)| = |{n} + {m}/q(x_res)|")
+        
+        # Solve for resonant q-value: n + m/q_res = ±sqrt_lambda_scaled
+        # So: m/q_res = ±sqrt_lambda_scaled - n
+        # Therefore: q_res = m / (±sqrt_lambda_scaled - n)
+        
+        # Try both signs
+        q_res_positive = m / (sqrt_lambda_scaled - n) if (sqrt_lambda_scaled - n) != 0 else None
+        q_res_negative = m / (-sqrt_lambda_scaled - n) if (-sqrt_lambda_scaled - n) != 0 else None
+        
+        print("Possible resonant q-values:")
+        if q_res_positive is not None:
+            print(f"  q_res (+): {q_res_positive:.6f}")
+        if q_res_negative is not None:
+            print(f"  q_res (-): {q_res_negative:.6f}")
+        
+        # Check which q-value(s) are in the valid range [q0, q1]
+        valid_q_values = []
+        if q_res_positive is not None and q0 <= q_res_positive <= q1:
+            valid_q_values.append(q_res_positive)
+        if q_res_negative is not None and q0 <= q_res_negative <= q1:
+            valid_q_values.append(q_res_negative)
+        
+        if len(valid_q_values) == 0:
+            print(f"⚠️  No resonant q-value in valid range [{q0:.3f}, {q1:.3f}]")
+            resonant_positions = []
+        else:
+            print(f"Valid resonant q-value(s): {valid_q_values}")
+            
+            # Convert q-values to radial positions using: q(x) = q0 + (q1-q0)*(x/a)**2
+            # So: x/a = sqrt((q - q0)/(q1 - q0))
+            resonant_positions = []
+            for q_res in valid_q_values:
+                x_over_a = np.sqrt((q_res - q0) / (q1 - q0))
+                x_physical = x_over_a * a
+                resonant_positions.append((x_physical, x_over_a, q_res))
+                print(f"  Predicted resonant position: x = {x_physical:.6f}, x/a = {x_over_a:.6f}")
+                
+                # Verify by evaluating continuum at this position
+                w2_at_resonance = w_2(x_physical)
+                w2_normalized = w2_at_resonance / alfven_scale
+                print(f"  Continuum frequency at x = {x_physical:.6f}: ω²/ω_A² = {w2_normalized:.6f}")
+                print(f"  Match with eigenvalue: {np.abs(w2_normalized - eigval):.2e}")
+        
+        def oneform_to_vector(oneform_values, x_logical):
+            """Transform 1-form to vector field using the metric tensor."""
+            # Compute Jacobian at this point
+            DF = jax.jacfwd(F)(x_logical)
+            
+            # Metric tensor in logical coordinates: g = DF^T DF
+            g = DF.T @ DF
+            g_inv = inv33(g)
+            
+            # Transform 1-form to vector using inverse metric: v = g^(-1) v_α
+            vector_logical = g_inv @ oneform_values
+            
+            # Transform to physical coordinates: v_phys = DF v_logical  
+            vector_physical = DF @ vector_logical
+            
+            return vector_physical
+
+        
+        # Create fine grid for plotting (logical coordinates)
+        n_plot = 100
+        x_min_safe = 0.0   # Include x = 0
+        x_max_safe = 1.0   # Include up to x = 1.0
+        x_logical_plot = np.linspace(x_min_safe, x_max_safe, n_plot)
         y_fixed = 0.5
         z_fixed = 0.5
-        eval_points_plot = np.array([[x, y_fixed, z_fixed] for x in x_logical_plot])
+        
+        # Create eigenfunction from coefficients
+        eigenfunction_1form = DiscreteFunction(eigvec, differential_1form)
+        
+        print("\nComputing eigenfunction on full domain x=0 to x=1...")
         
         try:
-            eigenfunction_values_plot = jax.vmap(eigenfunction)(eval_points_plot)
+            # Evaluate and transform each point
+            vector_components = []
+            physical_positions = []
             
-            # Extract components
-            u_x_plot = eigenfunction_values_plot[:, 0]
-            u_y_plot = eigenfunction_values_plot[:, 1]
-            u_z_plot = eigenfunction_values_plot[:, 2]
-            eigenfunction_norm_plot = np.sqrt(u_x_plot**2 + u_y_plot**2 + u_z_plot**2)
+            for x_log in x_logical_plot:
+                x_logical = jnp.array([x_log, y_fixed, z_fixed])
+                
+                # Evaluate 1-form at this logical point  
+                oneform_values = eigenfunction_1form(x_logical)
+                
+                # Transform to physical vector field
+                vector_phys = oneform_to_vector(oneform_values, x_logical)
+                vector_components.append(vector_phys)
+                
+                # Get physical position
+                x_physical = F(x_logical)
+                physical_positions.append(x_physical[0])  # x-coordinate only
             
-       
+            vector_components = np.array(vector_components)
+            physical_positions = np.array(physical_positions)
             
-            # Create the plot
-            fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+            # Extract physical displacement components
+            u_x_plot = vector_components[:, 0]  # Radial 
+            u_y_plot = vector_components[:, 1]  # Poloidal
+            u_z_plot = vector_components[:, 2]  # Toroidal 
+            eigenfunction_norm_plot = np.sqrt(np.abs(u_x_plot)**2 + np.abs(u_y_plot)**2 + np.abs(u_z_plot)**2)
             
-            # Plot eigenfunction components
-            ax.plot(x_plot, u_x_plot, 'b-', label='u_x', linewidth=2)
-            ax.plot(x_plot, u_y_plot, 'r-', label='u_y', linewidth=2)
-            ax.plot(x_plot, u_z_plot, 'g-', label='u_z', linewidth=2)
-            ax.plot(x_plot, eigenfunction_norm_plot, 'k-', label='|u|', linewidth=3)
+        
+            # Create simple magnitude plot
+            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
             
-            ax.set_xlabel('Radial position x')
-            ax.set_ylabel('Eigenfunction components')
-            ax.set_title(f'Incompressible Alfvén Mode {mode_index} (λ = {eigval:.6f})')
+            # Plot just the eigenfunction magnitude
+            ax.plot(physical_positions/a, eigenfunction_norm_plot, 'k-', linewidth=2, label='|u|')
+            
+            # Mark predicted resonant positions
+            if len(resonant_positions) > 0:
+                for i, (x_phys, x_norm, q_res) in enumerate(resonant_positions):
+                    ax.axvline(x=x_norm, color='red', linestyle='--', alpha=0.7, 
+                              label=f'Predicted resonance {i+1}' if i == 0 else '')
+                    # Add text annotation
+                    ax.text(x_norm, ax.get_ylim()[1] * 0.8, f'x/a = {x_norm:.3f}\nq = {q_res:.3f}', 
+                           rotation=90, ha='right', va='top', fontsize=8, color='red')
+    
+            ax.set_xlabel('Normalized radial position (x/a)')
+            ax.set_ylabel('|u| - Displacement magnitude')
+            ax.set_title(f'Mode {mode_index} Eigenfunction Magnitude (λ = {eigval:.6f})')
             ax.legend()
             ax.grid(True, alpha=0.3)
             
             plt.tight_layout()
-            plt.savefig(f'incompressible_alfven_mode_{mode_index}.png', dpi=300, bbox_inches='tight')
+            plt.savefig(f'alfven_mode_{mode_index}_eigenfunction.png', dpi=300, bbox_inches='tight')
             plt.show()
             
-            print(f"✓ Plot saved as 'incompressible_alfven_mode_{mode_index}.png'")
+            print(f"✓ Eigenfunction plot saved as 'alfven_mode_{mode_index}_eigenfunction.png'")
             
         except Exception as e:
             print(f"❌ Error plotting eigenfunction: {e}")
             import traceback
             traceback.print_exc()
+            return None
 
 
     # CONTINUUM EVALUATION
@@ -455,7 +556,9 @@ if __name__ == "__main__":
             
             # Create evaluation points for divergence computation
             n_div_points = 50
-            x_logical = np.linspace(0.0, 1.0, n_div_points)  
+            x_min_safe = 0.0   # Include x = 0 (same as eigenfunction plotting)
+            x_max_safe = 1.0   # Include up to x = 1.0 (same as eigenfunction plotting)
+            x_logical = np.linspace(x_min_safe, x_max_safe, n_div_points)  
             x_physical = x_logical * a
             y_fixed = 0.5 #Using for now
             z_fixed = 0.5
@@ -486,7 +589,9 @@ if __name__ == "__main__":
             print(f"{'Mode':<6} {'Index':<8} {'Eigenvalue':<12} {'Div1D':<12}")
             print("-" * 50)
             
-        
+            # Track divergence values for all modes
+            divergence_values = []
+            
             # Analyze all Alfvén continuum modes
             for i, idx in enumerate(continuum_indices):
                 eigval = continuum_eigenvalues[i]
@@ -494,21 +599,17 @@ if __name__ == "__main__":
                 
                 # Compute 1D divergence
                 div_norm_1d, div_values_1d, x_div_1d = compute_divergence_1d(eigvec)
+                divergence_values.append(div_norm_1d)
                 
-                print(f"{i:<6} {idx:<8} {eigval:<12.3f} {div_norm_1d:<12.3f}")
-                
-                # Classify mode type based on 1D divergence
+                # Check if this is a pure Alfvén mode (incompressible)
                 if div_norm_1d < 0.3:
-                    print("    ✓ Pure Alfvén mode (incompressible)")
-                    
-                    # PLOT MODE 131 SPECIFICALLY (lowest divergence pure Alfvén mode)
-                    if idx == 131:
-                        plot_eigenfunction(eigvec, eigval, differential_1form, a, alfven_scale, idx)
-                        
+                    mode_type = "Pure Alfvén"
                 elif div_norm_1d < 0.6:
-                    print("    ⚠️  Mixed mode")
+                    mode_type = "Mixed"
                 else:
-                    print("    ❌ Compressible mode")
+                    mode_type = "Compressible"
+                
+                print(f"{i:<6} {idx:<8} {eigval:<12.3f} {div_norm_1d:<12.3f} {mode_type}")
                 
                 # Check for degeneracy with previous mode
                 if i > 0:
@@ -519,7 +620,7 @@ if __name__ == "__main__":
                     # Check eigenvalue degeneracy
                     eigval_diff = abs(eigval - prev_eigval)
                     if eigval_diff < 1e-10:
-                        print("    🔄 DEGENERATE: within e-10 of  previous mode")
+                        print("    🔄 DEGENERATE: within e-10 of previous mode")
                         
                         # Check differences in eigenvectors by taking norms
                         overlap = abs(eigvec.T @ C_np @ prev_eigvec) / (np.sqrt(eigvec.T @ C_np @ eigvec) * np.sqrt(prev_eigvec.T @ C_np @ prev_eigvec))
@@ -530,8 +631,18 @@ if __name__ == "__main__":
                         elif overlap < 0.1:
                             print("    ✓ Orthogonal eigenvectors")
                         else:
-                            print("    ⚠️  mixed degeneracy")
+                            print("    ⚠️  Mixed degeneracy")
                     elif eigval_diff < 1e-6:
                         print(f"    ⚠️  NEAR-DEGENERATE: Very close eigenvalue (diff: {eigval_diff:.2e})")
+            
+            # Find the mode with the lowest divergence
+            min_div_idx = np.argmin(divergence_values)
+            best_idx = continuum_indices[min_div_idx]
+            best_eigval = continuum_eigenvalues[min_div_idx]
+            best_div = divergence_values[min_div_idx]
+            
+            print("\n=== PLOTTING LOWEST DIVERGENCE MODE ===")
+            print(f"Mode with lowest divergence: index {best_idx}, eigenvalue {best_eigval:.6f}, divergence {best_div:.3f}")
+            plot_eigenfunction(eigvecs_full[:, best_idx], best_eigval, differential_1form, a, alfven_scale, best_idx)
                 
               
