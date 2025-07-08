@@ -534,8 +534,11 @@ class LazyWeightedDoubleDivergenceMatrix(LazyMatrix):
         # Step 3: Get quadrature weights
         quad_weights = self.Q.w
         
-        # Step 4: Assemble matrix using efficient einsum
-        return jnp.einsum("qi,qj,q,q->ij", div_vals, div_vals, weight_vals, quad_weights)
+        # Step 4: Get Jacobian determinant at quadrature points  
+        J_vals = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
+        
+        # Step 5: Assemble matrix using efficient einsum (multiply by J)
+        return jnp.einsum("qi,qj,q,q,q->ij", div_vals, div_vals, weight_vals, quad_weights, J_vals)
 
 
 class LazyMagneticTensionMatrix(LazyMatrix):
@@ -592,9 +595,9 @@ class LazyMagneticTensionMatrix(LazyMatrix):
         # Compute integrand: curl(φ_i × B₀) · curl(φ_j × B₀)
         integrand = jnp.einsum('ijk,ljk->ijl', curl_vals, curl_vals)
         
-        # Integrate
+        # Integrate (multiply by J)
         J = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
-        result = jnp.einsum('ijl,j,j->il', integrand, 1/(J**2), self.Q.w)
+        result = jnp.einsum('ijl,j,j->il', integrand, 1/J, self.Q.w)
         
         return result
 
@@ -679,8 +682,8 @@ class LazyCurrentDensityMatrix(LazyMatrix):
         integrand_vals = jax.vmap(jax.vmap(jax.vmap(compute_integrand, (0, None, None)), (None, 0, None)), (None, None, 0))(
             jnp.arange(len(self.Q.x)), jnp.arange(self.n0), jnp.arange(self.n0))
         
-        # Step 6: Integrate 
-        result = jnp.einsum('ijk,k->ij', integrand_vals, self.Q.w)
+        # Step 6: Integrate (multiply by J)
+        result = jnp.einsum('ijk,k,k->ij', integrand_vals, self.Q.w, J)
         
         return result
 
@@ -808,8 +811,9 @@ class LazyPressureGradientForceMatrix(LazyMatrix):
         integrand_vals = jax.vmap(jax.vmap(jax.vmap(compute_integrand, (0, None, None)), (None, 0, None)), (None, None, 0))(
             jnp.arange(len(self.Q.x)), jnp.arange(self.n0), jnp.arange(self.n0))
         
-        # Step 8: Integrate 
-        result = jnp.einsum('ijk,k->ij', integrand_vals, self.Q.w)
+        # Step 8: Integrate (multiply by J)
+        J_j = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
+        result = jnp.einsum('ijk,k,k->ij', integrand_vals, self.Q.w, J_j)
         
         return result
 
