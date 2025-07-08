@@ -3,7 +3,7 @@ Hessian calculation and Alfvén wave analysis
 
 This file solves the generalized eigenvalue problem, Hx = λCx, where H is the Hessian of the force operator,
 C is a mass matrix, and x is the eigenvector. The equilibrium B-field and equilibrium pressure is from (4.1) in Florian's thesis, and is in a slab geometry 
-in (x',y',z') slab coordinates. The basis functions are 1 forms, and the B-field is converted to a 1 form in logical coordinates.
+in (x',y',z') slab coordinates. The basis functions are now 2 forms.
 
 The four terms in the Hessian are:
 1. Term 1: ∫ (∇ × (φ_i × B₀)) · (∇ × (φ_j × B₀))  dx
@@ -38,32 +38,35 @@ q1 = 1.85 # Figure 4.1
 gamma = 5/3
 
 # Mode number parameters 
-n = -1   # Toroidal mode number
-m = 1    # Poloidal mode number
+n = -1   
+m = 1   
 
-
-k_y = m/(2*jnp.pi*a)  # Wave number in logical y-coordinates
-k_z = n/(2*jnp.pi*R0)  # Wave number in logical z-coordinates
+# Wave numbers
+k_y = m/(2*jnp.pi*a)  
+k_z = n/(2*jnp.pi*R0) 
 
 # q-profile function
 def q_profile(x):
     """q-profile as a function of x"""
     return q0 + (q1-q0)*(x**2)/(a**2)  
 
-differential_1form = DifferentialForm( 
-    k=1,  # 1-form 
-    ns=[11, 1, 1], 
+differential_2form = DifferentialForm( 
+    k=2,  
+    ns=[8, 2, 2], 
     ps=[4, k_y, k_z], 
     types=['clamped', 'simple_fourier', 'simple_fourier']  
 )
 
-# Quadrature rule
-Q = QuadratureRule(differential_1form, 10)  
+Q = QuadratureRule(differential_2form, 10)  
 
-# Coordinate transformation
 def F(x):
     """Transform coordinates to slab dimensions: Lx = a, Ly = 2πa, Lz = 2πR₀"""
     return jnp.array([a * x[0], 2*jnp.pi*a * x[1], 2*jnp.pi*R0 * x[2]])
+
+
+def DF(x):
+    """Jacobian of the coordinate transformation"""
+    return jax.jacfwd(F)(x)
 
 def get_hessian_components_fast():
     """
@@ -74,71 +77,28 @@ def get_hessian_components_fast():
     # X-DEPENDENT EQUILIBRIUM FIELD FUNCTIONS
     # ============================================================================
     
-
-    
     # Pressure function 
     def pressure_func(x_log):
-        """Pressure function that takes logical x-coordinate and returns pressure"""
-        # Handle both scalar and vector inputs from JAX autodiff
-        if jnp.ndim(x_log) == 0:
-            # Scalar input 
-            x_coord = x_log 
-        else:
-            # Vector input - extract x-coordinate
-            x_coord = x_log[0] if x_log.shape == (3,) else x_log[..., 0]
-        
+        """Pressure function that takes logical coordinates (0-form)"""
+        x_coord = x_log[0] if jnp.ndim(x_log) > 0 else x_log # x-coordinate
         q_val = q_profile(x_coord)
         p_val = ((β*B0**2)/(2))*(1+(a/(q_val*R0))**2) + ((B0**2)*(a**2)/R0**2)*((1/(q0**2))-(1/q_val**2))
         return p_val
 
     # Equilibrium B₀ function
     def B0_field(x_log):
-        """
-         B-field function in logical coordinates.
-        Handles both scalar and vector inputs from JAX autodiff while 
-        preserving 1-form transformation.
-        """
-        # Handle different input shapes 
-        if jnp.ndim(x_log) == 0:
-            # Scalar input 
-            x_coord = x_log
-            # Create a 3D point for coordinate transformation
-            x_point = jnp.array([x_coord, 0.0, 0.0])
-        elif x_log.shape == ():
-            #  scalar
-            x_coord = x_log
-            x_point = jnp.array([x_coord, 0.0, 0.0])
-        elif x_log.shape == (3,):
-            # 3D vector input
-            x_coord, y_coord, z_coord = x_log[0], x_log[1], x_log[2]
-            x_point = x_log
-        else:
-            # Fallback for other shapes
-            x_coord = x_log[..., 0]
-            x_point = x_log
-        
-        # Convert logical to physical x-coordinate
-        x_physical = a * x_coord
-        q_val = q_profile(x_physical)
+        """B-field function that takes logical coordinates (2-form)"""
+        x_coord = x_log[0] if jnp.ndim(x_log) > 0 else x_log # x-coordinate
+        # For now, we will use B(F(\hat{x})) as the appropriate two form for B
+        q_val = q_profile(a*x_coord)
 
-        # Compute Jacobian mapping at the point
-        DF = jax.jacfwd(F)(x_point)
-        
-        # B-field components in slab
+        # B-field
         B0_x = 0.0
         B0_y = (B0*a)/(q_val*R0)
         B0_z = B0
 
-        B_vector = jnp.array([B0_x, B0_y, B0_z])
+        return jnp.array([B0_x, B0_y, B0_z])
 
-        # Transform vector field to logical coordinates
-        B_vector_logical = inv33(DF) @ B_vector
-
-        # Transform from vector field to 1-form using metric tensor
-        g = DF.T @ DF  # Metric tensor
-        B_1form = g @ B_vector_logical  # Convert to 1-form
-
-        return B_1form
 
     # ============================================================================
     # COMPUTE MATRIX COMPONENTS OF HESSIAN
@@ -148,24 +108,24 @@ def get_hessian_components_fast():
     start_time = time.time()
     
     # Mass matrix
-    M_mass = LazyMassMatrix(differential_1form, Q, F=F)
+    M_mass = LazyMassMatrix(differential_2form, Q, F=F)
     C = M_mass.M
     print(f"Mass matrix: {C.shape} ({time.time() - start_time:.2f}s)")
 
     # Term 1:  ∫ (∇ × (φ_i × B₀)) · (∇ × (φ_j × B₀))  dx
-    K_magnetic_tension = LazyMagneticTensionMatrix(differential_1form, Q, B0_field, F=F)    
+    K_magnetic_tension = LazyMagneticTensionMatrix(differential_2form, Q, B0_field, F=F, k_y=k_y, k_z=k_z)    
     print(f"Term 1: {time.time() - start_time:.2f}s")
 
     # Term 2: ∫ γ*p*(∇·φ_i)*(∇·φ_j)
-    D_divdiv_weighted = LazyWeightedDoubleDivergenceMatrix(differential_1form, Q, pressure_func, F=F).M
+    D_divdiv_weighted = LazyWeightedDoubleDivergenceMatrix(differential_2form, Q, pressure_func, F=F).M
     print(f"Term 2: {time.time() - start_time:.2f}s")
 
     # Term 3: ∫ φ_i · [(∇×B₀) × (∇×(φ_j × B₀))] dx (note(∇×B₀) is nearly zero)
-    K_current_density = LazyCurrentDensityMatrix(differential_1form, Q, B0_field, F=F)
+    K_current_density = LazyCurrentDensityMatrix(differential_2form, Q, B0_field, F=F, k_y=k_y, k_z=k_z)
     print(f"Term 3: {time.time() - start_time:.2f}s")
 
     # Term 4: ∫ φ_i · ∇(φ_j · ∇p) dx
-    K_pressure_gradient_force = LazyPressureGradientForceMatrix(differential_1form, Q, pressure_func, F=F)
+    K_pressure_gradient_force = LazyPressureGradientForceMatrix(differential_2form, Q, pressure_func, F=F)
     K_pressure_gradient_force = K_pressure_gradient_force.M
     print(f"Term 4: {time.time() - start_time:.2f}s")
     
@@ -345,27 +305,13 @@ if __name__ == "__main__":
     # q profile
     def q(x): return q0 + (q1-q0)*(x**2)/(a**2)
 
-    # Leaving this in for sound continuum later
-    def B_cont(x):
-        """Norm of equilibrium B field for continuum calculation"""
-        Bx = 0.0
-        Bz = B0
-        By = (B0*a)/(q(x)*R0)
-        return jnp.sqrt(Bx**2 + By**2 + Bz**2)
     
-    def p_cont(x):
-        """Pressure p field for continuum calculation"""
-        # Pressure terms
-        thermal_pressure = (β*B0**2)/(2)*(1+(a**2/((q(x))**2)*(R0**2)))
-        magnetic_pressure = ((B0**2)*(a**2)/R0**2)*((1/(q0**2))-(1/q(x)**2))
-        
-        return thermal_pressure  + magnetic_pressure
 
     #  Alfvén continuum
     def w_2(x): return B0**2/R0**2 * (n + (m/q(x)))**2
 
-    def plot_eigenfunction(eigvec, eigval, differential_1form, a, alfven_scale, mode_index):
-        """Plot eigenfunction magnitude with proper 1-form to vector transformation."""
+    def plot_eigenfunction(eigvec, eigval, differential_2form, a, alfven_scale, mode_index):
+        """Plot eigenfunction magnitude with proper 2-form to vector transformation."""
         print(f"\n=== PLOTTING EIGENFUNCTION FOR MODE {mode_index} ===")
         
         # RESONANCE CONDITION CHECK
@@ -452,7 +398,7 @@ if __name__ == "__main__":
         z_fixed = 0.5
         
         # Create eigenfunction from coefficients
-        eigenfunction_1form = DiscreteFunction(eigvec, differential_1form)
+        eigenfunction_1form = DiscreteFunction(eigvec, differential_2form)
         
         print("\nComputing eigenfunction on full domain x=0 to x=1...")
         
@@ -552,12 +498,12 @@ if __name__ == "__main__":
         # Define 1D divergence function 
         def compute_divergence_1d(eigvec):
             """Compute 1D divergence of eigenfunction along x-direction"""
-            eigenfunction = DiscreteFunction(eigvec, differential_1form)
+            eigenfunction = DiscreteFunction(eigvec, differential_2form)
             
             # Create evaluation points for divergence computation
             n_div_points = 50
-            x_min_safe = 0.0   # Include x = 0 (same as eigenfunction plotting)
-            x_max_safe = 1.0   # Include up to x = 1.0 (same as eigenfunction plotting)
+            x_min_safe = 0.0   
+            x_max_safe = 1.0
             x_logical = np.linspace(x_min_safe, x_max_safe, n_div_points)  
             x_physical = x_logical * a
             y_fixed = 0.5 #Using for now
@@ -616,24 +562,7 @@ if __name__ == "__main__":
                     prev_idx = continuum_indices[i-1]
                     prev_eigval = continuum_eigenvalues[i-1]
                     prev_eigvec = eigvecs_full[:, prev_idx]
-                    
-                    # Check eigenvalue degeneracy
-                    eigval_diff = abs(eigval - prev_eigval)
-                    if eigval_diff < 1e-10:
-                        print("    🔄 DEGENERATE: within e-10 of previous mode")
-                        
-                        # Check differences in eigenvectors by taking norms
-                        overlap = abs(eigvec.T @ C_np @ prev_eigvec) / (np.sqrt(eigvec.T @ C_np @ eigvec) * np.sqrt(prev_eigvec.T @ C_np @ prev_eigvec))
-                        print(f"    Overlap with previous mode: {overlap:.6f}")
-                        
-                        if overlap > 0.9:
-                            print("    ❌  Nearly identical eigenvectors")
-                        elif overlap < 0.1:
-                            print("    ✓ Orthogonal eigenvectors")
-                        else:
-                            print("    ⚠️  Mixed degeneracy")
-                    elif eigval_diff < 1e-6:
-                        print(f"    ⚠️  NEAR-DEGENERATE: Very close eigenvalue (diff: {eigval_diff:.2e})")
+                 
             
             # Find the mode with the lowest divergence
             min_div_idx = np.argmin(divergence_values)
@@ -643,6 +572,6 @@ if __name__ == "__main__":
             
             print("\n=== PLOTTING LOWEST DIVERGENCE MODE ===")
             print(f"Mode with lowest divergence: index {best_idx}, eigenvalue {best_eigval:.6f}, divergence {best_div:.3f}")
-            plot_eigenfunction(eigvecs_full[:, best_idx], best_eigval, differential_1form, a, alfven_scale, best_idx)
+            plot_eigenfunction(eigvecs_full[:, best_idx], best_eigval, differential_2form, a, alfven_scale, best_idx)
                 
               

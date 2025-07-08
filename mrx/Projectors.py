@@ -15,6 +15,7 @@ import jax
 import jax.numpy as jnp
 
 from mrx.Utils import div, grad, inv33, jacobian_determinant
+from mrx.DifferentialForms import DiscreteFunction
 
 __all__ = ['Projector', 'CurlProjection']
 
@@ -179,6 +180,94 @@ class Projector:
         return jnp.einsum("ijk,jk,j->i", Λijk, fjk, wj)
         # Jj = jax.vmap(jacobian(self.F))(self.Q.x)  # n_q x 1
         # return jnp.einsum("ijk,jk,j,j->i", Λijk, fjk, 1/Jj, wj)
+
+class CrossProductProjection:
+    """
+    Given bases Λn, Λm, Λk, constructs an operator to evaluate
+    (w, u) -> ∫ (wₕ × uₕ) · Λn[i] dx for all i, where Λn[i] is the i-th basis function of Λn
+    and wₕ = ∑ w[i] Λm[i], uₕ = ∑ u[i] Λk[i] are discrete functions
+    with coordinate transformation F.
+    """
+    def __init__(self, Λn, Λm, Λk, Q, F=None, En=None, Em=None, Ek=None):
+        """
+        Given bases Λn, Λm, Λk, constructs an operator to evaluate
+        (w, u) -> ∫ (wₕ × uₕ) · Λn[i] dx for all i, where Λn[i] is the i-th basis function of Λn
+        and wₕ = ∑ w[i] Λm[i], uₕ = ∑ u[i] Λk[i] are discrete functions
+        with coordinate transformation F.
+        Args:
+            Λn: Basis for n-forms (n can be 1 or 2)
+            Λm: Basis for m-forms (m can be 1 or 2)
+            Λk: Basis for k-forms (k can be 1 or 2)
+            Q: Quadrature rule for numerical integration
+            F (callable, optional): Coordinate transformation function.
+                                    Defaults to identity mapping.
+            Ek, Ev, En (array, optional): Extraction operator matrix for Λn, Λm, Λk.
+                                Defaults to identity matrix.
+        """
+        self.Λn = Λn
+        self.Λm = Λm
+        self.Λk = Λk
+        self.Q = Q
+        if F is None:
+            self.F = lambda x: x
+        else:
+            self.F = F
+        self.En = En if En is not None else None
+        self.Em = Em if Em is not None else None
+        self.Ek = Ek if Ek is not None else None
+        if En is None:
+            self.M = jnp.eye(Λn.n)
+        else:
+            self.M = En
+    def __call__(self, w, u):
+        """
+        evaluates ∫ (wₕ × uₕ) · Λn[i] dx for all i
+        and collects the values in a vector.
+        Args:
+            w (array): m-form dofs
+            u (array): k-form dofs
+        Returns:
+            array: ∫ (wₕ × uₕ) · Λn[i] dx for all i
+        """
+        return self.M @ self.projection(w, u)
+    def projection(self, w, u):
+        DF = jax.jacfwd(self.F)
+        w_h = DiscreteFunction(w, self.Λm, self.Em)
+        u_h = DiscreteFunction(u, self.Λk, self.Ek)
+        if self.Λn.k == 1 and self.Λm.k == 2 and self.Λk.k == 1:
+            def v(x):
+                G = DF(x).T @ DF(x) / jnp.linalg.det(DF(x))
+                return jnp.cross(G @ w_h(x), u_h(x))
+        elif self.Λn.k == 1 and self.Λm.k == 1 and self.Λk.k == 1:
+            def v(x):
+                return jnp.cross(w_h(x), u_h(x))
+        elif self.Λn.k == 2 and self.Λm.k == 1 and self.Λk.k == 1:
+            def v(x):
+                G = DF(x).T @ DF(x) / jnp.linalg.det(DF(x))
+                return G @ jnp.cross(w_h(x), u_h(x))
+        elif self.Λn.k == 2 and self.Λm.k == 2 and self.Λk.k == 1:
+            def v(x):
+                G = DF(x).T @ DF(x) / jnp.linalg.det(DF(x))
+                return G @ jnp.cross(G @ w_h(x), u_h(x))
+        elif self.Λn.k == 1 and self.Λm.k == 2 and self.Λk.k == 2:
+            def v(x):
+                G = DF(x).T @ DF(x)
+                return inv33(G) @ jnp.cross(w_h(x), u_h(x))
+        elif self.Λn.k == 2 and self.Λm.k == 1 and self.Λk.k == 2:
+            def v(x):
+                G = DF(x).T @ DF(x) / jnp.linalg.det(DF(x))
+                return G @ jnp.cross(w_h(x), G @ u_h(x))
+        elif self.Λn.k == 2 and self.Λm.k == 2 and self.Λk.k == 2:
+            def v(x):
+                return jnp.cross(w_h(x), u_h(x)) / jnp.linalg.det(DF(x))
+        else:
+            raise ValueError("Not yet implemented")
+        # Compute projections
+        vjk = jax.vmap(v)(self.Q.x)  # n_q x d
+        Λijk = jax.vmap(jax.vmap(self.Λn, (0, None)), (None, 0))(
+            self.Q.x, self.Λn.ns)  # n x n_q x d
+        wj = self.Q.w
+        return jnp.einsum("ijk,jk,j->i", Λijk, vjk, wj)
 
 
 class CurlProjection:
