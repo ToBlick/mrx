@@ -22,7 +22,6 @@ import matplotlib
 matplotlib.use('TkAgg') 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
-from mrx.BoundaryConditions import LazyBoundaryOperator
 import scipy.linalg
 from mrx.Utils import inv33,jacobian_determinant
 from mrx.LazyMatrices import LazyMassMatrix, LazyMagneticTensionMatrixV2, LazyPressureGradientForceMatrixV2, LazyCurrentDensityMatrixV2, LazyWeightedDoubleDivergenceMatrixV2, LazyDerivativeMatrix
@@ -182,30 +181,6 @@ if __name__ == "__main__":
     H_np = np.array(H_analytical)
     C_np = np.array(C_analytical)
     
-    # Apply boundary conditions to enforce zero at x=0,1
-    print("\n=== APPLYING BOUNDARY CONDITIONS ===")
-    print("Creating boundary operator for zero boundary conditions at x=0,1...")
-    
-    # Create boundary operator for zero BCs in x-direction
-    boundary_op = LazyBoundaryOperator(differential_2form, ('dirichlet', 'none', 'none'))
-    B = np.array(boundary_op.M)
-    
-    print(f"Boundary operator shape: {B.shape}")
-    print(f"Full space dimension: {H_np.shape[0]}")
-    print(f"Reduced space dimension: {B.shape[0]}")
-    print(f"Removed {H_np.shape[0] - B.shape[0]} boundary degrees of freedom")
-    
-    # Apply boundary conditions to matrices
-    H_reduced = B @ H_np @ B.T
-    C_reduced = B @ C_np @ B.T
-    
-    print(f"Reduced Hessian shape: {H_reduced.shape}")
-    print(f"Reduced mass matrix shape: {C_reduced.shape}")
-    
-    # Use reduced matrices for eigenvalue problem
-    H_np = H_reduced
-    C_np = C_reduced
-    
     
     # Use Cholesky decomposition to transform to regular eigenvalue problem
     print("Using Cholesky decomposition to transform Hx = λCx → H̃y = λy")
@@ -335,7 +310,7 @@ if __name__ == "__main__":
     
     # Transform eigenvectors back: x = L^(-T) y
     print("Transforming eigenvectors back: x = L^(-T) y")
-    eigvecs_reduced = scipy.linalg.solve_triangular(L.T, eigvecs_y, lower=False)
+    eigvecs_full = scipy.linalg.solve_triangular(L.T, eigvecs_y, lower=False)
     
     print("  ✓ Eigenvalue computation completed")
     print(f"  Number of eigenvalues: {len(eigvals)}")
@@ -343,36 +318,12 @@ if __name__ == "__main__":
 
     # ANALYSIS (Making sure shape is correct)
     eigvals_full = eigvals[:C_np.shape[0]]
-    eigvecs_reduced = eigvecs_reduced[:, :C_np.shape[0]]
+    eigvecs_full = eigvecs_full[:, :C_np.shape[0]]
     alfven_scale = B0**2/R0**2
     eigvals_normalized = eigvals_full / alfven_scale
 
-    # Map eigenvectors back to full space for plotting
-    print("Mapping eigenvectors back to full space for plotting...")
-    eigvecs_full = B.T @ eigvecs_reduced
-    print(f"  Full space eigenvector shape: {eigvecs_full.shape}")
-    
     # Use unnormalized eigenfunctions
     eigvecs_normalized = eigvecs_full
-    
-    # Verify boundary conditions are working
-    print("\n=== VERIFYING BOUNDARY CONDITIONS ===")
-    print("Checking that eigenvectors are zero at boundaries...")
-    
-    # Check the first few eigenvectors at boundary indices
-    # For clamped B-splines, the first and last basis functions are boundary functions
-    boundary_indices = [0, 1, eigvecs_normalized.shape[0]-2, eigvecs_normalized.shape[0]-1]
-    
-    for i in range(min(5, eigvecs_normalized.shape[1])):
-        eigenvector = eigvecs_normalized[:, i]
-        boundary_values = eigenvector[boundary_indices]
-        max_boundary_val = np.max(np.abs(boundary_values))
-        print(f"  Mode {i}: max boundary value = {max_boundary_val:.2e}")
-        
-        if max_boundary_val > 1e-10:
-            print(f"    ⚠️  Warning: Non-zero boundary values detected!")
-        else:
-            print(f"    ✓ Boundary conditions satisfied")
     
     print("\n=== USING UNNORMALIZED EIGENFUNCTIONS ===")
     print("Eigenfunction norms (unnormalized):")
