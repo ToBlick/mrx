@@ -37,7 +37,6 @@ class LazyExtractionOperator:
         n2 (int): Size of second component
         n3 (int): Size of third component
         n (int): Total size of the operator
-        M: Assembled operator matrix
     """
 
     def __init__(self, Λ, ξ, zero_bc):
@@ -73,16 +72,18 @@ class LazyExtractionOperator:
             self.n1 = (self.dr - 1) * self.dχ * self.dζ
             self.n2 = 0
             self.n3 = 0
+        if self.k == -1:
+            self.n1 = ((self.nr - 2 - self.o) * self.nχ + 3) * self.nζ
+            self.n2 = ((self.nr - 2 - self.o) * self.nχ + 3) * self.nζ
+            self.n3 = ((self.nr - 2 - self.o) * self.nχ + 3) * self.nζ
         self.n = self.n1 + self.n2 + self.n3
-        self.M = self.assemble()
 
-    def __getitem__(self, idx):
-        """Get operator element at specified index."""
-        return self.M[idx]
+    def matrix(self):
+        return self.assemble()
 
     def __array__(self):
         """Convert operator to numpy array."""
-        return np.array(self.M)
+        return np.array(self.matrix())
 
     def _vector_index(self, idx):
         """
@@ -98,7 +99,7 @@ class LazyExtractionOperator:
         n1, n2 = self.n1, self.n2
         if self.k == 0 or self.k == 3:
             return 0, idx
-        elif self.k == 1 or self.k == 2:
+        elif self.k == 1 or self.k == 2 or self.k == -1:
             category = jnp.int32(idx >= n1) + jnp.int32(idx >= n1 + n2)
             index = idx - n1 * jnp.int32(idx >= n1) - \
                 n2 * jnp.int32(idx >= n1 + n2)
@@ -201,6 +202,18 @@ class LazyExtractionOperator:
         if self.k == 3:
             # Handle 3-forms
             return self._threeform(row_idx, col_idx, self.nr, self.nχ, self.nζ)
+        if self.k == -1:
+            # Handle vector fields
+            cat_row, row_idx = self._vector_index(row_idx)
+            cat_col, col_idx = self.Λ._vector_index(col_idx)
+            return jnp.where(
+                row_idx < 3 * self.nζ,
+                self._inner_zeroform(
+                    row_idx, col_idx, self.nr, self.nχ, self.nζ),
+                self._outer_zeroform(
+                    row_idx - 3 * self.nζ, col_idx, self.nr, self.nχ, self.nζ
+                ),
+            ) * jnp.int32(cat_row == cat_col)
 
     def _inner_zeroform(self, row_idx, col_idx, nr, nχ, nζ):
         """
@@ -334,7 +347,7 @@ def get_xi(_R, _Y, Λ0, Q):
     """
     nr, nχ, nζ = Λ0.nr, Λ0.nχ, Λ0.nζ
     P = Projector(Λ0, Q)
-    M = LazyMassMatrix(Λ0, Q).M
+    M = LazyMassMatrix(Λ0, Q).matrix()
 
     def R(x):
         return _R(x[0], x[1])

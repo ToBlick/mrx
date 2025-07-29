@@ -5,6 +5,7 @@ import jax.numpy as jnp
 
 __all__ = ['SplineBasis', 'TensorBasis', 'DerivativeSpline']
 
+
 class SplineBasis:
     """A class representing a basis of spline functions.
 
@@ -129,7 +130,9 @@ class SplineBasis:
                 jnp.logical_and(i == self.n-1, x == self.T[-1]),
                 1.0 * jnp.ones_like(x),
                 self._evaluate(x, i))
-        else:
+        elif self.type == 'constant':
+            return 1.0
+        elif self.type == 'fourier':
             return 1.0
 
     def _evaluate(self, x: float, i: int) -> jnp.ndarray:
