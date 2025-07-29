@@ -1,3 +1,4 @@
+# %%
 """
 2D Poisson Problem in Polar Coordinates
 
@@ -31,11 +32,8 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
-from mrx.LazyMatrices import LazyStiffnessMatrix
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.Projectors import Projector
-from mrx.Quadrature import QuadratureRule
+from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction
 from mrx.Utils import l2_product
 
 # Enable 64-bit precision for numerical stability
@@ -43,6 +41,8 @@ jax.config.update("jax_enable_x64", True)
 
 # Create output directory for figures
 os.makedirs("script_outputs", exist_ok=True)
+
+# %%
 
 
 @partial(jax.jit, static_argnames=["n", "p", "q"])
@@ -63,18 +63,12 @@ def get_err(n, p, q):
     R0 = 3.0
     Y0 = 0.0
 
-    def _R(r, χ):
-        """Compute the R coordinate in polar mapping."""
-        return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * jnp.pi * χ))
-
-    def _Y(r, χ):
-        """Compute the Y coordinate in polar mapping."""
-        return jnp.ones(1) * (Y0 + a * r * jnp.sin(2 * jnp.pi * χ))
-
     def F(x):
         """Polar coordinate mapping function."""
         r, χ, z = x
-        return jnp.ravel(jnp.array([_R(r, χ), _Y(r, χ), jnp.ones(1) * z]))
+        return jnp.array([R0 + a * r * jnp.cos(2 * jnp.pi * χ),
+                          -z,
+                          Y0 + a * r * jnp.sin(2 * jnp.pi * χ)])
 
     # Define exact solution and source term
     def u(x):
@@ -91,25 +85,21 @@ def get_err(n, p, q):
     ns = (n, n, 1)
     ps = (p, p, 0)
     types = ("clamped", "periodic", "constant")
-    # bcs = ('dirichlet', 'dirichlet', 'none')
-    Λ0 = DifferentialForm(0, ns, ps, types)
+    bcs = ('dirichlet', 'none', 'none')
 
-    # Get polar mapping and set up operators
-    Q = QuadratureRule(Λ0, q)
-    ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
-    E0 = LazyExtractionOperator(Λ0, ξ, zero_bc=True).M
-    K = LazyStiffnessMatrix(Λ0, Q, F=F, E=E0).M
-    P0 = Projector(Λ0, Q, F=F, E=E0)
+    Seq = DeRhamSequence(ns, ps, q, types, bcs, F, polar=True)
+    K = Seq.assemble_gradgrad()
 
     # Solve the system
-    u_hat = jnp.linalg.solve(K, P0(f))
-    u_h = DiscreteFunction(u_hat, Λ0, E0)
+    u_hat = jnp.linalg.solve(K, Seq.P0(f))
+    u_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0.matrix())
 
     # Compute error
     def err(x):
         return u(x) - u_h(x)
 
-    error = (l2_product(err, err, Q, F) / l2_product(u, u, Q, F)) ** 0.5
+    error = (l2_product(err, err, Seq.Q, F) /
+             l2_product(u, u, Seq.Q, F)) ** 0.5
     return error
 
 

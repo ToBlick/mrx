@@ -1,3 +1,4 @@
+# %%
 """
 2D Poisson Problem in Polar Coordinates
 
@@ -89,20 +90,20 @@ def get_err(n, p, q):
     # Assemble matrices
     Λ0, Λ2, Λ3 = [DifferentialForm(i, ns, ps, types) for i in [0, 2, 3]]
     Q = QuadratureRule(Λ0, q)
-    ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
+    ξ = get_xi(_R, _Y, Λ0, Q)[0]
     E0, E2, E3 = [LazyExtractionOperator(
-        Λ, ξ, False).M for Λ in [Λ0, Λ2, Λ3]]
-    D = LazyDerivativeMatrix(Λ2, Λ3, Q, F, E2, E3).M
-    M2 = LazyMassMatrix(Λ2, Q, F, E2).M
+        Λ, ξ, False) for Λ in [Λ0, Λ2, Λ3]]
+    D = LazyDerivativeMatrix(Λ2, Λ3, Q, F, E2, E3).matrix()
+    M2 = LazyMassMatrix(Λ2, Q, F, E2).matrix()
     K = D @ jnp.linalg.solve(M2, D.T)
     P3 = Projector(Λ3, Q, F, E3)
     # Solve the system
     u_hat = jnp.linalg.solve(K, P3(f))
     # Project the solution to zero-forms
-    M03 = LazyProjectionMatrix(Λ0, Λ3, Q, F, E0, E3).M
-    M0 = LazyMassMatrix(Λ0, Q, F, E0).M
+    M03 = LazyProjectionMatrix(Λ0, Λ3, Q, F, E0, E3).matrix()
+    M0 = LazyMassMatrix(Λ0, Q, F, E0).matrix()
     u_hat = jnp.linalg.solve(M0, M03.T @ u_hat)
-    u_h = DiscreteFunction(u_hat, Λ0, E0)
+    u_h = DiscreteFunction(u_hat, Λ0, E0.matrix())
 
     # Compute error
     def err(x):
@@ -115,7 +116,7 @@ def get_err(n, p, q):
 def run_convergence_analysis():
     """Run convergence analysis for different parameters."""
     # Parameter ranges
-    ns = np.arange(6, 16, 2)
+    ns = np.arange(6, 12, 2)
     ps = np.arange(1, 5)
     qs = np.arange(4, 8, 3)
 
@@ -240,3 +241,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# %%

@@ -1,3 +1,4 @@
+# %%
 """
 3D Poisson Problem with Dirichlet Boundary Conditions
 
@@ -27,11 +28,8 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.BoundaryConditions import LazyBoundaryOperator
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
-from mrx.LazyMatrices import LazyStiffnessMatrix
-from mrx.Projectors import Projector
-from mrx.Quadrature import QuadratureRule
+from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction
 from mrx.Utils import l2_product
 
 # Enable 64-bit precision for numerical stability
@@ -58,6 +56,7 @@ def get_err(n, p):
     ps = (p, p, p)
     types = ('clamped', 'clamped', 'clamped')
     bcs = ('dirichlet', 'dirichlet', 'dirichlet')
+    q = p
 
     # Define exact solution and source term
     def u(x):
@@ -70,19 +69,17 @@ def get_err(n, p):
         return 3 * (2*jnp.pi)**2 * u(x)
 
     # Set up operators and solve system
-    Λ0 = DifferentialForm(0, ns, ps, types)
-    Q = QuadratureRule(Λ0, 5)
-    B0 = LazyBoundaryOperator(Λ0, bcs).M
-    K = LazyStiffnessMatrix(Λ0, Q, F=None, E=B0).M
-    P0 = Projector(Λ0, Q, E=B0)
+    Seq = DeRhamSequence(ns, ps, q, types, bcs, lambda x: x, polar=False)
+
+    K = Seq.assemble_gradgrad()
 
     # Solve the system
-    u_hat = jnp.linalg.solve(K, P0(f))
-    u_h = DiscreteFunction(u_hat, Λ0, B0)
+    u_hat = jnp.linalg.solve(K, Seq.P0(f))
+    u_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0.matrix())
 
     # Compute error
     def err(x): return u(x) - u_h(x)
-    return (l2_product(err, err, Q) / l2_product(u, u, Q))**0.5
+    return (l2_product(err, err, Seq.Q) / l2_product(u, u, Seq.Q))**0.5
 
 
 def run_convergence_analysis():
@@ -90,7 +87,7 @@ def run_convergence_analysis():
     # Parameter ranges
     # Extended range for higher resolution
     ns = np.arange(6, 11, 2)
-    ps = np.arange(1, 5)
+    ps = np.arange(1, 4)
 
     # Arrays to store results
     err = np.zeros((len(ns), len(ps)))
@@ -202,7 +199,7 @@ def main():
     err, times, times2 = run_convergence_analysis()
 
     # Plot results
-    ns = np.arange(6, 11, 2)
+    ns = np.arange(6, 9, 1)
     ps = np.arange(1, 5)
     plot_results(err, times, times2, ns, ps)
 
@@ -215,3 +212,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# %%

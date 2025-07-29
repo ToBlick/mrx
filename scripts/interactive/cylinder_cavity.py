@@ -42,17 +42,18 @@ def F(x):
     return jnp.ravel(jnp.array([_R(r, χ), _Y(r, χ), h * jnp.ones(1) * z]))
 
 
+# %%
 ξ = get_xi(_R, _Y, Λ0, Q)[0]
 
 # %%
 E0, E1, E2, E3 = [LazyExtractionOperator(
-    Λ, ξ, True).M for Λ in [Λ0, Λ1, Λ2, Λ3]]
-M1 = LazyMassMatrix(Λ1, Q, F=F, E=E1).M
-M0 = LazyMassMatrix(Λ0, Q, F=F, E=E0).M
-D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).M
+    Λ, ξ, True) for Λ in [Λ0, Λ1, Λ2, Λ3]]
+M1 = LazyMassMatrix(Λ1, Q, F=F, E=E1).matrix()
+M0 = LazyMassMatrix(Λ0, Q, F=F, E=E0).matrix()
+D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).matrix()
 O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros((D0.shape[1], D0.shape[1]))
-C = LazyDoubleCurlMatrix(Λ1, Q, F=F, E=E1).M
+C = LazyDoubleCurlMatrix(Λ1, Q, F=F, E=E1).matrix()
 Q = jnp.block([[C, D0], [D0.T, O0]])
 P = jnp.block([[M1, O10], [O10.T, O0]])
 
