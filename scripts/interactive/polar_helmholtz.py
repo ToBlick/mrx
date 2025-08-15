@@ -5,53 +5,43 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
 
-from mrx.DifferentialForms import DifferentialForm
-from mrx.LazyMatrices import LazyMassMatrix, LazyStiffnessMatrix
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.Quadrature import QuadratureRule
+from mrx.DeRhamSequence import DeRhamSequence
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
-# Initialize differential forms and operators
+# Initialize parameters
 ns = (20, 20, 1)  # Number of elements in each direction
 ps = (3, 3, 0)  # Polynomial degree in each direction
 types = ('clamped', 'periodic', 'constant')  # Boundary conditions
 bcs = ('dirichlet', 'periodic', 'periodic')
-# Define differential forms for different function spaces
-Λ0 = DifferentialForm(0, ns, ps, types)  # H1 functions
-Λ1 = DifferentialForm(1, ns, ps, types)  # H(curl) vector fields
-Λ2 = DifferentialForm(2, ns, ps, types)  # H(div) vector fields
-Λ3 = DifferentialForm(3, ns, ps, types)  # L2 densities
-
-# Set up quadrature rule
-Q = QuadratureRule(Λ0, 8)
+q = 8  # Quadrature order
 
 a = 1
 h = 1
 
-
-def _R(r, χ):
-    return jnp.ones(1) * (a * r * jnp.cos(2 * jnp.pi * χ))
-
-
-def _Y(r, χ):
-    return jnp.ones(1) * (a * r * jnp.sin(2 * jnp.pi * χ))
-
-
 def F(x):
+    """Coordinate transformation from logical to physical coordinates"""
     r, χ, z = x
-    return jnp.ravel(jnp.array([_R(r, χ), _Y(r, χ), h * jnp.ones(1) * z]))
+    R = a * r * jnp.cos(2 * jnp.pi * χ)
+    Y = a * r * jnp.sin(2 * jnp.pi * χ)
+    Z = h * z
+    return jnp.array([R, Y, Z])
 
-
-ξ = get_xi(_R, _Y, Λ0, Q)[0]
+# Create DeRham sequence with polar mapping
+print("Creating DeRham sequence...")
+derham = DeRhamSequence(ns, ps, q, types, bcs, F, polar=True)
 
 # %%
-E0 = LazyExtractionOperator(Λ0, ξ, True).M
-M0 = LazyMassMatrix(Λ0, Q, F, E0).M
-L = LazyStiffnessMatrix(Λ0, Q, F, E0).M
+# Assemble mass and stiffness matrices using DeRham sequence
+print("Assembling mass matrix...")
+M0 = derham.assemble_M0()
+
+print("Assembling stiffness matrix (grad-grad)...")
+L = derham.assemble_gradgrad()
 
 # %%
+# Solve eigenvalue problem
 evs, evecs = sp.linalg.eig(L, M0)
 evs = jnp.real(evs)
 evecs = jnp.real(evecs)
@@ -59,9 +49,10 @@ sort_indices = jnp.argsort(evs)
 evs = evs[sort_indices]
 evecs = evecs[:, sort_indices]
 
+print(f"Computed {len(evs)} eigenvalues")
+print(f"Eigenvalue range: [{evs[0]:.6f}, {evs[-1]:.6f}]")
+
 # %%
-
-
 def calculate_cylindrical_eigenvalues(
     n_values, m_values, k_values, radius_a, period_h
 ):
@@ -136,23 +127,32 @@ def calculate_cylindrical_eigenvalues(
 
     return np.sort(np.array(all_eigenvalues_repeated))
 
-
+# Calculate analytical eigenvalues
 true_evs = calculate_cylindrical_eigenvalues(
     range(0, 16), range(1, 16), [0], a, h)
 
 # %%
-_end = 32
-fig, ax = plt.subplots()
+# Plot comparison
+_end = min(32, len(evs), len(true_evs))
+fig, ax = plt.subplots(figsize=(10, 6))
 ax.set_xticks(jnp.arange(1, _end + 1)[::4])
 ax.yaxis.grid(True, which='both')
 ax.xaxis.grid(True, which='both')
 ax.set_ylabel('λ')
-ax.legend()
-# ax.plot(jnp.arange(1,_end + 1), evd[0][:_end] / (jnp.pi**2), marker='s', label='λ/ᴨ²')
-ax.plot(jnp.arange(1, _end + 1),
-        evs[:_end], marker='v', label='λ')
-ax.plot(jnp.arange(1, _end + 1),
-        true_evs[:_end], marker='*', label='λ', linestyle='')
-# ax.set_yscale('log')
 ax.set_xlabel('n')
+
+# Plot numerical eigenvalues 
+ax.plot(jnp.arange(1, _end + 1),
+        evs[:_end], marker='v', label='Numerical', linestyle='-', markersize=6)
+
+# Plot analytical eigenvalues
+ax.plot(jnp.arange(1, _end + 1),
+        true_evs[:_end], marker='*', label='Analytical', linestyle='', markersize=6)
+
+ax.legend()
+ax.set_title('Polar Helmholtz Eigenvalues: Numerical vs Analytical')
+
+plt.tight_layout()
+plt.show()
+
 # %%
