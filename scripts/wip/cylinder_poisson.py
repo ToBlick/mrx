@@ -36,11 +36,8 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.BoundaryConditions import LazyBoundaryOperator
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
-from mrx.LazyMatrices import LazyStiffnessMatrix
-from mrx.Projectors import Projector
-from mrx.Quadrature import QuadratureRule
+from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction
 from mrx.Utils import l2_product
 
 # Enable 64-bit precision for numerical stability
@@ -86,16 +83,13 @@ def get_err(n, p, q):
         return jnp.ones(1) * (- r * jnp.log(r) * jnp.sin(2 * jnp.pi * z) + (2*jnp.pi)**2 * u(x))
     types = ('clamped', 'constant', 'clamped')
     bcs = ('half', 'none', 'dirichlet')
-    Λ0 = DifferentialForm(0, ns, ps, types)
-    E0 = LazyBoundaryOperator(Λ0, bcs).M
 
-    Q = QuadratureRule(Λ0, q)
-    K = LazyStiffnessMatrix(Λ0, Q, F=F, E=E0).M
-    P0 = Projector(Λ0, Q, F=F, E=E0)
-    u_hat = jnp.linalg.solve(K, P0(f))
-    u_h = DiscreteFunction(u_hat, Λ0, E0)
+    Seq = DeRhamSequence(ns, ps, q, types, bcs, F, polar=False)
+    K = Seq.assemble_gradgrad()
+    u_hat = jnp.linalg.solve(K, Seq.P0(f))
+    u_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0.matrix())
     def err(x): return (u(x) - u_h(x))
-    error = (l2_product(err, err, Q, F) / l2_product(u, u, Q, F))**0.5
+    error = (l2_product(err, err, Seq.Q, F) / l2_product(u, u, Seq.Q, F))**0.5
     return error
 
 

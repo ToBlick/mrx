@@ -1,6 +1,8 @@
 from abc import abstractmethod
 
 import jax
+import jax.experimental
+import jax.experimental.sparse
 import jax.numpy as jnp
 import numpy as np
 
@@ -57,7 +59,6 @@ class LazyMatrix:
     n1: int
     ns0: jnp.ndarray
     ns1: jnp.ndarray
-    M: jnp.ndarray
 
     def __init__(self, Λ0, Λ1, Q, F=None, E0=None, E1=None):
         """
@@ -79,17 +80,20 @@ class LazyMatrix:
         self.n1 = Λ1.n
         self.ns1 = Λ1.ns
         self.F = F if F is not None else lambda x: x
-        self.E0 = E0 if E0 is not None else jnp.eye(self.n0)
-        self.E1 = E1 if E1 is not None else jnp.eye(self.n1)
-        self.M = self.E1 @ self.assemble() @ self.E0.T
+        self.E0 = E0
+        self.E1 = E1
 
-    def __getitem__(self, i):
-        """Access a specific row/element of the assembled matrix."""
-        return self.M[i]
+    def matrix(self):
+        E0 = self.E0.matrix() if self.E0 is not None else jnp.eye(self.n0)
+        E1 = self.E1.matrix() if self.E1 is not None else jnp.eye(self.n1)
+        return E1 @ self.assemble() @ E0.T
 
     def __array__(self):
         """Convert the assembled matrix to a NumPy array."""
-        return np.array(self.M)
+        return np.array(self.matrix())
+
+    def sparse(self, M):
+        return jax.experimental.sparse.bcsr_fromdense(M, )
 
     @abstractmethod
     def assemble(self):
@@ -150,6 +154,8 @@ class LazyMassMatrix(LazyMatrix):
                 return self.twoform_assemble()
             case 3:
                 return self.threeform_assemble()
+            case -1:
+                return self.vector_assemble()
 
     def zeroform_assemble(self):
         """Assemble the mass matrix for 0-forms."""
@@ -166,7 +172,7 @@ class LazyMassMatrix(LazyMatrix):
         def _Λ(x, i):
             return inv33(DF(x)).T @ self.Λ0(x, i)
         Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.n0))  # n x n_q x d
+            self.Q.x, jnp.arange(self.n0))  # n x n_q x 3
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,ljk,j,j->li", Λijk, Λijk, Jj, wj)
@@ -190,6 +196,18 @@ class LazyMassMatrix(LazyMatrix):
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,ljk,j,j->li", Λijk, Λijk, 1/Jj, wj)
+
+    def vector_assemble(self):
+        """Assemble the mass matrix for vector fields."""
+        DF = jax.jacfwd(self.F)
+
+        def _Λ(x, i):
+            return DF(x) @ self.Λ0(x, i)
+        Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
+            self.Q.x, jnp.arange(self.Λ0.n))  # n x n_q x d
+        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
+        wj = self.Q.w
+        return jnp.einsum("ijk,ljk,j,j->li", Λijk, Λijk, Jj, wj)
 
 
 class LazyDerivativeMatrix(LazyMatrix):
@@ -256,6 +274,7 @@ class LazyDerivativeMatrix(LazyMatrix):
 
         def _Λ1(x, i):
             return DF(x) @ self.Λ1(x, i)
+
         Λ0_ijk = jax.vmap(jax.vmap(_Λ0, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))  # n0 x n_q x d
         Λ1_ijk = jax.vmap(jax.vmap(_Λ1, (0, None)), (None, 0))(

@@ -24,7 +24,7 @@ output_dir = script_dir / 'script_outputs'
 os.makedirs(output_dir, exist_ok=True)
 
 # Initialize differential forms and operators
-ns = (8, 8, 8)  # Number of elements in each direction
+ns = (6, 6, 6)  # Number of elements in each direction
 ps = (3, 3, 3)  # Polynomial degree in each direction
 types = ('clamped', 'clamped', 'clamped')  # Boundary conditions
 bcs = ('dirichlet', 'dirichlet', 'dirichlet')
@@ -71,12 +71,25 @@ P = jnp.block([[M1, O10], [O10.T, O0]])
 # div u = 0
 # u x n = 0 on ∂Ω
 # %%
-evs, evecs = sp.linalg.eig(Q, P)
+
+
+def generalized_eigh(A, B):
+    # Add small value for numerical stability
+    L = jnp.linalg.cholesky(B + jnp.eye(B.shape[0]) * 1e-12)
+    L_inv = jnp.linalg.inv(L)
+    C = L_inv @ A @ L_inv.T
+    eigenvalues, eigenvectors_transformed = jnp.linalg.eigh(C)
+    eigenvectors_original = L_inv.T @ eigenvectors_transformed
+    return eigenvalues, eigenvectors_original
+
+
+# evs, evecs = sp.linalg.eigh(Q, P)
+evs, evecs = generalized_eigh(Q, P)
 
 evs = jnp.real(evs)
 evecs = jnp.real(evecs)
 
-finite_indices = jnp.isfinite(evs)
+finite_indices = evs > 0  # jnp.isfinite(evs)
 evs = evs[finite_indices]
 evecs = evecs[:, finite_indices]
 
@@ -161,7 +174,7 @@ def get_true_evs(N_max):
 
 
 # %%
-_end = 64
+_end = 26
 true_evs = get_true_evs(4)[:_end]
 # %%
 # --- PLOT SETTINGS FOR SLIDES ---
