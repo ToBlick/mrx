@@ -54,9 +54,9 @@ def get_evs(a_hat, n, p):
     def F(x):
         """Polar coordinate mapping function."""
         r, χ, z = x
-        return jnp.array([a_h(χ) * r * jnp.cos(2 * jnp.pi * χ),
+        return jnp.array([a_h(χ)[0] * r * jnp.cos(2 * jnp.pi * χ),
                           -z,
-                          a_h(χ) * r * jnp.sin(2 * jnp.pi * χ)])
+                          a_h(χ)[0] * r * jnp.sin(2 * jnp.pi * χ)])
 
     # Set up finite element spaces
     ns = (n, n, 1)
@@ -141,26 +141,31 @@ for i in range(100):
 
 
 # %%
-# a_hat = jnp.ones(n)
-# solver = optax.adam(learning_rate=1e-4)
-# opt_state = solver.init(a_hat)
-# for _ in range(100):
-#     v, gradf = grad_fit(a_hat, None)
-#     updates, opt_state = solver.update(gradf, opt_state, a_hat)
-#     a_hat = optax.apply_updates(a_hat, updates)
-#     print('Objective function: {:.3E}'.format(v))
+a_hat = jnp.ones(n)
+solver = optax.adam(learning_rate=1e-4)
+opt_state = solver.init(a_hat)
+for _ in range(100):
+    v, gradf = grad_fit(a_hat, None)
+    updates, opt_state = solver.update(gradf, opt_state, a_hat)
+    a_hat = optax.apply_updates(a_hat, updates)
+    print('Objective function: {:.3E}'.format(v))
 
 # %%
-# solver = optx.LevenbergMarquardt(
-#     rtol=1e-8, atol=1e-8, verbose=frozenset({"step", "accepted", "loss", "step_size"})
-# )
+solver = optx.LevenbergMarquardt(
+    rtol=1e-8,
+    atol=1e-8,
+    verbose=frozenset({"step",
+                       "accepted",
+                       "loss",
+                       "step_size"})
+)
 
-# sol = optx.least_squares(
-#     fn=fit_evs,
-#     y0=a_hat,
-#     solver=solver,
-#     max_steps=100
-# )
+sol = optx.least_squares(
+    fn=fit_evs,
+    y0=a_hat,
+    solver=solver,
+    max_steps=100
+)
 
 # %%
 k_plot = 36
