@@ -163,34 +163,49 @@ def get_true_evs(N_max):
 # %%
 _end = 64
 true_evs = get_true_evs(4)[:_end]
-fig, ax = plt.subplots()
-ax.set_yticks(jnp.unique(true_evs))
-ax.set_xticks(jnp.arange(1, _end + 1)[::5])
-ax.yaxis.grid(True, which='both')
-ax.xaxis.grid(True, which='both')
-ax.set_ylabel('λ/π²')
-ax.legend()
-# ax.plot(jnp.arange(1,_end + 1), evd[0][:_end] / (jnp.pi**2), marker='s', label='λ/ᴨ²')
-ax.plot(jnp.arange(1, _end + 1),
-        evs[:_end] / (jnp.pi**2), marker='v', label='λ/π²')
-ax.plot(jnp.arange(1, _end + 1),
-        true_evs[:_end], marker='*', label='λ/π²', linestyle='')
-# ax.set_yscale('log')
-ax.set_xlabel('n')
 # %%
+# --- PLOT SETTINGS FOR SLIDES ---
+FIG_SIZE = (12, 6)      # Figure size in inches (width, height)
+TITLE_SIZE = 20         # Font size for the plot title
+LABEL_SIZE = 20         # Font size for x and y axis labels
+TICK_SIZE = 16          # Font size for x and y tick labels
+LEGEND_SIZE = 16        # Font size for the legend
+LINE_WIDTH = 2.5        # Width of the plot lines
+# ---------------------------------
+end = 64
 
+# %% Figure 1: Energy and Force
+fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
+
+color1 = 'purple'
+color2 = 'black'
+ax1.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
+ax1.set_ylabel(r'$\lambda_k / \pi^2$', fontsize=LABEL_SIZE)
+ax1.plot(true_evs[:end], label=r'true',
+         marker='', ls = ':', markersize=10, color=color2, lw=LINE_WIDTH)
+ax1.plot(evs[:end] / (jnp.pi**2), label=r'computed',
+         marker='*', ls = '', markersize=10, color=color1, lw=LINE_WIDTH)
+ax1.tick_params(axis='y', labelsize=TICK_SIZE)
+ax1.tick_params(axis='x', labelsize=TICK_SIZE)
+ax1.set_yticks(jnp.unique(true_evs[:end]))
+ax1.grid(axis='y', linestyle='--', alpha=0.7)
+ax1.legend(fontsize=LEGEND_SIZE) # Use ax1.legend() for clarity
+
+# Now save the figure. The 'tight' layout will be calculated correctly.
+fig1.savefig('cube_eigenvalues.pdf', bbox_inches='tight')
+# %%
 ɛ = 1e-5
 nx = 64
 _nx = 16
 
 _x1 = jnp.linspace(ɛ, 1-ɛ, nx)
 _x2 = jnp.linspace(ɛ, 1-ɛ, nx)
-_x3 = jnp.ones(1)/2
+_x3 = jnp.ones(1)/3
 _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
 _x = _x.transpose(1, 2, 3, 0).reshape(nx*nx*1, 3)
 __x1 = jnp.linspace(ɛ, 1-ɛ, _nx)
 __x2 = jnp.linspace(ɛ, 1-ɛ, _nx)
-__x3 = jnp.ones(1)/2
+__x3 = jnp.ones(1)/3
 __x = jnp.array(jnp.meshgrid(__x1, __x2, __x3))
 __x = __x.transpose(1, 2, 3, 0).reshape(_nx*_nx*1, 3)
 __y = jax.vmap(F)(__x)
@@ -244,7 +259,8 @@ def plot_eigenvectors_grid(
         _z1_vector_field = jax.vmap(u_h)(map_input_x)
         _z1_reshaped = _z1_vector_field.reshape(nx_grid, nx_grid, 3)
         _z1_norm = jnp.linalg.norm(_z1_reshaped, axis=2)
-        ax.contourf(y1_coords, y2_coords, _z1_norm)
+        ax.contourf(y1_coords, y2_coords, _z1_norm, 
+                    levels=25, cmap='plasma')
 
         # No axes
         ax.set_axis_off()
@@ -262,7 +278,8 @@ def plot_eigenvectors_grid(
 
 
 # %%
-plot_eigenvectors_grid(
+fig = plot_eigenvectors_grid(
     evecs, M1, Λ1, B1, F, _x, _x1, _x2, nx, num_to_plot=25
 )
 # %%
+fig.savefig('cube_eigenvectors.pdf', bbox_inches='tight')

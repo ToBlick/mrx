@@ -35,15 +35,8 @@ dependencies = [
     "jaxlib>=0.1.56",
     "scipy>=1.5.4",
     "matplotlib",
-    "plotly",
-    "orthax",
-    "quadax",
-    "optax",
-    "ipywidgets",
-    "chex",
     "ruff",
-    "autopep8",
-    "mypy",
+    "autopep8"
 ]
 
 [tool.setuptools.packages.find]

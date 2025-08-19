@@ -1,5 +1,4 @@
 # %%
-
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -27,7 +26,7 @@ q1 = q0  # 1.85
 R0 = 0
 π = jnp.pi
 γ = 5/3
-alpha = 1
+alpha = 4
 
 n = 5
 p = 3
@@ -85,6 +84,7 @@ ___x = jnp.array(jnp.meshgrid(___x1, ___x2, ___x3))
 ___x = ___x.transpose(1, 2, 3, 0).reshape(__nx * 1 * 1, 3)
 ___y = jax.vmap(F)(___x)
 ___y1 = ___y[:, 0]
+
 
 
 # %%
@@ -283,7 +283,7 @@ def p_analytic(x):
 
 def B_analytic(x):
     r, χ, z = x
-    return jnp.array([0, r**alpha, 1])
+    return jnp.array([0, r**alpha * 2 * π * r, 1])
     # qr = q0 + (q1 - q0) * r**2
     # Btheta = r
     # Bz = 0.2 * (1 - r**2)
@@ -298,34 +298,29 @@ def B_analytic(x):
 
 B_0 = B_analytic
 
-
-def p_0(x):
-    r, χ, z = x
-    delta_rho = 0.05 * jnp.sin(2 * π * r) / r
-    return (p_analytic(x)**(1/γ) + delta_rho)**γ
+p_0 = p_analytic
+# def p_0(x):
+#     r, χ, z = x
+#     delta_rho = 0.05 * jnp.sin(2 * π * r) / r
+#     return (p_analytic(x)**(1/γ) + delta_rho)**γ
 
 
 # %%
-H_analytic = Flat(B_0, F)
+H_analytic = B_0
 p_hat = jnp.linalg.solve(mass_matrix_3, projector_3(p_0))
 B_hat = jnp.linalg.solve(mass_matrix_2_dbc, projector_2_dbc(H_analytic))
 o_hat = jnp.linalg.solve(mass_matrix_3, projector_3(lambda x: jnp.ones(1)))
 # %%
 A_hat = curl_curl_matrix_pinv @ curl_matrix_dbc.T @ B_hat
-
+H_0 = B_hat @ mass_matrix_12 @ A_hat
+H_0 / π 
 # %%
-
-
 @jax.jit
 def mass(p_hat):
     p_h = DiscreteFunction(p_hat, Λ3, boundary_operator_3)
     J = jax.vmap(jacobian_determinant(F))(Q.x)  # n_q x 1
     return jnp.sum(jax.vmap(p_h)(Q.x)[:, 0]**(1/γ) * J**(1 - 1/γ) * Q.w)
 
-
-# %%
-H_0 = B_hat @ mass_matrix_12 @ A_hat
-H_0 / jnp.pi
 # %%
 mass(p_hat) / jnp.pi
 # %%
@@ -407,7 +402,7 @@ trace_mass = []
 
 # %%
 for _ in range(50):
-    B_hat, p_hat, u_hat = update(B_hat, p_hat, 1e-3)
+    B_hat, p_hat, u_hat = update(B_hat, p_hat, 5e-4)
     A_hat = curl_curl_matrix_pinv @ curl_matrix_dbc.T @ B_hat
     # print("|u|: ", (u_hat @ mass_matrix_2_dbc @ u_hat)**0.5)
     trace_u.append(u_hat @ mass_matrix_2_dbc @ u_hat)
@@ -448,14 +443,6 @@ plt.colorbar()
 plt.xlabel('X')
 plt.ylabel('Z')
 # %%
-# q_h = DiscreteFunction(q_hat, Λ3, boundary_operator_3)
-# F_q_h = Pushforward(q_h, F, 3)
-# _z1 = jax.vmap(F_q_h)(_x).reshape(nx, nx)
-# plt.contourf(_y1, _y2, _z1)
-# plt.colorbar()
-# plt.xlabel('X')
-# plt.ylabel('Z')
-# %%
 F_B_h = Pushforward(B_h, F, 2)
 _z1 = jax.vmap(F_B_h)(_x).reshape(nx, nx, 3)
 _z1_norm = jnp.linalg.norm(_z1, axis=2)
@@ -482,7 +469,7 @@ plt.plot(___y1, _z4, label='B chi-component')
 plt.plot(___y1, _z5, label='B z-component')
 plt.plot(___y1, _z6, label='p analytic', linestyle='--')
 plt.plot(___y1, _z7[:, 0], label='Br analytic', linestyle='--')
-plt.plot(___y1, _z7[:, 1], label='Bchi analytic', linestyle='--')
+plt.plot(___y1, _z7[:, 1] / (2 * π * ___x[:, 0]), label='Bchi analytic', linestyle='--')
 plt.plot(___y1, _z7[:, 2], label='Bz analytic', linestyle='--')
 plt.plot(___y1, _z8, label='p_0 analytic', linestyle='--')
 # plt.plot(___y1, _z9[:, 0], label='Br_0 analytic', linestyle='--')
@@ -491,44 +478,4 @@ plt.plot(___y1, _z8, label='p_0 analytic', linestyle='--')
 plt.legend()
 plt.xlabel('r')
 plt.ylabel('p')
-# %%
-# E_h = DiscreteFunction(E_hat, Λ1, E1)
-# F_E_h = Pushforward(E_h, F, 1)
-# _z1 = jax.vmap(F_E_h)(_x).reshape(nx, nx, 3)
-# _z1_norm = jnp.linalg.norm(_z1, axis=2)
-# plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
-# plt.colorbar()
-# __z1 = jax.vmap(F_E_h)(__x).reshape(_nx, _nx, 3)
-# plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color="k")
-# plt.xlabel('X')
-# plt.ylabel('Z')
-# # %%
-# _z = jax.vmap(F_E_h)(___x).reshape(nx, 3)
-# plt.plot(___y1, _z[:, 0], label='r-component')
-# plt.plot(___y1, _z[:, 1], label='chi-component')
-# plt.plot(___y1, _z[:, 2], label='theta-component')
-# plt.legend()
-# plt.xlabel('r')
-# plt.ylabel('E')
-# # %%
-# dB_h = DiscreteFunction(dB_hat, Λ2, E2)
-# F_dB_h = Pushforward(dB_h, F, 2)
-# _z1 = jax.vmap(F_dB_h)(_x).reshape(nx, nx, 3)
-# _z1_norm = jnp.linalg.norm(_z1, axis=2)
-# plt.contourf(_y1, _y2, _z1_norm.reshape(nx, nx))
-# plt.colorbar()
-# __z1 = jax.vmap(F_dB_h)(__x).reshape(_nx, _nx, 3)
-# plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color="k")
-# plt.xlabel('X')
-# plt.ylabel('Z')
-# # %%
-# _z = jax.vmap(F_dB_h)(___x).reshape(nx, 3)
-# plt.plot(___y1, _z[:, 0], label='r-component')
-# plt.plot(___y1, _z[:, 1], label='chi-component')
-# plt.plot(___y1, _z[:, 2], label='theta-component')
-# plt.legend()
-# plt.xlabel('r')
-# plt.ylabel('dB')
-# # %%
-
 # %%
