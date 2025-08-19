@@ -4,6 +4,8 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import optax
+import optimistix as optx
 
 # import numpy as np
 
@@ -45,39 +47,28 @@ def get_evs(a_hat, n, p):
         _x = jnp.array([x, 0, 0])
         return _a_h(_x)
 
-    def _R(r, χ):
-        """Compute the R coordinate in polar mapping."""
-        return jnp.ones(1) * (a_h(χ) * r * jnp.cos(2 * jnp.pi * χ))
-
-    def _Y(r, χ):
-        """Compute the Y coordinate in polar mapping."""
-        return jnp.ones(1) * (a_h(χ) * r * jnp.sin(2 * jnp.pi * χ))
-
     def F(x):
+        """Polar coordinate mapping function."""
         r, χ, z = x
-        return jnp.ravel(jnp.array([_R(r, χ), _Y(r, χ), jnp.ones(1) * z]))
+        return jnp.array([a_h(χ)[0] * r * jnp.cos(2 * jnp.pi * χ),
+                          -z,
+                          a_h(χ)[0] * r * jnp.sin(2 * jnp.pi * χ)])
 
-    # Set up
+    # Set up DeRham sequence
     ns = (n, n, 1)
     ps = (p, p, 0)
-    types = ('clamped', 'periodic', 'constant') # Types
+    types = ("clamped", "periodic", "constant") # Types
     bcs = ('dirichlet', 'periodic', 'constant')  # Boundary conditions
-    
-    # Create DeRham sequence 
+
+    # Create DeRham sequence
     derham = DeRhamSequence(ns, ps, 3*p, types, bcs, F, polar=True)
-    
-    # Get stiffness and mass matrices
-    K = derham.assemble_gradgrad()  # Stiffness matrix 
+
+    # Get matrices 
+    K = derham.assemble_gradgrad()  # Stiffness matrix
     M0 = derham.assemble_M0()      # Mass matrix for 0-forms
-    
-    # Debug by printing matrix shapes
-    print(f"K shape: {K.shape}, M0 shape: {M0.shape}")
     
     # Solve the system
     evs, evecs = generalized_eigh(K, M0)
-    # finite_indices = evs > 0
-    # jnp.ispositive
-    # evs = evs[finite_indices]
     return evs, evecs
 
 
@@ -88,7 +79,6 @@ p = 3
 # %%
 a = 1.0
 e = 0.5
-
 
 # I'm not going to use DeRham object here since this is just a 1D mapping
 Λmap = DifferentialForm(0, (n, 1, 1), (p, 1, 1),
@@ -110,15 +100,11 @@ def _radius(x):
 a_target = jnp.linalg.solve(M0, P_0(_radius))
 
 # %%
-k = 36  
+k = 36
 _k = jnp.arange(k)
 
-# Get eigenvalues 
-circle_evs = get_evs(jnp.ones(n), n, p)[0]
-ellipse_evs = get_evs(a_target, n, p)[0]
-
-plt.plot(_k, circle_evs[:k], marker='s', label=r'circle')
-plt.plot(_k, ellipse_evs[:k], marker='s', label=r'ellipse')
+plt.plot(_k, get_evs(jnp.ones(n), n, p)[0][:k], marker='s', label=r'circle')
+plt.plot(_k, get_evs(a_target, n, p)[0][:k], marker='s', label=r'ellipse')
 plt.xlabel(r'$k$')
 plt.ylabel(r'$\lambda_k$')
 plt.grid(axis='y', linestyle='--', alpha=0.7)
@@ -126,13 +112,13 @@ plt.legend()
 
 # %%
 a_hat = jnp.ones(n)
-target_evs = get_evs(a_target, n, p)[0]
+target_evs = get_evs(a_target, n, p)[0][:k]
 
 
 def fit_evs(a_hat, args):
     _k = jnp.arange(k) + 1
     evs = get_evs(a_hat, n, p)[0][:k]
-    return jnp.sum((evs/_k - target_evs[:k]/_k)**2)
+    return jnp.sum((evs/_k - target_evs/_k)**2)
 
 
 grad_fit = jax.jit(jax.value_and_grad(fit_evs))
@@ -151,51 +137,53 @@ for i in range(100):
 
 
 # %%
-# a_hat = jnp.ones(n)
-# solver = optax.adam(learning_rate=1e-4)
-# opt_state = solver.init(a_hat)
-# for _ in range(100):
-#     v, gradf = grad_fit(a_hat, None)
-#     updates, opt_state = solver.update(gradf, opt_state, a_hat)
-#     a_hat = optax.apply_updates(a_hat, updates)
-#     print('Objective function: {:.3E}'.format(v))
+a_hat = jnp.ones(n)
+solver = optax.adam(learning_rate=1e-4)
+opt_state = solver.init(a_hat)
+for _ in range(100):
+    v, gradf = grad_fit(a_hat, None)
+    updates, opt_state = solver.update(gradf, opt_state, a_hat)
+    a_hat = optax.apply_updates(a_hat, updates)
+    print('Objective function: {:.3E}'.format(v))
 
 # %%
-# solver = optx.LevenbergMarquardt(
-#     rtol=1e-8, atol=1e-8, verbose=frozenset({"step", "accepted", "loss", "step_size"})
-# )
+solver = optx.LevenbergMarquardt(
+    rtol=1e-8,
+    atol=1e-8,
+    verbose=frozenset({"step",
+                       "accepted",
+                       "loss",
+                       "step_size"})
+)
 
-# sol = optx.least_squares(
-#     fn=fit_evs,
-#     y0=a_hat,
-#     solver=solver,
-#     max_steps=100
-# )
+sol = optx.least_squares(
+    fn=fit_evs,
+    y0=a_hat,
+    solver=solver,
+    max_steps=100
+)
 
 # %%
-k_plot = 36  
+k_plot = 36
 _k_plot = jnp.arange(k_plot)
-
-# Get eigenvalues 
-circle_evs_final = get_evs(jnp.ones(n), n, p)[0]
-ellipse_evs_final = get_evs(a_target, n, p)[0]
-fit_evs_final = get_evs(a_hat, n, p)[0]
-
-plt.plot(_k_plot, circle_evs_final[:k_plot], marker='s', label=r'circle')
-plt.plot(_k_plot, ellipse_evs_final[:k_plot], marker='s', label=r'ellipse')
-plt.plot(_k_plot, fit_evs_final[:k_plot], marker='s', label=r'fit')
+plt.plot(_k_plot, get_evs(jnp.ones(n), n, p)[0][
+         :k_plot], marker='s', label=r'circle')
+plt.plot(_k_plot, get_evs(a_target, n, p)[0][
+         :k_plot], marker='s', label=r'ellipse')
+plt.plot(_k_plot, get_evs(a_hat, n, p)[0][:k_plot], marker='s', label=r'fit')
 plt.xlabel(r'$k$')
 plt.ylabel(r'$\lambda_k$')
 plt.grid(axis='y', linestyle='--', alpha=0.7)
 plt.legend()
+
 # %%
 
-# Create DeRham sequence 
 ns = (n, n, 1)
 ps = (p, p, 0)
-types = ('clamped', 'periodic', 'constant') # Types
-bcs = ('dirichlet', 'periodic', 'constant') # Boundary
+types = ('clamped', 'periodic', 'constant')
+bcs = ('dirichlet', 'periodic', 'constant')
 
+# I'm not going to use DeRham object here since this is just a 1D mapping
 Λmap = DifferentialForm(0, (n, 1, 1), (p, 1, 1),
                         ('periodic', 'constant', 'constant'))
 _a_h = DiscreteFunction(a_hat, Λmap)
@@ -221,7 +209,7 @@ def F(x):
     return jnp.ravel(jnp.array([_R(r, χ), _Y(r, χ), jnp.ones(1) * z]))
 
 
-# Create DeRham sequence
+# Create DeRham sequence for the main problem
 derham = DeRhamSequence(ns, ps, 3*p, types, bcs, F, polar=True)
 
 # Get the extraction operator for 3-forms
@@ -229,8 +217,8 @@ E3 = derham.E3.matrix()
 
 # %%
 evs, evecs = get_evs(a_hat, n, p)
-# %%
 
+# %%
 ɛ = 1e-6
 nx = 64
 _nx = 16
@@ -242,13 +230,12 @@ _x = _x.transpose(1, 2, 3, 0).reshape(nx * nx * 1, 3)
 _y = jax.vmap(F)(_x)
 _y1 = _y[:, 0].reshape(nx, nx)
 _y2 = _y[:, 1].reshape(nx, nx)
+
 # %%
 u_h = Pushforward(DiscreteFunction(evecs[:, 0], derham.Λ3, E3), F, 3)
 plt.contourf(_y1, _y2, jax.vmap(u_h)(_x).reshape(nx, nx), levels=10)
 
 # %%
-
-
 def radius_h(x):
     _radius_h = DiscreteFunction(a_hat, Λmap)
     _x = jnp.array([x, 0, 0])
@@ -263,4 +250,3 @@ plt.xlabel(r'$\chi$')
 plt.ylabel(r'$r(\chi)$')
 plt.grid(axis='y', linestyle='--', alpha=0.7)
 plt.legend()
-# %%

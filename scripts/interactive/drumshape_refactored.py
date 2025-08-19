@@ -6,9 +6,9 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import optax
+from mrx.DeRhamSequence import DeRhamSequence
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pushforward
-from mrx.LazyMatrices import LazyDerivativeMatrix, LazyMassMatrix
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
+from mrx.LazyMatrices import LazyMassMatrix
 from mrx.Projectors import Projector
 from mrx.Quadrature import QuadratureRule
 import matplotlib.gridspec as gridspec
@@ -63,24 +63,19 @@ def get_evs(a_hat, n, p, n_map):
         r, χ, z = x
         return jnp.ravel(jnp.array([_R(r, χ), _Y(r, χ), z * jnp.ones(1)]))
 
-    # Set up finite element spaces
+    # Set up
     ns = (n, n, 1)
     ps = (p, p, 0)
-    types = ('clamped', 'periodic', 'constant')
-
-    # Set up differential forms and quadrature
-    Λ0 = DifferentialForm(0, ns, ps, types)
-    Λ2 = DifferentialForm(2, ns, ps, types)
-    Λ3 = DifferentialForm(3, ns, ps, types)
-    Q = QuadratureRule(Λ0, 3*p)
-    ξ, _, _, _, _ = get_xi(_R, _Y, Λ0, Q)
+    types = ('clamped', 'periodic', 'constant') # Types
+    bcs = ('dirichlet', 'periodic', 'constant')  # Boundary conditions
     
-    # Set up operators
-    E2 = LazyExtractionOperator(Λ2, ξ, False).M
-    E3 = LazyExtractionOperator(Λ3, ξ, False).M
-    D = LazyDerivativeMatrix(Λ2, Λ3, Q, F, E2, E3).M
-    M2 = LazyMassMatrix(Λ2, Q, F, E2).M
-    M3 = LazyMassMatrix(Λ3, Q, F, E3).M
+    # Create DeRham sequence
+    derham = DeRhamSequence(ns, ps, 3*p, types, bcs, F, polar=True)
+    
+    # Get matrices 
+    D = derham.assemble_dvg()  # Divergence matrix 
+    M2 = derham.assemble_M2()  # Mass matrix for 2-forms
+    M3 = derham.assemble_M3()  # Mass matrix for 3-forms
     
     # Assemble and solve the system K*u = lambda*M*u
     K = D @ jnp.linalg.solve(M2, D.T)
@@ -101,7 +96,7 @@ def setup_target_shape(n_map, p, a, e):
                             ('periodic', 'constant', 'constant'))
     Q = QuadratureRule(Λmap, 3*p)
     P_0 = Projector(Λmap, Q)
-    M0 = LazyMassMatrix(Λmap, Q).M
+    M0 = LazyMassMatrix(Λmap, Q).matrix() # Don't need full DeRhamSequence for this
 
     def radius_func(chi):
         b = a * e
@@ -170,15 +165,19 @@ def plot_reconstruction(a_hat, target_radius_func, target_evs, n, p, n_map, iter
     y1 = grid_physical[:, 0].reshape(nx, nx)
     y2 = grid_physical[:, 1].reshape(nx, nx)
     
-    # Evaluate the eigenfunction on the grid
+    # Evaluate the eigenfunction on the grid using DeRhamSequence
     ns = (n, n, 1)
     ps = (p, p, 0)
     types = ('clamped', 'periodic', 'constant')
-    Λ3 = DifferentialForm(3, ns, ps, types)
-    Q_dummy = QuadratureRule(Λ3, 1) # Dummy Q for ξ
-    ξ, _, _, _, _ = get_xi(_R, _Y, DifferentialForm(0, ns, ps, types), Q_dummy)
-    E3 = LazyExtractionOperator(Λ3, ξ, False).M
-    u_h = Pushforward(DiscreteFunction(first_evec, Λ3, E3), F, 3)
+    bcs = ('dirichlet', 'periodic', 'constant')
+    
+    # Create DeRham sequence for plotting
+    derham_plot = DeRhamSequence(ns, ps, 2*p, types, bcs, F, polar=True) # Order 2*p quadrature
+    
+    # Get the extraction operator for 3-forms
+    E3 = derham_plot.E3.matrix()
+    
+    u_h = Pushforward(DiscreteFunction(first_evec, derham_plot.Λ3, E3), F, 3)
     
     # Normalize the sign of the eigenfunction for consistent plotting
     if u_h(jnp.array([0.0, 0, 0])) < 0:
@@ -310,4 +309,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-# %%
