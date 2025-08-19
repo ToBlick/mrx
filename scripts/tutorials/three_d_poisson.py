@@ -70,7 +70,6 @@ def get_err(n, p):
 
     # Set up operators and solve system
     Seq = DeRhamSequence(ns, ps, q, types, bcs, lambda x: x, polar=False)
-
     K = Seq.assemble_gradgrad()
 
     # Solve the system
@@ -115,7 +114,7 @@ def run_convergence_analysis():
             times2[i, j] = end - start
             print(f"n={n}, p={p}, time={times2[i, j]:.2f}s")
 
-    return err, times, times2
+    return err, times, times2, ns, ps
 
 
 def plot_results(err, times, times2, ns, ps):
@@ -196,11 +195,9 @@ def plot_results(err, times, times2, ns, ps):
 def main():
     """Main function to run the analysis."""
     # Run convergence analysis
-    err, times, times2 = run_convergence_analysis()
+    err, times, times2, ns, ps = run_convergence_analysis()
 
     # Plot results
-    ns = np.arange(6, 9, 1)
-    ps = np.arange(1, 5)
     plot_results(err, times, times2, ns, ps)
 
     # Show all figures

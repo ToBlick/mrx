@@ -14,7 +14,6 @@ from mrx.Utils import curl, div, grad, inv33, jacobian_determinant
 class DeRhamSequence:
     """
     A class to represent a de Rham sequence.
-
     """
     Λ0: DifferentialForm
     Λ1: DifferentialForm
@@ -48,7 +47,10 @@ class DeRhamSequence:
     G_inv_jkl = jnp.ndarray
 
     def __init__(self, ns, ps, q, types, bcs, F, polar):
+        """
+        Initialize the de Rham sequence.    
 
+        """
         self.Λ0, self.Λ1, self.Λ2, self.Λ3 = [
             DifferentialForm(i, ns, ps, types) for i in range(0, 4)
         ]

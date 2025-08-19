@@ -124,7 +124,7 @@ def run_convergence_analysis():
             times2[i, j] = end - start
             print(f"n={n}, p={p}, time={times2[i, j]:.2f}s")
 
-    return err, times, times2
+    return err, times, times2, ns, ps
 
 
 def plot_results(err, times, times2, ns, ps):
@@ -208,11 +208,9 @@ def plot_results(err, times, times2, ns, ps):
 def main():
     """Main function to run the analysis."""
     # Run convergence analysis
-    err, times, times2 = run_convergence_analysis()
+    err, times, times2, ns, ps = run_convergence_analysis()
 
     # Plot results
-    ns = np.arange(7, 21, 2)
-    ps = np.arange(1, 4)
     plot_results(err, times, times2, ns, ps)
 
     # Show all figures
