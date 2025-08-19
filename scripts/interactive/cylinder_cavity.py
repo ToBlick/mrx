@@ -15,9 +15,9 @@ from mrx.Quadrature import QuadratureRule
 jax.config.update("jax_enable_x64", True)
 
 # Initialize differential forms and operators
-ns = (6, 6, 6)  # Number of elements in each direction
-ps = (3, 3, 3)  # Polynomial degree in each direction
-types = ('clamped', 'periodic', 'periodic')  # Boundary conditions
+ns = (15, 15, 1)  # Number of elements in each direction
+ps = (3, 3, 0)  # Polynomial degree in each direction
+types = ('clamped', 'periodic', 'constant')  # Boundary conditions
 bcs = ('dirichlet', 'periodic', 'periodic')
 # Define differential forms for different function spaces
 Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(k, ns, ps, types) for k in range(4)]
@@ -193,23 +193,38 @@ def calculate_cylindrical_periodic_TE_TM_eigenvalues(
 
 
 true_evs = calculate_cylindrical_periodic_TE_TM_eigenvalues(
-    range(0, 8), range(1, 8), [0], a, h)
+    range(0, 8), range(1, 8), range(1), a, h)
 
 # %%
+# --- PLOT SETTINGS FOR SLIDES ---
+FIG_SIZE = (12, 6)      # Figure size in inches (width, height)
+TITLE_SIZE = 20         # Font size for the plot title
+LABEL_SIZE = 20         # Font size for x and y axis labels
+TICK_SIZE = 16          # Font size for x and y tick labels
+LEGEND_SIZE = 16        # Font size for the legend
+LINE_WIDTH = 2.5        # Width of the plot lines
+# ---------------------------------
+end = 40
 
-_end = 20
-fig, ax = plt.subplots()
-ax.set_xticks(jnp.arange(1, _end + 1)[::2])
-ax.yaxis.grid(True, which='both')
-ax.xaxis.grid(True, which='both')
-ax.set_ylabel('λ')
-ax.legend()
-ax.plot(jnp.arange(1, _end + 1),
-        evs[:_end], marker='v', label='λ')
-ax.plot(jnp.arange(1, _end + 1),
-        true_evs[:_end], marker='*', label='λ', linestyle='')
-# ax.set_yscale('log')
-ax.set_xlabel('n')
+# %% Figure 1: Energy and Force
+fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
+
+color1 = 'purple'
+color2 = 'black'
+ax1.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
+ax1.set_ylabel(r'$\lambda_k / \pi^2$', fontsize=LABEL_SIZE)
+ax1.plot(true_evs[:end], label=r'true',
+         marker='', ls = ':', markersize=10, color=color2, lw=LINE_WIDTH)
+ax1.plot(evs[:end], label=r'computed',
+         marker='*', ls = '', markersize=10, color=color1, lw=LINE_WIDTH)
+ax1.tick_params(axis='y', labelsize=TICK_SIZE)
+ax1.tick_params(axis='x', labelsize=TICK_SIZE)
+# ax1.set_yticks(jnp.unique(true_evs[:end]))
+ax1.grid(axis='y', linestyle='--', alpha=0.7)
+ax1.legend(fontsize=LEGEND_SIZE) # Use ax1.legend() for clarity
+
+# Now save the figure. The 'tight' layout will be calculated correctly.
+fig1.savefig('cylinder_eigenvalues.pdf', bbox_inches='tight')
 # %%
 # Check that for all EVs in `evs`, there is a corresponding true EV in `true_evs` such that the difference is less than tol:
 tol = 1e-5
@@ -300,7 +315,7 @@ def plot_eigenvectors_grid(
         _z1_reshaped = _z1_vector_field.reshape(nx_grid, nx_grid, 3)
         _z1_norm = jnp.linalg.norm(_z1_reshaped, axis=2)
 
-        ax.contourf(y1_coords, y2_coords, _z1_norm)
+        ax.contourf(y1_coords, y2_coords, _z1_norm, cmap='plasma', levels=25)
 
         ax.set_axis_off()
         ax.set_aspect('equal', adjustable='box')  # Maintain aspect ratio
@@ -317,7 +332,9 @@ def plot_eigenvectors_grid(
 
 # %%
 # Plot the first 9 eigenvectors
-plot_eigenvectors_grid(
+fig = plot_eigenvectors_grid(
     evecs, M1, Λ1, E1, F, _x, _y1, _y2, nx, num_to_plot=25
 )
+# %%
+fig.savefig('cylinder_eigenmodes.pdf', bbox_inches='tight')
 # %%

@@ -14,9 +14,9 @@ from mrx.Quadrature import QuadratureRule
 jax.config.update("jax_enable_x64", True)
 
 # Initialize differential forms and operators
-ns = (6, 6, 3)  # Number of elements in each direction
-ps = (3, 3, 2)  # Polynomial degree in each direction
-types = ('clamped', 'periodic', 'periodic')
+ns = (15, 15, 1)  # Number of elements in each direction
+ps = (3, 3, 0)  # Polynomial degree in each direction
+types = ('clamped', 'periodic', 'constant')
 # Define differential forms for different function spaces
 Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(k, ns, ps, types) for k in range(4)]
 
@@ -24,7 +24,7 @@ types = ('clamped', 'periodic', 'periodic')
 Q = QuadratureRule(Λ0, 8)
 
 a = 1
-R0 = 3
+R0 = 2.1
 π = jnp.pi
 
 
@@ -76,18 +76,34 @@ evs = evs[sort_indices]
 evecs = evecs[:, sort_indices]
 # %%
 
-_end = 20
-fig, ax = plt.subplots()
-ax.set_xticks(jnp.arange(1, _end + 1)[::2])
-ax.yaxis.grid(True, which='both')
-ax.xaxis.grid(True, which='both')
-ax.set_ylabel('λ')
-ax.legend()
-ax.plot(jnp.arange(1, _end + 1),
-        evs[:_end], marker='v', label='λ')
-# ax.set_yscale('log')
-ax.set_xlabel('n')
+# %%
+# --- PLOT SETTINGS FOR SLIDES ---
+FIG_SIZE = (12, 6)      # Figure size in inches (width, height)
+TITLE_SIZE = 20         # Font size for the plot title
+LABEL_SIZE = 20         # Font size for x and y axis labels
+TICK_SIZE = 16          # Font size for x and y tick labels
+LEGEND_SIZE = 16        # Font size for the legend
+LINE_WIDTH = 2.5        # Width of the plot lines
+# ---------------------------------
+end = 40
 
+# %% Figure 1: Energy and Force
+fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
+
+color1 = 'purple'
+color2 = 'black'
+ax1.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
+ax1.set_ylabel(r'$\lambda_k / \pi^2$', fontsize=LABEL_SIZE)
+ax1.plot(evs[:end], label=r'computed',
+         marker='*', ls = '', markersize=10, color=color1, lw=LINE_WIDTH)
+ax1.tick_params(axis='y', labelsize=TICK_SIZE)
+ax1.tick_params(axis='x', labelsize=TICK_SIZE)
+# ax1.set_yticks(jnp.unique(true_evs[:end]))
+ax1.grid(axis='y', linestyle='--', alpha=0.7)
+ax1.legend(fontsize=LEGEND_SIZE) # Use ax1.legend() for clarity
+
+# %%
+fig1.savefig('toroid_eigenvalues.pdf', bbox_inches='tight')
 # %%
 ɛ = 1e-5
 nx = 64
@@ -174,7 +190,7 @@ def plot_eigenvectors_grid(
         _z1_vector_field = jax.vmap(F_u)(map_input_x)
         _z1_reshaped = _z1_vector_field.reshape(nx_grid, nx_grid, 3)
         _z1_norm = jnp.linalg.norm(_z1_reshaped, axis=2)
-        ax.contourf(y1_coords, y2_coords, _z1_norm)
+        ax.contourf(y1_coords, y2_coords, _z1_norm, levels=25, cmap='plasma')
         ax.set_axis_off()
         ax.set_aspect('equal', adjustable='box')
     for j in range(num_to_plot, nrows * ncols):
@@ -186,7 +202,9 @@ def plot_eigenvectors_grid(
 
 # %%
 # Plot the first 9 eigenvectors
-plot_eigenvectors_grid(
+fig = plot_eigenvectors_grid(
     evecs, M1, Λ1, E1, F, _x, _y1, _y3, nx, num_to_plot=25
 )
+# %%
+fig.savefig('toroid_eigenvectors.pdf', bbox_inches='tight')
 # %%
