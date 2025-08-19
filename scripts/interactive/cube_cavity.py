@@ -7,12 +7,9 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy as sp
 
-from mrx.BoundaryConditions import LazyBoundaryOperator
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
-from mrx.LazyMatrices import LazyDerivativeMatrix, LazyDoubleCurlMatrix, LazyMassMatrix
-from mrx.Quadrature import QuadratureRule
+from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -23,38 +20,30 @@ script_dir = Path(__file__).parent.absolute()
 output_dir = script_dir / 'script_outputs'
 os.makedirs(output_dir, exist_ok=True)
 
-# Initialize differential forms and operators
+# Initialize parameters
 ns = (6, 6, 6)  # Number of elements in each direction
 ps = (3, 3, 3)  # Polynomial degree in each direction
-types = ('clamped', 'clamped', 'clamped')  # Boundary conditions
-bcs = ('dirichlet', 'dirichlet', 'dirichlet')
-# Define differential forms for different function spaces
-Λ0 = DifferentialForm(0, ns, ps, types)  # H1 functions
-Λ1 = DifferentialForm(1, ns, ps, types)  # H(curl) vector fields
-Λ2 = DifferentialForm(2, ns, ps, types)  # H(div) vector fields
-Λ3 = DifferentialForm(3, ns, ps, types)  # L2 densities
-
-# Set up quadrature rule
-Q = QuadratureRule(Λ0, 6)
+types = ('clamped', 'clamped', 'clamped')  # Types
+bcs = ('dirichlet', 'dirichlet', 'dirichlet')  # Boundary conditions
 
 # Identity mapping for the domain
-
-
 def F(x): return x
 
+# Create DeRham sequence 
+derham = DeRhamSequence(ns, ps, 6, types, bcs, F, polar=False) # Quadrature order 6
 
-# %%
-B1 = LazyBoundaryOperator(Λ1, bcs).M
-B0 = LazyBoundaryOperator(Λ0, bcs).M
-M1 = LazyMassMatrix(Λ1, Q, F=F, E=B1).M
-M0 = LazyMassMatrix(Λ0, Q, F=F, E=B0).M
+# Get boundary operators and mass matrices 
+B1 = derham.E1.matrix()  # Boundary operator for 1-forms
+B0 = derham.E0.matrix()  # Boundary operator for 0-forms
+M1 = derham.assemble_M1()  # Mass matrix for 1-forms
+M0 = derham.assemble_M0()  # Mass matrix for 0-forms
 
-D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, B0, B1).M
+D0 = derham.assemble_grad()  # Gradient matrix
 O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros_like(M0)
 
-C = LazyDoubleCurlMatrix(Λ1, Q, F=F, E=B1).M
 
+C = derham.assemble_curlcurl()  # Double curl matrix 
 
 # %%
 Q = jnp.block([[C, D0], [D0.T, O0]])
@@ -224,7 +213,7 @@ __x = __x.transpose(1, 2, 3, 0).reshape(_nx*_nx*1, 3)
 __y = jax.vmap(F)(__x)
 # %%
 u_hat = evecs[:C.shape[0], 0]
-u_h = DiscreteFunction(u_hat, Λ1, B1)
+u_h = DiscreteFunction(u_hat, derham.Λ1, B1)
 _z1 = jax.vmap(u_h)(_x).reshape(nx, nx, 3)
 _z1_norm = jnp.linalg.norm(_z1, axis=2)
 plt.contourf(_x1, _x2, _z1_norm.reshape(nx, nx), levels=25)
@@ -266,7 +255,7 @@ def plot_eigenvectors_grid(
 
         # Extract and prepare the degrees of freedom for the i-th eigenvector
         ev_dof = jnp.split(evecs[:, i], (M1.shape[0],))[0]
-        u_h = DiscreteFunction(ev_dof, Λ1, B1)
+        u_h = DiscreteFunction(ev_dof, Λ1, E1)
 
         # Vector norm
         _z1_vector_field = jax.vmap(u_h)(map_input_x)
@@ -292,7 +281,7 @@ def plot_eigenvectors_grid(
 
 # %%
 fig = plot_eigenvectors_grid(
-    evecs, M1, Λ1, B1, F, _x, _x1, _x2, nx, num_to_plot=25
+    evecs, M1, derham.Λ1, B1, F, _x, _x1, _x2, nx, num_to_plot=25
 )
 # %%
 fig.savefig('cube_eigenvectors.pdf', bbox_inches='tight')

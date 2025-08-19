@@ -8,11 +8,8 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
-from mrx.LazyMatrices import LazyStiffnessMatrix
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.Projectors import Projector
-from mrx.Quadrature import QuadratureRule
+from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction
 from mrx.Utils import l2_product
 
 # Enable 64-bit precision for numerical stability
@@ -28,7 +25,8 @@ def get_err(n, p):
     q = 2*p
     ns = (n, n, 1)
     ps = (p, p, 0)
-    types = ("clamped", "periodic", "constant")
+    types = ("clamped", "periodic", "constant") # Types
+    bcs = ("dirichlet", "periodic", "constant")  # Boundary conditions
 
     # Domain parameters
     a = 1.13
@@ -66,21 +64,22 @@ def get_err(n, p):
         # return 1 / (a**2 * R) * (4*R0*(1 - 4*r**2) + 2*a*r*c*(3 - 10*r**2)) * jnp.ones(1)
         return 4 * π / a**2 * (jnp.cos(π*r**2) * (1 + (R - R0) / R / 2)
                                - π * r**2 * jnp.sin(π*r**2)) * jnp.ones(1)
-    Λ0 = DifferentialForm(0, ns, ps, types)
-    # Get polar mapping and set up operators
-    Q = QuadratureRule(Λ0, q)
-    ξ = get_xi(_X, _Z, Λ0, Q)[0]
-    E0 = LazyExtractionOperator(Λ0, ξ, zero_bc=True).M
-    K = LazyStiffnessMatrix(Λ0, Q, F=F, E=E0).M
-    P0 = Projector(Λ0, Q, F=F, E=E0)
+    
+    # Create DeRham sequence
+    derham = DeRhamSequence(ns, ps, q, types, bcs, F, polar=True)
+    
+    # Get stiffness matrix and projector
+    K = derham.assemble_gradgrad()  # Stiffness matrix 
+    P0 = derham.P0  # Projector for 0-forms
+    
     # Solve the system
     u_hat = jnp.linalg.solve(K, P0(f))
-    u_h = DiscreteFunction(u_hat, Λ0, E0)
+    u_h = DiscreteFunction(u_hat, derham.Λ0, derham.E0.matrix())
+    
     # Compute error
-
     def err(x):
         return u(x) - u_h(x)
-    error = (l2_product(err, err, Q, F) / l2_product(u, u, Q, F)) ** 0.5
+    error = (l2_product(err, err, derham.Q, F) / l2_product(u, u, derham.Q, F)) ** 0.5
     return error
 
 
