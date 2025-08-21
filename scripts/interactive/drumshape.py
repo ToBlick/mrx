@@ -7,11 +7,12 @@ import matplotlib.pyplot as plt
 import optax
 from mrx.DeRhamSequence import DeRhamSequence
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pushforward
-from mrx.LazyMatrices import LazyDerivativeMatrix, LazyMassMatrix
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
+from mrx.LazyMatrices import LazyMassMatrix
 from mrx.Projectors import Projector
 from mrx.Quadrature import QuadratureRule
 import matplotlib.gridspec as gridspec
+
+import os
 
 from mrx.Utils import inv33, jacobian_determinant
 
@@ -205,11 +206,11 @@ def plot_reconstruction(a_hat,
     else:
         u_h_vals = jax.vmap(u_h)(grid_logical).reshape(nx, nx)
     
-    ax2.contourf(y2, y1, u_h_vals, levels=15, cmap='plasma')
+    ax2.contourf(y1, y2, u_h_vals, levels=15, cmap='plasma')
     x_mean = jnp.mean(y1)
     y_mean = jnp.mean(y2)
-    ax2.set_ylim(x_mean-1, x_mean+1)
-    ax2.set_xlim(y_mean-1, y_mean+1)
+    ax2.set_xlim(x_mean-1, x_mean+1)
+    ax2.set_ylim(y_mean-1, y_mean+1)
     ax2.set_aspect('equal', 'box')
     ax2.axis('off')
 
@@ -268,12 +269,12 @@ def plot_reconstruction(a_hat,
 def main():
     # --- Configuration ---
     N_PARAMS = 8
-    N_MAP = 6
+    N_MAP = 8
     P_MAP = 3
     POLY_DEGREE = 3
     K_EVS = (N_PARAMS - 3) * (N_PARAMS) # Number of eigenvalues to use in the loss function
     LEARNING_RATE = 5e-2
-    NUM_STEPS = 300
+    NUM_STEPS = 250
     PLOT_EVERY = 1
     OUTPUT_DIR = "scripts/interactive/script_outputs/drumshape"
     
@@ -303,17 +304,17 @@ def main():
     
     # Get the target eigenvalue spectrum
     target_evs_full, _ = get_evs(a_target, N_MAP, P_MAP, Seq)
-    target_evs = target_evs_full[:K_EVS]
+    target_evs = target_evs_full[:]
     k_norm = jnp.arange(0, K_EVS)
     
     # --- Loss Function ---
     def fit_evs(a_hat):
         """Computes the squared error between current and target spectra."""
         evs, _ = get_evs(a_hat, N_MAP, P_MAP, Seq)
-        valid_evs = evs[:K_EVS]
+        valid_evs = evs[:]
 
         # Normalize by k to weigh smaller eigenvalues more
-        return jnp.sum(((valid_evs) - (target_evs))**2 * jnp.exp(-0.5*k_norm)) \
+        return jnp.sum(((valid_evs) - (target_evs))**2 / target_evs**2) \
             + 0.01 * jnp.sum((a_hat - 0.8)**2) / N_PARAMS 
     
     # --- Optimization ---
@@ -395,9 +396,9 @@ def main():
     circle_evs, _ = get_evs(jnp.ones(N_MAP),N_MAP, P_MAP, Seq)
     fit_evs_final, _ = get_evs(a_hat, N_MAP, P_MAP, Seq)
     
-    plt.plot(k_plot, circle_evs[:K_EVS], 'o-', label='Circle (Initial Guess Basis)')
+    plt.plot(k_plot, circle_evs[:], 'o-', label='Circle (Initial Guess Basis)')
     plt.plot(k_plot, target_evs, 's-', label='Ellipse (Target)')
-    plt.plot(k_plot, fit_evs_final[:K_EVS], '^-', label='Fitted Shape (Final)')
+    plt.plot(k_plot, fit_evs_final[:], '^-', label='Fitted Shape (Final)')
     plt.xlabel(r'Eigenvalue index $k$')
     plt.ylabel(r'Eigenvalue $\lambda_k$')
     plt.title('Comparison of Eigenvalue Spectra')
