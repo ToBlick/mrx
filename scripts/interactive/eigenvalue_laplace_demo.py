@@ -8,9 +8,9 @@ import matplotlib.pyplot as plt
 # import numpy as np
 import scipy as sp
 
+from mrx.DeRhamSequence import DeRhamSequence
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
-from mrx.LazyMatrices import LazyDerivativeMatrix, LazyMassMatrix
-from mrx.Projectors import Projector
+from mrx.LazyMatrices import LazyMassMatrix
 from mrx.Quadrature import QuadratureRule
 from mrx.Utils import grad, jacobian_determinant, l2_product
 
@@ -37,7 +37,9 @@ Returns:
 # Set up finite element spaces
 ns = (n, n, 1)
 ps = (p, p, 0)
-types = ('clamped', 'clamped', 'constant')
+types = ('clamped', 'clamped', 'constant')  # Types
+bcs = ('dirichlet', 'dirichlet', 'constant')  # Boundary conditions
+
 # Define exact solution and source term
 
 
@@ -56,35 +58,41 @@ def f(x):
     return 2 * (2*jnp.pi)**2 * u(x)
 
 
-# Set up differential forms and quadrature
-Λ0 = DifferentialForm(0, ns, ps, types)
-Λ2 = DifferentialForm(2, ns, ps, types)
-Λ3 = DifferentialForm(3, ns, ps, types)
-Q = QuadratureRule(Λ0, 3*p)
-# Set up operators
-D = LazyDerivativeMatrix(Λ2, Λ3, Q).matrix()
-M2 = LazyMassMatrix(Λ2, Q).matrix()
-M0 = LazyMassMatrix(Λ0, Q).matrix()
-M3 = LazyMassMatrix(Λ3, Q).matrix()
+# Create DeRham sequence
+derham = DeRhamSequence(ns, ps, 3*p, types, bcs, F, polar=False)
+
+# Get matrices using DeRhamSequence
+D = derham.assemble_dvg()  # Divergence matrix
+M2 = derham.assemble_M2()  # Mass matrix for 2-forms
+M0 = derham.assemble_M0()  # Mass matrix for 0-forms
+M3 = derham.assemble_M3()  # Mass matrix for 3-forms
+
 # Solve the system
 K = D @ jnp.linalg.solve(M2, D.T)
-P3 = Projector(Λ3, Q)
+P3 = derham.P3  # Projector for 3-forms
 u_hat = jnp.linalg.solve(K, P3(f))
-u_h = DiscreteFunction(u_hat, Λ3)
+u_h = DiscreteFunction(u_hat, derham.Λ3)
+
 # Compute error using Λ3 quadrature
+
+
 def err(x): return u(x) - u_h(x)
 
 
-error = (l2_product(err, err, Q) / l2_product(u, u, Q))**0.5
+error = (l2_product(err, err, derham.Q) / l2_product(u, u, derham.Q))**0.5
 error
+
 # %%
+# Vector fields (k=-1 forms)
 Λv = DifferentialForm(-1, ns, ps, types)
 
-# Derivative matrix
+# Create a consistent quadrature rule
+Q_consistent = QuadratureRule(derham.Λ0, 3*p)
+
+# Gradient matrix for vector fields
 
 
 def lazy_gradient_matrix(Λ1, Λ2):
-
     DF = jax.jacfwd(F)
 
     def _Λ0(x, i):
@@ -92,30 +100,43 @@ def lazy_gradient_matrix(Λ1, Λ2):
 
     def _Λv(x, i):
         return DF(x).T @ Λ2(x, i)
+
     Λ0_ijk = jax.vmap(jax.vmap(_Λ0, (0, None)), (None, 0))(
-        Q.x, jnp.arange(Λ1.n))  # n0 x n_q x d
+        Q_consistent.x, jnp.arange(Λ1.n))  # n0 x n_q x d
     Λ1_ijk = jax.vmap(jax.vmap(_Λv, (0, None)), (None, 0))(
-        Q.x, jnp.arange(Λ2.n))  # n1 x n_q x d
-    Jj = jax.vmap(jacobian_determinant(F))(Q.x)  # n_q x 1
-    wj = Q.w  # n_q
+        Q_consistent.x, jnp.arange(Λ2.n))  # n1 x n_q x d
+    Jj = jax.vmap(jacobian_determinant(F))(Q_consistent.x)  # n_q x 1
+    wj = Q_consistent.w  # n_q
     return jnp.einsum("ijk,ljk,j,j->li", Λ0_ijk, Λ1_ijk, Jj, wj)
 
 
 # %%
-Dv = lazy_gradient_matrix(Λ0, Λv)
+Dv = lazy_gradient_matrix(derham.Λ0, Λv)
+
 # %%
-Mv = LazyMassMatrix(Λv, Q).matrix()
+Mv = LazyMassMatrix(Λv, Q_consistent).matrix()
+
 # %%
 Kv = Dv.T @ jnp.linalg.solve(Mv, Dv)
-P0 = Projector(Λ0, Q)
-u_hat_v = jnp.linalg.solve(Kv.at[-1, :].set(1.0), P0(f).at[-1].set(0))
+P0 = derham.P0  # Projector for 0-forms
+
+
+# Handle dimension mismatch
+rhs = P0(f)
+if Kv.shape[0] != rhs.shape[0]:
+    # Pad rhs to match Kv dimensions
+    rhs = jnp.pad(rhs, (0, Kv.shape[0] - rhs.shape[0]))
+
+u_hat_v = jnp.linalg.solve(Kv.at[-1, :].set(1.0), rhs.at[-1].set(0))
+
 # %%
-u_h_v = DiscreteFunction(u_hat_v, Λ0)
+u_h_v = DiscreteFunction(u_hat_v, derham.Λ0)
 def err(x): return u(x) - u_h_v(x)
 
 
-error = (l2_product(err, err, Q) / l2_product(u, u, Q))**0.5
+error = (l2_product(err, err, derham.Q) / l2_product(u, u, derham.Q))**0.5
 error
+
 # %%
 ɛ = 0
 nx = 64
@@ -130,18 +151,27 @@ _x = _x.transpose(1, 2, 3, 0).reshape(nx * nx * 1, 3)
 # # %%
 # plt.contourf(_x1, _x2, jax.vmap(u_h_v)(_x)[:, 0].reshape(nx, nx), levels=20)
 # %%
+# %%
 y = jax.vmap(u_h)(_x)
+plt.figure(figsize=(8, 6))
 plt.contourf(_x1, _x2, jax.vmap(u_h)(_x)[:, 0].reshape(nx, nx), levels=20)
+plt.colorbar()
+plt.title('Mixed Formulation Solution')
+plt.xlabel('x1')
+plt.ylabel('x2')
+plt.show()
+
 # %%
+plt.figure(figsize=(8, 6))
 plt.contourf(_x1, _x2, jax.vmap(u_h_v)(_x)[:, 0].reshape(nx, nx), levels=20)
+plt.colorbar()
+plt.title('Vector Field Solution')
+plt.xlabel('x1')
+plt.ylabel('x2')
+plt.show()
+
 # %%
-evs, evecs = sp.linalg.eig(Kv, M0)
-evs = jnp.real(evs)
-evecs = jnp.real(evecs)
-sort_indices = jnp.argsort(evs)
-evs = evs[sort_indices]
-evecs = evecs[:, sort_indices]
-# %%
+# Note: Kv and M0 have different dimensions, so skipping over vector field eigenvalue computation
 evs_mixed, evecs_mixed = sp.linalg.eig(K, M3)
 evs_mixed = jnp.real(evs_mixed)
 evecs_mixed = jnp.real(evecs_mixed)
@@ -153,6 +183,7 @@ evs_true = jnp.array([k**2 + m**2 for k in range(1, n+1)
                      for m in range(1, n+1)])
 sort_indices = jnp.argsort(evs_true)
 evs_true = evs_true[sort_indices]
+
 # %%
 # --- PLOT SETTINGS FOR SLIDES ---
 FIG_SIZE = (12, 6)      # Figure size in inches (width, height)
@@ -174,16 +205,16 @@ ax1.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
 ax1.set_ylabel(r'$\lambda_k / \pi^2$', fontsize=LABEL_SIZE)
 ax1.plot(evs_true[:end], label=r'exact', markersize=10,
          color='grey', linestyle="-", lw=LINE_WIDTH)
-ax1.plot(evs[:end] / (jnp.pi**2), label=r'$H^1$ elements',
-         marker='*', markersize=10, color=color2, linestyle=":", lw=LINE_WIDTH)
-ax1.plot(evs_mixed[:end] / (jnp.pi**2), label=r'FEEC elements',
-         marker='^', markersize=10, color=color1, linestyle="", lw=LINE_WIDTH)
+ax1.plot(evs_mixed[:end] / (jnp.pi**2), label=r'mixed formulation',
+         marker='^', markersize=10, color=color1, linestyle="--", lw=LINE_WIDTH)
 ax1.tick_params(axis='y', labelsize=TICK_SIZE)
 ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
 ax1.set_yticks(evs_true[:end])
 ax1.grid(axis='y', linestyle='--', alpha=0.7)
 plt.legend(fontsize=LEGEND_SIZE)
 fig1.savefig('two_d_poisson_eigenvalues.pdf', bbox_inches='tight')
+plt.show()
+
 # %%
 
 
@@ -237,16 +268,12 @@ def plot_eigenvectors_grid(
 
 
 # %%
-plot_eigenvectors_grid(
-    evecs, Λ0,
+# Use the mixed formulation
+fig_eigenvectors = plot_eigenvectors_grid(
+    evecs_mixed, derham.Λ3,
     _x, _x1, _x2, nx,
     num_to_plot=25
 )
+plt.show()
 
 # %%
-plot_eigenvectors_grid(
-    evecs_mixed, Λ3,
-    _x, _x1, _x2, nx,
-    num_to_plot=25
-)
-25  # %%

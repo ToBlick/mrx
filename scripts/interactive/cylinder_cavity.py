@@ -6,24 +6,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
 
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pushforward
-from mrx.LazyMatrices import LazyDerivativeMatrix, LazyDoubleCurlMatrix, LazyMassMatrix
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.Quadrature import QuadratureRule
+from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction, Pushforward
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
-# Initialize differential forms and operators
+# Initialize parameters
 ns = (15, 15, 1)  # Number of elements in each direction
 ps = (3, 3, 0)  # Polynomial degree in each direction
-types = ('clamped', 'periodic', 'constant')  # Boundary conditions
-bcs = ('dirichlet', 'periodic', 'periodic')
-# Define differential forms for different function spaces
-Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(k, ns, ps, types) for k in range(4)]
-
-# Set up quadrature rule
-Q = QuadratureRule(Λ0, 8)
+types = ('clamped', 'periodic', 'constant')  # Types
+bcs = ('dirichlet', 'periodic', 'periodic')  # Boundary conditions
 
 a = 1
 h = 1
@@ -42,18 +35,22 @@ def F(x):
     return jnp.ravel(jnp.array([_R(r, χ), _Y(r, χ), h * jnp.ones(1) * z]))
 
 
-# %%
-ξ = get_xi(_R, _Y, Λ0, Q)[0]
+# Create DeRham sequence 
+derham = DeRhamSequence(ns, ps, 8, types, bcs, F, polar=True)
 
-# %%
-E0, E1, E2, E3 = [LazyExtractionOperator(
-    Λ, ξ, True) for Λ in [Λ0, Λ1, Λ2, Λ3]]
-M1 = LazyMassMatrix(Λ1, Q, F=F, E=E1).matrix()
-M0 = LazyMassMatrix(Λ0, Q, F=F, E=E0).matrix()
-D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).matrix()
+# Get extraction operators and mass matrices 
+E0, E1, E2, E3 = [derham.E0.matrix(), derham.E1.matrix(), derham.E2.matrix(), derham.E3.matrix()]
+M1 = derham.assemble_M1()  # Mass matrix for 1-forms
+M0 = derham.assemble_M0()  # Mass matrix for 0-forms
+
+
+D0 = derham.assemble_grad()  # Gradient matrix 
 O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros((D0.shape[1], D0.shape[1]))
-C = LazyDoubleCurlMatrix(Λ1, Q, F=F, E=E1).matrix()
+
+
+C = derham.assemble_curlcurl()  # Double curl matrix 
+
 Q = jnp.block([[C, D0], [D0.T, O0]])
 P = jnp.block([[M1, O10], [O10.T, O0]])
 
@@ -261,7 +258,7 @@ __x = jnp.array(jnp.meshgrid(__x1, __x2, __x3))
 __x = __x.transpose(1, 2, 3, 0).reshape(_nx*_nx*1, 3)
 __y = jax.vmap(F)(__x)
 __y1 = __y[:, 0].reshape(_nx, _nx)
-__y2 = __y[:, 1].reshape(_nx, _nx)
+_y2 = __y[:, 1].reshape(_nx, _nx)
 
 
 def plot_eigenvectors_grid(
@@ -333,7 +330,7 @@ def plot_eigenvectors_grid(
 # %%
 # Plot the first 9 eigenvectors
 fig = plot_eigenvectors_grid(
-    evecs, M1, Λ1, E1, F, _x, _y1, _y2, nx, num_to_plot=25
+    evecs, M1, derham.Λ1, E1, F, _x, _y1, _y2, nx, num_to_plot=25
 )
 # %%
 fig.savefig('cylinder_eigenmodes.pdf', bbox_inches='tight')

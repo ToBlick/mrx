@@ -9,9 +9,9 @@ from mrx.PolarMapping import LazyExtractionOperator, get_xi
 from mrx.Projectors import Projector
 from mrx.Quadrature import QuadratureRule
 from mrx.Utils import curl, div, grad, inv33, jacobian_determinant
+from typing import NamedTuple, Any, Callable
 
-
-class DeRhamSequence:
+class DeRhamSequence():
     """
     A class to represent a de Rham sequence.
     """
@@ -20,7 +20,7 @@ class DeRhamSequence:
     Λ2: DifferentialForm
     Λ3: DifferentialForm
     Q: QuadratureRule
-    F: callable
+    F: Callable
     E0: LazyBoundaryOperator
     E1: LazyBoundaryOperator
     E2: LazyBoundaryOperator
