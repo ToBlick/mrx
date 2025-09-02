@@ -55,6 +55,7 @@ def F(x):
                                 -_Y(r, χ) * jnp.sin(2 * π * z),
                                 _Z(r, χ)]))
 
+
 Λ0, Λ1, Λ2, Λ3 = [
     DifferentialForm(i, ns, ps, types) for i in range(0, 4)
 ]  # H1, H(curl), H(div), L2
@@ -101,30 +102,35 @@ alpha_z = 1.1
 alpha_p = 2 * p_avg / Bz0**2
 beta = p_avg / (Bz0**2 / 2)
 
+
 def B_phys(x):
     r, χ, z = x
     Br = 0
-    Bχ = Bz0 * (alpha_p/9 * (35 * r**6 - 40 * r**12 + 14 * r**18) 
-                + alpha_z/15 * (30 * r**2 - 20 * (alpha_z * 2 + 1) * r**4 
+    Bχ = Bz0 * (alpha_p/9 * (35 * r**6 - 40 * r**12 + 14 * r**18)
+                + alpha_z/15 * (30 * r**2 - 20 * (alpha_z * 2 + 1) * r**4
                                 + 45 * alpha_z * r**6 - 12 * alpha_z * r**8))**0.5
     Bz = Bz0 * (1 - 2 * alpha_z * r**2 + alpha_z * r**4)
     return jnp.array([Br, Bχ, Bz])
 
+
 def B_analytic(x):
     Br, Bχ, Bz = B_phys(x)
-    
+
     DF = jax.jacfwd(F)
     G = DF(x).T @ DF(x)
-    
-    return jnp.array([Br * G[0,0]**0.5,
-                      Bχ * G[1,1]**0.5, 
-                      Bz * G[2,2]**0.5])
-    
+
+    return jnp.array([Br * G[0, 0]**0.5,
+                      Bχ * G[1, 1]**0.5,
+                      Bz * G[2, 2]**0.5])
+
+
 def p_analytic(x):
     r, χ, z = x
     return p_max * (1 - r**6)**3 * jnp.ones(1)
 
 # %%
+
+
 class CrossProductProjection:
     """
     Given bases Λn, Λm, Λk, constructs an operator to evaluate
@@ -223,6 +229,7 @@ class CrossProductProjection:
 P_uxH = CrossProductProjection(Λ1, Λ2, Λ2, Q, F, En=E1, Em=E2, Ek=E2)
 P_JxH = CrossProductProjection(Λ2, Λ1, Λ2, Q, F, En=E2, Em=E1, Ek=E2)
 
+
 @jax.jit
 def step(B_guess, B_prev, dt):
     B = (B_guess + B_prev) / 2
@@ -236,6 +243,7 @@ def step(B_guess, B_prev, dt):
     delta_B = jnp.linalg.solve(M2, D1 @ E)
     return B_prev + dt * delta_B, u, q
 
+
 def update(B_hat, dt, tol):
     B_guess, _, _ = step(B_hat, B_hat, dt)
     err = 1
@@ -246,6 +254,8 @@ def update(B_hat, dt, tol):
         # print("Error: ", err)
         B_guess = B_next
     return B_next, u, q
+
+
 # %%
 dt = 1e-3
 
@@ -280,16 +290,16 @@ print("force squared: ", u_hat @ M2 @ u_hat)
 
 # %%
 print("Change in magnetic energy: ", (E_mag_1 - E_mag_0))
-print("Change in helicity: ", (Helicity_1 - Helicity_0) )
+print("Change in helicity: ", (Helicity_1 - Helicity_0))
 
 # %%
 B_hat = jnp.linalg.solve(M2, P2(B_analytic))
 B_hat = B_hat - jnp.linalg.solve(M2, D2.T @ L_pinv @ D2 @ B_hat)
 A_hat = CC_pinv @ D1.T @ B_hat
 
-Energy_trace = [ B_hat @ M2 @ B_hat / 2 ]
-Helicity_trace = [ B_hat @ M21 @ A_hat ]
-force_trace = [ ]
+Energy_trace = [B_hat @ M2 @ B_hat / 2]
+Helicity_trace = [B_hat @ M21 @ A_hat]
+force_trace = []
 divergence_trace = [D2 @ B_hat @ jnp.linalg.solve(M3, D2 @ B_hat)]
 
 # %%
@@ -323,11 +333,14 @@ fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
 # Plot Energy on the left y-axis (ax1)
 color1 = 'purple'
 ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
-ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2, \quad \pi \, (A, B)$', color=color1, fontsize=LABEL_SIZE)
-ax1.plot(jnp.array(Energy_trace), label=r'$\frac{1}{2} \| B \|^2$', color=color1, lw=LINE_WIDTH)
-ax1.plot(jnp.pi * jnp.array(Helicity_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
+ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2, \quad \pi \, (A, B)$',
+               color=color1, fontsize=LABEL_SIZE)
+ax1.plot(jnp.array(Energy_trace),
+         label=r'$\frac{1}{2} \| B \|^2$', color=color1, lw=LINE_WIDTH)
+ax1.plot(jnp.pi * jnp.array(Helicity_trace), label=r'$\pi \, (A, B)$',
+         color=color1, linestyle="--", lw=LINE_WIDTH)
 ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
-ax1.tick_params(axis='x', labelsize=TICK_SIZE) # Set x-tick size
+ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
 
 # Create a second y-axis that shares the same x-axis
 ax2 = ax1.twinx()
@@ -335,9 +348,11 @@ ax2 = ax1.twinx()
 # Plot Force on the right y-axis (ax2)
 color2 = 'black'
 ax2.set_ylabel(r'$\|J \times B \|^2$', color=color2, fontsize=LABEL_SIZE)
-ax2.plot(force_trace, label=r'$\|J \times B \|^2$', color=color2, lw=LINE_WIDTH)
+ax2.plot(force_trace, label=r'$\|J \times B \|^2$',
+         color=color2, lw=LINE_WIDTH)
 ax2.tick_params(axis='y', labelcolor=color2, labelsize=TICK_SIZE)
-ax2.set_ylim(0.5 * min(force_trace), 2 * max(force_trace))  # Set y-limits for better visibility
+# Set y-limits for better visibility
+ax2.set_ylim(0.5 * min(force_trace), 2 * max(force_trace))
 ax2.set_yscale('log')
 
 # Add grid and title
@@ -346,7 +361,8 @@ ax2.set_yscale('log')
 # Combine legends from both axes
 lines1, labels1 = ax1.get_legend_handles_labels()
 lines2, labels2 = ax2.get_legend_handles_labels()
-ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize=LEGEND_SIZE)
+ax2.legend(lines1 + lines2, labels1 + labels2,
+           loc='upper right', fontsize=LEGEND_SIZE)
 
 fig1.tight_layout()
 plt.show()
@@ -361,19 +377,22 @@ fig2, ax3 = plt.subplots(figsize=FIG_SIZE)
 color3 = 'purple'
 ax3.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
 ax3.set_ylabel(r'$\| \nabla \cdot B \|^2$', color=color3, fontsize=LABEL_SIZE)
-ax3.plot(jnp.array(divergence_trace), label='Divergence', color=color3, lw=LINE_WIDTH)
+ax3.plot(jnp.array(divergence_trace),
+         label='Divergence', color=color3, lw=LINE_WIDTH)
 ax3.tick_params(axis='y', labelcolor=color3, labelsize=TICK_SIZE)
-ax3.tick_params(axis='x', labelsize=TICK_SIZE) # Set x-tick size
+ax3.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
 offset_text3 = ax3.yaxis.get_offset_text()
 offset_text3.set_size(TICK_SIZE)
 # Create a second y-axis
 ax4 = ax3.twinx()
 
 # Calculate and plot relative Helicity change on the right y-axis (ax4)
-relative_helicity_change = jnp.array(jnp.array(Helicity_trace) - Helicity_trace[0])
+relative_helicity_change = jnp.array(
+    jnp.array(Helicity_trace) - Helicity_trace[0])
 color4 = 'black'
 ax4.set_ylabel(r'$(B, A) - (B_0, A_0)$', color=color4, fontsize=LABEL_SIZE)
-ax4.plot(relative_helicity_change, label='Relative Helicity Change', color=color4, lw=LINE_WIDTH)
+ax4.plot(relative_helicity_change, label='Relative Helicity Change',
+         color=color4, lw=LINE_WIDTH)
 ax4.tick_params(axis='y', labelcolor=color4, labelsize=TICK_SIZE)
 offset_text4 = ax4.yaxis.get_offset_text()
 offset_text4.set_size(TICK_SIZE)
@@ -409,7 +428,8 @@ _y1 = _y[:, 0].reshape(nx, nx)
 _y2 = _y[:, 1].reshape(nx, nx)
 _y3 = _y[:, 2].reshape(nx, nx)
 
-plt.contourf(_y1, _y3, jax.vmap(q_h)(_x).reshape(nx, nx), levels=25, cmap='plasma')
+plt.contourf(_y1, _y3, jax.vmap(q_h)(_x).reshape(
+    nx, nx), levels=25, cmap='plasma')
 plt.colorbar()
 # indicate origin
 plt.scatter(_y1[0, 0], _y3[0, 0], color='k', s=2,)
@@ -445,10 +465,12 @@ ns = (6, 1, 1)
 ps = (3, 0, 0)
 types = ("clamped", "constant", "constant")
 
-Λ = DifferentialForm(0, (6, 1, 1), (3, 0, 0), ("clamped", "constant", "constant"))
+Λ = DifferentialForm(0, (6, 1, 1), (2, 0, 0),
+                     ("clamped", "constant", "constant"))
 # %%
-nx = 128
-_x1 = jnp.linspace(0, 1, nx)
+nx = 512
+eps = 1e-6
+_x1 = jnp.linspace(eps, 1 - eps, nx)
 _x2 = jnp.zeros(1) / 2
 _x3 = jnp.zeros(1) / 2
 _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
@@ -463,16 +485,44 @@ plt.plot(_x1, jax.vmap(Λ[5])(_x))
 plt.xlabel(r'$x$')
 plt.ylabel(r'$\phi_i(x)$')
 # %%
+# --- PLOT SETTINGS FOR SLIDES ---
+# You can easily adjust these values
+FIG_SIZE = (12, 6)      # Figure size in inches (width, height)
+TITLE_SIZE = 20         # Font size for the plot title
+LABEL_SIZE = 20         # Font size for x and y axis labels
+TICK_SIZE = 16          # Font size for x and y tick labels
+LEGEND_SIZE = 16        # Font size for the legend
+LINE_WIDTH = 2.5        # Width of the plot lines
+# ---------------------------------
+
+# %%
+coeffs = jax.random.normal(jax.random.PRNGKey(0), (6,)) * 0.5 + 0.5
+fct = DiscreteFunction(coeffs, Λ)
+
 fig2, ax3 = plt.subplots(figsize=FIG_SIZE)
-colors = ['purple', 'black', 'grey', 'orange', 'teal', 'violet']
-# Plot Divergence on the left y-axis (ax3)
+colors = ['purple', 'darkgrey', 'orange', 'teal', 'grey', 'violet']
 color3 = 'purple'
 ax3.set_xlabel(r'$x$', fontsize=LABEL_SIZE)
 ax3.set_ylabel(r'$\phi_i(x)$', fontsize=LABEL_SIZE)
 for i, c in enumerate(colors):
-    ax3.plot(_x1, jax.vmap(Λ[i])(_x), label=f'$\phi_{i}(x)$', lw=LINE_WIDTH, color=c)
+    ax3.plot(_x1, jax.vmap(Λ[i])(
+        _x), label=r'$\phi_{i}(x)$', lw=LINE_WIDTH, color=c, linestyle='--')
+ax3.plot(_x1, jax.vmap(fct)(_x), label=r'$f(x)$', lw=LINE_WIDTH, color='black')
 ax3.tick_params(axis='y', labelsize=TICK_SIZE)
-ax3.tick_params(axis='x', labelsize=TICK_SIZE) # Set x-tick size
+ax3.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
 ax3.grid(True, which="both", linestyle='--', alpha=0.6)
 plt.savefig('spline_basis.pdf', bbox_inches='tight')
+# %%
+fig2, ax3 = plt.subplots(figsize=FIG_SIZE)
+ax3.set_xlabel(r'$x$', fontsize=LABEL_SIZE)
+ax3.set_ylabel(r'$\partial_x \phi_i(x)$', fontsize=LABEL_SIZE)
+for i, c in enumerate(colors[:]):
+    ax3.plot(_x1, jax.vmap(grad(Λ[i]))(_x)[
+             :, 0], label=r'$\partial_x \phi_{i}(x)$', lw=LINE_WIDTH, color=c, linestyle='--')
+ax3.plot(_x1, jax.vmap(grad(fct))(_x)[
+         :, 0], label=r'$f(x)$', lw=LINE_WIDTH, color='black')
+ax3.tick_params(axis='y', labelsize=TICK_SIZE)
+ax3.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
+ax3.grid(True, which="both", linestyle='--', alpha=0.6)
+plt.savefig('deriv_spline_basis.pdf', bbox_inches='tight')
 # %%

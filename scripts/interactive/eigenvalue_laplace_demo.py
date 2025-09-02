@@ -62,10 +62,10 @@ def f(x):
 Λ3 = DifferentialForm(3, ns, ps, types)
 Q = QuadratureRule(Λ0, 3*p)
 # Set up operators
-D = LazyDerivativeMatrix(Λ2, Λ3, Q).M
-M2 = LazyMassMatrix(Λ2, Q).M
-M0 = LazyMassMatrix(Λ0, Q).M
-M3 = LazyMassMatrix(Λ3, Q).M
+D = LazyDerivativeMatrix(Λ2, Λ3, Q).matrix()
+M2 = LazyMassMatrix(Λ2, Q).matrix()
+M0 = LazyMassMatrix(Λ0, Q).matrix()
+M3 = LazyMassMatrix(Λ3, Q).matrix()
 # Solve the system
 K = D @ jnp.linalg.solve(M2, D.T)
 P3 = Projector(Λ3, Q)
@@ -104,7 +104,7 @@ def lazy_gradient_matrix(Λ1, Λ2):
 # %%
 Dv = lazy_gradient_matrix(Λ0, Λv)
 # %%
-Mv = LazyMassMatrix(Λv, Q).M
+Mv = LazyMassMatrix(Λv, Q).matrix()
 # %%
 Kv = Dv.T @ jnp.linalg.solve(Mv, Dv)
 P0 = Projector(Λ0, Q)
@@ -174,10 +174,10 @@ ax1.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
 ax1.set_ylabel(r'$\lambda_k / \pi^2$', fontsize=LABEL_SIZE)
 ax1.plot(evs_true[:end], label=r'exact', markersize=10,
          color='grey', linestyle="-", lw=LINE_WIDTH)
-ax1.plot(evs[:end] / (jnp.pi**2), label=r'$\phi^0, \phi^v$',
-         marker='*', markersize=10, color=color2, lw=LINE_WIDTH)
-ax1.plot(evs_mixed[:end] / (jnp.pi**2), label=r'$\phi^3, \phi^2$',
-         marker='^', markersize=10, color=color1, linestyle="--", lw=LINE_WIDTH)
+ax1.plot(evs[:end] / (jnp.pi**2), label=r'$H^1$ elements',
+         marker='*', markersize=10, color=color2, linestyle=":", lw=LINE_WIDTH)
+ax1.plot(evs_mixed[:end] / (jnp.pi**2), label=r'FEEC elements',
+         marker='^', markersize=10, color=color1, linestyle="", lw=LINE_WIDTH)
 ax1.tick_params(axis='y', labelsize=TICK_SIZE)
 ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
 ax1.set_yticks(evs_true[:end])
