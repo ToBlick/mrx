@@ -57,8 +57,8 @@ def setup_problem(n=8, p=3):
 
     # Set up quadrature and operators
     Q = QuadratureRule(Λ0, 4)
-    D = LazyDerivativeMatrix(Λ2, Λ3, Q).M
-    M2 = LazyMassMatrix(Λ2, Q).M
+    D = LazyDerivativeMatrix(Λ2, Λ3, Q).matrix()
+    M2 = LazyMassMatrix(Λ2, Q).matrix()
     K = D @ jnp.linalg.solve(M2, D.T)
     P2 = Projector(Λ2, Q)
 

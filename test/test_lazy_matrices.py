@@ -123,7 +123,7 @@ class TestLazyMatrices(unittest.TestCase):
                 # Test mass matrices for each form degree
                 for k, Λ in enumerate([Λ0, Λ1, Λ2, Λ3]):
                     print(f"\nTesting {k}-form mass matrix")
-                    M = LazyMassMatrix(Λ, Q).M
+                    M = LazyMassMatrix(Λ, Q).matrix()
                     print_matrix_stats(M, f"{k}-form Mass Matrix")
 
                     # Check for NaN values
@@ -187,9 +187,9 @@ class TestLazyMatrices(unittest.TestCase):
                 Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(
                     k, ns, ps, types) for k in range(4)]
                 Q = QuadratureRule(Λ0, quad_order)
-                D0, D1, D2 = [LazyDerivativeMatrix(Λk, Λkand1, Q).M
-                              for Λk, Λkand1 in zip([Λ0, Λ1, Λ2], [Λ1, Λ2, Λ3])]
-                M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q).M
+                D0, D1, D2 = [LazyDerivativeMatrix(Λk, Λkplus1, Q).matrix()
+                              for Λk, Λkplus1 in zip([Λ0, Λ1, Λ2], [Λ1, Λ2, Λ3])]
+                M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q).matrix()
                                   for Λ in [Λ0, Λ1, Λ2, Λ3]]
 
                 for k, D, M in zip([0, 1, 2], [D0, D1, D2], [M1, M2, M3]):
@@ -269,7 +269,7 @@ class TestLazyMatrices(unittest.TestCase):
             for quad_order in self.quad_orders:
                 print(f"\nQuadrature order: {quad_order}")
                 Q = QuadratureRule(Λ1, quad_order)
-                C = LazyDoubleCurlMatrix(Λ1, Q).M
+                C = LazyDoubleCurlMatrix(Λ1, Q).matrix()
                 print_matrix_stats(C, "Double Curl Matrix")
 
                 # Check for NaN values
@@ -301,7 +301,7 @@ class TestLazyMatrices(unittest.TestCase):
             for quad_order in self.quad_orders:
                 print(f"\nQuadrature order: {quad_order}")
                 Q = QuadratureRule(Λ0, quad_order)
-                K = LazyStiffnessMatrix(Λ0, Q).M
+                K = LazyStiffnessMatrix(Λ0, Q).matrix()
                 print_matrix_stats(K, "Stiffness Matrix")
 
         

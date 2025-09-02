@@ -2,7 +2,7 @@
 2D Mixed Poisson Problem
 
 This script solves a 2D Poisson problem using a mixed finite element formulation.
-The problem is defined on a square domain [0,1]^2 with Dirichlet boundary conditions.
+The problem is defined on a square domain [0,1]^2 with free boundary conditions.
 
 The mixed formulation uses:
 - Λ2: 2-forms for the flux
@@ -32,10 +32,8 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
-from mrx.LazyMatrices import LazyDerivativeMatrix, LazyMassMatrix
-from mrx.Projectors import Projector
-from mrx.Quadrature import QuadratureRule
+from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction
 from mrx.Utils import l2_product
 
 # Enable 64-bit precision for numerical stability
@@ -61,6 +59,8 @@ def get_err(n, p):
     ns = (n, n, 1)
     ps = (p, p, 0)
     types = ('clamped', 'clamped', 'constant')
+    bcs = ('none', 'none', 'none')
+    q = 4
 
     # Define exact solution and source term
     def u(x):
@@ -73,24 +73,23 @@ def get_err(n, p):
         return 2 * (2*jnp.pi)**2 * u(x)
 
     # Set up differential forms and quadrature
-    Λ0 = DifferentialForm(0, ns, ps, types)
-    Λ2 = DifferentialForm(2, ns, ps, types)
-    Λ3 = DifferentialForm(3, ns, ps, types)
-    Q = QuadratureRule(Λ0, 3)
+
+    Seq = DeRhamSequence(ns, ps, q, types, bcs, lambda x: x, polar=False)
 
     # Set up operators
-    D = LazyDerivativeMatrix(Λ2, Λ3, Q).M
-    M2 = LazyMassMatrix(Λ2, Q).M
+    D = Seq.assemble_dvg()
+    M2 = Seq.assemble_M2()
 
     # Solve the system
     K = D @ jnp.linalg.solve(M2, D.T)
-    P3 = Projector(Λ3, Q)
-    u_hat = jnp.linalg.solve(K, P3(f))
-    u_h = DiscreteFunction(u_hat, Λ3)
+
+    # P3 = Projector(Λ3, Q)
+    u_hat = jnp.linalg.solve(K, Seq.P3(f))
+    u_h = DiscreteFunction(u_hat, Seq.Λ3)
 
     # Compute error using Λ3 quadrature
     def err(x): return u(x) - u_h(x)
-    return (l2_product(err, err, Q) / l2_product(u, u, Q))**0.5
+    return (l2_product(err, err, Seq.Q) / l2_product(u, u, Seq.Q))**0.5
 
 
 def run_convergence_analysis():
@@ -125,7 +124,7 @@ def run_convergence_analysis():
             times2[i, j] = end - start
             print(f"n={n}, p={p}, time={times2[i, j]:.2f}s")
 
-    return err, times, times2
+    return err, times, times2, ns, ps
 
 
 def plot_results(err, times, times2, ns, ps):
@@ -209,11 +208,9 @@ def plot_results(err, times, times2, ns, ps):
 def main():
     """Main function to run the analysis."""
     # Run convergence analysis
-    err, times, times2 = run_convergence_analysis()
+    err, times, times2, ns, ps = run_convergence_analysis()
 
     # Plot results
-    ns = np.arange(7, 21, 2)
-    ps = np.arange(1, 4)
     plot_results(err, times, times2, ns, ps)
 
     # Show all figures

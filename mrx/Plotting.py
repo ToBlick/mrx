@@ -5,6 +5,9 @@ This module provides functions for creating visualizations of convergence plots
 and other analysis results using Plotly.
 """
 
+import jax
+import jax.numpy as jnp
+import matplotlib as plt
 import plotly.colors as pc
 import plotly.graph_objects as go
 
@@ -83,3 +86,33 @@ def converge_plot(err, ns, ps, qs):
         ))
 
     return fig
+
+
+def get_2d_grids(F, zeta=0, nx=64, tol=1e-6):
+    tol = 1e-6
+    nx = 64
+    _x1 = jnp.linspace(tol, 1 - tol, nx)
+    _x2 = jnp.linspace(0, 1, nx)
+    _x3 = jnp.ones(1) * zeta
+    _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
+    _x = _x.transpose(1, 2, 3, 0).reshape(nx**2, 3)
+    _y = jax.vmap(F)(_x)
+    _y1 = _y[:, 0].reshape(nx, nx)
+    _y2 = _y[:, 1].reshape(nx, nx)
+    _y3 = _y[:, 2].reshape(nx, nx)
+    return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
+
+
+def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
+    tol = 1e-6
+    nx = 64
+    _x1 = jnp.linspace(tol, 1 - tol, nx)
+    _x2 = jnp.ones(1) * chi
+    _x3 = jnp.ones(1) * zeta
+    _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
+    _x = _x.transpose(1, 2, 3, 0).reshape(nx, 3)
+    _y = jax.vmap(F)(_x)
+    _y1 = _y[:, 0]
+    _y2 = _y[:, 1]
+    _y3 = _y[:, 2]
+    return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)

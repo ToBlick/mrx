@@ -1,22 +1,13 @@
 # %%
 import os
 import time
-from functools import partial
 
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.DifferentialForms import DifferentialForm, Flat
-from mrx.LazyMatrices import (
-    LazyDerivativeMatrix,
-    LazyDoubleDivergenceMatrix,
-    LazyMassMatrix,
-)
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.Projectors import Projector
-from mrx.Quadrature import QuadratureRule
+from mrx.DeRhamSequence import DeRhamSequence
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -25,14 +16,14 @@ jax.config.update("jax_enable_x64", True)
 os.makedirs("script_outputs", exist_ok=True)
 
 
-@partial(jax.jit, static_argnames=["n", "p"])
 def get_err(n, p):
     # Set up finite element spaces
     q = 2*p
     ns = (n, n, n)
     ps = (p, p, p)
-
     types = ("clamped", "periodic", "periodic")
+    bcs = ["dirichlet"] * 4  # Boundary conditions
+
     # Domain parameters
     π = jnp.pi
 
@@ -40,7 +31,7 @@ def get_err(n, p):
         return jnp.ones(1) * r * jnp.cos(2 * π * χ)
 
     def _Y(r, χ):
-        return jnp.ones(1) * r * jnp.sin(2 * π * χ)
+        return jnp.ones(1) * r * jnp.sin(2 * χ)
 
     def _Z(r, χ):
         return jnp.ones(1)
@@ -51,8 +42,8 @@ def get_err(n, p):
         return jnp.ravel(jnp.array([_X(r, χ),
                                     _Y(r, χ),
                                     _Z(r, χ) * z]))
+    
     # Define exact solution and source term
-
     def u(x):
         """Exact solution of the Poisson problem."""
         r, χ, z = x
@@ -66,22 +57,26 @@ def get_err(n, p):
                    (3 - 16*r + 15*r**2)) * jnp.cos(2*π*z)
         return jnp.array([0, f_theta, 0])
 
-    Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(k, ns, ps, types) for k in range(4)]
+    # Create DeRham sequence
+    derham = DeRhamSequence(ns, ps, q, types, bcs, F, polar=False)
 
-    # Get polar mapping and set up operators
-    Q = QuadratureRule(Λ0, q)
-    ξ = get_xi(_X, _Z, Λ0, Q)[0]
-    E1 = LazyExtractionOperator(Λ1, ξ, zero_bc=False).M
-    E2 = LazyExtractionOperator(Λ2, ξ, zero_bc=True).M
-
-    C = LazyDerivativeMatrix(Λ1, Λ2, Q, F, E1, E2).M
-    K = LazyDoubleDivergenceMatrix(Λ2, Q, F, E2).M
-    M1 = LazyMassMatrix(Λ1, Q, F, E1).M
-    M2 = LazyMassMatrix(Λ2, Q, F, E2).M
+    # Curl operator
+    C = derham.assemble_curl()
+    
+    # Double divergence operator on 2-forms
+    K = derham.assemble_divdiv()
+    
+    # Mass matrix for 1-forms
+    M1 = derham.assemble_M1()
+    
+    # Mass matrix for 2-forms
+    M2 = derham.assemble_M2()
 
     # block_matrix = jnp.block([[K, C], [-C.T, M1]])
 
+    
     L = C @ jnp.linalg.solve(M1, C.T) + K
+    
 
     tol = 1e-12
     eigvals, eigvecs = jnp.linalg.eigh(L)
@@ -92,9 +87,16 @@ def get_err(n, p):
     )
     L_pinv = (eigvecs * inv_eigvals) @ eigvecs.T
 
-    P2 = Projector(Λ2, Q, F, E2)
-    u_hat = L_pinv @ P2(Flat(f, F))
-    u_hat_analytic = jnp.linalg.solve(M2, P2(Flat(u, F)))
+    # Project source term onto 2-form space
+    P2 = derham.P2
+    f_proj = P2(f)
+    
+    u_hat = L_pinv @ f_proj
+    
+    # Project exact solution onto 2-form space for error computation
+    u_proj = P2(u)
+    
+    u_hat_analytic = jnp.linalg.solve(M2, u_proj)
     error = ((u_hat - u_hat_analytic) @ M2 @ (u_hat - u_hat_analytic) /
              (u_hat_analytic @ M2 @ u_hat_analytic))**0.5
     return error
@@ -107,8 +109,8 @@ def run_convergence_analysis(ns, ps):
     err = np.zeros((len(ns), len(ps)))
     times = np.zeros((len(ns), len(ps)))
 
-    # First run (with JIT compilation)
-    print("First run (with JIT compilation):")
+    # First run (without JIT compilation)
+    print("First run (without JIT compilation):")
     for i, n in enumerate(ns):
         for j, p in enumerate(ps):
             start = time.time()
@@ -118,8 +120,8 @@ def run_convergence_analysis(ns, ps):
             print(
                 f"n={n}, p={p}, err={err[i, j]:.2e}, time={times[i, j]:.2f}s")
 
-    # Second run (after JIT compilation)
-    print("\nSecond run (after JIT compilation):")
+    # Second run (after first compilation)
+    print("\nSecond run (after first compilation):")
     times2 = np.zeros((len(ns), len(ps)))
     for i, n in enumerate(ns):
         for j, p in enumerate(ps):
@@ -150,7 +152,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.title('Error Convergence')
     plt.grid(True)
     plt.legend()
-    plt.savefig('script_outputs/toroid_vectorpoisson_mixed_error.png',
+    plt.savefig('script_outputs/cylinder_vector_poisson_error.png',
                 dpi=300, bbox_inches='tight')
 
     return fig1

@@ -18,6 +18,7 @@ from mrx.Utils import inv33
 
 __all__ = ['DifferentialForm', 'DiscreteFunction', 'Pushforward', 'Pullback']
 
+
 class DifferentialForm:
     """
     A class representing differential forms of various degrees.
@@ -27,7 +28,7 @@ class DifferentialForm:
 
     Attributes:
         d (int): Dimension of the space
-        k (int): Degree of the differential form (0, 1, 2, or 3)
+        k (int): Degree of the differential form (0, 1, 2, or 3. -1 refers to a vector field)
         n (int): Total number of basis functions
         nr (int): Number of basis functions in r direction
         nχ (int): Number of basis functions in χ direction
@@ -46,6 +47,9 @@ class DifferentialForm:
     nr: int
     nχ: int
     nζ: int
+    pr: int
+    pχ: int
+    pζ: int
     ns: jnp.ndarray
 
     def __init__(self, k, ns, ps, types, Ts=None):
@@ -69,6 +73,7 @@ class DifferentialForm:
         self.dΛ = [DerivativeSpline(b) for b in self.Λ]
         self.types = types
 
+        self.pr, self.pχ, self.pζ = ps
         self.nr, self.nχ, self.nζ = ns
         if types[0] == "clamped":
             self.dr = self.nr - 1
@@ -125,6 +130,23 @@ class DifferentialForm:
             self.n1 = self.dr * self.dχ * self.dζ
             self.n2 = 0
             self.n3 = 0
+        elif k == -1:
+            self.bases = (
+                TensorBasis([self.Λ[0], self.Λ[1], self.Λ[2]]),
+                TensorBasis([self.Λ[0], self.Λ[1], self.Λ[2]]),
+                TensorBasis([self.Λ[0], self.Λ[1], self.Λ[2]]),
+            )
+            self.shape = (
+                (self.nr, self.nχ, self.nζ),
+                (self.nr, self.nχ, self.nζ),
+                (self.nr, self.nχ, self.nζ),
+            )
+            self.n1 = self.nr * self.nχ * self.nζ
+            self.n2 = self.nr * self.nχ * self.nζ
+            self.n3 = self.nr * self.nχ * self.nζ
+        else:
+            raise ValueError(
+                "Degree k must be 0, 1, 2, 3, or -1 (vector field)")
         self.n = self.n1 + self.n2 + self.n3
         self.ns = jnp.arange(self.n)
 
@@ -141,7 +163,7 @@ class DifferentialForm:
         """
         if self.k == 0 or self.k == 3:
             return jnp.int32(0), idx
-        elif self.k == 1 or self.k == 2:
+        elif self.k == 1 or self.k == 2 or self.k == -1:
             n1, n2 = self.n1, self.n2
             category = jnp.int32(idx >= n1) + jnp.int32(idx >= n1 + n2)
             index = jnp.int32(idx - n1 * (idx >= n1) - n2 * (idx >= n1 + n2))
@@ -208,6 +230,20 @@ class DifferentialForm:
             rav = jnp.ravel_multi_index(
                 (i, j, k), (self.dr, self.dχ, self.dζ), mode="clip"
             )
+        elif self.k == -1:
+            n1, n2 = self.n1, self.n2
+            _rav = jnp.ravel_multi_index(
+                (i, j, k), (self.nr, self.nχ, self.nζ), mode="clip"
+            )
+            rav = jnp.where(
+                c == 0,
+                _rav,
+                jnp.where(
+                    c == 1,
+                    n1 + _rav,
+                    n1 + n2 + _rav,
+                ),
+            )
         return jnp.int32(rav)
 
     def _unravel_index(self, idx):
@@ -253,6 +289,11 @@ class DifferentialForm:
             return c, i, j, k
         elif self.k == 3:
             return jnp.int32(0), *jnp.unravel_index(idx, (self.dr, self.dχ, self.dζ))
+        elif self.k == -1:
+            c, ijk = self._vector_index(idx)
+            i, j, k = jnp.array(jnp.unravel_index(
+                ijk, (self.nr, self.nχ, self.nζ)))
+            return c, i, j, k
 
     def __call__(self, x, i):
         """Evaluate the form at point x with basis function i."""
@@ -285,7 +326,7 @@ class DifferentialForm:
         category, index = self._vector_index(i)
         if self.k == 0 or self.k == 3:
             return jnp.ones(1) * self.bases[0](x, index)
-        elif self.k == 1 or self.k == 2:
+        elif self.k == 1 or self.k == 2 or self.k == -1:
             e = jnp.zeros(3).at[category].set(1)
             val = jnp.where(
                 category == 0,
@@ -389,6 +430,11 @@ class Pushforward:
             )
         elif self.k == 3:
             return self.f(x) / jnp.linalg.det(jax.jacfwd(self.F)(x))
+        elif self.k == -1:
+            return (
+                jax.jacfwd(self.F)(x)
+                @ self.f(x)
+            )
 
 
 class Pullback:
@@ -440,40 +486,7 @@ class Pullback:
             )
         elif self.k == 3:
             return self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))
-
-
-class Flat:
-    def __init__(self, A, F):
-        """
-        Initialize a musical operator.
-
-        Args:
-            A (callable): The 1-form to convert to a vector field
-            F (callable): The transformation function
-            k (int): Degree of the form
-        """
-        self.A = A
-        self.F = F
-
-    def __call__(self, x):
-        """
-        Apply the musical operator at point x.
-
-        Args:
-            x (array-like): Point at which to evaluate
-
-        Returns:
-            array-like: Value of the vector field at x
-        """
-        DF = jax.jacfwd(self.F)(x)
-        return jnp.real(jax.scipy.linalg.sqrtm(DF.T @ DF)) @ self.A(x)
-
-
-class Sharp:
-    def __init__(self, A, F):
-        self.A = A
-        self.F = F
-
-    def __call__(self, x):
-        DF = inv33(jax.jacfwd(self.F)(x))
-        return jnp.real(jax.scipy.linalg.sqrtm(DF @ DF.T)) @ self.A(x)
+        elif self.k == -1:
+            return (
+                inv33(jax.jacfwd(self.F)(x)) @ self.f(y)
+            )

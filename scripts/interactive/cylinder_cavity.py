@@ -6,24 +6,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
 
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pushforward
-from mrx.LazyMatrices import LazyDerivativeMatrix, LazyDoubleCurlMatrix, LazyMassMatrix
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.Quadrature import QuadratureRule
+from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction, Pushforward
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
-# Initialize differential forms and operators
-ns = (6, 6, 6)  # Number of elements in each direction
-ps = (3, 3, 3)  # Polynomial degree in each direction
-types = ('clamped', 'periodic', 'periodic')  # Boundary conditions
-bcs = ('dirichlet', 'periodic', 'periodic')
-# Define differential forms for different function spaces
-Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(k, ns, ps, types) for k in range(4)]
-
-# Set up quadrature rule
-Q = QuadratureRule(Λ0, 8)
+# Initialize parameters
+ns = (15, 15, 1)  # Number of elements in each direction
+ps = (3, 3, 0)  # Polynomial degree in each direction
+types = ('clamped', 'periodic', 'constant')  # Types
+bcs = ('dirichlet', 'periodic', 'periodic')  # Boundary conditions
 
 a = 1
 h = 1
@@ -42,17 +35,22 @@ def F(x):
     return jnp.ravel(jnp.array([_R(r, χ), _Y(r, χ), h * jnp.ones(1) * z]))
 
 
-ξ = get_xi(_R, _Y, Λ0, Q)[0]
+# Create DeRham sequence 
+derham = DeRhamSequence(ns, ps, 8, types, bcs, F, polar=True)
 
-# %%
-E0, E1, E2, E3 = [LazyExtractionOperator(
-    Λ, ξ, True).M for Λ in [Λ0, Λ1, Λ2, Λ3]]
-M1 = LazyMassMatrix(Λ1, Q, F=F, E=E1).M
-M0 = LazyMassMatrix(Λ0, Q, F=F, E=E0).M
-D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).M
+# Get extraction operators and mass matrices 
+E0, E1, E2, E3 = [derham.E0.matrix(), derham.E1.matrix(), derham.E2.matrix(), derham.E3.matrix()]
+M1 = derham.assemble_M1()  # Mass matrix for 1-forms
+M0 = derham.assemble_M0()  # Mass matrix for 0-forms
+
+
+D0 = derham.assemble_grad()  # Gradient matrix 
 O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros((D0.shape[1], D0.shape[1]))
-C = LazyDoubleCurlMatrix(Λ1, Q, F=F, E=E1).M
+
+
+C = derham.assemble_curlcurl()  # Double curl matrix 
+
 Q = jnp.block([[C, D0], [D0.T, O0]])
 P = jnp.block([[M1, O10], [O10.T, O0]])
 
@@ -192,23 +190,38 @@ def calculate_cylindrical_periodic_TE_TM_eigenvalues(
 
 
 true_evs = calculate_cylindrical_periodic_TE_TM_eigenvalues(
-    range(0, 8), range(1, 8), [0], a, h)
+    range(0, 8), range(1, 8), range(1), a, h)
 
 # %%
+# --- PLOT SETTINGS FOR SLIDES ---
+FIG_SIZE = (12, 6)      # Figure size in inches (width, height)
+TITLE_SIZE = 20         # Font size for the plot title
+LABEL_SIZE = 20         # Font size for x and y axis labels
+TICK_SIZE = 16          # Font size for x and y tick labels
+LEGEND_SIZE = 16        # Font size for the legend
+LINE_WIDTH = 2.5        # Width of the plot lines
+# ---------------------------------
+end = 40
 
-_end = 20
-fig, ax = plt.subplots()
-ax.set_xticks(jnp.arange(1, _end + 1)[::2])
-ax.yaxis.grid(True, which='both')
-ax.xaxis.grid(True, which='both')
-ax.set_ylabel('λ')
-ax.legend()
-ax.plot(jnp.arange(1, _end + 1),
-        evs[:_end], marker='v', label='λ')
-ax.plot(jnp.arange(1, _end + 1),
-        true_evs[:_end], marker='*', label='λ', linestyle='')
-# ax.set_yscale('log')
-ax.set_xlabel('n')
+# %% Figure 1: Energy and Force
+fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
+
+color1 = 'purple'
+color2 = 'black'
+ax1.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
+ax1.set_ylabel(r'$\lambda_k / \pi^2$', fontsize=LABEL_SIZE)
+ax1.plot(true_evs[:end], label=r'true',
+         marker='', ls = ':', markersize=10, color=color2, lw=LINE_WIDTH)
+ax1.plot(evs[:end], label=r'computed',
+         marker='*', ls = '', markersize=10, color=color1, lw=LINE_WIDTH)
+ax1.tick_params(axis='y', labelsize=TICK_SIZE)
+ax1.tick_params(axis='x', labelsize=TICK_SIZE)
+# ax1.set_yticks(jnp.unique(true_evs[:end]))
+ax1.grid(axis='y', linestyle='--', alpha=0.7)
+ax1.legend(fontsize=LEGEND_SIZE) # Use ax1.legend() for clarity
+
+# Now save the figure. The 'tight' layout will be calculated correctly.
+fig1.savefig('cylinder_eigenvalues.pdf', bbox_inches='tight')
 # %%
 # Check that for all EVs in `evs`, there is a corresponding true EV in `true_evs` such that the difference is less than tol:
 tol = 1e-5
@@ -245,7 +258,7 @@ __x = jnp.array(jnp.meshgrid(__x1, __x2, __x3))
 __x = __x.transpose(1, 2, 3, 0).reshape(_nx*_nx*1, 3)
 __y = jax.vmap(F)(__x)
 __y1 = __y[:, 0].reshape(_nx, _nx)
-__y2 = __y[:, 1].reshape(_nx, _nx)
+_y2 = __y[:, 1].reshape(_nx, _nx)
 
 
 def plot_eigenvectors_grid(
@@ -299,7 +312,7 @@ def plot_eigenvectors_grid(
         _z1_reshaped = _z1_vector_field.reshape(nx_grid, nx_grid, 3)
         _z1_norm = jnp.linalg.norm(_z1_reshaped, axis=2)
 
-        ax.contourf(y1_coords, y2_coords, _z1_norm)
+        ax.contourf(y1_coords, y2_coords, _z1_norm, cmap='plasma', levels=25)
 
         ax.set_axis_off()
         ax.set_aspect('equal', adjustable='box')  # Maintain aspect ratio
@@ -316,7 +329,9 @@ def plot_eigenvectors_grid(
 
 # %%
 # Plot the first 9 eigenvectors
-plot_eigenvectors_grid(
-    evecs, M1, Λ1, E1, F, _x, _y1, _y2, nx, num_to_plot=25
+fig = plot_eigenvectors_grid(
+    evecs, M1, derham.Λ1, E1, F, _x, _y1, _y2, nx, num_to_plot=25
 )
+# %%
+fig.savefig('cylinder_eigenmodes.pdf', bbox_inches='tight')
 # %%

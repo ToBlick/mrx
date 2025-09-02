@@ -58,7 +58,9 @@ class LazyBoundaryOperator:
         def get_dim(original_dim, bc_type):
             if bc_type == "dirichlet":
                 return original_dim - 2
-            elif bc_type == "half":
+            elif bc_type == "right":
+                return original_dim - 1
+            elif bc_type == "left":
                 return original_dim - 1
             else:
                 return original_dim
@@ -85,17 +87,18 @@ class LazyBoundaryOperator:
             self.n1 = self.dr * self.dχ * self.dζ
             self.n2 = 0
             self.n3 = 0
+        elif self.k == -1:
+            self.n1 = self.nr * self.nχ * self.nζ
+            self.n2 = self.nr * self.nχ * self.nζ
+            self.n3 = self.nr * self.nχ * self.nζ
         self.n = self.n1 + self.n2 + self.n3
 
-        self.M = self.assemble()
-
-    def __getitem__(self, idx):
-        """Get operator element at specified index."""
-        return self.M[idx]
+    def matrix(self):
+        return self.assemble()
 
     def __array__(self):
         """Convert operator to numpy array."""
-        return np.array(self.M)
+        return np.array(self.matrix())
 
     def _vector_index(self, idx):
         """
@@ -110,7 +113,7 @@ class LazyBoundaryOperator:
         """
         if self.k == 0 or self.k == 3:
             return jnp.int32(0), idx
-        elif self.k == 1 or self.k == 2:
+        elif self.k == 1 or self.k == 2 or self.k == -1:
             n1, n2 = self.n1, self.n2
             category = jnp.int32(idx >= n1) + jnp.int32(idx >= n1 + n2)
             local_idx = jnp.int32(
@@ -160,6 +163,11 @@ class LazyBoundaryOperator:
             return category, i, j, k
         elif self.k == 3:
             return jnp.int32(0), *jnp.unravel_index(idx, (self.dr, self.dχ, self.dζ))
+        elif self.k == -1:
+            category, ijk = self._vector_index(idx)
+            i, j, k = jnp.array(jnp.unravel_index(
+                ijk, (self.nr, self.nχ, self.nζ)))
+            return category, i, j, k
 
     def _element(self, row_idx, col_idx):
         """
@@ -175,9 +183,12 @@ class LazyBoundaryOperator:
         cat_row, i, j, k = self._unravel_index(row_idx)
         cat_col, p, m, n = self.Λ._unravel_index(col_idx)
 
-        target_l = jnp.where(self.types[0] == "dirichlet", p - 1, p)
-        target_m = jnp.where(self.types[1] == "dirichlet", m - 1, m)
-        target_n = jnp.where(self.types[2] == "dirichlet", n - 1, n)
+        target_l = jnp.where(jnp.logical_or(
+            self.types[0] == "dirichlet", self.types[0] == "left"), p - 1, p)
+        target_m = jnp.where(jnp.logical_or(
+            self.types[1] == "dirichlet", self.types[1] == "left"), m - 1, m)
+        target_n = jnp.where(jnp.logical_or(
+            self.types[2] == "dirichlet", self.types[2] == "left"), n - 1, n)
 
         if self.k == 0:
             return jnp.int32((i == target_l) * (j == target_m) * (k == target_n))
@@ -197,7 +208,7 @@ class LazyBoundaryOperator:
                     0,
                 )
             )
-        elif self.k == 2:
+        elif self.k == 2 or self.k == -1:
             return jnp.int32(
                 jnp.where(
                     cat_row == cat_col,

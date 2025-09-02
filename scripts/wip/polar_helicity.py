@@ -28,6 +28,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
+from mrx.DeRhamSequence import DeRhamSequence
 from mrx.DifferentialForms import DifferentialForm
 from mrx.LazyMatrices import (
     LazyDerivativeMatrix,
@@ -79,8 +80,10 @@ def get_error(n, p):
             curl_A_err: Relative error in curl calculation
     """
     types = ('clamped', 'periodic', 'constant')
+    bcs = ('dirichlet', 'none', 'none')
     ns = (n, n, 1)
     ps = (p, p, 0)
+    q = 6
 
     Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(i, ns, ps, types) for i in range(4)]
     Q = QuadratureRule(Λ0, 4)
@@ -105,19 +108,21 @@ def get_error(n, p):
                                     _Y(r, χ),
                                     _R(r, χ) * jnp.sin(2 * jnp.pi * z)]))
 
+    # Seq = DeRhamSequence(ns, ps, q, types, bcs, F, polar=True)
+
     ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
     Q = QuadratureRule(Λ0, 10)  # Redefine at higher order
     E0, E1, E2, E3 = [LazyExtractionOperator(
-        Λ, ξ, True).M for Λ in [Λ0, Λ1, Λ2, Λ3]]
-    M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q, F, E).M for Λ, E in zip(
+        Λ, ξ, True) for Λ in [Λ0, Λ1, Λ2, Λ3]]
+    M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q, F, E).matrix() for Λ, E in zip(
         [Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
     P0, P1, P2, P3 = [Projector(Λ, Q, F, E)
                       for Λ, E in zip([Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
 
-    M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F, E1, E2).M.T
-    C = LazyDoubleCurlMatrix(Λ1, Q, F, E1).M
-    D1 = LazyDerivativeMatrix(Λ1, Λ2, Q, F, E1, E2).M
-    # D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).M
+    M12 = LazyProjectionMatrix(Λ1, Λ2, Q, F, E1, E2).matrix().T
+    C = LazyDoubleCurlMatrix(Λ1, Q, F, E1).matrix()
+    D1 = LazyDerivativeMatrix(Λ1, Λ2, Q, F, E1, E2).matrix()
+    # D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).matrix()
 
     def A(x):
         r, χ, z = x
@@ -253,18 +258,18 @@ pps = (pp, pp, 0)  # Polynomial degrees
 Q = QuadratureRule(Λ0, 3)  # Quadrature rule with 3 points per dimension
 
 # Assemble mass matrices and derivative operators
-M2 = LazyMassMatrix(Λ2, Q).M  # Mass matrix for 2-forms
-M1 = LazyMassMatrix(Λ1, Q).M  # Mass matrix for 1-forms
+M2 = LazyMassMatrix(Λ2, Q).matrix()  # Mass matrix for 2-forms
+M1 = LazyMassMatrix(Λ1, Q).matrix()  # Mass matrix for 1-forms
 # Derivative operator from 1-forms to 2-forms
-D = LazyDerivativeMatrix(Λ1, Λ2, Q).M
+D = LazyDerivativeMatrix(Λ1, Λ2, Q).matrix()
 P2 = Projector(Λ2, Q)  # Projector for 2-forms
 P1 = Projector(Λ1, Q)  # Projector for 1-forms
 # Projection matrix from 1-forms to 2-forms
-M12 = LazyProjectionMatrix(Λ1, Λ2, Q).M
+M12 = LazyProjectionMatrix(Λ1, Λ2, Q).matrix()
 
 # Compute double curl operator and its SVD
 C = D.T @ jnp.linalg.solve(M2, D)  # Double curl operator
-_C = LazyDoubleCurlMatrix(Λ1, Q).M  # Alternative double curl operator
+_C = LazyDoubleCurlMatrix(Λ1, Q).matrix()  # Alternative double curl operator
 
 # Compute magnetic field and vector potential
 B = curl(A)  # Magnetic field from vector potential

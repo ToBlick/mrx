@@ -1,38 +1,37 @@
 # %%
-import os
-import time
-from functools import partial
-
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Flat, Pushforward
-from mrx.LazyMatrices import LazyDerivativeMatrix, LazyMassMatrix, LazyProjectionMatrix
+from mrx.LazyMatrices import (
+    LazyDerivativeMatrix,
+    LazyDoubleCurlMatrix,
+    LazyMassMatrix,
+    LazyProjectionMatrix,
+)
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.Projectors import CurlProjection, EFieldProjector, ForceProjector, Projector
+from mrx.Projectors import Projector
 from mrx.Quadrature import QuadratureRule
-from mrx.Utils import grad, inv33, jacobian_determinant
+from mrx.Utils import inv33, jacobian_determinant
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
 a = 1
-ɛ = 0.35
-q_star = 1.5
-β_t = 0.12
 B0 = 1.0
-μ0 = 1.0
-R0 = a / ɛ
+q0 = 0.8
+q1 = q0  # 1.85
+R0 = 0
 π = jnp.pi
-ν = β_t * q_star**2 / ɛ
 γ = 5/3
+alpha = 4
 
 n = 5
 p = 3
-q = 2*p
-ns = (n, n, 1)
+q = 3*p
+ns = (8, 4, 1)
 ps = (p, p, 0)
 types = ("clamped", "periodic", "fourier")
 
@@ -46,15 +45,15 @@ def _Y(r, χ):
 
 
 def _Z(r, χ):
-    return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
+    return jnp.ones(1)
 
 
 def F(x):
     """Polar coordinate mapping function."""
     r, χ, z = x
-    return jnp.ravel(jnp.array([_X(r, χ) * jnp.cos(2 * π * z),
+    return jnp.ravel(jnp.array([_X(r, χ),
                                 _Y(r, χ),
-                                _Z(r, χ) * jnp.sin(2 * π * z)]))
+                                _Z(r, χ) * z]))
 
 
 # Set up plotting grid
@@ -85,6 +84,7 @@ ___x = jnp.array(jnp.meshgrid(___x1, ___x2, ___x3))
 ___x = ___x.transpose(1, 2, 3, 0).reshape(__nx * 1 * 1, 3)
 ___y = jax.vmap(F)(___x)
 ___y1 = ___y[:, 0]
+
 
 
 # %%
@@ -125,6 +125,11 @@ curl_matrix_cart = LazyDerivativeMatrix(Λ1, Λ2, Q, F, None, None).M
 curl_matrix_dbc = boundary_operator_2_dbc @ curl_matrix_cart @ boundary_operator_1_dbc.T
 curl_matrix = boundary_operator_2 @ curl_matrix_cart @ boundary_operator_1.T
 
+curl_curl_matrix = LazyDoubleCurlMatrix(Λ1, Q, F, boundary_operator_1_dbc).M
+U, S, Vh = jnp.linalg.svd(curl_curl_matrix)
+S_inv = jnp.where(S > 1e-12, 1/S, 0)
+curl_curl_matrix_pinv = Vh.T @ jnp.diag(S_inv) @ U.T
+
 divergence_matrix_cart = LazyDerivativeMatrix(Λ2, Λ3, Q, F, None, None).M
 divergence_matrix_dbc = boundary_operator_3 @ divergence_matrix_cart @ boundary_operator_2_dbc.T
 divergence_matrix = boundary_operator_3 @ divergence_matrix_cart @ boundary_operator_2.T
@@ -135,6 +140,8 @@ projection_matrix_12 = jnp.linalg.solve(mass_matrix_1,
                                         LazyProjectionMatrix(
                                             Λ1, Λ2, Q, F, boundary_operator_1, boundary_operator_2_dbc
                                         ).M.T)
+mass_matrix_12 = LazyProjectionMatrix(
+    Λ1, Λ2, Q, F, boundary_operator_1_dbc, boundary_operator_2_dbc).M
 # %%
 
 
@@ -266,27 +273,89 @@ class dp_plus_gu:
 
 def p_analytic(x):
     r, χ, z = x
-    return 1/μ0 * B0**2 * β_t * (1 - r**2) * (1 + ν * r * jnp.cos(2 * π * χ)) * jnp.ones(1)
+    return (alpha + 1) / (2 * alpha) * (1 - r**(2*alpha)) * jnp.ones(1)
+    # qr = q0 + (q1 - q0) * r**2
+    # return (1 - r**2) * jnp.ones(1)  # * (1 - 0.2 * jnp.cos(2 * jnp.pi * r))
+    # return - B0**2 * (r**2 - 1) / (q0**2 * R0**2) * jnp.ones(1)
+    # return q0 * a**2 * B0**2 / (2 * R0**2 * (q1 - q0)) * (1/qr**2 - 1/q1**2) * jnp.ones(1)
+    # return (B0**2 / 48) * (5 - 12*r**2 + 9*r**4 - 2*r**6) * jnp.ones(1)
 
 
 def B_analytic(x):
     r, χ, z = x
-    Br = - 0.5 * ν * ɛ / q_star * (r**2 - 1) * jnp.sin(2 * π * χ)
-    Bχ = ɛ / q_star * (r + ν / 2 * (3 * r**2 - 1) * jnp.cos(2 * π * χ))
-    Bz = - (1 - ɛ * r * jnp.cos(2 * π * χ) - β_t *
-            (1 - r**2) * (1 + ν * r * jnp.cos(2 * π * χ)))
-    return jnp.array([Br, Bχ, Bz]) * B0
+    return jnp.array([0, r**alpha * 2 * π * r, 1])
+    # qr = q0 + (q1 - q0) * r**2
+    # Btheta = r
+    # Bz = 0.2 * (1 - r**2)
+    # Btheta = r * a / R0 / qr
+    # Btheta = r * 0.5 * (1 - 0.5 * r**2)
+    # return jnp.array([0, Btheta, Bz]) * B0
+
+# def p_0(x):
+#     r, χ, z = x
+#     return (γ / (1 + γ))**γ * jnp.ones(1)
+
+
+B_0 = B_analytic
+
+p_0 = p_analytic
+# def p_0(x):
+#     r, χ, z = x
+#     delta_rho = 0.05 * jnp.sin(2 * π * r) / r
+#     return (p_analytic(x)**(1/γ) + delta_rho)**γ
 
 
 # %%
-H_analytic = Flat(B_analytic, F)
-p_hat = jnp.linalg.solve(mass_matrix_3, projector_3(p_analytic))
+H_analytic = B_0
+p_hat = jnp.linalg.solve(mass_matrix_3, projector_3(p_0))
 B_hat = jnp.linalg.solve(mass_matrix_2_dbc, projector_2_dbc(H_analytic))
 o_hat = jnp.linalg.solve(mass_matrix_3, projector_3(lambda x: jnp.ones(1)))
+# %%
+A_hat = curl_curl_matrix_pinv @ curl_matrix_dbc.T @ B_hat
+H_0 = B_hat @ mass_matrix_12 @ A_hat
+H_0 / π 
+# %%
+@jax.jit
+def mass(p_hat):
+    p_h = DiscreteFunction(p_hat, Λ3, boundary_operator_3)
+    J = jax.vmap(jacobian_determinant(F))(Q.x)  # n_q x 1
+    return jnp.sum(jax.vmap(p_h)(Q.x)[:, 0]**(1/γ) * J**(1 - 1/γ) * Q.w)
+
+# %%
+mass(p_hat) / jnp.pi
 # %%
 PuxB = uxB(Λ1, Q, F, boundary_operator_1_dbc)
 PJxB = JxB(Λ2, Q, F, boundary_operator_2_dbc)
 Pdpgu = dp_plus_gu(Λ3, Q, F, boundary_operator_3)
+# %%
+
+
+def u_pert(x):
+    r, χ, z = x
+    return jnp.array([jnp.cos(4 * jnp.pi * χ), 1.0, -1.0]) * r**2 * (1 - r)**2
+
+
+@jax.jit
+def perturb(B_hat, p_hat, dt):
+    B_h = DiscreteFunction(B_hat, Λ2, boundary_operator_2_dbc)
+    p_h = DiscreteFunction(p_hat, Λ3, boundary_operator_3)
+    # H, J, g functions
+    g_hat = - jnp.linalg.solve(mass_matrix_2_dbc,
+                               divergence_matrix_dbc.T @ p_hat)
+    g_h = DiscreteFunction(g_hat, Λ2, boundary_operator_2_dbc)
+    # perturbation is a poloidal flow
+    u_hat = jnp.linalg.solve(
+        mass_matrix_2_dbc, projector_2_dbc(Flat(u_pert, F)))
+    u_h = DiscreteFunction(u_hat, Λ2, boundary_operator_2_dbc)
+    # evolve B
+    E_hat = jnp.linalg.solve(mass_matrix_1_dbc, PuxB(u_h, B_h))
+    dB_hat = jnp.linalg.solve(mass_matrix_2_dbc, curl_matrix_dbc @ E_hat)
+    # evolve p
+    d_hat = γ * jnp.linalg.solve(mass_matrix_3, divergence_matrix_dbc @ u_hat)
+    d_h = DiscreteFunction(d_hat, Λ3, boundary_operator_3)
+    dp_hat = - Pdpgu(d_h, p_h, g_h, u_h)
+
+    return B_hat + dt * dB_hat, p_hat + dt * dp_hat, u_hat
 # %%
 
 
@@ -316,22 +385,42 @@ def update(B_hat, p_hat, dt):
 
 
 # %%
+# for _ in range(10):
+#     B_hat, p_hat, u_hat = perturb(B_hat, p_hat, 1e-3)
+
+p_hat = jnp.linalg.solve(mass_matrix_3, projector_3(p_0))
+B_hat = jnp.linalg.solve(mass_matrix_2_dbc, projector_2_dbc(H_analytic))
+# %%
 _, _, u_hat = update(B_hat, p_hat, 1e-3)
-trace = []
+# d_hat = jnp.linalg.solve(mass_matrix_3, divergence_matrix_dbc @ u_hat)
+# c_hat = jnp.linalg.solve(mass_matrix_1_dbc, curl_matrix_dbc.T @ u_hat)
+print("|u|**2: ", (u_hat @ mass_matrix_2_dbc @ u_hat))
+trace_u = []
+trace_E = []
+trace_H = []
+trace_mass = []
 
 # %%
-for _ in range(1000):
-    B_hat, p_hat, u_hat = update(B_hat, p_hat, 3e-2)
+for _ in range(50):
+    B_hat, p_hat, u_hat = update(B_hat, p_hat, 5e-4)
+    A_hat = curl_curl_matrix_pinv @ curl_matrix_dbc.T @ B_hat
     # print("|u|: ", (u_hat @ mass_matrix_2_dbc @ u_hat)**0.5)
-    trace.append(u_hat @ mass_matrix_2_dbc @ u_hat)
-    print("|u|: ", trace[-1])
+    trace_u.append(u_hat @ mass_matrix_2_dbc @ u_hat)
+    trace_E.append(0.5 * B_hat @ mass_matrix_2_dbc @ B_hat
+                   + jnp.sum(p_hat)/(γ - 1))
+    trace_H.append(B_hat @ mass_matrix_12 @ A_hat)
+    trace_mass.append(mass(p_hat))
+    print("|u|: ", trace_u[-1])
 
 # %%
-plt.plot(trace)
+plt.plot(trace_u)
 plt.yscale("log")
-
 # %%
-B_hat_save, p_hat_save = B_hat, p_hat
+plt.plot(np.array(trace_E))
+# %%
+plt.plot(np.array(trace_H)/trace_H[0] - 1, label='H')
+plt.plot(np.array(trace_mass)/trace_mass[0] - 1, label='mass')
+plt.legend()
 # %%
 u_h = DiscreteFunction(u_hat, Λ2, boundary_operator_2_dbc)
 B_h = DiscreteFunction(B_hat, Λ2, boundary_operator_2_dbc)
@@ -345,22 +434,14 @@ plt.colorbar()
 __z1 = jax.vmap(F_u_h)(__x).reshape(_nx, _nx, 3)
 plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color="k")
 plt.xlabel('X')
-plt.ylabel('Y')
+plt.ylabel('Z')
 # %%
 F_p_h = Pushforward(p_h, F, 3)
 _z1 = jax.vmap(F_p_h)(_x).reshape(nx, nx)
 plt.contourf(_y1, _y2, _z1)
 plt.colorbar()
 plt.xlabel('X')
-plt.ylabel('Y')
-# %%
-# q_h = DiscreteFunction(q_hat, Λ3, boundary_operator_3)
-# F_q_h = Pushforward(q_h, F, 3)
-# _z1 = jax.vmap(F_q_h)(_x).reshape(nx, nx)
-# plt.contourf(_y1, _y2, _z1)
-# plt.colorbar()
-# plt.xlabel('X')
-# plt.ylabel('Z')
+plt.ylabel('Z')
 # %%
 F_B_h = Pushforward(B_h, F, 2)
 _z1 = jax.vmap(F_B_h)(_x).reshape(nx, nx, 3)
@@ -372,19 +453,28 @@ plt.quiver(__y1, __y2, __z1[:, :, 0], __z1[:, :, 1], color="k")
 plt.xlabel('X')
 plt.ylabel('Z')
 # %%
-_z1 = jax.vmap(F_p_h)(___x)
-_z2 = jnp.sum(jax.vmap(F_B_h)(___x)**2, axis=-1)
-_z3 = jax.vmap(F_B_h)(___x)[:, 0]
-_z4 = jax.vmap(F_B_h)(___x)[:, 1]
-_z5 = jax.vmap(F_B_h)(___x)[:, 2]
-# _x_sq = Pushforward(lambda x: x[0]**2, F, 0)
-# _z3 = jax.vmap(_x_sq)(___x)
+_z1 = jax.vmap(p_h)(___x)[:, 0] / ___x[:, 0] / 2 / jnp.pi
+_z3 = jax.vmap(B_h)(___x)[:, 0] / ___x[:, 0] / 2 / jnp.pi
+_z4 = jax.vmap(B_h)(___x)[:, 1]
+_z5 = jax.vmap(B_h)(___x)[:, 2] / ___x[:, 0] / 2 / jnp.pi
+_z6 = jax.vmap(p_analytic)(___x)
+_z7 = jax.vmap(B_analytic)(___x)
+_z8 = jax.vmap(p_0)(___x)
+_z9 = jax.vmap(B_0)(___x)
+
+# %%
 plt.plot(___y1, _z1, label='pressure')
-plt.plot(___y1, _z2, label='B squared')
 plt.plot(___y1, _z3, label='B r-component')
 plt.plot(___y1, _z4, label='B chi-component')
 plt.plot(___y1, _z5, label='B z-component')
-# plt.plot(___y1, _z3, label='1 + x**2')
+plt.plot(___y1, _z6, label='p analytic', linestyle='--')
+plt.plot(___y1, _z7[:, 0], label='Br analytic', linestyle='--')
+plt.plot(___y1, _z7[:, 1] / (2 * π * ___x[:, 0]), label='Bchi analytic', linestyle='--')
+plt.plot(___y1, _z7[:, 2], label='Bz analytic', linestyle='--')
+plt.plot(___y1, _z8, label='p_0 analytic', linestyle='--')
+# plt.plot(___y1, _z9[:, 0], label='Br_0 analytic', linestyle='--')
+# plt.plot(___y1, _z9[:, 1], label='Bchi_0 analytic', linestyle='--')
+# plt.plot(___y1, _z9[:, 2], label='Bz_0 analytic', linestyle='--')
 plt.legend()
 plt.xlabel('r')
 plt.ylabel('p')

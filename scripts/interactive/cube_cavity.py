@@ -7,12 +7,9 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy as sp
 
-from mrx.BoundaryConditions import LazyBoundaryOperator
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
-from mrx.LazyMatrices import LazyDerivativeMatrix, LazyDoubleCurlMatrix, LazyMassMatrix
-from mrx.Quadrature import QuadratureRule
+from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -23,38 +20,30 @@ script_dir = Path(__file__).parent.absolute()
 output_dir = script_dir / 'script_outputs'
 os.makedirs(output_dir, exist_ok=True)
 
-# Initialize differential forms and operators
-ns = (8, 8, 8)  # Number of elements in each direction
+# Initialize parameters
+ns = (6, 6, 6)  # Number of elements in each direction
 ps = (3, 3, 3)  # Polynomial degree in each direction
-types = ('clamped', 'clamped', 'clamped')  # Boundary conditions
-bcs = ('dirichlet', 'dirichlet', 'dirichlet')
-# Define differential forms for different function spaces
-Λ0 = DifferentialForm(0, ns, ps, types)  # H1 functions
-Λ1 = DifferentialForm(1, ns, ps, types)  # H(curl) vector fields
-Λ2 = DifferentialForm(2, ns, ps, types)  # H(div) vector fields
-Λ3 = DifferentialForm(3, ns, ps, types)  # L2 densities
-
-# Set up quadrature rule
-Q = QuadratureRule(Λ0, 6)
+types = ('clamped', 'clamped', 'clamped')  # Types
+bcs = ('dirichlet', 'dirichlet', 'dirichlet')  # Boundary conditions
 
 # Identity mapping for the domain
-
-
 def F(x): return x
 
+# Create DeRham sequence 
+derham = DeRhamSequence(ns, ps, 6, types, bcs, F, polar=False) # Quadrature order 6
 
-# %%
-B1 = LazyBoundaryOperator(Λ1, bcs).M
-B0 = LazyBoundaryOperator(Λ0, bcs).M
-M1 = LazyMassMatrix(Λ1, Q, F=F, E=B1).M
-M0 = LazyMassMatrix(Λ0, Q, F=F, E=B0).M
+# Get boundary operators and mass matrices 
+B1 = derham.E1.matrix()  # Boundary operator for 1-forms
+B0 = derham.E0.matrix()  # Boundary operator for 0-forms
+M1 = derham.assemble_M1()  # Mass matrix for 1-forms
+M0 = derham.assemble_M0()  # Mass matrix for 0-forms
 
-D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, B0, B1).M
+D0 = derham.assemble_grad()  # Gradient matrix
 O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros_like(M0)
 
-C = LazyDoubleCurlMatrix(Λ1, Q, F=F, E=B1).M
 
+C = derham.assemble_curlcurl()  # Double curl matrix 
 
 # %%
 Q = jnp.block([[C, D0], [D0.T, O0]])
@@ -71,12 +60,25 @@ P = jnp.block([[M1, O10], [O10.T, O0]])
 # div u = 0
 # u x n = 0 on ∂Ω
 # %%
-evs, evecs = sp.linalg.eig(Q, P)
+
+
+def generalized_eigh(A, B):
+    # Add small value for numerical stability
+    L = jnp.linalg.cholesky(B + jnp.eye(B.shape[0]) * 1e-12)
+    L_inv = jnp.linalg.inv(L)
+    C = L_inv @ A @ L_inv.T
+    eigenvalues, eigenvectors_transformed = jnp.linalg.eigh(C)
+    eigenvectors_original = L_inv.T @ eigenvectors_transformed
+    return eigenvalues, eigenvectors_original
+
+
+# evs, evecs = sp.linalg.eigh(Q, P)
+evs, evecs = generalized_eigh(Q, P)
 
 evs = jnp.real(evs)
 evecs = jnp.real(evecs)
 
-finite_indices = jnp.isfinite(evs)
+finite_indices = evs > 0  # jnp.isfinite(evs)
 evs = evs[finite_indices]
 evecs = evecs[:, finite_indices]
 
@@ -161,42 +163,57 @@ def get_true_evs(N_max):
 
 
 # %%
-_end = 64
+_end = 26
 true_evs = get_true_evs(4)[:_end]
-fig, ax = plt.subplots()
-ax.set_yticks(jnp.unique(true_evs))
-ax.set_xticks(jnp.arange(1, _end + 1)[::5])
-ax.yaxis.grid(True, which='both')
-ax.xaxis.grid(True, which='both')
-ax.set_ylabel('λ/π²')
-ax.legend()
-# ax.plot(jnp.arange(1,_end + 1), evd[0][:_end] / (jnp.pi**2), marker='s', label='λ/ᴨ²')
-ax.plot(jnp.arange(1, _end + 1),
-        evs[:_end] / (jnp.pi**2), marker='v', label='λ/π²')
-ax.plot(jnp.arange(1, _end + 1),
-        true_evs[:_end], marker='*', label='λ/π²', linestyle='')
-# ax.set_yscale('log')
-ax.set_xlabel('n')
 # %%
+# --- PLOT SETTINGS FOR SLIDES ---
+FIG_SIZE = (12, 6)      # Figure size in inches (width, height)
+TITLE_SIZE = 20         # Font size for the plot title
+LABEL_SIZE = 20         # Font size for x and y axis labels
+TICK_SIZE = 16          # Font size for x and y tick labels
+LEGEND_SIZE = 16        # Font size for the legend
+LINE_WIDTH = 2.5        # Width of the plot lines
+# ---------------------------------
+end = 64
 
+# %% Figure 1: Energy and Force
+fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
+
+color1 = 'purple'
+color2 = 'black'
+ax1.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
+ax1.set_ylabel(r'$\lambda_k / \pi^2$', fontsize=LABEL_SIZE)
+ax1.plot(true_evs[:end], label=r'true',
+         marker='', ls = ':', markersize=10, color=color2, lw=LINE_WIDTH)
+ax1.plot(evs[:end] / (jnp.pi**2), label=r'computed',
+         marker='*', ls = '', markersize=10, color=color1, lw=LINE_WIDTH)
+ax1.tick_params(axis='y', labelsize=TICK_SIZE)
+ax1.tick_params(axis='x', labelsize=TICK_SIZE)
+ax1.set_yticks(jnp.unique(true_evs[:end]))
+ax1.grid(axis='y', linestyle='--', alpha=0.7)
+ax1.legend(fontsize=LEGEND_SIZE) # Use ax1.legend() for clarity
+
+# Now save the figure. The 'tight' layout will be calculated correctly.
+fig1.savefig('cube_eigenvalues.pdf', bbox_inches='tight')
+# %%
 ɛ = 1e-5
 nx = 64
 _nx = 16
 
 _x1 = jnp.linspace(ɛ, 1-ɛ, nx)
 _x2 = jnp.linspace(ɛ, 1-ɛ, nx)
-_x3 = jnp.ones(1)/2
+_x3 = jnp.ones(1)/3
 _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
 _x = _x.transpose(1, 2, 3, 0).reshape(nx*nx*1, 3)
 __x1 = jnp.linspace(ɛ, 1-ɛ, _nx)
 __x2 = jnp.linspace(ɛ, 1-ɛ, _nx)
-__x3 = jnp.ones(1)/2
+__x3 = jnp.ones(1)/3
 __x = jnp.array(jnp.meshgrid(__x1, __x2, __x3))
 __x = __x.transpose(1, 2, 3, 0).reshape(_nx*_nx*1, 3)
 __y = jax.vmap(F)(__x)
 # %%
 u_hat = evecs[:C.shape[0], 0]
-u_h = DiscreteFunction(u_hat, Λ1, B1)
+u_h = DiscreteFunction(u_hat, derham.Λ1, B1)
 _z1 = jax.vmap(u_h)(_x).reshape(nx, nx, 3)
 _z1_norm = jnp.linalg.norm(_z1, axis=2)
 plt.contourf(_x1, _x2, _z1_norm.reshape(nx, nx), levels=25)
@@ -238,13 +255,14 @@ def plot_eigenvectors_grid(
 
         # Extract and prepare the degrees of freedom for the i-th eigenvector
         ev_dof = jnp.split(evecs[:, i], (M1.shape[0],))[0]
-        u_h = DiscreteFunction(ev_dof, Λ1, B1)
+        u_h = DiscreteFunction(ev_dof, Λ1, E1)
 
         # Vector norm
         _z1_vector_field = jax.vmap(u_h)(map_input_x)
         _z1_reshaped = _z1_vector_field.reshape(nx_grid, nx_grid, 3)
         _z1_norm = jnp.linalg.norm(_z1_reshaped, axis=2)
-        ax.contourf(y1_coords, y2_coords, _z1_norm)
+        ax.contourf(y1_coords, y2_coords, _z1_norm, 
+                    levels=25, cmap='plasma')
 
         # No axes
         ax.set_axis_off()
@@ -262,7 +280,8 @@ def plot_eigenvectors_grid(
 
 
 # %%
-plot_eigenvectors_grid(
-    evecs, M1, Λ1, B1, F, _x, _x1, _x2, nx, num_to_plot=25
+fig = plot_eigenvectors_grid(
+    evecs, M1, derham.Λ1, B1, F, _x, _x1, _x2, nx, num_to_plot=25
 )
 # %%
+fig.savefig('cube_eigenvectors.pdf', bbox_inches='tight')

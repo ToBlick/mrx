@@ -1,12 +1,3 @@
-"""
-Utility functions for differential geometry and numerical analysis.
-
-This module provides a collection of mathematical functions commonly used in
-differential geometry, finite element analysis, and numerical computations.
-It includes functions for computing Jacobians, matrix operations, and
-differential operators using JAX for automatic differentiation.
-"""
-
 from typing import Any, Callable
 
 import jax

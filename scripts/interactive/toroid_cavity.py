@@ -5,26 +5,20 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import scipy as sp
 
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pushforward
-from mrx.LazyMatrices import LazyDerivativeMatrix, LazyDoubleCurlMatrix, LazyMassMatrix
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.Quadrature import QuadratureRule
+from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction, Pushforward
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
-# Initialize differential forms and operators
-ns = (6, 6, 3)  # Number of elements in each direction
-ps = (3, 3, 2)  # Polynomial degree in each direction
-types = ('clamped', 'periodic', 'periodic')
-# Define differential forms for different function spaces
-Λ0, Λ1, Λ2, Λ3 = [DifferentialForm(k, ns, ps, types) for k in range(4)]
-
-# Set up quadrature rule
-Q = QuadratureRule(Λ0, 8)
+# Initialize parameters
+ns = (15, 15, 1)  # Number of elements in each direction
+ps = (3, 3, 0)  # Polynomial degree in each direction
+types = ('clamped', 'periodic', 'constant') # Types
+bcs = ('dirichlet', 'periodic', 'constant')  # Boundary conditions
 
 a = 1
-R0 = 3
+R0 = 2.1
 π = jnp.pi
 
 
@@ -48,17 +42,22 @@ def F(x):
                                 _Z(r, χ)]))
 
 
-ξ = get_xi(_X, _Z, Λ0, Q)[0]
+# Create DeRham sequence 
+derham = DeRhamSequence(ns, ps, 8, types, bcs, F, polar=True)
 
-# %%
-E0, E1, E2, E3 = [LazyExtractionOperator(
-    Λ, ξ, True).M for Λ in [Λ0, Λ1, Λ2, Λ3]]
-M0, M1, M2, M3 = [LazyMassMatrix(Λ, Q, F=F, E=E).M for Λ, E in zip(
-    [Λ0, Λ1, Λ2, Λ3], [E0, E1, E2, E3])]
-D0 = LazyDerivativeMatrix(Λ0, Λ1, Q, F, E0, E1).M
+# Get extraction operators and mass matrices 
+E0, E1, E2, E3 = [derham.E0.matrix(), derham.E1.matrix(), derham.E2.matrix(), derham.E3.matrix()]
+M0, M1, M2, M3 = [derham.assemble_M0(), derham.assemble_M1(), 
+                    derham.assemble_M2(), derham.assemble_M3()]
+
+
+D0 = derham.assemble_grad()  # Gradient matrix 
+
 O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros((D0.shape[1], D0.shape[1]))
-C = LazyDoubleCurlMatrix(Λ1, Q, F=F, E=E1).M
+
+C = derham.assemble_curlcurl()  # Double curl matrix 
+
 _Q = jnp.block([[C, D0], [D0.T, O0]])
 _P = jnp.block([[M1, O10], [O10.T, O0]])
 
@@ -76,18 +75,34 @@ evs = evs[sort_indices]
 evecs = evecs[:, sort_indices]
 # %%
 
-_end = 20
-fig, ax = plt.subplots()
-ax.set_xticks(jnp.arange(1, _end + 1)[::2])
-ax.yaxis.grid(True, which='both')
-ax.xaxis.grid(True, which='both')
-ax.set_ylabel('λ')
-ax.legend()
-ax.plot(jnp.arange(1, _end + 1),
-        evs[:_end], marker='v', label='λ')
-# ax.set_yscale('log')
-ax.set_xlabel('n')
+# %%
+# --- PLOT SETTINGS FOR SLIDES ---
+FIG_SIZE = (12, 6)      # Figure size in inches (width, height)
+TITLE_SIZE = 20         # Font size for the plot title
+LABEL_SIZE = 20         # Font size for x and y axis labels
+TICK_SIZE = 16          # Font size for x and y tick labels
+LEGEND_SIZE = 16        # Font size for the legend
+LINE_WIDTH = 2.5        # Width of the plot lines
+# ---------------------------------
+end = 40
 
+# %% Figure 1: Energy and Force
+fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
+
+color1 = 'purple'
+color2 = 'black'
+ax1.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
+ax1.set_ylabel(r'$\lambda_k / \pi^2$', fontsize=LABEL_SIZE)
+ax1.plot(evs[:end], label=r'computed',
+         marker='*', ls = '', markersize=10, color=color1, lw=LINE_WIDTH)
+ax1.tick_params(axis='y', labelsize=TICK_SIZE)
+ax1.tick_params(axis='x', labelsize=TICK_SIZE)
+# ax1.set_yticks(jnp.unique(true_evs[:end]))
+ax1.grid(axis='y', linestyle='--', alpha=0.7)
+ax1.legend(fontsize=LEGEND_SIZE) # Use ax1.legend() for clarity
+
+# %%
+fig1.savefig('toroid_eigenvalues.pdf', bbox_inches='tight')
 # %%
 ɛ = 1e-5
 nx = 64
@@ -114,7 +129,7 @@ __y3 = __y[:, 2].reshape(_nx, _nx)
 # %%
 idx = 3
 u_hat, p_hat = jnp.split(evecs[:, idx], (M1.shape[0],))
-u_h = DiscreteFunction(u_hat, Λ1, E1)
+u_h = DiscreteFunction(u_hat, derham.Λ1, E1)
 F_u = Pushforward(u_h, F, 1)
 
 _z1 = jax.vmap(F_u)(_x).reshape(nx, nx, 3)
@@ -123,8 +138,8 @@ plt.contourf(_y1, _y3, _z1_norm.reshape(nx, nx))
 plt.colorbar()
 __z1 = jax.vmap(F_u)(__x).reshape(_nx, _nx, 3)
 plt.quiver(
-    __y1,
-    __y3,
+    _y1,
+    _y3,
     __z1[:, :, 0],
     __z1[:, :, 2],
     color='w',
@@ -132,7 +147,7 @@ plt.quiver(
 plt.xlabel('X')
 plt.ylabel('Z')
 # %%
-p_h = DiscreteFunction(p_hat, Λ0, E0)
+p_h = DiscreteFunction(p_hat, derham.Λ0, E0)
 F_p = Pushforward(p_h, F, 0)
 
 _z1 = jax.vmap(F_p)(_x).reshape(nx, nx)
@@ -174,7 +189,7 @@ def plot_eigenvectors_grid(
         _z1_vector_field = jax.vmap(F_u)(map_input_x)
         _z1_reshaped = _z1_vector_field.reshape(nx_grid, nx_grid, 3)
         _z1_norm = jnp.linalg.norm(_z1_reshaped, axis=2)
-        ax.contourf(y1_coords, y2_coords, _z1_norm)
+        ax.contourf(y1_coords, y2_coords, _z1_norm, levels=25, cmap='plasma')
         ax.set_axis_off()
         ax.set_aspect('equal', adjustable='box')
     for j in range(num_to_plot, nrows * ncols):
@@ -186,7 +201,9 @@ def plot_eigenvectors_grid(
 
 # %%
 # Plot the first 9 eigenvectors
-plot_eigenvectors_grid(
-    evecs, M1, Λ1, E1, F, _x, _y1, _y3, nx, num_to_plot=25
+fig = plot_eigenvectors_grid(
+    evecs, M1, derham.Λ1, E1, F, _x, _y1, _y3, nx, num_to_plot=25
 )
+# %%
+fig.savefig('toroid_eigenvectors.pdf', bbox_inches='tight')
 # %%
