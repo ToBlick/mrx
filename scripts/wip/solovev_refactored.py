@@ -104,7 +104,6 @@ plt.ylabel("Z")
 bcs = ('dirichlet', 'none', 'none')
 
 Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
-# DualSeq = DeRhamSequence(ns, ps, q, types, ('dirichlet', 'none', 'none'), F, polar=True, Λ0_ijk = PrimalSeq.Λ0_ijk)
 
 # %%
 
@@ -187,38 +186,6 @@ P_uxB = CrossProductProjection(
 P_Leray = jnp.eye(M2.shape[0]) + \
     weak_grad @ jnp.linalg.pinv(laplace_3) @ M3 @ dvg
 
-# %%
-# B_hat = jnp.linalg.solve(M2, Seq.P2_0(B_xyz))
-# print(f"|B|^2: {B_hat @ M2 @ B_hat}")
-# print(f"|div B|^2: {dvg @ B_hat @ M3 @ dvg @ B_hat}")
-# B_hat = P_Leray @ B_hat
-# print(f"|B|^2: {B_hat @ M2 @ B_hat}")
-# print(f"|div B|^2: {dvg @ B_hat @ M3 @ dvg @ B_hat}")
-
-# # %%
-# # One step of resisitive relaxation to get J x n = 0 on ∂Ω
-# B_hat = jnp.linalg.solve(jnp.eye(M2.shape[0]) + 1e-2 * curl @ weak_curl, B_hat)
-# J_hat = weak_curl @ B_hat
-# # %%
-
-# # J_h = Pushforward(DiscreteFunction(J_hat, Seq.Λ1, Seq.E1_0.matrix()), F, 1)
-# # B_h = Pushforward(DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix()), F, 2)
-# # plt.plot(_y1_1d, jax.vmap(J_h)(_x_1d)[:, 0], label=r'$J_x$')
-# # plt.plot(_y1_1d, jax.vmap(J_h)(_x_1d)[:, 1], label=r'$J_y$')
-# # plt.plot(_y1_1d, jax.vmap(J_h)(_x_1d)[:, 2], label=r'$J_z$')
-# # plt.plot(_y1_1d, jax.vmap(B_h)(_x_1d)[:, 0], '--', label=r'$B_x$')
-# # plt.plot(_y1_1d, jax.vmap(B_h)(_x_1d)[:, 1], '--', label=r'$B_y$')
-# # plt.plot(_y1_1d, jax.vmap(B_h)(_x_1d)[:, 2], '--', label=r'$B_z$')
-# # plt.legend()
-
-# # %%
-# print(f"|B|^2: {B_hat @ M2 @ B_hat}")
-# print(f"|J|^2: {J_hat @ M1 @ J_hat}")
-# # %%
-# print(f"|div B|^2: {dvg @ B_hat @ M3 @ dvg @ B_hat}")
-# A_hat = jnp.linalg.solve(laplace_1, M1 @ weak_curl @ B_hat)
-# B_harm_hat = B_hat - curl @ A_hat
-# print(f"(A, B + B_H): {A_hat @ M12 @ (B_hat + B_harm_hat)}")
 # %%
 # Set up inital condition
 B_hat = P_Leray @ jnp.linalg.solve(M2, Seq.P2_0(B_xyz))
