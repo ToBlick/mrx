@@ -1,4 +1,5 @@
 # %%
+import matplotlib.gridspec as gridspec
 import time
 from functools import partial
 
@@ -68,9 +69,9 @@ plt.plot(_x, jax.vmap(a)(_x))
 
 p = 3
 q = 3*p
-ns = (8, 8, 4)
-ps = (3, 3, 3)
-types = ("clamped", "periodic", "periodic")
+ns = (8, 8, 1)
+ps = (3, 3, 0)
+types = ("clamped", "periodic", "constant")
 
 
 def _R(r, χ):
@@ -159,6 +160,8 @@ L_vec_pinv = jnp.linalg.inv(LazyDoubleCurlMatrix(
 jnp.min(jax.vmap(jacobian_determinant(F))(Q.x)), jnp.max(
     jax.vmap(jacobian_determinant(F))(Q.x))
 # %%
+
+
 def p_phys(x):
     return - (k0**2 + 1)/(R0**2 * k0 * q0) * psi(x) * jnp.ones(1)
 
@@ -402,7 +405,6 @@ plt.xlabel("Iteration")
 plt.ylabel("Helicity - H(0)")
 
 
-
 # %%
 
 # %%
@@ -454,29 +456,28 @@ physical_trajectories = physical_trajectories.reshape(
     trajectories.shape[0], trajectories.shape[1], 3)
 # %%
 
-import matplotlib.gridspec as gridspec
 
 # Dummy data for demonstration if 'trajectories' and 'physical_trajectories' are not defined
 # In a real scenario, these would come from your calculations.
 if 'trajectories' not in locals():
     num_points = 500
     trajectories = [np.random.rand(num_points, 3) * 10 for _ in range(3)]
-    trajectories[0][:, 0] = trajectories[0][:, 0] - 5 # Example x values
-    trajectories[1][:, 0] = trajectories[1][:, 0] # Example x values
-    trajectories[2][:, 0] = trajectories[2][:, 0] + 5 # Example x values
+    trajectories[0][:, 0] = trajectories[0][:, 0] - 5  # Example x values
+    trajectories[1][:, 0] = trajectories[1][:, 0]  # Example x values
+    trajectories[2][:, 0] = trajectories[2][:, 0] + 5  # Example x values
 
 
 if 'physical_trajectories' not in locals():
-    R0 = 5 # Example value for R0
+    R0 = 5  # Example value for R0
     num_physical_points = 1000
     physical_trajectories = []
     # Create some dummy data that crosses the R0 threshold
     t1 = np.random.rand(num_physical_points // 2, 3) * 2
-    t1[:, 0] = t1[:, 0] - (R0 + 1) # Left side
+    t1[:, 0] = t1[:, 0] - (R0 + 1)  # Left side
     physical_trajectories.append(t1)
 
     t2 = np.random.rand(num_physical_points // 2, 3) * 2
-    t2[:, 0] = t2[:, 0] + (R0 + 1) # Right side
+    t2[:, 0] = t2[:, 0] + (R0 + 1)  # Right side
     physical_trajectories.append(t2)
 
 
@@ -485,7 +486,8 @@ FIG_SIZE = (12, 6)      # Figure size in inches (width, height)
 TITLE_SIZE = 20         # Font size for the plot title
 LABEL_SIZE = 20         # Font size for x and y axis labels
 TICK_SIZE = 16          # Font size for x and y tick labels
-LEGEND_SIZE = 16        # Font size for the legend (not directly used here, but good to keep)
+# Font size for the legend (not directly used here, but good to keep)
+LEGEND_SIZE = 16
 LINE_WIDTH = 2.5        # Width of the plot lines (not directly used here)
 # ---------------------------------
 
@@ -521,13 +523,15 @@ for i, t in enumerate(physical_trajectories):
     mask_left = x < -R0 + 1
     mask_right = x > R0 - 1
 
-    current_color = colors[i % len(colors)] # Cycle through the defined colors
+    current_color = colors[i % len(colors)]  # Cycle through the defined colors
 
     if np.any(mask_left):
-        ax1.scatter(x[mask_left], z[mask_left], s=0.1, alpha=alpha[mask_left], color=current_color)
+        ax1.scatter(x[mask_left], z[mask_left], s=0.1,
+                    alpha=alpha[mask_left], color=current_color)
 
     if np.any(mask_right):
-        ax2.scatter(x[mask_right], z[mask_right], s=0.1, alpha=alpha[mask_right], color=current_color)
+        ax2.scatter(x[mask_right], z[mask_right], s=0.1,
+                    alpha=alpha[mask_right], color=current_color)
 
 # Set labels and titles with specified font sizes
 ax1.set_xlabel(r'$x$', fontsize=LABEL_SIZE)
@@ -543,10 +547,12 @@ ax2.set_xlim(R0 - 0.9, R0 + 0.9)
 ax1.tick_params(axis='x', labelsize=TICK_SIZE)
 ax1.tick_params(axis='y', labelsize=TICK_SIZE)
 ax2.tick_params(axis='x', labelsize=TICK_SIZE)
-ax2.tick_params(axis='y', labelsize=TICK_SIZE) # Although labelleft=False, still good to set size for potential future use
+# Although labelleft=False, still good to set size for potential future use
+ax2.tick_params(axis='y', labelsize=TICK_SIZE)
 
 # Adjust layout
-fig.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust rect to prevent suptitle overlap
+# Adjust rect to prevent suptitle overlap
+fig.tight_layout(rect=[0, 0.03, 1, 0.95])
 
 # fig.savefig('poincare_solovev_physical.png', bbox_inches='tight', dpi=800)
 
@@ -554,8 +560,9 @@ fig.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust rect to prevent suptitle over
 plt.figure(figsize=FIG_SIZE)
 
 for i, t in enumerate(trajectories):
-    current_color = colors[i % len(colors)] # Cycle through the defined colors
-    plt.scatter(t[:, 0], t[:, 1], s=0.1, alpha=jnp.exp(-t[:, 2]**2/0.02), color=current_color)
+    current_color = colors[i % len(colors)]  # Cycle through the defined colors
+    plt.scatter(t[:, 0], t[:, 1], s=0.1,
+                alpha=jnp.exp(-t[:, 2]**2/0.02), color=current_color)
 
 # plt.title(r'Field line intersections', fontsize=TITLE_SIZE)
 plt.xlabel(r'$r$', fontsize=LABEL_SIZE)
@@ -565,7 +572,7 @@ plt.ylabel(r'$\chi$', fontsize=LABEL_SIZE)
 plt.xticks(fontsize=TICK_SIZE)
 plt.yticks(fontsize=TICK_SIZE)
 
-plt.tight_layout() # Adjust layout to prevent labels from overlapping
+plt.tight_layout()  # Adjust layout to prevent labels from overlapping
 
 # plt.savefig('poincare_solovev_logical.png', bbox_inches='tight', dpi=800)
 
@@ -576,27 +583,33 @@ fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
 color1 = 'purple'
 ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
 ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$', color=color1, fontsize=LABEL_SIZE)
-ax1.plot(jnp.array(E_trace), label=r'$\frac{1}{2} \| B \|^2$', color=color1, lw=LINE_WIDTH)
+ax1.plot(jnp.array(E_trace),
+         label=r'$\frac{1}{2} \| B \|^2$', color=color1, lw=LINE_WIDTH)
 # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
 ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
-ax1.tick_params(axis='x', labelsize=TICK_SIZE) # Set x-tick size
+ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
 
 # Create a second y-axis that shares the same x-axis
 ax2 = ax1.twinx()
 
 # Plot Force on the right y-axis (ax2)
 color2 = 'black'
-ax2.set_ylabel(r'$\|J \times B - \nabla p\|^2, \quad | H - H_0 |$', color=color2, fontsize=LABEL_SIZE)
-ax2.plot(u_trace, label=r'$\|J \times B - \nabla p \|^2$', color=color2, lw=LINE_WIDTH)
+ax2.set_ylabel(r'$\|J \times B - \nabla p\|^2, \quad | H - H_0 |$',
+               color=color2, fontsize=LABEL_SIZE)
+ax2.plot(u_trace, label=r'$\|J \times B - \nabla p \|^2$',
+         color=color2, lw=LINE_WIDTH)
 ax2.tick_params(axis='y', labelcolor=color2, labelsize=TICK_SIZE)
-ax2.set_ylim(0.5 * min(u_trace), 2 * max(u_trace))  # Set y-limits for better visibility
+# Set y-limits for better visibility
+ax2.set_ylim(0.5 * min(u_trace), 2 * max(u_trace))
 ax2.set_yscale('log')
 
 relative_helicity_change = jnp.abs(jnp.array(jnp.array(H_trace) - H_trace[0]))
-ax2.plot(relative_helicity_change, label=r'$| H - H_0 |$', color='darkgray', linestyle='--', lw=LINE_WIDTH)
+ax2.plot(relative_helicity_change, label=r'$| H - H_0 |$',
+         color='darkgray', linestyle='--', lw=LINE_WIDTH)
 lines1, labels1 = ax1.get_legend_handles_labels()
 lines2, labels2 = ax2.get_legend_handles_labels()
-ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize=LEGEND_SIZE)
+ax2.legend(lines1 + lines2, labels1 + labels2,
+           loc='upper right', fontsize=LEGEND_SIZE)
 
 fig1.tight_layout()
 plt.show()
