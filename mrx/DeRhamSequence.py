@@ -1,3 +1,5 @@
+from typing import Any, Callable, NamedTuple
+
 import jax
 import jax.experimental
 import jax.experimental.sparse
@@ -9,7 +11,7 @@ from mrx.PolarMapping import LazyExtractionOperator, get_xi
 from mrx.Projectors import Projector
 from mrx.Quadrature import QuadratureRule
 from mrx.Utils import curl, div, grad, inv33, jacobian_determinant
-from typing import NamedTuple, Any, Callable
+
 
 class DeRhamSequence():
     """
@@ -25,6 +27,10 @@ class DeRhamSequence():
     E1: LazyBoundaryOperator
     E2: LazyBoundaryOperator
     E3: LazyBoundaryOperator
+    E0_0: LazyBoundaryOperator
+    E1_0: LazyBoundaryOperator
+    E2_0: LazyBoundaryOperator
+    E3_0: LazyBoundaryOperator
     # kth component of 0form i evaluated at quadrature point j. shape: n x n_q x 1
     Λ0_ijk: jnp.ndarray
     # kth component of 1form i evaluated at quadrature point j. shape: n x n_q x 3
@@ -46,7 +52,7 @@ class DeRhamSequence():
     G_jkl = jnp.ndarray
     G_inv_jkl = jnp.ndarray
 
-    def __init__(self, ns, ps, q, types, bcs, F, polar):
+    def __init__(self, ns, ps, q, types, F, polar):
         """
         Initialize the de Rham sequence.    
 
@@ -72,12 +78,21 @@ class DeRhamSequence():
                 return self.F(jnp.array([r, χ, 0.0]))[2] * jnp.ones(1)
             ξ = get_xi(_R, _Z, self.Λ0, self.Q)[0]
             self.E0, self.E1, self.E2, self.E3 = [
-                LazyExtractionOperator(Λ, ξ, bcs[0] == 'dirichlet')
+                LazyExtractionOperator(Λ, ξ, False)
+                for Λ in [self.Λ0, self.Λ1, self.Λ2, self.Λ3]
+            ]
+            self.E0_0, self.E1_0, self.E2_0, self.E3_0 = [
+                LazyExtractionOperator(Λ, ξ, True)
                 for Λ in [self.Λ0, self.Λ1, self.Λ2, self.Λ3]
             ]
         else:
             self.E0, self.E1, self.E2, self.E3 = [
-                LazyBoundaryOperator(Λ, bcs)
+                LazyBoundaryOperator(Λ, ('none', 'none', 'none'))
+                for Λ in [self.Λ0, self.Λ1, self.Λ2, self.Λ3]
+            ]
+            self.E0_0, self.E1_0, self.E2_0, self.E3_0 = [
+                LazyBoundaryOperator(
+                    Λ, ('dirichlet', 'dirichlet', 'dirichlet'))
                 for Λ in [self.Λ0, self.Λ1, self.Λ2, self.Λ3]
             ]
 
@@ -111,52 +126,147 @@ class DeRhamSequence():
             for Λ, E in zip([self.Λ0, self.Λ1, self.Λ2, self.Λ3], [self.E0, self.E1, self.E2, self.E3])
         ]
 
+        self.P0_0, self.P1_0, self.P2_0, self.P3_0 = [
+            Projector(Λ, self.Q, self.F, E=E)
+            for Λ, E in zip([self.Λ0, self.Λ1, self.Λ2, self.Λ3], [self.E0_0, self.E1_0, self.E2_0, self.E3_0])
+        ]
+
     def assemble_M0(self):
         M0 = jnp.einsum("ijk,ljk,j,j->il", self.Λ0_ijk,
                         self.Λ0_ijk, self.J_j, self.Q.w)
         return self.E0.matrix() @ M0 @ self.E0.matrix().T
+
+    def assemble_M0_0(self):
+        M0_0 = jnp.einsum("ijk,ljk,j,j->il", self.Λ0_ijk,
+                          self.Λ0_ijk, self.J_j, self.Q.w)
+        return self.E0_0.matrix() @ M0_0 @ self.E0_0.matrix().T
 
     def assemble_M1(self):
         M1 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
                         self.G_inv_jkl, self.Λ1_ijk, self.J_j, self.Q.w)
         return self.E1.matrix() @ M1 @ self.E1.matrix().T
 
+    def assemble_M1_0(self):
+        M1_0 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
+                          self.G_inv_jkl, self.Λ1_ijk, self.J_j, self.Q.w)
+        return self.E1_0.matrix() @ M1_0 @ self.E1_0.matrix().T
+
     def assemble_M2(self):
         M2 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
                         self.G_jkl, self.Λ2_ijk, 1/self.J_j, self.Q.w)
         return self.E2.matrix() @ M2 @ self.E2.matrix().T
+
+    def assemble_M2_0(self):
+        M2_0 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
+                          self.G_jkl, self.Λ2_ijk, 1/self.J_j, self.Q.w)
+        return self.E2_0.matrix() @ M2_0 @ self.E2_0.matrix().T
 
     def assemble_M3(self):
         M3 = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
                         self.Λ3_ijk, 1/self.J_j, self.Q.w)
         return self.E3.matrix() @ M3 @ self.E3.matrix().T
 
+    def assemble_M3_0(self):
+        M3_0 = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
+                          self.Λ3_ijk, 1/self.J_j, self.Q.w)
+        return self.E3_0.matrix() @ M3_0 @ self.E3_0.matrix().T
+
     def assemble_grad(self):
         D0 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
                         self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
         return self.E1.matrix() @ D0 @ self.E0.matrix().T
+
+    def assemble_grad_0(self):
+        D0_0 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
+                          self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
+        return self.E1_0.matrix() @ D0_0 @ self.E0_0.matrix().T
 
     def assemble_curl(self):
         D1 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
                         self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
         return self.E2.matrix() @ D1 @ self.E1.matrix().T
 
+    def assemble_curl_0(self):
+        D1_0 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
+                          self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
+        return self.E2_0.matrix() @ D1_0 @ self.E1_0.matrix().T
+
     def assemble_dvg(self):
         D2 = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
                         self.dΛ2_ijk, 1/self.J_j, self.Q.w)
         return self.E3.matrix() @ D2 @ self.E2.matrix().T
+
+    def assemble_dvg_0(self):
+        D2_0 = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
+                          self.dΛ2_ijk, 1/self.J_j, self.Q.w)
+        return self.E3_0.matrix() @ D2_0 @ self.E2_0.matrix().T
 
     def assemble_gradgrad(self):
         GG = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ0_ijk,
                         self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
         return self.E0.matrix() @ GG @ self.E0.matrix().T
 
+    def assemble_gradgrad_0(self):
+        GG = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ0_ijk,
+                        self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
+        return self.E0_0.matrix() @ GG @ self.E0_0.matrix().T
+
     def assemble_curlcurl(self):
         CC = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ1_ijk,
-                        self.G_inv_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
+                        self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
         return self.E1.matrix() @ CC @ self.E1.matrix().T
+
+    def assemble_curlcurl_0(self):
+        CC = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ1_ijk,
+                        self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
+        return self.E1_0.matrix() @ CC @ self.E1_0.matrix().T
 
     def assemble_divdiv(self):
         DD = jnp.einsum("ijk,ljk,j,j->il", self.dΛ2_ijk,
                         self.dΛ2_ijk, 1/self.J_j, self.Q.w)
         return self.E2.matrix() @ DD @ self.E2.matrix().T
+
+    def assemble_divdiv_0(self):
+        DD = jnp.einsum("ijk,ljk,j,j->il", self.dΛ2_ijk,
+                        self.dΛ2_ijk, 1/self.J_j, self.Q.w)
+        return self.E2_0.matrix() @ DD @ self.E2_0.matrix().T
+
+    def assemble_P0(self):
+        P = jnp.einsum("ijk,ljk,j->il", self.Λ0_ijk,
+                       self.Λ3_ijk, self.Q.w)
+        return self.E0_0.matrix() @ P @ self.E3.matrix().T
+
+    def assemble_P1(self):
+        P = jnp.einsum("ijk,ljk,j->il", self.Λ1_ijk,
+                       self.Λ2_ijk, self.Q.w)
+        return self.E1_0.matrix() @ P @ self.E2.matrix().T
+
+    def assemble_P2(self):
+        P = jnp.einsum("ijk,ljk,j->il", self.Λ2_ijk,
+                       self.Λ1_ijk, self.Q.w)
+        return self.E2_0.matrix() @ P @ self.E1.matrix().T
+
+    def assemble_P3(self):
+        P = jnp.einsum("ijk,ljk,j->il", self.Λ3_ijk,
+                       self.Λ0_ijk, self.Q.w)
+        return self.E3_0.matrix() @ P @ self.E0.matrix().T
+
+    def assemble_M12_0(self):
+        P = jnp.einsum("ijk,ljk,j->il", self.Λ1_ijk,
+                       self.Λ2_ijk, self.Q.w)
+        return self.E1_0.matrix() @ P @ self.E2_0.matrix().T
+
+    def assemble_M12(self):
+        P = jnp.einsum("ijk,ljk,j->il", self.Λ1_ijk,
+                       self.Λ2_ijk, self.Q.w)
+        return self.E1.matrix() @ P @ self.E2.matrix().T
+
+    def assemble_M03_0(self):
+        P = jnp.einsum("ijk,ljk,j->il", self.Λ0_ijk,
+                       self.Λ3_ijk, self.Q.w)
+        return self.E0_0.matrix() @ P @ self.E3_0.matrix().T
+
+    def assemble_M03(self):
+        P = jnp.einsum("ijk,ljk,j->il", self.Λ0_ijk,
+                       self.Λ3_ijk, self.Q.w)
+        return self.E0.matrix() @ P @ self.E3.matrix().T
