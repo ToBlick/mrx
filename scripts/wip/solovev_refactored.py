@@ -1,32 +1,13 @@
 # %%
-import time
-from functools import partial
-
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import numpy as np
-import optimistix
-import scipy as sp
-from matplotlib import gridspec
 
 from mrx.BoundaryFitting import solovev_lcfs_fit
 from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pushforward
-from mrx.LazyMatrices import (
-    LazyDerivativeMatrix,
-    LazyDoubleCurlMatrix,
-    LazyDoubleDivergenceMatrix,
-    LazyMassMatrix,
-    LazyProjectionMatrix,
-    LazyStiffnessMatrix,
-)
+from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Nonlinearities import CrossProductProjection
 from mrx.Plotting import get_1d_grids, get_2d_grids
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.Projectors import Projector
-from mrx.Quadrature import QuadratureRule
-from mrx.Utils import jacobian_determinant, l2_product
 
 jax.config.update("jax_enable_x64", True)
 
