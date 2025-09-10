@@ -59,7 +59,7 @@ def f(x):
 
 
 # Create DeRham sequence
-derham = DeRhamSequence(ns, ps, 3*p, types, bcs, F, polar=False)
+derham = DeRhamSequence(ns, ps, 3*p, types, F, polar=False)
 
 # Get matrices using DeRhamSequence
 D = derham.assemble_dvg()  # Divergence matrix
@@ -120,13 +120,7 @@ Mv = LazyMassMatrix(Λv, Q_consistent).matrix()
 Kv = Dv.T @ jnp.linalg.solve(Mv, Dv)
 P0 = derham.P0  # Projector for 0-forms
 
-
-# Handle dimension mismatch
 rhs = P0(f)
-if Kv.shape[0] != rhs.shape[0]:
-    # Pad rhs to match Kv dimensions
-    rhs = jnp.pad(rhs, (0, Kv.shape[0] - rhs.shape[0]))
-
 u_hat_v = jnp.linalg.solve(Kv.at[-1, :].set(1.0), rhs.at[-1].set(0))
 
 # %%
@@ -172,7 +166,7 @@ plt.show()
 
 # %%
 # Note: Kv and M0 have different dimensions, so skipping over vector field eigenvalue computation
-evs_mixed, evecs_mixed = sp.linalg.eig(K, M3)
+evs_mixed, evecs_mixed = sp.linalg.eig(Kv, Mv)
 evs_mixed = jnp.real(evs_mixed)
 evecs_mixed = jnp.real(evecs_mixed)
 sort_indices = jnp.argsort(evs_mixed)
@@ -194,8 +188,6 @@ LEGEND_SIZE = 16        # Font size for the legend
 LINE_WIDTH = 2.5        # Width of the plot lines
 # ---------------------------------
 
-
-# %% Figure 1: Energy and Force
 fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
 end = 20
 # Plot Energy on the left y-axis (ax1)
@@ -212,7 +204,7 @@ ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
 ax1.set_yticks(evs_true[:end])
 ax1.grid(axis='y', linestyle='--', alpha=0.7)
 plt.legend(fontsize=LEGEND_SIZE)
-fig1.savefig('two_d_poisson_eigenvalues.pdf', bbox_inches='tight')
+# fig1.savefig('two_d_poisson_eigenvalues.pdf', bbox_inches='tight')
 plt.show()
 
 # %%
