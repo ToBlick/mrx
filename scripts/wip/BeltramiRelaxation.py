@@ -22,9 +22,9 @@ os.makedirs("script_outputs", exist_ok=True)
 
 
 # Set up exact solution components (for now mode numbers (1,1))
-A_0 = 1.0
-m_mode = 2
-n_mode = 4
+A_0 = 10000
+m_mode = 1
+n_mode = 1
 mu_target = jnp.pi * jnp.sqrt(m_mode**2 + n_mode**2)
 
 def B_exact(x: jnp.ndarray) -> jnp.ndarray:
@@ -38,16 +38,33 @@ def B_exact(x: jnp.ndarray) -> jnp.ndarray:
 
 
 
-def localization_function(x: jnp.ndarray,a:float) -> jnp.ndarray:
+def eta(x: jnp.ndarray) -> float:
     x_1, x_2, x_3 = x
-    return 100000*(x_1/a)**2 * (1 - x_1/a)**2 * (x_2/a)**2 * (1 - x_2/a)**2 * (x_3/a)**2 * (1 - x_3/a)**2
+    return (x_1)**2 * (1 - x_1)**2 * (x_2)**2 * (1 - x_2)**2 * (x_3)**2 * (1 - x_3)**2
 
 
-a = 1.0
+
+def mu(m:float, n:float) -> float:
+    return jnp.pi * jnp.sqrt(m**2 + n**2)
+
+def grad_eta(x: jnp.ndarray) -> jnp.ndarray:
+    return jax.grad(lambda t: eta(t))(x)
+
+
+def grad_eta_cross_B(x: jnp.ndarray) -> jnp.ndarray:
+    B_x, B_y, B_z = B_exact(x)
+    eta_x, eta_y, eta_z = grad_eta(x)
+    return jnp.array([
+        B_z*eta_y - B_y*eta_z,
+        B_x*eta_z - B_z*eta_x,
+        B_y*eta_x - B_x*eta_y
+    ])
+
+
 def B_local(x: jnp.ndarray) -> jnp.ndarray:
     """Creating an interesting initial condition"""
     x_1, x_2, x_3 = x
-    return B_exact(x) * localization_function(x,a)
+    return grad_eta_cross_B(x) + mu(1,1)*B_exact(x)*eta(x)
 
 # %%
 def F(x): # Identity maps
@@ -56,8 +73,8 @@ def F(x): # Identity maps
 #Set up
 p = 3
 q = 3*p
-ns = (3, 3, 3)  
-ps = (2, 2, 2)  
+ns = (8, 8, 8)  
+ps = (1, 1, 1)  
 types = ("periodic", "periodic", "periodic")
 bcs = ("dirichlet", "dirichlet", "dirichlet")
 
@@ -192,7 +209,7 @@ def picard_loop(B_hat, dt, eta, tol):
 
 for i in range(200):  # Fewer iterations 
     # B_hat, J_hat, u_hat = update(B_hat)
-    B_hat, J_hat, u_hat = picard_loop(B_hat, dt=0.001, eta=0.0, tol=1e-12)  # no dissipation
+    B_hat, J_hat, u_hat = picard_loop(B_hat, dt=0.001, eta=0.0, tol=1e-13)  # no dissipation
     A_hat = jnp.linalg.solve(laplace_1, M1 @ weak_curl @ B_hat)
     u_trace.append(u_hat @ M2 @ u_hat)
     E_trace.append(B_hat @ M2 @ B_hat / 2)
@@ -243,202 +260,202 @@ plt.show()
 
 
 
-# %%
-# Poincare plot
+# # %%
+# # Poincare plot
 
-B_full = Seq.E2_0.matrix().T @ B_hat
-B_h = DiscreteFunction(B_full, Seq.Λ2)
-B_h_xyz = Pushforward(B_h, F, 2)
+# B_full = Seq.E2_0.matrix().T @ B_hat
+# B_h = DiscreteFunction(B_full, Seq.Λ2)
+# B_h_xyz = Pushforward(B_h, F, 2)
 
-def rk4(x0, f, dt):
-    k1 = f(x0)
-    k2 = f(x0 + dt/2 * k1)
-    k3 = f(x0 + dt/2 * k2)
-    k4 = f(x0 + dt * k3)
-    return x0 + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
-
-
-@partial(jax.jit, static_argnames=['B_h', 'n_steps'])
-def fieldline(x0, B_h, dt, n_steps):
-    def step(current_x, _):
-        next_x = rk4(current_x, B_h, dt)
-        next_x = next_x.at[0].set(jnp.clip(next_x[0], 0, 1))
-        next_x = next_x.at[1].set(jnp.mod(next_x[1], 1))
-        next_x = next_x.at[2].set(jnp.mod(next_x[2], 1))
-        return next_x, next_x
-    final_x, xs = jax.lax.scan(step, x0, None, length=n_steps)
-    return xs
+# def rk4(x0, f, dt):
+#     k1 = f(x0)
+#     k2 = f(x0 + dt/2 * k1)
+#     k3 = f(x0 + dt/2 * k2)
+#     k4 = f(x0 + dt * k3)
+#     return x0 + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
 
 
-def vector_field(x):
-    DFx = jax.jacfwd(F)(x)
-    norm = ((DFx @ B_h(x)) @ DFx @ B_h(x))**0.5 / (jnp.linalg.det(DFx) + 1e-12)
-    return B_h(x) / (jnp.linalg.det(DFx) * norm + 1e-12)
+# @partial(jax.jit, static_argnames=['B_h', 'n_steps'])
+# def fieldline(x0, B_h, dt, n_steps):
+#     def step(current_x, _):
+#         next_x = rk4(current_x, B_h, dt)
+#         next_x = next_x.at[0].set(jnp.clip(next_x[0], 0, 1))
+#         next_x = next_x.at[1].set(jnp.mod(next_x[1], 1))
+#         next_x = next_x.at[2].set(jnp.mod(next_x[2], 1))
+#         return next_x, next_x
+#     final_x, xs = jax.lax.scan(step, x0, None, length=n_steps)
+#     return xs
 
 
-# %%
-x0 = jnp.linspace(5e-2, 1-5e-2, 20)
-x0_1 = jnp.array([x0, jnp.zeros_like(x0), jnp.ones_like(x0)/7]).T
-x0_2 = jnp.array([x0, jnp.ones_like(x0)/4, jnp.zeros_like(x0)]).T
-x0_3 = jnp.array([x0, jnp.ones_like(x0)/2, jnp.zeros_like(x0)]).T
-x0_4 = jnp.array([x0, 3*jnp.ones_like(x0)/4, jnp.zeros_like(x0)]).T
-# x0 = jnp.concatenate([x0_1, x0_2, x0_3, x0_4], axis=0)
-x0 = x0_1
-# %%
-trajectories = jax.vmap(lambda x: fieldline(
-    x, vector_field, 0.1, 2000))(x0)
-# %%
-physical_trajectories = jax.vmap(F)(trajectories.reshape(-1, 3))
-physical_trajectories = physical_trajectories.reshape(
-    trajectories.shape[0], trajectories.shape[1], 3)
-# %%
-
-import matplotlib.gridspec as gridspec
-
-# Dummy data for demonstration if 'trajectories' and 'physical_trajectories' are not defined
-# In a real scenario, these would come from your calculations.
-if 'trajectories' not in locals():
-    num_points = 500
-    trajectories = [np.random.rand(num_points, 3) * 10 for _ in range(3)]
-    trajectories[0][:, 0] = trajectories[0][:, 0] - 5 # Example x values
-    trajectories[1][:, 0] = trajectories[1][:, 0] # Example x values
-    trajectories[2][:, 0] = trajectories[2][:, 0] + 5 # Example x values
+# def vector_field(x):
+#     DFx = jax.jacfwd(F)(x)
+#     norm = ((DFx @ B_h(x)) @ DFx @ B_h(x))**0.5 / (jnp.linalg.det(DFx) + 1e-12)
+#     return B_h(x) / (jnp.linalg.det(DFx) * norm + 1e-12)
 
 
-if 'physical_trajectories' not in locals():
-    R0 = 5 # Example value for R0
-    num_physical_points = 1000
-    physical_trajectories = []
-    # Create some dummy data that crosses the R0 threshold
-    t1 = np.random.rand(num_physical_points // 2, 3) * 2
-    t1[:, 0] = t1[:, 0] - (R0 + 1) # Left side
-    physical_trajectories.append(t1)
+# # %%
+# x0 = jnp.linspace(5e-2, 1-5e-2, 20)
+# x0_1 = jnp.array([x0, jnp.zeros_like(x0), jnp.ones_like(x0)/7]).T
+# x0_2 = jnp.array([x0, jnp.ones_like(x0)/4, jnp.zeros_like(x0)]).T
+# x0_3 = jnp.array([x0, jnp.ones_like(x0)/2, jnp.zeros_like(x0)]).T
+# x0_4 = jnp.array([x0, 3*jnp.ones_like(x0)/4, jnp.zeros_like(x0)]).T
+# # x0 = jnp.concatenate([x0_1, x0_2, x0_3, x0_4], axis=0)
+# x0 = x0_1
+# # %%
+# trajectories = jax.vmap(lambda x: fieldline(
+#     x, vector_field, 0.1, 2000))(x0)
+# # %%
+# physical_trajectories = jax.vmap(F)(trajectories.reshape(-1, 3))
+# physical_trajectories = physical_trajectories.reshape(
+#     trajectories.shape[0], trajectories.shape[1], 3)
+# # %%
 
-    t2 = np.random.rand(num_physical_points // 2, 3) * 2
-    t2[:, 0] = t2[:, 0] + (R0 + 1) # Right side
-    physical_trajectories.append(t2)
+# import matplotlib.gridspec as gridspec
+
+# # Dummy data for demonstration if 'trajectories' and 'physical_trajectories' are not defined
+# # In a real scenario, these would come from your calculations.
+# if 'trajectories' not in locals():
+#     num_points = 500
+#     trajectories = [np.random.rand(num_points, 3) * 10 for _ in range(3)]
+#     trajectories[0][:, 0] = trajectories[0][:, 0] - 5 # Example x values
+#     trajectories[1][:, 0] = trajectories[1][:, 0] # Example x values
+#     trajectories[2][:, 0] = trajectories[2][:, 0] + 5 # Example x values
 
 
-# --- PLOT SETTINGS FOR SLIDES ---
-FIG_SIZE = (12, 6)      # Figure size in inches (width, height)
-TITLE_SIZE = 20         # Font size for the plot title
-LABEL_SIZE = 20         # Font size for x and y axis labels
-TICK_SIZE = 16          # Font size for x and y tick labels
-LEGEND_SIZE = 16        # Font size for the legend (not directly used here, but good to keep)
-LINE_WIDTH = 2.5        # Width of the plot lines (not directly used here)
-# ---------------------------------
+# if 'physical_trajectories' not in locals():
+#     R0 = 5 # Example value for R0
+#     num_physical_points = 1000
+#     physical_trajectories = []
+#     # Create some dummy data that crosses the R0 threshold
+#     t1 = np.random.rand(num_physical_points // 2, 3) * 2
+#     t1[:, 0] = t1[:, 0] - (R0 + 1) # Left side
+#     physical_trajectories.append(t1)
 
-# Create a figure with two subplots next to each other
-fig = plt.figure(figsize=FIG_SIZE)
-gs = gridspec.GridSpec(1, 2, width_ratios=[1, 1], wspace=0.05)
+#     t2 = np.random.rand(num_physical_points // 2, 3) * 2
+#     t2[:, 0] = t2[:, 0] + (R0 + 1) # Right side
+#     physical_trajectories.append(t2)
 
-# Left subplot: x < -2
-ax1 = fig.add_subplot(gs[0])
-# Right subplot: x > 2
-ax2 = fig.add_subplot(gs[1], sharey=ax1)
 
-# Turn off tick labels on right of left plot and left of right plot
-ax1.spines['right'].set_visible(False)
-ax2.spines['left'].set_visible(False)
-ax2.yaxis.tick_right()
-ax1.yaxis.tick_left()
-ax2.tick_params(labelleft=False)
+# # --- PLOT SETTINGS FOR SLIDES ---
+# FIG_SIZE = (12, 6)      # Figure size in inches (width, height)
+# TITLE_SIZE = 20         # Font size for the plot title
+# LABEL_SIZE = 20         # Font size for x and y axis labels
+# TICK_SIZE = 16          # Font size for x and y tick labels
+# LEGEND_SIZE = 16        # Font size for the legend (not directly used here, but good to keep)
+# LINE_WIDTH = 2.5        # Width of the plot lines (not directly used here)
+# # ---------------------------------
 
-# Define primary and secondary colors for the scatter plots
-primary_color = 'purple'
-secondary_color = 'teal'
-tertiary_color = 'orange'
-quaternary_color = 'black'
+# # Create a figure with two subplots next to each other
+# fig = plt.figure(figsize=FIG_SIZE)
+# gs = gridspec.GridSpec(1, 2, width_ratios=[1, 1], wspace=0.05)
 
-colors = [primary_color, secondary_color, tertiary_color, quaternary_color]
+# # Left subplot: x < -2
+# ax1 = fig.add_subplot(gs[0])
+# # Right subplot: x > 2
+# ax2 = fig.add_subplot(gs[1], sharey=ax1)
 
-for i, t in enumerate(physical_trajectories):
-    x = np.array(t[:, 0])
-    z = np.array(t[:, 2])
-    alpha = np.exp(-np.array(t[:, 1])**2 / 0.02)
+# # Turn off tick labels on right of left plot and left of right plot
+# ax1.spines['right'].set_visible(False)
+# ax2.spines['left'].set_visible(False)
+# ax2.yaxis.tick_right()
+# ax1.yaxis.tick_left()
+# ax2.tick_params(labelleft=False)
 
-    mask_left = x < -R0 + 1
-    mask_right = x > R0 - 1
+# # Define primary and secondary colors for the scatter plots
+# primary_color = 'purple'
+# secondary_color = 'teal'
+# tertiary_color = 'orange'
+# quaternary_color = 'black'
 
-    current_color = colors[i % len(colors)] # Cycle through the defined colors
+# colors = [primary_color, secondary_color, tertiary_color, quaternary_color]
 
-    if np.any(mask_left):
-        ax1.scatter(x[mask_left], z[mask_left], s=0.1, alpha=alpha[mask_left], color=current_color)
+# for i, t in enumerate(physical_trajectories):
+#     x = np.array(t[:, 0])
+#     z = np.array(t[:, 2])
+#     alpha = np.exp(-np.array(t[:, 1])**2 / 0.02)
 
-    if np.any(mask_right):
-        ax2.scatter(x[mask_right], z[mask_right], s=0.1, alpha=alpha[mask_right], color=current_color)
+#     mask_left = x < -R0 + 1
+#     mask_right = x > R0 - 1
 
-# Set labels and titles with specified font sizes
-ax1.set_xlabel(r'$x$', fontsize=LABEL_SIZE)
-ax2.set_xlabel(r'$x$', fontsize=LABEL_SIZE)
-ax1.set_ylabel(r'$z$', fontsize=LABEL_SIZE)
-# fig.suptitle(r'Field line intersections', fontsize=TITLE_SIZE)
+#     current_color = colors[i % len(colors)] # Cycle through the defined colors
 
-# Set x limits for both subplots
-ax1.set_xlim(-R0 - 0.9, -R0 + 0.9)
-ax2.set_xlim(R0 - 0.9, R0 + 0.9)
+#     if np.any(mask_left):
+#         ax1.scatter(x[mask_left], z[mask_left], s=0.1, alpha=alpha[mask_left], color=current_color)
 
-# Set tick parameters for both axes
-ax1.tick_params(axis='x', labelsize=TICK_SIZE)
-ax1.tick_params(axis='y', labelsize=TICK_SIZE)
-ax2.tick_params(axis='x', labelsize=TICK_SIZE)
-ax2.tick_params(axis='y', labelsize=TICK_SIZE) # Although labelleft=False, still good to set size for potential future use
+#     if np.any(mask_right):
+#         ax2.scatter(x[mask_right], z[mask_right], s=0.1, alpha=alpha[mask_right], color=current_color)
 
-# Adjust layout
-fig.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust rect to prevent suptitle overlap
+# # Set labels and titles with specified font sizes
+# ax1.set_xlabel(r'$x$', fontsize=LABEL_SIZE)
+# ax2.set_xlabel(r'$x$', fontsize=LABEL_SIZE)
+# ax1.set_ylabel(r'$z$', fontsize=LABEL_SIZE)
+# # fig.suptitle(r'Field line intersections', fontsize=TITLE_SIZE)
 
-# fig.savefig('poincare_solovev_physical.png', bbox_inches='tight', dpi=800)
+# # Set x limits for both subplots
+# ax1.set_xlim(-R0 - 0.9, -R0 + 0.9)
+# ax2.set_xlim(R0 - 0.9, R0 + 0.9)
 
-# %%
-plt.figure(figsize=FIG_SIZE)
+# # Set tick parameters for both axes
+# ax1.tick_params(axis='x', labelsize=TICK_SIZE)
+# ax1.tick_params(axis='y', labelsize=TICK_SIZE)
+# ax2.tick_params(axis='x', labelsize=TICK_SIZE)
+# ax2.tick_params(axis='y', labelsize=TICK_SIZE) # Although labelleft=False, still good to set size for potential future use
 
-for i, t in enumerate(trajectories):
-    current_color = colors[i % len(colors)] # Cycle through the defined colors
-    plt.scatter(t[:, 0], t[:, 1], s=0.1, alpha=jnp.exp(-t[:, 2]**2/0.02), color=current_color)
+# # Adjust layout
+# fig.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust rect to prevent suptitle overlap
 
-# plt.title(r'Field line intersections', fontsize=TITLE_SIZE)
-plt.xlabel(r'$r$', fontsize=LABEL_SIZE)
-plt.ylabel(r'$\chi$', fontsize=LABEL_SIZE)
+# # fig.savefig('poincare_solovev_physical.png', bbox_inches='tight', dpi=800)
 
-# Set tick parameters
-plt.xticks(fontsize=TICK_SIZE)
-plt.yticks(fontsize=TICK_SIZE)
+# # %%
+# plt.figure(figsize=FIG_SIZE)
 
-plt.tight_layout() # Adjust layout to prevent labels from overlapping
+# for i, t in enumerate(trajectories):
+#     current_color = colors[i % len(colors)] # Cycle through the defined colors
+#     plt.scatter(t[:, 0], t[:, 1], s=0.1, alpha=jnp.exp(-t[:, 2]**2/0.02), color=current_color)
 
-# plt.savefig('poincare_solovev_logical.png', bbox_inches='tight', dpi=800)
+# # plt.title(r'Field line intersections', fontsize=TITLE_SIZE)
+# plt.xlabel(r'$r$', fontsize=LABEL_SIZE)
+# plt.ylabel(r'$\chi$', fontsize=LABEL_SIZE)
 
-# %% Figure 1: Energy and Force
-fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
+# # Set tick parameters
+# plt.xticks(fontsize=TICK_SIZE)
+# plt.yticks(fontsize=TICK_SIZE)
 
-# Plot Energy on the left y-axis (ax1)
-color1 = 'purple'
-ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
-ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$', color=color1, fontsize=LABEL_SIZE)
-ax1.plot(jnp.array(E_trace), label=r'$\frac{1}{2} \| B \|^2$', color=color1, lw=LINE_WIDTH)
-# ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
-ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
-ax1.tick_params(axis='x', labelsize=TICK_SIZE) # Set x-tick size
+# plt.tight_layout() # Adjust layout to prevent labels from overlapping
 
-# Create a second y-axis that shares the same x-axis
-ax2 = ax1.twinx()
+# # plt.savefig('poincare_solovev_logical.png', bbox_inches='tight', dpi=800)
 
-# Plot Force on the right y-axis (ax2)
-color2 = 'black'
-ax2.set_ylabel(r'$\|J \times B - \nabla p\|^2, \quad | H - H_0 |$', color=color2, fontsize=LABEL_SIZE)
-ax2.plot(u_trace, label=r'$\|J \times B - \nabla p \|^2$', color=color2, lw=LINE_WIDTH)
-ax2.tick_params(axis='y', labelcolor=color2, labelsize=TICK_SIZE)
-ax2.set_ylim(0.5 * min(u_trace), 2 * max(u_trace))  # Set y-limits for better visibility
-ax2.set_yscale('log')
+# # %% Figure 1: Energy and Force
+# fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
 
-relative_helicity_change = jnp.abs(jnp.array(jnp.array(H_trace) - H_trace[0]))
-ax2.plot(relative_helicity_change, label=r'$| H - H_0 |$', color='darkgray', linestyle='--', lw=LINE_WIDTH)
-lines1, labels1 = ax1.get_legend_handles_labels()
-lines2, labels2 = ax2.get_legend_handles_labels()
-ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize=LEGEND_SIZE)
+# # Plot Energy on the left y-axis (ax1)
+# color1 = 'purple'
+# ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
+# ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$', color=color1, fontsize=LABEL_SIZE)
+# ax1.plot(jnp.array(E_trace), label=r'$\frac{1}{2} \| B \|^2$', color=color1, lw=LINE_WIDTH)
+# # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
+# ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
+# ax1.tick_params(axis='x', labelsize=TICK_SIZE) # Set x-tick size
 
-fig1.tight_layout()
-plt.show()
+# # Create a second y-axis that shares the same x-axis
+# ax2 = ax1.twinx()
 
-# fig1.savefig('solovev_force.pdf', bbox_inches='tight')
-# %%
+# # Plot Force on the right y-axis (ax2)
+# color2 = 'black'
+# ax2.set_ylabel(r'$\|J \times B - \nabla p\|^2, \quad | H - H_0 |$', color=color2, fontsize=LABEL_SIZE)
+# ax2.plot(u_trace, label=r'$\|J \times B - \nabla p \|^2$', color=color2, lw=LINE_WIDTH)
+# ax2.tick_params(axis='y', labelcolor=color2, labelsize=TICK_SIZE)
+# ax2.set_ylim(0.5 * min(u_trace), 2 * max(u_trace))  # Set y-limits for better visibility
+# ax2.set_yscale('log')
+
+# relative_helicity_change = jnp.abs(jnp.array(jnp.array(H_trace) - H_trace[0]))
+# ax2.plot(relative_helicity_change, label=r'$| H - H_0 |$', color='darkgray', linestyle='--', lw=LINE_WIDTH)
+# lines1, labels1 = ax1.get_legend_handles_labels()
+# lines2, labels2 = ax2.get_legend_handles_labels()
+# ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize=LEGEND_SIZE)
+
+# fig1.tight_layout()
+# plt.show()
+
+# # fig1.savefig('solovev_force.pdf', bbox_inches='tight')
+# # %%
