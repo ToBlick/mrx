@@ -1,10 +1,10 @@
 # %%
-import matplotlib.gridspec as gridspec
 import time
 from functools import partial
 
 import jax
 import jax.numpy as jnp
+import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
 import optimistix
@@ -330,7 +330,7 @@ def picard_loop(B_hat, dt, eta, tol):
 
 # %%
 
-for i in range(25000):
+for i in range(5000):
     start = time.time()
     # B_hat, J_hat, u_hat, q_hat = update(B_hat, J_hat)
     B_hat, J_hat, u_hat, q_hat = picard_loop(

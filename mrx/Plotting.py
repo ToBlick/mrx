@@ -88,9 +88,27 @@ def converge_plot(err, ns, ps, qs):
     return fig
 
 
+def get_3d_grids(F,
+                 x_min=0, x_max=1,
+                 y_min=0, y_max=1,
+                 z_min=0, z_max=1,
+                 nx=64,
+                 ny=64,
+                 nz=64):
+    _x1 = jnp.linspace(x_min, x_max, nx)
+    _x2 = jnp.linspace(y_min, y_max, ny)
+    _x3 = jnp.linspace(z_min, z_max, nz)
+    _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
+    _x = _x.transpose(1, 2, 3, 0).reshape(nx*ny*nz, 3)
+    _y = jax.vmap(F)(_x)
+    _y1 = _y[:, 0].reshape(nx, ny, nz)
+    _y2 = _y[:, 1].reshape(nx, ny, nz)
+    _y3 = _y[:, 2].reshape(nx, ny, nz)
+    return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
+
+
 def get_2d_grids(F, zeta=0, nx=64, tol=1e-6):
     tol = 1e-6
-    nx = 64
     _x1 = jnp.linspace(tol, 1 - tol, nx)
     _x2 = jnp.linspace(0, 1, nx)
     _x3 = jnp.ones(1) * zeta
@@ -105,7 +123,6 @@ def get_2d_grids(F, zeta=0, nx=64, tol=1e-6):
 
 def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
     tol = 1e-6
-    nx = 64
     _x1 = jnp.linspace(tol, 1 - tol, nx)
     _x2 = jnp.ones(1) * chi
     _x3 = jnp.ones(1) * zeta
