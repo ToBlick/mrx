@@ -1,4 +1,4 @@
-from typing import Any, Callable, NamedTuple
+from typing import Callable
 
 import jax
 import jax.experimental
@@ -90,9 +90,10 @@ class DeRhamSequence():
                 LazyBoundaryOperator(Λ, ('none', 'none', 'none'))
                 for Λ in [self.Λ0, self.Λ1, self.Λ2, self.Λ3]
             ]
+            bc = ['dirichlet' if n > 1 else 'none' for n in ns]
             self.E0_0, self.E1_0, self.E2_0, self.E3_0 = [
                 LazyBoundaryOperator(
-                    Λ, ('dirichlet', 'dirichlet', 'dirichlet'))
+                    Λ, bc)
                 for Λ in [self.Λ0, self.Λ1, self.Λ2, self.Λ3]
             ]
 

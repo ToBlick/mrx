@@ -1,5 +1,4 @@
 # %%
-
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -11,10 +10,13 @@ from mrx.DifferentialForms import DiscreteFunction, Pushforward
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
+p = 3
+n = 8
+
 # Initialize parameters
-ns = (15, 15, 1)  # Number of elements in each direction
-ps = (3, 3, 0)  # Polynomial degree in each direction
-types = ('clamped', 'periodic', 'constant') # Types
+ns = (n, n, 1)  # Number of elements in each direction
+ps = (p, p, 0)  # Polynomial degree in each direction
+types = ('clamped', 'periodic', 'constant')  # Types
 bcs = ('dirichlet', 'periodic', 'constant')  # Boundary conditions
 
 a = 1
@@ -42,21 +44,22 @@ def F(x):
                                 _Z(r, χ)]))
 
 
-# Create DeRham sequence 
-derham = DeRhamSequence(ns, ps, 8, types, bcs, F, polar=True)
+# Create DeRham sequence
+Seq = DeRhamSequence(ns, ps, 2*p, types, F, polar=True)
 
-# Get extraction operators and mass matrices 
-E0, E1, E2, E3 = [derham.E0.matrix(), derham.E1.matrix(), derham.E2.matrix(), derham.E3.matrix()]
-M0, M1, M2, M3 = [derham.assemble_M0(), derham.assemble_M1(), 
-                    derham.assemble_M2(), derham.assemble_M3()]
+# Get extraction operators and mass matrices
+E0, E1, E2, E3 = [Seq.E0_0.matrix(), Seq.E1_0.matrix(),
+                  Seq.E2_0.matrix(), Seq.E3_0.matrix()]
+M0, M1, M2, M3 = [Seq.assemble_M0_0(), Seq.assemble_M1_0(),
+                  Seq.assemble_M2_0(), Seq.assemble_M3_0()]
 
 
-D0 = derham.assemble_grad()  # Gradient matrix 
+D0 = Seq.assemble_grad_0()  # Gradient matrix
 
 O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros((D0.shape[1], D0.shape[1]))
 
-C = derham.assemble_curlcurl()  # Double curl matrix 
+C = Seq.assemble_curlcurl_0()  # Double curl matrix
 
 _Q = jnp.block([[C, D0], [D0.T, O0]])
 _P = jnp.block([[M1, O10], [O10.T, O0]])
@@ -94,15 +97,19 @@ color2 = 'black'
 ax1.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
 ax1.set_ylabel(r'$\lambda_k / \pi^2$', fontsize=LABEL_SIZE)
 ax1.plot(evs[:end], label=r'computed',
-         marker='*', ls = '', markersize=10, color=color1, lw=LINE_WIDTH)
+         marker='*', ls='', markersize=10, color=color1, lw=LINE_WIDTH)
 ax1.tick_params(axis='y', labelsize=TICK_SIZE)
 ax1.tick_params(axis='x', labelsize=TICK_SIZE)
 # ax1.set_yticks(jnp.unique(true_evs[:end]))
 ax1.grid(axis='y', linestyle='--', alpha=0.7)
-ax1.legend(fontsize=LEGEND_SIZE) # Use ax1.legend() for clarity
+ax1.legend(fontsize=LEGEND_SIZE)  # Use ax1.legend() for clarity
 
 # %%
 fig1.savefig('toroid_eigenvalues.pdf', bbox_inches='tight')
+
+# %%
+# Plot the first 9 eigenvectors
+
 # %%
 ɛ = 1e-5
 nx = 64
@@ -126,33 +133,6 @@ __y1 = __y[:, 0].reshape(_nx, _nx)
 __y2 = __y[:, 1].reshape(_nx, _nx)
 __y3 = __y[:, 2].reshape(_nx, _nx)
 
-# %%
-idx = 3
-u_hat, p_hat = jnp.split(evecs[:, idx], (M1.shape[0],))
-u_h = DiscreteFunction(u_hat, derham.Λ1, E1)
-F_u = Pushforward(u_h, F, 1)
-
-_z1 = jax.vmap(F_u)(_x).reshape(nx, nx, 3)
-_z1_norm = jnp.linalg.norm(_z1, axis=2)
-plt.contourf(_y1, _y3, _z1_norm.reshape(nx, nx))
-plt.colorbar()
-__z1 = jax.vmap(F_u)(__x).reshape(_nx, _nx, 3)
-plt.quiver(
-    _y1,
-    _y3,
-    __z1[:, :, 0],
-    __z1[:, :, 2],
-    color='w',
-    scale=10)
-plt.xlabel('X')
-plt.ylabel('Z')
-# %%
-p_h = DiscreteFunction(p_hat, derham.Λ0, E0)
-F_p = Pushforward(p_h, F, 0)
-
-_z1 = jax.vmap(F_p)(_x).reshape(nx, nx)
-plt.contourf(_y1, _y3, _z1)
-plt.colorbar()
 # %%
 
 
@@ -199,11 +179,40 @@ def plot_eigenvectors_grid(
     return fig
 
 
-# %%
-# Plot the first 9 eigenvectors
 fig = plot_eigenvectors_grid(
-    evecs, M1, derham.Λ1, E1, F, _x, _y1, _y3, nx, num_to_plot=25
+    evecs, M1, Seq.Λ1, E1, F, _x, _y1, _y3, nx, num_to_plot=25
 )
 # %%
 fig.savefig('toroid_eigenvectors.pdf', bbox_inches='tight')
 # %%
+
+# %%
+idx = 3
+u_hat, p_hat = jnp.split(evecs[:, idx], (M1.shape[0],))
+u_h = DiscreteFunction(u_hat, Seq.Λ1, E1)
+F_u = Pushforward(u_h, F, 1)
+
+_z1 = jax.vmap(F_u)(_x).reshape(nx, nx, 3)
+_z1_norm = jnp.linalg.norm(_z1, axis=-1)
+plt.contourf(_y1, _y3, _z1_norm.reshape(nx, nx))
+plt.colorbar()
+__z1 = jax.vmap(F_u)(__x).reshape(_nx, _nx, 3)
+plt.quiver(
+    __y1,
+    __y3,
+    __z1[:, :, 0],
+    __z1[:, :, 2],
+    color='w',
+    scale=10)
+plt.xlabel('X')
+plt.ylabel('Z')
+# %%
+p_h = DiscreteFunction(p_hat, Seq.Λ0, E0)
+F_p = Pushforward(p_h, F, 0)
+
+_z1 = jax.vmap(F_p)(_x).reshape(nx, nx)
+plt.contourf(_y1, _y3, _z1)
+plt.colorbar()
+plt.xlabel('X')
+plt.ylabel('Z')
+plt.title(f'Pressure field for eigenvalue {evs[idx]:.4f}')

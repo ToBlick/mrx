@@ -25,31 +25,30 @@ def get_err(n, p):
     q = 2*p
     ns = (n, n, 1)
     ps = (p, p, 0)
-    types = ("clamped", "periodic", "constant") # Types
-    bcs = ("dirichlet", "periodic", "constant")  # Boundary conditions
+    types = ("clamped", "periodic", "constant")  # Types
 
     # Domain parameters
-    a = 1.13
-    R0 = 3.46
+    a = 1.0
+    R0 = 3.0
     π = jnp.pi
 
     def _X(r, χ):
         return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
 
-    def _Z(r, χ):
+    def _Y(r, χ):
         return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
 
-    def _Y(r, χ):
+    def _Z(r, χ):
         return jnp.ones(1) * a * r * jnp.sin(2 * π * χ)
 
     def F(x):
         """Polar coordinate mapping function."""
         r, χ, z = x
         return jnp.ravel(jnp.array([_X(r, χ) * jnp.cos(2 * π * z),
-                                    _Y(r, χ),
-                                    _Z(r, χ) * jnp.sin(2 * π * z)]))
-    # Define exact solution and source term
+                                    -_Y(r, χ) * jnp.sin(2 * π * z),
+                                    _Z(r, χ)]))
 
+    # Define exact solution and source term
     def u(x):
         """Exact solution of the Poisson problem."""
         r, χ, z = x
@@ -64,22 +63,23 @@ def get_err(n, p):
         # return 1 / (a**2 * R) * (4*R0*(1 - 4*r**2) + 2*a*r*c*(3 - 10*r**2)) * jnp.ones(1)
         return 4 * π / a**2 * (jnp.cos(π*r**2) * (1 + (R - R0) / R / 2)
                                - π * r**2 * jnp.sin(π*r**2)) * jnp.ones(1)
-    
+
     # Create DeRham sequence
-    derham = DeRhamSequence(ns, ps, q, types, bcs, F, polar=True)
-    
+    derham = DeRhamSequence(ns, ps, q, types, F, polar=True)
+
     # Get stiffness matrix and projector
-    K = derham.assemble_gradgrad()  # Stiffness matrix 
-    P0 = derham.P0  # Projector for 0-forms
-    
+    K = derham.assemble_gradgrad_0()  # Stiffness matrix
+    P0 = derham.P0_0  # Projector for 0-forms
+
     # Solve the system
     u_hat = jnp.linalg.solve(K, P0(f))
-    u_h = DiscreteFunction(u_hat, derham.Λ0, derham.E0.matrix())
-    
+    u_h = DiscreteFunction(u_hat, derham.Λ0, derham.E0_0.matrix())
+
     # Compute error
     def err(x):
         return u(x) - u_h(x)
-    error = (l2_product(err, err, derham.Q, F) / l2_product(u, u, derham.Q, F)) ** 0.5
+    error = (l2_product(err, err, derham.Q, F) /
+             l2_product(u, u, derham.Q, F)) ** 0.5
     return error
 
 
