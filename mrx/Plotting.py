@@ -5,11 +5,19 @@ This module provides functions for creating visualizations of convergence plots
 and other analysis results using Plotly.
 """
 
+import os
+
+import h5py
 import jax
 import jax.numpy as jnp
 import matplotlib as plt
+import matplotlib.pyplot as plt
 import plotly.colors as pc
 import plotly.graph_objects as go
+
+from mrx.BoundaryFitting import get_lcfs_F
+from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction, Pushforward
 
 __all__ = ['converge_plot']
 
@@ -133,3 +141,103 @@ def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
     _y2 = _y[:, 1]
     _y3 = _y[:, 2]
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
+
+# %%
+
+
+def generate_solovev_plots(name):
+    outdir = "../script_outputs/solovev/"
+    os.makedirs(outdir, exist_ok=True)
+
+    # --- Figure settings ---
+    FIG_SIZE = (12, 6)
+    SQUARE_FIG_SIZE = (8, 8)
+    TITLE_SIZE = 20
+    LABEL_SIZE = 20
+    TICK_SIZE = 16
+    LINE_WIDTH = 2.5
+
+    with h5py.File("script_outputs/solovev/" + name + ".h5", "r") as f:
+        B_hat = f["B_hat"][:]
+        p_hat = f["p_hat"][:]
+
+        cfg = {k: v for k, v in f["config"].attrs.items()}
+        # decode strings back if needed
+        cfg = {k: v.decode() if isinstance(v, bytes)
+               else v for k, v in cfg.items()}
+
+    R0 = cfg["R_0"]
+    aR = cfg["a_R"]
+    π = jnp.pi
+# Step 1: Reconstruct F
+    if cfg["circular_cross_section"]:
+        def F(x):
+            r, χ, z = x
+            return jnp.ravel(jnp.array(
+                [(R0 + aR * r * jnp.cos(2 * π * χ)) * jnp.cos(2 * π * z),
+                 -(R0 + aR * r * jnp.cos(2 * π * χ)) * jnp.sin(2 * π * z),
+                 aR * r * jnp.sin(2 * π * χ)]))
+    else:
+        F = get_lcfs_F(cfg["n_chi"], cfg["p_chi"], 2 * cfg["p_chi"],
+                       cfg["R_0"], cfg["k_0"], cfg["q_0"], cfg["a_R"])
+    # Step 2: Get the Sequence
+    ns = (cfg["n_r"], cfg["n_chi"], cfg["n_zeta"])
+    ps = (cfg["p_r"], cfg["p_chi"], 0
+          if cfg["n_zeta"] == 1 else cfg["p_zeta"])
+    q = max(ps)
+    types = ("clamped", "periodic",
+             "constant" if cfg["n_zeta"] == 1 else "periodic")
+
+    Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
+
+    # Step 3: get the grids
+    _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3) = get_2d_grids(
+        F, zeta=0, nx=64, tol=1e-2)
+    _x_1d, _y_1d, (_y1_1d, _y2_1d, _y3_1d), (_x1_1d, _x2_1d,
+                                             _x3_1d) = get_1d_grids(F, zeta=0, chi=0, nx=128)
+
+    # Plot number one: pressure contour plot
+    p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0_0.matrix())
+    p_h_xyz = Pushforward(p_h, F, 0)
+
+    _s = jax.vmap(F)(jnp.vstack(
+        [jnp.ones(256), jnp.linspace(0, 1, 256), jnp.zeros(256)]).T)
+
+    fig, ax = plt.subplots(figsize=SQUARE_FIG_SIZE)
+
+    # Plot the line first
+    ax.plot(_s[:, 0], _s[:, 2], 'k--',
+            linewidth=LINE_WIDTH, label="trajectory")
+
+    # Evaluate Z values for contour
+    Z = jax.vmap(p_h_xyz)(_x).reshape(_y1.shape)
+
+    # Filled contours for nicer visualization
+    cf = ax.contourf(_y1, _y3, Z, levels=20, cmap="plasma", alpha=0.8)
+
+    # Contour lines on top
+    # cs = ax.contour(_y1, _y3, Z, levels=10, colors="k", linewidths=LINE_WIDTH)
+    # ax.clabel(cs, fmt="%.2f", fontsize=0.5 * LABEL_SIZE)
+
+    # Axes limits and aspect
+    ax.set_xlim(jnp.min(_s[:, 0]) - 0.2, jnp.max(_s[:, 0]) + 0.2)
+    ax.set_ylim(jnp.min(_s[:, 2]) - 0.2, jnp.max(_s[:, 2]) + 0.2)
+    ax.set_aspect('equal')
+
+    # Labels
+    ax.set_xlabel("R", fontsize=LABEL_SIZE)
+    ax.set_ylabel("z", fontsize=LABEL_SIZE)
+
+    # Optional: grid and title
+    ax.grid(True, linestyle="--", alpha=0.5)
+
+    # Colorbar
+    cbar = fig.colorbar(cf, ax=ax)
+    cbar.set_label(r"p", fontsize=LABEL_SIZE)
+    cbar.ax.tick_params(labelsize=TICK_SIZE)
+
+    # Save
+    plt.tight_layout()
+    plt.savefig("../script_outputs/solovev/" + name + "_pressure.png",
+                dpi=400)
+    plt.close()
