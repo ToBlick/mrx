@@ -17,30 +17,31 @@ jax.config.update("jax_enable_x64", True)
 π = jnp.pi
 p = 3
 q = 3*p
-ns = (6, 6, 10)
+ns = (6, 6, 6)
 ps = (3, 3, 3)
 types = ("clamped", "clamped", "clamped")
 
 
 def F(x):
-    """Polar coordinate mapping function."""
-    r, χ, z = x
-    return jnp.array([r * 8 - 4, χ * 8 - 4, z * 20 - 10])
+    return x
 
 
 # %%
-s = 1
-ω1 = 3
-ω2 = 2
+
+n_mu = 1
+m_mu = 1
+mu = π * (n_mu**2 + m_mu**2)**0.5
+s = 1e4
 
 
 def B(p):
     x, y, z = F(p)
-    rsq = (x**2 + y**2 + z**2)
-    return 4 * jnp.sqrt(s) / (π * (1 + rsq)**3 * (ω1**2 + ω2**2)**0.5) * jnp.array([
-        2 * ω2 * y - 2 * ω1 * x * z,
-        - 2 * ω2 * x - 2 * ω1 * y * z,
-        ω1 * (x**2 + y**2 - z**2 - 1)
+    return mu * jnp.array([
+        n_mu / (n_mu**2 + m_mu**2) *
+        jnp.sin(m_mu * π * x) * jnp.cos(n_mu * π * y),
+        - m_mu / (n_mu**2 + m_mu**2) *
+        jnp.cos(m_mu * π * x) * jnp.sin(n_mu * π * y),
+        jnp.sin(m_mu * π * x) * jnp.sin(n_mu * π * y)
     ])
 
 
@@ -50,6 +51,9 @@ _x_1d, _y_1d, (_y1_1d, _y2_1d, _y3_1d), (_x1_1d, _x2_1d,
                                          _x3_1d) = get_1d_grids(F, zeta=0.5, chi=0.5, nx=128)
 
 # %%
+# Set up finite element spaces
+bcs = ('dirichlet', 'dirichlet', 'dirichlet')
+
 Seq = DeRhamSequence(ns, ps, q, types, F, polar=False)
 
 # %%
@@ -128,7 +132,7 @@ E_trace = []
 H_trace = []
 dvg_trace = []
 
-dt = 10.0
+dt = 1e-3
 eta = 0.00
 
 # %%
@@ -162,17 +166,23 @@ def implicit_update(B_hat_guess, B_hat_0, dt, eta):
 
 
 def picard_loop(B_hat, dt, eta, tol):
-    B_hat_0 = B_hat
-    B_hat_guess = B_hat
+
+    def is_not_converged(x):
+        B, B_guess, _, _ = x
+        delta = (B - B_guess) @ M2 @ (B - B_guess)
+        return delta > tol**2
+
+    def update(x):
+        B, B_guess, _, _ = x
+        B_new, J, u = implicit_update(B_guess, B, dt, eta)
+        return B, B_new, J, u
+
     B_hat_1, J_hat, u_hat = implicit_update(
-        B_hat_guess, B_hat_0, dt, eta)
-    delta = (B_hat_1 - B_hat_guess) @ M2 @ (B_hat_1 - B_hat_guess)
-    while delta > tol**2:
-        B_hat_guess = B_hat_1
-        B_hat_1, J_hat, u_hat = implicit_update(
-            B_hat_guess, B_hat_0, dt, eta)
-        delta = (B_hat_1 - B_hat_guess) @ M2 @ (B_hat_1 - B_hat_guess)
-    return B_hat_1, J_hat, u_hat
+        B_hat, B_hat, dt, eta)
+    x = (B_hat, B_hat_1, J_hat, u_hat)
+    x = jax.lax.while_loop(is_not_converged, update, x)
+    B_hat, B_hat_1, J_hat, u_hat = x
+    return B_hat_1, J_hat, u_hat, dt
 
 
 # %%
@@ -241,10 +251,10 @@ def vector_field(t, x, args):
 
 # %%
 key = jax.random.PRNGKey(123)
-x0s = jax.random.uniform(key, (4, 3), maxval=0.66, minval=0.33)
+x0s = jax.random.uniform(key, (100, 3), minval=0.05, maxval=0.95)
 
 t1 = 1_000.0
-n_saves = 20_000
+n_saves = 10_000
 term = ODETerm(vector_field)
 solver = Dopri5()
 saveat = SaveAt(ts=jnp.linspace(0, t1, n_saves))
