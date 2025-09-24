@@ -10,6 +10,8 @@ from .Projectors import *
 from .Quadrature import *
 from .SplineBases import *
 from .Utils import *
+from .BoundaryFitting import *
+from .DeRhamSequence import *
 
 __all__ = (DifferentialForms.__all__ + IterativeSolvers.__all__ +
            LazyMatrices.__all__ + Plotting.__all__ + PolarMapping.__all__ +

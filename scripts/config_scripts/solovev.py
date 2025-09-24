@@ -53,6 +53,7 @@ CONFIG = {
     "gamma": 0,                  # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
     "eps": 1e-2,                 # Regularization for the initial condition
     "dt": 1e-3,                  # Time step
+    "dt_max": 1.0,               # max. time step
     "n_steps": 20_000,           # max. Number of time steps
     # Stop if || JxB - grad p || < this or (force-free) || JxB || < this
     "force_tol": 1e-12,
@@ -95,6 +96,7 @@ def run(CONFIG):
     force_free = CONFIG["force_free"]
     eta = CONFIG["eta"]
     dt0 = CONFIG["dt"]
+    dt_max = CONFIG["dt_max"]
     n_steps = int(CONFIG["n_steps"])
     force_tol = CONFIG["force_tol"]
 
@@ -209,7 +211,7 @@ def run(CONFIG):
         for _ in range(gamma):
             u_hat = jnp.linalg.inv(M2 + laplace_2) @ M2 @ u_hat
         u_norm = (u_hat @ M2 @ u_hat)**0.5
-        dt = jnp.minimum(dt0 / u_norm, 1.0)
+        dt = jnp.minimum(dt0 / u_norm, dt_max)
         E_hat = jnp.linalg.solve(M1, P_uxH(u_hat, H_hat)) - eta * J_hat
         return jnp.concatenate([B_n + dt * curl @ E_hat, B_n])
 
