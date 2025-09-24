@@ -129,29 +129,34 @@ def plot_results(err, times, times2, conds, sparsities, ns, ps):
     LABEL_SIZE = 20
     TICK_SIZE = 16
     LINE_WIDTH = 2.5
+    LEGEND_SIZE = 16
 
     colors = ['purple', 'teal', 'black']
 
-    """Plot the results of the convergence analysis."""
-    # Error convergence plot
-    fig1 = plt.figure(figsize=FIG_SIZE)
+    fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
+
+    ax1.set_title("Error Convergence", fontsize=TITLE_SIZE)
+    ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
+    ax1.set_ylabel(r'$\| f - f_h \|_{L^2(\Omega)}$',
+                   fontsize=LABEL_SIZE)
     for j, p in enumerate(ps):
-        plt.loglog(ns, err[:, j],
+        ax1.loglog(ns, err[:, j],
                    label=f'p={p}',
                    marker='o')
     # Add theoretical convergence rates
     for j, p in enumerate(ps):
         expected_rate = -(p+1)
-        plt.loglog(ns, err[-1, j] * (ns/ns[-1])**(-expected_rate),
+        ax1.loglog(ns[-3:], err[-1, j] * (ns[-3:]/ns[-1])**(-expected_rate),
                    label=f'O(n^{-expected_rate})', linestyle='--')
-    plt.xlabel(r'$n$')
-    plt.ylabel(r'$\| f - f_h \|_{L^2(\Omega)}$')
-    plt.grid(True)
-    plt.legend()
-    plt.savefig('script_outputs/2d_toroid_poisson_mixed_error.png',
-                dpi=300, bbox_inches='tight')
-
-    fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
+    ax1.set_xlabel(r'$n$')
+    ax1.set_ylabel(r'$\| f - f_h \|_{L^2(\Omega)}$')
+    ax1.grid(which="both", linestyle="--", linewidth=0.5)
+    ax1.legend(fontsize=LEGEND_SIZE)
+    ax1.tick_params(axis='y', labelsize=TICK_SIZE)
+    ax1.tick_params(axis='x', labelsize=TICK_SIZE)
+    fig1.tight_layout()
+    plt.savefig(
+        'script_outputs/2d_toroid_poisson_mixed_convergence.pdf', bbox_inches='tight')
 
     # Plot Energy on the left y-axis (ax1)
     color1 = 'purple'

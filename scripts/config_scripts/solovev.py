@@ -208,7 +208,7 @@ def run(CONFIG):
             u_hat = P_Leray @ JxH_hat
         for _ in range(gamma):
             u_hat = jnp.linalg.inv(M2 + laplace_2) @ M2 @ u_hat
-        u_norm = (JxH_hat @ M2 @ u_hat)**0.5
+        u_norm = (u_hat @ M2 @ u_hat)**0.5
         dt = jnp.minimum(dt0 / u_norm, 1.0)
         E_hat = jnp.linalg.solve(M1, P_uxH(u_hat, H_hat)) - eta * J_hat
         return jnp.concatenate([B_n + dt * curl @ E_hat, B_n])
@@ -244,7 +244,8 @@ def run(CONFIG):
         dvg_trace.append((dvg @ B_hat @ M3 @ dvg @ B_hat)**0.5)
         if iters[-1] == max_iter and err > solver_tol:
             print(
-                f"Warning: Picard solver did not converge in {max_iter} iterations (err={err:.2e})")
+                f"Picard solver did not converge in {max_iter} iterations (err={err:.2e})")
+            break
         if i % 1000 == 0:
             print(f"Iteration {i}, u norm: {force_trace[-1]}")
         if force_trace[-1] < force_tol:

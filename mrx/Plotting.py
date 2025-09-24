@@ -144,8 +144,12 @@ def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
 
 # %%
 
+# %%
+
 
 def generate_solovev_plots(name):
+    jax.config.update("jax_enable_x64", True)
+
     outdir = "script_outputs/solovev/"
     os.makedirs(outdir, exist_ok=True)
 
@@ -158,10 +162,14 @@ def generate_solovev_plots(name):
     LABEL_SIZE = 20
     TICK_SIZE = 16
     LINE_WIDTH = 2.5
+    LEGEND_SIZE = 16
 
     with h5py.File("script_outputs/solovev/" + name + ".h5", "r") as f:
         B_hat = f["B_hat"][:]
         p_hat = f["p_hat"][:]
+        helicity_trace = f["helicity_trace"][:]
+        energy_trace = f["energy_trace"][:]
+        force_trace = f["force_trace"][:]
 
         cfg = {k: v for k, v in f["config"].attrs.items()}
         # decode strings back if needed
@@ -171,6 +179,8 @@ def generate_solovev_plots(name):
     R0 = cfg["R_0"]
     aR = cfg["a_R"]
     π = jnp.pi
+
+    solver_tol = cfg["solver_tol"]
 
     # Step 1: Reconstruct F
     if cfg["circular_cross_section"]:
@@ -242,8 +252,49 @@ def generate_solovev_plots(name):
 
     # Save
     plt.tight_layout()
-    plt.savefig("script_outputs/solovev/" + name + "_pressure.png",
+    plt.savefig("script_outputs/solovev/" + name + "_pressure.pdf",
                 dpi=400)
     plt.close()
 
     print("Generating convergence plot...")
+
+    # Figure 2: Energy and Force
+
+    fig1, ax2 = plt.subplots(figsize=FIG_SIZE)
+    ax1 = ax2.twinx()
+
+    # Plot Energy on the left y-axis (ax1)
+    color1 = 'purple'
+    ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
+    ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$',
+                   color=color1, fontsize=LABEL_SIZE)
+    ax1.plot(jnp.array(energy_trace),
+             label=r'$\frac{1}{2} \| B \|^2$', color=color1, linestyle='-.', lw=LINE_WIDTH)
+    # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
+    ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
+    ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
+
+    helicity_change = jnp.abs(
+        jnp.array(jnp.array(helicity_trace) - helicity_trace[0]))
+    # Plot Force on the right y-axis (ax2)
+    color2 = 'black'
+    ax2.set_ylabel(r'$\|J \times B - \nabla p\|, \quad | H - H_0 |$',
+                   color=color2, fontsize=LABEL_SIZE)
+    ax2.plot(force_trace, label=r'$\|J \times B - \nabla p \|^2$',
+             color=color2, lw=LINE_WIDTH)
+    ax2.tick_params(axis='y', labelcolor=color2, labelsize=TICK_SIZE)
+    # Set y-limits for better visibility
+    ax2.set_ylim(0.5 * min(min(force_trace), 0.1 * max(helicity_change)),
+                 2 * max(max(force_trace), max(helicity_change)))
+    ax2.set_yscale('log')
+
+    ax2.plot(helicity_change, label=r'$| H - H_0 |$',
+             color='darkgray', linestyle='--', lw=LINE_WIDTH)
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax2.legend(lines1 + lines2, labels1 + labels2,
+               loc='upper right', fontsize=LEGEND_SIZE)
+    # ax1.grid(which="major", linestyle="-", color=color1, linewidth=0.5)
+    ax2.grid(which="both", linestyle="--", linewidth=0.5)
+    fig1.tight_layout()
+    plt.savefig("script_outputs/solovev/" + name + "_energy_force.pdf")
