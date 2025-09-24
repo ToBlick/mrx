@@ -119,7 +119,7 @@ colors = [cmap(v) for v in np.linspace(0, 1, len(p_scan) + 1)]
 fig1 = plt.figure(figsize=(10, 6))
 for j, p in enumerate(p_scan):
     plt.loglog(n_scan, errors[:, j],
-               label=r'$p={p}$',
+               label=f'$p={p_scan[j]}$',
                marker='o', color=colors[j])
     # Add theoretical convergence rates
     plt.loglog(n_scan, errors[-1, j] * (n_scan/n_scan[-1])**(-p),
