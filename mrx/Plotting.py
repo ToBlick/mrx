@@ -5,11 +5,19 @@ This module provides functions for creating visualizations of convergence plots
 and other analysis results using Plotly.
 """
 
+import os
+
+import h5py
 import jax
 import jax.numpy as jnp
 import matplotlib as plt
+import matplotlib.pyplot as plt
 import plotly.colors as pc
 import plotly.graph_objects as go
+
+from mrx.BoundaryFitting import get_lcfs_F
+from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction, Pushforward
 
 __all__ = ['converge_plot']
 
@@ -133,3 +141,160 @@ def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
     _y2 = _y[:, 1]
     _y3 = _y[:, 2]
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
+
+# %%
+
+# %%
+
+
+def generate_solovev_plots(name):
+    jax.config.update("jax_enable_x64", True)
+
+    outdir = "script_outputs/solovev/"
+    os.makedirs(outdir, exist_ok=True)
+
+    print("Generating plots for " + name + "...")
+
+    # --- Figure settings ---
+    FIG_SIZE = (12, 6)
+    SQUARE_FIG_SIZE = (8, 8)
+    TITLE_SIZE = 20
+    LABEL_SIZE = 20
+    TICK_SIZE = 16
+    LINE_WIDTH = 2.5
+    LEGEND_SIZE = 16
+
+    with h5py.File("script_outputs/solovev/" + name + ".h5", "r") as f:
+        B_hat = f["B_hat"][:]
+        p_hat = f["p_hat"][:]
+        helicity_trace = f["helicity_trace"][:]
+        energy_trace = f["energy_trace"][:]
+        force_trace = f["force_trace"][:]
+
+        cfg = {k: v for k, v in f["config"].attrs.items()}
+        # decode strings back if needed
+        cfg = {k: v.decode() if isinstance(v, bytes)
+               else v for k, v in cfg.items()}
+
+    R0 = cfg["R_0"]
+    aR = cfg["a_R"]
+    π = jnp.pi
+
+    solver_tol = cfg["solver_tol"]
+
+    # Step 1: Reconstruct F
+    if cfg["circular_cross_section"]:
+        def F(x):
+            r, χ, z = x
+            return jnp.ravel(jnp.array(
+                [(R0 + aR * r * jnp.cos(2 * π * χ)) * jnp.cos(2 * π * z),
+                 -(R0 + aR * r * jnp.cos(2 * π * χ)) * jnp.sin(2 * π * z),
+                 aR * r * jnp.sin(2 * π * χ)]))
+    else:
+        F = get_lcfs_F(cfg["n_chi"], cfg["p_chi"], 2 * cfg["p_chi"],
+                       cfg["R_0"], cfg["k_0"], cfg["q_0"], cfg["a_R"])
+    # Step 2: Get the Sequence
+    ns = (cfg["n_r"], cfg["n_chi"], cfg["n_zeta"])
+    ps = (cfg["p_r"], cfg["p_chi"], 0
+          if cfg["n_zeta"] == 1 else cfg["p_zeta"])
+    q = max(ps)
+    types = ("clamped", "periodic",
+             "constant" if cfg["n_zeta"] == 1 else "periodic")
+
+    Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
+
+    # Step 3: get the grids
+    _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3) = get_2d_grids(
+        F, zeta=0, nx=64, tol=1e-2)
+    _x_1d, _y_1d, (_y1_1d, _y2_1d, _y3_1d), (_x1_1d, _x2_1d,
+                                             _x3_1d) = get_1d_grids(F, zeta=0, chi=0, nx=128)
+
+    print("Generating pressure plot...")
+    # Plot number one: pressure contour plot
+    p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0_0.matrix())
+    p_h_xyz = Pushforward(p_h, F, 0)
+
+    _s = jax.vmap(F)(jnp.vstack(
+        [jnp.ones(256), jnp.linspace(0, 1, 256), jnp.zeros(256)]).T)
+
+    fig, ax = plt.subplots(figsize=SQUARE_FIG_SIZE)
+
+    # Plot the line first
+    ax.plot(_s[:, 0], _s[:, 2], 'k--',
+            linewidth=LINE_WIDTH, label="trajectory")
+
+    # Evaluate Z values for contour
+    Z = jax.vmap(p_h_xyz)(_x).reshape(_y1.shape)
+
+    # Filled contours for nicer visualization
+    cf = ax.contourf(_y1, _y3, Z, levels=20, cmap="plasma", alpha=0.8)
+
+    # Contour lines on top
+    # cs = ax.contour(_y1, _y3, Z, levels=10, colors="k", linewidths=LINE_WIDTH)
+    # ax.clabel(cs, fmt="%.2f", fontsize=0.5 * LABEL_SIZE)
+
+    # Axes limits and aspect
+    ax.set_xlim(jnp.min(_s[:, 0]) - 0.2, jnp.max(_s[:, 0]) + 0.2)
+    ax.set_ylim(jnp.min(_s[:, 2]) - 0.2, jnp.max(_s[:, 2]) + 0.2)
+    ax.set_aspect('equal')
+
+    # Labels
+    ax.set_xlabel("R", fontsize=LABEL_SIZE)
+    ax.set_ylabel("z", fontsize=LABEL_SIZE)
+
+    # Optional: grid and title
+    ax.grid(True, linestyle="--", alpha=0.5)
+
+    # Colorbar
+    cbar = fig.colorbar(cf, ax=ax)
+    cbar.set_label(r"p", fontsize=LABEL_SIZE)
+    cbar.ax.tick_params(labelsize=TICK_SIZE)
+
+    # Save
+    plt.tight_layout()
+    plt.savefig("script_outputs/solovev/" + name + "_pressure.pdf",
+                dpi=400)
+    plt.close()
+
+    print("Generating convergence plot...")
+
+    # Figure 2: Energy and Force
+
+    fig1, ax2 = plt.subplots(figsize=FIG_SIZE)
+    ax1 = ax2.twinx()
+
+    # Plot Energy on the left y-axis (ax1)
+    color1 = 'purple'
+    ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
+    ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$',
+                   color=color1, fontsize=LABEL_SIZE)
+    ax1.plot(jnp.array(energy_trace),
+             label=r'$\frac{1}{2} \| B \|^2$', color=color1, linestyle='-.', lw=LINE_WIDTH)
+    # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
+    ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
+    ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
+
+    helicity_change = jnp.abs(
+        jnp.array(jnp.array(helicity_trace) - helicity_trace[0]))
+    # Plot Force on the right y-axis (ax2)
+    color2 = 'black'
+    ax2.set_ylabel(r'$\|J \times B - \nabla p\|, \quad | H - H_0 |$',
+                   color=color2, fontsize=LABEL_SIZE)
+    ax2.plot(force_trace, label=r'$\|J \times B - \nabla p \|^2$',
+             color=color2, lw=LINE_WIDTH)
+    ax2.tick_params(axis='y', labelcolor=color2, labelsize=TICK_SIZE)
+    # Set y-limits for better visibility
+    ax2.set_ylim(0.5 * min(min(force_trace), 0.1 * max(helicity_change)),
+                 2 * max(max(force_trace), max(helicity_change)))
+    ax2.set_yscale('log')
+
+    ax2.plot(helicity_change, label=r'$| H - H_0 |$',
+             color='darkgray', linestyle='--', lw=LINE_WIDTH)
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax2.legend(lines1 + lines2, labels1 + labels2,
+               loc='upper right', fontsize=LEGEND_SIZE)
+    # ax1.grid(which="major", linestyle="-", color=color1, linewidth=0.5)
+    ax2.grid(which="both", linestyle="--", linewidth=0.5)
+    fig1.tight_layout()
+    plt.savefig("script_outputs/solovev/" + name + "_energy_force.pdf")

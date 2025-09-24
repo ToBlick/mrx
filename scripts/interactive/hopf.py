@@ -49,9 +49,6 @@ _x_1d, _y_1d, (_y1_1d, _y2_1d, _y3_1d), (_x1_1d, _x2_1d,
                                          _x3_1d) = get_1d_grids(F, zeta=0.5, chi=0.5, nx=128)
 
 # %%
-# Set up finite element spaces
-bcs = ('dirichlet', 'dirichlet', 'dirichlet')
-
 Seq = DeRhamSequence(ns, ps, q, types, F, polar=False)
 
 # %%
