@@ -80,7 +80,7 @@ def get_err(n, p):
         return u(x) - u_h(x)
     error = (l2_product(err, err, derham.Q, F) /
              l2_product(u, u, derham.Q, F)) ** 0.5
-    return error
+    return error, jnp.linalg.cond(K), jnp.sum(jnp.abs(K) > 1e-12) / K.size
 
 
 def run_convergence_analysis(ns, ps):
@@ -89,17 +89,22 @@ def run_convergence_analysis(ns, ps):
     # Arrays to store results
     err = np.zeros((len(ns), len(ps)))
     times = np.zeros((len(ns), len(ps)))
+    sparsities = np.zeros((len(ns), len(ps)))
+    conds = np.zeros((len(ns), len(ps)))
 
     # First run (with JIT compilation)
     print("First run (with JIT compilation):")
     for i, n in enumerate(ns):
         for j, p in enumerate(ps):
             start = time.time()
-            err[i, j] = get_err(n, p)
+            _err, cond, sparsity = get_err(n, p)
+            err[i, j] = _err
+            conds[i, j] = cond
+            sparsities[i, j] = sparsity
             end = time.time()
             times[i, j] = end - start
             print(
-                f"n={n}, p={p}, err={err[i, j]:.2e}, time={times[i, j]:.2f}s")
+                f"n={n}, p={p}, err={err[i, j]:.2e}, time={times[i, j]:.2f}s, cond={conds[i, j]:.2e}, sparsity={sparsities[i, j]:.2e}")
 
     # Second run (after JIT compilation)
     print("\nSecond run (after JIT compilation):")
@@ -112,28 +117,102 @@ def run_convergence_analysis(ns, ps):
             times2[i, j] = end - start
             print(f"n={n}, p={p}, time={times2[i, j]:.2f}s")
 
-    return err, times, times2
+    return err, times, times2, conds, sparsities
 
 
-def plot_results(err, times, times2, ns, ps):
+def plot_results(err, times, times2, conds, sparsities, ns, ps):
+
+    # --- Figure settings ---
+    FIG_SIZE = (12, 6)
+    SQUARE_FIG_SIZE = (8, 8)
+    TITLE_SIZE = 20
+    LABEL_SIZE = 20
+    TICK_SIZE = 16
+    LINE_WIDTH = 2.5
+
+    colors = ['purple', 'teal', 'black']
+
     """Plot the results of the convergence analysis."""
     # Error convergence plot
-    fig1 = plt.figure(figsize=(10, 6))
+    fig1 = plt.figure(figsize=FIG_SIZE)
     for j, p in enumerate(ps):
         plt.loglog(ns, err[:, j],
                    label=f'p={p}',
                    marker='o')
     # Add theoretical convergence rates
     for j, p in enumerate(ps):
-        expected_rate = 2 * p - 1 * (p != 1)
+        expected_rate = -(p+1)
         plt.loglog(ns, err[-1, j] * (ns/ns[-1])**(-expected_rate),
                    label=f'O(n^{-expected_rate})', linestyle='--')
-    plt.xlabel('Number of elements (n)')
-    plt.ylabel('Relative L2 error')
-    plt.title('Error Convergence')
+    plt.xlabel(r'$n$')
+    plt.ylabel(r'$\| f - f_h \|_{L^2(\Omega)}$')
     plt.grid(True)
     plt.legend()
     plt.savefig('script_outputs/2d_toroid_poisson_mixed_error.png',
+                dpi=300, bbox_inches='tight')
+
+    fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
+
+    # Plot Energy on the left y-axis (ax1)
+    color1 = 'purple'
+    ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
+    ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$',
+                   color=color1, fontsize=LABEL_SIZE)
+    for j, p in enumerate(ps):
+        ax1.plot(ns, err[:, j],
+                 label=f'p={p}',
+                 marker='o')
+    ax1.set_xscale('log')
+    ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
+    ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
+
+    ax1.grid(which="both", linestyle="--", linewidth=0.5)
+    fig1.tight_layout()
+    plt.show()
+
+    # Timing plot
+    fig2 = plt.figure(figsize=(10, 6))
+    for j, p in enumerate(ps):
+        plt.semilogy(ns, times[:, j],
+                     label=f'p={p} (1st run)',
+                     marker='o')
+        plt.semilogy(ns, times2[:, j],
+                     label=f'p={p} (2nd run)',
+                     marker='x')
+    plt.xlabel('Number of elements (n)')
+    plt.ylabel('Time (s)')
+    plt.title('Computation Time')
+    plt.grid(True)
+    plt.legend()
+    plt.savefig('script_outputs/2d_toroid_poisson_mixed_time.png',
+                dpi=300, bbox_inches='tight')
+
+    # sparsity plot
+    fig3 = plt.figure(figsize=(10, 6))
+    for j, p in enumerate(ps):
+        plt.semilogy(ns, sparsities[:, j],
+                     label=f'p={p}',
+                     marker='o')
+    plt.xlabel('Number of elements (n)')
+    plt.ylabel('Sparsity')
+    plt.title('Matrix Sparsity')
+    plt.grid(True)
+    plt.legend()
+    plt.savefig('script_outputs/2d_toroid_poisson_mixed_sparsity.png',
+                dpi=300, bbox_inches='tight')
+
+    # condition number plot
+    fig4 = plt.figure(figsize=(10, 6))
+    for j, p in enumerate(ps):
+        plt.semilogy(ns, conds[:, j],
+                     label=f'p={p}',
+                     marker='o')
+    plt.xlabel('Number of elements (n)')
+    plt.ylabel('Condition Number')
+    plt.title('Matrix Condition Number')
+    plt.grid(True)
+    plt.legend()
+    plt.savefig('script_outputs/2d_toroid_poisson_mixed_condition_number.png',
                 dpi=300, bbox_inches='tight')
 
     return fig1
@@ -142,12 +221,12 @@ def plot_results(err, times, times2, ns, ps):
 def main():
     """Main function to run the analysis."""
     # Run convergence analysis
-    ns = np.arange(8, 23, 4)
-    ps = np.arange(1, 5)
-    err, times, times2 = run_convergence_analysis(ns, ps)
+    ns = np.arange(8, 31, 2)
+    ps = np.arange(1, 4)
+    err, times, times2, conds, sparsities = run_convergence_analysis(ns, ps)
 
     # Plot results
-    plot_results(err, times, times2, ns, ps)
+    plot_results(err, times, times2, conds, sparsities, ns, ps)
 
     # Show all figures
     plt.show()

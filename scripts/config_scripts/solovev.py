@@ -33,9 +33,9 @@ CONFIG = {
     "k_0": 1.5,  # Elongation parameter
     "q_0": 1.5,  # Safety factor (?)
     "F_0": 0.5,  # toroidal field strength
-    "a_R": 1.0,  # LCFS is at R_0 + a_R
+    "a_R": 1.2,  # LCFS is at R_0 + a_R
     # If True, use circular cross section instead of Solovev
-    "circular_cross_section": True,
+    "circular_cross_section": False,
 
     ###
     # Discretization
@@ -50,18 +50,20 @@ CONFIG = {
     ###
     # Hyperparameters for the relaxation
     ###
-    "gamma": 0,             # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
-    "eps": 1e-2,            # Regularization for the initial condition
-    "dt": 1e-3,             # Time step
-    "n_steps": 20_000,      # Number of time steps
-    "eta": 0.0,             # Resistivity
-    "force_free": False,    # If True, solve for JxB = 0. If False, JxB = grad p
+    "gamma": 0,                  # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
+    "eps": 1e-2,                 # Regularization for the initial condition
+    "dt": 1e-3,                  # Time step
+    "n_steps": 20_000,           # max. Number of time steps
+    # Stop if || JxB - grad p || < this or (force-free) || JxB || < this
+    "force_tol": 1e-12,
+    "eta": 0.0,                  # Resistivity
+    "force_free": False,         # If True, solve for JxB = 0. If False, JxB = grad p
 
     ###
     # Solver hyperparameters
     ###
-    "max_iter": 100,       # Maximum number of iterations
-    "tol": 1e-9,           # Tolerance for convergence
+    "max_iter": 100,              # Maximum number of iterations
+    "solver_tol": 1e-9,           # Tolerance for convergence
 }
 
 
@@ -94,8 +96,9 @@ def run(CONFIG):
     eta = CONFIG["eta"]
     dt0 = CONFIG["dt"]
     n_steps = int(CONFIG["n_steps"])
+    force_tol = CONFIG["force_tolerance"]
 
-    tol = CONFIG["tol"]
+    solver_tol = CONFIG["solver_tol"]
     max_iter = int(CONFIG["max_iter"])
 
     if CONFIG["circular_cross_section"]:
@@ -180,7 +183,7 @@ def run(CONFIG):
     A_hat = jnp.linalg.solve(laplace_1, M1 @ weak_curl @ B_hat)
     B_harm_hat = B_hat - curl @ A_hat
 
-    u_trace = []
+    force_trace = []
     E_trace = []
     H_trace = []
     dvg_trace = []
@@ -223,8 +226,9 @@ def run(CONFIG):
 
     @jax.jit
     def update(x):
-        return picard_solver(implicit_update, x, tol=tol, norm=L2norm, max_iter=max_iter)
+        return picard_solver(implicit_update, x, tol=solver_tol, norm=L2norm, max_iter=max_iter)
 
+    # jax.lax.scan ? jax.lax.fori?
     for i in range(n_steps):
         x = jnp.concatenate([B_hat, B_hat])
         x, err, it = update(x)
@@ -234,12 +238,19 @@ def run(CONFIG):
 
         iters.append(it)
         errs.append(err)
-        u_trace.append(compute_force_norm(B_hat))
+        force_trace.append(compute_force_norm(B_hat))
         E_trace.append(B_hat @ M2 @ B_hat / 2)
         H_trace.append(A_hat @ M12 @ (B_hat + B_harm_hat))
         dvg_trace.append((dvg @ B_hat @ M3 @ dvg @ B_hat)**0.5)
+        if iters[-1] == max_iter and err > solver_tol:
+            print(
+                f"Warning: Picard solver did not converge in {max_iter} iterations (err={err:.2e})")
         if i % 1000 == 0:
-            print(f"Iteration {i}, u norm: {u_trace[-1]}")
+            print(f"Iteration {i}, u norm: {force_trace[-1]}")
+        if force_trace[-1] < force_tol:
+            print(
+                f"Converged to force tolerance {force_tol} after {i} steps.")
+            break
 
     ###
     # Post-processing
@@ -278,8 +289,9 @@ def run(CONFIG):
         f.create_dataset("energy_trace", data=jnp.array(E_trace))
         f.create_dataset("helicity_trace", data=jnp.array(H_trace))
         f.create_dataset("divergence_B_trace", data=jnp.array(dvg_trace))
-        f.create_dataset("force_trace", data=jnp.array(u_trace))
-
+        f.create_dataset("force_trace", data=jnp.array(force_trace))
+        f.create_dataset("iters", data=jnp.array(iters))
+        f.create_dataset("errs", data=jnp.array(errs))
         # Store config variables in a group
         cfg_group = f.create_group("config")
         for key, val in CONFIG.items():
@@ -333,7 +345,7 @@ if __name__ == "__main__":
 # term = diffrax.ODETerm(vector_field)
 # solver = diffrax.Dopri5()
 # saveat = diffrax.SaveAt(ts=jnp.linspace(0, t1, n_saves))
-# stepsize_controller = diffrax.PIDController(rtol=1e-5, atol=1e-5)
+# stepsize_controller = diffrax.PIDController(rtol=1e-7, atol=1e-7)
 
 # n_loop = 5
 # n_batch = 5

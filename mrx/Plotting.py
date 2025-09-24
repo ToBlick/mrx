@@ -146,8 +146,10 @@ def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
 
 
 def generate_solovev_plots(name):
-    outdir = "../script_outputs/solovev/"
+    outdir = "script_outputs/solovev/"
     os.makedirs(outdir, exist_ok=True)
+
+    print("Generating plots for " + name + "...")
 
     # --- Figure settings ---
     FIG_SIZE = (12, 6)
@@ -169,7 +171,8 @@ def generate_solovev_plots(name):
     R0 = cfg["R_0"]
     aR = cfg["a_R"]
     π = jnp.pi
-# Step 1: Reconstruct F
+
+    # Step 1: Reconstruct F
     if cfg["circular_cross_section"]:
         def F(x):
             r, χ, z = x
@@ -196,6 +199,7 @@ def generate_solovev_plots(name):
     _x_1d, _y_1d, (_y1_1d, _y2_1d, _y3_1d), (_x1_1d, _x2_1d,
                                              _x3_1d) = get_1d_grids(F, zeta=0, chi=0, nx=128)
 
+    print("Generating pressure plot...")
     # Plot number one: pressure contour plot
     p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0_0.matrix())
     p_h_xyz = Pushforward(p_h, F, 0)
@@ -238,6 +242,8 @@ def generate_solovev_plots(name):
 
     # Save
     plt.tight_layout()
-    plt.savefig("../script_outputs/solovev/" + name + "_pressure.png",
+    plt.savefig("script_outputs/solovev/" + name + "_pressure.png",
                 dpi=400)
     plt.close()
+
+    print("Generating convergence plot...")
