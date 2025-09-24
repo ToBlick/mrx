@@ -96,7 +96,7 @@ def run(CONFIG):
     eta = CONFIG["eta"]
     dt0 = CONFIG["dt"]
     n_steps = int(CONFIG["n_steps"])
-    force_tol = CONFIG["force_tolerance"]
+    force_tol = CONFIG["force_tol"]
 
     solver_tol = CONFIG["solver_tol"]
     max_iter = int(CONFIG["max_iter"])
