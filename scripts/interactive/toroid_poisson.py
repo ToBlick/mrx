@@ -222,6 +222,7 @@ def plot_results(err, times, times2, conds, sparsities, ns, ps):
 
     return fig1
 
+# %%
 
 def main():
     """Main function to run the analysis."""

@@ -4,6 +4,9 @@ scripts/experimental
 scripts/dice
 script_outputs
 test_outputs
+logs
+slurm
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
