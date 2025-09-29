@@ -13,25 +13,24 @@ from mrx.Plotting import get_1d_grids, get_2d_grids
 
 jax.config.update("jax_enable_x64", True)
 
-# %%
+
 π = jnp.pi
 p = 3
-q = 3*p
-ns = (8, 8, 8)
+q = 2*p
+ns = (4, 4, 10)
 ps = (3, 3, 3)
 types = ("clamped", "clamped", "clamped")
 
 
 def F(x):
-    """Polar coordinate mapping function."""
     r, χ, z = x
     return jnp.array([r * 8 - 4, χ * 8 - 4, z * 20 - 10])
 
 
 # %%
 s = 1
-ω1 = 1
-ω2 = 1
+ω1 = 3
+ω2 = 2
 
 def B(p):
     x, y, z = F(p)
@@ -52,13 +51,10 @@ _x_1d, _y_1d, (_y1_1d, _y2_1d, _y3_1d), (_x1_1d, _x2_1d,
 Seq = DeRhamSequence(ns, ps, q, types, F, polar=False)
 
 # %%
-
 M0 = Seq.assemble_M0_0()
 M1 = Seq.assemble_M1_0()
 M2 = Seq.assemble_M2_0()
 M3 = Seq.assemble_M3_0()
-
-M1_dual = Seq.assemble_M1()
 
 ###
 # Operators
@@ -80,31 +76,18 @@ laplace_2 = M2 @ curl @ weak_curl + \
     Seq.assemble_divdiv_0()  # dim ker = 1 (one tunnel)
 laplace_3 = - M3 @ dvg @ weak_grad  # dim ker = 1 (constants)
 
-# from H₀(div) to H(curl)
-P1 = jnp.linalg.solve(Seq.assemble_M1(), Seq.assemble_P2().T)
-
 M12 = Seq.assemble_M12_0()
 
 # %%
 P_JxH = CrossProductProjection(
     Seq.Λ2, Seq.Λ1, Seq.Λ1, Seq.Q, Seq.F,
-    En=Seq.E2_0, Em=Seq.E1_0, Ek=Seq.E1,
+    En=Seq.E2_0, Em=Seq.E1_0, Ek=Seq.E1_0,
     Λn_ijk=Seq.Λ2_ijk, Λm_ijk=Seq.Λ1_ijk, Λk_ijk=Seq.Λ1_ijk,
-    J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
-P_JxB = CrossProductProjection(
-    Seq.Λ2, Seq.Λ1, Seq.Λ2, Seq.Q, Seq.F,
-    En=Seq.E2_0, Em=Seq.E1_0, Ek=Seq.E2_0,
-    Λn_ijk=Seq.Λ2_ijk, Λm_ijk=Seq.Λ1_ijk, Λk_ijk=Seq.Λ2_ijk,
     J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
 P_uxH = CrossProductProjection(
     Seq.Λ1, Seq.Λ2, Seq.Λ1, Seq.Q, Seq.F,
-    En=Seq.E1_0, Em=Seq.E2_0, Ek=Seq.E1,
+    En=Seq.E1_0, Em=Seq.E2_0, Ek=Seq.E1_0,
     Λn_ijk=Seq.Λ1_ijk, Λm_ijk=Seq.Λ2_ijk, Λk_ijk=Seq.Λ1_ijk,
-    J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
-P_uxB = CrossProductProjection(
-    Seq.Λ1, Seq.Λ2, Seq.Λ2, Seq.Q, Seq.F,
-    En=Seq.E1_0, Em=Seq.E2_0, Ek=Seq.E2_0,
-    Λn_ijk=Seq.Λ1_ijk, Λm_ijk=Seq.Λ2_ijk, Λk_ijk=Seq.Λ2_ijk,
     J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
 # %%
 P_Leray = jnp.eye(M2.shape[0]) + \
@@ -127,52 +110,48 @@ E_trace = []
 H_trace = []
 dvg_trace = []
 
-dt = 2e-2
+dt0 = 10
+dt_max = 1_000
 eta = 0.00
-u_stoch = jnp.zeros(M2.shape[0])
 # %%
 gamma = 0
 
-key = jax.random.PRNGKey(123)
-
 @jax.jit
-def implicit_update(B_hat_guess, B_hat_0, dt, eta, u_stoch):
+def implicit_update(B_hat_guess, B_hat_0, dt, eta):
     B_hat_star = (B_hat_guess + B_hat_0) / 2
     J_hat = weak_curl @ B_hat_star
-    H_hat = P1 @ B_hat_star
+    H_hat = jnp.linalg.solve(M1, M12 @ B_hat_star)
     JxH_hat = jnp.linalg.solve(M2, P_JxH(J_hat, H_hat))
     u_hat = P_Leray @ JxH_hat
     for _ in range(gamma):
         u_hat = jnp.linalg.inv(M2 + laplace_2) @ M2 @ u_hat
     u_norm = (u_hat @ M2 @ u_hat)**0.5
-    u_hat += P_Leray @ u_stoch
+    dt = jnp.minimum(dt0 / u_norm, dt_max)
     E_hat = jnp.linalg.solve(M1, P_uxH(u_hat, H_hat)) - eta * J_hat
-    B_hat_1 = B_hat_0 + dt * curl @ E_hat / u_norm
+    B_hat_1 = B_hat_0 + dt * curl @ E_hat
     return B_hat_1, J_hat, u_hat
 
 
-def picard_loop(B_hat, dt, eta, tol, u_stoch):
+def picard_loop(B_hat, dt, eta, tol):
     B_hat_0 = B_hat
     B_hat_guess = B_hat
     B_hat_1, J_hat, u_hat = implicit_update(
-        B_hat_guess, B_hat_0, dt, eta, u_stoch)
+        B_hat_guess, B_hat_0, dt, eta)
     delta = (B_hat_1 - B_hat_guess) @ M2 @ (B_hat_1 - B_hat_guess)
     while delta > tol**2:
         B_hat_guess = B_hat_1
         B_hat_1, J_hat, u_hat = implicit_update(
-            B_hat_guess, B_hat_0, dt, eta, u_stoch)
+            B_hat_guess, B_hat_0, dt, eta)
         delta = (B_hat_1 - B_hat_guess) @ M2 @ (B_hat_1 - B_hat_guess)
     return B_hat_1, J_hat, u_hat
 
 
 # %%
-n_iters = 10_000
+n_iters = 20_000
 
-for (i, key, sigma) in zip(range(n_iters), 
-                           jax.random.split(key, n_iters), 
-                           jnp.linspace(1, 0, n_iters)):
+for i in range(n_iters):
     # B_hat, J_hat, u_hat = update(B_hat)
-    B_hat, J_hat, u_hat = picard_loop(B_hat, dt=dt, eta=0.0, tol=1e-9, u_stoch=u_stoch)
+    B_hat, J_hat, u_hat = picard_loop(B_hat, dt=dt0, eta=0.0, tol=1e-9)
     # u_stoch = u_stoch - 1e-2 * dt * u_stoch \
     # + jnp.sqrt(dt) * (u_hat @ M2 @ u_hat) * jax.random.normal(key, (M2.shape[0],))
     A_hat = jnp.linalg.solve(laplace_1, M1 @ weak_curl @ B_hat)
@@ -184,39 +163,11 @@ for (i, key, sigma) in zip(range(n_iters),
         print(f"Iteration {i}, u norm: {u_trace[-1]}")
 
 # %%
-# pressure computation
-
-J_hat = weak_curl @ B_hat
-JxB_hat = jnp.linalg.solve(M2, P_JxB(J_hat, B_hat))
-
-p_hat = jnp.linalg.pinv(laplace_3) @ M3 @ dvg @ JxB_hat
-
-p_h = DiscreteFunction(p_hat, Seq.Λ3, Seq.E3_0.matrix())
-p_h_xyz = jax.jit(lambda x: Pushforward(p_h, F, 3)(x))
-
-# %%
 J_h = DiscreteFunction(J_hat, Seq.Λ1, Seq.E1_0.matrix())
 J_h_xyz = Pushforward(J_h, F, 1)
 
 B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
 B_h_xyz = Pushforward(B_h, F, 2)
-# %%
-
-plt.contourf(_x1, _x2, jax.vmap(p_h_xyz)(_x).reshape(
-    _x1.shape[0], _x2.shape[0]), levels=30)
-plt.colorbar()
-plt.xlabel(r'$x$')
-plt.ylabel(r'$y$')
-plt.title(r'$p$ at $z=0.5$')
-plt.show()
-# %%
-plt.contourf(_y1, _y2, jnp.linalg.norm(jax.vmap(J_h_xyz)(_x), axis=-1).reshape(
-    _y1.shape[0], _y2.shape[0]), levels=30)
-plt.colorbar()
-plt.xlabel(r'$x$')
-plt.ylabel(r'$y$')
-plt.title(r'$\|J\|$ at $z=0.5$')
-plt.show()
 # %%
 plt.contourf(_y1, _y2, jnp.linalg.norm(jax.vmap(B_h_xyz)(_x), axis=-1).reshape(
     _y1.shape[0], _y2.shape[0]), levels=30)
@@ -238,31 +189,30 @@ def vector_field(t, x, args):
 
 # %%
 
-t1 = 2_000.0
-n_saves = 20_000
+t1 = 10_000.0
+n_saves = 10_000
 term = ODETerm(vector_field)
 solver = Dopri5()
 saveat = SaveAt(ts=jnp.linspace(0, t1, n_saves))
-stepsize_controller = PIDController(rtol=1e-5, atol=1e-5)
+stepsize_controller = PIDController(rtol=1e-7, atol=1e-7)
 
-n_loop = 20
-n_batch = 5
+n_loop = 5
+n_batch = 10
 key = jax.random.PRNGKey(123)
-x0s = jax.random.uniform(key, (n_loop, n_batch, 3), minval=0.05, maxval=0.95)
-x0s = x0s.at[:, :, 2].set(0.5)
+x0s = jnp.vstack(
+    (jnp.linspace(0.05, 0.95, n_loop * n_batch),
+     jnp.ones(n_loop * n_batch) * 0.5,
+     jnp.ones(n_loop * n_batch) * 0.5)
+)
 
-# trajectories = jax.vmap(lambda x0: diffeqsolve(term, solver,
-#                             t0=0, t1=t1, dt0=None,
-#                             y0=x0,
-#                             max_steps=2**14,
-#                             saveat=saveat, stepsize_controller=stepsize_controller).ys)(x0s)
+x0s = x0s.T.reshape(n_batch, n_loop, 3)
 
 trajectories = []
 for x0 in x0s:
     trajectories.append(jax.vmap(lambda x0: diffeqsolve(term, solver,
                             t0=0, t1=t1, dt0=None,
                             y0=x0,
-                            max_steps=2**15,
+                            max_steps=2**17,
                             saveat=saveat, stepsize_controller=stepsize_controller).ys)(x0))
 
 trajectories = jnp.array(trajectories).reshape(n_batch * n_loop, n_saves, 3)
@@ -298,13 +248,73 @@ colors = [
     # "gold"
 ]
 
+n_cols = trajectories.shape[0]
+cm = plt.cm.plasma
+vals = jnp.linspace(0, 1, n_cols)
+
+# Interleave from start and end
+order = jnp.ravel(jnp.column_stack([jnp.arange(n_cols//2), n_cols-1-jnp.arange(n_cols//2)]))
+if n_cols % 2 == 1:
+    order = jnp.append(order, n_cols//2)
+
+colors = cm(vals[order])
+
+# %%
+def trajectory_plane_intersections(trajectories, plane_val=0.5, axis=1):
+    """
+    Vectorized + jittable intersection with plane x_axis = plane_val.
+    
+    Parameters
+    ----------
+    trajectories : array (N, T, D)
+    plane_val    : float
+    axis         : int, which coordinate axis (default=1 for x_2).
+    
+    Returns
+    -------
+    intersections : array (N, T-1, D)
+        Intersection points for each segment. Non-crossings are filled with NaN.
+    mask : bool array (N, T-1)
+        True if the corresponding segment contains an intersection.
+    """
+    x = trajectories[..., axis]                           # (N, T)
+    diff = x - plane_val
+
+    # crossings: sign change or exact hit
+    mask = (diff[..., :-1] * diff[..., 1:] <= 0)
+
+    # interpolation fraction t in [0,1]
+    denom = diff[..., :-1] - diff[..., 1:]
+    t = jnp.where(mask, diff[..., :-1] / denom, jnp.nan)  # (N, T-1)
+
+    # shape to broadcast into (N, T-1, 1)
+    t = t[..., None]
+
+    # segment start + t * (segment end - start)
+    intersections = trajectories[:, :-1, :] + t * (trajectories[:, 1:, :] - trajectories[:, :-1, :])
+
+    return intersections, mask
+
+def collapse_to_ragged(intersections, mask):
+    """
+    Collapse dense representation into ragged Python lists.
+    """
+    N = intersections.shape[0]
+    result = []
+    for n in range(N):
+        pts = intersections[n][mask[n]]
+        result.append(jnp.array(pts))
+    return result
+# %%
+intersections, mask = trajectory_plane_intersections(physical_trajectories, plane_val=0.5, axis=1)
+
+# intersections_ragged = collapse_to_ragged(intersections, mask)
 # %%
 plt.figure(figsize=FIG_SIZE_SQUARE)
 
-for i, t in enumerate(trajectories):
+for i, t in enumerate(intersections):
     current_color = colors[i % len(colors)]  # Cycle through the defined colors
     plt.scatter(t[:, 0], t[:, 2], s=1,
-                alpha=jnp.exp(-(t[:, 1] - 0.5)**2/0.0001),
                 color=current_color)
 
 # plt.title(r'Field line intersections', fontsize=TITLE_SIZE)
@@ -325,7 +335,7 @@ plt.tight_layout()  # Adjust layout to prevent labels from overlapping
 fig = plt.figure(figsize=FIG_SIZE_SQUARE)
 ax = fig.add_subplot(projection='3d')
 
-for i, t in enumerate(trajectories[0:4]):
+for i, t in enumerate(trajectories[4:5]):
     current_color = colors[i % len(colors)]  # Cycle through the defined colors
     ax.plot(t[:, 0], t[:, 1], t[:, 2],
             # alpha=jnp.exp(-(t[:, 1] - 0.5)**2/0.01),
@@ -348,45 +358,41 @@ plt.tight_layout()  # Adjust layout to prevent labels from overlapping
 
 
 # %% Figure 1: Energy and Force
+
 fig1, ax2 = plt.subplots(figsize=FIG_SIZE)
 ax1 = ax2.twinx()
-
 # Plot Energy on the left y-axis (ax1)
 color1 = 'purple'
 ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
-ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$', color=color1, fontsize=LABEL_SIZE)
+ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$',
+               color=color1, fontsize=LABEL_SIZE)
 ax1.plot(jnp.array(E_trace),
          label=r'$\frac{1}{2} \| B \|^2$', color=color1, linestyle='-.', lw=LINE_WIDTH)
 # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
 ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
 ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
-
-
+helicity_change = jnp.abs(
+    jnp.array(jnp.array(H_trace) - H_trace[0]))
 # Plot Force on the right y-axis (ax2)
 color2 = 'black'
-ax2.set_ylabel(r'$\|J \times B - \nabla p\|$',
+ax2.set_ylabel(r'$\|J \times B - \nabla p\|, \quad | H - H_0 |$',
                color=color2, fontsize=LABEL_SIZE)
 ax2.plot(u_trace, label=r'$\|J \times B - \nabla p \|^2$',
          color=color2, lw=LINE_WIDTH)
 ax2.tick_params(axis='y', labelcolor=color2, labelsize=TICK_SIZE)
 # Set y-limits for better visibility
-ax2.set_ylim(0.5 * min(u_trace), 2 * max(u_trace))
+ax2.set_ylim(0.5 * min(min(u_trace), 0.1 * max(helicity_change)),
+             2 * max(max(u_trace), max(helicity_change)))
 ax2.set_yscale('log')
-
-# relative_helicity_change = jnp.abs(jnp.array(jnp.array(H_trace) - H_trace[0]))
-# ax2.plot(relative_helicity_change, label=r'$| H - H_0 |$',
-#          color='darkgray', linestyle='--', lw=LINE_WIDTH)
+ax2.plot(helicity_change, label=r'$| H - H_0 |$',
+         color='darkgray', linestyle='--', lw=LINE_WIDTH)
 lines1, labels1 = ax1.get_legend_handles_labels()
 lines2, labels2 = ax2.get_legend_handles_labels()
 ax2.legend(lines1 + lines2, labels1 + labels2,
            loc='upper right', fontsize=LEGEND_SIZE)
 # ax1.grid(which="major", linestyle="-", color=color1, linewidth=0.5)
 ax2.grid(which="both", linestyle="--", linewidth=0.5)
-fig1.suptitle(r'$\sigma = C = 0, dt = 0.02$', fontsize=TITLE_SIZE)
 fig1.tight_layout()
-plt.show()
-
-# fig1.savefig('hopf_force.pdf', bbox_inches='tight')
 # %%
 print(f"B squared norm: {B_hat @ M2 @ B_hat}")
 print(f"B_harmonic squared norm: {B_harm_hat @ M2 @ B_harm_hat}")

@@ -15,7 +15,7 @@ def lcfs_fit(n_map,
              aR,
              atol=1e-6,
              rtol=1e-6,
-             maxiter=20_000):
+             maxiter=100_000):
 
     ###
     # ψ(R, Z) =  (¼ k₀² (R² - R₀²)² + R²Z² ) / (2 R₀² k₀ q₀)
@@ -43,7 +43,7 @@ def lcfs_fit(n_map,
 
     solver = optimistix.LevenbergMarquardt(rtol=rtol, atol=atol)
     sol = optimistix.least_squares(fn=loss,
-                                   y0=jnp.ones(n_map),
+                                   y0=jnp.ones(n_map) * aR,
                                    solver=solver,
                                    max_steps=maxiter
                                    )
@@ -87,4 +87,33 @@ def get_lcfs_F(n_map,
              -_R(r, χ) * jnp.sin(2 * π * z),
              _Z(r, χ)]))
 
+    return F
+
+def cerfon_map(eps, kappa, alpha, R0=1.0):
+
+    π = jnp.pi
+    def x_t(t):
+        return 1 + eps * jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t))
+
+    def y_t(t):
+        return eps * kappa * jnp.sin(2 * π * t)
+    
+    def _s_from_t(t):
+        return jnp.arctan2(kappa * jnp.sin(2 * π * t), 
+                           jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t)))
+        
+    def s_from_t(t):
+        return jnp.where(t > 0.5, _s_from_t(t) + 2 * π, _s_from_t(t))
+        
+    def a_from_t(t):
+        return jnp.sqrt((x_t(t) - 1)**2 + y_t(t)**2)
+    
+    @jax.jit
+    def F(x):
+        r, χ, z = x
+        return jnp.ravel(jnp.array(
+            [(R0 + a_from_t(χ) * r * jnp.cos( s_from_t(χ))) * jnp.cos(2 * π * z),
+             -(R0 + a_from_t(χ) * r * jnp.cos( s_from_t(χ))) * jnp.sin(2 * π * z),
+             a_from_t(χ) * r * jnp.sin( s_from_t(χ))]))
+        
     return F

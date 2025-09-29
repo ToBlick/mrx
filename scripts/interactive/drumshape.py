@@ -7,7 +7,8 @@ import jax.numpy as jnp
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import optax
-
+import time
+ 
 from mrx.DeRhamSequence import DeRhamSequence
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pushforward
 from mrx.LazyMatrices import LazyMassMatrix
@@ -130,12 +131,22 @@ def plot_reconstruction(a_hat,
                         iter_num,
                         output_dir,
                         loss_history=None,
-                        max_iters=None):
+                        max_iters=None,
+                        legends=True):
     """
     Generates and saves a three-panel plot showing the current fitted radius,
     the first eigenfunction, and the eigenvalue spectrum. Also includes a
     small panel that tracks the loss over iterations (bottom-left).
     """
+    
+    FIG_SIZE = (12, 6)
+    SQUARE_FIG_SIZE = (8, 8)
+    TITLE_SIZE = 20
+    LABEL_SIZE = 16
+    TICK_SIZE = 14
+    LINE_WIDTH = 2.5
+    LEGEND_SIZE = 16
+
     fig = plt.figure(figsize=(12, 8))
     gs = gridspec.GridSpec(3, 2, width_ratios=[1, 1.618])
 
@@ -148,7 +159,7 @@ def plot_reconstruction(a_hat,
     ax3 = fig.add_subplot(gs[1, 1])
     ax4 = fig.add_subplot(gs[2, 1])
 
-    fig.suptitle(f'Iteration {iter_num}', fontsize=14)
+    # fig.suptitle(f'Iteration {iter_num}', fontsize=14)
 
     # --- Panel 1 (right-top): Radius Plot ---
     Λmap = DifferentialForm(0, (n_map, 1, 1), (p_map, 1, 1),
@@ -160,11 +171,15 @@ def plot_reconstruction(a_hat,
 
     chi_plot = jnp.linspace(0, 1, 200)
     ax1.plot(chi_plot, jax.vmap(radius_h_func)(chi_plot),
-             label='Fitted Radius', color='purple')
+             label=r'Fitted Radius', color='purple', linewidth=LINE_WIDTH)
     ax1.plot(chi_plot, jax.vmap(target_radius_func)(chi_plot),
-             '--', label='Target Radius', color='k')
-    ax1.set_xlabel(r'$\chi$')
-    ax1.set_ylabel(r'$r(\chi)$')
+             '--', label='Target Radius', color='k', linewidth=LINE_WIDTH)
+    ax1.set_xlabel(r'$\theta$', fontsize=LABEL_SIZE)
+    ax1.set_ylabel(r'$r(\theta)$', fontsize=LABEL_SIZE)
+    ax1.tick_params(axis='y', labelsize=TICK_SIZE)
+    ax1.tick_params(axis='x', labelsize=TICK_SIZE)
+    if legends:
+        ax1.legend(fontsize=LEGEND_SIZE)
     ax1.grid(True, linestyle='--', alpha=0.6)
 
     # --- Panel 2 (left big): First Eigenfunction Contour ---
@@ -217,8 +232,8 @@ def plot_reconstruction(a_hat,
     ax2.contourf(y1, y2, u_h_vals, levels=15, cmap='plasma')
     x_mean = jnp.mean(y1)
     y_mean = jnp.mean(y2)
-    ax2.set_xlim(x_mean-1, x_mean+1)
-    ax2.set_ylim(y_mean-1, y_mean+1)
+    # ax2.set_xlim(x_mean-1, x_mean+1)
+    # ax2.set_ylim(y_mean-1, y_mean+1)
     ax2.set_aspect('equal', 'box')
     ax2.axis('off')
 
@@ -227,12 +242,16 @@ def plot_reconstruction(a_hat,
     current_evs = evs[:k_evs]
     k_plot = jnp.arange(1, k_evs + 1)
 
-    ax3.plot(k_plot, target_evs, 'x--', color='k', label='Target Spectrum')
-    ax3.plot(k_plot, current_evs, '^-',
-             color='purple', label='Fitted Spectrum')
+    ax3.plot(k_plot, target_evs, '-.', color='k', label='target spectrum', linewidth=LINE_WIDTH)
+    ax3.plot(k_plot, current_evs, '-',
+             color='purple', label='fitted spectrum', linewidth=LINE_WIDTH)
     ax3.set_yscale('log')
-    ax3.set_xlabel(r'$k$')
-    ax3.set_ylabel(r'$\lambda_k$')
+    ax3.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
+    ax3.set_ylabel(r'$\lambda_k$', fontsize=LABEL_SIZE)
+    ax3.tick_params(axis='y', labelsize=TICK_SIZE)
+    ax3.tick_params(axis='x', labelsize=TICK_SIZE)
+    if legends:
+        ax3.legend(fontsize=LEGEND_SIZE)
     ax3.grid(True, which="both", linestyle='--', alpha=0.6)
 
     # --- Panel 4 (right-bottom): Eigenvalue Difference (log scale, abs rel diff) ---
@@ -241,25 +260,27 @@ def plot_reconstruction(a_hat,
     # Convert to python lists for matplotlib
     k_plot_list = list(range(1, k_evs + 1))
     rel_diff_list = jnp.asarray(rel_diff).tolist()
-    ax4.plot(k_plot_list, rel_diff_list, 'o-',
-             color='purple', label='Absolute Relative Error')
+    ax4.plot(k_plot_list, rel_diff_list, 'o',
+             color='purple', label='relative Error')
     ax4.set_yscale('log')
-    ax4.set_xlabel(r'$k$')
-    ax4.set_ylabel(r'$|\Delta \lambda_k| / \lambda_k$')
+    ax4.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
+    ax4.set_ylabel(r'$|\lambda_k - \lambda_k^*| / \lambda_k$', fontsize=LABEL_SIZE)
+    ax4.tick_params(axis='y', labelsize=TICK_SIZE)
+    ax4.tick_params(axis='x', labelsize=TICK_SIZE)
     ax4.grid(True, which='both', linestyle='--', alpha=0.6)
-    ax4.set_ylim(1e-5, 1.0)
+    ax4.set_ylim(1e-6, 1.0)
 
     # --- Panel err (bottom-left): Loss history over iterations ---
     if loss_history is not None:
         xs = list(range(len(loss_history)))
         ys = [float(v) for v in loss_history]
         # plot loss in log-scale and use purple to match other plots
-        ax_err.plot(xs, ys, '-', color='purple', linewidth=2)
-        ax_err.set_xlabel('Iteration')
-        ax_err.set_ylabel('Loss')
+        ax_err.plot(xs, ys, '-', color='purple', linewidth=LINE_WIDTH)
+        ax_err.set_xlabel(r'n', fontsize=LABEL_SIZE)
+        ax_err.set_ylabel(r'$\sum_k ( |\lambda_k - \lambda_k^*| / \lambda_k^* )^2$', fontsize=LABEL_SIZE)
         ax_err.set_yscale('log')
         ax_err.grid(True, which="both", linestyle='--', alpha=0.6)
-        ax_err.set_ylim(1e-5, 1.1 * loss_history[0])
+        ax_err.set_ylim(1e-7, 1.1 * loss_history[0])
         # Fix x-axis length if requested
         if max_iters is not None:
             ax_err.set_xlim(0, int(max_iters))
@@ -279,15 +300,15 @@ def plot_reconstruction(a_hat,
 
 def main():
     # --- Configuration ---
-    N_PARAMS = 6
-    N_MAP = 6
+    N_PARAMS = 8
+    N_MAP = 8
     P_MAP = 3
     POLY_DEGREE = 3
-    # Number of eigenvalues to use in the loss function
-    K_EVS = (N_PARAMS - 3) * (N_PARAMS)
-    LEARNING_RATE = 5e-2
-    NUM_STEPS = 250
-    PLOT_EVERY = 1
+    # max. Number of eigenvalues to use in the loss function
+    K_EVS = 100
+    LEARNING_RATE = 1e-1
+    NUM_STEPS = 500
+    PLOT_EVERY = 10
     OUTPUT_DIR = "scripts/interactive/script_outputs/drumshape"
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -301,10 +322,9 @@ def main():
     # Set up finite element spaces
     ns = (N_PARAMS, N_PARAMS, 1)
     ps = (POLY_DEGREE, POLY_DEGREE, 0)
-    q = 3
+    q = 2*POLY_DEGREE
     types = ("clamped", "periodic", "constant")
-    bcs = ("dirichlet", "none", "none")
-
+    
     def F_default(x):
         """Polar coordinate mapping function."""
         r, χ, z = x
@@ -316,30 +336,31 @@ def main():
 
     # Get the target eigenvalue spectrum
     target_evs_full, _ = get_evs(a_target, N_MAP, P_MAP, Seq)
-    target_evs = target_evs_full[:]
-    k_norm = jnp.arange(0, K_EVS)
+    k_max = jnp.minimum(K_EVS, len(target_evs_full))
+    target_evs = target_evs_full[:k_max]
+    
 
     # --- Loss Function ---
     def fit_evs(a_hat):
         """Computes the squared error between current and target spectra."""
         evs, _ = get_evs(a_hat, N_MAP, P_MAP, Seq)
-        valid_evs = evs[:]
+        valid_evs = evs[:k_max]
 
-        # Normalize by k to weigh smaller eigenvalues more
         return jnp.sum(((valid_evs) - (target_evs))**2 / target_evs**2) \
-            + 0.01 * jnp.sum((a_hat - 0.8)**2) / N_PARAMS
+            + 0.0 * jnp.sum((a_hat)**2)
 
     # --- Optimization ---
     # JIT-compile the function that computes both loss and gradient
     value_and_grad_fn = jax.jit(jax.value_and_grad(fit_evs))
-
+    value_fun = jax.jit(fit_evs)
     # Initialize parameters with a random perturbation around a circle
-    key = jax.random.PRNGKey(123)
-    a_hat = jnp.ones(N_MAP) * 0.8 + jax.random.normal(key, (N_MAP,)) * 0.5
+    key = jax.random.PRNGKey(1)
+    a_hat = jnp.maximum(jnp.ones(N_MAP) + 0.5 * jax.random.normal(key, (N_MAP,)), 0.01)
 
     # Set up the optimizer
     optimizer = optax.adam(learning_rate=LEARNING_RATE)
-
+    # optimizer = optax.contrib.muon(learning_rate=1e-1)
+    # optimizer = optax.lbfgs()
     opt_state = optimizer.init(a_hat)
 
     print("--- Starting Shape Optimization ---")
@@ -359,11 +380,11 @@ def main():
                         loss_history=losses,
                         max_iters=NUM_STEPS
                         )
-
+    t1 = time.time()
     for i in range(NUM_STEPS):
-        value, grads = value_and_grad_fn(a_hat)
+        value, grad = value_and_grad_fn(a_hat)
 
-        updates, opt_state = optimizer.update(grads, opt_state, a_hat)
+        updates, opt_state = optimizer.update(grad, opt_state, a_hat, value=value, grad=grad, value_fn=value_fun)
         a_hat = optax.apply_updates(a_hat, updates)
 
         # record loss
@@ -381,26 +402,30 @@ def main():
                                 iter_num=i+1,
                                 output_dir=OUTPUT_DIR,
                                 loss_history=losses,
-                                max_iters=NUM_STEPS
+                                max_iters=NUM_STEPS,
+                                legends=False
                                 )
 
     print("\n--- Optimization Finished ---")
+    t2 = time.time()
+    print(f"Total time for {NUM_STEPS} steps: {t2 - t1:.2f} seconds")
+    print(f"Final Loss: {value:.6E}")
 
-    # --- Final Analysis and Plotting ---
-    print("Plotting final results...")
+    # # --- Final Analysis and Plotting ---
+    # print("Plotting final results...")
 
-    # Plot final reconstructed shape and eigenfunction
-    plot_reconstruction(a_hat,
-                        target_radius_func,
-                        target_evs,
-                        Seq,
-                        n_map=N_MAP,
-                        p_map=P_MAP,
-                        iter_num=NUM_STEPS,
-                        output_dir=OUTPUT_DIR,
-                        loss_history=losses,
-                        max_iters=NUM_STEPS
-                        )
+    # # Plot final reconstructed shape and eigenfunction
+    # plot_reconstruction(a_hat,
+    #                     target_radius_func,
+    #                     target_evs,
+    #                     Seq,
+    #                     n_map=N_MAP,
+    #                     p_map=P_MAP,
+    #                     iter_num=NUM_STEPS,
+    #                     output_dir=OUTPUT_DIR,
+    #                     loss_history=losses,
+    #                     max_iters=NUM_STEPS
+    #                     )
 
     # Plot a comparison of the eigenvalue spectra
     plt.figure(figsize=(8, 6))
