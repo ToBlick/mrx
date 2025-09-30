@@ -1,7 +1,8 @@
 # %%
+import copy
 import os
 import time
-import copy
+
 import h5py
 import jax
 import jax.numpy as jnp
@@ -26,7 +27,7 @@ os.makedirs(outdir, exist_ok=True)
 DEVICE_PRESETS = {
     "ITER":  {"eps": 0.32, "kappa": 1.7, "delta": 0.33, "q_star": 1.57},
     "NSTX":  {"eps": 0.78, "kappa": 2.0, "delta": 0.35, "q_star": 2.0},
-    "SPHERO":{"eps": 0.95, "kappa": 1.0, "delta": 0.2,  "q_star": 0.0},
+    "SPHERO": {"eps": 0.95, "kappa": 1.0, "delta": 0.2,  "q_star": 0.0},
 }
 
 CONFIG = {
@@ -56,26 +57,32 @@ CONFIG = {
     ###
     "precond":               False,     # Use preconditioner
     "precond_compute_every": 100,       # Recompute preconditioner every n iterations
-    "gamma":                 0,         # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
+    # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
+    "gamma":                 0,
     "dt":                    1e-6,      # initial time step
-    "dt_factor":             1.01,      # time-steps are increased by this factor and decreased by its square
+    # time-steps are increased by this factor and decreased by its square
+    "dt_factor":             1.01,
     "maxit":                 250_000,   # max. Number of time steps
-    "force_tol":             1e-15,     # Convergence tolerance for |JxB - grad p| (or |JxB| if force_free)
+    # Convergence tolerance for |JxB - grad p| (or |JxB| if force_free)
+    "force_tol":             1e-15,
     "eta":                   0.0,       # Resistivity
-    "force_free":            False,     # If True, solve for JxB = 0. If False, JxB = grad p
+    # If True, solve for JxB = 0. If False, JxB = grad p
+    "force_free":            False,
 
     ###
     # Solver hyperparameters
     ###
     # Picard solver
     "solver_maxit": 20,    # Maximum number of iterations before Picard solver gives up
-    "solver_critit": 4,    # If Picard solver converges in less than this number of iterations, increase time step
+    # If Picard solver converges in less than this number of iterations, increase time step
+    "solver_critit": 4,
     "solver_tol": 1e-12,   # Tolerance for convergence
     "verbose": False,      # If False, prints only force every 'print_every'
     "print_every": 1000,    # Print every n iterations
     "save_every": 100,     # Save intermediate results every n iterations
     "save_B": False,       # Save intermediate B fields to file
 }
+
 
 def run(CONFIG):
     run_name = CONFIG["run_name"]
@@ -96,7 +103,7 @@ def run(CONFIG):
     gamma = CONFIG["gamma"]
     force_free = CONFIG["force_free"]
     η = CONFIG["eta"]
-    
+
     start_time = time.time()
 
     F = cerfon_map(eps, kappa, alpha, R0)
@@ -107,7 +114,7 @@ def run(CONFIG):
     q = max(ps)
     types = ("clamped", "periodic",
              "constant" if CONFIG["n_zeta"] == 1 else "periodic")
-    
+
     print("Setting up FEM spaces...")
 
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
@@ -140,9 +147,9 @@ def run(CONFIG):
 
     P_Leray = jnp.eye(M2.shape[0]) + \
         weak_grad @ jnp.linalg.pinv(laplace_3) @ M3 @ dvg
-    
+
     P_2to1 = jnp.linalg.solve(M1, M12)
-    
+
     P_1x1to2 = CrossProductProjection(
         Seq.Λ2, Seq.Λ1, Seq.Λ1, Seq.Q, Seq.F,
         En=Seq.E2_0, Em=Seq.E1_0, Ek=Seq.E1_0,
@@ -153,25 +160,25 @@ def run(CONFIG):
         En=Seq.E1_0, Em=Seq.E2_0, Ek=Seq.E1_0,
         Λn_ijk=Seq.Λ1_ijk, Λm_ijk=Seq.Λ2_ijk, Λk_ijk=Seq.Λ1_ijk,
         J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
-    
+
     def δB(B, u):
         H = P_2to1 @ B
         uxH = jnp.linalg.solve(M1, P_2x1to1(u, H))
         return curl @ uxH
-    
+
     def uxJ(B, u):
         J = weak_curl @ B
         return jnp.linalg.solve(M1, P_2x1to1(u, J))
-    
+
     def δδE(B):
         X = jnp.eye(B.shape[0])
         δBᵢ = jax.vmap(δB, in_axes=(None, 1), out_axes=1)(B, X)
         # shape is (n2, n2)
         # ΛxJᵢ = jax.vmap(uxJ, in_axes=(None, 1), out_axes=1)(B, X)
         # shape is (n2, n1)
-        return δBᵢ.T @ M2 @ δBᵢ # + ΛxJᵢ.T @ M12 @ δBᵢ
+        return δBᵢ.T @ M2 @ δBᵢ  # + ΛxJᵢ.T @ M12 @ δBᵢ
 
-    iterations = [ 0]
+    iterations = [0]
     force_trace = []
     energy_trace = []
     energy_diff_trace = []
@@ -199,14 +206,14 @@ def run(CONFIG):
         wall_time_trace.append(time.time() - start_time)
         if CONFIG["save_B"]:
             B_fields.append(B)
-            
+
     @jax.jit
     def compute_diagnostics(B_hat):
         A_hat = jnp.linalg.solve(laplace_1, M1 @ weak_curl @ B_hat)
         B_harm_hat = B_hat - curl @ A_hat
         dvg_B = (dvg @ B_hat @ M3 @ dvg @ B_hat)**0.5
         return B_hat @ M2 @ B_hat / 2, A_hat @ M12 @ (B_hat + B_harm_hat), dvg_B
-    
+
     @jax.jit
     def compute_pressure(B_hat):
         if not force_free:
@@ -219,13 +226,14 @@ def run(CONFIG):
             B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
             J_hat = weak_curl @ B_hat
             J_h = DiscreteFunction(J_hat, Seq.Λ1, Seq.E1_0.matrix())
+
             def lmbda(x):
                 DFx = jax.jacfwd(F)(x)
                 Bx = B_h(x)
                 return (J_h(x) @ Bx) / ((DFx @ Bx) @ DFx @ Bx) * jnp.linalg.det(DFx) * jnp.ones(1)
             return jnp.linalg.solve(M0, Seq.P0_0(lmbda))
 
-    # State is given by x = (B˖, (B, dt, |JxB - grad p|, |u|, Hess)) 
+    # State is given by x = (B˖, (B, dt, |JxB - grad p|, |u|, Hess))
     @jax.jit
     def implicit_update(x):
         dt = x[1][1]
@@ -258,16 +266,16 @@ def run(CONFIG):
     @jax.jit
     def update(x):
         _x, error, iters = picard_solver(
-                            implicit_update, 
-                            x,
-                            tol=CONFIG["solver_tol"], 
-                            norm=lambda B: (B @ M2 @ B)**0.5,
-                            inprod=lambda u, v: u @ M2 @ v,
-                            max_iter=CONFIG["solver_maxit"],
-                            )
+            implicit_update,
+            x,
+            tol=CONFIG["solver_tol"],
+            norm=lambda B: (B @ M2 @ B)**0.5,
+            inprod=lambda u, v: u @ M2 @ v,
+            max_iter=CONFIG["solver_maxit"],
+        )
         # _x has the form (B˖, (B, dt, |JxB - grad p|, |u|, Hess))
         # for next iterate, update B to B˖
-        x = ( _x[0], (_x[0], *_x[1][1:]) )
+        x = (_x[0], (_x[0], *_x[1][1:]))
         return x, error, iters
 
     def B_xyz(p):
@@ -289,22 +297,23 @@ def run(CONFIG):
     # One step of resisitive relaxation to get J x n = 0 on ∂Ω
     # B_hat = jnp.linalg.solve(jnp.eye(M2.shape[0]) + 1e-2 * curl @ weak_curl, B_hat)
     B_hat /= (B_hat @ M2 @ B_hat)**0.5  # normalize
-    
+
     # %%
-    eps_precond = jnp.linalg.eigh(δδE(B_hat))[0][-1] * 1e-2 if CONFIG["precond"] else 0.0
-    
+    eps_precond = jnp.linalg.eigh(
+        δδE(B_hat))[0][-1] * 1e-2 if CONFIG["precond"] else 0.0
+
     @jax.jit
     def compute_Hessian(B_hat):
         return M2 * eps_precond + δδE(B_hat) if CONFIG["precond"] else None
 
-    x = (B_hat, (B_hat, CONFIG["dt"], 0.0, 0.0, compute_Hessian(B_hat))) 
+    x = (B_hat, (B_hat, CONFIG["dt"], 0.0, 0.0, compute_Hessian(B_hat)))
     # initial state: (B, (B_old, dt, |JxB - grad p|, |u|, Hess))
-    
-    __x, _, _ = update(x) # also doing the compilation here
+
+    __x, _, _ = update(x)  # also doing the compilation here
 
     force_norm, velocity_norm = __x[1][2], __x[1][3]
 
-    force_trace.append(force_norm) 
+    force_trace.append(force_norm)
     velocity_trace.append(velocity_norm)
 
     energy, helicity, divergence_B = compute_diagnostics(B_hat)
@@ -324,51 +333,55 @@ def run(CONFIG):
     print(f"Setup took {setup_done_time - start_time:.2e} seconds.")
     print("Starting relaxation loop...")
 # %%
+    dt = CONFIG["dt"]
     for i in range(1, 1 + int(CONFIG["maxit"])):
         x_old = copy.deepcopy(x)
-        
+
         x, picard_err, picard_it = update(x)
         if picard_err > CONFIG["solver_tol"] or jnp.isnan(picard_err) or jnp.isinf(picard_err):
             # halve time step and try again
-            x = (x_old[0], (x_old[0], dt/2, x_old[1][2], x_old[1][3], x_old[1][4]))
+            x = (x_old[0], (x_old[0], dt/2, x_old[1]
+                 [2], x_old[1][3], x_old[1][4]))
             continue
         # otherwise, we converged - proceed
         _, dt, force_norm, velocity_norm, Hessian = x[1]
-        
+
         if CONFIG["precond"] and (i % CONFIG["precond_compute_every"] == 0):
             Hessian = compute_Hessian(x[0])
-        
+
         if picard_it <= CONFIG["solver_critit"]:
             dt_new = dt * CONFIG["dt_factor"]
         else:
             dt_new = dt / (CONFIG["dt_factor"])**2
-            
+
         # collect everything
         x = (x[0], (x[0], dt_new, force_norm, velocity_norm, Hessian))
-        
+
         if i % CONFIG["save_every"] == 0 or i == CONFIG["maxit"]:
             energy, helicity, divergence_B = compute_diagnostics(x[0])
-            append_all(i, 
-                    force_norm, 
-                    energy, 
-                    (x_old[0] @ M2 @ x_old[0] - x[0] @ M2 @ x[0]) / 2,
-                    helicity, 
-                    divergence_B, 
-                    velocity_norm, 
-                    picard_it, 
-                    picard_err, 
-                    dt_new, 
-                    x[0] if CONFIG["save_B"] else None)
+            append_all(i,
+                       force_norm,
+                       energy,
+                       (x_old[0] @ M2 @ x_old[0] - x[0] @ M2 @ x[0]) / 2,
+                       helicity,
+                       divergence_B,
+                       velocity_norm,
+                       picard_it,
+                       picard_err,
+                       dt_new,
+                       x[0] if CONFIG["save_B"] else None)
 
         if i % CONFIG["print_every"] == 0:
-            print(f"Iteration {i}, u norm: {velocity_norm:.2e}, force norm: {force_norm:.2e}")
+            print(
+                f"Iteration {i}, u norm: {velocity_norm:.2e}, force norm: {force_norm:.2e}")
             if CONFIG["verbose"]:
-                print(f"   dt: {dt_new:.2e}, picard iters: {picard_it:.2e}, picard err: {picard_err:.2e}")
+                print(
+                    f"   dt: {dt_new:.2e}, picard iters: {picard_it:.2e}, picard err: {picard_err:.2e}")
         if force_trace[-1] < CONFIG["force_tol"]:
             print(
                 f"Converged to force tolerance {CONFIG['force_tol']} after {i} steps.")
             break
-# # %% 
+# # %%
 #     plt.plot(-np.array(energy_trace) + np.array(energy_trace)[0], label="Energy")
 #     plt.plot(np.abs(np.array(helicity_trace) - np.array(helicity_trace)[0]), label="Helicity")
 #     plt.plot(np.array(velocity_trace), label="Velocity")
@@ -378,7 +391,7 @@ def run(CONFIG):
 #     plt.yscale("log")
 #     plt.legend()
 #     plt.show()
-    
+
 #     # %%
 #     plt.plot(picard_iterations, label="Picard Iterations")
 #     # plt.plot(picard_errors, label="Picard Error")
@@ -389,7 +402,8 @@ def run(CONFIG):
 
 # %%
     final_time = time.time()
-    print(f"Main loop took {final_time - setup_done_time:.2e} seconds for {i} steps, avg. { (final_time - setup_done_time)/i:.2e} s/step.")
+    print(
+        f"Main loop took {final_time - setup_done_time:.2e} seconds for {i} steps, avg. {(final_time - setup_done_time)/i:.2e} s/step.")
 
     ###
     # Post-processing
@@ -413,17 +427,24 @@ def run(CONFIG):
         f.create_dataset("B_final", data=B_hat)
         f.create_dataset("p_final", data=p_hat)
         f.create_dataset("energy_trace", data=jnp.array(energy_trace))
-        f.create_dataset("energy_diff_trace", data=jnp.array(energy_diff_trace))
+        f.create_dataset("energy_diff_trace",
+                         data=jnp.array(energy_diff_trace))
         f.create_dataset("helicity_trace", data=jnp.array(helicity_trace))
-        f.create_dataset("divergence_B_trace", data=jnp.array(divergence_trace))
+        f.create_dataset("divergence_B_trace",
+                         data=jnp.array(divergence_trace))
         f.create_dataset("velocity_trace", data=jnp.array(velocity_trace))
-        f.create_dataset("picard_iterations", data=jnp.array(picard_iterations))
+        f.create_dataset("picard_iterations",
+                         data=jnp.array(picard_iterations))
         f.create_dataset("picard_errors", data=jnp.array(picard_errors))
         f.create_dataset("timesteps", data=jnp.array(timesteps))
-        f.create_dataset("total_time", data=jnp.array([final_time - start_time]))
-        f.create_dataset("time_setup", data=jnp.array([setup_done_time - start_time]))
-        f.create_dataset("time_solve", data=jnp.array([final_time - setup_done_time]))
-        f.create_dataset("wall_time_trace", data=jnp.array(wall_time_trace) - start_time)
+        f.create_dataset("total_time", data=jnp.array(
+            [final_time - start_time]))
+        f.create_dataset("time_setup", data=jnp.array(
+            [setup_done_time - start_time]))
+        f.create_dataset("time_solve", data=jnp.array(
+            [final_time - setup_done_time]))
+        f.create_dataset("wall_time_trace", data=jnp.array(
+            wall_time_trace) - start_time)
         if CONFIG["save_B"]:
             f.create_dataset("B_fields", data=jnp.array(B_fields))
             f.create_dataset("p_fields", data=jnp.array(p_fields))
@@ -440,7 +461,7 @@ def run(CONFIG):
 
 
 def main():
-# Get user input
+    # Get user input
     params = parse_args()
 
     # Step 1: If device specified, apply defaults
@@ -459,12 +480,13 @@ def main():
             CONFIG[k] = v
         elif k != "device":
             print(f"Unknown parameter '{k}' - ignoring.")
-    
+
     print("Configuration:")
     for k, v in CONFIG.items():
         print(f"  {k}: {v}")
-        
+
     run(CONFIG)
+
 
 if __name__ == "__main__":
     main()
@@ -472,11 +494,11 @@ if __name__ == "__main__":
 
 # # %%
     # Force_op = δδE(B_hat)
-    
+
     # evd = jnp.linalg.eigh(Force_op)
     # plt.semilogy(evd[0])
     # plt.semilogy(jnp.abs(evd[0]))
-    
+
     # dominant_evec = evd[1][:, -1]
     # v_h = Pushforward(DiscreteFunction(dominant_evec, Seq.Λ2, Seq.E2_0.matrix()), Seq.F, 2)
 
@@ -490,10 +512,10 @@ if __name__ == "__main__":
     # plt.quiver(_y[:, 0], _y[:, 2], vals[:, 0], vals[:, 2], color="black")
     # plt.xlabel("R")
     # plt.ylabel("z")
-    
+
     # def angle(u):
     #     return jnp.abs(u[1]) / ((u[0]**2 + u[2]**2)**0.5 + 1e-16)
-    
+
     # angles = jax.vmap(angle)(vals)
     # colors = plt.cm.viridis((angles - angles.min()) / (angles.max() - angles.min()))
     # plt.scatter(_y[:, 0], _y[:, 2], c=colors, s=5)
