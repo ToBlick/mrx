@@ -5,12 +5,12 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from diffrax import Dopri5, Kvaerno3, ODETerm, PIDController, SaveAt, diffeqsolve
-from mrx.Plotting import poincare_plot
+
 from mrx.DeRhamSequence import DeRhamSequence
 from mrx.DifferentialForms import DiscreteFunction, Pushforward
 from mrx.IterativeSolvers import picard_solver
 from mrx.Nonlinearities import CrossProductProjection
-from mrx.Plotting import get_1d_grids, get_2d_grids
+from mrx.Plotting import get_1d_grids, get_2d_grids, poincare_plot
 
 jax.config.update("jax_enable_x64", True)
 
@@ -34,6 +34,7 @@ m_mu = 1
 mu = π * (n_mu**2 + m_mu**2)**0.5
 s = 1e4
 
+
 def B_beltrami(p):
     x, y, z = F(p)
     return mu * jnp.array([
@@ -44,8 +45,10 @@ def B_beltrami(p):
         jnp.sin(m_mu * π * x) * jnp.sin(n_mu * π * y)
     ])
 
+
 # %%
-_x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3) = get_2d_grids(F, zeta=0.5, nx=64)
+_x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3) = get_2d_grids(
+    F, cut_value=0.5, nx=64)
 _x_1d, _y_1d, (_y1_1d, _y2_1d, _y3_1d), (_x1_1d, _x2_1d,
                                          _x3_1d) = get_1d_grids(F, zeta=0.5, chi=0.5, nx=128)
 
@@ -86,18 +89,18 @@ M12 = Seq.assemble_M12_0()
 
 # %%
 P_JxH = CrossProductProjection(
-        Seq.Λ2, Seq.Λ1, Seq.Λ1, Seq.Q, Seq.F,
-        En=Seq.E2_0, Em=Seq.E1_0, Ek=Seq.E1_0,
-        Λn_ijk=Seq.Λ2_ijk, Λm_ijk=Seq.Λ1_ijk, Λk_ijk=Seq.Λ1_ijk,
-        J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
+    Seq.Λ2, Seq.Λ1, Seq.Λ1, Seq.Q, Seq.F,
+    En=Seq.E2_0, Em=Seq.E1_0, Ek=Seq.E1_0,
+    Λn_ijk=Seq.Λ2_ijk, Λm_ijk=Seq.Λ1_ijk, Λk_ijk=Seq.Λ1_ijk,
+    J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
 P_uxH = CrossProductProjection(
-        Seq.Λ1, Seq.Λ2, Seq.Λ1, Seq.Q, Seq.F,
-        En=Seq.E1_0, Em=Seq.E2_0, Ek=Seq.E1_0,
-        Λn_ijk=Seq.Λ1_ijk, Λm_ijk=Seq.Λ2_ijk, Λk_ijk=Seq.Λ1_ijk,
-        J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
+    Seq.Λ1, Seq.Λ2, Seq.Λ1, Seq.Q, Seq.F,
+    En=Seq.E1_0, Em=Seq.E2_0, Ek=Seq.E1_0,
+    Λn_ijk=Seq.Λ1_ijk, Λm_ijk=Seq.Λ2_ijk, Λk_ijk=Seq.Λ1_ijk,
+    J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
 
 P_Leray = jnp.eye(M2.shape[0]) + \
-        weak_grad @ jnp.linalg.pinv(laplace_3) @ M3 @ dvg
+    weak_grad @ jnp.linalg.pinv(laplace_3) @ M3 @ dvg
 
 # %%
 
@@ -122,12 +125,16 @@ dim0 = M0.shape[0]
 dim1 = M1.shape[0]
 dim2 = M2.shape[0]
 dim3 = M3.shape[0]
-# State is given by x = (B˖, B, dt, |JxB - grad p|) 
+# State is given by x = (B˖, B, dt, |JxB - grad p|)
 #
+
+
 @jax.jit
 def L2norm(x):
     dB = x[:dim2]
     return (dB @ M2 @ dB)**0.5
+
+
 @jax.jit
 def implicit_update(x):
     B_nplus1, B_n, _, _ = jnp.split(x, [dim2, 2*dim2, 2*dim2+1])
@@ -141,13 +148,16 @@ def implicit_update(x):
         u_hat = jnp.linalg.inv(M2 + laplace_2) @ M2 @ u_hat
     dt = jnp.minimum(dt0 / f_norm, dt_max)
     E_hat = jnp.linalg.solve(M1, P_uxH(u_hat, H_hat)) - eta * J_hat
-    return jnp.concatenate((B_n + dt * curl @ E_hat, 
-                            B_n, 
-                            jnp.ones(1) * dt, 
+    return jnp.concatenate((B_n + dt * curl @ E_hat,
+                            B_n,
+                            jnp.ones(1) * dt,
                             jnp.ones(1) * f_norm))
+
+
 @jax.jit
 def update(x):
     return picard_solver(implicit_update, x, tol=solver_tol, norm=L2norm, max_iter=max_iter)
+
 
 # %%
 force_err = 0
@@ -160,13 +170,14 @@ n_steps = 15_000
 
 # %%
 for i in range(n_steps):
-    x = jnp.concatenate((B_hat, B_hat, jnp.ones(1) * dt, jnp.ones(1) * force_err))
+    x = jnp.concatenate(
+        (B_hat, B_hat, jnp.ones(1) * dt, jnp.ones(1) * force_err))
     x, picard_err, it = update(x)
-    
+
     force_err = x[-1]
     dt = x[-2]
     B_hat = x[:dim2]
-    
+
     A_hat = jnp.linalg.solve(laplace_1, M1 @ weak_curl @ B_hat)
     dts.append(dt)
     iters.append(it)
@@ -181,34 +192,37 @@ for i in range(n_steps):
         break
     if i % 100 == 0:
         print(f"Iteration {i}, u norm: {force_trace[-1]}")
-        
-        
+
+
 # %%
 plt.plot(jnp.array(E_trace))
 plt.yscale('log')
 # %%
 # %%
-plt.plot(jnp.array(force_trace))        
+plt.plot(jnp.array(force_trace))
 plt.yscale('log')
 # %%
 B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
 B_h_xyz = Pushforward(B_h, F, 2)
 # %%
+
+
 @jax.jit
 def vector_field(t, x, args):
     DFx = jax.jacfwd(F)(x)
     norm = ((DFx @ B_h(x)) @ DFx @ B_h(x))**0.5
     return B_h(x) / (norm + 1e-9)
 
+
 # %%
 n_loop = 5
 n_batch = 10
 
 x0s = jnp.vstack(
-        (jnp.linspace(0.05, 0.95, n_loop * n_batch),
-        jnp.ones(n_loop * n_batch)/2,
-        jnp.ones(n_loop * n_batch)/2)
-    )
+    (jnp.linspace(0.05, 0.95, n_loop * n_batch),
+     jnp.ones(n_loop * n_batch)/2,
+     jnp.ones(n_loop * n_batch)/2)
+)
 
 n_cols = x0s.shape[1]
 cm = plt.cm.nipy_spectral
@@ -218,17 +232,17 @@ vals = jnp.linspace(0, 1, n_cols + 2)[:-1]
 order = jax.random.permutation(jax.random.PRNGKey(0), n_cols)
 colors = cm(vals[order])
 
-for (i,c) in enumerate(colors):
+for (i, c) in enumerate(colors):
     plt.plot(i, i, color=c, marker='o', markersize=5)
 
 x0s = x0s.T.reshape(n_batch, n_loop, 3)
 
-poincare_plot("/scratch/tblickhan/mrx/script_outputs/beltrami/", vector_field, F, x0s, 
-                  n_loop, n_batch, colors, 
-                  name = "final",
-                  plane_val=0.5, axis=1, 
-                  final_time=2_000, n_saves=100_000, cylindrical=False, 
-                  r_tol=1e-8, a_tol=1e-8)
+poincare_plot("/scratch/tblickhan/mrx/script_outputs/beltrami/", vector_field, F, x0s,
+              n_loop, n_batch, colors,
+              name="final",
+              plane_val=0.5, axis=1,
+              final_time=2_000, n_saves=100_000, cylindrical=False,
+              r_tol=1e-8, a_tol=1e-8)
 # %%
 # Figure 2: Energy and Force
 
@@ -278,7 +292,8 @@ ax2.legend(lines1 + lines2, labels1 + labels2,
 # ax1.grid(which="major", linestyle="-", color=color1, linewidth=0.5)
 ax2.grid(which="both", linestyle="--", linewidth=0.5)
 fig1.tight_layout()
-plt.savefig("/scratch/tblickhan/mrx/script_outputs/beltrami/energy_force.pdf", bbox_inches='tight')
+plt.savefig("/scratch/tblickhan/mrx/script_outputs/beltrami/energy_force.pdf",
+            bbox_inches='tight')
 # %%
 plt.close('all')
 # %%

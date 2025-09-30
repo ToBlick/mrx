@@ -32,6 +32,7 @@ s = 1
 ω1 = 3
 ω2 = 2
 
+
 def B(p):
     x, y, z = F(p)
     rsq = (x**2 + y**2 + z**2)
@@ -43,7 +44,8 @@ def B(p):
 
 
 # %%
-_x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3) = get_2d_grids(F, zeta=0.5, nx=64)
+_x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3) = get_2d_grids(
+    F, cut_value=0.5, nx=64)
 _x_1d, _y_1d, (_y1_1d, _y2_1d, _y3_1d), (_x1_1d, _x2_1d,
                                          _x3_1d) = get_1d_grids(F, zeta=0.5, chi=0.5, nx=128)
 
@@ -116,6 +118,7 @@ eta = 0.00
 # %%
 gamma = 0
 
+
 @jax.jit
 def implicit_update(B_hat_guess, B_hat_0, dt, eta):
     B_hat_star = (B_hat_guess + B_hat_0) / 2
@@ -181,6 +184,7 @@ plt.show()
 B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
 B_h_xyz = Pushforward(B_h, F, 2)
 
+
 @jax.jit
 def vector_field(t, x, args):
     DFx = jax.jacfwd(F)(x)
@@ -188,6 +192,7 @@ def vector_field(t, x, args):
     return B_h(x) / (norm + 1e-9)
 
 # %%
+
 
 t1 = 10_000.0
 n_saves = 10_000
@@ -210,10 +215,10 @@ x0s = x0s.T.reshape(n_batch, n_loop, 3)
 trajectories = []
 for x0 in x0s:
     trajectories.append(jax.vmap(lambda x0: diffeqsolve(term, solver,
-                            t0=0, t1=t1, dt0=None,
-                            y0=x0,
-                            max_steps=2**17,
-                            saveat=saveat, stepsize_controller=stepsize_controller).ys)(x0))
+                                                        t0=0, t1=t1, dt0=None,
+                                                        y0=x0,
+                                                        max_steps=2**17,
+                                                        saveat=saveat, stepsize_controller=stepsize_controller).ys)(x0))
 
 trajectories = jnp.array(trajectories).reshape(n_batch * n_loop, n_saves, 3)
 trajectories.shape
@@ -253,23 +258,26 @@ cm = plt.cm.plasma
 vals = jnp.linspace(0, 1, n_cols)
 
 # Interleave from start and end
-order = jnp.ravel(jnp.column_stack([jnp.arange(n_cols//2), n_cols-1-jnp.arange(n_cols//2)]))
+order = jnp.ravel(jnp.column_stack(
+    [jnp.arange(n_cols//2), n_cols-1-jnp.arange(n_cols//2)]))
 if n_cols % 2 == 1:
     order = jnp.append(order, n_cols//2)
 
 colors = cm(vals[order])
 
 # %%
+
+
 def trajectory_plane_intersections(trajectories, plane_val=0.5, axis=1):
     """
     Vectorized + jittable intersection with plane x_axis = plane_val.
-    
+
     Parameters
     ----------
     trajectories : array (N, T, D)
     plane_val    : float
     axis         : int, which coordinate axis (default=1 for x_2).
-    
+
     Returns
     -------
     intersections : array (N, T-1, D)
@@ -291,9 +299,11 @@ def trajectory_plane_intersections(trajectories, plane_val=0.5, axis=1):
     t = t[..., None]
 
     # segment start + t * (segment end - start)
-    intersections = trajectories[:, :-1, :] + t * (trajectories[:, 1:, :] - trajectories[:, :-1, :])
+    intersections = trajectories[:, :-1, :] + t * \
+        (trajectories[:, 1:, :] - trajectories[:, :-1, :])
 
     return intersections, mask
+
 
 def collapse_to_ragged(intersections, mask):
     """
@@ -305,8 +315,11 @@ def collapse_to_ragged(intersections, mask):
         pts = intersections[n][mask[n]]
         result.append(jnp.array(pts))
     return result
+
+
 # %%
-intersections, mask = trajectory_plane_intersections(physical_trajectories, plane_val=0.5, axis=1)
+intersections, mask = trajectory_plane_intersections(
+    physical_trajectories, plane_val=0.5, axis=1)
 
 # intersections_ragged = collapse_to_ragged(intersections, mask)
 # %%
