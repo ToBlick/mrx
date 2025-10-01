@@ -141,7 +141,7 @@ def plot_crossections(f, grids):
 # %%
 # fig, ax = plot_crossections(u_h, grids)
 # %%
-cuts = jnp.linspace(0, 1, 8)
+cuts = jnp.linspace(0, 1, 7)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
                           nx=16, ny=16, nz=1) for v in cuts]
 grid_surface = get_2d_grids(F, cut_axis=0, cut_value=1.0,
@@ -171,16 +171,9 @@ def plot_torus(f, grids_pol, grid_surface):
 
     set_axes_equal(ax)
     plt.tight_layout()
-    ax.view_init(elev=30, azim=190)
+    ax.view_init(elev=25, azim=130)
     ax.set_axis_off()
     return fig, ax
-
-
-# %%
-fig, ax = plot_torus(p_h, grids_pol, grid_surface)
-# %%
-grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v, nx=32, ny=32,)
-             for v in jnp.linspace(0, 1, 9, endpoint=False)]
 
 
 def plot_crossections_separate(f, grids):
@@ -200,6 +193,12 @@ def plot_crossections_separate(f, grids):
     plt.tight_layout()
     return fig, axes
 
+
+# %%
+fig, ax = plot_torus(p_h, grids_pol, grid_surface)
+# %%
+grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v, nx=32, ny=32,)
+             for v in jnp.linspace(0, 1, 9, endpoint=False)]
 
 # %%
 fig, ax = plot_crossections_separate(p_h, grids_pol)

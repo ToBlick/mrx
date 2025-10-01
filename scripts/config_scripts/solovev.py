@@ -6,6 +6,7 @@ import time
 import h5py
 import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import numpy as np
 
 from mrx.BoundaryFitting import cerfon_map, helical_map, rotating_ellipse_map
@@ -14,7 +15,7 @@ from mrx.DifferentialForms import DiscreteFunction, Pushforward
 from mrx.InputOutput import parse_args, unique_id
 from mrx.IterativeSolvers import picard_solver
 from mrx.Nonlinearities import CrossProductProjection
-from mrx.Plotting import get_3d_grids
+from mrx.Plotting import get_2d_grids, get_3d_grids
 
 jax.config.update("jax_enable_x64", True)
 
@@ -39,15 +40,15 @@ DEVICE_PRESETS = {
 CONFIG = {
     "run_name": "",  # Name for the run. If empty, a hash will be created
 
-    "type": "tokamak",  # Type of configuration: "tokamak" or "helix" or "rotating_ellipse"
+    "type": "helix",  # Type of configuration: "tokamak" or "helix" or "rotating_ellipse"
 
     ###
     # Parameters describing the domain.
     ###
-    "eps":      0.32,  # aspect ratio
-    "kappa":    1.7,   # Elongation parameter
-    "q_star":   1.57,  # toroidal field strength
-    "delta":    0.33,  # triangularity
+    "eps":      0.33,  # aspect ratio
+    "kappa":    1.0,   # Elongation parameter
+    "q_star":   2.0,  # toroidal field strength
+    "delta":    0.0,  # triangularity
     "m_helix":  3,     # poloidal mode number of helix
     "h_helix":  0.25,  # radius of helix turns
     "m_rot":   2,      # mode number of rotating ellipse
@@ -55,12 +56,12 @@ CONFIG = {
     ###
     # Discretization
     ###
-    "n_r": 6,       # Number of radial splines
-    "n_theta": 6,   # Number of poloidal splines
+    "n_r": 4,       # Number of radial splines
+    "n_theta": 4,   # Number of poloidal splines
     "n_zeta": 4,    # Number of toroidal splines
-    "p_r": 3,       # Degree of radial splines
-    "p_theta": 3,     # Degree of poloidal splines
-    "p_zeta": 3,    # Degree of toroidal splines
+    "p_r": 2,       # Degree of radial splines
+    "p_theta": 2,     # Degree of poloidal splines
+    "p_zeta": 2,    # Degree of toroidal splines
 
     ###
     # Hyperparameters for the relaxation
@@ -72,7 +73,7 @@ CONFIG = {
     "dt":                    1e-6,      # initial time step
     # time-steps are increased by this factor and decreased by its square
     "dt_factor":             1.01,
-    "maxit":                 250_000,   # max. Number of time steps
+    "maxit":                 10_000,   # max. Number of time steps
     # Convergence tolerance for |JxB - grad p| (or |JxB| if force_free)
     "force_tol":             1e-15,
     "eta":                   0.0,       # Resistivity
@@ -299,14 +300,9 @@ def run(CONFIG):
         R = (x**2 + y**2)**0.5
         phi = jnp.arctan2(y, x) / (2 * π)
 
-        if CONFIG["type"] == "tokamak":
-            BR = z * R
-            Bphi = tau / R
-            Bz = - kappa**2 / 2 * (R**2 - 1**2) - z**2
-        else:
-            BR = 0.0
-            Bphi = tau / R
-            Bz = 0.0
+        BR = z * R
+        Bphi = tau / R
+        Bz = - kappa**2 / 2 * (R**2 - 1**2) - z**2
 
         Bx = BR * jnp.cos(2 * π * phi) - Bphi * jnp.sin(2 * π * phi)
         By = BR * jnp.sin(2 * π * phi) + Bphi * jnp.cos(2 * π * phi)
@@ -314,10 +310,11 @@ def run(CONFIG):
         return jnp.array([Bx, By, Bz])
 
     # Set up inital condition
+    B_harm_hat = jnp.linalg.eigh(laplace_2)[1][:, 0]
+    B_harm_hat /= (B_harm_hat @ M2 @ B_harm_hat)**0.5
+
     B_hat = P_Leray @ jnp.linalg.solve(M2, Seq.P2_0(B_xyz))
-    # One step of resisitive relaxation to get J x n = 0 on ∂Ω
-    # B_hat = jnp.linalg.solve(jnp.eye(M2.shape[0]) + 1e-2 * curl @ weak_curl, B_hat)
-    B_hat /= (B_hat @ M2 @ B_hat)**0.5  # normalize
+    B_hat /= (B_hat @ M2 @ B_hat)**0.5
 
     # %%
     eps_precond = jnp.linalg.eigh(
@@ -410,11 +407,12 @@ def run(CONFIG):
     ###
     # Post-processing
     ###
-
+    B_hat = x[0]
     print("Simulation finished, post-processing...")
     if CONFIG["save_B"]:
         p_fields = [compute_pressure(B) for B in B_fields]
-    p_hat = compute_pressure(x[0])
+    p_hat = compute_pressure(B_hat)
+    p_h = Pushforward(DiscreteFunction(p_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
 
     # save final state on a grid in physical space
     grid_3d = get_3d_grids(F, x_min=1e-3,
@@ -423,18 +421,19 @@ def run(CONFIG):
                            nz=ps[2]*ns[2]*2 if ns[2] > 1 else 1)
 
     B_final = Pushforward(DiscreteFunction(
-        x[0], Seq.Λ2, Seq.E2_0.matrix()), F, 2)
+        B_hat, Seq.Λ2, Seq.E2_0.matrix()), F, 2)
     B_final_values = jax.vmap(B_final)(grid_3d[0])
     p_final = Pushforward(DiscreteFunction(
         p_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
     p_final_values = jax.vmap(p_final)(grid_3d[0])
     grid_points = grid_3d[1]
 
-    B_h = Pushforward(DiscreteFunction(x[0], Seq.Λ2, Seq.E2_0.matrix()), F, 2)
-    p_h = Pushforward(DiscreteFunction(p_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
+    B_h = Pushforward(DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix()), F, 2)
 
-    A_hat = jnp.linalg.solve(laplace_1, M1 @ weak_curl @ x[0])
-    B_harm_hat = x[0] - curl @ A_hat
+    grid_2d = get_2d_grids(F)
+    plt.contour(grid_2d[2][1], grid_2d[2][2], jax.vmap(p_h)(
+        grid_2d[0]).reshape(grid_2d[2][0].shape), levels=50, cmap='plasma')
+    plt.colorbar()
 
     ###
     # Save stuff
