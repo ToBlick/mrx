@@ -90,9 +90,10 @@ def get_lcfs_F(n_map,
     return F
 
 
-def cerfon_map(epsilon, kappa, alpha, R0=1.0):
+def cerfon_map(epsilon=0.32, kappa=1.72, delta=0.33, R0=1.0):
 
     π = jnp.pi
+    alpha = jnp.arcsin(delta)
 
     def x_t(t):
         return 1 + epsilon * jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t))

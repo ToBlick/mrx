@@ -71,12 +71,23 @@ class DeRhamSequence():
         self.J_j = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
 
         if polar:
-            def _R(r, χ):
-                return self.F(jnp.array([r, χ, 0.0]))[0] * jnp.ones(1)
+            # evaluate extraction coeffs at every quadrature point
+            taus = []
+            xis = []
+            for ζ in self.Q.x_z:
+                def _R(r, χ):
+                    return jnp.sqrt(self.F(jnp.array([r, χ, ζ]))[0]**2
+                                    + self.F(jnp.array([r, χ, ζ]))[1]**2) * jnp.ones(1)
 
-            def _Z(r, χ):
-                return self.F(jnp.array([r, χ, 0.0]))[2] * jnp.ones(1)
-            ξ = get_xi(_R, _Z, self.Λ0, self.Q)[0]
+                def _Z(r, χ):
+                    return self.F(jnp.array([r, χ, ζ]))[2] * jnp.ones(1)
+                ξ, _, _, _, τ = get_xi(_R, _Z, self.Λ0, self.Q)
+                xis.append(ξ)
+                taus.append(τ)
+            print("taus:", taus)
+            max_idx = jnp.argmax(jnp.array(taus), axis=0)  # worst case
+            ξ = xis[max_idx]
+
             self.E0, self.E1, self.E2, self.E3 = [
                 LazyExtractionOperator(Λ, ξ, False)
                 for Λ in [self.Λ0, self.Λ1, self.Λ2, self.Λ3]
