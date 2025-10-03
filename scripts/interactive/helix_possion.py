@@ -11,10 +11,15 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.interpolate import LinearNDInterpolator, RegularGridInterpolator
 
-from mrx.BoundaryFitting import helical_map
+from mrx.BoundaryFitting import helical_map, rotating_ellipse_map
 from mrx.DeRhamSequence import DeRhamSequence
 from mrx.DifferentialForms import DiscreteFunction, Pushforward
-from mrx.Plotting import get_2d_grids, get_3d_grids, trajectory_plane_intersections
+from mrx.Plotting import (
+    get_2d_grids,
+    plot_crossections,
+    plot_crossections_separate,
+    plot_torus,
+)
 
 # --- Figure settings ---
 FIG_SIZE = (12, 6)
@@ -41,15 +46,9 @@ ps = (p, p, p)
 types = ("clamped", "periodic", "periodic")  # Types
 # Domain parameters
 π = jnp.pi
-ɛ = 1/3
-n_turns = 4  # Number of helix turns
-h = 1/4      # radius of helix
 
-# For the current construction to work, the tangent line must be parallel to Y at zeta = 0.
-# Helical curve
-
-
-F = helical_map(ɛ, h, n_turns)
+# F = rotating_ellipse_map()
+F = jax.jit(helical_map())
 
 # %%
 
@@ -101,147 +100,22 @@ grids = [get_2d_grids(F, cut_axis=2, cut_value=v, nx=32)
 # grids[i] = _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 # %%
 
-
-def set_axes_equal(ax):
-    """Set 3D plot axes to equal scale."""
-    X_limits = ax.get_xlim3d()
-    Y_limits = ax.get_ylim3d()
-    Z_limits = ax.get_zlim3d()
-
-    X_range = X_limits[1] - X_limits[0]
-    Y_range = Y_limits[1] - Y_limits[0]
-    Z_range = Z_limits[1] - Z_limits[0]
-    max_range = max(X_range, Y_range, Z_range)
-
-    X_mid = np.mean(X_limits)
-    Y_mid = np.mean(Y_limits)
-    Z_mid = np.mean(Z_limits)
-
-    ax.set_xlim3d([X_mid - max_range/2, X_mid + max_range/2])
-    ax.set_ylim3d([Y_mid - max_range/2, Y_mid + max_range/2])
-    ax.set_zlim3d([Z_mid - max_range/2, Z_mid + max_range/2])
-
-
-def plot_crossections(f, grids):
-    fig = plt.figure(figsize=(10, 6))
-    ax = fig.add_subplot(111, projection='3d')
-    for grid in grids:
-        X = grid[2][0]
-        Y = grid[2][1]
-        Z = grid[2][2]
-        vals = jax.vmap(f)(grid[0]).reshape(X.shape)
-
-        ax.plot_surface(X, Y, Z, facecolors=plt.cm.plasma(
-            (vals - vals.min())/(vals.max()-vals.min())), rstride=1, cstride=1, shade=False)
-    set_axes_equal(ax)
-    plt.tight_layout()
-    return fig, ax
-
-
 # %%
-# fig, ax = plot_crossections(u_h, grids)
-# %%
-cuts = jnp.linspace(0, 1, 7)
+cuts = jnp.linspace(0, 1, 8, endpoint=True)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
                           nx=16, ny=16, nz=1) for v in cuts]
 grid_surface = get_2d_grids(F, cut_axis=0, cut_value=1.0,
-                            ny=64, nz=64, z_min=cuts[0], z_max=cuts[-1], invert_z=True)
-
-
-def plot_torus(f, grids_pol, grid_surface):
-    fig = plt.figure(figsize=(10, 6))
-    ax = fig.add_subplot(111, projection='3d')
-
-    X = grid_surface[2][0]
-    Y = grid_surface[2][1]
-    Z = grid_surface[2][2]
-    vals = jax.vmap(f)(grid_surface[0]).reshape(X.shape)
-    colors = plt.cm.plasma(vals)
-    ax.plot_surface(X, Y, Z, facecolors=colors, rstride=1, cstride=1, shade=False,
-                    alpha=0.0, linewidth=0.05,)
-
-    for grid in grids_pol:
-        X = grid[2][0]
-        Y = grid[2][1]
-        Z = grid[2][2]
-        vals = jax.vmap(f)(grid[0]).reshape(X.shape)
-        colors = plt.cm.plasma((vals - vals.min()) / (vals.max() - vals.min()))
-        ax.plot_surface(X, Y, Z, facecolors=colors, rstride=1,
-                        cstride=1, shade=False, zsort='min', linewidth=0)
-
-    set_axes_equal(ax)
-    plt.tight_layout()
-    ax.view_init(elev=25, azim=130)
-    ax.set_axis_off()
-    return fig, ax
-
-
-def plot_crossections_separate(f, grids):
-    fig, axes = plt.subplots(3, 3, figsize=(10, 10))
-    axes = axes.flatten()  # make it easy to index
-
-    for i, (ax, grid) in enumerate(zip(axes, grids)):
-        R = jnp.sqrt(grid[2][0]**2 + grid[2][1]**2)
-        Z = grid[2][2]
-
-        vals = jax.vmap(f)(grid[0]).reshape(R.shape)
-
-        c = ax.contourf(R, Z, vals, 20, cmap='plasma')
-        fig.colorbar(c, ax=ax)  # optional colorbar per panel
-        ax.set_aspect('equal')  # 2D "equal axes"
-
-    plt.tight_layout()
-    return fig, axes
-
-
+                            ny=64, nz=128, z_min=cuts[0], z_max=cuts[-1], invert_z=True)
 # %%
 fig, ax = plot_torus(p_h, grids_pol, grid_surface)
 # %%
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v, nx=32, ny=32,)
-             for v in jnp.linspace(0, 1, 9, endpoint=False)]
+             for v in jnp.linspace(0, 1, 16, endpoint=False)]
 
 # %%
 fig, ax = plot_crossections_separate(p_h, grids_pol)
 # %%
 
-
-def trajectory_plane_intersections_list(trajectory, plane_point, plane_normal):
-    """
-    Compute intersections of a 3D trajectory with a general plane.
-
-    Returns a list of intersection points (no NaNs, no masks).
-
-    Parameters
-    ----------
-    trajectory : ndarray (T, 3)
-    plane_point : ndarray (3,)
-    plane_normal : ndarray (3,)
-
-    Returns
-    -------
-    intersections : list of ndarray, each of shape (3,)
-    """
-    trajectory = np.asarray(trajectory)
-    plane_point = np.asarray(plane_point)
-    plane_normal = np.asarray(plane_normal)
-
-    intersections = []
-
-    for i in range(len(trajectory)-1):
-        seg_start = trajectory[i]
-        seg_end = trajectory[i+1]
-        seg_vec = seg_end - seg_start
-
-        denom = np.dot(plane_normal, seg_vec)
-        if np.abs(denom) < 1e-12:  # parallel segment
-            continue
-
-        t = np.dot(plane_normal, plane_point - seg_start) / denom
-
-        if 0 <= t <= 1:
-            intersections.append(seg_start + t * seg_vec)
-
-    return intersections
 
 # %%
 

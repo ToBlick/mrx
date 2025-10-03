@@ -90,15 +90,15 @@ def get_lcfs_F(n_map,
     return F
 
 
-def cerfon_map(eps, kappa, alpha, R0=1.0):
+def cerfon_map(epsilon, kappa, alpha, R0=1.0):
 
     π = jnp.pi
 
     def x_t(t):
-        return 1 + eps * jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t))
+        return 1 + epsilon * jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t))
 
     def y_t(t):
-        return eps * kappa * jnp.sin(2 * π * t)
+        return epsilon * kappa * jnp.sin(2 * π * t)
 
     def _s_from_t(t):
         return jnp.arctan2(kappa * jnp.sin(2 * π * t),
@@ -121,7 +121,7 @@ def cerfon_map(eps, kappa, alpha, R0=1.0):
     return F
 
 
-def helical_map(ɛ=0.3, h=0.25, n_turns=3):
+def helical_map(epsilon=0.33, h=0.25, n_turns=3, kappa=1.0):
     π = jnp.pi
 
     def X(ζ):
@@ -132,11 +132,12 @@ def helical_map(ɛ=0.3, h=0.25, n_turns=3):
         ])
 
     def get_frame(ζ):
-        dX = jax.jacrev(X)(ζ)
-        τ = dX / jnp.linalg.norm(dX)  # Tangent vector
-
-        e = jnp.array([0.0, 0.0, 1.0])
-        ν1 = (e - jnp.dot(e, τ) * τ)
+        dX = jax.jacrev(X)
+        τ = dX(ζ) / jnp.linalg.norm(dX(ζ))  # Tangent vector
+        dτ = jax.jacfwd(dX)(ζ)
+        ν1 = dτ / jnp.linalg.norm(dτ)
+        # e = jnp.array([0.0, 0.0, 1.0])
+        # ν1 = (e - jnp.dot(e, τ) * τ)
         ν1 = ν1 / jnp.linalg.norm(ν1)  # First normal vector
         ν2 = jnp.cross(τ, ν1)         # Second normal vector
         return τ, ν1, ν2
@@ -144,16 +145,16 @@ def helical_map(ɛ=0.3, h=0.25, n_turns=3):
     def F(x):
         """Helical coordinate mapping function."""
         r, θ, ζ = x
-        τ, ν1, ν2 = get_frame(ζ)
-        return X(ζ) + ɛ * r * jnp.cos(2 * π * θ) * ν1 + ɛ * r * jnp.sin(2 * π * θ) * ν2
+        _, ν1, ν2 = get_frame(ζ)
+        return X(ζ) + epsilon * r * jnp.cos(2 * π * θ) * ν1 + epsilon * r * kappa * jnp.sin(2 * π * θ) * ν2
 
     return F
 
 
-def rotating_ellipse_map(ɛ=0.1, kappa=1.25, m=5):
+def rotating_ellipse_map(epsilon=0.1, kappa=4, m=5):
     π = jnp.pi
-    a = ɛ
-    b = ɛ / kappa
+    a = epsilon * kappa
+    b = epsilon
 
     def R(x):
         r, θ, ζ = x
@@ -169,7 +170,7 @@ def rotating_ellipse_map(ɛ=0.1, kappa=1.25, m=5):
         Z_val = Z(x)
         return jnp.ravel(jnp.array([
             R_val * jnp.cos(2 * π * ζ),
-            -R_val * jnp.sin(2 * π * ζ),
+            R_val * jnp.sin(2 * π * ζ),
             Z_val
         ]))
 

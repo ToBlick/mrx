@@ -28,8 +28,8 @@ def get_err(n, p):
     types = ("clamped", "periodic", "constant")  # Types
 
     # Domain parameters
-    a = 1.0
-    R0 = 3.0
+    a = 1/3
+    R0 = 1.0
     π = jnp.pi
 
     def _X(r, χ):
@@ -53,7 +53,7 @@ def get_err(n, p):
         """Exact solution of the Poisson problem."""
         r, χ, z = x
         # return - jnp.ones(1) * r**2 * (1 - r**2)
-        return - jnp.ones(1) * jnp.sin(π * r**2)
+        return - a**2 / (4 * jnp.pi) * jnp.ones(1) * jnp.sin(π * r**2)
 
     def f(x):
         """Source term of the Poisson problem."""
@@ -61,8 +61,8 @@ def get_err(n, p):
         c = jnp.cos(2 * π * χ)
         R = R0 + a * r * c
         # return 1 / (a**2 * R) * (4*R0*(1 - 4*r**2) + 2*a*r*c*(3 - 10*r**2)) * jnp.ones(1)
-        return 4 * π / a**2 * (jnp.cos(π*r**2) * (1 + (R - R0) / R / 2)
-                               - π * r**2 * jnp.sin(π*r**2)) * jnp.ones(1)
+        return (jnp.cos(π*r**2) * (1 + (R - R0) / R / 2)
+                - π * r**2 * jnp.sin(π*r**2)) * jnp.ones(1)
 
     # Create DeRham sequence
     derham = DeRhamSequence(ns, ps, q, types, F, polar=True)
@@ -222,12 +222,11 @@ def plot_results(err, times, times2, conds, sparsities, ns, ps):
 
     return fig1
 
-# %%
 
 def main():
     """Main function to run the analysis."""
     # Run convergence analysis
-    ns = np.arange(8, 31, 2)
+    ns = np.arange(8, 16, 2)
     ps = np.arange(1, 4)
     err, times, times2, conds, sparsities = run_convergence_analysis(ns, ps)
 

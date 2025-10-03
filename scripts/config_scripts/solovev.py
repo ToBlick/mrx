@@ -33,8 +33,8 @@ DEVICE_PRESETS = {
               "n_zeta": 1, "p_zeta": 0},
     "SPHERO": {"eps": 0.95, "kappa": 1.0, "delta": 0.2,  "q_star": 0.0, "type": "tokamak",
                "n_zeta": 1, "p_zeta": 0},
-    "ROT_ELL": {"eps": 0.1, "kappa": 1.25, "m_rot": 5, "q_star": 2.0, "type": "rotating_ellipse"},
-    "HELIX": {"eps": 0.33, "h_helix": 0.25, "kappa": 1.0, "m_helix": 3, "q_star": 2.0, "type": "helix"},
+    "ROT_ELL": {"eps": 0.1, "kappa": 4, "m_rot": 5, "q_star": 0.0, "type": "rotating_ellipse"},
+    "HELIX": {"eps": 0.33, "h_helix": 0.20, "kappa": 1.7, "m_helix": 3, "q_star": 2.0, "type": "helix"},
 }
 
 CONFIG = {
@@ -56,18 +56,18 @@ CONFIG = {
     ###
     # Discretization
     ###
-    "n_r": 4,       # Number of radial splines
-    "n_theta": 4,   # Number of poloidal splines
+    "n_r": 6,       # Number of radial splines
+    "n_theta": 6,   # Number of poloidal splines
     "n_zeta": 4,    # Number of toroidal splines
-    "p_r": 2,       # Degree of radial splines
-    "p_theta": 2,     # Degree of poloidal splines
-    "p_zeta": 2,    # Degree of toroidal splines
+    "p_r": 3,       # Degree of radial splines
+    "p_theta": 3,     # Degree of poloidal splines
+    "p_zeta": 3,    # Degree of toroidal splines
 
     ###
     # Hyperparameters for the relaxation
     ###
     "precond":               False,     # Use preconditioner
-    "precond_compute_every": 100,       # Recompute preconditioner every n iterations
+    "precond_compute_every": 1000,       # Recompute preconditioner every n iterations
     # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
     "gamma":                 0,
     "dt":                    1e-6,      # initial time step
@@ -191,9 +191,9 @@ def run(CONFIG):
         X = jnp.eye(B.shape[0])
         δBᵢ = jax.vmap(δB, in_axes=(None, 1), out_axes=1)(B, X)
         # shape is (n2, n2)
-        # ΛxJᵢ = jax.vmap(uxJ, in_axes=(None, 1), out_axes=1)(B, X)
+        ΛxJᵢ = jax.vmap(uxJ, in_axes=(None, 1), out_axes=1)(B, X)
         # shape is (n2, n1)
-        return δBᵢ.T @ M2 @ δBᵢ  # + ΛxJᵢ.T @ M12 @ δBᵢ
+        return (δBᵢ.T @ M2 @ δBᵢ + ΛxJᵢ.T @ M12 @ δBᵢ) / 2
 
     iterations = [0]
     force_trace = []
@@ -272,13 +272,14 @@ def run(CONFIG):
         for _ in range(gamma):
             u_hat = jnp.linalg.solve(M2 + laplace_2, M2 @ u_hat)
         if CONFIG["precond"]:
-            Hessian = x[1][4]
-            u_hat = jnp.linalg.solve(Hessian, M2 @ u_hat)
+            invHessian = x[1][4]
+            u_hat = invHessian @ P_Leray.T @ M2 @ u_hat
+            # P_Leray.T technically not needed because already div_free
         else:
-            Hessian = None
+            invHessian = None
         u_norm = (u_hat @ M2 @ u_hat)**0.5
         E_hat = jnp.linalg.solve(M1, P_2x1to1(u_hat, H_hat)) - η * J_hat
-        return (B_n + dt * curl @ E_hat, (B_n, dt, f_norm, u_norm, Hessian))
+        return (B_n + dt * curl @ E_hat, (B_n, dt, f_norm, u_norm, invHessian))
 
     @jax.jit
     def update(x):
@@ -302,29 +303,39 @@ def run(CONFIG):
 
         BR = z * R
         Bphi = tau / R
-        Bz = - kappa**2 / 2 * (R**2 - 1**2) - z**2
+        if CONFIG["type"] == "tokamak":
+            Bz = - (kappa**2 / 2 * (R**2 - 1**2) + z**2)
+        else:
+            Bz = - (1 / 2 * (R**2 - 1**2) + z**2)
 
         Bx = BR * jnp.cos(2 * π * phi) - Bphi * jnp.sin(2 * π * phi)
         By = BR * jnp.sin(2 * π * phi) + Bphi * jnp.cos(2 * π * phi)
-
         return jnp.array([Bx, By, Bz])
+        # DFp = jax.jacfwd(F)(p)
+        # J = jnp.linalg.det(DFp)
+        # Br = J / jnp.linalg.norm(DFp[:, 1]) * 0.0
+        # Btheta = J / jnp.linalg.norm(DFp[:, 1]) * 0.1 * p[0]
+        # Bzeta = J / jnp.linalg.norm(DFp[:, 2]) * 0.9
+        # return DFp @ jnp.array([Br, Btheta, Bzeta]) / J
 
     # Set up inital condition
     B_harm_hat = jnp.linalg.eigh(laplace_2)[1][:, 0]
     B_harm_hat /= (B_harm_hat @ M2 @ B_harm_hat)**0.5
 
-    B_hat = P_Leray @ jnp.linalg.solve(M2, Seq.P2_0(B_xyz))
+    B_hat = jnp.linalg.solve(M2, Seq.P2_0(B_xyz))
+    B_hat = P_Leray @ B_hat
     B_hat /= (B_hat @ M2 @ B_hat)**0.5
 
     # %%
-    eps_precond = jnp.linalg.eigh(
-        δδE(B_hat))[0][-1] * 1e-2 if CONFIG["precond"] else 0.0
+    eps_precond = jnp.linalg.eigvalsh(
+        P_Leray.T @ δδE(B_hat) @ P_Leray)[-1] * 1e-2 if CONFIG["precond"] else 0.0
 
     @jax.jit
-    def compute_Hessian(B_hat):
-        return M2 * eps_precond + δδE(B_hat) if CONFIG["precond"] else None
+    def compute_invHessian(B_hat):
+        return jnp.linalg.pinv(P_Leray.T @ (M2 * eps_precond + δδE(B_hat)) @ P_Leray) if CONFIG["precond"] else None
 
-    x = (B_hat, (B_hat, CONFIG["dt"], 0.0, 0.0, compute_Hessian(B_hat)))
+    x = (B_hat, (B_hat, CONFIG["dt"], 0.0, 0.0,
+         M2 if CONFIG["precond"] else None))
     # initial state: (B, (B_old, dt, |JxB - grad p|, |u|, Hess))
 
     __x, _, _ = update(x)  # also doing the compilation here
@@ -362,10 +373,10 @@ def run(CONFIG):
                  [2], x_old[1][3], x_old[1][4]))
             continue
         # otherwise, we converged - proceed
-        _, dt, force_norm, velocity_norm, Hessian = x[1]
+        _, dt, force_norm, velocity_norm, invHessian = x[1]
 
         if CONFIG["precond"] and (i % CONFIG["precond_compute_every"] == 0):
-            Hessian = compute_Hessian(x[0])
+            invHessian = compute_invHessian(x[0])
 
         if picard_it <= CONFIG["solver_critit"]:
             dt_new = dt * CONFIG["dt_factor"]
@@ -373,7 +384,7 @@ def run(CONFIG):
             dt_new = dt / (CONFIG["dt_factor"])**2
 
         # collect everything
-        x = (x[0], (x[0], dt_new, force_norm, velocity_norm, Hessian))
+        x = (x[0], (x[0], dt_new, force_norm, velocity_norm, invHessian))
 
         if i % CONFIG["save_every"] == 0 or i == CONFIG["maxit"]:
             energy, helicity, divergence_B = compute_diagnostics(x[0])
@@ -428,13 +439,6 @@ def run(CONFIG):
     p_final_values = jax.vmap(p_final)(grid_3d[0])
     grid_points = grid_3d[1]
 
-    B_h = Pushforward(DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix()), F, 2)
-
-    grid_2d = get_2d_grids(F)
-    plt.contour(grid_2d[2][1], grid_2d[2][2], jax.vmap(p_h)(
-        grid_2d[0]).reshape(grid_2d[2][0].shape), levels=50, cmap='plasma')
-    plt.colorbar()
-
     ###
     # Save stuff
     ###
@@ -484,9 +488,53 @@ def run(CONFIG):
                 cfg_group.attrs[key] = val
 
     print(f"Data saved to {outdir + run_name + '.h5'}.")
+# %%
 
-    def anisotropic_diffusion_tensor(B_hat):
-        return
+    # def anisotropic_diffusion_tensor(B_hat):
+    #     B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
+
+    #     def B_tensor(x):
+    #         Bx = B_h(x)
+    #         Dfx = jax.jacfwd(F)(x)
+    #         B_phys = Dfx @ Bx
+    #         B_norm = (B_phys @ B_phys)**0.5
+    #         return jnp.outer(Bx, Bx) / (B_norm**2)
+    #     BB_jmn = jax.vmap(B_tensor)(Seq.Q.x)  # Q x 3 x 3
+    #     M = jnp.einsum('ajm,jmn,bjn,j->ab', Seq.dΛ0_ijk,
+    #                    BB_jmn, Seq.dΛ0_ijk, Seq.J_j)
+    #     return Seq.E0_0.matrix() @ M @ Seq.E0_0.matrix().T
+
+# %%
+    # eps_diff = 0.0
+    # Diff = eps_diff * laplace_0 + \
+    #     (1-eps_diff) * anisotropic_diffusion_tensor(B_hat)
+
+    # def localized_source(x, x0, sigma=0.05):
+    #     return jnp.exp(-((x - x0) @ (x - x0)) / (2 * sigma**2)) * jnp.ones(1) / (2 * jnp.pi * sigma**2)**(3/2)
+    # %%
+    # T_hat = jnp.linalg.solve(Diff, Seq.P0_0(lambda x: localized_source(x, jnp.array([0, 0.0, 0.0]), 0.02)))
+    # T_hat = jnp.linalg.solve(Diff, Seq.P0_0(lambda x: jnp.ones(1)))
+    # T_h = Pushforward(DiscreteFunction(T_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
+    # T_hat_iso = jnp.linalg.solve(laplace_0, Seq.P0_0(lambda x: jnp.ones(1)))
+    # T_h_iso = Pushforward(DiscreteFunction(T_hat_iso, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
+
+#     T_hat = jnp.linalg.solve(Diff, M0 @ p_hat)
+#     T_h = Pushforward(DiscreteFunction(T_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
+#     T_hat_iso = jnp.linalg.solve(laplace_0, M0 @ p_hat)
+#     T_h_iso = Pushforward(DiscreteFunction(
+#         T_hat_iso, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
+
+
+# # %%
+#     grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v, nx=32, ny=32,)
+#                  for v in jnp.linspace(0, 1, 16, endpoint=False)]
+    # %%
+    # fig, ax = plot_crossections_separate(T_h, grids_pol)
+    # # %%
+    # fig, ax = plot_crossections_separate(T_h_iso, grids_pol)
+    # # %%
+    # fig, ax = plot_crossections_separate(p_h, grids_pol)
+# %%
 
 
 def main():
