@@ -19,8 +19,8 @@ from mrx.Plotting import (
 )
 
 # %%
-name = "helix"
-with h5py.File("script_outputs/solovev/" + name + ".h5", "r") as f:
+name = "helix_2"
+with h5py.File("../../script_outputs/solovev/" + name + ".h5", "r") as f:
     B_hat = f["B_final"][:]
     p_hat = f["p_final"][:]
     helicity_trace = f["helicity_trace"][:]
