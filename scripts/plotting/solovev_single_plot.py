@@ -70,10 +70,17 @@ grid_surface = get_2d_grids(F, cut_axis=0, cut_value=1.0,
 # %%
 fig, ax = plot_torus(p_h, grids_pol, grid_surface,
                      gridlinewidth=1, cstride=8)
-plt.savefig(os.path.join("script_outputs",
-            "solovev", "rotating_ellipse_3d.pdf"))
+# plt.savefig(os.path.join("script_outputs",
+#             "solovev", "rotating_ellipse_3d.pdf"))
 # %%
 plot_crossections_separate(p_h, grids_pol, cuts, plot_centerline=True)
-plt.savefig(os.path.join("script_outputs",
-            "solovev", "rotating_ellipse_cuts.pdf"))
+# plt.savefig(os.path.join("script_outputs",
+#             "solovev", "rotating_ellipse_cuts.pdf"))
+# %%
+p_avg = p_hat @ Seq.P0_0(lambda x: jnp.ones(1)) / (Seq.J_j @ Seq.Q.w)
+beta = p_avg / energy_trace[-1]
+print(f"Beta = {beta:.3e}")
+# %%
+print("Final |JxB - grad p| / |grad p| =", force_trace[-1])
+print("Initial |JxB - grad p| / |grad p| =", force_trace[0])
 # %%

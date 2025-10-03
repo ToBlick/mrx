@@ -56,8 +56,8 @@ CONFIG = {
     ###
     # Discretization
     ###
-    "n_r": 6,       # Number of radial splines
-    "n_theta": 6,   # Number of poloidal splines
+    "n_r": 8,       # Number of radial splines
+    "n_theta": 8,   # Number of poloidal splines
     "n_zeta": 4,    # Number of toroidal splines
     "p_r": 3,       # Degree of radial splines
     "p_theta": 3,     # Degree of poloidal splines
@@ -193,7 +193,8 @@ def run(CONFIG):
         # shape is (n2, n2)
         ΛxJᵢ = jax.vmap(uxJ, in_axes=(None, 1), out_axes=1)(B, X)
         # shape is (n2, n1)
-        return (δBᵢ.T @ M2 @ δBᵢ + ΛxJᵢ.T @ M12 @ δBᵢ) / 2
+        H = (δBᵢ.T @ M2 @ δBᵢ + ΛxJᵢ.T @ M12 @ δBᵢ)
+        return (H + H.T) / 2
 
     iterations = [0]
     force_trace = []
@@ -272,14 +273,15 @@ def run(CONFIG):
         for _ in range(gamma):
             u_hat = jnp.linalg.solve(M2 + laplace_2, M2 @ u_hat)
         if CONFIG["precond"]:
-            invHessian = x[1][4]
-            u_hat = invHessian @ P_Leray.T @ M2 @ u_hat
-            # P_Leray.T technically not needed because already div_free
+            Hessian = x[1][4]
+            u_hat = P_Leray @ jnp.linalg.lstsq(
+                Hessian, P_Leray.T @ M2 @ u_hat)[0]
+            # P_Leray.T technically not needed because u is already div_free
         else:
-            invHessian = None
+            Hessian = None
         u_norm = (u_hat @ M2 @ u_hat)**0.5
         E_hat = jnp.linalg.solve(M1, P_2x1to1(u_hat, H_hat)) - η * J_hat
-        return (B_n + dt * curl @ E_hat, (B_n, dt, f_norm, u_norm, invHessian))
+        return (B_n + dt * curl @ E_hat, (B_n, dt, f_norm, u_norm, Hessian))
 
     @jax.jit
     def update(x):
@@ -331,8 +333,8 @@ def run(CONFIG):
         P_Leray.T @ δδE(B_hat) @ P_Leray)[-1] * 1e-2 if CONFIG["precond"] else 0.0
 
     @jax.jit
-    def compute_invHessian(B_hat):
-        return jnp.linalg.pinv(P_Leray.T @ (M2 * eps_precond + δδE(B_hat)) @ P_Leray) if CONFIG["precond"] else None
+    def compute_Hessian(B_hat):
+        return P_Leray.T @ (M2 * eps_precond + δδE(B_hat)) @ P_Leray if CONFIG["precond"] else None
 
     x = (B_hat, (B_hat, CONFIG["dt"], 0.0, 0.0,
          M2 if CONFIG["precond"] else None))
@@ -376,7 +378,7 @@ def run(CONFIG):
         _, dt, force_norm, velocity_norm, invHessian = x[1]
 
         if CONFIG["precond"] and (i % CONFIG["precond_compute_every"] == 0):
-            invHessian = compute_invHessian(x[0])
+            invHessian = compute_Hessian(x[0])
 
         if picard_it <= CONFIG["solver_critit"]:
             dt_new = dt * CONFIG["dt_factor"]
