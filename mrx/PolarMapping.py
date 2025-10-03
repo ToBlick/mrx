@@ -335,14 +335,14 @@ def get_xi(_R, _Y, Λ0, Q):
     Args:
         _R (callable): Function defining the R-coordinate transformation
         _Y (callable): Function defining the Y-coordinate transformation
-        Λ0: Reference to the domain operator
+        Λ0 (callable): 0-form
 
     Returns:
         tuple: (ξ, R_hat, Y_hat, Λ0, τ) where:
             - ξ: Polar mapping coefficients
             - R_hat: Projected R-coordinates
             - Y_hat: Projected Y-coordinates
-            - Λ0: Reference to the domain operator
+            - Λ0: 0-form
             - τ: Scaling parameter
     """
     nr, nχ, nζ = Λ0.nr, Λ0.nχ, Λ0.nζ

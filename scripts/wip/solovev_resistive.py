@@ -104,7 +104,7 @@ def psi(p):
 
 
 # %%
-_x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3) = get_2d_grids(F, zeta=0, nx=64)
+_x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3) = get_2d_grids(F, cut_value=0, nx=64)
 _x_1d, _y_1d, (_y1_1d, _y2_1d, _y3_1d), (_x1_1d, _x2_1d,
                                          _x3_1d) = get_1d_grids(F, zeta=0, chi=0, nx=128)
 

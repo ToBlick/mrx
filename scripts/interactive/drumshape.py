@@ -1,5 +1,6 @@
 # %%
 import os
+import time
 from functools import partial
 
 import jax
@@ -7,8 +8,7 @@ import jax.numpy as jnp
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import optax
-import time
- 
+
 from mrx.DeRhamSequence import DeRhamSequence
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction, Pushforward
 from mrx.LazyMatrices import LazyMassMatrix
@@ -138,14 +138,14 @@ def plot_reconstruction(a_hat,
     the first eigenfunction, and the eigenvalue spectrum. Also includes a
     small panel that tracks the loss over iterations (bottom-left).
     """
-    
+
     FIG_SIZE = (12, 6)
     SQUARE_FIG_SIZE = (8, 8)
     TITLE_SIZE = 20
-    LABEL_SIZE = 16
-    TICK_SIZE = 14
-    LINE_WIDTH = 2.5
-    LEGEND_SIZE = 16
+    LABEL_SIZE = 18
+    TICK_SIZE = 16
+    LINE_WIDTH = 3
+    LEGEND_SIZE = 18
 
     fig = plt.figure(figsize=(12, 8))
     gs = gridspec.GridSpec(3, 2, width_ratios=[1, 1.618])
@@ -173,7 +173,7 @@ def plot_reconstruction(a_hat,
     ax1.plot(chi_plot, jax.vmap(radius_h_func)(chi_plot),
              label=r'Fitted Radius', color='purple', linewidth=LINE_WIDTH)
     ax1.plot(chi_plot, jax.vmap(target_radius_func)(chi_plot),
-             '--', label='Target Radius', color='k', linewidth=LINE_WIDTH)
+             ':', label='Target Radius', color='k', linewidth=LINE_WIDTH)
     ax1.set_xlabel(r'$\theta$', fontsize=LABEL_SIZE)
     ax1.set_ylabel(r'$a(\theta)$', fontsize=LABEL_SIZE)
     ax1.tick_params(axis='y', labelsize=TICK_SIZE)
@@ -242,7 +242,8 @@ def plot_reconstruction(a_hat,
     current_evs = evs[:k_evs]
     k_plot = jnp.arange(1, k_evs + 1)
 
-    ax3.plot(k_plot, target_evs, '-.', color='k', label='target spectrum', linewidth=LINE_WIDTH)
+    ax3.plot(k_plot, target_evs, ':', color='k',
+             label='target spectrum', linewidth=LINE_WIDTH)
     ax3.plot(k_plot, current_evs, '-',
              color='purple', label='fitted spectrum', linewidth=LINE_WIDTH)
     ax3.set_yscale('log')
@@ -264,7 +265,8 @@ def plot_reconstruction(a_hat,
              color='purple', label='relative Error')
     ax4.set_yscale('log')
     ax4.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
-    ax4.set_ylabel(r'$|\lambda_k - \lambda_k^*| / \lambda_k$', fontsize=LABEL_SIZE)
+    ax4.set_ylabel(r'$|\lambda_k - \lambda_k^*| / \lambda_k$',
+                   fontsize=LABEL_SIZE)
     ax4.tick_params(axis='y', labelsize=TICK_SIZE)
     ax4.tick_params(axis='x', labelsize=TICK_SIZE)
     ax4.grid(True, which='both', linestyle='--', alpha=0.6)
@@ -276,9 +278,12 @@ def plot_reconstruction(a_hat,
         ys = [float(v) for v in loss_history]
         # plot loss in log-scale and use purple to match other plots
         ax_err.plot(xs, ys, '-', color='purple', linewidth=LINE_WIDTH)
-        ax_err.set_xlabel(r'n', fontsize=LABEL_SIZE)
-        ax_err.set_ylabel(r'$\sum_k ( |\lambda_k - \lambda_k^*| / \lambda_k^* )^2$', fontsize=LABEL_SIZE)
+        ax_err.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
+        ax_err.set_ylabel(
+            r'$\sum_k ( |\lambda_k - \lambda_k^*| / \lambda_k^* )^2$', fontsize=LABEL_SIZE)
         ax_err.set_yscale('log')
+        ax_err.tick_params(axis='y', labelsize=TICK_SIZE)
+        ax_err.tick_params(axis='x', labelsize=TICK_SIZE)
         ax_err.grid(True, which="both", linestyle='--', alpha=0.6)
         ax_err.set_ylim(1e-7, 1.1 * loss_history[0])
         # Fix x-axis length if requested
@@ -324,7 +329,7 @@ def main():
     ps = (POLY_DEGREE, POLY_DEGREE, 0)
     q = 2*POLY_DEGREE
     types = ("clamped", "periodic", "constant")
-    
+
     def F_default(x):
         """Polar coordinate mapping function."""
         r, χ, z = x
@@ -338,9 +343,9 @@ def main():
     target_evs_full, _ = get_evs(a_target, N_MAP, P_MAP, Seq)
     k_max = jnp.minimum(K_EVS, len(target_evs_full))
     target_evs = target_evs_full[:k_max]
-    
 
     # --- Loss Function ---
+
     def fit_evs(a_hat):
         """Computes the squared error between current and target spectra."""
         evs, _ = get_evs(a_hat, N_MAP, P_MAP, Seq)
@@ -355,7 +360,8 @@ def main():
     value_fun = jax.jit(fit_evs)
     # Initialize parameters with a random perturbation around a circle
     key = jax.random.PRNGKey(1)
-    a_hat = jnp.maximum(jnp.ones(N_MAP) + 0.5 * jax.random.normal(key, (N_MAP,)), 0.01)
+    a_hat = jnp.maximum(jnp.ones(N_MAP) + 0.5 *
+                        jax.random.normal(key, (N_MAP,)), 0.01)
 
     # Set up the optimizer
     optimizer = optax.adam(learning_rate=LEARNING_RATE)
@@ -384,7 +390,8 @@ def main():
     for i in range(NUM_STEPS):
         value, grad = value_and_grad_fn(a_hat)
 
-        updates, opt_state = optimizer.update(grad, opt_state, a_hat, value=value, grad=grad, value_fn=value_fun)
+        updates, opt_state = optimizer.update(
+            grad, opt_state, a_hat, value=value, grad=grad, value_fn=value_fun)
         a_hat = optax.apply_updates(a_hat, updates)
 
         # record loss
@@ -428,21 +435,6 @@ def main():
     #                     )
 
     # Plot a comparison of the eigenvalue spectra
-    plt.figure(figsize=(8, 6))
-    k_plot = jnp.arange(K_EVS)
-    circle_evs, _ = get_evs(jnp.ones(N_MAP), N_MAP, P_MAP, Seq)
-    fit_evs_final, _ = get_evs(a_hat, N_MAP, P_MAP, Seq)
-
-    plt.plot(k_plot, circle_evs[:], 'o-', label='Circle (Initial Guess Basis)')
-    plt.plot(k_plot, target_evs, 's-', label='Ellipse (Target)')
-    plt.plot(k_plot, fit_evs_final[:], '^-', label='Fitted Shape (Final)')
-    plt.xlabel(r'Eigenvalue index $k$')
-    plt.ylabel(r'Eigenvalue $\lambda_k$')
-    plt.title('Comparison of Eigenvalue Spectra')
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.legend()
-    plt.savefig(os.path.join(OUTPUT_DIR, "final_spectra_comparison.pdf"))
-    plt.show()
 
 
 if __name__ == '__main__':

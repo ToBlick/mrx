@@ -5,18 +5,16 @@ import time
 import h5py
 import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import numpy as np
 
 from mrx.BoundaryFitting import cerfon_map
 from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction
+from mrx.DifferentialForms import DiscreteFunction, Pushforward
 from mrx.InputOutput import parse_args, unique_id
 from mrx.IterativeSolvers import picard_solver
 from mrx.Nonlinearities import CrossProductProjection
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction, Pushforward
 from mrx.Plotting import get_1d_grids, get_2d_grids
-import matplotlib.pyplot as plt
 
 jax.config.update("jax_enable_x64", True)
 
@@ -38,7 +36,7 @@ CONFIG = {
     "kappa":    1.7,   # Elongation parameter
     "q_star":   1.57,  # toroidal field strength
     "delta":    0.33,
-    
+
     ###
     # ITER: eps=0.32, kappa=1.7, delta=0.33, q_star=1.57
     # NSTX: eps=0.78, kappa=2, delta=0.35, q_star=2
@@ -58,7 +56,8 @@ CONFIG = {
     ###
     # Hyperparameters for the relaxation
     ###
-    "gamma":    0,                  # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
+    # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
+    "gamma":    0,
     "dt":       1e-4,                  # Time step
     "dt_max":   1e-1,                # max. time step
     "n_steps":  100_000,           # max. Number of time steps
@@ -103,17 +102,17 @@ def run(CONFIG):
 
     solver_tol = CONFIG["solver_tol"]
     max_iter = int(CONFIG["max_iter"])
-    
+
     alpha = jnp.arcsin(delta)
     tau = q_star * eps * kappa * (1 + kappa**2) / (kappa + 1)
     F = cerfon_map(eps, kappa, alpha, R0)
-    
+
     time0 = time.time()
-        
+
     _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3) = get_2d_grids(
-        F, zeta=0, nx=64, tol=1e-2)
-        
-        # %%
+        F, cut_value=0, nx=64, tol1=1e-2)
+
+    # %%
 
     ns = (CONFIG["n_r"], CONFIG["n_chi"], CONFIG["n_zeta"])
     ps = (CONFIG["p_r"], CONFIG["p_chi"], 0
@@ -195,11 +194,11 @@ def run(CONFIG):
     # One step of resisitive relaxation to get J x n = 0 on ∂Ω
     # B_hat = jnp.linalg.solve(
     #     jnp.eye(M2.shape[0]) + eps_init * curl @ weak_curl, B_hat)
-    
+
     B_hat /= (B_hat @ M2 @ B_hat)**0.5  # normalize
     A_hat = jnp.linalg.solve(laplace_1, M1 @ weak_curl @ B_hat)
     B_harm_hat = B_hat - curl @ A_hat
-    
+
     print(f"Initial energy: {B_hat @ M2 @ B_hat / 2:.5f}")
     print(f"Initial helicity: {A_hat @ M12 @ (B_hat + B_harm_hat):.5f}")
     print(f"Initial ||div B||: {((dvg @ B_hat) @ M3 @ dvg @ B_hat)**0.5:.2e}")
@@ -217,7 +216,7 @@ def run(CONFIG):
     dim2 = M2.shape[0]
     dim3 = M3.shape[0]
 
-    # State is given by x = (B˖, B, dt, |JxB - grad p|) 
+    # State is given by x = (B˖, B, dt, |JxB - grad p|)
     #
     @jax.jit
     def L2norm(x):
@@ -237,35 +236,36 @@ def run(CONFIG):
             u_hat = jnp.linalg.inv(M2 + laplace_2) @ M2 @ u_hat
         dt = jnp.minimum(dt0 / f_norm, dt_max)
         E_hat = jnp.linalg.solve(M1, P_uxH(u_hat, H_hat)) - eta * J_hat
-        return jnp.concatenate((B_n + dt * curl @ E_hat, 
-                                B_n, 
-                                jnp.ones(1) * dt, 
+        return jnp.concatenate((B_n + dt * curl @ E_hat,
+                                B_n,
+                                jnp.ones(1) * dt,
                                 jnp.ones(1) * f_norm))
 
     @jax.jit
     def update(x):
         return picard_solver(implicit_update, x, tol=solver_tol, norm=L2norm, max_iter=max_iter)
 
-
     # x = jnp.concatenate((B_hat, B_hat, jnp.ones(1) * dt0, jnp.zeros(1)))
     dt = dt0
     force_err = 0
-    
-    x = jnp.concatenate((B_hat, B_hat, jnp.ones(1) * dt, jnp.ones(1) * force_err))
+
+    x = jnp.concatenate(
+        (B_hat, B_hat, jnp.ones(1) * dt, jnp.ones(1) * force_err))
     _, _, _ = update(x)  # compile
     print(f"Initial force error: {update(x)[0][-1]:.2e}")
     # %%
     time1 = time.time()
     print(f"Setup took {time1 - time0:.2f} seconds.")
     print("Starting main loop...")
-    for i in range(1,n_steps+1):
-        x = jnp.concatenate((B_hat, B_hat, jnp.ones(1) * dt, jnp.ones(1) * force_err))
+    for i in range(1, n_steps+1):
+        x = jnp.concatenate(
+            (B_hat, B_hat, jnp.ones(1) * dt, jnp.ones(1) * force_err))
         x, picard_err, it = update(x)
-        
+
         force_err = x[-1]
         dt = x[-2]
         B_hat = x[:dim2]
-        
+
         A_hat = jnp.linalg.solve(laplace_1, M1 @ weak_curl @ B_hat)
         dts.append(dt)
         iters.append(it)
@@ -287,7 +287,8 @@ def run(CONFIG):
 # %%
 
     time2 = time.time()
-    print(f"Main loop took {time2 - time1:.2f} seconds for {i} steps, avg. { (time2 - time1)/i:.5f} s/step.")
+    print(
+        f"Main loop took {time2 - time1:.2f} seconds for {i} steps, avg. {(time2 - time1)/i:.5f} s/step.")
     ###
     # Post-processing
     ###
@@ -318,8 +319,6 @@ def run(CONFIG):
     energy_trace = E_trace
     helicity_trace = H_trace
 
-
-    
     FIG_SIZE = (12, 6)
     SQUARE_FIG_SIZE = (8, 8)
     TITLE_SIZE = 20
@@ -328,7 +327,7 @@ def run(CONFIG):
     LINE_WIDTH = 2.5
     LEGEND_SIZE = 16
     _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3) = get_2d_grids(
-        F, zeta=0, nx=64, tol=1e-2)
+        F, cut_value=0, nx=64, tol1=1e-2)
     print("Generating pressure plot...")
     # Plot number one: pressure contour plot
     p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0_0.matrix())
@@ -376,7 +375,6 @@ def run(CONFIG):
 
     fig1, ax2 = plt.subplots(figsize=FIG_SIZE)
     ax1 = ax2.twinx()
-    
 
     # Plot Energy on the left y-axis (ax1)
     color1 = 'purple'
@@ -414,7 +412,7 @@ def run(CONFIG):
     fig1.tight_layout()
 
 # %%
-    
+
     ###
     # Save stuff
     ###
