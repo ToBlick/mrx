@@ -175,7 +175,7 @@ def plot_reconstruction(a_hat,
     ax1.plot(chi_plot, jax.vmap(target_radius_func)(chi_plot),
              '--', label='Target Radius', color='k', linewidth=LINE_WIDTH)
     ax1.set_xlabel(r'$\theta$', fontsize=LABEL_SIZE)
-    ax1.set_ylabel(r'$r(\theta)$', fontsize=LABEL_SIZE)
+    ax1.set_ylabel(r'$a(\theta)$', fontsize=LABEL_SIZE)
     ax1.tick_params(axis='y', labelsize=TICK_SIZE)
     ax1.tick_params(axis='x', labelsize=TICK_SIZE)
     if legends:
