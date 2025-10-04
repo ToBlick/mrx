@@ -84,7 +84,7 @@ class DeRhamSequence():
                 ξ, _, _, _, τ = get_xi(_R, _Z, self.Λ0, self.Q)
                 xis.append(ξ)
                 taus.append(τ)
-            print("taus:", taus)
+            # print("taus:", taus)
             max_idx = jnp.argmax(jnp.array(taus), axis=0)  # worst case
             ξ = xis[max_idx]
 

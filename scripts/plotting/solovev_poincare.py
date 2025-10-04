@@ -19,8 +19,10 @@ from mrx.Plotting import (
     set_axes_equal,
 )
 
+# Enable 64-bit precision for numerical stability
+jax.config.update("jax_enable_x64", True)
 # %%
-name = "HELIX_precond"
+name = "HELIX_precond_False_10x8x6"
 with h5py.File("../../script_outputs/solovev/" + name + ".h5", "r") as f:
     B_hat = f["B_final"][:]
     p_hat = f["p_final"][:]
@@ -64,17 +66,18 @@ Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
 B_h = jax.jit(DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix()))
 # %%
 # at zeta = 0, we are in the (R, z) plane, so we sample there:
-n_lines = 16  # even numbers only
-_r = np.linspace(0.05, 0.95, n_lines)
+n_lines = 8  # even numbers only
+_r = np.linspace(0.2, 0.9, n_lines)
 x0s = np.vstack(
     (np.hstack((_r[::2], _r[-1::-2])),                              # between 0 and 1
      # half go to theta=0 and half to theta=pi
      np.hstack((np.zeros(n_lines//2), 0.5 * np.ones(n_lines//2))),
-     np.zeros(n_lines))
+     0.0 * np.ones(n_lines))
 ).T
 # %%
 
 
+@jax.jit
 def vector_field(x):
     """Return the norm of B at x=(r,theta,zeta) in [0,1]^3."""
     r, θ, z = x
@@ -87,10 +90,15 @@ def vector_field(x):
     return Bx / jnp.linalg.norm(DFx @ Bx)
 
 
+# %%
+vector_field(jnp.array([0.25, 0.0, 0.0]))
+# %%
+
+
 def integrate_field_line(v, x0, t_span=(0, 1000), n_saves=10000, max_step=0.05, rtol=1e-6, atol=1e-9):
 
     if n_saves is None:
-        n_saves = 100 * t_span[1]
+        n_saves = 1000 * t_span[1]
     t_eval = np.linspace(t_span[0], t_span[1], n_saves)
 
     def rhs(t, x):
@@ -101,7 +109,7 @@ def integrate_field_line(v, x0, t_span=(0, 1000), n_saves=10000, max_step=0.05, 
         z = z % 1.0
 
         vec = v(np.array([r, θ, z]))
-        return vec / jnp.linalg.norm(vec)
+        return vec
 
     sol = solve_ivp(
         rhs, t_span, np.array(x0, dtype=float),
@@ -112,7 +120,7 @@ def integrate_field_line(v, x0, t_span=(0, 1000), n_saves=10000, max_step=0.05, 
 
 # %%
 field_lines = [integrate_field_line(
-    vector_field, x0, t_span=(0, 100), n_saves=None) for x0 in x0s]
+    vector_field, x0, t_span=(0, 1000), n_saves=None) for x0 in x0s]
 # %%
 physical_field_lines = [
     np.array(jax.vmap(F, in_axes=1, out_axes=1)(x)) for x in field_lines]
@@ -188,7 +196,7 @@ def fieldline_phi_plane_crossings(ys, phi0):
 
 
 # %%
-phi_0 = 0.35  # toroidal angle of the plane to intersect
+phi_0 = 0.2 * jnp.pi * 2  # toroidal angle of the plane to intersect
 crossings = [fieldline_phi_plane_crossings(
     x, phi0=phi_0) for x in physical_field_lines]
 
@@ -206,13 +214,10 @@ plt.show()
 # Plot a field line in 3D
 fig = plt.figure()
 ax = fig.add_subplot(111, projection="3d")
-for x in physical_field_lines[3:6]:
+for x in physical_field_lines[1:2]:
     ax.plot(*x, lw=0.1)
 set_axes_equal(ax)
 ax.set_title("Magnetic field lines")
 plt.show()
+
 # %%
-plt.plot(field_lines[0][:, 0], label="r")
-plt.plot(field_lines[0][:, 1], label="θ")
-plt.plot(field_lines[0][:, 2], label="z")
-plt.legend()

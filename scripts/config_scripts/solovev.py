@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.BoundaryFitting import cerfon_map, helical_map, rotating_ellipse_map
+from mrx.BoundaryFitting import cerfon_map, helical_map, rotating_ellipse_map, w7x_map
 from mrx.DeRhamSequence import DeRhamSequence
 from mrx.DifferentialForms import DiscreteFunction, Pushforward
 from mrx.InputOutput import parse_args, unique_id
@@ -27,20 +27,27 @@ os.makedirs(outdir, exist_ok=True)
 # Default configuration
 ###
 DEVICE_PRESETS = {
-    "ITER":  {"eps": 0.32, "kappa": 1.7, "delta": 0.33, "q_star": 1.57, "type": "tokamak",
+    "ITER":  {"eps": 0.32, "kappa": 1.7,  "delta": 0.33,
+              "q_star": 1.57, "type": "tokamak",
               "n_zeta": 1, "p_zeta": 0},
-    "NSTX":  {"eps": 0.78, "kappa": 2.0, "delta": 0.35, "q_star": 2.0, "type": "tokamak",
+    "NSTX":  {"eps": 0.78, "kappa": 2.0, "delta": 0.35,
+              "q_star": 2.0, "type": "tokamak",
               "n_zeta": 1, "p_zeta": 0},
-    "SPHERO": {"eps": 0.95, "kappa": 1.0, "delta": 0.2,  "q_star": 0.0, "type": "tokamak",
+    "SPHERO": {"eps": 0.95, "kappa": 1.0, "delta": 0.2,
+               "q_star": 0.0, "type": "tokamak",
                "n_zeta": 1, "p_zeta": 0},
-    "ROT_ELL": {"eps": 0.1, "kappa": 4, "m_rot": 5, "q_star": 0.0, "type": "rotating_ellipse"},
-    "HELIX": {"eps": 0.33, "h_helix": 0.20, "kappa": 1.7, "m_helix": 3, "q_star": 2.0, "type": "helix"},
+    "ROT_ELL": {"eps": 0.1, "kappa": 4, "m_rot": 5,
+                "q_star": 0.0, "type": "rotating_ellipse"},
+    "HELIX": {"eps": 0.33, "kappa": 1.7, "delta": 0.33, "m_delta": 3,
+              "h_helix": 0.20,  "m_helix": 3,
+              "q_star": 2.0,  "type": "helix"},
+    "W7X": {"eps": 0.2, "q_star": 0.0,  "type": "w7x"},
 }
 
 CONFIG = {
     "run_name": "",  # Name for the run. If empty, a hash will be created
 
-    "type": "helix",  # Type of configuration: "tokamak" or "helix" or "rotating_ellipse"
+    "type": "w7x",  # Type of configuration: "tokamak" or "helix" or "rotating_ellipse"
 
     ###
     # Parameters describing the domain.
@@ -52,11 +59,12 @@ CONFIG = {
     "m_helix":  3,     # poloidal mode number of helix
     "h_helix":  0.25,  # radius of helix turns
     "m_rot":   2,      # mode number of rotating ellipse
+    "m_delta": 3,    # mode number of variation of triangularity in helix
 
     ###
     # Discretization
     ###
-    "n_r": 8,       # Number of radial splines
+    "n_r": 16,       # Number of radial splines
     "n_theta": 8,   # Number of poloidal splines
     "n_zeta": 4,    # Number of toroidal splines
     "p_r": 3,       # Degree of radial splines
@@ -122,8 +130,12 @@ def run(CONFIG):
         F = helical_map(eps, CONFIG["h_helix"], CONFIG["m_helix"])
     elif CONFIG["type"] == "rotating_ellipse":
         F = rotating_ellipse_map(eps, CONFIG["kappa"], CONFIG["m_rot"])
+    elif CONFIG["type"] == "w7x":
+        F = w7x_map()
     else:
         raise ValueError("Unknown configuration type.")
+
+    F = jax.jit(F)
 
     ns = (CONFIG["n_r"], CONFIG["n_theta"], CONFIG["n_zeta"])
     ps = (CONFIG["p_r"], CONFIG["p_theta"], 0
@@ -316,18 +328,26 @@ def run(CONFIG):
         # DFp = jax.jacfwd(F)(p)
         # J = jnp.linalg.det(DFp)
         # Br = J / jnp.linalg.norm(DFp[:, 1]) * 0.0
-        # Btheta = J / jnp.linalg.norm(DFp[:, 1]) * 0.1 * p[0]
-        # Bzeta = J / jnp.linalg.norm(DFp[:, 2]) * 0.9
+        # Btheta = J / jnp.linalg.norm(DFp[:, 1]) * (-p[0])
+        # Bzeta = J / jnp.linalg.norm(DFp[:, 2]) * (-4 * R)
         # return DFp @ jnp.array([Br, Btheta, Bzeta]) / J
 
     # Set up inital condition
     B_harm_hat = jnp.linalg.eigh(laplace_2)[1][:, 0]
     B_harm_hat /= (B_harm_hat @ M2 @ B_harm_hat)**0.5
 
-    B_hat = jnp.linalg.solve(M2, Seq.P2_0(B_xyz))
-    B_hat = P_Leray @ B_hat
-    B_hat /= (B_hat @ M2 @ B_hat)**0.5
+    # One step of resisitive relaxation to get J x n = 0 on ∂Ω
+    B_hat = jnp.linalg.solve(
+        jnp.eye(M2.shape[0]) + laplace_2, B_harm_hat)
+    B_hat = B_harm_hat
+    # B_hat = jnp.linalg.solve(M2, Seq.P2_0(B_xyz))
+    # # if CONFIG["type"] == "w7x":
+    # #     B_hat /= (B_hat @ M2 @ B_hat)**0.5
+    # #     B_hat = B_hat * 0.05 + B_harm_hat * 0.95
+    # B_hat = P_Leray @ B_hat
 
+    B_hat /= (B_hat @ M2 @ B_hat)**0.5
+    p_hat = compute_pressure(B_hat)
     # %%
     eps_precond = jnp.linalg.eigvalsh(
         P_Leray.T @ δδE(B_hat) @ P_Leray)[-1] * 1e-2 if CONFIG["precond"] else 0.0

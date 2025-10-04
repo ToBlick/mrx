@@ -11,7 +11,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.interpolate import LinearNDInterpolator, RegularGridInterpolator
 
-from mrx.BoundaryFitting import helical_map, rotating_ellipse_map
+from mrx.BoundaryFitting import helical_map, rotating_ellipse_map, w7x_map
 from mrx.DeRhamSequence import DeRhamSequence
 from mrx.DifferentialForms import DiscreteFunction, Pushforward
 from mrx.Plotting import (
@@ -20,6 +20,7 @@ from mrx.Plotting import (
     plot_crossections_separate,
     plot_torus,
 )
+from mrx.Quadrature import QuadratureRule
 
 # --- Figure settings ---
 FIG_SIZE = (12, 6)
@@ -37,7 +38,7 @@ jax.config.update("jax_enable_x64", True)
 os.makedirs("script_outputs", exist_ok=True)
 
 p = 2
-n = 4
+n = 3
 
 # Set up finite element spaces
 q = 2*p
@@ -59,8 +60,10 @@ def f(x):
 
 # Create DeRham sequence
 Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
+assert jnp.min(
+    Seq.J_j) > 0, f"Singular mapping! {jnp.sum(jnp.ones_like(Seq.J_j)[Seq.J_j <= 0])}"
 # Get stiffness matrix and projector
-
+# %%
 M0 = Seq.assemble_M0_0()
 M1 = Seq.assemble_M1_0()
 M2 = Seq.assemble_M2_0()
@@ -81,8 +84,6 @@ laplace_2 = M2 @ curl @ weak_curl + \
 laplace_3 = - M3 @ dvg @ weak_grad  # dim ker = 1 (constants)
 
 P0 = Seq.P0_0  # Projector for 0-forms
-
-
 # %%
 print("Smallest 3 eigenvalues of Laplace operators:")
 print("0-forms (dim ker = 0):", jnp.linalg.eigvalsh(laplace_0)[:3])
@@ -91,34 +92,23 @@ print("2-forms (dim ker = 1):", jnp.linalg.eigvalsh(laplace_2)[:3])
 print("3-forms (dim ker = 1):", jnp.linalg.eigvalsh(laplace_3)[:3])
 # %%
 # Solve the system
-u_hat = jnp.linalg.solve(laplace_0, P0(f))
-p_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0_0.matrix())
-
-# Plot solution
-grids = [get_2d_grids(F, cut_axis=2, cut_value=v, nx=32)
-         for v in jnp.linspace(0, 1, 32, endpoint=False)]
-# grids[i] = _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
-# %%
+u_hat = jnp.ones_like(jnp.linalg.solve(laplace_0, P0(f)))
+p_h = Pushforward(DiscreteFunction(u_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
 
 # %%
 cuts = jnp.linspace(0, 1, 8, endpoint=True)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
-                          nx=16, ny=16, nz=1) for v in cuts]
+                          nx=32, ny=32, nz=1) for v in cuts]
 grid_surface = get_2d_grids(F, cut_axis=0, cut_value=1.0,
-                            ny=64, nz=128, z_min=cuts[0], z_max=cuts[-1], invert_z=True)
+                            ny=128, nz=128, z_min=0, z_max=1, invert_z=True)
 # %%
-fig, ax = plot_torus(p_h, grids_pol, grid_surface)
+fig, ax = plot_torus(p_h, grids_pol, grid_surface,
+                     gridlinewidth=1, cstride=8)
 # %%
-grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v, nx=32, ny=32,)
-             for v in jnp.linspace(0, 1, 16, endpoint=False)]
+plot_crossections_separate(p_h, grids_pol, cuts,
+                           plot_centerline=False)
 
 # %%
-fig, ax = plot_crossections_separate(p_h, grids_pol)
-# %%
-
-
-# %%
-
 
 # @jax.jit
 # def vector_field(t, p, args):
@@ -432,3 +422,5 @@ fig, ax = plot_crossections_separate(p_h, grids_pol)
 # plt.tight_layout()
 
 # # %%
+
+# %%

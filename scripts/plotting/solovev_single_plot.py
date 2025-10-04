@@ -18,8 +18,10 @@ from mrx.Plotting import (
     set_axes_equal,
 )
 
+# Enable 64-bit precision for numerical stability
+jax.config.update("jax_enable_x64", True)
 # %%
-name = "helix_2"
+name = "helix_precond"
 with h5py.File("../../script_outputs/solovev/" + name + ".h5", "r") as f:
     B_hat = f["B_final"][:]
     p_hat = f["p_final"][:]
@@ -45,9 +47,11 @@ gamma = CONFIG["gamma"]
 if CONFIG["type"] == "tokamak":
     F = cerfon_map(eps, kappa, alpha)
 elif CONFIG["type"] == "helix":
-    F = helical_map(eps, CONFIG["h_helix"], CONFIG["m_helix"])
+    F = helical_map(epsilon=CONFIG["eps"], kappa=CONFIG["kappa"],
+                    h=CONFIG["h_helix"], n_turns=CONFIG["m_helix"])
 elif CONFIG["type"] == "rotating_ellipse":
-    F = rotating_ellipse_map(eps, CONFIG["kappa"], CONFIG["m_rot"])
+    F = rotating_ellipse_map(
+        epsilon=CONFIG["eps"], kappa=CONFIG["kappa"], m=CONFIG["m_rot"])
 else:
     raise ValueError("Unknown configuration type.")
 ns = (CONFIG["n_r"], CONFIG["n_theta"], CONFIG["n_zeta"])
@@ -59,6 +63,7 @@ types = ("clamped", "periodic",
 print("Setting up FEM spaces...")
 Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
 
+assert jnp.min(Seq.J_j) > 0, "Map is singular!"
 # %%
 p_h = Pushforward(DiscreteFunction(p_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
 # %%
@@ -68,14 +73,16 @@ grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
 grid_surface = get_2d_grids(F, cut_axis=0, cut_value=1.0,
                             ny=128, nz=128, z_min=0, z_max=1, invert_z=True)
 # %%
+plot_crossections_separate(p_h, grids_pol, cuts, plot_centerline=True)
+# plt.savefig(os.path.join("script_outputs",
+#             "solovev", "rotating_ellipse_cuts.pdf"))
+# %%
 fig, ax = plot_torus(p_h, grids_pol, grid_surface,
                      gridlinewidth=1, cstride=8)
 # plt.savefig(os.path.join("script_outputs",
 #             "solovev", "rotating_ellipse_3d.pdf"))
 # %%
-plot_crossections_separate(p_h, grids_pol, cuts, plot_centerline=True)
-# plt.savefig(os.path.join("script_outputs",
-#             "solovev", "rotating_ellipse_cuts.pdf"))
+
 # %%
 p_avg = p_hat @ Seq.P0_0(lambda x: jnp.ones(1)) / (Seq.J_j @ Seq.Q.w)
 beta = p_avg / energy_trace[-1]
@@ -83,4 +90,5 @@ print(f"Beta = {beta:.3e}")
 # %%
 print("Final |JxB - grad p| / |grad p| =", force_trace[-1])
 print("Initial |JxB - grad p| / |grad p| =", force_trace[0])
+
 # %%
