@@ -121,7 +121,7 @@ def cerfon_map(epsilon, kappa, alpha, R0=1.0):
     return F
 
 
-def helical_map(epsilon=0.33, h=0.25, n_turns=3, kappa=1.0):
+def helical_map(epsilon=0.33, h=0.25, n_turns=3, kappa=1.0, alpha=-0.3):
     π = jnp.pi
 
     def X(ζ):
@@ -130,6 +130,22 @@ def helical_map(epsilon=0.33, h=0.25, n_turns=3, kappa=1.0):
             (1 + h * jnp.cos(2 * π * n_turns * ζ)) * jnp.sin(2 * π * ζ),
             h * jnp.sin(2 * π * n_turns * ζ)
         ])
+
+    def dx_t(t):
+        return epsilon * jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t))
+
+    def dy_t(t):
+        return epsilon * kappa * jnp.sin(2 * π * t)
+
+    def _s_from_t(t):
+        return jnp.arctan2(kappa * jnp.sin(2 * π * t),
+                           jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t)))
+
+    def s_from_t(t):
+        return jnp.where(t > 0.5, _s_from_t(t) + 2 * π, _s_from_t(t))
+
+    def a_from_t(t):
+        return jnp.sqrt(dx_t(t)**2 + dy_t(t)**2)
 
     def get_frame(ζ):
         dX = jax.jacrev(X)
@@ -144,9 +160,10 @@ def helical_map(epsilon=0.33, h=0.25, n_turns=3, kappa=1.0):
 
     def F(x):
         """Helical coordinate mapping function."""
-        r, θ, ζ = x
+        r, t, ζ = x
         _, ν1, ν2 = get_frame(ζ)
-        return X(ζ) + epsilon * r * jnp.cos(2 * π * θ) * ν1 + epsilon * r * kappa * jnp.sin(2 * π * θ) * ν2
+        return (X(ζ) + r * a_from_t(t) * jnp.cos(s_from_t(t)) * ν1
+                + r * a_from_t(t) * jnp.sin(s_from_t(t)) * ν2)
 
     return F
 
