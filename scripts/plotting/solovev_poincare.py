@@ -1,12 +1,15 @@
 # %%
 import os
 
+import diffrax as dfx
 import h5py
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.integrate import solve_ivp
+import optimistix as optx
+from matplotlib import gridspec
+from matplotlib.ticker import MultipleLocator
 
 from mrx.BoundaryFitting import cerfon_map, helical_map, rotating_ellipse_map
 from mrx.DeRhamSequence import DeRhamSequence
@@ -20,7 +23,7 @@ from mrx.Plotting import (
 )
 
 # %%
-name = "HELIX_precond_False_10x8x6"
+name = "9zrUjmG9"
 with h5py.File("../../script_outputs/solovev/" + name + ".h5", "r") as f:
     B_hat = f["B_final"][:]
     p_hat = f["p_final"][:]
@@ -34,19 +37,15 @@ with h5py.File("../../script_outputs/solovev/" + name + ".h5", "r") as f:
               else v for k, v in CONFIG.items()}
 # %%
 # Get the map and sequences back:
-delta = CONFIG["delta"]
 kappa = CONFIG["kappa"]
-q_star = CONFIG["q_star"]
 eps = CONFIG["eps"]
-alpha = jnp.arcsin(delta)
-tau = q_star * eps * kappa * (1 + kappa**2) / (kappa + 1)
-π = jnp.pi
-gamma = CONFIG["gamma"]
+alpha = jnp.arcsin(CONFIG["delta"])
 
 if CONFIG["type"] == "tokamak":
     F = cerfon_map(eps, kappa, alpha)
 elif CONFIG["type"] == "helix":
-    F = helical_map(eps, CONFIG["h_helix"], CONFIG["m_helix"])
+    F = helical_map(epsilon=CONFIG["eps"], h=CONFIG["h_helix"],
+                    n_turns=CONFIG["m_helix"], kappa=CONFIG["kappa"], alpha=alpha)
 elif CONFIG["type"] == "rotating_ellipse":
     F = rotating_ellipse_map(eps, CONFIG["kappa"], CONFIG["m_rot"])
 else:
@@ -58,169 +57,270 @@ q = max(ps)
 types = ("clamped", "periodic",
          "constant" if CONFIG["n_zeta"] == 1 else "periodic")
 print("Setting up FEM spaces...")
-Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
+Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
+assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 # %%
-B_h = (DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix()))
-# %%
-# at zeta = 0, we are in the (R, z) plane, so we sample there:
-n_lines = 24  # even numbers only
-# cluster samples towards r=1
-r_min, r_max = 0.05, 0.99
-p = 1.0
-_r = np.linspace(r_min, r_max, n_lines)
-# x0s = np.vstack(
-#     (np.hstack((_r[::3], _r[1::3], _r[2::3])),                              # between 0 and 1 - samples along x
-#      # half go to theta=0 and half to theta=pi
-#      np.hstack((0.31 * np.ones(n_lines//3),
-#                 0.43 * np.ones(n_lines//3),
-#                 0.76 * np.ones(n_lines//3))),
-#      0.743 * np.ones(n_lines))
-# ).T
-x0s = np.vstack(
-    (_r,
-     0.0 * np.ones(n_lines),
-     0.0 * np.ones(n_lines))
-).T
-# %%
+F = jax.jit(F)
 
 
 @jax.jit
-def vector_field(x):
-    """Return the norm of B at x=(r,theta,zeta) in [0,1]^3."""
-    r, θ, z = x
-    r = jnp.clip(r, 1e-6, 1)  # avoid r=0 in polar coords
-    θ = θ % 1.0
-    z = z % 1.0
-    x = jnp.array([r, θ, z])
-    Bx = B_h(jnp.array(x))
-    DFx = jax.jacfwd(F)(jnp.array(x))
-    return Bx / jnp.linalg.norm(DFx @ Bx)
+def F_cyl_signed(x):
+    """Cylindrical coords with signed R."""
+    R = jnp.sqrt(x[0]**2 + x[1]**2) * \
+        jnp.sign(jnp.sin(jnp.arctan2(x[1], x[0])))
+    phi = jnp.arctan2(x[1], x[0])
+    z = x[2]
+    return jnp.array([R, phi, z])
 
 
-def integrate_field_line(v, x0, t_span=(0, 200), n_saves=None, max_step=100.0, rtol=1e-6, atol=1e-9):
+p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
+B_h = (DiscreteFunction(B_hat, Seq.Λ2, Seq.E2))
+# %%
+# at zeta = 0, we are in the (R, z) plane, so we sample there:
+n_lines = 60  # even numbers only
+r_min, r_max = 0.05, 1.0
+p = 1.0
+_r = np.linspace(r_min, r_max, n_lines)
+x0s = np.vstack(
+    (np.hstack((_r[::3], _r[1::3], _r[2::3])),                              # between 0 and 1 - samples along x
+     # half go to theta=0 and half to theta=pi
+     np.hstack((0.31 * np.ones(n_lines//3),
+                0.43 * np.ones(n_lines//3),
+                0.76 * np.ones(n_lines//3))),
+     0.743 * np.ones(n_lines))
+).T
+# x0s = np.vstack(
+#     (_r,
+#      0.0 * np.ones(n_lines),
+#      0.0 * np.ones(n_lines))
+# ).T
 
-    if n_saves is None:
-        n_saves = 1000 * t_span[1]
-    t_eval = np.linspace(t_span[0], t_span[1], n_saves)
+# %%
 
-    def rhs(t, x):
-        # apply periodicity
+
+def integrate_field_line_diffrax(B_h, x0, F, N, phi_target):
+    """
+    Integrate a field line x'(t) = v(x)/||v(x)|| using Diffrax, 
+    detecting crossings where F(x)[1] passes target values.
+
+    Args:
+        v: Callable(x) -> vector field (R^3 -> R^3)
+        F: Callable(x) -> map R^3 -> R^2 or higher (used for event detection)
+        x0: initial position array (3,)
+        targets: sequence of float target values to cross in F(x)[1]
+        N: number of intersections to record
+        t_span: (t0, tf)
+        max_step: maximum step size
+        rtol, atol: solver tolerances
+    Returns:
+        crossings: array of shape (N, 3) with intersection points
+    """
+
+    @jax.jit
+    def vector_field(t, x, args):
+        """Return the norm of B at x=(r,theta,zeta) in [0,1]^3."""
+        x = x % 1.0
         r, θ, z = x
         r = jnp.clip(r, 1e-6, 1)  # avoid r=0 in polar coords
-        θ = θ % 1.0
-        z = z % 1.0
+        x = jnp.array([r, θ, z])
+        Bx = B_h(jnp.array(x))
+        DFx = jax.jacfwd(F)(jnp.array(x))
+        return Bx / jnp.linalg.norm(DFx @ Bx)
 
-        vec = v(np.array([r, θ, z]))
-        return vec / jnp.linalg.norm(vec)
+    term = dfx.ODETerm(vector_field)
+    solver = dfx.Dopri5()
 
-    sol = solve_ivp(
-        rhs, t_span, np.array(x0, dtype=float),
-        method="RK45", max_step=max_step, rtol=rtol, atol=atol, t_eval=t_eval
-    )
-    return sol.y % 1
+    def cond_fn(t, y, args, **kwargs):
+        x = F(y)  # cartesian coords
+        phi = (jnp.arctan2(x[1], x[0]) / jnp.pi + 1) / 2  # in [0, 1]
+        return jnp.sin(2 * jnp.pi * (phi - phi_target))
 
+    t0 = 0
+    t1 = jnp.inf
+    dt0 = 0.1
+    term = dfx.ODETerm(vector_field)
+    root_finder = optx.Newton(1e-5, 1e-5, optx.rms_norm)
+    event = dfx.Event(cond_fn, root_finder)
+    solver = dfx.Tsit5()
 
-# %%
-field_lines = [integrate_field_line(
-    vector_field, x0, t_span=(0, 2000), n_saves=None) for x0 in x0s]
-# %%
-physical_field_lines = [
-    np.array(jax.vmap(F, in_axes=1, out_axes=1)(x)) for x in field_lines]
-# %%
+    crossings = jnp.zeros((N, 3))
 
+    for i in range(N):
+        sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, x0, event=event)
+        if sol.ys.size == 0:
+            break
+        x_cross = sol.ys[0]
+        crossings = crossings.at[i, :].set(x_cross)
+        # restart
+        # step a bit forward to avoid finding the same root again
+        x0 = (sol.ys[0] + 1e-6 * vector_field(0, sol.ys[0], None)) % 1.0
 
-def fieldline_phi_plane_crossings(ys, phi0):
-    """
-    Find points where a field line crosses the toroidal plane phi = phi0.
-
-    Parameters
-    ----------
-    ys : np.ndarray
-        Array of shape (3, N) representing the field line in Cartesian coordinates (x, y, z).
-    phi0 : float
-        The toroidal angle (in radians) of the plane to intersect.
-
-    Returns
-    -------
-    crossings : list of (R, z)
-        List of (R, z) points where the field line intersects the plane.
-    """
-    x, y, z = ys
-
-    # Compute toroidal angle phi along trajectory (principal value in [-pi, pi))
-    phi = np.arctan2(y, x)
-
-    # Unwrap phi to a continuous curve to avoid branch-cut artifacts near ±pi.
-    phi_unwrapped = np.unwrap(phi)
-
-    # Look for crossings of phi = phi0 + 2π*k. Compute how many integer
-    # multiples of 2π the unwrapped angle has passed between consecutive
-    # samples. Each integer jump corresponds to a crossing of the target
-    # toroidal plane; interpolate each such crossing accurately.
-    q = (phi_unwrapped - phi0) / (2 * np.pi)
-    floor_q = np.floor(q).astype(int)
-    dq = floor_q[1:] - floor_q[:-1]
-
-    crossings = []
-    for i, delta in enumerate(dq):
-        if delta == 0:
-            # Check exact sample-on-plane (rare) at index i
-            if np.isclose(phi_unwrapped[i] - phi0 - 2 * np.pi * floor_q[i], 0.0, atol=1e-12):
-                R_c = np.hypot(x[i], y[i])
-                crossings.append((R_c, z[i]))
-            continue
-
-        # One or more integer crossings occurred between i and i+1.
-        # Handle forward (delta>0) and backward (delta<0) motion.
-        step = 1 if delta > 0 else -1
-        for s in range(abs(delta)):
-            target_k = floor_q[i] + (s + 1) * step
-            target_phi = phi0 + 2 * np.pi * target_k
-
-            denom = (phi_unwrapped[i + 1] - phi_unwrapped[i])
-            if np.isclose(denom, 0.0):
-                # Degenerate step — fall back to midpoint
-                t = 0.5
-            else:
-                t = (target_phi - phi_unwrapped[i]) / denom
-
-            # Clamp interpolation parameter to [0,1]
-            t = max(0.0, min(1.0, t))
-
-            x_c = x[i] + t * (x[i + 1] - x[i])
-            y_c = y[i] + t * (y[i + 1] - y[i])
-            z_c = z[i] + t * (z[i + 1] - z[i])
-
-            R_c = np.hypot(x_c, y_c)
-            crossings.append((R_c, z_c))
-
-    return np.array(crossings)
+    return crossings
 
 
 # %%
-phi_0 = 0.0 * jnp.pi * 2  # toroidal angle of the plane to intersect
-crossings = [fieldline_phi_plane_crossings(
-    x, phi0=phi_0) for x in physical_field_lines]
+crossings = jax.vmap(lambda x0: integrate_field_line_diffrax(
+    # m x N x 3
+    B_h, x0, F, N=5000, phi_target=0.2, rtol=1e-6, atol=1e-9))(x0s)
 
 # %%
-fig, ax = plt.subplots()
-for x in crossings:
-    if x.size == 0:
-        continue
-    ax.scatter(x[:, 0], x[:, 1], lw=1, s=1)
-ax.set_xlabel("R")
-ax.set_ylabel("z")
-ax.set_aspect('equal', adjustable='box')
+crossings_xyz = jax.vmap(jax.vmap(F))(crossings)
+crossings_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(crossings_xyz)
+# %%
+
+# ================== PLOT CONFIGURATION ==================
+dot_width = 0.5
+tick_label_size = 20
+axis_label_size = 22
+# --------------------------------------------------------
+
+# --- Gap and Limit Detection ---
+all_R_values = crossings_Rphiz[:, :, 0].flatten()
+positive_R = all_R_values[all_R_values > 0]
+negative_R = all_R_values[all_R_values < 0]
+
+gap_left = 0.9 * np.max(negative_R) if len(negative_R) > 0 else -0.1
+gap_right = 0.9 * np.min(positive_R) if len(positive_R) > 0 else 0.1
+
+Rmin = -0.05 + np.min(all_R_values)
+Rmax = 0.05 + np.max(all_R_values)
+Zmin = -0.05 + np.min(crossings_Rphiz[:, :, 2])
+Zmax = 0.05 + np.max(crossings_Rphiz[:, :, 2])
+
+# 1. Find out which plot's data range is wider.
+x_span_left = gap_left - Rmin
+x_span_right = Rmax - gap_right
+max_x_span = max(x_span_left, x_span_right)  # The width needed for the box
+
+# 2. Find the height of the data.
+y_span = Zmax - Zmin
+
+# 3. Create two identical plot boxes
+fig = plt.figure(figsize=(24, 12))
+gs = gridspec.GridSpec(1, 2, wspace=0.05)
+ax1 = fig.add_subplot(gs[0])
+ax2 = fig.add_subplot(gs[1], sharey=ax1)
+
+# =============================================================================
+
+# --- Plotting Loop ---
+colors = ['purple', 'black', 'teal']
+for i, curve in enumerate(crossings_Rphiz):
+    ax1.scatter(curve[curve[:, 0] < gap_left, 0], curve[curve[:, 0] < gap_left, 2],
+                s=dot_width, color=colors[i % len(colors)], rasterized=True)
+    ax2.scatter(curve[curve[:, 0] > gap_right, 0], curve[curve[:, 0] > gap_right, 2],
+                s=dot_width, color=colors[i % len(colors)], rasterized=True)
+
+# --- Set limits, aspect ratio, and styling ---
+# Enforce strict axis bounds and disable autoscaling so Matplotlib doesn't
+# expand the right-hand panel beyond the requested limits.
+ax1.set_xlim(gap_left - max_x_span, gap_left, auto=False)
+ax2.set_xlim(gap_right, gap_right + max_x_span, auto=False)
+ax1.set_ylim(Zmin, Zmax, auto=False)
+# # --- Ticks and Labels ---
+ax1.xaxis.set_major_locator(MultipleLocator(0.2))
+ax2.xaxis.set_major_locator(MultipleLocator(0.2))
+ax1.yaxis.set_major_locator(MultipleLocator(0.2))
+
+ax1.tick_params(axis='both', which='major', labelsize=tick_label_size)
+ax2.tick_params(axis='x', which='major', labelsize=tick_label_size)
+ax1.grid(True, linestyle="--", lw=0.5)
+ax2.grid(True, linestyle="--", lw=0.5)
+
+plt.setp(ax2.get_yticklabels(), visible=False)
+ax2.tick_params(axis='y', which='both', length=0)
+
+ax1.set_ylabel(r"$z$", fontsize=axis_label_size)
+fig.supxlabel(r"$\pm R$", fontsize=axis_label_size)
+
+# # Use tight_layout for final margin adjustments
+plt.tight_layout()
+plt.subplots_adjust(bottom=0.08)  # Add a bit more space for the supxlabel
+
+# --- Save and Show ---
+# Create directory if it doesn't exist
+output_dir = os.path.join("script_outputs", "solovev")
+os.makedirs(output_dir, exist_ok=True)
+plt.savefig(os.path.join(output_dir, "helix_poincare.pdf"),
+            dpi=400, bbox_inches=None)
+
 plt.show()
 # %%
-# Plot a field line in 3D
-fig = plt.figure()
-ax = fig.add_subplot(111, projection="3d")
-for x in physical_field_lines[7:9]:
-    ax.plot(*x, lw=0.05)
-set_axes_equal(ax)
-plt.show()
+# get iota profile
+
+# integrate field line a bunch
+n_lines = 24  # even numbers only
+r_min, r_max = 0.05, 0.99
+_r = np.linspace(r_min, r_max, n_lines)
+x0s = np.vstack((_r, 0.325 * jnp.ones(n_lines), 0.413 * jnp.ones(n_lines))).T
 # %%
+p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
+B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2)
+# %%
+crossings = jax.vmap(lambda x0: integrate_field_line_diffrax(
+    # m x N x 3
+    B_h, x0, F, N=1000, phi_target=0.2))(x0s)
+# %%
+crossings_xyz = jax.vmap(jax.vmap(F))(crossings)
+crossings_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(crossings_xyz)
+# %%
+
+
+def get_iota(c):
+    # crossings_Rphiz:M x 3
+    _crossings = c[c[:, 1] > 0]
+    # compute center
+    center = jnp.mean(_crossings, axis=0)
+    # compute angles
+    angles = jnp.arctan2(_crossings[:, 2] - center[2],
+                         _crossings[:, 0] - center[0])
+    # unwrap
+    angles = jnp.unwrap(angles)
+    # fit line
+    A = jnp.vstack([jnp.arange(len(angles)), jnp.ones(len(angles))]).T
+    m, c = jnp.linalg.lstsq(A, angles, rcond=None)[0]
+    return m / (2 * jnp.pi)
+
+
+iotas = [get_iota(crossing) for crossing in crossings_Rphiz]
+
+# %%
+poincare = crossings_Rphiz
+
+R = poincare[:, :, 0]
+phi = poincare[:, :, 1]
+Z = poincare[:, :, 2]
+
+# Flatten arrays
+R_flat = R.flatten()
+phi_flat = phi.flatten()
+Z_flat = Z.flatten()
+iota_flat = np.repeat(iotas, poincare.shape[1]) * 2 * np.pi
+
+# Keep only positive phi crossings
+mask = phi_flat > 0
+R_pos = R_flat[mask]
+Z_pos = Z_flat[mask]
+iota_pos = iota_flat[mask]
+
+plt.figure(figsize=(7, 7))
+sc = plt.scatter(R_pos, Z_pos, c=iota_pos, s=8,
+                 cmap='plasma', edgecolor='none')
+
+plt.xlabel(r"$R$", fontsize=16)
+plt.ylabel(r"$Z$", fontsize=16)
+plt.axis("equal")
+sc = plt.scatter(R_pos, Z_pos, c=iota_pos, s=8,
+                 cmap='plasma', edgecolor='none')
+cbar = plt.colorbar(sc)
+
+# Set the label and its font size
+cbar.set_label(r"$2 \pi \iota$", fontsize=16)
+
+# Set the tick label size
+cbar.ax.tick_params(labelsize=14)
+plt.tight_layout()
+plt.show()
 
 # %%

@@ -2,6 +2,8 @@
 import copy
 import os
 import time
+from collections import namedtuple
+from functools import partial
 
 import h5py
 import jax
@@ -13,9 +15,8 @@ from mrx.BoundaryFitting import cerfon_map, helical_map, rotating_ellipse_map
 from mrx.DeRhamSequence import DeRhamSequence
 from mrx.DifferentialForms import DiscreteFunction, Pushforward
 from mrx.InputOutput import parse_args, unique_id
-from mrx.IterativeSolvers import picard_solver
-from mrx.Nonlinearities import CrossProductProjection
 from mrx.Plotting import get_2d_grids, get_3d_grids
+from mrx.Relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
 
 jax.config.update("jax_enable_x64", True)
 
@@ -27,39 +28,36 @@ os.makedirs(outdir, exist_ok=True)
 # Default configuration
 ###
 DEVICE_PRESETS = {
-    "ITER":  {"eps": 0.32, "kappa": 1.7, "delta": 0.33, "q_star": 1.57, "type": "tokamak",
-              "n_zeta": 1, "p_zeta": 0},
-    "NSTX":  {"eps": 0.78, "kappa": 2.0, "delta": 0.35, "q_star": 2.0, "type": "tokamak",
-              "n_zeta": 1, "p_zeta": 0},
-    "SPHERO": {"eps": 0.95, "kappa": 1.0, "delta": 0.2,  "q_star": 0.0, "type": "tokamak",
-               "n_zeta": 1, "p_zeta": 0},
+    "ITER":  {"eps": 0.32, "kappa": 1.7, "delta": 0.33, "q_star": 1.57, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
+    "NSTX":  {"eps": 0.78, "kappa": 2.0, "delta": 0.35, "q_star": 2.0, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
+    "SPHERO": {"eps": 0.95, "kappa": 1.0, "delta": 0.2,  "q_star": 0.0, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
     "ROT_ELL": {"eps": 0.1, "kappa": 4, "m_rot": 5, "q_star": 0.0, "type": "rotating_ellipse"},
-    "HELIX": {"eps": 0.33, "h_helix": 0.2, "kappa": 0.8, "delta": 0 * jnp.sin(-0.3), "m_helix": 3,
-              "q_star": 2.0, "type": "helix"},
+    "HELIX": {"eps": 0.33, "h_helix": 0.25, "kappa": 1.0, "delta": 0.0, "m_helix": 3, "q_star": 2.0, "type": "helix"},
 }
 
 CONFIG = {
     "run_name": "",  # Name for the run. If empty, a hash will be created
 
-    "type": "helix",  # Type of configuration: "tokamak" or "helix" or "rotating_ellipse"
+    # Type of configuration: "tokamak" or "helix" or "rotating_ellipse"
+    "type": "rotating_ellipse",
 
     ###
     # Parameters describing the domain.
     ###
-    "eps":      0.33,  # aspect ratio
-    "kappa":    2.0,   # Elongation parameter
-    "q_star":   2.0,  # toroidal field strength
-    "delta":    0.0,  # triangularity
+    "eps":      0.1,  # aspect ratio
+    "kappa":    4,   # Elongation parameter
+    "q_star":   1.6,   # toroidal field strength
+    "delta":    0.33,   # triangularity
     "m_helix":  3,     # poloidal mode number of helix
-    "h_helix":  0.25,  # radius of helix turns
-    "m_rot":   2,      # mode number of rotating ellipse
+    "h_helix":  0.25,   # radius of helix turns
+    "m_rot":   5,      # mode number of rotating ellipse
 
     ###
     # Discretization
     ###
     "n_r": 6,       # Number of radial splines
     "n_theta": 6,   # Number of poloidal splines
-    "n_zeta": 4,    # Number of toroidal splines
+    "n_zeta": 6,    # Number of toroidal splines
     "p_r": 3,       # Degree of radial splines
     "p_theta": 3,     # Degree of poloidal splines
     "p_zeta": 3,    # Degree of toroidal splines
@@ -131,25 +129,19 @@ def run(CONFIG):
 
     print("Running simulation " + run_name + "...")
 
-    delta = CONFIG["delta"]
     kappa = CONFIG["kappa"]
-    q_star = CONFIG["q_star"]
     eps = CONFIG["eps"]
-    alpha = jnp.arcsin(delta)
-    tau = q_star * eps * kappa * (1 + kappa**2) / (kappa + 1)
+    alpha = jnp.arcsin(CONFIG["delta"])
+    tau = CONFIG["q_star"] * eps * kappa * (1 + kappa**2) / (kappa + 1)
     π = jnp.pi
-
-    gamma = CONFIG["gamma"]
-    force_free = CONFIG["force_free"]
-    η = CONFIG["eta"]
 
     start_time = time.time()
 
     if CONFIG["type"] == "tokamak":
         F = cerfon_map(eps, kappa, alpha)
     elif CONFIG["type"] == "helix":
-        F = helical_map(epsilon=CONFIG["eps"], h=CONFIG["h_helix"], n_turns=CONFIG["m_helix"],
-                        kappa=CONFIG["kappa"], alpha=alpha)
+        F = helical_map(epsilon=CONFIG["eps"], h=CONFIG["h_helix"],
+                        n_turns=CONFIG["m_helix"], kappa=CONFIG["kappa"], alpha=alpha)
     elif CONFIG["type"] == "rotating_ellipse":
         F = rotating_ellipse_map(eps, CONFIG["kappa"], CONFIG["m_rot"])
     else:
@@ -164,72 +156,18 @@ def run(CONFIG):
 
     print("Setting up FEM spaces...")
 
-    Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
+    Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
     assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 
-    M0 = Seq.assemble_M0_0()
-    M1 = Seq.assemble_M1_0()
-    M2 = Seq.assemble_M2_0()
-    M3 = Seq.assemble_M3_0()
-    M12 = Seq.assemble_M12_0()
-    M03 = Seq.assemble_M03_0()
-
-    ###
-    # Operators
-    ###
-
-    grad = jnp.linalg.solve(M1, Seq.assemble_grad_0())
-    curl = jnp.linalg.solve(M2, Seq.assemble_curl_0())
-    dvg = jnp.linalg.solve(M3, Seq.assemble_dvg_0())
-    weak_grad = -jnp.linalg.solve(M2, Seq.assemble_dvg_0().T)
-    weak_curl = jnp.linalg.solve(M1, Seq.assemble_curl_0().T)
-    weak_dvg = -jnp.linalg.solve(M0, Seq.assemble_grad_0().T)
-
-    laplace_0 = Seq.assemble_gradgrad_0()                         # dim ker = 0
-    laplace_1 = Seq.assemble_curlcurl_0() - M1 @ grad @ weak_dvg  # dim ker = 0 (no voids)
-    laplace_2 = M2 @ curl @ weak_curl + \
-        Seq.assemble_divdiv_0()  # dim ker = 1 (one tunnel)
-    laplace_3 = - M3 @ dvg @ weak_grad  # dim ker = 1 (constants)
-
-    P_Leray = jnp.eye(M2.shape[0]) + \
-        weak_grad @ jnp.linalg.pinv(laplace_3) @ M3 @ dvg
-
-    P_2to1 = jnp.linalg.solve(M1, M12)
-
-    P_1x1to2 = CrossProductProjection(
-        Seq.Λ2, Seq.Λ1, Seq.Λ1, Seq.Q, Seq.F,
-        En=Seq.E2_0, Em=Seq.E1_0, Ek=Seq.E1_0,
-        Λn_ijk=Seq.Λ2_ijk, Λm_ijk=Seq.Λ1_ijk, Λk_ijk=Seq.Λ1_ijk,
-        J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
-    P_2x1to1 = CrossProductProjection(
-        Seq.Λ1, Seq.Λ2, Seq.Λ1, Seq.Q, Seq.F,
-        En=Seq.E1_0, Em=Seq.E2_0, Ek=Seq.E1_0,
-        Λn_ijk=Seq.Λ1_ijk, Λm_ijk=Seq.Λ2_ijk, Λk_ijk=Seq.Λ1_ijk,
-        J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
-
-    def δB(B, u):
-        H = P_2to1 @ B
-        uxH = jnp.linalg.solve(M1, P_2x1to1(u, H))
-        return curl @ uxH
-
-    def uxJ(B, u):
-        J = weak_curl @ B
-        return jnp.linalg.solve(M1, P_2x1to1(u, J))
-
-    def δδE(B):
-        X = jnp.eye(B.shape[0])
-        δBᵢ = jax.vmap(δB, in_axes=(None, 1), out_axes=1)(B, X)
-        # shape is (n2, n2)
-        ΛxJᵢ = jax.vmap(uxJ, in_axes=(None, 1), out_axes=1)(B, X)
-        # shape is (n2, n1)
-        H = (δBᵢ.T @ M2 @ δBᵢ + ΛxJᵢ.T @ M12 @ δBᵢ)
-        return (H + H.T) / 2
+    Seq.evaluate_all()
+    Seq.assemble_all()
+    Seq.build_crossproduct_projections()
+    Seq.assemble_leray_projection()
 
     iterations = [0]
     force_trace = []
     energy_trace = []
-    energy_diff_trace = []
     helicity_trace = []
     divergence_trace = []
     picard_iterations = []
@@ -240,11 +178,10 @@ def run(CONFIG):
     if CONFIG["save_B"]:
         B_fields = []
 
-    def append_all(i, f, E, dE, H, dvg, v, p_i, e, dt, B=None):
+    def append_all(i, f, E, H, dvg, v, p_i, e, dt, B=None):
         iterations.append(i)
         force_trace.append(f)
         energy_trace.append(E)
-        energy_diff_trace.append(dE)
         helicity_trace.append(H)
         divergence_trace.append(dvg)
         velocity_trace.append(v)
@@ -255,78 +192,8 @@ def run(CONFIG):
         if CONFIG["save_B"]:
             B_fields.append(B)
 
-    @jax.jit
-    def compute_diagnostics(B_hat):
-        A_hat = jnp.linalg.solve(laplace_1, M1 @ weak_curl @ B_hat)
-        B_harm_hat = B_hat - curl @ A_hat
-        dvg_B = (dvg @ B_hat @ M3 @ dvg @ B_hat)**0.5
-        return B_hat @ M2 @ B_hat / 2, A_hat @ M12 @ (B_hat + B_harm_hat), dvg_B
-
-    @jax.jit
-    def compute_pressure(B_hat):
-        if not force_free:
-            J_hat = weak_curl @ B_hat
-            H_hat = P_2to1 @ B_hat
-            JxH_hat = jnp.linalg.solve(M2, P_1x1to2(J_hat, H_hat))
-            return -jnp.linalg.solve(laplace_0, M03 @ dvg @ JxH_hat)
-        else:
-            # Compute p(x) = J · B / |B|²
-            B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
-            J_hat = weak_curl @ B_hat
-            J_h = DiscreteFunction(J_hat, Seq.Λ1, Seq.E1_0.matrix())
-
-            def lmbda(x):
-                DFx = jax.jacfwd(F)(x)
-                Bx = B_h(x)
-                return (J_h(x) @ Bx) / ((DFx @ Bx) @ DFx @ Bx) * jnp.linalg.det(DFx) * jnp.ones(1)
-            return jnp.linalg.solve(M0, Seq.P0_0(lmbda))
-
-    # State is given by x = (B˖, (B, dt, |JxB - grad p|, |u|, Hess))
-    @jax.jit
-    def implicit_update(x):
-        dt = x[1][1]
-        B_nplus1 = x[0]
-        B_n = x[1][0]
-        B_mid = (B_nplus1 + B_n) / 2
-        J_hat = weak_curl @ B_mid
-        H_hat = P_2to1 @ B_mid
-        JxH_hat = jnp.linalg.solve(M2, P_1x1to2(J_hat, H_hat))
-        if not force_free:
-            f_hat = P_Leray @ JxH_hat
-            gradp_hat = -f_hat + JxH_hat
-            norm = (gradp_hat @ M2 @ gradp_hat)**0.5
-        else:
-            f_hat = JxH_hat
-            norm = (B_hat @ M2 @ B_hat)**0.5
-        f_norm = (f_hat @ M2 @ f_hat)**0.5 / norm
-        u_hat = f_hat
-        for _ in range(gamma):
-            u_hat = jnp.linalg.solve(M2 + laplace_2, M2 @ u_hat)
-        if CONFIG["precond"]:
-            Hessian = x[1][4]
-            u_hat = P_Leray @ jnp.linalg.lstsq(
-                Hessian, P_Leray.T @ M2 @ u_hat)[0]
-            # P_Leray.T technically not needed because u is already div_free
-        else:
-            Hessian = None
-        u_norm = (u_hat @ M2 @ u_hat)**0.5
-        E_hat = jnp.linalg.solve(M1, P_2x1to1(u_hat, H_hat)) - η * J_hat
-        return (B_n + dt * curl @ E_hat, (B_n, dt, f_norm, u_norm, Hessian))
-
-    @jax.jit
-    def update(x):
-        _x, error, iters = picard_solver(
-            implicit_update,
-            x,
-            tol=CONFIG["solver_tol"],
-            norm=lambda B: (B @ M2 @ B)**0.5,
-            inprod=lambda u, v: u @ M2 @ v,
-            max_iter=CONFIG["solver_maxit"],
-        )
-        # _x has the form (B˖, (B, dt, |JxB - grad p|, |u|, Hess))
-        # for next iterate, update B to B˖
-        x = (_x[0], (_x[0], *_x[1][1:]))
-        return x, error, iters
+    def norm_2(u):
+        return (u @ Seq.M2 @ u)**0.5
 
     def B_xyz(p):
         x, y, z = F(p)
@@ -343,48 +210,43 @@ def run(CONFIG):
         Bx = BR * jnp.cos(2 * π * phi) - Bphi * jnp.sin(2 * π * phi)
         By = BR * jnp.sin(2 * π * phi) + Bphi * jnp.cos(2 * π * phi)
         return jnp.array([Bx, By, Bz])
-        # DFp = jax.jacfwd(F)(p)
-        # J = jnp.linalg.det(DFp)
-        # Br = J / jnp.linalg.norm(DFp[:, 1]) * 0.0
-        # Btheta = J / jnp.linalg.norm(DFp[:, 1]) * eps * p[0]
-        # Bzeta = J / jnp.linalg.norm(DFp[:, 2]) * R * tau
-        # return DFp @ jnp.array([Br, Btheta, Bzeta]) / J
 
-    # Set up inital condition
-    B_harm_hat = jnp.linalg.eigh(laplace_2)[1][:, 0]
-    B_harm_hat /= (B_harm_hat @ M2 @ B_harm_hat)**0.5
+    B_hat = jnp.linalg.solve(Seq.M2, Seq.P2(B_xyz))
+    B_hat = Seq.P_Leray @ B_hat
+    B_hat /= norm_2(B_hat)
 
-    B_hat = jnp.linalg.solve(M2, Seq.P2_0(B_xyz))
-    # if CONFIG["type"] != "tokamak":
-    #     B_hat = 0.2 * B_hat + 0.8 * B_harm_hat
-    B_hat = P_Leray @ B_hat
-    B_hat /= (B_hat @ M2 @ B_hat)**0.5
+    # B_harm = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[1][:, 0]
 
-    p_hat = compute_pressure(B_hat)
+    diagnostics = MRXDiagnostics(Seq, CONFIG["force_free"])
 
-    # %%
-    eps_precond = jnp.linalg.eigvalsh(
-        P_Leray.T @ δδE(B_hat) @ P_Leray)[-1] * 1e-2 if CONFIG["precond"] else 0.0
+    get_pressure = jax.jit(diagnostics.pressure)
+    get_energy = jax.jit(diagnostics.energy)
+    get_helicity = jax.jit(diagnostics.helicity)
+    get_divergence_B = jax.jit(diagnostics.divergence_norm)
 
-    @jax.jit
-    def compute_Hessian(B_hat):
-        return P_Leray.T @ (M2 * eps_precond + δδE(B_hat)) @ P_Leray if CONFIG["precond"] else None
+    p_hat = get_pressure(B_hat)
 
-    x = (B_hat, (B_hat, CONFIG["dt"], 0.0, 0.0,
-         M2 if CONFIG["precond"] else None))
-    # initial state: (B, (B_old, dt, |JxB - grad p|, |u|, Hess))
+    state = State(B_hat, B_hat, CONFIG["dt"],
+                  CONFIG["eta"], Seq.M2, 0, 0, 0, 0)
+    # initial Hessian is identity
 
-    __x, _, _ = update(x)  # also doing the compilation here
+    timestepper = TimeStepper(Seq,
+                              gamma=CONFIG["gamma"],
+                              newton=CONFIG["precond"],
+                              force_free=CONFIG["force_free"],
+                              picard_tol=CONFIG["solver_tol"],
+                              picard_maxit=CONFIG["solver_maxit"])
 
-    force_norm, velocity_norm = __x[1][2], __x[1][3]
+    compute_hessian = jax.jit(MRXHessian(Seq).assemble)
+    step = jax.jit(timestepper.picard_solver)
 
-    force_trace.append(force_norm)
-    velocity_trace.append(velocity_norm)
+    dry_run = step(state)  # compile
 
-    energy, helicity, divergence_B = compute_diagnostics(B_hat)
-    energy_trace.append(energy)
-    helicity_trace.append(helicity)
-    divergence_trace.append(divergence_B)
+    force_trace.append(dry_run.force_norm)
+    velocity_trace.append(dry_run.velocity_norm)
+    energy_trace.append(get_energy(state.B_n))
+    helicity_trace.append(get_helicity(state.B_n))
+    divergence_trace.append(get_divergence_B(state.B_n))
     if CONFIG["save_B"]:
         B_fields.append(B_hat)
 
@@ -398,50 +260,46 @@ def run(CONFIG):
     print(f"Setup took {setup_done_time - start_time:.2e} seconds.")
     print("Starting relaxation loop...")
 # %%
-    dt = CONFIG["dt"]
-    for i in range(1, 1 + int(CONFIG["maxit"])):
-        x_old = copy.deepcopy(x)
+    for i in range(1, 5000):
 
-        x, picard_err, picard_it = update(x)
-        if picard_err > CONFIG["solver_tol"] or jnp.isnan(picard_err) or jnp.isinf(picard_err):
-            # halve time step and try again
-            x = (x_old[0], (x_old[0], dt/2, x_old[1]
-                 [2], x_old[1][3], x_old[1][4]))
+        state = step(state)
+        if (state.picard_residuum > CONFIG["solver_tol"]
+                or ~jnp.isfinite(state.picard_residuum)):
+            # half time step and try again
+            state = timestepper.update_dt(state, state.dt / 2)
+            state = timestepper.update_B_guess(state, state.B_n)
             continue
         # otherwise, we converged - proceed
-        _, dt, force_norm, velocity_norm, invHessian = x[1]
+        state = timestepper.update_B_n(state, state.B_guess)
 
         if CONFIG["precond"] and (i % CONFIG["precond_compute_every"] == 0):
-            invHessian = compute_Hessian(x[0])
+            state = timestepper.update_hessian(
+                state, compute_hessian(state.B_n))
 
-        if picard_it <= CONFIG["solver_critit"]:
-            dt_new = dt * CONFIG["dt_factor"]
+        if state.picard_iterations < CONFIG["solver_critit"]:
+            dt_new = state.dt * CONFIG["dt_factor"]
         else:
-            dt_new = dt / (CONFIG["dt_factor"])**2
-
-        # collect everything
-        x = (x[0], (x[0], dt_new, force_norm, velocity_norm, invHessian))
+            dt_new = state.dt / (CONFIG["dt_factor"])**2
+        state = timestepper.update_dt(state, dt_new)
 
         if i % CONFIG["save_every"] == 0 or i == CONFIG["maxit"]:
-            energy, helicity, divergence_B = compute_diagnostics(x[0])
             append_all(i,
-                       force_norm,
-                       energy,
-                       (x_old[0] @ M2 @ x_old[0] - x[0] @ M2 @ x[0]) / 2,
-                       helicity,
-                       divergence_B,
-                       velocity_norm,
-                       picard_it,
-                       picard_err,
-                       dt_new,
-                       x[0] if CONFIG["save_B"] else None)
+                       state.force_norm,
+                       get_energy(state.B_n),
+                       get_helicity(state.B_n),
+                       get_divergence_B(state.B_n),
+                       state.velocity_norm,
+                       state.picard_iterations,
+                       state.picard_residuum,
+                       state.dt,
+                       state.B_n if CONFIG["save_B"] else None)
 
         if i % CONFIG["print_every"] == 0:
             print(
-                f"Iteration {i}, u norm: {velocity_norm:.2e}, force norm: {force_norm:.2e}")
+                f"Iteration {i}, u norm: {state.velocity_norm:.2e}, force norm: {state.force_norm:.2e}")
             if CONFIG["verbose"]:
                 print(
-                    f"   dt: {dt_new:.2e}, picard iters: {picard_it:.2e}, picard err: {picard_err:.2e}")
+                    f"   dt: {dt_new:.2e}, picard iters: {state.picard_iterations:.2e}, picard err: {state.picard_residuum:.2e}")
         if force_trace[-1] < CONFIG["force_tol"]:
             print(
                 f"Converged to force tolerance {CONFIG['force_tol']} after {i} steps.")
@@ -454,12 +312,11 @@ def run(CONFIG):
     ###
     # Post-processing
     ###
-    B_hat = x[0]
+    B_hat = state.B_n
     print("Simulation finished, post-processing...")
     if CONFIG["save_B"]:
-        p_fields = [compute_pressure(B) for B in B_fields]
-    p_hat = compute_pressure(B_hat)
-    p_h = Pushforward(DiscreteFunction(p_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
+        p_fields = [get_pressure(B) for B in B_fields]
+    p_hat = get_pressure(B_hat)
 
     # save final state on a grid in physical space
     grid_3d = get_3d_grids(F, x_min=1e-3,
@@ -468,10 +325,10 @@ def run(CONFIG):
                            nz=ps[2]*ns[2]*2 if ns[2] > 1 else 1)
 
     B_final = Pushforward(DiscreteFunction(
-        B_hat, Seq.Λ2, Seq.E2_0.matrix()), F, 2)
+        B_hat, Seq.Λ2, Seq.E2), F, 2)
     B_final_values = jax.vmap(B_final)(grid_3d[0])
     p_final = Pushforward(DiscreteFunction(
-        p_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
+        p_hat, Seq.Λ0, Seq.E0), F, 0)
     p_final_values = jax.vmap(p_final)(grid_3d[0])
     grid_points = grid_3d[1]
 
@@ -491,8 +348,6 @@ def run(CONFIG):
         f.create_dataset("p_final_values", data=p_final_values)
         f.create_dataset("grid_points", data=grid_points)
         f.create_dataset("energy_trace", data=jnp.array(energy_trace))
-        f.create_dataset("energy_diff_trace",
-                         data=jnp.array(energy_diff_trace))
         f.create_dataset("helicity_trace", data=jnp.array(helicity_trace))
         f.create_dataset("divergence_B_trace",
                          data=jnp.array(divergence_trace))
@@ -502,7 +357,7 @@ def run(CONFIG):
         f.create_dataset("picard_errors", data=jnp.array(picard_errors))
         f.create_dataset("timesteps", data=jnp.array(timesteps))
         f.create_dataset("harmonic_norm", data=jnp.array(
-            [(B_harm_hat @ M2 @ B_harm_hat)**0.5]))
+            [norm_2(diagnostics.harmonic_component(B_hat))]))
         f.create_dataset("total_time", data=jnp.array(
             [final_time - start_time]))
         f.create_dataset("time_setup", data=jnp.array(
@@ -524,6 +379,14 @@ def run(CONFIG):
                 cfg_group.attrs[key] = val
 
     print(f"Data saved to {outdir + run_name + '.h5'}.")
+
+    # alternative ICs
+    # DFp = jax.jacfwd(F)(p)
+    # J = jnp.linalg.det(DFp)
+    # Br = J / jnp.linalg.norm(DFp[:, 1]) * 0.0
+    # Btheta = J / jnp.linalg.norm(DFp[:, 1]) * eps * p[0]
+    # Bzeta = J / jnp.linalg.norm(DFp[:, 2]) * R * tau
+    # return DFp @ jnp.array([Br, Btheta, Bzeta]) / J
 # %%
 
     # def anisotropic_diffusion_tensor(B_hat):

@@ -65,22 +65,23 @@ def get_err(n, p):
                 - π * r**2 * jnp.sin(π*r**2)) * jnp.ones(1)
 
     # Create DeRham sequence
-    derham = DeRhamSequence(ns, ps, q, types, F, polar=True)
+    Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
-    # Get stiffness matrix and projector
-    K = derham.assemble_gradgrad_0()  # Stiffness matrix
-    P0 = derham.P0_0  # Projector for 0-forms
+    Seq.evaluate_d0()
+    Seq.evaluate_0()
+    Seq.assemble_M0()
+    Seq.assemble_dd0()
 
     # Solve the system
-    u_hat = jnp.linalg.solve(K, P0(f))
-    u_h = DiscreteFunction(u_hat, derham.Λ0, derham.E0_0.matrix())
+    u_hat = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
+    u_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0)
 
     # Compute error
     def err(x):
         return u(x) - u_h(x)
-    error = (l2_product(err, err, derham.Q, F) /
-             l2_product(u, u, derham.Q, F)) ** 0.5
-    return error, jnp.linalg.cond(K), jnp.sum(jnp.abs(K) > 1e-12) / K.size
+    error = (l2_product(err, err, Seq.Q, F) /
+             l2_product(u, u, Seq.Q, F)) ** 0.5
+    return error, jnp.linalg.cond(Seq.M0 @ Seq.dd0), jnp.sum(jnp.abs(Seq.M0 @ Seq.dd0) > 1e-12) / Seq.dd0.size
 
 
 def run_convergence_analysis(ns, ps):

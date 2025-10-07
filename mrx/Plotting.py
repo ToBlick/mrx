@@ -212,21 +212,32 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
 
     last_c = None
     for i, (ax, grid) in enumerate(zip(axes, grids_pol)):
-        R = jnp.sqrt(grid[2][0]**2 + grid[2][1]**2)
-        Z = grid[2][2]
+        # do a PCA to get the planar coordinates
+        mean = jnp.mean(grid[1], axis=0)
+        cov = jnp.cov(grid[1].T)
+        eigvals, eigvecs = jnp.linalg.eigh(cov)
+        # sort eigenvalues and eigenvectors
+        idx = jnp.argsort(eigvals)[::-1]
+        eigvals = eigvals[idx]
+        eigvecs = eigvecs[:, idx]
+        # project points onto the first two principal components
+        centered = grid[1] - mean
+        projected = centered @ eigvecs[:, :2]
+        nu1 = projected[:, 0].reshape(*grid[2][0].shape)
+        nu2 = projected[:, 1].reshape(*grid[2][0].shape)
 
-        vals = jax.vmap(p_h)(grid[0]).reshape(R.shape)
+        vals = jax.vmap(p_h)(grid[0]).reshape(nu1.shape)
 
         # draw contour above the guide lines
-        last_c = ax.contourf(R, Z, vals, 25, cmap="plasma", zorder=2)
+        last_c = ax.contourf(nu1, nu2, vals, 25, cmap="plasma", zorder=2)
 
         # ensure axis artists (like text/legend) are above the guide lines
         ax.set_axisbelow(False)
 
-        if plot_centerline:
-            ax.axvline(1.0, color='k', linestyle=":",
-                       linewidth=1.5, zorder=3, clip_on=True)
-            # ax.axhline(0.0, color='k', linestyle=":", linewidth=1.5, zorder=3, clip_on=True)
+        # if plot_centerline:
+        #     ax.axvline(1.0, color='k', linestyle=":",
+        #                linewidth=1.5, zorder=3, clip_on=True)
+        # ax.axhline(0.0, color='k', linestyle=":", linewidth=1.5, zorder=3, clip_on=True)
 
         ax.set_aspect("equal")
 
@@ -243,9 +254,9 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
         except Exception:
             zval = float(jnp.asarray(zeta_vals[i]))
         label = rf"$\zeta = {zval:.2f}$"
-        # place a small boxed text in the bottom-right of the axis (no legend handle/whitespace)
-        ax.text(0.98, 0.02, label, transform=ax.transAxes,
-                fontsize=textsize, ha='right', va='bottom', zorder=10,
+        # place a small boxed text in the top-right of the axis (no legend handle/whitespace)
+        ax.text(0.98, 0.98, label, transform=ax.transAxes,
+                fontsize=textsize, ha='right', va='top', zorder=10,
                 bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.3', alpha=1.0))
 
     # put ONE shared colorbar on the right, aligned with subplots
@@ -267,11 +278,11 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
         # upward arrow for z
 
         # annotate the center (dotted) line at the very top of the axis
-        if plot_centerline:
-            anchor_ax.text(0.5, 1.02, r"$R = 1$",
-                           transform=anchor_ax.transAxes,
-                           fontsize=textsize, ha='center', va='bottom', zorder=12,
-                           bbox=dict(facecolor='white', edgecolor='none', alpha=0.8, pad=0.2))
+        # if plot_centerline:
+        #     anchor_ax.text(0.5, 1.02, r"$R = 1$",
+        #                    transform=anchor_ax.transAxes,
+        #                    fontsize=textsize, ha='center', va='bottom', zorder=12,
+        #                    bbox=dict(facecolor='white', edgecolor='none', alpha=0.8, pad=0.2))
         anchor_ax.annotate('', xy=(x0, y0 + arrow_len), xytext=(x0, y0),
                            xycoords='axes fraction',
                            arrowprops=dict(arrowstyle='->', linewidth=1.5, color='k'))
@@ -281,10 +292,10 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
                            arrowprops=dict(arrowstyle='->', linewidth=1.5, color='k'))
 
         # labels for arrows
-        anchor_ax.text(x0 - 0.01, y0 + arrow_len + 0.01, r"$z$",
+        anchor_ax.text(x0 - 0.01, y0 + arrow_len + 0.01, r"$\nu_2$",
                        transform=anchor_ax.transAxes, fontsize=textsize+2,
                        ha='center', va='bottom')
-        anchor_ax.text(x0 + arrow_len + 0.01, y0 - 0.01, r"$R$",
+        anchor_ax.text(x0 + arrow_len + 0.01, y0 - 0.01, r"$\nu_1$",
                        transform=anchor_ax.transAxes, fontsize=textsize+2,
                        ha='left', va='center')
 
