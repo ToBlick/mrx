@@ -34,7 +34,8 @@ DEVICE_PRESETS = {
     "SPHERO": {"eps": 0.95, "kappa": 1.0, "delta": 0.2,  "q_star": 0.0, "type": "tokamak",
                "n_zeta": 1, "p_zeta": 0},
     "ROT_ELL": {"eps": 0.1, "kappa": 4, "m_rot": 5, "q_star": 0.0, "type": "rotating_ellipse"},
-    "HELIX": {"eps": 0.33, "h_helix": 0.20, "kappa": 1.7, "m_helix": 3, "q_star": 2.0, "type": "helix"},
+    "HELIX": {"eps": 0.33, "h_helix": 0.2, "kappa": 0.8, "delta": 0 * jnp.sin(-0.3), "m_helix": 3,
+              "q_star": 2.0, "type": "helix"},
 }
 
 CONFIG = {
@@ -46,7 +47,7 @@ CONFIG = {
     # Parameters describing the domain.
     ###
     "eps":      0.33,  # aspect ratio
-    "kappa":    1.0,   # Elongation parameter
+    "kappa":    2.0,   # Elongation parameter
     "q_star":   2.0,  # toroidal field strength
     "delta":    0.0,  # triangularity
     "m_helix":  3,     # poloidal mode number of helix
@@ -56,8 +57,8 @@ CONFIG = {
     ###
     # Discretization
     ###
-    "n_r": 8,       # Number of radial splines
-    "n_theta": 8,   # Number of poloidal splines
+    "n_r": 6,       # Number of radial splines
+    "n_theta": 6,   # Number of poloidal splines
     "n_zeta": 4,    # Number of toroidal splines
     "p_r": 3,       # Degree of radial splines
     "p_theta": 3,     # Degree of poloidal splines
@@ -66,6 +67,7 @@ CONFIG = {
     ###
     # Hyperparameters for the relaxation
     ###
+    "maxit":                 10_000,   # max. Number of time steps
     "precond":               False,     # Use preconditioner
     "precond_compute_every": 1000,       # Recompute preconditioner every n iterations
     # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
@@ -73,7 +75,6 @@ CONFIG = {
     "dt":                    1e-6,      # initial time step
     # time-steps are increased by this factor and decreased by its square
     "dt_factor":             1.01,
-    "maxit":                 10_000,   # max. Number of time steps
     # Convergence tolerance for |JxB - grad p| (or |JxB| if force_free)
     "force_tol":             1e-15,
     "eta":                   0.0,       # Resistivity
@@ -93,6 +94,34 @@ CONFIG = {
     "save_every": 100,     # Save intermediate results every n iterations
     "save_B": False,       # Save intermediate B fields to file
 }
+
+
+def main():
+    # Get user input
+    params = parse_args()
+
+    # Step 1: If device specified, apply defaults
+    device_name = params.get("device")
+    if device_name:
+        preset = DEVICE_PRESETS.get(device_name.upper())
+        if preset:
+            for k, v in preset.items():
+                CONFIG[k] = v
+        else:
+            print(f"Unknown device '{device_name}' - ignoring.")
+
+    # Step 2: Override with user-supplied parameters
+    for k, v in params.items():
+        if k in CONFIG:
+            CONFIG[k] = v
+        elif k != "device":
+            print(f"Unknown parameter '{k}' - ignoring.")
+
+    print("Configuration:")
+    for k, v in CONFIG.items():
+        print(f"  {k}: {v}")
+
+    run(CONFIG)
 
 
 def run(CONFIG):
@@ -119,7 +148,8 @@ def run(CONFIG):
     if CONFIG["type"] == "tokamak":
         F = cerfon_map(eps, kappa, alpha)
     elif CONFIG["type"] == "helix":
-        F = helical_map(eps, CONFIG["h_helix"], CONFIG["m_helix"])
+        F = helical_map(epsilon=CONFIG["eps"], h=CONFIG["h_helix"], n_turns=CONFIG["m_helix"],
+                        kappa=CONFIG["kappa"], alpha=alpha)
     elif CONFIG["type"] == "rotating_ellipse":
         F = rotating_ellipse_map(eps, CONFIG["kappa"], CONFIG["m_rot"])
     else:
@@ -316,8 +346,8 @@ def run(CONFIG):
         # DFp = jax.jacfwd(F)(p)
         # J = jnp.linalg.det(DFp)
         # Br = J / jnp.linalg.norm(DFp[:, 1]) * 0.0
-        # Btheta = J / jnp.linalg.norm(DFp[:, 1]) * 0.1 * p[0]
-        # Bzeta = J / jnp.linalg.norm(DFp[:, 2]) * 0.9
+        # Btheta = J / jnp.linalg.norm(DFp[:, 1]) * eps * p[0]
+        # Bzeta = J / jnp.linalg.norm(DFp[:, 2]) * R * tau
         # return DFp @ jnp.array([Br, Btheta, Bzeta]) / J
 
     # Set up inital condition
@@ -325,8 +355,12 @@ def run(CONFIG):
     B_harm_hat /= (B_harm_hat @ M2 @ B_harm_hat)**0.5
 
     B_hat = jnp.linalg.solve(M2, Seq.P2_0(B_xyz))
+    # if CONFIG["type"] != "tokamak":
+    #     B_hat = 0.2 * B_hat + 0.8 * B_harm_hat
     B_hat = P_Leray @ B_hat
     B_hat /= (B_hat @ M2 @ B_hat)**0.5
+
+    p_hat = compute_pressure(B_hat)
 
     # %%
     eps_precond = jnp.linalg.eigvalsh(
@@ -537,34 +571,6 @@ def run(CONFIG):
     # # %%
     # fig, ax = plot_crossections_separate(p_h, grids_pol)
 # %%
-
-
-def main():
-    # Get user input
-    params = parse_args()
-
-    # Step 1: If device specified, apply defaults
-    device_name = params.get("device")
-    if device_name:
-        preset = DEVICE_PRESETS.get(device_name.upper())
-        if preset:
-            for k, v in preset.items():
-                CONFIG[k] = v
-        else:
-            print(f"Unknown device '{device_name}' - ignoring.")
-
-    # Step 2: Override with user-supplied parameters
-    for k, v in params.items():
-        if k in CONFIG:
-            CONFIG[k] = v
-        elif k != "device":
-            print(f"Unknown parameter '{k}' - ignoring.")
-
-    print("Configuration:")
-    for k, v in CONFIG.items():
-        print(f"  {k}: {v}")
-
-    run(CONFIG)
 
 
 if __name__ == "__main__":

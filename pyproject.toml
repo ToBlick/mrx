@@ -36,7 +36,12 @@ dependencies = [
     "scipy>=1.5.4",
     "matplotlib",
     "ruff",
-    "autopep8"
+    "autopep8",
+    "diffrax",
+    "optax",
+    "optimistix",
+    "h5py",
+    "plotly",
 ]
 
 [tool.setuptools.packages.find]

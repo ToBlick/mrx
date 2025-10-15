@@ -37,19 +37,65 @@ jax.config.update("jax_enable_x64", True)
 os.makedirs("script_outputs", exist_ok=True)
 
 p = 2
-n = 4
+n = 3
 
 # Set up finite element spaces
-q = 2*p
+q = p
 ns = (n, n, n)
 ps = (p, p, p)
 types = ("clamped", "periodic", "periodic")  # Types
 # Domain parameters
 π = jnp.pi
 
-# F = rotating_ellipse_map()
-F = jax.jit(helical_map())
 
+def helical_map(epsilon=0.33, h=0.25, n_turns=3, kappa=1.0, alpha=0.0):
+    π = jnp.pi
+
+    def X(ζ):
+        return jnp.array([
+            (1 + h * jnp.cos(2 * π * n_turns * ζ)) * jnp.cos(2 * π * ζ),
+            (1 + h * jnp.cos(2 * π * n_turns * ζ)) * jnp.sin(2 * π * ζ),
+            h * jnp.sin(2 * π * n_turns * ζ)
+        ])
+
+    def dx_t(t):
+        return epsilon * jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t))
+
+    def dy_t(t):
+        return epsilon * kappa * jnp.sin(2 * π * t)
+
+    def _s_from_t(t):
+        return jnp.arctan2(kappa * jnp.sin(2 * π * t),
+                           jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t)))
+
+    def s_from_t(t):
+        return jnp.where(t > 0.5, _s_from_t(t) + 2 * π, _s_from_t(t))
+
+    def a_from_t(t):
+        return jnp.sqrt(dx_t(t)**2 + dy_t(t)**2)
+
+    def get_frame(ζ):
+        dX = jax.jacrev(X)
+        τ = dX(ζ) / jnp.linalg.norm(dX(ζ))  # Tangent vector
+        dτ = jax.jacfwd(dX)(ζ)
+        ν1 = dτ / jnp.linalg.norm(dτ)
+        # e = jnp.array([0.0, 0.0, 1.0])
+        # ν1 = (e - jnp.dot(e, τ) * τ)
+        ν1 = ν1 / jnp.linalg.norm(ν1)  # First normal vector
+        ν2 = jnp.cross(τ, ν1)         # Second normal vector
+        return τ, ν1, ν2
+
+    def F(x):
+        """Helical coordinate mapping function."""
+        r, t, ζ = x
+        _, ν1, ν2 = get_frame(ζ)
+        return (X(ζ) + r * a_from_t(t) * jnp.cos(s_from_t(t)) * ν1
+                + r * a_from_t(t) * jnp.sin(s_from_t(t)) * ν2)
+
+    return F
+
+
+F = jax.jit(helical_map(alpha=-0.3, kappa=1.0))
 # %%
 
 
@@ -92,30 +138,26 @@ print("3-forms (dim ker = 1):", jnp.linalg.eigvalsh(laplace_3)[:3])
 # %%
 # Solve the system
 u_hat = jnp.linalg.solve(laplace_0, P0(f))
+
+# %%
 p_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0_0.matrix())
 
-# Plot solution
-grids = [get_2d_grids(F, cut_axis=2, cut_value=v, nx=32)
-         for v in jnp.linspace(0, 1, 32, endpoint=False)]
 # grids[i] = _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 # %%
-
-# %%
-cuts = jnp.linspace(0, 1, 8, endpoint=True)
+cuts = jnp.linspace(0, 1, 8, endpoint=False)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
-                          nx=16, ny=16, nz=1) for v in cuts]
+                          nx=32, ny=32, nz=1) for v in cuts[:]]
 grid_surface = get_2d_grids(F, cut_axis=0, cut_value=1.0,
-                            ny=64, nz=128, z_min=cuts[0], z_max=cuts[-1], invert_z=True)
+                            ny=128, nz=128, z_min=0, z_max=1, invert_z=True)
 # %%
-fig, ax = plot_torus(p_h, grids_pol, grid_surface)
+fig, ax = plot_torus(p_h, grids_pol, grid_surface,
+                     gridlinewidth=1, cstride=8)
+# plt.savefig(os.path.join("script_outputs",
+#             "solovev", "rotating_ellipse_3d.pdf"))
 # %%
-grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v, nx=32, ny=32,)
-             for v in jnp.linspace(0, 1, 16, endpoint=False)]
-
-# %%
-fig, ax = plot_crossections_separate(p_h, grids_pol)
-# %%
-
+plot_crossections_separate(p_h, grids_pol, cuts, plot_centerline=True)
+# plt.savefig(os.path.join("script_outputs",
+#             "solovev", "rotating_ellipse_cuts.pdf"))
 
 # %%
 
@@ -432,3 +474,5 @@ fig, ax = plot_crossections_separate(p_h, grids_pol)
 # plt.tight_layout()
 
 # # %%
+
+# %%
