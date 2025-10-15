@@ -196,8 +196,8 @@ def torus_map():
     return F
 
 
-F = spec_map()
-# F = w7x_map()
+# F = spec_map()
+F = w7x_map()
 # F = siesta_map()
 # F = torus_map()
 
@@ -306,9 +306,9 @@ def E_test(p):
 # %%
 
 
-@partial(jax.jit, static_argnames=["n", "p"])
-def proj_error(n, p):
-    Seq = DeRhamSequence((n, n, n), (p, p, p), 3,
+@partial(jax.jit, static_argnames=["n", "p", "q"])
+def proj_error(n, p, q):
+    Seq = DeRhamSequence((n, n, n), (p, p, p), q,
                          ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
     # Seq.evaluate_0()
     Seq.evaluate_1d()
@@ -327,15 +327,15 @@ def proj_error(n, p):
 
 # %%
 errs = []
-ns = np.arange(5, 11, 1)
+ns = np.arange(5, 18, 1)
 for n in ns:
     print(f"n = {n}")
-    errs.append(proj_error(n, 3))
+    errs.append(proj_error(n, 3, 6))
     print("err =", errs[-1])
 
 # %%
 plt.plot(ns, errs, marker='o', label="L2 projection error")
-plt.plot(ns, (1.0 * ns)**-3, marker='o', label=r"$\mathcal{O}(h^3)$")
+plt.plot(ns, (0.4 * ns)**-3, marker='o', label=r"$\mathcal{O}(h^3)$")
 plt.yscale("log")
 plt.xscale("log")
 plt.grid(which="both", linestyle="--", linewidth=0.5)
@@ -344,17 +344,17 @@ plt.legend()
 plt.show()
 
 # %%
-Seq = DeRhamSequence((8, 8, 5), (3, 3, 3), 3,
+Seq = DeRhamSequence((8, 8, 8), (3, 3, 3), 3,
                      ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
 Seq.evaluate_1d()
 Seq.assemble_all()
 
 assert jnp.min(Seq.J_j) > 0, "Mapping is not orientation-preserving!"
 # %%
-print("first Evs of dd0:", jnp.linalg.eigvalsh(Seq.M0 @ Seq.dd0)[:3])
-print("first Evs of dd1:", jnp.linalg.eigvalsh(Seq.M1 @ Seq.dd1)[:3])
-print("first Evs of dd2:", jnp.linalg.eigvalsh(Seq.M2 @ Seq.dd2)[:3])
-print("first Evs of dd3:", jnp.linalg.eigvalsh(Seq.M3 @ Seq.dd3)[:3])
+print("first Evs of dd0:", scipy.linalg.eigvalsh(Seq.M0 @ Seq.dd0, Seq.M0)[:5])
+print("first Evs of dd1:", scipy.linalg.eigvalsh(Seq.M1 @ Seq.dd1, Seq.M1)[:5])
+print("first Evs of dd2:", scipy.linalg.eigvalsh(Seq.M2 @ Seq.dd2, Seq.M2)[:5])
+print("first Evs of dd3:", scipy.linalg.eigvalsh(Seq.M3 @ Seq.dd3, Seq.M3)[:5])
 print("curl grad", jnp.max(jnp.abs(Seq.strong_curl @ Seq.strong_grad)))
 print("div curl:", jnp.max(jnp.abs(Seq.strong_div @ Seq.strong_curl)))
 # %%

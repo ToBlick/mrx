@@ -304,30 +304,9 @@ class DeRhamSequence():
         self.M0 = self.E0 @ M @ self.E0.T
 
     def assemble_M1(self):
-        # M1 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
+        # M = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
         #                 self.G_inv_jkl, self.Λ1_ijk, self.J_j, self.Q.w)
-        # get_L0_jk = jax.vmap(
-        #     jax.vmap(self.get_Λ1_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # k_vals = jnp.arange(3)
-
-        # def body_fun(carry, i):
-        #     # Λ_i has shape (n_j, n_k)
-        #     Λ_i = get_L0_jk(i, self.Q.ns, k_vals)
-
-        #     # Build full M0[i, l] row by vectorizing over l
-        #     def compute_row(m):
-        #         Λ_m = get_L0_jk(m, self.Q.ns, k_vals)
-        #         return jnp.einsum("jk,jkm,jm,j,j->", Λ_i, self.G_inv_jkl, Λ_m, self.J_j, self.Q.w)
-        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ1.n))
-
-        #     return carry.at[i, :].set(M_row), None
-
-        # M_init = jnp.zeros((self.Λ1.n, self.Λ1.n))
-        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ1.ns)
-
+        
         # shape (n_q, 3, 3)
         W = self.G_inv_jkl * (self.J_j * self.Q.w)[:, None, None]
 
@@ -336,32 +315,8 @@ class DeRhamSequence():
         self.M1 = self.E1 @ M @ self.E1.T
 
     def assemble_M2(self):
-        # M2 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
+        # M = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
         # self.G_jkl, self.Λ2_ijk, 1/self.J_j, self.Q.w)
-
-        # get_L0_jk = jax.vmap(
-        #     jax.vmap(self.get_Λ2_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # j_vals = jnp.arange(self.Q.n)
-        # k_vals = jnp.arange(3)
-
-        # def body_fun(carry, i):
-        #     # Λ_i has shape (n_j, n_k)
-        #     Λ_i = get_L0_jk(i, j_vals, k_vals)
-
-        #     # Build full M0[i, l] row by vectorizing over l
-        #     def compute_row(m):
-        #         Λ_m = get_L0_jk(m, j_vals, k_vals)
-        #         return jnp.einsum("jk,jkm,jm,j,j->", Λ_i, self.G_jkl, Λ_m, 1/self.J_j, self.Q.w)
-        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ2.n))
-
-        #     return carry.at[i, :].set(M_row), None
-
-        # M_init = jnp.zeros((self.Λ2.n, self.Λ2.n))
-        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ2.ns)
-
         W = self.G_jkl * (1/self.J_j * self.Q.w)[:, None, None]
 
         M = assemble(self.get_Λ2_ijk, self.get_Λ2_ijk, W, self.Λ2.n, self.Λ2.n)
@@ -369,31 +324,8 @@ class DeRhamSequence():
         self.M2 = self.E2 @ M @ self.E2.T
 
     def assemble_M3(self):
-        # M3 = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
+        # M = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
         #                 self.Λ3_ijk, 1/self.J_j, self.Q.w)
-
-        # get_L0_jk = jax.vmap(
-        #     jax.vmap(self.get_Λ3_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # j_vals = jnp.arange(self.Q.n)
-        # k_vals = jnp.arange(1)
-
-        # def body_fun(carry, i):
-        #     # Λ_i has shape (n_j, n_k)
-        #     Λ_i = get_L0_jk(i, j_vals, k_vals)
-
-        #     # Build full M0[i, l] row by vectorizing over l
-        #     def compute_row(m):
-        #         Λ_m = get_L0_jk(m, j_vals, k_vals)
-        #         return jnp.einsum("jk,jk,j,j->", Λ_i, Λ_m, 1/self.J_j, self.Q.w)
-        #     M0_row = jax.vmap(compute_row)(jnp.arange(self.Λ3.n))
-
-        #     return carry.at[i, :].set(M0_row), None
-
-        # M_init = jnp.zeros((self.Λ3.n, self.Λ3.n))
-        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ3.ns)
 
         W = (1/self.J_j * self.Q.w)[:, None, None]
 
@@ -402,35 +334,8 @@ class DeRhamSequence():
         self.M3 = self.E3 @ M @ self.E3.T
 
     def assemble_d0(self):
-        # D0 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
-        #                 self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
-
-        # get_L0_jk = jax.vmap(
-        #     jax.vmap(self.get_Λ1_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # get_D0_jk = jax.vmap(
-        #     jax.vmap(self.get_dΛ0_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # k_vals = jnp.arange(3)
-
-        # def body_fun(carry, i):
-        #     # Λ_i has shape (n_j, n_k)
-        #     Λ_i = get_L0_jk(i, self.Q.ns, k_vals)
-
-        #     # Build full M0[i, l] row by vectorizing over l
-        #     def compute_row(m):
-        #         Λ_m = get_D0_jk(m, self.Q.ns, k_vals)
-        #         return jnp.einsum("jk,jkm,jm,j,j->", Λ_i, self.G_inv_jkl, Λ_m, self.J_j, self.Q.w)
-        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ0.n))
-
-        #     return carry.at[i, :].set(M_row), None
-
-        # M_init = jnp.zeros((self.Λ1.n, self.Λ0.n))
-        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ1.ns)
+        # M = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
+        #                  self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
 
         W = self.G_inv_jkl * (self.J_j * self.Q.w)[:, None, None]
 
@@ -442,34 +347,8 @@ class DeRhamSequence():
         self.weak_div = -jnp.linalg.solve(self.M0.T, self.D0.T)
 
     def assemble_d1(self):
-        # D1 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
-        #                 self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
-
-        # get_L0_jk = jax.vmap(
-        #     jax.vmap(self.get_Λ2_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # get_D0_jk = jax.vmap(
-        #     jax.vmap(self.get_dΛ1_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # k_vals = jnp.arange(3)
-
-        # def body_fun(carry, i):
-        #     # Λ_i has shape (n_j, n_k)
-        #     Λ_i = get_L0_jk(i, self.Q.ns, k_vals)
-
-        #     def compute_row(m):
-        #         Λ_m = get_D0_jk(m, self.Q.ns, k_vals)
-        #         return jnp.einsum("jk,jkm,jm,j,j->", Λ_i, self.G_jkl, Λ_m, 1/self.J_j, self.Q.w)
-        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ1.n))
-
-        #     return carry.at[i, :].set(M_row), None
-
-        # M_init = jnp.zeros((self.Λ2.n, self.Λ1.n))
-        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ2.ns)
+        # M = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
+        #                  self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
 
         W = self.G_jkl * (1/self.J_j * self.Q.w)[:, None, None]
 
@@ -480,34 +359,8 @@ class DeRhamSequence():
         self.weak_curl = jnp.linalg.solve(self.M1.T, self.D1.T)
 
     def assemble_d2(self):
-        # D2 = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
+        # M = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
         #                 self.dΛ2_ijk, 1/self.J_j, self.Q.w)
-        # get_L0_jk = jax.vmap(
-        #     jax.vmap(self.get_Λ3_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # get_D0_jk = jax.vmap(
-        #     jax.vmap(self.get_dΛ2_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # k_vals = jnp.arange(1)
-
-        # def body_fun(carry, i):
-        #     # Λ_i has shape (n_j, n_k)
-        #     Λ_i = get_L0_jk(i, self.Q.ns, k_vals)
-
-        #     # Build full M0[i, l] row by vectorizing over l
-        #     def compute_row(m):
-        #         Λ_m = get_D0_jk(m, self.Q.ns, k_vals)
-        #         return jnp.einsum("jk,jk,j,j->", Λ_i, Λ_m, 1/self.J_j, self.Q.w)
-        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ2.n))
-
-        #     return carry.at[i, :].set(M_row), None
-
-        # M_init = jnp.zeros((self.Λ3.n, self.Λ2.n))
-        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ3.ns)
 
         W = (1/self.J_j * self.Q.w)[:, None, None]
 
@@ -519,30 +372,8 @@ class DeRhamSequence():
         self.weak_grad = -jnp.linalg.solve(self.M2.T, self.D2.T)
 
     def assemble_dd0(self):
-        # GG = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ0_ijk,
-        #                 self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
-
-        # get_L0_jk = jax.vmap(
-        #     jax.vmap(self.get_dΛ0_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # k_vals = jnp.arange(3)
-
-        # def body_fun(carry, i):
-        #     # Λ_i has shape (n_j, n_k)
-        #     Λ_i = get_L0_jk(i, self.Q.ns, k_vals)
-
-        #     # Build full M0[i, l] row by vectorizing over l
-        #     def compute_row(m):
-        #         Λ_m = get_L0_jk(m, self.Q.ns, k_vals)
-        #         return jnp.einsum("jk,jkm,jm,j,j->", Λ_i, self.G_inv_jkl, Λ_m, self.J_j, self.Q.w)
-        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ0.n))
-
-        #     return carry.at[i, :].set(M_row), None
-
-        # M_init = jnp.zeros((self.Λ0.n, self.Λ0.n))
-        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ0.ns)
+        # M = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ0_ijk,
+        #                  self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
 
         W = self.G_inv_jkl * (self.J_j * self.Q.w)[:, None, None]
 
@@ -552,30 +383,8 @@ class DeRhamSequence():
         self.dd0 = jnp.linalg.solve(self.M0, self.E0 @ M @ self.E0.T)
 
     def assemble_dd1(self):
-        # CC = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ1_ijk,
-        #                 self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
-
-        # get_D0_jk = jax.vmap(
-        #     jax.vmap(self.get_dΛ1_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # k_vals = jnp.arange(3)
-
-        # def body_fun(carry, i):
-        #     # Λ_i has shape (n_j, n_k)
-        #     Λ_i = get_D0_jk(i, self.Q.ns, k_vals)
-
-        #     # Build full M0[i, l] row by vectorizing over l
-        #     def compute_row(m):
-        #         Λ_m = get_D0_jk(m, self.Q.ns, k_vals)
-        #         return jnp.einsum("jk,jkm,jm,j,j->", Λ_i, self.G_jkl, Λ_m, 1/self.J_j, self.Q.w)
-        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ1.n))
-
-        #     return carry.at[i, :].set(M_row), None
-
-        # M_init = jnp.zeros((self.Λ1.n, self.Λ1.n))
-        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ1.ns)
+        # M = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ1_ijk,
+        #                  self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
 
         W = self.G_jkl * (1/self.J_j * self.Q.w)[:, None, None]
 
@@ -586,30 +395,8 @@ class DeRhamSequence():
             self.M1, self.E1 @ M @ self.E1.T) - self.strong_grad @ self.weak_div
 
     def assemble_dd2(self):
-        # DD = jnp.einsum("ijk,ljk,j,j->il", self.dΛ2_ijk,
-        #                 self.dΛ2_ijk, 1/self.J_j, self.Q.w)
-
-        # get_D0_jk = jax.vmap(
-        #     jax.vmap(self.get_dΛ2_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # k_vals = jnp.arange(1)
-
-        # def body_fun(carry, i):
-        #     # Λ_i has shape (n_j, n_k)
-        #     Λ_i = get_D0_jk(i, self.Q.ns, k_vals)
-
-        #     # Build full M0[i, l] row by vectorizing over l
-        #     def compute_row(m):
-        #         Λ_m = get_D0_jk(m, self.Q.ns, k_vals)
-        #         return jnp.einsum("jk,jk,j,j->", Λ_i, Λ_m, 1/self.J_j, self.Q.w)
-        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ2.n))
-
-        #     return carry.at[i, :].set(M_row), None
-
-        # M_init = jnp.zeros((self.Λ2.n, self.Λ2.n))
-        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ2.ns)
+        # M = jnp.einsum("ijk,ljk,j,j->il", self.dΛ2_ijk,
+        #                  self.dΛ2_ijk, 1/self.J_j, self.Q.w)
 
         W = (1/self.J_j * self.Q.w)[:, None, None]
 
@@ -623,34 +410,8 @@ class DeRhamSequence():
         self.dd3 = -self.strong_div @ self.weak_grad
 
     def assemble_P12(self):
-        # P = jnp.einsum("ijk,ljk,j->il", self.Λ1_ijk,
-        #                self.Λ2_ijk, self.Q.w)
-
-        # get_L1_jk = jax.vmap(
-        #     jax.vmap(self.get_Λ1_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # get_L2_jk = jax.vmap(
-        #     jax.vmap(self.get_Λ2_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # k_vals = jnp.arange(3)
-
-        # def body_fun(carry, i):
-        #     # Λ_i has shape (n_j, n_k)
-        #     Λ_i = get_L2_jk(i, self.Q.ns, k_vals)
-
-        #     def compute_row(m):
-        #         Λ_m = get_L1_jk(m, self.Q.ns, k_vals)
-        #         return jnp.einsum("jk,jk,j->", Λ_i, Λ_m, self.Q.w)
-        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ1.n))
-
-        #     return carry.at[i, :].set(M_row), None
-
-        # M_init = jnp.zeros((self.Λ2.n, self.Λ1.n))
-        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ2.ns)
+        # M = jnp.einsum("ijk,ljk,j->il", self.Λ1_ijk,
+        #                 self.Λ2_ijk, self.Q.w)
 
         W = self.Q.w[:, None, None]  # shape (n_q, 1, 1)
         M = assemble(self.get_Λ1_ijk, self.get_Λ2_ijk, W, self.Λ1.n, self.Λ2.n)
@@ -659,34 +420,8 @@ class DeRhamSequence():
         self.P12 = jnp.linalg.solve(self.M1, M12)
 
     def assemble_P03(self):
-        # P = jnp.einsum("ijk,ljk,j->il", self.Λ0_ijk,
-        #                self.Λ3_ijk, self.Q.w)
-
-        # get_L0_jk = jax.vmap(
-        #     jax.vmap(self.get_Λ0_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # get_L3_jk = jax.vmap(
-        #     jax.vmap(self.get_Λ3_ijk, in_axes=(None, None, 0)),  # over k
-        #     in_axes=(None, 0, None)                         # then over j
-        # )
-
-        # k_vals = jnp.arange(3)
-
-        # def body_fun(carry, i):
-        #     # Λ_i has shape (n_j, n_k)
-        #     Λ_i = get_L3_jk(i, self.Q.ns, k_vals)
-
-        #     def compute_row(m):
-        #         Λ_m = get_L0_jk(m, self.Q.ns, k_vals)
-        #         return jnp.einsum("jk,jk,j->", Λ_i, Λ_m, self.Q.w)
-        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ0.n))
-
-        #     return carry.at[i, :].set(M_row), None
-
-        # M_init = jnp.zeros((self.Λ3.n, self.Λ0.n))
-        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ3.ns)
+        # M = jnp.einsum("ijk,ljk,j->il", self.Λ0_ijk,
+        #                 self.Λ3_ijk, self.Q.w)
 
         W = self.Q.w[:, None, None]  # shape (n_q, 1, 1)
         M = assemble(self.get_Λ0_ijk, self.get_Λ3_ijk, W, self.Λ0.n, self.Λ3.n)
