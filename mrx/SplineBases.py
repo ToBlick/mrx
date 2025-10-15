@@ -295,6 +295,7 @@ class DerivativeSpline:
         self.type = s.type
         self.T = s.T[1:-1] if s.type == 'periodic' else s.T
         self.s = SplineBasis(self.n, self.p, self.type, self.T)
+        self.ns = jnp.arange(self.n)
 
     def __call__(self, x: float, i: int) -> jnp.ndarray:
         """Evaluate the derivative of the ith spline at point x.

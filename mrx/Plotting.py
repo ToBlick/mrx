@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import plotly.colors as pc
 import plotly.graph_objects as go
@@ -207,36 +208,40 @@ def trajectory_plane_intersections_jit(trajectories, plane_val=0.5, axis=1):
 def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=16, plot_centerline=False):
 
     numplots = len(grids_pol)
-    fig, axes = plt.subplots(2, numplots//2, figsize=(12, 6))
+    fig, axes = plt.subplots(1, numplots, figsize=(16, 16/5))
     axes = axes.flatten()
 
     last_c = None
     for i, (ax, grid) in enumerate(zip(axes, grids_pol)):
-        # do a PCA to get the planar coordinates
-        mean = jnp.mean(grid[1], axis=0)
-        cov = jnp.cov(grid[1].T)
-        eigvals, eigvecs = jnp.linalg.eigh(cov)
-        # sort eigenvalues and eigenvectors
-        idx = jnp.argsort(eigvals)[::-1]
-        eigvals = eigvals[idx]
-        eigvecs = eigvecs[:, idx]
-        # project points onto the first two principal components
-        centered = grid[1] - mean
-        projected = centered @ eigvecs[:, :2]
-        nu1 = projected[:, 0].reshape(*grid[2][0].shape)
-        nu2 = projected[:, 1].reshape(*grid[2][0].shape)
+        # # do a PCA to get the planar coordinates
+        # mean = jnp.mean(grid[1], axis=0)
+        # cov = jnp.cov(grid[1].T)
+        # eigvals, eigvecs = jnp.linalg.eigh(cov)
+        # # sort eigenvalues and eigenvectors
+        # idx = jnp.argsort(eigvals)[::-1]
+        # eigvals = eigvals[idx]
+        # eigvecs = eigvecs[:, idx]
+        # # project points onto the first two principal components
+        # centered = grid[1] - mean
+        # projected = centered @ eigvecs[:, :2]
+        # nu1 = projected[:, 0].reshape(*grid[2][0].shape)
+        # nu2 = projected[:, 1].reshape(*grid[2][0].shape)
 
-        vals = jax.vmap(p_h)(grid[0]).reshape(nu1.shape)
+        R = jnp.sqrt(grid[2][0]**2 + grid[2][1]**2)
+        z = grid[2][2]
+
+        vals = jax.vmap(p_h)(grid[0]).reshape(*grid[2][0].shape)
 
         # draw contour above the guide lines
-        last_c = ax.contourf(nu1, nu2, vals, 25, cmap="plasma", zorder=2)
+        last_c = ax.contourf(R, z,
+                             vals, 25, cmap="plasma", zorder=2)
 
         # ensure axis artists (like text/legend) are above the guide lines
         ax.set_axisbelow(False)
 
-        # if plot_centerline:
-        #     ax.axvline(1.0, color='k', linestyle=":",
-        #                linewidth=1.5, zorder=3, clip_on=True)
+        if plot_centerline:
+            ax.axvline(1.0, color='k', linestyle=":",
+                       linewidth=1.5, zorder=3, clip_on=True)
         # ax.axhline(0.0, color='k', linestyle=":", linewidth=1.5, zorder=3, clip_on=True)
 
         ax.set_aspect("equal")
@@ -259,6 +264,23 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
                 fontsize=textsize, ha='right', va='top', zorder=10,
                 bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.3', alpha=1.0))
 
+        # force same limits across all subplots
+    Rmins, Rmaxs, Zmins, Zmaxs = [], [], [], []
+    for grid in grids_pol:
+        R = jnp.sqrt(grid[2][0]**2 + grid[2][1]**2)
+        z = grid[2][2]
+        Rmins.append(R.min())
+        Rmaxs.append(R.max())
+        Zmins.append(z.min())
+        Zmaxs.append(z.max())
+
+    Rmin, Rmax = float(min(Rmins)), float(max(Rmaxs))
+    Zmin, Zmax = float(min(Zmins)), float(max(Zmaxs))
+
+    for ax in axes:
+        ax.set_xlim(Rmin, Rmax)
+        ax.set_ylim(Zmin, Zmax)
+
     # put ONE shared colorbar on the right, aligned with subplots
     fig.subplots_adjust(right=0.85)  # make space for colorbar
     # [left, bottom, width, height]
@@ -278,11 +300,11 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
         # upward arrow for z
 
         # annotate the center (dotted) line at the very top of the axis
-        # if plot_centerline:
-        #     anchor_ax.text(0.5, 1.02, r"$R = 1$",
-        #                    transform=anchor_ax.transAxes,
-        #                    fontsize=textsize, ha='center', va='bottom', zorder=12,
-        #                    bbox=dict(facecolor='white', edgecolor='none', alpha=0.8, pad=0.2))
+        if plot_centerline:
+            anchor_ax.text(0.5, 1.02, r"$R = 1$",
+                           transform=anchor_ax.transAxes,
+                           fontsize=textsize, ha='center', va='bottom', zorder=12,
+                           bbox=dict(facecolor='white', edgecolor='none', alpha=0.8, pad=0.2))
         anchor_ax.annotate('', xy=(x0, y0 + arrow_len), xytext=(x0, y0),
                            xycoords='axes fraction',
                            arrowprops=dict(arrowstyle='->', linewidth=1.5, color='k'))
@@ -292,14 +314,18 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
                            arrowprops=dict(arrowstyle='->', linewidth=1.5, color='k'))
 
         # labels for arrows
-        anchor_ax.text(x0 - 0.01, y0 + arrow_len + 0.01, r"$\nu_2$",
+        anchor_ax.text(x0 - 0.01, y0 + arrow_len + 0.01, r"$z$",
                        transform=anchor_ax.transAxes, fontsize=textsize+2,
                        ha='center', va='bottom')
-        anchor_ax.text(x0 + arrow_len + 0.01, y0 - 0.01, r"$\nu_1$",
+        anchor_ax.text(x0 + arrow_len + 0.01, y0 - 0.01, r"$R$",
                        transform=anchor_ax.transAxes, fontsize=textsize+2,
                        ha='left', va='center')
 
-    fig.colorbar(last_c, cax=cbar_ax)
+    cbar = fig.colorbar(last_c, cax=cbar_ax,
+                        format=mticker.ScalarFormatter(useMathText=True))
+    cbar.formatter.set_powerlimits((0, 0))  # always show scientific notation
+    cbar.update_ticks()
+    cbar.ax.yaxis.get_offset_text().set_fontsize(ticksize)
 
     # plt.tight_layout(rect=[0, 0, 0.85, 1])  # leave room for cbar
     return fig, axes
@@ -314,7 +340,8 @@ def plot_torus(p_h,
                gridlinewidth=0.01,
                cstride=4,
                elev=30,
-               azim=140):
+               azim=140,
+               noaxes=False):
 
     vals = jnp.array([jax.vmap(p_h)(grid[0]).reshape(grid[2][0].shape)
                      for grid in grids_pol])
@@ -379,7 +406,8 @@ def plot_torus(p_h,
 
     plt.tight_layout()
     ax.view_init(elev=elev, azim=azim)
-    # ax.set_axis_off()
+    if noaxes:
+        ax.set_axis_off()
 
     return fig, ax
 

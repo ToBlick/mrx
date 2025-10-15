@@ -53,13 +53,13 @@ class QuadratureRule:
         x_s = [x_x, x_y, x_z]
         w_s = [w_x, w_y, w_z]
         d = 3
-        N = w_x.size * w_y.size * w_z.size
+        n = w_x.size * w_y.size * w_z.size
 
         # Create 3D grid of quadrature points and weights
         x_q = jnp.array(jnp.meshgrid(*x_s))  # shape d, n1, n2, n3, ...
-        x_q = x_q.transpose(*range(1, d+1), 0).reshape(N, d)
-        w_q = jnp.array(jnp.meshgrid(*w_s)).transpose(*
-                                                      range(1, d+1), 0).reshape(N, d)
+        x_q = x_q.transpose(*range(1, d+1), 0).reshape(n, d)
+        w_q = jnp.array(
+            jnp.meshgrid(*w_s)).transpose(*range(1, d+1), 0).reshape(n, d)
         w_q = jnp.prod(w_q, 1)
 
         # Store quadrature points and weights
@@ -71,6 +71,11 @@ class QuadratureRule:
         self.w_z = w_z
         self.x = x_q
         self.w = w_q
+        self.nx = x_x.size
+        self.ny = x_y.size
+        self.nz = x_z.size
+        self.n = n
+        self.ns = jnp.arange(n)
 
 
 def trapezoidal_quad(n):

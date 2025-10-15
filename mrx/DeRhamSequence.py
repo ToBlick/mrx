@@ -11,7 +11,7 @@ from mrx.Nonlinearities import CrossProductProjection
 from mrx.PolarMapping import LazyExtractionOperator, get_xi
 from mrx.Projectors import Projector
 from mrx.Quadrature import QuadratureRule
-from mrx.Utils import curl, div, grad, inv33, jacobian_determinant
+from mrx.Utils import assemble, curl, div, grad, inv33, jacobian_determinant
 
 
 class DeRhamSequence():
@@ -28,20 +28,26 @@ class DeRhamSequence():
     E1: LazyBoundaryOperator
     E2: LazyBoundaryOperator
     E3: LazyBoundaryOperator
-    # kth component of 0form i evaluated at quadrature point j. shape: n x n_q x 1
-    Λ0_ijk: jnp.ndarray
-    # kth component of 1form i evaluated at quadrature point j. shape: n x n_q x 3
-    Λ1_ijk: jnp.ndarray
-    # kth component of 2form i evaluated at quadrature point j. shape: n x n_q x 3
-    Λ2_ijk: jnp.ndarray
-    # kth component of 3form i evaluated at quadrature point j. shape: n x n_q x 1
-    Λ3_ijk: jnp.ndarray
-    # kth component of grad of 0form i evaluated at quadrature point j. shape: n x n_q x 3
-    dΛ0_ijk: jnp.ndarray
-    # kth component of curl of 1form i evaluated at quadrature point j. shape: n x n_q x 3
-    dΛ1_ijk: jnp.ndarray
-    # kth component of div of 2form i evaluated at quadrature point j. shape: n x n_q x 1
-    dΛ2_ijk: jnp.ndarray
+    # # kth component of 0form i evaluated at quadrature point j. shape: n x n_q x 1
+    # Λ0_ijk: jnp.ndarray
+    # # kth component of 1form i evaluated at quadrature point j. shape: n x n_q x 3
+    # Λ1_ijk: jnp.ndarray
+    # # kth component of 2form i evaluated at quadrature point j. shape: n x n_q x 3
+    # Λ2_ijk: jnp.ndarray
+    # # kth component of 3form i evaluated at quadrature point j. shape: n x n_q x 1
+    # Λ3_ijk: jnp.ndarray
+    # # kth component of grad of 0form i evaluated at quadrature point j. shape: n x n_q x 3
+    # dΛ0_ijk: jnp.ndarray
+    # # kth component of curl of 1form i evaluated at quadrature point j. shape: n x n_q x 3
+    # dΛ1_ijk: jnp.ndarray
+    # # kth component of div of 2form i evaluated at quadrature point j. shape: n x n_q x 1
+    # dΛ2_ijk: jnp.ndarray
+    r: jnp.ndarray
+    theta: jnp.ndarray
+    z: jnp.ndarray
+    dr: jnp.ndarray
+    dtheta: jnp.ndarray
+    dz: jnp.ndarray
 
     # Jacobian determinant evaluated at quadrature points. shape: n_q x 1
     J_j = jnp.ndarray
@@ -68,12 +74,7 @@ class DeRhamSequence():
         self.J_j = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
 
         if polar:
-            def _R(r, χ):
-                return self.F(jnp.array([r, χ, 0.0]))[0] * jnp.ones(1)
-
-            def _Z(r, χ):
-                return self.F(jnp.array([r, χ, 0.0]))[2] * jnp.ones(1)
-            ξ = get_xi(_R, _Z, self.Λ0, self.Q)[0]
+            ξ = get_xi(ns[1])
             if dirichlet:
                 self.E0, self.E1, self.E2, self.E3 = [
                     LazyExtractionOperator(Λ, ξ, True).matrix()
@@ -103,6 +104,151 @@ class DeRhamSequence():
             Projector(Λ, self.Q, self.F, E=E)
             for Λ, E in zip([self.Λ0, self.Λ1, self.Λ2, self.Λ3], [self.E0, self.E1, self.E2, self.E3])
         ]
+
+    def evaluate_1d(self):
+        self.r = jax.vmap(jax.vmap(self.Λ0.Λ[0], (0, None)),
+                          (None, 0))(self.Q.x_x, self.Λ0.Λ[0].ns)
+        self.theta = jax.vmap(jax.vmap(self.Λ0.Λ[1], (0, None)),
+                              (None, 0))(self.Q.x_y, self.Λ0.Λ[1].ns)
+        self.z = jax.vmap(jax.vmap(self.Λ0.Λ[2], (0, None)),
+                          (None, 0))(self.Q.x_z, self.Λ0.Λ[2].ns)
+        self.dr = jax.vmap(jax.vmap(self.Λ0.dΛ[0], (0, None)),
+                           (None, 0))(self.Q.x_x, self.Λ0.dΛ[0].ns)
+        self.dtheta = jax.vmap(jax.vmap(self.Λ0.dΛ[1], (0, None)),
+                               (None, 0))(self.Q.x_y, self.Λ0.dΛ[1].ns)
+        self.dz = jax.vmap(jax.vmap(self.Λ0.dΛ[2], (0, None)),
+                           (None, 0))(self.Q.x_z, self.Λ0.dΛ[2].ns)
+
+    def get_Λ0_ijk(self, i, j, k):
+        # kth component of 0form i evaluated at quadrature point j.
+        # get 1d quadrature points
+        j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
+        # weird order here is due to meshgrid's indexing
+        # get the 1d basis functions
+        c, i1, i2, i3 = self.Λ0._unravel_index(i)
+        # k is always 0
+        return self.r[i1, j1] * self.theta[i2, j2] * self.z[i3, j3]
+
+    def get_dΛ0_ijk(self, i, j, k):
+        # kth component of gradient of 0 form i evaluated at quadrature point j.
+        j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
+        c, i1, i2, i3 = self.Λ0._unravel_index(i)
+        # get i-1
+        dr = jnp.where(i1 == self.Λ0.nχ-1, 0.0, self.dr[i1, j1])
+        dr_m1 = jnp.where(i1 > 0, self.dr[i1-1, j1], 0.0)
+        dtheta_m1 = jnp.where(
+            i2 > 0, self.dtheta[i2-1, j2], self.dtheta[self.Λ0.nχ-1, j2])
+        dtheta = self.dtheta[i2, j2]
+        dz_m1 = jnp.where(i3 > 0, self.dz[i3-1, j3], self.dz[self.Λ0.nχ-1, j3])
+        dz = self.dz[i3, j3]
+        return jnp.where(k == 0,
+                         (dr_m1 - dr) * self.theta[i2, j2] * self.z[i3, j3],
+                         jnp.where(k == 1,
+                                   self.r[i1, j1] *
+                                   (dtheta_m1 - dtheta) * self.z[i3, j3],
+                                   self.r[i1, j1] * self.theta[i2, j2] * (dz_m1 - dz)))
+
+    def get_Λ1_ijk(self, i, j, k):
+        # kth component of 1 form i evaluated at quadrature point j.
+        j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
+        c, i1, i2, i3 = self.Λ1._unravel_index(i)
+        return jnp.where(k == c,
+                         jnp.where(k == 0,
+                                   self.dr[i1, j1] *
+                                   self.theta[i2, j2] * self.z[i3, j3],
+                                   jnp.where(k == 1,
+                                             self.r[i1, j1] *
+                                             self.dtheta[i2, j2] *
+                                             self.z[i3, j3],
+                                             self.r[i1, j1] * self.theta[i2, j2] * self.dz[i3, j3])),
+                         0.0)
+
+    def get_dΛ1_ijk(self, i, j, k):
+        # kth component of curl of 1 form i evaluated at quadrature point j.
+        j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
+        c, i1, i2, i3 = self.Λ1._unravel_index(i)
+        # get i-1
+        dr = jnp.where(i1 == self.Λ1.nχ-1, 0.0, self.dr[i1, j1])
+        dr_m1 = jnp.where(i1 > 0, self.dr[i1-1, j1], 0.0)
+        dtheta_m1 = jnp.where(
+            i2 > 0, self.dtheta[i2-1, j2], self.dtheta[self.Λ1.nχ-1, j2])
+        dtheta = self.dtheta[i2, j2]
+        dz_m1 = jnp.where(i3 > 0, self.dz[i3-1, j3], self.dz[self.Λ1.nχ-1, j3])
+        dz = self.dz[i3, j3]
+        # d3/dy - d2/dz
+        d3dy = self.r[i1, j1] * (dtheta_m1 - dtheta) * self.dz[i3, j3]
+        d2dz = self.r[i1, j1] * self.dtheta[i2, j2] * (dz_m1 - dz)
+        d1dz = self.dr[i1, j1] * self.theta[i2, j2] * (dz_m1 - dz)
+        d3dx = (dr_m1 - dr) * self.theta[i2, j2] * self.dz[i3, j3]
+        d2dx = (dr_m1 - dr) * self.dtheta[i2, j2] * self.z[i3, j3]
+        d1dy = self.dr[i1, j1] * (dtheta_m1 - dtheta) * self.z[i3, j3]
+
+        return jnp.where(c == 0,
+                         jnp.where(k == 0,
+                                   0.0,
+                                   jnp.where(k == 1,
+                                             d1dz,
+                                             -d1dy)
+                                   ),
+                         jnp.where(c == 1,
+                                   jnp.where(k == 0,
+                                             -d2dz,
+                                             jnp.where(k == 1,
+                                                       0.0,
+                                                       d2dx)
+                                             ),  # c==2
+                                   jnp.where(k == 0,
+                                             d3dy,
+                                             jnp.where(k == 1,
+                                                       -d3dx,
+                                                       0.0)
+                                             )
+                                   )
+                         )
+
+    def get_Λ2_ijk(self, i, j, k):
+        # kth component of 2 form i evaluated at quadrature point j.
+        j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
+        c, i1, i2, i3 = self.Λ2._unravel_index(i)
+        return jnp.where(k == c,
+                         jnp.where(k == 0,
+                                   self.r[i1, j1] *
+                                   self.dtheta[i2, j2] * self.dz[i3, j3],
+                                   jnp.where(k == 1,
+                                             self.dr[i1, j1] *
+                                             self.theta[i2, j2] *
+                                             self.dz[i3, j3],
+                                             self.dr[i1, j1] * self.dtheta[i2, j2] * self.z[i3, j3])),
+                         0.0)
+
+    def get_dΛ2_ijk(self, i, j, k):
+        # kth component of divergence of 2 form i evaluated at quadrature point j.
+        j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
+        c, i1, i2, i3 = self.Λ2._unravel_index(i)
+        # get i-1
+        dr = jnp.where(i1 == self.Λ2.nχ-1, 0.0, self.dr[i1, j1])
+        dr_m1 = jnp.where(i1 > 0, self.dr[i1-1, j1], 0.0)
+        dtheta_m1 = jnp.where(
+            i2 > 0, self.dtheta[i2-1, j2], self.dtheta[self.Λ2.nχ-1, j2])
+        dtheta = self.dtheta[i2, j2]
+        dz_m1 = jnp.where(i3 > 0, self.dz[i3-1, j3], self.dz[self.Λ2.nχ-1, j3])
+        dz = self.dz[i3, j3]
+
+        return jnp.where(c == 0,
+                         (dr_m1 - dr) * self.dtheta[i2, j2] * self.dz[i3, j3],
+                         jnp.where(c == 1,
+                                   self.dr[i1, j1] *
+                                   (dtheta_m1 - dtheta) * self.dz[i3, j3],
+                                   self.dr[i1, j1] *
+                                   self.dtheta[i2, j2] * (dz_m1 - dz)
+                                   )
+                         )
+
+    def get_Λ3_ijk(self, i, j, k):
+        # kth component of 3 form i evaluated at quadrature point j.
+        j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
+        c, i1, i2, i3 = self.Λ3._unravel_index(i)
+        return self.dr[i1, j1] * self.dtheta[i2, j2] * self.dz[i3, j3]
 
     def evaluate_0(self):
         self.Λ0_ijk = jax.vmap(jax.vmap(self.Λ0, (0, None)),
@@ -148,88 +294,416 @@ class DeRhamSequence():
         self.evaluate_d2()
 
     def assemble_M0(self):
-        M0 = jnp.einsum("ijk,ljk,j,j->il", self.Λ0_ijk,
-                        self.Λ0_ijk, self.J_j, self.Q.w)
-        self.M0 = self.E0 @ M0 @ self.E0.T
+        # M = jnp.einsum("ijk,ljk,j,j->il", self.Λ0_ijk,
+        #                self.Λ0_ijk, self.J_j, self.Q.w)
+
+        W = (self.J_j * self.Q.w)[:, None, None]  # shape (n_q, 1, 1)
+
+        M = assemble(self.get_Λ0_ijk, self.get_Λ0_ijk, W, self.Λ0.n, self.Λ0.n)
+
+        self.M0 = self.E0 @ M @ self.E0.T
 
     def assemble_M1(self):
-        M1 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
-                        self.G_inv_jkl, self.Λ1_ijk, self.J_j, self.Q.w)
-        self.M1 = self.E1 @ M1 @ self.E1.T
+        # M1 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
+        #                 self.G_inv_jkl, self.Λ1_ijk, self.J_j, self.Q.w)
+        # get_L0_jk = jax.vmap(
+        #     jax.vmap(self.get_Λ1_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # k_vals = jnp.arange(3)
+
+        # def body_fun(carry, i):
+        #     # Λ_i has shape (n_j, n_k)
+        #     Λ_i = get_L0_jk(i, self.Q.ns, k_vals)
+
+        #     # Build full M0[i, l] row by vectorizing over l
+        #     def compute_row(m):
+        #         Λ_m = get_L0_jk(m, self.Q.ns, k_vals)
+        #         return jnp.einsum("jk,jkm,jm,j,j->", Λ_i, self.G_inv_jkl, Λ_m, self.J_j, self.Q.w)
+        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ1.n))
+
+        #     return carry.at[i, :].set(M_row), None
+
+        # M_init = jnp.zeros((self.Λ1.n, self.Λ1.n))
+        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ1.ns)
+
+        # shape (n_q, 3, 3)
+        W = self.G_inv_jkl * (self.J_j * self.Q.w)[:, None, None]
+
+        M = assemble(self.get_Λ1_ijk, self.get_Λ1_ijk, W, self.Λ1.n, self.Λ1.n)
+
+        self.M1 = self.E1 @ M @ self.E1.T
 
     def assemble_M2(self):
-        M2 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
-                        self.G_jkl, self.Λ2_ijk, 1/self.J_j, self.Q.w)
-        self.M2 = self.E2 @ M2 @ self.E2.T
+        # M2 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
+        # self.G_jkl, self.Λ2_ijk, 1/self.J_j, self.Q.w)
+
+        # get_L0_jk = jax.vmap(
+        #     jax.vmap(self.get_Λ2_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # j_vals = jnp.arange(self.Q.n)
+        # k_vals = jnp.arange(3)
+
+        # def body_fun(carry, i):
+        #     # Λ_i has shape (n_j, n_k)
+        #     Λ_i = get_L0_jk(i, j_vals, k_vals)
+
+        #     # Build full M0[i, l] row by vectorizing over l
+        #     def compute_row(m):
+        #         Λ_m = get_L0_jk(m, j_vals, k_vals)
+        #         return jnp.einsum("jk,jkm,jm,j,j->", Λ_i, self.G_jkl, Λ_m, 1/self.J_j, self.Q.w)
+        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ2.n))
+
+        #     return carry.at[i, :].set(M_row), None
+
+        # M_init = jnp.zeros((self.Λ2.n, self.Λ2.n))
+        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ2.ns)
+
+        W = self.G_jkl * (1/self.J_j * self.Q.w)[:, None, None]
+
+        M = assemble(self.get_Λ2_ijk, self.get_Λ2_ijk, W, self.Λ2.n, self.Λ2.n)
+
+        self.M2 = self.E2 @ M @ self.E2.T
 
     def assemble_M3(self):
-        M3 = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
-                        self.Λ3_ijk, 1/self.J_j, self.Q.w)
-        self.M3 = self.E3 @ M3 @ self.E3.T
+        # M3 = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
+        #                 self.Λ3_ijk, 1/self.J_j, self.Q.w)
+
+        # get_L0_jk = jax.vmap(
+        #     jax.vmap(self.get_Λ3_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # j_vals = jnp.arange(self.Q.n)
+        # k_vals = jnp.arange(1)
+
+        # def body_fun(carry, i):
+        #     # Λ_i has shape (n_j, n_k)
+        #     Λ_i = get_L0_jk(i, j_vals, k_vals)
+
+        #     # Build full M0[i, l] row by vectorizing over l
+        #     def compute_row(m):
+        #         Λ_m = get_L0_jk(m, j_vals, k_vals)
+        #         return jnp.einsum("jk,jk,j,j->", Λ_i, Λ_m, 1/self.J_j, self.Q.w)
+        #     M0_row = jax.vmap(compute_row)(jnp.arange(self.Λ3.n))
+
+        #     return carry.at[i, :].set(M0_row), None
+
+        # M_init = jnp.zeros((self.Λ3.n, self.Λ3.n))
+        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ3.ns)
+
+        W = (1/self.J_j * self.Q.w)[:, None, None]
+
+        M = assemble(self.get_Λ3_ijk, self.get_Λ3_ijk, W, self.Λ3.n, self.Λ3.n)
+
+        self.M3 = self.E3 @ M @ self.E3.T
 
     def assemble_d0(self):
-        D0 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
-                        self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
-        self.D0 = self.E1 @ D0 @ self.E0.T
+        # D0 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
+        #                 self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
+
+        # get_L0_jk = jax.vmap(
+        #     jax.vmap(self.get_Λ1_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # get_D0_jk = jax.vmap(
+        #     jax.vmap(self.get_dΛ0_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # k_vals = jnp.arange(3)
+
+        # def body_fun(carry, i):
+        #     # Λ_i has shape (n_j, n_k)
+        #     Λ_i = get_L0_jk(i, self.Q.ns, k_vals)
+
+        #     # Build full M0[i, l] row by vectorizing over l
+        #     def compute_row(m):
+        #         Λ_m = get_D0_jk(m, self.Q.ns, k_vals)
+        #         return jnp.einsum("jk,jkm,jm,j,j->", Λ_i, self.G_inv_jkl, Λ_m, self.J_j, self.Q.w)
+        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ0.n))
+
+        #     return carry.at[i, :].set(M_row), None
+
+        # M_init = jnp.zeros((self.Λ1.n, self.Λ0.n))
+        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ1.ns)
+
+        W = self.G_inv_jkl * (self.J_j * self.Q.w)[:, None, None]
+
+        M = assemble(self.get_Λ1_ijk, self.get_dΛ0_ijk,
+                     W, self.Λ1.n, self.Λ0.n)
+
+        self.D0 = self.E1 @ M @ self.E0.T
         self.strong_grad = jnp.linalg.solve(self.M1, self.D0)
         self.weak_div = -jnp.linalg.solve(self.M0.T, self.D0.T)
 
     def assemble_d1(self):
-        D1 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
-                        self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
-        self.D1 = self.E2 @ D1 @ self.E1.T
+        # D1 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
+        #                 self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
+
+        # get_L0_jk = jax.vmap(
+        #     jax.vmap(self.get_Λ2_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # get_D0_jk = jax.vmap(
+        #     jax.vmap(self.get_dΛ1_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # k_vals = jnp.arange(3)
+
+        # def body_fun(carry, i):
+        #     # Λ_i has shape (n_j, n_k)
+        #     Λ_i = get_L0_jk(i, self.Q.ns, k_vals)
+
+        #     def compute_row(m):
+        #         Λ_m = get_D0_jk(m, self.Q.ns, k_vals)
+        #         return jnp.einsum("jk,jkm,jm,j,j->", Λ_i, self.G_jkl, Λ_m, 1/self.J_j, self.Q.w)
+        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ1.n))
+
+        #     return carry.at[i, :].set(M_row), None
+
+        # M_init = jnp.zeros((self.Λ2.n, self.Λ1.n))
+        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ2.ns)
+
+        W = self.G_jkl * (1/self.J_j * self.Q.w)[:, None, None]
+
+        M = assemble(self.get_Λ2_ijk, self.get_dΛ1_ijk,
+                     W, self.Λ2.n, self.Λ1.n)
+        self.D1 = self.E2 @ M @ self.E1.T
         self.strong_curl = jnp.linalg.solve(self.M2, self.D1)
         self.weak_curl = jnp.linalg.solve(self.M1.T, self.D1.T)
 
     def assemble_d2(self):
-        D2 = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
-                        self.dΛ2_ijk, 1/self.J_j, self.Q.w)
-        self.D2 = self.E3 @ D2 @ self.E2.T
+        # D2 = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
+        #                 self.dΛ2_ijk, 1/self.J_j, self.Q.w)
+        # get_L0_jk = jax.vmap(
+        #     jax.vmap(self.get_Λ3_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # get_D0_jk = jax.vmap(
+        #     jax.vmap(self.get_dΛ2_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # k_vals = jnp.arange(1)
+
+        # def body_fun(carry, i):
+        #     # Λ_i has shape (n_j, n_k)
+        #     Λ_i = get_L0_jk(i, self.Q.ns, k_vals)
+
+        #     # Build full M0[i, l] row by vectorizing over l
+        #     def compute_row(m):
+        #         Λ_m = get_D0_jk(m, self.Q.ns, k_vals)
+        #         return jnp.einsum("jk,jk,j,j->", Λ_i, Λ_m, 1/self.J_j, self.Q.w)
+        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ2.n))
+
+        #     return carry.at[i, :].set(M_row), None
+
+        # M_init = jnp.zeros((self.Λ3.n, self.Λ2.n))
+        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ3.ns)
+
+        W = (1/self.J_j * self.Q.w)[:, None, None]
+
+        M = assemble(self.get_Λ3_ijk, self.get_dΛ2_ijk,
+                     W, self.Λ3.n, self.Λ2.n)
+
+        self.D2 = self.E3 @ M @ self.E2.T
         self.strong_div = jnp.linalg.solve(self.M3, self.D2)
         self.weak_grad = -jnp.linalg.solve(self.M2.T, self.D2.T)
 
     def assemble_dd0(self):
-        GG = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ0_ijk,
-                        self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
-        self.dd0 = jnp.linalg.solve(self.M0, self.E0 @ GG @ self.E0.T)
+        # GG = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ0_ijk,
+        #                 self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
+
+        # get_L0_jk = jax.vmap(
+        #     jax.vmap(self.get_dΛ0_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # k_vals = jnp.arange(3)
+
+        # def body_fun(carry, i):
+        #     # Λ_i has shape (n_j, n_k)
+        #     Λ_i = get_L0_jk(i, self.Q.ns, k_vals)
+
+        #     # Build full M0[i, l] row by vectorizing over l
+        #     def compute_row(m):
+        #         Λ_m = get_L0_jk(m, self.Q.ns, k_vals)
+        #         return jnp.einsum("jk,jkm,jm,j,j->", Λ_i, self.G_inv_jkl, Λ_m, self.J_j, self.Q.w)
+        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ0.n))
+
+        #     return carry.at[i, :].set(M_row), None
+
+        # M_init = jnp.zeros((self.Λ0.n, self.Λ0.n))
+        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ0.ns)
+
+        W = self.G_inv_jkl * (self.J_j * self.Q.w)[:, None, None]
+
+        M = assemble(self.get_dΛ0_ijk, self.get_dΛ0_ijk,
+                     W, self.Λ0.n, self.Λ0.n)
+
+        self.dd0 = jnp.linalg.solve(self.M0, self.E0 @ M @ self.E0.T)
 
     def assemble_dd1(self):
-        CC = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ1_ijk,
-                        self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
+        # CC = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ1_ijk,
+        #                 self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
+
+        # get_D0_jk = jax.vmap(
+        #     jax.vmap(self.get_dΛ1_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # k_vals = jnp.arange(3)
+
+        # def body_fun(carry, i):
+        #     # Λ_i has shape (n_j, n_k)
+        #     Λ_i = get_D0_jk(i, self.Q.ns, k_vals)
+
+        #     # Build full M0[i, l] row by vectorizing over l
+        #     def compute_row(m):
+        #         Λ_m = get_D0_jk(m, self.Q.ns, k_vals)
+        #         return jnp.einsum("jk,jkm,jm,j,j->", Λ_i, self.G_jkl, Λ_m, 1/self.J_j, self.Q.w)
+        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ1.n))
+
+        #     return carry.at[i, :].set(M_row), None
+
+        # M_init = jnp.zeros((self.Λ1.n, self.Λ1.n))
+        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ1.ns)
+
+        W = self.G_jkl * (1/self.J_j * self.Q.w)[:, None, None]
+
+        M = assemble(self.get_dΛ1_ijk, self.get_dΛ1_ijk,
+                     W, self.Λ1.n, self.Λ1.n)
+
         self.dd1 = jnp.linalg.solve(
-            self.M1, self.E1 @ CC @ self.E1.T) - self.strong_grad @ self.weak_div
+            self.M1, self.E1 @ M @ self.E1.T) - self.strong_grad @ self.weak_div
 
     def assemble_dd2(self):
-        DD = jnp.einsum("ijk,ljk,j,j->il", self.dΛ2_ijk,
-                        self.dΛ2_ijk, 1/self.J_j, self.Q.w)
+        # DD = jnp.einsum("ijk,ljk,j,j->il", self.dΛ2_ijk,
+        #                 self.dΛ2_ijk, 1/self.J_j, self.Q.w)
+
+        # get_D0_jk = jax.vmap(
+        #     jax.vmap(self.get_dΛ2_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # k_vals = jnp.arange(1)
+
+        # def body_fun(carry, i):
+        #     # Λ_i has shape (n_j, n_k)
+        #     Λ_i = get_D0_jk(i, self.Q.ns, k_vals)
+
+        #     # Build full M0[i, l] row by vectorizing over l
+        #     def compute_row(m):
+        #         Λ_m = get_D0_jk(m, self.Q.ns, k_vals)
+        #         return jnp.einsum("jk,jk,j,j->", Λ_i, Λ_m, 1/self.J_j, self.Q.w)
+        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ2.n))
+
+        #     return carry.at[i, :].set(M_row), None
+
+        # M_init = jnp.zeros((self.Λ2.n, self.Λ2.n))
+        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ2.ns)
+
+        W = (1/self.J_j * self.Q.w)[:, None, None]
+
+        M = assemble(self.get_dΛ2_ijk, self.get_dΛ2_ijk,
+                     W, self.Λ2.n, self.Λ2.n)
+
         self.dd2 = jnp.linalg.solve(
-            self.M2, self.E2 @ DD @ self.E2.T) + self.strong_curl @ self.weak_curl
+            self.M2, self.E2 @ M @ self.E2.T) + self.strong_curl @ self.weak_curl
 
     def assemble_dd3(self):
         self.dd3 = -self.strong_div @ self.weak_grad
 
     def assemble_P12(self):
-        P = jnp.einsum("ijk,ljk,j->il", self.Λ1_ijk,
-                       self.Λ2_ijk, self.Q.w)
-        M12 = self.E1 @ P @ self.E2.T
+        # P = jnp.einsum("ijk,ljk,j->il", self.Λ1_ijk,
+        #                self.Λ2_ijk, self.Q.w)
+
+        # get_L1_jk = jax.vmap(
+        #     jax.vmap(self.get_Λ1_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # get_L2_jk = jax.vmap(
+        #     jax.vmap(self.get_Λ2_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # k_vals = jnp.arange(3)
+
+        # def body_fun(carry, i):
+        #     # Λ_i has shape (n_j, n_k)
+        #     Λ_i = get_L2_jk(i, self.Q.ns, k_vals)
+
+        #     def compute_row(m):
+        #         Λ_m = get_L1_jk(m, self.Q.ns, k_vals)
+        #         return jnp.einsum("jk,jk,j->", Λ_i, Λ_m, self.Q.w)
+        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ1.n))
+
+        #     return carry.at[i, :].set(M_row), None
+
+        # M_init = jnp.zeros((self.Λ2.n, self.Λ1.n))
+        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ2.ns)
+
+        W = self.Q.w[:, None, None]  # shape (n_q, 1, 1)
+        M = assemble(self.get_Λ1_ijk, self.get_Λ2_ijk, W, self.Λ1.n, self.Λ2.n)
+
+        M12 = self.E1 @ M @ self.E2.T
         self.P12 = jnp.linalg.solve(self.M1, M12)
 
     def assemble_P03(self):
-        P = jnp.einsum("ijk,ljk,j->il", self.Λ0_ijk,
-                       self.Λ3_ijk, self.Q.w)
-        M03 = self.E0 @ P @ self.E3.T
+        # P = jnp.einsum("ijk,ljk,j->il", self.Λ0_ijk,
+        #                self.Λ3_ijk, self.Q.w)
+
+        # get_L0_jk = jax.vmap(
+        #     jax.vmap(self.get_Λ0_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # get_L3_jk = jax.vmap(
+        #     jax.vmap(self.get_Λ3_ijk, in_axes=(None, None, 0)),  # over k
+        #     in_axes=(None, 0, None)                         # then over j
+        # )
+
+        # k_vals = jnp.arange(3)
+
+        # def body_fun(carry, i):
+        #     # Λ_i has shape (n_j, n_k)
+        #     Λ_i = get_L3_jk(i, self.Q.ns, k_vals)
+
+        #     def compute_row(m):
+        #         Λ_m = get_L0_jk(m, self.Q.ns, k_vals)
+        #         return jnp.einsum("jk,jk,j->", Λ_i, Λ_m, self.Q.w)
+        #     M_row = jax.vmap(compute_row)(jnp.arange(self.Λ0.n))
+
+        #     return carry.at[i, :].set(M_row), None
+
+        # M_init = jnp.zeros((self.Λ3.n, self.Λ0.n))
+        # M, _ = jax.lax.scan(body_fun, M_init, self.Λ3.ns)
+
+        W = self.Q.w[:, None, None]  # shape (n_q, 1, 1)
+        M = assemble(self.get_Λ0_ijk, self.get_Λ3_ijk, W, self.Λ0.n, self.Λ3.n)
+
+        M03 = self.E0 @ M @ self.E3.T
         self.P03 = jnp.linalg.solve(self.M0, M03)
 
     def build_crossproduct_projections(self):
-        self.P1x1_to_1 = CrossProductProjection(1, 1, 1, self)
-        self.P1x2_to_1 = CrossProductProjection(1, 1, 2, self)
+        # self.P1x1_to_1 = CrossProductProjection(1, 1, 1, self)
+        # self.P1x2_to_1 = CrossProductProjection(1, 1, 2, self)
         self.P2x1_to_1 = CrossProductProjection(1, 2, 1, self)
-        self.P2x2_to_1 = CrossProductProjection(1, 2, 2, self)
+        # self.P2x2_to_1 = CrossProductProjection(1, 2, 2, self)
 
         self.P1x1_to_2 = CrossProductProjection(2, 1, 1, self)
-        self.P1x2_to_2 = CrossProductProjection(2, 1, 2, self)
-        self.P2x1_to_2 = CrossProductProjection(2, 2, 1, self)
-        self.P2x1_to_2 = CrossProductProjection(2, 2, 1, self)
+        # self.P1x2_to_2 = CrossProductProjection(2, 1, 2, self)
+        # self.P2x1_to_2 = CrossProductProjection(2, 2, 1, self)
+        # self.P2x1_to_2 = CrossProductProjection(2, 2, 1, self)
 
     def assemble_all(self):
         self.assemble_M0()

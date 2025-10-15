@@ -115,3 +115,125 @@ def l2_product(f: Callable[[jnp.ndarray], jnp.ndarray],
     """
     Jj = jax.vmap(jacobian_determinant(F))(Q.x)
     return jnp.einsum("ij,ij,i,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Jj, Q.w)
+
+
+def assemble(
+    getter_1,
+    getter_2,
+    W,
+    n1,
+    n2,
+):
+    """
+    Assemble a matrix M[a, b] = Σ_{a,j,k} Λ1[a,j,i] * W[j,i,k] * Λ2[b,j,k]
+
+    Parameters
+    ----------
+    getter_1 : callable
+        Function (a, j, k) -> scalar. kth component of form a evaluated at quadrature point j.
+    getter_2 : callable
+        Function (b, j, k) -> scalar. kth component of form b evaluated at quadrature point j.
+    W : jnp.ndarray, shape (3, 3, n_q)
+        Weight tensor combining metric, Jacobian, and quadrature weights.
+        (For example: G_inv[q, ...] * J[q] * w[q])
+    n1 : int
+        Number of row basis functions.
+    n2 : int
+        Number of column basis functions.
+
+    Returns
+    -------
+    M : jnp.ndarray, shape (n1, n2)
+        The assembled matrix.
+    """
+
+    n_q, d, _ = W.shape
+
+    get_A_jk = jax.vmap(
+        jax.vmap(getter_1, in_axes=(None, None, 0)),  # over k (dimensions)
+        # over j (quadrature points)
+        in_axes=(None, 0, None)
+    )
+
+    get_B_jk = jax.vmap(
+        jax.vmap(getter_2, in_axes=(None, None, 0)),
+        in_axes=(None, 0, None)
+    )
+
+    def body_fun(carry, i):
+        ΛA_i = get_A_jk(i, jnp.arange(n_q), jnp.arange(d))
+
+        def compute_row(m):
+            ΛB_m = get_B_jk(m, jnp.arange(n_q), jnp.arange(d))
+            return jnp.einsum("jk,jkm,jm->", ΛA_i, W, ΛB_m)
+
+        M_row = jax.vmap(compute_row)(jnp.arange(n2))
+        return None, M_row
+
+    _, M = jax.lax.scan(body_fun, None, jnp.arange(n1))
+    return M
+
+
+def evaluate_at_xq(getter, dofs, n_q, d):
+    """
+    Evaluate a finite element function at quadrature points.
+
+    Parameters
+    ----------
+    getter : callable
+        Function (i, j, k) -> scalar. kth component of form i evaluated at quadrature point j.
+    dofs : jnp.ndarray, shape (m,)
+        Degrees of freedom of the finite element function, already contracted with extraction matrices
+
+    Returns
+    -------
+    f_h_jk : jnp.ndarray, shape (n_q, d)
+        Function values at quadrature points.
+    """
+    # Evaluate the finite element function at quadrature points
+    get_f_jk = jax.vmap(
+        jax.vmap(getter, in_axes=(None, None, 0)),  # over k (dimensions)
+        # over j (quadrature points)
+        in_axes=(None, 0, None)
+    )
+
+    v_i = dofs  # shape (n_i,)
+
+    def body_fun(carry, i):
+        L_i = get_f_jk(i, jnp.arange(n_q), jnp.arange(d))  # shape (n_q, d)
+        # broadcast scalar over last axis (dimesions)
+        carry += L_i * v_i[i][:, None]
+        return carry, None
+
+    R_init = jnp.zeros_like(
+        get_f_jk(0, jnp.arange(n_q), jnp.arange(d)))  # shape (n_q, d)
+    R, _ = jax.lax.scan(body_fun, R_init, jnp.arange(v_i.shape[0]))
+    return R
+
+
+def integrate_against(getter, w_jk, n):
+    """
+    Integrate a function represented at quadrature points against a set of basis functions.
+
+    Args:
+        getter (callable): Function (i, j, k) -> scalar. kth component of form i evaluated at quadrature point j.
+        w_jk (jnp.ndarray): Function values at quadrature points, shape (n_q, d).
+        n (int): Number of basis functions.
+
+    Returns:
+        jnp.ndarray: Integrated values, shape (n,). Entries are given by
+        ∑_{j,k} Λ[i,j,k] * w[j,k]
+    """
+    n_q, d = w_jk.shape
+    get_f_jk = jax.vmap(
+        jax.vmap(getter, in_axes=(None, None, 0)),  # over k (dimensions)
+        # over j (quadrature points)
+        in_axes=(None, 0, None)
+    )
+
+    def body_fun(carry, i):
+        L_i = get_f_jk(i, jnp.arange(n_q), jnp.arange(d))  # shape (n_q, d)
+        return None, jnp.sum(L_i * w_jk)
+
+    _, R = jax.lax.scan(body_fun, None, jnp.arange(n))
+    return R

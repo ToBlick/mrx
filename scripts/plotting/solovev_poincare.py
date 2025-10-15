@@ -5,11 +5,13 @@ import diffrax as dfx
 import h5py
 import jax
 import jax.numpy as jnp
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import optimistix as optx
 from matplotlib import gridspec
 from matplotlib.ticker import MultipleLocator
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 from mrx.BoundaryFitting import cerfon_map, helical_map, rotating_ellipse_map
 from mrx.DeRhamSequence import DeRhamSequence
@@ -60,69 +62,17 @@ print("Setting up FEM spaces...")
 Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
 assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
-# %%
-F = jax.jit(F)
-
-
-@jax.jit
-def F_cyl_signed(x):
-    """Cylindrical coords with signed R."""
-    R = jnp.sqrt(x[0]**2 + x[1]**2) * \
-        jnp.sign(jnp.sin(jnp.arctan2(x[1], x[0])))
-    phi = jnp.arctan2(x[1], x[0])
-    z = x[2]
-    return jnp.array([R, phi, z])
-
-
-p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
-B_h = (DiscreteFunction(B_hat, Seq.Λ2, Seq.E2))
-# %%
-# at zeta = 0, we are in the (R, z) plane, so we sample there:
-n_lines = 60  # even numbers only
-r_min, r_max = 0.05, 1.0
-p = 1.0
-_r = np.linspace(r_min, r_max, n_lines)
-x0s = np.vstack(
-    (np.hstack((_r[::3], _r[1::3], _r[2::3])),                              # between 0 and 1 - samples along x
-     # half go to theta=0 and half to theta=pi
-     np.hstack((0.31 * np.ones(n_lines//3),
-                0.43 * np.ones(n_lines//3),
-                0.76 * np.ones(n_lines//3))),
-     0.743 * np.ones(n_lines))
-).T
-# x0s = np.vstack(
-#     (_r,
-#      0.0 * np.ones(n_lines),
-#      0.0 * np.ones(n_lines))
-# ).T
 
 # %%
 
 
-def integrate_field_line_diffrax(B_h, x0, F, N, phi_target):
-    """
-    Integrate a field line x'(t) = v(x)/||v(x)|| using Diffrax, 
-    detecting crossings where F(x)[1] passes target values.
-
-    Args:
-        v: Callable(x) -> vector field (R^3 -> R^3)
-        F: Callable(x) -> map R^3 -> R^2 or higher (used for event detection)
-        x0: initial position array (3,)
-        targets: sequence of float target values to cross in F(x)[1]
-        N: number of intersections to record
-        t_span: (t0, tf)
-        max_step: maximum step size
-        rtol, atol: solver tolerances
-    Returns:
-        crossings: array of shape (N, 3) with intersection points
-    """
-
+def integrate_fieldline(B_h, x0, F, N, t1=10):
     @jax.jit
     def vector_field(t, x, args):
         """Return the norm of B at x=(r,theta,zeta) in [0,1]^3."""
         x = x % 1.0
         r, θ, z = x
-        r = jnp.clip(r, 1e-6, 1)  # avoid r=0 in polar coords
+        # r = jnp.clip(r, 1e-5, 1.0)
         x = jnp.array([r, θ, z])
         Bx = B_h(jnp.array(x))
         DFx = jax.jacfwd(F)(jnp.array(x))
@@ -131,62 +81,200 @@ def integrate_field_line_diffrax(B_h, x0, F, N, phi_target):
     term = dfx.ODETerm(vector_field)
     solver = dfx.Dopri5()
 
-    def cond_fn(t, y, args, **kwargs):
-        x = F(y)  # cartesian coords
-        phi = (jnp.arctan2(x[1], x[0]) / jnp.pi + 1) / 2  # in [0, 1]
-        return jnp.sin(2 * jnp.pi * (phi - phi_target))
+    t0 = 0
+    dt0 = 0.05
+    term = dfx.ODETerm(vector_field)
+    solver = dfx.Dopri5()
+    saveat = dfx.SaveAt(ts=jnp.linspace(t0, t1, N))
+    stepsize_controller = dfx.PIDController(rtol=1e-8, atol=1e-8)
+
+    sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, x0,
+                          saveat=saveat,
+                          stepsize_controller=stepsize_controller,
+                          max_steps=100_000)
+    return sol.ys
+
+# %%
+
+
+def get_crossings(B_h, x0, F, N, phi_targets):
+    @jax.jit
+    def vector_field(t, x, args):
+        """Return the norm of B at x=(r,theta,zeta) in [0,1]^3."""
+        x = x % 1.0
+        r, θ, z = x
+        r = jnp.clip(r, 1e-4, 1.0)
+        x = jnp.array([r, θ, z])
+        Bx = B_h(jnp.array(x))
+        DFx = jax.jacfwd(F)(jnp.array(x))
+        return Bx / jnp.linalg.norm(DFx @ Bx)
+
+    term = dfx.ODETerm(vector_field)
+    solver = dfx.Dopri5()
+
+    def make_cond_fn(phi_target):
+        def cond_fn(t, y, args, **kwargs):
+            x = F(y)  # cartesian coords
+            phi = (jnp.arctan2(x[1], x[0]) / jnp.pi + 1) / 2  # in [0, 1]
+            return jnp.sin(2 * jnp.pi * (phi - phi_target))
+        return cond_fn
 
     t0 = 0
     t1 = jnp.inf
-    dt0 = 0.1
+    dt0 = 0.05
     term = dfx.ODETerm(vector_field)
-    root_finder = optx.Newton(1e-5, 1e-5, optx.rms_norm)
-    event = dfx.Event(cond_fn, root_finder)
+    root_finder = dfx.VeryChord(rtol=1e-3, atol=1e-3)
+    event = dfx.Event([make_cond_fn(phi) for phi in phi_targets], root_finder)
     solver = dfx.Tsit5()
 
     crossings = jnp.zeros((N, 3))
 
     for i in range(N):
-        sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, x0, event=event)
+        sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, x0, event=event,
+                              max_steps=20_000)
         if sol.ys.size == 0:
             break
         x_cross = sol.ys[0]
-        crossings = crossings.at[i, :].set(x_cross)
+        crossings = crossings.at[i, :].set((x_cross))
         # restart
         # step a bit forward to avoid finding the same root again
-        x0 = (sol.ys[0] + 1e-6 * vector_field(0, sol.ys[0], None)) % 1.0
+        x0 = (sol.ys[0] + 1e-5 * vector_field(0, sol.ys[0], None))
 
     return crossings
 
 
 # %%
-crossings = jax.vmap(lambda x0: integrate_field_line_diffrax(
-    # m x N x 3
-    B_h, x0, F, N=5000, phi_target=0.2, rtol=1e-6, atol=1e-9))(x0s)
+F = jax.jit(F)
+
+
+@jax.jit
+def F_cyl_signed(x):
+    """Cylindrical coords with signed R."""
+    R = jnp.sqrt(x[0]**2 + x[1]**2) * \
+        jnp.sign(jnp.sin(1e-16 + jnp.arctan2(x[1], x[0])))
+    phi = jnp.arctan2(x[1], x[0])
+    z = x[2]
+    return jnp.array([R, phi, z])
+
+
+p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
+B_h = (DiscreteFunction(B_hat, Seq.Λ2, Seq.E2))
+# %%
+n_lines = 30  # even numbers only
+r_min, r_max = 0.05, 0.99
+p = 1.0
+_r = np.linspace(r_min, r_max, n_lines)
+x0s = np.vstack(
+    (np.hstack((_r[::3], _r[1::3], _r[2::3])),                              # between 0 and 1 - samples along x
+     # half go to theta=0 and half to theta=pi
+     np.hstack((0.31 * np.ones(n_lines//3),
+                0.43 * np.ones(n_lines//3),
+                0.76 * np.ones(n_lines//3))),
+     0.25 * np.ones(n_lines))
+).T
+
+
+# x0s = np.vstack(
+#     (_r,
+#      0.0 * np.ones(n_lines),
+#      0.0 * np.ones(n_lines))
+# ).T
+
+key = x0s[:, 0] * np.cos(x0s[:, 1])
+
+# Get sorted indices
+idx = np.argsort(key)
+
+# Apply sorting
+x0s_sorted = x0s[idx]
 
 # %%
+trajectories = jax.vmap(lambda x0: integrate_fieldline(
+    B_h, x0, F, N=10_000, t1=200))(x0s_sorted)
+trajectories_xyz = jax.vmap(jax.vmap(F))(trajectories)
+trajectories_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(trajectories_xyz)
+
+# %%
+
+
+def toroidal_unwrapped(phi):
+    phi_unwrapped = jnp.unwrap(phi)
+    total_angle = phi_unwrapped[-1] - phi_unwrapped[0]
+    return total_angle / (2 * jnp.pi)
+
+
+def poloidal_unwrapped(R, Z, R_center=1.0, Z_center=0.0):
+    θ = jnp.arctan2(Z - Z_center, R - R_center)
+    θ_unwrapped = jnp.unwrap(θ)
+    total_angle = θ_unwrapped[-1] - θ_unwrapped[0]
+    return total_angle / (2 * jnp.pi)
+
+
+@jax.jit
+def get_iota(c):
+    r_mean = jnp.mean(jnp.abs(c[:, 0]))
+    z_mean = jnp.mean(c[:, 2])
+    m = poloidal_unwrapped(
+        jnp.abs(c[:, 0]), c[:, 2], R_center=r_mean, Z_center=z_mean)
+    n = toroidal_unwrapped(c[:, 1])
+    return jnp.abs(m / n), m, n
+
+
+# %%
+iotas, poloidal_turns, toroidal_turns = jax.vmap(get_iota)(trajectories_Rphiz)
+# %%
+plt.plot(iotas, 'o-', label=r"$\iota$")
+# plt.plot(1/iotas, '*-', label=r"$q = 1 / \iota$")
+plt.xlabel(r"field line number (starting R)")
+plt.grid()
+plt.legend()
+plt.show()
+
+# %%
+# 3D plot
+fig = plt.figure(figsize=(8, 8))
+ax = fig.add_subplot(111, projection='3d')
+
+# Plot the trajectories
+for i, traj in enumerate(trajectories_xyz[::4]):
+    ax.plot(traj[:, 0], traj[:, 1], traj[:, 2], label=f"Field line {i}")
+
+ax.set_xlabel(r"$x$")
+ax.set_ylabel(r"$y$")
+ax.set_zlabel(r"$Z$")
+ax.legend()
+set_axes_equal(ax)
+plt.show()
+
+# %%
+crossings = jax.vmap(lambda x0: get_crossings(
+    # m x N x 3
+    B_h, x0, F, N=200, phi_targets=[0.25]))(x0s_sorted)
+
 crossings_xyz = jax.vmap(jax.vmap(F))(crossings)
 crossings_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(crossings_xyz)
+
 # %%
+crossings_to_plot = crossings_Rphiz[:, :, :]
 
 # ================== PLOT CONFIGURATION ==================
-dot_width = 0.5
+dot_width = 1.0
 tick_label_size = 20
 axis_label_size = 22
 # --------------------------------------------------------
 
 # --- Gap and Limit Detection ---
-all_R_values = crossings_Rphiz[:, :, 0].flatten()
+all_R_values = crossings_to_plot[:, :, 0].flatten()
 positive_R = all_R_values[all_R_values > 0]
 negative_R = all_R_values[all_R_values < 0]
 
-gap_left = 0.9 * np.max(negative_R) if len(negative_R) > 0 else -0.1
-gap_right = 0.9 * np.min(positive_R) if len(positive_R) > 0 else 0.1
+gap_left = 0.95 * np.max(negative_R) if len(negative_R) > 0 else -0.1
+gap_right = 0.95 * np.min(positive_R) if len(positive_R) > 0 else 0.1
 
-Rmin = -0.05 + np.min(all_R_values)
-Rmax = 0.05 + np.max(all_R_values)
-Zmin = -0.05 + np.min(crossings_Rphiz[:, :, 2])
-Zmax = 0.05 + np.max(crossings_Rphiz[:, :, 2])
+Rmin = -0.01 + np.min(all_R_values)
+Rmax = 0.01 + np.max(all_R_values)
+Zmin = -0.01 + np.min(crossings_to_plot[:, :, 2])
+Zmax = 0.01 + np.max(crossings_to_plot[:, :, 2])
 
 # 1. Find out which plot's data range is wider.
 x_span_left = gap_left - Rmin
@@ -205,12 +293,27 @@ ax2 = fig.add_subplot(gs[1], sharey=ax1)
 # =============================================================================
 
 # --- Plotting Loop ---
-colors = ['purple', 'black', 'teal']
-for i, curve in enumerate(crossings_Rphiz):
-    ax1.scatter(curve[curve[:, 0] < gap_left, 0], curve[curve[:, 0] < gap_left, 2],
-                s=dot_width, color=colors[i % len(colors)], rasterized=True)
-    ax2.scatter(curve[curve[:, 0] > gap_right, 0], curve[curve[:, 0] > gap_right, 2],
-                s=dot_width, color=colors[i % len(colors)], rasterized=True)
+# colors = ['purple', 'black', 'teal']
+
+
+def truncate_colormap(cmap_name="plasma", minval=0.0, maxval=0.85, n=256):
+    cmap = mpl.cm.get_cmap(cmap_name, n)
+    new_colors = cmap(np.linspace(minval, maxval, n))
+    return mpl.colors.ListedColormap(new_colors)
+
+
+cmap = truncate_colormap("plasma", 0.0, 0.85)
+norm = mpl.colors.Normalize(vmin=np.min(iotas), vmax=np.max(iotas))
+sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+
+for i, curve in enumerate(crossings_to_plot):
+    color = cmap(norm(iotas[i]))  # color based on iota
+    ax1.scatter(curve[curve[:, 0] < gap_left, 0],
+                curve[curve[:, 0] < gap_left, 2],
+                s=dot_width, color=color, rasterized=True)
+    ax2.scatter(curve[curve[:, 0] > gap_right, 0],
+                curve[curve[:, 0] > gap_right, 2],
+                s=dot_width, color=color, rasterized=True)
 
 # --- Set limits, aspect ratio, and styling ---
 # Enforce strict axis bounds and disable autoscaling so Matplotlib doesn't
@@ -219,9 +322,9 @@ ax1.set_xlim(gap_left - max_x_span, gap_left, auto=False)
 ax2.set_xlim(gap_right, gap_right + max_x_span, auto=False)
 ax1.set_ylim(Zmin, Zmax, auto=False)
 # # --- Ticks and Labels ---
-ax1.xaxis.set_major_locator(MultipleLocator(0.2))
-ax2.xaxis.set_major_locator(MultipleLocator(0.2))
-ax1.yaxis.set_major_locator(MultipleLocator(0.2))
+ax1.xaxis.set_major_locator(MultipleLocator(0.1))
+ax2.xaxis.set_major_locator(MultipleLocator(0.1))
+ax1.yaxis.set_major_locator(MultipleLocator(0.1))
 
 ax1.tick_params(axis='both', which='major', labelsize=tick_label_size)
 ax2.tick_params(axis='x', which='major', labelsize=tick_label_size)
@@ -238,89 +341,151 @@ fig.supxlabel(r"$\pm R$", fontsize=axis_label_size)
 plt.tight_layout()
 plt.subplots_adjust(bottom=0.08)  # Add a bit more space for the supxlabel
 
+# Add a taller colorbar on the right side of the figure
+cbar = fig.colorbar(sm, ax=[ax1, ax2], shrink=1.0, pad=0.02, aspect=25)
+cbar.set_label(r"$\iota$", fontsize=axis_label_size)
+cbar.ax.tick_params(labelsize=tick_label_size)
+
+# ##### INSET PLOT #####
+# # Parameters controlling the inset position and size
+# # horizontal position in figure fraction (0 → left, 1 → right)
+# inset_x = 0.6
+# inset_y = 0.6     # vertical position in figure fraction (0 → bottom, 1 → top)
+# inset_width = 0.25
+# inset_height = 0.25
+
+# # Create inset axis (attached to the first panel, but could be fig.add_axes instead)
+# ax_inset = fig.add_axes([inset_x, inset_y, inset_width, inset_height])
+
+# # Plot the iota curve
+# ax_inset.plot(iota_s, color='black', lw=2)
+
+# # Optional cosmetics
+# ax_inset.set_title(r"$\iota(\zeta)$", fontsize=axis_label_size - 2)
+# ax_inset.tick_params(labelsize=tick_label_size - 4)
+# ax_inset.grid(True, ls='--', lw=0.5)
+
 # --- Save and Show ---
 # Create directory if it doesn't exist
-output_dir = os.path.join("script_outputs", "solovev")
-os.makedirs(output_dir, exist_ok=True)
-plt.savefig(os.path.join(output_dir, "helix_poincare.pdf"),
-            dpi=400, bbox_inches=None)
+# output_dir = os.path.join("script_outputs", "solovev")
+# os.makedirs(output_dir, exist_ok=True)
+# plt.savefig(os.path.join(output_dir, "helix_poincare.pdf"),
+#             dpi=400, bbox_inches=None)
 
 plt.show()
-# %%
-# get iota profile
-
-# integrate field line a bunch
-n_lines = 24  # even numbers only
-r_min, r_max = 0.05, 0.99
-_r = np.linspace(r_min, r_max, n_lines)
-x0s = np.vstack((_r, 0.325 * jnp.ones(n_lines), 0.413 * jnp.ones(n_lines))).T
-# %%
-p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
-B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2)
-# %%
-crossings = jax.vmap(lambda x0: integrate_field_line_diffrax(
-    # m x N x 3
-    B_h, x0, F, N=1000, phi_target=0.2))(x0s)
-# %%
-crossings_xyz = jax.vmap(jax.vmap(F))(crossings)
-crossings_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(crossings_xyz)
-# %%
-
-
-def get_iota(c):
-    # crossings_Rphiz:M x 3
-    _crossings = c[c[:, 1] > 0]
-    # compute center
-    center = jnp.mean(_crossings, axis=0)
-    # compute angles
-    angles = jnp.arctan2(_crossings[:, 2] - center[2],
-                         _crossings[:, 0] - center[0])
-    # unwrap
-    angles = jnp.unwrap(angles)
-    # fit line
-    A = jnp.vstack([jnp.arange(len(angles)), jnp.ones(len(angles))]).T
-    m, c = jnp.linalg.lstsq(A, angles, rcond=None)[0]
-    return m / (2 * jnp.pi)
-
-
-iotas = [get_iota(crossing) for crossing in crossings_Rphiz]
 
 # %%
-poincare = crossings_Rphiz
+crossings_to_plot = crossings_Rphiz
+crossings_p = crossings % 1
 
-R = poincare[:, :, 0]
-phi = poincare[:, :, 1]
-Z = poincare[:, :, 2]
+# ================== CONFIG ==================
+dot_width = 1.0
+tick_label_size = 16
+axis_label_size = 18
 
-# Flatten arrays
-R_flat = R.flatten()
-phi_flat = phi.flatten()
-Z_flat = Z.flatten()
-iota_flat = np.repeat(iotas, poincare.shape[1]) * 2 * np.pi
+# --- Limits ---
+all_R_values = crossings_to_plot[:, :, 0].flatten()  # exclude zeros
+all_Z_values = (crossings_to_plot[:, :, 2].flatten())
+Rmin, Rmax = np.min(all_R_values[all_R_values > 0]), np.max(
+    all_R_values[all_R_values > 0])
+Zmin, Zmax = np.min(all_Z_values[all_R_values > 0]), np.max(
+    all_Z_values[all_R_values > 0])
 
-# Keep only positive phi crossings
-mask = phi_flat > 0
-R_pos = R_flat[mask]
-Z_pos = Z_flat[mask]
-iota_pos = iota_flat[mask]
+# --- Colormaps ---
 
-plt.figure(figsize=(7, 7))
-sc = plt.scatter(R_pos, Z_pos, c=iota_pos, s=8,
-                 cmap='plasma', edgecolor='none')
 
-plt.xlabel(r"$R$", fontsize=16)
-plt.ylabel(r"$Z$", fontsize=16)
-plt.axis("equal")
-sc = plt.scatter(R_pos, Z_pos, c=iota_pos, s=8,
-                 cmap='plasma', edgecolor='none')
-cbar = plt.colorbar(sc)
+def truncate_colormap(cmap_name="plasma", minval=0.0, maxval=0.85, n=256, reverse=False):
+    cmap = mpl.cm.get_cmap(cmap_name, n)
+    new_colors = cmap(np.linspace(minval, maxval, n))
+    if reverse:
+        new_colors = new_colors[::-1]
+    return mpl.colors.ListedColormap(new_colors)
 
-# Set the label and its font size
-cbar.set_label(r"$2 \pi \iota$", fontsize=16)
 
-# Set the tick label size
-cbar.ax.tick_params(labelsize=14)
-plt.tight_layout()
+cmap_iota = truncate_colormap("turbo", 0.0, 1.0)
+cmap_p = truncate_colormap("plasma", 0.0, 0.9)
+
+norm_iota = mpl.colors.Normalize(vmin=np.min(iotas), vmax=np.max(iotas))
+
+# if p varies per curve
+p_values = (jnp.array([jax.vmap(p_h)(curve)
+            for curve in crossings_p]))[:, :, 0]
+norm_p = mpl.colors.Normalize(vmin=np.min(p_values), vmax=np.max(p_values))
+
+# --- Figure ---
+fig, ax = plt.subplots(figsize=(10, 8))
+
+# --- Plotting loop ---
+for i, curve in enumerate(crossings_to_plot):
+    z = curve[:, 2]
+    R = curve[:, 0]
+
+    # mask z>0 and z<0
+    mask_pos = (z > 0) & (R > 0)
+    mask_neg = (z < 0) & (R > 0)
+
+    # color by iota (for z>0)
+    if np.any(mask_pos):
+        ax.scatter((R[mask_pos]), (z[mask_pos]),
+                   s=dot_width,
+                   color=cmap_iota(norm_iota(iotas[i])),
+                   rasterized=True)
+
+    # color by p (for z<0)
+    if np.any(mask_neg):
+        ax.scatter((R[mask_neg]), (z[mask_neg]),
+                   s=dot_width,
+                   color=cmap_p(norm_p(p_values[i][mask_neg])),
+                   rasterized=True)
+
+# --- Style ---
+ax.set_xlim(Rmin - 0.01, Rmax + 0.01)
+ax.set_ylim(Zmin - 0.01, Zmax + 0.01)
+ax.set_aspect("equal", adjustable="box")
+
+ax.xaxis.set_major_locator(MultipleLocator(0.1))
+ax.yaxis.set_major_locator(MultipleLocator(0.1))
+ax.tick_params(axis='both', which='major', labelsize=tick_label_size)
+# ax.grid(True, linestyle="--", lw=0.5)
+
+ax.set_xlabel(r"$R$", fontsize=axis_label_size)
+ax.set_ylabel(r"$z$", fontsize=axis_label_size)
+
+
+# ============================================================
+# Colorbars stacked vertically on the right
+# ============================================================
+sm_iota = mpl.cm.ScalarMappable(norm=norm_iota, cmap=cmap_iota)
+sm_p = mpl.cm.ScalarMappable(norm=norm_p, cmap=cmap_p)
+
+# Main plot area adjustment to make space for colorbars
+plt.subplots_adjust(right=0.85)
+
+# Position colorbars manually using add_axes
+cbar_height = 0.33   # relative height of each bar
+cbar_width = 0.05
+x0 = 0.82           # x-position for both bars
+
+# iota (top)
+cax1 = fig.add_axes([x0, 0.55, cbar_width, cbar_height])
+cbar1 = fig.colorbar(sm_iota, cax=cax1)
+cbar1.set_label(r"$\iota$", fontsize=axis_label_size)
+cbar1.ax.tick_params(labelsize=tick_label_size)
+
+# p (bottom)
+cax2 = fig.add_axes([x0, 0.1, cbar_width, cbar_height])
+cbar2 = fig.colorbar(
+    sm_p, cax=cax2, format=mpl.ticker.ScalarFormatter(useMathText=True))
+cbar2.formatter.set_powerlimits((0, 0))
+cbar2.set_label(r"$p$", fontsize=axis_label_size)
+cbar2.ax.tick_params(labelsize=tick_label_size)
+cbar2.update_ticks()
+offset_text = cbar2.ax.yaxis.get_offset_text()
+offset_text.set_fontsize(tick_label_size)
+offset_text.set_x(1.5)
+
+# plt.savefig("ROT_ELL_double_poincare.pdf", dpi=400)
+
 plt.show()
 
 # %%

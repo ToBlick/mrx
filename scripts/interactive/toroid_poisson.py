@@ -23,9 +23,9 @@ os.makedirs("script_outputs", exist_ok=True)
 def get_err(n, p):
     # Set up finite element spaces
     q = 2*p
-    ns = (n, n, 1)
-    ps = (p, p, 0)
-    types = ("clamped", "periodic", "constant")  # Types
+    ns = (n, n, n)
+    ps = (p, p, p)
+    types = ("clamped", "periodic", "periodic")  # Types
 
     # Domain parameters
     a = 1/3
@@ -147,8 +147,8 @@ def plot_results(err, times, times2, conds, sparsities, ns, ps):
     # Add theoretical convergence rates
     for j, p in enumerate(ps):
         expected_rate = -(p+1)
-        ax1.loglog(ns[-3:], err[-1, j] * (ns[-3:]/ns[-1])**(-expected_rate),
-                   label=f'O(n^{-expected_rate})', linestyle='--')
+        ax1.loglog(ns[-3:], err[-1, j] * (ns[-3:]/ns[-1])**(expected_rate),
+                   label=f'O(n^{expected_rate})', linestyle='--')
     ax1.set_xlabel(r'$n$')
     ax1.set_ylabel(r'$\| f - f_h \|_{L^2(\Omega)}$')
     ax1.grid(which="both", linestyle="--", linewidth=0.5)
@@ -227,7 +227,7 @@ def plot_results(err, times, times2, conds, sparsities, ns, ps):
 def main():
     """Main function to run the analysis."""
     # Run convergence analysis
-    ns = np.arange(8, 16, 2)
+    ns = np.arange(4, 8, 1)
     ps = np.arange(1, 4)
     err, times, times2, conds, sparsities = run_convergence_analysis(ns, ps)
 

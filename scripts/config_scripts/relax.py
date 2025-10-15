@@ -38,7 +38,7 @@ CONFIG = {
     ###
     # Parameters describing the domain.
     ###
-    "eps":      0.2,  # aspect ratio
+    "eps":      0.33,  # aspect ratio
     "kappa":    1.7,   # Elongation parameter
     "q_star":   1.57,   # toroidal field strength
     "delta": 0.0,   # triangularity

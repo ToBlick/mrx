@@ -323,63 +323,33 @@ class LazyExtractionOperator:
         return jax.vmap(jax.vmap(self._element, (None, 0)), (0, None))(
             jnp.arange(self.n), jnp.arange(self.Λ.n)
         )
+# %%
 
 
-def get_xi(_R, _Y, Λ0, Q):
+def get_xi(nχ):
     """
     Compute polar mapping coefficients.
-
-    This function computes the coefficients for the polar mapping transformation
-    based on given R and Y functions.
-
-    Args:
-        _R (callable): Function defining the R-coordinate transformation
-        _Y (callable): Function defining the Y-coordinate transformation
-        Λ0 (callable): 0-form
-
-    Returns:
-        tuple: (ξ, R_hat, Y_hat, Λ0, τ) where:
-            - ξ: Polar mapping coefficients
-            - R_hat: Projected R-coordinates
-            - Y_hat: Projected Y-coordinates
-            - Λ0: 0-form
-            - τ: Scaling parameter
     """
-    nr, nχ, nζ = Λ0.nr, Λ0.nχ, Λ0.nζ
-    P = Projector(Λ0, Q)
-    M = LazyMassMatrix(Λ0, Q).matrix()
+    theta_js = (jnp.arange(nχ) / nχ) * 2 * jnp.pi
 
-    def R(x):
-        return _R(x[0], x[1])
+    M = jnp.array([
+        [1/3, 0],
+        [-1/6, jnp.sqrt(3)/6],
+        [-1/6, -jnp.sqrt(3)/6]
+    ])
 
-    def Y(x):
-        return _Y(x[0], x[1])
+    cos_js = jnp.cos(theta_js)
+    sin_js = jnp.sin(theta_js)
 
-    R0 = _R(0, 0)
-    Y0 = _Y(0, 0)
+    Es = 1/3 + M @ jnp.array([cos_js, sin_js])  # shape (3, nχ)
 
-    R_hat = jnp.linalg.solve(M, P(R))
-    Y_hat = jnp.linalg.solve(M, P(Y))
-
-    cR = R_hat.reshape(nr, nχ, nζ)
-    cY = Y_hat.reshape(nr, nχ, nζ)
-    ΔR = cR[1, :, 0] - R0
-    ΔY = cY[1, :, 0] - Y0
-    τ = jnp.max(
-        jnp.array(
-            [
-                jnp.max(-2 * ΔR),
-                jnp.max(ΔR - jnp.sqrt(3) * ΔY),
-                jnp.max(ΔR + jnp.sqrt(3) * ΔY),
-            ]
-        )
-    )
     ξ00 = jnp.ones(nχ) / 3
-    ξ01 = 1 / 3 + 2 / (3 * τ) * ΔR
     ξ10 = jnp.ones(nχ) / 3
-    ξ11 = 1 / 3 - 1 / (3 * τ) * ΔR + jnp.sqrt(3) / (3 * τ) * ΔY
     ξ20 = jnp.ones(nχ) / 3
-    ξ21 = 1 / 3 - 1 / (3 * τ) * ΔR - jnp.sqrt(3) / (3 * τ) * ΔY
+
+    ξ01 = Es[0]
+    ξ11 = Es[1]
+    ξ21 = Es[2]
     # (3, 2, nχ) -> l, i, j
     ξ = jnp.array([[ξ00, ξ01], [ξ10, ξ11], [ξ20, ξ21]])
-    return ξ, R_hat, Y_hat, Λ0, τ
+    return ξ
