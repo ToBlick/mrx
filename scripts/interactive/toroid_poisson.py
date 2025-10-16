@@ -5,7 +5,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
+import sys
 import numpy as np
 
 from mrx.DeRhamSequence import DeRhamSequence
@@ -17,7 +17,6 @@ jax.config.update("jax_enable_x64", True)
 
 # Create output directory for figures
 os.makedirs("script_outputs", exist_ok=True)
-
 
 @partial(jax.jit, static_argnames=["n", "p"])
 def get_err(n, p):
@@ -47,28 +46,20 @@ def get_err(n, p):
         return jnp.ravel(jnp.array([_X(r, χ) * jnp.cos(2 * π * z),
                                     -_Y(r, χ) * jnp.sin(2 * π * z),
                                     _Z(r, χ)]))
-
-    # Define exact solution and source term
+        
     def u(x):
-        """Exact solution of the Poisson problem."""
         r, χ, z = x
-        # return - jnp.ones(1) * r**2 * (1 - r**2)
-        return - a**2 / (4 * jnp.pi) * jnp.ones(1) * jnp.sin(π * r**2)
-
+        return 1/4 * (r**2 - r**4) * jnp.cos(2 * π * z) * jnp.ones(1)
+    
     def f(x):
-        """Source term of the Poisson problem."""
         r, χ, z = x
-        c = jnp.cos(2 * π * χ)
-        R = R0 + a * r * c
-        # return 1 / (a**2 * R) * (4*R0*(1 - 4*r**2) + 2*a*r*c*(3 - 10*r**2)) * jnp.ones(1)
-        return (jnp.cos(π*r**2) * (1 + (R - R0) / R / 2)
-                - π * r**2 * jnp.sin(π*r**2)) * jnp.ones(1)
+        R = R0 + a * r * jnp.cos(2 * jnp.pi * χ)
+        return jnp.cos(2 * jnp.pi * z) * (-1/a**2 * (1 - 4*r**2) - 1/(a*R) * (r/2 - r**3) * jnp.cos(2 * jnp.pi * χ) + 1/4 * (r**2 - r**4) / R**2 ) * jnp.ones(1)
 
     # Create DeRham sequence
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
-    Seq.evaluate_d0()
-    Seq.evaluate_0()
+    Seq.evaluate_1d()
     Seq.assemble_M0()
     Seq.assemble_dd0()
 
@@ -84,161 +75,41 @@ def get_err(n, p):
     return error, jnp.linalg.cond(Seq.M0 @ Seq.dd0), jnp.sum(jnp.abs(Seq.M0 @ Seq.dd0) > 1e-12) / Seq.dd0.size
 
 
-def run_convergence_analysis(ns, ps):
-    """Run convergence analysis for different parameters."""
-
-    # Arrays to store results
-    err = np.zeros((len(ns), len(ps)))
-    times = np.zeros((len(ns), len(ps)))
-    sparsities = np.zeros((len(ns), len(ps)))
-    conds = np.zeros((len(ns), len(ps)))
-
-    # First run (with JIT compilation)
-    print("First run (with JIT compilation):")
-    for i, n in enumerate(ns):
-        for j, p in enumerate(ps):
-            start = time.time()
-            _err, cond, sparsity = get_err(n, p)
-            err[i, j] = _err
-            conds[i, j] = cond
-            sparsities[i, j] = sparsity
-            end = time.time()
-            times[i, j] = end - start
-            print(
-                f"n={n}, p={p}, err={err[i, j]:.2e}, time={times[i, j]:.2f}s, cond={conds[i, j]:.2e}, sparsity={sparsities[i, j]:.2e}")
-
-    # Second run (after JIT compilation)
-    print("\nSecond run (after JIT compilation):")
-    times2 = np.zeros((len(ns), len(ps)))
-    for i, n in enumerate(ns):
-        for j, p in enumerate(ps):
-            start = time.time()
-            _ = get_err(n, p)  # We don't need to store the error again
-            end = time.time()
-            times2[i, j] = end - start
-            print(f"n={n}, p={p}, time={times2[i, j]:.2f}s")
-
-    return err, times, times2, conds, sparsities
-
-
-def plot_results(err, times, times2, conds, sparsities, ns, ps):
-
-    # --- Figure settings ---
-    FIG_SIZE = (12, 6)
-    SQUARE_FIG_SIZE = (8, 8)
-    TITLE_SIZE = 20
-    LABEL_SIZE = 20
-    TICK_SIZE = 16
-    LINE_WIDTH = 2.5
-    LEGEND_SIZE = 16
-
-    colors = ['purple', 'teal', 'black']
-
-    fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
-
-    ax1.set_title("Error Convergence", fontsize=TITLE_SIZE)
-    ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
-    ax1.set_ylabel(r'$\| f - f_h \|_{L^2(\Omega)}$',
-                   fontsize=LABEL_SIZE)
-    for j, p in enumerate(ps):
-        ax1.loglog(ns, err[:, j],
-                   label=f'p={p}',
-                   marker='o')
-    # Add theoretical convergence rates
-    for j, p in enumerate(ps):
-        expected_rate = -(p+1)
-        ax1.loglog(ns[-3:], err[-1, j] * (ns[-3:]/ns[-1])**(expected_rate),
-                   label=f'O(n^{expected_rate})', linestyle='--')
-    ax1.set_xlabel(r'$n$')
-    ax1.set_ylabel(r'$\| f - f_h \|_{L^2(\Omega)}$')
-    ax1.grid(which="both", linestyle="--", linewidth=0.5)
-    ax1.legend(fontsize=LEGEND_SIZE)
-    ax1.tick_params(axis='y', labelsize=TICK_SIZE)
-    ax1.tick_params(axis='x', labelsize=TICK_SIZE)
-    fig1.tight_layout()
-    plt.savefig(
-        'script_outputs/2d_toroid_poisson_mixed_convergence.pdf', bbox_inches='tight')
-
-    # Plot Energy on the left y-axis (ax1)
-    color1 = 'purple'
-    ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
-    ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$',
-                   color=color1, fontsize=LABEL_SIZE)
-    for j, p in enumerate(ps):
-        ax1.plot(ns, err[:, j],
-                 label=f'p={p}',
-                 marker='o')
-    ax1.set_xscale('log')
-    ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
-    ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
-
-    ax1.grid(which="both", linestyle="--", linewidth=0.5)
-    fig1.tight_layout()
-    plt.show()
-
-    # Timing plot
-    fig2 = plt.figure(figsize=(10, 6))
-    for j, p in enumerate(ps):
-        plt.semilogy(ns, times[:, j],
-                     label=f'p={p} (1st run)',
-                     marker='o')
-        plt.semilogy(ns, times2[:, j],
-                     label=f'p={p} (2nd run)',
-                     marker='x')
-    plt.xlabel('Number of elements (n)')
-    plt.ylabel('Time (s)')
-    plt.title('Computation Time')
-    plt.grid(True)
-    plt.legend()
-    plt.savefig('script_outputs/2d_toroid_poisson_mixed_time.png',
-                dpi=300, bbox_inches='tight')
-
-    # sparsity plot
-    fig3 = plt.figure(figsize=(10, 6))
-    for j, p in enumerate(ps):
-        plt.semilogy(ns, sparsities[:, j],
-                     label=f'p={p}',
-                     marker='o')
-    plt.xlabel('Number of elements (n)')
-    plt.ylabel('Sparsity')
-    plt.title('Matrix Sparsity')
-    plt.grid(True)
-    plt.legend()
-    plt.savefig('script_outputs/2d_toroid_poisson_mixed_sparsity.png',
-                dpi=300, bbox_inches='tight')
-
-    # condition number plot
-    fig4 = plt.figure(figsize=(10, 6))
-    for j, p in enumerate(ps):
-        plt.semilogy(ns, conds[:, j],
-                     label=f'p={p}',
-                     marker='o')
-    plt.xlabel('Number of elements (n)')
-    plt.ylabel('Condition Number')
-    plt.title('Matrix Condition Number')
-    plt.grid(True)
-    plt.legend()
-    plt.savefig('script_outputs/2d_toroid_poisson_mixed_condition_number.png',
-                dpi=300, bbox_inches='tight')
-
-    return fig1
-
-
 def main():
-    """Main function to run the analysis."""
-    # Run convergence analysis
-    ns = np.arange(4, 8, 1)
-    ps = np.arange(1, 4)
-    err, times, times2, conds, sparsities = run_convergence_analysis(ns, ps)
+    """Run get_err for a single (n,p) taken from command-line arguments and save results to a text file.
 
-    # Plot results
-    plot_results(err, times, times2, conds, sparsities, ns, ps)
+    Usage: python toroid_poisson.py <n> <p>
+    """
+    if len(sys.argv) < 3:
+        print("Usage: python toroid_poisson.py <n> <p>")
+        sys.exit(1)
 
-    # Show all figures
-    plt.show()
+    try:
+        n = int(sys.argv[1])
+        p = int(sys.argv[2])
+    except ValueError:
+        print("Both n and p must be integers.")
+        sys.exit(1)
 
-    # Clean up
-    plt.close('all')
+    # Compute results
+    error, cond, sparsity = get_err(n, p)
+
+    # get_err returns (error, cond, sparsity). The user requested the order: error, sparsity, cond.
+    error_f = float(error)
+    sparsity_f = float(sparsity)
+    cond_f = float(cond)
+
+    # Ensure output directory exists
+    os.makedirs("script_outputs", exist_ok=True)
+
+    out_name = f"toroid_poisson_{n}_{p}.txt"
+    out_path = os.path.join("script_outputs", out_name)
+    with open(out_path, "w") as fh:
+        fh.write(f"error {error_f:.18e}\n")
+        fh.write(f"sparsity {sparsity_f:.18e}\n")
+        fh.write(f"cond {cond_f:.18e}\n")
+
+    print(f"Wrote results to {out_path}")
 
 
 if __name__ == "__main__":

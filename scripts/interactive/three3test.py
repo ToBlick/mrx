@@ -398,10 +398,10 @@ Seq.assemble_all()
 
 assert jnp.min(Seq.J_j) > 0, "Mapping is not orientation-preserving!"
 # %%
-print("first Evs of dd0:", jnp.linalg.eigvalsh(Seq.M0 @ Seq.dd0)[:3])
-print("first Evs of dd1:", jnp.linalg.eigvalsh(Seq.M1 @ Seq.dd1)[:3])
-print("first Evs of dd2:", jnp.linalg.eigvalsh(Seq.M2 @ Seq.dd2)[:3])
-print("first Evs of dd3:", jnp.linalg.eigvalsh(Seq.M3 @ Seq.dd3)[:3])
+print("first Evs of dd0:", scipy.linalg.eigvalsh(Seq.M0 @ Seq.dd0, Seq.M0)[:5])
+print("first Evs of dd1:", scipy.linalg.eigvalsh(Seq.M1 @ Seq.dd1, Seq.M1)[:5])
+print("first Evs of dd2:", scipy.linalg.eigvalsh(Seq.M2 @ Seq.dd2, Seq.M2)[:5])
+print("first Evs of dd3:", scipy.linalg.eigvalsh(Seq.M3 @ Seq.dd3, Seq.M3)[:5])
 print("curl grad", jnp.max(jnp.abs(Seq.strong_curl @ Seq.strong_grad)))
 print("div curl:", jnp.max(jnp.abs(Seq.strong_div @ Seq.strong_curl)))
 # %%
