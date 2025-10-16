@@ -14,7 +14,7 @@ The module implements two main classes:
 import jax
 import jax.numpy as jnp
 
-from mrx.Utils import inv33, jacobian_determinant
+from mrx.Utils import integrate_against, inv33, jacobian_determinant
 
 __all__ = ['Projector']
 
@@ -40,7 +40,7 @@ class Projector:
         M (array): Extraction operator matrix, defaults to identity
     """
 
-    def __init__(self, Λ, Q, F=None, E=None):
+    def __init__(self, Seq, k):
         """
         Initialize the projector.
 
@@ -52,18 +52,8 @@ class Projector:
             E (array, optional): Extraction operator matrix.
                               Defaults to identity matrix.
         """
-        self.Λ = Λ
-        self.Q = Q
-        self.n = Λ.n
-        self.ns = Λ.ns
-        if F is None:
-            self.F = lambda x: x
-        else:
-            self.F = F
-        if E is None:
-            self.E = jnp.eye(self.n)
-        else:
-            self.E = E
+        self.k = k
+        self.Seq = Seq
 
     def __call__(self, f):
         """
@@ -75,16 +65,14 @@ class Projector:
         Returns:
             array: Projection coefficients
         """
-        if self.Λ.k == 0:
-            return self.E @ self.zeroform_projection(f)
-        elif self.Λ.k == 1:
-            return self.E @ self.oneform_projection(f)
-        elif self.Λ.k == 2:
-            return self.E @ self.twoform_projection(f)
-        elif self.Λ.k == 3:
-            return self.E @ self.threeform_projection(f)
-        elif self.Λ.k == -1:
-            return self.E @ self.vectorfield_projection(f)
+        if self.k == 0:
+            return self.Seq.E0 @ self.zeroform_projection(f)
+        elif self.k == 1:
+            return self.Seq.E1 @ self.oneform_projection(f)
+        elif self.k == 2:
+            return self.Seq.E2 @ self.twoform_projection(f)
+        elif self.k == 3:
+            return self.Seq.E3 @ self.threeform_projection(f)
 
     def zeroform_projection(self, f):
         """
@@ -96,15 +84,10 @@ class Projector:
         Returns:
             array: Projection coefficients for the 0-form
         """
-        # Evaluate all basis functions at quadrature points
-        Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(
-            self.Q.x, self.ns)  # n x n_q x 1
         # Evaluate the given function at quadrature points
-        fjk = jax.vmap(f)(self.Q.x)  # n_q x 1
-        # Evaluate the jacobian of F at quadrature points
-        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
-        wj = self.Q.w  # n_q
-        return jnp.einsum("ijk,jk,j,j->i", Λijk, fjk, Jj, wj)
+        f_jk = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
+        w_jk = f_jk * (self.Seq.Q.w * self.Seq.J_j)[:, None]
+        return integrate_against(self.Seq.get_Λ0_ijk, w_jk, self.Seq.Λ0.n)
 
     def oneform_projection(self, v):
         """
@@ -116,17 +99,16 @@ class Projector:
         Returns:
             array: Projection coefficients for the 1-form
         """
-        DF = jax.jacfwd(self.F)
+        DF = jax.jacfwd(self.Seq.F)
 
         def _v(x):
             return inv33(DF(x)) @ v(x)
 
-        Ajk = jax.vmap(_v)(self.Q.x)  # n_q x d
-        Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
-        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
-        wj = self.Q.w
-        return jnp.einsum("ijk,jk,j,j->i", Λijk, Ajk, Jj, wj)
+        # Evaluate the given function at quadrature points
+        A_jk = jax.vmap(_v)(self.Seq.Q.x)  # n_q x d
+        w_jk = A_jk * (self.Seq.Q.w * self.Seq.J_j)[:, None]
+
+        return integrate_against(self.Seq.get_Λ1_ijk, w_jk, self.Seq.Λ1.n)
 
     def twoform_projection(self, v):
         """
@@ -138,18 +120,17 @@ class Projector:
         Returns:
             array: Projection coefficients for the 2-form
         """
-        DF = jax.jacfwd(self.F)
+        DF = jax.jacfwd(self.Seq.F)
 
         def _v(x):
             return DF(x).T @ v(x)
 
-        def _Λ(x, i):
-            return self.Λ(x, i)
-        Bjk = jax.vmap(_v)(self.Q.x)  # n_q x d
-        Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
-        wj = self.Q.w
-        return jnp.einsum("ijk,jk,j->i", Λijk, Bjk, wj)
+        # Evaluate the given function at quadrature points
+        B_jk = jax.vmap(_v)(self.Seq.Q.x)  # n_q x d
+
+        w_jk = B_jk * (self.Seq.Q.w)[:, None]
+
+        return integrate_against(self.Seq.get_Λ2_ijk, w_jk, self.Seq.Λ2.n)
 
     def threeform_projection(self, f):
         """
@@ -161,33 +142,7 @@ class Projector:
         Returns:
             array: Projection coefficients for the 3-form
         """
-        # Evaluate all basis functions at quadrature points
-        Λijk = jax.vmap(jax.vmap(self.Λ, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x 1
-        fjk = jax.vmap(f)(self.Q.x)  # n_q x 1
-        wj = self.Q.w  # n_q
-        return jnp.einsum("ijk,jk,j->i", Λijk, fjk, wj)
-
-    def vectorfield_projection(self, v):
-        """
-        Project to a vector field.
-
-        Args:
-            v (callable): vector field to project - in physical coordinates
-
-        Returns:
-            array: Projection coefficients for the vector field
-        """
-        DF = jax.jacfwd(self.F)
-
-        def _v(x):
-            return DF(x).T @ v(x)
-
-        def _Λ(x, i):
-            return self.Λ(x, i)
-        Bjk = jax.vmap(_v)(self.Q.x)  # n_q x d
-        Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.Λ.n))  # n x n_q x d
-        Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
-        wj = self.Q.w
-        return jnp.einsum("ijk,jk,j,j->i", Λijk, Bjk, Jj, wj)
+        # Evaluate the given function at quadrature points
+        f_jk = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
+        w_jk = f_jk * (self.Seq.Q.w)[:, None]
+        return integrate_against(self.Seq.get_Λ3_ijk, w_jk, self.Seq.Λ3.n)

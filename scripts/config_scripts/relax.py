@@ -9,6 +9,7 @@ import numpy as np
 
 from mrx.BoundaryFitting import cerfon_map, helical_map, rotating_ellipse_map
 from mrx.DeRhamSequence import DeRhamSequence
+from mrx.DifferentialForms import DiscreteFunction, Pushforward
 from mrx.InputOutput import parse_args, unique_id
 from mrx.Relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
 
@@ -33,7 +34,7 @@ CONFIG = {
     "run_name": "",  # Name for the run. If empty, a hash will be created
 
     # Type of configuration: "tokamak" or "helix" or "rotating_ellipse"
-    "type": "helix",
+    "type": "tokamak",
 
     ###
     # Parameters describing the domain.
@@ -51,8 +52,8 @@ CONFIG = {
     ###
     # Discretization
     ###
-    "n_r": 8,       # Number of radial splines
-    "n_theta": 8,   # Number of poloidal splines
+    "n_r": 12,       # Number of radial splines
+    "n_theta": 10,   # Number of poloidal splines
     "n_zeta": 6,    # Number of toroidal splines
     "p_r": 3,       # Degree of radial splines
     "p_theta": 3,     # Degree of poloidal splines
@@ -159,7 +160,7 @@ def run(CONFIG):
 
     assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 
-    Seq.evaluate_all()
+    Seq.evaluate_1d()
     Seq.assemble_all()
     Seq.build_crossproduct_projections()
     Seq.assemble_leray_projection()
@@ -227,8 +228,11 @@ def run(CONFIG):
     # if CONFIG["type"] != "tokamak":
     # for ITER, B_harm + 2 B_hat does the trick (unnormalized),
     # also for ROT_ELL (or 1 for rot_ell, 8x8x5 - ~ 7% normalized)
-    B_hat = B_harm + 0 * B_hat
+    B_hat = B_harm + 0.25 * B_hat
     B_hat /= norm_2(B_hat)
+
+    B_harm_h = jax.jit(Pushforward(
+        DiscreteFunction(B_harm, Seq.Λ2, Seq.E2), F, 2))
 
     diagnostics = MRXDiagnostics(Seq, CONFIG["force_free"])
 

@@ -24,6 +24,51 @@ jax.config.update("jax_enable_x64", True)
 # Mapping:
 
 
+def helical_map(epsilon=0.2, h=0.2, n_turns=3, kappa=1.0, alpha=0.0):
+    π = jnp.pi
+
+    def X(ζ):
+        return jnp.array([
+            (1 + h * jnp.cos(2 * π * n_turns * ζ)) * jnp.cos(2 * π * ζ),
+            (1 + h * jnp.cos(2 * π * n_turns * ζ)) * jnp.sin(2 * π * ζ),
+            h * jnp.sin(2 * π * n_turns * ζ)
+        ])
+
+    def get_frame(ζ):
+        dX = jax.jacrev(X)
+        τ = dX(ζ) / jnp.linalg.norm(dX(ζ))  # Tangent vector
+        dτ = jax.jacfwd(dX)(ζ)
+        ν1 = dτ / jnp.linalg.norm(dτ)
+        ν1 = ν1 / jnp.linalg.norm(ν1)  # First normal vector
+        ν2 = jnp.cross(τ, ν1)         # Second normal vector
+        return τ, ν1, ν2
+
+    def x_t(t):
+        return epsilon * jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t))
+
+    def y_t(t):
+        return epsilon * kappa * jnp.sin(2 * π * t)
+
+    def _s_from_t(t):
+        return jnp.arctan2(y_t(t), x_t(t))
+
+    def s_from_t(t):
+        return jnp.where(t > 0.5, _s_from_t(t) + 2 * π, _s_from_t(t))
+
+    def a_from_t(t):
+        return jnp.sqrt(x_t(t)**2 + y_t(t)**2)
+
+    def F(x):
+        """Helical coordinate mapping function."""
+        r, t, ζ = x
+        _, ν1, ν2 = get_frame(ζ)
+        return (X(ζ)
+                + a_from_t(t) * r * jnp.cos(s_from_t(t)) * ν1
+                + a_from_t(t) * r * jnp.sin(s_from_t(t)) * ν2)
+
+    return F
+
+
 def siesta_map():
     Np = 3
 
@@ -55,6 +100,7 @@ def siesta_map():
 
     def F(x):
         r, χ, z = x
+        z /= Np
         dR = r * (Rb(χ, z) - R0(z))
         dZ = r * (Zb(χ, z) - Z0(z))
         return jnp.array([(R0(z) + dR) * jnp.cos(2 * pi * z),
@@ -112,11 +158,8 @@ def w7x_map():
     return F
 
 
-def spec_map():
+def spec_map(a=0.1, b=0.025, m=5):
     π = jnp.pi
-    a = 0.1
-    b = 0.025
-    m = 5
 
     def Rb(θ, ζ):
         return 1 + a * jnp.cos(2 * π * θ) + b * jnp.cos(2 * π * θ - 2 * π * m * ζ)
@@ -126,6 +169,7 @@ def spec_map():
 
     def F(x):
         r, θ, ζ = x
+        ζ /= m
         R_val = 1 + r * (Rb(θ, ζ) - 1)
         Z_val = r * Zb(θ, ζ)
         return jnp.ravel(jnp.array([
@@ -196,7 +240,8 @@ def torus_map():
     return F
 
 
-F = spec_map()
+# F = helical_map(h = 0.0)
+F = spec_map(a=0.1, b=0.025, m=5)
 # F = w7x_map()
 # F = siesta_map()
 # F = torus_map()
@@ -211,7 +256,7 @@ def f_test(p):
     R = (x1**2 + x2**2)**0.5
     phi = jnp.arctan2(x2, x1)
     r = p[0]
-    return R * jnp.cos(phi)**2 * jnp.ones(1) * (1-r**2)
+    return R * jnp.cos(phi) * jnp.ones(1) * (1-r**2)
 
 
 def E_test(p):
@@ -219,7 +264,7 @@ def E_test(p):
     r = p[0]
     R = (x1**2 + x2**2)**0.5
     phi = jnp.arctan2(x2, x1)
-    return jnp.array([R**2, 1.0/R, 1.0/R**2]) * (1-r**2)
+    return jnp.array([0, R * jnp.cos(phi), 0]) * (1-r**2)
 # %%
 # Seq = DeRhamSequence((6, 6, 6), (3, 3, 3), 3,
 #                      ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
@@ -286,9 +331,9 @@ def E_test(p):
 # # %%
 # Seq.get_dΛ0_ijk(10, 4, 0), Seq.dΛ0_ijk[10, 4, 0]
 # %%
-# MapSeq = DeRhamSequence((8, 8, 4), (3, 3, 3), 3,
+# MapSeq = DeRhamSequence((6, 6, 6), (3, 3, 3), 3,
 #                         ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=False)
-# MapSeq.evaluate_0()
+# MapSeq.evaluate_1d()
 # MapSeq.assemble_M0()
 
 # F_x_hat = jnp.linalg.solve(MapSeq.M0, MapSeq.P0(lambda x: F(x)[0:1]))
@@ -306,36 +351,38 @@ def E_test(p):
 # %%
 
 
-@partial(jax.jit, static_argnames=["n", "p"])
-def proj_error(n, p):
-    Seq = DeRhamSequence((n, n, n), (p, p, p), 3,
+@partial(jax.jit, static_argnames=["n", "p", "q"])
+def proj_error(n, p, q):
+    Seq = DeRhamSequence((n, n, n), (p, p, p), q,
                          ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
-    # Seq.evaluate_0()
     Seq.evaluate_1d()
-    Seq.assemble_M0()
+    Seq.assemble_M2()
 
-    f_hat = jnp.linalg.solve(Seq.M0, Seq.P0(f_test))
-    f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ0, Seq.E0), F, 0)
+    f_hat = jnp.linalg.solve(Seq.M2, Seq.P2(E_test))
+    f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ2, Seq.E2), F, 2)
 
-    df = jax.vmap(lambda x: f_test(x) - f_h(x))(Seq.Q.x)
-    L2_df = jnp.einsum('ik,ik,i,i->', df, df, Seq.J_j, Seq.Q.w)**0.5
+    Seq2 = DeRhamSequence((n, n, n), (p, p, p), 2*q,
+                          ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
+
+    df = jax.vmap(lambda x: E_test(x) - f_h(x))(Seq2.Q.x)
+    L2_df = jnp.einsum('ik,ik,i,i->', df, df, Seq2.J_j, Seq2.Q.w)**0.5
     L2_f = jnp.einsum('ik,ik,i,i->',
-                      jax.vmap(f_test)(Seq.Q.x), jax.vmap(f_test)(Seq.Q.x),
-                      Seq.J_j, Seq.Q.w)**0.5
+                      jax.vmap(E_test)(Seq2.Q.x), jax.vmap(E_test)(Seq2.Q.x),
+                      Seq2.J_j, Seq2.Q.w)**0.5
     return L2_df / L2_f
 
 
 # %%
 errs = []
-ns = np.arange(5, 11, 1)
+ns = np.arange(4, 9, 1)
 for n in ns:
     print(f"n = {n}")
-    errs.append(proj_error(n, 3))
+    errs.append(proj_error(n, 3, 3))
     print("err =", errs[-1])
 
 # %%
 plt.plot(ns, errs, marker='o', label="L2 projection error")
-plt.plot(ns, (1.0 * ns)**-3, marker='o', label=r"$\mathcal{O}(h^3)$")
+plt.plot(ns, (0.3 * ns)**-2, marker='o', label=r"$\mathcal{O}(h^2)$")
 plt.yscale("log")
 plt.xscale("log")
 plt.grid(which="both", linestyle="--", linewidth=0.5)
@@ -344,7 +391,7 @@ plt.legend()
 plt.show()
 
 # %%
-Seq = DeRhamSequence((8, 8, 5), (3, 3, 3), 3,
+Seq = DeRhamSequence((8, 8, 6), (3, 3, 3), 3,
                      ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
 Seq.evaluate_1d()
 Seq.assemble_all()
@@ -373,17 +420,17 @@ def norm_u_h(x):
 f_hat = jnp.linalg.solve(Seq.M0, Seq.P0(f_test))
 f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ0, Seq.E0), F, 0)
 # %%
-cuts = jnp.linspace(0, 1, 5, endpoint=False)
+cuts = jnp.linspace(0, 1/5, 5, endpoint=False)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
                           nx=32, ny=32, nz=1) for v in cuts]
 grid_surface = get_2d_grids(F, cut_axis=0, cut_value=1.0,
-                            ny=128, nz=128, z_min=0, z_max=1, invert_z=True)
+                            ny=128, nz=128, z_min=0, z_max=1/3, invert_z=True)
 # %%
 fig, ax = plot_torus(norm_u_h, grids_pol, grid_surface,
-                     gridlinewidth=1, cstride=8, elev=80,
-                     azim=66)
+                     gridlinewidth=1, cstride=8, elev=10,
+                     azim=-70)
 # %%
-cuts = jnp.linspace(0, 1, 6, endpoint=False)
+cuts = jnp.linspace(0, 1/3, 6, endpoint=False)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
                           nx=32, ny=32, nz=1) for v in cuts]
 plot_crossections_separate(norm_u_h, grids_pol, cuts, plot_centerline=True)

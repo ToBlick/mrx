@@ -182,6 +182,7 @@ def select_quadrature(basis, n):
         return composite_quad(basis.T[basis.p:-basis.p], n)
     elif basis.type == 'periodic':
         return composite_quad(basis.T[basis.p:-basis.p], n)
+        # return trapezoidal_quad(2*n)
     elif basis.type == 'fourier':
         return trapezoidal_quad(2*n)
     elif basis.type == 'constant':

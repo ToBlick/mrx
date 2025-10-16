@@ -172,6 +172,7 @@ def assemble(
 
     _, M = jax.lax.scan(body_fun, None, jnp.arange(n1))
     return M
+# %%
 
 
 def evaluate_at_xq(getter, dofs, n_q, d):
@@ -202,7 +203,7 @@ def evaluate_at_xq(getter, dofs, n_q, d):
     def body_fun(carry, i):
         L_i = get_f_jk(i, jnp.arange(n_q), jnp.arange(d))  # shape (n_q, d)
         # broadcast scalar over last axis (dimesions)
-        carry += L_i * v_i[i][:, None]
+        carry += L_i * v_i[i]
         return carry, None
 
     R_init = jnp.zeros_like(

@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from mrx.Utils import evaluate_at_xq, integrate_against
 
 
+# %%
 class CrossProductProjection:
     """
     Given bases Λn, Λm, Λk, constructs an operator to evaluate
@@ -81,8 +82,10 @@ class CrossProductProjection:
         # w_h_jk = jnp.einsum("ijk,mi,m->jk", self.Λm_ijk, self.Em, w)
         # u_h_jk = jnp.einsum("ijk,mi,m->jk", self.Λk_ijk, self.Ek, u)
 
-        w_h_jk = evaluate_at_xq(self.get_Λm_ijk, self.Em @ w, self.Seq.Q.n, 3)
-        u_h_jk = evaluate_at_xq(self.get_Λk_ijk, self.Ek @ u, self.Seq.Q.n, 3)
+        w_h_jk = evaluate_at_xq(
+            self.get_Λm_ijk, self.Em.T @ w, self.Seq.Q.n, 3)
+        u_h_jk = evaluate_at_xq(
+            self.get_Λk_ijk, self.Ek.T @ u, self.Seq.Q.n, 3)
         # shapes of this: n_q x 3
 
         # now, we compute
