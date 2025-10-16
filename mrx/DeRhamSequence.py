@@ -412,7 +412,7 @@ class DeRhamSequence():
         # M = jnp.einsum("ijk,ljk,j->il", self.Λ1_ijk,
         #                 self.Λ2_ijk, self.Q.w)
 
-        W = self.Q.w[:, None, None]  # shape (n_q, 1, 1)
+        W = self.Q.w[:, None, None] * jnp.eye(3)  # shape (n_q, 1, 1)
         M = assemble(self.get_Λ1_ijk, self.get_Λ2_ijk, W, self.Λ1.n, self.Λ2.n)
 
         M12 = self.E1 @ M @ self.E2.T

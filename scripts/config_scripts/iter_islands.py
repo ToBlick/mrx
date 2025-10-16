@@ -12,23 +12,13 @@ from mrx.DeRhamSequence import DeRhamSequence
 from mrx.DifferentialForms import DiscreteFunction, Pushforward
 from mrx.InputOutput import parse_args, unique_id
 from mrx.Relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
+from mrx.Utils import inv33
 
 jax.config.update("jax_enable_x64", True)
 
 outdir = "script_outputs/solovev/"
 os.makedirs(outdir, exist_ok=True)
 
-
-###
-# Default configuration
-###
-DEVICE_PRESETS = {
-    "ITER":  {"eps": 0.32, "kappa": 1.7, "delta": 0.33, "q_star": 1.57, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
-    "NSTX":  {"eps": 0.78, "kappa": 2.0, "delta": 0.35, "q_star": 2.0, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
-    "SPHERO": {"eps": 0.95, "kappa": 1.0, "delta": 0.2,  "q_star": 0.0, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
-    "ROT_ELL": {"a": 0.1, "b": 0.025, "m_rot": 5, "q_star": 1.6, "type": "rotating_ellipse"},
-    "HELIX": {"eps": 0.33, "h_helix": 0.20, "kappa": 1.7, "delta": 0.33, "m_helix": 3, "q_star": 2.0, "type": "helix"},
-}
 
 CONFIG = {
     "run_name": "",  # Name for the run. If empty, a hash will be created
@@ -41,23 +31,18 @@ CONFIG = {
     ###
     "eps":      0.33,  # aspect ratio
     "kappa":    1.7,   # Elongation parameter
-    "q_star":   1.57,   # toroidal field strength
-    "delta": 0.0,   # triangularity
-    "m_helix":  3,     # poloidal mode number of helix
-    "h_helix":  0,   # radius of helix turns
-    "m_rot":    5,      # mode number of rotating ellipse
-    "a": 0.1,      # amplitude of rotating ellipse deformation
-    "b": 0.025,    # amplitude of rotating ellipse deformation
+    "delta":    0.33,   # triangularity
+    "delta_B":   0.2,   # poloidal field strength relative to harmonic one
 
     ###
     # Discretization
     ###
-    "n_r": 12,       # Number of radial splines
+    "n_r": 10,       # Number of radial splines
     "n_theta": 10,   # Number of poloidal splines
-    "n_zeta": 6,    # Number of toroidal splines
-    "p_r": 3,       # Degree of radial splines
-    "p_theta": 3,     # Degree of poloidal splines
-    "p_zeta": 3,    # Degree of toroidal splines
+    "n_zeta": 3,    # Number of toroidal splines
+    "p_r": 2,       # Degree of radial splines
+    "p_theta": 2,     # Degree of poloidal splines
+    "p_zeta": 2,    # Degree of toroidal splines
 
     ###
     # Hyperparameters for the relaxation
@@ -75,6 +60,17 @@ CONFIG = {
     "eta":                   0.0,       # Resistivity
     # If True, solve for JxB = 0. If False, JxB = grad p
     "force_free":            False,
+
+    ###
+    # Hyperparameters pertaining to island seeding
+    ###
+    "pert_strength":      0.0,  # strength of perturbation
+    "pert_pol_mode":        6,  # poloidal mode number of perturbation
+    "pert_tor_mode":        2,  # toroidal mode number of perturbation
+    "pert_radial_loc":    1/3,  # radial location of perturbation
+    "pert_radial_width": 0.05,  # radial width of perturbation
+    # apply perturbation after n steps (0 = to initial condition)
+    "apply_pert_after":     0,
 
     ###
     # Solver hyperparameters
@@ -95,17 +91,6 @@ def main():
     # Get user input
     params = parse_args()
 
-    # Step 1: If device specified, apply defaults
-    device_name = params.get("device")
-    if device_name:
-        preset = DEVICE_PRESETS.get(device_name.upper())
-        if preset:
-            for k, v in preset.items():
-                CONFIG[k] = v
-        else:
-            print(f"Unknown device '{device_name}' - ignoring.")
-
-    # Step 2: Override with user-supplied parameters
     for k, v in params.items():
         if k in CONFIG:
             CONFIG[k] = v
@@ -129,23 +114,10 @@ def run(CONFIG):
     kappa = CONFIG["kappa"]
     eps = CONFIG["eps"]
     alpha = jnp.arcsin(CONFIG["delta"])
-    if CONFIG["type"] == "tokamak":
-        tau = CONFIG["q_star"] * kappa * (1 + kappa**2) / (kappa + 1)
-    else:
-        tau = CONFIG["q_star"]
 
     start_time = time.time()
 
-    if CONFIG["type"] == "tokamak":
-        F = cerfon_map(eps, kappa, alpha)
-    elif CONFIG["type"] == "helix":
-        F = helical_map(epsilon=CONFIG["eps"], h=CONFIG["h_helix"],
-                        n_turns=CONFIG["m_helix"], kappa=CONFIG["kappa"], alpha=alpha)
-    elif CONFIG["type"] == "rotating_ellipse":
-        F = rotating_ellipse_map(
-            a=CONFIG["a"], b=CONFIG["b"], m=CONFIG["m_rot"])
-    else:
-        raise ValueError("Unknown configuration type.")
+    F = cerfon_map(eps, kappa, alpha)
 
     ns = (CONFIG["n_r"], CONFIG["n_theta"], CONFIG["n_zeta"])
     ps = (CONFIG["p_r"], CONFIG["p_theta"], 0
@@ -195,28 +167,34 @@ def run(CONFIG):
     def norm_2(u):
         return (u @ Seq.M2 @ u)**0.5
 
-    def B_xyz(p):
-        x, y, z = F(p)
-        R = (x**2 + y**2)**0.5
-        phi = jnp.arctan2(y, x)
+    def norm_1(u):
+        return (u @ Seq.M1 @ u)**0.5
 
-        # if CONFIG["type"] == "tokamak":
-        #     BR = z * R
-        #     Bphi = tau / R
-        #     Bz = - (kappa**2 / 2 * (R**2 - 1**2) + z**2)
-        #     Bx = BR * jnp.cos(phi) - Bphi * jnp.sin(phi)
-        #     By = BR * jnp.sin(phi) + Bphi * jnp.cos(phi)
-        #     return jnp.array([Bx, By, Bz])
-        # else:
-        #     BR = z * R
-        #     Bphi = tau / R
-        #     Bz = - (1**2 / 2 * (R**2 - 1**2) + z**2)
-        #     Bx = BR * jnp.cos(phi) - Bphi * jnp.sin(phi)
-        #     By = BR * jnp.sin(phi) + Bphi * jnp.cos(phi)
-        #     return jnp.array([Bx, By, Bz])
+    def B_xyz(p):
         DFx = jax.jacfwd(F)(p)
         # purely poloidal
-        return DFx[:, 1]
+        B_pol = DFx[:, 1]
+        return B_pol
+
+    def dB_xyz(p):
+        r, θ, ζ = p
+        DFx = jax.jacfwd(F)(p)
+
+        def a(r):
+            return jnp.exp(- (r - CONFIG["pert_radial_loc"])**2 / (2 * CONFIG["pert_radial_width"]**2))
+        B_rad = a(r) * jnp.sin(2 * jnp.pi * θ * CONFIG["pert_pol_mode"]) * \
+            jnp.sin(2 * jnp.pi * ζ * CONFIG["pert_tor_mode"]) * DFx[:, 0]
+        return B_rad
+
+    # def A_xyz(p):
+    #     x, y, z = F(p)
+    #     r, θ, ζ = p
+    #     # seeded island at r = 1/3 in toroidal direction
+    #     DFx = jax.jacfwd(F)(p)
+    #     J = jnp.linalg.det(DFx)
+    #     A_ζ = jnp.sin(2 * jnp.pi * ζ) * jnp.exp(-100 *
+    #                                             (r - 1 / 3)**2) * jnp.sin(6 * jnp.pi * θ)
+    #     return inv33(DFx.T)[:, 2] * A_ζ / J
 
     B_hat = jnp.linalg.solve(Seq.M2, Seq.P2(B_xyz))
     B_hat = Seq.P_Leray @ B_hat
@@ -225,14 +203,16 @@ def run(CONFIG):
     B_harm = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[1][:, 0]
     B_harm = B_harm / norm_2(B_harm)
 
-    # if CONFIG["type"] != "tokamak":
-    # for ITER, B_harm + 2 B_hat does the trick (unnormalized),
-    # also for ROT_ELL (or 1 for rot_ell, 8x8x5 - ~ 7% normalized)
-    B_hat = B_harm + 0.25 * B_hat
+    B_hat = B_harm + CONFIG["delta_B"] * B_hat
     B_hat /= norm_2(B_hat)
 
-    B_harm_h = jax.jit(Pushforward(
-        DiscreteFunction(B_harm, Seq.Λ2, Seq.E2), F, 2))
+    if CONFIG["apply_pert_after"] == 0 and CONFIG["pert_strength"] > 0:
+        print("Applying perturbation to initial condition...")
+        dB_hat = jnp.linalg.solve(Seq.M2, Seq.P2(dB_xyz))
+        dB_hat = Seq.P_Leray @ dB_hat
+        dB_hat /= norm_2(dB_hat)
+        B_hat += CONFIG["pert_strength"] * dB_hat
+        B_hat /= norm_2(B_hat)
 
     diagnostics = MRXDiagnostics(Seq, CONFIG["force_free"])
 
@@ -277,7 +257,7 @@ def run(CONFIG):
     print(f"Setup took {setup_done_time - start_time:.2e} seconds.")
     print("Starting relaxation loop...")
 # %%
-    for i in range(1, 5000 + 1):
+    for i in range(1, 2000 + 1):
 
         state = step(state)
         if (state.picard_residuum > CONFIG["solver_tol"]
@@ -288,6 +268,15 @@ def run(CONFIG):
             continue
         # otherwise, we converged - proceed
         state = timestepper.update_B_n(state, state.B_guess)
+
+        if i == CONFIG["apply_pert_after"] and CONFIG["pert_strength"] > 0:
+            print(f"Applying perturbation after {i} steps...")
+            dB_hat = jnp.linalg.solve(Seq.M2, Seq.P2(dB_xyz))
+            dB_hat = Seq.P_Leray @ dB_hat
+            dB_hat /= norm_2(dB_hat)
+            B_new = state.B_n + CONFIG["pert_strength"] * dB_hat
+            B_new /= norm_2(B_new)
+            state = timestepper.update_B_n(state, B_new)
 
         if CONFIG["precond"] and (i % CONFIG["precond_compute_every"] == 0):
             state = timestepper.update_hessian(

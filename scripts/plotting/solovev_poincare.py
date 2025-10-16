@@ -160,8 +160,8 @@ def F_cyl_signed(x):
 p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
 B_h = (DiscreteFunction(B_hat, Seq.Λ2, Seq.E2))
 # %%
-n_lines = 30  # even numbers only
-r_min, r_max = 0.05, 0.99
+n_lines = 18  # even numbers only
+r_min, r_max = 0.05, 0.95
 p = 1.0
 _r = np.linspace(r_min, r_max, n_lines)
 x0s = np.vstack(
@@ -249,7 +249,7 @@ plt.show()
 # %%
 crossings = jax.vmap(lambda x0: get_crossings(
     # m x N x 3
-    B_h, x0, F, N=200, phi_targets=[0.25]))(x0s_sorted)
+    B_h, x0, F, N=400, phi_targets=[0.25]))(x0s_sorted)
 
 crossings_xyz = jax.vmap(jax.vmap(F))(crossings)
 crossings_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(crossings_xyz)

@@ -204,6 +204,7 @@ rbc = jnp.array([  # rows are m, cols are n (-6 to 6), modes are cos(m theta - n
      -0.003413, -0.0016615, -0.0010591, -5.3034e-4, -6.5265e-4, 9.7208e-5]
 ])
 
+
 zbc = jnp.array([
     # m = 0
     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.23754, -
@@ -229,6 +230,37 @@ zbc = jnp.array([
 ])
 
 
+def cerfon_map(epsilon=0.33, kappa=1.7, alpha=jnp.arcsin(0.33), R0=1.0):
+
+    π = jnp.pi
+
+    def x_t(t):
+        return 1 + epsilon * jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t))
+
+    def y_t(t):
+        return epsilon * kappa * jnp.sin(2 * π * t)
+
+    def _s_from_t(t):
+        return jnp.arctan2(kappa * jnp.sin(2 * π * t),
+                           jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t)))
+
+    def s_from_t(t):
+        return jnp.where(t > 0.5, _s_from_t(t) + 2 * π, _s_from_t(t))
+
+    def a_from_t(t):
+        return jnp.sqrt((x_t(t) - 1)**2 + y_t(t)**2)
+
+    @jax.jit
+    def F(x):
+        r, χ, z = x
+        return jnp.ravel(jnp.array(
+            [(R0 + a_from_t(χ) * r * jnp.cos(s_from_t(χ))) * jnp.cos(2 * π * z),
+             -(R0 + a_from_t(χ) * r * jnp.cos(s_from_t(χ))) * jnp.sin(2 * π * z),
+             a_from_t(χ) * r * jnp.sin(s_from_t(χ))]))
+
+    return F
+
+
 def torus_map():
     def F(x):
         r, θ, ζ = x
@@ -240,11 +272,12 @@ def torus_map():
     return F
 
 
-# F = helical_map(h = 0.0)
-F = spec_map(a=0.1, b=0.01, m=5)
+F = helical_map(h=0.01)
+# F = spec_map(a=0.1, b=0.01, m=5)
 # F = w7x_map()
 # F = siesta_map()
 # F = torus_map()
+# F = cerfon_map()
 
 grid = get_3d_grids(F, nx=8, ny=17, nz=17, x_min=1e-6)
 
@@ -257,6 +290,7 @@ def f_test(p):
     phi = jnp.arctan2(x2, x1)
     r = p[0]
     return R * jnp.cos(phi) * jnp.ones(1) * (1-r**2)
+
 
 def E_test(p):
     x1, x2, x3 = F(p)
@@ -350,12 +384,12 @@ def E_test(p):
 # %%
 
 
-# @partial(jax.jit, static_argnames=["n", "p", "q"])
+@partial(jax.jit, static_argnames=["n", "p", "q", "k"])
 def proj_error(n, p, q, k):
     Seq = DeRhamSequence((n, n, n), (p, p, p), q,
                          ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
     Seq.evaluate_1d()
-    
+
     match k:
         case 0:
             u_test = f_test
@@ -377,7 +411,7 @@ def proj_error(n, p, q, k):
             Seq.assemble_M3()
             f_hat = jnp.linalg.solve(Seq.M3, Seq.P3(u_test))
             f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ3, Seq.E3), F, 3)
-    
+
     # do not vmap here because of memory issues
     def diff_at_x(x):
         return u_test(x) - f_h(x)
@@ -386,7 +420,7 @@ def proj_error(n, p, q, k):
         return None, diff_at_x(x)
 
     _, df = jax.lax.scan(body_fun, None, Seq.Q.x)
-    
+
     L2_df = jnp.einsum('ik,ik,i,i->', df, df, Seq.J_j, Seq.Q.w)**0.5
     L2_f = jnp.einsum('ik,ik,i,i->',
                       jax.vmap(u_test)(Seq.Q.x), jax.vmap(u_test)(Seq.Q.x),
@@ -396,17 +430,20 @@ def proj_error(n, p, q, k):
 
 # %%
 errs = []
-ns = np.arange(4, 11, 2)
+ns = np.arange(4, 10, 1)
 for n in ns:
     print(f"n = {n}")
-    errs.append(proj_error(n=n, p=2, q=3, k=0))
+    errs.append(proj_error(n=n, p=3, q=3, k=0))
     print("err =", errs[-1])
 
 # %%
 plt.plot(ns, errs, marker='o', label="L2 projection error")
-plt.plot(ns, errs[-1] * (ns/ns[-1])**-1, linestyle=':', label=r"$\mathcal{O}(h)$")
-plt.plot(ns, errs[-1] * (ns/ns[-1])**-2, linestyle=':', label=r"$\mathcal{O}(h^2)$")
-plt.plot(ns, errs[-1] * (ns/ns[-1])**-3, linestyle=':', label=r"$\mathcal{O}(h^3)$")
+plt.plot(ns, errs[-1] * (ns/ns[-1])**-1,
+         linestyle=':', label=r"$\mathcal{O}(h)$")
+plt.plot(ns, errs[-1] * (ns/ns[-1])**-2,
+         linestyle=':', label=r"$\mathcal{O}(h^2)$")
+plt.plot(ns, errs[-1] * (ns/ns[-1])**-3,
+         linestyle=':', label=r"$\mathcal{O}(h^3)$")
 plt.yscale("log")
 plt.xscale("log")
 plt.grid(which="both", linestyle="--", linewidth=0.5)
@@ -415,7 +452,7 @@ plt.legend()
 plt.show()
 
 # %%
-Seq = DeRhamSequence((8, 8, 8), (3, 3, 3), 3,
+Seq = DeRhamSequence((10, 10, 4), (3, 3, 3), 3,
                      ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
 Seq.evaluate_1d()
 Seq.assemble_all()

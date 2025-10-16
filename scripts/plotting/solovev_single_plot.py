@@ -52,6 +52,13 @@ assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 
 # %%
 p_h = Pushforward(DiscreteFunction(p_hat, Seq.Λ0, Seq.E0), F, 0)
+J_hat = Seq.weak_curl @ B_hat
+
+
+def J_norm(x):
+    return jnp.linalg.norm(Pushforward(DiscreteFunction(J_hat, Seq.Λ1, Seq.E1), F, 1)(x))
+
+
 # %%
 cuts = jnp.linspace(0, 1, 5, endpoint=False)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
@@ -78,4 +85,6 @@ print(f"Beta = {beta:.3e}")
 # %%
 print("Final |JxB - grad p| / |grad p| =", force_trace[-1])
 print("Initial |JxB - grad p| / |grad p| =", force_trace[0])
+# %%
+plot_crossections_separate(J_norm, grids_pol, cuts, plot_centerline=True)
 # %%
