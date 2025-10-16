@@ -241,7 +241,7 @@ def torus_map():
 
 
 # F = helical_map(h = 0.0)
-F = spec_map(a=0.1, b=0.025, m=5)
+F = spec_map(a=0.1, b=0.01, m=5)
 # F = w7x_map()
 # F = siesta_map()
 # F = torus_map()
@@ -258,13 +258,12 @@ def f_test(p):
     r = p[0]
     return R * jnp.cos(phi) * jnp.ones(1) * (1-r**2)
 
-
 def E_test(p):
     x1, x2, x3 = F(p)
     r = p[0]
     R = (x1**2 + x2**2)**0.5
     phi = jnp.arctan2(x2, x1)
-    return jnp.array([0, R * jnp.cos(phi), 0]) * (1-r**2)
+    return jnp.array([R**2, R * jnp.cos(phi), jnp.sin(phi)/R]) * (1-r**2)
 # %%
 # Seq = DeRhamSequence((6, 6, 6), (3, 3, 3), 3,
 #                      ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
@@ -351,38 +350,63 @@ def E_test(p):
 # %%
 
 
-@partial(jax.jit, static_argnames=["n", "p", "q"])
-def proj_error(n, p, q):
+# @partial(jax.jit, static_argnames=["n", "p", "q"])
+def proj_error(n, p, q, k):
     Seq = DeRhamSequence((n, n, n), (p, p, p), q,
                          ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
     Seq.evaluate_1d()
-    Seq.assemble_M2()
+    
+    match k:
+        case 0:
+            u_test = f_test
+            Seq.assemble_M0()
+            f_hat = jnp.linalg.solve(Seq.M0, Seq.P0(u_test))
+            f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ0, Seq.E0), F, 0)
+        case 1:
+            u_test = E_test
+            Seq.assemble_M1()
+            f_hat = jnp.linalg.solve(Seq.M1, Seq.P1(u_test))
+            f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ1, Seq.E1), F, 1)
+        case 2:
+            u_test = E_test
+            Seq.assemble_M2()
+            f_hat = jnp.linalg.solve(Seq.M2, Seq.P2(u_test))
+            f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ2, Seq.E2), F, 2)
+        case 3:
+            u_test = f_test
+            Seq.assemble_M3()
+            f_hat = jnp.linalg.solve(Seq.M3, Seq.P3(u_test))
+            f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ3, Seq.E3), F, 3)
+    
+    # do not vmap here because of memory issues
+    def diff_at_x(x):
+        return u_test(x) - f_h(x)
 
-    f_hat = jnp.linalg.solve(Seq.M2, Seq.P2(E_test))
-    f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ2, Seq.E2), F, 2)
+    def body_fun(carry, x):
+        return None, diff_at_x(x)
 
-    Seq2 = DeRhamSequence((n, n, n), (p, p, p), 2*q,
-                          ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
-
-    df = jax.vmap(lambda x: E_test(x) - f_h(x))(Seq2.Q.x)
-    L2_df = jnp.einsum('ik,ik,i,i->', df, df, Seq2.J_j, Seq2.Q.w)**0.5
+    _, df = jax.lax.scan(body_fun, None, Seq.Q.x)
+    
+    L2_df = jnp.einsum('ik,ik,i,i->', df, df, Seq.J_j, Seq.Q.w)**0.5
     L2_f = jnp.einsum('ik,ik,i,i->',
-                      jax.vmap(E_test)(Seq2.Q.x), jax.vmap(E_test)(Seq2.Q.x),
-                      Seq2.J_j, Seq2.Q.w)**0.5
+                      jax.vmap(u_test)(Seq.Q.x), jax.vmap(u_test)(Seq.Q.x),
+                      Seq.J_j, Seq.Q.w)**0.5
     return L2_df / L2_f
 
 
 # %%
 errs = []
-ns = np.arange(4, 9, 1)
+ns = np.arange(4, 11, 2)
 for n in ns:
     print(f"n = {n}")
-    errs.append(proj_error(n, 3, 3))
+    errs.append(proj_error(n=n, p=2, q=3, k=0))
     print("err =", errs[-1])
 
 # %%
 plt.plot(ns, errs, marker='o', label="L2 projection error")
-plt.plot(ns, (0.3 * ns)**-2, marker='o', label=r"$\mathcal{O}(h^2)$")
+plt.plot(ns, errs[-1] * (ns/ns[-1])**-1, linestyle=':', label=r"$\mathcal{O}(h)$")
+plt.plot(ns, errs[-1] * (ns/ns[-1])**-2, linestyle=':', label=r"$\mathcal{O}(h^2)$")
+plt.plot(ns, errs[-1] * (ns/ns[-1])**-3, linestyle=':', label=r"$\mathcal{O}(h^3)$")
 plt.yscale("log")
 plt.xscale("log")
 plt.grid(which="both", linestyle="--", linewidth=0.5)
@@ -391,7 +415,7 @@ plt.legend()
 plt.show()
 
 # %%
-Seq = DeRhamSequence((8, 8, 6), (3, 3, 3), 3,
+Seq = DeRhamSequence((8, 8, 8), (3, 3, 3), 3,
                      ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
 Seq.evaluate_1d()
 Seq.assemble_all()
@@ -420,17 +444,17 @@ def norm_u_h(x):
 f_hat = jnp.linalg.solve(Seq.M0, Seq.P0(f_test))
 f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ0, Seq.E0), F, 0)
 # %%
-cuts = jnp.linspace(0, 1/5, 5, endpoint=False)
+cuts = jnp.linspace(0, 1, 5, endpoint=False)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
                           nx=32, ny=32, nz=1) for v in cuts]
 grid_surface = get_2d_grids(F, cut_axis=0, cut_value=1.0,
-                            ny=128, nz=128, z_min=0, z_max=1/3, invert_z=True)
+                            ny=128, nz=128, z_min=0, z_max=1, invert_z=True)
 # %%
 fig, ax = plot_torus(norm_u_h, grids_pol, grid_surface,
-                     gridlinewidth=1, cstride=8, elev=10,
+                     gridlinewidth=1, cstride=8, elev=20,
                      azim=-70)
 # %%
-cuts = jnp.linspace(0, 1/3, 6, endpoint=False)
+cuts = jnp.linspace(0, 1, 6, endpoint=False)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
                           nx=32, ny=32, nz=1) for v in cuts]
 plot_crossections_separate(norm_u_h, grids_pol, cuts, plot_centerline=True)

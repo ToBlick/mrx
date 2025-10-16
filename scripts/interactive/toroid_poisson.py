@@ -18,7 +18,7 @@ jax.config.update("jax_enable_x64", True)
 # Create output directory for figures
 os.makedirs("script_outputs", exist_ok=True)
 
-@partial(jax.jit, static_argnames=["n", "p"])
+# @partial(jax.jit, static_argnames=["n", "p"])
 def get_err(n, p):
     # Set up finite element spaces
     q = 2*p
@@ -67,11 +67,21 @@ def get_err(n, p):
     u_hat = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
     u_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0)
 
-    # Compute error
-    def err(x):
+    # do not vmap here because of memory issues
+    def diff_at_x(x):
         return u(x) - u_h(x)
-    error = (l2_product(err, err, Seq.Q, F) /
-             l2_product(u, u, Seq.Q, F)) ** 0.5
+
+    def body_fun(carry, x):
+        return None, diff_at_x(x)
+
+    _, df = jax.lax.scan(body_fun, None, Seq.Q.x)
+    
+    L2_df = jnp.einsum('ik,ik,i,i->', df, df, Seq.J_j, Seq.Q.w)**0.5
+    L2_f = jnp.einsum('ik,ik,i,i->',
+                      jax.vmap(u)(Seq.Q.x), jax.vmap(u)(Seq.Q.x),
+                      Seq.J_j, Seq.Q.w)**0.5
+
+    error = L2_df / L2_f
     return error, jnp.linalg.cond(Seq.M0 @ Seq.dd0), jnp.sum(jnp.abs(Seq.M0 @ Seq.dd0) > 1e-12) / Seq.dd0.size
 
 
