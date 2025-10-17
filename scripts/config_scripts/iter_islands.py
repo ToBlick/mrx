@@ -32,27 +32,28 @@ CONFIG = {
     "eps":      0.33,  # aspect ratio
     "kappa":    1.7,   # Elongation parameter
     "delta":    0.33,   # triangularity
-    "delta_B":   0.17,   # poloidal field strength relative to harmonic one
+    "delta_B":   0.2,   # poloidal field strength relative to harmonic one
+    "q_star":   1.54,
 
     ###
     # Discretization
     ###
-    "n_r": 8,       # Number of radial splines
-    "n_theta": 8,   # Number of poloidal splines
-    "n_zeta": 3,    # Number of toroidal splines
-    "p_r": 2,       # Degree of radial splines
-    "p_theta": 2,     # Degree of poloidal splines
-    "p_zeta": 2,    # Degree of toroidal splines
+    "n_r": 10,       # Number of radial splines
+    "n_theta": 10,   # Number of poloidal splines
+    "n_zeta": 4,    # Number of toroidal splines
+    "p_r": 3,       # Degree of radial splines
+    "p_theta": 3,     # Degree of poloidal splines
+    "p_zeta": 3,    # Degree of toroidal splines
 
     ###
     # Hyperparameters for the relaxation
     ###
-    "maxit":                 3_000,   # max. Number of time steps
+    "maxit":                 5_000,   # max. Number of time steps
     "precond":               False,     # Use preconditioner
     "precond_compute_every": 1000,       # Recompute preconditioner every n iterations
     # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
     "gamma":                 0,
-    "dt":                    1e-6,      # initial time step
+    "dt":                    1e-4,      # initial time step
     # time-steps are increased by this factor and decreased by its square
     "dt_factor":             1.01,
     # Convergence tolerance for |JxB - grad p| (or |JxB| if force_free)
@@ -64,13 +65,13 @@ CONFIG = {
     ###
     # Hyperparameters pertaining to island seeding
     ###
-    "pert_strength":     0.0001,  # strength of perturbation
-    "pert_pol_mode":         2,  # poloidal mode number of perturbation
+    "pert_strength":     0.00005,  # strength of perturbation
+    "pert_pol_mode":          2,  # poloidal mode number of perturbation
     "pert_tor_mode":          1,  # toroidal mode number of perturbation
-    "pert_radial_loc":      1/2,  # radial location of perturbation
+    "pert_radial_loc":      1/5,  # radial location of perturbation
     "pert_radial_width":    0.07,  # radial width of perturbation
     # apply perturbation after n steps (0 = to initial condition)
-    "apply_pert_after":     1000,
+    "apply_pert_after":     2000,
 
     ###
     # Solver hyperparameters
@@ -81,10 +82,10 @@ CONFIG = {
     "solver_critit": 4,
     "solver_tol": 1e-12,   # Tolerance for convergence
     "verbose": False,      # If False, prints only force every 'print_every'
-    "print_every": 250,    # Print every n iterations
+    "print_every": 500,    # Print every n iterations
     "save_every": 10,     # Save intermediate results every n iterations
     "save_B": True,       # Save intermediate B fields to file
-    "save_B_every": 500,   # Save full B every n iterations
+    "save_B_every": 1000,   # Save full B every n iterations
 }
 
 
@@ -126,7 +127,7 @@ def run(CONFIG):
     q = max(ps)
     types = ("clamped", "periodic",
              "constant" if CONFIG["n_zeta"] == 1 else "periodic")
-
+    tau = CONFIG["q_star"] * kappa * (1 + kappa**2) / (kappa + 1)
     print("Setting up FEM spaces...")
 
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
@@ -172,12 +173,15 @@ def run(CONFIG):
         return (u @ Seq.M1 @ u)**0.5
 
     def B_xyz(p):
-        r, _, _ = p
-        DFx = jax.jacfwd(F)(p)
-        # purely poloidal
-        J = jnp.linalg.det(DFx)
-        B_pol = DFx[:, 1] * r / J
-        return B_pol
+        x, y, z = F(p)
+        R = (x**2 + y**2)**0.5
+        phi = jnp.arctan2(y, x)
+        BR = z * R
+        Bphi = tau / R
+        Bz = - (kappa**2 / 2 * (R**2 - 1**2) + z**2)
+        Bx = BR * jnp.cos(phi) - Bphi * jnp.sin(phi)
+        By = BR * jnp.sin(phi) + Bphi * jnp.cos(phi)
+        return jnp.array([Bx, By, Bz])
 
     def dB_xyz(p):
         r, θ, ζ = p
@@ -203,11 +207,11 @@ def run(CONFIG):
     B_hat = Seq.P_Leray @ B_hat
     B_hat /= norm_2(B_hat)
 
-    B_harm = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[1][:, 0]
-    B_harm = B_harm / norm_2(B_harm)
+    # B_harm = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[1][:, 0]
+    # B_harm = B_harm / norm_2(B_harm)
 
-    B_hat = B_harm + CONFIG["delta_B"] * B_hat
-    B_hat /= norm_2(B_hat)
+    # B_hat = B_harm + CONFIG["delta_B"] * B_hat
+    # B_hat /= norm_2(B_hat)
 
     if CONFIG["apply_pert_after"] == 0 and CONFIG["pert_strength"] > 0:
         print("Applying perturbation to initial condition...")
@@ -316,13 +320,14 @@ def run(CONFIG):
     print(
         f"Main loop took {final_time - setup_done_time:.2e} seconds for {i} steps, avg. {(final_time - setup_done_time)/i:.2e} s/step.")
 
+    B_fields = [x for x in B_fields if x is not None]
     ###
     # Post-processing
     ###
     B_hat = state.B_n
     print("Simulation finished, post-processing...")
     if CONFIG["save_B"]:
-        p_fields = [get_pressure(B) for B in B_fields]
+        p_fields = [get_pressure(B) if B is not None else None for B in B_fields]
     p_hat = get_pressure(B_hat)
 
     ###

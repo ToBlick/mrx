@@ -21,7 +21,7 @@ os.makedirs("script_outputs", exist_ok=True)
 # @partial(jax.jit, static_argnames=["n", "p"])
 def get_err(n, p):
     # Set up finite element spaces
-    q = 2*p
+    q = p
     ns = (n, n, n)
     ps = (p, p, p)
     types = ("clamped", "periodic", "periodic")  # Types

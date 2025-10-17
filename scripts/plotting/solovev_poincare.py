@@ -25,7 +25,7 @@ from mrx.Plotting import (
 )
 
 # %%
-name = "ylaXItJ6"
+name = "FV2QFGrX"
 with h5py.File("script_outputs/solovev/" + name + ".h5", "r") as f:
     B_hat = f["B_final"][:]
     p_hat = f["p_final"][:]
@@ -167,7 +167,7 @@ def F_cyl_signed(x):
 p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
 B_h = (DiscreteFunction(B_hat, Seq.Λ2, Seq.E2))
 # %%
-n_lines = 27  # even numbers only
+n_lines = 60  # even numbers only
 r_min, r_max = 0.01, 0.99
 p = 1.0
 _r = np.linspace(r_min, r_max, n_lines)
@@ -197,7 +197,7 @@ x0s_sorted = x0s[idx]
 
 # %%
 trajectories = jax.vmap(lambda x0: integrate_fieldline(
-    B_h, x0, F, N=10_000, t1=100))(x0s_sorted)
+    B_h, x0, F, N=10_000, t1=200))(x0s_sorted)
 trajectories_xyz = jax.vmap(jax.vmap(F))(trajectories)
 trajectories_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(trajectories_xyz)
 
@@ -256,7 +256,7 @@ plt.show()
 # %%
 crossings = jax.vmap(lambda x0: get_crossings(
     # m x N x 3
-    B_h, x0, F, N=400, phi_targets=[0.25]))(x0s_sorted)
+    B_h, x0, F, N=600, phi_targets=[0.25]))(x0s_sorted)
 
 crossings_xyz = jax.vmap(jax.vmap(F))(crossings)
 crossings_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(crossings_xyz)
@@ -303,13 +303,13 @@ ax2 = fig.add_subplot(gs[1], sharey=ax1)
 # colors = ['purple', 'black', 'teal']
 
 
-def truncate_colormap(cmap_name="plasma", minval=0.0, maxval=0.85, n=256):
+def truncate_colormap(cmap_name="turbo", minval=0.0, maxval=0.85, n=256):
     cmap = mpl.cm.get_cmap(cmap_name, n)
     new_colors = cmap(np.linspace(minval, maxval, n))
     return mpl.colors.ListedColormap(new_colors)
 
 
-cmap = truncate_colormap("plasma", 0.0, 0.85)
+cmap = truncate_colormap("turbo", 0.0, 0.85)
 norm = mpl.colors.Normalize(vmin=np.min(iotas), vmax=np.max(iotas))
 sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
 
@@ -497,6 +497,7 @@ offset_text.set_x(1.5)
 # plt.savefig("ROT_ELL_double_poincare.pdf", dpi=400)
 
 plt.show()
+
 
 
 # %%

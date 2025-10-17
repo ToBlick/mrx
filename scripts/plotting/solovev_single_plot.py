@@ -12,13 +12,17 @@ from mrx.DifferentialForms import DiscreteFunction, Pushforward
 from mrx.Plotting import get_2d_grids, plot_crossections_separate, plot_torus
 
 # %%
-name = "9zrUjmG9"
-with h5py.File("../../script_outputs/solovev/" + name + ".h5", "r") as f:
+# %%
+name = "FV2QFGrX"
+with h5py.File("script_outputs/solovev/" + name + ".h5", "r") as f:
     B_hat = f["B_final"][:]
     p_hat = f["p_final"][:]
     helicity_trace = f["helicity_trace"][:]
     energy_trace = f["energy_trace"][:]
     force_trace = f["force_trace"][:]
+
+    B_fields = f["B_fields"][:] if "B_fields" in f else None
+    p_fields = f["p_fields"][:] if "p_fields" in f else None
 
     CONFIG = {k: v for k, v in f["config"].attrs.items()}
     # decode strings back if needed
@@ -51,14 +55,10 @@ Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 
 # %%
+B_hat = B_fields[4]
+p_hat = p_fields[4]
+# %%
 p_h = Pushforward(DiscreteFunction(p_hat, Seq.Λ0, Seq.E0), F, 0)
-J_hat = Seq.weak_curl @ B_hat
-
-
-def J_norm(x):
-    return jnp.linalg.norm(Pushforward(DiscreteFunction(J_hat, Seq.Λ1, Seq.E1), F, 1)(x))
-
-
 # %%
 cuts = jnp.linspace(0, 1, 5, endpoint=False)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
@@ -76,6 +76,7 @@ grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
 plot_crossections_separate(p_h, grids_pol, cuts, plot_centerline=True)
 # plt.savefig("rotating_ellipse_cuts.pdf")
 # %%
+Seq.evaluate_1d()
 p_avg = p_hat @ Seq.P0(lambda x: jnp.ones(1)) / (Seq.J_j @ Seq.Q.w)
 print(f"p_avg = {p_avg:.3e}")
 
@@ -85,6 +86,7 @@ print(f"Beta = {beta:.3e}")
 # %%
 print("Final |JxB - grad p| / |grad p| =", force_trace[-1])
 print("Initial |JxB - grad p| / |grad p| =", force_trace[0])
-# %%
-plot_crossections_separate(J_norm, grids_pol, cuts, plot_centerline=True)
+
+
+
 # %%
