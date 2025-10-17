@@ -32,13 +32,13 @@ CONFIG = {
     "eps":      0.33,  # aspect ratio
     "kappa":    1.7,   # Elongation parameter
     "delta":    0.33,   # triangularity
-    "delta_B":   0.2,   # poloidal field strength relative to harmonic one
+    "delta_B":   0.17,   # poloidal field strength relative to harmonic one
 
     ###
     # Discretization
     ###
-    "n_r": 10,       # Number of radial splines
-    "n_theta": 10,   # Number of poloidal splines
+    "n_r": 8,       # Number of radial splines
+    "n_theta": 8,   # Number of poloidal splines
     "n_zeta": 3,    # Number of toroidal splines
     "p_r": 2,       # Degree of radial splines
     "p_theta": 2,     # Degree of poloidal splines
@@ -47,7 +47,7 @@ CONFIG = {
     ###
     # Hyperparameters for the relaxation
     ###
-    "maxit":                 5_000,   # max. Number of time steps
+    "maxit":                 3_000,   # max. Number of time steps
     "precond":               False,     # Use preconditioner
     "precond_compute_every": 1000,       # Recompute preconditioner every n iterations
     # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
@@ -64,13 +64,13 @@ CONFIG = {
     ###
     # Hyperparameters pertaining to island seeding
     ###
-    "pert_strength":      0.0,  # strength of perturbation
-    "pert_pol_mode":        6,  # poloidal mode number of perturbation
-    "pert_tor_mode":        2,  # toroidal mode number of perturbation
-    "pert_radial_loc":    1/3,  # radial location of perturbation
-    "pert_radial_width": 0.05,  # radial width of perturbation
+    "pert_strength":     0.0001,  # strength of perturbation
+    "pert_pol_mode":         2,  # poloidal mode number of perturbation
+    "pert_tor_mode":          1,  # toroidal mode number of perturbation
+    "pert_radial_loc":      1/2,  # radial location of perturbation
+    "pert_radial_width":    0.07,  # radial width of perturbation
     # apply perturbation after n steps (0 = to initial condition)
-    "apply_pert_after":     0,
+    "apply_pert_after":     1000,
 
     ###
     # Solver hyperparameters
@@ -81,9 +81,10 @@ CONFIG = {
     "solver_critit": 4,
     "solver_tol": 1e-12,   # Tolerance for convergence
     "verbose": False,      # If False, prints only force every 'print_every'
-    "print_every": 1000,    # Print every n iterations
-    "save_every": 100,     # Save intermediate results every n iterations
-    "save_B": False,       # Save intermediate B fields to file
+    "print_every": 250,    # Print every n iterations
+    "save_every": 10,     # Save intermediate results every n iterations
+    "save_B": True,       # Save intermediate B fields to file
+    "save_B_every": 500,   # Save full B every n iterations
 }
 
 
@@ -171,9 +172,11 @@ def run(CONFIG):
         return (u @ Seq.M1 @ u)**0.5
 
     def B_xyz(p):
+        r, _, _ = p
         DFx = jax.jacfwd(F)(p)
         # purely poloidal
-        B_pol = DFx[:, 1]
+        J = jnp.linalg.det(DFx)
+        B_pol = DFx[:, 1] * r / J
         return B_pol
 
     def dB_xyz(p):
@@ -212,7 +215,6 @@ def run(CONFIG):
         dB_hat = Seq.P_Leray @ dB_hat
         dB_hat /= norm_2(dB_hat)
         B_hat += CONFIG["pert_strength"] * dB_hat
-        B_hat /= norm_2(B_hat)
 
     diagnostics = MRXDiagnostics(Seq, CONFIG["force_free"])
 
@@ -257,7 +259,7 @@ def run(CONFIG):
     print(f"Setup took {setup_done_time - start_time:.2e} seconds.")
     print("Starting relaxation loop...")
 # %%
-    for i in range(1, 2000 + 1):
+    for i in range(1, CONFIG["maxit"] + 1):
 
         state = step(state)
         if (state.picard_residuum > CONFIG["solver_tol"]
@@ -275,7 +277,6 @@ def run(CONFIG):
             dB_hat = Seq.P_Leray @ dB_hat
             dB_hat /= norm_2(dB_hat)
             B_new = state.B_n + CONFIG["pert_strength"] * dB_hat
-            B_new /= norm_2(B_new)
             state = timestepper.update_B_n(state, B_new)
 
         if CONFIG["precond"] and (i % CONFIG["precond_compute_every"] == 0):
@@ -298,7 +299,7 @@ def run(CONFIG):
                        state.picard_iterations,
                        state.picard_residuum,
                        state.dt,
-                       state.B_n if CONFIG["save_B"] else None)
+                       state.B_n if (CONFIG["save_B"] and i % CONFIG["save_B_every"] == 0) else None)
 
         if i % CONFIG["print_every"] == 0:
             print(
@@ -324,20 +325,6 @@ def run(CONFIG):
         p_fields = [get_pressure(B) for B in B_fields]
     p_hat = get_pressure(B_hat)
 
-    # # save final state on a grid in physical space
-    # grid_3d = get_3d_grids(F, x_min=1e-3,
-    #                        nx=ps[0]*ns[0]*2,
-    #                        ny=ps[1]*ns[1]*2,
-    #                        nz=ps[2]*ns[2]*2 if ns[2] > 1 else 1)
-
-    # B_final = Pushforward(DiscreteFunction(
-    #     B_hat, Seq.Λ2, Seq.E2), F, 2)
-    # B_final_values = jax.vmap(B_final)(grid_3d[0])
-    # p_final = Pushforward(DiscreteFunction(
-    #     p_hat, Seq.Λ0, Seq.E0), F, 0)
-    # p_final_values = jax.vmap(p_final)(grid_3d[0])
-    # grid_points = grid_3d[1]
-
     ###
     # Save stuff
     ###
@@ -350,9 +337,6 @@ def run(CONFIG):
         f.create_dataset("force_trace", data=jnp.array(force_trace))
         f.create_dataset("B_final", data=B_hat)
         f.create_dataset("p_final", data=p_hat)
-        # f.create_dataset("B_final_values", data=B_final_values)
-        # f.create_dataset("p_final_values", data=p_final_values)
-        # f.create_dataset("grid_points", data=grid_points)
         f.create_dataset("energy_trace", data=jnp.array(energy_trace))
         f.create_dataset("helicity_trace", data=jnp.array(helicity_trace))
         f.create_dataset("divergence_B_trace",

@@ -25,13 +25,16 @@ from mrx.Plotting import (
 )
 
 # %%
-name = "9zrUjmG9"
-with h5py.File("../../script_outputs/solovev/" + name + ".h5", "r") as f:
+name = "ylaXItJ6"
+with h5py.File("script_outputs/solovev/" + name + ".h5", "r") as f:
     B_hat = f["B_final"][:]
     p_hat = f["p_final"][:]
     helicity_trace = f["helicity_trace"][:]
     energy_trace = f["energy_trace"][:]
     force_trace = f["force_trace"][:]
+
+    B_fields = f["B_fields"][:] if "B_fields" in f else None
+    p_fields = f["p_fields"][:] if "p_fields" in f else None
 
     CONFIG = {k: v for k, v in f["config"].attrs.items()}
     # decode strings back if needed
@@ -62,6 +65,10 @@ print("Setting up FEM spaces...")
 Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
 assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
+
+# %%
+B_hat = B_fields[-1]
+p_hat = p_fields[-1]
 
 # %%
 
@@ -160,16 +167,16 @@ def F_cyl_signed(x):
 p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
 B_h = (DiscreteFunction(B_hat, Seq.Λ2, Seq.E2))
 # %%
-n_lines = 18  # even numbers only
-r_min, r_max = 0.05, 0.95
+n_lines = 27  # even numbers only
+r_min, r_max = 0.01, 0.99
 p = 1.0
 _r = np.linspace(r_min, r_max, n_lines)
 x0s = np.vstack(
     (np.hstack((_r[::3], _r[1::3], _r[2::3])),                              # between 0 and 1 - samples along x
      # half go to theta=0 and half to theta=pi
-     np.hstack((0.31 * np.ones(n_lines//3),
-                0.43 * np.ones(n_lines//3),
-                0.76 * np.ones(n_lines//3))),
+     np.hstack((0.33 * np.ones(n_lines//3),
+                0.66 * np.ones(n_lines//3),
+                0.99 * np.ones(n_lines//3))),
      0.25 * np.ones(n_lines))
 ).T
 
@@ -190,7 +197,7 @@ x0s_sorted = x0s[idx]
 
 # %%
 trajectories = jax.vmap(lambda x0: integrate_fieldline(
-    B_h, x0, F, N=10_000, t1=200))(x0s_sorted)
+    B_h, x0, F, N=10_000, t1=100))(x0s_sorted)
 trajectories_xyz = jax.vmap(jax.vmap(F))(trajectories)
 trajectories_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(trajectories_xyz)
 
@@ -374,6 +381,9 @@ cbar.ax.tick_params(labelsize=tick_label_size)
 
 plt.show()
 
+
+#################################
+
 # %%
 crossings_to_plot = crossings_Rphiz
 crossings_p = crossings % 1
@@ -487,5 +497,6 @@ offset_text.set_x(1.5)
 # plt.savefig("ROT_ELL_double_poincare.pdf", dpi=400)
 
 plt.show()
+
 
 # %%
