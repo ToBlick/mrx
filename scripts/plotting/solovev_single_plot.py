@@ -58,6 +58,36 @@ assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 B_hat = B_fields[4]
 p_hat = p_fields[4]
 # %%
+eps = CONFIG["eps"]
+dR = 0.2
+kappa = CONFIG["kappa"]
+
+
+def du(p):
+    r, θ, ζ = p
+
+    r_star = CONFIG["pert_radial_loc"]
+
+    def rad(θ):
+        a = jnp.cos(2 * jnp.pi * θ)**2 + kappa**2 * jnp.sin(2 * jnp.pi * θ)**2
+        return r_star + dR * jnp.cos(2 * jnp.pi * θ) / a
+
+    def phi(θ):
+        c = jnp.cos(2 * jnp.pi * θ)
+        s = jnp.sin(2 * jnp.pi * θ)
+        rr = rad(θ)
+        return jnp.arctan2(kappa * rr * s, rr * c - dR)
+
+    def a(r, θ):
+        return jnp.exp(- (r - rad(θ))**2 / (2 * CONFIG["pert_radial_width"]**2))
+    B_rad = a(r, θ) * jnp.sin(phi(θ) * CONFIG["pert_pol_mode"]) * \
+        jnp.sin(2 * jnp.pi * ζ * CONFIG["pert_tor_mode"])
+    return B_rad * jnp.ones(1)
+
+
+p_hat = jnp.linalg.solve(Seq.M0, Seq.P0(du))
+
+
 p_h = Pushforward(DiscreteFunction(p_hat, Seq.Λ0, Seq.E0), F, 0)
 # %%
 cuts = jnp.linspace(0, 1, 5, endpoint=False)
@@ -86,7 +116,6 @@ print(f"Beta = {beta:.3e}")
 # %%
 print("Final |JxB - grad p| / |grad p| =", force_trace[-1])
 print("Initial |JxB - grad p| / |grad p| =", force_trace[0])
-
 
 
 # %%

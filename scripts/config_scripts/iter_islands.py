@@ -40,10 +40,10 @@ CONFIG = {
     ###
     "n_r": 10,       # Number of radial splines
     "n_theta": 10,   # Number of poloidal splines
-    "n_zeta": 4,    # Number of toroidal splines
+    "n_zeta": 1,    # Number of toroidal splines
     "p_r": 3,       # Degree of radial splines
     "p_theta": 3,     # Degree of poloidal splines
-    "p_zeta": 3,    # Degree of toroidal splines
+    "p_zeta": 0,    # Degree of toroidal splines
 
     ###
     # Hyperparameters for the relaxation
@@ -327,7 +327,8 @@ def run(CONFIG):
     B_hat = state.B_n
     print("Simulation finished, post-processing...")
     if CONFIG["save_B"]:
-        p_fields = [get_pressure(B) if B is not None else None for B in B_fields]
+        p_fields = [get_pressure(
+            B) if B is not None else None for B in B_fields]
     p_hat = get_pressure(B_hat)
 
     ###
