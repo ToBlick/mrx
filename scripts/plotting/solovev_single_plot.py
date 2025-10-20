@@ -13,7 +13,7 @@ from mrx.Plotting import get_2d_grids, plot_crossections_separate, plot_torus
 
 # %%
 # %%
-name = "FV2QFGrX"
+name = "default"
 with h5py.File("script_outputs/solovev/" + name + ".h5", "r") as f:
     B_hat = f["B_final"][:]
     p_hat = f["p_final"][:]
@@ -55,12 +55,12 @@ Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 
 # %%
-B_hat = B_fields[4]
-p_hat = p_fields[4]
+B_hat = B_fields[0]
+p_hat = p_fields[0]
 # %%
 eps = CONFIG["eps"]
-dR = 0.2
-kappa = CONFIG["kappa"]
+dR = 0.0
+kappa = 1.0 # CONFIG["kappa"]
 
 
 def du(p):
@@ -84,7 +84,8 @@ def du(p):
         jnp.sin(2 * jnp.pi * ζ * CONFIG["pert_tor_mode"])
     return B_rad * jnp.ones(1)
 
-
+Seq.evaluate_1d()
+Seq.assemble_M0()
 p_hat = jnp.linalg.solve(Seq.M0, Seq.P0(du))
 
 

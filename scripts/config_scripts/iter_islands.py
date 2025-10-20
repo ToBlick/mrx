@@ -16,7 +16,7 @@ from mrx.Utils import inv33
 
 jax.config.update("jax_enable_x64", True)
 
-outdir = "script_outputs/solovev/"
+outdir = "script_outputs/iter/"
 os.makedirs(outdir, exist_ok=True)
 
 
@@ -38,12 +38,12 @@ CONFIG = {
     ###
     # Discretization
     ###
-    "n_r": 10,       # Number of radial splines
-    "n_theta": 10,   # Number of poloidal splines
-    "n_zeta": 1,    # Number of toroidal splines
+    "n_r": 8,       # Number of radial splines
+    "n_theta": 8,   # Number of poloidal splines
+    "n_zeta": 4,    # Number of toroidal splines
     "p_r": 3,       # Degree of radial splines
     "p_theta": 3,     # Degree of poloidal splines
-    "p_zeta": 0,    # Degree of toroidal splines
+    "p_zeta": 3,    # Degree of toroidal splines
 
     ###
     # Hyperparameters for the relaxation
@@ -65,10 +65,10 @@ CONFIG = {
     ###
     # Hyperparameters pertaining to island seeding
     ###
-    "pert_strength":     0.00005,  # strength of perturbation
+    "pert_strength":       2e-5,  # strength of perturbation
     "pert_pol_mode":          2,  # poloidal mode number of perturbation
     "pert_tor_mode":          1,  # toroidal mode number of perturbation
-    "pert_radial_loc":      1/5,  # radial location of perturbation
+    "pert_radial_loc":      1/2,  # radial location of perturbation
     "pert_radial_width":    0.07,  # radial width of perturbation
     # apply perturbation after n steps (0 = to initial condition)
     "apply_pert_after":     2000,
@@ -82,10 +82,10 @@ CONFIG = {
     "solver_critit": 4,
     "solver_tol": 1e-12,   # Tolerance for convergence
     "verbose": False,      # If False, prints only force every 'print_every'
-    "print_every": 500,    # Print every n iterations
+    "print_every": 250,    # Print every n iterations
     "save_every": 10,     # Save intermediate results every n iterations
     "save_B": True,       # Save intermediate B fields to file
-    "save_B_every": 1000,   # Save full B every n iterations
+    "save_B_every": 500,   # Save full B every n iterations
 }
 
 

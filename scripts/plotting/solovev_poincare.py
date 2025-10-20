@@ -25,8 +25,8 @@ from mrx.Plotting import (
 )
 
 # %%
-name = "FV2QFGrX"
-with h5py.File("script_outputs/solovev/" + name + ".h5", "r") as f:
+name = "default"
+with h5py.File("script_outputs/iter/" + name + ".h5", "r") as f:
     B_hat = f["B_final"][:]
     p_hat = f["p_final"][:]
     helicity_trace = f["helicity_trace"][:]
@@ -66,13 +66,6 @@ Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
 assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 
-# %%
-B_hat = B_fields[-1]
-p_hat = p_fields[-1]
-
-# %%
-
-
 def integrate_fieldline(B_h, x0, F, N, t1=10):
     @jax.jit
     def vector_field(t, x, args):
@@ -100,9 +93,6 @@ def integrate_fieldline(B_h, x0, F, N, t1=10):
                           stepsize_controller=stepsize_controller,
                           max_steps=100_000)
     return sol.ys
-
-# %%
-
 
 def get_crossings(B_h, x0, F, N, phi_targets):
     @jax.jit
@@ -149,10 +139,7 @@ def get_crossings(B_h, x0, F, N, phi_targets):
 
     return crossings
 
-
-# %%
 F = jax.jit(F)
-
 
 @jax.jit
 def F_cyl_signed(x):
@@ -163,29 +150,22 @@ def F_cyl_signed(x):
     z = x[2]
     return jnp.array([R, phi, z])
 
-
-p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
-B_h = (DiscreteFunction(B_hat, Seq.Λ2, Seq.E2))
 # %%
-n_lines = 60  # even numbers only
+n_lines = 45  # even numbers only
 r_min, r_max = 0.01, 0.99
 p = 1.0
 _r = np.linspace(r_min, r_max, n_lines)
 x0s = np.vstack(
     (np.hstack((_r[::3], _r[1::3], _r[2::3])),                              # between 0 and 1 - samples along x
      # half go to theta=0 and half to theta=pi
+    #  np.hstack((0.33 * np.ones(n_lines//3),
+    #             0.66 * np.ones(n_lines//3),
+    #             0.99 * np.ones(n_lines//3))),
+     0.0 * np.ones(n_lines),
      np.hstack((0.33 * np.ones(n_lines//3),
                 0.66 * np.ones(n_lines//3),
-                0.99 * np.ones(n_lines//3))),
-     0.25 * np.ones(n_lines))
+                0.99 * np.ones(n_lines//3))))
 ).T
-
-
-# x0s = np.vstack(
-#     (_r,
-#      0.0 * np.ones(n_lines),
-#      0.0 * np.ones(n_lines))
-# ).T
 
 key = x0s[:, 0] * np.cos(x0s[:, 1])
 
@@ -195,27 +175,16 @@ idx = np.argsort(key)
 # Apply sorting
 x0s_sorted = x0s[idx]
 
-# %%
-trajectories = jax.vmap(lambda x0: integrate_fieldline(
-    B_h, x0, F, N=10_000, t1=200))(x0s_sorted)
-trajectories_xyz = jax.vmap(jax.vmap(F))(trajectories)
-trajectories_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(trajectories_xyz)
-
-# %%
-
-
 def toroidal_unwrapped(phi):
     phi_unwrapped = jnp.unwrap(phi)
     total_angle = phi_unwrapped[-1] - phi_unwrapped[0]
     return total_angle / (2 * jnp.pi)
-
 
 def poloidal_unwrapped(R, Z, R_center=1.0, Z_center=0.0):
     θ = jnp.arctan2(Z - Z_center, R - R_center)
     θ_unwrapped = jnp.unwrap(θ)
     total_angle = θ_unwrapped[-1] - θ_unwrapped[0]
     return total_angle / (2 * jnp.pi)
-
 
 @jax.jit
 def get_iota(c):
@@ -225,279 +194,404 @@ def get_iota(c):
         jnp.abs(c[:, 0]), c[:, 2], R_center=r_mean, Z_center=z_mean)
     n = toroidal_unwrapped(c[:, 1])
     return jnp.abs(m / n), m, n
-
-
 # %%
-iotas, poloidal_turns, toroidal_turns = jax.vmap(get_iota)(trajectories_Rphiz)
-# %%
-plt.plot(iotas, 'o-', label=r"$\iota$")
-# plt.plot(1/iotas, '*-', label=r"$q = 1 / \iota$")
-plt.xlabel(r"field line number (starting R)")
-plt.grid()
-plt.legend()
-plt.show()
+output_dir = os.path.join("script_outputs", "iter", name, "poincare")
+os.makedirs(output_dir, exist_ok=True)
+    
+print(B_fields.shape, p_fields.shape)
+for plt_nr in range(B_fields.shape[0]):
+    print(f"--- Starting step {plt_nr} ---", flush=True)
+    B_hat = B_fields[plt_nr]
+    p_hat = p_fields[plt_nr]
 
-# %%
-# 3D plot
-fig = plt.figure(figsize=(8, 8))
-ax = fig.add_subplot(111, projection='3d')
+    p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
+    B_h = (DiscreteFunction(B_hat, Seq.Λ2, Seq.E2))
 
-# Plot the trajectories
-for i, traj in enumerate(trajectories_xyz[::4]):
-    ax.plot(traj[:, 0], traj[:, 1], traj[:, 2], label=f"Field line {i}")
+    trajectories = jax.vmap(lambda x0: integrate_fieldline(
+        B_h, x0, F, N=10_000, t1=250))(x0s_sorted)
+    trajectories_xyz = jax.vmap(jax.vmap(F))(trajectories)
+    trajectories_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(trajectories_xyz)
 
-ax.set_xlabel(r"$x$")
-ax.set_ylabel(r"$y$")
-ax.set_zlabel(r"$Z$")
-ax.legend()
-set_axes_equal(ax)
-plt.show()
+    iotas, poloidal_turns, toroidal_turns = jax.vmap(get_iota)(trajectories_Rphiz)
+    # plt.plot(iotas, 'o-', label=r"$\iota$")
+    # # plt.plot(1/iotas, '*-', label=r"$q = 1 / \iota$")
+    # plt.xlabel(r"field line number (starting R)")
+    # plt.grid()
+    # plt.legend()
+    # plt.show()
 
-# %%
-crossings = jax.vmap(lambda x0: get_crossings(
-    # m x N x 3
-    B_h, x0, F, N=600, phi_targets=[0.25]))(x0s_sorted)
+    # # 3D plot
+    # fig = plt.figure(figsize=(8, 8))
+    # ax = fig.add_subplot(111, projection='3d')
 
-crossings_xyz = jax.vmap(jax.vmap(F))(crossings)
-crossings_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(crossings_xyz)
+    # # Plot the trajectories
+    # for i, traj in enumerate(trajectories_xyz[::4]):
+    #     ax.plot(traj[:, 0], traj[:, 1], traj[:, 2], label=f"Field line {i}")
 
-# %%
-crossings_to_plot = crossings_Rphiz[:, :, :]
+    # ax.set_xlabel(r"$x$")
+    # ax.set_ylabel(r"$y$")
+    # ax.set_zlabel(r"$Z$")
+    # ax.legend()
+    # set_axes_equal(ax)
+    # plt.show()
 
-# ================== PLOT CONFIGURATION ==================
-dot_width = 1.0
-tick_label_size = 20
-axis_label_size = 22
-# --------------------------------------------------------
+    crossings = jax.vmap(lambda x0: get_crossings(
+        # m x N x 3
+        B_h, x0, F, N=600, phi_targets=[0.25]))(x0s_sorted)
 
-# --- Gap and Limit Detection ---
-all_R_values = crossings_to_plot[:, :, 0].flatten()
-positive_R = all_R_values[all_R_values > 0]
-negative_R = all_R_values[all_R_values < 0]
-
-gap_left = 0.95 * np.max(negative_R) if len(negative_R) > 0 else -0.1
-gap_right = 0.95 * np.min(positive_R) if len(positive_R) > 0 else 0.1
-
-Rmin = -0.01 + np.min(all_R_values)
-Rmax = 0.01 + np.max(all_R_values)
-Zmin = -0.01 + np.min(crossings_to_plot[:, :, 2])
-Zmax = 0.01 + np.max(crossings_to_plot[:, :, 2])
-
-# 1. Find out which plot's data range is wider.
-x_span_left = gap_left - Rmin
-x_span_right = Rmax - gap_right
-max_x_span = max(x_span_left, x_span_right)  # The width needed for the box
-
-# 2. Find the height of the data.
-y_span = Zmax - Zmin
-
-# 3. Create two identical plot boxes
-fig = plt.figure(figsize=(24, 12))
-gs = gridspec.GridSpec(1, 2, wspace=0.05)
-ax1 = fig.add_subplot(gs[0])
-ax2 = fig.add_subplot(gs[1], sharey=ax1)
-
-# =============================================================================
-
-# --- Plotting Loop ---
-# colors = ['purple', 'black', 'teal']
+    crossings_xyz = jax.vmap(jax.vmap(F))(crossings)
+    crossings_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(crossings_xyz)
 
 
-def truncate_colormap(cmap_name="turbo", minval=0.0, maxval=0.85, n=256):
-    cmap = mpl.cm.get_cmap(cmap_name, n)
-    new_colors = cmap(np.linspace(minval, maxval, n))
-    return mpl.colors.ListedColormap(new_colors)
+    crossings_to_plot = crossings_Rphiz[:, :, :]
+    crossings_p = crossings % 1
+
+    # ================== PLOT CONFIGURATION ==================
+    dot_width = 1.0
+    tick_label_size = 20
+    axis_label_size = 22
+
+    # --- Gap and Limit Detection ---
+    all_R_values = crossings_to_plot[:, :, 0].flatten()
+    positive_R = all_R_values[all_R_values > 0]
+    negative_R = all_R_values[all_R_values < 0]
+
+    gap_left = 0.95 * np.max(negative_R) if len(negative_R) > 0 else -0.1
+    gap_right = 0.95 * np.min(positive_R) if len(positive_R) > 0 else 0.1
+
+    Rmin = -0.01 + np.min(all_R_values)
+    Rmax = 0.01 + np.max(all_R_values)
+    Zmin = -0.01 + np.min(crossings_to_plot[:, :, 2])
+    Zmax = 0.01 + np.max(crossings_to_plot[:, :, 2])
+
+    # 1. Determine max spans for symmetric panels
+    x_span_left = gap_left - Rmin
+    x_span_right = Rmax - gap_right
+    max_x_span = max(x_span_left, x_span_right)
+    y_span = Zmax - Zmin
+
+    # --- Colormaps ---
+    def truncate_colormap(cmap_name="turbo", minval=0.0, maxval=0.85, n=256, reverse=False):
+        cmap = plt.get_cmap(cmap_name, n)
+        new_colors = cmap(np.linspace(minval, maxval, n))
+        if reverse:
+            new_colors = new_colors[::-1]
+        return mpl.colors.ListedColormap(new_colors)
+
+    # iota → turbo, p → plasma
+    cmap_iota = truncate_colormap("turbo", 0.0, 0.85)
+    cmap_p = truncate_colormap("plasma", 0.0, 0.9)
+
+    # --- Color normalizations ---
+    norm_iota = mpl.colors.Normalize(vmin=np.min(iotas), vmax=np.max(iotas))
+
+    # compute p-values per crossing
+    p_values = (jnp.array([jax.vmap(p_h)(curve) for curve in crossings_p]))[:, :, 0]
+    norm_p = mpl.colors.Normalize(vmin=0.0, vmax=np.max(p_values))
+
+    # --- Figure setup ---
+    fig = plt.figure(figsize=(24, 12))
+    gs = gridspec.GridSpec(1, 2, wspace=0.05)
+    ax1 = fig.add_subplot(gs[0])
+    ax2 = fig.add_subplot(gs[1], sharey=ax1)
+
+    # =============================================================================
+    # --- Plotting Loop ---
+    for i, curve in enumerate(crossings_to_plot):
+        # --- Left panel (negative-R side): color by p ---
+        mask_left = curve[:, 0] < gap_left
+        if np.any(mask_left):
+            ax1.scatter(curve[mask_left, 0],
+                        curve[mask_left, 2],
+                        s=dot_width,
+                        color=cmap_p(norm_p(p_values[i][mask_left])),
+                        rasterized=True)
+
+        # --- Right panel (positive-R side): color by iota ---
+        mask_right = curve[:, 0] > gap_right
+        if np.any(mask_right):
+            ax2.scatter(curve[mask_right, 0],
+                        curve[mask_right, 2],
+                        s=dot_width,
+                        color=cmap_iota(norm_iota(iotas[i])),
+                        rasterized=True)
+
+    # =============================================================================
+    # --- Styling, limits, and axes ---
+    ax1.set_xlim(gap_left - max_x_span, gap_left, auto=False)
+    ax2.set_xlim(gap_right, gap_right + max_x_span, auto=False)
+    ax1.set_ylim(Zmin, Zmax, auto=False)
+
+    ax1.xaxis.set_major_locator(MultipleLocator(0.1))
+    ax2.xaxis.set_major_locator(MultipleLocator(0.1))
+    ax1.yaxis.set_major_locator(MultipleLocator(0.1))
+
+    ax1.tick_params(axis='both', which='major', labelsize=tick_label_size)
+    ax2.tick_params(axis='x', which='major', labelsize=tick_label_size)
+    ax1.grid(True, linestyle="--", lw=0.5)
+    ax2.grid(True, linestyle="--", lw=0.5)
+
+    plt.setp(ax2.get_yticklabels(), visible=False)
+    ax2.tick_params(axis='y', which='both', length=0)
+
+    ax1.set_ylabel(r"$z$", fontsize=axis_label_size)
+    ax1.set_xlabel(r"$-R$", fontsize=axis_label_size)
+    ax2.set_xlabel(r"$R$", fontsize=axis_label_size)
+
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.08)
+
+    # --- Colorbars ---
+    sm_iota = mpl.cm.ScalarMappable(norm=norm_iota, cmap=cmap_iota)
+    sm_p = mpl.cm.ScalarMappable(norm=norm_p, cmap=cmap_p)
+    cbar1 = fig.colorbar(sm_p, ax=ax1, shrink=1.0, pad=0.02, aspect=25)
+    cbar1.set_label(r"$p$", fontsize=axis_label_size)
+    cbar1.ax.tick_params(labelsize=tick_label_size)
+    cbar2 = fig.colorbar(sm_iota, ax=ax2, shrink=1.0, pad=0.02, aspect=25)
+    cbar2.set_label(r"$\iota$", fontsize=axis_label_size)
+    cbar2.ax.tick_params(labelsize=tick_label_size)
+
+    # --- Save and Show ---
+
+    plt.savefig(os.path.join(output_dir, f"step_{plt_nr}.pdf"),
+                dpi=400, bbox_inches=None)
+    print(f"Saved step {plt_nr} poincare plot.")
+    plt.close()
 
 
-cmap = truncate_colormap("turbo", 0.0, 0.85)
-norm = mpl.colors.Normalize(vmin=np.min(iotas), vmax=np.max(iotas))
-sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+# # %%
+# crossings_to_plot = crossings_Rphiz[:, :, :]
 
-for i, curve in enumerate(crossings_to_plot):
-    color = cmap(norm(iotas[i]))  # color based on iota
-    ax1.scatter(curve[curve[:, 0] < gap_left, 0],
-                curve[curve[:, 0] < gap_left, 2],
-                s=dot_width, color=color, rasterized=True)
-    ax2.scatter(curve[curve[:, 0] > gap_right, 0],
-                curve[curve[:, 0] > gap_right, 2],
-                s=dot_width, color=color, rasterized=True)
+# # ================== PLOT CONFIGURATION ==================
+# dot_width = 1.0
+# tick_label_size = 20
+# axis_label_size = 22
+# # --------------------------------------------------------
 
-# --- Set limits, aspect ratio, and styling ---
-# Enforce strict axis bounds and disable autoscaling so Matplotlib doesn't
-# expand the right-hand panel beyond the requested limits.
-ax1.set_xlim(gap_left - max_x_span, gap_left, auto=False)
-ax2.set_xlim(gap_right, gap_right + max_x_span, auto=False)
-ax1.set_ylim(Zmin, Zmax, auto=False)
-# # --- Ticks and Labels ---
-ax1.xaxis.set_major_locator(MultipleLocator(0.1))
-ax2.xaxis.set_major_locator(MultipleLocator(0.1))
-ax1.yaxis.set_major_locator(MultipleLocator(0.1))
+# # --- Gap and Limit Detection ---
+# all_R_values = crossings_to_plot[:, :, 0].flatten()
+# positive_R = all_R_values[all_R_values > 0]
+# negative_R = all_R_values[all_R_values < 0]
 
-ax1.tick_params(axis='both', which='major', labelsize=tick_label_size)
-ax2.tick_params(axis='x', which='major', labelsize=tick_label_size)
-ax1.grid(True, linestyle="--", lw=0.5)
-ax2.grid(True, linestyle="--", lw=0.5)
+# gap_left = 0.95 * np.max(negative_R) if len(negative_R) > 0 else -0.1
+# gap_right = 0.95 * np.min(positive_R) if len(positive_R) > 0 else 0.1
 
-plt.setp(ax2.get_yticklabels(), visible=False)
-ax2.tick_params(axis='y', which='both', length=0)
+# Rmin = -0.01 + np.min(all_R_values)
+# Rmax = 0.01 + np.max(all_R_values)
+# Zmin = -0.01 + np.min(crossings_to_plot[:, :, 2])
+# Zmax = 0.01 + np.max(crossings_to_plot[:, :, 2])
 
-ax1.set_ylabel(r"$z$", fontsize=axis_label_size)
-fig.supxlabel(r"$\pm R$", fontsize=axis_label_size)
+# # 1. Find out which plot's data range is wider.
+# x_span_left = gap_left - Rmin
+# x_span_right = Rmax - gap_right
+# max_x_span = max(x_span_left, x_span_right)  # The width needed for the box
 
-# # Use tight_layout for final margin adjustments
-plt.tight_layout()
-plt.subplots_adjust(bottom=0.08)  # Add a bit more space for the supxlabel
+# # 2. Find the height of the data.
+# y_span = Zmax - Zmin
 
-# Add a taller colorbar on the right side of the figure
-cbar = fig.colorbar(sm, ax=[ax1, ax2], shrink=1.0, pad=0.02, aspect=25)
-cbar.set_label(r"$\iota$", fontsize=axis_label_size)
-cbar.ax.tick_params(labelsize=tick_label_size)
+# # 3. Create two identical plot boxes
+# fig = plt.figure(figsize=(24, 12))
+# gs = gridspec.GridSpec(1, 2, wspace=0.05)
+# ax1 = fig.add_subplot(gs[0])
+# ax2 = fig.add_subplot(gs[1], sharey=ax1)
 
-# ##### INSET PLOT #####
-# # Parameters controlling the inset position and size
-# # horizontal position in figure fraction (0 → left, 1 → right)
-# inset_x = 0.6
-# inset_y = 0.6     # vertical position in figure fraction (0 → bottom, 1 → top)
-# inset_width = 0.25
-# inset_height = 0.25
+# # =============================================================================
 
-# # Create inset axis (attached to the first panel, but could be fig.add_axes instead)
-# ax_inset = fig.add_axes([inset_x, inset_y, inset_width, inset_height])
+# # --- Plotting Loop ---
+# def truncate_colormap(cmap_name="turbo", minval=0.0, maxval=0.85, n=256):
+#     cmap = plt.get_cmap(cmap_name, n)
+#     new_colors = cmap(np.linspace(minval, maxval, n))
+#     return mpl.colors.ListedColormap(new_colors)
 
-# # Plot the iota curve
-# ax_inset.plot(iota_s, color='black', lw=2)
+# cmap_p = truncate_colormap("plasma", 0.0, 0.9)
+# cmap = truncate_colormap("turbo", 0.0, 0.85)
+# norm = mpl.colors.Normalize(vmin=np.min(iotas), vmax=np.max(iotas))
+# sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
 
-# # Optional cosmetics
-# ax_inset.set_title(r"$\iota(\zeta)$", fontsize=axis_label_size - 2)
-# ax_inset.tick_params(labelsize=tick_label_size - 4)
-# ax_inset.grid(True, ls='--', lw=0.5)
+# for i, curve in enumerate(crossings_to_plot):
+#     color = cmap(norm(iotas[i]))  # color based on iota
+#     ax1.scatter(curve[curve[:, 0] < gap_left, 0],
+#                 curve[curve[:, 0] < gap_left, 2],
+#                 s=dot_width, color=color, rasterized=True)
+#     ax2.scatter(curve[curve[:, 0] > gap_right, 0],
+#                 curve[curve[:, 0] > gap_right, 2],
+#                 s=dot_width, color=color, rasterized=True)
 
-# --- Save and Show ---
-# Create directory if it doesn't exist
-# output_dir = os.path.join("script_outputs", "solovev")
-# os.makedirs(output_dir, exist_ok=True)
-# plt.savefig(os.path.join(output_dir, "helix_poincare.pdf"),
-#             dpi=400, bbox_inches=None)
+# # --- Set limits, aspect ratio, and styling ---
+# # Enforce strict axis bounds and disable autoscaling so Matplotlib doesn't
+# # expand the right-hand panel beyond the requested limits.
+# ax1.set_xlim(gap_left - max_x_span, gap_left, auto=False)
+# ax2.set_xlim(gap_right, gap_right + max_x_span, auto=False)
+# ax1.set_ylim(Zmin, Zmax, auto=False)
+# # # --- Ticks and Labels ---
+# ax1.xaxis.set_major_locator(MultipleLocator(0.1))
+# ax2.xaxis.set_major_locator(MultipleLocator(0.1))
+# ax1.yaxis.set_major_locator(MultipleLocator(0.1))
 
-plt.show()
+# ax1.tick_params(axis='both', which='major', labelsize=tick_label_size)
+# ax2.tick_params(axis='x', which='major', labelsize=tick_label_size)
+# ax1.grid(True, linestyle="--", lw=0.5)
+# ax2.grid(True, linestyle="--", lw=0.5)
 
+# plt.setp(ax2.get_yticklabels(), visible=False)
+# ax2.tick_params(axis='y', which='both', length=0)
 
-#################################
+# ax1.set_ylabel(r"$z$", fontsize=axis_label_size)
+# ax1.set_xlabel(r"$-R$", fontsize=axis_label_size)
+# ax2.set_xlabel(r"$R$", fontsize=axis_label_size)
 
-# %%
-crossings_to_plot = crossings_Rphiz
-crossings_p = crossings % 1
+# # # Use tight_layout for final margin adjustments
+# plt.tight_layout()
+# plt.subplots_adjust(bottom=0.08)  # Add a bit more space for the supxlabel
 
-# ================== CONFIG ==================
-dot_width = 1.0
-tick_label_size = 16
-axis_label_size = 18
+# # Add a taller colorbar on the right side of the figure
+# cbar = fig.colorbar(sm, ax=[ax1, ax2], shrink=1.0, pad=0.02, aspect=25)
+# cbar.set_label(r"$\iota$", fontsize=axis_label_size)
+# cbar.ax.tick_params(labelsize=tick_label_size)
 
-# --- Limits ---
-all_R_values = crossings_to_plot[:, :, 0].flatten()  # exclude zeros
-all_Z_values = (crossings_to_plot[:, :, 2].flatten())
-Rmin, Rmax = np.min(all_R_values[all_R_values > 0]), np.max(
-    all_R_values[all_R_values > 0])
-Zmin, Zmax = np.min(all_Z_values[all_R_values > 0]), np.max(
-    all_Z_values[all_R_values > 0])
+# # ##### INSET PLOT #####
+# # # Parameters controlling the inset position and size
+# # # horizontal position in figure fraction (0 → left, 1 → right)
+# # inset_x = 0.6
+# # inset_y = 0.6     # vertical position in figure fraction (0 → bottom, 1 → top)
+# # inset_width = 0.25
+# # inset_height = 0.25
 
-# --- Colormaps ---
+# # # Create inset axis (attached to the first panel, but could be fig.add_axes instead)
+# # ax_inset = fig.add_axes([inset_x, inset_y, inset_width, inset_height])
 
+# # # Plot the iota curve
+# # ax_inset.plot(iota_s, color='black', lw=2)
 
-def truncate_colormap(cmap_name="plasma", minval=0.0, maxval=0.85, n=256, reverse=False):
-    cmap = mpl.cm.get_cmap(cmap_name, n)
-    new_colors = cmap(np.linspace(minval, maxval, n))
-    if reverse:
-        new_colors = new_colors[::-1]
-    return mpl.colors.ListedColormap(new_colors)
+# # # Optional cosmetics
+# # ax_inset.set_title(r"$\iota(\zeta)$", fontsize=axis_label_size - 2)
+# # ax_inset.tick_params(labelsize=tick_label_size - 4)
+# # ax_inset.grid(True, ls='--', lw=0.5)
 
+# # --- Save and Show ---
+# # Create directory if it doesn't exist
+# # output_dir = os.path.join("script_outputs", "solovev")
+# # os.makedirs(output_dir, exist_ok=True)
+# # plt.savefig(os.path.join(output_dir, "helix_poincare.pdf"),
+# #             dpi=400, bbox_inches=None)
 
-cmap_iota = truncate_colormap("turbo", 0.0, 1.0)
-cmap_p = truncate_colormap("plasma", 0.0, 0.9)
-
-norm_iota = mpl.colors.Normalize(vmin=np.min(iotas), vmax=np.max(iotas))
-
-# if p varies per curve
-p_values = (jnp.array([jax.vmap(p_h)(curve)
-            for curve in crossings_p]))[:, :, 0]
-norm_p = mpl.colors.Normalize(vmin=np.min(p_values), vmax=np.max(p_values))
-
-# --- Figure ---
-fig, ax = plt.subplots(figsize=(10, 8))
-
-# --- Plotting loop ---
-for i, curve in enumerate(crossings_to_plot):
-    z = curve[:, 2]
-    R = curve[:, 0]
-
-    # mask z>0 and z<0
-    mask_pos = (z > 0) & (R > 0)
-    mask_neg = (z < 0) & (R > 0)
-
-    # color by iota (for z>0)
-    if np.any(mask_pos):
-        ax.scatter((R[mask_pos]), (z[mask_pos]),
-                   s=dot_width,
-                   color=cmap_iota(norm_iota(iotas[i])),
-                   rasterized=True)
-
-    # color by p (for z<0)
-    if np.any(mask_neg):
-        ax.scatter((R[mask_neg]), (z[mask_neg]),
-                   s=dot_width,
-                   color=cmap_p(norm_p(p_values[i][mask_neg])),
-                   rasterized=True)
-
-# --- Style ---
-ax.set_xlim(Rmin - 0.01, Rmax + 0.01)
-ax.set_ylim(Zmin - 0.01, Zmax + 0.01)
-ax.set_aspect("equal", adjustable="box")
-
-ax.xaxis.set_major_locator(MultipleLocator(0.1))
-ax.yaxis.set_major_locator(MultipleLocator(0.1))
-ax.tick_params(axis='both', which='major', labelsize=tick_label_size)
-# ax.grid(True, linestyle="--", lw=0.5)
-
-ax.set_xlabel(r"$R$", fontsize=axis_label_size)
-ax.set_ylabel(r"$z$", fontsize=axis_label_size)
+# plt.show()
 
 
-# ============================================================
-# Colorbars stacked vertically on the right
-# ============================================================
-sm_iota = mpl.cm.ScalarMappable(norm=norm_iota, cmap=cmap_iota)
-sm_p = mpl.cm.ScalarMappable(norm=norm_p, cmap=cmap_p)
+# #################################
 
-# Main plot area adjustment to make space for colorbars
-plt.subplots_adjust(right=0.85)
+# # %%
+# crossings_to_plot = crossings_Rphiz
+# crossings_p = crossings % 1
 
-# Position colorbars manually using add_axes
-cbar_height = 0.33   # relative height of each bar
-cbar_width = 0.05
-x0 = 0.82           # x-position for both bars
+# # ================== CONFIG ==================
+# dot_width = 1.0
+# tick_label_size = 16
+# axis_label_size = 18
 
-# iota (top)
-cax1 = fig.add_axes([x0, 0.55, cbar_width, cbar_height])
-cbar1 = fig.colorbar(sm_iota, cax=cax1)
-cbar1.set_label(r"$\iota$", fontsize=axis_label_size)
-cbar1.ax.tick_params(labelsize=tick_label_size)
+# # --- Limits ---
+# all_R_values = crossings_to_plot[:, :, 0].flatten()  # exclude zeros
+# all_Z_values = (crossings_to_plot[:, :, 2].flatten())
+# Rmin, Rmax = np.min(all_R_values[all_R_values > 0]), np.max(
+#     all_R_values[all_R_values > 0])
+# Zmin, Zmax = np.min(all_Z_values[all_R_values > 0]), np.max(
+#     all_Z_values[all_R_values > 0])
 
-# p (bottom)
-cax2 = fig.add_axes([x0, 0.1, cbar_width, cbar_height])
-cbar2 = fig.colorbar(
-    sm_p, cax=cax2, format=mpl.ticker.ScalarFormatter(useMathText=True))
-cbar2.formatter.set_powerlimits((0, 0))
-cbar2.set_label(r"$p$", fontsize=axis_label_size)
-cbar2.ax.tick_params(labelsize=tick_label_size)
-cbar2.update_ticks()
-offset_text = cbar2.ax.yaxis.get_offset_text()
-offset_text.set_fontsize(tick_label_size)
-offset_text.set_x(1.5)
-
-# plt.savefig("ROT_ELL_double_poincare.pdf", dpi=400)
-
-plt.show()
+# # --- Colormaps ---
 
 
+# def truncate_colormap(cmap_name="plasma", minval=0.0, maxval=0.85, n=256, reverse=False):
+#     cmap = plt.get_cmap(cmap_name, n)
+#     new_colors = cmap(np.linspace(minval, maxval, n))
+#     if reverse:
+#         new_colors = new_colors[::-1]
+#     return mpl.colors.ListedColormap(new_colors)
+
+
+# cmap_iota = truncate_colormap("turbo", 0.0, 1.0)
+# cmap_p = truncate_colormap("plasma", 0.0, 0.9)
+
+# norm_iota = mpl.colors.Normalize(vmin=np.min(iotas), vmax=np.max(iotas))
+
+# # if p varies per curve
+# p_values = (jnp.array([jax.vmap(p_h)(curve)
+#             for curve in crossings_p]))[:, :, 0]
+# norm_p = mpl.colors.Normalize(vmin=np.min(p_values), vmax=np.max(p_values))
+
+# # --- Figure ---
+# fig, ax = plt.subplots(figsize=(10, 8))
+
+# # --- Plotting loop ---
+# for i, curve in enumerate(crossings_to_plot):
+#     z = curve[:, 2]
+#     R = curve[:, 0]
+
+#     # mask z>0 and z<0
+#     mask_pos = (z > 0) & (R > 0)
+#     mask_neg = (z < 0) & (R > 0)
+
+#     # color by iota (for z>0)
+#     if np.any(mask_pos):
+#         ax.scatter((R[mask_pos]), (z[mask_pos]),
+#                    s=dot_width,
+#                    color=cmap_iota(norm_iota(iotas[i])),
+#                    rasterized=True)
+
+#     # color by p (for z<0)
+#     if np.any(mask_neg):
+#         ax.scatter((R[mask_neg]), (z[mask_neg]),
+#                    s=dot_width,
+#                    color=cmap_p(norm_p(p_values[i][mask_neg])),
+#                    rasterized=True)
+
+# # --- Style ---
+# ax.set_xlim(Rmin - 0.01, Rmax + 0.01)
+# ax.set_ylim(Zmin - 0.01, Zmax + 0.01)
+# ax.set_aspect("equal", adjustable="box")
+
+# ax.xaxis.set_major_locator(MultipleLocator(0.1))
+# ax.yaxis.set_major_locator(MultipleLocator(0.1))
+# ax.tick_params(axis='both', which='major', labelsize=tick_label_size)
+# # ax.grid(True, linestyle="--", lw=0.5)
+
+# ax.set_xlabel(r"$R$", fontsize=axis_label_size)
+# ax.set_ylabel(r"$z$", fontsize=axis_label_size)
+
+
+# # ============================================================
+# # Colorbars stacked vertically on the right
+# # ============================================================
+# sm_iota = mpl.cm.ScalarMappable(norm=norm_iota, cmap=cmap_iota)
+# sm_p = mpl.cm.ScalarMappable(norm=norm_p, cmap=cmap_p)
+
+# # Main plot area adjustment to make space for colorbars
+# plt.subplots_adjust(right=0.85)
+
+# # Position colorbars manually using add_axes
+# cbar_height = 0.33   # relative height of each bar
+# cbar_width = 0.05
+# x0 = 0.82           # x-position for both bars
+
+# # iota (top)
+# cax1 = fig.add_axes([x0, 0.55, cbar_width, cbar_height])
+# cbar1 = fig.colorbar(sm_iota, cax=cax1)
+# cbar1.set_label(r"$\iota$", fontsize=axis_label_size)
+# cbar1.ax.tick_params(labelsize=tick_label_size)
+
+# # p (bottom)
+# cax2 = fig.add_axes([x0, 0.1, cbar_width, cbar_height])
+# cbar2 = fig.colorbar(
+#     sm_p, cax=cax2, format=mpl.ticker.ScalarFormatter(useMathText=True))
+# cbar2.formatter.set_powerlimits((0, 0))
+# cbar2.set_label(r"$p$", fontsize=axis_label_size)
+# cbar2.ax.tick_params(labelsize=tick_label_size)
+# cbar2.update_ticks()
+# offset_text = cbar2.ax.yaxis.get_offset_text()
+# offset_text.set_fontsize(tick_label_size)
+# offset_text.set_x(1.5)
+
+# # plt.savefig("ROT_ELL_double_poincare.pdf", dpi=400)
+
+# plt.show()
 
 # %%
