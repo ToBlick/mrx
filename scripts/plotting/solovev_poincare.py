@@ -128,14 +128,14 @@ def get_crossings(B_h, x0, F, N, phi_targets):
 
     for i in range(N):
         sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, x0, event=event,
-                              max_steps=20_000)
+                              max_steps=20_000, throw=False)
         if sol.ys.size == 0:
             break
         x_cross = sol.ys[0]
         crossings = crossings.at[i, :].set((x_cross))
         # restart
         # step a bit forward to avoid finding the same root again
-        x0 = (sol.ys[0] + 1e-5 * vector_field(0, sol.ys[0], None))
+        x0 = (sol.ys[0] + 1e-3 * vector_field(0, sol.ys[0], None))
 
     return crossings
 
@@ -151,20 +151,17 @@ def F_cyl_signed(x):
     return jnp.array([R, phi, z])
 
 # %%
-n_lines = 45  # even numbers only
+n_lines = 90  # even numbers only
 r_min, r_max = 0.01, 0.99
 p = 1.0
 _r = np.linspace(r_min, r_max, n_lines)
 x0s = np.vstack(
     (np.hstack((_r[::3], _r[1::3], _r[2::3])),                              # between 0 and 1 - samples along x
      # half go to theta=0 and half to theta=pi
-    #  np.hstack((0.33 * np.ones(n_lines//3),
-    #             0.66 * np.ones(n_lines//3),
-    #             0.99 * np.ones(n_lines//3))),
-     0.0 * np.ones(n_lines),
      np.hstack((0.33 * np.ones(n_lines//3),
                 0.66 * np.ones(n_lines//3),
-                0.99 * np.ones(n_lines//3))))
+                0.99 * np.ones(n_lines//3))),
+     0.0 * np.ones(n_lines))
 ).T
 
 key = x0s[:, 0] * np.cos(x0s[:, 1])
@@ -220,24 +217,9 @@ for plt_nr in range(B_fields.shape[0]):
     # plt.legend()
     # plt.show()
 
-    # # 3D plot
-    # fig = plt.figure(figsize=(8, 8))
-    # ax = fig.add_subplot(111, projection='3d')
-
-    # # Plot the trajectories
-    # for i, traj in enumerate(trajectories_xyz[::4]):
-    #     ax.plot(traj[:, 0], traj[:, 1], traj[:, 2], label=f"Field line {i}")
-
-    # ax.set_xlabel(r"$x$")
-    # ax.set_ylabel(r"$y$")
-    # ax.set_zlabel(r"$Z$")
-    # ax.legend()
-    # set_axes_equal(ax)
-    # plt.show()
-
     crossings = jax.vmap(lambda x0: get_crossings(
         # m x N x 3
-        B_h, x0, F, N=600, phi_targets=[0.25]))(x0s_sorted)
+        B_h, x0, F, N=1000, phi_targets=[0.25]))(x0s_sorted)
 
     crossings_xyz = jax.vmap(jax.vmap(F))(crossings)
     crossings_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(crossings_xyz)
@@ -357,6 +339,9 @@ for plt_nr in range(B_fields.shape[0]):
                 dpi=400, bbox_inches=None)
     print(f"Saved step {plt_nr} poincare plot.")
     plt.close()
+
+# %%
+
 
 
 # # %%

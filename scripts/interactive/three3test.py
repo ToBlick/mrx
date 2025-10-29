@@ -18,57 +18,11 @@ from mrx.Plotting import (
     plot_crossections_separate,
     plot_torus,
 )
+from mrx.Utils import integrate_against, assemble
 
 jax.config.update("jax_enable_x64", True)
 # %%
 # Mapping:
-
-
-def helical_map(epsilon=0.2, h=0.2, n_turns=3, kappa=1.0, alpha=0.0):
-    π = jnp.pi
-
-    def X(ζ):
-        return jnp.array([
-            (1 + h * jnp.cos(2 * π * n_turns * ζ)) * jnp.cos(2 * π * ζ),
-            (1 + h * jnp.cos(2 * π * n_turns * ζ)) * jnp.sin(2 * π * ζ),
-            h * jnp.sin(2 * π * n_turns * ζ)
-        ])
-
-    def get_frame(ζ):
-        dX = jax.jacrev(X)
-        τ = dX(ζ) / jnp.linalg.norm(dX(ζ))  # Tangent vector
-        dτ = jax.jacfwd(dX)(ζ)
-        ν1 = dτ / jnp.linalg.norm(dτ)
-        ν1 = ν1 / jnp.linalg.norm(ν1)  # First normal vector
-        ν2 = jnp.cross(τ, ν1)         # Second normal vector
-        return τ, ν1, ν2
-
-    def x_t(t):
-        return epsilon * jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t))
-
-    def y_t(t):
-        return epsilon * kappa * jnp.sin(2 * π * t)
-
-    def _s_from_t(t):
-        return jnp.arctan2(y_t(t), x_t(t))
-
-    def s_from_t(t):
-        return jnp.where(t > 0.5, _s_from_t(t) + 2 * π, _s_from_t(t))
-
-    def a_from_t(t):
-        return jnp.sqrt(x_t(t)**2 + y_t(t)**2)
-
-    def F(x):
-        """Helical coordinate mapping function."""
-        r, t, ζ = x
-        _, ν1, ν2 = get_frame(ζ)
-        return (X(ζ)
-                + a_from_t(t) * r * jnp.cos(s_from_t(t)) * ν1
-                + a_from_t(t) * r * jnp.sin(s_from_t(t)) * ν2)
-
-    return F
-
-
 def siesta_map():
     Np = 3
 
@@ -271,16 +225,84 @@ def torus_map():
                           Z])
     return F
 
+def torus_map2():
+    def F(x):
+        r, θ, ζ = x
+        R = 1 + 0.2 * r * cos(2 * pi * θ)
+        Z = 0.2 * r * sin(2 * pi * θ)
+        return jnp.array([R * cos(2 * pi * ζ),
+                          -R * sin(2 * pi * ζ),
+                          Z])
+    return F
 
-F = helical_map(h=0.01)
-# F = spec_map(a=0.1, b=0.01, m=5)
-# F = w7x_map()
-# F = siesta_map()
-# F = torus_map()
-# F = cerfon_map()
+def stellerator_map(eps=0.33, h=1.1, nfp=3):
+    def kappa(zeta):
+        return 1 + (1 - h) * cos(2 * pi * zeta * nfp)
+        
+    def F(x):
+        r, θ, ζ = x
+        R = 1 + eps * kappa(ζ) * r * cos(2 * pi * θ)
+        Z = eps * r * kappa(ζ + 0.5) * sin(2 * pi * θ)
+        return jnp.array([R * cos(2 * pi * ζ),
+                          -R * sin(2 * pi * ζ),
+                          Z])
+    return F
 
-grid = get_3d_grids(F, nx=8, ny=17, nz=17, x_min=1e-6)
+F_spec = spec_map(a=0.1, b=0.01, m=5)
+F_w7x = w7x_map()
+F_siesta = siesta_map()
+F_torus = torus_map()
+F_cerfon = cerfon_map()
 
+n = 5
+p = 3
+
+# %%
+# Least squares approx. for siesta map
+
+def least_squares_deformed(F):
+    Seq = DeRhamSequence((n, n, n), (p, p, p), p,
+                      ("clamped", "periodic", "periodic"), F_torus, polar=True, dirichlet=False)
+    Seq.evaluate_1d()
+    Seq.assemble_M0()
+    # this is now the polar spline space
+
+    F_q = jax.vmap(F)(Seq.Q.x) * Seq.Q.w[:, None]  # nq, 3
+
+    M0_log = Seq.E0 @ assemble(Seq.get_Λ0_ijk, Seq.get_Λ0_ijk, Seq.Q.w[:, None, None], Seq.Λ0.n, Seq.Λ0.n) @ Seq.E0.T
+    
+    F_x_hat = jnp.linalg.solve(M0_log, Seq.E0 @ integrate_against(Seq.get_Λ0_ijk, F_q[:, 0:1], Seq.Λ0.n))
+    F_y_hat = jnp.linalg.solve(M0_log, Seq.E0 @ integrate_against(Seq.get_Λ0_ijk, F_q[:, 1:2], Seq.Λ0.n))
+    F_z_hat = jnp.linalg.solve(M0_log, Seq.E0 @ integrate_against(Seq.get_Λ0_ijk, F_q[:, 2:3], Seq.Λ0.n))
+    
+    F_x_h = DiscreteFunction(F_x_hat, Seq.Λ0, Seq.E0)
+    F_y_h = DiscreteFunction(F_y_hat, Seq.Λ0, Seq.E0)
+    F_z_h = DiscreteFunction(F_z_hat, Seq.Λ0, Seq.E0)
+    
+    @jax.jit
+    def G_h(x):
+        return jnp.ravel(jnp.array([F_x_h(x), F_y_h(x), F_z_h(x)]))
+    return G_h
+
+# %%
+# G = least_squares_deformed(F_spec)
+
+# @jax.jit
+# def F(p):
+#     x, y, z = F_torus(p)
+#     R = (x**2 + y**2)**0.5
+#     phi = jnp.arctan2(y, x)
+#     dR = 0.1 * jnp.cos(2 * phi)
+#     dZ = 0.1 * jnp.sin(2 * phi)
+#     x = R * (1 + dR) * jnp.cos(phi)
+#     y = R * (1 + dR) * jnp.sin(phi)
+#     z = z * (1 + dZ)
+#     return jnp.array([x, y, z])
+
+F = jax.jit(stellerator_map())
+
+# %%
+# grid = get_3d_grids(F, nx=8, ny=17, nz=17, x_min=1e-6)
 
 def f_test(p):
     x1, x2, x3 = F(p)
@@ -291,31 +313,46 @@ def f_test(p):
     r = p[0]
     return R * jnp.cos(phi) * jnp.ones(1) * (1-r**2)
 
-
 def E_test(p):
     x1, x2, x3 = F(p)
     r = p[0]
     R = (x1**2 + x2**2)**0.5
     phi = jnp.arctan2(x2, x1)
     return jnp.array([R**2, R * jnp.cos(phi), jnp.sin(phi)/R]) * (1-r**2)
+
+
 # %%
-# Seq = DeRhamSequence((6, 6, 6), (3, 3, 3), 3,
-#                      ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
+cuts = jnp.linspace(0, 1, 9, endpoint=False)
+grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
+                          nx=32, ny=32, nz=1) for v in cuts]
+grid_surface = get_2d_grids(F, cut_axis=0, cut_value=1.0,
+                            ny=128, nz=128, z_min=0, z_max=1, invert_z=True)
+fig, ax = plot_torus(lambda x: 1.0, grids_pol, grid_surface,
+                     gridlinewidth=1, cstride=8, noaxes=False, elev=90, azim=40)
 
+# %%
+fig, ax = plot_torus(lambda x: 1.0, grids_pol, grid_surface,
+                     gridlinewidth=1, cstride=8, noaxes=False, elev=00, azim=40)
 
-# start = time.time()
-# Seq.evaluate_1d()
-# Seq.assemble_all()
-# end = time.time()
-# print("Assembly time:", end - start, "s")
+# %%
+fig, ax = plot_torus(lambda x: 1.0, grids_pol, grid_surface,
+                     gridlinewidth=1, cstride=8, noaxes=False, elev=30, azim=40)
+# %%
+Seq = DeRhamSequence((n, n, n), (p, p, p), p,
+                     ("clamped", "periodic", "periodic"), F, polar=True, dirichlet=True)
 
-# # %%
-# print("first Evs of dd0:", jnp.linalg.eigh(Seq.M0 @ Seq.dd0)[0][:3])
-# print("first Evs of dd1:", jnp.linalg.eigh(Seq.M1 @ Seq.dd1)[0][:3])
-# print("first Evs of dd2:", jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[0][:3])
-# print("first Evs of dd3:", jnp.linalg.eigh(Seq.M3 @ Seq.dd3)[0][:3])
-# print("curl grad", jnp.max(jnp.abs(Seq.strong_curl @ Seq.strong_grad)))
-# print("div curl:", jnp.max(jnp.abs(Seq.strong_div @ Seq.strong_curl)))
+start = time.time()
+Seq.evaluate_1d()
+Seq.assemble_all()
+end = time.time()
+print("Assembly time:", end - start, "s")
+# %%
+print("first Evs of dd0:", jnp.linalg.eigh(Seq.M0 @ Seq.dd0)[0][:3])
+print("first Evs of dd1:", jnp.linalg.eigh(Seq.M1 @ Seq.dd1)[0][:3])
+print("first Evs of dd2:", jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[0][:3])
+print("first Evs of dd3:", jnp.linalg.eigh(Seq.M3 @ Seq.dd3)[0][:3])
+print("curl grad", jnp.max(jnp.abs(Seq.strong_curl @ Seq.strong_grad)))
+print("div curl:", jnp.max(jnp.abs(Seq.strong_div @ Seq.strong_curl)))
 # %%
 # jnp.max(Seq.strong_curl @ Seq.strong_grad), jnp.max(Seq.strong_div @ Seq.strong_curl)
 # # %%
@@ -403,6 +440,7 @@ def proj_error(n, p, q, k):
             f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ1, Seq.E1), F, 1)
         case 2:
             u_test = E_test
+            
             Seq.assemble_M2()
             f_hat = jnp.linalg.solve(Seq.M2, Seq.P2(u_test))
             f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ2, Seq.E2), F, 2)
@@ -429,21 +467,23 @@ def proj_error(n, p, q, k):
 
 
 # %%
-errs = []
-ns = np.arange(4, 10, 1)
-for n in ns:
-    print(f"n = {n}")
-    errs.append(proj_error(n=n, p=3, q=3, k=0))
-    print("err =", errs[-1])
+ns = np.arange(4, 11, 1)
+ps = np.arange(1, 4, 1)
+errs = np.zeros((ns.shape[0], ps.shape[0]))
+for i, n in enumerate(ns):
+    for j, p in enumerate(ps):
+        print(f"n = {n}, p = {p}")
+        errs[i, j] = proj_error(n=n, p=p, q=3, k=0)
+        print("err =", errs[i, j])
 
 # %%
 plt.plot(ns, errs, marker='o', label="L2 projection error")
-plt.plot(ns, errs[-1] * (ns/ns[-1])**-1,
-         linestyle=':', label=r"$\mathcal{O}(h)$")
-plt.plot(ns, errs[-1] * (ns/ns[-1])**-2,
+plt.plot(ns, errs[-1, 0] * (ns/ns[-1])**-2,
          linestyle=':', label=r"$\mathcal{O}(h^2)$")
-plt.plot(ns, errs[-1] * (ns/ns[-1])**-3,
+plt.plot(ns, errs[-1, 1] * (ns/ns[-1])**-3,
          linestyle=':', label=r"$\mathcal{O}(h^3)$")
+plt.plot(ns, errs[-1, 2] * (ns/ns[-1])**-4,
+         linestyle=':', label=r"$\mathcal{O}(h^4)$")
 plt.yscale("log")
 plt.xscale("log")
 plt.grid(which="both", linestyle="--", linewidth=0.5)

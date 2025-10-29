@@ -133,7 +133,7 @@ def assemble(
         Function (a, j, k) -> scalar. kth component of form a evaluated at quadrature point j.
     getter_2 : callable
         Function (b, j, k) -> scalar. kth component of form b evaluated at quadrature point j.
-    W : jnp.ndarray, shape (3, 3, n_q)
+    W : jnp.ndarray, shape (n_q, 3, 3)
         Weight tensor combining metric, Jacobian, and quadrature weights.
         (For example: G_inv[q, ...] * J[q] * w[q])
     n1 : int

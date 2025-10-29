@@ -16,7 +16,7 @@ from mrx.Utils import inv33
 
 jax.config.update("jax_enable_x64", True)
 
-outdir = "script_outputs/iter/"
+outdir = "script_outputs/helix/"
 os.makedirs(outdir, exist_ok=True)
 
 
@@ -24,16 +24,19 @@ CONFIG = {
     "run_name": "",  # Name for the run. If empty, a hash will be created
 
     # Type of configuration: "tokamak" or "helix" or "rotating_ellipse"
-    "type": "tokamak",
+    "type": "helix",
 
     ###
     # Parameters describing the domain.
     ###
-    "eps":      0.33,  # aspect ratio
-    "kappa":    1.7,   # Elongation parameter
-    "delta":    0.33,   # triangularity
-    "delta_B":   0.2,   # poloidal field strength relative to harmonic one
+    "eps":       0.2,  # aspect ratio
+    "kappa":     1.0,   # Elongation parameter
+    "delta":     0.0,   # triangularity
+    "delta_B":   0.2, 
     "q_star":   1.54,
+    
+    "h_helix":   0.2,
+    "m_helix":     1,
 
     ###
     # Discretization
@@ -48,7 +51,7 @@ CONFIG = {
     ###
     # Hyperparameters for the relaxation
     ###
-    "maxit":                 5_000,   # max. Number of time steps
+    "maxit":                 10_000,   # max. Number of time steps
     "precond":               False,     # Use preconditioner
     "precond_compute_every": 1000,       # Recompute preconditioner every n iterations
     # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
@@ -66,12 +69,12 @@ CONFIG = {
     # Hyperparameters pertaining to island seeding
     ###
     "pert_strength":       2e-5,  # strength of perturbation
-    "pert_pol_mode":          2,  # poloidal mode number of perturbation
+    "pert_pol_mode":          1,  # poloidal mode number of perturbation
     "pert_tor_mode":          1,  # toroidal mode number of perturbation
     "pert_radial_loc":      1/2,  # radial location of perturbation
     "pert_radial_width":    0.07,  # radial width of perturbation
     # apply perturbation after n steps (0 = to initial condition)
-    "apply_pert_after":     2000,
+    "apply_pert_after":     5000,
 
     ###
     # Solver hyperparameters
@@ -119,7 +122,8 @@ def run(CONFIG):
 
     start_time = time.time()
 
-    F = cerfon_map(eps, kappa, alpha)
+    F = helical_map(epsilon=eps, kappa=kappa, n_turns=CONFIG["m_helix"],
+                    h=CONFIG["h_helix"], alpha=alpha)
 
     ns = (CONFIG["n_r"], CONFIG["n_theta"], CONFIG["n_zeta"])
     ps = (CONFIG["p_r"], CONFIG["p_theta"], 0

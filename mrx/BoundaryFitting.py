@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 import optimistix
-
+from jax.numpy import cos, pi, sin
 from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
 from mrx.Quadrature import QuadratureRule
 
@@ -126,81 +126,75 @@ def helical_map(epsilon=0.33, h=0.25, n_turns=3, kappa=1.0, alpha=-0.3):
 
     def X(ζ):
         return jnp.array([
-            (1 + h * jnp.cos(2 * π * n_turns * ζ)) * jnp.cos(2 * π * ζ),
             (1 + h * jnp.cos(2 * π * n_turns * ζ)) * jnp.sin(2 * π * ζ),
+            (1 + h * jnp.cos(2 * π * n_turns * ζ)) * jnp.cos(2 * π * ζ),
             h * jnp.sin(2 * π * n_turns * ζ)
         ])
 
     def get_frame(ζ):
-        # dX = jax.jacrev(X)
-        # τ = dX(ζ) / jnp.linalg.norm(dX(ζ))  # Tangent vector
-        # dτ = jax.jacfwd(dX)(ζ)
-        # ν1 = dτ / jnp.linalg.norm(dτ)
-        # # e = jnp.array([0.0, 0.0, 1.0])
-        # # ν1 = (e - jnp.dot(e, τ) * τ)
-        # ν1 = ν1 / jnp.linalg.norm(ν1)  # First normal vector
-        # ν2 = jnp.cross(τ, ν1)         # Second normal vector
-        # return τ, ν1, ν2
-        τ = jnp.array([-jnp.sin(2 * π * ζ),
-                       jnp.cos(2 * π * ζ),
-                       0.0])
-        ν1 = jnp.array([jnp.cos(2 * π * ζ),
-                        jnp.sin(2 * π * ζ),
-                        0.0])
-
-        # Twist angle
-        θ = 2 * π * n_turns * ζ
-
-        cosθ, sinθ = jnp.cos(θ), jnp.sin(θ)
-        ν1_rot = ν1 * cosθ + jnp.cross(τ, ν1) * \
-            sinθ + τ * (jnp.dot(τ, ν1)) * (1 - cosθ)
-        ν2_rot = jnp.cross(τ, ν1_rot)
-
-        return τ, ν1_rot, ν2_rot
-
-    def x_t(t):
-        return epsilon * jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t))
-
-    def y_t(t):
-        return epsilon * kappa * jnp.sin(2 * π * t)
-
-    def _s_from_t(t):
-        return jnp.arctan2(y_t(t), x_t(t))
-
-    def s_from_t(t):
-        return jnp.where(t > 0.5, _s_from_t(t) + 2 * π, _s_from_t(t))
-
-    def a_from_t(t):
-        return jnp.sqrt(x_t(t)**2 + y_t(t)**2)
+        dX = jax.jacrev(X)
+        τ = dX(ζ) / jnp.linalg.norm(dX(ζ))  # Tangent vector
+        dτ = jax.jacfwd(dX)(ζ)
+        ν1 = dτ / jnp.linalg.norm(dτ)
+        ν1 = ν1 / jnp.linalg.norm(ν1)  # First normal vector
+        ν2 = jnp.cross(τ, ν1)         # Second normal vector
+        return τ, ν1, ν2
 
     def F(x):
         """Helical coordinate mapping function."""
         r, t, ζ = x
         _, ν1, ν2 = get_frame(ζ)
         return (X(ζ)
-                + a_from_t(t) * r * jnp.cos(s_from_t(t)) * ν1
-                + a_from_t(t) * r * jnp.sin(s_from_t(t)) * ν2)
+                + epsilon * r * jnp.cos(2 * π * t) * ν1
+                + epsilon * r * jnp.sin(2 * π * t) * ν2)
 
     return F
 
 
-def rotating_ellipse_map(a=0.1, b=0.025, m=5):
-    π = jnp.pi
+# def rotating_ellipse_map(a=0.1, b=0.025, m=5):
+#     π = jnp.pi
 
-    def Rb(θ, ζ):
-        return 1 + a * jnp.cos(2 * π * θ) + b * jnp.cos(2 * π * θ - 2 * π * m * ζ)
+#     def Rb(θ, ζ):
+#         return 1 + a * jnp.cos(2 * π * θ) + b * jnp.cos(2 * π * θ - 2 * π * m * ζ)
 
-    def Zb(θ, ζ):
-        return -a * jnp.sin(2 * π * θ) + b * jnp.sin(2 * π * θ - 2 * π * m * ζ)
+#     def Zb(θ, ζ):
+#         return -a * jnp.sin(2 * π * θ) + b * jnp.sin(2 * π * θ - 2 * π * m * ζ)
 
+#     def F(x):
+#         r, θ, ζ = x
+#         R_val = 1 + r * (Rb(θ, ζ) - 1)
+#         Z_val = r * Zb(θ, ζ)
+#         return jnp.ravel(jnp.array([
+#             R_val * jnp.cos(2 * π * ζ),
+#             R_val * jnp.sin(2 * π * ζ),
+#             Z_val
+#         ]))
+
+#     return F
+
+def rotating_ellipse_map(eps=0.33, h=1.1, nfp=3):
+    def kappa(zeta):
+        return 1 + (1 - h) * cos(2 * pi * zeta * nfp)
+        
     def F(x):
         r, θ, ζ = x
-        R_val = 1 + r * (Rb(θ, ζ) - 1)
-        Z_val = r * Zb(θ, ζ)
-        return jnp.ravel(jnp.array([
-            R_val * jnp.cos(2 * π * ζ),
-            R_val * jnp.sin(2 * π * ζ),
-            Z_val
-        ]))
-
+        R = 1 + eps * kappa(ζ) * r * cos(2 * pi * θ)
+        Z = eps * r * kappa(ζ + 0.5) * sin(2 * pi * θ)
+        return jnp.array([R * cos(2 * pi * ζ),
+                          -R * sin(2 * pi * ζ),
+                          Z])
     return F
+
+# def helical_map(epsilon=0.33, h=0.25, n_turns=3, kappa=1.0, alpha=-0.3):
+#     π = jnp.pi
+
+#     def F(x):
+#         """Helical coordinate mapping function."""
+#         r, t, ζ = x
+#         R0 = (1 + h * jnp.cos(2 * π * n_turns * ζ))
+#         return jnp.ravel(jnp.array(
+#             [(R0 + epsilon * r * jnp.cos(2 * π * t)) * jnp.cos(2 * π * ζ),
+#              -(R0 + epsilon * r * jnp.cos(2 * π * t)) * jnp.sin(2 * π * ζ),
+#              epsilon * r * jnp.sin(2 * π * t)]))
+
+#     return F

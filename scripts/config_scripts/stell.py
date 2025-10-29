@@ -16,7 +16,7 @@ from mrx.Utils import inv33
 
 jax.config.update("jax_enable_x64", True)
 
-outdir = "script_outputs/iter/"
+outdir = "script_outputs/stell/"
 os.makedirs(outdir, exist_ok=True)
 
 
@@ -24,16 +24,15 @@ CONFIG = {
     "run_name": "",  # Name for the run. If empty, a hash will be created
 
     # Type of configuration: "tokamak" or "helix" or "rotating_ellipse"
-    "type": "tokamak",
+    "type": "rotating_ellipse",
 
     ###
     # Parameters describing the domain.
     ###
     "eps":      0.33,  # aspect ratio
-    "kappa":    1.7,   # Elongation parameter
-    "delta":    0.33,   # triangularity
-    "delta_B":   0.2,   # poloidal field strength relative to harmonic one
+    "kappa":     1.1,  # Elongation parameter
     "q_star":   1.54,
+    "n_fp":        3,  # number of field periods (for stellarator-like configs)
 
     ###
     # Discretization
@@ -65,7 +64,7 @@ CONFIG = {
     ###
     # Hyperparameters pertaining to island seeding
     ###
-    "pert_strength":       2e-5,  # strength of perturbation
+    "pert_strength":       0.0,  # strength of perturbation
     "pert_pol_mode":          2,  # poloidal mode number of perturbation
     "pert_tor_mode":          1,  # toroidal mode number of perturbation
     "pert_radial_loc":      1/2,  # radial location of perturbation
@@ -113,13 +112,9 @@ def run(CONFIG):
 
     print("Running simulation " + run_name + "...")
 
-    kappa = CONFIG["kappa"]
-    eps = CONFIG["eps"]
-    alpha = jnp.arcsin(CONFIG["delta"])
-
     start_time = time.time()
 
-    F = cerfon_map(eps, kappa, alpha)
+    F = rotating_ellipse_map(CONFIG["eps"], CONFIG["kappa"], CONFIG["n_fp"])
 
     ns = (CONFIG["n_r"], CONFIG["n_theta"], CONFIG["n_zeta"])
     ps = (CONFIG["p_r"], CONFIG["p_theta"], 0
@@ -127,7 +122,7 @@ def run(CONFIG):
     q = max(ps)
     types = ("clamped", "periodic",
              "constant" if CONFIG["n_zeta"] == 1 else "periodic")
-    tau = CONFIG["q_star"] * kappa * (1 + kappa**2) / (kappa + 1)
+    tau = CONFIG["q_star"]
     print("Setting up FEM spaces...")
 
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
@@ -178,7 +173,7 @@ def run(CONFIG):
         phi = jnp.arctan2(y, x)
         BR = z * R
         Bphi = tau / R
-        Bz = - (kappa**2 / 2 * (R**2 - 1**2) + z**2)
+        Bz = - (1 / 2 * (R**2 - 1**2) + z**2)
         Bx = BR * jnp.cos(phi) - Bphi * jnp.sin(phi)
         By = BR * jnp.sin(phi) + Bphi * jnp.cos(phi)
         return jnp.array([Bx, By, Bz])
@@ -193,25 +188,9 @@ def run(CONFIG):
             jnp.sin(2 * jnp.pi * ζ * CONFIG["pert_tor_mode"]) * DFx[:, 0]
         return B_rad
 
-    # def A_xyz(p):
-    #     x, y, z = F(p)
-    #     r, θ, ζ = p
-    #     # seeded island at r = 1/3 in toroidal direction
-    #     DFx = jax.jacfwd(F)(p)
-    #     J = jnp.linalg.det(DFx)
-    #     A_ζ = jnp.sin(2 * jnp.pi * ζ) * jnp.exp(-100 *
-    #                                             (r - 1 / 3)**2) * jnp.sin(6 * jnp.pi * θ)
-    #     return inv33(DFx.T)[:, 2] * A_ζ / J
-
     B_hat = jnp.linalg.solve(Seq.M2, Seq.P2(B_xyz))
     B_hat = Seq.P_Leray @ B_hat
     B_hat /= norm_2(B_hat)
-
-    # B_harm = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[1][:, 0]
-    # B_harm = B_harm / norm_2(B_harm)
-
-    # B_hat = B_harm + CONFIG["delta_B"] * B_hat
-    # B_hat /= norm_2(B_hat)
 
     if CONFIG["apply_pert_after"] == 0 and CONFIG["pert_strength"] > 0:
         print("Applying perturbation to initial condition...")
