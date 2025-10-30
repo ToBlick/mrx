@@ -275,7 +275,8 @@ if __name__ == "__main__":
         cmap_p = truncate_colormap("plasma", 0.0, 0.9)
 
         # --- Color normalizations ---
-        norm_iota = mpl.colors.Normalize(vmin=np.min(iotas), vmax=np.max(iotas))
+        low, high = np.percentile(iotas, [5, 95])
+        norm_iota = mpl.colors.Normalize(vmin=low, vmax=high, clip=True)
 
         # compute p-values per crossing
         p_values = 100 * (jnp.array([jax.vmap(p_h)(curve) for curve in crossings_p]))[:, :, 0]
