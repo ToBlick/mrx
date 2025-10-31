@@ -11,11 +11,9 @@ def aitken_step(z_prev, z_curr, fz, eps=1e-12, inprod=jnp.vdot):
     omega = jnp.clip(num / den, 0.0, 1.0)
     z_next = (1.0 - omega) * z_curr + omega * fz
     return z_next, omega
+
 # %%
 def picard_solver(f, z_init, tol=1e-12, max_iter=1000, norm=jnp.linalg.norm, inprod=jnp.vdot, debug=False):
-    """
-    Picard iteration with Aitken acceleration.
-    """
     def cond_fun(state):
         # z = (x, (aux1, aux2, ...))
         z_prev, z, i = state
@@ -33,7 +31,6 @@ def picard_solver(f, z_init, tol=1e-12, max_iter=1000, norm=jnp.linalg.norm, inp
                           1,
                           jnp.clip(norm(fz[0] - z[0]) / (norm(z[0] - z_prev[0]) + 1e-12), 0.0, 1.0)
                           )
-        # alpha = jnp.clip(norm(fz[0] - z[0]) / (norm(z[0] - z_prev[0]) + 1e-12), 0.0, 1.0)
 
         z_next = (alpha * fz[0] + (1 - alpha) * z[0], fz[1])
         return (z, z_next, i + 1)
@@ -51,26 +48,40 @@ def picard_solver(f, z_init, tol=1e-12, max_iter=1000, norm=jnp.linalg.norm, inp
 
 def newton_solver(f, z_init, tol=1e-12, max_iter=1000, norm=jnp.linalg.norm):
     """
-    Solve a fixed-point problem using Newton's method.
-    Parameters:
-        f (callable): The function for which the fixed point is to be found.
-                      It should take a single argument and return a value of the same shape.
-        z_init (array-like): The initial guess for the fixed point.
-        tol (float, optional): The tolerance for convergence. The iteration stops when the norm
-                               of the difference between successive approximations is less than `tol`.
-                               Default is 1e-12.
-        norm (callable, optional): A function to compute the norm of a vector.
-                                   Default is `jnp.linalg.norm`.
-    Returns:
-        array-like: The computed fixed point of the function `f`.
-    Notes:
-        - The function `picard_solver` is used internally to perform the iterative process.
+    Newton fixed-point solver compatible with picard_solver's (x, aux) state.
+
+    Parameters
+    ----------
+    f : callable
+        Map that takes a state z = (x, aux) and returns (x_new, aux_new).
+        The fixed-point equation is x = f((x, aux))[0].
+    z_init : array-like or tuple
+        Initial state (x0, aux0) tuple.
+    tol, max_iter, norm : as in picard_solver
+
+    Returns
+    -------
+    (z_star, residual, iters)
+        z_star = (x*, aux*) with x* the Newton fixed point.
+        residual = ||f(z_star)[0] - x*||.
+        iters = picard iteration count applied to the Newton map.
     """
-
-    def f_root(z):
-        return f(z) - z
-
     def g(z):
-        return z - jnp.linalg.solve(jax.jacrev(f_root)(z), f_root(z))
+        """One Newton update on x, threaded aux; returns (x_next, aux_next)."""
+        x, aux = z
 
-    return picard_solver(g, jnp.atleast_1d(z_init), tol, max_iter, norm)
+        # F(x) = f((x, aux))[0] - x  (fixed-point residual on the primary var)
+        def F(x_):
+            return f((x_, aux))[0] - x_
+
+        Fx = F(x)                             # shape like x
+        J = jax.jacrev(F)(x)                  # Jacobian dF/dx at current x
+        dx = jnp.linalg.solve(J, Fx)          # Newton step
+        x_next = x - dx
+        # Update aux consistently
+        x_f, aux_next = f((x_next, aux))
+        return (x_next, aux_next)
+
+    # Hand off to picard_solver to iterate the Newton map g
+    return picard_solver(g, z_init, tol, max_iter, norm)
+

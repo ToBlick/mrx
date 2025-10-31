@@ -29,10 +29,10 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction
-from mrx.LazyMatrices import LazyProjectionMatrix
-from mrx.Utils import l2_product
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction
+from mrx.lazy_matrices import LazyProjectionMatrix
+from mrx.utils import l2_product
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)

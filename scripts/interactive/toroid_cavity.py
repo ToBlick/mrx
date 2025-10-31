@@ -1,11 +1,16 @@
 # %%
+
+##
+# Standing TM waves in a toroidal cavity
+##
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import scipy as sp
 
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction, Pushforward
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -89,7 +94,7 @@ LINE_WIDTH = 2.5        # Width of the plot lines
 # ---------------------------------
 end = 40
 
-# %% Figure 1: Energy and Force
+# %%
 fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
 
 color1 = 'purple'

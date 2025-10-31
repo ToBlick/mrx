@@ -6,7 +6,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from mrx.InputOutput import load_sweep
+from mrx.io import load_sweep
 # %%
 # --- Figure settings ---
 FIG_SIZE = (12, 6)

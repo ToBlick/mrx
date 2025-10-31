@@ -2,9 +2,8 @@ import jax
 import jax.numpy as jnp
 import optimistix
 from jax.numpy import cos, pi, sin
-from mrx.DifferentialForms import DifferentialForm, DiscreteFunction
-from mrx.Quadrature import QuadratureRule
-
+from mrx.differential_forms import DifferentialForm, DiscreteFunction
+from mrx.quadrature import QuadratureRule
 
 def lcfs_fit(n_map,
              p_map,
@@ -150,51 +149,15 @@ def helical_map(epsilon=0.33, h=0.25, n_turns=3, kappa=1.0, alpha=-0.3):
 
     return F
 
-
-# def rotating_ellipse_map(a=0.1, b=0.025, m=5):
-#     π = jnp.pi
-
-#     def Rb(θ, ζ):
-#         return 1 + a * jnp.cos(2 * π * θ) + b * jnp.cos(2 * π * θ - 2 * π * m * ζ)
-
-#     def Zb(θ, ζ):
-#         return -a * jnp.sin(2 * π * θ) + b * jnp.sin(2 * π * θ - 2 * π * m * ζ)
-
-#     def F(x):
-#         r, θ, ζ = x
-#         R_val = 1 + r * (Rb(θ, ζ) - 1)
-#         Z_val = r * Zb(θ, ζ)
-#         return jnp.ravel(jnp.array([
-#             R_val * jnp.cos(2 * π * ζ),
-#             R_val * jnp.sin(2 * π * ζ),
-#             Z_val
-#         ]))
-
-#     return F
-
-def rotating_ellipse_map(eps=0.33, h=1.1, nfp=3):
-    def kappa(zeta):
-        return 1 + (1 - h) * cos(2 * pi * zeta * nfp)
+def rotating_ellipse_map(eps=0.33, kappa=1.2, nfp=3):
+    def nu(zeta):
+        return 1 + (1 - kappa) * cos(2 * pi * zeta * nfp)
         
     def F(x):
         r, θ, ζ = x
-        R = 1 + eps * kappa(ζ) * r * cos(2 * pi * θ)
-        Z = eps * r * kappa(ζ + 0.5) * sin(2 * pi * θ)
+        R = 1 + eps * nu(ζ) * r * cos(2 * pi * θ)
+        Z = eps * r * nu(ζ + 0.5 / nfp) * sin(2 * pi * θ)
         return jnp.array([R * cos(2 * pi * ζ),
                           -R * sin(2 * pi * ζ),
                           Z])
     return F
-
-# def helical_map(epsilon=0.33, h=0.25, n_turns=3, kappa=1.0, alpha=-0.3):
-#     π = jnp.pi
-
-#     def F(x):
-#         """Helical coordinate mapping function."""
-#         r, t, ζ = x
-#         R0 = (1 + h * jnp.cos(2 * π * n_turns * ζ))
-#         return jnp.ravel(jnp.array(
-#             [(R0 + epsilon * r * jnp.cos(2 * π * t)) * jnp.cos(2 * π * ζ),
-#              -(R0 + epsilon * r * jnp.cos(2 * π * t)) * jnp.sin(2 * π * ζ),
-#              epsilon * r * jnp.sin(2 * π * t)]))
-
-#     return F

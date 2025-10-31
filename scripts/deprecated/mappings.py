@@ -10,15 +10,15 @@ import numpy as np
 import scipy
 from jax.numpy import cos, pi, sin
 
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction, Pushforward
-from mrx.Plotting import (
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.plotting import (
     get_2d_grids,
     get_3d_grids,
     plot_crossections_separate,
     plot_torus,
 )
-from mrx.Utils import integrate_against, assemble
+from mrx.utils import integrate_against, assemble
 
 jax.config.update("jax_enable_x64", True)
 # %%
@@ -242,7 +242,7 @@ def stellerator_map(eps=0.33, h=1.1, nfp=3):
     def F(x):
         r, θ, ζ = x
         R = 1 + eps * kappa(ζ) * r * cos(2 * pi * θ)
-        Z = eps * r * kappa(ζ + 0.5) * sin(2 * pi * θ)
+        Z = eps * r * kappa(ζ + 0.5/nfp) * sin(2 * pi * θ)
         return jnp.array([R * cos(2 * pi * ζ),
                           -R * sin(2 * pi * ζ),
                           Z])

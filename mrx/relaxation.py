@@ -3,7 +3,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from mrx.DifferentialForms import DiscreteFunction
+from mrx.differential_forms import DiscreteFunction
 
 
 class MRXHessian:

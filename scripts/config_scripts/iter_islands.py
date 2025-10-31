@@ -7,12 +7,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.BoundaryFitting import cerfon_map, helical_map, rotating_ellipse_map
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction, Pushforward
-from mrx.InputOutput import parse_args, unique_id
-from mrx.Relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
-from mrx.Utils import inv33
+from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.io import parse_args, unique_id
+from mrx.relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
+from mrx.utils import inv33
 
 jax.config.update("jax_enable_x64", True)
 
@@ -375,62 +375,6 @@ def run(CONFIG):
                 cfg_group.attrs[key] = val
 
     print(f"Data saved to {outdir + run_name + '.h5'}.")
-
-    # alternative ICs
-    # DFp = jax.jacfwd(F)(p)
-    # J = jnp.linalg.det(DFp)
-    # Br = J / jnp.linalg.norm(DFp[:, 1]) * 0.0
-    # Btheta = J / jnp.linalg.norm(DFp[:, 1]) * eps * p[0]
-    # Bzeta = J / jnp.linalg.norm(DFp[:, 2]) * R * tau
-    # return DFp @ jnp.array([Br, Btheta, Bzeta]) / J
-# %%
-
-    # def anisotropic_diffusion_tensor(B_hat):
-    #     B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
-
-    #     def B_tensor(x):
-    #         Bx = B_h(x)
-    #         Dfx = jax.jacfwd(F)(x)
-    #         B_phys = Dfx @ Bx
-    #         B_norm = (B_phys @ B_phys)**0.5
-    #         return jnp.outer(Bx, Bx) / (B_norm**2)
-    #     BB_jmn = jax.vmap(B_tensor)(Seq.Q.x)  # Q x 3 x 3
-    #     M = jnp.einsum('ajm,jmn,bjn,j->ab', Seq.dΛ0_ijk,
-    #                    BB_jmn, Seq.dΛ0_ijk, Seq.J_j)
-    #     return Seq.E0_0.matrix() @ M @ Seq.E0_0.matrix().T
-
-# %%
-    # eps_diff = 0.0
-    # Diff = eps_diff * laplace_0 + \
-    #     (1-eps_diff) * anisotropic_diffusion_tensor(B_hat)
-
-    # def localized_source(x, x0, sigma=0.05):
-    #     return jnp.exp(-((x - x0) @ (x - x0)) / (2 * sigma**2)) * jnp.ones(1) / (2 * jnp.pi * sigma**2)**(3/2)
-    # %%
-    # T_hat = jnp.linalg.solve(Diff, Seq.P0_0(lambda x: localized_source(x, jnp.array([0, 0.0, 0.0]), 0.02)))
-    # T_hat = jnp.linalg.solve(Diff, Seq.P0_0(lambda x: jnp.ones(1)))
-    # T_h = Pushforward(DiscreteFunction(T_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
-    # T_hat_iso = jnp.linalg.solve(laplace_0, Seq.P0_0(lambda x: jnp.ones(1)))
-    # T_h_iso = Pushforward(DiscreteFunction(T_hat_iso, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
-
-#     T_hat = jnp.linalg.solve(Diff, M0 @ p_hat)
-#     T_h = Pushforward(DiscreteFunction(T_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
-#     T_hat_iso = jnp.linalg.solve(laplace_0, M0 @ p_hat)
-#     T_h_iso = Pushforward(DiscreteFunction(
-#         T_hat_iso, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
-
-
-# # %%
-#     grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v, nx=32, ny=32,)
-#                  for v in jnp.linspace(0, 1, 16, endpoint=False)]
-    # %%
-    # fig, ax = plot_crossections_separate(T_h, grids_pol)
-    # # %%
-    # fig, ax = plot_crossections_separate(T_h_iso, grids_pol)
-    # # %%
-    # fig, ax = plot_crossections_separate(p_h, grids_pol)
-# %%
-
 
 if __name__ == "__main__":
     main()

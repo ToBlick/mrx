@@ -6,13 +6,13 @@ build-backend = "setuptools.build_meta"
 name = "mrx"
 version = "0.0.1"
 license = {text = "MIT License"}
-description="3D MHD Equilibria using Admissible Variations"
+description="Differentiable 3D MHD equilibria without nested flux surfaces"
 readme = "README.md"
 # long_description = file: README.md
 # long_description_content_type = text/markdown
 requires-python = ">=3.8"
 authors = [
-  {name = "Tobias Blickhan", email = "tmb9910@nyu.edu"},
+  {name = "Tobias Blickhan", email = "tobias.blickhan@nyu.edu"},
 ]
 keywords = [
     "plasma physics",
@@ -41,7 +41,6 @@ dependencies = [
     "optax",
     "optimistix",
     "h5py",
-    "plotly",
 ]
 
 [tool.setuptools.packages.find]

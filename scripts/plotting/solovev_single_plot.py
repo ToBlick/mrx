@@ -6,10 +6,10 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
-from mrx.BoundaryFitting import cerfon_map, helical_map, rotating_ellipse_map
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction, Pushforward
-from mrx.Plotting import get_2d_grids, plot_crossections_separate, plot_torus, trace_plot
+from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.plotting import get_2d_grids, plot_crossections_separate, plot_torus, trace_plot
 
 # %%
 name = "helix/helix_qstar_3.0_m_2_h_0.05_16x16x8"

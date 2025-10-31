@@ -6,12 +6,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.BoundaryFitting import get_lcfs_F
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction
-from mrx.InputOutput import parse_args, unique_id
-from mrx.IterativeSolvers import picard_solver
-from mrx.Nonlinearities import CrossProductProjection
+from mrx.mappings import get_lcfs_F
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction
+from mrx.io import parse_args, unique_id
+from mrx.iterative_solvers import picard_solver
+from mrx.nonlinearities import CrossProductProjection
 
 jax.config.update("jax_enable_x64", True)
 

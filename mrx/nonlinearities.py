@@ -2,7 +2,7 @@
 import jax
 import jax.numpy as jnp
 
-from mrx.Utils import evaluate_at_xq, integrate_against
+from mrx.utils import evaluate_at_xq, integrate_against
 
 
 # %%
@@ -78,55 +78,52 @@ class CrossProductProjection:
 
     def projection(self, w, u):
 
-        # w_h evaluated at quadrature points: shape: n_q x 3
-        # w_h_jk = jnp.einsum("ijk,mi,m->jk", self.Λm_ijk, self.Em, w)
-        # u_h_jk = jnp.einsum("ijk,mi,m->jk", self.Λk_ijk, self.Ek, u)
-
-        w_h_jk = evaluate_at_xq(
+        # w and u evaluated at quadrature points: shape: n_q x 3
+        w_jk = evaluate_at_xq(
             self.get_Λm_ijk, self.Em.T @ w, self.Seq.Q.n, 3)
-        u_h_jk = evaluate_at_xq(
+        u_jk = evaluate_at_xq(
             self.get_Λk_ijk, self.Ek.T @ u, self.Seq.Q.n, 3)
         # shapes of this: n_q x 3
 
         # now, we compute
-        # ∑_ Λn[i](x_j)_a w(x_j)_b u(x_j)_c ) t(x_j)_abc
+        # ∑ Λn[i](x_j)_a w(x_j)_b u(x_j)_c ) t(x_j)_abc
         # where t is some transformation depending on n,m,k and the metric
         # and we sum over j (quadrature points) and b,c (dimensions)
         # To avoid assembling the huge Λn[i](x_j)_a tensor, we scan over i.
 
         if self.n == 1 and self.m == 2 and self.k == 1:
             # ∫ Λ[i] (Gw x u) / J dx
-            Gw_jk = jnp.einsum('jkl,jk->jl', self.Seq.G_jkl, w_h_jk)
-            Gw_x_u_jk = jnp.cross(Gw_jk, u_h_jk, axis=1)
+            Gw_jk = jnp.einsum('jkl,jk->jl', self.Seq.G_jkl, w_jk)
+            Gw_x_u_jk = jnp.cross(Gw_jk, u_jk, axis=1)
             f_jk = Gw_x_u_jk * (self.Seq.Q.w / self.Seq.J_j)[:, None]
         elif self.n == 1 and self.m == 1 and self.k == 1:
             # ∫ Λ[i] (w x u) dx
-            w_x_u_jk = jnp.cross(w_h_jk, u_h_jk, axis=1)
+            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
             f_jk = w_x_u_jk * (self.Seq.Q.w)[:, None]
         elif self.n == 2 and self.m == 1 and self.k == 1:
             # ∫ Λ[i] G(w x u) / J dx
-            w_x_u_jk = jnp.cross(w_h_jk, u_h_jk, axis=1)
+            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
             G_wxu_jk = jnp.einsum('jkl,jk->jl', self.Seq.G_jkl, w_x_u_jk)
             f_jk = G_wxu_jk * (self.Seq.Q.w / self.Seq.J_j)[:, None]
         elif self.n == 2 and self.m == 2 and self.k == 1:
             # ∫ Λ[i] (w x G_inv u) dx
-            Ginvu_jk = jnp.einsum('jkl,jk->jl', self.Seq.G_inv_jkl, u_h_jk)
-            w_x_Ginvu_jk = jnp.cross(w_h_jk, Ginvu_jk, axis=1)
+            Ginvu_jk = jnp.einsum('jkl,jk->jl', self.Seq.G_inv_jkl, u_jk)
+            w_x_Ginvu_jk = jnp.cross(w_jk, Ginvu_jk, axis=1)
             f_jk = w_x_Ginvu_jk * (self.Seq.Q.w)[:, None]
         elif self.n == 1 and self.m == 2 and self.k == 2:
             # ∫ Λ[i] G_inv(w x u) dx
-            w_x_u_jk = jnp.cross(w_h_jk, u_h_jk, axis=1)
+            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
             Ginv_wxu_jk = jnp.einsum(
                 'jkl,jk->jl', self.Seq.G_inv_jkl, w_x_u_jk)
             f_jk = Ginv_wxu_jk * (self.Seq.Q.w)[:, None]
         elif self.n == 2 and self.m == 1 and self.k == 2:
             # ∫ Λ[i] (G_inv w x u) dx
-            Ginvw_jk = jnp.einsum('jkl,jk->jl', self.Seq.G_inv_jkl, w_h_jk)
-            Ginvw_x_u_jk = jnp.cross(Ginvw_jk, u_h_jk, axis=1)
+            Ginvw_jk = jnp.einsum('jkl,jk->jl', self.Seq.G_inv_jkl, w_jk)
+            Ginvw_x_u_jk = jnp.cross(Ginvw_jk, u_jk, axis=1)
             f_jk = Ginvw_x_u_jk * (self.Seq.Q.w)[:, None]
         elif self.n == 2 and self.m == 2 and self.k == 2:
             # ∫ Λ[i] (w x u) / J dx
-            w_x_u_jk = jnp.cross(w_h_jk, u_h_jk, axis=1)
+            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
             f_jk = w_x_u_jk * (self.Seq.Q.w / self.Seq.J_j)[:, None]
         else:
             raise ValueError("Not yet implemented")

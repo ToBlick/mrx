@@ -14,7 +14,7 @@ The module implements two main classes:
 import jax
 import jax.numpy as jnp
 
-from mrx.Utils import integrate_against, inv33, jacobian_determinant
+from mrx.utils import integrate_against, inv33, jacobian_determinant
 
 __all__ = ['Projector']
 

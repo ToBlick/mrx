@@ -6,10 +6,10 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from diffrax import Dopri5, Kvaerno3, ODETerm, PIDController, SaveAt, diffeqsolve
 
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction, Pushforward
-from mrx.Nonlinearities import CrossProductProjection
-from mrx.Plotting import get_1d_grids, get_2d_grids
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.nonlinearities import CrossProductProjection
+from mrx.plotting import get_1d_grids, get_2d_grids
 
 jax.config.update("jax_enable_x64", True)
 

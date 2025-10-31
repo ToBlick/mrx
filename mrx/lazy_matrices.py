@@ -6,9 +6,9 @@ import jax.experimental.sparse
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.DifferentialForms import DifferentialForm
-from mrx.Quadrature import QuadratureRule
-from mrx.Utils import curl, div, grad, inv33, jacobian_determinant
+from mrx.differential_forms import DifferentialForm
+from mrx.quadrature import QuadratureRule
+from mrx.utils import curl, div, grad, inv33, jacobian_determinant
 
 __all__ = ['LazyMatrix', 'LazyMassMatrix', 'LazyDerivativeMatrix',
            'LazyProjectionMatrix', 'LazyDoubleCurlMatrix', 'LazyDoubleDivergenceMatrix', 'LazyStiffnessMatrix']

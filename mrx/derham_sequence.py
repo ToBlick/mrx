@@ -5,13 +5,13 @@ import jax.experimental
 import jax.experimental.sparse
 import jax.numpy as jnp
 
-from mrx.BoundaryConditions import LazyBoundaryOperator
-from mrx.DifferentialForms import DifferentialForm
-from mrx.Nonlinearities import CrossProductProjection
-from mrx.PolarMapping import LazyExtractionOperator, get_xi
-from mrx.Projectors import Projector
-from mrx.Quadrature import QuadratureRule
-from mrx.Utils import assemble, curl, div, grad, inv33, jacobian_determinant
+from mrx.boundary import LazyBoundaryOperator
+from mrx.differential_forms import DifferentialForm
+from mrx.nonlinearities import CrossProductProjection
+from mrx.polar import LazyExtractionOperator, get_xi
+from mrx.projectors import Projector
+from mrx.quadrature import QuadratureRule
+from mrx.utils import assemble, curl, div, grad, inv33, jacobian_determinant
 
 
 class DeRhamSequence():

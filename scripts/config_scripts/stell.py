@@ -7,12 +7,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.BoundaryFitting import cerfon_map, helical_map, rotating_ellipse_map
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction, Pushforward
-from mrx.InputOutput import parse_args, unique_id
-from mrx.Relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
-from mrx.Utils import inv33
+from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.io import parse_args, unique_id
+from mrx.relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
+from mrx.utils import inv33
 
 jax.config.update("jax_enable_x64", True)
 

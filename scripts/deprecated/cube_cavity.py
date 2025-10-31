@@ -1,4 +1,11 @@
 # %%
+
+###
+# Right now, computations in cube geometry are not tested.
+# This script computes the eigenvalues and eigenvectors of the vector Laplacian
+# in a cube using electric boundary conditions.
+###
+
 import os
 from collections import defaultdict
 from pathlib import Path
@@ -8,8 +15,8 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)

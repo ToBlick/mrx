@@ -13,10 +13,10 @@ from matplotlib import gridspec
 from matplotlib.ticker import MultipleLocator
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
-from mrx.BoundaryFitting import cerfon_map, helical_map, rotating_ellipse_map
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction, Pushforward
-from mrx.Plotting import (
+from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.plotting import (
     get_2d_grids,
     plot_crossections,
     plot_crossections_separate,

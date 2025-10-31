@@ -13,10 +13,10 @@ from matplotlib import gridspec
 from matplotlib.ticker import MultipleLocator
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
-from mrx.BoundaryFitting import cerfon_map, helical_map, rotating_ellipse_map
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction, Pushforward
-from mrx.Plotting import (
+from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.plotting import (
     get_2d_grids,
     plot_crossections,
     plot_crossections_separate,
@@ -24,8 +24,8 @@ from mrx.Plotting import (
     set_axes_equal,
 )
 
-from mrx.InputOutput import parse_args
-from mrx.Plotting import generate_solovev_plots
+from mrx.io import parse_args
+from mrx.plotting import generate_solovev_plots
 
 if __name__ == "__main__":
     jax.config.update("jax_enable_x64", True)

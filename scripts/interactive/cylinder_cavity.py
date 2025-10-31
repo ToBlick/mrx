@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
 
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction, Pushforward
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
