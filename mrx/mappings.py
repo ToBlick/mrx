@@ -2,8 +2,10 @@ import jax
 import jax.numpy as jnp
 import optimistix
 from jax.numpy import cos, pi, sin
+
 from mrx.differential_forms import DifferentialForm, DiscreteFunction
 from mrx.quadrature import QuadratureRule
+
 
 def lcfs_fit(n_map,
              p_map,
@@ -149,14 +151,21 @@ def helical_map(epsilon=0.33, h=0.25, n_turns=3, kappa=1.0, alpha=-0.3):
 
     return F
 
+
 def rotating_ellipse_map(eps=0.33, kappa=1.2, nfp=3):
     def nu(zeta):
         return 1 + (1 - kappa) * cos(2 * pi * zeta * nfp)
-        
+
     def F(x):
         r, θ, ζ = x
+        if nfp > 0:
+            ζ /= nfp  # only model one field period
+
         R = 1 + eps * nu(ζ) * r * cos(2 * pi * θ)
-        Z = eps * r * nu(ζ + 0.5 / nfp) * sin(2 * pi * θ)
+        if nfp > 0:
+            Z = eps * r * nu(ζ + 0.5 / nfp) * sin(2 * pi * θ)
+        else:
+            Z = eps * nu(ζ) * r * sin(2 * pi * θ)
         return jnp.array([R * cos(2 * pi * ζ),
                           -R * sin(2 * pi * ζ),
                           Z])
