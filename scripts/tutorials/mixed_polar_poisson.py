@@ -1,17 +1,19 @@
 # %%
 """
-3D Poisson Problem in Toroidal Coordinates
+2D Poisson Problem in Polar Coordinates
 
-This script solves a 3D Poisson problem in toroidal coordinates.
-The problem is defined on a toroidal domain with Dirichlet boundary conditions.
+This script solves a 2D Poisson problem in polar coordinates using mixed finite element methods.
+The problem is defined on a polar domain with homogeneous Neumann boundary conditions.
 
 The exact solution is given by:
-u(r, θ, ζ) = (r² - r⁴) cos(2πζ)
+u(r, θ) = -(1/16)r⁴ + (1/12)r³ + 1/48
+such that 
+∂u/∂r = (r³ - r²)/4
+and u(1, θ) = ∂u/∂r(1, θ) = 0 and
 with source term:
-f(r, θ, ζ) = cos(2πζ) (-4/ɛ² * (1 - 4r²) - 4/(ɛR) (r/2 - r³)cos(2πθ) 
-                + (r² - r⁴) / R²)
-with R = 1 + ɛ r cos(2πθ).
+f(r, θ) = r² - (3/4)r
 """
+
 import os
 import time
 from functools import partial
@@ -22,14 +24,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction
+from mrx.differential_forms import DiscreteFunction, Pushforward
+
+# Enable 64-bit precision for numerical stability
+jax.config.update("jax_enable_x64", True)
+
+# Create output directory for figures
+os.makedirs("script_outputs", exist_ok=True)
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 # Create output directory for figures
 os.makedirs("script_outputs", exist_ok=True)
 
-# %%
 ###
 # We define this function that does assembly, solves the system, and computes the error.
 # It is JIT-compiled separately for different values of n, p, and q.
@@ -38,41 +45,50 @@ os.makedirs("script_outputs", exist_ok=True)
 
 @partial(jax.jit, static_argnames=["n", "p", "q"])
 def get_err(n, p, q):
-    ɛ = 1/3
-    π = jnp.pi
+    """
+    Compute the error in the solution of the Poisson problem.
 
+    Args:
+        n: Number of elements in each direction
+        p: Polynomial degree
+        q: Quadrature order
+
+    Returns:
+        float: Relative L2 error of the solution
+    """
     def F(x):
-        """Toroid coordinate mapping function."""
+        """Polar coordinate mapping function."""
         r, θ, z = x
-        R = 1 + ɛ * r * jnp.cos(2 * π * θ)
-        return jnp.array([R * jnp.cos(2 * π * z),
-                          -R * jnp.sin(2 * π * z),
-                          ɛ * r * jnp.sin(2 * π * θ)])
+        return jnp.array([r * jnp.cos(2 * jnp.pi * θ),
+                          -z,
+                          r * jnp.sin(2 * jnp.pi * θ)])
 
     # Define exact solution and source term
     def u(x):
         """Exact solution of the Poisson problem."""
         r, θ, z = x
-        return (r**2 - r**4) * jnp.cos(2 * π * z) * jnp.ones(1)
+        return -jnp.ones(1) * (r**4/16 - r**3/12 + 1/48)
 
     def f(x):
         """Source term of the Poisson problem."""
-        r, χ, z = x
-        R = 1 + ɛ * r * jnp.cos(2 * jnp.pi * χ)
-        return jnp.cos(2 * jnp.pi * z) * (-4/ɛ**2 * (1 - 4*r**2) - 4/(ɛ*R) * (r/2 - r**3) * jnp.cos(2 * jnp.pi * χ) + (r**2 - r**4) / R**2) * jnp.ones(1)
+        r, θ, z = x
+        return jnp.ones(1) * (r - 3 / 4) * r
 
     # Set up finite element spaces
-    ns = (n, n, n)
-    ps = (p, p, p)
-    types = ("clamped", "periodic", "periodic")
-    Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
-    Seq.evaluate_1d()
-    Seq.assemble_M0()
-    Seq.assemble_dd0()
+    ns = (n, n, 1)
+    ps = (p, p, 0)
+    types = ("clamped", "periodic", "constant")
+    Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=False)
+    Seq.evaluate_1d()   # Precompute 1D basis functions at quadrature points
+    Seq.assemble_M2()   # Assemble 2-form mass matrix
+    Seq.assemble_M3()   # Assemble 3-form mass matrix
+    Seq.assemble_d2()   # Assemble strong divergence and weak gradient
+    Seq.assemble_dd3()  # Assemble 3-form Laplacian - strong_div o weak_grad
 
     # Solve the system
-    u_hat = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
-    u_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0)
+    u_dof = jnp.linalg.solve(Seq.M3 @ Seq.dd3, Seq.P3(f))
+    # The solution will satisfy u = 0 on the boundary
+    u_h = Pushforward(DiscreteFunction(u_dof, Seq.Λ3, Seq.E3), F, 3)
 
     # Compute the L2 error
     def diff_at_x(x):
@@ -136,7 +152,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig1)
-    plt.savefig("script_outputs/toroid_poisson_error.pdf",
+    plt.savefig("script_outputs/mixed_polar_poisson_error.pdf",
                 dpi=300, bbox_inches="tight")
 
     # Timing plot (first run)
@@ -149,7 +165,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig2)
-    plt.savefig("script_outputs/toroid_poisson_time1.pdf",
+    plt.savefig("script_outputs/mixed_polar_poisson_time1.pdf",
                 dpi=300, bbox_inches="tight")
 
     # Timing plot (second run)
@@ -162,7 +178,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig3)
-    plt.savefig("script_outputs/toroid_poisson_time2.pdf",
+    plt.savefig("script_outputs/mixed_polar_poisson_time2.pdf",
                 dpi=300, bbox_inches="tight")
 
     # Speedup plot
@@ -177,7 +193,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.legend()
     figures.append(fig4)
     plt.savefig(
-        "script_outputs/toroid_poisson_speedup.pdf", dpi=300, bbox_inches="tight"
+        "script_outputs/mixed_polar_poisson_speedup.pdf", dpi=300, bbox_inches="tight"
     )
 
     return figures
@@ -186,8 +202,8 @@ def plot_results(err, times, times2, ns, ps):
 def main():
     """Main function to run the analysis."""
     # Run convergence analysis
-    ns = np.arange(4, 10, 2)
-    ps = np.arange(1, 4)
+    ns = np.arange(6, 17, 2)
+    ps = np.arange(1, 5)
     err, times, times2, ns, ps = run_convergence_analysis(ns, ps)
     # Plot results
     plot_results(err, times, times2, ns, ps)
