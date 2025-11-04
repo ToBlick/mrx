@@ -14,7 +14,18 @@ jax.config.update("jax_enable_x64", True)
     (False, [True,  True,  False, False])  # free
 ])
 def test_derham_sequence_eigen_and_exactness(p, dirichlet, expected_nulls):
-    """Check dd operator spectra and exactness identities for rotating ellipse map."""
+    """
+    Check dd operator spectra and exactness identities for rotating ellipse map.
+    
+    Parameters
+    ----------
+    p : int
+        The degree of the spline in each direction.
+    dirichlet : bool
+        Whether the problem has dirichlet boundary conditions.
+    expected_nulls : list
+        The expected nullspace pattern of the dd operator.
+    """
     Seq = DeRhamSequence(
         (4, 4, 4),
         (p, p, p),

@@ -6,7 +6,15 @@ import h5py
 import os
 import numpy as np
 
-def parse_args():
+def parse_args() -> dict:
+    """
+    Parse key=value arguments from command line.
+
+    Returns
+    -------
+    kwargs : dict
+        Dictionary of key=value arguments.
+    """
     parser = argparse.ArgumentParser(
         description="Example script with key=value inputs")
 
@@ -35,14 +43,33 @@ def parse_args():
     return kwargs
 
 
-def unique_id(n) -> str:
-    """creates unique alphanumeric id w/ low collision probability"""
+def unique_id(n: int) -> str:
+    """
+    Create a unique alphanumeric ID with low collision probability.
+
+    Parameters
+    ----------
+    n : int
+        Length of the ID.
+    """
     chars = string.ascii_letters + string.digits  # 64 choices
     id_str = "".join(random.choice(chars) for _ in range(n))
     return id_str
 
 
 def epoch_time(decimals=0) -> int:
+    """
+    Get the current epoch time in seconds.
+
+    Parameters
+    ----------
+    decimals (int): Number of decimal places to round to. Default is 0.
+
+    Returns
+    -------
+    time : int
+        Current epoch time in seconds.
+    """
     return int(time() * (10 ** (decimals)))
 
 def load_sweep(
@@ -61,12 +88,19 @@ def load_sweep(
         Directory containing .h5 files.
     reference_file : str
         Path to the reference .h5 file.
+    QOI : str
+        Key of the quantity of interest to load.
     sweep_params : list[str]
         List of config keys that are allowed to differ (in addition to 'run_name').
 
     Returns
     -------
-    cfgs, forces, iter_counts : list[dict], list[np.ndarray], list[np.ndarray]
+    cfgs : list[dict]
+        List of configurations.
+    forces : list[np.ndarray]
+        List of force traces.
+    iter_counts : list[np.ndarray]
+        List of iteration counts.
     """
 
     # --- load reference config ---

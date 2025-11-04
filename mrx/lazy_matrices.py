@@ -84,6 +84,14 @@ class LazyMatrix:
         self.E1 = E1
 
     def matrix(self):
+        """
+        Assemble the matrix.
+
+        Returns
+        -------
+        matrix : jnp.ndarray
+            The assembled matrix.
+        """
         E0 = self.E0.matrix() if self.E0 is not None else jnp.eye(self.n0)
         E1 = self.E1.matrix() if self.E1 is not None else jnp.eye(self.n1)
         return E1 @ self.assemble() @ E0.T
@@ -93,6 +101,17 @@ class LazyMatrix:
         return np.array(self.matrix())
 
     def sparse(self, M):
+        """
+        Convert the assembled matrix to a CSR sparse matrix.
+
+        Args:
+            M : jnp.ndarray
+                The assembled matrix.
+
+        Returns:
+            sparse_matrix : jax.experimental.sparse.CSR
+                The assembled CSR sparse matrix.
+        """
         return jax.experimental.sparse.bcsr_fromdense(M, )
 
     @abstractmethod

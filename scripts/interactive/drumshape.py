@@ -15,8 +15,6 @@ import optax
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DifferentialForm, DiscreteFunction, Pushforward
-from mrx.lazy_matrices import LazyMassMatrix
-from mrx.projectors import Projector
 from mrx.quadrature import QuadratureRule
 from mrx.utils import assemble, inv33, jacobian_determinant, integrate_against
 

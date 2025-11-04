@@ -11,7 +11,7 @@ jax.config.update("jax_enable_x64", True)
 
 
 def test_quadrature():
-    """Check torus volume."""
+    """Test the quadrature by verifying the exact torus volume in the rotating ellipse mapping."""
     eps = 0.5
     kappa = 1.2
     nfp = 3

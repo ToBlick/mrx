@@ -314,7 +314,6 @@ def nodes_and_weights(n):
 
 # Pre-computed Gauss quadrature nodes and weights
 # These values are exact and used for efficient computation
-
 gauss_1_nodes = jnp.array([
     0.0
 ])

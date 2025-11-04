@@ -8,20 +8,15 @@ from mrx.spline_bases import SplineBasis
 
 jax.config.update("jax_enable_x64", True)
 
-# ============================================================
 # Helper fixture and parametrization
-# ============================================================
 @pytest.fixture(params=["clamped", "periodic"])
 def basis(request):
     """Return a spline basis of given type."""
     n, p = 10, 3
     return SplineBasis(n, p, request.param), request.param
 
-
-# ============================================================
-# Partition of unity
-# ============================================================
 def test_partition_of_unity(basis):
+    """Test the partition of unity property of the spline basis."""
     spl, typ = basis
     xs = jnp.linspace(0.0, 1.0, 200)
     i = jnp.arange(spl.n)
@@ -36,10 +31,9 @@ def test_partition_of_unity(basis):
     )
 
 
-# ============================================================
 # Positivity
-# ============================================================
 def test_basis_positivity(basis):
+    """Test the positivity property of the spline basis."""
     spl, typ = basis
     xs = jnp.linspace(0.0, 1.0, 200)
     i = jnp.arange(spl.n)
@@ -51,10 +45,15 @@ def test_basis_positivity(basis):
     assert jnp.all(vals >= -1e-14), f"Negative basis value detected ({typ})"
 
 
-# ============================================================
 # L2 projection of sin(2πx)
-# ============================================================
 def test_spline_projection_sin(basis):
+    """Test the L2 projection of the sine function using the spline basis.
+
+    Parameters
+    ----------
+    basis : tuple
+        A tuple containing the spline basis and the type of spline.
+    """
     spl, typ = basis
     n = spl.n
     i = jnp.arange(n)

@@ -117,13 +117,7 @@ def l2_product(f: Callable[[jnp.ndarray], jnp.ndarray],
     return jnp.einsum("ij,ij,i,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Jj, Q.w)
 
 
-def assemble(
-    getter_1,
-    getter_2,
-    W,
-    n1,
-    n2,
-):
+def assemble(getter_1, getter_2, W, n1, n2):    
     """
     Assemble a matrix M[a, b] = Σ_{a,j,k} Λ1[a,j,i] * W[j,i,k] * Λ2[b,j,k]
 
@@ -172,7 +166,6 @@ def assemble(
 
     _, M = jax.lax.scan(body_fun, None, jnp.arange(n1))
     return M
-# %%
 
 
 def evaluate_at_xq(getter, dofs, n_q, d):
@@ -185,6 +178,10 @@ def evaluate_at_xq(getter, dofs, n_q, d):
         Function (i, j, k) -> scalar. kth component of form i evaluated at quadrature point j.
     dofs : jnp.ndarray, shape (m,)
         Degrees of freedom of the finite element function, already contracted with extraction matrices
+    n_q : int
+        Number of quadrature points.
+    d : int
+        Number of dimensions.
 
     Returns
     -------

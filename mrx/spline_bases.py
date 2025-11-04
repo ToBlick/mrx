@@ -182,7 +182,17 @@ class SplineBasis:
                          )
 
     def _p_spline(self, x, t, p):
-        # jax.debug.print("Calling p_spline with p={p}, x={x}, t={t}", p=p, x=x, t=t)
+        """
+        Evaluate a p-spline at point x. TODO: Jaxify this if we use this.
+
+        Args:
+            x: The point at which to evaluate the spline
+            t: The knot vector
+            p: The degree of the spline
+
+        Returns:
+            The value of the p-spline at x
+        """
         if p == 0:
             return self._const_spline(x, t)
         else:

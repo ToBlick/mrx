@@ -9,8 +9,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.lazy_matrices import LazyMassMatrix
-from mrx.projectors import Projector
 
 __all__ = ['LazyExtractionOperator', 'get_xi']
 
@@ -79,6 +77,7 @@ class LazyExtractionOperator:
         self.n = self.n1 + self.n2 + self.n3
 
     def matrix(self):
+        """Wrapper for the assemble method."""
         return self.assemble()
 
     def __array__(self):
@@ -329,6 +328,17 @@ class LazyExtractionOperator:
 def get_xi(nχ):
     """
     Compute polar mapping coefficients.
+
+    Parameters
+    ----------
+    nχ : int
+        Number of points in polar coordinate χ-direction.
+
+    Returns
+    -------
+    ξ : jnp.ndarray
+        Polar mapping coefficients.
+        Shape: (3, 2, nχ)
     """
     theta_js = (jnp.arange(nχ) / nχ) * 2 * jnp.pi
 

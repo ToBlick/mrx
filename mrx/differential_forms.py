@@ -33,6 +33,9 @@ class DifferentialForm:
         nr (int): Number of basis functions in r direction
         nχ (int): Number of basis functions in χ direction
         nζ (int): Number of basis functions in ζ direction
+        pr (int): Polynomial degree in r direction
+        pχ (int): Polynomial degree in χ direction
+        pζ (int): Polynomial degree in ζ direction
         ns (jnp.ndarray): Array of indices for basis functions
         Λ (list): List of SplineBasis objects for each direction
         dΛ (list): List of derivative spline bases
@@ -40,7 +43,6 @@ class DifferentialForm:
         bases (tuple): Tensor bases for the form
         shape (tuple): Shape of the form in each direction
     """
-
     d: int
     k: int
     n: int
@@ -57,7 +59,7 @@ class DifferentialForm:
         Initialize a differential form.
 
         Args:
-            k (int): Degree of the form
+            k (int): Degree of the form, k = 0, 1, 2, 3 are supported.
             ns (list): Number of basis functions in each direction
             ps (list): Polynomial degrees for each direction
             types (list): Boundary condition types for each direction

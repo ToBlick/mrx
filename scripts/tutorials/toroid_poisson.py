@@ -1,16 +1,12 @@
 # %%
 import os
-import time
-from functools import partial
 
 import jax
 import jax.numpy as jnp
 import sys
-import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
-from mrx.utils import l2_product
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)

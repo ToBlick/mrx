@@ -1,9 +1,7 @@
 # %%
 import os
-import h5py
 import matplotlib.pyplot as plt
 import numpy as np
-import jax
 import jax.numpy as jnp
 
 from mrx.io import load_sweep
