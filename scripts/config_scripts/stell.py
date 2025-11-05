@@ -9,51 +9,37 @@ import numpy as np
 
 from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
 from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.io import parse_args, unique_id
 from mrx.relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
+from mrx.utils import inv33
 
 jax.config.update("jax_enable_x64", True)
 
-outdir = "script_outputs/solovev/"
+outdir = "script_outputs/stell/"
 os.makedirs(outdir, exist_ok=True)
 
-
-###
-# Default configuration
-###
-DEVICE_PRESETS = {
-    "ITER":  {"eps": 0.32, "kappa": 1.7, "delta": 0.33, "q_star": 1.57, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
-    "NSTX":  {"eps": 0.78, "kappa": 2.0, "delta": 0.35, "q_star": 2.0, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
-    "SPHERO": {"eps": 0.95, "kappa": 1.0, "delta": 0.2,  "q_star": 0.0, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
-    "ROT_ELL": {"a": 0.1, "b": 0.025, "m_rot": 5, "q_star": 1.6, "type": "rotating_ellipse"},
-    "HELIX": {"eps": 0.33, "h_helix": 0.20, "kappa": 1.7, "delta": 0.33, "m_helix": 3, "q_star": 2.0, "type": "helix"},
-}
 
 CONFIG = {
     "run_name": "",  # Name for the run. If empty, a hash will be created
 
     # Type of configuration: "tokamak" or "helix" or "rotating_ellipse"
-    "type": "helix",
+    "type": "rotating_ellipse",
 
     ###
     # Parameters describing the domain.
     ###
-    "eps":      0.2,  # aspect ratio
-    "kappa":    1.7,   # Elongation parameter
-    "q_star":   1.57,   # toroidal field strength
-    "delta": 0.0,   # triangularity
-    "m_helix":  3,     # poloidal mode number of helix
-    "h_helix":  0,   # radius of helix turns
-    "m_rot":    5,      # mode number of rotating ellipse
-    "a": 0.1,      # amplitude of rotating ellipse deformation
-    "b": 0.025,    # amplitude of rotating ellipse deformation
+    "eps":      0.33,  # aspect ratio
+    "kappa":     1.1,  # Elongation parameter
+    "q_star":   1.54,
+    "n_fp":        3,  # number of field periods (for stellarator-like configs)
 
     ###
     # Discretization
     ###
     "n_r": 8,       # Number of radial splines
     "n_theta": 8,   # Number of poloidal splines
-    "n_zeta": 6,    # Number of toroidal splines
+    "n_zeta": 4,    # Number of toroidal splines
     "p_r": 3,       # Degree of radial splines
     "p_theta": 3,     # Degree of poloidal splines
     "p_zeta": 3,    # Degree of toroidal splines
@@ -66,7 +52,7 @@ CONFIG = {
     "precond_compute_every": 1000,       # Recompute preconditioner every n iterations
     # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
     "gamma":                 0,
-    "dt":                    1e-6,      # initial time step
+    "dt":                    1e-4,      # initial time step
     # time-steps are increased by this factor and decreased by its square
     "dt_factor":             1.01,
     # Convergence tolerance for |JxB - grad p| (or |JxB| if force_free)
@@ -74,6 +60,17 @@ CONFIG = {
     "eta":                   0.0,       # Resistivity
     # If True, solve for JxB = 0. If False, JxB = grad p
     "force_free":            False,
+
+    ###
+    # Hyperparameters pertaining to island seeding
+    ###
+    "pert_strength":       0.0,  # strength of perturbation
+    "pert_pol_mode":          2,  # poloidal mode number of perturbation
+    "pert_tor_mode":          1,  # toroidal mode number of perturbation
+    "pert_radial_loc":      1/2,  # radial location of perturbation
+    "pert_radial_width":    0.07,  # radial width of perturbation
+    # apply perturbation after n steps (0 = to initial condition)
+    "apply_pert_after":     2000,
 
     ###
     # Solver hyperparameters
@@ -84,9 +81,10 @@ CONFIG = {
     "solver_critit": 4,
     "solver_tol": 1e-12,   # Tolerance for convergence
     "verbose": False,      # If False, prints only force every 'print_every'
-    "print_every": 1000,    # Print every n iterations
-    "save_every": 100,     # Save intermediate results every n iterations
-    "save_B": False,       # Save intermediate B fields to file
+    "print_every": 500,    # Print every n iterations
+    "save_every": 10,     # Save intermediate results every n iterations
+    "save_B": True,       # Save intermediate B fields to file
+    "save_B_every": 500,   # Save full B every n iterations
 }
 
 
@@ -94,17 +92,6 @@ def main():
     # Get user input
     params = parse_args()
 
-    # Step 1: If device specified, apply defaults
-    device_name = params.get("device")
-    if device_name:
-        preset = DEVICE_PRESETS.get(device_name.upper())
-        if preset:
-            for k, v in preset.items():
-                CONFIG[k] = v
-        else:
-            print(f"Unknown device '{device_name}' - ignoring.")
-
-    # Step 2: Override with user-supplied parameters
     for k, v in params.items():
         if k in CONFIG:
             CONFIG[k] = v
@@ -125,26 +112,9 @@ def run(CONFIG):
 
     print("Running simulation " + run_name + "...")
 
-    kappa = CONFIG["kappa"]
-    eps = CONFIG["eps"]
-    alpha = jnp.arcsin(CONFIG["delta"])
-    if CONFIG["type"] == "tokamak":
-        tau = CONFIG["q_star"] * kappa * (1 + kappa**2) / (kappa + 1)
-    else:
-        tau = CONFIG["q_star"]
-
     start_time = time.time()
 
-    if CONFIG["type"] == "tokamak":
-        F = cerfon_map(eps, kappa, alpha)
-    elif CONFIG["type"] == "helix":
-        F = helical_map(epsilon=CONFIG["eps"], h=CONFIG["h_helix"],
-                        n_turns=CONFIG["m_helix"], kappa=CONFIG["kappa"], alpha=alpha)
-    elif CONFIG["type"] == "rotating_ellipse":
-        F = rotating_ellipse_map(
-            a=CONFIG["a"], b=CONFIG["b"], m=CONFIG["m_rot"])
-    else:
-        raise ValueError("Unknown configuration type.")
+    F = rotating_ellipse_map(CONFIG["eps"], CONFIG["kappa"], CONFIG["n_fp"])
 
     ns = (CONFIG["n_r"], CONFIG["n_theta"], CONFIG["n_zeta"])
     ps = (CONFIG["p_r"], CONFIG["p_theta"], 0
@@ -152,14 +122,14 @@ def run(CONFIG):
     q = max(ps)
     types = ("clamped", "periodic",
              "constant" if CONFIG["n_zeta"] == 1 else "periodic")
-
+    tau = CONFIG["q_star"]
     print("Setting up FEM spaces...")
 
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
     assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 
-    Seq.evaluate_all()
+    Seq.evaluate_1d()
     Seq.assemble_all()
     Seq.build_crossproduct_projections()
     Seq.assemble_leray_projection()
@@ -194,41 +164,40 @@ def run(CONFIG):
     def norm_2(u):
         return (u @ Seq.M2 @ u)**0.5
 
+    def norm_1(u):
+        return (u @ Seq.M1 @ u)**0.5
+
     def B_xyz(p):
         x, y, z = F(p)
         R = (x**2 + y**2)**0.5
         phi = jnp.arctan2(y, x)
+        BR = z * R
+        Bphi = tau / R
+        Bz = - (1 / 2 * (R**2 - 1**2) + z**2)
+        Bx = BR * jnp.cos(phi) - Bphi * jnp.sin(phi)
+        By = BR * jnp.sin(phi) + Bphi * jnp.cos(phi)
+        return jnp.array([Bx, By, Bz])
 
-        # if CONFIG["type"] == "tokamak":
-        #     BR = z * R
-        #     Bphi = tau / R
-        #     Bz = - (kappa**2 / 2 * (R**2 - 1**2) + z**2)
-        #     Bx = BR * jnp.cos(phi) - Bphi * jnp.sin(phi)
-        #     By = BR * jnp.sin(phi) + Bphi * jnp.cos(phi)
-        #     return jnp.array([Bx, By, Bz])
-        # else:
-        #     BR = z * R
-        #     Bphi = tau / R
-        #     Bz = - (1**2 / 2 * (R**2 - 1**2) + z**2)
-        #     Bx = BR * jnp.cos(phi) - Bphi * jnp.sin(phi)
-        #     By = BR * jnp.sin(phi) + Bphi * jnp.cos(phi)
-        #     return jnp.array([Bx, By, Bz])
+    def dB_xyz(p):
+        r, θ, ζ = p
         DFx = jax.jacfwd(F)(p)
-        # purely poloidal
-        return DFx[:, 1]
+
+        def a(r):
+            return jnp.exp(- (r - CONFIG["pert_radial_loc"])**2 / (2 * CONFIG["pert_radial_width"]**2))
+        B_rad = a(r) * jnp.sin(2 * jnp.pi * θ * CONFIG["pert_pol_mode"]) * \
+            jnp.sin(2 * jnp.pi * ζ * CONFIG["pert_tor_mode"]) * DFx[:, 0]
+        return B_rad
 
     B_hat = jnp.linalg.solve(Seq.M2, Seq.P2(B_xyz))
     B_hat = Seq.P_Leray @ B_hat
     B_hat /= norm_2(B_hat)
 
-    B_harm = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[1][:, 0]
-    B_harm = B_harm / norm_2(B_harm)
-
-    # if CONFIG["type"] != "tokamak":
-    # for ITER, B_harm + 2 B_hat does the trick (unnormalized),
-    # also for ROT_ELL (or 1 for rot_ell, 8x8x5 - ~ 7% normalized)
-    B_hat = B_harm + 0 * B_hat
-    B_hat /= norm_2(B_hat)
+    if CONFIG["apply_pert_after"] == 0 and CONFIG["pert_strength"] > 0:
+        print("Applying perturbation to initial condition...")
+        dB_hat = jnp.linalg.solve(Seq.M2, Seq.P2(dB_xyz))
+        dB_hat = Seq.P_Leray @ dB_hat
+        dB_hat /= norm_2(dB_hat)
+        B_hat += CONFIG["pert_strength"] * dB_hat
 
     diagnostics = MRXDiagnostics(Seq, CONFIG["force_free"])
 
@@ -273,7 +242,7 @@ def run(CONFIG):
     print(f"Setup took {setup_done_time - start_time:.2e} seconds.")
     print("Starting relaxation loop...")
 # %%
-    for i in range(1, 5000 + 1):
+    for i in range(1, CONFIG["maxit"] + 1):
 
         state = step(state)
         if (state.picard_residuum > CONFIG["solver_tol"]
@@ -284,6 +253,14 @@ def run(CONFIG):
             continue
         # otherwise, we converged - proceed
         state = timestepper.update_B_n(state, state.B_guess)
+
+        if i == CONFIG["apply_pert_after"] and CONFIG["pert_strength"] > 0:
+            print(f"Applying perturbation after {i} steps...")
+            dB_hat = jnp.linalg.solve(Seq.M2, Seq.P2(dB_xyz))
+            dB_hat = Seq.P_Leray @ dB_hat
+            dB_hat /= norm_2(dB_hat)
+            B_new = state.B_n + CONFIG["pert_strength"] * dB_hat
+            state = timestepper.update_B_n(state, B_new)
 
         if CONFIG["precond"] and (i % CONFIG["precond_compute_every"] == 0):
             state = timestepper.update_hessian(
@@ -305,7 +282,7 @@ def run(CONFIG):
                        state.picard_iterations,
                        state.picard_residuum,
                        state.dt,
-                       state.B_n if CONFIG["save_B"] else None)
+                       state.B_n if (CONFIG["save_B"] and i % CONFIG["save_B_every"] == 0) else None)
 
         if i % CONFIG["print_every"] == 0:
             print(
@@ -322,28 +299,16 @@ def run(CONFIG):
     print(
         f"Main loop took {final_time - setup_done_time:.2e} seconds for {i} steps, avg. {(final_time - setup_done_time)/i:.2e} s/step.")
 
+    B_fields = [x for x in B_fields if x is not None]
     ###
     # Post-processing
     ###
     B_hat = state.B_n
     print("Simulation finished, post-processing...")
     if CONFIG["save_B"]:
-        p_fields = [get_pressure(B) for B in B_fields]
+        p_fields = [get_pressure(
+            B) if B is not None else None for B in B_fields]
     p_hat = get_pressure(B_hat)
-
-    # # save final state on a grid in physical space
-    # grid_3d = get_3d_grids(F, x_min=1e-3,
-    #                        nx=ps[0]*ns[0]*2,
-    #                        ny=ps[1]*ns[1]*2,
-    #                        nz=ps[2]*ns[2]*2 if ns[2] > 1 else 1)
-
-    # B_final = Pushforward(DiscreteFunction(
-    #     B_hat, Seq.Λ2, Seq.E2), F, 2)
-    # B_final_values = jax.vmap(B_final)(grid_3d[0])
-    # p_final = Pushforward(DiscreteFunction(
-    #     p_hat, Seq.Λ0, Seq.E0), F, 0)
-    # p_final_values = jax.vmap(p_final)(grid_3d[0])
-    # grid_points = grid_3d[1]
 
     ###
     # Save stuff
@@ -357,9 +322,6 @@ def run(CONFIG):
         f.create_dataset("force_trace", data=jnp.array(force_trace))
         f.create_dataset("B_final", data=B_hat)
         f.create_dataset("p_final", data=p_hat)
-        # f.create_dataset("B_final_values", data=B_final_values)
-        # f.create_dataset("p_final_values", data=p_final_values)
-        # f.create_dataset("grid_points", data=grid_points)
         f.create_dataset("energy_trace", data=jnp.array(energy_trace))
         f.create_dataset("helicity_trace", data=jnp.array(helicity_trace))
         f.create_dataset("divergence_B_trace",

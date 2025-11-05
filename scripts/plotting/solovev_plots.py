@@ -1,6 +1,6 @@
 import jax
-from mrx.InputOutput import parse_args
-from mrx.Plotting import generate_solovev_plots
+from mrx.io import parse_args
+from mrx.plotting import generate_solovev_plots
 
 if __name__ == "__main__":
     jax.config.update("jax_enable_x64", True)

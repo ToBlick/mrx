@@ -1,4 +1,6 @@
 # %%
+# TODO: test or delete
+
 import os
 import time
 
@@ -7,12 +9,9 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.DeRhamSequence import DeRhamSequence
+from mrx.derham_sequence import DeRhamSequence
 
-# Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
-
-# Create output directory for figures
 os.makedirs("script_outputs", exist_ok=True)
 
 
@@ -42,7 +41,7 @@ def get_err(n, p):
         return jnp.ravel(jnp.array([_X(r, χ),
                                     _Y(r, χ),
                                     _Z(r, χ) * z]))
-    
+
     # Define exact solution and source term
     def u(x):
         """Exact solution of the Poisson problem."""
@@ -62,21 +61,19 @@ def get_err(n, p):
 
     # Curl operator
     C = derham.assemble_curl()
-    
+
     # Double divergence operator on 2-forms
     K = derham.assemble_divdiv()
-    
+
     # Mass matrix for 1-forms
     M1 = derham.assemble_M1()
-    
+
     # Mass matrix for 2-forms
     M2 = derham.assemble_M2()
 
     # block_matrix = jnp.block([[K, C], [-C.T, M1]])
 
-    
     L = C @ jnp.linalg.solve(M1, C.T) + K
-    
 
     tol = 1e-12
     eigvals, eigvecs = jnp.linalg.eigh(L)
@@ -90,12 +87,12 @@ def get_err(n, p):
     # Project source term onto 2-form space
     P2 = derham.P2
     f_proj = P2(f)
-    
+
     u_hat = L_pinv @ f_proj
-    
+
     # Project exact solution onto 2-form space for error computation
     u_proj = P2(u)
-    
+
     u_hat_analytic = jnp.linalg.solve(M2, u_proj)
     error = ((u_hat - u_hat_analytic) @ M2 @ (u_hat - u_hat_analytic) /
              (u_hat_analytic @ M2 @ u_hat_analytic))**0.5

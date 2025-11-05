@@ -1,0 +1,355 @@
+"""
+Polar mapping utilities for finite element analysis.
+
+This module provides classes and functions for handling polar coordinate transformations
+and boundary conditions in finite element computations.
+"""
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from mrx.lazy_matrices import LazyMassMatrix
+from mrx.projectors import Projector
+
+__all__ = ['LazyExtractionOperator', 'get_xi']
+
+
+class LazyExtractionOperator:
+    """
+    A class for extracting boundary conditions and handling polar mappings.
+
+    This class implements operators for handling boundary conditions and polar
+    coordinate transformations.
+
+    Attributes:
+        k (int): Degree of the differential form
+        Λ: Reference to the domain operator
+        ξ: Polar mapping coefficients
+        nr (int): Number of points in r-direction
+        nχ (int): Number of points in χ-direction
+        nζ (int): Number of points in ζ-direction
+        dr (int): Number of points in r-direction after boundary conditions
+        dχ (int): Number of points in χ-direction after boundary conditions
+        dζ (int): Number of points in ζ-direction after boundary conditions
+        o (int): Offset for boundary conditions (1 for zero BC, 0 otherwise)
+        n1 (int): Size of first component
+        n2 (int): Size of second component
+        n3 (int): Size of third component
+        n (int): Total size of the operator
+    """
+
+    def __init__(self, Λ, ξ, zero_bc):
+        """
+        Initialize the extraction operator.
+
+        Args:
+            Λ: Domain operator
+            ξ: Polar mapping coefficients
+            zero_bc (bool): Whether to apply zero boundary conditions
+        """
+        self.k = Λ.k
+        self.Λ = Λ
+        self.ξ = ξ
+        self.nr, self.nχ, self.nζ = Λ.nr, Λ.nχ, Λ.nζ
+        self.dr, self.dχ, self.dζ = Λ.dr, Λ.dχ, Λ.dζ
+        self.o = 1 if zero_bc else 0  # offset for boundary conditions
+
+        # Set component sizes based on form degree
+        if self.k == 0:
+            self.n1 = ((self.nr - 2 - self.o) * self.nχ + 3) * self.nζ
+            self.n2 = 0
+            self.n3 = 0
+        if self.k == 1:
+            self.n1 = (self.dr - 1) * self.nχ * self.nζ
+            self.n2 = ((self.nr - 2 - self.o) * self.dχ + 2) * self.nζ
+            self.n3 = ((self.nr - 2 - self.o) * self.nχ + 3) * self.dζ
+        if self.k == 2:
+            self.n1 = ((self.nr - 2 - self.o) * self.dχ + 2) * self.dζ
+            self.n2 = (self.dr - 1) * self.nχ * self.dζ
+            self.n3 = (self.dr - 1) * self.dχ * self.nζ
+        if self.k == 3:
+            self.n1 = (self.dr - 1) * self.dχ * self.dζ
+            self.n2 = 0
+            self.n3 = 0
+        if self.k == -1:
+            self.n1 = ((self.nr - 2 - self.o) * self.nχ + 3) * self.nζ
+            self.n2 = ((self.nr - 2 - self.o) * self.nχ + 3) * self.nζ
+            self.n3 = ((self.nr - 2 - self.o) * self.nχ + 3) * self.nζ
+        self.n = self.n1 + self.n2 + self.n3
+
+    def matrix(self):
+        return self.assemble()
+
+    def __array__(self):
+        """Convert operator to numpy array."""
+        return np.array(self.matrix())
+
+    def _vector_index(self, idx):
+        """
+        Convert linear index to vector component and local index.
+
+        Args:
+            idx (int): Linear index
+
+        Returns:
+            tuple: (category, index) where category indicates the vector component
+                  and index is the local index within that component
+        """
+        n1, n2 = self.n1, self.n2
+        if self.k == 0 or self.k == 3:
+            return 0, idx
+        elif self.k == 1 or self.k == 2 or self.k == -1:
+            category = jnp.int32(idx >= n1) + jnp.int32(idx >= n1 + n2)
+            index = idx - n1 * jnp.int32(idx >= n1) - \
+                n2 * jnp.int32(idx >= n1 + n2)
+            return category, index
+
+    def _element(self, row_idx, col_idx):
+        """
+        Compute the operator element at specified indices.
+
+        Args:
+            row_idx (int): Row index
+            col_idx (int): Column index
+
+        Returns:
+            jnp.ndarray: The operator element value
+        """
+        if self.k == 0:
+            # Handle 0-forms
+            return jnp.where(
+                row_idx < 3 * self.nζ,
+                self._inner_zeroform(
+                    row_idx, col_idx, self.nr, self.nχ, self.nζ),
+                self._outer_zeroform(
+                    row_idx - 3 * self.nζ, col_idx, self.nr, self.nχ, self.nζ
+                ),
+            )
+        if self.k == 1:
+            # Handle 1-forms
+            cat_row, row_idx = self._vector_index(row_idx)
+            cat_col, col_idx = self.Λ._vector_index(col_idx)
+            return jnp.where(
+                cat_row == 0,
+                # r-component
+                self._threeform(row_idx, col_idx, self.dr, self.nχ, self.nζ)
+                * jnp.int32(cat_row == cat_col),
+                jnp.where(
+                    cat_row == 1,
+                    # χ-component
+                    jnp.where(
+                        row_idx < 2 * self.nζ,
+                        self.inner_oneform_r(
+                            row_idx, col_idx, self.dr, self.nχ, self.nζ
+                        )
+                        * jnp.int32(cat_col == 0)
+                        + self.inner_oneform_χ(
+                            row_idx, col_idx, self.nr, self.dχ, self.nζ
+                        )
+                        * jnp.int32(cat_col == 1),
+                        self._outer_zeroform(
+                            row_idx - 2 * self.nζ, col_idx, self.nr, self.dχ, self.nζ
+                        )
+                        * jnp.int32(cat_row == cat_col),
+                    ),
+                    # ζ-component
+                    jnp.where(
+                        row_idx < 3 * self.dζ,
+                        self._inner_zeroform(
+                            row_idx, col_idx, self.nr, self.nχ, self.dζ
+                        )
+                        * jnp.int32(cat_row == cat_col),
+                        self._outer_zeroform(
+                            row_idx - 3 * self.dζ, col_idx, self.nr, self.nχ, self.dζ
+                        )
+                        * jnp.int32(cat_row == cat_col),
+                    ),
+                ),
+            )
+        if self.k == 2:
+            # Handle 2-forms
+            cat_row, row_idx = self._vector_index(row_idx)
+            cat_col, col_idx = self.Λ._vector_index(col_idx)
+            return jnp.where(
+                cat_row == 0,
+                # r-component
+                jnp.where(
+                    row_idx < 2 * self.nζ,
+                    self.inner_oneform_χ(
+                        row_idx, col_idx, self.nr, self.dχ, self.dζ)
+                    * jnp.int32(cat_col == 0)
+                    - self.inner_oneform_r(row_idx, col_idx,
+                                           self.dr, self.nχ, self.dζ)
+                    * jnp.int32(cat_col == 1),
+                    self._outer_zeroform(
+                        row_idx - 2 * self.nζ, col_idx, self.nr, self.dχ, self.dζ
+                    )
+                    * jnp.int32(cat_row == cat_col),
+                ),
+                jnp.where(
+                    cat_row == 1,
+                    # χ-component
+                    self._threeform(row_idx, col_idx,
+                                    self.dr, self.nχ, self.dζ)
+                    * jnp.int32(cat_row == cat_col),
+                    # ζ-component
+                    self._threeform(row_idx, col_idx,
+                                    self.dr, self.dχ, self.nζ)
+                    * jnp.int32(cat_row == cat_col),
+                ),
+            )
+        if self.k == 3:
+            # Handle 3-forms
+            return self._threeform(row_idx, col_idx, self.nr, self.nχ, self.nζ)
+        if self.k == -1:
+            # Handle vector fields
+            cat_row, row_idx = self._vector_index(row_idx)
+            cat_col, col_idx = self.Λ._vector_index(col_idx)
+            return jnp.where(
+                row_idx < 3 * self.nζ,
+                self._inner_zeroform(
+                    row_idx, col_idx, self.nr, self.nχ, self.nζ),
+                self._outer_zeroform(
+                    row_idx - 3 * self.nζ, col_idx, self.nr, self.nχ, self.nζ
+                ),
+            ) * jnp.int32(cat_row == cat_col)
+
+    def _inner_zeroform(self, row_idx, col_idx, nr, nχ, nζ):
+        """
+        Compute inner zero-form basis function.
+
+        Args:
+            row_idx (int): Row index
+            col_idx (int): Column index
+            nr (int): Number of points in r-direction
+            nχ (int): Number of points in χ-direction
+            nζ (int): Number of points in ζ-direction
+
+        Returns:
+            jnp.ndarray: The basis function value
+        """
+        p, m = jnp.unravel_index(row_idx, (3, nζ))
+        i, j, k = jnp.unravel_index(col_idx, (nr, nχ, nζ))
+        return jnp.int32(k == m) * jnp.int32(i < 2) * self.ξ[p, i, j]
+
+    def _outer_zeroform(self, row_idx, col_idx, nr, nχ, nζ):
+        """
+        Compute outer zero-form basis function.
+
+        Args:
+            row_idx (int): Row index
+            col_idx (int): Column index
+            nr (int): Number of points in r-direction
+            nχ (int): Number of points in χ-direction
+            nζ (int): Number of points in ζ-direction
+
+        Returns:
+            jnp.ndarray: The basis function value
+        """
+        i, j, k = jnp.unravel_index(row_idx, (nr, nχ, nζ))
+        return jnp.int32(
+            col_idx == jnp.ravel_multi_index(
+                (i + 2, j, k), (nr, nχ, nζ), mode="clip")
+        ) * jnp.where(self.o == 1, jnp.int32(i != nr - 1), 1)
+
+    def inner_oneform_r(self, row_idx, col_idx, nr, nχ, nζ):
+        """
+        Compute inner one-form basis function in r-direction.
+
+        Args:
+            row_idx (int): Row index
+            col_idx (int): Column index
+            nr (int): Number of points in r-direction
+            nχ (int): Number of points in χ-direction
+            nζ (int): Number of points in ζ-direction
+
+        Returns:
+            jnp.ndarray: The basis function value
+        """
+        p, m = jnp.unravel_index(row_idx, (2, nζ))
+        p += 1
+        i, j, k = jnp.unravel_index(col_idx, (nr, nχ, nζ))
+        return (
+            jnp.int32(k == m) * jnp.int32(i == 0) *
+            (self.ξ[p, 1, j] - self.ξ[p, 0, j])
+        )
+
+    def inner_oneform_χ(self, row_idx, col_idx, nr, nχ, nζ):
+        """
+        Compute inner one-form basis function in χ-direction.
+
+        Args:
+            row_idx (int): Row index
+            col_idx (int): Column index
+            nr (int): Number of points in r-direction
+            nχ (int): Number of points in χ-direction
+            nζ (int): Number of points in ζ-direction
+
+        Returns:
+            jnp.ndarray: The basis function value
+        """
+        p, m = jnp.unravel_index(row_idx, (2, nζ))
+        p += 1
+        i, j, k = jnp.unravel_index(col_idx, (nr, nχ, nζ))
+        return (
+            jnp.int32(k == m)
+            * jnp.int32(i == 1)
+            * (self.ξ[p, 1, jnp.mod(j + 1, nχ)] - self.ξ[p, 1, j])
+        )
+
+    def _threeform(self, row_idx, col_idx, nr, nχ, nζ):
+        """
+        Compute three-form basis function.
+
+        Args:
+            row_idx (int): Row index
+            col_idx (int): Column index
+            nr (int): Number of points in r-direction
+            nχ (int): Number of points in χ-direction
+            nζ (int): Number of points in ζ-direction
+
+        Returns:
+            jnp.ndarray: The basis function value
+        """
+        i, j, k = jnp.unravel_index(row_idx, (nr, nχ, nζ))
+        return jnp.int32(
+            col_idx == jnp.ravel_multi_index(
+                (i + 1, j, k), (nr, nχ, nζ), mode="clip")
+        )
+
+    def assemble(self):
+        """Assemble the complete operator matrix."""
+        return jax.vmap(jax.vmap(self._element, (None, 0)), (0, None))(
+            jnp.arange(self.n), jnp.arange(self.Λ.n)
+        )
+# %%
+
+
+def get_xi(nχ):
+    """
+    Compute polar mapping coefficients.
+    """
+    theta_js = (jnp.arange(nχ) / nχ) * 2 * jnp.pi
+
+    M = jnp.array([
+        [1/3, 0],
+        [-1/6, jnp.sqrt(3)/6],
+        [-1/6, -jnp.sqrt(3)/6]
+    ])
+
+    cos_js = jnp.cos(theta_js)
+    sin_js = jnp.sin(theta_js)
+
+    Es = 1/3 + M @ jnp.array([cos_js, sin_js])  # shape (3, nχ)
+
+    ξ00 = jnp.ones(nχ) / 3
+    ξ10 = jnp.ones(nχ) / 3
+    ξ20 = jnp.ones(nχ) / 3
+
+    ξ01 = Es[0]
+    ξ11 = Es[1]
+    ξ21 = Es[2]
+    # (3, 2, nχ) -> l, i, j
+    ξ = jnp.array([[ξ00, ξ01], [ξ10, ξ11], [ξ20, ξ21]])
+    return ξ

@@ -1,13 +1,13 @@
 # %%
-
+# TODO turn into test
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
 
-from mrx.DeRhamSequence import DeRhamSequence
-from mrx.DifferentialForms import DiscreteFunction, Pushforward
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -35,21 +35,22 @@ def F(x):
     return jnp.ravel(jnp.array([_R(r, χ), _Y(r, χ), h * jnp.ones(1) * z]))
 
 
-# Create DeRham sequence 
+# Create DeRham sequence
 derham = DeRhamSequence(ns, ps, 8, types, bcs, F, polar=True)
 
-# Get extraction operators and mass matrices 
-E0, E1, E2, E3 = [derham.E0.matrix(), derham.E1.matrix(), derham.E2.matrix(), derham.E3.matrix()]
+# Get extraction operators and mass matrices
+E0, E1, E2, E3 = [derham.E0.matrix(), derham.E1.matrix(),
+                  derham.E2.matrix(), derham.E3.matrix()]
 M1 = derham.assemble_M1()  # Mass matrix for 1-forms
 M0 = derham.assemble_M0()  # Mass matrix for 0-forms
 
 
-D0 = derham.assemble_grad()  # Gradient matrix 
+D0 = derham.assemble_grad()  # Gradient matrix
 O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros((D0.shape[1], D0.shape[1]))
 
 
-C = derham.assemble_curlcurl()  # Double curl matrix 
+C = derham.assemble_curlcurl()  # Double curl matrix
 
 Q = jnp.block([[C, D0], [D0.T, O0]])
 P = jnp.block([[M1, O10], [O10.T, O0]])
@@ -211,14 +212,14 @@ color2 = 'black'
 ax1.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
 ax1.set_ylabel(r'$\lambda_k / \pi^2$', fontsize=LABEL_SIZE)
 ax1.plot(true_evs[:end], label=r'true',
-         marker='', ls = ':', markersize=10, color=color2, lw=LINE_WIDTH)
+         marker='', ls=':', markersize=10, color=color2, lw=LINE_WIDTH)
 ax1.plot(evs[:end], label=r'computed',
-         marker='*', ls = '', markersize=10, color=color1, lw=LINE_WIDTH)
+         marker='*', ls='', markersize=10, color=color1, lw=LINE_WIDTH)
 ax1.tick_params(axis='y', labelsize=TICK_SIZE)
 ax1.tick_params(axis='x', labelsize=TICK_SIZE)
 # ax1.set_yticks(jnp.unique(true_evs[:end]))
 ax1.grid(axis='y', linestyle='--', alpha=0.7)
-ax1.legend(fontsize=LEGEND_SIZE) # Use ax1.legend() for clarity
+ax1.legend(fontsize=LEGEND_SIZE)  # Use ax1.legend() for clarity
 
 # Now save the figure. The 'tight' layout will be calculated correctly.
 fig1.savefig('cylinder_eigenvalues.pdf', bbox_inches='tight')

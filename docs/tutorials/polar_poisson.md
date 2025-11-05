@@ -1,72 +1,115 @@
 ---
-title: Poisson Problem on a disc
+title: Poisson equation on the unit disk
 parent: Tutorials
 layout: default
 nav_order: 2
 ---
 
-### Poisson equation on a disc
+# Poisson equation on the unit disk
 
-For this problem, we consider the source-solution pair $-\Delta u = f$
-$$
-\begin{align}
-u(r) &= \frac 1 {27} \left( r^3 (3 \log r - 2) + 2 \right), \\
-f(r) &= - r \log r
-\end{align}
-$$
+### Mapping
 
-The initial setup is analogous to the case on a square domain. The $\chi$ variable is treated as periodic.
+First, we define our mapping function. MRX is written with 3D problems in toroidal geometry in mind, so this map is still three-dimensional as $\Phi : [0, 1]^3 \mapsto \mathbb{R}^3$:
+```python
+def Phi(x):
+    r, θ, z = x
+    return jnp.array([r * jnp.cos(2 * jnp.pi * θ),
+                      -z,
+                      r * jnp.sin(2 * jnp.pi * θ)])
 ```
+### Manufactured solution
+We also define the source $f$ and the exact solution $u$ where $-\Delta u = f$:
+```python
+def f(x):
+    r, θ, z = x
+    return -jnp.ones(1) * r * jnp.log(r)
+
+def u(x):
+    r, θ, z = x
+    return jnp.ones(1) * (r**3 * (3 * jnp.log(r) - 2) / 27 + 2 / 27)
+```
+In MRX, scalar functions are represented as arrays with a single element (or one channel in ML-lingo), hence the use of `jnp.ones(1) * ...`.
+
+### Resolution and periodicity
+Next, we set the degree of basis functions in the three spatial dimensions. All code is written in 3D, hence solving a 2D problem is done by setting one of the basis functions constant:
+```python
 ns = (n, n, 1)
 ps = (p, p, 0)
-types = ('clamped', 'periodic', 'constant')
-Λ0 = DifferentialForm(0, ns, ps, types)
-Q = QuadratureRule(Λ0, q)
+types = ("clamped", "periodic", "constant")
+```
+The `types` tuple defines the type of basis functions in each spatial dimension. Here, we use clamped B-splines in $r$, periodic B-splines in $\theta$, and constant basis functions in $z$.
+
+### de Rham sequence
+We will solve the Poisson problem using zero-forms with Dirichlet boundary conditions. The central object to create is the `DeRhamSequence`:
+```python
+Seq = DeRhamSequence(ns, ps, q, types, Phi, polar=True, dirichlet=True)
 ```
 
-Now, we need to deal with the singularity at the axis. This is done by constructing a tensor $\xi$ with shape `(3, 2, nχ)` that is used to create new basis functions around the line $r = 0$, replacing the inner rings of cartesian splines.
+The Sequence object is a factory to create all relevant matrices, projectors, and other operators we need. On creation, it pre-computes some useful quantities at all quadrature points such as the (inverse) Metric of the mapping $\Phi$, `Seq.G_jkl` and `Seq.G_inv_jkl` with shape `(n_q, 3, 3)` and its determinant `Seq.J_j` with shape `(n_q,)`.
 
-We define the mapping (a cylinder in this example) and use it to calculate $\xi$.
+### Matrix assembly
+To assemble the matrices we need, we first evaluate all the 1D basis splines at all quadrature points in each spatial dimension
+```python
+Seq.evaluate_1d()
 ```
-a = 1
-R0 = 3.0
-Y0 = 0.0
-
-def _R(r, χ):
-    return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * jnp.pi * χ))
-
-def _Y(r, χ):
-    return jnp.ones(1) * (Y0 + a * r * jnp.sin(2 * jnp.pi * χ))
-
-def F(x):
-    r, χ, z = x
-    return jnp.ravel(jnp.array([_R(r, χ),
-                                _Y(r, χ),
-                                jnp.ones(1) * z]))
-
-ξ, R_hat, Y_hat, Λ, τ = get_xi(_R, _Y, Λ0, Q)
+and then call the assemblers for our mass and stiffness matrices:
+```python
+Seq.assemble_M0()
+Seq.assemble_dd0()
 ```
 
-Since polar splines are linear combination of cartesian ones, they can be evaluated using an extraction matrix $\mathbb E$ that functions much the same as the boundary matrix we already know:
+### Differential forms
 
+Internally, the `DeRhamSequence` creates `DifferentialForm` objects `Seq.Λ0`, `Seq.Λ1`, ... for zero-forms, one-forms, ... respectively.  `DifferentialForm` objects support indexing and evaluation - to evaluate the i-th basis function at a point `x`, we would call `Λ0[i](x)` where the shape of `x` is `(3,)`.
+
+### Handling the polar singularity and boundary conditions
+
+At the bottom of everything stands a cartesian product of one-dimensional spline bases. However, not all combinations of 1D splines are valid basis functions in physical space: At the polar singularity, only basis functions that are constant in $\theta$ may be non-zero. This introduces a set of linear constraints on the discrete function space, effectively removing some basis functions from the space. The number of constraints depends on the required regularity at the singularity. In MRX, we always enforce $C^1$ regularity at the polar singularity: This removes $2 n_\theta n_\zeta$ basis functions from the cartesian product space and replaces them by $3 n_\zeta$ new basis functions.
+
+Analogously, homogeneous Dirichlet boundary conditions at $r = 1$ removes all basis functions that are non-zero at $r = 1$ (because we are using clamped splines, only a single $r$ basis function is non-zero at the boundary), i.e. $n_\theta \times n_\zeta$ basis functions are removed.
+
+The way that these constraints are implemented is by multiplying the basis functions evaluation with a rectangular matrix. Discrete functions with constraints applied hence have a lower amount of degrees of freedom $\mathring{n} < n = n_r n_\theta n_\zeta$:
 $$
 \begin{align}
-f_h(x) &= \sum_{i=0}^{n-1} \mathtt{f}_i \Lambda_i(x) \quad \text{(cartesian splines)} \\
-&= \sum_{j=0}^{m-1} {\mathtt{f}}^{\mathrm{pol}}_j \Lambda_j^{\mathrm{pol}}(x) = \sum_{j=0}^{m-1} {\mathtt{f}}_j^{\mathrm{pol}} \sum_{i=0}^{n-1} \mathbb E_{ji} \Lambda_i(x).
+f_h(x) &= \sum_{i=0}^{n-1} \mathtt{f}_i \Lambda_i(x) \quad \text{(no constraints applied)} \\
+\mathring{f}_h(x) &= \sum_{j=0}^{\mathring{n}-1} {\mathring{\mathtt{f}}}_j \mathring\Lambda_j(x) = \sum_{j=0}^{\mathring{n}-1} {\mathring{\mathtt{f}}_j} \sum_{i=0}^{n-1} \mathbb E_{ji} \Lambda_i(x).
 \end{align}
 $$
-```
-E0 = LazyExtractionOperator(Λ0, ξ, zero_bc=True).M
-```
-As we can see, the `LazyExtractionOperator` constructor also allows us to drop the outer "ring" of basis functions to implement dirichlet boundary conditions there.
+Analogously, we assemble the stiffness matrix $\mathring {\mathbb K}$. Its $i,j$-th element is
+$$
+\begin{align}
+\mathring{\mathbb K}_{ij} = \int_{\hat \Omega} \hat \nabla \mathring\Lambda_i \cdot (D\Phi)^{-1} (D\Phi)^{-T} \hat \nabla \mathring\Lambda_j \, \det D\Phi \, \mathrm d \hat x
+\end{align}
+$$
+In practice, it is assembled by computing $\mathbb K$ - the stiffness matrix with no constraints applied - and then contracting it on both sides with $\mathbb E$ as $\mathring{\mathbb K} = \mathbb E \mathbb K \mathbb E^T$. The matrix `Seq.dd0` is $\mathring{\mathbb M}_0^{-1} \mathring{\mathbb K}$.
 
-The stiffness matrix and projector are built as before, with the difference that now, the non-trivial mapping `F` and the extraction operator `E0` need to be passed to them.
-```
-K = LazyStiffnessMatrix(Λ0, Q, F=F, E=E0).M
-P0 = Projector(Λ0, Q, F=F, E=E0)
-u_hat = jnp.linalg.solve(K, P0(f))
-u_h = DiscreteFunction(u_hat, Λ0, E0)
-```
-The discrete function `u_h` is defined on the logical domain, i.e. it represents $\hat u_h: \hat \Omega \to \mathbb R$. To get the solution in the physical domain, we need to apply a push-forward, $u_h(x) := \hat u_h \circ F^{-1}(x)$.
+### Matrix solve
+To solve the Poisson problem itself, we follow the usual arguments.
+$$
+\begin{align}
+\sum_{i=0}^{m-1} \mathring{\mathtt{u}}_i \int_{\hat \Omega} \hat \nabla \mathring\Lambda_i \cdot (D\Phi)^{-1} (D\Phi)^{-T} \hat \nabla \mathring\Lambda_j \, \det D\Phi \, \mathrm d \hat x = \int_{\hat \Omega} \hat f \mathring\Lambda_j \, \det D\Phi \, \mathrm d \hat x.
+\end{align}
+$$
+The function $\hat f$ is the pull-back of $f$ into the logical domain where $f$ is treated as a zero-form, i.e. $\hat f(\hat x) = f \circ F(\hat x)$. This right-hand-side is evaluated using a `Projector` object that corresponds to the operation 
+$$
+\begin{align}
+\mathring\Pi_0: \hat f \mapsto \left( \int_{\hat \Omega} \hat f \mathring\Lambda_j \, \det D\Phi \, \mathrm d \hat x \right)_{j = 0}^{\mathring{n}-1}.
+\end{align}
+$$ 
+Note that $\mathring{\mathbb M}_0^{-1} \mathring\Pi_0(\hat f)$ are the DoFs of the $L^2$ projection of $\hat f$ onto the discrete zero-form space.
 
-Lastly, note that the solution `u` is not smooth, we only have $u \in H^s(\Omega)$ for all $s < 4$. This limits the order of convergence we can expect to see.
+With all this in place, we can solve for the $u$ DoFs and create a `DiscreteFunction` object that supports evaluation as `u_h(x)`:
+```python
+u_dof = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
+u_h = DiscreteFunction(u_dof, Seq.Λ0, Seq.E0)
+```
+The only thing left to do is to compute the $L^2$ error between the discrete solution `u_h` and the exact solution `u`. This is done by evaluating both functions at `Seq`s quadrature points and computing a weighted sum:
+```python
+def diff_at_x(x):
+    return u(x) - u_h(x)
+df_at_x = jax.vmap(diff_at_x)(Seq.Q.x)
+f_at_x = jax.vmap(u)(Seq.Q.x)
+L2_df = jnp.einsum('ik,ik,i,i->', df_at_x, df_at_x, Seq.J_j, Seq.Q.w)**0.5
+L2_f = jnp.einsum('ik,ik,i,i->', f_at_x, f_at_x, Seq.J_j, Seq.Q.w)**0.5
+error = L2_df / L2_f
+```

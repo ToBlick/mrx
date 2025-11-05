@@ -1,19 +1,19 @@
 __version__ = "0.0.1"
 
-from .BoundaryConditions import *
-from .DifferentialForms import *
-from .IterativeSolvers import *
-from .LazyMatrices import *
-from .Plotting import *
-from .PolarMapping import *
-from .Projectors import *
-from .Quadrature import *
-from .SplineBases import *
-from .Utils import *
-from .BoundaryFitting import *
-from .DeRhamSequence import *
+from .boundary import *
+from .differential_forms import *
+from .iterative_solvers import *
+from .lazy_matrices import *
+from .plotting import *
+from .polar import *
+from .projectors import *
+from .quadrature import *
+from .spline_bases import *
+from .utils import *
+from .mappings import *
+from .derham_sequence import *
 
-__all__ = (DifferentialForms.__all__ + IterativeSolvers.__all__ +
-           LazyMatrices.__all__ + Plotting.__all__ + PolarMapping.__all__ +
-           Projectors.__all__ + Quadrature.__all__ + SplineBases.__all__ +
-           Utils.__all__ + BoundaryConditions.__all__)
+__all__ = (differential_forms.__all__ + iterative_solvers.__all__ +
+           lazy_matrices.__all__ + plotting.__all__ + polar.__all__ +
+           projectors.__all__ + quadrature.__all__ + spline_bases.__all__ +
+           utils.__all__ + boundary.__all__)

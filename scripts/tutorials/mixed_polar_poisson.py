@@ -2,17 +2,18 @@
 """
 2D Poisson Problem in Polar Coordinates
 
-This script solves a 2D Poisson problem in polar coordinates.
-The problem is defined on a polar domain with Dirichlet boundary conditions.
+This script solves a 2D Poisson problem in polar coordinates using mixed finite element methods.
+The problem is defined on a polar domain with homogeneous Neumann boundary conditions.
 
 The exact solution is given by:
-u(r, θ) = r³(3 log(r) - 2)/27 + 2/27
+u(r, θ) = -(1/16)r⁴ + (1/12)r³ + 1/48
+such that 
+∂u/∂r = (r³ - r²)/4
+and u(1, θ) = ∂u/∂r(1, θ) = 0 and
 with source term:
-f(r, θ) = -r log(r)
-
-Note that the solution u is not smooth, we only have u ∈ H^s(Ω) for all s < 4. 
-This limits the order of convergence we can expect to see.
+f(r, θ) = r² - (3/4)r
 """
+
 import os
 import time
 from functools import partial
@@ -23,14 +24,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction
+from mrx.differential_forms import DiscreteFunction, Pushforward
+
+# Enable 64-bit precision for numerical stability
+jax.config.update("jax_enable_x64", True)
+
+# Create output directory for figures
+os.makedirs("script_outputs", exist_ok=True)
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 # Create output directory for figures
 os.makedirs("script_outputs", exist_ok=True)
 
-# %%
 ###
 # We define this function that does assembly, solves the system, and computes the error.
 # It is JIT-compiled separately for different values of n, p, and q.
@@ -50,7 +56,7 @@ def get_err(n, p, q):
     Returns:
         float: Relative L2 error of the solution
     """
-    def Phi(x):
+    def F(x):
         """Polar coordinate mapping function."""
         r, θ, z = x
         return jnp.array([r * jnp.cos(2 * jnp.pi * θ),
@@ -61,25 +67,28 @@ def get_err(n, p, q):
     def u(x):
         """Exact solution of the Poisson problem."""
         r, θ, z = x
-        return jnp.ones(1) * (r**3 * (3 * jnp.log(r) - 2) / 27 + 2 / 27)
+        return -jnp.ones(1) * (r**4/16 - r**3/12 + 1/48)
 
     def f(x):
         """Source term of the Poisson problem."""
         r, θ, z = x
-        return -jnp.ones(1) * r * jnp.log(r)
+        return jnp.ones(1) * (r - 3 / 4) * r
 
     # Set up finite element spaces
     ns = (n, n, 1)
     ps = (p, p, 0)
     types = ("clamped", "periodic", "constant")
-    Seq = DeRhamSequence(ns, ps, q, types, Phi, polar=True, dirichlet=True)
+    Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=False)
     Seq.evaluate_1d()   # Precompute 1D basis functions at quadrature points
-    Seq.assemble_M0()   # Assemble 0-form mass matrix
-    Seq.assemble_dd0()  # Assemble 0-form Laplacian
+    Seq.assemble_M2()   # Assemble 2-form mass matrix
+    Seq.assemble_M3()   # Assemble 3-form mass matrix
+    Seq.assemble_d2()   # Assemble strong divergence and weak gradient
+    Seq.assemble_dd3()  # Assemble 3-form Laplacian - strong_div o weak_grad
 
     # Solve the system
-    u_dof = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
-    u_h = DiscreteFunction(u_dof, Seq.Λ0, Seq.E0)
+    u_dof = jnp.linalg.solve(Seq.M3 @ Seq.dd3, Seq.P3(f))
+    # The solution will satisfy u = 0 on the boundary
+    u_h = Pushforward(DiscreteFunction(u_dof, Seq.Λ3, Seq.E3), F, 3)
 
     # Compute the L2 error
     def diff_at_x(x):
@@ -143,7 +152,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig1)
-    plt.savefig("script_outputs/polar_poisson_error.pdf",
+    plt.savefig("script_outputs/mixed_polar_poisson_error.pdf",
                 dpi=300, bbox_inches="tight")
 
     # Timing plot (first run)
@@ -156,7 +165,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig2)
-    plt.savefig("script_outputs/polar_poisson_time1.pdf",
+    plt.savefig("script_outputs/mixed_polar_poisson_time1.pdf",
                 dpi=300, bbox_inches="tight")
 
     # Timing plot (second run)
@@ -169,7 +178,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig3)
-    plt.savefig("script_outputs/polar_poisson_time2.pdf",
+    plt.savefig("script_outputs/mixed_polar_poisson_time2.pdf",
                 dpi=300, bbox_inches="tight")
 
     # Speedup plot
@@ -184,7 +193,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.legend()
     figures.append(fig4)
     plt.savefig(
-        "script_outputs/polar_poisson_speedup.pdf", dpi=300, bbox_inches="tight"
+        "script_outputs/mixed_polar_poisson_speedup.pdf", dpi=300, bbox_inches="tight"
     )
 
     return figures

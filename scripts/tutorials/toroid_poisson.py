@@ -1,17 +1,16 @@
 # %%
 """
-2D Poisson Problem in Polar Coordinates
+3D Poisson Problem in Toroidal Coordinates
 
-This script solves a 2D Poisson problem in polar coordinates.
-The problem is defined on a polar domain with Dirichlet boundary conditions.
+This script solves a 3D Poisson problem in toroidal coordinates.
+The problem is defined on a toroidal domain with Dirichlet boundary conditions.
 
 The exact solution is given by:
-u(r, θ) = r³(3 log(r) - 2)/27 + 2/27
+u(r, θ, ζ) = (r² - r⁴) cos(2πζ)
 with source term:
-f(r, θ) = -r log(r)
-
-Note that the solution u is not smooth, we only have u ∈ H^s(Ω) for all s < 4. 
-This limits the order of convergence we can expect to see.
+f(r, θ, ζ) = cos(2πζ) (-4/ɛ² * (1 - 4r²) - 4/(ɛR) (r/2 - r³)cos(2πθ) 
+                + (r² - r⁴) / R²)
+with R = 1 + ɛ r cos(2πθ).
 """
 import os
 import time
@@ -39,47 +38,41 @@ os.makedirs("script_outputs", exist_ok=True)
 
 @partial(jax.jit, static_argnames=["n", "p", "q"])
 def get_err(n, p, q):
-    """
-    Compute the error in the solution of the Poisson problem.
+    ɛ = 1/3
+    π = jnp.pi
 
-    Args:
-        n: Number of elements in each direction
-        p: Polynomial degree
-        q: Quadrature order
-
-    Returns:
-        float: Relative L2 error of the solution
-    """
-    def Phi(x):
-        """Polar coordinate mapping function."""
+    def F(x):
+        """Toroid coordinate mapping function."""
         r, θ, z = x
-        return jnp.array([r * jnp.cos(2 * jnp.pi * θ),
-                          -z,
-                          r * jnp.sin(2 * jnp.pi * θ)])
+        R = 1 + ɛ * r * jnp.cos(2 * π * θ)
+        return jnp.array([R * jnp.cos(2 * π * z),
+                          -R * jnp.sin(2 * π * z),
+                          ɛ * r * jnp.sin(2 * π * θ)])
 
     # Define exact solution and source term
     def u(x):
         """Exact solution of the Poisson problem."""
         r, θ, z = x
-        return jnp.ones(1) * (r**3 * (3 * jnp.log(r) - 2) / 27 + 2 / 27)
+        return (r**2 - r**4) * jnp.cos(2 * π * z) * jnp.ones(1)
 
     def f(x):
         """Source term of the Poisson problem."""
-        r, θ, z = x
-        return -jnp.ones(1) * r * jnp.log(r)
+        r, χ, z = x
+        R = 1 + ɛ * r * jnp.cos(2 * jnp.pi * χ)
+        return jnp.cos(2 * jnp.pi * z) * (-4/ɛ**2 * (1 - 4*r**2) - 4/(ɛ*R) * (r/2 - r**3) * jnp.cos(2 * jnp.pi * χ) + (r**2 - r**4) / R**2) * jnp.ones(1)
 
     # Set up finite element spaces
-    ns = (n, n, 1)
-    ps = (p, p, 0)
-    types = ("clamped", "periodic", "constant")
-    Seq = DeRhamSequence(ns, ps, q, types, Phi, polar=True, dirichlet=True)
-    Seq.evaluate_1d()   # Precompute 1D basis functions at quadrature points
-    Seq.assemble_M0()   # Assemble 0-form mass matrix
-    Seq.assemble_dd0()  # Assemble 0-form Laplacian
+    ns = (n, n, n)
+    ps = (p, p, p)
+    types = ("clamped", "periodic", "periodic")
+    Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
+    Seq.evaluate_1d()
+    Seq.assemble_M0()
+    Seq.assemble_dd0()
 
     # Solve the system
-    u_dof = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
-    u_h = DiscreteFunction(u_dof, Seq.Λ0, Seq.E0)
+    u_hat = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
+    u_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0)
 
     # Compute the L2 error
     def diff_at_x(x):
@@ -143,7 +136,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig1)
-    plt.savefig("script_outputs/polar_poisson_error.pdf",
+    plt.savefig("script_outputs/toroid_poisson_error.pdf",
                 dpi=300, bbox_inches="tight")
 
     # Timing plot (first run)
@@ -156,7 +149,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig2)
-    plt.savefig("script_outputs/polar_poisson_time1.pdf",
+    plt.savefig("script_outputs/toroid_poisson_time1.pdf",
                 dpi=300, bbox_inches="tight")
 
     # Timing plot (second run)
@@ -169,7 +162,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig3)
-    plt.savefig("script_outputs/polar_poisson_time2.pdf",
+    plt.savefig("script_outputs/toroid_poisson_time2.pdf",
                 dpi=300, bbox_inches="tight")
 
     # Speedup plot
@@ -184,7 +177,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.legend()
     figures.append(fig4)
     plt.savefig(
-        "script_outputs/polar_poisson_speedup.pdf", dpi=300, bbox_inches="tight"
+        "script_outputs/toroid_poisson_speedup.pdf", dpi=300, bbox_inches="tight"
     )
 
     return figures
@@ -193,8 +186,8 @@ def plot_results(err, times, times2, ns, ps):
 def main():
     """Main function to run the analysis."""
     # Run convergence analysis
-    ns = np.arange(6, 17, 2)
-    ps = np.arange(1, 5)
+    ns = np.arange(4, 10, 2)
+    ps = np.arange(1, 4)
     err, times, times2, ns, ps = run_convergence_analysis(ns, ps)
     # Plot results
     plot_results(err, times, times2, ns, ps)
