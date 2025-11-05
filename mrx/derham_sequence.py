@@ -82,11 +82,11 @@ class DeRhamSequence():
                 ]
 
         else:
+            # TODO: right now, we only support dirichlet BCs in r
             if dirichlet:
-                bc = ['dirichlet' if n > 1 else 'none' for n in ns]
                 self.E0, self.E1, self.E2, self.E3 = [
                     LazyBoundaryOperator(
-                        Λ, bc).matrix()
+                        Λ, ('dirichlet', 'none', 'none')).matrix()
                     for Λ in [self.Λ0, self.Λ1, self.Λ2, self.Λ3]
                 ]
             else:

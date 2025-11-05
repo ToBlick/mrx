@@ -1,6 +1,7 @@
 .DS_Store
 .vscode
 scripts/experimental
+scripts/deprecated
 scripts/dice
 script_outputs
 test_outputs
