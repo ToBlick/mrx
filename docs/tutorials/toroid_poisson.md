@@ -9,7 +9,7 @@ nav_order: 2
 
 This example is essentially the same as the Poisson equation on the unit disk, but with a different mapping function $\Phi$ that maps the logical domain $[0, 1]^3$ to a toroidal shape in $\mathbb{R}^3$ and uses periodic boundary conditions in both angular directions. This example is what the convergence tests in the MRX paper are done on.
 
-```
+```python
 ɛ = 1/3
 π = jnp.pi
 
