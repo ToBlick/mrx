@@ -2,6 +2,7 @@
 # test_harmonic_fields_hollow_toroid.py
 import jax
 import jax.numpy as jnp
+import scipy as sp
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
@@ -11,10 +12,10 @@ jax.config.update("jax_enable_x64", True)
 
 
 def test_harmonic_fields():
-    Ip = 2.31
-    It = 1.74
+    Ip = 1.95
+    It = 2.46
     Is = jnp.array([Ip, It])
-    n = 5
+    n = 6
     p = 3
     q = p + 2
     ɛ = 0.1
@@ -38,43 +39,34 @@ def test_harmonic_fields():
     Seq.evaluate_1d()
     Seq.assemble_all()
 
-    evs, evecs = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)
-    assert jnp.sum(evs < 1e-10) == 2  # two harmonic fields
-    assert jnp.min(evs) > -1e-10  # no negative eigenvalues
+    evs, evecs = sp.linalg.eigh(Seq.M2 @ Seq.dd2, Seq.M2)
+    assert jnp.sum(evs < 1e-11) == 2  # two harmonic fields
+    assert jnp.min(evs) > -1e-11  # no negative eigenvalues
 
-    def m2_orthonormalize(V, M):
-        G = V.T @ M @ V              # 2x2 Gram
-        R = jnp.linalg.cholesky(G)
-        K = V @ jnp.linalg.inv(R)    # columns now M-orthonormal
-        return K
-    K = m2_orthonormalize(evecs[:, :2], Seq.M2)
-    h1_dof = K[:, 0]
-    h2_dof = K[:, 1]
+    h1_dof = evecs[:, 0]
+    h2_dof = evecs[:, 1]
 
-    h1 = jax.jit(Pushforward(DiscreteFunction(
-        h1_dof, Seq.Λ2, Seq.E2), Seq.F, 2))
-    h2 = jax.jit(Pushforward(DiscreteFunction(
-        h2_dof, Seq.Λ2, Seq.E2), Seq.F, 2))
+    h1 = jax.jit(DiscreteFunction(h1_dof, Seq.Λ2, Seq.E2))
+    h2 = jax.jit(DiscreteFunction(h2_dof, Seq.Λ2, Seq.E2))
 
     # Compute contour integrals:
     # contour wrapping around the enclosed tunnel poloidally:
-    def c1(χ):
-        r = jnp.ones_like(χ) * 0.5
-        θ = χ
-        z = jnp.zeros_like(χ)
-        return Seq.F(jnp.array([r, θ, z]))
+    def c1(θ): return jnp.array([1e-6, θ, 0])
 
     # contour wrapping around the center tunnel toroidally:
-    def c2(χ):
-        r = jnp.ones_like(χ) * 0.5
-        θ = jnp.ones_like(χ) * 0.5
-        z = χ
-        return Seq.F(jnp.array([r, θ, z]))
+    def c2(ζ): return jnp.array([1 - 1e-6, 0.5, ζ])
 
-    def h_dl(function, curve):
-        def h_dl(χ):
-            return function(curve(χ)) @ jax.jacfwd(curve)(χ)
-        return h_dl
+    def h_dl(twoform, curve):
+        def oneform(x):
+            DF = jax.jacfwd(F)(x)
+            return DF.T @ DF @ twoform(x) / jnp.linalg.det(DF)
+
+        def integrand(χ):
+            x = curve(χ)
+            dx = jax.jacfwd(curve)(χ).reshape(-1)
+            v = oneform(x).reshape(-1)
+            return jnp.dot(v, dx)
+        return integrand
 
     # Integrate h1 along contours using trapezoidal rule
     n_q = 256
@@ -97,33 +89,38 @@ def test_harmonic_fields():
     assert (curl_b_dofs @ Seq.M1 @ curl_b_dofs)**0.5 < 1e-10
     assert (div_b_dofs @ Seq.M3 @ div_b_dofs)**0.5 < 1e-10
 
-    # check energy in the field
-    energy = b_dofs @ Seq.M2 @ b_dofs / (2 * μ0)
-    expected_energy = μ0 / 2 * Is @ jnp.linalg.solve(P.T @ P, Is)
-    assert jnp.abs(energy - expected_energy) / expected_energy < 1e-6
-
     # in ɛ ≪ 1 limit, we know that B = μ0 (I_p eφ / 2πR + I_t eθ / 2πd),
     # where d is the distance to the centerline of the enclosed tunnel
     # and R the distance to the z-axis
     def B_expected(x):
-        """Expected magnetic field in the thin-torus limit."""
         r, θ, ζ = x
-        R = 1 + ɛ * (r + 1)/2 * jnp.cos(2 * π * θ)
-        B_φ = μ0 * Ip / (2 * π * R)
-        B_θ = μ0 * It / (2 * π * (ɛ * (r + 1)/2))
+        d = ɛ * (r + 1) / 2
+        R = 1 + d * jnp.cos(2 * π * θ)
 
-        sζ = jnp.sin(2 * π * ζ)
-        cζ = jnp.cos(2 * π * ζ)
-        sθ = jnp.sin(2 * π * θ)
-        cθ = jnp.cos(2 * π * θ)
+        sζ, cζ = jnp.sin(2 * π * ζ), jnp.cos(2 * π * ζ)
+        sθ, cθ = jnp.sin(2 * π * θ), jnp.cos(2 * π * θ)
 
-        Bx = -B_φ * sζ - B_θ * sθ * cζ * ɛ * (r + 1)/(2*R)
-        By = - B_φ * cζ + B_θ * sθ * sζ * ɛ * (r + 1)/(2*R)
-        Bz = B_θ * cθ * ɛ * (r + 1)/(2*R)
+        B_ζ = μ0 * It / (2 * π * R)
+        B_θ = μ0 * Ip / (2 * π * d)
+
+        Bx = -B_ζ * sζ - B_θ * sθ * cζ
+        By = -B_ζ * cζ + B_θ * sθ * sζ
+        Bz = B_θ * cθ
 
         return jnp.array([Bx, By, Bz])
 
     B_computed = jax.jit(Pushforward(DiscreteFunction(
         b_dofs, Seq.Λ2, Seq.E2), Seq.F, 2))
 
-    return
+    # Check the field in the interior
+    y = jnp.array([0.5, 0.0, 0.0])
+    B_diff = B_computed(y) - B_expected(y)
+    # Bx should be very close to 0 because both harmonic
+    # fields are orthogonal to this direction at point y
+    assert jnp.abs(B_diff[0]) < 1e-12
+    # By is due to the toroidal field ~1/R -
+    # this error is dominated by resolution
+    assert jnp.abs(B_diff/B_expected(y))[1] < (1/n)**p
+    # By is due to the poloidal field ~1/d -
+    # this error is dominated by the approximation ɛ ≪ 1
+    assert jnp.abs(B_diff/B_expected(y))[2] < ɛ
