@@ -293,9 +293,6 @@ class DeRhamSequence():
         self.evaluate_d2()
 
     def assemble_M0(self):
-        # M = jnp.einsum("ijk,ljk,j,j->il", self.Λ0_ijk,
-        #                self.Λ0_ijk, self.J_j, self.Q.w)
-
         W = (self.J_j * self.Q.w)[:, None, None]  # shape (n_q, 1, 1)
 
         M = assemble(self.get_Λ0_ijk, self.get_Λ0_ijk, W, self.Λ0.n, self.Λ0.n)
@@ -303,10 +300,6 @@ class DeRhamSequence():
         self.M0 = self.E0 @ M @ self.E0.T
 
     def assemble_M1(self):
-        # M = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
-        #                self.G_inv_jkl, self.Λ1_ijk, self.J_j, self.Q.w)
-
-        # shape (n_q, 3, 3)
         W = self.G_inv_jkl * (self.J_j * self.Q.w)[:, None, None]
 
         M = assemble(self.get_Λ1_ijk, self.get_Λ1_ijk, W, self.Λ1.n, self.Λ1.n)
@@ -314,8 +307,6 @@ class DeRhamSequence():
         self.M1 = self.E1 @ M @ self.E1.T
 
     def assemble_M2(self):
-        # M = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
-        # self.G_jkl, self.Λ2_ijk, 1/self.J_j, self.Q.w)
         W = self.G_jkl * (1/self.J_j * self.Q.w)[:, None, None]
 
         M = assemble(self.get_Λ2_ijk, self.get_Λ2_ijk, W, self.Λ2.n, self.Λ2.n)
@@ -323,9 +314,6 @@ class DeRhamSequence():
         self.M2 = self.E2 @ M @ self.E2.T
 
     def assemble_M3(self):
-        # M = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
-        #                 self.Λ3_ijk, 1/self.J_j, self.Q.w)
-
         W = (1/self.J_j * self.Q.w)[:, None, None]
 
         M = assemble(self.get_Λ3_ijk, self.get_Λ3_ijk, W, self.Λ3.n, self.Λ3.n)
@@ -333,9 +321,6 @@ class DeRhamSequence():
         self.M3 = self.E3 @ M @ self.E3.T
 
     def assemble_d0(self):
-        # D0 = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ1_ijk,
-        #                 self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
-
         W = self.G_inv_jkl * (self.J_j * self.Q.w)[:, None, None]
 
         M = assemble(self.get_Λ1_ijk, self.get_dΛ0_ijk,
@@ -346,9 +331,6 @@ class DeRhamSequence():
         self.weak_div = -jnp.linalg.solve(self.M0.T, self.D0.T)
 
     def assemble_d1(self):
-        # M = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.Λ2_ijk,
-        #                  self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
-
         W = self.G_jkl * (1/self.J_j * self.Q.w)[:, None, None]
 
         M = assemble(self.get_Λ2_ijk, self.get_dΛ1_ijk,
@@ -358,9 +340,6 @@ class DeRhamSequence():
         self.weak_curl = jnp.linalg.solve(self.M1.T, self.D1.T)
 
     def assemble_d2(self):
-        # M = jnp.einsum("ijk,ljk,j,j->il", self.Λ3_ijk,
-        #                 self.dΛ2_ijk, 1/self.J_j, self.Q.w)
-
         W = (1/self.J_j * self.Q.w)[:, None, None]
 
         M = assemble(self.get_Λ3_ijk, self.get_dΛ2_ijk,
@@ -382,9 +361,6 @@ class DeRhamSequence():
         self.dd0 = jnp.linalg.solve(self.M0, self.E0 @ M @ self.E0.T)
 
     def assemble_dd1(self):
-        # M = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ1_ijk,
-        #                  self.G_jkl, self.dΛ1_ijk, 1/self.J_j, self.Q.w)
-
         W = self.G_jkl * (1/self.J_j * self.Q.w)[:, None, None]
 
         M = assemble(self.get_dΛ1_ijk, self.get_dΛ1_ijk,
@@ -394,9 +370,6 @@ class DeRhamSequence():
             self.M1, self.E1 @ M @ self.E1.T) - self.strong_grad @ self.weak_div
 
     def assemble_dd2(self):
-        # M = jnp.einsum("ijk,ljk,j,j->il", self.dΛ2_ijk,
-        #                  self.dΛ2_ijk, 1/self.J_j, self.Q.w)
-
         W = (1/self.J_j * self.Q.w)[:, None, None]
 
         M = assemble(self.get_dΛ2_ijk, self.get_dΛ2_ijk,
@@ -409,9 +382,6 @@ class DeRhamSequence():
         self.dd3 = -self.strong_div @ self.weak_grad
 
     def assemble_P12(self):
-        # M = jnp.einsum("ijk,ljk,j->il", self.Λ1_ijk,
-        #                 self.Λ2_ijk, self.Q.w)
-
         W = self.Q.w[:, None, None] * jnp.eye(3)  # shape (n_q, 1, 1)
         M = assemble(self.get_Λ1_ijk, self.get_Λ2_ijk, W, self.Λ1.n, self.Λ2.n)
 
@@ -419,9 +389,6 @@ class DeRhamSequence():
         self.P12 = jnp.linalg.solve(self.M1, M12)
 
     def assemble_P03(self):
-        # M = jnp.einsum("ijk,ljk,j->il", self.Λ0_ijk,
-        #                 self.Λ3_ijk, self.Q.w)
-
         W = self.Q.w[:, None, None]  # shape (n_q, 1, 1)
         M = assemble(self.get_Λ0_ijk, self.get_Λ3_ijk, W, self.Λ0.n, self.Λ3.n)
 
