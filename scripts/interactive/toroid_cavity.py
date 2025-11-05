@@ -15,6 +15,7 @@ from mrx.differential_forms import DiscreteFunction, Pushforward
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
+# order of the splines and number of elements in each direction
 p = 3
 n = 8
 
@@ -24,25 +25,68 @@ ps = (p, p, 0)  # Polynomial degree in each direction
 types = ('clamped', 'periodic', 'constant')  # Types
 bcs = ('dirichlet', 'periodic', 'constant')  # Boundary conditions
 
+# Domain parameters, a = minor radius, R0 = major radius
 a = 1
 R0 = 2.1
 π = jnp.pi
 
 
 def _X(r, χ):
+    """Toroidal radial coordinate. Formula is:
+    
+    X(r, χ) = R0 + a * r * cos(2πχ)
+
+    Args:   
+        r: Radial coordinate
+        χ: Toroidal angle
+
+    Returns:
+        X: Toroidal radial coordinate
+    """
     return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
 
 
 def _Y(r, χ):
+    """Toroidal vertical coordinate. Formula is:
+    
+    Y(r, χ) = R0 + a * r * cos(2πχ)
+
+    Args:
+        r: Radial coordinate
+        χ: Toroidal angle
+
+    Returns:
+        Y: Toroidal vertical coordinate
+    """
     return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
 
 
 def _Z(r, χ):
+    """Toroidal azimuthal coordinate. Formula is:
+    
+    Z(r, χ) = a * r * sin(2πχ)
+
+    Args:
+        r: Radial coordinate
+        χ: Toroidal angle
+
+    Returns:
+        Z: Toroidal azimuthal coordinate
+    """
     return jnp.ones(1) * a * r * jnp.sin(2 * π * χ)
 
 
 def F(x):
-    """Polar coordinate mapping function."""
+    """Toroidal coordinate mapping function. Formula is:
+    
+    F(r, χ, z) = (X(r, χ) * cos(2πz), -Y(r, χ) * sin(2πz), Z(r, χ))
+
+    Args:
+        x: Input logical coordinates (r, χ, z)
+
+    Returns:
+        F: Toroidal coordinate mapping function
+    """
     r, χ, z = x
     return jnp.ravel(jnp.array([_X(r, χ) * jnp.cos(2 * π * z),
                                 -_Y(r, χ) * jnp.sin(2 * π * z),
@@ -63,9 +107,10 @@ Seq.assemble_M3()
 Seq.assemble_d0()
 M0, M1, M2, M3 = [Seq.M0, Seq.M1, Seq.M2, Seq.M3]
 Seq.assemble_dd1()
-D0 = Seq.strong_grad
+D0 = Seq.strong_grad  # Gradient operator
 O10 = jnp.zeros_like(D0)
-C = Seq.dd1  # Double curl matrix
+Seq.assemble_dd1()
+C = Seq.M1 @ (Seq.dd1 + Seq.strong_grad @ Seq.weak_div)  # Double curl matrix
 
 # %%
 evs, evecs = sp.linalg.eig(C, M1)

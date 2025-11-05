@@ -110,8 +110,8 @@ def get_err(n, p):
     C = derham.strong_curl
 
     # Double divergence operator on 2-forms
-    derham.assemble_dd2()
-    dd2 = derham.dd2
+    derham.assemble_dd2()  # dd2 = divdiv + strong_curl weak_curl
+    divdiv = derham.M2 @ (derham.dd2 - derham.strong_curl @ derham.weak_curl)
 
     # Mass matrix for 1-forms
     derham.assemble_M1()
@@ -122,7 +122,7 @@ def get_err(n, p):
     M2 = derham.M2
 
     # block_matrix = jnp.block([[K, C], [-C.T, M1]])
-    L = C @ jnp.linalg.solve(M1, C.T) + dd2
+    L = C @ jnp.linalg.solve(M1, C.T) + divdiv
 
     # Solve the generalized eigenvalue problem
     tol = 1e-12

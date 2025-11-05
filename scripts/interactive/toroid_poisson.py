@@ -1,6 +1,6 @@
 # %%
 import os
-
+from functools import partial
 import jax
 import jax.numpy as jnp
 import sys
@@ -14,7 +14,7 @@ jax.config.update("jax_enable_x64", True)
 # Create output directory for figures
 os.makedirs("script_outputs", exist_ok=True)
 
-# @partial(jax.jit, static_argnames=["n", "p"])
+@partial(jax.jit, static_argnames=["n", "p"])
 def get_err(n, p):
     """
     Computes the error, condition number, and sparsity of the solution to the Poisson equation on a toroidal domain.
@@ -35,8 +35,8 @@ def get_err(n, p):
     types = ("clamped", "periodic", "periodic")  # Types
 
     # Domain parameters
-    a = 1/3
-    R0 = 1.0
+    a = 1 / 3  # minor radius
+    R0 = 1.0  # major radius
     π = jnp.pi
 
     def _X(r, χ):

@@ -67,22 +67,26 @@ D0 = derham.D0
 O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros((D0.shape[1], D0.shape[1]))
 
-# TODO: Update the correct assembly method to be used below
-C = derham.assemble_curlcurl()  # Double curl matrix
+# TODO: Double check that this is the correct assembly method to be used below
+derham.assemble_dd1()
+C = derham.M1 @ (derham.dd1 + derham.strong_grad @ derham.weak_div)  # Double curl matrix
 
 # TODO: Clarify why we construct these block matrices here
 Q = jnp.block([[C, D0], [D0.T, O0]])
 P = jnp.block([[M1, O10], [O10.T, O0]])
 
 # %%
+# Generalized eigenvalue problem
 evs, evecs = sp.linalg.eig(Q, P)
 evs = jnp.real(evs)
 evecs = jnp.real(evecs)
 
+# Find finite eigenvalues and eigenvectors
 finite_indices = jnp.isfinite(evs)
 evs = evs[finite_indices]
 evecs = evecs[:, finite_indices]
 
+# Sort eigenvalues and eigenvectors
 sort_indices = jnp.argsort(evs)
 evs = evs[sort_indices]
 evecs = evecs[:, sort_indices]
@@ -249,9 +253,8 @@ ax1.tick_params(axis='x', labelsize=TICK_SIZE)
 # ax1.set_yticks(jnp.unique(true_evs[:end]))
 ax1.grid(axis='y', linestyle='--', alpha=0.7)
 ax1.legend(fontsize=LEGEND_SIZE)  # Use ax1.legend() for clarity
-
-# Now save the figure. The 'tight' layout will be calculated correctly.
 fig1.savefig('cylinder_eigenvalues.pdf', bbox_inches='tight')
+
 # %%
 # Check that for all EVs in `evs`, there is a corresponding true EV in `true_evs` such that the difference is less than tol:
 tol = 1e-5
@@ -281,9 +284,6 @@ def check_eigenvalues(evs, true_evs, tol=1e-5):
     """
     return jnp.all(jax.vmap(dist, in_axes=(0, None))(evs, true_evs) < tol)
 
-
-# %%
-
 # %%
 # Generate a grid of points in the physical domain
 ɛ = 1e-5
@@ -296,16 +296,6 @@ _x = _x.transpose(1, 2, 3, 0).reshape(nx*nx*1, 3)
 _y = jax.vmap(F)(_x)
 _y1 = _y[:, 0].reshape(nx, nx)
 _y2 = _y[:, 1].reshape(nx, nx)
-_nx = 16
-__x1 = jnp.linspace(ɛ, 1-ɛ, _nx)
-__x2 = jnp.linspace(ɛ, 1-ɛ, _nx)
-__x3 = jnp.ones(1)/2
-__x = jnp.array(jnp.meshgrid(__x1, __x2, __x3))
-__x = __x.transpose(1, 2, 3, 0).reshape(_nx*_nx*1, 3)
-__y = jax.vmap(F)(__x)
-__y1 = __y[:, 0].reshape(_nx, _nx)
-_y2 = __y[:, 1].reshape(_nx, _nx)
-
 
 def plot_eigenvectors_grid(
     evecs,         # Eigenvectors array, shape (num_dofs, num_eigenvectors)
@@ -372,15 +362,13 @@ def plot_eigenvectors_grid(
 
     plt.tight_layout(pad=0.1, w_pad=0.1, h_pad=0.1)  # Adjust padding as needed
     plt.show()
-
     return fig
 
-
 # %%
-# Plot the first 9 eigenvectors
+# Plot the first num_to_plot eigenvectors
+num_to_plot = 25
 fig = plot_eigenvectors_grid(
-    evecs, M1, derham.Λ1, E1, F, _x, _y1, _y2, nx, num_to_plot=25
+    evecs, M1, derham.Λ1, E1, F, _x, _y1, _y2, nx, num_to_plot=num_to_plot
 )
-# %%
 fig.savefig('cylinder_eigenmodes.pdf', bbox_inches='tight')
 # %%

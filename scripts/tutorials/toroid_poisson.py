@@ -1,8 +1,8 @@
 # %%
 """
-3D Poisson Problem in Toroidal Coordinates
+3D Scalar Poisson Problem in Toroidal Coordinates
 
-This script solves a 3D Poisson problem in toroidal coordinates.
+This script solves a 3D scalar Poisson problem in toroidal coordinates.
 The problem is defined on a toroidal domain with Dirichlet boundary conditions.
 
 The exact solution is given by:
@@ -61,6 +61,12 @@ def get_err(n, p, q):
         """Exact solution of the Poisson problem in logical coordinates. Solution is independent of θ. Formula is:
 
             u(r, z) = (r² - r⁴) cos(2πz)
+
+        Args:   
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            u: Exact solution of the Poisson equation
         """
         r, _, z = x
         return (r**2 - r**4) * jnp.cos(2 * π * z) * jnp.ones(1)
@@ -69,6 +75,12 @@ def get_err(n, p, q):
         """Source term of the Poisson problem in logical coordinates. Formula is:
 
             f(r, z) = cos(2πz) (-4/ɛ² * (1 - 4r²) - 4/(ɛR) (r/2 - r³)cos(2πθ) + (r² - r⁴) / R²)
+        
+        Args:
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            f: Source term of the Poisson equation
         """
         r, θ, z = x
         R = 1 + ɛ * r * jnp.cos(2 * jnp.pi * θ)
