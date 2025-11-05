@@ -58,3 +58,6 @@ Homepage = "https://github.com/ToBlick/mrx"
 Download = "https://github.com/ToBlick/mrx"
 Issues = "https://github.com/ToBlick/mrx/issues"
 Repository = "https://github.com/ToBlick/mrx"
+
+[tool.ruff]
+target-version = "py312"
