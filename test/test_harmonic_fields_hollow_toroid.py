@@ -126,4 +126,4 @@ def test_harmonic_fields():
     B_computed = jax.jit(Pushforward(DiscreteFunction(
         b_dofs, Seq.Λ2, Seq.E2), Seq.F, 2))
 
-    return
+    return B_computed

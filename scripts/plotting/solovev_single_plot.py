@@ -63,8 +63,6 @@ Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 
 # %%
-import jax.numpy as jnp
-
 plt.rcParams['font.family'] = 'serif'
 plt.rcParams['mathtext.fontset'] = 'dejavuserif'
 

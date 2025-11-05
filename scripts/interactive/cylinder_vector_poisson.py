@@ -33,7 +33,6 @@ def get_err(n, p):
     ns = (n, n, n)
     ps = (p, p, p)
     types = ("clamped", "periodic", "periodic")
-    bcs = ["dirichlet"] * 4  # Boundary conditions
 
     # Domain parameters
     π = jnp.pi
