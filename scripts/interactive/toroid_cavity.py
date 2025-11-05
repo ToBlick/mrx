@@ -1,5 +1,5 @@
 # %%
-
+# TODO update this after the refactor
 ##
 # Standing TM waves in a toroidal cavity
 ##

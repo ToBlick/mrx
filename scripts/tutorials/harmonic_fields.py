@@ -55,15 +55,16 @@ def get_err(Ip, It, n, p, q, μ0=1.0):
 
     def m2_orthonormalize(V, M):
         G = V.T @ M @ V              # 2x2 Gram
-        G = 0.5 * (G + G.T)          # symmetrize (numerical hygiene)
-        R = jnp.linalg.cholesky(G + 1e-12 * jnp.eye(2))
+        R = jnp.linalg.cholesky(G)
         K = V @ jnp.linalg.inv(R)    # columns now M-orthonormal
         return K
 
     K = m2_orthonormalize(evecs[:, :2], Seq.M2)
+    h1_dof = K[:, 0]
+    h2_dof = K[:, 1]
 
-    h1 = Pushforward(DiscreteFunction(K[0], Seq.Λ2, Seq.E2), Seq.F, 2)
-    h2 = Pushforward(DiscreteFunction(K[1], Seq.Λ2, Seq.E2), Seq.F, 2)
+    h1 = Pushforward(DiscreteFunction(h1_dof, Seq.Λ2, Seq.E2), Seq.F, 2)
+    h2 = Pushforward(DiscreteFunction(h2_dof, Seq.Λ2, Seq.E2), Seq.F, 2)
 
     # Next, compute contour integrals:
     # contour wrapping around the tunnel poloidally:
@@ -99,7 +100,7 @@ def get_err(Ip, It, n, p, q, μ0=1.0):
 
     # Coefficients of the harmonic fields:
     a = jnp.linalg.solve(P.T, μ0 * I)
-    b_dofs = a[0] * evecs[:, 0] + a[1] * evecs[:, 1]
+    b_dofs = a[0] * h1_dof + a[1] * h2_dof
 
     # assert that the solution is indeed harmonic:
     Seq.assemble_M3()
@@ -109,10 +110,11 @@ def get_err(Ip, It, n, p, q, μ0=1.0):
     assert (curl_b_dofs @ Seq.M1 @ curl_b_dofs)**0.5 < 1e-10
     assert (div_b_dofs @ Seq.M3 @ div_b_dofs)**0.5 < 1e-10
 
-    # check energy in the field"
+    # check energy in the field
     energy = b_dofs @ Seq.M2 @ b_dofs / (2 * μ0)
-    expected_energy = 0.5 * μ0 * I @ jnp.linalg.solve(P.T @ P, I)
-    err = jnp.abs(energy - expected_energy) / expected_energy
+    expected_energy = μ0 / 2 * I @ jnp.linalg.solve(P.T @ P, I)
+    assert jnp.abs(energy - expected_energy) / expected_energy < 1e-10
+
     return
 
 
