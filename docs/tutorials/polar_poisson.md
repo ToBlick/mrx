@@ -10,7 +10,7 @@ nav_order: 2
 ### Mapping
 
 First, we define our mapping function. MRX is written with 3D problems in toroidal geometry in mind, so this map is still three-dimensional as $\Phi : [0, 1]^3 \mapsto \mathbb{R}^3$:
-```
+```python
 def Phi(x):
     r, θ, z = x
     return jnp.array([r * jnp.cos(2 * jnp.pi * θ),
@@ -19,7 +19,7 @@ def Phi(x):
 ```
 ### Manufactured solution
 We also define the source $f$ and the exact solution $u$ where $-\Delta u = f$:
-```
+```python
 def f(x):
     r, θ, z = x
     return -jnp.ones(1) * r * jnp.log(r)
@@ -32,7 +32,7 @@ In MRX, scalar functions are represented as arrays with a single element (or one
 
 ### Resolution and periodicity
 Next, we set the degree of basis functions in the three spatial dimensions. All code is written in 3D, hence solving a 2D problem is done by setting one of the basis functions constant:
-```
+```python
 ns = (n, n, 1)
 ps = (p, p, 0)
 types = ("clamped", "periodic", "constant")
@@ -41,7 +41,7 @@ The `types` tuple defines the type of basis functions in each spatial dimension.
 
 ### de Rham sequence
 We will solve the Poisson problem using zero-forms with Dirichlet boundary conditions. The central object to create is the `DeRhamSequence`:
-```
+```python
 Seq = DeRhamSequence(ns, ps, q, types, Phi, polar=True, dirichlet=True)
 ```
 
@@ -49,11 +49,11 @@ The Sequence object is a factory to create all relevant matrices, projectors, an
 
 ### Matrix assembly
 To assemble the matrices we need, we first evaluate all the 1D basis splines at all quadrature points in each spatial dimension
-```
+```python
 Seq.evaluate_1d()
 ```
 and then call the assemblers for our mass and stiffness matrices:
-```
+```python
 Seq.assemble_M0()
 Seq.assemble_dd0()
 ```
@@ -99,12 +99,12 @@ $$
 Note that $\mathring{\mathbb M}_0^{-1} \mathring\Pi_0(\hat f)$ are the DoFs of the $L^2$ projection of $\hat f$ onto the discrete zero-form space.
 
 With all this in place, we can solve for the $u$ DoFs and create a `DiscreteFunction` object that supports evaluation as `u_h(x)`:
-```
+```python
 u_dof = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
 u_h = DiscreteFunction(u_dof, Seq.Λ0, Seq.E0)
 ```
 The only thing left to do is to compute the $L^2$ error between the discrete solution `u_h` and the exact solution `u`. This is done by evaluating both functions at `Seq`s quadrature points and computing a weighted sum:
-```
+```python
 def diff_at_x(x):
     return u(x) - u_h(x)
 df_at_x = jax.vmap(diff_at_x)(Seq.Q.x)

@@ -83,7 +83,7 @@ The constant in $u$ is chosen such that $u(1) = 0$.
 
 ### Code
 With all this in place, the code is straightforward. We start by defining the mapping from logical to physical space, get a `deRhamSequence` object (this time without Dirichlet boundary conditions, as the boundary conditions are natural instead of essential), assemble the required matrices, project the source term, and solve for the degrees of freedom of `u_h`.
-```
+```python
 def F(x):
     r, θ, z = x
     return jnp.array([r * jnp.cos(2 * jnp.pi * θ),
@@ -114,7 +114,7 @@ u_dof = jnp.linalg.solve(Seq.M3 @ Seq.dd3, Seq.P3(f))
 The assembly calls are done in that order as `Seq.d2` (strong divergence/weak gradient) depends on `Seq.M2`, and `Seq.dd3` (strong gradient $\circ$ weak divergence) depends on `Seq.d2`.
 
 To get a function on the physical domain, we can then use the `Pushforward` operation:
-```
+```python
 u_h = Pushforward(DiscreteFunction(u_dof, Seq.Λ3, Seq.E3), F, 3)
 ```
 The push-forward of a three-form scales the function values by the determinant of the Jacobian of the mapping.
