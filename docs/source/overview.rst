@@ -6,10 +6,8 @@ Ways to use mrx
 
 MRX is a collection of classes and functions that can be used in
 several ways for optimizing 2D and 3D MHD equilibria without the 
-assumption of nested flux surfaces.  
-You can manipulate the objects
+assumption of nested flux surfaces. You can manipulate the objects
 interactively, at the python command line or in a Jupyter notebook.
-
 
 Input files
 -----------
