@@ -16,42 +16,61 @@ jax.config.update("jax_enable_x64", True)
 ns = (15, 15, 1)  # Number of elements in each direction
 ps = (3, 3, 0)  # Polynomial degree in each direction
 types = ('clamped', 'periodic', 'constant')  # Types
-bcs = ('dirichlet', 'periodic', 'periodic')  # Boundary conditions
 
+# Radius and height of the cylinder
 a = 1
 h = 1
 
-
 def _R(r, χ):
+    """Cylindrical radial coordinate. Formula is:
+    
+    R(r, χ) = a r cos(2πχ)
+    """
     return jnp.ones(1) * (a * r * jnp.cos(2 * jnp.pi * χ))
 
 
-def _Y(r, χ):
+def _Z(r, χ):
+    """Cylindrical vertical coordinate. Formula is:
+    
+    Y(r, χ) = a r sin(2πχ)
+    """
     return jnp.ones(1) * (a * r * jnp.sin(2 * jnp.pi * χ))
 
 
 def F(x):
+    """Cylindrical coordinate mapping function. Formula is:
+    
+    F(r, χ, z) = (R, Z, hz) = (a r cos(2πχ), a r sin(2πχ), h z)
+
+    Args:   
+        x: Input logical coordinates (r, χ, z)
+
+    Returns:
+        F: Coordinate mapping function (R, Z, hz)
+    """
     r, χ, z = x
-    return jnp.ravel(jnp.array([_R(r, χ), _Y(r, χ), h * jnp.ones(1) * z]))
+    return jnp.ravel(jnp.array([_R(r, χ), _Z(r, χ), h * jnp.ones(1) * z]))
 
 
 # Create DeRham sequence
-derham = DeRhamSequence(ns, ps, 8, types, bcs, F, polar=True)
+derham = DeRhamSequence(ns, ps, 8, types, F, polar=True, dirichlet=True)
 
 # Get extraction operators and mass matrices
-E0, E1, E2, E3 = [derham.E0.matrix(), derham.E1.matrix(),
-                  derham.E2.matrix(), derham.E3.matrix()]
-M1 = derham.assemble_M1()  # Mass matrix for 1-forms
-M0 = derham.assemble_M0()  # Mass matrix for 0-forms
-
-
-D0 = derham.assemble_grad()  # Gradient matrix
+E0, E1, E2, E3 = [derham.E0, derham.E1, derham.E2, derham.E3]
+derham.evaluate_1d()
+derham.assemble_M1()  # Mass matrix for 1-forms
+derham.assemble_M0()  # Mass matrix for 0-forms
+derham.assemble_d0()  # Gradient matrix for 0-forms
+M1 = derham.M1 
+M0 = derham.M0 
+D0 = derham.D0 
 O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros((D0.shape[1], D0.shape[1]))
 
-
+# TODO: Update the correct assembly method to be used below
 C = derham.assemble_curlcurl()  # Double curl matrix
 
+# TODO: Clarify why we construct these block matrices here
 Q = jnp.block([[C, D0], [D0.T, O0]])
 P = jnp.block([[M1, O10], [O10.T, O0]])
 
@@ -69,15 +88,10 @@ evs = evs[sort_indices]
 evecs = evecs[:, sort_indices]
 
 # %%
-
-
 def calculate_cylindrical_periodic_TE_TM_eigenvalues(
-    # List of azimuthal mode indices n (e.g., [0, 1, 2], n >= 0)
-    n_values,
-    # List of radial mode indices m (e.g., [1, 2, 3], m >= 1)
-    m_values,
-    # List of axial periodic indices k (e.g., [0, 1, 2], k >= 0)
-    k_axial_values,
+    n_values, # List of azimuthal mode indices n (e.g., [0, 1, 2], n >= 0)
+    m_values, # List of radial mode indices m (e.g., [1, 2, 3], m >= 1)
+    k_axial_values, # List of axial periodic indices k (e.g., [0, 1, 2], k >= 0)
     radius_a,             # Radius of the cylinder
     period_h              # Periodicity length in z-direction
 ):
@@ -89,6 +103,24 @@ def calculate_cylindrical_periodic_TE_TM_eigenvalues(
                   where j'_nm is the m-th positive root of J'_n(x) = 0.
     For TM modes: k^2 = (j_nm / radius_a)^2 + (2 * k_axial * pi / period_h)^2,
                   where j_nm is the m-th positive root of J_n(x) = 0.
+
+    Args:
+        n_values: List of azimuthal mode indices n (e.g., [0, 1, 2], n >= 0)
+        m_values: List of radial mode indices m (e.g., [1, 2, 3], m >= 1)
+        k_axial_values: List of axial periodic indices k (e.g., [0, 1, 2], k >= 0)
+        radius_a: Radius of the cylinder
+        period_h: Periodicity length in z-direction
+
+    Returns:
+        all_eigenvalues_repeated: List of all eigenvalues (k^2)
+        sorted_eigenvalues: Sorted list of all eigenvalues (k^2)
+
+    Raises:
+        ValueError: If radius_a or period_h is not positive
+        ValueError: If m_values is not a list of positive integers
+        ValueError: If k_axial_values is not a list of non-negative integers
+        ValueError: If n_values is not a list of non-negative integers
+        ValueError: If any eigenvalue is not finite
     """
     if not (radius_a > 0 and period_h > 0):
         raise ValueError("Radius 'a' and period 'h' must be positive.")
@@ -170,7 +202,6 @@ def calculate_cylindrical_periodic_TE_TM_eigenvalues(
             # If n>0 and k_axial_index=0 (TM_nm0, n>0), E_z is proportional to J_n(k_c r).
             # This means H_r and H_phi are zero, but E_z, E_r are not necessarily zero.
             # These are valid modes.
-
             for k_axial_index in k_axial_values:
                 term1_radial_TM = (j_nm_root / radius_a)**2
                 term2_axial = (2 * k_axial_index * np.pi /
@@ -194,19 +225,17 @@ true_evs = calculate_cylindrical_periodic_TE_TM_eigenvalues(
     range(0, 8), range(1, 8), range(1), a, h)
 
 # %%
-# --- PLOT SETTINGS FOR SLIDES ---
+# set some plotting variables
 FIG_SIZE = (12, 6)      # Figure size in inches (width, height)
 TITLE_SIZE = 20         # Font size for the plot title
 LABEL_SIZE = 20         # Font size for x and y axis labels
 TICK_SIZE = 16          # Font size for x and y tick labels
 LEGEND_SIZE = 16        # Font size for the legend
 LINE_WIDTH = 2.5        # Width of the plot lines
-# ---------------------------------
 end = 40
 
 # %% Figure 1: Energy and Force
 fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
-
 color1 = 'purple'
 color2 = 'black'
 ax1.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
@@ -226,21 +255,37 @@ fig1.savefig('cylinder_eigenvalues.pdf', bbox_inches='tight')
 # %%
 # Check that for all EVs in `evs`, there is a corresponding true EV in `true_evs` such that the difference is less than tol:
 tol = 1e-5
-
-
 def dist(ev, true_evs):
-    """Calculate the distance between an eigenvalue and the closest true eigenvalue."""
+    """Calculate the distance between an eigenvalue and the closest true eigenvalue.
+    
+    Args:
+        ev: Eigenvalue to check
+        true_evs: List of true eigenvalues
+
+    Returns:
+        Relative difference between the eigenvalue and the closest true eigenvalue
+    """
     return jnp.min(jnp.abs(true_evs - ev)/true_evs)
 
 
 def check_eigenvalues(evs, true_evs, tol=1e-5):
-    """Check if all eigenvalues in `evs` are close to some eigenvalue in `true_evs`."""
+    """Check if all eigenvalues in `evs` are close to some eigenvalue in `true_evs`.
+    
+    Args:
+        evs: List of eigenvalues to check
+        true_evs: List of true eigenvalues
+        tol: Tolerance for the check
+
+    Returns:
+        True if all eigenvalues in `evs` are close to some eigenvalue in `true_evs`, False otherwise
+    """
     return jnp.all(jax.vmap(dist, in_axes=(0, None))(evs, true_evs) < tol)
 
 
 # %%
 
 # %%
+# Generate a grid of points in the physical domain
 ɛ = 1e-5
 nx = 64
 _x1 = jnp.linspace(ɛ, 1-ɛ, nx)
@@ -287,6 +332,9 @@ def plot_eigenvectors_grid(
         y1_coords, y2_coords: Meshgrid outputs for plt.contourf.
         nx_grid: Integer dimension for reshaping the output norm.
         num_to_plot: Number of eigenvectors to plot (default is 9 for a 3x3 grid).
+
+    Returns:
+        fig: Figure object
     """
     if num_to_plot > evecs.shape[1]:
         print(

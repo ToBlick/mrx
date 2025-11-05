@@ -16,8 +16,20 @@ os.makedirs("script_outputs", exist_ok=True)
 
 
 def get_err(n, p):
+    """
+    Compute the error in the solution of a vector Poisson problem in 3D.
+    We define this function that does assembly, solves the system, and computes the error.
+    It is JIT-compiled separately for different values of n, p.
+
+    Args:
+        n: Number of elements in each direction
+        p: Polynomial degree
+
+    Returns:
+        float: Relative L2 error of the solution
+    """
     # Set up finite element spaces
-    q = 2*p
+    q = 2 * p
     ns = (n, n, n)
     ps = (p, p, p)
     types = ("clamped", "periodic", "periodic")
@@ -27,16 +39,27 @@ def get_err(n, p):
     π = jnp.pi
 
     def _X(r, χ):
+        """Cylindrical radial coordinate. Formula is:
+        
+        X(r, χ) = r cos(2πχ)
+        """
         return jnp.ones(1) * r * jnp.cos(2 * π * χ)
 
     def _Y(r, χ):
+        """Cylindrical vertical coordinate. Formula is:
+        
+        Y(r, χ) = r sin(2πχ)
+        """
         return jnp.ones(1) * r * jnp.sin(2 * χ)
 
     def _Z(r, χ):
         return jnp.ones(1)
 
     def F(x):
-        """Polar coordinate mapping function."""
+        """Cylindrical coordinate mapping function. Formula is:
+        
+        F(r, χ, z) = (X, Y, Z) = (r cos(2πχ), r sin(2πχ), z)
+        """
         r, χ, z = x
         return jnp.ravel(jnp.array([_X(r, χ),
                                     _Y(r, χ),
@@ -44,37 +67,64 @@ def get_err(n, p):
 
     # Define exact solution and source term
     def u(x):
-        """Exact solution of the Poisson problem."""
+        """Exact solution of the Poisson problem. Formula is:
+        
+        u(r, χ, z) = (0, r² (1 - r)² cos(2πz), 0), 
+        and is independent of χ.
+
+        Args:
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            u: Exact solution of the vector Poisson problem given the source term defined below.
+        """
         r, χ, z = x
         u_theta = r**2 * (1 - r)**2 * jnp.cos(2*π*z)
         return jnp.array([0, u_theta, 0])
 
     def f(x):
-        """Source term of the Poisson problem."""
+        """Source term of the Poisson problem. Formula is:
+        
+        f(r, χ, z) = (0, 4π² r² (1 - r)² cos(2πz) - (3 - 16r + 15r²) cos(2πz), 0),
+        and is independent of χ.
+
+        Args:
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            f: Source term of the vector Poisson problem.
+        """
         r, χ, z = x
-        f_theta = (r**2 * (1 - r)**2 * 4*π**2 -
-                   (3 - 16*r + 15*r**2)) * jnp.cos(2*π*z)
+        f_theta = (r**2 * (1 - r)**2 * 4*π**2 - (3 - 16*r + 15*r**2)) * jnp.cos(2*π*z)
         return jnp.array([0, f_theta, 0])
 
     # Create DeRham sequence
-    derham = DeRhamSequence(ns, ps, q, types, bcs, F, polar=False)
+    derham = DeRhamSequence(ns, ps, q, types, F, polar=False, dirichlet=True)
+    derham.evaluate_1d()
+    derham.assemble_M0()
+    derham.assemble_M1()
+    derham.assemble_M2()
 
-    # Curl operator
-    C = derham.assemble_curl()
+    # Curl operator TODO: should this be strong or weak? 
+    derham.assemble_d1()
+    C = derham.strong_curl
 
     # Double divergence operator on 2-forms
-    K = derham.assemble_divdiv()
+    derham.assemble_dd2()
+    dd2 = derham.dd2
 
     # Mass matrix for 1-forms
-    M1 = derham.assemble_M1()
+    derham.assemble_M1()
+    M1 = derham.M1
 
     # Mass matrix for 2-forms
-    M2 = derham.assemble_M2()
+    derham.assemble_M2()
+    M2 = derham.M2
 
     # block_matrix = jnp.block([[K, C], [-C.T, M1]])
+    L = C @ jnp.linalg.solve(M1, C.T) + dd2
 
-    L = C @ jnp.linalg.solve(M1, C.T) + K
-
+    # Solve the generalized eigenvalue problem
     tol = 1e-12
     eigvals, eigvecs = jnp.linalg.eigh(L)
     inv_eigvals = jnp.where(
@@ -85,13 +135,11 @@ def get_err(n, p):
     L_pinv = (eigvecs * inv_eigvals) @ eigvecs.T
 
     # Project source term onto 2-form space
-    P2 = derham.P2
-    f_proj = P2(f)
-
+    f_proj = derham.P2(f)
     u_hat = L_pinv @ f_proj
 
     # Project exact solution onto 2-form space for error computation
-    u_proj = P2(u)
+    u_proj = derham.P2(u)
 
     u_hat_analytic = jnp.linalg.solve(M2, u_proj)
     error = ((u_hat - u_hat_analytic) @ M2 @ (u_hat - u_hat_analytic) /
@@ -100,8 +148,17 @@ def get_err(n, p):
 
 
 def run_convergence_analysis(ns, ps):
-    """Run convergence analysis for different parameters."""
+    """Run convergence analysis for different parameters.
+    
+    Args:
+        ns: List of number of elements in each direction
+        ps: List of polynomial degrees
 
+    Returns:
+        err: Array of relative L2 errors
+        times: Array of computation times   
+        times2: Array of computation times for second run
+    """
     # Arrays to store results
     err = np.zeros((len(ns), len(ps)))
     times = np.zeros((len(ns), len(ps)))
@@ -114,8 +171,7 @@ def run_convergence_analysis(ns, ps):
             err[i, j] = get_err(n, p)
             end = time.time()
             times[i, j] = end - start
-            print(
-                f"n={n}, p={p}, err={err[i, j]:.2e}, time={times[i, j]:.2f}s")
+            print(f"n={n}, p={p}, err={err[i, j]:.2e}, time={times[i, j]:.2f}s")
 
     # Second run (after first compilation)
     print("\nSecond run (after first compilation):")
@@ -131,8 +187,17 @@ def run_convergence_analysis(ns, ps):
     return err, times, times2
 
 
-def plot_results(err, times, times2, ns, ps):
-    """Plot the results of the convergence analysis."""
+def plot_results(err, ns, ps):
+    """Plot the results of the convergence analysis.
+    
+    Args:
+        err: Array of relative L2 errors
+        ns: List of number of elements in each direction
+        ps: List of polynomial degrees
+    
+    Returns:
+        fig1: Figure object
+    """
     # Error convergence plot
     fig1 = plt.figure(figsize=(10, 6))
     for j, p in enumerate(ps):
@@ -158,12 +223,12 @@ def plot_results(err, times, times2, ns, ps):
 def main():
     """Main function to run the analysis."""
     # Run convergence analysis
-    ns = np.arange(4, 6, 1)
+    ns = np.arange(4, 8, 2)
     ps = np.arange(1, 4)
-    err, times, times2 = run_convergence_analysis(ns, ps)
+    err, _, _ = run_convergence_analysis(ns, ps)
 
     # Plot results
-    plot_results(err, times, times2, ns, ps)
+    plot_results(err, ns, ps)
 
     # Show all figures
     plt.show()

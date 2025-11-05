@@ -16,6 +16,18 @@ os.makedirs("script_outputs", exist_ok=True)
 
 # @partial(jax.jit, static_argnames=["n", "p"])
 def get_err(n, p):
+    """
+    Computes the error, condition number, and sparsity of the solution to the Poisson equation on a toroidal domain.
+
+    Args:
+        n: Number of elements in each direction.
+        p: Polynomial degree.
+
+    Returns:
+        error: Error of the solution.
+        cond: Condition number of the system.
+        sparsity: Sparsity of the system.
+    """
     # Set up finite element spaces
     q = p
     ns = (n, n, n)
@@ -28,26 +40,67 @@ def get_err(n, p):
     π = jnp.pi
 
     def _X(r, χ):
+        """Toroidal radial coordinate. Formula is:
+        
+        X(r, χ) = R0 + a * r * cos(2πχ)
+        """
         return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
 
     def _Y(r, χ):
+        """Toroidal vertical coordinate. Formula is:
+        
+        Y(r, χ) = R0 + a * r * cos(2πχ)
+        """
         return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
 
     def _Z(r, χ):
+        """Toroidal azimuthal coordinate. Formula is:
+        
+        Z(r, χ) = a * r * sin(2πχ)
+        """
         return jnp.ones(1) * a * r * jnp.sin(2 * π * χ)
 
     def F(x):
-        """Polar coordinate mapping function."""
+        """Toroidal coordinate mapping function. Formula is:
+        
+        F(r, χ, z) = (X(r, χ) * cos(2πz), -Y(r, χ) * sin(2πz), Z(r, χ))
+
+        Args:   
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            F: Coordinate mapping function
+        """
         r, χ, z = x
         return jnp.ravel(jnp.array([_X(r, χ) * jnp.cos(2 * π * z),
                                     -_Y(r, χ) * jnp.sin(2 * π * z),
                                     _Z(r, χ)]))
         
     def u(x):
+        """Exact solution of the Poisson equation. Formula is:
+        
+        u(r, χ, z) = 1/4 * (r**2 - r**4) * cos(2πz)
+
+        Args:
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            u: Exact solution of the Poisson equation
+        """
         r, χ, z = x
         return 1/4 * (r**2 - r**4) * jnp.cos(2 * π * z) * jnp.ones(1)
     
     def f(x):
+        """Source term of the Poisson equation. Formula is:
+
+        f(r, χ, z) = cos(2πz) * (-1/a**2 * (1 - 4r**2) - 1/(a*R) * (r/2 - r**3) * cos(2πχ) + 1/4 * (r**2 - r**4) / R**2 )
+
+        Args:
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            f: Source term of the Poisson equation
+        """
         r, χ, z = x
         R = R0 + a * r * jnp.cos(2 * jnp.pi * χ)
         return jnp.cos(2 * jnp.pi * z) * (-1/a**2 * (1 - 4*r**2) - 1/(a*R) * (r/2 - r**3) * jnp.cos(2 * jnp.pi * χ) + 1/4 * (r**2 - r**4) / R**2 ) * jnp.ones(1)
@@ -65,18 +118,25 @@ def get_err(n, p):
 
     # do not vmap here because of memory issues
     def diff_at_x(x):
+        """Difference between exact and computed solution.
+
+        Args:
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            diff: Difference between exact and computed solution
+        """
         return u(x) - u_h(x)
 
     def body_fun(carry, x):
         return None, diff_at_x(x)
 
+    # TODO: Explain what is happening below.
     _, df = jax.lax.scan(body_fun, None, Seq.Q.x)
-    
     L2_df = jnp.einsum('ik,ik,i,i->', df, df, Seq.J_j, Seq.Q.w)**0.5
     L2_f = jnp.einsum('ik,ik,i,i->',
                       jax.vmap(u)(Seq.Q.x), jax.vmap(u)(Seq.Q.x),
                       Seq.J_j, Seq.Q.w)**0.5
-
     error = L2_df / L2_f
     return error, jnp.linalg.cond(Seq.M0 @ Seq.dd0), jnp.sum(jnp.abs(Seq.M0 @ Seq.dd0) > 1e-12) / Seq.dd0.size
 
@@ -85,6 +145,9 @@ def main():
     """Run get_err for a single (n,p) taken from command-line arguments and save results to a text file.
 
     Usage: python toroid_poisson.py <n> <p>
+
+    Raises:
+        ValueError: If n or p are not integers or n <= p
     """
     if len(sys.argv) < 3:
         print("Usage: python toroid_poisson.py <n> <p>")

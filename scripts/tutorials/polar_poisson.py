@@ -93,7 +93,17 @@ def get_err(n, p, q):
 
 
 def run_convergence_analysis(ns, ps):
-    """Run convergence analysis for different parameters."""
+    """Run convergence analysis for different parameters.
+    
+    Args:
+        ns: List of number of elements in each direction
+        ps: List of polynomial degrees
+
+    Returns:
+        err: Array of relative L2 errors
+        times: Array of computation times
+        times2: Array of computation times for second run
+    """
     # Arrays to store results
     err = np.zeros((len(ns), len(ps)))
     times = np.zeros((len(ns), len(ps)))
@@ -125,7 +135,7 @@ def run_convergence_analysis(ns, ps):
             times2[i, j] = end - start
             print(f"n={n}, p={p}, q={q}, time={times2[i, j]:.2f}s")
 
-    return err, times, times2, ns, ps
+    return err, times, times2
 
 
 def plot_results(err, times, times2, ns, ps):
@@ -195,7 +205,7 @@ def main():
     # Run convergence analysis
     ns = np.arange(6, 17, 2)
     ps = np.arange(1, 5)
-    err, times, times2, ns, ps = run_convergence_analysis(ns, ps)
+    err, times, times2 = run_convergence_analysis(ns, ps)
     # Plot results
     plot_results(err, times, times2, ns, ps)
     # Show all figures
