@@ -24,7 +24,17 @@ def test_harmonic_fields():
 
     @jax.jit
     def F(x):
-        """Hollow toroid."""
+        """Hollow toroid. Formula is:
+        
+        F(r, θ, ζ) = (R cos(2πζ), -R sin(2πζ), ɛ (r + 1)/2 sin(2πθ))
+        where R = 1 + ɛ (r + 1)/2 cos(2πθ) is the radial coordinate.
+
+        Args: 
+            x: (r, θ, ζ) in logical coordinates
+
+        Returns:
+            F: (x, y, z) in physical coordinates
+        """
         r, θ, ζ = x
         R = 1 + ɛ * (r + 1)/2 * jnp.cos(2 * π * θ)
         return jnp.array([R * jnp.cos(2 * π * ζ),
@@ -40,8 +50,10 @@ def test_harmonic_fields():
     Seq.assemble_all()
 
     evs, evecs = sp.linalg.eigh(Seq.M2 @ Seq.dd2, Seq.M2)
-    assert jnp.sum(evs < 1e-11) == 2  # two harmonic fields
-    assert jnp.min(evs) > -1e-11  # no negative eigenvalues
+    # tolerance is 1e-10 to account for numerical errors
+    # since first two eigenvalues are -1e-12 and 1e-11 or so. 
+    assert jnp.sum(evs < 1e-10) == 2  # two harmonic fields
+    assert jnp.min(evs) > -1e-10  # no negative eigenvalues
 
     h1_dof = evecs[:, 0]
     h2_dof = evecs[:, 1]
@@ -73,11 +85,11 @@ def test_harmonic_fields():
     _χ = jnp.linspace(0, 1, n_q, endpoint=False)
     _w = jnp.ones(n_q) * (1/n_q)
 
+    # this matrix has entries ∫ h_i · dl_j
     P = jnp.array([
         [jax.vmap(h_dl(h, c))(_χ) @ _w for c in (c1, c2)]
         for h in (h1, h2)
     ])
-    # this matrix has entries ∫ h_i · dl_j
 
     # Coefficients of the harmonic fields:
     b = jnp.linalg.solve(P.T, μ0 * Is)
@@ -89,10 +101,18 @@ def test_harmonic_fields():
     assert (curl_b_dofs @ Seq.M1 @ curl_b_dofs)**0.5 < 1e-10
     assert (div_b_dofs @ Seq.M3 @ div_b_dofs)**0.5 < 1e-10
 
-    # in ɛ ≪ 1 limit, we know that B = μ0 (I_p eφ / 2πR + I_t eθ / 2πd),
-    # where d is the distance to the centerline of the enclosed tunnel
-    # and R the distance to the z-axis
     def B_expected(x):
+        """Exact magnetic field in Cartesian coordinates.
+        In the ɛ ≪ 1 limit, we know that B = μ0 (I_p eφ / 2πR + I_t eθ / 2πd),
+        where d is the distance to the centerline of the enclosed tunnel
+        and R the distance to the z-axis
+
+        Args: 
+            x: (r, θ, ζ) in logical coordinates
+
+        Returns:
+            B: (Bx, By, Bz) in Cartesian coordinates
+        """
         r, θ, ζ = x
         d = ɛ * (r + 1) / 2
         R = 1 + d * jnp.cos(2 * π * θ)
