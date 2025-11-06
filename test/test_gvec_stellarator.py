@@ -1,53 +1,45 @@
 # %%
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy as sp
+import numpy.testing as npt
 import xarray as xr
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.utils import evaluate_at_xq, integrate_against
+from mrx.differential_forms import DiscreteFunction
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
-p = 3
-n = 8
-
-# %%
-gvec_eq = xr.open_dataset("data/gvec_tokamak.h5", engine="h5netcdf")
-# %%
-
-θ_star = gvec_eq["thetastar"].values    # shape (mρ, mθ), rho x theta
+p, n, nfp = 3, 8, 3
+gvec_eq = xr.open_dataset("data/gvec_stellarator.h5", engine="h5netcdf")
+θ_star = gvec_eq["thetastar"].values    # shape (mρ, mθ, mζ), rho x theta
 _ρ = gvec_eq["rho"].values              # shape (mρ,)
 _θ = gvec_eq["theta"].values            # shape (mθ,)
-X1 = gvec_eq["X1"].values              # shape (mρ, mθ, 1)
-X2 = gvec_eq["X2"].values              # shape (mρ, mθ, 1)
+_ζ = gvec_eq["zeta"].values             # shape (mζ,)
+X1 = gvec_eq["X1"].values               # shape (mρ, mθ, mζ)
+X2 = gvec_eq["X2"].values               # shape (mρ, mθ, mζ)
 # %%
-# Get a deRham sequence to approximate the functions X1(ρ,θ) and X2(ρ,θ)
-mapSeq = DeRhamSequence((n, n, 1), (p, p, 0), p+2,
-                        ("clamped", "periodic", "constant"),
+# Get a deRham sequence to approximate the functions x1(ρ,θ,ζ), x2(ρ,θ,ζ) and x3(ρ,θ,ζ)
+mapSeq = DeRhamSequence((n, n, n), (p, p, p), p+2,
+                        ("clamped", "periodic", "clamped"),
                         lambda x: x, polar=False, dirichlet=False)
 
-
 # Set up the interpolation problem:
-# ∑ c_i Λ0[i](ρ,θ*(ρ,θ),0)_j ≈ X1(ρ,θ)_j
-
+# ∑ c_ki Λ0[i](ρ,θ*(ρ,θ,ζ),ζ)_j ≈ Xk(ρ,θ,ζ)_j ∀j
 # Evaluation grid:
-ρ, θ = jnp.meshgrid(_ρ, _θ, indexing="ij")    # shape (mρ, mθ)
-θ_star = jnp.asarray(θ_star)                  # same shape
-# Build evaluation points in 3D expected by Λ0[i]: set ζ=0
-pts = jnp.stack([ρ.ravel(), θ_star.ravel() / (2 * jnp.pi),
-                jnp.zeros(ρ.size)], axis=1)  # (mρ mθ, 3)
+# evaluation grid, shape (mρ, mθ, mζ)
+ρ, θ, ζ = jnp.meshgrid(_ρ, _θ, _ζ, indexing="ij")
+θ_star = jnp.asarray(θ_star)
+pts = jnp.stack([ρ.ravel(), θ_star.ravel() / (2 * jnp.pi), ζ.ravel() /
+                (2 * jnp.pi) * nfp], axis=1)  # x_hat_js, shape (mρ mθ mζ, 3)
 
-# Design Matrix:
 M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.Λ0[i](x)[0])(pts))(
-    mapSeq.Λ0.ns).T  # (mρ mθ, n)
-# Target values:
-y = jnp.stack([X1.ravel(), X2.ravel()], axis=1)  # (mρ mθ, 2)
-# %%
+    mapSeq.Λ0.ns).T  # Λ0[i](x_hat_j)
+y = jnp.stack([X1.ravel(), X2.ravel()], axis=1)  # X_α(x'_j)
 c, residuals, rank, s = jnp.linalg.lstsq(M, y, rcond=None)
 # %%
 X1_h = DiscreteFunction(c[:, 0], mapSeq.Λ0, mapSeq.E0)
@@ -57,8 +49,8 @@ X2_h = DiscreteFunction(c[:, 1], mapSeq.Λ0, mapSeq.E0)
 @jax.jit
 def F(x):
     r, θ, ζ = x
-    return jnp.array([X1_h(x)[0] * jnp.cos(2 * jnp.pi * ζ),
-                      -X1_h(x)[0] * jnp.sin(2 * jnp.pi * ζ),
+    return jnp.array([X1_h(x)[0] * jnp.cos(jnp.pi * ζ / nfp),
+                      -X1_h(x)[0] * jnp.sin(jnp.pi * ζ / nfp),
                       X2_h(x)[0]])
 
 # %%
@@ -67,15 +59,13 @@ def F(x):
 
 def f(x):
     r, θ, ζ = x
-    return jnp.sin(2 * jnp.pi * θ) * jnp.sin(jnp.pi * r) * jnp.ones(1)
+    return jnp.sin(2 * jnp.pi * θ) * jnp.sin(2 * jnp.pi * ζ) * jnp.sin(jnp.pi * r) * jnp.ones(1)
 
 
-projection_errs = []
-ns = jnp.arange(4, 19, 2)
-
-for n in ns:
-    Seq = DeRhamSequence((n, n, 1), (p, p, 0), p+2,
-                         ("clamped", "periodic", "constant"),
+@partial(jax.jit, static_argnames=["n"])
+def get_err(n):
+    Seq = DeRhamSequence((n, n, n), (p, p, p), p+2,
+                         ("clamped", "periodic", "periodic"),
                          F, polar=True, dirichlet=True)
     Seq.evaluate_1d()
     Seq.assemble_M0()
@@ -88,9 +78,7 @@ for n in ns:
 
     def body_fun(carry, x):
         return None, diff_at_x(x)
-
     _, df = jax.lax.scan(body_fun, None, Seq.Q.x)
-
     L2_dp = jnp.einsum('ik,ik,i,i->', df, df, Seq.J_j, Seq.Q.w)**0.5
     L2_p = jnp.einsum('ik,ik,i,i->',
                       jax.vmap(f)(Seq.Q.x),
@@ -98,8 +86,65 @@ for n in ns:
                       Seq.J_j, Seq.Q.w)**0.5
 
     error = L2_dp / L2_p
+    return error, jnp.min(Seq.J_j), jnp.max(Seq.J_j)
+
+
+# %%
+projection_errs = []
+ns = range(4, 10, 1)
+for n in ns:
+    error, J_min, J_max = get_err(n)
+    assert J_min > 0, f"Jacobian has non-positive values for n={n}"
+    assert J_max / J_min < 1e9, f"Jacobian severely ill-conditioned for n={n}"
     projection_errs.append(error)
-    print(f"n={n}: projection relative L2 error = {error:.3e}")
+    print(f"n={n}: projection relative L2 error = {projection_errs[-1]:.3e}")
+
+# Check that the error decreases with increasing n at expected rate or faster
+rates = -jnp.array([jnp.log(projection_errs[i] / projection_errs[i+1]) /
+                   jnp.log(ns[i] / ns[i+1]) for i in range(len(ns)-1)])
+assert jnp.mean(rates) >= p + 1, f"Convergence rates too low: {rates}"
+
+
+# %%
+Seq = DeRhamSequence((5, 5, 5), (3, 3, 3), 5,
+                     ("clamped", "periodic", "periodic"),
+                     F, polar=True, dirichlet=True)
+Seq.evaluate_1d()
+Seq.assemble_all()
+
+eigs = [
+    jnp.linalg.eigvalsh(Seq.M0 @ Seq.dd0),
+    jnp.linalg.eigvalsh(Seq.M1 @ Seq.dd1),
+    jnp.linalg.eigvalsh(Seq.M2 @ Seq.dd2),
+    jnp.linalg.eigvalsh(Seq.M3 @ Seq.dd3),
+]
+
+expected_nulls = [False,  False,  True, True]
+for i, (vals, should_be_zero) in enumerate(zip(eigs, expected_nulls)):
+    # --- all eigenvalues should be nonnegative ---
+    min_eig = jnp.min(vals)
+    assert min_eig > -1e-10, (
+        f"dd{i} has negative eigenvalue {min_eig}"
+    )
+
+    # --- check smallest eigenvalue matches expected nullspace pattern ---
+    λ0 = float(vals[0])
+    if should_be_zero:
+        assert abs(λ0) < 1e-10, (
+            f"dd{i} should have zero eigenvalue (got {λ0})"
+        )
+    else:
+        assert abs(λ0) > 1e-6, (
+            f"dd{i} should NOT have zero eigenvalue (got {λ0})"
+        )
+
+# Check exactness identities
+curl_grad = jnp.max(jnp.abs(Seq.strong_curl @ Seq.strong_grad))
+div_curl = jnp.max(jnp.abs(Seq.strong_div @ Seq.strong_curl))
+npt.assert_allclose(curl_grad, 0.0, atol=1e-12,
+                    err_msg="curl∘grad ≠ 0")
+npt.assert_allclose(div_curl, 0.0, atol=1e-12,
+                    err_msg="div∘curl ≠ 0")
 
 
 # %%
@@ -115,13 +160,16 @@ plt.tight_layout()
 plt.show()
 
 # %%
+
+
+# %%
 # --------------------------------------------------------------------
 # Parameters for the sampling grid in (ρ, θ)
 # --------------------------------------------------------------------
 mρ_vis, mθ_vis = 80, 180
 ρ_vals = jnp.linspace(0.0, 1.0, mρ_vis)
 θ_vals = jnp.linspace(0.0, 2 * jnp.pi, mθ_vis)
-
+ζ_val = 0.5
 # Normalize θ for Λ0 evaluation
 θ_norm = (θ_vals / (2 * jnp.pi)) % 1.0
 
@@ -134,7 +182,7 @@ def eval_map(rho, thetas):
     pts = jnp.stack([
         jnp.full_like(thetas, rho),
         (thetas / (2 * jnp.pi)) % 1.0,
-        jnp.zeros_like(thetas)
+        jnp.ones_like(thetas) * ζ_val
     ], axis=1)
     R = jax.vmap(X1_h)(pts)
     Z = jax.vmap(X2_h)(pts)
@@ -149,7 +197,7 @@ def eval_map_theta(theta_norm):
     pts = jnp.stack([
         jnp.linspace(0, 1, mρ_vis),
         jnp.full(mρ_vis, theta_norm),
-        jnp.zeros(mρ_vis)
+        jnp.ones(mρ_vis) * ζ_val
     ], axis=1)
     R = jax.vmap(X1_h)(pts)
     Z = jax.vmap(X2_h)(pts)
