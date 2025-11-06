@@ -43,6 +43,9 @@ dependencies = [
     "h5py",
 ]
 
+[tool.ruff]
+target-version = "py312"
+
 [tool.setuptools.packages.find]
 include = ["mrx*"]  # Include specific packages
 exclude = ["scripts_tutorials*", "scripts_deprecated*"]                  # Exclude specific package
@@ -58,6 +61,3 @@ Homepage = "https://github.com/ToBlick/mrx"
 Download = "https://github.com/ToBlick/mrx"
 Issues = "https://github.com/ToBlick/mrx/issues"
 Repository = "https://github.com/ToBlick/mrx"
-
-[tool.ruff]
-target-version = "py312"
