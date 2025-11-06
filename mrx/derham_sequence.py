@@ -1,8 +1,6 @@
 from typing import Callable
 
 import jax
-import jax.experimental
-import jax.experimental.sparse
 import jax.numpy as jnp
 
 from mrx.boundary import LazyBoundaryOperator
@@ -11,7 +9,7 @@ from mrx.nonlinearities import CrossProductProjection
 from mrx.polar import LazyExtractionOperator, get_xi
 from mrx.projectors import Projector
 from mrx.quadrature import QuadratureRule
-from mrx.utils import assemble, curl, div, grad, inv33, jacobian_determinant
+from mrx.utils import assemble, inv33, jacobian_determinant
 
 
 class DeRhamSequence():
@@ -28,20 +26,6 @@ class DeRhamSequence():
     E1: LazyBoundaryOperator
     E2: LazyBoundaryOperator
     E3: LazyBoundaryOperator
-    # # kth component of 0form i evaluated at quadrature point j. shape: n x n_q x 1
-    # Λ0_ijk: jnp.ndarray
-    # # kth component of 1form i evaluated at quadrature point j. shape: n x n_q x 3
-    # Λ1_ijk: jnp.ndarray
-    # # kth component of 2form i evaluated at quadrature point j. shape: n x n_q x 3
-    # Λ2_ijk: jnp.ndarray
-    # # kth component of 3form i evaluated at quadrature point j. shape: n x n_q x 1
-    # Λ3_ijk: jnp.ndarray
-    # # kth component of grad of 0form i evaluated at quadrature point j. shape: n x n_q x 3
-    # dΛ0_ijk: jnp.ndarray
-    # # kth component of curl of 1form i evaluated at quadrature point j. shape: n x n_q x 3
-    # dΛ1_ijk: jnp.ndarray
-    # # kth component of div of 2form i evaluated at quadrature point j. shape: n x n_q x 1
-    # dΛ2_ijk: jnp.ndarray
     r: jnp.ndarray
     theta: jnp.ndarray
     z: jnp.ndarray
@@ -49,21 +33,22 @@ class DeRhamSequence():
     dtheta: jnp.ndarray
     dz: jnp.ndarray
 
-    # Jacobian determinant evaluated at quadrature points. shape: n_q x 1
+    # Jacobian determinant evaluated at quadrature points: det DF(x_j). Shape: n_q x 1.
     J_j = jnp.ndarray
-    # (k,l)th element of metric at quadrature point j. shape: n_q x 3 x 3
+    # (k,l)th element of metric at quadrature point j: G(x_j)_kl. Shape: n_q x 3 x 3. G = DF^T DF.
     G_jkl = jnp.ndarray
+    # (k,l)th element of inverse metric at quadrature point j: G(x_j)^{-1}_kl. Shape: n_q x 3 x 3.
     G_inv_jkl = jnp.ndarray
 
     def __init__(self, ns, ps, q, types, F, polar, dirichlet=True):
         """
         Initialize the de Rham sequence.    
-
         """
         self.Λ0, self.Λ1, self.Λ2, self.Λ3 = [
             DifferentialForm(i, ns, ps, types) for i in range(0, 4)
         ]
         self.Q = QuadratureRule(self.Λ0, q)
+        # Mapping from logical to physical coordinates
         self.F = F
 
         def G(x):
@@ -105,6 +90,9 @@ class DeRhamSequence():
         ]
 
     def evaluate_1d(self):
+        """
+        Evaluate the 1D basis functions at quadrature points.
+        """
         self.r = jax.vmap(jax.vmap(self.Λ0.Λ[0], (0, None)),
                           (None, 0))(self.Q.x_x, self.Λ0.Λ[0].ns)
         self.theta = jax.vmap(jax.vmap(self.Λ0.Λ[1], (0, None)),
@@ -119,17 +107,22 @@ class DeRhamSequence():
                            (None, 0))(self.Q.x_z, self.Λ0.dΛ[2].ns)
 
     def get_Λ0_ijk(self, i, j, k):
-        # kth component of 0form i evaluated at quadrature point j.
-        # get 1d quadrature points
+        """
+        kth component of 0form i evaluated at quadrature point j.
+        (Λ0_i(x_j))_k
+        """
+        # get 1d quadrature points, weird order here is due to meshgrid's indexing
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
-        # weird order here is due to meshgrid's indexing
         # get the 1d basis functions
         c, i1, i2, i3 = self.Λ0._unravel_index(i)
         # k is always 0
         return self.r[i1, j1] * self.theta[i2, j2] * self.z[i3, j3]
 
     def get_dΛ0_ijk(self, i, j, k):
-        # kth component of gradient of 0 form i evaluated at quadrature point j.
+        """
+        kth component of gradient of 0form i evaluated at quadrature point j.
+        (grad Λ0_i(x_j))_k
+        """
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
         c, i1, i2, i3 = self.Λ0._unravel_index(i)
         # get i-1
@@ -148,7 +141,10 @@ class DeRhamSequence():
                                    self.r[i1, j1] * self.theta[i2, j2] * (dz_m1 - dz)))
 
     def get_Λ1_ijk(self, i, j, k):
-        # kth component of 1 form i evaluated at quadrature point j.
+        """
+        kth component of 1 form i evaluated at quadrature point j.
+        (Λ1_i(x_j))_k
+        """
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
         c, i1, i2, i3 = self.Λ1._unravel_index(i)
         return jnp.where(k == c,
@@ -163,7 +159,10 @@ class DeRhamSequence():
                          0.0)
 
     def get_dΛ1_ijk(self, i, j, k):
-        # kth component of curl of 1 form i evaluated at quadrature point j.
+        """
+        kth component of curl of 1 form i evaluated at quadrature point j.
+        (curl Λ1_i(x_j))_k
+        """
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
         c, i1, i2, i3 = self.Λ1._unravel_index(i)
         # get i-1
@@ -174,7 +173,6 @@ class DeRhamSequence():
         dtheta = self.dtheta[i2, j2]
         dz_m1 = jnp.where(i3 > 0, self.dz[i3-1, j3], self.dz[self.Λ1.nχ-1, j3])
         dz = self.dz[i3, j3]
-        # d3/dy - d2/dz
         d3dy = self.r[i1, j1] * (dtheta_m1 - dtheta) * self.dz[i3, j3]
         d2dz = self.r[i1, j1] * self.dtheta[i2, j2] * (dz_m1 - dz)
         d1dz = self.dr[i1, j1] * self.theta[i2, j2] * (dz_m1 - dz)
@@ -206,7 +204,9 @@ class DeRhamSequence():
                          )
 
     def get_Λ2_ijk(self, i, j, k):
-        # kth component of 2 form i evaluated at quadrature point j.
+        """
+        kth component of 2 form i evaluated at quadrature point j.
+        """
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
         c, i1, i2, i3 = self.Λ2._unravel_index(i)
         return jnp.where(k == c,
@@ -221,7 +221,10 @@ class DeRhamSequence():
                          0.0)
 
     def get_dΛ2_ijk(self, i, j, k):
-        # kth component of divergence of 2 form i evaluated at quadrature point j.
+        """
+        kth component of divergence of 2 form i evaluated at quadrature point j.
+        (div Λ2_i(x_j))_k
+        """
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
         c, i1, i2, i3 = self.Λ2._unravel_index(i)
         # get i-1
@@ -244,95 +247,74 @@ class DeRhamSequence():
                          )
 
     def get_Λ3_ijk(self, i, j, k):
-        # kth component of 3 form i evaluated at quadrature point j.
+        """
+        kth component of 3 form i evaluated at quadrature point j.
+        (Λ3_i(x_j))_k
+        """
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
         c, i1, i2, i3 = self.Λ3._unravel_index(i)
         return self.dr[i1, j1] * self.dtheta[i2, j2] * self.dz[i3, j3]
 
-    def evaluate_0(self):
-        self.Λ0_ijk = jax.vmap(jax.vmap(self.Λ0, (0, None)),
-                               (None, 0))(self.Q.x, self.Λ0.ns)
-
-    def evaluate_1(self):
-        self.Λ1_ijk = jax.vmap(jax.vmap(self.Λ1, (0, None)),
-                               (None, 0))(self.Q.x, self.Λ1.ns)
-
-    def evaluate_2(self):
-        self.Λ2_ijk = jax.vmap(jax.vmap(self.Λ2, (0, None)),
-                               (None, 0))(self.Q.x, self.Λ2.ns)
-
-    def evaluate_3(self):
-        self.Λ3_ijk = jax.vmap(jax.vmap(self.Λ3, (0, None)),
-                               (None, 0))(self.Q.x, self.Λ3.ns)
-
-    def evaluate_d0(self):
-        def dΛ0(x, i):
-            return grad(self.Λ0[i])(x)
-        self.dΛ0_ijk = jax.vmap(jax.vmap(dΛ0, (0, None)), (None, 0))(
-            self.Q.x, self.Λ0.ns)
-
-    def evaluate_d1(self):
-        def dΛ1(x, i):
-            return curl(self.Λ1[i])(x)
-        self.dΛ1_ijk = jax.vmap(jax.vmap(dΛ1, (0, None)), (None, 0))(
-            self.Q.x, self.Λ1.ns)
-
-    def evaluate_d2(self):
-        def dΛ2(x, i):
-            return div(self.Λ2[i])(x)
-        self.dΛ2_ijk = jax.vmap(jax.vmap(dΛ2, (0, None)), (None, 0))(
-            self.Q.x, self.Λ2.ns)
-
-    def evaluate_all(self):
-        self.evaluate_0()
-        self.evaluate_1()
-        self.evaluate_2()
-        self.evaluate_3()
-        self.evaluate_d0()
-        self.evaluate_d1()
-        self.evaluate_d2()
-
     def assemble_M0(self):
+        """
+        Assemble mass matrix for 0-forms.
+            M0_ij = ∫ Λ0_i Λ0_j det DF dx
+        """
         W = (self.J_j * self.Q.w)[:, None, None]  # shape (n_q, 1, 1)
-
         M = assemble(self.get_Λ0_ijk, self.get_Λ0_ijk, W, self.Λ0.n, self.Λ0.n)
-
         self.M0 = self.E0 @ M @ self.E0.T
 
     def assemble_M1(self):
+        """
+        Assemble mass matrix for 1-forms.
+            M1_ij = ∫ Λ1_i · G⁻¹ Λ1_j det DF dx
+        """
         W = self.G_inv_jkl * (self.J_j * self.Q.w)[:, None, None]
-
         M = assemble(self.get_Λ1_ijk, self.get_Λ1_ijk, W, self.Λ1.n, self.Λ1.n)
-
         self.M1 = self.E1 @ M @ self.E1.T
 
     def assemble_M2(self):
+        """
+        Assemble mass matrix for 2-forms.
+            M2_ij = ∫ Λ2_i · G Λ2_j (det DF)⁻¹ dx
+        """
         W = self.G_jkl * (1/self.J_j * self.Q.w)[:, None, None]
-
         M = assemble(self.get_Λ2_ijk, self.get_Λ2_ijk, W, self.Λ2.n, self.Λ2.n)
-
         self.M2 = self.E2 @ M @ self.E2.T
 
     def assemble_M3(self):
+        """
+        Assemble mass matrix for 3-forms.
+            M3_ij = ∫ Λ3_i Λ3_j (det DF)⁻¹ dx
+        """
         W = (1/self.J_j * self.Q.w)[:, None, None]
-
         M = assemble(self.get_Λ3_ijk, self.get_Λ3_ijk, W, self.Λ3.n, self.Λ3.n)
-
         self.M3 = self.E3 @ M @ self.E3.T
 
     def assemble_d0(self):
+        """
+        Assemble derivative matrices for 0-form dofs.
+            D0_ij = ∫ Λ1_i · G⁻¹ grad Λ0_j det DF dx
+        from this, get strong grad and weak div operators:
+            v.T D0 f = (v, grad f) =: v.T M1 strong_grad f => strong_grad = M1⁻¹ D0
+                    = -(div v, f) =: -(weak_div v).T M0 f => weak_div = -M0⁻¹ D0.T
+        """
         W = self.G_inv_jkl * (self.J_j * self.Q.w)[:, None, None]
-
         M = assemble(self.get_Λ1_ijk, self.get_dΛ0_ijk,
                      W, self.Λ1.n, self.Λ0.n)
-
         self.D0 = self.E1 @ M @ self.E0.T
         self.strong_grad = jnp.linalg.solve(self.M1, self.D0)
         self.weak_div = -jnp.linalg.solve(self.M0.T, self.D0.T)
 
     def assemble_d1(self):
+        """
+        Assemble derivative matrices for 1-form dofs.
+            D1_ij = ∫ Λ2_i · G curl Λ1_j (det DF)⁻¹ dx
+        from this, get strong curl and weak curl operators:
+            ω.T D1 v = (ω, curl v) =: ω.T M2 strong_curl v => strong_curl = M2⁻¹ D1
+                     = (curl ω, v) =: (weak_curl ω).T M1 v => weak_curl = M1⁻¹ D1.T
+        """
         W = self.G_jkl * (1/self.J_j * self.Q.w)[:, None, None]
-
         M = assemble(self.get_Λ2_ijk, self.get_dΛ1_ijk,
                      W, self.Λ2.n, self.Λ1.n)
         self.D1 = self.E2 @ M @ self.E1.T
@@ -340,6 +322,13 @@ class DeRhamSequence():
         self.weak_curl = jnp.linalg.solve(self.M1.T, self.D1.T)
 
     def assemble_d2(self):
+        """
+        Assemble derivative matrices for 1-form dofs.
+            D2_ij = ∫ Λ2_i div Λ1_j (det DF)⁻¹ dx
+        from this, get strong div and weak grad operators:
+            ρ.T D2 ω = (ρ, div ω) =: ρ.T M3 strong_div ω => strong_div = M3⁻¹ D2
+                     = -(grad ρ, ω) =: -(weak_grad ρ).T M2 ω => weak_grad = -M2⁻¹ D2.T
+        """
         W = (1/self.J_j * self.Q.w)[:, None, None]
 
         M = assemble(self.get_Λ3_ijk, self.get_dΛ2_ijk,
@@ -350,52 +339,92 @@ class DeRhamSequence():
         self.weak_grad = -jnp.linalg.solve(self.M2.T, self.D2.T)
 
     def assemble_dd0(self):
-        # M = jnp.einsum("ijk,jkl,qjl,j,j->iq", self.dΛ0_ijk,
-        #                  self.G_inv_jkl, self.dΛ0_ijk, self.J_j, self.Q.w)
-
+        """
+        Assemble Hodge-Laplacian for 0-form dofs:
+            (grad f, grad g) = (f, δdg) ∀g
+            => δd = M0⁻¹ grad_grad
+        where
+            grad_grad_ij = ∫ grad Λ0_i · G⁻¹ grad Λ0_j det DF dx
+        """
         W = self.G_inv_jkl * (self.J_j * self.Q.w)[:, None, None]
-
-        M = assemble(self.get_dΛ0_ijk, self.get_dΛ0_ijk,
-                     W, self.Λ0.n, self.Λ0.n)
-
-        self.dd0 = jnp.linalg.solve(self.M0, self.E0 @ M @ self.E0.T)
+        grad_grad = assemble(self.get_dΛ0_ijk, self.get_dΛ0_ijk,
+                             W, self.Λ0.n, self.Λ0.n)
+        self.dd0 = jnp.linalg.solve(self.M0, self.E0 @ grad_grad @ self.E0.T)
 
     def assemble_dd1(self):
+        """
+        Assemble Hodge-Laplacian for 1-form dofs:
+            (curl v, curl u) - (grad ω, u) = (δdv, u)   ∀u
+                                    (ω, f) = (div v, f) ∀f
+            => ω = weak_div v
+            => δd = M1⁻¹ curl_curl - strong_grad @ weak_div
+        where
+            curl_curl_ij = ∫ curl Λ1_i · G curl Λ1_j (det DF)⁻¹ dx
+        """
         W = self.G_jkl * (1/self.J_j * self.Q.w)[:, None, None]
-
-        M = assemble(self.get_dΛ1_ijk, self.get_dΛ1_ijk,
-                     W, self.Λ1.n, self.Λ1.n)
-
+        curl_curl = assemble(self.get_dΛ1_ijk, self.get_dΛ1_ijk,
+                             W, self.Λ1.n, self.Λ1.n)
         self.dd1 = jnp.linalg.solve(
-            self.M1, self.E1 @ M @ self.E1.T) - self.strong_grad @ self.weak_div
+            self.M1, self.E1 @ curl_curl @ self.E1.T) - self.strong_grad @ self.weak_div
 
     def assemble_dd2(self):
+        """
+        Assemble Hodge-Laplacian for 2-form dofs:
+            (div ω, div ξ) + (curl v, ξ) = (δdω, ξ)     ∀ξ
+                                  (v, u) = (curl ω, u)  ∀u
+            => v = weak_curl ω
+            => δd = M2⁻¹ div_div + strong_curl @ weak_curl
+        where
+            div_div_ij = ∫ div Λ2_i div Λ2_j (det DF)⁻¹ dx
+        """
         W = (1/self.J_j * self.Q.w)[:, None, None]
-
         M = assemble(self.get_dΛ2_ijk, self.get_dΛ2_ijk,
                      W, self.Λ2.n, self.Λ2.n)
-
         self.dd2 = jnp.linalg.solve(
             self.M2, self.E2 @ M @ self.E2.T) + self.strong_curl @ self.weak_curl
 
     def assemble_dd3(self):
+        """
+        Assemble Hodge-Laplacian for 2-form dofs:
+            -(div ξ, μ) = (δdρ, μ)       ∀μ
+                 (ξ, ω) = (grad ρ, ω)    ∀ω
+            => ξ = weak_grad ρ
+            => δd = - strong_div @ weak_grad
+        where
+            div_div_ij = ∫ div Λ2_i div Λ2_j (det DF)⁻¹ dx
+        """
         self.dd3 = -self.strong_div @ self.weak_grad
 
     def assemble_P12(self):
+        """
+        Projection matrix from 2- to 1-form dofs:
+            (v, ω) = (v, u)       ∀v
+            M12_ij = ∫ Λ1_i · Λ2_j dx 
+        and
+            P12 = M1⁻¹ M12
+        """
         W = self.Q.w[:, None, None] * jnp.eye(3)  # shape (n_q, 1, 1)
         M = assemble(self.get_Λ1_ijk, self.get_Λ2_ijk, W, self.Λ1.n, self.Λ2.n)
-
         M12 = self.E1 @ M @ self.E2.T
         self.P12 = jnp.linalg.solve(self.M1, M12)
 
     def assemble_P03(self):
+        """
+        Projection matrix from 3- to 0-form dofs:
+            (f, ρ) = (f, g)       ∀f
+            M03_ij = ∫ Λ0_i · Λ3_j dx 
+        and
+            P03 = M0⁻¹ M03
+        """
         W = self.Q.w[:, None, None]  # shape (n_q, 1, 1)
         M = assemble(self.get_Λ0_ijk, self.get_Λ3_ijk, W, self.Λ0.n, self.Λ3.n)
-
         M03 = self.E0 @ M @ self.E3.T
         self.P03 = jnp.linalg.solve(self.M0, M03)
 
     def build_crossproduct_projections(self):
+        """
+        Returns projections to evaluate (u, v) -> u x v
+        """
         # self.P1x1_to_1 = CrossProductProjection(1, 1, 1, self)
         # self.P1x2_to_1 = CrossProductProjection(1, 1, 2, self)
         self.P2x1_to_1 = CrossProductProjection(1, 2, 1, self)

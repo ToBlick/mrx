@@ -35,7 +35,7 @@ def F(x):
 
 ### de Rham sequence
 
-Next, we set up the finite element spaces. Using the convenience method `Seq.assemble_all()` is only be marginally more expensive than assembling only the needed operators.
+Next, we set up the finite element spaces. Using the convenience method `Seq.assemble_all()` is only marginally more expensive than assembling only the needed operators.
 
 ```python
 ns = (n, n, n)
@@ -48,7 +48,7 @@ Seq.assemble_all()
 
 ### Harmonic fields
 
-There are two non-trivial harmonic fields in a hollow torus, one is linked to the current $I_p$ flowing through the cavity/tunnel in the torus toroidally. The other is linked to the current  $I_t$ flowing poloidally around the torus and through the "donut" hole in the middle. This is our first sanity check (note that generalized eigenvalue problems are not yet implemented in `jax.numpy.linalg`, so we use `scipy.linalg.eigh` here):
+There are two non-trivial harmonic fields in a hollow torus: One is linked to the current $I_p$ flowing through the cavity/tunnel in the torus toroidally, the other is linked to the current $I_t$ flowing poloidally around the torus and through the "donut" hole in the middle. This is our first sanity check (generalized hermitian eigenvalue problems are not yet implemented in `jax.numpy.linalg`, so we use `scipy.linalg.eigh` here):
 ```python
 evs, evecs = sp.linalg.eigh(Seq.M2 @ Seq.dd2, Seq.M2)
 assert jnp.sum(evs < 1e-11) == 2  # two harmonic fields
@@ -72,7 +72,7 @@ h2 = jax.jit(DiscreteFunction(h2_dof, Seq.Λ2, Seq.E2))
 
 ### Ampère’s law
 
-Next, we compute contour integrals of the harmonic fields along two non-contractible loops in the torus: one poloidal ($c_1$) and one toroidal ($c_2$). These integrals give us the fluxes associated with each harmonic field. According to Ampère’s law, we should have
+Next, we compute contour integrals of the harmonic fields along two non-contractible loops in the torus: one poloidal and one toroidal. These integrals give us the fluxes associated with each harmonic field. According to Ampère’s law, we should have
 $$
 \begin{align}
     \oint_{c_p} h_p \cdot \mathrm dl_p &= \mu_0 I_p, \quad &\oint_{c_t} h_t \cdot \mathrm dl_t &= \mu_0 I_t.
@@ -81,9 +81,9 @@ $$
 
 We compute the line integrals in the logical domain: $\hat c_1$ and $\hat c_2$ have simple expressions:
 ```python
-# contour wrapping around the enclosed tunnel poloidally:
+# contour around the enclosed tunnel poloidally:
 def c1(θ): return jnp.array([1e-6, θ, 0])
-# contour wrapping around the center tunnel toroidally:
+# contour around the center tunnel toroidally:
 def c2(ζ): return jnp.array([1 - 1e-6, 0.5, ζ])
 ```
 The small offsets `1e-6` ensure that the contours lie in the interior of the physical domain. If $h_1$ and $h_2$ were one-forms, we could directly evaluate them along the curves in the logical domain since $\int E \cdot \mathrm dl = \int \hat E \cdot \mathrm d \hat l$ for one-forms under pushforward $E = \Phi_*^1 \hat E$.
@@ -151,7 +151,9 @@ div_b_dofs = Seq.strong_div @ b_dofs
 assert (curl_b_dofs @ Seq.M1 @ curl_b_dofs)**0.5 < 1e-10
 assert (div_b_dofs @ Seq.M3 @ div_b_dofs)**0.5 < 1e-10
 ```
-Furthermore, we know that $h_t = \mu_0 I_t \mathbf e_\phi / (2 \pi R)$ - this is simply the vacuum field of a solid torid with the correct magnitude to match $I_t$. For the poloidal field, $h_p \approx \mu_0 I_p \mathbf e_\theta / (2 \pi d)$, where $d$ is the distance to the centerline of the enclosed tunnel assuming $\varepsilon \ll 1$. At $\hat x = (r, θ, ζ) = (0.5, 0, 0)$, we have $B_r = B_x$, $B_θ = B_z$, and $B_ζ = -B_y$ in Cartesian coordinates. Thus, we can check the values of the computed magnetic field $B$ at this point: The error in $B_e$ should be essentially zero since neither $h_1$ nor $h_2$ have a radial component. The error in $B_ζ$ is determined by the resolution, while that in $B_θ$ is dominated by the thin-torus approximation.
+Furthermore, we know that $h_t = \mu_0 I_t \mathbf e_\phi / (2 \pi R)$ - this is simply the vacuum field of a solid torid with the correct magnitude to match $I_t$. For the poloidal field, $h_p \approx \mu_0 I_p \mathbf e_\theta / (2 \pi d)$, where $d$ is the distance to the centerline of the enclosed tunnel assuming $\varepsilon \ll 1$. 
+
+At $\hat x = (r, θ, ζ) = (0.5, 0, 0)$, we have $B_r = B_x$, $B_θ = B_z$, and $B_ζ = -B_y$ in Cartesian coordinates. Thus, we can check the values of the computed magnetic field $B$ at this point: The error in $B_e$ should be essentially zero since neither $h_1$ nor $h_2$ have a radial component. The error in $B_ζ$ is determined by the resolution, while that in $B_θ$ is dominated by the thin-torus approximation.
 ```python
 def B_expected(x):
     r, θ, ζ = x

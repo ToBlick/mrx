@@ -85,7 +85,7 @@ In practice, it is assembled by computing $\mathbb K$ - the stiffness matrix wit
 
 ### Pre-computations
 
-Both quadrature grid and spline basis have cartesian product structure, i.e.
+Both quadrature grid and spline basis have Cartesian product structure, i.e.
 $$
 \begin{align}
     x^q_j &= (r^q_{j_r}, \, \theta^q_{j_\theta}, \, \zeta^q_{j_\zeta}) \quad \text{and} \quad \Lambda_i = \lambda_{i_r} \otimes \lambda_{i_\theta} \otimes \lambda_{i_\zeta},
