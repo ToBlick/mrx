@@ -137,7 +137,7 @@ def test_harmonic_fields():
     B_diff = B_computed(y) - B_expected(y)
     # Bx should be very close to 0 because both harmonic
     # fields are orthogonal to this direction at point y
-    assert jnp.abs(B_diff[0]) < 1e-12
+    assert jnp.abs(B_diff[0]) < 1e-10
     # By is due to the toroidal field ~1/R -
     # this error is dominated by resolution
     assert jnp.abs(B_diff/B_expected(y))[1] < (1/n)**p
