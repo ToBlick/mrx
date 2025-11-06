@@ -8,13 +8,18 @@ from mrx.differential_forms import DifferentialForm, DiscreteFunction
 from mrx.quadrature import QuadratureRule
 
 
-def lcfs_fit(n_map, p_map, q_map, R0, k0, q0, aR, atol=1e-6, rtol=1e-6, maxiter=100_000)->jnp.ndarray:
+def lcfs_fit(
+    n_map: int, p_map: int, q_map: int, R0: float = 1.0, 
+    k0: float = 1.0, q0: float = 1.0, aR: float = 0.5, 
+    atol: float = 1e-6, rtol: float = 1e-6, maxiter: int = 10000)->jnp.ndarray:
     """
     Fit the last closed flux surface (LCFS) shape to the data using a least squares approach solved with Levenberg-Marquardt.
 
     Flux function: ψ(R, Z) =  (¼ k0² (R² - R0²)² + R²Z² ) / (2 R0² k0 q0)
     where R0 is the major radius, k0 is the toroidal magnetic field strength, 
     q0 is the safety factor at the LCFS, and aR is the radial position of the LCFS.
+
+    NOTE: Alan: I am not sure this function is being used in the codebase right now 11/06/2025
 
     Parameters
     ----------
@@ -24,13 +29,13 @@ def lcfs_fit(n_map, p_map, q_map, R0, k0, q0, aR, atol=1e-6, rtol=1e-6, maxiter=
         Polynomial degree in the mapping.
     q_map : int
         Quadrature order in the mapping.
-    R0 : float
+    R0 : float, default=1.0
         Major radius of the LCFS.
-    k0 : float
+    k0 : float, default=1.0
         Toroidal magnetic field strength.
-    q0 : float
+    q0 : float, default=1.0
         Safety factor at the LCFS.
-    aR : float
+    aR : float, default=0.5
         Radial position of the LCFS.
     atol : float, default=1e-6
         Absolute tolerance for the fit.
@@ -48,12 +53,13 @@ def lcfs_fit(n_map, p_map, q_map, R0, k0, q0, aR, atol=1e-6, rtol=1e-6, maxiter=
         def _psi(R, Z):
             return (k0**2/4*(R**2 - R0**2)**2 + R**2*Z**2) / (2 * R0**2 * k0 * q0)
         return _psi(R, Z) - _psi(R0 + aR, 0)
+
     π = jnp.pi
     Λ_map = DifferentialForm(0, (n_map, 1, 1), (p_map, 0, 0),
                              ("periodic", "constant", "constant"))
     Q_map = QuadratureRule(Λ_map, q_map)
 
-    def loss(a_hat):
+    def loss(a_hat, args):
         """
         Loss function to minimize for the LCFS fit.
 
@@ -61,6 +67,8 @@ def lcfs_fit(n_map, p_map, q_map, R0, k0, q0, aR, atol=1e-6, rtol=1e-6, maxiter=
         ----------
         a_hat : jnp.ndarray
             Fitted LCFS shape.
+        args : Any
+            Additional arguments (not used, but required by optimistix API).
 
         Returns
         -------
@@ -87,7 +95,10 @@ def lcfs_fit(n_map, p_map, q_map, R0, k0, q0, aR, atol=1e-6, rtol=1e-6, maxiter=
     return a_hat
 
 
-def get_lcfs_F(n_map, p_map, q_map, R0, k0, q0, aR, atol=1e-6, rtol=1e-6, maxiter=20_000):
+def get_lcfs_F(
+    n_map: int, p_map: int, q_map: int, R0: float = 1.0, k0: float = 1.0, 
+    q0: float = 1.0, aR: float = 0.5, atol: float = 1e-6, 
+    rtol: float = 1e-6, maxiter: int = 20_000)->Callable:
     """
     Get the LCFS mapping function:
     F(r, χ, z) = (R(r, χ), Z(r, χ), z) where R(r, χ) and Z(r, χ) are the 
@@ -102,12 +113,12 @@ def get_lcfs_F(n_map, p_map, q_map, R0, k0, q0, aR, atol=1e-6, rtol=1e-6, maxite
         Polynomial degree in the mapping.
     q_map : int
         Quadrature order in the mapping.
-    R0 : float
+    R0 : float, default=1.0
         Major radius of the LCFS.
-    k0 : float
+    k0 : float, default=1.0
         Toroidal magnetic field strength.
-    q0 : float
-    aR : float
+    q0 : float, default=1.0
+    aR : float, default=0.5
         Radial position of the LCFS.
     atol : float, default=1e-6
         Absolute tolerance for the fit.
@@ -121,86 +132,16 @@ def get_lcfs_F(n_map, p_map, q_map, R0, k0, q0, aR, atol=1e-6, rtol=1e-6, maxite
     F : Callable
         LCFS mapping function.
     """
-    π = jnp.pi
-
     a_hat = lcfs_fit(n_map, p_map, q_map, R0, k0, q0, aR,
                      atol=atol, rtol=rtol, maxiter=maxiter)
     Λ_map = DifferentialForm(0, (n_map, 1, 1), (p_map, 0, 0),
                              ("periodic", "constant", "constant"))
     a_h = DiscreteFunction(a_hat, Λ_map)
-
-    def a(χ):
-        """
-        Radius function.
-
-        Parameters
-        ----------
-        χ : float
-            Toroidal angle.
-
-        Returns
-        -------
-        a : float
-            Radius.
-        """
+    def a_h_modified(χ):
+        """Wrapper for the discrete radius function."""
         return a_h(jnp.array([χ, 0, 0]))[0]
 
-    def _R(r, χ):
-        """
-        Cylindrical radial coordinate function.
-
-        Parameters
-        ----------
-        r : float
-            Radial coordinate.
-        χ : float
-            Toroidal angle.
-
-        Returns
-        -------
-        R : float
-            Radial coordinate.
-        """
-        return jnp.ones(1) * (R0 + a(χ) * r * jnp.cos(2 * π * χ))
-
-    def _Z(r, χ):
-        """
-        Cylindrical Z coordinate function.
-
-        Parameters
-        ----------
-        r : float
-            Radial coordinate.
-        χ : float
-            Toroidal angle.
-
-        Returns
-        -------
-        Z : float
-            Z coordinate.
-        """
-        return jnp.ones(1) * a(χ) * r * jnp.sin(2 * π * χ)
-
-    def F(x):
-        """
-        Cylindrical mapping function.
-
-        Parameters
-        ----------
-        x : jnp.ndarray
-            Input coordinates.
-
-        Returns
-        -------
-        F : jnp.ndarray
-            Mapping function.
-        """
-        r, χ, z = x
-        return jnp.ravel(jnp.array(
-            [_R(r, χ) * jnp.cos(2 * π * z),
-             -_R(r, χ) * jnp.sin(2 * π * z),
-             _Z(r, χ)]))
-
+    F = drumshape_map_modified(a_h_modified, R0)
     return F
 
 
@@ -471,5 +412,30 @@ def drumshape_map(a_h: Callable) -> Callable:
         return jnp.array([a_h(χ) * r * jnp.cos(2 * π * χ),
                           -z,
                           a_h(χ) * r * jnp.sin(2 * π * χ)])
+
+    return F
+
+def drumshape_map_modified(a: Callable, R0: float = 1.0) -> Callable:
+    """
+    Modified drumshape mapping function:
+    F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
+    and (r, χ, z) are the logical coordinates, with χ the toroidal angle.
+    Formula is:
+    F(r, χ, z) = (a(χ) r cos(2πχ), -z, a(χ) r sin(2πχ))
+    where a(χ) is the radius as a function of the toroidal angle.
+    """
+    π = jnp.pi
+    def _R(r, χ):
+        return jnp.ones(1) * (R0 + a(χ) * r * jnp.cos(2 * π * χ))
+
+    def _Z(r, χ):
+        return jnp.ones(1) * a(χ) * r * jnp.sin(2 * π * χ)
+
+    def F(x):
+        r, χ, z = x
+        return jnp.ravel(jnp.array(
+            [_R(r, χ) * jnp.cos(2 * π * z),
+            -_R(r, χ) * jnp.sin(2 * π * z),
+            _Z(r, χ)]))
 
     return F

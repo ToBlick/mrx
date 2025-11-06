@@ -490,15 +490,16 @@ class DeRhamSequence():
         """
         Returns projections to evaluate (u, v) -> u x v
         """
-        # self.P1x1_to_1 = CrossProductProjection(1, 1, 1, self)
+        self.P1x1_to_1 = CrossProductProjection(1, 1, 1, self)
+        # Not yet implemented
         # self.P1x2_to_1 = CrossProductProjection(1, 1, 2, self)
         self.P2x1_to_1 = CrossProductProjection(1, 2, 1, self)
-        # self.P2x2_to_1 = CrossProductProjection(1, 2, 2, self)
-
+        self.P2x2_to_1 = CrossProductProjection(1, 2, 2, self)
         self.P1x1_to_2 = CrossProductProjection(2, 1, 1, self)
+        # Not yet implemented
         # self.P1x2_to_2 = CrossProductProjection(2, 1, 2, self)
-        # self.P2x1_to_2 = CrossProductProjection(2, 2, 1, self)
-        # self.P2x1_to_2 = CrossProductProjection(2, 2, 1, self)
+        self.P2x1_to_2 = CrossProductProjection(2, 2, 1, self)
+        self.P2x2_to_2 = CrossProductProjection(2, 2, 2, self)
 
     def assemble_all(self):
         """

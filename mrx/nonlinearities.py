@@ -10,7 +10,7 @@ class CrossProductProjection:
     with coordinate transformation F.
     """
 
-    def __init__(self, n, m, k, Seq):
+    def __init__(self, n: int, m: int, k: int, Seq):  # Seq: DeRhamSequence
         """
         Given bases n, m, k, constructs an operator to evaluate
         (w, u) -> ∫ (wₕ × uₕ) · Λn[i] dx for all i, where Λn[i] is the i-th basis function of Λn
