@@ -11,6 +11,7 @@ import scipy as sp
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.mappings import toroid_map
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -29,84 +30,20 @@ bcs = ('dirichlet', 'periodic', 'constant')  # Boundary conditions
 a = 1
 R0 = 2.1
 π = jnp.pi
-
-
-def _X(r, χ):
-    """Toroidal radial coordinate. Formula is:
-    
-    X(r, χ) = R0 + a * r * cos(2πχ)
-
-    Args:   
-        r: Radial coordinate
-        χ: Toroidal angle
-
-    Returns:
-        X: Toroidal radial coordinate
-    """
-    return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
-
-
-def _Y(r, χ):
-    """Toroidal vertical coordinate. Formula is:
-    
-    Y(r, χ) = R0 + a * r * cos(2πχ)
-
-    Args:
-        r: Radial coordinate
-        χ: Toroidal angle
-
-    Returns:
-        Y: Toroidal vertical coordinate
-    """
-    return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
-
-
-def _Z(r, χ):
-    """Toroidal azimuthal coordinate. Formula is:
-    
-    Z(r, χ) = a * r * sin(2πχ)
-
-    Args:
-        r: Radial coordinate
-        χ: Toroidal angle
-
-    Returns:
-        Z: Toroidal azimuthal coordinate
-    """
-    return jnp.ones(1) * a * r * jnp.sin(2 * π * χ)
-
-
-def F(x):
-    """Toroidal coordinate mapping function. Formula is:
-    
-    F(r, χ, z) = (X(r, χ) * cos(2πz), -Y(r, χ) * sin(2πz), Z(r, χ))
-
-    Args:
-        x: Input logical coordinates (r, χ, z)
-
-    Returns:
-        F: Toroidal coordinate mapping function
-    """
-    r, χ, z = x
-    return jnp.ravel(jnp.array([_X(r, χ) * jnp.cos(2 * π * z),
-                                -_Y(r, χ) * jnp.sin(2 * π * z),
-                                _Z(r, χ)]))
-
+F = toroid_map(epsilon=a, R0=R0)
 
 # Create DeRham sequence
 Seq = DeRhamSequence(ns, ps, 2*p, types, F, polar=True)
 Seq.evaluate_1d()
 
 # Get extraction operators and mass matrices
-E0, E1, E2, E3 = [Seq.E0, Seq.E1,
-                  Seq.E2, Seq.E3]
+E0, E1, E2, E3 = [Seq.E0, Seq.E1, Seq.E2, Seq.E3]
 Seq.assemble_M0()
 Seq.assemble_M1()
 Seq.assemble_M2()
 Seq.assemble_M3()
 Seq.assemble_d0()
 M0, M1, M2, M3 = [Seq.M0, Seq.M1, Seq.M2, Seq.M3]
-Seq.assemble_dd1()
 D0 = Seq.strong_grad  # Gradient operator
 O10 = jnp.zeros_like(D0)
 Seq.assemble_dd1()
@@ -241,6 +178,7 @@ fig = plot_eigenvectors_grid(
 fig.savefig('toroid_eigenvectors.pdf', bbox_inches='tight')
 # %%
 idx = 3
+# The eigenvector from the double curl operator only contains velocity components (1-form)
 u_hat, p_hat = jnp.split(evecs[:, idx], (M1.shape[0],))
 u_h = DiscreteFunction(u_hat, Seq.Λ1, E1)
 F_u = Pushforward(u_h, F, 1)
@@ -250,22 +188,19 @@ _z1_norm = jnp.linalg.norm(_z1, axis=-1)
 plt.contourf(_y1, _y3, _z1_norm.reshape(nx, nx))
 plt.colorbar()
 __z1 = jax.vmap(F_u)(__x).reshape(_nx, _nx, 3)
-plt.quiver(
-    __y1,
-    __y3,
-    __z1[:, :, 0],
-    __z1[:, :, 2],
-    color='w',
-    scale=10)
+plt.quiver(__y1, __y3, __z1[:, :, 0], __z1[:, :, 2], color='w', scale=10)
 plt.xlabel('X')
 plt.ylabel('Z')
+plt.show()
 # %%
-p_h = DiscreteFunction(p_hat, Seq.Λ0, E0)
-F_p = Pushforward(p_h, F, 0)
+# There is no pressure component in this formulation
+# p_h = DiscreteFunction(p_hat, Seq.Λ0, E0)
+# F_p = Pushforward(p_h, F, 0)
 
-_z1 = jax.vmap(F_p)(_x).reshape(nx, nx)
-plt.contourf(_y1, _y3, _z1)
-plt.colorbar()
-plt.xlabel('X')
-plt.ylabel('Z')
-plt.title(f'Pressure field for eigenvalue {evs[idx]:.4f}')
+# _z1 = jax.vmap(F_p)(_x).reshape(nx, nx)
+# plt.contourf(_y1, _y3, _z1)
+# plt.colorbar()
+# plt.xlabel('X')
+# plt.ylabel('Z')
+# plt.title(f'Pressure field for eigenvalue {evs[idx]:.4f}')
+# plt.show()

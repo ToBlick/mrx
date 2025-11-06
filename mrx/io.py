@@ -70,7 +70,7 @@ def epoch_time(decimals=0) -> int:
     time : int
         Current epoch time in seconds.
     """
-    return int(time() * (10 ** (decimals)))
+    return int(time.time() * (10 ** (decimals)))
 
 def load_sweep(
     path, 

@@ -15,7 +15,7 @@ f(r, θ) = r² - (3/4)r
 """
 
 import os
-import time
+import time 
 from functools import partial
 
 import jax
@@ -25,6 +25,7 @@ import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.mappings import polar_map
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -53,21 +54,7 @@ def get_err(n, p, q):
     Returns:
         float: Relative L2 error of the solution
     """
-    def F(x):
-        """Polar coordinate mapping function. Formula is:
-        
-        F(r, θ, z) = (r cos(2πθ), -z, r sin(2πθ))
-
-        Args:
-            x: Input logical coordinates (r, θ, z)
-
-        Returns:
-            F: Coordinate mapping function
-        """
-        r, θ, z = x
-        return jnp.array([r * jnp.cos(2 * jnp.pi * θ),
-                          -z,
-                          r * jnp.sin(2 * jnp.pi * θ)])
+    F = polar_map()
 
     # Define exact solution and source term
     def u(x):

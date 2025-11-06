@@ -33,6 +33,17 @@ def test_helmholtz_decomposition():
     Seq.assemble_leray_projection()
 
     def B(x):
+        """Exact magnetic field in Cartesian coordinates.
+
+        Formula is:
+        B(r, θ, ζ) = (sin(φ), -cos(φ), 0) / R
+        where φ = arctan2(x2, x1) and R = 1 + r * eps * cos(2πθ) is the radial coordinate.
+        Args: 
+            x: (r, θ, ζ) in logical coordinates
+
+        Returns:
+            B: (Bx, By, Bz) in Cartesian coordinates
+        """
         r, θ, _ = x
         x1, x2, _ = Seq.F(x)
         φ = jnp.arctan2(x2, x1)

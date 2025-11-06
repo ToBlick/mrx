@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
+from mrx.mappings import cylinder_map
 
 jax.config.update("jax_enable_x64", True)
 os.makedirs("script_outputs", exist_ok=True)
@@ -35,34 +36,10 @@ def get_err(n, p):
     types = ("clamped", "periodic", "periodic")
 
     # Domain parameters
+    a = 1
+    h = 1
     π = jnp.pi
-
-    def _X(r, χ):
-        """Cylindrical radial coordinate. Formula is:
-        
-        X(r, χ) = r cos(2πχ)
-        """
-        return jnp.ones(1) * r * jnp.cos(2 * π * χ)
-
-    def _Y(r, χ):
-        """Cylindrical vertical coordinate. Formula is:
-        
-        Y(r, χ) = r sin(2πχ)
-        """
-        return jnp.ones(1) * r * jnp.sin(2 * χ)
-
-    def _Z(r, χ):
-        return jnp.ones(1)
-
-    def F(x):
-        """Cylindrical coordinate mapping function. Formula is:
-        
-        F(r, χ, z) = (X, Y, Z) = (r cos(2πχ), r sin(2πχ), z)
-        """
-        r, χ, z = x
-        return jnp.ravel(jnp.array([_X(r, χ),
-                                    _Y(r, χ),
-                                    _Z(r, χ) * z]))
+    F = cylinder_map(a=a, h=h)
 
     # Define exact solution and source term
     def u(x):

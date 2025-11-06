@@ -82,17 +82,28 @@ def trapezoidal_quad(n):
     """
     Generate trapezoidal quadrature rule.
 
+    The trapezoidal rule on [0, 1] with n points:
+    \int_0^1 f(x) dx ≈ \sum_{i=0}^{n-1} f(x_i) w_i
+    where x_i are evenly spaced points from 0 to 1 (spacing h = 1/(n-1)),
+    and weights are w_0 = w_{n-1} = h/2 for endpoints and w_i = h for interior points.
+
     Args:
         n (int): Number of quadrature points
 
     Returns:
         tuple: (x_q, w_q) where:
-            - x_q: Quadrature points
-            - w_q: Quadrature weights
+            - x_q: Quadrature points (shape: (n,))
+            - w_q: Quadrature weights (shape: (n,))
     """
-    h = 1 / n
-    x_q = jnp.linspace(0, 1 - h, n)
-    w_q = h * jnp.ones(n)
+    if n == 1:
+        # Special case: single point with weight 1
+        x_q = jnp.array([0.0])
+        w_q = jnp.array([1.0])
+    else:
+        h = 1 / (n - 1)  # Spacing between points
+        x_q = jnp.linspace(0, 1, n)
+        w_q = h * jnp.ones(n)
+        w_q = w_q.at[0].set(w_q[0] / 2).at[-1].set(w_q[-1] / 2)
     return x_q, w_q
 
 
@@ -113,7 +124,17 @@ def composite_quad(T, p):
     _x_q, _w_q = nodes_and_weights(p)
 
     def _rescale(a, b):
-        """Rescale quadrature points and weights from [-1,1] to [a,b]."""
+        """Rescale quadrature points and weights from [-1,1] to [a,b].
+
+        Args:
+            a (float): Lower endpoint of the interval
+            b (float): Upper endpoint of the interval
+
+        Returns:
+            tuple: (x, w) where:
+                - x: Quadrature points on [a,b]
+                - w: Quadrature weights on [a,b]
+        """
         x = (_x_q + 1) / 2 * (b - a) + a
         w = _w_q * (b - a) / 2
         return x, w
@@ -187,84 +208,6 @@ def select_quadrature(basis, n):
         return trapezoidal_quad(2*n)
     elif basis.type == 'constant':
         return spectral_quad(1)
-
-
-def exact_nodes_and_weights(n):
-    """
-    Compute exact Gauss quadrature nodes and weights.
-
-    Args:
-        n (int): Number of quadrature points
-
-    Returns:
-        tuple: (points, weights) where:
-            - points: Gauss quadrature nodes
-            - weights: Gauss quadrature weights
-    """
-    if n == 1:
-        points = jnp.array([0])
-        weights = jnp.array([2])
-    elif n == 2:
-        coeffs = jnp.array([3/2, 0, -1/2])
-        points = jnp.roots(coeffs)
-        weights = jnp.array([1, 1])
-    elif n == 3:
-        coeffs = jnp.array([5/2, 0, -3/2, 0])
-        points = jnp.roots(coeffs)
-        # Order is 0, 0.77, -0.77
-        weights = jnp.array([8/9, 5/9, 5/9])
-    elif n == 4:
-        coeffs = jnp.array([35/8, 0, -30/8, 0, 3/8])
-        points = jnp.roots(coeffs)
-        # Order is 0.86, -0.86, -0.34, 0.34
-        a = (jnp.sqrt(30) + 18)/36
-        b = (-jnp.sqrt(30) + 18)/36
-        weights = jnp.array([b, b, a, a])
-    elif n == 5:
-        coeffs = jnp.array([63/8, 0, -70/8, 0, 15/8, 0])
-        points = jnp.roots(coeffs)
-        # Order is 0, -0.91, -0.54, 0.91, 0.54
-        a = 128/225
-        b = (322 + 13*jnp.sqrt(70))/900
-        c = (322 - 13*jnp.sqrt(70))/900
-        weights = jnp.array([a, c, b, c, b])
-    elif n == 6:
-        coeffs = jnp.array([231/16, 0, -315/16, 0, 105/16, 0, -5/16])
-        points = jnp.roots(coeffs)
-        # Order is 0.93, 0.66, -0.93, -0.66, -0.24, 0.24
-        d_coeffs = jnp.polyder(coeffs)
-        w = jnp.polyval(d_coeffs, points)
-        weights = 2/((1-points**2)*(w**2))
-    elif n == 7:
-        coeffs = jnp.array([429/16, 0, -693/16, 0, 315/16, 0, -35/16, 0])
-        points = jnp.roots(coeffs)
-        d_coeffs = jnp.polyder(coeffs)
-        w = jnp.polyval(d_coeffs, points)
-        weights = 2/((1-points**2)*(w**2))
-    elif n == 8:
-        coeffs = jnp.array(
-            [6435/128, 0, -12012/16, 0, 6930/16, 0, -1260/16, 0, 35/128])
-        points = jnp.roots(coeffs)
-        d_coeffs = jnp.polyder(coeffs)
-        w = jnp.polyval(d_coeffs, points)
-        weights = 2/((1-points**2)*(w**2))
-    elif n == 9:
-        coeffs = jnp.array([12155/128, 0, -25740/128, 0,
-                           18018/128, 0, -4620/128, 0, 315/128, 0])
-        points = jnp.roots(coeffs)
-        d_coeffs = jnp.polyder(coeffs)
-        w = jnp.polyval(d_coeffs, points)
-        weights = 2/((1-points**2)*(w**2))
-    # n=10
-    else:
-        coeffs = jnp.array([46189/256, 0, -109395/256, 0,
-                           90090/256, 0, -30030/256, 0, 3465/256, 0, -63/256])
-        points = jnp.roots(coeffs)
-        d_coeffs = jnp.polyder(coeffs)
-        w = jnp.polyval(d_coeffs, points)
-        weights = 2/((1-points**2)*(w**2))
-    return jnp.real(points), jnp.real(weights)
-
 
 def nodes_and_weights(n):
     """

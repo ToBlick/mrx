@@ -8,6 +8,7 @@ import scipy as sp
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.mappings import cylinder_map
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -20,37 +21,7 @@ types = ('clamped', 'periodic', 'constant')  # Types
 # Radius and height of the cylinder
 a = 1
 h = 1
-
-def _R(r, χ):
-    """Cylindrical radial coordinate. Formula is:
-    
-    R(r, χ) = a r cos(2πχ)
-    """
-    return jnp.ones(1) * (a * r * jnp.cos(2 * jnp.pi * χ))
-
-
-def _Z(r, χ):
-    """Cylindrical vertical coordinate. Formula is:
-    
-    Y(r, χ) = a r sin(2πχ)
-    """
-    return jnp.ones(1) * (a * r * jnp.sin(2 * jnp.pi * χ))
-
-
-def F(x):
-    """Cylindrical coordinate mapping function. Formula is:
-    
-    F(r, χ, z) = (R, Z, hz) = (a r cos(2πχ), a r sin(2πχ), h z)
-
-    Args:   
-        x: Input logical coordinates (r, χ, z)
-
-    Returns:
-        F: Coordinate mapping function (R, Z, hz)
-    """
-    r, χ, z = x
-    return jnp.ravel(jnp.array([_R(r, χ), _Z(r, χ), h * jnp.ones(1) * z]))
-
+F = cylinder_map(a=a, h=h)
 
 # Create DeRham sequence
 derham = DeRhamSequence(ns, ps, 8, types, F, polar=True, dirichlet=True)

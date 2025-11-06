@@ -24,6 +24,7 @@ import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
+from mrx.mappings import polar_map
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -47,15 +48,7 @@ def get_err(n, p, q):
     Returns:
         float: Relative L2 error of the solution
     """
-    def Phi(x):
-        """Polar coordinate mapping function. Formula is:
-        
-        Phi(r, θ, z) = (r cos(2πθ), -z, r sin(2πθ))
-        """
-        r, θ, z = x
-        return jnp.array([r * jnp.cos(2 * jnp.pi * θ),
-                          -z,
-                          r * jnp.sin(2 * jnp.pi * θ)])
+    Phi = polar_map()
 
     # Define exact solution and source term
     def u(x):

@@ -2,40 +2,7 @@ import jax
 import jax.numpy as jnp
 __all__ = ['picard_solver', 'newton_solver']
 
-
-def aitken_step(z_prev, z_curr, fz, eps=1e-12, inprod=jnp.vdot):
-    """
-    Aitken step for iterative solvers.
-
-    Parameters
-    ----------
-    z_prev : jnp.ndarray
-        Previous state.
-    z_curr : jnp.ndarray
-        Current state.
-    fz : jnp.ndarray
-        Function value at current state.
-    eps : float
-        Epsilon for numerical stability.
-    inprod : callable
-        Inner product function definition.
-
-    Returns
-    -------
-    z_next : jnp.ndarray
-        Next state.
-    omega : float
-        Relaxation parameter.
-    """
-    d1 = z_curr - z_prev
-    d2 = fz - z_curr
-    num = inprod(d1, d2)
-    den = inprod(d2, d2) + eps
-    omega = jnp.clip(num / den, 0.0, 1.0)
-    z_next = (1.0 - omega) * z_curr + omega * fz
-    return z_next, omega
-
-def picard_solver(f, z_init, tol=1e-12, max_iter=1000, norm=jnp.linalg.norm)->tuple[jnp.ndarray, float, int]:
+def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm)->tuple[jnp.ndarray, float, int]:
     """
     Picard solver for fixed-point iteration.
 
@@ -94,12 +61,10 @@ def picard_solver(f, z_init, tol=1e-12, max_iter=1000, norm=jnp.linalg.norm)->tu
         """
         z_prev, z, i = state
         fz = f(z)
-        
         alpha = jnp.where(i == 0,
-                          1,
-                          jnp.clip(norm(fz[0] - z[0]) / (norm(z[0] - z_prev[0]) + 1e-12), 0.0, 1.0)
-                          )
-
+                            1,
+                            jnp.clip(norm(fz[0] - z[0]) / (norm(z[0] - z_prev[0]) + 1e-12), 0.0, 1.0)
+                            )
         z_next = (alpha * fz[0] + (1 - alpha) * z[0], fz[1])
         return (z, z_next, i + 1)
 
@@ -112,7 +77,7 @@ def picard_solver(f, z_init, tol=1e-12, max_iter=1000, norm=jnp.linalg.norm)->tu
     z_star = jax.lax.cond(iters == 0, lambda z: f(z), lambda z: z, z_star)
     return z_star, norm(f(z_star)[0] - z_star[0]), iters
 
-def newton_solver(f, z_init, tol=1e-12, max_iter=1000, norm=jnp.linalg.norm):
+def newton_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm):
     """
     Newton fixed-point solver compatible with picard_solver's (x, aux) state.
 

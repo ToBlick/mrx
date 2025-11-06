@@ -20,6 +20,7 @@ import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
+from mrx.mappings import toroid_map
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -43,18 +44,7 @@ def get_err(n, p, q):
     """
     ɛ = 1/3
     π = jnp.pi
-
-    def F(x):
-        """Toroidal coordinate mapping function. Formula is:
-        
-        F(r, θ, z) = (X, Y, Z) = (R(r, θ) cos(2πz), -R(r, θ) sin(2πz), ɛ r sin(2πθ))
-        where R(r, θ) = 1 + ɛ r cos(2πθ) is the radial coordinate.
-        """
-        r, θ, z = x
-        R = 1 + ɛ * r * jnp.cos(2 * π * θ)
-        return jnp.array([R * jnp.cos(2 * π * z),
-                          -R * jnp.sin(2 * π * z),
-                          ɛ * r * jnp.sin(2 * π * θ)])
+    F = toroid_map(epsilon=ɛ)
 
     # Define exact solution and source term
     def u(x):

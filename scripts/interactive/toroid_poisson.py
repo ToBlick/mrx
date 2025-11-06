@@ -7,6 +7,7 @@ import sys
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
+from mrx.mappings import toroid_map
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -38,43 +39,7 @@ def get_err(n, p):
     a = 1 / 3  # minor radius
     R0 = 1.0  # major radius
     π = jnp.pi
-
-    def _X(r, χ):
-        """Toroidal radial coordinate. Formula is:
-        
-        X(r, χ) = R0 + a * r * cos(2πχ)
-        """
-        return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
-
-    def _Y(r, χ):
-        """Toroidal vertical coordinate. Formula is:
-        
-        Y(r, χ) = R0 + a * r * cos(2πχ)
-        """
-        return jnp.ones(1) * (R0 + a * r * jnp.cos(2 * π * χ))
-
-    def _Z(r, χ):
-        """Toroidal azimuthal coordinate. Formula is:
-        
-        Z(r, χ) = a * r * sin(2πχ)
-        """
-        return jnp.ones(1) * a * r * jnp.sin(2 * π * χ)
-
-    def F(x):
-        """Toroidal coordinate mapping function. Formula is:
-        
-        F(r, χ, z) = (X(r, χ) * cos(2πz), -Y(r, χ) * sin(2πz), Z(r, χ))
-
-        Args:   
-            x: Input logical coordinates (r, χ, z)
-
-        Returns:
-            F: Coordinate mapping function
-        """
-        r, χ, z = x
-        return jnp.ravel(jnp.array([_X(r, χ) * jnp.cos(2 * π * z),
-                                    -_Y(r, χ) * jnp.sin(2 * π * z),
-                                    _Z(r, χ)]))
+    F = toroid_map(epsilon=a, R0=R0)
         
     def u(x):
         """Exact solution of the Poisson equation. Formula is:

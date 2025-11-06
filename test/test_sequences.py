@@ -31,7 +31,7 @@ def test_derham_sequence_eigen_and_exactness(p, dirichlet, expected_nulls):
         (p, p, p),
         2*p,
         ("clamped", "periodic", "periodic"),
-        rotating_ellipse_map(),
+        rotating_ellipse_map(nfp=3),
         polar=True,
         dirichlet=dirichlet
     )

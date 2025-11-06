@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import optimistix
 from jax.numpy import cos, pi, sin
+from typing import Callable
 
 from mrx.differential_forms import DifferentialForm, DiscreteFunction
 from mrx.quadrature import QuadratureRule
@@ -203,7 +204,7 @@ def get_lcfs_F(n_map, p_map, q_map, R0, k0, q0, aR, atol=1e-6, rtol=1e-6, maxite
     return F
 
 
-def cerfon_map(epsilon, kappa, alpha, R0=1.0):
+def cerfon_map(epsilon: float = 0.33, kappa: float = 1.2, alpha: float = 0.0, R0: float = 1.0) -> Callable:
     """
     Mapping function from "One Size Fits All" paper by Cerfon et al.:
     F(r, t, z) = (X(t), Y(t), z) where X(t) and Y(t) are the Cartesian coordinates, 
@@ -211,11 +212,11 @@ def cerfon_map(epsilon, kappa, alpha, R0=1.0):
 
     Parameters
     ----------
-    epsilon : float
+    epsilon : float, default=0.33
         Eccentricity of the ellipse.
-    kappa : float
+    kappa : float, default=1.2
         Aspect ratio of the ellipse.
-    alpha : float
+    alpha : float, default=0.0
         Phase shift of the ellipse.
     R0 : float, default=1.0
         Major radius of the ellipse.
@@ -261,7 +262,7 @@ def cerfon_map(epsilon, kappa, alpha, R0=1.0):
     return F
 
 
-def helical_map(epsilon=0.33, h=0.25, n_turns=3):
+def helical_map(epsilon: float = 0.33, h: float = 0.25, n_turns: int = 3) -> Callable:
     """
     Helical mapping function:
     F(r, t, ζ) = (X(ζ)) where X(ζ) is the coordinate along the helix.
@@ -310,11 +311,9 @@ def helical_map(epsilon=0.33, h=0.25, n_turns=3):
     return F
 
 
-def rotating_ellipse_map(eps=0.33, kappa=1.2, nfp=3):
+def rotating_ellipse_map(eps: float = 0.33, kappa: float = 1.2, nfp: int = 3) -> Callable:
     """
-    Rotating ellipse mapping function:
-    F(r, θ, ζ) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
-    and (r, θ, ζ) are the logical coordinates, with ζ the toroidal angle.
+    Rotating ellipse mapping function.
 
     Parameters
     ----------
@@ -330,6 +329,12 @@ def rotating_ellipse_map(eps=0.33, kappa=1.2, nfp=3):
     F : Callable
         Rotating ellipse mapping function.
     """
+    # Raise an error if nfp is not a positive integer.
+    if nfp <= 0:
+        raise ValueError(f"nfp must be a positive integer, got {nfp}")
+    if eps <= 0:
+        raise ValueError(f"eps must be a positive number, got {eps}")
+
     def nu(zeta):
         return 1 + (1 - kappa) * cos(2 * pi * zeta * nfp)
 
@@ -347,4 +352,124 @@ def rotating_ellipse_map(eps=0.33, kappa=1.2, nfp=3):
         return jnp.array([R * cos(2 * pi * ζ),
                           -R * sin(2 * pi * ζ),
                           Z])
+    return F
+
+def toroid_map(epsilon: float = 1/3, R0: float = 1.0) -> Callable:
+    """
+    Toroidal mapping function:
+    F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
+    and (r, χ, z) are the logical coordinates, with χ the toroidal angle.
+
+    Parameters
+    ----------
+    epsilon : float
+        Eccentricity of the ellipse.
+    R0 : float, default=1.0
+        Major radius of the toroid.
+    """
+    π = jnp.pi
+    
+    def F(x):
+        """Toroidal coordinate mapping function. Formula is:
+        
+        F(r, θ, z) = (X, Y, Z) = (R(r, θ) cos(2πz), -R(r, θ) sin(2πz), ɛ r sin(2πθ))
+        where R(r, θ) = R0 + ɛ r cos(2πθ) is the radial coordinate.
+        """
+        r, θ, ζ = x
+        R = R0 + epsilon * r * jnp.cos(2 * π * θ)
+        return jnp.array([R * jnp.cos(2 * π * ζ),
+                        -R * jnp.sin(2 * π * ζ),
+                        epsilon * r * jnp.sin(2 * π * θ)])
+    return F
+
+def polar_map() -> Callable:
+    """
+    Polar mapping function:
+    F(r, θ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
+    and (r, θ, z) are the logical coordinates, with θ the poloidal angle.
+    """
+    π = jnp.pi
+    def F(x):
+        """Polar coordinate mapping function."""
+        r, θ, z = x
+        return jnp.array([r * jnp.cos(2 * π * θ), -z, r * jnp.sin(2 * π * θ)])
+    return F
+
+def cylinder_map(a: float = 1.0, h: float = 1.0) -> Callable:
+    """
+    Cylinder mapping function:
+    F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
+    and (r, χ, z) are the logical coordinates, with χ the toroidal angle.
+
+    Parameters
+    ----------
+    a : float
+        Radius of the cylinder.
+    h : float
+        Height of the cylinder.
+
+    Returns
+    -------
+    F : Callable
+        Cylinder mapping function.
+    """
+    π = jnp.pi
+    
+    def _X(r, χ):
+        """Cylindrical radial coordinate. Formula is:
+
+        X(r, χ) = a r cos(2πχ)
+        """
+        return jnp.ones(1) * (a * r * jnp.cos(2 * π * χ))
+
+    def _Y(r, χ):
+        """Cylindrical vertical coordinate. Formula is:
+        
+        Y(r, χ) = a r sin(2πχ)
+        """
+        return jnp.ones(1) * (a * r * jnp.sin(2 * π * χ))
+
+    def F(x):
+        """Cylindrical coordinate mapping function. Formula is:
+        
+        F(r, χ, z) = (X, Y, Z) = (a r cos(2πχ), a r sin(2πχ), h z)
+
+        Args:   
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            F: Coordinate mapping function (R, Z, hz)
+        """
+        r, χ, z = x
+        return jnp.ravel(jnp.array([_X(r, χ), _Y(r, χ), h * jnp.ones(1) * z]))
+
+    return F
+
+
+def drumshape_map(a_h: Callable) -> Callable:
+    """
+    Drumshape mapping function:
+    F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
+    and (r, χ, z) are the logical coordinates, with χ the toroidal angle.
+    Formula is:
+    F(r, χ, z) = (a_h(χ) r cos(2πχ), -z, a_h(χ) r sin(2πχ))
+    where a_h(χ) is the radius as a function of the toroidal angle.
+
+    Parameters
+    ----------
+    a_h : Callable
+        Radius as a function of the toroidal angle.
+
+    Returns
+    -------
+    F : Callable
+        Drumshape mapping function.
+    """
+    π = jnp.pi
+    def F(x):
+        r, χ, z = x
+        return jnp.array([a_h(χ) * r * jnp.cos(2 * π * χ),
+                          -z,
+                          a_h(χ) * r * jnp.sin(2 * π * χ)])
+
     return F

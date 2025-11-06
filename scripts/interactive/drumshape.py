@@ -20,6 +20,7 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DifferentialForm, DiscreteFunction, Pushforward
 from mrx.quadrature import QuadratureRule
 from mrx.utils import assemble, inv33, jacobian_determinant, integrate_against
+from mrx.mappings import drumshape_map
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -72,21 +73,7 @@ def get_evs(a_hat, n_map, p_map, Seq):
         _x = jnp.array([x, 0, 0])
         return _a_h(_x)
 
-    def F(x):
-        """Polar coordinate mapping function. Formula is:
-        
-        F(r, χ, z) = (a_h(χ) r cos(2πχ), -z, a_h(χ) r sin(2πχ))
-
-        Args:
-            x: Input logical coordinates (r, χ, z)
-
-        Returns:
-            F: Coordinate mapping function (r cos(2πχ), -z, r sin(2πχ))
-        """
-        r, χ, z = x
-        return jnp.array([a_h(χ)[0] * r * jnp.cos(2 * jnp.pi * χ),
-                          -z,
-                          a_h(χ)[0] * r * jnp.sin(2 * jnp.pi * χ)])
+    F = drumshape_map(a_h=lambda χ: a_h(χ)[0])
 
     # We now assemble the matrices by hand
     # TODO: Make the deRhamSequence class compatible with jax transformations
@@ -401,22 +388,7 @@ def main():
     q = 2 * POLY_DEGREE
     types = ("clamped", "periodic", "constant")
 
-    def F_default(x):
-        """Polar coordinate mapping function. Formula is:
-        
-        F(r, χ, z) = (r cos(2πχ), -z, r sin(2πχ))
-
-        Args:
-            x: Input logical coordinates (r, χ, z)
-
-        Returns:
-            F: Coordinate mapping function (r cos(2πχ), -z, r sin(2πχ))
-        """
-        r, χ, z = x
-        return jnp.array([r * jnp.cos(2 * jnp.pi * χ),
-                          -z,
-                          r * jnp.sin(2 * jnp.pi * χ)])
-
+    F_default = drumshape_map(a_h=lambda χ: jnp.ones(1)[0])
     Seq = DeRhamSequence(ns, ps, q, types, F_default, polar=True, dirichlet=True)
     Seq.evaluate_1d()
     
