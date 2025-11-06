@@ -43,6 +43,9 @@ dependencies = [
     "h5py",
 ]
 
+[tool.ruff]
+target-version = "py311"
+
 [tool.setuptools.packages.find]
 include = ["mrx*"]  # Include specific packages
 exclude = ["scripts_tutorials*", "scripts_deprecated*"]                  # Exclude specific package
