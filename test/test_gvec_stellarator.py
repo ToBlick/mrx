@@ -166,6 +166,7 @@ plt.grid(True, which="both", ls=":")
 plt.legend()
 plt.tight_layout()
 if not is_running_in_github_actions():
+    os.makedirs("test_outputs", exist_ok=True)
     plt.savefig("test_outputs/test_gvec_stellarator_projection_errs.png")
     plt.show()
 

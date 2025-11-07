@@ -6,6 +6,7 @@ import pytest
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward, Pullback
 from mrx.mappings import rotating_ellipse_map
+from mrx.nonlinearities import CrossProductProjection
 from mrx.utils import inv33
 jax.config.update("jax_enable_x64", True)
 
@@ -392,6 +393,66 @@ def test_crossproduct_projections(p):
     result = Seq.P1x1_to_2(zero_1, u_1)
     npt.assert_allclose(result, 0.0, rtol=1e-10, atol=1e-10,
                        err_msg=f"P1x1_to_2(0, u) should be zero for p={p}")
+
+
+@pytest.mark.parametrize("p", [1, 2, 3])
+def test_crossproduct_projection_value_errors(p):
+    """Test ValueError cases in CrossProductProjection."""
+    Seq = DeRhamSequence(
+        (4, 4, 4),
+        (p, p, p),
+        2*p,
+        ("clamped", "periodic", "periodic"),
+        rotating_ellipse_map(nfp=3),
+        polar=True,
+        dirichlet=True
+    )
+    
+    Seq.evaluate_1d()
+    Seq.assemble_all()
+    
+    # Test ValueError for n not in [1, 2]
+    with pytest.raises(ValueError, match="n must be 1 or 2"):
+        CrossProductProjection(n=0, m=1, k=1, Seq=Seq)
+    
+    with pytest.raises(ValueError, match="n must be 1 or 2"):
+        CrossProductProjection(n=3, m=1, k=1, Seq=Seq)
+    
+    # Test ValueError for m not in [1, 2]
+    with pytest.raises(ValueError, match="m must be 1 or 2"):
+        CrossProductProjection(n=1, m=0, k=1, Seq=Seq)
+    
+    with pytest.raises(ValueError, match="m must be 1 or 2"):
+        CrossProductProjection(n=1, m=3, k=1, Seq=Seq)
+    
+    # Test ValueError for k not in [1, 2]
+    with pytest.raises(ValueError, match="k must be 1 or 2"):
+        CrossProductProjection(n=1, m=1, k=0, Seq=Seq)
+    
+    with pytest.raises(ValueError, match="k must be 1 or 2"):
+        CrossProductProjection(n=1, m=1, k=3, Seq=Seq)
+    
+    # Test ValueError for not yet implemented combinations
+    # Based on the code, the implemented combinations are:
+    # - (n=1, m=2, k=1)
+    # - (n=1, m=1, k=1)
+    # - (n=2, m=1, k=1)
+    # - (n=2, m=2, k=1)
+    # - (n=1, m=2, k=2)
+    # - (n=2, m=1, k=2)
+    # - (n=2, m=2, k=2)
+    # So (n=1, m=1, k=2) should raise "Not yet implemented"
+    with pytest.raises(ValueError, match="Not yet implemented"):
+        proj = CrossProductProjection(n=1, m=1, k=2, Seq=Seq)
+        w_1 = jnp.ones(Seq.M1.shape[0]) * 0.1
+        u_2 = jnp.ones(Seq.M2.shape[0]) * 0.2
+        proj(w_1, u_2)
+
+    with pytest.raises(ValueError, match="Not yet implemented"):
+        proj = CrossProductProjection(n=1, m=1, k=2, Seq=Seq)
+        w_1 = jnp.ones(Seq.M1.shape[0]) * 0.1
+        u_2 = jnp.ones(Seq.M2.shape[0]) * 0.2
+        proj(w_1, u_2)
 
 
 @pytest.mark.parametrize("p", [1, 2, 3])

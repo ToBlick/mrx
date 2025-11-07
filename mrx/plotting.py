@@ -3,7 +3,7 @@ Plotting utilities for finite element analysis results.
 """
 # %%
 import os
-
+from typing import Callable
 import diffrax
 import h5py
 import jax
@@ -30,8 +30,9 @@ base_markers = [
 # Default color scale for plots
 colorbar = 'plasma'
 
-def get_3d_grids(F, x_min=0, x_max=1, y_min=0, y_max=1,
-                 z_min=0, z_max=1, nx=16, ny=16, nz=16):
+def get_3d_grids(
+    F : Callable, x_min : float = 0.0, x_max: float = 1.0, y_min: float = 0.0, y_max: float = 1.0,
+    z_min: float = 0.0, z_max: float = 1.0, nx: int = 16, ny: int = 16, nz: int = 16):
     """
     Get 3D grids for plotting.
 
@@ -39,17 +40,17 @@ def get_3d_grids(F, x_min=0, x_max=1, y_min=0, y_max=1,
     ----------
     F : callable
         Coordinate transformation function.
-    x_min : float, default=0
+    x_min : float, default=0.0  
         Minimum value of the x coordinate.  
-    x_max : float, default=1
+    x_max : float, default=1.0
         Maximum value of the x coordinate.
-    y_min : float, default=0
+    y_min : float, default=0.0
         Minimum value of the y coordinate.
-    y_max : float, default=1
+    y_max : float, default=1.0
         Maximum value of the y coordinate.
-    z_min : float, default=0
+    z_min : float, default=0.0
         Minimum value of the z coordinate.
-    z_max : float, default=1
+    z_max : float, default=1.0
         Maximum value of the z coordinate.
     nx : int, default=16
         Number of grid points in the x direction.
@@ -60,14 +61,14 @@ def get_3d_grids(F, x_min=0, x_max=1, y_min=0, y_max=1,
 
     Returns
     -------
-    _x : array (nx*ny*nz, 3)
-    _y : array (nx*ny*nz, 3)
-    _y1 : array (nx, ny, nz)
-    _y2 : array (nx, ny, nz)
-    _y3 : array (nx, ny, nz)
-    _x1 : array (nx)
-    _x2 : array (ny)
-    _x3 : array (nz)
+    _x : jnp.ndarray (nx*ny*nz, 3)
+    _y : jnp.ndarray (nx*ny*nz, 3)
+    _y1 : jnp.ndarray (nx, ny, nz)
+    _y2 : jnp.ndarray (nx, ny, nz)
+    _y3 : jnp.ndarray (nx, ny, nz)
+    _x1 : jnp.ndarray (nx)
+    _x2 : jnp.ndarray (ny)
+    _x3 : jnp.ndarray (nz)
     """
     _x1 = jnp.linspace(x_min, x_max, nx)
     _x2 = jnp.linspace(y_min, y_max, ny)
@@ -81,9 +82,12 @@ def get_3d_grids(F, x_min=0, x_max=1, y_min=0, y_max=1,
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
 
-def get_2d_grids(F, cut_value=0, cut_axis=2, nx=64, ny=64, nz=64, tol1=1e-6, tol2=0, tol3=0,
-                 x_min=0, x_max=1, y_min=0, y_max=1,
-                 z_min=0, z_max=1, invert_x=False, invert_y=False, invert_z=False):
+def get_2d_grids(
+    F : Callable, cut_value: float = 0.0, cut_axis: int = 2, nx: int = 64, ny: int = 64, 
+    nz: int = 64, tol1: float = 1e-6, tol2: float = 0.0, tol3: float = 0.0,
+    x_min: float = 0.0, x_max: float = 1.0, y_min: float = 0.0, y_max: float = 1.0,
+    z_min: float = 0.0, z_max: float = 1.0, invert_x: bool = False, invert_y: bool = False, invert_z: bool = False
+    ):
     """
     Get 2D grids for plotting.
 
@@ -91,7 +95,7 @@ def get_2d_grids(F, cut_value=0, cut_axis=2, nx=64, ny=64, nz=64, tol1=1e-6, tol
     ----------
     F : callable
         Coordinate transformation function.
-    cut_value : float, default=0
+    cut_value : float, default=0.0
         Value to cut the grid at.
     cut_axis : int, default=2
         Axis to cut the grid at.
@@ -103,33 +107,33 @@ def get_2d_grids(F, cut_value=0, cut_axis=2, nx=64, ny=64, nz=64, tol1=1e-6, tol
         Number of grid points in the z direction.
     tol1 : float, default=1e-6
         Tolerance for the grid in the x direction.
-    tol2 : float, default=0
+    tol2 : float, default=0.0
         Tolerance for the grid in the y direction.
-    tol3 : float, default=0
+    tol3 : float, default=0.0
         Tolerance for the grid in the z direction.
-    x_min : float, default=0
+    x_min : float, default=0.0
         Minimum value of the x coordinate.
-    x_max : float, default=1
+    x_max : float, default=1.0
         Maximum value of the x coordinate.
-    y_min : float, default=0
+    y_min : float, default=0.0
         Minimum value of the y coordinate.
-    y_max : float, default=1
+    y_max : float, default=1.0
         Maximum value of the y coordinate.
-    z_min : float, default=0
+    z_min : float, default=0.0
         Minimum value of the z coordinate.
-    z_max : float, default=1
+    z_max : float, default=1.0
         Maximum value of the z coordinate.
 
     Returns
     -------
-    _x : array (n1*n2, 3)
-    _y : array (n1*n2, 3)
-    _y1 : array (n1, n2)
-    _y2 : array (n1, n2)
-    _y3 : array (n1, n2)
-    _x1 : array (n1)
-    _x2 : array (n2)
-    _x3 : array (nz)
+    _x : jnp.ndarray (n1*n2, 3)
+    _y : jnp.ndarray (n1*n2, 3)
+    _y1 : jnp.ndarray (n1, n2)
+    _y2 : jnp.ndarray (n1, n2)
+    _y3 : jnp.ndarray (n1, n2)
+    _x1 : jnp.ndarray (n1)
+    _x2 : jnp.ndarray (n2)
+    _x3 : jnp.ndarray (nz)
     """
     _x1 = jnp.linspace(x_min + tol1, x_max - tol1, nx)
     _x2 = jnp.linspace(y_min + tol2, y_max - tol2, ny)
@@ -159,7 +163,7 @@ def get_2d_grids(F, cut_value=0, cut_axis=2, nx=64, ny=64, nz=64, tol1=1e-6, tol
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
 
-def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
+def get_1d_grids(F : Callable, zeta: float = 0.0, chi: float = 0.0, nx: int = 64, tol: float = 1e-6):
     """
     Get 1D grids for plotting.
 
@@ -167,9 +171,9 @@ def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
     ----------
     F : callable
         Coordinate transformation function.
-    zeta : float, default=0
+    zeta : float, default=0.0
         Toroidal angle.
-    chi : float, default=0
+    chi : float, default=0.0
         Poloidal angle.
     nx : int, default=64
         Number of grid points.
@@ -178,16 +182,15 @@ def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
 
     Returns
     -------
-    _x : array (nx, 3)
-    _y : array (nx, 3)
-    _y1 : array (nx)
-    _y2 : array (nx)
-    _y3 : array (nx)
-    _x1 : array (nx)
-    _x2 : array (1)
-    _x3 : array (1)
+    _x : jnp.ndarray (nx, 3)
+    _y : jnp.ndarray (nx, 3)
+    _y1 : jnp.ndarray (nx)
+    _y2 : jnp.ndarray (nx)
+    _y3 : jnp.ndarray (nx)
+    _x1 : jnp.ndarray (nx)
+    _x2 : jnp.ndarray (1)
+    _x3 : jnp.ndarray (1)
     """
-    tol = 1e-6
     _x1 = jnp.linspace(tol, 1 - tol, nx)
     _x2 = jnp.ones(1) * chi
     _x3 = jnp.ones(1) * zeta
@@ -200,7 +203,7 @@ def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
 
-def trajectory_plane_intersections_jit(trajectories, plane_val=0.5, axis=1):
+def trajectory_plane_intersections_jit(trajectories: jnp.ndarray, plane_val: float = 0.5, axis: int = 1):
     """
     Vectorized + jittable function for computing intersections of trajectories with a plane.
 
@@ -246,17 +249,17 @@ def trajectory_plane_intersections_jit(trajectories, plane_val=0.5, axis=1):
     return intersections, mask
 
 
-def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=16, plot_centerline=False):
+def plot_crossections_separate(p_h : Callable, grids_pol : list[tuple], zeta_vals : list[float], textsize : int = 16, ticksize : int = 16, plot_centerline : bool = False):
     """
     Plot cross-sections of a function.
 
     Parameters
     ----------
-    p_h : callable
+    p_h : Callable
         Function to plot.
-    grids_pol : list of tuples
+    grids_pol : list[tuple]
         List of tuples containing the grid points and the function values.
-    zeta_vals : list of floats
+    zeta_vals : list[float]
         List of toroidal angles to plot.
     textsize : int, default=16
         Font size for the text.
@@ -377,15 +380,15 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
 
 def plot_torus(p_h, grids_pol,
                grid_surface,
-               figsize=(12, 8),
-               labelsize=20,
-               ticksize=16,
-               gridlinewidth=0.01,
-               cstride=4,
-               elev=30,
-               azim=140,
-               noaxes=False,
-               add_colorbar=False):
+               figsize : tuple = (12, 8),
+               labelsize : int = 20,
+               ticksize : int = 16,
+               gridlinewidth : float = 0.01,
+               cstride : int = 4,
+               elev : float = 30,
+               azim : float = 140,
+               noaxes : bool = False,
+               add_colorbar : bool = False):
     """
     Plot a function on a torus.
 
@@ -494,7 +497,7 @@ def plot_torus(p_h, grids_pol,
     return fig, ax
 
 
-def plot_crossections(f, grids):
+def plot_crossections(f : Callable, grids : list[tuple]):
     """
     Plot cross-sections of a function.
 
@@ -528,7 +531,7 @@ def plot_crossections(f, grids):
     return fig, ax
 
 
-def trajectory_plane_intersections_list(trajectory, plane_point, plane_normal):
+def trajectory_plane_intersections_list(trajectory: jnp.ndarray, plane_point: jnp.ndarray, plane_normal: jnp.ndarray):
     """
     Compute intersections of a 3D trajectory with a general plane.
 
@@ -549,7 +552,7 @@ def trajectory_plane_intersections_list(trajectory, plane_point, plane_normal):
     intersections : list of jnp.ndarray, each of shape (3,)
         Intersection points.
     """
-    # TODO: Tobi should these be converted to jnp.ndarray?
+    # TODO: Why convert to np.ndarray?
     trajectory = np.asarray(trajectory)
     plane_point = np.asarray(plane_point)
     plane_normal = np.asarray(plane_normal)
@@ -573,9 +576,10 @@ def trajectory_plane_intersections_list(trajectory, plane_point, plane_normal):
 
 
 def poincare_plot(
-    outdir, vector_field, F, x0, n_loop, n_batch, colors, plane_val, axis, 
-    final_time=10_000, n_saves=20_000, max_steps=150000, r_tol=1e-7, 
-    a_tol=1e-7, cylindrical=False, name=""):
+    outdir : str, vector_field : Callable, F : Callable, x0 : jnp.ndarray, 
+    n_loop : int, n_batch : int, colors : list[str], plane_val : float = 0.5, axis : int = 1, 
+    final_time : float = 10_000, n_saves : int = 20_000, max_steps : int = 150000, r_tol : float = 1e-7, 
+    a_tol : float = 1e-7, cylindrical : bool = False, name : str = ""):
     """
     Plot Poincaré sections of a vector field.
 
@@ -583,23 +587,23 @@ def poincare_plot(
     ----------
     outdir : str
         Directory to save the plots.
-    vector_field : callable
+    vector_field : Callable
         Vector field to plot.
-    F : callable
+    F : Callable
         Coordinate transformation function.
     x0 : jnp.ndarray (n_batch, n_loop, 3)
         Initial conditions for the trajectories. The shape is (n_batch, n_loop, 3), 
         where n_batch is the number of batches, n_loop is the number of loops, 
         and 3 is the dimension of the space.
-    n_loop : int
+    n_loop : int, default=1
         Number of loops.
-    n_batch : int
+    n_batch : int, default=1
         Number of batches.
     colors : list of colors
         List of colors for the trajectories.
-    plane_val : float
+    plane_val : float, default=0.5
         Value of the plane to intersect with.
-    axis : int
+    axis : int, default=1
         Coordinate axis to intersect with.
     final_time : float, default=10_000
         Final time.
@@ -731,10 +735,10 @@ def poincare_plot(
         plt.savefig(outdir + name + "field_line_" + str(i) + ".pdf", bbox_inches='tight')
 
 
-def pressure_plot(p, Seq, F, outdir, name,
-                  resolution=128, zeta=0, tol=1e-3,
-                  SQUARE_FIG_SIZE=(8, 8), LABEL_SIZE=20,
-                  TICK_SIZE=16, LINE_WIDTH=2.5):
+def pressure_plot(p : jnp.ndarray, Seq : DeRhamSequence, F : Callable, outdir : str, name : str,
+                  resolution : int = 128, zeta : float = 0.0, tol : float = 1e-3,
+                  SQUARE_FIG_SIZE : tuple = (8, 8), LABEL_SIZE : int = 20,
+                  TICK_SIZE : int = 16, LINE_WIDTH : float = 2.5):
     """
     Plot a pressure contour plot.
 
@@ -744,7 +748,7 @@ def pressure_plot(p, Seq, F, outdir, name,
         Pressure field.
     Seq : DeRhamSequence
         DeRham sequence.
-    F : callable
+    F : Callable
         Coordinate transformation function.
     outdir : str
         Directory to save the plot.
@@ -752,7 +756,7 @@ def pressure_plot(p, Seq, F, outdir, name,
         Name of the plot.
     resolution : int, default=128
         Resolution of the plot.
-    zeta : float, default=0
+    zeta : float, default=0.0
         Toroidal angle.
     tol : float, default=1e-3
         Tolerance for the plot.
@@ -773,7 +777,7 @@ def pressure_plot(p, Seq, F, outdir, name,
         Axes object.
     """
 
-    p_h = DiscreteFunction(p, Seq.Λ0, Seq.E0_0.matrix())
+    p_h = DiscreteFunction(p, Seq.Λ0, Seq.E0)
     p_h_xyz = Pushforward(p_h, F, 0)
 
     _s = jax.vmap(F)(jnp.vstack(
@@ -810,9 +814,10 @@ def pressure_plot(p, Seq, F, outdir, name,
 
 
 def trace_plot(
-    iterations, force_trace, helicity_trace, divergence_trace, 
-    velocity_trace, wall_time_trace, energy_trace=None, outdir='./', name='',
-    FIG_SIZE=(12, 6), LABEL_SIZE=20, TICK_SIZE=16, LINE_WIDTH=2.5, LEGEND_SIZE=16):
+    iterations : jnp.ndarray, force_trace : jnp.ndarray, helicity_trace : jnp.ndarray, divergence_trace : jnp.ndarray, 
+    velocity_trace : jnp.ndarray, wall_time_trace : jnp.ndarray, energy_trace : jnp.ndarray = None, 
+    outdir : str = './', name : str = '', FIG_SIZE : tuple = (12, 6), LABEL_SIZE : int = 20, 
+    TICK_SIZE : int = 16, LINE_WIDTH : float = 2.5, LEGEND_SIZE : int = 16):
     """
     Plot a trace plot.
 
@@ -913,7 +918,7 @@ def trace_plot(
     plt.close()
 
 
-def generate_solovev_plots(name):
+def generate_solovev_plots(name : str):
     """
     Generate all plots for a Solovev configuration.
 
@@ -991,7 +996,7 @@ def generate_solovev_plots(name):
                name="force_trace.pdf",
                CONFIG=CONFIG)
 
-def set_axes_equal(ax):
+def set_axes_equal(ax : plt.Axes):
     """Set 3D plot axes to equal scale."""
     X_limits = ax.get_xlim3d()
     Y_limits = ax.get_ylim3d()
