@@ -3,21 +3,16 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
+import numpy.testing as npt
 import xarray as xr
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 
-# Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
-
-p = 3
-n = 8
-
 # %%
 gvec_eq = xr.open_dataset("data/gvec_tokamak.h5", engine="h5netcdf")
 # %%
-
 θ_star = gvec_eq["thetastar"].values    # shape (mρ, mθ), rho x theta
 _ρ = gvec_eq["rho"].values              # shape (mρ,)
 _θ = gvec_eq["theta"].values            # shape (mθ,)
@@ -25,7 +20,7 @@ X1 = gvec_eq["X1"].values              # shape (mρ, mθ, 1)
 X2 = gvec_eq["X2"].values              # shape (mρ, mθ, 1)
 # %%
 # Get a deRham sequence to approximate the functions X1(ρ,θ) and X2(ρ,θ)
-mapSeq = DeRhamSequence((n, n, 1), (p, p, 0), p+2,
+mapSeq = DeRhamSequence((8, 8, 1), (3, 3, 0), 5,
                         ("clamped", "periodic", "constant"),
                         lambda x: x, polar=False, dirichlet=False)
 
@@ -70,7 +65,7 @@ def f(x):
 
 projection_errs = []
 ns = jnp.arange(4, 19, 2)
-
+p = 3
 for n in ns:
     Seq = DeRhamSequence((n, n, 1), (p, p, 0), p+2,
                          ("clamped", "periodic", "constant"),
@@ -188,5 +183,42 @@ ax.legend(
 )
 plt.tight_layout()
 plt.show()  # %%
+
+# %%
+Seq.assemble_all()
+eigs = [
+    jnp.linalg.eigvalsh(Seq.M0 @ Seq.dd0),
+    jnp.linalg.eigvalsh(Seq.M1 @ Seq.dd1),
+    jnp.linalg.eigvalsh(Seq.M2 @ Seq.dd2),
+    jnp.linalg.eigvalsh(Seq.M3 @ Seq.dd3),
+]
+
+# %%
+expected_nulls = [False,  False,  True, True]
+for i, (vals, should_be_zero) in enumerate(zip(eigs, expected_nulls)):
+    # --- all eigenvalues should be nonnegative ---
+    min_eig = jnp.min(vals)
+    assert min_eig > -1e-10, (
+        f"dd{i} has negative eigenvalue {min_eig}"
+    )
+
+    # --- check smallest eigenvalue matches expected nullspace pattern ---
+    λ0 = float(vals[0])
+    if should_be_zero:
+        assert abs(λ0) < 1e-10, (
+            f"dd{i} should have zero eigenvalue (got {λ0})"
+        )
+    else:
+        assert abs(λ0) > 1e-6, (
+            f"dd{i} should NOT have zero eigenvalue (got {λ0})"
+        )
+
+# Check exactness identities
+curl_grad = jnp.max(jnp.abs(Seq.strong_curl @ Seq.strong_grad))
+div_curl = jnp.max(jnp.abs(Seq.strong_div @ Seq.strong_curl))
+npt.assert_allclose(curl_grad, 0.0, atol=1e-11,
+                    err_msg="curl∘grad ≠ 0")
+npt.assert_allclose(div_curl, 0.0, atol=1e-11,
+                    err_msg="div∘curl ≠ 0")
 
 # %%

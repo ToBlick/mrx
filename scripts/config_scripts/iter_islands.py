@@ -7,9 +7,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.mappings import cerfon_map
 from mrx.derham_sequence import DeRhamSequence
 from mrx.io import parse_args, unique_id
+from mrx.mappings import cerfon_map
 from mrx.relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
 
 jax.config.update("jax_enable_x64", True)
@@ -166,9 +166,6 @@ def run(CONFIG):
 
     def norm_2(u):
         return (u @ Seq.M2 @ u)**0.5
-
-    def norm_1(u):
-        return (u @ Seq.M1 @ u)**0.5
 
     def B_xyz(p):
         x, y, z = F(p)
@@ -373,6 +370,7 @@ def run(CONFIG):
                 cfg_group.attrs[key] = val
 
     print(f"Data saved to {outdir + run_name + '.h5'}.")
+
 
 if __name__ == "__main__":
     main()

@@ -7,9 +7,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
 from mrx.derham_sequence import DeRhamSequence
 from mrx.io import parse_args, unique_id
+from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
 from mrx.relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
 
 jax.config.update("jax_enable_x64", True)
@@ -159,7 +159,7 @@ def run(CONFIG):
 
     assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 
-    Seq.evaluate_all()
+    Seq.evaluate_1d()
     Seq.assemble_all()
     Seq.build_crossproduct_projections()
     Seq.assemble_leray_projection()

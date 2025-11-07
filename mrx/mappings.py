@@ -439,3 +439,11 @@ def drumshape_map_modified(a: Callable, R0: float = 1.0) -> Callable:
             _Z(r, χ)]))
 
     return F
+
+def gvec_stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: int = 3) -> Callable:
+    def F(x):
+        _, _, ζ = x
+        return jnp.array([X1_h(x)[0] * jnp.cos(jnp.pi * ζ / nfp),
+                          -X1_h(x)[0] * jnp.sin(jnp.pi * ζ / nfp),
+                          X2_h(x)[0]])
+    return F
