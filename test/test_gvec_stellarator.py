@@ -165,8 +165,8 @@ plt.ylabel("Relative L2 Projection Error")
 plt.grid(True, which="both", ls=":")
 plt.legend()
 plt.tight_layout()
-plt.savefig("test_outputs/test_gvec_stellarator_projection_errs.png")
 if not is_running_in_github_actions():
+    plt.savefig("test_outputs/test_gvec_stellarator_projection_errs.png")
     plt.show()
 
 # %%
@@ -247,8 +247,8 @@ ax.legend(
     loc="upper right"
 )
 plt.tight_layout()
-plt.savefig("test_outputs/test_gvec_stellarator.png")
 if not is_running_in_github_actions():
+    plt.savefig("test_outputs/test_gvec_stellarator.png")
     plt.show()
 
 # %%
