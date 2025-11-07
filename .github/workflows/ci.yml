@@ -47,7 +47,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install jax jaxlib numpy pytest matplotlib plotly optax diffrax h5py
+        pip install jax jaxlib numpy pytest matplotlib plotly optax diffrax h5py xarray h5netcdf
         
     - name: Run tests
       run: |
@@ -86,7 +86,7 @@ jobs:
   #   - name: Install dependencies
   #     run: |
   #       python -m pip install --upgrade pip
-  #       pip install jax[cuda12] jaxlib numpy optax diffrax h5py
+  #       pip install jax[cuda12] jaxlib numpy optax diffrax h5py xarray h5netcdf
 
   build:
     runs-on: ubuntu-latest

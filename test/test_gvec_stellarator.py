@@ -1,5 +1,6 @@
 # %%
 from functools import partial
+import os
 
 import jax
 import jax.numpy as jnp
@@ -12,11 +13,17 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.mappings import gvec_stellarator_map
 
+def is_running_in_github_actions():
+    """
+    Checks if the current Python script is running within a GitHub Actions environment.
+    """
+    return os.getenv("GITHUB_ACTIONS") == "true"
+
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
 p, n, nfp = 3, 8, 3
-gvec_eq = xr.open_dataset("data/gvec_stellarator.h5", engine="h5netcdf")
+gvec_eq = xr.open_dataset("../data/gvec_stellarator.h5", engine="h5netcdf")
 θ_star = gvec_eq["thetastar"].values    # shape (mρ, mθ, mζ), rho x theta
 _ρ = gvec_eq["rho"].values              # shape (mρ,)
 _θ = gvec_eq["theta"].values            # shape (mθ,)
@@ -153,7 +160,9 @@ plt.ylabel("Relative L2 Projection Error")
 plt.grid(True, which="both", ls=":")
 plt.legend()
 plt.tight_layout()
-plt.show()
+plt.savefig("test_outputs/test_gvec_stellarator_projection_errs.png")
+if not is_running_in_github_actions():
+    plt.show()
 
 # %%
 
@@ -233,6 +242,8 @@ ax.legend(
     loc="upper right"
 )
 plt.tight_layout()
-plt.show()  # %%
+plt.savefig("test_outputs/test_gvec_stellarator.png")
+if not is_running_in_github_actions():
+    plt.show()
 
 # %%
