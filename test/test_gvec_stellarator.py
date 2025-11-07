@@ -1,6 +1,7 @@
 # %%
 from functools import partial
 import os
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -22,8 +23,12 @@ def is_running_in_github_actions():
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
+# Get the repository root directory (parent of test directory)
+repo_root = Path(__file__).parent.parent
+data_file = repo_root / "data" / "gvec_stellarator.h5"
+
 p, n, nfp = 3, 8, 3
-gvec_eq = xr.open_dataset("../data/gvec_stellarator.h5", engine="h5netcdf")
+gvec_eq = xr.open_dataset(data_file, engine="h5netcdf")
 θ_star = gvec_eq["thetastar"].values    # shape (mρ, mθ, mζ), rho x theta
 _ρ = gvec_eq["rho"].values              # shape (mρ,)
 _θ = gvec_eq["theta"].values            # shape (mθ,)
