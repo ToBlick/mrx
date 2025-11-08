@@ -167,7 +167,7 @@ def run(CONFIG):
     def norm_2(u):
         return (u @ Seq.M2 @ u)**0.5
 
-    def B_xyz(p):
+    def B_0(p):
         x, y, z = F(p)
         R = (x**2 + y**2)**0.5
         phi = jnp.arctan2(y, x)
@@ -198,9 +198,9 @@ def run(CONFIG):
     #                                             (r - 1 / 3)**2) * jnp.sin(6 * jnp.pi * θ)
     #     return inv33(DFx.T)[:, 2] * A_ζ / J
 
-    B_hat = jnp.linalg.solve(Seq.M2, Seq.P2(B_xyz))
-    B_hat = Seq.P_Leray @ B_hat
-    B_hat /= norm_2(B_hat)
+    B_dof = jnp.linalg.solve(Seq.M2, Seq.P2(B_0))
+    B_dof = Seq.P_Leray @ B_dof
+    B_dof /= norm_2(B_dof)
 
     # B_harm = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[1][:, 0]
     # B_harm = B_harm / norm_2(B_harm)
@@ -210,21 +210,21 @@ def run(CONFIG):
 
     if CONFIG["apply_pert_after"] == 0 and CONFIG["pert_strength"] > 0:
         print("Applying perturbation to initial condition...")
-        dB_hat = jnp.linalg.solve(Seq.M2, Seq.P2(dB_xyz))
-        dB_hat = Seq.P_Leray @ dB_hat
-        dB_hat /= norm_2(dB_hat)
-        B_hat += CONFIG["pert_strength"] * dB_hat
+        dB_dof = jnp.linalg.solve(Seq.M2, Seq.P2(dB_xyz))
+        dB_dof = Seq.P_Leray @ dB_dof
+        dB_dof /= norm_2(dB_dof)
+        B_dof += CONFIG["pert_strength"] * dB_dof
 
     diagnostics = MRXDiagnostics(Seq, CONFIG["force_free"])
 
     get_pressure = jax.jit(diagnostics.pressure)
     get_energy = jax.jit(diagnostics.energy)
     get_helicity = jax.jit(diagnostics.helicity)
-    get_divergence_B = jax.jit(diagnostics.divergence_norm)
+    get_divergence_norm = jax.jit(diagnostics.divergence_norm)
 
-    p_hat = get_pressure(B_hat)
+    p_dof = get_pressure(B_dof)
 
-    state = State(B_hat, B_hat, CONFIG["dt"],
+    state = State(B_dof, B_dof, CONFIG["dt"],
                   CONFIG["eta"], Seq.M2, 0, 0, 0, 0)
     # initial Hessian is identity
 
@@ -244,9 +244,9 @@ def run(CONFIG):
     velocity_trace.append(dry_run.velocity_norm)
     energy_trace.append(get_energy(state.B_n))
     helicity_trace.append(get_helicity(state.B_n))
-    divergence_trace.append(get_divergence_B(state.B_n))
+    divergence_trace.append(get_divergence_norm(state.B_n))
     if CONFIG["save_B"]:
-        B_fields.append(B_hat)
+        B_fields.append(B_dof)
 
     print(f"Initial force error: {force_trace[-1]:.2e}")
     print(f"Initial energy: {energy_trace[-1]:.2e}")
@@ -272,10 +272,10 @@ def run(CONFIG):
 
         if i == CONFIG["apply_pert_after"] and CONFIG["pert_strength"] > 0:
             print(f"Applying perturbation after {i} steps...")
-            dB_hat = jnp.linalg.solve(Seq.M2, Seq.P2(dB_xyz))
-            dB_hat = Seq.P_Leray @ dB_hat
-            dB_hat /= norm_2(dB_hat)
-            B_new = state.B_n + CONFIG["pert_strength"] * dB_hat
+            dB_dof = jnp.linalg.solve(Seq.M2, Seq.P2(dB_xyz))
+            dB_dof = Seq.P_Leray @ dB_dof
+            dB_dof /= norm_2(dB_dof)
+            B_new = state.B_n + CONFIG["pert_strength"] * dB_dof
             state = timestepper.update_B_n(state, B_new)
 
         if CONFIG["precond"] and (i % CONFIG["precond_compute_every"] == 0):
@@ -293,7 +293,7 @@ def run(CONFIG):
                        state.force_norm,
                        get_energy(state.B_n),
                        get_helicity(state.B_n),
-                       get_divergence_B(state.B_n),
+                       get_divergence_norm(state.B_n),
                        state.velocity_norm,
                        state.picard_iterations,
                        state.picard_residuum,
@@ -319,12 +319,12 @@ def run(CONFIG):
     ###
     # Post-processing
     ###
-    B_hat = state.B_n
+    B_dof = state.B_n
     print("Simulation finished, post-processing...")
     if CONFIG["save_B"]:
         p_fields = [get_pressure(
             B) if B is not None else None for B in B_fields]
-    p_hat = get_pressure(B_hat)
+    p_dof = get_pressure(B_dof)
 
     ###
     # Save stuff
@@ -336,8 +336,8 @@ def run(CONFIG):
         # Store arrays
         f.create_dataset("iterations", data=jnp.array(iterations))
         f.create_dataset("force_trace", data=jnp.array(force_trace))
-        f.create_dataset("B_final", data=B_hat)
-        f.create_dataset("p_final", data=p_hat)
+        f.create_dataset("B_final", data=B_dof)
+        f.create_dataset("p_final", data=p_dof)
         f.create_dataset("energy_trace", data=jnp.array(energy_trace))
         f.create_dataset("helicity_trace", data=jnp.array(helicity_trace))
         f.create_dataset("divergence_B_trace",
@@ -348,7 +348,7 @@ def run(CONFIG):
         f.create_dataset("picard_errors", data=jnp.array(picard_errors))
         f.create_dataset("timesteps", data=jnp.array(timesteps))
         f.create_dataset("harmonic_norm", data=jnp.array(
-            [norm_2(diagnostics.harmonic_component(B_hat))]))
+            [norm_2(diagnostics.harmonic_component(B_dof))]))
         f.create_dataset("total_time", data=jnp.array(
             [final_time - start_time]))
         f.create_dataset("time_setup", data=jnp.array(

@@ -13,9 +13,9 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 
-from mrx.mappings import cerfon_map
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.mappings import cerfon_map
 
 __all__ = []
 
@@ -27,8 +27,72 @@ base_markers = [
     'cross', 'x', 'diamond', 'diamond-open', 'line-ns', 'line-ew'
 ]
 
+
+def intersect_with_plane(traj, plane_normal=jnp.array([1., 0., 0.]),
+                         plane_offset=0.0, deg=2):
+    """
+    JAX/vmap/jit-safe: intersections of a 3D trajectory with an arbitrary plane.
+
+    Plane defined by:    n · x = plane_offset
+    where n is the normal vector.
+
+    Parameters
+    ----------
+    traj : (N,3)
+        Trajectory points in 3D.
+    plane_normal : (3,)
+        Plane normal vector (does not need to be normalized).
+    plane_offset : float
+        Offset in the plane equation n·x = plane_offset.
+    deg : int
+        Polynomial interpolation degree (1=linear, 2=quadratic, 3=cubic,...)
+    """
+    N = traj.shape[0]
+    pad_size = N
+    half = deg // 2
+
+    # signed distance of each point to the plane
+    n = plane_normal / jnp.linalg.norm(plane_normal)
+    s = traj @ n - plane_offset  # signed distance to plane
+
+    # find sign changes (crossings)
+    flip_mask = s[:-1] * s[1:] < 0
+    idxs = jnp.where(flip_mask, jnp.arange(N - 1), N)
+    idxs = jnp.sort(idxs)
+    idxs = jnp.pad(idxs, (0, jnp.maximum(0, pad_size - idxs.size)),
+                   constant_values=N)[:pad_size]
+
+    def interp(i):
+        valid = (i >= half) & (i < N - half)
+        offset = jnp.arange(-half, deg - half + 1)
+        idxs_local = jnp.clip(i + offset, 0, N - 1)
+        pts_seg = traj[idxs_local]
+        s_seg = s[idxs_local]
+        t = jnp.arange(deg + 1, dtype=float)
+
+        # fit polynomial s(t) ~ a t^deg + b t^{deg-1} + ... + c
+        coeffs_s = jnp.polyfit(t, s_seg, deg=deg)
+        roots = jnp.roots(coeffs_s, strip_zeros=False)
+        roots_real = jnp.real(roots)
+        cond = (jnp.abs(jnp.imag(roots)) <
+                1e-8) & (roots_real > 0.0) & (roots_real < deg)
+        t_cross = jnp.nanmin(jnp.where(cond, roots_real, jnp.nan))
+
+        # fit each coordinate & evaluate at t_cross
+        def eval_coord(y_seg):
+            coeffs = jnp.polyfit(t, y_seg, deg=deg)
+            return jnp.polyval(coeffs, t_cross)
+
+        pt = jax.vmap(eval_coord)(pts_seg.T)
+        return jnp.where(valid, pt, jnp.nan)
+
+    pts = jax.vmap(interp)(idxs)
+    return pts, idxs
+
+
 # Default color scale for plots
 colorbar = 'plasma'
+
 
 def get_3d_grids(F,
                  x_min=0, x_max=1,

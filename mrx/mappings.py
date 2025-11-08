@@ -170,3 +170,33 @@ def rotating_ellipse_map(eps=0.33, kappa=1.2, nfp=3):
                           -R * sin(2 * pi * ζ),
                           Z])
     return F
+
+
+def approx_inverse_map(y, eps):
+    X, Y, Z = y
+    R = jnp.sqrt(X**2 + Y**2)
+    ζ = (jnp.arctan2(-Y, X) / (2 * pi)) % 1.0
+    r = jnp.sqrt(((R - 1) / eps)**2 + (Z / (eps))**2)
+    θ = (jnp.arctan2(Z / (eps * r), (R - 1) / (eps * r)) / (2 * pi)) % 1.0
+    return jnp.array([r, θ, ζ])
+
+
+def invert_map(f, y_target, x0_fn, tol=1e-10, max_iter=50):
+    """Newton iteration with analytic initial guess."""
+    def cond_fn(state):
+        x, err, i = state
+        return jnp.logical_and(err > tol, i < max_iter)
+
+    def body_fn(state):
+        x, _, i = state
+        r = f(x) - y_target
+        J = jax.jacobian(f)(x)
+        dx = jnp.linalg.solve(J, -r)
+        x_new = x + dx
+        err = jnp.linalg.norm(r)
+        return (x_new, err, i + 1)
+
+    x0 = x0_fn(y_target)
+    init_state = (x0, jnp.inf, 0)
+    x_final, err_final, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
+    return x_final

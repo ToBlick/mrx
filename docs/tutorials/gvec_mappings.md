@@ -22,7 +22,7 @@ we obtain a map from the logical domain to the physical domain in $\mathbb{R}^3$
 GVEC allows the computation of so-called straight field line angle $\theta^*(\theta', \zeta') := \theta' + \lambda(\theta', \zeta')$. We chose to use these angles as poloidal angle in MRX. For more details on the definition of $\lambda$, we refer to the GVEC documentation. Let us call the GVEC coordinates $x' = (\rho', \theta', \zeta')$. The coordinates $\hat x = (r, \theta, \zeta)$ MRX mappings use remain on the unit cube and so we obtain the relations
 $$
 \begin{align}
-r = \rho', \quad \theta = \frac{\theta^*(\theta', \zeta')}{2 \pi}, \quad \zeta = \frac{\zeta' n_{\text{fp}}}{2 \pi}
+r = \rho', \quad 2 \pi \theta = \theta^*(\theta', \zeta'), \quad 2 \pi \zeta = \zeta' n_{\text{fp}}
 \end{align}
 $$
 with $n_{\text{fp}}$ the number of field periods.
@@ -60,11 +60,27 @@ This mapping is periodic only in the polidal angle, since only a single field pe
 
 We can now build the interpolation matrix and solve for the spline coefficients using least-squares:
 ```python
-ρ, θ, ζ = jnp.meshgrid(_ρ, _θ, _ζ, indexing="ij")    # evaluation grid, shape (mρ, mθ, mζ)
+ρ, θ, ζ = jnp.meshgrid(_ρ, _θ, _ζ, indexing="ij") # evaluation grid, shape (mρ, mθ, mζ)
 θ_star = jnp.asarray(θ_star)
-pts = jnp.stack([ρ.ravel(), θ_star.ravel() / (2 * jnp.pi), ζ.ravel() / (2 * jnp.pi) * nfp], axis=1)  # x_hat_js, shape (mρ mθ mζ, 3)
+pts = jnp.stack([ρ.ravel(), θ_star.ravel() / (2 * jnp.pi), ζ.ravel() / (2 * jnp.pi) * nfp], axis=1) # x_hat_js, shape (mρ mθ mζ, 3)
 
 M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.Λ0[i](x)[0])(pts))(mapSeq.Λ0.ns).T # Λ0[i](x_hat_j)
 y = jnp.stack([X1.ravel(), X2.ravel()], axis=1) # X_α(x'_j)
 c, residuals, rank, s = jnp.linalg.lstsq(M, y, rcond=None)
 ```
+
+We can now define the mapping $\Phi$ using the spline interpolations $X_{\alpha, h}(\hat x) = \sum_{i = 0}^{n - 1} c_i^\alpha \, \Lambda^{0, \alpha}_i (\hat x)$. 
+```python
+@jax.jit
+def Phi(x):
+    r, θ, ζ = x
+    return jnp.array([X1_h(x)[0] * jnp.cos(jnp.pi * ζ / nfp),
+                      -X1_h(x)[0] * jnp.sin(jnp.pi * ζ / nfp),
+                      X2_h(x)[0]])
+
+Seq = DeRhamSequence((n, n, n), (p, p, p), p+2, ("clamped", "periodic", "periodic"), Phi, polar=True, dirichlet=True)
+```
+
+### Verifying the mapping
+
+In the tests, we verify the mapping by checking the convergence of projection errors to the expected rates as well as the discrete de Rham complex properties. See `test/test_gvec_stellarator.py` for details.
