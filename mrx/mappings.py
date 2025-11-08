@@ -370,7 +370,7 @@ def cylinder_map(a: float = 1.0, h: float = 1.0) -> Callable:
         """
         return jnp.ones(1) * (a * r * jnp.sin(2 * π * χ))
 
-    def F(x):
+    def F(x : jnp.ndarray) -> jnp.ndarray:
         """Cylindrical coordinate mapping function. Formula is:
         
         F(r, χ, z) = (X, Y, Z) = (a r cos(2πχ), a r sin(2πχ), h z)
@@ -465,3 +465,49 @@ def gvec_stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: in
                           -X1_h(x)[0] * jnp.sin(π_nfp * ζ),
                           X2_h(x)[0]])
     return F
+
+def approx_inverse_map(y : jnp.ndarray, eps : float) -> jnp.ndarray:
+    """
+    Approximate inverse mapping function.
+
+    Parameters
+    ----------
+    y : jnp.ndarray
+        Input coordinates.
+    eps : float
+        Eccentricity of the ellipse.
+
+    Returns
+    -------
+    x : jnp.ndarray
+        Output coordinates.
+    """
+    X, Y, Z = y
+    R = jnp.sqrt(X**2 + Y**2)
+    ζ = (jnp.arctan2(-Y, X) / (2 * pi)) % 1.0
+    r = jnp.sqrt(((R - 1) / eps)**2 + (Z / (eps))**2)
+    θ = (jnp.arctan2(Z / (eps * r), (R - 1) / (eps * r)) / (2 * pi)) % 1.0
+    return jnp.array([r, θ, ζ])
+
+
+def invert_map(
+    f : Callable, y_target : jnp.ndarray, 
+    x0_fn : Callable, tol : float = 1e-10, max_iter : int = 50) -> jnp.ndarray:
+    """Newton iteration with analytic initial guess."""
+    def cond_fn(state : tuple[jnp.ndarray, float, int]) -> jnp.ndarray:
+        x, err, i = state
+        return jnp.logical_and(err > tol, i < max_iter)
+
+    def body_fn(state : tuple[jnp.ndarray, float, int]) -> tuple[jnp.ndarray, float, int]:
+        x, _, i = state
+        r = f(x) - y_target
+        J = jax.jacobian(f)(x)
+        dx = jnp.linalg.solve(J, -r)
+        x_new = x + dx
+        err = jnp.linalg.norm(r)
+        return (x_new, err, i + 1)
+
+    x0 = x0_fn(y_target)
+    init_state = (x0, jnp.inf, 0)
+    x_final, err_final, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
+    return x_final
