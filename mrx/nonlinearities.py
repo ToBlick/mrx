@@ -1,10 +1,7 @@
-
 import jax.numpy as jnp
 
 from mrx.utils import evaluate_at_xq, integrate_against
 
-
-# %%
 class CrossProductProjection:
     """
     Given bases Λn, Λm, Λk, constructs an operator to evaluate
@@ -13,7 +10,7 @@ class CrossProductProjection:
     with coordinate transformation F.
     """
 
-    def __init__(self, n, m, k, Seq):
+    def __init__(self, n: int, m: int, k: int, Seq):  # Seq: DeRhamSequence
         """
         Given bases n, m, k, constructs an operator to evaluate
         (w, u) -> ∫ (wₕ × uₕ) · Λn[i] dx for all i, where Λn[i] is the i-th basis function of Λn
@@ -21,9 +18,9 @@ class CrossProductProjection:
         with coordinate transformation F.
 
         Args:
-            Λn: Basis for n-forms (n can be 1 or 2)
-            Λm: Basis for m-forms (m can be 1 or 2)
-            Λk: Basis for k-forms (k can be 1 or 2)
+            n: Degree of the n-form (n can be 1 or 2)
+            m: Degree of the m-form (m can be 1 or 2)
+            k: Degree of the k-form (k can be 1 or 2)
             Seq: DeRham sequence containing the bases and quadrature rule
         """
         self.n = n
@@ -76,20 +73,26 @@ class CrossProductProjection:
         return self.En @ self.projection(w, u)
 
     def projection(self, w, u):
+        """
+        Evaluate the projection of the cross product of the m-form and the k-form onto the n-form.
+        TODO: Tobi please add a description of these projections.
 
+        Args:
+            w (array): m-form dofs
+            u (array): k-form dofs
+
+        Returns:
+            array: ∫ (wₕ × uₕ) · Λn[i] dx for all i
+        """
         # w and u evaluated at quadrature points: shape: n_q x 3
-        w_jk = evaluate_at_xq(
-            self.get_Λm_ijk, self.Em.T @ w, self.Seq.Q.n, 3)
-        u_jk = evaluate_at_xq(
-            self.get_Λk_ijk, self.Ek.T @ u, self.Seq.Q.n, 3)
-        # shapes of this: n_q x 3
+        w_jk = evaluate_at_xq(self.get_Λm_ijk, self.Em.T @ w, self.Seq.Q.n, 3)
+        u_jk = evaluate_at_xq(self.get_Λk_ijk, self.Ek.T @ u, self.Seq.Q.n, 3)
 
         # now, we compute
         # ∑ Λn[i](x_j)_a w(x_j)_b u(x_j)_c ) t(x_j)_abc
         # where t is some transformation depending on n,m,k and the metric
         # and we sum over j (quadrature points) and b,c (dimensions)
         # To avoid assembling the huge Λn[i](x_j)_a tensor, we scan over i.
-
         if self.n == 1 and self.m == 2 and self.k == 1:
             # ∫ Λ[i] (Gw x u) / J dx
             Gw_jk = jnp.einsum('jkl,jk->jl', self.Seq.G_jkl, w_jk)

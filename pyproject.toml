@@ -10,7 +10,7 @@ description="Differentiable 3D MHD equilibria without nested flux surfaces"
 readme = "README.md"
 # long_description = file: README.md
 # long_description_content_type = text/markdown
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 authors = [
   {name = "Tobias Blickhan", email = "tobias.blickhan@nyu.edu"},
 ]
@@ -44,7 +44,7 @@ dependencies = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 
 [tool.setuptools.packages.find]
 include = ["mrx*"]  # Include specific packages

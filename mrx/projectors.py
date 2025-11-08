@@ -12,9 +12,8 @@ The module implements two main classes:
 """
 
 import jax
-import jax.numpy as jnp
 
-from mrx.utils import integrate_against, inv33, jacobian_determinant
+from mrx.utils import integrate_against, inv33
 
 __all__ = ['Projector']
 
@@ -45,12 +44,8 @@ class Projector:
         Initialize the projector.
 
         Args:
-            Λ: Domain operator defining the finite element space
-            Q: Quadrature rule for numerical integration
-            F (callable, optional): Coordinate transformation function.
-                                 Defaults to identity mapping.
-            E (array, optional): Extraction operator matrix.
-                              Defaults to identity matrix.
+            Seq : DeRham sequence
+            k : Degree of the differential form
         """
         self.k = k
         self.Seq = Seq

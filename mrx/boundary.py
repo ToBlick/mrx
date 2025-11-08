@@ -94,6 +94,7 @@ class LazyBoundaryOperator:
         self.n = self.n1 + self.n2 + self.n3
 
     def matrix(self):
+        """Wrapper for the assemble method."""
         return self.assemble()
 
     def __array__(self):

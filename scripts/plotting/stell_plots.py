@@ -8,24 +8,14 @@ import jax.numpy as jnp
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-import optimistix as optx
 from matplotlib import gridspec
 from matplotlib.ticker import MultipleLocator
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
-from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
+from mrx.mappings import rotating_ellipse_map
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.plotting import (
-    get_2d_grids,
-    plot_crossections,
-    plot_crossections_separate,
-    plot_torus,
-    set_axes_equal,
-)
+from mrx.differential_forms import DiscreteFunction
 
 from mrx.io import parse_args
-from mrx.plotting import generate_solovev_plots
 
 if __name__ == "__main__":
     jax.config.update("jax_enable_x64", True)

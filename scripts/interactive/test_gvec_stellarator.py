@@ -1,5 +1,7 @@
 # %%
 from functools import partial
+import os
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -10,13 +12,24 @@ import xarray as xr
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.mappings import gvec_stellarator_map
+
+def is_running_in_github_actions():
+    """
+    Checks if the current Python script is running within a GitHub Actions environment.
+    """
+    return os.getenv("GITHUB_ACTIONS") == "true"
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
+# Get the repository root directory (parent of test directory)
+repo_root = Path(__file__).parent.parent
+data_file = repo_root / "data" / "gvec_stellarator.h5"
+
 n, p, nfp = 8, 3, 3
-gvec_eq = xr.open_dataset("data/gvec_stellarator.h5", engine="h5netcdf")
-# θ_star = gvec_eq["thetastar"].values    # shape (mρ, mθ, mζ), rho x theta
+gvec_eq = xr.open_dataset(data_file, engine="h5netcdf")
+θ_star = gvec_eq["thetastar"].values    # shape (mρ, mθ, mζ), rho x theta
 _ρ = gvec_eq["rho"].values              # shape (mρ,)
 _θ = gvec_eq["theta"].values            # shape (mθ,)
 _ζ = gvec_eq["zeta"].values             # shape (mζ,)
@@ -45,13 +58,8 @@ c, residuals, rank, s = jnp.linalg.lstsq(M, y, rcond=None)
 X1_h = DiscreteFunction(c[:, 0], mapSeq.Λ0, mapSeq.E0)
 X2_h = DiscreteFunction(c[:, 1], mapSeq.Λ0, mapSeq.E0)
 
-
-@jax.jit
-def Phi(x):
-    r, θ, ζ = x
-    return jnp.array([X1_h(x)[0] * jnp.cos(2 * jnp.pi * ζ / nfp),
-                      -X1_h(x)[0] * jnp.sin(2 * jnp.pi * ζ / nfp),
-                      X2_h(x)[0]])
+# jax.jit
+Phi = gvec_stellarator_map(X1_h, X2_h, nfp=nfp)
 
 
 # %%
@@ -205,7 +213,10 @@ plt.ylabel("Relative L2 Projection Error")
 plt.grid(True, which="both", ls=":")
 plt.legend()
 plt.tight_layout()
-plt.show()
+if not is_running_in_github_actions():
+    os.makedirs("test_outputs", exist_ok=True)
+    plt.savefig("test_outputs/test_gvec_stellarator_projection_errs.png")
+    plt.show()
 
 # %%
 
@@ -285,6 +296,8 @@ ax.legend(
     loc="upper right"
 )
 plt.tight_layout()
-plt.show()  # %%
+if not is_running_in_github_actions():
+    plt.savefig("test_outputs/test_gvec_stellarator.png")
+    plt.show()
 
 # %%

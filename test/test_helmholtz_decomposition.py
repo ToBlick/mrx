@@ -11,6 +11,9 @@ jax.config.update("jax_enable_x64", True)
 
 
 def test_helmholtz_decomposition():
+    """
+    Test the Helmholtz decomposition using a rotating ellipse mapping.
+    """
     eps = 0.5
     kappa = 1.0
     nfp = 3
@@ -30,8 +33,19 @@ def test_helmholtz_decomposition():
     Seq.assemble_leray_projection()
 
     def B(x):
-        r, θ, ζ = x
-        x1, x2, x3 = Seq.F(x)
+        """Exact magnetic field in Cartesian coordinates.
+
+        Formula is:
+        B(r, θ, ζ) = (sin(φ), -cos(φ), 0) / R
+        where φ = arctan2(x2, x1) and R = 1 + r * eps * cos(2πθ) is the radial coordinate.
+        Args: 
+            x: (r, θ, ζ) in logical coordinates
+
+        Returns:
+            B: (Bx, By, Bz) in Cartesian coordinates
+        """
+        r, θ, _ = x
+        x1, x2, _ = Seq.F(x)
         φ = jnp.arctan2(x2, x1)
         R = 1 + r * eps * jnp.cos(2 * jnp.pi * θ)
         return jnp.array([jnp.sin(φ), -jnp.cos(φ), 0]) / R

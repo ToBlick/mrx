@@ -6,7 +6,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.mappings import get_lcfs_F
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.io import parse_args, unique_id

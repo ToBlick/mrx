@@ -15,6 +15,10 @@ from mrx.utils import assemble, inv33, jacobian_determinant
 class DeRhamSequence():
     """
     A class to represent a de Rham sequence.
+
+    Attributes:
+
+    TODO: Tobi please add a description of the attributes.
     """
     Λ0: DifferentialForm
     Λ1: DifferentialForm
@@ -43,6 +47,15 @@ class DeRhamSequence():
     def __init__(self, ns, ps, q, types, F, polar, dirichlet=True):
         """
         Initialize the de Rham sequence.    
+
+        Args:
+            ns (list): List of integers representing the number of basis functions for each differential form.
+            ps (list): List of integers representing the order of the basis functions for each differential form.
+            q (int): The order of the quadrature rule.
+            types (list): List of strings representing the type of boundary condition for each differential form.
+            F (callable): The mapping function from logical to physical domain.
+            polar (bool): Whether to use polar coordinates.
+            dirichlet (bool): Whether to use Dirichlet boundary conditions.
         """
         self.Λ0, self.Λ1, self.Λ2, self.Λ3 = [
             DifferentialForm(i, ns, ps, types) for i in range(0, 4)
@@ -91,7 +104,7 @@ class DeRhamSequence():
 
     def evaluate_1d(self):
         """
-        Evaluate the 1D basis functions at quadrature points.
+        Evaluate the 1-dimensional basis functions at the quadrature points.
         """
         self.r = jax.vmap(jax.vmap(self.Λ0.Λ[0], (0, None)),
                           (None, 0))(self.Q.x_x, self.Λ0.Λ[0].ns)
@@ -108,23 +121,40 @@ class DeRhamSequence():
 
     def get_Λ0_ijk(self, i, j, k):
         """
-        kth component of 0form i evaluated at quadrature point j.
-        (Λ0_i(x_j))_k
+        Get the kth component of the ith 0-form evaluated at quadrature point j.
+
+        Args:
+            i (int): The index of the basis function.
+            j (int): The index of the quadrature point.
+            k (int): The index of the component.
+
+        Returns:
+            float: The value of the kth component of the ith 0-form evaluated at quadrature point j.
         """
-        # get 1d quadrature points, weird order here is due to meshgrid's indexing
+        # get 1d quadrature points
+        # weird order here is due to meshgrid's indexing
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
+
         # get the 1d basis functions
-        c, i1, i2, i3 = self.Λ0._unravel_index(i)
+        _, i1, i2, i3 = self.Λ0._unravel_index(i)
         # k is always 0
         return self.r[i1, j1] * self.theta[i2, j2] * self.z[i3, j3]
 
     def get_dΛ0_ijk(self, i, j, k):
         """
-        kth component of gradient of 0form i evaluated at quadrature point j.
-        (grad Λ0_i(x_j))_k
+        Get the kth component of the gradient of the ith 0-form evaluated at quadrature point j.
+
+        Args:
+            i (int): The index of the basis function.
+            j (int): The index of the quadrature point.
+            k (int): The index of the component.
+
+        Returns:
+            float: The value of the kth component of the gradient of the ith 0-form evaluated at quadrature point j.
         """
+        # kth component of gradient of 0 form i evaluated at quadrature point j.
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
-        c, i1, i2, i3 = self.Λ0._unravel_index(i)
+        _, i1, i2, i3 = self.Λ0._unravel_index(i)
         # get i-1
         dr = jnp.where(i1 == self.Λ0.nχ-1, 0.0, self.dr[i1, j1])
         dr_m1 = jnp.where(i1 > 0, self.dr[i1-1, j1], 0.0)
@@ -142,9 +172,17 @@ class DeRhamSequence():
 
     def get_Λ1_ijk(self, i, j, k):
         """
-        kth component of 1 form i evaluated at quadrature point j.
-        (Λ1_i(x_j))_k
+        Get the kth component of the ith 1-form evaluated at quadrature point j.
+
+        Args:
+            i (int): The index of the basis function.
+            j (int): The index of the quadrature point.
+            k (int): The index of the component.
+
+        Returns:
+            float: The value of the kth component of the ith 1-form evaluated at quadrature point j.
         """
+        # kth component of 1 form i evaluated at quadrature point j.
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
         c, i1, i2, i3 = self.Λ1._unravel_index(i)
         return jnp.where(k == c,
@@ -160,8 +198,15 @@ class DeRhamSequence():
 
     def get_dΛ1_ijk(self, i, j, k):
         """
-        kth component of curl of 1 form i evaluated at quadrature point j.
-        (curl Λ1_i(x_j))_k
+        Get the kth component of the curl of the ith 1-form evaluated at quadrature point j.
+
+        Args:
+            i (int): The index of the basis function.
+            j (int): The index of the quadrature point.
+            k (int): The index of the component.
+
+        Returns:
+            float: The value of the kth component of the curl of the ith 1-form evaluated at quadrature point j.
         """
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
         c, i1, i2, i3 = self.Λ1._unravel_index(i)
@@ -180,6 +225,7 @@ class DeRhamSequence():
         d2dx = (dr_m1 - dr) * self.dtheta[i2, j2] * self.z[i3, j3]
         d1dy = self.dr[i1, j1] * (dtheta_m1 - dtheta) * self.z[i3, j3]
 
+        # c is not defined below and this is quite a complicated chain of np.where
         return jnp.where(c == 0,
                          jnp.where(k == 0,
                                    0.0,
@@ -205,7 +251,15 @@ class DeRhamSequence():
 
     def get_Λ2_ijk(self, i, j, k):
         """
-        kth component of 2 form i evaluated at quadrature point j.
+        Get the kth component of the ith 2-form evaluated at quadrature point j.
+
+        Args:
+            i (int): The index of the basis function.
+            j (int): The index of the quadrature point.
+            k (int): The index of the component.
+
+        Returns:
+            float: The value of the kth component of the ith 2-form evaluated at quadrature point j.
         """
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
         c, i1, i2, i3 = self.Λ2._unravel_index(i)
@@ -222,8 +276,15 @@ class DeRhamSequence():
 
     def get_dΛ2_ijk(self, i, j, k):
         """
-        kth component of divergence of 2 form i evaluated at quadrature point j.
-        (div Λ2_i(x_j))_k
+        Get the kth component of the divergence of the ith 2-form evaluated at quadrature point j.
+
+        Args:
+            i (int): The index of the basis function.
+            j (int): The index of the quadrature point.
+            k (int): The index of the component.
+
+        Returns:
+            float: The value of the kth component of the divergence of the ith 2-form evaluated at quadrature point j.
         """
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
         c, i1, i2, i3 = self.Λ2._unravel_index(i)
@@ -248,12 +309,19 @@ class DeRhamSequence():
 
     def get_Λ3_ijk(self, i, j, k):
         """
-        kth component of 3 form i evaluated at quadrature point j.
-        (Λ3_i(x_j))_k
+        Get the kth component of the ith 3-form evaluated at quadrature point j.
+
+        Args:
+            i (int): The index of the basis function.
+            j (int): The index of the quadrature point.
+            k (int): The index of the component.
+
+        Returns:
+            float: The value of the kth component of the ith 3-form evaluated at quadrature point j.
         """
         j2, j1, j3 = jnp.unravel_index(j, (self.Q.ny, self.Q.nx, self.Q.nz))
-        c, i1, i2, i3 = self.Λ3._unravel_index(i)
-        return self.dr[i1, j1] * self.dtheta[i2, j2] * self.dz[i3, j3]
+        _, i1, i2, i3 = self.Λ3._unravel_index(i)
+        return self.dr[i1, j1] * self.dtheta[i2, j2] * self.dz[i3, j3]  # k is always 0
 
     def assemble_M0(self):
         """
@@ -330,10 +398,7 @@ class DeRhamSequence():
                      = -(grad ρ, ω) =: -(weak_grad ρ).T M2 ω => weak_grad = -M2⁻¹ D2.T
         """
         W = (1/self.J_j * self.Q.w)[:, None, None]
-
-        M = assemble(self.get_Λ3_ijk, self.get_dΛ2_ijk,
-                     W, self.Λ3.n, self.Λ2.n)
-
+        M = assemble(self.get_Λ3_ijk, self.get_dΛ2_ijk, W, self.Λ3.n, self.Λ2.n)
         self.D2 = self.E3 @ M @ self.E2.T
         self.strong_div = jnp.linalg.solve(self.M3, self.D2)
         self.weak_grad = -jnp.linalg.solve(self.M2.T, self.D2.T)
@@ -406,6 +471,7 @@ class DeRhamSequence():
         W = self.Q.w[:, None, None] * jnp.eye(3)  # shape (n_q, 1, 1)
         M = assemble(self.get_Λ1_ijk, self.get_Λ2_ijk, W, self.Λ1.n, self.Λ2.n)
         M12 = self.E1 @ M @ self.E2.T
+        self.M12 = M12
         self.P12 = jnp.linalg.solve(self.M1, M12)
 
     def assemble_P03(self):
@@ -425,17 +491,21 @@ class DeRhamSequence():
         """
         Returns projections to evaluate (u, v) -> u x v
         """
-        # self.P1x1_to_1 = CrossProductProjection(1, 1, 1, self)
+        self.P1x1_to_1 = CrossProductProjection(1, 1, 1, self)
+        # Not yet implemented
         # self.P1x2_to_1 = CrossProductProjection(1, 1, 2, self)
         self.P2x1_to_1 = CrossProductProjection(1, 2, 1, self)
-        # self.P2x2_to_1 = CrossProductProjection(1, 2, 2, self)
-
+        self.P2x2_to_1 = CrossProductProjection(1, 2, 2, self)
         self.P1x1_to_2 = CrossProductProjection(2, 1, 1, self)
+        # Not yet implemented
         # self.P1x2_to_2 = CrossProductProjection(2, 1, 2, self)
-        # self.P2x1_to_2 = CrossProductProjection(2, 2, 1, self)
-        # self.P2x1_to_2 = CrossProductProjection(2, 2, 1, self)
+        self.P2x1_to_2 = CrossProductProjection(2, 2, 1, self)
+        self.P2x2_to_2 = CrossProductProjection(2, 2, 2, self)
 
     def assemble_all(self):
+        """
+        Assemble all the matrices and operators.
+        """
         self.assemble_M0()
         self.assemble_M1()
         self.assemble_M2()
@@ -451,5 +521,9 @@ class DeRhamSequence():
         self.assemble_P03()
 
     def assemble_leray_projection(self):
+        """
+        Assemble the Leray projection matrix. Formula:
+            P_Leray = I + weak_grad @ (dd3)^-1 @ strong_div
+        """
         self.P_Leray = jnp.eye(self.M2.shape[0]) + \
             self.weak_grad @ jnp.linalg.pinv(self.dd3) @ self.strong_div

@@ -14,7 +14,6 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.plotting import (
     get_2d_grids,
-    get_3d_grids,
     plot_crossections_separate,
     plot_torus,
 )

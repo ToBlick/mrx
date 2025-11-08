@@ -1,10 +1,9 @@
 # %%
-from functools import partial
 
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-from diffrax import Dopri5, Kvaerno3, ODETerm, PIDController, SaveAt, diffeqsolve
+from diffrax import Dopri5, ODETerm, PIDController, SaveAt, diffeqsolve
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
