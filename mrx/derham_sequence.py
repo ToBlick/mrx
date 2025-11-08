@@ -471,6 +471,7 @@ class DeRhamSequence():
         W = self.Q.w[:, None, None] * jnp.eye(3)  # shape (n_q, 1, 1)
         M = assemble(self.get_Λ1_ijk, self.get_Λ2_ijk, W, self.Λ1.n, self.Λ2.n)
         M12 = self.E1 @ M @ self.E2.T
+        self.M12 = M12
         self.P12 = jnp.linalg.solve(self.M1, M12)
 
     def assemble_P03(self):

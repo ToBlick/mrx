@@ -8,13 +8,16 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import scipy as sp
-
+from pathlib import Path
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import toroid_map
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
+script_dir = Path(__file__).parent / 'script_outputs'
+script_dir.mkdir(parents=True, exist_ok=True)
+# %%
 
 # order of the splines and number of elements in each direction
 p = 3
@@ -86,7 +89,7 @@ ax1.tick_params(axis='x', labelsize=TICK_SIZE)
 # ax1.set_yticks(jnp.unique(true_evs[:end]))
 ax1.grid(axis='y', linestyle='--', alpha=0.7)
 ax1.legend(fontsize=LEGEND_SIZE)  # Use ax1.legend() for clarity
-fig1.savefig('toroid_eigenvalues.pdf', bbox_inches='tight')
+fig1.savefig(script_dir / 'toroid_eigenvalues.pdf', bbox_inches='tight')
 
 # %%
 # Plot the first 9 eigenvectors and make a meshgrid in the physical domain
@@ -175,7 +178,7 @@ def plot_eigenvectors_grid(
 fig = plot_eigenvectors_grid(
     evecs, M1, Seq.Λ1, E1, F, _x, _y1, _y3, nx, num_to_plot=25
 )
-fig.savefig('toroid_eigenvectors.pdf', bbox_inches='tight')
+fig.savefig(script_dir / 'toroid_eigenvectors.pdf', bbox_inches='tight')
 # %%
 idx = 3
 # The eigenvector from the double curl operator only contains velocity components (1-form)
@@ -191,6 +194,7 @@ __z1 = jax.vmap(F_u)(__x).reshape(_nx, _nx, 3)
 plt.quiver(__y1, __y3, __z1[:, :, 0], __z1[:, :, 2], color='w', scale=10)
 plt.xlabel('X')
 plt.ylabel('Z')
+plt.savefig(script_dir / 'toroid_eigenvectors2.pdf', bbox_inches='tight')
 plt.show()
 # %%
 # There is no pressure component in this formulation

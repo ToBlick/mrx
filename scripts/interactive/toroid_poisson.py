@@ -4,7 +4,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import sys
-
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.mappings import toroid_map
@@ -12,11 +11,8 @@ from mrx.mappings import toroid_map
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
-# Create output directory for figures
-os.makedirs("script_outputs", exist_ok=True)
-
 @partial(jax.jit, static_argnames=["n", "p"])
-def get_err(n, p):
+def get_err(n : int, p : int) -> tuple[float, float, float]:
     """
     Computes the error, condition number, and sparsity of the solution to the Poisson equation on a toroidal domain.
 
@@ -41,7 +37,7 @@ def get_err(n, p):
     π = jnp.pi
     F = toroid_map(epsilon=a, R0=R0)
         
-    def u(x):
+    def u(x : jnp.ndarray) -> jnp.ndarray:
         """Exact solution of the Poisson equation. Formula is:
         
         u(r, χ, z) = 1/4 * (r**2 - r**4) * cos(2πz)
@@ -55,7 +51,7 @@ def get_err(n, p):
         r, χ, z = x
         return 1/4 * (r**2 - r**4) * jnp.cos(2 * π * z) * jnp.ones(1)
     
-    def f(x):
+    def f(x : jnp.ndarray) -> jnp.ndarray:
         """Source term of the Poisson equation. Formula is:
 
         f(r, χ, z) = cos(2πz) * (-1/a**2 * (1 - 4r**2) - 1/(a*R) * (r/2 - r**3) * cos(2πχ) + 1/4 * (r**2 - r**4) / R**2 )
@@ -82,7 +78,7 @@ def get_err(n, p):
     u_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0)
 
     # do not vmap here because of memory issues
-    def diff_at_x(x):
+    def diff_at_x(x : jnp.ndarray) -> jnp.ndarray:
         """Difference between exact and computed solution.
 
         Args:
@@ -93,7 +89,7 @@ def get_err(n, p):
         """
         return u(x) - u_h(x)
 
-    def body_fun(carry, x):
+    def body_fun(carry : None, x : jnp.ndarray) -> tuple[None, jnp.ndarray]:
         return None, diff_at_x(x)
 
     # TODO: Explain what is happening below.

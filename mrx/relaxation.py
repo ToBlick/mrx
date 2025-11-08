@@ -4,11 +4,12 @@ import jax
 import jax.numpy as jnp
 
 from mrx.differential_forms import DiscreteFunction
+from mrx.derham_sequence import DeRhamSequence
 
 
 class MRXHessian:
 
-    def __init__(self, Seq):
+    def __init__(self, Seq : DeRhamSequence):
         """ 
         Initialize the MRX Hessian class.
 
@@ -19,7 +20,7 @@ class MRXHessian:
         """
         self.Seq = Seq
 
-    def δB(self, B, u):
+    def δB(self, B : jnp.ndarray, u : jnp.ndarray) -> jnp.ndarray:
         """
         Compute the δB operator. TODO: Add definition and formula of δB.
 
@@ -39,7 +40,7 @@ class MRXHessian:
         uxH = jnp.linalg.solve(self.Seq.M1, self.Seq.P2x1_to_1(u, H))
         return self.Seq.strong_curl @ uxH
 
-    def uxJ(self, B, u):
+    def uxJ(self, B : jnp.ndarray, u : jnp.ndarray) -> jnp.ndarray:
         """
         Compute the uxJ operator. TODO: Add formula of uxJ.
 
@@ -56,9 +57,11 @@ class MRXHessian:
             The uxJ operator.
         """
         J = self.Seq.weak_curl @ B
-        return jnp.linalg.solve(self.Seq.M1, self.Seq.PP2x1_to_1(u, J))
+        # Assuming that this was suppose to be P2x1_to_1? 
+        # This was PP2x1_to_1 earlier but maybe a typo?
+        return jnp.linalg.solve(self.Seq.M1, self.Seq.P2x1_to_1(u, J))
 
-    def assemble(self, B):
+    def assemble(self, B : jnp.ndarray) -> jnp.ndarray:
         """
         Assemble the MRX Hessian.
 
@@ -85,7 +88,7 @@ class MRXDiagnostics:
     A class to compute various important quantities and diagnostics of the MRX relaxation.
     """
 
-    def __init__(self, Seq, force_free=False):
+    def __init__(self, Seq : DeRhamSequence, force_free : bool = False):
         """
         Initialize the MRX Diagnostics class.
 
@@ -99,7 +102,7 @@ class MRXDiagnostics:
         self.Seq = Seq
         self.force_free = force_free
 
-    def energy(self, B):
+    def energy(self, B : jnp.ndarray) -> float:
         """
         Compute the magnetic field energy.
 
@@ -115,7 +118,7 @@ class MRXDiagnostics:
         """
         return 0.5 * B.T @ self.Seq.M2 @ B
 
-    def helicity(self, B):
+    def helicity(self, B : jnp.ndarray) -> float:
         """
         Compute the magnetic helicity.
 
@@ -133,7 +136,7 @@ class MRXDiagnostics:
         B_harm = B - self.Seq.strong_curl @ A
         return A.T @ self.Seq.M1 @ self.Seq.P12 @ (B + B_harm)
 
-    def harmonic_component(self, B):
+    def harmonic_component(self, B : jnp.ndarray) -> jnp.ndarray:
         """
         Compute the harmonic component of the magnetic field.
 
@@ -151,7 +154,7 @@ class MRXDiagnostics:
         B_harm = B - self.Seq.strong_curl @ A
         return B_harm
 
-    def divergence_norm(self, B):
+    def divergence_norm(self, B : jnp.ndarray) -> float:
         """
         Compute the norm of the divergence of the magnetic field. 
         Should be at machine precision if the right forms are being used.
@@ -168,7 +171,7 @@ class MRXDiagnostics:
         """
         return ((self.Seq.strong_div @ B) @ self.Seq.M3 @ (self.Seq.strong_div @ B))**0.5
 
-    def pressure(self, B_hat):
+    def pressure(self, B_hat : jnp.ndarray) -> jnp.ndarray:
         """
         Compute the pressure. TODO: Add formula of how the pressure is defined when not force-free.
 
@@ -238,7 +241,9 @@ class State(eqx.Module):
 
 class TimeStepper:
 
-    def __init__(self, Seq, gamma=0, newton=False, picard_tol=1e-12, picard_maxit=20, force_free=False):
+    def __init__(
+        self, Seq : DeRhamSequence, gamma : int = 0, newton : bool = False, 
+        picard_tol : float = 1e-12, picard_maxit : int = 20, force_free : bool = False):
         """
         Initialize the TimeStepper class.
 
@@ -265,7 +270,7 @@ class TimeStepper:
         self.picard_maxit = picard_maxit
         self.force_free = force_free
 
-    def init_state(self, B, dt, eta, Hessian):
+    def init_state(self, B : jnp.ndarray, dt : float, eta : float, Hessian : jnp.ndarray) -> State:
         """
         Initialize the state of the MRX relaxation.
 
@@ -287,7 +292,7 @@ class TimeStepper:
         """
         return self.State(B, B, dt, eta, Hessian)
 
-    def norm_2(self, B):
+    def norm_2(self, B : jnp.ndarray) -> float:
         """
         Compute the L2 norm of a vector.
 
@@ -303,7 +308,7 @@ class TimeStepper:
         """
         return (B @ self.Seq.M2 @ B)**0.5
 
-    def midpoint_residuum(self, state):
+    def midpoint_residuum(self, state : State) -> float:
         """
         Compute the residuum of the Picard solver at the midpoint.
 
@@ -358,7 +363,7 @@ class TimeStepper:
              velocity_norm)
         )
 
-    def update_dt(self, state, dt):
+    def update_dt(self, state : State, dt : float) -> State:
         """
         Update the time step.
 
@@ -380,7 +385,7 @@ class TimeStepper:
             dt
         )
 
-    def update_hessian(self, state, Hessian):
+    def update_hessian(self, state : State, Hessian : jnp.ndarray) -> State:
         """
         Update the Hessian of the MRX relaxation.
 
@@ -402,7 +407,7 @@ class TimeStepper:
             Hessian
         )
 
-    def update_B_n(self, state, B):
+    def update_B_n(self, state : State, B : jnp.ndarray) -> State:
         """
         Update the magnetic field at the current time step.
 
@@ -424,7 +429,7 @@ class TimeStepper:
             B
         )
 
-    def update_B_guess(self, state, B):
+    def update_B_guess(self, state : State, B : jnp.ndarray) -> State:
         """
         Update the magnetic field at the previous time step.
 
@@ -446,7 +451,7 @@ class TimeStepper:
             B
         )
 
-    def picard_solver(self, state):
+    def picard_solver(self, state : State) -> State:
         """
         Picard solver for the MRX relaxation.
 
@@ -460,7 +465,7 @@ class TimeStepper:
         state : State
             The updated state of the MRX relaxation.
         """
-        def cond_fun(state):
+        def cond_fun(state : State) -> bool:
             """
             Condition function for the while loop of the Picard solver.
             Continue while either residual or change is above tolerance.
@@ -479,7 +484,7 @@ class TimeStepper:
                                    jnp.logical_or(state.picard_residuum > self.picard_tol,
                                                   jnp.isnan(state.picard_residuum)))
 
-        def body_fun(state):
+        def body_fun(state : State) -> State:
             """
             Body function for the while loop of the Picard solver.
 
@@ -505,36 +510,3 @@ class TimeStepper:
         # Finally, perform the while loop in the Picard solver.
         state = jax.lax.while_loop(cond_fun, body_fun, state)
         return state
-
-
-def aitken_step(z_prev, z_curr, fz, eps=1e-12, inprod=jnp.vdot):
-    """
-    Aitken step for iterative solvers.
-
-    Parameters
-    ----------
-    z_prev : jnp.ndarray
-        The previous state.
-    z_curr : jnp.ndarray
-        The current state.
-    fz : jnp.ndarray
-        The function value at the current state.
-    eps : float, default=1e-12
-        The epsilon for numerical stability.
-    inprod : callable, default=jnp.vdot
-        The inner product function definition.
-
-    Returns
-    -------
-    z_next : jnp.ndarray
-        The next state.
-    omega : float
-        The relaxation parameter.
-    """
-    d1 = z_curr - z_prev
-    d2 = fz - z_curr
-    num = inprod(d1, d2)
-    den = inprod(d2, d2) + eps
-    omega = jnp.clip(num / den, 0.0, 1.0)
-    z_next = (1.0 - omega) * z_curr + omega * fz
-    return z_next, omega

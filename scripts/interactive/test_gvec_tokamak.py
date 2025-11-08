@@ -4,12 +4,15 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.testing as npt
+from pathlib import Path
 import xarray as xr
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 
 jax.config.update("jax_enable_x64", True)
+script_dir = Path(__file__).parent / 'script_outputs'
+script_dir.mkdir(parents=True, exist_ok=True)
 # %%
 gvec_eq = xr.open_dataset("data/gvec_tokamak.h5", engine="h5netcdf")
 # %%
@@ -105,6 +108,7 @@ plt.ylabel("Relative L2 Projection Error")
 plt.grid(True, which="both", ls=":")
 plt.legend()
 plt.tight_layout()
+plt.savefig(script_dir / "projection_error.png")
 plt.show()
 
 # %%
@@ -182,6 +186,7 @@ ax.legend(
     loc="upper right"
 )
 plt.tight_layout()
+plt.savefig(script_dir / "deformed_polar_grid.png")
 plt.show()  # %%
 
 # %%

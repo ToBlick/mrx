@@ -1,22 +1,22 @@
 # %%
 # TODO: test or delete
 
-import os
 import time
 
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
+from pathlib import Path
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import cylinder_map
 
 jax.config.update("jax_enable_x64", True)
-os.makedirs("script_outputs", exist_ok=True)
+script_dir = Path(__file__).parent / 'script_outputs'
+script_dir.mkdir(parents=True, exist_ok=True)
 
-
-def get_err(n, p):
+def get_err(n : int, p : int) -> float:
     """
     Compute the error in the solution of a vector Poisson problem in 3D.
     We define this function that does assembly, solves the system, and computes the error.
@@ -42,7 +42,7 @@ def get_err(n, p):
     F = cylinder_map(a=a, h=h)
 
     # Define exact solution and source term
-    def u(x):
+    def u(x : jnp.ndarray) -> jnp.ndarray:
         """Exact solution of the Poisson problem. Formula is:
         
         u(r, χ, z) = (0, r² (1 - r)² cos(2πz), 0), 
@@ -58,7 +58,7 @@ def get_err(n, p):
         u_theta = r**2 * (1 - r)**2 * jnp.cos(2*π*z)
         return jnp.array([0, u_theta, 0])
 
-    def f(x):
+    def f(x : jnp.ndarray) -> jnp.ndarray:
         """Source term of the Poisson problem. Formula is:
         
         f(r, χ, z) = (0, 4π² r² (1 - r)² cos(2πz) - (3 - 16r + 15r²) cos(2πz), 0),
@@ -123,7 +123,7 @@ def get_err(n, p):
     return error
 
 
-def run_convergence_analysis(ns, ps):
+def run_convergence_analysis(ns : list[int], ps : list[int]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run convergence analysis for different parameters.
     
     Args:
@@ -163,16 +163,20 @@ def run_convergence_analysis(ns, ps):
     return err, times, times2
 
 
-def plot_results(err, ns, ps):
+def plot_results(err : np.ndarray, ns : list[int], ps : list[int]) -> plt.Figure:
     """Plot the results of the convergence analysis.
     
     Args:
-        err: Array of relative L2 errors
-        ns: List of number of elements in each direction
-        ps: List of polynomial degrees
+        err : np.ndarray
+            Array of relative L2 errors
+        ns : list[int]
+            List of number of elements in each direction
+        ps : list[int]
+            List of polynomial degrees
     
     Returns:
-        fig1: Figure object
+        fig1 : plt.Figure
+            Figure object
     """
     # Error convergence plot
     fig1 = plt.figure(figsize=(10, 6))
@@ -190,7 +194,7 @@ def plot_results(err, ns, ps):
     plt.title('Error Convergence')
     plt.grid(True)
     plt.legend()
-    plt.savefig('script_outputs/cylinder_vector_poisson_error.png',
+    plt.savefig(script_dir / 'cylinder_vector_poisson_error.png',
                 dpi=300, bbox_inches='tight')
 
     return fig1
