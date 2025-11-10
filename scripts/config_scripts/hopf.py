@@ -93,7 +93,7 @@ def run(CONFIG):
 
     def F(x):
         return jnp.array([x[0] * 8 - 4, x[1] * 8 - 4, x[2] * 20 - 10])
-        
+
     ns = (CONFIG["n_r"], CONFIG["n_chi"], CONFIG["n_zeta"])
     ps = (CONFIG["p_r"], CONFIG["p_chi"], CONFIG["p_zeta"])
     q = max(ps)
@@ -136,12 +136,12 @@ def run(CONFIG):
         ])
 
     P_JxH = CrossProductProjection(
-        Seq.Λ2, Seq.Λ1, Seq.Λ1, Seq.Q, Seq.F,
+        Seq.Lambda_2, Seq.Lambda_1, Seq.Lambda_1, Seq.Q, Seq.F,
         En=Seq.E2_0, Em=Seq.E1_0, Ek=Seq.E1_0,
         Λn_ijk=Seq.Λ2_ijk, Λm_ijk=Seq.Λ1_ijk, Λk_ijk=Seq.Λ1_ijk,
         J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
     P_uxH = CrossProductProjection(
-        Seq.Λ1, Seq.Λ2, Seq.Λ1, Seq.Q, Seq.F,
+        Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_1, Seq.Q, Seq.F,
         En=Seq.E1_0, Em=Seq.E2_0, Ek=Seq.E1_0,
         Λn_ijk=Seq.Λ1_ijk, Λm_ijk=Seq.Λ2_ijk, Λk_ijk=Seq.Λ1_ijk,
         J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
@@ -201,7 +201,7 @@ def run(CONFIG):
     @jax.jit
     def update(x):
         return picard_solver(implicit_update, x, tol=solver_tol, norm=L2norm, max_iter=max_iter)
-    
+
     for i in range(n_steps):
         x = jnp.concatenate([B_hat, B_hat])
         x, err, it = update(x)
@@ -240,9 +240,9 @@ def run(CONFIG):
         p_hat = -jnp.linalg.solve(laplace_0, M03 @ dvg @ JxH_hat)
     else:
         # Compute p(x) = J · B / |B|²
-        B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
+        B_h = DiscreteFunction(B_hat, Seq.Lambda_2, Seq.E2_0.matrix())
         J_hat = weak_curl @ B_hat
-        J_h = DiscreteFunction(J_hat, Seq.Λ1, Seq.E1_0.matrix())
+        J_h = DiscreteFunction(J_hat, Seq.Lambda_1, Seq.E1_0.matrix())
 
         @jax.jit
         def lmbda(x):
@@ -278,6 +278,8 @@ def run(CONFIG):
     print(f"Data saved to {outdir + run_name + '.h5'}.")
 
 # %%
+
+
 def main():
     # Get user input
     params = parse_args()

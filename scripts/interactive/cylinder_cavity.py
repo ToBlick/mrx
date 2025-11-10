@@ -1,17 +1,17 @@
 # %%
 # TODO turn into test
+from pathlib import Path
+from typing import Callable
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
 
-from typing import Callable
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import cylinder_map
-
-from pathlib import Path
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -37,15 +37,16 @@ derham.evaluate_1d()
 derham.assemble_M1()  # Mass matrix for 1-forms
 derham.assemble_M0()  # Mass matrix for 0-forms
 derham.assemble_d0()  # Gradient matrix for 0-forms
-M1 = derham.M1 
-M0 = derham.M0 
-D0 = derham.D0 
+M1 = derham.M1
+M0 = derham.M0
+D0 = derham.D0
 O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros((D0.shape[1], D0.shape[1]))
 
 # TODO: Double check that this is the correct assembly method to be used below
 derham.assemble_dd1()
-C = derham.M1 @ (derham.dd1 + derham.strong_grad @ derham.weak_div)  # Double curl matrix
+C = derham.M1 @ (derham.dd1 + derham.strong_grad @
+                 derham.weak_div)  # Double curl matrix
 
 # TODO: Clarify why we construct these block matrices here
 Q = jnp.block([[C, D0], [D0.T, O0]])
@@ -68,12 +69,17 @@ evs = evs[sort_indices]
 evecs = evecs[:, sort_indices]
 
 # %%
+
+
 def calculate_cylindrical_periodic_TE_TM_eigenvalues(
-    n_values : list[int], # List of azimuthal mode indices n (e.g., [0, 1, 2], n >= 0)
-    m_values : list[int], # List of radial mode indices m (e.g., [1, 2, 3], m >= 1)
-    k_axial_values : list[int], # List of axial periodic indices k (e.g., [0, 1, 2], k >= 0)
-    radius_a : float,             # Radius of the cylinder
-    period_h : float              # Periodicity length in z-direction
+    # List of azimuthal mode indices n (e.g., [0, 1, 2], n >= 0)
+    n_values: list[int],
+    # List of radial mode indices m (e.g., [1, 2, 3], m >= 1)
+    m_values: list[int],
+    # List of axial periodic indices k (e.g., [0, 1, 2], k >= 0)
+    k_axial_values: list[int],
+    radius_a: float,             # Radius of the cylinder
+    period_h: float              # Periodicity length in z-direction
 ) -> jnp.ndarray:
     """
     Calculates the eigenvalues (k^2) for both TE_nmk and TM_nmk modes
@@ -229,14 +235,17 @@ ax1.tick_params(axis='x', labelsize=TICK_SIZE)
 # ax1.set_yticks(jnp.unique(true_evs[:end]))
 ax1.grid(axis='y', linestyle='--', alpha=0.7)
 ax1.legend(fontsize=LEGEND_SIZE)  # Use ax1.legend() for clarity
-fig1.savefig(script_dir / 'cylinder_cavity_eigenvalues.pdf', bbox_inches='tight')
+fig1.savefig(script_dir / 'cylinder_cavity_eigenvalues.pdf',
+             bbox_inches='tight')
 
 # %%
 # Check that for all EVs in `evs`, there is a corresponding true EV in `true_evs` such that the difference is less than tol:
 tol = 1e-5
-def dist(ev : float, true_evs : jnp.ndarray) -> float:
+
+
+def dist(ev: float, true_evs: jnp.ndarray) -> float:
     """Calculate the distance between an eigenvalue and the closest true eigenvalue.
-    
+
     Args:
         ev: Eigenvalue to check
         true_evs: List of true eigenvalues
@@ -247,9 +256,9 @@ def dist(ev : float, true_evs : jnp.ndarray) -> float:
     return jnp.min(jnp.abs(true_evs - ev)/true_evs)
 
 
-def check_eigenvalues(evs : jnp.ndarray, true_evs : jnp.ndarray, tol : float = 1e-5) -> bool:
+def check_eigenvalues(evs: jnp.ndarray, true_evs: jnp.ndarray, tol: float = 1e-5) -> bool:
     """Check if all eigenvalues in `evs` are close to some eigenvalue in `true_evs`.
-    
+
     Args:
         evs: List of eigenvalues to check
         true_evs: List of true eigenvalues
@@ -259,6 +268,7 @@ def check_eigenvalues(evs : jnp.ndarray, true_evs : jnp.ndarray, tol : float = 1
         True if all eigenvalues in `evs` are close to some eigenvalue in `true_evs`, False otherwise
     """
     return jnp.all(jax.vmap(dist, in_axes=(0, None))(evs, true_evs) < tol)
+
 
 # %%
 # Generate a grid of points in the physical domain
@@ -273,17 +283,21 @@ _y = jax.vmap(F)(_x)
 _y1 = _y[:, 0].reshape(nx, nx)
 _y2 = _y[:, 1].reshape(nx, nx)
 
+
 def plot_eigenvectors_grid(
-    evecs : jnp.ndarray,         # Eigenvectors array, shape (num_dofs, num_eigenvectors)
-    M1 : jnp.ndarray,            # Matrix used to determine split point for DOFs
-    Λ1 : jnp.ndarray,            # Parameters for DiscreteFunction
-    E1 : jnp.ndarray,            # Parameters for DiscreteFunction
-    F_map : Callable,            # The 'F' map for Pushforward (renamed from F to avoid confusion with a potential figure object)
-    map_input_x : jnp.ndarray,   # Input points for the pushforward map (_x)
-    y1_coords : jnp.ndarray,     # y1 coordinates for contourf (_y1)
-    y2_coords : jnp.ndarray,     # y2 coordinates for contourf (_y2)
-    nx_grid : int,               # Grid dimension for reshaping (nx)
-    num_to_plot : int = 9        # Number of eigenvectors to plot (0 to num_to_plot-1)
+    # Eigenvectors array, shape (num_dofs, num_eigenvectors)
+    evecs: jnp.ndarray,
+    M1: jnp.ndarray,            # Matrix used to determine split point for DOFs
+    Λ1: jnp.ndarray,            # Parameters for DiscreteFunction
+    E1: jnp.ndarray,            # Parameters for DiscreteFunction
+    # The 'F' map for Pushforward (renamed from F to avoid confusion with a potential figure object)
+    F_map: Callable,
+    map_input_x: jnp.ndarray,   # Input points for the pushforward map (_x)
+    y1_coords: jnp.ndarray,     # y1 coordinates for contourf (_y1)
+    y2_coords: jnp.ndarray,     # y2 coordinates for contourf (_y2)
+    nx_grid: int,               # Grid dimension for reshaping (nx)
+    # Number of eigenvectors to plot (0 to num_to_plot-1)
+    num_to_plot: int = 9
 ) -> plt.Figure:
     """
     Plots the norm of the pushforward of the first 'num_to_plot' eigenvectors
@@ -340,11 +354,12 @@ def plot_eigenvectors_grid(
     plt.show()
     return fig
 
+
 # %%
 # Plot the first num_to_plot eigenvectors
 num_to_plot = 25
 fig = plot_eigenvectors_grid(
-    evecs, M1, derham.Λ1, E1, F, _x, _y1, _y2, nx, num_to_plot=num_to_plot
+    evecs, M1, derham.Lambda_1, E1, F, _x, _y1, _y2, nx, num_to_plot=num_to_plot
 )
 fig.savefig(script_dir / 'cylinder_cavity_eigenmodes.pdf', bbox_inches='tight')
 # %%

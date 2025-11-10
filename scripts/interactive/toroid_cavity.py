@@ -4,11 +4,13 @@
 # Standing TM waves in a toroidal cavity
 ##
 
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import scipy as sp
-from pathlib import Path
+
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import toroid_map
@@ -116,6 +118,8 @@ __y2 = __y[:, 1].reshape(_nx, _nx)
 __y3 = __y[:, 2].reshape(_nx, _nx)
 
 # %%
+
+
 def plot_eigenvectors_grid(
     evecs,         # Eigenvectors array, shape (num_dofs, num_eigenvectors)
     M1,            # Matrix used to determine split point for DOFs
@@ -176,14 +180,14 @@ def plot_eigenvectors_grid(
 
 
 fig = plot_eigenvectors_grid(
-    evecs, M1, Seq.Λ1, E1, F, _x, _y1, _y3, nx, num_to_plot=25
+    evecs, M1, Seq.Lambda_1, E1, F, _x, _y1, _y3, nx, num_to_plot=25
 )
 fig.savefig(script_dir / 'toroid_eigenvectors.pdf', bbox_inches='tight')
 # %%
 idx = 3
 # The eigenvector from the double curl operator only contains velocity components (1-form)
 u_hat, p_hat = jnp.split(evecs[:, idx], (M1.shape[0],))
-u_h = DiscreteFunction(u_hat, Seq.Λ1, E1)
+u_h = DiscreteFunction(u_hat, Seq.Lambda_1, E1)
 F_u = Pushforward(u_h, F, 1)
 
 _z1 = jax.vmap(F_u)(_x).reshape(nx, nx, 3)

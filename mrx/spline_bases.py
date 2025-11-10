@@ -183,7 +183,7 @@ class SplineBasis:
 
     def _p_spline(self, x, t, p):
         """
-        Evaluate a p-spline at point x. TODO: Jaxify this if we use this.
+        Evaluate a p-spline at point x.
 
         Args:
             x: The point at which to evaluate the spline

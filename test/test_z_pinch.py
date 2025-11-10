@@ -4,8 +4,8 @@
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
+from jax.numpy import cos, pi, sin
 
-from jax.numpy import cos, sin, pi
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.relaxation import MRXDiagnostics
@@ -13,6 +13,8 @@ from mrx.relaxation import MRXDiagnostics
 jax.config.update("jax_enable_x64", True)
 
 # --- helper functions ---
+
+
 def F(p):
     """Cylindrical coordinates mapping function.
     Parameters
@@ -63,7 +65,7 @@ def test_zpinch_pressure_convergence():
     # --- compute pressure approximation ---
     B_hat = jnp.linalg.solve(Seq.M2, Seq.P2(B0))
     p_hat = MRXDiagnostics(Seq).pressure(B_hat)
-    p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
+    p_h = DiscreteFunction(p_hat, Seq.Lambda_0, Seq.E0)
 
     # --- error evaluation ---
     def diff_at_x(x):
@@ -83,4 +85,5 @@ def test_zpinch_pressure_convergence():
     error = L2_dp / L2_p
 
     # --- numerical tolerance check ---
-    npt.assert_allclose(error, 0.0, atol=5e-2, err_msg=f"L2 error too large: {error}")
+    npt.assert_allclose(error, 0.0, atol=5e-2,
+                        err_msg=f"L2 error too large: {error}")

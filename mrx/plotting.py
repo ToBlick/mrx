@@ -4,6 +4,7 @@ Plotting utilities for finite element analysis results.
 # %%
 import os
 from typing import Callable
+
 import diffrax
 import h5py
 import jax
@@ -93,9 +94,10 @@ def intersect_with_plane(traj, plane_normal=jnp.array([1., 0., 0.]),
 # Default color scale for plots
 colorbar = 'plasma'
 
+
 def get_3d_grids(
-    F : Callable, x_min : float = 0.0, x_max: float = 1.0, y_min: float = 0.0, y_max: float = 1.0,
-    z_min: float = 0.0, z_max: float = 1.0, nx: int = 16, ny: int = 16, nz: int = 16):
+        F: Callable, x_min: float = 0.0, x_max: float = 1.0, y_min: float = 0.0, y_max: float = 1.0,
+        z_min: float = 0.0, z_max: float = 1.0, nx: int = 16, ny: int = 16, nz: int = 16):
     """
     Get 3D grids for plotting.
 
@@ -146,11 +148,11 @@ def get_3d_grids(
 
 
 def get_2d_grids(
-    F : Callable, cut_value: float = 0.0, cut_axis: int = 2, nx: int = 64, ny: int = 64, 
+    F: Callable, cut_value: float = 0.0, cut_axis: int = 2, nx: int = 64, ny: int = 64,
     nz: int = 64, tol1: float = 1e-6, tol2: float = 0.0, tol3: float = 0.0,
     x_min: float = 0.0, x_max: float = 1.0, y_min: float = 0.0, y_max: float = 1.0,
     z_min: float = 0.0, z_max: float = 1.0, invert_x: bool = False, invert_y: bool = False, invert_z: bool = False
-    ):
+):
     """
     Get 2D grids for plotting.
 
@@ -226,7 +228,7 @@ def get_2d_grids(
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
 
-def get_1d_grids(F : Callable, zeta: float = 0.0, chi: float = 0.0, nx: int = 64, tol: float = 1e-6):
+def get_1d_grids(F: Callable, zeta: float = 0.0, chi: float = 0.0, nx: int = 64, tol: float = 1e-6):
     """
     Get 1D grids for plotting.
 
@@ -288,7 +290,7 @@ def trajectory_plane_intersections_jit(trajectories: jnp.ndarray, plane_val: flo
     mask : jnp.ndarray (N, T-1)
         True if the corresponding segment contains an intersection.
     """
-    x = trajectories[..., axis] # (N, T)
+    x = trajectories[..., axis]  # (N, T)
     diff = x - plane_val
 
     # if plane is zero, check for one point very small and another close to one:
@@ -312,7 +314,7 @@ def trajectory_plane_intersections_jit(trajectories: jnp.ndarray, plane_val: flo
     return intersections, mask
 
 
-def plot_crossections_separate(p_h : Callable, grids_pol : list[tuple], zeta_vals : list[float], textsize : int = 16, ticksize : int = 16, plot_centerline : bool = False):
+def plot_crossections_separate(p_h: Callable, grids_pol: list[tuple], zeta_vals: list[float], textsize: int = 16, ticksize: int = 16, plot_centerline: bool = False):
     """
     Plot cross-sections of a function.
 
@@ -443,15 +445,15 @@ def plot_crossections_separate(p_h : Callable, grids_pol : list[tuple], zeta_val
 
 def plot_torus(p_h, grids_pol,
                grid_surface,
-               figsize : tuple = (12, 8),
-               labelsize : int = 20,
-               ticksize : int = 16,
-               gridlinewidth : float = 0.01,
-               cstride : int = 4,
-               elev : float = 30,
-               azim : float = 140,
-               noaxes : bool = False,
-               add_colorbar : bool = False):
+               figsize: tuple = (12, 8),
+               labelsize: int = 20,
+               ticksize: int = 16,
+               gridlinewidth: float = 0.01,
+               cstride: int = 4,
+               elev: float = 30,
+               azim: float = 140,
+               noaxes: bool = False,
+               add_colorbar: bool = False):
     """
     Plot a function on a torus.
 
@@ -560,7 +562,7 @@ def plot_torus(p_h, grids_pol,
     return fig, ax
 
 
-def plot_crossections(f : Callable, grids : list[tuple]):
+def plot_crossections(f: Callable, grids: list[tuple]):
     """
     Plot cross-sections of a function.
 
@@ -639,10 +641,10 @@ def trajectory_plane_intersections_list(trajectory: jnp.ndarray, plane_point: jn
 
 
 def poincare_plot(
-    outdir : str, vector_field : Callable, F : Callable, x0 : jnp.ndarray, 
-    n_loop : int, n_batch : int, colors : list[str], plane_val : float = 0.5, axis : int = 1, 
-    final_time : float = 10_000, n_saves : int = 20_000, max_steps : int = 150000, r_tol : float = 1e-7, 
-    a_tol : float = 1e-7, cylindrical : bool = False, name : str = ""):
+        outdir: str, vector_field: Callable, F: Callable, x0: jnp.ndarray,
+        n_loop: int, n_batch: int, colors: list[str], plane_val: float = 0.5, axis: int = 1,
+        final_time: float = 10_000, n_saves: int = 20_000, max_steps: int = 150000, r_tol: float = 1e-7,
+        a_tol: float = 1e-7, cylindrical: bool = False, name: str = ""):
     """
     Plot Poincaré sections of a vector field.
 
@@ -714,13 +716,15 @@ def poincare_plot(
                                                                     y0=x0,
                                                                     max_steps=max_steps,
                                                                     saveat=saveat, stepsize_controller=stepsize_controller).ys)(x))
-    trajectories = jnp.array(trajectories).reshape(n_batch * n_loop, n_saves, 3) % 1
+    trajectories = jnp.array(trajectories).reshape(
+        n_batch * n_loop, n_saves, 3) % 1
 
     physical_trajectories = jax.vmap(F)(trajectories.reshape(-1, 3))
     physical_trajectories = physical_trajectories.reshape(
         trajectories.shape[0], trajectories.shape[1], 3)
 
-    intersections, _ = trajectory_plane_intersections_jit(trajectories, plane_val=plane_val, axis=axis)
+    intersections, _ = trajectory_plane_intersections_jit(
+        trajectories, plane_val=plane_val, axis=axis)
 
     if cylindrical:
         def F_cyl(p):
@@ -795,13 +799,14 @@ def poincare_plot(
                 alpha=1)
         ax.set_axis_off()
         plt.tight_layout()
-        plt.savefig(outdir + name + "field_line_" + str(i) + ".pdf", bbox_inches='tight')
+        plt.savefig(outdir + name + "field_line_" +
+                    str(i) + ".pdf", bbox_inches='tight')
 
 
-def pressure_plot(p : jnp.ndarray, Seq : DeRhamSequence, F : Callable, outdir : str, name : str,
-                  resolution : int = 128, zeta : float = 0.0, tol : float = 1e-3,
-                  SQUARE_FIG_SIZE : tuple = (8, 8), LABEL_SIZE : int = 20,
-                  TICK_SIZE : int = 16, LINE_WIDTH : float = 2.5):
+def pressure_plot(p: jnp.ndarray, Seq: DeRhamSequence, F: Callable, outdir: str, name: str,
+                  resolution: int = 128, zeta: float = 0.0, tol: float = 1e-3,
+                  SQUARE_FIG_SIZE: tuple = (8, 8), LABEL_SIZE: int = 20,
+                  TICK_SIZE: int = 16, LINE_WIDTH: float = 2.5):
     """
     Plot a pressure contour plot.
 
@@ -840,7 +845,7 @@ def pressure_plot(p : jnp.ndarray, Seq : DeRhamSequence, F : Callable, outdir : 
         Axes object.
     """
 
-    p_h = DiscreteFunction(p, Seq.Λ0, Seq.E0)
+    p_h = DiscreteFunction(p, Seq.Lambda_0, Seq.E0)
     p_h_xyz = Pushforward(p_h, F, 0)
 
     _s = jax.vmap(F)(jnp.vstack(
@@ -877,10 +882,10 @@ def pressure_plot(p : jnp.ndarray, Seq : DeRhamSequence, F : Callable, outdir : 
 
 
 def trace_plot(
-    iterations : jnp.ndarray, force_trace : jnp.ndarray, helicity_trace : jnp.ndarray, divergence_trace : jnp.ndarray, 
-    velocity_trace : jnp.ndarray, wall_time_trace : jnp.ndarray, energy_trace : jnp.ndarray = None, 
-    outdir : str = './', name : str = '', FIG_SIZE : tuple = (12, 6), LABEL_SIZE : int = 20, 
-    TICK_SIZE : int = 16, LINE_WIDTH : float = 2.5, LEGEND_SIZE : int = 16):
+        iterations: jnp.ndarray, force_trace: jnp.ndarray, helicity_trace: jnp.ndarray, divergence_trace: jnp.ndarray,
+        velocity_trace: jnp.ndarray, wall_time_trace: jnp.ndarray, energy_trace: jnp.ndarray = None,
+        outdir: str = './', name: str = '', FIG_SIZE: tuple = (12, 6), LABEL_SIZE: int = 20,
+        TICK_SIZE: int = 16, LINE_WIDTH: float = 2.5, LEGEND_SIZE: int = 16):
     """
     Plot a trace plot.
 
@@ -939,7 +944,7 @@ def trace_plot(
         ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$',
                        color=color4, fontsize=LABEL_SIZE)
         ax1.semilogy(energy_trace[0] - jnp.array(energy_trace),
-                 label=r'$\frac{1}{2} \| B \|^2$', color=color4, linestyle='-.', lw=LINE_WIDTH)
+                     label=r'$\frac{1}{2} \| B \|^2$', color=color4, linestyle='-.', lw=LINE_WIDTH)
         # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
         ax1.tick_params(axis='y', labelcolor=color4, labelsize=TICK_SIZE)
         ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
@@ -981,7 +986,7 @@ def trace_plot(
     plt.close()
 
 
-def generate_solovev_plots(name : str):
+def generate_solovev_plots(name: str):
     """
     Generate all plots for a Solovev configuration.
 
@@ -1059,7 +1064,8 @@ def generate_solovev_plots(name : str):
                name="force_trace.pdf",
                CONFIG=CONFIG)
 
-def set_axes_equal(ax : plt.Axes):
+
+def set_axes_equal(ax: plt.Axes):
     """Set 3D plot axes to equal scale."""
     X_limits = ax.get_xlim3d()
     Y_limits = ax.get_ylim3d()

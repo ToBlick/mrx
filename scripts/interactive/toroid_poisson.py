@@ -1,9 +1,11 @@
 # %%
 import os
+import sys
 from functools import partial
+
 import jax
 import jax.numpy as jnp
-import sys
+
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.mappings import toroid_map
@@ -11,8 +13,9 @@ from mrx.mappings import toroid_map
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
+
 @partial(jax.jit, static_argnames=["n", "p"])
-def get_err(n : int, p : int) -> tuple[float, float, float]:
+def get_err(n: int, p: int) -> tuple[float, float, float]:
     """
     Computes the error, condition number, and sparsity of the solution to the Poisson equation on a toroidal domain.
 
@@ -36,10 +39,10 @@ def get_err(n : int, p : int) -> tuple[float, float, float]:
     R0 = 1.0  # major radius
     π = jnp.pi
     F = toroid_map(epsilon=a, R0=R0)
-        
-    def u(x : jnp.ndarray) -> jnp.ndarray:
+
+    def u(x: jnp.ndarray) -> jnp.ndarray:
         """Exact solution of the Poisson equation. Formula is:
-        
+
         u(r, χ, z) = 1/4 * (r**2 - r**4) * cos(2πz)
 
         Args:
@@ -50,8 +53,8 @@ def get_err(n : int, p : int) -> tuple[float, float, float]:
         """
         r, χ, z = x
         return 1/4 * (r**2 - r**4) * jnp.cos(2 * π * z) * jnp.ones(1)
-    
-    def f(x : jnp.ndarray) -> jnp.ndarray:
+
+    def f(x: jnp.ndarray) -> jnp.ndarray:
         """Source term of the Poisson equation. Formula is:
 
         f(r, χ, z) = cos(2πz) * (-1/a**2 * (1 - 4r**2) - 1/(a*R) * (r/2 - r**3) * cos(2πχ) + 1/4 * (r**2 - r**4) / R**2 )
@@ -64,7 +67,7 @@ def get_err(n : int, p : int) -> tuple[float, float, float]:
         """
         r, χ, z = x
         R = R0 + a * r * jnp.cos(2 * jnp.pi * χ)
-        return jnp.cos(2 * jnp.pi * z) * (-1/a**2 * (1 - 4*r**2) - 1/(a*R) * (r/2 - r**3) * jnp.cos(2 * jnp.pi * χ) + 1/4 * (r**2 - r**4) / R**2 ) * jnp.ones(1)
+        return jnp.cos(2 * jnp.pi * z) * (-1/a**2 * (1 - 4*r**2) - 1/(a*R) * (r/2 - r**3) * jnp.cos(2 * jnp.pi * χ) + 1/4 * (r**2 - r**4) / R**2) * jnp.ones(1)
 
     # Create DeRham sequence
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
@@ -75,10 +78,10 @@ def get_err(n : int, p : int) -> tuple[float, float, float]:
 
     # Solve the system
     u_hat = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
-    u_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0)
+    u_h = DiscreteFunction(u_hat, Seq.Lambda_0, Seq.E0)
 
     # do not vmap here because of memory issues
-    def diff_at_x(x : jnp.ndarray) -> jnp.ndarray:
+    def diff_at_x(x: jnp.ndarray) -> jnp.ndarray:
         """Difference between exact and computed solution.
 
         Args:
@@ -89,7 +92,7 @@ def get_err(n : int, p : int) -> tuple[float, float, float]:
         """
         return u(x) - u_h(x)
 
-    def body_fun(carry : None, x : jnp.ndarray) -> tuple[None, jnp.ndarray]:
+    def body_fun(carry: None, x: jnp.ndarray) -> tuple[None, jnp.ndarray]:
         return None, diff_at_x(x)
 
     # TODO: Explain what is happening below.

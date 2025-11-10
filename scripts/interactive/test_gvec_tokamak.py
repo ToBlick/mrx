@@ -1,10 +1,11 @@
 # %%
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.testing as npt
-from pathlib import Path
 import xarray as xr
 
 from mrx.derham_sequence import DeRhamSequence
@@ -39,15 +40,15 @@ pts = jnp.stack([ρ.ravel(), θ_star.ravel() / (2 * jnp.pi),
                 jnp.zeros(ρ.size)], axis=1)  # (mρ mθ, 3)
 
 # Design Matrix:
-M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.Λ0[i](x)[0])(pts))(
-    mapSeq.Λ0.ns).T  # (mρ mθ, n)
+M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.Lambda_0[i](x)[0])(pts))(
+    mapSeq.Lambda_0.ns).T  # (mρ mθ, n)
 # Target values:
 y = jnp.stack([X1.ravel(), X2.ravel()], axis=1)  # (mρ mθ, 2)
 # %%
 c, residuals, rank, s = jnp.linalg.lstsq(M, y, rcond=None)
 # %%
-X1_h = DiscreteFunction(c[:, 0], mapSeq.Λ0, mapSeq.E0)
-X2_h = DiscreteFunction(c[:, 1], mapSeq.Λ0, mapSeq.E0)
+X1_h = DiscreteFunction(c[:, 0], mapSeq.Lambda_0, mapSeq.E0)
+X2_h = DiscreteFunction(c[:, 1], mapSeq.Lambda_0, mapSeq.E0)
 
 
 @jax.jit
@@ -76,7 +77,7 @@ for n in ns:
     Seq.evaluate_1d()
     Seq.assemble_M0()
     f_dof = jnp.linalg.solve(Seq.M0, Seq.P0(f))
-    f_h = DiscreteFunction(f_dof, Seq.Λ0, Seq.E0)
+    f_h = DiscreteFunction(f_dof, Seq.Lambda_0, Seq.E0)
 
     # --- error evaluation ---
     def diff_at_x(x):

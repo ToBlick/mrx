@@ -34,12 +34,16 @@ types = ('clamped', 'clamped', 'clamped')  # Types
 bcs = ('dirichlet', 'dirichlet', 'dirichlet')  # Boundary conditions
 
 # Identity mapping for the domain
+
+
 def F(x): return x
 
-# Create DeRham sequence 
-derham = DeRhamSequence(ns, ps, 6, types, bcs, F, polar=False) # Quadrature order 6
 
-# Get boundary operators and mass matrices 
+# Create DeRham sequence
+derham = DeRhamSequence(ns, ps, 6, types, bcs, F,
+                        polar=False)  # Quadrature order 6
+
+# Get boundary operators and mass matrices
 B1 = derham.E1.matrix()  # Boundary operator for 1-forms
 B0 = derham.E0.matrix()  # Boundary operator for 0-forms
 M1 = derham.assemble_M1()  # Mass matrix for 1-forms
@@ -50,7 +54,7 @@ O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros_like(M0)
 
 
-C = derham.assemble_curlcurl()  # Double curl matrix 
+C = derham.assemble_curlcurl()  # Double curl matrix
 
 # %%
 Q = jnp.block([[C, D0], [D0.T, O0]])
@@ -191,14 +195,14 @@ color2 = 'black'
 ax1.set_xlabel(r'$k$', fontsize=LABEL_SIZE)
 ax1.set_ylabel(r'$\lambda_k / \pi^2$', fontsize=LABEL_SIZE)
 ax1.plot(true_evs[:end], label=r'true',
-         marker='', ls = ':', markersize=10, color=color2, lw=LINE_WIDTH)
+         marker='', ls=':', markersize=10, color=color2, lw=LINE_WIDTH)
 ax1.plot(evs[:end] / (jnp.pi**2), label=r'computed',
-         marker='*', ls = '', markersize=10, color=color1, lw=LINE_WIDTH)
+         marker='*', ls='', markersize=10, color=color1, lw=LINE_WIDTH)
 ax1.tick_params(axis='y', labelsize=TICK_SIZE)
 ax1.tick_params(axis='x', labelsize=TICK_SIZE)
 ax1.set_yticks(jnp.unique(true_evs[:end]))
 ax1.grid(axis='y', linestyle='--', alpha=0.7)
-ax1.legend(fontsize=LEGEND_SIZE) # Use ax1.legend() for clarity
+ax1.legend(fontsize=LEGEND_SIZE)  # Use ax1.legend() for clarity
 
 # Now save the figure. The 'tight' layout will be calculated correctly.
 fig1.savefig('cube_eigenvalues.pdf', bbox_inches='tight')
@@ -220,7 +224,7 @@ __x = __x.transpose(1, 2, 3, 0).reshape(_nx*_nx*1, 3)
 __y = jax.vmap(F)(__x)
 # %%
 u_hat = evecs[:C.shape[0], 0]
-u_h = DiscreteFunction(u_hat, derham.Λ1, B1)
+u_h = DiscreteFunction(u_hat, derham.Lambda_1, B1)
 _z1 = jax.vmap(u_h)(_x).reshape(nx, nx, 3)
 _z1_norm = jnp.linalg.norm(_z1, axis=2)
 plt.contourf(_x1, _x2, _z1_norm.reshape(nx, nx), levels=25)
@@ -268,7 +272,7 @@ def plot_eigenvectors_grid(
         _z1_vector_field = jax.vmap(u_h)(map_input_x)
         _z1_reshaped = _z1_vector_field.reshape(nx_grid, nx_grid, 3)
         _z1_norm = jnp.linalg.norm(_z1_reshaped, axis=2)
-        ax.contourf(y1_coords, y2_coords, _z1_norm, 
+        ax.contourf(y1_coords, y2_coords, _z1_norm,
                     levels=25, cmap='plasma')
 
         # No axes
@@ -288,7 +292,7 @@ def plot_eigenvectors_grid(
 
 # %%
 fig = plot_eigenvectors_grid(
-    evecs, M1, derham.Λ1, B1, F, _x, _x1, _x2, nx, num_to_plot=25
+    evecs, M1, derham.Lambda_1, B1, F, _x, _x1, _x2, nx, num_to_plot=25
 )
 # %%
 fig.savefig('cube_eigenvectors.pdf', bbox_inches='tight')

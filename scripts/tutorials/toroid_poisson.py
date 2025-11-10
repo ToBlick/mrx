@@ -13,6 +13,7 @@ with R = 1 + ɛ r cos(2πθ).
 """
 import os
 from functools import partial
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -26,6 +27,7 @@ from mrx.mappings import toroid_map
 jax.config.update("jax_enable_x64", True)
 # Create output directory for figures
 os.makedirs("script_outputs", exist_ok=True)
+
 
 @partial(jax.jit, static_argnames=["n", "p", "q"])
 def get_err(n, p, q):
@@ -65,7 +67,7 @@ def get_err(n, p, q):
         """Source term of the Poisson problem in logical coordinates. Formula is:
 
             f(r, z) = cos(2πz) (-4/ɛ² * (1 - 4r²) - 4/(ɛR) (r/2 - r³)cos(2πθ) + (r² - r⁴) / R²)
-        
+
         Args:
             x: Input logical coordinates (r, χ, z)
 
@@ -87,7 +89,7 @@ def get_err(n, p, q):
 
     # Solve the system
     u_hat = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
-    u_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0)
+    u_h = DiscreteFunction(u_hat, Seq.Lambda_0, Seq.E0)
 
     # Compute the L2 error
     def diff_at_x(x):
@@ -102,7 +104,7 @@ def get_err(n, p, q):
 
 def run_convergence_analysis(ns, ps):
     """Run convergence analysis for different parameters.
-    
+
     Args:
         ns: List of number of elements in each direction
         ps: List of polynomial degrees
@@ -150,7 +152,7 @@ def run_convergence_analysis(ns, ps):
 
 def plot_results(err, times, times2, ns, ps):
     """Plot the results of the convergence analysis.
-    
+
     Args:
         err: Array of relative L2 errors
         times: Array of computation times
