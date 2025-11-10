@@ -2,14 +2,13 @@
 import os
 
 import h5py
-import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
-from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.plotting import get_2d_grids, plot_crossections_separate, plot_torus, trace_plot
+from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
+from mrx.plotting import get_2d_grids, plot_crossections_separate, plot_torus
 
 # %%
 name = "helix/helix_qstar_3.0_m_2_h_0.05_16x16x8"
@@ -64,10 +63,6 @@ Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 
 # %%
-import matplotlib.pyplot as plt
-import matplotlib.transforms as mtransforms
-import jax.numpy as jnp
-
 plt.rcParams['font.family'] = 'serif'
 plt.rcParams['mathtext.fontset'] = 'dejavuserif'
 
@@ -79,8 +74,8 @@ LEGEND_SIZE = 16
 
 color1 = 'purple'   # Force trace
 color2 = 'black'    # Helicity change
-color3 = 'teal' # Divergence B
-color4 = 'orange'    
+color3 = 'teal'  # Divergence B
+color4 = 'orange'
 
 xticks = jnp.arange(0, jnp.max(iterations) + 1, 5000)
 
@@ -97,11 +92,13 @@ fig, (ax_top, ax_bottom) = plt.subplots(
 )
 
 # --- Define ranges ---
-cut_low, cut_high = 2.0*jnp.maximum(jnp.max(helicity_change),jnp.max(divergence_B_trace)), 0.9*jnp.min(force_trace)
+cut_low, cut_high = 2.0*jnp.maximum(jnp.max(helicity_change),
+                                    jnp.max(divergence_B_trace)), 0.9*jnp.min(force_trace)
 
 # === Top axis ===
 ax_top.set_yscale('log')
-ax_top.set_ylim(cut_high, 1.5*jnp.max(force_trace))  # from high values down to cut
+# from high values down to cut
+ax_top.set_ylim(cut_high, 1.5*jnp.max(force_trace))
 ax_top.tick_params(axis='y', labelsize=TICK_SIZE)
 ax_top.grid(which="both", linestyle="--", linewidth=0.5)
 
@@ -133,7 +130,8 @@ ax_bottom.set_xlabel(r'Iteration $(×10^3)$', fontsize=LABEL_SIZE)
 ax_bottom.xaxis.get_offset_text().set_fontsize(TICK_SIZE)
 ax_bottom.xaxis.get_offset_text().set_x(0.95)
 lines, labels = ax_top.get_legend_handles_labels()
-ax_top.legend(lines, labels, loc='upper right', fontsize=LEGEND_SIZE, frameon=True)
+ax_top.legend(lines, labels, loc='upper right',
+              fontsize=LEGEND_SIZE, frameon=True)
 
 fig.tight_layout()
 
@@ -176,7 +174,7 @@ p_hat = p_fields[-1]
 # %%
 # F = helical_map(epsilon=0.33, h=0.2, n_turns=3, kappa=1.0, alpha=0.0)
 # %%
-p_h = Pushforward(DiscreteFunction(p_hat, Seq.Λ0, Seq.E0), F, 0)
+p_h = Pushforward(DiscreteFunction(p_hat, Seq.Lambda_0, Seq.E0), F, 0)
 # %%
 cuts = jnp.linspace(0, 1, 9, endpoint=False)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,

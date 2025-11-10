@@ -1,5 +1,7 @@
 # %%
+import os
 from functools import partial
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -10,13 +12,26 @@ import xarray as xr
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.mappings import gvec_stellarator_map
+
+
+def is_running_in_github_actions():
+    """
+    Checks if the current Python script is running within a GitHub Actions environment.
+    """
+    return os.getenv("GITHUB_ACTIONS") == "true"
+
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 
+# Get the repository root directory (parent of test directory)
+repo_root = Path(__file__).parent.parent
+data_file = repo_root / "data" / "gvec_stellarator.h5"
+
 n, p, nfp = 8, 3, 3
-gvec_eq = xr.open_dataset("data/gvec_stellarator.h5", engine="h5netcdf")
-# θ_star = gvec_eq["thetastar"].values    # shape (mρ, mθ, mζ), rho x theta
+gvec_eq = xr.open_dataset(data_file, engine="h5netcdf")
+θ_star = gvec_eq["thetastar"].values    # shape (mρ, mθ, mζ), rho x theta
 _ρ = gvec_eq["rho"].values              # shape (mρ,)
 _θ = gvec_eq["theta"].values            # shape (mθ,)
 _ζ = gvec_eq["zeta"].values             # shape (mζ,)
@@ -37,21 +52,16 @@ pts = jnp.stack([ρ.ravel(),
                  θ.ravel() / (2 * jnp.pi),
                  ζ.ravel() / (2 * jnp.pi) * nfp], axis=1)  # x_hat_js, shape (mρ mθ mζ, 3)
 
-M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.Λ0[i](x)[0])(pts))(
-    mapSeq.Λ0.ns).T  # Λ0[i](x_hat_j)
+M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.Lambda_0[i](x)[0])(pts))(
+    mapSeq.Lambda_0.ns).T  # Λ0[i](x_hat_j)
 y = jnp.stack([X1.ravel(), X2.ravel()], axis=1)  # X_α(x'_j)
 c, residuals, rank, s = jnp.linalg.lstsq(M, y, rcond=None)
 # %%
-X1_h = DiscreteFunction(c[:, 0], mapSeq.Λ0, mapSeq.E0)
-X2_h = DiscreteFunction(c[:, 1], mapSeq.Λ0, mapSeq.E0)
+X1_h = DiscreteFunction(c[:, 0], mapSeq.Lambda_0, mapSeq.E0)
+X2_h = DiscreteFunction(c[:, 1], mapSeq.Lambda_0, mapSeq.E0)
 
-
-@jax.jit
-def Phi(x):
-    r, θ, ζ = x
-    return jnp.array([X1_h(x)[0] * jnp.cos(2 * jnp.pi * ζ / nfp),
-                      -X1_h(x)[0] * jnp.sin(2 * jnp.pi * ζ / nfp),
-                      X2_h(x)[0]])
+# jax.jit
+Phi = gvec_stellarator_map(X1_h, X2_h, nfp=nfp)
 
 
 # %%
@@ -71,7 +81,7 @@ def Λ2_phys(i, x):
     # Pullback of basis function
     DPhix = jax.jacfwd(Phi)(x)  # Jacobian of Phi at x
     J = jnp.linalg.det(DPhix)
-    return DPhix @ Seq.Λ2[i](x) / J
+    return DPhix @ Seq.Lambda_2[i](x) / J
 
 
 def eval_basis_block(i):
@@ -89,7 +99,7 @@ pts_B = pts[valid_pts]  # avoid singularity on axis and eval. on bdy
 # TODO: No double vmaps
 # evaluate all basis functions at all interp. points
 # Stream through basis functions and collect the results into a scanned array
-_, M = jax.lax.scan(body_fun, None, Seq.Λ2.ns)
+_, M = jax.lax.scan(body_fun, None, Seq.Lambda_2.ns)
 M = jnp.einsum('il,ljk->ijk', Seq.E2, M)  # Λ2[i](x_hat_j)_k
 y = gvec_eq.B.values.reshape(-1, 3)[valid_pts]  # B(x'_j)_k
 A = M.reshape(M.shape[0], -1).T
@@ -98,7 +108,8 @@ b = y.ravel()
 B_dof, residuals, rank, s = jnp.linalg.lstsq(A, b, rcond=None)
 residuals
 # %%
-B_h = jax.jit(Pushforward(DiscreteFunction(B_dof, Seq.Λ2, Seq.E2), Seq.F, 2))
+B_h = jax.jit(Pushforward(DiscreteFunction(
+    B_dof, Seq.Lambda_2, Seq.E2), Seq.F, 2))
 
 # %%
 _zeta_plt = jnp.linspace(0, 1, 100, endpoint=False)
@@ -161,7 +172,7 @@ def get_err(n):
     Seq.evaluate_1d()
     Seq.assemble_M0()
     f_dof = jnp.linalg.solve(Seq.M0, Seq.P0(f))
-    f_h = DiscreteFunction(f_dof, Seq.Λ0, Seq.E0)
+    f_h = DiscreteFunction(f_dof, Seq.Lambda_0, Seq.E0)
 
     # --- error evaluation ---
     def diff_at_x(x):
@@ -205,7 +216,10 @@ plt.ylabel("Relative L2 Projection Error")
 plt.grid(True, which="both", ls=":")
 plt.legend()
 plt.tight_layout()
-plt.show()
+if not is_running_in_github_actions():
+    os.makedirs("test_outputs", exist_ok=True)
+    plt.savefig("test_outputs/test_gvec_stellarator_projection_errs.png")
+    plt.show()
 
 # %%
 
@@ -285,6 +299,8 @@ ax.legend(
     loc="upper right"
 )
 plt.tight_layout()
-plt.show()  # %%
+if not is_running_in_github_actions():
+    plt.savefig("test_outputs/test_gvec_stellarator.png")
+    plt.show()
 
 # %%

@@ -85,7 +85,7 @@ def get_err(n, p):
 
     # P3 = Projector(Λ3, Q)
     u_hat = jnp.linalg.solve(K, Seq.P3(f))
-    u_h = DiscreteFunction(u_hat, Seq.Λ3)
+    u_h = DiscreteFunction(u_hat, Seq.Lambda_3)
 
     # Compute error using Λ3 quadrature
     def err(x): return u(x) - u_h(x)

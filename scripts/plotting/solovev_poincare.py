@@ -8,21 +8,12 @@ import jax.numpy as jnp
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-import optimistix as optx
 from matplotlib import gridspec
 from matplotlib.ticker import MultipleLocator
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
-from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.plotting import (
-    get_2d_grids,
-    plot_crossections,
-    plot_crossections_separate,
-    plot_torus,
-    set_axes_equal,
-)
+from mrx.differential_forms import DiscreteFunction
+from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
 
 # %%
 name = "default"
@@ -66,6 +57,7 @@ Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
 assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 
+
 def integrate_fieldline(B_h, x0, F, N, t1=10):
     @jax.jit
     def vector_field(t, x, args):
@@ -93,6 +85,7 @@ def integrate_fieldline(B_h, x0, F, N, t1=10):
                           stepsize_controller=stepsize_controller,
                           max_steps=100_000)
     return sol.ys
+
 
 def get_crossings(B_h, x0, F, N, phi_targets):
     @jax.jit
@@ -139,7 +132,9 @@ def get_crossings(B_h, x0, F, N, phi_targets):
 
     return crossings
 
+
 F = jax.jit(F)
+
 
 @jax.jit
 def F_cyl_signed(x):
@@ -149,6 +144,7 @@ def F_cyl_signed(x):
     phi = jnp.arctan2(x[1], x[0])
     z = x[2]
     return jnp.array([R, phi, z])
+
 
 # %%
 n_lines = 90  # even numbers only
@@ -172,16 +168,19 @@ idx = np.argsort(key)
 # Apply sorting
 x0s_sorted = x0s[idx]
 
+
 def toroidal_unwrapped(phi):
     phi_unwrapped = jnp.unwrap(phi)
     total_angle = phi_unwrapped[-1] - phi_unwrapped[0]
     return total_angle / (2 * jnp.pi)
+
 
 def poloidal_unwrapped(R, Z, R_center=1.0, Z_center=0.0):
     θ = jnp.arctan2(Z - Z_center, R - R_center)
     θ_unwrapped = jnp.unwrap(θ)
     total_angle = θ_unwrapped[-1] - θ_unwrapped[0]
     return total_angle / (2 * jnp.pi)
+
 
 @jax.jit
 def get_iota(c):
@@ -191,25 +190,28 @@ def get_iota(c):
         jnp.abs(c[:, 0]), c[:, 2], R_center=r_mean, Z_center=z_mean)
     n = toroidal_unwrapped(c[:, 1])
     return jnp.abs(m / n), m, n
+
+
 # %%
 output_dir = os.path.join("script_outputs", "iter", name, "poincare")
 os.makedirs(output_dir, exist_ok=True)
-    
+
 print(B_fields.shape, p_fields.shape)
 for plt_nr in range(B_fields.shape[0]):
     print(f"--- Starting step {plt_nr} ---", flush=True)
     B_hat = B_fields[plt_nr]
     p_hat = p_fields[plt_nr]
 
-    p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
-    B_h = (DiscreteFunction(B_hat, Seq.Λ2, Seq.E2))
+    p_h = DiscreteFunction(p_hat, Seq.Lambda_0, Seq.E0)
+    B_h = (DiscreteFunction(B_hat, Seq.Lambda_2, Seq.E2))
 
     trajectories = jax.vmap(lambda x0: integrate_fieldline(
         B_h, x0, F, N=10_000, t1=250))(x0s_sorted)
     trajectories_xyz = jax.vmap(jax.vmap(F))(trajectories)
     trajectories_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(trajectories_xyz)
 
-    iotas, poloidal_turns, toroidal_turns = jax.vmap(get_iota)(trajectories_Rphiz)
+    iotas, poloidal_turns, toroidal_turns = jax.vmap(
+        get_iota)(trajectories_Rphiz)
     # plt.plot(iotas, 'o-', label=r"$\iota$")
     # # plt.plot(1/iotas, '*-', label=r"$q = 1 / \iota$")
     # plt.xlabel(r"field line number (starting R)")
@@ -223,7 +225,6 @@ for plt_nr in range(B_fields.shape[0]):
 
     crossings_xyz = jax.vmap(jax.vmap(F))(crossings)
     crossings_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(crossings_xyz)
-
 
     crossings_to_plot = crossings_Rphiz[:, :, :]
     crossings_p = crossings % 1
@@ -268,7 +269,8 @@ for plt_nr in range(B_fields.shape[0]):
     norm_iota = mpl.colors.Normalize(vmin=np.min(iotas), vmax=np.max(iotas))
 
     # compute p-values per crossing
-    p_values = (jnp.array([jax.vmap(p_h)(curve) for curve in crossings_p]))[:, :, 0]
+    p_values = (jnp.array([jax.vmap(p_h)(curve)
+                for curve in crossings_p]))[:, :, 0]
     norm_p = mpl.colors.Normalize(vmin=0.0, vmax=np.max(p_values))
 
     # --- Figure setup ---
@@ -341,7 +343,6 @@ for plt_nr in range(B_fields.shape[0]):
     plt.close()
 
 # %%
-
 
 
 # # %%

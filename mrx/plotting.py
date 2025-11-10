@@ -3,6 +3,7 @@ Plotting utilities for finite element analysis results.
 """
 # %%
 import os
+from typing import Callable
 
 import diffrax
 import h5py
@@ -94,13 +95,46 @@ def intersect_with_plane(traj, plane_normal=jnp.array([1., 0., 0.]),
 colorbar = 'plasma'
 
 
-def get_3d_grids(F,
-                 x_min=0, x_max=1,
-                 y_min=0, y_max=1,
-                 z_min=0, z_max=1,
-                 nx=16,
-                 ny=16,
-                 nz=16):
+def get_3d_grids(
+        F: Callable, x_min: float = 0.0, x_max: float = 1.0, y_min: float = 0.0, y_max: float = 1.0,
+        z_min: float = 0.0, z_max: float = 1.0, nx: int = 16, ny: int = 16, nz: int = 16):
+    """
+    Get 3D grids for plotting.
+
+    Parameters
+    ----------
+    F : callable
+        Coordinate transformation function.
+    x_min : float, default=0.0  
+        Minimum value of the x coordinate.  
+    x_max : float, default=1.0
+        Maximum value of the x coordinate.
+    y_min : float, default=0.0
+        Minimum value of the y coordinate.
+    y_max : float, default=1.0
+        Maximum value of the y coordinate.
+    z_min : float, default=0.0
+        Minimum value of the z coordinate.
+    z_max : float, default=1.0
+        Maximum value of the z coordinate.
+    nx : int, default=16
+        Number of grid points in the x direction.
+    ny : int, default=16
+        Number of grid points in the y direction.
+    nz : int, default=16
+        Number of grid points in the z direction.
+
+    Returns
+    -------
+    _x : jnp.ndarray (nx*ny*nz, 3)
+    _y : jnp.ndarray (nx*ny*nz, 3)
+    _y1 : jnp.ndarray (nx, ny, nz)
+    _y2 : jnp.ndarray (nx, ny, nz)
+    _y3 : jnp.ndarray (nx, ny, nz)
+    _x1 : jnp.ndarray (nx)
+    _x2 : jnp.ndarray (ny)
+    _x3 : jnp.ndarray (nz)
+    """
     _x1 = jnp.linspace(x_min, x_max, nx)
     _x2 = jnp.linspace(y_min, y_max, ny)
     _x3 = jnp.linspace(z_min, z_max, nz)
@@ -113,11 +147,60 @@ def get_3d_grids(F,
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
 
-def get_2d_grids(F, cut_value=0, cut_axis=2, nx=64, ny=64, nz=64, tol1=1e-6, tol2=0, tol3=0,
-                 x_min=0, x_max=1,
-                 y_min=0, y_max=1,
-                 z_min=0, z_max=1, invert_x=False, invert_y=False, invert_z=False):
-    _x1 = jnp.linspace(x_min + tol2, x_max - tol2, nx)
+def get_2d_grids(
+    F: Callable, cut_value: float = 0.0, cut_axis: int = 2, nx: int = 64, ny: int = 64,
+    nz: int = 64, tol1: float = 1e-6, tol2: float = 0.0, tol3: float = 0.0,
+    x_min: float = 0.0, x_max: float = 1.0, y_min: float = 0.0, y_max: float = 1.0,
+    z_min: float = 0.0, z_max: float = 1.0, invert_x: bool = False, invert_y: bool = False, invert_z: bool = False
+):
+    """
+    Get 2D grids for plotting.
+
+    Parameters
+    ----------
+    F : callable
+        Coordinate transformation function.
+    cut_value : float, default=0.0
+        Value to cut the grid at.
+    cut_axis : int, default=2
+        Axis to cut the grid at.
+    nx : int, default=64
+        Number of grid points in the x direction.
+    ny : int, default=64
+        Number of grid points in the y direction.
+    nz : int, default=64
+        Number of grid points in the z direction.
+    tol1 : float, default=1e-6
+        Tolerance for the grid in the x direction.
+    tol2 : float, default=0.0
+        Tolerance for the grid in the y direction.
+    tol3 : float, default=0.0
+        Tolerance for the grid in the z direction.
+    x_min : float, default=0.0
+        Minimum value of the x coordinate.
+    x_max : float, default=1.0
+        Maximum value of the x coordinate.
+    y_min : float, default=0.0
+        Minimum value of the y coordinate.
+    y_max : float, default=1.0
+        Maximum value of the y coordinate.
+    z_min : float, default=0.0
+        Minimum value of the z coordinate.
+    z_max : float, default=1.0
+        Maximum value of the z coordinate.
+
+    Returns
+    -------
+    _x : jnp.ndarray (n1*n2, 3)
+    _y : jnp.ndarray (n1*n2, 3)
+    _y1 : jnp.ndarray (n1, n2)
+    _y2 : jnp.ndarray (n1, n2)
+    _y3 : jnp.ndarray (n1, n2)
+    _x1 : jnp.ndarray (n1)
+    _x2 : jnp.ndarray (n2)
+    _x3 : jnp.ndarray (nz)
+    """
+    _x1 = jnp.linspace(x_min + tol1, x_max - tol1, nx)
     _x2 = jnp.linspace(y_min + tol2, y_max - tol2, ny)
     _x3 = jnp.linspace(z_min + tol3, z_max - tol3, nz)
     if invert_x:
@@ -145,8 +228,34 @@ def get_2d_grids(F, cut_value=0, cut_axis=2, nx=64, ny=64, nz=64, tol1=1e-6, tol
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
 
-def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
-    tol = 1e-6
+def get_1d_grids(F: Callable, zeta: float = 0.0, chi: float = 0.0, nx: int = 64, tol: float = 1e-6):
+    """
+    Get 1D grids for plotting.
+
+    Parameters
+    ----------
+    F : callable
+        Coordinate transformation function.
+    zeta : float, default=0.0
+        Toroidal angle.
+    chi : float, default=0.0
+        Poloidal angle.
+    nx : int, default=64
+        Number of grid points.
+    tol : float, default=1e-6
+        Tolerance for the grid.
+
+    Returns
+    -------
+    _x : jnp.ndarray (nx, 3)
+    _y : jnp.ndarray (nx, 3)
+    _y1 : jnp.ndarray (nx)
+    _y2 : jnp.ndarray (nx)
+    _y3 : jnp.ndarray (nx)
+    _x1 : jnp.ndarray (nx)
+    _x2 : jnp.ndarray (1)
+    _x3 : jnp.ndarray (1)
+    """
     _x1 = jnp.linspace(tol, 1 - tol, nx)
     _x2 = jnp.ones(1) * chi
     _x3 = jnp.ones(1) * zeta
@@ -159,24 +268,29 @@ def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
 
-def trajectory_plane_intersections_jit(trajectories, plane_val=0.5, axis=1):
+def trajectory_plane_intersections_jit(trajectories: jnp.ndarray, plane_val: float = 0.5, axis: int = 1):
     """
-    Vectorized + jittable intersection with plane x_axis = plane_val.
+    Vectorized + jittable function for computing intersections of trajectories with a plane.
 
     Parameters
     ----------
-    trajectories : array (N, T, D)
-    plane_val    : float
-    axis         : int, which coordinate axis (default=1 for x_2).
+    trajectories : jnp.ndarray (N, T, D)
+        Trajectories to intersect with the plane. The shape is (N, T, D), 
+        where N is the number of trajectories, T is the number of time steps, 
+        and D is the dimension of the space.
+    plane_val    : float, default=0.5
+        Value of the plane to intersect with.
+    axis         : int, default=1
+        Coordinate axis to intersect with.
 
     Returns
     -------
-    intersections : array (N, T-1, D)
+    intersections : jnp.ndarray (N, T-1, D)
         Intersection points for each segment. Non-crossings are filled with NaN.
-    mask : bool array (N, T-1)
+    mask : jnp.ndarray (N, T-1)
         True if the corresponding segment contains an intersection.
     """
-    x = trajectories[..., axis]                           # (N, T)
+    x = trajectories[..., axis]  # (N, T)
     diff = x - plane_val
 
     # if plane is zero, check for one point very small and another close to one:
@@ -200,31 +314,40 @@ def trajectory_plane_intersections_jit(trajectories, plane_val=0.5, axis=1):
     return intersections, mask
 
 
-def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=16, plot_centerline=False):
+def plot_crossections_separate(p_h: Callable, grids_pol: list[tuple], zeta_vals: list[float], textsize: int = 16, ticksize: int = 16, plot_centerline: bool = False):
+    """
+    Plot cross-sections of a function.
 
+    Parameters
+    ----------
+    p_h : Callable
+        Function to plot.
+    grids_pol : list[tuple]
+        List of tuples containing the grid points and the function values.
+    zeta_vals : list[float]
+        List of toroidal angles to plot.
+    textsize : int, default=16
+        Font size for the text.
+    ticksize : int, default=16
+        Font size for the ticks.
+    plot_centerline : bool, default=False
+        Whether to plot the centerline.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object.
+    axes : list of matplotlib.axes.Axes
+        List of axes objects.
+    """
     numplots = len(grids_pol)
     fig, axes = plt.subplots(1, numplots, figsize=(16, 16/5))
     axes = axes.flatten()
 
     last_c = None
     for i, (ax, grid) in enumerate(zip(axes, grids_pol)):
-        # # do a PCA to get the planar coordinates
-        # mean = jnp.mean(grid[1], axis=0)
-        # cov = jnp.cov(grid[1].T)
-        # eigvals, eigvecs = jnp.linalg.eigh(cov)
-        # # sort eigenvalues and eigenvectors
-        # idx = jnp.argsort(eigvals)[::-1]
-        # eigvals = eigvals[idx]
-        # eigvecs = eigvecs[:, idx]
-        # # project points onto the first two principal components
-        # centered = grid[1] - mean
-        # projected = centered @ eigvecs[:, :2]
-        # nu1 = projected[:, 0].reshape(*grid[2][0].shape)
-        # nu2 = projected[:, 1].reshape(*grid[2][0].shape)
-
         R = jnp.sqrt(grid[2][0]**2 + grid[2][1]**2)
         z = grid[2][2]
-
         vals = jax.vmap(p_h)(grid[0]).reshape(*grid[2][0].shape)
 
         # draw contour above the guide lines
@@ -233,12 +356,9 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
 
         # ensure axis artists (like text/legend) are above the guide lines
         ax.set_axisbelow(False)
-
         if plot_centerline:
             ax.axvline(1.0, color='k', linestyle=":",
                        linewidth=1.5, zorder=3, clip_on=True)
-        # ax.axhline(0.0, color='k', linestyle=":", linewidth=1.5, zorder=3, clip_on=True)
-
         ax.set_aspect("equal")
 
         # remove all ticks
@@ -259,7 +379,7 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
                 fontsize=textsize, ha='right', va='top', zorder=10,
                 bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.3', alpha=1.0))
 
-        # force same limits across all subplots
+    # force same limits across all subplots
     Rmins, Rmaxs, Zmins, Zmaxs = [], [], [], []
     for grid in grids_pol:
         R = jnp.sqrt(grid[2][0]**2 + grid[2][1]**2)
@@ -272,6 +392,7 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
     Rmin, Rmax = float(min(Rmins)), float(max(Rmaxs))
     Zmin, Zmax = float(min(Zmins)), float(max(Zmaxs))
 
+    # Set axis limits for all subplots
     for ax in axes:
         ax.set_xlim(Rmin, Rmax)
         ax.set_ylim(Zmin, Zmax)
@@ -291,8 +412,6 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
     if anchor_ax is not None:
         x0, y0 = -0.01, -0.01        # anchor location in axis fraction coordinates
         arrow_len = 0.16           # length of each arrow in axis fraction units
-
-        # upward arrow for z
 
         # annotate the center (dotted) line at the very top of the axis
         if plot_centerline:
@@ -321,22 +440,57 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
     cbar.formatter.set_powerlimits((0, 0))  # always show scientific notation
     cbar.update_ticks()
     cbar.ax.yaxis.get_offset_text().set_fontsize(ticksize)
-
-    # plt.tight_layout(rect=[0, 0, 0.85, 1])  # leave room for cbar
     return fig, axes
 
 
-def plot_torus(p_h,
-               grids_pol,
+def plot_torus(p_h, grids_pol,
                grid_surface,
-               figsize=(12, 8),
-               labelsize=20,
-               ticksize=16,
-               gridlinewidth=0.01,
-               cstride=4,
-               elev=30,
-               azim=140,
-               noaxes=False):
+               figsize: tuple = (12, 8),
+               labelsize: int = 20,
+               ticksize: int = 16,
+               gridlinewidth: float = 0.01,
+               cstride: int = 4,
+               elev: float = 30,
+               azim: float = 140,
+               noaxes: bool = False,
+               add_colorbar: bool = False):
+    """
+    Plot a function on a torus.
+
+    Parameters
+    ----------
+    p_h : callable
+        Function to plot.
+    grids_pol : list of tuples
+        List of tuples containing the grid points and the function values.
+    grid_surface : tuple
+        Tuple containing the grid points and the function values.
+    figsize : tuple, default=(12, 8)
+        Size of the figure.
+    labelsize : int, default=20
+        Font size for the labels.
+    ticksize : int, default=16
+        Font size for the ticks.
+    gridlinewidth : float, default=0.01
+        Width of the grid lines.
+    cstride : int, default=4
+        Stride for the colorbar.
+    elev : float, default=30
+        Elevation angle.
+    azim : float, default=140
+        Azimuth angle.
+    noaxes : bool, default=False
+        Whether to plot the axes.
+    add_colorbar : bool, default=False  
+        Whether to add a colorbar.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object.
+    ax : matplotlib.axes.Axes
+        Axes object.
+    """
 
     vals = jnp.array([jax.vmap(p_h)(grid[0]).reshape(grid[2][0].shape)
                      for grid in grids_pol])
@@ -368,12 +522,13 @@ def plot_torus(p_h,
                         cstride=1, shade=False, zsort='min', linewidth=0)
 
     # add colorbar
-    # norm = mpl.colors.Normalize(vmin=vals_min, vmax=vals_max)
-    # sm = mpl.cm.ScalarMappable(cmap='plasma', norm=norm)
-    # sm.set_array(vals_np)  # provide data for the colorbar
-    # cbar = fig.colorbar(sm, ax=ax, shrink=0.6, pad=0.08)
-    # cbar.set_label(r'$p$', fontsize=LABEL_SIZE)
-    # cbar.ax.tick_params(labelsize=TICK_SIZE)
+    if add_colorbar:
+        norm = mpl.colors.Normalize(vmin=vals_min, vmax=vals_max)
+        sm = mpl.cm.ScalarMappable(cmap='plasma', norm=norm)
+        sm.set_array(vals_np)  # provide data for the colorbar
+        cbar = fig.colorbar(sm, ax=ax, shrink=0.6, pad=0.08)
+        cbar.set_label(r'$p$', fontsize=labelsize)
+        cbar.ax.tick_params(labelsize=ticksize)
 
     # Remove grey background of 3D panes and ensure white background (robust across mpl versions)
     panes = [
@@ -407,7 +562,25 @@ def plot_torus(p_h,
     return fig, ax
 
 
-def plot_crossections(f, grids):
+def plot_crossections(f: Callable, grids: list[tuple]):
+    """
+    Plot cross-sections of a function.
+
+    Parameters
+    ----------
+    f : callable
+        Function to plot.
+    grids : list of tuples
+        List of tuples containing the grid points and the function values.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object.
+    ax : matplotlib.axes.Axes
+        Axes object.
+    """
+
     fig = plt.figure(figsize=(10, 6))
     ax = fig.add_subplot(111, projection='3d')
     for grid in grids:
@@ -423,7 +596,7 @@ def plot_crossections(f, grids):
     return fig, ax
 
 
-def trajectory_plane_intersections_list(trajectory, plane_point, plane_normal):
+def trajectory_plane_intersections_list(trajectory: jnp.ndarray, plane_point: jnp.ndarray, plane_normal: jnp.ndarray):
     """
     Compute intersections of a 3D trajectory with a general plane.
 
@@ -431,14 +604,20 @@ def trajectory_plane_intersections_list(trajectory, plane_point, plane_normal):
 
     Parameters
     ----------
-    trajectory : ndarray (T, 3)
-    plane_point : ndarray (3,)
-    plane_normal : ndarray (3,)
+    trajectory : jnp.ndarray (T, 3)
+        Trajectory to intersect with the plane. The shape is (T, 3), 
+        where T is the number of time steps.
+    plane_point : jnp.ndarray (3,)
+        Point on the plane.
+    plane_normal : jnp.ndarray (3,)
+        Normal vector to the plane.
 
     Returns
     -------
-    intersections : list of ndarray, each of shape (3,)
+    intersections : list of jnp.ndarray, each of shape (3,)
+        Intersection points.
     """
+    # TODO: Why convert to np.ndarray?
     trajectory = np.asarray(trajectory)
     plane_point = np.asarray(plane_point)
     plane_normal = np.asarray(plane_normal)
@@ -458,34 +637,79 @@ def trajectory_plane_intersections_list(trajectory, plane_point, plane_normal):
 
         if 0 <= t <= 1:
             intersections.append(seg_start + t * seg_vec)
-
     return intersections
-# %%
 
 
-def poincare_plot(outdir, vector_field, F, x0, n_loop, n_batch, colors, plane_val, axis, final_time=10_000, n_saves=20_000, max_steps=150000, r_tol=1e-7, a_tol=1e-7, cylindrical=False, name=""):
+def poincare_plot(
+        outdir: str, vector_field: Callable, F: Callable, x0: jnp.ndarray,
+        n_loop: int, n_batch: int, colors: list[str], plane_val: float = 0.5, axis: int = 1,
+        final_time: float = 10_000, n_saves: int = 20_000, max_steps: int = 150000, r_tol: float = 1e-7,
+        a_tol: float = 1e-7, cylindrical: bool = False, name: str = ""):
+    """
+    Plot Poincaré sections of a vector field.
+
+    Parameters
+    ----------
+    outdir : str
+        Directory to save the plots.
+    vector_field : Callable
+        Vector field to plot.
+    F : Callable
+        Coordinate transformation function.
+    x0 : jnp.ndarray (n_batch, n_loop, 3)
+        Initial conditions for the trajectories. The shape is (n_batch, n_loop, 3), 
+        where n_batch is the number of batches, n_loop is the number of loops, 
+        and 3 is the dimension of the space.
+    n_loop : int, default=1
+        Number of loops.
+    n_batch : int, default=1
+        Number of batches.
+    colors : list of colors
+        List of colors for the trajectories.
+    plane_val : float, default=0.5
+        Value of the plane to intersect with.
+    axis : int, default=1
+        Coordinate axis to intersect with.
+    final_time : float, default=10_000
+        Final time.
+    n_saves : int, default=20_000
+        Number of saves.
+    max_steps : int, default=150000
+        Maximum number of steps.
+    r_tol : float, default=1e-7
+        Relative tolerance.
+    a_tol : float, default=1e-7
+        Absolute tolerance.
+    cylindrical : bool, default=False
+        Whether to plot in cylindrical coordinates.
+    name : str, default=""
+        Name of the plot.
+    """
 
     os.makedirs(outdir, exist_ok=True)
 
     # --- Figure settings ---
-    FIG_SIZE = (12, 6)
     FIG_SIZE_SQUARE = (8, 8)
-    TITLE_SIZE = 20
     LABEL_SIZE = 20
     TICK_SIZE = 16
-    LINE_WIDTH = 2.5
-    LEGEND_SIZE = 16
 
     assert x0.shape == (n_batch, n_loop, 3)
 
+    # Define the ODE term and solver, use classic Dopri5 solver (Dormand-Prince 4/5)
     term = diffrax.ODETerm(vector_field)
     solver = diffrax.Dopri5()
+
+    # Save at the specified time steps and controller for the stepsize
     saveat = diffrax.SaveAt(ts=jnp.linspace(0, final_time, n_saves))
     stepsize_controller = diffrax.PIDController(rtol=r_tol, atol=a_tol)
+
+    # Initialize an empty list to store the trajectories
     trajectories = []
 
     # Compute trajectories
     print("Integrating field lines...")
+
+    # Integrate each of the trajectories
     for x in x0:
         trajectories.append(jax.vmap(lambda x0: diffrax.diffeqsolve(term, solver,
                                                                     t0=0, t1=final_time, dt0=None,
@@ -499,7 +723,7 @@ def poincare_plot(outdir, vector_field, F, x0, n_loop, n_batch, colors, plane_va
     physical_trajectories = physical_trajectories.reshape(
         trajectories.shape[0], trajectories.shape[1], 3)
 
-    intersections, mask = trajectory_plane_intersections_jit(
+    intersections, _ = trajectory_plane_intersections_jit(
         trajectories, plane_val=plane_val, axis=axis)
 
     if cylindrical:
@@ -516,7 +740,7 @@ def poincare_plot(outdir, vector_field, F, x0, n_loop, n_batch, colors, plane_va
 
     print("Plotting Poincaré sections...")
     # physical domain
-    fig1, ax1 = plt.subplots(figsize=FIG_SIZE_SQUARE)
+    _, ax1 = plt.subplots(figsize=FIG_SIZE_SQUARE)
     for i, t in enumerate(physical_intersections):
         # Cycle through the defined colors
         current_color = colors[i % len(colors)]
@@ -544,7 +768,7 @@ def poincare_plot(outdir, vector_field, F, x0, n_loop, n_batch, colors, plane_va
                 dpi=600, bbox_inches='tight')
 
     # logical domain
-    fig1, ax1 = plt.subplots(figsize=FIG_SIZE_SQUARE)
+    _, ax1 = plt.subplots(figsize=FIG_SIZE_SQUARE)
     for i, t in enumerate(intersections):
         current_color = colors[i % len(colors)]
         if axis == 0:
@@ -579,12 +803,49 @@ def poincare_plot(outdir, vector_field, F, x0, n_loop, n_batch, colors, plane_va
                     str(i) + ".pdf", bbox_inches='tight')
 
 
-def pressure_plot(p, Seq, F, outdir, name,
-                  resolution=128, zeta=0, tol=1e-3,
-                  SQUARE_FIG_SIZE=(8, 8), LABEL_SIZE=20,
-                  TICK_SIZE=16, LINE_WIDTH=2.5):
+def pressure_plot(p: jnp.ndarray, Seq: DeRhamSequence, F: Callable, outdir: str, name: str,
+                  resolution: int = 128, zeta: float = 0.0, tol: float = 1e-3,
+                  SQUARE_FIG_SIZE: tuple = (8, 8), LABEL_SIZE: int = 20,
+                  TICK_SIZE: int = 16, LINE_WIDTH: float = 2.5):
+    """
+    Plot a pressure contour plot.
 
-    p_h = DiscreteFunction(p, Seq.Λ0, Seq.E0_0.matrix())
+    Parameters
+    ----------
+    p : jnp.ndarray
+        Pressure field.
+    Seq : DeRhamSequence
+        DeRham sequence.
+    F : Callable
+        Coordinate transformation function.
+    outdir : str
+        Directory to save the plot.
+    name : str
+        Name of the plot.
+    resolution : int, default=128
+        Resolution of the plot.
+    zeta : float, default=0.0
+        Toroidal angle.
+    tol : float, default=1e-3
+        Tolerance for the plot.
+    SQUARE_FIG_SIZE : tuple, default=(8, 8)
+        Size of the figure.
+    LABEL_SIZE : int, default=20
+        Font size for the labels.
+    TICK_SIZE : int, default=16
+        Font size for the ticks.
+    LINE_WIDTH : float, default=2.5
+        Width of the line.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object.
+    ax : matplotlib.axes.Axes
+        Axes object.
+    """
+
+    p_h = DiscreteFunction(p, Seq.Lambda_0, Seq.E0)
     p_h_xyz = Pushforward(p_h, F, 0)
 
     _s = jax.vmap(F)(jnp.vstack(
@@ -618,35 +879,57 @@ def pressure_plot(p, Seq, F, outdir, name,
     plt.tight_layout()
     plt.savefig(outdir + name, bbox_inches='tight')
     plt.close()
-# %%
 
 
-def trace_plot(iterations,
-               force_trace,
-               helicity_trace,
-               divergence_trace,
-               energy_trace,
-               velocity_trace,
-               wall_time_trace,
-               outdir,
-               name,
-               CONFIG,
-               FIG_SIZE=(12, 6), LABEL_SIZE=20, TICK_SIZE=16, LINE_WIDTH=2.5, LEGEND_SIZE=16):
+def trace_plot(
+        iterations: jnp.ndarray, force_trace: jnp.ndarray, helicity_trace: jnp.ndarray, divergence_trace: jnp.ndarray,
+        velocity_trace: jnp.ndarray, wall_time_trace: jnp.ndarray, energy_trace: jnp.ndarray = None,
+        outdir: str = './', name: str = '', FIG_SIZE: tuple = (12, 6), LABEL_SIZE: int = 20,
+        TICK_SIZE: int = 16, LINE_WIDTH: float = 2.5, LEGEND_SIZE: int = 16):
+    """
+    Plot a trace plot.
+
+    Parameters
+    ----------
+    iterations : jnp.ndarray
+        Iterations.
+    force_trace : jnp.ndarray
+        Force trace.
+    energy_trace : jnp.ndarray, default=None
+        Energy trace.
+    helicity_trace : jnp.ndarray
+        Helicity trace.
+    divergence_trace : jnp.ndarray
+        Divergence trace.
+    velocity_trace : jnp.ndarray
+        Velocity trace.
+    wall_time_trace : jnp.ndarray
+        Wall time trace.
+    outdir : str, default='./'
+        Directory to save the plot.
+    name : str, default=''
+        Name of the plot.
+    FIG_SIZE : tuple, default=(12, 6)
+        Size of the figure.
+    LABEL_SIZE : int, default=20
+        Font size for the labels.
+    TICK_SIZE : int, default=16
+        Font size for the ticks.
+    LINE_WIDTH : float, default=2.5
+        Width of the line.
+    LEGEND_SIZE : int, default=16
+        Font size for the legend.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object.
+    ax : matplotlib.axes.Axes
+        Axes object.
+    ax2_top : matplotlib.axes.Axes
+        Axes object for the top y-axis.
+    """
     fig1, ax2 = plt.subplots(figsize=FIG_SIZE)
-
-    # # Plot Energy on the left y-axis (ax1)
-    #
-    # ax1 = ax2.twinx()
-    # ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
-    # ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$',
-    #                color=color1, fontsize=LABEL_SIZE)
-    # ax1.semilogy(energy_trace[0] - jnp.array(energy_trace),
-    #          label=r'$\frac{1}{2} \| B \|^2$', color=color1, linestyle='-.', lw=LINE_WIDTH)
-    # # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
-    # ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
-    # ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
-    # ax1.set_xscale('log')
-    # ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
 
     color1 = 'purple'
     color2 = 'black'
@@ -654,10 +937,25 @@ def trace_plot(iterations,
     color4 = 'teal'
     color5 = 'orange'
 
+    # Plot Energy on the left y-axis (ax1)
+    if energy_trace is not None:
+        ax1 = ax2.twinx()
+        ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
+        ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$',
+                       color=color4, fontsize=LABEL_SIZE)
+        ax1.semilogy(energy_trace[0] - jnp.array(energy_trace),
+                     label=r'$\frac{1}{2} \| B \|^2$', color=color4, linestyle='-.', lw=LINE_WIDTH)
+        # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
+        ax1.tick_params(axis='y', labelcolor=color4, labelsize=TICK_SIZE)
+        ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
+        ax1.set_xscale('log')
+        ax1.tick_params(axis='y', labelcolor=color4, labelsize=TICK_SIZE)
+
     ax2.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
     ax2.tick_params(axis='y', labelsize=TICK_SIZE)
     ax2.tick_params(axis='x', labelsize=TICK_SIZE)
     ax2.set_yscale('log')
+
     # make a twin y axis for wall time (top) and iteration(bottom)
     ax2_top = ax2.twiny()
     ax2_top.tick_params(axis='x', labelsize=TICK_SIZE)
@@ -677,22 +975,27 @@ def trace_plot(iterations,
     ax2_top.plot(wall_time_trace, divergence_trace - divergence_trace[0], label=r'$ \| \mathrm{div} \, B \|$',
                  color=color5, linestyle='-.', lw=LINE_WIDTH)
 
-    # Set y-limits for better visibility
-    # ax2.set_ylim(0.5 * min(min(force_trace), 0.1 * max(helicity_change)),
-    #              2 * max(max(force_trace), max(helicity_change)))
     lines1, labels1 = ax2.get_legend_handles_labels()
     lines2, labels2 = ax2_top.get_legend_handles_labels()
     ax2.legend(lines1 + lines2, labels1 + labels2,
                loc='best', fontsize=LEGEND_SIZE)
-    # ax1.grid(which="major", linestyle="-", color=color1, linewidth=0.5)
     ax2.legend(loc='best', fontsize=LEGEND_SIZE)
     ax2.grid(which="both", linestyle="--", linewidth=0.5)
     fig1.tight_layout()
     plt.savefig(outdir + name, bbox_inches='tight')
-# %%
+    plt.close()
 
 
-def generate_solovev_plots(name):
+def generate_solovev_plots(name: str):
+    """
+    Generate all plots for a Solovev configuration.
+
+    Parameters
+    ----------
+    name : str
+        Name of the configuration.
+    """
+
     jax.config.update("jax_enable_x64", True)
 
     outdir = "script_outputs/solovev/" + name + "/"
@@ -706,31 +1009,20 @@ def generate_solovev_plots(name):
         CONFIG = {k: v.decode() if isinstance(v, bytes)
                   else v for k, v in CONFIG.items()}
 
-        B_final = f["B_final"][:]
         p_final = f["p_final"][:]
         iterations = f["iterations"][:]
         force_trace = f["force_trace"][:]
         velocity_trace = f["velocity_trace"][:]
         helicity_trace = f["helicity_trace"][:]
         energy_trace = f["energy_trace"][:]
-        energy_diff_trace = f["energy_diff_trace"][:]
         divergence_B_trace = f["divergence_B_trace"][:]
-        picard_iterations = f["picard_iterations"][:]
-        picard_errors = f["picard_errors"][:]
-        timesteps = f["timesteps"][:]
-        total_time = f["total_time"][0]
-        time_setup = f["time_setup"][0]
-        time_solve = f["time_solve"][0]
         wall_time_trace = f["wall_time_trace"][:]
         if CONFIG["save_B"]:
-            # B_fields = f["B_fields"][:]
             p_fields = f["p_fields"][:]
-            B_fields = f["B_fields"][:]
 
     # Step 1: get F
     delta = CONFIG["delta"]
     kappa = CONFIG["kappa"]
-    q_star = CONFIG["q_star"]
     eps = CONFIG["eps"]
     R0 = CONFIG["R_0"]
     alpha = jnp.arcsin(delta)
@@ -772,48 +1064,8 @@ def generate_solovev_plots(name):
                name="force_trace.pdf",
                CONFIG=CONFIG)
 
-    # print("Plotting Poincaré sections and field lines...")
-    # B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
 
-    # @jax.jit
-    # def vector_field(t, p, args):
-    #     r, χ, z = p
-    #     r = jnp.clip(r, 1e-6, 1)
-    #     χ = χ % 1.0
-    #     z = z % 1.0
-    #     x = jnp.array([r, χ, z])
-    #     DFx = jax.jacfwd(F)(x)
-    #     norm = ((DFx @ B_h(x)) @ DFx @ B_h(x))**0.5
-    #     return B_h(x) / (norm + 1e-9)
-
-    # n_loop = 5
-    # n_batch = 5
-
-    # x0s = jnp.vstack(
-    #     (jnp.linspace(0.05, 0.95, n_loop * n_batch),
-    #     jnp.zeros(n_loop * n_batch),
-    #     jnp.zeros(n_loop * n_batch))
-    # ).T
-
-    # n_cols = x0s.shape[1]
-    # cm = plt.cm.plasma
-    # vals = jnp.linspace(0, 1, n_cols + 2)[:-2]
-
-    # # Interleave from start and end
-    # order = jnp.ravel(jnp.column_stack([jnp.arange(n_cols//2), n_cols-1-jnp.arange(n_cols//2)]))
-    # if n_cols % 2 == 1:
-    #     order = jnp.append(order, n_cols//2)
-
-    # colors = cm(vals[order])
-
-    # x0s = x0s.T.reshape(n_batch, n_loop, 3)
-
-    # poincare_plot(outdir, vector_field, F, x0s, n_loop, n_batch, colors, plane_val=0.25, axis=2, final_time=5_000, n_saves=20_000, cylindrical=True, r_tol=solver_tol, a_tol=solver_tol)
-
-# %%
-
-
-def set_axes_equal(ax):
+def set_axes_equal(ax: plt.Axes):
     """Set 3D plot axes to equal scale."""
     X_limits = ax.get_xlim3d()
     Y_limits = ax.get_ylim3d()

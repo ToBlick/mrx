@@ -1,3 +1,5 @@
+# TODO: This functionality got replaced by the methods in deRhamSequence - consider removing
+
 from abc import abstractmethod
 
 import jax
@@ -49,8 +51,8 @@ class LazyMatrix:
     Notes:
         - Any subclass must implement the assemble method.
     """
-    Λ0: DifferentialForm
-    Λ1: DifferentialForm
+    Lambda_0: DifferentialForm
+    Lambda_1: DifferentialForm
     Q: QuadratureRule
     F: callable
     E0: jnp.ndarray
@@ -72,8 +74,8 @@ class LazyMatrix:
             E0 (jnp.ndarray, optional): Transformation matrix for Λ0. Defaults to identity.
             E1 (jnp.ndarray, optional): Transformation matrix for Λ1. Defaults to identity.
         """
-        self.Λ0 = Λ0
-        self.Λ1 = Λ1
+        self.Lambda_0 = Λ0
+        self.Lambda_1 = Λ1
         self.Q = Q
         self.n0 = Λ0.n
         self.ns0 = Λ0.ns
@@ -84,6 +86,14 @@ class LazyMatrix:
         self.E1 = E1
 
     def matrix(self):
+        """
+        Assemble the matrix.
+
+        Returns
+        -------
+        matrix : jnp.ndarray
+            The assembled matrix.
+        """
         E0 = self.E0.matrix() if self.E0 is not None else jnp.eye(self.n0)
         E1 = self.E1.matrix() if self.E1 is not None else jnp.eye(self.n1)
         return E1 @ self.assemble() @ E0.T
@@ -93,6 +103,17 @@ class LazyMatrix:
         return np.array(self.matrix())
 
     def sparse(self, M):
+        """
+        Convert the assembled matrix to a CSR sparse matrix.
+
+        Args:
+            M : jnp.ndarray
+                The assembled matrix.
+
+        Returns:
+            sparse_matrix : jax.experimental.sparse.CSR
+                The assembled CSR sparse matrix.
+        """
         return jax.experimental.sparse.bcsr_fromdense(M, )
 
     @abstractmethod
@@ -145,7 +166,7 @@ class LazyMassMatrix(LazyMatrix):
 
     def assemble(self):
         """Assemble the mass matrix based on the form degree."""
-        match self.Λ0.k:
+        match self.Lambda_0.k:
             case 0:
                 return self.zeroform_assemble()
             case 1:
@@ -159,7 +180,7 @@ class LazyMassMatrix(LazyMatrix):
 
     def zeroform_assemble(self):
         """Assemble the mass matrix for 0-forms."""
-        Λijk = jax.vmap(jax.vmap(self.Λ0, (0, None)), (None, 0))(
+        Λijk = jax.vmap(jax.vmap(self.Lambda_0, (0, None)), (None, 0))(
             self.Q.x, self.ns0)  # n x n_q x 1
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
@@ -170,7 +191,7 @@ class LazyMassMatrix(LazyMatrix):
         DF = jax.jacfwd(self.F)
 
         def _Λ(x, i):
-            return inv33(DF(x)).T @ self.Λ0(x, i)
+            return inv33(DF(x)).T @ self.Lambda_0(x, i)
         Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))  # n x n_q x 3
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
@@ -182,17 +203,17 @@ class LazyMassMatrix(LazyMatrix):
         DF = jax.jacfwd(self.F)
 
         def _Λ(x, i):
-            return DF(x) @ self.Λ0(x, i)
+            return DF(x) @ self.Lambda_0(x, i)
         Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.Λ0.n))  # n x n_q x d
+            self.Q.x, jnp.arange(self.Lambda_0.n))  # n x n_q x d
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w
         return jnp.einsum("ijk,ljk,j,j->li", Λijk, Λijk, 1/Jj, wj)
 
     def threeform_assemble(self):
         """Assemble the mass matrix for 3-forms."""
-        Λijk = jax.vmap(jax.vmap(self.Λ0, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.Λ0.n))  # n x n_q x 1
+        Λijk = jax.vmap(jax.vmap(self.Lambda_0, (0, None)), (None, 0))(
+            self.Q.x, jnp.arange(self.Lambda_0.n))  # n x n_q x 1
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,ljk,j,j->li", Λijk, Λijk, 1/Jj, wj)
@@ -202,9 +223,9 @@ class LazyMassMatrix(LazyMatrix):
         DF = jax.jacfwd(self.F)
 
         def _Λ(x, i):
-            return DF(x) @ self.Λ0(x, i)
+            return DF(x) @ self.Lambda_0(x, i)
         Λijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
-            self.Q.x, jnp.arange(self.Λ0.n))  # n x n_q x d
+            self.Q.x, jnp.arange(self.Lambda_0.n))  # n x n_q x d
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w
         return jnp.einsum("ijk,ljk,j,j->li", Λijk, Λijk, Jj, wj)
@@ -237,7 +258,7 @@ class LazyDerivativeMatrix(LazyMatrix):
 
     def assemble(self):
         """Assemble the derivative matrix based on the form degree."""
-        match self.Λ0.k:
+        match self.Lambda_0.k:
             case 0:
                 return self.gradient_assemble()
             case 1:
@@ -253,10 +274,10 @@ class LazyDerivativeMatrix(LazyMatrix):
         DF = jax.jacfwd(self.F)
 
         def _Λ0(x, i):
-            return inv33(DF(x)).T @ grad(lambda y: self.Λ0(y, i))(x)
+            return inv33(DF(x)).T @ grad(lambda y: self.Lambda_0(y, i))(x)
 
         def _Λ1(x, i):
-            return inv33(DF(x)).T @ self.Λ1(x, i)
+            return inv33(DF(x)).T @ self.Lambda_1(x, i)
         Λ0_ijk = jax.vmap(jax.vmap(_Λ0, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))  # n0 x n_q x d
         Λ1_ijk = jax.vmap(jax.vmap(_Λ1, (0, None)), (None, 0))(
@@ -270,10 +291,10 @@ class LazyDerivativeMatrix(LazyMatrix):
         DF = jax.jacfwd(self.F)
 
         def _Λ0(x, i):
-            return DF(x) @ curl(lambda y: self.Λ0(y, i))(x)
+            return DF(x) @ curl(lambda y: self.Lambda_0(y, i))(x)
 
         def _Λ1(x, i):
-            return DF(x) @ self.Λ1(x, i)
+            return DF(x) @ self.Lambda_1(x, i)
 
         Λ0_ijk = jax.vmap(jax.vmap(_Λ0, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))  # n0 x n_q x d
@@ -286,10 +307,10 @@ class LazyDerivativeMatrix(LazyMatrix):
     def div_assemble(self):
         """Assemble the divergence matrix for 2-forms."""
         def _Λ0(x, i):
-            return div(lambda y: self.Λ0(y, i))(x)
+            return div(lambda y: self.Lambda_0(y, i))(x)
         Λ0_ijk = jax.vmap(jax.vmap(_Λ0, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))  # n0 x n_q x 1
-        Λ1_ijk = jax.vmap(jax.vmap(self.Λ1, (0, None)), (None, 0))(
+        Λ1_ijk = jax.vmap(jax.vmap(self.Lambda_1, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n1))  # n1 x n_q x 1
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
         wj = self.Q.w  # n_q
@@ -313,9 +334,9 @@ class LazyProjectionMatrix(LazyMatrix):
 
     def assemble(self):
         """Assemble the projection matrix."""
-        Λ0_ijk = jax.vmap(jax.vmap(self.Λ0, (0, None)), (None, 0))(
+        Λ0_ijk = jax.vmap(jax.vmap(self.Lambda_0, (0, None)), (None, 0))(
             self.Q.x, self.ns0)  # n0 x n_q x d
-        Λ1_ijk = jax.vmap(jax.vmap(self.Λ1, (0, None)), (None, 0))(
+        Λ1_ijk = jax.vmap(jax.vmap(self.Lambda_1, (0, None)), (None, 0))(
             self.Q.x, self.ns1)  # n0 x n_q x d
         wj = self.Q.w  # n_q
         return jnp.einsum("ijk,ljk,j->li", Λ0_ijk, Λ1_ijk, wj)
@@ -354,7 +375,7 @@ class LazyDoubleCurlMatrix(LazyMatrix):
         DF = jax.jacfwd(self.F)
 
         def _Λ(x, i):
-            return DF(x) @ curl(lambda y: self.Λ0(y, i))(x)
+            return DF(x) @ curl(lambda y: self.Lambda_0(y, i))(x)
         Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))  # n x n_q x d
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
@@ -395,7 +416,7 @@ class LazyStiffnessMatrix(LazyMatrix):
         DF = jax.jacfwd(self.F)
 
         def _Λ(x, i):
-            return inv33(DF(x)).T @ grad(lambda y: self.Λ0(y, i))(x)
+            return inv33(DF(x)).T @ grad(lambda y: self.Lambda_0(y, i))(x)
         Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))  # n x n_q x d
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)  # n_q x 1
@@ -434,7 +455,7 @@ class LazyDoubleDivergenceMatrix(LazyMatrix):
     def assemble(self):
         """Assemble the double curl matrix."""
         def _Λ(x, i):
-            return div(lambda y: self.Λ0(y, i))(x)
+            return div(lambda y: self.Lambda_0(y, i))(x)
         Λ_ijk = jax.vmap(jax.vmap(_Λ, (0, None)), (None, 0))(
             self.Q.x, jnp.arange(self.n0))  # n x n_q x 1
         Jj = jax.vmap(jacobian_determinant(self.F))(self.Q.x)

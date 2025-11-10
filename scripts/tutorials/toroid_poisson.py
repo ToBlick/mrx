@@ -1,19 +1,17 @@
 # %%
 """
-3D Poisson Problem in Toroidal Coordinates
+3D Scalar Poisson Problem in Toroidal Coordinates
 
-This script solves a 3D Poisson problem in toroidal coordinates.
+This script solves a 3D scalar Poisson problem in toroidal coordinates.
 The problem is defined on a toroidal domain with Dirichlet boundary conditions.
 
 The exact solution is given by:
 u(r, θ, ζ) = (r² - r⁴) cos(2πζ)
 with source term:
-f(r, θ, ζ) = cos(2πζ) (-4/ɛ² * (1 - 4r²) - 4/(ɛR) (r/2 - r³)cos(2πθ) 
-                + (r² - r⁴) / R²)
+f(r, θ, ζ) = cos(2πζ) (-4/ɛ² * (1 - 4r²) - 4/(ɛR) (r/2 - r³)cos(2πθ) + (r² - r⁴) / R²)
 with R = 1 + ɛ r cos(2πθ).
 """
 import os
-import time
 from functools import partial
 
 import jax
@@ -23,43 +21,62 @@ import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
+from mrx.mappings import toroid_map
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 # Create output directory for figures
 os.makedirs("script_outputs", exist_ok=True)
 
-# %%
-###
-# We define this function that does assembly, solves the system, and computes the error.
-# It is JIT-compiled separately for different values of n, p, and q.
-###
-
 
 @partial(jax.jit, static_argnames=["n", "p", "q"])
 def get_err(n, p, q):
+    """
+    Compute the error in the solution of the Poisson problem.
+    We define this function that does assembly, solves the system, and computes the error.
+    It is JIT-compiled separately for different values of n, p, and q.
+
+    Args:
+        n: Number of elements in each direction
+        p: Polynomial degree
+        q: Quadrature order
+
+    Returns:
+        float: Relative L2 error of the solution
+    """
     ɛ = 1/3
     π = jnp.pi
-
-    def F(x):
-        """Toroid coordinate mapping function."""
-        r, θ, z = x
-        R = 1 + ɛ * r * jnp.cos(2 * π * θ)
-        return jnp.array([R * jnp.cos(2 * π * z),
-                          -R * jnp.sin(2 * π * z),
-                          ɛ * r * jnp.sin(2 * π * θ)])
+    F = toroid_map(epsilon=ɛ)
 
     # Define exact solution and source term
     def u(x):
-        """Exact solution of the Poisson problem."""
-        r, θ, z = x
+        """Exact solution of the Poisson problem in logical coordinates. Solution is independent of θ. Formula is:
+
+            u(r, z) = (r² - r⁴) cos(2πz)
+
+        Args:   
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            u: Exact solution of the Poisson equation
+        """
+        r, _, z = x
         return (r**2 - r**4) * jnp.cos(2 * π * z) * jnp.ones(1)
 
     def f(x):
-        """Source term of the Poisson problem."""
-        r, χ, z = x
-        R = 1 + ɛ * r * jnp.cos(2 * jnp.pi * χ)
-        return jnp.cos(2 * jnp.pi * z) * (-4/ɛ**2 * (1 - 4*r**2) - 4/(ɛ*R) * (r/2 - r**3) * jnp.cos(2 * jnp.pi * χ) + (r**2 - r**4) / R**2) * jnp.ones(1)
+        """Source term of the Poisson problem in logical coordinates. Formula is:
+
+            f(r, z) = cos(2πz) (-4/ɛ² * (1 - 4r²) - 4/(ɛR) (r/2 - r³)cos(2πθ) + (r² - r⁴) / R²)
+
+        Args:
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            f: Source term of the Poisson equation
+        """
+        r, θ, z = x
+        R = 1 + ɛ * r * jnp.cos(2 * jnp.pi * θ)
+        return jnp.cos(2 * jnp.pi * z) * (-4/ɛ**2 * (1 - 4*r**2) - 4/(ɛ*R) * (r/2 - r**3) * jnp.cos(2 * jnp.pi * θ) + (r**2 - r**4) / R**2) * jnp.ones(1)
 
     # Set up finite element spaces
     ns = (n, n, n)
@@ -72,7 +89,7 @@ def get_err(n, p, q):
 
     # Solve the system
     u_hat = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
-    u_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0)
+    u_h = DiscreteFunction(u_hat, Seq.Lambda_0, Seq.E0)
 
     # Compute the L2 error
     def diff_at_x(x):
@@ -86,7 +103,19 @@ def get_err(n, p, q):
 
 
 def run_convergence_analysis(ns, ps):
-    """Run convergence analysis for different parameters."""
+    """Run convergence analysis for different parameters.
+
+    Args:
+        ns: List of number of elements in each direction
+        ps: List of polynomial degrees
+
+    Returns:
+        err: Array of relative L2 errors
+        times: Array of computation times
+        times2: Array of computation times for second run
+    """
+    import time
+
     # Arrays to store results
     err = np.zeros((len(ns), len(ps)))
     times = np.zeros((len(ns), len(ps)))
@@ -118,11 +147,22 @@ def run_convergence_analysis(ns, ps):
             times2[i, j] = end - start
             print(f"n={n}, p={p}, q={q}, time={times2[i, j]:.2f}s")
 
-    return err, times, times2, ns, ps
+    return err, times, times2
 
 
 def plot_results(err, times, times2, ns, ps):
-    """Plot the results of the convergence analysis."""
+    """Plot the results of the convergence analysis.
+
+    Args:
+        err: Array of relative L2 errors
+        times: Array of computation times
+        times2: Array of computation times for second run
+        ns: List of number of elements in each direction
+        ps: List of polynomial degrees
+
+    Returns:
+        figures: List of figures
+    """
     # Create figures
     figures = []
 
@@ -188,7 +228,7 @@ def main():
     # Run convergence analysis
     ns = np.arange(4, 10, 2)
     ps = np.arange(1, 4)
-    err, times, times2, ns, ps = run_convergence_analysis(ns, ps)
+    err, times, times2 = run_convergence_analysis(ns, ps)
     # Plot results
     plot_results(err, times, times2, ns, ps)
     # Show all figures

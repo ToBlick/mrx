@@ -12,17 +12,14 @@ from jax.numpy import cos, pi, sin
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.plotting import (
-    get_2d_grids,
-    get_3d_grids,
-    plot_crossections_separate,
-    plot_torus,
-)
-from mrx.utils import integrate_against, assemble
+from mrx.plotting import get_2d_grids, plot_crossections_separate, plot_torus
+from mrx.utils import assemble, integrate_against
 
 jax.config.update("jax_enable_x64", True)
 # %%
 # Mapping:
+
+
 def siesta_map():
     Np = 3
 
@@ -225,6 +222,7 @@ def torus_map():
                           Z])
     return F
 
+
 def torus_map2():
     def F(x):
         r, θ, ζ = x
@@ -235,10 +233,11 @@ def torus_map2():
                           Z])
     return F
 
+
 def stellerator_map(eps=0.33, h=1.1, nfp=3):
     def kappa(zeta):
         return 1 + (1 - h) * cos(2 * pi * zeta * nfp)
-        
+
     def F(x):
         r, θ, ζ = x
         R = 1 + eps * kappa(ζ) * r * cos(2 * pi * θ)
@@ -247,6 +246,7 @@ def stellerator_map(eps=0.33, h=1.1, nfp=3):
                           -R * sin(2 * pi * ζ),
                           Z])
     return F
+
 
 F_spec = spec_map(a=0.1, b=0.01, m=5)
 F_w7x = w7x_map()
@@ -260,25 +260,30 @@ p = 3
 # %%
 # Least squares approx. for siesta map
 
+
 def least_squares_deformed(F):
     Seq = DeRhamSequence((n, n, n), (p, p, p), p,
-                      ("clamped", "periodic", "periodic"), F_torus, polar=True, dirichlet=False)
+                         ("clamped", "periodic", "periodic"), F_torus, polar=True, dirichlet=False)
     Seq.evaluate_1d()
     Seq.assemble_M0()
     # this is now the polar spline space
 
     F_q = jax.vmap(F)(Seq.Q.x) * Seq.Q.w[:, None]  # nq, 3
 
-    M0_log = Seq.E0 @ assemble(Seq.get_Λ0_ijk, Seq.get_Λ0_ijk, Seq.Q.w[:, None, None], Seq.Λ0.n, Seq.Λ0.n) @ Seq.E0.T
-    
-    F_x_hat = jnp.linalg.solve(M0_log, Seq.E0 @ integrate_against(Seq.get_Λ0_ijk, F_q[:, 0:1], Seq.Λ0.n))
-    F_y_hat = jnp.linalg.solve(M0_log, Seq.E0 @ integrate_against(Seq.get_Λ0_ijk, F_q[:, 1:2], Seq.Λ0.n))
-    F_z_hat = jnp.linalg.solve(M0_log, Seq.E0 @ integrate_against(Seq.get_Λ0_ijk, F_q[:, 2:3], Seq.Λ0.n))
-    
-    F_x_h = DiscreteFunction(F_x_hat, Seq.Λ0, Seq.E0)
-    F_y_h = DiscreteFunction(F_y_hat, Seq.Λ0, Seq.E0)
-    F_z_h = DiscreteFunction(F_z_hat, Seq.Λ0, Seq.E0)
-    
+    M0_log = Seq.E0 @ assemble(Seq.get_Lambda_0_ijk, Seq.get_Lambda_0_ijk,
+                               Seq.Q.w[:, None, None], Seq.Lambda_0.n, Seq.Lambda_0.n) @ Seq.E0.T
+
+    F_x_hat = jnp.linalg.solve(
+        M0_log, Seq.E0 @ integrate_against(Seq.get_Lambda_0_ijk, F_q[:, 0:1], Seq.Lambda_0.n))
+    F_y_hat = jnp.linalg.solve(
+        M0_log, Seq.E0 @ integrate_against(Seq.get_Lambda_0_ijk, F_q[:, 1:2], Seq.Lambda_0.n))
+    F_z_hat = jnp.linalg.solve(
+        M0_log, Seq.E0 @ integrate_against(Seq.get_Lambda_0_ijk, F_q[:, 2:3], Seq.Lambda_0.n))
+
+    F_x_h = DiscreteFunction(F_x_hat, Seq.Lambda_0, Seq.E0)
+    F_y_h = DiscreteFunction(F_y_hat, Seq.Lambda_0, Seq.E0)
+    F_z_h = DiscreteFunction(F_z_hat, Seq.Lambda_0, Seq.E0)
+
     @jax.jit
     def G_h(x):
         return jnp.ravel(jnp.array([F_x_h(x), F_y_h(x), F_z_h(x)]))
@@ -299,10 +304,12 @@ def least_squares_deformed(F):
 #     z = z * (1 + dZ)
 #     return jnp.array([x, y, z])
 
+
 F = jax.jit(stellerator_map())
 
 # %%
 # grid = get_3d_grids(F, nx=8, ny=17, nz=17, x_min=1e-6)
+
 
 def f_test(p):
     x1, x2, x3 = F(p)
@@ -312,6 +319,7 @@ def f_test(p):
     phi = jnp.arctan2(x2, x1)
     r = p[0]
     return R * jnp.cos(phi) * jnp.ones(1) * (1-r**2)
+
 
 def E_test(p):
     x1, x2, x3 = F(p)
@@ -432,23 +440,27 @@ def proj_error(n, p, q, k):
             u_test = f_test
             Seq.assemble_M0()
             f_hat = jnp.linalg.solve(Seq.M0, Seq.P0(u_test))
-            f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ0, Seq.E0), F, 0)
+            f_h = Pushforward(DiscreteFunction(
+                f_hat, Seq.Lambda_0, Seq.E0), F, 0)
         case 1:
             u_test = E_test
             Seq.assemble_M1()
             f_hat = jnp.linalg.solve(Seq.M1, Seq.P1(u_test))
-            f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ1, Seq.E1), F, 1)
+            f_h = Pushforward(DiscreteFunction(
+                f_hat, Seq.Lambda_1, Seq.E1), F, 1)
         case 2:
             u_test = E_test
-            
+
             Seq.assemble_M2()
             f_hat = jnp.linalg.solve(Seq.M2, Seq.P2(u_test))
-            f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ2, Seq.E2), F, 2)
+            f_h = Pushforward(DiscreteFunction(
+                f_hat, Seq.Lambda_2, Seq.E2), F, 2)
         case 3:
             u_test = f_test
             Seq.assemble_M3()
             f_hat = jnp.linalg.solve(Seq.M3, Seq.P3(u_test))
-            f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ3, Seq.E3), F, 3)
+            f_h = Pushforward(DiscreteFunction(
+                f_hat, Seq.Lambda_3, Seq.E3), F, 3)
 
     # do not vmap here because of memory issues
     def diff_at_x(x):
@@ -508,7 +520,7 @@ print("div curl:", jnp.max(jnp.abs(Seq.strong_div @ Seq.strong_curl)))
 # %%
 
 u_hat = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[1][:, 0]
-u_h = DiscreteFunction(u_hat, Seq.Λ2, Seq.E2)
+u_h = DiscreteFunction(u_hat, Seq.Lambda_2, Seq.E2)
 
 
 def norm_u_h(x):
@@ -519,7 +531,7 @@ def norm_u_h(x):
 
 
 f_hat = jnp.linalg.solve(Seq.M0, Seq.P0(f_test))
-f_h = Pushforward(DiscreteFunction(f_hat, Seq.Λ0, Seq.E0), F, 0)
+f_h = Pushforward(DiscreteFunction(f_hat, Seq.Lambda_0, Seq.E0), F, 0)
 # %%
 cuts = jnp.linspace(0, 1, 5, endpoint=False)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,

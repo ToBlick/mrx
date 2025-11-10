@@ -14,7 +14,15 @@ TOL = 1e-12
 @pytest.mark.parametrize("solver", [picard_solver, newton_solver])
 @pytest.mark.parametrize("case", ["linear", "dottie", "multidim"])
 def test_fixed_point_solvers(solver, case):
-    """Unified fixed-point solver tests for Picard and Newton."""
+    """Unified fixed-point solver tests for Picard and Newton.
+    
+    Parameters
+    ----------
+    solver : callable
+        The solver to test.
+    case : str
+        The test case to run.
+    """
 
     # ------------------------------------------------------------
     # Define test functions

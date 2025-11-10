@@ -1,11 +1,16 @@
 # %%
 """
-Interactive script to optimize the shape of a drum to match a target eigenvalue spectrum.
+Interactive script to optimize the shape of a drum (a poloidal domain) to match a target eigenvalue spectrum.
+
+This is "hearing" the shape of a drum by specifying the eigenvalues and figuring out the shape using 
+inverse optimization.
 """
 
 import os
 import time
 from functools import partial
+from pathlib import Path
+from typing import Callable
 
 import jax
 import jax.numpy as jnp
@@ -15,40 +20,67 @@ import optax
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DifferentialForm, DiscreteFunction, Pushforward
-from mrx.lazy_matrices import LazyMassMatrix
-from mrx.projectors import Projector
+from mrx.mappings import drumshape_map
 from mrx.quadrature import QuadratureRule
-from mrx.utils import assemble, inv33, jacobian_determinant, integrate_against
+from mrx.utils import assemble, integrate_against, inv33, jacobian_determinant
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
+script_dir = Path(__file__).parent / 'script_outputs'
+script_dir.mkdir(parents=True, exist_ok=True)
+
 
 # %%
-def generalized_eigh(A, B):
-    """Solve the generalized eigenvalue problem A*v = lambda*B*v."""
+def generalized_eigh(A: jnp.ndarray, B: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Solve the generalized eigenvalue problem A*v = lambda*B*v.
+
+    Args:
+        A : jnp.ndarray
+            Matrix appearing in the generalized eigenvalue problem A*v = lambda*B*v.
+        B : jnp.ndarray
+            Matrix appearing in the generalized eigenvalue problem A*v = lambda*B*v.
+
+    Returns:
+        eigenvalues : jnp.ndarray
+            Eigenvalues
+        eigenvectors_original : jnp.ndarray
+            Eigenvectors in the original basis before Cholesky decomposition
+    """
     # Add a small identity matrix for numerical stability during Cholesky decomposition
     L = jnp.linalg.cholesky(B + jnp.eye(B.shape[0]) * 1e-12)
     L_inv = jnp.linalg.inv(L)
+
     # Transform to a standard eigenvalue problem: C*v' = lambda*v'
     C = L_inv @ A @ L_inv.T
     eigenvalues, eigenvectors_transformed = jnp.linalg.eigh(C)
+
     # Transform eigenvectors back to the original basis
     eigenvectors_original = L_inv.T @ eigenvectors_transformed
     return eigenvalues, eigenvectors_original
 
 # %%
+
+
 @partial(jax.jit, static_argnames=["n_map", "p_map", "Seq"])
-def get_evs(a_hat, n_map, p_map, Seq):
+def get_evs(a_hat: jnp.ndarray, n_map: int, p_map: int, Seq: DeRhamSequence) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Computes the eigenvalues and eigenvectors for a drum shape defined by a_hat.
 
     Args:
-        a_hat: Discrete representation of the radius function r(χ).
-        n: Number of elements.
-        p: Polynomial degree.
+        a_hat: jnp.ndarray
+            Discrete representation of the radius function r(χ).
+        n_map: int 
+            Number of elements in the map.
+        p_map: int
+            Polynomial degree in the map.
+        Seq: DeRhamSequence
+            DeRham sequence.
 
     Returns:
-        A tuple (eigenvalues, eigenvectors).
+        eigenvalues : jnp.ndarray
+            Eigenvalues
+        eigenvectors : jnp.ndarray
+            Eigenvectors
     """
     # Define the mapping from the parameter χ to the radius function
     Λmap = DifferentialForm(0, (n_map, 1, 1), (p_map, 0, 0),
@@ -59,46 +91,62 @@ def get_evs(a_hat, n_map, p_map, Seq):
         _x = jnp.array([x, 0, 0])
         return _a_h(_x)
 
-    def F(x):
-        """Polar coordinate mapping function."""
-        r, χ, z = x
-        return jnp.array([a_h(χ)[0] * r * jnp.cos(2 * jnp.pi * χ),
-                          -z,
-                          a_h(χ)[0] * r * jnp.sin(2 * jnp.pi * χ)])
+    F = drumshape_map(a_h=lambda χ: a_h(χ)[0])
 
     # We now assemble the matrices by hand
     # TODO: Make the deRhamSequence class compatible with jax transformations
     # by extending NamedTuple
 
-    def G(x):
+    def G(x: jnp.ndarray) -> jnp.ndarray:
+        """Metric tensor from the coordinate transformation. Formula is:
+
+        G = F.T @ F
+
+        Args:
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            G: Metric tensor.
+        """
         return jax.jacfwd(F)(x).T @ jax.jacfwd(F)(x)
 
     G_jkl = jax.vmap(G)(Seq.Q.x)
     G_inv_jkl = jax.vmap(inv33)(G_jkl)
     J_j = jax.vmap(jacobian_determinant(F))(Seq.Q.x)
 
-    K = assemble(Seq.get_dΛ0_ijk,
-                 Seq.get_dΛ0_ijk,
+    K = assemble(Seq.get_d_Lambda_0_ijk,
+                 Seq.get_d_Lambda_0_ijk,
                  G_inv_jkl * J_j[:, None, None] * Seq.Q.w[:, None, None],
-                 Seq.Λ0.n,
-                 Seq.Λ0.n)
+                 Seq.Lambda_0.n,
+                 Seq.Lambda_0.n)
     K = Seq.E0 @ K @ Seq.E0.T
-    
-    M = assemble(Seq.get_Λ0_ijk,
-                 Seq.get_Λ0_ijk,
+
+    M = assemble(Seq.get_Lambda_0_ijk,
+                 Seq.get_Lambda_0_ijk,
                  J_j[:, None, None] * Seq.Q.w[:, None, None],
-                 Seq.Λ0.n,
-                 Seq.Λ0.n)
+                 Seq.Lambda_0.n,
+                 Seq.Lambda_0.n)
     M = Seq.E0 @ M @ Seq.E0.T
-    
+
     evs, evecs = generalized_eigh(K, M)
-    
     return evs, evecs
 
 # %%
-def setup_target_shape(n_map, p_map, a, e):
+
+
+def setup_target_shape(n_map: int, p_map: int, a: float, e: float) -> tuple[jnp.ndarray, Callable]:
     """
     Computes the discrete representation of an elliptical target shape.
+
+    Args:
+        n_map: int
+            Number of elements in the map.
+        p_map: int
+            Polynomial degree in the map.
+        a: float
+            Radius of the drum.
+        e: float
+            Eccentricity of the target shape.
 
     Returns:
         (a_target, radius_func): A tuple containing the discrete parameters
@@ -107,10 +155,18 @@ def setup_target_shape(n_map, p_map, a, e):
     Λmap = DifferentialForm(0, (n_map, 1, 1), (p_map, 0, 0),
                             ('periodic', 'constant', 'constant'))
     Q = QuadratureRule(Λmap, 3*p_map)
-    
-    def get_Λmap_ijk(a, j, k):
+
+    def get_Λmap_ijk(a: int, j: int, k: int) -> float:
+        """
+        Gets the value of the map at a given point.
+
+        Args:
+            a: Index of the map.
+            j: Index of the quadrature point.
+            k: Index of the component of the map.
+        """
         return Λmap[a](Q.x[j])[k]
-    
+
     M0 = assemble(
         get_Λmap_ijk,
         get_Λmap_ijk,
@@ -119,40 +175,73 @@ def setup_target_shape(n_map, p_map, a, e):
         Λmap.n,
     )
 
-    def radius_func(θ):
+    def radius_func(x: jnp.ndarray) -> jnp.ndarray:
+        """Elliptical radius function. Formula is:
+
+        r(θ) = a * b / (b**2 * cos(2πθ)**2 + a**2 * sin(2πθ)**2)**0.5
+
+        Args:
+            x: Input logical coordinates (θ, 0, 0)
+
+        Returns:
+            r: Radius function.
+        """
+        if jnp.size(x) > 1:
+            θ = x[0]
+        else:
+            θ = x
         b = a * e
         return a * b / (b**2 * jnp.cos(2 * jnp.pi * θ)**2 + a**2 * jnp.sin(2 * jnp.pi * θ)**2)**0.5 * jnp.ones(1)
-    
-    def radius_fct_wrapper(x):
-        θ = x[0]
-        return radius_func(θ)
 
-    rad_fct_jk = jax.vmap(radius_fct_wrapper)(Q.x) * Q.w[:, None]  # (n_q, 1)
-
-    a_target = jnp.linalg.solve(M0, integrate_against(get_Λmap_ijk, rad_fct_jk, Λmap.n))
+    rad_fct_jk = jax.vmap(radius_func)(Q.x) * Q.w[:, None]  # (n_q, 1)
+    a_target = jnp.linalg.solve(
+        M0, integrate_against(get_Λmap_ijk, rad_fct_jk, Λmap.n))
     return a_target, radius_func
 
 # %%
-def plot_reconstruction(a_hat,
-                        target_radius_func,
-                        target_evs,
-                        Seq,
-                        n_map,
-                        p_map,
-                        iter_num,
-                        output_dir,
-                        loss_history=None,
-                        max_iters=None,
-                        legends=True):
+
+
+def plot_reconstruction(a_hat: jnp.ndarray,
+                        target_radius_func: Callable,
+                        target_evs: jnp.ndarray,
+                        Seq: DeRhamSequence,
+                        n_map: int,
+                        p_map: int,
+                        iter_num: int,
+                        output_dir: Path,
+                        loss_history: list[float] = None,
+                        max_iters: int = None,
+                        legends: bool = True) -> None:
     """
     Generates and saves a three-panel plot showing the current fitted radius,
     the first eigenfunction, and the eigenvalue spectrum. Also includes a
     small panel that tracks the loss over iterations (bottom-left).
-    """
 
-    FIG_SIZE = (12, 6)
-    SQUARE_FIG_SIZE = (8, 8)
-    TITLE_SIZE = 20
+    Args:
+        a_hat: jnp.ndarray
+            Discrete representation of the radius function r(χ).
+        target_radius_func: Callable
+            Target radius function.
+        target_evs: jnp.ndarray
+            Target eigenvalues.
+        Seq: DeRhamSequence
+            DeRham sequence.
+        n_map: int
+            Number of elements in the map.
+        p_map: int
+            Polynomial degree in the map.
+        iter_num: int
+            Iteration number.
+        output_dir: Path
+            Output directory.
+        loss_history: list[float]
+            Loss history. Defaults to None.
+        max_iters: int
+            Maximum number of iterations. Defaults to None.
+        legends: bool
+            Whether to show legends. Defaults to True.
+    """
+    # Set some plotting variables
     LABEL_SIZE = 18
     TICK_SIZE = 16
     LINE_WIDTH = 3
@@ -170,14 +259,13 @@ def plot_reconstruction(a_hat,
     ax3 = fig.add_subplot(gs[1, 1])
     ax4 = fig.add_subplot(gs[2, 1])
 
-    # fig.suptitle(f'Iteration {iter_num}', fontsize=14)
-
     # --- Panel 1 (right-top): Radius Plot ---
     Λmap = DifferentialForm(0, (n_map, 1, 1), (p_map, 1, 1),
                             ('periodic', 'constant', 'constant'))
     _radius_h_discrete = DiscreteFunction(a_hat, Λmap)
 
-    def radius_h_func(x):
+    def radius_h_func(x: jnp.ndarray) -> jnp.ndarray:
+        """Wrapper for the discrete radius function."""
         return _radius_h_discrete(jnp.array([x, 0, 0]))
 
     θ_plot = jnp.linspace(0, 1, 200)
@@ -202,12 +290,22 @@ def plot_reconstruction(a_hat,
                             ('periodic', 'constant', 'constant'))
     _a_h = DiscreteFunction(a_hat, Λmap)
 
-    def a_h(x):
+    def a_h(x: jnp.ndarray) -> jnp.ndarray:
+        """Wrapper for the a_h(χ) function."""
         _x = jnp.array([x, 0, 0])
         return _a_h(_x)
 
-    def F(x):
-        """Polar coordinate mapping function."""
+    def F(x: jnp.ndarray) -> jnp.ndarray:
+        """Polar coordinate mapping function. Formula is:
+
+        F(r, χ, z) = (a_h(χ) r cos(2πχ), -z, a_h(χ) r sin(2πχ))
+
+        Args:
+            x: Input logical coordinates (r, χ, z)
+
+        Returns:
+            F: Coordinate mapping function (a_h(χ) r cos(2πχ), -z, a_h(χ) r sin(2πχ))
+        """
         r, χ, z = x
         return jnp.array([a_h(χ)[0] * r * jnp.cos(2 * jnp.pi * χ),
                           -z,
@@ -228,11 +326,7 @@ def plot_reconstruction(a_hat,
     y2 = grid_physical[:, 2].reshape(nx, nx)
 
     # Evaluate the eigenfunction on the grid
-    u_h = Pushforward(
-        DiscreteFunction(
-            first_evec, Seq.Λ0, Seq.E0),
-        F,
-        0)
+    u_h = Pushforward(DiscreteFunction(first_evec, Seq.Lambda_0, Seq.E0), F, 0)
 
     # Fix the sign of the eigenfunction for consistent plotting
     if u_h(jnp.array([0.0, 0, 0])) < 0:
@@ -241,8 +335,8 @@ def plot_reconstruction(a_hat,
         u_h_vals = jax.vmap(u_h)(grid_logical).reshape(nx, nx)
 
     ax2.contourf(y1, y2, u_h_vals, levels=15, cmap='plasma')
-    x_mean = jnp.mean(y1)
-    y_mean = jnp.mean(y2)
+    # x_mean = jnp.mean(y1)
+    # y_mean = jnp.mean(y2)
     # ax2.set_xlim(x_mean-1, x_mean+1)
     # ax2.set_ylim(y_mean-1, y_mean+1)
     ax2.set_aspect('equal', 'box')
@@ -312,37 +406,33 @@ def plot_reconstruction(a_hat,
     print(f"Saved reconstruction plot to {filepath}")
 
 # %%
+
+
 def main():
-    # --- Configuration ---
+    # Numerical parameters to use
     N_PARAMS = 8
     N_MAP = 8
     P_MAP = 3
     POLY_DEGREE = 3
+
     # max. Number of eigenvalues to use in the loss function
+    # and other hyperparameters of the optimization and plotting
     K_EVS = 100
     LEARNING_RATE = 1e-1
     NUM_STEPS = 500
     PLOT_EVERY = 10
-    OUTPUT_DIR = "script_outputs/drumshape"
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Set up finite element spaces
     ns = (N_PARAMS, N_PARAMS, 1)
     ps = (POLY_DEGREE, POLY_DEGREE, 0)
-    q = 2*POLY_DEGREE
+    q = 2 * POLY_DEGREE
     types = ("clamped", "periodic", "constant")
 
-    def F_default(x):
-        """Polar coordinate mapping function."""
-        r, χ, z = x
-        return jnp.array([r * jnp.cos(2 * jnp.pi * χ),
-                          -z,
-                          r * jnp.sin(2 * jnp.pi * χ)])
-
-    Seq = DeRhamSequence(ns, ps, q, types, F_default, polar=True, dirichlet=True)
+    F_default = drumshape_map(a_h=lambda χ: jnp.ones(1)[0])
+    Seq = DeRhamSequence(ns, ps, q, types, F_default,
+                         polar=True, dirichlet=True)
     Seq.evaluate_1d()
-    
+
     # --- Problem Setup ---
     # Define a target ellipse shape and get its discrete representation
     a_target, target_radius_func = setup_target_shape(
@@ -355,9 +445,17 @@ def main():
     target_evs = target_evs_full[:k_max]
 
     # --- Loss Function ---
+    def fit_evs(a_hat: jnp.ndarray) -> float:
+        """Computes the squared error between current and target spectra. Formula is:
 
-    def fit_evs(a_hat):
-        """Computes the squared error between current and target spectra."""
+        loss = sum_k ( (lambda_k - lambda_k^*) / lambda_k^* )^2
+
+        Args:
+            a_hat: Discrete representation of the radius function r(χ).
+
+        Returns:
+            loss: Squared error between current and target spectra.
+        """
         evs, _ = get_evs(a_hat, N_MAP, P_MAP, Seq)
         valid_evs = evs[:k_max]
 
@@ -368,6 +466,7 @@ def main():
     # JIT-compile the function that computes both loss and gradient
     value_and_grad_fn = jax.jit(jax.value_and_grad(fit_evs))
     value_fun = jax.jit(fit_evs)
+
     # Initialize parameters with a random perturbation around a circle
     key = jax.random.PRNGKey(1)
     a_hat = jnp.maximum(jnp.ones(N_MAP) + 0.5 *
@@ -375,13 +474,11 @@ def main():
 
     # Set up the optimizer
     optimizer = optax.adam(learning_rate=LEARNING_RATE)
-    # optimizer = optax.contrib.muon(learning_rate=1e-1)
-    # optimizer = optax.lbfgs()
     opt_state = optimizer.init(a_hat)
 
     print("--- Starting Shape Optimization ---")
-    # Plot initial state before starting
     print("Plotting initial state (Iteration 0)...")
+
     # evaluate initial loss and start loss history
     value0, _ = value_and_grad_fn(a_hat)
     losses = [float(value0)]
@@ -392,10 +489,12 @@ def main():
                         n_map=N_MAP,
                         p_map=P_MAP,
                         iter_num=0,
-                        output_dir=OUTPUT_DIR,
+                        output_dir=script_dir,
                         loss_history=losses,
                         max_iters=NUM_STEPS
                         )
+
+    # Start the optimization loop
     t1 = time.time()
     for i in range(NUM_STEPS):
         value, grad = value_and_grad_fn(a_hat)
@@ -417,7 +516,7 @@ def main():
                                 n_map=N_MAP,
                                 p_map=P_MAP,
                                 iter_num=i+1,
-                                output_dir=OUTPUT_DIR,
+                                output_dir=script_dir,
                                 loss_history=losses,
                                 max_iters=NUM_STEPS,
                                 legends=False
@@ -427,6 +526,7 @@ def main():
     t2 = time.time()
     print(f"Total time for {NUM_STEPS} steps: {t2 - t1:.2f} seconds")
     print(f"Final Loss: {value:.6E}")
+
 
 if __name__ == '__main__':
     main()

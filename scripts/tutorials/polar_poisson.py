@@ -2,7 +2,7 @@
 """
 2D Poisson Problem in Polar Coordinates
 
-This script solves a 2D Poisson problem in polar coordinates.
+This script solves a 2D scalar Poisson problem in polar coordinates.
 The problem is defined on a polar domain with Dirichlet boundary conditions.
 
 The exact solution is given by:
@@ -24,6 +24,7 @@ import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
+from mrx.mappings import polar_map
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -31,16 +32,15 @@ jax.config.update("jax_enable_x64", True)
 os.makedirs("script_outputs", exist_ok=True)
 
 # %%
-###
-# We define this function that does assembly, solves the system, and computes the error.
-# It is JIT-compiled separately for different values of n, p, and q.
-###
 
 
 @partial(jax.jit, static_argnames=["n", "p", "q"])
 def get_err(n, p, q):
     """
     Compute the error in the solution of the Poisson problem.
+    We define this function that does assembly, solves the system, 
+    and computes the error.
+    It is JIT-compiled separately for different values of n, p, and q.
 
     Args:
         n: Number of elements in each direction
@@ -50,22 +50,35 @@ def get_err(n, p, q):
     Returns:
         float: Relative L2 error of the solution
     """
-    def Phi(x):
-        """Polar coordinate mapping function."""
-        r, θ, z = x
-        return jnp.array([r * jnp.cos(2 * jnp.pi * θ),
-                          -z,
-                          r * jnp.sin(2 * jnp.pi * θ)])
+    Phi = polar_map()
 
     # Define exact solution and source term
     def u(x):
-        """Exact solution of the Poisson problem."""
-        r, θ, z = x
+        """Exact solution of the Poisson problem. Formula is:
+
+        u(r, θ, z) = r³(3 log(r) - 2)/27 + 2/27
+
+        Args:
+            x: Input logical coordinates (r, θ, z)
+
+        Returns:
+            u: Exact solution of the Poisson equation
+        """
+        r, _, _ = x  # solution is independent of θ and z
         return jnp.ones(1) * (r**3 * (3 * jnp.log(r) - 2) / 27 + 2 / 27)
 
     def f(x):
-        """Source term of the Poisson problem."""
-        r, θ, z = x
+        """Source term of the Poisson problem. Formula is:
+
+        f(r, θ, z) = -r log(r)
+
+        Args:
+            x: Input logical coordinates (r, θ, z)
+
+        Returns:
+            f: Source term of the Poisson equation
+        """
+        r, _, _ = x  # source is independent of θ and z
         return -jnp.ones(1) * r * jnp.log(r)
 
     # Set up finite element spaces
@@ -79,7 +92,7 @@ def get_err(n, p, q):
 
     # Solve the system
     u_dof = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
-    u_h = DiscreteFunction(u_dof, Seq.Λ0, Seq.E0)
+    u_h = DiscreteFunction(u_dof, Seq.Lambda_0, Seq.E0)
 
     # Compute the L2 error
     def diff_at_x(x):
@@ -93,7 +106,17 @@ def get_err(n, p, q):
 
 
 def run_convergence_analysis(ns, ps):
-    """Run convergence analysis for different parameters."""
+    """Run convergence analysis for different parameters.
+
+    Args:
+        ns: List of number of elements in each direction
+        ps: List of polynomial degrees
+
+    Returns:
+        err: Array of relative L2 errors
+        times: Array of computation times
+        times2: Array of computation times for second run
+    """
     # Arrays to store results
     err = np.zeros((len(ns), len(ps)))
     times = np.zeros((len(ns), len(ps)))
@@ -125,11 +148,22 @@ def run_convergence_analysis(ns, ps):
             times2[i, j] = end - start
             print(f"n={n}, p={p}, q={q}, time={times2[i, j]:.2f}s")
 
-    return err, times, times2, ns, ps
+    return err, times, times2
 
 
 def plot_results(err, times, times2, ns, ps):
-    """Plot the results of the convergence analysis."""
+    """Plot the results of the convergence analysis.
+
+    Args:
+        err: Array of relative L2 errors
+        times: Array of computation times
+        times2: Array of computation times for second run
+        ns: List of number of elements in each direction
+        ps: List of polynomial degrees
+
+    Returns:
+        figures: List of figures
+    """
     # Create figures
     figures = []
 
@@ -195,7 +229,7 @@ def main():
     # Run convergence analysis
     ns = np.arange(6, 17, 2)
     ps = np.arange(1, 5)
-    err, times, times2, ns, ps = run_convergence_analysis(ns, ps)
+    err, times, times2 = run_convergence_analysis(ns, ps)
     # Plot results
     plot_results(err, times, times2, ns, ps)
     # Show all figures

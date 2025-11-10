@@ -128,10 +128,10 @@ def run(CONFIG):
     kappa = CONFIG["kappa"]
     eps = CONFIG["eps"]
     alpha = jnp.arcsin(CONFIG["delta"])
-    if CONFIG["type"] == "tokamak":
-        tau = CONFIG["q_star"] * kappa * (1 + kappa**2) / (kappa + 1)
-    else:
-        tau = CONFIG["q_star"]
+    # if CONFIG["type"] == "tokamak":
+    #     tau = CONFIG["q_star"] * kappa * (1 + kappa**2) / (kappa + 1)
+    # else:
+    #     tau = CONFIG["q_star"]
 
     start_time = time.time()
 
@@ -196,8 +196,8 @@ def run(CONFIG):
 
     def B_xyz(p):
         x, y, z = F(p)
-        R = (x**2 + y**2)**0.5
-        phi = jnp.arctan2(y, x)
+        # R = (x**2 + y**2)**0.5
+        # phi = jnp.arctan2(y, x)
 
         # if CONFIG["type"] == "tokamak":
         #     BR = z * R

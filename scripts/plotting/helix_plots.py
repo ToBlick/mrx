@@ -8,28 +8,17 @@ import jax.numpy as jnp
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-import optimistix as optx
 from matplotlib import gridspec
 from matplotlib.ticker import MultipleLocator
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
-from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.plotting import (
-    get_2d_grids,
-    plot_crossections,
-    plot_crossections_separate,
-    plot_torus,
-    set_axes_equal,
-)
-
+from mrx.differential_forms import DiscreteFunction
 from mrx.io import parse_args
-from mrx.plotting import generate_solovev_plots
+from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
 
 if __name__ == "__main__":
     jax.config.update("jax_enable_x64", True)
-    
+
     # Get user input
     params = parse_args()
     name = params["run_name"]
@@ -47,7 +36,7 @@ if __name__ == "__main__":
         CONFIG = {k: v for k, v in f["config"].attrs.items()}
         # decode strings back if needed
         CONFIG = {k: v.decode() if isinstance(v, bytes)
-                else v for k, v in CONFIG.items()}
+                  else v for k, v in CONFIG.items()}
     # %%
     # Get the map and sequences back:
     kappa = CONFIG["kappa"]
@@ -65,10 +54,10 @@ if __name__ == "__main__":
         raise ValueError("Unknown configuration type.")
     ns = (CONFIG["n_r"], CONFIG["n_theta"], CONFIG["n_zeta"])
     ps = (CONFIG["p_r"], CONFIG["p_theta"], 0
-        if CONFIG["n_zeta"] == 1 else CONFIG["p_zeta"])
+          if CONFIG["n_zeta"] == 1 else CONFIG["p_zeta"])
     q = max(ps)
     types = ("clamped", "periodic",
-            "constant" if CONFIG["n_zeta"] == 1 else "periodic")
+             "constant" if CONFIG["n_zeta"] == 1 else "periodic")
     print("Setting up FEM spaces...")
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
@@ -97,9 +86,9 @@ if __name__ == "__main__":
         stepsize_controller = dfx.PIDController(rtol=1e-8, atol=1e-8)
 
         sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, x0,
-                            saveat=saveat,
-                            stepsize_controller=stepsize_controller,
-                            max_steps=100_000)
+                              saveat=saveat,
+                              stepsize_controller=stepsize_controller,
+                              max_steps=100_000)
         return sol.ys
 
     def get_crossings(B_h, x0, F, N, phi_targets):
@@ -129,14 +118,15 @@ if __name__ == "__main__":
         dt0 = 0.05
         term = dfx.ODETerm(vector_field)
         root_finder = dfx.VeryChord(rtol=1e-3, atol=1e-3)
-        event = dfx.Event([make_cond_fn(phi) for phi in phi_targets], root_finder)
+        event = dfx.Event([make_cond_fn(phi)
+                          for phi in phi_targets], root_finder)
         solver = dfx.Tsit5()
 
         crossings = jnp.zeros((N, 3))
 
         for i in range(N):
             sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, x0, event=event,
-                                max_steps=20_000, throw=False)
+                                  max_steps=20_000, throw=False)
             if sol.ys.size == 0:
                 break
             x_cross = sol.ys[0]
@@ -173,15 +163,15 @@ if __name__ == "__main__":
     # ).T
     x0s = np.vstack(
         (np.hstack((_r[::4], _r[1::4], _r[2::4], _r[3::4])),                              # between 0 and 1 - samples along x
-        # half go to theta=0 and half to theta=pi
-        np.hstack(( 0.027345 * np.ones(n_lines//4),
-                    0.246452 * np.ones(n_lines//4),
-                    0.515341 * np.ones(n_lines//4),
-                    0.749154 * np.ones(n_lines//4)
-                )),
-        0.174 * np.ones(n_lines))
+         # half go to theta=0 and half to theta=pi
+         np.hstack((0.027345 * np.ones(n_lines//4),
+                   0.246452 * np.ones(n_lines//4),
+                   0.515341 * np.ones(n_lines//4),
+                   0.749154 * np.ones(n_lines//4)
+                    )),
+         0.174 * np.ones(n_lines))
     ).T
-    
+
     N_cross = 5_000
 
     key = x0s[:, 0] * np.cos(x0s[:, 1])
@@ -195,7 +185,7 @@ if __name__ == "__main__":
     # %%
     output_dir = os.path.join("script_outputs", "helix", name, "poincare")
     os.makedirs(output_dir, exist_ok=True)
-    
+
     plt.rcParams['font.family'] = 'serif'
     plt.rcParams['mathtext.fontset'] = 'dejavuserif'
 
@@ -205,8 +195,8 @@ if __name__ == "__main__":
         B_hat = B_fields[plt_nr]
         p_hat = p_fields[plt_nr]
 
-        p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
-        B_h = (DiscreteFunction(B_hat, Seq.Λ2, Seq.E2))
+        p_h = DiscreteFunction(p_hat, Seq.Lambda_0, Seq.E0)
+        B_h = (DiscreteFunction(B_hat, Seq.Lambda_2, Seq.E2))
 
         crossings = jax.vmap(lambda x0: get_crossings(
             # m x N x 3
@@ -214,7 +204,6 @@ if __name__ == "__main__":
 
         crossings_xyz = jax.vmap(jax.vmap(F))(crossings)
         crossings_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(crossings_xyz)
-
 
         crossings_to_plot = crossings_Rphiz
         crossings_p = crossings % 1
@@ -255,7 +244,8 @@ if __name__ == "__main__":
         cmap_p = truncate_colormap("plasma", 0.0, 0.9)
 
         # compute p-values per crossing
-        p_values = 100 * (jnp.array([jax.vmap(p_h)(curve) for curve in crossings_p]))[:, :, 0]
+        p_values = 100 * (jnp.array([jax.vmap(p_h)(curve)
+                          for curve in crossings_p]))[:, :, 0]
         norm_p = mpl.colors.Normalize(vmin=0.0, vmax=np.max(p_values))
 
         # --- Figure setup ---
@@ -267,7 +257,7 @@ if __name__ == "__main__":
         # =============================================================================
         # --- Plotting Loop ---
         for i, curve in enumerate(crossings_to_plot):
-            
+
             # shape of curve is (N_cross, 3)
             if jnp.min(crossings[i, :, 0]) <= 1e-12:
                 continue
@@ -334,7 +324,6 @@ if __name__ == "__main__":
         plt.close()
 
 # %%
-
 
 
 # # %%

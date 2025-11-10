@@ -74,7 +74,7 @@ def get_err(n, p):
 
     # Solve the system
     u_hat = jnp.linalg.solve(K, Seq.P0(f))
-    u_h = DiscreteFunction(u_hat, Seq.Λ0, Seq.E0.matrix())
+    u_h = DiscreteFunction(u_hat, Seq.Lambda_0, Seq.E0.matrix())
 
     # Compute error
     def err(x): return u(x) - u_h(x)
