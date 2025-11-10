@@ -2,6 +2,7 @@ import jax.numpy as jnp
 
 from mrx.utils import evaluate_at_xq, integrate_against
 
+
 class CrossProductProjection:
     """
     Given bases Λn, Λm, Λk, constructs an operator to evaluate
@@ -31,30 +32,30 @@ class CrossProductProjection:
         match self.n:
             case 1:
                 self.En = Seq.E1
-                self.get_Λn_ijk = Seq.get_Λ1_ijk
-                self.nn = Seq.Λ1.n
+                self.get_Lambda_n_ijk = Seq.get_Lambda_1_ijk
+                self.nn = Seq.Lambda_1.n
             case 2:
                 self.En = Seq.E2
-                self.get_Λn_ijk = Seq.get_Λ2_ijk
-                self.nn = Seq.Λ2.n
+                self.get_Lambda_n_ijk = Seq.get_Lambda_2_ijk
+                self.nn = Seq.Lambda_2.n
             case _:
                 raise ValueError("n must be 1 or 2")
         match self.m:
             case 1:
                 self.Em = Seq.E1
-                self.get_Λm_ijk = Seq.get_Λ1_ijk
+                self.get_Lambda_m_ijk = Seq.get_Lambda_1_ijk
             case 2:
                 self.Em = Seq.E2
-                self.get_Λm_ijk = Seq.get_Λ2_ijk
+                self.get_Lambda_m_ijk = Seq.get_Lambda_2_ijk
             case _:
                 raise ValueError("m must be 1 or 2")
         match self.k:
             case 1:
                 self.Ek = Seq.E1
-                self.get_Λk_ijk = Seq.get_Λ1_ijk
+                self.get_Lambda_k_ijk = Seq.get_Lambda_1_ijk
             case 2:
                 self.Ek = Seq.E2
-                self.get_Λk_ijk = Seq.get_Λ2_ijk
+                self.get_Lambda_k_ijk = Seq.get_Lambda_2_ijk
             case _:
                 raise ValueError("k must be 1 or 2")
 
@@ -85,8 +86,10 @@ class CrossProductProjection:
             array: ∫ (wₕ × uₕ) · Λn[i] dx for all i
         """
         # w and u evaluated at quadrature points: shape: n_q x 3
-        w_jk = evaluate_at_xq(self.get_Λm_ijk, self.Em.T @ w, self.Seq.Q.n, 3)
-        u_jk = evaluate_at_xq(self.get_Λk_ijk, self.Ek.T @ u, self.Seq.Q.n, 3)
+        w_jk = evaluate_at_xq(self.get_Lambda_m_ijk,
+                              self.Em.T @ w, self.Seq.Q.n, 3)
+        u_jk = evaluate_at_xq(self.get_Lambda_k_ijk,
+                              self.Ek.T @ u, self.Seq.Q.n, 3)
 
         # now, we compute
         # ∑ Λn[i](x_j)_a w(x_j)_b u(x_j)_c ) t(x_j)_abc
@@ -129,4 +132,4 @@ class CrossProductProjection:
             f_jk = w_x_u_jk * (self.Seq.Q.w / self.Seq.J_j)[:, None]
         else:
             raise ValueError("Not yet implemented")
-        return integrate_against(self.get_Λn_ijk, f_jk, self.nn)
+        return integrate_against(self.get_Lambda_n_ijk, f_jk, self.nn)

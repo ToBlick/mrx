@@ -15,7 +15,7 @@ f(r, θ) = r² - (3/4)r
 """
 
 import os
-import time 
+import time
 from functools import partial
 
 import jax
@@ -38,6 +38,7 @@ jax.config.update("jax_enable_x64", True)
 # Create output directory for figures
 os.makedirs("script_outputs", exist_ok=True)
 
+
 @partial(jax.jit, static_argnames=["n", "p", "q"])
 def get_err(n, p, q):
     """
@@ -59,7 +60,7 @@ def get_err(n, p, q):
     # Define exact solution and source term
     def u(x):
         """Exact solution of the Poisson problem. Formula is:
-        
+
         u(r, θ, z) = -(1/16)r⁴ + (1/12)r³ + 1/48
 
         Args:
@@ -73,7 +74,7 @@ def get_err(n, p, q):
 
     def f(x):
         """Source term of the Poisson problem. Formula is:
-        
+
         f(r, θ, z) = r(r - 3/4)
 
         Args:
@@ -99,7 +100,7 @@ def get_err(n, p, q):
     # Solve the system
     u_dof = jnp.linalg.solve(Seq.M3 @ Seq.dd3, Seq.P3(f))
     # The solution will satisfy u = 0 on the boundary
-    u_h = Pushforward(DiscreteFunction(u_dof, Seq.Λ3, Seq.E3), F, 3)
+    u_h = Pushforward(DiscreteFunction(u_dof, Seq.Lambda_3, Seq.E3), F, 3)
 
     # Compute the L2 error
     def diff_at_x(x):
@@ -114,7 +115,7 @@ def get_err(n, p, q):
 
 def run_convergence_analysis(ns, ps):
     """Run convergence analysis for different parameters.
-    
+
     Args:
         ns: List of number of elements in each direction
         ps: List of polynomial degrees
@@ -160,7 +161,7 @@ def run_convergence_analysis(ns, ps):
 
 def plot_results(err, times, times2, ns, ps):
     """Plot the results of the convergence analysis.
-    
+
     Args:
         err: Array of relative L2 errors
         times: Array of computation times

@@ -25,7 +25,7 @@ def test_harmonic_fields():
     @jax.jit
     def F(x):
         """Hollow toroid. Formula is:
-        
+
         F(r, θ, ζ) = (R cos(2πζ), -R sin(2πζ), ɛ (r + 1)/2 sin(2πθ))
         where R = 1 + ɛ (r + 1)/2 cos(2πθ) is the radial coordinate.
 
@@ -51,15 +51,15 @@ def test_harmonic_fields():
 
     evs, evecs = sp.linalg.eigh(Seq.M2 @ Seq.dd2, Seq.M2)
     # tolerance is 1e-10 to account for numerical errors
-    # since first two eigenvalues are -1e-12 and 1e-11 or so. 
+    # since first two eigenvalues are -1e-12 and 1e-11 or so.
     assert jnp.sum(evs < 1e-10) == 2  # two harmonic fields
     assert jnp.min(evs) > -1e-10  # no negative eigenvalues
 
     h1_dof = evecs[:, 0]
     h2_dof = evecs[:, 1]
 
-    h1 = jax.jit(DiscreteFunction(h1_dof, Seq.Λ2, Seq.E2))
-    h2 = jax.jit(DiscreteFunction(h2_dof, Seq.Λ2, Seq.E2))
+    h1 = jax.jit(DiscreteFunction(h1_dof, Seq.Lambda_2, Seq.E2))
+    h2 = jax.jit(DiscreteFunction(h2_dof, Seq.Lambda_2, Seq.E2))
 
     # Compute contour integrals:
     # contour wrapping around the enclosed tunnel poloidally:
@@ -130,7 +130,7 @@ def test_harmonic_fields():
         return jnp.array([Bx, By, Bz])
 
     B_computed = jax.jit(Pushforward(DiscreteFunction(
-        b_dofs, Seq.Λ2, Seq.E2), Seq.F, 2))
+        b_dofs, Seq.Lambda_2, Seq.E2), Seq.F, 2))
 
     # Check the field in the interior
     y = jnp.array([0.5, 0.0, 0.0])

@@ -27,14 +27,14 @@ class LazyBoundaryOperator:
 
     Attributes:
         k (int): Degree of the differential form (0, 1, 2, or 3)
-        Λ: Differential form
+        Lambda_0 (DifferentialForm)
         types (tuple): Tuple of boundary condition types for each direction.
         nr (int): Number of points in r-direction after boundary conditions
-        nχ (int): Number of points in χ-direction after boundary conditions
-        nζ (int): Number of points in ζ-direction after boundary conditions
+        nt (int): Number of points in θ-direction after boundary conditions
+        nz (int): Number of points in ζ-direction after boundary conditions
         dr (int): Number of points in r-direction
-        dχ (int): Number of points in χ-direction
-        dζ (int): Number of points in ζ-direction
+        dt (int): Number of points in θ-direction
+        dz (int): Number of points in ζ-direction
         n1 (int): Size of first component
         n2 (int): Size of second component
         n3 (int): Size of third component
@@ -47,13 +47,13 @@ class LazyBoundaryOperator:
         Initialize the boundary operator.
 
         Args:
-            Λ: Domain operator
+            Λ (DifferentialForm)
             types (tuple): Tuple of boundary condition types for each direction.
                           Can be 'dirichlet' (zero at boundaries), 'half' (zero only at x=1)
                           or other types (no boundary conditions).
         """
         self.k = Λ.k
-        self.Λ = Λ
+        self.Lambda = Λ
 
         def get_dim(original_dim, bc_type):
             if bc_type == "dirichlet":
@@ -65,32 +65,31 @@ class LazyBoundaryOperator:
             else:
                 return original_dim
 
-        self.nr = get_dim(Λ.nr, types[0])
-        self.nχ = get_dim(Λ.nχ, types[1])
-        self.nζ = get_dim(Λ.nζ, types[2])
-        self.dr, self.dχ, self.dζ = Λ.dr, Λ.dχ, Λ.dζ
+        self.nr, self.nt, self.nz = get_dim(self.Lambda.nr, types[0]), get_dim(
+            self.Lambda.nt, types[1]), get_dim(self.Lambda.nz, types[2])
+        self.dr, self.dt, self.dz = self.Lambda.dr, self.Lambda.dt, self.Lambda.dz
         self.types = types
 
         if self.k == 0:
-            self.n1 = self.nr * self.nχ * self.nζ
+            self.n1 = self.nr * self.nt * self.nz
             self.n2 = 0
             self.n3 = 0
         if self.k == 1:
-            self.n1 = self.dr * self.nχ * self.nζ
-            self.n2 = self.nr * self.dχ * self.nζ
-            self.n3 = self.nr * self.nχ * self.dζ
+            self.n1 = self.dr * self.nt * self.nz
+            self.n2 = self.nr * self.dt * self.nz
+            self.n3 = self.nr * self.nt * self.dz
         elif self.k == 2:
-            self.n1 = self.nr * self.dχ * self.dζ
-            self.n2 = self.dr * self.nχ * self.dζ
-            self.n3 = self.dr * self.dχ * self.nζ
+            self.n1 = self.nr * self.dt * self.dz
+            self.n2 = self.dr * self.nt * self.dz
+            self.n3 = self.dr * self.dt * self.nz
         elif self.k == 3:
-            self.n1 = self.dr * self.dχ * self.dζ
+            self.n1 = self.dr * self.dt * self.dz
             self.n2 = 0
             self.n3 = 0
         elif self.k == -1:
-            self.n1 = self.nr * self.nχ * self.nζ
-            self.n2 = self.nr * self.nχ * self.nζ
-            self.n3 = self.nr * self.nχ * self.nζ
+            self.n1 = self.nr * self.nt * self.nz
+            self.n2 = self.nr * self.nt * self.nz
+            self.n3 = self.nr * self.nt * self.nz
         self.n = self.n1 + self.n2 + self.n3
 
     def matrix(self):
@@ -133,18 +132,18 @@ class LazyBoundaryOperator:
                   component and (i,j,k) are the spatial coordinates
         """
         if self.k == 0:
-            return jnp.int32(0), *jnp.unravel_index(idx, (self.nr, self.nχ, self.nζ))
+            return jnp.int32(0), *jnp.unravel_index(idx, (self.nr, self.nt, self.nz))
         elif self.k == 1:
             category, ijk = self._vector_index(idx)
             i, j, k = jnp.where(
                 category == 0,
-                jnp.array(jnp.unravel_index(ijk, (self.dr, self.nχ, self.nζ))),
+                jnp.array(jnp.unravel_index(ijk, (self.dr, self.nt, self.nz))),
                 jnp.where(
                     category == 1,
                     jnp.array(jnp.unravel_index(
-                        ijk, (self.nr, self.dχ, self.nζ))),
+                        ijk, (self.nr, self.dt, self.nz))),
                     jnp.array(jnp.unravel_index(
-                        ijk, (self.nr, self.nχ, self.dζ))),
+                        ijk, (self.nr, self.nt, self.dz))),
                 ),
             )
             return category, i, j, k
@@ -152,22 +151,22 @@ class LazyBoundaryOperator:
             category, ijk = self._vector_index(idx)
             i, j, k = jnp.where(
                 category == 0,
-                jnp.array(jnp.unravel_index(ijk, (self.nr, self.dχ, self.dζ))),
+                jnp.array(jnp.unravel_index(ijk, (self.nr, self.dt, self.dz))),
                 jnp.where(
                     category == 1,
                     jnp.array(jnp.unravel_index(
-                        ijk, (self.dr, self.nχ, self.dζ))),
+                        ijk, (self.dr, self.nt, self.dz))),
                     jnp.array(jnp.unravel_index(
-                        ijk, (self.dr, self.dχ, self.nζ))),
+                        ijk, (self.dr, self.dt, self.nz))),
                 ),
             )
             return category, i, j, k
         elif self.k == 3:
-            return jnp.int32(0), *jnp.unravel_index(idx, (self.dr, self.dχ, self.dζ))
+            return jnp.int32(0), *jnp.unravel_index(idx, (self.dr, self.dt, self.dz))
         elif self.k == -1:
             category, ijk = self._vector_index(idx)
             i, j, k = jnp.array(jnp.unravel_index(
-                ijk, (self.nr, self.nχ, self.nζ)))
+                ijk, (self.nr, self.nt, self.nz)))
             return category, i, j, k
 
     def _element(self, row_idx, col_idx):
@@ -182,7 +181,7 @@ class LazyBoundaryOperator:
             jnp.ndarray: The operator element value
         """
         cat_row, i, j, k = self._unravel_index(row_idx)
-        cat_col, p, m, n = self.Λ._unravel_index(col_idx)
+        cat_col, p, m, n = self.Lambda._unravel_index(col_idx)
 
         target_l = jnp.where(jnp.logical_or(
             self.types[0] == "dirichlet", self.types[0] == "left"), p - 1, p)
@@ -236,5 +235,5 @@ class LazyBoundaryOperator:
             jnp.ndarray: The assembled operator matrix
         """
         return jax.vmap(jax.vmap(self._element, (None, 0)), (0, None))(
-            jnp.arange(self.n), jnp.arange(self.Λ.n)
+            jnp.arange(self.n), jnp.arange(self.Lambda.n)
         )

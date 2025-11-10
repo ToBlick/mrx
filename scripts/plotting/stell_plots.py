@@ -11,15 +11,14 @@ import numpy as np
 from matplotlib import gridspec
 from matplotlib.ticker import MultipleLocator
 
-from mrx.mappings import rotating_ellipse_map
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
-
 from mrx.io import parse_args
+from mrx.mappings import rotating_ellipse_map
 
 if __name__ == "__main__":
     jax.config.update("jax_enable_x64", True)
-    
+
     # Get user input
     params = parse_args()
     name = params["run_name"]
@@ -37,17 +36,17 @@ if __name__ == "__main__":
         CONFIG = {k: v for k, v in f["config"].attrs.items()}
         # decode strings back if needed
         CONFIG = {k: v.decode() if isinstance(v, bytes)
-                else v for k, v in CONFIG.items()}
+                  else v for k, v in CONFIG.items()}
     # %%
     # Get the map and sequences back:
     F = rotating_ellipse_map(CONFIG["eps"], CONFIG["kappa"], CONFIG["n_fp"])
-    
+
     ns = (CONFIG["n_r"], CONFIG["n_theta"], CONFIG["n_zeta"])
     ps = (CONFIG["p_r"], CONFIG["p_theta"], 0
-        if CONFIG["n_zeta"] == 1 else CONFIG["p_zeta"])
+          if CONFIG["n_zeta"] == 1 else CONFIG["p_zeta"])
     q = max(ps)
     types = ("clamped", "periodic",
-            "constant" if CONFIG["n_zeta"] == 1 else "periodic")
+             "constant" if CONFIG["n_zeta"] == 1 else "periodic")
     print("Setting up FEM spaces...")
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
@@ -76,9 +75,9 @@ if __name__ == "__main__":
         stepsize_controller = dfx.PIDController(rtol=1e-8, atol=1e-8)
 
         sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, x0,
-                            saveat=saveat,
-                            stepsize_controller=stepsize_controller,
-                            max_steps=100_000)
+                              saveat=saveat,
+                              stepsize_controller=stepsize_controller,
+                              max_steps=100_000)
         return sol.ys
 
     def get_crossings(B_h, x0, F, N, phi_targets):
@@ -108,14 +107,15 @@ if __name__ == "__main__":
         dt0 = 0.05
         term = dfx.ODETerm(vector_field)
         root_finder = dfx.VeryChord(rtol=1e-3, atol=1e-3)
-        event = dfx.Event([make_cond_fn(phi) for phi in phi_targets], root_finder)
+        event = dfx.Event([make_cond_fn(phi)
+                          for phi in phi_targets], root_finder)
         solver = dfx.Tsit5()
 
         crossings = jnp.zeros((N, 3))
 
         for i in range(N):
             sol = dfx.diffeqsolve(term, solver, t0, t1, dt0, x0, event=event,
-                                max_steps=20_000, throw=False)
+                                  max_steps=20_000, throw=False)
             if sol.ys.size == 0:
                 break
             x_cross = sol.ys[0]
@@ -152,13 +152,13 @@ if __name__ == "__main__":
     # ).T
     x0s = np.vstack(
         (np.hstack((_r[::2], _r[1::2])),                              # between 0 and 1 - samples along x
-        # half go to theta=0 and half to theta=pi
-        np.hstack((0.0 * np.ones(n_lines//2),
-                    0.5 * np.ones(n_lines//2)
-                )),
-        0.0 * np.ones(n_lines))
+         # half go to theta=0 and half to theta=pi
+         np.hstack((0.0 * np.ones(n_lines//2),
+                   0.5 * np.ones(n_lines//2)
+                    )),
+         0.0 * np.ones(n_lines))
     ).T
-    
+
     N_cross = 5_000
 
     key = x0s[:, 0] * np.cos(x0s[:, 1])
@@ -191,7 +191,7 @@ if __name__ == "__main__":
     # %%
     output_dir = os.path.join("script_outputs", "stell", name, "poincare")
     os.makedirs(output_dir, exist_ok=True)
-    
+
     plt.rcParams['font.family'] = 'serif'
     plt.rcParams['mathtext.fontset'] = 'dejavuserif'
 
@@ -201,15 +201,16 @@ if __name__ == "__main__":
         B_hat = B_fields[plt_nr]
         p_hat = p_fields[plt_nr]
 
-        p_h = DiscreteFunction(p_hat, Seq.Λ0, Seq.E0)
-        B_h = (DiscreteFunction(B_hat, Seq.Λ2, Seq.E2))
+        p_h = DiscreteFunction(p_hat, Seq.Lambda_0, Seq.E0)
+        B_h = (DiscreteFunction(B_hat, Seq.Lambda_2, Seq.E2))
 
         trajectories = jax.vmap(lambda x0: integrate_fieldline(
             B_h, x0, F, N=10_000, t1=500))(x0s_sorted)
         trajectories_xyz = jax.vmap(jax.vmap(F))(trajectories)
         trajectories_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(trajectories_xyz)
 
-        iotas, poloidal_turns, toroidal_turns = jax.vmap(get_iota)(trajectories_Rphiz[:, :, :])
+        iotas, poloidal_turns, toroidal_turns = jax.vmap(
+            get_iota)(trajectories_Rphiz[:, :, :])
         # plt.plot(iotas, 'o-', label=r"$\iota$")
         # # plt.plot(1/iotas, '*-', label=r"$q = 1 / \iota$")
         # plt.xlabel(r"field line number (starting R)")
@@ -223,7 +224,6 @@ if __name__ == "__main__":
 
         crossings_xyz = jax.vmap(jax.vmap(F))(crossings)
         crossings_Rphiz = jax.vmap(jax.vmap(F_cyl_signed))(crossings_xyz)
-
 
         crossings_to_plot = crossings_Rphiz[:, :, :]
         crossings_p = crossings % 1
@@ -269,7 +269,8 @@ if __name__ == "__main__":
         norm_iota = mpl.colors.Normalize(vmin=low, vmax=high, clip=True)
 
         # compute p-values per crossing
-        p_values = 100 * (jnp.array([jax.vmap(p_h)(curve) for curve in crossings_p]))[:, :, 0]
+        p_values = 100 * (jnp.array([jax.vmap(p_h)(curve)
+                          for curve in crossings_p]))[:, :, 0]
         norm_p = mpl.colors.Normalize(vmin=0.0, vmax=np.max(p_values))
 
         # --- Figure setup ---
@@ -344,7 +345,6 @@ if __name__ == "__main__":
         plt.close()
 
 # %%
-
 
 
 # # %%

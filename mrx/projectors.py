@@ -31,12 +31,8 @@ class Projector:
     the mapping F and can handle extraction operators through E.
 
     Attributes:
-        Λ: The domain operator defining the finite element space
-        Q: Quadrature rule for numerical integration
-        n (int): Total size of the operator
-        ns (array): Array of indices for the finite element space
-        F (callable): Coordinate transformation function, defaults to identity
-        M (array): Extraction operator matrix, defaults to identity
+        k (int): Degree of the differential form (0, 1, 2, or 3)
+        Seq : DeRham sequence object
     """
 
     def __init__(self, Seq, k):
@@ -44,7 +40,7 @@ class Projector:
         Initialize the projector.
 
         Args:
-            Seq : DeRham sequence
+            Seq : DeRham sequence object
             k : Degree of the differential form
         """
         self.k = k
@@ -82,7 +78,7 @@ class Projector:
         # Evaluate the given function at quadrature points
         f_jk = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
         w_jk = f_jk * (self.Seq.Q.w * self.Seq.J_j)[:, None]
-        return integrate_against(self.Seq.get_Λ0_ijk, w_jk, self.Seq.Λ0.n)
+        return integrate_against(self.Seq.get_Lambda_0_ijk, w_jk, self.Seq.Lambda_0.n)
 
     def oneform_projection(self, v):
         """
@@ -103,7 +99,7 @@ class Projector:
         A_jk = jax.vmap(_v)(self.Seq.Q.x)  # n_q x d
         w_jk = A_jk * (self.Seq.Q.w * self.Seq.J_j)[:, None]
 
-        return integrate_against(self.Seq.get_Λ1_ijk, w_jk, self.Seq.Λ1.n)
+        return integrate_against(self.Seq.get_Lambda_1_ijk, w_jk, self.Seq.Lambda_1.n)
 
     def twoform_projection(self, v):
         """
@@ -125,7 +121,7 @@ class Projector:
 
         w_jk = B_jk * (self.Seq.Q.w)[:, None]
 
-        return integrate_against(self.Seq.get_Λ2_ijk, w_jk, self.Seq.Λ2.n)
+        return integrate_against(self.Seq.get_Lambda_2_ijk, w_jk, self.Seq.Lambda_2.n)
 
     def threeform_projection(self, f):
         """
@@ -140,4 +136,4 @@ class Projector:
         # Evaluate the given function at quadrature points
         f_jk = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
         w_jk = f_jk * (self.Seq.Q.w)[:, None]
-        return integrate_against(self.Seq.get_Λ3_ijk, w_jk, self.Seq.Λ3.n)
+        return integrate_against(self.Seq.get_Lambda_3_ijk, w_jk, self.Seq.Lambda_3.n)
