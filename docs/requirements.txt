@@ -8,4 +8,4 @@ myst-parser
 # Note: The 'pandoc' pip package is just a Python wrapper.
 # The actual pandoc executable must be installed via conda:
 #   conda install -c conda-forge pandoc
-pandoc
+# pandoc

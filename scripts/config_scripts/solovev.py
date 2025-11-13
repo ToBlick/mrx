@@ -11,6 +11,8 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.io import parse_args, unique_id
 from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
 from mrx.relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
+from mrx.utils import DEVICE_PRESETS
+from mrx.utils import DEFAULT_CONFIG as CONFIG
 
 jax.config.update("jax_enable_x64", True)
 
@@ -18,79 +20,21 @@ outdir = "script_outputs/solovev/"
 os.makedirs(outdir, exist_ok=True)
 
 
-###
-# Default configuration
-###
-DEVICE_PRESETS = {
-    "ITER":  {"eps": 0.32, "kappa": 1.7, "delta": 0.33, "q_star": 1.57, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
-    "NSTX":  {"eps": 0.78, "kappa": 2.0, "delta": 0.35, "q_star": 2.0, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
-    "SPHERO": {"eps": 0.95, "kappa": 1.0, "delta": 0.2,  "q_star": 0.0, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
-    "ROT_ELL": {"a": 0.1, "b": 0.025, "m_rot": 5, "q_star": 1.6, "type": "rotating_ellipse"},
-    "HELIX": {"eps": 0.33, "h_helix": 0.20, "kappa": 1.7, "delta": 0.33, "m_helix": 3, "q_star": 2.0, "type": "helix"},
-}
-
-CONFIG = {
-    "run_name": "",  # Name for the run. If empty, a hash will be created
-
-    # Type of configuration: "tokamak" or "helix" or "rotating_ellipse"
-    "type": "helix",
-
-    ###
-    # Parameters describing the domain.
-    ###
-    "eps":      0.2,  # aspect ratio
-    "kappa":    1.7,   # Elongation parameter
-    "q_star":   1.57,   # toroidal field strength
-    "delta": 0.0,   # triangularity
-    "m_helix":  3,     # poloidal mode number of helix
-    "h_helix":  0,   # radius of helix turns
-    "m_rot":    5,      # mode number of rotating ellipse
-    "a": 0.1,      # amplitude of rotating ellipse deformation
-    "b": 0.025,    # amplitude of rotating ellipse deformation
-
-    ###
-    # Discretization
-    ###
-    "n_r": 8,       # Number of radial splines
-    "n_theta": 8,   # Number of poloidal splines
-    "n_zeta": 6,    # Number of toroidal splines
-    "p_r": 3,       # Degree of radial splines
-    "p_theta": 3,     # Degree of poloidal splines
-    "p_zeta": 3,    # Degree of toroidal splines
-
-    ###
-    # Hyperparameters for the relaxation
-    ###
-    "maxit":                 5_000,   # max. Number of time steps
-    "precond":               False,     # Use preconditioner
-    "precond_compute_every": 1000,       # Recompute preconditioner every n iterations
-    # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
-    "gamma":                 0,
-    "dt":                    1e-6,      # initial time step
-    # time-steps are increased by this factor and decreased by its square
-    "dt_factor":             1.01,
-    # Convergence tolerance for |JxB - grad p| (or |JxB| if force_free)
-    "force_tol":             1e-15,
-    "eta":                   0.0,       # Resistivity
-    # If True, solve for JxB = 0. If False, JxB = grad p
-    "force_free":            False,
-
-    ###
-    # Solver hyperparameters
-    ###
-    # Picard solver
-    "solver_maxit": 20,    # Maximum number of iterations before Picard solver gives up
-    # If Picard solver converges in less than this number of iterations, increase time step
-    "solver_critit": 4,
-    "solver_tol": 1e-12,   # Tolerance for convergence
-    "verbose": False,      # If False, prints only force every 'print_every'
-    "print_every": 1000,    # Print every n iterations
-    "save_every": 100,     # Save intermediate results every n iterations
-    "save_B": False,       # Save intermediate B fields to file
-}
-
-
 def main():
+    """
+    Runs a magnetic relaxation simulation for a Solovev configuration.
+    Usage: python solovev.py <parameter_name>=<parameter_value>
+    where <parameter_name> is one of the parameters in DEFAULT_CONFIG and <parameter_value> is the value to use.
+    
+    For example:
+    python solovev.py run_name=test_run boundary_type=rotating_ellipse n_r=16 n_theta=16 n_zeta=8 p_r=3 p_theta=3 p_zeta=3
+    
+    will run a simulation with 16 radial, 16 poloidal, and 8 toroidal splines, with radial and poloidal splines of degree 3 and toroidal splines of degree 3, on the CPU.
+    The run will be saved to script_outputs/solovev/my_run/.
+    The configuration will be saved to script_outputs/solovev/my_run/config.h5.
+    The final state will be saved to script_outputs/solovev/my_run/final_state.h5.
+    The final state will be saved to script_outputs/solovev/my_run/final_state.h5.
+    """
     # Get user input
     params = parse_args()
 
@@ -128,23 +72,23 @@ def run(CONFIG):
     kappa = CONFIG["kappa"]
     eps = CONFIG["eps"]
     alpha = jnp.arcsin(CONFIG["delta"])
-    # if CONFIG["type"] == "tokamak":
+    # if CONFIG["boundary_type"] == "tokamak":
     #     tau = CONFIG["q_star"] * kappa * (1 + kappa**2) / (kappa + 1)
     # else:
     #     tau = CONFIG["q_star"]
 
     start_time = time.time()
 
-    if CONFIG["type"] == "tokamak":
+    if CONFIG["boundary_type"] == "tokamak":
         F = cerfon_map(eps, kappa, alpha)
-    elif CONFIG["type"] == "helix":
+    elif CONFIG["boundary_type"] == "helix":
         F = helical_map(epsilon=CONFIG["eps"], h=CONFIG["h_helix"],
-                        n_turns=CONFIG["m_helix"], kappa=CONFIG["kappa"], alpha=alpha)
-    elif CONFIG["type"] == "rotating_ellipse":
+                        nfp=CONFIG["nfp"], kappa=CONFIG["kappa"], alpha=alpha)
+    elif CONFIG["boundary_type"] == "rotating_ellipse":
         F = rotating_ellipse_map(
-            a=CONFIG["a"], b=CONFIG["b"], m=CONFIG["m_rot"])
+            eps=CONFIG["eps"], kappa=CONFIG["kappa"], nfp=CONFIG["nfp"])
     else:
-        raise ValueError("Unknown configuration type.")
+        raise ValueError("Unknown boundary type.")
 
     ns = (CONFIG["n_r"], CONFIG["n_theta"], CONFIG["n_zeta"])
     ps = (CONFIG["p_r"], CONFIG["p_theta"], 0

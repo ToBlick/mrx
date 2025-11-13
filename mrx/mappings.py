@@ -67,7 +67,7 @@ def cerfon_map(epsilon: float = 0.33, kappa: float = 1.2, alpha: float = 0.0, R0
     return F
 
 
-def helical_map(epsilon: float = 0.33, h: float = 0.25, n_turns: int = 3) -> Callable:
+def helical_map(epsilon: float = 0.33, h: float = 0.25, kappa: float = 1.2, alpha: float = 0.0, nfp: int = 3) -> Callable:
     """
     Helical mapping function:
     F(r, t, ζ) = (X(ζ)) where X(ζ) is the coordinate along the helix.
@@ -79,8 +79,12 @@ def helical_map(epsilon: float = 0.33, h: float = 0.25, n_turns: int = 3) -> Cal
         Eccentricity of the helix.
     h : float, default=0.25
         Height of the helix.
-    n_turns : int, default=3
-        Number of turns of the helix.
+    kappa : float, default=1.2
+        Aspect ratio of the helix.
+    alpha : float, default=0.0
+        Phase shift of the helix.
+    nfp : int, default=3
+        Number of turns of the helix (number of field periods).
 
     Returns
     -------
@@ -91,9 +95,9 @@ def helical_map(epsilon: float = 0.33, h: float = 0.25, n_turns: int = 3) -> Cal
 
     def X(ζ):
         return jnp.array([
-            (1 + h * jnp.cos(2 * π * n_turns * ζ)) * jnp.sin(2 * π * ζ),
-            (1 + h * jnp.cos(2 * π * n_turns * ζ)) * jnp.cos(2 * π * ζ),
-            h * jnp.sin(2 * π * n_turns * ζ)
+            (1 + kappa * h * jnp.cos(2 * π * nfp * ζ + alpha)) * jnp.sin(2 * π * ζ),
+            (1 + kappa * h * jnp.cos(2 * π * nfp * ζ + alpha)) * jnp.cos(2 * π * ζ),
+            kappa * h * jnp.sin(2 * π * nfp * ζ + alpha)
         ])
 
     def get_frame(ζ):

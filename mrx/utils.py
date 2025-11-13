@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 
 __all__ = ['jacobian_determinant', 'inv33',
-           'div', 'curl', 'grad', 'l2_product']
+           'div', 'curl', 'grad', 'l2_product', 'DEVICE_PRESETS', 'DEFAULT_CONFIG']
 
 
 def jacobian_determinant(f: Callable[[jnp.ndarray], jnp.ndarray]) -> Callable[[jnp.ndarray], jnp.ndarray]:
@@ -235,3 +235,56 @@ def integrate_against(getter, w_jk, n):
 
     _, R = jax.lax.scan(body_fun, None, jnp.arange(n))
     return R
+
+
+# Device-specific parameter presets for the relaxation
+DEVICE_PRESETS = {
+    "ITER":  {"eps": 0.32, "kappa": 1.7, "delta": 0.33, "q_star": 1.57, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
+    "NSTX":  {"eps": 0.78, "kappa": 2.0, "delta": 0.35, "q_star": 2.0, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
+    "SPHERO": {"eps": 0.95, "kappa": 1.0, "delta": 0.2,  "q_star": 0.0, "type": "tokamak", "n_zeta": 1, "p_zeta": 0},
+    "ROT_ELL": {"a": 0.1, "b": 0.025, "m_rot": 5, "q_star": 1.6, "type": "rotating_ellipse"},
+    "HELIX": {"eps": 0.33, "h_helix": 0.20, "kappa": 1.7, "delta": 0.33, "m_helix": 3, "q_star": 2.0, "type": "helix"},
+}
+
+# Default configuration parameters for the relaxation
+DEFAULT_CONFIG = {
+    # Run parameters
+    "run_name": "",
+    "boundary_type": "helix", # Type of boundary: "tokamak" or "helix" or "rotating_ellipse"
+
+    # Parameters describing the domain. Some of these parameters are ignored for certain domain shapes.
+    "eps":      0.2,  # aspect ratio
+    "kappa":    1.7,   # Elongation parameter
+    "q_star":   1.57,   # toroidal field strength
+    "delta": 0.0,   # triangularity
+    "nfp":  3,     # poloidal mode number of helix (number of field periods)
+    "h_helix":  0,   # radius of helix turns
+    
+    # Discretization parameters for the finite element space
+    "n_r": 8,       # Number of radial splines
+    "n_theta": 8,   # Number of poloidal splines
+    "n_zeta": 6,    # Number of toroidal splines
+    "p_r": 3,       # Degree of radial splines
+    "p_theta": 3,     # Degree of poloidal splines
+    "p_zeta": 3,    # Degree of toroidal splines
+
+    # Hyperparameters for the outer loop of the magnetic relaxation solver
+    "maxit":                 5_000,   # max. Number of time steps
+    "precond":               False,     # Use preconditioner
+    "precond_compute_every": 1000,       # Recompute preconditioner every n iterations
+    "gamma":                 0, # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
+    "dt":                    1e-6,      # initial time step
+    "dt_factor":             1.01,  # time-steps are increased by this factor and decreased by its square
+    "force_tol":             1e-15,  # Convergence tolerance for |JxB - grad p| (or |JxB| if force_free)
+    "eta":                   0.0,       # Resistivity
+    "force_free":            False, # If True, solve for JxB = 0. If False, JxB = grad p
+
+    # Solver hyperparameters for the inner loop of the magnetic relaxation solver
+    "solver_maxit": 20,    # Maximum number of iterations before Picard solver gives up
+    "solver_critit": 4, # If Picard solver converges in less than this number of iterations, increase time step
+    "solver_tol": 1e-12,   # Tolerance for convergence
+    "verbose": False,      # If False, prints only force every 'print_every'
+    "print_every": 1000,    # Print every n iterations
+    "save_every": 100,     # Save intermediate results every n iterations
+    "save_B": False,       # Save intermediate B fields to file
+}
