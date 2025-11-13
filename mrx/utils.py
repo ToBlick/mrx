@@ -259,7 +259,8 @@ DEFAULT_CONFIG = {
     "delta": 0.0,   # triangularity
     "nfp":  3,     # poloidal mode number of helix (number of field periods)
     "h_helix":  0,   # radius of helix turns
-    
+    "R_0": 1.0,   # major radius of the domain
+
     # Discretization parameters for the finite element space
     "n_r": 8,       # Number of radial splines
     "n_theta": 8,   # Number of poloidal splines

@@ -1062,7 +1062,7 @@ def generate_solovev_plots(name: str):
                wall_time_trace=wall_time_trace,
                outdir=outdir,
                name="force_trace.pdf",
-               CONFIG=CONFIG)
+               )
 
 
 def set_axes_equal(ax: plt.Axes):

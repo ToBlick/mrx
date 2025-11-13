@@ -10,6 +10,7 @@ import numpy as np
 from mrx.derham_sequence import DeRhamSequence
 from mrx.io import parse_args, unique_id
 from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
+from mrx.plotting import generate_solovev_plots
 from mrx.relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
 from mrx.utils import DEVICE_PRESETS
 from mrx.utils import DEFAULT_CONFIG as CONFIG
@@ -130,26 +131,8 @@ def run(CONFIG):
         return (u @ Seq.M2 @ u)**0.5
 
     def B_xyz(p):
-        x, y, z = F(p)
-        # R = (x**2 + y**2)**0.5
-        # phi = jnp.arctan2(y, x)
-
-        # if CONFIG["type"] == "tokamak":
-        #     BR = z * R
-        #     Bphi = tau / R
-        #     Bz = - (kappa**2 / 2 * (R**2 - 1**2) + z**2)
-        #     Bx = BR * jnp.cos(phi) - Bphi * jnp.sin(phi)
-        #     By = BR * jnp.sin(phi) + Bphi * jnp.cos(phi)
-        #     return jnp.array([Bx, By, Bz])
-        # else:
-        #     BR = z * R
-        #     Bphi = tau / R
-        #     Bz = - (1**2 / 2 * (R**2 - 1**2) + z**2)
-        #     Bx = BR * jnp.cos(phi) - Bphi * jnp.sin(phi)
-        #     By = BR * jnp.sin(phi) + Bphi * jnp.cos(phi)
-        #     return jnp.array([Bx, By, Bz])
         DFx = jax.jacfwd(F)(p)
-        # purely poloidal
+        # purely poloidal component of the magnetic field
         return DFx[:, 1]
 
     B_hat = jnp.linalg.solve(Seq.M2, Seq.P2(B_xyz))
@@ -158,10 +141,6 @@ def run(CONFIG):
 
     B_harm = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[1][:, 0]
     B_harm = B_harm / norm_2(B_harm)
-
-    # if CONFIG["type"] != "tokamak":
-    # for ITER, B_harm + 2 B_hat does the trick (unnormalized),
-    # also for ROT_ELL (or 1 for rot_ell, 8x8x5 - ~ 7% normalized)
     B_hat = B_harm + 0 * B_hat
     B_hat /= norm_2(B_hat)
 
@@ -208,7 +187,7 @@ def run(CONFIG):
     print(f"Setup took {setup_done_time - start_time:.2e} seconds.")
     print("Starting relaxation loop...")
 # %%
-    for i in range(1, 5000 + 1):
+    for i in range(1, CONFIG["maxit"] + 1):
 
         state = step(state)
         if (state.picard_residuum > CONFIG["solver_tol"]
@@ -257,44 +236,20 @@ def run(CONFIG):
     print(
         f"Main loop took {final_time - setup_done_time:.2e} seconds for {i} steps, avg. {(final_time - setup_done_time)/i:.2e} s/step.")
 
-    ###
     # Post-processing
-    ###
     B_hat = state.B_n
     print("Simulation finished, post-processing...")
     if CONFIG["save_B"]:
         p_fields = [get_pressure(B) for B in B_fields]
     p_hat = get_pressure(B_hat)
 
-    # # save final state on a grid in physical space
-    # grid_3d = get_3d_grids(F, x_min=1e-3,
-    #                        nx=ps[0]*ns[0]*2,
-    #                        ny=ps[1]*ns[1]*2,
-    #                        nz=ps[2]*ns[2]*2 if ns[2] > 1 else 1)
-
-    # B_final = Pushforward(DiscreteFunction(
-    #     B_hat, Seq.Λ2, Seq.E2), F, 2)
-    # B_final_values = jax.vmap(B_final)(grid_3d[0])
-    # p_final = Pushforward(DiscreteFunction(
-    #     p_hat, Seq.Λ0, Seq.E0), F, 0)
-    # p_final_values = jax.vmap(p_final)(grid_3d[0])
-    # grid_points = grid_3d[1]
-
-    ###
-    # Save stuff
-    ###
-    print("Saving to hdf5...")
-
     # Write to HDF5
+    print("Saving to hdf5...")
     with h5py.File(outdir + run_name + ".h5", "w") as f:
-        # Store arrays
         f.create_dataset("iterations", data=jnp.array(iterations))
         f.create_dataset("force_trace", data=jnp.array(force_trace))
         f.create_dataset("B_final", data=B_hat)
         f.create_dataset("p_final", data=p_hat)
-        # f.create_dataset("B_final_values", data=B_final_values)
-        # f.create_dataset("p_final_values", data=p_final_values)
-        # f.create_dataset("grid_points", data=grid_points)
         f.create_dataset("energy_trace", data=jnp.array(energy_trace))
         f.create_dataset("helicity_trace", data=jnp.array(helicity_trace))
         f.create_dataset("divergence_B_trace",
@@ -328,60 +283,9 @@ def run(CONFIG):
 
     print(f"Data saved to {outdir + run_name + '.h5'}.")
 
-    # alternative ICs
-    # DFp = jax.jacfwd(F)(p)
-    # J = jnp.linalg.det(DFp)
-    # Br = J / jnp.linalg.norm(DFp[:, 1]) * 0.0
-    # Btheta = J / jnp.linalg.norm(DFp[:, 1]) * eps * p[0]
-    # Bzeta = J / jnp.linalg.norm(DFp[:, 2]) * R * tau
-    # return DFp @ jnp.array([Br, Btheta, Bzeta]) / J
-# %%
-
-    # def anisotropic_diffusion_tensor(B_hat):
-    #     B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
-
-    #     def B_tensor(x):
-    #         Bx = B_h(x)
-    #         Dfx = jax.jacfwd(F)(x)
-    #         B_phys = Dfx @ Bx
-    #         B_norm = (B_phys @ B_phys)**0.5
-    #         return jnp.outer(Bx, Bx) / (B_norm**2)
-    #     BB_jmn = jax.vmap(B_tensor)(Seq.Q.x)  # Q x 3 x 3
-    #     M = jnp.einsum('ajm,jmn,bjn,j->ab', Seq.dΛ0_ijk,
-    #                    BB_jmn, Seq.dΛ0_ijk, Seq.J_j)
-    #     return Seq.E0_0.matrix() @ M @ Seq.E0_0.matrix().T
-
-# %%
-    # eps_diff = 0.0
-    # Diff = eps_diff * laplace_0 + \
-    #     (1-eps_diff) * anisotropic_diffusion_tensor(B_hat)
-
-    # def localized_source(x, x0, sigma=0.05):
-    #     return jnp.exp(-((x - x0) @ (x - x0)) / (2 * sigma**2)) * jnp.ones(1) / (2 * jnp.pi * sigma**2)**(3/2)
-    # %%
-    # T_hat = jnp.linalg.solve(Diff, Seq.P0_0(lambda x: localized_source(x, jnp.array([0, 0.0, 0.0]), 0.02)))
-    # T_hat = jnp.linalg.solve(Diff, Seq.P0_0(lambda x: jnp.ones(1)))
-    # T_h = Pushforward(DiscreteFunction(T_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
-    # T_hat_iso = jnp.linalg.solve(laplace_0, Seq.P0_0(lambda x: jnp.ones(1)))
-    # T_h_iso = Pushforward(DiscreteFunction(T_hat_iso, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
-
-#     T_hat = jnp.linalg.solve(Diff, M0 @ p_hat)
-#     T_h = Pushforward(DiscreteFunction(T_hat, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
-#     T_hat_iso = jnp.linalg.solve(laplace_0, M0 @ p_hat)
-#     T_h_iso = Pushforward(DiscreteFunction(
-#         T_hat_iso, Seq.Λ0, Seq.E0_0.matrix()), F, 0)
-
-
-# # %%
-#     grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v, nx=32, ny=32,)
-#                  for v in jnp.linspace(0, 1, 16, endpoint=False)]
-    # %%
-    # fig, ax = plot_crossections_separate(T_h, grids_pol)
-    # # %%
-    # fig, ax = plot_crossections_separate(T_h_iso, grids_pol)
-    # # %%
-    # fig, ax = plot_crossections_separate(p_h, grids_pol)
-# %%
+    # Plot all traces
+    print("Generating plots...")
+    generate_solovev_plots(run_name)
 
 
 if __name__ == "__main__":
