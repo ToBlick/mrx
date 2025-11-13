@@ -34,7 +34,6 @@ and is designed to be used in a JAX-based optimization framework.
    overview
    installation
    generate_docs
-   tracing
    source
    publications
 
@@ -51,6 +50,15 @@ Indices and tables
 * :ref:`genindex`
 * :ref:`modindex`
 * :ref:`search`
+
+Tutorials
+==========
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Tutorials: 
+
+   notebooks/10_tokamak_equilibrium
 
 Examples
 ========
@@ -77,18 +85,4 @@ Examples
    polar_relaxation
    relaxation
    pullbacks
-
-Unit Tests
-==========
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Unit Tests:
-
-   test_boundary_conditions
-   test_IterativeSolvers
-   test_lazy_matrices
-   test_projectors
-   test_quadrature
-   test_spline_bases
   

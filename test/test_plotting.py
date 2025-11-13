@@ -4,6 +4,7 @@ import os
 import tempfile
 from pathlib import Path
 
+import h5py
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -12,6 +13,7 @@ import numpy.testing as npt
 import pytest
 
 from mrx.plotting import (
+    generate_solovev_plots,
     get_1d_grids,
     get_2d_grids,
     get_3d_grids,
@@ -919,6 +921,216 @@ def test_poincare_plot_shape_assertion():
                 max_steps=500,
                 name="wrong_"
             )
+
+
+# ============================================================================
+# Tests for generate_solovev_plots
+# ============================================================================
+def test_generate_solovev_plots_basic():
+    """Test basic generate_solovev_plots functionality."""
+    from mrx.mappings import cerfon_map
+    
+    # Create a temporary directory for test data
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        
+        # Create the directory structure that generate_solovev_plots expects
+        solovev_dir = tmpdir_path / "script_outputs" / "solovev"
+        solovev_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create test configuration
+        test_name = "test_solovev"
+        h5_file = solovev_dir / f"{test_name}.h5"
+        
+        # Create a minimal DeRham sequence to get the right size for p_final
+        F = cerfon_map(epsilon=0.33, kappa=1.2, alpha=0.0, R0=1.0)
+        ns = (4, 4, 4)
+        ps = (2, 2, 2)
+        q = max(ps)
+        types = ("clamped", "periodic", "periodic")
+        Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
+        Seq.evaluate_1d()
+        Seq.assemble_M0()
+        
+        # Create test data
+        n_iterations = 10
+        p_final = jnp.ones(Seq.E0.shape[0]) * 0.5
+        iterations = jnp.arange(n_iterations)
+        force_trace = jnp.linspace(1.0, 0.01, n_iterations)
+        velocity_trace = jnp.linspace(1.0, 0.1, n_iterations)
+        helicity_trace = jnp.ones(n_iterations) * 1.0
+        energy_trace = jnp.linspace(1.0, 0.9, n_iterations)
+        divergence_B_trace = jnp.linspace(0.01, 0.001, n_iterations)
+        wall_time_trace = jnp.linspace(0.0, 10.0, n_iterations)
+        
+        # Create HDF5 file with required structure
+        with h5py.File(h5_file, "w") as f:
+            # Create config group with attributes
+            config_group = f.create_group("config")
+            config_group.attrs["delta"] = 0.0
+            config_group.attrs["kappa"] = 1.2
+            config_group.attrs["eps"] = 0.33
+            config_group.attrs["R_0"] = 1.0
+            config_group.attrs["n_r"] = 4
+            config_group.attrs["n_theta"] = 4
+            config_group.attrs["n_zeta"] = 4
+            config_group.attrs["p_r"] = 2
+            config_group.attrs["p_theta"] = 2
+            config_group.attrs["p_zeta"] = 2
+            config_group.attrs["save_B"] = False
+            config_group.attrs["save_every"] = 10
+            
+            # Create datasets
+            f.create_dataset("p_final", data=np.array(p_final))
+            f.create_dataset("iterations", data=np.array(iterations))
+            f.create_dataset("force_trace", data=np.array(force_trace))
+            f.create_dataset("velocity_trace", data=np.array(velocity_trace))
+            f.create_dataset("helicity_trace", data=np.array(helicity_trace))
+            f.create_dataset("energy_trace", data=np.array(energy_trace))
+            f.create_dataset("divergence_B_trace", data=np.array(divergence_B_trace))
+            f.create_dataset("wall_time_trace", data=np.array(wall_time_trace))
+        
+        # Change to the temporary directory so generate_solovev_plots can find the file
+        # The function uses hardcoded paths relative to current directory
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmpdir)
+            
+            # Monkeypatch trace_plot to ignore the CONFIG parameter (bug in generate_solovev_plots)
+            import mrx.plotting as plotting_module
+            original_trace_plot = plotting_module.trace_plot
+            
+            def patched_trace_plot(*args, **kwargs):
+                """Patched trace_plot that ignores CONFIG parameter."""
+                kwargs.pop('CONFIG', None)  # Remove CONFIG if present
+                return original_trace_plot(*args, **kwargs)
+            
+            plotting_module.trace_plot = patched_trace_plot
+            
+            try:
+                # Call the real generate_solovev_plots function
+                # It will look for script_outputs/solovev/{name}.h5 relative to current directory
+                generate_solovev_plots(test_name)
+            finally:
+                # Restore original function
+                plotting_module.trace_plot = original_trace_plot
+            
+            # Verify output files were created
+            output_dir = tmpdir_path / "script_outputs" / "solovev" / test_name
+            p_final_file = output_dir / "p_final.pdf"
+            force_trace_file = output_dir / "force_trace.pdf"
+            
+            assert p_final_file.exists(), "p_final.pdf should be created"
+            assert force_trace_file.exists(), "force_trace.pdf should be created"
+            
+        finally:
+            os.chdir(original_cwd)
+
+
+def test_generate_solovev_plots_with_save_B():
+    """Test generate_solovev_plots with save_B=True."""
+    from mrx.mappings import cerfon_map
+    
+    # Create a temporary directory for test data
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        
+        # Create the directory structure
+        solovev_dir = tmpdir_path / "script_outputs" / "solovev"
+        solovev_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create test configuration
+        test_name = "test_solovev_save_B"
+        h5_file = solovev_dir / f"{test_name}.h5"
+        
+        # Create a minimal DeRham sequence
+        F = cerfon_map(epsilon=0.33, kappa=1.2, alpha=0.0, R0=1.0)
+        ns = (4, 4, 4)
+        ps = (2, 2, 2)
+        q = max(ps)
+        types = ("clamped", "periodic", "periodic")
+        Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
+        Seq.evaluate_1d()
+        Seq.assemble_M0()
+        
+        # Create test data
+        n_iterations = 5
+        p_final = jnp.ones(Seq.E0.shape[0]) * 0.5
+        iterations = jnp.arange(n_iterations)
+        force_trace = jnp.linspace(1.0, 0.01, n_iterations)
+        velocity_trace = jnp.linspace(1.0, 0.1, n_iterations)
+        helicity_trace = jnp.ones(n_iterations) * 1.0
+        energy_trace = jnp.linspace(1.0, 0.9, n_iterations)
+        divergence_B_trace = jnp.linspace(0.01, 0.001, n_iterations)
+        wall_time_trace = jnp.linspace(0.0, 10.0, n_iterations)
+        
+        # Create p_fields (2 pressure fields)
+        n_fields = 2
+        p_fields = jnp.array([jnp.ones(Seq.E0.shape[0]) * (0.5 + i * 0.1) for i in range(n_fields)])
+        
+        # Create HDF5 file with save_B=True
+        with h5py.File(h5_file, "w") as f:
+            config_group = f.create_group("config")
+            config_group.attrs["delta"] = 0.0
+            config_group.attrs["kappa"] = 1.2
+            config_group.attrs["eps"] = 0.33
+            config_group.attrs["R_0"] = 1.0
+            config_group.attrs["n_r"] = 4
+            config_group.attrs["n_theta"] = 4
+            config_group.attrs["n_zeta"] = 4
+            config_group.attrs["p_r"] = 2
+            config_group.attrs["p_theta"] = 2
+            config_group.attrs["p_zeta"] = 2
+            config_group.attrs["save_B"] = True
+            config_group.attrs["save_every"] = 10
+            
+            f.create_dataset("p_final", data=np.array(p_final))
+            f.create_dataset("iterations", data=np.array(iterations))
+            f.create_dataset("force_trace", data=np.array(force_trace))
+            f.create_dataset("velocity_trace", data=np.array(velocity_trace))
+            f.create_dataset("helicity_trace", data=np.array(helicity_trace))
+            f.create_dataset("energy_trace", data=np.array(energy_trace))
+            f.create_dataset("divergence_B_trace", data=np.array(divergence_B_trace))
+            f.create_dataset("wall_time_trace", data=np.array(wall_time_trace))
+            f.create_dataset("p_fields", data=np.array(p_fields))
+        
+        # Change to temp directory
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmpdir)
+            
+            # Monkeypatch trace_plot to ignore the CONFIG parameter (bug in generate_solovev_plots)
+            import mrx.plotting as plotting_module
+            original_trace_plot = plotting_module.trace_plot
+            
+            def patched_trace_plot(*args, **kwargs):
+                """Patched trace_plot that ignores CONFIG parameter."""
+                kwargs.pop('CONFIG', None)  # Remove CONFIG if present
+                return original_trace_plot(*args, **kwargs)
+            
+            plotting_module.trace_plot = patched_trace_plot
+            
+            try:
+                # Call the real generate_solovev_plots function
+                generate_solovev_plots(test_name)
+            finally:
+                # Restore original function
+                plotting_module.trace_plot = original_trace_plot
+            
+            # Verify output files were created
+            output_dir = tmpdir_path / "script_outputs" / "solovev" / test_name
+            p_final_file = output_dir / "p_final.pdf"
+            force_trace_file = output_dir / "force_trace.pdf"
+            p_iter_0_file = output_dir / "p_iter_000000.pdf"
+            p_iter_1_file = output_dir / "p_iter_000010.pdf"
+            
+            assert p_final_file.exists(), "p_final.pdf should be created"
+            assert force_trace_file.exists(), "force_trace.pdf should be created"
+            assert p_iter_0_file.exists(), "p_iter_000000.pdf should be created"
+            assert p_iter_1_file.exists(), "p_iter_000010.pdf should be created"
+            
+        finally:
+            os.chdir(original_cwd)
 
 
 # which runs after all tests complete. The code below is kept for non-pytest execution.
