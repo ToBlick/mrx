@@ -1,14 +1,6 @@
 MRX API Reference
 =================
 
-Subpackages
------------
-
-.. toctree::
-   :maxdepth: 4
-
-   mrx
-
 Module contents
 ---------------
 

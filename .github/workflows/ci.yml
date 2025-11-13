@@ -106,6 +106,7 @@ jobs:
       - name: Install sphinx and its dependencies for building docs
         run: |
           pip install -r docs/requirements.txt
+          conda install -c conda-forge pandoc
 
       - name: Install doxygen
         run: sudo apt install doxygen

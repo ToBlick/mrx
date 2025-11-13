@@ -58,7 +58,12 @@ Tutorials
    :maxdepth: 2
    :caption: Tutorials: 
 
+   tutorials/polar_poisson
+   tutorials/mixed_polar_poisson
+   tutorials/toroid_poisson
+   tutorials/harmonics_hollow_torus
    notebooks/10_tokamak_equilibrium
+   tutorials/gvec_mappings
 
 Examples
 ========

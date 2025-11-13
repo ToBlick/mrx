@@ -21,7 +21,10 @@ sys.path.insert(0, os.path.abspath('.'))
 
 
 # -- Run Doxygen -------------------------------------------------------------
-subprocess.call('doxygen Doxyfile.in', shell=True)
+# Only run doxygen if Doxyfile.in exists
+doxyfile_path = os.path.join(os.path.dirname(__file__), 'Doxyfile.in')
+if os.path.exists(doxyfile_path):
+    subprocess.call('doxygen Doxyfile.in', shell=True)
 
 # -- Project information -----------------------------------------------------
 
@@ -45,6 +48,8 @@ extensions = [
               'sphinx.ext.napoleon',
               'sphinx.ext.mathjax',
               'sphinx.ext.intersphinx',
+              'nbsphinx',
+              'myst_parser',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -97,6 +102,21 @@ napoleon_use_param = True
 napoleon_use_rtype = True
 napoleon_type_aliases = None
 napoleon_attr_annotations = True
+
+# -- MyST Parser configuration --------------------------------------------
+# Enable MyST parser features
+myst_enable_extensions = [
+    "amsmath",
+    "dollarmath",
+    "colon_fence",
+    "html_admonition",
+    "html_image",
+    # "linkify",  # Requires linkify-it-py package
+    "replacements",
+    "smartquotes",
+    "substitution",
+    "tasklist",
+]
 
 # Typehints for autodoc
 #autodoc_typehints = "description"
