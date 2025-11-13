@@ -68,22 +68,13 @@ def run(CONFIG):
         run_name = unique_id(8)
 
     print("Running simulation " + run_name + "...")
-
-    kappa = CONFIG["kappa"]
-    eps = CONFIG["eps"]
-    alpha = jnp.arcsin(CONFIG["delta"])
-    # if CONFIG["boundary_type"] == "tokamak":
-    #     tau = CONFIG["q_star"] * kappa * (1 + kappa**2) / (kappa + 1)
-    # else:
-    #     tau = CONFIG["q_star"]
-
     start_time = time.time()
 
     if CONFIG["boundary_type"] == "tokamak":
-        F = cerfon_map(eps, kappa, alpha)
+        F = cerfon_map(CONFIG["eps"], CONFIG["kappa"], jnp.arcsin(CONFIG["delta"]))
     elif CONFIG["boundary_type"] == "helix":
         F = helical_map(epsilon=CONFIG["eps"], h=CONFIG["h_helix"],
-                        nfp=CONFIG["nfp"], kappa=CONFIG["kappa"], alpha=alpha)
+                        nfp=CONFIG["nfp"], kappa=CONFIG["kappa"], alpha=jnp.arcsin(CONFIG["delta"]))
     elif CONFIG["boundary_type"] == "rotating_ellipse":
         F = rotating_ellipse_map(
             eps=CONFIG["eps"], kappa=CONFIG["kappa"], nfp=CONFIG["nfp"])
@@ -98,16 +89,16 @@ def run(CONFIG):
              "constant" if CONFIG["n_zeta"] == 1 else "periodic")
 
     print("Setting up FEM spaces...")
-
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
-
     assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
 
+    # Assemble the FEM spaces and build the projections
     Seq.evaluate_1d()
     Seq.assemble_all()
     Seq.build_crossproduct_projections()
     Seq.assemble_leray_projection()
 
+    # Initialize the arrays for keeping track of the simulation progress
     iterations = [0]
     force_trace = []
     energy_trace = []

@@ -107,11 +107,12 @@ jobs:
         run: |
           pip install -r docs/requirements.txt
 
-      - name: Install doxygen
-        run: sudo apt install doxygen
+      - name: Install doxygen and pandoc
+        run: |
+          sudo apt update
+          sudo apt install -y doxygen pandoc
 
       - name: Build docs
         run: |
           cd docs
-          conda install -c conda-forge pandoc
           sphinx-build -b html source build
