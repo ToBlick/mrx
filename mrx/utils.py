@@ -488,7 +488,7 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
 
     setup_done_time = time.time()
     trace_dict["setup_done_time"] = setup_done_time
-    print(f"Setup took {setup_done_time - trace_dict["start_time"]:.2e} seconds.")
+    print(f"Setup took {setup_done_time - trace_dict['start_time']:.2e} seconds.")
 
     print("Starting relaxation loop...")
     for i in range(1, CONFIG["maxit"] + 1):
