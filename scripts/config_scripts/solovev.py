@@ -2,18 +2,16 @@
 import os
 import time
 
-import h5py
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.io import parse_args, unique_id
 from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
 from mrx.plotting import generate_solovev_plots
-from mrx.relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
-from mrx.utils import DEVICE_PRESETS
-from mrx.utils import DEFAULT_CONFIG as CONFIG
+from mrx.relaxation import MRXDiagnostics, State
+from mrx.utils import run_relaxation_loop, update_config, DEFAULT_CONFIG
+from mrx.utils import default_trace_dict, save_trace_dict_to_hdf5, norm_2
 
 jax.config.update("jax_enable_x64", True)
 
@@ -30,36 +28,12 @@ def main():
     For example:
     python solovev.py run_name=test_run boundary_type=rotating_ellipse n_r=16 n_theta=16 n_zeta=8 p_r=3 p_theta=3 p_zeta=3
     
-    will run a simulation with 16 radial, 16 poloidal, and 8 toroidal splines, with radial and poloidal splines of degree 3 and toroidal splines of degree 3, on the CPU.
-    The run will be saved to script_outputs/solovev/my_run/.
-    The configuration will be saved to script_outputs/solovev/my_run/config.h5.
-    The final state will be saved to script_outputs/solovev/my_run/final_state.h5.
-    The final state will be saved to script_outputs/solovev/my_run/final_state.h5.
+    will run a simulation with 16 radial, 16 poloidal, and 8 toroidal splines, 
+    with radial and poloidal splines of degree 3 and toroidal splines of degree 3, on the CPU.
     """
     # Get user input
     params = parse_args()
-
-    # Step 1: If device specified, apply defaults
-    device_name = params.get("device")
-    if device_name:
-        preset = DEVICE_PRESETS.get(device_name.upper())
-        if preset:
-            for k, v in preset.items():
-                CONFIG[k] = v
-        else:
-            print(f"Unknown device '{device_name}' - ignoring.")
-
-    # Step 2: Override with user-supplied parameters
-    for k, v in params.items():
-        if k in CONFIG:
-            CONFIG[k] = v
-        elif k != "device":
-            print(f"Unknown parameter '{k}' - ignoring.")
-
-    print("Configuration:")
-    for k, v in CONFIG.items():
-        print(f"  {k}: {v}")
-
+    CONFIG = update_config(params, DEFAULT_CONFIG)
     run(CONFIG)
 
 
@@ -70,6 +44,9 @@ def run(CONFIG):
 
     print("Running simulation " + run_name + "...")
     start_time = time.time()
+    # Initialize the trace dictionary
+    trace_dict = default_trace_dict.copy()
+    trace_dict["start_time"] = start_time
 
     if CONFIG["boundary_type"] == "tokamak":
         F = cerfon_map(CONFIG["eps"], CONFIG["kappa"], jnp.arcsin(CONFIG["delta"]))
@@ -99,195 +76,45 @@ def run(CONFIG):
     Seq.build_crossproduct_projections()
     Seq.assemble_leray_projection()
 
-    # Initialize the arrays for keeping track of the simulation progress
-    iterations = [0]
-    force_trace = []
-    energy_trace = []
-    helicity_trace = []
-    divergence_trace = []
-    picard_iterations = []
-    picard_errors = []
-    timesteps = []
-    velocity_trace = []
-    wall_time_trace = []
-    if CONFIG["save_B"]:
-        B_fields = []
-
-    def append_all(i, f, E, H, dvg, v, p_i, e, dt, B=None):
-        iterations.append(i)
-        force_trace.append(f)
-        energy_trace.append(E)
-        helicity_trace.append(H)
-        divergence_trace.append(dvg)
-        velocity_trace.append(v)
-        picard_iterations.append(p_i)
-        picard_errors.append(e)
-        timesteps.append(dt)
-        wall_time_trace.append(time.time() - start_time)
-        if CONFIG["save_B"]:
-            B_fields.append(B)
-
-    def norm_2(u):
-        return (u @ Seq.M2 @ u)**0.5
-
-    def B_xyz(p):
-        DFx = jax.jacfwd(F)(p)
-        # purely poloidal component of the magnetic field
-        return DFx[:, 1]
-
-    B_hat = jnp.linalg.solve(Seq.M2, Seq.P2(B_xyz))
-    B_hat = Seq.P_Leray @ B_hat
-    B_hat /= norm_2(B_hat)
-
+    # Initialize initial magnetic field guess
     B_harm = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[1][:, 0]
-    B_harm = B_harm / norm_2(B_harm)
-    B_hat = B_harm + 0 * B_hat
-    B_hat /= norm_2(B_hat)
+    B_hat = B_harm / norm_2(B_harm, Seq)
 
+    # Initialize the state of the simulation
     diagnostics = MRXDiagnostics(Seq, CONFIG["force_free"])
-
-    get_pressure = jax.jit(diagnostics.pressure)
-    get_energy = jax.jit(diagnostics.energy)
-    get_helicity = jax.jit(diagnostics.helicity)
-    get_divergence_B = jax.jit(diagnostics.divergence_norm)
-
-    p_hat = get_pressure(B_hat)
-
-    state = State(B_hat, B_hat, CONFIG["dt"],
-                  CONFIG["eta"], Seq.M2, 0, 0, 0, 0)
-    # initial Hessian is identity
-
-    timestepper = TimeStepper(Seq,
-                              gamma=CONFIG["gamma"],
-                              newton=CONFIG["precond"],
-                              force_free=CONFIG["force_free"],
-                              picard_tol=CONFIG["solver_tol"],
-                              picard_maxit=CONFIG["solver_maxit"])
-
-    compute_hessian = jax.jit(MRXHessian(Seq).assemble)
-    step = jax.jit(timestepper.picard_solver)
-
-    dry_run = step(state)  # compile
-
-    force_trace.append(dry_run.force_norm)
-    velocity_trace.append(dry_run.velocity_norm)
-    energy_trace.append(get_energy(state.B_n))
-    helicity_trace.append(get_helicity(state.B_n))
-    divergence_trace.append(get_divergence_B(state.B_n))
-    if CONFIG["save_B"]:
-        B_fields.append(B_hat)
-
-    print(f"Initial force error: {force_trace[-1]:.2e}")
-    print(f"Initial energy: {energy_trace[-1]:.2e}")
-    print(f"Initial helicity: {helicity_trace[-1]:.2e}")
-    print(f"Initial ||div B||: {divergence_trace[-1]:.2e}")
-
-    setup_done_time = time.time()
-    wall_time_trace.append(setup_done_time - start_time)
-    print(f"Setup took {setup_done_time - start_time:.2e} seconds.")
-    print("Starting relaxation loop...")
+    state = State(B_hat, B_hat, CONFIG["dt"], CONFIG["eta"], Seq.M2, 0, 0, 0, 0)
 # %%
-    for i in range(1, CONFIG["maxit"] + 1):
-
-        state = step(state)
-        if (state.picard_residuum > CONFIG["solver_tol"]
-                or ~jnp.isfinite(state.picard_residuum)):
-            # half time step and try again
-            state = timestepper.update_dt(state, state.dt / 2)
-            state = timestepper.update_B_guess(state, state.B_n)
-            continue
-        # otherwise, we converged - proceed
-        state = timestepper.update_B_n(state, state.B_guess)
-
-        if CONFIG["precond"] and (i % CONFIG["precond_compute_every"] == 0):
-            state = timestepper.update_hessian(
-                state, compute_hessian(state.B_n))
-
-        if state.picard_iterations < CONFIG["solver_critit"]:
-            dt_new = state.dt * CONFIG["dt_factor"]
-        else:
-            dt_new = state.dt / (CONFIG["dt_factor"])**2
-        state = timestepper.update_dt(state, dt_new)
-
-        if i % CONFIG["save_every"] == 0 or i == CONFIG["maxit"]:
-            append_all(i,
-                       state.force_norm,
-                       get_energy(state.B_n),
-                       get_helicity(state.B_n),
-                       get_divergence_B(state.B_n),
-                       state.velocity_norm,
-                       state.picard_iterations,
-                       state.picard_residuum,
-                       state.dt,
-                       state.B_n if CONFIG["save_B"] else None)
-
-        if i % CONFIG["print_every"] == 0:
-            print(
-                f"Iteration {i}, u norm: {state.velocity_norm:.2e}, force norm: {state.force_norm:.2e}")
-            if CONFIG["verbose"]:
-                print(
-                    f"   dt: {dt_new:.2e}, picard iters: {state.picard_iterations:.2e}, picard err: {state.picard_residuum:.2e}")
-        if force_trace[-1] < CONFIG["force_tol"]:
-            print(
-                f"Converged to force tolerance {CONFIG['force_tol']} after {i} steps.")
-            break
+    # Perform the magnetic relaxation solve
+    run_relaxation_loop(CONFIG, trace_dict, state, diagnostics)
 # %%
     final_time = time.time()
+    trace_dict["end_time"] = final_time
     print(
-        f"Main loop took {final_time - setup_done_time:.2e} seconds for {i} steps, avg. {(final_time - setup_done_time)/i:.2e} s/step.")
+        f"Main loop took {final_time - trace_dict["setup_done_time"]:.2e} ",
+        f"seconds for {trace_dict["iterations"][-1]} steps, avg.", 
+        f"{(final_time - trace_dict["setup_done_time"])/trace_dict["iterations"][-1]:.2e} s/step."
+    )
 
     # Post-processing
-    B_hat = state.B_n
     print("Simulation finished, post-processing...")
+    B_hat = state.B_n
+    get_pressure = jax.jit(diagnostics.pressure)
     if CONFIG["save_B"]:
-        p_fields = [get_pressure(B) for B in B_fields]
+        trace_dict["p_fields"] = [get_pressure(B) for B in trace_dict["B_fields"]]
     p_hat = get_pressure(B_hat)
+    trace_dict["p_final"] = p_hat
+    trace_dict["B_final"] = B_hat
 
     # Write to HDF5
     print("Saving to hdf5...")
-    with h5py.File(outdir + run_name + ".h5", "w") as f:
-        f.create_dataset("iterations", data=jnp.array(iterations))
-        f.create_dataset("force_trace", data=jnp.array(force_trace))
-        f.create_dataset("B_final", data=B_hat)
-        f.create_dataset("p_final", data=p_hat)
-        f.create_dataset("energy_trace", data=jnp.array(energy_trace))
-        f.create_dataset("helicity_trace", data=jnp.array(helicity_trace))
-        f.create_dataset("divergence_B_trace",
-                         data=jnp.array(divergence_trace))
-        f.create_dataset("velocity_trace", data=jnp.array(velocity_trace))
-        f.create_dataset("picard_iterations",
-                         data=jnp.array(picard_iterations))
-        f.create_dataset("picard_errors", data=jnp.array(picard_errors))
-        f.create_dataset("timesteps", data=jnp.array(timesteps))
-        f.create_dataset("harmonic_norm", data=jnp.array(
-            [norm_2(diagnostics.harmonic_component(B_hat))]))
-        f.create_dataset("total_time", data=jnp.array(
-            [final_time - start_time]))
-        f.create_dataset("time_setup", data=jnp.array(
-            [setup_done_time - start_time]))
-        f.create_dataset("time_solve", data=jnp.array(
-            [final_time - setup_done_time]))
-        f.create_dataset("wall_time_trace", data=jnp.array(
-            wall_time_trace) - start_time)
-        if CONFIG["save_B"]:
-            f.create_dataset("B_fields", data=jnp.array(B_fields))
-            f.create_dataset("p_fields", data=jnp.array(p_fields))
-        # Store config variables in a group
-        cfg_group = f.create_group("config")
-        for key, val in CONFIG.items():
-            if isinstance(val, str):
-                # Strings need special handling
-                cfg_group.attrs[key] = np.bytes_(val)
-            else:
-                cfg_group.attrs[key] = val
+    save_trace_dict_to_hdf5(trace_dict, diagnostics, outdir + run_name, CONFIG)
 
     print(f"Data saved to {outdir + run_name + '.h5'}.")
 
     # Plot all traces
     print("Generating plots...")
-    generate_solovev_plots(run_name)
+    generate_solovev_plots(outdir + run_name + ".h5")
 
-
+# %%
 if __name__ == "__main__":
     main()
-# %%

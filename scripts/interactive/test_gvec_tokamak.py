@@ -15,7 +15,9 @@ jax.config.update("jax_enable_x64", True)
 script_dir = Path(__file__).parent / 'script_outputs'
 script_dir.mkdir(parents=True, exist_ok=True)
 # %%
-gvec_eq = xr.open_dataset("data/gvec_tokamak.h5", engine="h5netcdf")
+repo_root = Path(__file__).parent.parent.parent 
+data_file = repo_root / "data" / "gvec_tokamak.h5"
+gvec_eq = xr.open_dataset(data_file, engine="h5netcdf")
 # %%
 θ_star = gvec_eq["thetastar"].values    # shape (mρ, mθ), rho x theta
 _ρ = gvec_eq["rho"].values              # shape (mρ,)

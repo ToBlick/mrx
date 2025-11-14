@@ -26,7 +26,7 @@ def is_running_in_github_actions():
 jax.config.update("jax_enable_x64", True)
 
 # Get the repository root directory (parent of test directory)
-repo_root = Path(__file__).parent.parent
+repo_root = Path(__file__).parent.parent.parent 
 data_file = repo_root / "data" / "gvec_stellarator.h5"
 
 n, p, nfp = 8, 3, 3

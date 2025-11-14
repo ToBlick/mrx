@@ -15,7 +15,7 @@ changes to the main branch, follow the steps below.
 .. code-block:: bash
 
     pip install -r docs/requirements.txt
-    conda install -c conda-forge doxygen
+    conda install -c conda-forge doxygen pandoc
 
 2. Generate the documentation:
 
