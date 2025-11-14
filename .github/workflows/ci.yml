@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.12']
+        python-version: ['3.10', '3.11','3.12']
     steps:
     - uses: actions/checkout@v4
     
@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.12']
+        python-version: ['3.10', '3.11','3.12']
         
     steps:
     - uses: actions/checkout@v4
@@ -53,40 +53,53 @@ jobs:
       run: |
         pytest test
         
-  # script-test:
-  #   needs: test
-  #   runs-on: ubuntu-latest
-  #   strategy:
-  #     matrix:
-  #       python-version: ['3.12']
-  #       script: [
-  #         'polar_helicity.py',
-  #         'cube_relaxation.py',
-  #         'relaxation.py',
-  #         'two_d_helicity.py',
-  #         'polar_relaxation.py',
-  #         'conjugate.py',
-  #         'oop_splines.py',
-  #         'two_d_poisson.py',
-  #         'polar_poisson.py',
-  #         'three_d_poisson.py',
-  #         'two_d_poisson_mixed.py',
-  #         'Beltrami.py',
-  #         'two_d_helmhotz_decomposition.py'
-  #       ]
+  script-test:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12']  # Avoid excessive runtime by only testing with Python 3.12
+        script: [
+          'scripts/interactive/test_gvec_stellarator.py',
+          'scripts/interactive/test_gvec_tokamak.py',
+          'scripts/interactive/cylinder_vector_poisson.py',
+          'scripts/interactive/toroid_cavity.py',
+          'scripts/interactive/toroid_poisson.py',
+          'scripts/interactive/cylinder_cavity.py',
+          'scripts/interactive/cylinder_vector_poisson.py',
+          'scripts/interactive/drumshape.py',
+          'scripts/tutorials/polar_poisson.py',
+          'scripts/tutorials/toroid_poisson.py',
+          'scripts/tutorials/mixed_polar_poisson.py',
+          'scripts/config_scripts/iter_islands.py',
+          'scripts/config_scripts/stell.py',
+          'scripts/config_scripts/solovev.py',
+        ]
         
-  #   steps:
-  #   - uses: actions/checkout@v4
+    steps:
+    - uses: actions/checkout@v4
     
-  #   - name: Set up Python ${{ matrix.python-version }}
-  #     uses: actions/setup-python@v5
-  #     with:
-  #       python-version: ${{ matrix.python-version }}
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
         
-  #   - name: Install dependencies
-  #     run: |
-  #       python -m pip install --upgrade pip
-  #       pip install jax[cuda12] jaxlib numpy optax diffrax h5py xarray h5netcdf
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install jax jaxlib numpy matplotlib optax diffrax h5py xarray h5netcdf
+        
+    - name: Install mrx package
+      run: |
+        pip install -e .
+        
+    - name: Run script
+      env:
+        MPLBACKEND: Agg
+      timeout-minutes: 10
+      run: |
+        # Try with maxit=10 for config scripts, fallback to default args, then no args
+        python ${{ matrix.script }} maxit=10 run_name=ci_test || python ${{ matrix.script }} 8 3 || python ${{ matrix.script }} run_name=ci_test || python ${{ matrix.script }}
 
   build:
     runs-on: ubuntu-latest
@@ -107,8 +120,10 @@ jobs:
         run: |
           pip install -r docs/requirements.txt
 
-      - name: Install doxygen
-        run: sudo apt install doxygen
+      - name: Install doxygen and pandoc
+        run: |
+          sudo apt update
+          sudo apt install -y doxygen pandoc
 
       - name: Build docs
         run: |

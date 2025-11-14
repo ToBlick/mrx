@@ -882,33 +882,18 @@ def pressure_plot(p: jnp.ndarray, Seq: DeRhamSequence, F: Callable, outdir: str,
 
 
 def trace_plot(
-        iterations: jnp.ndarray, force_trace: jnp.ndarray, helicity_trace: jnp.ndarray, divergence_trace: jnp.ndarray,
-        velocity_trace: jnp.ndarray, wall_time_trace: jnp.ndarray, energy_trace: jnp.ndarray = None,
-        outdir: str = './', name: str = '', FIG_SIZE: tuple = (12, 6), LABEL_SIZE: int = 20,
+        trace_dict: dict, filename: str,
+        FIG_SIZE: tuple = (12, 6), LABEL_SIZE: int = 20,
         TICK_SIZE: int = 16, LINE_WIDTH: float = 2.5, LEGEND_SIZE: int = 16):
     """
     Plot a trace plot.
 
     Parameters
     ----------
-    iterations : jnp.ndarray
-        Iterations.
-    force_trace : jnp.ndarray
-        Force trace.
-    energy_trace : jnp.ndarray, default=None
-        Energy trace.
-    helicity_trace : jnp.ndarray
-        Helicity trace.
-    divergence_trace : jnp.ndarray
-        Divergence trace.
-    velocity_trace : jnp.ndarray
-        Velocity trace.
-    wall_time_trace : jnp.ndarray
-        Wall time trace.
-    outdir : str, default='./'
-        Directory to save the plot.
-    name : str, default=''
-        Name of the plot.
+    trace_dict : dict
+        Trace dictionary.
+    filename : str
+        Name of the file to save the plot to.
     FIG_SIZE : tuple, default=(12, 6)
         Size of the figure.
     LABEL_SIZE : int, default=20
@@ -929,13 +914,24 @@ def trace_plot(
     ax2_top : matplotlib.axes.Axes
         Axes object for the top y-axis.
     """
-    fig1, ax2 = plt.subplots(figsize=FIG_SIZE)
+    # Convert to jnp.ndarray
+    iterations = jnp.array(trace_dict["iterations"])
+    force_trace = jnp.array(trace_dict["force_trace"])
+    energy_trace_val = trace_dict.get("energy_trace")
+    energy_trace = jnp.array(energy_trace_val) if energy_trace_val is not None else None
+    helicity_trace = jnp.array(trace_dict["helicity_trace"])
+    divergence_trace = jnp.array(trace_dict["divergence_trace"])
+    velocity_trace = jnp.array(trace_dict["velocity_trace"])
+    wall_time_trace = jnp.array(trace_dict["wall_time_trace"])
 
+    # Plot colors
     color1 = 'purple'
     color2 = 'black'
     color3 = 'darkgray'
     color4 = 'teal'
     color5 = 'orange'
+
+    fig1, ax2 = plt.subplots(figsize=FIG_SIZE)
 
     # Plot Energy on the left y-axis (ax1)
     if energy_trace is not None:
@@ -982,28 +978,43 @@ def trace_plot(
     ax2.legend(loc='best', fontsize=LEGEND_SIZE)
     ax2.grid(which="both", linestyle="--", linewidth=0.5)
     fig1.tight_layout()
-    plt.savefig(outdir + name, bbox_inches='tight')
+    plt.savefig(filename, bbox_inches='tight')
     plt.close()
 
 
-def generate_solovev_plots(name: str):
+def generate_solovev_plots(filename: str):
     """
     Generate all plots for a Solovev configuration.
 
     Parameters
     ----------
-    name : str
-        Name of the configuration.
+    filename : str
+        Name of the h5 file (without .h5 extension) or full path to the h5 file.
+        If just a name, looks for script_outputs/solovev/{filename}.h5
     """
 
     jax.config.update("jax_enable_x64", True)
 
-    outdir = "script_outputs/solovev/" + name + "/"
-    os.makedirs(outdir, exist_ok=True)
+    # Handle both full path and just name
+    if filename.endswith('.h5'):
+        h5_file = filename
+    else:
+        h5_file = f"script_outputs/solovev/{filename}.h5"
+    
+    outdir = os.path.dirname(h5_file)
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+    else:
+        # If no directory, use the default output directory
+        outdir = "script_outputs/solovev"
+        os.makedirs(outdir, exist_ok=True)
+        # Construct full path for h5_file
+        if not h5_file.startswith("script_outputs"):
+            h5_file = os.path.join(outdir, os.path.basename(h5_file))
 
-    print("Generating plots for " + name + "...")
+    print("Generating plots for " + h5_file + "...")
 
-    with h5py.File("script_outputs/solovev/" + name + ".h5", "r") as f:
+    with h5py.File(h5_file, "r") as f:
         CONFIG = {k: v for k, v in f["config"].attrs.items()}
         # decode strings back if needed
         CONFIG = {k: v.decode() if isinstance(v, bytes)
@@ -1015,7 +1026,7 @@ def generate_solovev_plots(name: str):
         velocity_trace = f["velocity_trace"][:]
         helicity_trace = f["helicity_trace"][:]
         energy_trace = f["energy_trace"][:]
-        divergence_B_trace = f["divergence_B_trace"][:]
+        divergence_trace = f["divergence_trace"][:]
         wall_time_trace = f["wall_time_trace"][:]
         if CONFIG["save_B"]:
             p_fields = f["p_fields"][:]
@@ -1039,30 +1050,31 @@ def generate_solovev_plots(name: str):
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
 
     print("Generating pressure plot...")
+    # Construct output directory for plots
+    plot_outdir = os.path.join(outdir, os.path.splitext(os.path.basename(h5_file))[0])
+    os.makedirs(plot_outdir, exist_ok=True)
     # Plot number one: pressure contour plot of final solution
-    pressure_plot(p_final, Seq, F, outdir, name="p_final.pdf", zeta=0)
+    pressure_plot(p_final, Seq, F, plot_outdir + "/", name="p_final.pdf", zeta=0)
     if CONFIG["save_B"]:
         for i, p in enumerate(p_fields):
             pressure_plot(p,
                           Seq,
                           F,
-                          outdir,
+                          plot_outdir + "/",
                           name=f"p_iter_{i*CONFIG['save_every']:06d}.pdf",
                           zeta=0)
 
     print("Generating convergence plot...")
-    # Figure 2: Energy and Force
-
-    trace_plot(iterations=iterations,
-               force_trace=force_trace,
-               energy_trace=energy_trace,
-               helicity_trace=helicity_trace,
-               divergence_trace=divergence_B_trace,
-               velocity_trace=velocity_trace,
-               wall_time_trace=wall_time_trace,
-               outdir=outdir,
-               name="force_trace.pdf",
-               CONFIG=CONFIG)
+    trace_dict = {
+        "iterations": iterations,
+        "force_trace": force_trace,
+        "energy_trace": energy_trace,
+        "helicity_trace": helicity_trace,
+        "divergence_trace": divergence_trace,
+        "velocity_trace": velocity_trace,
+        "wall_time_trace": wall_time_trace,
+    }
+    trace_plot(trace_dict, filename=os.path.join(plot_outdir, "force_trace.pdf"))
 
 
 def set_axes_equal(ax: plt.Axes):

@@ -32,6 +32,7 @@ Optional Packages
 
 - For building the documentation, navigate to docs/ and run:
     ``pip install -r requirements.txt``
+    ``conda install -c conda-forge doxygen pandoc``
     ``make html``
 
 Post-Installation

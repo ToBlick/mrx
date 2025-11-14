@@ -29,9 +29,8 @@ def run_all_scripts(directory):
         print('Total run time = ', t2 - t1, ' s')
 
 # Specify the directory containing the scripts
-scripts_directory = "scripts/"
+scripts_directory = "scripts/tutorials"
 run_all_scripts(scripts_directory)
 
-# Tutorial scripts take too long on a single CPU
-# scripts_directory = "scripts/scripts_tutorials/"
-# run_all_scripts(scripts_directory)
+scripts_directory = "scripts/interactive/"
+run_all_scripts(scripts_directory)

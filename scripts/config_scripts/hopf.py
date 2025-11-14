@@ -100,15 +100,26 @@ def run(CONFIG):
     types = ("clamped", "clamped", "clamped")
 
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=False)
-
-    M0 = Seq.assemble_M0_0()
-    M1 = Seq.assemble_M1_0()
-    M2 = Seq.assemble_M2_0()
-    M3 = Seq.assemble_M3_0()
+    Seq.evaluate_1d()
+    Seq.assemble_M0()   # Assemble 0-form mass matrix
+    Seq.assemble_M1()   # Assemble 1-form mass matrix
+    Seq.assemble_M2()   # Assemble 2-form mass matrix
+    Seq.assemble_M3()   # Assemble 3-form mass matrix
+    M0 = Seq.M0
+    M1 = Seq.M1
+    M2 = Seq.M2
+    M3 = Seq.M3
 
     ###
     # Operators
     ###
+    Seq.assemble_d0()
+    Seq.assemble_d1()
+    Seq.assemble_d2()
+    Seq.assemble_dd0()
+    Seq.assemble_dd1()
+    Seq.assemble_dd2()
+    Seq.assemble_dd3()
 
     grad = jnp.linalg.solve(M1, Seq.assemble_grad_0())
     curl = jnp.linalg.solve(M2, Seq.assemble_curl_0())
@@ -117,16 +128,27 @@ def run(CONFIG):
     weak_curl = jnp.linalg.solve(M1, Seq.assemble_curl_0().T)
     weak_dvg = -jnp.linalg.solve(M0, Seq.assemble_grad_0().T)
 
-    laplace_0 = Seq.assemble_gradgrad_0()                         # dim ker = 0
-    laplace_1 = Seq.assemble_curlcurl_0() - M1 @ grad @ weak_dvg  # dim ker = 0 (no voids)
+
+    laplace_0 = Seq.dd0                         # dim ker = 0
+    laplace_1 = Seq.dd1 - M1 @ grad @ weak_dvg  # dim ker = 0 (no voids)
     laplace_2 = M2 @ curl @ weak_curl + \
-        Seq.assemble_divdiv_0()  # dim ker = 1 (one tunnel)
+        Seq.dd2  # dim ker = 1 (one tunnel)
     laplace_3 = - M3 @ dvg @ weak_grad  # dim ker = 1 (constants)
 
-    M12 = Seq.assemble_M12_0()
-    M03 = Seq.assemble_M03_0()
+    M12 = Seq.M12
+    M03 = Seq.M03
 
     def B_xyz(p):
+        """
+        Returns the Hopf fibration analytic magnetic field in physical space. Formula is:
+
+        .. math::
+            B(x, y, z) = 4 * sqrt(s) / (π * (1 + r^2)^3 * (ω1^2 + ω2^2)^0.5) * [
+                2 * ω2 * y - 2 * ω1 * x * z,
+                - 2 * ω2 * x - 2 * ω1 * y * z,
+                ω1 * (x^2 + y^2 - z^2 - 1)
+            ]
+        """
         x, y, z = F(p)
         rsq = (x**2 + y**2 + z**2)
         return 4 * jnp.sqrt(s) / (π * (1 + rsq)**3 * (ω1**2 + ω2**2)**0.5) * jnp.array([

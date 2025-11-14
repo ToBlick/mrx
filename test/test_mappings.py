@@ -205,7 +205,7 @@ def test_cerfon_map_periodicity():
 # Tests for helical_map
 def test_helical_map_basic():
     """Test basic helical_map functionality."""
-    F = helical_map(epsilon=0.33, h=0.25, n_turns=3)
+    F = helical_map(epsilon=0.33, h=0.25, nfp=3)
     x = jnp.array([0.0, 0.0, 0.0])
     y = F(x)
     assert y.shape == (3,), "Output should have shape (3,)"
@@ -215,16 +215,16 @@ def test_helical_map_parameters():
     """Test helical_map with different parameters."""
     for epsilon in [0.1, 0.33, 0.5]:
         for h in [0.1, 0.25, 0.5]:
-            for n_turns in [1, 3, 5]:
-                F = helical_map(epsilon=epsilon, h=h, n_turns=n_turns)
+            for nfp in [1, 3, 5]:
+                F = helical_map(epsilon=epsilon, h=h, nfp=nfp)
                 x = jnp.array([0.0, 0.0, 0.0])
                 y = F(x)
-                assert y.shape == (3,), f"Failed for epsilon={epsilon}, h={h}, n_turns={n_turns}"
+                assert y.shape == (3,), f"Failed for epsilon={epsilon}, h={h}, nfp={nfp}"
 
 
 def test_helical_map_origin():
     """Test helical_map at origin."""
-    F = helical_map(epsilon=0.33, h=0.25, n_turns=3)
+    F = helical_map(epsilon=0.33, h=0.25, nfp=3)
     x = jnp.array([0.0, 0.0, 0.0])
     y = F(x)
     # At r=0, should be on the helix centerline
@@ -700,7 +700,7 @@ def test_cerfon_map_jacobian():
 
 def test_helical_map_jacobian():
     """Test that helical_map produces valid Jacobian."""
-    F = helical_map(epsilon=0.33, h=0.25, n_turns=3)
+    F = helical_map(epsilon=0.33, h=0.25, nfp=3)
     x = jnp.array([0.5, 0.5, 0.5])
     
     DF = jax.jacfwd(F)(x)
