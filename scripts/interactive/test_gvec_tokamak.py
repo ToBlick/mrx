@@ -1,6 +1,6 @@
 # %%
 from pathlib import Path
-
+import os
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -10,6 +10,12 @@ import xarray as xr
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
+
+def is_running_in_github_actions():
+    """
+    Checks if the current Python script is running within a GitHub Actions environment.
+    """
+    return os.getenv("GITHUB_ACTIONS") == "true"
 
 jax.config.update("jax_enable_x64", True)
 script_dir = Path(__file__).parent / 'script_outputs'
@@ -25,8 +31,11 @@ _θ = gvec_eq["theta"].values            # shape (mθ,)
 X1 = gvec_eq["X1"].values              # shape (mρ, mθ, 1)
 X2 = gvec_eq["X2"].values              # shape (mρ, mθ, 1)
 # %%
+n, p = 8, 3
+if is_running_in_github_actions():
+    n, p = 2, 1
 # Get a deRham sequence to approximate the functions X1(ρ,θ) and X2(ρ,θ)
-mapSeq = DeRhamSequence((8, 8, 1), (3, 3, 0), 5,
+mapSeq = DeRhamSequence((n, n, 1), (p, p, 0), p+2,
                         ("clamped", "periodic", "constant"),
                         lambda x: x, polar=False, dirichlet=False)
 
@@ -112,7 +121,8 @@ plt.grid(True, which="both", ls=":")
 plt.legend()
 plt.tight_layout()
 plt.savefig(script_dir / "projection_error.png")
-plt.show()
+if not is_running_in_github_actions():
+    plt.show()  
 
 # %%
 # --------------------------------------------------------------------
@@ -190,7 +200,9 @@ ax.legend(
 )
 plt.tight_layout()
 plt.savefig(script_dir / "deformed_polar_grid.png")
-plt.show()  # %%
+
+if not is_running_in_github_actions():
+    plt.show()  # %%
 
 # %%
 Seq.assemble_all()

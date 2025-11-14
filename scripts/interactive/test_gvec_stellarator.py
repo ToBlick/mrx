@@ -30,6 +30,8 @@ repo_root = Path(__file__).parent.parent.parent
 data_file = repo_root / "data" / "gvec_stellarator.h5"
 
 n, p, nfp = 8, 3, 3
+if is_running_in_github_actions():
+    n, p = 2, 1
 gvec_eq = xr.open_dataset(data_file, engine="h5netcdf")
 θ_star = gvec_eq["thetastar"].values    # shape (mρ, mθ, mζ), rho x theta
 _ρ = gvec_eq["rho"].values              # shape (mρ,)

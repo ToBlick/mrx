@@ -1,6 +1,7 @@
 # %%
 # TODO turn into test
 from pathlib import Path
+import os
 from typing import Callable
 
 import jax
@@ -19,6 +20,19 @@ script_dir = Path(__file__).parent / 'script_outputs'
 script_dir.mkdir(parents=True, exist_ok=True)
 
 # Initialize parameters
+def is_running_in_github_actions():
+    """
+    Checks if the current Python script is running within a GitHub Actions environment.
+    """
+    return os.getenv("GITHUB_ACTIONS") == "true"
+
+if is_running_in_github_actions():
+    ns = (2, 2, 1)
+    ps = (1, 1, 0)
+else:
+    ns = (15, 15, 1)
+    ps = (3, 3, 0)
+
 ns = (15, 15, 1)  # Number of elements in each direction
 ps = (3, 3, 0)  # Polynomial degree in each direction
 types = ('clamped', 'periodic', 'constant')  # Types

@@ -409,11 +409,24 @@ def plot_reconstruction(a_hat: jnp.ndarray,
 
 
 def main():
+
+    def is_running_in_github_actions():
+        """
+        Checks if the current Python script is running within a GitHub Actions environment.
+        """
+        return os.getenv("GITHUB_ACTIONS") == "true"
+
     # Numerical parameters to use
-    N_PARAMS = 8
-    N_MAP = 8
-    P_MAP = 3
-    POLY_DEGREE = 3
+    if is_running_in_github_actions():
+        N_PARAMS = 2
+        N_MAP = 2
+        P_MAP = 1
+        POLY_DEGREE = 1
+    else:
+        N_PARAMS = 8
+        N_MAP = 8
+        P_MAP = 3
+        POLY_DEGREE = 3
 
     # max. Number of eigenvalues to use in the loss function
     # and other hyperparameters of the optimization and plotting
