@@ -15,10 +15,6 @@ from mrx.utils import default_trace_dict, save_trace_dict_to_hdf5, norm_2
 
 jax.config.update("jax_enable_x64", True)
 
-outdir = "script_outputs/solovev/"
-os.makedirs(outdir, exist_ok=True)
-
-
 def main():
     """
     Runs a magnetic relaxation simulation for a Solovev configuration.
@@ -41,7 +37,9 @@ def run(CONFIG):
     run_name = CONFIG["run_name"]
     if run_name == "":
         run_name = unique_id(8)
-
+    outdir = "script_outputs/solovev/" + run_name + "/"
+    os.makedirs(outdir, exist_ok=True)
+    
     print("Running simulation " + run_name + "...")
     start_time = time.time()
     # Initialize the trace dictionary

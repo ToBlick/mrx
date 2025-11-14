@@ -426,21 +426,23 @@ def test_trace_plot_basic():
     velocity_trace = jnp.array([1.0, 0.8, 0.6, 0.4, 0.2])
     wall_time_trace = jnp.array([0.0, 1.0, 2.0, 3.0, 4.0])
     energy_trace = jnp.array([1.0, 0.9, 0.8, 0.7, 0.6])
+    trace_dict = {
+        "iterations": iterations,
+        "force_trace": force_trace,
+        "helicity_trace": helicity_trace,
+        "divergence_trace": divergence_trace,
+        "velocity_trace": velocity_trace,
+        "wall_time_trace": wall_time_trace,
+        "energy_trace": energy_trace,
+    }
     
     with tempfile.TemporaryDirectory() as tmpdir:
         outdir = Path(tmpdir) / "plots"
         outdir.mkdir()
         
         trace_plot(
-            iterations=iterations,
-            force_trace=force_trace,
-            helicity_trace=helicity_trace,
-            divergence_trace=divergence_trace,
-            velocity_trace=velocity_trace,
-            wall_time_trace=wall_time_trace,
-            energy_trace=energy_trace,
-            outdir=str(outdir) + "/",
-            name="test_trace.pdf"
+            trace_dict=trace_dict,
+            filename=str(outdir) + "/test_trace.pdf"
         )
         if not is_running_in_ci():   
             plt.title("Test trace_plot")
@@ -456,21 +458,23 @@ def test_trace_plot_no_energy():
     divergence_trace = jnp.array([0.0, 0.01, 0.005])
     velocity_trace = jnp.array([1.0, 0.8, 0.6])
     wall_time_trace = jnp.array([0.0, 1.0, 2.0])
-    
+
+    trace_dict = {
+        "iterations": iterations,
+        "force_trace": force_trace,
+        "helicity_trace": helicity_trace,
+        "divergence_trace": divergence_trace,
+        "velocity_trace": velocity_trace,
+        "wall_time_trace": wall_time_trace,
+        "energy_trace": None,
+    }
     with tempfile.TemporaryDirectory() as tmpdir:
         outdir = Path(tmpdir) / "plots"
         outdir.mkdir()
         
         trace_plot(
-            iterations=iterations,
-            force_trace=force_trace,
-            helicity_trace=helicity_trace,
-            divergence_trace=divergence_trace,
-            velocity_trace=velocity_trace,
-            wall_time_trace=wall_time_trace,
-            energy_trace=None,
-            outdir=str(outdir) + "/",
-            name="test_trace_no_energy.pdf"
+            trace_dict=trace_dict,
+            filename=str(outdir) + "/test_trace_no_energy.pdf"
         )
         if not is_running_in_ci():   
             plt.title("Test trace_plot without energy_trace")
@@ -960,7 +964,7 @@ def test_generate_solovev_plots_basic():
         velocity_trace = jnp.linspace(1.0, 0.1, n_iterations)
         helicity_trace = jnp.ones(n_iterations) * 1.0
         energy_trace = jnp.linspace(1.0, 0.9, n_iterations)
-        divergence_B_trace = jnp.linspace(0.01, 0.001, n_iterations)
+        divergence_trace = jnp.linspace(0.01, 0.001, n_iterations)
         wall_time_trace = jnp.linspace(0.0, 10.0, n_iterations)
         
         # Create HDF5 file with required structure
@@ -987,7 +991,7 @@ def test_generate_solovev_plots_basic():
             f.create_dataset("velocity_trace", data=np.array(velocity_trace))
             f.create_dataset("helicity_trace", data=np.array(helicity_trace))
             f.create_dataset("energy_trace", data=np.array(energy_trace))
-            f.create_dataset("divergence_B_trace", data=np.array(divergence_B_trace))
+            f.create_dataset("divergence_trace", data=np.array(divergence_trace))
             f.create_dataset("wall_time_trace", data=np.array(wall_time_trace))
         
         # Change to the temporary directory so generate_solovev_plots can find the file
@@ -1061,7 +1065,7 @@ def test_generate_solovev_plots_with_save_B():
         velocity_trace = jnp.linspace(1.0, 0.1, n_iterations)
         helicity_trace = jnp.ones(n_iterations) * 1.0
         energy_trace = jnp.linspace(1.0, 0.9, n_iterations)
-        divergence_B_trace = jnp.linspace(0.01, 0.001, n_iterations)
+        divergence_trace = jnp.linspace(0.01, 0.001, n_iterations)
         wall_time_trace = jnp.linspace(0.0, 10.0, n_iterations)
         
         # Create p_fields (2 pressure fields)
@@ -1090,7 +1094,7 @@ def test_generate_solovev_plots_with_save_B():
             f.create_dataset("velocity_trace", data=np.array(velocity_trace))
             f.create_dataset("helicity_trace", data=np.array(helicity_trace))
             f.create_dataset("energy_trace", data=np.array(energy_trace))
-            f.create_dataset("divergence_B_trace", data=np.array(divergence_B_trace))
+            f.create_dataset("divergence_trace", data=np.array(divergence_trace))
             f.create_dataset("wall_time_trace", data=np.array(wall_time_trace))
             f.create_dataset("p_fields", data=np.array(p_fields))
         

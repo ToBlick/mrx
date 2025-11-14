@@ -14,9 +14,6 @@ from mrx.utils import update_config, default_trace_dict, save_trace_dict_to_hdf5
 
 jax.config.update("jax_enable_x64", True)
 
-outdir = "script_outputs/stell/"
-os.makedirs(outdir, exist_ok=True)
-
 def main():
     # Get user input
     params = parse_args()
@@ -40,6 +37,8 @@ def run(CONFIG):
     run_name = CONFIG["run_name"]
     if run_name == "":
         run_name = unique_id(8)
+    outdir = "script_outputs/stell/" + run_name + "/"
+    os.makedirs(outdir, exist_ok=True)
 
     print("Running simulation " + run_name + "...")
 
@@ -132,7 +131,7 @@ def run(CONFIG):
     trace_dict["p_final"] = p_hat
 
     print("Saving to hdf5...")
-    save_trace_dict_to_hdf5(trace_dict, diagnostics, outdir + run_name, CONFIG)
+    save_trace_dict_to_hdf5(trace_dict, diagnostics, outdir + run_name + ".h5", CONFIG)
     print(f"Data saved to {outdir + run_name + '.h5'}")
 
     # Plot all traces
