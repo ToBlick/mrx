@@ -26,7 +26,7 @@ def is_running_in_github_actions():
 jax.config.update("jax_enable_x64", True)
 
 # Get the repository root directory (parent of test directory)
-repo_root = Path(__file__).parent.parent
+repo_root = Path(__file__).parent.parent.parent
 data_file = repo_root / "data" / "gvec_stellarator.h5"
 
 n, p, nfp = 8, 3, 3
@@ -112,7 +112,7 @@ B_h = jax.jit(Pushforward(DiscreteFunction(
     B_dof, Seq.Lambda_2, Seq.E2), Seq.F, 2))
 
 # %%
-_zeta_plt = jnp.linspace(0, 1, 100, endpoint=False)
+_zeta_plt = jnp.linspace(0, 1, 100, endpoint=True)
 B_on_axis = jax.vmap(B_h)(jnp.stack([jnp.ones_like(_zeta_plt) * 5e-3,
                                     jnp.zeros_like(_zeta_plt),
                                     _zeta_plt], axis=1))
