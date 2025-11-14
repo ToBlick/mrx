@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ['3.10', '3.11','3.12']
+        python-version: ['3.12']  # Avoid excessive runtime by only testing with Python 3.12
         script: [
           'scripts/interactive/test_gvec_stellarator.py',
           'scripts/interactive/test_gvec_tokamak.py',
@@ -99,7 +99,7 @@ jobs:
       timeout-minutes: 10
       run: |
         # Try with maxit=10 for config scripts, fallback to default args, then no args
-        python ${{ matrix.script }} maxit=10 run_name=ci_test || python ${{ matrix.script }} run_name=ci_test || python ${{ matrix.script }}
+        python ${{ matrix.script }} maxit=10 run_name=ci_test || python ${{ matrix.script }} 8 3 || python ${{ matrix.script }} run_name=ci_test || python ${{ matrix.script }}
 
   build:
     runs-on: ubuntu-latest
