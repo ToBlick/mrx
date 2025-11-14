@@ -88,9 +88,9 @@ def run(CONFIG):
     final_time = time.time()
     trace_dict["end_time"] = final_time
     print(
-        f"Main loop took {final_time - trace_dict["setup_done_time"]:.2e} ",
-        f"seconds for {trace_dict["iterations"][-1]} steps, avg.", 
-        f"{(final_time - trace_dict["setup_done_time"])/trace_dict["iterations"][-1]:.2e} s/step."
+        f"Main loop took {final_time - trace_dict['setup_done_time']:.2e} ",
+        f"seconds for {trace_dict['iterations'][-1]} steps, avg.", 
+        f"{(final_time - trace_dict['setup_done_time'])/trace_dict['iterations'][-1]:.2e} s/step."
     )
 
     # Post-processing
