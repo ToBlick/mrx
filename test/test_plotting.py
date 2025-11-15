@@ -422,16 +422,16 @@ def test_trace_plot_basic():
     }
     
     with tempfile.TemporaryDirectory() as tmpdir:
-        outdir = Path(tmpdir) / "plots"
+        outdir = Path(tmpdir) / "plots/"
         outdir.mkdir()
         
         trace_plot(
             trace_dict=trace_dict,
-            filename=str(outdir) + "/test_trace.pdf"
+            filename=str(outdir) + "/"
         )
-        if not is_running_in_ci():   
-            plt.title("Test trace_plot")
-        output_file = outdir / "test_trace.pdf"
+        output_file = outdir / "force_trace.pdf"
+        assert output_file.exists(), "Output file should be created"
+        output_file = outdir / "energy_trace.pdf"
         assert output_file.exists(), "Output file should be created"
 
 
@@ -454,17 +454,15 @@ def test_trace_plot_no_energy():
         "energy_trace": None,
     }
     with tempfile.TemporaryDirectory() as tmpdir:
-        outdir = Path(tmpdir) / "plots"
+        outdir = Path(tmpdir) / "plots/"
         outdir.mkdir()
         
         trace_plot(
             trace_dict=trace_dict,
-            filename=str(outdir) + "/test_trace_no_energy.pdf"
+            filename=str(outdir) + "/"
         )
-        if not is_running_in_ci():   
-            plt.title("Test trace_plot without energy_trace")
 
-        output_file = outdir / "test_trace_no_energy.pdf"
+        output_file = outdir / "force_trace.pdf"
         assert output_file.exists(), "Output file should be created"
 
 
@@ -1115,12 +1113,16 @@ def test_generate_solovev_plots_basic():
         tmpdir_path = Path(tmpdir)
         
         # Create the directory structure that generate_solovev_plots expects
+        # The function expects: script_outputs/solovev/{filename}/{filename}.h5
         solovev_dir = tmpdir_path / "script_outputs" / "solovev"
         solovev_dir.mkdir(parents=True, exist_ok=True)
         
         # Create test configuration
         test_name = "test_solovev"
-        h5_file = solovev_dir / f"{test_name}.h5"
+        # Create subdirectory for the test name
+        test_dir = solovev_dir / test_name
+        test_dir.mkdir(parents=True, exist_ok=True)
+        h5_file = test_dir / f"{test_name}.h5"
         
         # Create a minimal DeRham sequence to get the right size for p_final
         F = cerfon_map(epsilon=0.33, kappa=1.2, alpha=0.0, R0=1.0)
@@ -1198,10 +1200,11 @@ def test_generate_solovev_plots_basic():
             # Verify output files were created
             output_dir = tmpdir_path / "script_outputs" / "solovev" / test_name
             p_final_file = output_dir / "p_final.pdf"
-            force_trace_file = output_dir / f"{test_name}_force_trace.pdf"
+            # trace_plot saves to outdir (which ends with '/'), so file is "force_trace.pdf"
+            force_trace_file = output_dir / "force_trace.pdf"
             
             assert p_final_file.exists(), "p_final.pdf should be created"
-            assert force_trace_file.exists(), f"{test_name}_force_trace.pdf should be created"
+            assert force_trace_file.exists(), "force_trace.pdf should be created"
             
         finally:
             os.chdir(original_cwd)
@@ -1216,12 +1219,22 @@ def test_generate_solovev_plots_with_save_B():
         tmpdir_path = Path(tmpdir)
         
         # Create the directory structure
+        # The function expects: script_outputs/solovev/{filename}/{filename}.h5
         solovev_dir = tmpdir_path / "script_outputs" / "solovev"
         solovev_dir.mkdir(parents=True, exist_ok=True)
         
         # Create test configuration
         test_name = "test_solovev_save_B"
-        h5_file = solovev_dir / f"{test_name}.h5"
+        # Create subdirectory for the test name
+        test_dir = solovev_dir / test_name
+        test_dir.mkdir(parents=True, exist_ok=True)
+        h5_file = test_dir / f"{test_name}.h5"
+
+        print(h5_file)
+        print(solovev_dir)
+        print(tmpdir_path)
+        print(tmpdir)
+        print(os.getcwd())
         
         # Create a minimal DeRham sequence
         F = cerfon_map(epsilon=0.33, kappa=1.2, alpha=0.0, R0=1.0)
@@ -1300,12 +1313,13 @@ def test_generate_solovev_plots_with_save_B():
             # Verify output files were created
             output_dir = tmpdir_path / "script_outputs" / "solovev" / test_name
             p_final_file = output_dir / "p_final.pdf"
-            force_trace_file = output_dir / f"{test_name}_force_trace.pdf"
+            # trace_plot saves to outdir (which ends with '/'), so file is "force_trace.pdf"
+            force_trace_file = output_dir / "force_trace.pdf"
             p_iter_0_file = output_dir / "p_iter_000000.pdf"
             p_iter_1_file = output_dir / "p_iter_000010.pdf"
             
             assert p_final_file.exists(), "p_final.pdf should be created"
-            assert force_trace_file.exists(), f"{test_name}_force_trace.pdf should be created"
+            assert force_trace_file.exists(), "force_trace.pdf should be created"
             assert p_iter_0_file.exists(), "p_iter_000000.pdf should be created"
             assert p_iter_1_file.exists(), "p_iter_000010.pdf should be created"
             

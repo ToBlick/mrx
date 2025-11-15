@@ -136,7 +136,7 @@ def run(CONFIG):
 
     # Plot all traces
     print("Generating plots...")
-    trace_plot(trace_dict, filename=outdir + "force_trace.pdf")
+    trace_plot(trace_dict, filename=outdir)
 
 if __name__ == "__main__":
     main()

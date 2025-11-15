@@ -1170,7 +1170,7 @@ def trace_plot(trace_dict : dict, filename : str,
         ax1.set_xscale('log')
         ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
         fig1.tight_layout()
-        plt.savefig(filename + "_energy_trace.pdf", bbox_inches='tight')
+        plt.savefig(filename + "energy_trace.pdf", bbox_inches='tight')
 
     fig2, ax2 = plt.subplots(figsize=FIG_SIZE)
 
@@ -1208,11 +1208,27 @@ def trace_plot(trace_dict : dict, filename : str,
     ax2.legend(loc='best', fontsize=LEGEND_SIZE)
     ax2.grid(which="both", linestyle="--", linewidth=0.5)
     fig2.tight_layout()
-    plt.savefig(filename, bbox_inches='tight')
+    if filename.endswith("/"):
+        filename = filename[:-1]
+    plt.savefig(filename + "/force_trace.pdf", bbox_inches='tight')
 # %%
 
 
 def generate_solovev_plots(filename : str):
+    """
+    Generate plots for a Solovev equilibrium.
+    
+    Parameters
+    ----------
+    filename : str
+        Name of the file to save the plots. If the file is not in the script_outputs/solovev folder,
+        the file will be saved in the script_outputs/solovev folder. 
+
+    Returns
+    -------
+    None.
+    """
+    from mrx.utils import is_running_in_github_actions
     jax.config.update("jax_enable_x64", True)
 
     outdir = "script_outputs/solovev/" + filename + "/"
@@ -1220,7 +1236,7 @@ def generate_solovev_plots(filename : str):
 
     print("Generating plots for " + filename + "...")
 
-    with h5py.File("script_outputs/solovev/" + filename + ".h5", "r") as f:
+    with h5py.File(outdir + filename + ".h5", "r") as f:
         CONFIG = {k: v for k, v in f["config"].attrs.items()}
         # decode strings back if needed
         CONFIG = {k: v.decode() if isinstance(v, bytes)
@@ -1268,12 +1284,11 @@ def generate_solovev_plots(filename : str):
 
     print("Generating convergence plot...")
     # Figure 2: Energy and Force
+    # outdir already ends with '/' and contains filename, so just pass outdir
+    trace_plot(trace_dict=trace_dict, filename=outdir)
 
-    trace_plot(trace_dict=trace_dict, filename=outdir + filename + "_force_trace.pdf")
-
-    # print("Plotting Poincaré sections and field lines...")
     # Only plot B_final if it exists
-    if "B_final" in trace_dict:
+    if "B_final" in trace_dict and is_running_in_github_actions():
         B_hat = trace_dict["B_final"]
         B_h = DiscreteFunction(B_hat, Seq.Lambda_2, Seq.E2)
 

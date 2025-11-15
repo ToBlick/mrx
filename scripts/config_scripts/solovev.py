@@ -111,7 +111,7 @@ def run(CONFIG):
 
     # Plot all traces
     print("Generating plots...")
-    generate_solovev_plots(outdir + run_name + ".h5")
+    generate_solovev_plots(run_name)
 
 # %%
 if __name__ == "__main__":

@@ -15,9 +15,6 @@ from mrx.plotting import trace_plot
 
 jax.config.update("jax_enable_x64", True)
 
-outdir = "script_outputs/iter/"
-os.makedirs(outdir, exist_ok=True)
-
 
 def main():
     # Get user input
@@ -40,6 +37,9 @@ def run(CONFIG):
     run_name = CONFIG["run_name"]
     if run_name == "":
         run_name = unique_id(8)
+    
+    outdir = "script_outputs/iter/" + run_name + "/"
+    os.makedirs(outdir, exist_ok=True)
 
     print("Running simulation " + run_name + "...")
 
@@ -139,7 +139,7 @@ def run(CONFIG):
 
     # Plot all traces
     print("Generating plots...")
-    trace_plot(trace_dict, filename=outdir + "force_trace.pdf")
+    trace_plot(trace_dict, filename=outdir)
 
 if __name__ == "__main__":
     main()
