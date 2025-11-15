@@ -55,7 +55,7 @@ Tutorials
 ==========
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: Tutorials: 
 
    tutorials/polar_poisson
@@ -74,7 +74,7 @@ Tutorial Scripts
 ----------------
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: Tutorial Scripts:
 
    polar_poisson
@@ -85,7 +85,7 @@ Configuration Scripts
 ---------------------
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: Configuration Scripts:
 
    solovev
@@ -97,7 +97,7 @@ Interactive Scripts
 -------------------
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: Interactive Scripts:
 
    test_gvec_tokamak

@@ -4,12 +4,25 @@ Poisson Problem on a disc
 This tutorial demonstrates solving a Poisson problem on a disc using polar coordinates.
 The script is located at ``scripts/tutorials/polar_poisson.py``.
 
-For this problem, we consider the source-solution pair $-\Delta u = f$
+Mathematical Problem
+====================
+
+We solve the Poisson equation on a disc domain :math:`\Omega = \{ (r,\theta) : 0 \leq r \leq 1, 0 \leq \theta < 2\pi \}`:
 
 .. math::
 
-    u(r) = \frac 1 {27} \left( r^3 (3 \log r - 2) + 2 \right),\\
-    f(r) = - r \log r
+    -\Delta u = f \quad \text{in } \Omega
+
+with homogeneous Dirichlet boundary conditions :math:`u|_{\partial\Omega} = 0`.
+
+For this problem, we consider the source-solution pair:
+
+.. math::
+
+    u(r) &= \frac{1}{27} \left( r^3 (3 \log r - 2) + 2 \right) \\
+    f(r) &= -r \log r
+
+Note that :math:`u \in H^s(\Omega)` for all :math:`s < 4`, limiting the convergence rate.
 
 The script demonstrates:
 
@@ -25,6 +38,103 @@ To run the script:
     python scripts/tutorials/polar_poisson.py
 
 The script generates convergence plots showing error vs. mesh size for different polynomial orders.
+
+Mathematical Formulation
+=========================
+
+**Finite Element Discretization**
+
+The domain is discretized using a DeRham sequence with:
+- **Mesh parameters**: :math:`n_r = n_\theta = n` elements in radial and poloidal directions
+- **Polynomial degrees**: :math:`p_r = p_\theta = p` (B-spline degree)
+- **Quadrature order**: :math:`q = p + 2` (Gauss-Legendre quadrature)
+- **Boundary conditions**: Clamped in radial direction (:math:`r=0,1`), periodic in poloidal direction (:math:`\theta`)
+
+**Basis Functions**
+
+The 0-form basis functions :math:`\{\Lambda_0^i\}_{i=1}^{N_0}` are tensor products of B-splines:
+:math:`\Lambda_0^i(r,\theta) = \Lambda_r^{i_r}(r) \Lambda_\theta^{i_\theta}(\theta)`, where:
+- :math:`N_0 = n_r \cdot n_\theta` is the total number of 0-form degrees of freedom
+- :math:`\Lambda_r^{i_r}(r)` are radial B-splines of degree :math:`p_r`
+- :math:`\Lambda_\theta^{i_\theta}(\theta)` are poloidal B-splines of degree :math:`p_\theta`
+
+**Mass Matrix**
+
+The 0-form mass matrix :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}` is defined as:
+
+.. math::
+
+    (M_0)_{ij} = \int_\Omega \Lambda_0^i(x) \Lambda_0^j(x) \det(DF(x)) \, dx
+
+where :math:`F: [0,1]^2 \to \Omega` is the polar coordinate mapping and :math:`DF(x)` is its Jacobian matrix.
+The matrix has dimensions :math:`N_0 \times N_0` where :math:`N_0` is the number of 0-form DOFs.
+
+**Laplacian Operator**
+
+The 0-form Laplacian :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}` is the Hodge-Laplacian operator :math:`\delta d`:
+
+.. math::
+
+    \Delta_0 = M_0^{-1} \text{grad\_grad}
+
+where the gradient-gradient matrix is:
+
+.. math::
+
+    (\text{grad\_grad})_{ij} = \int_\Omega \nabla \Lambda_0^i(x) \cdot G^{-1}(x) \nabla \Lambda_0^j(x) \det(DF(x)) \, dx
+
+and :math:`G(x) = DF(x)^T DF(x)` is the metric tensor and :math:`G^{-1}(x)` is its inverse.
+The operator satisfies :math:`(\nabla f, \nabla g) = (f, \delta d g)` for all test functions :math:`g`.
+The matrix :math:`\Delta_0` has dimensions :math:`N_0 \times N_0`.
+
+**Projection Operator**
+
+The projection operator :math:`P_0: L^2(\Omega) \to V_0` maps functions to the 0-form finite element space:
+
+.. math::
+
+    P_0(f) = \arg\min_{v_h \in V_0} \|f - v_h\|_{L^2(\Omega)}
+
+where :math:`V_0 = \text{span}\{\Lambda_0^i\}`. The projection coefficients :math:`\hat{f} \in \mathbb{R}^{N_0}` satisfy:
+
+.. math::
+
+    M_0 \hat{f} = \mathbf{b}, \quad b_i = \int_\Omega f(x) \Lambda_0^i(x) \det(DF(x)) \, dx
+
+**Linear System**
+
+The discrete Poisson equation becomes:
+
+.. math::
+
+    M_0 \Delta_0 \hat{u} = P_0(f)
+
+where:
+- :math:`\hat{u} \in \mathbb{R}^{N_0}` are the solution coefficients
+- :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}` is the mass matrix
+- :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}` is the Laplacian operator
+- :math:`P_0(f) \in \mathbb{R}^{N_0}` is the projection of the source term
+
+**Error Computation**
+
+The relative L2 error is computed using quadrature:
+
+.. math::
+
+    \text{error} = \frac{\|u - u_h\|_{L^2(\Omega)}}{\|u\|_{L^2(\Omega)}}
+
+where:
+
+.. math::
+
+    \|u - u_h\|_{L^2(\Omega)}^2 = \int_\Omega (u(x) - u_h(x))^2 \det(DF(x)) \, dx \approx \sum_{j=1}^{n_q} (u(x_j) - u_h(x_j))^2 J_j w_j
+
+and:
+- :math:`n_q` is the number of quadrature points
+- :math:`x_j` are quadrature points
+- :math:`J_j = \det(DF(x_j))` are Jacobian determinants
+- :math:`w_j` are quadrature weights
+- :math:`u_h(x) = \sum_{i=1}^{N_0} \hat{u}_i \Lambda_0^i(x)` is the discrete solution
 
 Code Walkthrough
 ================

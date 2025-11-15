@@ -4,6 +4,57 @@ Toroid Poisson Problem
 This tutorial demonstrates solving a Poisson problem on a toroidal domain.
 The script is located at ``scripts/tutorials/toroid_poisson.py``.
 
+Mathematical Problem
+====================
+
+We solve the Poisson equation on a toroidal domain :math:`\Omega`:
+
+.. math::
+
+    -\Delta u = f \quad \text{in } \Omega
+
+with homogeneous Dirichlet boundary conditions :math:`u|_{\partial\Omega} = 0`.
+
+The toroidal domain is parameterized by logical coordinates :math:`(r, \chi, \zeta) \in [0,1]^3`:
+- :math:`r`: Radial coordinate (minor radius direction)
+- :math:`\chi`: Poloidal angle coordinate
+- :math:`\zeta`: Toroidal angle coordinate
+
+The mapping :math:`F: [0,1]^3 \to \mathbb{R}^3` transforms logical to physical cylindrical coordinates:
+
+.. math::
+
+    F(r, \chi, \zeta) = (R, \phi, Z)
+
+where:
+- :math:`R = R_0 + \epsilon r \cos(2\pi\chi)` is the major radius
+- :math:`\phi = 2\pi\zeta` is the toroidal angle
+- :math:`Z = \epsilon r \sin(2\pi\chi)` is the vertical coordinate
+- :math:`R_0` is the major radius of the torus
+- :math:`\epsilon = a/R_0` is the inverse aspect ratio (minor radius :math:`a` divided by major radius)
+
+For this problem, we use:
+- :math:`R_0 = 1.0`
+- :math:`\epsilon = 1/3` (aspect ratio :math:`A = R_0/a = 3`)
+
+**Exact Solution and Source Term**
+
+The exact solution is:
+
+.. math::
+
+    u(r, \chi, \zeta) = (r^2 - r^4) \cos(2\pi\zeta)
+
+which is independent of the poloidal angle :math:`\chi`.
+
+The corresponding source term is:
+
+.. math::
+
+    f(r, \chi, \zeta) = \cos(2\pi\zeta) \left[ -\frac{4}{\epsilon^2}(1-4r^2) - \frac{4}{\epsilon R}\left(\frac{r}{2}-r^3\right)\cos(2\pi\chi) + \frac{r^2-r^4}{R^2} \right]
+
+where :math:`R = R_0 + \epsilon r \cos(2\pi\chi)`.
+
 The script demonstrates:
 
 - Setting up finite element spaces on a toroidal domain
@@ -18,6 +69,69 @@ To run the script:
     python scripts/tutorials/toroid_poisson.py
 
 The script generates convergence plots showing error vs. mesh size.
+
+Mathematical Formulation
+=========================
+
+**Finite Element Discretization**
+
+The domain is discretized using a DeRham sequence with:
+- **Mesh parameters**: :math:`n_r = n_\chi = n_\zeta = n` elements in each direction
+- **Polynomial degrees**: :math:`p_r = p_\chi = p_\zeta = p`
+- **Quadrature order**: :math:`q = p + 2`
+- **Boundary conditions**: Clamped in radial direction, periodic in poloidal and toroidal directions
+
+**Basis Functions**
+
+The 0-form basis functions :math:`\{\Lambda_0^i\}_{i=1}^{N_0}` are tensor products:
+
+.. math::
+
+    \Lambda_0^i(r,\chi,\zeta) = \Lambda_r^{i_r}(r) \Lambda_\chi^{i_\chi}(\chi) \Lambda_\zeta^{i_\zeta}(\zeta)
+
+where:
+- :math:`N_0 = n_r \cdot n_\chi \cdot n_\zeta` is the total number of 0-form DOFs
+- Each component is a B-spline of degree :math:`p`
+
+**Mass Matrix and Laplacian**
+
+The 0-form mass matrix :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}`:
+
+.. math::
+
+    (M_0)_{ij} = \int_\Omega \Lambda_0^i(x) \Lambda_0^j(x) \det(DF(x)) \, dx
+
+The 0-form Laplacian :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}`:
+
+.. math::
+
+    (\Delta_0)_{ij} = \int_\Omega \nabla \Lambda_0^i(x) \cdot G^{-1}(x) \nabla \Lambda_0^j(x) \det(DF(x)) \, dx
+
+where :math:`G(x) = DF(x)^T DF(x)` is the metric tensor.
+
+**Toroidal Geometry Effects**
+
+The toroidal mapping introduces curvature through:
+- **Jacobian determinant**: :math:`J(x) = \det(DF(x)) = \epsilon R` (varies with position)
+- **Metric tensor**: :math:`G(x) = DF(x)^T DF(x)` (accounts for non-orthogonal coordinates)
+- **Inverse metric**: :math:`G^{-1}(x)` (used in Laplacian computation)
+
+These geometric factors must be properly accounted for in the finite element discretization
+to maintain accuracy in curved geometries.
+
+**Linear System**
+
+The discrete Poisson equation:
+
+.. math::
+
+    M_0 \Delta_0 \hat{u} = P_0(f)
+
+where:
+- :math:`\hat{u} \in \mathbb{R}^{N_0}`: Solution coefficients
+- :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}`: Mass matrix
+- :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}`: Laplacian operator
+- :math:`P_0(f) \in \mathbb{R}^{N_0}`: Projection of source term
 
 Code Walkthrough
 ================
@@ -57,8 +171,8 @@ This script extends the polar Poisson example to 3D toroidal geometry:
 **Block 5: Main Execution (lines 226-242)**
    Runs the convergence analysis and generates plots.
 
-The toroidal mapping transforms logical coordinates ``(r, θ, ζ)`` to physical
-cylindrical coordinates ``(R, φ, Z)``, where the toroidal geometry introduces
+The toroidal mapping transforms logical coordinates :math:`(r, \chi, \zeta)` to physical
+cylindrical coordinates :math:`(R, \phi, Z)`, where the toroidal geometry introduces
 curvature effects that must be properly handled by the finite element discretization.
 
 Full script:
@@ -66,4 +180,3 @@ Full script:
 .. literalinclude:: ../../scripts/tutorials/toroid_poisson.py
    :language: python
    :linenos:
-

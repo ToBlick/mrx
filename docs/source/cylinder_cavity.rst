@@ -4,6 +4,45 @@ Cylinder Cavity
 This script solves eigenvalue problems for a cylindrical cavity.
 The script is located at ``scripts/interactive/cylinder_cavity.py``.
 
+Mathematical Problem
+====================
+
+The script computes electromagnetic eigenmodes (TE and TM modes) for a cylindrical cavity
+with periodic boundary conditions in the axial direction. The eigenvalue problem is:
+
+.. math::
+
+    \nabla \times \nabla \times \mathbf{E} = k^2 \mathbf{E}
+
+where:
+- :math:`\mathbf{E}: \Omega \to \mathbb{R}^3` is the electric field (1-form)
+- :math:`k^2` is the eigenvalue (square of the wavenumber)
+- :math:`\Omega` is a cylinder of radius :math:`a=1` and height :math:`h=1`
+
+**Boundary Conditions**
+
+- Radial direction: Clamped (perfect conductor boundary)
+- Azimuthal direction: Periodic (rotational symmetry)
+- Axial direction: Periodic (periodic boundary conditions)
+
+**Analytical Solutions**
+
+For TE modes (transverse electric):
+
+.. math::
+
+    k^2 = \left(\frac{j'_{nm}}{a}\right)^2 + \left(\frac{2\pi k_{\text{axial}}}{h}\right)^2
+
+where :math:`j'_{nm}` is the :math:`m`-th positive root of :math:`J'_n(x) = 0` (derivative of Bessel function).
+
+For TM modes (transverse magnetic):
+
+.. math::
+
+    k^2 = \left(\frac{j_{nm}}{a}\right)^2 + \left(\frac{2\pi k_{\text{axial}}}{h}\right)^2
+
+where :math:`j_{nm}` is the :math:`m`-th positive root of :math:`J_n(x) = 0` (Bessel function).
+
 The script demonstrates:
 
 - Computing eigenvalues and eigenmodes for cylindrical cavities
@@ -17,6 +56,115 @@ Usage:
     python scripts/interactive/cylinder_cavity.py
 
 The script generates plots showing eigenvalues and eigenmode visualizations.
+
+Mathematical Formulation
+=========================
+
+**Finite Element Discretization**
+
+The electric field is represented as a 1-form:
+
+.. math::
+
+    V_1 = \text{span}\{\Lambda_1^i\}_{i=1}^{N_1}
+
+where :math:`N_1` is the number of 1-form DOFs.
+
+**Mass Matrices**
+
+The 1-form mass matrix :math:`M_1 \in \mathbb{R}^{N_1 \times N_1}`:
+
+.. math::
+
+    (M_1)_{ij} = \int_\Omega \Lambda_1^i(x) \cdot G^{-1}(x) \Lambda_1^j(x) \det(DF(x)) \, dx
+
+Dimensions: :math:`N_1 \times N_1`.
+
+The 0-form mass matrix :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}`:
+
+.. math::
+
+    (M_0)_{ij} = \int_\Omega \Lambda_0^i(x) \Lambda_0^j(x) \det(DF(x)) \, dx
+
+Dimensions: :math:`N_0 \times N_0`.
+
+**Derivative Operators**
+
+The strong gradient operator :math:`D_0: V_0 \to V_1`:
+
+.. math::
+
+    (D_0)_{ij} = \int_\Omega \Lambda_1^i(x) \cdot G^{-1}(x) \nabla \Lambda_0^j(x) \det(DF(x)) \, dx
+
+Dimensions: :math:`N_1 \times N_0`.
+
+The 1-form Laplacian :math:`\Delta_1 \in \mathbb{R}^{N_1 \times N_1}`:
+
+.. math::
+
+    \Delta_1 = M_1^{-1} \text{curl\_curl} - \text{strong\_grad} \circ \text{weak\_div}
+
+where:
+
+.. math::
+
+    (\text{curl\_curl})_{ij} = \int_\Omega \nabla \times \Lambda_1^i(x) \cdot G(x) \nabla \times \Lambda_1^j(x) \frac{1}{\det(DF(x))} \, dx
+
+**Double Curl Matrix**
+
+The double curl operator is constructed as:
+
+.. math::
+
+    C = M_1 (\Delta_1 + \text{strong\_grad} \circ \text{weak\_div})
+
+Since :math:`\Delta_1 = M_1^{-1} \text{curl\_curl} - \text{strong\_grad} \circ \text{weak\_div}`, adding :math:`\text{strong\_grad} \circ \text{weak\_div}`
+cancels the gradient-divergence term, leaving :math:`C = M_1 \cdot M_1^{-1} \text{curl\_curl} = \text{curl\_curl}`.
+
+This represents the curl-curl operator :math:`\nabla \times \nabla \times` for electromagnetic modes.
+The matrix :math:`C` has dimensions :math:`N_1 \times N_1`.
+
+**Generalized Eigenvalue Problem**
+
+The eigenvalue problem is formulated as a generalized eigenvalue problem:
+
+.. math::
+
+    Q \mathbf{v} = \lambda P \mathbf{v}
+
+where:
+
+.. math::
+
+    Q = \begin{bmatrix} C & D_0 \\ D_0^T & 0 \end{bmatrix}, \quad
+    P = \begin{bmatrix} M_1 & 0 \\ 0 & 0 \end{bmatrix}
+
+Dimensions:
+- :math:`Q \in \mathbb{R}^{(N_1+N_0) \times (N_1+N_0)}`
+- :math:`P \in \mathbb{R}^{(N_1+N_0) \times (N_1+N_0)}`
+- :math:`\mathbf{v} \in \mathbb{R}^{N_1+N_0}` is the eigenvector
+- :math:`\lambda = k^2` is the eigenvalue
+
+The block structure enforces the constraint :math:`\nabla \cdot \mathbf{E} = 0` (divergence-free condition).
+
+**Eigenvalue Extraction**
+
+The generalized eigenvalue problem is solved using SciPy's ``eig`` function:
+
+.. math::
+
+    \text{eig}(Q, P) = (\lambda_i, \mathbf{v}_i)_{i=1}^{N_1+N_0}
+
+Finite eigenvalues are extracted (filtering out infinite eigenvalues corresponding to
+the null space of :math:`P`), and eigenvalues are sorted in ascending order.
+
+**Mode Classification**
+
+Eigenmodes are classified as:
+- **TE modes**: Transverse electric modes (electric field perpendicular to axis)
+- **TM modes**: Transverse magnetic modes (magnetic field perpendicular to axis)
+
+The classification is based on comparison with analytical solutions.
 
 Code Walkthrough
 ================

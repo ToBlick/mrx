@@ -4,12 +4,33 @@ Mixed Polar Poisson Problem
 This tutorial demonstrates solving a mixed formulation of the Poisson problem on a disc.
 The script is located at ``scripts/tutorials/mixed_polar_poisson.py``.
 
-The mixed formulation rewrites the Poisson equation as a system:
+Mathematical Problem
+====================
+
+The mixed formulation rewrites the Poisson equation :math:`-\Delta u = f` as a first-order system:
 
 .. math::
 
-    \nabla \cdot \sigma = f \\
-    -\nabla u = \sigma
+    \nabla \cdot \sigma &= f \\
+    -\nabla u &= \sigma
+
+where:
+- :math:`u: \Omega \to \mathbb{R}` is the scalar solution (3-form, volume form)
+- :math:`\sigma: \Omega \to \mathbb{R}^2` is the flux variable (2-form, area form)
+- :math:`f: \Omega \to \mathbb{R}` is the source term
+
+This formulation is equivalent to the standard Poisson equation but solves for both the solution
+and its gradient simultaneously, which can provide better conservation properties and is useful
+for problems where flux conservation is important.
+
+For this problem, we use the exact solution and source term:
+
+.. math::
+
+    u(r) &= -\frac{1}{16}r^4 + \frac{1}{12}r^3 + \frac{1}{48} \\
+    f(r) &= r^2 - \frac{3}{4}r
+
+Boundary conditions are homogeneous Neumann: :math:`\partial u/\partial n = 0` on :math:`\partial\Omega`.
 
 The script demonstrates:
 
@@ -25,6 +46,101 @@ To run the script:
     python scripts/tutorials/mixed_polar_poisson.py
 
 The script generates convergence plots and performance comparisons.
+
+Mathematical Formulation
+=========================
+
+**Finite Element Spaces**
+
+The mixed formulation uses a 3D DeRham sequence (with trivial third dimension) to solve a 2D problem:
+- **3-forms** (volume forms) for the solution :math:`u`: :math:`V_3 = \text{span}\{\Lambda_3^i\}_{i=1}^{N_3}`
+- **2-forms** (area forms) for the flux :math:`\sigma`: :math:`V_2 = \text{span}\{\Lambda_2^i\}_{i=1}^{N_2}`
+
+where:
+- :math:`N_3` is the number of 3-form degrees of freedom
+- :math:`N_2` is the number of 2-form degrees of freedom
+- :math:`\{\Lambda_3^i\}` are 3-form basis functions (scalar functions, volume forms in 3D)
+- :math:`\{\Lambda_2^i\}` are 2-form basis functions (vector fields, area forms in 3D)
+
+Note: Although the problem is 2D (disc domain), the code uses a 3D DeRham sequence with the third dimension
+having a single element and zero polynomial degree, effectively reducing to 2D.
+
+**Mass Matrices**
+
+The 2-form mass matrix :math:`M_2 \in \mathbb{R}^{N_2 \times N_2}`:
+
+.. math::
+
+    (M_2)_{ij} = \int_\Omega \Lambda_2^i(x) \cdot G(x) \Lambda_2^j(x) \frac{1}{\det(DF(x))} \, dx
+
+where :math:`G(x) = DF(x)^T DF(x)` is the metric tensor. Dimensions: :math:`N_2 \times N_2`.
+
+The 3-form mass matrix :math:`M_3 \in \mathbb{R}^{N_3 \times N_3}`:
+
+.. math::
+
+    (M_3)_{ij} = \int_\Omega \Lambda_3^i(x) \Lambda_3^j(x) \frac{1}{\det(DF(x))} \, dx
+
+Dimensions: :math:`N_3 \times N_3`.
+
+**Derivative Operators**
+
+The strong divergence operator :math:`\text{strong\_div}: V_2 \to V_3`:
+
+.. math::
+
+    (\text{strong\_div})_{ij} = \int_\Omega \Lambda_3^i(x) \text{div} \Lambda_2^j(x) \frac{1}{\det(DF(x))} \, dx
+
+Dimensions: :math:`N_3 \times N_2`.
+
+The weak gradient operator :math:`\text{weak\_grad}: V_3 \to V_2`:
+
+.. math::
+
+    (\text{weak\_grad})_{ij} = -\int_\Omega \Lambda_2^i(x) \cdot G^{-1}(x) \nabla \Lambda_3^j(x) \det(DF(x)) \, dx
+
+Dimensions: :math:`N_2 \times N_3`.
+
+**3-Form Laplacian**
+
+The 3-form Laplacian :math:`\Delta_3 \in \mathbb{R}^{N_3 \times N_3}` is constructed as:
+
+.. math::
+
+    \Delta_3 = -\text{strong\_div} \circ \text{weak\_grad}
+
+This operator satisfies:
+
+.. math::
+
+    -(\text{div} \xi, \mu) = (\delta d \rho, \mu) \quad \forall \mu \in V_3
+
+where :math:`\xi = \text{weak\_grad} \rho` and :math:`\rho \in V_3`.
+
+**Linear System**
+
+The discrete mixed formulation becomes:
+
+.. math::
+
+    M_3 \Delta_3 \hat{u} = P_3(f)
+
+where:
+- :math:`\hat{u} \in \mathbb{R}^{N_3}` are the solution coefficients
+- :math:`M_3 \in \mathbb{R}^{N_3 \times N_3}` is the 3-form mass matrix
+- :math:`\Delta_3 \in \mathbb{R}^{N_3 \times N_3}` is the 3-form Laplacian
+- :math:`P_3(f) \in \mathbb{R}^{N_3}` is the projection of the source term onto :math:`V_3`
+
+**Pushforward Operation**
+
+The solution is pushed forward from logical to physical space:
+
+.. math::
+
+    u_h(x) = \text{Pushforward}(u_{\text{logical}}, F, 3)(x)
+
+where the pushforward of a 3-form transforms the discrete function representation
+to account for the coordinate mapping :math:`F`.
 
 Code Walkthrough
 ================
@@ -83,4 +199,3 @@ Full script:
 .. literalinclude:: ../../scripts/tutorials/mixed_polar_poisson.py
    :language: python
    :linenos:
-
