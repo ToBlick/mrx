@@ -25,13 +25,17 @@ for maximal performance after an initial compilation.
 Optimization
 ------------
 
-To do optimization using MRX, there are four basic steps:
+To do optimization using MRX, there are five basic steps:
 
 1. Define the problem by specifying the geometry, the boundary type, the PDE being solved, and the 
 resolution of the finite element space.
+
 2. Initialize a deRham sequence and assemble the FEM spaces.
+
 3. Initialize the initial magnetic field guess and the state of the simulation.
+
 4. Run the relaxation loop.
+
 5. Post-process the results.
 
 This pattern is evident in the examples in this documentation. Much of the default functionality 

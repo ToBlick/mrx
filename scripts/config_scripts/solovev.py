@@ -12,6 +12,7 @@ from mrx.plotting import generate_solovev_plots
 from mrx.relaxation import MRXDiagnostics, State
 from mrx.utils import run_relaxation_loop, update_config, DEFAULT_CONFIG
 from mrx.utils import default_trace_dict, save_trace_dict_to_hdf5, norm_2
+from mrx.utils import is_running_in_github_actions
 
 jax.config.update("jax_enable_x64", True)
 
@@ -30,6 +31,13 @@ def main():
     # Get user input
     params = parse_args()
     CONFIG = update_config(params, DEFAULT_CONFIG)
+    if is_running_in_github_actions():
+        CONFIG["n_r"] = 4
+        CONFIG["n_theta"] = 4
+        CONFIG["n_zeta"] = 4
+        CONFIG["p_r"] = 2
+        CONFIG["p_theta"] = 2
+        CONFIG["p_zeta"] = 2
     run(CONFIG)
 
 
