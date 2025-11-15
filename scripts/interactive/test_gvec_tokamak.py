@@ -15,12 +15,12 @@ jax.config.update("jax_enable_x64", True)
 script_dir = Path(__file__).parent / 'script_outputs'
 script_dir.mkdir(parents=True, exist_ok=True)
 # %%
-repo_root = Path(__file__).parent.parent.parent 
+repo_root = Path(__file__).parent.parent.parent
 data_file = repo_root / "data" / "gvec_tokamak.h5"
 gvec_eq = xr.open_dataset(data_file, engine="h5netcdf")
 # %%
 θ_star = gvec_eq["thetastar"].values    # shape (mρ, mθ), rho x theta
-_ρ = gvec_eq["rho"].values              # shape (mρ,)
+_r = gvec_eq["rho"].values              # shape (mρ,)
 _θ = gvec_eq["theta"].values            # shape (mθ,)
 X1 = gvec_eq["X1"].values              # shape (mρ, mθ, 1)
 X2 = gvec_eq["X2"].values              # shape (mρ, mθ, 1)
@@ -38,11 +38,11 @@ mapSeq = DeRhamSequence((n, n, 1), (p, p, 0), p+2,
 # ∑ c_i Λ0[i](ρ,θ*(ρ,θ),0)_j ≈ X1(ρ,θ)_j
 
 # Evaluation grid:
-ρ, θ = jnp.meshgrid(_ρ, _θ, indexing="ij")    # shape (mρ, mθ)
+r, θ = jnp.meshgrid(_r, _θ, indexing="ij")    # shape (mρ, mθ)
 θ_star = jnp.asarray(θ_star)                  # same shape
 # Build evaluation points in 3D expected by Λ0[i]: set ζ=0
-pts = jnp.stack([ρ.ravel(), θ_star.ravel() / (2 * jnp.pi),
-                jnp.zeros(ρ.size)], axis=1)  # (mρ mθ, 3)
+pts = jnp.stack([r.ravel(), θ_star.ravel() / (2 * jnp.pi),
+                jnp.zeros(r.size)], axis=1)  # (mρ mθ, 3)
 
 # Design Matrix:
 M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.Lambda_0[i](x)[0])(pts))(
@@ -170,8 +170,8 @@ def eval_map_theta(theta_norm):
 fig, ax = plt.subplots(figsize=(7, 6))
 
 # constant-ρ lines (black)
-for ρ in np.linspace(0, 1, 9, endpoint=True):
-    R, Z = eval_map(ρ, θ_vals)
+for r in np.linspace(0, 1, 9, endpoint=True):
+    R, Z = eval_map(r, θ_vals)
     ax.plot(R, Z, color="black", lw=0.8)
 
 # constant-θ lines (red)
