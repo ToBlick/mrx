@@ -344,7 +344,7 @@ def gvec_stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: in
     return F
 
 
-def approx_inverse_map(y: jnp.ndarray, eps: float) -> jnp.ndarray:
+def approx_inverse_map(y: jnp.ndarray, eps: float, R0: float = 1.0) -> jnp.ndarray:
     """
     Approximate inverse mapping function.
 
@@ -363,8 +363,8 @@ def approx_inverse_map(y: jnp.ndarray, eps: float) -> jnp.ndarray:
     X, Y, Z = y
     R = jnp.sqrt(X**2 + Y**2)
     ζ = (jnp.arctan2(-Y, X) / (2 * pi)) % 1.0
-    r = jnp.sqrt(((R - 1) / eps)**2 + (Z / (eps))**2)
-    θ = (jnp.arctan2(Z / (eps * r), (R - 1) / (eps * r)) / (2 * pi)) % 1.0
+    r = jnp.sqrt(((R - R0) / eps)**2 + (Z / (eps))**2)
+    θ = (jnp.arctan2(Z / (eps * r), (R - R0) / (eps * r)) / (2 * pi)) % 1.0
     return jnp.array([r, θ, ζ])
 
 
