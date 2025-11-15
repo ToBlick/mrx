@@ -33,7 +33,7 @@ X2 = gvec_eq["X2"].values              # shape (mρ, mθ, 1)
 # %%
 n, p = 8, 3
 if is_running_in_github_actions():
-    n, p = 2, 1
+    n, p = 4, 2
 # Get a deRham sequence to approximate the functions X1(ρ,θ) and X2(ρ,θ)
 mapSeq = DeRhamSequence((n, n, 1), (p, p, 0), p+2,
                         ("clamped", "periodic", "constant"),
@@ -79,8 +79,12 @@ def f(x):
 
 
 projection_errs = []
-ns = jnp.arange(4, 19, 2)
-p = 3
+if is_running_in_github_actions():
+    ns = jnp.arange(4, 7, 2)
+    p = 2
+else:
+    ns = jnp.arange(4, 19, 2)
+    p = 3
 for n in ns:
     Seq = DeRhamSequence((n, n, 1), (p, p, 0), p+2,
                          ("clamped", "periodic", "constant"),
