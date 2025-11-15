@@ -62,32 +62,49 @@ Tutorials
    tutorials/mixed_polar_poisson
    tutorials/toroid_poisson
    tutorials/harmonics_hollow_torus
-   notebooks/10_tokamak_equilibrium
    tutorials/gvec_mappings
+   notebooks/10_tokamak_equilibrium
+   notebooks/11_helicity_minimization
+   notebooks/MRX_tokamak_demo
 
 Examples
 ========
 
+Tutorial Scripts
+----------------
+
 .. toctree::
    :maxdepth: 2
-   :caption: Example Scripts:
+   :caption: Tutorial Scripts:
 
-   mixed_poisson
-   poisson
-   Beltrami 
-   conjugate 
-   cube_relaxation
-   oop_splines
-   two_d_poisson
-   two_d_helicity
-   two_d_poisson_mixed
-   two_d_helmholtz_decomposition
-   three_d_poisson
-   polar_helicity
    polar_poisson
-   polar_poisson_mixed
-   polar_poisson_constantangle
-   polar_relaxation
-   relaxation
-   pullbacks
+   mixed_polar_poisson
+   toroid_poisson
+
+Configuration Scripts
+---------------------
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Configuration Scripts:
+
+   solovev
+   stell
+   iter_islands
+   hopf
+
+Interactive Scripts
+-------------------
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Interactive Scripts:
+
+   test_gvec_tokamak
+   test_gvec_stellarator
+   toroid_poisson_interactive
+   toroid_cavity
+   cylinder_cavity
+   cylinder_vector_poisson
+   drumshape
   
