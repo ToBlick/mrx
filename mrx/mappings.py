@@ -164,7 +164,7 @@ def rotating_ellipse_map(eps: float = 0.33, kappa: float = 1.2, nfp: int = 3) ->
     return F
 
 
-def toroid_map(epsilon: float = 1/3, R0: float = 1.0) -> Callable:
+def toroid_map(epsilon: float = 1/3, kappa: float = 1.0, R0: float = 1.0) -> Callable:
     """
     Toroidal mapping function:
     F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
@@ -189,7 +189,7 @@ def toroid_map(epsilon: float = 1/3, R0: float = 1.0) -> Callable:
         R = R0 + epsilon * r * jnp.cos(2 * π * θ)
         return jnp.array([R * jnp.cos(2 * π * ζ),
                           -R * jnp.sin(2 * π * ζ),
-                          epsilon * r * jnp.sin(2 * π * θ)])
+                          epsilon * kappa * r * jnp.sin(2 * π * θ)])
     return F
 
 

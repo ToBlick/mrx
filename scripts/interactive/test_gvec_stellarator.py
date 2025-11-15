@@ -54,10 +54,7 @@ c, residuals, rank, s = jnp.linalg.lstsq(M, y, rcond=None)
 # %%
 X1_h = DiscreteFunction(c[:, 0], mapSeq.Lambda_0, mapSeq.E0)
 X2_h = DiscreteFunction(c[:, 1], mapSeq.Lambda_0, mapSeq.E0)
-
-# jax.jit
-Phi = gvec_stellarator_map(X1_h, X2_h, nfp=nfp)
-
+Phi = jax.jit(gvec_stellarator_map(X1_h, X2_h, nfp=nfp))
 
 # %%
 # Assemble Sequence with Gvec mapping

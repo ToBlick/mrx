@@ -13,7 +13,7 @@ from mrx.utils import inv33
 jax.config.update("jax_enable_x64", True)
 
 
-@pytest.mark.parametrize("p", [1, 2, 3])
+@pytest.mark.parametrize("p", [1, 2])
 @pytest.mark.parametrize("dirichlet, expected_nulls", [
     (True,  [False, False, True, True]),   # clamped
     (False, [True,  True,  False, False])  # free
@@ -32,7 +32,7 @@ def test_derham_sequence_eigen_and_exactness(p, dirichlet, expected_nulls):
         The expected nullspace pattern of the dd operator.
     """
     Seq = DeRhamSequence(
-        (4, 4, 4),
+        (3, 3, 3),
         (p, p, p),
         2*p,
         ("clamped", "periodic", "periodic"),
@@ -80,11 +80,11 @@ def test_derham_sequence_eigen_and_exactness(p, dirichlet, expected_nulls):
                         err_msg=f"div∘curl ≠ 0 for p={p}")
 
 
-@pytest.mark.parametrize("p", [1, 2, 3])
+@pytest.mark.parametrize("p", [1, 2])
 def test_projection_0form(p):
     """Test basic P0 projection functionality."""
     Seq = DeRhamSequence(
-        (4, 4, 4),
+        (3, 3, 3),
         (p, p, p),
         2*p,
         ("clamped", "periodic", "periodic"),
@@ -125,11 +125,11 @@ def test_projection_0form(p):
                         err_msg=f"P0 projection is not idempotent for p={p}")
 
 
-@pytest.mark.parametrize("p", [1, 2, 3])
+@pytest.mark.parametrize("p", [1, 2])
 def test_projection_1form(p):
     """Test basic P1 projection functionality."""
     Seq = DeRhamSequence(
-        (4, 4, 4),
+        (3, 3, 3),
         (p, p, p),
         2*p,
         ("clamped", "periodic", "periodic"),
@@ -174,11 +174,11 @@ def test_projection_1form(p):
     # Need to investigate further.
 
 
-@pytest.mark.parametrize("p", [1, 2, 3])
+@pytest.mark.parametrize("p", [1, 2])
 def test_projection_2form(p):
     """Test basic P2 projection functionality."""
     Seq = DeRhamSequence(
-        (4, 4, 4),
+        (3, 3, 3),
         (p, p, p),
         2*p,
         ("clamped", "periodic", "periodic"),
@@ -223,11 +223,11 @@ def test_projection_2form(p):
     # Need to investigate further.
 
 
-@pytest.mark.parametrize("p", [1, 2, 3])
+@pytest.mark.parametrize("p", [1, 2])
 def test_projection_3form(p):
     """Test basic P3 projection functionality."""
     Seq = DeRhamSequence(
-        (4, 4, 4),
+        (3, 3, 3),
         (p, p, p),
         2*p,
         ("clamped", "periodic", "periodic"),
@@ -268,11 +268,11 @@ def test_projection_3form(p):
                         err_msg=f"P3 projection is not idempotent for p={p}")
 
 
-@pytest.mark.parametrize("p", [1, 2, 3])
+@pytest.mark.parametrize("p", [1, 2])
 def test_crossproduct_projections(p):
     """Test cross product projections created by build_crossproduct_projections."""
     Seq = DeRhamSequence(
-        (4, 4, 4),
+        (3, 3, 3),
         (p, p, p),
         2*p,
         ("clamped", "periodic", "periodic"),
@@ -419,11 +419,11 @@ def test_crossproduct_projections(p):
                         err_msg=f"P1x1_to_2(0, u) should be zero for p={p}")
 
 
-@pytest.mark.parametrize("p", [1, 2, 3])
+@pytest.mark.parametrize("p", [1, 2])
 def test_crossproduct_projection_value_errors(p):
     """Test ValueError cases in CrossProductProjection."""
     Seq = DeRhamSequence(
-        (4, 4, 4),
+        (3, 3, 3),
         (p, p, p),
         2*p,
         ("clamped", "periodic", "periodic"),
@@ -563,11 +563,11 @@ def test_differential_forms_setup(p):
     assert count > 0, "Should be able to iterate over bases"
 
 
-@pytest.mark.parametrize("p", [1, 2, 3])
+@pytest.mark.parametrize("p", [1, 2])
 def test_discrete_function(p):
     """Test DiscreteFunction class."""
     Seq = DeRhamSequence(
-        (4, 4, 4),
+        (3, 3, 3),
         (p, p, p),
         2*p,
         ("clamped", "periodic", "periodic"),

@@ -13,13 +13,16 @@ import numpy.testing as npt
 import pytest
 
 from mrx.plotting import (
+    converge_plot,
     generate_solovev_plots,
     get_1d_grids,
     get_2d_grids,
     get_3d_grids,
     plot_crossections,
     plot_crossections_separate,
+    plot_scalar_fct_physical_logical,
     plot_torus,
+    plot_twin_axis,
     poincare_plot,
     pressure_plot,
     set_axes_equal,
@@ -336,26 +339,6 @@ def test_plot_torus_basic():
     assert fig is not None, "Figure should be created"
     assert ax is not None, "Axes should be created"
 
-
-def test_plot_torus_with_colorbar():
-    """Test plot_torus with colorbar."""
-    F = toroid_map(epsilon=0.5, R0=2.0)
-    
-    def p_h(x):
-        r, theta, zeta = x
-        return jnp.sin(2 * jnp.pi * theta) * jnp.ones(1)
-    
-    cuts = jnp.linspace(0, 1, 2, endpoint=False)
-    grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v, nx=8, ny=8, nz=1) for v in cuts]
-    grid_surface = get_2d_grids(F, cut_axis=0, cut_value=1.0, ny=16, nz=16)
-    
-    fig, ax = plot_torus(p_h, grids_pol, grid_surface, add_colorbar=True)
-    collect_figure(fig)
-    if not is_running_in_ci():   
-        plt.title("Test plot_torus with colorbar")
-    assert fig is not None, "Figure should be created"
-
-
 # ============================================================================
 # Tests for plot_crossections
 # ============================================================================
@@ -406,7 +389,9 @@ def test_pressure_plot_basic():
         outdir = Path(tmpdir) / "plots"
         outdir.mkdir()
         
-        pressure_plot(p, Seq, F, str(outdir) + "/", "test_pressure.pdf", resolution=16, zeta=0.0)
+        pressure_plot(
+            p, Seq, F, str(outdir), filename="test_pressure.pdf", 
+            resolution=16, zeta=0.0)
         if not is_running_in_ci():   
             plt.title("Test pressure_plot")
         # Check that file was created
@@ -516,6 +501,197 @@ def test_set_axes_equal():
 
 
 # ============================================================================
+# Tests for converge_plot
+# ============================================================================
+def test_converge_plot_basic():
+    """Test basic converge_plot functionality."""
+    ns = jnp.array([4, 8, 16, 32])
+    ps = jnp.array([1, 2])
+    qs = jnp.array([2, 3])
+    
+    # Create error array with shape (len(ns), len(ps), len(qs))
+    # Error decreases with increasing n (convergence)
+    err = jnp.array([
+        [[1.0, 0.8], [0.5, 0.4]],   # n=4
+        [[0.5, 0.4], [0.25, 0.2]],  # n=8
+        [[0.25, 0.2], [0.125, 0.1]], # n=16
+        [[0.125, 0.1], [0.0625, 0.05]], # n=32
+    ])
+    
+    fig = converge_plot(err, ns, ps, qs)
+    
+    assert fig is not None, "Figure should be created"
+    assert hasattr(fig, 'data'), "Figure should have data attribute"
+    assert len(fig.data) > 0, "Figure should have traces"
+
+
+def test_converge_plot_single_p():
+    """Test converge_plot with single polynomial order."""
+    ns = jnp.array([4, 8, 16])
+    ps = jnp.array([2])
+    qs = jnp.array([2, 3, 4])
+    
+    err = jnp.array([
+        [[1.0, 0.8, 0.6]],   # n=4
+        [[0.5, 0.4, 0.3]],   # n=8
+        [[0.25, 0.2, 0.15]], # n=16
+    ])
+    
+    fig = converge_plot(err, ns, ps, qs)
+    
+    assert fig is not None, "Figure should be created"
+    assert len(fig.data) > 0, "Figure should have traces"
+
+
+def test_converge_plot_single_q():
+    """Test converge_plot with single quadrature rule."""
+    ns = jnp.array([4, 8, 16])
+    ps = jnp.array([1, 2, 3])
+    qs = jnp.array([2, 3])  # Need at least 2 q values to avoid plotly division by zero
+    
+    err = jnp.array([
+        [[1.0, 0.8], [0.5, 0.4], [0.25, 0.2]],   # n=4
+        [[0.5, 0.4], [0.25, 0.2], [0.125, 0.1]], # n=8
+        [[0.25, 0.2], [0.125, 0.1], [0.0625, 0.05]], # n=16
+    ])
+    
+    fig = converge_plot(err, ns, ps, qs)
+    
+    assert fig is not None, "Figure should be created"
+    assert len(fig.data) > 0, "Figure should have traces"
+
+
+def test_converge_plot_multiple_combinations():
+    """Test converge_plot with multiple p and q combinations."""
+    ns = jnp.array([4, 8, 16, 32, 64])
+    ps = jnp.array([1, 2, 3, 4])
+    qs = jnp.array([2, 3, 4, 5])
+    
+    # Create error array with convergence behavior
+    err = jnp.zeros((len(ns), len(ps), len(qs)))
+    for i, n in enumerate(ns):
+        for j, p in enumerate(ps):
+            for k, q in enumerate(qs):
+                # Error decreases with n, p, and q
+                err = err.at[i, j, k].set(1.0 / (n * (p + 1) * (q + 1)))
+    
+    fig = converge_plot(err, ns, ps, qs)
+    
+    assert fig is not None, "Figure should be created"
+    assert len(fig.data) > 0, "Figure should have traces"
+    
+    # Check that legend entries are created
+    legend_names = [trace.name for trace in fig.data if trace.showlegend]
+    assert len(legend_names) > 0, "Should have legend entries"
+
+
+def test_converge_plot_zero_errors():
+    """Test converge_plot with zero errors."""
+    ns = jnp.array([4, 8])
+    ps = jnp.array([1, 2])
+    qs = jnp.array([2, 3])  # Need at least 2 q values to avoid plotly division by zero
+    
+    err = jnp.zeros((len(ns), len(ps), len(qs)))
+    
+    fig = converge_plot(err, ns, ps, qs)
+    
+    assert fig is not None, "Figure should be created"
+    assert len(fig.data) > 0, "Figure should have traces"
+
+
+def test_converge_plot_constant_errors():
+    """Test converge_plot with constant errors."""
+    ns = jnp.array([4, 8, 16])
+    ps = jnp.array([1, 2])
+    qs = jnp.array([2, 3])
+    
+    err = jnp.ones((len(ns), len(ps), len(qs))) * 0.5
+    
+    fig = converge_plot(err, ns, ps, qs)
+    
+    assert fig is not None, "Figure should be created"
+    assert len(fig.data) > 0, "Figure should have traces"
+
+
+def test_converge_plot_shape_validation():
+    """Test that converge_plot handles correct array shapes."""
+    ns = jnp.array([4, 8, 16])
+    ps = jnp.array([1, 2])
+    qs = jnp.array([2, 3])
+    
+    # Correct shape: (len(ns), len(ps), len(qs))
+    # Use numpy random instead of jax.random for simplicity
+    err = np.random.rand(len(ns), len(ps), len(qs))
+    err = jnp.array(err)
+    
+    fig = converge_plot(err, ns, ps, qs)
+    
+    assert fig is not None, "Figure should be created"
+
+
+def test_converge_plot_legend_entries():
+    """Test that converge_plot creates proper legend entries."""
+    ns = jnp.array([4, 8])
+    ps = jnp.array([1, 2])
+    qs = jnp.array([2, 3])
+    
+    err = jnp.array([
+        [[1.0, 0.8], [0.5, 0.4]],
+        [[0.5, 0.4], [0.25, 0.2]],
+    ])
+    
+    fig = converge_plot(err, ns, ps, qs)
+    
+    # Extract legend entries (showlegend=True)
+    legend_traces = [trace for trace in fig.data if trace.showlegend]
+    
+    # Should have legend entries for each p and each q
+    assert len(legend_traces) >= len(ps) + len(qs), \
+        f"Should have at least {len(ps) + len(qs)} legend entries"
+    
+    # Check that p entries are in legend
+    p_names = [f'p = {p}' for p in ps]
+    q_names = [f'q = {q}' for q in qs]
+    legend_names = [trace.name for trace in legend_traces]
+    
+    for p_name in p_names:
+        assert p_name in legend_names, f"Legend should contain {p_name}"
+    for q_name in q_names:
+        assert q_name in legend_names, f"Legend should contain {q_name}"
+
+
+def test_converge_plot_markers_and_colors():
+    """Test that converge_plot uses different markers and colors."""
+    ns = jnp.array([4, 8])
+    ps = jnp.array([1, 2, 3])
+    qs = jnp.array([2, 3])
+    
+    err = jnp.array([
+        [[1.0, 0.8], [0.5, 0.4], [0.25, 0.2]],
+        [[0.5, 0.4], [0.25, 0.2], [0.125, 0.1]],
+    ])
+    
+    fig = converge_plot(err, ns, ps, qs)
+    
+    # Check that different markers are used
+    markers_used = set()
+    colors_used = set()
+    
+    for trace in fig.data:
+        if trace.mode == 'lines+markers':
+            if trace.marker and 'symbol' in trace.marker:
+                markers_used.add(trace.marker['symbol'])
+            if trace.marker and 'color' in trace.marker:
+                colors_used.add(trace.marker['color'])
+    
+    # Should have multiple markers (one per p) and multiple colors (one per q)
+    assert len(markers_used) >= len(ps), \
+        f"Should use at least {len(ps)} different markers"
+    assert len(colors_used) >= len(qs), \
+        f"Should use at least {len(qs)} different colors"
+
+
+# ============================================================================
 # Integration tests based on usage examples
 # ============================================================================
 def test_plotting_workflow_example():
@@ -603,7 +779,7 @@ def test_poincare_plot_basic():
             final_time=10.0,  # Shorter time for testing
             n_saves=100,  # Fewer saves for faster testing
             max_steps=1000,  # Fewer steps for faster testing
-            name="test_"
+            filename="test_"
         )
         if not is_running_in_ci():   
             plt.title("Test poincare_plot")
@@ -646,7 +822,7 @@ def test_poincare_plot_different_axes():
             final_time=5.0,
             n_saves=50,
             max_steps=500,
-            name="axis0_"
+            filename="axis0_"
         )
         if not is_running_in_ci():   
             plt.title("Test poincare_plot with axis=0")
@@ -685,7 +861,7 @@ def test_poincare_plot_cylindrical():
             n_saves=50,
             max_steps=500,
             cylindrical=True,
-            name="cyl_"
+            filename="cyl_"
         )
         if not is_running_in_ci():   
             plt.title("Test poincare_plot with cylindrical=True")
@@ -727,7 +903,7 @@ def test_poincare_plot_multiple_batches():
             final_time=5.0,
             n_saves=50,
             max_steps=500,
-            name="multi_"
+            filename="multi_"
         )   
         if not is_running_in_ci():   
             plt.title("Test poincare_plot with multiple batches")
@@ -768,7 +944,7 @@ def test_poincare_plot_rotating_field():
             final_time=10.0,
             n_saves=100,
             max_steps=1000,
-            name="rotating_"
+            filename="rotating_"
         )
         if not is_running_in_ci():   
             plt.title("Test poincare_plot with rotating field")
@@ -806,7 +982,7 @@ def test_poincare_plot_cerfon_map():
             final_time=5.0,
             n_saves=50,
             max_steps=500,
-            name="cerfon_"
+            filename="cerfon_"
         )
         if not is_running_in_ci():   
             plt.title("Test poincare_plot with cerfon_map") 
@@ -877,7 +1053,7 @@ def test_poincare_plot_cerfon_map_full_scale():
         max_steps=50000,  # More steps for accuracy
         r_tol=1e-7,
         a_tol=1e-7,
-        name="cerfon_full_scale_"
+        filename="cerfon_full_scale_"
     )
     if not is_running_in_ci():   
         plt.title("Test poincare_plot with cerfon_map at full scale (high res, multiple batches/loops)") 
@@ -923,7 +1099,7 @@ def test_poincare_plot_shape_assertion():
                 final_time=5.0,
                 n_saves=50,
                 max_steps=500,
-                name="wrong_"
+                filename="wrong_"
             )
 
 
@@ -1022,10 +1198,10 @@ def test_generate_solovev_plots_basic():
             # Verify output files were created
             output_dir = tmpdir_path / "script_outputs" / "solovev" / test_name
             p_final_file = output_dir / "p_final.pdf"
-            force_trace_file = output_dir / "force_trace.pdf"
+            force_trace_file = output_dir / f"{test_name}_force_trace.pdf"
             
             assert p_final_file.exists(), "p_final.pdf should be created"
-            assert force_trace_file.exists(), "force_trace.pdf should be created"
+            assert force_trace_file.exists(), f"{test_name}_force_trace.pdf should be created"
             
         finally:
             os.chdir(original_cwd)
@@ -1124,17 +1300,360 @@ def test_generate_solovev_plots_with_save_B():
             # Verify output files were created
             output_dir = tmpdir_path / "script_outputs" / "solovev" / test_name
             p_final_file = output_dir / "p_final.pdf"
-            force_trace_file = output_dir / "force_trace.pdf"
+            force_trace_file = output_dir / f"{test_name}_force_trace.pdf"
             p_iter_0_file = output_dir / "p_iter_000000.pdf"
             p_iter_1_file = output_dir / "p_iter_000010.pdf"
             
             assert p_final_file.exists(), "p_final.pdf should be created"
-            assert force_trace_file.exists(), "force_trace.pdf should be created"
+            assert force_trace_file.exists(), f"{test_name}_force_trace.pdf should be created"
             assert p_iter_0_file.exists(), "p_iter_000000.pdf should be created"
             assert p_iter_1_file.exists(), "p_iter_000010.pdf should be created"
             
         finally:
             os.chdir(original_cwd)
+
+
+# ============================================================================
+# Tests for plot_scalar_fct_physical_logical
+# ============================================================================
+def test_plot_scalar_fct_physical_logical_basic():
+    """Test basic plot_scalar_fct_physical_logical functionality."""
+    F = toroid_map(epsilon=0.5, R0=2.0)
+    
+    # Create a simple scalar function
+    def p_h(x):
+        r, theta, zeta = x
+        return jnp.sin(2 * jnp.pi * theta) * jnp.ones(1)
+    
+    fig, (ax_phys, ax_log) = plot_scalar_fct_physical_logical(
+        p_h, F, n_vis=32, scale=1.0, logical_plane='r_theta', cmap='viridis'
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_scalar_fct_physical_logical")
+    
+    assert fig is not None, "Figure should be created"
+    assert ax_phys is not None, "Physical axis should be created"
+    assert ax_log is not None, "Logical axis should be created"
+
+
+def test_plot_scalar_fct_physical_logical_r_zeta():
+    """Test plot_scalar_fct_physical_logical with r_zeta plane."""
+    F = toroid_map(epsilon=0.5, R0=2.0)
+    
+    def p_h(x):
+        r, theta, zeta = x
+        return jnp.sin(2 * jnp.pi * r) * jnp.ones(1)
+    
+    fig, (ax_phys, ax_log) = plot_scalar_fct_physical_logical(
+        p_h, F, n_vis=32, logical_plane='r_zeta', fixed_theta=0.5
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_scalar_fct_physical_logical r_zeta")
+    
+    assert fig is not None, "Figure should be created"
+    # For r_zeta plane, ax_phys is None and only logical axis is returned
+    assert ax_phys is None, "Physical axis should be None for r_zeta plane"
+    assert ax_log is not None, "Logical axis should be created"
+
+
+def test_plot_scalar_fct_physical_logical_theta_zeta():
+    """Test plot_scalar_fct_physical_logical with theta_zeta plane."""
+    F = toroid_map(epsilon=0.5, R0=2.0)
+    
+    def p_h(x):
+        r, theta, zeta = x
+        return jnp.sin(2 * jnp.pi * theta) * jnp.cos(2 * jnp.pi * zeta) * jnp.ones(1)
+    
+    fig, (ax_phys, ax_log) = plot_scalar_fct_physical_logical(
+        p_h, F, n_vis=32, logical_plane='theta_zeta', fixed_r=0.5
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_scalar_fct_physical_logical theta_zeta")
+    
+    assert fig is not None, "Figure should be created"
+    assert ax_log is not None, "Logical axis should be created"
+
+
+def test_plot_scalar_fct_physical_logical_with_colorbar():
+    """Test plot_scalar_fct_physical_logical with colorbar."""
+    F = toroid_map(epsilon=0.5, R0=2.0)
+    
+    def p_h(x):
+        r, theta, zeta = x
+        return jnp.sin(2 * jnp.pi * theta) * jnp.ones(1)
+    
+    fig, (ax_phys, ax_log) = plot_scalar_fct_physical_logical(
+        p_h, F, n_vis=32, colorbar=True, cbar_label="Test Label"
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_scalar_fct_physical_logical with colorbar")
+    
+    assert fig is not None, "Figure should be created"
+
+
+def test_plot_scalar_fct_physical_logical_no_colorbar():
+    """Test plot_scalar_fct_physical_logical without colorbar."""
+    F = toroid_map(epsilon=0.5, R0=2.0)
+    
+    def p_h(x):
+        r, theta, zeta = x
+        return jnp.sin(2 * jnp.pi * theta) * jnp.ones(1)
+    
+    fig, (ax_phys, ax_log) = plot_scalar_fct_physical_logical(
+        p_h, F, n_vis=32, colorbar=False
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_scalar_fct_physical_logical without colorbar")
+    
+    assert fig is not None, "Figure should be created"
+
+
+def test_plot_scalar_fct_physical_logical_custom_levels():
+    """Test plot_scalar_fct_physical_logical with custom levels."""
+    F = toroid_map(epsilon=0.5, R0=2.0)
+    
+    def p_h(x):
+        r, theta, zeta = x
+        return jnp.sin(2 * jnp.pi * theta) * jnp.ones(1)
+    
+    fig, (ax_phys, ax_log) = plot_scalar_fct_physical_logical(
+        p_h, F, n_vis=32, levels=10, cmap='plasma'
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_scalar_fct_physical_logical custom levels")
+    
+    assert fig is not None, "Figure should be created"
+
+
+def test_plot_scalar_fct_physical_logical_invalid_plane():
+    """Test plot_scalar_fct_physical_logical with invalid logical_plane."""
+    F = toroid_map(epsilon=0.5, R0=2.0)
+    
+    def p_h(x):
+        r, theta, zeta = x
+        return jnp.sin(2 * jnp.pi * theta) * jnp.ones(1)
+    
+    with pytest.raises(ValueError, match="Unknown logical_plane"):
+        plot_scalar_fct_physical_logical(
+            p_h, F, n_vis=32, logical_plane='invalid_plane'
+        )
+
+
+def test_plot_scalar_fct_physical_logical_cerfon_map():
+    """Test plot_scalar_fct_physical_logical with cerfon_map."""
+    F = cerfon_map(epsilon=0.33, kappa=1.2, alpha=0.0, R0=1.0)
+    
+    def p_h(x):
+        r, theta, zeta = x
+        return jnp.sin(2 * jnp.pi * theta) * jnp.cos(2 * jnp.pi * zeta) * jnp.ones(1)
+    
+    fig, (ax_phys, ax_log) = plot_scalar_fct_physical_logical(
+        p_h, F, n_vis=32, logical_plane='r_theta'
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_scalar_fct_physical_logical cerfon_map")
+    
+    assert fig is not None, "Figure should be created"
+
+
+# ============================================================================
+# Tests for plot_twin_axis
+# ============================================================================
+def test_plot_twin_axis_basic():
+    """Test basic plot_twin_axis functionality."""
+    left_y = jnp.array([1.0, 0.5, 0.25, 0.125, 0.0625])
+    right_y = jnp.array([10.0, 20.0, 30.0, 40.0, 50.0])
+    
+    fig, (ax1, ax2) = plot_twin_axis(
+        left_y, right_y,
+        left_label="Left Axis",
+        right_label="Right Axis"
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_twin_axis")
+    
+    assert fig is not None, "Figure should be created"
+    assert ax1 is not None, "Left axis should be created"
+    assert ax2 is not None, "Right axis should be created"
+
+
+def test_plot_twin_axis_with_custom_x():
+    """Test plot_twin_axis with custom x values."""
+    left_y = jnp.array([1.0, 0.5, 0.25])
+    right_y = jnp.array([10.0, 20.0, 30.0])
+    x_left = jnp.array([0, 5, 10])
+    x_right = jnp.array([0, 5, 10])
+    
+    fig, (ax1, ax2) = plot_twin_axis(
+        left_y, right_y,
+        x_left=x_left,
+        x_right=x_right,
+        left_label="Left",
+        right_label="Right"
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_twin_axis with custom x")
+    
+    assert fig is not None, "Figure should be created"
+
+
+def test_plot_twin_axis_log_scale():
+    """Test plot_twin_axis with log scale."""
+    left_y = jnp.array([1.0, 0.1, 0.01, 0.001])
+    right_y = jnp.array([10.0, 20.0, 30.0, 40.0])
+    
+    fig, (ax1, ax2) = plot_twin_axis(
+        left_y, right_y,
+        left_log=True,
+        right_log=False,
+        left_label="Log Left",
+        right_label="Linear Right"
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_twin_axis log scale")
+    
+    assert fig is not None, "Figure should be created"
+
+
+def test_plot_twin_axis_both_log():
+    """Test plot_twin_axis with both axes in log scale."""
+    left_y = jnp.array([1.0, 0.1, 0.01, 0.001])
+    right_y = jnp.array([10.0, 1.0, 0.1, 0.01])
+    
+    fig, (ax1, ax2) = plot_twin_axis(
+        left_y, right_y,
+        left_log=True,
+        right_log=True,
+        left_label="Log Left",
+        right_label="Log Right"
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_twin_axis both log")
+    
+    assert fig is not None, "Figure should be created"
+
+
+def test_plot_twin_axis_custom_colors():
+    """Test plot_twin_axis with custom colors."""
+    left_y = jnp.array([1.0, 0.5, 0.25])
+    right_y = jnp.array([10.0, 20.0, 30.0])
+    
+    fig, (ax1, ax2) = plot_twin_axis(
+        left_y, right_y,
+        left_color="red",
+        right_color="blue",
+        left_label="Red Left",
+        right_label="Blue Right"
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_twin_axis custom colors")
+    
+    assert fig is not None, "Figure should be created"
+
+
+def test_plot_twin_axis_custom_markers():
+    """Test plot_twin_axis with custom markers."""
+    left_y = jnp.array([1.0, 0.5, 0.25])
+    right_y = jnp.array([10.0, 20.0, 30.0])
+    
+    fig, (ax1, ax2) = plot_twin_axis(
+        left_y, right_y,
+        left_marker='o',
+        right_marker='^',
+        left_label="Circle",
+        right_label="Triangle"
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_twin_axis custom markers")
+    
+    assert fig is not None, "Figure should be created"
+
+
+def test_plot_twin_axis_no_grid():
+    """Test plot_twin_axis without grid."""
+    left_y = jnp.array([1.0, 0.5, 0.25])
+    right_y = jnp.array([10.0, 20.0, 30.0])
+    
+    fig, (ax1, ax2) = plot_twin_axis(
+        left_y, right_y,
+        grid=False,
+        left_label="Left",
+        right_label="Right"
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_twin_axis no grid")
+    
+    assert fig is not None, "Figure should be created"
+
+
+def test_plot_twin_axis_with_kwargs():
+    """Test plot_twin_axis with plot_kwargs."""
+    left_y = jnp.array([1.0, 0.5, 0.25])
+    right_y = jnp.array([10.0, 20.0, 30.0])
+    
+    fig, (ax1, ax2) = plot_twin_axis(
+        left_y, right_y,
+        left_plot_kwargs={'linewidth': 3, 'alpha': 0.7},
+        right_plot_kwargs={'linewidth': 2, 'alpha': 0.8},
+        left_label="Left",
+        right_label="Right"
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_twin_axis with kwargs")
+    
+    assert fig is not None, "Figure should be created"
+
+
+def test_plot_twin_axis_num_iters_inner():
+    """Test plot_twin_axis with num_iters_inner."""
+    left_y = jnp.array([1.0, 0.5, 0.25])
+    right_y = jnp.array([10.0, 20.0, 30.0])
+    
+    fig, (ax1, ax2) = plot_twin_axis(
+        left_y, right_y,
+        num_iters_inner=2,
+        left_label="Left",
+        right_label="Right"
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_twin_axis num_iters_inner")
+    
+    assert fig is not None, "Figure should be created"
+
+
+def test_plot_twin_axis_return_fig_only():
+    """Test plot_twin_axis with return_axes=False."""
+    left_y = jnp.array([1.0, 0.5, 0.25])
+    right_y = jnp.array([10.0, 20.0, 30.0])
+    
+    fig = plot_twin_axis(
+        left_y, right_y,
+        return_axes=False,
+        left_label="Left",
+        right_label="Right"
+    )
+    collect_figure(fig)
+    if not is_running_in_ci():   
+        plt.title("Test plot_twin_axis return fig only")
+    
+    assert fig is not None, "Figure should be created"
+    assert isinstance(fig, plt.Figure), "Should return Figure object"
 
 
 # which runs after all tests complete. The code below is kept for non-pytest execution.

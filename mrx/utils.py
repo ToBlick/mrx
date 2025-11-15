@@ -1,4 +1,4 @@
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 import os
 
 import jax
@@ -341,7 +341,7 @@ def append_to_trace_dict(
     trace_dict : dict, i : int, f : float, E : float, 
     H : float, dvg : float, v : float, p_i : int, 
     e : float, dt : float, end_time : float, 
-    B : jnp.ndarray | None = None) -> dict:
+    B : Optional[jnp.ndarray] = None) -> dict:
     """
     Append values to the trace dictionary.
 

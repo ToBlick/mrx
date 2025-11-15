@@ -9,6 +9,7 @@ import xarray as xr
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
+from mrx.mappings import gvec_stellarator_map
 from mrx.utils import is_running_in_github_actions
 
 jax.config.update("jax_enable_x64", True)
@@ -55,13 +56,7 @@ c, residuals, rank, s = jnp.linalg.lstsq(M, y, rcond=None)
 X1_h = DiscreteFunction(c[:, 0], mapSeq.Lambda_0, mapSeq.E0)
 X2_h = DiscreteFunction(c[:, 1], mapSeq.Lambda_0, mapSeq.E0)
 
-
-@jax.jit
-def F(x):
-    r, θ, ζ = x
-    return jnp.array([X1_h(x)[0] * jnp.cos(2 * jnp.pi * ζ),
-                      -X1_h(x)[0] * jnp.sin(2 * jnp.pi * ζ),
-                      X2_h(x)[0]])
+F = jax.jit(gvec_stellarator_map(X1_h, X2_h, nfp=1))
 
 # %%
 # Assemble Sequence with Gvec mapping

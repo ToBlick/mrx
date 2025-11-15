@@ -6,7 +6,8 @@ and other analysis results using Plotly.
 """
 # %%
 import os
-
+from typing import Optional
+from typing import Callable
 import diffrax
 import h5py
 import jax
@@ -19,7 +20,8 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import cerfon_map
 
-__all__ = []
+__all__ = ['converge_plot', 'get_3d_grids', 'get_2d_grids', 
+            'get_1d_grids', 'poincare_plot', 'pressure_plot', 'trace_plot']
 
 # Base marker styles for different data series
 base_markers = [
@@ -33,76 +35,123 @@ base_markers = [
 colorbar = 'Viridis'
 
 
-# def converge_plot(err, ns, ps, qs):
-#     """
-#     Create a convergence plot showing error vs. number of elements for different polynomial orders.
+def converge_plot(err : jnp.ndarray, ns : jnp.ndarray, ps : jnp.ndarray, qs : jnp.ndarray):
+    """
+    Create a convergence plot showing error vs. number of elements for different polynomial orders.
 
-#     This function generates a plotly figure showing the convergence behavior of
-#     numerical solutions for different polynomial orders (p) and quadrature rules (q).
+    This function generates a plotly figure showing the convergence behavior of
+    numerical solutions for different polynomial orders (p) and quadrature rules (q).
 
-#     Args:
-#         err (numpy.ndarray): Error values of shape (len(ns), len(ps), len(qs))
-#         ns (numpy.ndarray): Array of number of elements
-#         ps (numpy.ndarray): Array of polynomial orders
-#         qs (numpy.ndarray): Array of quadrature rule orders
+    Args:
+        err (numpy.ndarray): Error values of shape (len(ns), len(ps), len(qs))
+        ns (numpy.ndarray): Array of number of elements
+        ps (numpy.ndarray): Array of polynomial orders
+        qs (numpy.ndarray): Array of quadrature rule orders
 
-#     Returns:
-#         plotly.graph_objects.Figure: A plotly figure showing the convergence plot
-#             with separate markers for polynomial orders and colors for quadrature rules.
+    Returns:
+        plotly.graph_objects.Figure: A plotly figure showing the convergence plot
+            with separate markers for polynomial orders and colors for quadrature rules.
 
-#     Notes:
-#         - Each polynomial order (p) is represented by a different marker style
-#         - Each quadrature rule (q) is represented by a different color
-#         - The plot includes both lines and markers for better visualization
-#         - Legend entries are added separately for markers and colors
-#     """
-#     markers = [base_markers[i % len(base_markers)] for i in range(len(ps))]
-#     colors = pc.sample_colorscale(colorbar, len(qs))
-#     fig = go.Figure()
+    Notes:
+        - Each polynomial order (p) is represented by a different marker style
+        - Each quadrature rule (q) is represented by a different color
+        - The plot includes both lines and markers for better visualization
+        - Legend entries are added separately for markers and colors
+    """
+    import plotly.graph_objects as go
+    import plotly.colors as pc
+    markers = [base_markers[i % len(base_markers)] for i in range(len(ps))]
+    colors = pc.sample_colorscale(colorbar, len(qs))
+    fig = go.Figure()
 
-#     # Add main traces with both lines and markers
-#     for j, p in enumerate(ps):
-#         for k, q in enumerate(qs):
-#             fig.add_trace(go.Scatter(
-#                 x=ns,
-#                 y=err[:, j, k],
-#                 mode='lines+markers',
-#                 name=f'p={p}',
-#                 marker=dict(symbol=markers[j], size=8, color=colors[k]),
-#                 line=dict(color=colors[k], width=2),
-#                 showlegend=False,
-#             ))
+    # Add main traces with both lines and markers
+    for j, p in enumerate(ps):
+        for k, q in enumerate(qs):
+            fig.add_trace(go.Scatter(
+                x=ns,
+                y=err[:, j, k],
+                mode='lines+markers',
+                name=f'p={p}',
+                marker=dict(symbol=markers[j], size=8, color=colors[k]),
+                line=dict(color=colors[k], width=2),
+                showlegend=False,
+            ))
 
-#     # Add legend entries for polynomial orders (markers)
-#     for j, marker in enumerate(markers):
-#         fig.add_trace(go.Scatter(
-#             x=[None], y=[None],
-#             mode='markers',
-#             marker=dict(symbol=marker, color=colors[0], size=8),
-#             name=f'p = {ps[j]}',
-#             showlegend=True
-#         ))
+    # Add legend entries for polynomial orders (markers)
+    for j, marker in enumerate(markers):
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],
+            mode='markers',
+            marker=dict(symbol=marker, color=colors[0], size=8),
+            name=f'p = {ps[j]}',
+            showlegend=True
+        ))
 
-#     # Add legend entries for quadrature rules (colors)
-#     for j, color in enumerate(colors):
-#         fig.add_trace(go.Scatter(
-#             x=[None], y=[None],
-#             mode='lines',
-#             marker=dict(symbol=None, color=color, size=8),
-#             name=f'q = {qs[j]}',
-#             showlegend=True
-#         ))
+    # Add legend entries for quadrature rules (colors)
+    for j, color in enumerate(colors):
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],
+            mode='lines',
+            marker=dict(symbol=None, color=color, size=8),
+            name=f'q = {qs[j]}',
+            showlegend=True
+        ))
 
-#     return fig
+    return fig
 
 
-def get_3d_grids(F,
-                 x_min=0, x_max=1,
-                 y_min=0, y_max=1,
-                 z_min=0, z_max=1,
-                 nx=16,
-                 ny=16,
-                 nz=16):
+def get_3d_grids(F : Callable,
+                 x_min : float = 0, x_max : float = 1,
+                 y_min : float = 0, y_max : float = 1,
+                 z_min : float = 0, z_max : float = 1,
+                 nx : int = 16,
+                 ny : int = 16,
+                 nz : int = 16):
+    """
+    Get 3D grids for plotting.
+
+    Parameters
+    ----------
+    F : callable
+        Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
+    x_min : float
+        Minimum value of the x coordinate.
+    x_max : float
+        Maximum value of the x coordinate.
+    y_min : float
+        Minimum value of the y coordinate.
+    y_max : float
+        Maximum value of the y coordinate.
+    z_min : float
+        Minimum value of the z coordinate.
+    z_max : float
+        Maximum value of the z coordinate.
+    nx : int
+        Number of grid points in the x direction.
+    ny : int
+        Number of grid points in the y direction.
+    nz : int
+        Number of grid points in the z direction.
+
+    Returns
+    -------
+    _x : jnp.ndarray
+        Grid points in the x direction.
+    _y : jnp.ndarray
+        Grid points in the y direction.
+    _y1 : jnp.ndarray
+        Grid points in the x direction.
+    _y2 : jnp.ndarray
+        Grid points in the y direction.
+    _y3 : jnp.ndarray
+        Grid points in the z direction.
+    _x1 : jnp.ndarray
+        Grid points in the x direction.
+    _x2 : jnp.ndarray
+        Grid points in the y direction.
+    _x3 : jnp.ndarray
+        Grid points in the z direction.
+    """
     _x1 = jnp.linspace(x_min, x_max, nx)
     _x2 = jnp.linspace(y_min, y_max, ny)
     _x3 = jnp.linspace(z_min, z_max, nz)
@@ -115,11 +164,75 @@ def get_3d_grids(F,
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
 
-def get_2d_grids(F, cut_value=0, cut_axis=2, nx=64, ny=64, nz=64, tol1=1e-6, tol2=0, tol3=0,
-                 x_min=0, x_max=1,
-                 y_min=0, y_max=1,
-                 z_min=0, z_max=1, invert_x=False, invert_y=False, invert_z=False):
-    _x1 = jnp.linspace(x_min + tol2, x_max - tol2, nx)
+def get_2d_grids(
+    F : Callable, cut_value : float = 0, cut_axis : int = 2, 
+    nx : int = 64, ny : int = 64, nz : int = 64, tol1 : float = 1e-6, 
+    tol2 : float = 0, tol3 : float = 0,
+    x_min : float = 0, x_max : float = 1,
+    y_min : float = 0, y_max : float = 1,
+    z_min : float = 0, z_max : float = 1, 
+    invert_x : bool = False, invert_y : bool = False, 
+    invert_z : bool = False):
+    """
+    Get 2D grids for plotting.
+    Parameters
+    ----------
+    F : callable
+        Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
+    cut_value : float
+        Value of the cut to make.
+    cut_axis : int
+        Axis to cut on.
+    nx : int
+        Number of grid points in the x direction.
+    ny : int
+        Number of grid points in the y direction.
+    nz : int
+        Number of grid points in the z direction.
+    tol1 : float
+        Tolerance for the x direction.
+    tol2 : float
+        Tolerance for the y direction.
+    tol3 : float
+        Tolerance for the z direction.
+    x_min : float
+        Minimum value of the x coordinate.
+    x_max : float
+        Maximum value of the x coordinate.
+    y_min : float
+        Minimum value of the y coordinate.
+    y_max : float
+        Maximum value of the y coordinate.
+    z_min : float
+        Minimum value of the z coordinate.
+    z_max : float
+        Maximum value of the z coordinate.
+    invert_x : bool
+        Whether to invert the x direction.
+    invert_y : bool
+        Whether to invert the y direction.
+    invert_z : bool
+        Whether to invert the z direction.
+
+    Returns
+    -------
+    _x : jnp.ndarray
+        Grid points in the x direction.
+    _y : jnp.ndarray
+        Grid points in the y direction.
+    _y1 : jnp.ndarray
+        Grid points in the x direction.
+    _y2 : jnp.ndarray
+        Grid points in the y direction.
+    _y3 : jnp.ndarray
+        Grid points in the z direction.
+    _x1 : jnp.ndarray
+        Grid points in the x direction.
+    _x2 : jnp.ndarray
+        Grid points in the y direction.
+    _x3 : jnp.ndarray
+    """
+    _x1 = jnp.linspace(x_min + tol1, x_max - tol1, nx)
     _x2 = jnp.linspace(y_min + tol2, y_max - tol2, ny)
     _x3 = jnp.linspace(z_min + tol3, z_max - tol3, nz)
     if invert_x:
@@ -147,8 +260,43 @@ def get_2d_grids(F, cut_value=0, cut_axis=2, nx=64, ny=64, nz=64, tol1=1e-6, tol
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
 
-def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
-    tol = 1e-6
+def get_1d_grids(
+    F : Callable, zeta : float = 0, chi : float = 0, 
+    nx : int = 64, tol : float = 1e-6):
+    """
+    Get 1D grids for plotting.
+    Parameters
+    ----------
+    F : callable
+        Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
+    zeta : float
+        Value of the zeta coordinate.
+    chi : float
+        Value of the chi coordinate.
+    nx : int
+        Number of grid points in the x direction.
+    tol : float
+        Tolerance for the grid.
+
+    Returns
+    -------
+    _x : jnp.ndarray
+        Grid points in the x direction.
+    _y : jnp.ndarray
+        Grid points in the y direction.
+    _y1 : jnp.ndarray
+        Grid points in the x direction.
+    _y2 : jnp.ndarray
+        Grid points in the y direction.
+    _y3 : jnp.ndarray
+        Grid points in the z direction.
+    _x1 : jnp.ndarray
+        Grid points in the x direction.
+    _x2 : jnp.ndarray
+        Grid points in the y direction.
+    _x3 : jnp.ndarray
+        Grid points in the z direction.
+    """
     _x1 = jnp.linspace(tol, 1 - tol, nx)
     _x2 = jnp.ones(1) * chi
     _x3 = jnp.ones(1) * zeta
@@ -161,7 +309,8 @@ def get_1d_grids(F, zeta=0, chi=0, nx=64, tol=1e-6):
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
 
-def trajectory_plane_intersections_jit(trajectories, plane_val=0.5, axis=1):
+def trajectory_plane_intersections_jit(
+    trajectories : jnp.ndarray, plane_val : float = 0.5, axis : int = 1):
     """
     Vectorized + jittable intersection with plane x_axis = plane_val.
 
@@ -202,8 +351,34 @@ def trajectory_plane_intersections_jit(trajectories, plane_val=0.5, axis=1):
     return intersections, mask
 
 
-def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=16, plot_centerline=False):
+def plot_crossections_separate(
+    p_h : Callable, grids_pol : list, zeta_vals : list, 
+    textsize : int = 16, ticksize : int = 16, 
+    plot_centerline : bool = False):
+    """
+    Plot cross-sections of a function on a list of grids.
 
+    Parameters
+    ----------
+    p_h : callable
+        Function to plot.
+    grids_pol : list
+    zeta_vals : list
+        Values of the zeta coordinate to plot.
+    textsize : int
+        Size of the text.
+    ticksize : int
+        Size of the ticks.
+    plot_centerline : bool
+        Whether to plot the centerline.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object.
+    axes : list
+        List of axes objects.
+    """
     numplots = len(grids_pol)
     fig, axes = plt.subplots(1, numplots, figsize=(16, 16/5))
     axes = axes.flatten()
@@ -328,18 +503,52 @@ def plot_crossections_separate(p_h, grids_pol, zeta_vals, textsize=16, ticksize=
     return fig, axes
 
 
-def plot_torus(p_h,
-               grids_pol,
-               grid_surface,
-               figsize=(12, 8),
-               labelsize=20,
-               ticksize=16,
-               gridlinewidth=0.01,
-               cstride=4,
-               elev=30,
-               azim=140,
-               noaxes=False):
+def plot_torus(p_h : Callable,
+               grids_pol : list,
+               grid_surface : list,
+               figsize : tuple = (12, 8),
+               labelsize : int = 20,
+               ticksize : int = 16,
+               gridlinewidth : float = 0.01,
+               cstride : int = 4,
+               elev : float = 30,
+               azim : float = 140,
+               noaxes : bool = False):
+    """
+    Plot a torus.
+    
+    Parameters
+    ----------
+    p_h : callable
+        Function to plot.
+    grids_pol : list
+        List of grids to plot.
+    grid_surface : list
+        List of grid surfaces to plot.
+    figsize : tuple
+        Size of the figure.
+    labelsize : int
+        Size of the labels.
+    ticksize : int
+        Size of the ticks.
+    gridlinewidth : float
+        Width of the grid lines.
+    cstride : int
+        Stride for the color map.
+    elev : float
+        Elevation angle.
+    azim : float
+        Azimuthal angle.
+    noaxes : bool
+        Whether to plot the axes.
 
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object.
+    ax : matplotlib.axes.Axes
+        Axes object.
+    """
     vals = jnp.array([jax.vmap(p_h)(grid[0]).reshape(grid[2][0].shape)
                      for grid in grids_pol])
 
@@ -409,7 +618,24 @@ def plot_torus(p_h,
     return fig, ax
 
 
-def plot_crossections(f, grids):
+def plot_crossections(f : Callable, grids : list):
+    """
+    Plot cross-sections of a function on a list of grids.
+    
+    Parameters
+    ----------
+    f : callable
+        Function to plot.
+    grids : list
+        List of grids to plot.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object.
+    ax : matplotlib.axes.Axes
+        Axes object.
+    """
     fig = plt.figure(figsize=(10, 6))
     ax = fig.add_subplot(111, projection='3d')
     for grid in grids:
@@ -425,7 +651,8 @@ def plot_crossections(f, grids):
     return fig, ax
 
 
-def trajectory_plane_intersections_list(trajectory, plane_point, plane_normal):
+def trajectory_plane_intersections_list(
+    trajectory : jnp.ndarray, plane_point : jnp.ndarray, plane_normal : jnp.ndarray):
     """
     Compute intersections of a 3D trajectory with a general plane.
 
@@ -470,7 +697,7 @@ def poincare_plot(
     n_loop : int, n_batch : int, colors : list, plane_val : float, 
     axis : int, final_time : int = 10000, n_saves : int = 20000, 
     max_steps : int = 150000, r_tol : float = 1e-7, a_tol : float = 1e-7,
-    cylindrical : bool = False, name : str = ""):
+    cylindrical : bool = False, filename : str = ""):
 
     """
     Plot Poincaré sections of a field line.
@@ -507,7 +734,7 @@ def poincare_plot(
         Absolute tolerance for the integration.
     cylindrical : bool
         Whether to plot the Poincaré sections in cylindrical coordinates.
-    name : str
+    filename : str
         Name of the plot.
     """
     os.makedirs(outdir, exist_ok=True)
@@ -585,7 +812,7 @@ def poincare_plot(
     ax1.tick_params(axis='both', which='major', labelsize=TICK_SIZE)
     ax1.grid(True, linestyle="--", alpha=0.5)
     plt.tight_layout()
-    plt.savefig(outdir + name + "poincare_physical.png",
+    plt.savefig(outdir + filename + "poincare_physical.png",
                 dpi=600, bbox_inches='tight')
 
     # logical domain
@@ -607,7 +834,7 @@ def poincare_plot(
     ax1.tick_params(axis='both', which='major', labelsize=TICK_SIZE)
     ax1.grid(True, linestyle="--", alpha=0.5)
     plt.tight_layout()
-    plt.savefig(outdir + name + "poincare_logical.png",
+    plt.savefig(outdir + filename + "poincare_logical.png",
                 dpi=600, bbox_inches='tight')
 
     print("Plotting field lines...")
@@ -620,16 +847,47 @@ def poincare_plot(
                 alpha=1)
         ax.set_axis_off()
         plt.tight_layout()
-        plt.savefig(outdir + name + "field_line_" +
+        plt.savefig(outdir + filename + "field_line_" +
                     str(i) + ".pdf", bbox_inches='tight')
 
 
-def pressure_plot(p, Seq, F, outdir, name,
-                  resolution=128, zeta=0, tol=1e-3,
-                  SQUARE_FIG_SIZE=(8, 8), LABEL_SIZE=20,
-                  TICK_SIZE=16, LINE_WIDTH=2.5):
+def pressure_plot(p : jnp.ndarray, Seq : DeRhamSequence, F : Callable, outdir : str, filename : str,
+                  resolution : int = 128, zeta : float = 0, 
+                  tol : float = 1e-3,
+                  SQUARE_FIG_SIZE : tuple = (8, 8), LABEL_SIZE : int = 20,
+                  TICK_SIZE : int = 16, LINE_WIDTH : float = 2.5):
 
-    p_h = DiscreteFunction(p, Seq.Λ0, Seq.E0_0.matrix())
+    """
+    Plot the pressure on the physical and logical domains side-by-side.
+
+    Parameters
+    ----------
+    p : jnp.ndarray
+        Pressure values.
+    Seq : DeRhamSequence
+        DeRham sequence to plot the pressure on.
+    F : callable
+        Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
+    outdir : str
+        Directory to save the plot.
+    filename : str
+        Name of the plot.
+    resolution : int
+        Resolution of the plot.
+    zeta : float
+        Value of the zeta coordinate to plot.
+    tol : float
+        Tolerance for the plot.
+    SQUARE_FIG_SIZE : tuple
+        Size of the figure.
+    LABEL_SIZE : int
+        Size of the labels.
+    TICK_SIZE : int
+        Size of the ticks.
+    LINE_WIDTH : float
+        Width of the line.
+    """
+    p_h = DiscreteFunction(p, Seq.Lambda_0, Seq.E0)
     p_h_xyz = Pushforward(p_h, F, 0)
 
     _s = jax.vmap(F)(jnp.vstack(
@@ -661,50 +919,83 @@ def pressure_plot(p, Seq, F, outdir, name,
 
     # Save
     plt.tight_layout()
-    plt.savefig(outdir + name, bbox_inches='tight')
+    # Ensure outdir ends with a path separator
+    if not outdir.endswith(os.sep) and not outdir.endswith('/'):
+        outdir = outdir + os.sep
+    plt.savefig(outdir + filename, bbox_inches='tight')
     plt.close()
 
 
-def plot_scalar_fct_physical_logical(p_h, Phi,
-                                     n_vis=64,
-                                     scale=100.0,
-                                     cmap='berlin',
-                                     levels=25,
-                                     figsize=(8, 4),
-                                     grid_stride=4,
-                                     grid_alpha=0.2,
-                                     grid_lw=1.0,
-                                     cbar_label=None,
-                                     cbar_shrink=0.9,
-                                     constrained_layout=True,
-                                     show=False,
-                                     logical_plane='r_theta',
-                                     fixed_theta=0.0,
-                                     fixed_r=0.5,
-                                     fixed_zeta=0,
-                                     colorbar=True):
+def plot_scalar_fct_physical_logical(p_h : Callable, Phi : Callable,
+                                     n_vis : int = 64,
+                                     scale : float = 100.0,
+                                     cmap : str = 'viridis',
+                                     levels : int = 25,
+                                     figsize : tuple = (8, 4),
+                                     grid_stride : int = 4,
+                                     grid_alpha : float = 0.2,
+                                     grid_lw : float = 1.0,
+                                     cbar_label : str = None,
+                                     cbar_shrink : float = 0.9,
+                                     constrained_layout : bool = True,
+                                     show : bool = False,
+                                     logical_plane : str = 'r_theta',
+                                     fixed_theta : float = 0.0,
+                                     fixed_r : float = 0.5,
+                                     fixed_zeta : float = 0,
+                                     colorbar : bool = True):
     """Plot a scalar function on the physical and logical domains side-by-side.
 
     Parameters
-    - p_h: callable
+    ----------
+    p_h : Callable
         DiscreteFunction-like object mapping logical coordinates -> scalar
         pressure value. Should accept (N,3) or (3,) points via vmap.
-    - Phi: callable
+    Phi : Callable
         Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
-    - n_vis: int
+    n_vis : int
         Number of points per logical axis (resolution of the visualization).
-    - scale: float
+    scale : float
         Multiplicative scale applied to `p_h` values for display.
-    - cmap, levels: passed to `contourf`.
-    - figsize, constrained_layout: figure layout options.
-    - grid_stride: stride for drawing grid lines.
-    - grid_alpha, grid_lw: appearance of grid lines.
-        - cbar_label, cbar_shrink: colorbar appearance. If `cbar_label` is
-            None (default) no label is set on the colorbar.
-    - show: if True, call `plt.show()` before returning.
+    cmap : str
+        Colormap to use.
+    levels : int
+        Number of levels for the contour plot.
+    figsize : tuple
+        Size of the figure.
+    grid_stride : int
+        Stride for the grid lines.
+    grid_alpha : float
+        Alpha for the grid lines.
+    grid_lw : float
+        Width for the grid lines.
+    cbar_label : str
+        Label for the colorbar.
+    cbar_shrink : float
+        Shrink factor for the colorbar.
+    constrained_layout : bool
+        Whether to use constrained layout.
+    show : bool
+        Whether to show the plot.
+    logical_plane : str
+        Logical plane to plot.
+    fixed_theta : float
+        Value of the theta coordinate to fix.
+    fixed_r : float
+        Value of the r coordinate to fix.
+    fixed_zeta : float
+        Value of the zeta coordinate to fix.
+    colorbar : bool
+        Whether to show the colorbar.
 
     Returns
-    - fig, (ax_phys, ax_log): matplotlib Figure and tuple of Axes
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object.
+    ax_phys : matplotlib.axes.Axes
+        Axes object for the physical domain.
+    ax_log : matplotlib.axes.Axes
+        Axes object for the logical domain.
     """
 
     # Build logical grid and evaluation points depending on requested plane
@@ -818,9 +1109,34 @@ def plot_scalar_fct_physical_logical(p_h, Phi,
 # %%
 
 
-def trace_plot(trace_dict, filename,
-               FIG_SIZE=(12, 6), LABEL_SIZE=20, TICK_SIZE=16, 
-               LINE_WIDTH=2.5, LEGEND_SIZE=16):
+def trace_plot(trace_dict : dict, filename : str,
+               FIG_SIZE : tuple = (12, 6), LABEL_SIZE : int = 20, TICK_SIZE : int = 16, 
+               LINE_WIDTH : float = 2.5, LEGEND_SIZE : int = 16):
+    """
+    Plot the trace of the energy, force, helicity, divergence, and 
+    velocity. 
+    
+    Parameters
+    ----------
+    trace_dict : dict
+        Dictionary containing the trace of the energy, force, helicity, divergence, and velocity.
+    filename : str
+        Name of the file to save the plot.
+    FIG_SIZE : tuple
+        Size of the figure.
+    LABEL_SIZE : int
+        Size of the labels.
+    TICK_SIZE : int
+        Size of the ticks.
+    LINE_WIDTH : float
+        Width of the lines.
+    LEGEND_SIZE : int
+        Size of the legend.
+
+    Returns
+    ------
+    None.
+    """
 
     color1 = 'purple'
     color2 = 'black'
@@ -829,27 +1145,34 @@ def trace_plot(trace_dict, filename,
     color5 = 'orange'
 
     # # Plot Energy on separate plot
-    energy_trace = jnp.array(trace_dict["energy_trace"])
+    energy_trace = trace_dict.get("energy_trace")
+    if energy_trace is not None:
+        energy_trace = jnp.array(energy_trace)
     iterations = trace_dict["iterations"]
     force_trace = jnp.array(trace_dict["force_trace"])
     helicity_trace = jnp.array(trace_dict["helicity_trace"])
     divergence_trace = jnp.array(trace_dict["divergence_trace"])
     velocity_trace = jnp.array(trace_dict["velocity_trace"])
     wall_time_trace = jnp.array(trace_dict["wall_time_trace"])
-    _, ax1 = plt.figure(figsize=FIG_SIZE)
-    # ax1 = ax2.twinx()
-    ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
-    ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$',
-                   color=color1, fontsize=LABEL_SIZE)
-    ax1.semilogy(energy_trace[0] - energy_trace,
-             label=r'$\frac{1}{2} \| B \|^2$', color=color1, linestyle='-.', lw=LINE_WIDTH)
-    # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
-    ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
-    ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
-    ax1.set_xscale('log')
-    ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
+    
+    # Only plot energy trace if it's not None
+    if energy_trace is not None:
+        fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
+        # ax1 = ax2.twinx()
+        ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
+        ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$',
+                       color=color1, fontsize=LABEL_SIZE)
+        ax1.semilogy(energy_trace[0] - energy_trace,
+                 label=r'$\frac{1}{2} \| B \|^2$', color=color1, linestyle='-.', lw=LINE_WIDTH)
+        # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
+        ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
+        ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
+        ax1.set_xscale('log')
+        ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
+        fig1.tight_layout()
+        plt.savefig(filename + "_energy_trace.pdf", bbox_inches='tight')
 
-    fig1, ax2 = plt.subplots(figsize=FIG_SIZE)
+    fig2, ax2 = plt.subplots(figsize=FIG_SIZE)
 
     ax2.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
     ax2.tick_params(axis='y', labelsize=TICK_SIZE)
@@ -884,30 +1207,39 @@ def trace_plot(trace_dict, filename,
     # ax1.grid(which="major", linestyle="-", color=color1, linewidth=0.5)
     ax2.legend(loc='best', fontsize=LEGEND_SIZE)
     ax2.grid(which="both", linestyle="--", linewidth=0.5)
-    fig1.tight_layout()
+    fig2.tight_layout()
     plt.savefig(filename, bbox_inches='tight')
 # %%
 
 
-def generate_solovev_plots(name):
+def generate_solovev_plots(filename : str):
     jax.config.update("jax_enable_x64", True)
 
-    outdir = "script_outputs/solovev/" + name + "/"
+    outdir = "script_outputs/solovev/" + filename + "/"
     os.makedirs(outdir, exist_ok=True)
 
-    print("Generating plots for " + name + "...")
+    print("Generating plots for " + filename + "...")
 
-    with h5py.File("script_outputs/solovev/" + name + ".h5", "r") as f:
+    with h5py.File("script_outputs/solovev/" + filename + ".h5", "r") as f:
         CONFIG = {k: v for k, v in f["config"].attrs.items()}
         # decode strings back if needed
         CONFIG = {k: v.decode() if isinstance(v, bytes)
                   else v for k, v in CONFIG.items()}
 
-        trace_dict = {k: v for k, v in f.items()}
+        trace_dict = {}
+        for k, v in f.items():
+            if k != "config":
+                # Convert HDF5 datasets to numpy arrays
+                if isinstance(v, h5py.Dataset):
+                    trace_dict[k] = v[:]
+                else:
+                    trace_dict[k] = v
         if CONFIG["save_B"]:
             # B_fields = f["B_fields"][:]
-            trace_dict["p_fields"] = f["p_fields"][:]
-            trace_dict["B_fields"] = f["B_fields"][:]
+            if "p_fields" in f:
+                trace_dict["p_fields"] = f["p_fields"][:]
+            if "B_fields" in f:
+                trace_dict["B_fields"] = f["B_fields"][:]
 
     # Step 1: get F
     delta = CONFIG["delta"]
@@ -929,61 +1261,63 @@ def generate_solovev_plots(name):
 
     print("Generating pressure plot...")
     # Plot number one: pressure contour plot of final solution
-    pressure_plot(trace_dict["p_final"], Seq, F, outdir, name="p_final.pdf", zeta=0)
-    if CONFIG["save_B"]:
+    pressure_plot(trace_dict["p_final"], Seq, F, outdir, filename="p_final.pdf", zeta=0)
+    if CONFIG["save_B"] and "p_fields" in trace_dict:
         for i, p in enumerate(trace_dict["p_fields"]):
-            pressure_plot(p, Seq, F, outdir, name=f"p_iter_{i*CONFIG['save_every']:06d}.pdf", zeta=0)
+            pressure_plot(p, Seq, F, outdir, filename=f"p_iter_{i*CONFIG['save_every']:06d}.pdf", zeta=0)
 
     print("Generating convergence plot...")
     # Figure 2: Energy and Force
 
-    trace_plot(trace_dict=trace_dict, filename="force_trace.pdf")
+    trace_plot(trace_dict=trace_dict, filename=outdir + filename + "_force_trace.pdf")
 
     # print("Plotting Poincaré sections and field lines...")
-    B_hat = trace_dict["B_final"]
-    B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
+    # Only plot B_final if it exists
+    if "B_final" in trace_dict:
+        B_hat = trace_dict["B_final"]
+        B_h = DiscreteFunction(B_hat, Seq.Lambda_2, Seq.E2)
 
-    @jax.jit
-    def vector_field(t, p, args):
-        r, χ, z = p
-        r = jnp.clip(r, 1e-6, 1)
-        χ = χ % 1.0
-        z = z % 1.0
-        x = jnp.array([r, χ, z])
-        DFx = jax.jacfwd(F)(x)
-        norm = ((DFx @ B_h(x)) @ DFx @ B_h(x))**0.5
-        return B_h(x) / (norm + 1e-9)
+        @jax.jit
+        def vector_field(t, p, args):
+            r, χ, z = p
+            r = jnp.clip(r, 1e-6, 1)
+            χ = χ % 1.0
+            z = z % 1.0
+            x = jnp.array([r, χ, z])
+            DFx = jax.jacfwd(F)(x)
+            norm = ((DFx @ B_h(x)) @ DFx @ B_h(x))**0.5
+            return B_h(x) / (norm + 1e-9)
 
-    n_loop = 5
-    n_batch = 5
+        n_loop = 5
+        n_batch = 5
 
-    x0s = jnp.vstack(
-        (jnp.linspace(0.05, 0.95, n_loop * n_batch),
-        jnp.zeros(n_loop * n_batch),
-        jnp.zeros(n_loop * n_batch))
-    ).T
+        x0s = jnp.vstack(
+            (jnp.linspace(0.05, 0.95, n_loop * n_batch),
+            jnp.zeros(n_loop * n_batch),
+            jnp.zeros(n_loop * n_batch))
+        ).T
 
-    n_cols = x0s.shape[1]
-    cm = plt.cm.plasma
-    vals = jnp.linspace(0, 1, n_cols + 2)[:-2]
+        n_cols = x0s.shape[1]
+        cm = plt.cm.plasma
+        vals = jnp.linspace(0, 1, n_cols + 2)[:-2]
 
-    # Interleave from start and end
-    order = jnp.ravel(jnp.column_stack([jnp.arange(n_cols//2), n_cols-1-jnp.arange(n_cols//2)]))
-    if n_cols % 2 == 1:
-        order = jnp.append(order, n_cols//2)
+        # Interleave from start and end
+        order = jnp.ravel(jnp.column_stack([jnp.arange(n_cols//2), n_cols-1-jnp.arange(n_cols//2)]))
+        if n_cols % 2 == 1:
+            order = jnp.append(order, n_cols//2)
 
-    colors = cm(vals[order])
+        colors = cm(vals[order])
 
-    x0s = x0s.T.reshape(n_batch, n_loop, 3)
+        x0s = x0s.T.reshape(n_batch, n_loop, 3)
 
-    poincare_plot(outdir, vector_field, F, x0s, n_loop, n_batch, colors, 
-                  plane_val=0.25, axis=2, final_time=5000, n_saves=20000, cylindrical=True, 
-                  r_tol=CONFIG["solver_tol"], a_tol=CONFIG["solver_tol"])
+        poincare_plot(outdir, vector_field, F, x0s, n_loop, n_batch, colors, 
+                      plane_val=0.25, axis=2, final_time=5000, n_saves=20000, cylindrical=True, 
+                      r_tol=CONFIG["solver_tol"], a_tol=CONFIG["solver_tol"], filename="")
 
 # %%
 
 
-def set_axes_equal(ax):
+def set_axes_equal(ax : plt.Axes):
     """Set 3D plot axes to equal scale."""
     X_limits = ax.get_xlim3d()
     Y_limits = ax.get_ylim3d()
@@ -1004,32 +1338,32 @@ def set_axes_equal(ax):
 
 
 def plot_twin_axis(
-    left_y,
-    right_y,
-    x_left=None,
-    x_right=None,
-    left_label="",
-    right_label="",
-    left_log=True,
-    right_log=False,
-    left_color="black",
-    right_color="teal",
-    left_marker='s',
-    right_marker='d',
-    left_linestyle='-',
-    right_linestyle='--',
-    left_markersize=4,
-    right_markersize=4,
-    num_iters_inner=1,
-    x_label='iteration',
-    figsize=(8, 3),
-    grid=True,
-    grid_linestyle='--',
-    grid_linewidth=0.5,
-    left_plot_kwargs=None,
-    right_plot_kwargs=None,
-    show=False,
-    return_axes=True,
+    left_y : jnp.ndarray,
+    right_y : jnp.ndarray,
+    x_left : Optional[jnp.ndarray] = None,
+    x_right : Optional[jnp.ndarray] = None,
+    left_label : str = "",
+    right_label : str = "",
+    left_log : bool = True,
+    right_log : bool = False,
+    left_color : str = "black",
+    right_color : str = "teal",
+    left_marker : str = 's',
+    right_marker : str = 'd',
+    left_linestyle : str = '-',
+    right_linestyle : str = '--',
+    left_markersize : int = 4,
+    right_markersize : int = 4,
+    num_iters_inner : int = 1,
+    x_label : str = 'iteration',
+    figsize : tuple = (8, 3),
+    grid : bool = True,
+    grid_linestyle : str = '--',
+    grid_linewidth : float = 0.5,
+    left_plot_kwargs : Optional[dict] = None,
+    right_plot_kwargs : Optional[dict] = None,
+    show : bool = False,
+    return_axes : bool = True,
 ):
     """Plot two series on shared x-axis with separate y-axes (twinx).
 
@@ -1038,6 +1372,70 @@ def plot_twin_axis(
     may contain any valid matplotlib plotting kwargs which will be
     forwarded to the underlying plotting call and will override the
     corresponding explicit arguments when present.
+
+    Parameters
+    ----------
+    left_y : jnp.ndarray
+        Left y-axis data.
+    right_y : jnp.ndarray
+        Right y-axis data.
+    x_left : Optional[jnp.ndarray]
+        Left x-axis data.
+    x_right : Optional[jnp.ndarray]
+        Right x-axis data.
+    left_label : str
+        Left y-axis label.
+    right_label : str
+        Right y-axis label.
+    left_log : bool
+        Whether to plot the left y-axis on a log scale.
+    right_log : bool
+        Whether to plot the right y-axis on a log scale.
+    left_color : str
+        Left color.
+    right_color : str
+        Right color.
+    left_marker : str
+        Left marker.
+    right_marker : str
+        Right marker.
+    left_linestyle : str
+        Left line style.
+    right_linestyle : str
+        Right line style.
+    left_markersize : int
+        Left marker size.
+    right_markersize : int
+        Right marker size.
+    num_iters_inner : int
+        Number of iterations per inner data point.
+    x_label : str
+        X-axis label.
+    figsize : tuple
+        Figure size.
+    grid : bool
+        Whether to plot a grid.
+    grid_linestyle : str
+        Grid line style.
+    grid_linewidth : float
+        Grid line width.
+    left_plot_kwargs : Optional[dict]
+        Left plot kwargs.
+    right_plot_kwargs : Optional[dict]
+        Right plot kwargs.
+    show : bool
+        Whether to show the plot.
+    return_axes : bool
+        Whether to return the axes.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object.
+    ax1 : matplotlib.axes.Axes
+        Axes object for the left y-axis.
+    ax2 : matplotlib.axes.Axes
+        Axes object for the right y-axis.
     """
 
     ly = np.asarray(left_y)

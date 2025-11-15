@@ -3,13 +3,11 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
-import numpy.testing as npt
 import pytest
 import xarray as xr
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.gvec_interface import interpolate_B_from_GVEC, interpolate_map_from_GVEC
-from mrx.mappings import gvec_stellarator_map
 
 jax.config.update("jax_enable_x64", True)
 

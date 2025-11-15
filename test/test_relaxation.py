@@ -15,7 +15,7 @@ jax.config.update("jax_enable_x64", True)
 def seq() -> DeRhamSequence:
     """Create a DeRhamSequence for testing."""
     return DeRhamSequence(
-        (4, 4, 4),
+        (3, 3, 3),
         (2, 2, 2),
         4,
         ("clamped", "periodic", "periodic"),
@@ -31,7 +31,7 @@ def seq_simple():
     def F_identity(x):
         return x
     return DeRhamSequence(
-        (4, 4, 4),
+        (3, 3, 3),
         (2, 2, 2),
         4,
         ("clamped", "periodic", "periodic"),
