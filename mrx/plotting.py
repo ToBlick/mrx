@@ -465,18 +465,61 @@ def trajectory_plane_intersections_list(trajectory, plane_point, plane_normal):
 # %%
 
 
-def poincare_plot(outdir, vector_field, F, x0, n_loop, n_batch, colors, plane_val, axis, final_time=10_000, n_saves=20_000, max_steps=150000, r_tol=1e-7, a_tol=1e-7, cylindrical=False, name=""):
+def poincare_plot(
+    outdir : str, vector_field : callable, F : callable, x0 : jnp.ndarray, 
+    n_loop : int, n_batch : int, colors : list, plane_val : float, 
+    axis : int, final_time : int = 10000, n_saves : int = 20000, 
+    max_steps : int = 150000, r_tol : float = 1e-7, a_tol : float = 1e-7,
+    cylindrical : bool = False, name : str = ""):
 
+    """
+    Plot Poincaré sections of a field line.
+
+    Parameters
+    ----------
+    outdir : str
+        Directory to save the plots.
+    vector_field : callable
+        Vector field to plot.
+    F : callable
+        Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
+    x0 : jnp.ndarray
+        Initial conditions for the field lines.
+    n_loop : int
+        Number of field lines to plot.
+    n_batch : int
+        Number of batches of field lines to plot.
+    colors : list
+        Colors to use for the field lines.
+    plane_val : float
+        Value of the plane to plot.
+    axis : int
+        Axis to plot the plane on.
+    final_time : int
+        Final time to integrate the field lines.
+    n_saves : int
+        Number of saves to make during the integration.
+    max_steps : int
+        Maximum number of steps to take during the integration.
+    r_tol : float
+        Relative tolerance for the integration.
+    a_tol : float
+        Absolute tolerance for the integration.
+    cylindrical : bool
+        Whether to plot the Poincaré sections in cylindrical coordinates.
+    name : str
+        Name of the plot.
+    """
     os.makedirs(outdir, exist_ok=True)
 
     # --- Figure settings ---
-    FIG_SIZE = (12, 6)
+    # FIG_SIZE = (12, 6)
     FIG_SIZE_SQUARE = (8, 8)
-    TITLE_SIZE = 20
+    # TITLE_SIZE = 20
     LABEL_SIZE = 20
     TICK_SIZE = 16
-    LINE_WIDTH = 2.5
-    LEGEND_SIZE = 16
+    # LINE_WIDTH = 2.5
+    # LEGEND_SIZE = 16
 
     assert x0.shape == (n_batch, n_loop, 3)
 
@@ -775,38 +818,38 @@ def plot_scalar_fct_physical_logical(p_h, Phi,
 # %%
 
 
-def trace_plot(iterations,
-               force_trace,
-               helicity_trace,
-               divergence_trace,
-               energy_trace,
-               velocity_trace,
-               wall_time_trace,
-               outdir,
-               name,
-               CONFIG,
-               FIG_SIZE=(12, 6), LABEL_SIZE=20, TICK_SIZE=16, LINE_WIDTH=2.5, LEGEND_SIZE=16):
-    fig1, ax2 = plt.subplots(figsize=FIG_SIZE)
-
-    # # Plot Energy on the left y-axis (ax1)
-    #
-    # ax1 = ax2.twinx()
-    # ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
-    # ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$',
-    #                color=color1, fontsize=LABEL_SIZE)
-    # ax1.semilogy(energy_trace[0] - jnp.array(energy_trace),
-    #          label=r'$\frac{1}{2} \| B \|^2$', color=color1, linestyle='-.', lw=LINE_WIDTH)
-    # # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
-    # ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
-    # ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
-    # ax1.set_xscale('log')
-    # ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
+def trace_plot(trace_dict, filename,
+               FIG_SIZE=(12, 6), LABEL_SIZE=20, TICK_SIZE=16, 
+               LINE_WIDTH=2.5, LEGEND_SIZE=16):
 
     color1 = 'purple'
     color2 = 'black'
     color3 = 'darkgray'
-    color4 = 'teal'
+    # color4 = 'teal'
     color5 = 'orange'
+
+    # # Plot Energy on separate plot
+    energy_trace = jnp.array(trace_dict["energy_trace"])
+    iterations = trace_dict["iterations"]
+    force_trace = jnp.array(trace_dict["force_trace"])
+    helicity_trace = jnp.array(trace_dict["helicity_trace"])
+    divergence_trace = jnp.array(trace_dict["divergence_trace"])
+    velocity_trace = jnp.array(trace_dict["velocity_trace"])
+    wall_time_trace = jnp.array(trace_dict["wall_time_trace"])
+    _, ax1 = plt.figure(figsize=FIG_SIZE)
+    # ax1 = ax2.twinx()
+    ax1.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
+    ax1.set_ylabel(r'$\frac{1}{2} \| B \|^2$',
+                   color=color1, fontsize=LABEL_SIZE)
+    ax1.semilogy(energy_trace[0] - energy_trace,
+             label=r'$\frac{1}{2} \| B \|^2$', color=color1, linestyle='-.', lw=LINE_WIDTH)
+    # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
+    ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
+    ax1.tick_params(axis='x', labelsize=TICK_SIZE)  # Set x-tick size
+    ax1.set_xscale('log')
+    ax1.tick_params(axis='y', labelcolor=color1, labelsize=TICK_SIZE)
+
+    fig1, ax2 = plt.subplots(figsize=FIG_SIZE)
 
     ax2.set_xlabel(r'$n$', fontsize=LABEL_SIZE)
     ax2.tick_params(axis='y', labelsize=TICK_SIZE)
@@ -842,7 +885,7 @@ def trace_plot(iterations,
     ax2.legend(loc='best', fontsize=LEGEND_SIZE)
     ax2.grid(which="both", linestyle="--", linewidth=0.5)
     fig1.tight_layout()
-    plt.savefig(outdir + name, bbox_inches='tight')
+    plt.savefig(filename, bbox_inches='tight')
 # %%
 
 
@@ -860,31 +903,15 @@ def generate_solovev_plots(name):
         CONFIG = {k: v.decode() if isinstance(v, bytes)
                   else v for k, v in CONFIG.items()}
 
-        B_final = f["B_final"][:]
-        p_final = f["p_final"][:]
-        iterations = f["iterations"][:]
-        force_trace = f["force_trace"][:]
-        velocity_trace = f["velocity_trace"][:]
-        helicity_trace = f["helicity_trace"][:]
-        energy_trace = f["energy_trace"][:]
-        energy_diff_trace = f["energy_diff_trace"][:]
-        divergence_B_trace = f["divergence_B_trace"][:]
-        picard_iterations = f["picard_iterations"][:]
-        picard_errors = f["picard_errors"][:]
-        timesteps = f["timesteps"][:]
-        total_time = f["total_time"][0]
-        time_setup = f["time_setup"][0]
-        time_solve = f["time_solve"][0]
-        wall_time_trace = f["wall_time_trace"][:]
+        trace_dict = {k: v for k, v in f.items()}
         if CONFIG["save_B"]:
             # B_fields = f["B_fields"][:]
-            p_fields = f["p_fields"][:]
-            B_fields = f["B_fields"][:]
+            trace_dict["p_fields"] = f["p_fields"][:]
+            trace_dict["B_fields"] = f["B_fields"][:]
 
     # Step 1: get F
     delta = CONFIG["delta"]
     kappa = CONFIG["kappa"]
-    q_star = CONFIG["q_star"]
     eps = CONFIG["eps"]
     R0 = CONFIG["R_0"]
     alpha = jnp.arcsin(delta)
@@ -902,67 +929,56 @@ def generate_solovev_plots(name):
 
     print("Generating pressure plot...")
     # Plot number one: pressure contour plot of final solution
-    pressure_plot(p_final, Seq, F, outdir, name="p_final.pdf", zeta=0)
+    pressure_plot(trace_dict["p_final"], Seq, F, outdir, name="p_final.pdf", zeta=0)
     if CONFIG["save_B"]:
-        for i, p in enumerate(p_fields):
-            pressure_plot(p,
-                          Seq,
-                          F,
-                          outdir,
-                          name=f"p_iter_{i*CONFIG['save_every']:06d}.pdf",
-                          zeta=0)
+        for i, p in enumerate(trace_dict["p_fields"]):
+            pressure_plot(p, Seq, F, outdir, name=f"p_iter_{i*CONFIG['save_every']:06d}.pdf", zeta=0)
 
     print("Generating convergence plot...")
     # Figure 2: Energy and Force
 
-    trace_plot(iterations=iterations,
-               force_trace=force_trace,
-               energy_trace=energy_trace,
-               helicity_trace=helicity_trace,
-               divergence_trace=divergence_B_trace,
-               velocity_trace=velocity_trace,
-               wall_time_trace=wall_time_trace,
-               outdir=outdir,
-               name="force_trace.pdf",
-               CONFIG=CONFIG)
+    trace_plot(trace_dict=trace_dict, filename="force_trace.pdf")
 
     # print("Plotting Poincaré sections and field lines...")
-    # B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
+    B_hat = trace_dict["B_final"]
+    B_h = DiscreteFunction(B_hat, Seq.Λ2, Seq.E2_0.matrix())
 
-    # @jax.jit
-    # def vector_field(t, p, args):
-    #     r, χ, z = p
-    #     r = jnp.clip(r, 1e-6, 1)
-    #     χ = χ % 1.0
-    #     z = z % 1.0
-    #     x = jnp.array([r, χ, z])
-    #     DFx = jax.jacfwd(F)(x)
-    #     norm = ((DFx @ B_h(x)) @ DFx @ B_h(x))**0.5
-    #     return B_h(x) / (norm + 1e-9)
+    @jax.jit
+    def vector_field(t, p, args):
+        r, χ, z = p
+        r = jnp.clip(r, 1e-6, 1)
+        χ = χ % 1.0
+        z = z % 1.0
+        x = jnp.array([r, χ, z])
+        DFx = jax.jacfwd(F)(x)
+        norm = ((DFx @ B_h(x)) @ DFx @ B_h(x))**0.5
+        return B_h(x) / (norm + 1e-9)
 
-    # n_loop = 5
-    # n_batch = 5
+    n_loop = 5
+    n_batch = 5
 
-    # x0s = jnp.vstack(
-    #     (jnp.linspace(0.05, 0.95, n_loop * n_batch),
-    #     jnp.zeros(n_loop * n_batch),
-    #     jnp.zeros(n_loop * n_batch))
-    # ).T
+    x0s = jnp.vstack(
+        (jnp.linspace(0.05, 0.95, n_loop * n_batch),
+        jnp.zeros(n_loop * n_batch),
+        jnp.zeros(n_loop * n_batch))
+    ).T
 
-    # n_cols = x0s.shape[1]
-    # cm = plt.cm.plasma
-    # vals = jnp.linspace(0, 1, n_cols + 2)[:-2]
+    n_cols = x0s.shape[1]
+    cm = plt.cm.plasma
+    vals = jnp.linspace(0, 1, n_cols + 2)[:-2]
 
-    # # Interleave from start and end
-    # order = jnp.ravel(jnp.column_stack([jnp.arange(n_cols//2), n_cols-1-jnp.arange(n_cols//2)]))
-    # if n_cols % 2 == 1:
-    #     order = jnp.append(order, n_cols//2)
+    # Interleave from start and end
+    order = jnp.ravel(jnp.column_stack([jnp.arange(n_cols//2), n_cols-1-jnp.arange(n_cols//2)]))
+    if n_cols % 2 == 1:
+        order = jnp.append(order, n_cols//2)
 
-    # colors = cm(vals[order])
+    colors = cm(vals[order])
 
-    # x0s = x0s.T.reshape(n_batch, n_loop, 3)
+    x0s = x0s.T.reshape(n_batch, n_loop, 3)
 
-    # poincare_plot(outdir, vector_field, F, x0s, n_loop, n_batch, colors, plane_val=0.25, axis=2, final_time=5_000, n_saves=20_000, cylindrical=True, r_tol=solver_tol, a_tol=solver_tol)
+    poincare_plot(outdir, vector_field, F, x0s, n_loop, n_batch, colors, 
+                  plane_val=0.25, axis=2, final_time=5000, n_saves=20000, cylindrical=True, 
+                  r_tol=CONFIG["solver_tol"], a_tol=CONFIG["solver_tol"])
 
 # %%
 

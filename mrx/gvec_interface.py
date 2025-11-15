@@ -1,15 +1,29 @@
 
 import jax
 import jax.numpy as jnp
-import numpy as np
-from numpy import pi
 
-from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.mappings import gvec_stellarator_map
 
 
 def interpolate_map_from_GVEC(gvec_eq, nfp, mapSeq):
+    """
+    Interpolate the GVEC map onto a DeRham sequence.
+
+    Parameters
+    ----------
+    gvec_eq : xarray.Dataset
+        GVEC equilibrium dataset.
+    nfp : int
+        Number of field periods.
+    mapSeq : DeRhamSequence
+        DeRham sequence to interpolate the map onto.
+
+    Returns
+    -------
+    gvec_stellarator_map : callable
+        GVEC stellarator map.
+    """
     _ρ = gvec_eq["rho"].values              # shape (mρ,)
     _θ = gvec_eq["theta"].values            # shape (mθ,)
     _ζ = gvec_eq["zeta"].values             # shape (mζ,)
@@ -29,7 +43,7 @@ def interpolate_map_from_GVEC(gvec_eq, nfp, mapSeq):
     M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.Lambda_0[i](x)[0])(pts))(
         mapSeq.Lambda_0.ns).T  # Λ0[i](x_hat_j)
     y = jnp.stack([X1.ravel(), X2.ravel()], axis=1)  # X_α(x'_j)
-    c, residuals, rank, s = jnp.linalg.lstsq(M, y, rcond=None)
+    c, _, _, _ = jnp.linalg.lstsq(M, y, rcond=None)
 
     X1_h = DiscreteFunction(c[:, 0], mapSeq.Lambda_0, mapSeq.E0)
     X2_h = DiscreteFunction(c[:, 1], mapSeq.Lambda_0, mapSeq.E0)
@@ -38,7 +52,33 @@ def interpolate_map_from_GVEC(gvec_eq, nfp, mapSeq):
 
 
 def interpolate_B_from_GVEC(gvec_eq, Seq, Phi, nfp, exclude_axis_tol=1e-3):
-    """Interpolate GVEC B-field onto Seq.Lambda_2 basis."""
+    """
+    Interpolate GVEC B-field onto Seq.Lambda_2 basis.
+
+    Parameters
+    ----------
+    gvec_eq : xarray.Dataset
+        GVEC equilibrium dataset.
+    Seq : DeRhamSequence
+        DeRham sequence to interpolate the B-field onto.
+    Phi : callable
+        Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
+    nfp : int
+        Number of field periods.
+    exclude_axis_tol : float
+        Tolerance for excluding points near the axis and exact boundary.
+
+    Returns
+    -------
+    B_dof : jnp.ndarray
+        B-field coefficients.
+    residuals : jnp.ndarray
+        Residuals of the interpolation.
+    rank : int
+        Rank of the interpolation.
+    s : jnp.ndarray
+        Singular values of the interpolation.
+    """
     # build pts from gvec_eq if not provided (expects rho, theta, zeta coords)
     _ρ = jnp.array(gvec_eq.rho.values)
     _θ = jnp.array(gvec_eq.theta.values)
@@ -52,7 +92,21 @@ def interpolate_B_from_GVEC(gvec_eq, Seq, Phi, nfp, exclude_axis_tol=1e-3):
     valid_pts = (pts[:, 0] > 1e-3) & (pts[:, 0] < 1 - 1e-3)
 
     def Λ2_phys(i, x):
-        """Evaluate the physical 2-form basis function Phi*Λ2[i] at x."""
+        """
+        Evaluate the physical 2-form basis function Phi*Λ2[i] at x.
+
+        Parameters
+        ----------
+        i : int
+            Index of the basis function.
+        x : jnp.ndarray
+            Point to evaluate the basis function at.
+
+        Returns
+        -------
+        jnp.ndarray
+            Value of the basis function at x.
+        """
         # Pullback of basis function
         DPhix = jax.jacfwd(Phi)(x)  # Jacobian of Phi at x
         J = jnp.linalg.det(DPhix)
@@ -68,5 +122,5 @@ def interpolate_B_from_GVEC(gvec_eq, Seq, Phi, nfp, exclude_axis_tol=1e-3):
     A = M.reshape(M.shape[0], -1).T
     b = y.ravel()
     # Solve least squares
-    B_dof, residuals, rank, s = jnp.linalg.lstsq(A, b, rcond=None)
+    B_dof, residuals, _, _ = jnp.linalg.lstsq(A, b, rcond=None)
     return B_dof, residuals
