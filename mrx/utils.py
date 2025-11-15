@@ -1,11 +1,18 @@
 from typing import Any, Callable
+import os
 
 import jax
 import jax.numpy as jnp
 
 __all__ = ['jacobian_determinant', 'inv33',
            'div', 'curl', 'grad', 'l2_product', 'DEVICE_PRESETS', 'DEFAULT_CONFIG',
-           'append_to_trace_dict', 'default_trace_dict', 'update_config']
+           'append_to_trace_dict', 'default_trace_dict', 'update_config', 'is_running_in_github_actions']
+
+def is_running_in_github_actions():
+    """
+    Checks if the current Python script is running within a GitHub Actions environment.
+    """
+    return os.getenv("GITHUB_ACTIONS") == "true"
 
 def norm_2(u : jnp.ndarray, Seq) -> float:
     """Compute the L2 norm of a vector field.
