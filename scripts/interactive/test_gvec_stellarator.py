@@ -29,7 +29,7 @@ jax.config.update("jax_enable_x64", True)
 repo_root = Path(__file__).parent.parent.parent 
 data_file = repo_root / "data" / "gvec_stellarator.h5"
 
-n, p, nfp = 8, 3, 3
+n, p, nfp = 4, 2, 3
 if is_running_in_github_actions():
     n, p = 2, 1
 gvec_eq = xr.open_dataset(data_file, engine="h5netcdf")
@@ -41,7 +41,7 @@ X1 = gvec_eq["X1"].values               # shape (mρ, mθ, mζ)
 X2 = gvec_eq["X2"].values               # shape (mρ, mθ, mζ)
 # %%
 # Get a deRham sequence to approximate the functions x1(ρ,θ,ζ), x2(ρ,θ,ζ) and x3(ρ,θ,ζ)
-mapSeq = DeRhamSequence((n, n, n), (p, p, p), p+2,
+mapSeq = DeRhamSequence((n, n, n), (p, p, p), 5,
                         ("clamped", "periodic", "periodic"),
                         lambda x: x, polar=False, dirichlet=False)
 
