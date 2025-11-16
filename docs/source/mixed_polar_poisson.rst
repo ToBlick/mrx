@@ -1,6 +1,10 @@
 Mixed Polar Poisson Problem
 ============================
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This tutorial demonstrates solving a mixed formulation of the Poisson problem on a disc.
 The script is located at ``scripts/tutorials/mixed_polar_poisson.py``.
 
@@ -50,38 +54,48 @@ The script generates convergence plots and performance comparisons.
 Mathematical Formulation
 =========================
 
+**Discretization Parameters**
+
+This script uses:
+- **Mesh parameters**: :math:`n_r = n_\theta = n`, :math:`n_\zeta = 1` (2D problem with trivial third dimension)
+- **Polynomial degrees**: :math:`p_r = p_\theta = p`, :math:`p_\zeta = 0` (constant in third direction)
+- **Boundary conditions**: Clamped in radial direction, periodic in poloidal direction, constant in toroidal direction
+
+Following the general formulas in :doc:`overview`, the number of DOFs are:
+- **2-forms** (flux variable :math:`\sigma`): :math:`N_2 = n_r \cdot d_\theta \cdot d_\zeta + d_r \cdot n_\theta \cdot d_\zeta + d_r \cdot d_\theta \cdot n_\zeta = n \cdot n \cdot 1 + (n-1) \cdot n \cdot 1 + (n-1) \cdot n \cdot 1 = 3n^2 - 2n` where :math:`d_r = n-1` (clamped), :math:`d_\theta = n` (periodic), :math:`d_\zeta = 1` (constant)
+- **3-forms** (solution :math:`u`): :math:`N_3 = d_r \cdot d_\theta \cdot d_\zeta = (n-1) \cdot n \cdot 1 = n(n-1)`
+
 **Finite Element Spaces**
 
 The mixed formulation uses a 3D DeRham sequence (with trivial third dimension) to solve a 2D problem:
-- **3-forms** (volume forms) for the solution :math:`u`: :math:`V_3 = \text{span}\{\Lambda_3^i\}_{i=1}^{N_3}`
-- **2-forms** (area forms) for the flux :math:`\sigma`: :math:`V_2 = \text{span}\{\Lambda_2^i\}_{i=1}^{N_2}`
-
-where:
-- :math:`N_3` is the number of 3-form degrees of freedom
-- :math:`N_2` is the number of 2-form degrees of freedom
-- :math:`\{\Lambda_3^i\}` are 3-form basis functions (scalar functions, volume forms in 3D)
-- :math:`\{\Lambda_2^i\}` are 2-form basis functions (vector fields, area forms in 3D)
+- **3-forms** (volume forms) for the solution :math:`u`: :math:`V_3 = \text{span}\{\Lambda_3^i\}_{i=1}^{N_3}` where :math:`N_3 = n(n-1)`
+- **2-forms** (area forms) for the flux :math:`\sigma`: :math:`V_2 = \text{span}\{\Lambda_2^i\}_{i=1}^{N_2}` where :math:`N_2 = 3n^2 - 2n`
 
 Note: Although the problem is 2D (disc domain), the code uses a 3D DeRham sequence with the third dimension
 having a single element and zero polynomial degree, effectively reducing to 2D.
 
+**Matrix and Operator Dimensions**
+
+All matrices and operators are defined with explicit dimensions:
+
 **Mass Matrices**
 
-The 2-form mass matrix :math:`M_2 \in \mathbb{R}^{N_2 \times N_2}`:
+The 2-form mass matrix :math:`M_2 \in \mathbb{R}^{N_2 \times N_2}` where :math:`N_2 = 3n^2 - 2n`:
 
 .. math::
 
     (M_2)_{ij} = \int_\Omega \Lambda_2^i(x) \cdot G(x) \Lambda_2^j(x) \frac{1}{\det(DF(x))} \, dx
 
-where :math:`G(x) = DF(x)^T DF(x)` is the metric tensor. Dimensions: :math:`N_2 \times N_2`.
+where :math:`G(x) = DF(x)^T DF(x)` is the metric tensor.
+Dimensions: :math:`M_2 \in \mathbb{R}^{(3n^2-2n) \times (3n^2-2n)}`.
 
-The 3-form mass matrix :math:`M_3 \in \mathbb{R}^{N_3 \times N_3}`:
+The 3-form mass matrix :math:`M_3 \in \mathbb{R}^{N_3 \times N_3}` where :math:`N_3 = n(n-1)`:
 
 .. math::
 
     (M_3)_{ij} = \int_\Omega \Lambda_3^i(x) \Lambda_3^j(x) \frac{1}{\det(DF(x))} \, dx
 
-Dimensions: :math:`N_3 \times N_3`.
+Dimensions: :math:`M_3 \in \mathbb{R}^{n(n-1) \times n(n-1)}`.
 
 **Derivative Operators**
 
@@ -91,7 +105,7 @@ The strong divergence operator :math:`\text{strong\_div}: V_2 \to V_3`:
 
     (\text{strong\_div})_{ij} = \int_\Omega \Lambda_3^i(x) \text{div} \Lambda_2^j(x) \frac{1}{\det(DF(x))} \, dx
 
-Dimensions: :math:`N_3 \times N_2`.
+Dimensions: :math:`\text{strong\_div} \in \mathbb{R}^{n(n-1) \times (3n^2-2n)}`.
 
 The weak gradient operator :math:`\text{weak\_grad}: V_3 \to V_2`:
 
@@ -99,7 +113,7 @@ The weak gradient operator :math:`\text{weak\_grad}: V_3 \to V_2`:
 
     (\text{weak\_grad})_{ij} = -\int_\Omega \Lambda_2^i(x) \cdot G^{-1}(x) \nabla \Lambda_3^j(x) \det(DF(x)) \, dx
 
-Dimensions: :math:`N_2 \times N_3`.
+Dimensions: :math:`\text{weak\_grad} \in \mathbb{R}^{(3n^2-2n) \times n(n-1)}`.
 
 **3-Form Laplacian**
 
@@ -116,6 +130,17 @@ This operator satisfies:
     -(\text{div} \xi, \mu) = (\delta d \rho, \mu) \quad \forall \mu \in V_3
 
 where :math:`\xi = \text{weak\_grad} \rho` and :math:`\rho \in V_3`.
+Dimensions: :math:`\Delta_3 \in \mathbb{R}^{n(n-1) \times n(n-1)}`.
+
+**Projection Operator**
+
+The 3-form projection operator :math:`P_3: L^2(\Omega) \to V_3`:
+
+.. math::
+
+    P_3(f) = \arg\min_{v_h \in V_3} \|f - v_h\|_{L^2(\Omega)}
+
+Dimensions: :math:`P_3(f) \in \mathbb{R}^{n(n-1)}`.
 
 **Linear System**
 
@@ -126,10 +151,10 @@ The discrete mixed formulation becomes:
     M_3 \Delta_3 \hat{u} = P_3(f)
 
 where:
-- :math:`\hat{u} \in \mathbb{R}^{N_3}` are the solution coefficients
-- :math:`M_3 \in \mathbb{R}^{N_3 \times N_3}` is the 3-form mass matrix
-- :math:`\Delta_3 \in \mathbb{R}^{N_3 \times N_3}` is the 3-form Laplacian
-- :math:`P_3(f) \in \mathbb{R}^{N_3}` is the projection of the source term onto :math:`V_3`
+- :math:`\hat{u} \in \mathbb{R}^{N_3}` are the solution coefficients, :math:`\hat{u} \in \mathbb{R}^{n(n-1)}`
+- :math:`M_3 \in \mathbb{R}^{N_3 \times N_3}` is the 3-form mass matrix, :math:`M_3 \in \mathbb{R}^{n(n-1) \times n(n-1)}`
+- :math:`\Delta_3 \in \mathbb{R}^{N_3 \times N_3}` is the 3-form Laplacian, :math:`\Delta_3 \in \mathbb{R}^{n(n-1) \times n(n-1)}`
+- :math:`P_3(f) \in \mathbb{R}^{N_3}` is the projection of the source term, :math:`P_3(f) \in \mathbb{R}^{n(n-1)}`
 
 **Pushforward Operation**
 
@@ -143,7 +168,7 @@ where the pushforward of a 3-form transforms the discrete function representatio
 to account for the coordinate mapping :math:`F`.
 
 Code Walkthrough
-================
+----------------
 
 The script follows a similar structure to ``polar_poisson.py`` but uses a mixed finite
 element formulation:

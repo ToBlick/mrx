@@ -1,6 +1,10 @@
 Iterative Island Calculation
 ============================
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This script performs iterative island calculations for magnetic configurations.
 The script is located at ``scripts/config_scripts/iter_islands.py``.
 
@@ -131,7 +135,7 @@ The perturbation creates resonant surfaces where magnetic field lines form close
 creating "islands" in the magnetic topology.
 
 Code Walkthrough
-================
+----------------
 
 This script is similar to ``solovev.py`` but configured for studying magnetic islands
 in tokamak configurations:

@@ -1,6 +1,10 @@
 Poisson Problem on a disc
 ==========================
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This tutorial demonstrates solving a Poisson problem on a disc using polar coordinates.
 The script is located at ``scripts/tutorials/polar_poisson.py``.
 
@@ -50,24 +54,41 @@ The domain is discretized using a DeRham sequence with:
 - **Quadrature order**: :math:`q = p + 2` (Gauss-Legendre quadrature)
 - **Boundary conditions**: Clamped in radial direction (:math:`r=0,1`), periodic in poloidal direction (:math:`\theta`)
 
+**Discretization Parameters**
+
+This script uses:
+- **Mesh parameters**: :math:`n_r = n_\theta = n`, :math:`n_\zeta = 1` (2D problem)
+- **Polynomial degrees**: :math:`p_r = p_\theta = p`, :math:`p_\zeta = 0`
+- **Boundary conditions**: Clamped in radial direction, periodic in poloidal direction
+
+Following the general formulas in :doc:`overview`, the number of DOFs are:
+- **0-forms**: :math:`N_0 = n_r \cdot n_\theta = n^2`
+- **1-forms**: :math:`N_1 = d_r \cdot n_\theta + n_r \cdot d_\theta = (n-1) \cdot n + n \cdot n = n(2n-1)` where :math:`d_r = n-1` (clamped), :math:`d_\theta = n` (periodic)
+- **2-forms**: :math:`N_2 = n_r \cdot d_\theta + d_r \cdot n_\theta = n^2 + n(n-1) = n(2n-1)`
+- **3-forms**: :math:`N_3 = d_r \cdot d_\theta = n(n-1)`
+
 **Basis Functions**
 
 The 0-form basis functions :math:`\{\Lambda_0^i\}_{i=1}^{N_0}` are tensor products of B-splines:
 :math:`\Lambda_0^i(r,\theta) = \Lambda_r^{i_r}(r) \Lambda_\theta^{i_\theta}(\theta)`, where:
-- :math:`N_0 = n_r \cdot n_\theta` is the total number of 0-form degrees of freedom
-- :math:`\Lambda_r^{i_r}(r)` are radial B-splines of degree :math:`p_r`
-- :math:`\Lambda_\theta^{i_\theta}(\theta)` are poloidal B-splines of degree :math:`p_\theta`
+- :math:`N_0 = n^2` is the total number of 0-form degrees of freedom
+- :math:`\Lambda_r^{i_r}(r)` are radial B-splines of degree :math:`p_r = p`
+- :math:`\Lambda_\theta^{i_\theta}(\theta)` are poloidal B-splines of degree :math:`p_\theta = p`
+
+**Matrix and Operator Dimensions**
+
+All matrices and operators are defined with explicit dimensions:
 
 **Mass Matrix**
 
-The 0-form mass matrix :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}` is defined as:
+The 0-form mass matrix :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}` where :math:`N_0 = n^2`:
 
 .. math::
 
     (M_0)_{ij} = \int_\Omega \Lambda_0^i(x) \Lambda_0^j(x) \det(DF(x)) \, dx
 
 where :math:`F: [0,1]^2 \to \Omega` is the polar coordinate mapping and :math:`DF(x)` is its Jacobian matrix.
-The matrix has dimensions :math:`N_0 \times N_0` where :math:`N_0` is the number of 0-form DOFs.
+Dimensions: :math:`M_0 \in \mathbb{R}^{n^2 \times n^2}`.
 
 **Laplacian Operator**
 
@@ -77,15 +98,15 @@ The 0-form Laplacian :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}` is the Hod
 
     \Delta_0 = M_0^{-1} \text{grad\_grad}
 
-where the gradient-gradient matrix is:
+where the gradient-gradient matrix :math:`\text{grad\_grad} \in \mathbb{R}^{N_0 \times N_0}` is:
 
 .. math::
 
     (\text{grad\_grad})_{ij} = \int_\Omega \nabla \Lambda_0^i(x) \cdot G^{-1}(x) \nabla \Lambda_0^j(x) \det(DF(x)) \, dx
 
 and :math:`G(x) = DF(x)^T DF(x)` is the metric tensor and :math:`G^{-1}(x)` is its inverse.
+Dimensions: :math:`\Delta_0 \in \mathbb{R}^{n^2 \times n^2}`, :math:`\text{grad\_grad} \in \mathbb{R}^{n^2 \times n^2}`.
 The operator satisfies :math:`(\nabla f, \nabla g) = (f, \delta d g)` for all test functions :math:`g`.
-The matrix :math:`\Delta_0` has dimensions :math:`N_0 \times N_0`.
 
 **Projection Operator**
 
@@ -95,11 +116,13 @@ The projection operator :math:`P_0: L^2(\Omega) \to V_0` maps functions to the 0
 
     P_0(f) = \arg\min_{v_h \in V_0} \|f - v_h\|_{L^2(\Omega)}
 
-where :math:`V_0 = \text{span}\{\Lambda_0^i\}`. The projection coefficients :math:`\hat{f} \in \mathbb{R}^{N_0}` satisfy:
+where :math:`V_0 = \text{span}\{\Lambda_0^i\}_{i=1}^{N_0}`. The projection coefficients :math:`\hat{f} \in \mathbb{R}^{N_0}` satisfy:
 
 .. math::
 
     M_0 \hat{f} = \mathbf{b}, \quad b_i = \int_\Omega f(x) \Lambda_0^i(x) \det(DF(x)) \, dx
+
+Dimensions: :math:`P_0(f) \in \mathbb{R}^{n^2}`, :math:`\hat{f} \in \mathbb{R}^{n^2}`, :math:`\mathbf{b} \in \mathbb{R}^{n^2}`.
 
 **Linear System**
 
@@ -110,10 +133,10 @@ The discrete Poisson equation becomes:
     M_0 \Delta_0 \hat{u} = P_0(f)
 
 where:
-- :math:`\hat{u} \in \mathbb{R}^{N_0}` are the solution coefficients
-- :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}` is the mass matrix
-- :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}` is the Laplacian operator
-- :math:`P_0(f) \in \mathbb{R}^{N_0}` is the projection of the source term
+- :math:`\hat{u} \in \mathbb{R}^{N_0}` are the solution coefficients, :math:`\hat{u} \in \mathbb{R}^{n^2}`
+- :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}` is the mass matrix, :math:`M_0 \in \mathbb{R}^{n^2 \times n^2}`
+- :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}` is the Laplacian operator, :math:`\Delta_0 \in \mathbb{R}^{n^2 \times n^2}`
+- :math:`P_0(f) \in \mathbb{R}^{N_0}` is the projection of the source term, :math:`P_0(f) \in \mathbb{R}^{n^2}`
 
 **Error Computation**
 
@@ -137,7 +160,7 @@ and:
 - :math:`u_h(x) = \sum_{i=1}^{N_0} \hat{u}_i \Lambda_0^i(x)` is the discrete solution
 
 Code Walkthrough
-================
+----------------
 
 The script is organized into several logical blocks:
 

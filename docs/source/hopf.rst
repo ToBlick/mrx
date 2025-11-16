@@ -1,6 +1,10 @@
 Hopf Configuration
 ==================
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This script runs simulations for Hopf configurations.
 The script is located at ``scripts/config_scripts/hopf.py``.
 
@@ -193,7 +197,7 @@ For non-force-free fields:
     p = -\Delta_0^{-1}(\nabla \cdot (\mathbf{J} \times \mathbf{B}))
 
 Code Walkthrough
-================
+----------------
 
 This script implements a magnetic relaxation solver for the Hopf fibration, which is
 an exact solution to the force-free field equations:

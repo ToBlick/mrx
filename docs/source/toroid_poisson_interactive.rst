@@ -1,6 +1,10 @@
 Toroid Poisson (Interactive)
 ============================
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This script solves a Poisson problem on a toroidal domain interactively.
 The script is located at ``scripts/interactive/toroid_poisson.py``.
 
@@ -158,7 +162,7 @@ is computed using quadrature:
     \|u - u_h\|_{L^2(\Omega)}^2 = \int_\Omega (u(x) - u_h(x))^2 \det(DF(x)) \, dx \approx \sum_{j=1}^{n_q} (u(x_j) - u_h(x_j))^2 J_j w_j
 
 Code Walkthrough
-================
+----------------
 
 This script is similar to ``toroid_poisson.py`` but focuses on interactive exploration
 and additional diagnostics:

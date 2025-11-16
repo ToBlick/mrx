@@ -1,42 +1,28 @@
 Overview
 ========
 
-Ways to use mrx
----------------
+MRX is a differentiable 3D magnetohydrodynamic (MHD) equilibrium solver that allows for magnetic relaxation
+of magnetic fields in perturbed/non-minimum energy states to lower energy states. The code is designed to
+address traditional challenges to 3D MHD equilibrium solvers, including exactly enforcing physical constraints
+such as divergence-free magnetic fields, exhibiting high levels of numerical convergence, dealing with complex
+geometries, and modeling stochastic field lines or chaotic behavior. By using differentiable Python (JAX), the
+numerical method provides computational efficiency on modern computing architectures, high code accessibility,
+and differentiability at each step.
 
-MRX is a collection of classes and functions that can be used in
-several ways for optimizing 2D and 3D MHD equilibria without the 
-assumption of nested flux surfaces. You can manipulate the objects
-interactively, at the python command line or in a Jupyter notebook.
+The method is based on the concept of **admissible variations** of :math:`\mathbf{B}` and :math:`p` that allows
+for magnetic relaxation without the assumption of nested flux surfaces. This makes MRX particularly suitable for
+studying magnetic islands and chaos in stellarator fusion devices.
 
-Input files
------------
+For more details, see the paper: `MRX: A differentiable 3D MHD equilibrium solver without nested flux surfaces <https://arxiv.org/pdf/2510.26986>`_.
 
-MRX problems are specified using a
-python driver script, in which objects are defined and
-configured. 
+.. toctree::
+   :maxdepth: 1
+   :caption: Overview Sections:
 
-JAX and jit-compilation
------------------------
+   overview_usage
+   overview_mathematical
+   overview_discretization
+   overview_geometry
+   overview_relaxation
 
-MRX is written in a way that is compatible with JAX and jit-compilation 
-for maximal performance after an initial compilation.
-
-Optimization
-------------
-
-To do optimization using MRX, there are five basic steps:
-
-1. Define the problem by specifying the geometry, the boundary type, the PDE being solved, and the 
-resolution of the finite element space.
-
-2. Initialize a deRham sequence and assemble the FEM spaces.
-
-3. Initialize the initial magnetic field guess and the state of the simulation.
-
-4. Run the relaxation loop.
-
-5. Post-process the results.
-
-This pattern is evident in the examples in this documentation. Much of the default functionality 
-is available through mrx.utils. You can see the functionality used in the scripts/config_scripts folder.
+For more details on specific scripts, see the individual script documentation pages.

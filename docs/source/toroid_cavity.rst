@@ -1,6 +1,10 @@
 Toroid Cavity
 ==============
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This script solves eigenvalue problems for a toroidal cavity.
 The script is located at ``scripts/interactive/toroid_cavity.py``.
 
@@ -137,7 +141,7 @@ The toroidal geometry introduces curvature through:
 These geometric factors modify the eigenmode structure compared to cylindrical cavities.
 
 Code Walkthrough
-================
+----------------
 
 This script computes electromagnetic eigenmodes for a toroidal cavity (2D cross-section
 with periodic boundary in toroidal direction):

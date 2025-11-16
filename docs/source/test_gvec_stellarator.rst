@@ -1,6 +1,10 @@
 GVEC Stellarator Interface Test
 ================================
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This script tests the interface with GVEC data for stellarator configurations.
 The script is located at ``scripts/interactive/test_gvec_stellarator.py``.
 
@@ -152,7 +156,7 @@ where:
 - :math:`\mathbf{B}_h` is the interpolated field in MRX space
 
 Code Walkthrough
-================
+----------------
 
 This script tests the GVEC interface for 3D stellarator geometries (non-axisymmetric):
 

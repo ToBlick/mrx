@@ -1,6 +1,10 @@
 Solovev Configuration
 ====================
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This script runs a magnetic relaxation simulation for a Solovev configuration.
 The script is located at ``scripts/config_scripts/solovev.py``.
 
@@ -95,6 +99,12 @@ The script generates HDF5 files with simulation data and PDF plots showing:
 Mathematical Formulation
 =========================
 
+**Discretization Parameters**
+
+This script uses a 3D DeRham sequence with mesh parameters :math:`n_r, n_\theta, n_\zeta`, polynomial degrees :math:`p_r, p_\theta, p_\zeta`,
+and boundary conditions (typically clamped in radial direction, periodic in poloidal and toroidal directions).
+For details on computing the number of DOFs :math:`N_0, N_1, N_2, N_3` from these parameters, see :doc:`overview`.
+
 **Finite Element Spaces**
 
 The magnetic field :math:`\mathbf{B}` is represented as a 2-form (area form) in the finite element space:
@@ -115,6 +125,10 @@ The current density :math:`\mathbf{J} = \nabla \times \mathbf{B}` is a 1-form:
 
 where :math:`\text{weak\_curl}: V_2 \to V_1` is the weak curl operator.
 
+**Matrix and Operator Dimensions**
+
+All matrices and operators have explicit dimensions as described in :doc:`overview`:
+
 **Mass Matrices**
 
 The 2-form mass matrix :math:`M_2 \in \mathbb{R}^{N_2 \times N_2}`:
@@ -123,15 +137,13 @@ The 2-form mass matrix :math:`M_2 \in \mathbb{R}^{N_2 \times N_2}`:
 
     (M_2)_{ij} = \int_\Omega \Lambda_2^i(x) \cdot G(x) \Lambda_2^j(x) \frac{1}{\det(DF(x))} \, dx
 
-Dimensions: :math:`N_2 \times N_2`.
+where :math:`G(x) = DF(x)^T DF(x)` is the metric tensor.
 
 The 1-form mass matrix :math:`M_1 \in \mathbb{R}^{N_1 \times N_1}`:
 
 .. math::
 
     (M_1)_{ij} = \int_\Omega \Lambda_1^i(x) \cdot G^{-1}(x) \Lambda_1^j(x) \det(DF(x)) \, dx
-
-Dimensions: :math:`N_1 \times N_1`.
 
 **Derivative Operators**
 
@@ -141,7 +153,7 @@ The weak curl operator :math:`\text{weak\_curl}: V_2 \to V_1`:
 
     (\text{weak\_curl})_{ij} = \int_\Omega \Lambda_1^i(x) \cdot \nabla \times \Lambda_2^j(x) \det(DF(x)) \, dx
 
-Dimensions: :math:`N_1 \times N_2`.
+Dimensions: :math:`\text{weak\_curl} \in \mathbb{R}^{N_1 \times N_2}`.
 
 The strong curl operator :math:`\text{strong\_curl}: V_1 \to V_2`:
 
@@ -149,7 +161,7 @@ The strong curl operator :math:`\text{strong\_curl}: V_1 \to V_2`:
 
     (\text{strong\_curl})_{ij} = \int_\Omega \Lambda_2^i(x) \cdot G(x) \nabla \times \Lambda_1^j(x) \frac{1}{\det(DF(x))} \, dx
 
-Dimensions: :math:`N_2 \times N_1`.
+Dimensions: :math:`\text{strong\_curl} \in \mathbb{R}^{N_2 \times N_1}`.
 
 **Cross-Product Projections**
 
@@ -160,6 +172,7 @@ The cross-product projection :math:`P_{2 \times 1 \to 2}` computes:
     (P_{2 \times 1 \to 2}(\mathbf{B}, \mathbf{J}))_i = \int_\Omega (\mathbf{B} \times \mathbf{J}) \cdot \Lambda_2^i(x) \frac{1}{\det(DF(x))} \, dx
 
 This is used to compute :math:`\mathbf{J} \times \mathbf{B}` in the finite element space.
+Dimensions: :math:`P_{2 \times 1 \to 2}(\mathbf{B}, \mathbf{J}) \in \mathbb{R}^{N_2}`.
 
 **Leray Projection**
 
@@ -170,6 +183,7 @@ The Leray projection :math:`P_{\text{Leray}}: V_2 \to V_2^{\text{div-free}}` pro
     P_{\text{Leray}} = I - \text{strong\_grad} \circ (\text{weak\_div} \circ M_1^{-1} \circ \text{strong\_grad})^{-1} \circ \text{weak\_div}
 
 This ensures :math:`\nabla \cdot (P_{\text{Leray}} \mathbf{u}) = 0` for all :math:`\mathbf{u} \in V_2`.
+Dimensions: :math:`P_{\text{Leray}} \in \mathbb{R}^{N_2 \times N_2}`.
 
 **Initial Magnetic Field**
 
@@ -224,7 +238,7 @@ where :math:`\mathbf{A}` is the vector potential satisfying :math:`\nabla \times
     \|\nabla \cdot \mathbf{B}\|_2
 
 Code Walkthrough
-================
+----------------
 
 The script implements a magnetic relaxation solver for MHD equilibrium:
 

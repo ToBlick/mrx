@@ -1,6 +1,10 @@
 Cylinder Vector Poisson
 ========================
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This script solves vector Poisson problems on a cylindrical domain.
 The script is located at ``scripts/interactive/cylinder_vector_poisson.py``.
 
@@ -156,7 +160,7 @@ where:
 and :math:`\mathbf{u}_h = \sum_{i=1}^{N_1} \hat{u}_i \Lambda_1^i` is the discrete solution.
 
 Code Walkthrough
-================
+----------------
 
 This script solves a vector Poisson problem:
    

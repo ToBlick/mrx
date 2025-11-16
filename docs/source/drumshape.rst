@@ -1,6 +1,10 @@
 Drum Shape Optimization
 ========================
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This script demonstrates shape optimization for drum-like configurations.
 The script is located at ``scripts/interactive/drumshape.py``.
 
@@ -151,7 +155,7 @@ The optimization uses gradient descent (e.g., Adam optimizer):
 where :math:`\alpha` is the learning rate (adaptive in Adam).
 
 Code Walkthrough
-================
+----------------
 
 This script implements an inverse problem: given a target eigenvalue spectrum, find
 the drum shape that produces those eigenvalues ("hearing the shape of a drum"):

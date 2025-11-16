@@ -625,8 +625,7 @@ def test_discrete_function(p):
 
 
 @pytest.mark.parametrize("p", [1, 2, 3])
-@pytest.mark.parametrize("k", [0, 1, 2, 3])
-def test_pushforward(p, k):
+def test_pushforward(p):
     """Test Pushforward operator for different form degrees."""
     Seq = DeRhamSequence(
         (4, 4, 4),
@@ -638,83 +637,83 @@ def test_pushforward(p, k):
         dirichlet=True
     )
 
-    # Define test functions for each form degree
-    if k == 0:
-        def f(x):
-            r, theta, zeta = x
-            return jnp.sin(2 * jnp.pi * r) * jnp.cos(2 * jnp.pi * theta) * jnp.sin(2 * jnp.pi * zeta)
-    elif k == 1:
-        def f(x):
-            r, theta, zeta = x
-            return jnp.array([
-                jnp.sin(2 * jnp.pi * r),
-                jnp.cos(2 * jnp.pi * theta),
-                jnp.sin(2 * jnp.pi * zeta)
-            ])
-    elif k == 2:
-        def f(x):
-            r, theta, zeta = x
-            return jnp.array([
-                jnp.sin(2 * jnp.pi * r),
-                jnp.cos(2 * jnp.pi * theta),
-                jnp.sin(2 * jnp.pi * zeta)
-            ])
-    elif k == 3:
-        def f(x):
-            r, theta, zeta = x
-            return jnp.sin(2 * jnp.pi * r) * jnp.cos(2 * jnp.pi * theta) * jnp.sin(2 * jnp.pi * zeta)
+    for k in [0, 1, 2, 3]:
+        # Define test functions for each form degree
+        if k == 0:
+            def f(x):
+                r, theta, zeta = x
+                return jnp.sin(2 * jnp.pi * r) * jnp.cos(2 * jnp.pi * theta) * jnp.sin(2 * jnp.pi * zeta)
+        elif k == 1:
+            def f(x):
+                r, theta, zeta = x
+                return jnp.array([
+                    jnp.sin(2 * jnp.pi * r),
+                    jnp.cos(2 * jnp.pi * theta),
+                    jnp.sin(2 * jnp.pi * zeta)
+                ])
+        elif k == 2:
+            def f(x):
+                r, theta, zeta = x
+                return jnp.array([
+                    jnp.sin(2 * jnp.pi * r),
+                    jnp.cos(2 * jnp.pi * theta),
+                    jnp.sin(2 * jnp.pi * zeta)
+                ])
+        elif k == 3:
+            def f(x):
+                r, theta, zeta = x
+                return jnp.sin(2 * jnp.pi * r) * jnp.cos(2 * jnp.pi * theta) * jnp.sin(2 * jnp.pi * zeta)
 
-    # Create pushforward
-    push = Pushforward(f, Seq.F, k)
+        # Create pushforward
+        push = Pushforward(f, Seq.F, k)
 
-    # Test evaluation at a point
-    x_test = jnp.array([0.5, 0.5, 0.5])
-    val = push(x_test)
+        # Test evaluation at a point
+        x_test = jnp.array([0.5, 0.5, 0.5])
+        val = push(x_test)
 
-    # Check shape based on form degree
-    if k == 0 or k == 3:
-        assert val.shape == (1,) or val.shape == (
-        ), f"Pushforward(k={k}) should return scalar, got shape {val.shape}"
-    elif k == 1 or k == 2:
-        assert val.shape == (
-            3,), f"Pushforward(k={k}) should return shape (3,), got {val.shape}"
+        # Check shape based on form degree
+        if k == 0 or k == 3:
+            assert val.shape == (1,) or val.shape == (
+            ), f"Pushforward(k={k}) should return scalar, got shape {val.shape}"
+        elif k == 1 or k == 2:
+            assert val.shape == (
+                3,), f"Pushforward(k={k}) should return shape (3,), got {val.shape}"
 
-    assert jnp.all(jnp.isfinite(
-        val)), f"Pushforward(k={k}) has non-finite values"
+        assert jnp.all(jnp.isfinite(
+            val)), f"Pushforward(k={k}) has non-finite values"
 
-    # Compute expected value manually based on pushforward definition
-    DF = jax.jacfwd(Seq.F)
-    DF_x = DF(x_test)
-    f_x = f(x_test)
+        # Compute expected value manually based on pushforward definition
+        DF = jax.jacfwd(Seq.F)
+        DF_x = DF(x_test)
+        f_x = f(x_test)
 
-    if k == 0:
-        # Pushforward(k=0): f(x) - identity
-        val_expected = f_x
-    elif k == 1:
-        # Pushforward(k=1): inv33(DF(x)).T @ f(x)
-        val_expected = inv33(DF_x).T @ f_x
-    elif k == 2:
-        # Pushforward(k=2): DF(x) @ f(x) / det(DF(x))
-        det_DF = jnp.linalg.det(DF_x)
-        val_expected = (DF_x @ f_x) / det_DF
-    elif k == 3:
-        # Pushforward(k=3): f(x) / det(DF(x))
-        det_DF = jnp.linalg.det(DF_x)
-        val_expected = f_x / det_DF
+        if k == 0:
+            # Pushforward(k=0): f(x) - identity
+            val_expected = f_x
+        elif k == 1:
+            # Pushforward(k=1): inv33(DF(x)).T @ f(x)
+            val_expected = inv33(DF_x).T @ f_x
+        elif k == 2:
+            # Pushforward(k=2): DF(x) @ f(x) / det(DF(x))
+            det_DF = jnp.linalg.det(DF_x)
+            val_expected = (DF_x @ f_x) / det_DF
+        elif k == 3:
+            # Pushforward(k=3): f(x) / det(DF(x))
+            det_DF = jnp.linalg.det(DF_x)
+            val_expected = f_x / det_DF
 
-    # Normalize shapes for comparison
-    if val.shape == ():
-        val = val.reshape(1)
-    if val_expected.shape == ():
-        val_expected = val_expected.reshape(1)
+        # Normalize shapes for comparison
+        if val.shape == ():
+            val = val.reshape(1)
+        if val_expected.shape == ():
+            val_expected = val_expected.reshape(1)
 
-    npt.assert_allclose(val, val_expected, rtol=1e-10, atol=1e-10,
-                        err_msg=f"Pushforward(k={k}) does not match expected value")
+        npt.assert_allclose(val, val_expected, rtol=1e-10, atol=1e-10,
+                            err_msg=f"Pushforward(k={k}) does not match expected value")
 
 
 @pytest.mark.parametrize("p", [1, 2, 3])
-@pytest.mark.parametrize("k", [0, 1, 2, 3])
-def test_pullback(p, k):
+def test_pullback(p):
     """Test Pullback operator for different form degrees."""
     Seq = DeRhamSequence(
         (4, 4, 4),
@@ -726,78 +725,79 @@ def test_pullback(p, k):
         dirichlet=True
     )
 
-    # Define test functions in physical space for each form degree
-    if k == 0:
-        def f_physical(y):
-            x, y_coord, z = y
-            return jnp.sin(2 * jnp.pi * x) * jnp.cos(2 * jnp.pi * y_coord) * jnp.sin(2 * jnp.pi * z)
-    elif k == 1:
-        def f_physical(y):
-            x, y_coord, z = y
-            return jnp.array([
-                jnp.sin(2 * jnp.pi * x),
-                jnp.cos(2 * jnp.pi * y_coord),
-                jnp.sin(2 * jnp.pi * z)
-            ])
-    elif k == 2:
-        def f_physical(y):
-            x, y_coord, z = y
-            return jnp.array([
-                jnp.sin(2 * jnp.pi * x),
-                jnp.cos(2 * jnp.pi * y_coord),
-                jnp.sin(2 * jnp.pi * z)
-            ])
-    elif k == 3:
-        def f_physical(y):
-            x, y_coord, z = y
-            return jnp.sin(2 * jnp.pi * x) * jnp.cos(2 * jnp.pi * y_coord) * jnp.sin(2 * jnp.pi * z)
+    for k in [0, 1, 2, 3]:
+        # Define test functions in physical space for each form degree
+        if k == 0:
+            def f_physical(y):
+                x, y_coord, z = y
+                return jnp.sin(2 * jnp.pi * x) * jnp.cos(2 * jnp.pi * y_coord) * jnp.sin(2 * jnp.pi * z)
+        elif k == 1:
+            def f_physical(y):
+                x, y_coord, z = y
+                return jnp.array([
+                    jnp.sin(2 * jnp.pi * x),
+                    jnp.cos(2 * jnp.pi * y_coord),
+                    jnp.sin(2 * jnp.pi * z)
+                ])
+        elif k == 2:
+            def f_physical(y):
+                x, y_coord, z = y
+                return jnp.array([
+                    jnp.sin(2 * jnp.pi * x),
+                    jnp.cos(2 * jnp.pi * y_coord),
+                    jnp.sin(2 * jnp.pi * z)
+                ])
+        elif k == 3:
+            def f_physical(y):
+                x, y_coord, z = y
+                return jnp.sin(2 * jnp.pi * x) * jnp.cos(2 * jnp.pi * y_coord) * jnp.sin(2 * jnp.pi * z)
 
-    # Create pullback
-    pull = Pullback(f_physical, Seq.F, k)
+        # Create pullback
+        pull = Pullback(f_physical, Seq.F, k)
 
-    # Test evaluation at a point in logical space
-    x_test = jnp.array([0.5, 0.5, 0.5])
-    val = pull(x_test)
+        # Test evaluation at a point in logical space
+        x_test = jnp.array([0.5, 0.5, 0.5])
+        val = pull(x_test)
 
-    # Check shape based on form degree
-    if k == 0 or k == 3:
-        assert val.shape == (1,) or val.shape == (
-        ), f"Pullback(k={k}) should return scalar, got shape {val.shape}"
-    elif k == 1 or k == 2:
-        assert val.shape == (
-            3,), f"Pullback(k={k}) should return shape (3,), got {val.shape}"
+        # Check shape based on form degree
+        if k == 0 or k == 3:
+            assert val.shape == (1,) or val.shape == (
+            ), f"Pullback(k={k}) should return scalar, got shape {val.shape}"
+        elif k == 1 or k == 2:
+            assert val.shape == (
+                3,), f"Pullback(k={k}) should return shape (3,), got {val.shape}"
 
-    assert jnp.all(jnp.isfinite(val)), f"Pullback(k={k}) has non-finite values"
+        assert jnp.all(jnp.isfinite(val)), f"Pullback(k={k}) has non-finite values"
 
-    # Compute expected value manually based on pullback definition
-    DF = jax.jacfwd(Seq.F)
-    DF_x = DF(x_test)
-    y_physical = Seq.F(x_test)
-    f_y = f_physical(y_physical)
+        # Compute expected value manually based on pullback definition
+        DF = jax.jacfwd(Seq.F)
+        DF_x = DF(x_test)
+        y_physical = Seq.F(x_test)
+        f_y = f_physical(y_physical)
 
-    if k == 0:
-        # Pullback(k=0): f(F(x))
-        val_expected = f_y
-    elif k == 1:
-        # Pullback(k=1): DF(x).T @ f(F(x))
-        val_expected = DF_x.T @ f_y
-    elif k == 2:
-        # Pullback(k=2): inv33(DF(x)) @ f(F(x)) * det(DF(x))
-        det_DF = jnp.linalg.det(DF_x)
-        val_expected = inv33(DF_x) @ f_y * det_DF
-    elif k == 3:
-        # Pullback(k=3): f(F(x)) * det(DF(x))
-        det_DF = jnp.linalg.det(DF_x)
-        val_expected = f_y * det_DF
+        if k == 0:
+            # Pullback(k=0): f(F(x))
+            val_expected = f_y
+        elif k == 1:
+            # Pullback(k=1): DF(x).T @ f(F(x))
+            val_expected = DF_x.T @ f_y
+        elif k == 2:
+            # Pullback(k=2): inv33(DF(x)) @ f(F(x)) * det(DF(x))
+            det_DF = jnp.linalg.det(DF_x)
+            val_expected = inv33(DF_x) @ f_y * det_DF
+        elif k == 3:
+            # Pullback(k=3): f(F(x)) * det(DF(x))
+            det_DF = jnp.linalg.det(DF_x)
+            val_expected = f_y * det_DF
 
-    # Normalize shapes for comparison
-    if val.shape == ():
-        val = val.reshape(1)
-    if val_expected.shape == ():
-        val_expected = val_expected.reshape(1)
+        # Normalize shapes for comparison
+        if val.shape == ():
+            val = val.reshape(1)
+        if val_expected.shape == ():
+            val_expected = val_expected.reshape(1)
 
-    npt.assert_allclose(val, val_expected, rtol=1e-10, atol=1e-10,
-                        err_msg=f"Pullback(k={k}) does not match expected value")
+        npt.assert_allclose(val, val_expected, rtol=1e-10, atol=1e-10,
+                            err_msg=f"Pullback(k={k}) does not match expected value")
 
 
 @pytest.mark.parametrize("p", [1, 2, 3])
@@ -844,8 +844,7 @@ def test_pushforward_pullback_consistency(p):
 
 
 @pytest.mark.parametrize("p", [1, 2, 3])
-@pytest.mark.parametrize("k", [0, 1, 2, 3])
-def test_vector_index(p, k):
+def test_vector_index(p):
     """Test _vector_index method for different form degrees."""
     Seq = DeRhamSequence(
         (4, 4, 4),
@@ -857,51 +856,52 @@ def test_vector_index(p, k):
         dirichlet=True
     )
 
-    Λ = [Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3][k]
+    Λs = [Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3]
+    for k in [0, 1, 2, 3]:
+        Λ = Λs[k]
 
-    # Test _vector_index for all valid indices
-    for idx in range(Λ.n):
-        category, local_idx = Λ._vector_index(idx)
+        # Test _vector_index for all valid indices
+        for idx in range(Λ.n):
+            category, local_idx = Λ._vector_index(idx)
 
-        # Check that category is valid
-        if k == 0 or k == 3:
-            assert category == 0, f"Category should be 0 for k={k}, got {category}"
-        elif k == 1 or k == 2:
-            assert category in [
-                0, 1, 2], f"Category should be 0, 1, or 2 for k={k}, got {category}"
+            # Check that category is valid
+            if k == 0 or k == 3:
+                assert category == 0, f"Category should be 0 for k={k}, got {category}"
+            elif k == 1 or k == 2:
+                assert category in [
+                    0, 1, 2], f"Category should be 0, 1, or 2 for k={k}, got {category}"
 
-        # Check that local_idx is within bounds
-        if k == 0:
-            assert 0 <= local_idx < Λ.nr * Λ.nt * Λ.nz, \
-                f"Local index {local_idx} out of bounds for k={k}"
-        elif k == 1:
-            if category == 0:
-                assert 0 <= local_idx < Λ.dr * Λ.nt * Λ.nz, \
-                    f"Local index {local_idx} out of bounds for k={k}, category={category}"
-            elif category == 1:
-                assert 0 <= local_idx < Λ.nr * Λ.dz * Λ.nz, \
-                    f"Local index {local_idx} out of bounds for k={k}, category={category}"
-            elif category == 2:
-                assert 0 <= local_idx < Λ.nr * Λ.nt * Λ.dz, \
-                    f"Local index {local_idx} out of bounds for k={k}, category={category}"
-        elif k == 2:
-            if category == 0:
-                assert 0 <= local_idx < Λ.nr * Λ.dz * Λ.dz, \
-                    f"Local index {local_idx} out of bounds for k={k}, category={category}"
-            elif category == 1:
-                assert 0 <= local_idx < Λ.dr * Λ.nt * Λ.dz, \
-                    f"Local index {local_idx} out of bounds for k={k}, category={category}"
-            elif category == 2:
-                assert 0 <= local_idx < Λ.dr * Λ.dz * Λ.nz, \
-                    f"Local index {local_idx} out of bounds for k={k}, category={category}"
-        elif k == 3:
-            assert 0 <= local_idx < Λ.dr * Λ.dz * Λ.dz, \
-                f"Local index {local_idx} out of bounds for k={k}"
+            # Check that local_idx is within bounds
+            if k == 0:
+                assert 0 <= local_idx < Λ.nr * Λ.nt * Λ.nz, \
+                    f"Local index {local_idx} out of bounds for k={k}"
+            elif k == 1:
+                if category == 0:
+                    assert 0 <= local_idx < Λ.dr * Λ.nt * Λ.nz, \
+                        f"Local index {local_idx} out of bounds for k={k}, category={category}"
+                elif category == 1:
+                    assert 0 <= local_idx < Λ.nr * Λ.dz * Λ.nz, \
+                        f"Local index {local_idx} out of bounds for k={k}, category={category}"
+                elif category == 2:
+                    assert 0 <= local_idx < Λ.nr * Λ.nt * Λ.dz, \
+                        f"Local index {local_idx} out of bounds for k={k}, category={category}"
+            elif k == 2:
+                if category == 0:
+                    assert 0 <= local_idx < Λ.nr * Λ.dz * Λ.dz, \
+                        f"Local index {local_idx} out of bounds for k={k}, category={category}"
+                elif category == 1:
+                    assert 0 <= local_idx < Λ.dr * Λ.nt * Λ.dz, \
+                        f"Local index {local_idx} out of bounds for k={k}, category={category}"
+                elif category == 2:
+                    assert 0 <= local_idx < Λ.dr * Λ.dz * Λ.nz, \
+                        f"Local index {local_idx} out of bounds for k={k}, category={category}"
+            elif k == 3:
+                assert 0 <= local_idx < Λ.dr * Λ.dz * Λ.dz, \
+                    f"Local index {local_idx} out of bounds for k={k}"
 
 
 @pytest.mark.parametrize("p", [1, 2, 3])
-@pytest.mark.parametrize("k", [0, 1, 2, 3])
-def test_ravel_index(p, k):
+def test_ravel_index(p):
     """Test _ravel_index method for different form degrees."""
     Seq = DeRhamSequence(
         (4, 4, 4),
@@ -913,79 +913,79 @@ def test_ravel_index(p, k):
         dirichlet=True
     )
 
-    Λ = [Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3][k]
-
-    # Test _ravel_index for various indices
-    if k == 0:
-        # For 0-forms, component is always 0
-        for i in range(Λ.nr):
-            for j in range(Λ.nt):
-                for k_idx in range(Λ.nz):
-                    idx = Λ._ravel_index(0, i, j, k_idx)
-                    # Check that the index is within bounds
-                    assert 0 <= idx < Λ.n, \
-                        f"Ravel index {idx} out of bounds for k={k}, (i,j,k)=({i},{j},{k_idx})"
-    elif k == 1:
-        # For 1-forms, test all three components
-        for c in [0, 1, 2]:
-            if c == 0:
-                for i in range(Λ.dr):
-                    for j in range(Λ.nt):
-                        for k_idx in range(Λ.nz):
-                            idx = Λ._ravel_index(c, i, j, k_idx)
-                            assert 0 <= idx < Λ.n, \
-                                f"Ravel index {idx} out of bounds for k={k}, c={c}, (i,j,k)=({i},{j},{k_idx})"
-            elif c == 1:
-                for i in range(Λ.nr):
-                    for j in range(Λ.dz):
-                        for k_idx in range(Λ.nz):
-                            idx = Λ._ravel_index(c, i, j, k_idx)
-                            assert 0 <= idx < Λ.n, \
-                                f"Ravel index {idx} out of bounds for k={k}, c={c}, (i,j,k)=({i},{j},{k_idx})"
-            elif c == 2:
-                for i in range(Λ.nr):
-                    for j in range(Λ.nt):
-                        for k_idx in range(Λ.dz):
-                            idx = Λ._ravel_index(c, i, j, k_idx)
-                            assert 0 <= idx < Λ.n, \
-                                f"Ravel index {idx} out of bounds for k={k}, c={c}, (i,j,k)=({i},{j},{k_idx})"
-    elif k == 2:
-        # For 2-forms, test all three components
-        for c in [0, 1, 2]:
-            if c == 0:
-                for i in range(Λ.nr):
-                    for j in range(Λ.dz):
-                        for k_idx in range(Λ.dz):
-                            idx = Λ._ravel_index(c, i, j, k_idx)
-                            assert 0 <= idx < Λ.n, \
-                                f"Ravel index {idx} out of bounds for k={k}, c={c}, (i,j,k)=({i},{j},{k_idx})"
-            elif c == 1:
-                for i in range(Λ.dr):
-                    for j in range(Λ.nt):
-                        for k_idx in range(Λ.dz):
-                            idx = Λ._ravel_index(c, i, j, k_idx)
-                            assert 0 <= idx < Λ.n, \
-                                f"Ravel index {idx} out of bounds for k={k}, c={c}, (i,j,k)=({i},{j},{k_idx})"
-            elif c == 2:
-                for i in range(Λ.dr):
-                    for j in range(Λ.dz):
-                        for k_idx in range(Λ.nz):
-                            idx = Λ._ravel_index(c, i, j, k_idx)
-                            assert 0 <= idx < Λ.n, \
-                                f"Ravel index {idx} out of bounds for k={k}, c={c}, (i,j,k)=({i},{j},{k_idx})"
-    elif k == 3:
-        # For 3-forms, component is always 0
-        for i in range(Λ.dr):
-            for j in range(Λ.dz):
-                for k_idx in range(Λ.dz):
-                    idx = Λ._ravel_index(0, i, j, k_idx)
-                    assert 0 <= idx < Λ.n, \
-                        f"Ravel index {idx} out of bounds for k={k}, (i,j,k)=({i},{j},{k_idx})"
+    Λs = [Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3]
+    for k in [0, 1, 2, 3]:
+        Λ = Λs[k]
+        # Test _ravel_index for various indices
+        if k == 0:
+            # For 0-forms, component is always 0
+            for i in range(Λ.nr):
+                for j in range(Λ.nt):
+                    for k_idx in range(Λ.nz):
+                        idx = Λ._ravel_index(0, i, j, k_idx)
+                        # Check that the index is within bounds
+                        assert 0 <= idx < Λ.n, \
+                            f"Ravel index {idx} out of bounds for k={k}, (i,j,k)=({i},{j},{k_idx})"
+        elif k == 1:
+            # For 1-forms, test all three components
+            for c in [0, 1, 2]:
+                if c == 0:
+                    for i in range(Λ.dr):
+                        for j in range(Λ.nt):
+                            for k_idx in range(Λ.nz):
+                                idx = Λ._ravel_index(c, i, j, k_idx)
+                                assert 0 <= idx < Λ.n, \
+                                    f"Ravel index {idx} out of bounds for k={k}, c={c}, (i,j,k)=({i},{j},{k_idx})"
+                elif c == 1:
+                    for i in range(Λ.nr):
+                        for j in range(Λ.dz):
+                            for k_idx in range(Λ.nz):
+                                idx = Λ._ravel_index(c, i, j, k_idx)
+                                assert 0 <= idx < Λ.n, \
+                                    f"Ravel index {idx} out of bounds for k={k}, c={c}, (i,j,k)=({i},{j},{k_idx})"
+                elif c == 2:
+                    for i in range(Λ.nr):
+                        for j in range(Λ.nt):
+                            for k_idx in range(Λ.dz):
+                                idx = Λ._ravel_index(c, i, j, k_idx)
+                                assert 0 <= idx < Λ.n, \
+                                    f"Ravel index {idx} out of bounds for k={k}, c={c}, (i,j,k)=({i},{j},{k_idx})"
+        elif k == 2:
+            # For 2-forms, test all three components
+            for c in [0, 1, 2]:
+                if c == 0:
+                    for i in range(Λ.nr):
+                        for j in range(Λ.dz):
+                            for k_idx in range(Λ.dz):
+                                idx = Λ._ravel_index(c, i, j, k_idx)
+                                assert 0 <= idx < Λ.n, \
+                                    f"Ravel index {idx} out of bounds for k={k}, c={c}, (i,j,k)=({i},{j},{k_idx})"
+                elif c == 1:
+                    for i in range(Λ.dr):
+                        for j in range(Λ.nt):
+                            for k_idx in range(Λ.dz):
+                                idx = Λ._ravel_index(c, i, j, k_idx)
+                                assert 0 <= idx < Λ.n, \
+                                    f"Ravel index {idx} out of bounds for k={k}, c={c}, (i,j,k)=({i},{j},{k_idx})"
+                elif c == 2:
+                    for i in range(Λ.dr):
+                        for j in range(Λ.dz):
+                            for k_idx in range(Λ.nz):
+                                idx = Λ._ravel_index(c, i, j, k_idx)
+                                assert 0 <= idx < Λ.n, \
+                                    f"Ravel index {idx} out of bounds for k={k}, c={c}, (i,j,k)=({i},{j},{k_idx})"
+        elif k == 3:
+            # For 3-forms, component is always 0
+            for i in range(Λ.dr):
+                for j in range(Λ.dz):
+                    for k_idx in range(Λ.dz):
+                        idx = Λ._ravel_index(0, i, j, k_idx)
+                        assert 0 <= idx < Λ.n, \
+                            f"Ravel index {idx} out of bounds for k={k}, (i,j,k)=({i},{j},{k_idx})"
 
 
 @pytest.mark.parametrize("p", [1, 2, 3])
-@pytest.mark.parametrize("k", [0, 1, 2, 3])
-def test_ravel_unravel_consistency(p, k):
+def test_ravel_unravel_consistency(p):
     """Test that _ravel_index and _unravel_index are consistent."""
     Seq = DeRhamSequence(
         (4, 4, 4),
@@ -997,24 +997,25 @@ def test_ravel_unravel_consistency(p, k):
         dirichlet=True
     )
 
-    Λ = [Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3][k]
+    Λs = [Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3]
 
-    # Test consistency: _ravel_index(*_unravel_index(idx)) should equal idx
-    for idx in range(Λ.n):
-        c, i, j, k_idx = Λ._unravel_index(idx)
-        idx_reconstructed = Λ._ravel_index(c, i, j, k_idx)
+    for k in [0, 1, 2, 3]:
+        Λ = Λs[k]
+        # Test consistency: _ravel_index(*_unravel_index(idx)) should equal idx
+        for idx in range(Λ.n):
+            c, i, j, k_idx = Λ._unravel_index(idx)
+            idx_reconstructed = Λ._ravel_index(c, i, j, k_idx)
 
-        npt.assert_allclose(
-            idx_reconstructed, idx, rtol=1e-10, atol=1e-10,
-            err_msg=f"Ravel/unravel inconsistency for k={k}, idx={idx}, "
-            f"unraveled to (c,i,j,k)=({c},{i},{j},{k_idx}), "
-            f"reconstructed to {idx_reconstructed}"
-        )
+            npt.assert_allclose(
+                idx_reconstructed, idx, rtol=1e-10, atol=1e-10,
+                err_msg=f"Ravel/unravel inconsistency for k={k}, idx={idx}, "
+                f"unraveled to (c,i,j,k)=({c},{i},{j},{k_idx}), "
+                f"reconstructed to {idx_reconstructed}"
+            )
 
 
 @pytest.mark.parametrize("p", [1, 2, 3])
-@pytest.mark.parametrize("k", [0, 1, 2, 3])
-def test_vector_ravel_consistency(p, k):
+def test_vector_ravel_consistency(p):
     """Test that _vector_index and _ravel_index are consistent with _unravel_index."""
     Seq = DeRhamSequence(
         (4, 4, 4),
@@ -1025,26 +1026,27 @@ def test_vector_ravel_consistency(p, k):
         polar=True,
         dirichlet=True
     )
+    Λs = [Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3]
 
-    Λ = [Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3][k]
+    for k in [0, 1, 2, 3]:
+        Λ = Λs[k]
+        # Test consistency: _vector_index should match category from _unravel_index
+        for idx in range(Λ.n):
+            category, local_idx = Λ._vector_index(idx)
+            c, i, j, k_idx = Λ._unravel_index(idx)
 
-    # Test consistency: _vector_index should match category from _unravel_index
-    for idx in range(Λ.n):
-        category, local_idx = Λ._vector_index(idx)
-        c, i, j, k_idx = Λ._unravel_index(idx)
+            # Category from _vector_index should match component from _unravel_index
+            npt.assert_allclose(
+                category, c, rtol=1e-10, atol=1e-10,
+                err_msg=f"Category mismatch for k={k}, idx={idx}, "
+                f"_vector_index category={category}, _unravel_index c={c}"
+            )
 
-        # Category from _vector_index should match component from _unravel_index
-        npt.assert_allclose(
-            category, c, rtol=1e-10, atol=1e-10,
-            err_msg=f"Category mismatch for k={k}, idx={idx}, "
-            f"_vector_index category={category}, _unravel_index c={c}"
-        )
-
-        # Reconstructing from _unravel_index should give same index
-        idx_from_unravel = Λ._ravel_index(c, i, j, k_idx)
-        npt.assert_allclose(
-            idx_from_unravel, idx, rtol=1e-10, atol=1e-10,
-            err_msg=f"Index reconstruction mismatch for k={k}, idx={idx}, "
-            f"unraveled to (c,i,j,k)=({c},{i},{j},{k_idx}), "
-            f"reconstructed to {idx_from_unravel}"
-        )
+            # Reconstructing from _unravel_index should give same index
+            idx_from_unravel = Λ._ravel_index(c, i, j, k_idx)
+            npt.assert_allclose(
+                idx_from_unravel, idx, rtol=1e-10, atol=1e-10,
+                err_msg=f"Index reconstruction mismatch for k={k}, idx={idx}, "
+                f"unraveled to (c,i,j,k)=({c},{i},{j},{k_idx}), "
+                f"reconstructed to {idx_from_unravel}"
+            )

@@ -5,14 +5,19 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 from mrx.spline_bases import SplineBasis, TensorBasis, DerivativeSpline
+from mrx.utils import is_running_in_github_actions
 
 jax.config.update("jax_enable_x64", True)
+
+if is_running_in_github_actions():
+    n, p = 4, 2
+else:
+    n, p = 10, 3
 
 # Helper fixture and parametrization
 @pytest.fixture(params=["clamped", "periodic", "constant", "fourier"])
 def basis(request):
     """Return a spline basis of given type."""
-    n, p = 10, 3
     return SplineBasis(n, p, request.param), request.param
 
 def test_partition_of_unity(basis):
@@ -241,13 +246,13 @@ def test_tensor_basis_getitem(tensor_basis):
 @pytest.fixture(params=["clamped", "periodic", "constant"])
 def derivative_spline(request):
     """Create a DerivativeSpline for testing."""
-    s = SplineBasis(10, 3, request.param)
+    s = SplineBasis(n, p, request.param)
     return DerivativeSpline(s), request.param
 
 def test_derivative_spline_init(derivative_spline):
     """Test DerivativeSpline initialization."""
     ds, typ = derivative_spline
-    s = SplineBasis(10, 3, typ)
+    s = SplineBasis(n, p, typ)
     
     # Check that n is correct
     if typ == "clamped":

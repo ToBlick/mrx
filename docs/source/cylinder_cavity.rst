@@ -1,6 +1,10 @@
 Cylinder Cavity
 ===============
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This script solves eigenvalue problems for a cylindrical cavity.
 The script is located at ``scripts/interactive/cylinder_cavity.py``.
 
@@ -167,7 +171,7 @@ Eigenmodes are classified as:
 The classification is based on comparison with analytical solutions.
 
 Code Walkthrough
-================
+----------------
 
 This script computes electromagnetic eigenmodes (TE and TM modes) for a cylindrical
 cavity with periodic boundary conditions in the axial direction:

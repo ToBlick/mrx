@@ -1,6 +1,10 @@
 GVEC Tokamak Interface Test
 ============================
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This script tests the interface with GVEC data for tokamak configurations.
 The script is located at ``scripts/interactive/test_gvec_tokamak.py``.
 
@@ -188,7 +192,7 @@ where:
 - :math:`w_j` are quadrature weights
 
 Code Walkthrough
-================
+----------------
 
 This script tests the interface between MRX and GVEC (Generalized Variational Equilibrium Code)
 data for tokamak geometries:

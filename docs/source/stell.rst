@@ -1,6 +1,10 @@
 Stellarator Configuration
 =========================
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This script runs a magnetic relaxation simulation for a stellarator configuration.
 The script is located at ``scripts/config_scripts/stell.py``.
 
@@ -141,7 +145,7 @@ where:
 and :math:`\mathbf{u} = P_{\text{Leray}}(\mathbf{J} \times \mathbf{B} - \nabla p)`.
 
 Code Walkthrough
-================
+----------------
 
 This script is similar to ``solovev.py`` but configured specifically for stellarator
 geometries with rotating elliptical cross-sections:

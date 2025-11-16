@@ -174,6 +174,8 @@ def toroid_map(epsilon: float = 1/3, kappa: float = 1.0, R0: float = 1.0) -> Cal
     ----------
     epsilon : float
         Eccentricity of the ellipse.
+    kappa : float, default=1.0
+        Aspect ratio of the ellipse.
     R0 : float, default=1.0
         Major radius of the toroid.
     """

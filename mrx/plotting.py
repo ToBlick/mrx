@@ -1325,9 +1325,10 @@ def generate_solovev_plots(filename : str):
 
         x0s = x0s.T.reshape(n_batch, n_loop, 3)
 
-        poincare_plot(outdir, vector_field, F, x0s, n_loop, n_batch, colors, 
-                      plane_val=0.25, axis=2, final_time=5000, n_saves=20000, cylindrical=True, 
-                      r_tol=CONFIG["solver_tol"], a_tol=CONFIG["solver_tol"], filename="")
+        if is_running_in_github_actions():
+            poincare_plot(outdir, vector_field, F, x0s, n_loop, n_batch, colors, 
+                        plane_val=0.25, axis=2, final_time=5000, n_saves=20000, cylindrical=True, 
+                        r_tol=CONFIG["solver_tol"], a_tol=CONFIG["solver_tol"], filename="")
 
 # %%
 

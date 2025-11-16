@@ -1,6 +1,10 @@
 Toroid Poisson Problem
 =======================
 
+.. note::
+   For general information about finite element discretization, basis functions, mesh parameters,
+   polynomial degrees, boundary conditions, and matrix/operator dimensions, see :doc:`overview`.
+
 This tutorial demonstrates solving a Poisson problem on a toroidal domain.
 The script is located at ``scripts/tutorials/toroid_poisson.py``.
 
@@ -73,13 +77,18 @@ The script generates convergence plots showing error vs. mesh size.
 Mathematical Formulation
 =========================
 
-**Finite Element Discretization**
+**Discretization Parameters**
 
-The domain is discretized using a DeRham sequence with:
+This script uses:
 - **Mesh parameters**: :math:`n_r = n_\chi = n_\zeta = n` elements in each direction
 - **Polynomial degrees**: :math:`p_r = p_\chi = p_\zeta = p`
-- **Quadrature order**: :math:`q = p + 2`
 - **Boundary conditions**: Clamped in radial direction, periodic in poloidal and toroidal directions
+
+Following the general formulas in :doc:`overview`, the number of DOFs are:
+- **0-forms**: :math:`N_0 = n_r \cdot n_\chi \cdot n_\zeta = n^3`
+- **1-forms**: :math:`N_1 = d_r \cdot n_\chi \cdot n_\zeta + n_r \cdot d_\chi \cdot n_\zeta + n_r \cdot n_\chi \cdot d_\zeta = n^2(3n-1)` where :math:`d_r = n-1` (clamped), :math:`d_\chi = d_\zeta = n` (periodic)
+- **2-forms**: :math:`N_2 = n_r \cdot d_\chi \cdot d_\zeta + d_r \cdot n_\chi \cdot d_\zeta + d_r \cdot d_\chi \cdot n_\zeta = n^2(3n-2)`
+- **3-forms**: :math:`N_3 = d_r \cdot d_\chi \cdot d_\zeta = n^2(n-1)`
 
 **Basis Functions**
 
@@ -90,24 +99,49 @@ The 0-form basis functions :math:`\{\Lambda_0^i\}_{i=1}^{N_0}` are tensor produc
     \Lambda_0^i(r,\chi,\zeta) = \Lambda_r^{i_r}(r) \Lambda_\chi^{i_\chi}(\chi) \Lambda_\zeta^{i_\zeta}(\zeta)
 
 where:
-- :math:`N_0 = n_r \cdot n_\chi \cdot n_\zeta` is the total number of 0-form DOFs
+- :math:`N_0 = n^3` is the total number of 0-form DOFs
 - Each component is a B-spline of degree :math:`p`
 
-**Mass Matrix and Laplacian**
+**Matrix and Operator Dimensions**
 
-The 0-form mass matrix :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}`:
+All matrices and operators are defined with explicit dimensions:
+
+**Mass Matrix**
+
+The 0-form mass matrix :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}` where :math:`N_0 = n^3`:
 
 .. math::
 
     (M_0)_{ij} = \int_\Omega \Lambda_0^i(x) \Lambda_0^j(x) \det(DF(x)) \, dx
 
+Dimensions: :math:`M_0 \in \mathbb{R}^{n^3 \times n^3}`.
+
+**Laplacian Operator**
+
 The 0-form Laplacian :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}`:
 
 .. math::
 
-    (\Delta_0)_{ij} = \int_\Omega \nabla \Lambda_0^i(x) \cdot G^{-1}(x) \nabla \Lambda_0^j(x) \det(DF(x)) \, dx
+    \Delta_0 = M_0^{-1} \text{grad\_grad}
 
-where :math:`G(x) = DF(x)^T DF(x)` is the metric tensor.
+where the gradient-gradient matrix :math:`\text{grad\_grad} \in \mathbb{R}^{N_0 \times N_0}`:
+
+.. math::
+
+    (\text{grad\_grad})_{ij} = \int_\Omega \nabla \Lambda_0^i(x) \cdot G^{-1}(x) \nabla \Lambda_0^j(x) \det(DF(x)) \, dx
+
+and :math:`G(x) = DF(x)^T DF(x)` is the metric tensor.
+Dimensions: :math:`\Delta_0 \in \mathbb{R}^{n^3 \times n^3}`, :math:`\text{grad\_grad} \in \mathbb{R}^{n^3 \times n^3}`.
+
+**Projection Operator**
+
+The 0-form projection operator :math:`P_0: L^2(\Omega) \to V_0`:
+
+.. math::
+
+    P_0(f) = \arg\min_{v_h \in V_0} \|f - v_h\|_{L^2(\Omega)}
+
+Dimensions: :math:`P_0(f) \in \mathbb{R}^{n^3}`.
 
 **Toroidal Geometry Effects**
 
@@ -128,13 +162,13 @@ The discrete Poisson equation:
     M_0 \Delta_0 \hat{u} = P_0(f)
 
 where:
-- :math:`\hat{u} \in \mathbb{R}^{N_0}`: Solution coefficients
-- :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}`: Mass matrix
-- :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}`: Laplacian operator
-- :math:`P_0(f) \in \mathbb{R}^{N_0}`: Projection of source term
+- :math:`\hat{u} \in \mathbb{R}^{N_0}`: Solution coefficients, :math:`\hat{u} \in \mathbb{R}^{n^3}`
+- :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}`: Mass matrix, :math:`M_0 \in \mathbb{R}^{n^3 \times n^3}`
+- :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}`: Laplacian operator, :math:`\Delta_0 \in \mathbb{R}^{n^3 \times n^3}`
+- :math:`P_0(f) \in \mathbb{R}^{N_0}`: Projection of source term, :math:`P_0(f) \in \mathbb{R}^{n^3}`
 
 Code Walkthrough
-================
+----------------
 
 This script extends the polar Poisson example to 3D toroidal geometry:
 
