@@ -5,14 +5,9 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 from mrx.spline_bases import SplineBasis, TensorBasis, DerivativeSpline
-from mrx.utils import is_running_in_github_actions
 
 jax.config.update("jax_enable_x64", True)
-
-if is_running_in_github_actions():
-    n, p = 6, 3
-else:
-    n, p = 10, 3
+n, p = 10, 3
 
 # Helper fixture and parametrization
 @pytest.fixture(params=["clamped", "periodic", "constant", "fourier"])
