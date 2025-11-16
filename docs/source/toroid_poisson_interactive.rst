@@ -8,8 +8,7 @@ Toroid Poisson (Interactive)
 This script solves a Poisson problem on a toroidal domain interactively.
 The script is located at ``scripts/interactive/toroid_poisson.py``.
 
-Mathematical Problem
-====================
+**Problem Statement**
 
 This script is similar to ``toroid_poisson.py`` but focuses on interactive exploration
 and additional diagnostics. It solves the Poisson equation:
@@ -18,16 +17,24 @@ and additional diagnostics. It solves the Poisson equation:
 
     -\Delta u = f \quad \text{in } \Omega
 
+with homogeneous Dirichlet boundary conditions:
+
+.. math::
+
+    u|_{\partial\Omega} = 0
+
 where:
 - :math:`u: \Omega \to \mathbb{R}` is the scalar solution (0-form)
 - :math:`f: \Omega \to \mathbb{R}` is the source term (0-form)
+- :math:`\Delta = \nabla \cdot \nabla` is the scalar Laplacian operator
 - :math:`\Omega` is a toroidal domain
+- :math:`\partial\Omega` denotes the boundary of the toroidal domain
 
 **Toroidal Geometry**
 
 The toroidal domain is parameterized by:
-- Minor radius: :math:`a=1`
-- Major radius: :math:`R_0 = 3a = 3`
+- Minor radius: :math:`a=1/3`
+- Major radius: :math:`R_0 = 1.0`
 - Aspect ratio: :math:`\epsilon = a/R_0 = 1/3`
 
 The mapping from logical coordinates :math:`(r, \chi, \zeta)` to physical coordinates is:
@@ -65,55 +72,27 @@ The script demonstrates:
 - Setting up finite element spaces on a toroidal domain
 - Solving Poisson equations in toroidal geometry
 - Interactive visualization of results
+- Computing condition numbers and matrix sparsity for diagnostics
 
 Usage:
 
 .. code-block:: bash
 
-    python scripts/interactive/toroid_poisson.py
+    python scripts/interactive/toroid_poisson.py <n> <p>
 
-Mathematical Formulation
-=========================
+where ``n`` is the number of elements and ``p`` is the polynomial degree.
 
 **Finite Element Discretization**
 
 The domain is discretized using a DeRham sequence with:
 - **Mesh parameters**: :math:`n_r = n_\chi = n_\zeta = n` elements in each direction
 - **Polynomial degrees**: :math:`p_r = p_\chi = p_\zeta = p`
-- **Quadrature order**: :math:`q = p + 2`
+- **Quadrature order**: :math:`q = p`
 - **Boundary conditions**: Clamped in radial direction, periodic in poloidal and toroidal directions
 
-**Basis Functions**
+**Matrix and Operator Dimensions**
 
-The 0-form basis functions :math:`\{\Lambda_0^i\}_{i=1}^{N_0}` are tensor products:
-
-.. math::
-
-    \Lambda_0^i(r,\chi,\zeta) = \Lambda_r^{i_r}(r) \Lambda_\chi^{i_\chi}(\chi) \Lambda_\zeta^{i_\zeta}(\zeta)
-
-where :math:`N_0 = n_r \cdot n_\chi \cdot n_\zeta` is the total number of 0-form DOFs.
-
-**Mass Matrix**
-
-The 0-form mass matrix :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}`:
-
-.. math::
-
-    (M_0)_{ij} = \int_\Omega \Lambda_0^i(x) \Lambda_0^j(x) \det(DF(x)) \, dx
-
-Dimensions: :math:`N_0 \times N_0`.
-
-**Laplacian Operator**
-
-The 0-form Laplacian :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}`:
-
-.. math::
-
-    (\Delta_0)_{ij} = \int_\Omega \nabla \Lambda_0^i(x) \cdot G^{-1}(x) \nabla \Lambda_0^j(x) \det(DF(x)) \, dx
-
-where :math:`G(x) = DF(x)^T DF(x)` is the metric tensor.
-
-**Linear System**
+The 0-form mass matrix :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}` and Laplacian :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}` are used.
 
 The discrete Poisson equation:
 
@@ -121,102 +100,67 @@ The discrete Poisson equation:
 
     M_0 \Delta_0 \hat{u} = P_0(f)
 
-where:
-- :math:`\hat{u} \in \mathbb{R}^{N_0}`: Solution coefficients
-- :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}`: Mass matrix
-- :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}`: Laplacian operator
-- :math:`P_0(f) \in \mathbb{R}^{N_0}`: Projection of source term
+where :math:`\hat{u} \in \mathbb{R}^{N_0}` are the solution coefficients.
 
-**Condition Number**
+**Diagnostics**
 
-The condition number of the system matrix :math:`A = M_0 \Delta_0`:
-
-.. math::
-
-    \kappa(A) = \frac{\sigma_{\max}(A)}{\sigma_{\min}(A)}
-
-where :math:`\sigma_{\max}` and :math:`\sigma_{\min}` are the largest and smallest singular values.
-
-**Sparsity**
-
-The sparsity of a matrix :math:`A` is defined as:
-
-.. math::
-
-    \text{sparsity}(A) = 1 - \frac{\text{nnz}(A)}{N^2}
-
-where :math:`\text{nnz}(A)` is the number of non-zero entries and :math:`N` is the matrix size.
-
-**Error Computation**
-
-The relative L2 error:
-
-.. math::
-
-    \text{error} = \frac{\|u - u_h\|_{L^2(\Omega)}}{\|u\|_{L^2(\Omega)}}
-
-is computed using quadrature:
-
-.. math::
-
-    \|u - u_h\|_{L^2(\Omega)}^2 = \int_\Omega (u(x) - u_h(x))^2 \det(DF(x)) \, dx \approx \sum_{j=1}^{n_q} (u(x_j) - u_h(x_j))^2 J_j w_j
+The script computes:
+- **Condition number**: :math:`\kappa(A) = \sigma_{\max}(A)/\sigma_{\min}(A)` where :math:`A = M_0 \Delta_0`
+- **Sparsity**: Fraction of non-zero entries in the system matrix
 
 Code Walkthrough
 ----------------
 
-This script is similar to ``toroid_poisson.py`` but focuses on interactive exploration
-and additional diagnostics:
-
 **Block 1: Imports and Setup (lines 1-14)**
-   Imports modules and enables 64-bit precision. Uses ``toroid_map`` for domain geometry.
 
-**Block 2: Error and Diagnostics Function (lines 17-100)**
-   The ``get_err()`` function computes error and additional diagnostics:
-   
-   - Exact solution:
-   
-     .. math::
-     
-         u(r,\chi,z) = \frac{1}{4}(r^2 - r^4) \cos(2\pi z)
-   
-   - Source term:
-   
-     .. math::
-     
-         f(r,\chi,z) = \cos(2\pi z) \left[ -\frac{1}{a^2}(1-4r^2) - \frac{1}{aR}\left(\frac{r}{2}-r^3\right)\cos(2\pi\chi) + \frac{1}{4}\frac{r^2-r^4}{R^2} \right]
-     
-     where :math:`R = R_0 + a r \cos(2\pi\chi)` and :math:`\epsilon = a/R_0 = 1/3` is the aspect ratio.
-   
-   - Sets up DeRham sequence with toroidal mapping
-   - Assembles mass matrix :math:`M_0` and Laplacian :math:`\Delta_0`
-   - Solves system:
-   
-     .. math::
-     
-         M_0 \Delta_0 \hat{u} = P_0(f)
-   - Computes relative L2 error
-   - **Additional diagnostics**: Condition number and sparsity of system matrix
+Imports modules and enables 64-bit precision. Uses ``toroid_map`` for domain geometry.
 
-**Block 3: Convergence Analysis (lines 102-152)**
-   Runs convergence study with diagnostics:
-   
-   - Tests mesh sizes :math:`n \in \{4,6,8,10,12\}` and polynomial degrees :math:`p \in \{1,2,3\}`
-   - Tracks error, condition number, and matrix sparsity
-   - Reports timing information
+.. literalinclude:: ../../scripts/interactive/toroid_poisson.py
+   :language: python
+   :lines: 1-14
 
-**Block 4: Visualization and Analysis (lines 154-152)**
-   Generates enhanced visualizations:
-   
-   - Error convergence plots
-   - Condition number vs. mesh size (to check numerical stability)
-   - Sparsity patterns of system matrices
-   - Solution field visualizations on toroidal cross-sections
+**Block 2: Error and Diagnostics Function (lines 17-105)**
+
+The ``get_err()`` function computes error and additional diagnostics.
+
+Exact solution:
+
+.. math::
+
+    u(r,\chi,z) = \frac{1}{4}(r^2 - r^4) \cos(2\pi z)
+
+Source term:
+
+.. math::
+
+    f(r,\chi,z) = \cos(2\pi z) \left[ -\frac{1}{a^2}(1-4r^2) - \frac{1}{aR}\left(\frac{r}{2}-r^3\right)\cos(2\pi\chi) + \frac{1}{4}\frac{r^2-r^4}{R^2} \right]
+
+where :math:`R = R_0 + a r \cos(2\pi\chi)` and :math:`\epsilon = a/R_0 = 1/3` is the aspect ratio.
+
+Sets up DeRham sequence with toroidal mapping,
+assembles mass matrix :math:`M_0` and Laplacian :math:`\Delta_0`,
+solves system:
+
+.. math::
+
+    M_0 \Delta_0 \hat{u} = P_0(f)
+
+Computes relative L2 error using ``jax.lax.scan`` to avoid memory issues with large arrays.
+Also computes condition number and sparsity of the system matrix :math:`M_0 \Delta_0`.
+
+.. literalinclude:: ../../scripts/interactive/toroid_poisson.py
+   :language: python
+   :lines: 17-105
+
+**Block 3: Main Function (lines 108-149)**
+
+Parses command-line arguments for mesh size :math:`n` and polynomial degree :math:`p`,
+computes error, condition number, and sparsity,
+and saves results to a text file.
 
 The interactive version provides more detailed diagnostics than the tutorial version,
 making it useful for understanding numerical properties of the discretization.
 
-Full script:
-
 .. literalinclude:: ../../scripts/interactive/toroid_poisson.py
    :language: python
-   :linenos:
+   :lines: 108-149

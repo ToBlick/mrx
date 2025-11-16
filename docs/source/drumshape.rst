@@ -8,8 +8,7 @@ Drum Shape Optimization
 This script demonstrates shape optimization for drum-like configurations.
 The script is located at ``scripts/interactive/drumshape.py``.
 
-Mathematical Problem
-====================
+**Problem Statement**
 
 This script implements an inverse problem: given a target eigenvalue spectrum, find
 the drum shape that produces those eigenvalues ("hearing the shape of a drum").
@@ -20,9 +19,20 @@ The forward problem is to solve the Laplacian eigenvalue problem:
 
     -\Delta u = \lambda u \quad \text{in } \Omega
 
-with homogeneous Dirichlet boundary conditions :math:`u|_{\partial\Omega} = 0`.
+with homogeneous Dirichlet boundary conditions:
 
-The inverse problem is: given eigenvalues :math:`\{\lambda_i^{\text{target}}\}`, find
+.. math::
+
+    u|_{\partial\Omega} = 0
+
+where:
+- :math:`u: \Omega \to \mathbb{R}` is the eigenfunction (0-form)
+- :math:`\lambda` is the eigenvalue
+- :math:`\Delta = \nabla \cdot \nabla` is the scalar Laplacian operator
+- :math:`\Omega` is the drum domain (shape to be optimized)
+- :math:`\partial\Omega` denotes the boundary of the domain
+
+The inverse problem is: given eigenvalues :math:`\{\lambda_i^{\mathrm{target}}\}`, find
 the domain :math:`\Omega` such that the eigenvalues :math:`\{\lambda_i\}` of the Laplacian
 match the target eigenvalues.
 
@@ -48,18 +58,12 @@ The optimization problem is:
 
 .. math::
 
-    \min_{\hat{r}} L(\hat{r}) = \sum_{i=1}^{N} (\lambda_i(\hat{r}) - \lambda_i^{\text{target}})^2
+    \min_{\hat{r}} L(\hat{r}) = \sum_{i=1}^{N} (\lambda_i(\hat{r}) - \lambda_i^{\mathrm{target}})^2
 
 where:
 - :math:`\lambda_i(\hat{r})` are the computed eigenvalues for shape :math:`\hat{r}`
-- :math:`\lambda_i^{\text{target}}` are the target eigenvalues
+- :math:`\lambda_i^{\mathrm{target}}` are the target eigenvalues
 - :math:`N` is the number of eigenvalues to match
-
-The script demonstrates:
-
-- Shape optimization using finite element methods
-- Target shape reconstruction
-- Iterative optimization algorithms
 
 Usage:
 
@@ -68,9 +72,6 @@ Usage:
     python scripts/interactive/drumshape.py
 
 The script generates plots showing the optimization progress and final shape.
-
-Mathematical Formulation
-=========================
 
 **Generalized Eigenvalue Problem**
 
@@ -86,145 +87,99 @@ where:
 - :math:`\mathbf{v} \in \mathbb{R}^{N_0}` is the eigenvector
 - :math:`\lambda` is the eigenvalue
 
-**Stiffness Matrix**
-
-The stiffness matrix is:
-
-.. math::
-
-    K_{ij} = \int_\Omega \nabla \Lambda_0^i(x) \cdot G^{-1}(x) \nabla \Lambda_0^j(x) \det(DF(x)) \, dx
-
-where:
-- :math:`\{\Lambda_0^i\}_{i=1}^{N_0}` are 0-form basis functions
-- :math:`G(x) = DF(x)^T DF(x)` is the metric tensor
-- :math:`F` is the mapping from logical to physical coordinates
-
-**Mass Matrix**
-
-The mass matrix is:
-
-.. math::
-
-    M_{ij} = \int_\Omega \Lambda_0^i(x) \Lambda_0^j(x) \det(DF(x)) \, dx
-
-**Eigenvalue Solver**
-
-The generalized eigenvalue problem is solved using Cholesky decomposition:
-
-.. math::
-
-    M = LL^T
-
-Then transform to standard form:
-
-.. math::
-
-    C = L^{-1} K L^{-T}, \quad C \mathbf{v}' = \lambda \mathbf{v}'
-
-where :math:`\mathbf{v}' = L^T \mathbf{v}`.
-
-**Loss Function**
-
-The optimization loss function is:
-
-.. math::
-
-    L(\hat{r}) = \sum_{i=1}^{N} w_i (\lambda_i(\hat{r}) - \lambda_i^{\text{target}})^2
-
-where :math:`w_i` are optional weights (typically :math:`w_i = 1`).
-
-**Gradient Computation**
-
-The gradient is computed using JAX automatic differentiation:
-
-.. math::
-
-    \nabla_{\hat{r}} L = \sum_{i=1}^{N} 2(\lambda_i(\hat{r}) - \lambda_i^{\text{target}}) \frac{\partial \lambda_i}{\partial \hat{r}}
-
-The derivative :math:`\partial \lambda_i / \partial \hat{r}` is computed using the chain rule
-through the eigenvalue solver.
-
-**Optimization Algorithm**
-
-The optimization uses gradient descent (e.g., Adam optimizer):
-
-.. math::
-
-    \hat{r}^{(k+1)} = \hat{r}^{(k)} - \alpha \nabla_{\hat{r}} L(\hat{r}^{(k)})
-
-where :math:`\alpha` is the learning rate (adaptive in Adam).
-
 Code Walkthrough
 ----------------
 
-This script implements an inverse problem: given a target eigenvalue spectrum, find
-the drum shape that produces those eigenvalues ("hearing the shape of a drum"):
-
 **Block 1: Imports and Setup (lines 1-30)**
-   Imports JAX, Optax (for optimization), and MRX modules. Sets up output directory.
-   Uses ``drumshape_map`` which defines a 2D domain with variable radius ``r(χ)``.
+
+Imports JAX, Optax (for optimization), and MRX modules. Sets up output directory.
+Uses ``drumshape_map`` which defines a 2D domain with variable radius ``r(χ)``.
+
+.. literalinclude:: ../../scripts/interactive/drumshape.py
+   :language: python
+   :lines: 1-30
 
 **Block 2: Generalized Eigenvalue Solver (lines 34-59)**
-   Defines ``generalized_eigh()`` function:
-   
-   - Solves generalized eigenvalue problem:
-   
-     .. math::
-     
-         A \mathbf{v} = \lambda B \mathbf{v}
-     
-     using Cholesky decomposition: :math:`B = LL^T`, then transforms to standard form:
-   
-     .. math::
-     
-         C = L^{-1} A L^{-T}, \quad C \mathbf{v}' = \lambda \mathbf{v}'
-   - Returns eigenvalues and eigenvectors in original basis
 
-**Block 3: Eigenvalue Computation (lines 64-200)**
-   The ``get_evs()`` function computes eigenvalues for a given shape:
-   
-   - Takes shape parameters ``a_hat`` (discrete radius function)
-   - Constructs ``drumshape_map`` from radius function
-   - Manually assembles mass and stiffness matrices (to enable JAX transformations)
-   - Solves generalized eigenvalue problem for Laplacian eigenmodes
-   - Returns eigenvalues and eigenvectors
+Defines ``generalized_eigh()`` function:
 
-**Block 4: Optimization Setup (lines 202-350)**
-   Sets up optimization problem:
-   
-   - Defines target eigenvalues :math:`\{\lambda_i^{\text{target}}\}` (from a known shape)
-   - Creates loss function:
-   
-     .. math::
-     
-         L = \sum_i (\lambda_i - \lambda_i^{\text{target}})^2
-     
-     where :math:`\{\lambda_i\}` are the computed eigenvalues for the current shape.
-   - Uses Optax optimizer (e.g., Adam) to minimize loss
-   - Implements gradient descent with JAX automatic differentiation
+- Solves generalized eigenvalue problem:
 
-**Block 5: Optimization Loop (lines 352-450)**
-   Runs iterative optimization:
-   
-   - Computes eigenvalues for current shape
-   - Evaluates loss function
-   - Computes gradients using ``jax.grad()``
-   - Updates shape parameters using optimizer
-   - Tracks convergence and saves intermediate results
+.. math::
 
-**Block 6: Visualization (lines 452-547)**
-   Generates plots showing:
-   
-   - Initial vs. target vs. optimized shape
-   - Eigenvalue convergence during optimization
-   - Final optimized drum shape
+    A \mathbf{v} = \lambda B \mathbf{v}
+
+using Cholesky decomposition: :math:`B = LL^T`, then transforms to standard form:
+
+.. math::
+
+    C = L^{-1} A L^{-T}, \quad C \mathbf{v}' = \lambda \mathbf{v}'`
+
+- Returns eigenvalues and eigenvectors in original basis
+
+.. literalinclude:: ../../scripts/interactive/drumshape.py
+   :language: python
+   :lines: 34-59
+
+**Block 3: Eigenvalue Computation (lines 64-132)**
+
+The ``get_evs()`` function computes eigenvalues for a given shape:
+
+- Takes shape parameters ``a_hat`` (discrete radius function)
+- Constructs ``drumshape_map`` from radius function
+- Manually assembles mass and stiffness matrices (to enable JAX transformations)
+- Solves generalized eigenvalue problem for Laplacian eigenmodes
+- Returns eigenvalues and eigenvectors
+
+.. literalinclude:: ../../scripts/interactive/drumshape.py
+   :language: python
+   :lines: 64-132
+
+**Block 4: Target Shape Setup (lines 137-199)**
+
+Sets up target elliptical shape:
+
+- Defines elliptical radius function
+- Projects target shape into discrete representation
+- Computes target eigenvalue spectrum
+
+.. literalinclude:: ../../scripts/interactive/drumshape.py
+   :language: python
+   :lines: 137-199
+
+**Block 5: Plotting Function (lines 204-406)**
+
+Generates multi-panel visualization:
+
+- Radius function comparison (target vs. fitted)
+- First eigenfunction contour plot
+- Eigenvalue spectrum comparison
+- Relative eigenvalue error
+- Loss history over iterations
+
+.. literalinclude:: ../../scripts/interactive/drumshape.py
+   :language: python
+   :lines: 204-406
+
+**Block 6: Main Optimization Loop (lines 411-545)**
+
+Sets up and runs optimization:
+
+- Defines loss function:
+
+.. math::
+
+    L = \sum_k \left(\frac{\lambda_k - \lambda_k^{\mathrm{target}}}{\lambda_k^{\mathrm{target}}}\right)^2
+
+- Uses Optax Adam optimizer
+- JIT-compiles loss and gradient computation
+- Runs iterative optimization with periodic plotting
+- Tracks convergence
 
 This inverse problem demonstrates how shape optimization can be used to design
 structures with desired spectral properties, which has applications in acoustics,
 electromagnetics, and structural engineering.
 
-Full script:
-
 .. literalinclude:: ../../scripts/interactive/drumshape.py
    :language: python
-   :linenos:
+   :lines: 411-545

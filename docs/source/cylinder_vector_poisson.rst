@@ -8,19 +8,25 @@ Cylinder Vector Poisson
 This script solves vector Poisson problems on a cylindrical domain.
 The script is located at ``scripts/interactive/cylinder_vector_poisson.py``.
 
-Mathematical Problem
-====================
+**Problem Statement**
 
 This script solves a vector Poisson problem:
 
 .. math::
 
-    -\Delta \mathbf{u} = \mathbf{f}
+    -\Delta \mathbf{u} = \mathbf{f} \quad \text{in } \Omega
 
-for vector fields in cylindrical geometry, where:
+with boundary conditions:
+
+.. math::
+
+    \mathbf{u} = 0 \quad \text{on } \partial\Omega
+
+where:
 - :math:`\mathbf{u}: \Omega \to \mathbb{R}^3` is the vector solution (1-form)
 - :math:`\mathbf{f}: \Omega \to \mathbb{R}^3` is the vector source term (1-form)
-- :math:`\Delta` is the vector Laplacian
+- :math:`\Delta` is the vector Laplacian operator
+- :math:`\Omega` is a cylindrical domain of radius :math:`a=1` and height :math:`h=1`
 
 **Vector Laplacian**
 
@@ -66,9 +72,6 @@ Usage:
 
 The script generates plots showing solution fields and error convergence.
 
-Mathematical Formulation
-=========================
-
 **Finite Element Spaces**
 
 The vector field is represented as a 1-form:
@@ -79,57 +82,17 @@ The vector field is represented as a 1-form:
 
 where :math:`N_1` is the number of 1-form DOFs.
 
-**Mass Matrices**
+**Matrix and Operator Dimensions**
 
-The 1-form mass matrix :math:`M_1 \in \mathbb{R}^{N_1 \times N_1}`:
-
-.. math::
-
-    (M_1)_{ij} = \int_\Omega \Lambda_1^i(x) \cdot G^{-1}(x) \Lambda_1^j(x) \det(DF(x)) \, dx
-
-Dimensions: :math:`N_1 \times N_1`.
-
-The 2-form mass matrix :math:`M_2 \in \mathbb{R}^{N_2 \times N_2}`:
-
-.. math::
-
-    (M_2)_{ij} = \int_\Omega \Lambda_2^i(x) \cdot G(x) \Lambda_2^j(x) \frac{1}{\det(DF(x))} \, dx
-
-Dimensions: :math:`N_2 \times N_2`.
-
-**Derivative Operators**
-
-The strong curl operator :math:`\text{strong\_curl}: V_1 \to V_2`:
-
-.. math::
-
-    (\text{strong\_curl})_{ij} = \int_\Omega \Lambda_2^i(x) \cdot G(x) \nabla \times \Lambda_1^j(x) \frac{1}{\det(DF(x))} \, dx
-
-Dimensions: :math:`N_2 \times N_1`.
-
-The weak divergence operator :math:`\text{weak\_div}: V_1 \to V_0`:
-
-.. math::
-
-    (\text{weak\_div})_{ij} = -\int_\Omega \Lambda_0^i(x) \nabla \cdot \Lambda_1^j(x) \det(DF(x)) \, dx
-
-Dimensions: :math:`N_0 \times N_1`.
-
-**Vector Laplacian Discretization**
+The 1-form mass matrix :math:`M_1 \in \mathbb{R}^{N_1 \times N_1}` and 2-form mass matrix :math:`M_2 \in \mathbb{R}^{N_2 \times N_2}` are used.
 
 The vector Laplacian is discretized as:
 
 .. math::
 
-    \Delta_1 = M_1^{-1} (\text{curl\_curl} + \text{strong\_grad} \circ \text{weak\_div})
+    \Delta_1 = M_1^{-1} ((\nabla \times)_h^T M_2 (\nabla \times)_h + \nabla_h \circ (\nabla \cdot)_h)
 
-where:
-
-.. math::
-
-    (\text{curl\_curl})_{ij} = \int_\Omega \nabla \times \Lambda_1^i(x) \cdot G(x) \nabla \times \Lambda_1^j(x) \frac{1}{\det(DF(x))} \, dx
-
-**Block System**
+where the curl-curl term represents :math:`\nabla \times (\nabla \times)`.
 
 The discrete vector Poisson equation becomes:
 
@@ -137,89 +100,75 @@ The discrete vector Poisson equation becomes:
 
     M_1 \Delta_1 \hat{\mathbf{u}} = P_1(\mathbf{f})
 
-where:
-- :math:`\hat{\mathbf{u}} \in \mathbb{R}^{N_1}` are the solution coefficients
-- :math:`M_1 \in \mathbb{R}^{N_1 \times N_1}` is the 1-form mass matrix
-- :math:`\Delta_1 \in \mathbb{R}^{N_1 \times N_1}` is the 1-form Laplacian
-- :math:`P_1(\mathbf{f}) \in \mathbb{R}^{N_1}` is the projection of the source term
-
-**Error Computation**
-
-The relative L2 error is computed using quadrature:
-
-.. math::
-
-    \text{error} = \frac{\|\mathbf{u} - \mathbf{u}_h\|_{L^2(\Omega)}}{\|\mathbf{u}\|_{L^2(\Omega)}}
-
-where:
-
-.. math::
-
-    \|\mathbf{u} - \mathbf{u}_h\|_{L^2(\Omega)}^2 = \int_\Omega |\mathbf{u}(x) - \mathbf{u}_h(x)|^2 \det(DF(x)) \, dx
-
-and :math:`\mathbf{u}_h = \sum_{i=1}^{N_1} \hat{u}_i \Lambda_1^i` is the discrete solution.
+where :math:`\hat{\mathbf{u}} \in \mathbb{R}^{N_1}` are the solution coefficients and :math:`P_1(\mathbf{f}) \in \mathbb{R}^{N_1}` is the projection of the source term.
 
 Code Walkthrough
 ----------------
 
-This script solves a vector Poisson problem:
-   
-   .. math::
-   
-       -\Delta \mathbf{u} = \mathbf{f}
-   
-   for vector fields in cylindrical geometry:
-
 **Block 1: Imports and Setup (lines 1-17)**
-   Imports modules and sets up output directory. The script uses ``cylinder_map``
-   for the domain geometry.
+
+Imports modules and sets up output directory. The script uses ``cylinder_map``
+for the domain geometry.
+
+.. literalinclude:: ../../scripts/interactive/cylinder_vector_poisson.py
+   :language: python
+   :lines: 1-17
 
 **Block 2: Error Computation Function (lines 19-122)**
-   The ``get_err()`` function is JIT-compiled and computes relative L2 error:
-   
-   - Exact solution (only azimuthal component):
-   
-     .. math::
-     
-         \mathbf{u}(r,\chi,z) = (0, r^2(1-r)^2\cos(2\pi z), 0)
-     
-   - Source term:
-   
-     .. math::
-     
-         \mathbf{f}(r,\chi,z) = \left(0, \left[4\pi^2 r^2(1-r)^2 - (3-16r+15r^2)\right]\cos(2\pi z), 0\right)
-   
-   - Sets up DeRham sequence with clamped/periodic/periodic boundary conditions
-   - Assembles mass matrices :math:`M_1` (1-forms) and :math:`M_2` (2-forms)
-   - Constructs curl operator :math:`C = \nabla \times` (strong curl)
-   - Builds double divergence operator:
-   
-     .. math::
-     
-         \text{divdiv} = M_2 (\Delta_2 - (\nabla \times)(\nabla \times))
-   - Solves block system for vector field components
-   - Computes relative L2 error using quadrature
+
+The ``get_err()`` function is JIT-compiled and computes relative L2 error.
+
+Exact solution (only azimuthal component):
+
+.. math::
+
+    \mathbf{u}(r,\chi,z) = (0, r^2(1-r)^2\cos(2\pi z), 0)
+
+Source term:
+
+.. math::
+
+    \mathbf{f}(r,\chi,z) = \left(0, \left[4\pi^2 r^2(1-r)^2 - (3-16r+15r^2)\right]\cos(2\pi z), 0\right)
+
+Sets up DeRham sequence with clamped/periodic/periodic boundary conditions,
+assembles mass matrices :math:`M_1` (1-forms) and :math:`M_2` (2-forms),
+constructs curl operator :math:`C = (\nabla \times)_h` (strong curl),
+and builds double divergence operator:
+
+.. math::
+
+    \text{divdiv} = M_2 (\Delta_2 - (\nabla \times)_h^T M_1 (\nabla \times)_h)
+
+Solves block system for vector field components and computes relative L2 error using quadrature.
+
+.. literalinclude:: ../../scripts/interactive/cylinder_vector_poisson.py
+   :language: python
+   :lines: 19-122
 
 **Block 3: Convergence Analysis (lines 124-180)**
-   Runs convergence study over mesh sizes ``n ∈ [4,6,8,10,12]`` and polynomial
-   degrees ``p ∈ [1,2,3]``:
-   
-   - First run includes JIT compilation overhead
-   - Second run measures pure computation time
-   - Stores error and timing data
+
+Runs convergence study over mesh sizes :math:`n \in [4,6,8,10,12]` and polynomial
+degrees :math:`p \in [1,2,3]`:
+
+- First run includes JIT compilation overhead
+- Second run measures pure computation time
+- Stores error and timing data
+
+.. literalinclude:: ../../scripts/interactive/cylinder_vector_poisson.py
+   :language: python
+   :lines: 124-180
 
 **Block 4: Plotting (lines 182-222)**
-   Generates convergence plots:
-   
-   - Error vs. mesh size (log-log scale)
-   - Computation time vs. mesh size
-   - JIT compilation speedup factor
+
+Generates convergence plots:
+
+- Error vs. mesh size (log-log scale)
+- Computation time vs. mesh size
+- JIT compilation speedup factor
 
 The vector Poisson problem requires solving a coupled system due to the curl-curl
 structure of the vector Laplacian, which is more complex than the scalar case.
 
-Full script:
-
 .. literalinclude:: ../../scripts/interactive/cylinder_vector_poisson.py
    :language: python
-   :linenos:
+   :lines: 166-221

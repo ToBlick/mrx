@@ -8,44 +8,43 @@ GVEC Stellarator Interface Test
 This script tests the interface with GVEC data for stellarator configurations.
 The script is located at ``scripts/interactive/test_gvec_stellarator.py``.
 
-Mathematical Problem
-====================
+**Problem Statement**
 
 This script tests the GVEC interface for 3D stellarator geometries (non-axisymmetric).
-The goal is to:
+The script does not solve a PDE directly, but rather:
 
-1. Load GVEC equilibrium data from HDF5 files
-2. Interpolate the GVEC coordinate mapping into MRX spline space
-3. Interpolate magnetic field data from GVEC into MRX finite element space
-4. Test projection accuracy and field line integration
+1. Loads GVEC equilibrium data from HDF5 files
+2. Interpolates the GVEC coordinate mapping into MRX spline space
+3. Interpolates magnetic field data from GVEC into MRX finite element space
+4. Tests projection accuracy and field line integration
+
+The magnetic field interpolation solves a least-squares problem:
+
+.. math::
+
+    \min_{\mathbf{c}} \sum_{j=1}^{m_\rho m_\theta m_\zeta} \left\| \sum_{i=1}^{N_2} c_i \Lambda_2^{\mathrm{phys}}(i, x_j) - \mathbf{B}_{\mathrm{data}}(x_j) \right\|^2
+
+where :math:`\Lambda_2^{\mathrm{phys}}` are pushforward basis functions and :math:`\mathbf{B}_{\mathrm{data}}` is the GVEC magnetic field data.
 
 **GVEC Data Structure**
 
 GVEC provides 3D equilibrium data:
 - :math:`\rho \in [0,1]`: Normalized radial coordinate
 - :math:`\theta \in [0,2\pi]`: Poloidal angle
-- :math:`\zeta \in [0,2\pi/n_{\text{fp}}]`: Toroidal angle (one field period)
+- :math:`\zeta \in [0,2\pi/n_{\mathrm{fp}}]`: Toroidal angle (one field period)
 - :math:`\theta^*(\rho,\theta,\zeta)`: Modified poloidal angle mapping (3D)
 - :math:`X_1(\rho,\theta^*,\zeta), X_2(\rho,\theta^*,\zeta)`: Physical coordinates :math:`(R, Z)`
-- :math:`n_{\text{fp}} = 3`: Number of field periods (rotational symmetry)
+- :math:`n_{\mathrm{fp}} = 3`: Number of field periods (rotational symmetry)
 
 The mapping from logical coordinates :math:`(\rho, \theta^*, \zeta)` to physical coordinates is:
 
 .. math::
 
     F(\rho, \theta^*, \zeta) = \begin{bmatrix}
-        X_1(\rho, \theta^*, \zeta) \cos(2\pi n_{\text{fp}} \zeta) \\
-        X_1(\rho, \theta^*, \zeta) \sin(2\pi n_{\text{fp}} \zeta) \\
+        X_1(\rho, \theta^*, \zeta) \cos(2\pi n_{\mathrm{fp}} \zeta) \\
+        X_1(\rho, \theta^*, \zeta) \sin(2\pi n_{\mathrm{fp}} \zeta) \\
         X_2(\rho, \theta^*, \zeta)
     \end{bmatrix}
-
-**Least-Squares Interpolation**
-
-The coordinate functions are interpolated using least-squares fitting:
-
-.. math::
-
-    \min_{\mathbf{c}_1, \mathbf{c}_2} \sum_{j=1}^{m_\rho m_\theta m_\zeta} \left\| \sum_{i=1}^{N_0} c_{1,i} \Lambda_0^i(\rho_j, \theta^*_j, \zeta_j) - X_1(\rho_j, \theta_j, \zeta_j) \right\|^2 + \left\| \sum_{i=1}^{N_0} c_{2,i} \Lambda_0^i(\rho_j, \theta^*_j, \zeta_j) - X_2(\rho_j, \theta_j, \zeta_j) \right\|^2
 
 **Magnetic Field Interpolation**
 
@@ -53,22 +52,9 @@ The magnetic field :math:`\mathbf{B}` is interpolated using pushforward basis fu
 
 .. math::
 
-    \Lambda_2^{\text{phys}}(i,x) = \frac{D\Phi(x) \Lambda_2[i](x)}{\det(D\Phi(x))}
+    \Lambda_2^{\mathrm{phys}}(i,x) = \frac{D\Phi(x) \Lambda_2[i](x)}{\det(D\Phi(x))}
 
 where :math:`\Phi` is the mapping from logical to physical coordinates.
-
-The least-squares problem is:
-
-.. math::
-
-    \min_{\mathbf{c}} \sum_{j=1}^{m_\rho m_\theta m_\zeta} \left\| \sum_{i=1}^{N_2} c_i \Lambda_2^{\text{phys}}(i, x_j) - \mathbf{B}_{\text{data}}(x_j) \right\|^2
-
-The script demonstrates:
-
-- Loading GVEC data from HDF5 files
-- Interpolating mappings from GVEC data
-- Testing projection accuracy for stellarator geometries
-- Visualizing stellarator configurations
 
 Usage:
 
@@ -78,145 +64,110 @@ Usage:
 
 The script generates plots showing the stellarator configuration and projection errors.
 
-Mathematical Formulation
-=========================
-
-**3D Coordinate Interpolation**
-
-The design matrix :math:`M \in \mathbb{R}^{(m_\rho m_\theta m_\zeta) \times N_0}` is constructed by evaluating
-basis functions at GVEC grid points:
-
-.. math::
-
-    M_{ji} = \Lambda_0^i(\rho_j, \theta^*_j, \zeta_j)
-
-where:
-- :math:`j = 1, \ldots, m_\rho m_\theta m_\zeta` indexes grid points
-- :math:`i = 1, \ldots, N_0` indexes basis functions
-
-**Least-Squares Solution**
-
-The least-squares problem:
-
-.. math::
-
-    \min_{\mathbf{c}} \|M \mathbf{c} - \mathbf{y}\|_2^2
-
-is solved using:
-
-.. math::
-
-    \mathbf{c} = (M^T M)^{-1} M^T \mathbf{y}
-
-**Pushforward Basis Functions**
-
-For magnetic field interpolation, the physical basis functions are constructed using
-pushforward:
-
-.. math::
-
-    \Lambda_2^{\text{phys}}(i,x) = \frac{D\Phi(x) \Lambda_2[i](x)}{\det(D\Phi(x))}
-
-where:
-- :math:`D\Phi(x)` is the Jacobian matrix of the mapping
-- :math:`\det(D\Phi(x))` is the Jacobian determinant
-- :math:`\Lambda_2[i]` are logical 2-form basis functions
-
-This ensures that the interpolated field satisfies the correct transformation properties
-under coordinate changes.
-
-**Design Matrix for Field Interpolation**
-
-The design matrix :math:`M_{\text{field}} \in \mathbb{R}^{(m_\rho m_\theta m_\zeta) \times N_2}`:
-
-.. math::
-
-    (M_{\text{field}})_{ji} = \Lambda_2^{\text{phys}}(i, x_j)
-
-**Field Line Integration**
-
-Field lines are integrated by solving:
-
-.. math::
-
-    \frac{d\mathbf{x}}{dt} = \mathbf{B}(\mathbf{x})
-
-using a differential equation solver (e.g., Runge-Kutta).
-
-**Projection Error**
-
-The projection error is computed as:
-
-.. math::
-
-    \text{error} = \frac{\|\mathbf{B} - \mathbf{B}_h\|_{L^2(\Omega)}}{\|\mathbf{B}\|_{L^2(\Omega)}}
-
-where:
-- :math:`\mathbf{B}` is the exact field from GVEC data
-- :math:`\mathbf{B}_h` is the interpolated field in MRX space
-
 Code Walkthrough
 ----------------
 
-This script tests the GVEC interface for 3D stellarator geometries (non-axisymmetric):
-
 **Block 1: Imports and Data Loading (lines 1-34)**
-   Imports modules and loads GVEC stellarator data from ``data/gvec_stellarator.h5``:
-   
-   - :math:`\theta^*`: Modified poloidal angle :math:`\theta^*(\rho,\theta,\zeta)` (3D array)
-   - :math:`\rho, \theta, \zeta`: Radial, poloidal, and toroidal coordinate grids
-   - :math:`X_1, X_2`: Physical coordinates as functions of :math:`(\rho, \theta^*, \zeta)`
-   - :math:`n_{\text{fp}}=3`: Number of field periods (rotational symmetry)
+
+Imports modules and loads GVEC stellarator data from ``data/gvec_stellarator.h5`:
+
+- :math:`\theta^*`: Modified poloidal angle :math:`\theta^*(\rho,\theta,\zeta)` (3D array)
+- :math:`\rho, \theta, \zeta`: Radial, poloidal, and toroidal coordinate grids
+- :math:`X_1, X_2`: Physical coordinates as functions of :math:`(\rho, \theta^*, \zeta)`
+- :math:`n_{\mathrm{fp}}=3`: Number of field periods (rotational symmetry)
+
+.. literalinclude:: ../../scripts/interactive/test_gvec_stellarator.py
+   :language: python
+   :lines: 1-34
 
 **Block 2: Mapping Interpolation (lines 36-57)**
-   Interpolates 3D GVEC mapping:
-   
-   - Creates 3D DeRham sequence for approximating coordinate functions
-   - Evaluates basis functions on 3D meshgrid
-   - Solves least-squares problem to find spline coefficients
-   - Constructs ``gvec_stellarator_map`` with ``nfp=3``
 
-**Block 3: Magnetic Field Interpolation (lines 59-150)**
-   Tests interpolation of magnetic field ``B`` from GVEC data:
-   
-   - Creates DeRham sequence using GVEC mapping
-   - Defines physical 2-form basis functions (pushforward of logical basis functions):
-   
-     .. math::
-     
-         \Lambda_2^{\text{phys}}(i,x) = \frac{D\Phi \Lambda_2[i]}{\det(D\Phi)}
-   
-   - Builds design matrix by evaluating physical basis at GVEC grid points
-   - Solves least-squares:
-   
-     .. math::
-     
-         M \mathbf{c} = \mathbf{B}_{\text{data}}
-     
-     to find field coefficients :math:`\mathbf{c}`
-   - Tests projection accuracy for various mesh sizes
+Interpolates 3D GVEC mapping:
 
-**Block 4: Field Line Integration (lines 152-303)**
-   Validates magnetic field representation:
-   
-   - Integrates field lines using the interpolated field
-   - Compares with GVEC field line data
-   - Visualizes field line structure
+- Creates 3D DeRham sequence for approximating coordinate functions
+- Evaluates basis functions on 3D meshgrid
+- Solves least-squares problem to find spline coefficients
+- Constructs ``gvec_stellarator_map`` with ``nfp=3``
 
-**Block 5: Visualization (lines 305-303)**
-   Generates plots showing:
-   
-   - Stellarator boundary shape (3D visualization)
-   - Magnetic field magnitude contours
-   - Field line trajectories
-   - Projection error convergence
+.. literalinclude:: ../../scripts/interactive/test_gvec_stellarator.py
+   :language: python
+   :lines: 36-57
+
+**Block 3: Sequence Assembly (lines 59-65)**
+
+Creates DeRham sequence using GVEC mapping for subsequent field interpolation and testing.
+
+.. literalinclude:: ../../scripts/interactive/test_gvec_stellarator.py
+   :language: python
+   :lines: 59-65
+
+**Block 4: Magnetic Field Interpolation (lines 68-100)**
+
+Tests interpolation of magnetic field ``B`` from GVEC data:
+
+- Defines physical 2-form basis functions (pushforward of logical basis functions):
+
+.. math::
+
+    \Lambda_2^{\mathrm{phys}}(i,x) = \frac{D\Phi \Lambda_2[i]}{\det(D\Phi)}
+
+- Builds design matrix by evaluating physical basis at GVEC grid points (avoiding axis singularity)
+- Solves least-squares:
+
+.. math::
+
+    M \mathbf{c} = \mathbf{B}_{\mathrm{data}}
+
+to find field coefficients :math:`\mathbf{c}`.
+
+.. literalinclude:: ../../scripts/interactive/test_gvec_stellarator.py
+   :language: python
+   :lines: 68-100
+
+**Block 5: Field Validation and Diagnostics (lines 103-151)**
+
+Validates magnetic field representation:
+
+- Creates pushforward of interpolated field
+- Checks divergence-free property
+- Validates exactness identities (curl∘grad = 0, div∘curl = 0)
+- Checks Laplacian eigenvalue patterns
+
+.. literalinclude:: ../../scripts/interactive/test_gvec_stellarator.py
+   :language: python
+   :lines: 103-151
+
+**Block 6: Projection Error Test (lines 154-206)**
+
+Tests projection accuracy for various mesh sizes:
+
+- Defines test function:
+
+.. math::
+
+    f(r,\theta,\zeta) = \sin(2\pi\theta) \sin(2\pi\zeta) \sin(\pi r)
+
+- Projects function into finite element space
+- Computes L2 projection error using ``jax.lax.scan``
+- Tests convergence as mesh is refined
+- Validates convergence rate matches expected order
+
+.. literalinclude:: ../../scripts/interactive/test_gvec_stellarator.py
+   :language: python
+   :lines: 154-206
+
+**Block 7: Visualization (lines 208-302)**
+
+Generates plots showing:
+
+- Projection error convergence
+- Stellarator boundary shape (deformed polar grid visualization)
+- Constant :math:`\rho` and :math:`\theta^*` coordinate lines
 
 This script demonstrates that MRX can handle complex 3D stellarator geometries from
 GVEC, enabling MHD equilibrium and stability calculations on experimentally relevant
 configurations.
 
-Full script:
-
 .. literalinclude:: ../../scripts/interactive/test_gvec_stellarator.py
    :language: python
-   :linenos:
+   :lines: 208-302

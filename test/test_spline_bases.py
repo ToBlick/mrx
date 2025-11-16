@@ -10,7 +10,7 @@ from mrx.utils import is_running_in_github_actions
 jax.config.update("jax_enable_x64", True)
 
 if is_running_in_github_actions():
-    n, p = 4, 2
+    n, p = 6, 3
 else:
     n, p = 10, 3
 

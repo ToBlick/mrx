@@ -8,8 +8,7 @@ Toroid Poisson Problem
 This tutorial demonstrates solving a Poisson problem on a toroidal domain.
 The script is located at ``scripts/tutorials/toroid_poisson.py``.
 
-Mathematical Problem
-====================
+**Problem Statement**
 
 We solve the Poisson equation on a toroidal domain :math:`\Omega`:
 
@@ -17,7 +16,17 @@ We solve the Poisson equation on a toroidal domain :math:`\Omega`:
 
     -\Delta u = f \quad \text{in } \Omega
 
-with homogeneous Dirichlet boundary conditions :math:`u|_{\partial\Omega} = 0`.
+with homogeneous Dirichlet boundary conditions:
+
+.. math::
+
+    u|_{\partial\Omega} = 0
+
+where:
+- :math:`u: \Omega \to \mathbb{R}` is the unknown scalar field (0-form)
+- :math:`f: \Omega \to \mathbb{R}` is the given source term
+- :math:`\Delta = \nabla \cdot \nabla` is the scalar Laplacian operator
+- :math:`\partial\Omega` denotes the boundary of the toroidal domain
 
 The toroidal domain is parameterized by logical coordinates :math:`(r, \chi, \zeta) \in [0,1]^3`:
 - :math:`r`: Radial coordinate (minor radius direction)
@@ -74,9 +83,6 @@ To run the script:
 
 The script generates convergence plots showing error vs. mesh size.
 
-Mathematical Formulation
-=========================
-
 **Discretization Parameters**
 
 This script uses:
@@ -90,23 +96,7 @@ Following the general formulas in :doc:`overview`, the number of DOFs are:
 - **2-forms**: :math:`N_2 = n_r \cdot d_\chi \cdot d_\zeta + d_r \cdot n_\chi \cdot d_\zeta + d_r \cdot d_\chi \cdot n_\zeta = n^2(3n-2)`
 - **3-forms**: :math:`N_3 = d_r \cdot d_\chi \cdot d_\zeta = n^2(n-1)`
 
-**Basis Functions**
-
-The 0-form basis functions :math:`\{\Lambda_0^i\}_{i=1}^{N_0}` are tensor products:
-
-.. math::
-
-    \Lambda_0^i(r,\chi,\zeta) = \Lambda_r^{i_r}(r) \Lambda_\chi^{i_\chi}(\chi) \Lambda_\zeta^{i_\zeta}(\zeta)
-
-where:
-- :math:`N_0 = n^3` is the total number of 0-form DOFs
-- Each component is a B-spline of degree :math:`p`
-
 **Matrix and Operator Dimensions**
-
-All matrices and operators are defined with explicit dimensions:
-
-**Mass Matrix**
 
 The 0-form mass matrix :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}` where :math:`N_0 = n^3`:
 
@@ -114,34 +104,21 @@ The 0-form mass matrix :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}` where :math:`
 
     (M_0)_{ij} = \int_\Omega \Lambda_0^i(x) \Lambda_0^j(x) \det(DF(x)) \, dx
 
-Dimensions: :math:`M_0 \in \mathbb{R}^{n^3 \times n^3}`.
-
-**Laplacian Operator**
-
 The 0-form Laplacian :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}`:
 
 .. math::
 
-    \Delta_0 = M_0^{-1} \text{grad\_grad}
+    \Delta_0 = M_0^{-1} \nabla_h^T M_1 \nabla_h
 
-where the gradient-gradient matrix :math:`\text{grad\_grad} \in \mathbb{R}^{N_0 \times N_0}`:
+where the gradient-gradient matrix :math:`\nabla_h^T M_1 \nabla_h` represents :math:`\nabla \cdot \nabla`.
 
-.. math::
-
-    (\text{grad\_grad})_{ij} = \int_\Omega \nabla \Lambda_0^i(x) \cdot G^{-1}(x) \nabla \Lambda_0^j(x) \det(DF(x)) \, dx
-
-and :math:`G(x) = DF(x)^T DF(x)` is the metric tensor.
-Dimensions: :math:`\Delta_0 \in \mathbb{R}^{n^3 \times n^3}`, :math:`\text{grad\_grad} \in \mathbb{R}^{n^3 \times n^3}`.
-
-**Projection Operator**
-
-The 0-form projection operator :math:`P_0: L^2(\Omega) \to V_0`:
+The discrete Poisson equation:
 
 .. math::
 
-    P_0(f) = \arg\min_{v_h \in V_0} \|f - v_h\|_{L^2(\Omega)}
+    M_0 \Delta_0 \hat{u} = P_0(f)
 
-Dimensions: :math:`P_0(f) \in \mathbb{R}^{n^3}`.
+where :math:`\hat{u} \in \mathbb{R}^{N_0}` are the solution coefficients and :math:`P_0(f) \in \mathbb{R}^{N_0}` is the projection of the source term.
 
 **Toroidal Geometry Effects**
 
@@ -153,64 +130,74 @@ The toroidal mapping introduces curvature through:
 These geometric factors must be properly accounted for in the finite element discretization
 to maintain accuracy in curved geometries.
 
-**Linear System**
+Code Walkthrough
+----------------
 
-The discrete Poisson equation:
+**Block 1: Imports and Configuration (lines 1-29)**
+
+Imports libraries and MRX modules, with ``toroid_map`` instead of ``polar_map``.
+Enables 64-bit precision and creates output directory.
+
+.. literalinclude:: ../../scripts/tutorials/toroid_poisson.py
+   :language: python
+   :lines: 1-29
+
+**Block 2: Error Computation Function (lines 32-102)**
+
+The ``get_err`` function solves a 3D Poisson problem with the exact solution and source term:
+
+.. math::
+
+    u(r, \theta, \zeta) &= (r^2 - r^4) \cos(2\pi \zeta) \\
+    f(r, \theta, \zeta) &= \cos(2\pi \zeta) \left[ -\frac{4}{\epsilon^2}(1-4r^2) - \frac{4}{\epsilon R}\left(\frac{r}{2}-r^3\right)\cos(2\pi\theta) + \frac{r^2-r^4}{R^2} \right]
+
+where :math:`R = 1 + \epsilon r \cos(2\pi\theta)` is the major radius coordinate
+and :math:`\epsilon = 1/3` is the toroidal aspect ratio. The solution is independent of :math:`\theta`.
+
+The DeRham sequence uses 3D splines with periodic boundary conditions in both
+:math:`\theta` (poloidal) and :math:`\zeta` (toroidal) directions. The system is solved as:
 
 .. math::
 
     M_0 \Delta_0 \hat{u} = P_0(f)
 
-where:
-- :math:`\hat{u} \in \mathbb{R}^{N_0}`: Solution coefficients, :math:`\hat{u} \in \mathbb{R}^{n^3}`
-- :math:`M_0 \in \mathbb{R}^{N_0 \times N_0}`: Mass matrix, :math:`M_0 \in \mathbb{R}^{n^3 \times n^3}`
-- :math:`\Delta_0 \in \mathbb{R}^{N_0 \times N_0}`: Laplacian operator, :math:`\Delta_0 \in \mathbb{R}^{n^3 \times n^3}`
-- :math:`P_0(f) \in \mathbb{R}^{N_0}`: Projection of source term, :math:`P_0(f) \in \mathbb{R}^{n^3}`
+Error is computed using relative L2 norm.
 
-Code Walkthrough
-----------------
-
-This script extends the polar Poisson example to 3D toroidal geometry:
-
-**Block 1: Imports and Configuration (lines 1-29)**
-   Imports libraries and MRX modules, with ``toroid_map`` instead of ``polar_map``.
-   Enables 64-bit precision and creates output directory.
-
-**Block 2: Error Computation Function (lines 32-102)**
-   The ``get_err`` function solves a 3D Poisson problem:
-   
-   .. math::
-   
-       u(r, \theta, \zeta) &= (r^2 - r^4) \cos(2\pi \zeta) \\
-       f(r, \theta, \zeta) &= \cos(2\pi \zeta) \left[ -\frac{4}{\epsilon^2}(1-4r^2) - \frac{4}{\epsilon R}\left(\frac{r}{2}-r^3\right)\cos(2\pi\theta) + \frac{r^2-r^4}{R^2} \right]
-   
-   where :math:`R = 1 + \epsilon r \cos(2\pi\theta)` is the major radius coordinate
-   and :math:`\epsilon = 1/3` is the toroidal aspect ratio. The solution is independent of :math:`\theta`.
-   
-   The DeRham sequence uses 3D splines with periodic boundary conditions in both
-   :math:`\theta` (poloidal) and :math:`\zeta` (toroidal) directions. The system is solved as:
-   
-   .. math::
-   
-       M_0 \Delta_0 \hat{u} = P_0(f)
+.. literalinclude:: ../../scripts/tutorials/toroid_poisson.py
+   :language: python
+   :lines: 32-102
 
 **Block 3: Convergence Analysis (lines 105-150)**
-   Similar structure to previous examples, but uses smaller parameter ranges:
-   ``ns = [4, 6, 8]`` and ``ps = [1, 2, 3]`` due to the increased computational
-   cost of 3D problems.
+
+Runs convergence analysis twice (with and without JIT compilation overhead) to measure performance and error convergence.
+Uses smaller parameter ranges: ``ns = [4, 6, 8]`` and ``ps = [1, 2, 3]`` due to the increased computational
+cost of 3D problems.
+
+.. literalinclude:: ../../scripts/tutorials/toroid_poisson.py
+   :language: python
+   :lines: 105-150
 
 **Block 4: Plotting Functions (lines 153-223)**
-   Generates the same four plots as previous examples, adapted for toroidal geometry.
+
+Generates four plots:
+- Error convergence: Log-log plot of error vs. number of elements for each polynomial degree
+- Timing (first run): Shows computation time including JIT compilation
+- Timing (second run): Shows computation time after JIT compilation
+- Speedup factor: Compares first vs. second run to demonstrate JIT compilation benefits
+
+.. literalinclude:: ../../scripts/tutorials/toroid_poisson.py
+   :language: python
+   :lines: 153-223
 
 **Block 5: Main Execution (lines 226-242)**
-   Runs the convergence analysis and generates plots.
+
+Runs the convergence analysis with parameter ranges ``ns = [4, 6, 8]`` and ``ps = [1, 2, 3]``,
+generates plots, displays figures, and cleans up.
 
 The toroidal mapping transforms logical coordinates :math:`(r, \chi, \zeta)` to physical
 cylindrical coordinates :math:`(R, \phi, Z)`, where the toroidal geometry introduces
 curvature effects that must be properly handled by the finite element discretization.
 
-Full script:
-
 .. literalinclude:: ../../scripts/tutorials/toroid_poisson.py
    :language: python
-   :linenos:
+   :lines: 226-242
