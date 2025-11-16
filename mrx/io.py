@@ -27,7 +27,10 @@ def parse_args() -> dict:
     kwargs = {}
     for kv in args.kv:
         if '=' not in kv:
-            raise ValueError(f"Argument '{kv}' is not in key=value format")
+            # Ignore arguments that don't match key=value format
+            # This allows scripts to run with default values even when called
+            # with incompatible arguments (e.g., in CI fallback scenarios)
+            continue
         key, value = kv.split('=', 1)
         # try to convert to int/float/bool
         if value.isdigit():

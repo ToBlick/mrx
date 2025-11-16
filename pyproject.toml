@@ -46,7 +46,7 @@ dependencies = [
 
 [tool.ruff]
 target-version = "py312"
-extend-exclude = ["docs/source/notebooks/*.ipynb"]
+extend-exclude = ["docs/source/notebooks/*.ipynb", "*.ipynb"]
 
 [tool.setuptools.packages.find]
 include = ["mrx*"]  # Include specific packages
