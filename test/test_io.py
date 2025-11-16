@@ -69,11 +69,23 @@ def test_parse_args_mixed_types():
 
 
 def test_parse_args_no_equals():
-    """Test parse_args with invalid format (no equals sign)."""
-    test_args = ['script.py', 'invalid']
+    """Test parse_args ignores arguments without equals sign."""
+    test_args = ['script.py', 'invalid', 'key=value']
     with patch.object(sys, 'argv', test_args):
-        with pytest.raises(ValueError, match="not in key=value format"):
-            parse_args()
+        kwargs = parse_args()
+        # Should ignore 'invalid' and only parse 'key=value'
+        assert 'key' in kwargs
+        assert kwargs['key'] == 'value'
+        assert 'invalid' not in kwargs
+
+
+def test_parse_args_ci_fallback():
+    """Test parse_args handles CI fallback scenario (8 3 arguments)."""
+    test_args = ['script.py', '8', '3']
+    with patch.object(sys, 'argv', test_args):
+        kwargs = parse_args()
+        # Should return empty dict, allowing script to use defaults
+        assert kwargs == {}
 
 
 def test_parse_args_empty():

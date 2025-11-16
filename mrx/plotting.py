@@ -1288,7 +1288,7 @@ def generate_solovev_plots(filename : str):
     trace_plot(trace_dict=trace_dict, filename=outdir)
 
     # Only plot B_final if it exists
-    if "B_final" in trace_dict and is_running_in_github_actions():
+    if "B_final" in trace_dict and not is_running_in_github_actions():
         B_hat = trace_dict["B_final"]
         B_h = DiscreteFunction(B_hat, Seq.Lambda_2, Seq.E2)
 
@@ -1325,10 +1325,9 @@ def generate_solovev_plots(filename : str):
 
         x0s = x0s.T.reshape(n_batch, n_loop, 3)
 
-        if is_running_in_github_actions():
-            poincare_plot(outdir, vector_field, F, x0s, n_loop, n_batch, colors, 
-                        plane_val=0.25, axis=2, final_time=5000, n_saves=20000, cylindrical=True, 
-                        r_tol=CONFIG["solver_tol"], a_tol=CONFIG["solver_tol"], filename="")
+        poincare_plot(outdir, vector_field, F, x0s, n_loop, n_batch, colors, 
+                    plane_val=0.25, axis=2, final_time=5000, n_saves=20000, cylindrical=True, 
+                    r_tol=CONFIG["solver_tol"], a_tol=CONFIG["solver_tol"], filename="")
 
 # %%
 
