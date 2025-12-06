@@ -48,7 +48,7 @@ def interpolate_map_from_GVEC(gvec_eq, nfp, mapSeq):
     X1_h = DiscreteFunction(c[:, 0], mapSeq.Lambda_0, mapSeq.E0)
     X2_h = DiscreteFunction(c[:, 1], mapSeq.Lambda_0, mapSeq.E0)
 
-    return gvec_stellarator_map(X1_h, X2_h, nfp=nfp)
+    return gvec_stellarator_map(X1_h, X2_h, nfp=nfp), X1_h, X2_h
 
 
 def interpolate_B_from_GVEC(gvec_eq, Seq, Phi, nfp, exclude_axis_tol=1e-3):
@@ -89,7 +89,8 @@ def interpolate_B_from_GVEC(gvec_eq, Seq, Phi, nfp, exclude_axis_tol=1e-3):
                     θ.ravel() / (2 * jnp.pi),
                     ζ.ravel() / (2 * jnp.pi) * nfp], axis=1)  # x_hat_js, shape (mρ mθ mζ, 3)
     # valid interpolation points (avoid axis and exact boundary)
-    valid_pts = (pts[:, 0] > 1e-3) & (pts[:, 0] < 1 - 1e-3)
+    valid_pts = (pts[:, 0] > exclude_axis_tol) & (
+        pts[:, 0] < 1 - exclude_axis_tol)
 
     def Λ2_phys(i, x):
         """
@@ -117,7 +118,7 @@ def interpolate_B_from_GVEC(gvec_eq, Seq, Phi, nfp, exclude_axis_tol=1e-3):
         return None, jax.vmap(lambda x: Λ2_phys(i, x))(pts[valid_pts])
 
     _, M = jax.lax.scan(body_fun, None, Seq.Lambda_2.ns)
-    M = jnp.einsum('il,ljk->ijk', Seq.E2, M)  # Λ2[i](x_hat_j)_k
+    M = jnp.einsum('il,ljk->ijk', Seq.E2, M)        # Λ2[i](x_hat_j)_k
     y = gvec_eq.B.values.reshape(-1, 3)[valid_pts]  # B(x'_j)_k
     A = M.reshape(M.shape[0], -1).T
     b = y.ravel()

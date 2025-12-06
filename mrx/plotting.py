@@ -1099,7 +1099,7 @@ def plot_scalar_fct_physical_logical(p_h: Callable, Phi: Callable,
 
     # map to physical points and evaluate pressure
     _x = jax.vmap(Phi)(_x_hat)
-    R = _x[:, 0].reshape(n_vis, n_vis)
+    R = ((_x[:, 0]**2 + _x[:, 1]**2)**0.5).reshape(n_vis, n_vis)
     Z = _x[:, 2].reshape(n_vis, n_vis)
 
     p_vals = jax.vmap(p_h)(_x_hat).reshape(n_vis, n_vis) * scale

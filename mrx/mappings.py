@@ -317,6 +317,8 @@ def drumshape_map_modified(a: Callable, R0: float = 1.0) -> Callable:
 
     return F
 
+# %%
+
 
 def gvec_stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: int = 3) -> Callable:
     """
@@ -336,7 +338,7 @@ def gvec_stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: in
     Returns
     -------
     """
-    π_nfp = jnp.pi / nfp
+    π_nfp = jnp.pi / nfp * 2
 
     def F(x):
         _, _, ζ = x
@@ -344,6 +346,8 @@ def gvec_stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: in
                           -X1_h(x)[0] * jnp.sin(π_nfp * ζ),
                           X2_h(x)[0]])
     return F
+
+# %%
 
 
 def approx_inverse_map(y: jnp.ndarray, eps: float, R0: float = 1.0) -> jnp.ndarray:
