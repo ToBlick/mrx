@@ -1,5 +1,5 @@
-from typing import Any, Callable, Optional
 import os
+from typing import Any, Callable, Optional
 
 import jax
 import jax.numpy as jnp
@@ -8,13 +8,15 @@ __all__ = ['jacobian_determinant', 'inv33',
            'div', 'curl', 'grad', 'l2_product', 'DEVICE_PRESETS', 'DEFAULT_CONFIG',
            'append_to_trace_dict', 'default_trace_dict', 'update_config', 'is_running_in_github_actions']
 
+
 def is_running_in_github_actions():
     """
     Checks if the current Python script is running within a GitHub Actions environment.
     """
     return os.getenv("GITHUB_ACTIONS") == "true"
 
-def norm_2(u : jnp.ndarray, Seq) -> float:
+
+def norm_2(u: jnp.ndarray, Seq) -> float:
     """Compute the L2 norm of a vector field.
 
     Args:
@@ -25,6 +27,7 @@ def norm_2(u : jnp.ndarray, Seq) -> float:
         L2 norm of the vector field.
     """
     return (u @ Seq.M2 @ u)**0.5
+
 
 def jacobian_determinant(f: Callable[[jnp.ndarray], jnp.ndarray]) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Compute the determinant of the Jacobian matrix for a given function.
@@ -136,7 +139,7 @@ def l2_product(f: Callable[[jnp.ndarray], jnp.ndarray],
     return jnp.einsum("ij,ij,i,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Jj, Q.w)
 
 
-def assemble(getter_1, getter_2, W, n1, n2):    
+def assemble(getter_1, getter_2, W, n1, n2):
     """
     Assemble a matrix M[a, b] = Σ_{a,j,k} Λ1[a,j,i] * W[j,i,k] * Λ2[b,j,k]
 
@@ -269,7 +272,8 @@ DEVICE_PRESETS = {
 DEFAULT_CONFIG = {
     # Run parameters
     "run_name": "",
-    "boundary_type": "rotating_ellipse", # Type of boundary: "tokamak" or "helix" or "rotating_ellipse"
+    # Type of boundary: "tokamak" or "helix" or "rotating_ellipse"
+    "boundary_type": "rotating_ellipse",
 
     # Parameters describing the domain. Some of these parameters are ignored for certain domain shapes.
     "eps":      0.2,  # aspect ratio
@@ -292,16 +296,20 @@ DEFAULT_CONFIG = {
     "maxit":                 5_000,   # max. Number of time steps
     "precond":               False,     # Use preconditioner
     "precond_compute_every": 1000,       # Recompute preconditioner every n iterations
-    "gamma":                 0, # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
+    "gamma":                 0,  # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
     "dt":                    1e-6,      # initial time step
-    "dt_factor":             1.01,  # time-steps are increased by this factor and decreased by its square
-    "force_tol":             1e-15,  # Convergence tolerance for |JxB - grad p| (or |JxB| if force_free)
+    # time-steps are increased by this factor and decreased by its square
+    "dt_factor":             1.01,
+    # Convergence tolerance for |JxB - grad p| (or |JxB| if force_free)
+    "force_tol":             1e-15,
     "eta":                   0.0,       # Resistivity
-    "force_free":            False, # If True, solve for JxB = 0. If False, JxB = grad p
+    # If True, solve for JxB = 0. If False, JxB = grad p
+    "force_free":            False,
 
     # Solver hyperparameters for the inner loop of the magnetic relaxation solver
     "solver_maxit": 20,    # Maximum number of iterations before Picard solver gives up
-    "solver_critit": 4, # If Picard solver converges in less than this number of iterations, increase time step
+    # If Picard solver converges in less than this number of iterations, increase time step
+    "solver_critit": 4,
     "solver_tol": 1e-12,   # Tolerance for convergence
     "verbose": False,      # If False, prints only force every 'print_every'
     "print_every": 1000,    # Print every n iterations
@@ -315,7 +323,8 @@ DEFAULT_CONFIG = {
     "pert_tor_mode":          1,  # toroidal mode number of perturbation
     "pert_radial_loc":      1/2,  # radial location of perturbation
     "pert_radial_width":    0.07,  # radial width of perturbation
-    "apply_pert_after":     2000,  # apply perturbation after n steps (0 = to initial condition)
+    # apply perturbation after n steps (0 = to initial condition)
+    "apply_pert_after":     2000,
 }
 
 
@@ -337,11 +346,12 @@ default_trace_dict = {
     "end_time": None,
 }
 
+
 def append_to_trace_dict(
-    trace_dict : dict, i : int, f : float, E : float, 
-    H : float, dvg : float, v : float, p_i : int, 
-    e : float, dt : float, end_time : float, 
-    B : Optional[jnp.ndarray] = None) -> dict:
+        trace_dict: dict, i: int, f: float, E: float,
+        H: float, dvg: float, v: float, p_i: int,
+        e: float, dt: float, end_time: float,
+        B: Optional[jnp.ndarray] = None) -> dict:
     """
     Append values to the trace dictionary.
 
@@ -375,8 +385,9 @@ def append_to_trace_dict(
     if B is not None:
         trace_dict["B_fields"].append(B)
     return trace_dict
-    
-def save_trace_dict_to_hdf5(trace_dict : dict, diagnostics, filename: str, CONFIG: dict):
+
+
+def save_trace_dict_to_hdf5(trace_dict: dict, diagnostics, filename: str, CONFIG: dict):
     """
     Save the trace dictionary to an HDF5 file.
 
@@ -394,56 +405,67 @@ def save_trace_dict_to_hdf5(trace_dict : dict, diagnostics, filename: str, CONFI
     Seq = diagnostics.Seq
     print(filename)
     with h5py.File(filename + ".h5", "w") as f:
-            f.create_dataset("iterations", data=jnp.array(trace_dict["iterations"]))
-            f.create_dataset("force_trace", data=jnp.array(trace_dict["force_trace"]))
-            f.create_dataset("B_final", data=trace_dict["B_final"])
-            f.create_dataset("p_final", data=trace_dict["p_final"])
-            f.create_dataset("energy_trace", data=jnp.array(trace_dict["energy_trace"]))
-            f.create_dataset("helicity_trace", data=jnp.array(trace_dict["helicity_trace"]))
-            f.create_dataset("divergence_trace", data=jnp.array(trace_dict["divergence_trace"]))
-            f.create_dataset("velocity_trace", data=jnp.array(trace_dict["velocity_trace"]))
-            f.create_dataset("picard_iterations", data=jnp.array(trace_dict["picard_iterations"]))
-            f.create_dataset("picard_errors", data=jnp.array(trace_dict["picard_errors"]))
-            f.create_dataset("timesteps", data=jnp.array(trace_dict["timesteps"]))
-            f.create_dataset("harmonic_norm", data=jnp.array(
-                [norm_2(diagnostics.harmonic_component(trace_dict["B_final"]), Seq)]))
-            f.create_dataset("total_time", data=jnp.array(
-                [trace_dict["end_time"] - trace_dict["start_time"]]))
-            f.create_dataset("time_setup", data=jnp.array(
-                [trace_dict["setup_done_time"] - trace_dict["start_time"]]))
-            f.create_dataset("time_solve", data=jnp.array(
-                [trace_dict["end_time"] - trace_dict["setup_done_time"]]))
-            f.create_dataset("wall_time_trace", data=jnp.array(
-                trace_dict["wall_time_trace"]))
-            if CONFIG["save_B"]:
-                f.create_dataset("B_fields", data=jnp.array(trace_dict["B_fields"]))
-                f.create_dataset("p_fields", data=jnp.array(trace_dict["p_fields"]))
-            # Store config variables in a group
-            cfg_group = f.create_group("config")
-            for key, val in CONFIG.items():
-                # Skip callable objects (functions) and other non-serializable types
-                if callable(val):
+        f.create_dataset("iterations", data=jnp.array(
+            trace_dict["iterations"]))
+        f.create_dataset("force_trace", data=jnp.array(
+            trace_dict["force_trace"]))
+        f.create_dataset("B_final", data=trace_dict["B_final"])
+        f.create_dataset("p_final", data=trace_dict["p_final"])
+        f.create_dataset("energy_trace", data=jnp.array(
+            trace_dict["energy_trace"]))
+        f.create_dataset("helicity_trace", data=jnp.array(
+            trace_dict["helicity_trace"]))
+        f.create_dataset("divergence_trace", data=jnp.array(
+            trace_dict["divergence_trace"]))
+        f.create_dataset("velocity_trace", data=jnp.array(
+            trace_dict["velocity_trace"]))
+        f.create_dataset("picard_iterations", data=jnp.array(
+            trace_dict["picard_iterations"]))
+        f.create_dataset("picard_errors", data=jnp.array(
+            trace_dict["picard_errors"]))
+        f.create_dataset("timesteps", data=jnp.array(trace_dict["timesteps"]))
+        f.create_dataset("harmonic_norm", data=jnp.array(
+            [norm_2(diagnostics.harmonic_component(trace_dict["B_final"]), Seq)]))
+        f.create_dataset("total_time", data=jnp.array(
+            [trace_dict["end_time"] - trace_dict["start_time"]]))
+        f.create_dataset("time_setup", data=jnp.array(
+            [trace_dict["setup_done_time"] - trace_dict["start_time"]]))
+        f.create_dataset("time_solve", data=jnp.array(
+            [trace_dict["end_time"] - trace_dict["setup_done_time"]]))
+        f.create_dataset("wall_time_trace", data=jnp.array(
+            trace_dict["wall_time_trace"]))
+        if CONFIG["save_B"]:
+            f.create_dataset("B_fields", data=jnp.array(
+                trace_dict["B_fields"]))
+            f.create_dataset("p_fields", data=jnp.array(
+                trace_dict["p_fields"]))
+        # Store config variables in a group
+        cfg_group = f.create_group("config")
+        for key, val in CONFIG.items():
+            # Skip callable objects (functions) and other non-serializable types
+            if callable(val):
+                continue
+            # Skip numpy arrays with object dtype
+            if isinstance(val, np.ndarray) and val.dtype == object:
+                continue
+            # Try to convert to numpy array and check for object dtype
+            try:
+                val_array = np.asarray(val)
+                if val_array.dtype == object:
                     continue
-                # Skip numpy arrays with object dtype
-                if isinstance(val, np.ndarray) and val.dtype == object:
-                    continue
-                # Try to convert to numpy array and check for object dtype
+            except (ValueError, TypeError):
+                pass
+
+            if isinstance(val, str):
+                # Strings need special handling
+                cfg_group.attrs[key] = np.bytes_(val)
+            else:
                 try:
-                    val_array = np.asarray(val)
-                    if val_array.dtype == object:
-                        continue
-                except (ValueError, TypeError):
-                    pass
-                
-                if isinstance(val, str):
-                    # Strings need special handling
-                    cfg_group.attrs[key] = np.bytes_(val)
-                else:
-                    try:
-                        cfg_group.attrs[key] = val
-                    except (TypeError, ValueError):
-                        # Skip values that can't be serialized to HDF5
-                        continue
+                    cfg_group.attrs[key] = val
+                except (TypeError, ValueError):
+                    # Skip values that can't be serialized to HDF5
+                    continue
+
 
 def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
     """
@@ -456,7 +478,8 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
         diagnostics: MRXDiagnostics object.
     """
     import time
-    from mrx.relaxation import TimeStepper, MRXHessian
+
+    from mrx.relaxation import MRXHessian, TimeStepper
 
     # Construct the time stepper and the Hessian
     Seq = diagnostics.Seq
@@ -468,7 +491,7 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
                               picard_maxit=CONFIG["solver_maxit"])
 
     compute_hessian = jax.jit(MRXHessian(Seq).assemble)  # defaults to identity
-    step = jax.jit(timestepper.picard_solver)
+    step = jax.jit(timestepper.midpoint_relaxation_step)
     B_hat = state.B_n
     get_energy = jax.jit(diagnostics.energy)
     get_helicity = jax.jit(diagnostics.helicity)
@@ -477,16 +500,16 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
     # Compile and record initial values
     dry_run = step(state)
     trace_dict = append_to_trace_dict(trace_dict, 0,
-                        dry_run.force_norm,
-                        get_energy(state.B_n),
-                        get_helicity(state.B_n),
-                        get_divergence_B(state.B_n),
-                        dry_run.velocity_norm,
-                        0,
-                        0,
-                        dry_run.dt,
-                        time.time(),
-                        B_hat if CONFIG["save_B"] else None)
+                                      dry_run.force_norm,
+                                      get_energy(state.B_n),
+                                      get_helicity(state.B_n),
+                                      get_divergence_B(state.B_n),
+                                      dry_run.velocity_norm,
+                                      0,
+                                      0,
+                                      dry_run.dt,
+                                      time.time(),
+                                      B_hat if CONFIG["save_B"] else None)
 
     print(f"Initial force error: {trace_dict['force_trace'][-1]:.2e}")
     print(f"Initial energy: {trace_dict['energy_trace'][-1]:.2e}")
@@ -495,7 +518,8 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
 
     setup_done_time = time.time()
     trace_dict["setup_done_time"] = setup_done_time
-    print(f"Setup took {setup_done_time - trace_dict['start_time']:.2e} seconds.")
+    print(
+        f"Setup took {setup_done_time - trace_dict['start_time']:.2e} seconds.")
 
     print("Starting relaxation loop...")
     for i in range(1, CONFIG["maxit"] + 1):
@@ -530,20 +554,20 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
 
         if i % CONFIG["save_every"] == 0 or i == CONFIG["maxit"]:
             trace_dict = append_to_trace_dict(trace_dict, i,
-                        state.force_norm,
-                        get_energy(state.B_n),
-                        get_helicity(state.B_n),
-                        get_divergence_B(state.B_n),
-                        state.velocity_norm,
-                        state.picard_iterations,
-                        state.picard_residuum,
-                        state.dt,
-                        time.time(),
-                        state.B_n if CONFIG["save_B"] else None)
+                                              state.F_norm,
+                                              get_energy(state.B_n),
+                                              get_helicity(state.B_n),
+                                              get_divergence_B(state.B_n),
+                                              state.v_norm,
+                                              state.picard_iterations,
+                                              state.picard_residuum,
+                                              state.dt,
+                                              time.time(),
+                                              state.B_n if CONFIG["save_B"] else None)
 
         if i % CONFIG["print_every"] == 0:
             print(
-                f"Iteration {i}, u norm: {state.velocity_norm:.2e}, force norm: {state.force_norm:.2e}")
+                f"Iteration {i}, u norm: {state.v_norm:.2e}, force norm: {state.F_norm:.2e}")
             if CONFIG["verbose"]:
                 print(
                     f"   dt: {dt_new:.2e}, picard iters: {state.picard_iterations:.2e}, picard err: {state.picard_residuum:.2e}")
@@ -551,6 +575,7 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
             print(
                 f"Converged to force tolerance {CONFIG['force_tol']} after {i} steps.")
             break
+
 
 def update_config(params: dict, CONFIG: dict):
     """
@@ -562,7 +587,7 @@ def update_config(params: dict, CONFIG: dict):
 
     Returns:
         CONFIG: Updated configuration dictionary.
-    """    
+    """
     # Step 1: If device specified, apply defaults
     device_name = params.get("device")
     if device_name:
