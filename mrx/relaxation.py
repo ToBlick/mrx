@@ -384,7 +384,7 @@ class TimeStepper(eqx.Module):
                 jnp.eye(self.seq.M2.shape[0]) + self.mu * self.seq.dd2, u_hat)
         return u_hat
 
-    def apply_inverse_hessian(self, state: State, u_hat: jnp.ndarray) -> jnp.ndarray:
+    def apply_inverse_hessian(self, state: State, F: jnp.ndarray) -> jnp.ndarray:
         """
         Apply the inverse Hessian to the velocity field.
 
@@ -392,36 +392,36 @@ class TimeStepper(eqx.Module):
         ----------
         state : State
             The state of the MRX relaxation.
-        u_hat : jnp.ndarray
-            The velocity field in spectral space.
+        F : jnp.ndarray
+            The direction of the force.
 
         Returns
         -------
         u_hat_inv : jnp.ndarray
             The velocity field after applying the inverse Hessian.
         """
-        return self.seq.P_Leray @ jnp.linalg.lstsq(
-            state.hessian, self.seq.P_Leray.T @ self.seq.M2 @ u_hat)[0]
-        # P_Leray.T technically not needed because u is already div_free
+        return -self.seq.P_Leray @ jnp.linalg.lstsq(state.hessian,
+                                                    self.seq.P_Leray.T @ self.seq.M2 @ F)[0]
+        # P_Leray.T technically not needed because F is already div_free
 
     def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'dt', 'eta', 'hessian', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'noise_level', 'v'], value) -> State:
         """
-            Update any field in the state.
+        Update any field in the state.
 
-            Parameters
-            ----------
-            state : State
-                The state of the MRX relaxation.
-            field_name : str
-                The name of the field to update.
-            value : any
-                The new value for the field.
+        Parameters
+        ----------
+        state : State
+            The state of the MRX relaxation.
+        field_name : str
+            The name of the field to update.
+        value : any
+            The new value for the field.
 
-            Returns
-            -------
-            state : State
-                The updated state of the MRX relaxation.
-            """
+        Returns
+        -------
+        state : State
+            The updated state of the MRX relaxation.
+        """
         return eqx.tree_at(
             lambda s: getattr(s, field_name),
             state,
@@ -506,17 +506,19 @@ class TimeStepper(eqx.Module):
             raise ValueError(
                 f"Unknown timestep_mode: {self.timestep_mode}. Supported modes are given by the IntegrationScheme enum.")
         F, J, H = self.compute_force(B_n)
-        u = self.apply_regularization(F)
         # TODO: Need to check how Newton interacts with the div = 0 constraint and if another projection is needed.
         if self.newton:
-            u = self.apply_inverse_hessian(state, u)
+            u = self.apply_inverse_hessian(state, F)
+        else:
+            u = F
         if self.stochastic:
-            u = self.apply_noise(u, key, state.noise_level * self.norm_2(F))
+            u = self.apply_noise(u, key, state.noise_level * self.norm_2(u))
         if self.conjugate:
             v = state.v
             u = u + self.b * v * \
                 jnp.maximum((F @ self.seq.M2 @ (u - v)) /
                             (v @ self.seq.M2 @ v), 0.0)
+        u = self.apply_regularization(u)
         E = jnp.linalg.solve(self.seq.M1,
                              self.seq.P2x1_to_1(u, H)) - state.eta * J
         dB = self.seq.strong_curl @ E
@@ -689,12 +691,24 @@ def relaxation_loop(B_dof: jnp.ndarray,
     seq = ts.seq
     diagnostics = MRXDiagnostics(seq, ts.force_free)
     get_helicity = jax.jit(diagnostics.helicity)
+    if ts.newton:
+        hessian_assembler = MRXHessian(seq)
+        assemble_hessian = jax.jit(hessian_assembler.assemble)
+        H = assemble_hessian(B_dof)
+    else:
+        H = None
     F, _, _ = ts.compute_force(B_dof)
     state = State(B_n=B_dof,
                   dt=dt0,
+                  hessian=H,
                   v=F,
-                  F_norm=ts.norm_2(F),
-                  v_norm=ts.norm_2(F))
+                  F_norm=ts.norm_2(F))
+    if ts.newton:
+        v = ts.apply_inverse_hessian(state, F)
+    else:
+        v = F
+    state = ts.update_field(state, "v", v)
+    state = ts.update_field(state, "v_norm", ts.norm_2(v))
     # ---- diagnostics ----
     force_norm_trace = [state.F_norm]
     helicity_trace = [get_helicity(state.B_n)]
@@ -749,6 +763,9 @@ def relaxation_loop(B_dof: jnp.ndarray,
         if resistivity_schedule is not None:
             state = ts.update_field(
                 state, "eta", resistivity_schedule(i))
+        if ts.newton:
+            H = assemble_hessian(state.B_n)
+            state = ts.update_field(state, "hessian", H)
         state, _ = jax.lax.scan(
             body_fn, state, jax.random.split(key, num_iters_inner))
         # ---- diagnostics ----
