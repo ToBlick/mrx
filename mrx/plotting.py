@@ -8,7 +8,7 @@ and other analysis results using Plotly.
 import os
 from typing import Callable, Optional
 
-import diffrax
+import diffrax as dfx
 import h5py
 import jax
 import jax.numpy as jnp
@@ -18,7 +18,7 @@ import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.mappings import cerfon_map
+from mrx.mappings import cerfon_map, extend_map_nfp
 
 __all__ = ['converge_plot', 'get_3d_grids', 'get_2d_grids',
            'get_1d_grids', 'poincare_plot', 'pressure_plot', 'trace_plot']
@@ -811,20 +811,20 @@ def poincare_plot(
 
     assert x0.shape == (n_batch, n_loop, 3)
 
-    term = diffrax.ODETerm(vector_field)
-    solver = diffrax.Dopri5()
-    saveat = diffrax.SaveAt(ts=jnp.linspace(0, final_time, n_saves))
-    stepsize_controller = diffrax.PIDController(rtol=r_tol, atol=a_tol)
+    term = dfx.ODETerm(vector_field)
+    solver = dfx.Dopri5()
+    saveat = dfx.SaveAt(ts=jnp.linspace(0, final_time, n_saves))
+    stepsize_controller = dfx.PIDController(rtol=r_tol, atol=a_tol)
     trajectories = []
 
     # Compute trajectories
     print("Integrating field lines...")
     for x in x0:
-        trajectories.append(jax.vmap(lambda x0: diffrax.diffeqsolve(term, solver,
-                                                                    t0=0, t1=final_time, dt0=None,
-                                                                    y0=x0,
-                                                                    max_steps=max_steps,
-                                                                    saveat=saveat, stepsize_controller=stepsize_controller).ys)(x))
+        trajectories.append(jax.vmap(lambda x0: dfx.diffeqsolve(term, solver,
+                                                                t0=0, t1=final_time, dt0=None,
+                                                                y0=x0,
+                                                                max_steps=max_steps,
+                                                                saveat=saveat, stepsize_controller=stepsize_controller).ys)(x))
     trajectories = jnp.array(trajectories).reshape(
         n_batch * n_loop, n_saves, 3) % 1
 
@@ -1003,7 +1003,8 @@ def plot_scalar_fct_physical_logical(p_h: Callable, Phi: Callable,
                                      fixed_theta: float = 0.0,
                                      fixed_r: float = 0.5,
                                      fixed_zeta: float = 0,
-                                     colorbar: bool = True):
+                                     colorbar: bool = True,
+                                     avoid_boundary: float = 0.0):
     """Plot a scalar function on the physical and logical domains side-by-side.
 
     Parameters
@@ -1057,12 +1058,12 @@ def plot_scalar_fct_physical_logical(p_h: Callable, Phi: Callable,
     ax_log : matplotlib.axes.Axes
         Axes object for the logical domain.
     """
-
+    ɛ = avoid_boundary
     # Build logical grid and evaluation points depending on requested plane
     logical_plane = logical_plane.lower()
     if logical_plane in ('r_theta', 'rθ', 'r_θ', 'rtheta', 'rt', 'r_t'):
         # default behavior: vary r and theta, fix zeta at `fixed_zeta`
-        _r = jnp.linspace(0, 1, n_vis)
+        _r = jnp.linspace(ɛ, 1-ɛ, n_vis)
         _θ = jnp.linspace(0, 1, n_vis)
         _ζ = jnp.array([fixed_zeta])
         _rgrid, _θgrid, _ζgrid = jnp.meshgrid(_r, _θ, _ζ, indexing='ij')
@@ -1073,7 +1074,7 @@ def plot_scalar_fct_physical_logical(p_h: Callable, Phi: Callable,
 
     elif logical_plane in ('r_zeta', 'r_ζ', 'r_z', 'rzeta', 'rz', 'rζ'):
         # vary r and zeta, fix theta at `fixed_theta`
-        _r = jnp.linspace(0, 1, n_vis)
+        _r = jnp.linspace(ɛ, 1-ɛ, n_vis)
         _ζ = jnp.linspace(0, 1, n_vis)
         _rgrid, _ζgrid = jnp.meshgrid(_r, _ζ, indexing='ij')
         _θgrid = jnp.ones_like(_rgrid) * float(fixed_theta)
@@ -1585,3 +1586,292 @@ def plot_twin_axis(
     if return_axes:
         return fig, (ax1, ax2)
     return fig
+# %%
+
+
+def integrate_fieldline(B, Phi, nfp, T, rtol=1e-5, atol=1e-5, dt0=0.1):
+
+    def vector_field(t, x, args):
+        x %= 1.0
+        Bx = B(x)
+        DFx = jax.jacfwd(Phi)(x)
+        return Bx / jnp.linalg.norm(DFx @ Bx)
+
+    def integrate_fieldline(f, x0, N, t1):
+        t0 = 0.0
+        sol = dfx.diffeqsolve(
+            terms=dfx.ODETerm(f),
+            solver=dfx.Dopri8(),
+            t0=t0,
+            t1=t1,
+            dt0=dt0,
+            y0=x0,
+            saveat=dfx.SaveAt(ts=jnp.linspace(t0, t1, N)),
+            stepsize_controller=dfx.PIDController(rtol=rtol, atol=atol),
+            max_steps=100_000,
+        )
+        return sol.ys
+
+    N = jnp.int32(10 * T)
+    n_traj = 32
+    r_vals = jnp.linspace(0.01, 0.99, n_traj)
+    x0s = jnp.stack(
+        [r_vals, 0.5 * jnp.ones_like(r_vals), 0.5 * jnp.ones_like(r_vals)], axis=1
+    )
+
+    logical_trajectories = (
+        jax.vmap(lambda x0: integrate_fieldline(
+            vector_field, x0, N, T))(x0s) % 1.0
+    )
+
+    Phi_full_fp = jax.jit(extend_map_nfp(Phi, nfp))
+
+    physical_trajectories = jax.vmap(Phi_full_fp)(
+        logical_trajectories.reshape(-1, 3)
+    ).reshape(n_traj, N, 3)
+
+    return logical_trajectories, physical_trajectories
+# %%
+
+
+def intersect_with_plane_logical_periodic(traj, zeta_value, deg=2):
+    """
+    Plane defined by: ζ = constant, where ζ is periodic on [0,1]
+
+    Parameters
+    ----------
+    traj : (N,3)
+        Trajectory points in 3D.
+    zeta_value : float
+        ζ value of the plane (should be in [0,1]).
+    deg : int
+        Polynomial interpolation degree.
+    """
+    N = traj.shape[0]
+    pad_size = N
+    half = deg // 2
+
+    zeta_points = traj[:, 2]
+
+    # Handle periodic wrapping: compute shortest distance considering periodicity
+    def periodic_distance(z1, z2):
+        """Compute shortest distance between two points on [0,1] torus"""
+        return (z2 - z1 + zeta_value + 0.1) % 1.0 - (zeta_value + 0.1) % 1.0
+
+    # Compute signed distances considering periodicity
+    s = periodic_distance(zeta_value, zeta_points)
+
+    # Find sign changes (true crossings)
+    flip_mask = s[:-1] * s[1:] < 0
+
+    # Additional check: ensure we're not crossing due to large jumps
+    zeta_diff = periodic_distance(zeta_points[:-1], zeta_points[1:])
+    large_jump_mask = jnp.abs(zeta_diff) > 0.5  # Detect wrapping
+
+    # Only count as crossing if not a large jump
+    valid_flip_mask = flip_mask & ~large_jump_mask
+
+    idxs = jnp.where(valid_flip_mask, jnp.arange(N - 1), N)
+    idxs = jnp.sort(idxs)
+    idxs = jnp.pad(idxs, (0, jnp.maximum(0, pad_size - idxs.size)), constant_values=N)[
+        :pad_size
+    ]
+
+    def interp(i):
+        valid = (i >= half) & (i < N - half)
+        offset = jnp.arange(-half, deg - half + 1)
+        idxs_local = jnp.clip(i + offset, 0, N - 1)
+        pts_seg = traj[idxs_local]
+        s_seg = s[idxs_local]
+        t = jnp.arange(deg + 1, dtype=float)
+
+        # fit polynomial s(t) ~ a t^deg + b t^{deg-1} + ... + c
+        coeffs_s = jnp.polyfit(t, s_seg, deg=deg)
+        roots = jnp.roots(coeffs_s, strip_zeros=False)
+        roots_real = jnp.real(roots)
+        cond = (
+            (jnp.abs(jnp.imag(roots)) < 1e-8) & (roots_real > 0.0) & (roots_real < deg)
+        )
+        t_cross = jnp.nanmin(jnp.where(cond, roots_real, jnp.nan))
+
+        # fit each coordinate & evaluate at t_cross
+        def eval_coord(y_seg):
+            coeffs = jnp.polyfit(t, y_seg, deg=deg)
+            return jnp.polyval(coeffs, t_cross)
+
+        pt = jax.vmap(eval_coord)(pts_seg.T)
+        return jnp.where(valid, pt, jnp.nan)
+
+    pts = jax.vmap(interp)(idxs)
+    return pts, idxs
+# %%
+
+
+def get_iota(c, nfp):
+    def toroidal_unwrapped(phi):
+        phi_unwrapped = jnp.unwrap(phi)
+        total_angle = phi_unwrapped[-1] - phi_unwrapped[0]
+        return total_angle / (2 * jnp.pi)
+
+    def poloidal_unwrapped(R, Z, R_center=1.0, Z_center=0.0):
+        θ = jnp.arctan2(Z - Z_center, R - R_center)
+        θ_unwrapped = jnp.unwrap(θ)
+        total_angle = θ_unwrapped[-1] - θ_unwrapped[0]
+        return total_angle / (2 * jnp.pi)
+
+    x, y, z = c[:, 0], c[:, 1], c[:, 2]
+    R = jnp.sqrt(x**2 + y**2)
+    phi = jnp.arctan2(y, x)
+    r_mean = jnp.mean(R)
+    z_mean = jnp.mean(z)
+    m = poloidal_unwrapped(R, z, R_center=r_mean, Z_center=z_mean)
+    n = toroidal_unwrapped(phi) / nfp
+    return jnp.abs(m / n)
+# %%
+
+
+def classify_uniformity(t, ks_thresh=0.05):
+
+    def uniformity_score(t_mod):
+        # sort values
+        ts = jnp.sort(t_mod)
+        n = t_mod.size
+
+        # empirical CDF minus ideal uniform CDF
+        ecdf = jnp.arange(1, n + 1) / n
+        ucdf = ts  # uniform CDF value at ts
+
+        # KS statistic
+        ks = jnp.max(jnp.abs(ecdf - ucdf)) * (n**0.5)
+        return ks
+
+    t_mod = t % 1.0
+    ks = uniformity_score(t_mod)
+    well_winding = ks < ks_thresh
+    return well_winding, ks
+
+
+def get_iota_log(c, nfp, ks_thresh=0.05):
+    t = jnp.unwrap(c[:, 1], period=1.0)
+    z = jnp.unwrap(c[:, 2], period=1.0)
+    total_t_angle = t[-1] - t[0]
+    total_z_angle = z[-1] - z[0]
+    iota = jnp.abs(total_t_angle / total_z_angle * nfp)
+    # Uniformity test
+    well_winding, ks = classify_uniformity(t, ks_thresh=ks_thresh)
+    # set bad values to nan
+    iota = jnp.where(well_winding, iota, jnp.nan)
+    return iota, well_winding, ks
+# %%
+
+
+def poincare_plot(logical_trajectories,
+                  Phi,
+                  nfp,
+                  p_h=None,
+                  zeta_value=0.5,
+                  interpolation_degree=3,
+                  cmap="berlin",
+                  markersize=0.1,
+                  show=False):
+    # native Python loop - lax.scan not possible for now as padding width is a runtime value
+    res = [
+        intersect_with_plane_logical_periodic(
+            traj, zeta_value=zeta_value, deg=interpolation_degree)
+        for traj in logical_trajectories
+    ]
+    logical_intersections = jnp.array([r[0] for r in res])
+    idxs = jnp.array([r[1] for r in res])
+
+    iotas, flags, ks = jax.vmap(lambda c: get_iota_log(c, nfp, ks_thresh=10.0))(
+        logical_trajectories
+    )
+
+    mask = (~jnp.isnan(logical_intersections[..., 0])) & (
+        logical_intersections[..., 2] < 0.5
+    )
+    pts_log = logical_intersections[mask] % 1.0
+    pts_phys = jax.vmap(Phi)(pts_log)
+    # TODO : color one of the two plots by pressure
+    p_vals = jax.vmap(p_h)(pts_log) if p_h is not None else None
+    # Create iota_vals array where each point gets the iota value of its trajectory
+    traj_indices = jnp.arange(logical_intersections.shape[0])[:, None]
+    traj_indices_expanded = jnp.broadcast_to(
+        traj_indices, logical_intersections.shape[:2])
+    iota_vals = iotas[traj_indices_expanded][mask]
+
+    # Separate points based on whether iota is NaN
+    valid_mask = ~jnp.isnan(iota_vals)
+    nan_mask = jnp.isnan(iota_vals)
+
+    fig, (ax1, ax2) = plt.subplots(
+        1, 2, figsize=(8, 4), constrained_layout=True)
+
+    # Plot valid points with color mapping
+    if jnp.any(valid_mask):
+        s1 = ax1.scatter(  # physical
+            (pts_phys[valid_mask, 0] ** 2 +
+             pts_phys[valid_mask, 1] ** 2) ** 0.5,
+            pts_phys[valid_mask, 2],
+            c=iota_vals[valid_mask],
+            cmap=cmap,
+            s=markersize,
+        )
+        s2 = ax2.scatter(  # logical
+            pts_log[valid_mask, 0],
+            pts_log[valid_mask, 1],
+            c=iota_vals[valid_mask],
+            cmap=cmap,
+            s=markersize,
+        )
+
+    # Plot NaN points in grey
+    if jnp.any(nan_mask):
+        ax1.scatter(  # physical
+            (pts_phys[nan_mask, 0] ** 2 + pts_phys[nan_mask, 1] ** 2) ** 0.5,
+            pts_phys[nan_mask, 2],
+            c="grey",
+            s=markersize,
+        )
+        ax2.scatter(  # logical
+            pts_log[nan_mask, 0],
+            pts_log[nan_mask, 1],
+            c="grey",
+            s=markersize,
+        )
+
+    ax1.set(xlabel="R", ylabel="z", aspect="equal")
+    ax2.set(xlabel="r", ylabel="θ", aspect="equal")
+
+    # Only add colorbar if there are valid points
+    if jnp.any(valid_mask):
+        cbar2 = fig.colorbar(s2, ax=ax2, label="iota", shrink=0.9)
+
+        # Automatically determine rational ticks based on nfp and clipped iota range
+        iota_min, iota_max = (
+            jnp.nanmin(iota_vals[valid_mask]),
+            jnp.nanmax(iota_vals[valid_mask]),
+        )
+        rational_ticks = []
+        rational_labels = []
+        seen_rationals = set()
+        for m in range(1, 20 // nfp + 1):
+            m_scaled = m * nfp
+            for n in range(1, 20):  # reasonable range for denominators
+                rational = m_scaled / n
+                if iota_min <= rational <= iota_max and rational not in seen_rationals:
+                    rational_ticks.append(rational)
+                    g = jnp.gcd(m_scaled, n)
+                    rational_labels.append(
+                        f"{int(m_scaled // g)}/{int(n // g)}")
+                    seen_rationals.add(rational)
+        if rational_ticks:
+            cbar2.set_ticks(rational_ticks)
+            cbar2.set_ticklabels(rational_labels)
+
+        if show:
+            plt.show()
+
+        return fig, (ax1, ax2)
+
+# %%
