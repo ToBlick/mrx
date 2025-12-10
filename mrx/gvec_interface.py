@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 
 from mrx.differential_forms import DiscreteFunction
-from mrx.mappings import gvec_stellarator_map
+from mrx.mappings import stellarator_map
 
 
 def interpolate_map_from_GVEC(gvec_eq, nfp, mapSeq):
@@ -48,7 +48,7 @@ def interpolate_map_from_GVEC(gvec_eq, nfp, mapSeq):
     X1_h = DiscreteFunction(c[:, 0], mapSeq.Lambda_0, mapSeq.E0)
     X2_h = DiscreteFunction(c[:, 1], mapSeq.Lambda_0, mapSeq.E0)
 
-    return gvec_stellarator_map(X1_h, X2_h, nfp=nfp), X1_h, X2_h
+    return stellarator_map(X1_h, X2_h, nfp=nfp, flip_zeta=False), X1_h, X2_h
 
 
 def interpolate_B_from_GVEC(gvec_eq, Seq, Phi, nfp, exclude_axis_tol=1e-3):

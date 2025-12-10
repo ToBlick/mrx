@@ -610,3 +610,69 @@ def update_config(params: dict, CONFIG: dict):
         print(f"  {k}: {v}")
 
     return CONFIG
+
+
+def interpolate_B(B_vals, eval_points, Seq, exclude_axis_tol=1e-3):
+    """
+    Interpolate B-field onto Seq.Lambda_2 basis.
+
+    Parameters
+    ----------
+    B_vals : jnp.ndarray
+        B-field values at evaluation points, shape (mρ mθ mζ, 3).
+    eval_points : jnp.ndarray
+        Evaluation points in logical coordinates, shape (mρ mθ mζ, 3).
+    Seq : DeRhamSequence
+        DeRham sequence to interpolate the B-field onto.
+    exclude_axis_tol : float
+        Tolerance for excluding points near the axis and exact boundary.
+
+    Returns
+    -------
+    B_dof : jnp.ndarray
+        B-field coefficients.
+    residuals : jnp.ndarray
+        Residuals of the interpolation.
+    rank : int
+        Rank of the interpolation.
+    s : jnp.ndarray
+        Singular values of the interpolation.
+    """
+    # valid interpolation points (avoid axis and exact boundary)
+    valid_pts = (eval_points[:, 0] > exclude_axis_tol) & (
+        eval_points[:, 0] < 1 - exclude_axis_tol
+    )
+
+    def Λ2_phys(i, x):
+        """
+        Evaluate the physical 2-form basis function Phi*Λ2[i] at x.
+
+        Parameters
+        ----------
+        i : int
+            Index of the basis function.
+        x : jnp.ndarray
+            Point to evaluate the basis function at.
+
+        Returns
+        -------
+        jnp.ndarray
+            Value of the basis function at x.
+        """
+        # Pullback of basis function
+        DPhix = jax.jacfwd(Seq.F)(x)  # Jacobian of Phi at x
+        J = jnp.linalg.det(DPhix)
+        return DPhix @ Seq.Lambda_2[i](x) / J
+
+    def body_fun(_, i):
+        # Evaluate Λ2_phys(i, x) for all points (vectorized over x)
+        return None, jax.vmap(lambda x: Λ2_phys(i, x))(eval_points[valid_pts])
+
+    _, M = jax.lax.scan(body_fun, None, Seq.Lambda_2.ns)
+    M = jnp.einsum("il,ljk->ijk", Seq.E2, M)  # Λ2[i](x_hat_j)_k
+    y = B_vals[valid_pts]  # B(x'_j)_k
+    A = M.reshape(M.shape[0], -1).T
+    b = y.ravel()
+    # Solve least squares
+    B_dof, residuals, _, _ = jnp.linalg.lstsq(A, b, rcond=None)
+    return B_dof, residuals
