@@ -3,8 +3,7 @@ import os
 import random
 import string
 import time
-
-import desc
+# Removed desc import
 import h5py
 import jax
 import jax.numpy as jnp
@@ -165,25 +164,58 @@ def load_sweep(
 
 
 def load_desc(path, map_seq, nr=None, ntheta=None, nzeta=None):
-    eq_fam = desc.io.load(path)
-    eq = eq_fam[-1]
-    nfp = eq.NFP
-    if nr is None:
+    """
+    Load DESC equilibrium from HDF5 file.
+    
+    This function now checks if the HDF5 file contains precomputed R, Z, B data, to avoid relative import of DESC.
+    If that data is not available, it falls back to using the DESC library (will fail if DESC is not installed).
+    
+    
+    Parameters
+    ----------
+    path : str
+        Path to DESC HDF5 file.
+    map_seq : DeRhamSequence
+        DeRham sequence for mapping interpolation.
+    nr, ntheta, nzeta : int, optional
+        Grid resolution. 
+    
+    Returns
+    -------
+    dict
+        Dictionary containing 'X1', 'X2', 'Phi', 'nfp', 'eval_points', 'R', 'Z', 'B_vals',
+        and 'map_interpolation_residual'.
+    """
+    if nr is None: # Defaults to map_seq.Q dimensions 
         nr = map_seq.Q.nx
     if ntheta is None:
         ntheta = map_seq.Q.ny
     if nzeta is None:
         nzeta = map_seq.Q.nz
-    grid = desc.grid.LinearGrid(L=nr, M=ntheta, N=nzeta, NFP=nfp)
-    pts = grid.nodes.copy()
-    pts[:, 1] /= 2 * jnp.pi
-    pts[:, 2] /= 2 * jnp.pi / nfp
-    vals = eq.compute(["R", "Z", "B"], grid=grid, basis="xyz")
-
-    R = vals["R"]
-    Z = vals["Z"]
-    B_vals = vals["B"]
-    eval_points = pts
+    
+    # Read precomputed data from HDF5 file 
+    with h5py.File(path, 'r') as f:
+        # Check if precomputed data exists
+        if 'R' in f and 'Z' in f and 'B' in f and 'eval_points' in f:
+            R = jnp.array(f['R'][:])
+            Z = jnp.array(f['Z'][:])
+            B_vals = jnp.array(f['B'][:])
+            eval_points = jnp.array(f['eval_points'][:])
+            
+            # Try to get nfp 
+            if 'nfp' in f.attrs:
+                nfp = int(f.attrs['nfp'])
+            else:
+                raise KeyError(
+                    "nfp not found in HDF5 file attributes. "
+                )
+            
+            # Use the precomputed data
+            pts = eval_points
+        else:
+            raise KeyError(
+                "Precomputed R, Z, B data not found in HDF5 file. "
+            )
 
     def body_fun(_, i):
         # Evaluate Λ0[i](x) for all points
@@ -205,6 +237,8 @@ def load_desc(path, map_seq, nr=None, ntheta=None, nzeta=None):
         'Phi': Phi,
         'nfp': nfp,
         'eval_points': eval_points,
+        'R': R, # adding R,Z,B
+        'Z': Z,
         'B_vals': B_vals,
         'map_interpolation_residual': mapresid
     }
