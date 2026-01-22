@@ -765,7 +765,6 @@ def test_poincare_plot_basic():
         outdir.mkdir()
         
         poincare_plot(
-            outdir=str(outdir) + "/",
             vector_field=vector_field,
             F=F,
             x0=x0,
@@ -808,7 +807,6 @@ def test_poincare_plot_different_axes():
         
         # Test axis=0
         poincare_plot(
-            outdir=str(outdir) + "/",
             vector_field=vector_field,
             F=F,
             x0=x0,
@@ -846,7 +844,6 @@ def test_poincare_plot_cylindrical():
         outdir.mkdir()
         
         poincare_plot(
-            outdir=str(outdir) + "/",
             vector_field=vector_field,
             F=F,
             x0=x0,
@@ -889,7 +886,6 @@ def test_poincare_plot_multiple_batches():
         outdir.mkdir()
         
         poincare_plot(
-            outdir=str(outdir) + "/",
             vector_field=vector_field,
             F=F,
             x0=x0,
@@ -930,7 +926,6 @@ def test_poincare_plot_rotating_field():
         outdir.mkdir()
         
         poincare_plot(
-            outdir=str(outdir) + "/",
             vector_field=vector_field,
             F=F,
             x0=x0,
@@ -968,7 +963,6 @@ def test_poincare_plot_cerfon_map():
         outdir.mkdir()
         
         poincare_plot(
-            outdir=str(outdir) + "/",
             vector_field=vector_field,
             F=F,
             x0=x0,
@@ -1033,11 +1027,9 @@ def test_poincare_plot_cerfon_map_full_scale():
     # Use test_outputs directory (always in mrx/test/test_outputs/)
     test_output_dir = Path(__file__).parent / "test_outputs"
     test_output_dir.mkdir(parents=True, exist_ok=True)
-    outdir = str(test_output_dir) + "/"
     
     # High resolution settings based on solovev_poincare.py
     poincare_plot(
-        outdir=outdir,
         vector_field=vector_field,
         F=F,
         x0=x0,

@@ -6,7 +6,8 @@ import jax.numpy as jnp
 
 __all__ = ['jacobian_determinant', 'inv33',
            'div', 'curl', 'grad', 'l2_product', 'DEVICE_PRESETS', 'DEFAULT_CONFIG',
-           'append_to_trace_dict', 'default_trace_dict', 'update_config', 'is_running_in_github_actions']
+           'append_to_trace_dict', 'default_trace_dict', 'update_config', 'is_running_in_github_actions',
+           'interpolate_B', 'interpolate_B_regularized', 'interpolate_B_weighted']
 
 
 def is_running_in_github_actions():
@@ -488,7 +489,7 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
                               newton=CONFIG["precond"],
                               force_free=CONFIG["force_free"],
                               picard_tol=CONFIG["solver_tol"],
-                              picard_maxit=CONFIG["solver_maxit"])
+                              picard_k_restart=CONFIG["solver_maxit"])
 
     compute_hessian = jax.jit(MRXHessian(Seq).assemble)  # defaults to identity
     step = jax.jit(timestepper.midpoint_relaxation_step)
@@ -500,11 +501,11 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
     # Compile and record initial values
     dry_run = step(state)
     trace_dict = append_to_trace_dict(trace_dict, 0,
-                                      dry_run.force_norm,
+                                      dry_run.F_norm,
                                       get_energy(state.B_n),
                                       get_helicity(state.B_n),
                                       get_divergence_B(state.B_n),
-                                      dry_run.velocity_norm,
+                                      dry_run.v_norm,
                                       0,
                                       0,
                                       dry_run.dt,
@@ -528,11 +529,11 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
         if (state.picard_residuum > CONFIG["solver_tol"]
                 or ~jnp.isfinite(state.picard_residuum)):
             # half time step and try again
-            state = timestepper.update_dt(state, state.dt / 2)
-            state = timestepper.update_B_guess(state, state.B_n)
+            state = timestepper.update_field(state, "dt", state.dt / 2)
+            state = timestepper.update_field(state, "B_nplus1", state.B_n)
             continue
         # otherwise, we converged - proceed
-        state = timestepper.update_B_n(state, state.B_guess)
+        state = timestepper.update_field(state, "B_n", state.B_nplus1)
 
         if i == CONFIG["apply_pert_after"] and CONFIG["pert_strength"] > 0:
             print(f"Applying perturbation after {i} steps...")
@@ -540,17 +541,17 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
             dB_hat = Seq.P_Leray @ dB_hat
             dB_hat /= norm_2(dB_hat, Seq)
             B_new = state.B_n + CONFIG["pert_strength"] * dB_hat
-            state = timestepper.update_B_n(state, B_new)
+            state = timestepper.update_field(state, "B_n", B_new)
 
         if CONFIG["precond"] and (i % CONFIG["precond_compute_every"] == 0):
-            state = timestepper.update_hessian(
-                state, compute_hessian(state.B_n))
+            state = timestepper.update_field(
+                state, "hessian", compute_hessian(state.B_n))
 
         if state.picard_iterations < CONFIG["solver_critit"]:
             dt_new = state.dt * CONFIG["dt_factor"]
         else:
             dt_new = state.dt / (CONFIG["dt_factor"])**2
-        state = timestepper.update_dt(state, dt_new)
+        state = timestepper.update_field(state, "dt", dt_new)
 
         if i % CONFIG["save_every"] == 0 or i == CONFIG["maxit"]:
             trace_dict = append_to_trace_dict(trace_dict, i,
@@ -675,4 +676,184 @@ def interpolate_B(B_vals, eval_points, Seq, exclude_axis_tol=1e-3):
     b = y.ravel()
     # Solve least squares
     B_dof, residuals, _, _ = jnp.linalg.lstsq(A, b, rcond=None)
+    return B_dof, residuals
+
+
+def interpolate_B_regularized(B_vals, eval_points, Seq, exclude_axis_tol=1e-3, regularization=1e-6):
+    """
+    Interpolate B-field onto Seq.Lambda_2 basis using regularized least squares (Tikhonov regularization).
+    
+    This method adds a regularization term to the least squares problem to improve stability
+    for ill-conditioned systems. The regularization parameter controls the trade-off between
+    fitting the data and keeping the solution smooth.
+    
+    Parameters
+    ----------
+    B_vals : jnp.ndarray
+        B-field values at evaluation points, shape (mρ mθ mζ, 3).
+    eval_points : jnp.ndarray
+        Evaluation points in logical coordinates, shape (mρ mθ mζ, 3).
+    Seq : DeRhamSequence
+        DeRham sequence to interpolate the B-field onto.
+    exclude_axis_tol : float
+        Tolerance for excluding points near the axis and exact boundary.
+    regularization : float, default=1e-6
+        Regularization parameter (lambda). Larger values give smoother solutions
+        but may reduce accuracy. Smaller values approach standard least squares.
+
+    Returns
+    -------
+    B_dof : jnp.ndarray
+        B-field coefficients.
+    residuals : jnp.ndarray
+        Residuals of the interpolation (regularized residual).
+    """
+    # valid interpolation points (avoid axis and exact boundary)
+    valid_pts = (eval_points[:, 0] > exclude_axis_tol) & (
+        eval_points[:, 0] < 1 - exclude_axis_tol
+    )
+
+    def Λ2_phys(i, x):
+        """
+        Evaluate the physical 2-form basis function Phi*Λ2[i] at x.
+
+        Parameters
+        ----------
+        i : int
+            Index of the basis function.
+        x : jnp.ndarray
+            Point to evaluate the basis function at.
+
+        Returns
+        -------
+        jnp.ndarray
+            Value of the basis function at x.
+        """
+        # Pullback of basis function
+        DPhix = jax.jacfwd(Seq.F)(x)  # Jacobian of Phi at x
+        J = jnp.linalg.det(DPhix)
+        return DPhix @ Seq.Lambda_2[i](x) / J
+
+    def body_fun(_, i):
+        # Evaluate Λ2_phys(i, x) for all points (vectorized over x)
+        return None, jax.vmap(lambda x: Λ2_phys(i, x))(eval_points[valid_pts])
+
+    _, M = jax.lax.scan(body_fun, None, Seq.Lambda_2.ns)
+    M = jnp.einsum("il,ljk->ijk", Seq.E2, M)  # Λ2[i](x_hat_j)_k
+    y = B_vals[valid_pts]  # B(x'_j)_k
+    A = M.reshape(M.shape[0], -1).T
+    b = y.ravel()
+    
+    # Regularized least squares: (A^T A + lambda*I) x = A^T b
+    # This is equivalent to solving the augmented system
+    n_basis = A.shape[1]
+    ATA = A.T @ A
+    ATb = A.T @ b
+    
+    # Add regularization term: lambda * I
+    regularized_ATA = ATA + regularization * jnp.eye(n_basis)
+    
+    # Solve regularized system
+    B_dof = jnp.linalg.solve(regularized_ATA, ATb)
+    
+    # Compute residual (regularized)
+    residual = jnp.linalg.norm(A @ B_dof - b)**2 + regularization * jnp.linalg.norm(B_dof)**2
+    residuals = jnp.array([residual])
+    
+    return B_dof, residuals
+
+
+def interpolate_B_weighted(B_vals, eval_points, Seq, exclude_axis_tol=1e-3, weight_func=None):
+    """
+    Interpolate B-field onto Seq.Lambda_2 basis using weighted least squares.
+    
+    This method allows assigning different weights to different evaluation points,
+    which can be useful for emphasizing certain regions (e.g., near the axis or boundary).
+    
+    Parameters
+    ----------
+    B_vals : jnp.ndarray
+        B-field values at evaluation points, shape (mρ mθ mζ, 3).
+    eval_points : jnp.ndarray
+        Evaluation points in logical coordinates, shape (mρ mθ mζ, 3).
+    Seq : DeRhamSequence
+        DeRham sequence to interpolate the B-field onto.
+    exclude_axis_tol : float
+        Tolerance for excluding points near the axis and exact boundary.
+    weight_func : callable, optional
+        Function that takes evaluation points and returns weights for each point.
+        If None, uses distance-based weights (higher weight for points away from axis).
+        Signature: weight_func(eval_points) -> jnp.ndarray of shape (n_points,)
+
+    Returns
+    -------
+    B_dof : jnp.ndarray
+        B-field coefficients.
+    residuals : jnp.ndarray
+        Weighted residuals of the interpolation.
+    """
+    # valid interpolation points (avoid axis and exact boundary)
+    valid_pts = (eval_points[:, 0] > exclude_axis_tol) & (
+        eval_points[:, 0] < 1 - exclude_axis_tol
+    )
+
+    def Λ2_phys(i, x):
+        """
+        Evaluate the physical 2-form basis function Phi*Λ2[i] at x.
+
+        Parameters
+        ----------
+        i : int
+            Index of the basis function.
+        x : jnp.ndarray
+            Point to evaluate the basis function at.
+
+        Returns
+        -------
+        jnp.ndarray
+            Value of the basis function at x.
+        """
+        # Pullback of basis function
+        DPhix = jax.jacfwd(Seq.F)(x)  # Jacobian of Phi at x
+        J = jnp.linalg.det(DPhix)
+        return DPhix @ Seq.Lambda_2[i](x) / J
+
+    def body_fun(_, i):
+        # Evaluate Λ2_phys(i, x) for all points (vectorized over x)
+        return None, jax.vmap(lambda x: Λ2_phys(i, x))(eval_points[valid_pts])
+
+    _, M = jax.lax.scan(body_fun, None, Seq.Lambda_2.ns)
+    M = jnp.einsum("il,ljk->ijk", Seq.E2, M)  # Λ2[i](x_hat_j)_k
+    y = B_vals[valid_pts]  # B(x'_j)_k
+    A = M.reshape(M.shape[0], -1).T
+    b = y.ravel()
+    
+    # Compute weights
+    if weight_func is None:
+        # Default: weight by distance from axis (higher weight for points away from axis)
+        # This helps reduce the influence of points near the axis where the mapping may be singular
+        rho_vals = eval_points[valid_pts][:, 0]
+        weights = rho_vals  # Linear weighting: weight = rho
+    else:
+        weights = weight_func(eval_points[valid_pts])
+    
+    # Ensure weights are positive and have correct shape
+    weights = jnp.abs(weights)
+    if weights.ndim == 0:
+        weights = weights * jnp.ones(A.shape[0])
+    elif weights.shape[0] != A.shape[0]:
+        raise ValueError(f"Weight function must return array of shape ({A.shape[0]},), got {weights.shape}")
+    
+    # Weighted least squares: W^{1/2} A x = W^{1/2} b
+    # This is equivalent to solving (A^T W A) x = A^T W b
+    W_sqrt = jnp.sqrt(weights)
+    W_sqrt_diag = jnp.diag(W_sqrt)
+    
+    # Apply weights: W^{1/2} A and W^{1/2} b
+    A_weighted = W_sqrt_diag @ A
+    b_weighted = W_sqrt * b
+    
+    # Solve weighted least squares
+    B_dof, residuals, _, _ = jnp.linalg.lstsq(A_weighted, b_weighted, rcond=None)
+    
     return B_dof, residuals

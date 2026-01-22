@@ -376,15 +376,15 @@ def test_state_creation(
         B_nplus1=B_field,
         dt=dt,
         eta=eta,
-        Hessian=Hessian,
+        hessian=Hessian,
         picard_iterations=0,
         picard_residuum=0.0,
-        force_norm=0.0,
-        velocity_norm=0.0
+        F_norm=0.0,
+        v_norm=0.0
     )
 
     assert state.B_n.shape == B_field.shape
-    assert state.B_guess.shape == B_field.shape
+    assert state.B_nplus1.shape == B_field.shape
     assert state.dt == dt
     assert state.eta == eta
     assert state.picard_iterations == 0
@@ -405,7 +405,7 @@ def test_time_stepper_init(seq: DeRhamSequence) -> None:
         gamma=0,
         newton=False,
         picard_tol=1e-12,
-        picard_maxit=20,
+        picard_k_restart=20,
         force_free=False
     )
 
@@ -413,7 +413,7 @@ def test_time_stepper_init(seq: DeRhamSequence) -> None:
     assert timestepper.gamma == 0
     assert timestepper.newton is False
     assert timestepper.picard_tol == 1e-12
-    assert timestepper.picard_maxit == 20
+    assert timestepper.picard_k_restart == 20
     assert timestepper.force_free is False
 
 
@@ -432,7 +432,7 @@ def test_time_stepper_init_state(
     state = State(B_field, B_field, dt, eta, Hessian, 0, 0.0, 0.0, 0.0)
 
     assert state.B_n.shape == B_field.shape
-    assert state.B_guess.shape == B_field.shape
+    assert state.B_nplus1.shape == B_field.shape
     assert state.dt == dt
     assert state.eta == eta
     npt.assert_allclose(state.hessian, Hessian, rtol=1e-10, atol=1e-10)
@@ -461,7 +461,7 @@ def test_time_stepper_norm_2(
 
 def test_time_stepper_update_dt(
         seq: DeRhamSequence, B_field: jnp.ndarray) -> None:
-    """Test TimeStepper.update_dt method."""
+    """Test TimeStepper.update_field to update dt."""
     seq.evaluate_1d()
     seq.assemble_all()
 
@@ -469,7 +469,7 @@ def test_time_stepper_update_dt(
     state = State(B_field, B_field, 0.01, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
 
     new_dt = 0.02
-    updated_state = timestepper.update_dt(state, new_dt)
+    updated_state = timestepper.update_field(state, "dt", new_dt)
 
     assert updated_state.dt == new_dt
     # Other fields should remain unchanged
@@ -478,7 +478,7 @@ def test_time_stepper_update_dt(
 
 def test_time_stepper_update_hessian(
         seq: DeRhamSequence, B_field: jnp.ndarray) -> None:
-    """Test TimeStepper.update_hessian method."""
+    """Test TimeStepper.update_field to update Hessian."""
     seq.evaluate_1d()
     seq.assemble_all()
     seq.build_crossproduct_projections()
@@ -489,7 +489,7 @@ def test_time_stepper_update_hessian(
 
     hessian = MRXHessian(seq)
     new_Hessian = hessian.assemble(B_field)
-    updated_state = timestepper.update_hessian(state, new_Hessian)
+    updated_state = timestepper.update_field(state, "hessian", new_Hessian)
 
     npt.assert_allclose(updated_state.hessian, new_Hessian,
                         rtol=1e-10, atol=1e-10)
@@ -499,7 +499,7 @@ def test_time_stepper_update_hessian(
 
 def test_time_stepper_update_B_n(
         seq: DeRhamSequence, B_field: jnp.ndarray) -> None:
-    """Test TimeStepper.update_B_n method."""
+    """Test TimeStepper.update_field to update B_n."""
     seq.evaluate_1d()
     seq.assemble_all()
 
@@ -507,7 +507,7 @@ def test_time_stepper_update_B_n(
     state = State(B_field, B_field, 0.01, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
 
     new_B = B_field * 1.1
-    updated_state = timestepper.update_B_n(state, new_B)
+    updated_state = timestepper.update_field(state, "B_n", new_B)
 
     npt.assert_allclose(updated_state.B_n, new_B, rtol=1e-10, atol=1e-10)
     # Other fields should remain unchanged
@@ -516,7 +516,7 @@ def test_time_stepper_update_B_n(
 
 def test_time_stepper_update_B_guess(
         seq: DeRhamSequence, B_field: jnp.ndarray) -> None:
-    """Test TimeStepper.update_B_guess method."""
+    """Test TimeStepper.update_field to update B_nplus1."""
     seq.evaluate_1d()
     seq.assemble_all()
 
@@ -524,9 +524,9 @@ def test_time_stepper_update_B_guess(
     state = State(B_field, B_field, 0.01, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
 
     new_B_guess = B_field * 0.9
-    updated_state = timestepper.update_B_guess(state, new_B_guess)
+    updated_state = timestepper.update_field(state, "B_nplus1", new_B_guess)
 
-    npt.assert_allclose(updated_state.B_guess, new_B_guess,
+    npt.assert_allclose(updated_state.B_nplus1, new_B_guess,
                         rtol=1e-10, atol=1e-10)
     # Other fields should remain unchanged
     assert updated_state.dt == state.dt
@@ -547,14 +547,19 @@ def test_time_stepper_midpoint_residuum(
 
     # Check that state was updated
     assert updated_state.picard_iterations == state.picard_iterations + 1
-    assert updated_state.picard_residuum >= 0
-    assert updated_state.force_norm >= 0
-    assert updated_state.velocity_norm >= 0
+    # Convert JAX arrays to Python scalars 
+    residuum = float(updated_state.picard_residuum)
+    F_norm = float(updated_state.F_norm)
+    v_norm = float(updated_state.v_norm)
+    
+    assert residuum >= 0
+    assert F_norm >= 0
+    assert v_norm >= 0
 
-    # Check finiteness
-    assert jnp.isfinite(updated_state.picard_residuum)
-    assert jnp.isfinite(updated_state.force_norm)
-    assert jnp.isfinite(updated_state.velocity_norm)
+    # Check finiteness 
+    assert bool(jnp.isfinite(updated_state.picard_residuum))
+    assert bool(jnp.isfinite(updated_state.F_norm))
+    assert bool(jnp.isfinite(updated_state.v_norm))
 
 
 def test_time_stepper_picard_solver(
@@ -570,7 +575,7 @@ def test_time_stepper_picard_solver(
         seq,
         force_free=False,
         picard_tol=1e-6,
-        picard_maxit=5
+        picard_k_restart=5
     )
     state = State(B_field, B_field, 0.001, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
 
@@ -579,12 +584,12 @@ def test_time_stepper_picard_solver(
 
     # Check that iterations were performed
     assert final_state.picard_iterations > 0
-    assert final_state.picard_iterations <= timestepper.picard_maxit
+    assert final_state.picard_iterations <= timestepper.picard_k_restart
 
     # Check finiteness
     assert jnp.isfinite(final_state.picard_residuum)
-    assert jnp.isfinite(final_state.force_norm)
-    assert jnp.isfinite(final_state.velocity_norm)
+    assert jnp.isfinite(final_state.F_norm)
+    assert jnp.isfinite(final_state.v_norm)
 
     # Check that B_guess was updated
     assert final_state.B_guess.shape == B_field.shape
@@ -602,7 +607,7 @@ def test_time_stepper_picard_solver_force_free(
         seq,
         force_free=True,
         picard_tol=1e-6,
-        picard_maxit=5
+        picard_k_restart=5
     )
     state = State(B_field, B_field, 0.001, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
 
@@ -628,7 +633,7 @@ def test_time_stepper_picard_solver_newton(
         newton=True,
         force_free=False,
         picard_tol=1e-6,
-        picard_maxit=5
+        picard_k_restart=5
     )
     state = State(B_field, B_field, 0.001, 0.1, H, 0, 0.0, 0.0, 0.0)
 
@@ -651,7 +656,7 @@ def test_time_stepper_picard_solver_gamma(
         gamma=1,
         force_free=False,
         picard_tol=1e-6,
-        picard_maxit=5
+        picard_k_restart=5
     )
     state = State(B_field, B_field, 0.001, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
 
