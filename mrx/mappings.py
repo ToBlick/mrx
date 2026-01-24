@@ -349,6 +349,9 @@ def stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: int = 3
                           X2_h(x)[0]])
     return F
 
+# Alias for now
+gvec_stellarator_map = stellarator_map
+
 # %%
 
 
