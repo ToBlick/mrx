@@ -492,14 +492,14 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
                               picard_k_restart=CONFIG["solver_maxit"])
 
     compute_hessian = jax.jit(MRXHessian(Seq).assemble)  # defaults to identity
-    step = jax.jit(timestepper.midpoint_relaxation_step)
+    step = jax.jit(lambda state, key: timestepper.relaxation_step(state, key))
     B_hat = state.B_n
     get_energy = jax.jit(diagnostics.energy)
     get_helicity = jax.jit(diagnostics.helicity)
     get_divergence_B = jax.jit(diagnostics.divergence_norm)
 
     # Compile and record initial values
-    dry_run = step(state)
+    dry_run = step(state, state.key)
     trace_dict = append_to_trace_dict(trace_dict, 0,
                                       dry_run.F_norm,
                                       get_energy(state.B_n),
@@ -525,7 +525,7 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
     print("Starting relaxation loop...")
     for i in range(1, CONFIG["maxit"] + 1):
 
-        state = step(state)
+        state = step(state, state.key)
         if (state.picard_residuum > CONFIG["solver_tol"]
                 or ~jnp.isfinite(state.picard_residuum)):
             # half time step and try again

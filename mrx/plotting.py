@@ -883,163 +883,180 @@ def trajectory_plane_intersections_list(
     return intersections
 
 
+
+def poincare_plot(
+    outdir: str,
+    vector_field: callable,
+    F: callable,
+    x0: jnp.ndarray,
+    n_loop: int,
+    n_batch: int,
+    colors: list,
+    plane_val: float,
+    axis: int,
+    final_time: int = 10000,
+    n_saves: int = 20000,
+    max_steps: int = 150000,
+    r_tol: float = 1e-7,
+    a_tol: float = 1e-7,
+    cylindrical: bool = False,
+    filename: str = "",
+    show: bool = False,
+):
+    """
+    Plot Poincaré sections of a field line.
+
+    Parameters
+    ----------
+    outdir : str
+        Directory to save the plots.
+    vector_field : callable
+        Vector field to plot.
+    F : callable
+        Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
+    x0 : jnp.ndarray
+        Initial conditions for the field lines.
+    n_loop : int
+        Number of field lines to plot.
+    n_batch : int
+        Number of batches of field lines to plot.
+    colors : list
+        Colors to use for the field lines.
+    plane_val : float
+        Value of the plane to plot.
+    axis : int
+        Axis to plot the plane on.
+    final_time : int
+        Final time to integrate the field lines.
+    n_saves : int
+        Number of saves to make during the integration.
+    max_steps : int
+        Maximum number of steps to take during the integration.
+    r_tol : float
+        Relative tolerance for the integration.
+    a_tol : float
+        Absolute tolerance for the integration.
+    cylindrical : bool
+        Whether to plot the Poincaré sections in cylindrical coordinates.
+    filename : str
+        Name of the plot files.
+    show : bool
+        Whether to display the plot.
+    """
+    os.makedirs(outdir, exist_ok=True)
+    # --- Figure settings ---
+    FIG_SIZE_SQUARE = (8, 8)
+    LABEL_SIZE = 20
+    TICK_SIZE = 16
+
+    assert x0.shape == (n_batch, n_loop, 3)
+
+    term = dfx.ODETerm(vector_field)
+    solver = dfx.Dopri5()
+    saveat = dfx.SaveAt(ts=jnp.linspace(0, final_time, n_saves))
+    stepsize_controller = dfx.PIDController(rtol=r_tol, atol=a_tol)
+    trajectories = []
+
+    # Compute trajectories
+    print("Integrating field lines...")
+    for x in x0:
+        trajectories.append(jax.vmap(lambda x0: dfx.diffeqsolve(term, solver,
+                                                                t0=0, t1=final_time, dt0=None,
+                                                                y0=x0,
+                                                                max_steps=max_steps,
+                                                                saveat=saveat, stepsize_controller=stepsize_controller).ys)(x))
+    trajectories = jnp.array(trajectories).reshape(
+        n_batch * n_loop, n_saves, 3) % 1
+
+    physical_trajectories = jax.vmap(F)(trajectories.reshape(-1, 3))
+    physical_trajectories = physical_trajectories.reshape(
+        trajectories.shape[0], trajectories.shape[1], 3)
+
+    intersections, mask = trajectory_plane_intersections_jit(
+        trajectories, plane_val=plane_val, axis=axis)
+
+    if cylindrical:
+        def F_cyl(p):
+            x, y, z = F(p)
+            r = jnp.sqrt(x**2 + y**2)
+            phi = jnp.arctan2(y, x)
+            return jnp.array([r, phi, z])
+        physical_intersections = jax.vmap(F_cyl)(intersections.reshape(-1, 3))
+    else:
+        physical_intersections = jax.vmap(F)(intersections.reshape(-1, 3))
+    physical_intersections = physical_intersections.reshape(
+        intersections.shape[0], intersections.shape[1], 3)
+
+    print("Plotting Poincaré sections...")
+    # physical domain
+    fig1, ax1 = plt.subplots(figsize=FIG_SIZE_SQUARE)
+    for i, t in enumerate(physical_intersections):
+        # Cycle through the defined colors
+        current_color = colors[i % len(colors)]
+        if not cylindrical:
+            if axis == 0:
+                ax1.scatter(t[:, 1], t[:, 2], s=1, color=current_color)
+                ax1.set_xlabel(r'$x_2$', fontsize=LABEL_SIZE)
+                ax1.set_ylabel(r'$x_3$', fontsize=LABEL_SIZE)
+            elif axis == 1:
+                ax1.scatter(t[:, 0], t[:, 2], s=1, color=current_color)
+                ax1.set_xlabel(r'$x_1$', fontsize=LABEL_SIZE)
+                ax1.set_ylabel(r'$x_3$', fontsize=LABEL_SIZE)
+            else:
+                ax1.scatter(t[:, 0], t[:, 1], s=1, color=current_color)
+                ax1.set_xlabel(r'$x_1$', fontsize=LABEL_SIZE)
+                ax1.set_ylabel(r'$x_2$', fontsize=LABEL_SIZE)
+        else:  # for cylindrical, always plot (r,z) (axis = 2)
+            ax1.scatter(t[:, 0], t[:, 2], s=1, color=current_color)
+            ax1.set_xlabel(r'$R$', fontsize=LABEL_SIZE)
+            ax1.set_ylabel(r'$z$', fontsize=LABEL_SIZE)
+    ax1.tick_params(axis='both', which='major', labelsize=TICK_SIZE)
+    ax1.grid(True, linestyle="--", alpha=0.5)
+    plt.tight_layout()
+
+    # logical domain
+    fig2, ax2 = plt.subplots(figsize=FIG_SIZE_SQUARE)
+    for i, t in enumerate(intersections):
+        current_color = colors[i % len(colors)]
+        if axis == 0:
+            ax2.scatter(t[:, 1], t[:, 2], s=1, color=current_color)
+            ax2.set_xlabel(r'$\theta$', fontsize=LABEL_SIZE)
+            ax2.set_ylabel(r'$\zeta$', fontsize=LABEL_SIZE)
+        elif axis == 1:
+            ax2.scatter(t[:, 0], t[:, 2], s=1, color=current_color)
+            ax2.set_xlabel(r'$r$', fontsize=LABEL_SIZE)
+            ax2.set_ylabel(r'$\zeta$', fontsize=LABEL_SIZE)
+        else:
+            ax2.scatter(t[:, 0], t[:, 1], s=1, color=current_color)
+            ax2.set_xlabel(r'$r$', fontsize=LABEL_SIZE)
+            ax2.set_ylabel(r'$\theta$', fontsize=LABEL_SIZE)
+    ax2.tick_params(axis='both', which='major', labelsize=TICK_SIZE)
+    ax2.grid(True, linestyle="--", alpha=0.5)
+    plt.tight_layout()
+    plt.savefig(outdir + filename + "poincare_logical.png",
+                dpi=600, bbox_inches='tight')
+
+    print("Plotting field lines...")
+    # Also plot a few full physical trajectories
+    for (i, t) in enumerate(physical_trajectories[::2]):
+        fig = plt.figure(figsize=FIG_SIZE_SQUARE)
+        ax = fig.add_subplot(projection='3d')
+        ax.plot(t[:, 0], t[:, 1], t[:, 2],
+                color="purple",
+                alpha=1)
+        ax.set_axis_off()
+        plt.tight_layout()
+        plt.savefig(outdir + filename + "field_line_" +
+                    str(i) + ".pdf", bbox_inches='tight')
+
+    if show:
+        plt.show()
+
+    return (fig1, ax1), (fig2, ax2)
+
+
 # %%
-# def poincare_plot(
-#         outdir: str, vector_field: callable, F: callable, x0: jnp.ndarray,
-#         n_loop: int, n_batch: int, colors: list, plane_val: float,
-#         axis: int, final_time: int = 10000, n_saves: int = 20000,
-#         max_steps: int = 150000, r_tol: float = 1e-7, a_tol: float = 1e-7,
-#         cylindrical: bool = False, filename: str = ""):
-#     """
-#     Plot Poincaré sections of a field line.
 
-#     Parameters
-#     ----------
-#     outdir : str
-#         Directory to save the plots.
-#     vector_field : callable
-#         Vector field to plot.
-#     F : callable
-#         Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
-#     x0 : jnp.ndarray
-#         Initial conditions for the field lines.
-#     n_loop : int
-#         Number of field lines to plot.
-#     n_batch : int
-#         Number of batches of field lines to plot.
-#     colors : list
-#         Colors to use for the field lines.
-#     plane_val : float
-#         Value of the plane to plot.
-#     axis : int
-#         Axis to plot the plane on.
-#     final_time : int
-#         Final time to integrate the field lines.
-#     n_saves : int
-#         Number of saves to make during the integration.
-#     max_steps : int
-#         Maximum number of steps to take during the integration.
-#     r_tol : float
-#         Relative tolerance for the integration.
-#     a_tol : float
-#         Absolute tolerance for the integration.
-#     cylindrical : bool
-#         Whether to plot the Poincaré sections in cylindrical coordinates.
-#     filename : str
-#         Name of the plot.
-#     """
-#     os.makedirs(outdir, exist_ok=True)
-
-#     # --- Figure settings ---
-#     # FIG_SIZE = (12, 6)
-#     FIG_SIZE_SQUARE = (8, 8)
-#     # TITLE_SIZE = 20
-#     LABEL_SIZE = 20
-#     TICK_SIZE = 16
-#     # LINE_WIDTH = 2.5
-#     # LEGEND_SIZE = 16
-
-#     assert x0.shape == (n_batch, n_loop, 3)
-
-#     term = dfx.ODETerm(vector_field)
-#     solver = dfx.Dopri5()
-#     saveat = dfx.SaveAt(ts=jnp.linspace(0, final_time, n_saves))
-#     stepsize_controller = dfx.PIDController(rtol=r_tol, atol=a_tol)
-#     trajectories = []
-
-#     # Compute trajectories
-#     print("Integrating field lines...")
-#     for x in x0:
-#         trajectories.append(jax.vmap(lambda x0: dfx.diffeqsolve(term, solver,
-#                                                                 t0=0, t1=final_time, dt0=None,
-#                                                                 y0=x0,
-#                                                                 max_steps=max_steps,
-#                                                                 saveat=saveat, stepsize_controller=stepsize_controller).ys)(x))
-#     trajectories = jnp.array(trajectories).reshape(
-#         n_batch * n_loop, n_saves, 3) % 1
-
-#     physical_trajectories = jax.vmap(F)(trajectories.reshape(-1, 3))
-#     physical_trajectories = physical_trajectories.reshape(
-#         trajectories.shape[0], trajectories.shape[1], 3)
-
-#     intersections, mask = trajectory_plane_intersections_jit(
-#         trajectories, plane_val=plane_val, axis=axis)
-
-#     if cylindrical:
-#         def F_cyl(p):
-#             x, y, z = F(p)
-#             r = jnp.sqrt(x**2 + y**2)
-#             phi = jnp.arctan2(y, x)
-#             return jnp.array([r, phi, z])
-#         physical_intersections = jax.vmap(F_cyl)(intersections.reshape(-1, 3))
-#     else:
-#         physical_intersections = jax.vmap(F)(intersections.reshape(-1, 3))
-#     physical_intersections = physical_intersections.reshape(
-#         intersections.shape[0], intersections.shape[1], 3)
-
-#     print("Plotting Poincaré sections...")
-#     # physical domain
-#     fig1, ax1 = plt.subplots(figsize=FIG_SIZE_SQUARE)
-#     for i, t in enumerate(physical_intersections):
-#         # Cycle through the defined colors
-#         current_color = colors[i % len(colors)]
-#         if not cylindrical:
-#             if axis == 0:
-#                 ax1.scatter(t[:, 1], t[:, 2], s=1, color=current_color)
-#                 ax1.set_xlabel(r'$x_2$', fontsize=LABEL_SIZE)
-#                 ax1.set_ylabel(r'$x_3$', fontsize=LABEL_SIZE)
-#             elif axis == 1:
-#                 ax1.scatter(t[:, 0], t[:, 2], s=1, color=current_color)
-#                 ax1.set_xlabel(r'$x_1$', fontsize=LABEL_SIZE)
-#                 ax1.set_ylabel(r'$x_3$', fontsize=LABEL_SIZE)
-#             else:
-#                 ax1.scatter(t[:, 0], t[:, 1], s=1, color=current_color)
-#                 ax1.set_xlabel(r'$x_1$', fontsize=LABEL_SIZE)
-#                 ax1.set_ylabel(r'$x_2$', fontsize=LABEL_SIZE)
-#         else:  # for cylindrical, always plot (r,z) (axis = 2)
-#             ax1.scatter(t[:, 0], t[:, 2], s=1, color=current_color)
-#             ax1.set_xlabel(r'$R$', fontsize=LABEL_SIZE)
-#             ax1.set_ylabel(r'$z$', fontsize=LABEL_SIZE)
-#     ax1.tick_params(axis='both', which='major', labelsize=TICK_SIZE)
-#     ax1.grid(True, linestyle="--", alpha=0.5)
-#     plt.tight_layout()
-#     plt.savefig(outdir + filename + "poincare_physical.png",
-#                 dpi=600, bbox_inches='tight')
-
-#     # logical domain
-#     fig1, ax1 = plt.subplots(figsize=FIG_SIZE_SQUARE)
-#     for i, t in enumerate(intersections):
-#         current_color = colors[i % len(colors)]
-#         if axis == 0:
-#             ax1.scatter(t[:, 1], t[:, 2], s=1, color=current_color)
-#             ax1.set_xlabel(r'$\theta$', fontsize=LABEL_SIZE)
-#             ax1.set_ylabel(r'$\zeta$', fontsize=LABEL_SIZE)
-#         elif axis == 1:
-#             ax1.scatter(t[:, 0], t[:, 2], s=1, color=current_color)
-#             ax1.set_xlabel(r'$r$', fontsize=LABEL_SIZE)
-#             ax1.set_ylabel(r'$\zeta$', fontsize=LABEL_SIZE)
-#         else:
-#             ax1.scatter(t[:, 0], t[:, 1], s=1, color=current_color)
-#             ax1.set_xlabel(r'$r$', fontsize=LABEL_SIZE)
-#             ax1.set_ylabel(r'$\theta$', fontsize=LABEL_SIZE)
-#     ax1.tick_params(axis='both', which='major', labelsize=TICK_SIZE)
-#     ax1.grid(True, linestyle="--", alpha=0.5)
-#     plt.tight_layout()
-#     plt.savefig(outdir + filename + "poincare_logical.png",
-#                 dpi=600, bbox_inches='tight')
-
-#     print("Plotting field lines...")
-#     # Also plot a few full physical trajectories
-#     for (i, t) in enumerate(physical_trajectories[::2]):
-#         fig = plt.figure(figsize=FIG_SIZE_SQUARE)
-#         ax = fig.add_subplot(projection='3d')
-#         ax.plot(t[:, 0], t[:, 1], t[:, 2],
-#                 color="purple",
-#                 alpha=1)
-#         ax.set_axis_off()
-#         plt.tight_layout()
-#         plt.savefig(outdir + filename + "field_line_" +
-#                     str(i) + ".pdf", bbox_inches='tight')
 
 
 def pressure_plot(
@@ -2014,118 +2031,3 @@ def get_iota_log(c, nfp, ks_thresh=0.05):
 
 # %%
 
-
-def poincare_plot(
-    logical_trajectories,
-    Phi,
-    nfp,
-    p_h=None,
-    zeta_value=0.5,
-    interpolation_degree=3,
-    cmap="berlin",
-    markersize=0.1,
-    show=False,
-):
-    # native Python loop - lax.scan not possible for now as padding width is a runtime value
-    res = [
-        intersect_with_plane_logical_periodic(
-            traj, zeta_value=zeta_value, deg=interpolation_degree
-        )
-        for traj in logical_trajectories
-    ]
-    logical_intersections = jnp.array([r[0] for r in res])
-
-    iotas, flags, ks = jax.vmap(lambda c: get_iota_log(c, nfp, ks_thresh=10.0))(
-        logical_trajectories
-    )
-
-    mask = (~jnp.isnan(logical_intersections[..., 0])) & (
-        logical_intersections[..., 2] < 0.5
-    )
-    pts_log = logical_intersections[mask] % 1.0
-    pts_phys = jax.vmap(Phi)(pts_log)
-    # TODO : color one of the two plots by pressure
-    # p_vals = jax.vmap(p_h)(pts_log) if p_h is not None else None
-    # Create iota_vals array where each point gets the iota value of its trajectory
-    traj_indices = jnp.arange(logical_intersections.shape[0])[:, None]
-    traj_indices_expanded = jnp.broadcast_to(
-        traj_indices, logical_intersections.shape[:2]
-    )
-    iota_vals = iotas[traj_indices_expanded][mask]
-
-    # Separate points based on whether iota is NaN
-    valid_mask = ~jnp.isnan(iota_vals)
-    nan_mask = jnp.isnan(iota_vals)
-
-    fig, (ax1, ax2) = plt.subplots(
-        1, 2, figsize=(8, 4), constrained_layout=True)
-
-    # Plot valid points with color mapping
-    if jnp.any(valid_mask):
-        _ = ax1.scatter(  # physical
-            (pts_phys[valid_mask, 0] ** 2 +
-             pts_phys[valid_mask, 1] ** 2) ** 0.5,
-            pts_phys[valid_mask, 2],
-            c=iota_vals[valid_mask],
-            cmap=cmap,
-            s=markersize,
-        )
-        s2 = ax2.scatter(  # logical
-            pts_log[valid_mask, 0],
-            pts_log[valid_mask, 1],
-            c=iota_vals[valid_mask],
-            cmap=cmap,
-            s=markersize,
-        )
-
-    # Plot NaN points in grey
-    if jnp.any(nan_mask):
-        ax1.scatter(  # physical
-            (pts_phys[nan_mask, 0] ** 2 + pts_phys[nan_mask, 1] ** 2) ** 0.5,
-            pts_phys[nan_mask, 2],
-            c="grey",
-            s=markersize,
-        )
-        ax2.scatter(  # logical
-            pts_log[nan_mask, 0],
-            pts_log[nan_mask, 1],
-            c="grey",
-            s=markersize,
-        )
-
-    ax1.set(xlabel="R", ylabel="z", aspect="equal")
-    ax2.set(xlabel="r", ylabel="θ", aspect="equal")
-
-    # Only add colorbar if there are valid points
-    if jnp.any(valid_mask):
-        cbar2 = fig.colorbar(s2, ax=ax2, label="iota", shrink=0.9)
-
-        # Automatically determine rational ticks based on nfp and clipped iota range
-        iota_min, iota_max = (
-            jnp.nanmin(iota_vals[valid_mask]),
-            jnp.nanmax(iota_vals[valid_mask]),
-        )
-        rational_ticks = []
-        rational_labels = []
-        seen_rationals = set()
-        for m in range(1, 20 // nfp + 1):
-            m_scaled = m * nfp
-            for n in range(1, 20):  # reasonable range for denominators
-                rational = m_scaled / n
-                if iota_min <= rational <= iota_max and rational not in seen_rationals:
-                    rational_ticks.append(rational)
-                    g = jnp.gcd(m_scaled, n)
-                    rational_labels.append(
-                        f"{int(m_scaled // g)}/{int(n // g)}")
-                    seen_rationals.add(rational)
-        if rational_ticks:
-            cbar2.set_ticks(rational_ticks)
-            cbar2.set_ticklabels(rational_labels)
-
-        if show:
-            plt.show()
-
-        return fig, (ax1, ax2)
-
-
-# %%

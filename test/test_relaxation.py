@@ -429,7 +429,7 @@ def test_time_stepper_init_state(
     Hessian = seq.M2
 
     # Use State directly since init_state uses self.State which doesn't exist
-    state = State(B_field, B_field, dt, eta, Hessian, 0, 0.0, 0.0, 0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=dt, eta=eta, hessian=Hessian, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     assert state.B_n.shape == B_field.shape
     assert state.B_nplus1.shape == B_field.shape
@@ -466,7 +466,7 @@ def test_time_stepper_update_dt(
     seq.assemble_all()
 
     timestepper = TimeStepper(seq)
-    state = State(B_field, B_field, 0.01, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     new_dt = 0.02
     updated_state = timestepper.update_field(state, "dt", new_dt)
@@ -485,7 +485,7 @@ def test_time_stepper_update_hessian(
     seq.assemble_leray_projection()
 
     timestepper = TimeStepper(seq)
-    state = State(B_field, B_field, 0.01, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     hessian = MRXHessian(seq)
     new_Hessian = hessian.assemble(B_field)
@@ -504,8 +504,7 @@ def test_time_stepper_update_B_n(
     seq.assemble_all()
 
     timestepper = TimeStepper(seq)
-    state = State(B_field, B_field, 0.01, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
-
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
     new_B = B_field * 1.1
     updated_state = timestepper.update_field(state, "B_n", new_B)
 
@@ -521,7 +520,7 @@ def test_time_stepper_update_B_guess(
     seq.assemble_all()
 
     timestepper = TimeStepper(seq)
-    state = State(B_field, B_field, 0.01, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     new_B_guess = B_field * 0.9
     updated_state = timestepper.update_field(state, "B_nplus1", new_B_guess)
@@ -541,16 +540,16 @@ def test_time_stepper_midpoint_residuum(
     seq.assemble_leray_projection()
 
     timestepper = TimeStepper(seq, force_free=False)
-    state = State(B_field, B_field, 0.01, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     updated_state = timestepper.midpoint_residuum(state)
 
     # Check that state was updated
     assert updated_state.picard_iterations == state.picard_iterations + 1
     # Convert JAX arrays to Python scalars 
-    residuum = float(updated_state.picard_residuum)
-    F_norm = float(updated_state.F_norm)
-    v_norm = float(updated_state.v_norm)
+    residuum = float(jnp.asarray(updated_state.picard_residuum).ravel()[0])
+    F_norm = float(jnp.asarray(updated_state.F_norm).ravel()[0])
+    v_norm = float(jnp.asarray(updated_state.v_norm).ravel()[0])
     
     assert residuum >= 0
     assert F_norm >= 0
@@ -577,22 +576,22 @@ def test_time_stepper_picard_solver(
         picard_tol=1e-6,
         picard_k_restart=5
     )
-    state = State(B_field, B_field, 0.001, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     # Run Picard solver
-    final_state = timestepper.midpoint_relaxation_step(state)
+    final_state = timestepper.midpoint_picard_step(state, state.key)
 
     # Check that iterations were performed
     assert final_state.picard_iterations > 0
     assert final_state.picard_iterations <= timestepper.picard_k_restart
 
     # Check finiteness
-    assert jnp.isfinite(final_state.picard_residuum)
-    assert jnp.isfinite(final_state.F_norm)
-    assert jnp.isfinite(final_state.v_norm)
+    assert bool(jnp.isfinite(final_state.picard_residuum))
+    assert bool(jnp.isfinite(final_state.F_norm))
+    assert bool(jnp.isfinite(final_state.v_norm))
 
-    # Check that B_guess was updated
-    assert final_state.B_guess.shape == B_field.shape
+    # Check that B_nplus1 was updated
+    assert final_state.B_nplus1.shape == B_field.shape
 
 
 def test_time_stepper_picard_solver_force_free(
@@ -609,9 +608,9 @@ def test_time_stepper_picard_solver_force_free(
         picard_tol=1e-6,
         picard_k_restart=5
     )
-    state = State(B_field, B_field, 0.001, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
-    final_state = timestepper.midpoint_relaxation_step(state)
+    final_state = timestepper.midpoint_picard_step(state, state.key)
 
     assert final_state.picard_iterations > 0
     assert jnp.isfinite(final_state.picard_residuum)
@@ -635,9 +634,9 @@ def test_time_stepper_picard_solver_newton(
         picard_tol=1e-6,
         picard_k_restart=5
     )
-    state = State(B_field, B_field, 0.001, 0.1, H, 0, 0.0, 0.0, 0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=H, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
-    final_state = timestepper.midpoint_relaxation_step(state)
+    final_state = timestepper.midpoint_picard_step(state, state.key)
 
     assert final_state.picard_iterations > 0
     assert jnp.isfinite(final_state.picard_residuum)
@@ -658,9 +657,9 @@ def test_time_stepper_picard_solver_gamma(
         picard_tol=1e-6,
         picard_k_restart=5
     )
-    state = State(B_field, B_field, 0.001, 0.1, seq.M2, 0, 0.0, 0.0, 0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
-    final_state = timestepper.midpoint_relaxation_step(state)
+    final_state = timestepper.midpoint_picard_step(state, state.key)
 
     assert final_state.picard_iterations > 0
     assert jnp.isfinite(final_state.picard_residuum)

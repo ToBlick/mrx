@@ -60,7 +60,7 @@ class MRXHessian:
             The uxJ operator.
         """
         J = self.Seq.weak_curl @ B
-        # Assuming that this was suppose to be P2x1_to_1?
+        # Assuming that this was supposed to be P2x1_to_1?
         # This was PP2x1_to_1 earlier but maybe a typo?
         return jnp.linalg.solve(self.Seq.M1, self.Seq.P2x1_to_1(u, J))
 
@@ -107,7 +107,7 @@ class MRXDiagnostics:
 
     def energy(self, B: jnp.ndarray) -> float:
         """
-        Compute the magnetic field energy.
+        Compute the magnetic field energy: E = 1/2 |B|^2.
 
         Parameters
         ----------
@@ -123,7 +123,7 @@ class MRXDiagnostics:
 
     def helicity(self, B: jnp.ndarray) -> float:
         """
-        Compute the magnetic helicity.
+        Compute the magnetic helicity: H = ∫ A · B dx.
 
         Parameters
         ----------
@@ -205,6 +205,8 @@ class MRXDiagnostics:
                 Bx = B_h(x)
                 return (J_h(x) @ Bx) / ((DFx @ Bx) @ DFx @ Bx) * jnp.linalg.det(DFx) * jnp.ones(1)
             return jnp.linalg.solve(self.Seq.M0, self.Seq.P0(lmbda))
+    
+    
 
 
 class State(eqx.Module):
@@ -214,7 +216,7 @@ class State(eqx.Module):
     Attributes:
     B_n : jnp.ndarray
         The magnetic field at the current time step.
-    B_nplus1 : jnp.ndarray
+    B_nplus1 : jnp.ndarray (note name change from B_guess to B_nplus1)
         The magnetic field at the next time step.
     v : jnp.ndarray
         The velocity field.
@@ -228,9 +230,9 @@ class State(eqx.Module):
         The number of Picard iterations.
     picard_residuum : float
         The residuum of the Picard solver.
-    F_norm : float
+    F_norm : float (note name change from force_norm to F_norm)
         The norm of the force.
-    v_norm : float
+    v_norm : float (note name change from velocity_norm to v_norm)
         The norm of the velocity.
     noise_level : float
         The noise level.
@@ -273,27 +275,27 @@ class TimeStepper(eqx.Module):
     TimeStepper class.
 
     Fields
-    ----------
+        ----------
     seq : DeRham sequence
-        The de Rham sequence to use.
-    gamma : int, default=0
+            The de Rham sequence to use.
+        gamma : int, default=0
         The hyperregularization parameter: v = (I - μ Δ)^{-Ɣ} f
     mu : float, default=0.0
         characteristic length scale for hyperregularization. v = (I - μ Δ)^{-Ɣ} f
-    newton : bool, default=False
-        Whether to use Newton's method.
+        newton : bool, default=False
+            Whether to use Newton's method.
     timestep_mode : TimestepMode, default=TimestepMode.EXPLICIT
         The time stepping mode to use.
     picard_tol : float, default=1e-9
-        The tolerance for the Picard solver.
+            The tolerance for the Picard solver.
     picard_k_restart : int, default=10
         The number of iterations after which to restart the Picard solver.
     picard_k_crit : int, default=4
         If the Picard iterations to convergence is below this value, lower the time step.
     picard_dt_increment : float, default=1.01
         The factor by which to increase/decrease the time step based on Picard iterations.
-    force_free : bool, default=False
-        Whether the problem has grad(p) = 0.
+        force_free : bool, default=False
+            Whether the problem has grad(p) = 0.
     conjugate: bool, default=False
         Whether to use the conjugate gradient method.
     b : float, default=1.0
@@ -519,8 +521,38 @@ class TimeStepper(eqx.Module):
                 jnp.maximum((F @ self.seq.M2 @ (u - v)) /
                             (v @ self.seq.M2 @ v), 0.0)
         u = self.apply_regularization(u)
-        E = jnp.linalg.solve(self.seq.M1,
-                             self.seq.P2x1_to_1(u, H)) - state.eta * J
+    
+        # Project u and H to E1 space using P2x1_to_1
+        P2x1_result = self.seq.P2x1_to_1(u, H)
+        
+        # M1 is (n_E1, n_E1), so P2x1_result should be (n_E1,)
+        if P2x1_result.shape[0] != self.seq.M1.shape[0]:
+            # Result is in wrong space, project from E2 to E1 using P12
+            if P2x1_result.shape[0] == self.seq.M2.shape[0]:
+                P2x1_result = self.seq.P12 @ P2x1_result
+            else:
+                raise ValueError(
+                    "Shape mismatch."
+                )
+
+        # J should be in E1 space
+        if J.shape[0] != self.seq.M1.shape[0]:
+            if J.shape[0] == self.seq.M2.shape[0]:
+                # J is in E2, need to project to E1
+                J = self.seq.P12 @ J
+            else:
+                raise ValueError("Shape mismatch.")
+
+        solve_result = jnp.linalg.solve(self.seq.M1, P2x1_result)
+
+        # Ensure solve_result and J have matching shapes before calculating E
+        if solve_result.shape[0] != J.shape[0]:
+            raise ValueError(
+                f"Shape mismatch: {solve_result.shape[0]} != {J.shape[0]}"
+            )
+
+        E = solve_result - state.eta * J
+
         dB = self.seq.strong_curl @ E
         if self.dt_mode == TimeStepChoice.FIXED or self.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:
             dt = state.dt
@@ -596,11 +628,17 @@ class TimeStepper(eqx.Module):
             """
             return self.midpoint_residuum(state)
 
-        # initialize residuum and picard_iterations
+        # Initialize residuum, picard_iterations, key, and v (if None)
+        if state.v is None:
+            # Initialize v to zeros with same shape as B_n
+            v_init = jnp.zeros_like(state.B_n)
+        else:
+            v_init = state.v
+            
         state = eqx.tree_at(
-            lambda s: (s.picard_residuum, s.picard_iterations, s.key),
+            lambda s: (s.picard_residuum, s.picard_iterations, s.key, s.v),
             state,
-            (1.0, 0, key)
+            (1.0, 0, key, v_init)
         )
 
         # Finally, perform the while loop in the Picard solver.
