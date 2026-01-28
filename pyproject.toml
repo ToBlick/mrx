@@ -40,6 +40,7 @@ dependencies = [
     "diffrax",
     "optax",
     "optimistix",
+    "equinox",
     "h5py",
     "xarray"
 ]

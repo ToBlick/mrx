@@ -317,8 +317,10 @@ def drumshape_map_modified(a: Callable, R0: float = 1.0) -> Callable:
 
     return F
 
+# %%
 
-def gvec_stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: int = 3) -> Callable:
+
+def stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: int = 3, flip_zeta: bool = False) -> Callable:
     """
     A basic GVEC stellarator map:
     F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
@@ -336,14 +338,21 @@ def gvec_stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: in
     Returns
     -------
     """
-    π_nfp = jnp.pi / nfp
+    π_nfp = 2 * jnp.pi / nfp
 
     def F(x):
         _, _, ζ = x
+        if flip_zeta:
+            ζ = 1.0 - ζ
         return jnp.array([X1_h(x)[0] * jnp.cos(π_nfp * ζ),
                           -X1_h(x)[0] * jnp.sin(π_nfp * ζ),
                           X2_h(x)[0]])
     return F
+
+# Alias for now
+gvec_stellarator_map = stellarator_map
+
+# %%
 
 
 def approx_inverse_map(y: jnp.ndarray, eps: float, R0: float = 1.0) -> jnp.ndarray:
@@ -549,3 +558,36 @@ def get_lcfs_F(
 
     F = drumshape_map_modified(a_h_modified, R0)
     return F
+
+
+def extend_map_nfp(Phi, nfp):
+    """
+    Extend the mapping defined by (X1, X2) over one field period
+    to the full torus with nfp field periods.
+
+    Parameters
+    ----------
+    Phi : callable
+        Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
+    nfp : int
+        Number of field periods.
+
+    Returns
+    -------
+    Phi_full_fp : callable
+        Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
+    """
+    def Phi_full_fp(x):
+        r, θ, ζ = x  # now ζ ∈ [0, 1] should cover the FULL device
+        π_nfp = 2 * jnp.pi / nfp
+        ξ = ζ * nfp  # in [0, nfp]
+        ζ_loc = ξ - jnp.floor(ξ)  # in [0, 1)
+        x_loc = jnp.array([r, θ, ζ_loc])
+        R = (Phi(x_loc)[0]**2 + Phi(x_loc)[1]**2)**0.5
+        Z = Phi(x_loc)[2]
+        φ_wedge = π_nfp * ζ_loc  # 0 → 2π/nfp
+        φ_shift = 2 * jnp.pi * jnp.floor(ξ) / nfp
+        φ = φ_wedge + φ_shift  # total toroidal angle
+        return jnp.array([R * jnp.cos(φ), -R * jnp.sin(φ), Z])
+
+    return Phi_full_fp
