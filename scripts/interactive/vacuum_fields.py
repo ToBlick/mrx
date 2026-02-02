@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import optimistix as optx
 import scipy as sp
 
-from mrx.boundary import LazyBoundaryOperator
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.plotting import get_2d_grids, plot_scalar_fct_physical_logical

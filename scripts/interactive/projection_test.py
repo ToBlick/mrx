@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
-from mrx.desc_interface import DESCWrapper, project_desc_equilibrium
+from mrx.desc_interface import project_desc_equilibrium
 
 jax.config.update("jax_enable_x64", True)
 
@@ -42,7 +42,6 @@ def test_desc_projection(desc_path: str, n_resolution: int = 8, p: int = 3):
     X1_h = result['X1_h']
     X2_h = result['X2_h']
     B_h_xyz = result['B_h_xyz']
-    F_h = result['F_h']
     map_seq = result['map_seq']
     seq = result['seq']
     wrapper = result['wrapper']

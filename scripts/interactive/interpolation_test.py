@@ -1,14 +1,12 @@
 # %%
 from functools import partial
-from itertools import product
 
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction, Pullback, Pushforward
+from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import rotating_ellipse_map, stellarator_map
 
 jax.config.update("jax_enable_x64", True)
@@ -103,9 +101,6 @@ def check_interpolation(n_interp, n_resolution, p):
     B_xyz_at_pts = jax.vmap(B_xyz)(
         pts)  # * jax.vmap(lambda x: jnp.linalg.det(jax.jacfwd(seq.F)(x)))(pts)[:, None]
 
-    # * jax.vmap(lambda x: jnp.linalg.det(jax.jacfwd(seq.F)(x)))(pts)[:, None]
-    B_at_pts = jax.vmap(Pullback(B_xyz, seq.F, 2))(pts)
-
     def body_fun(_, i):
         # Evaluate Λ2_phys(i, x) for all points (vectorized over x)
         return None, jax.vmap(lambda x: Λ2_phys(i, x))(pts)
@@ -146,14 +141,10 @@ def check_interpolation(n_interp, n_resolution, p):
     B_dof = S_inv @ z
 
     B_h = jax.jit(DiscreteFunction(B_dof, seq.Lambda_2, seq.E2))
-    B_rtz = jax.jit(Pullback(B_xyz, seq.F, 2))
     B_h_xyz = jax.jit(Pushforward(B_h, seq.F, 2))
 
     B_exact = jax.vmap(B_xyz)(test_pts)
     B_interp = jax.vmap(B_h_xyz)(test_pts)
-
-    B_exact_logical = jax.vmap(B_rtz)(test_pts)
-    B_interp_logical = jax.vmap(B_h)(test_pts)
 
     B_error = jnp.linalg.norm(B_exact - B_interp, axis=1) / \
         jnp.linalg.norm(B_exact, axis=1)

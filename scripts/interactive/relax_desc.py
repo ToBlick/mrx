@@ -5,10 +5,8 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
-from mrx.derham_sequence import DeRhamSequence
 from mrx.desc_interface import project_desc_equilibrium
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.io import load_desc
 from mrx.mappings import extend_map_nfp
 from mrx.plotting import (
     get_2d_grids,
@@ -25,7 +23,6 @@ from mrx.relaxation import (
     TimeStepper,
     relaxation_loop,
 )
-from mrx.utils import interpolate_B
 
 jax.config.update("jax_enable_x64", True)
 
