@@ -10,27 +10,35 @@ nav_order: 2
 ## Mixed formulation
 
 The Poisson equation can be re-written as
-\begin{align}
+$$
+\begin{aligned}
     \nabla \cdot \sigma &= f \\
     -\nabla u &= \sigma
-\end{align}
+\end{aligned}
+$$
 Note that only one of these can hold in a strong sense, since $\sigma$ cannot be both a two- and a one-form.
 
 When the first equation is fulfilled in strong form and the second weakly, this leads to the system
-\begin{align}
+
+$$
+\begin{aligned}
     (\nabla \cdot \sigma^2, \Lambda^3) &= (f, \Lambda^3) \\
     (u^3, \nabla \cdot \Lambda^2) &= (\sigma^2, \Lambda^2),
-\end{align}
+\end{aligned}
+$$
 where we use superscripts to denote what forms the variables are interpreted as. This formulation automatically implies the boundary condition $u = 0$ on $\partial \Omega$.
 
 ## Discrete formulation
 In matrix-vector form, the equations read
-\begin{align}
+$$
+\begin{aligned}
     \mathbb D \sigma^2 &= \Pi_3 f \\
     \mathbb D^T u &= \mathbb M_2 \sigma^2
-\end{align}
+\end{aligned}
+$$
 where $\mathbb D$ denotes the divergence matrix. This can be re-written as
-\begin{align}
+$$
+\begin{aligned}
     \begin{bmatrix}
         \mathbb M_2 & - \mathbb D^T \\
         \mathbb D & 0
@@ -42,29 +50,34 @@ where $\mathbb D$ denotes the divergence matrix. This can be re-written as
     \begin{bmatrix}
         0 \\ \Pi_3 f
     \end{bmatrix}
-\end{align}
+\end{aligned}
+$$
 and back-substituted to get
-\begin{align}
+$$
+\begin{aligned}
     \mathbb D \mathbb M_2^{-1} \mathbb D^T u = \Pi_3 f.
-\end{align}
+\end{aligned}
+$$
 
 ## Strong and weak operators
 The matrix $\mathbb M_3^{-1} \mathbb D$ corresponds to the strong divergence operator, which maps two-forms to three-forms on the level of their DoFs. The weak gradient operator is given by $-\mathbb M_2^{-1} \mathbb D^T$, and it maps discrete two-forms to discrete three-forms. The strong divergence operator coincides point-wise with the analytical divergence operator when applied to discrete two-forms, while the weak gradient operator only does so in a weak $L^2$ sense.
 
 The projector to three-forms is given by
-\begin{align}
+$$
+\begin{aligned}
     (\Pi_3 f)_i &= \int_{\Omega} f(\hat x) \frac{\Lambda^3 \circ \Phi^{-1} (x)}{\det D\Phi \circ \Phi^{-1}(x)} \, \mathrm d x
     = \int_{\hat \Omega} f(\hat x) {\Lambda^3(\hat x)} \, \mathrm d \hat x.
-\end{align}
+\end{aligned}
+$$
 
 ## Manufactured solution
 To test this case, we need a solution to Poisson's equation on a disc that satisfies $\int_{\partial \Omega} \nabla u \cdot n \, \mathrm d \sigma = \int_\Omega f \mathrm d x = 0$:
-
-\begin{align}
+$$
+\begin{aligned}
 u(r) &= \frac 1 4 \left( \frac 1 3 r^3 - \frac 1 4 r^4 - \frac 1 {12} \right) \\
 f(r) &= r \left( r - \frac 3 4 \right)
-\end{align}
-
+\end{aligned}
+$$
 The constant in $u$ is chosen such that $u(1) = 0$.
 
 ## Code

@@ -69,37 +69,49 @@ At the bottom of everything stands a cartesian product of one-dimensional spline
 Analogously, homogeneous Dirichlet boundary conditions at $r = 1$ removes all basis functions that are non-zero at $r = 1$. Because we are using clamped splines, only a single $r$ basis function is non-zero at the boundary, so $n_\theta \times n_\zeta$ basis functions are removed.
 
 The way that these constraints are implemented is by multiplying the basis functions evaluation with a rectangular matrix. Discrete functions with constraints applied hence have a lower amount of degrees of freedom $\mathring{n} < n = n_r n_\theta n_\zeta$:
-\begin{align}
+$$
+\begin{aligned}
 f_h(x) &= \sum_{i=0}^{n-1} \mathtt{f}_i \Lambda_i(x) \quad \text{(no constraints applied)} \\
 \mathring{f}_h(x) &= \sum_{j=0}^{\mathring{n}-1} {\mathring{\mathtt{f}}}_j \mathring\Lambda_j(x) = \sum_{j=0}^{\mathring{n}-1} {\mathring{\mathtt{f}}_j} \sum_{i=0}^{n-1} \mathbb E_{ji} \Lambda_i(x).
-\end{align}
+\end{aligned}
+$$
 Analogously, we assemble the stiffness matrix $\mathring {\mathbb K}$. Its $i,j$-th element is
-\begin{align}
+$$
+\begin{aligned}
 \mathring{\mathbb K}_{ij} = \int_{\hat \Omega} \hat \nabla \mathring\Lambda_i \cdot (D\Phi)^{-1} (D\Phi)^{-T} \hat \nabla \mathring\Lambda_j \, \det D\Phi \, \mathrm d \hat x
-\end{align}
+\end{aligned}
+$$
 In practice, it is assembled by computing $\mathbb K$ (the stiffness matrix with no constraints applied) and then contracting it on both sides with $\mathbb E$ as $\mathring{\mathbb K} = \mathbb E \mathbb K \mathbb E^T$. The matrix `Seq.dd0` is $\mathring{\mathbb M}_0^{-1} \mathring{\mathbb K}$.
 
 ## Pre-computations
 
 Both quadrature grid and spline basis have Cartesian product structure, i.e.
-\begin{align}
+$$
+\begin{aligned}
     x^q_j &= (r^q_{j_r}, \, \theta^q_{j_\theta}, \, \zeta^q_{j_\zeta}) \quad \text{and} \quad \Lambda_i = \lambda_{i_r} \otimes \lambda_{i_\theta} \otimes \lambda_{i_\zeta},
-\end{align}
+\end{aligned}
+$$
 where $x^q_j$ is the $j$-th quadrature point and $\Lambda_i$ is the $i$-th basis function. The indices satisfy: $0 \leq i \leq n = n_r n_\theta n_\zeta$, $0 \leq i_\nu \leq n_\nu$, $0 \leq j \leq n^q = n^q_r n^q_\theta n^q_\zeta$, and $0 \leq j_\nu \leq n^q_\nu$, where $\nu \in \{r, \theta, \zeta\}$. Using this, we can pre-compute the evaluations of the 1D basis functions at the 1D quadrature points. Then, to evaluate both the mass and stiffness matrices, the $i$-th basis function evaluated at the $j$-th quadrature point can be written as
-\begin{align}
+$$
+\begin{aligned}
     \Lambda_i(x^q_j) = \lambda_{i_r}(r^q_j) \, \lambda_{i_\theta}(\theta^q_j) \, \lambda_{i_\zeta}(x^q_j).
-\end{align}
+\end{aligned}
+$$
 We can pre-compute the values of $\lambda_{i_r}(r^q_j)$, $\lambda_{i_\theta}(\theta^q_j)$, and $\lambda_{i_\zeta}(x^q_j)$ at low memory cost. The memory requirement is $\sum_{\nu \in \{r, \theta, \zeta \}} n_\nu n^q_\nu$ as opposed to $\prod_{\nu \in \{r, \theta, \zeta \}} n_\nu n^q_\nu$. We use these pre-computed values to evaluate all basis functions at all quadrature points.
 
 ## Matrix solve
 To solve the Poisson problem itself, we follow the usual arguments, starting from the weak form
-\begin{align}
+$$
+\begin{aligned}
 \sum_{i=0}^{m-1} \mathring{\mathtt{u}}_i \int_{\hat \Omega} \hat \nabla \mathring\Lambda_i \cdot (D\Phi)^{-1} (D\Phi)^{-T} \hat \nabla \mathring\Lambda_j \, \det D\Phi \, \mathrm d \hat x = \int_{\hat \Omega} \hat f \mathring\Lambda_j \, \det D\Phi \, \mathrm d \hat x.
-\end{align}
+\end{aligned}
+$$
 The function $\hat f$ is the pull-back of $f$ into the logical domain where $f$ is treated as a zero-form, i.e., $\hat f(\hat x) = f \circ F(\hat x)$. This right-hand-side is evaluated using a `Projector` object that corresponds to the operation 
-\begin{align}
+$$
+\begin{aligned}
 \mathring\Pi_0: \hat f \mapsto \left( \int_{\hat \Omega} \hat f \mathring\Lambda_j \, \det D\Phi \, \mathrm d \hat x \right)_{j = 0}^{\mathring{n}-1}.
-\end{align}
+\end{aligned}
+$$
 The expression $\mathring{\mathbb M}_0^{-1} \mathring\Pi_0(\hat f)$ gives the DoFs of the $L^2$ projection of $\hat f$ onto the discrete zero-form space.
 
 With all this in place, we can solve for the $u$ DoFs and create a `DiscreteFunction` object that supports evaluation as `u_h(x)`:
