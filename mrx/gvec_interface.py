@@ -24,14 +24,14 @@ def interpolate_map_from_GVEC(gvec_eq, nfp, mapSeq):
     gvec_stellarator_map : callable
         GVEC stellarator map.
     """
-    _ρ = gvec_eq["rho"].values              # shape (mρ,)
-    _θ = gvec_eq["theta"].values            # shape (mθ,)
-    _ζ = gvec_eq["zeta"].values             # shape (mζ,)
-    X1 = gvec_eq["X1"].values               # shape (mρ, mθ, mζ)
-    X2 = gvec_eq["X2"].values               # shape (mρ, mθ, mζ)
+    _ρ = gvec_eq["rho"].values      # shape (mρ,)
+    _θ = gvec_eq["theta"].values    # shape (mθ,)
+    _ζ = gvec_eq["zeta"].values     # shape (mζ,)
+    X1 = gvec_eq["X1"].values       # shape (mρ, mθ, mζ)
+    X2 = gvec_eq["X2"].values       # shape (mρ, mθ, mζ)
 
     # Set up the interpolation problem:
-    # ∑ c_ki Λ0[i](ρ,θ*(ρ,θ,ζ),ζ)_j ≈ Xk(ρ,θ,ζ)_j ∀j
+    # ∑ c_ki Λ0[i](ρ,θ,ζ)_j ≈ Xk(ρ,θ,ζ)_j ∀j
     # evaluation grid, shape (mρ, mθ, mζ)
     ρ, θ, ζ = jnp.meshgrid(_ρ, _θ, _ζ, indexing="ij")
     # θ_star = jnp.asarray(θ_star)
