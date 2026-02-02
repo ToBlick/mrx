@@ -47,8 +47,9 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install jax jaxlib numpy pytest matplotlib plotly optax diffrax h5py xarray h5netcdf
-        
+        pip install -e .  # This installs all dependencies from pyproject.toml
+        pip install pytest  # pytest for running tests
+    
     - name: Run tests
       run: |
         pytest test
