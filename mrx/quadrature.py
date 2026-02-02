@@ -84,7 +84,7 @@ def trapezoidal_quad(n):
 
     The trapezoidal rule on [0, 1] with n points:
     math::
-        ∫ f(x) dx ≈ \sum_{i=0}^{n-1} f(x_i) w_i
+        ∫ f(x) dx ≈ \\sum_{i=0}^{n-1} f(x_i) w_i
     where x_i are evenly spaced points from 0 to 1 (spacing h = 1/(n-1)),
     and weights are w_0 = w_{n-1} = h/2 for endpoints and w_i = h for interior points.
 

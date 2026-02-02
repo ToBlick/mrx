@@ -564,3 +564,16 @@ class DeRhamSequence():
         """
         self.P_Leray = jnp.eye(self.M2.shape[0]) + \
             self.weak_grad @ jnp.linalg.pinv(self.dd3) @ self.strong_div
+
+    def apply_leray_projection(self, u):
+        """
+        Apply the Leray projection to a vector u.
+
+        Args:
+            u (jnp.ndarray): The input vector to be projected.
+
+        Returns:
+            jnp.ndarray: The projected vector.
+        """
+        # TODO: At some point, we may want to not assemble P_Leray
+        return self.P_Leray @ u
