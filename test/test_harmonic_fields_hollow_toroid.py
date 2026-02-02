@@ -12,7 +12,7 @@ jax.config.update("jax_enable_x64", True)
 
 
 def test_harmonic_fields():
-    Ip = 1.95
+    Ip = 0.455
     It = 2.46
     Is = jnp.array([Ip, It])
     n = 6
@@ -54,6 +54,11 @@ def test_harmonic_fields():
     # since first two eigenvalues are -1e-12 and 1e-11 or so.
     assert jnp.sum(evs < 1e-10) == 2  # two harmonic fields
     assert jnp.min(evs) > -1e-10  # no negative eigenvalues
+    # check that the eigenvectors are indeed harmonic:
+    assert jnp.all(jnp.abs(Seq.strong_div @ evecs[:, 0]) < 1e-10)
+    assert jnp.all(jnp.abs(Seq.strong_div @ evecs[:, 1]) < 1e-10)
+    assert jnp.all(jnp.abs(Seq.weak_curl @ evecs[:, 0]) < 1e-10)
+    assert jnp.all(jnp.abs(Seq.weak_curl @ evecs[:, 1]) < 1e-10)
 
     h1_dof = evecs[:, 0]
     h2_dof = evecs[:, 1]

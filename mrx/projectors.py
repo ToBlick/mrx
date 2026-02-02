@@ -11,11 +11,24 @@ The module implements two main classes:
 - CurlProjection: For projecting curl operations on differential forms
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Callable, Literal
+
 import jax
+import jax.numpy as jnp
+from jax import Array
 
 from mrx.utils import integrate_against, inv33
 
+if TYPE_CHECKING:
+    from mrx.derham_sequence import DeRhamSequence
+
 __all__ = ['Projector']
+
+# Type aliases for callable functions used in projections
+ScalarFunction = Callable[[Array], Array]  # ξ -> scalar (with trailing dim)
+VectorFunction = Callable[[Array], Array]  # ξ -> 3D vector
 
 
 class Projector:
@@ -35,7 +48,10 @@ class Projector:
         Seq : DeRham sequence object
     """
 
-    def __init__(self, Seq, k):
+    k: Literal[0, 1, 2, 3]
+    Seq: DeRhamSequence
+
+    def __init__(self, Seq: DeRhamSequence, k: Literal[0, 1, 2, 3]) -> None:
         """
         Initialize the projector.
 
@@ -46,7 +62,7 @@ class Projector:
         self.k = k
         self.Seq = Seq
 
-    def __call__(self, f):
+    def __call__(self, f: ScalarFunction | VectorFunction) -> Array:
         """
         Project a function onto the finite element space.
 
@@ -64,8 +80,10 @@ class Projector:
             return self.Seq.E2 @ self.twoform_projection(f)
         elif self.k == 3:
             return self.Seq.E3 @ self.threeform_projection(f)
+        # TODO: Consider raising an error for invalid k values
+        raise ValueError(f"Invalid k value: {self.k}. Must be 0, 1, 2, or 3.")
 
-    def zeroform_projection(self, f):
+    def zeroform_projection(self, f: ScalarFunction) -> Array:
         """
         Project a scalar function (0-form).
 
@@ -76,11 +94,11 @@ class Projector:
             array: Projection coefficients for the 0-form
         """
         # Evaluate the given function at quadrature points
-        f_jk = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
-        w_jk = f_jk * (self.Seq.Q.w * self.Seq.J_j)[:, None]
+        f_jk: Array = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
+        w_jk: Array = f_jk * (self.Seq.Q.w * self.Seq.J_j)[:, None]
         return integrate_against(self.Seq.get_Lambda_0_ijk, w_jk, self.Seq.Lambda_0.n)
 
-    def oneform_projection(self, v):
+    def oneform_projection(self, v: VectorFunction) -> Array:
         """
         Project a vector-valued function to a 1-form.
 
@@ -92,16 +110,16 @@ class Projector:
         """
         DF = jax.jacfwd(self.Seq.F)
 
-        def _v(x):
+        def _v(x: Array) -> Array:
             return inv33(DF(x)) @ v(x)
 
         # Evaluate the given function at quadrature points
-        A_jk = jax.vmap(_v)(self.Seq.Q.x)  # n_q x d
-        w_jk = A_jk * (self.Seq.Q.w * self.Seq.J_j)[:, None]
+        A_jk: Array = jax.vmap(_v)(self.Seq.Q.x)  # n_q x d
+        w_jk: Array = A_jk * (self.Seq.Q.w * self.Seq.J_j)[:, None]
 
         return integrate_against(self.Seq.get_Lambda_1_ijk, w_jk, self.Seq.Lambda_1.n)
 
-    def twoform_projection(self, v):
+    def twoform_projection(self, v: VectorFunction) -> Array:
         """
         Project to a 2-form.
 
@@ -113,17 +131,17 @@ class Projector:
         """
         DF = jax.jacfwd(self.Seq.F)
 
-        def _v(x):
+        def _v(x: Array) -> Array:
             return DF(x).T @ v(x)
 
         # Evaluate the given function at quadrature points
-        B_jk = jax.vmap(_v)(self.Seq.Q.x)  # n_q x d
+        B_jk: Array = jax.vmap(_v)(self.Seq.Q.x)  # n_q x d
 
-        w_jk = B_jk * (self.Seq.Q.w)[:, None]
+        w_jk: Array = B_jk * (self.Seq.Q.w)[:, None]
 
         return integrate_against(self.Seq.get_Lambda_2_ijk, w_jk, self.Seq.Lambda_2.n)
 
-    def threeform_projection(self, f):
+    def threeform_projection(self, f: ScalarFunction) -> Array:
         """
         Project a volume form (3-form).
 
@@ -134,6 +152,6 @@ class Projector:
             array: Projection coefficients for the 3-form
         """
         # Evaluate the given function at quadrature points
-        f_jk = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
-        w_jk = f_jk * (self.Seq.Q.w)[:, None]
+        f_jk: Array = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
+        w_jk: Array = f_jk * (self.Seq.Q.w)[:, None]
         return integrate_against(self.Seq.get_Lambda_3_ijk, w_jk, self.Seq.Lambda_3.n)
