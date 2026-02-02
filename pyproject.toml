@@ -42,7 +42,8 @@ dependencies = [
     "optimistix",
     "equinox",
     "h5py",
-    "xarray"
+    "xarray",
+    "desc-opt"
 ]
 
 [tool.ruff]
