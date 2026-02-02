@@ -71,7 +71,14 @@ class CrossProductProjection:
         Returns:
             array: ∫ (wₕ × uₕ) · Λn[i] dx for all i
         """
-        return self.En @ self.projection(w, u)
+        # Reassign En from Seq to ensure we have the current value
+        if self.n == 1:
+            En_current = self.Seq.E1
+        else:
+            En_current = self.Seq.E2
+        
+        result = En_current @ self.projection(w, u)
+        return result
 
     def projection(self, w, u):
         """
@@ -84,7 +91,9 @@ class CrossProductProjection:
 
         Returns:
             array: ∫ (wₕ × uₕ) · Λn[i] dx for all i
+
         """
+
         # w and u evaluated at quadrature points: shape: n_q x 3
         w_jk = evaluate_at_xq(self.get_Lambda_m_ijk,
                               self.Em.T @ w, self.Seq.Q.n, 3)
@@ -132,4 +141,5 @@ class CrossProductProjection:
             f_jk = w_x_u_jk * (self.Seq.Q.w / self.Seq.J_j)[:, None]
         else:
             raise ValueError("Not yet implemented")
-        return integrate_against(self.get_Lambda_n_ijk, f_jk, self.nn)
+        proj_result = integrate_against(self.get_Lambda_n_ijk, f_jk, self.nn)
+        return proj_result

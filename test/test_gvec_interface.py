@@ -138,7 +138,7 @@ def test_interpolate_map_from_GVEC_basic(gvec_eq_stellarator, mapSeq):
     """Test basic interpolate_map_from_GVEC functionality."""
     nfp = 3
     
-    Phi = interpolate_map_from_GVEC(gvec_eq_stellarator, nfp, mapSeq)
+    Phi, X1_h, X2_h = interpolate_map_from_GVEC(gvec_eq_stellarator, nfp, mapSeq)
     
     # Check that Phi is callable
     assert callable(Phi), "Phi should be callable"
@@ -155,7 +155,7 @@ def test_interpolate_map_from_GVEC_basic(gvec_eq_stellarator, mapSeq):
 def test_interpolate_map_from_GVEC_different_nfp(gvec_eq_stellarator, mapSeq):
     """Test interpolate_map_from_GVEC with different nfp values."""
     for nfp in [1, 2, 3, 5]:
-        Phi = interpolate_map_from_GVEC(gvec_eq_stellarator, nfp, mapSeq)
+        Phi, X1_h, X2_h = interpolate_map_from_GVEC(gvec_eq_stellarator, nfp, mapSeq)
         
         # Test evaluation
         x_test = jnp.array([0.5, 0.5, 0.5])
@@ -168,7 +168,7 @@ def test_interpolate_map_from_GVEC_different_nfp(gvec_eq_stellarator, mapSeq):
 def test_interpolate_map_from_GVEC_multiple_points(gvec_eq_stellarator, mapSeq):
     """Test interpolate_map_from_GVEC with multiple evaluation points."""
     nfp = 3
-    Phi = interpolate_map_from_GVEC(gvec_eq_stellarator, nfp, mapSeq)
+    Phi, X1_h, X2_h = interpolate_map_from_GVEC(gvec_eq_stellarator, nfp, mapSeq)
     
     # Test multiple points
     x_test = jnp.array([
@@ -186,7 +186,7 @@ def test_interpolate_map_from_GVEC_multiple_points(gvec_eq_stellarator, mapSeq):
 def test_interpolate_map_from_GVEC_boundary_points(gvec_eq_stellarator, mapSeq):
     """Test interpolate_map_from_GVEC at boundary points."""
     nfp = 3
-    Phi = interpolate_map_from_GVEC(gvec_eq_stellarator, nfp, mapSeq)
+    Phi, X1_h, X2_h = interpolate_map_from_GVEC(gvec_eq_stellarator, nfp, mapSeq)
     
     # Test at boundaries
     boundary_points = jnp.array([
@@ -204,7 +204,7 @@ def test_interpolate_map_from_GVEC_boundary_points(gvec_eq_stellarator, mapSeq):
 def test_interpolate_map_from_GVEC_returns_gvec_stellarator_map(gvec_eq_stellarator, mapSeq):
     """Test that interpolate_map_from_GVEC returns a gvec_stellarator_map."""
     nfp = 3
-    Phi = interpolate_map_from_GVEC(gvec_eq_stellarator, nfp, mapSeq)
+    Phi, X1_h, X2_h = interpolate_map_from_GVEC(gvec_eq_stellarator, nfp, mapSeq)
     
     # The function should return a callable that behaves like gvec_stellarator_map
     # Test that it can be evaluated
@@ -261,7 +261,7 @@ def test_interpolate_map_from_GVEC_different_grid_sizes():
         dirichlet=False
     )
     
-    Phi = interpolate_map_from_GVEC(gvec_eq, nfp, mapSeq)
+    Phi, X1_h, X2_h = interpolate_map_from_GVEC(gvec_eq, nfp, mapSeq)
     
     x_test = jnp.array([0.5, 0.5, 0.5])
     result = Phi(x_test)
@@ -474,7 +474,7 @@ def test_interpolate_map_and_B_together(gvec_eq_with_B, mapSeq, seq):
     nfp = 3
     
     # First interpolate the map
-    Phi = interpolate_map_from_GVEC(gvec_eq_with_B, nfp, mapSeq)
+    Phi, X1_h, X2_h = interpolate_map_from_GVEC(gvec_eq_with_B, nfp, mapSeq)
     
     # Then interpolate B-field using the interpolated map
     B_dof, residuals = interpolate_B_from_GVEC(

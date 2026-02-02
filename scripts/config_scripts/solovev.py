@@ -88,7 +88,40 @@ def run(CONFIG):
 
     # Initialize the state of the simulation
     diagnostics = MRXDiagnostics(Seq, CONFIG["force_free"])
-    state = State(B_hat, B_hat, CONFIG["dt"], CONFIG["eta"], Seq.M2, 0, 0, 0, 0)
+    
+    # Create TimeStepper to compute initial force (matching relaxation_loop)
+    from mrx.relaxation import TimeStepper, MRXHessian
+    timestepper = TimeStepper(Seq,
+                              gamma=CONFIG["gamma"],
+                              newton=CONFIG["precond"],
+                              force_free=CONFIG["force_free"],
+                              picard_tol=CONFIG["solver_tol"],
+                              picard_k_restart=CONFIG["solver_maxit"])
+    
+    # Compute initial force and hessian
+    F, _, _ = timestepper.compute_force(B_hat)
+    if CONFIG["precond"]:
+        hessian_assembler = MRXHessian(Seq)
+        H = hessian_assembler.assemble(B_hat)
+    else:
+        H = None
+    
+    # Create state
+    state = State(B_n=B_hat,
+                  B_nplus1=B_hat,
+                  dt=CONFIG["dt"],
+                  eta=CONFIG["eta"],
+                  hessian=H,
+                  v=F,
+                  F_norm=norm_2(F, Seq))
+    
+    # Update v and v_norm 
+    if CONFIG["precond"]:
+        v = timestepper.apply_inverse_hessian(state, F)
+    else:
+        v = F
+    state = timestepper.update_field(state, "v", v)
+    state = timestepper.update_field(state, "v_norm", norm_2(v, Seq))
 # %%
     # Perform the magnetic relaxation solve
     run_relaxation_loop(CONFIG, trace_dict, state, diagnostics)

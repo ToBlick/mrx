@@ -1,12 +1,14 @@
-from typing import Any, Callable, Optional
 import os
+from typing import Any, Callable, Optional
 
 import jax
 import jax.numpy as jnp
 
 __all__ = ['jacobian_determinant', 'inv33',
            'div', 'curl', 'grad', 'l2_product', 'DEVICE_PRESETS', 'DEFAULT_CONFIG',
-           'append_to_trace_dict', 'default_trace_dict', 'update_config', 'is_running_in_github_actions']
+           'append_to_trace_dict', 'default_trace_dict', 'update_config', 'is_running_in_github_actions',
+           'interpolate_B']
+
 
 def is_running_in_github_actions():
     """
@@ -14,7 +16,8 @@ def is_running_in_github_actions():
     """
     return os.getenv("GITHUB_ACTIONS") == "true"
 
-def norm_2(u : jnp.ndarray, Seq) -> float:
+
+def norm_2(u: jnp.ndarray, Seq) -> float:
     """Compute the L2 norm of a vector field.
 
     Args:
@@ -25,6 +28,7 @@ def norm_2(u : jnp.ndarray, Seq) -> float:
         L2 norm of the vector field.
     """
     return (u @ Seq.M2 @ u)**0.5
+
 
 def jacobian_determinant(f: Callable[[jnp.ndarray], jnp.ndarray]) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Compute the determinant of the Jacobian matrix for a given function.
@@ -136,7 +140,7 @@ def l2_product(f: Callable[[jnp.ndarray], jnp.ndarray],
     return jnp.einsum("ij,ij,i,i->", jax.vmap(f)(Q.x), jax.vmap(g)(Q.x), Jj, Q.w)
 
 
-def assemble(getter_1, getter_2, W, n1, n2):    
+def assemble(getter_1, getter_2, W, n1, n2):
     """
     Assemble a matrix M[a, b] = Σ_{a,j,k} Λ1[a,j,i] * W[j,i,k] * Λ2[b,j,k]
 
@@ -269,7 +273,8 @@ DEVICE_PRESETS = {
 DEFAULT_CONFIG = {
     # Run parameters
     "run_name": "",
-    "boundary_type": "rotating_ellipse", # Type of boundary: "tokamak" or "helix" or "rotating_ellipse"
+    # Type of boundary: "tokamak" or "helix" or "rotating_ellipse"
+    "boundary_type": "rotating_ellipse",
 
     # Parameters describing the domain. Some of these parameters are ignored for certain domain shapes.
     "eps":      0.2,  # aspect ratio
@@ -292,16 +297,20 @@ DEFAULT_CONFIG = {
     "maxit":                 5_000,   # max. Number of time steps
     "precond":               False,     # Use preconditioner
     "precond_compute_every": 1000,       # Recompute preconditioner every n iterations
-    "gamma":                 0, # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
+    "gamma":                 0,  # Regularization, u = (-Δ)⁻ᵞ (J x B - grad p)
     "dt":                    1e-6,      # initial time step
-    "dt_factor":             1.01,  # time-steps are increased by this factor and decreased by its square
-    "force_tol":             1e-15,  # Convergence tolerance for |JxB - grad p| (or |JxB| if force_free)
+    # time-steps are increased by this factor and decreased by its square
+    "dt_factor":             1.01,
+    # Convergence tolerance for |JxB - grad p| (or |JxB| if force_free)
+    "force_tol":             1e-15,
     "eta":                   0.0,       # Resistivity
-    "force_free":            False, # If True, solve for JxB = 0. If False, JxB = grad p
+    # If True, solve for JxB = 0. If False, JxB = grad p
+    "force_free":            False,
 
     # Solver hyperparameters for the inner loop of the magnetic relaxation solver
     "solver_maxit": 20,    # Maximum number of iterations before Picard solver gives up
-    "solver_critit": 4, # If Picard solver converges in less than this number of iterations, increase time step
+    # If Picard solver converges in less than this number of iterations, increase time step
+    "solver_critit": 4,
     "solver_tol": 1e-12,   # Tolerance for convergence
     "verbose": False,      # If False, prints only force every 'print_every'
     "print_every": 1000,    # Print every n iterations
@@ -315,7 +324,8 @@ DEFAULT_CONFIG = {
     "pert_tor_mode":          1,  # toroidal mode number of perturbation
     "pert_radial_loc":      1/2,  # radial location of perturbation
     "pert_radial_width":    0.07,  # radial width of perturbation
-    "apply_pert_after":     2000,  # apply perturbation after n steps (0 = to initial condition)
+    # apply perturbation after n steps (0 = to initial condition)
+    "apply_pert_after":     2000,
 }
 
 
@@ -337,11 +347,12 @@ default_trace_dict = {
     "end_time": None,
 }
 
+
 def append_to_trace_dict(
-    trace_dict : dict, i : int, f : float, E : float, 
-    H : float, dvg : float, v : float, p_i : int, 
-    e : float, dt : float, end_time : float, 
-    B : Optional[jnp.ndarray] = None) -> dict:
+        trace_dict: dict, i: int, f: float, E: float,
+        H: float, dvg: float, v: float, p_i: int,
+        e: float, dt: float, end_time: float,
+        B: Optional[jnp.ndarray] = None) -> dict:
     """
     Append values to the trace dictionary.
 
@@ -375,8 +386,9 @@ def append_to_trace_dict(
     if B is not None:
         trace_dict["B_fields"].append(B)
     return trace_dict
-    
-def save_trace_dict_to_hdf5(trace_dict : dict, diagnostics, filename: str, CONFIG: dict):
+
+
+def save_trace_dict_to_hdf5(trace_dict: dict, diagnostics, filename: str, CONFIG: dict):
     """
     Save the trace dictionary to an HDF5 file.
 
@@ -394,56 +406,67 @@ def save_trace_dict_to_hdf5(trace_dict : dict, diagnostics, filename: str, CONFI
     Seq = diagnostics.Seq
     print(filename)
     with h5py.File(filename + ".h5", "w") as f:
-            f.create_dataset("iterations", data=jnp.array(trace_dict["iterations"]))
-            f.create_dataset("force_trace", data=jnp.array(trace_dict["force_trace"]))
-            f.create_dataset("B_final", data=trace_dict["B_final"])
-            f.create_dataset("p_final", data=trace_dict["p_final"])
-            f.create_dataset("energy_trace", data=jnp.array(trace_dict["energy_trace"]))
-            f.create_dataset("helicity_trace", data=jnp.array(trace_dict["helicity_trace"]))
-            f.create_dataset("divergence_trace", data=jnp.array(trace_dict["divergence_trace"]))
-            f.create_dataset("velocity_trace", data=jnp.array(trace_dict["velocity_trace"]))
-            f.create_dataset("picard_iterations", data=jnp.array(trace_dict["picard_iterations"]))
-            f.create_dataset("picard_errors", data=jnp.array(trace_dict["picard_errors"]))
-            f.create_dataset("timesteps", data=jnp.array(trace_dict["timesteps"]))
-            f.create_dataset("harmonic_norm", data=jnp.array(
-                [norm_2(diagnostics.harmonic_component(trace_dict["B_final"]), Seq)]))
-            f.create_dataset("total_time", data=jnp.array(
-                [trace_dict["end_time"] - trace_dict["start_time"]]))
-            f.create_dataset("time_setup", data=jnp.array(
-                [trace_dict["setup_done_time"] - trace_dict["start_time"]]))
-            f.create_dataset("time_solve", data=jnp.array(
-                [trace_dict["end_time"] - trace_dict["setup_done_time"]]))
-            f.create_dataset("wall_time_trace", data=jnp.array(
-                trace_dict["wall_time_trace"]))
-            if CONFIG["save_B"]:
-                f.create_dataset("B_fields", data=jnp.array(trace_dict["B_fields"]))
-                f.create_dataset("p_fields", data=jnp.array(trace_dict["p_fields"]))
-            # Store config variables in a group
-            cfg_group = f.create_group("config")
-            for key, val in CONFIG.items():
-                # Skip callable objects (functions) and other non-serializable types
-                if callable(val):
+        f.create_dataset("iterations", data=jnp.array(
+            trace_dict["iterations"]))
+        f.create_dataset("force_trace", data=jnp.array(
+            trace_dict["force_trace"]))
+        f.create_dataset("B_final", data=trace_dict["B_final"])
+        f.create_dataset("p_final", data=trace_dict["p_final"])
+        f.create_dataset("energy_trace", data=jnp.array(
+            trace_dict["energy_trace"]))
+        f.create_dataset("helicity_trace", data=jnp.array(
+            trace_dict["helicity_trace"]))
+        f.create_dataset("divergence_trace", data=jnp.array(
+            trace_dict["divergence_trace"]))
+        f.create_dataset("velocity_trace", data=jnp.array(
+            trace_dict["velocity_trace"]))
+        f.create_dataset("picard_iterations", data=jnp.array(
+            trace_dict["picard_iterations"]))
+        f.create_dataset("picard_errors", data=jnp.array(
+            trace_dict["picard_errors"]))
+        f.create_dataset("timesteps", data=jnp.array(trace_dict["timesteps"]))
+        f.create_dataset("harmonic_norm", data=jnp.array(
+            [norm_2(diagnostics.harmonic_component(trace_dict["B_final"]), Seq)]))
+        f.create_dataset("total_time", data=jnp.array(
+            [trace_dict["end_time"] - trace_dict["start_time"]]))
+        f.create_dataset("time_setup", data=jnp.array(
+            [trace_dict["setup_done_time"] - trace_dict["start_time"]]))
+        f.create_dataset("time_solve", data=jnp.array(
+            [trace_dict["end_time"] - trace_dict["setup_done_time"]]))
+        f.create_dataset("wall_time_trace", data=jnp.array(
+            trace_dict["wall_time_trace"]))
+        if CONFIG["save_B"]:
+            f.create_dataset("B_fields", data=jnp.array(
+                trace_dict["B_fields"]))
+            f.create_dataset("p_fields", data=jnp.array(
+                trace_dict["p_fields"]))
+        # Store config variables in a group
+        cfg_group = f.create_group("config")
+        for key, val in CONFIG.items():
+            # Skip callable objects (functions) and other non-serializable types
+            if callable(val):
+                continue
+            # Skip numpy arrays with object dtype
+            if isinstance(val, np.ndarray) and val.dtype == object:
+                continue
+            # Try to convert to numpy array and check for object dtype
+            try:
+                val_array = np.asarray(val)
+                if val_array.dtype == object:
                     continue
-                # Skip numpy arrays with object dtype
-                if isinstance(val, np.ndarray) and val.dtype == object:
-                    continue
-                # Try to convert to numpy array and check for object dtype
+            except (ValueError, TypeError):
+                pass
+
+            if isinstance(val, str):
+                # Strings need special handling
+                cfg_group.attrs[key] = np.bytes_(val)
+            else:
                 try:
-                    val_array = np.asarray(val)
-                    if val_array.dtype == object:
-                        continue
-                except (ValueError, TypeError):
-                    pass
-                
-                if isinstance(val, str):
-                    # Strings need special handling
-                    cfg_group.attrs[key] = np.bytes_(val)
-                else:
-                    try:
-                        cfg_group.attrs[key] = val
-                    except (TypeError, ValueError):
-                        # Skip values that can't be serialized to HDF5
-                        continue
+                    cfg_group.attrs[key] = val
+                except (TypeError, ValueError):
+                    # Skip values that can't be serialized to HDF5
+                    continue
+
 
 def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
     """
@@ -456,7 +479,8 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
         diagnostics: MRXDiagnostics object.
     """
     import time
-    from mrx.relaxation import TimeStepper, MRXHessian
+
+    from mrx.relaxation import MRXHessian, TimeStepper
 
     # Construct the time stepper and the Hessian
     Seq = diagnostics.Seq
@@ -465,28 +489,28 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
                               newton=CONFIG["precond"],
                               force_free=CONFIG["force_free"],
                               picard_tol=CONFIG["solver_tol"],
-                              picard_maxit=CONFIG["solver_maxit"])
+                              picard_k_restart=CONFIG["solver_maxit"])
 
     compute_hessian = jax.jit(MRXHessian(Seq).assemble)  # defaults to identity
-    step = jax.jit(timestepper.picard_solver)
+    step = jax.jit(lambda state, key: timestepper.relaxation_step(state, key))
     B_hat = state.B_n
     get_energy = jax.jit(diagnostics.energy)
     get_helicity = jax.jit(diagnostics.helicity)
     get_divergence_B = jax.jit(diagnostics.divergence_norm)
 
     # Compile and record initial values
-    dry_run = step(state)
+    dry_run = step(state, state.key)
     trace_dict = append_to_trace_dict(trace_dict, 0,
-                        dry_run.force_norm,
-                        get_energy(state.B_n),
-                        get_helicity(state.B_n),
-                        get_divergence_B(state.B_n),
-                        dry_run.velocity_norm,
-                        0,
-                        0,
-                        dry_run.dt,
-                        time.time(),
-                        B_hat if CONFIG["save_B"] else None)
+                                      dry_run.F_norm,
+                                      get_energy(state.B_n),
+                                      get_helicity(state.B_n),
+                                      get_divergence_B(state.B_n),
+                                      dry_run.v_norm,
+                                      0,
+                                      0,
+                                      dry_run.dt,
+                                      time.time(),
+                                      B_hat if CONFIG["save_B"] else None)
 
     print(f"Initial force error: {trace_dict['force_trace'][-1]:.2e}")
     print(f"Initial energy: {trace_dict['energy_trace'][-1]:.2e}")
@@ -495,20 +519,21 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
 
     setup_done_time = time.time()
     trace_dict["setup_done_time"] = setup_done_time
-    print(f"Setup took {setup_done_time - trace_dict['start_time']:.2e} seconds.")
+    print(
+        f"Setup took {setup_done_time - trace_dict['start_time']:.2e} seconds.")
 
     print("Starting relaxation loop...")
     for i in range(1, CONFIG["maxit"] + 1):
 
-        state = step(state)
+        state = step(state, state.key)
         if (state.picard_residuum > CONFIG["solver_tol"]
                 or ~jnp.isfinite(state.picard_residuum)):
             # half time step and try again
-            state = timestepper.update_dt(state, state.dt / 2)
-            state = timestepper.update_B_guess(state, state.B_n)
+            state = timestepper.update_field(state, "dt", state.dt / 2)
+            state = timestepper.update_field(state, "B_nplus1", state.B_n)
             continue
         # otherwise, we converged - proceed
-        state = timestepper.update_B_n(state, state.B_guess)
+        state = timestepper.update_field(state, "B_n", state.B_nplus1)
 
         if i == CONFIG["apply_pert_after"] and CONFIG["pert_strength"] > 0:
             print(f"Applying perturbation after {i} steps...")
@@ -516,34 +541,34 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
             dB_hat = Seq.P_Leray @ dB_hat
             dB_hat /= norm_2(dB_hat, Seq)
             B_new = state.B_n + CONFIG["pert_strength"] * dB_hat
-            state = timestepper.update_B_n(state, B_new)
+            state = timestepper.update_field(state, "B_n", B_new)
 
         if CONFIG["precond"] and (i % CONFIG["precond_compute_every"] == 0):
-            state = timestepper.update_hessian(
-                state, compute_hessian(state.B_n))
+            state = timestepper.update_field(
+                state, "hessian", compute_hessian(state.B_n))
 
         if state.picard_iterations < CONFIG["solver_critit"]:
             dt_new = state.dt * CONFIG["dt_factor"]
         else:
             dt_new = state.dt / (CONFIG["dt_factor"])**2
-        state = timestepper.update_dt(state, dt_new)
+        state = timestepper.update_field(state, "dt", dt_new)
 
         if i % CONFIG["save_every"] == 0 or i == CONFIG["maxit"]:
             trace_dict = append_to_trace_dict(trace_dict, i,
-                        state.force_norm,
-                        get_energy(state.B_n),
-                        get_helicity(state.B_n),
-                        get_divergence_B(state.B_n),
-                        state.velocity_norm,
-                        state.picard_iterations,
-                        state.picard_residuum,
-                        state.dt,
-                        time.time(),
-                        state.B_n if CONFIG["save_B"] else None)
+                                              state.F_norm,
+                                              get_energy(state.B_n),
+                                              get_helicity(state.B_n),
+                                              get_divergence_B(state.B_n),
+                                              state.v_norm,
+                                              state.picard_iterations,
+                                              state.picard_residuum,
+                                              state.dt,
+                                              time.time(),
+                                              state.B_n if CONFIG["save_B"] else None)
 
         if i % CONFIG["print_every"] == 0:
             print(
-                f"Iteration {i}, u norm: {state.velocity_norm:.2e}, force norm: {state.force_norm:.2e}")
+                f"Iteration {i}, u norm: {state.v_norm:.2e}, force norm: {state.F_norm:.2e}")
             if CONFIG["verbose"]:
                 print(
                     f"   dt: {dt_new:.2e}, picard iters: {state.picard_iterations:.2e}, picard err: {state.picard_residuum:.2e}")
@@ -551,6 +576,7 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
             print(
                 f"Converged to force tolerance {CONFIG['force_tol']} after {i} steps.")
             break
+
 
 def update_config(params: dict, CONFIG: dict):
     """
@@ -562,7 +588,7 @@ def update_config(params: dict, CONFIG: dict):
 
     Returns:
         CONFIG: Updated configuration dictionary.
-    """    
+    """
     # Step 1: If device specified, apply defaults
     device_name = params.get("device")
     if device_name:
@@ -585,3 +611,70 @@ def update_config(params: dict, CONFIG: dict):
         print(f"  {k}: {v}")
 
     return CONFIG
+
+
+def interpolate_B(B_vals, eval_points, Seq, exclude_axis_tol=1e-3):
+    """
+    Interpolate B-field onto Seq.Lambda_2 basis.
+
+    Parameters
+    ----------
+    B_vals : jnp.ndarray
+        B-field values at evaluation points, shape (mρ mθ mζ, 3).
+    eval_points : jnp.ndarray
+        Evaluation points in logical coordinates, shape (mρ mθ mζ, 3).
+    Seq : DeRhamSequence
+        DeRham sequence to interpolate the B-field onto.
+    exclude_axis_tol : float
+        Tolerance for excluding points near the axis and exact boundary.
+
+    Returns
+    -------
+    B_dof : jnp.ndarray
+        B-field coefficients.
+    residuals : jnp.ndarray
+        Residuals of the interpolation.
+    rank : int
+        Rank of the interpolation.
+    s : jnp.ndarray
+        Singular values of the interpolation.
+    """
+    # valid interpolation points (avoid axis and exact boundary)
+    valid_pts = (eval_points[:, 0] > exclude_axis_tol) & (
+        eval_points[:, 0] < 1 - exclude_axis_tol
+    )
+
+    def Λ2_phys(i, x):
+        """
+        Evaluate the physical 2-form basis function Phi*Λ2[i] at x.
+
+        Parameters
+        ----------
+        i : int
+            Index of the basis function.
+        x : jnp.ndarray
+            Point to evaluate the basis function at.
+
+        Returns
+        -------
+        jnp.ndarray
+            Value of the basis function at x.
+        """
+        # Pullback of basis function
+        DPhix = jax.jacfwd(Seq.F)(x)  # Jacobian of Phi at x
+        J = jnp.linalg.det(DPhix)
+        return DPhix @ Seq.Lambda_2[i](x) / J
+
+    def body_fun(_, i):
+        # Evaluate Λ2_phys(i, x) for all points (vectorized over x)
+        return None, jax.vmap(lambda x: Λ2_phys(i, x))(eval_points[valid_pts])
+
+    _, M = jax.lax.scan(body_fun, None, Seq.Lambda_2.ns)
+    M = jnp.einsum("il,ljk->ijk", Seq.E2, M)  # Λ2[i](x_hat_j)_k
+    y = B_vals[valid_pts]  # B(x'_j)_k
+    A = M.reshape(M.shape[0], -1).T
+    b = y.ravel()
+    # Solve least squares
+    B_dof, residuals, _, _ = jnp.linalg.lstsq(A, b, rcond=None)
+    return B_dof, residuals
+

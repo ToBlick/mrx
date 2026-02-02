@@ -71,6 +71,49 @@ def seq_simple():
 
 
 # ============================================================================
+# Adding initial state for _relaxation_step function 
+# ============================================================================
+def create_initial_state(seq, B_hat, CONFIG):
+    """Create initial state for _relaxation_step function, matching relaxation_loop pattern."""
+    from mrx.relaxation import TimeStepper, MRXHessian
+    
+    # Create TimeStepper to compute initial force
+    timestepper = TimeStepper(seq,
+                              gamma=CONFIG["gamma"],
+                              newton=CONFIG["precond"],
+                              force_free=CONFIG["force_free"],
+                              picard_tol=CONFIG["solver_tol"],
+                              picard_k_restart=CONFIG["solver_maxit"])
+    
+    # Compute initial force and hessian
+    F, _, _ = timestepper.compute_force(B_hat)
+    if CONFIG["precond"]:
+        hessian_assembler = MRXHessian(seq)
+        H = hessian_assembler.assemble(B_hat)
+    else:
+        H = None
+    
+    # Create state properly
+    state = State(B_n=B_hat,
+                  B_nplus1=B_hat,
+                  dt=CONFIG["dt"],
+                  eta=CONFIG["eta"],
+                  hessian=H,
+                  v=F,
+                  F_norm=norm_2(F, seq))
+    
+    # Update v and v_norm if using Newton
+    if CONFIG["precond"]:
+        v = timestepper.apply_inverse_hessian(state, F)
+    else:
+        v = F
+    state = timestepper.update_field(state, "v", v)
+    state = timestepper.update_field(state, "v_norm", norm_2(v, seq))
+    
+    return state
+
+
+# ============================================================================
 # Tests for norm_2
 # ============================================================================
 def test_norm_2_basic(seq):
@@ -857,6 +900,7 @@ def test_run_relaxation_loop_basic(seq):
     seq.build_crossproduct_projections()
     seq.assemble_leray_projection()
     
+    
     # Create initial magnetic field (harmonic component)
     B_harm = jnp.linalg.eigh(seq.M2 @ seq.dd2)[1][:, 0]
     B_hat = B_harm / norm_2(B_harm, seq)
@@ -876,7 +920,7 @@ def test_run_relaxation_loop_basic(seq):
     
     # Create diagnostics and state
     diagnostics = MRXDiagnostics(seq, CONFIG["force_free"])
-    state = State(B_hat, B_hat, CONFIG["dt"], CONFIG["eta"], seq.M2, 0, 0, 0, 0)
+    state = create_initial_state(seq, B_hat, CONFIG)
     
     # Run relaxation loop
     run_relaxation_loop(CONFIG, trace_dict, state, diagnostics)
@@ -913,7 +957,7 @@ def test_run_relaxation_loop_with_save_B(seq):
     trace_dict["start_time"] = time.time()
     
     diagnostics = MRXDiagnostics(seq, CONFIG["force_free"])
-    state = State(B_hat, B_hat, CONFIG["dt"], CONFIG["eta"], seq.M2, 0, 0, 0, 0)
+    state = create_initial_state(seq, B_hat, CONFIG)
     
     # Store initial B shape for later comparison
     initial_B_shape = B_hat.shape
@@ -960,7 +1004,7 @@ def test_run_relaxation_loop_early_convergence(seq):
     trace_dict["start_time"] = time.time()
     
     diagnostics = MRXDiagnostics(seq, CONFIG["force_free"])
-    state = State(B_hat, B_hat, CONFIG["dt"], CONFIG["eta"], seq.M2, 0, 0, 0, 0)
+    state = create_initial_state(seq, B_hat, CONFIG)
     
     run_relaxation_loop(CONFIG, trace_dict, state, diagnostics)
     
@@ -994,7 +1038,7 @@ def test_run_relaxation_loop_with_preconditioner(seq):
     trace_dict["start_time"] = time.time()
     
     diagnostics = MRXDiagnostics(seq, CONFIG["force_free"])
-    state = State(B_hat, B_hat, CONFIG["dt"], CONFIG["eta"], seq.M2, 0, 0, 0, 0)
+    state = create_initial_state(seq, B_hat, CONFIG)
     
     run_relaxation_loop(CONFIG, trace_dict, state, diagnostics)
     
@@ -1032,7 +1076,7 @@ def test_run_relaxation_loop_with_perturbation(seq):
     trace_dict["start_time"] = time.time()
     
     diagnostics = MRXDiagnostics(seq, CONFIG["force_free"])
-    state = State(B_hat, B_hat, CONFIG["dt"], CONFIG["eta"], seq.M2, 0, 0, 0, 0)
+    state = create_initial_state(seq, B_hat, CONFIG)
     
     run_relaxation_loop(CONFIG, trace_dict, state, diagnostics)
     
@@ -1065,7 +1109,7 @@ def test_run_relaxation_loop_trace_dict_updates(seq):
     trace_dict["start_time"] = time.time()
     
     diagnostics = MRXDiagnostics(seq, CONFIG["force_free"])
-    state = State(B_hat, B_hat, CONFIG["dt"], CONFIG["eta"], seq.M2, 0, 0, 0, 0)
+    state = create_initial_state(seq, B_hat, CONFIG)
     
     run_relaxation_loop(CONFIG, trace_dict, state, diagnostics)
     
@@ -1116,7 +1160,7 @@ def test_run_relaxation_loop_state_modification(seq):
     
     diagnostics = MRXDiagnostics(seq, CONFIG["force_free"])
     initial_B = B_hat.copy()
-    state = State(B_hat, B_hat, CONFIG["dt"], CONFIG["eta"], seq.M2, 0, 0, 0, 0)
+    state = create_initial_state(seq, B_hat, CONFIG)
     
     run_relaxation_loop(CONFIG, trace_dict, state, diagnostics)
     
