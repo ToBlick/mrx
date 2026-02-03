@@ -38,7 +38,7 @@ def run(CONFIG):
     if run_name == "":
         run_name = unique_id(8)
     
-    outdir = "script_outputs/iter/" + run_name + "/"
+    outdir = "out/iter/" + run_name + "/"
     os.makedirs(outdir, exist_ok=True)
 
     print("Running simulation " + run_name + "...")

@@ -1,9 +1,47 @@
-
+# %%
 import jax
 import jax.numpy as jnp
 
 from mrx.differential_forms import DiscreteFunction
 from mrx.mappings import stellarator_map
+
+
+def load_and_reshape_GVEC(gvec_eq, nfp):
+    """
+    Load GVEC equilibrium data and reshape it.
+
+    Parameters
+    ----------
+    gvec_eq : xarray.Dataset
+        GVEC equilibrium dataset.
+
+    Returns
+    -------
+    x : jnp.ndarray
+        evaluation points reshaped to (n_pts, 3).
+    R : jnp.ndarray
+        R coordinates reshaped to (n_pts,).
+    Z : jnp.ndarray
+        Z coordinates reshaped to (n_pts,).
+    B : jnp.ndarray
+        B field reshaped to (n_pts, 3).
+    """
+    _ρ = gvec_eq["rho"].values      # shape (mρ,)
+    _θ = gvec_eq["theta"].values    # shape (mθ,)
+    _ζ = gvec_eq["zeta"].values     # shape (mζ,)
+    R = gvec_eq["X1"].values       # shape (mρ, mθ, mζ)
+    Z = gvec_eq["X2"].values       # shape (mρ, mθ, mζ)
+    B = gvec_eq["B"].values        # shape (mρ, mθ, mζ, 3)
+    
+    ρ, θ, ζ = jnp.meshgrid(_ρ, _θ, _ζ, indexing="ij")
+    # θ_star = jnp.asarray(θ_star)
+    pts = jnp.stack([ρ.ravel(),
+                    θ.ravel() / (2 * jnp.pi),
+                    ζ.ravel() / (2 * jnp.pi) * nfp], axis=1)  # x_hat_js, shape (mρ mθ mζ, 3)
+    return (pts.reshape(-1, 3),
+           R.ravel(),
+           Z.ravel(),
+           B.reshape(-1, 3))
 
 
 def interpolate_map_from_GVEC(gvec_eq, nfp, mapSeq):

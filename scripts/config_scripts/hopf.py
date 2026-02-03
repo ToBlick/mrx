@@ -14,7 +14,7 @@ from mrx.nonlinearities import CrossProductProjection
 
 jax.config.update("jax_enable_x64", True)
 
-outdir = "script_outputs/hopf/"
+outdir = "out/hopf/"
 os.makedirs(outdir, exist_ok=True)
 
 ###

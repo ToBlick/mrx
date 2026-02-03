@@ -3,7 +3,7 @@
 scripts/experimental
 scripts/deprecated
 scripts/dice
-script_outputs
+out
 test_outputs
 logs
 slurm

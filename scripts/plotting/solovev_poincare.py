@@ -17,7 +17,7 @@ from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
 
 # %%
 name = "default"
-with h5py.File("script_outputs/iter/" + name + ".h5", "r") as f:
+with h5py.File("out/iter/" + name + ".h5", "r") as f:
     B_hat = f["B_final"][:]
     p_hat = f["p_final"][:]
     helicity_trace = f["helicity_trace"][:]
@@ -193,7 +193,7 @@ def get_iota(c):
 
 
 # %%
-output_dir = os.path.join("script_outputs", "iter", name, "poincare")
+output_dir = os.path.join("out", "iter", name, "poincare")
 os.makedirs(output_dir, exist_ok=True)
 
 print(B_fields.shape, p_fields.shape)
@@ -456,7 +456,7 @@ for plt_nr in range(B_fields.shape[0]):
 
 # # --- Save and Show ---
 # # Create directory if it doesn't exist
-# # output_dir = os.path.join("script_outputs", "solovev")
+# # output_dir = os.path.join("out", "solovev")
 # # os.makedirs(output_dir, exist_ok=True)
 # # plt.savefig(os.path.join(output_dir, "helix_poincare.pdf"),
 # #             dpi=400, bbox_inches=None)

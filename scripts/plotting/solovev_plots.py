@@ -11,4 +11,4 @@ if __name__ == "__main__":
 
     generate_solovev_plots(name)
 
-    print(f"Plots saved to script_outputs/solovev/{name}/")
+    print(f"Plots saved to out/solovev/{name}/")

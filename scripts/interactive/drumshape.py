@@ -26,7 +26,7 @@ from mrx.utils import assemble, integrate_against, inv33, jacobian_determinant
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
-script_dir = Path(__file__).parent / 'script_outputs'
+script_dir = Path(__file__).parent / 'out'
 script_dir.mkdir(parents=True, exist_ok=True)
 
 

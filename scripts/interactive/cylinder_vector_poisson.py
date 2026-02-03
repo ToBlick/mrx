@@ -13,7 +13,7 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import cylinder_map
 
 jax.config.update("jax_enable_x64", True)
-script_dir = Path(__file__).parent / 'script_outputs'
+script_dir = Path(__file__).parent / 'out'
 script_dir.mkdir(parents=True, exist_ok=True)
 
 def get_err(n : int, p : int) -> float:

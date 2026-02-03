@@ -12,7 +12,7 @@ from mrx.plotting import get_2d_grids, plot_crossections_separate, plot_torus
 
 # %%
 name = "helix/helix_qstar_3.0_m_2_h_0.05_16x16x8"
-with h5py.File("script_outputs/" + name + ".h5", "r") as f:
+with h5py.File("out/" + name + ".h5", "r") as f:
     CONFIG = {k: v for k, v in f["config"].attrs.items()}
     # decode strings back if needed
     CONFIG = {k: v.decode() if isinstance(v, bytes)
@@ -135,7 +135,7 @@ ax_top.legend(lines, labels, loc='upper right',
 
 fig.tight_layout()
 
-plt.savefig(os.path.join("script_outputs", f"{name}_trace_plot.pdf"))
+plt.savefig(os.path.join("out", f"{name}_trace_plot.pdf"))
 
 plt.show()
 # %%
@@ -183,7 +183,7 @@ grid_surface = get_2d_grids(F, cut_axis=0, cut_value=1.0,
                             ny=128, nz=128, z_min=0, z_max=1, invert_z=True)
 fig, ax = plot_torus(p_h, grids_pol, grid_surface,
                      gridlinewidth=1, cstride=8, noaxes=False, elev=15, azim=40)
-plt.savefig(os.path.join("script_outputs", f"{name}_3d_plot.pdf"))
+plt.savefig(os.path.join("out", f"{name}_3d_plot.pdf"))
 
 # %%
 cuts = jnp.linspace(0, 1/5, 6, endpoint=False)

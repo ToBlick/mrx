@@ -29,7 +29,7 @@ from mrx.mappings import polar_map
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
 # Create output directory for figures
-os.makedirs("script_outputs", exist_ok=True)
+os.makedirs("out", exist_ok=True)
 
 # %%
 
@@ -177,7 +177,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig1)
-    plt.savefig("script_outputs/polar_poisson_error.pdf",
+    plt.savefig("out/polar_poisson_error.pdf",
                 dpi=300, bbox_inches="tight")
 
     # Timing plot (first run)
@@ -190,7 +190,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig2)
-    plt.savefig("script_outputs/polar_poisson_time1.pdf",
+    plt.savefig("out/polar_poisson_time1.pdf",
                 dpi=300, bbox_inches="tight")
 
     # Timing plot (second run)
@@ -203,7 +203,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.grid(True)
     plt.legend()
     figures.append(fig3)
-    plt.savefig("script_outputs/polar_poisson_time2.pdf",
+    plt.savefig("out/polar_poisson_time2.pdf",
                 dpi=300, bbox_inches="tight")
 
     # Speedup plot
@@ -218,7 +218,7 @@ def plot_results(err, times, times2, ns, ps):
     plt.legend()
     figures.append(fig4)
     plt.savefig(
-        "script_outputs/polar_poisson_speedup.pdf", dpi=300, bbox_inches="tight"
+        "out/polar_poisson_speedup.pdf", dpi=300, bbox_inches="tight"
     )
 
     return figures

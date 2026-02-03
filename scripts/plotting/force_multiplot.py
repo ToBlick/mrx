@@ -106,7 +106,7 @@ def plot_traces(cfgs, traces, iters, sweep_params, FIG_SIZE=(6,4),
 # %%
 print(os.getcwd())
 # %%
-path = "script_outputs/solovev/ITER_sweep_1/"
+path = "out/solovev/ITER_sweep_1/"
 outdir = path + "iter_sweep/"
 os.makedirs(outdir, exist_ok=True)
 

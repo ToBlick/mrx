@@ -122,7 +122,7 @@ Parses command-line arguments and sets default configuration parameters:
 
 The ``run()`` function:
 
-- Creates output directory: ``script_outputs/stell/{run_name}/``
+- Creates output directory: ``out/stell/{run_name}/``
 - Sets up rotating ellipse mapping with specified parameters
 - Configures DeRham sequence with polar coordinates
 - Defines initial magnetic field :math:`\mathbf{B}_{\mathrm{xyz}}(p)` in physical space

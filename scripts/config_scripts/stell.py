@@ -37,7 +37,7 @@ def run(CONFIG):
     run_name = CONFIG["run_name"]
     if run_name == "":
         run_name = unique_id(8)
-    outdir = "script_outputs/stell/" + run_name + "/"
+    outdir = "out/stell/" + run_name + "/"
     os.makedirs(outdir, exist_ok=True)
 
     print("Running simulation " + run_name + "...")

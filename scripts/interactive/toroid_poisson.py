@@ -133,10 +133,10 @@ def main():
     cond_f = float(cond)
 
     # Ensure output directory exists
-    os.makedirs("script_outputs", exist_ok=True)
+    os.makedirs("out", exist_ok=True)
 
     out_name = f"toroid_poisson_{n}_{p}.txt"
-    out_path = os.path.join("script_outputs", out_name)
+    out_path = os.path.join("out", out_name)
     with open(out_path, "w") as fh:
         fh.write(f"error {error_f:.18e}\n")
         fh.write(f"sparsity {sparsity_f:.18e}\n")

@@ -2,7 +2,6 @@ __version__ = "0.0.1"
 
 from .boundary import *
 from .derham_sequence import *
-from .desc_interface import DESCWrapper, project_desc_equilibrium
 from .differential_forms import *
 from .iterative_solvers import *
 from .lazy_matrices import *
@@ -17,5 +16,4 @@ from .utils import *
 __all__ = (differential_forms.__all__ + iterative_solvers.__all__ +
            lazy_matrices.__all__ + plotting.__all__ + polar.__all__ +
            projectors.__all__ + quadrature.__all__ + spline_bases.__all__ +
-           utils.__all__ + boundary.__all__ +
-           ['DESCWrapper', 'project_desc_equilibrium'])
+           utils.__all__ + boundary.__all__)

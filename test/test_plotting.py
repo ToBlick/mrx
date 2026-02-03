@@ -1077,8 +1077,8 @@ def test_generate_solovev_plots_basic():
         tmpdir_path = Path(tmpdir)
         
         # Create the directory structure that generate_solovev_plots expects
-        # The function expects: script_outputs/solovev/{filename}/{filename}.h5
-        solovev_dir = tmpdir_path / "script_outputs" / "solovev"
+        # The function expects: out/solovev/{filename}/{filename}.h5
+        solovev_dir = tmpdir_path / "out" / "solovev"
         solovev_dir.mkdir(parents=True, exist_ok=True)
         
         # Create test configuration
@@ -1155,14 +1155,14 @@ def test_generate_solovev_plots_basic():
             
             try:
                 # Call the real generate_solovev_plots function
-                # It will look for script_outputs/solovev/{name}.h5 relative to current directory
+                # It will look for out/solovev/{name}.h5 relative to current directory
                 generate_solovev_plots(test_name)
             finally:
                 # Restore original function
                 plotting_module.trace_plot = original_trace_plot
             
             # Verify output files were created
-            output_dir = tmpdir_path / "script_outputs" / "solovev" / test_name
+            output_dir = tmpdir_path / "out" / "solovev" / test_name
             p_final_file = output_dir / "p_final.pdf"
             # trace_plot saves to outdir (which ends with '/'), so file is "force_trace.pdf"
             force_trace_file = output_dir / "force_trace.pdf"
@@ -1183,8 +1183,8 @@ def test_generate_solovev_plots_with_save_B():
         tmpdir_path = Path(tmpdir)
         
         # Create the directory structure
-        # The function expects: script_outputs/solovev/{filename}/{filename}.h5
-        solovev_dir = tmpdir_path / "script_outputs" / "solovev"
+        # The function expects: out/solovev/{filename}/{filename}.h5
+        solovev_dir = tmpdir_path / "out" / "solovev"
         solovev_dir.mkdir(parents=True, exist_ok=True)
         
         # Create test configuration
@@ -1275,7 +1275,7 @@ def test_generate_solovev_plots_with_save_B():
                 plotting_module.trace_plot = original_trace_plot
             
             # Verify output files were created
-            output_dir = tmpdir_path / "script_outputs" / "solovev" / test_name
+            output_dir = tmpdir_path / "out" / "solovev" / test_name
             p_final_file = output_dir / "p_final.pdf"
             # trace_plot saves to outdir (which ends with '/'), so file is "force_trace.pdf"
             force_trace_file = output_dir / "force_trace.pdf"

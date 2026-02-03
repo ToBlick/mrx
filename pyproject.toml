@@ -30,10 +30,10 @@ keywords = [
     "magnetostatics"
 ]
 dependencies = [
-    "numpy>=1.21",
-    "jax>=0.2.5",
-    "jaxlib>=0.1.56",
-    "scipy>=1.5.4",
+    "numpy",
+    "jax",
+    "jaxlib",
+    "scipy",
     "matplotlib",
     "ruff",
     "autopep8",
@@ -41,8 +41,7 @@ dependencies = [
     "optax",
     "optimistix",
     "equinox",
-    "h5py",
-    "xarray"
+    "xarray",
 ]
 
 [tool.ruff]
@@ -54,10 +53,9 @@ include = ["mrx*"]  # Include specific packages
 exclude = ["scripts_tutorials*", "scripts_deprecated*"]                  # Exclude specific package
 
 [project.optional-dependencies]
-SPEC = ["py_spec>=3.0.1", "pyoculus>=0.1.1", "h5py>=3.1.0"]
-MPI = ["mpi4py>=3.0.3"]
-VIS = ["vtk >= 8.1.2", "PyQt5", "plotly", "networkx"]
 DOCS = ["sphinx", "sphinx-rtd-theme", "nbsphinx", "ipykernel"]
+SLURM = ["hydra-core>=1.3", "h5netcdf>=1.0", "h5py>=3.1.0"]
+WANDB = ["wandb", "h5netcdf>=1.0", "h5py>=3.1.0"]
 
 [project.urls]
 Homepage = "https://github.com/ToBlick/mrx"

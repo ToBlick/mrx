@@ -13,7 +13,7 @@ from mrx.mappings import gvec_stellarator_map
 from mrx.utils import is_running_in_github_actions
 
 jax.config.update("jax_enable_x64", True)
-script_dir = Path(__file__).parent / 'script_outputs'
+script_dir = Path(__file__).parent / 'out'
 script_dir.mkdir(parents=True, exist_ok=True)
 # %%
 repo_root = Path(__file__).parent.parent.parent

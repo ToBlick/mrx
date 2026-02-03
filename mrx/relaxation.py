@@ -817,7 +817,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
         divergence_B_trace.append(diagnostics.divergence_norm(state.B_n))
         # -----------------------
         if callback is not None:
-            state = callback(state, i * num_iters_inner)
+            state = callback(state, i)
         print(
             f"Iteration {i * num_iters_inner}: \nforce norm: {state.F_norm:.2e} \nrelative helicity change: {jnp.abs(helicity_trace[0] - helicity_trace[-1])/helicity_trace[0]:.2e} \ndt: {state.dt:.2e} \nrelative energy change: {(energy_trace[0] - energy_trace[-1])/energy_trace[0]:.2e} \npicard iterations: {state.picard_iterations} \npicard residuum: {state.picard_residuum:.2e} \n------------------------")
         if state.F_norm < force_tolerance:

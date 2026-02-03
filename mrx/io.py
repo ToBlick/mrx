@@ -1,3 +1,4 @@
+# %%
 import argparse
 import os
 import random
@@ -9,7 +10,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.differential_forms import DiscreteFunction
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import stellarator_map
 
 
@@ -244,3 +246,74 @@ def load_desc(path, map_seq, nr=None, ntheta=None, nzeta=None):
     }
 
     return desc_import
+
+
+def interpolate_map_from_points(x, R, Z, nfp, ns=(6, 6, 6), ps = (3, 3, 3), quad_order=3):
+    """
+    Given evaluations of a function R(x), Z(x) at some points x, interpolate
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+        Points at which R, Z are evaluated.
+    R : jnp.ndarray
+        R evaluations at points.
+    Z : jnp.ndarray
+        Z evaluations at points.
+    nfp : int
+        Number of field periods.
+
+    Returns
+    -------
+    """
+    # Set up DeRham sequence for interpolation
+    map_seq = DeRhamSequence(ns, ps, quad_order, ("clamped", "periodic", "periodic"), 
+                             lambda x: x, polar=False, dirichlet=False)
+    
+    # Set up the interpolation problem:
+    # ∑ c_ki Λ0[i](x_j) ≈ Xk(x_j) ∀j
+    def body_fun(_, i):
+        # Evaluate Λ0[i](x) for all points
+        return None, jax.vmap(lambda x: map_seq.Lambda_0[i](x)[0])(x)
+    
+    _, M = jax.lax.scan(body_fun, None, map_seq.Lambda_0.ns)  # Λ0[i](x_j)
+
+    y = jnp.stack([R, Z], axis=1)  # X_α(x'_j)
+    c, resid, _, _ = jnp.linalg.lstsq(M.T, y, rcond=None)
+
+    X1_h = DiscreteFunction(c[:, 0], map_seq.Lambda_0, map_seq.E0)
+    X2_h = DiscreteFunction(c[:, 1], map_seq.Lambda_0, map_seq.E0)
+    return stellarator_map(X1_h, X2_h, nfp=nfp, flip_zeta=False), resid
+
+
+def interpolate_B(x, B, seq, exclude_axis_tol=1e-3):
+    """
+    Interpolate B-field onto FEM basis given evaluations at points x.
+    """
+    
+    # valid interpolation points (avoid axis and exact boundary)
+    valid_pts = (x[:, 0] > exclude_axis_tol) & (
+        x[:, 0] < 1 - exclude_axis_tol)
+
+    def Λ2_phys(i, x):
+        return Pushforward(lambda x: seq.Lambda_2[i](x), seq.F, 2)(x)
+
+    def body_fun(_, i):
+        # Evaluate Λ2_phys(i, x) for all points (vectorized over x)
+        return None, jax.vmap(lambda x: Λ2_phys(i, x))(x[valid_pts])
+
+    _, M = jax.lax.scan(body_fun, None, seq.Lambda_2.ns)
+    M = jnp.einsum('il,ljk->ijk', seq.E2, M)    # Λ2[i](x_hat_j)_k
+    y = B[valid_pts].reshape(-1, 3)              # B(x'_j)_k
+
+    # Solve least squares interpolation:
+    # ∑ c_ik Λ2[i](x_j) ≈ B_k(x_j) ∀j,k
+    # i.e. M @ C ≈ B where M is (num_basis, num_pts, 3) and B is (num_pts, 3)
+
+    A = M.reshape(M.shape[0], -1).T         # reshape to (num_pts*3, num_basis)
+    b = y.ravel()                           # reshape to (num_pts*3,)
+    
+    # Solve least squares
+    B_dof, residuals, _, _ = jnp.linalg.lstsq(A, b, rcond=None)
+    return B_dof, residuals
+# %%

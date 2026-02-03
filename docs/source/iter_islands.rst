@@ -115,7 +115,7 @@ Sets default configuration for tokamak geometry:
 
 The ``run()`` function:
 
-- Creates output directory: ``script_outputs/iter/{run_name}/``
+- Creates output directory: ``out/iter/{run_name}/``
 - Sets up cerfon mapping (circular tokamak cross-section)
 - Defines initial magnetic field :math:`\mathbf{B}_0(p)` with tokamak-specific scaling
 - Defines perturbation ``dB_xyz(p)`` with Gaussian radial profile and

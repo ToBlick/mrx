@@ -1,0 +1,88 @@
+# Default configuration for GVEC relaxation
+defaults:
+  - _self_
+
+# Run parameters
+run_name: null  # Auto-generated if null
+
+# Input data
+gvec_file: data/gvec_stellarator.h5
+nfp: 3  # Number of field periods
+
+# Map interpolation parameters
+map:
+  ns_r: 4
+  ns_theta: 4
+  ns_zeta: 4
+  ps_r: 3
+  ps_theta: 3
+  ps_zeta: 3
+  quad_order: 3
+
+# FEM discretization parameters
+fem:
+  ns_r: 5
+  ns_theta: 10
+  ns_zeta: 5
+  ps_r: 3
+  ps_theta: 3
+  ps_zeta: 3
+  quad_order: 3
+
+# B-field interpolation
+interpolation:
+  val_stride: 10  # Validation sampling stride
+  exclude_axis_tol: 1e-3
+
+# Relaxation parameters
+relaxation:
+  num_iters_inner: 10
+  num_iters_outer: 100
+  dt0: 1.0
+  force_tolerance: 1e-6
+  conjugate: true
+
+# Resistivity schedule parameters
+eta:
+  max: 1e-6
+  schedule_type: tanh  # tanh, constant, linear
+
+# Fieldline tracing parameters
+fieldline:
+  enabled: true  # Enable fieldline integration callback
+  every: 50  # Integrate fieldlines every N outer iterations
+  T: 4000.0  # Integration time for fieldlines
+  n_traj: 30  # Number of trajectories to trace
+  rtol: 1e-5  # Relative tolerance for ODE solver
+  atol: 1e-5  # Absolute tolerance for ODE solver
+
+# Poincare plot parameters
+plotting:
+  zeta_values: [0.33]  # Toroidal angles for Poincare sections
+  interpolation_degree: 3  # Polynomial degree for intersection interpolation
+  markersize: 0.1  # Size of scatter plot markers
+  cmap_iota: berlin  # Colormap for iota values
+  cmap_p: plasma  # Colormap for pressure values
+  ks_thresh: 10  # KS test threshold for iota classification
+  denom_max: 15  # Max denominator for rational ticks on colorbar
+  dpi: 150  # DPI for saved figures
+  Rlim: [1.75, 4.25]  # R axis limits [min, max], null for auto
+  zlim: [-1.0, 1.5]  # z axis limits [min, max], null for auto
+  plot_pressure: true  # Whether to plot pressure values
+
+# Output
+output:
+  dir: out/gvec_relaxation
+  save_final: true
+  verbose: true
+  print_every: 10
+
+# Hydra configuration
+hydra:
+  job:
+    chdir: true  # Change to output directory when running
+  run:
+    dir: ${hydra:runtime.cwd}/${output.dir}/${now:%Y%m%d_%H%M%S}
+  sweep:
+    dir: ${hydra:runtime.cwd}/${output.dir}/multirun/${now:%Y%m%d_%H%M%S}
+    subdir: ${hydra.job.num}

@@ -23,7 +23,7 @@ if __name__ == "__main__":
     params = parse_args()
     name = params["run_name"]
 # %%
-    with h5py.File("script_outputs/helix/" + name + ".h5", "r") as f:
+    with h5py.File("out/helix/" + name + ".h5", "r") as f:
         B_hat = f["B_final"][:]
         p_hat = f["p_final"][:]
         helicity_trace = f["helicity_trace"][:]
@@ -183,7 +183,7 @@ if __name__ == "__main__":
     x0s_sorted = x0s[idx]
 
     # %%
-    output_dir = os.path.join("script_outputs", "helix", name, "poincare")
+    output_dir = os.path.join("out", "helix", name, "poincare")
     os.makedirs(output_dir, exist_ok=True)
 
     plt.rcParams['font.family'] = 'serif'
@@ -437,7 +437,7 @@ if __name__ == "__main__":
 
 # # --- Save and Show ---
 # # Create directory if it doesn't exist
-# # output_dir = os.path.join("script_outputs", "solovev")
+# # output_dir = os.path.join("out", "solovev")
 # # os.makedirs(output_dir, exist_ok=True)
 # # plt.savefig(os.path.join(output_dir, "helix_poincare.pdf"),
 # #             dpi=400, bbox_inches=None)
