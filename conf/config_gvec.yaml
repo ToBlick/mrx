@@ -1,6 +1,8 @@
 # Default configuration for GVEC relaxation
 defaults:
   - _self_
+  - resolution: low  # Options: low, medium, high
+  - optional experiment: null  # Load with +experiment=name
 
 # Run parameters
 run_name: null  # Auto-generated if null
@@ -21,9 +23,9 @@ map:
 
 # FEM discretization parameters
 fem:
-  ns_r: 5
-  ns_theta: 10
-  ns_zeta: 5
+  ns_r: 4
+  ns_theta: 4
+  ns_zeta: 4
   ps_r: 3
   ps_theta: 3
   ps_zeta: 3
@@ -37,22 +39,22 @@ interpolation:
 # Relaxation parameters
 relaxation:
   num_iters_inner: 10
-  num_iters_outer: 100
+  num_iters_outer: 25
   dt0: 1.0
-  force_tolerance: 1e-6
+  force_tolerance: 1e-8
   conjugate: true
 
 # Resistivity schedule parameters
 eta:
-  max: 1e-6
+  max: 0.0
   schedule_type: tanh  # tanh, constant, linear
 
 # Fieldline tracing parameters
 fieldline:
-  enabled: true  # Enable fieldline integration callback
-  every: 50  # Integrate fieldlines every N outer iterations
-  T: 4000.0  # Integration time for fieldlines
-  n_traj: 30  # Number of trajectories to trace
+  enabled: false  # Enable fieldline integration callback
+  every: 1  # Integrate fieldlines every N outer iterations
+  T: 3000.0  # Integration time for fieldlines
+  n_traj: 40  # Number of trajectories to trace
   rtol: 1e-5  # Relative tolerance for ODE solver
   atol: 1e-5  # Absolute tolerance for ODE solver
 
@@ -60,7 +62,7 @@ fieldline:
 plotting:
   zeta_values: [0.33]  # Toroidal angles for Poincare sections
   interpolation_degree: 3  # Polynomial degree for intersection interpolation
-  markersize: 0.1  # Size of scatter plot markers
+  markersize: 0.05  # Size of scatter plot markers
   cmap_iota: berlin  # Colormap for iota values
   cmap_p: plasma  # Colormap for pressure values
   ks_thresh: 10  # KS test threshold for iota classification

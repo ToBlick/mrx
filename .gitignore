@@ -6,7 +6,6 @@ scripts/dice
 out
 test_outputs
 logs
-slurm
 jax-caches/
 
 

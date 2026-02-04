@@ -50,6 +50,7 @@ def create_eta_schedule(cfg: DictConfig):
     schedule_type = cfg.eta.schedule_type
     
     if schedule_type == "tanh":
+        # drops from eta_max to ~0 over the middle ~1/3rd of the iterations
         def eta_schedule(iter_outer):
             return eta_max * 0.5 * (1 - jnp.tanh(4 * jnp.pi * (iter_outer / num_iters_outer - 0.5)))
     elif schedule_type == "constant":
@@ -133,14 +134,19 @@ def create_fieldline_callback(seq, diagnostics, nfp, cfg: DictConfig, outdir: Pa
         
         # Compute |B| along fieldlines
         B_norm_fn = compute_B_norm(B_dof)
-        flat_logical = logical_trajectories.reshape(-1, 3)
-        B_norm_values = jax.vmap(B_norm_fn)(flat_logical)
+        # Use scan over trajectories and vmap over time points
+        def process_trajectory(carry, traj_points):
+            return carry, jax.vmap(B_norm_fn)(traj_points)
+        _, B_norm_values = jax.lax.scan(process_trajectory, None, logical_trajectories)
         B_norm_values = B_norm_values.reshape(logical_trajectories.shape[:-1])
         
         # Compute pressure along fieldlines
         p_dof = get_pressure(B_dof)
         p_fn = compute_pressure_fn(p_dof)
-        p_values = jax.vmap(p_fn)(flat_logical)
+        # Use scan over trajectories and vmap over time points
+        def process_trajectory(carry, traj_points):
+            return carry, jax.vmap(p_fn)(traj_points)
+        _, p_values = jax.lax.scan(process_trajectory, None, logical_trajectories)
         p_values = p_values.reshape(logical_trajectories.shape[:-1])
         
         # Save to HDF5
@@ -371,6 +377,7 @@ def main(cfg: DictConfig) -> float:
             f.create_dataset("energy_trace", data=jnp.array(traces["energy"]))
             f.create_dataset("helicity_trace", data=jnp.array(traces["helicity"]))
             f.create_dataset("timestep_trace", data=jnp.array(traces["timestep"]))
+            f.create_dataset("eta_trace", data=jnp.array(traces["eta"]))
             # Save flattened config
             f.attrs["config"] = OmegaConf.to_yaml(cfg)
     

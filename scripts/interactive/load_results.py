@@ -5,14 +5,12 @@ Interactive script to load and visualize results from relaxation simulations.
 This script can handle both single runs and multirun (sweep) outputs from Hydra.
 It loads the HDF5 results files and uses the trace_plot function from mrx.plotting.
 """
-
-# %%
 from pathlib import Path
 
 import h5py
 import numpy as np
 
-from mrx.plotting import trace_plot
+from mrx.plotting import plot_twin_axis
 
 # %%
 # Configuration - set your output directory here
@@ -21,7 +19,7 @@ from mrx.plotting import trace_plot
 # For a multirun:
 # base_dir = Path("out/gvec_relaxation/multirun/20260203_120000")
 
-base_dir = Path("out/gvec_relaxation/20260203_142430")
+base_dir = Path("out/gvec_relaxation/20260204_140136")
 
 # %%
 def find_result_files(base_dir: Path) -> list[Path]:
@@ -67,6 +65,20 @@ def load_results(filepath: Path) -> dict:
             results["config_str"] = f.attrs["config"]
     
     return results
+
+# %%
+def extract_param_from_config(config_str: str, param_path: str):
+    """Extract a parameter value from a YAML config string."""
+    import yaml
+    try:
+        config = yaml.safe_load(config_str)
+        keys = param_path.split(".")
+        value = config
+        for key in keys:
+            value = value[key]
+        return value
+    except:
+        return None
 
 # %%
 def convert_to_trace_dict(results: dict) -> dict:
@@ -129,19 +141,65 @@ if all_results:
     print(f"  Attributes: {list(first_result.get('attrs', {}).keys())}")
 
 # %%
-# Generate trace plots using mrx.plotting.trace_plot
+# Generate plots using mrx.plotting.plot_twin_axis
 for run_name, results in all_results.items():
-    print(f"\nGenerating trace plot for {run_name}...")
-    
-    # Convert to trace_dict format
-    trace_dict = convert_to_trace_dict(results)
+    print(f"\nGenerating plots for {run_name}...")
     
     # Get output directory from filepath
-    outdir = str(results["filepath"].parent) + "/"
+    outdir = results["filepath"].parent
     
-    # Use trace_plot from mrx.plotting
-    trace_plot(trace_dict, filename=outdir)
-    print(f"Saved plots to {outdir}")
+    # Extract num_iters_inner from config (default to 1 if not found)
+    num_iters_inner = 1
+    if "config_str" in results:
+        val = extract_param_from_config(results["config_str"], "relaxation.num_iters_inner")
+        if val is not None:
+            num_iters_inner = int(val)
+    print(f"  num_iters_inner: {num_iters_inner}")
+    
+    # Plot 1: Force vs time step
+    force_trace = results.get("force_trace", np.array([]))
+    timestep_trace = results.get("timestep_trace", np.array([]))
+    if len(force_trace) > 0:
+        iterations = np.arange(len(force_trace)) * num_iters_inner
+        timesteps = timestep_trace
+        fig, (ax1, ax2) = plot_twin_axis(
+            left_y=force_trace,
+            right_y=timestep_trace,
+            x_left=iterations,
+            x_right=iterations,
+            left_label="Force",
+            right_label="Time step",
+            left_log=True,
+            right_log=False,
+            x_label="Iterations",
+            return_axes=True,
+            left_marker="",
+            right_marker="",
+        )
+        fig.savefig(outdir / "force_vs_timestep.pdf", dpi=150, bbox_inches="tight")
+        print(f"  Saved force_vs_timestep.pdf")
+    
+    # Plot 2: Force vs helicity
+    helicity_trace = results.get("helicity_trace", np.array([]))
+    if len(force_trace) > 0 and len(helicity_trace) > 0:
+        iterations = np.arange(len(helicity_trace)) * num_iters_inner
+        fig, (ax1, ax2) = plot_twin_axis(
+            left_y=force_trace,
+            right_y=(helicity_trace - helicity_trace[0]) / np.abs(helicity_trace[0]),
+            x_left=iterations,
+            x_right=iterations,
+            left_label="Force",
+            right_label="rel. Helicity change",
+            left_log=True,
+            right_log=False,
+            x_label="Iterations",
+            return_axes=True,
+            left_marker="",
+            right_marker="",
+        )
+        fig.savefig(outdir / "force_vs_helicity.pdf", dpi=150, bbox_inches="tight")
+        print(f"  Saved force_vs_helicity.pdf")
+# %%
 
 # %%
 def print_summary(results_dict: dict):
@@ -169,21 +227,6 @@ def print_summary(results_dict: dict):
 # %%
 if all_results:
     print_summary(all_results)
-
-# %%
-# Compare specific parameters across runs (useful for parameter sweeps)
-def extract_param_from_config(config_str: str, param_path: str):
-    """Extract a parameter value from a YAML config string."""
-    import yaml
-    try:
-        config = yaml.safe_load(config_str)
-        keys = param_path.split(".")
-        value = config
-        for key in keys:
-            value = value[key]
-        return value
-    except:
-        return None
 
 # %%
 # Example: Compare runs by a specific parameter

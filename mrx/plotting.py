@@ -2201,15 +2201,17 @@ def integrate_fieldline(B, Phi, nfp, T, rtol=1e-5, atol=1e-5, dt0=0.1, n_traj=32
         return sol.ys
 
     N = jnp.int32(10 * T)
-    r_vals = jnp.linspace(0.01, 0.99, n_traj)
+    r_vals = jnp.linspace(0.05, 0.99, n_traj)
     x0s = jnp.stack(
         [r_vals, 0.5 * jnp.ones_like(r_vals), 0.5 * jnp.ones_like(r_vals)], axis=1
     )
 
-    logical_trajectories = (
-        jax.vmap(lambda x0: integrate_fieldline(
-            vector_field, x0, N, T))(x0s) % 1.0
-    )
+    def scan_fn(carry, x0):
+        traj = integrate_fieldline(vector_field, x0, N, T)
+        return carry, traj
+    
+    _, logical_trajectories = jax.lax.scan(scan_fn, None, x0s)
+    logical_trajectories = logical_trajectories % 1.0
 
     Phi_full_fp = jax.jit(extend_map_nfp(Phi, nfp))
 

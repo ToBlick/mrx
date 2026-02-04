@@ -1,0 +1,15 @@
+# Resistivity sweep at medium resolution
+# Usage: python scripts/config_scripts/relax_gvec.py +experiment=eta_sweep
+# @package _global_
+
+defaults:
+  - /resolution: medium
+
+eta:
+  schedule_type: tanh
+
+hydra:
+  mode: MULTIRUN
+  sweeper:
+    params:
+      eta.max: 1e-8,1e-7,1e-6,1e-5

@@ -1,0 +1,12 @@
+# Low resolution settings for quick testing
+# @package _global_
+
+map:
+  ns_r: 4
+  ns_theta: 4
+  ns_zeta: 4
+
+fem:
+  ns_r: 4
+  ns_theta: 4
+  ns_zeta: 4

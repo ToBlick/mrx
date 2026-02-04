@@ -756,6 +756,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
     picard_iterations = [state.picard_iterations]
     velocity_norm_trace = [state.v_norm]
     divergence_B_trace = [diagnostics.divergence_norm(state.B_n)]
+    eta_trace = [state.eta]
 
     traces = {
         "force_norm": force_norm_trace,
@@ -766,6 +767,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
         "picard_iterations": picard_iterations,
         "velocity_norm": velocity_norm_trace,
         "divergence_B": divergence_B_trace,
+        "eta": eta_trace,
     }
     # -----------------------
     print(
@@ -815,6 +817,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
         picard_iterations.append(state.picard_iterations)
         velocity_norm_trace.append(state.v_norm)
         divergence_B_trace.append(diagnostics.divergence_norm(state.B_n))
+        eta_trace.append(state.eta)
         # -----------------------
         if callback is not None:
             state = callback(state, i)

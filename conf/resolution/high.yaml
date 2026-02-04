@@ -1,0 +1,12 @@
+# High resolution settings for publication-quality results
+# @package _global_
+
+map:
+  ns_r: 6
+  ns_theta: 12
+  ns_zeta: 12
+
+fem:
+  ns_r: 8
+  ns_theta: 16
+  ns_zeta: 12

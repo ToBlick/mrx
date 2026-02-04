@@ -1,0 +1,12 @@
+# Medium resolution settings for production runs
+# @package _global_
+
+map:
+  ns_r: 5
+  ns_theta: 8
+  ns_zeta: 8
+
+fem:
+  ns_r: 6
+  ns_theta: 10
+  ns_zeta: 8

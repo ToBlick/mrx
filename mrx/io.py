@@ -255,11 +255,11 @@ def interpolate_map_from_points(x, R, Z, nfp, ns=(6, 6, 6), ps = (3, 3, 3), quad
     Parameters
     ----------
     x : jnp.ndarray
-        Points at which R, Z are evaluated.
+        Points at which R, Z are evaluated (n_pts, 3).
     R : jnp.ndarray
-        R evaluations at points.
+        R evaluations at points (n_pts,).
     Z : jnp.ndarray
-        Z evaluations at points.
+        Z evaluations at points (n_pts,).
     nfp : int
         Number of field periods.
 
