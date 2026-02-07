@@ -1099,8 +1099,6 @@ def poincare_plot(logical_trajectories,
     # Separate points based on whether iota is NaN
     valid_mask = ~jnp.isnan(iota_vals)
     nan_mask = jnp.isnan(iota_vals)
-
-
     
     fig = plt.figure(figsize=(10, 4))
     # Fixed positions: [left, bottom, width, height]

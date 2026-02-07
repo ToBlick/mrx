@@ -757,6 +757,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
     velocity_norm_trace = [state.v_norm]
     divergence_B_trace = [diagnostics.divergence_norm(state.B_n)]
     eta_trace = [state.eta]
+    iterations = [0]
 
     traces = {
         "force_norm": force_norm_trace,
@@ -768,6 +769,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
         "velocity_norm": velocity_norm_trace,
         "divergence_B": divergence_B_trace,
         "eta": eta_trace,
+        "iteration": iterations
     }
     # -----------------------
     print(
@@ -796,7 +798,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
         state = jax.lax.cond(failed, on_fail, on_success, state)
         return state, None
 
-    for i in range(num_iters_outer + 1):
+    for i in range(1, num_iters_outer + 1):
         key, _ = jax.random.split(key)
         if noise_schedule is not None:
             state = ts.update_field(state, "noise_level", noise_schedule(i))
@@ -818,11 +820,12 @@ def relaxation_loop(B_dof: jnp.ndarray,
         velocity_norm_trace.append(state.v_norm)
         divergence_B_trace.append(diagnostics.divergence_norm(state.B_n))
         eta_trace.append(state.eta)
+        iterations.append(i * num_iters_inner)
         # -----------------------
         if callback is not None:
             state = callback(state, i)
         print(
-            f"Iteration {i * num_iters_inner}: \nforce norm: {state.F_norm:.2e} \nrelative helicity change: {jnp.abs(helicity_trace[0] - helicity_trace[-1])/helicity_trace[0]:.2e} \ndt: {state.dt:.2e} \nrelative energy change: {(energy_trace[0] - energy_trace[-1])/energy_trace[0]:.2e} \npicard iterations: {state.picard_iterations} \npicard residuum: {state.picard_residuum:.2e} \n------------------------")
+            f"Iteration {iterations[-1]}: \nforce norm: {state.F_norm:.2e} \nrelative helicity change: {jnp.abs(helicity_trace[0] - helicity_trace[-1])/helicity_trace[0]:.2e} \ndt: {state.dt:.2e} \nrelative energy change: {(energy_trace[0] - energy_trace[-1])/energy_trace[0]:.2e} \npicard iterations: {state.picard_iterations} \npicard residuum: {state.picard_residuum:.2e} \n------------------------")
         if state.F_norm < force_tolerance:
             break
 

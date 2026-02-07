@@ -280,10 +280,13 @@ def interpolate_map_from_points(x, R, Z, nfp, ns=(6, 6, 6), ps = (3, 3, 3), quad
 
     y = jnp.stack([R, Z], axis=1)  # X_α(x'_j)
     c, resid, _, _ = jnp.linalg.lstsq(M.T, y, rcond=None)
+    
+    R_dof = c[:, 0]
+    Z_dof = c[:, 1]
 
-    X1_h = DiscreteFunction(c[:, 0], map_seq.Lambda_0, map_seq.E0)
-    X2_h = DiscreteFunction(c[:, 1], map_seq.Lambda_0, map_seq.E0)
-    return stellarator_map(X1_h, X2_h, nfp=nfp, flip_zeta=False), resid
+    X1_h = DiscreteFunction(R_dof, map_seq.Lambda_0, map_seq.E0)
+    X2_h = DiscreteFunction(Z_dof, map_seq.Lambda_0, map_seq.E0)
+    return stellarator_map(X1_h, X2_h, nfp=nfp, flip_zeta=False), R_dof, Z_dof, resid
 
 
 def interpolate_B(x, B, seq, exclude_axis_tol=1e-3):

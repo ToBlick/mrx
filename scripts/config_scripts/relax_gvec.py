@@ -64,6 +64,41 @@ def create_eta_schedule(cfg: DictConfig):
     
     return eta_schedule
 
+def create_hdf5_callback(seq, diagnostics, nfp, cfg: DictConfig, outdir: Path):
+    """
+    Create a callback function to save intermediate results to HDF5 after each outer iteration.
+
+    Args:
+        seq (DeRhamSequence):
+        diagnostics (MRXDiagnostics): _description_
+        nfp (int): _description_
+        cfg (DictConfig): _description_
+        outdir (Path): _description_
+    """
+    get_pressure = jax.jit(diagnostics.pressure)
+    def hdf5_callback(state, iteration):
+        if iteration % cfg.output.save_every != 0:
+            return state
+
+        print(f"  [Callback] Saving intermediate results to HDF5 at iteration {iteration}...")
+
+        B_dof = state.B_n
+        p_dof = get_pressure(B_dof)
+
+        output_file = outdir / "intermediate_states.h5"
+        # Use a group per iteration
+        with h5py.File(output_file, "a") as f:
+            group = f.create_group(f"iter_{iteration:05d}")
+            group.create_dataset("B_dof", data=B_dof)
+            group.create_dataset("p_dof", data=p_dof)
+            group.attrs["iteration"] = iteration
+            group.attrs["force_norm"] = float(state.F_norm)
+
+        print(f"  [Callback] Saved intermediate results to {output_file} (group iter_{iteration:05d})")
+
+        return state
+    
+    return hdf5_callback
 
 def create_fieldline_callback(seq, diagnostics, nfp, cfg: DictConfig, outdir: Path):
     """
@@ -247,7 +282,7 @@ def main(cfg: DictConfig) -> float:
     ps_map = tuple(min(p, n - 1) for p, n in zip(ps_map, ns_map))
     
     print("Interpolating map...")
-    map_func, map_resid = interpolate_map_from_points(
+    map_func, R_dof, Z_dof, map_resid = interpolate_map_from_points(
         pts, R, Z, nfp, ns=ns_map, ps=ps_map, quad_order=cfg.map.quad_order
     )
     map_func = jax.jit(map_func)
@@ -328,7 +363,11 @@ def main(cfg: DictConfig) -> float:
     
     # Setup fieldline callback if enabled
     callback = None
-    if cfg.fieldline.enabled:
+    
+    if cfg.output.save_every > 0:
+        print(f"HDF5 callback enabled: saving every {cfg.output.save_every} iterations")
+        callback = create_hdf5_callback(seq, diagnostics, nfp, cfg, outdir)
+    elif cfg.fieldline.enabled:
         print(f"Fieldline callback enabled: tracing every {cfg.fieldline.every} iterations")
         callback = create_fieldline_callback(seq, diagnostics, nfp, cfg, outdir)
     
@@ -378,6 +417,9 @@ def main(cfg: DictConfig) -> float:
             f.create_dataset("helicity_trace", data=jnp.array(traces["helicity"]))
             f.create_dataset("timestep_trace", data=jnp.array(traces["timestep"]))
             f.create_dataset("eta_trace", data=jnp.array(traces["eta"]))
+            f.create_dataset("iteration_trace", data=jnp.array(traces["iteration"]))
+            f.create_dataset("R_dof", data=R_dof)
+            f.create_dataset("Z_dof", data=Z_dof)
             # Save flattened config
             f.attrs["config"] = OmegaConf.to_yaml(cfg)
     

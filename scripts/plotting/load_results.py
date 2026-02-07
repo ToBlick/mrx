@@ -19,7 +19,7 @@ from mrx.plotting import plot_twin_axis
 # For a multirun:
 # base_dir = Path("out/gvec_relaxation/multirun/20260203_120000")
 
-base_dir = Path("out/gvec_relaxation/20260204_140136")
+base_dir = Path("out/gvec_relaxation/20260205_190027")
 
 # %%
 def find_result_files(base_dir: Path) -> list[Path]:
@@ -239,3 +239,5 @@ if all_results:
 #         param_value = extract_param_from_config(results["config_str"], param_to_compare)
 #         final_force = results.get("force_trace", [np.nan])[-1]
 #         print(f"{run_name}: {param_to_compare}={param_value}, final_force={final_force:.2e}")
+
+# %%

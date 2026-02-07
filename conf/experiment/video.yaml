@@ -1,0 +1,16 @@
+# Quick test run with minimal settings
+# Usage: python scripts/config_scripts/relax_gvec.py +experiment=test
+# @package _global_
+
+defaults:
+  - /resolution: medium
+
+relaxation:
+  num_iters_inner: 10
+  num_iters_outer: 10
+
+fieldline:
+  enabled: true
+  every: 1
+  T: 10000.0
+  n_traj: 64
