@@ -1,11 +1,9 @@
 # %%
 from functools import partial
-from itertools import product
 
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pullback, Pushforward

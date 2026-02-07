@@ -6,30 +6,31 @@ and other analysis results using Plotly.
 """
 
 # %%
-import os
 from typing import Callable, Optional
-    
-from mpl_toolkits.axes_grid1 import make_axes_locatable
+
 import diffrax as dfx
-import h5py
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 
-from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.mappings import cerfon_map, extend_map_nfp
+from mrx.differential_forms import DiscreteFunction
 
 __all__ = [
-    "converge_plot",
     "get_3d_grids",
     "get_2d_grids",
     "get_1d_grids",
+    "plot_torus",
+    "set_axes_equal",
+    "plot_twin_axis",
     "poincare_plot",
-    "pressure_plot",
     "trace_plot",
+    "integrate_fieldlines",
+    "get_periodic_intersections",
+    "get_iota_log",
+    "get_iota",
+    "classify_uniformity",
 ]
 
 # Base marker styles for different data series
@@ -59,80 +60,9 @@ base_markers = [
 # Default color scale for plots
 colorbar = "Viridis"
 
-
-def converge_plot(err: jnp.ndarray, ns: jnp.ndarray, ps: jnp.ndarray, qs: jnp.ndarray):
-    """
-    Create a convergence plot showing error vs. number of elements for different polynomial orders.
-
-    This function generates a plotly figure showing the convergence behavior of
-    numerical solutions for different polynomial orders (p) and quadrature rules (q).
-
-    Args:
-        err (numpy.ndarray): Error values of shape (len(ns), len(ps), len(qs))
-        ns (numpy.ndarray): Array of number of elements
-        ps (numpy.ndarray): Array of polynomial orders
-        qs (numpy.ndarray): Array of quadrature rule orders
-
-    Returns:
-        plotly.graph_objects.Figure: A plotly figure showing the convergence plot
-            with separate markers for polynomial orders and colors for quadrature rules.
-
-    Notes:
-        - Each polynomial order (p) is represented by a different marker style
-        - Each quadrature rule (q) is represented by a different color
-        - The plot includes both lines and markers for better visualization
-        - Legend entries are added separately for markers and colors
-    """
-    import plotly.colors as pc
-    import plotly.graph_objects as go
-
-    markers = [base_markers[i % len(base_markers)] for i in range(len(ps))]
-    colors = pc.sample_colorscale(colorbar, len(qs))
-    fig = go.Figure()
-
-    # Add main traces with both lines and markers
-    for j, p in enumerate(ps):
-        for k, q in enumerate(qs):
-            fig.add_trace(
-                go.Scatter(
-                    x=ns,
-                    y=err[:, j, k],
-                    mode="lines+markers",
-                    name=f"p={p}",
-                    marker=dict(symbol=markers[j], size=8, color=colors[k]),
-                    line=dict(color=colors[k], width=2),
-                    showlegend=False,
-                )
-            )
-
-    # Add legend entries for polynomial orders (markers)
-    for j, marker in enumerate(markers):
-        fig.add_trace(
-            go.Scatter(
-                x=[None],
-                y=[None],
-                mode="markers",
-                marker=dict(symbol=marker, color=colors[0], size=8),
-                name=f"p = {ps[j]}",
-                showlegend=True,
-            )
-        )
-
-    # Add legend entries for quadrature rules (colors)
-    for j, color in enumerate(colors):
-        fig.add_trace(
-            go.Scatter(
-                x=[None],
-                y=[None],
-                mode="lines",
-                marker=dict(symbol=None, color=color, size=8),
-                name=f"q = {qs[j]}",
-                showlegend=True,
-            )
-        )
-
-    return fig
-
+#########
+# Grids #
+#########
 
 def get_3d_grids(
     F: Callable,
@@ -201,7 +131,6 @@ def get_3d_grids(
     _y2 = _y[:, 1].reshape(nx, ny, nz)
     _y3 = _y[:, 2].reshape(nx, ny, nz)
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
-
 
 def get_2d_grids(
     F: Callable,
@@ -309,7 +238,6 @@ def get_2d_grids(
     _y = jax.vmap(F)(_x)
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
-
 def get_1d_grids(
     F: Callable, zeta: float = 0, chi: float = 0, nx: int = 64, tol: float = 1e-6
 ):
@@ -358,248 +286,9 @@ def get_1d_grids(
     _y3 = _y[:, 2]
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
-
-def trajectory_plane_intersections_jit(
-    trajectories: jnp.ndarray, plane_val: float = 0.5, axis: int = 1
-):
-    """
-    Vectorized + jittable intersection with plane x_axis = plane_val.
-
-    Parameters
-    ----------
-    trajectories : array (N, T, D)
-    plane_val    : float
-    axis         : int, which coordinate axis (default=1 for x_2).
-
-    Returns
-    -------
-    intersections : array (N, T-1, D)
-        Intersection points for each segment. Non-crossings are filled with NaN.
-    mask : bool array (N, T-1)
-        True if the corresponding segment contains an intersection.
-    """
-    x = trajectories[..., axis]  # (N, T)
-    diff = x - plane_val
-
-    # if plane is zero, check for one point very small and another close to one:
-    if plane_val == 0:
-        diff = jnp.minimum(jnp.abs(diff), jnp.abs(diff - 1))
-
-    # crossings: sign change or exact hit
-    mask = diff[..., :-1] * diff[..., 1:] <= 0
-
-    # interpolation fraction t in [0,1]
-    denom = diff[..., :-1] - diff[..., 1:]
-    t = jnp.where(mask, diff[..., :-1] / denom, jnp.nan)  # (N, T-1)
-
-    # shape to broadcast into (N, T-1, 1)
-    t = t[..., None]
-
-    # segment start + t * (segment end - start)
-    intersections = trajectories[:, :-1, :] + t * (
-        trajectories[:, 1:, :] - trajectories[:, :-1, :]
-    )
-
-    return intersections, mask
-
-
-def plot_crossections_separate(
-    p_h: Callable,
-    grids_pol: list,
-    zeta_vals: list,
-    textsize: int = 16,
-    ticksize: int = 16,
-    plot_centerline: bool = False,
-):
-    """
-    Plot cross-sections of a function on a list of grids.
-
-    Parameters
-    ----------
-    p_h : callable
-        Function to plot.
-    grids_pol : list
-    zeta_vals : list
-        Values of the zeta coordinate to plot.
-    textsize : int
-        Size of the text.
-    ticksize : int
-        Size of the ticks.
-    plot_centerline : bool
-        Whether to plot the centerline.
-
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-        Figure object.
-    axes : list
-        List of axes objects.
-    """
-    numplots = len(grids_pol)
-    fig, axes = plt.subplots(1, numplots, figsize=(16, 16 / 5))
-    axes = axes.flatten()
-
-    last_c = None
-    for i, (ax, grid) in enumerate(zip(axes, grids_pol)):
-        # # do a PCA to get the planar coordinates
-        # mean = jnp.mean(grid[1], axis=0)
-        # cov = jnp.cov(grid[1].T)
-        # eigvals, eigvecs = jnp.linalg.eigh(cov)
-        # # sort eigenvalues and eigenvectors
-        # idx = jnp.argsort(eigvals)[::-1]
-        # eigvals = eigvals[idx]
-        # eigvecs = eigvecs[:, idx]
-        # # project points onto the first two principal components
-        # centered = grid[1] - mean
-        # projected = centered @ eigvecs[:, :2]
-        # nu1 = projected[:, 0].reshape(*grid[2][0].shape)
-        # nu2 = projected[:, 1].reshape(*grid[2][0].shape)
-
-        R = jnp.sqrt(grid[2][0] ** 2 + grid[2][1] ** 2)
-        z = grid[2][2]
-
-        vals = jax.vmap(p_h)(grid[0]).reshape(*grid[2][0].shape)
-
-        # draw contour above the guide lines
-        last_c = ax.contourf(R, z, vals, 25, cmap="plasma", zorder=2)
-
-        # ensure axis artists (like text/legend) are above the guide lines
-        ax.set_axisbelow(False)
-
-        if plot_centerline:
-            ax.axvline(
-                1.0, color="k", linestyle=":", linewidth=1.5, zorder=3, clip_on=True
-            )
-        # ax.axhline(0.0, color='k', linestyle=":", linewidth=1.5, zorder=3, clip_on=True)
-
-        ax.set_aspect("equal")
-
-        # remove all ticks
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-        # remove the box (all spines)
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-
-        try:
-            zval = float(zeta_vals[i])
-        except Exception:
-            zval = float(jnp.asarray(zeta_vals[i]))
-        label = rf"$\zeta = {zval:.2f}$"
-        # place a small boxed text in the top-right of the axis (no legend handle/whitespace)
-        ax.text(
-            0.98,
-            0.98,
-            label,
-            transform=ax.transAxes,
-            fontsize=textsize,
-            ha="right",
-            va="top",
-            zorder=10,
-            bbox=dict(
-                facecolor="white",
-                edgecolor="black",
-                boxstyle="round,pad=0.3",
-                alpha=1.0,
-            ),
-        )
-
-        # force same limits across all subplots
-    Rmins, Rmaxs, Zmins, Zmaxs = [], [], [], []
-    for grid in grids_pol:
-        R = jnp.sqrt(grid[2][0] ** 2 + grid[2][1] ** 2)
-        z = grid[2][2]
-        Rmins.append(R.min())
-        Rmaxs.append(R.max())
-        Zmins.append(z.min())
-        Zmaxs.append(z.max())
-
-    Rmin, Rmax = float(min(Rmins)), float(max(Rmaxs))
-    Zmin, Zmax = float(min(Zmins)), float(max(Zmaxs))
-
-    for ax in axes:
-        ax.set_xlim(Rmin, Rmax)
-        ax.set_ylim(Zmin, Zmax)
-
-    # put ONE shared colorbar on the right, aligned with subplots
-    fig.subplots_adjust(right=0.85)  # make space for colorbar
-    # [left, bottom, width, height]
-    cbar_ax = fig.add_axes([0.88, 0.15, 0.03, 0.7])
-    cbar_ax.tick_params(labelsize=ticksize)
-
-    # add reference axis arrows (R to the right, z upwards) at the bottom-left of the first subplot
-    try:
-        anchor_ax = axes[0]
-    except Exception:
-        anchor_ax = axes if hasattr(axes, "annotate") else None
-
-    if anchor_ax is not None:
-        x0, y0 = -0.01, -0.01  # anchor location in axis fraction coordinates
-        arrow_len = 0.16  # length of each arrow in axis fraction units
-
-        # upward arrow for z
-
-        # annotate the center (dotted) line at the very top of the axis
-        if plot_centerline:
-            anchor_ax.text(
-                0.5,
-                1.02,
-                r"$R = 1$",
-                transform=anchor_ax.transAxes,
-                fontsize=textsize,
-                ha="center",
-                va="bottom",
-                zorder=12,
-                bbox=dict(facecolor="white", edgecolor="none",
-                          alpha=0.8, pad=0.2),
-            )
-        anchor_ax.annotate(
-            "",
-            xy=(x0, y0 + arrow_len),
-            xytext=(x0, y0),
-            xycoords="axes fraction",
-            arrowprops=dict(arrowstyle="->", linewidth=1.5, color="k"),
-        )
-        # rightward arrow for R
-        anchor_ax.annotate(
-            "",
-            xy=(x0 + arrow_len, y0),
-            xytext=(x0, y0),
-            xycoords="axes fraction",
-            arrowprops=dict(arrowstyle="->", linewidth=1.5, color="k"),
-        )
-
-        # labels for arrows
-        anchor_ax.text(
-            x0 - 0.01,
-            y0 + arrow_len + 0.01,
-            r"$z$",
-            transform=anchor_ax.transAxes,
-            fontsize=textsize + 2,
-            ha="center",
-            va="bottom",
-        )
-        anchor_ax.text(
-            x0 + arrow_len + 0.01,
-            y0 - 0.01,
-            r"$R$",
-            transform=anchor_ax.transAxes,
-            fontsize=textsize + 2,
-            ha="left",
-            va="center",
-        )
-
-    cbar = fig.colorbar(
-        last_c, cax=cbar_ax, format=mticker.ScalarFormatter(useMathText=True)
-    )
-    cbar.formatter.set_powerlimits((0, 0))  # always show scientific notation
-    cbar.update_ticks()
-    cbar.ax.yaxis.get_offset_text().set_fontsize(ticksize)
-
-    # plt.tight_layout(rect=[0, 0, 0.85, 1])  # leave room for cbar
-    return fig, axes
-
+############
+# 3D plots #
+############
 
 def plot_torus(
     p_h: Callable,
@@ -736,1252 +425,6 @@ def plot_torus(
 
     return fig, ax
 
-
-def plot_crossections(f: Callable, grids: list):
-    """
-    Plot cross-sections of a function on a list of grids.
-
-    Parameters
-    ----------
-    f : callable
-        Function to plot.
-    grids : list
-        List of grids to plot.
-
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-        Figure object.
-    ax : matplotlib.axes.Axes
-        Axes object.
-    """
-    fig = plt.figure(figsize=(10, 6))
-    ax = fig.add_subplot(111, projection="3d")
-    for grid in grids:
-        X = grid[2][0]
-        Y = grid[2][1]
-        Z = grid[2][2]
-        vals = jax.vmap(f)(grid[0]).reshape(X.shape)
-
-        ax.plot_surface(
-            X,
-            Y,
-            Z,
-            facecolors=plt.cm.plasma(
-                (vals - vals.min()) / (vals.max() - vals.min())),
-            rstride=1,
-            cstride=1,
-            shade=False,
-        )
-    set_axes_equal(ax)
-    plt.tight_layout()
-    return fig, ax
-
-
-def intersect_with_plane(
-    traj, plane_normal=jnp.array([1.0, 0.0, 0.0]), plane_offset=0.0, deg=2
-):
-    """
-    JAX/vmap/jit-safe: intersections of a 3D trajectory with an arbitrary plane.
-
-    Plane defined by:    n · x = plane_offset
-    where n is the normal vector.
-
-    Parameters
-    ----------
-    traj : (N,3)
-        Trajectory points in 3D.
-    plane_normal : (3,)
-        Plane normal vector (does not need to be normalized).
-    plane_offset : float
-        Offset in the plane equation n·x = plane_offset.
-    deg : int
-        Polynomial interpolation degree (1=linear, 2=quadratic, 3=cubic,...)
-    """
-    N = traj.shape[0]
-    pad_size = N
-    half = deg // 2
-
-    # signed distance of each point to the plane
-    n = plane_normal / jnp.linalg.norm(plane_normal)
-    s = traj @ n - plane_offset  # signed distance to plane
-
-    # find sign changes (crossings)
-    flip_mask = s[:-1] * s[1:] < 0
-    idxs = jnp.where(flip_mask, jnp.arange(N - 1), N)
-    idxs = jnp.sort(idxs)
-    idxs = jnp.pad(idxs, (0, jnp.maximum(0, pad_size - idxs.size)), constant_values=N)[
-        :pad_size
-    ]
-
-    def interp(i):
-        valid = (i >= half) & (i < N - half)
-        offset = jnp.arange(-half, deg - half + 1)
-        idxs_local = jnp.clip(i + offset, 0, N - 1)
-        pts_seg = traj[idxs_local]
-        s_seg = s[idxs_local]
-        t = jnp.arange(deg + 1, dtype=float)
-
-        # fit polynomial s(t) ~ a t^deg + b t^{deg-1} + ... + c
-        coeffs_s = jnp.polyfit(t, s_seg, deg=deg)
-        roots = jnp.roots(coeffs_s, strip_zeros=False)
-        roots_real = jnp.real(roots)
-        cond = (
-            (jnp.abs(jnp.imag(roots)) < 1e-8) & (roots_real > 0.0) & (roots_real < deg)
-        )
-        t_cross = jnp.nanmin(jnp.where(cond, roots_real, jnp.nan))
-
-        # fit each coordinate & evaluate at t_cross
-        def eval_coord(y_seg):
-            coeffs = jnp.polyfit(t, y_seg, deg=deg)
-            return jnp.polyval(coeffs, t_cross)
-
-        pt = jax.vmap(eval_coord)(pts_seg.T)
-        return jnp.where(valid, pt, jnp.nan)
-
-    pts = jax.vmap(interp)(idxs)
-    return pts, idxs
-
-
-def trajectory_plane_intersections_list(
-    trajectory: jnp.ndarray, plane_point: jnp.ndarray, plane_normal: jnp.ndarray
-):
-    """
-    Compute intersections of a 3D trajectory with a general plane.
-
-    Returns a list of intersection points (no NaNs, no masks).
-
-    Parameters
-    ----------
-    trajectory : ndarray (T, 3)
-    plane_point : ndarray (3,)
-    plane_normal : ndarray (3,)
-
-    Returns
-    -------
-    intersections : list of ndarray, each of shape (3,)
-    """
-    trajectory = np.asarray(trajectory)
-    plane_point = np.asarray(plane_point)
-    plane_normal = np.asarray(plane_normal)
-
-    intersections = []
-
-    for i in range(len(trajectory) - 1):
-        seg_start = trajectory[i]
-        seg_end = trajectory[i + 1]
-        seg_vec = seg_end - seg_start
-
-        denom = np.dot(plane_normal, seg_vec)
-        if np.abs(denom) < 1e-12:  # parallel segment
-            continue
-
-        t = np.dot(plane_normal, plane_point - seg_start) / denom
-
-        if 0 <= t <= 1:
-            intersections.append(seg_start + t * seg_vec)
-
-    return intersections
-
-
-
-# def poincare_plot(
-#     outdir: str,
-#     vector_field: callable,
-#     F: callable,
-#     x0: jnp.ndarray,
-#     n_loop: int,
-#     n_batch: int,
-#     colors: list,
-#     plane_val: float,
-#     axis: int,
-#     final_time: int = 10000,
-#     n_saves: int = 20000,
-#     max_steps: int = 150000,
-#     r_tol: float = 1e-7,
-#     a_tol: float = 1e-7,
-#     cylindrical: bool = False,
-#     filename: str = "",
-#     show: bool = False,
-# ):
-#     """
-#     Plot Poincaré sections of a field line.
-
-#     Parameters
-#     ----------
-#     outdir : str
-#         Directory to save the plots.
-#     vector_field : callable
-#         Vector field to plot.
-#     F : callable
-#         Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
-#     x0 : jnp.ndarray
-#         Initial conditions for the field lines.
-#     n_loop : int
-#         Number of field lines to plot.
-#     n_batch : int
-#         Number of batches of field lines to plot.
-#     colors : list
-#         Colors to use for the field lines.
-#     plane_val : float
-#         Value of the plane to plot.
-#     axis : int
-#         Axis to plot the plane on.
-#     final_time : int
-#         Final time to integrate the field lines.
-#     n_saves : int
-#         Number of saves to make during the integration.
-#     max_steps : int
-#         Maximum number of steps to take during the integration.
-#     r_tol : float
-#         Relative tolerance for the integration.
-#     a_tol : float
-#         Absolute tolerance for the integration.
-#     cylindrical : bool
-#         Whether to plot the Poincaré sections in cylindrical coordinates.
-#     filename : str
-#         Name of the plot files.
-#     show : bool
-#         Whether to display the plot.
-#     """
-#     os.makedirs(outdir, exist_ok=True)
-#     # --- Figure settings ---
-#     FIG_SIZE_SQUARE = (8, 8)
-#     LABEL_SIZE = 20
-#     TICK_SIZE = 16
-
-#     assert x0.shape == (n_batch, n_loop, 3)
-
-#     term = dfx.ODETerm(vector_field)
-#     solver = dfx.Dopri5()
-#     saveat = dfx.SaveAt(ts=jnp.linspace(0, final_time, n_saves))
-#     stepsize_controller = dfx.PIDController(rtol=r_tol, atol=a_tol)
-#     trajectories = []
-
-#     # Compute trajectories
-#     print("Integrating field lines...")
-#     for x in x0:
-#         trajectories.append(jax.vmap(lambda x0: dfx.diffeqsolve(term, solver,
-#                                                                 t0=0, t1=final_time, dt0=None,
-#                                                                 y0=x0,
-#                                                                 max_steps=max_steps,
-#                                                                 saveat=saveat, stepsize_controller=stepsize_controller).ys)(x))
-#     trajectories = jnp.array(trajectories).reshape(
-#         n_batch * n_loop, n_saves, 3) % 1
-
-#     physical_trajectories = jax.vmap(F)(trajectories.reshape(-1, 3))
-#     physical_trajectories = physical_trajectories.reshape(
-#         trajectories.shape[0], trajectories.shape[1], 3)
-
-#     intersections, mask = trajectory_plane_intersections_jit(
-#         trajectories, plane_val=plane_val, axis=axis)
-
-#     if cylindrical:
-#         def F_cyl(p):
-#             x, y, z = F(p)
-#             r = jnp.sqrt(x**2 + y**2)
-#             phi = jnp.arctan2(y, x)
-#             return jnp.array([r, phi, z])
-#         physical_intersections = jax.vmap(F_cyl)(intersections.reshape(-1, 3))
-#     else:
-#         physical_intersections = jax.vmap(F)(intersections.reshape(-1, 3))
-#     physical_intersections = physical_intersections.reshape(
-#         intersections.shape[0], intersections.shape[1], 3)
-
-#     print("Plotting Poincaré sections...")
-#     # physical domain
-#     fig1, ax1 = plt.subplots(figsize=FIG_SIZE_SQUARE)
-#     for i, t in enumerate(physical_intersections):
-#         # Cycle through the defined colors
-#         current_color = colors[i % len(colors)]
-#         if not cylindrical:
-#             if axis == 0:
-#                 ax1.scatter(t[:, 1], t[:, 2], s=1, color=current_color)
-#                 ax1.set_xlabel(r'$x_2$', fontsize=LABEL_SIZE)
-#                 ax1.set_ylabel(r'$x_3$', fontsize=LABEL_SIZE)
-#             elif axis == 1:
-#                 ax1.scatter(t[:, 0], t[:, 2], s=1, color=current_color)
-#                 ax1.set_xlabel(r'$x_1$', fontsize=LABEL_SIZE)
-#                 ax1.set_ylabel(r'$x_3$', fontsize=LABEL_SIZE)
-#             else:
-#                 ax1.scatter(t[:, 0], t[:, 1], s=1, color=current_color)
-#                 ax1.set_xlabel(r'$x_1$', fontsize=LABEL_SIZE)
-#                 ax1.set_ylabel(r'$x_2$', fontsize=LABEL_SIZE)
-#         else:  # for cylindrical, always plot (r,z) (axis = 2)
-#             ax1.scatter(t[:, 0], t[:, 2], s=1, color=current_color)
-#             ax1.set_xlabel(r'$R$', fontsize=LABEL_SIZE)
-#             ax1.set_ylabel(r'$z$', fontsize=LABEL_SIZE)
-#     ax1.tick_params(axis='both', which='major', labelsize=TICK_SIZE)
-#     ax1.grid(True, linestyle="--", alpha=0.5)
-#     plt.tight_layout()
-
-#     # logical domain
-#     fig2, ax2 = plt.subplots(figsize=FIG_SIZE_SQUARE)
-#     for i, t in enumerate(intersections):
-#         current_color = colors[i % len(colors)]
-#         if axis == 0:
-#             ax2.scatter(t[:, 1], t[:, 2], s=1, color=current_color)
-#             ax2.set_xlabel(r'$\theta$', fontsize=LABEL_SIZE)
-#             ax2.set_ylabel(r'$\zeta$', fontsize=LABEL_SIZE)
-#         elif axis == 1:
-#             ax2.scatter(t[:, 0], t[:, 2], s=1, color=current_color)
-#             ax2.set_xlabel(r'$r$', fontsize=LABEL_SIZE)
-#             ax2.set_ylabel(r'$\zeta$', fontsize=LABEL_SIZE)
-#         else:
-#             ax2.scatter(t[:, 0], t[:, 1], s=1, color=current_color)
-#             ax2.set_xlabel(r'$r$', fontsize=LABEL_SIZE)
-#             ax2.set_ylabel(r'$\theta$', fontsize=LABEL_SIZE)
-#     ax2.tick_params(axis='both', which='major', labelsize=TICK_SIZE)
-#     ax2.grid(True, linestyle="--", alpha=0.5)
-#     plt.tight_layout()
-#     plt.savefig(outdir + filename + "poincare_logical.png",
-#                 dpi=600, bbox_inches='tight')
-
-#     print("Plotting field lines...")
-#     # Also plot a few full physical trajectories
-#     for (i, t) in enumerate(physical_trajectories[::2]):
-#         fig = plt.figure(figsize=FIG_SIZE_SQUARE)
-#         ax = fig.add_subplot(projection='3d')
-#         ax.plot(t[:, 0], t[:, 1], t[:, 2],
-#                 color="purple",
-#                 alpha=1)
-#         ax.set_axis_off()
-#         plt.tight_layout()
-#         plt.savefig(outdir + filename + "field_line_" +
-#                     str(i) + ".pdf", bbox_inches='tight')
-
-#     if show:
-#         plt.show()
-
-#     return (fig1, ax1), (fig2, ax2)
-
-# %%
-def poincare_plot(logical_trajectories,
-                  Phi,
-                  nfp,
-                  p_h=None,
-                  zeta_value=0.5,
-                  interpolation_degree=3,
-                  cmap_iota="berlin",
-                  cmap_p="plasma",
-                  markersize=0.1,
-                  ks_thresh=10,
-                  denom_max=20,
-                  Rlim=None,
-                  zlim=None,
-                  rasterized=True,
-                  show=False):
-    # native Python loop - lax.scan not possible for now as padding width is a runtime value
-    res = [
-        intersect_with_plane_logical_periodic(
-            traj, zeta_value=zeta_value, deg=interpolation_degree)
-        for traj in logical_trajectories
-    ]
-    logical_intersections = jnp.array([r[0] for r in res])
-    idxs = jnp.array([r[1] for r in res])
-
-    iotas, flags, ks = jax.vmap(lambda c: get_iota_log(c, nfp, ks_thresh=ks_thresh))(
-        logical_trajectories
-    )
-
-    mask = (~jnp.isnan(logical_intersections[..., 0])) & (
-        logical_intersections[..., 2] < 0.5
-    )
-    pts_log = logical_intersections[mask] % 1.0
-    pts_phys = jax.vmap(Phi)(pts_log)
-    p_vals = jax.vmap(p_h)(pts_log) if p_h is not None else None
-    # Create iota_vals array where each point gets the iota value of its trajectory
-    traj_indices = jnp.arange(logical_intersections.shape[0])[:, None]
-    traj_indices_expanded = jnp.broadcast_to(
-        traj_indices, logical_intersections.shape[:2])
-    iota_vals = iotas[traj_indices_expanded][mask]
-
-    # Separate points based on whether iota is NaN
-    valid_mask = ~jnp.isnan(iota_vals)
-    nan_mask = jnp.isnan(iota_vals)
-    
-    fig = plt.figure(figsize=(10, 4))
-    # Fixed positions: [left, bottom, width, height]
-    ax1 = fig.add_axes([0.05, 0.12, 0.35, 0.78])   # left plot
-    ax2 = fig.add_axes([0.55, 0.12, 0.35, 0.78])   # right plot
-    # Colorbar axes with fixed positions
-    cax1 = fig.add_axes([0.41, 0.12, 0.02, 0.78])  # left colorbar
-    cax2 = fig.add_axes([0.91, 0.12, 0.02, 0.78])  # right colorbar
-
-    # Plot valid points with color mapping
-    if jnp.any(valid_mask):
-        # Left plot: color by pressure if available, otherwise by iota
-        if p_vals is not None:
-            s1 = ax1.scatter(  # physical
-                (pts_phys[valid_mask, 0] ** 2 +
-                 pts_phys[valid_mask, 1] ** 2) ** 0.5,
-                pts_phys[valid_mask, 2],
-                c=p_vals[valid_mask] * 100,
-                cmap=cmap_p,
-                s=markersize,
-                rasterized=rasterized,
-            )
-        else:
-            s1 = ax1.scatter(  # physical
-                (pts_phys[valid_mask, 0] ** 2 +
-                 pts_phys[valid_mask, 1] ** 2) ** 0.5,
-                pts_phys[valid_mask, 2],
-                c=iota_vals[valid_mask],
-                cmap=cmap_iota,
-                s=markersize,
-                rasterized=rasterized,
-            )
-        s2 = ax2.scatter(  # logical
-            pts_log[valid_mask, 0],
-            pts_log[valid_mask, 1],
-            c=iota_vals[valid_mask],
-            cmap=cmap_iota,
-            s=markersize,
-            rasterized=rasterized,
-        )
-
-    # Plot NaN points in grey
-    if jnp.any(nan_mask):
-        ax1.scatter(  # physical
-            (pts_phys[nan_mask, 0] ** 2 + pts_phys[nan_mask, 1] ** 2) ** 0.5,
-            pts_phys[nan_mask, 2],
-            c="grey",
-            s=markersize,
-            rasterized=rasterized,
-        )
-        ax2.scatter(  # logical
-            pts_log[nan_mask, 0],
-            pts_log[nan_mask, 1],
-            c="grey",
-            s=markersize,
-            rasterized=rasterized,
-        )
-
-    # Set fixed axis limits - always make the plot square
-    # Compute data ranges
-    R_data = (pts_phys[:, 0] ** 2 + pts_phys[:, 1] ** 2) ** 0.5
-    z_data = pts_phys[:, 2]
-    
-    # Use provided limits or compute from data
-    R_min = Rlim[0] if Rlim is not None else float(jnp.min(R_data))
-    R_max = Rlim[1] if Rlim is not None else float(jnp.max(R_data))
-    z_min = zlim[0] if zlim is not None else float(jnp.min(z_data))
-    z_max = zlim[1] if zlim is not None else float(jnp.max(z_data))
-    
-    # Pad to make square
-    R_range = R_max - R_min
-    z_range = z_max - z_min
-    max_range = max(R_range, z_range) * 1.05  # 5% margin
-    R_center = (R_min + R_max) / 2
-    z_center = (z_min + z_max) / 2
-    ax1.set_xlim(R_center - max_range / 2, R_center + max_range / 2)
-    ax1.set_ylim(z_center - max_range / 2, z_center + max_range / 2)
-    
-    ax1.set(xlabel="R", ylabel="z")
-    ax2.set(xlabel="r", ylabel="θ", aspect="equal")
-
-    # Only add colorbar if there are valid points
-    if jnp.any(valid_mask):
-        # Add colorbar to left plot for pressure if available
-        if p_vals is not None:
-            cbar1 = fig.colorbar(s1, cax=cax1, label="p (x100)")
-        else:
-            cax1.set_visible(False)  # Hide left colorbar axis if no pressure
-        
-        cbar2 = fig.colorbar(s2, cax=cax2, label="iota")
-
-        # Automatically determine rational ticks based on nfp and clipped iota range
-        iota_min, iota_max = (
-            jnp.nanmin(iota_vals[valid_mask]),
-            jnp.nanmax(iota_vals[valid_mask]),
-        )
-        rational_ticks = []
-        rational_labels = []
-        seen_rationals = set()
-        for m in range(1, denom_max // nfp + 1):
-            m_scaled = m * nfp
-            for n in range(1, denom_max):  # reasonable range for denominators
-                rational = m_scaled / n
-                if iota_min <= rational <= iota_max and rational not in seen_rationals:
-                    rational_ticks.append(rational)
-                    g = jnp.gcd(m_scaled, n)
-                    rational_labels.append(
-                        f"{int(m_scaled // g)}/{int(n // g)}")
-                    seen_rationals.add(rational)
-        if rational_ticks:
-            cbar2.set_ticks(rational_ticks)
-            cbar2.set_ticklabels(rational_labels)
-
-        if show:
-            plt.show()
-    else:
-        # Hide colorbar axes if no valid points
-        cax1.set_visible(False)
-        cax2.set_visible(False)
-
-    return fig, (ax1, ax2)
-
-
-def intersect_with_plane_logical_periodic(traj, zeta_value, deg=2):
-    """
-    Plane defined by: ζ = constant, where ζ is periodic on [0,1]
-
-    Parameters
-    ----------
-    traj : (N,3)
-        Trajectory points in 3D.
-    zeta_value : float
-        ζ value of the plane (should be in [0,1]).
-    deg : int
-        Polynomial interpolation degree.
-    """
-    N = traj.shape[0]
-    pad_size = N
-    half = deg // 2
-
-    zeta_points = traj[:, 2]
-
-    # Handle periodic wrapping: compute shortest distance considering periodicity
-    def periodic_distance(z1, z2):
-        """Compute shortest distance between two points on [0,1] torus"""
-        return (z2 - z1 + zeta_value + 0.1) % 1.0 - (zeta_value + 0.1) % 1.0
-
-    # Compute signed distances considering periodicity
-    s = periodic_distance(zeta_value, zeta_points)
-
-    # Find sign changes (true crossings)
-    flip_mask = s[:-1] * s[1:] < 0
-
-    # Additional check: ensure we're not crossing due to large jumps
-    zeta_diff = periodic_distance(zeta_points[:-1], zeta_points[1:])
-    large_jump_mask = jnp.abs(zeta_diff) > 0.5  # Detect wrapping
-
-    # Only count as crossing if not a large jump
-    valid_flip_mask = flip_mask & ~large_jump_mask
-
-    idxs = jnp.where(valid_flip_mask, jnp.arange(N - 1), N)
-    idxs = jnp.sort(idxs)
-    idxs = jnp.pad(idxs, (0, jnp.maximum(0, pad_size - idxs.size)), constant_values=N)[
-        :pad_size
-    ]
-
-    def interp(i):
-        valid = (i >= half) & (i < N - half)
-        offset = jnp.arange(-half, deg - half + 1)
-        idxs_local = jnp.clip(i + offset, 0, N - 1)
-        pts_seg = traj[idxs_local]
-        s_seg = s[idxs_local]
-        t = jnp.arange(deg + 1, dtype=float)
-
-        # fit polynomial s(t) ~ a t^deg + b t^{deg-1} + ... + c
-        coeffs_s = jnp.polyfit(t, s_seg, deg=deg)
-        roots = jnp.roots(coeffs_s, strip_zeros=False)
-        roots_real = jnp.real(roots)
-        cond = (
-            (jnp.abs(jnp.imag(roots)) < 1e-8) & (roots_real > 0.0) & (roots_real < deg)
-        )
-        t_cross = jnp.nanmin(jnp.where(cond, roots_real, jnp.nan))
-
-        # fit each coordinate & evaluate at t_cross
-        # Unwrap periodic coordinates (theta=1, zeta=2) before fitting to handle wrapping
-        def eval_coord(y_seg, is_periodic):
-            y_unwrapped = jnp.where(is_periodic, jnp.unwrap(y_seg, period=1.0), y_seg)
-            coeffs = jnp.polyfit(t, y_unwrapped, deg=deg)
-            result = jnp.polyval(coeffs, t_cross)
-            # Wrap back to [0, 1) for periodic coordinates
-            return jnp.where(is_periodic, result % 1.0, result)
-
-        # r (coord 0) is not periodic, theta (coord 1) and zeta (coord 2) are periodic
-        is_periodic = jnp.array([False, True, True])
-        pt = jax.vmap(eval_coord)(pts_seg.T, is_periodic)
-        return jnp.where(valid, pt, jnp.nan)
-
-    pts = jax.vmap(interp)(idxs)
-    return pts, idxs
-# %%
-
-
-def get_iota(c, nfp):
-    def toroidal_unwrapped(phi):
-        phi_unwrapped = jnp.unwrap(phi)
-        total_angle = phi_unwrapped[-1] - phi_unwrapped[0]
-        return total_angle / (2 * jnp.pi)
-
-    def poloidal_unwrapped(R, Z, R_center=1.0, Z_center=0.0):
-        θ = jnp.arctan2(Z - Z_center, R - R_center)
-        θ_unwrapped = jnp.unwrap(θ)
-        total_angle = θ_unwrapped[-1] - θ_unwrapped[0]
-        return total_angle / (2 * jnp.pi)
-
-    x, y, z = c[:, 0], c[:, 1], c[:, 2]
-    R = jnp.sqrt(x**2 + y**2)
-    phi = jnp.arctan2(y, x)
-    r_mean = jnp.mean(R)
-    z_mean = jnp.mean(z)
-    m = poloidal_unwrapped(R, z, R_center=r_mean, Z_center=z_mean)
-    n = toroidal_unwrapped(phi) / nfp
-    return jnp.abs(m / n)
-# %%
-
-
-def classify_uniformity(t, ks_thresh=0.05):
-
-    def uniformity_score(t_mod):
-        # sort values
-        ts = jnp.sort(t_mod)
-        n = t_mod.size
-
-        # empirical CDF minus ideal uniform CDF
-        ecdf = jnp.arange(1, n + 1) / n
-        ucdf = ts  # uniform CDF value at ts
-
-        # KS statistic
-        ks = jnp.max(jnp.abs(ecdf - ucdf)) * (n**0.5)
-        return ks
-
-    t_mod = t % 1.0
-    ks = uniformity_score(t_mod)
-    well_winding = ks < ks_thresh
-    return well_winding, ks
-
-
-def get_iota_log(c, nfp, ks_thresh=0.05):
-    t = jnp.unwrap(c[:, 1], period=1.0)
-    z = jnp.unwrap(c[:, 2], period=1.0)
-    total_t_angle = t[-1] - t[0]
-    total_z_angle = z[-1] - z[0]
-    iota = jnp.abs(total_t_angle / total_z_angle * nfp)
-    # Uniformity test
-    well_winding, ks = classify_uniformity(t, ks_thresh=ks_thresh)
-    # set bad values to nan
-    iota = jnp.where(well_winding, iota, jnp.nan)
-    return iota, well_winding, ks
-# %%
-
-# %%
-
-
-
-def pressure_plot(
-    p: jnp.ndarray,
-    Seq: DeRhamSequence,
-    F: Callable,
-    outdir: str,
-    filename: str,
-    resolution: int = 128,
-    zeta: float = 0,
-    tol: float = 1e-3,
-    SQUARE_FIG_SIZE: tuple = (8, 8),
-    LABEL_SIZE: int = 20,
-    TICK_SIZE: int = 16,
-    LINE_WIDTH: float = 2.5,
-):
-    """
-    Plot the pressure on the physical and logical domains side-by-side.
-
-    Parameters
-    ----------
-    p : jnp.ndarray
-        Pressure values.
-    Seq : DeRhamSequence
-        DeRham sequence to plot the pressure on.
-    F : callable
-        Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
-    outdir : str
-        Directory to save the plot.
-    filename : str
-        Name of the plot.
-    resolution : int
-        Resolution of the plot.
-    zeta : float
-        Value of the zeta coordinate to plot.
-    tol : float
-        Tolerance for the plot.
-    SQUARE_FIG_SIZE : tuple
-        Size of the figure.
-    LABEL_SIZE : int
-        Size of the labels.
-    TICK_SIZE : int
-        Size of the ticks.
-    LINE_WIDTH : float
-        Width of the line.
-    """
-    p_h = DiscreteFunction(p, Seq.Lambda_0, Seq.E0)
-    p_h_xyz = Pushforward(p_h, F, 0)
-
-    _s = jax.vmap(F)(
-        jnp.vstack([jnp.ones(256), jnp.linspace(0, 1, 256), jnp.zeros(256)]).T
-    )
-
-    fig, ax = plt.subplots(figsize=SQUARE_FIG_SIZE)
-
-    # Plot the line first
-    ax.plot(_s[:, 0], _s[:, 2], "k--",
-            linewidth=LINE_WIDTH, label="trajectory")
-
-    _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3) = get_2d_grids(
-        F, cut_value=zeta, nx=resolution, tol1=tol
-    )
-
-    Z = jax.vmap(p_h_xyz)(_x).reshape(_y1.shape)
-    cf = ax.contourf(_y1, _y3, Z, levels=20, cmap="plasma", alpha=0.8)
-
-    ax.set_xlim(jnp.min(_s[:, 0]) - 0.2, jnp.max(_s[:, 0]) + 0.2)
-    ax.set_ylim(jnp.min(_s[:, 2]) - 0.2, jnp.max(_s[:, 2]) + 0.2)
-    ax.set_aspect("equal")
-    ax.set_xlabel("R", fontsize=LABEL_SIZE)
-    ax.set_ylabel("z", fontsize=LABEL_SIZE)
-    ax.grid(True, linestyle="--", alpha=0.5)
-
-    # Colorbar
-    cbar = fig.colorbar(cf, ax=ax)
-    cbar.set_label(r"p", fontsize=LABEL_SIZE)
-    cbar.ax.tick_params(labelsize=TICK_SIZE)
-
-    # Save
-    plt.tight_layout()
-    # Ensure outdir ends with a path separator
-    if not outdir.endswith(os.sep) and not outdir.endswith("/"):
-        outdir = outdir + os.sep
-    plt.savefig(outdir + filename, bbox_inches="tight")
-    plt.close()
-
-
-def plot_scalar_fct_physical_logical(
-    p_h: Callable,
-    Phi: Callable,
-    n_vis: int = 64,
-    scale: float = 1.0,
-    cmap: str = "viridis",
-    levels: int = 25,
-    figsize: tuple = (8, 4),
-    grid_stride: int = 4,
-    grid_alpha: float = 0.2,
-    grid_lw: float = 1.0,
-    cbar_label: str = None,
-    cbar_shrink: float = 0.9,
-    constrained_layout: bool = True,
-    show: bool = False,
-    logical_plane: str = "r_theta",
-    fixed_theta: float = 0.0,
-    fixed_r: float = 0.5,
-    fixed_zeta: float = 0,
-    colorbar: bool = True,
-    avoid_boundary: float = 0.0,
-):
-    """Plot a scalar function on the physical and logical domains side-by-side.
-
-    Parameters
-    ----------
-    p_h : Callable
-        DiscreteFunction-like object mapping logical coordinates -> scalar
-        pressure value. Should accept (N,3) or (3,) points via vmap.
-    Phi : Callable
-        Mapping from logical coordinates to physical coords: (r,theta,zeta)->(x,y,z)
-    n_vis : int
-        Number of points per logical axis (resolution of the visualization).
-    scale : float
-        Multiplicative scale applied to `p_h` values for display.
-    cmap : str
-        Colormap to use.
-    levels : int
-        Number of levels for the contour plot.
-    figsize : tuple
-        Size of the figure.
-    grid_stride : int
-        Stride for the grid lines.
-    grid_alpha : float
-        Alpha for the grid lines.
-    grid_lw : float
-        Width for the grid lines.
-    cbar_label : str
-        Label for the colorbar.
-    cbar_shrink : float
-        Shrink factor for the colorbar.
-    constrained_layout : bool
-        Whether to use constrained layout.
-    show : bool
-        Whether to show the plot.
-    logical_plane : str
-        Logical plane to plot.
-    fixed_theta : float
-        Value of the theta coordinate to fix.
-    fixed_r : float
-        Value of the r coordinate to fix.
-    fixed_zeta : float
-        Value of the zeta coordinate to fix.
-    colorbar : bool
-        Whether to show the colorbar.
-
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-        Figure object.
-    ax_phys : matplotlib.axes.Axes
-        Axes object for the physical domain.
-    ax_log : matplotlib.axes.Axes
-        Axes object for the logical domain.
-    """
-    ɛ = avoid_boundary
-    # Build logical grid and evaluation points depending on requested plane
-    logical_plane = logical_plane.lower()
-    if logical_plane in ("r_theta", "rθ", "r_θ", "rtheta", "rt", "r_t"):
-        # default behavior: vary r and theta, fix zeta at `fixed_zeta`
-        _r = jnp.linspace(ɛ, 1 - ɛ, n_vis)
-        _θ = jnp.linspace(0, 1, n_vis)
-        _ζ = jnp.array([fixed_zeta])
-        _rgrid, _θgrid, _ζgrid = jnp.meshgrid(_r, _θ, _ζ, indexing="ij")
-        _x_hat = jnp.stack([_rgrid, _θgrid, _ζgrid], axis=-1).reshape(-1, 3)
-        logical_x = np.asarray(_rgrid).squeeze()
-        logical_y = np.asarray(_θgrid).squeeze()
-        xlabel, ylabel = "r", "θ"
-
-    elif logical_plane in ("r_zeta", "r_ζ", "r_z", "rzeta", "rz", "rζ"):
-        # vary r and zeta, fix theta at `fixed_theta`
-        _r = jnp.linspace(ɛ, 1 - ɛ, n_vis)
-        _ζ = jnp.linspace(0, 1, n_vis)
-        _rgrid, _ζgrid = jnp.meshgrid(_r, _ζ, indexing="ij")
-        _θgrid = jnp.ones_like(_rgrid) * float(fixed_theta)
-        _x_hat = jnp.stack([_rgrid, _θgrid, _ζgrid], axis=-1).reshape(-1, 3)
-        logical_x = np.asarray(_rgrid).squeeze()
-        logical_y = np.asarray(_ζgrid).squeeze()
-        xlabel, ylabel = "r", "ζ"
-
-    elif logical_plane in (
-        "theta_zeta",
-        "θ_ζ",
-        "theta_z",
-        "thetazeta",
-        "tz",
-        "t_z",
-        "θζ",
-    ):
-        # vary theta and zeta, fix r at `fixed_r`
-        _θ = jnp.linspace(0, 1, n_vis)
-        _ζ = jnp.linspace(0, 1, n_vis)
-        _θgrid, _ζgrid = jnp.meshgrid(_θ, _ζ, indexing="ij")
-        _rgrid = jnp.ones_like(_θgrid) * float(fixed_r)
-        _x_hat = jnp.stack([_rgrid, _θgrid, _ζgrid], axis=-1).reshape(-1, 3)
-        logical_x = np.asarray(_θgrid).squeeze()
-        logical_y = np.asarray(_ζgrid).squeeze()
-        xlabel, ylabel = "θ", "ζ"
-
-    else:
-        raise ValueError(
-            f"Unknown logical_plane '{logical_plane}'. Use 'rt', 'rz' or 'tz'."
-        )
-
-    # map to physical points and evaluate pressure
-    _x = jax.vmap(Phi)(_x_hat)
-    R = ((_x[:, 0] ** 2 + _x[:, 1] ** 2) ** 0.5).reshape(n_vis, n_vis)
-    Z = _x[:, 2].reshape(n_vis, n_vis)
-
-    p_vals = jax.vmap(p_h)(_x_hat).reshape(n_vis, n_vis) * scale
-
-    # create figure and axes
-    if logical_plane in ("r_theta", "rθ", "r_x_theta"):
-        # keep previous behavior: show both physical (R,z) and logical panels
-        fig, (ax_phys, ax_log) = plt.subplots(
-            1, 2, figsize=figsize, constrained_layout=constrained_layout
-        )
-
-        # physical domain contour
-        ax_phys.contourf(
-            np.asarray(R), np.asarray(Z), np.asarray(p_vals), levels=levels, cmap=cmap
-        )
-        if grid_stride > 0:
-            for i in range(0, n_vis, grid_stride):
-                ax_phys.plot(
-                    np.asarray(R[i, :]),
-                    np.asarray(Z[i, :]),
-                    "w",
-                    lw=grid_lw,
-                    alpha=grid_alpha,
-                )
-            for j in range(0, n_vis, grid_stride):
-                ax_phys.plot(
-                    np.asarray(R[:, j]),
-                    np.asarray(Z[:, j]),
-                    "w",
-                    lw=grid_lw,
-                    alpha=grid_alpha,
-                )
-        # Set fixed axis limits - always make the plot square
-        # Compute data ranges
-        R_min, R_max = float(jnp.min(R)), float(jnp.max(R))
-        z_min, z_max = float(jnp.min(Z)), float(jnp.max(Z))
-        
-        # Pad to make square
-        R_range = R_max - R_min
-        z_range = z_max - z_min
-        max_range = max(R_range, z_range) * 1.05  # 5% margin
-        R_center = (R_min + R_max) / 2
-        z_center = (z_min + z_max) / 2
-        ax_phys.set_xlim(R_center - max_range / 2, R_center + max_range / 2)
-        ax_phys.set_ylim(z_center - max_range / 2, z_center + max_range / 2)
-        ax_phys.set(xlabel="R", ylabel="z")
-
-        # logical domain contour for the selected logical plane
-        c2 = ax_log.contourf(
-            logical_x, logical_y, np.asarray(p_vals), levels=levels, cmap=cmap
-        )
-        if grid_stride > 0:
-            for i in range(0, n_vis, grid_stride):
-                ax_log.plot(
-                    logical_x[i, :], logical_y[i, :], "w", lw=grid_lw, alpha=grid_alpha
-                )
-            for j in range(0, n_vis, grid_stride):
-                ax_log.plot(
-                    logical_x[:, j], logical_y[:, j], "w", lw=grid_lw, alpha=grid_alpha
-                )
-        # Set fixed axis limits - make the logical plot square with same size as physical
-        log_x_min, log_x_max = float(jnp.min(logical_x)), float(jnp.max(logical_x))
-        log_y_min, log_y_max = float(jnp.min(logical_y)), float(jnp.max(logical_y))
-        log_x_range = log_x_max - log_x_min
-        log_y_range = log_y_max - log_y_min
-        log_max_range = max(log_x_range, log_y_range) * 1.05  # 5% margin
-        log_x_center = (log_x_min + log_x_max) / 2
-        log_y_center = (log_y_min + log_y_max) / 2
-        ax_log.set_xlim(log_x_center - log_max_range / 2, log_x_center + log_max_range / 2)
-        ax_log.set_ylim(log_y_center - log_max_range / 2, log_y_center + log_max_range / 2)
-        ax_log.set(xlabel=xlabel, ylabel=ylabel)
-
-        # shared colorbar on the right of the logical axis
-        if colorbar:
-            fig.colorbar(c2, ax=ax_log, label=cbar_label, shrink=cbar_shrink)
-
-        if show:
-            plt.show()
-        return fig, (ax_phys, ax_log)
-
-    else:
-        # Only plot the logical plane (no physical left panel)
-        fig, ax_log = plt.subplots(
-            1, 1, figsize=figsize, constrained_layout=constrained_layout
-        )
-
-        c2 = ax_log.contourf(
-            logical_x, logical_y, np.asarray(p_vals), levels=levels, cmap=cmap
-        )
-        if grid_stride > 0:
-            for i in range(0, n_vis, grid_stride):
-                ax_log.plot(
-                    logical_x[i, :], logical_y[i, :], "w", lw=grid_lw, alpha=grid_alpha
-                )
-            for j in range(0, n_vis, grid_stride):
-                ax_log.plot(
-                    logical_x[:, j], logical_y[:, j], "w", lw=grid_lw, alpha=grid_alpha
-                )
-        ax_log.set(xlabel=xlabel, ylabel=ylabel, aspect="equal")
-
-        # colorbar
-        if colorbar:
-            fig.colorbar(c2, ax=ax_log, label=cbar_label, shrink=cbar_shrink)
-
-        if show:
-            plt.show()
-
-        return fig, (None, ax_log)
-
-
-# %%
-
-
-def trace_plot(
-    trace_dict: dict,
-    filename: str,
-    FIG_SIZE: tuple = (12, 6),
-    LABEL_SIZE: int = 20,
-    TICK_SIZE: int = 16,
-    LINE_WIDTH: float = 2.5,
-    LEGEND_SIZE: int = 16,
-):
-    """
-    Plot the trace of the energy, force, helicity, divergence, and
-    velocity.
-
-    Parameters
-    ----------
-    trace_dict : dict
-        Dictionary containing the trace of the energy, force, helicity, divergence, and velocity.
-    filename : str
-        Name of the file to save the plot.
-    FIG_SIZE : tuple
-        Size of the figure.
-    LABEL_SIZE : int
-        Size of the labels.
-    TICK_SIZE : int
-        Size of the ticks.
-    LINE_WIDTH : float
-        Width of the lines.
-    LEGEND_SIZE : int
-        Size of the legend.
-
-    Returns
-    ------
-    None.
-    """
-
-    color1 = "purple"
-    color2 = "black"
-    color3 = "darkgray"
-    # color4 = 'teal'
-    color5 = "orange"
-
-    # # Plot Energy on separate plot
-    energy_trace = trace_dict.get("energy_trace")
-    if energy_trace is not None:
-        energy_trace = jnp.array(energy_trace)
-    iterations = trace_dict["iterations"]
-    force_trace = jnp.array(trace_dict["force_trace"])
-    helicity_trace = jnp.array(trace_dict["helicity_trace"])
-    divergence_trace = jnp.array(trace_dict["divergence_trace"])
-    velocity_trace = jnp.array(trace_dict["velocity_trace"])
-    wall_time_trace = jnp.array(trace_dict["wall_time_trace"])
-
-    # Only plot energy trace if it's not None
-    if energy_trace is not None:
-        fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
-        # ax1 = ax2.twinx()
-        ax1.set_xlabel(r"$n$", fontsize=LABEL_SIZE)
-        ax1.set_ylabel(r"$\frac{1}{2} \| B \|^2$",
-                       color=color1, fontsize=LABEL_SIZE)
-        ax1.semilogy(
-            energy_trace[0] - energy_trace,
-            label=r"$\frac{1}{2} \| B \|^2$",
-            color=color1,
-            linestyle="-.",
-            lw=LINE_WIDTH,
-        )
-        # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
-        ax1.tick_params(axis="y", labelcolor=color1, labelsize=TICK_SIZE)
-        ax1.tick_params(axis="x", labelsize=TICK_SIZE)  # Set x-tick size
-        ax1.set_xscale("log")
-        ax1.tick_params(axis="y", labelcolor=color1, labelsize=TICK_SIZE)
-        fig1.tight_layout()
-        plt.savefig(filename + "energy_trace.pdf", bbox_inches="tight")
-
-    fig2, ax2 = plt.subplots(figsize=FIG_SIZE)
-
-    ax2.set_xlabel(r"$n$", fontsize=LABEL_SIZE)
-    ax2.tick_params(axis="y", labelsize=TICK_SIZE)
-    ax2.tick_params(axis="x", labelsize=TICK_SIZE)
-    ax2.set_yscale("log")
-    # make a twin y axis for wall time (top) and iteration(bottom)
-    ax2_top = ax2.twiny()
-    ax2_top.tick_params(axis="x", labelsize=TICK_SIZE)
-    ax2_top.set_xlabel("wall time [s]", fontsize=LABEL_SIZE)
-
-    helicity_change = jnp.abs(jnp.array(helicity_trace - helicity_trace[0]))
-
-    ax2.plot(
-        iterations,
-        force_trace,
-        label=r"$\| \, J \times B - \mathrm{grad} \, p \| / \| \mathrm{grad} p \|$",
-        color=color1,
-        lw=LINE_WIDTH,
-        linestyle="-",
-    )
-
-    ax2.plot(
-        iterations,
-        velocity_trace,
-        label=r"$\| v \|^2$",
-        color=color3,
-        lw=LINE_WIDTH,
-        linestyle="-.",
-    )
-
-    ax2.plot(
-        iterations,
-        helicity_change,
-        label=r"$| H - H^0 | $",
-        color=color2,
-        linestyle="--",
-        lw=LINE_WIDTH,
-    )
-
-    ax2_top.plot(
-        wall_time_trace,
-        divergence_trace - divergence_trace[0],
-        label=r"$ \| \mathrm{div} \, B \|$",
-        color=color5,
-        linestyle="-.",
-        lw=LINE_WIDTH,
-    )
-
-    # Set y-limits for better visibility
-    # ax2.set_ylim(0.5 * min(min(force_trace), 0.1 * max(helicity_change)),
-    #              2 * max(max(force_trace), max(helicity_change)))
-    lines1, labels1 = ax2.get_legend_handles_labels()
-    lines2, labels2 = ax2_top.get_legend_handles_labels()
-    ax2.legend(lines1 + lines2, labels1 + labels2,
-               loc="best", fontsize=LEGEND_SIZE)
-    # ax1.grid(which="major", linestyle="-", color=color1, linewidth=0.5)
-    ax2.legend(loc="best", fontsize=LEGEND_SIZE)
-    ax2.grid(which="both", linestyle="--", linewidth=0.5)
-    fig2.tight_layout()
-    if filename.endswith("/"):
-        filename = filename[:-1]
-    plt.savefig(filename + "/force_trace.pdf", bbox_inches="tight")
-
-
-# %%
-
-
-def generate_solovev_plots(filename: str):
-    """
-    Generate plots for a Solovev equilibrium.
-
-    Parameters
-    ----------
-    filename : str
-        Name of the file to save the plots. If the file is not in the out/solovev folder,
-        the file will be saved in the out/solovev folder.
-
-    Returns
-    -------
-    None.
-    """
-    from mrx.utils import is_running_in_github_actions
-
-    jax.config.update("jax_enable_x64", True)
-
-    outdir = "out/solovev/" + filename + "/"
-    os.makedirs(outdir, exist_ok=True)
-
-    print("Generating plots for " + filename + "...")
-
-    with h5py.File(outdir + filename + ".h5", "r") as f:
-        CONFIG = {k: v for k, v in f["config"].attrs.items()}
-        # decode strings back if needed
-        CONFIG = {
-            k: v.decode() if isinstance(v, bytes) else v for k, v in CONFIG.items()
-        }
-
-        trace_dict = {}
-        for k, v in f.items():
-            if k != "config":
-                # Convert HDF5 datasets to numpy arrays
-                if isinstance(v, h5py.Dataset):
-                    trace_dict[k] = v[:]
-                else:
-                    trace_dict[k] = v
-        if CONFIG["save_B"]:
-            # B_fields = f["B_fields"][:]
-            if "p_fields" in f:
-                trace_dict["p_fields"] = f["p_fields"][:]
-            if "B_fields" in f:
-                trace_dict["B_fields"] = f["B_fields"][:]
-
-    # Step 1: get F
-    delta = CONFIG["delta"]
-    kappa = CONFIG["kappa"]
-    eps = CONFIG["eps"]
-    R0 = CONFIG["R_0"]
-    alpha = jnp.arcsin(delta)
-    F = cerfon_map(eps, kappa, alpha, R0)
-
-    # Step 2: Get the Sequence
-    ns = (CONFIG["n_r"], CONFIG["n_theta"], CONFIG["n_zeta"])
-    ps = (
-        CONFIG["p_r"],
-        CONFIG["p_theta"],
-        0 if CONFIG["n_zeta"] == 1 else CONFIG["p_zeta"],
-    )
-    q = max(ps)
-    types = ("clamped", "periodic",
-             "constant" if CONFIG["n_zeta"] == 1 else "periodic")
-
-    Seq = DeRhamSequence(ns, ps, q, types, F, polar=True)
-
-    print("Generating pressure plot...")
-    # Plot number one: pressure contour plot of final solution
-    pressure_plot(trace_dict["p_final"], Seq, F,
-                  outdir, filename="p_final.pdf", zeta=0)
-    if CONFIG["save_B"] and "p_fields" in trace_dict:
-        for i, p in enumerate(trace_dict["p_fields"]):
-            pressure_plot(
-                p,
-                Seq,
-                F,
-                outdir,
-                filename=f"p_iter_{i * CONFIG['save_every']:06d}.pdf",
-                zeta=0,
-            )
-
-    print("Generating convergence plot...")
-    # Figure 2: Energy and Force
-    # outdir already ends with '/' and contains filename, so just pass outdir
-    trace_plot(trace_dict=trace_dict, filename=outdir)
-
-    # Only plot B_final if it exists
-    if "B_final" in trace_dict and not is_running_in_github_actions():
-        B_hat = trace_dict["B_final"]
-        B_h = DiscreteFunction(B_hat, Seq.Lambda_2, Seq.E2)
-
-        @jax.jit
-        def vector_field(t, p, args):
-            r, χ, z = p
-            r = jnp.clip(r, 1e-6, 1)
-            χ = χ % 1.0
-            z = z % 1.0
-            x = jnp.array([r, χ, z])
-            DFx = jax.jacfwd(F)(x)
-            norm = ((DFx @ B_h(x)) @ DFx @ B_h(x)) ** 0.5
-            return B_h(x) / (norm + 1e-9)
-
-        n_loop = 5
-        n_batch = 5
-
-        x0s = jnp.vstack(
-            (
-                jnp.linspace(0.05, 0.95, n_loop * n_batch),
-                jnp.zeros(n_loop * n_batch),
-                jnp.zeros(n_loop * n_batch),
-            )
-        ).T
-
-        n_cols = x0s.shape[1]
-        cm = plt.cm.plasma
-        vals = jnp.linspace(0, 1, n_cols + 2)[:-2]
-
-        # Interleave from start and end
-        order = jnp.ravel(
-            jnp.column_stack(
-                [jnp.arange(n_cols // 2), n_cols - 1 - jnp.arange(n_cols // 2)]
-            )
-        )
-        if n_cols % 2 == 1:
-            order = jnp.append(order, n_cols // 2)
-
-        colors = cm(vals[order])
-
-        x0s = x0s.T.reshape(n_batch, n_loop, 3)
-
-        if is_running_in_github_actions():
-            poincare_plot(
-                outdir,
-                vector_field,
-                F,
-                x0s,
-                n_loop,
-                n_batch,
-                colors,
-                plane_val=0.25,
-                axis=2,
-                final_time=5000,
-                n_saves=20000,
-                cylindrical=True,
-                r_tol=CONFIG["solver_tol"],
-                a_tol=CONFIG["solver_tol"],
-                filename="",
-            )
-
-
-# %%
-
-
 def set_axes_equal(ax: plt.Axes):
     """Set 3D plot axes to equal scale."""
     X_limits = ax.get_xlim3d()
@@ -2001,6 +444,9 @@ def set_axes_equal(ax: plt.Axes):
     ax.set_ylim3d([Y_mid - max_range / 2, Y_mid + max_range / 2])
     ax.set_zlim3d([Z_mid - max_range / 2, Z_mid + max_range / 2])
 
+###############
+# Trace plots #
+###############
 
 def plot_twin_axis(
     left_y: jnp.ndarray,
@@ -2172,137 +618,299 @@ def plot_twin_axis(
         return fig, (ax1, ax2)
     return fig
 
-
-# %%
-
-
-def integrate_fieldline(B, Phi, nfp, T, rtol=1e-5, atol=1e-5, dt0=0.1, n_traj=32):
-    def vector_field(t, x, args):
-        x %= 1.0
-        Bx = B(x)
-        DFx = jax.jacfwd(Phi)(x)
-        return Bx / jnp.linalg.norm(DFx @ Bx)
-
-    def integrate_fieldline(f, x0, N, t1):
-        t0 = 0.0
-        sol = dfx.diffeqsolve(
-            terms=dfx.ODETerm(f),
-            solver=dfx.Dopri8(),
-            t0=t0,
-            t1=t1,
-            dt0=dt0,
-            y0=x0,
-            saveat=dfx.SaveAt(ts=jnp.linspace(t0, t1, N)),
-            stepsize_controller=dfx.PIDController(rtol=rtol, atol=atol),
-            max_steps=100_000,
-        )
-        return sol.ys
-
-    N = jnp.int32(10 * T)
-    r_vals = jnp.linspace(0.05, 0.99, n_traj)
-    x0s = jnp.stack(
-        [r_vals, 0.5 * jnp.ones_like(r_vals), 0.5 * jnp.ones_like(r_vals)], axis=1
-    )
-
-    def scan_fn(carry, x0):
-        traj = integrate_fieldline(vector_field, x0, N, T)
-        return carry, traj
-    
-    _, logical_trajectories = jax.lax.scan(scan_fn, None, x0s)
-    logical_trajectories = logical_trajectories % 1.0
-
-    Phi_full_fp = jax.jit(extend_map_nfp(Phi, nfp))
-
-    physical_trajectories = jax.vmap(Phi_full_fp)(
-        logical_trajectories.reshape(-1, 3)
-    ).reshape(n_traj, N, 3)
-
-    return logical_trajectories, physical_trajectories
-
-
-# %%
-
-
-def intersect_with_plane_logical_periodic(traj, zeta_value, deg=2):
+def trace_plot(
+    trace_dict: dict,
+    filename: str,
+    FIG_SIZE: tuple = (12, 6),
+    LABEL_SIZE: int = 20,
+    TICK_SIZE: int = 16,
+    LINE_WIDTH: float = 2.5,
+    LEGEND_SIZE: int = 16,
+):
     """
-    Plane defined by: ζ = constant, where ζ is periodic on [0,1]
+    Plot the trace of the energy, force, helicity, divergence, and
+    velocity.
 
     Parameters
     ----------
-    traj : (N,3)
-        Trajectory points in 3D.
-    zeta_value : float
-        ζ value of the plane (should be in [0,1]).
-    deg : int
-        Polynomial interpolation degree.
+    trace_dict : dict
+        Dictionary containing the trace of the energy, force, helicity, divergence, and velocity.
+    filename : str
+        Name of the file to save the plot.
+    FIG_SIZE : tuple
+        Size of the figure.
+    LABEL_SIZE : int
+        Size of the labels.
+    TICK_SIZE : int
+        Size of the ticks.
+    LINE_WIDTH : float
+        Width of the lines.
+    LEGEND_SIZE : int
+        Size of the legend.
+
+    Returns
+    ------
+    None.
     """
-    N = traj.shape[0]
-    pad_size = N
-    half = deg // 2
 
-    zeta_points = traj[:, 2]
+    color1 = "purple"
+    color2 = "black"
+    color3 = "darkgray"
+    # color4 = 'teal'
+    color5 = "orange"
 
-    # Handle periodic wrapping: compute shortest distance considering periodicity
-    def periodic_distance(z1, z2):
-        """Compute shortest distance between two points on [0,1] torus"""
-        return (z2 - z1 + zeta_value + 0.1) % 1.0 - (zeta_value + 0.1) % 1.0
+    # # Plot Energy on separate plot
+    energy_trace = trace_dict.get("energy_trace")
+    if energy_trace is not None:
+        energy_trace = jnp.array(energy_trace)
+    iterations = trace_dict["iterations"]
+    force_trace = jnp.array(trace_dict["force_trace"])
+    helicity_trace = jnp.array(trace_dict["helicity_trace"])
+    divergence_trace = jnp.array(trace_dict["divergence_trace"])
+    velocity_trace = jnp.array(trace_dict["velocity_trace"])
+    wall_time_trace = jnp.array(trace_dict["wall_time_trace"])
 
-    # Compute signed distances considering periodicity
-    s = periodic_distance(zeta_value, zeta_points)
-
-    # Find sign changes (true crossings)
-    flip_mask = s[:-1] * s[1:] < 0
-
-    # Additional check: ensure we're not crossing due to large jumps
-    zeta_diff = periodic_distance(zeta_points[:-1], zeta_points[1:])
-    large_jump_mask = jnp.abs(zeta_diff) > 0.5  # Detect wrapping
-
-    # Only count as crossing if not a large jump
-    valid_flip_mask = flip_mask & ~large_jump_mask
-
-    idxs = jnp.where(valid_flip_mask, jnp.arange(N - 1), N)
-    idxs = jnp.sort(idxs)
-    idxs = jnp.pad(idxs, (0, jnp.maximum(0, pad_size - idxs.size)), constant_values=N)[
-        :pad_size
-    ]
-
-    def interp(i):
-        valid = (i >= half) & (i < N - half)
-        offset = jnp.arange(-half, deg - half + 1)
-        idxs_local = jnp.clip(i + offset, 0, N - 1)
-        pts_seg = traj[idxs_local]
-        s_seg = s[idxs_local]
-        t = jnp.arange(deg + 1, dtype=float)
-
-        # fit polynomial s(t) ~ a t^deg + b t^{deg-1} + ... + c
-        coeffs_s = jnp.polyfit(t, s_seg, deg=deg)
-        roots = jnp.roots(coeffs_s, strip_zeros=False)
-        roots_real = jnp.real(roots)
-        cond = (
-            (jnp.abs(jnp.imag(roots)) < 1e-8) & (roots_real > 0.0) & (roots_real < deg)
+    # Only plot energy trace if it's not None
+    if energy_trace is not None:
+        fig1, ax1 = plt.subplots(figsize=FIG_SIZE)
+        # ax1 = ax2.twinx()
+        ax1.set_xlabel(r"$n$", fontsize=LABEL_SIZE)
+        ax1.set_ylabel(r"$\frac{1}{2} \| B \|^2$",
+                       color=color1, fontsize=LABEL_SIZE)
+        ax1.semilogy(
+            energy_trace[0] - energy_trace,
+            label=r"$\frac{1}{2} \| B \|^2$",
+            color=color1,
+            linestyle="-.",
+            lw=LINE_WIDTH,
         )
-        t_cross = jnp.nanmin(jnp.where(cond, roots_real, jnp.nan))
+        # ax1.plot(jnp.pi * jnp.array(H_trace), label=r'$\pi \, (A, B)$', color=color1, linestyle="--", lw=LINE_WIDTH)
+        ax1.tick_params(axis="y", labelcolor=color1, labelsize=TICK_SIZE)
+        ax1.tick_params(axis="x", labelsize=TICK_SIZE)  # Set x-tick size
+        ax1.set_xscale("log")
+        ax1.tick_params(axis="y", labelcolor=color1, labelsize=TICK_SIZE)
+        fig1.tight_layout()
+        plt.savefig(filename + "energy_trace.pdf", bbox_inches="tight")
 
-        # fit each coordinate & evaluate at t_cross
-        # Unwrap periodic coordinates (theta=1, zeta=2) before fitting to handle wrapping
-        def eval_coord(y_seg, is_periodic):
-            y_unwrapped = jnp.where(is_periodic, jnp.unwrap(y_seg, period=1.0), y_seg)
-            coeffs = jnp.polyfit(t, y_unwrapped, deg=deg)
-            result = jnp.polyval(coeffs, t_cross)
-            # Wrap back to [0, 1) for periodic coordinates
-            return jnp.where(is_periodic, result % 1.0, result)
+    fig2, ax2 = plt.subplots(figsize=FIG_SIZE)
 
-        # r (coord 0) is not periodic, theta (coord 1) and zeta (coord 2) are periodic
-        is_periodic = jnp.array([False, True, True])
-        pt = jax.vmap(eval_coord)(pts_seg.T, is_periodic)
-        return jnp.where(valid, pt, jnp.nan)
+    ax2.set_xlabel(r"$n$", fontsize=LABEL_SIZE)
+    ax2.tick_params(axis="y", labelsize=TICK_SIZE)
+    ax2.tick_params(axis="x", labelsize=TICK_SIZE)
+    ax2.set_yscale("log")
+    # make a twin y axis for wall time (top) and iteration(bottom)
+    ax2_top = ax2.twiny()
+    ax2_top.tick_params(axis="x", labelsize=TICK_SIZE)
+    ax2_top.set_xlabel("wall time [s]", fontsize=LABEL_SIZE)
 
-    pts = jax.vmap(interp)(idxs)
-    return pts, idxs
+    helicity_change = jnp.abs(jnp.array(helicity_trace - helicity_trace[0]))
 
+    ax2.plot(
+        iterations,
+        force_trace,
+        label=r"$\| \, J \times B - \mathrm{grad} \, p \| / \| \mathrm{grad} p \|$",
+        color=color1,
+        lw=LINE_WIDTH,
+        linestyle="-",
+    )
+
+    ax2.plot(
+        iterations,
+        velocity_trace,
+        label=r"$\| v \|^2$",
+        color=color3,
+        lw=LINE_WIDTH,
+        linestyle="-.",
+    )
+
+    ax2.plot(
+        iterations,
+        helicity_change,
+        label=r"$| H - H^0 | $",
+        color=color2,
+        linestyle="--",
+        lw=LINE_WIDTH,
+    )
+
+    ax2_top.plot(
+        wall_time_trace,
+        divergence_trace - divergence_trace[0],
+        label=r"$ \| \mathrm{div} \, B \|$",
+        color=color5,
+        linestyle="-.",
+        lw=LINE_WIDTH,
+    )
+
+    # Set y-limits for better visibility
+    # ax2.set_ylim(0.5 * min(min(force_trace), 0.1 * max(helicity_change)),
+    #              2 * max(max(force_trace), max(helicity_change)))
+    lines1, labels1 = ax2.get_legend_handles_labels()
+    lines2, labels2 = ax2_top.get_legend_handles_labels()
+    ax2.legend(lines1 + lines2, labels1 + labels2,
+               loc="best", fontsize=LEGEND_SIZE)
+    # ax1.grid(which="major", linestyle="-", color=color1, linewidth=0.5)
+    ax2.legend(loc="best", fontsize=LEGEND_SIZE)
+    ax2.grid(which="both", linestyle="--", linewidth=0.5)
+    fig2.tight_layout()
+    if filename.endswith("/"):
+        filename = filename[:-1]
+    plt.savefig(filename + "/force_trace.pdf", bbox_inches="tight")
 
 # %%
+##################
+# Poincare plots #
+##################
 
+def integrate_fieldlines(x0s, B_dof, p_dof, seq, T, N):
+    B_h = DiscreteFunction(B_dof, seq.Lambda_2, seq.E2)
+    p_h = DiscreteFunction(p_dof, seq.Lambda_0, seq.E0)
+    
+    def vector_field(t, x, args):
+        # avoid evaluation at x[0] = 0
+        x = x.at[0].set(jnp.where(x[0] < 1e-9, 1e-9, x[0]))
+        # Ensure periodicity in the last two coordinates
+        x = x.at[1:3].set(x[1:3] % 1.0) 
+        Bx = B_h(x)
+        DFx = jax.jacfwd(seq.F)(x)
+        return Bx / (jnp.linalg.norm(DFx @ Bx) + 1e-9)
+
+    def integrate_fieldline(x0):
+        sol = dfx.diffeqsolve(
+            terms=dfx.ODETerm(vector_field),
+            solver=dfx.Dopri8(),
+            t0=0.0,
+            t1=T,
+            dt0=1.0,
+            y0=x0,
+            saveat=dfx.SaveAt(ts=jnp.linspace(0.0, T, N)),
+            stepsize_controller=dfx.PIDController(rtol=1e-5, atol=1e-5),
+            max_steps=100_000,
+            throw=False,
+        )
+        # On solver failure, fill trajectory with NaN
+        failed = sol.result != dfx.RESULTS.successful
+        traj = jnp.where(failed, jnp.nan, sol.ys % 1.0)
+        p_vals = jax.vmap(p_h)(jnp.where(failed, jnp.zeros_like(sol.ys), sol.ys) % 1.0)
+        p_vals = jnp.where(failed, jnp.nan, p_vals)
+        return traj, p_vals
+
+    # Vectorized inner function
+    vmapped_integrate = jax.vmap(integrate_fieldline)
+
+    # Loop over 'n_scan' batches sequentially to save memory
+    def scan_fn(carry, x0_batch):
+        trajs, ps = vmapped_integrate(x0_batch)
+        return carry, (trajs, ps)
+    
+    _, (logical_trajectories, p_values) = jax.lax.scan(scan_fn, None, x0s)
+    
+    return logical_trajectories, p_values
+
+def get_periodic_intersections(
+    field_line, 
+    p_values, 
+    plane_normal, 
+    plane_point, 
+    max_intersections=100
+):
+    # Padding and Masking
+    def pad_axis0(arr):
+        pads = ((1, 1),) + ((0, 0),) * (arr.ndim - 1)
+        return jnp.pad(arr, pads, mode='edge')
+
+    def apply_mask(data, mask):
+        mask_reshaped = mask.reshape(mask.shape + (1,) * (data.ndim - 1))
+        return jnp.where(mask_reshaped, data, jnp.nan)
+
+    # Find shortest vector in periodic [0, 1] space
+    diffs = field_line - plane_point
+    dists = jnp.dot(diffs, plane_normal)
+    pos_curr = field_line[:-1]
+    pos_next_raw = field_line[1:]
+    delta = pos_next_raw - pos_curr
+    delta_unwrapped = delta - jnp.round(delta)
+    pos_next_virt_detect = pos_curr + delta_unwrapped
+    # Distance at the "virtual" next point
+    dist_next_virt = jnp.dot(pos_next_virt_detect - plane_point, plane_normal)
+    
+    # Detect Crossings: A crossing exists if the line segment (curr -> next_virt) crosses zero
+    d_curr_detect = dists[:-1]
+    valid_crossing = (d_curr_detect * dist_next_virt) < 0.0
+    
+    # Interpolation
+    pos_pad = pad_axis0(field_line)
+    p_pad = pad_axis0(p_values)
+    crossing_indices = jnp.nonzero(
+        valid_crossing, 
+        size=max_intersections, 
+        fill_value=0
+    )[0]
+    count = jnp.sum(valid_crossing)
+    # +1 because we padded the start of the array
+    centers = crossing_indices + 1 
+
+    # Interpolation Kernel (Quadratic)
+    def interpolate_single(idx):
+        pos_prev_raw = pos_pad[idx - 1]
+        pos_curr     = pos_pad[idx]
+        pos_next_raw = pos_pad[idx + 1]
+        
+        # Unwrap Geometry for the local neighborhood
+        delta_prev = pos_prev_raw - pos_curr
+        pos_prev_v = pos_curr + (delta_prev - jnp.round(delta_prev))
+        delta_next = pos_next_raw - pos_curr
+        pos_next_v = pos_curr + (delta_next - jnp.round(delta_next))
+        
+        # Recalculate distances on unwrapped local points
+        d_prev = jnp.dot(pos_prev_v - plane_point, plane_normal)
+        d_curr = jnp.dot(pos_curr - plane_point, plane_normal)
+        d_next = jnp.dot(pos_next_v - plane_point, plane_normal)
+        
+        # Quadratic coefficients: f(t) = at^2 + bt + c, where t=0 is pos_curr
+        c = d_curr
+        a = 0.5 * (d_prev - 2.0 * d_curr + d_next)
+        b = 0.5 * (d_next - d_prev)
+        
+        # Solve at^2 + bt + c = 0
+        discriminant = b**2 - 4*a*c
+        sqrt_disc = jnp.sqrt(jnp.maximum(discriminant, 0.0))
+        
+        div = 2.0 * a + 1e-15
+        t1 = (-b + sqrt_disc) / div
+        t2 = (-b - sqrt_disc) / div
+        t_lin = -c / (b + 1e-15)
+        
+        # Choose the root that lies within the segment range [0, 1] 
+        t_quad = jnp.where((t1 >= 0.0) & (t1 <= 1.0), t1, t2)
+        t = jnp.where(jnp.abs(a) > 1e-10, t_quad, t_lin)
+        t = jnp.clip(t, 0.0, 1.0)
+        
+        # Interpolate Position
+        A_pos = 0.5 * (pos_prev_v - 2.0 * pos_curr + pos_next_v)
+        B_pos = 0.5 * (pos_next_v - pos_prev_v)
+        final_pos = A_pos * (t**2) + B_pos * t + pos_curr
+        
+        # Re-apply periodicity to the result
+        final_pos = final_pos - jnp.floor(final_pos)
+        
+        # Interpolate Scalar Field p
+        v0, v1, v2 = p_pad[idx-1], p_pad[idx], p_pad[idx+1]
+        Ap = 0.5 * (v0 - 2.0 * v1 + v2)
+        Bp = 0.5 * (v2 - v0)
+        final_p = Ap * (t**2) + Bp * t + v1
+
+        return final_pos, final_p
+
+    # Vectorize and Mask
+    intersections, inter_p = jax.vmap(interpolate_single)(centers)
+    
+    _idx = jnp.arange(max_intersections)
+    mask = _idx < count
+    
+    intersections = apply_mask(intersections, mask)
+    inter_p = apply_mask(inter_p, mask)
+    
+    return intersections, inter_p, count
 
 def get_iota(c, nfp):
     def toroidal_unwrapped(phi):
@@ -2325,10 +933,6 @@ def get_iota(c, nfp):
     n = toroidal_unwrapped(phi) / nfp
     return jnp.abs(m / n)
 
-
-# %%
-
-
 def classify_uniformity(t, ks_thresh=0.05):
     def uniformity_score(t_mod):
         # sort values
@@ -2348,7 +952,6 @@ def classify_uniformity(t, ks_thresh=0.05):
     well_winding = ks < ks_thresh
     return well_winding, ks
 
-
 def get_iota_log(c, nfp, ks_thresh=0.05):
     t = jnp.unwrap(c[:, 1], period=1.0)
     z = jnp.unwrap(c[:, 2], period=1.0)
@@ -2361,5 +964,336 @@ def get_iota_log(c, nfp, ks_thresh=0.05):
     iota = jnp.where(well_winding, iota, jnp.nan)
     return iota, well_winding, ks
 
+def poincare_plot(logical_intersections,
+                  physical_intersections,
+                  p_values,
+                  iota_values,
+                  nfp,
+                  cmap_iota="berlin",
+                  cmap_p="plasma",
+                  markersize=0.01,
+                  denom_max=15,
+                  Rlim=None,
+                  zlim=None,
+                  p_lim = None,
+                  iota_lim = None,
+                  rasterized=True,
+                  show=False):
 
+    # Separate points based on whether iota is NaN
+    valid_mask = ~jnp.isnan(iota_values)
+    nan_mask = jnp.isnan(iota_values)
+    
+    fig = plt.figure(figsize=(10, 4))
+    # Fixed positions: [left, bottom, width, height]
+    ax1 = fig.add_axes([0.05, 0.12, 0.35, 0.78])   # left plot
+    ax2 = fig.add_axes([0.55, 0.12, 0.35, 0.78])   # right plot
+    # Colorbar axes with fixed positions
+    cax1 = fig.add_axes([0.41, 0.12, 0.02, 0.78])  # left colorbar
+    cax2 = fig.add_axes([0.91, 0.12, 0.02, 0.78])  # right colorbar
+
+    # Plot valid points with color mapping
+    if jnp.any(valid_mask):
+        # Left plot: color by pressure if available, otherwise by iota
+        if p_values is not None:
+            s1 = ax1.scatter(  # physical
+                (physical_intersections[valid_mask, 0] ** 2 +
+                 physical_intersections[valid_mask, 1] ** 2) ** 0.5,
+                physical_intersections[valid_mask, 2],
+                c=p_values[valid_mask] * 100,
+                cmap=cmap_p,
+                s=markersize,
+                rasterized=rasterized,
+                vmin = p_lim[0] * 100 if p_lim is not None else None,
+                vmax = p_lim[1] * 100 if p_lim is not None else None
+            )
+        else:
+            s1 = ax1.scatter(  # physical
+                (physical_intersections[valid_mask, 0] ** 2 +
+                 physical_intersections[valid_mask, 1] ** 2) ** 0.5,
+                physical_intersections[valid_mask, 2],
+                c=iota_values[valid_mask],
+                cmap=cmap_iota,
+                s=markersize,
+                rasterized=rasterized,
+                vmin = iota_lim[0] if iota_lim is not None else None,
+                vmax = iota_lim[1] if iota_lim is not None else None
+            )
+        s2 = ax2.scatter(  # logical
+            logical_intersections[valid_mask, 0],
+            logical_intersections[valid_mask, 1],
+            c=iota_values[valid_mask],
+            cmap=cmap_iota,
+            s=markersize,
+            rasterized=rasterized,
+            vmin = iota_lim[0] if iota_lim is not None else None,
+            vmax = iota_lim[1] if iota_lim is not None else None
+        )
+
+    # Plot NaN points in grey
+    if jnp.any(nan_mask):
+        ax1.scatter(  # physical
+            (physical_intersections[nan_mask, 0] ** 2 + physical_intersections[nan_mask, 1] ** 2) ** 0.5,
+            physical_intersections[nan_mask, 2],
+            c="grey",
+            s=markersize,
+            rasterized=rasterized,
+        )
+        ax2.scatter(  # logical
+            logical_intersections[nan_mask, 0],
+            logical_intersections[nan_mask, 1],
+            c="grey",
+            s=markersize,
+            rasterized=rasterized,
+        )
+
+    # Set fixed axis limits - always make the plot square
+    # Compute data ranges
+    R_data = (physical_intersections[:, 0] ** 2 + physical_intersections[:, 1] ** 2) ** 0.5
+    z_data = physical_intersections[:, 2]
+    
+    # Use provided limits or compute from data
+    R_min = Rlim[0] if Rlim is not None else float(jnp.min(R_data))
+    R_max = Rlim[1] if Rlim is not None else float(jnp.max(R_data))
+    z_min = zlim[0] if zlim is not None else float(jnp.min(z_data))
+    z_max = zlim[1] if zlim is not None else float(jnp.max(z_data))
+    
+    # Pad to make square
+    R_range = R_max - R_min
+    z_range = z_max - z_min
+    max_range = max(R_range, z_range) * 1.05  # 5% margin
+    R_center = (R_min + R_max) / 2
+    z_center = (z_min + z_max) / 2
+    ax1.set_xlim(R_center - max_range / 2, R_center + max_range / 2)
+    ax1.set_ylim(z_center - max_range / 2, z_center + max_range / 2)
+    
+    ax1.set(xlabel=r"$R$", ylabel=r"$z$")
+    ax2.set(xlabel=r"$r$", ylabel=r"$\theta$", aspect="equal")
+
+    # Only add colorbar if there are valid points
+    if jnp.any(valid_mask):
+        # Add colorbar to left plot for pressure if available
+        if p_values is not None and jnp.any(valid_mask):
+            cbar1 = fig.colorbar(s1, cax=cax1, label=r"$p \; [\times 100]$")
+        else:
+            cax1.set_visible(False)  # Hide left colorbar axis if no pressure
+        
+        cbar2 = fig.colorbar(s2, cax=cax2, label=r"$\iota$")
+
+        # Automatically determine rational ticks based on nfp and clipped iota range
+        iota_min, iota_max = (
+            jnp.nanmin(iota_values[valid_mask]),
+            jnp.nanmax(iota_values[valid_mask]),
+        )
+        rational_ticks = []
+        rational_labels = []
+        seen_rationals = set()
+        for m in range(1, denom_max // nfp + 1):
+            m_scaled = m * nfp
+            for n in range(1, denom_max):  # reasonable range for denominators
+                rational = m_scaled / n
+                if iota_min <= rational <= iota_max and rational not in seen_rationals:
+                    rational_ticks.append(rational)
+                    # Can uncomment this to simplify the fractions
+                    g = 1 #jnp.gcd(m_scaled, n)
+                    rational_labels.append(
+                        f"{int(m_scaled // g)}/{int(n // g)}")
+                    seen_rationals.add(rational)
+        if rational_ticks:
+            cbar2.set_ticks(rational_ticks)
+            cbar2.set_ticklabels(rational_labels)
+
+        if show:
+            plt.show()
+    else:
+        # Hide colorbar axes if no valid points
+        cax1.set_visible(False)
+        cax2.set_visible(False)
+        
+    return fig, (ax1, ax2)
+
+# TODO: might be obsolete after the new plotting refactor
+def plot_crossections_separate(
+    p_h: Callable,
+    grids_pol: list,
+    zeta_vals: list,
+    textsize: int = 16,
+    ticksize: int = 16,
+    plot_centerline: bool = False,
+):
+    """
+    Plot cross-sections of a function on a list of grids.
+
+    Parameters
+    ----------
+    p_h : callable
+        Function to plot.
+    grids_pol : list
+    zeta_vals : list
+        Values of the zeta coordinate to plot.
+    textsize : int
+        Size of the text.
+    ticksize : int
+        Size of the ticks.
+    plot_centerline : bool
+        Whether to plot the centerline.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        Figure object.
+    axes : list
+        List of axes objects.
+    """
+    numplots = len(grids_pol)
+    fig, axes = plt.subplots(1, numplots, figsize=(16, 16 / 5))
+    axes = axes.flatten()
+
+    last_c = None
+    for i, (ax, grid) in enumerate(zip(axes, grids_pol)):
+
+        R = jnp.sqrt(grid[2][0] ** 2 + grid[2][1] ** 2)
+        z = grid[2][2]
+
+        vals = jax.vmap(p_h)(grid[0]).reshape(*grid[2][0].shape)
+
+        # draw contour above the guide lines
+        last_c = ax.contourf(R, z, vals, 25, cmap="plasma", zorder=2)
+
+        # ensure axis artists (like text/legend) are above the guide lines
+        ax.set_axisbelow(False)
+
+        if plot_centerline:
+            ax.axvline(
+                1.0, color="k", linestyle=":", linewidth=1.5, zorder=3, clip_on=True
+            )
+        # ax.axhline(0.0, color='k', linestyle=":", linewidth=1.5, zorder=3, clip_on=True)
+
+        ax.set_aspect("equal")
+
+        # remove all ticks
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        # remove the box (all spines)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+        try:
+            zval = float(zeta_vals[i])
+        except Exception:
+            zval = float(jnp.asarray(zeta_vals[i]))
+        label = rf"$\zeta = {zval:.2f}$"
+        # place a small boxed text in the top-right of the axis (no legend handle/whitespace)
+        ax.text(
+            0.98,
+            0.98,
+            label,
+            transform=ax.transAxes,
+            fontsize=textsize,
+            ha="right",
+            va="top",
+            zorder=10,
+            bbox=dict(
+                facecolor="white",
+                edgecolor="black",
+                boxstyle="round,pad=0.3",
+                alpha=1.0,
+            ),
+        )
+
+        # force same limits across all subplots
+    Rmins, Rmaxs, Zmins, Zmaxs = [], [], [], []
+    for grid in grids_pol:
+        R = jnp.sqrt(grid[2][0] ** 2 + grid[2][1] ** 2)
+        z = grid[2][2]
+        Rmins.append(R.min())
+        Rmaxs.append(R.max())
+        Zmins.append(z.min())
+        Zmaxs.append(z.max())
+
+    Rmin, Rmax = float(min(Rmins)), float(max(Rmaxs))
+    Zmin, Zmax = float(min(Zmins)), float(max(Zmaxs))
+
+    for ax in axes:
+        ax.set_xlim(Rmin, Rmax)
+        ax.set_ylim(Zmin, Zmax)
+
+    # put ONE shared colorbar on the right, aligned with subplots
+    fig.subplots_adjust(right=0.85)  # make space for colorbar
+    # [left, bottom, width, height]
+    cbar_ax = fig.add_axes([0.88, 0.15, 0.03, 0.7])
+    cbar_ax.tick_params(labelsize=ticksize)
+
+    # add reference axis arrows (R to the right, z upwards) at the bottom-left of the first subplot
+    try:
+        anchor_ax = axes[0]
+    except Exception:
+        anchor_ax = axes if hasattr(axes, "annotate") else None
+
+    if anchor_ax is not None:
+        x0, y0 = -0.01, -0.01  # anchor location in axis fraction coordinates
+        arrow_len = 0.16  # length of each arrow in axis fraction units
+
+        # upward arrow for z
+
+        # annotate the center (dotted) line at the very top of the axis
+        if plot_centerline:
+            anchor_ax.text(
+                0.5,
+                1.02,
+                r"$R = 1$",
+                transform=anchor_ax.transAxes,
+                fontsize=textsize,
+                ha="center",
+                va="bottom",
+                zorder=12,
+                bbox=dict(facecolor="white", edgecolor="none",
+                          alpha=0.8, pad=0.2),
+            )
+        anchor_ax.annotate(
+            "",
+            xy=(x0, y0 + arrow_len),
+            xytext=(x0, y0),
+            xycoords="axes fraction",
+            arrowprops=dict(arrowstyle="->", linewidth=1.5, color="k"),
+        )
+        # rightward arrow for R
+        anchor_ax.annotate(
+            "",
+            xy=(x0 + arrow_len, y0),
+            xytext=(x0, y0),
+            xycoords="axes fraction",
+            arrowprops=dict(arrowstyle="->", linewidth=1.5, color="k"),
+        )
+
+        # labels for arrows
+        anchor_ax.text(
+            x0 - 0.01,
+            y0 + arrow_len + 0.01,
+            r"$z$",
+            transform=anchor_ax.transAxes,
+            fontsize=textsize + 2,
+            ha="center",
+            va="bottom",
+        )
+        anchor_ax.text(
+            x0 + arrow_len + 0.01,
+            y0 - 0.01,
+            r"$R$",
+            transform=anchor_ax.transAxes,
+            fontsize=textsize + 2,
+            ha="left",
+            va="center",
+        )
+
+    cbar = fig.colorbar(
+        last_c, cax=cbar_ax, format=mticker.ScalarFormatter(useMathText=True)
+    )
+    cbar.formatter.set_powerlimits((0, 0))  # always show scientific notation
+    cbar.update_ticks()
+    cbar.ax.yaxis.get_offset_text().set_fontsize(ticksize)
+
+    # plt.tight_layout(rect=[0, 0, 0.85, 1])  # leave room for cbar
+    return fig, axes
 # %%

@@ -1,20 +1,20 @@
+# %%
 """
-GVEC Relaxation script using Hydra for configuration management.
+Relaxation script using Hydra for configuration management.
 
 Usage: 
     # Single run with defaults
-    python scripts/config_scripts/relax_gvec.py
+    python scripts/config_scripts/relax_from_nfs.py
     
     # Override parameters
-    python scripts/config_scripts/relax_gvec.py fem.ns_r=16 fem.ns_theta=32
+    python scripts/config_scripts/relax_from_nfs.py fem.ns_r=16 fem.ns_theta=32
     
     # Multirun sweep
-    python scripts/config_scripts/relax_gvec.py -m fem.ns_r=8,12,16 eta.max=1e-6,1e-7
+    python scripts/config_scripts/relax_from_nfs.py -m fem.ns_r=8,12,16 eta.max=1e-6,1e-7
 
     # With custom run name
-    python scripts/config_scripts/relax_gvec.py run_name=my_experiment
+    python scripts/config_scripts/relax_from_nfs.py run_name=my_experiment
 """
-import os
 import time
 from pathlib import Path
 
@@ -22,15 +22,11 @@ import h5py
 import hydra
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
-import xarray as xr
 from omegaconf import DictConfig, OmegaConf
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.gvec_interface import load_and_reshape_GVEC
 from mrx.io import unique_id, interpolate_B, interpolate_map_from_points
-from mrx.plotting import integrate_fieldline, poincare_plot
 from mrx.relaxation import (
     IntegrationScheme,
     MRXDiagnostics,
@@ -100,148 +96,10 @@ def create_hdf5_callback(seq, diagnostics, nfp, cfg: DictConfig, outdir: Path):
     
     return hdf5_callback
 
-def create_fieldline_callback(seq, diagnostics, nfp, cfg: DictConfig, outdir: Path):
-    """
-    Create a callback function for fieldline integration during relaxation.
-    
-    This callback:
-    1. Integrates magnetic field lines
-    2. Evaluates |B| along the field lines
-    3. Evaluates pressure p along the field lines
-    4. Saves results to HDF5
-    """
-    fieldline_every = cfg.fieldline.every
-    fieldline_T = cfg.fieldline.T
-    fieldline_n_traj = cfg.fieldline.n_traj
-    fieldline_rtol = cfg.fieldline.rtol
-    fieldline_atol = cfg.fieldline.atol
-    
-    # Pre-compile functions for efficiency
-    get_pressure = jax.jit(diagnostics.pressure)
-    
-    def compute_B_norm(B_dof):
-        """Create a function to compute |B| at a point given B_dof."""
-        B_h = DiscreteFunction(B_dof, seq.Lambda_2, seq.E2)
-        
-        @jax.jit
-        def B_norm_fn(x):
-            x = x % 1.0
-            Bx = B_h(x)
-            DFx = jax.jacfwd(seq.F)(x)
-            return jnp.linalg.norm(DFx @ Bx) / jnp.linalg.det(DFx)
-        
-        return B_norm_fn
-    
-    def compute_pressure_fn(p_dof):
-        """Create a function to compute pressure at a point given p_dof."""
-        p_h = Pushforward(DiscreteFunction(p_dof, seq.Lambda_0, seq.E0), seq.F, 0)
-        
-        @jax.jit
-        def p_fn(x):
-            x = x % 1.0
-            return p_h(x)
-        
-        return p_fn
-    
-    def fieldline_callback(state, iteration):
-        """
-        Callback function called after each outer iteration.
-        Integrates fieldlines and evaluates B-norm and pressure along them.
-        """
-        if iteration % fieldline_every != 0:
-            return state
-        
-        print(f"  [Callback] Integrating fieldlines at iteration {iteration}...")
-        
-        B_dof = state.B_n
-        
-        # Create discrete B field for integration
-        B_h = jax.jit(DiscreteFunction(B_dof, seq.Lambda_2, seq.E2))
-        
-        # Integrate fieldlines
-        logical_trajectories, physical_trajectories = integrate_fieldline(
-            B_h, seq.F, nfp, 
-            T=fieldline_T, 
-            n_traj=fieldline_n_traj,
-            rtol=fieldline_rtol,
-            atol=fieldline_atol,
-        )
-        
-        # Compute |B| along fieldlines
-        B_norm_fn = compute_B_norm(B_dof)
-        # Use scan over trajectories and vmap over time points
-        def process_trajectory(carry, traj_points):
-            return carry, jax.vmap(B_norm_fn)(traj_points)
-        _, B_norm_values = jax.lax.scan(process_trajectory, None, logical_trajectories)
-        B_norm_values = B_norm_values.reshape(logical_trajectories.shape[:-1])
-        
-        # Compute pressure along fieldlines
-        p_dof = get_pressure(B_dof)
-        p_fn = compute_pressure_fn(p_dof)
-        # Use scan over trajectories and vmap over time points
-        def process_trajectory(carry, traj_points):
-            return carry, jax.vmap(p_fn)(traj_points)
-        _, p_values = jax.lax.scan(process_trajectory, None, logical_trajectories)
-        p_values = p_values.reshape(logical_trajectories.shape[:-1])
-        
-        # Save to HDF5
-        fieldline_file = outdir / f"fieldlines_iter{iteration:05d}.h5"
-        print(f"  [Callback] Saving fieldlines to {fieldline_file}")
-        
-        with h5py.File(fieldline_file, "w") as f:
-            f.create_dataset("logical_trajectories", data=jnp.array(logical_trajectories))
-            f.create_dataset("physical_trajectories", data=jnp.array(physical_trajectories))
-            f.create_dataset("B_norm", data=jnp.array(B_norm_values))
-            f.create_dataset("pressure", data=jnp.array(p_values))
-            f.attrs["iteration"] = iteration
-            f.attrs["nfp"] = nfp
-            f.attrs["T"] = fieldline_T
-            f.attrs["n_traj"] = fieldline_n_traj
-            f.attrs["force_norm"] = float(state.F_norm)
-        
-        print(f"  [Callback] |B| range: [{float(jnp.min(B_norm_values)):.4f}, {float(jnp.max(B_norm_values)):.4f}]")
-        print(f"  [Callback] p range: [{float(jnp.min(p_values)):.4f}, {float(jnp.max(p_values)):.4f}]")
-        
-        # Generate Poincare plot
-        print(f"  [Callback] Generating Poincare plots...")
-        try:
-            # Get plot limits from config (convert to tuple or None)
-            Rlim = tuple(cfg.plotting.Rlim) if cfg.plotting.Rlim is not None else None
-            zlim = tuple(cfg.plotting.zlim) if cfg.plotting.zlim is not None else None
-            
-            for zeta_value in cfg.plotting.zeta_values:
-                fig, axes = poincare_plot(
-                    logical_trajectories,
-                    seq.F,
-                    nfp,
-                    p_h=p_fn if cfg.plotting.plot_pressure else None,
-                    zeta_value=zeta_value,
-                    interpolation_degree=cfg.plotting.interpolation_degree,
-                    markersize=cfg.plotting.markersize,
-                    cmap_iota=cfg.plotting.cmap_iota,
-                    cmap_p=cfg.plotting.cmap_p,
-                    ks_thresh=cfg.plotting.ks_thresh,
-                    denom_max=cfg.plotting.denom_max,
-                    Rlim=Rlim,
-                    zlim=zlim,
-                    rasterized=True,
-                )
-                plot_file = outdir / f"poincare_iter{iteration:05d}_zeta{zeta_value:.2f}.pdf"
-                fig.savefig(plot_file, dpi=cfg.plotting.dpi, bbox_inches="tight")
-                plt.close(fig)
-                print(f"  [Callback] Saved Poincare plot to {plot_file}")
-        except Exception as e:
-            print(f"  [Callback] Warning: Could not generate Poincare plot: {e}")
-        
-        return state
-    
-    return fieldline_callback
-
-
-@hydra.main(version_base=None, config_path="../../conf", config_name="config_gvec")
+@hydra.main(version_base=None, config_path="../../conf", config_name="config_relax_from_nfs")
 def main(cfg: DictConfig) -> float:
     """
-    Main entry point for GVEC relaxation with Hydra configuration.
+    Main entry point for relaxation with Hydra configuration.
     
     Returns the final force norm (useful for Hydra optimization).
     """
@@ -250,9 +108,10 @@ def main(cfg: DictConfig) -> float:
     
     # Generate run name if not provided
     run_name = cfg.run_name if cfg.run_name else unique_id(8)
+    cfg.run_name = run_name  # Update config with the actual run name used
     
     print("=" * 60)
-    print(f"GVEC Relaxation: {run_name}")
+    print(f"Relaxation: {run_name}")
     print("=" * 60)
     print("\nConfiguration:")
     print(OmegaConf.to_yaml(cfg))
@@ -264,15 +123,18 @@ def main(cfg: DictConfig) -> float:
     trace_dict = default_trace_dict.copy()
     trace_dict["start_time"] = start_time
     
-    # Load GVEC data
+    # Load NFS data
     # Use original working directory for data files
     original_cwd = hydra.utils.get_original_cwd()
-    gvec_file = Path(original_cwd) / cfg.gvec_file
+    nfs_file = Path(original_cwd) / cfg.nfs_file
     
-    print(f"Loading GVEC data from {gvec_file}...")
-    gvec_eq = xr.open_dataset(gvec_file, engine="h5netcdf")
-    nfp = cfg.nfp
-    pts, R, Z, B_vals = load_and_reshape_GVEC(gvec_eq, nfp)
+    print(f"Loading NFS data from {nfs_file}...")
+    # read results file
+    with h5py.File(nfs_file, "r") as f:
+        pts =    jnp.array(f["eval_points"])
+        R =      jnp.array(f["R"])
+        Z =      jnp.array(f["Z"])
+        B_vals = jnp.array(f["B"])
     
     # Map interpolation
     ns_map = (cfg.map.ns_r, cfg.map.ns_theta, cfg.map.ns_zeta)
@@ -280,10 +142,12 @@ def main(cfg: DictConfig) -> float:
     
     # Validate that ps_map_x <= ns_map_x - 1
     ps_map = tuple(min(p, n - 1) for p, n in zip(ps_map, ns_map))
+    nfp = cfg.nfp
     
     print("Interpolating map...")
     map_func, R_dof, Z_dof, map_resid = interpolate_map_from_points(
-        pts, R, Z, nfp, ns=ns_map, ps=ps_map, quad_order=cfg.map.quad_order
+        pts, R, Z, nfp, ns=ns_map, ps=ps_map, 
+        quad_order=cfg.map.quad_order, flip_zeta=cfg.map.flip_zeta
     )
     map_func = jax.jit(map_func)
     print(f"Map interpolation residuals: {map_resid[0]:.2e}, {map_resid[1]:.2e}")
@@ -367,9 +231,6 @@ def main(cfg: DictConfig) -> float:
     if cfg.output.save_every > 0:
         print(f"HDF5 callback enabled: saving every {cfg.output.save_every} iterations")
         callback = create_hdf5_callback(seq, diagnostics, nfp, cfg, outdir)
-    elif cfg.fieldline.enabled:
-        print(f"Fieldline callback enabled: tracing every {cfg.fieldline.every} iterations")
-        callback = create_fieldline_callback(seq, diagnostics, nfp, cfg, outdir)
     
     # Run relaxation loop
     print(f"Starting relaxation: {cfg.relaxation.num_iters_outer} outer x {cfg.relaxation.num_iters_inner} inner iterations...")

@@ -1,5 +1,5 @@
 # Quick test run with minimal settings
-# Usage: python scripts/config_scripts/relax_gvec.py +experiment=test
+# Usage: python scripts/config_scripts/relax_from_nfs.py +experiment=test
 # @package _global_
 
 defaults:

@@ -1,0 +1,23 @@
+run_dir: out/relax_from_nfs/20260207_123744
+fieldline:
+  n_scan: 1
+  n_vmap: 32
+  T_factor: 300
+  axis_margin: 0.05
+poincare:
+  zeta_values:
+  - 0.33
+  ks_thresh: 10
+plotting:
+  markersize: 0.005
+  dpi: 150
+  denom_max: 15
+  cmap_iota: berlin
+  cmap_p: plasma
+  plot_pressure: true
+  Rlim: null
+  zlim: null
+output:
+  subdir: poincare_plots
+  format: pdf
+  verbose: true

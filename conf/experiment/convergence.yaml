@@ -1,5 +1,5 @@
 # Convergence study: sweep over resolutions
-# Usage: python scripts/config_scripts/relax_gvec.py +experiment=convergence
+# Usage: python scripts/config_scripts/relax_from_nfs.py +experiment=convergence
 # @package _global_
 
 defaults:

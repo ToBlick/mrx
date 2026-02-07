@@ -1,0 +1,43 @@
+# Default configuration for Poincaré plot generation
+defaults:
+  - _self_
+
+# Path to a completed relaxation run output directory
+# (relative to the original working directory)
+run_dir: null  # REQUIRED — e.g. out/relax_from_nfs/20260206_072421
+
+# Fieldline integration parameters
+fieldline:
+  n_scan: 1         # Number of scan batches (sequential)
+  n_vmap: 32        # Number of trajectories per batch (parallel via vmap)
+  T_factor: 300     # Integration time = T_factor * 2π * nfp
+  axis_margin: 0.05 # Exclude region near axis (r ∈ [axis_margin, 0.99])
+
+# Poincaré section & classification parameters
+poincare:
+  zeta_values: [0.33]  # Toroidal angle(s) for Poincaré sections (logical coords)
+  ks_thresh: 10         # KS test threshold for iota classification
+
+# Plot appearance
+plotting:
+  markersize: 0.005
+  dpi: 150
+  denom_max: 15        # Max denominator for rational ticks on iota colorbar
+  cmap_iota: berlin
+  cmap_p: plasma
+  plot_pressure: true
+  Rlim: null           # R axis limits [min, max], null for auto
+  zlim: null           # z axis limits [min, max], null for auto
+
+# Output
+output:
+  subdir: poincare_plots  # Subdirectory inside run_dir for output
+  format: pdf             # Figure file format (pdf, png, svg)
+  verbose: true
+
+# Hydra configuration
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .

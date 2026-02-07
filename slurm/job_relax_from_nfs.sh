@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=video_test
+#SBATCH --job-name=relax
 #SBATCH --nodes=1
 #SBATCH --account=extremedata
 #SBATCH --time=6:00:00
@@ -10,14 +10,14 @@
 #SBATCH --output=/scratch/tblickhan/mrx/logs/%x_%A_%a.out
 
 # ============================================================================
-# GVEC Relaxation SLURM Job Script with Hydra
+# Relaxation SLURM Job Script with Hydra
 # ============================================================================
 # 
 # Usage:
-#   Single run:     sbatch job_gvec.sh
-#   With overrides: sbatch job_gvec.sh "fem.ns_r=16 fem.ns_theta=32"
-#   Multirun:       sbatch job_gvec.sh "-m fem.ns_r=8,12,16"
-#
+#   Single run:     sbatch job_relax_from_nfs.sh
+#   With overrides: sbatch job_relax_from_nfs.sh "fem.ns_r=16 fem.ns_theta=32"
+#   Multirun:       sbatch job_relax_from_nfs.sh "-m fem.ns_r=8,12,16"
+#                   sbatch job_relax_from_nfs.sh "-m nfs_file=data/gvec_rotating_ellipse.h5,data/desc_heliotron_7_7_7.h5,data/desc_w7x_10_10_10.h5"
 # ============================================================================
 
 # --- Load modules and activate environment ---
@@ -29,9 +29,9 @@ source .venv/bin/activate
 HYDRA_OVERRIDES="${1:-}"
 
 # --- Run the relaxation script ---
-echo "Starting GVEC relaxation at $(date)"
+echo "Starting relaxation at $(date)"
 echo "Hydra overrides: $HYDRA_OVERRIDES"
 
-python scripts/config_scripts/relax_gvec.py $HYDRA_OVERRIDES
+python scripts/config_scripts/relax_from_nfs.py $HYDRA_OVERRIDES
 
 echo "Job finished at $(date)"

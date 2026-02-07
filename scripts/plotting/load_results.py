@@ -15,11 +15,9 @@ from mrx.plotting import plot_twin_axis
 # %%
 # Configuration - set your output directory here
 # For a single run:
-# base_dir = Path("out/gvec_relaxation/20260203_120000")
+# base_dir = Path("out/relax_from_nfs/20260203_120000")
 # For a multirun:
-# base_dir = Path("out/gvec_relaxation/multirun/20260203_120000")
-
-base_dir = Path("out/gvec_relaxation/20260205_190027")
+# base_dir = Path("out/relax_from_nfs/multirun/20260203_120000")
 
 # %%
 def find_result_files(base_dir: Path) -> list[Path]:
@@ -113,6 +111,9 @@ def convert_to_trace_dict(results: dict) -> dict:
     return trace_dict
 
 # %%
+
+base_dir = Path("out/relax_from_nfs/20260207_135253")
+
 # Find and load all result files
 result_files = find_result_files(base_dir)
 print(f"Found {len(result_files)} result file(s):")
@@ -167,17 +168,17 @@ for run_name, results in all_results.items():
             right_y=timestep_trace,
             x_left=iterations,
             x_right=iterations,
-            left_label="Force",
-            right_label="Time step",
+            left_label=r"$\| \, J \times B - \nabla p \| / \| \nabla p \|$",
+            right_label=r"$\delta t$",
             left_log=True,
             right_log=False,
-            x_label="Iterations",
+            x_label=r"$\mathrm{iterations}$",
             return_axes=True,
             left_marker="",
             right_marker="",
         )
         fig.savefig(outdir / "force_vs_timestep.pdf", dpi=150, bbox_inches="tight")
-        print(f"  Saved force_vs_timestep.pdf")
+        print("  Saved force_vs_timestep.pdf")
     
     # Plot 2: Force vs helicity
     helicity_trace = results.get("helicity_trace", np.array([]))
@@ -188,17 +189,17 @@ for run_name, results in all_results.items():
             right_y=(helicity_trace - helicity_trace[0]) / np.abs(helicity_trace[0]),
             x_left=iterations,
             x_right=iterations,
-            left_label="Force",
-            right_label="rel. Helicity change",
+            left_label=r"$\| \, J \times B - \nabla p \| / \| \nabla p \|$",
+            right_label=r"$|\Delta H \, / \, H(0)|$",
             left_log=True,
             right_log=False,
-            x_label="Iterations",
+            x_label=r"$\mathrm{iterations}$",
             return_axes=True,
             left_marker="",
             right_marker="",
         )
         fig.savefig(outdir / "force_vs_helicity.pdf", dpi=150, bbox_inches="tight")
-        print(f"  Saved force_vs_helicity.pdf")
+        print("  Saved force_vs_helicity.pdf")
 # %%
 
 # %%
@@ -207,7 +208,7 @@ def print_summary(results_dict: dict):
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print(f"{'Run':<40} {'Final Force':<15} {'Final Energy':<15} {'ΔH/H₀':<15}")
+    print(f"{'Run':<40} {r'Final $\| J \times B - \nabla p \| / \| \nabla p \|$':<15} {'Final Energy':<15} {r'$\Delta H / H(0)$':<15}")
     print("-" * 80)
     
     for run_name, results in results_dict.items():

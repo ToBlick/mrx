@@ -2,7 +2,7 @@
 Stellarator Relaxation script using Hydra for configuration management.
 
 This uses an analytical rotating ellipse map and analytical initial B-field,
-unlike relax_gvec.py which loads data from GVEC files.
+unlike relax_from_nfs.py which loads data from GVEC files.
 
 Usage: 
     # Single run with defaults
@@ -164,7 +164,7 @@ def create_fieldline_callback(seq, diagnostics, nfp, cfg: DictConfig, outdir: Pa
         print(f"  [Callback] p range: [{float(jnp.min(p_values)):.4f}, {float(jnp.max(p_values)):.4f}]")
         
         # Generate Poincare plot
-        print(f"  [Callback] Generating Poincare plots...")
+        print("  [Callback] Generating Poincare plots...")
         try:
             # Get plot limits from config (convert to tuple or None)
             Rlim = tuple(cfg.plotting.Rlim) if cfg.plotting.Rlim is not None else None

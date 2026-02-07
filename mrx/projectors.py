@@ -16,9 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable, Literal
 
 import jax
-import jax.numpy as jnp
 from jax import Array
-
 from mrx.utils import integrate_against, inv33
 
 if TYPE_CHECKING:

@@ -1,5 +1,5 @@
 # Resistivity sweep at medium resolution
-# Usage: python scripts/config_scripts/relax_gvec.py +experiment=eta_sweep
+# Usage: python scripts/config_scripts/relax_from_nfs.py +experiment=eta_sweep
 # @package _global_
 
 defaults:

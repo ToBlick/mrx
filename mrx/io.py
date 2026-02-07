@@ -248,7 +248,7 @@ def load_desc(path, map_seq, nr=None, ntheta=None, nzeta=None):
     return desc_import
 
 
-def interpolate_map_from_points(x, R, Z, nfp, ns=(6, 6, 6), ps = (3, 3, 3), quad_order=3):
+def interpolate_map_from_points(x, R, Z, nfp, ns=(6, 6, 6), ps = (3, 3, 3), quad_order=3, flip_zeta=False):
     """
     Given evaluations of a function R(x), Z(x) at some points x, interpolate
 
@@ -286,7 +286,7 @@ def interpolate_map_from_points(x, R, Z, nfp, ns=(6, 6, 6), ps = (3, 3, 3), quad
 
     X1_h = DiscreteFunction(R_dof, map_seq.Lambda_0, map_seq.E0)
     X2_h = DiscreteFunction(Z_dof, map_seq.Lambda_0, map_seq.E0)
-    return stellarator_map(X1_h, X2_h, nfp=nfp, flip_zeta=False), R_dof, Z_dof, resid
+    return stellarator_map(X1_h, X2_h, nfp=nfp, flip_zeta=flip_zeta), R_dof, Z_dof, resid
 
 
 def interpolate_B(x, B, seq, exclude_axis_tol=1e-3):
