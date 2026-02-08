@@ -60,6 +60,27 @@ def create_eta_schedule(cfg: DictConfig):
     
     return eta_schedule
 
+def create_noise_schedule(cfg: DictConfig):
+    """Create resistivity schedule function based on config."""
+    eta_max = cfg.noise.max
+    num_iters_outer = cfg.relaxation.num_iters_outer
+    schedule_type = cfg.noise.schedule_type
+    
+    if schedule_type == "tanh":
+        # drops from eta_max to ~0 over the middle ~1/3rd of the iterations
+        def eta_schedule(iter_outer):
+            return eta_max * 0.5 * (1 - jnp.tanh(4 * jnp.pi * (iter_outer / num_iters_outer - 0.5)))
+    elif schedule_type == "constant":
+        def eta_schedule(iter_outer):
+            return eta_max
+    elif schedule_type == "linear":
+        def eta_schedule(iter_outer):
+            return eta_max * (1 - iter_outer / num_iters_outer)
+    else:
+        raise ValueError(f"Unknown noise.schedule_type: {schedule_type}")
+    
+    return eta_schedule
+
 def create_hdf5_callback(seq, diagnostics, nfp, cfg: DictConfig, outdir: Path):
     """
     Create a callback function to save intermediate results to HDF5 after each outer iteration.
@@ -221,6 +242,7 @@ def main(cfg: DictConfig) -> float:
     )
     
     eta_schedule = create_eta_schedule(cfg)
+    noise_schedule = create_noise_schedule(cfg)
     
     # Setup diagnostics (needed for callback)
     diagnostics = MRXDiagnostics(seq)
@@ -243,6 +265,8 @@ def main(cfg: DictConfig) -> float:
         dt0=cfg.relaxation.dt0,
         force_tolerance=cfg.relaxation.force_tolerance,
         resistivity_schedule=eta_schedule,
+        noise_schedule=noise_schedule,
+        key = jax.random.PRNGKey(cfg.noise.key),
         callback=callback,
     )
     

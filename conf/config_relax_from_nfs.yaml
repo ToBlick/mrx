@@ -13,23 +13,23 @@ nfp: 3  # Number of field periods
 
 # Map interpolation parameters
 map:
-  ns_r: 8
-  ns_theta: 12
-  ns_zeta: 8
-  ps_r: 5
-  ps_theta: 5
-  ps_zeta: 5
+  ns_r: 6
+  ns_theta: 10
+  ns_zeta: 6
+  ps_r: 4
+  ps_theta: 4
+  ps_zeta: 4
   quad_order: 5
   flip_zeta: false  # Whether to flip the zeta coordinate in the map interpolation
 
 # FEM discretization parameters
 fem:
-  ns_r: 8
-  ns_theta: 12
-  ns_zeta: 8
-  ps_r: 5
-  ps_theta: 5
-  ps_zeta: 5
+  ns_r: 6
+  ns_theta: 10
+  ns_zeta: 6
+  ps_r: 4
+  ps_theta: 4
+  ps_zeta: 4
   quad_order: 5
 
 # B-field interpolation
@@ -39,16 +39,22 @@ interpolation:
 
 # Relaxation parameters
 relaxation:
-  num_iters_inner: 10
-  num_iters_outer: 100
+  num_iters_inner: 100
+  num_iters_outer: 25
   dt0: 1.0
   force_tolerance: 1e-6
-  conjugate: true
+  conjugate: false
 
 # Resistivity schedule parameters
 eta:
   max: 0.0
   schedule_type: tanh  # tanh, constant, linear
+
+# Noise schedule parameters
+noise:
+  max: 0.0
+  schedule_type: tanh  # tanh, constant, linear
+  key: 42
 
 # Output
 output:
