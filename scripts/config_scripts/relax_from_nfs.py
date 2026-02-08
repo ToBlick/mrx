@@ -186,6 +186,9 @@ def main(cfg: DictConfig) -> float:
         ("clamped", "periodic", "periodic"),
         map_func, polar=True, dirichlet=True
     )
+    
+    assert jnp.min(seq.J_j) > 0, "Negative Jacobian!"
+    
     seq.evaluate_1d()
     seq.assemble_all()
     seq.build_crossproduct_projections()
@@ -194,6 +197,7 @@ def main(cfg: DictConfig) -> float:
     setup_time = time.time()
     trace_dict["setup_done_time"] = setup_time
     print(f"Setup completed in {setup_time - start_time:.2f}s")
+    print(f"Minimum Jacobian: {jnp.min(seq.J_j):.2e}, Maximum Jacobian: {jnp.max(seq.J_j):.2e}")
     
     # B-field interpolation with train/validation split
     val_stride = cfg.interpolation.val_stride
