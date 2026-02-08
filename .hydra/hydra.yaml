@@ -112,11 +112,11 @@ hydra:
     hydra:
     - hydra.mode=RUN
     task:
-    - run_dir=out/gvec_relaxation/20260207_121651
+    - run_dir=out/relax_from_nfs/20260207_182940
   job:
     name: poincare_plots
     chdir: false
-    override_dirname: run_dir=out/gvec_relaxation/20260207_121651
+    override_dirname: run_dir=out/relax_from_nfs/20260207_182940
     id: ???
     num: ???
     config_name: config_poincare

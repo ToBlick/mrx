@@ -8,39 +8,39 @@ defaults:
 run_name: null  # Auto-generated if null
 
 # Input data
-nfs_file: data/desc_heliotron_8_8_8.h5
+nfs_file: data/gvec_rotating_ellipse.h5
 nfp: 3  # Number of field periods
 
 # Map interpolation parameters
 map:
-  ns_r: 6
-  ns_theta: 10
-  ns_zeta: 6
-  ps_r: 4
-  ps_theta: 4
-  ps_zeta: 4
-  quad_order: 5
+  ns_r: 7
+  ns_theta: 9
+  ns_zeta: 7
+  ps_r: 6
+  ps_theta: 6
+  ps_zeta: 6
+  quad_order: 6
   flip_zeta: false  # Whether to flip the zeta coordinate in the map interpolation
 
 # FEM discretization parameters
 fem:
-  ns_r: 6
-  ns_theta: 10
-  ns_zeta: 6
-  ps_r: 4
-  ps_theta: 4
-  ps_zeta: 4
-  quad_order: 5
+  ns_r: 7
+  ns_theta: 9
+  ns_zeta: 7
+  ps_r: 6
+  ps_theta: 6
+  ps_zeta: 6
+  quad_order: 6
 
 # B-field interpolation
 interpolation:
-  val_stride: 50  # Validation sampling stride
+  val_stride: 2  # Validation sampling stride
   exclude_axis_tol: 1e-3
 
 # Relaxation parameters
 relaxation:
-  num_iters_inner: 100
-  num_iters_outer: 25
+  num_iters_inner: 10
+  num_iters_outer: 1000
   dt0: 1.0
   force_tolerance: 1e-6
   conjugate: false
@@ -59,7 +59,7 @@ noise:
 # Output
 output:
   dir: out/relax_from_nfs
-  save_every: 1  # Save intermediate states every N outer iterations (0 to disable)
+  save_every: 10  # Save intermediate states every N outer iterations (0 to disable)
   save_final: true
   verbose: true
   print_every: 1
