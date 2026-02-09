@@ -8,8 +8,8 @@ defaults:
 run_name: null  # Auto-generated if null
 
 # Input data
-nfs_file: data/gvec_rotating_ellipse.h5
-nfp: 3  # Number of field periods
+nfs_file: data/gvec_w7x.h5
+nfp: 5  # Number of field periods
 
 # Map interpolation parameters
 map:
@@ -42,7 +42,7 @@ relaxation:
   num_iters_inner: 10
   num_iters_outer: 1000
   dt0: 1.0
-  force_tolerance: 1e-6
+  force_tolerance: 1e-9
   conjugate: false
 
 # Resistivity schedule parameters
@@ -62,7 +62,7 @@ output:
   save_every: 10  # Save intermediate states every N outer iterations (0 to disable)
   save_final: true
   verbose: true
-  print_every: 1
+  print_every: 10
   
 
 # Hydra configuration

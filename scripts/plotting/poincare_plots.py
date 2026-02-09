@@ -208,7 +208,7 @@ with h5py.File(results_file, "r") as f:
     for key in f.keys():
         gvec_data[key] = np.array(f[key])
 # %%
-nfs_file = "data/gvec_rotating_ellipse.h5"
+nfs_file = "/scratch/tblickhan/mrx/data/gvec_rotating_ellipse.h5"
 print(f"Loading NFS data from {nfs_file}...")
 nfs_data = {}
 # read results file
@@ -219,7 +219,19 @@ with h5py.File(nfs_file, "r") as f:
     B_vals = jnp.array(f["B"])
 
 # %%
-nfs_data.keys()
+nfs_file = "/scratch/tblickhan/mrx/data/desc_heliotron_output_fine.h5"
+print(f"Loading NFS data from {nfs_file}...")
+nfs_data = {}
+# read results file
+with h5py.File(nfs_file, "r") as f:
+    for key in f.keys():
+        nfs_data[key] = np.array(f[key])
+    desc_pts =    jnp.array(f["eval_points"])
+    desc_R =      jnp.array(f["R"])
+    desc_Z =      jnp.array(f["Z"])
+    desc_B_vals = jnp.array(f["B"])
 # %%
-
+plt.scatter(desc_R, desc_Z, s=0.01)
+# %%
+plt.scatter(R, Z, s=0.01)
 # %%

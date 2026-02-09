@@ -112,7 +112,7 @@ def convert_to_trace_dict(results: dict) -> dict:
 
 # %%
 
-base_dir = Path("/scratch/tblickhan/mrx/out/relax_from_nfs/20260207_182940")
+base_dir = Path("/scratch/tblickhan/mrx/out/relax_from_nfs/20260209_120245")
 
 # Find and load all result files
 result_files = find_result_files(base_dir)
@@ -240,5 +240,6 @@ if all_results:
 #         param_value = extract_param_from_config(results["config_str"], param_to_compare)
 #         final_force = results.get("force_trace", [np.nan])[-1]
 #         print(f"{run_name}: {param_to_compare}={param_value}, final_force={final_force:.2e}")
+
 
 # %%

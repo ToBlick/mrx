@@ -23,7 +23,7 @@ plotting:
   markersize: 0.005
   dpi: 150
   denom_max: 15        # Max denominator for rational ticks on iota colorbar
-  cmap_iota: berlin
+  cmap_iota: nipy_spectral
   cmap_p: plasma
   plot_pressure: true
   Rlim: null           # R axis limits [min, max], null for auto

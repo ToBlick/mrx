@@ -1,4 +1,4 @@
-run_dir: out/relax_from_nfs/20260207_182940
+run_dir: out/relax_from_nfs/20260209_115723
 fieldline:
   n_scan: 1
   n_vmap: 32
@@ -12,7 +12,7 @@ plotting:
   markersize: 0.005
   dpi: 150
   denom_max: 15
-  cmap_iota: berlin
+  cmap_iota: nipy_spectral
   cmap_p: plasma
   plot_pressure: true
   Rlim: null
