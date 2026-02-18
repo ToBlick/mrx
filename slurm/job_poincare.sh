@@ -2,7 +2,7 @@
 #SBATCH --job-name=poincare
 #SBATCH --nodes=1
 #SBATCH --account=extremedata
-#SBATCH --time=2:00:00
+#SBATCH --time=6:00:00
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=80G
 #SBATCH --partition=gpu-h100

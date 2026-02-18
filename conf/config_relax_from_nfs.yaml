@@ -39,8 +39,8 @@ interpolation:
 
 # Relaxation parameters
 relaxation:
-  num_iters_inner: 10
-  num_iters_outer: 1000
+  num_iters_inner: 1000
+  num_iters_outer: 100
   dt0: 1.0
   force_tolerance: 1e-9
   conjugate: false

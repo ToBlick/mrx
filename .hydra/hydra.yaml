@@ -112,11 +112,14 @@ hydra:
     hydra:
     - hydra.mode=RUN
     task:
-    - run_dir=out/relax_from_nfs/20260209_115723
+    - run_dir=out/relax_from_nfs/20260210_035543
+    - fieldline.n_scan=2
+    - plotting.denom_max=25
+    - plotting.plot_pressure=False
   job:
     name: poincare_plots
     chdir: false
-    override_dirname: run_dir=out/relax_from_nfs/20260209_115723
+    override_dirname: fieldline.n_scan=2,plotting.denom_max=25,plotting.plot_pressure=False,run_dir=out/relax_from_nfs/20260210_035543
     id: ???
     num: ???
     config_name: config_poincare

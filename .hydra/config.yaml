@@ -1,6 +1,6 @@
-run_dir: out/relax_from_nfs/20260209_115723
+run_dir: out/relax_from_nfs/20260210_035543
 fieldline:
-  n_scan: 1
+  n_scan: 2
   n_vmap: 32
   T_factor: 300
   axis_margin: 0.05
@@ -11,10 +11,10 @@ poincare:
 plotting:
   markersize: 0.005
   dpi: 150
-  denom_max: 15
+  denom_max: 25
   cmap_iota: nipy_spectral
   cmap_p: plasma
-  plot_pressure: true
+  plot_pressure: false
   Rlim: null
   zlim: null
 output:

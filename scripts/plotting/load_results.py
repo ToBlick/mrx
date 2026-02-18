@@ -112,7 +112,7 @@ def convert_to_trace_dict(results: dict) -> dict:
 
 # %%
 
-base_dir = Path("/scratch/tblickhan/mrx/out/relax_from_nfs/20260209_120245")
+base_dir = Path("/scratch/tblickhan/mrx/out/relax_from_nfs/20260210_051702")
 
 # Find and load all result files
 result_files = find_result_files(base_dir)
