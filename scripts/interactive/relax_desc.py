@@ -8,21 +8,11 @@ import matplotlib.pyplot as plt
 from mrx.desc_interface import project_desc_equilibrium
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import extend_map_nfp
-from mrx.plotting import (
-    get_2d_grids,
-    integrate_fieldline,
-    plot_scalar_fct_physical_logical,
-    plot_torus,
-    plot_twin_axis,
-    poincare_plot,
-)
-from mrx.relaxation import (
-    IntegrationScheme,
-    MRXDiagnostics,
-    TimeStepChoice,
-    TimeStepper,
-    relaxation_loop,
-)
+from mrx.plotting import (get_2d_grids, integrate_fieldline,
+                          plot_scalar_fct_physical_logical, plot_torus,
+                          plot_twin_axis, poincare_plot)
+from mrx.relaxation import (DescentMethod, IntegrationScheme, MRXDiagnostics,
+                            TimeStepChoice, TimeStepper, relaxation_loop)
 
 jax.config.update("jax_enable_x64", True)
 
@@ -50,10 +40,9 @@ num_iters_inner = 100
 num_iters_outer = 10
 ts = TimeStepper(
     seq=seq,
-    conjugate=True,
+    descent_method=DescentMethod.CONJUGATE_GRADIENT,
     dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH,
     timestep_mode=IntegrationScheme.EXPLICIT,
-    newton=False,
 )
 
 final_state, traces = relaxation_loop(

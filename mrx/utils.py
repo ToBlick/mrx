@@ -480,13 +480,14 @@ def run_relaxation_loop(CONFIG, trace_dict, state, diagnostics):
     """
     import time
 
-    from mrx.relaxation import MRXHessian, TimeStepper
+    from mrx.relaxation import DescentMethod, MRXHessian, TimeStepper
 
     # Construct the time stepper and the Hessian
     Seq = diagnostics.Seq
     timestepper = TimeStepper(Seq,
                               gamma=CONFIG["gamma"],
-                              newton=CONFIG["precond"],
+                              descent_method=DescentMethod.NEWTON if CONFIG[
+                                  "precond"] else DescentMethod.GRADIENT,
                               force_free=CONFIG["force_free"],
                               picard_tol=CONFIG["solver_tol"],
                               picard_k_restart=CONFIG["solver_maxit"])
@@ -677,4 +678,3 @@ def interpolate_B(B_vals, eval_points, Seq, exclude_axis_tol=1e-3):
     # Solve least squares
     B_dof, residuals, _, _ = jnp.linalg.lstsq(A, b, rcond=None)
     return B_dof, residuals
-

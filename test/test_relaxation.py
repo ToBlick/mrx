@@ -6,7 +6,8 @@ import pytest
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
-from mrx.relaxation import MRXDiagnostics, MRXHessian, State, TimeStepper
+from mrx.relaxation import (DescentMethod, MRXDiagnostics, MRXHessian, State,
+                            TimeStepper)
 
 jax.config.update("jax_enable_x64", True)
 
@@ -403,7 +404,6 @@ def test_time_stepper_init(seq: DeRhamSequence) -> None:
     timestepper = TimeStepper(
         seq,
         gamma=0,
-        newton=False,
         picard_tol=1e-12,
         picard_k_restart=20,
         force_free=False
@@ -411,7 +411,7 @@ def test_time_stepper_init(seq: DeRhamSequence) -> None:
 
     assert timestepper.seq is seq
     assert timestepper.gamma == 0
-    assert timestepper.newton is False
+    assert timestepper.descent_method == DescentMethod.GRADIENT
     assert timestepper.picard_tol == 1e-12
     assert timestepper.picard_k_restart == 20
     assert timestepper.force_free is False
@@ -429,7 +429,8 @@ def test_time_stepper_init_state(
     Hessian = seq.M2
 
     # Use State directly since init_state uses self.State which doesn't exist
-    state = State(B_n=B_field, B_nplus1=B_field, dt=dt, eta=eta, hessian=Hessian, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=dt, eta=eta, hessian=Hessian,
+                  picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     assert state.B_n.shape == B_field.shape
     assert state.B_nplus1.shape == B_field.shape
@@ -466,7 +467,8 @@ def test_time_stepper_update_dt(
     seq.assemble_all()
 
     timestepper = TimeStepper(seq)
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2,
+                  picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     new_dt = 0.02
     updated_state = timestepper.update_field(state, "dt", new_dt)
@@ -485,7 +487,8 @@ def test_time_stepper_update_hessian(
     seq.assemble_leray_projection()
 
     timestepper = TimeStepper(seq)
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2,
+                  picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     hessian = MRXHessian(seq)
     new_Hessian = hessian.assemble(B_field)
@@ -504,7 +507,8 @@ def test_time_stepper_update_B_n(
     seq.assemble_all()
 
     timestepper = TimeStepper(seq)
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2,
+                  picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
     new_B = B_field * 1.1
     updated_state = timestepper.update_field(state, "B_n", new_B)
 
@@ -520,7 +524,8 @@ def test_time_stepper_update_B_guess(
     seq.assemble_all()
 
     timestepper = TimeStepper(seq)
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2,
+                  picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     new_B_guess = B_field * 0.9
     updated_state = timestepper.update_field(state, "B_nplus1", new_B_guess)
@@ -540,22 +545,23 @@ def test_time_stepper_midpoint_residuum(
     seq.assemble_leray_projection()
 
     timestepper = TimeStepper(seq, force_free=False)
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2,
+                  picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     updated_state = timestepper.midpoint_residuum(state)
 
     # Check that state was updated
     assert updated_state.picard_iterations == state.picard_iterations + 1
-    # Convert JAX arrays to Python scalars 
+    # Convert JAX arrays to Python scalars
     residuum = float(jnp.asarray(updated_state.picard_residuum).ravel()[0])
     F_norm = float(jnp.asarray(updated_state.F_norm).ravel()[0])
     v_norm = float(jnp.asarray(updated_state.v_norm).ravel()[0])
-    
+
     assert residuum >= 0
     assert F_norm >= 0
     assert v_norm >= 0
 
-    # Check finiteness 
+    # Check finiteness
     assert bool(jnp.isfinite(updated_state.picard_residuum))
     assert bool(jnp.isfinite(updated_state.F_norm))
     assert bool(jnp.isfinite(updated_state.v_norm))
@@ -576,7 +582,8 @@ def test_time_stepper_picard_solver(
         picard_tol=1e-6,
         picard_k_restart=5
     )
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.M2,
+                  picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     # Run Picard solver
     final_state = timestepper.midpoint_picard_step(state, state.key)
@@ -608,7 +615,8 @@ def test_time_stepper_picard_solver_force_free(
         picard_tol=1e-6,
         picard_k_restart=5
     )
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.M2,
+                  picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     final_state = timestepper.midpoint_picard_step(state, state.key)
 
@@ -629,12 +637,13 @@ def test_time_stepper_picard_solver_newton(
 
     timestepper = TimeStepper(
         seq,
-        newton=True,
+        descent_method=DescentMethod.NEWTON,
         force_free=False,
         picard_tol=1e-6,
         picard_k_restart=5
     )
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=H, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=H,
+                  picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     final_state = timestepper.midpoint_picard_step(state, state.key)
 
@@ -657,7 +666,8 @@ def test_time_stepper_picard_solver_gamma(
         picard_tol=1e-6,
         picard_k_restart=5
     )
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.M2, picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.M2,
+                  picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     final_state = timestepper.midpoint_picard_step(state, state.key)
 
@@ -702,3 +712,6 @@ def test_mrx_hessian_assemble_symmetry(
         npt.assert_allclose(
             H, H.T, rtol=1e-10, atol=1e-10,
             err_msg=f"Hessian should be symmetric for scale={scale}")
+            err_msg = f"Hessian should be symmetric for scale={scale}")
+            err_msg = f"Hessian should be symmetric for scale={scale}")
+            err_msg = f"Hessian should be symmetric for scale={scale}")

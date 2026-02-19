@@ -3,27 +3,18 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import xarray as xr
+
 # %%
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.mappings import extend_map_nfp
-from mrx.plotting import (
-    get_2d_grids,
-    integrate_fieldline,
-    plot_scalar_fct_physical_logical,
-    plot_torus,
-    plot_twin_axis,
-    poincare_plot,
-)
-from mrx.relaxation import (
-    IntegrationScheme,
-    MRXDiagnostics,
-    TimeStepChoice,
-    TimeStepper,
-    relaxation_loop,
-)
-from mrx.io import interpolate_B, interpolate_map_from_points
 from mrx.gvec_interface import load_and_reshape_GVEC
+from mrx.io import interpolate_B, interpolate_map_from_points
+from mrx.mappings import extend_map_nfp
+from mrx.plotting import (get_2d_grids, integrate_fieldline,
+                          plot_scalar_fct_physical_logical, plot_torus,
+                          plot_twin_axis, poincare_plot)
+from mrx.relaxation import (DescentMethod, IntegrationScheme, MRXDiagnostics,
+                            TimeStepChoice, TimeStepper, relaxation_loop)
 
 jax.config.update("jax_enable_x64", True)
 
@@ -41,10 +32,11 @@ ns = (8, 16, 8)
 ps = (6, 6, 6)
 quad_order = 5
 
-map, resid = interpolate_map_from_points(pts, R, Z, nfp, ns=ns_map, ps=ps_map, quad_order=quad_order_map)
+map, resid = interpolate_map_from_points(
+    pts, R, Z, nfp, ns=ns_map, ps=ps_map, quad_order=quad_order_map)
 map = jax.jit(map)
 print(f"Map interpolation residuals: {resid[0]:.2e}, {resid[1]:.2e}")
-seq = DeRhamSequence(ns, ps, quad_order, ("clamped", "periodic", "periodic"), 
+seq = DeRhamSequence(ns, ps, quad_order, ("clamped", "periodic", "periodic"),
                      map, polar=True, dirichlet=True)
 seq.evaluate_1d()
 seq.assemble_all()
@@ -52,22 +44,26 @@ seq.build_crossproduct_projections()
 seq.assemble_leray_projection()
 # %%
 # set aside  points for validation using strided sampling
-val_stride = 3 
+val_stride = 3
 exclude_axis_tol = 1e-3
-val_mask = (jnp.arange(pts.shape[0]) % val_stride == 0) & (pts[:, 0] > exclude_axis_tol) & (pts[:, 0] < 1 - exclude_axis_tol)
+val_mask = (jnp.arange(pts.shape[0]) % val_stride == 0) & (
+    pts[:, 0] > exclude_axis_tol) & (pts[:, 0] < 1 - exclude_axis_tol)
 train_mask = ~val_mask
 val_pts = pts[val_mask]
 train_pts = pts[train_mask]
 train_B_vals = B_vals[train_mask]
-B_dof_0, resid_B = interpolate_B(train_pts, train_B_vals, seq, exclude_axis_tol=exclude_axis_tol)
+B_dof_0, resid_B = interpolate_B(
+    train_pts, train_B_vals, seq, exclude_axis_tol=exclude_axis_tol)
 print(f"B-field interpolation residual (train): {resid_B[0]:.2e}")
 # %%
 # Validate interpolation
-B_h = jax.jit(Pushforward(DiscreteFunction(B_dof_0, seq.Lambda_2, seq.E2), seq.F, 2))
+B_h = jax.jit(Pushforward(DiscreteFunction(
+    B_dof_0, seq.Lambda_2, seq.E2), seq.F, 2))
 B_val_interp = jax.vmap(B_h)(val_pts)
 val_error = jnp.linalg.norm(B_vals[val_mask] - B_val_interp, axis=1)
 val_rel_error = val_error / jnp.linalg.norm(B_vals[val_mask], axis=1)
-print(f"B-field interpolation relative error (validation): mean={jnp.mean(val_rel_error):.2e}, max={jnp.max(val_rel_error):.2e}")
+print(
+    f"B-field interpolation relative error (validation): mean={jnp.mean(val_rel_error):.2e}, max={jnp.max(val_rel_error):.2e}")
 print(
     f"div B after interpolation: {((seq.strong_div @ B_dof_0) @ seq.M3 @ (seq.strong_div @ B_dof_0))**0.5: .2e}")
 
@@ -82,15 +78,18 @@ num_iters_inner = 10
 num_iters_outer = 100
 ts = TimeStepper(
     seq=seq,
-    conjugate=True,
+    descent_method=DescentMethod.CONJUGATE_GRADIENT,
     dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH,
     timestep_mode=IntegrationScheme.EXPLICIT,
-    newton=False,
 )
 
 # %%
+
+
 def eta_schedule(iter_outer):
     return 1e-6 * 0.5 * (1 - jnp.tanh(4 * jnp.pi * (iter_outer / num_iters_outer - 0.5)))
+
+
 plt.plot(jnp.array([eta_schedule(i) for i in range(num_iters_outer)]))
 plt.xlabel("Outer iteration")
 plt.ylabel(r"$\eta$ schedule")
@@ -175,7 +174,8 @@ diagnostics = MRXDiagnostics(seq)
 B_dof = final_state.B_n
 get_pressure = jax.jit(diagnostics.pressure)
 p_dof = get_pressure(B_dof)
-p_h = jax.jit(Pushforward(DiscreteFunction(p_dof, seq.Lambda_0, seq.E0), seq.F, 0))
+p_h = jax.jit(Pushforward(DiscreteFunction(
+    p_dof, seq.Lambda_0, seq.E0), seq.F, 0))
 
 # %%
 # J_hat = seq.weak_curl @ B_dof

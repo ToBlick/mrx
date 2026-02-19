@@ -31,7 +31,7 @@ relaxation:
   num_iters_outer: 100
   dt0: 1.0
   force_tolerance: 1e-6
-  conjugate: true
+  descent_method: conjugate_gradient  # gradient, conjugate_gradient, newton, bfgs
 
 # Resistivity schedule parameters
 eta:
