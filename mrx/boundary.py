@@ -14,8 +14,6 @@ import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
-__all__ = ['LazyBoundaryOperator']
-
 
 # Boundary extraction operator for cube-like domains
 class LazyBoundaryOperator:

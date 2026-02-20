@@ -4,11 +4,6 @@ from typing import Any, Callable, Optional
 import jax
 import jax.numpy as jnp
 
-__all__ = ['jacobian_determinant', 'inv33',
-           'div', 'curl', 'grad', 'l2_product', 'DEVICE_PRESETS', 'DEFAULT_CONFIG',
-           'append_to_trace_dict', 'default_trace_dict', 'update_config', 'is_running_in_github_actions',
-           'interpolate_B']
-
 
 def is_running_in_github_actions():
     """

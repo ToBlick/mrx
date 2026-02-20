@@ -17,22 +17,6 @@ import numpy as np
 
 from mrx.differential_forms import DiscreteFunction
 
-__all__ = [
-    "get_3d_grids",
-    "get_2d_grids",
-    "get_1d_grids",
-    "plot_torus",
-    "set_axes_equal",
-    "plot_twin_axis",
-    "poincare_plot",
-    "trace_plot",
-    "integrate_fieldlines",
-    "get_periodic_intersections",
-    "get_iota_log",
-    "get_iota",
-    "classify_uniformity",
-]
-
 # Base marker styles for different data series
 base_markers = [
     "circle",
@@ -63,6 +47,7 @@ colorbar = "Viridis"
 #########
 # Grids #
 #########
+
 
 def get_3d_grids(
     F: Callable,
@@ -131,6 +116,7 @@ def get_3d_grids(
     _y2 = _y[:, 1].reshape(nx, ny, nz)
     _y3 = _y[:, 2].reshape(nx, ny, nz)
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
+
 
 def get_2d_grids(
     F: Callable,
@@ -238,6 +224,7 @@ def get_2d_grids(
     _y = jax.vmap(F)(_x)
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
+
 def get_1d_grids(
     F: Callable, zeta: float = 0, chi: float = 0, nx: int = 64, tol: float = 1e-6
 ):
@@ -289,6 +276,7 @@ def get_1d_grids(
 ############
 # 3D plots #
 ############
+
 
 def plot_torus(
     p_h: Callable,
@@ -425,6 +413,7 @@ def plot_torus(
 
     return fig, ax
 
+
 def set_axes_equal(ax: plt.Axes):
     """Set 3D plot axes to equal scale."""
     X_limits = ax.get_xlim3d()
@@ -447,6 +436,7 @@ def set_axes_equal(ax: plt.Axes):
 ###############
 # Trace plots #
 ###############
+
 
 def plot_twin_axis(
     left_y: jnp.ndarray,
@@ -618,6 +608,7 @@ def plot_twin_axis(
         return fig, (ax1, ax2)
     return fig
 
+
 def trace_plot(
     trace_dict: dict,
     filename: str,
@@ -761,15 +752,16 @@ def trace_plot(
 # Poincare plots #
 ##################
 
+
 def integrate_fieldlines(x0s, B_dof, p_dof, seq, T, N):
     B_h = DiscreteFunction(B_dof, seq.Lambda_2, seq.E2)
     p_h = DiscreteFunction(p_dof, seq.Lambda_0, seq.E0)
-    
+
     def vector_field(t, x, args):
         # avoid evaluation at x[0] = 0
         x = x.at[0].set(jnp.where(x[0] < 1e-9, 1e-9, x[0]))
         # Ensure periodicity in the last two coordinates
-        x = x.at[1:3].set(x[1:3] % 1.0) 
+        x = x.at[1:3].set(x[1:3] % 1.0)
         Bx = B_h(x)
         DFx = jax.jacfwd(seq.F)(x)
         return Bx / (jnp.linalg.norm(DFx @ Bx) + 1e-9)
@@ -790,7 +782,8 @@ def integrate_fieldlines(x0s, B_dof, p_dof, seq, T, N):
         # On solver failure, fill trajectory with NaN
         failed = sol.result != dfx.RESULTS.successful
         traj = jnp.where(failed, jnp.nan, sol.ys % 1.0)
-        p_vals = jax.vmap(p_h)(jnp.where(failed, jnp.zeros_like(sol.ys), sol.ys) % 1.0)
+        p_vals = jax.vmap(p_h)(
+            jnp.where(failed, jnp.zeros_like(sol.ys), sol.ys) % 1.0)
         p_vals = jnp.where(failed, jnp.nan, p_vals)
         return traj, p_vals
 
@@ -801,16 +794,17 @@ def integrate_fieldlines(x0s, B_dof, p_dof, seq, T, N):
     def scan_fn(carry, x0_batch):
         trajs, ps = vmapped_integrate(x0_batch)
         return carry, (trajs, ps)
-    
+
     _, (logical_trajectories, p_values) = jax.lax.scan(scan_fn, None, x0s)
-    
+
     return logical_trajectories, p_values
 
+
 def get_periodic_intersections(
-    field_line, 
-    p_values, 
-    plane_normal, 
-    plane_point, 
+    field_line,
+    p_values,
+    plane_normal,
+    plane_point,
     max_intersections=100
 ):
     # Padding and Masking
@@ -832,67 +826,67 @@ def get_periodic_intersections(
     pos_next_virt_detect = pos_curr + delta_unwrapped
     # Distance at the "virtual" next point
     dist_next_virt = jnp.dot(pos_next_virt_detect - plane_point, plane_normal)
-    
+
     # Detect Crossings: A crossing exists if the line segment (curr -> next_virt) crosses zero
     d_curr_detect = dists[:-1]
     valid_crossing = (d_curr_detect * dist_next_virt) < 0.0
-    
+
     # Interpolation
     pos_pad = pad_axis0(field_line)
     p_pad = pad_axis0(p_values)
     crossing_indices = jnp.nonzero(
-        valid_crossing, 
-        size=max_intersections, 
+        valid_crossing,
+        size=max_intersections,
         fill_value=0
     )[0]
     count = jnp.sum(valid_crossing)
     # +1 because we padded the start of the array
-    centers = crossing_indices + 1 
+    centers = crossing_indices + 1
 
     # Interpolation Kernel (Quadratic)
     def interpolate_single(idx):
         pos_prev_raw = pos_pad[idx - 1]
-        pos_curr     = pos_pad[idx]
+        pos_curr = pos_pad[idx]
         pos_next_raw = pos_pad[idx + 1]
-        
+
         # Unwrap Geometry for the local neighborhood
         delta_prev = pos_prev_raw - pos_curr
         pos_prev_v = pos_curr + (delta_prev - jnp.round(delta_prev))
         delta_next = pos_next_raw - pos_curr
         pos_next_v = pos_curr + (delta_next - jnp.round(delta_next))
-        
+
         # Recalculate distances on unwrapped local points
         d_prev = jnp.dot(pos_prev_v - plane_point, plane_normal)
         d_curr = jnp.dot(pos_curr - plane_point, plane_normal)
         d_next = jnp.dot(pos_next_v - plane_point, plane_normal)
-        
+
         # Quadratic coefficients: f(t) = at^2 + bt + c, where t=0 is pos_curr
         c = d_curr
         a = 0.5 * (d_prev - 2.0 * d_curr + d_next)
         b = 0.5 * (d_next - d_prev)
-        
+
         # Solve at^2 + bt + c = 0
         discriminant = b**2 - 4*a*c
         sqrt_disc = jnp.sqrt(jnp.maximum(discriminant, 0.0))
-        
+
         div = 2.0 * a + 1e-15
         t1 = (-b + sqrt_disc) / div
         t2 = (-b - sqrt_disc) / div
         t_lin = -c / (b + 1e-15)
-        
-        # Choose the root that lies within the segment range [0, 1] 
+
+        # Choose the root that lies within the segment range [0, 1]
         t_quad = jnp.where((t1 >= 0.0) & (t1 <= 1.0), t1, t2)
         t = jnp.where(jnp.abs(a) > 1e-10, t_quad, t_lin)
         t = jnp.clip(t, 0.0, 1.0)
-        
+
         # Interpolate Position
         A_pos = 0.5 * (pos_prev_v - 2.0 * pos_curr + pos_next_v)
         B_pos = 0.5 * (pos_next_v - pos_prev_v)
         final_pos = A_pos * (t**2) + B_pos * t + pos_curr
-        
+
         # Re-apply periodicity to the result
         final_pos = final_pos - jnp.floor(final_pos)
-        
+
         # Interpolate Scalar Field p
         v0, v1, v2 = p_pad[idx-1], p_pad[idx], p_pad[idx+1]
         Ap = 0.5 * (v0 - 2.0 * v1 + v2)
@@ -903,14 +897,15 @@ def get_periodic_intersections(
 
     # Vectorize and Mask
     intersections, inter_p = jax.vmap(interpolate_single)(centers)
-    
+
     _idx = jnp.arange(max_intersections)
     mask = _idx < count
-    
+
     intersections = apply_mask(intersections, mask)
     inter_p = apply_mask(inter_p, mask)
-    
+
     return intersections, inter_p, count
+
 
 def get_iota(c, nfp):
     def toroidal_unwrapped(phi):
@@ -933,6 +928,7 @@ def get_iota(c, nfp):
     n = toroidal_unwrapped(phi) / nfp
     return jnp.abs(m / n)
 
+
 def classify_uniformity(t, ks_thresh=0.05):
     def uniformity_score(t_mod):
         # sort values
@@ -952,6 +948,7 @@ def classify_uniformity(t, ks_thresh=0.05):
     well_winding = ks < ks_thresh
     return well_winding, ks
 
+
 def get_iota_log(c, nfp, ks_thresh=0.05):
     t = jnp.unwrap(c[:, 1], period=1.0)
     z = jnp.unwrap(c[:, 2], period=1.0)
@@ -964,6 +961,7 @@ def get_iota_log(c, nfp, ks_thresh=0.05):
     iota = jnp.where(well_winding, iota, jnp.nan)
     return iota, well_winding, ks
 
+
 def poincare_plot(logical_intersections,
                   physical_intersections,
                   p_values,
@@ -975,15 +973,15 @@ def poincare_plot(logical_intersections,
                   denom_max=15,
                   Rlim=None,
                   zlim=None,
-                  p_lim = None,
-                  iota_lim = None,
+                  p_lim=None,
+                  iota_lim=None,
                   rasterized=True,
                   show=False):
 
     # Separate points based on whether iota is NaN
     valid_mask = ~jnp.isnan(iota_values)
     nan_mask = jnp.isnan(iota_values)
-    
+
     fig = plt.figure(figsize=(10, 4))
     # Fixed positions: [left, bottom, width, height]
     ax1 = fig.add_axes([0.05, 0.12, 0.35, 0.78])   # left plot
@@ -1004,8 +1002,8 @@ def poincare_plot(logical_intersections,
                 cmap=cmap_p,
                 s=markersize,
                 rasterized=rasterized,
-                vmin = p_lim[0] * 100 if p_lim is not None else None,
-                vmax = p_lim[1] * 100 if p_lim is not None else None
+                vmin=p_lim[0] * 100 if p_lim is not None else None,
+                vmax=p_lim[1] * 100 if p_lim is not None else None
             )
         else:
             s1 = ax1.scatter(  # physical
@@ -1016,8 +1014,8 @@ def poincare_plot(logical_intersections,
                 cmap=cmap_iota,
                 s=markersize,
                 rasterized=rasterized,
-                vmin = iota_lim[0] if iota_lim is not None else None,
-                vmax = iota_lim[1] if iota_lim is not None else None
+                vmin=iota_lim[0] if iota_lim is not None else None,
+                vmax=iota_lim[1] if iota_lim is not None else None
             )
         s2 = ax2.scatter(  # logical
             logical_intersections[valid_mask, 0],
@@ -1026,14 +1024,15 @@ def poincare_plot(logical_intersections,
             cmap=cmap_iota,
             s=markersize,
             rasterized=rasterized,
-            vmin = iota_lim[0] if iota_lim is not None else None,
-            vmax = iota_lim[1] if iota_lim is not None else None
+            vmin=iota_lim[0] if iota_lim is not None else None,
+            vmax=iota_lim[1] if iota_lim is not None else None
         )
 
     # Plot NaN points in grey
     if jnp.any(nan_mask):
         ax1.scatter(  # physical
-            (physical_intersections[nan_mask, 0] ** 2 + physical_intersections[nan_mask, 1] ** 2) ** 0.5,
+            (physical_intersections[nan_mask, 0] ** 2 +
+             physical_intersections[nan_mask, 1] ** 2) ** 0.5,
             physical_intersections[nan_mask, 2],
             c="grey",
             s=markersize,
@@ -1049,15 +1048,16 @@ def poincare_plot(logical_intersections,
 
     # Set fixed axis limits - always make the plot square
     # Compute data ranges
-    R_data = (physical_intersections[:, 0] ** 2 + physical_intersections[:, 1] ** 2) ** 0.5
+    R_data = (physical_intersections[:, 0] ** 2 +
+              physical_intersections[:, 1] ** 2) ** 0.5
     z_data = physical_intersections[:, 2]
-    
+
     # Use provided limits or compute from data
     R_min = Rlim[0] if Rlim is not None else float(jnp.min(R_data))
     R_max = Rlim[1] if Rlim is not None else float(jnp.max(R_data))
     z_min = zlim[0] if zlim is not None else float(jnp.min(z_data))
     z_max = zlim[1] if zlim is not None else float(jnp.max(z_data))
-    
+
     # Pad to make square
     R_range = R_max - R_min
     z_range = z_max - z_min
@@ -1066,7 +1066,7 @@ def poincare_plot(logical_intersections,
     z_center = (z_min + z_max) / 2
     ax1.set_xlim(R_center - max_range / 2, R_center + max_range / 2)
     ax1.set_ylim(z_center - max_range / 2, z_center + max_range / 2)
-    
+
     ax1.set(xlabel=r"$R$", ylabel=r"$z$")
     ax2.set(xlabel=r"$r$", ylabel=r"$\theta$", aspect="equal")
 
@@ -1077,7 +1077,7 @@ def poincare_plot(logical_intersections,
             cbar1 = fig.colorbar(s1, cax=cax1, label=r"$p \; [\times 100]$")
         else:
             cax1.set_visible(False)  # Hide left colorbar axis if no pressure
-        
+
         cbar2 = fig.colorbar(s2, cax=cax2, label=r"$\iota$")
 
         # Automatically determine rational ticks based on nfp and clipped iota range
@@ -1095,7 +1095,7 @@ def poincare_plot(logical_intersections,
                 if iota_min <= rational <= iota_max and rational not in seen_rationals:
                     rational_ticks.append(rational)
                     # Can uncomment this to simplify the fractions
-                    g = 1 #jnp.gcd(m_scaled, n)
+                    g = 1  # jnp.gcd(m_scaled, n)
                     rational_labels.append(
                         f"{int(m_scaled // g)}/{int(n // g)}")
                     seen_rationals.add(rational)
@@ -1109,10 +1109,12 @@ def poincare_plot(logical_intersections,
         # Hide colorbar axes if no valid points
         cax1.set_visible(False)
         cax2.set_visible(False)
-        
+
     return fig, (ax1, ax2)
 
 # TODO: might be obsolete after the new plotting refactor
+
+
 def plot_crossections_separate(
     p_h: Callable,
     grids_pol: list,

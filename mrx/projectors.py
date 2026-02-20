@@ -17,12 +17,12 @@ from typing import TYPE_CHECKING, Callable, Literal
 
 import jax
 from jax import Array
+
 from mrx.utils import integrate_against, inv33
 
 if TYPE_CHECKING:
     from mrx.derham_sequence import DeRhamSequence
 
-__all__ = ['Projector']
 
 # Type aliases for callable functions used in projections
 ScalarFunction = Callable[[Array], Array]  # ξ -> scalar (with trailing dim)
@@ -152,4 +152,5 @@ class Projector:
         # Evaluate the given function at quadrature points
         f_jk: Array = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
         w_jk: Array = f_jk * (self.Seq.Q.w)[:, None]
+        return integrate_against(self.Seq.get_Lambda_3_ijk, w_jk, self.Seq.Lambda_3.n)
         return integrate_against(self.Seq.get_Lambda_3_ijk, w_jk, self.Seq.Lambda_3.n)

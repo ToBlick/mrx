@@ -1,21 +1,14 @@
+from .utils import *
+from .spline_bases import *
+from .quadrature import *
+from .projectors import *
+from .polar import *
+from .plotting import *
+from .mappings import *
+from .iterative_solvers import *
+from .differential_forms import *
+from .derham_sequence import *
+from .boundary import *
 __version__ = "0.0.1"
 
 MAP_BATCH_SIZE = 10_000
-
-from .boundary import *
-from .derham_sequence import *
-from .differential_forms import *
-from .iterative_solvers import *
-from .lazy_matrices import *
-from .mappings import *
-from .plotting import *
-from .polar import *
-from .projectors import *
-from .quadrature import *
-from .spline_bases import *
-from .utils import *
-
-__all__ = (differential_forms.__all__ + iterative_solvers.__all__ +
-           lazy_matrices.__all__ + plotting.__all__ + polar.__all__ +
-           projectors.__all__ + quadrature.__all__ + spline_bases.__all__ +
-           utils.__all__ + boundary.__all__)

@@ -3,8 +3,6 @@ from typing import Callable, Optional
 import jax
 import jax.numpy as jnp
 
-__all__ = ['SplineBasis', 'TensorBasis', 'DerivativeSpline']
-
 
 class SplineBasis:
     """A class representing a basis of spline functions.

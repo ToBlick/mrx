@@ -712,6 +712,3 @@ def test_mrx_hessian_assemble_symmetry(
         npt.assert_allclose(
             H, H.T, rtol=1e-10, atol=1e-10,
             err_msg=f"Hessian should be symmetric for scale={scale}")
-            err_msg = f"Hessian should be symmetric for scale={scale}")
-            err_msg = f"Hessian should be symmetric for scale={scale}")
-            err_msg = f"Hessian should be symmetric for scale={scale}")

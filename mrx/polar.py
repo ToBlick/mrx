@@ -10,8 +10,6 @@ import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
-__all__ = ['LazyExtractionOperator', 'get_xi']
-
 
 class LazyExtractionOperator:
     """
@@ -360,7 +358,8 @@ class LazyExtractionOperator:
             vals, cols = process_row(row_idx)
             return carry, (vals, cols)
 
-        _, (all_vals, all_cols) = jax.lax.scan(scan_fn, None, jnp.arange(nrows)) # (nrows, max_nnz)
+        _, (all_vals, all_cols) = jax.lax.scan(
+            scan_fn, None, jnp.arange(nrows))  # (nrows, max_nnz)
 
         # Build row indices and flatten
         row_indices = jnp.broadcast_to(

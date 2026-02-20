@@ -44,6 +44,9 @@ dependencies = [
     "xarray",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["test"]
+
 [tool.ruff]
 target-version = "py312"
 extend-exclude = ["docs/source/notebooks/*.ipynb", "*.ipynb"]

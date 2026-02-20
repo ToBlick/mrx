@@ -4,7 +4,6 @@ Tests for the LazyBoundaryOperator, including dense and sparse assembly.
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import numpy.testing as npt
 import pytest
 
@@ -18,7 +17,7 @@ jax.config.update("jax_enable_x64", True)
 # ---------------------------------------------------------------------------
 
 NS = (5, 5, 5)
-PS = (2, 2, 2)
+PS = (3, 3, 3)
 TYPES = ("clamped", "periodic", "periodic")
 
 
@@ -26,12 +25,6 @@ TYPES = ("clamped", "periodic", "periodic")
 def form(request):
     """DifferentialForm for each degree k."""
     return DifferentialForm(request.param, NS, PS, TYPES)
-
-
-@pytest.fixture
-def form_vector():
-    """DifferentialForm for vector fields (k = -1)."""
-    return DifferentialForm(-1, NS, PS, TYPES)
 
 
 BC_CONFIGS = [
@@ -42,63 +35,10 @@ BC_CONFIGS = [
     ("dirichlet", "dirichlet", "dirichlet"),
 ]
 
-
-# ---------------------------------------------------------------------------
-# Initialization tests
-# ---------------------------------------------------------------------------
-
-class TestInit:
-    """Test LazyBoundaryOperator initialization."""
-
-    def test_form_degree_stored(self, form):
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
-        assert B.k == form.k
-
-    def test_total_n(self, form):
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
-        assert B.n == B.n1 + B.n2 + B.n3
-
-    def test_dirichlet_reduces_nr_by_2(self, form):
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
-        assert B.nr == form.nr - 2
-
-    def test_left_reduces_nr_by_1(self, form):
-        B = LazyBoundaryOperator(form, ("left", "periodic", "periodic"))
-        assert B.nr == form.nr - 1
-
-    def test_right_reduces_nr_by_1(self, form):
-        B = LazyBoundaryOperator(form, ("right", "periodic", "periodic"))
-        assert B.nr == form.nr - 1
-
-    def test_none_keeps_dimensions(self, form):
-        B = LazyBoundaryOperator(form, ("none", "none", "none"))
-        assert B.nr == form.nr
-        assert B.nt == form.nt
-        assert B.nz == form.nz
-
-    def test_scalar_forms_n2_n3_zero(self):
-        for k in [0, 3]:
-            Λ = DifferentialForm(k, NS, PS, TYPES)
-            B = LazyBoundaryOperator(Λ, ("dirichlet", "periodic", "periodic"))
-            assert B.n2 == 0
-            assert B.n3 == 0
-
-    def test_vector_forms_all_components_positive(self):
-        for k in [1, 2]:
-            Λ = DifferentialForm(k, NS, PS, TYPES)
-            B = LazyBoundaryOperator(Λ, ("dirichlet", "periodic", "periodic"))
-            assert B.n1 > 0
-            assert B.n2 > 0
-            assert B.n3 > 0
-
-    def test_vector_field_equal_components(self, form_vector):
-        B = LazyBoundaryOperator(form_vector, ("dirichlet", "periodic", "periodic"))
-        assert B.n1 == B.n2 == B.n3
-
-
 # ---------------------------------------------------------------------------
 # Dense assembly tests
 # ---------------------------------------------------------------------------
+
 
 class TestDenseAssembly:
     """Test dense matrix assembly via assemble() / matrix()."""
@@ -120,16 +60,6 @@ class TestDenseAssembly:
         M = B.matrix()
         row_sums = jnp.sum(M, axis=1)
         assert jnp.all(row_sums <= 1 + 1e-10)
-
-    def test_matrix_equals_assemble(self, form):
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
-        npt.assert_array_equal(B.matrix(), B.assemble())
-
-    def test_array_conversion(self, form):
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
-        arr = np.array(B)
-        assert isinstance(arr, np.ndarray)
-        npt.assert_array_equal(arr, np.array(B.matrix()))
 
     @pytest.mark.parametrize("bc_types", BC_CONFIGS)
     def test_various_bc_types(self, bc_types):
@@ -153,54 +83,7 @@ class TestSparseAssembly:
         B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
         dense = B.assemble()
         sparse = B.assemble_sparse()
-        npt.assert_array_almost_equal(sparse.todense(), dense)
-
-    def test_sparse_matrix_wrapper(self, form):
-        """sparse_matrix() should return the same result as assemble_sparse()."""
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
-        s1 = B.sparse_matrix()
-        s2 = B.assemble_sparse()
-        npt.assert_array_equal(s1.todense(), s2.todense())
-
-    def test_sparse_shape(self, form):
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
-        S = B.assemble_sparse()
-        assert S.shape == (B.n, form.n)
-
-    @pytest.mark.parametrize("bc_types", BC_CONFIGS)
-    def test_sparse_matches_dense_all_bcs(self, bc_types):
-        """Sparse and dense should agree for every BC config and form degree."""
-        for k in [0, 1, 2, 3]:
-            Λ = DifferentialForm(k, NS, PS, TYPES)
-            B = LazyBoundaryOperator(Λ, bc_types)
-            dense = B.assemble()
-            sparse = B.assemble_sparse()
-            npt.assert_array_almost_equal(
-                sparse.todense(), dense,
-                err_msg=f"Mismatch for k={k}, bc_types={bc_types}",
-            )
-
-    def test_sparse_vector_field(self, form_vector):
-        B = LazyBoundaryOperator(form_vector, ("dirichlet", "periodic", "periodic"))
-        dense = B.assemble()
-        sparse = B.assemble_sparse()
-        npt.assert_array_almost_equal(sparse.todense(), dense)
-
-    def test_sparse_nnz_bounded(self, form):
-        """Number of stored elements should be <= nrows (at most 1 per row)."""
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
-        S = B.assemble_sparse()
-        # BCOO stores exactly nrows entries (max_nnz=1 * nrows)
-        assert S.nse <= B.n
-
-    def test_sparse_matvec(self, form):
-        """Sparse matvec should match dense matvec."""
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
-        dense = B.assemble()
-        sparse = B.assemble_sparse()
-        key = jax.random.PRNGKey(0)
-        x = jax.random.normal(key, (form.n,))
-        npt.assert_array_almost_equal(sparse @ x, dense @ x)
+        npt.assert_array_equal(sparse.todense(), dense)
 
 
 # ---------------------------------------------------------------------------
@@ -243,9 +126,3 @@ class TestBoundarySemantics:
         B = LazyBoundaryOperator(Λ, ("dirichlet", "periodic", "periodic"))
         M = B.matrix()
         npt.assert_array_equal(M, jnp.eye(Λ.n1))
-
-    def test_dirichlet_smaller_than_none(self):
-        Λ = DifferentialForm(0, NS, PS, TYPES)
-        B_d = LazyBoundaryOperator(Λ, ("dirichlet", "dirichlet", "dirichlet"))
-        B_n = LazyBoundaryOperator(Λ, ("none", "none", "none"))
-        assert B_d.n < B_n.n

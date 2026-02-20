@@ -1,8 +1,8 @@
 import jax
 import jax.numpy as jnp
-__all__ = ['picard_solver', 'newton_solver']
 
-def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm)->tuple[jnp.ndarray, float, int]:
+
+def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm) -> tuple[jnp.ndarray, float, int]:
     """
     Picard solver for fixed-point iteration.
 
@@ -41,7 +41,7 @@ def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm)->tu
         """
         # z = (x, (aux1, aux2, ...))
         z_prev, z, i = state
-        # Use the residual ||f(z) - z|| as stopping criterion. 
+        # Use the residual ||f(z) - z|| as stopping criterion.
         residual = norm(f(z)[0] - z[0])
         # Continue while either residual or change is above tolerance.
         return jnp.logical_and(i < max_iter, jnp.logical_or(residual > tol, jnp.isnan(residual)))
@@ -62,9 +62,10 @@ def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm)->tu
         z_prev, z, i = state
         fz = f(z)
         alpha = jnp.where(i == 0,
-                            1,
-                            jnp.clip(norm(fz[0] - z[0]) / (norm(z[0] - z_prev[0]) + 1e-12), 0.0, 1.0)
-                            )
+                          1,
+                          jnp.clip(
+                              norm(fz[0] - z[0]) / (norm(z[0] - z_prev[0]) + 1e-12), 0.0, 1.0)
+                          )
         z_next = (alpha * fz[0] + (1 - alpha) * z[0], fz[1])
         return (z, z_next, i + 1)
 
@@ -76,6 +77,7 @@ def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm)->tu
     # that f computes.
     z_star = jax.lax.cond(iters == 0, lambda z: f(z), lambda z: z, z_star)
     return z_star, norm(f(z_star)[0] - z_star[0]), iters
+
 
 def newton_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm):
     """
@@ -120,4 +122,3 @@ def newton_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm):
 
     # Hand off to picard_solver to iterate the Newton map g
     return picard_solver(g, z_init, tol, max_iter, norm)
-

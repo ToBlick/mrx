@@ -16,8 +16,6 @@ import jax.numpy as jnp
 from mrx.spline_bases import DerivativeSpline, SplineBasis, TensorBasis
 from mrx.utils import inv33
 
-__all__ = ['DifferentialForm', 'DiscreteFunction', 'Pushforward', 'Pullback']
-
 
 class DifferentialForm:
     """
