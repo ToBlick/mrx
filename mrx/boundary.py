@@ -10,6 +10,7 @@ different form degrees (k = 0, 1, 2, 3) in three-dimensional space.
 """
 
 import jax
+import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
@@ -237,3 +238,52 @@ class LazyBoundaryOperator:
         return jax.vmap(jax.vmap(self._element, (None, 0)), (0, None))(
             jnp.arange(self.n), jnp.arange(self.Lambda.n)
         )
+
+    def assemble_sparse(self):
+        """Assemble the operator as a sparse BCOO matrix.
+
+        Scans over rows sequentially, computing one row at a time via
+        vmap over columns. Non-zero indices and values are collected
+        and assembled into a BCOO sparse matrix.
+
+        Returns:
+            jsparse.BCOO: The sparse operator matrix of shape (n, Lambda.n).
+        """
+        ncols = self.Lambda.n
+        nrows = self.n
+        col_indices = jnp.arange(ncols)
+
+        # Each row has at most 1 non-zero (selection/permutation matrix)
+        max_nnz = 1
+
+        def process_row(row_idx):
+            row = jax.vmap(self._element, (None, 0))(row_idx, col_indices)
+            nz_mask = row != 0
+            order = jnp.argsort(~nz_mask, stable=True)
+            vals = row[order][:max_nnz]
+            cols = col_indices[order][:max_nnz]
+            nz_count = jnp.sum(nz_mask)
+            valid = jnp.arange(max_nnz) < nz_count
+            vals = jnp.where(valid, vals, 0.0)
+            cols = jnp.where(valid, cols, 0)
+            return vals, cols
+
+        def scan_fn(carry, row_idx):
+            vals, cols = process_row(row_idx)
+            return carry, (vals, cols)
+
+        _, (all_vals, all_cols) = jax.lax.scan(
+            scan_fn, None, jnp.arange(nrows)
+        )  # (nrows, max_nnz)
+
+        row_indices = jnp.broadcast_to(
+            jnp.arange(nrows)[:, None], (nrows, max_nnz)
+        )
+        indices = jnp.stack([row_indices.ravel(), all_cols.ravel()], axis=-1)
+        data = all_vals.ravel()
+
+        return jsparse.BCOO((data, indices), shape=(nrows, ncols))
+
+    def sparse_matrix(self):
+        """Wrapper for assemble_sparse."""
+        return self.assemble_sparse()

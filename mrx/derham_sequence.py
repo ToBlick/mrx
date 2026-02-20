@@ -1,6 +1,7 @@
 from typing import Callable
 
 import jax
+import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 
 import mrx
@@ -37,10 +38,10 @@ class DeRhamSequence():
     Lambda_3: DifferentialForm
     Q: QuadratureRule
     F: Callable
-    E0: jnp.ndarray
-    E1: jnp.ndarray
-    E2: jnp.ndarray
-    E3: jnp.ndarray
+    E0: jsparse.BCSR
+    E1: jsparse.BCSR
+    E2: jsparse.BCSR
+    E3: jsparse.BCSR
     lambda_r_jk: jnp.ndarray
     lambda_t_jk: jnp.ndarray
     lambda_z_jk: jnp.ndarray
@@ -49,11 +50,11 @@ class DeRhamSequence():
     d_lambda_z_jk: jnp.ndarray
 
     # Jacobian determinant evaluated at quadrature points: det DF(x_j). Shape: n_q x 1.
-    J_j = jnp.ndarray
+    J_j: jnp.ndarray
     # (k,l)th element of metric at quadrature point j: G(x_j)_kl. Shape: n_q x 3 x 3. G = DF^T DF.
-    G_jkl = jnp.ndarray
+    G_jkl: jnp.ndarray
     # (k,l)th element of inverse metric at quadrature point j: G(x_j)^{-1}_kl. Shape: n_q x 3 x 3.
-    G_inv_jkl = jnp.ndarray
+    G_inv_jkl: jnp.ndarray
 
     def __init__(self, ns, ps, q, types, F, polar, dirichlet=True):
         """
