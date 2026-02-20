@@ -13,34 +13,34 @@ nfp: 5  # Number of field periods
 
 # Map interpolation parameters
 map:
-  ns_r: 7
-  ns_theta: 9
-  ns_zeta: 7
-  ps_r: 6
-  ps_theta: 6
-  ps_zeta: 6
-  quad_order: 6
+  ns_r: 8
+  ns_theta: 8
+  ns_zeta: 8
+  ps_r: 4
+  ps_theta: 4
+  ps_zeta: 4
+  quad_order: 4
   flip_zeta: false  # Whether to flip the zeta coordinate in the map interpolation
 
 # FEM discretization parameters
 fem:
-  ns_r: 7
-  ns_theta: 9
-  ns_zeta: 7
-  ps_r: 6
-  ps_theta: 6
-  ps_zeta: 6
-  quad_order: 6
+  ns_r: 8
+  ns_theta: 8
+  ns_zeta: 8
+  ps_r: 4
+  ps_theta: 4
+  ps_zeta: 4
+  quad_order: 4
 
 # B-field interpolation
 interpolation:
-  val_stride: 2  # Validation sampling stride
+  val_stride: 4     # Validation sampling stride
   exclude_axis_tol: 1e-3
 
 # Relaxation parameters
 relaxation:
   num_iters_inner: 100
-  num_iters_outer: 1000
+  num_iters_outer: 100
   dt0: 1.0
   force_tolerance: 1e-9
   descent_method: gradient  # gradient, conjugate_gradient, newton, bfgs
@@ -59,10 +59,10 @@ noise:
 # Output
 output:
   dir: out/relax_from_nfs
-  save_every: 10  # Save intermediate states every N outer iterations (0 to disable)
+  save_every: 1  # Save intermediate states every N outer iterations (0 to disable)
   save_final: true
   verbose: true
-  print_every: 10
+  print_every: 1
   
 
 # Hydra configuration
@@ -70,7 +70,7 @@ hydra:
   job:
     chdir: true  # Change to output directory when running
   run:
-    dir: ${hydra:runtime.cwd}/${output.dir}/${now:%Y%m%d_%H%M%S}
+    dir: ${hydra:runtime.cwd}/${output.dir}/${now:%Y%m%d_%H%M%S}_${run_name}
   sweep:
     dir: ${hydra:runtime.cwd}/${output.dir}/multirun/${now:%Y%m%d_%H%M%S}
     subdir: ${hydra.job.num}

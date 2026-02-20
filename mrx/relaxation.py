@@ -301,11 +301,6 @@ class TimeStepper(eqx.Module):
         The factor by which to increase/decrease the time step based on Picard iterations.
         force_free : bool, default=False
             Whether the problem has grad(p) = 0.
-    conjugate: bool, default=False
-        Whether to use the conjugate gradient method.
-    b : float, default=1.0
-        The parameter for the modified update step:
-        v = f + b v⁻ max{ <f, f - v⁻> / <v⁻, v⁻>, 0}.
     dt_mode : DTMode, default=DTMode.ANALYTIC_LS
         The mode for updating the time step:
         - DTMode.FIXED: use the time step stored in the state.
@@ -320,15 +315,13 @@ class TimeStepper(eqx.Module):
     gamma: int = 0
     mu: float = 0.0
     descent_method: DescentMethod = DescentMethod.GRADIENT
+    dt_mode: TimeStepChoice = TimeStepChoice.ANALYTIC_LINESEARCH
+    timestep_mode: IntegrationScheme = IntegrationScheme.EXPLICIT
     picard_tol: float = 1e-9
     picard_k_restart: int = 20
     picard_k_crit: int = 4
     picard_dt_increment: float = 1.01
     force_free: bool = False
-    conjugate: bool = False
-    b: float = 1.0
-    dt_mode: TimeStepChoice = TimeStepChoice.ANALYTIC_LINESEARCH
-    timestep_mode: IntegrationScheme = IntegrationScheme.EXPLICIT
     stochastic: bool = False
     key: Optional[jax.Array] = None
 
@@ -521,7 +514,7 @@ class TimeStepper(eqx.Module):
         elif self.descent_method == DescentMethod.CONJUGATE_GRADIENT:
             u = F
             v = state.v
-            u += self.b * v * jnp.maximum((F @ self.seq.M2 @ (u - v)) /
+            u += v * jnp.maximum((u @ self.seq.M2 @ (u - v)) /
                                           (v @ self.seq.M2 @ v), 0.0)
         elif self.descent_method == DescentMethod.GRADIENT:
             u = F
@@ -755,10 +748,10 @@ def relaxation_loop(B_dof: jnp.ndarray,
     # ---- diagnostics ----
     force_norm_trace = [state.F_norm]
     helicity_trace = [get_helicity(state.B_n)]
-    timesteps = [state.dt]
+    timesteps = [ ]
     energy_trace = [state.B_n @ seq.M2 @ state.B_n/2]
-    picard_residua = [state.picard_residuum]
-    picard_iterations = [state.picard_iterations]
+    picard_residua = [ ]
+    picard_iterations = [ ]
     velocity_norm_trace = [state.v_norm]
     divergence_B_trace = [diagnostics.divergence_norm(state.B_n)]
     eta_trace = [state.eta]

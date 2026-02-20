@@ -102,9 +102,12 @@ def create_hdf5_callback(seq, diagnostics, nfp, cfg: DictConfig, outdir: Path):
         p_dof = get_pressure(B_dof)
 
         output_file = outdir / "intermediate_states.h5"
-        # Use a group per iteration
+        # Use a group per iteration (require_group avoids error if group already exists)
         with h5py.File(output_file, "a") as f:
-            group = f.create_group(f"iter_{iteration:05d}")
+            group_name = f"iter_{iteration:05d}"
+            if group_name in f:
+                del f[group_name]
+            group = f.create_group(group_name)
             group.create_dataset("B_dof", data=B_dof)
             group.create_dataset("p_dof", data=p_dof)
             group.attrs["iteration"] = iteration
