@@ -5,85 +5,9 @@ from typing import Callable, Literal, Optional
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax.scipy.sparse.linalg import cg
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction
-
-
-class MRXHessian:
-
-    def __init__(self, Seq: DeRhamSequence):
-        """ 
-        Initialize the MRX Hessian class.
-
-        Parameters
-        ----------
-        Seq : DeRham sequence
-            The de Rham sequence to use.
-        """
-        self.Seq = Seq
-
-    def δB(self, B: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
-        """
-        Compute the δB operator. TODO: Add definition and formula of δB.
-
-        Parameters
-        ----------
-        B : jnp.ndarray
-            The magnetic field.
-        u : jnp.ndarray
-            The velocity field.
-
-        Returns
-        -------
-        δB : jnp.ndarray
-            The δB operator.
-        """
-        H = self.Seq.p12 @ B
-        uxH = jnp.linalg.solve(self.Seq.m1, self.Seq.P2x1_to_1(u, H))
-        return self.Seq.strong_curl @ uxH
-
-    def uxJ(self, B: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
-        """
-        Compute the uxJ operator. TODO: Add formula of uxJ.
-
-        Parameters
-        ----------
-        B : jnp.ndarray
-            The magnetic field.
-        u : jnp.ndarray
-            The velocity field.
-
-        Returns
-        -------
-        uxJ : jnp.ndarray
-            The uxJ operator.
-        """
-        J = self.Seq.weak_curl @ B
-        # Assuming that this was supposed to be P2x1_to_1?
-        # This was PP2x1_to_1 earlier but maybe a typo?
-        return jnp.linalg.solve(self.Seq.m1, self.Seq.P2x1_to_1(u, J))
-
-    def assemble(self, B: jnp.ndarray) -> jnp.ndarray:
-        """
-        Assemble the MRX Hessian.
-
-        Parameters
-        ----------
-        B : jnp.ndarray
-            The magnetic field.
-
-        Returns
-        -------
-        H : jnp.ndarray
-            The assembled and symmetrized MRX Hessian.
-        """
-        X = jnp.eye(B.shape[0])
-        δBᵢ = jax.vmap(self.δB, in_axes=(None, 1), out_axes=1)(B, X)
-        ΛxJᵢ = jax.vmap(self.uxJ, in_axes=(None, 1), out_axes=1)(B, X)
-        H = (δBᵢ.T @ self.Seq.m2 @ δBᵢ
-             + ΛxJᵢ.T @ self.Seq.m12 @ self.Seq.m2 @ δBᵢ)
-        return (H + H.T) / 2
 
 
 class MRXDiagnostics:
@@ -91,7 +15,7 @@ class MRXDiagnostics:
     A class to compute various important quantities and diagnostics of the MRX relaxation.
     """
 
-    def __init__(self, Seq: DeRhamSequence, force_free: bool = False):
+    def __init__(self, seq: DeRhamSequence, tol=1e-9, maxiter=1000):
         """
         Initialize the MRX Diagnostics class.
 
@@ -99,112 +23,52 @@ class MRXDiagnostics:
         ----------
         Seq : DeRham sequence
             The de Rham sequence to use.
-        force_free : bool, default=False
-            Whether the problem has grad(p) = 0.
         """
-        self.Seq = Seq
-        self.force_free = force_free
+        self.seq = seq
+        self.tol = tol
+        self.maxiter = maxiter
 
     def energy(self, B: jnp.ndarray) -> float:
-        """
-        Compute the magnetic field energy: E = 1/2 |B|^2.
-
-        Parameters
-        ----------
-        B : jnp.ndarray
-            The magnetic field.
-
-        Returns
-        -------
-        energy : float
-            The magnetic field energy.
-        """
-        return 0.5 * B.T @ self.Seq.m2 @ B
+        return 0.5 * B @ self.seq.apply_m2_sparse(B)
 
     def helicity(self, B: jnp.ndarray) -> float:
         """
         Compute the magnetic helicity: H = ∫ A · B dx.
-
-        Parameters
-        ----------
-        B : jnp.ndarray
-            The magnetic field.
-
-        Returns
-        -------
-        helicity : float
-            The magnetic helicity.
         """
-        A = jnp.linalg.solve(self.Seq.dd1, self.Seq.weak_curl @ B)
-        B_harm = B - self.Seq.strong_curl @ A
-        return A.T @ self.Seq.m1 @ self.Seq.p12 @ (B + B_harm)
+        A = cg(self.seq.apply_dd1_sparse, self.seq.apply_d1t_sparse(B), M=self.seq.apply_dd1_precond,
+               tol=self.tol, maxiter=self.maxiter)[0]
+        curlA = cg(self.seq.apply_m2_sparse, self.seq.apply_d1_sparse(
+            A), tol=self.tol, M=self.seq.apply_m2_precond, maxiter=self.maxiter)[0]
+        return A @ self.seq.apply_m12_sparse @ (2 * B - curlA)
 
     def harmonic_component(self, B: jnp.ndarray) -> jnp.ndarray:
         """
         Compute the harmonic component of the magnetic field.
-
-        Parameters
-        ----------
-        B : jnp.ndarray
-            The magnetic field.
-
-        Returns
-        -------
-        B_harm : jnp.ndarray
-            The harmonic component of the magnetic field.
         """
-        A = jnp.linalg.solve(self.Seq.dd1, self.Seq.weak_curl @ B)
-        B_harm = B - self.Seq.strong_curl @ A
-        return B_harm
+        A = cg(self.seq.apply_dd1_sparse, self.seq.apply_d1t_sparse(B), M=self.seq.apply_dd1_precond,
+               tol=self.tol, maxiter=self.maxiter)[0]
+        curlA = self.seq.apply_strong_curl(A)
+        return B - curlA
 
     def divergence_norm(self, B: jnp.ndarray) -> float:
         """
         Compute the norm of the divergence of the magnetic field. 
-        Should be at machine precision if the right forms are being used.
-
-        Parameters
-        ----------
-        B : jnp.ndarray
-            The magnetic field.
-
-        Returns
-        -------
-        divergence_norm : float
-            The norm of the divergence of the magnetic field.
         """
-        return ((self.Seq.strong_div @ B) @ self.Seq.m3 @ (self.Seq.strong_div @ B))**0.5
+        return (self.seq.apply_d2_sparse(B) @ self.seq.apply_strong_div(B))**0.5
 
-    def pressure(self, B_hat: jnp.ndarray) -> jnp.ndarray:
+    def pressure(self, b: jnp.ndarray) -> jnp.ndarray:
         """
-        Compute the pressure. TODO: Add formula of how the pressure is defined when not force-free.
-
-        Parameters
-        ----------
-        B_hat : jnp.ndarray
-            The magnetic field.
-
-        Returns
-        -------
-        pressure : jnp.ndarray
-            The pressure.
+        Compute the pressure.
         """
-        if not self.force_free:
-            J_hat = self.Seq.weak_curl @ B_hat
-            H_hat = self.Seq.p12 @ B_hat
-            JxH_hat = jnp.linalg.solve(
-                self.Seq.m2, self.Seq.P1x1_to_2(J_hat, H_hat))
-            return -jnp.linalg.solve(self.Seq.dd0, self.Seq.p03 @ self.Seq.strong_div @ JxH_hat)
-        else:
-            # Compute p(x) = J · B / |B|²
-            B_h = DiscreteFunction(B_hat, self.Seq.basis_2, self.Seq.e2)
-            J_hat = self.Seq.weak_curl @ B_hat
-            J_h = DiscreteFunction(J_hat, self.Seq.basis_1, self.Seq.e1)
-
-            def lmbda(x):
-                DFx = jax.jacfwd(self.Seq.map)(x)
-                Bx = B_h(x)
-                return (J_h(x) @ Bx) / ((DFx @ Bx) @ DFx @ Bx) * jnp.linalg.det(DFx) * jnp.ones(1)
-            return jnp.linalg.solve(self.Seq.m0, self.Seq.P0(lmbda))
+        # j = curl b
+        j = self.seq.apply_weak_curl(b)
+        # h = P1 b
+        h = cg(self.seq.apply_m1_sparse, self.seq.apply_m12_sparse(b), M=self.seq.apply_m1_precond,
+               tol=self.tol, maxiter=self.maxiter)[0]
+        jxb = cg(self.seq.apply_m1_sparse, self.seq.P1x1_to_1(j, h), M=self.seq.apply_m1_precond,
+                 tol=self.tol, maxiter=self.maxiter)[0]
+        return cg(self.seq.apply_dd0_sparse, self.seq.apply_d0t_sparse(jxb), M=self.seq.apply_dd0_precond,
+                  tol=self.tol, maxiter=self.maxiter)[0]
 
 
 class State(eqx.Module):
@@ -270,9 +134,7 @@ class TimeStepChoice(Enum):
 
 class DescentMethod(Enum):
     GRADIENT = 0
-    NEWTON = 1
-    BFGS = 2
-    CONJUGATE_GRADIENT = 3
+    CONJUGATE_GRADIENT = 1
 
 
 class TimeStepper(eqx.Module):
@@ -325,103 +187,37 @@ class TimeStepper(eqx.Module):
     stochastic: bool = False
     key: Optional[jax.Array] = None
 
-    def norm_2(self, B: jnp.ndarray) -> float:
+    def norm_2(self, b: jnp.ndarray) -> float:
         """
-        Compute the L2 norm of a vector.
-
-        Parameters
-        ----------
-        B : jnp.ndarray
-            The vector we want to compute the norm of.
-
-        Returns
-        -------
-        norm : float
-            The L2 norm of the vector.
+        Compute the L2 norm of a 2-form.
         """
-        return (B @ self.seq.m2 @ B)**0.5
+        return (b @ self.seq.apply_m2_sparse(b))**0.5
 
-    def compute_force(self, B: jnp.ndarray) -> jnp.ndarray:
+    def compute_force(self, b: jnp.ndarray) -> jnp.ndarray:
         """
         Compute the force at the current state.
-
-        Parameters
-        ----------
-        state : State
-            The state of the MRX relaxation.
-
-        Returns
-        -------
-        F : jnp.ndarray
-            The force at the current state.
         """
-        J = self.seq.weak_curl @ B
-        H = self.seq.p12 @ B
-        JxH = jnp.linalg.solve(
-            self.seq.m2, self.seq.P1x1_to_2(J, H))
-        if not self.force_free:
-            F = self.seq.P_Leray @ JxH
-        else:
-            F = JxH
-        return F, J, H
+        # j = curl b
+        j = self.seq.apply_weak_curl(b)
+        # h = P1 b
+        h = cg(self.seq.apply_m1_sparse, self.seq.apply_m12_sparse(b), M=self.seq.apply_m1_precond,
+               tol=self.tol, maxiter=self.maxiter)[0]
+        jxh = cg(self.seq.apply_m2_sparse, self.seq.P1x1_to_2(j, h), M=self.seq.apply_m2_precond,
+                 tol=self.tol, maxiter=self.maxiter)[0]
+        f = self.seq.apply_leray_projection(
+            jxh, nullspace_vectors=self.seq.null_3, k=2)
+        return f, j, h
 
-    def apply_regularization(self, u_hat: jnp.ndarray) -> jnp.ndarray:
-        """
-        Apply hyperregularization to the velocity field.
+    def regularization_operator(self, u: jnp.ndarray) -> jnp.ndarray:
+        return self.seq.apply_m2_sparse(u) + self.mu * self.seq.apply_dd2_sparse(u)
 
-        Parameters
-        ----------
-        u_hat : jnp.ndarray
-            The velocity field in spectral space.
-
-        Returns
-        -------
-        u_hat_reg : jnp.ndarray
-            The regularized velocity field in spectral space.
-        """
+    def apply_regularization(self, u: jnp.ndarray) -> jnp.ndarray:
         for _ in range(self.gamma):
-            u_hat = jnp.linalg.solve(
-                jnp.eye(self.seq.m2.shape[0]) + self.mu * self.seq.dd2, u_hat)
-        return u_hat
-
-    def apply_inverse_hessian(self, state: State, F: jnp.ndarray) -> jnp.ndarray:
-        """
-        Apply the inverse Hessian to the velocity field.
-
-        Parameters
-        ----------
-        state : State
-            The state of the MRX relaxation.
-        F : jnp.ndarray
-            The direction of the force.
-
-        Returns
-        -------
-        u_hat_inv : jnp.ndarray
-            The velocity field after applying the inverse Hessian.
-        """
-        return -self.seq.P_Leray @ jnp.linalg.lstsq(state.hessian,
-                                                    self.seq.P_Leray.T @ self.seq.m2 @ F)[0]
-        # P_Leray.T technically not needed because F is already div_free
+            u = cg(self.regularization_operator, u, M=self.seq.apply_m2_precond,
+                   tol=self.tol, maxiter=self.maxiter)[0]
+        return u
 
     def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'dt', 'eta', 'hessian', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'noise_level', 'v'], value) -> State:
-        """
-        Update any field in the state.
-
-        Parameters
-        ----------
-        state : State
-            The state of the MRX relaxation.
-        field_name : str
-            The name of the field to update.
-        value : any
-            The new value for the field.
-
-        Returns
-        -------
-        state : State
-            The updated state of the MRX relaxation.
-        """
         return eqx.tree_at(
             lambda s: getattr(s, field_name),
             state,
@@ -431,40 +227,14 @@ class TimeStepper(eqx.Module):
     def apply_noise(self, v: jnp.ndarray, key: jax.random.PRNGKey, strength: float) -> jnp.ndarray:
         """
         Apply noise to the velocity field.
-
-        Parameters
-        ----------
-        state : State
-            The state of the MRX relaxation.
-        v : jnp.ndarray
-            The velocity field to which noise will be applied.
-        key : jax.random.PRNGKey
-            The random key for noise generation.
-        strength : float
-            The strength of the noise to be applied.
-
-        Returns
-        -------
-        jnp.ndarray
-            The noise applied to the velocity field.
         """
-        noise = jnp.linalg.solve(
-            self.seq.m2, jax.random.normal(key, v.shape))
+        noise = cg(self.seq.apply_m2_sparse, jax.random.normal(key, v.shape),
+                   M=self.seq.apply_m2_precond, tol=self.tol, maxiter=self.maxiter)[0]
         return v + strength * self.seq.apply_leray_projection(noise)
 
     def midpoint_residuum(self, state: State) -> float:
         """
         Compute the residuum of the Picard solver at the midpoint.
-
-        Parameters
-        ----------
-        state : State
-            The state of the MRX relaxation.
-
-        Returns
-        -------
-        residuum : float
-            The residuum of the Picard solver at the midpoint.
         """
         B_guess = state.B_nplus1
         # this updates B_nplus1, force_norm, velocity_norm
@@ -506,12 +276,7 @@ class TimeStepper(eqx.Module):
             raise ValueError(
                 f"Unknown timestep_mode: {self.timestep_mode}. Supported modes are given by the IntegrationScheme enum.")
         F, J, H = self.compute_force(B_n)
-        # TODO: Need to check how Newton interacts with the div = 0 constraint and if another projection is needed.
-        if self.descent_method == DescentMethod.NEWTON:
-            u = self.apply_inverse_hessian(state, F)
-        elif self.descent_method == DescentMethod.BFGS:
-            u = state.hessian @ F
-        elif self.descent_method == DescentMethod.CONJUGATE_GRADIENT:
+        if self.descent_method == DescentMethod.CONJUGATE_GRADIENT:
             u = F
             v = state.v
             u += v * jnp.maximum((u @ self.seq.m2 @ (u - v)) /
@@ -524,36 +289,26 @@ class TimeStepper(eqx.Module):
         if self.stochastic:
             u = self.apply_noise(u, key, state.noise_level * self.norm_2(u))
         u = self.apply_regularization(u)
+        u = self.seq.apply_leray_projection(u)
 
-        if not self.force_free:
-            u = self.seq.P_Leray @ u
+        uxH = self.seq.P2x1_to_1(u, H)
 
-        # Project u and H to E1 space using P2x1_to_1
-        P2x1_result = self.seq.P2x1_to_1(u, H)
+        E = cg(self.seq.apply_m1_sparse, uxH,
+               M=self.seq.apply_m1_precond, tol=self.tol, maxiter=self.maxiter)[0]
+        E = E - state.eta * J
 
-        E = jnp.linalg.solve(self.seq.m1, P2x1_result) - state.eta * J
-
-        dB = self.seq.strong_curl @ E
+        dB = self.seq.apply_strong_curl(E)
         if self.dt_mode == TimeStepChoice.FIXED or self.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:
             dt = state.dt
         elif self.dt_mode == TimeStepChoice.ANALYTIC_LINESEARCH:
-            dt = F @ self.seq.m2 @ u / (dB @ self.seq.m2 @ dB)
+            dt = F @ self.seq.apply_m2_sparse(u) / \
+                (dB @ self.seq.apply_m2_sparse(dB))
         else:
             raise ValueError(
                 f"Unknown dt_mode: {self.dt_mode}. Supported modes are given by the TimeStepChoice enum.")
         B_nplus1 = B_n + dt * dB
 
-        # update hessian approximation
-        if self.descent_method == DescentMethod.BFGS:
-            s = dt * u
-            y = u - state.v
-            rho = 1.0 / (y @ self.seq.m2 @ s)
-            rho = jnp.where(rho > 0, rho, 0.0)
-            Id = jnp.eye(state.hessian.shape[0])
-            H_new = (Id - rho * jnp.outer(s, y) @ self.seq.m2) @ state.hessian \
-                @ (Id - rho * jnp.outer(y, s) @ self.seq.m2) + rho * jnp.outer(s, s) @ self.seq.m2
-        else:
-            H_new = state.hessian
+        H_new = state.hessian
 
         # update state
         return eqx.tree_at(
@@ -725,31 +480,21 @@ def relaxation_loop(B_dof: jnp.ndarray,
     seq = ts.seq
     diagnostics = MRXDiagnostics(seq, ts.force_free)
     get_helicity = jax.jit(diagnostics.helicity)
-    if ts.descent_method == DescentMethod.NEWTON:
-        hessian_assembler = MRXHessian(seq)
-        assemble_hessian = jax.jit(hessian_assembler.assemble)
-        H = assemble_hessian(B_dof)
-    elif ts.descent_method == DescentMethod.BFGS:
-        H = jnp.eye(B_dof.shape[0])
-    else:
-        H = None
+    H = None  # No Newton and BFGS for now
     F, _, _ = ts.compute_force(B_dof)
     state = State(B_n=B_dof,
                   dt=dt0,
                   hessian=H,
                   v=F,
                   F_norm=ts.norm_2(F))
-    if ts.descent_method == DescentMethod.NEWTON:
-        v = ts.apply_inverse_hessian(state, F)
-    else:
-        v = F
+    v = F
     state = ts.update_field(state, "v", v)
     state = ts.update_field(state, "v_norm", ts.norm_2(v))
     # ---- diagnostics ----
     force_norm_trace = [state.F_norm]
     helicity_trace = [get_helicity(state.B_n)]
     timesteps = []
-    energy_trace = [state.B_n @ seq.m2 @ state.B_n/2]
+    energy_trace = [0.5 * state.B_n @ seq.apply_m2_sparse(state.B_n)]
     picard_residua = []
     picard_iterations = []
     velocity_norm_trace = [state.v_norm]
@@ -803,16 +548,13 @@ def relaxation_loop(B_dof: jnp.ndarray,
         if resistivity_schedule is not None:
             state = ts.update_field(
                 state, "eta", resistivity_schedule(i))
-        if ts.descent_method == DescentMethod.NEWTON:
-            H = assemble_hessian(state.B_n)
-            state = ts.update_field(state, "hessian", H)
         state, _ = jax.lax.scan(
             body_fn, state, jax.random.split(key, num_iters_inner))
         # ---- diagnostics ----
         force_norm_trace.append(state.F_norm)
         helicity_trace.append(get_helicity(state.B_n))
         timesteps.append(state.dt)
-        energy_trace.append(state.B_n @ seq.m2 @ state.B_n/2)
+        energy_trace.append(0.5 * state.B_n @ seq.apply_m2_sparse(state.B_n))
         picard_residua.append(state.picard_residuum)
         picard_iterations.append(state.picard_iterations)
         velocity_norm_trace.append(state.v_norm)
@@ -828,5 +570,3 @@ def relaxation_loop(B_dof: jnp.ndarray,
             break
 
     return state, traces
-
-# %%

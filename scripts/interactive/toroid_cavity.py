@@ -42,17 +42,17 @@ Seq = DeRhamSequence(ns, ps, 2*p, types, F, polar=True)
 Seq.evaluate_1d()
 
 # Get extraction operators and mass matrices
-E0, E1, E2, E3 = [Seq.E0, Seq.E1, Seq.E2, Seq.E3]
-Seq.assemble_M0()
-Seq.assemble_M1()
-Seq.assemble_M2()
-Seq.assemble_M3()
+E0, E1, E2, E3 = [Seq.e0, Seq.e1, Seq.e2, Seq.e3]
+Seq.assemble_m0()
+Seq.assemble_m1()
+Seq.assemble_m2()
+Seq.assemble_m3()
 Seq.assemble_d0()
-M0, M1, M2, M3 = [Seq.M0, Seq.M1, Seq.M2, Seq.M3]
+M0, M1, M2, M3 = [Seq.m0, Seq.m1, Seq.m2, Seq.m3]
 D0 = Seq.strong_grad  # Gradient operator
 O10 = jnp.zeros_like(D0)
 Seq.assemble_dd1()
-C = Seq.M1 @ (Seq.dd1 + Seq.strong_grad @ Seq.weak_div)  # Double curl matrix
+C = Seq.m1 @ (Seq.dd1 + Seq.strong_grad @ Seq.weak_div)  # Double curl matrix
 
 # %%
 evs, evecs = sp.linalg.eig(C, M1)
@@ -180,14 +180,14 @@ def plot_eigenvectors_grid(
 
 
 fig = plot_eigenvectors_grid(
-    evecs, M1, Seq.Lambda_1, E1, F, _x, _y1, _y3, nx, num_to_plot=25
+    evecs, M1, Seq.basis_1, E1, F, _x, _y1, _y3, nx, num_to_plot=25
 )
 fig.savefig(script_dir / 'toroid_eigenvectors.pdf', bbox_inches='tight')
 # %%
 idx = 3
 # The eigenvector from the double curl operator only contains velocity components (1-form)
 u_hat, p_hat = jnp.split(evecs[:, idx], (M1.shape[0],))
-u_h = DiscreteFunction(u_hat, Seq.Lambda_1, E1)
+u_h = DiscreteFunction(u_hat, Seq.basis_1, E1)
 F_u = Pushforward(u_h, F, 1)
 
 _z1 = jax.vmap(F_u)(_x).reshape(nx, nx, 3)

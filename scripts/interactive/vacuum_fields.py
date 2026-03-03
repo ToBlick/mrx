@@ -51,14 +51,14 @@ types = ("clamped", "periodic", "constant")
 Seq = DeRhamSequence(ns, ps, q, types, F, polar=False, dirichlet=False)
 Seq.evaluate_1d()
 Seq.assemble_all()
-evs, evecs = sp.linalg.eigh(Seq.M1 @ Seq.dd1, Seq.M1)
+evs, evecs = sp.linalg.eigh(Seq.m1 @ Seq.dd1, Seq.m1)
 
 # %%
 # Assemble 0-form Laplacian
-L0 = Seq.M0 @ Seq.dd0
+L0 = Seq.m0 @ Seq.dd0
 
-mode1 = evecs[:, 0] / (evecs[:, 0] @ Seq.M1 @ evecs[:, 0])**0.5
-mode2 = evecs[:, 1] / (evecs[:, 1] @ Seq.M1 @ evecs[:, 1])**0.5
+mode1 = evecs[:, 0] / (evecs[:, 0] @ Seq.m1 @ evecs[:, 0])**0.5
+mode2 = evecs[:, 1] / (evecs[:, 1] @ Seq.m1 @ evecs[:, 1])**0.5
 # %%
 
 inner_ring_quad = get_2d_grids(F, cut_axis=0, cut_value=0, ny=16, nz=1)[0]
@@ -83,10 +83,10 @@ def reconstruct_v(v_reduced):
 def B_sq_mismatch(v_guess):
     # In MRX's ordering, the outer boundary DOFs are the last n ones.
     g_hat = jnp.concatenate(
-        [jnp.zeros(Seq.Lambda_0.n - ns[1] * ns[2]), v_guess])
+        [jnp.zeros(Seq.basis_0.n - ns[1] * ns[2]), v_guess])
     f_hat = jnp.linalg.lstsq(L0, g_hat)[0]
     B_hat = 0.0 * mode1 + 0.0 * mode2 + Seq.strong_grad @ f_hat
-    B_h = DiscreteFunction(B_hat, Seq.Lambda_1)
+    B_h = DiscreteFunction(B_hat, Seq.basis_1)
     B_h_xyz = Pushforward(B_h, F, 1)
     B_sq_plasma = (1/R_inner)**2
     B_sq_vacuum = jnp.sum(jax.vmap(B_h_xyz)(inner_ring_quad)**2, axis=1)
@@ -125,7 +125,7 @@ print(f"Converged: {result.result == optx.RESULTS.successful}")
 # Get the optimized B field
 _, B_hat_optimal = B_sq_mismatch(v_optimal)
 # %%
-B_h = DiscreteFunction(B_hat_optimal, Seq.Lambda_1)
+B_h = DiscreteFunction(B_hat_optimal, Seq.basis_1)
 B_h_xyz = Pushforward(B_h, F, 1)
 # %%
 B_sq_vacuum = jnp.sum(jax.vmap(B_h_xyz)(inner_ring_quad)**2, axis=1)
@@ -156,9 +156,9 @@ def mod_B(x):
 
 # %%
 g_hat = jnp.concatenate(
-    [jnp.zeros(Seq.Lambda_0.n - ns[1] * ns[2]), v_optimal])
+    [jnp.zeros(Seq.basis_0.n - ns[1] * ns[2]), v_optimal])
 f_hat = jnp.linalg.lstsq(L0, g_hat)[0]
-f_h = DiscreteFunction(f_hat, Seq.Lambda_0)
+f_h = DiscreteFunction(f_hat, Seq.basis_0)
 plot_scalar_fct_physical_logical(f_h, F)
 
 # %%

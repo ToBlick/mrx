@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 
-class LazyExtractionOperator:
+class ExtractionOperator:
     """
     A class for extracting boundary conditions and handling polar mappings.
 

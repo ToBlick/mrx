@@ -58,12 +58,12 @@ def check_interpolation(n_interp, n_resolution, p):
     X1_eval, X2_eval = jax.vmap(lambda x: (
         X1_analytic(x), X2_analytic(x)))(pts)
 
-    M = jax.vmap(lambda i: jax.vmap(lambda x: map_seq.Lambda_0[i](x)[0])(pts))(
-        map_seq.Lambda_0.ns).T  # Λ0[i](x_hat_j)
+    M = jax.vmap(lambda i: jax.vmap(lambda x: map_seq.basis_0[i](x)[0])(pts))(
+        map_seq.basis_0.ns).T  # Λ0[i](x_hat_j)
     y = jnp.stack([X1_eval, X2_eval], axis=1)  # X_α(x'_j)
     c, resid, rank, _ = jnp.linalg.lstsq(M, y, rcond=None)
-    X1_h = DiscreteFunction(c[:, 0], map_seq.Lambda_0, map_seq.E0)
-    X2_h = DiscreteFunction(c[:, 1], map_seq.Lambda_0, map_seq.E0)
+    X1_h = DiscreteFunction(c[:, 0], map_seq.basis_0, map_seq.e0)
+    X2_h = DiscreteFunction(c[:, 1], map_seq.basis_0, map_seq.e0)
 
     F_h = jax.jit(stellarator_map(X1_h, X2_h, nfp=nfp, flip_zeta=False))
 
@@ -87,7 +87,7 @@ def check_interpolation(n_interp, n_resolution, p):
 
     def Λ2_phys(i, x):
         # * jnp.linalg.det(jax.jacfwd(seq.F)(x))
-        return Pushforward(lambda x: seq.Lambda_2[i](x), seq.F, 2)(x)
+        return Pushforward(lambda x: seq.basis_2[i](x), seq.map, 2)(x)
 
     # def Λ2(i, x):
     #     return seq.Lambda_2[i](x) #* jnp.linalg.det(jax.jacfwd(seq.F)(x))
@@ -102,15 +102,15 @@ def check_interpolation(n_interp, n_resolution, p):
         pts)  # * jax.vmap(lambda x: jnp.linalg.det(jax.jacfwd(seq.F)(x)))(pts)[:, None]
 
     # * jax.vmap(lambda x: jnp.linalg.det(jax.jacfwd(seq.F)(x)))(pts)[:, None]
-    B_at_pts = jax.vmap(Pullback(B_xyz, seq.F, 2))(pts)
+    B_at_pts = jax.vmap(Pullback(B_xyz, seq.map, 2))(pts)
 
     def body_fun(_, i):
         # Evaluate Λ2_phys(i, x) for all points (vectorized over x)
         return None, jax.vmap(lambda x: Λ2_phys(i, x))(pts)
         # return None, jax.vmap(lambda x: Λ2(i, x))(pts)
 
-    _, M = jax.lax.scan(body_fun, None, seq.Lambda_2.ns)
-    M = jnp.einsum('il,ljk->ijk', seq.E2, M)    # Λ2[i](x_hat_j)_k
+    _, M = jax.lax.scan(body_fun, None, seq.basis_2.ns)
+    M = jnp.einsum('il,ljk->ijk', seq.e2, M)    # Λ2[i](x_hat_j)_k
     y = B_xyz_at_pts.reshape(-1, 3)              # B(x'_j)_k
     # y = B_at_pts.reshape(-1, 3)              # B(x'_j)_k
 
@@ -121,7 +121,8 @@ def check_interpolation(n_interp, n_resolution, p):
     A = M.reshape(M.shape[0], -1).T         # reshape to (num_pts*3, num_basis)
     b = y.ravel()                           # reshape to (num_pts*3,)
 
-    J = jax.vmap(lambda x: jnp.abs(jnp.linalg.det(jax.jacfwd(seq.F)(x))))(pts)
+    J = jax.vmap(lambda x: jnp.abs(
+        jnp.linalg.det(jax.jacfwd(seq.map)(x))))(pts)
     weights = jnp.sqrt(J)
     # Expand weights to match the 3 components per point
     weights_expanded = jnp.repeat(weights, 3)
@@ -133,8 +134,8 @@ def check_interpolation(n_interp, n_resolution, p):
     # If M2 = S.T @ S, then substituting z = S @ B_dof gives min |z|^2
     # Solve (A @ S^{-1}) @ z = b, then B_dof = S^{-1} @ z
     seq.evaluate_1d()
-    seq.assemble_M2()
-    L = jnp.linalg.cholesky(seq.M2)  # M2 = L @ L.T
+    seq.assemble_m2()
+    L = jnp.linalg.cholesky(seq.m2)  # M2 = L @ L.T
     S = L.T                           # S.T @ S = M2
     S_inv = jnp.linalg.inv(S)
 
@@ -143,9 +144,9 @@ def check_interpolation(n_interp, n_resolution, p):
         A_transformed, b_weighted, rcond=None)
     B_dof = S_inv @ z
 
-    B_h = jax.jit(DiscreteFunction(B_dof, seq.Lambda_2, seq.E2))
-    B_rtz = jax.jit(Pullback(B_xyz, seq.F, 2))
-    B_h_xyz = jax.jit(Pushforward(B_h, seq.F, 2))
+    B_h = jax.jit(DiscreteFunction(B_dof, seq.basis_2, seq.e2))
+    B_rtz = jax.jit(Pullback(B_xyz, seq.map, 2))
+    B_h_xyz = jax.jit(Pushforward(B_h, seq.map, 2))
 
     B_exact = jax.vmap(B_xyz)(test_pts)
     B_interp = jax.vmap(B_h_xyz)(test_pts)

@@ -47,13 +47,13 @@ pts = jnp.stack([ρ.ravel(),
                  θ.ravel() / (2 * jnp.pi),
                  ζ.ravel() / (2 * jnp.pi) * nfp], axis=1)  # x_hat_js, shape (mρ mθ mζ, 3)
 
-M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.Lambda_0[i](x)[0])(pts))(
-    mapSeq.Lambda_0.ns).T  # Λ0[i](x_hat_j)
+M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.basis_0[i](x)[0])(pts))(
+    mapSeq.basis_0.ns).T  # Λ0[i](x_hat_j)
 y = jnp.stack([X1.ravel(), X2.ravel()], axis=1)  # X_α(x'_j)
 c, residuals, rank, s = jnp.linalg.lstsq(M, y, rcond=None)
 # %%
-X1_h = DiscreteFunction(c[:, 0], mapSeq.Lambda_0, mapSeq.E0)
-X2_h = DiscreteFunction(c[:, 1], mapSeq.Lambda_0, mapSeq.E0)
+X1_h = DiscreteFunction(c[:, 0], mapSeq.basis_0, mapSeq.e0)
+X2_h = DiscreteFunction(c[:, 1], mapSeq.basis_0, mapSeq.e0)
 Phi = jax.jit(gvec_stellarator_map(X1_h, X2_h, nfp=nfp))
 
 # %%
@@ -73,7 +73,7 @@ def Λ2_phys(i, x):
     # Pullback of basis function
     DPhix = jax.jacfwd(Phi)(x)  # Jacobian of Phi at x
     J = jnp.linalg.det(DPhix)
-    return DPhix @ Seq.Lambda_2[i](x) / J
+    return DPhix @ Seq.basis_2[i](x) / J
 
 
 def eval_basis_block(i):
@@ -91,8 +91,8 @@ pts_B = pts[valid_pts]  # avoid singularity on axis and eval. on bdy
 # TODO: No double vmaps
 # evaluate all basis functions at all interp. points
 # Stream through basis functions and collect the results into a scanned array
-_, M = jax.lax.scan(body_fun, None, Seq.Lambda_2.ns)
-M = jnp.einsum('il,ljk->ijk', Seq.E2, M)  # Λ2[i](x_hat_j)_k
+_, M = jax.lax.scan(body_fun, None, Seq.basis_2.ns)
+M = jnp.einsum('il,ljk->ijk', Seq.e2, M)  # Λ2[i](x_hat_j)_k
 y = gvec_eq.B.values.reshape(-1, 3)[valid_pts]  # B(x'_j)_k
 A = M.reshape(M.shape[0], -1).T
 b = y.ravel()
@@ -101,7 +101,7 @@ B_dof, residuals, rank, s = jnp.linalg.lstsq(A, b, rcond=None)
 residuals
 # %%
 B_h = jax.jit(Pushforward(DiscreteFunction(
-    B_dof, Seq.Lambda_2, Seq.E2), Seq.F, 2))
+    B_dof, Seq.basis_2, Seq.e2), Seq.map, 2))
 
 # %%
 _zeta_plt = jnp.linspace(0, 1, 100, endpoint=True)
@@ -112,13 +112,13 @@ plt.plot(_zeta_plt, jnp.linalg.norm(B_on_axis, axis=-1))
 # %%
 # Are we approx. div-free?
 div_B_dof = Seq.strong_div @ B_dof
-(div_B_dof @ Seq.M3 @ div_B_dof)**0.5 / (B_dof @ Seq.M2 @ B_dof)**0.5
+(div_B_dof @ Seq.m3 @ div_B_dof)**0.5 / (B_dof @ Seq.m2 @ B_dof)**0.5
 # %%
 eigs = [
-    jnp.linalg.eigvalsh(Seq.M0 @ Seq.dd0),
-    jnp.linalg.eigvalsh(Seq.M1 @ Seq.dd1),
-    jnp.linalg.eigvalsh(Seq.M2 @ Seq.dd2),
-    jnp.linalg.eigvalsh(Seq.M3 @ Seq.dd3),
+    jnp.linalg.eigvalsh(Seq.m0 @ Seq.dd0),
+    jnp.linalg.eigvalsh(Seq.m1 @ Seq.dd1),
+    jnp.linalg.eigvalsh(Seq.m2 @ Seq.dd2),
+    jnp.linalg.eigvalsh(Seq.m3 @ Seq.dd3),
 ]
 
 expected_nulls = [False,  False,  True, True]
@@ -164,9 +164,9 @@ def get_err(n):
                          ("clamped", "periodic", "periodic"),
                          Phi, polar=True, dirichlet=True)
     Seq.evaluate_1d()
-    Seq.assemble_M0()
-    f_dof = jnp.linalg.solve(Seq.M0, Seq.P0(f))
-    f_h = DiscreteFunction(f_dof, Seq.Lambda_0, Seq.E0)
+    Seq.assemble_m0()
+    f_dof = jnp.linalg.solve(Seq.m0, Seq.P0(f))
+    f_h = DiscreteFunction(f_dof, Seq.basis_0, Seq.e0)
 
     # --- error evaluation ---
     def diff_at_x(x):
@@ -174,15 +174,15 @@ def get_err(n):
 
     def body_fun(carry, x):
         return None, diff_at_x(x)
-    _, df = jax.lax.scan(body_fun, None, Seq.Q.x)
-    L2_dp = jnp.einsum('ik,ik,i,i->', df, df, Seq.J_j, Seq.Q.w)**0.5
+    _, df = jax.lax.scan(body_fun, None, Seq.quad.x)
+    L2_dp = jnp.einsum('ik,ik,i,i->', df, df, Seq.jacobian_j, Seq.quad.w)**0.5
     L2_p = jnp.einsum('ik,ik,i,i->',
-                      jax.vmap(f)(Seq.Q.x),
-                      jax.vmap(f)(Seq.Q.x),
-                      Seq.J_j, Seq.Q.w)**0.5
+                      jax.vmap(f)(Seq.quad.x),
+                      jax.vmap(f)(Seq.quad.x),
+                      Seq.jacobian_j, Seq.quad.w)**0.5
 
     error = L2_dp / L2_p
-    return error, jnp.min(Seq.J_j), jnp.max(Seq.J_j)
+    return error, jnp.min(Seq.jacobian_j), jnp.max(Seq.jacobian_j)
 
 
 # %%
@@ -195,7 +195,8 @@ for n in ns:
     error, J_min, J_max = get_err(n)
     if not is_running_in_github_actions():
         assert J_min > 0, f"Jacobian has non-positive values for n={n}"
-        assert J_max / J_min < 1e9, f"Jacobian severely ill-conditioned for n={n}"
+        assert J_max / \
+            J_min < 1e9, f"Jacobian severely ill-conditioned for n={n}"
     projection_errs.append(error)
     print(f"n={n}: projection relative L2 error = {projection_errs[-1]:.3e}")
 

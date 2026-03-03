@@ -4,6 +4,7 @@ import os
 import random
 import string
 import time
+
 # Removed desc import
 import h5py
 import jax
@@ -168,11 +169,11 @@ def load_sweep(
 def load_desc(path, map_seq, nr=None, ntheta=None, nzeta=None):
     """
     Load DESC equilibrium from HDF5 file.
-    
+
     This function now checks if the HDF5 file contains precomputed R, Z, B data, to avoid relative import of DESC.
     If that data is not available, it falls back to using the DESC library (will fail if DESC is not installed).
-    
-    
+
+
     Parameters
     ----------
     path : str
@@ -181,21 +182,21 @@ def load_desc(path, map_seq, nr=None, ntheta=None, nzeta=None):
         DeRham sequence for mapping interpolation.
     nr, ntheta, nzeta : int, optional
         Grid resolution. 
-    
+
     Returns
     -------
     dict
         Dictionary containing 'X1', 'X2', 'Phi', 'nfp', 'eval_points', 'R', 'Z', 'B_vals',
         and 'map_interpolation_residual'.
     """
-    if nr is None: # Defaults to map_seq.Q dimensions 
+    if nr is None:  # Defaults to map_seq.Q dimensions
         nr = map_seq.Q.nx
     if ntheta is None:
         ntheta = map_seq.Q.ny
     if nzeta is None:
         nzeta = map_seq.Q.nz
-    
-    # Read precomputed data from HDF5 file 
+
+    # Read precomputed data from HDF5 file
     with h5py.File(path, 'r') as f:
         # Check if precomputed data exists
         if 'R' in f and 'Z' in f and 'B' in f and 'eval_points' in f:
@@ -203,15 +204,15 @@ def load_desc(path, map_seq, nr=None, ntheta=None, nzeta=None):
             Z = jnp.array(f['Z'][:])
             B_vals = jnp.array(f['B'][:])
             eval_points = jnp.array(f['eval_points'][:])
-            
-            # Try to get nfp 
+
+            # Try to get nfp
             if 'nfp' in f.attrs:
                 nfp = int(f.attrs['nfp'])
             else:
                 raise KeyError(
                     "nfp not found in HDF5 file attributes. "
                 )
-            
+
             # Use the precomputed data
             pts = eval_points
         else:
@@ -239,7 +240,7 @@ def load_desc(path, map_seq, nr=None, ntheta=None, nzeta=None):
         'Phi': Phi,
         'nfp': nfp,
         'eval_points': eval_points,
-        'R': R, # adding R,Z,B
+        'R': R,  # adding R,Z,B
         'Z': Z,
         'B_vals': B_vals,
         'map_interpolation_residual': mapresid
@@ -248,7 +249,7 @@ def load_desc(path, map_seq, nr=None, ntheta=None, nzeta=None):
     return desc_import
 
 
-def interpolate_map_from_points(x, R, Z, nfp, ns=(6, 6, 6), ps = (3, 3, 3), quad_order=3, flip_zeta=False):
+def interpolate_map_from_points(x, R, Z, nfp, ns=(6, 6, 6), ps=(3, 3, 3), quad_order=3, flip_zeta=False):
     """
     Given evaluations of a function R(x), Z(x) at some points x, interpolate
 
@@ -267,25 +268,25 @@ def interpolate_map_from_points(x, R, Z, nfp, ns=(6, 6, 6), ps = (3, 3, 3), quad
     -------
     """
     # Set up DeRham sequence for interpolation
-    map_seq = DeRhamSequence(ns, ps, quad_order, ("clamped", "periodic", "periodic"), 
+    map_seq = DeRhamSequence(ns, ps, quad_order, ("clamped", "periodic", "periodic"),
                              lambda x: x, polar=False, dirichlet=False)
-    
+
     # Set up the interpolation problem:
     # ∑ c_ki Λ0[i](x_j) ≈ Xk(x_j) ∀j
     def body_fun(_, i):
         # Evaluate Λ0[i](x) for all points
-        return None, jax.vmap(lambda x: map_seq.Lambda_0[i](x)[0])(x)
-    
-    _, M = jax.lax.scan(body_fun, None, map_seq.Lambda_0.ns)  # Λ0[i](x_j)
+        return None, jax.vmap(lambda x: map_seq.basis_0[i](x)[0])(x)
+
+    _, M = jax.lax.scan(body_fun, None, map_seq.basis_0.ns)  # Λ0[i](x_j)
 
     y = jnp.stack([R, Z], axis=1)  # X_α(x'_j)
     c, resid, _, _ = jnp.linalg.lstsq(M.T, y, rcond=None)
-    
+
     R_dof = c[:, 0]
     Z_dof = c[:, 1]
 
-    X1_h = DiscreteFunction(R_dof, map_seq.Lambda_0, map_seq.E0)
-    X2_h = DiscreteFunction(Z_dof, map_seq.Lambda_0, map_seq.E0)
+    X1_h = DiscreteFunction(R_dof, map_seq.basis_0, map_seq.e0)
+    X2_h = DiscreteFunction(Z_dof, map_seq.basis_0, map_seq.e0)
     return stellarator_map(X1_h, X2_h, nfp=nfp, flip_zeta=flip_zeta), R_dof, Z_dof, resid
 
 
@@ -293,7 +294,7 @@ def interpolate_B(x, B, seq, exclude_axis_tol=1e-3):
     """
     Interpolate B-field onto FEM basis given evaluations at points x.
     """
-    
+
     # valid interpolation points (avoid axis and exact boundary)
     valid_pts = (x[:, 0] > exclude_axis_tol) & (
         x[:, 0] < 1 - exclude_axis_tol)
@@ -315,8 +316,11 @@ def interpolate_B(x, B, seq, exclude_axis_tol=1e-3):
 
     A = M.reshape(M.shape[0], -1).T         # reshape to (num_pts*3, num_basis)
     b = y.ravel()                           # reshape to (num_pts*3,)
-    
+
     # Solve least squares
     B_dof, residuals, _, _ = jnp.linalg.lstsq(A, b, rcond=None)
     return B_dof, residuals
+# %%
+# %%
+# %%
 # %%

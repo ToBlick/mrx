@@ -1,8 +1,13 @@
+# %%
 import os
 from typing import Any, Callable, Optional
 
 import jax
+import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
+from jax.scipy.sparse.linalg import cg
+
+from mrx import MAP_BATCH_SIZE
 
 
 def is_running_in_github_actions():
@@ -184,6 +189,83 @@ def assemble(getter_1, getter_2, W, n1, n2):
 
     _, M = jax.lax.scan(body_fun, None, jnp.arange(n1))
     return M
+
+
+def assemble_sparse(getter_1, getter_2, W, n1, n2, max_nnz):
+    """
+    Assemble a sparse BCOO matrix M[a, b] = Σ_{j,k} Λ1[a,j,k] * W[j,k,m] * Λ2[b,j,m]
+
+    Scans over rows sequentially (one at a time), computes the full row via
+    vmap over columns, then keeps only the ``max_nnz`` largest-magnitude
+    entries per row.  This avoids ever materialising the full dense matrix.
+
+    Parameters
+    ----------
+    getter_1 : callable
+        Function (a, j, k) -> scalar.
+    getter_2 : callable
+        Function (b, j, k) -> scalar.
+    W : jnp.ndarray, shape (n_q, 3, 3)
+        Weight tensor combining metric, Jacobian, and quadrature weights.
+    n1 : int
+        Number of row basis functions.
+    n2 : int
+        Number of column basis functions.
+    max_nnz : int
+        Upper bound on the number of non-zero entries per row.
+
+    Returns
+    -------
+    M : jax.experimental.sparse.BCOO, shape (n1, n2)
+        The assembled sparse matrix.
+    """
+
+    n_q, d, _ = W.shape
+    max_nnz = min(max_nnz, n2)
+
+    get_A_jk = jax.vmap(
+        jax.vmap(getter_1, in_axes=(None, None, 0)),
+        in_axes=(None, 0, None)
+    )
+
+    get_B_jk = jax.vmap(
+        jax.vmap(getter_2, in_axes=(None, None, 0)),
+        in_axes=(None, 0, None)
+    )
+
+    col_indices = jnp.arange(n2)
+
+    def process_row(carry, i):
+        ΛA_i = get_A_jk(i, jnp.arange(n_q), jnp.arange(d))
+
+        def compute_entry(m):
+            ΛB_m = get_B_jk(m, jnp.arange(n_q), jnp.arange(d))
+            return jnp.einsum("jk,jkm,jm->", ΛA_i, W, ΛB_m)
+
+        row = jax.lax.map(compute_entry, col_indices,
+                          batch_size=MAP_BATCH_SIZE)
+
+        # Keep only the max_nnz non-zero entries
+        nz_mask = row != 0
+        order = jnp.argsort(~nz_mask, stable=True)
+        vals = row[order][:max_nnz]
+        cols = col_indices[order][:max_nnz]
+        nz_count = jnp.sum(nz_mask)
+        valid = jnp.arange(max_nnz) < nz_count
+        vals = jnp.where(valid, vals, 0.0)
+        cols = jnp.where(valid, cols, 0)
+        return None, (vals, cols)
+
+    _, (all_vals, all_cols) = jax.lax.scan(
+        process_row, None, jnp.arange(n1))  # (n1, max_nnz)
+
+    row_indices = jnp.broadcast_to(
+        jnp.arange(n1)[:, None], (n1, max_nnz)
+    )
+    indices = jnp.stack([row_indices.ravel(), all_cols.ravel()], axis=-1)
+    data = all_vals.ravel()
+
+    return jsparse.BCOO((data, indices), shape=(n1, n2))
 
 
 def evaluate_at_xq(getter, dofs, n_q, d):
@@ -673,3 +755,147 @@ def interpolate_B(B_vals, eval_points, Seq, exclude_axis_tol=1e-3):
     # Solve least squares
     B_dof, residuals, _, _ = jnp.linalg.lstsq(A, b, rcond=None)
     return B_dof, residuals
+
+
+def extract_diag_vector(mat: jsparse.BCOO) -> jnp.ndarray:
+    """Extracts the main diagonal of a BCOO matrix as a 1D array."""
+    n = mat.shape[0]
+    rows = mat.indices[:, 0]
+    cols = mat.indices[:, 1]
+    is_diag = rows == cols
+    diag_data = jnp.where(is_diag, mat.data, 0.0)
+    return jnp.zeros(n, dtype=mat.dtype).at[rows].add(diag_data)
+
+
+def square_bcoo(mat: jsparse.BCOO) -> jsparse.BCOO:
+    """Squares the non-zero elements of a BCOO matrix."""
+    return jsparse.BCOO((mat.data**2, mat.indices), shape=mat.shape)
+
+# %%
+
+
+def bcoo_schur_diag(C: jsparse.BCOO, M_inv_diag: jnp.ndarray) -> jnp.ndarray:
+    """
+    Approximates diag(C @ M⁻¹ @ C.T).
+
+    The presence of extraction operators means that this really is a matrix product of the form
+
+    ( E @ C @ E'.T @ (E' @ M @ E'.T)⁻¹ @ E' @ C.T @ E.T ) where E and E' are the extraction operators.
+
+    We now approximate (E' @ M @ E'.T)⁻¹ ≈ 1 / diag(E' @ M @ E'.T) =: D
+
+    Then, considering the i-th diagonal element of the resulting matrix, we have
+    ( E @ C @ E'.T @ D @ E' @ C.T @ E.T )_ii = ∑_jklmn E_ik C_kj E'_lj D_l E'_lm C_nm E_in
+
+    Args:
+        C: jax.experimental.sparse.BCOO matrix of shape (n, m)
+        M_inv_diag: 1D jnp.ndarray of shape (m,) 1 / diag(M)
+
+    Returns:
+        1D jnp.ndarray of shape (n,) representing the diagonal of the Schur complement term.
+    """
+    C_sq = jsparse.BCOO((C.data**2, C.indices), shape=C.shape)
+    # ∑_k (C_ik)^2 * D_k = diag(C @ D @ C.T)
+    return C_sq @ (1 / M_inv_diag)
+
+
+def solve_singular_cg(A_matvec, mass_matvec, b, precond_matvec=lambda x: x, x0=None, vs=[], max_iters=None, tol=1e-6):
+    """
+    Solve the singular SPSD system for the minimum norm solution using CG.
+
+    Args:
+        A_matvec: Callable representing bilinear form (outputs Dual vectors).
+        mass_matvec: Callable representing mass matrix.
+        b: The right-hand side vector (Dual vector).
+        x0: Optional initial guess (Primal vector).
+        vs: List of mass-normalized zero eigenvectors (Primal vectors).
+        max_iters: Maximum number of CG iterations.
+        tol: CG tolerance.
+    """
+
+    def inner_product(x, y):
+        return jnp.dot(x, mass_matvec(y))
+
+    def project_primal(x):
+        for v in vs:
+            x = x - inner_product(v, x) * v
+        return x
+
+    def project_dual(f):
+        for v in vs:
+            f = f - jnp.dot(v, f) * mass_matvec(v)
+        return f
+
+    b_proj = project_dual(b)
+
+    def A_matvec_safe(x):
+        x = project_primal(x)
+        # Apply the bilinear form (output is Dual)
+        Ax = A_matvec(x)
+        return project_dual(Ax)
+
+    if x0 is None:
+        x0 = jnp.zeros_like(b_proj)
+    else:
+        x0 = project_primal(x0)
+
+    x, info = cg(A_matvec_safe, b_proj, x0=x0,
+                 M=precond_matvec, tol=tol, maxiter=max_iters)
+    return project_primal(x), info
+
+
+def get_smallest_ev_pair(A_matvec, mass_matvec, x0, precond_matvec=lambda x: x, vs=[], shift=1e-9, maxiter=20, tol=1e-6):
+    """
+    Finds the generalized eigenvector using shifted inverse iteration. 
+    """
+    def inner_product(x, y):
+        return jnp.dot(x, mass_matvec(y))
+
+    def normalize(x):
+        return x / jnp.sqrt(inner_product(x, x))
+
+    def project_primal(x):
+        # These are DoF vectors
+        for v in vs:
+            x = x - inner_product(v, x) * v
+        return x
+
+    def project_dual(f):
+        # These are bilinear form outputs
+        for v in vs:
+            f = f - jnp.dot(v, f) * mass_matvec(v)
+        return f
+
+    def A_shifted(x):
+        x = project_primal(x)
+        # (outputs are Dual vectors)
+        Ax = A_matvec(x) + shift * mass_matvec(x)
+        return project_dual(Ax)
+
+    x0 = normalize(project_primal(x0))
+
+    def cond_fun(val):
+        i, x, x_prev = val
+        # Check both signs
+        diff = jnp.minimum(jnp.linalg.norm(x - x_prev),
+                           jnp.linalg.norm(x + x_prev))
+        return jnp.logical_and(i < maxiter, diff > tol)
+
+    def body_fun(val):
+        i, x, _ = val
+        rhs = mass_matvec(x)
+        rhs = project_dual(rhs)
+        y, _ = cg(A_shifted, rhs, x0=jnp.zeros_like(
+            x), M=precond_matvec, tol=tol, maxiter=maxiter)
+        y = project_primal(y)
+        x_next = normalize(y)
+        return (i + 1, x_next, x)
+
+    init_val = (0, x0, jnp.zeros_like(x0))
+    _, v, _ = jax.lax.while_loop(cond_fun, body_fun, init_val)
+
+    # Rayleigh quotient
+    lmbda = jnp.dot(v, A_matvec(v))
+
+    return v, lmbda
+    return v, lmbda

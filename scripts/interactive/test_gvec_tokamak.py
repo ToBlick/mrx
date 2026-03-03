@@ -1,5 +1,6 @@
 # %%
 from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -46,15 +47,15 @@ pts = jnp.stack([r.ravel(), θ_star.ravel() / (2 * jnp.pi),
                 jnp.zeros(r.size)], axis=1)  # (mρ mθ, 3)
 
 # Design Matrix:
-M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.Lambda_0[i](x)[0])(pts))(
-    mapSeq.Lambda_0.ns).T  # (mρ mθ, n)
+M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.basis_0[i](x)[0])(pts))(
+    mapSeq.basis_0.ns).T  # (mρ mθ, n)
 # Target values:
 y = jnp.stack([X1.ravel(), X2.ravel()], axis=1)  # (mρ mθ, 2)
 # %%
 c, residuals, rank, s = jnp.linalg.lstsq(M, y, rcond=None)
 # %%
-X1_h = DiscreteFunction(c[:, 0], mapSeq.Lambda_0, mapSeq.E0)
-X2_h = DiscreteFunction(c[:, 1], mapSeq.Lambda_0, mapSeq.E0)
+X1_h = DiscreteFunction(c[:, 0], mapSeq.basis_0, mapSeq.e0)
+X2_h = DiscreteFunction(c[:, 1], mapSeq.basis_0, mapSeq.e0)
 
 F = jax.jit(gvec_stellarator_map(X1_h, X2_h, nfp=1))
 
@@ -79,9 +80,9 @@ for n in ns:
                          ("clamped", "periodic", "constant"),
                          F, polar=True, dirichlet=True)
     Seq.evaluate_1d()
-    Seq.assemble_M0()
-    f_dof = jnp.linalg.solve(Seq.M0, Seq.P0(f))
-    f_h = DiscreteFunction(f_dof, Seq.Lambda_0, Seq.E0)
+    Seq.assemble_m0()
+    f_dof = jnp.linalg.solve(Seq.m0, Seq.P0(f))
+    f_h = DiscreteFunction(f_dof, Seq.basis_0, Seq.e0)
 
     # --- error evaluation ---
     def diff_at_x(x):
@@ -90,13 +91,13 @@ for n in ns:
     def body_fun(carry, x):
         return None, diff_at_x(x)
 
-    _, df = jax.lax.scan(body_fun, None, Seq.Q.x)
+    _, df = jax.lax.scan(body_fun, None, Seq.quad.x)
 
-    L2_dp = jnp.einsum('ik,ik,i,i->', df, df, Seq.J_j, Seq.Q.w)**0.5
+    L2_dp = jnp.einsum('ik,ik,i,i->', df, df, Seq.jacobian_j, Seq.quad.w)**0.5
     L2_p = jnp.einsum('ik,ik,i,i->',
-                      jax.vmap(f)(Seq.Q.x),
-                      jax.vmap(f)(Seq.Q.x),
-                      Seq.J_j, Seq.Q.w)**0.5
+                      jax.vmap(f)(Seq.quad.x),
+                      jax.vmap(f)(Seq.quad.x),
+                      Seq.jacobian_j, Seq.quad.w)**0.5
 
     error = L2_dp / L2_p
     projection_errs.append(error)
@@ -115,7 +116,7 @@ plt.legend()
 plt.tight_layout()
 plt.savefig(script_dir / "projection_error.png")
 if not is_running_in_github_actions():
-    plt.show()  
+    plt.show()
 
 # %%
 # --------------------------------------------------------------------
@@ -200,10 +201,10 @@ if not is_running_in_github_actions():
 # %%
 Seq.assemble_all()
 eigs = [
-    jnp.linalg.eigvalsh(Seq.M0 @ Seq.dd0),
-    jnp.linalg.eigvalsh(Seq.M1 @ Seq.dd1),
-    jnp.linalg.eigvalsh(Seq.M2 @ Seq.dd2),
-    jnp.linalg.eigvalsh(Seq.M3 @ Seq.dd3),
+    jnp.linalg.eigvalsh(Seq.m0 @ Seq.dd0),
+    jnp.linalg.eigvalsh(Seq.m1 @ Seq.dd1),
+    jnp.linalg.eigvalsh(Seq.m2 @ Seq.dd2),
+    jnp.linalg.eigvalsh(Seq.m3 @ Seq.dd3),
 ]
 
 # %%
@@ -237,4 +238,7 @@ if not is_running_in_github_actions():
     npt.assert_allclose(div_curl, 0.0, atol=1e-11,
                         err_msg="div∘curl ≠ 0")
 
+# %%
+# %%
+# %%
 # %%

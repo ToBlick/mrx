@@ -59,7 +59,7 @@ def B_field(seq: DeRhamSequence) -> jnp.ndarray:
     seq.build_crossproduct_projections()
     seq.assemble_leray_projection()
 
-    B_hat = jnp.linalg.solve(seq.M2, seq.P2(B_xyz))
+    B_hat = jnp.linalg.solve(seq.m2, seq.P2(B_xyz))
     B_hat = seq.P_Leray @ B_hat
     return B_hat
 
@@ -74,8 +74,8 @@ def B_field_force_free(seq: DeRhamSequence) -> jnp.ndarray:
 
     # Use harmonic component which is divergence-free and curl-free
     # This gives a force-free field (J = curl(B) = 0, so J × B = 0)
-    B_harm = jnp.linalg.eigh(seq.M2 @ seq.dd2)[1][:, 0]
-    B_harm = B_harm / ((B_harm @ seq.M2 @ B_harm)**0.5)  # Normalize
+    B_harm = jnp.linalg.eigh(seq.m2 @ seq.dd2)[1][:, 0]
+    B_harm = B_harm / ((B_harm @ seq.m2 @ B_harm)**0.5)  # Normalize
     return B_harm
 
 
@@ -96,7 +96,7 @@ def u_field(seq: DeRhamSequence) -> jnp.ndarray:
     seq.build_crossproduct_projections()
     seq.assemble_leray_projection()
 
-    u_hat = jnp.linalg.solve(seq.M1, seq.P1(u_xyz))
+    u_hat = jnp.linalg.solve(seq.m1, seq.P1(u_xyz))
     return u_hat
 
 
@@ -217,7 +217,7 @@ def test_mrx_diagnostics_energy(
     assert jnp.isfinite(energy), "Energy should be finite"
 
     # Energy should be 0.5 * B^T M2 B
-    expected_energy = 0.5 * B_field.T @ seq.M2 @ B_field
+    expected_energy = 0.5 * B_field.T @ seq.m2 @ B_field
     npt.assert_allclose(energy, expected_energy, rtol=1e-10, atol=1e-10,
                         err_msg="Energy should equal 0.5 * B^T M2 B")
 
@@ -240,7 +240,7 @@ def test_mrx_diagnostics_helicity(
     # Check against direct helicity calculation
     A = jnp.linalg.solve(seq.dd1, seq.weak_curl @ B_field)
     B_harm = B_field - seq.strong_curl @ A
-    direct_helicity = A.T @ seq.M1 @ seq.P12 @ (B_field + B_harm)
+    direct_helicity = A.T @ seq.m1 @ seq.p12 @ (B_field + B_harm)
     npt.assert_allclose(helicity, direct_helicity, rtol=1e-10, atol=1e-10,
                         err_msg="Helicity should equal A^T M1 P12 (B + B_harm)")
 
@@ -266,7 +266,7 @@ def test_mrx_diagnostics_harmonic_component(
 
     # Harmonic component should be divergence-free
     div_B_harm = seq.strong_div @ B_harm
-    div_norm = (div_B_harm @ seq.M3 @ div_B_harm)**0.5
+    div_norm = (div_B_harm @ seq.m3 @ div_B_harm)**0.5
     assert div_norm < 1e-10, "Harmonic component should be divergence-free"
 
 
@@ -302,9 +302,9 @@ def test_mrx_diagnostics_pressure_force_free(
 
     # First verify that the field is actually force-free
     J_hat = seq.weak_curl @ B_field_force_free
-    H_hat = seq.P12 @ B_field_force_free
-    JxH_hat = jnp.linalg.solve(seq.M2, seq.P1x1_to_2(J_hat, H_hat))
-    force_norm = (JxH_hat @ seq.M2 @ JxH_hat)**0.5
+    H_hat = seq.p12 @ B_field_force_free
+    JxH_hat = jnp.linalg.solve(seq.m2, seq.P1x1_to_2(J_hat, H_hat))
+    force_norm = (JxH_hat @ seq.m2 @ JxH_hat)**0.5
 
     # For a harmonic field, J = curl(B) should be zero (or very small)
     # So J × B should also be zero
@@ -314,7 +314,7 @@ def test_mrx_diagnostics_pressure_force_free(
     p_hat = diagnostics.pressure(B_field_force_free)
 
     # Check shape
-    assert p_hat.shape == (seq.E0.shape[0],), \
+    assert p_hat.shape == (seq.e0.shape[0],), \
         "Pressure should have shape of 0-form space"
 
     # Check finiteness
@@ -323,7 +323,7 @@ def test_mrx_diagnostics_pressure_force_free(
     # Gradient of pressure should be zero in force-free case
     # Compute grad(p) in physical space using strong_grad operator
     grad_p = seq.strong_grad @ p_hat
-    grad_p_norm = (grad_p @ seq.M1 @ grad_p)**0.5
+    grad_p_norm = (grad_p @ seq.m1 @ grad_p)**0.5
 
     # In force-free case, grad(p) = J × B = 0
     # So the gradient should be zero (or very small)
@@ -342,7 +342,7 @@ def test_mrx_diagnostics_pressure_non_force_free(
     p_hat = diagnostics.pressure(B_field)
 
     # Check shape
-    assert p_hat.shape == (seq.E0.shape[0],), \
+    assert p_hat.shape == (seq.e0.shape[0],), \
         "Pressure should have shape of 0-form space"
 
     # Check finiteness
@@ -354,7 +354,7 @@ def test_mrx_diagnostics_pressure_non_force_free(
     assert jnp.all(jnp.isfinite(grad_p)
                    ), "Gradient of pressure should be finite"
     # Check that gradient norm is reasonable
-    grad_p_norm = (grad_p @ seq.M1 @ grad_p)**0.5
+    grad_p_norm = (grad_p @ seq.m1 @ grad_p)**0.5
     assert jnp.isfinite(grad_p_norm), "Gradient norm should be finite"
 
 
@@ -370,7 +370,7 @@ def test_state_creation(
 
     dt = 0.01
     eta = 0.1
-    Hessian = seq.M2  # Use identity-like matrix
+    Hessian = seq.m2  # Use identity-like matrix
 
     state = State(
         B_n=B_field,
@@ -426,7 +426,7 @@ def test_time_stepper_init_state(
     _ = TimeStepper(seq)
     dt = 0.01
     eta = 0.1
-    Hessian = seq.M2
+    Hessian = seq.m2
 
     # Use State directly since init_state uses self.State which doesn't exist
     state = State(B_n=B_field, B_nplus1=B_field, dt=dt, eta=eta, hessian=Hessian,
@@ -455,7 +455,7 @@ def test_time_stepper_norm_2(
     assert jnp.isfinite(norm), "Norm should be finite"
 
     # Norm should equal (B^T M2 B)^0.5
-    expected_norm = (B_field.T @ seq.M2 @ B_field)**0.5
+    expected_norm = (B_field.T @ seq.m2 @ B_field)**0.5
     npt.assert_allclose(norm, expected_norm, rtol=1e-10, atol=1e-10,
                         err_msg="Norm should equal (B^T M2 B)^0.5")
 
@@ -467,7 +467,7 @@ def test_time_stepper_update_dt(
     seq.assemble_all()
 
     timestepper = TimeStepper(seq)
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2,
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.m2,
                   picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     new_dt = 0.02
@@ -487,7 +487,7 @@ def test_time_stepper_update_hessian(
     seq.assemble_leray_projection()
 
     timestepper = TimeStepper(seq)
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2,
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.m2,
                   picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     hessian = MRXHessian(seq)
@@ -507,7 +507,7 @@ def test_time_stepper_update_B_n(
     seq.assemble_all()
 
     timestepper = TimeStepper(seq)
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2,
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.m2,
                   picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
     new_B = B_field * 1.1
     updated_state = timestepper.update_field(state, "B_n", new_B)
@@ -524,7 +524,7 @@ def test_time_stepper_update_B_guess(
     seq.assemble_all()
 
     timestepper = TimeStepper(seq)
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2,
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.m2,
                   picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     new_B_guess = B_field * 0.9
@@ -545,7 +545,7 @@ def test_time_stepper_midpoint_residuum(
     seq.assemble_leray_projection()
 
     timestepper = TimeStepper(seq, force_free=False)
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.M2,
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.01, eta=0.1, hessian=seq.m2,
                   picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     updated_state = timestepper.midpoint_residuum(state)
@@ -582,7 +582,7 @@ def test_time_stepper_picard_solver(
         picard_tol=1e-6,
         picard_k_restart=5
     )
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.M2,
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.m2,
                   picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     # Run Picard solver
@@ -615,7 +615,7 @@ def test_time_stepper_picard_solver_force_free(
         picard_tol=1e-6,
         picard_k_restart=5
     )
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.M2,
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.m2,
                   picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     final_state = timestepper.midpoint_picard_step(state, state.key)
@@ -666,7 +666,7 @@ def test_time_stepper_picard_solver_gamma(
         picard_tol=1e-6,
         picard_k_restart=5
     )
-    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.M2,
+    state = State(B_n=B_field, B_nplus1=B_field, dt=0.001, eta=0.1, hessian=seq.m2,
                   picard_iterations=0, picard_residuum=0.0, F_norm=0.0, v_norm=0.0)
 
     final_state = timestepper.midpoint_picard_step(state, state.key)

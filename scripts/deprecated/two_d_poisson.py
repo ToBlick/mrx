@@ -77,9 +77,9 @@ def get_err(n, p, q):
     # %%
     # Solve the system
     u_hat = jnp.linalg.solve(K, Seq.P0(f))
-    u_h = DiscreteFunction(u_hat, Seq.Lambda_0, Seq.E0.matrix())
+    u_h = DiscreteFunction(u_hat, Seq.basis_0, Seq.e0.matrix())
     def err(x): return u(x) - u_h(x)
-    return (l2_product(err, err, Seq.Q) / l2_product(u, u, Seq.Q)) ** 0.5
+    return (l2_product(err, err, Seq.quad) / l2_product(u, u, Seq.quad)) ** 0.5
 
 
 def run_convergence_analysis():

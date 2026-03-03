@@ -73,12 +73,12 @@ def get_err(n: int, p: int) -> tuple[float, float, float]:
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
     Seq.evaluate_1d()
-    Seq.assemble_M0()
+    Seq.assemble_m0()
     Seq.assemble_dd0()
 
     # Solve the system
-    u_hat = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
-    u_h = DiscreteFunction(u_hat, Seq.Lambda_0, Seq.E0)
+    u_hat = jnp.linalg.solve(Seq.m0 @ Seq.dd0, Seq.P0(f))
+    u_h = DiscreteFunction(u_hat, Seq.basis_0, Seq.e0)
 
     # do not vmap here because of memory issues
     def diff_at_x(x: jnp.ndarray) -> jnp.ndarray:
@@ -96,13 +96,13 @@ def get_err(n: int, p: int) -> tuple[float, float, float]:
         return None, diff_at_x(x)
 
     # TODO: Explain what is happening below.
-    _, df = jax.lax.scan(body_fun, None, Seq.Q.x)
-    L2_df = jnp.einsum('ik,ik,i,i->', df, df, Seq.J_j, Seq.Q.w)**0.5
+    _, df = jax.lax.scan(body_fun, None, Seq.quad.x)
+    L2_df = jnp.einsum('ik,ik,i,i->', df, df, Seq.jacobian_j, Seq.quad.w)**0.5
     L2_f = jnp.einsum('ik,ik,i,i->',
-                      jax.vmap(u)(Seq.Q.x), jax.vmap(u)(Seq.Q.x),
-                      Seq.J_j, Seq.Q.w)**0.5
+                      jax.vmap(u)(Seq.quad.x), jax.vmap(u)(Seq.quad.x),
+                      Seq.jacobian_j, Seq.quad.w)**0.5
     error = L2_df / L2_f
-    return error, jnp.linalg.cond(Seq.M0 @ Seq.dd0), jnp.sum(jnp.abs(Seq.M0 @ Seq.dd0) > 1e-12) / Seq.dd0.size
+    return error, jnp.linalg.cond(Seq.m0 @ Seq.dd0), jnp.sum(jnp.abs(Seq.m0 @ Seq.dd0) > 1e-12) / Seq.dd0.size
 
 
 def main():

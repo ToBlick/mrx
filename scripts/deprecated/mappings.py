@@ -265,24 +265,24 @@ def least_squares_deformed(F):
     Seq = DeRhamSequence((n, n, n), (p, p, p), p,
                          ("clamped", "periodic", "periodic"), F_torus, polar=True, dirichlet=False)
     Seq.evaluate_1d()
-    Seq.assemble_M0()
+    Seq.assemble_m0()
     # this is now the polar spline space
 
-    F_q = jax.vmap(F)(Seq.Q.x) * Seq.Q.w[:, None]  # nq, 3
+    F_q = jax.vmap(F)(Seq.quad.x) * Seq.quad.w[:, None]  # nq, 3
 
-    M0_log = Seq.E0 @ assemble(Seq.get_Lambda_0_ijk, Seq.get_Lambda_0_ijk,
-                               Seq.Q.w[:, None, None], Seq.Lambda_0.n, Seq.Lambda_0.n) @ Seq.E0.T
+    M0_log = Seq.e0 @ assemble(Seq.eval_basis_0_ijk, Seq.eval_basis_0_ijk,
+                               Seq.quad.w[:, None, None], Seq.basis_0.n, Seq.basis_0.n) @ Seq.e0.T
 
     F_x_hat = jnp.linalg.solve(
-        M0_log, Seq.E0 @ integrate_against(Seq.get_Lambda_0_ijk, F_q[:, 0:1], Seq.Lambda_0.n))
+        M0_log, Seq.e0 @ integrate_against(Seq.eval_basis_0_ijk, F_q[:, 0:1], Seq.basis_0.n))
     F_y_hat = jnp.linalg.solve(
-        M0_log, Seq.E0 @ integrate_against(Seq.get_Lambda_0_ijk, F_q[:, 1:2], Seq.Lambda_0.n))
+        M0_log, Seq.e0 @ integrate_against(Seq.eval_basis_0_ijk, F_q[:, 1:2], Seq.basis_0.n))
     F_z_hat = jnp.linalg.solve(
-        M0_log, Seq.E0 @ integrate_against(Seq.get_Lambda_0_ijk, F_q[:, 2:3], Seq.Lambda_0.n))
+        M0_log, Seq.e0 @ integrate_against(Seq.eval_basis_0_ijk, F_q[:, 2:3], Seq.basis_0.n))
 
-    F_x_h = DiscreteFunction(F_x_hat, Seq.Lambda_0, Seq.E0)
-    F_y_h = DiscreteFunction(F_y_hat, Seq.Lambda_0, Seq.E0)
-    F_z_h = DiscreteFunction(F_z_hat, Seq.Lambda_0, Seq.E0)
+    F_x_h = DiscreteFunction(F_x_hat, Seq.basis_0, Seq.e0)
+    F_y_h = DiscreteFunction(F_y_hat, Seq.basis_0, Seq.e0)
+    F_z_h = DiscreteFunction(F_z_hat, Seq.basis_0, Seq.e0)
 
     @jax.jit
     def G_h(x):
@@ -355,10 +355,10 @@ Seq.assemble_all()
 end = time.time()
 print("Assembly time:", end - start, "s")
 # %%
-print("first Evs of dd0:", jnp.linalg.eigh(Seq.M0 @ Seq.dd0)[0][:3])
-print("first Evs of dd1:", jnp.linalg.eigh(Seq.M1 @ Seq.dd1)[0][:3])
-print("first Evs of dd2:", jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[0][:3])
-print("first Evs of dd3:", jnp.linalg.eigh(Seq.M3 @ Seq.dd3)[0][:3])
+print("first Evs of dd0:", jnp.linalg.eigh(Seq.m0 @ Seq.dd0)[0][:3])
+print("first Evs of dd1:", jnp.linalg.eigh(Seq.m1 @ Seq.dd1)[0][:3])
+print("first Evs of dd2:", jnp.linalg.eigh(Seq.m2 @ Seq.dd2)[0][:3])
+print("first Evs of dd3:", jnp.linalg.eigh(Seq.m3 @ Seq.dd3)[0][:3])
 print("curl grad", jnp.max(jnp.abs(Seq.strong_curl @ Seq.strong_grad)))
 print("div curl:", jnp.max(jnp.abs(Seq.strong_div @ Seq.strong_curl)))
 # %%
@@ -438,29 +438,29 @@ def proj_error(n, p, q, k):
     match k:
         case 0:
             u_test = f_test
-            Seq.assemble_M0()
-            f_hat = jnp.linalg.solve(Seq.M0, Seq.P0(u_test))
+            Seq.assemble_m0()
+            f_hat = jnp.linalg.solve(Seq.m0, Seq.P0(u_test))
             f_h = Pushforward(DiscreteFunction(
-                f_hat, Seq.Lambda_0, Seq.E0), F, 0)
+                f_hat, Seq.basis_0, Seq.e0), F, 0)
         case 1:
             u_test = E_test
-            Seq.assemble_M1()
-            f_hat = jnp.linalg.solve(Seq.M1, Seq.P1(u_test))
+            Seq.assemble_m1()
+            f_hat = jnp.linalg.solve(Seq.m1, Seq.P1(u_test))
             f_h = Pushforward(DiscreteFunction(
-                f_hat, Seq.Lambda_1, Seq.E1), F, 1)
+                f_hat, Seq.basis_1, Seq.e1), F, 1)
         case 2:
             u_test = E_test
 
-            Seq.assemble_M2()
-            f_hat = jnp.linalg.solve(Seq.M2, Seq.P2(u_test))
+            Seq.assemble_m2()
+            f_hat = jnp.linalg.solve(Seq.m2, Seq.P2(u_test))
             f_h = Pushforward(DiscreteFunction(
-                f_hat, Seq.Lambda_2, Seq.E2), F, 2)
+                f_hat, Seq.basis_2, Seq.e2), F, 2)
         case 3:
             u_test = f_test
-            Seq.assemble_M3()
-            f_hat = jnp.linalg.solve(Seq.M3, Seq.P3(u_test))
+            Seq.assemble_m3()
+            f_hat = jnp.linalg.solve(Seq.m3, Seq.P3(u_test))
             f_h = Pushforward(DiscreteFunction(
-                f_hat, Seq.Lambda_3, Seq.E3), F, 3)
+                f_hat, Seq.basis_3, Seq.e3), F, 3)
 
     # do not vmap here because of memory issues
     def diff_at_x(x):
@@ -469,12 +469,13 @@ def proj_error(n, p, q, k):
     def body_fun(carry, x):
         return None, diff_at_x(x)
 
-    _, df = jax.lax.scan(body_fun, None, Seq.Q.x)
+    _, df = jax.lax.scan(body_fun, None, Seq.quad.x)
 
-    L2_df = jnp.einsum('ik,ik,i,i->', df, df, Seq.J_j, Seq.Q.w)**0.5
+    L2_df = jnp.einsum('ik,ik,i,i->', df, df, Seq.jacobian_j, Seq.quad.w)**0.5
     L2_f = jnp.einsum('ik,ik,i,i->',
-                      jax.vmap(u_test)(Seq.Q.x), jax.vmap(u_test)(Seq.Q.x),
-                      Seq.J_j, Seq.Q.w)**0.5
+                      jax.vmap(u_test)(Seq.quad.x), jax.vmap(
+                          u_test)(Seq.quad.x),
+                      Seq.jacobian_j, Seq.quad.w)**0.5
     return L2_df / L2_f
 
 
@@ -509,18 +510,18 @@ Seq = DeRhamSequence((10, 10, 4), (3, 3, 3), 3,
 Seq.evaluate_1d()
 Seq.assemble_all()
 
-assert jnp.min(Seq.J_j) > 0, "Mapping is not orientation-preserving!"
+assert jnp.min(Seq.jacobian_j) > 0, "Mapping is not orientation-preserving!"
 # %%
-print("first Evs of dd0:", scipy.linalg.eigvalsh(Seq.M0 @ Seq.dd0, Seq.M0)[:5])
-print("first Evs of dd1:", scipy.linalg.eigvalsh(Seq.M1 @ Seq.dd1, Seq.M1)[:5])
-print("first Evs of dd2:", scipy.linalg.eigvalsh(Seq.M2 @ Seq.dd2, Seq.M2)[:5])
-print("first Evs of dd3:", scipy.linalg.eigvalsh(Seq.M3 @ Seq.dd3, Seq.M3)[:5])
+print("first Evs of dd0:", scipy.linalg.eigvalsh(Seq.m0 @ Seq.dd0, Seq.m0)[:5])
+print("first Evs of dd1:", scipy.linalg.eigvalsh(Seq.m1 @ Seq.dd1, Seq.m1)[:5])
+print("first Evs of dd2:", scipy.linalg.eigvalsh(Seq.m2 @ Seq.dd2, Seq.m2)[:5])
+print("first Evs of dd3:", scipy.linalg.eigvalsh(Seq.m3 @ Seq.dd3, Seq.m3)[:5])
 print("curl grad", jnp.max(jnp.abs(Seq.strong_curl @ Seq.strong_grad)))
 print("div curl:", jnp.max(jnp.abs(Seq.strong_div @ Seq.strong_curl)))
 # %%
 
-u_hat = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)[1][:, 0]
-u_h = DiscreteFunction(u_hat, Seq.Lambda_2, Seq.E2)
+u_hat = jnp.linalg.eigh(Seq.m2 @ Seq.dd2)[1][:, 0]
+u_h = DiscreteFunction(u_hat, Seq.basis_2, Seq.e2)
 
 
 def norm_u_h(x):
@@ -530,8 +531,8 @@ def norm_u_h(x):
     return ((DFx @ u_h_x) @ (DFx @ u_h_x))**0.5 / J
 
 
-f_hat = jnp.linalg.solve(Seq.M0, Seq.P0(f_test))
-f_h = Pushforward(DiscreteFunction(f_hat, Seq.Lambda_0, Seq.E0), F, 0)
+f_hat = jnp.linalg.solve(Seq.m0, Seq.P0(f_test))
+f_h = Pushforward(DiscreteFunction(f_hat, Seq.basis_0, Seq.e0), F, 0)
 # %%
 cuts = jnp.linspace(0, 1, 5, endpoint=False)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,

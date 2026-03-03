@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
-from mrx.boundary import LazyBoundaryOperator
+from mrx.boundary import BoundaryOperator
 from mrx.differential_forms import DifferentialForm
 
 jax.config.update("jax_enable_x64", True)
@@ -44,19 +44,19 @@ class TestDenseAssembly:
     """Test dense matrix assembly via assemble() / matrix()."""
 
     def test_shape(self, form):
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
+        B = BoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
         M = B.matrix()
         assert M.shape == (B.n, form.n)
 
     def test_binary_entries(self, form):
         """All entries should be 0 or 1."""
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
+        B = BoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
         M = B.matrix()
         assert jnp.all((M == 0) | (M == 1))
 
     def test_at_most_one_per_row(self, form):
         """Each row should have at most one non-zero entry."""
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
+        B = BoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
         M = B.matrix()
         row_sums = jnp.sum(M, axis=1)
         assert jnp.all(row_sums <= 1 + 1e-10)
@@ -66,7 +66,7 @@ class TestDenseAssembly:
         """Assembly should succeed for all supported BC configurations."""
         for k in [0, 1, 2, 3]:
             Λ = DifferentialForm(k, NS, PS, TYPES)
-            B = LazyBoundaryOperator(Λ, bc_types)
+            B = BoundaryOperator(Λ, bc_types)
             M = B.matrix()
             assert M.shape == (B.n, Λ.n)
 
@@ -80,7 +80,7 @@ class TestSparseAssembly:
 
     def test_sparse_matches_dense(self, form):
         """The sparse matrix should be identical to the dense one."""
-        B = LazyBoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
+        B = BoundaryOperator(form, ("dirichlet", "periodic", "periodic"))
         dense = B.assemble()
         sparse = B.assemble_sparse()
         npt.assert_array_equal(sparse.todense(), dense)
@@ -97,7 +97,7 @@ class TestBoundarySemantics:
         """For 0-forms with Dirichlet BCs, the first and last radial
         basis functions should be absent from the range of E."""
         Λ = DifferentialForm(0, NS, PS, TYPES)
-        B = LazyBoundaryOperator(Λ, ("dirichlet", "periodic", "periodic"))
+        B = BoundaryOperator(Λ, ("dirichlet", "periodic", "periodic"))
         M = B.matrix()
         # Columns corresponding to i_r = 0 should be zero
         nr, nt, nz = Λ.nr, Λ.nt, Λ.nz
@@ -116,13 +116,13 @@ class TestBoundarySemantics:
     def test_none_is_identity(self):
         """With no BCs, the boundary operator should be the identity."""
         Λ = DifferentialForm(0, NS, PS, TYPES)
-        B = LazyBoundaryOperator(Λ, ("none", "none", "none"))
+        B = BoundaryOperator(Λ, ("none", "none", "none"))
         M = B.matrix()
         npt.assert_array_equal(M, jnp.eye(Λ.n))
 
     def test_3form_identity(self):
         """For 3-forms, the boundary operator is always the identity."""
         Λ = DifferentialForm(3, NS, PS, TYPES)
-        B = LazyBoundaryOperator(Λ, ("dirichlet", "periodic", "periodic"))
+        B = BoundaryOperator(Λ, ("dirichlet", "periodic", "periodic"))
         M = B.matrix()
         npt.assert_array_equal(M, jnp.eye(Λ.n1))

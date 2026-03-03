@@ -45,29 +45,29 @@ def test_helmholtz_decomposition():
             B: (Bx, By, Bz) in Cartesian coordinates
         """
         r, θ, _ = x
-        x1, x2, _ = Seq.F(x)
+        x1, x2, _ = Seq.map(x)
         φ = jnp.arctan2(x2, x1)
         R = 1 + r * eps * jnp.cos(2 * jnp.pi * θ)
         return jnp.array([jnp.sin(φ), -jnp.cos(φ), 0]) / R
 
     # Project B into the discrete space
-    B_hat = Seq.P_Leray @ jnp.linalg.solve(Seq.M2, Seq.P2(B))
-    B_hat /= (B_hat @ Seq.M2 @ B_hat)**0.5  # normalize
+    B_hat = Seq.P_Leray @ jnp.linalg.solve(Seq.m2, Seq.P2(B))
+    B_hat /= (B_hat @ Seq.m2 @ B_hat)**0.5  # normalize
     A_hat = jnp.linalg.solve(Seq.dd1, Seq.weak_curl @ B_hat)
     # A_hat is approx. 0 since B is the harmonic form
     npt.assert_allclose(
-        (A_hat @ Seq.M1 @ A_hat)**0.5, 0.0,
+        (A_hat @ Seq.m1 @ A_hat)**0.5, 0.0,
         atol=1e-3,
         err_msg="|A| is not approximately zero for harmonic field"
     )
 
     # Harmonic form is also given by the zero eigenvector of dd2:
-    _, eigvecs = jnp.linalg.eigh(Seq.M2 @ Seq.dd2)
+    _, eigvecs = jnp.linalg.eigh(Seq.m2 @ Seq.dd2)
     B_harm = eigvecs[:, 0]
-    B_harm /= (B_harm @ Seq.M2 @ B_harm)**0.5  # normalize
+    B_harm /= (B_harm @ Seq.m2 @ B_harm)**0.5  # normalize
 
     # Check that B_hat and B_harm are aligned
-    alignment = jnp.abs(B_hat @ Seq.M2 @ B_harm)
+    alignment = jnp.abs(B_hat @ Seq.m2 @ B_harm)
     npt.assert_allclose(
         alignment, 1.0,
         atol=1e-6,

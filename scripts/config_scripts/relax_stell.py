@@ -295,7 +295,7 @@ def main(cfg: DictConfig) -> float:
     )
 
     # Check that mapping is not singular
-    assert jnp.min(seq.J_j) > 0, "Mapping is singular!"
+    assert jnp.min(seq.jacobian_j) > 0, "Mapping is singular!"
 
     seq.evaluate_1d()
     seq.assemble_all()
@@ -312,18 +312,18 @@ def main(cfg: DictConfig) -> float:
     B_xyz = create_initial_B_field(F, tau)
 
     # Project to FEM space
-    B_dof_0 = jnp.linalg.solve(seq.M2, seq.P2(B_xyz))
+    B_dof_0 = jnp.linalg.solve(seq.m2, seq.P2(B_xyz))
     B_dof_0 = seq.P_Leray @ B_dof_0
 
     # Normalize
-    B_norm_initial = (B_dof_0 @ seq.M2 @ B_dof_0)**0.5
+    B_norm_initial = (B_dof_0 @ seq.m2 @ B_dof_0)**0.5
     B_dof_0 /= B_norm_initial
     print(f"Initial B-field norm: {B_norm_initial:.6f}")
 
     B_dof = B_dof_0.copy()
 
     div_B_initial = float(((seq.strong_div @ B_dof_0) @
-                          seq.M3 @ (seq.strong_div @ B_dof_0))**0.5)
+                          seq.m3 @ (seq.strong_div @ B_dof_0))**0.5)
     print(f"div B after projection: {div_B_initial:.2e}")
 
     # Setup relaxation

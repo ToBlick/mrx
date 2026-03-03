@@ -19,7 +19,8 @@ import matplotlib.pyplot as plt
 import optax
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DifferentialForm, DiscreteFunction, Pushforward
+from mrx.differential_forms import (DifferentialForm, DiscreteFunction,
+                                    Pushforward)
 from mrx.mappings import drumshape_map
 from mrx.quadrature import QuadratureRule
 from mrx.utils import assemble, integrate_against, inv33, jacobian_determinant
@@ -110,23 +111,23 @@ def get_evs(a_hat: jnp.ndarray, n_map: int, p_map: int, Seq: DeRhamSequence) -> 
         """
         return jax.jacfwd(F)(x).T @ jax.jacfwd(F)(x)
 
-    G_jkl = jax.vmap(G)(Seq.Q.x)
+    G_jkl = jax.vmap(G)(Seq.quad.x)
     G_inv_jkl = jax.vmap(inv33)(G_jkl)
-    J_j = jax.vmap(jacobian_determinant(F))(Seq.Q.x)
+    J_j = jax.vmap(jacobian_determinant(F))(Seq.quad.x)
 
-    K = assemble(Seq.get_d_Lambda_0_ijk,
-                 Seq.get_d_Lambda_0_ijk,
-                 G_inv_jkl * J_j[:, None, None] * Seq.Q.w[:, None, None],
-                 Seq.Lambda_0.n,
-                 Seq.Lambda_0.n)
-    K = Seq.E0 @ K @ Seq.E0.T
+    K = assemble(Seq.eval_d_basis_0_ijk,
+                 Seq.eval_d_basis_0_ijk,
+                 G_inv_jkl * J_j[:, None, None] * Seq.quad.w[:, None, None],
+                 Seq.basis_0.n,
+                 Seq.basis_0.n)
+    K = Seq.e0 @ K @ Seq.e0.T
 
-    M = assemble(Seq.get_Lambda_0_ijk,
-                 Seq.get_Lambda_0_ijk,
-                 J_j[:, None, None] * Seq.Q.w[:, None, None],
-                 Seq.Lambda_0.n,
-                 Seq.Lambda_0.n)
-    M = Seq.E0 @ M @ Seq.E0.T
+    M = assemble(Seq.eval_basis_0_ijk,
+                 Seq.eval_basis_0_ijk,
+                 J_j[:, None, None] * Seq.quad.w[:, None, None],
+                 Seq.basis_0.n,
+                 Seq.basis_0.n)
+    M = Seq.e0 @ M @ Seq.e0.T
 
     evs, evecs = generalized_eigh(K, M)
     return evs, evecs
@@ -326,7 +327,7 @@ def plot_reconstruction(a_hat: jnp.ndarray,
     y2 = grid_physical[:, 2].reshape(nx, nx)
 
     # Evaluate the eigenfunction on the grid
-    u_h = Pushforward(DiscreteFunction(first_evec, Seq.Lambda_0, Seq.E0), F, 0)
+    u_h = Pushforward(DiscreteFunction(first_evec, Seq.basis_0, Seq.e0), F, 0)
 
     # Fix the sign of the eigenfunction for consistent plotting
     if u_h(jnp.array([0.0, 0, 0])) < 0:
@@ -543,4 +544,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+# %%
+# %%
 # %%

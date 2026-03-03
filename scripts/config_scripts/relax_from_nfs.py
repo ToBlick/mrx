@@ -192,7 +192,7 @@ def main(cfg: DictConfig) -> float:
         map_func, polar=True, dirichlet=True
     )
 
-    assert jnp.min(seq.J_j) > 0, "Negative Jacobian!"
+    assert jnp.min(seq.jacobian_j) > 0, "Negative Jacobian!"
 
     seq.evaluate_1d()
     seq.assemble_all()
@@ -203,7 +203,7 @@ def main(cfg: DictConfig) -> float:
     trace_dict["setup_done_time"] = setup_time
     print(f"Setup completed in {setup_time - start_time:.2f}s")
     print(
-        f"Minimum Jacobian: {jnp.min(seq.J_j):.2e}, Maximum Jacobian: {jnp.max(seq.J_j):.2e}")
+        f"Minimum Jacobian: {jnp.min(seq.jacobian_j):.2e}, Maximum Jacobian: {jnp.max(seq.jacobian_j):.2e}")
 
     # B-field interpolation with train/validation split
     val_stride = cfg.interpolation.val_stride
@@ -226,7 +226,7 @@ def main(cfg: DictConfig) -> float:
 
     # Validate interpolation
     B_h = jax.jit(Pushforward(DiscreteFunction(
-        B_dof_0, seq.Lambda_2, seq.E2), seq.F, 2))
+        B_dof_0, seq.basis_2, seq.e2), seq.map, 2))
     B_val_interp = jax.vmap(B_h)(pts[val_mask])
     val_error = jnp.linalg.norm(B_vals[val_mask] - B_val_interp, axis=1)
     val_rel_error = val_error / jnp.linalg.norm(B_vals[val_mask], axis=1)
@@ -236,12 +236,12 @@ def main(cfg: DictConfig) -> float:
         f"B-field validation error: mean={mean_val_error:.2e}, max={max_val_error:.2e}")
 
     div_B_initial = float(((seq.strong_div @ B_dof_0) @
-                          seq.M3 @ (seq.strong_div @ B_dof_0))**0.5)
+                          seq.m3 @ (seq.strong_div @ B_dof_0))**0.5)
     print(f"div B after interpolation: {div_B_initial:.2e}")
 
     # Project to divergence-free and normalize
     B_dof_0 = seq.P_Leray @ B_dof_0
-    B_dof_0 /= (B_dof_0 @ seq.M2 @ B_dof_0)**0.5
+    B_dof_0 /= (B_dof_0 @ seq.m2 @ B_dof_0)**0.5
     B_dof = B_dof_0.copy()
 
     # Setup relaxation

@@ -71,13 +71,13 @@ class Projector:
             array: Projection coefficients
         """
         if self.k == 0:
-            return self.Seq.E0 @ self.zeroform_projection(f)
+            return self.Seq.e0 @ self.zeroform_projection(f)
         elif self.k == 1:
-            return self.Seq.E1 @ self.oneform_projection(f)
+            return self.Seq.e1 @ self.oneform_projection(f)
         elif self.k == 2:
-            return self.Seq.E2 @ self.twoform_projection(f)
+            return self.Seq.e2 @ self.twoform_projection(f)
         elif self.k == 3:
-            return self.Seq.E3 @ self.threeform_projection(f)
+            return self.Seq.e3 @ self.threeform_projection(f)
         # TODO: Consider raising an error for invalid k values
         raise ValueError(f"Invalid k value: {self.k}. Must be 0, 1, 2, or 3.")
 
@@ -92,9 +92,9 @@ class Projector:
             array: Projection coefficients for the 0-form
         """
         # Evaluate the given function at quadrature points
-        f_jk: Array = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
-        w_jk: Array = f_jk * (self.Seq.Q.w * self.Seq.J_j)[:, None]
-        return integrate_against(self.Seq.get_Lambda_0_ijk, w_jk, self.Seq.Lambda_0.n)
+        f_jk: Array = jax.vmap(f)(self.Seq.quad.x)  # n_q x 1
+        w_jk: Array = f_jk * (self.Seq.quad.w * self.Seq.jacobian_j)[:, None]
+        return integrate_against(self.Seq.eval_basis_0_ijk, w_jk, self.Seq.basis_0.n)
 
     def oneform_projection(self, v: VectorFunction) -> Array:
         """
@@ -106,16 +106,16 @@ class Projector:
         Returns:
             array: Projection coefficients for the 1-form
         """
-        DF = jax.jacfwd(self.Seq.F)
+        DF = jax.jacfwd(self.Seq.map)
 
         def _v(x: Array) -> Array:
             return inv33(DF(x)) @ v(x)
 
         # Evaluate the given function at quadrature points
-        A_jk: Array = jax.vmap(_v)(self.Seq.Q.x)  # n_q x d
-        w_jk: Array = A_jk * (self.Seq.Q.w * self.Seq.J_j)[:, None]
+        A_jk: Array = jax.vmap(_v)(self.Seq.quad.x)  # n_q x d
+        w_jk: Array = A_jk * (self.Seq.quad.w * self.Seq.jacobian_j)[:, None]
 
-        return integrate_against(self.Seq.get_Lambda_1_ijk, w_jk, self.Seq.Lambda_1.n)
+        return integrate_against(self.Seq.eval_basis_1_ijk, w_jk, self.Seq.basis_1.n)
 
     def twoform_projection(self, v: VectorFunction) -> Array:
         """
@@ -127,17 +127,17 @@ class Projector:
         Returns:
             array: Projection coefficients for the 2-form
         """
-        DF = jax.jacfwd(self.Seq.F)
+        DF = jax.jacfwd(self.Seq.map)
 
         def _v(x: Array) -> Array:
             return DF(x).T @ v(x)
 
         # Evaluate the given function at quadrature points
-        B_jk: Array = jax.vmap(_v)(self.Seq.Q.x)  # n_q x d
+        B_jk: Array = jax.vmap(_v)(self.Seq.quad.x)  # n_q x d
 
-        w_jk: Array = B_jk * (self.Seq.Q.w)[:, None]
+        w_jk: Array = B_jk * (self.Seq.quad.w)[:, None]
 
-        return integrate_against(self.Seq.get_Lambda_2_ijk, w_jk, self.Seq.Lambda_2.n)
+        return integrate_against(self.Seq.eval_basis_2_ijk, w_jk, self.Seq.basis_2.n)
 
     def threeform_projection(self, f: ScalarFunction) -> Array:
         """
@@ -150,7 +150,7 @@ class Projector:
             array: Projection coefficients for the 3-form
         """
         # Evaluate the given function at quadrature points
-        f_jk: Array = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
-        w_jk: Array = f_jk * (self.Seq.Q.w)[:, None]
-        return integrate_against(self.Seq.get_Lambda_3_ijk, w_jk, self.Seq.Lambda_3.n)
-        return integrate_against(self.Seq.get_Lambda_3_ijk, w_jk, self.Seq.Lambda_3.n)
+        f_jk: Array = jax.vmap(f)(self.Seq.quad.x)  # n_q x 1
+        w_jk: Array = f_jk * (self.Seq.quad.w)[:, None]
+        return integrate_against(self.Seq.eval_basis_3_ijk, w_jk, self.Seq.basis_3.n)
+        return integrate_against(self.Seq.eval_basis_3_ijk, w_jk, self.Seq.basis_3.n)

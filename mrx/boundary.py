@@ -16,7 +16,7 @@ import numpy as np
 
 
 # Boundary extraction operator for cube-like domains
-class LazyBoundaryOperator:
+class BoundaryOperator:
     """
     A lazy boundary operator for handling boundary conditions in differential forms.
 

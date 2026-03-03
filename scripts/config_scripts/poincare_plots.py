@@ -32,12 +32,8 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.io import unique_id
 from mrx.mappings import stellarator_map
-from mrx.plotting import (
-    get_iota_log,
-    get_periodic_intersections,
-    integrate_fieldlines,
-    poincare_plot,
-)
+from mrx.plotting import (get_iota_log, get_periodic_intersections,
+                          integrate_fieldlines, poincare_plot)
 
 jax.config.update("jax_enable_x64", True)
 matplotlib.use("Agg")  # Non-interactive backend for batch jobs
@@ -100,11 +96,13 @@ def main(cfg: DictConfig) -> None:
     run_name = relax_cfg.get("run_name")
     if run_name is None:
         # Find the h5 file in run_dir that's not intermediate_states.h5
-        h5_files = [f for f in run_dir.glob("*.h5") if f.name != "intermediate_states.h5"]
+        h5_files = [f for f in run_dir.glob(
+            "*.h5") if f.name != "intermediate_states.h5"]
         if len(h5_files) == 0:
             raise FileNotFoundError(f"No results h5 file found in {run_dir}")
         elif len(h5_files) > 1:
-            raise ValueError(f"Multiple h5 files found in {run_dir}: {[f.name for f in h5_files]}")
+            raise ValueError(
+                f"Multiple h5 files found in {run_dir}: {[f.name for f in h5_files]}")
         run_name = h5_files[0].stem  # Get filename without extension
 
     nfp = relax_cfg.nfp
@@ -118,8 +116,10 @@ def main(cfg: DictConfig) -> None:
     print(f"Output directory: {outdir}")
 
     # ── Build the map ────────────────────────────────────────────────────
-    ns_map = (relax_cfg.map.ns_r, relax_cfg.map.ns_theta, relax_cfg.map.ns_zeta)
-    ps_map = (relax_cfg.map.ps_r, relax_cfg.map.ps_theta, relax_cfg.map.ps_zeta)
+    ns_map = (relax_cfg.map.ns_r, relax_cfg.map.ns_theta,
+              relax_cfg.map.ns_zeta)
+    ps_map = (relax_cfg.map.ps_r, relax_cfg.map.ps_theta,
+              relax_cfg.map.ps_zeta)
     quad_map = relax_cfg.map.quad_order
 
     map_seq = DeRhamSequence(
@@ -130,9 +130,10 @@ def main(cfg: DictConfig) -> None:
 
     R_dof = results["R_dof"]
     Z_dof = results["Z_dof"]
-    X1_h = DiscreteFunction(R_dof, map_seq.Lambda_0, map_seq.E0)
-    X2_h = DiscreteFunction(Z_dof, map_seq.Lambda_0, map_seq.E0)
-    map_func = jax.jit(stellarator_map(X1_h, X2_h, nfp=nfp, flip_zeta=relax_cfg.map.flip_zeta))
+    X1_h = DiscreteFunction(R_dof, map_seq.basis_0, map_seq.e0)
+    X2_h = DiscreteFunction(Z_dof, map_seq.basis_0, map_seq.e0)
+    map_func = jax.jit(stellarator_map(X1_h, X2_h, nfp=nfp,
+                       flip_zeta=relax_cfg.map.flip_zeta))
 
     print("Map reconstructed.")
 
@@ -174,14 +175,16 @@ def main(cfg: DictConfig) -> None:
     # ── Trace fieldlines for each intermediate state ─────────────────────
     trace_file = run_dir / "intermediate_states.h5"
     if not trace_file.exists():
-        raise FileNotFoundError(f"No intermediate_states.h5 found in {run_dir}")
+        raise FileNotFoundError(
+            f"No intermediate_states.h5 found in {run_dir}")
 
     ks_thresh = cfg.poincare.ks_thresh
     zeta_values = list(cfg.poincare.zeta_values)
     max_intersections = int(T // (2 * nfp))
 
     plot_data = []
-    print(f"\nIntegrating fieldlines (n_traj={n_traj}, T={float(T):.0f}, N={N}) ...")
+    print(
+        f"\nIntegrating fieldlines (n_traj={n_traj}, T={float(T):.0f}, N={N}) ...")
 
     for trace in tqdm.tqdm(list(iter_traces(trace_file))):
         B_dof = trace["B_dof"]
@@ -231,7 +234,8 @@ def main(cfg: DictConfig) -> None:
 
     # ── Compute global colour limits ─────────────────────────────────────
     p_min = 0.0
-    p_max = float(jnp.nanmax(jnp.array([d["p_at_intersections"] for d in plot_data])))
+    p_max = float(jnp.nanmax(
+        jnp.array([d["p_at_intersections"] for d in plot_data])))
     iota_min = float(jnp.nanmin(jnp.array([d["iotas"] for d in plot_data])))
     iota_max = float(jnp.nanmax(jnp.array([d["iotas"] for d in plot_data])))
 
@@ -253,14 +257,18 @@ def main(cfg: DictConfig) -> None:
         p_at_intersections = data["p_at_intersections"]
 
         # Convert to cylindrical coordinates
-        R_vals = (phys_intersec[:, :, 0] ** 2 + phys_intersec[:, :, 1] ** 2) ** 0.5
+        R_vals = (phys_intersec[:, :, 0] ** 2 +
+                  phys_intersec[:, :, 1] ** 2) ** 0.5
         phi_vals = jnp.arctan2(phys_intersec[:, :, 1], phys_intersec[:, :, 0])
         z_vals = phys_intersec[:, :, 2]
         cyl_intersections = jnp.stack([R_vals, phi_vals, z_vals], axis=-1)
-        iota_values = jnp.broadcast_to(iotas[:, None], phys_intersec[:, :, 0].shape)
+        iota_values = jnp.broadcast_to(
+            iotas[:, None], phys_intersec[:, :, 0].shape)
 
-        auto_Rlim = Rlim if Rlim is not None else (float(jnp.nanmin(R_vals)), float(jnp.nanmax(R_vals)))
-        auto_zlim = zlim if zlim is not None else (float(jnp.nanmin(z_vals)), float(jnp.nanmax(z_vals)))
+        auto_Rlim = Rlim if Rlim is not None else (
+            float(jnp.nanmin(R_vals)), float(jnp.nanmax(R_vals)))
+        auto_zlim = zlim if zlim is not None else (
+            float(jnp.nanmin(z_vals)), float(jnp.nanmax(z_vals)))
 
         fig, axes = poincare_plot(
             log_intersec,
