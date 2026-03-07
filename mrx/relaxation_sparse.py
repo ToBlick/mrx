@@ -63,12 +63,9 @@ class MRXDiagnostics:
         # j = curl b
         j = self.seq.apply_weak_curl(b)
         # h = P1 b
-        h = cg(self.seq.apply_m1_sparse, self.seq.apply_m12_sparse(b), M=self.seq.apply_m1_precond,
-               tol=self.tol, maxiter=self.maxiter)[0]
-        jxb = cg(self.seq.apply_m1_sparse, self.seq.P1x1_to_1(j, h), M=self.seq.apply_m1_precond,
-                 tol=self.tol, maxiter=self.maxiter)[0]
-        return cg(self.seq.apply_dd0_sparse, self.seq.apply_d0t_sparse(jxb), M=self.seq.apply_dd0_precond,
-                  tol=self.tol, maxiter=self.maxiter)[0]
+        h = cg(self.seq.apply_m1_sparse, self.seq.apply_m12_sparse(b), M=self.seq.apply_m1_precond, tol=self.tol, maxiter=self.maxiter)[0]
+        jxb = cg(self.seq.apply_m1_sparse, self.seq.P1x1_to_1(j, h), M=self.seq.apply_m1_precond, tol=self.tol, maxiter=self.maxiter)[0]
+        return cg(self.seq.apply_dd0_sparse, self.seq.apply_d0t_sparse(jxb), M=self.seq.apply_dd0_precond, tol=self.tol, maxiter=self.maxiter)[0]
 
 
 class State(eqx.Module):
@@ -200,12 +197,9 @@ class TimeStepper(eqx.Module):
         # j = curl b
         j = self.seq.apply_weak_curl(b)
         # h = P1 b
-        h = cg(self.seq.apply_m1_sparse, self.seq.apply_m12_sparse(b), M=self.seq.apply_m1_precond,
-               tol=self.tol, maxiter=self.maxiter)[0]
-        jxh = cg(self.seq.apply_m2_sparse, self.seq.P1x1_to_2(j, h), M=self.seq.apply_m2_precond,
-                 tol=self.tol, maxiter=self.maxiter)[0]
-        f = self.seq.apply_leray_projection(
-            jxh, nullspace_vectors=self.seq.null_3, k=2)
+        h = cg(self.seq.apply_m1_sparse, self.seq.apply_m12_sparse(b), M=self.seq.apply_m1_precond, tol=self.tol, maxiter=self.maxiter)[0]
+        jxh = cg(self.seq.apply_m2_sparse, self.seq.P1x1_to_2(j, h), M=self.seq.apply_m2_precond, tol=self.tol, maxiter=self.maxiter)[0]
+        f = self.seq.apply_leray_projection(jxh, nullspace_vectors=self.seq.null_3)
         return f, j, h
 
     def regularization_operator(self, u: jnp.ndarray) -> jnp.ndarray:

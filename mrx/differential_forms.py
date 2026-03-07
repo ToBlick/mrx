@@ -379,6 +379,7 @@ class DiscreteFunction:
         Returns:
             array-like: Value of the function at x
         """
+        # TODO: Should be fine as a single vmap since it is only over bases.
         return self.dof @ self.E @ jax.vmap(self.Λ, (None, 0))(x, self.ns)
 
 

@@ -28,12 +28,17 @@ import tqdm
 import yaml
 from omegaconf import DictConfig, OmegaConf
 
+import mrx.config  # noqa: F401  —  register Hydra structured configs
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.io import unique_id
 from mrx.mappings import stellarator_map
-from mrx.plotting import (get_iota_log, get_periodic_intersections,
-                          integrate_fieldlines, poincare_plot)
+from mrx.plotting import (
+    get_iota_log,
+    get_periodic_intersections,
+    integrate_fieldlines,
+    poincare_plot,
+)
 
 jax.config.update("jax_enable_x64", True)
 matplotlib.use("Agg")  # Non-interactive backend for batch jobs
@@ -69,7 +74,7 @@ def iter_traces(trace_file: Path):
             }
 
 
-@hydra.main(version_base=None, config_path="../../conf", config_name="config_poincare")
+@hydra.main(version_base=None, config_name="config_poincare")
 def main(cfg: DictConfig) -> None:
     """
     Main entry point for Poincaré plot generation with Hydra configuration.

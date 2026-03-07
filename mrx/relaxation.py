@@ -79,8 +79,8 @@ class MRXHessian:
             The assembled and symmetrized MRX Hessian.
         """
         X = jnp.eye(B.shape[0])
-        δBᵢ = jax.vmap(self.δB, in_axes=(None, 1), out_axes=1)(B, X)
-        ΛxJᵢ = jax.vmap(self.uxJ, in_axes=(None, 1), out_axes=1)(B, X)
+        δBᵢ = jax.lax.map(lambda u: self.δB(B, u), X.T).T
+        ΛxJᵢ = jax.lax.map(lambda u: self.uxJ(B, u), X.T).T
         H = (δBᵢ.T @ self.Seq.m2 @ δBᵢ
              + ΛxJᵢ.T @ self.Seq.m12 @ self.Seq.m2 @ δBᵢ)
         return (H + H.T) / 2

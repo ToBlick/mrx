@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 
+import mrx
 from mrx.differential_forms import DiscreteFunction
 
 # Base marker styles for different data series
@@ -111,7 +112,7 @@ def get_3d_grids(
     _x3 = jnp.linspace(z_min, z_max, nz)
     _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
     _x = _x.transpose(1, 2, 3, 0).reshape(nx * ny * nz, 3)
-    _y = jax.vmap(F)(_x)
+    _y = jax.lax.map(F, _x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
     _y1 = _y[:, 0].reshape(nx, ny, nz)
     _y2 = _y[:, 1].reshape(nx, ny, nz)
     _y3 = _y[:, 2].reshape(nx, ny, nz)
@@ -217,11 +218,11 @@ def get_2d_grids(
         n1, n2 = nx, ny
     _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
     _x = _x.transpose(1, 2, 3, 0).reshape(n1 * n2, 3)
-    _y = jax.vmap(F)(_x)
+    _y = jax.lax.map(F, _x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
     _y1 = _y[:, 0].reshape(n1, n2)
     _y2 = _y[:, 1].reshape(n1, n2)
     _y3 = _y[:, 2].reshape(n1, n2)
-    _y = jax.vmap(F)(_x)
+    _y = jax.lax.map(F, _x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
 
@@ -267,7 +268,7 @@ def get_1d_grids(
     _x3 = jnp.ones(1) * zeta
     _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
     _x = _x.transpose(1, 2, 3, 0).reshape(nx, 3)
-    _y = jax.vmap(F)(_x)
+    _y = jax.lax.map(F, _x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
     _y1 = _y[:, 0]
     _y2 = _y[:, 1]
     _y3 = _y[:, 2]
@@ -327,7 +328,7 @@ def plot_torus(
         Axes object.
     """
     vals = jnp.array(
-        [jax.vmap(p_h)(grid[0]).reshape(grid[2][0].shape)
+        [jax.lax.map(p_h, grid[0], batch_size=mrx.MAP_BATCH_SIZE_INNER).reshape(grid[2][0].shape)
          for grid in grids_pol]
     )
 
@@ -782,17 +783,19 @@ def integrate_fieldlines(x0s, B_dof, p_dof, seq, T, N):
         # On solver failure, fill trajectory with NaN
         failed = sol.result != dfx.RESULTS.successful
         traj = jnp.where(failed, jnp.nan, sol.ys % 1.0)
-        p_vals = jax.vmap(p_h)(
-            jnp.where(failed, jnp.zeros_like(sol.ys), sol.ys) % 1.0)
+        p_vals = jax.lax.map(p_h,
+            jnp.where(failed, jnp.zeros_like(sol.ys), sol.ys) % 1.0, batch_size=mrx.MAP_BATCH_SIZE_INNER)
         p_vals = jnp.where(failed, jnp.nan, p_vals)
         return traj, p_vals
 
-    # Vectorized inner function
-    vmapped_integrate = jax.vmap(integrate_fieldline)
+    # Inner function: map over trajectories in a batch
+    def mapped_integrate(x0_batch):
+        return jax.lax.map(integrate_fieldline, x0_batch,
+                           batch_size=mrx.MAP_BATCH_SIZE_INNER)
 
     # Loop over 'n_scan' batches sequentially to save memory
     def scan_fn(carry, x0_batch):
-        trajs, ps = vmapped_integrate(x0_batch)
+        trajs, ps = mapped_integrate(x0_batch)
         return carry, (trajs, ps)
 
     _, (logical_trajectories, p_values) = jax.lax.scan(scan_fn, None, x0s)
@@ -1157,7 +1160,8 @@ def plot_crossections_separate(
         R = jnp.sqrt(grid[2][0] ** 2 + grid[2][1] ** 2)
         z = grid[2][2]
 
-        vals = jax.vmap(p_h)(grid[0]).reshape(*grid[2][0].shape)
+        vals = jax.lax.map(p_h, grid[0], 
+            batch_size=mrx.MAP_BATCH_SIZE_INNER).reshape(*grid[2][0].shape)
 
         # draw contour above the guide lines
         last_c = ax.contourf(R, z, vals, 25, cmap="plasma", zorder=2)

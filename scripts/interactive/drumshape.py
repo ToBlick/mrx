@@ -32,6 +32,63 @@ script_dir.mkdir(parents=True, exist_ok=True)
 
 
 # %%
+def drumshape_map(a_h: Callable) -> Callable:
+    """
+    Drumshape mapping function:
+    F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
+    and (r, χ, z) are the logical coordinates, with χ the toroidal angle.
+    Formula is:
+    F(r, χ, z) = (a_h(χ) r cos(2πχ), -z, a_h(χ) r sin(2πχ))
+    where a_h(χ) is the radius as a function of the toroidal angle.
+
+    Parameters
+    ----------
+    a_h : Callable
+        Radius as a function of the toroidal angle.
+
+    Returns
+    -------
+    F : Callable
+        Drumshape mapping function.
+    """
+    π = jnp.pi
+
+    def F(x):
+        r, χ, z = x
+        return jnp.array([a_h(χ) * r * jnp.cos(2 * π * χ),
+                          -z,
+                          a_h(χ) * r * jnp.sin(2 * π * χ)])
+
+    return F
+
+
+def drumshape_map_modified(a: Callable, R0: float = 1.0) -> Callable:
+    """
+    Modified drumshape mapping function:
+    F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
+    and (r, χ, z) are the logical coordinates, with χ the toroidal angle.
+    Formula is:
+    F(r, χ, z) = (a(χ) r cos(2πχ), -z, a(χ) r sin(2πχ))
+    where a(χ) is the radius as a function of the toroidal angle.
+    """
+    π = jnp.pi
+
+    def _R(r, χ):
+        return jnp.ones(1) * (R0 + a(χ) * r * jnp.cos(2 * π * χ))
+
+    def _Z(r, χ):
+        return jnp.ones(1) * a(χ) * r * jnp.sin(2 * π * χ)
+
+    def F(x):
+        r, χ, z = x
+        return jnp.ravel(jnp.array(
+            [_R(r, χ) * jnp.cos(2 * π * z),
+             -_R(r, χ) * jnp.sin(2 * π * z),
+             _Z(r, χ)]))
+
+    return F
+
+
 def generalized_eigh(A: jnp.ndarray, B: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Solve the generalized eigenvalue problem A*v = lambda*B*v.
 

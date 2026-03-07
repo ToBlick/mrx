@@ -27,13 +27,20 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig, OmegaConf
 
+import mrx.config  # noqa: F401  —  register Hydra structured configs
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.io import unique_id
 from mrx.mappings import rotating_ellipse_map
 from mrx.plotting import integrate_fieldline, poincare_plot
-from mrx.relaxation import (DescentMethod, IntegrationScheme, MRXDiagnostics,
-                            TimeStepChoice, TimeStepper, relaxation_loop)
+from mrx.relaxation import (
+    DescentMethod,
+    IntegrationScheme,
+    MRXDiagnostics,
+    TimeStepChoice,
+    TimeStepper,
+    relaxation_loop,
+)
 from mrx.utils import default_trace_dict
 
 jax.config.update("jax_enable_x64", True)
@@ -237,7 +244,7 @@ def create_initial_B_field(F, tau):
     return B_xyz
 
 
-@hydra.main(version_base=None, config_path="../../conf", config_name="config_stell")
+@hydra.main(version_base=None, config_name="config_stell")
 def main(cfg: DictConfig) -> float:
     """
     Main entry point for stellarator relaxation with Hydra configuration.

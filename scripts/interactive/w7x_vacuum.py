@@ -10,10 +10,14 @@ import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.io import interpolate_map_from_points
-from mrx.plotting import (get_iota_log, get_periodic_intersections,
-                          integrate_fieldlines, poincare_plot)
+from mrx.plotting import (
+    get_iota_log,
+    get_periodic_intersections,
+    integrate_fieldlines,
+    poincare_plot,
+)
 
-mrx.MAP_BATCH_SIZE = 20_000
+mrx.MAP_BATCH_SIZE_INNER = 20_000
 
 # %%
 
@@ -34,13 +38,13 @@ quad_order = max(ps)
 ps = tuple(min(p, n - 1) for p, n in zip(ps, ns))
 nfp = 5
 print("Interpolating map...")
-map_func, R_dof, Z_dof, map_resid = interpolate_map_from_points(
+map_func, R_dof, Z_dof, resid_R, resid_Z = interpolate_map_from_points(
     pts, R, Z, nfp, ns=ns, ps=ps,
     quad_order=quad_order, flip_zeta=False
 )
 map_func = jax.jit(map_func)
 print(
-    f"Map interpolation residuals: {map_resid[0]:.2e}, {map_resid[1]:.2e}")
+    f"Map interpolation residuals: R={resid_R:.2e}, Z={resid_Z:.2e}")
 # Setup FEM spaces
 print(f"Setting up FEM spaces with ns={ns}, ps={ps}...")
 seq = DeRhamSequence(

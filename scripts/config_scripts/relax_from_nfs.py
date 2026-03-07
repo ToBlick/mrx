@@ -24,11 +24,18 @@ import jax
 import jax.numpy as jnp
 from omegaconf import DictConfig, OmegaConf
 
+import mrx.config  # noqa: F401  —  register Hydra structured configs
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.io import interpolate_B, interpolate_map_from_points, unique_id
-from mrx.relaxation import (DescentMethod, IntegrationScheme, MRXDiagnostics,
-                            TimeStepChoice, TimeStepper, relaxation_loop)
+from mrx.relaxation import (
+    DescentMethod,
+    IntegrationScheme,
+    MRXDiagnostics,
+    TimeStepChoice,
+    TimeStepper,
+    relaxation_loop,
+)
 from mrx.utils import default_trace_dict
 
 jax.config.update("jax_enable_x64", True)
@@ -121,7 +128,7 @@ def create_hdf5_callback(seq, diagnostics, nfp, cfg: DictConfig, outdir: Path):
     return hdf5_callback
 
 
-@hydra.main(version_base=None, config_path="../../conf", config_name="config_relax_from_nfs")
+@hydra.main(version_base=None, config_name="config_relax_from_nfs")
 def main(cfg: DictConfig) -> float:
     """
     Main entry point for relaxation with Hydra configuration.
@@ -170,13 +177,13 @@ def main(cfg: DictConfig) -> float:
     nfp = cfg.nfp
 
     print("Interpolating map...")
-    map_func, R_dof, Z_dof, map_resid = interpolate_map_from_points(
+    map_func, R_dof, Z_dof, resid_R, resid_Z = interpolate_map_from_points(
         pts, R, Z, nfp, ns=ns_map, ps=ps_map,
         quad_order=cfg.map.quad_order, flip_zeta=cfg.map.flip_zeta
     )
     map_func = jax.jit(map_func)
     print(
-        f"Map interpolation residuals: {map_resid[0]:.2e}, {map_resid[1]:.2e}")
+        f"Map interpolation residuals: R={resid_R:.2e}, Z={resid_Z:.2e}")
 
     # Setup FEM spaces
     ns = (cfg.fem.ns_r, cfg.fem.ns_theta, cfg.fem.ns_zeta)

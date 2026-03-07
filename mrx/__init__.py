@@ -12,4 +12,10 @@ from .utils import *
 
 __version__ = "0.0.1"
 
-MAP_BATCH_SIZE = 100_000
+# maximum batch size for map evaluations in inner loops 
+# most commonly, this is vectorization over quadrature points
+MAP_BATCH_SIZE_INNER = 0  # (0 corresponds to vmap)
+# maximum batch size for outer loops 
+# for example, this is used in matrix assembly to batch over rows
+# maximum number of concurrent evaluations is thus MAP_BATCH_SIZE_OUTER * MAP_BATCH_SIZE_INNER
+MAP_BATCH_SIZE_OUTER = None # (None corresponds to no batching)

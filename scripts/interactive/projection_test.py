@@ -1,185 +1,196 @@
-# # %%
-# """
-# Projection test script: Load DESC equilibrium and project R, Z, and B onto FEM spaces.
+# %%
+import jax
+import jax.numpy as jnp
+import numpy.testing as npt
+import pytest
+import mrx
+from mrx.derham_sequence import DeRhamSequence
+from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.mappings import (
+    interpolate_map,
+    cerfon_map,
+    helical_map,
+    rotating_ellipse_map,
+    toroid_map,
+    polar_map,
+    cylinder_map
+)
+from mrx.utils import inv33, jacobian_determinant, det33, solve_singular_cg
+from mrx.io import interpolate_scalar_function
+import numpy as np
+import h5py
+import matplotlib.pyplot as plt
 
-# This script demonstrates:
-# 1. Creating callable wrappers for DESC equilibrium quantities (R, Z, B)
-# 2. Projecting scalar functions R(x), Z(x) onto 0-form spaces
-# 3. Using the interpolated geometry to project B(x) onto a 2-form space
-# """
-# import jax
-# import jax.numpy as jnp
-# import matplotlib.pyplot as plt
+jax.config.update("jax_enable_x64", True)
 
-# # from mrx.desc_interface import DESCWrapper, project_desc_equilibrium
+nfs_path = "/scratch/tblickhan/mrx/data/gvec_nfp3_hegna_clebsch.h5"
 
-# jax.config.update("jax_enable_x64", True)
+def inspect_h5_item(name, obj):
+    """Callback function to print the name and type of each item."""
+    if isinstance(obj, h5py.Group):
+        print(f"Group:   {name}")
+    elif isinstance(obj, h5py.Dataset):
+        print(f"Dataset: {name} | Shape: {obj.shape} | Type: {obj.dtype}")
 
+with h5py.File(nfs_path, 'r') as f:
+    print("--- HDF5 File Structure ---")
+    # This visits every node in the file and applies our function
+    f.visititems(inspect_h5_item)
 
-# # %%
-# # =============================================================================
-# # Test against DESC equilibrium
-# # =============================================================================
+with h5py.File(nfs_path, "r") as f:
+    if not f.attrs.get("clebsch_ingredients", False):
+        print("ERROR: File lacks clebsch_ingredients.") # Clebsch ingredients means things I extracted from GVEC run
+    for k in ("Phi", "chi", "LA"):
+        if f"clebsch/{k}" not in f:
+            print(f"ERROR: File lacks clebsch/{k}. Export with --export-clebsch-ingredients.")
+    
+    pts = jnp.array(f["eval_points"][:])
+    phi_vals = jnp.array(f["clebsch/Phi"][:]).ravel()
+    chi_vals = jnp.array(f["clebsch/chi"][:]).ravel()
+    lambda_vals = jnp.array(f["clebsch/LA"][:]).ravel()
+    R_vals = jnp.array(f["R"][:]).ravel()
+    Z_vals = jnp.array(f["Z"][:]).ravel()
+    B_vals = jnp.array(f["B"][:]).reshape(-1, 3)
+    p_vals = jnp.array(f["pressure"][:]).ravel()
+    dlambda_dt_vals = jnp.array(f["clebsch/dLA_dt"][:]).ravel()
+    dlambda_dz_vals = jnp.array(f["clebsch/dLA_dz"][:]).ravel()
+    dphi_dr_vals = jnp.array(f["clebsch/dPhi_dr"][:]).ravel()
+    dchi_dr_vals = jnp.array(f["clebsch/dchi_dr"][:]).ravel()
+    grad_rho_vals = jnp.array(f["clebsch/grad_rho"][:]).reshape(-1, 3)
+    grad_theta_vals = jnp.array(f["clebsch/grad_theta"][:]).reshape(-1, 3)
+    grad_zeta_vals = jnp.array(f["clebsch/grad_zeta"][:]).reshape(-1, 3)
 
-# def test_desc_projection(desc_path: str, n_resolution: int = 8, p: int = 3):
-#     """
-#     Test projection by comparing interpolated values against DESC using quadrature.
+# Drop boundary points where rho == 1
+mask = pts[:, 0] < 1.0
+pts             = pts[mask]
+phi_vals        = phi_vals[mask]
+chi_vals        = chi_vals[mask]
+lambda_vals     = lambda_vals[mask]
+R_vals          = R_vals[mask]
+Z_vals          = Z_vals[mask]
+B_vals          = B_vals[mask]
+p_vals          = p_vals[mask]
+dlambda_dt_vals = dlambda_dt_vals[mask]
+dlambda_dz_vals = dlambda_dz_vals[mask]
+dphi_dr_vals    = dphi_dr_vals[mask]
+dchi_dr_vals    = dchi_dr_vals[mask]
+grad_rho_vals   = grad_rho_vals[mask]
+grad_theta_vals = grad_theta_vals[mask]
+grad_zeta_vals  = grad_zeta_vals[mask]
 
-#     For R and Z: uses standard quadrature on [0,1]^3 (identity map).
-#     For B: uses quadrature weighted by the Jacobian of F_h (the interpolated geometry).
+# %%
+# Interpolate/get the map
+map_seq = DeRhamSequence(
+        (10, 10, 10), (3, 3, 3), 6,
+        ("clamped", "periodic", "periodic"),
+        map=lambda x: x, polar=False, dirichlet=False
+    )
+nfp = 3
+map = interpolate_map(pts, R_vals, Z_vals, nfp=nfp, seq=map_seq)
 
-#     Args:
-#         desc_path: Path to DESC equilibrium file
-#         n_resolution: Number of basis functions in each direction
-#         p: Polynomial degree
+# %%
+lambda_interpol = interpolate_scalar_function(pts, lambda_vals, map_seq, rcond=None)
+pressure_interpol = interpolate_scalar_function(pts, p_vals, map_seq, rcond=None)
+phi_interpol = interpolate_scalar_function(pts, phi_vals, map_seq, rcond=None)
+chi_interpol = interpolate_scalar_function(pts, chi_vals, map_seq, rcond=None)
+# %%
+lambda_h = jax.jit(DiscreteFunction(lambda_interpol["dof"], map_seq.basis_0, map_seq.e0))
+p_h = jax.jit(DiscreteFunction(pressure_interpol["dof"], map_seq.basis_0, map_seq.e0))
+phi_h = jax.jit(DiscreteFunction(phi_interpol["dof"], map_seq.basis_0, map_seq.e0))
+chi_h = jax.jit(DiscreteFunction(chi_interpol["dof"], map_seq.basis_0, map_seq.e0))
+@jax.jit
+def dlambda_dx(x):
+    Dmap = jax.jacfwd(map)(x)
+    Dmap_inv = inv33(Dmap)
+    dlambda_dxhat = jax.jacfwd(lambda_h)(x).T
+    return jnp.squeeze(Dmap_inv @ dlambda_dxhat)
+@jax.jit
+def dlambda_dt(x):
+    return jnp.squeeze(jax.jacfwd(lambda_h)(x))[1] / 2 / jnp.pi
+@jax.jit
+def dlambda_dz(x):
+    return jnp.squeeze(jax.jacfwd(lambda_h)(x))[2] / 2 / jnp.pi * nfp
+@jax.jit
+def dphi_dr(x):
+    return jnp.squeeze(jax.jacfwd(phi_h)(x))[0]
+@jax.jit
+def dchi_dr(x):
+    return jnp.squeeze(jax.jacfwd(chi_h)(x))[0]
+@jax.jit
+def dx(x):
+    Dmap = jax.jacfwd(map)(x)
+    Dmap_inv = inv33(Dmap)
+    grad_rho, grad_theta, grad_zeta = Dmap_inv[0, :], Dmap_inv[1, :], Dmap_inv[2, :]
+    return grad_rho, grad_theta, grad_zeta
+# %%
+for f, f_vals, name in zip(
+        (lambda_h, p_h, phi_h, chi_h, dlambda_dt, dlambda_dz, dphi_dr, dchi_dr), 
+        (lambda_vals, p_vals, phi_vals, chi_vals, dlambda_dt_vals, dlambda_dz_vals, dphi_dr_vals, dchi_dr_vals), 
+        ("lambda", "pressure", "phi", "chi", "dlambda_dt", "dlambda_dz", "dphi_dr", "dchi_dr")
+    ):
+    f_h_vals = jnp.squeeze(jax.lax.map(f, pts, batch_size=100_000))
+    print(f"--- {name} ---")
+    print("Resolution:", map_seq.n0)
+    print("Max abs error:", jnp.max(jnp.abs(f_vals - f_h_vals)) / jnp.mean(jnp.abs(f_vals)))
+    print("Max abs error occurs at:", pts[jnp.argmax(jnp.abs(f_vals - f_h_vals))])
+    print("Mean abs error:", jnp.mean(jnp.abs(f_vals - f_h_vals)) / jnp.mean(jnp.abs(f_vals)))
+    print("standard deviation of error:", jnp.std(jnp.abs(f_vals - f_h_vals)) / jnp.mean(jnp.abs(f_vals)))
 
-#     Returns:
-#         Dictionary with error metrics
-#     """
-#     # Project the equilibrium
-#     result = project_desc_equilibrium(desc_path, n_resolution, p)
+# %%
+# %%
+@jax.jit
+def B_clebsch(x):
+    Dmap = jax.jacfwd(map)(x)
+    J = det33(Dmap)
+    grad_phi =    jnp.squeeze(jax.jacfwd(phi_h)(x))
+    grad_chi =    jnp.squeeze(jax.jacfwd(chi_h)(x))
+    grad_lambda = jnp.squeeze(jax.jacfwd(lambda_h)(x))
+    return Dmap @ ( jnp.cross(grad_phi, (jnp.array([0,1,0]) * 2 * jnp.pi + grad_lambda)) 
+                   + jnp.cross(jnp.array([0,0,1]) * 2 * jnp.pi / nfp, grad_chi) ) / J
+    
+# %%
+B_clebsch_vals = jnp.squeeze(jax.lax.map(B_clebsch, pts, batch_size=100_000))
+print(f"--- B (Clebsch) ---")
+print("Resolution:", map_seq.n0)
+print("Max abs error:", jnp.max(jnp.linalg.norm(B_vals - B_clebsch_vals, axis=1)) / jnp.mean(jnp.linalg.norm(B_vals, axis=1)))
+print("Max abs error occurs at:", pts[jnp.argmax(jnp.linalg.norm(B_vals - B_clebsch_vals, axis=1))])
+print("Mean abs error:", jnp.mean(jnp.abs(B_vals - B_clebsch_vals))  / jnp.mean(jnp.linalg.norm(B_vals, axis=1)))
+print("standard deviation of error:", jnp.std(jnp.abs(B_vals - B_clebsch_vals)) / jnp.mean(jnp.linalg.norm(B_vals, axis=1)))
+# %%
+seq = DeRhamSequence(
+        (10, 10, 10), (3, 3, 3), 6,
+        ("clamped", "periodic", "periodic"),
+        map=map, polar=True, dirichlet=False
+    )
+seq.evaluate_1d()
+seq.assemble_m2_sparse()
+# %%
+rhs = seq.P2(B)
+B_dof = solve_singular_cg(
+    seq.apply_m2_sparse, 
+    rhs,
+    mass_matvec=seq.apply_m2_sparse,
+    precond_matvec=seq.apply_m2_precond,
+    tol=1e-12, 
+    maxiter=10_000)[0]
 
-#     X1_h = result['X1_h']
-#     X2_h = result['X2_h']
-#     B_h_xyz = result['B_h_xyz']
-#     F_h = result['F_h']
-#     map_seq = result['map_seq']
-#     seq = result['seq']
-#     wrapper = result['wrapper']
+# %%
+seq.assemble_d2_sparse()
+seq.assemble_m3_sparse()
+# %%
+B_norm = B_dof @ seq.apply_m2_sparse(B_dof)
+B_norm
+# %%
+divB_dof = seq.apply_strong_div(B_dof)
+div_B_norm = divB_dof @ seq.apply_d2_sparse(B_dof)
+# %%
+B_h = jax.jit(Pushforward(DiscreteFunction(B_dof, seq.basis_2, seq.e2), seq.map, 2))
 
-#     # ==========================================================================
-#     # Compute R, Z errors using quadrature on identity map
-#     # ==========================================================================
-#     # Get DESC values at quadrature points
-#     desc_vals = wrapper.compute_at_points(map_seq.Q.x)
-#     R_exact = desc_vals['R']
-#     Z_exact = desc_vals['Z']
-
-#     # Get interpolated values at quadrature points
-#     R_interp = jax.vmap(X1_h)(map_seq.Q.x).ravel()
-#     Z_interp = jax.vmap(X2_h)(map_seq.Q.x).ravel()
-
-#     # L2 error: sqrt(∫|f - f_h|^2 dx / ∫|f|^2 dx)
-#     # For identity map, J = 1, so just use weights
-#     R_diff_sq = (R_exact - R_interp)**2
-#     Z_diff_sq = (Z_exact - Z_interp)**2
-
-#     R_L2_error = jnp.sqrt(jnp.sum(R_diff_sq * map_seq.Q.w) /
-#                           jnp.sum(R_exact**2 * map_seq.Q.w))
-#     Z_L2_error = jnp.sqrt(jnp.sum(Z_diff_sq * map_seq.Q.w) /
-#                           jnp.sum(Z_exact**2 * map_seq.Q.w))
-
-#     # L∞ error: max |f - f_h| / max |f|
-#     R_inf_error = jnp.max(jnp.abs(R_exact - R_interp)) / \
-#         jnp.max(jnp.abs(R_exact))
-#     Z_inf_error = jnp.max(jnp.abs(Z_exact - Z_interp)) / \
-#         jnp.max(jnp.abs(Z_exact))
-
-#     # ==========================================================================
-#     # Compute B error using quadrature with geometry from F_h
-#     # ==========================================================================
-#     # Get DESC B values at quadrature points (using seq.Q.x which matches the B projection)
-#     desc_vals_B = wrapper.compute_at_points(seq.Q.x)
-#     B_exact = desc_vals_B['B']
-
-#     # Get interpolated B values
-#     B_interp = jax.vmap(B_h_xyz)(seq.Q.x)
-
-#     J = seq.J_j  # Jacobian at quadrature points
-
-#     # L2 error: sqrt(∫|B - B_h|^2 J dξ / ∫|B|^2 J dξ)
-#     B_diff_sq = jnp.sum((B_exact - B_interp)**2, axis=1)
-#     B_exact_sq = jnp.sum(B_exact**2, axis=1)
-
-#     B_L2_error = jnp.sqrt(jnp.sum(B_diff_sq * J * seq.Q.w) /
-#                           jnp.sum(B_exact_sq * J * seq.Q.w))
-
-#     # L∞ error for B
-#     B_diff_norm = jnp.sqrt(B_diff_sq)
-#     B_exact_norm = jnp.sqrt(B_exact_sq)
-#     B_inf_error = jnp.max(B_diff_norm) / jnp.max(B_exact_norm)
-
-#     return {
-#         'R_L2_error': float(R_L2_error),
-#         'R_inf_error': float(R_inf_error),
-#         'Z_L2_error': float(Z_L2_error),
-#         'Z_inf_error': float(Z_inf_error),
-#         'B_L2_error': float(B_L2_error),
-#         'B_inf_error': float(B_inf_error),
-#     }
-
-
-# # %%
-# # =============================================================================
-# # Run tests
-# # =============================================================================
-
-# DESC_PATH = "../data/desc_heliotron.h5"  # Update this path to your DESC file
-
-# print(f"Testing projection against DESC file: {DESC_PATH}")
-# print("=" * 70)
-
-# n_values = [4, 5, 6, 7, 8]
-# results = []
-
-# for n in n_values:
-#     print(f"\nResolution n = {n}")
-#     result = test_desc_projection(DESC_PATH, n_resolution=n, p=3)
-#     print(
-#         f"  R: L2={result['R_L2_error']:.3e}, L∞={result['R_inf_error']:.3e}")
-#     print(
-#         f"  Z: L2={result['Z_L2_error']:.3e}, L∞={result['Z_inf_error']:.3e}")
-#     print(
-#         f"  B: L2={result['B_L2_error']:.3e}, L∞={result['B_inf_error']:.3e}")
-#     results.append({'n': n, **result})
-
-# # %%
-# # Visualize convergence
-# fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-# n_vals = [r['n'] for r in results]
-
-# # L2 errors
-# ax = axes[0]
-# ax.semilogy(n_vals, [r['R_L2_error']
-#             for r in results], 'o-', label='R', linewidth=2)
-# ax.semilogy(n_vals, [r['Z_L2_error']
-#             for r in results], 's-', label='Z', linewidth=2)
-# ax.semilogy(n_vals, [r['B_L2_error']
-#             for r in results], '^-', label='B', linewidth=2)
-# ax.set_xlabel('n (resolution)', fontsize=12)
-# ax.set_ylabel('Relative L2 Error', fontsize=12)
-# ax.set_title('L2 Error Convergence', fontsize=13, fontweight='bold')
-# ax.legend()
-# ax.grid(True, alpha=0.3)
-
-# # L∞ errors
-# ax = axes[1]
-# ax.semilogy(n_vals, [r['R_inf_error']
-#             for r in results], 'o--', label='R', linewidth=2)
-# ax.semilogy(n_vals, [r['Z_inf_error']
-#             for r in results], 's--', label='Z', linewidth=2)
-# ax.semilogy(n_vals, [r['B_inf_error']
-#             for r in results], '^--', label='B', linewidth=2)
-# ax.set_xlabel('n (resolution)', fontsize=12)
-# ax.set_ylabel('Relative L∞ Error', fontsize=12)
-# ax.set_title('L∞ Error Convergence', fontsize=13, fontweight='bold')
-# ax.legend()
-# ax.grid(True, alpha=0.3)
-
-# plt.tight_layout()
-# plt.show()
-
-# # %%
-# # Print summary
-# print("\n" + "=" * 90)
-# print("SUMMARY")
-# print("=" * 90)
-# print(f"{'n':<6} {'R L2':<12} {'R L∞':<12} {'Z L2':<12} {'Z L∞':<12} {'B L2':<12} {'B L∞':<12}")
-# print("-" * 90)
-# for r in results:
-#     print(f"{r['n']:<6} {r['R_L2_error']:<12.3e} {r['R_inf_error']:<12.3e} "
-#           f"{r['Z_L2_error']:<12.3e} {r['Z_inf_error']:<12.3e} "
-#           f"{r['B_L2_error']:<12.3e} {r['B_inf_error']:<12.3e}")
-
-# # %%
+# %%
+B_h_vals = jnp.squeeze(jax.lax.map(B_h, pts, batch_size=100_000))
+print(f"--- B (FEM) ---")
+print("Resolution:", map_seq.n0)
+print("Max abs error:", jnp.max(jnp.linalg.norm(B_vals - B_h_vals, axis=1)) / jnp.mean(jnp.linalg.norm(B_vals, axis=1)))
+print("Max abs error occurs at:", pts[jnp.argmax(jnp.linalg.norm(B_vals - B_h_vals, axis=1))])
+print("Mean abs error:", jnp.mean(jnp.abs(B_vals - B_h_vals))  / jnp.mean(jnp.linalg.norm(B_vals, axis=1)))
+print("standard deviation of error:", jnp.std(jnp.abs(B_vals - B_h_vals)) / jnp.mean(jnp.linalg.norm(B_vals, axis=1)))

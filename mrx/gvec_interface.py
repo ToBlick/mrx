@@ -2,6 +2,7 @@
 import jax
 import jax.numpy as jnp
 
+import mrx
 from mrx.differential_forms import DiscreteFunction
 from mrx.mappings import stellarator_map
 
@@ -77,9 +78,10 @@ def interpolate_map_from_GVEC(gvec_eq, nfp, mapSeq):
                     θ.ravel() / (2 * jnp.pi),
                     ζ.ravel() / (2 * jnp.pi) * nfp], axis=1)  # x_hat_js, shape (mρ mθ mζ, 3)
 
-    # TODO: double vmap here
-    M = jax.vmap(lambda i: jax.vmap(lambda x: mapSeq.Lambda_0[i](x)[0])(pts))(
-        mapSeq.Lambda_0.ns).T  # Λ0[i](x_hat_j)
+    M = mrx.double_map(
+        lambda i, x: mapSeq.Lambda_0[i](x)[0],
+        mapSeq.Lambda_0.ns, pts,
+    ).T  # Λ0[i](x_hat_j)
     y = jnp.stack([X1.ravel(), X2.ravel()], axis=1)  # X_α(x'_j)
     c, _, _, _ = jnp.linalg.lstsq(M, y, rcond=None)
 
@@ -151,11 +153,9 @@ def interpolate_B_from_GVEC(gvec_eq, Seq, Phi, nfp, exclude_axis_tol=1e-3):
         J = jnp.linalg.det(DPhix)
         return DPhix @ Seq.Lambda_2[i](x) / J
 
-    def body_fun(_, i):
-        # Evaluate Λ2_phys(i, x) for all points (vectorized over x)
-        return None, jax.vmap(lambda x: Λ2_phys(i, x))(pts[valid_pts])
+    valid_points = pts[valid_pts]
 
-    _, M = jax.lax.scan(body_fun, None, Seq.Lambda_2.ns)
+    M = mrx.double_map(Λ2_phys, Seq.Lambda_2.ns, valid_points)
     M = jnp.einsum('il,ljk->ijk', Seq.E2, M)        # Λ2[i](x_hat_j)_k
     y = gvec_eq.B.values.reshape(-1, 3)[valid_pts]  # B(x'_j)_k
     A = M.reshape(M.shape[0], -1).T

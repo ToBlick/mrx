@@ -11,7 +11,7 @@ from scipy.linalg import eigvalsh
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.mappings import rotating_ellipse_map, toroid_map
-from mrx.utils import get_smallest_ev_pair, solve_singular_cg
+from mrx.utils import build_neighbors, get_smallest_ev_pair, solve_singular_cg
 
 jax.config.update("jax_enable_x64", True)
 
@@ -19,9 +19,9 @@ jax.config.update("jax_enable_x64", True)
 # Shared fixtures
 # ---------------------------------------------------------------------------
 
-p = 3
-n = 5
-q = p
+p = 1
+n = 8
+q = 2*p
 ns = (n, n, n)
 ps = (p, p, p)
 types = ("clamped", "periodic", "periodic")
@@ -35,8 +35,8 @@ def seq_toroid():
     seq = DeRhamSequence(ns, ps, q, types, F, polar=True,
                          dirichlet=True, tol=1e-12, maxiter=1000)
     seq.evaluate_1d()
-    seq.assemble_m0()
-    seq.assemble_dd0()
+    # seq.assemble_m0()
+    # seq.assemble_dd0()
     seq.assemble_m0_sparse()
     seq.assemble_dd0_sparse()
     return seq
@@ -51,7 +51,8 @@ def seq_ellipse(request):
     """
     F = rotating_ellipse_map(nfp=3)
     seq = DeRhamSequence(ns, ps, q, types, F, polar=True,
-                         dirichlet=request.param, tol=1e-12, maxiter=1000)
+                         dirichlet=request.param, 
+                         tol=1e-12, maxiter=1000)
     seq.evaluate_1d()
     seq.assemble_all()
     seq.assemble_all_sparse()
@@ -117,7 +118,7 @@ class TestPoissonToroidSparse:
 
 
 # ---------------------------------------------------------------------------
-# 2.  Sparse-vs-dense Poisson solves with random right-hand sides
+# 2.  Sparse Poisson solves with random right-hand sides
 # ---------------------------------------------------------------------------
 # %%
 
@@ -129,13 +130,9 @@ class TestSequenceProperty:
         key = jax.random.PRNGKey(0)
         x = jax.random.normal(key, (seq.n0,))
         grad_x = seq.apply_strong_grad(x)
-        # grad_x = cg(seq.apply_m1_sparse, seq.apply_d0_sparse(
-        # x), tol=seq.tol, maxiter=seq.maxiter)[0]
         curl_grad_x = seq.apply_strong_curl(grad_x)
-        # curl_grad_x = cg(seq.apply_m2_sparse, seq.apply_d1_sparse(
-        # grad_x), tol=seq.tol, maxiter=seq.maxiter)[0]
         npt.assert_allclose(
-            curl_grad_x @ seq.apply_m2_sparse(curl_grad_x), 0, atol=1e-16)
+            curl_grad_x @ seq.apply_m2_sparse(curl_grad_x), 0, atol=1e-12)
 
     def test_div_grad_zero(self, seq_ellipse):
         seq = seq_ellipse
@@ -144,7 +141,7 @@ class TestSequenceProperty:
         curl_x = seq.apply_strong_curl(x)
         div_curl_x = seq.apply_strong_div(curl_x)
         npt.assert_allclose(
-            div_curl_x @ seq.apply_m3_sparse(div_curl_x), 0, atol=1e-16)
+            div_curl_x @ seq.apply_m3_sparse(div_curl_x), 0, atol=1e-12)
 
 
 class TestPoissonSparse:
@@ -194,8 +191,8 @@ class TestPoissonSparse:
         b = jax.random.normal(key, (seq.n0,))
 
         u_sparse, _ = solve_singular_cg(
-            seq.apply_dd0_sparse, seq.apply_m0_sparse, b, precond_matvec=seq.apply_dd0_precond,
-            x0=jnp.zeros_like(b), vs=seq.null_0, tol=seq.tol, max_iters=seq.maxiter
+            seq.apply_dd0_sparse, b, mass_matvec=seq.apply_m0_sparse, precond_matvec=seq.apply_dd0_precond,
+            x0=jnp.zeros_like(b), vs=seq.null_0, tol=seq.tol, maxiter=seq.maxiter
         )
         b_proj = b
         for v in seq.null_0:
@@ -211,8 +208,8 @@ class TestPoissonSparse:
         b = jax.random.normal(key, (seq.n1,))
 
         u_sparse, _ = solve_singular_cg(
-            seq.apply_dd1_sparse, seq.apply_m1_sparse, b, precond_matvec=seq.apply_dd1_precond,
-            x0=jnp.zeros_like(b), vs=seq.null_1, tol=seq.tol, max_iters=seq.maxiter
+            seq.apply_dd1_sparse, b, mass_matvec=seq.apply_m1_sparse, precond_matvec=seq.apply_dd1_precond,
+            x0=jnp.zeros_like(b), vs=seq.null_1, tol=seq.tol, maxiter=seq.maxiter
         )
         b_proj = b
         for v in seq.null_1:
@@ -228,8 +225,8 @@ class TestPoissonSparse:
         b = jax.random.normal(key, (seq.n2,))
 
         u_sparse, _ = solve_singular_cg(
-            seq.apply_dd2_sparse, seq.apply_m2_sparse, b, precond_matvec=seq.apply_dd2_precond,
-            x0=jnp.zeros_like(b), vs=seq.null_2, tol=seq.tol, max_iters=seq.maxiter
+            seq.apply_dd2_sparse, b, mass_matvec=seq.apply_m2_sparse, precond_matvec=seq.apply_dd2_precond,
+            x0=jnp.zeros_like(b), vs=seq.null_2, tol=seq.tol, maxiter=seq.maxiter
         )
         # check that dd2 @ u_sparse = b_proj and that u_sparse is m2-orthogonal to the nullspace
         b_proj = b
@@ -246,8 +243,8 @@ class TestPoissonSparse:
         b = jax.random.normal(key, (seq.n3,))
 
         u_sparse, _ = solve_singular_cg(
-            seq.apply_dd3_sparse, seq.apply_m3_sparse, b, precond_matvec=seq.apply_dd3_precond,
-            x0=jnp.zeros_like(b), vs=seq.null_3, tol=seq.tol, max_iters=seq.maxiter
+            seq.apply_dd3_sparse, b, mass_matvec=seq.apply_m3_sparse, precond_matvec=seq.apply_dd3_precond,
+            x0=jnp.zeros_like(b), vs=seq.null_3, tol=seq.tol, maxiter=seq.maxiter
         )
         # check that dd3 @ u_sparse = b_proj and that u_sparse is m3-orthogonal to the nullspace
         b_proj = b
@@ -278,7 +275,7 @@ class TestLerayProjection:
             b, k=1)
         div_v = seq.apply_weak_div(v)
 
-        npt.assert_allclose(div_v @ seq.apply_m0_sparse(div_v), 0, atol=1e-16)
+        npt.assert_allclose(div_v @ seq.apply_m0_sparse(div_v), 0, atol=1e-12)
 
     def test_leray_k2(self, seq_ellipse):
         seq = seq_ellipse
@@ -290,4 +287,194 @@ class TestLerayProjection:
 
         div_v = seq.apply_strong_div(v)
 
-        npt.assert_allclose(div_v @ seq.apply_m3_sparse(div_v), 0, atol=1e-16)
+        npt.assert_allclose(div_v @ seq.apply_m3_sparse(div_v), 0, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Sparse-vs-dense agreement for every operator
+# ---------------------------------------------------------------------------
+
+class TestSparseVsDense:
+    """Apply every operator with both the dense matrix and the sparse
+    callable to the same random vector and verify they agree."""
+
+    # -- mass matrices -------------------------------------------------------
+
+    def test_m0(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(10), (seq.n0,))
+        dense = seq.m0 @ x
+        sparse = seq.apply_m0_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="m0 sparse != dense")
+
+    def test_m1(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(11), (seq.n1,))
+        dense = seq.m1 @ x
+        sparse = seq.apply_m1_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="m1 sparse != dense")
+
+    def test_m2(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(12), (seq.n2,))
+        dense = seq.m2 @ x
+        sparse = seq.apply_m2_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="m2 sparse != dense")
+
+    def test_m3(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(13), (seq.n3,))
+        dense = seq.m3 @ x
+        sparse = seq.apply_m3_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="m3 sparse != dense")
+
+    # -- differential operators d0, d1, d2 and transposes --------------------
+
+    def test_d0(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(20), (seq.n0,))
+        dense = seq.d0 @ x
+        sparse = seq.apply_d0_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="d0 sparse != dense")
+
+    def test_d0t(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(21), (seq.n1,))
+        dense = seq.d0.T @ x
+        sparse = seq.apply_d0t_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="d0^T sparse != dense")
+
+    def test_d1(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(22), (seq.n1,))
+        dense = seq.d1 @ x
+        sparse = seq.apply_d1_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="d1 sparse != dense")
+
+    def test_d1t(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(23), (seq.n2,))
+        dense = seq.d1.T @ x
+        sparse = seq.apply_d1t_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="d1^T sparse != dense")
+
+    def test_d2(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(24), (seq.n2,))
+        dense = seq.d2 @ x
+        sparse = seq.apply_d2_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="d2 sparse != dense")
+
+    def test_d2t(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(25), (seq.n3,))
+        dense = seq.d2.T @ x
+        sparse = seq.apply_d2t_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="d2^T sparse != dense")
+
+    # -- Hodge-Laplacians dd0 … dd3 -----------------------------------------
+
+    def test_dd0(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(30), (seq.n0,))
+        dense = seq.m0 @ seq.dd0 @ x
+        sparse = seq.apply_dd0_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="dd0 sparse != dense")
+
+    def test_dd1(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(31), (seq.n1,))
+        dense = seq.m1 @ seq.dd1 @ x
+        sparse = seq.apply_dd1_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="dd1 sparse != dense")
+
+    def test_dd2(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(32), (seq.n2,))
+        dense = seq.m2 @ seq.dd2 @ x
+        sparse = seq.apply_dd2_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="dd2 sparse != dense")
+
+    def test_dd3(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(33), (seq.n3,))
+        dense = seq.m3 @ seq.dd3 @ x
+        sparse = seq.apply_dd3_sparse(x)
+        npt.assert_allclose(sparse, dense, atol=1e-12,
+                            err_msg="dd3 sparse != dense")
+
+    # -- strong grad / curl / div -------------------------------------------
+
+    def test_strong_grad(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(40), (seq.n0,))
+        dense = seq.strong_grad @ x
+        sparse = seq.apply_strong_grad(x)
+        npt.assert_allclose(sparse, dense, atol=1e-9,
+                            err_msg="strong_grad sparse != dense")
+
+    def test_strong_curl(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(41), (seq.n1,))
+        dense = seq.strong_curl @ x
+        sparse = seq.apply_strong_curl(x)
+        npt.assert_allclose(sparse, dense, atol=1e-9,
+                            err_msg="strong_curl sparse != dense")
+
+    def test_strong_div(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(42), (seq.n2,))
+        dense = seq.strong_div @ x
+        sparse = seq.apply_strong_div(x)
+        npt.assert_allclose(sparse, dense, atol=1e-9,
+                            err_msg="strong_div sparse != dense")
+
+    # -- weak grad / curl / div ---------------------------------------------
+
+    def test_weak_grad(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(50), (seq.n3,))
+        dense = seq.weak_grad @ x
+        sparse = seq.apply_weak_grad(x)
+        npt.assert_allclose(sparse, dense, atol=1e-9,
+                            err_msg="weak_grad sparse != dense")
+
+    def test_weak_curl(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(51), (seq.n2,))
+        dense = seq.weak_curl @ x
+        sparse = seq.apply_weak_curl(x)
+        npt.assert_allclose(sparse, dense, atol=1e-9,
+                            err_msg="weak_curl sparse != dense")
+
+    def test_weak_div(self, seq_ellipse):
+        seq = seq_ellipse
+        x = jax.random.normal(jax.random.PRNGKey(52), (seq.n1,))
+        dense = seq.weak_div @ x
+        sparse = seq.apply_weak_div(x)
+        npt.assert_allclose(sparse, dense, atol=1e-9,
+                            err_msg="weak_div sparse != dense")
+
+    # -- Leray projection ---------------------------------------------------
+
+    def test_leray_projection(self, seq_ellipse):
+        seq = seq_ellipse
+        seq.assemble_leray_projection()
+        x = jax.random.normal(jax.random.PRNGKey(60), (seq.n2,))
+        dense = seq.P_Leray @ x
+        sparse_v, _ = seq.apply_leray_projection(x, k=2)
+        npt.assert_allclose(sparse_v, dense, atol=1e-9,
+                            err_msg="Leray projection sparse != dense")

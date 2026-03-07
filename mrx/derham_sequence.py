@@ -5,15 +5,23 @@ import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 from jax.scipy.sparse.linalg import cg
 
-from mrx import MAP_BATCH_SIZE
+import mrx
 from mrx.boundary import BoundaryOperator
 from mrx.differential_forms import DifferentialForm
 from mrx.nonlinearities import CrossProductProjection
 from mrx.polar import ExtractionOperator, get_xi
 from mrx.projectors import Projector
 from mrx.quadrature import QuadratureRule
-from mrx.utils import (assemble, assemble_sparse, extract_diag_vector, inv33,
-                       jacobian_determinant, solve_singular_cg, square_bcoo)
+from mrx.utils import (
+    assemble,
+    assemble_sparse,
+    build_neighbors,
+    extract_diag_vector,
+    inv33,
+    jacobian_determinant,
+    solve_singular_cg,
+    square_bcoo,
+)
 
 
 class DeRhamSequence():
@@ -87,53 +95,53 @@ class DeRhamSequence():
             return jax.jacfwd(self.map)(x).T @ jax.jacfwd(self.map)(x)
 
         self.metric_jkl = jax.lax.map(
-            G, self.quad.x, batch_size=MAP_BATCH_SIZE)
+            G, self.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
         self.metric_inv_jkl = jax.lax.map(
-            inv33, self.metric_jkl, batch_size=MAP_BATCH_SIZE)
+            inv33, self.metric_jkl, batch_size=mrx.MAP_BATCH_SIZE_INNER)
         self.jacobian_j = jax.lax.map(jacobian_determinant(
-            self.map), self.quad.x, batch_size=MAP_BATCH_SIZE)
+            self.map), self.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
 
         if polar:
             xi = get_xi(ns[1])
-            if dirichlet:
-                self.e0, self.e1, self.e2, self.e3 = [
-                    ExtractionOperator(Λ, xi, True).assemble_sparse()
-                    for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
-                ]
-            else:
-                self.e0, self.e1, self.e2, self.e3 = [
-                    ExtractionOperator(Λ, xi, False).assemble_sparse()
-                    for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
-                ]
+            e0, e1, e2, e3 = [
+                ExtractionOperator(Λ, xi, dirichlet)
+                for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
+            ]
 
         else:
             # TODO: right now, we only support dirichlet BCs in r
             if dirichlet:
-                self.e0, self.e1, self.e2, self.e3 = [
-                    BoundaryOperator(
-                        Λ, ('dirichlet', 'none', 'none')).assemble_sparse()
-                    for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
-                ]
+                bcs = ('dirichlet', 'none', 'none')
             else:
-                self.e0, self.e1, self.e2, self.e3 = [
-                    BoundaryOperator(
-                        Λ, ('none', 'none', 'none')).assemble_sparse()
-                    for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
+                bcs = ('none', 'none', 'none')
+            e0, e1, e2, e3 = [
+                BoundaryOperator(
+                    Λ, bcs)
+                for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
                 ]
+        self.e0 = e0.assemble_sparse()
+        self.n0 = e0.n
+        self.n0_1, self.n0_2, self.n0_3 = e0.n, 0, 0
+        self.e1 = e1.assemble_sparse()
+        self.n1 = e1.n
+        self.n1_1, self.n1_2, self.n1_3 = e1.n1, e1.n2, e1.n2
+        self.e2 = e2.assemble_sparse()
+        self.n2 = e2.n
+        self.n2_1, self.n2_2, self.n2_3 = e2.n1, e2.n2, e2.n3
+        self.e3 = e3.assemble_sparse()
+        self.n3 = e3.n
+        self.n3_1, self.n3_2, self.n3_3 = e3.n1, e3.n2, e3.n3
 
         self.P0, self.P1, self.P2, self.P3 = [
             Projector(self, k) for k in range(4)
         ]
 
-        self.n0 = self.e0.shape[0]
-        self.n1 = self.e1.shape[0]
-        self.n2 = self.e2.shape[0]
-        self.n3 = self.e3.shape[0]
-
     def evaluate_1d(self):
         """
         Evaluate the 1-dimensional basis functions at the quadrature points.
         """
+        # TODO: This should really be fine as double vmap since it is all 1D.
+        # Consider replacing with jax.lax.map if we ever run into memory issues.
         self.basis_r_jk = jax.vmap(jax.vmap(self.basis_0.Λ[0], (0, None)),
                                    (None, 0))(self.quad.x_x, self.basis_0.Λ[0].ns)
         self.basis_t_jk = jax.vmap(jax.vmap(self.basis_0.Λ[1], (0, None)),
@@ -395,10 +403,9 @@ class DeRhamSequence():
             M0_ij = ∫ Λ0_i Λ0_j det DF dx
         """
         W = (self.jacobian_j * self.quad.w)[:, None, None]  # shape (n_q, 1, 1)
-        nnz = (2*self.basis_0.pr + 1) * \
-            (2*self.basis_0.pt + 1) * (2*self.basis_0.pz + 1)
+        neighbors, nnz = build_neighbors(self.basis_0)
         self.m0_sp = assemble_sparse(self.eval_basis_0_ijk, self.eval_basis_0_ijk,
-                                     W, self.basis_0.n, self.basis_0.n, nnz)
+                                     W, self.basis_0.n, self.basis_0.n, nnz, neighbors)
         self.m0_sp_diaginv = 1 / (square_bcoo(
             self.e0) @ extract_diag_vector(self.m0_sp))
 
@@ -432,10 +439,9 @@ class DeRhamSequence():
         """
         W = self.metric_inv_jkl * \
             (self.jacobian_j * self.quad.w)[:, None, None]
-        nnz = 3 * (2*self.basis_1.pr + 1) * \
-            (2*self.basis_1.pt + 1) * (2*self.basis_1.pz + 1)
+        neighbors, nnz = build_neighbors(self.basis_1)
         self.m1_sp = assemble_sparse(self.eval_basis_1_ijk, self.eval_basis_1_ijk,
-                                     W, self.basis_1.n, self.basis_1.n, nnz)
+                                     W, self.basis_1.n, self.basis_1.n, nnz, neighbors)
         self.m1_sp_diaginv = 1 / (square_bcoo(
             self.e1) @ extract_diag_vector(self.m1_sp))
 
@@ -467,10 +473,9 @@ class DeRhamSequence():
             M2_ij = ∫ Λ2_i · G Λ2_j (det DF)⁻¹ dx
         """
         W = self.metric_jkl * (1/self.jacobian_j * self.quad.w)[:, None, None]
-        nnz = 3 * (2*self.basis_2.pr + 1) * \
-            (2*self.basis_2.pt + 1) * (2*self.basis_2.pz + 1)
+        neighbors, nnz = build_neighbors(self.basis_2)
         self.m2_sp = assemble_sparse(self.eval_basis_2_ijk, self.eval_basis_2_ijk,
-                                     W, self.basis_2.n, self.basis_2.n, nnz)
+                                     W, self.basis_2.n, self.basis_2.n, nnz, neighbors)
         self.m2_sp_diaginv = 1 / (square_bcoo(
             self.e2) @ extract_diag_vector(self.m2_sp))
 
@@ -502,10 +507,9 @@ class DeRhamSequence():
             M3_ij = ∫ Λ3_i Λ3_j (det DF)⁻¹ dx
         """
         W = (1/self.jacobian_j * self.quad.w)[:, None, None]
-        nnz = (2*self.basis_3.pr + 1) * \
-            (2*self.basis_3.pt + 1) * (2*self.basis_3.pz + 1)
+        neighbors, nnz = build_neighbors(self.basis_3)
         self.m3_sp = assemble_sparse(self.eval_basis_3_ijk, self.eval_basis_3_ijk,
-                                     W, self.basis_3.n, self.basis_3.n, nnz)
+                                     W, self.basis_3.n, self.basis_3.n, nnz, neighbors)
         self.m3_sp_diaginv = 1 / (square_bcoo(
             self.e3) @ extract_diag_vector(self.m3_sp))
 
@@ -545,10 +549,9 @@ class DeRhamSequence():
         """
         W = self.metric_inv_jkl * \
             (self.jacobian_j * self.quad.w)[:, None, None]
-        nnz = (2*self.basis_0.pr + 1) * \
-            (2*self.basis_0.pt + 1) * (2*self.basis_0.pz + 1)
+        neighbors, nnz = build_neighbors(self.basis_1, self.basis_0)
         self.d0_sp = assemble_sparse(self.eval_basis_1_ijk, self.eval_d_basis_0_ijk,
-                                     W, self.basis_1.n, self.basis_0.n, nnz)
+                                     W, self.basis_1.n, self.basis_0.n, nnz, neighbors)
 
     def apply_d0_sparse(self, v):
         """
@@ -583,10 +586,9 @@ class DeRhamSequence():
             D1_ij = ∫ Λ2_i · G curl Λ1_j (det DF)⁻¹ dx
         """
         W = self.metric_jkl * (1/self.jacobian_j * self.quad.w)[:, None, None]
-        nnz = 3 * (2*self.basis_1.pr + 1) * \
-            (2*self.basis_1.pt + 1) * (2*self.basis_1.pz + 1)
+        neighbors, nnz = build_neighbors(self.basis_2, self.basis_1)
         self.d1_sp = assemble_sparse(self.eval_basis_2_ijk, self.eval_d_basis_1_ijk,
-                                     W, self.basis_2.n, self.basis_1.n, nnz)
+                                     W, self.basis_2.n, self.basis_1.n, nnz, neighbors)
 
     def apply_d1_sparse(self, v):
         """
@@ -621,10 +623,9 @@ class DeRhamSequence():
             D2_ij = ∫ Λ3_i div Λ2_j (det DF)⁻¹ dx
         """
         W = (1/self.jacobian_j * self.quad.w)[:, None, None]
-        nnz = 3 * (2*self.basis_2.pr + 1) * \
-            (2*self.basis_2.pt + 1) * (2*self.basis_2.pz + 1)
+        neighbors, nnz = build_neighbors(self.basis_3, self.basis_2)
         self.d2_sp = assemble_sparse(self.eval_basis_3_ijk, self.eval_d_basis_2_ijk,
-                                     W, self.basis_3.n, self.basis_2.n, nnz)
+                                     W, self.basis_3.n, self.basis_2.n, nnz, neighbors)
 
     def apply_d2_sparse(self, v):
         """
@@ -659,10 +660,9 @@ class DeRhamSequence():
         """
         W = self.metric_inv_jkl * \
             (self.jacobian_j * self.quad.w)[:, None, None]
-        nnz = (2*self.basis_0.pr + 1) * \
-            (2*self.basis_0.pt + 1) * (2*self.basis_0.pz + 1)
+        neighbors, nnz = build_neighbors(self.basis_0)
         self.grad_grad_sp = assemble_sparse(self.eval_d_basis_0_ijk, self.eval_d_basis_0_ijk,
-                                            W, self.basis_0.n, self.basis_0.n, nnz)
+                                            W, self.basis_0.n, self.basis_0.n, nnz, neighbors)
 
         self.dd0_sp_diaginv = 1 / (square_bcoo(
             self.e0) @ extract_diag_vector(self.grad_grad_sp))
@@ -704,10 +704,9 @@ class DeRhamSequence():
             curl_curl_ij = ∫ curl Λ1_i · G curl Λ1_j (det DF)⁻¹ dx
         """
         W = self.metric_jkl * (1/self.jacobian_j * self.quad.w)[:, None, None]
-        nnz = 3 * (2*self.basis_1.pr + 1) * \
-            (2*self.basis_1.pt + 1) * (2*self.basis_1.pz + 1)
+        neighbors, nnz = build_neighbors(self.basis_1)
         self.curl_curl_sp = assemble_sparse(self.eval_d_basis_1_ijk, self.eval_d_basis_1_ijk,
-                                            W, self.basis_1.n, self.basis_1.n, nnz)
+                                            W, self.basis_1.n, self.basis_1.n, nnz, neighbors)
 
         diag = self.m0_sp_diaginv @ square_bcoo(self.e0)
         diag = square_bcoo(self.d0_sp) @ diag
@@ -772,10 +771,9 @@ class DeRhamSequence():
             div_div_ij = ∫ div Λ2_i div Λ2_j (det DF)⁻¹ dx
         """
         W = (1/self.jacobian_j * self.quad.w)[:, None, None]
-        nnz = 3 * (2*self.basis_2.pr + 1) * \
-            (2*self.basis_2.pt + 1) * (2*self.basis_2.pz + 1)
+        neighbors, nnz = build_neighbors(self.basis_2)
         self.div_div_sp = assemble_sparse(self.eval_d_basis_2_ijk, self.eval_d_basis_2_ijk,
-                                          W, self.basis_2.n, self.basis_2.n, nnz)
+                                          W, self.basis_2.n, self.basis_2.n, nnz, neighbors)
 
         diag = self.m1_sp_diaginv @ square_bcoo(self.e1)
         diag = square_bcoo(self.d1_sp) @ diag
@@ -807,11 +805,6 @@ class DeRhamSequence():
         m1_inv_curl_u = cg(self.apply_m1_sparse, curl_u, tol=self.tol,
                            M=self.apply_m1_precond, maxiter=self.maxiter)[0]
         return self.apply_div_div_sparse(u) + self.apply_d1_sparse(m1_inv_curl_u)
-
-        # u, s = jnp.split(v, [self.e2.shape[0]])
-        # term1 = self.apply_div_div_sparse(u) + self.apply_d1_sparse(s)
-        # term2 = self.apply_d1t_sparse(u) - self.apply_m1_sparse(s)
-        # return jnp.concatenate([term1, term2])
 
     def apply_dd2_precond(self, v):
         """
@@ -887,10 +880,9 @@ class DeRhamSequence():
             M12_ij = ∫ Λ1_i · Λ2_j dx
         """
         W = self.quad.w[:, None, None] * jnp.eye(3)
-        nnz = 3 * (2*self.basis_2.pr + 1) * \
-            (2*self.basis_2.pt + 1) * (2*self.basis_2.pz + 1)
+        neighbors, nnz = build_neighbors(self.basis_1, self.basis_2)
         self.m12_sp = assemble_sparse(self.eval_basis_1_ijk, self.eval_basis_2_ijk,
-                                      W, self.basis_1.n, self.basis_2.n, nnz)
+                                      W, self.basis_1.n, self.basis_2.n, nnz, neighbors)
 
     def apply_m12_sparse(self, v):
         """
@@ -918,10 +910,9 @@ class DeRhamSequence():
             M03_ij = ∫ Λ0_i · Λ3_j dx
         """
         W = self.quad.w[:, None, None]
-        nnz = (2*self.basis_3.pr + 1) * \
-            (2*self.basis_3.pt + 1) * (2*self.basis_3.pz + 1)
+        neighbors, nnz = build_neighbors(self.basis_0, self.basis_3)
         self.m03_sp = assemble_sparse(self.eval_basis_0_ijk, self.eval_basis_3_ijk,
-                                      W, self.basis_0.n, self.basis_3.n, nnz)
+                                      W, self.basis_0.n, self.basis_3.n, nnz, neighbors)
 
     def apply_m03_sparse(self, v):
         """
@@ -1004,14 +995,14 @@ class DeRhamSequence():
         """
         if k == 2:
             div_v = self.apply_d2_sparse(v)
-            p = solve_singular_cg(self.apply_dd3_sparse, self.apply_m3_sparse, div_v, tol=self.tol,
-                                  precond_matvec=self.apply_dd3_precond, vs=self.null_3, max_iters=self.maxiter)[0]
+            p = solve_singular_cg(self.apply_dd3_sparse, div_v, mass_matvec=self.apply_m3_sparse, tol=self.tol,
+                                  precond_matvec=self.apply_dd3_precond, vs=self.null_3, maxiter=self.maxiter)[0]
             σ = -self.apply_weak_grad(p)
             return v - σ, p
         elif k == 1:
             div_v = -self.apply_d0t_sparse(v)
-            p = solve_singular_cg(self.apply_dd0_sparse, self.apply_m0_sparse, div_v, tol=self.tol,
-                                  precond_matvec=self.apply_dd0_precond, vs=self.null_0, max_iters=self.maxiter)[0]
+            p = solve_singular_cg(self.apply_dd0_sparse, div_v, mass_matvec=self.apply_m0_sparse, tol=self.tol,
+                                  precond_matvec=self.apply_dd0_precond, vs=self.null_0, maxiter=self.maxiter)[0]
             σ = -self.apply_strong_grad(p)
             return v - σ, p
 

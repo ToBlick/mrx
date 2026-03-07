@@ -14,6 +14,8 @@ import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
+import mrx
+
 
 # Boundary extraction operator for cube-like domains
 class BoundaryOperator:
@@ -233,15 +235,17 @@ class BoundaryOperator:
         Returns:
             jnp.ndarray: The assembled operator matrix
         """
-        return jax.vmap(jax.vmap(self._element, (None, 0)), (0, None))(
-            jnp.arange(self.n), jnp.arange(self.Lambda.n)
+        return mrx.double_map(
+            self._element,
+            jnp.arange(self.n),
+            jnp.arange(self.Lambda.n),
         )
 
     def assemble_sparse(self):
         """Assemble the operator as a sparse BCOO matrix.
 
-        Scans over rows sequentially, computing one row at a time via
-        vmap over columns. Non-zero indices and values are collected
+        Maps over rows sequentially, computing one row at a time with
+        batched map over columns. Non-zero indices and values are collected
         and assembled into a BCOO sparse matrix.
 
         Returns:
@@ -255,7 +259,7 @@ class BoundaryOperator:
         max_nnz = 1
 
         def process_row(row_idx):
-            row = jax.vmap(self._element, (None, 0))(row_idx, col_indices)
+            row = jax.lax.map(lambda col_idx: self._element(row_idx, col_idx), col_indices, batch_size=mrx.MAP_BATCH_SIZE_INNER)
             nz_mask = row != 0
             order = jnp.argsort(~nz_mask, stable=True)
             vals = row[order][:max_nnz]
@@ -266,12 +270,8 @@ class BoundaryOperator:
             cols = jnp.where(valid, cols, 0)
             return vals, cols
 
-        def scan_fn(carry, row_idx):
-            vals, cols = process_row(row_idx)
-            return carry, (vals, cols)
-
-        _, (all_vals, all_cols) = jax.lax.scan(
-            scan_fn, None, jnp.arange(nrows)
+        all_vals, all_cols = jax.lax.map(
+            process_row, jnp.arange(nrows), batch_size=mrx.MAP_BATCH_SIZE_OUTER
         )  # (nrows, max_nnz)
 
         row_indices = jnp.broadcast_to(

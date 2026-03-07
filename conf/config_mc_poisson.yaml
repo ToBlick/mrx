@@ -1,0 +1,19 @@
+defaults:
+  - _mc_poisson_schema
+  - _self_
+  - override hydra/launcher: submitit_slurm
+
+hydra:
+  run:
+    dir: multirun_dice/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun_dice/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: n${n}_p${p}
+  launcher:
+    timeout_min: 60
+    mem_gb: 40
+    gpus_per_node: 1
+    partition: gpu-h100
+    account: extremedata
+    setup:
+      - "source /scratch/tblickhan/mrx/.venv/bin/activate"

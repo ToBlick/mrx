@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Callable, Literal
 import jax
 from jax import Array
 
+import mrx
 from mrx.utils import integrate_against, inv33
 
 if TYPE_CHECKING:
@@ -92,7 +93,7 @@ class Projector:
             array: Projection coefficients for the 0-form
         """
         # Evaluate the given function at quadrature points
-        f_jk: Array = jax.vmap(f)(self.Seq.quad.x)  # n_q x 1
+        f_jk: Array = jax.lax.map(f, self.Seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x 1
         w_jk: Array = f_jk * (self.Seq.quad.w * self.Seq.jacobian_j)[:, None]
         return integrate_against(self.Seq.eval_basis_0_ijk, w_jk, self.Seq.basis_0.n)
 
@@ -112,7 +113,7 @@ class Projector:
             return inv33(DF(x)) @ v(x)
 
         # Evaluate the given function at quadrature points
-        A_jk: Array = jax.vmap(_v)(self.Seq.quad.x)  # n_q x d
+        A_jk: Array = jax.lax.map(_v, self.Seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x d
         w_jk: Array = A_jk * (self.Seq.quad.w * self.Seq.jacobian_j)[:, None]
 
         return integrate_against(self.Seq.eval_basis_1_ijk, w_jk, self.Seq.basis_1.n)
@@ -133,7 +134,7 @@ class Projector:
             return DF(x).T @ v(x)
 
         # Evaluate the given function at quadrature points
-        B_jk: Array = jax.vmap(_v)(self.Seq.quad.x)  # n_q x d
+        B_jk: Array = jax.lax.map(_v, self.Seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x d
 
         w_jk: Array = B_jk * (self.Seq.quad.w)[:, None]
 
@@ -150,7 +151,6 @@ class Projector:
             array: Projection coefficients for the 3-form
         """
         # Evaluate the given function at quadrature points
-        f_jk: Array = jax.vmap(f)(self.Seq.quad.x)  # n_q x 1
+        f_jk: Array = jax.lax.map(f, self.Seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x 1
         w_jk: Array = f_jk * (self.Seq.quad.w)[:, None]
-        return integrate_against(self.Seq.eval_basis_3_ijk, w_jk, self.Seq.basis_3.n)
         return integrate_against(self.Seq.eval_basis_3_ijk, w_jk, self.Seq.basis_3.n)

@@ -32,10 +32,10 @@ ns = (8, 16, 8)
 ps = (6, 6, 6)
 quad_order = 5
 
-map, resid = interpolate_map_from_points(
+map, R_dof, Z_dof, resid_R, resid_Z = interpolate_map_from_points(
     pts, R, Z, nfp, ns=ns_map, ps=ps_map, quad_order=quad_order_map)
 map = jax.jit(map)
-print(f"Map interpolation residuals: {resid[0]:.2e}, {resid[1]:.2e}")
+print(f"Map interpolation residuals: R={resid_R:.2e}, Z={resid_Z:.2e}")
 seq = DeRhamSequence(ns, ps, quad_order, ("clamped", "periodic", "periodic"),
                      map, polar=True, dirichlet=True)
 seq.evaluate_1d()

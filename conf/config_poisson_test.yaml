@@ -1,0 +1,14 @@
+defaults:
+  - _poisson_test_schema   # structured config (PoissonTestConfig dataclass)
+  - _self_
+  - override hydra/launcher: submitit_slurm
+
+hydra:
+  launcher:
+    timeout_min: 240
+    mem_gb: 80
+    gpus_per_node: 1
+    partition: gpu-h100
+    account: extremedata
+    setup:
+      - "source /scratch/tblickhan/mrx/.venv/bin/activate"
