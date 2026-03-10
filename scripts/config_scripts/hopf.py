@@ -101,14 +101,14 @@ def run(CONFIG):
 
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=False)
     Seq.evaluate_1d()
-    Seq.assemble_M0()   # Assemble 0-form mass matrix
-    Seq.assemble_M1()   # Assemble 1-form mass matrix
-    Seq.assemble_M2()   # Assemble 2-form mass matrix
-    Seq.assemble_M3()   # Assemble 3-form mass matrix
-    M0 = Seq.M0
-    M1 = Seq.M1
-    M2 = Seq.M2
-    M3 = Seq.M3
+    Seq.assemble_m0()   # Assemble 0-form mass matrix
+    Seq.assemble_m1()   # Assemble 1-form mass matrix
+    Seq.assemble_m2()   # Assemble 2-form mass matrix
+    Seq.assemble_m3()   # Assemble 3-form mass matrix
+    M0 = Seq.m0
+    M1 = Seq.m1
+    M2 = Seq.m2
+    M3 = Seq.m3
 
     ###
     # Operators
@@ -128,14 +128,13 @@ def run(CONFIG):
     weak_curl = jnp.linalg.solve(M1, Seq.assemble_curl_0().T)
     weak_dvg = -jnp.linalg.solve(M0, Seq.assemble_grad_0().T)
 
-
     laplace_0 = Seq.dd0                         # dim ker = 0
     laplace_1 = Seq.dd1 - M1 @ grad @ weak_dvg  # dim ker = 0 (no voids)
     laplace_2 = M2 @ curl @ weak_curl + \
         Seq.dd2  # dim ker = 1 (one tunnel)
     laplace_3 = - M3 @ dvg @ weak_grad  # dim ker = 1 (constants)
 
-    M12 = Seq.M12
+    M12 = Seq.m12
     M03 = Seq.M03
 
     def B_xyz(p):
@@ -158,15 +157,15 @@ def run(CONFIG):
         ])
 
     P_JxH = CrossProductProjection(
-        Seq.Lambda_2, Seq.Lambda_1, Seq.Lambda_1, Seq.Q, Seq.F,
+        Seq.basis_2, Seq.basis_1, Seq.basis_1, Seq.quad, Seq.map,
         En=Seq.E2_0, Em=Seq.E1_0, Ek=Seq.E1_0,
         Λn_ijk=Seq.Λ2_ijk, Λm_ijk=Seq.Λ1_ijk, Λk_ijk=Seq.Λ1_ijk,
-        J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
+        J_j=Seq.jacobian_j, G_jkl=Seq.metric_jkl, G_inv_jkl=Seq.metric_inv_jkl)
     P_uxH = CrossProductProjection(
-        Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_1, Seq.Q, Seq.F,
+        Seq.basis_1, Seq.basis_2, Seq.basis_1, Seq.quad, Seq.map,
         En=Seq.E1_0, Em=Seq.E2_0, Ek=Seq.E1_0,
         Λn_ijk=Seq.Λ1_ijk, Λm_ijk=Seq.Λ2_ijk, Λk_ijk=Seq.Λ1_ijk,
-        J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
+        J_j=Seq.jacobian_j, G_jkl=Seq.metric_jkl, G_inv_jkl=Seq.metric_inv_jkl)
 
     P_Leray = jnp.eye(M2.shape[0]) + \
         weak_grad @ jnp.linalg.pinv(laplace_3) @ M3 @ dvg
@@ -262,9 +261,9 @@ def run(CONFIG):
         p_hat = -jnp.linalg.solve(laplace_0, M03 @ dvg @ JxH_hat)
     else:
         # Compute p(x) = J · B / |B|²
-        B_h = DiscreteFunction(B_hat, Seq.Lambda_2, Seq.E2_0.matrix())
+        B_h = DiscreteFunction(B_hat, Seq.basis_2, Seq.E2_0.matrix())
         J_hat = weak_curl @ B_hat
-        J_h = DiscreteFunction(J_hat, Seq.Lambda_1, Seq.E1_0.matrix())
+        J_h = DiscreteFunction(J_hat, Seq.basis_1, Seq.E1_0.matrix())
 
         @jax.jit
         def lmbda(x):

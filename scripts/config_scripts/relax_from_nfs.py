@@ -24,11 +24,18 @@ import jax
 import jax.numpy as jnp
 from omegaconf import DictConfig, OmegaConf
 
+import mrx.config  # noqa: F401  —  register Hydra structured configs
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.io import interpolate_B, interpolate_map_from_points, unique_id
-from mrx.relaxation import (DescentMethod, IntegrationScheme, MRXDiagnostics,
-                            TimeStepChoice, TimeStepper, relaxation_loop)
+from mrx.relaxation import (
+    DescentMethod,
+    IntegrationScheme,
+    MRXDiagnostics,
+    TimeStepChoice,
+    TimeStepper,
+    relaxation_loop,
+)
 from mrx.utils import default_trace_dict
 
 jax.config.update("jax_enable_x64", True)
@@ -121,7 +128,7 @@ def create_hdf5_callback(seq, diagnostics, nfp, cfg: DictConfig, outdir: Path):
     return hdf5_callback
 
 
-@hydra.main(version_base=None, config_path="../../conf", config_name="config_relax_from_nfs")
+@hydra.main(version_base=None, config_name="config_relax_from_nfs")
 def main(cfg: DictConfig) -> float:
     """
     Main entry point for relaxation with Hydra configuration.
@@ -170,13 +177,13 @@ def main(cfg: DictConfig) -> float:
     nfp = cfg.nfp
 
     print("Interpolating map...")
-    map_func, R_dof, Z_dof, map_resid = interpolate_map_from_points(
+    map_func, R_dof, Z_dof, resid_R, resid_Z = interpolate_map_from_points(
         pts, R, Z, nfp, ns=ns_map, ps=ps_map,
         quad_order=cfg.map.quad_order, flip_zeta=cfg.map.flip_zeta
     )
     map_func = jax.jit(map_func)
     print(
-        f"Map interpolation residuals: {map_resid[0]:.2e}, {map_resid[1]:.2e}")
+        f"Map interpolation residuals: R={resid_R:.2e}, Z={resid_Z:.2e}")
 
     # Setup FEM spaces
     ns = (cfg.fem.ns_r, cfg.fem.ns_theta, cfg.fem.ns_zeta)
@@ -192,7 +199,7 @@ def main(cfg: DictConfig) -> float:
         map_func, polar=True, dirichlet=True
     )
 
-    assert jnp.min(seq.J_j) > 0, "Negative Jacobian!"
+    assert jnp.min(seq.jacobian_j) > 0, "Negative Jacobian!"
 
     seq.evaluate_1d()
     seq.assemble_all()
@@ -203,7 +210,7 @@ def main(cfg: DictConfig) -> float:
     trace_dict["setup_done_time"] = setup_time
     print(f"Setup completed in {setup_time - start_time:.2f}s")
     print(
-        f"Minimum Jacobian: {jnp.min(seq.J_j):.2e}, Maximum Jacobian: {jnp.max(seq.J_j):.2e}")
+        f"Minimum Jacobian: {jnp.min(seq.jacobian_j):.2e}, Maximum Jacobian: {jnp.max(seq.jacobian_j):.2e}")
 
     # B-field interpolation with train/validation split
     val_stride = cfg.interpolation.val_stride
@@ -226,7 +233,7 @@ def main(cfg: DictConfig) -> float:
 
     # Validate interpolation
     B_h = jax.jit(Pushforward(DiscreteFunction(
-        B_dof_0, seq.Lambda_2, seq.E2), seq.F, 2))
+        B_dof_0, seq.basis_2, seq.e2), seq.map, 2))
     B_val_interp = jax.vmap(B_h)(pts[val_mask])
     val_error = jnp.linalg.norm(B_vals[val_mask] - B_val_interp, axis=1)
     val_rel_error = val_error / jnp.linalg.norm(B_vals[val_mask], axis=1)
@@ -236,12 +243,12 @@ def main(cfg: DictConfig) -> float:
         f"B-field validation error: mean={mean_val_error:.2e}, max={max_val_error:.2e}")
 
     div_B_initial = float(((seq.strong_div @ B_dof_0) @
-                          seq.M3 @ (seq.strong_div @ B_dof_0))**0.5)
+                          seq.m3 @ (seq.strong_div @ B_dof_0))**0.5)
     print(f"div B after interpolation: {div_B_initial:.2e}")
 
     # Project to divergence-free and normalize
     B_dof_0 = seq.P_Leray @ B_dof_0
-    B_dof_0 /= (B_dof_0 @ seq.M2 @ B_dof_0)**0.5
+    B_dof_0 /= (B_dof_0 @ seq.m2 @ B_dof_0)**0.5
     B_dof = B_dof_0.copy()
 
     # Setup relaxation

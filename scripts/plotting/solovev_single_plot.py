@@ -60,7 +60,7 @@ types = ("clamped", "periodic",
 print("Setting up FEM spaces...")
 Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
-assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
+assert jnp.min(Seq.jacobian_j) > 0, "Mapping is singular!"
 
 # %%
 plt.rcParams['font.family'] = 'serif'
@@ -174,7 +174,7 @@ p_hat = p_fields[-1]
 # %%
 # F = helical_map(epsilon=0.33, h=0.2, n_turns=3, kappa=1.0, alpha=0.0)
 # %%
-p_h = Pushforward(DiscreteFunction(p_hat, Seq.Lambda_0, Seq.E0), F, 0)
+p_h = Pushforward(DiscreteFunction(p_hat, Seq.basis_0, Seq.e0), F, 0)
 # %%
 cuts = jnp.linspace(0, 1, 9, endpoint=False)
 grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
@@ -192,7 +192,7 @@ grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
 plot_crossections_separate(p_h, grids_pol, cuts, plot_centerline=True)
 # %%
 Seq.evaluate_1d()
-p_avg = p_hat @ Seq.P0(lambda x: jnp.ones(1)) / (Seq.J_j @ Seq.Q.w)
+p_avg = p_hat @ Seq.p0(lambda x: jnp.ones(1)) / (Seq.jacobian_j @ Seq.quad.w)
 print(f"p_avg = {p_avg:.3e}")
 
 # %%

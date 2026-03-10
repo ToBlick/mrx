@@ -63,9 +63,9 @@ def test_zpinch_pressure_convergence():
     Seq.assemble_leray_projection()
 
     # --- compute pressure approximation ---
-    B_hat = jnp.linalg.solve(Seq.M2, Seq.P2(B0))
+    B_hat = jnp.linalg.solve(Seq.m2, Seq.p2(B0))
     p_hat = MRXDiagnostics(Seq).pressure(B_hat)
-    p_h = DiscreteFunction(p_hat, Seq.Lambda_0, Seq.E0)
+    p_h = DiscreteFunction(p_hat, Seq.basis_0, Seq.e0)
 
     # --- error evaluation ---
     def diff_at_x(x):
@@ -74,13 +74,13 @@ def test_zpinch_pressure_convergence():
     def body_fun(carry, x):
         return None, diff_at_x(x)
 
-    _, df = jax.lax.scan(body_fun, None, Seq.Q.x)
+    _, df = jax.lax.scan(body_fun, None, Seq.quad.x)
 
-    L2_dp = jnp.einsum('ik,ik,i,i->', df, df, Seq.J_j, Seq.Q.w)**0.5
+    L2_dp = jnp.einsum('ik,ik,i,i->', df, df, Seq.jacobian_j, Seq.quad.w)**0.5
     L2_p = jnp.einsum('ik,ik,i,i->',
-                      jax.vmap(p_exact)(Seq.Q.x),
-                      jax.vmap(p_exact)(Seq.Q.x),
-                      Seq.J_j, Seq.Q.w)**0.5
+                      jax.vmap(p_exact)(Seq.quad.x),
+                      jax.vmap(p_exact)(Seq.quad.x),
+                      Seq.jacobian_j, Seq.quad.w)**0.5
 
     error = L2_dp / L2_p
 

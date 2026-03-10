@@ -78,18 +78,18 @@ def get_err(n, p):
 
     # Set up operators
     D = Seq.assemble_dvg()
-    M2 = Seq.assemble_M2()
+    M2 = Seq.assemble_m2()
 
     # Solve the system
     K = D @ jnp.linalg.solve(M2, D.T)
 
     # P3 = Projector(Λ3, Q)
-    u_hat = jnp.linalg.solve(K, Seq.P3(f))
-    u_h = DiscreteFunction(u_hat, Seq.Lambda_3)
+    u_hat = jnp.linalg.solve(K, Seq.p3(f))
+    u_h = DiscreteFunction(u_hat, Seq.basis_3)
 
     # Compute error using Λ3 quadrature
     def err(x): return u(x) - u_h(x)
-    return (l2_product(err, err, Seq.Q) / l2_product(u, u, Seq.Q))**0.5
+    return (l2_product(err, err, Seq.quad) / l2_product(u, u, Seq.quad))**0.5
 
 
 def run_convergence_analysis():

@@ -96,9 +96,9 @@ def compute_eigenvalues(ns, ps, a, h):
     derham.evaluate_1d()
 
     # Assemble mass matrices
-    derham.assemble_M0()  # 0-forms
-    derham.assemble_M1()  # 1-forms
-    derham.assemble_M2()  # 2-forms
+    derham.assemble_m0()  # 0-forms
+    derham.assemble_m1()  # 1-forms
+    derham.assemble_m2()  # 2-forms
 
     # Assemble derivative operators
     derham.assemble_d0()  # Gradient
@@ -107,10 +107,10 @@ def compute_eigenvalues(ns, ps, a, h):
     derham.assemble_dd1()  # Assemble Curl-Curl
 
     # Get mass matrix for 1-forms
-    M1 = derham.M1
+    M1 = derham.m1
 
     # Gradient matrix
-    D0 = derham.D0
+    D0 = derham.d0
     O10 = jnp.zeros_like(D0)
     O0 = jnp.zeros((D0.shape[1], D0.shape[1]))
 

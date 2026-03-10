@@ -5,7 +5,9 @@ import jax.numpy as jnp
 import optimistix
 from jax.numpy import cos, pi, sin
 
+import mrx
 from mrx.differential_forms import DifferentialForm, DiscreteFunction
+from mrx.io import interpolate_scalar_function
 from mrx.quadrature import QuadratureRule
 
 
@@ -120,7 +122,7 @@ def helical_map(epsilon: float = 0.33, h: float = 0.25, kappa: float = 1.2, alph
     return F
 
 
-def rotating_ellipse_map(eps: float = 0.33, kappa: float = 1.2, nfp: int = 3) -> Callable:
+def rotating_ellipse_map(eps: float = 0.33, kappa: float = 1.2, R0: float = 1.0, nfp: int = 3) -> Callable:
     """
     Rotating ellipse mapping function.
 
@@ -130,6 +132,8 @@ def rotating_ellipse_map(eps: float = 0.33, kappa: float = 1.2, nfp: int = 3) ->
         Eccentricity of the ellipse.
     kappa : float, default=1.2
         Aspect ratio of the ellipse.
+    R0 : float, default=1.0
+        Major radius of the ellipse.
     nfp : int, default=3
         Number of field periods of the ellipse.
 
@@ -153,7 +157,7 @@ def rotating_ellipse_map(eps: float = 0.33, kappa: float = 1.2, nfp: int = 3) ->
         if nfp > 0:
             ζ /= nfp  # only model one field period
 
-        R = 1 + eps * nu(ζ) * r * cos(2 * pi * θ)
+        R = R0 + eps * nu(ζ) * r * cos(2 * pi * θ)
         if nfp > 0:
             Z = eps * r * nu(ζ + 0.5 / nfp) * sin(2 * pi * θ)
         else:
@@ -261,68 +265,9 @@ def cylinder_map(a: float = 1.0, h: float = 1.0) -> Callable:
     return F
 
 
-def drumshape_map(a_h: Callable) -> Callable:
-    """
-    Drumshape mapping function:
-    F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
-    and (r, χ, z) are the logical coordinates, with χ the toroidal angle.
-    Formula is:
-    F(r, χ, z) = (a_h(χ) r cos(2πχ), -z, a_h(χ) r sin(2πχ))
-    where a_h(χ) is the radius as a function of the toroidal angle.
-
-    Parameters
-    ----------
-    a_h : Callable
-        Radius as a function of the toroidal angle.
-
-    Returns
-    -------
-    F : Callable
-        Drumshape mapping function.
-    """
-    π = jnp.pi
-
-    def F(x):
-        r, χ, z = x
-        return jnp.array([a_h(χ) * r * jnp.cos(2 * π * χ),
-                          -z,
-                          a_h(χ) * r * jnp.sin(2 * π * χ)])
-
-    return F
-
-
-def drumshape_map_modified(a: Callable, R0: float = 1.0) -> Callable:
-    """
-    Modified drumshape mapping function:
-    F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
-    and (r, χ, z) are the logical coordinates, with χ the toroidal angle.
-    Formula is:
-    F(r, χ, z) = (a(χ) r cos(2πχ), -z, a(χ) r sin(2πχ))
-    where a(χ) is the radius as a function of the toroidal angle.
-    """
-    π = jnp.pi
-
-    def _R(r, χ):
-        return jnp.ones(1) * (R0 + a(χ) * r * jnp.cos(2 * π * χ))
-
-    def _Z(r, χ):
-        return jnp.ones(1) * a(χ) * r * jnp.sin(2 * π * χ)
-
-    def F(x):
-        r, χ, z = x
-        return jnp.ravel(jnp.array(
-            [_R(r, χ) * jnp.cos(2 * π * z),
-             -_R(r, χ) * jnp.sin(2 * π * z),
-             _Z(r, χ)]))
-
-    return F
-
-# %%
-
-
 def stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: int = 3, flip_zeta: bool = False) -> Callable:
     """
-    A basic GVEC stellarator map:
+    A basic stellarator map:
     F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
     and (r, χ, z) are the logical coordinates, with χ the toroidal angle.
 
@@ -350,9 +295,50 @@ def stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: int = 3
     return F
 
 # Alias for now
-gvec_stellarator_map = stellarator_map
 
-# %%
+def interpolate_map(x, R_vals, Z_vals, nfp, seq, flip_zeta=False, rcond=None):
+    """
+    Interpolate a stellarator map from point evaluations of R(x) and Z(x).
+
+    Calls :func:`interpolate_scalar_function` twice (once for *R*, once
+    for *Z*) sharing the same DeRham sequence, then wraps the result in a
+    :func:`stellarator_map`.
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+        Points at which R, Z are evaluated, shape ``(n_pts, 3)``.
+    R_vals : jnp.ndarray
+        R evaluations at points, shape ``(n_pts,)``.
+    Z_vals : jnp.ndarray
+        Z evaluations at points, shape ``(n_pts,)``.
+    nfp : int
+        Number of field periods.
+    seq : DeRhamSequence
+        DeRham sequence to use for interpolation.
+    flip_zeta : bool
+        Whether to flip the toroidal angle in the stellarator map.
+
+    Returns
+    -------
+    Phi : callable
+        Stellarator map built from the interpolated R, Z.
+    R_dof : jnp.ndarray
+        Coefficients for R.
+    Z_dof : jnp.ndarray
+        Coefficients for Z.
+    resid_R : jnp.ndarray
+        Least-squares residual for R.
+    resid_Z : jnp.ndarray
+        Least-squares residual for Z.
+    """
+    R_interpolation = interpolate_scalar_function(x, R_vals, seq, rcond=rcond)
+    Z_interpolation = interpolate_scalar_function(x, Z_vals, seq, rcond=rcond)
+    
+    R_h = DiscreteFunction(R_interpolation["dof"], seq.basis_0, seq.e0)
+    Z_h = DiscreteFunction(Z_interpolation["dof"], seq.basis_0, seq.e0)
+    
+    return stellarator_map(R_h, Z_h, nfp=nfp, flip_zeta=flip_zeta)
 
 
 def approx_inverse_map(y: jnp.ndarray, eps: float, R0: float = 1.0) -> jnp.ndarray:
@@ -420,144 +406,6 @@ def invert_map(
     init_state = (x0, jnp.inf, 0)
     x_final, err_final, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
     return x_final
-
-
-def lcfs_fit(
-        n_map: int, p_map: int, q_map: int, R0: float = 1.0,
-        k0: float = 1.0, q0: float = 1.0, aR: float = 0.5,
-        atol: float = 1e-6, rtol: float = 1e-6, maxiter: int = 10000) -> jnp.ndarray:
-    """
-    Fit the last closed flux surface (LCFS) shape to the data using a least squares approach solved with Levenberg-Marquardt.
-
-    Flux function: ψ(R, Z) =  (¼ k0² (R² - R0²)² + R²Z² ) / (2 R0² k0 q0)
-    where R0 is the major radius, k0 is the toroidal magnetic field strength, 
-    q0 is the safety factor at the LCFS, and aR is the radial position of the LCFS.
-
-    NOTE: Alan: I am not sure this function is being used in the codebase right now 11/06/2025
-
-    Parameters
-    ----------
-    n_map : int
-        Number of basis functions in the mapping.
-    p_map : int
-        Polynomial degree in the mapping.
-    q_map : int
-        Quadrature order in the mapping.
-    R0 : float, default=1.0
-        Major radius of the LCFS.
-    k0 : float, default=1.0
-        Toroidal magnetic field strength.
-    q0 : float, default=1.0
-        Safety factor at the LCFS.
-    aR : float, default=0.5
-        Radial position of the LCFS.
-    atol : float, default=1e-6
-        Absolute tolerance for the fit.
-    rtol : float, default=1e-6
-        Relative tolerance for the fit.
-    maxiter : int, default=100_000
-        Maximum number of iterations for the fit.
-
-    Returns
-    -------
-    a_hat : jnp.ndarray
-        Fitted LCFS shape.
-    """
-    def psi(R, Z):
-        def _psi(R, Z):
-            return (k0**2/4*(R**2 - R0**2)**2 + R**2*Z**2) / (2 * R0**2 * k0 * q0)
-        return _psi(R, Z) - _psi(R0 + aR, 0)
-
-    π = jnp.pi
-    Λ_map = DifferentialForm(0, (n_map, 1, 1), (p_map, 0, 0),
-                             ("periodic", "constant", "constant"))
-    Q_map = QuadratureRule(Λ_map, q_map)
-
-    def loss(a_hat, args):
-        """
-        Loss function to minimize for the LCFS fit.
-
-        Parameters
-        ----------
-        a_hat : jnp.ndarray
-            Fitted LCFS shape.
-        args : Any
-            Additional arguments (not used, but required by optimistix API).
-
-        Returns
-        -------
-        loss : float
-            Loss value.
-        """
-        a_h = DiscreteFunction(a_hat, Λ_map)
-
-        def _psi(x):
-            a = a_h(x)[0]
-            χ = x[0]
-            R = R0 + a * jnp.cos(2 * π * χ)
-            Z = a * jnp.sin(2 * π * χ)
-            return psi(R, Z)**2
-        return Q_map.w @ jax.vmap(_psi)(Q_map.x)
-
-    solver = optimistix.LevenbergMarquardt(rtol=rtol, atol=atol)
-    sol = optimistix.least_squares(fn=loss,
-                                   y0=jnp.ones(n_map) * aR,
-                                   solver=solver,
-                                   max_steps=maxiter
-                                   )
-    a_hat = sol.value
-    return a_hat
-
-
-def get_lcfs_F(
-        n_map: int, p_map: int, q_map: int, R0: float = 1.0, k0: float = 1.0,
-        q0: float = 1.0, aR: float = 0.5, atol: float = 1e-6,
-        rtol: float = 1e-6, maxiter: int = 20_000) -> Callable:
-    """
-    Get the LCFS mapping function:
-    F(r, χ, z) = (R(r, χ), Z(r, χ), z) where R(r, χ) and Z(r, χ) are the 
-    cylindrical radial and Z coordinates, respectively, and (r, χ, z) are the 
-    logical coordinates.
-
-    Parameters
-    ----------
-    n_map : int
-        Number of basis functions in the mapping.
-    p_map : int
-        Polynomial degree in the mapping.
-    q_map : int
-        Quadrature order in the mapping.
-    R0 : float, default=1.0
-        Major radius of the LCFS.
-    k0 : float, default=1.0
-        Toroidal magnetic field strength.
-    q0 : float, default=1.0
-    aR : float, default=0.5
-        Radial position of the LCFS.
-    atol : float, default=1e-6
-        Absolute tolerance for the fit.
-    rtol : float, default=1e-6
-        Relative tolerance for the fit.
-    maxiter : int, default=20_000
-        Maximum number of iterations for the fit.
-
-    Returns
-    -------
-    F : Callable
-        LCFS mapping function.
-    """
-    a_hat = lcfs_fit(n_map, p_map, q_map, R0, k0, q0, aR,
-                     atol=atol, rtol=rtol, maxiter=maxiter)
-    Λ_map = DifferentialForm(0, (n_map, 1, 1), (p_map, 0, 0),
-                             ("periodic", "constant", "constant"))
-    a_h = DiscreteFunction(a_hat, Λ_map)
-
-    def a_h_modified(χ):
-        """Wrapper for the discrete radius function."""
-        return a_h(jnp.array([χ, 0, 0]))[0]
-
-    F = drumshape_map_modified(a_h_modified, R0)
-    return F
 
 
 def extend_map_nfp(Phi, nfp):

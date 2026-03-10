@@ -8,7 +8,7 @@ import numpy.testing as npt
 import pytest
 
 from mrx.differential_forms import DifferentialForm
-from mrx.polar import LazyExtractionOperator, get_xi
+from mrx.polar import ExtractionOperator, get_xi
 
 jax.config.update("jax_enable_x64", True)
 
@@ -34,7 +34,7 @@ class TestSparseMatchesDense:
 
     @pytest.mark.parametrize("zero_bc", [True, False])
     def test_sparse_matches_dense(self, form, xi, zero_bc):
-        E = LazyExtractionOperator(form, xi, zero_bc)
+        E = ExtractionOperator(form, xi, zero_bc)
         dense = E.assemble()
         sparse = E.assemble_sparse()
         npt.assert_array_equal(sparse.todense(), dense)

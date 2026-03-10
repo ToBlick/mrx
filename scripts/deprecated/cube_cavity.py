@@ -44,10 +44,10 @@ derham = DeRhamSequence(ns, ps, 6, types, bcs, F,
                         polar=False)  # Quadrature order 6
 
 # Get boundary operators and mass matrices
-B1 = derham.E1.matrix()  # Boundary operator for 1-forms
-B0 = derham.E0.matrix()  # Boundary operator for 0-forms
-M1 = derham.assemble_M1()  # Mass matrix for 1-forms
-M0 = derham.assemble_M0()  # Mass matrix for 0-forms
+B1 = derham.e1.matrix()  # Boundary operator for 1-forms
+B0 = derham.e0.matrix()  # Boundary operator for 0-forms
+M1 = derham.assemble_m1()  # Mass matrix for 1-forms
+M0 = derham.assemble_m0()  # Mass matrix for 0-forms
 
 D0 = derham.assemble_grad()  # Gradient matrix
 O10 = jnp.zeros_like(D0)
@@ -224,7 +224,7 @@ __x = __x.transpose(1, 2, 3, 0).reshape(_nx*_nx*1, 3)
 __y = jax.vmap(F)(__x)
 # %%
 u_hat = evecs[:C.shape[0], 0]
-u_h = DiscreteFunction(u_hat, derham.Lambda_1, B1)
+u_h = DiscreteFunction(u_hat, derham.basis_1, B1)
 _z1 = jax.vmap(u_h)(_x).reshape(nx, nx, 3)
 _z1_norm = jnp.linalg.norm(_z1, axis=2)
 plt.contourf(_x1, _x2, _z1_norm.reshape(nx, nx), levels=25)
@@ -292,7 +292,7 @@ def plot_eigenvectors_grid(
 
 # %%
 fig = plot_eigenvectors_grid(
-    evecs, M1, derham.Lambda_1, B1, F, _x, _x1, _x2, nx, num_to_plot=25
+    evecs, M1, derham.basis_1, B1, F, _x, _x1, _x2, nx, num_to_plot=25
 )
 # %%
 fig.savefig('cube_eigenvectors.pdf', bbox_inches='tight')

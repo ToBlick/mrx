@@ -19,7 +19,8 @@ import matplotlib.pyplot as plt
 import optax
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DifferentialForm, DiscreteFunction, Pushforward
+from mrx.differential_forms import (DifferentialForm, DiscreteFunction,
+                                    Pushforward)
 from mrx.mappings import drumshape_map
 from mrx.quadrature import QuadratureRule
 from mrx.utils import assemble, integrate_against, inv33, jacobian_determinant
@@ -31,6 +32,63 @@ script_dir.mkdir(parents=True, exist_ok=True)
 
 
 # %%
+def drumshape_map(a_h: Callable) -> Callable:
+    """
+    Drumshape mapping function:
+    F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
+    and (r, χ, z) are the logical coordinates, with χ the toroidal angle.
+    Formula is:
+    F(r, χ, z) = (a_h(χ) r cos(2πχ), -z, a_h(χ) r sin(2πχ))
+    where a_h(χ) is the radius as a function of the toroidal angle.
+
+    Parameters
+    ----------
+    a_h : Callable
+        Radius as a function of the toroidal angle.
+
+    Returns
+    -------
+    F : Callable
+        Drumshape mapping function.
+    """
+    π = jnp.pi
+
+    def F(x):
+        r, χ, z = x
+        return jnp.array([a_h(χ) * r * jnp.cos(2 * π * χ),
+                          -z,
+                          a_h(χ) * r * jnp.sin(2 * π * χ)])
+
+    return F
+
+
+def drumshape_map_modified(a: Callable, R0: float = 1.0) -> Callable:
+    """
+    Modified drumshape mapping function:
+    F(r, χ, z) = (X, Y, Z) where X, Y, Z are the Cartesian coordinates, 
+    and (r, χ, z) are the logical coordinates, with χ the toroidal angle.
+    Formula is:
+    F(r, χ, z) = (a(χ) r cos(2πχ), -z, a(χ) r sin(2πχ))
+    where a(χ) is the radius as a function of the toroidal angle.
+    """
+    π = jnp.pi
+
+    def _R(r, χ):
+        return jnp.ones(1) * (R0 + a(χ) * r * jnp.cos(2 * π * χ))
+
+    def _Z(r, χ):
+        return jnp.ones(1) * a(χ) * r * jnp.sin(2 * π * χ)
+
+    def F(x):
+        r, χ, z = x
+        return jnp.ravel(jnp.array(
+            [_R(r, χ) * jnp.cos(2 * π * z),
+             -_R(r, χ) * jnp.sin(2 * π * z),
+             _Z(r, χ)]))
+
+    return F
+
+
 def generalized_eigh(A: jnp.ndarray, B: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Solve the generalized eigenvalue problem A*v = lambda*B*v.
 
@@ -110,23 +168,23 @@ def get_evs(a_hat: jnp.ndarray, n_map: int, p_map: int, Seq: DeRhamSequence) -> 
         """
         return jax.jacfwd(F)(x).T @ jax.jacfwd(F)(x)
 
-    G_jkl = jax.vmap(G)(Seq.Q.x)
+    G_jkl = jax.vmap(G)(Seq.quad.x)
     G_inv_jkl = jax.vmap(inv33)(G_jkl)
-    J_j = jax.vmap(jacobian_determinant(F))(Seq.Q.x)
+    J_j = jax.vmap(jacobian_determinant(F))(Seq.quad.x)
 
-    K = assemble(Seq.get_d_Lambda_0_ijk,
-                 Seq.get_d_Lambda_0_ijk,
-                 G_inv_jkl * J_j[:, None, None] * Seq.Q.w[:, None, None],
-                 Seq.Lambda_0.n,
-                 Seq.Lambda_0.n)
-    K = Seq.E0 @ K @ Seq.E0.T
+    K = assemble(Seq.eval_d_basis_0_ijk,
+                 Seq.eval_d_basis_0_ijk,
+                 G_inv_jkl * J_j[:, None, None] * Seq.quad.w[:, None, None],
+                 Seq.basis_0.n,
+                 Seq.basis_0.n)
+    K = Seq.e0 @ K @ Seq.e0.T
 
-    M = assemble(Seq.get_Lambda_0_ijk,
-                 Seq.get_Lambda_0_ijk,
-                 J_j[:, None, None] * Seq.Q.w[:, None, None],
-                 Seq.Lambda_0.n,
-                 Seq.Lambda_0.n)
-    M = Seq.E0 @ M @ Seq.E0.T
+    M = assemble(Seq.eval_basis_0_ijk,
+                 Seq.eval_basis_0_ijk,
+                 J_j[:, None, None] * Seq.quad.w[:, None, None],
+                 Seq.basis_0.n,
+                 Seq.basis_0.n)
+    M = Seq.e0 @ M @ Seq.e0.T
 
     evs, evecs = generalized_eigh(K, M)
     return evs, evecs
@@ -326,7 +384,7 @@ def plot_reconstruction(a_hat: jnp.ndarray,
     y2 = grid_physical[:, 2].reshape(nx, nx)
 
     # Evaluate the eigenfunction on the grid
-    u_h = Pushforward(DiscreteFunction(first_evec, Seq.Lambda_0, Seq.E0), F, 0)
+    u_h = Pushforward(DiscreteFunction(first_evec, Seq.basis_0, Seq.e0), F, 0)
 
     # Fix the sign of the eigenfunction for consistent plotting
     if u_h(jnp.array([0.0, 0, 0])) < 0:
@@ -543,4 +601,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+# %%
+# %%
 # %%

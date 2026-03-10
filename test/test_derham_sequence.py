@@ -45,10 +45,10 @@ def test_derham_sequence_eigen_and_exactness(p, dirichlet, expected_nulls):
     Seq.assemble_all()
 
     eigs = [
-        jnp.linalg.eigvalsh(Seq.M0 @ Seq.dd0),
-        jnp.linalg.eigvalsh(Seq.M1 @ Seq.dd1),
-        jnp.linalg.eigvalsh(Seq.M2 @ Seq.dd2),
-        jnp.linalg.eigvalsh(Seq.M3 @ Seq.dd3),
+        jnp.linalg.eigvalsh(Seq.m0 @ Seq.dd0),
+        jnp.linalg.eigvalsh(Seq.m1 @ Seq.dd1),
+        jnp.linalg.eigvalsh(Seq.m2 @ Seq.dd2),
+        jnp.linalg.eigvalsh(Seq.m3 @ Seq.dd3),
     ]
 
     # Check expected nullspace pattern and positive definiteness
@@ -102,7 +102,7 @@ def test_projection_0form(p):
         return jnp.sin(2 * jnp.pi * r) * jnp.cos(2 * jnp.pi * theta) * jnp.sin(2 * jnp.pi * zeta)
 
     # Project the function
-    f_proj = Seq.P0(f)
+    f_proj = Seq.p0(f)
 
     # TODO: Test Galerkin condition: (P0(f), g)_M0 = (f, g)_M0 for all test functions g
     # This means: M0 @ f_proj should equal the right-hand side E0 @ (f, Lambda_0)
@@ -110,17 +110,17 @@ def test_projection_0form(p):
 
     # Verify basic properties
     assert f_proj.shape == (
-        Seq.M0.shape[0],), f"P0 projection has wrong shape for p={p}"
+        Seq.m0.shape[0],), f"P0 projection has wrong shape for p={p}"
     assert jnp.all(jnp.isfinite(f_proj)
                    ), f"P0 projection has non-finite values for p={p}"
 
     # Test idempotency: projecting an already projected function should give the same result
-    f_discrete = DiscreteFunction(f_proj, Seq.Lambda_0, Seq.E0)
+    f_discrete = DiscreteFunction(f_proj, Seq.basis_0, Seq.e0)
 
     def f_projected(x):
         return f_discrete(x)[0]
 
-    f_proj_twice = Seq.P0(f_projected)
+    f_proj_twice = Seq.p0(f_projected)
     npt.assert_allclose(f_proj, f_proj_twice, rtol=1e-8, atol=1e-8,
                         err_msg=f"P0 projection is not idempotent for p={p}")
 
@@ -151,7 +151,7 @@ def test_projection_1form(p):
         ])
 
     # Project the function
-    v_proj = Seq.P1(v)
+    v_proj = Seq.p1(v)
 
     # TODO: Test Galerkin condition: (P1(v), w)_M1 = (v, w)_M1 for all test functions w
     # This means: M1 @ v_proj should equal the right-hand side E1 @ (v, Λ1)
@@ -159,7 +159,7 @@ def test_projection_1form(p):
 
     # Verify basic properties
     assert v_proj.shape == (
-        Seq.M1.shape[0],), f"P1 projection has wrong shape for p={p}"
+        Seq.m1.shape[0],), f"P1 projection has wrong shape for p={p}"
     assert jnp.all(jnp.isfinite(v_proj)
                    ), f"P1 projection has non-finite values for p={p}"
 
@@ -200,7 +200,7 @@ def test_projection_2form(p):
         ])
 
     # Project the function
-    v_proj = Seq.P2(v)
+    v_proj = Seq.p2(v)
 
     # TODO: Test Galerkin condition: (P2(v), w)_M2 = (v, w)_M2 for all test functions w
     # This means: M2 @ v_proj should equal the right-hand side E2 @ (v, Λ2)
@@ -208,7 +208,7 @@ def test_projection_2form(p):
 
     # Verify basic properties
     assert v_proj.shape == (
-        Seq.M2.shape[0],), f"P2 projection has wrong shape for p={p}"
+        Seq.m2.shape[0],), f"P2 projection has wrong shape for p={p}"
     assert jnp.all(jnp.isfinite(v_proj)
                    ), f"P2 projection has non-finite values for p={p}"
 
@@ -245,7 +245,7 @@ def test_projection_3form(p):
         return jnp.sin(2 * jnp.pi * r) * jnp.cos(2 * jnp.pi * theta) * jnp.sin(2 * jnp.pi * zeta)
 
     # Project the function
-    f_proj = Seq.P3(f)
+    f_proj = Seq.p3(f)
 
     # TODO: Test Galerkin condition: (P3(f), g)_M3 = (f, g)_M3 for all test functions g
     # This means: M3 @ f_proj should equal the right-hand side E3 @ (f, Λ3)
@@ -253,17 +253,17 @@ def test_projection_3form(p):
 
     # Verify basic properties
     assert f_proj.shape == (
-        Seq.M3.shape[0],), f"P3 projection has wrong shape for p={p}"
+        Seq.m3.shape[0],), f"P3 projection has wrong shape for p={p}"
     assert jnp.all(jnp.isfinite(f_proj)
                    ), f"P3 projection has non-finite values for p={p}"
 
     # Test idempotency: projecting an already projected function should give the same result
-    f_discrete = DiscreteFunction(f_proj, Seq.Lambda_3, Seq.E3)
+    f_discrete = DiscreteFunction(f_proj, Seq.basis_3, Seq.e3)
 
     def f_projected(x):
         return f_discrete(x)[0]
 
-    f_proj_twice = Seq.P3(f_projected)
+    f_proj_twice = Seq.p3(f_projected)
     npt.assert_allclose(f_proj, f_proj_twice, rtol=1e-8, atol=1e-8,
                         err_msg=f"P3 projection is not idempotent for p={p}")
 
@@ -298,15 +298,15 @@ def test_crossproduct_projections(p):
     # Create test vectors with appropriate shapes
     # For 1-forms: use M1 shape
     # For 2-forms: use M2 shape
-    w_1 = jnp.ones(Seq.M1.shape[0]) * 0.1  # 1-form
-    u_1 = jnp.ones(Seq.M1.shape[0]) * 0.2  # 1-form
-    w_2 = jnp.ones(Seq.M2.shape[0]) * 0.1  # 2-form
-    u_2 = jnp.ones(Seq.M2.shape[0]) * 0.2  # 2-form
+    w_1 = jnp.ones(Seq.m1.shape[0]) * 0.1  # 1-form
+    u_1 = jnp.ones(Seq.m1.shape[0]) * 0.2  # 1-form
+    w_2 = jnp.ones(Seq.m2.shape[0]) * 0.1  # 2-form
+    u_2 = jnp.ones(Seq.m2.shape[0]) * 0.2  # 2-form
 
     # Test P1x1_to_1: (1-form, 1-form) -> 1-form
     result = Seq.P1x1_to_1(w_1, u_1)
     assert result.shape == (
-        Seq.M1.shape[0],), f"P1x1_to_1 has wrong shape for p={p}"
+        Seq.m1.shape[0],), f"P1x1_to_1 has wrong shape for p={p}"
     assert jnp.all(jnp.isfinite(result)
                    ), f"P1x1_to_1 has non-finite values for p={p}"
 
@@ -319,21 +319,21 @@ def test_crossproduct_projections(p):
     # Test P2x1_to_1: (2-form, 1-form) -> 1-form
     result = Seq.P2x1_to_1(w_2, u_1)
     assert result.shape == (
-        Seq.M1.shape[0],), f"P2x1_to_1 has wrong shape for p={p}"
+        Seq.m1.shape[0],), f"P2x1_to_1 has wrong shape for p={p}"
     assert jnp.all(jnp.isfinite(result)
                    ), f"P2x1_to_1 has non-finite values for p={p}"
 
     # Test P2x2_to_1: (2-form, 2-form) -> 1-form
     result = Seq.P2x2_to_1(w_2, u_2)
     assert result.shape == (
-        Seq.M1.shape[0],), f"P2x2_to_1 has wrong shape for p={p}"
+        Seq.m1.shape[0],), f"P2x2_to_1 has wrong shape for p={p}"
     assert jnp.all(jnp.isfinite(result)
                    ), f"P2x2_to_1 has non-finite values for p={p}"
 
     # Test P1x1_to_2: (1-form, 1-form) -> 2-form
     result = Seq.P1x1_to_2(w_1, u_1)
     assert result.shape == (
-        Seq.M2.shape[0],), f"P1x1_to_2 has wrong shape for p={p}"
+        Seq.m2.shape[0],), f"P1x1_to_2 has wrong shape for p={p}"
     assert jnp.all(jnp.isfinite(result)
                    ), f"P1x1_to_2 has non-finite values for p={p}"
 
@@ -346,14 +346,14 @@ def test_crossproduct_projections(p):
     # Test P2x1_to_2: (2-form, 1-form) -> 2-form
     result = Seq.P2x1_to_2(w_2, u_1)
     assert result.shape == (
-        Seq.M2.shape[0],), f"P2x1_to_2 has wrong shape for p={p}"
+        Seq.m2.shape[0],), f"P2x1_to_2 has wrong shape for p={p}"
     assert jnp.all(jnp.isfinite(result)
                    ), f"P2x1_to_2 has non-finite values for p={p}"
 
     # Test P2x2_to_2: (2-form, 2-form) -> 2-form
     result = Seq.P2x2_to_2(w_2, u_2)
     assert result.shape == (
-        Seq.M2.shape[0],), f"P2x2_to_2 has wrong shape for p={p}"
+        Seq.m2.shape[0],), f"P2x2_to_2 has wrong shape for p={p}"
     assert jnp.all(jnp.isfinite(result)
                    ), f"P2x2_to_2 has non-finite values for p={p}"
 
@@ -363,8 +363,8 @@ def test_crossproduct_projections(p):
 
     # Test antisymmetry for P1x1_to_1: (1-form, 1-form) -> 1-form
     # Both inputs are 1-forms, so antisymmetry should hold
-    w_test = jnp.ones(Seq.M1.shape[0]) * 0.1
-    u_test = jnp.ones(Seq.M1.shape[0]) * 0.2
+    w_test = jnp.ones(Seq.m1.shape[0]) * 0.1
+    u_test = jnp.ones(Seq.m1.shape[0]) * 0.2
     result1 = Seq.P1x1_to_1(w_test, u_test)
     result2 = Seq.P1x1_to_1(u_test, w_test)
     npt.assert_allclose(result1, -result2, rtol=1e-6, atol=1e-6,
@@ -379,8 +379,8 @@ def test_crossproduct_projections(p):
 
     # Test antisymmetry for P2x2_to_1: (2-form, 2-form) -> 1-form
     # Both inputs are 2-forms, so antisymmetry should hold
-    w_test_2 = jnp.ones(Seq.M2.shape[0]) * 0.1
-    u_test_2 = jnp.ones(Seq.M2.shape[0]) * 0.2
+    w_test_2 = jnp.ones(Seq.m2.shape[0]) * 0.1
+    u_test_2 = jnp.ones(Seq.m2.shape[0]) * 0.2
     result1 = Seq.P2x2_to_1(w_test_2, u_test_2)
     result2 = Seq.P2x2_to_1(u_test_2, w_test_2)
     npt.assert_allclose(result1, -result2, rtol=1e-6, atol=1e-6,
@@ -399,8 +399,8 @@ def test_crossproduct_projections(p):
     # - P1x2_to_1: (1-form, 2-form) -> 1-form uses different transformations
 
     # Test that zero input gives zero output
-    zero_1 = jnp.zeros(Seq.M1.shape[0])
-    zero_2 = jnp.zeros(Seq.M2.shape[0])
+    zero_1 = jnp.zeros(Seq.m1.shape[0])
+    zero_2 = jnp.zeros(Seq.m2.shape[0])
 
     result = Seq.P1x1_to_1(zero_1, u_1)
     npt.assert_allclose(result, 0.0, rtol=1e-10, atol=1e-10,
@@ -437,24 +437,24 @@ def test_crossproduct_projection_value_errors(p):
 
     # Test ValueError for n not in [1, 2]
     with pytest.raises(ValueError, match="n must be 1 or 2"):
-        CrossProductProjection(n=0, m=1, k=1, Seq=Seq)
+        CrossProductProjection(n=0, m=1, k=1, seq=Seq)
 
     with pytest.raises(ValueError, match="n must be 1 or 2"):
-        CrossProductProjection(n=3, m=1, k=1, Seq=Seq)
+        CrossProductProjection(n=3, m=1, k=1, seq=Seq)
 
     # Test ValueError for m not in [1, 2]
     with pytest.raises(ValueError, match="m must be 1 or 2"):
-        CrossProductProjection(n=1, m=0, k=1, Seq=Seq)
+        CrossProductProjection(n=1, m=0, k=1, seq=Seq)
 
     with pytest.raises(ValueError, match="m must be 1 or 2"):
-        CrossProductProjection(n=1, m=3, k=1, Seq=Seq)
+        CrossProductProjection(n=1, m=3, k=1, seq=Seq)
 
     # Test ValueError for k not in [1, 2]
     with pytest.raises(ValueError, match="k must be 1 or 2"):
-        CrossProductProjection(n=1, m=1, k=0, Seq=Seq)
+        CrossProductProjection(n=1, m=1, k=0, seq=Seq)
 
     with pytest.raises(ValueError, match="k must be 1 or 2"):
-        CrossProductProjection(n=1, m=1, k=3, Seq=Seq)
+        CrossProductProjection(n=1, m=1, k=3, seq=Seq)
 
     # Test ValueError for not yet implemented combinations
     # Based on the code, the implemented combinations are:
@@ -467,15 +467,15 @@ def test_crossproduct_projection_value_errors(p):
     # - (n=2, m=2, k=2)
     # So (n=1, m=1, k=2) should raise "Not yet implemented"
     with pytest.raises(ValueError, match="Not yet implemented"):
-        proj = CrossProductProjection(n=1, m=1, k=2, Seq=Seq)
-        w_1 = jnp.ones(Seq.M1.shape[0]) * 0.1
-        u_2 = jnp.ones(Seq.M2.shape[0]) * 0.2
+        proj = CrossProductProjection(n=1, m=1, k=2, seq=Seq)
+        w_1 = jnp.ones(Seq.m1.shape[0]) * 0.1
+        u_2 = jnp.ones(Seq.m2.shape[0]) * 0.2
         proj(w_1, u_2)
 
     with pytest.raises(ValueError, match="Not yet implemented"):
-        proj = CrossProductProjection(n=1, m=1, k=2, Seq=Seq)
-        w_1 = jnp.ones(Seq.M1.shape[0]) * 0.1
-        u_2 = jnp.ones(Seq.M2.shape[0]) * 0.2
+        proj = CrossProductProjection(n=1, m=1, k=2, seq=Seq)
+        w_1 = jnp.ones(Seq.m1.shape[0]) * 0.1
+        u_2 = jnp.ones(Seq.m2.shape[0]) * 0.2
         proj(w_1, u_2)
 
 
@@ -499,7 +499,7 @@ def test_differential_forms_setup(p):
     assert hasattr(Seq, 'Lambda_3'), "Λ3 not created"
 
     # Test basic properties of each form
-    for k, Λ in enumerate([Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3]):
+    for k, Λ in enumerate([Seq.basis_0, Seq.basis_1, Seq.basis_2, Seq.basis_3]):
         assert Λ.k == k, f"Λ{k} has wrong degree: expected {k}, got {Λ.k}"
         assert Λ.d == 3, f"Λ{k} has wrong dimension: expected 3, got {Λ.d}"
         assert Λ.n > 0, f"Λ{k} has zero or negative number of basis functions"
@@ -513,41 +513,41 @@ def test_differential_forms_setup(p):
         assert len(Λ) == Λ.n, f"Λ{k} __len__ doesn't match n"
 
     # Test that forms have correct number of components
-    assert Seq.Lambda_0.n1 > 0 and Seq.Lambda_0.n2 == 0 and Seq.Lambda_0.n3 == 0, "Lambda_0 should have only n1"
-    assert Seq.Lambda_1.n1 > 0 and Seq.Lambda_1.n2 > 0 and Seq.Lambda_1.n3 > 0, "Λ1 should have n1, n2, n3"
-    assert Seq.Lambda_2.n1 > 0 and Seq.Lambda_2.n2 > 0 and Seq.Lambda_2.n3 > 0, "Λ2 should have n1, n2, n3"
-    assert Seq.Lambda_3.n1 > 0 and Seq.Lambda_3.n2 == 0 and Seq.Lambda_3.n3 == 0, "Λ3 should have only n1"
+    assert Seq.basis_0.n1 > 0 and Seq.basis_0.n2 == 0 and Seq.basis_0.n3 == 0, "Lambda_0 should have only n1"
+    assert Seq.basis_1.n1 > 0 and Seq.basis_1.n2 > 0 and Seq.basis_1.n3 > 0, "Λ1 should have n1, n2, n3"
+    assert Seq.basis_2.n1 > 0 and Seq.basis_2.n2 > 0 and Seq.basis_2.n3 > 0, "Λ2 should have n1, n2, n3"
+    assert Seq.basis_3.n1 > 0 and Seq.basis_3.n2 == 0 and Seq.basis_3.n3 == 0, "Λ3 should have only n1"
 
     # Test evaluation at a point
     x_test = jnp.array([0.5, 0.5, 0.5])
 
     # Test 0-form evaluation (scalar)
-    val_0 = Seq.Lambda_0.evaluate(x_test, 0)
+    val_0 = Seq.basis_0.evaluate(x_test, 0)
     assert val_0.shape == (
         1,), f"Lambda_0 evaluation should return shape (1,), got {val_0.shape}"
     assert jnp.all(jnp.isfinite(val_0)
                    ), "Lambda_0 evaluation has non-finite values"
 
     # Test 1-form evaluation (vector)
-    val_1 = Seq.Lambda_1.evaluate(x_test, 0)
+    val_1 = Seq.basis_1.evaluate(x_test, 0)
     assert val_1.shape == (
         3,), f"Λ1 evaluation should return shape (3,), got {val_1.shape}"
     assert jnp.all(jnp.isfinite(val_1)), "Λ1 evaluation has non-finite values"
 
     # Test 2-form evaluation (vector)
-    val_2 = Seq.Lambda_2.evaluate(x_test, 0)
+    val_2 = Seq.basis_2.evaluate(x_test, 0)
     assert val_2.shape == (
         3,), f"Λ2 evaluation should return shape (3,), got {val_2.shape}"
     assert jnp.all(jnp.isfinite(val_2)), "Λ2 evaluation has non-finite values"
 
     # Test 3-form evaluation (scalar)
-    val_3 = Seq.Lambda_3.evaluate(x_test, 0)
+    val_3 = Seq.basis_3.evaluate(x_test, 0)
     assert val_3.shape == (
         1,), f"Λ3 evaluation should return shape (1,), got {val_3.shape}"
     assert jnp.all(jnp.isfinite(val_3)), "Λ3 evaluation has non-finite values"
 
     # Test indexing
-    basis_0 = Seq.Lambda_0[0]
+    basis_0 = Seq.basis_0[0]
     assert callable(basis_0), "Lambda_0[0] should be callable"
     val_indexed = basis_0(x_test)
     assert val_indexed.shape == (
@@ -555,7 +555,7 @@ def test_differential_forms_setup(p):
 
     # Test iteration
     count = 0
-    for basis in Seq.Lambda_0:
+    for basis in Seq.basis_0:
         assert callable(basis), f"Basis {count} should be callable"
         count += 1
         if count > 5:  # Just test a few
@@ -577,14 +577,14 @@ def test_discrete_function(p):
     )
 
     # Create test DOFs in extracted space (matching E.shape[0])
-    dof_0 = jnp.ones(Seq.E0.shape[0]) * 0.1
-    dof_1 = jnp.ones(Seq.E1.shape[0]) * 0.2
-    dof_2 = jnp.ones(Seq.E2.shape[0]) * 0.3
-    dof_3 = jnp.ones(Seq.E3.shape[0]) * 0.4
+    dof_0 = jnp.ones(Seq.e0.shape[0]) * 0.1
+    dof_1 = jnp.ones(Seq.e1.shape[0]) * 0.2
+    dof_2 = jnp.ones(Seq.e2.shape[0]) * 0.3
+    dof_3 = jnp.ones(Seq.e3.shape[0]) * 0.4
 
     # Test DiscreteFunction for 0-form
-    f_0 = DiscreteFunction(dof_0, Seq.Lambda_0, Seq.E0)
-    assert f_0.n == Seq.Lambda_0.n, "DiscreteFunction should have correct n (full space)"
+    f_0 = DiscreteFunction(dof_0, Seq.basis_0, Seq.e0)
+    assert f_0.n == Seq.basis_0.n, "DiscreteFunction should have correct n (full space)"
     x_test = jnp.array([0.5, 0.5, 0.5])
     val_0 = f_0(x_test)
     assert val_0.shape == (
@@ -593,7 +593,7 @@ def test_discrete_function(p):
                    ), "DiscreteFunction(0-form) has non-finite values"
 
     # Test DiscreteFunction for 1-form
-    f_1 = DiscreteFunction(dof_1, Seq.Lambda_1, Seq.E1)
+    f_1 = DiscreteFunction(dof_1, Seq.basis_1, Seq.e1)
     val_1 = f_1(x_test)
     assert val_1.shape == (
         3,), f"DiscreteFunction(1-form) should return shape (3,), got {val_1.shape}"
@@ -601,7 +601,7 @@ def test_discrete_function(p):
                    ), "DiscreteFunction(1-form) has non-finite values"
 
     # Test DiscreteFunction for 2-form
-    f_2 = DiscreteFunction(dof_2, Seq.Lambda_2, Seq.E2)
+    f_2 = DiscreteFunction(dof_2, Seq.basis_2, Seq.e2)
     val_2 = f_2(x_test)
     assert val_2.shape == (
         3,), f"DiscreteFunction(2-form) should return shape (3,), got {val_2.shape}"
@@ -609,7 +609,7 @@ def test_discrete_function(p):
                    ), "DiscreteFunction(2-form) has non-finite values"
 
     # Test DiscreteFunction for 3-form
-    f_3 = DiscreteFunction(dof_3, Seq.Lambda_3, Seq.E3)
+    f_3 = DiscreteFunction(dof_3, Seq.basis_3, Seq.e3)
     val_3 = f_3(x_test)
     assert val_3.shape == (
         1,), f"DiscreteFunction(3-form) should return shape (1,), got {val_3.shape}"
@@ -617,8 +617,8 @@ def test_discrete_function(p):
                    ), "DiscreteFunction(3-form) has non-finite values"
 
     # Test that zero DOFs give zero function
-    zero_dof = jnp.zeros(Seq.E0.shape[0])
-    f_zero = DiscreteFunction(zero_dof, Seq.Lambda_0, Seq.E0)
+    zero_dof = jnp.zeros(Seq.e0.shape[0])
+    f_zero = DiscreteFunction(zero_dof, Seq.basis_0, Seq.e0)
     val_zero = f_zero(x_test)
     npt.assert_allclose(val_zero, 0.0, rtol=1e-10, atol=1e-10,
                         err_msg="DiscreteFunction with zero DOFs should return zero")
@@ -665,7 +665,7 @@ def test_pushforward(p):
                 return jnp.sin(2 * jnp.pi * r) * jnp.cos(2 * jnp.pi * theta) * jnp.sin(2 * jnp.pi * zeta)
 
         # Create pushforward
-        push = Pushforward(f, Seq.F, k)
+        push = Pushforward(f, Seq.map, k)
 
         # Test evaluation at a point
         x_test = jnp.array([0.5, 0.5, 0.5])
@@ -683,7 +683,7 @@ def test_pushforward(p):
             val)), f"Pushforward(k={k}) has non-finite values"
 
         # Compute expected value manually based on pushforward definition
-        DF = jax.jacfwd(Seq.F)
+        DF = jax.jacfwd(Seq.map)
         DF_x = DF(x_test)
         f_x = f(x_test)
 
@@ -753,7 +753,7 @@ def test_pullback(p):
                 return jnp.sin(2 * jnp.pi * x) * jnp.cos(2 * jnp.pi * y_coord) * jnp.sin(2 * jnp.pi * z)
 
         # Create pullback
-        pull = Pullback(f_physical, Seq.F, k)
+        pull = Pullback(f_physical, Seq.map, k)
 
         # Test evaluation at a point in logical space
         x_test = jnp.array([0.5, 0.5, 0.5])
@@ -767,12 +767,13 @@ def test_pullback(p):
             assert val.shape == (
                 3,), f"Pullback(k={k}) should return shape (3,), got {val.shape}"
 
-        assert jnp.all(jnp.isfinite(val)), f"Pullback(k={k}) has non-finite values"
+        assert jnp.all(jnp.isfinite(
+            val)), f"Pullback(k={k}) has non-finite values"
 
         # Compute expected value manually based on pullback definition
-        DF = jax.jacfwd(Seq.F)
+        DF = jax.jacfwd(Seq.map)
         DF_x = DF(x_test)
-        y_physical = Seq.F(x_test)
+        y_physical = Seq.map(x_test)
         f_y = f_physical(y_physical)
 
         if k == 0:
@@ -856,7 +857,7 @@ def test_vector_index(p):
         dirichlet=True
     )
 
-    Λs = [Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3]
+    Λs = [Seq.basis_0, Seq.basis_1, Seq.basis_2, Seq.basis_3]
     for k in [0, 1, 2, 3]:
         Λ = Λs[k]
 
@@ -913,7 +914,7 @@ def test_ravel_index(p):
         dirichlet=True
     )
 
-    Λs = [Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3]
+    Λs = [Seq.basis_0, Seq.basis_1, Seq.basis_2, Seq.basis_3]
     for k in [0, 1, 2, 3]:
         Λ = Λs[k]
         # Test _ravel_index for various indices
@@ -997,7 +998,7 @@ def test_ravel_unravel_consistency(p):
         dirichlet=True
     )
 
-    Λs = [Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3]
+    Λs = [Seq.basis_0, Seq.basis_1, Seq.basis_2, Seq.basis_3]
 
     for k in [0, 1, 2, 3]:
         Λ = Λs[k]
@@ -1026,7 +1027,7 @@ def test_vector_ravel_consistency(p):
         polar=True,
         dirichlet=True
     )
-    Λs = [Seq.Lambda_0, Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_3]
+    Λs = [Seq.basis_0, Seq.basis_1, Seq.basis_2, Seq.basis_3]
 
     for k in [0, 1, 2, 3]:
         Λ = Λs[k]

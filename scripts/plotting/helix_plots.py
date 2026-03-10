@@ -61,7 +61,7 @@ if __name__ == "__main__":
     print("Setting up FEM spaces...")
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
 
-    assert jnp.min(Seq.J_j) > 0, "Mapping is singular!"
+    assert jnp.min(Seq.jacobian_j) > 0, "Mapping is singular!"
 
     def integrate_fieldline(B_h, x0, F, N, t1=10):
         @jax.jit
@@ -195,8 +195,8 @@ if __name__ == "__main__":
         B_hat = B_fields[plt_nr]
         p_hat = p_fields[plt_nr]
 
-        p_h = DiscreteFunction(p_hat, Seq.Lambda_0, Seq.E0)
-        B_h = (DiscreteFunction(B_hat, Seq.Lambda_2, Seq.E2))
+        p_h = DiscreteFunction(p_hat, Seq.basis_0, Seq.e0)
+        B_h = (DiscreteFunction(B_hat, Seq.basis_2, Seq.e2))
 
         crossings = jax.vmap(lambda x0: get_crossings(
             # m x N x 3

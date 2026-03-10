@@ -49,7 +49,7 @@ def test_harmonic_fields():
     Seq.evaluate_1d()
     Seq.assemble_all()
 
-    evs, evecs = sp.linalg.eigh(Seq.M2 @ Seq.dd2, Seq.M2)
+    evs, evecs = sp.linalg.eigh(Seq.m2 @ Seq.dd2, Seq.m2)
     # tolerance is 1e-10 to account for numerical errors
     # since first two eigenvalues are -1e-12 and 1e-11 or so.
     assert jnp.sum(evs < 1e-10) == 2  # two harmonic fields
@@ -63,8 +63,8 @@ def test_harmonic_fields():
     h1_dof = evecs[:, 0]
     h2_dof = evecs[:, 1]
 
-    h1 = jax.jit(DiscreteFunction(h1_dof, Seq.Lambda_2, Seq.E2))
-    h2 = jax.jit(DiscreteFunction(h2_dof, Seq.Lambda_2, Seq.E2))
+    h1 = jax.jit(DiscreteFunction(h1_dof, Seq.basis_2, Seq.e2))
+    h2 = jax.jit(DiscreteFunction(h2_dof, Seq.basis_2, Seq.e2))
 
     # Compute contour integrals:
     # contour wrapping around the enclosed tunnel poloidally:
@@ -103,8 +103,8 @@ def test_harmonic_fields():
     # assert that the solution is indeed harmonic:
     curl_b_dofs = Seq.weak_curl @ b_dofs
     div_b_dofs = Seq.strong_div @ b_dofs
-    assert (curl_b_dofs @ Seq.M1 @ curl_b_dofs)**0.5 < 1e-10
-    assert (div_b_dofs @ Seq.M3 @ div_b_dofs)**0.5 < 1e-10
+    assert (curl_b_dofs @ Seq.m1 @ curl_b_dofs)**0.5 < 1e-10
+    assert (div_b_dofs @ Seq.m3 @ div_b_dofs)**0.5 < 1e-10
 
     def B_expected(x):
         """Exact magnetic field in Cartesian coordinates.
@@ -135,7 +135,7 @@ def test_harmonic_fields():
         return jnp.array([Bx, By, Bz])
 
     B_computed = jax.jit(Pushforward(DiscreteFunction(
-        b_dofs, Seq.Lambda_2, Seq.E2), Seq.F, 2))
+        b_dofs, Seq.basis_2, Seq.e2), Seq.map, 2))
 
     # Check the field in the interior
     y = jnp.array([0.5, 0.0, 0.0])

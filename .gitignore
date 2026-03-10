@@ -8,7 +8,8 @@ test_outputs
 logs
 jax-caches/
 slurm/job_*
-
+multirun*
+*.html
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

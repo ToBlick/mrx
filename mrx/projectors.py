@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Callable, Literal
 import jax
 from jax import Array
 
+import mrx
 from mrx.utils import integrate_against, inv33
 
 if TYPE_CHECKING:
@@ -43,23 +44,27 @@ class Projector:
 
     Attributes:
         k (int): Degree of the differential form (0, 1, 2, or 3)
-        Seq : DeRham sequence object
+        seq : DeRham sequence object
+        dirichlet (bool): Whether to use dirichlet boundary conditions
     """
 
     k: Literal[0, 1, 2, 3]
-    Seq: DeRhamSequence
+    seq: DeRhamSequence
+    dirichlet: bool = True
 
-    def __init__(self, Seq: DeRhamSequence, k: Literal[0, 1, 2, 3]) -> None:
+    def __init__(self, seq: DeRhamSequence, k: Literal[0, 1, 2, 3], dirichlet: bool = True) -> None:
         """
         Initialize the projector.
 
         Args:
-            Seq : DeRham sequence object
+            seq : DeRham sequence object
             k : Degree of the differential form
+            dirichlet : Whether to use dirichlet boundary conditions
         """
         self.k = k
-        self.Seq = Seq
-
+        self.seq = seq
+        self.dirichlet = dirichlet
+        
     def __call__(self, f: ScalarFunction | VectorFunction) -> Array:
         """
         Project a function onto the finite element space.
@@ -70,14 +75,19 @@ class Projector:
         Returns:
             array: Projection coefficients
         """
+        
         if self.k == 0:
-            return self.Seq.E0 @ self.zeroform_projection(f)
+            e = self.seq.e0_dbc if self.dirichlet else self.seq.e0
+            return e @ self.zeroform_projection(f)
         elif self.k == 1:
-            return self.Seq.E1 @ self.oneform_projection(f)
+            e = self.seq.e1_dbc if self.dirichlet else self.seq.e1
+            return e @ self.oneform_projection(f)
         elif self.k == 2:
-            return self.Seq.E2 @ self.twoform_projection(f)
+            e = self.seq.e2_dbc if self.dirichlet else self.seq.e2
+            return e @ self.twoform_projection(f)
         elif self.k == 3:
-            return self.Seq.E3 @ self.threeform_projection(f)
+            e = self.seq.e3_dbc if self.dirichlet else self.seq.e3
+            return e @ self.threeform_projection(f)
         # TODO: Consider raising an error for invalid k values
         raise ValueError(f"Invalid k value: {self.k}. Must be 0, 1, 2, or 3.")
 
@@ -92,9 +102,9 @@ class Projector:
             array: Projection coefficients for the 0-form
         """
         # Evaluate the given function at quadrature points
-        f_jk: Array = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
-        w_jk: Array = f_jk * (self.Seq.Q.w * self.Seq.J_j)[:, None]
-        return integrate_against(self.Seq.get_Lambda_0_ijk, w_jk, self.Seq.Lambda_0.n)
+        f_jk: Array = jax.lax.map(f, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x 1
+        w_jk: Array = f_jk * (self.seq.quad.w * self.seq.jacobian_j)[:, None]
+        return integrate_against(self.seq.eval_basis_0_ijk, w_jk, self.seq.basis_0.n)
 
     def oneform_projection(self, v: VectorFunction) -> Array:
         """
@@ -106,16 +116,16 @@ class Projector:
         Returns:
             array: Projection coefficients for the 1-form
         """
-        DF = jax.jacfwd(self.Seq.F)
+        DF = jax.jacfwd(self.seq.map)
 
         def _v(x: Array) -> Array:
             return inv33(DF(x)) @ v(x)
 
         # Evaluate the given function at quadrature points
-        A_jk: Array = jax.vmap(_v)(self.Seq.Q.x)  # n_q x d
-        w_jk: Array = A_jk * (self.Seq.Q.w * self.Seq.J_j)[:, None]
+        A_jk: Array = jax.lax.map(_v, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x d
+        w_jk: Array = A_jk * (self.seq.quad.w * self.seq.jacobian_j)[:, None]
 
-        return integrate_against(self.Seq.get_Lambda_1_ijk, w_jk, self.Seq.Lambda_1.n)
+        return integrate_against(self.seq.eval_basis_1_ijk, w_jk, self.seq.basis_1.n)
 
     def twoform_projection(self, v: VectorFunction) -> Array:
         """
@@ -127,17 +137,17 @@ class Projector:
         Returns:
             array: Projection coefficients for the 2-form
         """
-        DF = jax.jacfwd(self.Seq.F)
+        DF = jax.jacfwd(self.seq.map)
 
         def _v(x: Array) -> Array:
             return DF(x).T @ v(x)
 
         # Evaluate the given function at quadrature points
-        B_jk: Array = jax.vmap(_v)(self.Seq.Q.x)  # n_q x d
+        B_jk: Array = jax.lax.map(_v, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x d
 
-        w_jk: Array = B_jk * (self.Seq.Q.w)[:, None]
+        w_jk: Array = B_jk * (self.seq.quad.w)[:, None]
 
-        return integrate_against(self.Seq.get_Lambda_2_ijk, w_jk, self.Seq.Lambda_2.n)
+        return integrate_against(self.seq.eval_basis_2_ijk, w_jk, self.seq.basis_2.n)
 
     def threeform_projection(self, f: ScalarFunction) -> Array:
         """
@@ -150,7 +160,6 @@ class Projector:
             array: Projection coefficients for the 3-form
         """
         # Evaluate the given function at quadrature points
-        f_jk: Array = jax.vmap(f)(self.Seq.Q.x)  # n_q x 1
-        w_jk: Array = f_jk * (self.Seq.Q.w)[:, None]
-        return integrate_against(self.Seq.get_Lambda_3_ijk, w_jk, self.Seq.Lambda_3.n)
-        return integrate_against(self.Seq.get_Lambda_3_ijk, w_jk, self.Seq.Lambda_3.n)
+        f_jk: Array = jax.lax.map(f, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x 1
+        w_jk: Array = f_jk * (self.seq.quad.w)[:, None]
+        return integrate_against(self.seq.eval_basis_3_ijk, w_jk, self.seq.basis_3.n)

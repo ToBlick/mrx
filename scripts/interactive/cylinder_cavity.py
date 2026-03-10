@@ -1,7 +1,7 @@
 # %%
 # TODO turn into test
-from pathlib import Path
 import os
+from pathlib import Path
 from typing import Callable
 
 import jax
@@ -20,11 +20,14 @@ script_dir = Path(__file__).parent / 'out'
 script_dir.mkdir(parents=True, exist_ok=True)
 
 # Initialize parameters
+
+
 def is_running_in_github_actions():
     """
     Checks if the current Python script is running within a GitHub Actions environment.
     """
     return os.getenv("GITHUB_ACTIONS") == "true"
+
 
 if is_running_in_github_actions():
     ns = (2, 2, 1)
@@ -46,20 +49,20 @@ F = cylinder_map(a=a, h=h)
 derham = DeRhamSequence(ns, ps, 8, types, F, polar=True, dirichlet=True)
 
 # Get extraction operators and mass matrices
-E0, E1, E2, E3 = [derham.E0, derham.E1, derham.E2, derham.E3]
+E0, E1, E2, E3 = [derham.e0, derham.e1, derham.e2, derham.e3]
 derham.evaluate_1d()
-derham.assemble_M1()  # Mass matrix for 1-forms
-derham.assemble_M0()  # Mass matrix for 0-forms
+derham.assemble_m1()  # Mass matrix for 1-forms
+derham.assemble_m0()  # Mass matrix for 0-forms
 derham.assemble_d0()  # Gradient matrix for 0-forms
-M1 = derham.M1
-M0 = derham.M0
-D0 = derham.D0
+M1 = derham.m1
+M0 = derham.m0
+D0 = derham.d0
 O10 = jnp.zeros_like(D0)
 O0 = jnp.zeros((D0.shape[1], D0.shape[1]))
 
 # TODO: Double check that this is the correct assembly method to be used below
 derham.assemble_dd1()
-C = derham.M1 @ (derham.dd1 + derham.strong_grad @
+C = derham.m1 @ (derham.dd1 + derham.strong_grad @
                  derham.weak_div)  # Double curl matrix
 
 # TODO: Clarify why we construct these block matrices here
@@ -373,7 +376,7 @@ def plot_eigenvectors_grid(
 # Plot the first num_to_plot eigenvectors
 num_to_plot = 25
 fig = plot_eigenvectors_grid(
-    evecs, M1, derham.Lambda_1, E1, F, _x, _y1, _y2, nx, num_to_plot=num_to_plot
+    evecs, M1, derham.basis_1, E1, F, _x, _y1, _y2, nx, num_to_plot=num_to_plot
 )
 fig.savefig(script_dir / 'cylinder_cavity_eigenmodes.pdf', bbox_inches='tight')
 # %%

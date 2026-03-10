@@ -2,15 +2,16 @@
 # test_quadrature.py
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
-import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
-from mrx.quadrature import trapezoidal_quad, composite_quad, spectral_quad
+from mrx.quadrature import composite_quad, spectral_quad, trapezoidal_quad
 
 jax.config.update("jax_enable_x64", True)
+
 
 @pytest.mark.parametrize("n", [6])
 @pytest.mark.parametrize("p", [1, 2, 3, 4])
@@ -33,7 +34,7 @@ def test_quadrature(n, p, bc_type):
     )
 
     # Volume of torus is integral (J dx)
-    vol = Seq.Q.w @ Seq.J_j * nfp
+    vol = Seq.quad.w @ Seq.jacobian_j * nfp
 
     npt.assert_allclose(
         vol, jnp.pi**2 * eps**2 * (2 - (1 - kappa)**2),

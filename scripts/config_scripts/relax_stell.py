@@ -27,13 +27,20 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig, OmegaConf
 
+import mrx.config  # noqa: F401  —  register Hydra structured configs
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.io import unique_id
 from mrx.mappings import rotating_ellipse_map
 from mrx.plotting import integrate_fieldline, poincare_plot
-from mrx.relaxation import (DescentMethod, IntegrationScheme, MRXDiagnostics,
-                            TimeStepChoice, TimeStepper, relaxation_loop)
+from mrx.relaxation import (
+    DescentMethod,
+    IntegrationScheme,
+    MRXDiagnostics,
+    TimeStepChoice,
+    TimeStepper,
+    relaxation_loop,
+)
 from mrx.utils import default_trace_dict
 
 jax.config.update("jax_enable_x64", True)
@@ -237,7 +244,7 @@ def create_initial_B_field(F, tau):
     return B_xyz
 
 
-@hydra.main(version_base=None, config_path="../../conf", config_name="config_stell")
+@hydra.main(version_base=None, config_name="config_stell")
 def main(cfg: DictConfig) -> float:
     """
     Main entry point for stellarator relaxation with Hydra configuration.
@@ -295,7 +302,7 @@ def main(cfg: DictConfig) -> float:
     )
 
     # Check that mapping is not singular
-    assert jnp.min(seq.J_j) > 0, "Mapping is singular!"
+    assert jnp.min(seq.jacobian_j) > 0, "Mapping is singular!"
 
     seq.evaluate_1d()
     seq.assemble_all()
@@ -312,18 +319,18 @@ def main(cfg: DictConfig) -> float:
     B_xyz = create_initial_B_field(F, tau)
 
     # Project to FEM space
-    B_dof_0 = jnp.linalg.solve(seq.M2, seq.P2(B_xyz))
+    B_dof_0 = jnp.linalg.solve(seq.m2, seq.p2(B_xyz))
     B_dof_0 = seq.P_Leray @ B_dof_0
 
     # Normalize
-    B_norm_initial = (B_dof_0 @ seq.M2 @ B_dof_0)**0.5
+    B_norm_initial = (B_dof_0 @ seq.m2 @ B_dof_0)**0.5
     B_dof_0 /= B_norm_initial
     print(f"Initial B-field norm: {B_norm_initial:.6f}")
 
     B_dof = B_dof_0.copy()
 
     div_B_initial = float(((seq.strong_div @ B_dof_0) @
-                          seq.M3 @ (seq.strong_div @ B_dof_0))**0.5)
+                          seq.m3 @ (seq.strong_div @ B_dof_0))**0.5)
     print(f"div B after projection: {div_B_initial:.2e}")
 
     # Setup relaxation

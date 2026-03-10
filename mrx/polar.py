@@ -10,8 +10,10 @@ import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
+import mrx
 
-class LazyExtractionOperator:
+
+class ExtractionOperator:
     """
     A class for extracting boundary conditions and handling polar mappings.
 
@@ -317,16 +319,14 @@ class LazyExtractionOperator:
 
     def assemble(self):
         """Assemble the complete operator matrix as a dense array."""
-        return jax.vmap(jax.vmap(self._element, (None, 0)), (0, None))(
-            jnp.arange(self.n), jnp.arange(self.Lambda.n)
+        return mrx.double_map(
+            self._element,
+            jnp.arange(self.n),
+            jnp.arange(self.Lambda.n),
         )
 
     def assemble_sparse(self):
         """Assemble the operator as a sparse BCOO matrix.
-
-        Instead of the double-vmap dense assembly, this method processes
-        one row at a time (vmap over columns, scan over rows), extracts
-        non-zero indices and values, and constructs a BCOO sparse matrix.
 
         Returns:
             jsparse.BCOO: The sparse operator matrix of shape (n, Lambda.n).
@@ -340,7 +340,12 @@ class LazyExtractionOperator:
 
         def process_row(row_idx):
             # Compute all entries in this row
-            row = jax.vmap(self._element, (None, 0))(row_idx, col_indices)
+            def compute_element(col_idx):
+                return self._element(row_idx, col_idx)
+            row = jax.lax.map(
+                compute_element, col_indices,
+                batch_size=mrx.MAP_BATCH_SIZE_INNER,
+            )
             # Identify non-zeros
             nz_mask = row != 0
             # Sort so non-zero entries come first
@@ -354,12 +359,10 @@ class LazyExtractionOperator:
             cols = jnp.where(valid, cols, 0)
             return vals, cols
 
-        def scan_fn(carry, row_idx):
-            vals, cols = process_row(row_idx)
-            return carry, (vals, cols)
-
-        _, (all_vals, all_cols) = jax.lax.scan(
-            scan_fn, None, jnp.arange(nrows))  # (nrows, max_nnz)
+        all_vals, all_cols = jax.lax.map(
+            process_row, jnp.arange(nrows),
+            batch_size=mrx.MAP_BATCH_SIZE_OUTER,
+        )  # (nrows, max_nnz)
 
         # Build row indices and flatten
         row_indices = jnp.broadcast_to(

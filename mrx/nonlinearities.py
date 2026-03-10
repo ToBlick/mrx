@@ -11,7 +11,7 @@ class CrossProductProjection:
     with coordinate transformation F.
     """
 
-    def __init__(self, n: int, m: int, k: int, Seq):  # Seq: DeRhamSequence
+    def __init__(self, n: int, m: int, k: int, seq):  # Seq: DeRhamSequence
         """
         Given bases n, m, k, constructs an operator to evaluate
         (w, u) -> ∫ (wₕ × uₕ) · Λn[i] dx for all i, where Λn[i] is the i-th basis function of Λn
@@ -22,40 +22,40 @@ class CrossProductProjection:
             n: Degree of the n-form (n can be 1 or 2)
             m: Degree of the m-form (m can be 1 or 2)
             k: Degree of the k-form (k can be 1 or 2)
-            Seq: DeRham sequence containing the bases and quadrature rule
+            seq: DeRham sequence containing the bases and quadrature rule
         """
         self.n = n
         self.m = m
         self.k = k
-        self.Seq = Seq
+        self.seq = seq
 
         match self.n:
             case 1:
-                self.En = Seq.E1
-                self.get_Lambda_n_ijk = Seq.get_Lambda_1_ijk
-                self.nn = Seq.Lambda_1.n
+                self.en = seq.e1
+                self.eval_basis_n_ijk = seq.eval_basis_1_ijk
+                self.nn = seq.basis_1.n
             case 2:
-                self.En = Seq.E2
-                self.get_Lambda_n_ijk = Seq.get_Lambda_2_ijk
-                self.nn = Seq.Lambda_2.n
+                self.en = seq.e2
+                self.eval_basis_n_ijk = seq.eval_basis_2_ijk
+                self.nn = seq.basis_2.n
             case _:
                 raise ValueError("n must be 1 or 2")
         match self.m:
             case 1:
-                self.Em = Seq.E1
-                self.get_Lambda_m_ijk = Seq.get_Lambda_1_ijk
+                self.em = seq.e1
+                self.eval_basis_m_ijk = seq.eval_basis_1_ijk
             case 2:
-                self.Em = Seq.E2
-                self.get_Lambda_m_ijk = Seq.get_Lambda_2_ijk
+                self.em = seq.e2
+                self.eval_basis_m_ijk = seq.eval_basis_2_ijk
             case _:
                 raise ValueError("m must be 1 or 2")
         match self.k:
             case 1:
-                self.Ek = Seq.E1
-                self.get_Lambda_k_ijk = Seq.get_Lambda_1_ijk
+                self.Ek = seq.e1
+                self.eval_basis_k_ijk = seq.eval_basis_1_ijk
             case 2:
-                self.Ek = Seq.E2
-                self.get_Lambda_k_ijk = Seq.get_Lambda_2_ijk
+                self.Ek = seq.e2
+                self.eval_basis_k_ijk = seq.eval_basis_2_ijk
             case _:
                 raise ValueError("k must be 1 or 2")
 
@@ -71,13 +71,12 @@ class CrossProductProjection:
         Returns:
             array: ∫ (wₕ × uₕ) · Λn[i] dx for all i
         """
-        # Reassign En from Seq to ensure we have the current value
         if self.n == 1:
-            En_current = self.Seq.E1
+            en_current = self.seq.e1
         else:
-            En_current = self.Seq.E2
+            en_current = self.seq.e2
         
-        result = En_current @ self.projection(w, u)
+        result = en_current @ self.projection(w, u)
         return result
 
     def projection(self, w, u):
@@ -95,10 +94,10 @@ class CrossProductProjection:
         """
 
         # w and u evaluated at quadrature points: shape: n_q x 3
-        w_jk = evaluate_at_xq(self.get_Lambda_m_ijk,
-                              self.Em.T @ w, self.Seq.Q.n, 3)
-        u_jk = evaluate_at_xq(self.get_Lambda_k_ijk,
-                              self.Ek.T @ u, self.Seq.Q.n, 3)
+        w_jk = evaluate_at_xq(self.eval_basis_m_ijk,
+                              self.em.T @ w, self.seq.quad.n, 3)
+        u_jk = evaluate_at_xq(self.eval_basis_k_ijk,
+                              self.Ek.T @ u, self.seq.quad.n, 3)
 
         # now, we compute
         # ∑ Λn[i](x_j)_a w(x_j)_b u(x_j)_c ) t(x_j)_abc
@@ -107,39 +106,38 @@ class CrossProductProjection:
         # To avoid assembling the huge Λn[i](x_j)_a tensor, we scan over i.
         if self.n == 1 and self.m == 2 and self.k == 1:
             # ∫ Λ[i] (Gw x u) / J dx
-            Gw_jk = jnp.einsum('jkl,jk->jl', self.Seq.G_jkl, w_jk)
+            Gw_jk = jnp.einsum('jkl,jk->jl', self.seq.metric_jkl, w_jk)
             Gw_x_u_jk = jnp.cross(Gw_jk, u_jk, axis=1)
-            f_jk = Gw_x_u_jk * (self.Seq.Q.w / self.Seq.J_j)[:, None]
+            f_jk = Gw_x_u_jk * (self.seq.quad.w / self.seq.jacobian_j)[:, None]
         elif self.n == 1 and self.m == 1 and self.k == 1:
             # ∫ Λ[i] (w x u) dx
             w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-            f_jk = w_x_u_jk * (self.Seq.Q.w)[:, None]
+            f_jk = w_x_u_jk * (self.seq.quad.w)[:, None]
         elif self.n == 2 and self.m == 1 and self.k == 1:
             # ∫ Λ[i] G(w x u) / J dx
             w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-            G_wxu_jk = jnp.einsum('jkl,jk->jl', self.Seq.G_jkl, w_x_u_jk)
-            f_jk = G_wxu_jk * (self.Seq.Q.w / self.Seq.J_j)[:, None]
+            G_wxu_jk = jnp.einsum('jkl,jk->jl', self.seq.metric_jkl, w_x_u_jk)
+            f_jk = G_wxu_jk * (self.seq.quad.w / self.seq.jacobian_j)[:, None]
         elif self.n == 2 and self.m == 2 and self.k == 1:
             # ∫ Λ[i] (w x G_inv u) dx
-            Ginvu_jk = jnp.einsum('jkl,jk->jl', self.Seq.G_inv_jkl, u_jk)
+            Ginvu_jk = jnp.einsum('jkl,jk->jl', self.seq.metric_inv_jkl, u_jk)
             w_x_Ginvu_jk = jnp.cross(w_jk, Ginvu_jk, axis=1)
-            f_jk = w_x_Ginvu_jk * (self.Seq.Q.w)[:, None]
+            f_jk = w_x_Ginvu_jk * (self.seq.quad.w)[:, None]
         elif self.n == 1 and self.m == 2 and self.k == 2:
             # ∫ Λ[i] G_inv(w x u) dx
             w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
             Ginv_wxu_jk = jnp.einsum(
-                'jkl,jk->jl', self.Seq.G_inv_jkl, w_x_u_jk)
-            f_jk = Ginv_wxu_jk * (self.Seq.Q.w)[:, None]
+                'jkl,jk->jl', self.seq.metric_inv_jkl, w_x_u_jk)
+            f_jk = Ginv_wxu_jk * (self.seq.quad.w)[:, None]
         elif self.n == 2 and self.m == 1 and self.k == 2:
             # ∫ Λ[i] (G_inv w x u) dx
-            Ginvw_jk = jnp.einsum('jkl,jk->jl', self.Seq.G_inv_jkl, w_jk)
+            Ginvw_jk = jnp.einsum('jkl,jk->jl', self.seq.metric_inv_jkl, w_jk)
             Ginvw_x_u_jk = jnp.cross(Ginvw_jk, u_jk, axis=1)
-            f_jk = Ginvw_x_u_jk * (self.Seq.Q.w)[:, None]
+            f_jk = Ginvw_x_u_jk * (self.seq.quad.w)[:, None]
         elif self.n == 2 and self.m == 2 and self.k == 2:
             # ∫ Λ[i] (w x u) / J dx
             w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-            f_jk = w_x_u_jk * (self.Seq.Q.w / self.Seq.J_j)[:, None]
+            f_jk = w_x_u_jk * (self.seq.quad.w / self.seq.jacobian_j)[:, None]
         else:
             raise ValueError("Not yet implemented")
-        proj_result = integrate_against(self.get_Lambda_n_ijk, f_jk, self.nn)
-        return proj_result
+        return integrate_against(self.eval_basis_n_ijk, f_jk, self.nn)

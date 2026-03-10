@@ -84,20 +84,22 @@ def get_err(n, p, q):
     types = ("clamped", "periodic", "periodic")
     Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
     Seq.evaluate_1d()
-    Seq.assemble_M0()
+    Seq.assemble_m0()
     Seq.assemble_dd0()
 
     # Solve the system
-    u_hat = jnp.linalg.solve(Seq.M0 @ Seq.dd0, Seq.P0(f))
-    u_h = DiscreteFunction(u_hat, Seq.Lambda_0, Seq.E0)
+    u_hat = jnp.linalg.solve(Seq.m0 @ Seq.dd0, Seq.p0(f))
+    u_h = DiscreteFunction(u_hat, Seq.basis_0, Seq.e0)
 
     # Compute the L2 error
     def diff_at_x(x):
         return u(x) - u_h(x)
-    df_at_x = jax.vmap(diff_at_x)(Seq.Q.x)
-    f_at_x = jax.vmap(u)(Seq.Q.x)
-    L2_df = jnp.einsum('ik,ik,i,i->', df_at_x, df_at_x, Seq.J_j, Seq.Q.w)**0.5
-    L2_f = jnp.einsum('ik,ik,i,i->', f_at_x, f_at_x, Seq.J_j, Seq.Q.w)**0.5
+    df_at_x = jax.vmap(diff_at_x)(Seq.quad.x)
+    f_at_x = jax.vmap(u)(Seq.quad.x)
+    L2_df = jnp.einsum('ik,ik,i,i->', df_at_x, df_at_x,
+                       Seq.jacobian_j, Seq.quad.w)**0.5
+    L2_f = jnp.einsum('ik,ik,i,i->', f_at_x, f_at_x,
+                      Seq.jacobian_j, Seq.quad.w)**0.5
     error = L2_df / L2_f
     return error
 

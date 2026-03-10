@@ -81,15 +81,15 @@ M12 = Seq.assemble_M12_0()
 
 # %%
 P_JxH = CrossProductProjection(
-    Seq.Lambda_2, Seq.Lambda_1, Seq.Lambda_1, Seq.Q, Seq.F,
+    Seq.basis_2, Seq.basis_1, Seq.basis_1, Seq.quad, Seq.map,
     En=Seq.E2_0, Em=Seq.E1_0, Ek=Seq.E1_0,
     Λn_ijk=Seq.Λ2_ijk, Λm_ijk=Seq.Λ1_ijk, Λk_ijk=Seq.Λ1_ijk,
-    J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
+    J_j=Seq.jacobian_j, G_jkl=Seq.metric_jkl, G_inv_jkl=Seq.metric_inv_jkl)
 P_uxH = CrossProductProjection(
-    Seq.Lambda_1, Seq.Lambda_2, Seq.Lambda_1, Seq.Q, Seq.F,
+    Seq.basis_1, Seq.basis_2, Seq.basis_1, Seq.quad, Seq.map,
     En=Seq.E1_0, Em=Seq.E2_0, Ek=Seq.E1_0,
     Λn_ijk=Seq.Λ1_ijk, Λm_ijk=Seq.Λ2_ijk, Λk_ijk=Seq.Λ1_ijk,
-    J_j=Seq.J_j, G_jkl=Seq.G_jkl, G_inv_jkl=Seq.G_inv_jkl)
+    J_j=Seq.jacobian_j, G_jkl=Seq.metric_jkl, G_inv_jkl=Seq.metric_inv_jkl)
 # %%
 P_Leray = jnp.eye(M2.shape[0]) + \
     weak_grad @ jnp.linalg.pinv(laplace_3) @ M3 @ dvg
@@ -165,10 +165,10 @@ for i in range(n_iters):
         print(f"Iteration {i}, u norm: {u_trace[-1]}")
 
 # %%
-J_h = DiscreteFunction(J_hat, Seq.Lambda_1, Seq.E1_0.matrix())
+J_h = DiscreteFunction(J_hat, Seq.basis_1, Seq.E1_0.matrix())
 J_h_xyz = Pushforward(J_h, F, 1)
 
-B_h = DiscreteFunction(B_hat, Seq.Lambda_2, Seq.E2_0.matrix())
+B_h = DiscreteFunction(B_hat, Seq.basis_2, Seq.E2_0.matrix())
 B_h_xyz = Pushforward(B_h, F, 2)
 # %%
 plt.contourf(_y1, _y2, jnp.linalg.norm(jax.vmap(B_h_xyz)(_x), axis=-1).reshape(
@@ -180,7 +180,7 @@ plt.title(r'$\|B\|$ at $z=0.5$')
 plt.show()
 
 # %%
-B_h = DiscreteFunction(B_hat, Seq.Lambda_2, Seq.E2_0.matrix())
+B_h = DiscreteFunction(B_hat, Seq.basis_2, Seq.E2_0.matrix())
 B_h_xyz = Pushforward(B_h, F, 2)
 
 

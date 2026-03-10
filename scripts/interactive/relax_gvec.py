@@ -32,10 +32,10 @@ ns = (8, 16, 8)
 ps = (6, 6, 6)
 quad_order = 5
 
-map, resid = interpolate_map_from_points(
+map, R_dof, Z_dof, resid_R, resid_Z = interpolate_map_from_points(
     pts, R, Z, nfp, ns=ns_map, ps=ps_map, quad_order=quad_order_map)
 map = jax.jit(map)
-print(f"Map interpolation residuals: {resid[0]:.2e}, {resid[1]:.2e}")
+print(f"Map interpolation residuals: R={resid_R:.2e}, Z={resid_Z:.2e}")
 seq = DeRhamSequence(ns, ps, quad_order, ("clamped", "periodic", "periodic"),
                      map, polar=True, dirichlet=True)
 seq.evaluate_1d()
@@ -58,18 +58,18 @@ print(f"B-field interpolation residual (train): {resid_B[0]:.2e}")
 # %%
 # Validate interpolation
 B_h = jax.jit(Pushforward(DiscreteFunction(
-    B_dof_0, seq.Lambda_2, seq.E2), seq.F, 2))
+    B_dof_0, seq.basis_2, seq.e2), seq.map, 2))
 B_val_interp = jax.vmap(B_h)(val_pts)
 val_error = jnp.linalg.norm(B_vals[val_mask] - B_val_interp, axis=1)
 val_rel_error = val_error / jnp.linalg.norm(B_vals[val_mask], axis=1)
 print(
     f"B-field interpolation relative error (validation): mean={jnp.mean(val_rel_error):.2e}, max={jnp.max(val_rel_error):.2e}")
 print(
-    f"div B after interpolation: {((seq.strong_div @ B_dof_0) @ seq.M3 @ (seq.strong_div @ B_dof_0))**0.5: .2e}")
+    f"div B after interpolation: {((seq.strong_div @ B_dof_0) @ seq.m3 @ (seq.strong_div @ B_dof_0))**0.5: .2e}")
 
 # %%
 B_dof_0 = seq.P_Leray @ B_dof_0
-B_dof_0 /= (B_dof_0 @ seq.M2 @ B_dof_0)**0.5
+B_dof_0 /= (B_dof_0 @ seq.m2 @ B_dof_0)**0.5
 # %%
 B_dof = B_dof_0.copy()
 # %%
@@ -175,7 +175,7 @@ B_dof = final_state.B_n
 get_pressure = jax.jit(diagnostics.pressure)
 p_dof = get_pressure(B_dof)
 p_h = jax.jit(Pushforward(DiscreteFunction(
-    p_dof, seq.Lambda_0, seq.E0), seq.F, 0))
+    p_dof, seq.basis_0, seq.e0), seq.map, 0))
 
 # %%
 # J_hat = seq.weak_curl @ B_dof
@@ -187,7 +187,7 @@ p_h = jax.jit(Pushforward(DiscreteFunction(
 # %%
 fig = plot_scalar_fct_physical_logical(
     p_h,
-    seq.F,
+    seq.map,
     n_vis=64,
     logical_plane="r_theta",
     cbar_label="$p$",
@@ -198,7 +198,7 @@ fig = plot_scalar_fct_physical_logical(
 
 # %%
 J_xyz = jax.jit(Pushforward(DiscreteFunction(
-    seq.weak_curl @ B_dof, seq.Lambda_1, seq.E1), seq.F, 1))
+    seq.weak_curl @ B_dof, seq.basis_1, seq.e1), seq.map, 1))
 
 
 def J_norm(x):
@@ -208,7 +208,7 @@ def J_norm(x):
 # %%
 fig = plot_scalar_fct_physical_logical(
     J_norm,
-    seq.F,
+    seq.map,
     n_vis=64,
     logical_plane="r_theta",
     cbar_label=r"$| J |$",
@@ -220,10 +220,10 @@ fig = plot_scalar_fct_physical_logical(
 # %%
 cuts = jnp.linspace(0, 1, 4, endpoint=True)
 grids_pol = [
-    get_2d_grids(seq.F, cut_axis=2, cut_value=v, nx=32, ny=32, nz=1) for v in cuts
+    get_2d_grids(seq.map, cut_axis=2, cut_value=v, nx=32, ny=32, nz=1) for v in cuts
 ]
 grid_surface = get_2d_grids(
-    seq.F, cut_axis=0, cut_value=1.0, ny=128, nz=128, z_min=0, z_max=1, invert_z=True
+    seq.map, cut_axis=0, cut_value=1.0, ny=128, nz=128, z_min=0, z_max=1, invert_z=True
 )
 # %%
 fig, ax = plot_torus(
@@ -240,16 +240,16 @@ fig, ax = plot_torus(
 
 plt.savefig("relaxed_pressure_torus.pdf", dpi=300)
 # %%
-Phi_full_fp = jax.jit(extend_map_nfp(seq.F, nfp))
+Phi_full_fp = jax.jit(extend_map_nfp(seq.map, nfp))
 # %%
-B_h = jax.jit(DiscreteFunction(B_dof, seq.Lambda_2, seq.E2))
+B_h = jax.jit(DiscreteFunction(B_dof, seq.basis_2, seq.e2))
 
 
 @jax.jit
 def B_norm(x):
     x %= 1.0
     Bx = B_h(x)
-    DFx = jax.jacfwd(seq.F)(x)
+    DFx = jax.jacfwd(seq.map)(x)
     return jnp.linalg.norm(DFx @ Bx) / jnp.linalg.det(DFx)
 
 
@@ -293,15 +293,15 @@ fig, ax = plot_torus(
     azim=33,
 )
 # %%
-B_h = jax.jit(DiscreteFunction(B_dof, seq.Lambda_2, seq.E2))
+B_h = jax.jit(DiscreteFunction(B_dof, seq.basis_2, seq.e2))
 logical_trajectories, physical_trajectories = integrate_fieldline(
-    B_h, seq.F, nfp, T=10_000.0, n_traj=50
+    B_h, seq.map, nfp, T=10_000.0, n_traj=50
 )
 # %%
 for zeta in jnp.linspace(0.1, 0.5, 5, endpoint=False):
     fig, _ = poincare_plot(
         logical_trajectories,
-        seq.F,
+        seq.map,
         nfp,
         p_h=None,
         zeta_value=zeta,
@@ -312,8 +312,8 @@ for zeta in jnp.linspace(0.1, 0.5, 5, endpoint=False):
     )
 
 # %%
-p_avg = p_dof @ seq.P0(lambda x: jnp.ones(1)) / (seq.J_j @ seq.Q.w)
-beta = 2 * p_avg / (B_dof @ seq.M2 @ B_dof)
+p_avg = p_dof @ seq.p0(lambda x: jnp.ones(1)) / (seq.jacobian_j @ seq.quad.w)
+beta = 2 * p_avg / (B_dof @ seq.m2 @ B_dof)
 print(f"Beta = {beta:.3e}")
 
 # %%

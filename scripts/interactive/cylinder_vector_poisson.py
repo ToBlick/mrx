@@ -2,12 +2,12 @@
 # TODO: test or delete
 
 import time
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-from pathlib import Path
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import cylinder_map
@@ -16,7 +16,8 @@ jax.config.update("jax_enable_x64", True)
 script_dir = Path(__file__).parent / 'out'
 script_dir.mkdir(parents=True, exist_ok=True)
 
-def get_err(n : int, p : int) -> float:
+
+def get_err(n: int, p: int) -> float:
     """
     Compute the error in the solution of a vector Poisson problem in 3D.
     We define this function that does assembly, solves the system, and computes the error.
@@ -42,9 +43,9 @@ def get_err(n : int, p : int) -> float:
     F = cylinder_map(a=a, h=h)
 
     # Define exact solution and source term
-    def u(x : jnp.ndarray) -> jnp.ndarray:
+    def u(x: jnp.ndarray) -> jnp.ndarray:
         """Exact solution of the Poisson problem. Formula is:
-        
+
         u(r, χ, z) = (0, r² (1 - r)² cos(2πz), 0), 
         and is independent of χ.
 
@@ -58,9 +59,9 @@ def get_err(n : int, p : int) -> float:
         u_theta = r**2 * (1 - r)**2 * jnp.cos(2*π*z)
         return jnp.array([0, u_theta, 0])
 
-    def f(x : jnp.ndarray) -> jnp.ndarray:
+    def f(x: jnp.ndarray) -> jnp.ndarray:
         """Source term of the Poisson problem. Formula is:
-        
+
         f(r, χ, z) = (0, 4π² r² (1 - r)² cos(2πz) - (3 - 16r + 15r²) cos(2πz), 0),
         and is independent of χ.
 
@@ -71,31 +72,32 @@ def get_err(n : int, p : int) -> float:
             f: Source term of the vector Poisson problem.
         """
         r, χ, z = x
-        f_theta = (r**2 * (1 - r)**2 * 4*π**2 - (3 - 16*r + 15*r**2)) * jnp.cos(2*π*z)
+        f_theta = (r**2 * (1 - r)**2 * 4*π**2 -
+                   (3 - 16*r + 15*r**2)) * jnp.cos(2*π*z)
         return jnp.array([0, f_theta, 0])
 
     # Create DeRham sequence
     derham = DeRhamSequence(ns, ps, q, types, F, polar=False, dirichlet=True)
     derham.evaluate_1d()
-    derham.assemble_M0()
-    derham.assemble_M1()
-    derham.assemble_M2()
+    derham.assemble_m0()
+    derham.assemble_m1()
+    derham.assemble_m2()
 
-    # Curl operator TODO: should this be strong or weak? 
+    # Curl operator TODO: should this be strong or weak?
     derham.assemble_d1()
     C = derham.strong_curl
 
     # Double divergence operator on 2-forms
     derham.assemble_dd2()  # dd2 = divdiv + strong_curl weak_curl
-    divdiv = derham.M2 @ (derham.dd2 - derham.strong_curl @ derham.weak_curl)
+    divdiv = derham.m2 @ (derham.dd2 - derham.strong_curl @ derham.weak_curl)
 
     # Mass matrix for 1-forms
-    derham.assemble_M1()
-    M1 = derham.M1
+    derham.assemble_m1()
+    M1 = derham.m1
 
     # Mass matrix for 2-forms
-    derham.assemble_M2()
-    M2 = derham.M2
+    derham.assemble_m2()
+    M2 = derham.m2
 
     # block_matrix = jnp.block([[K, C], [-C.T, M1]])
     L = C @ jnp.linalg.solve(M1, C.T) + divdiv
@@ -111,11 +113,11 @@ def get_err(n : int, p : int) -> float:
     L_pinv = (eigvecs * inv_eigvals) @ eigvecs.T
 
     # Project source term onto 2-form space
-    f_proj = derham.P2(f)
+    f_proj = derham.p2(f)
     u_hat = L_pinv @ f_proj
 
     # Project exact solution onto 2-form space for error computation
-    u_proj = derham.P2(u)
+    u_proj = derham.p2(u)
 
     u_hat_analytic = jnp.linalg.solve(M2, u_proj)
     error = ((u_hat - u_hat_analytic) @ M2 @ (u_hat - u_hat_analytic) /
@@ -123,9 +125,9 @@ def get_err(n : int, p : int) -> float:
     return error
 
 
-def run_convergence_analysis(ns : list[int], ps : list[int]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def run_convergence_analysis(ns: list[int], ps: list[int]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run convergence analysis for different parameters.
-    
+
     Args:
         ns: List of number of elements in each direction
         ps: List of polynomial degrees
@@ -147,7 +149,8 @@ def run_convergence_analysis(ns : list[int], ps : list[int]) -> tuple[np.ndarray
             err[i, j] = get_err(n, p)
             end = time.time()
             times[i, j] = end - start
-            print(f"n={n}, p={p}, err={err[i, j]:.2e}, time={times[i, j]:.2f}s")
+            print(
+                f"n={n}, p={p}, err={err[i, j]:.2e}, time={times[i, j]:.2f}s")
 
     # Second run (after first compilation)
     print("\nSecond run (after first compilation):")
@@ -163,9 +166,9 @@ def run_convergence_analysis(ns : list[int], ps : list[int]) -> tuple[np.ndarray
     return err, times, times2
 
 
-def plot_results(err : np.ndarray, ns : list[int], ps : list[int]) -> plt.Figure:
+def plot_results(err: np.ndarray, ns: list[int], ps: list[int]) -> plt.Figure:
     """Plot the results of the convergence analysis.
-    
+
     Args:
         err : np.ndarray
             Array of relative L2 errors
@@ -173,7 +176,7 @@ def plot_results(err : np.ndarray, ns : list[int], ps : list[int]) -> plt.Figure
             List of number of elements in each direction
         ps : list[int]
             List of polynomial degrees
-    
+
     Returns:
         fig1 : plt.Figure
             Figure object
