@@ -74,7 +74,7 @@ def get_err(n, p):
     M2 = derham.m2
 
     # Project source term onto 2-form space
-    f_proj = derham.P2(f)
+    f_proj = derham.p2(f)
 
     # Solve
     L = M2 @ derham.dd2
@@ -97,7 +97,7 @@ def get_err(n, p):
     print(f" Relative residual: {residual_norm:.2e}")
 
     # Project exact solution onto 2-form space
-    u_proj = derham.P2(u)
+    u_proj = derham.p2(u)
     u_hat_analytic = jnp.linalg.solve(M2, u_proj)
 
     error = ((u_hat - u_hat_analytic) @ M2 @ (u_hat - u_hat_analytic) /

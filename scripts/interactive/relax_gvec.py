@@ -312,7 +312,7 @@ for zeta in jnp.linspace(0.1, 0.5, 5, endpoint=False):
     )
 
 # %%
-p_avg = p_dof @ seq.P0(lambda x: jnp.ones(1)) / (seq.jacobian_j @ seq.quad.w)
+p_avg = p_dof @ seq.p0(lambda x: jnp.ones(1)) / (seq.jacobian_j @ seq.quad.w)
 beta = 2 * p_avg / (B_dof @ seq.m2 @ B_dof)
 print(f"Beta = {beta:.3e}")
 

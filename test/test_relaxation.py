@@ -59,7 +59,7 @@ def B_field(seq: DeRhamSequence) -> jnp.ndarray:
     seq.build_crossproduct_projections()
     seq.assemble_leray_projection()
 
-    B_hat = jnp.linalg.solve(seq.m2, seq.P2(B_xyz))
+    B_hat = jnp.linalg.solve(seq.m2, seq.p2(B_xyz))
     B_hat = seq.P_Leray @ B_hat
     return B_hat
 
@@ -96,7 +96,7 @@ def u_field(seq: DeRhamSequence) -> jnp.ndarray:
     seq.build_crossproduct_projections()
     seq.assemble_leray_projection()
 
-    u_hat = jnp.linalg.solve(seq.m1, seq.P1(u_xyz))
+    u_hat = jnp.linalg.solve(seq.m1, seq.p1(u_xyz))
     return u_hat
 
 

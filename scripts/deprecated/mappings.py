@@ -439,26 +439,26 @@ def proj_error(n, p, q, k):
         case 0:
             u_test = f_test
             Seq.assemble_m0()
-            f_hat = jnp.linalg.solve(Seq.m0, Seq.P0(u_test))
+            f_hat = jnp.linalg.solve(Seq.m0, Seq.p0(u_test))
             f_h = Pushforward(DiscreteFunction(
                 f_hat, Seq.basis_0, Seq.e0), F, 0)
         case 1:
             u_test = E_test
             Seq.assemble_m1()
-            f_hat = jnp.linalg.solve(Seq.m1, Seq.P1(u_test))
+            f_hat = jnp.linalg.solve(Seq.m1, Seq.p1(u_test))
             f_h = Pushforward(DiscreteFunction(
                 f_hat, Seq.basis_1, Seq.e1), F, 1)
         case 2:
             u_test = E_test
 
             Seq.assemble_m2()
-            f_hat = jnp.linalg.solve(Seq.m2, Seq.P2(u_test))
+            f_hat = jnp.linalg.solve(Seq.m2, Seq.p2(u_test))
             f_h = Pushforward(DiscreteFunction(
                 f_hat, Seq.basis_2, Seq.e2), F, 2)
         case 3:
             u_test = f_test
             Seq.assemble_m3()
-            f_hat = jnp.linalg.solve(Seq.m3, Seq.P3(u_test))
+            f_hat = jnp.linalg.solve(Seq.m3, Seq.p3(u_test))
             f_h = Pushforward(DiscreteFunction(
                 f_hat, Seq.basis_3, Seq.e3), F, 3)
 
@@ -531,7 +531,7 @@ def norm_u_h(x):
     return ((DFx @ u_h_x) @ (DFx @ u_h_x))**0.5 / J
 
 
-f_hat = jnp.linalg.solve(Seq.m0, Seq.P0(f_test))
+f_hat = jnp.linalg.solve(Seq.m0, Seq.p0(f_test))
 f_h = Pushforward(DiscreteFunction(f_hat, Seq.basis_0, Seq.e0), F, 0)
 # %%
 cuts = jnp.linspace(0, 1, 5, endpoint=False)

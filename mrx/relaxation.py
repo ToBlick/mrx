@@ -204,7 +204,7 @@ class MRXDiagnostics:
                 DFx = jax.jacfwd(self.Seq.map)(x)
                 Bx = B_h(x)
                 return (J_h(x) @ Bx) / ((DFx @ Bx) @ DFx @ Bx) * jnp.linalg.det(DFx) * jnp.ones(1)
-            return jnp.linalg.solve(self.Seq.m0, self.Seq.P0(lmbda))
+            return jnp.linalg.solve(self.Seq.m0, self.Seq.p0(lmbda))
 
 
 class State(eqx.Module):

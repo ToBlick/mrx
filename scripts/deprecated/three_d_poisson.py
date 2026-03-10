@@ -73,7 +73,7 @@ def get_err(n, p):
     K = Seq.assemble_gradgrad()
 
     # Solve the system
-    u_hat = jnp.linalg.solve(K, Seq.P0(f))
+    u_hat = jnp.linalg.solve(K, Seq.p0(f))
     u_h = DiscreteFunction(u_hat, Seq.basis_0, Seq.e0.matrix())
 
     # Compute error

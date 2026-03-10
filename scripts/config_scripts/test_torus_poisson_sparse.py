@@ -99,7 +99,7 @@ def compute_error(n: int, p: int, epsilon: float,
         sparsity[f"{name}_nnz_actual"] = nnz_actual
 
     t0 = time.perf_counter()
-    rhs = seq.P0(f)
+    rhs = seq.p0(f)
     jax.block_until_ready(rhs)
     timings["P0(f)"] = time.perf_counter() - t0
 

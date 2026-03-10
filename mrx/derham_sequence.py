@@ -52,6 +52,10 @@ class DeRhamSequence():
     e1: jsparse.BCOO
     e2: jsparse.BCOO
     e3: jsparse.BCOO
+    e0_dbc: jsparse.BCOO
+    e1_dbc: jsparse.BCOO
+    e2_dbc: jsparse.BCOO
+    e3_dbc: jsparse.BCOO
     basis_r_jk: jnp.ndarray
     basis_t_jk: jnp.ndarray
     basis_z_jk: jnp.ndarray
@@ -66,7 +70,7 @@ class DeRhamSequence():
     # (k,l)th element of inverse metric at quadrature point j: G(x_j)^{-1}_kl. Shape: n_q x 3 x 3.
     metric_inv_jkl: jnp.ndarray
 
-    def __init__(self, ns, ps, q, types, map, polar, dirichlet=True, tol=1e-9, maxiter=100):
+    def __init__(self, ns, ps, q, types, map, polar, tol=1e-9, maxiter=100, r_scale=1.0):
         """
         Initialize the de Rham sequence.
 
@@ -77,15 +81,24 @@ class DeRhamSequence():
             types (list): List of strings representing the type of boundary condition for each differential form.
             map (callable): The mapping function from logical to physical domain.
             polar (bool): Whether to use polar coordinates.
-            dirichlet (bool): Whether to use Dirichlet boundary conditions.
             tol (float): Tolerance for sparse linear solvers.
             maxiter (int): Maximum number of iterations for sparse linear solvers.
+            r_scale (float): Scale factor for the radial coordinate.
         """
-        self.dirichlet = dirichlet
         self.tol = tol
         self.maxiter = maxiter
+        if not polar:
+            Ts = [None] * 3
+        else:
+            Tr = jnp.concatenate([
+                jnp.zeros(ps[0]),
+                jnp.linspace(0, 1, ns[0]-ps[0]+1)**r_scale,
+                jnp.ones(ps[0])
+            ])
+            Ts = [Tr, None, None]
+
         self.basis_0, self.basis_1, self.basis_2, self.basis_3 = [
-            DifferentialForm(i, ns, ps, types) for i in range(0, 4)
+            DifferentialForm(i, ns, ps, types, Ts) for i in range(0, 4)
         ]
         self.quad = QuadratureRule(self.basis_0, q)
         # Mapping from logical to physical coordinates
@@ -104,36 +117,57 @@ class DeRhamSequence():
         if polar:
             xi = get_xi(ns[1])
             e0, e1, e2, e3 = [
-                ExtractionOperator(Λ, xi, dirichlet)
+                ExtractionOperator(Λ, xi, False)
+                for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
+            ]
+            e0_dbc, e1_dbc, e2_dbc, e3_dbc = [
+                ExtractionOperator(Λ, xi, True)
                 for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
             ]
 
         else:
             # TODO: right now, we only support dirichlet BCs in r
-            if dirichlet:
-                bcs = ('dirichlet', 'none', 'none')
-            else:
-                bcs = ('none', 'none', 'none')
             e0, e1, e2, e3 = [
                 BoundaryOperator(
-                    Λ, bcs)
+                    Λ, ('none', 'none', 'none'))
+                for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
+                ]
+            e0_dbc, e1_dbc, e2_dbc, e3_dbc = [
+                BoundaryOperator(
+                    Λ, ('dirichlet', 'none', 'none'))
                 for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
                 ]
         self.e0 = e0.assemble_sparse()
+        self.e0_dbc = e0_dbc.assemble_sparse()
         self.n0 = e0.n
+        self.n0_dbc = e0_dbc.n
         self.n0_1, self.n0_2, self.n0_3 = e0.n, 0, 0
+        self.n0_1_dbc, self.n0_2_dbc, self.n0_3_dbc = e0_dbc.n, 0, 0
         self.e1 = e1.assemble_sparse()
+        self.e1_dbc = e1_dbc.assemble_sparse()
         self.n1 = e1.n
+        self.n1_dbc = e1_dbc.n
         self.n1_1, self.n1_2, self.n1_3 = e1.n1, e1.n2, e1.n2
+        self.n1_1_dbc, self.n1_2_dbc, self.n1_3_dbc = e1_dbc.n1, e1_dbc.n2, e1_dbc.n2
         self.e2 = e2.assemble_sparse()
+        self.e2_dbc = e2_dbc.assemble_sparse()
         self.n2 = e2.n
+        self.n2_dbc = e2_dbc.n
         self.n2_1, self.n2_2, self.n2_3 = e2.n1, e2.n2, e2.n3
+        self.n2_1_dbc, self.n2_2_dbc, self.n2_3_dbc = e2_dbc.n1, e2_dbc.n2, e2_dbc.n3
         self.e3 = e3.assemble_sparse()
+        self.e3_dbc = e3_dbc.assemble_sparse()
         self.n3 = e3.n
+        self.n3_dbc = e3_dbc.n
         self.n3_1, self.n3_2, self.n3_3 = e3.n1, e3.n2, e3.n3
+        self.n3_1_dbc, self.n3_2_dbc, self.n3_3_dbc = e3_dbc.n1, e3_dbc.n2, e3_dbc.n3
 
-        self.P0, self.P1, self.P2, self.P3 = [
-            Projector(self, k) for k in range(4)
+        self.p0, self.p1, self.p2, self.p3 = [
+            Projector(self, k, False) for k in range(4)
+        ]
+        
+        self.p0_dbc, self.p1_dbc, self.p2_dbc, self.p3_dbc = [
+            Projector(self, k, True) for k in range(4)
         ]
 
     def evaluate_1d(self):
@@ -396,6 +430,7 @@ class DeRhamSequence():
         M = assemble(self.eval_basis_0_ijk, self.eval_basis_0_ijk,
                      W, self.basis_0.n, self.basis_0.n)
         self.m0 = self.e0 @ M @ self.e0.T
+        self.m0_dbc = self.e0_dbc @ M @ self.e0_dbc.T
 
     def assemble_m0_sparse(self):
         """
@@ -408,18 +443,26 @@ class DeRhamSequence():
                                      W, self.basis_0.n, self.basis_0.n, nnz, neighbors)
         self.m0_sp_diaginv = 1 / (square_bcoo(
             self.e0) @ extract_diag_vector(self.m0_sp))
+        self.m0_sp_diaginv_dbc = 1 / (square_bcoo(
+            self.e0_dbc) @ extract_diag_vector(self.m0_sp))
 
-    def apply_m0_sparse(self, v):
+    def apply_m0_sparse(self, v, dirichlet=True):
         """
         Apply the sparse mass matrix for 0-forms to a vector v.
         """
-        return self.e0 @ (self.m0_sp @ (self.e0.T @ v))
+        if dirichlet:
+            return self.e0_dbc @ (self.m0_sp @ (self.e0_dbc.T @ v))
+        else:
+            return self.e0 @ (self.m0_sp @ (self.e0.T @ v))
 
-    def apply_m0_precond(self, v):
+    def apply_m0_precond(self, v, dirichlet=True):
         """
         Apply the diagonal preconditioner for the mass matrix of 0-forms to a vector v.
         """
-        return self.m0_sp_diaginv * v
+        if dirichlet:
+            return self.m0_sp_diaginv_dbc * v
+        else:
+            return self.m0_sp_diaginv * v
 
     def assemble_m1(self):
         """
@@ -431,6 +474,7 @@ class DeRhamSequence():
         M = assemble(self.eval_basis_1_ijk, self.eval_basis_1_ijk,
                      W, self.basis_1.n, self.basis_1.n)
         self.m1 = self.e1 @ M @ self.e1.T
+        self.m1_dbc = self.e1_dbc @ M @ self.e1_dbc.T
 
     def assemble_m1_sparse(self):
         """
@@ -444,18 +488,26 @@ class DeRhamSequence():
                                      W, self.basis_1.n, self.basis_1.n, nnz, neighbors)
         self.m1_sp_diaginv = 1 / (square_bcoo(
             self.e1) @ extract_diag_vector(self.m1_sp))
-
-    def apply_m1_sparse(self, v):
+        self.m1_sp_diaginv_dbc = 1 / (square_bcoo(
+            self.e1_dbc) @ extract_diag_vector(self.m1_sp))
+    
+    def apply_m1_sparse(self, v, dirichlet=True):
         """
         Apply the sparse mass matrix for 1-forms to a vector v.
         """
-        return self.e1 @ (self.m1_sp @ (self.e1.T @ v))
-
-    def apply_m1_precond(self, v):
+        if dirichlet:
+            return self.e1_dbc @ (self.m1_sp @ (self.e1_dbc.T @ v))
+        else:
+            return self.e1 @ (self.m1_sp @ (self.e1.T @ v))
+    
+    def apply_m1_precond(self, v, dirichlet=True):
         """
         Apply the diagonal preconditioner for the mass matrix of 1-forms to a vector v.
         """
-        return self.m1_sp_diaginv * v
+        if dirichlet:
+            return self.m1_sp_diaginv_dbc * v
+        else:
+            return self.m1_sp_diaginv * v
 
     def assemble_m2(self):
         """
@@ -466,7 +518,8 @@ class DeRhamSequence():
         M = assemble(self.eval_basis_2_ijk, self.eval_basis_2_ijk,
                      W, self.basis_2.n, self.basis_2.n)
         self.m2 = self.e2 @ M @ self.e2.T
-
+        self.m2_dbc = self.e2_dbc @ M @ self.e2_dbc.T
+        
     def assemble_m2_sparse(self):
         """
         Assemble mass matrix for 2-forms in sparse format.
@@ -478,18 +531,26 @@ class DeRhamSequence():
                                      W, self.basis_2.n, self.basis_2.n, nnz, neighbors)
         self.m2_sp_diaginv = 1 / (square_bcoo(
             self.e2) @ extract_diag_vector(self.m2_sp))
+        self.m2_sp_diaginv_dbc = 1 / (square_bcoo(
+            self.e2_dbc) @ extract_diag_vector(self.m2_sp))
 
-    def apply_m2_sparse(self, v):
+    def apply_m2_sparse(self, v, dirichlet=True):
         """
         Apply the sparse mass matrix for 2-forms to a vector v.
         """
-        return self.e2 @ (self.m2_sp @ (self.e2.T @ v))
+        if dirichlet:
+            return self.e2_dbc @ (self.m2_sp @ (self.e2_dbc.T @ v))
+        else:
+            return self.e2 @ (self.m2_sp @ (self.e2.T @ v))
 
-    def apply_m2_precond(self, v):
+    def apply_m2_precond(self, v, dirichlet=True):
         """
         Apply the diagonal preconditioner for the mass matrix of 2-forms to a vector v.
         """
-        return self.m2_sp_diaginv * v
+        if dirichlet:
+            return self.m2_sp_diaginv_dbc * v
+        else:
+            return self.m2_sp_diaginv * v
 
     def assemble_m3(self):
         """
@@ -500,6 +561,7 @@ class DeRhamSequence():
         M = assemble(self.eval_basis_3_ijk, self.eval_basis_3_ijk,
                      W, self.basis_3.n, self.basis_3.n)
         self.m3 = self.e3 @ M @ self.e3.T
+        self.m3_dbc = self.e3_dbc @ M @ self.e3_dbc.T
 
     def assemble_m3_sparse(self):
         """
@@ -512,18 +574,26 @@ class DeRhamSequence():
                                      W, self.basis_3.n, self.basis_3.n, nnz, neighbors)
         self.m3_sp_diaginv = 1 / (square_bcoo(
             self.e3) @ extract_diag_vector(self.m3_sp))
+        self.m3_sp_diaginv_dbc = 1 / (square_bcoo(
+            self.e3_dbc) @ extract_diag_vector(self.m3_sp))
 
-    def apply_m3_sparse(self, v):
+    def apply_m3_sparse(self, v, dirichlet=True):
         """
         Apply the sparse mass matrix for 3-forms to a vector v.
         """
-        return self.e3 @ (self.m3_sp @ (self.e3.T @ v))
+        if dirichlet:
+            return self.e3_dbc @ (self.m3_sp @ (self.e3_dbc.T @ v))
+        else:
+            return self.e3 @ (self.m3_sp @ (self.e3.T @ v))
 
-    def apply_m3_precond(self, v):
+    def apply_m3_precond(self, v, dirichlet=True):
         """
         Apply the diagonal preconditioner for the mass matrix of 3-forms to a vector v.
         """
-        return self.m3_sp_diaginv * v
+        if dirichlet:
+            return self.m3_sp_diaginv_dbc * v
+        else:
+            return self.m3_sp_diaginv * v
 
     def assemble_d0(self):
         """
@@ -553,17 +623,31 @@ class DeRhamSequence():
         self.d0_sp = assemble_sparse(self.eval_basis_1_ijk, self.eval_d_basis_0_ijk,
                                      W, self.basis_1.n, self.basis_0.n, nnz, neighbors)
 
-    def apply_d0_sparse(self, v):
+    def apply_d0_sparse(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the sparse derivative matrix D0 to a vector v.
         """
-        return self.e1 @ (self.d0_sp @ (self.e0.T @ v))
+        if dirichlet_out and dirichlet_in:
+            return self.e1_dbc @ (self.d0_sp @ (self.e0_dbc.T @ v))
+        elif dirichlet_out and not dirichlet_in:
+            return self.e1_dbc @ (self.d0_sp @ (self.e0.T @ v))
+        elif not dirichlet_out and dirichlet_in:
+            return self.e1 @ (self.d0_sp @ (self.e0_dbc.T @ v))
+        else:
+            return self.e1 @ (self.d0_sp @ (self.e0.T @ v))
 
-    def apply_d0t_sparse(self, v):
+    def apply_d0t_sparse(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the transpose of the sparse derivative matrix D0 to a vector v.
         """
-        return self.e0 @ (self.d0_sp.T @ (self.e1.T @ v))
+        if dirichlet_out and dirichlet_in:
+            return self.e0_dbc @ (self.d0_sp.T @ (self.e1_dbc.T @ v))
+        elif dirichlet_out and not dirichlet_in:
+            return self.e0_dbc @ (self.d0_sp.T @ (self.e1.T @ v))
+        elif not dirichlet_out and dirichlet_in:
+            return self.e0 @ (self.d0_sp.T @ (self.e1_dbc.T @ v))
+        else:
+            return self.e0 @ (self.d0_sp.T @ (self.e1.T @ v))
 
     def assemble_d1(self):
         """
@@ -590,17 +674,31 @@ class DeRhamSequence():
         self.d1_sp = assemble_sparse(self.eval_basis_2_ijk, self.eval_d_basis_1_ijk,
                                      W, self.basis_2.n, self.basis_1.n, nnz, neighbors)
 
-    def apply_d1_sparse(self, v):
+    def apply_d1_sparse(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the sparse derivative matrix D1 to a vector v.
         """
-        return self.e2 @ (self.d1_sp @ (self.e1.T @ v))
+        if dirichlet_out and dirichlet_in:
+            return self.e2_dbc @ (self.d1_sp @ (self.e1_dbc.T @ v))
+        elif dirichlet_out and not dirichlet_in:
+            return self.e2_dbc @ (self.d1_sp @ (self.e1.T @ v))
+        elif not dirichlet_out and dirichlet_in:
+            return self.e2 @ (self.d1_sp @ (self.e1_dbc.T @ v))
+        else:
+            return self.e2 @ (self.d1_sp @ (self.e1.T @ v))
 
-    def apply_d1t_sparse(self, v):
+    def apply_d1t_sparse(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the transpose of the sparse derivative matrix D1 to a vector v.
         """
-        return self.e1 @ (self.d1_sp.T @ (self.e2.T @ v))
+        if dirichlet_out and dirichlet_in:
+            return self.e1_dbc @ (self.d1_sp.T @ (self.e2_dbc.T @ v))
+        elif dirichlet_out and not dirichlet_in:
+            return self.e1_dbc @ (self.d1_sp.T @ (self.e2.T @ v))
+        elif not dirichlet_out and dirichlet_in:
+            return self.e1 @ (self.d1_sp.T @ (self.e2_dbc.T @ v))
+        else:
+            return self.e1 @ (self.d1_sp.T @ (self.e2.T @ v))
 
     def assemble_d2(self):
         """
@@ -627,17 +725,31 @@ class DeRhamSequence():
         self.d2_sp = assemble_sparse(self.eval_basis_3_ijk, self.eval_d_basis_2_ijk,
                                      W, self.basis_3.n, self.basis_2.n, nnz, neighbors)
 
-    def apply_d2_sparse(self, v):
+    def apply_d2_sparse(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the sparse derivative matrix D2 to a vector v.
         """
-        return self.e3 @ (self.d2_sp @ (self.e2.T @ v))
+        if dirichlet_out and dirichlet_in:
+            return self.e3_dbc @ (self.d2_sp @ (self.e2_dbc.T @ v))
+        elif dirichlet_out and not dirichlet_in:
+            return self.e3_dbc @ (self.d2_sp @ (self.e2.T @ v))
+        elif not dirichlet_out and dirichlet_in:
+            return self.e3 @ (self.d2_sp @ (self.e2_dbc.T @ v))
+        else:
+            return self.e3 @ (self.d2_sp @ (self.e2.T @ v))
 
-    def apply_d2t_sparse(self, v):
+    def apply_d2t_sparse(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the sparse derivative matrix D2 to a vector v.
         """
-        return self.e2 @ (self.d2_sp.T @ (self.e3.T @ v))
+        if dirichlet_out and dirichlet_in:
+            return self.e2_dbc @ (self.d2_sp.T @ (self.e3_dbc.T @ v))
+        elif dirichlet_out and not dirichlet_in:
+            return self.e2_dbc @ (self.d2_sp.T @ (self.e3.T @ v))
+        elif not dirichlet_out and dirichlet_in:
+            return self.e2 @ (self.d2_sp.T @ (self.e3_dbc.T @ v))
+        else:
+            return self.e2 @ (self.d2_sp.T @ (self.e3.T @ v))
 
     def assemble_dd0(self):
         """
@@ -666,21 +778,29 @@ class DeRhamSequence():
 
         self.dd0_sp_diaginv = 1 / (square_bcoo(
             self.e0) @ extract_diag_vector(self.grad_grad_sp))
+        self.dd0_sp_diaginv_dbc = 1 / (square_bcoo(
+            self.e0_dbc) @ extract_diag_vector(self.grad_grad_sp))
 
-    def apply_grad_grad_sparse(self, v):
+    def apply_grad_grad_sparse(self, v, dirichlet=True):
         """
         Apply the sparse grad-grad matrix to a vector v.
         """
-        return self.e0 @ (self.grad_grad_sp @ (self.e0.T @ v))
+        if dirichlet:
+            return self.e0_dbc @ (self.grad_grad_sp @ (self.e0_dbc.T @ v))
+        else:
+            return self.e0 @ (self.grad_grad_sp @ (self.e0.T @ v))
 
-    def apply_dd0_sparse(self, v):
+    def apply_dd0_sparse(self, v, dirichlet=True):
         """
         Forward application of the k=0 Hodge Laplacian
         """
-        return self.apply_grad_grad_sparse(v)
+        return self.apply_grad_grad_sparse(v, dirichlet=dirichlet)
 
-    def apply_dd0_precond(self, v):
-        return self.dd0_sp_diaginv * v
+    def apply_dd0_precond(self, v, dirichlet=True):
+        if dirichlet:
+            return self.dd0_sp_diaginv_dbc * v
+        else:
+            return self.dd0_sp_diaginv * v
 
     def assemble_dd1(self):
         """
@@ -714,14 +834,24 @@ class DeRhamSequence():
         diag = diag + (square_bcoo(self.e1) @
                        extract_diag_vector(self.curl_curl_sp))
         self.dd1_sp_diaginv = 1 / diag
+        
+        diag_dbc = self.m0_sp_diaginv_dbc @ square_bcoo(self.e0_dbc)
+        diag_dbc = square_bcoo(self.d0_sp) @ diag_dbc
+        diag_dbc = square_bcoo(self.e1_dbc) @ diag_dbc
+        diag_dbc = diag_dbc + (square_bcoo(self.e1_dbc) @
+                       extract_diag_vector(self.curl_curl_sp))
+        self.dd1_sp_diaginv_dbc = 1 / diag_dbc
 
-    def apply_curl_curl_sparse(self, v):
+    def apply_curl_curl_sparse(self, v, dirichlet=True):
         """
         Apply the sparse curl-curl matrix to a vector v.
         """
-        return self.e1 @ (self.curl_curl_sp @ (self.e1.T @ v))
+        if dirichlet:
+            return self.e1_dbc @ (self.curl_curl_sp @ (self.e1_dbc.T @ v))
+        else:
+            return self.e1 @ (self.curl_curl_sp @ (self.e1.T @ v))
 
-    def apply_dd1_sparse(self, u):
+    def apply_dd1_sparse(self, u, dirichlet=True):
         """
         Forward application of the saddle point operator for the k=1 Hodge Laplacian:
 
@@ -733,21 +863,24 @@ class DeRhamSequence():
 
         To compute the inverse of M0, we do an inner cg solve with Jacobi preconditioning.
         """
-        minus_div_u = self.apply_d0t_sparse(u)
+        minus_div_u = self.apply_d0t_sparse(u, dirichlet_out=dirichlet, dirichlet_in=dirichlet)
         # inner solve with Jacobi preconditioning for M0
-        m0_inv_div_u = cg(self.apply_m0_sparse, minus_div_u, tol=self.tol,
-                          M=self.apply_m0_precond, maxiter=self.maxiter)[0]
-        return self.apply_curl_curl_sparse(u) + self.apply_d0_sparse(m0_inv_div_u)
-        # u, s = jnp.split(v, [self.e1.shape[0]])
-        # term1 = self.apply_curl_curl_sparse(u) + self.apply_d0_sparse(s)
-        # term2 = self.apply_d0t_sparse(u) - self.apply_m0_sparse(s)
-        # return jnp.concatenate([term1, term2])
+        m0_inv_div_u = cg(lambda x: self.apply_m0_sparse(x, dirichlet=dirichlet), 
+                          minus_div_u,
+                          M=lambda x: self.apply_m0_precond(x, dirichlet=dirichlet), 
+                          tol=self.tol, maxiter=self.maxiter)[0]
+        return self.apply_curl_curl_sparse(u, dirichlet=dirichlet) \
+            + self.apply_d0_sparse(m0_inv_div_u, dirichlet_out=dirichlet, dirichlet_in=dirichlet)
 
-    def apply_dd1_precond(self, v):
+
+    def apply_dd1_precond(self, v, dirichlet=True):
         """
         Apply the diagonal preconditioner for the k=1 Hodge Laplacian to a vector v.
         """
-        return self.dd1_sp_diaginv * v
+        if dirichlet:
+            return self.dd1_sp_diaginv_dbc * v
+        else:
+            return self.dd1_sp_diaginv * v
 
     def assemble_dd2(self):
         """
@@ -781,14 +914,24 @@ class DeRhamSequence():
         diag = diag + (square_bcoo(self.e2) @
                        extract_diag_vector(self.div_div_sp))
         self.dd2_sp_diaginv = 1 / diag
+        
+        diag_dbc = self.m1_sp_diaginv_dbc @ square_bcoo(self.e1_dbc)
+        diag_dbc = square_bcoo(self.d1_sp) @ diag_dbc
+        diag_dbc = square_bcoo(self.e2_dbc) @ diag_dbc
+        diag_dbc = diag_dbc + (square_bcoo(self.e2_dbc) @
+                       extract_diag_vector(self.div_div_sp))
+        self.dd2_sp_diaginv_dbc = 1 / diag_dbc
 
-    def apply_div_div_sparse(self, v):
+    def apply_div_div_sparse(self, v, dirichlet=True):
         """
         Apply the sparse div-div matrix to a vector v.
         """
-        return self.e2 @ (self.div_div_sp @ (self.e2.T @ v))
+        if dirichlet:
+            return self.e2_dbc @ (self.div_div_sp @ (self.e2_dbc.T @ v))
+        else:
+            return self.e2 @ (self.div_div_sp @ (self.e2.T @ v))
 
-    def apply_dd2_sparse(self, u):
+    def apply_dd2_sparse(self, u, dirichlet=True):
         """
         Forward application of the saddle point operator for the k=2 Hodge Laplacian:
 
@@ -800,17 +943,23 @@ class DeRhamSequence():
 
         To compute the inverse of M1, we do an inner cg solve with Jacobi preconditioning.
         """
-        curl_u = self.apply_d1t_sparse(u)
+        curl_u = self.apply_d1t_sparse(u, dirichlet_out=dirichlet, dirichlet_in=dirichlet)
         # inner solve with Jacobi preconditioning for M1
-        m1_inv_curl_u = cg(self.apply_m1_sparse, curl_u, tol=self.tol,
-                           M=self.apply_m1_precond, maxiter=self.maxiter)[0]
-        return self.apply_div_div_sparse(u) + self.apply_d1_sparse(m1_inv_curl_u)
+        m1_inv_curl_u = cg(lambda x: self.apply_m1_sparse(x, dirichlet=dirichlet),
+                           curl_u,
+                           M=lambda x: self.apply_m1_precond(x, dirichlet=dirichlet),
+                           maxiter=self.maxiter, tol=self.tol)[0]
+        return self.apply_div_div_sparse(u, dirichlet=dirichlet) \
+            + self.apply_d1_sparse(m1_inv_curl_u, dirichlet_out=dirichlet, dirichlet_in=dirichlet)
 
-    def apply_dd2_precond(self, v):
+    def apply_dd2_precond(self, v, dirichlet=True):
         """
         Apply the diagonal preconditioner for the k=2 Hodge Laplacian to a vector v.
         """
-        return self.dd2_sp_diaginv * v
+        if dirichlet:
+            return self.dd2_sp_diaginv_dbc * v
+        else:
+            return self.dd2_sp_diaginv * v
 
     def assemble_dd3(self):
         """
@@ -825,13 +974,17 @@ class DeRhamSequence():
         self.dd3 = -self.strong_div @ self.weak_grad
 
     def assemble_dd3_sparse(self):
-
         diag = self.m2_sp_diaginv @ square_bcoo(self.e2)
         diag = square_bcoo(self.d2_sp) @ diag
         diag = square_bcoo(self.e3) @ diag
         self.dd3_sp_diaginv = 1 / diag
+        
+        diag_dbc = self.m2_sp_diaginv_dbc @ square_bcoo(self.e2_dbc)
+        diag_dbc = square_bcoo(self.d2_sp) @ diag_dbc
+        diag_dbc = square_bcoo(self.e3_dbc) @ diag_dbc
+        self.dd3_sp_diaginv_dbc = 1 / diag_dbc
 
-    def apply_dd3_sparse(self, u):
+    def apply_dd3_sparse(self, u, dirichlet=True):
         """
         Forward application of the saddle point operator for the k=3 Hodge Laplacian:
 
@@ -843,22 +996,22 @@ class DeRhamSequence():
 
         To compute the inverse of M2, we do an inner cg solve with Jacobi preconditioning.
         """
-        minus_grad_u = self.apply_d2t_sparse(u)
+        minus_grad_u = self.apply_d2t_sparse(u, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         # inner solve with Jacobi preconditioning for M2
-        m2_inv_minus_grad_u = cg(self.apply_m2_sparse, minus_grad_u, tol=self.tol,
-                                 M=self.apply_m2_precond, maxiter=self.maxiter)[0]
-        return self.apply_d2_sparse(m2_inv_minus_grad_u)
+        m2_inv_minus_grad_u = cg(lambda x: self.apply_m2_sparse(x, dirichlet=dirichlet),
+                                 minus_grad_u,
+                                 M=lambda x: self.apply_m2_precond(x, dirichlet=dirichlet),
+                                 tol=self.tol, maxiter=self.maxiter)[0]
+        return self.apply_d2_sparse(m2_inv_minus_grad_u, dirichlet_out=dirichlet, dirichlet_in=dirichlet)
 
-        # u, s = jnp.split(v, [self.e3.shape[0]])
-        # term1 = self.apply_d2_sparse(s)
-        # term2 = -self.apply_d2t_sparse(u) - self.apply_m2_sparse(s)
-        # return jnp.concatenate([term1, term2])
-
-    def apply_dd3_precond(self, v):
+    def apply_dd3_precond(self, v, dirichlet=True):
         """
         Apply the diagonal preconditioner for the k=3 Hodge Laplacian to a vector v.
         """
-        return self.dd3_sp_diaginv * v
+        if dirichlet:
+            return self.dd3_sp_diaginv_dbc * v
+        else:
+            return self.dd3_sp_diaginv * v
 
     def assemble_p12(self):
         """
@@ -884,11 +1037,18 @@ class DeRhamSequence():
         self.m12_sp = assemble_sparse(self.eval_basis_1_ijk, self.eval_basis_2_ijk,
                                       W, self.basis_1.n, self.basis_2.n, nnz, neighbors)
 
-    def apply_m12_sparse(self, v):
+    def apply_m12_sparse(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the sparse 1-2 cross mass matrix to a vector v.
         """
-        return self.e1 @ (self.m12_sp @ (self.e2.T @ v))
+        if dirichlet_out and dirichlet_in:
+            return self.e1_dbc @ (self.m12_sp @ (self.e2_dbc.T @ v))
+        elif dirichlet_out and not dirichlet_in:
+            return self.e1_dbc @ (self.m12_sp @ (self.e2.T @ v))
+        elif not dirichlet_out and dirichlet_in:
+            return self.e1 @ (self.m12_sp @ (self.e2_dbc.T @ v))
+        else:
+            return self.e1 @ (self.m12_sp @ (self.e2.T @ v))
 
     def assemble_p03(self):
         """
@@ -914,11 +1074,18 @@ class DeRhamSequence():
         self.m03_sp = assemble_sparse(self.eval_basis_0_ijk, self.eval_basis_3_ijk,
                                       W, self.basis_0.n, self.basis_3.n, nnz, neighbors)
 
-    def apply_m03_sparse(self, v):
+    def apply_m03_sparse(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the sparse 0-3 cross mass matrix to a vector v.
         """
-        return self.e0 @ (self.m03_sp @ (self.e3.T @ v))
+        if dirichlet_in and dirichlet_out:
+            return self.e0_dbc @ (self.m03_sp @ (self.e3_dbc.T @ v))
+        elif dirichlet_in and not dirichlet_out:
+            return self.e0_dbc @ (self.m03_sp @ (self.e3.T @ v))
+        elif not dirichlet_in and dirichlet_out:
+            return self.e0 @ (self.m03_sp @ (self.e3_dbc.T @ v))
+        else:
+            return self.e0 @ (self.m03_sp @ (self.e3.T @ v))
 
     def build_crossproduct_projections(self):
         """
@@ -994,60 +1161,82 @@ class DeRhamSequence():
             -> div(v - grad p) = 0 and p = 0 on the boundary.
         """
         if k == 2:
-            div_v = self.apply_d2_sparse(v)
-            p = solve_singular_cg(self.apply_dd3_sparse, div_v, mass_matvec=self.apply_m3_sparse, tol=self.tol,
-                                  precond_matvec=self.apply_dd3_precond, vs=self.null_3, maxiter=self.maxiter)[0]
-            σ = -self.apply_weak_grad(p)
+            # Assumes dirichlet == True on all spaces.
+            div_v = self.apply_d2_sparse(v, True, True)
+            p = solve_singular_cg(lambda x: self.apply_dd3_sparse(x, True), 
+                                  div_v, 
+                                  mass_matvec=lambda x: self.apply_m3_sparse(x, True),
+                                  precond_matvec=lambda x: self.apply_dd3_precond(x, True), 
+                                  vs=self.null_3_dbc, 
+                                  tol=self.tol, maxiter=self.maxiter)[0]
+            σ = -self.apply_weak_grad(p, True, True)
             return v - σ, p
         elif k == 1:
-            div_v = -self.apply_d0t_sparse(v)
-            p = solve_singular_cg(self.apply_dd0_sparse, div_v, mass_matvec=self.apply_m0_sparse, tol=self.tol,
-                                  precond_matvec=self.apply_dd0_precond, vs=self.null_0, maxiter=self.maxiter)[0]
-            σ = -self.apply_strong_grad(p)
+            # Assumes dirichlet == False on all spaces.
+            div_v = -self.apply_d0t_sparse(v, False, False)
+            p = solve_singular_cg(lambda x: self.apply_dd0_sparse(x, False), 
+                                  div_v, 
+                                  mass_matvec=lambda x: self.apply_m0_sparse(x, False),
+                                  precond_matvec=lambda x: self.apply_dd0_precond(x, False), 
+                                  vs=self.null_0, 
+                                  tol=self.tol, maxiter=self.maxiter)[0]
+            σ = -self.apply_strong_grad(p, False, False)
             return v - σ, p
 
     # TODO: We can pre-compute strong operators, they are sparse
-    def apply_strong_grad(self, v):
+    def apply_strong_grad(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the strong gradient operator to a vector v.
         """
-        return cg(self.apply_m1_sparse, self.apply_d0_sparse(
-            v), tol=self.tol, M=self.apply_m1_precond, maxiter=self.maxiter)[0]
+        return cg(lambda x: self.apply_m1_sparse(x, dirichlet_out), 
+                  self.apply_d0_sparse(v, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out), 
+                  M=lambda x: self.apply_m1_precond(x, dirichlet_out), 
+                  tol=self.tol, maxiter=self.maxiter)[0]
 
-    def apply_strong_curl(self, v):
+    def apply_strong_curl(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the strong curl operator to a vector v.
         """
-        return cg(self.apply_m2_sparse, self.apply_d1_sparse(
-            v), tol=self.tol, M=self.apply_m2_precond, maxiter=self.maxiter)[0]
+        return cg(lambda x: self.apply_m2_sparse(x, dirichlet_out), 
+                  self.apply_d1_sparse(v, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out), 
+                  M=lambda x: self.apply_m2_precond(x, dirichlet_out), 
+                  tol=self.tol, maxiter=self.maxiter)[0]
 
-    def apply_strong_div(self, v):
+    def apply_strong_div(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the strong divergence operator to a vector v.
         """
-        return cg(self.apply_m3_sparse, self.apply_d2_sparse(
-            v), tol=self.tol, M=self.apply_m3_precond, maxiter=self.maxiter)[0]
+        return cg(lambda x: self.apply_m3_sparse(x, dirichlet_out), 
+                  self.apply_d2_sparse(v, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out), 
+                  M=lambda x: self.apply_m3_precond(x, dirichlet_out),
+                  tol=self.tol, maxiter=self.maxiter)[0]
 
-    def apply_weak_grad(self, v):
+    def apply_weak_grad(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the weak gradient operator to a vector v.
         """
-        return -cg(self.apply_m2_sparse, self.apply_d2t_sparse(
-            v), tol=self.tol, M=self.apply_m2_precond, maxiter=self.maxiter)[0]
+        return -cg(lambda x: self.apply_m2_sparse(x, dirichlet_out), 
+                   self.apply_d2t_sparse(v, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out), 
+                   M=lambda x: self.apply_m2_precond(x, dirichlet_out), 
+                   tol=self.tol, maxiter=self.maxiter)[0]
 
-    def apply_weak_curl(self, v):
+    def apply_weak_curl(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the weak curl operator to a vector v.
         """
-        return cg(self.apply_m1_sparse, self.apply_d1t_sparse(
-            v), tol=self.tol, M=self.apply_m1_precond, maxiter=self.maxiter)[0]
+        return cg(lambda x: self.apply_m1_sparse(x, dirichlet_out), 
+                  self.apply_d1t_sparse(v, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out), 
+                  M=lambda x: self.apply_m1_precond(x, dirichlet_out),
+                  tol=self.tol, maxiter=self.maxiter)[0]
 
-    def apply_weak_div(self, v):
+    def apply_weak_div(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the weak divergence operator to a vector v.
         """
-        return -cg(self.apply_m0_sparse, self.apply_d0t_sparse(
-            v), tol=self.tol, M=self.apply_m0_precond, maxiter=self.maxiter)[0]
+        return -cg(lambda x: self.apply_m0_sparse(x, dirichlet_out), 
+                   self.apply_d0t_sparse(v, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out), 
+                   M=lambda x: self.apply_m0_precond(x, dirichlet_out),
+                   tol=self.tol, maxiter=self.maxiter)[0]
 # %%
 
     def compute_nullspaces(self):
@@ -1055,32 +1244,38 @@ class DeRhamSequence():
         Compute the nullspace of the k-th Hodge Laplacian using randomized SVD.
         TODO: For now this only handles the case where the nullspace is 1-dim.
         """
-        if self.dirichlet:
-            self.null_0 = []
-            self.null_1 = []
-            v3 = cg(self.apply_m3_sparse, jnp.ones(self.n3), tol=self.tol,
-                    M=self.apply_m3_precond, maxiter=self.maxiter)[0]
-            v3 /= (v3 @ self.apply_m3_sparse(v3)) ** 0.5
-            self.null_3 = [v3]
-            v, _ = self.apply_leray_projection(
-                jnp.ones(self.n2), k=2)
-            a = cg(self.apply_dd1_sparse, self.apply_d1t_sparse(v), M=self.apply_dd1_precond,
-                   tol=self.tol, maxiter=self.maxiter)[0]
-            curl_a = self.apply_strong_curl(a)
-            v2 = v - curl_a
-            v2 /= (v2 @ self.apply_m2_sparse(v2))**0.5
-            self.null_2 = [v2]
-        else:
-            v0 = jnp.ones(self.n0)
-            v0 /= (v0 @ self.apply_m0_sparse(v0)) ** 0.5
-            self.null_0 = [v0]
-            v, _ = self.apply_leray_projection(
-                jnp.ones(self.n1), k=1)
-            a = cg(self.apply_dd2_sparse, self.apply_d1_sparse(v), M=self.apply_dd2_precond,
-                   tol=self.tol, maxiter=self.maxiter)[0]
-            curl_a = self.apply_weak_curl(a)
-            v1 = v - curl_a
-            v1 /= (v1 @ self.apply_m1_sparse(v1))**0.5
-            self.null_1 = [v1]
-            self.null_2 = []
-            self.null_3 = []
+        self.null_0_dbc = []
+        self.null_1_dbc = []
+        v3 = cg(lambda x: self.apply_m3_sparse(x, True), 
+                jnp.ones(self.n3_dbc), 
+                M=lambda x: self.apply_m3_precond(x, True), 
+                tol=self.tol, maxiter=self.maxiter)[0]
+        v3 /= (v3 @ self.apply_m3_sparse(v3, True)) ** 0.5
+        self.null_3_dbc = [v3]
+        v, _ = self.apply_leray_projection(
+            jnp.ones(self.n2_dbc), k=2)
+        a = cg(lambda x: self.apply_dd1_sparse(x, True), 
+               self.apply_d1t_sparse(v, True, True), 
+               M=lambda x: self.apply_dd1_precond(x, True),
+               tol=self.tol, maxiter=self.maxiter)[0]
+        curl_a = self.apply_strong_curl(a, True, True) 
+        v2 = v - curl_a
+        v2 /= (v2 @ self.apply_m2_sparse(v2, True))**0.5
+        self.null_2_dbc = [v2]
+        
+        # no Dirichlet BCs (all defaults to False)
+        v0 = jnp.ones(self.n0)
+        v0 /= (v0 @ self.apply_m0_sparse(v0, False)) ** 0.5
+        self.null_0 = [v0]
+        v, _ = self.apply_leray_projection(
+            jnp.ones(self.n1), k=1)
+        a = cg(lambda x: self.apply_dd2_sparse(x, False), 
+               self.apply_d1_sparse(v, False, False), 
+               M=lambda x: self.apply_dd2_precond(x, False),
+               tol=self.tol, maxiter=self.maxiter)[0]
+        curl_a = self.apply_weak_curl(a, False, False)
+        v1 = v - curl_a
+        v1 /= (v1 @ self.apply_m1_sparse(v1, False))**0.5
+        self.null_1 = [v1]
+        self.null_2 = []
+        self.null_3 = []

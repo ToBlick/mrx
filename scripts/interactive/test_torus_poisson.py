@@ -71,12 +71,12 @@ seq.assemble_m0_sparse()
 seq.assemble_dd0_sparse()
 # %%
 # Solve the dense system
-u_hat = jnp.linalg.solve(seq.m0 @ seq.dd0, seq.P0(f))
+u_hat = jnp.linalg.solve(seq.m0 @ seq.dd0, seq.p0(f))
 u_h = DiscreteFunction(u_hat, seq.basis_0, seq.e0)
 # %%
 # solve the sparse system
 out = jax.lax.custom_linear_solve(seq.apply_dd0_sparse,
-                                  seq.P0(f),
+                                  seq.p0(f),
                                   lambda mv, b: cg(
                                       mv, b, tol=1e-9, M=seq.apply_dd0_precond)[0],
                                   transpose_solve=None,

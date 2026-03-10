@@ -81,7 +81,7 @@ for n in ns:
                          F, polar=True, dirichlet=True)
     Seq.evaluate_1d()
     Seq.assemble_m0()
-    f_dof = jnp.linalg.solve(Seq.m0, Seq.P0(f))
+    f_dof = jnp.linalg.solve(Seq.m0, Seq.p0(f))
     f_h = DiscreteFunction(f_dof, Seq.basis_0, Seq.e0)
 
     # --- error evaluation ---

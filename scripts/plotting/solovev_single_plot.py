@@ -192,7 +192,7 @@ grids_pol = [get_2d_grids(F, cut_axis=2, cut_value=v,
 plot_crossections_separate(p_h, grids_pol, cuts, plot_centerline=True)
 # %%
 Seq.evaluate_1d()
-p_avg = p_hat @ Seq.P0(lambda x: jnp.ones(1)) / (Seq.jacobian_j @ Seq.quad.w)
+p_avg = p_hat @ Seq.p0(lambda x: jnp.ones(1)) / (Seq.jacobian_j @ Seq.quad.w)
 print(f"p_avg = {p_avg:.3e}")
 
 # %%

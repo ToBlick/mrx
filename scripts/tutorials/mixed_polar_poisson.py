@@ -98,7 +98,7 @@ def get_err(n, p, q):
     Seq.assemble_dd3()  # Assemble 3-form Laplacian - strong_div o weak_grad
 
     # Solve the system
-    u_dof = jnp.linalg.solve(Seq.m3 @ Seq.dd3, Seq.P3(f))
+    u_dof = jnp.linalg.solve(Seq.m3 @ Seq.dd3, Seq.p3(f))
     # The solution will satisfy u = 0 on the boundary
     u_h = Pushforward(DiscreteFunction(u_dof, Seq.basis_3, Seq.e3), F, 3)
 

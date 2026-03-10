@@ -84,7 +84,7 @@ def compute_error(n, p):
     timings['assemble_dd0_sparse'] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    rhs = seq.P0(f)
+    rhs = seq.p0(f)
     jax.block_until_ready(rhs)
     timings['P0(f)'] = time.perf_counter() - t0
 

@@ -164,7 +164,7 @@ def load_sweep(
     return cfgs, forces, iter_counts
 
 
-def interpolate_scalar_function(x, f_vals, seq, rcond=None):
+def interpolate_scalar_function(x, f_vals, seq, weights = None, rcond=None):
     """
     Least-squares interpolation of a scalar field onto a 0-form FEM basis.
 
@@ -180,6 +180,8 @@ def interpolate_scalar_function(x, f_vals, seq, rcond=None):
         Scalar values at evaluation points, shape ``(n_pts,)``.
     seq : DeRhamSequence
         Pre-built DeRham sequence to use for the basis.
+    weights : jnp.ndarray, optional
+        Weights for the least-squares problem, shape ``(n_pts,)``.
     rcond : float, optional
         Relative condition number cutoff for small singular values in lstsq.
 
@@ -188,12 +190,18 @@ def interpolate_scalar_function(x, f_vals, seq, rcond=None):
     dict
         Dictionary containing 'dof' (the coefficient vector) and lstsq diagnostics.
     """
+    if weights is None:
+        weights = jnp.ones_like(f_vals)
+    
     M = mrx.double_map(
         lambda i, pt: seq.basis_0[i](pt)[0],
         seq.basis_0.ns, x,
     )  # shape (n_dof, n_pts)
+    
+    A = jnp.einsum('ij,j,jk->ik', M, weights, M.T)  # shape (n_dof, n_dof)
+    rhs = jnp.einsum('ij,j,j->i', M, weights, f_vals)  # shape (n_dof,)
 
-    c, residual, rank, s = jnp.linalg.lstsq(M.T, f_vals, rcond=rcond)
+    c, residual, rank, s = jnp.linalg.lstsq(A, rhs, rcond=rcond)
     return {
         "dof" : c,
         "residual" : residual,
@@ -202,21 +210,15 @@ def interpolate_scalar_function(x, f_vals, seq, rcond=None):
     }
 
 
-def interpolate_B(x, B, seq, exclude_axis_tol=1e-3):
+def interpolate_B(x, B_vals, seq, weights = None, rcond=None):
     """
     Interpolate B-field onto FEM basis given evaluations at points x.
     """
 
-    # valid interpolation points (avoid axis and exact boundary)
-    valid_pts = (x[:, 0] > exclude_axis_tol) & (
-        x[:, 0] < 1 - exclude_axis_tol)
-
     def Λ2_phys(i, x):
         return Pushforward(lambda x: seq.Lambda_2[i](x), seq.F, 2)(x)
 
-    valid_points = x[valid_pts]
-
-    M = mrx.double_map(Λ2_phys, seq.Lambda_2.ns, valid_points)
+    M = mrx.double_map(Λ2_phys, seq.Lambda_2.ns, x)
     M = jnp.einsum('il,ljk->ijk', seq.E2, M)    # Λ2[i](x_hat_j)_k
     y = B[valid_pts].reshape(-1, 3)              # B(x'_j)_k
 

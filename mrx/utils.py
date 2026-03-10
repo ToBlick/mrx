@@ -885,102 +885,12 @@ def square_bcoo(mat: jsparse.BCOO) -> jsparse.BCOO:
 
 # %%
 
-def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x, x0=None, vs=[], maxiter=1000, tol=1e-6):
+# def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x, x0=None, vs=[], maxiter=1000, tol=1e-6):
     
-    # --- 1. Your Exact Projection Logic ---
-    def inner_product(x, y):
-        return jnp.dot(x, mass_matvec(y))
-
-    def project_primal(x):
-        for v in vs:
-            x = x - inner_product(v, x) * v
-        return x
-
-    def project_dual(f):
-        for v in vs:
-            f = f - jnp.dot(v, f) * mass_matvec(v)
-        return f
-
-    # --- 2. Initial Setup ---
-    b_proj = project_dual(b)
-    if x0 is None:
-        x0 = jnp.zeros_like(b_proj)
-    else:
-        x0 = project_primal(x0)
-
-    # Initial residual (Dual)
-    Ax0 = project_dual(A_matvec(x0))
-    r0 = b_proj - Ax0
-    r0 = project_dual(r0)  # Clean the initial residual
-
-    # Initial preconditioned residual (Primal)
-    z0 = precond_matvec(r0)
-    z0 = project_primal(z0) # Clean the preconditioner output
-
-    p0 = z0
+#    if mass_matvec is None:
+#        mass_matvec = lambda x: x
     
-    # State: (iteration, x, r, p, z, r_dot_z, residual_norm)
-    r_dot_z_0 = jnp.vdot(r0, z0)
-    init_state = (0, x0, r0, p0, z0, r_dot_z_0, jnp.linalg.norm(r0))
-
-    # --- 3. The CG Loop ---
-    def cond_fun(state):
-        i, _, _, _, _, _, r_norm = state
-        return (i < maxiter) & (r_norm > tol)
-
-    def body_fun(state):
-        i, x, r, p, z, r_dot_z, _ = state
-
-        # Matrix-vector multiply (output is Dual)
-        Ap = A_matvec(p)
-        Ap = project_dual(Ap) # Safe evaluation
-
-        # Step size
-        p_dot_Ap = jnp.vdot(p, Ap)
-        alpha = r_dot_z / p_dot_Ap
-
-        # Update solution and residual
-        x_next = x + alpha * p
-        r_next = r - alpha * Ap
-
-        r_next = project_dual(r_next) 
-
-        # Apply and project preconditioner
-        z_next = precond_matvec(r_next)
-        z_next = project_primal(z_next) # PREVENTS PRECONDITIONER DRIFT
-
-        # Update search direction
-        r_dot_z_next = jnp.vdot(r_next, z_next)
-        beta = r_dot_z_next / r_dot_z
-        p_next = z_next + beta * p
-        
-        # Keep p strictly in the Primal subspace
-        p_next = project_primal(p_next) 
-
-        return (i + 1, x_next, r_next, p_next, z_next, r_dot_z_next, jnp.linalg.norm(r_next))
-
-    # --- 4. Execute ---
-    final_state = jax.lax.while_loop(cond_fun, body_fun, init_state)
-    
-    iters, x_final, _, _, _, _, info_norm = final_state
-    
-    # Final safety projection
-    return project_primal(x_final), {"iterations": iters, "residual_norm": info_norm}
-
-# def solve_singular_cg(A_matvec, mass_matvec, b, precond_matvec=lambda x: x, x0=None, vs=[], max_iters=None, tol=1e-6):
-#     """
-#     Solve the singular SPSD system for the minimum norm solution using CG.
-
-#     Args:
-#         A_matvec: Callable representing bilinear form (outputs Dual vectors).
-#         mass_matvec: Callable representing mass matrix.
-#         b: The right-hand side vector (Dual vector).
-#         x0: Optional initial guess (Primal vector).
-#         vs: List of mass-normalized zero eigenvectors (Primal vectors).
-#         max_iters: Maximum number of CG iterations.
-#         tol: CG tolerance.
-#     """
-
+#     # --- 1. Your Exact Projection Logic ---
 #     def inner_product(x, y):
 #         return jnp.dot(x, mass_matvec(y))
 
@@ -994,22 +904,117 @@ def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x,
 #             f = f - jnp.dot(v, f) * mass_matvec(v)
 #         return f
 
+#     # --- 2. Initial Setup ---
 #     b_proj = project_dual(b)
-
-#     def A_matvec_safe(x):
-#         x = project_primal(x)
-#         # Apply the bilinear form (output is Dual)
-#         Ax = A_matvec(x)
-#         return project_dual(Ax)
-
 #     if x0 is None:
 #         x0 = jnp.zeros_like(b_proj)
 #     else:
 #         x0 = project_primal(x0)
 
-#     x, info = cg(A_matvec_safe, b_proj, x0=x0,
-#                  M=precond_matvec, tol=tol, maxiter=max_iters)
-#     return project_primal(x), info
+#     # Initial residual (Dual)
+#     Ax0 = project_dual(A_matvec(x0))
+#     r0 = b_proj - Ax0
+#     r0 = project_dual(r0)  # Clean the initial residual
+
+#     # Initial preconditioned residual (Primal)
+#     z0 = precond_matvec(r0)
+#     z0 = project_primal(z0) # Clean the preconditioner output
+
+#     p0 = z0
+    
+#     # State: (iteration, x, r, p, z, r_dot_z, residual_norm)
+#     r_dot_z_0 = jnp.vdot(r0, z0)
+#     init_state = (0, x0, r0, p0, z0, r_dot_z_0, jnp.linalg.norm(r0))
+
+#     # --- 3. The CG Loop ---
+#     def cond_fun(state):
+#         i, _, _, _, _, _, r_norm = state
+#         return (i < maxiter) & (r_norm > tol)
+
+#     def body_fun(state):
+#         i, x, r, p, z, r_dot_z, _ = state
+
+#         # Matrix-vector multiply (output is Dual)
+#         Ap = A_matvec(p)
+#         Ap = project_dual(Ap) # Safe evaluation
+
+#         # Step size
+#         p_dot_Ap = jnp.vdot(p, Ap)
+#         alpha = r_dot_z / p_dot_Ap
+
+#         # Update solution and residual
+#         x_next = x + alpha * p
+#         r_next = r - alpha * Ap
+
+#         r_next = project_dual(r_next) 
+
+#         # Apply and project preconditioner
+#         z_next = precond_matvec(r_next)
+#         z_next = project_primal(z_next) # PREVENTS PRECONDITIONER DRIFT
+
+#         # Update search direction
+#         r_dot_z_next = jnp.vdot(r_next, z_next)
+#         beta = r_dot_z_next / r_dot_z
+#         p_next = z_next + beta * p
+        
+#         # Keep p strictly in the Primal subspace
+#         p_next = project_primal(p_next) 
+
+#         return (i + 1, x_next, r_next, p_next, z_next, r_dot_z_next, jnp.linalg.norm(r_next))
+
+#     # --- 4. Execute ---
+#     final_state = jax.lax.while_loop(cond_fun, body_fun, init_state)
+    
+#     iters, x_final, _, _, _, _, info_norm = final_state
+    
+#     # Final safety projection
+#     return project_primal(x_final), {"iterations": iters, "residual_norm": info_norm}
+
+def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x, x0=None, vs=[], maxiter=None, tol=1e-6):
+    """
+    Solve the singular SPSD system for the minimum norm solution using CG.
+
+    Args:
+        A_matvec: Callable representing bilinear form (outputs Dual vectors).
+        mass_matvec: Callable representing mass matrix.
+        b: The right-hand side vector (Dual vector).
+        x0: Optional initial guess (Primal vector).
+        vs: List of mass-normalized zero eigenvectors (Primal vectors).
+        maxiter: Maximum number of CG iterations.
+        tol: CG tolerance.
+    """
+    if mass_matvec is None:
+        mass_matvec = lambda x: x
+
+    def inner_product(x, y):
+        return jnp.dot(x, mass_matvec(y))
+
+    def project_primal(x):
+        for v in vs:
+            x = x - inner_product(v, x) * v
+        return x
+
+    def project_dual(f):
+        for v in vs:
+            f = f - jnp.dot(v, f) * mass_matvec(v)
+        return f
+
+    b_proj = project_dual(b)
+
+    def A_matvec_safe(x):
+        x = project_primal(x)
+        # Apply the bilinear form (output is Dual)
+        Ax = A_matvec(x)
+        return project_dual(Ax)
+
+    if x0 is None:
+        x0 = jnp.zeros_like(b_proj)
+    else:
+        x0 = project_primal(x0)
+
+    x, info = cg(A_matvec_safe, b_proj, x0=x0,
+                 M=precond_matvec, tol=tol, maxiter=maxiter)
+    return project_primal(x), info
 
 
 def get_smallest_ev_pair(A_matvec, mass_matvec, x0, precond_matvec=lambda x: x, vs=[], shift=1e-9, maxiter=20, tol=1e-6):

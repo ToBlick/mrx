@@ -70,7 +70,7 @@ def get_err(n, p):
     M2 = derham.m2
 
     # Project source term onto 2-form space
-    f_proj = derham.P2(f)
+    f_proj = derham.p2(f)
 
     # Solve the system
     L = M2 @ derham.dd2
@@ -110,7 +110,7 @@ def get_err(n, p):
     u_hat, residuals, rank, s = jnp.linalg.lstsq(L_proj, f_proj_proj)
 
     # Project exact solution onto 2-form space
-    u_proj = derham.P2(u)
+    u_proj = derham.p2(u)
 
     # Full exact solution (coefficient vector)
     u_hat_analytic_full = jnp.linalg.solve(M2, u_proj)

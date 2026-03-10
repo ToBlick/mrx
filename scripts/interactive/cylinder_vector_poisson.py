@@ -113,11 +113,11 @@ def get_err(n: int, p: int) -> float:
     L_pinv = (eigvecs * inv_eigvals) @ eigvecs.T
 
     # Project source term onto 2-form space
-    f_proj = derham.P2(f)
+    f_proj = derham.p2(f)
     u_hat = L_pinv @ f_proj
 
     # Project exact solution onto 2-form space for error computation
-    u_proj = derham.P2(u)
+    u_proj = derham.p2(u)
 
     u_hat_analytic = jnp.linalg.solve(M2, u_proj)
     error = ((u_hat - u_hat_analytic) @ M2 @ (u_hat - u_hat_analytic) /

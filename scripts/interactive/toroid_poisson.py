@@ -77,7 +77,7 @@ def get_err(n: int, p: int) -> tuple[float, float, float]:
     Seq.assemble_dd0()
 
     # Solve the system
-    u_hat = jnp.linalg.solve(Seq.m0 @ Seq.dd0, Seq.P0(f))
+    u_hat = jnp.linalg.solve(Seq.m0 @ Seq.dd0, Seq.p0(f))
     u_h = DiscreteFunction(u_hat, Seq.basis_0, Seq.e0)
 
     # do not vmap here because of memory issues

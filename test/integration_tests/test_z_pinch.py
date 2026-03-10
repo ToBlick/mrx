@@ -63,7 +63,7 @@ def test_zpinch_pressure_convergence():
     Seq.assemble_leray_projection()
 
     # --- compute pressure approximation ---
-    B_hat = jnp.linalg.solve(Seq.m2, Seq.P2(B0))
+    B_hat = jnp.linalg.solve(Seq.m2, Seq.p2(B0))
     p_hat = MRXDiagnostics(Seq).pressure(B_hat)
     p_h = DiscreteFunction(p_hat, Seq.basis_0, Seq.e0)
 

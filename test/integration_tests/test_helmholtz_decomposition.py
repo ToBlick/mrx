@@ -51,7 +51,7 @@ def test_helmholtz_decomposition():
         return jnp.array([jnp.sin(φ), -jnp.cos(φ), 0]) / R
 
     # Project B into the discrete space
-    B_hat = Seq.P_Leray @ jnp.linalg.solve(Seq.m2, Seq.P2(B))
+    B_hat = Seq.P_Leray @ jnp.linalg.solve(Seq.m2, Seq.p2(B))
     B_hat /= (B_hat @ Seq.m2 @ B_hat)**0.5  # normalize
     A_hat = jnp.linalg.solve(Seq.dd1, Seq.weak_curl @ B_hat)
     # A_hat is approx. 0 since B is the harmonic form

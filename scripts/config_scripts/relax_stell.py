@@ -319,7 +319,7 @@ def main(cfg: DictConfig) -> float:
     B_xyz = create_initial_B_field(F, tau)
 
     # Project to FEM space
-    B_dof_0 = jnp.linalg.solve(seq.m2, seq.P2(B_xyz))
+    B_dof_0 = jnp.linalg.solve(seq.m2, seq.p2(B_xyz))
     B_dof_0 = seq.P_Leray @ B_dof_0
 
     # Normalize

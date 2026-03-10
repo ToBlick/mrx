@@ -102,7 +102,7 @@ def test_projection_0form(p):
         return jnp.sin(2 * jnp.pi * r) * jnp.cos(2 * jnp.pi * theta) * jnp.sin(2 * jnp.pi * zeta)
 
     # Project the function
-    f_proj = Seq.P0(f)
+    f_proj = Seq.p0(f)
 
     # TODO: Test Galerkin condition: (P0(f), g)_M0 = (f, g)_M0 for all test functions g
     # This means: M0 @ f_proj should equal the right-hand side E0 @ (f, Lambda_0)
@@ -120,7 +120,7 @@ def test_projection_0form(p):
     def f_projected(x):
         return f_discrete(x)[0]
 
-    f_proj_twice = Seq.P0(f_projected)
+    f_proj_twice = Seq.p0(f_projected)
     npt.assert_allclose(f_proj, f_proj_twice, rtol=1e-8, atol=1e-8,
                         err_msg=f"P0 projection is not idempotent for p={p}")
 
@@ -151,7 +151,7 @@ def test_projection_1form(p):
         ])
 
     # Project the function
-    v_proj = Seq.P1(v)
+    v_proj = Seq.p1(v)
 
     # TODO: Test Galerkin condition: (P1(v), w)_M1 = (v, w)_M1 for all test functions w
     # This means: M1 @ v_proj should equal the right-hand side E1 @ (v, Λ1)
@@ -200,7 +200,7 @@ def test_projection_2form(p):
         ])
 
     # Project the function
-    v_proj = Seq.P2(v)
+    v_proj = Seq.p2(v)
 
     # TODO: Test Galerkin condition: (P2(v), w)_M2 = (v, w)_M2 for all test functions w
     # This means: M2 @ v_proj should equal the right-hand side E2 @ (v, Λ2)
@@ -245,7 +245,7 @@ def test_projection_3form(p):
         return jnp.sin(2 * jnp.pi * r) * jnp.cos(2 * jnp.pi * theta) * jnp.sin(2 * jnp.pi * zeta)
 
     # Project the function
-    f_proj = Seq.P3(f)
+    f_proj = Seq.p3(f)
 
     # TODO: Test Galerkin condition: (P3(f), g)_M3 = (f, g)_M3 for all test functions g
     # This means: M3 @ f_proj should equal the right-hand side E3 @ (f, Λ3)
@@ -263,7 +263,7 @@ def test_projection_3form(p):
     def f_projected(x):
         return f_discrete(x)[0]
 
-    f_proj_twice = Seq.P3(f_projected)
+    f_proj_twice = Seq.p3(f_projected)
     npt.assert_allclose(f_proj, f_proj_twice, rtol=1e-8, atol=1e-8,
                         err_msg=f"P3 projection is not idempotent for p={p}")
 
@@ -437,24 +437,24 @@ def test_crossproduct_projection_value_errors(p):
 
     # Test ValueError for n not in [1, 2]
     with pytest.raises(ValueError, match="n must be 1 or 2"):
-        CrossProductProjection(n=0, m=1, k=1, Seq=Seq)
+        CrossProductProjection(n=0, m=1, k=1, seq=Seq)
 
     with pytest.raises(ValueError, match="n must be 1 or 2"):
-        CrossProductProjection(n=3, m=1, k=1, Seq=Seq)
+        CrossProductProjection(n=3, m=1, k=1, seq=Seq)
 
     # Test ValueError for m not in [1, 2]
     with pytest.raises(ValueError, match="m must be 1 or 2"):
-        CrossProductProjection(n=1, m=0, k=1, Seq=Seq)
+        CrossProductProjection(n=1, m=0, k=1, seq=Seq)
 
     with pytest.raises(ValueError, match="m must be 1 or 2"):
-        CrossProductProjection(n=1, m=3, k=1, Seq=Seq)
+        CrossProductProjection(n=1, m=3, k=1, seq=Seq)
 
     # Test ValueError for k not in [1, 2]
     with pytest.raises(ValueError, match="k must be 1 or 2"):
-        CrossProductProjection(n=1, m=1, k=0, Seq=Seq)
+        CrossProductProjection(n=1, m=1, k=0, seq=Seq)
 
     with pytest.raises(ValueError, match="k must be 1 or 2"):
-        CrossProductProjection(n=1, m=1, k=3, Seq=Seq)
+        CrossProductProjection(n=1, m=1, k=3, seq=Seq)
 
     # Test ValueError for not yet implemented combinations
     # Based on the code, the implemented combinations are:
@@ -467,13 +467,13 @@ def test_crossproduct_projection_value_errors(p):
     # - (n=2, m=2, k=2)
     # So (n=1, m=1, k=2) should raise "Not yet implemented"
     with pytest.raises(ValueError, match="Not yet implemented"):
-        proj = CrossProductProjection(n=1, m=1, k=2, Seq=Seq)
+        proj = CrossProductProjection(n=1, m=1, k=2, seq=Seq)
         w_1 = jnp.ones(Seq.m1.shape[0]) * 0.1
         u_2 = jnp.ones(Seq.m2.shape[0]) * 0.2
         proj(w_1, u_2)
 
     with pytest.raises(ValueError, match="Not yet implemented"):
-        proj = CrossProductProjection(n=1, m=1, k=2, Seq=Seq)
+        proj = CrossProductProjection(n=1, m=1, k=2, seq=Seq)
         w_1 = jnp.ones(Seq.m1.shape[0]) * 0.1
         u_2 = jnp.ones(Seq.m2.shape[0]) * 0.2
         proj(w_1, u_2)

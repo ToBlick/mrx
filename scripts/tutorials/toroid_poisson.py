@@ -88,7 +88,7 @@ def get_err(n, p, q):
     Seq.assemble_dd0()
 
     # Solve the system
-    u_hat = jnp.linalg.solve(Seq.m0 @ Seq.dd0, Seq.P0(f))
+    u_hat = jnp.linalg.solve(Seq.m0 @ Seq.dd0, Seq.p0(f))
     u_h = DiscreteFunction(u_hat, Seq.basis_0, Seq.e0)
 
     # Compute the L2 error
