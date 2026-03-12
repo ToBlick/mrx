@@ -16,7 +16,9 @@ from mrx.utils import (
     assemble,
     assemble_sparse,
     build_neighbors,
+    evaluate_at_xq,
     extract_diag_vector,
+    integrate_against,
     inv33,
     jacobian_determinant,
     solve_singular_cg,
@@ -865,9 +867,10 @@ class DeRhamSequence():
         """
         minus_div_u = self.apply_d0t_sparse(u, dirichlet_out=dirichlet, dirichlet_in=dirichlet)
         # inner solve with Jacobi preconditioning for M0
-        m0_inv_div_u = cg(lambda x: self.apply_m0_sparse(x, dirichlet=dirichlet), 
+        m0_inv_div_u = solve_singular_cg(lambda x: self.apply_m0_sparse(x, dirichlet=dirichlet), 
                           minus_div_u,
-                          M=lambda x: self.apply_m0_precond(x, dirichlet=dirichlet), 
+                          mass_matvec=lambda x: self.apply_m0_sparse(x, dirichlet=dirichlet),
+                          precond_matvec=lambda x: self.apply_m0_precond(x, dirichlet=dirichlet), 
                           tol=self.tol, maxiter=self.maxiter)[0]
         return self.apply_curl_curl_sparse(u, dirichlet=dirichlet) \
             + self.apply_d0_sparse(m0_inv_div_u, dirichlet_out=dirichlet, dirichlet_in=dirichlet)
@@ -945,9 +948,10 @@ class DeRhamSequence():
         """
         curl_u = self.apply_d1t_sparse(u, dirichlet_out=dirichlet, dirichlet_in=dirichlet)
         # inner solve with Jacobi preconditioning for M1
-        m1_inv_curl_u = cg(lambda x: self.apply_m1_sparse(x, dirichlet=dirichlet),
+        m1_inv_curl_u = solve_singular_cg(lambda x: self.apply_m1_sparse(x, dirichlet=dirichlet),
                            curl_u,
-                           M=lambda x: self.apply_m1_precond(x, dirichlet=dirichlet),
+                           mass_matvec=lambda x: self.apply_m1_sparse(x, dirichlet=dirichlet),
+                           precond_matvec=lambda x: self.apply_m1_precond(x, dirichlet=dirichlet),
                            maxiter=self.maxiter, tol=self.tol)[0]
         return self.apply_div_div_sparse(u, dirichlet=dirichlet) \
             + self.apply_d1_sparse(m1_inv_curl_u, dirichlet_out=dirichlet, dirichlet_in=dirichlet)
@@ -998,9 +1002,10 @@ class DeRhamSequence():
         """
         minus_grad_u = self.apply_d2t_sparse(u, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         # inner solve with Jacobi preconditioning for M2
-        m2_inv_minus_grad_u = cg(lambda x: self.apply_m2_sparse(x, dirichlet=dirichlet),
+        m2_inv_minus_grad_u = solve_singular_cg(lambda x: self.apply_m2_sparse(x, dirichlet=dirichlet),
                                  minus_grad_u,
-                                 M=lambda x: self.apply_m2_precond(x, dirichlet=dirichlet),
+                                 mass_matvec=lambda x: self.apply_m2_sparse(x, dirichlet=dirichlet),
+                                 precond_matvec=lambda x: self.apply_m2_precond(x, dirichlet=dirichlet),
                                  tol=self.tol, maxiter=self.maxiter)[0]
         return self.apply_d2_sparse(m2_inv_minus_grad_u, dirichlet_out=dirichlet, dirichlet_in=dirichlet)
 
@@ -1087,6 +1092,17 @@ class DeRhamSequence():
         else:
             return self.e0 @ (self.m03_sp @ (self.e3.T @ v))
 
+    def l2_norm_sq(self, v, k):
+        match k:
+            case 0:
+                return v @ self.apply_m0_sparse(v)
+            case 1:
+                return v @ self.apply_m1_sparse(v)
+            case 2:
+                return v @ self.apply_m2_sparse(v)
+            case 3:
+                return v @ self.apply_m3_sparse(v)
+
     def build_crossproduct_projections(self):
         """
         Returns projections to evaluate (u, v) -> u x v
@@ -1146,99 +1162,67 @@ class DeRhamSequence():
         self.P_Leray = jnp.eye(self.m2.shape[0]) + \
             self.weak_grad @ jnp.linalg.pinv(self.dd3) @ self.strong_div
 
-    def apply_leray_projection(self, v, k=2):
-        """
-        Apply the Leray projection to a 2-form v.
-
-        When k = 2:
-            Solves the system (k=3 Hodge Laplacian):
-            div v = div σ
-            (σ, ω) = -(p, div ω) ∀ω 2-forms
-            -> div(v - weak_grad p) = div(v - σ) = 0 and σ.n = 0 on the boundary.
-        When k = 1:
-            Solves the k=0 Hodge Laplacian:
-            (grad p, grad ω) = (v, grad ω) ∀ω 0-forms
-            -> div(v - grad p) = 0 and p = 0 on the boundary.
-        """
-        if k == 2:
-            # Assumes dirichlet == True on all spaces.
-            div_v = self.apply_d2_sparse(v, True, True)
-            p = solve_singular_cg(lambda x: self.apply_dd3_sparse(x, True), 
-                                  div_v, 
-                                  mass_matvec=lambda x: self.apply_m3_sparse(x, True),
-                                  precond_matvec=lambda x: self.apply_dd3_precond(x, True), 
-                                  vs=self.null_3_dbc, 
-                                  tol=self.tol, maxiter=self.maxiter)[0]
-            σ = -self.apply_weak_grad(p, True, True)
-            return v - σ, p
-        elif k == 1:
-            # Assumes dirichlet == False on all spaces.
-            div_v = -self.apply_d0t_sparse(v, False, False)
-            p = solve_singular_cg(lambda x: self.apply_dd0_sparse(x, False), 
-                                  div_v, 
-                                  mass_matvec=lambda x: self.apply_m0_sparse(x, False),
-                                  precond_matvec=lambda x: self.apply_dd0_precond(x, False), 
-                                  vs=self.null_0, 
-                                  tol=self.tol, maxiter=self.maxiter)[0]
-            σ = -self.apply_strong_grad(p, False, False)
-            return v - σ, p
-
     # TODO: We can pre-compute strong operators, they are sparse
     def apply_strong_grad(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the strong gradient operator to a vector v.
         """
-        return cg(lambda x: self.apply_m1_sparse(x, dirichlet_out), 
+        return solve_singular_cg(lambda x: self.apply_m1_sparse(x, dirichlet_out), 
                   self.apply_d0_sparse(v, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out), 
-                  M=lambda x: self.apply_m1_precond(x, dirichlet_out), 
+                  mass_matvec=lambda x: self.apply_m1_sparse(x, dirichlet_out),
+                  precond_matvec=lambda x: self.apply_m1_precond(x, dirichlet_out), 
                   tol=self.tol, maxiter=self.maxiter)[0]
 
     def apply_strong_curl(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the strong curl operator to a vector v.
         """
-        return cg(lambda x: self.apply_m2_sparse(x, dirichlet_out), 
+        return solve_singular_cg(lambda x: self.apply_m2_sparse(x, dirichlet_out), 
                   self.apply_d1_sparse(v, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out), 
-                  M=lambda x: self.apply_m2_precond(x, dirichlet_out), 
+                  mass_matvec=lambda x: self.apply_m2_sparse(x, dirichlet_out),
+                  precond_matvec=lambda x: self.apply_m2_precond(x, dirichlet_out), 
                   tol=self.tol, maxiter=self.maxiter)[0]
 
     def apply_strong_div(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the strong divergence operator to a vector v.
         """
-        return cg(lambda x: self.apply_m3_sparse(x, dirichlet_out), 
+        return solve_singular_cg(lambda x: self.apply_m3_sparse(x, dirichlet_out), 
                   self.apply_d2_sparse(v, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out), 
-                  M=lambda x: self.apply_m3_precond(x, dirichlet_out),
+                  mass_matvec=lambda x: self.apply_m3_sparse(x, dirichlet_out),
+                  precond_matvec=lambda x: self.apply_m3_precond(x, dirichlet_out),
                   tol=self.tol, maxiter=self.maxiter)[0]
 
     def apply_weak_grad(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the weak gradient operator to a vector v.
         """
-        return -cg(lambda x: self.apply_m2_sparse(x, dirichlet_out), 
+        return -solve_singular_cg(lambda x: self.apply_m2_sparse(x, dirichlet_out), 
                    self.apply_d2t_sparse(v, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out), 
-                   M=lambda x: self.apply_m2_precond(x, dirichlet_out), 
+                   mass_matvec=lambda x: self.apply_m2_sparse(x, dirichlet_out),
+                   precond_matvec=lambda x: self.apply_m2_precond(x, dirichlet_out), 
                    tol=self.tol, maxiter=self.maxiter)[0]
 
     def apply_weak_curl(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the weak curl operator to a vector v.
         """
-        return cg(lambda x: self.apply_m1_sparse(x, dirichlet_out), 
+        return solve_singular_cg(lambda x: self.apply_m1_sparse(x, dirichlet_out), 
                   self.apply_d1t_sparse(v, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out), 
-                  M=lambda x: self.apply_m1_precond(x, dirichlet_out),
+                  mass_matvec=lambda x: self.apply_m1_sparse(x, dirichlet_out),
+                  precond_matvec=lambda x: self.apply_m1_precond(x, dirichlet_out),
                   tol=self.tol, maxiter=self.maxiter)[0]
 
     def apply_weak_div(self, v, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the weak divergence operator to a vector v.
         """
-        return -cg(lambda x: self.apply_m0_sparse(x, dirichlet_out), 
+        return -solve_singular_cg(lambda x: self.apply_m0_sparse(x, dirichlet_out), 
                    self.apply_d0t_sparse(v, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out), 
-                   M=lambda x: self.apply_m0_precond(x, dirichlet_out),
+                   mass_matvec=lambda x: self.apply_m0_sparse(x, dirichlet_out),
+                   precond_matvec=lambda x: self.apply_m0_precond(x, dirichlet_out),
                    tol=self.tol, maxiter=self.maxiter)[0]
 # %%
-
     def compute_nullspaces(self):
         """
         Compute the nullspace of the k-th Hodge Laplacian using randomized SVD.
@@ -1246,17 +1230,19 @@ class DeRhamSequence():
         """
         self.null_0_dbc = []
         self.null_1_dbc = []
-        v3 = cg(lambda x: self.apply_m3_sparse(x, True), 
+        v3 = solve_singular_cg(lambda x: self.apply_m3_sparse(x, True), 
                 jnp.ones(self.n3_dbc), 
-                M=lambda x: self.apply_m3_precond(x, True), 
+                mass_matvec=lambda x: self.apply_m3_sparse(x, True),
+                precond_matvec=lambda x: self.apply_m3_precond(x, True), 
                 tol=self.tol, maxiter=self.maxiter)[0]
         v3 /= (v3 @ self.apply_m3_sparse(v3, True)) ** 0.5
         self.null_3_dbc = [v3]
         v, _ = self.apply_leray_projection(
             jnp.ones(self.n2_dbc), k=2)
-        a = cg(lambda x: self.apply_dd1_sparse(x, True), 
+        a = solve_singular_cg(lambda x: self.apply_dd1_sparse(x, True), 
                self.apply_d1t_sparse(v, True, True), 
-               M=lambda x: self.apply_dd1_precond(x, True),
+               mass_matvec=lambda x: self.apply_m1_sparse(x, True),
+               precond_matvec=lambda x: self.apply_dd1_precond(x, True),
                tol=self.tol, maxiter=self.maxiter)[0]
         curl_a = self.apply_strong_curl(a, True, True) 
         v2 = v - curl_a
@@ -1269,9 +1255,10 @@ class DeRhamSequence():
         self.null_0 = [v0]
         v, _ = self.apply_leray_projection(
             jnp.ones(self.n1), k=1)
-        a = cg(lambda x: self.apply_dd2_sparse(x, False), 
+        a = solve_singular_cg(lambda x: self.apply_dd2_sparse(x, False), 
                self.apply_d1_sparse(v, False, False), 
-               M=lambda x: self.apply_dd2_precond(x, False),
+               mass_matvec=lambda x: self.apply_m2_sparse(x, False),
+               precond_matvec=lambda x: self.apply_dd2_precond(x, False),
                tol=self.tol, maxiter=self.maxiter)[0]
         curl_a = self.apply_weak_curl(a, False, False)
         v1 = v - curl_a
@@ -1279,3 +1266,183 @@ class DeRhamSequence():
         self.null_1 = [v1]
         self.null_2 = []
         self.null_3 = []
+        
+        
+    def cross_product_projection(
+            self, w, u, n, m, k, 
+            dirichlet_n = True, 
+            dirichlet_m = True, 
+            dirichlet_k = True
+        ):
+        """
+        Evaluate the projection of the cross product of the m-form w 
+        and the k-form u onto an n-form.
+        TODO: Tobi please add a description of these projections.
+
+        Args:
+            w (array): m-form dofs
+            u (array): k-form dofs
+            n, m, k (ints): degree of the forms
+            dirichlet_n: boundary condtions on the n-form (default True)
+            dirichlet_m: boundary condtions on the m-form (default True)
+            dirichlet_k: boundary condtions on the k-form (default True)
+
+        Returns:
+            array: ∫ (wₕ × uₕ) · Λn[i] dx for all i
+
+        """
+        match n:
+            case 1:
+                if dirichlet_n:
+                    en = self.e1_dbc
+                else:
+                    en = self.e1
+                eval_basis_n_ijk = self.eval_basis_1_ijk
+                nn = self.basis_1.n
+            case 2:
+                if dirichlet_n:
+                    en = self.e2_dbc
+                else:
+                    en = self.e2
+                eval_basis_n_ijk = self.eval_basis_2_ijk
+                nn = self.basis_2.n
+            case _:
+                raise ValueError("n must be 1 or 2")
+        match self.m:
+            case 1:
+                if dirichlet_m:
+                    em = self.e1_dbc
+                else:
+                    em = self.e1
+                eval_basis_m_ijk = self.eval_basis_1_ijk
+            case 2:
+                if dirichlet_m:
+                    em = self.e2_dbc
+                else:
+                    em = self.e2
+                eval_basis_m_ijk = self.eval_basis_2_ijk
+            case _:
+                raise ValueError("m must be 1 or 2")
+        match self.k:
+            case 1:
+                if dirichlet_k:
+                    ek = self.e1_dbc
+                else:
+                    ek = self.e1
+                eval_basis_k_ijk = self.eval_basis_1_ijk
+            case 2:
+                if dirichlet_k:
+                    ek = self.e2_dbc
+                else:
+                    ek = self.e2
+                eval_basis_k_ijk = self.eval_basis_2_ijk
+            case _:
+                raise ValueError("k must be 1 or 2")
+            
+        # w and u evaluated at quadrature points: shape: n_q x 3
+        w_jk = evaluate_at_xq(eval_basis_m_ijk,
+                              em.T @ w, self.quad.n, 3)
+        u_jk = evaluate_at_xq(eval_basis_k_ijk,
+                              ek.T @ u, self.quad.n, 3)
+
+        # now, we compute
+        # ∑ Λn[i](x_j)_a w(x_j)_b u(x_j)_c ) t(x_j)_abc
+        # where t is some transformation depending on n,m,k and the metric
+        # and we sum over j (quadrature points) and b,c (dimensions)
+        # To avoid assembling the huge Λn[i](x_j)_a tensor, we scan over i.
+        if self.n == 1 and self.m == 2 and self.k == 1:
+            # ∫ Λ[i] (Gw x u) / J dx
+            Gw_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, w_jk)
+            Gw_x_u_jk = jnp.cross(Gw_jk, u_jk, axis=1)
+            f_jk = Gw_x_u_jk * (self.quad.w / self.jacobian_j)[:, None]
+        elif self.n == 1 and self.m == 1 and self.k == 1:
+            # ∫ Λ[i] (w x u) dx
+            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
+            f_jk = w_x_u_jk * (self.quad.w)[:, None]
+        elif self.n == 2 and self.m == 1 and self.k == 1:
+            # ∫ Λ[i] G(w x u) / J dx
+            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
+            G_wxu_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, w_x_u_jk)
+            f_jk = G_wxu_jk * (self.quad.w / self.jacobian_j)[:, None]
+        elif self.n == 2 and self.m == 2 and self.k == 1:
+            # ∫ Λ[i] (w x G_inv u) dx
+            Ginvu_jk = jnp.einsum('jkl,jk->jl', self.metric_inv_jkl, u_jk)
+            w_x_Ginvu_jk = jnp.cross(w_jk, Ginvu_jk, axis=1)
+            f_jk = w_x_Ginvu_jk * (self.quad.w)[:, None]
+        elif self.n == 1 and self.m == 2 and self.k == 2:
+            # ∫ Λ[i] G_inv(w x u) dx
+            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
+            Ginv_wxu_jk = jnp.einsum(
+                'jkl,jk->jl', self.metric_inv_jkl, w_x_u_jk)
+            f_jk = Ginv_wxu_jk * (self.quad.w)[:, None]
+        elif self.n == 2 and self.m == 1 and self.k == 2:
+            # ∫ Λ[i] (G_inv w x u) dx
+            Ginvw_jk = jnp.einsum('jkl,jk->jl', self.metric_inv_jkl, w_jk)
+            Ginvw_x_u_jk = jnp.cross(Ginvw_jk, u_jk, axis=1)
+            f_jk = Ginvw_x_u_jk * (self.quad.w)[:, None]
+        elif self.n == 2 and self.m == 2 and self.k == 2:
+            # ∫ Λ[i] (w x u) / J dx
+            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
+            f_jk = w_x_u_jk * (self.quad.w / self.jacobian_j)[:, None]
+        else:
+            raise ValueError("Not yet implemented")
+        return en @ integrate_against(eval_basis_n_ijk, f_jk, nn)
+
+    
+    def apply_leray_projection(self, v, k=2, p_guess = None):
+        """
+        Apply the Leray projection to a 1 or 2-form v.
+
+        When k = 2:
+            Solves the system (k=3 Hodge Laplacian):
+            div v = div σ
+            (σ, ω) = -(p, div ω) ∀ω 2-forms
+            -> div(v - weak_grad p) = div(v - σ) = 0 and σ.n = 0 on the boundary.
+        When k = 1:
+            Solves the k=0 Hodge Laplacian:
+            (grad p, grad ω) = (v, grad ω) ∀ω 0-forms
+            -> div(v - grad p) = 0 and p = 0 on the boundary.
+            
+        Parameters
+        ----------
+        v : jnp.ndarray 
+            The vector form DoFs
+        k : int
+            The degree of the vector form
+        p_guess : jnp.ndarray 
+            Guess for pressure form DoFs - v_out = v - grad p
+        
+        Returns
+        -------
+        v_out : jnp.ndarray 
+            divergence-cleaned v
+        p : jnp.ndarray 
+            The pressure form DoFs
+
+        """
+        if k == 2:
+            p_guess = jnp.zeros(self.n3_dbc) if p_guess is None else p_guess
+            # Assumes dirichlet == True on all spaces.
+            div_v = self.apply_d2_sparse(v, True, True)
+            p = solve_singular_cg(lambda x: self.apply_dd3_sparse(x, True), 
+                                  div_v, 
+                                  mass_matvec=lambda x: self.apply_m3_sparse(x, True),
+                                  precond_matvec=lambda x: self.apply_dd3_precond(x, True), 
+                                  vs=self.null_3_dbc, 
+                                  x0=p_guess,
+                                  tol=self.tol, maxiter=self.maxiter)[0]
+            σ = -self.apply_weak_grad(p, True, True)
+            return v - σ, p
+        elif k == 1:
+            # Assumes dirichlet == False on all spaces.
+            p_guess = jnp.zeros(self.n0) if p_guess is None else p_guess
+            div_v = -self.apply_d0t_sparse(v, False, False)
+            p = solve_singular_cg(lambda x: self.apply_dd0_sparse(x, False), 
+                                  div_v, 
+                                  mass_matvec=lambda x: self.apply_m0_sparse(x, False),
+                                  precond_matvec=lambda x: self.apply_dd0_precond(x, False), 
+                                  vs=self.null_0,
+                                  x0=p_guess,
+                                  tol=self.tol, maxiter=self.maxiter)[0]
+            σ = -self.apply_strong_grad(p, False, False)
+            return v - σ, p

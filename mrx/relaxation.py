@@ -8,7 +8,69 @@ import jax.numpy as jnp
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
+from mrx.utils import solve_singular_cg
+from test.test_utils import seq
 
+
+def apply_diffusion(B: jnp.ndarray, seq: DeRhamSequence, eta: float, dirichlet: bool = True, B_guess: jnp.ndarray | None = None) -> jnp.ndarray:
+
+    B_guess = B if B_guess is None else B_guess
+
+    def apply_A(x):
+            return seq.apply_m2_sparse(x, dirichlet) + eta * seq.apply_dd2_sparse(x, dirichlet)
+        
+    def apply_Ainv(x, x0=None):
+        return solve_singular_cg(
+            apply_A,
+            x,
+            mass_matvec=lambda x: seq.apply_m2_sparse(x, dirichlet),
+            precond_matvec=lambda x: seq.apply_m2_precond(x, dirichlet),
+            x0=x0,
+            maxiter=seq.maxiter, tol=seq.tol
+        )[0]
+        
+    return apply_Ainv(seq.apply_m2_sparse(B, dirichlet), x0=B_guess)
+
+def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) -> float:
+    # hard-coded dirichlet=True everywhere for now
+    J_dual = seq.apply_d1t_sparse(B) 
+    A = solve_singular_cg(
+            seq.apply_dd1_sparse,
+            J_dual,
+            mass_matvec=seq.apply_m1_sparse,
+            precond_matvec=seq.apply_m1_precond,
+            x0=A_guess,
+            maxiter=seq.maxiter, tol=seq.tol,
+        )[0]
+    B_harm = B - seq.apply_strong_curl(A)
+    return A @ seq.apply_m12_sparse(B + B_harm)
+
+def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
+    # hard-coded dirichlet=True for now
+    div_B = seq.apply_strong_div(B)
+    return seq.l2_norm_sq(div_B, 3)**0.5
+
+def compute_force(B: jnp.ndarray, seq: DeRhamSequence, dirichlet_H: bool = False, p_guess: jnp.ndarray | None = None,) -> tuple[jnp.ndarray, jnp.ndarray]:
+    # hard-coded dirichlet=True and force_free=False
+    JxH_guess = jnp.zeros(seq.n2_dbc) if JxH_guess is None else JxH_guess
+    J = seq.apply_weak_curl(B)
+    H = solve_singular_cg(
+        lambda x: seq.apply_m1_sparse(x, dirichlet_H),
+        seq.apply_m12_sparse(B, True, dirichlet_H),
+        mass_matvec=lambda x: seq.apply_m1_sparse(x, dirichlet_H),
+        precond_matvec=lambda x: seq.apply_m1_precond(x, dirichlet_H),
+        maxiter=seq.maxiter, tol=seq.tol,
+    )[0]
+    JxH_dual = seq.cross_product_projection(J, H, 2, 1, 1, True, True, dirichlet_H)
+    JxH = solve_singular_cg(
+        seq.apply_m2_sparse,
+        JxH_dual,
+        mass_matvec=seq.apply_m2_sparse,
+        precond_matvec=seq.apply_m2_precond,
+        maxiter=seq.maxiter, tol=seq.tol,
+    )[0]
+    F, p = seq.apply_leray_projection(JxH, k=2, p_guess=p_guess)
+    return F, p
 
 class MRXHessian:
 
@@ -91,18 +153,18 @@ class MRXDiagnostics:
     A class to compute various important quantities and diagnostics of the MRX relaxation.
     """
 
-    def __init__(self, Seq: DeRhamSequence, force_free: bool = False):
+    def __init__(self, seq: DeRhamSequence, force_free: bool = False):
         """
         Initialize the MRX Diagnostics class.
 
         Parameters
         ----------
-        Seq : DeRham sequence
+        seq : DeRham sequence
             The de Rham sequence to use.
         force_free : bool, default=False
             Whether the problem has grad(p) = 0.
         """
-        self.Seq = Seq
+        self.seq = seq
         self.force_free = force_free
 
     def energy(self, B: jnp.ndarray) -> float:
@@ -119,7 +181,7 @@ class MRXDiagnostics:
         energy : float
             The magnetic field energy.
         """
-        return 0.5 * B.T @ self.Seq.m2 @ B
+        return 0.5 * B.T @ self.seq.m2 @ B
 
     def helicity(self, B: jnp.ndarray) -> float:
         """
@@ -135,9 +197,9 @@ class MRXDiagnostics:
         helicity : float
             The magnetic helicity.
         """
-        A = jnp.linalg.solve(self.Seq.dd1, self.Seq.weak_curl @ B)
-        B_harm = B - self.Seq.strong_curl @ A
-        return A.T @ self.Seq.m1 @ self.Seq.p12 @ (B + B_harm)
+        A = jnp.linalg.solve(self.seq.dd1, self.seq.weak_curl @ B)
+        B_harm = B - self.seq.strong_curl @ A
+        return A.T @ self.seq.m1 @ self.seq.p12 @ (B + B_harm)
 
     def harmonic_component(self, B: jnp.ndarray) -> jnp.ndarray:
         """
@@ -153,8 +215,8 @@ class MRXDiagnostics:
         B_harm : jnp.ndarray
             The harmonic component of the magnetic field.
         """
-        A = jnp.linalg.solve(self.Seq.dd1, self.Seq.weak_curl @ B)
-        B_harm = B - self.Seq.strong_curl @ A
+        A = jnp.linalg.solve(self.seq.dd1, self.seq.weak_curl @ B)
+        B_harm = B - self.seq.strong_curl @ A
         return B_harm
 
     def divergence_norm(self, B: jnp.ndarray) -> float:
@@ -172,7 +234,7 @@ class MRXDiagnostics:
         divergence_norm : float
             The norm of the divergence of the magnetic field.
         """
-        return ((self.Seq.strong_div @ B) @ self.Seq.m3 @ (self.Seq.strong_div @ B))**0.5
+        return ((self.seq.strong_div @ B) @ self.seq.m3 @ (self.seq.strong_div @ B))**0.5
 
     def pressure(self, B_hat: jnp.ndarray) -> jnp.ndarray:
         """
@@ -189,22 +251,22 @@ class MRXDiagnostics:
             The pressure.
         """
         if not self.force_free:
-            J_hat = self.Seq.weak_curl @ B_hat
-            H_hat = self.Seq.p12 @ B_hat
+            J_hat = self.seq.weak_curl @ B_hat
+            H_hat = self.seq.p12 @ B_hat
             JxH_hat = jnp.linalg.solve(
-                self.Seq.m2, self.Seq.P1x1_to_2(J_hat, H_hat))
-            return -jnp.linalg.solve(self.Seq.dd0, self.Seq.p03 @ self.Seq.strong_div @ JxH_hat)
+                self.seq.m2, self.seq.P1x1_to_2(J_hat, H_hat))
+            return -jnp.linalg.solve(self.seq.dd0, self.seq.p03 @ self.seq.strong_div @ JxH_hat)
         else:
             # Compute p(x) = J · B / |B|²
-            B_h = DiscreteFunction(B_hat, self.Seq.basis_2, self.Seq.e2)
-            J_hat = self.Seq.weak_curl @ B_hat
-            J_h = DiscreteFunction(J_hat, self.Seq.basis_1, self.Seq.e1)
+            B_h = DiscreteFunction(B_hat, self.seq.basis_2, self.seq.e2)
+            J_hat = self.seq.weak_curl @ B_hat
+            J_h = DiscreteFunction(J_hat, self.seq.basis_1, self.seq.e1)
 
             def lmbda(x):
-                DFx = jax.jacfwd(self.Seq.map)(x)
+                DFx = jax.jacfwd(self.seq.map)(x)
                 Bx = B_h(x)
                 return (J_h(x) @ Bx) / ((DFx @ Bx) @ DFx @ Bx) * jnp.linalg.det(DFx) * jnp.ones(1)
-            return jnp.linalg.solve(self.Seq.m0, self.Seq.p0(lmbda))
+            return jnp.linalg.solve(self.seq.m0, self.seq.p0(lmbda))
 
 
 class State(eqx.Module):

@@ -194,7 +194,7 @@ def test_mrx_hessian_assemble(
 def test_mrx_diagnostics_init(seq: DeRhamSequence) -> None:
     """Test MRXDiagnostics initialization."""
     diagnostics = MRXDiagnostics(seq, force_free=False)
-    assert diagnostics.Seq is seq
+    assert diagnostics.seq is seq
     assert diagnostics.force_free is False
 
     diagnostics_ff = MRXDiagnostics(seq, force_free=True)

@@ -318,3 +318,106 @@ def test_derivative_spline_properties(derivative_spline):
                 vals, 1.0, atol=1e-12,
                 err_msg="Constant derivative should be 1.0 everywhere"
             )
+
+
+@pytest.mark.parametrize("degree", [1, 2, 3, 4, 5])
+def test_polynomial_derivative_clamped(degree):
+    """Test that the DerivativeSpline correctly differentiates a polynomial.
+
+    Projects f(x) = x^degree onto clamped splines, computes derivative
+    DoFs d_j = c_{j+1} - c_j, evaluates the derivative using
+    DerivativeSpline, and compares to f'(x) = degree * x^(degree-1).
+
+    Clamped splines of degree p can represent polynomials of degree <= p
+    exactly, so the projection and its derivative should match analytically.
+    """
+    n_basis = 20
+    spl = SplineBasis(n_basis, degree, "clamped")
+    ds = DerivativeSpline(spl)
+    i = jnp.arange(spl.n)
+
+    def f(x):
+        return x ** degree
+
+    def df_exact(x):
+        return degree * x ** (degree - 1)
+
+    # L2 project f onto spline basis
+    nq = 256
+    xq = (jnp.arange(nq) + 0.5) / nq
+    w = jnp.ones(nq) / nq
+
+    N = jax.vmap(lambda x: jax.vmap(lambda j: spl(x, j))(i))(xq)
+    M = N.T @ (N * w[:, None])
+    b = (f(xq) * w) @ N
+    coeffs = jnp.linalg.solve(M, b)
+
+    # Derivative DoFs: d_j = c_{j+1} - c_j
+    d_coeffs = coeffs[1:] - coeffs[:-1]
+
+    # Evaluate derivative using DerivativeSpline
+    j = jnp.arange(ds.n)
+
+    def df_spline(x):
+        return jnp.dot(d_coeffs, jax.vmap(lambda k: ds(x, k))(j))
+
+    xs = jnp.linspace(0.05, 0.95, 100)
+    df_approx = jax.vmap(df_spline)(xs)
+    df_true = df_exact(xs)
+
+    npt.assert_allclose(
+        df_approx, df_true, atol=1e-6,
+        err_msg=f"Polynomial derivative error too large (degree={degree})"
+    )
+
+
+@pytest.mark.parametrize("degree", [1, 2, 3, 4, 5])
+def test_periodic_derivative(degree):
+    """Test that the DerivativeSpline correctly differentiates a periodic function.
+
+    Projects f(x) = sin(2*pi*x) onto periodic splines, computes derivative
+    DoFs d_j = c_{j+1} - c_j (with periodic wrapping), evaluates the
+    derivative using DerivativeSpline, and compares to f'(x) = 2*pi*cos(2*pi*x).
+
+    Polynomials are not periodic on [0,1], so a trigonometric test function is
+    used instead. The tolerance accounts for the approximation error.
+    """
+    n_basis = 64
+    spl = SplineBasis(n_basis, degree, "periodic")
+    ds = DerivativeSpline(spl)
+    i = jnp.arange(spl.n)
+
+    def f(x):
+        return jnp.sin(2 * jnp.pi * x)
+
+    def df_exact(x):
+        return 2 * jnp.pi * jnp.cos(2 * jnp.pi * x)
+
+    # L2 project f onto spline basis
+    nq = 256
+    xq = (jnp.arange(nq) + 0.5) / nq
+    w = jnp.ones(nq) / nq
+
+    N = jax.vmap(lambda x: jax.vmap(lambda j: spl(x, j))(i))(xq)
+    M = N.T @ (N * w[:, None])
+    b = (f(xq) * w) @ N
+    coeffs = jnp.linalg.solve(M, b)
+
+    # Derivative DoFs with periodic wrapping: d_j = c_{(j+1) mod n} - c_j
+    d_coeffs = jnp.roll(coeffs, -1) - coeffs
+
+    # Evaluate derivative using DerivativeSpline
+    j = jnp.arange(ds.n)
+
+    def df_spline(x):
+        return jnp.dot(d_coeffs, jax.vmap(lambda k: ds(x, k))(j))
+
+    xs = jnp.linspace(0.05, 0.95, 100)
+    df_approx = jax.vmap(df_spline)(xs)
+    df_true = df_exact(xs)
+
+    npt.assert_allclose(
+        df_approx, df_true, atol=0.5**degree,
+        err_msg=f"Periodic derivative error too large (degree={degree})"
+    )
+

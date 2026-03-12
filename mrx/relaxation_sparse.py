@@ -5,68 +5,9 @@ from typing import Callable, Literal, Optional
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax.scipy.sparse.linalg import cg
 
 from mrx.derham_sequence import DeRhamSequence
-
-
-class MRXDiagnostics:
-    """
-    A class to compute various important quantities and diagnostics of the MRX relaxation.
-    """
-
-    def __init__(self, seq: DeRhamSequence, tol=1e-9, maxiter=1000):
-        """
-        Initialize the MRX Diagnostics class.
-
-        Parameters
-        ----------
-        Seq : DeRham sequence
-            The de Rham sequence to use.
-        """
-        self.seq = seq
-        self.tol = tol
-        self.maxiter = maxiter
-
-    def energy(self, B: jnp.ndarray) -> float:
-        return 0.5 * B @ self.seq.apply_m2_sparse(B)
-
-    def helicity(self, B: jnp.ndarray) -> float:
-        """
-        Compute the magnetic helicity: H = ∫ A · B dx.
-        """
-        A = cg(self.seq.apply_dd1_sparse, self.seq.apply_d1t_sparse(B), M=self.seq.apply_dd1_precond,
-               tol=self.tol, maxiter=self.maxiter)[0]
-        curlA = cg(self.seq.apply_m2_sparse, self.seq.apply_d1_sparse(
-            A), tol=self.tol, M=self.seq.apply_m2_precond, maxiter=self.maxiter)[0]
-        return A @ self.seq.apply_m12_sparse @ (2 * B - curlA)
-
-    def harmonic_component(self, B: jnp.ndarray) -> jnp.ndarray:
-        """
-        Compute the harmonic component of the magnetic field.
-        """
-        A = cg(self.seq.apply_dd1_sparse, self.seq.apply_d1t_sparse(B), M=self.seq.apply_dd1_precond,
-               tol=self.tol, maxiter=self.maxiter)[0]
-        curlA = self.seq.apply_strong_curl(A)
-        return B - curlA
-
-    def divergence_norm(self, B: jnp.ndarray) -> float:
-        """
-        Compute the norm of the divergence of the magnetic field. 
-        """
-        return (self.seq.apply_d2_sparse(B) @ self.seq.apply_strong_div(B))**0.5
-
-    def pressure(self, b: jnp.ndarray) -> jnp.ndarray:
-        """
-        Compute the pressure.
-        """
-        # j = curl b
-        j = self.seq.apply_weak_curl(b)
-        # h = P1 b
-        h = cg(self.seq.apply_m1_sparse, self.seq.apply_m12_sparse(b), M=self.seq.apply_m1_precond, tol=self.tol, maxiter=self.maxiter)[0]
-        jxb = cg(self.seq.apply_m1_sparse, self.seq.P1x1_to_1(j, h), M=self.seq.apply_m1_precond, tol=self.tol, maxiter=self.maxiter)[0]
-        return cg(self.seq.apply_dd0_sparse, self.seq.apply_d0t_sparse(jxb), M=self.seq.apply_dd0_precond, tol=self.tol, maxiter=self.maxiter)[0]
-
+from mrx.relaxation import apply_diffusion
 
 class State(eqx.Module):
     """
@@ -77,21 +18,25 @@ class State(eqx.Module):
         The magnetic field at the current time step.
     B_nplus1 : jnp.ndarray (note name change from B_guess to B_nplus1)
         The magnetic field at the next time step.
-    v : jnp.ndarray
+    v : jnp.ndarray (optional)
         The velocity field.
+    p : jnp.ndarray (optional)
+        The pressure.
+    A : jnp.ndarray (optional)
+        The vector potential.
     dt : float
         The time step.
     eta : float
         The resistivity.
-    hessian : jnp.ndarray
-        The Hessian of the MRX relaxation.
+    v_history : jnp.ndarray (optional)
+        A list of 'v's from previous time-steps.
     picard_iterations : int
         The number of Picard iterations.
     picard_residuum : float
         The residuum of the Picard solver.
-    F_norm : float (note name change from force_norm to F_norm)
+    F_norm : float
         The norm of the force.
-    v_norm : float (note name change from velocity_norm to v_norm)
+    v_norm : float
         The norm of the velocity.
     noise_level : float
         The noise level.
@@ -101,9 +46,10 @@ class State(eqx.Module):
     B_n: jnp.ndarray
     B_nplus1: Optional[jnp.ndarray] = None
     v: Optional[jnp.ndarray] = None
+    v_history: Optional[jnp.ndarray] = None
+    A: Optional[jnp.ndarray] = None
     dt: float = 1e-2
     eta: float = 0.0
-    hessian: Optional[jnp.ndarray] = None
     picard_iterations: int = 0
     picard_residuum: float = 0.0
     F_norm: float = 0.0
@@ -116,8 +62,6 @@ class State(eqx.Module):
             object.__setattr__(self, "B_nplus1", self.B_n)
 
 # %%
-
-
 class IntegrationScheme(Enum):
     EXPLICIT = 0
     IMPLICIT_MIDPOINT = 1
@@ -182,28 +126,8 @@ class TimeStepper(eqx.Module):
     picard_dt_increment: float = 1.01
     force_free: bool = False
     stochastic: bool = False
+    v_history_size: int = 1
     key: Optional[jax.Array] = None
-
-    def norm_2(self, b: jnp.ndarray) -> float:
-        """
-        Compute the L2 norm of a 2-form.
-        """
-        return (b @ self.seq.apply_m2_sparse(b))**0.5
-
-    def compute_force(self, b: jnp.ndarray) -> jnp.ndarray:
-        """
-        Compute the force at the current state.
-        """
-        # j = curl b
-        j = self.seq.apply_weak_curl(b)
-        # h = P1 b
-        h = cg(self.seq.apply_m1_sparse, self.seq.apply_m12_sparse(b), M=self.seq.apply_m1_precond, tol=self.tol, maxiter=self.maxiter)[0]
-        jxh = cg(self.seq.apply_m2_sparse, self.seq.P1x1_to_2(j, h), M=self.seq.apply_m2_precond, tol=self.tol, maxiter=self.maxiter)[0]
-        f = self.seq.apply_leray_projection(jxh, nullspace_vectors=self.seq.null_3)
-        return f, j, h
-
-    def regularization_operator(self, u: jnp.ndarray) -> jnp.ndarray:
-        return self.seq.apply_m2_sparse(u) + self.mu * self.seq.apply_dd2_sparse(u)
 
     def apply_regularization(self, u: jnp.ndarray) -> jnp.ndarray:
         for _ in range(self.gamma):

@@ -10,6 +10,7 @@ jax-caches/
 slurm/job_*
 multirun*
 *.html
+data
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

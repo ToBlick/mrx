@@ -6,15 +6,7 @@ import pytest
 import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.mappings import (
-    interpolate_map,
-    cerfon_map,
-    helical_map,
-    rotating_ellipse_map,
-    toroid_map,
-    polar_map,
-    cylinder_map
-)
+from mrx.mappings import interpolate_map
 from mrx.utils import evaluate_at_xq, integrate_against, inv33, jacobian_determinant, det33, solve_singular_cg
 from mrx.io import interpolate_scalar_function
 import numpy as np
@@ -63,9 +55,9 @@ with h5py.File(nfs_path, "r") as f:
 
 # %%
 # Interpolate/get the map
-n = 12
-p = 2
-mrx.MAP_BATCH_SIZE_INNER = 100_000
+n = 8
+p = 3
+mrx.MAP_BATCH_SIZE_INNER = 0
 map_seq = DeRhamSequence(
         (n, n, n), (p, p, p), 2*p,
         ("clamped", "periodic", "periodic"),
@@ -375,7 +367,7 @@ J_hat_weak_dbc = seq.apply_weak_curl(B_dof, dirichlet_in=True, dirichlet_out=Tru
 J_h_weak_dbc = jax.jit(DiscreteFunction(J_hat_weak_dbc, seq.basis_1, seq.e1_dbc))
 J_h_weak_xyz_dbc = jax.jit(Pushforward(J_h_weak_dbc, seq.map, 1))
 
-__r = jnp.linspace(0.001, 0.999, 1000)
+__r = jnp.linspace(0.01, 0.99, 1000)
 eval_pts = jnp.vstack([__r, jnp.zeros_like(__r), jnp.zeros_like(__r)]).T
 
 J_strong_dbc_xyz_at_r = jax.vmap(J_h_strong_xyz_dbc)(eval_pts)
@@ -400,12 +392,10 @@ plt.legend()
 plt.show()
 
 # %%
-# B_h_xyz = jax.jit(Pushforward(DiscreteFunction(B_dof, seq.basis_2, seq.e2_dbc), seq.map, 2))
-# B_h = jax.jit(DiscreteFunction(B_dof, seq.basis_2, seq.e2_dbc))
-
-B_h_xyz = jax.jit(Pushforward(DiscreteFunction(H_dof, seq.basis_1, seq.e1), seq.map, 1))
-B_h = jax.jit(DiscreteFunction(H_dof, seq.basis_1, seq.e1))
-
+B_h_xyz = jax.jit(Pushforward(DiscreteFunction(B_dof, seq.basis_2, seq.e2_dbc), seq.map, 2))
+B_h = jax.jit(DiscreteFunction(B_dof, seq.basis_2, seq.e2_dbc))
+# B_h_xyz = jax.jit(Pushforward(DiscreteFunction(B_dof, seq.basis_2, seq.e2), seq.map, 1))
+# B_h = jax.jit(DiscreteFunction(B_dof, seq.basis_1, seq.e1))
 B_xyz_at_rad = jax.vmap(B_h_xyz)(eval_pts)
 # %%
 plt.plot(__r, B_xyz_at_rad[:, 0], label="B_x")
@@ -420,11 +410,12 @@ plt.show()
 
 # %%
 # Dissipate some B away:
-alpha = 1e-5
-
+alpha = 1e-4
+# %%
 def apply_A(x):
         return seq.apply_m2_sparse(x, True) + alpha * seq.apply_dd2_sparse(x, True)
     
+@jax.jit
 def apply_Ainv(x, x0=None):
     return solve_singular_cg(
         apply_A,
@@ -435,7 +426,42 @@ def apply_Ainv(x, x0=None):
         x0=x0,
         maxiter=seq.maxiter
     )[0]
-   
-for _ in range(10): 
+
+# %%
+coeff = 100
+while coeff > 1.5:
     B_dof = apply_Ainv(seq.apply_m2_sparse(B_dof, True), x0=B_dof)
+    coeff = (B_dof @ seq.apply_dd2_sparse(B_dof, True))**0.5 / (B_dof @ seq.apply_m2_sparse(B_dof, True))**0.5
+    print("Coefficient:", coeff)
+# %%
+J_hat_weak_dbc = seq.apply_weak_curl(B_dof, dirichlet_in=True, dirichlet_out=True)
+J_h_weak_dbc = jax.jit(DiscreteFunction(J_hat_weak_dbc, seq.basis_1, seq.e1_dbc))
+J_h_weak_xyz_dbc = jax.jit(Pushforward(J_h_weak_dbc, seq.map, 1))
+J_weak_dbc_xyz_at_r_reg = jax.vmap(J_h_weak_xyz_dbc)(eval_pts)
+
+plt.plot(__r, J_weak_dbc_xyz_at_r_reg[:, 0], label="J_x (weak, Jxn = 0)", ls="-")
+plt.plot(__r, J_weak_dbc_xyz_at_r_reg[:, 1], label="J_y (weak, Jxn = 0)", ls="-")
+plt.plot(__r, J_weak_dbc_xyz_at_r_reg[:, 2], label="J_z (weak, Jxn = 0)", ls="-")
+plt.plot(__r, J_weak_dbc_xyz_at_r[:, 0], label="J_x (weak, Jxn = 0)", ls=":")
+plt.plot(__r, J_weak_dbc_xyz_at_r[:, 1], label="J_y (weak, Jxn = 0)", ls=":")
+plt.plot(__r, J_weak_dbc_xyz_at_r[:, 2], label="J_z (weak, Jxn = 0)", ls=":")
+plt.xlabel("r")
+plt.ylabel("J")
+plt.legend()
+plt.show()
+# %%
+B_h_xyz = jax.jit(Pushforward(DiscreteFunction(B_dof, seq.basis_2, seq.e2_dbc), seq.map, 2))
+B_h = jax.jit(DiscreteFunction(B_dof, seq.basis_2, seq.e2_dbc))
+B_xyz_at_rad_reg = jax.vmap(B_h_xyz)(eval_pts)
+
+plt.plot(__r, B_xyz_at_rad_reg[:, 0], label="B_x")
+plt.plot(__r, B_xyz_at_rad_reg[:, 1], label="B_y")
+plt.plot(__r, B_xyz_at_rad_reg[:, 2], label="B_z")
+plt.plot(__r, B_xyz_at_rad[:, 0], label="B_x", ls=":")
+plt.plot(__r, B_xyz_at_rad[:, 1], label="B_y", ls=":")
+plt.plot(__r, B_xyz_at_rad[:, 2], label="B_z", ls=":")
+plt.xlabel("r")
+plt.ylabel("B")
+plt.legend()
+plt.show()
 # %%
