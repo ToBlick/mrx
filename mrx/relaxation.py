@@ -1,5 +1,6 @@
 # %%
 from enum import Enum
+from test.test_utils import seq
 from typing import Callable, Literal, Optional
 
 import equinox as eqx
@@ -9,68 +10,7 @@ import jax.numpy as jnp
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.utils import solve_singular_cg
-from test.test_utils import seq
 
-
-def apply_diffusion(B: jnp.ndarray, seq: DeRhamSequence, eta: float, dirichlet: bool = True, B_guess: jnp.ndarray | None = None) -> jnp.ndarray:
-
-    B_guess = B if B_guess is None else B_guess
-
-    def apply_A(x):
-            return seq.apply_m2_sparse(x, dirichlet) + eta * seq.apply_dd2_sparse(x, dirichlet)
-        
-    def apply_Ainv(x, x0=None):
-        return solve_singular_cg(
-            apply_A,
-            x,
-            mass_matvec=lambda x: seq.apply_m2_sparse(x, dirichlet),
-            precond_matvec=lambda x: seq.apply_m2_precond(x, dirichlet),
-            x0=x0,
-            maxiter=seq.maxiter, tol=seq.tol
-        )[0]
-        
-    return apply_Ainv(seq.apply_m2_sparse(B, dirichlet), x0=B_guess)
-
-def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) -> float:
-    # hard-coded dirichlet=True everywhere for now
-    J_dual = seq.apply_d1t_sparse(B) 
-    A = solve_singular_cg(
-            seq.apply_dd1_sparse,
-            J_dual,
-            mass_matvec=seq.apply_m1_sparse,
-            precond_matvec=seq.apply_m1_precond,
-            x0=A_guess,
-            maxiter=seq.maxiter, tol=seq.tol,
-        )[0]
-    B_harm = B - seq.apply_strong_curl(A)
-    return A @ seq.apply_m12_sparse(B + B_harm)
-
-def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
-    # hard-coded dirichlet=True for now
-    div_B = seq.apply_strong_div(B)
-    return seq.l2_norm_sq(div_B, 3)**0.5
-
-def compute_force(B: jnp.ndarray, seq: DeRhamSequence, dirichlet_H: bool = False, p_guess: jnp.ndarray | None = None,) -> tuple[jnp.ndarray, jnp.ndarray]:
-    # hard-coded dirichlet=True and force_free=False
-    JxH_guess = jnp.zeros(seq.n2_dbc) if JxH_guess is None else JxH_guess
-    J = seq.apply_weak_curl(B)
-    H = solve_singular_cg(
-        lambda x: seq.apply_m1_sparse(x, dirichlet_H),
-        seq.apply_m12_sparse(B, True, dirichlet_H),
-        mass_matvec=lambda x: seq.apply_m1_sparse(x, dirichlet_H),
-        precond_matvec=lambda x: seq.apply_m1_precond(x, dirichlet_H),
-        maxiter=seq.maxiter, tol=seq.tol,
-    )[0]
-    JxH_dual = seq.cross_product_projection(J, H, 2, 1, 1, True, True, dirichlet_H)
-    JxH = solve_singular_cg(
-        seq.apply_m2_sparse,
-        JxH_dual,
-        mass_matvec=seq.apply_m2_sparse,
-        precond_matvec=seq.apply_m2_precond,
-        maxiter=seq.maxiter, tol=seq.tol,
-    )[0]
-    F, p = seq.apply_leray_projection(JxH, k=2, p_guess=p_guess)
-    return F, p
 
 class MRXHessian:
 
@@ -891,4 +831,5 @@ def relaxation_loop(B_dof: jnp.ndarray,
 
     return state, traces
 
+# %%
 # %%

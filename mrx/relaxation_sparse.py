@@ -7,7 +7,57 @@ import jax
 import jax.numpy as jnp
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.relaxation import apply_diffusion
+from mrx.utils import solve_singular_cg
+
+
+def apply_diffusion(B: jnp.ndarray, seq: DeRhamSequence, eta: float, dirichlet: bool = True, B_guess: jnp.ndarray | None = None) -> jnp.ndarray:
+
+    B_guess = B if B_guess is None else B_guess
+
+    def apply_A(x):
+        return seq.apply_mass_matrix(x, 2, dirichlet) + eta * seq.apply_hodge_laplacian(x, 2, dirichlet)
+
+    def apply_Ainv(x, x0=None):
+        return solve_singular_cg(
+            apply_A,
+            x,
+            mass_matvec=lambda x: seq.apply_mass_matrix(x, 2, dirichlet),
+            precond_matvec=lambda x: seq.apply_hodge_laplacian_preconditioner(
+                x, 2, dirichlet),
+            x0=x0,
+            maxiter=seq.maxiter, tol=seq.tol
+        )[0]
+
+    return apply_Ainv(seq.apply_mass_matrix(B, 2, dirichlet), x0=B_guess)
+
+
+def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) -> tuple[float, jnp.ndarray]:
+    A = seq.apply_inverse_hodge_laplacian(
+        seq.apply_weak_curl(B), 1, guess=A_guess)
+    B_harm = B - seq.apply_strong_curl(A)
+    # <A, B + B_harm>_{L^2} via the 1->2 projection matrix
+    helicity = A @ seq.apply_projection_matrix(
+        B + B_harm, 2, 1, True, dirichlet_out=True)
+    return helicity, A
+
+
+def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
+    # hard-coded dirichlet=True for now
+    div_B = seq.apply_strong_div(B)
+    return seq.l2_norm_sq(div_B, 3)**0.5
+
+
+def compute_force(B: jnp.ndarray, seq: DeRhamSequence, dirichlet_H: bool = False, p_guess: jnp.ndarray | None = None) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    J = seq.apply_weak_curl(B)
+    H_dual = seq.apply_projection_matrix(
+        B, 2, 1, True, dirichlet_out=dirichlet_H)
+    H = seq.apply_inverse_mass_matrix(H_dual, 1, dirichlet=dirichlet_H)
+    JxH_dual = seq.cross_product_projection(
+        J, H, 2, 1, 1, True, True, dirichlet_H)
+    JxH = seq.apply_inverse_mass_matrix(JxH_dual, 2)
+    F, p = seq.apply_leray_projection(JxH, k=2, p_guess=p_guess)
+    return F, p, J, H
+
 
 class State(eqx.Module):
     """
@@ -16,7 +66,7 @@ class State(eqx.Module):
     Attributes:
     B_n : jnp.ndarray
         The magnetic field at the current time step.
-    B_nplus1 : jnp.ndarray (note name change from B_guess to B_nplus1)
+    B_nplus1 : jnp.ndarray
         The magnetic field at the next time step.
     v : jnp.ndarray (optional)
         The velocity field.
@@ -28,8 +78,14 @@ class State(eqx.Module):
         The time step.
     eta : float
         The resistivity.
-    v_history : jnp.ndarray (optional)
-        A list of 'v's from previous time-steps.
+    F_prev : jnp.ndarray (optional)
+        The force from the previous time step (for L-BFGS y computation).
+    s_history : jnp.ndarray (optional)
+        History of iterate differences s_k = B_{k+1} - B_k (for L-BFGS).
+    y_history : jnp.ndarray (optional)
+        History of L^2-gradient differences y_k = grad_M E_{k+1} - grad_M E_k
+        = F_k - F_{k+1} (for L-BFGS).  Here grad_M E = -F is the Riesz
+        representative of dE w.r.t. the M2 inner product.
     picard_iterations : int
         The number of Picard iterations.
     picard_residuum : float
@@ -45,8 +101,11 @@ class State(eqx.Module):
     """
     B_n: jnp.ndarray
     B_nplus1: Optional[jnp.ndarray] = None
+    p: Optional[jnp.ndarray] = None
     v: Optional[jnp.ndarray] = None
-    v_history: Optional[jnp.ndarray] = None
+    F_prev: Optional[jnp.ndarray] = None
+    s_history: Optional[jnp.ndarray] = None
+    y_history: Optional[jnp.ndarray] = None
     A: Optional[jnp.ndarray] = None
     dt: float = 1e-2
     eta: float = 0.0
@@ -62,6 +121,8 @@ class State(eqx.Module):
             object.__setattr__(self, "B_nplus1", self.B_n)
 
 # %%
+
+
 class IntegrationScheme(Enum):
     EXPLICIT = 0
     IMPLICIT_MIDPOINT = 1
@@ -76,43 +137,41 @@ class TimeStepChoice(Enum):
 class DescentMethod(Enum):
     GRADIENT = 0
     CONJUGATE_GRADIENT = 1
+    LBFGS = 2
 
 
 class TimeStepper(eqx.Module):
     """
-    TimeStepper class.
+    TimeStepper for MRX relaxation.
 
     Fields
-        ----------
-    seq : DeRham sequence
-            The de Rham sequence to use.
-        gamma : int, default=0
-        The hyperregularization parameter: v = (I - μ Δ)^{-Ɣ} f
-    mu : float, default=0.0
-        characteristic length scale for hyperregularization. v = (I - μ Δ)^{-Ɣ} f
-    preconditioner : Preconditioner, default=Preconditioner.NONE
-        The preconditioner to use.
-    timestep_mode : TimestepMode, default=TimestepMode.EXPLICIT
-        The time stepping mode to use.
-    picard_tol : float, default=1e-9
-            The tolerance for the Picard solver.
-    picard_k_restart : int, default=10
-        The number of iterations after which to restart the Picard solver.
-    picard_k_crit : int, default=4
-        If the Picard iterations to convergence is below this value, lower the time step.
-    picard_dt_increment : float, default=1.01
-        The factor by which to increase/decrease the time step based on Picard iterations.
-        force_free : bool, default=False
-            Whether the problem has grad(p) = 0.
-    dt_mode : DTMode, default=DTMode.ANALYTIC_LS
-        The mode for updating the time step:
-        - DTMode.FIXED: use the time step stored in the state.
-        - DTMode.PICARD_ADAPTIVE: adapt the time step based on Picard iterations taken.
-        - DTMode.ANALYTIC_LS: compute the time step using an analytic line search.
-    apply_noise : bool, default=False
-        Whether to apply noise to the velocity field.
-    key: jax.random.PRNGKey = None
-        The random key for noise generation.
+    ----------
+    seq : DeRhamSequence
+        The de Rham sequence.
+    gamma : int
+        Hyperregularization exponent: v = (I - mu * Δ)^{-gamma} f.
+    mu : float
+        Length scale for hyperregularization.
+    descent_method : DescentMethod
+        GRADIENT, CONJUGATE_GRADIENT, or LBFGS.
+    dt_mode : TimeStepChoice
+        FIXED, PICARD_ADAPTIVE, or ANALYTIC_LINESEARCH.
+    timestep_mode : IntegrationScheme
+        EXPLICIT or IMPLICIT_MIDPOINT.
+    picard_tol : float
+        Tolerance for implicit midpoint Picard solver.
+    picard_k_restart : int
+        Max Picard iterations before restart.
+    picard_k_crit : int
+        Threshold: fewer iterations -> increase dt, more -> decrease.
+    picard_dt_increment : float
+        Factor for adaptive dt adjustment.
+    stochastic : bool
+        Whether to add noise to the velocity.
+    history_size : int
+        Number of stored pairs for CG / L-BFGS.
+    dirichlet_H : bool
+        Dirichlet BC on H.
     """
     seq: DeRhamSequence
     gamma: int = 0
@@ -124,18 +183,67 @@ class TimeStepper(eqx.Module):
     picard_k_restart: int = 20
     picard_k_crit: int = 4
     picard_dt_increment: float = 1.01
-    force_free: bool = False
     stochastic: bool = False
-    v_history_size: int = 1
-    key: Optional[jax.Array] = None
+    history_size: int = 1
+    dirichlet_H: bool = False
+
+    def __post_init__(self):
+        if self.descent_method in (DescentMethod.CONJUGATE_GRADIENT, DescentMethod.LBFGS) and self.history_size < 1:
+            raise ValueError(
+                "history_size must be at least 1 when using CG or L-BFGS.")
+
+    def _lbfgs_direction(self, F: jnp.ndarray, state: State) -> jnp.ndarray:
+        """
+        Compute the L-BFGS descent direction v = H_k F using the two-loop recursion.
+
+        The L^2 (M2) inner product is used both to identify the gradient via
+        the Riesz map (dE[v] = -(F, v)_{L^2} = <-F, v>_M  =>  grad_M E = -F)
+        and inside the two-loop recursion (<a, b>_M = a^T M b).
+
+        Stored histories:
+            s_k = B_{k+1} - B_k            (iterate differences)
+            y_k = grad_M E_{k+1} - grad_M E_k = F_k - F_{k+1}  (gradient differences)
+
+        Falls back to steepest descent (F) when all history entries are zero.
+        """
+        m = self.history_size
+        def apply_M(x): return self.seq.apply_mass_matrix(x, 2)
+
+        s = state.s_history  # (m, n)
+        y = state.y_history  # (m, n)
+
+        # --- two-loop recursion ---
+        q = F.copy()
+        alpha = jnp.zeros(m)
+
+        # first loop: newest (i=0) to oldest (i=m-1)
+        for i in range(m):
+            rho_i = 1.0 / (s[i] @ apply_M(y[i]) + 1e-30)
+            alpha_i = rho_i * (s[i] @ apply_M(q))
+            alpha = alpha.at[i].set(alpha_i)
+            q = q - alpha_i * y[i]
+
+        # initial Hessian scaling: gamma = (s_0^T M y_0) / (y_0^T M y_0)
+        sy = s[0] @ apply_M(y[0])
+        yy = y[0] @ apply_M(y[0])
+        gamma = jnp.where(yy > 1e-30, sy / yy, 1.0)
+        gamma = jnp.maximum(gamma, 1e-30)
+        r = gamma * q
+
+        # second loop: oldest (i=m-1) to newest (i=0)
+        for i in range(m - 1, -1, -1):
+            rho_i = 1.0 / (s[i] @ apply_M(y[i]) + 1e-30)
+            beta_i = rho_i * (y[i] @ apply_M(r))
+            r = r + (alpha[i] - beta_i) * s[i]
+
+        return r
 
     def apply_regularization(self, u: jnp.ndarray) -> jnp.ndarray:
         for _ in range(self.gamma):
-            u = cg(self.regularization_operator, u, M=self.seq.apply_m2_precond,
-                   tol=self.tol, maxiter=self.maxiter)[0]
+            u = apply_diffusion(u, self.seq, self.mu)
         return u
 
-    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'dt', 'eta', 'hessian', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'noise_level', 'v'], value) -> State:
+    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 's_history', 'y_history', 'F_prev', 'A', 'dt', 'eta', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'noise_level', 'key'], value) -> State:  # noqa: E501
         return eqx.tree_at(
             lambda s: getattr(s, field_name),
             state,
@@ -146,18 +254,15 @@ class TimeStepper(eqx.Module):
         """
         Apply noise to the velocity field.
         """
-        noise = cg(self.seq.apply_m2_sparse, jax.random.normal(key, v.shape),
-                   M=self.seq.apply_m2_precond, tol=self.tol, maxiter=self.maxiter)[0]
-        return v + strength * self.seq.apply_leray_projection(noise)
+        noise = self.seq.apply_inverse_mass_matrix(
+            jax.random.normal(key, v.shape), 2)
+        return v + strength * self.seq.apply_leray_projection(noise, k=2)[0]
 
-    def midpoint_residuum(self, state: State) -> float:
-        """
-        Compute the residuum of the Picard solver at the midpoint.
-        """
+    def midpoint_residuum(self, state: State) -> State:
         B_guess = state.B_nplus1
         # this updates B_nplus1, force_norm, velocity_norm
         state = self._relaxation_step(state, state.key)
-        residuum = self.norm_2(state.B_nplus1 - B_guess)
+        residuum = self.seq.l2_norm(state.B_nplus1 - B_guess, 2)
         return eqx.tree_at(
             lambda s: (s.picard_residuum,
                        s.picard_iterations),
@@ -167,25 +272,6 @@ class TimeStepper(eqx.Module):
         )
 
     def _relaxation_step(self, state: State, key: jax.random.PRNGKey) -> State:
-        """
-        Perform a single conjugate gradient step for the MRX relaxation.
-
-        Parameters
-        ------------
-        state : State
-            The state of the MRX relaxation.
-        key : jax.random.PRNGKey
-            The random key for noise generation.
-        Returns
-        -------
-        state : State
-            The updated state of the MRX relaxation. Updates:
-            - B_nplus1
-            - v
-            - F_norm
-            - v_norm
-            - dt
-        """
         if self.timestep_mode == IntegrationScheme.EXPLICIT:
             B_n = state.B_n
         elif self.timestep_mode == IntegrationScheme.IMPLICIT_MIDPOINT:
@@ -193,58 +279,59 @@ class TimeStepper(eqx.Module):
         else:
             raise ValueError(
                 f"Unknown timestep_mode: {self.timestep_mode}. Supported modes are given by the IntegrationScheme enum.")
-        F, J, H = self.compute_force(B_n)
-        if self.descent_method == DescentMethod.CONJUGATE_GRADIENT:
+        F, p, J, H = compute_force(
+            B_n, self.seq, dirichlet_H=self.dirichlet_H, p_guess=state.p)
+        if self.descent_method == DescentMethod.LBFGS:
+            u = self._lbfgs_direction(F, state)
+        elif self.descent_method == DescentMethod.CONJUGATE_GRADIENT:
             u = F
             v = state.v
-            u += v * jnp.maximum((u @ self.seq.m2 @ (u - v)) /
-                                 (v @ self.seq.m2 @ v), 0.0)
+            beta = jnp.maximum(
+                (u @ self.seq.apply_mass_matrix(u - v, 2)) /
+                self.seq.l2_norm_sq(v, 2),
+                0.0)
+            u = u + beta * v
         elif self.descent_method == DescentMethod.GRADIENT:
             u = F
         else:
             raise ValueError(
                 f"Unknown descent_method: {self.descent_method}. Supported methods are given by the DescentMethod enum.")
         if self.stochastic:
-            u = self.apply_noise(u, key, state.noise_level * self.norm_2(u))
+            u = self.apply_noise(
+                u, key, state.noise_level * self.seq.l2_norm(u, 2))
         u = self.apply_regularization(u)
-        u = self.seq.apply_leray_projection(u)
+        u, _ = self.seq.apply_leray_projection(u, k=2)
 
-        uxH = self.seq.P2x1_to_1(u, H)
-
-        E = cg(self.seq.apply_m1_sparse, uxH,
-               M=self.seq.apply_m1_precond, tol=self.tol, maxiter=self.maxiter)[0]
+        E_dual = self.seq.cross_product_projection(
+            u, H, 1, 2, 1, True, True, self.dirichlet_H)
+        E = self.seq.apply_inverse_mass_matrix(E_dual, 1)
         E = E - state.eta * J
 
         dB = self.seq.apply_strong_curl(E)
         if self.dt_mode == TimeStepChoice.FIXED or self.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:
             dt = state.dt
         elif self.dt_mode == TimeStepChoice.ANALYTIC_LINESEARCH:
-            dt = F @ self.seq.apply_m2_sparse(u) / \
-                (dB @ self.seq.apply_m2_sparse(dB))
+            dt = F @ self.seq.apply_mass_matrix(u, 2) / \
+                self.seq.l2_norm_sq(dB, 2)
         else:
             raise ValueError(
                 f"Unknown dt_mode: {self.dt_mode}. Supported modes are given by the TimeStepChoice enum.")
         B_nplus1 = B_n + dt * dB
 
-        H_new = state.hessian
+        # update histories: s = iterate difference, y = L^2-gradient difference
+        s_new = B_nplus1 - state.B_n
+        y_new = state.F_prev - F  # grad_M E = -F, so y = F_old - F_new
+        s_history = jnp.roll(state.s_history, 1, axis=0).at[0].set(s_new)
+        y_history = jnp.roll(state.y_history, 1, axis=0).at[0].set(y_new)
 
-        # update state
         return eqx.tree_at(
-            lambda s: (s.B_nplus1,
-                       s.v,
-                       s.F_norm,
-                       s.v_norm,
-                       s.dt,
-                       s.hessian),
+            lambda s: (s.B_nplus1, s.v, s.p, s.F_prev,
+                       s.F_norm, s.v_norm, s.dt,
+                       s.s_history, s.y_history),
             state,
-            (B_nplus1,
-             u,
-             self.norm_2(F),
-             self.norm_2(u),
-             dt,
-             H_new,
-             )
-        )
+            (B_nplus1, u, p, F,
+             self.seq.l2_norm(F, 2), self.seq.l2_norm(u, 2), dt,
+             s_history, y_history))
 
     def midpoint_picard_step(self, state: State, key: jax.random.PRNGKey) -> State:
         """
@@ -263,77 +350,25 @@ class TimeStepper(eqx.Module):
             The updated state of the MRX relaxation.
         """
         def cond_fun(state: State) -> bool:
-            """
-            Condition function for the while loop of the Picard solver.
-            Continue while either residual or change is above tolerance.
-
-            Parameters
-            ----------
-            state : State
-                The state of the MRX relaxation.
-
-            Returns
-            -------
-            bool : Whether to continue the loop.
-            """
-            # Continue while either residual or change is above tolerance.
-            return jnp.logical_and(state.picard_iterations < self.picard_k_restart,
-                                   jnp.logical_or(state.picard_residuum > self.picard_tol,
-                                                  jnp.isnan(state.picard_residuum)))
+            return jnp.logical_and(
+                state.picard_iterations < self.picard_k_restart,
+                jnp.logical_or(state.picard_residuum > self.picard_tol,
+                               jnp.isnan(state.picard_residuum)))
 
         def body_fun(state: State) -> State:
-            """
-            Body function for the while loop of the Picard solver.
-
-            Parameters
-            ----------
-            state : State
-                The state of the MRX relaxation.
-
-            Returns
-            -------
-            state : State
-                The updated state of the MRX relaxation.
-            """
             return self.midpoint_residuum(state)
 
-        # Initialize residuum, picard_iterations, key, and v (if None)
-        if state.v is None:
-            # Initialize v to zeros with same shape as B_n
-            v_init = jnp.zeros_like(state.B_n)
-        else:
-            v_init = state.v
-
         state = eqx.tree_at(
-            lambda s: (s.picard_residuum, s.picard_iterations, s.key, s.v),
+            lambda s: (s.picard_residuum, s.picard_iterations, s.key),
             state,
-            (1.0, 0, key, v_init)
+            (1.0, 0, key)
         )
 
-        # Finally, perform the while loop in the Picard solver.
+        # While loop in the Picard solver.
         state = jax.lax.while_loop(cond_fun, body_fun, state)
         return state
 
     def relaxation_step(self, state: State, key: jax.random.PRNGKey) -> State:
-        """
-        Perform a single relaxation step for the MRX relaxation.
-
-        Parameters
-        ------------
-        state : State
-            The state of the MRX relaxation.
-        key : jax.random.PRNGKey
-            The random key for noise generation.
-        Returns
-        -------
-        state : State
-            The updated state of the MRX relaxation. Updates:
-            - B_nplus1
-            - v
-            - F_norm
-            - v_norm
-            - dt
-        """
         if self.timestep_mode == IntegrationScheme.EXPLICIT:
             return self._relaxation_step(state, key)
         elif self.timestep_mode == IntegrationScheme.IMPLICIT_MIDPOINT:
@@ -343,147 +378,121 @@ class TimeStepper(eqx.Module):
                 f"Unknown timestep_mode: {self.timestep_mode}. Supported modes are given by the IntegrationScheme enum.")
 
 
+def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State:
+    n = ts.seq.n2_dbc
+    m = ts.history_size
+    return State(
+        B_n=B_dof,
+        dt=dt,
+        v=jnp.zeros(n),
+        p=jnp.zeros(ts.seq.n3),
+        A=jnp.zeros(ts.seq.n1_dbc),
+        F_prev=jnp.zeros(n),
+        s_history=jnp.zeros((m, n)),
+        y_history=jnp.zeros((m, n)),
+    )
+
+
 def relaxation_loop(B_dof: jnp.ndarray,
                     ts: TimeStepper,
-                    num_iters_outer,
-                    num_iters_inner=100,
-                    dt0=1.0,
+                    num_iters_outer: int,
+                    num_iters_inner: int = 100,
+                    dt0: float = 1.0,
                     force_tolerance: float = 1e-6,
                     key: jax.random.PRNGKey = jax.random.PRNGKey(67),
                     noise_schedule: Optional[Callable[[int], float]] = None,
                     resistivity_schedule: Optional[Callable[[
                         int], float]] = None,
                     callback: Optional[Callable[[State, int], State]] = None,
-                    ) -> State:
+                    ) -> tuple[State, dict]:
     """
     Perform multiple relaxation steps for the MRX relaxation.
 
-    Parameters
-    ------------
-    B_dof : jnp.ndarray
-        The initial magnetic field degrees of freedom.
-    timestepper : TimeStepper
-        The TimeStepper object to use for the relaxation.
-    num_iters_outer : int
-        The number of outer relaxation steps to perform (using a python for loop).
-    num_iters_inner : int, default=100
-        The number of inner relaxation steps to perform (using jax.lax.scan).
-    dt0 : float, default=1.0
-        The initial time step to use.
-    force_tolerance : float, default=1e-6
-        The tolerance for the force norm to consider the relaxation converged.
-    key : jax.random.PRNGKey, default=jax.random.PRNGKey(67)
-        The random key for noise generation.
-    noise_schedule : Optional[Callable[[int], float]], default=None
-        An optional noise schedule to use for the relaxation. This is function that takes the outer iteration index and returns the noise level to be used.
-    resistivity_schedule : Optional[Callable[[int], float]], default=None
-        An optional resistivity schedule to use for the relaxation. This is function that takes the outer iteration index and returns the resistivity to be used.
-    callback : Optional[Callable[[State, int], State]], default=None
-        A callback function to be called after each outer iteration. The signature is callback(state: State, iteration: int) -> State and it overrides the current state.
+    The outer loop is a Python for-loop (for diagnostics / callbacks),
+    the inner loop is compiled via jax.lax.scan.
 
     Returns
     -------
     state : State
-        The final state of the MRX relaxation.
-    traces : dict
-        A dictionary containing traces of various quantities during the relaxation: 
-        - force_norm
-        - helicity
-        - timestep
-        - energy
-        - picard_residua
-        - picard_iterations
-        - velocity_norm
+    traces : dict  with keys: force_norm, helicity, timestep, energy,
+             picard_residua, picard_iterations, velocity_norm, divergence_B, eta, iteration
     """
     seq = ts.seq
-    diagnostics = MRXDiagnostics(seq, ts.force_free)
-    get_helicity = jax.jit(diagnostics.helicity)
-    H = None  # No Newton and BFGS for now
-    F, _, _ = ts.compute_force(B_dof)
-    state = State(B_n=B_dof,
-                  dt=dt0,
-                  hessian=H,
-                  v=F,
-                  F_norm=ts.norm_2(F))
-    v = F
-    state = ts.update_field(state, "v", v)
-    state = ts.update_field(state, "v_norm", ts.norm_2(v))
-    # ---- diagnostics ----
-    force_norm_trace = [state.F_norm]
-    helicity_trace = [get_helicity(state.B_n)]
-    timesteps = []
-    energy_trace = [0.5 * state.B_n @ seq.apply_m2_sparse(state.B_n)]
-    picard_residua = []
-    picard_iterations = []
-    velocity_norm_trace = [state.v_norm]
-    divergence_B_trace = [diagnostics.divergence_norm(state.B_n)]
-    eta_trace = [state.eta]
-    iterations = [0]
-
-    traces = {
-        "force_norm": force_norm_trace,
-        "helicity": helicity_trace,
-        "timestep": timesteps,
-        "energy": energy_trace,
-        "picard_residua": picard_residua,
-        "picard_iterations": picard_iterations,
-        "velocity_norm": velocity_norm_trace,
-        "divergence_B": divergence_B_trace,
-        "eta": eta_trace,
-        "iteration": iterations
-    }
-    # -----------------------
-    print(
-        f"Initial condition: \nforce norm: {state.F_norm:.2e} \nhelicity: {helicity_trace[-1]:.2e} \nenergy: {energy_trace[-1]:.2e} \n------------------------")
+    state = initial_state(B_dof, ts, dt0)
 
     def body_fn(state, key):
-        # ---- one state update ----
         state = ts.relaxation_step(state, key)
         failed = (state.picard_residuum > ts.picard_tol) | (
             ~jnp.isfinite(state.picard_residuum))
 
-        def on_fail(state):
-            state = ts.update_field(state, "dt", state.dt / 2)
-            state = ts.update_field(
-                state, "B_nplus1", state.B_n)  # restart with halved dt
-            return state
+        def on_fail(s):
+            return eqx.tree_at(
+                lambda s: (s.dt, s.B_nplus1),
+                s, (s.dt / 2, s.B_n))
 
-        def on_success(state):
-            state = ts.update_field(state, "B_n", state.B_nplus1)
-            if ts.dt_mode == 'picard_adaptive':
-                dt_new = jnp.where(state.picard_iterations < ts.picard_k_crit,
-                                   state.dt * ts.picard_dt_increment,   # few iterations → increase dt
-                                   state.dt / ts.picard_dt_increment)   # many iterations → decrease dt
-                state = ts.update_field(state, "dt", dt_new)
-            return state
+        def on_success(s):
+            s = eqx.tree_at(lambda s: s.B_n, s, s.B_nplus1)
+            if ts.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:
+                dt_new = jnp.where(
+                    s.picard_iterations < ts.picard_k_crit,
+                    s.dt * ts.picard_dt_increment,
+                    s.dt / ts.picard_dt_increment)
+                s = eqx.tree_at(lambda s: s.dt, s, dt_new)
+            return s
+
         state = jax.lax.cond(failed, on_fail, on_success, state)
         return state, None
 
+    get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
+    get_energy = jax.jit(lambda B: 0.5 * seq.l2_norm_sq(B, 2))
+    get_div_norm = jax.jit(compute_divergence_norm, static_argnames=["seq"])
+
+    traces = {k: [] for k in (
+        "force_norm", "helicity", "timestep", "energy",
+        "picard_residua", "picard_iterations",
+        "velocity_norm", "divergence_B", "eta", "iteration")}
+
+    def record(state, iteration):
+        traces["force_norm"].append(state.F_norm)
+        h, A_new = get_helicity(state.B_n, seq, state.A)
+        traces["helicity"].append(h)
+        traces["timestep"].append(state.dt)
+        traces["energy"].append(get_energy(state.B_n))
+        traces["picard_residua"].append(state.picard_residuum)
+        traces["picard_iterations"].append(state.picard_iterations)
+        traces["velocity_norm"].append(state.v_norm)
+        traces["divergence_B"].append(get_div_norm(state.B_n, seq))
+        traces["eta"].append(state.eta)
+        traces["iteration"].append(iteration)
+        return eqx.tree_at(lambda s: s.A, state, A_new)
+
+    state = record(state, 0)
+    print(f"Initial: |F|={state.F_norm:.2e}  "
+          f"H={traces['helicity'][-1]:.2e}  "
+          f"E={traces['energy'][-1]:.2e}")
+
     for i in range(1, num_iters_outer + 1):
-        key, _ = jax.random.split(key)
+        key, subkey = jax.random.split(key)
         if noise_schedule is not None:
-            state = ts.update_field(state, "noise_level", noise_schedule(i))
+            state = eqx.tree_at(lambda s: s.noise_level,
+                                state, noise_schedule(i))
         if resistivity_schedule is not None:
-            state = ts.update_field(
-                state, "eta", resistivity_schedule(i))
+            state = eqx.tree_at(lambda s: s.eta, state,
+                                resistivity_schedule(i))
+
         state, _ = jax.lax.scan(
-            body_fn, state, jax.random.split(key, num_iters_inner))
-        # ---- diagnostics ----
-        force_norm_trace.append(state.F_norm)
-        helicity_trace.append(get_helicity(state.B_n))
-        timesteps.append(state.dt)
-        energy_trace.append(0.5 * state.B_n @ seq.apply_m2_sparse(state.B_n))
-        picard_residua.append(state.picard_residuum)
-        picard_iterations.append(state.picard_iterations)
-        velocity_norm_trace.append(state.v_norm)
-        divergence_B_trace.append(diagnostics.divergence_norm(state.B_n))
-        eta_trace.append(state.eta)
-        iterations.append(i * num_iters_inner)
-        # -----------------------
+            body_fn, state, jax.random.split(subkey, num_iters_inner))
+
+        state = record(state, i * num_iters_inner)
         if callback is not None:
             state = callback(state, i)
-        print(
-            f"Iteration {iterations[-1]}: \nforce norm: {state.F_norm:.2e} \nrelative helicity change: {jnp.abs(helicity_trace[0] - helicity_trace[-1])/helicity_trace[0]:.2e} \ndt: {state.dt:.2e} \nrelative energy change: {(energy_trace[0] - energy_trace[-1])/energy_trace[0]:.2e} \npicard iterations: {state.picard_iterations} \npicard residuum: {state.picard_residuum:.2e} \n------------------------")
+
+        print(f"Iter {traces['iteration'][-1]:>6d}: "
+              f"|F|={state.F_norm:.2e}  "
+              f"dH/H={abs(traces['helicity'][0] - traces['helicity'][-1]) / (abs(traces['helicity'][0]) + 1e-30):.2e}  "
+              f"dt={state.dt:.2e}  "
+              f"dE/E={(traces['energy'][0] - traces['energy'][-1]) / (abs(traces['energy'][0]) + 1e-30):.2e}")
+
         if state.F_norm < force_tolerance:
             break
 
