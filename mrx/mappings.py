@@ -261,6 +261,22 @@ def cylinder_map(a: float = 1.0, h: float = 1.0) -> Callable:
     return F
 
 
+def cylinder_annulus_map(R_min: float, R_max: float, L: float) -> Callable:
+    """
+    Cylinder annulus mapping: logical (r, θ, z) in [0,1]³ → physical (X, Y, Z).
+    R = R_min + r*(R_max - R_min), φ = 2πθ, Z = L*z.
+    (X, Y, Z) = (R*cos(φ), R*sin(φ), Z).
+    """
+    dR = R_max - R_min
+
+    def F(x: jnp.ndarray) -> jnp.ndarray:
+        r, θ, z = x
+        R = R_min + r * dR
+        φ = 2 * jnp.pi * θ
+        return jnp.array([R * jnp.cos(φ), R * jnp.sin(φ), L * z])
+
+    return F
+
 def drumshape_map(a_h: Callable) -> Callable:
     """
     Drumshape mapping function:
