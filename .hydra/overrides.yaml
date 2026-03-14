@@ -1,1 +1,4 @@
-- run_dir=out/relax_from_nfs/20260207_182940
+- run_dir=out/relax_from_nfs/20260210_035543
+- fieldline.n_scan=2
+- plotting.denom_max=25
+- plotting.plot_pressure=False

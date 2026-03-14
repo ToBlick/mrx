@@ -1,5 +1,7 @@
 __version__ = "0.0.1"
 
+MAP_BATCH_SIZE = 10_000
+
 from .boundary import *
 from .derham_sequence import *
 from .differential_forms import *

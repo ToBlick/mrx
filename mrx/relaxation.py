@@ -205,8 +205,6 @@ class MRXDiagnostics:
                 Bx = B_h(x)
                 return (J_h(x) @ Bx) / ((DFx @ Bx) @ DFx @ Bx) * jnp.linalg.det(DFx) * jnp.ones(1)
             return jnp.linalg.solve(self.Seq.M0, self.Seq.P0(lmbda))
-    
-    
 
 
 class State(eqx.Module):
@@ -270,6 +268,13 @@ class TimeStepChoice(Enum):
     ANALYTIC_LINESEARCH = 2
 
 
+class DescentMethod(Enum):
+    GRADIENT = 0
+    NEWTON = 1
+    BFGS = 2
+    CONJUGATE_GRADIENT = 3
+
+
 class TimeStepper(eqx.Module):
     """
     TimeStepper class.
@@ -282,8 +287,8 @@ class TimeStepper(eqx.Module):
         The hyperregularization parameter: v = (I - μ Δ)^{-Ɣ} f
     mu : float, default=0.0
         characteristic length scale for hyperregularization. v = (I - μ Δ)^{-Ɣ} f
-        newton : bool, default=False
-            Whether to use Newton's method.
+    preconditioner : Preconditioner, default=Preconditioner.NONE
+        The preconditioner to use.
     timestep_mode : TimestepMode, default=TimestepMode.EXPLICIT
         The time stepping mode to use.
     picard_tol : float, default=1e-9
@@ -296,11 +301,6 @@ class TimeStepper(eqx.Module):
         The factor by which to increase/decrease the time step based on Picard iterations.
         force_free : bool, default=False
             Whether the problem has grad(p) = 0.
-    conjugate: bool, default=False
-        Whether to use the conjugate gradient method.
-    b : float, default=1.0
-        The parameter for the modified update step:
-        v = f + b v⁻ max{ <f, f - v⁻> / <v⁻, v⁻>, 0}.
     dt_mode : DTMode, default=DTMode.ANALYTIC_LS
         The mode for updating the time step:
         - DTMode.FIXED: use the time step stored in the state.
@@ -314,16 +314,14 @@ class TimeStepper(eqx.Module):
     seq: DeRhamSequence
     gamma: int = 0
     mu: float = 0.0
-    newton: bool = False
+    descent_method: DescentMethod = DescentMethod.GRADIENT
+    dt_mode: TimeStepChoice = TimeStepChoice.ANALYTIC_LINESEARCH
+    timestep_mode: IntegrationScheme = IntegrationScheme.EXPLICIT
     picard_tol: float = 1e-9
     picard_k_restart: int = 20
     picard_k_crit: int = 4
     picard_dt_increment: float = 1.01
     force_free: bool = False
-    conjugate: bool = False
-    b: float = 1.0
-    dt_mode: TimeStepChoice = TimeStepChoice.ANALYTIC_LINESEARCH
-    timestep_mode: IntegrationScheme = IntegrationScheme.EXPLICIT
     stochastic: bool = False
     key: Optional[jax.Array] = None
 
@@ -509,49 +507,31 @@ class TimeStepper(eqx.Module):
                 f"Unknown timestep_mode: {self.timestep_mode}. Supported modes are given by the IntegrationScheme enum.")
         F, J, H = self.compute_force(B_n)
         # TODO: Need to check how Newton interacts with the div = 0 constraint and if another projection is needed.
-        if self.newton:
+        if self.descent_method == DescentMethod.NEWTON:
             u = self.apply_inverse_hessian(state, F)
-        else:
+        elif self.descent_method == DescentMethod.BFGS:
+            u = state.hessian @ F
+        elif self.descent_method == DescentMethod.CONJUGATE_GRADIENT:
             u = F
+            v = state.v
+            u += v * jnp.maximum((u @ self.seq.M2 @ (u - v)) /
+                                          (v @ self.seq.M2 @ v), 0.0)
+        elif self.descent_method == DescentMethod.GRADIENT:
+            u = F
+        else:
+            raise ValueError(
+                f"Unknown descent_method: {self.descent_method}. Supported methods are given by the DescentMethod enum.")
         if self.stochastic:
             u = self.apply_noise(u, key, state.noise_level * self.norm_2(u))
-        if self.conjugate:
-            v = state.v
-            u = u + self.b * v * \
-                jnp.maximum((F @ self.seq.M2 @ (u - v)) /
-                            (v @ self.seq.M2 @ v), 0.0)
         u = self.apply_regularization(u)
-    
+
+        if not self.force_free:
+            u = self.seq.P_Leray @ u
+
         # Project u and H to E1 space using P2x1_to_1
         P2x1_result = self.seq.P2x1_to_1(u, H)
-        
-        # M1 is (n_E1, n_E1), so P2x1_result should be (n_E1,)
-        if P2x1_result.shape[0] != self.seq.M1.shape[0]:
-            # Result is in wrong space, project from E2 to E1 using P12
-            if P2x1_result.shape[0] == self.seq.M2.shape[0]:
-                P2x1_result = self.seq.P12 @ P2x1_result
-            else:
-                raise ValueError(
-                    "Shape mismatch."
-                )
 
-        # J should be in E1 space
-        if J.shape[0] != self.seq.M1.shape[0]:
-            if J.shape[0] == self.seq.M2.shape[0]:
-                # J is in E2, need to project to E1
-                J = self.seq.P12 @ J
-            else:
-                raise ValueError("Shape mismatch.")
-
-        solve_result = jnp.linalg.solve(self.seq.M1, P2x1_result)
-
-        # Ensure solve_result and J have matching shapes before calculating E
-        if solve_result.shape[0] != J.shape[0]:
-            raise ValueError(
-                f"Shape mismatch: {solve_result.shape[0]} != {J.shape[0]}"
-            )
-
-        E = solve_result - state.eta * J
+        E = jnp.linalg.solve(self.seq.M1, P2x1_result) - state.eta * J
 
         dB = self.seq.strong_curl @ E
         if self.dt_mode == TimeStepChoice.FIXED or self.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:
@@ -562,19 +542,35 @@ class TimeStepper(eqx.Module):
             raise ValueError(
                 f"Unknown dt_mode: {self.dt_mode}. Supported modes are given by the TimeStepChoice enum.")
         B_nplus1 = B_n + dt * dB
+
+        # update hessian approximation
+        if self.descent_method == DescentMethod.BFGS:
+            s = dt * u
+            y = u - state.v
+            rho = 1.0 / (y @ self.seq.M2 @ s)
+            rho = jnp.where(rho > 0, rho, 0.0)
+            Id = jnp.eye(state.hessian.shape[0])
+            H_new = (Id - rho * jnp.outer(s, y) @ self.seq.M2) @ state.hessian \
+                @ (Id - rho * jnp.outer(y, s) @ self.seq.M2) + rho * jnp.outer(s, s) @ self.seq.M2
+        else:
+            H_new = state.hessian
+
         # update state
         return eqx.tree_at(
             lambda s: (s.B_nplus1,
                        s.v,
                        s.F_norm,
                        s.v_norm,
-                       s.dt),
+                       s.dt,
+                       s.hessian),
             state,
             (B_nplus1,
              u,
              self.norm_2(F),
              self.norm_2(u),
-             dt)
+             dt,
+             H_new,
+             )
         )
 
     def midpoint_picard_step(self, state: State, key: jax.random.PRNGKey) -> State:
@@ -634,7 +630,7 @@ class TimeStepper(eqx.Module):
             v_init = jnp.zeros_like(state.B_n)
         else:
             v_init = state.v
-            
+
         state = eqx.tree_at(
             lambda s: (s.picard_residuum, s.picard_iterations, s.key, s.v),
             state,
@@ -729,10 +725,12 @@ def relaxation_loop(B_dof: jnp.ndarray,
     seq = ts.seq
     diagnostics = MRXDiagnostics(seq, ts.force_free)
     get_helicity = jax.jit(diagnostics.helicity)
-    if ts.newton:
+    if ts.descent_method == DescentMethod.NEWTON:
         hessian_assembler = MRXHessian(seq)
         assemble_hessian = jax.jit(hessian_assembler.assemble)
         H = assemble_hessian(B_dof)
+    elif ts.descent_method == DescentMethod.BFGS:
+        H = jnp.eye(B_dof.shape[0])
     else:
         H = None
     F, _, _ = ts.compute_force(B_dof)
@@ -741,7 +739,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
                   hessian=H,
                   v=F,
                   F_norm=ts.norm_2(F))
-    if ts.newton:
+    if ts.descent_method == DescentMethod.NEWTON:
         v = ts.apply_inverse_hessian(state, F)
     else:
         v = F
@@ -750,10 +748,10 @@ def relaxation_loop(B_dof: jnp.ndarray,
     # ---- diagnostics ----
     force_norm_trace = [state.F_norm]
     helicity_trace = [get_helicity(state.B_n)]
-    timesteps = [state.dt]
+    timesteps = [ ]
     energy_trace = [state.B_n @ seq.M2 @ state.B_n/2]
-    picard_residua = [state.picard_residuum]
-    picard_iterations = [state.picard_iterations]
+    picard_residua = [ ]
+    picard_iterations = [ ]
     velocity_norm_trace = [state.v_norm]
     divergence_B_trace = [diagnostics.divergence_norm(state.B_n)]
     eta_trace = [state.eta]
@@ -805,7 +803,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
         if resistivity_schedule is not None:
             state = ts.update_field(
                 state, "eta", resistivity_schedule(i))
-        if ts.newton:
+        if ts.descent_method == DescentMethod.NEWTON:
             H = assemble_hessian(state.B_n)
             state = ts.update_field(state, "hessian", H)
         state, _ = jax.lax.scan(

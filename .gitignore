@@ -7,6 +7,7 @@ out
 test_outputs
 logs
 jax-caches/
+slurm/job_*
 
 
 # Byte-compiled / optimized / DLL files

@@ -3,6 +3,7 @@ from typing import Callable
 import jax
 import jax.numpy as jnp
 
+import mrx
 from mrx.boundary import LazyBoundaryOperator
 from mrx.differential_forms import DifferentialForm
 from mrx.nonlinearities import CrossProductProjection
@@ -77,9 +78,9 @@ class DeRhamSequence():
         def G(x):
             return jax.jacfwd(self.F)(x).T @ jax.jacfwd(self.F)(x)
 
-        self.G_jkl = jax.vmap(G)(self.Q.x)
-        self.G_inv_jkl = jax.vmap(inv33)(self.G_jkl)
-        self.J_j = jax.vmap(jacobian_determinant(self.F))(self.Q.x)
+        self.G_jkl = jax.lax.map(G, self.Q.x, batch_size=mrx.MAP_BATCH_SIZE)
+        self.G_inv_jkl = jax.lax.map(inv33, self.G_jkl, batch_size=mrx.MAP_BATCH_SIZE)
+        self.J_j = jax.lax.map(jacobian_determinant(self.F), self.Q.x, batch_size=mrx.MAP_BATCH_SIZE)
 
         if polar:
             xi = get_xi(ns[1])
