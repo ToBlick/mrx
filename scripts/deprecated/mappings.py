@@ -13,7 +13,7 @@ from jax.numpy import cos, pi, sin
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.plotting import get_2d_grids, plot_crossections_separate, plot_torus
-from mrx.utils import assemble, integrate_against
+from mrx.utils import assemble, integrate_against_deprecated
 
 jax.config.update("jax_enable_x64", True)
 # %%
@@ -274,11 +274,11 @@ def least_squares_deformed(F):
                                Seq.quad.w[:, None, None], Seq.basis_0.n, Seq.basis_0.n) @ Seq.e0.T
 
     F_x_hat = jnp.linalg.solve(
-        M0_log, Seq.e0 @ integrate_against(Seq.eval_basis_0_ijk, F_q[:, 0:1], Seq.basis_0.n))
+        M0_log, Seq.e0 @ integrate_against_deprecated(Seq.eval_basis_0_ijk, F_q[:, 0:1], Seq.basis_0.n))
     F_y_hat = jnp.linalg.solve(
-        M0_log, Seq.e0 @ integrate_against(Seq.eval_basis_0_ijk, F_q[:, 1:2], Seq.basis_0.n))
+        M0_log, Seq.e0 @ integrate_against_deprecated(Seq.eval_basis_0_ijk, F_q[:, 1:2], Seq.basis_0.n))
     F_z_hat = jnp.linalg.solve(
-        M0_log, Seq.e0 @ integrate_against(Seq.eval_basis_0_ijk, F_q[:, 2:3], Seq.basis_0.n))
+        M0_log, Seq.e0 @ integrate_against_deprecated(Seq.eval_basis_0_ijk, F_q[:, 2:3], Seq.basis_0.n))
 
     F_x_h = DiscreteFunction(F_x_hat, Seq.basis_0, Seq.e0)
     F_y_h = DiscreteFunction(F_y_hat, Seq.basis_0, Seq.e0)

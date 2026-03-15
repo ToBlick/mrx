@@ -47,7 +47,12 @@ def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
     return seq.l2_norm_sq(div_B, 3)**0.5
 
 
-def compute_force(B: jnp.ndarray, seq: DeRhamSequence, dirichlet_H: bool = False, p_guess: jnp.ndarray | None = None) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+def compute_force(
+    B: jnp.ndarray,
+    seq: DeRhamSequence,
+    dirichlet_H: bool = False,
+    p_guess: jnp.ndarray | None = None
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     J = seq.apply_weak_curl(B)
     H_dual = seq.apply_projection_matrix(
         B, 2, 1, True, dirichlet_out=dirichlet_H)
@@ -197,12 +202,12 @@ class TimeStepper(eqx.Module):
         Compute the L-BFGS descent direction v = H_k F using the two-loop recursion.
 
         The L^2 (M2) inner product is used both to identify the gradient via
-        the Riesz map (dE[v] = -(F, v)_{L^2} = <-F, v>_M  =>  grad_M E = -F)
+        the Riesz map (dℰ[v] = -(F, v)_{L^2} = <-F, v>_M  =>  grad_M E = -F)
         and inside the two-loop recursion (<a, b>_M = a^T M b).
 
         Stored histories:
             s_k = B_{k+1} - B_k            (iterate differences)
-            y_k = grad_M E_{k+1} - grad_M E_k = F_k - F_{k+1}  (gradient differences)
+            y_k = grad_M ℰ_{k+1} - grad_M ℰ_k = F_k - F_{k+1}  (gradient differences)
 
         Falls back to steepest descent (F) when all history entries are zero.
         """

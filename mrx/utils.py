@@ -60,6 +60,7 @@ def jacobian_determinant(f: Callable[[jnp.ndarray], jnp.ndarray]) -> Callable[[j
     """
     return lambda x: jnp.linalg.det(jax.jacfwd(f)(x))
 
+
 def det33(mat: jnp.ndarray) -> jnp.ndarray:
     """Compute the determinant of a 3x3 matrix using explicit formula.
 
@@ -75,6 +76,7 @@ def det33(mat: jnp.ndarray) -> jnp.ndarray:
     m4, m5, m6 = mat[1]
     m7, m8, m9 = mat[2]
     return m1 * (m5 * m9 - m6 * m8) - m2 * (m4 * m9 - m6 * m7) + m3 * (m4 * m8 - m5 * m7)
+
 
 def inv33(mat: jnp.ndarray) -> jnp.ndarray:
     """Compute the inverse of a 3x3 matrix using explicit formula.
@@ -170,10 +172,12 @@ def l2_product(f: Callable[[jnp.ndarray], jnp.ndarray],
     Returns:
         The L2 inner product value
     """
-    J_i = jax.lax.map(jacobian_determinant(F), Q.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
+    J_i = jax.lax.map(jacobian_determinant(F), Q.x,
+                      batch_size=mrx.MAP_BATCH_SIZE_INNER)
     f_ij = jax.lax.map(f, Q.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
     g_ij = jax.lax.map(g, Q.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
     return jnp.einsum("ij,ij,i,i->", f_ij, g_ij, J_i, Q.w)
+
 
 def assemble(getter_1, getter_2, W, n1, n2):
     """
@@ -210,7 +214,7 @@ def assemble(getter_1, getter_2, W, n1, n2):
 
     def get_B_jk(m, js, ks):
         return jax.lax.map(lambda j: get_B_k(m, j, ks), js,
-                           batch_size=mrx.MAP_BATCH_SIZE_INNER) # over j (quadrature points)
+                           batch_size=mrx.MAP_BATCH_SIZE_INNER)  # over j (quadrature points)
 
     def body_fun(i):
         ΛA_i = get_A_jk(i, jnp.arange(n_q), jnp.arange(d))
@@ -220,10 +224,337 @@ def assemble(getter_1, getter_2, W, n1, n2):
             return jnp.einsum("jk,jkm,jm->", ΛA_i, W, ΛB_m)
 
         return jax.lax.map(compute_row, jnp.arange(n2),
-                           batch_size=mrx.MAP_BATCH_SIZE_OUTER) # over m (basis functions for columns) -- batched
+                           batch_size=mrx.MAP_BATCH_SIZE_OUTER)  # over m (basis functions for columns) -- batched
 
-    M = jax.lax.map(body_fun, jnp.arange(n1), batch_size=None) # over i (rows) sequentially - not batched
+    # over i (rows) sequentially - not batched
+    M = jax.lax.map(body_fun, jnp.arange(n1), batch_size=None)
     return M
+
+
+def assemble_scalar_tp(R_row, T_row, Z_row, R_col, T_col, Z_col,
+                       W_flat, quad_shape, dof_shape, hw_r, hw_t, hw_z):
+    """Tensor-product assembly for scalar-valued form mass-like matrices.
+
+    Exploits the separable structure Λ(x) = R(r)·T(θ)·Z(ζ) to assemble via
+    1D basis overlap products contracted against a 3D weight tensor.  All
+    directions are treated as periodic; boundary conditions are enforced later
+    by the extraction operators.
+
+    Parameters
+    ----------
+    R_row, T_row, Z_row : arrays of shape (s1, n_qr), (s2, n_qt), (s3, n_qz)
+        1D basis evaluations at quadrature points for the row form.
+    R_col, T_col, Z_col : arrays of same shapes
+        1D basis evaluations at quadrature points for the column form.
+    W_flat : array of shape (n_q,)
+        Scalar quadrature weights at each quadrature point (e.g. J·w).
+    quad_shape : tuple (n_qt, n_qr, n_qz)
+        Shape of the 3D quadrature grid (matches meshgrid ordering: θ, r, ζ).
+    dof_shape : tuple (s1, s2, s3)
+        Shape of the DOF grid (radial, poloidal, toroidal).
+    hw_r, hw_t, hw_z : int
+        Stencil half-widths in each direction (typically the polynomial degree).
+
+    Returns
+    -------
+    M : jax.experimental.sparse.BCOO, shape (n_dof, n_dof)
+    """
+    s1, s2, s3 = dof_shape
+    n_dof = s1 * s2 * s3
+
+    W_3d = W_flat.reshape(quad_shape)  # (n_qt, n_qr, n_qz)
+
+    # Unique periodic offsets per direction, avoiding mod-s duplicates
+    def _offsets(hw, s):
+        if 2 * hw + 1 <= s:
+            return range(-hw, hw + 1)
+        return range(-(s // 2), s - s // 2)
+
+    offsets_r = _offsets(hw_r, s1)
+    offsets_t = _offsets(hw_t, s2)
+    offsets_z = _offsets(hw_z, s3)
+
+    # Precompute 1D overlap products per offset
+    Pr = {dr: R_row * jnp.roll(R_col, -dr, axis=0) for dr in offsets_r}
+    Pt = {dt: T_row * jnp.roll(T_col, -dt, axis=0) for dt in offsets_t}
+    Pz = {dz: Z_row * jnp.roll(Z_col, -dz, axis=0) for dz in offsets_z}
+
+    # Row DOF grid indices (flat)
+    I1, I2, I3 = jnp.meshgrid(
+        jnp.arange(s1), jnp.arange(s2), jnp.arange(s3), indexing='ij')
+    row_flat = jnp.ravel_multi_index(
+        (I1, I2, I3), dof_shape, mode='wrap').ravel()
+
+    all_data = []
+    all_rows = []
+    all_cols = []
+
+    for dr in offsets_r:
+        M1 = (I1 + dr) % s1
+        for dt in offsets_t:
+            M2 = (I2 + dt) % s2
+            for dz in offsets_z:
+                M3 = (I3 + dz) % s3
+
+                # einsum: W[b,a,c] * Pr[i,a] * Pt[j,b] * Pz[k,c] -> M[i,j,k]
+                vals = jnp.einsum('bac,ia,jb,kc->ijk',
+                                  W_3d, Pr[dr], Pt[dt], Pz[dz])
+
+                col_flat = jnp.ravel_multi_index(
+                    (M1, M2, M3), dof_shape, mode='wrap').ravel()
+
+                all_data.append(vals.ravel())
+                all_rows.append(row_flat)
+                all_cols.append(col_flat)
+
+    data = jnp.concatenate(all_data)
+    rows = jnp.concatenate(all_rows)
+    cols = jnp.concatenate(all_cols)
+    indices = jnp.stack([rows, cols], axis=-1)
+
+    return jsparse.BCOO((data, indices), shape=(n_dof, n_dof))
+
+
+def assemble_vectorial_tp(row_terms, col_terms, W_flat_3x3,
+                          quad_shape, comp_shapes, hw,
+                          col_comp_shapes=None):
+    """Tensor-product assembly for vectorial DOFs with block structure.
+
+    Computes M[i,j] = Σ_{k,l} ∫ (OpΛ_i)_k · W_{kl} · (OpΛ_j)_l dx
+
+    where the operator maps each source component c to one or more output
+    components k, each factoring as a product of 1D functions.
+
+    For mass matrices each component has a single identity term
+    ``[(c, R, T, Z, +1)]``.  For stiffness matrices (e.g. curl-curl)
+    each component may have multiple signed terms.
+
+    Supports rectangular matrices when ``col_comp_shapes`` is provided
+    (e.g. derivative matrices mapping between different form degrees).
+
+    Parameters
+    ----------
+    row_terms : list of lists
+        row_terms[c] is a list of (output_idx, R, T, Z, sign) tuples.
+    col_terms : list of lists
+        Same structure for the column operator.
+    W_flat_3x3 : array, shape (n_q, 3, 3)
+        Weight tensor indexed by output component pair (k, l).
+    quad_shape : tuple (n_qt, n_qr, n_qz)
+    comp_shapes : list of tuples (s1, s2, s3)
+        DOF grid shape per row source component.
+    hw : int
+        Stencil half-width (polynomial degree p).
+    col_comp_shapes : list of tuples (s1, s2, s3), optional
+        DOF grid shape per column source component.  When ``None``,
+        defaults to ``comp_shapes`` (square matrix).
+
+    Returns
+    -------
+    M : jax.experimental.sparse.BCOO
+    """
+    row_comp_shapes = comp_shapes
+    if col_comp_shapes is None:
+        col_comp_shapes = row_comp_shapes
+
+    # Row sizes and offsets
+    row_sizes = [s[0] * s[1] * s[2] for s in row_comp_shapes]
+    n_row_total = sum(row_sizes)
+    row_starts = []
+    acc = 0
+    for sz in row_sizes:
+        row_starts.append(acc)
+        acc += sz
+
+    # Col sizes and offsets
+    col_sizes = [s[0] * s[1] * s[2] for s in col_comp_shapes]
+    n_col_total = sum(col_sizes)
+    col_starts = []
+    acc = 0
+    for sz in col_sizes:
+        col_starts.append(acc)
+        acc += sz
+
+    def _offsets(hw, s):
+        if 2 * hw + 1 <= s:
+            return range(-hw, hw + 1)
+        return range(-(s // 2), s - s // 2)
+
+    # Precompute W_{kl} reshaped to 3D
+    W_3d = {}
+    for k in range(3):
+        for l in range(3):
+            W_3d[(k, l)] = W_flat_3x3[:, k, l].reshape(quad_shape)
+
+    all_data = []
+    all_rows = []
+    all_cols = []
+
+    for c_row in range(len(row_terms)):
+        s_row = row_comp_shapes[c_row]
+        I1, I2, I3 = jnp.meshgrid(
+            jnp.arange(s_row[0]), jnp.arange(s_row[1]),
+            jnp.arange(s_row[2]), indexing='ij')
+        row_flat = row_starts[c_row] + jnp.ravel_multi_index(
+            (I1, I2, I3), s_row, mode='wrap').ravel()
+
+        for c_col in range(len(col_terms)):
+            s_col = col_comp_shapes[c_col]
+            offsets_r = _offsets(hw, s_col[0])
+            offsets_t = _offsets(hw, s_col[1])
+            offsets_z = _offsets(hw, s_col[2])
+
+            # Precompute 1D overlap products for all term pairs and offsets
+            Pr = {}
+            Pt = {}
+            Pz = {}
+            for (k, Rk, Tk, Zk, _sk) in row_terms[c_row]:
+                for (l, Rl, Tl, Zl, _sl) in col_terms[c_col]:
+                    for dr in offsets_r:
+                        cidx = (jnp.arange(s_row[0]) + dr) % s_col[0]
+                        Pr[(k, l, dr)] = Rk * Rl[cidx, :]
+                    for dt in offsets_t:
+                        cidx = (jnp.arange(s_row[1]) + dt) % s_col[1]
+                        Pt[(k, l, dt)] = Tk * Tl[cidx, :]
+                    for dz in offsets_z:
+                        cidx = (jnp.arange(s_row[2]) + dz) % s_col[2]
+                        Pz[(k, l, dz)] = Zk * Zl[cidx, :]
+
+            for dr in offsets_r:
+                J1 = (I1 + dr) % s_col[0]
+                for dt in offsets_t:
+                    J2 = (I2 + dt) % s_col[1]
+                    for dz in offsets_z:
+                        J3 = (I3 + dz) % s_col[2]
+
+                        vals = jnp.zeros(s_row)
+                        for (k, _, _, _, sk) in row_terms[c_row]:
+                            for (l, _, _, _, sl) in col_terms[c_col]:
+                                vals = vals + sk * sl * jnp.einsum(
+                                    'bac,ia,jb,kc->ijk',
+                                    W_3d[(k, l)],
+                                    Pr[(k, l, dr)],
+                                    Pt[(k, l, dt)],
+                                    Pz[(k, l, dz)])
+
+                        col_flat = col_starts[c_col] + jnp.ravel_multi_index(
+                            (J1, J2, J3), s_col, mode='wrap').ravel()
+
+                        all_data.append(vals.ravel())
+                        all_rows.append(row_flat)
+                        all_cols.append(col_flat)
+
+    data = jnp.concatenate(all_data)
+    rows = jnp.concatenate(all_rows)
+    cols = jnp.concatenate(all_cols)
+    indices = jnp.stack([rows, cols], axis=-1)
+
+    return jsparse.BCOO((data, indices), shape=(n_row_total, n_col_total))
+
+
+def assemble_stiffness_scalar_tp(row_basis_1d, col_basis_1d, W_flat_3x3,
+                                 quad_shape, dof_shape, hw_r, hw_t, hw_z):
+    """Tensor-product assembly for stiffness-like matrix with scalar DOFs.
+
+    Computes M_ij = Σ_{a,b} ∫ (dΛ_i)_a · W_{ab} · (dΛ_j)_b dx
+
+    where dΛ is a vector-valued operator (e.g. gradient) applied to scalar
+    basis functions, producing 3 components, each factoring as a product
+    of 1D functions.  All 9 (a,b) blocks contribute to a single scalar
+    DOF matrix.
+
+    Parameters
+    ----------
+    row_basis_1d : list of 3 tuples (R, T, Z)
+        Per-component 1D basis evaluations for the row operator.
+        All arrays share the same DOF dimension per direction.
+    col_basis_1d : list of 3 tuples (R, T, Z)
+        Same, for the column operator.
+    W_flat_3x3 : array, shape (n_q, 3, 3)
+        Weight tensor at each quadrature point.
+    quad_shape : tuple (n_qt, n_qr, n_qz)
+    dof_shape : tuple (s1, s2, s3)
+    hw_r, hw_t, hw_z : int
+        Stencil half-widths per direction.
+
+    Returns
+    -------
+    M : jax.experimental.sparse.BCOO, shape (n_dof, n_dof)
+    """
+    s1, s2, s3 = dof_shape
+    n_dof = s1 * s2 * s3
+
+    def _offsets(hw, s):
+        if 2 * hw + 1 <= s:
+            return range(-hw, hw + 1)
+        return range(-(s // 2), s - s // 2)
+
+    offsets_r = _offsets(hw_r, s1)
+    offsets_t = _offsets(hw_t, s2)
+    offsets_z = _offsets(hw_z, s3)
+
+    # Precompute 1D overlap products for all (a, b) blocks and offsets
+    Pr = {}
+    Pt = {}
+    Pz = {}
+    for a in range(3):
+        R_row, T_row, Z_row = row_basis_1d[a]
+        for b in range(3):
+            R_col, T_col, Z_col = col_basis_1d[b]
+            for dr in offsets_r:
+                Pr[(a, b, dr)] = R_row * jnp.roll(R_col, -dr, axis=0)
+            for dt in offsets_t:
+                Pt[(a, b, dt)] = T_row * jnp.roll(T_col, -dt, axis=0)
+            for dz in offsets_z:
+                Pz[(a, b, dz)] = Z_row * jnp.roll(Z_col, -dz, axis=0)
+
+    # Precompute W_{ab} reshaped to 3D
+    W_ab_3d = {}
+    for a in range(3):
+        for b in range(3):
+            W_ab_3d[(a, b)] = W_flat_3x3[:, a, b].reshape(quad_shape)
+
+    # Row DOF grid
+    I1, I2, I3 = jnp.meshgrid(
+        jnp.arange(s1), jnp.arange(s2), jnp.arange(s3), indexing='ij')
+    row_flat = jnp.ravel_multi_index(
+        (I1, I2, I3), dof_shape, mode='wrap').ravel()
+
+    all_data = []
+    all_rows = []
+    all_cols = []
+
+    for dr in offsets_r:
+        M1 = (I1 + dr) % s1
+        for dt in offsets_t:
+            M2 = (I2 + dt) % s2
+            for dz in offsets_z:
+                M3 = (I3 + dz) % s3
+
+                # Sum contributions from all 9 (a, b) blocks
+                vals = jnp.zeros((s1, s2, s3))
+                for a in range(3):
+                    for b in range(3):
+                        vals = vals + jnp.einsum(
+                            'bac,ia,jb,kc->ijk',
+                            W_ab_3d[(a, b)],
+                            Pr[(a, b, dr)],
+                            Pt[(a, b, dt)],
+                            Pz[(a, b, dz)])
+
+                col_flat = jnp.ravel_multi_index(
+                    (M1, M2, M3), dof_shape, mode='wrap').ravel()
+
+                all_data.append(vals.ravel())
+                all_rows.append(row_flat)
+                all_cols.append(col_flat)
+
+    data = jnp.concatenate(all_data)
+    rows = jnp.concatenate(all_rows)
+    cols = jnp.concatenate(all_cols)
+    indices = jnp.stack([rows, cols], axis=-1)
+
+    return jsparse.BCOO((data, indices), shape=(n_dof, n_dof))
 
 
 def assemble_sparse(getter_1, getter_2, W, n1, n2, max_nnz, neighbors):
@@ -259,7 +590,8 @@ def assemble_sparse(getter_1, getter_2, W, n1, n2, max_nnz, neighbors):
     n_q, d, _ = W.shape
     max_nnz = min(max_nnz, n2)
 
-    get_A_k = jax.vmap(getter_1, in_axes=(None, None, 0))  # over k - dimensions
+    get_A_k = jax.vmap(getter_1, in_axes=(
+        None, None, 0))  # over k - dimensions
     get_B_k = jax.vmap(getter_2, in_axes=(None, None, 0))  # over k
 
     def get_A_jk(i, js, ks):
@@ -274,15 +606,18 @@ def assemble_sparse(getter_1, getter_2, W, n1, n2, max_nnz, neighbors):
     def process_row(i):
         ΛA_i = get_A_jk(i, jnp.arange(n_q), jnp.arange(d))
         cols = neighbors(i)  # shape (max_nnz,)
-        
+
         def compute_entry(m):
             ΛB_m = get_B_jk(m, jnp.arange(n_q), jnp.arange(d))
             return jnp.einsum("jk,jkm,jm->", ΛA_i, W, ΛB_m)
-        
-        vals = jax.lax.map(compute_entry, cols, batch_size=mrx.MAP_BATCH_SIZE_OUTER)  # over m (columns)
+
+        # over m (columns)
+        vals = jax.lax.map(compute_entry, cols,
+                           batch_size=mrx.MAP_BATCH_SIZE_OUTER)
         return vals, cols
 
-    all_vals, all_cols = jax.lax.map(process_row, jnp.arange(n1), batch_size=None)  # (n1, max_nnz)
+    all_vals, all_cols = jax.lax.map(
+        process_row, jnp.arange(n1), batch_size=None)  # (n1, max_nnz)
     # over i (rows) sequentially - not batched
 
     row_indices = jnp.broadcast_to(
@@ -335,10 +670,12 @@ def build_neighbors(row_form, col_form=None):
         # If stencil wider than any dimension, just use all columns
         if (2 * hw_r + 1 >= s1) or (2 * hw_t + 1 >= s2) or (2 * hw_z + 1 >= s3):
             max_nnz = s1 * s2 * s3
+
             def neighbors(i):
                 return jnp.arange(max_nnz)
         else:
             max_nnz = per_block
+
             def neighbors(i):
                 _, i1, i2, i3 = row_form._unravel_index(i)
                 j1 = (i1 + dr) % s1
@@ -360,10 +697,12 @@ def build_neighbors(row_form, col_form=None):
                 break
         if overflow:
             max_nnz = n_total
+
             def neighbors(i):
                 return jnp.arange(max_nnz)
         else:
             max_nnz = 3 * per_block
+
             def neighbors(i):
                 _, i1, i2, i3 = row_form._unravel_index(i)
                 cols = []
@@ -380,7 +719,7 @@ def build_neighbors(row_form, col_form=None):
     return neighbors, max_nnz
 
 
-def evaluate_at_xq(getter, dofs, n_q, d):
+def evaluate_at_xq_deprecated(getter, dofs, n_q, d):
     """
     Evaluate a finite element function at quadrature points.
 
@@ -421,7 +760,7 @@ def evaluate_at_xq(getter, dofs, n_q, d):
     return R
 
 
-def integrate_against(getter, w_jk, n):
+def integrate_against_deprecated(getter, w_jk, n):
     """
     Integrate a function represented at quadrature points against a set of basis functions.
 
@@ -447,6 +786,72 @@ def integrate_against(getter, w_jk, n):
 
     _, R = jax.lax.scan(body_fun, None, jnp.arange(n))
     return R
+
+
+def evaluate_at_xq(dofs, comp_info, comp_shapes, quad_shape, d):
+    """Evaluate a k-form at quadrature points using tensor-product structure.
+
+    Parameters
+    ----------
+    dofs : array, shape (n_total,)
+        DOF vector (internal, already contracted with extraction matrices).
+    comp_info : list of (output_dim, R, T, Z)
+        For each component c, the output dimension and 1D basis arrays.
+        R shape (s1_c, nq_r), T shape (s2_c, nq_t), Z shape (s3_c, nq_z).
+    comp_shapes : list of tuples (s1_c, s2_c, s3_c)
+        DOF grid shape per component.
+    quad_shape : tuple (nq_t, nq_r, nq_z)
+    d : int
+        Number of output dimensions.
+
+    Returns
+    -------
+    f_jk : array, shape (n_q, d)
+    """
+    f = jnp.zeros((d,) + quad_shape)
+
+    offset = 0
+    for c, (out_dim, R, T, Z) in enumerate(comp_info):
+        s = comp_shapes[c]
+        n_c = s[0] * s[1] * s[2]
+        V = dofs[offset:offset + n_c].reshape(s)
+        # V[i,j,k], R[i,a], T[j,b], Z[k,c] -> f[b,a,c]
+        # quad_shape = (nq_t, nq_r, nq_z) -> output indices (b, a, c)
+        val = jnp.einsum('ijk,ia,jb,kc->bac', V, R, T, Z)
+        f = f.at[out_dim].add(val)
+        offset += n_c
+
+    return f.transpose(1, 2, 3, 0).reshape(-1, d)
+
+
+def integrate_against(f_jk, comp_info, comp_shapes, quad_shape):
+    """Integrate quad-point values against k-form basis using TP structure.
+
+    Parameters
+    ----------
+    f_jk : array, shape (n_q, d)
+        Values at quadrature points (already weighted).
+    comp_info : list of (input_dim, R, T, Z)
+        For each component c, the input dimension and 1D basis arrays.
+    comp_shapes : list of tuples (s1_c, s2_c, s3_c)
+    quad_shape : tuple (nq_t, nq_r, nq_z)
+
+    Returns
+    -------
+    result : array, shape (n_total,)
+    """
+    d = f_jk.shape[1]
+    # Reshape to (d, nq_t, nq_r, nq_z)
+    f = f_jk.reshape(quad_shape + (d,)).transpose(3, 0, 1, 2)
+
+    parts = []
+    for c, (in_dim, R, T, Z) in enumerate(comp_info):
+        # f[in_dim] has shape (nq_t, nq_r, nq_z)
+        # R[i,a], T[j,b], Z[k,c], f[b,a,c] -> result[i,j,k]
+        val = jnp.einsum('ia,jb,kc,bac->ijk', R, T, Z, f[in_dim])
+        parts.append(val.ravel())
+
+    return jnp.concatenate(parts)
 
 
 # Device-specific parameter presets for the relaxation
@@ -869,27 +1274,47 @@ def interpolate_B(B_vals, eval_points, Seq, exclude_axis_tol=1e-3):
     return B_dof, residuals
 
 
-def extract_diag_vector(mat: jsparse.BCOO) -> jnp.ndarray:
-    """Extracts the main diagonal of a BCOO matrix as a 1D array."""
+def _bcsr_to_coo_indices(mat: jsparse.BCSR):
+    """Expand BCSR indptr to COO-style (row, col) index array."""
+    nse = mat.data.shape[0]
+    lengths = mat.indptr[1:] - mat.indptr[:-1]
+    rows = jnp.repeat(jnp.arange(mat.shape[0]), lengths,
+                      total_repeat_length=nse)
+    return jnp.stack([rows, mat.indices], axis=1)
+
+
+def extract_diag_vector(mat) -> jnp.ndarray:
+    """Extracts the main diagonal of a sparse matrix as a 1D array."""
     n = mat.shape[0]
-    rows = mat.indices[:, 0]
-    cols = mat.indices[:, 1]
+    if isinstance(mat, jsparse.BCSR):
+        indices = _bcsr_to_coo_indices(mat)
+        rows, cols = indices[:, 0], indices[:, 1]
+    else:
+        rows = mat.indices[:, 0]
+        cols = mat.indices[:, 1]
     is_diag = rows == cols
     diag_data = jnp.where(is_diag, mat.data, 0.0)
     return jnp.zeros(n, dtype=mat.dtype).at[rows].add(diag_data)
 
 
-def square_bcoo(mat: jsparse.BCOO) -> jsparse.BCOO:
-    """Squares the non-zero elements of a BCOO matrix."""
+def square_sparse(mat) -> jsparse.BCOO:
+    """Squares the non-zero elements of a sparse matrix. Always returns BCOO."""
+    if isinstance(mat, jsparse.BCSR):
+        indices = _bcsr_to_coo_indices(mat)
+        return jsparse.BCOO((mat.data**2, indices), shape=mat.shape)
     return jsparse.BCOO((mat.data**2, mat.indices), shape=mat.shape)
+
+
+# backward compat alias
+square_bcoo = square_sparse
 
 # %%
 
 # def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x, x0=None, vs=[], maxiter=1000, tol=1e-6):
-    
+
 #    if mass_matvec is None:
 #        mass_matvec = lambda x: x
-    
+
 #     # --- 1. Your Exact Projection Logic ---
 #     def inner_product(x, y):
 #         return jnp.dot(x, mass_matvec(y))
@@ -921,7 +1346,7 @@ def square_bcoo(mat: jsparse.BCOO) -> jsparse.BCOO:
 #     z0 = project_primal(z0) # Clean the preconditioner output
 
 #     p0 = z0
-    
+
 #     # State: (iteration, x, r, p, z, r_dot_z, residual_norm)
 #     r_dot_z_0 = jnp.vdot(r0, z0)
 #     init_state = (0, x0, r0, p0, z0, r_dot_z_0, jnp.linalg.norm(r0))
@@ -946,7 +1371,7 @@ def square_bcoo(mat: jsparse.BCOO) -> jsparse.BCOO:
 #         x_next = x + alpha * p
 #         r_next = r - alpha * Ap
 
-#         r_next = project_dual(r_next) 
+#         r_next = project_dual(r_next)
 
 #         # Apply and project preconditioner
 #         z_next = precond_matvec(r_next)
@@ -956,19 +1381,20 @@ def square_bcoo(mat: jsparse.BCOO) -> jsparse.BCOO:
 #         r_dot_z_next = jnp.vdot(r_next, z_next)
 #         beta = r_dot_z_next / r_dot_z
 #         p_next = z_next + beta * p
-        
+
 #         # Keep p strictly in the Primal subspace
-#         p_next = project_primal(p_next) 
+#         p_next = project_primal(p_next)
 
 #         return (i + 1, x_next, r_next, p_next, z_next, r_dot_z_next, jnp.linalg.norm(r_next))
 
 #     # --- 4. Execute ---
 #     final_state = jax.lax.while_loop(cond_fun, body_fun, init_state)
-    
+
 #     iters, x_final, _, _, _, _, info_norm = final_state
-    
+
 #     # Final safety projection
 #     return project_primal(x_final), {"iterations": iters, "residual_norm": info_norm}
+
 
 def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x, x0=None, vs=[], maxiter=None, tol=1e-6):
     """
@@ -984,7 +1410,7 @@ def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x,
         tol: CG tolerance.
     """
     if mass_matvec is None:
-        mass_matvec = lambda x: x
+        def mass_matvec(x): return x
 
     def inner_product(x, y):
         return jnp.dot(x, mass_matvec(y))

@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-from mrx.utils import evaluate_at_xq, integrate_against
+from mrx.utils import evaluate_at_xq_deprecated, integrate_against_deprecated
 
 
 class CrossProductProjection:
@@ -11,7 +11,7 @@ class CrossProductProjection:
     with coordinate transformation F.
     """
 
-    def __init__(self, n: int, m: int, k: int, seq, dirichlet_n = True, dirichlet_m = True, dirichlet_k = True):  # Seq: DeRhamSequence
+    def __init__(self, n: int, m: int, k: int, seq, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):  # Seq: DeRhamSequence
         """
         Given bases n, m, k, constructs an operator to evaluate
         (w, u) -> ∫ (wₕ × uₕ) · Λn[i] dx for all i, where Λn[i] is the i-th basis function of Λn
@@ -109,10 +109,10 @@ class CrossProductProjection:
         """
 
         # w and u evaluated at quadrature points: shape: n_q x 3
-        w_jk = evaluate_at_xq(self.eval_basis_m_ijk,
-                              self.em.T @ w, self.seq.quad.n, 3)
-        u_jk = evaluate_at_xq(self.eval_basis_k_ijk,
-                              self.ek.T @ u, self.seq.quad.n, 3)
+        w_jk = evaluate_at_xq_deprecated(self.eval_basis_m_ijk,
+                                         self.em.T @ w, self.seq.quad.n, 3)
+        u_jk = evaluate_at_xq_deprecated(self.eval_basis_k_ijk,
+                                         self.ek.T @ u, self.seq.quad.n, 3)
 
         # now, we compute
         # ∑ Λn[i](x_j)_a w(x_j)_b u(x_j)_c ) t(x_j)_abc
@@ -155,4 +155,4 @@ class CrossProductProjection:
             f_jk = w_x_u_jk * (self.seq.quad.w / self.seq.jacobian_j)[:, None]
         else:
             raise ValueError("Not yet implemented")
-        return integrate_against(self.eval_basis_n_ijk, f_jk, self.nn)
+        return integrate_against_deprecated(self.eval_basis_n_ijk, f_jk, self.nn)

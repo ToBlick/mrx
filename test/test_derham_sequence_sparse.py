@@ -9,7 +9,7 @@ from jax.scipy.sparse.linalg import cg
 from scipy.linalg import eigvalsh
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction
+from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import rotating_ellipse_map, toroid_map
 from mrx.utils import build_neighbors, get_smallest_ev_pair, solve_singular_cg
 
@@ -36,6 +36,17 @@ def seq_toroid():
     seq.evaluate_1d()
     seq.assemble_mass_matrix(0)
     seq.assemble_hodge_laplacian(0)
+    seq.null_0_dbc = []
+    return seq
+
+
+def _build_toroid_seq(n, p):
+    """Build a toroid DeRham sequence at given resolution."""
+    a = 1 / 3
+    F = toroid_map(epsilon=a)
+    seq = DeRhamSequence((n, n, n), (p, p, p), 2*p, types, F,
+                         polar=True, tol=1e-12, maxiter=1000)
+    seq.evaluate_1d()
     return seq
 
 
@@ -95,28 +106,92 @@ class TestPoissonToroidSparse:
             * jnp.ones(1)
         )
 
-    def test_poisson_sparse_solver(self, seq_toroid):
-        seq = seq_toroid
+    @staticmethod
+    def _solve_and_error_k0(seq):
+        """Solve k=0 Poisson and return relative L2 error."""
+        exact_u = TestPoissonToroidSparse._exact_u
+        source_f = TestPoissonToroidSparse._source_f
 
-        # Project source (with DBC)
-        rhs = seq.p0_dbc(self._source_f)
+        rhs = seq.p0_dbc(source_f)
+        u_hat = seq.apply_inverse_hodge_laplacian(rhs, k=0)
+        u_h = DiscreteFunction(u_hat, seq.basis_0, seq.e0_dbc)
 
-        # Sparse CG solve:  grad_grad @ u_hat = rhs
-        u_hat_sp = seq.apply_inverse_hodge_laplacian(rhs, k=0)
-        u_h = DiscreteFunction(u_hat_sp, seq.basis_0, seq.e0_dbc)
-
-        # L2 error
         diff_vals = jax.lax.map(
-            lambda x: self._exact_u(x) - u_h(x), seq.quad.x, batch_size=20_000
+            lambda x: exact_u(x) - u_h(x), seq.quad.x, batch_size=20_000
         )
-        u_vals = jax.vmap(self._exact_u)(seq.quad.x)
+        u_vals = jax.vmap(exact_u)(seq.quad.x)
         L2_diff = jnp.einsum("ik,ik,i,i->", diff_vals,
                              diff_vals, seq.jacobian_j, seq.quad.w)
         L2_u = jnp.einsum("ik,ik,i,i->", u_vals, u_vals,
                           seq.jacobian_j, seq.quad.w)
-        rel_error = (L2_diff / L2_u) ** 0.5
+        return float((L2_diff / L2_u) ** 0.5)
 
+    @staticmethod
+    def _solve_and_error_k3(seq):
+        """Solve k=3 Poisson (no BCs) and return relative L2 error.
+
+        The k=3 Hodge Laplacian without BCs is equivalent to the k=0
+        Laplacian with DBC, so we reuse the same analytic solution.
+        The physical comparison uses the Pushforward (divides by det DF).
+        """
+        exact_u = TestPoissonToroidSparse._exact_u
+        source_f = TestPoissonToroidSparse._source_f
+        a = 1 / 3
+        F = toroid_map(epsilon=a)
+
+        rhs = seq.p3(source_f)
+        p_hat = seq.apply_inverse_hodge_laplacian(rhs, k=3, dirichlet=False)
+
+        # Compare in physical space via Pushforward
+        p_h_ref = DiscreteFunction(p_hat, seq.basis_3, seq.e3)
+        p_h_phys = Pushforward(p_h_ref, F, k=3)
+
+        diff_vals = jax.lax.map(
+            lambda x: exact_u(x) - p_h_phys(x), seq.quad.x,
+            batch_size=20_000
+        )
+        u_vals = jax.vmap(exact_u)(seq.quad.x)
+        L2_diff = jnp.einsum("ik,ik,i,i->", diff_vals,
+                             diff_vals, seq.jacobian_j, seq.quad.w)
+        L2_u = jnp.einsum("ik,ik,i,i->", u_vals, u_vals,
+                          seq.jacobian_j, seq.quad.w)
+        return float((L2_diff / L2_u) ** 0.5)
+
+    def test_poisson_k0(self, seq_toroid):
+        """k=0 Poisson solve should achieve < 10% relative error at n=4, p=2."""
+        rel_error = self._solve_and_error_k0(seq_toroid)
         assert rel_error < 1e-1, f"Relative L2 error too large: {rel_error:.2e}"
+
+    def test_poisson_k0_convergence(self):
+        """k=0 error must decrease when resolution increases (n=4 → n=6)."""
+        errors = []
+        for n in (4, 6):
+            seq = _build_toroid_seq(n, p=2)
+            seq.assemble_mass_matrix(0)
+            seq.assemble_hodge_laplacian(0)
+            seq.null_0_dbc = []
+            errors.append(self._solve_and_error_k0(seq))
+        assert errors[1] < errors[0], (
+            f"k=0 error did not decrease: n=4 → {errors[0]:.4e}, "
+            f"n=6 → {errors[1]:.4e}")
+
+    def test_poisson_k3(self):
+        """k=3 Poisson (no BCs) should converge — same solution as k=0 with DBC."""
+        errors = []
+        for n in (4, 6):
+            seq = _build_toroid_seq(n, p=2)
+            seq.assemble_mass_matrix(2)
+            seq.assemble_mass_matrix(3)
+            seq.assemble_derivative_matrix(2)
+            seq.assemble_hodge_laplacian(3)
+            seq.null_3 = []
+            errors.append(self._solve_and_error_k3(seq))
+
+        assert errors[0] < 5e-1, (
+            f"k=3 error too large at n=4: {errors[0]:.2e}")
+        assert errors[1] < errors[0], (
+            f"k=3 error did not decrease: n=4 → {errors[0]:.4e}, "
+            f"n=6 → {errors[1]:.4e}")
 
 
 # ---------------------------------------------------------------------------

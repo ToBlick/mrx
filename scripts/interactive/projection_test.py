@@ -1,22 +1,26 @@
 # %%
+import h5py
 import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import numpy as np
 import numpy.testing as npt
 import pytest
+from jax.scipy.interpolate import RegularGridInterpolator
+
 import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.mappings import interpolate_map
-from mrx.utils import evaluate_at_xq, integrate_against, inv33, jacobian_determinant, det33, solve_singular_cg
 from mrx.io import interpolate_scalar_function
-import numpy as np
-import h5py
-import matplotlib.pyplot as plt
-from jax.scipy.interpolate import RegularGridInterpolator
+from mrx.mappings import interpolate_map
+from mrx.utils import (det33, evaluate_at_xq_deprecated,
+                       integrate_against_deprecated, inv33,
+                       jacobian_determinant, solve_singular_cg)
 
 jax.config.update("jax_enable_x64", True)
 
 nfs_path = "/scratch/tblickhan/mrx/data/gvec_nfp3_hegna_80cubed_clebsch.h5"
+
 
 def inspect_h5_item(name, obj):
     """Callback function to print the name and type of each item."""
@@ -25,6 +29,7 @@ def inspect_h5_item(name, obj):
     elif isinstance(obj, h5py.Dataset):
         print(f"Dataset: {name} | Shape: {obj.shape} | Type: {obj.dtype}")
 
+
 with h5py.File(nfs_path, 'r') as f:
     print("--- HDF5 File Structure ---")
     # This visits every node in the file and applies our function
@@ -32,11 +37,13 @@ with h5py.File(nfs_path, 'r') as f:
 
 with h5py.File(nfs_path, "r") as f:
     if not f.attrs.get("clebsch_ingredients", False):
-        print("ERROR: File lacks clebsch_ingredients.") # Clebsch ingredients means things I extracted from GVEC run
+        # Clebsch ingredients means things I extracted from GVEC run
+        print("ERROR: File lacks clebsch_ingredients.")
     for k in ("Phi", "chi", "LA"):
         if f"clebsch/{k}" not in f:
-            print(f"ERROR: File lacks clebsch/{k}. Export with --export-clebsch-ingredients.")
-    
+            print(
+                f"ERROR: File lacks clebsch/{k}. Export with --export-clebsch-ingredients.")
+
     pts = jnp.array(f["eval_points"][:])
     phi_vals = jnp.array(f["clebsch/Phi"][:]).ravel()
     chi_vals = jnp.array(f["clebsch/chi"][:]).ravel()
@@ -59,85 +66,90 @@ n = 8
 p = 3
 mrx.MAP_BATCH_SIZE_INNER = 0
 map_seq = DeRhamSequence(
-        (n, n, n), (p, p, p), 2*p,
-        ("clamped", "periodic", "periodic"),
-        map=lambda x: x, polar=False,
-    )
+    (n, n, n), (p, p, p), 2*p,
+    ("clamped", "periodic", "periodic"),
+    map=lambda x: x, polar=False,
+)
 nfp = 3
 map = interpolate_map(pts, R_vals, Z_vals, nfp=nfp, seq=map_seq)
 
 # %%
 seq = DeRhamSequence(
-        (n, n, n), (p, p, p), 2*p,
-        ("clamped", "periodic", "periodic"),
-        map=map, polar=True, r_scale=2/3
-    )
+    (n, n, n), (p, p, p), 2*p,
+    ("clamped", "periodic", "periodic"),
+    map=map, polar=True, r_scale=2/3
+)
 seq.evaluate_1d()
 seq.assemble_all_sparse()
 seq.compute_nullspaces()
 
 # lsq_weights = jax.vmap(jacobian_determinant(map))(pts)
-# lambda_interpol = interpolate_scalar_function(pts, lambda_vals, seq, lsq_weights, rcond=None)      
+# lambda_interpol = interpolate_scalar_function(pts, lambda_vals, seq, lsq_weights, rcond=None)
 # pressure_interpol = interpolate_scalar_function(pts, p_vals, map_seq, lsq_weights, rcond=None)
 # phi_interpol = interpolate_scalar_function(pts, phi_vals, map_seq, lsq_weights, rcond=None)
 # chi_interpol = interpolate_scalar_function(pts, chi_vals, map_seq, lsq_weights, rcond=None)
-   
+
 # p_h = jax.jit(DiscreteFunction(pressure_interpol["dof"], map_seq.basis_0, map_seq.e0))
 # phi_h = jax.jit(DiscreteFunction(phi_interpol["dof"], map_seq.basis_0, map_seq.e0))
 # chi_h = jax.jit(DiscreteFunction(chi_interpol["dof"], map_seq.basis_0, map_seq.e0))
 # lambda_h = jax.jit(DiscreteFunction(lambda_interpol["dof"], map_seq.basis_0, map_seq.e0))
 
 # %%
+
+
 def interpolate_vector_field(x_q, x_axis, y_axis, z_axis, v_values):
     """
     Interpolates a vector field at logical query points x_q.
-    
+
     Args:
         x_q: Array of query points in the logical domain, shape (m, 3).
         x_axis, y_axis, z_axis: 1D arrays defining the logical Cartesian grid.
         v_values: Vector field values at the logical grid points, shape (nx ny nz, 3).
             Note: nx, ny, nz must equal len(x_axis), len(y_axis), len(z_axis).
-    
+
     Returns:
         Interpolated vectors at x_q, shape (m, 3).
     """
     nx, ny, nz = len(x_axis), len(y_axis), len(z_axis)
     v_values = v_values.reshape(nx, ny, nz, 3)  # Reshape to (nx, ny, nz, 3)
-    
+
     def interpolate_scalar(V_scalar):
         # V_scalar shape is purely (nx, ny, nz)
         interpolator = RegularGridInterpolator(
-            points=(x_axis, y_axis, z_axis), 
-            values=V_scalar, 
-            method='linear' 
+            points=(x_axis, y_axis, z_axis),
+            values=V_scalar,
+            method='linear'
         )
-        return interpolator(x_q) 
+        return interpolator(x_q)
 
     return jax.vmap(interpolate_scalar, in_axes=-1, out_axes=-1)(v_values)
+
 
 def interpolate_scalar_field(x_q, x_axis, y_axis, z_axis, v_values):
     """
     Interpolates a scalar field at logical query points x_q.
-    
+
     Args:
         x_q: Array of query points in the logical domain, shape (m, 3).
         x_axis, y_axis, z_axis: 1D arrays defining the logical Cartesian grid.
         v_values: Scalar field values at the logical grid points, shape (nx ny nz,).
             Note: nx, ny, nz must equal len(x_axis), len(y_axis), len(z_axis).
-    
+
     Returns:
         Interpolated scalars at x_q, shape (m,).
     """
     nx, ny, nz = len(x_axis), len(y_axis), len(z_axis)
     v_values = v_values.reshape(nx, ny, nz)
-    
+
     interpolator = RegularGridInterpolator(
-            points=(x_axis, y_axis, z_axis), 
-            values=v_values, 
-            method='linear' 
-        )
-    
-    return interpolator(x_q) 
+        points=(x_axis, y_axis, z_axis),
+        values=v_values,
+        method='linear'
+    )
+
+    return interpolator(x_q)
+
+
 # %%
 n_gvec = 80
 _r = pts.reshape(n_gvec, n_gvec, n_gvec, 3)[:, 0, 0, 0]
@@ -150,28 +162,34 @@ chi_at_xq = interpolate_scalar_field(seq.quad.x, _r, _t, _z, chi_vals)
 p_at_xq = interpolate_scalar_field(seq.quad.x, _r, _t, _z, p_vals)
 # %%
 DF = jax.jacfwd(seq.map)
-DF_j = jax.lax.map(DF, seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER) # shape (n_q, 3, 3)
-J_j = jax.vmap(jacobian_determinant(seq.map))(seq.quad.x) # shape (n_q,)
-w_jk = jnp.einsum('jlk,jl,j->jk', DF_j, B_at_xq, seq.quad.w) # shape (n_q, 3)
-B_proj = seq.e2_dbc @ integrate_against(seq.eval_basis_2_ijk, w_jk, seq.basis_2.n)
-p_proj = seq.e0 @ integrate_against(seq.eval_basis_0_ijk, (p_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
-chi_proj = seq.e0 @ integrate_against(seq.eval_basis_0_ijk, (chi_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
-phi_proj = seq.e0 @ integrate_against(seq.eval_basis_0_ijk, (phi_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
-lambda_proj = seq.e0 @ integrate_against(seq.eval_basis_0_ijk, (lambda_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
+# shape (n_q, 3, 3)
+DF_j = jax.lax.map(DF, seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
+J_j = jax.vmap(jacobian_determinant(seq.map))(seq.quad.x)  # shape (n_q,)
+w_jk = jnp.einsum('jlk,jl,j->jk', DF_j, B_at_xq, seq.quad.w)  # shape (n_q, 3)
+B_proj = seq.e2_dbc @ integrate_against_deprecated(
+    seq.eval_basis_2_ijk, w_jk, seq.basis_2.n)
+p_proj = seq.e0 @ integrate_against_deprecated(
+    seq.eval_basis_0_ijk, (p_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
+chi_proj = seq.e0 @ integrate_against_deprecated(
+    seq.eval_basis_0_ijk, (chi_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
+phi_proj = seq.e0 @ integrate_against_deprecated(
+    seq.eval_basis_0_ijk, (phi_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
+lambda_proj = seq.e0 @ integrate_against_deprecated(
+    seq.eval_basis_0_ijk, (lambda_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
 # %%
 B_dof_direct = solve_singular_cg(
     seq.apply_m2_sparse,
     B_proj,
     mass_matvec=lambda x: seq.apply_m2_sparse(x, True),
     precond_matvec=lambda x: seq.apply_m2_precond(x, True),
-    tol=seq.tol, 
+    tol=seq.tol,
     maxiter=seq.maxiter)[0]
 p_dof, chi_dof, phi_dof, lambda_dof = [solve_singular_cg(
-    lambda x: seq.apply_m0_sparse(x, False), 
+    lambda x: seq.apply_m0_sparse(x, False),
     x,
     mass_matvec=lambda x: seq.apply_m0_sparse(x, False),
     precond_matvec=lambda x: seq.apply_m0_precond(x, False),
-    tol=seq.tol, 
+    tol=seq.tol,
     maxiter=seq.maxiter)[0] for x in (p_proj, chi_proj, phi_proj, lambda_proj)]
 # %%
 valid_indices = (pts[:, 0] < 1.0) & (pts[:, 0] > 0)
@@ -181,13 +199,13 @@ valid_indices = (pts[:, 0] < 1.0) & (pts[:, 0] > 0)
 # p_vals_valid = p_vals[valid_indices][::10, None]
 # print(f"--- p (FEM) ---")
 # print(f"p={p}, n={n}")
-# print("Max abs error:", 
+# print("Max abs error:",
 #       jnp.max(jnp.linalg.norm(p_vals_valid - p_h_vals, axis=1)) / jnp.mean(jnp.linalg.norm(p_vals_valid, axis=1)))
-# print("Max abs error occurs at:", 
+# print("Max abs error occurs at:",
 #       pts[jnp.argmax(jnp.linalg.norm(p_vals_valid - p_h_vals, axis=1))])
-# print("Mean abs error:", 
+# print("Mean abs error:",
 #       jnp.mean(jnp.abs(p_vals_valid - p_h_vals))  / jnp.mean(jnp.linalg.norm(p_vals_valid, axis=1)))
-# print("standard deviation of error:", 
+# print("standard deviation of error:",
 #       jnp.std(jnp.abs(p_vals_valid - p_h_vals)) / jnp.mean(jnp.linalg.norm(p_vals_valid, axis=1)))
 
 # # %%
@@ -196,13 +214,13 @@ valid_indices = (pts[:, 0] < 1.0) & (pts[:, 0] > 0)
 # lambda_vals_valid = lambda_vals[valid_indices][::10, None]
 # print(f"--- lambda (FEM) ---")
 # print(f"p = {p}, n={n}")
-# print("Max abs error:", 
+# print("Max abs error:",
 #       jnp.max(jnp.linalg.norm(lambda_vals_valid - lambda_h_vals, axis=1)) / jnp.mean(jnp.linalg.norm(lambda_vals_valid, axis=1)))
-# print("Max abs error occurs at:", 
+# print("Max abs error occurs at:",
 #       pts[jnp.argmax(jnp.linalg.norm(lambda_vals_valid - lambda_h_vals, axis=1))])
-# print("Mean abs error:", 
+# print("Mean abs error:",
 #       jnp.mean(jnp.abs(lambda_vals_valid - lambda_h_vals))  / jnp.mean(jnp.linalg.norm(lambda_vals_valid, axis=1)))
-# print("standard deviation of error:", 
+# print("standard deviation of error:",
 #       jnp.std(jnp.abs(lambda_vals_valid - lambda_h_vals)) / jnp.mean(jnp.linalg.norm(lambda_vals_valid, axis=1)))
 
 # # %%
@@ -211,13 +229,13 @@ valid_indices = (pts[:, 0] < 1.0) & (pts[:, 0] > 0)
 # phi_vals_valid = phi_vals[valid_indices][::10, None]
 # print(f"--- phi (FEM) ---")
 # print(f"p = {p}, n={n}")
-# print("Max abs error:", 
+# print("Max abs error:",
 #       jnp.max(jnp.linalg.norm(phi_vals_valid - phi_h_vals, axis=1)) / jnp.mean(jnp.linalg.norm(phi_vals_valid, axis=1)))
-# print("Max abs error occurs at:", 
+# print("Max abs error occurs at:",
 #       pts[jnp.argmax(jnp.linalg.norm(phi_vals_valid - phi_h_vals, axis=1))])
-# print("Mean abs error:", 
+# print("Mean abs error:",
 #       jnp.mean(jnp.abs(phi_vals_valid - phi_h_vals))  / jnp.mean(jnp.linalg.norm(phi_vals_valid, axis=1)))
-# print("standard deviation of error:", 
+# print("standard deviation of error:",
 #       jnp.std(jnp.abs(phi_vals_valid - phi_h_vals)) / jnp.mean(jnp.linalg.norm(phi_vals_valid, axis=1)))
 
 # # %%
@@ -226,39 +244,49 @@ valid_indices = (pts[:, 0] < 1.0) & (pts[:, 0] > 0)
 # chi_vals_valid = chi_vals[valid_indices][::10, None]
 # print(f"--- chi (FEM) ---")
 # print(f"p = {p}, n={n}")
-# print("Max abs error:", 
+# print("Max abs error:",
 #       jnp.max(jnp.linalg.norm(chi_vals_valid - chi_h_vals, axis=1)) / jnp.mean(jnp.linalg.norm(chi_vals_valid, axis=1)))
-# print("Max abs error occurs at:", 
+# print("Max abs error occurs at:",
 #       pts[jnp.argmax(jnp.linalg.norm(chi_vals_valid - chi_h_vals, axis=1))])
-# print("Mean abs error:", 
+# print("Mean abs error:",
 #       jnp.mean(jnp.abs(chi_vals_valid - chi_h_vals))  / jnp.mean(jnp.linalg.norm(chi_vals_valid, axis=1)))
-# print("standard deviation of error:", 
+# print("standard deviation of error:",
 #       jnp.std(jnp.abs(chi_vals_valid - chi_h_vals)) / jnp.mean(jnp.linalg.norm(chi_vals_valid, axis=1)))
 
 # %%
+
+
 def IC_projection(phi_dof, chi_dof, lambda_dof, k=2):
     # evaluate (logical) grad (phi, chi, lambda) at quad. point j. shape: n_q x 3
-    grad_phi = evaluate_at_xq(seq.eval_d_basis_0_ijk, seq.e0.T @ phi_dof, seq.quad.n, 3)
-    grad_chi = evaluate_at_xq(seq.eval_d_basis_0_ijk, seq.e0.T @ chi_dof, seq.quad.n, 3)
-    grad_lambda = evaluate_at_xq(seq.eval_d_basis_0_ijk, seq.e0.T @ lambda_dof, seq.quad.n, 3)
+    grad_phi = evaluate_at_xq_deprecated(
+        seq.eval_d_basis_0_ijk, seq.e0.T @ phi_dof, seq.quad.n, 3)
+    grad_chi = evaluate_at_xq_deprecated(
+        seq.eval_d_basis_0_ijk, seq.e0.T @ chi_dof, seq.quad.n, 3)
+    grad_lambda = evaluate_at_xq_deprecated(
+        seq.eval_d_basis_0_ijk, seq.e0.T @ lambda_dof, seq.quad.n, 3)
     grad_theta = jnp.array([0, 1, 0])[None, :] * 2 * jnp.pi
     grad_zeta = jnp.array([0, 0, 1])[None, :] * 2 * jnp.pi / nfp
-    
-    B_jk = jnp.cross(grad_phi, grad_theta + grad_lambda) - jnp.cross(grad_chi, grad_zeta)
+
+    B_jk = jnp.cross(grad_phi, grad_theta + grad_lambda) - \
+        jnp.cross(grad_chi, grad_zeta)
     if k == 2:
-        GB_jk = jnp.einsum('jkl,jk,j,j->jl', seq.metric_jkl, B_jk, seq.quad.w, 1 / seq.jacobian_j)
-        return seq.e2_dbc @ integrate_against(seq.eval_basis_2_ijk, GB_jk, seq.basis_2.n)
+        GB_jk = jnp.einsum('jkl,jk,j,j->jl', seq.metric_jkl,
+                           B_jk, seq.quad.w, 1 / seq.jacobian_j)
+        return seq.e2_dbc @ integrate_against_deprecated(seq.eval_basis_2_ijk, GB_jk, seq.basis_2.n)
     elif k == 1:
         GB_jk = jnp.einsum('jk,j->jk', B_jk, seq.quad.w)
-        return seq.e1 @ integrate_against(seq.eval_basis_1_ijk, GB_jk, seq.basis_1.n)
+        return seq.e1 @ integrate_against_deprecated(seq.eval_basis_1_ijk, GB_jk, seq.basis_1.n)
+
 
 # %%
 B_proj = IC_projection(phi_dof, chi_dof, lambda_dof, k=2)
 H_proj = IC_projection(phi_dof, chi_dof, lambda_dof, k=1)
 # %%
+
+
 @jax.jit
 def apply_B_projection(B_proj, alpha=0.0):
-    
+
     B_guess = solve_singular_cg(
         lambda x: seq.apply_m2_sparse(x, True),
         B_proj,
@@ -266,10 +294,10 @@ def apply_B_projection(B_proj, alpha=0.0):
         tol=seq.tol,
         maxiter=seq.maxiter
     )[0]
-    
+
     def apply_A(x):
         return seq.apply_m2_sparse(x, True) - alpha * seq.apply_dd2_sparse(x, True)
-    
+
     def apply_Ainv(x, x0=None):
         return solve_singular_cg(
             apply_A,
@@ -280,44 +308,45 @@ def apply_B_projection(B_proj, alpha=0.0):
             x0=x0,
             maxiter=seq.maxiter
         )[0]
-        
+
     def apply_D_Ainv_Dt(x, x0=None):
         return seq.apply_d2_sparse(apply_Ainv(seq.apply_d2t_sparse(x, True, True), x0=x0), True, True)
-    
+
     A_inv_B_proj = apply_Ainv(B_proj, x0=B_guess)
-    
+
     q_dof = solve_singular_cg(
-            A_matvec=apply_D_Ainv_Dt,
-            b=seq.apply_d2_sparse(A_inv_B_proj, True, True),
-            mass_matvec=lambda x: seq.apply_m3_sparse(x, True),
-            vs=seq.null_3_dbc,
-            precond_matvec=lambda x: seq.apply_dd3_precond(x, True),
-            tol=seq.tol,
-            maxiter=seq.maxiter
-        )[0]
-    
+        A_matvec=apply_D_Ainv_Dt,
+        b=seq.apply_d2_sparse(A_inv_B_proj, True, True),
+        mass_matvec=lambda x: seq.apply_m3_sparse(x, True),
+        vs=seq.null_3_dbc,
+        precond_matvec=lambda x: seq.apply_dd3_precond(x, True),
+        tol=seq.tol,
+        maxiter=seq.maxiter
+    )[0]
+
     B_dof = A_inv_B_proj - apply_Ainv(seq.apply_d2t_sparse(q_dof, True, True))
-    
+
     return B_dof, q_dof, B_guess
-# %% 
+# %%
 # B_dof, q_dof, B_guess = apply_B_projection(B_proj, alpha=0.0)
+
 
 # %%
 B_guess = solve_singular_cg(
-        lambda x: seq.apply_m2_sparse(x, True),
-        B_proj,
-        precond_matvec=lambda x: seq.apply_m2_precond(x, True),
-        tol=seq.tol,
-        maxiter=seq.maxiter
-    )[0]
+    lambda x: seq.apply_m2_sparse(x, True),
+    B_proj,
+    precond_matvec=lambda x: seq.apply_m2_precond(x, True),
+    tol=seq.tol,
+    maxiter=seq.maxiter
+)[0]
 
 H_guess = solve_singular_cg(
-        lambda x: seq.apply_m1_sparse(x, False),
-        H_proj,
-        precond_matvec=lambda x: seq.apply_m1_precond(x, False),
-        tol=seq.tol,
-        maxiter=seq.maxiter
-    )[0]
+    lambda x: seq.apply_m1_sparse(x, False),
+    H_proj,
+    precond_matvec=lambda x: seq.apply_m1_precond(x, False),
+    tol=seq.tol,
+    maxiter=seq.maxiter
+)[0]
 
 # %%
 B_dof = seq.apply_leray_projection(B_guess, k=2)[0]
@@ -355,16 +384,21 @@ H_dof = seq.apply_leray_projection(H_guess, k=1)[0]
 # print("Divergence norm:", div_B_norm / B_norm)
 
 # %%
-J_hat_strong_dbc = seq.apply_strong_curl(H_dof, dirichlet_in=False, dirichlet_out=True)
-J_h_strong_dbc = jax.jit(DiscreteFunction(J_hat_strong_dbc, seq.basis_2, seq.e2_dbc))
+J_hat_strong_dbc = seq.apply_strong_curl(
+    H_dof, dirichlet_in=False, dirichlet_out=True)
+J_h_strong_dbc = jax.jit(DiscreteFunction(
+    J_hat_strong_dbc, seq.basis_2, seq.e2_dbc))
 J_h_strong_xyz_dbc = jax.jit(Pushforward(J_h_strong_dbc, seq.map, 2))
 
-J_hat_strong = seq.apply_strong_curl(H_dof, dirichlet_in=False, dirichlet_out=False)
+J_hat_strong = seq.apply_strong_curl(
+    H_dof, dirichlet_in=False, dirichlet_out=False)
 J_h_strong = jax.jit(DiscreteFunction(J_hat_strong_dbc, seq.basis_2, seq.e2))
 J_h_strong_xyz = jax.jit(Pushforward(J_h_strong_dbc, seq.map, 2))
 
-J_hat_weak_dbc = seq.apply_weak_curl(B_dof, dirichlet_in=True, dirichlet_out=True)
-J_h_weak_dbc = jax.jit(DiscreteFunction(J_hat_weak_dbc, seq.basis_1, seq.e1_dbc))
+J_hat_weak_dbc = seq.apply_weak_curl(
+    B_dof, dirichlet_in=True, dirichlet_out=True)
+J_h_weak_dbc = jax.jit(DiscreteFunction(
+    J_hat_weak_dbc, seq.basis_1, seq.e1_dbc))
 J_h_weak_xyz_dbc = jax.jit(Pushforward(J_h_weak_dbc, seq.map, 1))
 
 __r = jnp.linspace(0.01, 0.99, 1000)
@@ -374,9 +408,12 @@ J_strong_dbc_xyz_at_r = jax.vmap(J_h_strong_xyz_dbc)(eval_pts)
 J_strong_xyz_at_r = jax.vmap(J_h_strong_xyz)(eval_pts)
 J_weak_dbc_xyz_at_r = jax.vmap(J_h_weak_xyz_dbc)(eval_pts)
 # %%
-plt.plot(__r, J_strong_dbc_xyz_at_r[:, 0], label="J_x (strong, J.n = 0)", ls="--")
-plt.plot(__r, J_strong_dbc_xyz_at_r[:, 1], label="J_y (strong, J.n = 0)", ls="--")
-plt.plot(__r, J_strong_dbc_xyz_at_r[:, 2], label="J_z (strong, J.n = 0)", ls="--")
+plt.plot(__r, J_strong_dbc_xyz_at_r[:, 0],
+         label="J_x (strong, J.n = 0)", ls="--")
+plt.plot(__r, J_strong_dbc_xyz_at_r[:, 1],
+         label="J_y (strong, J.n = 0)", ls="--")
+plt.plot(__r, J_strong_dbc_xyz_at_r[:, 2],
+         label="J_z (strong, J.n = 0)", ls="--")
 plt.plot(__r, J_strong_xyz_at_r[:, 0], label="J_x (strong)", ls="-")
 plt.plot(__r, J_strong_xyz_at_r[:, 1], label="J_y (strong)", ls="-")
 plt.plot(__r, J_strong_xyz_at_r[:, 2], label="J_z (strong)", ls="-")
@@ -392,7 +429,8 @@ plt.legend()
 plt.show()
 
 # %%
-B_h_xyz = jax.jit(Pushforward(DiscreteFunction(B_dof, seq.basis_2, seq.e2_dbc), seq.map, 2))
+B_h_xyz = jax.jit(Pushforward(DiscreteFunction(
+    B_dof, seq.basis_2, seq.e2_dbc), seq.map, 2))
 B_h = jax.jit(DiscreteFunction(B_dof, seq.basis_2, seq.e2_dbc))
 # B_h_xyz = jax.jit(Pushforward(DiscreteFunction(B_dof, seq.basis_2, seq.e2), seq.map, 1))
 # B_h = jax.jit(DiscreteFunction(B_dof, seq.basis_1, seq.e1))
@@ -412,9 +450,12 @@ plt.show()
 # Dissipate some B away:
 alpha = 1e-4
 # %%
+
+
 def apply_A(x):
-        return seq.apply_m2_sparse(x, True) + alpha * seq.apply_dd2_sparse(x, True)
-    
+    return seq.apply_m2_sparse(x, True) + alpha * seq.apply_dd2_sparse(x, True)
+
+
 @jax.jit
 def apply_Ainv(x, x0=None):
     return solve_singular_cg(
@@ -427,21 +468,28 @@ def apply_Ainv(x, x0=None):
         maxiter=seq.maxiter
     )[0]
 
+
 # %%
 coeff = 100
 while coeff > 1.5:
     B_dof = apply_Ainv(seq.apply_m2_sparse(B_dof, True), x0=B_dof)
-    coeff = (B_dof @ seq.apply_dd2_sparse(B_dof, True))**0.5 / (B_dof @ seq.apply_m2_sparse(B_dof, True))**0.5
+    coeff = (B_dof @ seq.apply_dd2_sparse(B_dof, True))**0.5 / \
+        (B_dof @ seq.apply_m2_sparse(B_dof, True))**0.5
     print("Coefficient:", coeff)
 # %%
-J_hat_weak_dbc = seq.apply_weak_curl(B_dof, dirichlet_in=True, dirichlet_out=True)
-J_h_weak_dbc = jax.jit(DiscreteFunction(J_hat_weak_dbc, seq.basis_1, seq.e1_dbc))
+J_hat_weak_dbc = seq.apply_weak_curl(
+    B_dof, dirichlet_in=True, dirichlet_out=True)
+J_h_weak_dbc = jax.jit(DiscreteFunction(
+    J_hat_weak_dbc, seq.basis_1, seq.e1_dbc))
 J_h_weak_xyz_dbc = jax.jit(Pushforward(J_h_weak_dbc, seq.map, 1))
 J_weak_dbc_xyz_at_r_reg = jax.vmap(J_h_weak_xyz_dbc)(eval_pts)
 
-plt.plot(__r, J_weak_dbc_xyz_at_r_reg[:, 0], label="J_x (weak, Jxn = 0)", ls="-")
-plt.plot(__r, J_weak_dbc_xyz_at_r_reg[:, 1], label="J_y (weak, Jxn = 0)", ls="-")
-plt.plot(__r, J_weak_dbc_xyz_at_r_reg[:, 2], label="J_z (weak, Jxn = 0)", ls="-")
+plt.plot(__r, J_weak_dbc_xyz_at_r_reg[:, 0],
+         label="J_x (weak, Jxn = 0)", ls="-")
+plt.plot(__r, J_weak_dbc_xyz_at_r_reg[:, 1],
+         label="J_y (weak, Jxn = 0)", ls="-")
+plt.plot(__r, J_weak_dbc_xyz_at_r_reg[:, 2],
+         label="J_z (weak, Jxn = 0)", ls="-")
 plt.plot(__r, J_weak_dbc_xyz_at_r[:, 0], label="J_x (weak, Jxn = 0)", ls=":")
 plt.plot(__r, J_weak_dbc_xyz_at_r[:, 1], label="J_y (weak, Jxn = 0)", ls=":")
 plt.plot(__r, J_weak_dbc_xyz_at_r[:, 2], label="J_z (weak, Jxn = 0)", ls=":")
@@ -450,7 +498,8 @@ plt.ylabel("J")
 plt.legend()
 plt.show()
 # %%
-B_h_xyz = jax.jit(Pushforward(DiscreteFunction(B_dof, seq.basis_2, seq.e2_dbc), seq.map, 2))
+B_h_xyz = jax.jit(Pushforward(DiscreteFunction(
+    B_dof, seq.basis_2, seq.e2_dbc), seq.map, 2))
 B_h = jax.jit(DiscreteFunction(B_dof, seq.basis_2, seq.e2_dbc))
 B_xyz_at_rad_reg = jax.vmap(B_h_xyz)(eval_pts)
 
@@ -462,6 +511,9 @@ plt.plot(__r, B_xyz_at_rad[:, 1], label="B_y", ls=":")
 plt.plot(__r, B_xyz_at_rad[:, 2], label="B_z", ls=":")
 plt.xlabel("r")
 plt.ylabel("B")
+plt.legend()
+plt.show()
+# %%
 plt.legend()
 plt.show()
 # %%

@@ -19,7 +19,7 @@ import jax
 from jax import Array
 
 import mrx
-from mrx.utils import integrate_against, inv33
+from mrx.utils import integrate_against_deprecated, inv33
 
 if TYPE_CHECKING:
     from mrx.derham_sequence import DeRhamSequence
@@ -64,7 +64,7 @@ class Projector:
         self.k = k
         self.seq = seq
         self.dirichlet = dirichlet
-        
+
     def __call__(self, f: ScalarFunction | VectorFunction) -> Array:
         """
         Project a function onto the finite element space.
@@ -75,7 +75,7 @@ class Projector:
         Returns:
             array: Projection coefficients
         """
-        
+
         if self.k == 0:
             e = self.seq.e0_dbc if self.dirichlet else self.seq.e0
             return e @ self.zeroform_projection(f)
@@ -102,9 +102,10 @@ class Projector:
             array: Projection coefficients for the 0-form
         """
         # Evaluate the given function at quadrature points
-        f_jk: Array = jax.lax.map(f, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x 1
+        f_jk: Array = jax.lax.map(
+            f, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x 1
         w_jk: Array = f_jk * (self.seq.quad.w * self.seq.jacobian_j)[:, None]
-        return integrate_against(self.seq.eval_basis_0_ijk, w_jk, self.seq.basis_0.n)
+        return integrate_against_deprecated(self.seq.eval_basis_0_ijk, w_jk, self.seq.basis_0.n)
 
     def oneform_projection(self, v: VectorFunction) -> Array:
         """
@@ -122,10 +123,11 @@ class Projector:
             return inv33(DF(x)) @ v(x)
 
         # Evaluate the given function at quadrature points
-        A_jk: Array = jax.lax.map(_v, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x d
+        A_jk: Array = jax.lax.map(
+            _v, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x d
         w_jk: Array = A_jk * (self.seq.quad.w * self.seq.jacobian_j)[:, None]
 
-        return integrate_against(self.seq.eval_basis_1_ijk, w_jk, self.seq.basis_1.n)
+        return integrate_against_deprecated(self.seq.eval_basis_1_ijk, w_jk, self.seq.basis_1.n)
 
     def twoform_projection(self, v: VectorFunction) -> Array:
         """
@@ -143,11 +145,12 @@ class Projector:
             return DF(x).T @ v(x)
 
         # Evaluate the given function at quadrature points
-        B_jk: Array = jax.lax.map(_v, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x d
+        B_jk: Array = jax.lax.map(
+            _v, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x d
 
         w_jk: Array = B_jk * (self.seq.quad.w)[:, None]
 
-        return integrate_against(self.seq.eval_basis_2_ijk, w_jk, self.seq.basis_2.n)
+        return integrate_against_deprecated(self.seq.eval_basis_2_ijk, w_jk, self.seq.basis_2.n)
 
     def threeform_projection(self, f: ScalarFunction) -> Array:
         """
@@ -160,6 +163,7 @@ class Projector:
             array: Projection coefficients for the 3-form
         """
         # Evaluate the given function at quadrature points
-        f_jk: Array = jax.lax.map(f, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x 1
+        f_jk: Array = jax.lax.map(
+            f, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x 1
         w_jk: Array = f_jk * (self.seq.quad.w)[:, None]
-        return integrate_against(self.seq.eval_basis_3_ijk, w_jk, self.seq.basis_3.n)
+        return integrate_against_deprecated(self.seq.eval_basis_3_ijk, w_jk, self.seq.basis_3.n)

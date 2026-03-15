@@ -23,7 +23,8 @@ from mrx.differential_forms import (DifferentialForm, DiscreteFunction,
                                     Pushforward)
 from mrx.mappings import drumshape_map
 from mrx.quadrature import QuadratureRule
-from mrx.utils import assemble, integrate_against, inv33, jacobian_determinant
+from mrx.utils import (assemble, integrate_against_deprecated, inv33,
+                       jacobian_determinant)
 
 # Enable 64-bit precision for numerical stability
 jax.config.update("jax_enable_x64", True)
@@ -253,7 +254,7 @@ def setup_target_shape(n_map: int, p_map: int, a: float, e: float) -> tuple[jnp.
 
     rad_fct_jk = jax.vmap(radius_func)(Q.x) * Q.w[:, None]  # (n_q, 1)
     a_target = jnp.linalg.solve(
-        M0, integrate_against(get_Λmap_ijk, rad_fct_jk, Λmap.n))
+        M0, integrate_against_deprecated(get_Λmap_ijk, rad_fct_jk, Λmap.n))
     return a_target, radius_func
 
 # %%
@@ -601,6 +602,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+# %%
 # %%
 # %%
 # %%
