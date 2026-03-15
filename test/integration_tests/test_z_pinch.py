@@ -8,7 +8,7 @@ from jax.numpy import cos, pi, sin
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
-from mrx.relaxation import MRXDiagnostics
+from mrx.relaxation_deprecated import MRXDiagnostics
 
 jax.config.update("jax_enable_x64", True)
 

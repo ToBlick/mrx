@@ -4,7 +4,7 @@ import jax.numpy as jnp
 from jax.numpy import cos, pi, sin
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.relaxation_sparse import compute_force
+from mrx.relaxation import compute_force
 from mrx.utils import evaluate_at_xq
 
 jax.config.update("jax_enable_x64", True)

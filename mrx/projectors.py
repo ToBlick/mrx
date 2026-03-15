@@ -19,7 +19,7 @@ import jax
 from jax import Array
 
 import mrx
-from mrx.utils import integrate_against_deprecated, inv33
+from mrx.utils import integrate_against, inv33
 
 if TYPE_CHECKING:
     from mrx.derham_sequence import DeRhamSequence
@@ -105,7 +105,9 @@ class Projector:
         f_jk: Array = jax.lax.map(
             f, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x 1
         w_jk: Array = f_jk * (self.seq.quad.w * self.seq.jacobian_j)[:, None]
-        return integrate_against_deprecated(self.seq.eval_basis_0_ijk, w_jk, self.seq.basis_0.n)
+        comp_info, comp_shapes = self.seq._form_comp_info(0)
+        quad_shape = (self.seq.quad.ny, self.seq.quad.nx, self.seq.quad.nz)
+        return integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
 
     def oneform_projection(self, v: VectorFunction) -> Array:
         """
@@ -127,7 +129,9 @@ class Projector:
             _v, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x d
         w_jk: Array = A_jk * (self.seq.quad.w * self.seq.jacobian_j)[:, None]
 
-        return integrate_against_deprecated(self.seq.eval_basis_1_ijk, w_jk, self.seq.basis_1.n)
+        comp_info, comp_shapes = self.seq._form_comp_info(1)
+        quad_shape = (self.seq.quad.ny, self.seq.quad.nx, self.seq.quad.nz)
+        return integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
 
     def twoform_projection(self, v: VectorFunction) -> Array:
         """
@@ -150,7 +154,9 @@ class Projector:
 
         w_jk: Array = B_jk * (self.seq.quad.w)[:, None]
 
-        return integrate_against_deprecated(self.seq.eval_basis_2_ijk, w_jk, self.seq.basis_2.n)
+        comp_info, comp_shapes = self.seq._form_comp_info(2)
+        quad_shape = (self.seq.quad.ny, self.seq.quad.nx, self.seq.quad.nz)
+        return integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
 
     def threeform_projection(self, f: ScalarFunction) -> Array:
         """
@@ -166,4 +172,6 @@ class Projector:
         f_jk: Array = jax.lax.map(
             f, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x 1
         w_jk: Array = f_jk * (self.seq.quad.w)[:, None]
-        return integrate_against_deprecated(self.seq.eval_basis_3_ijk, w_jk, self.seq.basis_3.n)
+        comp_info, comp_shapes = self.seq._form_comp_info(3)
+        quad_shape = (self.seq.quad.ny, self.seq.quad.nx, self.seq.quad.nz)
+        return integrate_against(w_jk, comp_info, comp_shapes, quad_shape)

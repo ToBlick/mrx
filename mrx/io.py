@@ -4,14 +4,16 @@ import os
 import random
 import string
 import time
+from typing import Literal
 
 import h5py
+import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.scipy.interpolate import RegularGridInterpolator
 
 import mrx
 from mrx.differential_forms import Pushforward
-
 
 
 def parse_args() -> dict:
@@ -164,7 +166,7 @@ def load_sweep(
     return cfgs, forces, iter_counts
 
 
-def interpolate_scalar_function(x, f_vals, seq, weights = None, rcond=None):
+def interpolate_scalar_function(x, f_vals, seq, weights=None, rcond=None):
     """
     Least-squares interpolation of a scalar field onto a 0-form FEM basis.
 
@@ -192,43 +194,155 @@ def interpolate_scalar_function(x, f_vals, seq, weights = None, rcond=None):
     """
     if weights is None:
         weights = jnp.ones_like(f_vals)
-    
+
     M = mrx.double_map(
         lambda i, pt: seq.basis_0[i](pt)[0],
         seq.basis_0.ns, x,
     )  # shape (n_dof, n_pts)
-    
+
     A = jnp.einsum('ij,j,jk->ik', M, weights, M.T)  # shape (n_dof, n_dof)
     rhs = jnp.einsum('ij,j,j->i', M, weights, f_vals)  # shape (n_dof,)
 
     c, residual, rank, s = jnp.linalg.lstsq(A, rhs, rcond=rcond)
     return {
-        "dof" : c,
-        "residual" : residual,
-        "rank" : rank,
-        "singular_values" : s,
+        "dof": c,
+        "residual": residual,
+        "rank": rank,
+        "singular_values": s,
     }
 
 
-def interpolate_B(x, B_vals, seq, weights = None, rcond=None):
+def project_sampled_field(
+    axes,
+    values,
+    seq,
+    k: Literal[0, 1, 2, 3],
+    dirichlet: bool = True,
+):
+    """L2-project a field sampled on a regular grid onto a k-form FEM basis.
+
+    The sampled data is interpolated at the quadrature points in one
+    vectorized call, the coordinate pullback is applied via precomputed
+    quantities on *seq*, and the result is integrated against the TP basis
+    directly — avoiding any point-by-point ``lax.map``.
+
+    Parameters
+    ----------
+    axes : tuple of 1-D arrays
+        Grid axes ``(x1, x2, x3)`` spanning the logical domain, each of
+        shape ``(n1,)``, ``(n2,)``, ``(n3,)``.
+    values : jnp.ndarray
+        Field values on the grid.  For scalar forms (k=0, k=3) the shape
+        must be ``(n1*n2*n3,)`` or ``(n1, n2, n3)``.  For vector forms
+        (k=1, k=2) the shape must be ``(n1*n2*n3, 3)`` or ``(n1, n2, n3, 3)``.
+    seq : DeRhamSequence
+        Pre-built de Rham sequence (must have ``evaluate_1d`` and the
+        k-th mass matrix assembled).
+    k : {0, 1, 2, 3}
+        Degree of the differential form.
+    dirichlet : bool, optional
+        Whether to use Dirichlet boundary conditions (default ``True``).
+
+    Returns
+    -------
+    dof : jnp.ndarray
+        Coefficient vector in the k-form FEM space.
     """
-    Interpolate B-field onto FEM basis given evaluations at points x.
+    from mrx.utils import integrate_against
+
+    x1, x2, x3 = axes
+    n1, n2, n3 = len(x1), len(x2), len(x3)
+    xq = seq.quad.x  # (n_q, 3)
+
+    comp_info, comp_shapes = seq._form_comp_info(k)
+    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+
+    if k in (0, 3):
+        # --- scalar field ---
+        grid = values.reshape(n1, n2, n3)
+        interp = RegularGridInterpolator(
+            points=(x1, x2, x3), values=grid, method='linear')
+        f_q = interp(xq)[:, None]                     # (n_q, 1)
+
+        if k == 0:
+            w_jk = f_q * (seq.quad.w * seq.jacobian_j)[:, None]
+        else:  # k == 3
+            w_jk = f_q * seq.quad.w[:, None]
+
+    else:
+        # --- vector field ---
+        grid = values.reshape(n1, n2, n3, 3)
+        v_q = jnp.stack([
+            RegularGridInterpolator(
+                points=(x1, x2, x3), values=grid[..., i],
+                method='linear')(xq)
+            for i in range(3)
+        ], axis=-1)                                    # (n_q, 3)
+
+        if k == 1:
+            # 1-form RHS_i = ∫ Λ^1_i · (DF^{-1} v) J w dξ
+            #               = ∫ Λ^1_i · G^{-1} (DF^T v) w dξ
+            # using DF^{-1} = G^{-1} DF^T  (since G = DF^T DF).
+            DF_q = jax.lax.map(
+                jax.jacfwd(seq.map), xq,
+                batch_size=mrx.MAP_BATCH_SIZE_INNER)  # (n_q, 3, 3)
+            DFt_v = jnp.einsum('qji,qj->qi', DF_q, v_q)  # DF^T @ v
+            Ginv_DFt_v = jnp.einsum('qij,qj->qi',
+                                    seq.metric_inv_jkl, DFt_v)
+            w_jk = Ginv_DFt_v * (seq.quad.w * seq.jacobian_j)[:, None]
+
+        else:  # k == 2
+            # 2-form pullback: DF^T v,  weighted by w  (no J)
+            DF_q = jax.lax.map(
+                jax.jacfwd(seq.map), xq,
+                batch_size=mrx.MAP_BATCH_SIZE_INNER)  # (n_q, 3, 3)
+            DFt_v = jnp.einsum('qji,qj->qi', DF_q, v_q)  # DF^T @ v
+            w_jk = DFt_v * seq.quad.w[:, None]
+
+    # Extraction operator
+    match k:
+        case 0: e = seq.e0_dbc if dirichlet else seq.e0
+        case 1: e = seq.e1_dbc if dirichlet else seq.e1
+        case 2: e = seq.e2_dbc if dirichlet else seq.e2
+        case 3: e = seq.e3_dbc if dirichlet else seq.e3
+
+    rhs = e @ integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
+    return seq.apply_inverse_mass_matrix(rhs, k=k, dirichlet=dirichlet)
+
+
+def load_and_reshape_GVEC(gvec_eq, nfp):
     """
+    Load GVEC equilibrium data and reshape it.
 
-    def Λ2_phys(i, x):
-        return Pushforward(lambda x: seq.Lambda_2[i](x), seq.F, 2)(x)
+    Parameters
+    ----------
+    gvec_eq : xarray.Dataset
+        GVEC equilibrium dataset.
 
-    M = mrx.double_map(Λ2_phys, seq.Lambda_2.ns, x)
-    M = jnp.einsum('il,ljk->ijk', seq.E2, M)    # Λ2[i](x_hat_j)_k
-    y = B[valid_pts].reshape(-1, 3)              # B(x'_j)_k
+    Returns
+    -------
+    x : jnp.ndarray
+        evaluation points reshaped to (n_pts, 3).
+    R : jnp.ndarray
+        R coordinates reshaped to (n_pts,).
+    Z : jnp.ndarray
+        Z coordinates reshaped to (n_pts,).
+    B : jnp.ndarray
+        B field reshaped to (n_pts, 3).
+    """
+    _ρ = gvec_eq["rho"].values      # shape (mρ,)
+    _θ = gvec_eq["theta"].values    # shape (mθ,)
+    _ζ = gvec_eq["zeta"].values     # shape (mζ,)
+    R = gvec_eq["X1"].values       # shape (mρ, mθ, mζ)
+    Z = gvec_eq["X2"].values       # shape (mρ, mθ, mζ)
+    B = gvec_eq["B"].values        # shape (mρ, mθ, mζ, 3)
 
-    # Solve least squares interpolation:
-    # ∑ c_ik Λ2[i](x_j) ≈ B_k(x_j) ∀j,k
-    # i.e. M @ C ≈ B where M is (num_basis, num_pts, 3) and B is (num_pts, 3)
-
-    A = M.reshape(M.shape[0], -1).T         # reshape to (num_pts*3, num_basis)
-    b = y.ravel()                           # reshape to (num_pts*3,)
-
-    # Solve least squares
-    B_dof, residuals, _, _ = jnp.linalg.lstsq(A, b, rcond=None)
-    return B_dof, residuals
+    ρ, θ, ζ = jnp.meshgrid(_ρ, _θ, _ζ, indexing="ij")
+    # θ_star = jnp.asarray(θ_star)
+    pts = jnp.stack([ρ.ravel(),
+                    θ.ravel() / (2 * jnp.pi),
+                    ζ.ravel() / (2 * jnp.pi) * nfp], axis=1)  # x_hat_js, shape (mρ mθ mζ, 3)
+    return (pts.reshape(-1, 3),
+            R.ravel(),
+            Z.ravel(),
+            B.reshape(-1, 3))

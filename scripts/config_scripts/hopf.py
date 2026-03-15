@@ -9,8 +9,7 @@ import numpy as np
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.io import parse_args, unique_id
-from mrx.iterative_solvers import picard_solver
-from mrx.nonlinearities import CrossProductProjection
+from mrx.solvers import picard_solver
 
 jax.config.update("jax_enable_x64", True)
 

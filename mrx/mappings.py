@@ -2,13 +2,10 @@ from typing import Callable
 
 import jax
 import jax.numpy as jnp
-import optimistix
 from jax.numpy import cos, pi, sin
 
-import mrx
-from mrx.differential_forms import DifferentialForm, DiscreteFunction
-from mrx.io import interpolate_scalar_function
-from mrx.quadrature import QuadratureRule
+from mrx.differential_forms import DiscreteFunction
+from mrx.io import project_sampled_field
 
 
 def cerfon_map(epsilon: float = 0.33, kappa: float = 1.2, alpha: float = 0.0, R0: float = 1.0) -> Callable:
@@ -296,26 +293,29 @@ def stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: int = 3
 
 # Alias for now
 
-def interpolate_map(x, R_vals, Z_vals, nfp, seq, flip_zeta=False, rcond=None):
-    """
-    Interpolate a stellarator map from point evaluations of R(x) and Z(x).
 
-    Calls :func:`interpolate_scalar_function` twice (once for *R*, once
-    for *Z*) sharing the same DeRham sequence, then wraps the result in a
+def interpolate_map(axes, R_grid, Z_grid, nfp, seq, flip_zeta=False):
+    """
+    Interpolate a stellarator map from R and Z sampled on a regular grid.
+
+    Uses :func:`project_sampled_field` (L² projection via
+    ``RegularGridInterpolator`` + tensor-product integration) to obtain
+    the FEM coefficients for *R* and *Z*, then wraps them in a
     :func:`stellarator_map`.
 
     Parameters
     ----------
-    x : jnp.ndarray
-        Points at which R, Z are evaluated, shape ``(n_pts, 3)``.
-    R_vals : jnp.ndarray
-        R evaluations at points, shape ``(n_pts,)``.
-    Z_vals : jnp.ndarray
-        Z evaluations at points, shape ``(n_pts,)``.
+    axes : tuple of 1-D arrays
+        Grid axes ``(x1, x2, x3)`` spanning the logical domain.
+    R_grid : jnp.ndarray
+        R values on the grid, shape ``(n1, n2, n3)``.
+    Z_grid : jnp.ndarray
+        Z values on the grid, shape ``(n1, n2, n3)``.
     nfp : int
         Number of field periods.
     seq : DeRhamSequence
-        DeRham sequence to use for interpolation.
+        DeRham sequence to use for interpolation.  Must have
+        ``evaluate_1d()`` and ``assemble_all_sparse()`` called first.
     flip_zeta : bool
         Whether to flip the toroidal angle in the stellarator map.
 
@@ -323,21 +323,13 @@ def interpolate_map(x, R_vals, Z_vals, nfp, seq, flip_zeta=False, rcond=None):
     -------
     Phi : callable
         Stellarator map built from the interpolated R, Z.
-    R_dof : jnp.ndarray
-        Coefficients for R.
-    Z_dof : jnp.ndarray
-        Coefficients for Z.
-    resid_R : jnp.ndarray
-        Least-squares residual for R.
-    resid_Z : jnp.ndarray
-        Least-squares residual for Z.
     """
-    R_interpolation = interpolate_scalar_function(x, R_vals, seq, rcond=rcond)
-    Z_interpolation = interpolate_scalar_function(x, Z_vals, seq, rcond=rcond)
-    
-    R_h = DiscreteFunction(R_interpolation["dof"], seq.basis_0, seq.e0)
-    Z_h = DiscreteFunction(Z_interpolation["dof"], seq.basis_0, seq.e0)
-    
+    R_dof = project_sampled_field(axes, R_grid, seq, k=0, dirichlet=False)
+    Z_dof = project_sampled_field(axes, Z_grid, seq, k=0, dirichlet=False)
+
+    R_h = DiscreteFunction(R_dof, seq.basis_0, seq.e0)
+    Z_h = DiscreteFunction(Z_dof, seq.basis_0, seq.e0)
+
     return stellarator_map(R_h, Z_h, nfp=nfp, flip_zeta=flip_zeta)
 
 

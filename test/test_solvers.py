@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
-from mrx.iterative_solvers import picard_solver, newton_solver
+from mrx.solvers import newton_solver, picard_solver
 
 jax.config.update("jax_enable_x64", True)
 TOL = 1e-12
@@ -15,7 +15,7 @@ TOL = 1e-12
 @pytest.mark.parametrize("case", ["linear", "dottie", "multidim"])
 def test_fixed_point_solvers(solver, case):
     """Unified fixed-point solver tests for Picard and Newton.
-    
+
     Parameters
     ----------
     solver : callable
@@ -45,6 +45,7 @@ def test_fixed_point_solvers(solver, case):
         A = jnp.array([[0.5, 0.2],
                        [0.1, 0.7]])
         b = jnp.array([1.0, -1.0])
+
         def f(z):
             x, aux = z
             return A @ x + b, aux

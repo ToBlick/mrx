@@ -3,20 +3,18 @@ from typing import Callable
 import jax
 import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
-from jax.scipy.sparse.linalg import cg
 
 import mrx
-from mrx.boundary import BoundaryOperator
+from mrx.assembly import assemble_sparse, build_neighbors
 from mrx.differential_forms import DifferentialForm
-from mrx.nonlinearities import CrossProductProjection
-from mrx.polar import ExtractionOperator, get_xi
+from mrx.extraction_operators import (BoundaryOperator,
+                                      PolarExtractionOperator, get_xi)
 from mrx.projectors import Projector
 from mrx.quadrature import QuadratureRule
-from mrx.utils import (assemble, assemble_sparse, build_neighbors,
-                       evaluate_at_xq, evaluate_at_xq_deprecated,
-                       extract_diag_vector, integrate_against,
+from mrx.solvers import solve_singular_cg
+from mrx.utils import (evaluate_at_xq_deprecated, extract_diag_vector,
                        integrate_against_deprecated, inv33,
-                       jacobian_determinant, solve_singular_cg, square_sparse)
+                       jacobian_determinant, square_sparse)
 
 
 class DeRhamSequence():
@@ -112,11 +110,11 @@ class DeRhamSequence():
         if polar:
             xi = get_xi(ns[1])
             e0, e1, e2, e3 = [
-                ExtractionOperator(Λ, xi, False)
+                PolarExtractionOperator(Λ, xi, False)
                 for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
             ]
             e0_dbc, e1_dbc, e2_dbc, e3_dbc = [
-                ExtractionOperator(Λ, xi, True)
+                PolarExtractionOperator(Λ, xi, True)
                 for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
             ]
 
@@ -504,7 +502,7 @@ class DeRhamSequence():
         """Assemble the mass matrix using tensor-product contraction.
 
         """
-        from mrx.utils import assemble_scalar_tp, assemble_vectorial_tp
+        from mrx.assembly import assemble_scalar_tp, assemble_vectorial_tp
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
         match k:
             case 0:
@@ -624,7 +622,7 @@ class DeRhamSequence():
 
         Supports (k_from, k_to) = (2, 1), (1, 2), (3, 0), (0, 3).
         """
-        from mrx.utils import assemble_vectorial_tp
+        from mrx.assembly import assemble_vectorial_tp
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
         dR = self.d_basis_r_jk
         dT = self.d_basis_t_jk
@@ -782,7 +780,7 @@ class DeRhamSequence():
 
         Supports k=0 (grad), k=1 (curl), k=2 (div).
         """
-        from mrx.utils import assemble_vectorial_tp
+        from mrx.assembly import assemble_vectorial_tp
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
         types = self.basis_0.types
         grad_r = self._grad_1d(self.d_basis_r_jk, types[0])
@@ -879,8 +877,8 @@ class DeRhamSequence():
 
         Supports k=0 (grad-grad), k=1 (curl-curl), k=2 (div-div), k=3 (preconditioner only).
         """
-        from mrx.utils import (assemble_stiffness_scalar_tp,
-                               assemble_vectorial_tp)
+        from mrx.assembly import (assemble_stiffness_scalar_tp,
+                                  assemble_vectorial_tp)
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
         types = self.basis_0.types
         grad_r = self._grad_1d(self.d_basis_r_jk, types[0])

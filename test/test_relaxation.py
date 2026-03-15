@@ -10,7 +10,7 @@ import pytest
 from jax.numpy import cos, pi, sin
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.relaxation_sparse import TimeStepper, compute_force, relaxation_loop
+from mrx.relaxation import TimeStepper, compute_force, relaxation_loop
 from mrx.utils import evaluate_at_xq
 
 jax.config.update("jax_enable_x64", True)

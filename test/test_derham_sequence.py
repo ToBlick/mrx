@@ -8,10 +8,11 @@ import pytest
 from jax.scipy.sparse.linalg import cg
 from scipy.linalg import eigvalsh
 
+from mrx.assembly import build_neighbors
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import rotating_ellipse_map, toroid_map
-from mrx.utils import build_neighbors, get_smallest_ev_pair, solve_singular_cg
+from mrx.utils import get_smallest_ev_pair, solve_singular_cg
 
 jax.config.update("jax_enable_x64", True)
 

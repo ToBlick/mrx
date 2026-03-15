@@ -33,14 +33,9 @@ from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.io import unique_id
 from mrx.mappings import rotating_ellipse_map
 from mrx.plotting import integrate_fieldline, poincare_plot
-from mrx.relaxation import (
-    DescentMethod,
-    IntegrationScheme,
-    MRXDiagnostics,
-    TimeStepChoice,
-    TimeStepper,
-    relaxation_loop,
-)
+from mrx.relaxation_deprecated import (DescentMethod, IntegrationScheme,
+                                       MRXDiagnostics, TimeStepChoice,
+                                       TimeStepper, relaxation_loop)
 from mrx.utils import default_trace_dict
 
 jax.config.update("jax_enable_x64", True)

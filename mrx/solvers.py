@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+from jax.scipy.sparse.linalg import cg
 
 
 def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm) -> tuple[jnp.ndarray, float, int]:
@@ -122,3 +123,50 @@ def newton_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm):
 
     # Hand off to picard_solver to iterate the Newton map g
     return picard_solver(g, z_init, tol, max_iter, norm)
+
+
+def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x, x0=None, vs=[], maxiter=None, tol=1e-6):
+    """
+    Solve the singular SPSD system for the minimum norm solution using CG.
+
+    Args:
+        A_matvec: Callable representing bilinear form (outputs Dual vectors).
+        mass_matvec: Callable representing mass matrix.
+        b: The right-hand side vector (Dual vector).
+        x0: Optional initial guess (Primal vector).
+        vs: List of mass-normalized zero eigenvectors (Primal vectors).
+        maxiter: Maximum number of CG iterations.
+        tol: CG tolerance.
+    """
+    if mass_matvec is None:
+        def mass_matvec(x): return x
+
+    def inner_product(x, y):
+        return jnp.dot(x, mass_matvec(y))
+
+    def project_primal(x):
+        for v in vs:
+            x = x - inner_product(v, x) * v
+        return x
+
+    def project_dual(f):
+        for v in vs:
+            f = f - jnp.dot(v, f) * mass_matvec(v)
+        return f
+
+    b_proj = project_dual(b)
+
+    def A_matvec_safe(x):
+        x = project_primal(x)
+        # Apply the bilinear form (output is Dual)
+        Ax = A_matvec(x)
+        return project_dual(Ax)
+
+    if x0 is None:
+        x0 = jnp.zeros_like(b_proj)
+    else:
+        x0 = project_primal(x0)
+
+    x, info = cg(A_matvec_safe, b_proj, x0=x0,
+                 M=precond_matvec, tol=tol, maxiter=maxiter)
+    return project_primal(x), info

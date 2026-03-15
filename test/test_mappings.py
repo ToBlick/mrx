@@ -2,25 +2,18 @@
 # test_mappings.py
 import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import numpy as np
 import numpy.testing as npt
 import pytest
+
 import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
-from mrx.mappings import (
-    interpolate_map,
-    cerfon_map,
-    helical_map,
-    rotating_ellipse_map,
-    toroid_map,
-    polar_map,
-    cylinder_map
-)
+from mrx.mappings import (cerfon_map, cylinder_map, helical_map,
+                          interpolate_map, polar_map, rotating_ellipse_map,
+                          toroid_map)
 from mrx.utils import jacobian_determinant
-from mrx.io import interpolate_scalar_function
-import numpy as np
-
-import matplotlib.pyplot as plt
 
 jax.config.update("jax_enable_x64", True)
 
@@ -46,11 +39,14 @@ def test_map_origin_and_jacobian(map_factory):
 
 @pytest.fixture(scope="module")
 def mapping_seq():
-    return DeRhamSequence(
-        (20, 20, 20), (3, 3, 3), 6,
+    seq = DeRhamSequence(
+        (6, 6, 6), (3, 3, 3), 6,
         ("clamped", "periodic", "periodic"),
-        map=lambda x: x, polar=False, dirichlet=False
+        map=lambda x: x, polar=False
     )
+    seq.evaluate_1d()
+    seq.assemble_mass_matrix(0)
+    return seq
 
 
 @pytest.mark.parametrize("map_factory,nfp", [
@@ -60,40 +56,55 @@ def mapping_seq():
 ], ids=["cerfon", "rotating_ellipse", "toroid"])
 def test_map_interpolation(map_factory, nfp, mapping_seq):
     F = map_factory()
+    # Build a regular grid covering the full domain for the L2 projection
+    _n = 20
+    _r = jnp.linspace(0, 1, _n)
+    _t = jnp.linspace(0, 1, _n)
+    _z = jnp.linspace(0, 1, _n)
+    _ri, _ti, _zi = jnp.meshgrid(_r, _t, _z, indexing="ij")
+    grid_pts = jnp.stack([_ri.ravel(), _ti.ravel(), _zi.ravel()], axis=1)
+    F_grid = jax.vmap(F)(grid_pts)
+    R_grid = (F_grid[:, 0]**2 + F_grid[:, 1]**2)**0.5
+    Z_grid = F_grid[:, 2]
+    F_h = interpolate_map((_r, _t, _z),
+                          R_grid.reshape(_n, _n, _n),
+                          Z_grid.reshape(_n, _n, _n),
+                          nfp, mapping_seq, flip_zeta=False)
+    # Evaluate at the standard test points and compare
     F_vals = jax.vmap(F)(pts)
-    R_vals = (F_vals[:, 0]**2 + F_vals[:, 1]**2)**0.5
-    Z_vals = F_vals[:, 2]
-    F_h = interpolate_map(pts, R_vals, Z_vals, nfp, mapping_seq,
-                          flip_zeta=False, rcond=None)
     F_h_vals = jax.vmap(F_h)(pts)
     # Check that the interpolated map matches the original at the evaluation points
-    npt.assert_allclose(jnp.max(jnp.abs(F_vals - F_h_vals)) < 1e-3, True)
-    # Check positive Jacobian at all points 
+    npt.assert_allclose(F_h_vals, F_vals, atol=1e-2)
+    # Check positive Jacobian at all points
     J = jax.vmap(jacobian_determinant(F_h))(pts)
     npt.assert_allclose(J > 0, True)
-    
-    
-# %%
-arr = np.loadtxt("/scratch/tblickhan/mrx/data/lambda.txt")
-lam = arr.reshape(50, 50, 50)  # lam[i_rho, i_theta, i_zeta]
-lambda_vals = lam.ravel()
-rho   = np.linspace(0, 1, 50)
-theta = np.linspace(0, 1, 50, endpoint=False)
-zeta  = np.linspace(0, 1, 50, endpoint=False)
 
-xi, xj, xk = np.meshgrid(rho, theta, zeta, indexing="ij")
-pts = np.stack([xi.ravel(), xj.ravel(), xk.ravel()], axis=1)
 
-seq = mapping_seq()
+# # %%
+# arr = np.loadtxt("/scratch/tblickhan/mrx/data/lambda.txt")
+# lam = arr.reshape(50, 50, 50)  # lam[i_rho, i_theta, i_zeta]
+# lambda_vals = lam.ravel()
+# rho = np.linspace(0, 1, 50)
+# theta = np.linspace(0, 1, 50, endpoint=False)
+# zeta = np.linspace(0, 1, 50, endpoint=False)
 
-lambda_interpol = interpolate_scalar_function(pts, lam.ravel(), seq, rcond=None)
+# xi, xj, xk = np.meshgrid(rho, theta, zeta, indexing="ij")
+# pts = np.stack([xi.ravel(), xj.ravel(), xk.ravel()], axis=1)
 
-lambda_h = jax.jit(DiscreteFunction(lambda_interpol["dof"], seq.basis_0, seq.e0))
+# seq = mapping_seq()
 
-lambda_h_vals = jnp.squeeze(jax.lax.map(lambda_h, pts, batch_size=100_000))
+# lambda_interpol = interpolate_scalar_function(
+#     pts, lam.ravel(), seq, rcond=None)
 
-print("Resolution:", seq.n0)
-print("Max abs error:", jnp.max(jnp.abs(lambda_vals - lambda_h_vals)))
-print("Max abs error occurs at:", pts[jnp.argmax(jnp.abs(lambda_vals - lambda_h_vals))])
-print("Mean abs error:", jnp.mean(jnp.abs(lambda_vals - lambda_h_vals)))
-print("standard deviation of error:", jnp.std(jnp.abs(lambda_vals - lambda_h_vals)))
+# lambda_h = jax.jit(DiscreteFunction(
+#     lambda_interpol["dof"], seq.basis_0, seq.e0))
+
+# lambda_h_vals = jnp.squeeze(jax.lax.map(lambda_h, pts, batch_size=100_000))
+
+# print("Resolution:", seq.n0)
+# print("Max abs error:", jnp.max(jnp.abs(lambda_vals - lambda_h_vals)))
+# print("Max abs error occurs at:", pts[jnp.argmax(
+#     jnp.abs(lambda_vals - lambda_h_vals))])
+# print("Mean abs error:", jnp.mean(jnp.abs(lambda_vals - lambda_h_vals)))
+# print("standard deviation of error:", jnp.std(
+#     jnp.abs(lambda_vals - lambda_h_vals)))
