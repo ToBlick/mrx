@@ -8,6 +8,7 @@ import pytest
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
+from mrx.utils import diag_EAET
 
 jax.config.update("jax_enable_x64", True)
 
@@ -94,3 +95,21 @@ class TestMassMatrixM3:
     def test_m3_positive_entries(self, seq_and_p):
         seq, _ = seq_and_p
         assert jnp.all(_bcoo_data(seq.m3_sp) > 0)
+
+
+class TestDiagEAET:
+    """Test diag_EAET against dense E @ M @ E^T diagonal."""
+
+    @pytest.mark.parametrize("k", [0, 1, 2, 3])
+    def test_diag_EAET_vs_dense(self, seq_and_p, k):
+        seq, _ = seq_and_p
+        E = getattr(seq, f"e{k}")
+        M = getattr(seq, f"m{k}_sp")
+
+        diag_fast = diag_EAET(E, M)
+
+        E_dense = E.todense()
+        M_dense = M.todense()
+        diag_ref = jnp.diag(E_dense @ M_dense @ E_dense.T)
+
+        npt.assert_allclose(diag_fast, diag_ref, atol=1e-12)

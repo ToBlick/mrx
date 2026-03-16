@@ -622,6 +622,7 @@ def extract_diag_vector(mat) -> jnp.ndarray:
     diag_data = jnp.where(is_diag, mat.data, 0.0)
     return jnp.zeros(n, dtype=mat.dtype).at[rows].add(diag_data)
 
+
 def square_sparse(mat) -> jsparse.BCOO:
     """Squares the non-zero elements of a sparse matrix. Always returns BCOO."""
     if isinstance(mat, jsparse.BCSR):
@@ -814,5 +815,4 @@ def get_smallest_ev_pair(A_matvec, mass_matvec, x0, precond_matvec=lambda x: x, 
     # Rayleigh quotient
     lmbda = jnp.dot(v, A_matvec(v))
 
-    return v, lmbda
     return v, lmbda
