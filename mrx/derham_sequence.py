@@ -12,7 +12,9 @@ from mrx.extraction_operators import (BoundaryOperator,
 from mrx.projectors import Projector
 from mrx.quadrature import QuadratureRule
 from mrx.solvers import solve_singular_cg
-from mrx.utils import (evaluate_at_xq_deprecated, extract_diag_vector,
+from mrx.utils import (diag_EAET, diag_schur_complement,
+                       evaluate_at_xq_deprecated,
+                       extract_diag_vector,
                        integrate_against_deprecated, inv33,
                        jacobian_determinant, square_sparse)
 
@@ -458,10 +460,8 @@ class DeRhamSequence():
                 neighbors, nnz = build_neighbors(self.basis_0)
                 sp = assemble_sparse(
                     self.eval_basis_0_ijk, self.eval_basis_0_ijk, W, self.basis_0.n, self.basis_0.n, nnz, neighbors)
-                self.m0_sp_diaginv = 1 / \
-                    (square_sparse(self.e0) @ extract_diag_vector(sp))
-                self.m0_sp_diaginv_dbc = 1 / \
-                    (square_sparse(self.e0_dbc) @ extract_diag_vector(sp))
+                self.m0_sp_diaginv = jnp.ones(self.n0)
+                self.m0_sp_diaginv_dbc = jnp.ones(self.n0_dbc)
                 self.m0_sp = jsparse.BCSR.from_bcoo(sp)
             case 1:
                 W = self.metric_inv_jkl * \
@@ -469,10 +469,8 @@ class DeRhamSequence():
                 neighbors, nnz = build_neighbors(self.basis_1)
                 sp = assemble_sparse(
                     self.eval_basis_1_ijk, self.eval_basis_1_ijk, W, self.basis_1.n, self.basis_1.n, nnz, neighbors)
-                self.m1_sp_diaginv = 1 / \
-                    (square_sparse(self.e1) @ extract_diag_vector(sp))
-                self.m1_sp_diaginv_dbc = 1 / \
-                    (square_sparse(self.e1_dbc) @ extract_diag_vector(sp))
+                self.m1_sp_diaginv = jnp.ones(self.n1)
+                self.m1_sp_diaginv_dbc = jnp.ones(self.n1_dbc)
                 self.m1_sp = jsparse.BCSR.from_bcoo(sp)
             case 2:
                 W = self.metric_jkl * \
@@ -480,20 +478,16 @@ class DeRhamSequence():
                 neighbors, nnz = build_neighbors(self.basis_2)
                 sp = assemble_sparse(
                     self.eval_basis_2_ijk, self.eval_basis_2_ijk, W, self.basis_2.n, self.basis_2.n, nnz, neighbors)
-                self.m2_sp_diaginv = 1 / \
-                    (square_sparse(self.e2) @ extract_diag_vector(sp))
-                self.m2_sp_diaginv_dbc = 1 / \
-                    (square_sparse(self.e2_dbc) @ extract_diag_vector(sp))
+                self.m2_sp_diaginv = jnp.ones(self.n2)
+                self.m2_sp_diaginv_dbc = jnp.ones(self.n2_dbc)
                 self.m2_sp = jsparse.BCSR.from_bcoo(sp)
             case 3:
                 W = (1/self.jacobian_j * self.quad.w)[:, None, None]
                 neighbors, nnz = build_neighbors(self.basis_3)
                 sp = assemble_sparse(
                     self.eval_basis_3_ijk, self.eval_basis_3_ijk, W, self.basis_3.n, self.basis_3.n, nnz, neighbors)
-                self.m3_sp_diaginv = 1 / \
-                    (square_sparse(self.e3) @ extract_diag_vector(sp))
-                self.m3_sp_diaginv_dbc = 1 / \
-                    (square_sparse(self.e3_dbc) @ extract_diag_vector(sp))
+                self.m3_sp_diaginv = jnp.ones(self.n3)
+                self.m3_sp_diaginv_dbc = jnp.ones(self.n3_dbc)
                 self.m3_sp = jsparse.BCSR.from_bcoo(sp)
             case _:
                 raise ValueError("k must be 0, 1, 2 or 3")
@@ -512,10 +506,8 @@ class DeRhamSequence():
                     self.basis_r_jk, self.basis_t_jk, self.basis_z_jk,
                     W_flat, quad_shape, self.basis_0.shape[0],
                     self.basis_0.pr, self.basis_0.pt, self.basis_0.pz)
-                self.m0_sp_diaginv = 1 / \
-                    (square_sparse(self.e0) @ extract_diag_vector(sp))
-                self.m0_sp_diaginv_dbc = 1 / \
-                    (square_sparse(self.e0_dbc) @ extract_diag_vector(sp))
+                self.m0_sp_diaginv = jnp.ones(self.n0)
+                self.m0_sp_diaginv_dbc = jnp.ones(self.n0_dbc)
                 self.m0_sp = jsparse.BCSR.from_bcoo(sp)
             case 1:
                 W_3x3 = self.metric_inv_jkl * \
@@ -529,10 +521,8 @@ class DeRhamSequence():
                     terms, terms, W_3x3, quad_shape,
                     list(self.basis_1.shape),
                     self.basis_1.pr)
-                self.m1_sp_diaginv = 1 / \
-                    (square_sparse(self.e1) @ extract_diag_vector(sp))
-                self.m1_sp_diaginv_dbc = 1 / \
-                    (square_sparse(self.e1_dbc) @ extract_diag_vector(sp))
+                self.m1_sp_diaginv = jnp.ones(self.n1)
+                self.m1_sp_diaginv_dbc = jnp.ones(self.n1_dbc)
                 self.m1_sp = jsparse.BCSR.from_bcoo(sp)
             case 2:
                 W_3x3 = self.metric_jkl * \
@@ -546,10 +536,8 @@ class DeRhamSequence():
                     terms, terms, W_3x3, quad_shape,
                     list(self.basis_2.shape),
                     self.basis_2.pr)
-                self.m2_sp_diaginv = 1 / \
-                    (square_sparse(self.e2) @ extract_diag_vector(sp))
-                self.m2_sp_diaginv_dbc = 1 / \
-                    (square_sparse(self.e2_dbc) @ extract_diag_vector(sp))
+                self.m2_sp_diaginv = jnp.ones(self.n2)
+                self.m2_sp_diaginv_dbc = jnp.ones(self.n2_dbc)
                 self.m2_sp = jsparse.BCSR.from_bcoo(sp)
             case 3:
                 W_flat = (1 / self.jacobian_j) * self.quad.w
@@ -558,10 +546,8 @@ class DeRhamSequence():
                     self.d_basis_r_jk, self.d_basis_t_jk, self.d_basis_z_jk,
                     W_flat, quad_shape, self.basis_3.shape[0],
                     self.basis_3.pr, self.basis_3.pt, self.basis_3.pz)
-                self.m3_sp_diaginv = 1 / \
-                    (square_sparse(self.e3) @ extract_diag_vector(sp))
-                self.m3_sp_diaginv_dbc = 1 / \
-                    (square_sparse(self.e3_dbc) @ extract_diag_vector(sp))
+                self.m3_sp_diaginv = jnp.ones(self.n3)
+                self.m3_sp_diaginv_dbc = jnp.ones(self.n3_dbc)
                 self.m3_sp = jsparse.BCSR.from_bcoo(sp)
             case _:
                 raise ValueError(
@@ -719,11 +705,8 @@ class DeRhamSequence():
                 sp = assemble_sparse(
                     self.eval_d_basis_0_ijk, self.eval_d_basis_0_ijk,
                     W, self.basis_0.n, self.basis_0.n, nnz, neighbors)
-                self.dd0_sp_diaginv = 1 / \
-                    (square_sparse(self.e0) @ extract_diag_vector(sp))
-                self.dd0_sp_diaginv_dbc = 1 / \
-                    (square_sparse(self.e0_dbc) @
-                     extract_diag_vector(sp))
+                self.dd0_sp_diaginv = jnp.ones(self.n0)
+                self.dd0_sp_diaginv_dbc = jnp.ones(self.n0_dbc)
                 self.grad_grad_sp = jsparse.BCSR.from_bcoo(sp)
             case 1:
                 W = self.metric_jkl * \
@@ -732,18 +715,8 @@ class DeRhamSequence():
                 sp = assemble_sparse(
                     self.eval_d_basis_1_ijk, self.eval_d_basis_1_ijk,
                     W, self.basis_1.n, self.basis_1.n, nnz, neighbors)
-                diag = self.m0_sp_diaginv @ square_sparse(self.e0)
-                diag = square_sparse(self.d0_sp) @ diag
-                diag = square_sparse(self.e1) @ diag
-                self.dd1_sp_diaginv = 1 / \
-                    (diag + square_sparse(self.e1) @
-                     extract_diag_vector(sp))
-                diag_dbc = self.m0_sp_diaginv_dbc @ square_sparse(self.e0_dbc)
-                diag_dbc = square_sparse(self.d0_sp) @ diag_dbc
-                diag_dbc = square_sparse(self.e1_dbc) @ diag_dbc
-                self.dd1_sp_diaginv_dbc = 1 / \
-                    (diag_dbc + square_sparse(self.e1_dbc) @
-                     extract_diag_vector(sp))
+                self.dd1_sp_diaginv = jnp.ones(self.n1)
+                self.dd1_sp_diaginv_dbc = jnp.ones(self.n1_dbc)
                 self.curl_curl_sp = jsparse.BCSR.from_bcoo(sp)
             case 2:
                 W = (1/self.jacobian_j * self.quad.w)[:, None, None]
@@ -751,27 +724,12 @@ class DeRhamSequence():
                 sp = assemble_sparse(
                     self.eval_d_basis_2_ijk, self.eval_d_basis_2_ijk,
                     W, self.basis_2.n, self.basis_2.n, nnz, neighbors)
-                diag = self.m1_sp_diaginv @ square_sparse(self.e1)
-                diag = square_sparse(self.d1_sp) @ diag
-                diag = square_sparse(self.e2) @ diag
-                self.dd2_sp_diaginv = 1 / \
-                    (diag + square_sparse(self.e2) @
-                     extract_diag_vector(sp))
-                diag_dbc = self.m1_sp_diaginv_dbc @ square_sparse(self.e1_dbc)
-                diag_dbc = square_sparse(self.d1_sp) @ diag_dbc
-                diag_dbc = square_sparse(self.e2_dbc) @ diag_dbc
-                self.dd2_sp_diaginv_dbc = 1 / \
-                    (diag_dbc + square_sparse(self.e2_dbc) @
-                     extract_diag_vector(sp))
+                self.dd2_sp_diaginv = jnp.ones(self.n2)
+                self.dd2_sp_diaginv_dbc = jnp.ones(self.n2_dbc)
                 self.div_div_sp = jsparse.BCSR.from_bcoo(sp)
             case 3:
-                diag = self.m2_sp_diaginv @ square_sparse(self.e2)
-                diag = square_sparse(self.d2_sp) @ diag
-                self.dd3_sp_diaginv = 1 / (square_sparse(self.e3) @ diag)
-                diag_dbc = self.m2_sp_diaginv_dbc @ square_sparse(self.e2_dbc)
-                diag_dbc = square_sparse(self.d2_sp) @ diag_dbc
-                self.dd3_sp_diaginv_dbc = 1 / \
-                    (square_sparse(self.e3_dbc) @ diag_dbc)
+                self.dd3_sp_diaginv = jnp.ones(self.n3)
+                self.dd3_sp_diaginv_dbc = jnp.ones(self.n3_dbc)
             case _:
                 raise ValueError("k must be 0, 1, 2 or 3")
 
@@ -897,11 +855,8 @@ class DeRhamSequence():
                     grad_basis_1d, grad_basis_1d, W_3x3, quad_shape,
                     self.basis_0.shape[0],
                     self.basis_0.pr, self.basis_0.pt, self.basis_0.pz)
-                self.dd0_sp_diaginv = 1 / \
-                    (square_sparse(self.e0) @ extract_diag_vector(sp))
-                self.dd0_sp_diaginv_dbc = 1 / \
-                    (square_sparse(self.e0_dbc) @
-                     extract_diag_vector(sp))
+                self.dd0_sp_diaginv = jnp.ones(self.n0)
+                self.dd0_sp_diaginv_dbc = jnp.ones(self.n0_dbc)
                 self.grad_grad_sp = jsparse.BCSR.from_bcoo(sp)
             case 1:
                 W_3x3 = self.metric_jkl * \
@@ -926,18 +881,8 @@ class DeRhamSequence():
                 sp = assemble_vectorial_tp(
                     curl_terms, curl_terms, W_3x3, quad_shape,
                     list(self.basis_1.shape), self.basis_1.pr)
-                diag = self.m0_sp_diaginv @ square_sparse(self.e0)
-                diag = square_sparse(self.d0_sp) @ diag
-                diag = square_sparse(self.e1) @ diag
-                self.dd1_sp_diaginv = 1 / \
-                    (diag + square_sparse(self.e1) @
-                     extract_diag_vector(sp))
-                diag_dbc = self.m0_sp_diaginv_dbc @ square_sparse(self.e0_dbc)
-                diag_dbc = square_sparse(self.d0_sp) @ diag_dbc
-                diag_dbc = square_sparse(self.e1_dbc) @ diag_dbc
-                self.dd1_sp_diaginv_dbc = 1 / \
-                    (diag_dbc + square_sparse(self.e1_dbc) @
-                     extract_diag_vector(sp))
+                self.dd1_sp_diaginv = jnp.ones(self.n1)
+                self.dd1_sp_diaginv_dbc = jnp.ones(self.n1_dbc)
                 self.curl_curl_sp = jsparse.BCSR.from_bcoo(sp)
             case 2:
                 W_scalar = (1 / self.jacobian_j) * self.quad.w
@@ -950,27 +895,12 @@ class DeRhamSequence():
                 sp = assemble_vectorial_tp(
                     div_terms, div_terms, W_3x3, quad_shape,
                     list(self.basis_2.shape), self.basis_2.pr)
-                diag = self.m1_sp_diaginv @ square_sparse(self.e1)
-                diag = square_sparse(self.d1_sp) @ diag
-                diag = square_sparse(self.e2) @ diag
-                self.dd2_sp_diaginv = 1 / \
-                    (diag + square_sparse(self.e2) @
-                     extract_diag_vector(sp))
-                diag_dbc = self.m1_sp_diaginv_dbc @ square_sparse(self.e1_dbc)
-                diag_dbc = square_sparse(self.d1_sp) @ diag_dbc
-                diag_dbc = square_sparse(self.e2_dbc) @ diag_dbc
-                self.dd2_sp_diaginv_dbc = 1 / \
-                    (diag_dbc + square_sparse(self.e2_dbc) @
-                     extract_diag_vector(sp))
+                self.dd2_sp_diaginv = jnp.ones(self.n2)
+                self.dd2_sp_diaginv_dbc = jnp.ones(self.n2_dbc)
                 self.div_div_sp = jsparse.BCSR.from_bcoo(sp)
             case 3:
-                diag = self.m2_sp_diaginv @ square_sparse(self.e2)
-                diag = square_sparse(self.d2_sp) @ diag
-                self.dd3_sp_diaginv = 1 / (square_sparse(self.e3) @ diag)
-                diag_dbc = self.m2_sp_diaginv_dbc @ square_sparse(self.e2_dbc)
-                diag_dbc = square_sparse(self.d2_sp) @ diag_dbc
-                self.dd3_sp_diaginv_dbc = 1 / \
-                    (square_sparse(self.e3_dbc) @ diag_dbc)
+                self.dd3_sp_diaginv = jnp.ones(self.n3)
+                self.dd3_sp_diaginv_dbc = jnp.ones(self.n3_dbc)
             case _:
                 raise ValueError("k must be 0, 1, 2, or 3")
 
@@ -1226,7 +1156,7 @@ class DeRhamSequence():
                         x, 0, dirichlet=dirichlet),
                     precond_matvec=lambda x: self.apply_mass_matrix_preconditioner(
                         x, 0, dirichlet=dirichlet),
-                    tol=self.tol, maxiter=self.maxiter)[0]
+                    tol=jnp.sqrt(self.tol), maxiter=self.maxiter)[0]
                 return e1 @ (self.curl_curl_sp @ (e1_T @ v)) \
                     + self.apply_derivative_matrix(m0_inv_div_v, 0,
                                                    dirichlet_in=dirichlet, dirichlet_out=dirichlet)
@@ -1243,7 +1173,7 @@ class DeRhamSequence():
                         x, 1, dirichlet=dirichlet),
                     precond_matvec=lambda x: self.apply_mass_matrix_preconditioner(
                         x, 1, dirichlet=dirichlet),
-                    tol=self.tol, maxiter=self.maxiter)[0]
+                    tol=jnp.sqrt(self.tol), maxiter=self.maxiter)[0]
                 return e2 @ (self.div_div_sp @ (e2_T @ v)) \
                     + self.apply_derivative_matrix(m1_inv_curl_v, 1,
                                                    dirichlet_in=dirichlet, dirichlet_out=dirichlet)
@@ -1258,7 +1188,7 @@ class DeRhamSequence():
                         x, 2, dirichlet=dirichlet),
                     precond_matvec=lambda x: self.apply_mass_matrix_preconditioner(
                         x, 2, dirichlet=dirichlet),
-                    tol=self.tol, maxiter=self.maxiter)[0]
+                    tol=jnp.sqrt(self.tol), maxiter=self.maxiter)[0]
                 return self.apply_derivative_matrix(m2_inv_minus_grad_v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
             case _:
                 raise ValueError("k must be 0, 1, 2 or 3")
@@ -1566,6 +1496,88 @@ class DeRhamSequence():
         # TP integration
         return en @ integrate_against(
             f_jk, comp_info_n, comp_shapes_n, quad_shape)
+
+    def pressure_projection(
+        self, p, u, gamma,
+        dirichlet_p=True,
+        dirichlet_u=True,
+    ):
+        """Evaluate the pressure projection -(grad p · u + γ p div u).
+
+        Computes the 0-form dual DOF vector:
+
+            q_i = ∫ Λ⁰_i (−∇p · u − γ p div u) w dx
+
+        The 0-form mass matrix weight J cancels with the 1/J from the
+        wedge product (1-form · 2-form) and from div = (1/J) div_logical,
+        so the integrand has no metric or Jacobian — only quad weights.
+
+        Parameters
+        ----------
+        p : array  –  0-form DOFs
+        u : array  –  2-form DOFs
+        gamma : float  –  adiabatic exponent
+        dirichlet_p : bool  –  Dirichlet BCs on p
+        dirichlet_u : bool  –  Dirichlet BCs on u
+
+        Returns
+        -------
+        q_dual : array  –  0-form dual DOFs (apply M0⁻¹ to get primal DOFs)
+        """
+        from mrx.utils import evaluate_at_xq, integrate_against
+        quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
+
+        types = self.basis_0.types
+        grad_r = self._grad_1d(self.d_basis_r_jk, types[0])
+        grad_t = self._grad_1d(self.d_basis_t_jk, types[1])
+        grad_z = self._grad_1d(self.d_basis_z_jk, types[2])
+
+        # --- evaluate p at quad points (0-form, 1 component) ---
+        ep_T = self.e0_dbc_T if dirichlet_p else self.e0_T
+        comp_info_0, comp_shapes_0 = self._form_comp_info(0)
+        p_jk = evaluate_at_xq(ep_T @ p, comp_info_0, comp_shapes_0,
+                               quad_shape, 1)  # (n_q, 1)
+
+        # --- evaluate grad(p) at quad points (3 components) ---
+        s0 = list(self.basis_0.shape)[0]
+        d0_comp_info = [
+            (0, grad_r, self.basis_t_jk, self.basis_z_jk),
+            (1, self.basis_r_jk, grad_t, self.basis_z_jk),
+            (2, self.basis_r_jk, self.basis_t_jk, grad_z),
+        ]
+        d0_comp_shapes = [s0, s0, s0]
+        grad_p_jk = evaluate_at_xq(
+            jnp.tile(ep_T @ p, 3), d0_comp_info, d0_comp_shapes,
+            quad_shape, 3)  # (n_q, 3)
+
+        # --- evaluate u at quad points (2-form, 3 components) ---
+        eu_T = self.e2_dbc_T if dirichlet_u else self.e2_T
+        comp_info_2, comp_shapes_2 = self._form_comp_info(2)
+        u_jk = evaluate_at_xq(eu_T @ u, comp_info_2, comp_shapes_2,
+                               quad_shape, 3)  # (n_q, 3)
+
+        # --- evaluate div_logical(u) at quad points (scalar) ---
+        s2 = list(self.basis_2.shape)
+        div_comp_info = [
+            (0, grad_r, self.d_basis_t_jk, self.d_basis_z_jk),
+            (0, self.d_basis_r_jk, grad_t, self.d_basis_z_jk),
+            (0, self.d_basis_r_jk, self.d_basis_t_jk, grad_z),
+        ]
+        div_comp_shapes = [s2[0], s2[1], s2[2]]
+        div_u_jk = evaluate_at_xq(eu_T @ u, div_comp_info, div_comp_shapes,
+                                   quad_shape, 1)  # (n_q, 1)
+
+        # --- combine: q = -(grad_p · u) - γ p div_logical(u) ---
+        grad_p_dot_u = jnp.sum(grad_p_jk * u_jk, axis=1, keepdims=True)
+        q_jk = -(grad_p_dot_u + gamma * p_jk * div_u_jk)  # (n_q, 1)
+
+        # Weight by quadrature weights only (J from M0 cancels 1/J in formula)
+        f_jk = q_jk * self.quad.w[:, None]
+
+        # Integrate against 0-form basis
+        e0 = self.e0_dbc if dirichlet_p else self.e0
+        return e0 @ integrate_against(f_jk, comp_info_0, comp_shapes_0,
+                                      quad_shape)
 
     def apply_leray_projection(self, v, k=2, p_guess=None):
         """

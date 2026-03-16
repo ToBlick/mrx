@@ -622,7 +622,6 @@ def extract_diag_vector(mat) -> jnp.ndarray:
     diag_data = jnp.where(is_diag, mat.data, 0.0)
     return jnp.zeros(n, dtype=mat.dtype).at[rows].add(diag_data)
 
-
 def square_sparse(mat) -> jsparse.BCOO:
     """Squares the non-zero elements of a sparse matrix. Always returns BCOO."""
     if isinstance(mat, jsparse.BCSR):
@@ -633,6 +632,46 @@ def square_sparse(mat) -> jsparse.BCOO:
 
 # backward compat alias
 square_bcoo = square_sparse
+
+
+def diag_EAET(E, A, E_T=None):
+    """Compute the diagonal of E @ A @ E^T via mapped matvecs.
+
+    Uses diag(E A E^T)_i = v_i^T A v_i  where v_i = E^T e_i (row i of E).
+    This avoids forming any dense matrices.
+    """
+    n = E.shape[0]
+    if E_T is None:
+        if isinstance(E, jsparse.BCSR):
+            coo_idx = _bcsr_to_coo_indices(E)
+            E_T = jsparse.BCOO((E.data, coo_idx), shape=E.shape).T
+        else:
+            E_T = E.T
+
+    def entry(i):
+        e_i = jnp.zeros(n).at[i].set(1.0)
+        v = E_T @ e_i
+        return v @ (A @ v)
+
+    return jax.lax.map(entry, jnp.arange(n), batch_size=mrx.MAP_BATCH_SIZE_OUTER)
+
+
+def diag_schur_complement(apply_DT, diag_inv, n):
+    """Compute diag(D @ diag(diag_inv) @ D^T) via mapped matvecs.
+
+    For each row i, computes e_i^T D diag(diag_inv) D^T e_i
+    = ||diag_inv^{1/2} D^T e_i||^2, using jax.lax.map over i.
+
+    Args:
+        apply_DT: callable, v -> D^T v (maps k-form DOFs to (k-1)-form DOFs)
+        diag_inv: 1D array, diagonal approximation of M_{k-1}^{-1}
+        n: int, number of k-form DOFs (rows of D)
+    """
+    def entry(i):
+        e_i = jnp.zeros(n).at[i].set(1.0)
+        Dt_ei = apply_DT(e_i)
+        return jnp.dot(Dt_ei, diag_inv * Dt_ei)
+    return jax.lax.map(entry, jnp.arange(n), batch_size=mrx.MAP_BATCH_SIZE_OUTER)
 
 # %%
 

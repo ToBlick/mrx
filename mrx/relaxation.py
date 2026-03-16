@@ -15,7 +15,8 @@ def apply_diffusion(B: jnp.ndarray, seq: DeRhamSequence, eta: float, dirichlet: 
     B_guess = B if B_guess is None else B_guess
 
     def apply_A(x):
-        return seq.apply_mass_matrix(x, 2, dirichlet) + eta * seq.apply_hodge_laplacian(x, 2, dirichlet)
+        return seq.apply_mass_matrix(x, 2, dirichlet) \
+            + eta * seq.apply_hodge_laplacian(x, 2, dirichlet)
 
     def apply_Ainv(x, x0=None):
         return solve_singular_cg(
@@ -46,24 +47,27 @@ def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
     div_B = seq.apply_strong_div(B)
     return seq.l2_norm_sq(div_B, 3)**0.5
 
-
+# %%
 def compute_force(
     B: jnp.ndarray,
     seq: DeRhamSequence,
     dirichlet_H: bool = False,
-    p_guess: jnp.ndarray | None = None
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    J = seq.apply_weak_curl(B)
+    p_guess: jnp.ndarray | None = None,
+    H_guess: jnp.ndarray | None = None,
+    JxH_guess: jnp.ndarray | None = None,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     H_dual = seq.apply_projection_matrix(
         B, 2, 1, True, dirichlet_out=dirichlet_H)
-    H = seq.apply_inverse_mass_matrix(H_dual, 1, dirichlet=dirichlet_H)
-    JxH_dual = seq.cross_product_projection(
-        J, H, 2, 1, 1, True, True, dirichlet_H)
-    JxH = seq.apply_inverse_mass_matrix(JxH_dual, 2)
+    H = seq.apply_inverse_mass_matrix(H_dual, 1, dirichlet=dirichlet_H, guess=H_guess)
+    # J = seq.apply_strong_curl(H, dirichlet_in=dirichlet_H, dirichlet_out=True)
+    # JxH_dual = seq.cross_product_projection(J, H, 2, 2, 1, True, True, dirichlet_H)
+    J = seq.apply_weak_curl(B, dirichlet_in=True, dirichlet_out=True)
+    JxH_dual = seq.cross_product_projection(J, H, 2, 1, 1, True, True, dirichlet_H)
+    JxH = seq.apply_inverse_mass_matrix(JxH_dual, 2, guess=JxH_guess)
     F, p = seq.apply_leray_projection(JxH, k=2, p_guess=p_guess)
-    return F, p, J, H
+    return F, p, J, H, JxH
 
-
+# %%
 class State(eqx.Module):
     """
     A class to store the state (variables and parameters) of the MRX relaxation.
@@ -107,7 +111,11 @@ class State(eqx.Module):
     B_n: jnp.ndarray
     B_nplus1: Optional[jnp.ndarray] = None
     p: Optional[jnp.ndarray] = None
+    p_v: Optional[jnp.ndarray] = None
     v: Optional[jnp.ndarray] = None
+    H: Optional[jnp.ndarray] = None
+    JxH: Optional[jnp.ndarray] = None
+    E: Optional[jnp.ndarray] = None
     F_prev: Optional[jnp.ndarray] = None
     s_history: Optional[jnp.ndarray] = None
     y_history: Optional[jnp.ndarray] = None
@@ -248,7 +256,7 @@ class TimeStepper(eqx.Module):
             u = apply_diffusion(u, self.seq, self.mu)
         return u
 
-    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 's_history', 'y_history', 'F_prev', 'A', 'dt', 'eta', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'noise_level', 'key'], value) -> State:  # noqa: E501
+    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'A', 'dt', 'eta', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'noise_level', 'key'], value) -> State:  # noqa: E501
         return eqx.tree_at(
             lambda s: getattr(s, field_name),
             state,
@@ -284,8 +292,9 @@ class TimeStepper(eqx.Module):
         else:
             raise ValueError(
                 f"Unknown timestep_mode: {self.timestep_mode}. Supported modes are given by the IntegrationScheme enum.")
-        F, p, J, H = compute_force(
-            B_n, self.seq, dirichlet_H=self.dirichlet_H, p_guess=state.p)
+        F, p, J, H, JxH = compute_force(
+            B_n, self.seq, dirichlet_H=self.dirichlet_H,
+            p_guess=state.p, H_guess=state.H, JxH_guess=state.JxH)
         if self.descent_method == DescentMethod.LBFGS:
             u = self._lbfgs_direction(F, state)
         elif self.descent_method == DescentMethod.CONJUGATE_GRADIENT:
@@ -305,12 +314,12 @@ class TimeStepper(eqx.Module):
             u = self.apply_noise(
                 u, key, state.noise_level * self.seq.l2_norm(u, 2))
         u = self.apply_regularization(u)
-        u, _ = self.seq.apply_leray_projection(u, k=2)
+        u, p_v = self.seq.apply_leray_projection(u, k=2, p_guess=state.p_v)
 
         E_dual = self.seq.cross_product_projection(
             u, H, 1, 2, 1, True, True, self.dirichlet_H)
-        E = self.seq.apply_inverse_mass_matrix(E_dual, 1)
-        E = E - state.eta * J
+        E = self.seq.apply_inverse_mass_matrix(E_dual, 1, guess=state.E)
+        E = E - state.eta * self.seq.apply_strong_curl(J)
 
         dB = self.seq.apply_strong_curl(E)
         if self.dt_mode == TimeStepChoice.FIXED or self.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:
@@ -330,12 +339,12 @@ class TimeStepper(eqx.Module):
         y_history = jnp.roll(state.y_history, 1, axis=0).at[0].set(y_new)
 
         return eqx.tree_at(
-            lambda s: (s.B_nplus1, s.v, s.p, s.F_prev,
-                       s.F_norm, s.v_norm, s.dt,
+            lambda s: (s.B_nplus1, s.v, s.p, s.p_v, s.H, s.JxH, s.E,
+                       s.F_prev, s.F_norm, s.v_norm, s.dt,
                        s.s_history, s.y_history),
             state,
-            (B_nplus1, u, p, F,
-             self.seq.l2_norm(F, 2), self.seq.l2_norm(u, 2), dt,
+            (B_nplus1, u, p, p_v, H, JxH, E,
+             F, self.seq.l2_norm(F, 2), self.seq.l2_norm(u, 2), dt,
              s_history, y_history))
 
     def midpoint_picard_step(self, state: State, key: jax.random.PRNGKey) -> State:
@@ -385,12 +394,17 @@ class TimeStepper(eqx.Module):
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State:
     n = ts.seq.n2_dbc
+    n1 = ts.seq.n1 if not ts.dirichlet_H else ts.seq.n1_dbc
     m = ts.history_size
     return State(
         B_n=B_dof,
         dt=dt,
         v=jnp.zeros(n),
-        p=jnp.zeros(ts.seq.n3),
+        p=jnp.zeros(ts.seq.n3_dbc),
+        p_v=jnp.zeros(ts.seq.n3_dbc),
+        H=jnp.zeros(n1),
+        JxH=jnp.zeros(n),
+        E=jnp.zeros(ts.seq.n1_dbc),
         A=jnp.zeros(ts.seq.n1_dbc),
         F_prev=jnp.zeros(n),
         s_history=jnp.zeros((m, n)),
@@ -448,6 +462,10 @@ def relaxation_loop(B_dof: jnp.ndarray,
         state = jax.lax.cond(failed, on_fail, on_success, state)
         return state, None
 
+    @jax.jit
+    def _run_scan(state, keys):
+        return jax.lax.scan(body_fn, state, keys)
+
     get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
     get_energy = jax.jit(lambda B: 0.5 * seq.l2_norm_sq(B, 2))
     get_div_norm = jax.jit(compute_divergence_norm, static_argnames=["seq"])
@@ -471,6 +489,11 @@ def relaxation_loop(B_dof: jnp.ndarray,
         traces["iteration"].append(iteration)
         return eqx.tree_at(lambda s: s.A, state, A_new)
 
+    F0, p0, _, H0, JxH0 = compute_force(state.B_n, seq, dirichlet_H=ts.dirichlet_H, p_guess=state.p)
+    state = eqx.tree_at(
+        lambda s: (s.F_norm, s.F_prev, s.p, s.H, s.JxH),
+        state,
+        (seq.l2_norm(F0, 2), F0, p0, H0, JxH0))
     state = record(state, 0)
     print(f"Initial: |F|={state.F_norm:.2e}  "
           f"H={traces['helicity'][-1]:.2e}  "
@@ -485,8 +508,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
             state = eqx.tree_at(lambda s: s.eta, state,
                                 resistivity_schedule(i))
 
-        state, _ = jax.lax.scan(
-            body_fn, state, jax.random.split(subkey, num_iters_inner))
+        state, _ = _run_scan(state, jax.random.split(subkey, num_iters_inner))
 
         state = record(state, i * num_iters_inner)
         if callback is not None:
@@ -494,7 +516,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
 
         print(f"Iter {traces['iteration'][-1]:>6d}: "
               f"|F|={state.F_norm:.2e}  "
-              f"dH/H={abs(traces['helicity'][0] - traces['helicity'][-1]) / (abs(traces['helicity'][0]) + 1e-30):.2e}  "
+              f"dH/H={(traces['helicity'][0] - traces['helicity'][-1]) / (abs(traces['helicity'][0]) + 1e-30):.2e}  "
               f"dt={state.dt:.2e}  "
               f"dE/E={(traces['energy'][0] - traces['energy'][-1]) / (abs(traces['energy'][0]) + 1e-30):.2e}")
 

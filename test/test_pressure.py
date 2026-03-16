@@ -60,7 +60,7 @@ def run(nr, nt, degree):
     err_p0 = (jnp.sum(d0**2 * wJ) / jnp.sum((pe - mean_pe)**2 * wJ)) ** 0.5
 
     # 3-form pressure (k=2 Leray via compute_force)
-    _, p3, _, _ = compute_force(B, seq)
+    _, p3, _, _, _ = compute_force(B, seq)
     comp_info_3, comp_shapes_3 = seq._form_comp_info(3)
     p3_ref = evaluate_at_xq(
         seq.e3_dbc_T @ p3, comp_info_3, comp_shapes_3, quad_shape, 1)

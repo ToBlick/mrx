@@ -544,3 +544,77 @@ def build_neighbors(row_form, col_form=None):
                 return jnp.concatenate(cols)
 
     return neighbors, max_nnz
+
+
+def assemble_dense_mass_matrix(seq, k, dirichlet=True):
+    """Assemble a dense mass matrix M_k = E_k @ m_k_sp @ E_k^T."""
+    match k:
+        case 0:
+            e = seq.e0_dbc if dirichlet else seq.e0
+            e_T = seq.e0_dbc_T if dirichlet else seq.e0_T
+            sp = seq.m0_sp
+        case 1:
+            e = seq.e1_dbc if dirichlet else seq.e1
+            e_T = seq.e1_dbc_T if dirichlet else seq.e1_T
+            sp = seq.m1_sp
+        case 2:
+            e = seq.e2_dbc if dirichlet else seq.e2
+            e_T = seq.e2_dbc_T if dirichlet else seq.e2_T
+            sp = seq.m2_sp
+        case 3:
+            e = seq.e3_dbc if dirichlet else seq.e3
+            e_T = seq.e3_dbc_T if dirichlet else seq.e3_T
+            sp = seq.m3_sp
+    return e.todense() @ sp.todense() @ e_T.todense()
+
+
+def assemble_dense_hodge_laplacian(seq, k, dirichlet=True):
+    """Assemble the dense Hodge Laplacian via the Schur complement.
+
+    L_k = E_k @ S_k @ E_k^T + D_{k-1} @ M_{k-1}^{-1} @ D_{k-1}^T
+
+    where S_k is the stiffness matrix and D_{k-1} is the derivative matrix.
+    """
+    match k:
+        case 0:
+            e = seq.e0_dbc if dirichlet else seq.e0
+            e_T = seq.e0_dbc_T if dirichlet else seq.e0_T
+            return e.todense() @ seq.grad_grad_sp.todense() @ e_T.todense()
+        case 1:
+            e1 = seq.e1_dbc if dirichlet else seq.e1
+            e1_T = seq.e1_dbc_T if dirichlet else seq.e1_T
+            e0 = seq.e0_dbc if dirichlet else seq.e0
+            e0_T = seq.e0_dbc_T if dirichlet else seq.e0_T
+            # stiffness: E1 @ curl_curl @ E1^T
+            S = e1.todense() @ seq.curl_curl_sp.todense() @ e1_T.todense()
+            # derivative: D0 = E1 @ d0 @ E0^T (grad)
+            D0 = e1.todense() @ seq.d0_sp.todense() @ e0_T.todense()
+            # inner mass: M0 = E0 @ m0 @ E0^T
+            M0 = e0.todense() @ seq.m0_sp.todense() @ e0_T.todense()
+            # Schur: S + D0 @ M0^{-1} @ D0^T
+            return S + D0 @ jnp.linalg.solve(M0, D0.T)
+        case 2:
+            e2 = seq.e2_dbc if dirichlet else seq.e2
+            e2_T = seq.e2_dbc_T if dirichlet else seq.e2_T
+            e1 = seq.e1_dbc if dirichlet else seq.e1
+            e1_T = seq.e1_dbc_T if dirichlet else seq.e1_T
+            # stiffness: E2 @ div_div @ E2^T
+            S = e2.todense() @ seq.div_div_sp.todense() @ e2_T.todense()
+            # derivative: D1 = E2 @ d1 @ E1^T (curl)
+            D1 = e2.todense() @ seq.d1_sp.todense() @ e1_T.todense()
+            # inner mass: M1 = E1 @ m1 @ E1^T
+            M1 = e1.todense() @ seq.m1_sp.todense() @ e1_T.todense()
+            # Schur: S + D1 @ M1^{-1} @ D1^T
+            return S + D1 @ jnp.linalg.solve(M1, D1.T)
+        case 3:
+            e3 = seq.e3_dbc if dirichlet else seq.e3
+            e3_T = seq.e3_dbc_T if dirichlet else seq.e3_T
+            e2 = seq.e2_dbc if dirichlet else seq.e2
+            e2_T = seq.e2_dbc_T if dirichlet else seq.e2_T
+            # stiffness_3 = 0, so only Schur part
+            # derivative: D2 = E3 @ d2 @ E2^T (div)
+            D2 = e3.todense() @ seq.d2_sp.todense() @ e2_T.todense()
+            # inner mass: M2 = E2 @ m2 @ E2^T
+            M2 = e2.todense() @ seq.m2_sp.todense() @ e2_T.todense()
+            # Schur: D2 @ M2^{-1} @ D2^T
+            return D2 @ jnp.linalg.solve(M2, D2.T)

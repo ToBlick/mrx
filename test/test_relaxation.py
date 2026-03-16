@@ -80,7 +80,7 @@ def compute_pressure_0form(B_hat, seq):
 
 def compute_pressure_3form(B_hat, seq):
     """Compute the 3-form pressure from the k=2 Leray projection in compute_force."""
-    _, p3, _, _ = compute_force(B_hat, seq)
+    _, p3, _, _, _ = compute_force(B_hat, seq)
     return p3
 
 
@@ -169,7 +169,7 @@ class TestRelaxation:
         B_noisy, _ = seq.apply_leray_projection(B_noisy, k=2)
 
         # --- before relaxation ---
-        F0, _, _, _ = compute_force(B_noisy, seq)
+        F0, _, _, _, _ = compute_force(B_noisy, seq)
         F_norm_0 = seq.l2_norm(F0, 2)
         energy_0 = 0.5 * seq.l2_norm_sq(B_noisy, 2)
         p_hat_0 = compute_pressure_0form(B_noisy, seq)
@@ -184,7 +184,7 @@ class TestRelaxation:
 
         # --- after relaxation ---
         B_final = state.B_n
-        F_final, _, _, _ = compute_force(B_final, seq)
+        F_final, _, _, _, _ = compute_force(B_final, seq)
         F_norm_final = seq.l2_norm(F_final, 2)
         energy_final = 0.5 * seq.l2_norm_sq(B_final, 2)
         p_hat_final = compute_pressure_0form(B_final, seq)
