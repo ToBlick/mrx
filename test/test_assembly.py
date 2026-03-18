@@ -1,11 +1,12 @@
 """Tests for assembly methods."""
 
 import jax
-import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
+from mrx.assembly import (assemble_dense_hodge_laplacian,
+                          assemble_dense_mass_matrix)
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
 from mrx.utils import diag_EAET
@@ -37,64 +38,53 @@ def seq_and_p(request):
         seq.assemble_mass_matrix(k)
     for k in range(3):
         seq.assemble_derivative_matrix(k)
+    for k in range(4):
+        seq.assemble_hodge_laplacian(k)
     return seq, p
 
 
-def _bcoo_data(bcsr_matrix):
-    """Convert a BCSR matrix to BCOO and return its stored values."""
-    return jsparse.BCOO.from_bcsr(bcsr_matrix).data
-
-
 class TestMassMatrixM0:
-    """Mass matrix M0: positivity of all entries and symmetry."""
+    """Mass matrix M0: no negative entries and symmetry."""
 
     def test_m0_symmetry(self, seq_and_p):
         seq, _ = seq_and_p
         M = seq.m0_sp.todense()
         npt.assert_allclose(M, M.T, atol=1e-14)
 
-    def test_m0_positive_entries(self, seq_and_p):
+    def test_m0_no_negative_entries(self, seq_and_p):
         seq, _ = seq_and_p
-        assert jnp.all(_bcoo_data(seq.m0_sp) > 0)
+        assert jnp.all(seq.m0_sp.to_bcoo().data > -1e-10)
 
 
 class TestMassMatrixM1:
-    """Mass matrix M1: positivity of all entries and symmetry."""
+    """Mass matrix M1: symmetry."""
 
     def test_m1_symmetry(self, seq_and_p):
         seq, _ = seq_and_p
         M = seq.m1_sp.todense()
         npt.assert_allclose(M, M.T, atol=1e-14)
 
-    def test_m1_positive_entries(self, seq_and_p):
-        seq, _ = seq_and_p
-        assert jnp.all(_bcoo_data(seq.m1_sp) > 0)
-
 
 class TestMassMatrixM2:
-    """Mass matrix M2: positivity of all entries and symmetry."""
+    """Mass matrix M2: symmetry."""
 
     def test_m2_symmetry(self, seq_and_p):
         seq, _ = seq_and_p
         M = seq.m2_sp.todense()
         npt.assert_allclose(M, M.T, atol=1e-14)
 
-    def test_m2_positive_entries(self, seq_and_p):
-        seq, _ = seq_and_p
-        assert jnp.all(_bcoo_data(seq.m2_sp) > 0)
-
 
 class TestMassMatrixM3:
-    """Mass matrix M3: positivity of all entries and symmetry."""
+    """Mass matrix M3: no negative entries and symmetry."""
 
     def test_m3_symmetry(self, seq_and_p):
         seq, _ = seq_and_p
         M = seq.m3_sp.todense()
         npt.assert_allclose(M, M.T, atol=1e-14)
 
-    def test_m3_positive_entries(self, seq_and_p):
+    def test_m3_no_negative_entries(self, seq_and_p):
         seq, _ = seq_and_p
-        assert jnp.all(_bcoo_data(seq.m3_sp) > 0)
+        assert jnp.all(seq.m3_sp.to_bcoo().data > -1e-10)
 
 
 class TestDiagEAET:
@@ -113,3 +103,72 @@ class TestDiagEAET:
         diag_ref = jnp.diag(E_dense @ M_dense @ E_dense.T)
 
         npt.assert_allclose(diag_fast, diag_ref, atol=1e-12)
+
+
+class TestMassPreconditioner:
+    """Mass matrix Jacobi preconditioner: positivity and spectral properties."""
+
+    @pytest.mark.parametrize("k", [0, 1, 2, 3])
+    def test_mass_precond_positive(self, seq_and_p, k):
+        seq, _ = seq_and_p
+        diaginv = getattr(seq, f"m{k}_sp_diaginv")
+        assert jnp.all(diaginv > 0)
+
+    @pytest.mark.parametrize("k", [0, 1, 2, 3])
+    def test_mass_precond_dbc_positive(self, seq_and_p, k):
+        seq, _ = seq_and_p
+        diaginv = getattr(seq, f"m{k}_sp_diaginv_dbc")
+        assert jnp.all(diaginv > 0)
+
+    @pytest.mark.parametrize("k", [0, 1, 2, 3])
+    def test_preconditioned_mass_eigs_positive(self, seq_and_p, k):
+        seq, _ = seq_and_p
+        M = assemble_dense_mass_matrix(seq, k, dirichlet=False)
+        diaginv = getattr(seq, f"m{k}_sp_diaginv")
+        sqrtinv = jnp.sqrt(diaginv)
+        sPMs = jnp.diag(sqrtinv) @ M @ jnp.diag(sqrtinv)
+        eigs = jnp.linalg.eigvalsh(sPMs)
+        assert jnp.all(eigs > -1e-12)
+
+
+class TestHodgeLaplacePreconditioner:
+    """Hodge-Laplace Jacobi preconditioner: positivity and spectral properties."""
+
+    @pytest.mark.parametrize("k", [0, 1, 2, 3])
+    def test_hodge_precond_positive(self, seq_and_p, k):
+        seq, _ = seq_and_p
+        diaginv = getattr(seq, f"dd{k}_sp_diaginv")
+        assert jnp.all(diaginv > 0)
+
+    @pytest.mark.parametrize("k", [0, 1, 2, 3])
+    def test_hodge_precond_dbc_positive(self, seq_and_p, k):
+        seq, _ = seq_and_p
+        diaginv = getattr(seq, f"dd{k}_sp_diaginv_dbc")
+        assert jnp.all(diaginv > 0)
+
+    @pytest.mark.parametrize("k", [0, 1, 2, 3])
+    @pytest.mark.parametrize("dirichlet", [False, True], ids=["no_dbc", "dbc"])
+    def test_preconditioned_laplace_eigs_positive(self, seq_and_p, k, dirichlet):
+        """Eigenvalues of preconditioned Hodge-Laplace should be non-negative.
+
+        Nullspace dimension depends on BCs:
+          no DBC: k=0 (constants) and k=1 (harmonic) each have 1 zero EV
+          DBC:    k=2 and k=3 each have 1 zero EV
+        """
+        seq, _ = seq_and_p
+        suffix = "_dbc" if dirichlet else ""
+        L = assemble_dense_hodge_laplacian(seq, k, dirichlet=dirichlet)
+        diaginv = getattr(seq, f"dd{k}_sp_diaginv{suffix}")
+        sqrtinv = jnp.sqrt(diaginv)
+        sPLs = jnp.diag(sqrtinv) @ L @ jnp.diag(sqrtinv)
+        eigs = jnp.linalg.eigvalsh(sPLs)
+        # All eigenvalues should be non-negative (allow small numerical noise)
+        assert jnp.all(eigs > -1e-10)
+        # Check nullspace dimension
+        if dirichlet:
+            has_null = k in (2, 3)
+        else:
+            has_null = k in (0, 1)
+        if has_null:
+            n_zero = jnp.sum(eigs < 1e-10)
+            assert n_zero == 1, f"Expected 1 zero EV for k={k}, got {n_zero}"

@@ -13,22 +13,25 @@ Usage
     python scripts/relax_siesta.py
 """
 import time
-import mrx
+
 import h5py
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
+from jax.scipy.interpolate import RegularGridInterpolator
 
+import mrx
+from mrx.assembly import (assemble_dense_hodge_laplacian,
+                          assemble_dense_mass_matrix)
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import interpolate_map
 from mrx.plotting import get_1d_grids
 from mrx.relaxation import (DescentMethod, IntegrationScheme, TimeStepChoice,
-                            TimeStepper, compute_force, relaxation_loop, apply_diffusion)
+                            TimeStepper, apply_diffusion, compute_force,
+                            relaxation_loop)
 from mrx.utils import evaluate_at_xq, integrate_against
-from jax.scipy.interpolate import RegularGridInterpolator
-from mrx.assembly import assemble_dense_mass_matrix, assemble_dense_hodge_laplacian
 
 jax.config.update("jax_enable_x64", True)
 
@@ -96,7 +99,7 @@ print(f"Map interpolation done in {time.time() - t0:.1f}s")
 # ---------------------------------------------------------------
 # Build the FEM de Rham sequence
 # ---------------------------------------------------------------
-mrx.MAP_BATCH_SIZE_INNER = 20_000
+mrx.MAP_BATCH_SIZE_INNER = 0
 print(f"Building FEM sequence (ns={NS}, ps={PS})...")
 t0 = time.time()
 seq = DeRhamSequence(
@@ -120,10 +123,14 @@ print(f"Nullspace computation done in {time.time() - t0:.1f}s")
 
 # %%
 # Check nullspaces
-print(f"0 (no dbc): {jnp.sqrt(seq.null_0[0] @ seq.apply_hodge_laplacian(seq.null_0[0], 0, dirichlet=False))}")
-print(f"1 (no dbc): {jnp.sqrt(seq.null_1[0] @ seq.apply_hodge_laplacian(seq.null_1[0], 1, dirichlet=False))}")
-print(f"2 (dbc): {jnp.sqrt(seq.null_2_dbc[0] @ seq.apply_hodge_laplacian(seq.null_2_dbc[0], 2, dirichlet=True))}")
-print(f"3 (dbc): {jnp.sqrt(seq.null_3_dbc[0] @ seq.apply_hodge_laplacian(seq.null_3_dbc[0], 3, dirichlet=True))}")
+print(
+    f"0 (no dbc): {jnp.sqrt(seq.null_0[0] @ seq.apply_hodge_laplacian(seq.null_0[0], 0, dirichlet=False))}")
+print(
+    f"1 (no dbc): {jnp.sqrt(seq.null_1[0] @ seq.apply_hodge_laplacian(seq.null_1[0], 1, dirichlet=False))}")
+print(
+    f"2 (dbc): {jnp.sqrt(seq.null_2_dbc[0] @ seq.apply_hodge_laplacian(seq.null_2_dbc[0], 2, dirichlet=True))}")
+print(
+    f"3 (dbc): {jnp.sqrt(seq.null_3_dbc[0] @ seq.apply_hodge_laplacian(seq.null_3_dbc[0], 3, dirichlet=True))}")
 
 
 # %%
@@ -144,11 +151,13 @@ def interpolate_scalar_to_xq(scalar_vals, axes, xq):
 # Interpolate Clebsch potentials to FEM quadrature points
 phi_at_xq = interpolate_scalar_to_xq(phi_vals, (rho, theta, zeta), seq.quad.x)
 chi_at_xq = interpolate_scalar_to_xq(chi_vals, (rho, theta, zeta), seq.quad.x)
-lambda_at_xq = interpolate_scalar_to_xq(lambda_vals, (rho, theta, zeta), seq.quad.x)
+lambda_at_xq = interpolate_scalar_to_xq(
+    lambda_vals, (rho, theta, zeta), seq.quad.x)
 
 # L2-project scalars onto 0-form basis
 comp_info_0, comp_shapes_0 = seq._form_comp_info(0)
 quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+
 
 @jax.jit
 def project_scalar_to_0form(vals_at_xq):
@@ -182,6 +191,7 @@ d0_comp_info = [
 s0 = list(seq.basis_0.shape)[0]  # (nr, nt, nz)
 d0_comp_shapes = [s0, s0, s0]
 
+
 def grad_0form_at_xq(dof_0):
     """Evaluate the (logical) gradient of a 0-form at quad points."""
     internal = seq.e0_T @ dof_0
@@ -195,13 +205,15 @@ grad_lambda = grad_0form_at_xq(lambda_dof)
 grad_theta = jnp.array([0, 1, 0])[None, :] * 2 * jnp.pi
 grad_zeta = jnp.array([0, 0, 1])[None, :] * 2 * jnp.pi / NFP
 
-B_jk = jnp.cross(grad_phi, grad_theta + grad_lambda) - jnp.cross(grad_chi, grad_zeta)
+B_jk = jnp.cross(grad_phi, grad_theta + grad_lambda) - \
+    jnp.cross(grad_chi, grad_zeta)
 
 # Project onto 2-form: ∫ Λ_2 · G B / J w dV
 comp_info_2, comp_shapes_2 = seq._form_comp_info(2)
 GB_jk = jnp.einsum('jkl,jk,j,j->jl', seq.metric_jkl, B_jk,
-                    seq.quad.w, 1 / seq.jacobian_j)
-B_proj = seq.e2_dbc @ integrate_against(GB_jk, comp_info_2, comp_shapes_2, quad_shape)
+                   seq.quad.w, 1 / seq.jacobian_j)
+B_proj = seq.e2_dbc @ integrate_against(GB_jk,
+                                        comp_info_2, comp_shapes_2, quad_shape)
 
 # Solve M2 B = B_proj
 _inv_mass_2 = jax.jit(lambda rhs: seq.apply_inverse_mass_matrix(rhs, 2))
@@ -218,14 +230,15 @@ print(f"Clebsch B projection done in {time.time() - t0:.1f}s")
 
 # %%
 # Regularity coeff.
-reg_coeff = B_dof_0 @ seq.apply_hodge_laplacian(B_dof_0, 2) / seq.l2_norm_sq(B_dof_0, 2)
+reg_coeff = B_dof_0 @ seq.apply_hodge_laplacian(
+    B_dof_0, 2) / seq.l2_norm_sq(B_dof_0, 2)
 print(f"Regularity coefficient: {reg_coeff:.2e}")
 # %%
 # for _ in range(5):
 #     B_dof_0 = apply_diffusion(B_dof_0, seq, eta=1e-4)
 #     reg_coeff = B_dof_0 @ seq.apply_hodge_laplacian(B_dof_0, 2) / seq.l2_norm_sq(B_dof_0, 2)
 #     print(f"Regularity coefficient: {reg_coeff:.2e}")
-    
+
 # %%
 F_force, p_dof, J_dof, H_dof, _ = compute_force(B_dof_0, seq)
 
@@ -412,32 +425,50 @@ for k in range(4):
     M = assemble_dense_mass_matrix(seq, k)
     match k:
         case 0:
-            pM = jnp.diag(seq.m0_sp_diaginv_dbc) @ M
+            pM = jnp.diag(jnp.sqrt(seq.m0_sp_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(seq.m0_sp_diaginv_dbc))
         case 1:
-            pM = jnp.diag(seq.m1_sp_diaginv_dbc) @ M
+            pM = jnp.diag(jnp.sqrt(seq.m1_sp_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(seq.m1_sp_diaginv_dbc))
         case 2:
-            pM = jnp.diag(seq.m2_sp_diaginv_dbc) @ M
+            pM = jnp.diag(jnp.sqrt(seq.m2_sp_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(seq.m2_sp_diaginv_dbc))
         case 3:
-            pM = jnp.diag(seq.m3_sp_diaginv_dbc) @ M
-    print(f"Condition number of M{k}:", jnp.linalg.eigvalsh(M)[-1]/jnp.linalg.eigvalsh(M)[0])
-    print(f"Condition number of preconditioned M{k}:", jnp.linalg.eigvalsh(pM)[-1]/jnp.linalg.eigvalsh(pM)[0])
+            pM = jnp.diag(jnp.sqrt(seq.m3_sp_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(seq.m3_sp_diaginv_dbc))
+    print(f"Condition number of M{k}:", jnp.linalg.eigvalsh(
+        M)[-1]/jnp.linalg.eigvalsh(M)[0])
+    print(f"Condition number of preconditioned M{k}:", jnp.linalg.eigvalsh(
+        pM)[-1]/jnp.linalg.eigvalsh(pM)[0])
     print(f"first 3 eigenvalues of M{k}:", jnp.linalg.eigvalsh(M)[:3])
-    print(f"first 3 eigenvalues of preconditioned M{k}:", jnp.linalg.eigvalsh(pM)[:3])
-    
+    print(
+        f"first 3 eigenvalues of preconditioned M{k}:", jnp.linalg.eigvalsh(pM)[:3])
+
 # %%
 for k in range(4):
     M = assemble_dense_hodge_laplacian(seq, k)
     match k:
         case 0:
-            pM = jnp.diag(seq.dd0_sp_diaginv_dbc) @ M
+            pM = jnp.diag(jnp.sqrt(seq.dd0_sp_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(seq.dd0_sp_diaginv_dbc))
+            has_null = False
         case 1:
-            pM = jnp.diag(seq.dd1_sp_diaginv_dbc) @ M
+            pM = jnp.diag(jnp.sqrt(seq.dd1_sp_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(seq.dd1_sp_diaginv_dbc))
+            has_null = False
         case 2:
-            pM = jnp.diag(seq.dd2_sp_diaginv_dbc) @ M
+            pM = jnp.diag(jnp.sqrt(seq.dd2_sp_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(seq.dd2_sp_diaginv_dbc))
+            has_null = True
         case 3:
-            pM = jnp.diag(seq.dd3_sp_diaginv_dbc) @ M
-    print(f"Condition number of L{k}:", jnp.linalg.eigvalsh(M)[-1]/jnp.linalg.eigvalsh(M)[0])
-    print(f"Condition number of preconditioned L{k}:", jnp.linalg.eigvalsh(pM)[-1]/jnp.linalg.eigvalsh(pM)[0])
+            pM = jnp.diag(jnp.sqrt(seq.dd3_sp_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(seq.dd3_sp_diaginv_dbc))
+            has_null = True
+    print(f"Condition number of L{k}:", jnp.linalg.eigvalsh(
+        M)[-1]/jnp.linalg.eigvalsh(M)[int(has_null)])
+    print(f"Condition number of preconditioned L{k}:", jnp.linalg.eigvalsh(
+        pM)[-1]/jnp.linalg.eigvalsh(pM)[int(has_null)])
     print(f"first 3 eigenvalues of L{k}:", jnp.linalg.eigvalsh(M)[:3])
-    print(f"first 3 eigenvalues of preconditioned L{k}:", jnp.linalg.eigvalsh(pM)[:3])
+    print(
+        f"first 3 eigenvalues of preconditioned L{k}:", jnp.linalg.eigvalsh(pM)[:3])
 # %%

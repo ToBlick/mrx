@@ -11,6 +11,7 @@ slurm/job_*
 multirun*
 *.html
 data
+outputs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

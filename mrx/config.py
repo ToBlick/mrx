@@ -24,6 +24,7 @@ from hydra.core.config_store import ConfigStore
 #  Shared sub-configs
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class FEMConfig:
     ns_r: int = 8
@@ -176,7 +177,8 @@ class RelaxFromNFSConfig:
 
     map: MapConfig = field(default_factory=MapConfig)
     fem: FEMConfig = field(default_factory=FEMConfig)
-    interpolation: InterpolationConfig = field(default_factory=InterpolationConfig)
+    interpolation: InterpolationConfig = field(
+        default_factory=InterpolationConfig)
     relaxation: RelaxationConfig = field(default_factory=RelaxationConfig)
     eta: EtaConfig = field(default_factory=EtaConfig)
     noise: NoiseConfig = field(default_factory=NoiseConfig)
@@ -190,7 +192,8 @@ class RelaxStellConfig:
     run_name: Optional[str] = None
 
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
-    initial_field: InitialFieldConfig = field(default_factory=InitialFieldConfig)
+    initial_field: InitialFieldConfig = field(
+        default_factory=InitialFieldConfig)
     fem: FEMConfig = field(default_factory=lambda: FEMConfig(
         ns_r=6, ns_theta=10, ns_zeta=6,
         ps_r=3, ps_theta=3, ps_zeta=3, quad_order=3))
@@ -207,7 +210,7 @@ class RelaxStellConfig:
 @dataclass
 class PoissonTestConfig:
     """Application parameters for ``test_torus_poisson_sparse.py``."""
-    n: int = 8
+    n: list[int] = field(default_factory=lambda: [8, 16, 32])
     p: int = 3
     epsilon: float = 1 / 3
     cg_tol: float = 1e-9
@@ -221,7 +224,8 @@ class MCPoissonConfig:
     """Application parameters for ``scripts/dice/mc_poisson.py``."""
     n: int = 10
     p: int = 3
-    N: list[int] = field(default_factory=lambda: [100, 500, 1000, 5000, 10_000])
+    N: list[int] = field(default_factory=lambda: [
+                         100, 500, 1000, 5000, 10_000])
     outer_batch_size: Optional[int] = None
     inner_batch_size: Optional[int] = 10_000
     seed: int = 42
@@ -237,9 +241,12 @@ class PoincarePlotsConfig:
     """
     run_dir: Optional[str] = None
 
-    fieldline: PoincareFieldlineConfig = field(default_factory=PoincareFieldlineConfig)
-    poincare: PoincareClassificationConfig = field(default_factory=PoincareClassificationConfig)
-    plotting: PoincarePlottingConfig = field(default_factory=PoincarePlottingConfig)
+    fieldline: PoincareFieldlineConfig = field(
+        default_factory=PoincareFieldlineConfig)
+    poincare: PoincareClassificationConfig = field(
+        default_factory=PoincareClassificationConfig)
+    plotting: PoincarePlottingConfig = field(
+        default_factory=PoincarePlottingConfig)
     output: PoincareOutputConfig = field(default_factory=PoincareOutputConfig)
 
 

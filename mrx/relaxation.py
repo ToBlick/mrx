@@ -14,6 +14,11 @@ def apply_diffusion(B: jnp.ndarray, seq: DeRhamSequence, eta: float, dirichlet: 
 
     B_guess = B if B_guess is None else B_guess
 
+    suffix = "_dbc" if dirichlet else ""
+    m_diaginv = getattr(seq, f"m2_sp_diaginv{suffix}")
+    dd_diaginv = getattr(seq, f"dd2_sp_diaginv{suffix}")
+    combined_diaginv = 1.0 / (1.0 / m_diaginv + eta / dd_diaginv)
+
     def apply_A(x):
         return seq.apply_mass_matrix(x, 2, dirichlet) \
             + eta * seq.apply_hodge_laplacian(x, 2, dirichlet)
@@ -23,8 +28,7 @@ def apply_diffusion(B: jnp.ndarray, seq: DeRhamSequence, eta: float, dirichlet: 
             apply_A,
             x,
             mass_matvec=lambda x: seq.apply_mass_matrix(x, 2, dirichlet),
-            precond_matvec=lambda x: seq.apply_hodge_laplacian_preconditioner(
-                x, 2, dirichlet),
+            precond_matvec=lambda x: combined_diaginv * x,
             x0=x0,
             maxiter=seq.maxiter, tol=seq.tol
         )[0]
@@ -48,6 +52,8 @@ def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
     return seq.l2_norm_sq(div_B, 3)**0.5
 
 # %%
+
+
 def compute_force(
     B: jnp.ndarray,
     seq: DeRhamSequence,
@@ -58,16 +64,20 @@ def compute_force(
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     H_dual = seq.apply_projection_matrix(
         B, 2, 1, True, dirichlet_out=dirichlet_H)
-    H = seq.apply_inverse_mass_matrix(H_dual, 1, dirichlet=dirichlet_H, guess=H_guess)
+    H = seq.apply_inverse_mass_matrix(
+        H_dual, 1, dirichlet=dirichlet_H, guess=H_guess)
     # J = seq.apply_strong_curl(H, dirichlet_in=dirichlet_H, dirichlet_out=True)
     # JxH_dual = seq.cross_product_projection(J, H, 2, 2, 1, True, True, dirichlet_H)
     J = seq.apply_weak_curl(B, dirichlet_in=True, dirichlet_out=True)
-    JxH_dual = seq.cross_product_projection(J, H, 2, 1, 1, True, True, dirichlet_H)
+    JxH_dual = seq.cross_product_projection(
+        J, H, 2, 1, 1, True, True, dirichlet_H)
     JxH = seq.apply_inverse_mass_matrix(JxH_dual, 2, guess=JxH_guess)
     F, p = seq.apply_leray_projection(JxH, k=2, p_guess=p_guess)
     return F, p, J, H, JxH
 
 # %%
+
+
 class State(eqx.Module):
     """
     A class to store the state (variables and parameters) of the MRX relaxation.
@@ -489,7 +499,8 @@ def relaxation_loop(B_dof: jnp.ndarray,
         traces["iteration"].append(iteration)
         return eqx.tree_at(lambda s: s.A, state, A_new)
 
-    F0, p0, _, H0, JxH0 = compute_force(state.B_n, seq, dirichlet_H=ts.dirichlet_H, p_guess=state.p)
+    F0, p0, _, H0, JxH0 = compute_force(
+        state.B_n, seq, dirichlet_H=ts.dirichlet_H, p_guess=state.p)
     state = eqx.tree_at(
         lambda s: (s.F_norm, s.F_prev, s.p, s.H, s.JxH),
         state,

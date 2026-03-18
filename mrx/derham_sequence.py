@@ -3,6 +3,7 @@ from typing import Callable
 import jax
 import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
+from jax.scipy.sparse.linalg import cg
 
 import mrx
 from mrx.assembly import assemble_sparse, build_neighbors
@@ -11,10 +12,9 @@ from mrx.extraction_operators import (BoundaryOperator,
                                       PolarExtractionOperator, get_xi)
 from mrx.projectors import Projector
 from mrx.quadrature import QuadratureRule
-from mrx.solvers import solve_singular_cg
+from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
 from mrx.utils import (diag_EAET, diag_schur_complement,
-                       evaluate_at_xq_deprecated,
-                       extract_diag_vector,
+                       evaluate_at_xq_deprecated, extract_diag_vector,
                        integrate_against_deprecated, inv33,
                        jacobian_determinant, square_sparse)
 
@@ -65,7 +65,7 @@ class DeRhamSequence():
     # (k,l)th element of inverse metric at quadrature point j: G(x_j)^{-1}_kl. Shape: n_q x 3 x 3.
     metric_inv_jkl: jnp.ndarray
 
-    def __init__(self, ns, ps, q, types, map, polar, tol=1e-12, maxiter=10_000, r_scale=1.0):
+    def __init__(self, ns, ps, q, types, map, polar, tol=1e-12, maxiter=10_000, r_scale=1.0, n_inner=5):
         """
         Initialize the de Rham sequence.
 
@@ -79,9 +79,11 @@ class DeRhamSequence():
             tol (float): Tolerance for sparse linear solvers.
             maxiter (int): Maximum number of iterations for sparse linear solvers.
             r_scale (float): Scale factor for the radial coordinate.
+            n_inner (int): Number of CG iterations for block preconditioner solves.
         """
         self.tol = tol
         self.maxiter = maxiter
+        self.n_inner = n_inner
         if not polar:
             Ts = [None] * 3
         else:
@@ -506,9 +508,11 @@ class DeRhamSequence():
                     self.basis_r_jk, self.basis_t_jk, self.basis_z_jk,
                     W_flat, quad_shape, self.basis_0.shape[0],
                     self.basis_0.pr, self.basis_0.pt, self.basis_0.pz)
-                self.m0_sp_diaginv = jnp.ones(self.n0)
-                self.m0_sp_diaginv_dbc = jnp.ones(self.n0_dbc)
                 self.m0_sp = jsparse.BCSR.from_bcoo(sp)
+                self.m0_sp_diaginv = 1.0 / \
+                    diag_EAET(self.e0, self.m0_sp, self.e0_T)
+                self.m0_sp_diaginv_dbc = 1.0 / \
+                    diag_EAET(self.e0_dbc, self.m0_sp, self.e0_dbc_T)
             case 1:
                 W_3x3 = self.metric_inv_jkl * \
                     (self.jacobian_j * self.quad.w)[:, None, None]
@@ -521,9 +525,11 @@ class DeRhamSequence():
                     terms, terms, W_3x3, quad_shape,
                     list(self.basis_1.shape),
                     self.basis_1.pr)
-                self.m1_sp_diaginv = jnp.ones(self.n1)
-                self.m1_sp_diaginv_dbc = jnp.ones(self.n1_dbc)
                 self.m1_sp = jsparse.BCSR.from_bcoo(sp)
+                self.m1_sp_diaginv = 1.0 / \
+                    diag_EAET(self.e1, self.m1_sp, self.e1_T)
+                self.m1_sp_diaginv_dbc = 1.0 / \
+                    diag_EAET(self.e1_dbc, self.m1_sp, self.e1_dbc_T)
             case 2:
                 W_3x3 = self.metric_jkl * \
                     (1 / self.jacobian_j * self.quad.w)[:, None, None]
@@ -536,9 +542,11 @@ class DeRhamSequence():
                     terms, terms, W_3x3, quad_shape,
                     list(self.basis_2.shape),
                     self.basis_2.pr)
-                self.m2_sp_diaginv = jnp.ones(self.n2)
-                self.m2_sp_diaginv_dbc = jnp.ones(self.n2_dbc)
                 self.m2_sp = jsparse.BCSR.from_bcoo(sp)
+                self.m2_sp_diaginv = 1.0 / \
+                    diag_EAET(self.e2, self.m2_sp, self.e2_T)
+                self.m2_sp_diaginv_dbc = 1.0 / \
+                    diag_EAET(self.e2_dbc, self.m2_sp, self.e2_dbc_T)
             case 3:
                 W_flat = (1 / self.jacobian_j) * self.quad.w
                 sp = assemble_scalar_tp(
@@ -546,9 +554,11 @@ class DeRhamSequence():
                     self.d_basis_r_jk, self.d_basis_t_jk, self.d_basis_z_jk,
                     W_flat, quad_shape, self.basis_3.shape[0],
                     self.basis_3.pr, self.basis_3.pt, self.basis_3.pz)
-                self.m3_sp_diaginv = jnp.ones(self.n3)
-                self.m3_sp_diaginv_dbc = jnp.ones(self.n3_dbc)
                 self.m3_sp = jsparse.BCSR.from_bcoo(sp)
+                self.m3_sp_diaginv = 1.0 / \
+                    diag_EAET(self.e3, self.m3_sp, self.e3_T)
+                self.m3_sp_diaginv_dbc = 1.0 / \
+                    diag_EAET(self.e3_dbc, self.m3_sp, self.e3_dbc_T)
             case _:
                 raise ValueError(
                     "Tensor-product assembly supports k=0, 1, 2, 3")
@@ -855,9 +865,11 @@ class DeRhamSequence():
                     grad_basis_1d, grad_basis_1d, W_3x3, quad_shape,
                     self.basis_0.shape[0],
                     self.basis_0.pr, self.basis_0.pt, self.basis_0.pz)
-                self.dd0_sp_diaginv = jnp.ones(self.n0)
-                self.dd0_sp_diaginv_dbc = jnp.ones(self.n0_dbc)
                 self.grad_grad_sp = jsparse.BCSR.from_bcoo(sp)
+                self.dd0_sp_diaginv = 1.0 / \
+                    diag_EAET(self.e0, self.grad_grad_sp, self.e0_T)
+                self.dd0_sp_diaginv_dbc = 1.0 / \
+                    diag_EAET(self.e0_dbc, self.grad_grad_sp, self.e0_dbc_T)
             case 1:
                 W_3x3 = self.metric_jkl * \
                     (1 / self.jacobian_j * self.quad.w)[:, None, None]
@@ -881,9 +893,20 @@ class DeRhamSequence():
                 sp = assemble_vectorial_tp(
                     curl_terms, curl_terms, W_3x3, quad_shape,
                     list(self.basis_1.shape), self.basis_1.pr)
-                self.dd1_sp_diaginv = jnp.ones(self.n1)
-                self.dd1_sp_diaginv_dbc = jnp.ones(self.n1_dbc)
                 self.curl_curl_sp = jsparse.BCSR.from_bcoo(sp)
+                # diag(E1 S1 E1^T) + diag(D0 diag(M0^{-1}) D0^T)
+                d_stiff = diag_EAET(self.e1, self.curl_curl_sp, self.e1_T)
+                d_schur = diag_schur_complement(
+                    lambda v: self.e0 @ (self.d0_sp_T @ (self.e1_T @ v)),
+                    self.m0_sp_diaginv, self.n1)
+                self.dd1_sp_diaginv = 1.0 / (d_stiff + d_schur)
+                d_stiff_dbc = diag_EAET(
+                    self.e1_dbc, self.curl_curl_sp, self.e1_dbc_T)
+                d_schur_dbc = diag_schur_complement(
+                    lambda v: self.e0_dbc @ (self.d0_sp_T @
+                                             (self.e1_dbc_T @ v)),
+                    self.m0_sp_diaginv_dbc, self.n1_dbc)
+                self.dd1_sp_diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
             case 2:
                 W_scalar = (1 / self.jacobian_j) * self.quad.w
                 W_3x3 = W_scalar[:, None, None] * jnp.ones((1, 3, 3))
@@ -895,12 +918,31 @@ class DeRhamSequence():
                 sp = assemble_vectorial_tp(
                     div_terms, div_terms, W_3x3, quad_shape,
                     list(self.basis_2.shape), self.basis_2.pr)
-                self.dd2_sp_diaginv = jnp.ones(self.n2)
-                self.dd2_sp_diaginv_dbc = jnp.ones(self.n2_dbc)
                 self.div_div_sp = jsparse.BCSR.from_bcoo(sp)
+                # diag(E2 S2 E2^T) + diag(D1 diag(M1^{-1}) D1^T)
+                d_stiff = diag_EAET(self.e2, self.div_div_sp, self.e2_T)
+                d_schur = diag_schur_complement(
+                    lambda v: self.e1 @ (self.d1_sp_T @ (self.e2_T @ v)),
+                    self.m1_sp_diaginv, self.n2)
+                self.dd2_sp_diaginv = 1.0 / (d_stiff + d_schur)
+                d_stiff_dbc = diag_EAET(
+                    self.e2_dbc, self.div_div_sp, self.e2_dbc_T)
+                d_schur_dbc = diag_schur_complement(
+                    lambda v: self.e1_dbc @ (self.d1_sp_T @
+                                             (self.e2_dbc_T @ v)),
+                    self.m1_sp_diaginv_dbc, self.n2_dbc)
+                self.dd2_sp_diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
             case 3:
-                self.dd3_sp_diaginv = jnp.ones(self.n3)
-                self.dd3_sp_diaginv_dbc = jnp.ones(self.n3_dbc)
+                # L3 = D2 diag(M2^{-1}) D2^T (no stiffness part)
+                d_schur = diag_schur_complement(
+                    lambda v: self.e2 @ (self.d2_sp_T @ (self.e3_T @ v)),
+                    self.m2_sp_diaginv, self.n3)
+                self.dd3_sp_diaginv = 1.0 / d_schur
+                d_schur_dbc = diag_schur_complement(
+                    lambda v: self.e2_dbc @ (self.d2_sp_T @
+                                             (self.e3_dbc_T @ v)),
+                    self.m2_sp_diaginv_dbc, self.n3_dbc)
+                self.dd3_sp_diaginv_dbc = 1.0 / d_schur_dbc
             case _:
                 raise ValueError("k must be 0, 1, 2, or 3")
 
@@ -1136,7 +1178,8 @@ class DeRhamSequence():
             k=2: stiffness_2 = div_div_ij   = ∫ div  Λ2_i div  Λ2_j (det DF)⁻¹ dx,  d_1 = curl
             k=3: stiffness_3 = 0,  d_2 = div
 
-        The inner M_{k-1}^{-1} solves use CG with Jacobi preconditioning.
+        The inner M_{k-1}^{-1} solves use CG with Jacobi preconditioning
+        to full solver tolerance.
         """
         match k:
             case 0:
@@ -1146,90 +1189,243 @@ class DeRhamSequence():
             case 1:
                 e1 = self.e1_dbc if dirichlet else self.e1
                 e1_T = self.e1_dbc_T if dirichlet else self.e1_T
-                minus_div_v = self.apply_derivative_matrix(
+                Dt_v = self.apply_derivative_matrix(
                     v, 0, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-                m0_inv_div_v = solve_singular_cg(
-                    lambda x: self.apply_mass_matrix(
-                        x, 0, dirichlet=dirichlet),
-                    minus_div_v,
-                    mass_matvec=lambda x: self.apply_mass_matrix(
-                        x, 0, dirichlet=dirichlet),
-                    precond_matvec=lambda x: self.apply_mass_matrix_preconditioner(
-                        x, 0, dirichlet=dirichlet),
-                    tol=jnp.sqrt(self.tol), maxiter=self.maxiter)[0]
+                Minv_Dt_v = self.apply_inverse_mass_matrix(
+                    Dt_v, 0, dirichlet=dirichlet)
                 return e1 @ (self.curl_curl_sp @ (e1_T @ v)) \
-                    + self.apply_derivative_matrix(m0_inv_div_v, 0,
+                    + self.apply_derivative_matrix(Minv_Dt_v, 0,
                                                    dirichlet_in=dirichlet, dirichlet_out=dirichlet)
             case 2:
                 e2 = self.e2_dbc if dirichlet else self.e2
                 e2_T = self.e2_dbc_T if dirichlet else self.e2_T
-                curl_v = self.apply_derivative_matrix(
+                Dt_v = self.apply_derivative_matrix(
                     v, 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-                m1_inv_curl_v = solve_singular_cg(
-                    lambda x: self.apply_mass_matrix(
-                        x, 1, dirichlet=dirichlet),
-                    curl_v,
-                    mass_matvec=lambda x: self.apply_mass_matrix(
-                        x, 1, dirichlet=dirichlet),
-                    precond_matvec=lambda x: self.apply_mass_matrix_preconditioner(
-                        x, 1, dirichlet=dirichlet),
-                    tol=jnp.sqrt(self.tol), maxiter=self.maxiter)[0]
+                Minv_Dt_v = self.apply_inverse_mass_matrix(
+                    Dt_v, 1, dirichlet=dirichlet)
                 return e2 @ (self.div_div_sp @ (e2_T @ v)) \
-                    + self.apply_derivative_matrix(m1_inv_curl_v, 1,
+                    + self.apply_derivative_matrix(Minv_Dt_v, 1,
                                                    dirichlet_in=dirichlet, dirichlet_out=dirichlet)
             case 3:
-                minus_grad_v = self.apply_derivative_matrix(
+                Dt_v = self.apply_derivative_matrix(
                     v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-                m2_inv_minus_grad_v = solve_singular_cg(
-                    lambda x: self.apply_mass_matrix(
-                        x, 2, dirichlet=dirichlet),
-                    minus_grad_v,
-                    mass_matvec=lambda x: self.apply_mass_matrix(
-                        x, 2, dirichlet=dirichlet),
-                    precond_matvec=lambda x: self.apply_mass_matrix_preconditioner(
-                        x, 2, dirichlet=dirichlet),
-                    tol=jnp.sqrt(self.tol), maxiter=self.maxiter)[0]
-                return self.apply_derivative_matrix(m2_inv_minus_grad_v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+                Minv_Dt_v = self.apply_inverse_mass_matrix(
+                    Dt_v, 2, dirichlet=dirichlet)
+                return self.apply_derivative_matrix(Minv_Dt_v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
             case _:
                 raise ValueError("k must be 0, 1, 2 or 3")
 
+    def apply_diffusion(self, v, k, alpha, dirichlet=True):
+        """Apply (M_k + alpha * L_k) to a k-form vector v."""
+        return self.apply_mass_matrix(v, k, dirichlet=dirichlet) \
+            + alpha * self.apply_hodge_laplacian(v, k, dirichlet=dirichlet)
+
+    def apply_stiffness(self, v, k, dirichlet=True):
+        """
+        Apply the stiffness matrix S_k to a k-form vector v.
+
+            k=0: grad_grad
+            k=1: curl_curl
+            k=2: div_div
+            k=3: 0 (no stiffness)
+        """
+        match k:
+            case 0:
+                e = self.e0_dbc if dirichlet else self.e0
+                e_T = self.e0_dbc_T if dirichlet else self.e0_T
+                return e @ (self.grad_grad_sp @ (e_T @ v))
+            case 1:
+                e = self.e1_dbc if dirichlet else self.e1
+                e_T = self.e1_dbc_T if dirichlet else self.e1_T
+                return e @ (self.curl_curl_sp @ (e_T @ v))
+            case 2:
+                e = self.e2_dbc if dirichlet else self.e2
+                e_T = self.e2_dbc_T if dirichlet else self.e2_T
+                return e @ (self.div_div_sp @ (e_T @ v))
+            case 3:
+                return jnp.zeros_like(v)
+            case _:
+                raise ValueError("k must be 0, 1, 2 or 3")
+
+    def _get_nullspace(self, k, dirichlet):
+        """Return the list of nullspace vectors for the k-th Hodge Laplacian."""
+        attr = f"null_{k}_dbc" if dirichlet else f"null_{k}"
+        return getattr(self, attr)
+
+    def _get_saddle_point_nullspaces(self, k, dirichlet):
+        """
+        Compute nullspace vectors for the saddle-point system from the
+        Schur complement nullspace vectors.
+
+        If v is in null(S_k + D_{k-1} M_{k-1}^{-1} D_{k-1}^T), then
+        [v, M_{k-1}^{-1} D_{k-1}^T v] is in the nullspace of the
+        saddle-point system. We approximate M_{k-1}^{-1} with diag(M_{k-1})^{-1}.
+        """
+        vs_upper = self._get_nullspace(k, dirichlet)
+        vs_lower = []
+        if k >= 1:
+            for v in vs_upper:
+                Dt_v = self.apply_derivative_matrix(
+                    v, k - 1, dirichlet_in=dirichlet,
+                    dirichlet_out=dirichlet, transpose=True)
+                s = self.apply_mass_matrix_preconditioner(
+                    Dt_v, k - 1, dirichlet=dirichlet)
+                vs_lower.append(s)
+        return vs_upper, vs_lower
+
     def apply_inverse_hodge_laplacian(self, v, k, dirichlet=True, guess=None):
         """
-        Apply the inverse of the k-th Hodge Laplacian (δd)⁻¹ to a vector v,
-        solved via CG with Jacobi preconditioning. An optional initial guess can be
-        provided to warm-start the solver.
+        Apply the inverse of the k-th Hodge Laplacian (δd)⁻¹ to a vector v.
+
+        For k=0: uses CG on the grad-grad stiffness (SPD system).
+        For k≥1: uses MINRES on the full saddle-point system:
+
+            | S_k      D_{k-1}   | | u |   | f |
+            | D_{k-1}^T  -M_{k-1} | | σ | = | 0 |
+
+        with block-diagonal preconditioning.
         """
         if k == 0:
-            if dirichlet:
-                vs = self.null_0_dbc
-            else:
-                vs = self.null_0
-        elif k == 1:
-            if dirichlet:
-                vs = self.null_1_dbc
-            else:
-                vs = self.null_1
-        elif k == 2:
-            if dirichlet:
-                vs = self.null_2_dbc
-            else:
-                vs = self.null_2
-        elif k == 3:
-            if dirichlet:
-                vs = self.null_3_dbc
-            else:
-                vs = self.null_3
+            vs = self._get_nullspace(0, dirichlet)
+            return solve_singular_cg(
+                lambda x: self.apply_stiffness(x, 0, dirichlet=dirichlet),
+                v,
+                mass_matvec=lambda x: self.apply_mass_matrix(
+                    x, 0, dirichlet=dirichlet),
+                precond_matvec=lambda x: self.apply_hodge_laplacian_preconditioner(
+                    x, 0, dirichlet=dirichlet),
+                x0=guess,
+                vs=vs,
+                tol=self.tol, maxiter=self.maxiter)[0]
 
-        return solve_singular_cg(
-            lambda x: self.apply_hodge_laplacian(x, k, dirichlet=dirichlet),
-            v,
-            mass_matvec=lambda x: self.apply_mass_matrix(
+        # k >= 1: saddle-point MINRES
+        vs_upper, vs_lower = self._get_saddle_point_nullspaces(k, dirichlet)
+
+        suffix = "_dbc" if dirichlet else ""
+        stiffness_diaginv = getattr(self, f"dd{k}_sp_diaginv{suffix}")
+        mass_lower_diaginv = getattr(self, f"m{k-1}_sp_diaginv{suffix}")
+        n_upper = getattr(self, f"n{k}{suffix}")
+        n_lower = getattr(self, f"n{k-1}{suffix}")
+
+        # Lower block preconditioner: a few CG steps on M_{k-1}
+        def precond_lower(x):
+            return cg(
+                lambda y: self.apply_mass_matrix(
+                    y, k - 1, dirichlet=dirichlet),
+                x, x0=jnp.zeros_like(x),
+                M=lambda y: mass_lower_diaginv * y,
+                maxiter=self.n_inner)[0]
+
+        # Upper block preconditioner: a few CG steps on the approximate
+        # Schur complement S_k + D_{k-1} diag(M_{k-1})^{-1} D_{k-1}^T
+        def approx_schur_matvec(x):
+            Dt_x = self.apply_derivative_matrix(
+                x, k - 1, dirichlet_in=dirichlet,
+                dirichlet_out=dirichlet, transpose=True)
+            D_Minv_Dt_x = self.apply_derivative_matrix(
+                mass_lower_diaginv * Dt_x,
+                k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+            return self.apply_stiffness(x, k, dirichlet=dirichlet) + D_Minv_Dt_x
+
+        def precond_upper(x):
+            return cg(
+                approx_schur_matvec, x, x0=jnp.zeros_like(x),
+                M=lambda y: stiffness_diaginv * y,
+                maxiter=self.n_inner)[0]
+
+        u, sigma, info = solve_saddle_point_minres(
+            stiffness_matvec=lambda x: self.apply_stiffness(
                 x, k, dirichlet=dirichlet),
-            precond_matvec=lambda x: self.apply_hodge_laplacian_preconditioner(
+            derivative_matvec=lambda s: self.apply_derivative_matrix(
+                s, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
+            derivative_T_matvec=lambda u: self.apply_derivative_matrix(
+                u, k - 1, dirichlet_in=dirichlet,
+                dirichlet_out=dirichlet, transpose=True),
+            mass_lower_matvec=lambda s: self.apply_mass_matrix(
+                s, k - 1, dirichlet=dirichlet),
+            b_upper=v,
+            n_upper=n_upper,
+            n_lower=n_lower,
+            precond_upper=precond_upper,
+            precond_lower=precond_lower,
+            mass_upper_matvec=lambda x: self.apply_mass_matrix(
                 x, k, dirichlet=dirichlet),
-            x0=guess,
-            vs=vs,
-            tol=self.tol, maxiter=self.maxiter)[0]
+            vs_upper=vs_upper,
+            vs_lower=vs_lower,
+            x0_upper=guess,
+            tol=self.tol, maxiter=self.maxiter,
+        )
+        return u
+
+    def apply_inverse_diffusion(self, v, k, alpha, dirichlet=True, guess=None):
+        """
+        Solve (M_k + alpha * L_k) x = v for the k-form x.
+
+        For k=0: (M_0 + alpha * S_0) is SPD, solved with CG.
+        For k>=1: uses MINRES on the symmetric saddle-point system:
+
+            | M_k + alpha*S_k    alpha*D_{k-1}   | | u |   | v |
+            | alpha*D_{k-1}^T   -alpha*M_{k-1}   | | σ | = | 0 |
+
+        The system is nonsingular (no nullspace) since M_k + alpha*L_k is SPD.
+        For small alpha, M_k^{-1} is a good upper block preconditioner.
+        """
+        if k == 0:
+            mass_diaginv = self.m0_sp_diaginv_dbc if dirichlet else self.m0_sp_diaginv
+            stiffness_diaginv = self.dd0_sp_diaginv_dbc if dirichlet else self.dd0_sp_diaginv
+            diaginv = 1.0 / (1.0 / mass_diaginv + alpha / stiffness_diaginv)
+            return solve_singular_cg(
+                lambda x: self.apply_mass_matrix(x, 0, dirichlet=dirichlet)
+                + alpha * self.apply_stiffness(x, 0, dirichlet=dirichlet),
+                v,
+                precond_matvec=lambda x: diaginv * x,
+                x0=guess,
+                tol=self.tol, maxiter=self.maxiter)[0]
+
+        # k >= 1: saddle-point MINRES
+        suffix = "_dbc" if dirichlet else ""
+        mass_diaginv = getattr(self, f"m{k}_sp_diaginv{suffix}")
+        mass_lower_diaginv = getattr(self, f"m{k-1}_sp_diaginv{suffix}")
+        n_upper = getattr(self, f"n{k}{suffix}")
+        n_lower = getattr(self, f"n{k-1}{suffix}")
+
+        # Lower block preconditioner: CG on alpha*M_{k-1}
+        def precond_lower(x):
+            return cg(
+                lambda y: alpha * self.apply_mass_matrix(
+                    y, k - 1, dirichlet=dirichlet),
+                x, x0=jnp.zeros_like(x),
+                M=lambda y: (1.0 / alpha) * mass_lower_diaginv * y,
+                maxiter=self.n_inner)[0]
+
+        # Upper block preconditioner: CG on M_k (dominant for small alpha)
+        def precond_upper(x):
+            return cg(
+                lambda y: self.apply_mass_matrix(y, k, dirichlet=dirichlet),
+                x, x0=jnp.zeros_like(x),
+                M=lambda y: mass_diaginv * y,
+                maxiter=self.n_inner)[0]
+
+        u, sigma, info = solve_saddle_point_minres(
+            stiffness_matvec=lambda x: self.apply_mass_matrix(
+                x, k, dirichlet=dirichlet)
+            + alpha * self.apply_stiffness(x, k, dirichlet=dirichlet),
+            derivative_matvec=lambda s: alpha * self.apply_derivative_matrix(
+                s, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
+            derivative_T_matvec=lambda u: alpha * self.apply_derivative_matrix(
+                u, k - 1, dirichlet_in=dirichlet,
+                dirichlet_out=dirichlet, transpose=True),
+            mass_lower_matvec=lambda s: alpha * self.apply_mass_matrix(
+                s, k - 1, dirichlet=dirichlet),
+            b_upper=v,
+            n_upper=n_upper,
+            n_lower=n_lower,
+            precond_upper=precond_upper,
+            precond_lower=precond_lower,
+            x0_upper=guess,
+            tol=self.tol, maxiter=self.maxiter,
+        )
+        return u
 
     def apply_hodge_laplacian_preconditioner(self, v, k, dirichlet=True):
         """
@@ -1536,7 +1732,7 @@ class DeRhamSequence():
         ep_T = self.e0_dbc_T if dirichlet_p else self.e0_T
         comp_info_0, comp_shapes_0 = self._form_comp_info(0)
         p_jk = evaluate_at_xq(ep_T @ p, comp_info_0, comp_shapes_0,
-                               quad_shape, 1)  # (n_q, 1)
+                              quad_shape, 1)  # (n_q, 1)
 
         # --- evaluate grad(p) at quad points (3 components) ---
         s0 = list(self.basis_0.shape)[0]
@@ -1554,7 +1750,7 @@ class DeRhamSequence():
         eu_T = self.e2_dbc_T if dirichlet_u else self.e2_T
         comp_info_2, comp_shapes_2 = self._form_comp_info(2)
         u_jk = evaluate_at_xq(eu_T @ u, comp_info_2, comp_shapes_2,
-                               quad_shape, 3)  # (n_q, 3)
+                              quad_shape, 3)  # (n_q, 3)
 
         # --- evaluate div_logical(u) at quad points (scalar) ---
         s2 = list(self.basis_2.shape)
@@ -1565,7 +1761,7 @@ class DeRhamSequence():
         ]
         div_comp_shapes = [s2[0], s2[1], s2[2]]
         div_u_jk = evaluate_at_xq(eu_T @ u, div_comp_info, div_comp_shapes,
-                                   quad_shape, 1)  # (n_q, 1)
+                                  quad_shape, 1)  # (n_q, 1)
 
         # --- combine: q = -(grad_p · u) - γ p div_logical(u) ---
         grad_p_dot_u = jnp.sum(grad_p_jk * u_jk, axis=1, keepdims=True)
