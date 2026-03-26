@@ -207,7 +207,8 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
     k_final = final_state[5]
     converged_final = final_state[6]
 
-    info = jnp.where(converged_final, 0, k_final)
+    # info < 0: converged (|info| = iteration count); info > 0: NOT converged
+    info = jnp.where(converged_final, -k_final, k_final)
     return x_final, info
 
 
@@ -258,6 +259,18 @@ def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x,
 
     x, info = preconditioned_cg(A_matvec_safe, b_proj, x0=x0,
                                 M=precond_matvec_safe, tol=tol, maxiter=maxiter)
+
+    # Diagnostics: compute true residual norm
+    r = b_proj - A_matvec_safe(x)
+    rnorm = float(jnp.linalg.norm(r))
+    bnorm = float(jnp.linalg.norm(b_proj))
+    info_val = int(info)
+    n_iters = abs(info_val)
+    converged = info_val <= 0
+    print(f"  [CG] n_dof={b.shape[0]}, iters={n_iters}, converged={converged}, "
+          f"||r||/||b||={rnorm/max(bnorm, 1e-30):.3e}, "
+          f"tol={tol:.1e}, maxiter={maxiter}")
+
     return project_primal(x), info
 
 
