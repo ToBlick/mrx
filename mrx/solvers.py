@@ -1,8 +1,5 @@
-from functools import partial
-
 import jax
 import jax.numpy as jnp
-from jax.scipy.sparse.linalg import cg
 
 
 def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm) -> tuple[jnp.ndarray, float, int]:
@@ -260,17 +257,6 @@ def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x,
     x, info = preconditioned_cg(A_matvec_safe, b_proj, x0=x0,
                                 M=precond_matvec_safe, tol=tol, maxiter=maxiter)
 
-    # Diagnostics: compute true residual norm
-    r = b_proj - A_matvec_safe(x)
-    rnorm = float(jnp.linalg.norm(r))
-    bnorm = float(jnp.linalg.norm(b_proj))
-    info_val = int(info)
-    n_iters = abs(info_val)
-    converged = info_val <= 0
-    print(f"  [CG] n_dof={b.shape[0]}, iters={n_iters}, converged={converged}, "
-          f"||r||/||b||={rnorm/max(bnorm, 1e-30):.3e}, "
-          f"tol={tol:.1e}, maxiter={maxiter}")
-
     return project_primal(x), info
 
 
@@ -359,11 +345,11 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
         y_new = A_matvec(v)
 
         # 2-term recurrence (avoids storing v_{k-1} explicitly)
-        safe_oldbeta = jnp.where(oldbeta > 0, oldbeta, 1.0)
-        y_new = y_new - jnp.where(k >= 1, beta / safe_oldbeta, 0.0) * r1
+        old_beta = jnp.where(oldbeta > 0, oldbeta, 1.0)
+        y_new = y_new - jnp.where(k >= 1, beta / old_beta, 0.0) * r1
 
-        alfa = jnp.dot(v, y_new)
-        y_new = y_new - (alfa / safe_beta) * r2
+        alpha = jnp.dot(v, y_new)
+        y_new = y_new - (alpha / safe_beta) * r2
 
         # Update Lanczos residual tracking
         r1_new = r2
@@ -376,8 +362,8 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
 
         # Apply previous Givens rotation to get QR factorization entries
         oldeps = epsln
-        delta = cs * dbar + sn * alfa
-        gbar = sn * dbar - cs * alfa
+        delta = cs * dbar + sn * alpha
+        gbar = sn * dbar - cs * alpha
         epsln_new = sn * beta_new
         dbar_new = -cs * beta_new
 
@@ -556,4 +542,6 @@ def solve_saddle_point_minres(
     x, info = minres(A_matvec, b, x0=x0, M=precond,
                      tol=tol, maxiter=maxiter)
     u, sigma = unpack(project_primal(x))
+
+    return u, sigma, info
     return u, sigma, info

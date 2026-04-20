@@ -618,3 +618,603 @@ def assemble_dense_hodge_laplacian(seq, k, dirichlet=True):
             M2 = e2.todense() @ seq.m2_sp.todense() @ e2_T.todense()
             # Schur: D2 @ M2^{-1} @ D2^T
             return D2 @ jnp.linalg.solve(M2, D2.T)
+
+
+# ---------------------------------------------------------------------------
+# Helper
+# ---------------------------------------------------------------------------
+
+def grad_1d(d_basis, boundary_type):
+    """Compute gradient basis from derivative spline: dΛ(i-1) - dΛ(i)."""
+    if boundary_type == 'clamped':
+        padded = jnp.pad(d_basis, ((1, 1), (0, 0)))
+        return padded[:-1] - padded[1:]
+    else:  # periodic
+        return jnp.roll(d_basis, 1, axis=0) - d_basis
+
+
+# ---------------------------------------------------------------------------
+# Element-wise basis evaluation at quadrature points
+# ---------------------------------------------------------------------------
+
+def eval_basis_0_ijk(seq, i, j, k):
+    """Get the kth component of the ith 0-form evaluated at quadrature point j."""
+    j2, j1, j3 = jnp.unravel_index(
+        j, (seq.quad.ny, seq.quad.nx, seq.quad.nz))
+    _, i1, i2, i3 = seq.basis_0._unravel_index(i)
+    return seq.basis_r_jk[i1, j1] * seq.basis_t_jk[i2, j2] * seq.basis_z_jk[i3, j3]
+
+
+def eval_d_basis_0_ijk(seq, i, j, k):
+    """Get the kth component of the gradient of the ith 0-form evaluated at quadrature point j."""
+    j2, j1, j3 = jnp.unravel_index(
+        j, (seq.quad.ny, seq.quad.nx, seq.quad.nz))
+    _, i1, i2, i3 = seq.basis_0._unravel_index(i)
+    dr = jnp.where(i1 == seq.basis_0.nt-1, 0.0,
+                   seq.d_basis_r_jk[i1, j1])
+    dr_m1 = jnp.where(i1 > 0, seq.d_basis_r_jk[i1-1, j1], 0.0)
+    dtheta_m1 = jnp.where(
+        i2 > 0, seq.d_basis_t_jk[i2-1, j2], seq.d_basis_t_jk[seq.basis_0.nt-1, j2])
+    dtheta = seq.d_basis_t_jk[i2, j2]
+    dz_m1 = jnp.where(
+        i3 > 0, seq.d_basis_z_jk[i3-1, j3], seq.d_basis_z_jk[seq.basis_0.nt-1, j3])
+    dz = seq.d_basis_z_jk[i3, j3]
+    return jnp.array([
+        (dr_m1 - dr) * seq.basis_t_jk[i2, j2] * seq.basis_z_jk[i3, j3],
+        seq.basis_r_jk[i1, j1] *
+        (dtheta_m1 - dtheta) * seq.basis_z_jk[i3, j3],
+        seq.basis_r_jk[i1, j1] * seq.basis_t_jk[i2, j2] * (dz_m1 - dz)
+    ])[k]
+
+
+def eval_basis_1_ijk(seq, i, j, k):
+    """Get the kth component of the ith 1-form evaluated at quadrature point j."""
+    j2, j1, j3 = jnp.unravel_index(
+        j, (seq.quad.ny, seq.quad.nx, seq.quad.nz))
+    c, i1, i2, i3 = seq.basis_1._unravel_index(i)
+    components = jnp.array([
+        seq.d_basis_r_jk[i1, j1] *
+        seq.basis_t_jk[i2, j2] * seq.basis_z_jk[i3, j3],
+        seq.basis_r_jk[i1, j1] * seq.d_basis_t_jk[i2,
+                                                  j2] * seq.basis_z_jk[i3, j3],
+        seq.basis_r_jk[i1, j1] *
+        seq.basis_t_jk[i2, j2] * seq.d_basis_z_jk[i3, j3]
+    ])
+    return jnp.where(k == c, components[c], 0.0)
+
+
+def eval_d_basis_1_ijk(seq, i, j, k):
+    """Get the kth component of the curl of the ith 1-form evaluated at quadrature point j."""
+    j2, j1, j3 = jnp.unravel_index(
+        j, (seq.quad.ny, seq.quad.nx, seq.quad.nz))
+    c, i1, i2, i3 = seq.basis_1._unravel_index(i)
+    dr = jnp.where(i1 == seq.basis_1.nt-1, 0.0,
+                   seq.d_basis_r_jk[i1, j1])
+    dr_m1 = jnp.where(i1 > 0, seq.d_basis_r_jk[i1-1, j1], 0.0)
+    dtheta_m1 = jnp.where(
+        i2 > 0, seq.d_basis_t_jk[i2-1, j2], seq.d_basis_t_jk[seq.basis_1.nt-1, j2])
+    dtheta = seq.d_basis_t_jk[i2, j2]
+    dz_m1 = jnp.where(
+        i3 > 0, seq.d_basis_z_jk[i3-1, j3], seq.d_basis_z_jk[seq.basis_1.nt-1, j3])
+    dz = seq.d_basis_z_jk[i3, j3]
+    d3dy = seq.basis_r_jk[i1, j1] * \
+        (dtheta_m1 - dtheta) * seq.d_basis_z_jk[i3, j3]
+    d2dz = seq.basis_r_jk[i1, j1] * \
+        seq.d_basis_t_jk[i2, j2] * (dz_m1 - dz)
+    d1dz = seq.d_basis_r_jk[i1, j1] * \
+        seq.basis_t_jk[i2, j2] * (dz_m1 - dz)
+    d3dx = (dr_m1 - dr) * \
+        seq.basis_t_jk[i2, j2] * seq.d_basis_z_jk[i3, j3]
+    d2dx = (dr_m1 - dr) * \
+        seq.d_basis_t_jk[i2, j2] * seq.basis_z_jk[i3, j3]
+    d1dy = seq.d_basis_r_jk[i1, j1] * \
+        (dtheta_m1 - dtheta) * seq.basis_z_jk[i3, j3]
+
+    curl_matrix = jnp.array([
+        [0.0,    d1dz,  -d1dy],
+        [-d2dz,  0.0,    d2dx],
+        [d3dy,  -d3dx,   0.0]
+    ])
+    return curl_matrix[c, k]
+
+
+def eval_basis_2_ijk(seq, i, j, k):
+    """Get the kth component of the ith 2-form evaluated at quadrature point j."""
+    j2, j1, j3 = jnp.unravel_index(
+        j, (seq.quad.ny, seq.quad.nx, seq.quad.nz))
+    c, i1, i2, i3 = seq.basis_2._unravel_index(i)
+    components = jnp.array([
+        seq.basis_r_jk[i1, j1] * seq.d_basis_t_jk[i2,
+                                                  j2] * seq.d_basis_z_jk[i3, j3],
+        seq.d_basis_r_jk[i1, j1] * seq.basis_t_jk[i2,
+                                                  j2] * seq.d_basis_z_jk[i3, j3],
+        seq.d_basis_r_jk[i1, j1] *
+        seq.d_basis_t_jk[i2, j2] * seq.basis_z_jk[i3, j3]
+    ])
+    return jnp.where(k == c, components[c], 0.0)
+
+
+def eval_d_basis_2_ijk(seq, i, j, k):
+    """Get the kth component of the divergence of the ith 2-form evaluated at quadrature point j."""
+    j2, j1, j3 = jnp.unravel_index(
+        j, (seq.quad.ny, seq.quad.nx, seq.quad.nz))
+    c, i1, i2, i3 = seq.basis_2._unravel_index(i)
+    dr = jnp.where(i1 == seq.basis_2.nt-1, 0.0,
+                   seq.d_basis_r_jk[i1, j1])
+    dr_m1 = jnp.where(i1 > 0, seq.d_basis_r_jk[i1-1, j1], 0.0)
+    dtheta_m1 = jnp.where(
+        i2 > 0, seq.d_basis_t_jk[i2-1, j2], seq.d_basis_t_jk[seq.basis_2.nt-1, j2])
+    dtheta = seq.d_basis_t_jk[i2, j2]
+    dz_m1 = jnp.where(
+        i3 > 0, seq.d_basis_z_jk[i3-1, j3], seq.d_basis_z_jk[seq.basis_2.nt-1, j3])
+    dz = seq.d_basis_z_jk[i3, j3]
+
+    return jnp.array([
+        (dr_m1 - dr) * seq.d_basis_t_jk[i2,
+                                        j2] * seq.d_basis_z_jk[i3, j3],
+        seq.d_basis_r_jk[i1, j1] *
+        (dtheta_m1 - dtheta) * seq.d_basis_z_jk[i3, j3],
+        seq.d_basis_r_jk[i1, j1] *
+        seq.d_basis_t_jk[i2, j2] * (dz_m1 - dz)
+    ])[c]
+
+
+def eval_basis_3_ijk(seq, i, j, k):
+    """Get the kth component of the ith 3-form evaluated at quadrature point j."""
+    j2, j1, j3 = jnp.unravel_index(
+        j, (seq.quad.ny, seq.quad.nx, seq.quad.nz))
+    _, i1, i2, i3 = seq.basis_3._unravel_index(i)
+    return seq.d_basis_r_jk[i1, j1] * seq.d_basis_t_jk[i2, j2] * seq.d_basis_z_jk[i3, j3]
+
+
+# ---------------------------------------------------------------------------
+# Deprecated assembly (element-wise quadrature)
+# ---------------------------------------------------------------------------
+
+def assemble_mass_matrix_deprecated(seq, k):
+    """Assemble the sparse mass matrix Mk for k-forms (deprecated)."""
+    match k:
+        case 0:
+            W = (seq.jacobian_j * seq.quad.w)[:, None, None]
+            neighbors, nnz = build_neighbors(seq.basis_0)
+            sp = assemble_sparse(
+                seq.eval_basis_0_ijk, seq.eval_basis_0_ijk, W,
+                seq.basis_0.n, seq.basis_0.n, nnz, neighbors)
+            seq.m0_sp_diaginv = jnp.ones(seq.n0)
+            seq.m0_sp_diaginv_dbc = jnp.ones(seq.n0_dbc)
+            seq.m0_sp = jsparse.BCSR.from_bcoo(sp)
+        case 1:
+            W = seq.metric_inv_jkl * \
+                (seq.jacobian_j * seq.quad.w)[:, None, None]
+            neighbors, nnz = build_neighbors(seq.basis_1)
+            sp = assemble_sparse(
+                seq.eval_basis_1_ijk, seq.eval_basis_1_ijk, W,
+                seq.basis_1.n, seq.basis_1.n, nnz, neighbors)
+            seq.m1_sp_diaginv = jnp.ones(seq.n1)
+            seq.m1_sp_diaginv_dbc = jnp.ones(seq.n1_dbc)
+            seq.m1_sp = jsparse.BCSR.from_bcoo(sp)
+        case 2:
+            W = seq.metric_jkl * \
+                (1/seq.jacobian_j * seq.quad.w)[:, None, None]
+            neighbors, nnz = build_neighbors(seq.basis_2)
+            sp = assemble_sparse(
+                seq.eval_basis_2_ijk, seq.eval_basis_2_ijk, W,
+                seq.basis_2.n, seq.basis_2.n, nnz, neighbors)
+            seq.m2_sp_diaginv = jnp.ones(seq.n2)
+            seq.m2_sp_diaginv_dbc = jnp.ones(seq.n2_dbc)
+            seq.m2_sp = jsparse.BCSR.from_bcoo(sp)
+        case 3:
+            W = (1/seq.jacobian_j * seq.quad.w)[:, None, None]
+            neighbors, nnz = build_neighbors(seq.basis_3)
+            sp = assemble_sparse(
+                seq.eval_basis_3_ijk, seq.eval_basis_3_ijk, W,
+                seq.basis_3.n, seq.basis_3.n, nnz, neighbors)
+            seq.m3_sp_diaginv = jnp.ones(seq.n3)
+            seq.m3_sp_diaginv_dbc = jnp.ones(seq.n3_dbc)
+            seq.m3_sp = jsparse.BCSR.from_bcoo(sp)
+        case _:
+            raise ValueError("k must be 0, 1, 2 or 3")
+
+
+def assemble_projection_matrix_deprecated(seq, k_from, k_to):
+    """Assemble the sparse projection matrix (deprecated)."""
+    match (k_from, k_to):
+        case (2, 1) | (1, 2):
+            W = seq.quad.w[:, None, None] * jnp.eye(3)
+            neighbors, nnz = build_neighbors(seq.basis_1, seq.basis_2)
+            seq.m12_sp = jsparse.BCSR.from_bcoo(assemble_sparse(
+                seq.eval_basis_1_ijk, seq.eval_basis_2_ijk, W,
+                seq.basis_1.n, seq.basis_2.n, nnz, neighbors))
+        case (3, 0) | (0, 3):
+            W = seq.quad.w[:, None, None]
+            neighbors, nnz = build_neighbors(seq.basis_0, seq.basis_3)
+            seq.m03_sp = jsparse.BCSR.from_bcoo(assemble_sparse(
+                seq.eval_basis_0_ijk, seq.eval_basis_3_ijk, W,
+                seq.basis_0.n, seq.basis_3.n, nnz, neighbors))
+        case _:
+            raise ValueError(
+                "Only (k_from, k_to) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
+
+
+def assemble_derivative_matrix_deprecated(seq, k):
+    """Assemble the sparse exterior derivative matrix Dk (deprecated)."""
+    match k:
+        case 0:
+            W = seq.metric_inv_jkl * \
+                (seq.jacobian_j * seq.quad.w)[:, None, None]
+            neighbors, nnz = build_neighbors(seq.basis_1, seq.basis_0)
+            sp = assemble_sparse(
+                seq.eval_basis_1_ijk, seq.eval_d_basis_0_ijk, W,
+                seq.basis_1.n, seq.basis_0.n, nnz, neighbors)
+            seq.d0_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.d0_sp_T = jsparse.BCSR.from_bcoo(sp.T)
+        case 1:
+            W = seq.metric_jkl * \
+                (1/seq.jacobian_j * seq.quad.w)[:, None, None]
+            neighbors, nnz = build_neighbors(seq.basis_2, seq.basis_1)
+            sp = assemble_sparse(
+                seq.eval_basis_2_ijk, seq.eval_d_basis_1_ijk, W,
+                seq.basis_2.n, seq.basis_1.n, nnz, neighbors)
+            seq.d1_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.d1_sp_T = jsparse.BCSR.from_bcoo(sp.T)
+        case 2:
+            W = (1/seq.jacobian_j * seq.quad.w)[:, None, None]
+            neighbors, nnz = build_neighbors(seq.basis_3, seq.basis_2)
+            sp = assemble_sparse(
+                seq.eval_basis_3_ijk, seq.eval_d_basis_2_ijk, W,
+                seq.basis_3.n, seq.basis_2.n, nnz, neighbors)
+            seq.d2_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.d2_sp_T = jsparse.BCSR.from_bcoo(sp.T)
+        case _:
+            raise ValueError("k must be 0, 1 or 2")
+
+
+def assemble_hodge_laplacian_deprecated(seq, k):
+    """Assemble the stiffness matrix and Jacobi preconditioner (deprecated)."""
+    match k:
+        case 0:
+            W = seq.metric_inv_jkl * \
+                (seq.jacobian_j * seq.quad.w)[:, None, None]
+            neighbors, nnz = build_neighbors(seq.basis_0)
+            sp = assemble_sparse(
+                seq.eval_d_basis_0_ijk, seq.eval_d_basis_0_ijk,
+                W, seq.basis_0.n, seq.basis_0.n, nnz, neighbors)
+            seq.dd0_sp_diaginv = jnp.ones(seq.n0)
+            seq.dd0_sp_diaginv_dbc = jnp.ones(seq.n0_dbc)
+            seq.grad_grad_sp = jsparse.BCSR.from_bcoo(sp)
+        case 1:
+            W = seq.metric_jkl * \
+                (1/seq.jacobian_j * seq.quad.w)[:, None, None]
+            neighbors, nnz = build_neighbors(seq.basis_1)
+            sp = assemble_sparse(
+                seq.eval_d_basis_1_ijk, seq.eval_d_basis_1_ijk,
+                W, seq.basis_1.n, seq.basis_1.n, nnz, neighbors)
+            seq.dd1_sp_diaginv = jnp.ones(seq.n1)
+            seq.dd1_sp_diaginv_dbc = jnp.ones(seq.n1_dbc)
+            seq.curl_curl_sp = jsparse.BCSR.from_bcoo(sp)
+        case 2:
+            W = (1/seq.jacobian_j * seq.quad.w)[:, None, None]
+            neighbors, nnz = build_neighbors(seq.basis_2)
+            sp = assemble_sparse(
+                seq.eval_d_basis_2_ijk, seq.eval_d_basis_2_ijk,
+                W, seq.basis_2.n, seq.basis_2.n, nnz, neighbors)
+            seq.dd2_sp_diaginv = jnp.ones(seq.n2)
+            seq.dd2_sp_diaginv_dbc = jnp.ones(seq.n2_dbc)
+            seq.div_div_sp = jsparse.BCSR.from_bcoo(sp)
+        case 3:
+            seq.dd3_sp_diaginv = jnp.ones(seq.n3)
+            seq.dd3_sp_diaginv_dbc = jnp.ones(seq.n3_dbc)
+        case _:
+            raise ValueError("k must be 0, 1, 2 or 3")
+
+
+# ---------------------------------------------------------------------------
+# Tensor-product assembly (current)
+# ---------------------------------------------------------------------------
+
+def assemble_mass_matrix(seq, k):
+    """Assemble the mass matrix using tensor-product contraction."""
+    from mrx.utils import diag_EAET
+    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    match k:
+        case 0:
+            W_flat = seq.jacobian_j * seq.quad.w
+            sp = assemble_scalar_tp(
+                seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk,
+                seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk,
+                W_flat, quad_shape, seq.basis_0.shape[0],
+                seq.basis_0.pr, seq.basis_0.pt, seq.basis_0.pz)
+            seq.m0_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.m0_sp_diaginv = 1.0 / \
+                diag_EAET(seq.e0, seq.m0_sp, seq.e0_T)
+            seq.m0_sp_diaginv_dbc = 1.0 / \
+                diag_EAET(seq.e0_dbc, seq.m0_sp, seq.e0_dbc_T)
+        case 1:
+            W_3x3 = seq.metric_inv_jkl * \
+                (seq.jacobian_j * seq.quad.w)[:, None, None]
+            terms = [
+                [(0, seq.d_basis_r_jk, seq.basis_t_jk, seq.basis_z_jk, +1)],
+                [(1, seq.basis_r_jk, seq.d_basis_t_jk, seq.basis_z_jk, +1)],
+                [(2, seq.basis_r_jk, seq.basis_t_jk, seq.d_basis_z_jk, +1)],
+            ]
+            sp = assemble_vectorial_tp(
+                terms, terms, W_3x3, quad_shape,
+                list(seq.basis_1.shape),
+                seq.basis_1.pr)
+            seq.m1_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.m1_sp_diaginv = 1.0 / \
+                diag_EAET(seq.e1, seq.m1_sp, seq.e1_T)
+            seq.m1_sp_diaginv_dbc = 1.0 / \
+                diag_EAET(seq.e1_dbc, seq.m1_sp, seq.e1_dbc_T)
+        case 2:
+            W_3x3 = seq.metric_jkl * \
+                (1 / seq.jacobian_j * seq.quad.w)[:, None, None]
+            terms = [
+                [(0, seq.basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk, +1)],
+                [(1, seq.d_basis_r_jk, seq.basis_t_jk, seq.d_basis_z_jk, +1)],
+                [(2, seq.d_basis_r_jk, seq.d_basis_t_jk, seq.basis_z_jk, +1)],
+            ]
+            sp = assemble_vectorial_tp(
+                terms, terms, W_3x3, quad_shape,
+                list(seq.basis_2.shape),
+                seq.basis_2.pr)
+            seq.m2_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.m2_sp_diaginv = 1.0 / \
+                diag_EAET(seq.e2, seq.m2_sp, seq.e2_T)
+            seq.m2_sp_diaginv_dbc = 1.0 / \
+                diag_EAET(seq.e2_dbc, seq.m2_sp, seq.e2_dbc_T)
+        case 3:
+            W_flat = (1 / seq.jacobian_j) * seq.quad.w
+            sp = assemble_scalar_tp(
+                seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk,
+                seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk,
+                W_flat, quad_shape, seq.basis_3.shape[0],
+                seq.basis_3.pr, seq.basis_3.pt, seq.basis_3.pz)
+            seq.m3_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.m3_sp_diaginv = 1.0 / \
+                diag_EAET(seq.e3, seq.m3_sp, seq.e3_T)
+            seq.m3_sp_diaginv_dbc = 1.0 / \
+                diag_EAET(seq.e3_dbc, seq.m3_sp, seq.e3_dbc_T)
+        case _:
+            raise ValueError(
+                "Tensor-product assembly supports k=0, 1, 2, 3")
+
+
+def assemble_projection_matrix(seq, k_from, k_to):
+    """Assemble the projection matrix using tensor-product contraction."""
+    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    dR = seq.d_basis_r_jk
+    dT = seq.d_basis_t_jk
+    dZ = seq.d_basis_z_jk
+    R = seq.basis_r_jk
+    T = seq.basis_t_jk
+    Z = seq.basis_z_jk
+    match (k_from, k_to):
+        case (2, 1) | (1, 2):
+            W_3x3 = seq.quad.w[:, None, None] * jnp.eye(3)
+            row_terms = [
+                [(0, dR, T, Z, +1)],
+                [(1, R, dT, Z, +1)],
+                [(2, R, T, dZ, +1)],
+            ]
+            col_terms = [
+                [(0, R, dT, dZ, +1)],
+                [(1, dR, T, dZ, +1)],
+                [(2, dR, dT, Z, +1)],
+            ]
+            sp = assemble_vectorial_tp(
+                row_terms, col_terms, W_3x3, quad_shape,
+                list(seq.basis_1.shape), seq.basis_1.pr,
+                col_comp_shapes=list(seq.basis_2.shape))
+            seq.m12_sp = jsparse.BCSR.from_bcoo(sp)
+        case (3, 0) | (0, 3):
+            W_1x1 = seq.quad.w.reshape(-1, 1, 1)
+            row_terms = [
+                [(0, R, T, Z, +1)],
+            ]
+            col_terms = [
+                [(0, dR, dT, dZ, +1)],
+            ]
+            sp = assemble_vectorial_tp(
+                row_terms, col_terms, W_1x1, quad_shape,
+                list(seq.basis_0.shape), seq.basis_0.pr,
+                col_comp_shapes=list(seq.basis_3.shape))
+            seq.m03_sp = jsparse.BCSR.from_bcoo(sp)
+        case _:
+            raise ValueError(
+                "Only (k_from, k_to) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
+
+
+def assemble_derivative_matrix(seq, k):
+    """Assemble the exterior derivative matrix using tensor-product contraction."""
+    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    types = seq.basis_0.types
+    gr = grad_1d(seq.d_basis_r_jk, types[0])
+    gt = grad_1d(seq.d_basis_t_jk, types[1])
+    gz = grad_1d(seq.d_basis_z_jk, types[2])
+    match k:
+        case 0:
+            W_3x3 = seq.metric_inv_jkl * \
+                (seq.jacobian_j * seq.quad.w)[:, None, None]
+            row_terms = [
+                [(0, seq.d_basis_r_jk, seq.basis_t_jk, seq.basis_z_jk, +1)],
+                [(1, seq.basis_r_jk, seq.d_basis_t_jk, seq.basis_z_jk, +1)],
+                [(2, seq.basis_r_jk, seq.basis_t_jk, seq.d_basis_z_jk, +1)],
+            ]
+            col_terms = [
+                [(0, gr, seq.basis_t_jk, seq.basis_z_jk, +1),
+                 (1, seq.basis_r_jk, gt, seq.basis_z_jk, +1),
+                 (2, seq.basis_r_jk, seq.basis_t_jk, gz, +1)],
+            ]
+            sp = assemble_vectorial_tp(
+                row_terms, col_terms, W_3x3, quad_shape,
+                list(seq.basis_1.shape), seq.basis_1.pr,
+                col_comp_shapes=list(seq.basis_0.shape))
+            seq.d0_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.d0_sp_T = jsparse.BCSR.from_bcoo(sp.T)
+        case 1:
+            W_3x3 = seq.metric_jkl * \
+                (1 / seq.jacobian_j * seq.quad.w)[:, None, None]
+            dR = seq.d_basis_r_jk
+            dT = seq.d_basis_t_jk
+            dZ = seq.d_basis_z_jk
+            R = seq.basis_r_jk
+            T = seq.basis_t_jk
+            Z = seq.basis_z_jk
+            row_terms = [
+                [(0, R, dT, dZ, +1)],
+                [(1, dR, T, dZ, +1)],
+                [(2, dR, dT, Z, +1)],
+            ]
+            col_terms = [
+                [(1, dR, T, gz, +1),
+                 (2, dR, gt, Z, -1)],
+                [(0, R, dT, gz, -1),
+                 (2, gr, dT, Z, +1)],
+                [(0, R, gt, dZ, +1),
+                 (1, gr, T, dZ, -1)],
+            ]
+            sp = assemble_vectorial_tp(
+                row_terms, col_terms, W_3x3, quad_shape,
+                list(seq.basis_2.shape), seq.basis_2.pr,
+                col_comp_shapes=list(seq.basis_1.shape))
+            seq.d1_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.d1_sp_T = jsparse.BCSR.from_bcoo(sp.T)
+        case 2:
+            W_scalar = (1 / seq.jacobian_j) * seq.quad.w
+            W_1x1 = W_scalar.reshape(-1, 1, 1)
+            dR = seq.d_basis_r_jk
+            dT = seq.d_basis_t_jk
+            dZ = seq.d_basis_z_jk
+            row_terms = [
+                [(0, dR, dT, dZ, +1)],
+            ]
+            col_terms = [
+                [(0, gr, dT, dZ, +1)],
+                [(0, dR, gt, dZ, +1)],
+                [(0, dR, dT, gz, +1)],
+            ]
+            sp = assemble_vectorial_tp(
+                row_terms, col_terms, W_1x1, quad_shape,
+                list(seq.basis_3.shape), seq.basis_3.pr,
+                col_comp_shapes=list(seq.basis_2.shape))
+            seq.d2_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.d2_sp_T = jsparse.BCSR.from_bcoo(sp.T)
+        case _:
+            raise ValueError(
+                "Tensor-product derivative assembly supports k=0, 1, 2")
+
+
+def assemble_hodge_laplacian(seq, k):
+    """Assemble the stiffness matrix (δd) using tensor-product contraction."""
+    from mrx.utils import diag_EAET, diag_schur_complement
+    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    types = seq.basis_0.types
+    gr = grad_1d(seq.d_basis_r_jk, types[0])
+    gt = grad_1d(seq.d_basis_t_jk, types[1])
+    gz = grad_1d(seq.d_basis_z_jk, types[2])
+    match k:
+        case 0:
+            W_3x3 = seq.metric_inv_jkl * \
+                (seq.jacobian_j * seq.quad.w)[:, None, None]
+            grad_basis_1d = [
+                (gr, seq.basis_t_jk, seq.basis_z_jk),
+                (seq.basis_r_jk, gt, seq.basis_z_jk),
+                (seq.basis_r_jk, seq.basis_t_jk, gz),
+            ]
+            sp = assemble_stiffness_scalar_tp(
+                grad_basis_1d, grad_basis_1d, W_3x3, quad_shape,
+                seq.basis_0.shape[0],
+                seq.basis_0.pr, seq.basis_0.pt, seq.basis_0.pz)
+            seq.grad_grad_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.dd0_sp_diaginv = 1.0 / \
+                diag_EAET(seq.e0, seq.grad_grad_sp, seq.e0_T)
+            seq.dd0_sp_diaginv_dbc = 1.0 / \
+                diag_EAET(seq.e0_dbc, seq.grad_grad_sp, seq.e0_dbc_T)
+        case 1:
+            W_3x3 = seq.metric_jkl * \
+                (1 / seq.jacobian_j * seq.quad.w)[:, None, None]
+            dR = seq.d_basis_r_jk
+            dT = seq.d_basis_t_jk
+            dZ = seq.d_basis_z_jk
+            R = seq.basis_r_jk
+            T = seq.basis_t_jk
+            Z = seq.basis_z_jk
+            curl_terms = [
+                [(1, dR, T, gz, +1),
+                 (2, dR, gt, Z, -1)],
+                [(0, R, dT, gz, -1),
+                 (2, gr, dT, Z, +1)],
+                [(0, R, gt, dZ, +1),
+                 (1, gr, T, dZ, -1)],
+            ]
+            sp = assemble_vectorial_tp(
+                curl_terms, curl_terms, W_3x3, quad_shape,
+                list(seq.basis_1.shape), seq.basis_1.pr)
+            seq.curl_curl_sp = jsparse.BCSR.from_bcoo(sp)
+            d_stiff = diag_EAET(seq.e1, seq.curl_curl_sp, seq.e1_T)
+            d_schur = diag_schur_complement(
+                lambda v: seq.e0 @ (seq.d0_sp_T @ (seq.e1_T @ v)),
+                seq.m0_sp_diaginv, seq.n1)
+            seq.dd1_sp_diaginv = 1.0 / (d_stiff + d_schur)
+            d_stiff_dbc = diag_EAET(
+                seq.e1_dbc, seq.curl_curl_sp, seq.e1_dbc_T)
+            d_schur_dbc = diag_schur_complement(
+                lambda v: seq.e0_dbc @ (seq.d0_sp_T @
+                                        (seq.e1_dbc_T @ v)),
+                seq.m0_sp_diaginv_dbc, seq.n1_dbc)
+            seq.dd1_sp_diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
+        case 2:
+            W_scalar = (1 / seq.jacobian_j) * seq.quad.w
+            W_3x3 = W_scalar[:, None, None] * jnp.ones((1, 3, 3))
+            div_terms = [
+                [(0, gr, seq.d_basis_t_jk, seq.d_basis_z_jk, +1)],
+                [(1, seq.d_basis_r_jk, gt, seq.d_basis_z_jk, +1)],
+                [(2, seq.d_basis_r_jk, seq.d_basis_t_jk, gz, +1)],
+            ]
+            sp = assemble_vectorial_tp(
+                div_terms, div_terms, W_3x3, quad_shape,
+                list(seq.basis_2.shape), seq.basis_2.pr)
+            seq.div_div_sp = jsparse.BCSR.from_bcoo(sp)
+            d_stiff = diag_EAET(seq.e2, seq.div_div_sp, seq.e2_T)
+            d_schur = diag_schur_complement(
+                lambda v: seq.e1 @ (seq.d1_sp_T @ (seq.e2_T @ v)),
+                seq.m1_sp_diaginv, seq.n2)
+            seq.dd2_sp_diaginv = 1.0 / (d_stiff + d_schur)
+            d_stiff_dbc = diag_EAET(
+                seq.e2_dbc, seq.div_div_sp, seq.e2_dbc_T)
+            d_schur_dbc = diag_schur_complement(
+                lambda v: seq.e1_dbc @ (seq.d1_sp_T @
+                                        (seq.e2_dbc_T @ v)),
+                seq.m1_sp_diaginv_dbc, seq.n2_dbc)
+            seq.dd2_sp_diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
+        case 3:
+            d_schur = diag_schur_complement(
+                lambda v: seq.e2 @ (seq.d2_sp_T @ (seq.e3_T @ v)),
+                seq.m2_sp_diaginv, seq.n3)
+            seq.dd3_sp_diaginv = 1.0 / d_schur
+            d_schur_dbc = diag_schur_complement(
+                lambda v: seq.e2_dbc @ (seq.d2_sp_T @
+                                        (seq.e3_dbc_T @ v)),
+                seq.m2_sp_diaginv_dbc, seq.n3_dbc)
+            seq.dd3_sp_diaginv_dbc = 1.0 / d_schur_dbc
+        case _:
+            raise ValueError("k must be 0, 1, 2, or 3")
+
+
+def assemble_leray_projection(seq):
+    """Assemble the Leray projection matrix."""
+    seq.P_Leray = jnp.eye(seq.m2.shape[0]) + \
+        seq.weak_grad @ jnp.linalg.pinv(seq.dd3) @ seq.strong_div
+
+
+def assemble_all_sparse(seq):
+    """Assemble all the matrices and operators in sparse format."""
+    for k in range(4):
+        assemble_mass_matrix(seq, k)
+    for k in range(3):
+        assemble_derivative_matrix(seq, k)
+    for k in range(4):
+        assemble_hodge_laplacian(seq, k)
+    for k_from, k_to in [(2, 1), (3, 0)]:
+        assemble_projection_matrix(seq, k_from, k_to)

@@ -6,15 +6,27 @@ import jax.numpy as jnp
 from jax.scipy.sparse.linalg import cg
 
 import mrx
-from mrx.assembly import assemble_sparse, build_neighbors
+from mrx.assembly import (assemble_all_sparse, assemble_derivative_matrix,
+                          assemble_derivative_matrix_deprecated,
+                          assemble_hodge_laplacian,
+                          assemble_hodge_laplacian_deprecated,
+                          assemble_leray_projection, assemble_mass_matrix,
+                          assemble_mass_matrix_deprecated,
+                          assemble_projection_matrix,
+                          assemble_projection_matrix_deprecated,
+                          eval_basis_0_ijk, eval_basis_1_ijk, eval_basis_2_ijk,
+                          eval_basis_3_ijk, eval_d_basis_0_ijk,
+                          eval_d_basis_1_ijk, eval_d_basis_2_ijk, grad_1d)
 from mrx.differential_forms import DifferentialForm
 from mrx.extraction_operators import (BoundaryOperator,
                                       PolarExtractionOperator, get_xi)
+from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
+                           find_nullspace_vectors, get_nullspace,
+                           get_saddle_point_nullspaces)
 from mrx.projectors import Projector
 from mrx.quadrature import QuadratureRule
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
-from mrx.utils import (diag_EAET, diag_schur_complement,
-                       evaluate_at_xq_deprecated, extract_diag_vector,
+from mrx.utils import (evaluate_at_xq_deprecated, extract_diag_vector,
                        integrate_against_deprecated, inv33,
                        jacobian_determinant, square_sparse)
 
@@ -225,208 +237,25 @@ class DeRhamSequence():
                 raise ValueError("k must be 0, 1, 2, or 3")
 
     def eval_basis_0_ijk(self, i, j, k):
-        """
-        Get the kth component of the ith 0-form evaluated at quadrature point j.
-
-        Args:
-            i (int): The index of the basis function.
-            j (int): The index of the quadrature point.
-            k (int): The index of the component.
-
-        Returns:
-            float: The value of the kth component of the ith 0-form evaluated at quadrature point j.
-        """
-        # get 1d quadrature points
-        # weird order here is due to meshgrid's indexing
-        j2, j1, j3 = jnp.unravel_index(
-            j, (self.quad.ny, self.quad.nx, self.quad.nz))
-
-        # get the 1d basis functions
-        _, i1, i2, i3 = self.basis_0._unravel_index(i)
-        # k is always 0
-        return self.basis_r_jk[i1, j1] * self.basis_t_jk[i2, j2] * self.basis_z_jk[i3, j3]
+        return eval_basis_0_ijk(self, i, j, k)
 
     def eval_d_basis_0_ijk(self, i, j, k):
-        """
-        Get the kth component of the gradient of the ith 0-form evaluated at quadrature point j.
-
-        Args:
-            i (int): The index of the basis function.
-            j (int): The index of the quadrature point.
-            k (int): The index of the component.
-
-        Returns:
-            float: The value of the kth component of the gradient of the ith 0-form evaluated at quadrature point j.
-        """
-        # kth component of gradient of 0 form i evaluated at quadrature point j.
-        j2, j1, j3 = jnp.unravel_index(
-            j, (self.quad.ny, self.quad.nx, self.quad.nz))
-        _, i1, i2, i3 = self.basis_0._unravel_index(i)
-        # get i-1
-        dr = jnp.where(i1 == self.basis_0.nt-1, 0.0,
-                       self.d_basis_r_jk[i1, j1])
-        dr_m1 = jnp.where(i1 > 0, self.d_basis_r_jk[i1-1, j1], 0.0)
-        dtheta_m1 = jnp.where(
-            i2 > 0, self.d_basis_t_jk[i2-1, j2], self.d_basis_t_jk[self.basis_0.nt-1, j2])
-        dtheta = self.d_basis_t_jk[i2, j2]
-        dz_m1 = jnp.where(
-            i3 > 0, self.d_basis_z_jk[i3-1, j3], self.d_basis_z_jk[self.basis_0.nt-1, j3])
-        dz = self.d_basis_z_jk[i3, j3]
-        return jnp.array([
-            (dr_m1 - dr) * self.basis_t_jk[i2, j2] * self.basis_z_jk[i3, j3],
-            self.basis_r_jk[i1, j1] *
-            (dtheta_m1 - dtheta) * self.basis_z_jk[i3, j3],
-            self.basis_r_jk[i1, j1] * self.basis_t_jk[i2, j2] * (dz_m1 - dz)
-        ])[k]
+        return eval_d_basis_0_ijk(self, i, j, k)
 
     def eval_basis_1_ijk(self, i, j, k):
-        """
-        Get the kth component of the ith 1-form evaluated at quadrature point j.
-
-        Args:
-            i (int): The index of the basis function.
-            j (int): The index of the quadrature point.
-            k (int): The index of the component.
-
-        Returns:
-            float: The value of the kth component of the ith 1-form evaluated at quadrature point j.
-        """
-        # kth component of 1 form i evaluated at quadrature point j.
-        j2, j1, j3 = jnp.unravel_index(
-            j, (self.quad.ny, self.quad.nx, self.quad.nz))
-        c, i1, i2, i3 = self.basis_1._unravel_index(i)
-        components = jnp.array([
-            self.d_basis_r_jk[i1, j1] *
-            self.basis_t_jk[i2, j2] * self.basis_z_jk[i3, j3],
-            self.basis_r_jk[i1, j1] * self.d_basis_t_jk[i2,
-                                                        j2] * self.basis_z_jk[i3, j3],
-            self.basis_r_jk[i1, j1] *
-            self.basis_t_jk[i2, j2] * self.d_basis_z_jk[i3, j3]
-        ])
-        return jnp.where(k == c, components[c], 0.0)
+        return eval_basis_1_ijk(self, i, j, k)
 
     def eval_d_basis_1_ijk(self, i, j, k):
-        """
-        Get the kth component of the curl of the ith 1-form evaluated at quadrature point j.
-
-        Args:
-            i (int): The index of the basis function.
-            j (int): The index of the quadrature point.
-            k (int): The index of the component.
-
-        Returns:
-            float: The value of the kth component of the curl of the ith 1-form evaluated at quadrature point j.
-        """
-        j2, j1, j3 = jnp.unravel_index(
-            j, (self.quad.ny, self.quad.nx, self.quad.nz))
-        c, i1, i2, i3 = self.basis_1._unravel_index(i)
-        # get i-1
-        dr = jnp.where(i1 == self.basis_1.nt-1, 0.0,
-                       self.d_basis_r_jk[i1, j1])
-        dr_m1 = jnp.where(i1 > 0, self.d_basis_r_jk[i1-1, j1], 0.0)
-        dtheta_m1 = jnp.where(
-            i2 > 0, self.d_basis_t_jk[i2-1, j2], self.d_basis_t_jk[self.basis_1.nt-1, j2])
-        dtheta = self.d_basis_t_jk[i2, j2]
-        dz_m1 = jnp.where(
-            i3 > 0, self.d_basis_z_jk[i3-1, j3], self.d_basis_z_jk[self.basis_1.nt-1, j3])
-        dz = self.d_basis_z_jk[i3, j3]
-        d3dy = self.basis_r_jk[i1, j1] * \
-            (dtheta_m1 - dtheta) * self.d_basis_z_jk[i3, j3]
-        d2dz = self.basis_r_jk[i1, j1] * \
-            self.d_basis_t_jk[i2, j2] * (dz_m1 - dz)
-        d1dz = self.d_basis_r_jk[i1, j1] * \
-            self.basis_t_jk[i2, j2] * (dz_m1 - dz)
-        d3dx = (dr_m1 - dr) * \
-            self.basis_t_jk[i2, j2] * self.d_basis_z_jk[i3, j3]
-        d2dx = (dr_m1 - dr) * \
-            self.d_basis_t_jk[i2, j2] * self.basis_z_jk[i3, j3]
-        d1dy = self.d_basis_r_jk[i1, j1] * \
-            (dtheta_m1 - dtheta) * self.basis_z_jk[i3, j3]
-
-        curl_matrix = jnp.array([
-            [0.0,    d1dz,  -d1dy],
-            [-d2dz,  0.0,    d2dx],
-            [d3dy,  -d3dx,   0.0]
-        ])
-        return curl_matrix[c, k]
+        return eval_d_basis_1_ijk(self, i, j, k)
 
     def eval_basis_2_ijk(self, i, j, k):
-        """
-        Get the kth component of the ith 2-form evaluated at quadrature point j.
-
-        Args:
-            i (int): The index of the basis function.
-            j (int): The index of the quadrature point.
-            k (int): The index of the component.
-
-        Returns:
-            float: The value of the kth component of the ith 2-form evaluated at quadrature point j.
-        """
-        j2, j1, j3 = jnp.unravel_index(
-            j, (self.quad.ny, self.quad.nx, self.quad.nz))
-        c, i1, i2, i3 = self.basis_2._unravel_index(i)
-        components = jnp.array([
-            self.basis_r_jk[i1, j1] * self.d_basis_t_jk[i2,
-                                                        j2] * self.d_basis_z_jk[i3, j3],
-            self.d_basis_r_jk[i1, j1] * self.basis_t_jk[i2,
-                                                        j2] * self.d_basis_z_jk[i3, j3],
-            self.d_basis_r_jk[i1, j1] *
-            self.d_basis_t_jk[i2, j2] * self.basis_z_jk[i3, j3]
-        ])
-        return jnp.where(k == c, components[c], 0.0)
+        return eval_basis_2_ijk(self, i, j, k)
 
     def eval_d_basis_2_ijk(self, i, j, k):
-        """
-        Get the kth component of the divergence of the ith 2-form evaluated at quadrature point j.
-
-        Args:
-            i (int): The index of the basis function.
-            j (int): The index of the quadrature point.
-            k (int): The index of the component.
-
-        Returns:
-            float: The value of the kth component of the divergence of the ith 2-form evaluated at quadrature point j.
-        """
-        j2, j1, j3 = jnp.unravel_index(
-            j, (self.quad.ny, self.quad.nx, self.quad.nz))
-        c, i1, i2, i3 = self.basis_2._unravel_index(i)
-        # get i-1
-        dr = jnp.where(i1 == self.basis_2.nt-1, 0.0,
-                       self.d_basis_r_jk[i1, j1])
-        dr_m1 = jnp.where(i1 > 0, self.d_basis_r_jk[i1-1, j1], 0.0)
-        dtheta_m1 = jnp.where(
-            i2 > 0, self.d_basis_t_jk[i2-1, j2], self.d_basis_t_jk[self.basis_2.nt-1, j2])
-        dtheta = self.d_basis_t_jk[i2, j2]
-        dz_m1 = jnp.where(
-            i3 > 0, self.d_basis_z_jk[i3-1, j3], self.d_basis_z_jk[self.basis_2.nt-1, j3])
-        dz = self.d_basis_z_jk[i3, j3]
-
-        return jnp.array([
-            (dr_m1 - dr) * self.d_basis_t_jk[i2,
-                                             j2] * self.d_basis_z_jk[i3, j3],
-            self.d_basis_r_jk[i1, j1] *
-            (dtheta_m1 - dtheta) * self.d_basis_z_jk[i3, j3],
-            self.d_basis_r_jk[i1, j1] *
-            self.d_basis_t_jk[i2, j2] * (dz_m1 - dz)
-        ])[c]
+        return eval_d_basis_2_ijk(self, i, j, k)
 
     def eval_basis_3_ijk(self, i, j, k):
-        """
-        Get the kth component of the ith 3-form evaluated at quadrature point j.
-
-        Args:
-            i (int): The index of the basis function.
-            j (int): The index of the quadrature point.
-            k (int): The index of the component.
-
-        Returns:
-            float: The value of the kth component of the ith 3-form evaluated at quadrature point j.
-        """
-        j2, j1, j3 = jnp.unravel_index(
-            j, (self.quad.ny, self.quad.nx, self.quad.nz))
-        _, i1, i2, i3 = self.basis_3._unravel_index(i)
-        # k is always 0
-        return self.d_basis_r_jk[i1, j1] * self.d_basis_t_jk[i2, j2] * self.d_basis_z_jk[i3, j3]
+        return eval_basis_3_ijk(self, i, j, k)
 
     def l2_norm_sq(self, v, k, dirichlet=True):
         return v @ self.apply_mass_matrix(v, k, dirichlet=dirichlet)
@@ -435,156 +264,16 @@ class DeRhamSequence():
         return jnp.sqrt(self.l2_norm_sq(v, k, dirichlet=dirichlet))
 
     def assemble_all_sparse(self):
-        """
-        Assemble all the matrices and operators in sparse format.
-        """
-        for k in range(4):
-            self.assemble_mass_matrix(k)
-        for k in range(3):
-            self.assemble_derivative_matrix(k)
-        for k in range(4):
-            self.assemble_hodge_laplacian(k)
-        for k_from, k_to in [(2, 1), (3, 0)]:
-            self.assemble_projection_matrix(k_from, k_to)
+        assemble_all_sparse(self)
 
     def assemble_mass_matrix_deprecated(self, k):
-        """
-        Assemble the sparse mass matrix Mk for k-forms (k = 0, 1, 2, 3).
-            k=0: M0_ij = ∫ Λ0_i Λ0_j det DF dx
-            k=1: M1_ij = ∫ Λ1_i · G⁻¹ Λ1_j det DF dx
-            k=2: M2_ij = ∫ Λ2_i · G Λ2_j (det DF)⁻¹ dx
-            k=3: M3_ij = ∫ Λ3_i Λ3_j (det DF)⁻¹ dx
-        Also assembles the diagonal Jacobi preconditioner (diaginv and diaginv_dbc).
-        """
-        match k:
-            case 0:
-                W = (self.jacobian_j * self.quad.w)[:, None, None]
-                neighbors, nnz = build_neighbors(self.basis_0)
-                sp = assemble_sparse(
-                    self.eval_basis_0_ijk, self.eval_basis_0_ijk, W, self.basis_0.n, self.basis_0.n, nnz, neighbors)
-                self.m0_sp_diaginv = jnp.ones(self.n0)
-                self.m0_sp_diaginv_dbc = jnp.ones(self.n0_dbc)
-                self.m0_sp = jsparse.BCSR.from_bcoo(sp)
-            case 1:
-                W = self.metric_inv_jkl * \
-                    (self.jacobian_j * self.quad.w)[:, None, None]
-                neighbors, nnz = build_neighbors(self.basis_1)
-                sp = assemble_sparse(
-                    self.eval_basis_1_ijk, self.eval_basis_1_ijk, W, self.basis_1.n, self.basis_1.n, nnz, neighbors)
-                self.m1_sp_diaginv = jnp.ones(self.n1)
-                self.m1_sp_diaginv_dbc = jnp.ones(self.n1_dbc)
-                self.m1_sp = jsparse.BCSR.from_bcoo(sp)
-            case 2:
-                W = self.metric_jkl * \
-                    (1/self.jacobian_j * self.quad.w)[:, None, None]
-                neighbors, nnz = build_neighbors(self.basis_2)
-                sp = assemble_sparse(
-                    self.eval_basis_2_ijk, self.eval_basis_2_ijk, W, self.basis_2.n, self.basis_2.n, nnz, neighbors)
-                self.m2_sp_diaginv = jnp.ones(self.n2)
-                self.m2_sp_diaginv_dbc = jnp.ones(self.n2_dbc)
-                self.m2_sp = jsparse.BCSR.from_bcoo(sp)
-            case 3:
-                W = (1/self.jacobian_j * self.quad.w)[:, None, None]
-                neighbors, nnz = build_neighbors(self.basis_3)
-                sp = assemble_sparse(
-                    self.eval_basis_3_ijk, self.eval_basis_3_ijk, W, self.basis_3.n, self.basis_3.n, nnz, neighbors)
-                self.m3_sp_diaginv = jnp.ones(self.n3)
-                self.m3_sp_diaginv_dbc = jnp.ones(self.n3_dbc)
-                self.m3_sp = jsparse.BCSR.from_bcoo(sp)
-            case _:
-                raise ValueError("k must be 0, 1, 2 or 3")
+        assemble_mass_matrix_deprecated(self, k)
 
     def assemble_mass_matrix(self, k):
-        """Assemble the mass matrix using tensor-product contraction.
-
-        """
-        from mrx.assembly import assemble_scalar_tp, assemble_vectorial_tp
-        quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
-        match k:
-            case 0:
-                W_flat = self.jacobian_j * self.quad.w
-                sp = assemble_scalar_tp(
-                    self.basis_r_jk, self.basis_t_jk, self.basis_z_jk,
-                    self.basis_r_jk, self.basis_t_jk, self.basis_z_jk,
-                    W_flat, quad_shape, self.basis_0.shape[0],
-                    self.basis_0.pr, self.basis_0.pt, self.basis_0.pz)
-                self.m0_sp = jsparse.BCSR.from_bcoo(sp)
-                self.m0_sp_diaginv = 1.0 / \
-                    diag_EAET(self.e0, self.m0_sp, self.e0_T)
-                self.m0_sp_diaginv_dbc = 1.0 / \
-                    diag_EAET(self.e0_dbc, self.m0_sp, self.e0_dbc_T)
-            case 1:
-                W_3x3 = self.metric_inv_jkl * \
-                    (self.jacobian_j * self.quad.w)[:, None, None]
-                terms = [
-                    [(0, self.d_basis_r_jk, self.basis_t_jk, self.basis_z_jk, +1)],
-                    [(1, self.basis_r_jk, self.d_basis_t_jk, self.basis_z_jk, +1)],
-                    [(2, self.basis_r_jk, self.basis_t_jk, self.d_basis_z_jk, +1)],
-                ]
-                sp = assemble_vectorial_tp(
-                    terms, terms, W_3x3, quad_shape,
-                    list(self.basis_1.shape),
-                    self.basis_1.pr)
-                self.m1_sp = jsparse.BCSR.from_bcoo(sp)
-                self.m1_sp_diaginv = 1.0 / \
-                    diag_EAET(self.e1, self.m1_sp, self.e1_T)
-                self.m1_sp_diaginv_dbc = 1.0 / \
-                    diag_EAET(self.e1_dbc, self.m1_sp, self.e1_dbc_T)
-            case 2:
-                W_3x3 = self.metric_jkl * \
-                    (1 / self.jacobian_j * self.quad.w)[:, None, None]
-                terms = [
-                    [(0, self.basis_r_jk, self.d_basis_t_jk, self.d_basis_z_jk, +1)],
-                    [(1, self.d_basis_r_jk, self.basis_t_jk, self.d_basis_z_jk, +1)],
-                    [(2, self.d_basis_r_jk, self.d_basis_t_jk, self.basis_z_jk, +1)],
-                ]
-                sp = assemble_vectorial_tp(
-                    terms, terms, W_3x3, quad_shape,
-                    list(self.basis_2.shape),
-                    self.basis_2.pr)
-                self.m2_sp = jsparse.BCSR.from_bcoo(sp)
-                self.m2_sp_diaginv = 1.0 / \
-                    diag_EAET(self.e2, self.m2_sp, self.e2_T)
-                self.m2_sp_diaginv_dbc = 1.0 / \
-                    diag_EAET(self.e2_dbc, self.m2_sp, self.e2_dbc_T)
-            case 3:
-                W_flat = (1 / self.jacobian_j) * self.quad.w
-                sp = assemble_scalar_tp(
-                    self.d_basis_r_jk, self.d_basis_t_jk, self.d_basis_z_jk,
-                    self.d_basis_r_jk, self.d_basis_t_jk, self.d_basis_z_jk,
-                    W_flat, quad_shape, self.basis_3.shape[0],
-                    self.basis_3.pr, self.basis_3.pt, self.basis_3.pz)
-                self.m3_sp = jsparse.BCSR.from_bcoo(sp)
-                self.m3_sp_diaginv = 1.0 / \
-                    diag_EAET(self.e3, self.m3_sp, self.e3_T)
-                self.m3_sp_diaginv_dbc = 1.0 / \
-                    diag_EAET(self.e3_dbc, self.m3_sp, self.e3_dbc_T)
-            case _:
-                raise ValueError(
-                    "Tensor-product assembly supports k=0, 1, 2, 3")
+        assemble_mass_matrix(self, k)
 
     def assemble_projection_matrix_deprecated(self, k_from, k_to):
-        """
-        Assemble the sparse projection matrix Pk_from_k_to mapping k_from-form dofs to k_to-form dofs.
-            k_from=2, k_to=1: M12_ij = ∫ Λ1_i · Λ2_j dx
-            k_from=3, k_to=0: M03_ij = ∫ Λ0_i · Λ3_j dx
-        and
-            Pk_from_k_to = Mk_to⁻¹ M_k_from_k_to
-        """
-        match (k_from, k_to):
-            case (2, 1) | (1, 2):
-                W = self.quad.w[:, None, None] * jnp.eye(3)
-                neighbors, nnz = build_neighbors(self.basis_1, self.basis_2)
-                self.m12_sp = jsparse.BCSR.from_bcoo(assemble_sparse(
-                    self.eval_basis_1_ijk, self.eval_basis_2_ijk, W, self.basis_1.n, self.basis_2.n, nnz, neighbors))
-            case (3, 0) | (0, 3):
-                W = self.quad.w[:, None, None]
-                neighbors, nnz = build_neighbors(self.basis_0, self.basis_3)
-                self.m03_sp = jsparse.BCSR.from_bcoo(assemble_sparse(
-                    self.eval_basis_0_ijk, self.eval_basis_3_ijk, W, self.basis_0.n, self.basis_3.n, nnz, neighbors))
-            case _:
-                raise ValueError(
-                    "Only (k_from, k_to) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
+        assemble_projection_matrix_deprecated(self, k_from, k_to)
 
     def apply_projection_matrix(self, v, k_from, k_to, dirichlet_in=True, dirichlet_out=True):
         """
@@ -614,345 +303,25 @@ class DeRhamSequence():
                     "Only (k_from, k_to) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
 
     def assemble_projection_matrix(self, k_from, k_to):
-        """Assemble the projection matrix using tensor-product contraction.
-
-        Supports (k_from, k_to) = (2, 1), (1, 2), (3, 0), (0, 3).
-        """
-        from mrx.assembly import assemble_vectorial_tp
-        quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
-        dR = self.d_basis_r_jk
-        dT = self.d_basis_t_jk
-        dZ = self.d_basis_z_jk
-        R = self.basis_r_jk
-        T = self.basis_t_jk
-        Z = self.basis_z_jk
-        match (k_from, k_to):
-            case (2, 1) | (1, 2):
-                W_3x3 = self.quad.w[:, None, None] * jnp.eye(3)
-                # Row: 1-form identity
-                row_terms = [
-                    [(0, dR, T, Z, +1)],
-                    [(1, R, dT, Z, +1)],
-                    [(2, R, T, dZ, +1)],
-                ]
-                # Col: 2-form identity
-                col_terms = [
-                    [(0, R, dT, dZ, +1)],
-                    [(1, dR, T, dZ, +1)],
-                    [(2, dR, dT, Z, +1)],
-                ]
-                sp = assemble_vectorial_tp(
-                    row_terms, col_terms, W_3x3, quad_shape,
-                    list(self.basis_1.shape), self.basis_1.pr,
-                    col_comp_shapes=list(self.basis_2.shape))
-                self.m12_sp = jsparse.BCSR.from_bcoo(sp)
-            case (3, 0) | (0, 3):
-                W_1x1 = self.quad.w.reshape(-1, 1, 1)
-                # Row: 0-form identity
-                row_terms = [
-                    [(0, R, T, Z, +1)],
-                ]
-                # Col: 3-form identity
-                col_terms = [
-                    [(0, dR, dT, dZ, +1)],
-                ]
-                sp = assemble_vectorial_tp(
-                    row_terms, col_terms, W_1x1, quad_shape,
-                    list(self.basis_0.shape), self.basis_0.pr,
-                    col_comp_shapes=list(self.basis_3.shape))
-                self.m03_sp = jsparse.BCSR.from_bcoo(sp)
-            case _:
-                raise ValueError(
-                    "Only (k_from, k_to) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
+        assemble_projection_matrix(self, k_from, k_to)
 
     def assemble_derivative_matrix_deprecated(self, k):
-        """
-        Assemble the sparse exterior derivative matrix Dk mapping k-forms to (k+1)-forms (k = 0, 1, 2).
-            k=0: D0_ij = ∫ Λ1_i · G⁻¹ grad Λ0_j det DF dx   (grad)
-            k=1: D1_ij = ∫ Λ2_i · G curl Λ1_j (det DF)⁻¹ dx  (curl)
-            k=2: D2_ij = ∫ Λ3_i div  Λ2_j (det DF)⁻¹ dx       (div)
-        """
-        match k:
-            case 0:
-                W = self.metric_inv_jkl * \
-                    (self.jacobian_j * self.quad.w)[:, None, None]
-                neighbors, nnz = build_neighbors(self.basis_1, self.basis_0)
-                sp = assemble_sparse(
-                    self.eval_basis_1_ijk, self.eval_d_basis_0_ijk, W, self.basis_1.n, self.basis_0.n, nnz, neighbors)
-                self.d0_sp = jsparse.BCSR.from_bcoo(sp)
-                self.d0_sp_T = jsparse.BCSR.from_bcoo(sp.T)
-            case 1:
-                W = self.metric_jkl * \
-                    (1/self.jacobian_j * self.quad.w)[:, None, None]
-                neighbors, nnz = build_neighbors(self.basis_2, self.basis_1)
-                sp = assemble_sparse(
-                    self.eval_basis_2_ijk, self.eval_d_basis_1_ijk, W, self.basis_2.n, self.basis_1.n, nnz, neighbors)
-                self.d1_sp = jsparse.BCSR.from_bcoo(sp)
-                self.d1_sp_T = jsparse.BCSR.from_bcoo(sp.T)
-            case 2:
-                W = (1/self.jacobian_j * self.quad.w)[:, None, None]
-                neighbors, nnz = build_neighbors(self.basis_3, self.basis_2)
-                sp = assemble_sparse(
-                    self.eval_basis_3_ijk, self.eval_d_basis_2_ijk, W, self.basis_3.n, self.basis_2.n, nnz, neighbors)
-                self.d2_sp = jsparse.BCSR.from_bcoo(sp)
-                self.d2_sp_T = jsparse.BCSR.from_bcoo(sp.T)
-            case _:
-                raise ValueError("k must be 0, 1 or 2")
+        assemble_derivative_matrix_deprecated(self, k)
 
     def assemble_hodge_laplacian_deprecated(self, k):
-        """
-        Assemble the stiffness matrix and Jacobi preconditioner for the k-th Hodge Laplacian (δd).
-            k=0: grad_grad_ij = ∫ ∇Λ0_i · G⁻¹ ∇Λ0_j det DF dx
-            k=1: curl_curl_ij = ∫ curl Λ1_i · G curl Λ1_j (det DF)⁻¹ dx
-            k=2: div_div_ij   = ∫ div  Λ2_i div  Λ2_j (det DF)⁻¹ dx
-            k=3: (no stiffness matrix; preconditioner only uses d2_sp and m2_sp_diaginv)
-        """
-        match k:
-            case 0:
-                W = self.metric_inv_jkl * \
-                    (self.jacobian_j * self.quad.w)[:, None, None]
-                neighbors, nnz = build_neighbors(self.basis_0)
-                sp = assemble_sparse(
-                    self.eval_d_basis_0_ijk, self.eval_d_basis_0_ijk,
-                    W, self.basis_0.n, self.basis_0.n, nnz, neighbors)
-                self.dd0_sp_diaginv = jnp.ones(self.n0)
-                self.dd0_sp_diaginv_dbc = jnp.ones(self.n0_dbc)
-                self.grad_grad_sp = jsparse.BCSR.from_bcoo(sp)
-            case 1:
-                W = self.metric_jkl * \
-                    (1/self.jacobian_j * self.quad.w)[:, None, None]
-                neighbors, nnz = build_neighbors(self.basis_1)
-                sp = assemble_sparse(
-                    self.eval_d_basis_1_ijk, self.eval_d_basis_1_ijk,
-                    W, self.basis_1.n, self.basis_1.n, nnz, neighbors)
-                self.dd1_sp_diaginv = jnp.ones(self.n1)
-                self.dd1_sp_diaginv_dbc = jnp.ones(self.n1_dbc)
-                self.curl_curl_sp = jsparse.BCSR.from_bcoo(sp)
-            case 2:
-                W = (1/self.jacobian_j * self.quad.w)[:, None, None]
-                neighbors, nnz = build_neighbors(self.basis_2)
-                sp = assemble_sparse(
-                    self.eval_d_basis_2_ijk, self.eval_d_basis_2_ijk,
-                    W, self.basis_2.n, self.basis_2.n, nnz, neighbors)
-                self.dd2_sp_diaginv = jnp.ones(self.n2)
-                self.dd2_sp_diaginv_dbc = jnp.ones(self.n2_dbc)
-                self.div_div_sp = jsparse.BCSR.from_bcoo(sp)
-            case 3:
-                self.dd3_sp_diaginv = jnp.ones(self.n3)
-                self.dd3_sp_diaginv_dbc = jnp.ones(self.n3_dbc)
-            case _:
-                raise ValueError("k must be 0, 1, 2 or 3")
+        assemble_hodge_laplacian_deprecated(self, k)
 
     def assemble_derivative_matrix(self, k):
-        """Assemble the exterior derivative matrix using tensor-product contraction.
-
-        Supports k=0 (grad), k=1 (curl), k=2 (div).
-        """
-        from mrx.assembly import assemble_vectorial_tp
-        quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
-        types = self.basis_0.types
-        grad_r = self._grad_1d(self.d_basis_r_jk, types[0])
-        grad_t = self._grad_1d(self.d_basis_t_jk, types[1])
-        grad_z = self._grad_1d(self.d_basis_z_jk, types[2])
-        match k:
-            case 0:
-                W_3x3 = self.metric_inv_jkl * \
-                    (self.jacobian_j * self.quad.w)[:, None, None]
-                # Row: 1-form identity (3 components)
-                row_terms = [
-                    [(0, self.d_basis_r_jk, self.basis_t_jk, self.basis_z_jk, +1)],
-                    [(1, self.basis_r_jk, self.d_basis_t_jk, self.basis_z_jk, +1)],
-                    [(2, self.basis_r_jk, self.basis_t_jk, self.d_basis_z_jk, +1)],
-                ]
-                # Col: grad of 0-form (1 component, 3 output terms)
-                col_terms = [
-                    [(0, grad_r, self.basis_t_jk, self.basis_z_jk, +1),
-                     (1, self.basis_r_jk, grad_t, self.basis_z_jk, +1),
-                     (2, self.basis_r_jk, self.basis_t_jk, grad_z, +1)],
-                ]
-                sp = assemble_vectorial_tp(
-                    row_terms, col_terms, W_3x3, quad_shape,
-                    list(self.basis_1.shape), self.basis_1.pr,
-                    col_comp_shapes=list(self.basis_0.shape))
-                self.d0_sp = jsparse.BCSR.from_bcoo(sp)
-                self.d0_sp_T = jsparse.BCSR.from_bcoo(sp.T)
-            case 1:
-                W_3x3 = self.metric_jkl * \
-                    (1 / self.jacobian_j * self.quad.w)[:, None, None]
-                dR = self.d_basis_r_jk
-                dT = self.d_basis_t_jk
-                dZ = self.d_basis_z_jk
-                R = self.basis_r_jk
-                T = self.basis_t_jk
-                Z = self.basis_z_jk
-                # Row: 2-form identity (3 components)
-                row_terms = [
-                    [(0, R, dT, dZ, +1)],
-                    [(1, dR, T, dZ, +1)],
-                    [(2, dR, dT, Z, +1)],
-                ]
-                # Col: curl of 1-form (3 components, each with 2 signed terms)
-                col_terms = [
-                    [(1, dR, T, grad_z, +1),
-                     (2, dR, grad_t, Z, -1)],
-                    [(0, R, dT, grad_z, -1),
-                     (2, grad_r, dT, Z, +1)],
-                    [(0, R, grad_t, dZ, +1),
-                     (1, grad_r, T, dZ, -1)],
-                ]
-                sp = assemble_vectorial_tp(
-                    row_terms, col_terms, W_3x3, quad_shape,
-                    list(self.basis_2.shape), self.basis_2.pr,
-                    col_comp_shapes=list(self.basis_1.shape))
-                self.d1_sp = jsparse.BCSR.from_bcoo(sp)
-                self.d1_sp_T = jsparse.BCSR.from_bcoo(sp.T)
-            case 2:
-                W_scalar = (1 / self.jacobian_j) * self.quad.w
-                W_1x1 = W_scalar.reshape(-1, 1, 1)
-                dR = self.d_basis_r_jk
-                dT = self.d_basis_t_jk
-                dZ = self.d_basis_z_jk
-                # Row: 3-form identity (1 component)
-                row_terms = [
-                    [(0, dR, dT, dZ, +1)],
-                ]
-                # Col: div of 2-form (3 components, each → output 0)
-                col_terms = [
-                    [(0, grad_r, dT, dZ, +1)],
-                    [(0, dR, grad_t, dZ, +1)],
-                    [(0, dR, dT, grad_z, +1)],
-                ]
-                sp = assemble_vectorial_tp(
-                    row_terms, col_terms, W_1x1, quad_shape,
-                    list(self.basis_3.shape), self.basis_3.pr,
-                    col_comp_shapes=list(self.basis_2.shape))
-                self.d2_sp = jsparse.BCSR.from_bcoo(sp)
-                self.d2_sp_T = jsparse.BCSR.from_bcoo(sp.T)
-            case _:
-                raise ValueError(
-                    "Tensor-product derivative assembly supports k=0, 1, 2")
+        assemble_derivative_matrix(self, k)
 
     def _grad_1d(self, d_basis, boundary_type):
-        """Compute gradient basis from derivative spline: dΛ(i-1) - dΛ(i)."""
-        if boundary_type == 'clamped':
-            padded = jnp.pad(d_basis, ((1, 1), (0, 0)))
-            return padded[:-1] - padded[1:]
-        else:  # periodic
-            return jnp.roll(d_basis, 1, axis=0) - d_basis
+        return grad_1d(d_basis, boundary_type)
 
     def assemble_hodge_laplacian(self, k):
-        """Assemble the stiffness matrix (δd) using tensor-product contraction.
-
-        Supports k=0 (grad-grad), k=1 (curl-curl), k=2 (div-div), k=3 (preconditioner only).
-        """
-        from mrx.assembly import (assemble_stiffness_scalar_tp,
-                                  assemble_vectorial_tp)
-        quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
-        types = self.basis_0.types
-        grad_r = self._grad_1d(self.d_basis_r_jk, types[0])
-        grad_t = self._grad_1d(self.d_basis_t_jk, types[1])
-        grad_z = self._grad_1d(self.d_basis_z_jk, types[2])
-        match k:
-            case 0:
-                W_3x3 = self.metric_inv_jkl * \
-                    (self.jacobian_j * self.quad.w)[:, None, None]
-                grad_basis_1d = [
-                    (grad_r, self.basis_t_jk, self.basis_z_jk),
-                    (self.basis_r_jk, grad_t, self.basis_z_jk),
-                    (self.basis_r_jk, self.basis_t_jk, grad_z),
-                ]
-                sp = assemble_stiffness_scalar_tp(
-                    grad_basis_1d, grad_basis_1d, W_3x3, quad_shape,
-                    self.basis_0.shape[0],
-                    self.basis_0.pr, self.basis_0.pt, self.basis_0.pz)
-                self.grad_grad_sp = jsparse.BCSR.from_bcoo(sp)
-                self.dd0_sp_diaginv = 1.0 / \
-                    diag_EAET(self.e0, self.grad_grad_sp, self.e0_T)
-                self.dd0_sp_diaginv_dbc = 1.0 / \
-                    diag_EAET(self.e0_dbc, self.grad_grad_sp, self.e0_dbc_T)
-            case 1:
-                W_3x3 = self.metric_jkl * \
-                    (1 / self.jacobian_j * self.quad.w)[:, None, None]
-                dR = self.d_basis_r_jk
-                dT = self.d_basis_t_jk
-                dZ = self.d_basis_z_jk
-                R = self.basis_r_jk
-                T = self.basis_t_jk
-                Z = self.basis_z_jk
-                curl_terms = [
-                    # c=0 (dR, T, Z) → curl k=1: +dR·T·grad_z, k=2: -dR·grad_t·Z
-                    [(1, dR, T, grad_z, +1),
-                     (2, dR, grad_t, Z, -1)],
-                    # c=1 (R, dT, Z) → curl k=0: -R·dT·grad_z, k=2: +grad_r·dT·Z
-                    [(0, R, dT, grad_z, -1),
-                     (2, grad_r, dT, Z, +1)],
-                    # c=2 (R, T, dZ) → curl k=0: +R·grad_t·dZ, k=1: -grad_r·T·dZ
-                    [(0, R, grad_t, dZ, +1),
-                     (1, grad_r, T, dZ, -1)],
-                ]
-                sp = assemble_vectorial_tp(
-                    curl_terms, curl_terms, W_3x3, quad_shape,
-                    list(self.basis_1.shape), self.basis_1.pr)
-                self.curl_curl_sp = jsparse.BCSR.from_bcoo(sp)
-                # diag(E1 S1 E1^T) + diag(D0 diag(M0^{-1}) D0^T)
-                d_stiff = diag_EAET(self.e1, self.curl_curl_sp, self.e1_T)
-                d_schur = diag_schur_complement(
-                    lambda v: self.e0 @ (self.d0_sp_T @ (self.e1_T @ v)),
-                    self.m0_sp_diaginv, self.n1)
-                self.dd1_sp_diaginv = 1.0 / (d_stiff + d_schur)
-                d_stiff_dbc = diag_EAET(
-                    self.e1_dbc, self.curl_curl_sp, self.e1_dbc_T)
-                d_schur_dbc = diag_schur_complement(
-                    lambda v: self.e0_dbc @ (self.d0_sp_T @
-                                             (self.e1_dbc_T @ v)),
-                    self.m0_sp_diaginv_dbc, self.n1_dbc)
-                self.dd1_sp_diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
-            case 2:
-                W_scalar = (1 / self.jacobian_j) * self.quad.w
-                W_3x3 = W_scalar[:, None, None] * jnp.ones((1, 3, 3))
-                div_terms = [
-                    [(0, grad_r, self.d_basis_t_jk, self.d_basis_z_jk, +1)],
-                    [(1, self.d_basis_r_jk, grad_t, self.d_basis_z_jk, +1)],
-                    [(2, self.d_basis_r_jk, self.d_basis_t_jk, grad_z, +1)],
-                ]
-                sp = assemble_vectorial_tp(
-                    div_terms, div_terms, W_3x3, quad_shape,
-                    list(self.basis_2.shape), self.basis_2.pr)
-                self.div_div_sp = jsparse.BCSR.from_bcoo(sp)
-                # diag(E2 S2 E2^T) + diag(D1 diag(M1^{-1}) D1^T)
-                d_stiff = diag_EAET(self.e2, self.div_div_sp, self.e2_T)
-                d_schur = diag_schur_complement(
-                    lambda v: self.e1 @ (self.d1_sp_T @ (self.e2_T @ v)),
-                    self.m1_sp_diaginv, self.n2)
-                self.dd2_sp_diaginv = 1.0 / (d_stiff + d_schur)
-                d_stiff_dbc = diag_EAET(
-                    self.e2_dbc, self.div_div_sp, self.e2_dbc_T)
-                d_schur_dbc = diag_schur_complement(
-                    lambda v: self.e1_dbc @ (self.d1_sp_T @
-                                             (self.e2_dbc_T @ v)),
-                    self.m1_sp_diaginv_dbc, self.n2_dbc)
-                self.dd2_sp_diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
-            case 3:
-                # L3 = D2 diag(M2^{-1}) D2^T (no stiffness part)
-                d_schur = diag_schur_complement(
-                    lambda v: self.e2 @ (self.d2_sp_T @ (self.e3_T @ v)),
-                    self.m2_sp_diaginv, self.n3)
-                self.dd3_sp_diaginv = 1.0 / d_schur
-                d_schur_dbc = diag_schur_complement(
-                    lambda v: self.e2_dbc @ (self.d2_sp_T @
-                                             (self.e3_dbc_T @ v)),
-                    self.m2_sp_diaginv_dbc, self.n3_dbc)
-                self.dd3_sp_diaginv_dbc = 1.0 / d_schur_dbc
-            case _:
-                raise ValueError("k must be 0, 1, 2, or 3")
+        assemble_hodge_laplacian(self, k)
 
     def assemble_leray_projection(self):
-        """
-        Assemble the Leray projection matrix. Formula:
-            P_Leray = I + weak_grad @ (dd3)^-1 @ strong_div
-        """
-        self.P_Leray = jnp.eye(self.m2.shape[0]) + \
-            self.weak_grad @ jnp.linalg.pinv(self.dd3) @ self.strong_div
+        assemble_leray_projection(self)
 
     # TODO: We can pre-compute strong operators, they are sparse
     def apply_strong_grad(self, v, dirichlet_in=True, dirichlet_out=True):
@@ -1248,94 +617,65 @@ class DeRhamSequence():
                 raise ValueError("k must be 0, 1, 2 or 3")
 
     def _get_nullspace(self, k, dirichlet):
-        """Return the list of nullspace vectors for the k-th Hodge Laplacian."""
-        attr = f"null_{k}_dbc" if dirichlet else f"null_{k}"
-        return getattr(self, attr)
+        return get_nullspace(self, k, dirichlet)
 
     def _get_saddle_point_nullspaces(self, k, dirichlet):
-        """
-        Compute nullspace vectors for the saddle-point system from the
-        Schur complement nullspace vectors.
-
-        If v is in null(S_k + D_{k-1} M_{k-1}^{-1} D_{k-1}^T), then
-        [v, M_{k-1}^{-1} D_{k-1}^T v] is in the nullspace of the
-        saddle-point system. We approximate M_{k-1}^{-1} with diag(M_{k-1})^{-1}.
-        """
-        vs_upper = self._get_nullspace(k, dirichlet)
-        vs_lower = []
-        if k >= 1:
-            for v in vs_upper:
-                Dt_v = self.apply_derivative_matrix(
-                    v, k - 1, dirichlet_in=dirichlet,
-                    dirichlet_out=dirichlet, transpose=True)
-                s = self.apply_mass_matrix_preconditioner(
-                    Dt_v, k - 1, dirichlet=dirichlet)
-                vs_lower.append(s)
-        return vs_upper, vs_lower
+        return get_saddle_point_nullspaces(self, k, dirichlet)
 
     def apply_inverse_hodge_laplacian(self, v, k, dirichlet=True, guess=None):
+        """Apply the inverse of the k-th Hodge Laplacian (δd)⁻¹ to a vector v."""
+        return self.apply_inverse_shifted_stiffness(
+            v, k, 0.0, dirichlet=dirichlet, guess=guess)
+
+    def apply_inverse_shifted_stiffness(self, v, k, eps, dirichlet=True, guess=None):
         """
-        Apply the inverse of the k-th Hodge Laplacian (δd)⁻¹ to a vector v.
+        Solve (S_k + eps * M_k) x = v for the k-form x.
 
-        For k=0: uses CG on the grad-grad stiffness (SPD system).
-        For k≥1: uses MINRES on the full saddle-point system:
+        For eps=0 this reduces to the Hodge Laplacian solve; the system may be
+        singular and nullspace deflation is applied automatically.
+        For eps > 0 the system is nonsingular (shift-invert for S_k u = λ M_k u).
 
-            | S_k      D_{k-1}   | | u |   | f |
-            | D_{k-1}^T  -M_{k-1} | | σ | = | 0 |
+        For k=0: solved with CG.
+        For k>=1: MINRES on the symmetric saddle-point system:
 
-        with block-diagonal preconditioning.
+            | S_k + eps*M_k    D_{k-1}   | | u |   | v |
+            | D_{k-1}^T       -M_{k-1}   | | σ | = | 0 |
         """
+        suffix = "_dbc" if dirichlet else ""
+        stiffness_diaginv = getattr(self, f"dd{k}_sp_diaginv{suffix}")
+        mass_diaginv = getattr(self, f"m{k}_sp_diaginv{suffix}")
+        shifted_diaginv = 1.0 / (1.0 / stiffness_diaginv + eps / mass_diaginv)
+
         if k == 0:
-            vs = self._get_nullspace(0, dirichlet)
+            vs = self._get_nullspace(0, dirichlet) if eps == 0 else []
             return solve_singular_cg(
-                lambda x: self.apply_stiffness(x, 0, dirichlet=dirichlet),
+                lambda x: self.apply_stiffness(x, 0, dirichlet=dirichlet)
+                + eps * self.apply_mass_matrix(x, 0, dirichlet=dirichlet),
                 v,
                 mass_matvec=lambda x: self.apply_mass_matrix(
-                    x, 0, dirichlet=dirichlet),
-                precond_matvec=lambda x: self.apply_hodge_laplacian_preconditioner(
-                    x, 0, dirichlet=dirichlet),
+                    x, 0, dirichlet=dirichlet) if eps == 0 else None,
+                precond_matvec=lambda x: shifted_diaginv * x,
                 x0=guess,
                 vs=vs,
                 tol=self.tol, maxiter=self.maxiter)[0]
 
         # k >= 1: saddle-point MINRES
-        vs_upper, vs_lower = self._get_saddle_point_nullspaces(k, dirichlet)
-
-        suffix = "_dbc" if dirichlet else ""
-        stiffness_diaginv = getattr(self, f"dd{k}_sp_diaginv{suffix}")
+        vs_upper, vs_lower = self._get_saddle_point_nullspaces(
+            k, dirichlet) if eps == 0 else ([], [])
         mass_lower_diaginv = getattr(self, f"m{k-1}_sp_diaginv{suffix}")
         n_upper = getattr(self, f"n{k}{suffix}")
         n_lower = getattr(self, f"n{k-1}{suffix}")
 
-        # Lower block preconditioner: a few CG steps on M_{k-1}
-        def precond_lower(x):
-            return cg(
-                lambda y: self.apply_mass_matrix(
-                    y, k - 1, dirichlet=dirichlet),
-                x, x0=jnp.zeros_like(x),
-                M=lambda y: mass_lower_diaginv * y,
-                maxiter=self.n_inner)[0]
-
-        # Upper block preconditioner: a few CG steps on the approximate
-        # Schur complement S_k + D_{k-1} diag(M_{k-1})^{-1} D_{k-1}^T
-        def approx_schur_matvec(x):
-            Dt_x = self.apply_derivative_matrix(
-                x, k - 1, dirichlet_in=dirichlet,
-                dirichlet_out=dirichlet, transpose=True)
-            D_Minv_Dt_x = self.apply_derivative_matrix(
-                mass_lower_diaginv * Dt_x,
-                k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-            return self.apply_stiffness(x, k, dirichlet=dirichlet) + D_Minv_Dt_x
-
         def precond_upper(x):
-            return cg(
-                approx_schur_matvec, x, x0=jnp.zeros_like(x),
-                M=lambda y: stiffness_diaginv * y,
-                maxiter=self.n_inner)[0]
+            return shifted_diaginv * x
+
+        def precond_lower(x):
+            return mass_lower_diaginv * x
 
         u, sigma, info = solve_saddle_point_minres(
             stiffness_matvec=lambda x: self.apply_stiffness(
-                x, k, dirichlet=dirichlet),
+                x, k, dirichlet=dirichlet)
+            + eps * self.apply_mass_matrix(x, k, dirichlet=dirichlet),
             derivative_matvec=lambda s: self.apply_derivative_matrix(
                 s, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
             derivative_T_matvec=lambda u: self.apply_derivative_matrix(
@@ -1389,22 +729,12 @@ class DeRhamSequence():
         n_upper = getattr(self, f"n{k}{suffix}")
         n_lower = getattr(self, f"n{k-1}{suffix}")
 
-        # Lower block preconditioner: CG on alpha*M_{k-1}
+        # Block-diagonal Jacobi preconditioners
         def precond_lower(x):
-            return cg(
-                lambda y: alpha * self.apply_mass_matrix(
-                    y, k - 1, dirichlet=dirichlet),
-                x, x0=jnp.zeros_like(x),
-                M=lambda y: (1.0 / alpha) * mass_lower_diaginv * y,
-                maxiter=self.n_inner)[0]
+            return (1.0 / alpha) * mass_lower_diaginv * x
 
-        # Upper block preconditioner: CG on M_k (dominant for small alpha)
         def precond_upper(x):
-            return cg(
-                lambda y: self.apply_mass_matrix(y, k, dirichlet=dirichlet),
-                x, x0=jnp.zeros_like(x),
-                M=lambda y: mass_diaginv * y,
-                maxiter=self.n_inner)[0]
+            return mass_diaginv * x
 
         u, sigma, info = solve_saddle_point_minres(
             stiffness_matvec=lambda x: self.apply_mass_matrix(
@@ -1444,44 +774,14 @@ class DeRhamSequence():
                 raise ValueError("k must be 0, 1, 2 or 3")
         return diaginv * v
 
-# %%
+    def _compute_nullspaces(self, betti_numbers, eps=1e-6):
+        return compute_nullspaces_iterative(self, betti_numbers, eps)
+
+    def _find_nullspace_vectors(self, k, n_vectors, eps, dirichlet=True):
+        return find_nullspace_vectors(self, k, n_vectors, eps, dirichlet)
 
     def compute_nullspaces(self):
-        """
-        Compute the nullspace of the k-th Hodge Laplacian using randomized SVD.
-        TODO: For now this only handles the case where the nullspace is 1-dim.
-        """
-        self.null_0_dbc = []
-        self.null_1_dbc = []
-        v3 = self.apply_inverse_mass_matrix(
-            jnp.ones(self.n3_dbc), 3, dirichlet=True)
-        v3 /= self.l2_norm(v3, 3, dirichlet=True)
-        self.null_3_dbc = [v3]
-        v, _ = self.apply_leray_projection(
-            jnp.ones(self.n2_dbc), k=2)
-        curl_v_dual = self.apply_derivative_matrix(
-            v, 1, dirichlet_in=True, dirichlet_out=True, transpose=True)
-        a = self.apply_inverse_hodge_laplacian(curl_v_dual, 1, dirichlet=True)
-        curl_a = self.apply_strong_curl(a, True, True)
-        v2 = v - curl_a
-        v2 /= self.l2_norm(v2, 2, dirichlet=True)
-        self.null_2_dbc = [v2]
-
-        # no Dirichlet BCs (all defaults to False)
-        v0 = jnp.ones(self.n0)
-        v0 /= self.l2_norm(v0, 0, False)
-        self.null_0 = [v0]
-        self.null_2 = []
-        v, _ = self.apply_leray_projection(
-            jnp.ones(self.n1), k=1)
-        curl_v_dual = self.apply_derivative_matrix(
-            v, 1, dirichlet_in=False, dirichlet_out=False)
-        a = self.apply_inverse_hodge_laplacian(curl_v_dual, 2, dirichlet=False)
-        curl_a = self.apply_weak_curl(a, False, False)
-        v1 = v - curl_a
-        v1 /= self.l2_norm(v1, 1, False)
-        self.null_1 = [v1]
-        self.null_3 = []
+        return compute_nullspaces(self)
 
     def cross_product_projection_deprecated(
         self, w, u, n, m, k,
