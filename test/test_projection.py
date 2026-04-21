@@ -8,7 +8,7 @@ import pytest
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import toroid_map
-from mrx.utils import integrate_against_tp, inv33
+from mrx.utils import inv33, integrate_against
 
 jax.config.update("jax_enable_x64", True)
 
@@ -23,7 +23,7 @@ def _build_toroid_seq(n, p=2):
                          polar=True, tol=1e-12, maxiter=1000)
     seq.evaluate_1d()
     for k in range(4):
-        seq.assemble_mass_matrix_tp(k)
+        seq.assemble_mass_matrix(k)
     return seq
 
 
@@ -31,6 +31,27 @@ def _build_toroid_seq(n, p=2):
 @pytest.fixture(scope="module")
 def seqs():
     return {n: _build_toroid_seq(n) for n in NS}
+
+
+@pytest.fixture(scope="module")
+def cross_dofs(seqs):
+    """Pre-projected DOFs for e_x and e_y as 1-forms and 2-forms, keyed by
+    (n_res, form_degree, 'ex'|'ey')."""
+    def _e_x(x):
+        return jnp.array([1.0, 0.0, 0.0])
+
+    def _e_y(x):
+        return jnp.array([0.0, 1.0, 0.0])
+
+    dofs = {}
+    for n_res in NS:
+        seq = seqs[n_res]
+        for form_k, proj in ((1, seq.p1), (2, seq.p2)):
+            dofs[n_res, form_k, "ex"] = seq.apply_inverse_mass_matrix(
+                proj(_e_x), form_k, dirichlet=False)
+            dofs[n_res, form_k, "ey"] = seq.apply_inverse_mass_matrix(
+                proj(_e_y), form_k, dirichlet=False)
+    return dofs
 
 
 class TestProjectionConvergence:
@@ -76,7 +97,7 @@ class TestProjectionConvergence:
 
     # -- helper --------------------------------------------------------------
     @staticmethod
-    def _project_tp(seq, k, f, dirichlet):
+    def _project(seq, k, f, dirichlet):
         """L2-project *f* as a k-form using TP integrate_against."""
         F = seq.map
         DF = jax.jacfwd(F)
@@ -105,7 +126,7 @@ class TestProjectionConvergence:
         else:
             raise ValueError(f"Invalid k: {k}")
 
-        rhs = integrate_against_tp(w_jk, comp_info, comp_shapes, quad_shape)
+        rhs = integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
         return e @ rhs
 
     @staticmethod
@@ -117,7 +138,7 @@ class TestProjectionConvergence:
         es_dbc = [seq.e0_dbc, seq.e1_dbc, seq.e2_dbc, seq.e3_dbc]
         e = es_dbc[k] if dirichlet else es[k]
 
-        b = TestProjectionConvergence._project_tp(seq, k, f, dirichlet)
+        b = TestProjectionConvergence._project(seq, k, f, dirichlet)
         u = seq.apply_inverse_mass_matrix(b, k, dirichlet=dirichlet)
         u_h = Pushforward(DiscreteFunction(u, bases[k], e), F, k)
 
@@ -225,16 +246,9 @@ class TestCrossProductCorrectness:
         return jnp.array([0.0, 0.0, 1.0])
 
     @staticmethod
-    def _cross_error(seq, w_func, u_func, expected_func, n, m, k):
-        """Project w (m-form) and u (k-form), compute cross product,
-        solve, push forward as n-form, return relative L2 error vs expected."""
-        proj_m = seq.p1 if m == 1 else seq.p2
-        proj_k = seq.p1 if k == 1 else seq.p2
-        w_dofs = seq.apply_inverse_mass_matrix(
-            proj_m(w_func), m, dirichlet=False)
-        u_dofs = seq.apply_inverse_mass_matrix(
-            proj_k(u_func), k, dirichlet=False)
-
+    def _cross_error(seq, w_dofs, u_dofs, expected_func, n, m, k):
+        """Given pre-projected DOFs, compute cross product, solve, push forward
+        as n-form, return relative L2 error vs expected."""
         rhs = seq.cross_product_projection(
             w_dofs, u_dofs, n, m, k,
             dirichlet_n=False, dirichlet_m=False, dirichlet_k=False)
@@ -248,8 +262,8 @@ class TestCrossProductCorrectness:
 
         diff = jax.lax.map(
             lambda x: expected_func(x) - result_h(x),
-            seq.quad.x, batch_size=50_000)
-        ref = jax.lax.map(expected_func, seq.quad.x, batch_size=50_000)
+            seq.quad.x, batch_size=0)
+        ref = jax.lax.map(expected_func, seq.quad.x, batch_size=0)
         L2_d = jnp.einsum("ik,ik,i,i->",
                           diff, diff, seq.jacobian_j, seq.quad.w)
         L2_r = jnp.einsum("ik,ik,i,i->",
@@ -257,11 +271,13 @@ class TestCrossProductCorrectness:
         return float((L2_d / L2_r) ** 0.5)
 
     @staticmethod
-    def _convergence(seqs, w_func, u_func, expected_func, n, m, k):
+    def _convergence(seqs, cross_dofs, w_key, u_key, expected_func, n, m, k):
         errors = []
         for n_res in NS:
+            w_dofs = cross_dofs[n_res, m, w_key]
+            u_dofs = cross_dofs[n_res, k, u_key]
             err = TestCrossProductCorrectness._cross_error(
-                seqs[n_res], w_func, u_func, expected_func, n, m, k)
+                seqs[n_res], w_dofs, u_dofs, expected_func, n, m, k)
             errors.append(err)
             print(f"  ({n},{m},{k}) n={n_res}: error={err:.4e}")
         return errors
@@ -274,20 +290,20 @@ class TestCrossProductCorrectness:
             assert errs[i] < errs[i - 1], (
                 f"{label} error did not decrease: {errs}")
 
-    def test_cross_211(self, seqs):
+    def test_cross_211(self, seqs, cross_dofs):
         """(n=2,m=1,k=1): two 1-forms → 2-form, ∫ Λ2 G(w×u)/J dx."""
         errs = self._convergence(
-            seqs, self._e_x, self._e_y, self._e_z, 2, 1, 1)
+            seqs, cross_dofs, "ex", "ey", self._e_z, 2, 1, 1)
         self._assert_convergence(errs, "cross 211", 0.2)
 
-    def test_cross_111(self, seqs):
+    def test_cross_111(self, seqs, cross_dofs):
         """(n=1,m=1,k=1): two 1-forms → 1-form, ∫ Λ1 (w×u) dx."""
         errs = self._convergence(
-            seqs, self._e_x, self._e_y, self._e_z, 1, 1, 1)
+            seqs, cross_dofs, "ex", "ey", self._e_z, 1, 1, 1)
         self._assert_convergence(errs, "cross 111", 0.2)
 
-    def test_cross_222(self, seqs):
+    def test_cross_222(self, seqs, cross_dofs):
         """(n=2,m=2,k=2): two 2-forms → 2-form, ∫ Λ2 (w×u)/J dx."""
         errs = self._convergence(
-            seqs, self._e_x, self._e_y, self._e_z, 2, 2, 2)
+            seqs, cross_dofs, "ex", "ey", self._e_z, 2, 2, 2)
         self._assert_convergence(errs, "cross 222", 0.2)

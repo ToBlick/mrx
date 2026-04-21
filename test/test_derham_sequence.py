@@ -5,14 +5,13 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy.testing as npt
 import pytest
-from jax.scipy.sparse.linalg import cg
-from scipy.linalg import eigvalsh
 
 from mrx.assembly import build_neighbors
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import rotating_ellipse_map, toroid_map
-from mrx.utils import get_smallest_ev_pair, solve_singular_cg
+from mrx.solvers import solve_singular_cg
+from mrx.utils import get_smallest_ev_pair
 
 jax.config.update("jax_enable_x64", True)
 
@@ -21,6 +20,8 @@ jax.config.update("jax_enable_x64", True)
 # ---------------------------------------------------------------------------
 
 types = ("clamped", "periodic", "periodic")
+# Betti numbers for a solid torus (rotating ellipse domain): [b0, b1, b2, b3]
+BETTI = [1, 1, 0, 0]
 
 
 @pytest.fixture(scope="module")
@@ -71,9 +72,8 @@ def seq_ellipse(request):
     seq = DeRhamSequence(ns, ps, 2*p, types, F, polar=True,
                          tol=1e-12, maxiter=1000)
     seq.evaluate_1d()
-    # seq.assemble_all()
     seq.assemble_all_sparse()
-    seq.compute_nullspaces()
+    seq._compute_nullspaces(BETTI)
     return seq, dirichlet
 
 

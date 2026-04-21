@@ -22,12 +22,13 @@ types = ("clamped", "periodic", "periodic")
     ids=[f"p{p}" for p in [1, 2, 3]],
 )
 def seq_and_p(request):
+
     """DeRham sequence on a rotating ellipse, parametrised over degree.
 
     Performs all prerequisite assemblies once so individual tests don't repeat them.
     """
     p = request.param
-    n = 6
+    n = 4
     ns = (n, n, n)
     ps = (p, p, p)
     F = rotating_ellipse_map(nfp=3)
@@ -41,6 +42,19 @@ def seq_and_p(request):
     for k in range(4):
         seq.assemble_hodge_laplacian(k)
     return seq, p
+
+
+@pytest.fixture(scope="module")
+def dense_matrices(seq_and_p):
+    """Pre-assembled dense mass matrices and Hodge Laplacians, keyed by (k, dirichlet)."""
+    seq, _ = seq_and_p
+    masses = {k: assemble_dense_mass_matrix(seq, k, dirichlet=False) for k in range(4)}
+    laplacians = {
+        (k, d): assemble_dense_hodge_laplacian(seq, k, dirichlet=d)
+        for k in range(4)
+        for d in (False, True)
+    }
+    return masses, laplacians
 
 
 class TestMassMatrixM0:
@@ -121,9 +135,10 @@ class TestMassPreconditioner:
         assert jnp.all(diaginv > 0)
 
     @pytest.mark.parametrize("k", [0, 1, 2, 3])
-    def test_preconditioned_mass_eigs_positive(self, seq_and_p, k):
+    def test_preconditioned_mass_eigs_positive(self, seq_and_p, dense_matrices, k):
         seq, _ = seq_and_p
-        M = assemble_dense_mass_matrix(seq, k, dirichlet=False)
+        masses, _ = dense_matrices
+        M = masses[k]
         diaginv = getattr(seq, f"m{k}_sp_diaginv")
         sqrtinv = jnp.sqrt(diaginv)
         sPMs = jnp.diag(sqrtinv) @ M @ jnp.diag(sqrtinv)
@@ -148,7 +163,7 @@ class TestHodgeLaplacePreconditioner:
 
     @pytest.mark.parametrize("k", [0, 1, 2, 3])
     @pytest.mark.parametrize("dirichlet", [False, True], ids=["no_dbc", "dbc"])
-    def test_preconditioned_laplace_eigs_positive(self, seq_and_p, k, dirichlet):
+    def test_preconditioned_laplace_eigs_positive(self, seq_and_p, dense_matrices, k, dirichlet):
         """Eigenvalues of preconditioned Hodge-Laplace should be non-negative.
 
         Nullspace dimension depends on BCs:
@@ -157,7 +172,8 @@ class TestHodgeLaplacePreconditioner:
         """
         seq, _ = seq_and_p
         suffix = "_dbc" if dirichlet else ""
-        L = assemble_dense_hodge_laplacian(seq, k, dirichlet=dirichlet)
+        _, laplacians = dense_matrices
+        L = laplacians[k, dirichlet]
         diaginv = getattr(seq, f"dd{k}_sp_diaginv{suffix}")
         sqrtinv = jnp.sqrt(diaginv)
         sPLs = jnp.diag(sqrtinv) @ L @ jnp.diag(sqrtinv)

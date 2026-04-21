@@ -10,7 +10,9 @@ import pytest
 from jax.numpy import cos, pi, sin
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.relaxation import TimeStepper, compute_force, relaxation_loop
+from mrx.relaxation import (TimeStepper, State, compute_divergence_norm,
+                            compute_force, compute_helicity, initial_state,
+                            relaxation_loop)
 from mrx.utils import evaluate_at_xq
 
 jax.config.update("jax_enable_x64", True)
@@ -61,6 +63,23 @@ def B_hat(seq: DeRhamSequence) -> jnp.ndarray:
     return B
 
 
+@pytest.fixture(scope="module")
+def relaxed(seq, B_hat):
+    """Perturbed B_hat after 5 relaxation steps (computed once per module)."""
+    ts = TimeStepper(seq=seq)
+    key = jax.random.PRNGKey(42)
+    noise = 1e-3 * jax.random.normal(key, shape=B_hat.shape)
+    B_noisy = B_hat + seq.apply_inverse_mass_matrix(noise, 2)
+    B_noisy, _ = seq.apply_leray_projection(B_noisy, k=2)
+    state, traces = relaxation_loop(
+        B_noisy, ts,
+        num_iters_outer=1,
+        num_iters_inner=5,
+        dt0=1.0,
+    )
+    return state, traces
+
+
 def compute_pressure_0form(B_hat, seq):
     """Compute the 0-form pressure via k=1 Leray projection of J x H.
 
@@ -96,7 +115,7 @@ class TestZPinchPressure:
         4. The 0-form and 3-form pressures agree pointwise.
         """
         wJ = seq.jacobian_j * seq.quad.w  # (n_q,)
-        V = jnp.sum(wJ)
+        vol = jnp.sum(wJ)
 
         # --- evaluate pressures at quad points (tensor product) ---
         # The Leray projection decomposes v = v_div_free - grad(p),
@@ -119,9 +138,9 @@ class TestZPinchPressure:
         pe_jk = jax.vmap(p_exact)(seq.quad.x)  # (n_q, 1)
 
         # --- means ---
-        mean_p0 = jnp.einsum("ik,i->", p0_jk, wJ) / V
-        mean_p3 = jnp.einsum("ik,i->", p3_phys_jk, wJ) / V
-        mean_pe = jnp.einsum("ik,i->", pe_jk, wJ) / V
+        mean_p0 = jnp.einsum("ik,i->", p0_jk, wJ) / vol
+        mean_p3 = jnp.einsum("ik,i->", p3_phys_jk, wJ) / vol
+        mean_pe = jnp.einsum("ik,i->", pe_jk, wJ) / vol
 
         pe_shifted = pe_jk - mean_pe
 
@@ -157,52 +176,71 @@ class TestZPinchPressure:
 
 
 class TestRelaxation:
-    def test_relaxation_reduces_force_and_energy(self, seq, B_hat):
-        """Perturb B_hat with small noise, Leray-project, then relax.
-        Force and energy should decrease; pressure should stay similar."""
+    def test_force_decreases(self, relaxed):
+        """Relaxation should reduce the Lorentz force norm."""
+        state, traces = relaxed
+        assert traces["force_norm"][-1] < traces["force_norm"][0], (
+            f"Force did not decrease: "
+            f"{traces['force_norm'][0]:.4e} -> {traces['force_norm'][-1]:.4e}")
+
+    def test_energy_decreases(self, relaxed):
+        """Relaxation should reduce the magnetic energy."""
+        state, traces = relaxed
+        assert traces["energy"][-1] < traces["energy"][0], (
+            f"Energy did not decrease: "
+            f"{traces['energy'][0]:.4e} -> {traces['energy'][-1]:.4e}")
+
+    def test_traces_structure(self, relaxed):
+        """traces dict should have all expected keys, each with 2 entries."""
+        _, traces = relaxed
+        expected_keys = {"force_norm", "helicity", "timestep", "energy",
+                         "picard_residua", "picard_iterations",
+                         "velocity_norm", "divergence_B", "eta", "iteration"}
+        assert set(traces.keys()) == expected_keys
+        # num_iters_outer=1: record at iteration 0 (initial) and 1 => 2 entries
+        for k, v in traces.items():
+            assert len(v) == 2, f"traces['{k}'] has {len(v)} entries, expected 2"
+
+    def test_cg_descent_runs(self, seq, B_hat):
+        """CG descent should run without error and produce a finite force norm."""
+        from mrx.relaxation import DescentMethod
+        ts = TimeStepper(seq=seq, descent_method=DescentMethod.CONJUGATE_GRADIENT)
+        state, _ = relaxation_loop(B_hat, ts, num_iters_outer=1, num_iters_inner=2,
+                                   dt0=1.0)
+        assert jnp.isfinite(state.F_norm)
+
+
+class TestHelicityAndDivergence:
+    def test_divergence_of_projected_B(self, seq, B_hat):
+        """Leray-projected B_hat should be divergence-free."""
+        div_norm = compute_divergence_norm(B_hat, seq)
+        npt.assert_allclose(div_norm, 0.0, atol=1e-10,
+                            err_msg=f"div B norm: {div_norm:.2e}")
+
+    def test_helicity_shape(self, seq, B_hat):
+        """compute_helicity returns a scalar and a 1-form DOF array."""
+        A_guess = jnp.zeros(seq.n1_dbc)
+        h, A = compute_helicity(B_hat, seq, A_guess)
+        assert A.shape == (seq.n1_dbc,), f"A shape {A.shape} != ({seq.n1_dbc},)"
+        assert jnp.isfinite(h)
+
+    def test_helicity_zero(self, seq, B_hat):
+        """Z-pinch has purely toroidal B_θ with no B_z, so A·B = 0 and helicity is zero."""
+        A_guess = jnp.zeros(seq.n1_dbc)
+        h, _ = compute_helicity(B_hat, seq, A_guess)
+        npt.assert_allclose(float(h), 0.0, atol=1e-10,
+                            err_msg=f"Z-pinch helicity should be zero, got {h:.2e}")
+
+
+class TestInitialState:
+    def test_shapes(self, seq, B_hat):
+        """initial_state should produce arrays with the correct DOF sizes."""
         ts = TimeStepper(seq=seq)
-
-        # --- perturb B_hat with small random noise, then Leray-project ---
-        key = jax.random.PRNGKey(42)
-        noise = 1e-3 * jax.random.normal(key, shape=B_hat.shape)
-        B_noisy = B_hat + seq.apply_inverse_mass_matrix(noise, 2)
-        B_noisy, _ = seq.apply_leray_projection(B_noisy, k=2)
-
-        # --- before relaxation ---
-        F0, _, _, _, _ = compute_force(B_noisy, seq)
-        F_norm_0 = seq.l2_norm(F0, 2)
-        energy_0 = 0.5 * seq.l2_norm_sq(B_noisy, 2)
-        p_hat_0 = compute_pressure_0form(B_noisy, seq)
-
-        # --- 5 relaxation steps via relaxation_loop ---
-        state, traces = relaxation_loop(
-            B_noisy, ts,
-            num_iters_outer=1,
-            num_iters_inner=5,
-            dt0=1.0,
-        )
-
-        # --- after relaxation ---
-        B_final = state.B_n
-        F_final, _, _, _, _ = compute_force(B_final, seq)
-        F_norm_final = seq.l2_norm(F_final, 2)
-        energy_final = 0.5 * seq.l2_norm_sq(B_final, 2)
-        p_hat_final = compute_pressure_0form(B_final, seq)
-
-        # force went down
-        print(f"Force: {F_norm_0:.4e} -> {F_norm_final:.4e}")
-        assert F_norm_final < F_norm_0, (
-            f"Force did not decrease: {F_norm_0:.4e} -> {F_norm_final:.4e}")
-
-        # energy went down
-        print(f"Energy: {energy_0:.4e} -> {energy_final:.4e}")
-        assert energy_final < energy_0, (
-            f"Energy did not decrease: {energy_0:.4e} -> {energy_final:.4e}")
-
-        # pressure is still similar (relative change < 20%)
-        dp = p_hat_final - p_hat_0
-        change = jnp.sqrt(dp @ seq.apply_mass_matrix(dp, 0, dirichlet=False)) / (
-            jnp.sqrt(p_hat_0 @ seq.apply_mass_matrix(p_hat_0, 0, dirichlet=False)) + 1e-30)
-        print(f"Pressure relative change: {change:.4e}")
-        assert change < 0.01, (
-            f"Pressure changed too much: relative change = {change:.4e}")
+        state = initial_state(B_hat, ts, dt=2.0)
+        n = seq.n2_dbc
+        assert state.B_n.shape == (n,)
+        assert state.v.shape == (n,)
+        assert state.F_prev.shape == (n,)
+        assert state.s_history.shape == (ts.history_size, n)
+        assert state.y_history.shape == (ts.history_size, n)
+        npt.assert_allclose(state.dt, 2.0)

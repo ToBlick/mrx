@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
-from mrx.boundary import BoundaryOperator
+from mrx.extraction_operators import BoundaryOperator
 from mrx.differential_forms import DifferentialForm
 
 jax.config.update("jax_enable_x64", True)

@@ -24,8 +24,7 @@ from mrx.utils import (det33, evaluate_at_xq, integrate_against, inv33,
 
 jax.config.update("jax_enable_x64", True)
 
-nfs_path = "/scratch/tblickhan/mrx/data/gvec_nfp3_hegna_80cubed_clebsch.h5"
-nfs_path = '/Users/tobias/Coding/mrx/data/gvec_nfp3_hegna_80cubed_clebsch.h5'
+nfs_path = "data/gvec_nfp3_hegna_80cubed_clebsch.h5"
 
 
 def inspect_h5_item(name, obj):
@@ -294,36 +293,20 @@ plt.xlabel("r")
 plt.ylabel("B")
 plt.legend()
 plt.show()
-# %%
 
 # %%
+# p_proj = seq.e0 @ integrate_against(seq.eval_basis_0_ijk,
+#                                     (p_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
+# chi_proj = seq.e0 @ integrate_against(seq.eval_basis_0_ijk,
+#                                       (chi_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
+# phi_proj = seq.e0 @ integrate_against(seq.eval_basis_0_ijk,
+#                                       (phi_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
+# lambda_proj = seq.e0 @ integrate_against(
+#     seq.eval_basis_0_ijk, (lambda_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
+# p_dof, chi_dof, phi_dof, lambda_dof = [seq.apply_inverse_mass_matrix(x, 0, dirichlet=True) for x in (p_proj, chi_proj, phi_proj, lambda_proj)]
+# %%
+B_dof_direct = seq.apply_inverse_mass_matrix(B_proj, 2, dirichlet=True)
 
-# %%
-
-# %%
-p_proj = seq.e0 @ integrate_against(seq.eval_basis_0_ijk,
-                                    (p_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
-chi_proj = seq.e0 @ integrate_against(seq.eval_basis_0_ijk,
-                                      (chi_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
-phi_proj = seq.e0 @ integrate_against(seq.eval_basis_0_ijk,
-                                      (phi_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
-lambda_proj = seq.e0 @ integrate_against(
-    seq.eval_basis_0_ijk, (lambda_at_xq * J_j * seq.quad.w)[:, None], seq.basis_0.n)
-# %%
-B_dof_direct = solve_singular_cg(
-    seq.apply_m2_sparse,
-    B_proj,
-    mass_matvec=lambda x: seq.apply_m2_sparse(x, True),
-    precond_matvec=lambda x: seq.apply_m2_precond(x, True),
-    tol=seq.tol,
-    maxiter=seq.maxiter)[0]
-p_dof, chi_dof, phi_dof, lambda_dof = [solve_singular_cg(
-    lambda x: seq.apply_m0_sparse(x, False),
-    x,
-    mass_matvec=lambda x: seq.apply_m0_sparse(x, False),
-    precond_matvec=lambda x: seq.apply_m0_precond(x, False),
-    tol=seq.tol,
-    maxiter=seq.maxiter)[0] for x in (p_proj, chi_proj, phi_proj, lambda_proj)]
 # %%
 valid_indices = (pts[:, 0] < 1.0) & (pts[:, 0] > 0)
 # %%
@@ -389,143 +372,157 @@ valid_indices = (pts[:, 0] < 1.0) & (pts[:, 0] > 0)
 # %%
 
 
-def IC_projection(phi_dof, chi_dof, lambda_dof, k=2):
-    # evaluate (logical) grad (phi, chi, lambda) at quad. point j. shape: n_q x 3
-    grad_phi = evaluate_at_xq(seq.eval_d_basis_0_ijk,
-                              seq.e0.T @ phi_dof, seq.quad.n, 3)
-    grad_chi = evaluate_at_xq(seq.eval_d_basis_0_ijk,
-                              seq.e0.T @ chi_dof, seq.quad.n, 3)
-    grad_lambda = evaluate_at_xq(
-        seq.eval_d_basis_0_ijk, seq.e0.T @ lambda_dof, seq.quad.n, 3)
-    grad_theta = jnp.array([0, 1, 0])[None, :] * 2 * jnp.pi
-    grad_zeta = jnp.array([0, 0, 1])[None, :] * 2 * jnp.pi / nfp
+# def IC_projection(phi_dof, chi_dof, lambda_dof, k=2):
+#     # evaluate (logical) grad (phi, chi, lambda) at quad. point j. shape: n_q x 3
+#     grad_phi = evaluate_at_xq(seq.eval_d_basis_0_ijk,
+#                               seq.e0.T @ phi_dof, seq.quad.n, 3)
+#     grad_chi = evaluate_at_xq(seq.eval_d_basis_0_ijk,
+#                               seq.e0.T @ chi_dof, seq.quad.n, 3)
+#     grad_lambda = evaluate_at_xq(
+#         seq.eval_d_basis_0_ijk, seq.e0.T @ lambda_dof, seq.quad.n, 3)
+#     grad_theta = jnp.array([0, 1, 0])[None, :] * 2 * jnp.pi
+#     grad_zeta = jnp.array([0, 0, 1])[None, :] * 2 * jnp.pi / NFP
 
-    B_jk = jnp.cross(grad_phi, grad_theta + grad_lambda) - \
-        jnp.cross(grad_chi, grad_zeta)
-    if k == 2:
-        GB_jk = jnp.einsum('jkl,jk,j,j->jl', seq.metric_jkl,
-                           B_jk, seq.quad.w, 1 / seq.jacobian_j)
-        return seq.e2_dbc @ integrate_against(seq.eval_basis_2_ijk, GB_jk, seq.basis_2.n)
-    elif k == 1:
-        GB_jk = jnp.einsum('jk,j->jk', B_jk, seq.quad.w)
-        return seq.e1 @ integrate_against(seq.eval_basis_1_ijk, GB_jk, seq.basis_1.n)
+#     B_jk = jnp.cross(grad_phi, grad_theta + grad_lambda) - \
+#         jnp.cross(grad_chi, grad_zeta)
+#     if k == 2:
+#         GB_jk = jnp.einsum('jkl,jk,j,j->jl', seq.metric_jkl,
+#                            B_jk, seq.quad.w, 1 / seq.jacobian_j)
+#         return seq.e2_dbc @ integrate_against(seq.eval_basis_2_ijk, GB_jk, seq.basis_2.n)
+#     elif k == 1:
+#         GB_jk = jnp.einsum('jk,j->jk', B_jk, seq.quad.w)
+#         return seq.e1 @ integrate_against(seq.eval_basis_1_ijk, GB_jk, seq.basis_1.n)
 
 
 # %%
-B_proj = IC_projection(phi_dof, chi_dof, lambda_dof, k=2)
-H_proj = IC_projection(phi_dof, chi_dof, lambda_dof, k=1)
+# B_proj = IC_projection(phi_dof, chi_dof, lambda_dof, k=2)
+# H_proj = IC_projection(phi_dof, chi_dof, lambda_dof, k=1)
 # %%
 
 
-@jax.jit
-def apply_B_projection(B_proj, alpha=0.0):
+# @jax.jit
+# def apply_B_projection(B_proj, alpha=0.0):
 
-    B_guess = solve_singular_cg(
-        lambda x: seq.apply_m2_sparse(x, True),
-        B_proj,
-        precond_matvec=lambda x: seq.apply_m2_precond(x, True),
-        tol=seq.tol,
-        maxiter=seq.maxiter
-    )[0]
+#     B_guess = solve_singular_cg(
+#         lambda x: seq.apply_m2_sparse(x, True),
+#         B_proj,
+#         precond_matvec=lambda x: seq.apply_m2_precond(x, True),
+#         tol=seq.tol,
+#         maxiter=seq.maxiter
+#     )[0]
 
-    def apply_A(x):
-        return seq.apply_m2_sparse(x, True) - alpha * seq.apply_dd2_sparse(x, True)
+#     def apply_A(x):
+#         return seq.apply_m2_sparse(x, True) - alpha * seq.apply_dd2_sparse(x, True)
 
-    def apply_Ainv(x, x0=None):
-        return solve_singular_cg(
-            apply_A,
-            x,
-            mass_matvec=lambda x: seq.apply_m2_sparse(x, True),
-            precond_matvec=lambda x: seq.apply_m2_precond(x, True),
-            tol=seq.tol,
-            x0=x0,
-            maxiter=seq.maxiter
-        )[0]
+#     def apply_Ainv(x, x0=None):
+#         return solve_singular_cg(
+#             apply_A,
+#             x,
+#             mass_matvec=lambda x: seq.apply_m2_sparse(x, True),
+#             precond_matvec=lambda x: seq.apply_m2_precond(x, True),
+#             tol=seq.tol,
+#             x0=x0,
+#             maxiter=seq.maxiter
+#         )[0]
 
-    def apply_D_Ainv_Dt(x, x0=None):
-        return seq.apply_d2_sparse(apply_Ainv(seq.apply_d2t_sparse(x, True, True), x0=x0), True, True)
+#     def apply_D_Ainv_Dt(x, x0=None):
+#         return seq.apply_d2_sparse(apply_Ainv(seq.apply_d2t_sparse(x, True, True), x0=x0), True, True)
 
-    A_inv_B_proj = apply_Ainv(B_proj, x0=B_guess)
+#     A_inv_B_proj = apply_Ainv(B_proj, x0=B_guess)
 
-    q_dof = solve_singular_cg(
-        A_matvec=apply_D_Ainv_Dt,
-        b=seq.apply_d2_sparse(A_inv_B_proj, True, True),
-        mass_matvec=lambda x: seq.apply_m3_sparse(x, True),
-        vs=seq.null_3_dbc,
-        precond_matvec=lambda x: seq.apply_dd3_precond(x, True),
-        tol=seq.tol,
-        maxiter=seq.maxiter
-    )[0]
+#     q_dof = solve_singular_cg(
+#         A_matvec=apply_D_Ainv_Dt,
+#         b=seq.apply_d2_sparse(A_inv_B_proj, True, True),
+#         mass_matvec=lambda x: seq.apply_m3_sparse(x, True),
+#         vs=seq.null_3_dbc,
+#         precond_matvec=lambda x: seq.apply_dd3_precond(x, True),
+#         tol=seq.tol,
+#         maxiter=seq.maxiter
+#     )[0]
 
-    B_dof = A_inv_B_proj - apply_Ainv(seq.apply_d2t_sparse(q_dof, True, True))
+#     B_dof = A_inv_B_proj - apply_Ainv(seq.apply_d2t_sparse(q_dof, True, True))
 
-    return B_dof, q_dof, B_guess
+#     return B_dof, q_dof, B_guess
 # %%
 # B_dof, q_dof, B_guess = apply_B_projection(B_proj, alpha=0.0)
 
 
 # %%
-B_guess = solve_singular_cg(
-    lambda x: seq.apply_m2_sparse(x, True),
-    B_proj,
-    precond_matvec=lambda x: seq.apply_m2_precond(x, True),
-    tol=seq.tol,
-    maxiter=seq.maxiter
-)[0]
+w_jk = jnp.einsum('jlk,jl,j->jk', DF_j, B_at_xq, seq.quad.w)  # shape (n_q, 3)
+B_rhs = integrate_against(w_jk, comp_info_2, comp_shapes_2, quad_shape)
+w_jk = jnp.einsum('jkl,jl,j,j->jk', DF_inv_j, B_at_xq, J_j, seq.quad.w)
+H_rhs = integrate_against(w_jk, comp_info_1, comp_shapes_1, quad_shape)
+w_jk = jnp.einsum('jkl,jl,j,j->jk', DF_inv_j, mu_0 * J_at_xq, J_j, seq.quad.w)
+J_rhs = integrate_against(w_jk, comp_info_1, comp_shapes_1, quad_shape)
+# %%
+# Full-space fields for the lift-based current reconstruction.
+B_dof = seq.apply_inverse_mass_matrix(seq.e2_dbc @ B_rhs, 2, dirichlet=True)
+H_dof = seq.apply_inverse_mass_matrix(seq.e1 @ H_rhs, 1, dirichlet=False)
 
-H_guess = solve_singular_cg(
-    lambda x: seq.apply_m1_sparse(x, False),
-    H_proj,
-    precond_matvec=lambda x: seq.apply_m1_precond(x, False),
-    tol=seq.tol,
-    maxiter=seq.maxiter
-)[0]
+# K is the strong curl of the no-BC 1-form H, projected back to the 1-form space.
+K_hat_2 = seq.apply_strong_curl(H_dof, dirichlet_in=False, dirichlet_out=False)
+K_full = seq.apply_inverse_mass_matrix(
+    seq.apply_projection_matrix(K_hat_2, 2, 1, dirichlet_in=False, dirichlet_out=False), 
+    1, dirichlet=False)
+
+# Boundary-only lift induced by K.
+gK_bc = seq.e1_bc @ (seq.e1_T @ K_full)
+K_lift_spline = seq.bc_lift(gK_bc, 1)
+K_lift = seq.e1 @ K_lift_spline
+# %%
+# J projected from the input data into the full 1-form space.
+J_proj = seq.apply_inverse_mass_matrix(seq.e1 @ J_rhs, 1, dirichlet=False)
+
+# Solve only for the zero-trace correction D and reconstruct J = K_lift + D.
+# The weak-curl boundary functional is the dual load induced by K's boundary lift.
+b_partial = -seq.apply_bc_mass_correction(gK_bc, 1)
+D_dbc = seq.apply_weak_curl(
+    B_dof,
+    dirichlet_in=True,
+    dirichlet_out=True,
+    boundary_dual=b_partial,
+)
+D_spline = seq.e1_dbc_T @ D_dbc
+D_full = seq.e1 @ D_spline
+J_spline_recon = K_lift_spline + D_spline
+J_hat_recon = K_lift + D_full
 
 # %%
-B_dof = seq.apply_leray_projection(B_guess, k=2)[0]
-H_dof = seq.apply_leray_projection(H_guess, k=1)[0]
-# %%
+K_h = jax.jit(DiscreteFunction(K_full, seq.basis_1, seq.e1))
+K_h_xyz = jax.jit(Pushforward(K_h, seq.map, 1))
+K_lift_h = jax.jit(DiscreteFunction(K_lift_spline, seq.basis_1))
+K_lift_h_xyz = jax.jit(Pushforward(K_lift_h, seq.map, 1))
+J_h_proj = jax.jit(DiscreteFunction(J_proj, seq.basis_1, seq.e1))
+J_h_proj_xyz = jax.jit(Pushforward(J_h_proj, seq.map, 1))
+D_h = jax.jit(DiscreteFunction(D_dbc, seq.basis_1, seq.e1_dbc))
+D_h_xyz = jax.jit(Pushforward(D_h, seq.map, 1))
+J_h_recon = jax.jit(DiscreteFunction(J_spline_recon, seq.basis_1))
+J_h_recon_xyz = jax.jit(Pushforward(J_h_recon, seq.map, 1))
 
-# %%
-# J_hat_strong_dbc = seq.apply_strong_curl(
-#     H_dof, dirichlet_in=False, dirichlet_out=True)
-# J_h_strong_dbc = jax.jit(DiscreteFunction(
-#     J_hat_strong_dbc, seq.basis_2, seq.e2_dbc))
-# J_h_strong_xyz_dbc = jax.jit(Pushforward(J_h_strong_dbc, seq.map, 2))
-
-# J_hat_strong = seq.apply_strong_curl(
-#     H_dof, dirichlet_in=False, dirichlet_out=False)
-# J_h_strong = jax.jit(DiscreteFunction(J_hat_strong_dbc, seq.basis_2, seq.e2))
-# J_h_strong_xyz = jax.jit(Pushforward(J_h_strong_dbc, seq.map, 2))
-
-J_hat_weak_dbc = seq.apply_weak_curl(
-    B_dof, dirichlet_in=True, dirichlet_out=True)
-J_h_weak_dbc = jax.jit(DiscreteFunction(
-    J_hat_weak_dbc, seq.basis_1, seq.e1_dbc))
-J_h_weak_xyz_dbc = jax.jit(Pushforward(J_h_weak_dbc, seq.map, 1))
-
-__r = jnp.linspace(0.001, 0.999, 1000)
+__r = jnp.linspace(0.001, 0.999, 500)
 eval_pts = jnp.vstack([__r, jnp.zeros_like(__r), jnp.zeros_like(__r)]).T
 
-# J_strong_dbc_xyz_at_r = jax.vmap(J_h_strong_xyz_dbc)(eval_pts)
-# J_strong_xyz_at_r = jax.vmap(J_h_strong_xyz)(eval_pts)
-J_weak_dbc_xyz_at_r = jax.vmap(J_h_weak_xyz_dbc)(eval_pts)
+K_xyz_at_r = jax.vmap(K_h_xyz)(eval_pts)
+K_lift_xyz_at_r = jax.vmap(K_lift_h_xyz)(eval_pts)
+J_proj_xyz_at_r = jax.vmap(J_h_proj_xyz)(eval_pts)
+D_xyz_at_r = jax.vmap(D_h_xyz)(eval_pts)
+J_recon_xyz_at_r = jax.vmap(J_h_recon_xyz)(eval_pts)
 # %%
-# plt.plot(__r, J_strong_dbc_xyz_at_r[:, 0],
-#          label="J_x (strong, J.n = 0)", ls="--")
-# plt.plot(__r, J_strong_dbc_xyz_at_r[:, 1],
-#          label="J_y (strong, J.n = 0)", ls="--")
-# plt.plot(__r, J_strong_dbc_xyz_at_r[:, 2],
-#          label="J_z (strong, J.n = 0)", ls="--")
-# plt.plot(__r, J_strong_xyz_at_r[:, 0], label="J_x (strong)", ls="-")
-# plt.plot(__r, J_strong_xyz_at_r[:, 1], label="J_y (strong)", ls="-")
-# plt.plot(__r, J_strong_xyz_at_r[:, 2], label="J_z (strong)", ls="-")
-plt.plot(__r, J_weak_dbc_xyz_at_r[:, 0], label="J_x (weak, Jxn = 0)", ls=":")
-plt.plot(__r, J_weak_dbc_xyz_at_r[:, 1], label="J_y (weak, Jxn = 0)", ls=":")
-plt.plot(__r, J_weak_dbc_xyz_at_r[:, 2], label="J_z (weak, Jxn = 0)", ls=":")
-# plt.plot(__r, J_weak_xyz_at_r[:, 0], label="J_x (weak)", ls="-.")
-# plt.plot(__r, J_weak_xyz_at_r[:, 1], label="J_y (weak)", ls="-.")
-# plt.plot(__r, J_weak_xyz_at_r[:, 2], label="J_z (weak)", ls="-.")
+plt.plot(__r, K_xyz_at_r[:, 0], label="K_x (curl H)", ls="-.")
+plt.plot(__r, K_xyz_at_r[:, 1], label="K_y (curl H)", ls="-.")
+plt.plot(__r, K_xyz_at_r[:, 2], label="K_z (curl H)", ls="-.")
+plt.plot(__r, K_lift_xyz_at_r[:, 0], label="K_lift_x", ls=":")
+plt.plot(__r, K_lift_xyz_at_r[:, 1], label="K_lift_y", ls=":")
+plt.plot(__r, K_lift_xyz_at_r[:, 2], label="K_lift_z", ls=":")
+plt.plot(__r, D_xyz_at_r[:, 0], label="D_x", ls=":")
+plt.plot(__r, D_xyz_at_r[:, 1], label="D_y", ls=":")
+plt.plot(__r, D_xyz_at_r[:, 2], label="D_z", ls=":")
+plt.plot(__r, J_proj_xyz_at_r[:, 0], label="Jproj_x", ls="-")
+plt.plot(__r, J_proj_xyz_at_r[:, 1], label="Jproj_y", ls="-")
+plt.plot(__r, J_proj_xyz_at_r[:, 2], label="Jproj_z", ls="-")
+plt.plot(__r, J_recon_xyz_at_r[:, 0], label="Jrecon_x", ls="--")
+plt.plot(__r, J_recon_xyz_at_r[:, 1], label="Jrecon_y", ls="--")
+plt.plot(__r, J_recon_xyz_at_r[:, 2], label="Jrecon_z", ls="--")
 plt.xlabel("r")
 plt.ylabel("J")
 plt.legend()
@@ -534,44 +531,30 @@ plt.show()
 # %%
 B_h_xyz = jax.jit(Pushforward(DiscreteFunction(
     B_dof, seq.basis_2, seq.e2_dbc), seq.map, 2))
-B_h = jax.jit(DiscreteFunction(B_dof, seq.basis_2, seq.e2_dbc))
+B_h = jax.jit(DiscreteFunction(B_dof, seq.basis_2, seq.e2))
 
-# B_h_xyz = jax.jit(Pushforward(DiscreteFunction(
-#     H_dof, seq.basis_1, seq.e1), seq.map, 1))
-# B_h = jax.jit(DiscreteFunction(H_dof, seq.basis_1, seq.e1))
+H_h_xyz = jax.jit(Pushforward(DiscreteFunction(
+    H_dof, seq.basis_1, seq.e1), seq.map, 1))
+H_h = jax.jit(DiscreteFunction(H_dof, seq.basis_1, seq.e1))
 
 B_xyz_at_rad = jax.vmap(B_h_xyz)(eval_pts)
+H_xyz_at_rad = jax.vmap(H_h_xyz)(eval_pts)
 # %%
 plt.plot(__r, B_xyz_at_rad[:, 0], label="B_x")
 plt.plot(__r, B_xyz_at_rad[:, 1], label="B_y")
 plt.plot(__r, B_xyz_at_rad[:, 2], label="B_z")
+plt.plot(__r, H_xyz_at_rad[:, 0], label="H_x", ls=":")
+plt.plot(__r, H_xyz_at_rad[:, 1], label="H_y", ls=":")
+plt.plot(__r, H_xyz_at_rad[:, 2], label="H_z", ls=":")
 # plt.plot(__r, jnp.linalg.norm(B_xyz_at_rad, axis=1), label="|B|")
 plt.xlabel("r")
 plt.ylabel("B")
 plt.legend()
 plt.show()
-
 # %%
-# # %%
-# # Dissipate some B away:
-# alpha = 1e-5
-
-# def apply_A(x):
-#     return seq.apply_m2_sparse(x, True) + alpha * seq.apply_dd2_sparse(x, True)
-
-# def apply_Ainv(x, x0=None):
-#     return solve_singular_cg(
-#         apply_A,
-#         x,
-#         mass_matvec=lambda x: seq.apply_m2_sparse(x, True),
-#         precond_matvec=lambda x: seq.apply_m2_precond(x, True),
-#         tol=seq.tol,
-#         x0=x0,
-#         maxiter=seq.maxiter
-#     )[0]
-
-
-# for _ in range(10):
-#     B_dof = apply_Ainv(seq.apply_m2_sparse(B_dof, True), x0=B_dof)
-# # %%
-# # %%
+div_B = seq.apply_strong_div(B_dof, dirichlet_in=True, dirichlet_out=True)
+norm_B = (B_dof @ seq.apply_mass_matrix(B_dof, 2))**0.5
+norm_div_B = (div_B @ seq.apply_mass_matrix(div_B, 3))**0.5
+print(f"||B|| = {norm_B:.3e}")
+print(f"||div B|| = {norm_div_B:.3e}")
+# %%

@@ -1007,6 +1007,7 @@ def assemble_projection_matrix(seq, k_from, k_to):
                 list(seq.basis_1.shape), seq.basis_1.pr,
                 col_comp_shapes=list(seq.basis_2.shape))
             seq.m12_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.m21_sp = jsparse.BCSR.from_bcoo(sp.T)
         case (3, 0) | (0, 3):
             W_1x1 = seq.quad.w.reshape(-1, 1, 1)
             row_terms = [
@@ -1020,6 +1021,7 @@ def assemble_projection_matrix(seq, k_from, k_to):
                 list(seq.basis_0.shape), seq.basis_0.pr,
                 col_comp_shapes=list(seq.basis_3.shape))
             seq.m03_sp = jsparse.BCSR.from_bcoo(sp)
+            seq.m30_sp = jsparse.BCSR.from_bcoo(sp.T)
         case _:
             raise ValueError(
                 "Only (k_from, k_to) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")

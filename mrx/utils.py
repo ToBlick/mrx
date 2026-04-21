@@ -36,19 +36,6 @@ def double_map(f, xs, ys):
     return jax.lax.map(outer, xs, batch_size=mrx.MAP_BATCH_SIZE_OUTER)
 
 
-def norm_2(u: jnp.ndarray, Seq) -> float:
-    """Compute the L2 norm of a vector field.
-
-    Args:
-        u: Vector field.
-        Seq: DeRham sequence object.
-
-    Returns:
-        L2 norm of the vector field.
-    """
-    return (u @ Seq.M2 @ u)**0.5
-
-
 def jacobian_determinant(f: Callable[[jnp.ndarray], jnp.ndarray]) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Compute the determinant of the Jacobian matrix for a given function.
 

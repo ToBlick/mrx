@@ -5,8 +5,6 @@ Hodge-Laplace solves use MINRES on the full saddle-point system (k>=1)
 with CG-based block preconditioner. Verified against dense direct solves.
 """
 
-import time
-
 import jax
 import jax.numpy as jnp
 import numpy.testing as npt
@@ -14,13 +12,13 @@ import pytest
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import toroid_map
-from mrx.solvers import (preconditioned_cg, solve_saddle_point_minres,
-                         solve_singular_cg)
+from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
 
 jax.config.update("jax_enable_x64", True)
 
 types = ("clamped", "periodic", "periodic")
-N_TIMING_SOLVES = 5
+# Betti numbers for a solid torus
+BETTI = [1, 1, 0, 0]
 
 
 @pytest.fixture(scope="module")
@@ -31,14 +29,37 @@ def seq():
     s = DeRhamSequence((n, n, n), (p, p, p), 2 * p, types, F,
                        polar=True, tol=1e-12, maxiter=2000)
     s.evaluate_1d()
-    for k in range(4):
-        s.assemble_mass_matrix(k)
-    for k in range(3):
-        s.assemble_derivative_matrix(k)
-    for k in range(4):
-        s.assemble_hodge_laplacian(k)
-    s.compute_nullspaces()
+    s.assemble_all_sparse()
+    s._compute_nullspaces(BETTI)
     return s
+
+
+@pytest.fixture(scope="module")
+def dense_saddle_blocks(seq):
+    """Precomputed dense saddle-point blocks for all (k, dirichlet) pairs.
+
+    Returns a dict keyed by (k, dirichlet) with values (S, D, DT, M).
+    """
+    blocks = {}
+    for k in [1, 2, 3]:
+        for dirichlet in [False, True]:
+            suffix = "_dbc" if dirichlet else ""
+            n_u = getattr(seq, f"n{k}{suffix}")
+            n_s = getattr(seq, f"n{k-1}{suffix}")
+            S = _build_dense(
+                lambda x, k=k, d=dirichlet: seq.apply_stiffness(x, k, dirichlet=d), n_u)
+            D = _build_dense(
+                lambda s, k=k, d=dirichlet: seq.apply_derivative_matrix(
+                    s, k-1, dirichlet_in=d, dirichlet_out=d),
+                n_s, n_u)
+            DT = _build_dense(
+                lambda u, k=k, d=dirichlet: seq.apply_derivative_matrix(
+                    u, k-1, dirichlet_in=d, dirichlet_out=d, transpose=True),
+                n_u, n_s)
+            M = _build_dense(
+                lambda s, k=k, d=dirichlet: seq.apply_mass_matrix(s, k-1, dirichlet=d), n_s)
+            blocks[k, dirichlet] = (S, D, DT, M)
+    return blocks
 
 
 # --------------------------------------------------------------------------
@@ -48,13 +69,6 @@ def seq():
 def _random_rhs(key, n):
     """Random RHS vector."""
     return jax.random.normal(key, (n,))
-
-
-def _get_nullspace(seq, k, dirichlet):
-    if dirichlet:
-        return getattr(seq, f"null_{k}_dbc")
-    else:
-        return getattr(seq, f"null_{k}")
 
 
 def _ndofs(seq, k, dirichlet):
@@ -125,7 +139,7 @@ class TestHodgeLaplaceSolves:
     def test_laplace_round_trip(self, seq, k, dirichlet):
         """Random b → x = L^{-1} b → L x ≈ b (up to nullspace)."""
         n = _ndofs(seq, k, dirichlet)
-        vs = _get_nullspace(seq, k, dirichlet)
+        vs = seq._get_nullspace(k, dirichlet)
         b = _random_rhs(jax.random.PRNGKey(k + 100 * dirichlet), n)
 
         # Project b out of the nullspace
@@ -168,27 +182,14 @@ class TestSaddlePointDenseVerification:
 
     @pytest.mark.parametrize("k", [1, 2, 3])
     @pytest.mark.parametrize("dirichlet", [False, True], ids=["no_dbc", "dbc"])
-    def test_minres_matches_direct(self, seq, k, dirichlet):
+    def test_minres_matches_direct(self, seq, dense_saddle_blocks, k, dirichlet):
         """MINRES solution matches dense direct solve to high accuracy."""
         suffix = "_dbc" if dirichlet else ""
         n_u = getattr(seq, f"n{k}{suffix}")
         n_s = getattr(seq, f"n{k-1}{suffix}")
         vs = seq._get_nullspace(k, dirichlet)
 
-        # Build dense blocks
-        S = _build_dense(
-            lambda x: seq.apply_stiffness(x, k, dirichlet=dirichlet), n_u)
-        D = _build_dense(
-            lambda s: seq.apply_derivative_matrix(
-                s, k-1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
-            n_s, n_u)
-        DT = _build_dense(
-            lambda u: seq.apply_derivative_matrix(
-                u, k-1, dirichlet_in=dirichlet, dirichlet_out=dirichlet,
-                transpose=True),
-            n_u, n_s)
-        M = _build_dense(
-            lambda s: seq.apply_mass_matrix(s, k-1, dirichlet=dirichlet), n_s)
+        S, D, DT, M = dense_saddle_blocks[k, dirichlet]
 
         # Full saddle-point matrix
         K = jnp.block([[S, D], [DT, -M]])
@@ -221,32 +222,15 @@ class TestSaddlePointDenseVerification:
 
     @pytest.mark.parametrize("k", [1, 2, 3])
     @pytest.mark.parametrize("dirichlet", [False, True], ids=["no_dbc", "dbc"])
-    def test_saddle_point_symmetry(self, seq, k, dirichlet):
+    def test_saddle_point_symmetry(self, seq, dense_saddle_blocks, k, dirichlet):
         """Dense saddle-point matrix K is symmetric: K = K^T."""
-        suffix = "_dbc" if dirichlet else ""
-        n_u = getattr(seq, f"n{k}{suffix}")
-        n_s = getattr(seq, f"n{k-1}{suffix}")
-
-        S = _build_dense(
-            lambda x: seq.apply_stiffness(x, k, dirichlet=dirichlet), n_u)
-        D = _build_dense(
-            lambda s: seq.apply_derivative_matrix(
-                s, k-1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
-            n_s, n_u)
-        DT = _build_dense(
-            lambda u: seq.apply_derivative_matrix(
-                u, k-1, dirichlet_in=dirichlet, dirichlet_out=dirichlet,
-                transpose=True),
-            n_u, n_s)
-        M = _build_dense(
-            lambda s: seq.apply_mass_matrix(s, k-1, dirichlet=dirichlet), n_s)
-
+        S, D, DT, M = dense_saddle_blocks[k, dirichlet]
         K = jnp.block([[S, D], [DT, -M]])
         npt.assert_allclose(K, K.T, atol=1e-12)
 
     @pytest.mark.parametrize("k", [1, 2, 3])
     @pytest.mark.parametrize("dirichlet", [False, True], ids=["no_dbc", "dbc"])
-    def test_saddle_point_residual(self, seq, k, dirichlet):
+    def test_saddle_point_residual(self, seq, dense_saddle_blocks, k, dirichlet):
         """Saddle-point residual ||K x - rhs|| / ||rhs|| is small."""
         suffix = "_dbc" if dirichlet else ""
         n_u = getattr(seq, f"n{k}{suffix}")
@@ -254,20 +238,7 @@ class TestSaddlePointDenseVerification:
         vs = seq._get_nullspace(k, dirichlet)
         vs_upper, vs_lower = seq._get_saddle_point_nullspaces(k, dirichlet)
 
-        # Build dense K for residual check
-        S = _build_dense(
-            lambda x: seq.apply_stiffness(x, k, dirichlet=dirichlet), n_u)
-        D = _build_dense(
-            lambda s: seq.apply_derivative_matrix(
-                s, k-1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
-            n_s, n_u)
-        DT = _build_dense(
-            lambda u: seq.apply_derivative_matrix(
-                u, k-1, dirichlet_in=dirichlet, dirichlet_out=dirichlet,
-                transpose=True),
-            n_u, n_s)
-        M = _build_dense(
-            lambda s: seq.apply_mass_matrix(s, k-1, dirichlet=dirichlet), n_s)
+        S, D, DT, M = dense_saddle_blocks[k, dirichlet]
         K = jnp.block([[S, D], [DT, -M]])
 
         b = _random_rhs(jax.random.PRNGKey(k + 100 * dirichlet + 99), n_u)

@@ -3,7 +3,6 @@ from typing import Callable
 import jax
 import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
-from jax.scipy.sparse.linalg import cg
 
 import mrx
 from mrx.assembly import (assemble_all_sparse, assemble_derivative_matrix,
@@ -19,7 +18,7 @@ from mrx.assembly import (assemble_all_sparse, assemble_derivative_matrix,
                           eval_d_basis_1_ijk, eval_d_basis_2_ijk, grad_1d)
 from mrx.differential_forms import DifferentialForm
 from mrx.extraction_operators import (BoundaryOperator,
-                                      PolarExtractionOperator, get_xi)
+                                      PolarExtractionOperator, bc_extraction_op, get_xi)
 from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
                            find_nullspace_vectors, get_nullspace,
                            get_saddle_point_nullspaces)
@@ -150,28 +149,51 @@ class DeRhamSequence():
         def _to_bcsr_pair(bcoo):
             return jsparse.BCSR.from_bcoo(bcoo), jsparse.BCSR.from_bcoo(bcoo.T)
 
-        self.e0, self.e0_T = _to_bcsr_pair(e0.assemble_sparse())
-        self.e0_dbc, self.e0_dbc_T = _to_bcsr_pair(e0_dbc.assemble_sparse())
+        e0_bcoo = e0.assemble_sparse()
+        e0_dbc_bcoo = e0_dbc.assemble_sparse()
+        self.e0, self.e0_T = _to_bcsr_pair(e0_bcoo)
+        self.e0_dbc, self.e0_dbc_T = _to_bcsr_pair(e0_dbc_bcoo)
+        self.e0_bc, self.e0_bc_T = _to_bcsr_pair(
+            bc_extraction_op(e0_bcoo, e0_dbc_bcoo, self.basis_0.n))
         self.n0 = e0.n
         self.n0_dbc = e0_dbc.n
+        self.n0_bc = e0.n - e0_dbc.n
         self.n0_1, self.n0_2, self.n0_3 = e0.n, 0, 0
         self.n0_1_dbc, self.n0_2_dbc, self.n0_3_dbc = e0_dbc.n, 0, 0
-        self.e1, self.e1_T = _to_bcsr_pair(e1.assemble_sparse())
-        self.e1_dbc, self.e1_dbc_T = _to_bcsr_pair(e1_dbc.assemble_sparse())
+
+        e1_bcoo = e1.assemble_sparse()
+        e1_dbc_bcoo = e1_dbc.assemble_sparse()
+        self.e1, self.e1_T = _to_bcsr_pair(e1_bcoo)
+        self.e1_dbc, self.e1_dbc_T = _to_bcsr_pair(e1_dbc_bcoo)
+        self.e1_bc, self.e1_bc_T = _to_bcsr_pair(
+            bc_extraction_op(e1_bcoo, e1_dbc_bcoo, self.basis_1.n))
         self.n1 = e1.n
         self.n1_dbc = e1_dbc.n
+        self.n1_bc = e1.n - e1_dbc.n
         self.n1_1, self.n1_2, self.n1_3 = e1.n1, e1.n2, e1.n2
         self.n1_1_dbc, self.n1_2_dbc, self.n1_3_dbc = e1_dbc.n1, e1_dbc.n2, e1_dbc.n2
-        self.e2, self.e2_T = _to_bcsr_pair(e2.assemble_sparse())
-        self.e2_dbc, self.e2_dbc_T = _to_bcsr_pair(e2_dbc.assemble_sparse())
+
+        e2_bcoo = e2.assemble_sparse()
+        e2_dbc_bcoo = e2_dbc.assemble_sparse()
+        self.e2, self.e2_T = _to_bcsr_pair(e2_bcoo)
+        self.e2_dbc, self.e2_dbc_T = _to_bcsr_pair(e2_dbc_bcoo)
+        self.e2_bc, self.e2_bc_T = _to_bcsr_pair(
+            bc_extraction_op(e2_bcoo, e2_dbc_bcoo, self.basis_2.n))
         self.n2 = e2.n
         self.n2_dbc = e2_dbc.n
+        self.n2_bc = e2.n - e2_dbc.n
         self.n2_1, self.n2_2, self.n2_3 = e2.n1, e2.n2, e2.n3
         self.n2_1_dbc, self.n2_2_dbc, self.n2_3_dbc = e2_dbc.n1, e2_dbc.n2, e2_dbc.n3
-        self.e3, self.e3_T = _to_bcsr_pair(e3.assemble_sparse())
-        self.e3_dbc, self.e3_dbc_T = _to_bcsr_pair(e3_dbc.assemble_sparse())
+
+        e3_bcoo = e3.assemble_sparse()
+        e3_dbc_bcoo = e3_dbc.assemble_sparse()
+        self.e3, self.e3_T = _to_bcsr_pair(e3_bcoo)
+        self.e3_dbc, self.e3_dbc_T = _to_bcsr_pair(e3_dbc_bcoo)
+        self.e3_bc, self.e3_bc_T = _to_bcsr_pair(
+            bc_extraction_op(e3_bcoo, e3_dbc_bcoo, self.basis_3.n))
         self.n3 = e3.n
         self.n3_dbc = e3_dbc.n
+        self.n3_bc = e3.n - e3_dbc.n
         self.n3_1, self.n3_2, self.n3_3 = e3.n1, e3.n2, e3.n3
         self.n3_1_dbc, self.n3_2_dbc, self.n3_3_dbc = e3_dbc.n1, e3_dbc.n2, e3_dbc.n3
 
@@ -182,6 +204,58 @@ class DeRhamSequence():
         self.p0_dbc, self.p1_dbc, self.p2_dbc, self.p3_dbc = [
             Projector(self, k, True) for k in range(4)
         ]
+
+        self.p0_bc, self.p1_bc, self.p2_bc, self.p3_bc = [
+            Projector(self, k, bc=True) for k in range(4)
+        ]
+
+    def bc_lift(self, g: jnp.ndarray, k: int) -> jnp.ndarray:
+        """Embed boundary DOF values into the full spline basis space.
+
+        Parameters
+        ----------
+        g : array of shape (n_k_bc,)
+            DOF values at the Dirichlet boundary nodes.
+        k : int
+            Form degree (0, 1, 2, 3).
+
+        Returns
+        -------
+        array of shape (basis_k.n,)
+            Full spline vector with g placed at the BC positions,
+            zeros everywhere else.  Multiply any full-spline-space
+            operator by this vector to compute the BC contribution.
+        """
+        e_bc_T = getattr(self, f'e{k}_bc_T')
+        return e_bc_T @ g
+
+    def apply_bc_mass_correction(self, g: jnp.ndarray, k: int) -> jnp.ndarray:
+        """Compute the DBC-space RHS correction for a non-zero Dirichlet BC.
+
+        For a k-form mass-matrix system  M_dbc @ u = rhs  where the
+        boundary DOFs are prescribed as g, the corrected right-hand side is::
+
+            rhs_corrected = rhs - seq.apply_bc_mass_correction(g, k)
+
+        The correction is  E_dbc @ M_full @ E_bc^T @ g, i.e. the
+        DBC-space projection of the mass matrix applied to the BC lift.
+
+        Requires ``assemble_all_sparse()`` (or the relevant
+        ``assemble_M{k}`` call) to have been called first.
+
+        Parameters
+        ----------
+        g : array of shape (n_k_bc,)
+        k : int
+
+        Returns
+        -------
+        array of shape (n_k_dbc,)
+        """
+        m_sp = getattr(self, f'm{k}_sp')
+        e_dbc = getattr(self, f'e{k}_dbc')
+        e_bc_T = getattr(self, f'e{k}_bc_T')
+        return e_dbc @ (m_sp @ (e_bc_T @ g))
 
     def evaluate_1d(self):
         """
@@ -348,28 +422,56 @@ class DeRhamSequence():
             v, 2, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out)
         return self.apply_inverse_mass_matrix(dv_dual, 3, dirichlet=dirichlet_out)
 
-    def apply_weak_grad(self, v, dirichlet_in=True, dirichlet_out=True):
+    def _add_boundary_dual(self, dv_dual, boundary_dual, operator_name):
+        """Add a prescribed boundary functional in the operator's dual target space."""
+        if boundary_dual is None:
+            return dv_dual
+        if boundary_dual.shape != dv_dual.shape:
+            raise ValueError(
+                f"{operator_name}: boundary_dual shape {boundary_dual.shape} does not match dual shape {dv_dual.shape}"
+            )
+        return dv_dual + boundary_dual
+
+    def apply_weak_grad(self, v, dirichlet_in=True, dirichlet_out=True, boundary_dual=None):
         """
         Apply the weak gradient operator to a vector v.
+
+        This returns ``M2^{-1} (-D2.T v + boundary_dual)`` where
+        ``boundary_dual`` is an optional prescribed boundary functional in the
+        dual 2-form space.
         """
         dv_dual = -self.apply_derivative_matrix(
             v, 2, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out, transpose=True)
+        dv_dual = self._add_boundary_dual(
+            dv_dual, boundary_dual, "apply_weak_grad")
         return self.apply_inverse_mass_matrix(dv_dual, 2, dirichlet=dirichlet_out)
 
-    def apply_weak_curl(self, v, dirichlet_in=True, dirichlet_out=True):
+    def apply_weak_curl(self, v, dirichlet_in=True, dirichlet_out=True, boundary_dual=None):
         """
         Apply the weak curl operator to a vector v.
+
+        This returns ``M1^{-1} (D1.T v + boundary_dual)`` where
+        ``boundary_dual`` is an optional prescribed boundary functional in the
+        dual 1-form space.
         """
         dv_dual = self.apply_derivative_matrix(
             v, 1, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out, transpose=True)
+        dv_dual = self._add_boundary_dual(
+            dv_dual, boundary_dual, "apply_weak_curl")
         return self.apply_inverse_mass_matrix(dv_dual, 1, dirichlet=dirichlet_out)
 
-    def apply_weak_div(self, v, dirichlet_in=True, dirichlet_out=True):
+    def apply_weak_div(self, v, dirichlet_in=True, dirichlet_out=True, boundary_dual=None):
         """
         Apply the weak divergence operator to a vector v.
+
+        This returns ``M0^{-1} (-D0.T v + boundary_dual)`` where
+        ``boundary_dual`` is an optional prescribed boundary functional in the
+        dual 0-form space.
         """
         dv_dual = -self.apply_derivative_matrix(
             v, 0, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out, transpose=True)
+        dv_dual = self._add_boundary_dual(
+            dv_dual, boundary_dual, "apply_weak_div")
         return self.apply_inverse_mass_matrix(dv_dual, 0, dirichlet=dirichlet_out)
 
     def apply_mass_matrix_preconditioner(self, v, k, dirichlet=True):

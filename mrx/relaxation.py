@@ -310,9 +310,12 @@ class TimeStepper(eqx.Module):
         elif self.descent_method == DescentMethod.CONJUGATE_GRADIENT:
             u = F
             v = state.v
-            beta = jnp.maximum(
-                (u @ self.seq.apply_mass_matrix(u - v, 2)) /
-                self.seq.l2_norm_sq(v, 2),
+            v_norm_sq = self.seq.l2_norm_sq(v, 2)
+            beta = jnp.where(
+                v_norm_sq > 0,
+                jnp.maximum(
+                    (u @ self.seq.apply_mass_matrix(u - v, 2)) / v_norm_sq,
+                    0.0),
                 0.0)
             u = u + beta * v
         elif self.descent_method == DescentMethod.GRADIENT:
@@ -329,7 +332,7 @@ class TimeStepper(eqx.Module):
         E_dual = self.seq.cross_product_projection(
             u, H, 1, 2, 1, True, True, self.dirichlet_H)
         E = self.seq.apply_inverse_mass_matrix(E_dual, 1, guess=state.E)
-        E = E - state.eta * self.seq.apply_strong_curl(J)
+        E = E - state.eta * J
 
         dB = self.seq.apply_strong_curl(E)
         if self.dt_mode == TimeStepChoice.FIXED or self.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:

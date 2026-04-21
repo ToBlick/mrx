@@ -687,3 +687,31 @@ class BoundaryOperator:
     def sparse_matrix(self):
         """Wrapper for assemble_sparse."""
         return self.assemble_sparse()
+
+
+def bc_extraction_op(
+    e_bcoo,
+    e_dbc_bcoo,
+    n_full: int,
+):
+    """Build the extraction operator for Dirichlet boundary DOFs.
+
+    Returns a BCOO matrix of shape (n_bc, n_full) that selects the
+    DOFs present in ``e`` (unrestricted) but absent from ``e_dbc`` (DBC),
+    i.e. the DOFs that are set to zero by the homogeneous Dirichlet BC.
+
+    Uses the identity: columns present in e but not e_dbc satisfy
+        (e.T @ 1  -  e_dbc.T @ 1)[i] == 1
+    """
+    indicator = np.array(
+        e_bcoo.T @ jnp.ones(e_bcoo.shape[0])
+        - e_dbc_bcoo.T @ jnp.ones(e_dbc_bcoo.shape[0])
+    )
+    bc_cols = np.where(indicator > 0.5)[0]
+    n_bc = len(bc_cols)
+    if n_bc == 0:
+        return jsparse.BCOO(
+            (jnp.zeros(0), jnp.zeros((0, 2), dtype=jnp.int32)),
+            shape=(0, n_full))
+    indices = jnp.array(np.stack([np.arange(n_bc), bc_cols], axis=-1))
+    return jsparse.BCOO((jnp.ones(n_bc), indices), shape=(n_bc, n_full))

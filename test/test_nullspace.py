@@ -11,7 +11,6 @@ import time
 import jax
 import jax.numpy as jnp
 import numpy as np
-import numpy.testing as npt
 import pytest
 from scipy.linalg import eigh
 
