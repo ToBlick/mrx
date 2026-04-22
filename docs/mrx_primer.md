@@ -35,7 +35,7 @@ $\{\lambda^\zeta_c\}$ of degrees $p_r, p_\theta, p_\zeta$, the 3D 0-form
 basis functions are products
 
 $$
-\Lambda^0_{abc}(\hat x) = \lambda^r_a(r)\,\lambda^\theta_b(\theta)\,\lambda^\zeta_c(\zeta).
+\Lambda^0_{abc}(\hat x) = \lambda^r_a(r)\lambda^\theta_b(\theta)\lambda^\zeta_c(\zeta).
 $$
 
 For $k=1,2$ we take one derivative in $k$ of the three directions,
@@ -66,7 +66,7 @@ These discrete spaces reproduce the continuous de Rham complex exactly. The grad
 A discrete $k$-form
 
 $$
-u_h^k(\hat x) = \sum_I \texttt{u}_I\, \Lambda^k_I(\hat x)
+u_h^k(\hat x) = \sum_I \texttt{u}_I \Lambda^k_I(\hat x)
 $$
 
 is stored as a coefficient vector `u` of length `basis_k.n` (with boundary conditions applied later via extraction — see §3). 
@@ -87,21 +87,21 @@ element-by-element loop.
 Every mass / stiffness matrix entry is of the form
 
 $$
-\mathbb{M}_{IJ}^k = \int_{\hat \Omega} \Lambda^k_I(\hat x) \cdot W^k(\hat x) \Lambda^k_J(\hat x)\, d\hat x
+\mathbb{M}_{IJ}^k = \int_{\hat \Omega} \Lambda^k_I(\hat x) \cdot W^k(\hat x) \Lambda^k_J(\hat x) d\hat x
 $$
 
 for some weight tensor $W$ (scalar for mass/pressure forms, $3\times 3$
 for 1-forms and 2-forms). 
 
-Concretely, $\mathbb{W}$ is built from the coordinate mapping Jacobian $D\Phi$:
+Concretely, ${W}$ is built from the coordinate mapping Jacobian $D\Phi$:
 
-$$\mathbb{M}^0_{IJ} = \int_\Omega \Lambda^0_I(\hat x) \Lambda^0_J(\hat x) \det D\Phi(\hat x) \, d\hat x$$
+$$\mathbb{M}^0_{IJ} = \int_\Omega \Lambda^0_I(\hat x) \Lambda^0_J(\hat x) \det D\Phi(\hat x) d\hat x$$
 
-$$\mathbb{M}^1_{IJ} = \int_\Omega \Lambda^1_I(\hat x) \cdot (D\Phi)^{-1} (D\Phi)^{-T} \Lambda^1_J(\hat x) \det D\Phi(\hat x) \, d\hat x$$
+$$\mathbb{M}^1_{IJ} = \int_\Omega \Lambda^1_I(\hat x) \cdot (D\Phi)^{-1} (D\Phi)^{-T} \Lambda^1_J(\hat x) \det D\Phi(\hat x) d\hat x$$
 
-$$\mathbb{M}^2_{IJ} = \int_\Omega \Lambda^2_I(\hat x) \cdot (D\Phi)^{T} (D\Phi) \Lambda^2_J(\hat x) (\det D\Phi(\hat x))^{-1} \, d\hat x$$
+$$\mathbb{M}^2_{IJ} = \int_\Omega \Lambda^2_I(\hat x) \cdot (D\Phi)^{T} (D\Phi) \Lambda^2_J(\hat x) (\det D\Phi(\hat x))^{-1} d\hat x$$
 
-$$\mathbb{M}^3_{IJ} = \int_\Omega \Lambda^3_I(\hat x) \Lambda^3_J(\hat x) (\det D\Phi(\hat x))^{-1} \, d\hat x$$
+$$\mathbb{M}^3_{IJ} = \int_\Omega \Lambda^3_I(\hat x) \Lambda^3_J(\hat x) (\det D\Phi(\hat x))^{-1} d\hat x$$
 
 The entries of stiffness/derivative matrices are similar but with one or two of the $\Lambda$ swapped for their derivatives. Importantly, since gradients of 0-forms transform like 1-forms, curls of 1-forms transform like 2-forms, and divergences of 2-forms transform like 3-forms, the same ${W}$ tensors appear.
 
@@ -110,13 +110,13 @@ The central metric quantities are hence the metric and inverse metric tensors $g
 Using Gauss quadrature with points and weights $(\hat x_q, w_q)$, the integral becomes
 
 $$
-\mathbb{M}_{IJ}^k = \sum_q \Lambda^k_I(\hat x_q) \cdot {W}^k(\hat x_q) \Lambda^k_J(\hat x_q)\, w_q.
+\mathbb{M}_{IJ}^k = \sum_q \Lambda^k_I(\hat x_q) \cdot {W}^k(\hat x_q) \Lambda^k_J(\hat x_q)w_q.
 $$
 
 At this point, we exploit the tensor-product structure: each $\Lambda^k_I$ factors into three 1D functions and the quadrature grid itself is a tensor product of 1D quadrature nodes in $r$, $\theta$, and $\zeta$. For example, for $k=0$ we have
 
 $$
-\mathbb{M}_{IJ}^0 = \sum_{q_r, q_\theta, q_\zeta} \lambda^r_{a}(r_{q_r}) \lambda^\theta_{b}(\theta_{q_\theta}) \lambda^\zeta_{c}(\zeta_{q_\zeta}) \lambda^r_{d}(r_{q_r}) \lambda^\theta_{e}(\theta_{q_\theta}) \lambda^\zeta_{f}(\zeta_{q_\zeta}) \det D\Phi(r_{q_r}, \theta_{q_\theta}, \zeta_{q_\zeta}) \, w_{q_r} w_{q_\theta} w_{q_\zeta},
+\mathbb{M}_{IJ}^0 = \sum_{q_r, q_\theta, q_\zeta} \lambda^r_{a}(r_{q_r}) \lambda^\theta_{b}(\theta_{q_\theta}) \lambda^\zeta_{c}(\zeta_{q_\zeta}) \lambda^r_{d}(r_{q_r}) \lambda^\theta_{e}(\theta_{q_\theta}) \lambda^\zeta_{f}(\zeta_{q_\zeta}) \det D\Phi(r_{q_r}, \theta_{q_\theta}, \zeta_{q_\zeta}) w_{q_r} w_{q_\theta} w_{q_\zeta},
 $$
 where $I = \text{flatten}(a,b,c), J = \text{flatten}(d,e,f)$.
 
@@ -150,8 +150,8 @@ $\Phi$ is itself a tensor-product spline (a `SplineMap`). Each Cartesian
 component factors as
 
 $$
- \Phi_\alpha(\hat x) = \sum_{abc} c^{\alpha}_{abc}\,
-\lambda^r_a(r)\,\lambda^\theta_b(\theta)\,\lambda^\zeta_c(\zeta), \quad \alpha \in \{x,y,z\},
+ \Phi_\alpha(\hat x) = \sum_{abc} c^{\alpha}_{abc}
+\lambda^r_a(r)\lambda^\theta_b(\theta)\lambda^\zeta_c(\zeta), \quad \alpha \in \{x,y,z\},
 $$
 
 and its partials $\partial_{\{r, \theta, \zeta\}} \Phi_\alpha$ differ only by swapping one of
@@ -187,7 +187,7 @@ of size $n^k$, the extraction operator is a sparse rectangular matrix
 $\mathbb{E}^k \in \mathbb{R}^{n^k \times n^k_{\text{raw}}}$ with
 
 $$
-\Lambda^k_I(\hat x) = \sum_J \mathbb{E}^k_{IJ}\,\Lambda^k_{\text{raw},J}(\hat x).
+\Lambda^k_I(\hat x) = \sum_J \mathbb{E}^k_{IJ}\Lambda^k_{\text{raw},J}(\hat x).
 $$
 
 Equivalently, matrices $\mathbb{A}$ in the extracted basis are $\mathbb{E}^k \mathbb{A}_{\text{raw}} (\mathbb{E}^k)^T$.
