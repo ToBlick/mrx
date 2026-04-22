@@ -87,28 +87,30 @@ element-by-element loop.
 Every mass / stiffness matrix entry is of the form
 
 $$
-\mathbb{M}_{IJ}^k = \int_\Omega \Lambda^k_I(\hat x) \cdot W^k(\hat x) \Lambda^k_J(\hat x)\, d\hat x
+\mathbb{M}_{IJ}^k = \int_{\hat \Omega} \Lambda^k_I(\hat x) \cdot W^k(\hat x) \Lambda^k_J(\hat x)\, d\hat x
 $$
 
 for some weight tensor $W$ (scalar for mass/pressure forms, $3\times 3$
 for 1-forms and 2-forms). 
 
-Concretely, $W$ is built from the coordinate mapping Jacobian $D\Phi$:
-$$
-\mathbb{M}^0_{IJ} = \int_\Omega \Lambda^0_I(\hat x) \Lambda^0_J(\hat x) \det D\Phi(\hat x) \, d\hat x \\
-\mathbb{M}^1_{IJ} = \int_\Omega \Lambda^1_I(\hat x) \cdot (D\Phi)^{-1} (D\Phi)^{-T} \Lambda^1_J(\hat x) \det D\Phi(\hat x) \, d\hat x \\
-\mathbb{M}^2_{IJ} = \int_\Omega \Lambda^2_I(\hat x) \cdot (D\Phi)^{T} (D\Phi) \Lambda^2_J(\hat x) (\det D\Phi(\hat x))^{-1} \, d\hat x \\
-\mathbb{M}^3_{IJ} = \int_\Omega \Lambda^3_I(\hat x) \Lambda^3_J(\hat x) (\det D\Phi(\hat x))^{-1} \, d\hat x
-$$
+Concretely, $\mathbb{W}$ is built from the coordinate mapping Jacobian $D\Phi$:
 
-The entries of stiffness/derivative matrices are similar but with one or two of the $\Lambda$ swapped for their derivatives. Importantly, since gradients of 0-forms transform like 1-forms, curls of 1-forms transform like 2-forms, and divergences of 2-forms transform like 3-forms, the same $W$ tensors appear.
+$$\mathbb{M}^0_{IJ} = \int_\Omega \Lambda^0_I(\hat x) \Lambda^0_J(\hat x) \det D\Phi(\hat x) \, d\hat x$$
+
+$$\mathbb{M}^1_{IJ} = \int_\Omega \Lambda^1_I(\hat x) \cdot (D\Phi)^{-1} (D\Phi)^{-T} \Lambda^1_J(\hat x) \det D\Phi(\hat x) \, d\hat x$$
+
+$$\mathbb{M}^2_{IJ} = \int_\Omega \Lambda^2_I(\hat x) \cdot (D\Phi)^{T} (D\Phi) \Lambda^2_J(\hat x) (\det D\Phi(\hat x))^{-1} \, d\hat x$$
+
+$$\mathbb{M}^3_{IJ} = \int_\Omega \Lambda^3_I(\hat x) \Lambda^3_J(\hat x) (\det D\Phi(\hat x))^{-1} \, d\hat x$$
+
+The entries of stiffness/derivative matrices are similar but with one or two of the $\Lambda$ swapped for their derivatives. Importantly, since gradients of 0-forms transform like 1-forms, curls of 1-forms transform like 2-forms, and divergences of 2-forms transform like 3-forms, the same ${W}$ tensors appear.
 
 The central metric quantities are hence the metric and inverse metric tensors $g = (D\Phi)^T D\Phi$ and $g^{-1} = (D\Phi)^{-1} (D\Phi)^{-T}$, and $\sqrt{\det g} = \det D\Phi$,  which are stored on the `SequenceGeometry` as `jacobian_j`, `metric_jkl`, and `metric_inv_jkl` respectively.
 
 Using Gauss quadrature with points and weights $(\hat x_q, w_q)$, the integral becomes
 
 $$
-\mathbb{M}_{IJ}^k = \sum_q \Lambda^k_I(\hat x_q) \cdot W^k(\hat x_q) \Lambda^k_J(\hat x_q)\, w_q.
+\mathbb{M}_{IJ}^k = \sum_q \Lambda^k_I(\hat x_q) \cdot {W}^k(\hat x_q) \Lambda^k_J(\hat x_q)\, w_q.
 $$
 
 At this point, we exploit the tensor-product structure: each $\Lambda^k_I$ factors into three 1D functions and the quadrature grid itself is a tensor product of 1D quadrature nodes in $r$, $\theta$, and $\zeta$. For example, for $k=0$ we have
