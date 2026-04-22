@@ -19,9 +19,9 @@ callable matvecs so we can differentiate through them.
 logical coordinates $\hat x = (r,\theta,\zeta)$:
 
 $$
-V^0 \xrightarrow{\operatorname{grad}}
-V^1 \xrightarrow{\operatorname{curl}}
-V^2 \xrightarrow{\operatorname{div}}
+V^0 \xrightarrow{\mathrm{grad}}
+V^1 \xrightarrow{\mathrm{curl}}
+V^2 \xrightarrow{\mathrm{div}}
 V^3.
 $$
 
@@ -137,7 +137,7 @@ pattern (independent of the geometry, some basis functions never overlap). The d
 - `assemble_vectorial_tp(...)` — for vector mass matrices
   ($k=1, 2$), with a list of terms per component describing which
   directions use the derivative basis.
-- `assemble_stiffness_scalar_tp(...)` — for the $k=0$ $\operatorname{grad}$-$\operatorname{grad}$ Laplacian.
+- `assemble_stiffness_scalar_tp(...)` — for the $k=0$ $\mathrm{grad}$-$\mathrm{grad}$ Laplacian.
 
 The cost for an $N^3$ grid drops from the naive $O(N^6)$ to
 $O(N^4)$ per matrix. All further sparse operations are
@@ -231,12 +231,12 @@ Discretely these are saddle-point systems that couple $k$-forms and $(k-1)$-form
 
 Concretely in [mrx/operators.py](mrx/operators.py), these bilinear forms are built:
 
-- $k=0$: $\mathbb{L}^0$ = -div grad, built as $\operatorname{grad grad}$
+- $k=0$: $\mathbb{L}^0$ = -div grad, built as $\mathrm{grad grad}$
   (this is the standard stiffness matrix).
 - $k=1$: $\mathbb{L}^1$ = curl-curl - grad-div, built as
-  $\operatorname{curl curl} + \mathbb{D}^{0} (\mathbb{M}^0)^{-1} (\mathbb{D}^0)^T$.
+  $\mathrm{curl curl} + \mathbb{D}^{0} (\mathbb{M}^0)^{-1} (\mathbb{D}^0)^T$.
 - $k=2$: $\mathbb{L}^2$ = curl-curl - grad-div, built as
-  $\operatorname{div div} + \mathbb{D}^{1} (\mathbb{M}^1)^{-1} (\mathbb{D}^1)^T$.
+  $\mathrm{div div} + \mathbb{D}^{1} (\mathbb{M}^1)^{-1} (\mathbb{D}^1)^T$.
 - $k=3$: $\mathbb{L}^3$ = -div grad, built as $\mathbb{D}^{2} (\mathbb{M}^2)^{-1} (\mathbb{D}^2)^T$. This is a pure Schur complement because there are no 4-forms.
 
 Key implementation points:
@@ -278,7 +278,7 @@ and lets us compose preconditioners on the fly. See
 | `backtracking_line_search`            | Armijo backtracking with an optional feasibility filter. Used by optimisation scripts. |
 
 Preconditioners are usually diagonal: we precompute
-$\operatorname{diag}(\mathbb{E} \mathbb{A} \mathbb{E}^\top)$ once per Hodge assembly (`diag_EAET`
+$\mathrm{diag}(\mathbb{E} \mathbb{A} \mathbb{E}^\top)$ once per Hodge assembly (`diag_EAET`
 in `mrx/utils.py`) and store its inverse on the `SequenceOperators` as
 `*_sp_diaginv` (with `_dbc` variants). For the Hodge Laplacians we
 additionally add the Schur-complement diagonal.
@@ -464,7 +464,7 @@ deflated in CG. There are two ways to populate the null vectors on
     - $k=1,2$ (plain / DBC): start from $\mathbf{1}$, take a Leray
       projection to get a divergence-free / curl-free seed $v$, then
       subtract its exact curl contribution by solving one auxiliary
-      Hodge Laplacian; the residual $v - \operatorname{curl} a$ is the
+      Hodge Laplacian; the residual $v - \mathrm{curl} a$ is the
       harmonic representative. **This relies that the domain has no holes**.
       We will probably remove this soon.
 
