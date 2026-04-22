@@ -42,16 +42,24 @@ For $k=1,2$ we take one derivative in $k$ of the three directions,
 producing three vector components:
 
 $$
-\Lambda^{1,r}_{abc}(\hat x) = \partial_r \lambda^r_a(r)  \; \lambda^\theta_b(\theta) \;\lambda^\zeta_c(\zeta) \\
-\Lambda^{1,\theta}_{abc}(\hat x) = \lambda^r_a(r)  \; \partial_\theta \lambda^\theta_b(\theta) \;\lambda^\zeta_c(\zeta) \\
+\Lambda^{1,r}_{abc}(\hat x) = \partial_r \lambda^r_a(r)  \; \lambda^\theta_b(\theta) \;\lambda^\zeta_c(\zeta)
+$$
+$$
+\Lambda^{1,\theta}_{abc}(\hat x) = \lambda^r_a(r)  \; \partial_\theta \lambda^\theta_b(\theta) \;\lambda^\zeta_c(\zeta)
+$$
+$$
 \Lambda^{1,\zeta}_{abc}(\hat x) = \lambda^r_a(r)  \; \lambda^\theta_b(\theta) \;\partial_\zeta \lambda^\zeta_c(\zeta)
 $$
 
 In practice, these index sets are flattened into a single index $I$ that runs over all three components and all $(a,b,c)$. The same applies to $k=2$ with two derivatives and three components:
 
 $$
-\Lambda^{2,r}_{abc}(\hat x) = \lambda^r_a(r)  \; \partial_\theta \lambda^\theta_b(\theta) \;\partial_\zeta \lambda^\zeta_c(\zeta) \\
-\Lambda^{2,\theta}_{abc}(\hat x) = \partial_r \lambda^r_a(r)  \; \lambda^\theta_b(\theta) \;\partial_\zeta \lambda^\zeta_c(\zeta) \\
+\Lambda^{2,r}_{abc}(\hat x) = \lambda^r_a(r)  \; \partial_\theta \lambda^\theta_b(\theta) \;\partial_\zeta \lambda^\zeta_c(\zeta)
+$$
+$$
+\Lambda^{2,\theta}_{abc}(\hat x) = \partial_r \lambda^r_a(r)  \; \lambda^\theta_b(\theta) \;\partial_\zeta \lambda^\zeta_c(\zeta)
+$$
+$$
 \Lambda^{2,\zeta}_{abc}(\hat x) = \partial_r \lambda^r_a(r)  \; \partial_\theta \lambda^\theta_b(\theta) \;\lambda^\zeta_c(\zeta).
 $$
 
@@ -113,12 +121,11 @@ $$
 \mathbb{M}_{IJ}^k = \sum_q \Lambda^k_I(\hat x_q) \cdot {W}^k(\hat x_q) \Lambda^k_J(\hat x_q)w_q.
 $$
 
-At this point, we exploit the tensor-product structure: each $\Lambda^k_I$ factors into three 1D functions and the quadrature grid itself is a tensor product of 1D quadrature nodes in $r$, $\theta$, and $\zeta$. For example, for $k=0$ we have
+At this point, we exploit the tensor-product structure: each $\Lambda^k_I$ factors into three 1D functions and the quadrature grid itself is a tensor product of 1D quadrature nodes in $r$, $\theta$, and $\zeta$. For example, for $k=0$, write $\hat x_q = (r_{q_r}, \theta_{q_\theta}, \zeta_{q_\zeta})$ and $w_q = w_{q_r} w_{q_\theta} w_{q_\zeta}$. Then,
 
 $$
-\mathbb{M}_{IJ}^0 = \sum_{q_r, q_\theta, q_\zeta} \lambda^r_{a}(r_{q_r}) \lambda^\theta_{b}(\theta_{q_\theta}) \lambda^\zeta_{c}(\zeta_{q_\zeta}) \lambda^r_{d}(r_{q_r}) \lambda^\theta_{e}(\theta_{q_\theta}) \lambda^\zeta_{f}(\zeta_{q_\zeta}) \det D\Phi(r_{q_r}, \theta_{q_\theta}, \zeta_{q_\zeta}) w_{q_r} w_{q_\theta} w_{q_\zeta},
+\mathbb{M}_{IJ}^0 = \sum_{q} \lambda^r_{a}(r_{q_r}) \lambda^\theta_{b}(\theta_{q_\theta}) \lambda^\zeta_{c}(\zeta_{q_\zeta}) \, \lambda^r_{d}(r_{q_r}) \lambda^\theta_{e}(\theta_{q_\theta}) \lambda^\zeta_{f}(\zeta_{q_\zeta}) \, \det D\Phi(\hat x_q)\, w_q.
 $$
-where $I = \text{flatten}(a,b,c), J = \text{flatten}(d,e,f)$.
 
 We evaluate the 1D basis functions at the 1D quadrature nodes once, store them (this takes only $O(N^2)$ memory) and then contract them against $W$.
 
@@ -490,7 +497,16 @@ for your chosen `ks`).
 Saddle-point solves (`solve_saddle_point_minres`) need a second set of
 null vectors on the lower block. These are derived lazily from the
 primary ones in `get_saddle_point_nullspaces(seq, k, dirichlet)` using
-the identity: 
+the identity: if
 
-$$v \in \ker(S_k + \mathbb{D}^{k-1}(\mathbb{M}^{k-1})^{-1}(\mathbb{D}^{k-1})^\top) \quad \Rightarrow \quad [v,\; (\mathbb{M}^{k-1})^{-1}(\mathbb{D}^{k-1})^\top v] \in \ker \begin{bmatrix} S_k & \mathbb{D}^{k-1} \\ (\mathbb{D}^{k-1})^\top & 0 \end{bmatrix}.
+$$
+v \in \ker\!\left(S_k + \mathbb{D}^{k-1}(\mathbb{M}^{k-1})^{-1}(\mathbb{D}^{k-1})^\top\right),
+$$
+
+then
+
+$$
+\bigl[\, v,\; (\mathbb{M}^{k-1})^{-1}(\mathbb{D}^{k-1})^\top v \,\bigr]
+\;\in\;
+\ker \begin{bmatrix} S_k & \mathbb{D}^{k-1} \\ (\mathbb{D}^{k-1})^\top & 0 \end{bmatrix}.
 $$
