@@ -546,78 +546,24 @@ def build_neighbors(row_form, col_form=None):
     return neighbors, max_nnz
 
 
-def assemble_dense_mass_matrix(seq, k, dirichlet=True):
-    """Assemble a dense mass matrix M_k = E_k @ m_k_sp @ E_k^T."""
-    match k:
-        case 0:
-            e = seq.e0_dbc if dirichlet else seq.e0
-            e_T = seq.e0_dbc_T if dirichlet else seq.e0_T
-            sp = seq.m0_sp
-        case 1:
-            e = seq.e1_dbc if dirichlet else seq.e1
-            e_T = seq.e1_dbc_T if dirichlet else seq.e1_T
-            sp = seq.m1_sp
-        case 2:
-            e = seq.e2_dbc if dirichlet else seq.e2
-            e_T = seq.e2_dbc_T if dirichlet else seq.e2_T
-            sp = seq.m2_sp
-        case 3:
-            e = seq.e3_dbc if dirichlet else seq.e3
-            e_T = seq.e3_dbc_T if dirichlet else seq.e3_T
-            sp = seq.m3_sp
-    return e.todense() @ sp.todense() @ e_T.todense()
+def assemble_dense_mass_matrix(seq, k, dirichlet=True, operators=None):
+    """Compatibility wrapper for dense mass matrices from an operator bundle."""
+    if operators is None:
+        operators = seq.get_operators() if hasattr(seq, 'get_operators') else None
+    if operators is None:
+        raise ValueError(
+            'Assemble operators first, for example with seq.assemble_all_sparse().')
+    return operators.todense(seq, 'mass', k, dirichlet=dirichlet)
 
 
-def assemble_dense_hodge_laplacian(seq, k, dirichlet=True):
-    """Assemble the dense Hodge Laplacian via the Schur complement.
-
-    L_k = E_k @ S_k @ E_k^T + D_{k-1} @ M_{k-1}^{-1} @ D_{k-1}^T
-
-    where S_k is the stiffness matrix and D_{k-1} is the derivative matrix.
-    """
-    match k:
-        case 0:
-            e = seq.e0_dbc if dirichlet else seq.e0
-            e_T = seq.e0_dbc_T if dirichlet else seq.e0_T
-            return e.todense() @ seq.grad_grad_sp.todense() @ e_T.todense()
-        case 1:
-            e1 = seq.e1_dbc if dirichlet else seq.e1
-            e1_T = seq.e1_dbc_T if dirichlet else seq.e1_T
-            e0 = seq.e0_dbc if dirichlet else seq.e0
-            e0_T = seq.e0_dbc_T if dirichlet else seq.e0_T
-            # stiffness: E1 @ curl_curl @ E1^T
-            S = e1.todense() @ seq.curl_curl_sp.todense() @ e1_T.todense()
-            # derivative: D0 = E1 @ d0 @ E0^T (grad)
-            D0 = e1.todense() @ seq.d0_sp.todense() @ e0_T.todense()
-            # inner mass: M0 = E0 @ m0 @ E0^T
-            M0 = e0.todense() @ seq.m0_sp.todense() @ e0_T.todense()
-            # Schur: S + D0 @ M0^{-1} @ D0^T
-            return S + D0 @ jnp.linalg.solve(M0, D0.T)
-        case 2:
-            e2 = seq.e2_dbc if dirichlet else seq.e2
-            e2_T = seq.e2_dbc_T if dirichlet else seq.e2_T
-            e1 = seq.e1_dbc if dirichlet else seq.e1
-            e1_T = seq.e1_dbc_T if dirichlet else seq.e1_T
-            # stiffness: E2 @ div_div @ E2^T
-            S = e2.todense() @ seq.div_div_sp.todense() @ e2_T.todense()
-            # derivative: D1 = E2 @ d1 @ E1^T (curl)
-            D1 = e2.todense() @ seq.d1_sp.todense() @ e1_T.todense()
-            # inner mass: M1 = E1 @ m1 @ E1^T
-            M1 = e1.todense() @ seq.m1_sp.todense() @ e1_T.todense()
-            # Schur: S + D1 @ M1^{-1} @ D1^T
-            return S + D1 @ jnp.linalg.solve(M1, D1.T)
-        case 3:
-            e3 = seq.e3_dbc if dirichlet else seq.e3
-            e3_T = seq.e3_dbc_T if dirichlet else seq.e3_T
-            e2 = seq.e2_dbc if dirichlet else seq.e2
-            e2_T = seq.e2_dbc_T if dirichlet else seq.e2_T
-            # stiffness_3 = 0, so only Schur part
-            # derivative: D2 = E3 @ d2 @ E2^T (div)
-            D2 = e3.todense() @ seq.d2_sp.todense() @ e2_T.todense()
-            # inner mass: M2 = E2 @ m2 @ E2^T
-            M2 = e2.todense() @ seq.m2_sp.todense() @ e2_T.todense()
-            # Schur: D2 @ M2^{-1} @ D2^T
-            return D2 @ jnp.linalg.solve(M2, D2.T)
+def assemble_dense_hodge_laplacian(seq, k, dirichlet=True, operators=None):
+    """Compatibility wrapper for dense Hodge Laplacians from an operator bundle."""
+    if operators is None:
+        operators = seq.get_operators() if hasattr(seq, 'get_operators') else None
+    if operators is None:
+        raise ValueError(
+            'Assemble operators first, for example with seq.assemble_all_sparse().')
+    return operators.todense(seq, 'hodge_laplacian', k, dirichlet=dirichlet)
 
 
 # ---------------------------------------------------------------------------
@@ -771,143 +717,6 @@ def eval_basis_3_ijk(seq, i, j, k):
 # Deprecated assembly (element-wise quadrature)
 # ---------------------------------------------------------------------------
 
-def assemble_mass_matrix_deprecated(seq, k):
-    """Assemble the sparse mass matrix Mk for k-forms (deprecated)."""
-    match k:
-        case 0:
-            W = (seq.jacobian_j * seq.quad.w)[:, None, None]
-            neighbors, nnz = build_neighbors(seq.basis_0)
-            sp = assemble_sparse(
-                seq.eval_basis_0_ijk, seq.eval_basis_0_ijk, W,
-                seq.basis_0.n, seq.basis_0.n, nnz, neighbors)
-            seq.m0_sp_diaginv = jnp.ones(seq.n0)
-            seq.m0_sp_diaginv_dbc = jnp.ones(seq.n0_dbc)
-            seq.m0_sp = jsparse.BCSR.from_bcoo(sp)
-        case 1:
-            W = seq.metric_inv_jkl * \
-                (seq.jacobian_j * seq.quad.w)[:, None, None]
-            neighbors, nnz = build_neighbors(seq.basis_1)
-            sp = assemble_sparse(
-                seq.eval_basis_1_ijk, seq.eval_basis_1_ijk, W,
-                seq.basis_1.n, seq.basis_1.n, nnz, neighbors)
-            seq.m1_sp_diaginv = jnp.ones(seq.n1)
-            seq.m1_sp_diaginv_dbc = jnp.ones(seq.n1_dbc)
-            seq.m1_sp = jsparse.BCSR.from_bcoo(sp)
-        case 2:
-            W = seq.metric_jkl * \
-                (1/seq.jacobian_j * seq.quad.w)[:, None, None]
-            neighbors, nnz = build_neighbors(seq.basis_2)
-            sp = assemble_sparse(
-                seq.eval_basis_2_ijk, seq.eval_basis_2_ijk, W,
-                seq.basis_2.n, seq.basis_2.n, nnz, neighbors)
-            seq.m2_sp_diaginv = jnp.ones(seq.n2)
-            seq.m2_sp_diaginv_dbc = jnp.ones(seq.n2_dbc)
-            seq.m2_sp = jsparse.BCSR.from_bcoo(sp)
-        case 3:
-            W = (1/seq.jacobian_j * seq.quad.w)[:, None, None]
-            neighbors, nnz = build_neighbors(seq.basis_3)
-            sp = assemble_sparse(
-                seq.eval_basis_3_ijk, seq.eval_basis_3_ijk, W,
-                seq.basis_3.n, seq.basis_3.n, nnz, neighbors)
-            seq.m3_sp_diaginv = jnp.ones(seq.n3)
-            seq.m3_sp_diaginv_dbc = jnp.ones(seq.n3_dbc)
-            seq.m3_sp = jsparse.BCSR.from_bcoo(sp)
-        case _:
-            raise ValueError("k must be 0, 1, 2 or 3")
-
-
-def assemble_projection_matrix_deprecated(seq, k_from, k_to):
-    """Assemble the sparse projection matrix (deprecated)."""
-    match (k_from, k_to):
-        case (2, 1) | (1, 2):
-            W = seq.quad.w[:, None, None] * jnp.eye(3)
-            neighbors, nnz = build_neighbors(seq.basis_1, seq.basis_2)
-            seq.m12_sp = jsparse.BCSR.from_bcoo(assemble_sparse(
-                seq.eval_basis_1_ijk, seq.eval_basis_2_ijk, W,
-                seq.basis_1.n, seq.basis_2.n, nnz, neighbors))
-        case (3, 0) | (0, 3):
-            W = seq.quad.w[:, None, None]
-            neighbors, nnz = build_neighbors(seq.basis_0, seq.basis_3)
-            seq.m03_sp = jsparse.BCSR.from_bcoo(assemble_sparse(
-                seq.eval_basis_0_ijk, seq.eval_basis_3_ijk, W,
-                seq.basis_0.n, seq.basis_3.n, nnz, neighbors))
-        case _:
-            raise ValueError(
-                "Only (k_from, k_to) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
-
-
-def assemble_derivative_matrix_deprecated(seq, k):
-    """Assemble the sparse exterior derivative matrix Dk (deprecated)."""
-    match k:
-        case 0:
-            W = seq.metric_inv_jkl * \
-                (seq.jacobian_j * seq.quad.w)[:, None, None]
-            neighbors, nnz = build_neighbors(seq.basis_1, seq.basis_0)
-            sp = assemble_sparse(
-                seq.eval_basis_1_ijk, seq.eval_d_basis_0_ijk, W,
-                seq.basis_1.n, seq.basis_0.n, nnz, neighbors)
-            seq.d0_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.d0_sp_T = jsparse.BCSR.from_bcoo(sp.T)
-        case 1:
-            W = seq.metric_jkl * \
-                (1/seq.jacobian_j * seq.quad.w)[:, None, None]
-            neighbors, nnz = build_neighbors(seq.basis_2, seq.basis_1)
-            sp = assemble_sparse(
-                seq.eval_basis_2_ijk, seq.eval_d_basis_1_ijk, W,
-                seq.basis_2.n, seq.basis_1.n, nnz, neighbors)
-            seq.d1_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.d1_sp_T = jsparse.BCSR.from_bcoo(sp.T)
-        case 2:
-            W = (1/seq.jacobian_j * seq.quad.w)[:, None, None]
-            neighbors, nnz = build_neighbors(seq.basis_3, seq.basis_2)
-            sp = assemble_sparse(
-                seq.eval_basis_3_ijk, seq.eval_d_basis_2_ijk, W,
-                seq.basis_3.n, seq.basis_2.n, nnz, neighbors)
-            seq.d2_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.d2_sp_T = jsparse.BCSR.from_bcoo(sp.T)
-        case _:
-            raise ValueError("k must be 0, 1 or 2")
-
-
-def assemble_hodge_laplacian_deprecated(seq, k):
-    """Assemble the stiffness matrix and Jacobi preconditioner (deprecated)."""
-    match k:
-        case 0:
-            W = seq.metric_inv_jkl * \
-                (seq.jacobian_j * seq.quad.w)[:, None, None]
-            neighbors, nnz = build_neighbors(seq.basis_0)
-            sp = assemble_sparse(
-                seq.eval_d_basis_0_ijk, seq.eval_d_basis_0_ijk,
-                W, seq.basis_0.n, seq.basis_0.n, nnz, neighbors)
-            seq.dd0_sp_diaginv = jnp.ones(seq.n0)
-            seq.dd0_sp_diaginv_dbc = jnp.ones(seq.n0_dbc)
-            seq.grad_grad_sp = jsparse.BCSR.from_bcoo(sp)
-        case 1:
-            W = seq.metric_jkl * \
-                (1/seq.jacobian_j * seq.quad.w)[:, None, None]
-            neighbors, nnz = build_neighbors(seq.basis_1)
-            sp = assemble_sparse(
-                seq.eval_d_basis_1_ijk, seq.eval_d_basis_1_ijk,
-                W, seq.basis_1.n, seq.basis_1.n, nnz, neighbors)
-            seq.dd1_sp_diaginv = jnp.ones(seq.n1)
-            seq.dd1_sp_diaginv_dbc = jnp.ones(seq.n1_dbc)
-            seq.curl_curl_sp = jsparse.BCSR.from_bcoo(sp)
-        case 2:
-            W = (1/seq.jacobian_j * seq.quad.w)[:, None, None]
-            neighbors, nnz = build_neighbors(seq.basis_2)
-            sp = assemble_sparse(
-                seq.eval_d_basis_2_ijk, seq.eval_d_basis_2_ijk,
-                W, seq.basis_2.n, seq.basis_2.n, nnz, neighbors)
-            seq.dd2_sp_diaginv = jnp.ones(seq.n2)
-            seq.dd2_sp_diaginv_dbc = jnp.ones(seq.n2_dbc)
-            seq.div_div_sp = jsparse.BCSR.from_bcoo(sp)
-        case 3:
-            seq.dd3_sp_diaginv = jnp.ones(seq.n3)
-            seq.dd3_sp_diaginv_dbc = jnp.ones(seq.n3_dbc)
-        case _:
-            raise ValueError("k must be 0, 1, 2 or 3")
-
-
 # ---------------------------------------------------------------------------
 # Tensor-product assembly (current)
 # ---------------------------------------------------------------------------
@@ -978,53 +787,6 @@ def assemble_mass_matrix(seq, k):
         case _:
             raise ValueError(
                 "Tensor-product assembly supports k=0, 1, 2, 3")
-
-
-def assemble_projection_matrix(seq, k_from, k_to):
-    """Assemble the projection matrix using tensor-product contraction."""
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
-    dR = seq.d_basis_r_jk
-    dT = seq.d_basis_t_jk
-    dZ = seq.d_basis_z_jk
-    R = seq.basis_r_jk
-    T = seq.basis_t_jk
-    Z = seq.basis_z_jk
-    match (k_from, k_to):
-        case (2, 1) | (1, 2):
-            W_3x3 = seq.quad.w[:, None, None] * jnp.eye(3)
-            row_terms = [
-                [(0, dR, T, Z, +1)],
-                [(1, R, dT, Z, +1)],
-                [(2, R, T, dZ, +1)],
-            ]
-            col_terms = [
-                [(0, R, dT, dZ, +1)],
-                [(1, dR, T, dZ, +1)],
-                [(2, dR, dT, Z, +1)],
-            ]
-            sp = assemble_vectorial_tp(
-                row_terms, col_terms, W_3x3, quad_shape,
-                list(seq.basis_1.shape), seq.basis_1.pr,
-                col_comp_shapes=list(seq.basis_2.shape))
-            seq.m12_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.m21_sp = jsparse.BCSR.from_bcoo(sp.T)
-        case (3, 0) | (0, 3):
-            W_1x1 = seq.quad.w.reshape(-1, 1, 1)
-            row_terms = [
-                [(0, R, T, Z, +1)],
-            ]
-            col_terms = [
-                [(0, dR, dT, dZ, +1)],
-            ]
-            sp = assemble_vectorial_tp(
-                row_terms, col_terms, W_1x1, quad_shape,
-                list(seq.basis_0.shape), seq.basis_0.pr,
-                col_comp_shapes=list(seq.basis_3.shape))
-            seq.m03_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.m30_sp = jsparse.BCSR.from_bcoo(sp.T)
-        case _:
-            raise ValueError(
-                "Only (k_from, k_to) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
 
 
 def assemble_derivative_matrix(seq, k):
@@ -1210,13 +972,3 @@ def assemble_leray_projection(seq):
         seq.weak_grad @ jnp.linalg.pinv(seq.dd3) @ seq.strong_div
 
 
-def assemble_all_sparse(seq):
-    """Assemble all the matrices and operators in sparse format."""
-    for k in range(4):
-        assemble_mass_matrix(seq, k)
-    for k in range(3):
-        assemble_derivative_matrix(seq, k)
-    for k in range(4):
-        assemble_hodge_laplacian(seq, k)
-    for k_from, k_to in [(2, 1), (3, 0)]:
-        assemble_projection_matrix(seq, k_from, k_to)

@@ -8,8 +8,9 @@ import numpy.testing as npt
 import pytest
 
 import mrx
-from mrx.derham_sequence import DeRhamSequence
+from mrx.derham_sequence import DeRhamSequence, compute_geometry_terms
 from mrx.differential_forms import DiscreteFunction
+from mrx.io import project_sampled_field
 from mrx.mappings import (cerfon_map, cylinder_map, helical_map,
                           interpolate_map, polar_map, rotating_ellipse_map,
                           toroid_map)
@@ -37,7 +38,7 @@ def test_map_origin_and_jacobian(map_factory):
     npt.assert_allclose(J > 0, True)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def mapping_seq():
     seq = DeRhamSequence(
         (6, 6, 6), (3, 3, 3), 6,
@@ -45,7 +46,7 @@ def mapping_seq():
         map=lambda x: x, polar=False
     )
     seq.evaluate_1d()
-    seq.assemble_mass_matrix(0)
+    seq.assemble_reference_mass_matrix()
     return seq
 
 
@@ -70,6 +71,8 @@ def test_map_interpolation(map_factory, nfp, mapping_seq):
                           R_grid.reshape(_n, _n, _n),
                           Z_grid.reshape(_n, _n, _n),
                           nfp, mapping_seq, flip_zeta=False)
+    mapping_seq.set_map(F_h)
+    mapping_seq.assemble_mass_matrix(0)
     # Evaluate at the standard test points and compare
     F_vals = jax.vmap(F)(pts)
     F_h_vals = jax.vmap(F_h)(pts)
@@ -78,6 +81,39 @@ def test_map_interpolation(map_factory, nfp, mapping_seq):
     # Check positive Jacobian at all points
     J = jax.vmap(jacobian_determinant(F_h))(pts)
     npt.assert_allclose(J > 0, True)
+
+
+def test_spline_map_geometry_update(mapping_seq):
+    F = toroid_map(epsilon=1/3, kappa=1.0, R0=1.0)
+    _n = 16
+    _r = jnp.linspace(0, 1, _n)
+    _t = jnp.linspace(0, 1, _n)
+    _z = jnp.linspace(0, 1, _n)
+    _ri, _ti, _zi = jnp.meshgrid(_r, _t, _z, indexing="ij")
+    grid_pts = jnp.stack([_ri.ravel(), _ti.ravel(), _zi.ravel()], axis=1)
+    F_grid = jax.vmap(F)(grid_pts)
+
+    coeffs = jnp.stack([
+        project_sampled_field(
+            (_r, _t, _z), F_grid[:, i], mapping_seq,
+            k=0, dirichlet=False, reference_domain=True,
+        )
+        for i in range(3)
+    ], axis=0)
+
+    F_spline = mapping_seq.build_spline_map(coeffs)
+    F_spline_vals = jax.vmap(F_spline)(pts)
+    F_vals = jax.vmap(F)(pts)
+    npt.assert_allclose(F_spline_vals, F_vals, atol=2e-2)
+
+    mapping_seq.set_spline_map(coeffs)
+    mapping_seq.assemble_mass_matrix(0)
+    npt.assert_allclose(mapping_seq.jacobian_j > 0, True)
+
+    jit_jacobian = jax.jit(
+        lambda x: compute_geometry_terms(mapping_seq.build_spline_map(x), mapping_seq.quad.x)[2]
+    )(coeffs)
+    npt.assert_allclose(jit_jacobian, mapping_seq.jacobian_j)
 
 
 # # %%

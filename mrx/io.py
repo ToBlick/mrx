@@ -218,6 +218,7 @@ def project_sampled_field(
     seq,
     k: Literal[0, 1, 2, 3],
     dirichlet: bool = True,
+    reference_domain: bool = False,
 ):
     """L2-project a field sampled on a regular grid onto a k-form FEM basis.
 
@@ -237,11 +238,14 @@ def project_sampled_field(
         (k=1, k=2) the shape must be ``(n1*n2*n3, 3)`` or ``(n1, n2, n3, 3)``.
     seq : DeRhamSequence
         Pre-built de Rham sequence (must have ``evaluate_1d`` and the
-        k-th mass matrix assembled).
+        relevant mass matrix assembled).
     k : {0, 1, 2, 3}
         Degree of the differential form.
     dirichlet : bool, optional
         Whether to use Dirichlet boundary conditions (default ``True``).
+    reference_domain : bool, optional
+        For ``k=0``, use the cached reference-domain mass matrix and
+        quadrature weights instead of the active mapped geometry.
 
     Returns
     -------
@@ -249,6 +253,9 @@ def project_sampled_field(
         Coefficient vector in the k-form FEM space.
     """
     from mrx.utils import integrate_against
+
+    if reference_domain and k != 0:
+        raise ValueError("reference_domain is only supported for k=0")
 
     x1, x2, x3 = axes
     n1, n2, n3 = len(x1), len(x2), len(x3)
@@ -265,7 +272,10 @@ def project_sampled_field(
         f_q = interp(xq)[:, None]                     # (n_q, 1)
 
         if k == 0:
-            w_jk = f_q * (seq.quad.w * seq.jacobian_j)[:, None]
+            if reference_domain:
+                w_jk = f_q * seq.quad.w[:, None]
+            else:
+                w_jk = f_q * (seq.quad.w * seq.jacobian_j)[:, None]
         else:  # k == 3
             w_jk = f_q * seq.quad.w[:, None]
 
@@ -307,6 +317,8 @@ def project_sampled_field(
         case 3: e = seq.e3_dbc if dirichlet else seq.e3
 
     rhs = e @ integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
+    if reference_domain:
+        return seq.apply_inverse_reference_mass_matrix(rhs, dirichlet=dirichlet)
     return seq.apply_inverse_mass_matrix(rhs, k=k, dirichlet=dirichlet)
 
 

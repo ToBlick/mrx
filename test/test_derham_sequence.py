@@ -10,6 +10,15 @@ from mrx.assembly import build_neighbors
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import rotating_ellipse_map, toroid_map
+from mrx.operators import (apply_derivative_matrix as apply_derivative_matrix_ops,
+                           apply_hodge_laplacian as apply_hodge_laplacian_ops,
+                           apply_hodge_laplacian_preconditioner as apply_hodge_laplacian_preconditioner_ops,
+                           apply_inverse_mass_matrix as apply_inverse_mass_matrix_ops,
+                           apply_mass_matrix as apply_mass_matrix_ops,
+                           apply_stiffness as apply_stiffness_ops,
+                           assemble_derivative_operators,
+                           assemble_hodge_operators,
+                           assemble_mass_operators)
 from mrx.solvers import solve_singular_cg
 from mrx.utils import get_smallest_ev_pair
 
@@ -224,6 +233,190 @@ class TestSequenceProperty:
             curl_x, dirichlet_in=False, dirichlet_out=False)
         npt.assert_allclose(
             div_curl_x @ seq.apply_mass_matrix(div_curl_x, k=3, dirichlet=False), 0, atol=1e-12)
+
+
+class TestMassOperatorBundle:
+    def test_mass_bundle_matches_sequence(self, seq_ellipse):
+        seq, dirichlet = seq_ellipse
+        ops = assemble_mass_operators(seq, seq.geometry)
+
+        key = jax.random.PRNGKey(0)
+        for k, n in [(0, seq.n0_dbc if dirichlet else seq.n0),
+                     (1, seq.n1_dbc if dirichlet else seq.n1),
+                     (2, seq.n2_dbc if dirichlet else seq.n2),
+                     (3, seq.n3_dbc if dirichlet else seq.n3)]:
+            key, subkey_x, subkey_b = jax.random.split(key, 3)
+            x = jax.random.normal(subkey_x, (n,))
+            b = jax.random.normal(subkey_b, (n,))
+
+            npt.assert_allclose(
+                apply_mass_matrix_ops(seq, ops, x, k, dirichlet=dirichlet),
+                seq.apply_mass_matrix(x, k, dirichlet=dirichlet),
+                atol=1e-12,
+            )
+
+            x_ops = apply_inverse_mass_matrix_ops(
+                seq, ops, b, k, dirichlet=dirichlet,
+                tol=seq.tol, maxiter=seq.maxiter)
+            npt.assert_allclose(
+                seq.apply_mass_matrix(x_ops, k, dirichlet=dirichlet),
+                b,
+                atol=1e-8,
+            )
+
+    def test_sequence_mass_wrapper_accepts_explicit_bundle(self, seq_ellipse):
+        seq, dirichlet = seq_ellipse
+        ops = assemble_mass_operators(seq, seq.geometry)
+        seq.operators = None
+
+        x = jax.random.normal(
+            jax.random.PRNGKey(10),
+            (seq.n1_dbc if dirichlet else seq.n1,),
+        )
+
+        npt.assert_allclose(
+            seq.apply_mass_matrix(x, 1, dirichlet=dirichlet, operators=ops),
+            apply_mass_matrix_ops(seq, ops, x, 1, dirichlet=dirichlet),
+            atol=1e-12,
+        )
+
+
+class TestDerivativeOperatorBundle:
+    def test_derivative_bundle_matches_sequence(self, seq_ellipse):
+        seq, dirichlet = seq_ellipse
+        ops = assemble_derivative_operators(seq, seq.geometry)
+
+        key = jax.random.PRNGKey(2)
+        for k, n_in, n_out in [
+            (0, seq.n0_dbc if dirichlet else seq.n0,
+             seq.n1_dbc if dirichlet else seq.n1),
+            (1, seq.n1_dbc if dirichlet else seq.n1,
+             seq.n2_dbc if dirichlet else seq.n2),
+            (2, seq.n2_dbc if dirichlet else seq.n2,
+             seq.n3_dbc if dirichlet else seq.n3),
+        ]:
+            key, subkey_in, subkey_out = jax.random.split(key, 3)
+            x_in = jax.random.normal(subkey_in, (n_in,))
+            x_out = jax.random.normal(subkey_out, (n_out,))
+
+            npt.assert_allclose(
+                apply_derivative_matrix_ops(
+                    seq, ops, x_in, k,
+                    dirichlet_in=dirichlet,
+                    dirichlet_out=dirichlet,
+                    transpose=False,
+                ),
+                seq.apply_derivative_matrix(
+                    x_in, k,
+                    dirichlet_in=dirichlet,
+                    dirichlet_out=dirichlet,
+                    transpose=False,
+                ),
+                atol=1e-12,
+            )
+
+            npt.assert_allclose(
+                apply_derivative_matrix_ops(
+                    seq, ops, x_out, k,
+                    dirichlet_in=dirichlet,
+                    dirichlet_out=dirichlet,
+                    transpose=True,
+                ),
+                seq.apply_derivative_matrix(
+                    x_out, k,
+                    dirichlet_in=dirichlet,
+                    dirichlet_out=dirichlet,
+                    transpose=True,
+                ),
+                atol=1e-12,
+            )
+
+    def test_sequence_derivative_wrapper_accepts_explicit_bundle(self, seq_ellipse):
+        seq, dirichlet = seq_ellipse
+        ops = assemble_derivative_operators(seq, seq.geometry)
+        seq.operators = None
+
+        x = jax.random.normal(
+            jax.random.PRNGKey(11),
+            (seq.n2_dbc if dirichlet else seq.n2,),
+        )
+
+        npt.assert_allclose(
+            seq.apply_derivative_matrix(
+                x, 2,
+                dirichlet_in=dirichlet,
+                dirichlet_out=dirichlet,
+                transpose=False,
+                operators=ops,
+            ),
+            apply_derivative_matrix_ops(
+                seq, ops, x, 2,
+                dirichlet_in=dirichlet,
+                dirichlet_out=dirichlet,
+                transpose=False,
+            ),
+            atol=1e-12,
+        )
+
+
+class TestHodgeOperatorBundle:
+    def test_hodge_bundle_matches_sequence(self, seq_ellipse):
+        seq, dirichlet = seq_ellipse
+        ops = assemble_mass_operators(seq, seq.geometry)
+        ops = assemble_derivative_operators(seq, seq.geometry, operators=ops)
+        ops = assemble_hodge_operators(seq, seq.geometry, operators=ops)
+
+        key = jax.random.PRNGKey(1)
+        for k, n in [(0, seq.n0_dbc if dirichlet else seq.n0),
+                     (1, seq.n1_dbc if dirichlet else seq.n1),
+                     (2, seq.n2_dbc if dirichlet else seq.n2),
+                     (3, seq.n3_dbc if dirichlet else seq.n3)]:
+            key, subkey = jax.random.split(key)
+            x = jax.random.normal(subkey, (n,))
+
+            npt.assert_allclose(
+                apply_hodge_laplacian_preconditioner_ops(
+                    seq, ops, x, k, dirichlet=dirichlet),
+                seq.apply_hodge_laplacian_preconditioner(
+                    x, k, dirichlet=dirichlet),
+                atol=1e-12,
+            )
+
+            npt.assert_allclose(
+                apply_hodge_laplacian_ops(
+                    seq, ops, x, k, dirichlet=dirichlet,
+                    tol=seq.tol, maxiter=seq.maxiter),
+                seq.apply_hodge_laplacian(x, k, dirichlet=dirichlet),
+                atol=1e-8,
+            )
+
+            if k < 3:
+                npt.assert_allclose(
+                    apply_stiffness_ops(seq, ops, x, k, dirichlet=dirichlet),
+                    seq.apply_stiffness(x, k, dirichlet=dirichlet),
+                    atol=1e-12,
+                )
+
+    def test_sequence_hodge_wrapper_accepts_explicit_bundle(self, seq_ellipse):
+        seq, dirichlet = seq_ellipse
+        ops = assemble_mass_operators(seq, seq.geometry)
+        ops = assemble_derivative_operators(seq, seq.geometry, operators=ops)
+        ops = assemble_hodge_operators(seq, seq.geometry, operators=ops)
+        seq.operators = None
+
+        x = jax.random.normal(
+            jax.random.PRNGKey(12),
+            (seq.n1_dbc if dirichlet else seq.n1,),
+        )
+
+        npt.assert_allclose(
+            seq.apply_hodge_laplacian(x, 1, dirichlet=dirichlet, operators=ops),
+            apply_hodge_laplacian_ops(
+                seq, ops, x, 1, dirichlet=dirichlet,
+                tol=seq.tol, maxiter=seq.maxiter,
+            ),
+            atol=1e-8,
+        )
 
 
 class TestPoissonSparse:

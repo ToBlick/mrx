@@ -81,45 +81,40 @@ PS = [3] * 3
 QUAD_ORDER = 2 * PS[0]
 NFP = 3
 
-print("Building map interpolation sequence...")
-map_seq = DeRhamSequence(
+print("Building sequence...")
+seq = DeRhamSequence(
     NS, PS, QUAD_ORDER,
     ("clamped", "periodic", "periodic"),
     lambda x: x, polar=True, tol=1e-9
 )
-map_seq.evaluate_1d()
-map_seq.assemble_mass_matrix(0)
+seq.evaluate_1d()
+seq.assemble_reference_mass_matrix()
 
 # %%
 print("Interpolating coordinate map (r, θ, ζ) -> (x, y, z)...")
 R_grid = R_vals.reshape(n_rho, n_theta, n_zeta)
 Z_grid = Z_vals.reshape(n_rho, n_theta, n_zeta)
-map_func = interpolate_map((rho, theta, zeta), R_grid, Z_grid, NFP, map_seq)
+map_func = interpolate_map((rho, theta, zeta), R_grid, Z_grid, NFP, seq)
 # map_func = jax.jit(map_func)
 # # Warm-up JIT
 # _ = map_func(jnp.array([0.5, 0.5, 0.5]))
 
 # %%
-seq = DeRhamSequence(
-    NS, PS, QUAD_ORDER,
-    ("clamped", "periodic", "periodic"),
-    map=map_func, polar=True, r_scale=1.0
-)
-seq.evaluate_1d()
+seq.set_map(map_func)
 seq.assemble_all_sparse()
 # %%
 seq.compute_nullspaces()
 
 # lsq_weights = jax.vmap(jacobian_determinant(map))(pts)
 # lambda_interpol = interpolate_scalar_function(pts, lambda_vals, seq, lsq_weights, rcond=None)
-# pressure_interpol = interpolate_scalar_function(pts, p_vals, map_seq, lsq_weights, rcond=None)
-# phi_interpol = interpolate_scalar_function(pts, phi_vals, map_seq, lsq_weights, rcond=None)
-# chi_interpol = interpolate_scalar_function(pts, chi_vals, map_seq, lsq_weights, rcond=None)
+# pressure_interpol = interpolate_scalar_function(pts, p_vals, seq, lsq_weights, rcond=None)
+# phi_interpol = interpolate_scalar_function(pts, phi_vals, seq, lsq_weights, rcond=None)
+# chi_interpol = interpolate_scalar_function(pts, chi_vals, seq, lsq_weights, rcond=None)
 
-# p_h = jax.jit(DiscreteFunction(pressure_interpol["dof"], map_seq.basis_0, map_seq.e0))
-# phi_h = jax.jit(DiscreteFunction(phi_interpol["dof"], map_seq.basis_0, map_seq.e0))
-# chi_h = jax.jit(DiscreteFunction(chi_interpol["dof"], map_seq.basis_0, map_seq.e0))
-# lambda_h = jax.jit(DiscreteFunction(lambda_interpol["dof"], map_seq.basis_0, map_seq.e0))
+# p_h = jax.jit(DiscreteFunction(pressure_interpol["dof"], seq.basis_0, seq.e0))
+# phi_h = jax.jit(DiscreteFunction(phi_interpol["dof"], seq.basis_0, seq.e0))
+# chi_h = jax.jit(DiscreteFunction(chi_interpol["dof"], seq.basis_0, seq.e0))
+# lambda_h = jax.jit(DiscreteFunction(lambda_interpol["dof"], seq.basis_0, seq.e0))
 
 # %%
 m1_dense = seq.e1_dbc.todense() @ seq.m1_sp.todense() @ seq.e1_dbc_T.todense()

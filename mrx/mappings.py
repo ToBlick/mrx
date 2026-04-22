@@ -8,6 +8,44 @@ from mrx.differential_forms import DiscreteFunction
 from mrx.io import project_sampled_field
 
 
+@jax.tree_util.register_pytree_node_class
+class SplineMap:
+    """A logical-to-physical map represented in the scalar spline basis."""
+
+    def __init__(self, coefficients, basis_0, extraction, extraction_T=None):
+        self.coefficients = coefficients
+        self.basis_0 = basis_0
+        self.extraction = extraction
+        # Optional precomputed transpose of `extraction`.  Required for
+        # the sum-factorized geometry path; callers that build a SplineMap
+        # from a DeRhamSequence should pass `seq.e0_T` here.
+        self.extraction_T = extraction_T
+        self.ns = jnp.arange(basis_0.n)
+
+    def tree_flatten(self):
+        return ((self.coefficients, self.extraction, self.extraction_T), self.basis_0)
+
+    @classmethod
+    def tree_unflatten(cls, basis_0, children):
+        coefficients, extraction, extraction_T = children
+        return cls(coefficients, basis_0, extraction, extraction_T)
+
+    def with_coefficients(self, coefficients):
+        """Return a new spline map with updated coefficients."""
+        return SplineMap(coefficients, self.basis_0, self.extraction,
+                         extraction_T=self.extraction_T)
+
+    def __call__(self, x):
+        basis_vals = self.extraction @ jax.vmap(self.basis_0, (None, 0))(x, self.ns)
+        basis_vals = jnp.ravel(basis_vals)
+
+        coeffs = self.coefficients
+        if coeffs.ndim == 1:
+            n_coeff = basis_vals.shape[0]
+            coeffs = coeffs.reshape(3, n_coeff)
+        return coeffs @ basis_vals
+
+
 def cerfon_map(epsilon: float = 0.33, kappa: float = 1.2, alpha: float = 0.0, R0: float = 1.0) -> Callable:
     """
     Mapping function from "One Size Fits All" paper by Cerfon et al.:
@@ -315,7 +353,7 @@ def interpolate_map(axes, R_grid, Z_grid, nfp, seq, flip_zeta=False):
         Number of field periods.
     seq : DeRhamSequence
         DeRham sequence to use for interpolation.  Must have
-        ``evaluate_1d()`` and ``assemble_all_sparse()`` called first.
+        ``evaluate_1d()`` and ``assemble_reference_mass_matrix()`` called first.
     flip_zeta : bool
         Whether to flip the toroidal angle in the stellarator map.
 
@@ -324,8 +362,10 @@ def interpolate_map(axes, R_grid, Z_grid, nfp, seq, flip_zeta=False):
     Phi : callable
         Stellarator map built from the interpolated R, Z.
     """
-    R_dof = project_sampled_field(axes, R_grid, seq, k=0, dirichlet=False)
-    Z_dof = project_sampled_field(axes, Z_grid, seq, k=0, dirichlet=False)
+    R_dof = project_sampled_field(
+        axes, R_grid, seq, k=0, dirichlet=False, reference_domain=True)
+    Z_dof = project_sampled_field(
+        axes, Z_grid, seq, k=0, dirichlet=False, reference_domain=True)
 
     R_h = DiscreteFunction(R_dof, seq.basis_0, seq.e0)
     Z_h = DiscreteFunction(Z_dof, seq.basis_0, seq.e0)
