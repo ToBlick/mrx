@@ -124,6 +124,102 @@ def newton_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm):
     return picard_solver(g, z_init, tol, max_iter, norm)
 
 
+def backtracking_line_search(
+    x,
+    direction,
+    J_current,
+    J_fn,
+    *,
+    step_init=1.0,
+    step_min=1e-9,
+    step_max=1e6,
+    c1=1e-4,
+    shrink=0.5,
+    grow=2.0,
+    max_backtracks=40,
+    directional_derivative=None,
+    feasible=None,
+):
+    """Armijo backtracking line search with an optional feasibility filter.
+
+    Finds a step ``s`` along the descent direction ``direction`` such that
+
+        J(x + s * direction) <= J(x) + c1 * s * <grad J, direction>,
+
+    and, if ``feasible`` is supplied, ``feasible(x + s * direction)`` is
+    True. Intended to be called once per outer iteration of a
+    Python-level descent loop; the returned ``step`` is already grown
+    (on success) or left at the last trial value (on failure) so it can
+    be passed back in as ``step_init`` next iteration.
+
+    Parameters
+    ----------
+    x : array
+        Current iterate.
+    direction : array
+        Descent direction (typically ``-grad J``).
+    J_current : float
+        ``J(x)``.
+    J_fn : callable
+        ``x_trial -> float``. May return non-finite; such trials are
+        rejected.
+    step_init, step_min, step_max : float
+        Initial trial step, floor, and cap.
+    c1 : float
+        Armijo sufficient-decrease constant.
+    shrink, grow : float
+        Multipliers applied to ``step`` on rejection / acceptance.
+    max_backtracks : int
+        Maximum number of trials per call.
+    directional_derivative : float, optional
+        ``<grad J, direction>``. When omitted, we assume
+        ``direction = -grad J`` and use ``-||direction||^2``.
+    feasible : callable, optional
+        ``x_trial -> bool``. Trials for which this returns False are
+        rejected without evaluating ``J_fn``.
+
+    Returns
+    -------
+    result : dict
+        Keys: ``"x"`` (new iterate, equals ``x`` if not accepted),
+        ``"J"`` (``J_fn`` at the new iterate, else ``J_current``),
+        ``"step"`` (next trial step to use),
+        ``"accepted"`` (bool),
+        ``"n_backtracks"`` (int).
+    """
+    if directional_derivative is None:
+        directional_derivative = -float(jnp.sum(jnp.asarray(direction) ** 2))
+
+    step = step_init
+    accepted = False
+    x_new = x
+    J_new = J_current
+    ls = 0
+    for ls in range(max_backtracks):
+        x_trial = x + step * direction
+        if feasible is not None and not bool(feasible(x_trial)):
+            step = max(step * shrink, step_min)
+            continue
+        J_trial = float(J_fn(x_trial))
+        if jnp.isfinite(J_trial) and (
+            J_trial <= J_current + c1 * step * directional_derivative
+        ):
+            x_new = x_trial
+            J_new = J_trial
+            accepted = True
+            break
+        step = max(step * shrink, step_min)
+
+    step_next = min(step * grow, step_max) if accepted else step
+    return {
+        "x": x_new,
+        "J": J_new,
+        "step": step_next,
+        "accepted": accepted,
+        "n_backtracks": ls + 1,
+    }
+
+
 def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
     """
     Preconditioned Conjugate Gradient with M-norm convergence check.

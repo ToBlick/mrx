@@ -3,15 +3,14 @@
 Problem:
 
     min_a   J(a) = 1/2 * (u(a) - u_bar)^T M_ref (u(a) - u_bar)
-    s.t.    S(a) u(a) = f
+    s.t.    S(a) u(a) = f(a)
 
 where
 
 - a are the spline coefficients defining the logical-to-physical map F_a,
 - S(a) is the k=0 Hodge Laplacian / grad-grad stiffness matrix on the
   geometry defined by a,
-- f is the source RHS vector, assembled once on the reference geometry a*
-  and then held fixed (so df/da = 0 in coefficient space),
+- f(a) is the source RHS vector
 - M_ref is the reference-domain (logical) 0-form mass matrix, used to
   measure || u(a) - u_bar ||_L2 in the logical domain,
 - u_bar = u(a*) is the reference solution on the unperturbed torus.
@@ -24,8 +23,6 @@ The scalar lambda^T S(a) u is a pure function of a through
 SplineMap -> SequenceGeometry -> SequenceOperators -> apply_stiffness, so
 we get its derivative w.r.t. a via jax.grad while keeping u, lambda
 detached with jax.lax.stop_gradient.
-
-Run cell-by-cell in VS Code / Jupyter to inspect the optimization.
 """
 
 # %%
@@ -41,9 +38,12 @@ from mrx.operators import (
     apply_inverse_shifted_stiffness,
     apply_mass_matrix,
     apply_stiffness,
-    assemble_derivative_operators,
-    assemble_hodge_operators,
-    assemble_mass_operators,
+    operators_from_coeffs,
+)
+from mrx.solvers import backtracking_line_search
+from mrx.spline_geometry import (
+    min_jacobian_from_coeffs,
+    spline_map_jacobian_j_at_quad,
 )
 from mrx.utils import integrate_against
 
@@ -147,7 +147,7 @@ u_bar = seq.apply_inverse_hodge_laplacian(rhs_ref, k=0)
 #
 #  `shape_step` reconstructs everything that depends on `coeffs`:
 #
-#    * the operator bundle via `_operators_from_coeffs`,
+#    * the operator bundle via `operators_from_coeffs(seq, coeffs, ...)`,
 #    * the RHS via `rhs_from_coeffs` (which contains the mapped Jacobian
 #      inherited from the projection operator p0_dbc).
 #
@@ -155,37 +155,9 @@ u_bar = seq.apply_inverse_hodge_laplacian(rhs_ref, k=0)
 #  solves themselves are not inside any jax.grad trace.
 #
 
-def _operators_from_coeffs(coeffs):
-    geometry = seq.geometry_from_spline_map(coeffs)
-    ops = assemble_mass_operators(seq, geometry, ks=(0,))
-    ops = assemble_derivative_operators(seq, geometry, operators=ops, ks=(0,))
-    ops = assemble_hodge_operators(seq, geometry, operators=ops, ks=(0,))
-    return ops, geometry
-
-
-def _geometry_from_coeffs(coeffs):
-    """Full geometry (metric + inv + jacobian). Used only where all are needed."""
-    return seq.geometry_from_spline_map(coeffs)
-
-
 def _jacobian_j_from_coeffs(coeffs):
     """Just the determinant det(DF) at quadrature -- skips metric + inv33."""
-    from mrx.spline_geometry import spline_map_jacobian_j_at_quad
     return spline_map_jacobian_j_at_quad(coeffs, seq.e0_T, seq)
-
-
-def _hodge0_ops_from_coeffs(coeffs):
-    """Assemble only the k=0 Hodge block (what `apply_stiffness` at k=0 needs)."""
-    geometry = _geometry_from_coeffs(coeffs)
-    ops = assemble_hodge_operators(seq, geometry, ks=(0,))
-    return ops
-
-
-def _mass0_ops_from_coeffs(coeffs):
-    """Assemble only the k=0 mass block (what `apply_mass_matrix` at k=0 needs)."""
-    geometry = _geometry_from_coeffs(coeffs)
-    ops = assemble_mass_operators(seq, geometry, ks=(0,))
-    return ops
 
 
 def _rhs_from_jac(jac_j, f_jk):
@@ -204,14 +176,14 @@ def rhs_from_coeffs(coeffs, f_jk):
 
 def stiffness_bilinear(coeffs, u_vec, lam_vec):
     # Only the k=0 Hodge block is needed; skip mass + derivative assembly.
-    ops = _hodge0_ops_from_coeffs(coeffs)
+    ops, _ = operators_from_coeffs(seq, coeffs, ks=(0,), kinds=("hodge",))
     Su = apply_stiffness(seq, ops, u_vec, 0, dirichlet=True)
     return jnp.dot(lam_vec, Su)
 
 
 def mass_quadratic(coeffs, r_vec):
     """0.5 * r^T M(a) r as a pure function of `coeffs` (for physical-domain J)."""
-    ops = _mass0_ops_from_coeffs(coeffs)
+    ops, _ = operators_from_coeffs(seq, coeffs, ks=(0,), kinds=("mass",))
     Mr = apply_mass_matrix(seq, ops, r_vec, 0, dirichlet=True)
     return 0.5 * jnp.dot(r_vec, Mr)
 
@@ -265,7 +237,7 @@ def shape_step(coeffs, u_bar, f_jk):
 
     with u, lam, r frozen via stop_gradient.
     """
-    ops, _ = _operators_from_coeffs(coeffs)
+    ops, _ = operators_from_coeffs(seq, coeffs, ks=(0,))
     rhs = rhs_from_coeffs(coeffs, f_jk)
     u = _solve_poisson(ops, rhs)
     r = u - u_bar
@@ -294,13 +266,9 @@ def shape_step(coeffs, u_bar, f_jk):
 
 shape_step_jit = jax.jit(shape_step)
 
-@jax.jit
-def _min_jac_from_coeffs(coeffs):
-    """Cheap Jacobian-positivity check: min_q J(F_a)(q) over quadrature points.
-
-    Only evaluates det(DF) -- no metric, no operator assembly.
-    """
-    return jnp.min(_jacobian_j_from_coeffs(coeffs))
+_min_jac_from_coeffs = jax.jit(
+    lambda coeffs: min_jacobian_from_coeffs(coeffs, seq.e0_T, seq)
+)
 
 
 # %% ------------------------------------------------------------------
@@ -308,7 +276,7 @@ def _min_jac_from_coeffs(coeffs):
 # --------------------------------------------------------------------
 
 key = jax.random.PRNGKey(0)
-perturbation_scale = 5e-4 * jnp.linalg.norm(coeffs_ref, 2)
+perturbation_scale = 1e-4 * jnp.linalg.norm(coeffs_ref, 2)
 
 n_axis = 3 * seq.basis_0.nz   # number of polar-axis DOFs (3 per z-slice)
 mask = jnp.ones(coeffs_ref.shape[1]).at[:n_axis].set(0.0)   # shape (n_dof,)
@@ -340,6 +308,15 @@ jac_floor = 1e-9      # reject geometries with min jacobian below this
 history = []
 coeffs_iter = coeffs
 
+
+def _J_only(trial_coeffs):
+    return float(shape_step_jit(trial_coeffs, u_bar, f_jk)[0])
+
+
+def _feasible(trial_coeffs):
+    return float(_min_jac_from_coeffs(trial_coeffs)) > jac_floor
+
+
 for it in range(n_iters):
     J, gJ, u = shape_step_jit(coeffs_iter, u_bar, f_jk)
     J = float(J)
@@ -349,31 +326,33 @@ for it in range(n_iters):
     err_a = float(jnp.linalg.norm(coeffs_iter - coeffs_ref))
     history.append((J, err_a, gnorm))
 
-    # --- line search ------------------------------------------------
-    accepted = False
-    for ls in range(max_ls):
-        trial = coeffs_iter - step * gJm
-        min_jac = float(_min_jac_from_coeffs(trial))
-        if min_jac > jac_floor:
-            J_trial, _, _ = shape_step_jit(trial, u_bar, f_jk)
-            J_trial = float(J_trial)
-            if jnp.isfinite(J_trial) and J_trial <= J - c1 * step * gnorm2:
-                coeffs_iter = trial
-                accepted = True
-                break
-        step = max(step * shrink, step_min)
+    result = backtracking_line_search(
+        coeffs_iter,
+        -gJm,
+        J,
+        _J_only,
+        step_init=step,
+        step_min=step_min,
+        step_max=step_max,
+        c1=c1,
+        shrink=shrink,
+        grow=grow,
+        max_backtracks=max_ls,
+        directional_derivative=-gnorm2,
+        feasible=_feasible,
+    )
+    coeffs_iter = result["x"]
+    step = result["step"]
 
-    if (it) % 100 == 0:
+    if it % 100 == 0:
         print(
             f"it {it:3d}  J={J:.4e}  ||grad J||={gnorm:.4e}  "
-            f"||a - a*||={err_a:.4e}  step={step:.2e}  ls={ls+1}"
+            f"||a - a*||={err_a:.4e}  step={step:.2e}  ls={result['n_backtracks']}"
         )
 
-    if not accepted:
+    if not result["accepted"]:
         print("  line search failed -- stopping")
         break
-    # try a bigger step next iteration
-    step = min(step * grow, step_max)
 
 # final residual
 J_final, _, _ = shape_step_jit(coeffs_iter, u_bar, f_jk)
@@ -388,13 +367,13 @@ print(f"final  J={J_final:.4e}  ||a - a*||={err_final:.4e}")
 
 hist = np.array(history)
 fig, axes = plt.subplots(1, 3, figsize=(12, 3.5))
-axes[0].semilogy(hist[:, 0], marker="o")
+axes[0].semilogy(hist[:, 0])
 axes[0].set_title("objective J(a)")
 axes[0].set_xlabel("iteration")
-axes[1].semilogy(hist[:, 1], marker="o")
+axes[1].semilogy(hist[:, 1])
 axes[1].set_title("||a - a*||")
 axes[1].set_xlabel("iteration")
-axes[2].semilogy(hist[:, 2], marker="o")
+axes[2].semilogy(hist[:, 2])
 axes[2].set_title("||grad J||")
 axes[2].set_xlabel("iteration")
 plt.tight_layout()

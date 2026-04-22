@@ -646,6 +646,42 @@ def assemble_all_operators(seq, geometry,
     return operators
 
 
+def operators_from_coeffs(seq, coeffs,
+                          ks: Sequence[int] = (0,),
+                          kinds: Sequence[str] = ("mass", "derivative", "hodge")):
+    """Build operators from spline-map coefficients.
+
+    Routes ``coeffs`` through :meth:`DeRhamSequence.geometry_from_spline_map`
+    and assembles only the requested operator ``kinds`` for the requested
+    form degrees ``ks``. Useful as a pure function of ``coeffs`` for
+    adjoint / shape-derivative workflows, where assembling the full
+    operator bundle on every gradient call is wasteful.
+
+    Parameters
+    ----------
+    seq : DeRhamSequence
+    coeffs : (3, n_dof) array
+        Cartesian spline coefficients defining the physical map.
+    ks : sequence of int
+        Form degrees to assemble (subset of ``(0, 1, 2, 3)``).
+    kinds : sequence of str
+        Any subset of ``("mass", "derivative", "hodge")``.
+
+    Returns
+    -------
+    (operators, geometry) : (SequenceOperators, SequenceGeometry)
+    """
+    geometry = seq.geometry_from_spline_map(coeffs)
+    ops: Optional[SequenceOperators] = None
+    if "mass" in kinds:
+        ops = assemble_mass_operators(seq, geometry, operators=ops, ks=ks)
+    if "derivative" in kinds:
+        ops = assemble_derivative_operators(seq, geometry, operators=ops, ks=ks)
+    if "hodge" in kinds:
+        ops = assemble_hodge_operators(seq, geometry, operators=ops, ks=ks)
+    return ops, geometry
+
+
 def _mass_extraction(seq, k: int, dirichlet: bool):
     match k:
         case 0:

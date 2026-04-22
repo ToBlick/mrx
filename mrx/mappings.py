@@ -1,42 +1,40 @@
-from typing import Callable
+from typing import Any, Callable, Optional
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax.numpy import cos, pi, sin
 
-from mrx.differential_forms import DiscreteFunction
+from mrx.differential_forms import DifferentialForm, DiscreteFunction
 from mrx.io import project_sampled_field
 
 
-@jax.tree_util.register_pytree_node_class
-class SplineMap:
-    """A logical-to-physical map represented in the scalar spline basis."""
+class SplineMap(eqx.Module):
+    """A logical-to-physical map represented in the scalar spline basis.
 
-    def __init__(self, coefficients, basis_0, extraction, extraction_T=None):
-        self.coefficients = coefficients
-        self.basis_0 = basis_0
-        self.extraction = extraction
-        # Optional precomputed transpose of `extraction`.  Required for
-        # the sum-factorized geometry path; callers that build a SplineMap
-        # from a DeRhamSequence should pass `seq.e0_T` here.
-        self.extraction_T = extraction_T
-        self.ns = jnp.arange(basis_0.n)
+    ``coefficients``, ``extraction`` and ``extraction_T`` are dynamic
+    pytree children, so ``SplineMap`` can be passed through ``jit`` /
+    ``grad`` / ``vmap`` and its coefficients can be differentiated.
+    ``basis_0`` is a static topology object and rides along as aux data.
+    """
 
-    def tree_flatten(self):
-        return ((self.coefficients, self.extraction, self.extraction_T), self.basis_0)
-
-    @classmethod
-    def tree_unflatten(cls, basis_0, children):
-        coefficients, extraction, extraction_T = children
-        return cls(coefficients, basis_0, extraction, extraction_T)
+    coefficients: jnp.ndarray
+    extraction: Any
+    extraction_T: Optional[Any] = None
+    basis_0: DifferentialForm = eqx.field(static=True, default=None)
 
     def with_coefficients(self, coefficients):
         """Return a new spline map with updated coefficients."""
-        return SplineMap(coefficients, self.basis_0, self.extraction,
-                         extraction_T=self.extraction_T)
+        return SplineMap(
+            coefficients=coefficients,
+            extraction=self.extraction,
+            extraction_T=self.extraction_T,
+            basis_0=self.basis_0,
+        )
 
     def __call__(self, x):
-        basis_vals = self.extraction @ jax.vmap(self.basis_0, (None, 0))(x, self.ns)
+        ns = jnp.arange(self.basis_0.n)
+        basis_vals = self.extraction @ jax.vmap(self.basis_0, (None, 0))(x, ns)
         basis_vals = jnp.ravel(basis_vals)
 
         coeffs = self.coefficients

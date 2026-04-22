@@ -1,6 +1,6 @@
-from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
+import equinox as eqx
 import jax
 import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
@@ -53,14 +53,21 @@ def compute_geometry_terms(map: Callable, quad_x: jnp.ndarray):
     return metric_jkl, metric_inv_jkl, jacobian_j
 
 
-@dataclass
-class SequenceGeometry:
-    """Geometry data attached to a de Rham sequence."""
+class SequenceGeometry(eqx.Module):
+    """Geometry data attached to a de Rham sequence.
 
-    map: Callable
-    metric_jkl: jnp.ndarray
-    metric_inv_jkl: jnp.ndarray
-    jacobian_j: jnp.ndarray
+    An ``eqx.Module`` so that the three quadrature-grid arrays
+    (``metric_jkl``, ``metric_inv_jkl``, ``jacobian_j``) are dynamic
+    pytree leaves and can flow through ``jit`` / ``grad``. ``map`` is
+    kept as a normal field so that if it is itself a pytree (e.g. a
+    :class:`SplineMap`), its coefficient leaves are tracked; plain
+    ``Callable`` maps are treated as opaque leaves.
+    """
+
+    map: Any
+    metric_jkl: jnp.ndarray = None
+    metric_inv_jkl: jnp.ndarray = None
+    jacobian_j: jnp.ndarray = None
 
     @classmethod
     def from_map(cls, map: Callable, quad_x: jnp.ndarray) -> "SequenceGeometry":
@@ -95,22 +102,46 @@ class SequenceGeometry:
 
 
 class DeRhamSequence():
-    """
-    A class to represent a de Rham sequence.
+    """Discrete de Rham sequence on a mapped 3-D domain.
 
-    Attributes:
-        Lambda_0, Lambda_1, Lambda_2, Lambda_3: DifferentialForm for 0-forms in the sequence
-        Q: QuadratureRule for numerical integration
-        F: Callable mapping from logical to physical coordinates
-        E0, E1, E2, E3: jnp.ndarray representing the assembled constraint/extraction operators
-        lambda_r_jk: jnp.ndarray of radial basis splines evaluated at radial quadrature points. Shape: n_r x n_qr.
-        lambda_t_jk: jnp.ndarray of poloidal basis splines evaluated at poloidal quadrature points. Shape: n_θ x n_qθ.
-        lambda_z_jk: jnp.ndarray of toroidal basis splines evaluated at toroidal quadrature points. Shape: n_ζ x n_qζ.
-        d_lambda_r_jk: jnp.ndarray of radial derivative splines evaluated at radial quadrature points. Shape: n_r x n_qr.
-        d_lambda_t_jk: jnp.ndarray of poloidal derivative splines evaluated at poloidal quadrature points. Shape: n_θ x n_qθ.
-        d_lambda_z_jk: jnp.ndarray of toroidal derivative splines evaluated at toroidal quadrature points. Shape: n_ζ x n_qζ.
-        J_j: jnp.ndarray of mapping Jacobian determinant at quad. pts. det DF(x_j). Shape: n_q.
-        G_jkl, inv_G_jkl: jnp.ndarray of mapping metric at quad. pts. [ DF(x_j).T DF(x_j) ]_kl and its inverse. Shape: n_q x 3 x 3.
+    Holds four ``DifferentialForm`` objects (``basis_0`` … ``basis_3``),
+    a ``QuadratureRule``, a ``SequenceGeometry``, and extraction/boundary
+    operators for each form degree.  After calling :meth:`assemble_all_sparse`
+    (or the individual ``assemble_*`` methods), operator application methods
+    become available.
+
+    Attributes
+    ----------
+    basis_0, basis_1, basis_2, basis_3 : DifferentialForm
+        Spline bases for 0-, 1-, 2-, and 3-forms respectively.
+    quad : QuadratureRule
+        Tensor-product Gauss quadrature rule used for assembly.
+    geometry : SequenceGeometry
+        Metric and Jacobian data derived from the logical-to-physical map.
+    e0, e1, e2, e3 : jsparse.BCSR
+        Extraction operators mapping constrained DOF vectors to the full
+        spline basis for each form degree (no Dirichlet BCs).
+    e0_dbc, e1_dbc, e2_dbc, e3_dbc : jsparse.BCSR
+        Extraction operators with homogeneous Dirichlet BCs applied at
+        the radial boundary (or axis in polar coordinates).
+    basis_r_jk : jnp.ndarray
+        Radial 0-form basis splines evaluated at radial quadrature points.
+        Shape ``(n_qr, n_r)``.  Populated by :meth:`evaluate_1d`.
+    basis_t_jk : jnp.ndarray
+        Poloidal 0-form basis splines evaluated at poloidal quadrature
+        points.  Shape ``(n_qθ, n_θ)``.  Populated by :meth:`evaluate_1d`.
+    basis_z_jk : jnp.ndarray
+        Toroidal 0-form basis splines evaluated at toroidal quadrature
+        points.  Shape ``(n_qζ, n_ζ)``.  Populated by :meth:`evaluate_1d`.
+    d_basis_r_jk : jnp.ndarray
+        Radial derivative splines evaluated at radial quadrature points.
+        Shape ``(n_qr, n_r)``.  Populated by :meth:`evaluate_1d`.
+    d_basis_t_jk : jnp.ndarray
+        Poloidal derivative splines evaluated at poloidal quadrature
+        points.  Shape ``(n_qθ, n_θ)``.  Populated by :meth:`evaluate_1d`.
+    d_basis_z_jk : jnp.ndarray
+        Toroidal derivative splines evaluated at toroidal quadrature
+        points.  Shape ``(n_qζ, n_ζ)``.  Populated by :meth:`evaluate_1d`.
     """
     basis_0: DifferentialForm
     basis_1: DifferentialForm
@@ -134,20 +165,33 @@ class DeRhamSequence():
     d_basis_z_jk: jnp.ndarray
 
     def __init__(self, ns, ps, q, types, map, polar, tol=1e-12, maxiter=10_000, r_scale=1.0, n_inner=5):
-        """
-        Initialize the de Rham sequence.
+        """Construct a de Rham sequence.
 
-        Args:
-            ns (list): List of integers representing the number of basis functions for each differential form.
-            ps (list): List of integers representing the order of the basis functions for each differential form.
-            q (int): The order of the quadrature rule.
-            types (list): List of strings representing the type of boundary condition for each differential form.
-            map (callable): The mapping function from logical to physical domain.
-            polar (bool): Whether to use polar coordinates.
-            tol (float): Tolerance for sparse linear solvers.
-            maxiter (int): Maximum number of iterations for sparse linear solvers.
-            r_scale (float): Scale factor for the radial coordinate.
-            n_inner (int): Number of CG iterations for block preconditioner solves.
+        Parameters
+        ----------
+        ns : list of int
+            Number of basis functions ``[n_r, n_θ, n_ζ]`` for each direction.
+        ps : list of int
+            Polynomial degree ``[p_r, p_θ, p_ζ]`` of the spline basis.
+        q : int
+            Number of quadrature points per direction.
+        types : list of str
+            Boundary-condition type string per direction, e.g.
+            ``['periodic', 'periodic', 'periodic']``.
+        map : callable
+            Logical-to-physical coordinate map ``F: [0,1]³ → ℝ³``.
+        polar : bool
+            If ``True``, apply polar extraction operators that enforce
+            regularity at the magnetic axis.
+        tol : float, optional
+            Convergence tolerance for iterative solvers.
+        maxiter : int, optional
+            Maximum iteration count for iterative solvers.
+        r_scale : float, optional
+            Exponent used to cluster radial knots toward the axis
+            (knot spacing proportional to ``r**r_scale``).
+        n_inner : int, optional
+            Number of inner CG iterations used by block preconditioners.
         """
         self.tol = tol
         self.maxiter = maxiter
@@ -339,8 +383,12 @@ class DeRhamSequence():
             extraction_T = self.e0_T
         else:
             extraction_T = None
-        return SplineMap(coefficients, self.basis_0, extraction,
-                         extraction_T=extraction_T)
+        return SplineMap(
+            coefficients=coefficients,
+            extraction=extraction,
+            extraction_T=extraction_T,
+            basis_0=self.basis_0,
+        )
 
     def geometry_from_spline_map(self, coefficients, extraction=None):
         """Construct geometry data from spline map coefficients.
@@ -361,17 +409,20 @@ class DeRhamSequence():
             coefficients, extraction=extraction))
 
     def _require_reference_mass_matrix(self):
+        """Raise if the reference-domain mass matrix has not been assembled."""
         if not hasattr(self, 'reference_m0_sp'):
             raise ValueError(
                 'Call assemble_reference_mass_matrix() before using reference 0-form operators.')
 
     def _apply_reference_mass_matrix(self, v, dirichlet=True):
+        """Apply the reference-domain 0-form mass matrix to ``v``."""
         self._require_reference_mass_matrix()
         e = self.e0_dbc if dirichlet else self.e0
         e_T = self.e0_dbc_T if dirichlet else self.e0_T
         return e @ (self.reference_m0_sp @ (e_T @ v))
 
     def _apply_reference_mass_matrix_preconditioner(self, v, dirichlet=True):
+        """Apply the diagonal (Jacobi) preconditioner for the reference mass matrix."""
         self._require_reference_mass_matrix()
         if dirichlet:
             return self.reference_m0_sp_diaginv_dbc * v
@@ -457,8 +508,13 @@ class DeRhamSequence():
         return e_dbc @ (m_sp @ (e_bc_T @ g))
 
     def evaluate_1d(self):
-        """
-        Evaluate the 1-dimensional basis functions at the quadrature points.
+        """Precompute 1-D spline and derivative values at quadrature points.
+
+        Populates ``basis_{r,t,z}_jk`` and ``d_basis_{r,t,z}_jk`` on
+        ``self``.  These arrays drive the sum-factorized assembly and
+        evaluation routines, and are required by
+        :meth:`geometry_from_spline_map` when using the fast spline-geometry
+        path.
         """
         # TODO: This should really be fine as double vmap since it is all 1D.
         # Consider replacing with jax.lax.map if we ever run into memory issues.
@@ -476,10 +532,16 @@ class DeRhamSequence():
                                      (None, 0))(self.quad.x_z, self.basis_0.dΛ[2].ns)
 
     def _form_comp_info(self, k):
-        """Return (comp_info, comp_shapes) for the k-th form.
+        """Return component metadata for tensor-product evaluation of the k-th form.
 
-        comp_info[c] = (output_dim, R, T, Z) for each component c.
-        comp_shapes[c] = (s1, s2, s3) DOF grid shape per component.
+        Returns
+        -------
+        comp_info : list of tuple
+            Each entry ``(output_dim, R_jk, T_jk, Z_jk)`` describes one
+            component: the physical vector index and the three 1-D basis
+            arrays (one differentiated per form degree).
+        comp_shapes : list of int
+            Number of DOFs for each component block.
         """
         match k:
             case 0:
@@ -510,39 +572,62 @@ class DeRhamSequence():
                 raise ValueError("k must be 0, 1, 2, or 3")
 
     def eval_basis_0_ijk(self, i, j, k):
+        """Evaluate the (i, j, k)-th 0-form basis function at all quadrature points."""
         return eval_basis_0_ijk(self, i, j, k)
 
     def eval_d_basis_0_ijk(self, i, j, k):
+        """Evaluate the gradient of the (i, j, k)-th 0-form basis at all quadrature points."""
         return eval_d_basis_0_ijk(self, i, j, k)
 
     def eval_basis_1_ijk(self, i, j, k):
+        """Evaluate the (i, j, k)-th 1-form basis function at all quadrature points."""
         return eval_basis_1_ijk(self, i, j, k)
 
     def eval_d_basis_1_ijk(self, i, j, k):
+        """Evaluate the curl of the (i, j, k)-th 1-form basis at all quadrature points."""
         return eval_d_basis_1_ijk(self, i, j, k)
 
     def eval_basis_2_ijk(self, i, j, k):
+        """Evaluate the (i, j, k)-th 2-form basis function at all quadrature points."""
         return eval_basis_2_ijk(self, i, j, k)
 
     def eval_d_basis_2_ijk(self, i, j, k):
+        """Evaluate the divergence of the (i, j, k)-th 2-form basis at all quadrature points."""
         return eval_d_basis_2_ijk(self, i, j, k)
 
     def eval_basis_3_ijk(self, i, j, k):
+        """Evaluate the (i, j, k)-th 3-form basis function at all quadrature points."""
         return eval_basis_3_ijk(self, i, j, k)
 
     def l2_norm_sq(self, v, k, dirichlet=True):
+        """Return the squared L² norm of a k-form DOF vector ``v``."""
         return v @ self.apply_mass_matrix(v, k, dirichlet=dirichlet)
 
     def l2_norm(self, v, k, dirichlet=True):
+        """Return the L² norm of a k-form DOF vector ``v``."""
         return jnp.sqrt(self.l2_norm_sq(v, k, dirichlet=dirichlet))
 
     def assemble_all_sparse(self):
+        """Assemble and cache all sparse operator matrices.
+
+        Builds mass matrices, derivative matrices, stiffness matrices, and
+        Hodge-Laplacian operators for all form degrees, storing the result in
+        ``self.operators`` and mirroring legacy fields.  Returns the operator
+        bundle.
+        """
         operators = assemble_all_operators(
             self, self.geometry, operators=self.get_operators())
         self.set_operators(operators)
         return operators
 
     def assemble_mass_matrix(self, k):
+        """Assemble and cache the mass matrix for k-forms.
+
+        Parameters
+        ----------
+        k : int
+            Form degree (0, 1, 2, or 3).
+        """
         return self.set_operators(assemble_mass_operators(
             self, self.geometry,
             operators=self.get_operators(),
@@ -550,6 +635,15 @@ class DeRhamSequence():
         ))
 
     def assemble_projection_matrix(self, k_from, k_to):
+        """Assemble and cache the L²-projection matrix from k_from-forms to k_to-forms.
+
+        Parameters
+        ----------
+        k_from : int
+            Source form degree.
+        k_to : int
+            Target form degree.
+        """
         return self.set_operators(assemble_projection_operators(
             self,
             operators=self.get_operators(),
@@ -557,6 +651,13 @@ class DeRhamSequence():
         ))
 
     def assemble_derivative_matrix(self, k):
+        """Assemble and cache the weak derivative matrix mapping k-forms to (k+1)-forms.
+
+        Parameters
+        ----------
+        k : int
+            Form degree of the *input* form (0, 1, or 2).
+        """
         return self.set_operators(assemble_derivative_operators(
             self, self.geometry,
             operators=self.get_operators(),
@@ -564,9 +665,17 @@ class DeRhamSequence():
         ))
 
     def _grad_1d(self, d_basis, boundary_type):
+        """Return the 1-D gradient matrix for the given derivative basis and BC type."""
         return grad_1d(d_basis, boundary_type)
 
     def assemble_hodge_laplacian(self, k):
+        """Assemble and cache the Hodge-Laplacian stiffness matrix for k-forms.
+
+        Parameters
+        ----------
+        k : int
+            Form degree (0, 1, 2, or 3).
+        """
         return self.set_operators(assemble_hodge_operators(
             self, self.geometry,
             operators=self.get_operators(),
@@ -574,29 +683,24 @@ class DeRhamSequence():
         ))
 
     def assemble_leray_projection(self):
+        """Assemble the auxiliary operators required by :meth:`apply_leray_projection`."""
         assemble_leray_projection(self)
 
     # TODO: We can pre-compute strong operators, they are sparse
     def apply_strong_grad(self, v, dirichlet_in=True, dirichlet_out=True):
-        """
-        Apply the strong gradient operator to a vector v.
-        """
+        """Apply the strong gradient M1⁻¹ D0 to a 0-form DOF vector ``v``."""
         dv_dual = self.apply_derivative_matrix(
             v, 0, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out)
         return self.apply_inverse_mass_matrix(dv_dual, 1, dirichlet=dirichlet_out)
 
     def apply_strong_curl(self, v, dirichlet_in=True, dirichlet_out=True):
-        """
-        Apply the strong curl operator to a vector v.
-        """
+        """Apply the strong curl M2⁻¹ D1 to a 1-form DOF vector ``v``."""
         dv_dual = self.apply_derivative_matrix(
             v, 1, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out)
         return self.apply_inverse_mass_matrix(dv_dual, 2, dirichlet=dirichlet_out)
 
     def apply_strong_div(self, v, dirichlet_in=True, dirichlet_out=True):
-        """
-        Apply the strong divergence operator to a vector v.
-        """
+        """Apply the strong divergence M3⁻¹ D2 to a 2-form DOF vector ``v``."""
         dv_dual = self.apply_derivative_matrix(
             v, 2, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out)
         return self.apply_inverse_mass_matrix(dv_dual, 3, dirichlet=dirichlet_out)
@@ -762,9 +866,11 @@ class DeRhamSequence():
             self, operators, v, k, dirichlet=dirichlet)
 
     def _get_nullspace(self, k, dirichlet):
+        """Return the nullspace basis for the k-th Hodge Laplacian."""
         return get_nullspace(self, k, dirichlet)
 
     def _get_saddle_point_nullspaces(self, k, dirichlet):
+        """Return the pair of nullspace bases for the k-th saddle-point system."""
         return get_saddle_point_nullspaces(self, k, dirichlet)
 
     def apply_inverse_hodge_laplacian(self, v, k, dirichlet=True, guess=None, operators=None):
@@ -822,12 +928,15 @@ class DeRhamSequence():
             self, operators, v, k, dirichlet=dirichlet)
 
     def _compute_nullspaces(self, betti_numbers, eps=1e-6):
+        """Iteratively compute harmonic forms for the given Betti numbers."""
         return compute_nullspaces_iterative(self, betti_numbers, eps)
 
     def _find_nullspace_vectors(self, k, n_vectors, eps, dirichlet=True):
+        """Find ``n_vectors`` nullspace vectors of the k-th Hodge Laplacian via inverse iteration."""
         return find_nullspace_vectors(self, k, n_vectors, eps, dirichlet)
 
     def compute_nullspaces(self):
+        """Compute and cache the harmonic forms for all form degrees."""
         return compute_nullspaces(self)
 
     # def cross_product_projection_deprecated(
@@ -956,10 +1065,39 @@ class DeRhamSequence():
         dirichlet_m=True,
         dirichlet_k=True
     ):
-        """Evaluate the cross-product projection using tensor-product eval/integrate.
+        """Project a cross product of two differential forms onto an n-form.
 
-        Same interface as cross_product_projection but uses TP structure
-        for evaluate_at_xq and integrate_against.
+        Computes the n-form dual DOF vector
+
+            ``v_i = ∫ Λⁿ_i · (w × u) dx``
+
+        with appropriate metric contractions depending on the form degrees
+        ``n``, ``m``, ``k``.  Uses the tensor-product structure for efficient
+        evaluation and integration.
+
+        Parameters
+        ----------
+        w : array
+            DOF vector of the m-form.
+        u : array
+            DOF vector of the k-form.
+        n : int
+            Form degree of the output (1 or 2).
+        m : int
+            Form degree of the first input (1 or 2).
+        k : int
+            Form degree of the second input (1 or 2).
+        dirichlet_n : bool, optional
+            Use Dirichlet-constrained extraction for the output n-form.
+        dirichlet_m : bool, optional
+            Use Dirichlet-constrained extraction for the input m-form.
+        dirichlet_k : bool, optional
+            Use Dirichlet-constrained extraction for the input k-form.
+
+        Returns
+        -------
+        array
+            n-form dual DOF vector (apply ``M_n⁻¹`` to obtain primal DOFs).
         """
         from mrx.utils import evaluate_at_xq, integrate_against
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)

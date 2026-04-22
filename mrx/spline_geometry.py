@@ -121,6 +121,16 @@ def spline_map_jacobian_j_at_quad(coefficients, extraction_T, seq):
     return jnp.linalg.det(DF_q)
 
 
+def min_jacobian_from_coeffs(coefficients, extraction_T, seq):
+    """Minimum of ``det(DF)`` over the quadrature grid.
+
+    Cheap mesh-folding diagnostic for a tensor-product spline map with
+    the given ``coefficients``; evaluates only ``det(DF)`` and no metric
+    or operator data.
+    """
+    return jnp.min(spline_map_jacobian_j_at_quad(coefficients, extraction_T, seq))
+
+
 def compute_geometry_terms_from_spline(coefficients, extraction_T, seq):
     """Drop-in replacement for ``compute_geometry_terms`` for spline maps.
 
