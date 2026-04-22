@@ -1,4 +1,4 @@
-# MRX primer for collaborators
+# MRX primer
 
 This note explains the building blocks of `mrx`: the discrete function
 spaces, how tensor-product structure is exploited during assembly, the
