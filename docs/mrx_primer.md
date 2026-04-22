@@ -95,12 +95,11 @@ for 1-forms and 2-forms).
 
 Concretely, $W$ is built from the coordinate mapping Jacobian $D\Phi$:
 $$
-\begin{align*}
-\mathbb{M}^0_{IJ} &= \int_\Omega \Lambda^0_I(\hat x) \Lambda^0_J(\hat x) \det D\Phi(\hat x) \, d\hat x \\
-\mathbb{M}^1_{IJ} &= \int_\Omega \Lambda^1_I(\hat x) \cdot (D\Phi)^{-1} (D\Phi)^{-T} \Lambda^1_J(\hat x) \det D\Phi(\hat x) \, d\hat x \\
-\mathbb{M}^2_{IJ} &= \int_\Omega \Lambda^2_I(\hat x) \cdot (D\Phi)^{T} (D\Phi) \Lambda^2_J(\hat x) (\det D\Phi(\hat x))^{-1} \, d\hat x \\
-\mathbb{M}^3_{IJ} &= \int_\Omega \Lambda^3_I(\hat x) \Lambda^3_J(\hat x) (\det D\Phi(\hat x))^{-1} \, d\hat x
-\end{align*}
+\mathbb{M}^0_{IJ} = \int_\Omega \Lambda^0_I(\hat x) \Lambda^0_J(\hat x) \det D\Phi(\hat x) \, d\hat x \\
+\mathbb{M}^1_{IJ} = \int_\Omega \Lambda^1_I(\hat x) \cdot (D\Phi)^{-1} (D\Phi)^{-T} \Lambda^1_J(\hat x) \det D\Phi(\hat x) \, d\hat x \\
+\mathbb{M}^2_{IJ} = \int_\Omega \Lambda^2_I(\hat x) \cdot (D\Phi)^{T} (D\Phi) \Lambda^2_J(\hat x) (\det D\Phi(\hat x))^{-1} \, d\hat x \\
+\mathbb{M}^3_{IJ} = \int_\Omega \Lambda^3_I(\hat x) \Lambda^3_J(\hat x) (\det D\Phi(\hat x))^{-1} \, d\hat x
+
 $$
 
 The entries of stiffness/derivative matrices are similar but with one or two of the $\Lambda$ swapped for their derivatives. Importantly, since gradients of 0-forms transform like 1-forms, curls of 1-forms transform like 2-forms, and divergences of 2-forms transform like 3-forms, the same $W$ tensors appear.
