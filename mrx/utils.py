@@ -644,6 +644,35 @@ def diag_EAET(E, A, E_T=None):
     return jax.lax.map(entry, jnp.arange(n), batch_size=mrx.MAP_BATCH_SIZE_OUTER)
 
 
+def diag_EAET_matvec(E, A_matvec, n, E_T=None):
+    """Compute the diagonal of ``E @ A @ E^T`` with ``A`` given as a matvec.
+
+    Identical to :func:`diag_EAET`, but ``A`` is a callable ``v -> A @ v``
+    rather than a materialised matrix.  Useful when ``A`` has a sparse
+    factorisation (e.g. ``A = G^T M G``) that would be expensive to
+    materialise but cheap to apply as a composition of matvecs.
+
+    Args:
+        E: row-extraction operator (BCSR or BCOO or dense).
+        A_matvec: callable that applies ``A`` to a dense vector.
+        n: number of rows of ``E`` (i.e. length of the output diagonal).
+        E_T: optional transpose of ``E``; built from ``E`` if omitted.
+    """
+    if E_T is None:
+        if isinstance(E, jsparse.BCSR):
+            coo_idx = _bcsr_to_coo_indices(E)
+            E_T = jsparse.BCOO((E.data, coo_idx), shape=E.shape).T
+        else:
+            E_T = E.T
+
+    def entry(i):
+        e_i = jnp.zeros(n).at[i].set(1.0)
+        v = E_T @ e_i
+        return v @ A_matvec(v)
+
+    return jax.lax.map(entry, jnp.arange(n), batch_size=mrx.MAP_BATCH_SIZE_OUTER)
+
+
 def diag_schur_complement(apply_DT, diag_inv, n):
     """Compute diag(D @ diag(diag_inv) @ D^T) via mapped matvecs.
 

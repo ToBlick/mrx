@@ -46,6 +46,7 @@ dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
+norecursedirs = ["test/deprecated", "deprecated"]
 
 [tool.ruff]
 target-version = "py312"

@@ -142,13 +142,63 @@ pattern (independent of the geometry, some basis functions never overlap). The d
 - `assemble_scalar_tp(...)` — for scalar mass matrices ($k=0$ and
   $k=3$).
 - `assemble_vectorial_tp(...)` — for vector mass matrices
-  ($k=1, 2$), with a list of terms per component describing which
-  directions use the derivative basis.
-- `assemble_stiffness_scalar_tp(...)` — for the $k=0$ $\mathrm{grad}$-$\mathrm{grad}$ Laplacian.
+  ($k=1, 2$).
 
 The cost for an $N^3$ grid drops from the naive $O(N^6)$ to
 $O(N^4)$ per matrix. All further sparse operations are
 $O(\text{nnz})$.
+
+### 2.1.1 Derivative and stiffness matrices come for free
+
+On a FEEC B-spline de Rham complex the exterior derivative at the DoF
+level is a **topological incidence matrix** $\mathbb{G}^k$ with entries
+in $\{-1, 0, +1\}$. The 1-D building block satisfies
+
+$$
+\frac{d}{dx}\lambda^0_j(x) \;=\; \lambda^1_{j-1}(x) - \lambda^1_{j}(x),
+$$
+
+so $(\mathbb{G} c)_j = c_{j+1} - c_j$ (clamped: shape $(n-1, n)$;
+periodic: shape $(n, n)$ with wrap-around; constant: zero). The 3-D
+operators $\mathbb{G}^0, \mathbb{G}^1, \mathbb{G}^2$ are Kronecker sums of
+these 1-D blocks with identities — i.e. the standard discrete grad /
+curl / div on a structured grid. They are **geometry-independent** and
+require no quadrature.
+
+Because $d\Lambda^k_j$ expands exactly in the next-degree basis with
+coefficients from $\mathbb{G}^k$, the weak derivative satisfies
+
+$$
+(\mathbb{D}^k)_{ij}
+  = \int \Lambda^{k+1}_i \cdot d\Lambda^k_j
+  = \sum_\ell (\mathbb{G}^k)_{\ell j} \int \Lambda^{k+1}_i \cdot \Lambda^{k+1}_\ell
+  = (\mathbb{M}^{k+1} \mathbb{G}^k)_{ij}.
+$$
+
+The stiffness blocks follow immediately:
+
+$$
+\mathbb{K}^k_{ij}
+  = \int (d\Lambda^k_i)\cdot(d\Lambda^k_j)
+  = \bigl((\mathbb{G}^k)^\top \mathbb{M}^{k+1} \mathbb{G}^k\bigr)_{ij}.
+$$
+
+In `mrx` we therefore **only run quadrature for the four mass matrices**
+$\mathbb{M}^0, \mathbb{M}^1, \mathbb{M}^2, \mathbb{M}^3$ and assemble the
+incidence $\mathbb{G}^k$ topologically. The derivative blocks
+$\mathbb{D}^k = \mathbb{M}^{k+1} \mathbb{G}^k$ and the stiffness blocks
+$\mathbb{K}^k = (\mathbb{G}^k)^\top \mathbb{M}^{k+1} \mathbb{G}^k$ are pure
+sparse products over data already on hand — no second quadrature pass.
+
+Note on extraction: the identity
+$\mathbb{G}^k = (\mathbb{M}^{k+1})^{-1} \mathbb{D}^k$ holds on the full
+pre-extraction DoF grid. After extraction, it continues to hold whenever
+$\mathbb{E}^{k+1} (\mathbb{E}^{k+1})^\top = I$ (e.g. clamped-drop or pure
+periodic extractions), but **not** for the polar-axis extraction, which
+fuses several DoFs at $r=0$ with fractional weights. Strong derivatives
+on polar geometries therefore go through $\mathbb{M}^{-1}\mathbb{D}$,
+which automatically inherits the correct $d\circ d = 0$ on the
+extracted DoFs.
 
 ### 2.2 Sum factorization of spline geometry
 
@@ -248,11 +298,13 @@ Concretely in [mrx/operators.py](mrx/operators.py), these bilinear forms are bui
 
 Key implementation points:
 
-- Each block $\mathbb{D}^k$ and each `(grad-grad / curl-curl / div-div)` stiffness
-  block is assembled once via sum-factorization, using the
-  metric / inverse-metric-weighted $W$ tensor built from
-  `geometry.metric_jkl`, `geometry.metric_inv_jkl`,
-  `geometry.jacobian_j`.
+- Each block $\mathbb{D}^k$ is built as the sparse product
+  $\mathbb{M}^{k+1}\mathbb{G}^k$, and each `(grad-grad / curl-curl / div-div)`
+  stiffness block as $(\mathbb{G}^k)^\top \mathbb{M}^{k+1} \mathbb{G}^k$
+  (see §2.1.1). Only the mass matrices $\mathbb{M}^k$ go through
+  sum-factorised quadrature against the metric / inverse-metric
+  $W$-tensor built from `geometry.metric_jkl`,
+  `geometry.metric_inv_jkl`, `geometry.jacobian_j`.
 - The Schur-complement contributions $\mathbb{D}^{k-1} (\mathbb{M}^{k-1})^{-1} (\mathbb{D}^{k-1})^\top$
   are not assembled. The systems are solved with matrix-free MINRES.
 - Everything is available in two flavors: "plain" (extraction with
@@ -284,11 +336,74 @@ and lets us compose preconditioners on the fly. See
 | `picard_solver`, `newton_solver`      | Fixed-point / Newton nonlinear solvers (used by relaxation).        |
 | `backtracking_line_search`            | Armijo backtracking with an optional feasibility filter. Used by optimisation scripts. |
 
-Preconditioners are usually diagonal: we precompute
-$\mathrm{diag}(\mathbb{E} \mathbb{A} \mathbb{E}^\top)$ once per Hodge assembly (`diag_EAET`
-in `mrx/utils.py`) and store its inverse on the `SequenceOperators` as
-`*_sp_diaginv` (with `_dbc` variants). For the Hodge Laplacians we
-additionally add the Schur-complement diagonal.
+### 5.1 Mass-matrix preconditioners
+
+Two preconditioners for $\mathbb{M}^k$ are available; both are applied
+as matvecs without forming any new sparse matrix.
+
+**Jacobi (default fallback).** We precompute
+$\mathrm{diag}(\mathbb{E} \mathbb{M}^k \mathbb{E}^\top)$ once via
+`diag_EAET` (in `mrx/utils.py`) and store its inverse on
+`SequenceOperators` as `m{k}_sp_diaginv` (with `_dbc` variants).
+
+**Kronecker ("fast diagonalisation").** Because the reference 1-D mass
+matrices $M_r, M_\theta, M_\zeta$ (regular and derivative splines) are
+small and SPD, we precompute their *full* inverses once and apply
+$\widetilde{\mathbb{M}}^k_{\text{ref}}{}^{-1} = M_r^{-1} \otimes
+M_\theta^{-1} \otimes M_\zeta^{-1}$ as a triple `einsum` (no Kronecker
+product ever assembled). Geometry is folded in by a per-component
+scalar $\alpha_i = \langle J\, g^{ii}\rangle_{\text{quad}}$ (length 1
+for $k=0,3$, length 3 for $k=1,2$), giving
+$\widetilde{\mathbb{M}}^k \approx \operatorname{diag}(\alpha_i)
+\cdot (M_r \otimes M_\theta \otimes M_\zeta)$. The resulting fields
+on `SequenceOperators` are `m1d_inv_{p,d}_{r,t,z}` (geometry-independent,
+shared across all $k$) and `m{k}_kron_scale` (geometry-dependent,
+rebuilt with the mass).
+
+`apply_mass_matrix_preconditioner(seq, ops, v, k, dirichlet, kind=...)`
+dispatches:
+
+- `kind='kronecker'` — uses the Kronecker apply.
+- `kind='jacobi'`    — uses the diagonal apply.
+- `kind='auto'` (default) — Kronecker when assembled and applicable,
+  else Jacobi. `apply_inverse_mass_matrix(..., precond='auto')`
+  forwards through.
+
+Kronecker is unavailable on axes whose 1-D mass is singular (e.g.
+`constant`-type basis); `auto` falls back to Jacobi in that case.
+
+*Why the per-component scale $\alpha_i = \langle J\,g^{ii}\rangle_{\text{quad}}$?*
+On the mapped domain the weak $k$-form mass is
+$\langle u, v\rangle_{M^k} = \int_{\hat\Omega} \hat u^\top W^k\,\hat v\,\mathrm{d}\hat x$,
+with pull-back weights
+
+$$
+W^0 = J,\qquad W^1 = J\,g^{-1},\qquad W^2 = g/J,\qquad W^3 = 1/J,
+$$
+
+i.e. the same $W$ that appears in §3.  The reference Kronecker mass
+$M_r \otimes M_\theta \otimes M_\zeta$ corresponds to $W \equiv I$;
+rescaling each component by the *quadrature average of its diagonal*
+$W^k_{ii}$ — $J$ for $k=0$, $J g^{ii}$ for $k=1$, $g_{ii}/J$ for $k=2$,
+$1/J$ for $k=3$ — recovers the leading anisotropy of the metric.  The
+off-diagonal cross terms $g^{ij}$, $i\neq j$ are dropped: they couple
+vector components and therefore break the block-Kronecker structure;
+keeping them would force a full mass solve.  In practice this is a
+spectrally equivalent approximation on quasi-uniform meshes and reduces
+CG iteration counts by roughly an order of magnitude versus plain
+Jacobi.
+
+### 5.2 Hodge-Laplacian preconditioner
+
+We build the Jacobi diagonal of the extracted stiffness
+$\mathbb{E} \mathbb{K}^k \mathbb{E}^\top$ *without* materialising
+$\mathbb{K}^k = (\mathbb{G}^k)^\top \mathbb{M}^{k+1} \mathbb{G}^k$. The
+helper `diag_EAET_matvec(E, A_matvec, n)` (in `mrx/utils.py`) probes
+$\mathbb{K}^k$ by applying it to extracted unit vectors via the
+composition $v \mapsto \mathbb{G}^{k\top} \mathbb{M}^{k+1}
+\mathbb{G}^k v$. For $k=1,2$ we add the Schur-complement diagonal
+$\mathrm{diag}(\mathbb{D}^{k-1}\,\mathrm{diag}(\mathbb{M}^{k-1})^{-1}
+\mathbb{D}^{(k-1)\top})$ on top.
 
 The Hodge-Laplacian inverse dispatches to the right solver per $k$:
 
@@ -296,6 +411,194 @@ The Hodge-Laplacian inverse dispatches to the right solver per $k$:
   average-zero conditions).
 - $k = 1, 2$: `solve_singular_cg` with the known harmonic null space
   deflated out, using the diagonal Schur preconditioner.
+
+**Fast-diagonalisation Hodge preconditioner ($k=0$).** For 0-forms the
+reference-domain stiffness is a Kronecker *sum*
+
+$$
+K_{0,\text{ref}} \;=\; K_r \otimes M_\theta \otimes M_\zeta
+ \,+\, M_r \otimes K_\theta \otimes M_\zeta
+ \,+\, M_r \otimes M_\theta \otimes K_\zeta ,
+$$
+
+with 1-D stiffness $K_a = G_a^\top M_a^{(d)} G_a$ assembled from the
+incidence matrix $G_a$ and the derivative-spline mass.  This sum is not
+a Kronecker product, so its inverse cannot be applied as one — but
+because every term shares the same 1-D mass factors, the per-axis
+generalised eigenproblem $K_a v = \lambda M_a v$ diagonalises *all*
+three terms simultaneously.  We solve it via Cholesky reduction
+($M_a = L_a L_a^\top$, eigh on $L_a^{-1} K_a L_a^{-\top}$,
+$V_a = L_a^{-\top} W_a$ so that $V_a^\top M_a V_a = I$) — JAX has no
+generalised `eigh`, but the 1-D matrices are tiny.  The inverse is
+applied as three forward einsums with $V_a^\top M_a$, a divide by
+$\sum_i \alpha_i \lambda_i$ on the 3-tensor, and three back einsums
+with $V_a$.  The $\alpha_i = \langle J\,g^{ii}\rangle_{\text{quad}}$
+factor (same metric weight as $W^1$, since $K^0$ comes from
+$(\mathbb{G}^0)^\top M^1 \mathbb{G}^0$) captures the leading
+anisotropy.
+
+Fields on `SequenceOperators`: geometry-independent eigendecompositions
+`fd_V_p_{r,t,z}`, `fd_lam_p_{r,t,z}`, `fd_VtM_p_{r,t,z}` (built once by
+`assemble_fd_hodge_preconditioner`); geometry-dependent
+`dd0_fd_scale_K` (rebuilt with the Hodge operator).
+`apply_hodge_laplacian_preconditioner(..., kind='auto'|'jacobi'|'kronecker')`
+dispatches; `'auto'` uses the FD apply when assembled and falls back to
+Jacobi.  Currently $k=0$ only — the higher-$k$ Hodge preconditioner
+remains diagonal.
+
+**Plan for the $k=1,2,3$ fast-diagonalisation extension.**  The
+structure of $K^k$ on the reference cube is known for every $k$, so
+the same Cholesky-reduction machinery extends with some care about
+(i) the block structure over vector components and (ii) which 1-D mass
+enters each factor.
+
+*$k=3$ (scalar, one block).*  Since $d$ acting on a 3-form vanishes
+on a 3-D domain, the Hodge Laplacian reduces to $L_3 = d \delta$.  In
+matrix form, using $\mathbb{D}^k = \mathbb{M}^{k+1} \mathbb{G}^k$:
+
+$$
+L_3 \;=\; (M^3)^{-1}\,\mathbb{D}^{2}\,(M^2)^{-1}\,(\mathbb{D}^{2})^\top .
+$$
+
+By Hodge duality, $L_3$ is unitarily equivalent to $L_0$ (with the
+roles of regular and derivative bases swapped on every axis), so the
+same FD Kronecker-sum structure applies.  On the reference cube:
+
+$$
+K_{3,\text{ref}} \;=\; K_r^{(d)} \otimes M_\theta^{(d)} \otimes M_\zeta^{(d)}
+\,+\, M_r^{(d)} \otimes K_\theta^{(d)} \otimes M_\zeta^{(d)}
+\,+\, M_r^{(d)} \otimes M_\theta^{(d)} \otimes K_\zeta^{(d)} ,
+$$
+
+where now $K_a^{(d)} = G_a^{(d)\,\top} M_a^{(p)} G_a^{(d)}$ is the
+1-D stiffness on the *derivative* spline space (using the incidence
+$G^2$ which maps the $k=3$ axis-$a$ basis back to the $k=2$ axis-$a$
+basis).  The implementation mirrors $k=0$ exactly: run the Cholesky
+reduction on each pair $(M_a^{(d)}, K_a^{(d)})$ to get
+`fd_V_d_{r,t,z}`, `fd_lam_d_{r,t,z}`; scales
+$\alpha_a = \langle 1/J \rangle_{\text{quad}}$ (the $W^3 = 1/J$
+weight).
+
+*$k=1$ (three-component vector).*  The stiffness block per Cartesian
+component $i$ on the reference cube is
+$K_{1,\text{ref}}^{(i)} = K_r^{(\alpha_r^{(i)})} \otimes
+M_\theta^{(\alpha_\theta^{(i)})} \otimes M_\zeta^{(\alpha_\zeta^{(i)})}
++ \ldots$ where $\alpha_a^{(i)} \in \{p, d\}$ tracks which axis uses
+the regular vs. derivative basis (see `_kron_component_specs` in
+`mrx/operators.py`).  For the component whose first logical direction
+is a derivative (the $d\theta \wedge d\zeta$-edge in 1-form
+conventions: spec `('d','p','p')`), the 1-D factors are
+$M_r^{(d)}, M_\theta^{(p)}, M_\zeta^{(p)}$ and the stiffness is built
+from $G_a^\top M_a^{(\cdot)} G_a$ *against the other two axes*, not
+this one (the derivative axis is already "differentiated" in the
+basis).  Concretely, the three component blocks are
+
+$$
+\begin{aligned}
+K_1^{(d,p,p)} &= M_r^{(d)} \otimes K_\theta^{(p)} \otimes M_\zeta^{(p)}
+ + M_r^{(d)} \otimes M_\theta^{(p)} \otimes K_\zeta^{(p)} , \\
+K_1^{(p,d,p)} &= K_r^{(p)} \otimes M_\theta^{(d)} \otimes M_\zeta^{(p)}
+ + M_r^{(p)} \otimes M_\theta^{(d)} \otimes K_\zeta^{(p)} , \\
+K_1^{(p,p,d)} &= K_r^{(p)} \otimes M_\theta^{(p)} \otimes M_\zeta^{(d)}
+ + M_r^{(p)} \otimes K_\theta^{(p)} \otimes M_\zeta^{(d)} ,
+\end{aligned}
+$$
+
+each a Kronecker **sum of two** terms (the third term drops because
+the derivative axis has no stiffness contribution, $d \circ d = 0$ in
+that slot).  Per block we still have the FD structure: the two active
+axes share the same mass, so the generalised eigenproblem on those two
+axes diagonalises the sum.  The inactive (derivative-basis) axis
+contributes only a mass factor, which Cholesky-factorises once.  The
+inverse is applied as a tensor multiplication with the per-axis
+eigenbases followed by a divide by
+$\alpha_a \lambda_a + \alpha_b \lambda_b$, with the third axis
+contributing $M_a^{(d)-1}$ applied directly.
+
+Required eigendecompositions, per block:
+- `(d,p,p)`: `fd_V_p_t`, `fd_V_p_z` (already built); plus Cholesky of
+  $M_r^{(d)}$ (call it `chol_M_d_r`, new).
+- `(p,d,p)`: `fd_V_p_r`, `fd_V_p_z`; `chol_M_d_t`.
+- `(p,p,d)`: `fd_V_p_r`, `fd_V_p_t`; `chol_M_d_z`.
+
+So the *new* geometry-independent data for $k=1$ is just three 1-D
+Cholesky factors of the derivative-spline mass matrices — all already
+assembled as `m1d_inv_d_{r,t,z}` for the mass preconditioner; we just
+need the Cholesky form too.
+
+The geometric scale per block is
+$\alpha_a^{(i)} = \langle J\, g^{ii}_a \rangle_{\text{quad}}$ for each
+active axis $a$, where the metric index $i$ matches the $W^k$ weight
+of a 1-form ($W^1 = J g^{-1}$, so the same $J g^{ii}$ we use in
+§5.1).  One length-3 array per component block, i.e. nine scalars for
+$k=1$; store as `dd1_fd_scale_K` of shape `(3, 3)`.
+
+*$k=2$ (three-component vector, dual to $k=1$).*  Swap $p \leftrightarrow d$
+in every slot of the $k=1$ analysis.  Component blocks are
+`(p,d,d)`, `(d,p,d)`, `(d,d,p)`.  The *single* active axis per block
+is the $p$-axis (the one where the basis is not differentiated);
+the two derivative axes contribute only mass.  Stiffness per block:
+
+$$
+K_2^{(p,d,d)} = K_r^{(p)} \otimes M_\theta^{(d)} \otimes M_\zeta^{(d)} ,
+$$
+
+i.e. a Kronecker *product* (single term, since two of the three slots
+are derivative axes).  This is the easiest case: the block is
+$A \otimes B \otimes C$ with one FD eigendecomposition ($K_r^{(p)}$
+vs. $M_r^{(p)}$) plus two Cholesky factors.  Inverse: apply $V_a^\top
+M_a$ on axis $a$, divide by $\alpha_a \lambda_a$, back-einsum with
+$V_a$; apply the two Cholesky solves on the other two axes.  No sum
+of Kronecker products to diagonalise.
+
+Required new data: Cholesky factors `chol_M_d_{r,t,z}` (shared with
+$k=1$).  The $V_a, \lambda_a$ are already on the struct (`fd_V_p_*`,
+`fd_lam_p_*`).  Scales: `dd2_fd_scale_K` with shape `(3, 3)`, one
+length-3 row per block, $\alpha_a^{(i)} = \langle J^{-1}\, g_{ii}
+\rangle_{\text{quad}}$ (the $W^2 = g/J$ weight restricted to the
+diagonal metric entry of the active axis).
+
+*Off-diagonal metric terms for $k=1,2$.*  As in $k=0$ (§5.1) we drop
+$g^{ij}$ with $i \ne j$ — they couple component blocks and break the
+block-diagonal Kronecker structure.  On a mapped but not highly skewed
+domain (our donut torus, tokamak-like stellarator), these terms are
+bounded and the resulting preconditioner stays spectrally equivalent.
+
+*Plan of implementation.*
+1. Extend `assemble_fd_hodge_preconditioner` to also compute and store
+   `fd_chol_d_r, fd_chol_d_t, fd_chol_d_z` (Cholesky factors of the
+   derivative-spline 1-D mass) — three small dense matrices, shared by
+   $k=1$ and $k=2$.
+2. Extend `update_hodge_operator` so that for $k=1,2$ it computes the
+   per-component, per-axis scales $\alpha_a^{(i)}$ and stores them as
+   `dd1_fd_scale_K` / `dd2_fd_scale_K` (shape `(3, 3)`).
+3. Add block-specific FD applies `_fd_apply_3d_{k1,k2}` that take the
+   relevant $(V_a, \lambda_a)$ pair(s) and Cholesky factor(s) and
+   return the block-local action.  Reuse `_fd_apply_full` machinery to
+   iterate over component blocks.
+4. Extend `_fd_hodge_available(operators, k)` to check the new fields.
+5. `apply_hodge_laplacian_preconditioner(kind='auto')` already
+   dispatches on $k$; add the $k=1, 2, 3$ branches.
+6. For $k=3$, route to `apply_mass_kron_preconditioner(k=3)` and scale
+   by the Hodge weight.
+7. Tests in `test/test_sequence.py`:
+   SPD test (dense build of $P$, `eigvalsh.min() > -1e-9`) and
+   acceleration test (CG iters with Kronecker $\le$ Jacobi) for each
+   of $k = 1, 2, 3$ on the existing `torus_seq` fixture.
+
+*Caveats.*
+- For $k=1$ the per-block Kronecker *sum* has only two terms, so the
+  FD inverse is rank-2 in the relevant subspace — still exact on the
+  reference cube.
+- `fd_chol_d_{r,t,z}` assumes the derivative-spline mass is SPD,
+  which it is for periodic and clamped types but **not** for
+  `constant`-type axes (where the derivative basis is one constant
+  function; the $1\times 1$ mass is fine, but the Cholesky reduces to
+  a scalar divide — worth a special case if we ever ship a
+  constant-type axis with $n>1$, which currently we don't).
+- The off-diagonal metric drop is the only "approximate" step.
+  Keep the `kind='auto'|'jacobi'|'kronecker'` knob so the user can
+  always fall back.
 
 ---
 
@@ -339,13 +642,23 @@ This is the data that depends on the physical map and must be recomputed when th
   `SequenceGeometry.from_spline_map(spline_map, seq)` (sum-factorised
   path, used automatically when the map is a `SplineMap`).
 - **`SequenceOperators`** ([mrx/operators.py](mrx/operators.py)) — the
-  assembled geometry-dependent operators: sparse $\mathbb{M}^k$, sparse
-  $\mathbb{D}^k$, sparse stiffness (grad-grad, curl-curl, div-div), all with
-  their diagonal preconditioners for plain and `dbc` extraction.
+  assembled operators: sparse $\mathbb{M}^k$ (the only blocks that
+  actually need quadrature), topological incidence $\mathbb{G}^k$
+  (geometry-independent ±1 entries), and the diagonal preconditioner
+  data for both plain and `dbc` extraction. The weak derivatives
+  $\mathbb{D}^k = \mathbb{M}^{k+1}\mathbb{G}^k$ and stiffness blocks
+  $\mathbb{K}^k = (\mathbb{G}^k)^\top \mathbb{M}^{k+1} \mathbb{G}^k$
+  are *not* stored — they are applied lazily as compositions of BCSR
+  matvecs (the corresponding `d{k}_sp` / `grad_grad_sp` / `curl_curl_sp`
+  / `div_div_sp` fields stay `None`). This avoids the dominant
+  `BCOO @ BCOO` peak-memory spike during assembly. Mass
+  preconditioner data: `m{k}_sp_diaginv` (Jacobi) and the Kronecker
+  set `m1d_inv_{p,d}_{r,t,z}` plus `m{k}_kron_scale` (see §5.1).
   `eqx.Module`; every field is `Optional[...]` so you only pay for the
-  blocks you actually assemble. Build it with
-  `assemble_mass_operators / assemble_derivative_operators /
-  assemble_hodge_operators(seq, geometry, ks=(0,))` or
+  blocks you actually assemble. Build it with `assemble_mass_operators
+  / assemble_kron_mass_preconditioner / assemble_incidence_operators /
+  assemble_derivative_operators / assemble_hodge_operators(seq,
+  geometry, ks=(0,))` (all wrapped by `assemble_all_operators`), or
   `operators_from_coeffs(seq, coeffs, ks, kinds)` when the map is a
   `SplineMap`.
 
@@ -409,12 +722,13 @@ SequenceGeometry            ←  from_map(F, quad.x)  or  from_spline_map(spline
       │   metric_jkl, metric_inv_jkl, jacobian_j
       ▼
 SequenceOperators
-      │   1. mass         (assemble_mass_operators)        — needs geometry
-      │   2. derivative   (assemble_derivative_operators)  — needs geometry (for sign / curl-perm only)
-      │   3. hodge        (assemble_hodge_operators)       — needs geometry; the grad-grad /
-      │                                                      curl-curl / div-div stiffness blocks
-      │                                                      and their diagonal preconditioners
-      │   4. projection   (assemble_projection_operators)  — topology-only, no geometry
+      │   1. mass         (assemble_mass_operators)              — needs geometry (only quadrature pass)
+      │   1b. kron precond (assemble_kron_mass_preconditioner)   — 1-D mass inverses + per-comp scale
+      │   2. incidence    (assemble_incidence_operators)         — topology-only, ±1 entries; no geometry
+      │   3. derivative   (assemble_derivative_operators)        — validates G_k and M_{k+1}; D_k applied lazily
+      │   4. hodge        (assemble_hodge_operators)             — Jacobi diagonal of K_k (matvec-free of K_k);
+      │                                                            K_k itself is never materialised
+      │   5. projection   (assemble_projection_operators)        — topology-only, no geometry
       ▼
 Nullspaces (compute_nullspaces / compute_nullspaces_iterative)
             needs fully assembled mass, derivative, and Hodge operators
@@ -429,10 +743,12 @@ seq = DeRhamSequence(ns, ps, p_quad, types, F, polar=True)
 seq.evaluate_1d()                              # cache 1D basis @ quadrature
 
 geom = SequenceGeometry.from_map(F, seq.quad.x)           # or .from_spline_map(...)
-ops  = assemble_mass_operators(seq, geom)                 # M^k, diag(M^k)^{-1}
-ops  = assemble_derivative_operators(seq, geom, ops)      # D^k (+ transposes)
-ops  = assemble_hodge_operators(seq, geom, ops)           # grad-grad / curl-curl /
-                                                          # div-div, with Schur diag preconds
+ops  = assemble_mass_operators(seq, geom)                 # M^k, diag(M^k)^{-1}  (only quadrature pass)
+ops  = assemble_kron_mass_preconditioner(seq, ops)        # 1-D mass inverses + per-component scale
+ops  = assemble_incidence_operators(seq, ops)             # G^k, ±1 entries; topology only
+ops  = assemble_derivative_operators(seq, geom, ops)      # validates G^k, M^{k+1}; D^k applied lazily
+ops  = assemble_hodge_operators(seq, geom, ops)           # Jacobi/Schur diag of K^k via matvec probes;
+                                                          # K^k itself is never materialised
 ops  = assemble_projection_operators(seq, ops)            # optional, topology only
 ```
 
@@ -461,11 +777,35 @@ and the unused fields stay `None`.
 ### 7.3 Nullspaces
 
 Hodge Laplacians generally have a non-trivial kernel and must be
-deflated in CG. There are two ways to populate the null vectors on
-`seq`, both in [mrx/nullspace.py](mrx/nullspace.py):
+deflated in CG. The harmonic-form DoF vectors live on the dynamic
+`SequenceOperators` pytree (not on `seq`), as eight fields
+`null_k` / `null_k_dbc` (`k = 0, 1, 2, 3`). Each is a stacked array
+of shape `(n_vectors, n_k)` with one row per harmonic form.
 
-1. **Closed-form** — `compute_nullspaces(seq)`: uses the fact that the harmonic 
-    spaces are easy to characterise when the domain has no holes.
+The *shape* of each field is **topology-determined** — fixed by the
+Betti numbers $(b_0, b_1, b_2, b_3)$ supplied to `DeRhamSequence`
+(default `(1, 1, 0, 0)` for a solid torus). The *values* are
+dynamic: they are initialised to zero the first time an operator
+bundle is attached (so deflation is a harmless no-op on a fresh
+sequence) and overwritten once nullspaces are computed. Holding
+shapes fixed means the stacked arrays are compatible with
+`jax.jit` and `jax.lax.while_loop`.
+
+Counts of harmonic $k$-forms per BC:
+
+| k | no DBC | with DBC |
+|---|--------|----------|
+| 0 | $b_0$  | 0        |
+| 1 | $b_1$  | $b_2$    |
+| 2 | $b_2$  | $b_1$    |
+| 3 | 0      | $b_0$    |
+
+Two routines populate the arrays, both in
+[mrx/nullspace.py](mrx/nullspace.py):
+
+1. **Closed-form** — `compute_nullspaces(seq, operators=None)`: uses
+   the fact that the harmonic spaces are easy to characterise when
+   the domain has no holes (`betti = (1, 0, 0, 0)`).
     - $k=0$, no DBC: the constant function $\mathbf{1}/\|\mathbf{1}\|_{M^0}$.
     - $k=3$, DBC: $\mathbf{1}$ lifted via $(\mathbb{M}^3)^{-1}$ and normalised.
     - $k=1,2$ (plain / DBC): start from $\mathbf{1}$, take a Leray
@@ -475,17 +815,20 @@ deflated in CG. There are two ways to populate the null vectors on
       harmonic representative. **This relies that the domain has no holes**.
       We will probably remove this soon.
 
-2. **Iterative** — `compute_nullspaces_iterative(seq, betti_numbers, eps)`:
-   inverse power iteration with a small shift $\epsilon$ against the
-   Hodge Laplacian for each $(k, \text{BC})$ pair. Handles arbitrary
-   topology: you pass $(b_0, b_1, b_2, b_3)$ (with the convention
-   $b_0 = 1$, $b_3 = 0$), and it finds $b_k$ null vectors for each
-   $k$. `eps` is a regulariser that keeps the shifted system SPD.
+2. **Iterative** — `compute_nullspaces_iterative(seq, operators=None,
+   betti_numbers=None, eps=1e-6)`: inverse power iteration with a
+   small shift $\epsilon$ against the Hodge Laplacian for each
+   $(k, \text{BC})$ pair. Handles arbitrary topology; `betti_numbers`
+   defaults to `seq.betti_numbers`. `eps` is a regulariser that keeps
+   the shifted system SPD.
 
-Both functions store results as attributes `seq.null_k` and
-`seq.null_k_dbc` (lists of vectors). The singular-CG wrapper
-`solve_singular_cg` consults these via `seq._get_nullspace(k, dirichlet)`
-to deflate each Krylov iterate.
+Both routines return the updated `SequenceOperators` bundle. The
+`DeRhamSequence` wrappers `seq.compute_nullspaces()` and
+`seq._compute_nullspaces(...)` store the result back on
+`seq.operators` for you, and the read-only properties `seq.null_k`,
+`seq.null_k_dbc` forward to `get_nullspace(seq.operators, k, dbc)`.
+The singular-CG wrapper `solve_singular_cg` consults the stacked
+arrays directly from the operator bundle it receives.
 
 **Order requirement.** Nullspace computation calls
 `apply_inverse_mass_matrix`, `apply_leray_projection`, and (for

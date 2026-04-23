@@ -6,7 +6,6 @@ from mrx.differential_forms import DiscreteFunction
 from mrx.io import project_sampled_field
 from mrx.mappings import toroid_map
 
-
 jax.config.update("jax_enable_x64", True)
 
 
@@ -68,7 +67,8 @@ def test_poisson_k0_with_projected_toroid_spline_geometry():
     seq.assemble_reference_mass_matrix()
 
     n_sample = 40
-    print(f"Projecting torus map to spline coefficients on a {n_sample}^3 logical grid...")
+    print(
+        f"Projecting torus map to spline coefficients on a {n_sample}^3 logical grid...")
     r = jnp.linspace(0, 1, n_sample)
     chi = jnp.linspace(0, 1, n_sample)
     zeta = jnp.linspace(0, 1, n_sample)
@@ -88,7 +88,6 @@ def test_poisson_k0_with_projected_toroid_spline_geometry():
     seq.set_spline_map(coeffs)
     seq.assemble_mass_matrix(0)
     seq.assemble_hodge_laplacian(0)
-    seq.null_0_dbc = []
 
     print("Solving k=0 Poisson problem on the spline-projected torus geometry...")
     rel_error = _solve_and_error_k0(seq)

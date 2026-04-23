@@ -34,17 +34,11 @@ import numpy as np
 from mrx.derham_sequence import DeRhamSequence, SequenceGeometry
 from mrx.io import project_sampled_field
 from mrx.mappings import SplineMap, toroid_map
-from mrx.operators import (
-    apply_inverse_shifted_stiffness,
-    apply_mass_matrix,
-    apply_stiffness,
-    operators_from_coeffs,
-)
+from mrx.operators import (apply_inverse_shifted_stiffness, apply_mass_matrix,
+                           apply_stiffness, operators_from_coeffs)
 from mrx.solvers import backtracking_line_search
-from mrx.spline_geometry import (
-    min_jacobian_from_coeffs,
-    spline_map_jacobian_j_at_quad,
-)
+from mrx.spline_geometry import (min_jacobian_from_coeffs,
+                                 spline_map_jacobian_j_at_quad)
 from mrx.utils import integrate_against
 
 jax.config.update("jax_enable_x64", True)
@@ -103,7 +97,8 @@ seq.evaluate_1d()
 seq.assemble_reference_mass_matrix()
 
 n_sample = 50
-print(f"Projecting torus map to spline coefficients on a {n_sample}^3 grid ...")
+print(
+    f"Projecting torus map to spline coefficients on a {n_sample}^3 grid ...")
 r_lin = jnp.linspace(0, 1, n_sample)
 chi_lin = jnp.linspace(0, 1, n_sample)
 zeta_lin = jnp.linspace(0, 1, n_sample)
@@ -132,7 +127,7 @@ print("Assembling reference operators and solving for u_bar ...")
 seq.set_spline_map(coeffs_ref)
 seq.assemble_mass_matrix(0)
 seq.assemble_hodge_laplacian(0)
-seq.null_0_dbc = []
+# default betti_numbers=(1,1,0,0): null_0_dbc is already empty
 
 # Precompute the source at logical quadrature points once (geometry-independent).
 f_jk = jax.lax.map(source_f, seq.quad.x, batch_size=20_000)
@@ -281,7 +276,8 @@ perturbation_scale = 1e-4 * jnp.linalg.norm(coeffs_ref, 2)
 n_axis = 3 * seq.basis_0.nz   # number of polar-axis DOFs (3 per z-slice)
 mask = jnp.ones(coeffs_ref.shape[1]).at[:n_axis].set(0.0)   # shape (n_dof,)
 
-perturbation = mask * perturbation_scale * jax.random.normal(key, coeffs_ref.shape)
+perturbation = mask * perturbation_scale * \
+    jax.random.normal(key, coeffs_ref.shape)
 coeffs = coeffs_ref + perturbation
 print(f"Initial ||a - a*|| = {float(jnp.linalg.norm(perturbation)):.4e}")
 # Check that the Jacobian is positive for the initial perturbed geometry.

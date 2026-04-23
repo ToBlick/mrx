@@ -6,29 +6,41 @@ import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 
 import mrx
-from mrx.assembly import (assemble_leray_projection,
-                          eval_basis_0_ijk, eval_basis_1_ijk, eval_basis_2_ijk,
-                          eval_basis_3_ijk, eval_d_basis_0_ijk,
-                          eval_d_basis_1_ijk, eval_d_basis_2_ijk, grad_1d)
+from mrx.assembly import (assemble_leray_projection, eval_basis_0_ijk,
+                          eval_basis_1_ijk, eval_basis_2_ijk, eval_basis_3_ijk,
+                          eval_d_basis_0_ijk, eval_d_basis_1_ijk,
+                          eval_d_basis_2_ijk, grad_1d)
 from mrx.differential_forms import DifferentialForm
 from mrx.extraction_operators import (BoundaryOperator,
-                                      PolarExtractionOperator, bc_extraction_op, get_xi)
+                                      PolarExtractionOperator,
+                                      bc_extraction_op, get_xi)
 from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
                            find_nullspace_vectors, get_nullspace,
-                           get_saddle_point_nullspaces)
-from mrx.operators import (apply_derivative_matrix as apply_derivative_matrix_ops,
-                           apply_hodge_laplacian as apply_hodge_laplacian_ops,
-                           apply_hodge_laplacian_preconditioner as apply_hodge_laplacian_preconditioner_ops,
-                           apply_inverse_diffusion as apply_inverse_diffusion_ops,
-                           apply_inverse_mass_matrix as apply_inverse_mass_matrix_ops,
-                           apply_inverse_shifted_stiffness as apply_inverse_shifted_stiffness_ops,
-                           apply_mass_matrix as apply_mass_matrix_ops,
-                           apply_mass_matrix_preconditioner as apply_mass_matrix_preconditioner_ops,
-                           apply_projection_matrix as apply_projection_matrix_ops,
-                           apply_stiffness as apply_stiffness_ops,
-                           assemble_all_operators,
+                           get_saddle_point_nullspaces, init_nullspaces)
+from mrx.operators import \
+    apply_derivative_matrix as apply_derivative_matrix_ops
+from mrx.operators import apply_hodge_laplacian as apply_hodge_laplacian_ops
+from mrx.operators import \
+    apply_hodge_laplacian_preconditioner as \
+    apply_hodge_laplacian_preconditioner_ops
+from mrx.operators import apply_incidence_matrix as apply_incidence_matrix_ops
+from mrx.operators import \
+    apply_inverse_diffusion as apply_inverse_diffusion_ops
+from mrx.operators import \
+    apply_inverse_mass_matrix as apply_inverse_mass_matrix_ops
+from mrx.operators import \
+    apply_inverse_shifted_stiffness as apply_inverse_shifted_stiffness_ops
+from mrx.operators import apply_mass_matrix as apply_mass_matrix_ops
+from mrx.operators import \
+    apply_mass_matrix_preconditioner as apply_mass_matrix_preconditioner_ops
+from mrx.operators import \
+    apply_projection_matrix as apply_projection_matrix_ops
+from mrx.operators import apply_stiffness as apply_stiffness_ops
+from mrx.operators import (assemble_all_operators,
                            assemble_derivative_operators,
-                           assemble_hodge_operators, assemble_mass_operators,
+                           assemble_hodge_operators,
+                           assemble_incidence_operators,
+                           assemble_mass_operators,
                            assemble_projection_operators)
 from mrx.projectors import Projector
 from mrx.quadrature import QuadratureRule
@@ -164,7 +176,8 @@ class DeRhamSequence():
     d_basis_t_jk: jnp.ndarray
     d_basis_z_jk: jnp.ndarray
 
-    def __init__(self, ns, ps, q, types, map, polar, tol=1e-12, maxiter=10_000, r_scale=1.0, n_inner=5):
+    def __init__(self, ns, ps, q, types, map, polar, tol=1e-12, maxiter=10_000,
+                 r_scale=1.0, n_inner=5, betti_numbers=(1, 1, 0, 0)):
         """Construct a de Rham sequence.
 
         Parameters
@@ -192,10 +205,18 @@ class DeRhamSequence():
             (knot spacing proportional to ``r**r_scale``).
         n_inner : int, optional
             Number of inner CG iterations used by block preconditioners.
+        betti_numbers : tuple of 4 ints, optional
+            ``(b0, b1, b2, b3)`` for the physical domain. Determines how
+            many harmonic ``k``-forms each Hodge Laplacian has, and hence
+            the shapes of the nullspace arrays stored on
+            :class:`SequenceOperators`. Defaults to ``(1, 1, 0, 0)`` which
+            matches a solid torus.
         """
         self.tol = tol
         self.maxiter = maxiter
         self.n_inner = n_inner
+        assert len(betti_numbers) == 4, "betti_numbers must have length 4"
+        self.betti_numbers = tuple(betti_numbers)
         if not polar:
             Ts = [None] * 3
         else:
@@ -315,6 +336,38 @@ class DeRhamSequence():
     def jacobian_j(self):
         return self.geometry.jacobian_j
 
+    @property
+    def null_0(self):
+        return get_nullspace(self._require_operators(), 0, False)
+
+    @property
+    def null_1(self):
+        return get_nullspace(self._require_operators(), 1, False)
+
+    @property
+    def null_2(self):
+        return get_nullspace(self._require_operators(), 2, False)
+
+    @property
+    def null_3(self):
+        return get_nullspace(self._require_operators(), 3, False)
+
+    @property
+    def null_0_dbc(self):
+        return get_nullspace(self._require_operators(), 0, True)
+
+    @property
+    def null_1_dbc(self):
+        return get_nullspace(self._require_operators(), 1, True)
+
+    @property
+    def null_2_dbc(self):
+        return get_nullspace(self._require_operators(), 2, True)
+
+    @property
+    def null_3_dbc(self):
+        return get_nullspace(self._require_operators(), 3, True)
+
     def set_geometry(self, geometry: SequenceGeometry):
         """Replace the geometry attached to this sequence."""
         self.geometry = geometry
@@ -345,7 +398,14 @@ class DeRhamSequence():
         return getattr(self, 'operators', None)
 
     def set_operators(self, operators, sync_legacy=True):
-        """Attach an operator bundle to the sequence and optionally mirror legacy fields."""
+        """Attach an operator bundle to the sequence and optionally mirror legacy fields.
+
+        If ``operators`` has no nullspace arrays yet, they are initialised to
+        zeros with shapes derived from ``self.betti_numbers``.
+        """
+        if operators is not None and getattr(operators, 'null_0', None) is None:
+            operators = init_nullspaces(self, operators,
+                                        betti_numbers=self.betti_numbers)
         self.operators = operators
         if sync_legacy and operators is not None:
             self._sync_operators()
@@ -686,7 +746,55 @@ class DeRhamSequence():
         """Assemble the auxiliary operators required by :meth:`apply_leray_projection`."""
         assemble_leray_projection(self)
 
-    # TODO: We can pre-compute strong operators, they are sparse
+    def assemble_incidence_matrix(self, k):
+        """Assemble and cache the topological incidence matrix Gk.
+
+        Parameters
+        ----------
+        k : int
+            Form degree of the *input* form (0, 1, or 2).
+        """
+        return self.set_operators(assemble_incidence_operators(
+            self,
+            operators=self.get_operators(),
+            ks=(k,),
+        ))
+
+    def apply_incidence_matrix(self, v, k, dirichlet_in=True, dirichlet_out=True,
+                               transpose=False, operators=None):
+        """Apply the topological exterior-derivative incidence Gk to ``v``.
+
+        Gk has entries in {-1, 0, +1} and is geometry-independent. On DoF
+        spaces where the extraction operators are "unitary" (``e @ e^T = I``),
+        this equals ``M_{k+1}^{-1} @ apply_derivative_matrix``. For non-unitary
+        extractions (e.g. polar axis gluing) the two differ; in that regime
+        :meth:`apply_strong_grad` / curl / div remain the mass-projected form
+        and should be preferred when exact d∘d = 0 on extracted DoFs is
+        required.
+        """
+        operators = self._require_operators(operators)
+        return apply_incidence_matrix_ops(
+            self, operators, v, k,
+            dirichlet_in=dirichlet_in,
+            dirichlet_out=dirichlet_out,
+            transpose=transpose,
+        )
+
+    # TODO: Cache the extracted strong derivatives S_k = M_ext^{-1} D_ext as a
+    # sparse-plus-low-rank operator and use it here instead of running CG on
+    # every call. Decomposition (exact, no thresholding):
+    #
+    #     S_k = G_ext  +  C_tilde @ P_K^T,
+    #
+    # where G_ext = E_{k+1} G^k E_k^T is the topological ±1 incidence on the
+    # extracted DoFs (sparse), P_K picks the K polar-fused output DoFs (small,
+    # ~3 n_z), and C_tilde ∈ R^{n_{k+1} × K} is dense and built once via K CG
+    # solves against M_{k+1,ext} on the residual columns
+    # R = D_ext - M_{k+1,ext} G_ext (which has only K nonzero columns by
+    # construction, since (I - E^T E) vanishes off the polar fusion set).
+    # Apply cost then drops from one CG solve per call to one sparse + one
+    # K-wide dense matvec. Requires exposing the polar-fused DoF indices from
+    # PolarExtractionOperator.
     def apply_strong_grad(self, v, dirichlet_in=True, dirichlet_out=True):
         """Apply the strong gradient M1⁻¹ D0 to a 0-form DOF vector ``v``."""
         dv_dual = self.apply_derivative_matrix(
@@ -867,19 +975,24 @@ class DeRhamSequence():
 
     def _get_nullspace(self, k, dirichlet):
         """Return the nullspace basis for the k-th Hodge Laplacian."""
-        return get_nullspace(self, k, dirichlet)
+        return get_nullspace(self._require_operators(), k, dirichlet)
 
     def _get_saddle_point_nullspaces(self, k, dirichlet):
         """Return the pair of nullspace bases for the k-th saddle-point system."""
-        return get_saddle_point_nullspaces(self, k, dirichlet)
+        return get_saddle_point_nullspaces(
+            self, self._require_operators(), k, dirichlet)
 
-    def apply_inverse_hodge_laplacian(self, v, k, dirichlet=True, guess=None, operators=None):
+    def apply_inverse_hodge_laplacian(self, v, k, dirichlet=True, guess=None,
+                                      operators=None, precond_kind='auto',
+                                      return_info=False):
         """Apply the inverse of the k-th Hodge Laplacian (δd)⁻¹ to a vector v."""
         return self.apply_inverse_shifted_stiffness(
-            v, k, 0.0, dirichlet=dirichlet, guess=guess, operators=operators)
+            v, k, 0.0, dirichlet=dirichlet, guess=guess, operators=operators,
+            precond_kind=precond_kind, return_info=return_info)
 
     def apply_inverse_shifted_stiffness(self, v, k, eps, dirichlet=True, guess=None,
-                                        operators=None):
+                                        operators=None, precond_kind='auto',
+                                        return_info=False):
         """
         Solve (S_k + eps * M_k) x = v for the k-form x.
 
@@ -897,7 +1010,8 @@ class DeRhamSequence():
         return apply_inverse_shifted_stiffness_ops(
             self, operators, v, k, eps,
             dirichlet=dirichlet, guess=guess,
-            tol=self.tol, maxiter=self.maxiter)
+            tol=self.tol, maxiter=self.maxiter,
+            precond_kind=precond_kind, return_info=return_info)
 
     def apply_inverse_diffusion(self, v, k, alpha, dirichlet=True, guess=None,
                                 operators=None):
@@ -919,25 +1033,52 @@ class DeRhamSequence():
             dirichlet=dirichlet, guess=guess,
             tol=self.tol, maxiter=self.maxiter)
 
-    def apply_hodge_laplacian_preconditioner(self, v, k, dirichlet=True, operators=None):
+    def apply_hodge_laplacian_preconditioner(self, v, k, dirichlet=True,
+                                             operators=None, kind='auto'):
         """
-        Apply the Jacobi preconditioner for the k-th Hodge Laplacian to a vector v.
+        Apply a preconditioner for the k-th Hodge Laplacian to a vector ``v``.
+
+        ``kind`` selects between ``'none'`` (identity), ``'jacobi'`` (per-DoF
+        diagonal) and ``'hx'`` (Hiptmair-Xu auxiliary-space preconditioner;
+        available for ``k = 0`` when the FD eigendecompositions are
+        assembled, and for ``k = 3`` with ``dirichlet=True``).  ``'auto'``
+        (the default) uses ``'hx'`` when available and falls back to
+        ``'jacobi'`` otherwise.
         """
         operators = self._require_operators(operators)
         return apply_hodge_laplacian_preconditioner_ops(
-            self, operators, v, k, dirichlet=dirichlet)
+            self, operators, v, k, dirichlet=dirichlet, kind=kind)
 
-    def _compute_nullspaces(self, betti_numbers, eps=1e-6):
-        """Iteratively compute harmonic forms for the given Betti numbers."""
-        return compute_nullspaces_iterative(self, betti_numbers, eps)
+    def _compute_nullspaces(self, betti_numbers=None, eps=1e-6):
+        """Iteratively compute harmonic forms and store them on ``self.operators``.
+
+        ``betti_numbers`` defaults to ``self.betti_numbers``. Returns the
+        info dict from :func:`compute_nullspaces_iterative`.
+        """
+        operators, info = compute_nullspaces_iterative(
+            self, self._require_operators(),
+            betti_numbers=betti_numbers, eps=eps)
+        self.operators = operators
+        return info
 
     def _find_nullspace_vectors(self, k, n_vectors, eps, dirichlet=True):
         """Find ``n_vectors`` nullspace vectors of the k-th Hodge Laplacian via inverse iteration."""
-        return find_nullspace_vectors(self, k, n_vectors, eps, dirichlet)
+        return find_nullspace_vectors(
+            self, self._require_operators(), k, n_vectors, eps, dirichlet)
 
     def compute_nullspaces(self):
-        """Compute and cache the harmonic forms for all form degrees."""
-        return compute_nullspaces(self)
+        """Compute and cache the harmonic forms for all form degrees (closed-form)."""
+        self.operators = compute_nullspaces(self, self._require_operators())
+        return self.operators
+
+    def init_nullspaces(self, betti_numbers=None):
+        """Initialise zero-valued nullspace arrays on ``self.operators``.
+
+        Shapes are derived from ``betti_numbers`` (or ``self.betti_numbers``).
+        """
+        self.operators = init_nullspaces(
+            self, self._require_operators(), betti_numbers=betti_numbers)
+        return self.operators
 
     # def cross_product_projection_deprecated(
     #     self, w, u, n, m, k,
@@ -946,7 +1087,7 @@ class DeRhamSequence():
     #     dirichlet_k=True
     # ):
     #     """
-    #     Evaluate the projection of the cross product of the m-form w 
+    #     Evaluate the projection of the cross product of the m-form w
     #     and the k-form u onto an n-form.
     #     TODO: Tobi please add a description of these projections.
 
@@ -1299,6 +1440,15 @@ class DeRhamSequence():
             p = self.apply_inverse_hodge_laplacian(
                 div_v, 3, dirichlet=True, guess=p_guess)
             σ = -self.apply_weak_grad(p, True, True)
+            return v - σ, p
+        elif k == 1:
+            # Assumes dirichlet == False on all spaces.
+            p_guess = jnp.zeros(self.n0) if p_guess is None else p_guess
+            div_v = -self.apply_derivative_matrix(
+                v, 0, dirichlet_in=False, dirichlet_out=False, transpose=True)
+            p = self.apply_inverse_hodge_laplacian(
+                div_v, 0, dirichlet=False, guess=p_guess)
+            σ = -self.apply_strong_grad(p, False, False)
             return v - σ, p
         elif k == 1:
             # Assumes dirichlet == False on all spaces.

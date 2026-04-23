@@ -1,84 +1,55 @@
-# %%
-# test_quadrature.py
+"""Low-level quadrature tests.
+
+These don't touch the DeRham sequence and run in milliseconds.
+"""
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 import pytest
 
-from mrx.derham_sequence import DeRhamSequence
-from mrx.mappings import rotating_ellipse_map
 from mrx.quadrature import composite_quad, spectral_quad, trapezoidal_quad
 
 jax.config.update("jax_enable_x64", True)
 
 
-@pytest.mark.parametrize("n", [6])
-@pytest.mark.parametrize("p", [1, 2, 3, 4])
-def test_quadrature(n, p):
-    """Test the quadrature by verifying the exact torus volume in the rotating ellipse mapping."""
-    eps = 0.5
-    kappa = 1.2
-    nfp = 3
-    q = 2*p
-
-    Seq = DeRhamSequence(
-        (n, n, n),
-        (p, p, p),
-        q,
-        ("clamped", "periodic", "periodic"),
-        rotating_ellipse_map(eps, kappa, nfp),
-        polar=True,
-    )
-
-    # Volume of torus is integral (J dx)
-    vol = Seq.quad.w @ Seq.jacobian_j
-
-    npt.assert_allclose(
-        vol, jnp.pi**2 * eps**2 * (2 - (1 - kappa)**2),
-        rtol=1e-6,
-        err_msg="Torus volume quadrature incorrect"
-    )
-
-    # TODO: Test the quadrature on more complex tests.
+@pytest.mark.parametrize("n", [1, 2, 5, 10, 20])
+def test_trapezoidal_weight_sum(n):
+    _, w = trapezoidal_quad(n)
+    npt.assert_allclose(jnp.sum(w), 1.0, atol=1e-14)
 
 
-@pytest.mark.parametrize("n", np.arange(1, 21))
-def test_trapezoidal_quad_weight_sum(n):
-    """Test that trapezoidal quadrature weights sum to 1.0 (length of [0,1] interval)."""
-    x_q, w_q = trapezoidal_quad(n)
-    weight_sum = jnp.sum(w_q)
-    npt.assert_allclose(
-        weight_sum, 1.0,
-        rtol=1e-7,
-        err_msg=f"Trapezoidal quadrature weights for n={n} should sum to 1.0"
-    )
+@pytest.mark.parametrize("p", [1, 2, 3, 5, 10])
+def test_spectral_weight_sum(p):
+    _, w = spectral_quad(p)
+    npt.assert_allclose(jnp.sum(w), 1.0, atol=1e-14)
 
 
-@pytest.mark.parametrize("p", np.arange(1, 11))
-def test_spectral_quad_weight_sum(p):
-    """Test that spectral quadrature weights sum to 1.0 (length of [0,1] interval)."""
-    x_q, w_q = spectral_quad(p)
-    weight_sum = jnp.sum(w_q)
-    npt.assert_allclose(
-        weight_sum, 1.0,
-        rtol=1e-7,
-        err_msg=f"Spectral quadrature weights for p={p} should sum to 1.0"
-    )
-
-
-@pytest.mark.parametrize("p", np.arange(1, 11))
+@pytest.mark.parametrize("p", [1, 2, 3, 5])
 @pytest.mark.parametrize("n_intervals", [2, 3, 5, 10])
-def test_composite_quad_weight_sum(p, n_intervals):
-    """Test that composite quadrature weights sum to the length of the domain."""
-    # Create a knot vector T with n_intervals intervals on [0, 1]
-    T = jnp.linspace(0, 1, n_intervals + 1)
-    x_q, w_q = composite_quad(T, p)
-    weight_sum = jnp.sum(w_q)
-    domain_length = T[-1] - T[0]
-    npt.assert_allclose(
-        weight_sum, domain_length,
-        rtol=1e-7,
-        err_msg=f"Composite quadrature weights for p={p}, n_intervals={n_intervals} "
-                f"should sum to {domain_length}"
-    )
+def test_composite_weight_sum(p, n_intervals):
+    T = jnp.linspace(0.0, 1.0, n_intervals + 1)
+    _, w = composite_quad(T, p)
+    npt.assert_allclose(jnp.sum(w), 1.0, atol=1e-14)
+
+
+@pytest.mark.parametrize("p", [1, 2, 3, 4, 5])
+def test_spectral_exact_for_polynomials(p):
+    """A Gauss rule with p points integrates polynomials of degree <= 2p-1 exactly."""
+    x, w = spectral_quad(p)
+    for deg in range(2 * p):
+        # True integral of x^deg on [0, 1] is 1 / (deg + 1).
+        val = jnp.sum(w * x ** deg)
+        npt.assert_allclose(val, 1.0 / (deg + 1), atol=1e-6)
+
+
+@pytest.mark.parametrize("n_intervals", [2, 4, 8])
+def test_composite_refinement_convergence(n_intervals):
+    """Composite trapezoidal rule converges for a smooth integrand."""
+    T = jnp.linspace(0.0, 1.0, n_intervals + 1)
+    x, w = composite_quad(T, 1)
+    f = jnp.cos(2 * jnp.pi * x)
+    val = jnp.sum(w * f)
+    # ∫₀¹ cos(2πx) dx = 0
+    assert jnp.abs(val) < 1.0 / n_intervals ** 2

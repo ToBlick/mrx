@@ -47,8 +47,7 @@ def _build_seq(n, p=2):
     seq.assemble_hodge_laplacian(0)
     seq.assemble_derivative_matrix(0)
     seq.assemble_hodge_laplacian(1)
-    seq.null_0_dbc = []  # no harmonic 0-forms with DBC
-    seq.null_1_dbc = []  # H^1(Omega, dOmega) = 0 for solid torus
+    # solid torus: betti=(1,1,0,0), so null_0_dbc, null_1_dbc are already empty.
     return seq
 
 
@@ -98,7 +97,8 @@ def _solve(seq):
     rhs -= correction
 
     # 4. Solve.
-    u_0 = seq.apply_inverse_hodge_laplacian(rhs, 0, dirichlet=True)  # (n0_dbc,)
+    u_0 = seq.apply_inverse_hodge_laplacian(
+        rhs, 0, dirichlet=True)  # (n0_dbc,)
 
     return u_0, g_bc
 
@@ -107,17 +107,17 @@ def _relative_l2_error(seq, u_0, g_bc):
     """Relative L2 error ‖u_h - u_exact‖ / ‖u_exact‖ over the full domain."""
     u_exact = _u_exact_func(seq.map)
     u_h_int = DiscreteFunction(u_0,   seq.basis_0, seq.e0_dbc)
-    u_h_bc  = DiscreteFunction(g_bc,  seq.basis_0, seq.e0_bc)
+    u_h_bc = DiscreteFunction(g_bc,  seq.basis_0, seq.e0_bc)
 
     def u_h(xi):
         return u_h_int(xi) + u_h_bc(xi)   # shape (1,) for k=0
 
-    diff_vals  = jax.lax.map(
+    diff_vals = jax.lax.map(
         lambda xi: u_exact(xi) - u_h(xi), seq.quad.x, batch_size=0)
     exact_vals = jax.vmap(u_exact)(seq.quad.x)
 
     wJ = seq.jacobian_j * seq.quad.w
-    L2_diff  = jnp.einsum("ik,ik,i->", diff_vals,  diff_vals,  wJ)
+    L2_diff = jnp.einsum("ik,ik,i->", diff_vals,  diff_vals,  wJ)
     L2_exact = jnp.einsum("ik,ik,i->", exact_vals, exact_vals, wJ)
     return float(jnp.sqrt(L2_diff / L2_exact))
 
@@ -145,8 +145,10 @@ class TestPoissonNonzeroDBC:
             print(f"\n  [n={n}, p=2] relative L2 error = {errors[-1]:.4e}")
         for i in range(1, len(errors)):
             if errors[i] > 0 and errors[i-1] > 0:
-                rate = jnp.log(errors[i-1] / errors[i]) / jnp.log(NS[i] / NS[i-1])
-                print(f"  convergence rate n={NS[i-1]}→{NS[i]}: {float(rate):.2f}")
+                rate = jnp.log(errors[i-1] / errors[i]) / \
+                    jnp.log(NS[i] / NS[i-1])
+                print(
+                    f"  convergence rate n={NS[i-1]}→{NS[i]}: {float(rate):.2f}")
         assert errors[1] < errors[0] and errors[2] < errors[1], (
             f"Error did not decrease: {errors[0]:.4e} → {errors[1]:.4e} → {errors[2]:.4e}"
         )
@@ -164,6 +166,7 @@ def _E_exact_phys(seq):
     curl E = (0, 0, 2),  div E = 0  =>  L_1 E = curl curl E + grad div E = 0.
     """
     F = seq.map
+
     def _f(xi):
         xyz = F(xi)
         return jnp.array([-xyz[1], xyz[0], 0.0])
@@ -213,17 +216,20 @@ def _relative_l2_error_k1(seq, E_0, g_bc):
     """Relative L2 error in physical space."""
     E_exact = _E_exact_phys(seq)
 
-    E_h_int = Pushforward(DiscreteFunction(E_0,  seq.basis_1, seq.e1_dbc), seq.map, 1)
-    E_h_bc = Pushforward(DiscreteFunction(g_bc, seq.basis_1, seq.e1_bc), seq.map, 1)
+    E_h_int = Pushforward(DiscreteFunction(
+        E_0,  seq.basis_1, seq.e1_dbc), seq.map, 1)
+    E_h_bc = Pushforward(DiscreteFunction(
+        g_bc, seq.basis_1, seq.e1_bc), seq.map, 1)
+
     def E_h(x_hat):
         return E_h_int(x_hat) + E_h_bc(x_hat)
 
-    diff_vals  = jax.lax.map(
+    diff_vals = jax.lax.map(
         lambda x_hat: E_exact(x_hat) - E_h(x_hat), seq.quad.x, batch_size=0)
     exact_vals = jax.vmap(E_exact)(seq.quad.x)
 
     wJ = seq.jacobian_j * seq.quad.w
-    L2_diff  = jnp.einsum("ik,ik,i->", diff_vals,  diff_vals,  wJ)
+    L2_diff = jnp.einsum("ik,ik,i->", diff_vals,  diff_vals,  wJ)
     L2_exact = jnp.einsum("ik,ik,i->", exact_vals, exact_vals, wJ)
     return float(jnp.sqrt(L2_diff / L2_exact))
 
@@ -248,14 +254,16 @@ class TestPoissonNonzeroDBC_k1:
         for n in NS:
             E_0, g_bc = _solve_k1(seqs[n])
             errors.append(_relative_l2_error_k1(seqs[n], E_0, g_bc))
-            print(f"\n  [k=1, n={n}, p=2] relative L2 error = {errors[-1]:.4e}")
+            print(
+                f"\n  [k=1, n={n}, p=2] relative L2 error = {errors[-1]:.4e}")
         for i in range(1, len(errors)):
             if errors[i] > 0 and errors[i - 1] > 0:
-                rate = jnp.log(errors[i - 1] / errors[i]) / jnp.log(NS[i] / NS[i - 1])
-                print(f"  convergence rate n={NS[i-1]}→{NS[i]}: {float(rate):.2f}")
+                rate = jnp.log(errors[i - 1] / errors[i]) / \
+                    jnp.log(NS[i] / NS[i - 1])
+                print(
+                    f"  convergence rate n={NS[i-1]}→{NS[i]}: {float(rate):.2f}")
         assert errors[1] < errors[0] and errors[2] < errors[1], (
             f"Error did not decrease: {errors[0]:.4e} → {errors[1]:.4e} → {errors[2]:.4e}"
         )
         assert errors[1] < 4e-3, f"Relative L2 error at n=6 too large: {errors[1]:.4e}"
         assert errors[2] < 2e-3, f"Relative L2 error at n=8 too large: {errors[2]:.4e}"
-

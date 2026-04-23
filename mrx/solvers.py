@@ -503,7 +503,8 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
     k_final = final_state[13]
     converged_final = final_state[14]
 
-    info = jnp.where(converged_final, 0, k_final)
+    # info < 0: converged (|info| = iteration count); info > 0: NOT converged
+    info = jnp.where(converged_final, -k_final, k_final)
     return x_final, info
 
 

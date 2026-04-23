@@ -10,15 +10,18 @@ from mrx.assembly import build_neighbors
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import rotating_ellipse_map, toroid_map
-from mrx.operators import (apply_derivative_matrix as apply_derivative_matrix_ops,
-                           apply_hodge_laplacian as apply_hodge_laplacian_ops,
-                           apply_hodge_laplacian_preconditioner as apply_hodge_laplacian_preconditioner_ops,
-                           apply_inverse_mass_matrix as apply_inverse_mass_matrix_ops,
-                           apply_mass_matrix as apply_mass_matrix_ops,
-                           apply_stiffness as apply_stiffness_ops,
-                           assemble_derivative_operators,
-                           assemble_hodge_operators,
-                           assemble_mass_operators)
+from mrx.operators import \
+    apply_derivative_matrix as apply_derivative_matrix_ops
+from mrx.operators import apply_hodge_laplacian as apply_hodge_laplacian_ops
+from mrx.operators import \
+    apply_hodge_laplacian_preconditioner as \
+    apply_hodge_laplacian_preconditioner_ops
+from mrx.operators import \
+    apply_inverse_mass_matrix as apply_inverse_mass_matrix_ops
+from mrx.operators import apply_mass_matrix as apply_mass_matrix_ops
+from mrx.operators import apply_stiffness as apply_stiffness_ops
+from mrx.operators import (assemble_derivative_operators,
+                           assemble_hodge_operators, assemble_mass_operators)
 from mrx.solvers import solve_singular_cg
 from mrx.utils import get_smallest_ev_pair
 
@@ -47,7 +50,6 @@ def seq_toroid():
     seq.evaluate_1d()
     seq.assemble_mass_matrix(0)
     seq.assemble_hodge_laplacian(0)
-    seq.null_0_dbc = []
     return seq
 
 
@@ -179,7 +181,6 @@ class TestPoissonToroidSparse:
             seq = _build_toroid_seq(n, p=2)
             seq.assemble_mass_matrix(0)
             seq.assemble_hodge_laplacian(0)
-            seq.null_0_dbc = []
             errors.append(self._solve_and_error_k0(seq))
         assert errors[1] < errors[0], (
             f"k=0 error did not decrease: n=4 → {errors[0]:.4e}, "
@@ -194,7 +195,6 @@ class TestPoissonToroidSparse:
             seq.assemble_mass_matrix(3)
             seq.assemble_derivative_matrix(2)
             seq.assemble_hodge_laplacian(3)
-            seq.null_3 = []
             errors.append(self._solve_and_error_k3(seq))
 
         assert errors[0] < 5e-1, (
@@ -410,7 +410,8 @@ class TestHodgeOperatorBundle:
         )
 
         npt.assert_allclose(
-            seq.apply_hodge_laplacian(x, 1, dirichlet=dirichlet, operators=ops),
+            seq.apply_hodge_laplacian(
+                x, 1, dirichlet=dirichlet, operators=ops),
             apply_hodge_laplacian_ops(
                 seq, ops, x, 1, dirichlet=dirichlet,
                 tol=seq.tol, maxiter=seq.maxiter,
@@ -784,6 +785,9 @@ class TestLerayProjection:
 #         seq, _ = seq_ellipse
 #         x = jax.random.normal(jax.random.PRNGKey(52), (seq.n1,))
 #         dense = seq.weak_div @ x
+#         sparse = seq.apply_weak_div(x, dirichlet_in=False, dirichlet_out=False)
+#         npt.assert_allclose(sparse, dense, atol=1e-9,
+#                             err_msg="weak_div sparse != dense")
 #         sparse = seq.apply_weak_div(x, dirichlet_in=False, dirichlet_out=False)
 #         npt.assert_allclose(sparse, dense, atol=1e-9,
 #                             err_msg="weak_div sparse != dense")

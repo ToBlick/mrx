@@ -104,9 +104,7 @@ def compute_error(n: int, p: int, epsilon: float,
     jax.block_until_ready(rhs)
     timings["P0_dbc(f)"] = time.perf_counter() - t0
 
-    # k=0 with DBC has no nullspace; skip expensive compute_nullspaces()
-    seq.null_0_dbc = []
-
+    # k=0 with DBC has no nullspace (default betti_numbers=(1,1,0,0))
     t0 = time.perf_counter()
     u_hat = seq.apply_inverse_hodge_laplacian(rhs, 0, dirichlet=True)
     jax.block_until_ready(u_hat)
