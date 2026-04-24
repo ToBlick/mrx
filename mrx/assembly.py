@@ -6,6 +6,29 @@ import jax.numpy as jnp
 import mrx
 
 
+def _init_triplet_buffers(total_nnz, data_dtype):
+    """Allocate fixed-size COO triplet buffers.
+
+    Using one final buffer per field avoids keeping every block alive until a
+    terminal ``concatenate``. The buffer sizes are pure shape functions of the
+    tensor-product stencil, so this remains compatible with JIT tracing.
+    """
+    data = jnp.zeros((total_nnz,), dtype=data_dtype)
+    rows = jnp.zeros((total_nnz,), dtype=jnp.int32)
+    cols = jnp.zeros((total_nnz,), dtype=jnp.int32)
+    return data, rows, cols
+
+
+def _write_triplet_block(data, rows, cols, offset, vals, row_flat, col_flat):
+    """Write one dense tensor-product block into preallocated COO buffers."""
+    block_nnz = row_flat.shape[0]
+    sl = slice(offset, offset + block_nnz)
+    data = data.at[sl].set(vals.ravel())
+    rows = rows.at[sl].set(row_flat)
+    cols = cols.at[sl].set(col_flat)
+    return data, rows, cols
+
+
 def assemble(getter_1, getter_2, W, n1, n2):
     """
     Assemble a matrix M[a, b] = Σ_{a,j,k} Λ1[a,j,i] * W[j,i,k] * Λ2[b,j,k]
@@ -112,9 +135,11 @@ def assemble_scalar_tp(R_row, T_row, Z_row, R_col, T_col, Z_col,
     row_flat = jnp.ravel_multi_index(
         (I1, I2, I3), dof_shape, mode='wrap').ravel()
 
-    all_data = []
-    all_rows = []
-    all_cols = []
+    n_blocks = len(offsets_r) * len(offsets_t) * len(offsets_z)
+    block_nnz = row_flat.shape[0]
+    data, rows, cols = _init_triplet_buffers(
+        n_blocks * block_nnz, W_flat.dtype)
+    offset = 0
 
     for dr in offsets_r:
         M1 = (I1 + dr) % s1
@@ -130,13 +155,10 @@ def assemble_scalar_tp(R_row, T_row, Z_row, R_col, T_col, Z_col,
                 col_flat = jnp.ravel_multi_index(
                     (M1, M2, M3), dof_shape, mode='wrap').ravel()
 
-                all_data.append(vals.ravel())
-                all_rows.append(row_flat)
-                all_cols.append(col_flat)
+                data, rows, cols = _write_triplet_block(
+                    data, rows, cols, offset, vals, row_flat, col_flat)
+                offset += block_nnz
 
-    data = jnp.concatenate(all_data)
-    rows = jnp.concatenate(all_rows)
-    cols = jnp.concatenate(all_cols)
     indices = jnp.stack([rows, cols], axis=-1)
 
     return jsparse.BCOO((data, indices), shape=(n_dof, n_dof))
@@ -213,15 +235,32 @@ def assemble_vectorial_tp(row_terms, col_terms, W_flat_3x3,
         for l in range(3):
             W_3d[(k, l)] = W_flat_3x3[:, k, l].reshape(quad_shape)
 
-    all_data = []
-    all_rows = []
-    all_cols = []
+    n_blocks = 0
+    block_sizes = []
+    for c_row in range(len(row_terms)):
+        s_row = row_comp_shapes[c_row]
+        row_block_nnz = s_row[0] * s_row[1] * s_row[2]
+        for c_col in range(len(col_terms)):
+            s_col = col_comp_shapes[c_col]
+            offsets_r = _offsets(hw, s_col[0])
+            offsets_t = _offsets(hw, s_col[1])
+            offsets_z = _offsets(hw, s_col[2])
+            count = len(offsets_r) * len(offsets_t) * len(offsets_z)
+            n_blocks += count
+            block_sizes.append(count * row_block_nnz)
+
+    total_nnz = sum(block_sizes)
+    data, rows, cols = _init_triplet_buffers(total_nnz, W_flat_3x3.dtype)
+    offset = 0
 
     for c_row in range(len(row_terms)):
         s_row = row_comp_shapes[c_row]
         I1, I2, I3 = jnp.meshgrid(
             jnp.arange(s_row[0]), jnp.arange(s_row[1]),
             jnp.arange(s_row[2]), indexing='ij')
+        row_r = jnp.arange(s_row[0])
+        row_t = jnp.arange(s_row[1])
+        row_z = jnp.arange(s_row[2])
         row_flat = row_starts[c_row] + jnp.ravel_multi_index(
             (I1, I2, I3), s_row, mode='wrap').ravel()
 
@@ -231,49 +270,33 @@ def assemble_vectorial_tp(row_terms, col_terms, W_flat_3x3,
             offsets_t = _offsets(hw, s_col[1])
             offsets_z = _offsets(hw, s_col[2])
 
-            # Precompute 1D overlap products for all term pairs and offsets
-            Pr = {}
-            Pt = {}
-            Pz = {}
-            for (k, Rk, Tk, Zk, _sk) in row_terms[c_row]:
-                for (l, Rl, Tl, Zl, _sl) in col_terms[c_col]:
-                    for dr in offsets_r:
-                        cidx = (jnp.arange(s_row[0]) + dr) % s_col[0]
-                        Pr[(k, l, dr)] = Rk * Rl[cidx, :]
-                    for dt in offsets_t:
-                        cidx = (jnp.arange(s_row[1]) + dt) % s_col[1]
-                        Pt[(k, l, dt)] = Tk * Tl[cidx, :]
-                    for dz in offsets_z:
-                        cidx = (jnp.arange(s_row[2]) + dz) % s_col[2]
-                        Pz[(k, l, dz)] = Zk * Zl[cidx, :]
-
             for dr in offsets_r:
+                cidx_r = (row_r + dr) % s_col[0]
                 J1 = (I1 + dr) % s_col[0]
                 for dt in offsets_t:
+                    cidx_t = (row_t + dt) % s_col[1]
                     J2 = (I2 + dt) % s_col[1]
                     for dz in offsets_z:
+                        cidx_z = (row_z + dz) % s_col[2]
                         J3 = (I3 + dz) % s_col[2]
 
                         vals = jnp.zeros(s_row)
-                        for (k, _, _, _, sk) in row_terms[c_row]:
-                            for (l, _, _, _, sl) in col_terms[c_col]:
+                        for (k, Rk, Tk, Zk, sk) in row_terms[c_row]:
+                            for (l, Rl, Tl, Zl, sl) in col_terms[c_col]:
                                 vals = vals + sk * sl * jnp.einsum(
                                     'bac,ia,jb,kc->ijk',
                                     W_3d[(k, l)],
-                                    Pr[(k, l, dr)],
-                                    Pt[(k, l, dt)],
-                                    Pz[(k, l, dz)])
+                                    Rk * Rl[cidx_r, :],
+                                    Tk * Tl[cidx_t, :],
+                                    Zk * Zl[cidx_z, :])
 
                         col_flat = col_starts[c_col] + jnp.ravel_multi_index(
                             (J1, J2, J3), s_col, mode='wrap').ravel()
 
-                        all_data.append(vals.ravel())
-                        all_rows.append(row_flat)
-                        all_cols.append(col_flat)
+                        data, rows, cols = _write_triplet_block(
+                            data, rows, cols, offset, vals, row_flat, col_flat)
+                        offset += row_flat.shape[0]
 
-    data = jnp.concatenate(all_data)
-    rows = jnp.concatenate(all_rows)
-    cols = jnp.concatenate(all_cols)
     indices = jnp.stack([rows, cols], axis=-1)
 
     return jsparse.BCOO((data, indices), shape=(n_row_total, n_col_total))
@@ -347,9 +370,11 @@ def assemble_stiffness_scalar_tp(row_basis_1d, col_basis_1d, W_flat_3x3,
     row_flat = jnp.ravel_multi_index(
         (I1, I2, I3), dof_shape, mode='wrap').ravel()
 
-    all_data = []
-    all_rows = []
-    all_cols = []
+    n_blocks = len(offsets_r) * len(offsets_t) * len(offsets_z)
+    block_nnz = row_flat.shape[0]
+    data, rows, cols = _init_triplet_buffers(
+        n_blocks * block_nnz, W_flat_3x3.dtype)
+    offset = 0
 
     for dr in offsets_r:
         M1 = (I1 + dr) % s1
@@ -372,13 +397,10 @@ def assemble_stiffness_scalar_tp(row_basis_1d, col_basis_1d, W_flat_3x3,
                 col_flat = jnp.ravel_multi_index(
                     (M1, M2, M3), dof_shape, mode='wrap').ravel()
 
-                all_data.append(vals.ravel())
-                all_rows.append(row_flat)
-                all_cols.append(col_flat)
+                data, rows, cols = _write_triplet_block(
+                    data, rows, cols, offset, vals, row_flat, col_flat)
+                offset += block_nnz
 
-    data = jnp.concatenate(all_data)
-    rows = jnp.concatenate(all_rows)
-    cols = jnp.concatenate(all_cols)
     indices = jnp.stack([rows, cols], axis=-1)
 
     return jsparse.BCOO((data, indices), shape=(n_dof, n_dof))
@@ -970,5 +992,3 @@ def assemble_leray_projection(seq):
     """Assemble the Leray projection matrix."""
     seq.P_Leray = jnp.eye(seq.m2.shape[0]) + \
         seq.weak_grad @ jnp.linalg.pinv(seq.dd3) @ seq.strong_div
-
-

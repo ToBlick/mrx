@@ -37,14 +37,16 @@ from mrx.solvers import solve_singular_cg  # noqa: E402
 # ---------------------------------------------------------------------------
 
 N = 5
-P = 2
+P = 3
 TYPES = ("clamped", "periodic", "periodic")
 TORUS_EPSILON = 1 / 3
 TORUS_R0 = 1.0
 BETTI = (1, 1, 0, 0)
 NUM_RHS = 10
 TOL = 1e-9
-MAXITER = 1000
+MAXITER = 2000
+
+N_MODES = 8
 
 
 def build_sequence():
@@ -199,7 +201,7 @@ def main():
     t0 = time.perf_counter()
     seq, operators = build_sequence()
     print(f"  done in {time.perf_counter() - t0:.1f} s")
-    benchmark_mass(seq, operators)
+    # benchmark_mass(seq, operators)
     benchmark_hodge(seq, operators)
 
 # %%
@@ -288,12 +290,12 @@ def benchmark_hodge(seq, operators):
     print("-" * len(header))
 
     key = jax.random.PRNGKey(1)
-    cases = [(0, False), (0, True), (3, True)]
+    cases = [(0, False), (0, True), (3, False), (3, True)]
     for k, dirichlet in cases:
         n = dof_size(seq, k, dirichlet)
         key, sub = jax.random.split(key)
         rhs_batch = _smooth_scalar_rhs_batch(
-            seq, sub, k, dirichlet, NUM_RHS)
+            seq, sub, k, dirichlet, NUM_RHS, N_MODES)
         # Project out the nullspace component so the RHS lies in range(L_k).
         vs = get_nullspace(operators, k, dirichlet)
         if vs.shape[0] > 0:

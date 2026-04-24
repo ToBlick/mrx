@@ -172,7 +172,7 @@ def section_D_preconditioners(seq, ops):
 
 def section_E_minres(seq, ops, b, vs):
     banner("(E) MINRES behaviour per preconditioner")
-    from mrx.operators import apply_inverse_shifted_stiffness
+    from mrx.operators import apply_inverse_shifted_hodge_laplacian
 
     # Initial residual norms (x0 = 0).
     print(f"  ||b||_2               = {float(jnp.linalg.norm(b)):.6e}")
@@ -191,7 +191,7 @@ def section_E_minres(seq, ops, b, vs):
 
     for kind in ("none", "jacobi", "hx"):
         try:
-            u, info = apply_inverse_shifted_stiffness(
+            u, info = apply_inverse_shifted_hodge_laplacian(
                 seq, ops, b, K, 0.0, dirichlet=DBC,
                 precond_kind=kind, return_info=True)
         except Exception as e:

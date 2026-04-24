@@ -114,12 +114,47 @@ def _set_null(operators, k, dirichlet, values):
     )
 
 
+def _overwrite_nullspace_vector(operators, k, dirichlet, idx, value):
+    """Return ``operators`` with one stored nullspace vector overwritten."""
+    values = get_nullspace(operators, k, dirichlet)
+    return _set_null(operators, k, dirichlet, values.at[idx].set(value))
+
+
 def _commit(seq, operators):
     """Set ``seq.operators`` to ``operators`` so fallback lookups see the
     latest null fields, and return the bundle unchanged.
     """
     seq.operators = operators
     return operators
+
+
+def _bootstrap_nullspace_guesses(seq, operators, k, dirichlet, guesses):
+    """Store normalised bootstrap guesses in the nullspace field for ``(k, dirichlet)``.
+
+    This lets shifted preconditioners read a stable coarse vector from the
+    operator bundle while inverse iteration is still constructing the true
+    nullspace.
+    """
+    n_vec = len(guesses)
+    n_dof = _dof_count(seq, k, dirichlet)
+    values = jnp.zeros((n_vec, n_dof))
+    stored = []
+
+    for idx, guess in enumerate(guesses):
+        if guess is None:
+            continue
+        work = guess
+        for u in stored:
+            work = work - (u @ seq.apply_mass_matrix(
+                work, k, dirichlet=dirichlet, operators=operators)) * u
+        norm = seq.l2_norm(work, k, dirichlet=dirichlet)
+        if float(norm) <= 0.0:
+            continue
+        work = work / norm
+        stored.append(work)
+        values = values.at[idx].set(work)
+
+    return _commit(seq, _set_null(operators, k, dirichlet, values))
 
 
 # ---------------------------------------------------------------------------
@@ -183,17 +218,26 @@ def compute_nullspaces(seq, operators=None):
 # ---------------------------------------------------------------------------
 
 def _toroidal_vacuum_field(seq):
-    """Return ``B(x) = (1/R) e_phi`` in Cartesian physical coordinates.
+    """Return ``B(x) = (1/R) e_zeta`` in Cartesian physical coordinates.
 
-    ``x`` is the logical coordinate; ``R = sqrt(X^2 + Y^2)`` is the major
-    radius at the physical point ``F(x)``. Used as the analytic initial
-    guess for the harmonic 1-form (no BC) and 2-form (DBC) on toroidal
-    geometries.
+    ``x`` is the logical coordinate. ``e_zeta`` is the unit tangent along the
+    third logical coordinate direction, i.e. the normalized third column of
+    ``DF(x)``. ``R = sqrt(X^2 + Y^2)`` uses physical coordinates
+    ``F(x) = (X, Y, Z)``.
+
+    Used as the analytic initial guess for the harmonic 1-form (no BC) and
+    2-form (DBC) on toroidal geometries.
     """
+    DF = jax.jacfwd(seq.map)
+
     def B(x_hat):
         x, y, _ = seq.map(x_hat)
-        R_squared = x**2 + y**2
-        return jnp.array([-y / R_squared, x / R_squared, 0.0])
+        dF = DF(x_hat)
+        dzeta = dF[:, 2]
+        dzeta_norm = jnp.linalg.norm(dzeta)
+        R = jnp.sqrt(x**2 + y**2)
+        return dzeta / (dzeta_norm * R)
+
     return B
 
 
@@ -204,8 +248,8 @@ def _initial_guesses(seq, operators, k, dirichlet, n_vec):
     ``betti = (1, 1, 0, 0)`` solid torus):
 
     * ``k = 0, no DBC``: the constant scalar field ``1``.
-    * ``k = 1, no DBC``: ``1/R * e_phi`` projected to a 1-form.
-    * ``k = 2, DBC``  : ``1/R * e_phi`` projected to a 2-form.
+    * ``k = 1, no DBC``: ``1/R * e_zeta`` projected to a 1-form.
+    * ``k = 2, DBC``  : ``1/R * e_zeta`` projected to a 2-form.
     * ``k = 3, DBC``  : the constant, lifted via ``M_3^{-1}``.
 
     Any remaining slots are ``None`` (fall back to the random init).
@@ -219,9 +263,11 @@ def _initial_guesses(seq, operators, k, dirichlet, n_vec):
         guesses[0] = seq.apply_inverse_mass_matrix(
             jnp.ones(seq.n3_dbc), 3, dirichlet=True, operators=operators)
     elif k == 1 and not dirichlet:
-        guesses[0] = seq.p1(_toroidal_vacuum_field(seq))
+        guesses[0] = seq.apply_inverse_mass_matrix(
+            seq.p1(_toroidal_vacuum_field(seq)), 1, dirichlet=False, operators=operators)
     elif k == 2 and dirichlet:
-        guesses[0] = seq.p2_dbc(_toroidal_vacuum_field(seq))
+        guesses[0] = seq.apply_inverse_mass_matrix(
+            seq.p2_dbc(_toroidal_vacuum_field(seq)), 2, dirichlet=True, operators=operators)
     return guesses
 
 
@@ -280,6 +326,8 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
             if n_vec == 0:
                 continue
             x0s = _initial_guesses(seq, operators, k, dirichlet, n_vec)
+            operators = _bootstrap_nullspace_guesses(
+                seq, operators, k, dirichlet, x0s)
             vs, iters = find_nullspace_vectors(
                 seq, operators, k, n_vec, eps, dirichlet=dirichlet,
                 x0s=x0s, abs_tol=abs_tol)
@@ -355,7 +403,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             v, res, _, i = state
             Mv = seq.apply_mass_matrix(
                 v, k, dirichlet=dirichlet, operators=operators)
-            w = seq.apply_inverse_shifted_stiffness(
+            w = seq.apply_inverse_shifted_hodge_laplacian(
                 Mv, k, eps, dirichlet=dirichlet, guess=v,
                 operators=operators)
             for u in found:

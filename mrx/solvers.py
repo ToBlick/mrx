@@ -440,11 +440,15 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
         # Lanczos step
         y_new = A_matvec(v)
 
+        # Compute alpha before any subtraction (SOL convention: alpha = v^T A v,
+        # which equals v^T y_new in exact arithmetic since v^T r1 = 0 by
+        # M-orthogonality, but computing it first avoids numerical drift at
+        # high iteration counts when orthogonality is only approximate).
+        alpha = jnp.dot(v, y_new)
+
         # 2-term recurrence (avoids storing v_{k-1} explicitly)
         old_beta = jnp.where(oldbeta > 0, oldbeta, 1.0)
         y_new = y_new - jnp.where(k >= 1, beta / old_beta, 0.0) * r1
-
-        alpha = jnp.dot(v, y_new)
         y_new = y_new - (alpha / safe_beta) * r2
 
         # Update Lanczos residual tracking
@@ -640,5 +644,4 @@ def solve_saddle_point_minres(
                      tol=tol, maxiter=maxiter)
     u, sigma = unpack(project_primal(x))
 
-    return u, sigma, info
     return u, sigma, info

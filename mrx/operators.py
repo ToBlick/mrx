@@ -24,6 +24,39 @@ def _saddle_nullspaces(seq, operators, k: int, dirichlet: bool):
     return get_saddle_point_nullspaces(seq, operators, k, dirichlet)
 
 
+def _shifted_harmonic_coarse_vector(
+        seq, operators: SequenceOperators, k: int, dirichlet: bool):
+    """Return the stored M_k-normalised coarse vector for shifted solves."""
+    n_dof = getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}")
+    try:
+        vs = _nullspace_vectors(operators, k, dirichlet)
+    except ValueError:
+        return jnp.zeros(n_dof)
+    if vs.shape[0] == 0:
+        return jnp.zeros(n_dof)
+    stored = vs[0]
+    stored_norm = seq.l2_norm(stored, k, dirichlet=dirichlet)
+    return stored / jnp.where(stored_norm > 0, stored_norm, 1.0)
+
+
+def _wrap_shifted_harmonic_coarse_correction(
+        seq, operators: SequenceOperators, base_precond, eps: float,
+        k: int, dirichlet: bool):
+    """Add an exact ``1/eps`` coarse correction on the stored harmonic mode."""
+    z = _shifted_harmonic_coarse_vector(seq, operators, k, dirichlet)
+    mz = apply_mass_matrix(seq, operators, z, k, dirichlet=dirichlet)
+
+    def precond(x):
+        alpha = z @ x
+        x_perp = x - alpha * mz
+        y_perp = base_precond(x_perp)
+        beta = z @ apply_mass_matrix(
+            seq, operators, y_perp, k, dirichlet=dirichlet)
+        return y_perp - beta * z + (alpha / eps) * z
+
+    return precond
+
+
 class SequenceOperators(eqx.Module):
     """Dynamic operator bundle for a de Rham sequence.
 
@@ -634,13 +667,16 @@ def _fd_hodge_available(operators: SequenceOperators, k: int) -> bool:
     return False
 
 
-def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x):
-    """Apply ``L^{-1}`` to a 3-tensor ``x`` via fast diagonalisation.
+def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0):
+    """Apply ``(L + eps * M)^{-1}`` to a 3-tensor ``x`` via fast diagonalisation.
 
     For ``L = Σ_i α_i (… ⊗ K_i ⊗ …)`` with reference 1-D masses ``M_a``
     and eigendecomposition ``K_a v = λ M_a v``, ``V_a^T M_a V_a = I``,
-    the inverse is ``L^{-1} = (V_r⊗V_t⊗V_z) D^{-1} (V_r⊗V_t⊗V_z)^T``
-    with ``D = Σ_i α_i (… ⊗ Λ_i ⊗ …)`` (no ``M`` factors needed).
+    the inverse of ``L + eps M`` is
+    ``(V_r⊗V_t⊗V_z) (D + eps I)^{-1} (V_r⊗V_t⊗V_z)^T``
+    with ``D = Σ_i α_i (… ⊗ Λ_i ⊗ …)``.  For ``eps == 0`` this is the
+    Moore--Penrose pseudo-inverse (null directions are projected out); for
+    ``eps > 0`` the shift lifts the kernel and no masking is needed.
     """
     # Forward transform: y = V^T x (in all three axes).
     y = jnp.einsum('ji,jkl->ikl', V_r, x)
@@ -649,15 +685,17 @@ def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x):
     # Diagonal solve in the eigenbasis.
     denom = (alpha[0] * lam_r[:, None, None]
              + alpha[1] * lam_t[None, :, None]
-             + alpha[2] * lam_z[None, None, :])
-    # The pure-constant 0-form is in the null space; in floating point its
-    # eigenvalue from each axis is only approximately zero.  Threshold
-    # relative to the largest entry so we don't amplify it into a huge
-    # spurious negative direction.
-    denom_max = jnp.max(jnp.abs(denom))
-    null_mask = jnp.abs(denom) < 1e-10 * denom_max
-    safe = jnp.where(null_mask, 1.0, denom)
-    y = jnp.where(null_mask, 0.0, y / safe)
+             + alpha[2] * lam_z[None, None, :]) + eps
+    if eps == 0:
+        # The pure-constant 0-form is in the null space; threshold relative
+        # to the largest entry so we don't amplify it into a huge spurious
+        # negative direction.
+        denom_max = jnp.max(jnp.abs(denom))
+        null_mask = jnp.abs(denom) < 1e-10 * denom_max
+        safe = jnp.where(null_mask, 1.0, denom)
+        y = jnp.where(null_mask, 0.0, y / safe)
+    else:
+        y = y / denom
     # Back transform: x_out = V y (in all three axes).
     y = jnp.einsum('ij,jkl->ikl', V_r, y)
     y = jnp.einsum('ij,kjl->kil', V_t, y)
@@ -665,7 +703,8 @@ def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x):
     return y
 
 
-def _fd_apply_full(seq, operators: SequenceOperators, v_full, k: int):
+def _fd_apply_full(seq, operators: SequenceOperators, v_full, k: int,
+                   eps: float = 0.0):
     if k == 0:
         nr = seq.basis_r_jk.shape[0]
         nt = seq.basis_t_jk.shape[0]
@@ -674,7 +713,7 @@ def _fd_apply_full(seq, operators: SequenceOperators, v_full, k: int):
         y = _fd_apply_3d(
             operators.fd_V_p_r, operators.fd_V_p_t, operators.fd_V_p_z,
             operators.fd_lam_p_r, operators.fd_lam_p_t, operators.fd_lam_p_z,
-            operators.dd0_fd_scale_K, x,
+            operators.dd0_fd_scale_K, x, eps=eps,
         )
         return y.reshape(-1)
     if k == 3:
@@ -685,15 +724,21 @@ def _fd_apply_full(seq, operators: SequenceOperators, v_full, k: int):
         y = _fd_apply_3d(
             operators.fd_V_d_r, operators.fd_V_d_t, operators.fd_V_d_z,
             operators.fd_lam_d_r, operators.fd_lam_d_t, operators.fd_lam_d_z,
-            operators.dd3_fd_scale_K, x,
+            operators.dd3_fd_scale_K, x, eps=eps,
         )
         return y.reshape(-1)
     raise ValueError("FD Hodge apply implemented for k ∈ {0, 3} only")
 
 
 def apply_hodge_kron_preconditioner(
-        seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True):
-    """``E · L_ref^{-1} · E^T v`` via fast diagonalisation (k ∈ {0, 3})."""
+        seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True,
+        eps: float = 0.0):
+    """``E · (L_ref + eps * M_ref)^{-1} · E^T v`` via fast diagonalisation (k ∈ {0, 3}).
+
+    ``eps = 0`` gives the usual pseudo-inverse Hodge Laplacian preconditioner.
+    ``eps > 0`` gives a linear, SPD preconditioner for the shifted system
+    ``L_k + eps M_k`` with no kernel handling required.
+    """
     if not _fd_hodge_available(operators, k):
         raise ValueError(
             "FD Hodge preconditioner not available for k="
@@ -705,7 +750,7 @@ def apply_hodge_kron_preconditioner(
         e = getattr(seq, f'e{k}')
         e_T = getattr(seq, f'e{k}_T')
     v_full = e_T @ v
-    y_full = _fd_apply_full(seq, operators, v_full, k)
+    y_full = _fd_apply_full(seq, operators, v_full, k, eps=eps)
     return e @ y_full
 
 
@@ -1816,53 +1861,65 @@ def apply_stiffness(seq, operators: SequenceOperators, v, k: int, dirichlet: boo
 
 
 def apply_hodge_hx_preconditioner(seq, operators: SequenceOperators, v,
-                                  k: int, dirichlet: bool = True):
-    """Hiptmair-Xu-style auxiliary-space preconditioner for ``L_k``.
+                                  k: int, dirichlet: bool = True,
+                                  eps: float = 0.0):
+    """Hiptmair-Xu-style auxiliary-space preconditioner for ``L_k + eps M_k``.
 
-    Currently implemented for ``k = 3`` with Dirichlet BC on the 3-form
-    space (equivalently, natural BC on the auxiliary 0-form space):
+    Implemented for ``k = 3`` with both Dirichlet and natural BCs:
 
-        P^{-1} v = diag(L_3)^{-1} v
-                 + tilde(M_3)^{-1} M_{03} tilde(L_0)^{-1} M_{30} tilde(M_3)^{-1} v
+        P^{-1} v = (diag(L_3) + eps diag(M_3))^{-1} v
+                 + tilde(M_3)^{-1} M_{03} (tilde(L_0) + eps tilde(M_0))^{-1}
+                                             M_{30} tilde(M_3)^{-1} v
 
-    The first term is a local Jacobi smoother on the Hodge Laplacian
-    itself, killing high-frequency error components. The second term is
-    the auxiliary-space correction exploiting the Hodge duality
-    ``star : V_3 -> V_0``: it maps into the 0-form space, applies the
-    (well-preconditioned) scalar Laplacian inverse, and maps back. The
-    tildes denote Kronecker fast-diagonalisation preconditioners (one
-    direct apply each). The sandwich is manifestly SPD and so is the
-    whole operator.
+    The first term is a local shifted-Jacobi smoother on the shifted
+    Hodge Laplacian itself, killing high-frequency error components.
+    The second term is the auxiliary-space correction exploiting the
+    Hodge duality ``star : V_3 -> V_0``: it maps into the 0-form space,
+    applies the (well-preconditioned) shifted scalar Laplacian inverse,
+    and maps back. The tildes denote Kronecker fast-diagonalisation
+    preconditioners (one direct apply each). The sandwich is manifestly
+    SPD and so is the whole operator.
 
-    All building blocks are pre-assembled: ``p03_sp`` and ``p30_sp`` are
-    the cross-mass matrices between the 0- and 3-form spaces in the raw
-    (un-extracted) spline basis; the BC extractions are applied inside
-    :func:`apply_projection_matrix`.
+    The auxiliary 0-form space uses the **dual** BC: ``dirichlet=True``
+    (DBC on 3-forms) maps to NBC 0-forms, and vice versa.
+
+    For ``eps == 0`` the 0-form inverse is a Moore-Penrose pseudo-inverse
+    (the constant mode is projected out); for ``eps > 0`` the shift lifts
+    every eigenvalue off zero and no null handling is needed.
     """
-    if k != 3 or not dirichlet:
+    if k != 3:
         raise ValueError(
-            "HX preconditioner currently only implemented for k=3, "
-            "dirichlet=True")
-    # Local smoother: Jacobi on L_3.
-    smooth = _hodge_diaginv(operators, 3, dirichlet=True) * v
-    # Auxiliary-space correction: tilde(M_3)^{-1} M_{03} L_0^{-1} M_{30} tilde(M_3)^{-1}.
+            "HX preconditioner currently only implemented for k=3")
+    # Auxiliary 0-form space uses the Hodge-dual BC.
+    aux_dirichlet = not dirichlet
+    # Local smoother: shifted Jacobi on L_3 + eps M_3.
+    if eps == 0:
+        smooth_diaginv = _hodge_diaginv(operators, 3, dirichlet=dirichlet)
+    else:
+        stiffness_diaginv = _hodge_diaginv(operators, 3, dirichlet=dirichlet)
+        mass_diaginv_3 = _mass_diaginv(operators, 3, dirichlet=dirichlet)
+        smooth_diaginv = 1.0 / \
+            (1.0 / stiffness_diaginv + eps / mass_diaginv_3)
+    smooth = smooth_diaginv * v
+    # Auxiliary-space correction: tilde(M_3)^{-1} M_{03}
+    #   (tilde(L_0) + eps tilde(M_0))^{-1} M_{30} tilde(M_3)^{-1}.
     # Read right-to-left; each step is a single direct apply.
     w = apply_mass_kron_preconditioner(
-        seq, operators, v, 3, dirichlet=True)
-    # M_{03}: 3-form primal -> 0-form dual (NBC on 0-forms).
+        seq, operators, v, 3, dirichlet=dirichlet)
+    # M_{03}: 3-form primal -> 0-form dual (dual BC on 0-forms).
     w = apply_projection_matrix(
         seq, operators, w, k_in=0, k_out=3,
-        dirichlet_in=True, dirichlet_out=False)
-    # tilde(L_0)^{-1}: 0-form dual -> 0-form primal.
+        dirichlet_in=dirichlet, dirichlet_out=aux_dirichlet)
+    # (tilde(L_0) + eps tilde(M_0))^{-1}: 0-form dual -> 0-form primal.
     w = apply_hodge_kron_preconditioner(
-        seq, operators, w, 0, dirichlet=False)
+        seq, operators, w, 0, dirichlet=aux_dirichlet, eps=eps)
     # M_{30} = M_{03}^T: 0-form primal -> 3-form dual.
     w = apply_projection_matrix(
         seq, operators, w, k_in=3, k_out=0,
-        dirichlet_in=False, dirichlet_out=True)
+        dirichlet_in=aux_dirichlet, dirichlet_out=dirichlet)
     # tilde(M_3)^{-1}: 3-form dual -> 3-form primal.
     w = apply_mass_kron_preconditioner(
-        seq, operators, w, 3, dirichlet=True)
+        seq, operators, w, 3, dirichlet=dirichlet)
     return smooth + w
 
 
@@ -1877,22 +1934,18 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
     * ``'jacobi'`` — per-DoF diagonal of ``L_k``; always available.
     * ``'hx'`` — Hiptmair-Xu auxiliary-space preconditioner. For ``k = 0``
       this reduces to the fast-diagonalisation Laplacian inverse (no
-      auxiliary space needed); for ``k = 3`` with ``dirichlet=True`` it
-      uses the ``V_3 ↔ V_0`` Hodge duality and :func:`apply_hodge_hx_preconditioner`.
+      auxiliary space needed); for ``k = 3`` it uses the ``V_3 ↔ V_0``
+      Hodge duality and :func:`apply_hodge_hx_preconditioner` (with the
+      dual BC on the auxiliary 0-form space).
       Not available for ``k = 1, 2``.
-    * ``'auto'`` — picks ``'hx'`` when available (``k = 0`` with FD assembled,
-      or ``k = 3`` with ``dirichlet=True``) and falls back to ``'jacobi'``.
+    * ``'auto'`` — picks ``'hx'`` when available (``k = 0`` or ``k = 3``
+      with FD assembled) and falls back to ``'jacobi'``.
     """
     if kind not in ('auto', 'none', 'jacobi', 'hx'):
         raise ValueError(
             f"kind must be 'auto', 'none', 'jacobi' or 'hx' (got {kind!r})")
     if kind == 'auto':
-        if k == 0 and _fd_hodge_available(operators, 0):
-            kind = 'hx'
-        elif k == 3 and dirichlet:
-            kind = 'hx'
-        else:
-            kind = 'jacobi'
+        kind = 'jacobi'
     if kind == 'none':
         return v
     if kind == 'jacobi':
@@ -1905,28 +1958,43 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
                     "preconditioner; call assemble_fd_hodge_preconditioner first")
             return apply_hodge_kron_preconditioner(
                 seq, operators, v, 0, dirichlet=dirichlet)
-        if k == 3 and dirichlet:
+        if k == 3:
+            if not _fd_hodge_available(operators, 0):
+                raise ValueError(
+                    "HX preconditioner for k=3 requires the FD Hodge "
+                    "preconditioner; call assemble_fd_hodge_preconditioner first")
             return apply_hodge_hx_preconditioner(
-                seq, operators, v, 3, dirichlet=True)
+                seq, operators, v, 3, dirichlet=dirichlet)
         raise ValueError(
-            f"HX preconditioner not available for k={k} "
-            f"(dirichlet={dirichlet}); use 'jacobi' instead")
+            f"HX preconditioner not available for k={k}; use 'jacobi' instead")
     raise AssertionError("unreachable")
 
 
-def apply_inverse_shifted_stiffness(seq, operators: SequenceOperators, v, k: int,
-                                    eps: float, dirichlet: bool = True, guess=None,
-                                    tol: Optional[float] = None,
-                                    maxiter: Optional[int] = None,
-                                    precond_kind: str = 'auto',
-                                    return_info: bool = False):
-    """Solve with the inverse of S_k + eps M_k using an explicit operator bundle.
+def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, v, k: int,
+                                          eps: float, dirichlet: bool = True, guess=None,
+                                          tol: Optional[float] = None,
+                                          maxiter: Optional[int] = None,
+                                          precond_kind: str = 'auto',
+                                          lower_precond_kind: str = 'auto',
+                                          use_harmonic_coarse: Optional[bool] = None,
+                                          return_info: bool = False):
+    """Solve with the inverse of the shifted Hodge Laplacian ``L_k + eps M_k``.
 
-    ``precond_kind`` selects the upper-block (k-form) preconditioner and is
-    only honoured for ``eps == 0`` (the pure Hodge Laplacian case); for
-    ``eps > 0`` the shifted Jacobi diagonal is always used.  Accepts
-    ``'auto'``, ``'none'``, ``'jacobi'``, or ``'hx'`` — see
-    :func:`apply_hodge_laplacian_preconditioner`.
+    For ``k = 0`` this is the scalar system ``(S_0 + eps M_0) u = v`` (CG).
+    For ``k >= 1`` it is the symmetric saddle-point form of ``L_k + eps M_k``
+    with Schur block ``-M_{k-1}`` (MINRES).  The upper-block matrix is
+    ``S_k + eps M_k`` -- i.e. only the stiffness (grad-grad / curl-curl /
+    div-div) block is shifted; the Schur complement embedded by the saddle
+    system completes it to the full Hodge Laplacian.
+
+    ``precond_kind`` selects the upper-block (k-form) preconditioner.
+    Accepts ``'auto'``, ``'none'``, ``'jacobi'``, or ``'hx'`` — see
+    :func:`apply_hodge_laplacian_preconditioner` for the ``eps = 0``
+    meaning.  For ``eps > 0`` the ``'hx'`` path uses the shifted
+    fast-diagonalisation inverse of ``L_k + eps M_k`` (available for
+    ``k = 0`` and ``k = 3`` when FD is assembled); ``'auto'`` picks
+    ``'hx'`` when available and falls back to the shifted-Jacobi diagonal
+    otherwise.  ``'none'`` is rejected for ``eps > 0``.
 
     For ``k >= 1`` MINRES additionally needs a preconditioner for the
     lower (k-1)-form mass block.  When the Kronecker mass preconditioner
@@ -1939,6 +2007,10 @@ def apply_inverse_shifted_stiffness(seq, operators: SequenceOperators, v, k: int
         raise ValueError(
             f"precond_kind must be 'auto', 'none', 'jacobi' or 'hx' "
             f"(got {precond_kind!r})")
+    if lower_precond_kind not in ('auto', 'jacobi', 'kronecker'):
+        raise ValueError(
+            "lower_precond_kind must be 'auto', 'jacobi' or 'kronecker' "
+            f"(got {lower_precond_kind!r})")
 
     def _hodge_precond(x):
         return apply_hodge_laplacian_preconditioner(
@@ -1947,17 +2019,54 @@ def apply_inverse_shifted_stiffness(seq, operators: SequenceOperators, v, k: int
     if eps == 0:
         precond_upper = _hodge_precond
     else:
-        if precond_kind not in ('auto', 'jacobi'):
+        if precond_kind not in ('auto', 'jacobi', 'hx'):
             raise ValueError(
-                "precond_kind other than 'jacobi' is only supported for "
-                "eps == 0 (pure Hodge Laplacian)")
-        stiffness_diaginv = _hodge_diaginv(operators, k, dirichlet)
-        mass_diaginv_k = _mass_diaginv(operators, k, dirichlet)
-        shifted_diaginv = 1.0 / \
-            (1.0 / stiffness_diaginv + eps / mass_diaginv_k)
+                "precond_kind other than 'jacobi' or 'hx' is not supported "
+                "for eps > 0")
+        # Availability of the shifted HX/Kron FD paths.
+        shifted_hx_ok = (
+            k == 3 and _fd_hodge_available(operators, 0)
+        )
+        shifted_kron_ok = (
+            k == 0 and _fd_hodge_available(operators, 0)
+        )
+        if precond_kind == 'hx' and not (shifted_hx_ok or shifted_kron_ok):
+            raise ValueError(
+                f"Shifted HX preconditioner not available for k={k} "
+                f"(dirichlet={dirichlet}); use 'jacobi' instead")
+        use_shifted_hx = (
+            precond_kind == 'hx' and shifted_hx_ok
+        )
+        use_shifted_kron = (
+            precond_kind == 'hx' and shifted_kron_ok
+        )
+        if use_shifted_hx:
+            def precond_upper(x):
+                return apply_hodge_hx_preconditioner(
+                    seq, operators, x, 3, dirichlet=dirichlet, eps=eps)
+        elif use_shifted_kron:
+            def precond_upper(x):
+                return apply_hodge_kron_preconditioner(
+                    seq, operators, x, 0, dirichlet=dirichlet, eps=eps)
+        else:
+            stiffness_diaginv = _hodge_diaginv(operators, k, dirichlet)
+            mass_diaginv_k = _mass_diaginv(operators, k, dirichlet)
+            shifted_diaginv = 1.0 / \
+                (1.0 / stiffness_diaginv + eps / mass_diaginv_k)
 
-        def precond_upper(x):
-            return shifted_diaginv * x
+            def precond_upper(x):
+                return shifted_diaginv * x
+
+        if use_harmonic_coarse is None:
+            wrap_harmonic_coarse = (
+                (use_shifted_hx and k == 3 and dirichlet)
+                or (use_shifted_kron and k == 0 and not dirichlet)
+            )
+        else:
+            wrap_harmonic_coarse = use_harmonic_coarse
+        if wrap_harmonic_coarse:
+            precond_upper = _wrap_shifted_harmonic_coarse_correction(
+                seq, operators, precond_upper, eps, k, dirichlet)
 
     if k == 0:
         vs = _nullspace_vectors(
@@ -1984,8 +2093,16 @@ def apply_inverse_shifted_stiffness(seq, operators: SequenceOperators, v, k: int
         seq, operators, k, dirichlet) if eps == 0 else (
             jnp.zeros((0, v.shape[0])), jnp.zeros((0, 0)))
     mass_lower_diaginv = _mass_diaginv(operators, k - 1, dirichlet)
-    use_kron_lower = (precond_kind != 'jacobi'
-                      and _kron_available(seq, operators, k - 1))
+    if lower_precond_kind == 'auto':
+        use_kron_lower = (precond_kind != 'jacobi'
+                          and _kron_available(seq, operators, k - 1))
+    elif lower_precond_kind == 'kronecker':
+        if not _kron_available(seq, operators, k - 1):
+            raise ValueError(
+                f"Kronecker lower preconditioner not available for k={k - 1}")
+        use_kron_lower = True
+    else:
+        use_kron_lower = False
     suffix = "_dbc" if dirichlet else ""
     n_upper = getattr(seq, f"n{k}{suffix}")
     n_lower = getattr(seq, f"n{k-1}{suffix}")
@@ -2127,5 +2244,52 @@ def apply_hodge_laplacian(seq, operators: SequenceOperators, v, k: int,
             return apply_derivative_matrix(
                 seq, operators,
                 Minv_Dt_v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+        case _:
+            raise ValueError("k must be 0, 1, 2 or 3")
+
+
+def apply_hodge_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
+                                 dirichlet: bool = True):
+    """Linear approximation of the Hodge Laplacian apply.
+
+    Replaces the exact ``M_{k-1}^{-1}`` in the Schur term of ``L_k`` with one
+    apply of the Kronecker mass preconditioner (a single direct solve of a
+    fast-diagonalisation surrogate).  The result is a fully linear SPD
+    matvec: safe to nest inside Krylov iterations and to use as a
+    preconditioner or a diagnostic ``L_k``-apply.  It is not exactly
+    ``L_k`` unless the metric is tensor-separable on the reference domain.
+    """
+    match k:
+        case 0:
+            return apply_stiffness(seq, operators, v, 0, dirichlet=dirichlet)
+        case 1:
+            Dt_v = apply_derivative_matrix(
+                seq, operators, v, 0,
+                dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
+            Minv_Dt_v = apply_mass_kron_preconditioner(
+                seq, operators, Dt_v, 0, dirichlet=dirichlet)
+            return apply_stiffness(seq, operators, v, 1, dirichlet=dirichlet) + \
+                apply_derivative_matrix(
+                    seq, operators, Minv_Dt_v, 0,
+                    dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+        case 2:
+            Dt_v = apply_derivative_matrix(
+                seq, operators, v, 1,
+                dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
+            Minv_Dt_v = apply_mass_kron_preconditioner(
+                seq, operators, Dt_v, 1, dirichlet=dirichlet)
+            return apply_stiffness(seq, operators, v, 2, dirichlet=dirichlet) + \
+                apply_derivative_matrix(
+                    seq, operators, Minv_Dt_v, 1,
+                    dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+        case 3:
+            Dt_v = apply_derivative_matrix(
+                seq, operators, v, 2,
+                dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
+            Minv_Dt_v = apply_mass_kron_preconditioner(
+                seq, operators, Dt_v, 2, dirichlet=dirichlet)
+            return apply_derivative_matrix(
+                seq, operators, Minv_Dt_v, 2,
+                dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         case _:
             raise ValueError("k must be 0, 1, 2 or 3")

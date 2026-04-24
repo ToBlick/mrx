@@ -21,6 +21,8 @@ from mrx.operators import \
     apply_derivative_matrix as apply_derivative_matrix_ops
 from mrx.operators import apply_hodge_laplacian as apply_hodge_laplacian_ops
 from mrx.operators import \
+    apply_hodge_laplacian_approx as apply_hodge_laplacian_approx_ops
+from mrx.operators import \
     apply_hodge_laplacian_preconditioner as \
     apply_hodge_laplacian_preconditioner_ops
 from mrx.operators import apply_incidence_matrix as apply_incidence_matrix_ops
@@ -29,7 +31,8 @@ from mrx.operators import \
 from mrx.operators import \
     apply_inverse_mass_matrix as apply_inverse_mass_matrix_ops
 from mrx.operators import \
-    apply_inverse_shifted_stiffness as apply_inverse_shifted_stiffness_ops
+    apply_inverse_shifted_hodge_laplacian as \
+    apply_inverse_shifted_hodge_laplacian_ops
 from mrx.operators import apply_mass_matrix as apply_mass_matrix_ops
 from mrx.operators import \
     apply_mass_matrix_preconditioner as apply_mass_matrix_preconditioner_ops
@@ -124,6 +127,10 @@ class DeRhamSequence():
 
     Attributes
     ----------
+    ns : tuple of int
+        Number of basis functions in each direction (``n_r``, ``n_θ``, ``n_ζ``).
+    ps : tuple of int
+        Polynomial degree in each direction (``p_r``, ``p_θ``, ``p_ζ``).
     basis_0, basis_1, basis_2, basis_3 : DifferentialForm
         Spline bases for 0-, 1-, 2-, and 3-forms respectively.
     quad : QuadratureRule
@@ -155,6 +162,8 @@ class DeRhamSequence():
         Toroidal derivative splines evaluated at toroidal quadrature
         points.  Shape ``(n_qζ, n_ζ)``.  Populated by :meth:`evaluate_1d`.
     """
+    ns: tuple[int, int, int]
+    ps: tuple[int, int, int]
     basis_0: DifferentialForm
     basis_1: DifferentialForm
     basis_2: DifferentialForm
@@ -212,6 +221,8 @@ class DeRhamSequence():
             :class:`SequenceOperators`. Defaults to ``(1, 1, 0, 0)`` which
             matches a solid torus.
         """
+        self.ns = tuple(ns)
+        self.ps = tuple(ps)
         self.tol = tol
         self.maxiter = maxiter
         self.n_inner = n_inner
@@ -955,6 +966,18 @@ class DeRhamSequence():
             self, operators, v, k, dirichlet=dirichlet,
             tol=self.tol, maxiter=self.maxiter)
 
+    def apply_hodge_laplacian_approx(self, v, k, dirichlet=True, operators=None):
+        """Linear approximate Hodge-Laplacian apply.
+
+        Replaces ``M_{k-1}^{-1}`` in the Schur term with a single Kronecker
+        fast-diagonalisation apply.  Linear, SPD, safe to nest inside Krylov
+        solvers and to use as a preconditioner.  Not exact unless the metric
+        is tensor-separable on the reference domain.
+        """
+        operators = self._require_operators(operators)
+        return apply_hodge_laplacian_approx_ops(
+            self, operators, v, k, dirichlet=dirichlet)
+
     def apply_diffusion(self, v, k, alpha, dirichlet=True):
         """Apply (M_k + alpha * L_k) to a k-form vector v."""
         return self.apply_mass_matrix(v, k, dirichlet=dirichlet) \
@@ -986,32 +1009,37 @@ class DeRhamSequence():
                                       operators=None, precond_kind='auto',
                                       return_info=False):
         """Apply the inverse of the k-th Hodge Laplacian (δd)⁻¹ to a vector v."""
-        return self.apply_inverse_shifted_stiffness(
+        return self.apply_inverse_shifted_hodge_laplacian(
             v, k, 0.0, dirichlet=dirichlet, guess=guess, operators=operators,
             precond_kind=precond_kind, return_info=return_info)
 
-    def apply_inverse_shifted_stiffness(self, v, k, eps, dirichlet=True, guess=None,
-                                        operators=None, precond_kind='auto',
-                                        return_info=False):
+    def apply_inverse_shifted_hodge_laplacian(self, v, k, eps, dirichlet=True, guess=None,
+                                              operators=None, precond_kind='auto',
+                                              lower_precond_kind='auto',
+                                              use_harmonic_coarse=None,
+                                              return_info=False):
         """
-        Solve (S_k + eps * M_k) x = v for the k-form x.
+        Solve (L_k + eps * M_k) x = v for the k-form x.
 
         For eps=0 this reduces to the Hodge Laplacian solve; the system may be
         singular and nullspace deflation is applied automatically.
-        For eps > 0 the system is nonsingular (shift-invert for S_k u = λ M_k u).
+        For eps > 0 the system is nonsingular (shift-invert for L_k u = λ M_k u).
 
-        For k=0: solved with CG.
-        For k>=1: MINRES on the symmetric saddle-point system:
+        For k=0: solved with CG on ``(S_0 + eps M_0) u = v``.
+        For k>=1: MINRES on the symmetric saddle-point form of L_k + eps M_k:
 
             | S_k + eps*M_k    D_{k-1}   | | u |   | v |
             | D_{k-1}^T       -M_{k-1}   | | σ | = | 0 |
         """
         operators = self._require_operators(operators)
-        return apply_inverse_shifted_stiffness_ops(
+        return apply_inverse_shifted_hodge_laplacian_ops(
             self, operators, v, k, eps,
             dirichlet=dirichlet, guess=guess,
             tol=self.tol, maxiter=self.maxiter,
-            precond_kind=precond_kind, return_info=return_info)
+            precond_kind=precond_kind,
+            lower_precond_kind=lower_precond_kind,
+            use_harmonic_coarse=use_harmonic_coarse,
+            return_info=return_info)
 
     def apply_inverse_diffusion(self, v, k, alpha, dirichlet=True, guess=None,
                                 operators=None):
@@ -1458,4 +1486,5 @@ class DeRhamSequence():
             p = self.apply_inverse_hodge_laplacian(
                 div_v, 0, dirichlet=False, guess=p_guess)
             σ = -self.apply_strong_grad(p, False, False)
+            return v - σ, p
             return v - σ, p
