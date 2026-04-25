@@ -393,6 +393,100 @@ spectrally equivalent approximation on quasi-uniform meshes and reduces
 CG iteration counts by roughly an order of magnitude versus plain
 Jacobi.
 
+*Asymptotic note for the rotating-ellipse map.*
+For
+
+$$
+R(r,\theta,\zeta) = R_0 + \varepsilon r A(\zeta)\cos(2\pi\theta),
+\qquad
+Z(r,\theta,\zeta) = \varepsilon r B(\zeta)\sin(2\pi\theta),
+$$
+
+with
+
+$$
+A(\zeta) = 1 + (1-\kappa)\cos(2\pi\zeta),
+\qquad
+B(\zeta) = 1 - (1-\kappa)\cos(2\pi\zeta),
+$$
+
+the Jacobian satisfies
+
+$$
+J \approx C\,\varepsilon^2 r\,A(\zeta)B(\zeta)
+$$
+
+for a geometry-dependent constant $C$.  To leading order this has no
+nontrivial $\theta$ dependence, so the scalar weights
+
+$$
+W^0 = J,
+\qquad
+W^3 = 1/J
+$$
+
+are separable in $(r,\zeta)$ and rank-1 in the $\theta$ direction at
+leading order.  The non-scalar weights are richer but still structured:
+
+$$
+W^1 = J g^{-1},
+\qquad
+W^2 = g/J,
+$$
+
+have $\theta$ dependence only through
+$\cos^2(2\pi\theta)$, $\sin^2(2\pi\theta)$, and
+$\sin(2\pi\theta)\cos(2\pi\theta)$ at leading order.  Equivalently, each
+component is a short sum of separable $r \otimes \theta \otimes \zeta$
+terms with only the Fourier modes $0$ and $2\theta$.  This suggests the
+following decomposition hierarchy for approximately toroidal geometries:
+
+- For $k=0$ and $k=3$, start from scalar separable models for $J$ and $1/J$.
+- For $k=1$ and $k=2$, use a small number of per-component separable terms
+  rather than a single averaged scalar.
+- The first improvement beyond the current production model should usually be
+  a few $\zeta$ modes (or a few $r \otimes \theta \otimes \zeta$ terms), not a
+  dense unstructured approximation of the full metric tensor.
+
+There is also an asymmetry between $k=1$ and $k=2$: for the rotating-ellipse
+map, the $\zeta$ coupling is weaker in $W^1 = J g^{-1}$ than in
+$W^2 = g/J$, so low-rank corrections are expected to help the $k=1$ mass and
+Hodge blocks earlier than the $k=2$ blocks.
+
+For the experimental rotating-ellipse $k=0$ mass bulk block, the numerical
+result is stronger than a single preferred matricization: the true bulk block,
+reshaped as a 3-tensor with modes $(r_{\mathrm{bulk}}^2, \theta^2, \zeta^2)$,
+has exact multilinear Tucker rank $(2,2,2)$.  Equivalently, the bulk block is
+exactly representable with a $2 \times 2 \times 2$ Tucker core and three small
+factor matrices.  This is consistent with the fact that $J$ itself is the sum
+of two separable $r \otimes \theta \otimes \zeta$ terms for the rotating-ellipse
+map.  The CP rank of the same tensor is a different question and was not
+resolved by the current ALS experiment.
+
+For the experimental rotating-ellipse $k=3$ mass operator, the corresponding
+statement is weaker.  The extracted $W^3 = 1/J$ matrix, reshaped as a 3-tensor
+with modes $(r_3^2, \theta_3^2, \zeta_3^2)$, is highly compressible but not
+exactly low Tucker rank at the same level: the best tested `rt|z`
+matricization reaches about $2.4 \times 10^{-4}$ relative Frobenius error at
+rank $2$ and about $1.8 \times 10^{-6}$ at rank $3$, while Tucker ranks
+$(2,2,2)$, $(3,3,3)$, and $(4,4,4)$ give about $2.0 \times 10^{-3}$,
+$5.5 \times 10^{-5}$, and $1.3 \times 10^{-6}$ relative Frobenius error,
+respectively.  So on this test $1/J$ still admits an efficient compressed
+representation, but only as an approximate low-rank object rather than with the
+exact Tucker $(2,2,2)$ closure seen for $J$.
+
+The validated scalar preconditioning path now uses that structure directly at
+the quadrature-weight level.  Instead of compressing a dense assembled 3D mass
+matrix, we first split the scalar weight tensor with an outer `rt|z` SVD, then
+split each retained `rt` factor with an inner `r|t` SVD, and finally assemble
+only the retained 1D weighted mass factors.  On the current rotating-ellipse
+test this gives an effectively exact hierarchical representation for $k=0$
+(outer rank `2`, inner ranks `(2,2)`) and an accurate approximate one for
+$k=3$ (outer rank `2`, inner ranks `(3,5)`, about `3 \times 10^{-4}` relative
+apply error at the tested tolerances).  See
+[docs/preconditioning_notes.md](preconditioning_notes.md) for the current
+policy and design constraints.
+
 ### 5.2 Hodge-Laplacian preconditioner
 
 We build the Jacobi diagonal of the extracted stiffness

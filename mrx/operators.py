@@ -8,6 +8,21 @@ import jax.numpy as jnp
 import jax.scipy as jsp
 
 from mrx.assembly import assemble_scalar_tp, assemble_vectorial_tp
+from mrx.preconditioners import (
+    MassPreconditioners,
+    apply_mass_kronecker_preconditioner,
+    apply_mass_rtzblock_preconditioner,
+    build_mass_jacobi_pair,
+    build_mass_kronecker_preconditioner,
+    build_mass_rtzblock_k0_factors,
+    build_mass_rtzblock_k3_factors,
+    get_mass_jacobi_diaginv,
+    invalidate_mass_rtzblock,
+    mass_kronecker_available,
+    set_mass_jacobi_pair,
+    set_mass_kronecker,
+    set_mass_rtzblock_factor,
+)
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
 from mrx.utils import diag_EAET, diag_EAET_matvec, diag_schur_complement
 
@@ -69,35 +84,7 @@ class SequenceOperators(eqx.Module):
     m1_sp: Optional[jsparse.BCSR] = None
     m2_sp: Optional[jsparse.BCSR] = None
     m3_sp: Optional[jsparse.BCSR] = None
-    m0_sp_diaginv: Optional[object] = None
-    m1_sp_diaginv: Optional[object] = None
-    m2_sp_diaginv: Optional[object] = None
-    m3_sp_diaginv: Optional[object] = None
-    m0_sp_diaginv_dbc: Optional[object] = None
-    m1_sp_diaginv_dbc: Optional[object] = None
-    m2_sp_diaginv_dbc: Optional[object] = None
-    m3_sp_diaginv_dbc: Optional[object] = None
-    # Reference-domain 1-D mass-matrix inverses for the regular ('p') and
-    # derivative ('d') splines along each axis. Used by the Kronecker
-    # ("fast diagonalisation") mass preconditioner; geometry-independent.
-    # ``None`` means not yet assembled (call
-    # :func:`assemble_kron_mass_preconditioner`).
-    m1d_inv_p_r: Optional[jnp.ndarray] = None
-    m1d_inv_p_t: Optional[jnp.ndarray] = None
-    m1d_inv_p_z: Optional[jnp.ndarray] = None
-    m1d_inv_d_r: Optional[jnp.ndarray] = None
-    m1d_inv_d_t: Optional[jnp.ndarray] = None
-    m1d_inv_d_z: Optional[jnp.ndarray] = None
-    # Per-component geometric scale factors for the Kronecker mass
-    # preconditioner.  Each array has one entry per vector component (length
-    # 1 for k=0, 3, length 3 for k=1, 2) holding the quadrature-average of
-    # the diagonal mass coefficient for that component, so that
-    # ``~M_k ≈ diag(α_i) · (M_r ⊗ M_θ ⊗ M_ζ)``. Geometry-dependent;
-    # reassembled whenever the mass operator is reassembled.
-    m0_kron_scale: Optional[jnp.ndarray] = None
-    m1_kron_scale: Optional[jnp.ndarray] = None
-    m2_kron_scale: Optional[jnp.ndarray] = None
-    m3_kron_scale: Optional[jnp.ndarray] = None
+    mass_preconds: Optional[MassPreconditioners] = None
     # Reference-domain 1-D fast-diagonalisation eigendecompositions of the
     # generalised eigenproblem ``K_a v = λ M_a v`` for the regular ('p')
     # and derivative ('d') spline spaces along each axis.  ``fd_V_*_a``
@@ -247,8 +234,6 @@ def _assemble_mass_block(seq, geometry, k):
                 W_flat, quad_shape, seq.basis_0.shape[0],
                 seq.basis_0.pr, seq.basis_0.pt, seq.basis_0.pz)
             sp = jsparse.BCSR.from_bcoo(sp)
-            diaginv = 1.0 / diag_EAET(seq.e0, sp, seq.e0_T)
-            diaginv_dbc = 1.0 / diag_EAET(seq.e0_dbc, sp, seq.e0_dbc_T)
         case 1:
             W_3x3 = geometry.metric_inv_jkl * \
                 (geometry.jacobian_j * seq.quad.w)[:, None, None]
@@ -261,8 +246,6 @@ def _assemble_mass_block(seq, geometry, k):
                 terms, terms, W_3x3, quad_shape,
                 list(seq.basis_1.shape), seq.basis_1.pr)
             sp = jsparse.BCSR.from_bcoo(sp)
-            diaginv = 1.0 / diag_EAET(seq.e1, sp, seq.e1_T)
-            diaginv_dbc = 1.0 / diag_EAET(seq.e1_dbc, sp, seq.e1_dbc_T)
         case 2:
             W_3x3 = geometry.metric_jkl * \
                 (1 / geometry.jacobian_j * seq.quad.w)[:, None, None]
@@ -275,8 +258,6 @@ def _assemble_mass_block(seq, geometry, k):
                 terms, terms, W_3x3, quad_shape,
                 list(seq.basis_2.shape), seq.basis_2.pr)
             sp = jsparse.BCSR.from_bcoo(sp)
-            diaginv = 1.0 / diag_EAET(seq.e2, sp, seq.e2_T)
-            diaginv_dbc = 1.0 / diag_EAET(seq.e2_dbc, sp, seq.e2_dbc_T)
         case 3:
             W_flat = (1 / geometry.jacobian_j) * seq.quad.w
             sp = assemble_scalar_tp(
@@ -285,52 +266,55 @@ def _assemble_mass_block(seq, geometry, k):
                 W_flat, quad_shape, seq.basis_3.shape[0],
                 seq.basis_3.pr, seq.basis_3.pt, seq.basis_3.pz)
             sp = jsparse.BCSR.from_bcoo(sp)
-            diaginv = 1.0 / diag_EAET(seq.e3, sp, seq.e3_T)
-            diaginv_dbc = 1.0 / diag_EAET(seq.e3_dbc, sp, seq.e3_dbc_T)
         case _:
             raise ValueError("k must be 0, 1, 2 or 3")
 
-    return sp, diaginv, diaginv_dbc
+    return sp
 
 
 def update_mass_operator(seq, geometry, operators: Optional[SequenceOperators], k: int):
     """Return an operator bundle with the k-th mass operator updated."""
-    sp, diaginv, diaginv_dbc = _assemble_mass_block(seq, geometry, k)
-    kron_scale = _kron_geometric_scales(seq, geometry, k)
+    del geometry  # geometry is already attached to seq and used inside assembly
+    sp = _assemble_mass_block(seq, seq.geometry, k)
+    jacobi_pair = build_mass_jacobi_pair(seq, sp, k)
     if operators is None:
         operators = SequenceOperators()
+    mass_preconds = set_mass_jacobi_pair(operators.mass_preconds, k, jacobi_pair)
+    if mass_preconds is not None and mass_preconds.kronecker is not None:
+        mass_preconds = set_mass_kronecker(
+            mass_preconds,
+            build_mass_kronecker_preconditioner(seq),
+        )
+    if k in (0, 3):
+        mass_preconds = invalidate_mass_rtzblock(mass_preconds, k)
 
     match k:
         case 0:
             return eqx.tree_at(
-                lambda ops: (ops.m0_sp, ops.m0_sp_diaginv,
-                             ops.m0_sp_diaginv_dbc, ops.m0_kron_scale),
+                lambda ops: (ops.m0_sp, ops.mass_preconds),
                 operators,
-                (sp, diaginv, diaginv_dbc, kron_scale),
+                (sp, mass_preconds),
                 is_leaf=lambda x: x is None,
             )
         case 1:
             return eqx.tree_at(
-                lambda ops: (ops.m1_sp, ops.m1_sp_diaginv,
-                             ops.m1_sp_diaginv_dbc, ops.m1_kron_scale),
+                lambda ops: (ops.m1_sp, ops.mass_preconds),
                 operators,
-                (sp, diaginv, diaginv_dbc, kron_scale),
+                (sp, mass_preconds),
                 is_leaf=lambda x: x is None,
             )
         case 2:
             return eqx.tree_at(
-                lambda ops: (ops.m2_sp, ops.m2_sp_diaginv,
-                             ops.m2_sp_diaginv_dbc, ops.m2_kron_scale),
+                lambda ops: (ops.m2_sp, ops.mass_preconds),
                 operators,
-                (sp, diaginv, diaginv_dbc, kron_scale),
+                (sp, mass_preconds),
                 is_leaf=lambda x: x is None,
             )
         case 3:
             return eqx.tree_at(
-                lambda ops: (ops.m3_sp, ops.m3_sp_diaginv,
-                             ops.m3_sp_diaginv_dbc, ops.m3_kron_scale),
+                lambda ops: (ops.m3_sp, ops.mass_preconds),
                 operators,
-                (sp, diaginv, diaginv_dbc, kron_scale),
+                (sp, mass_preconds),
                 is_leaf=lambda x: x is None,
             )
     raise ValueError("k must be 0, 1, 2 or 3")
@@ -344,32 +328,6 @@ def assemble_mass_operators(seq, geometry, operators: Optional[SequenceOperators
     return operators
 
 
-# ---------------------------------------------------------------------------
-# Kronecker ("fast diagonalisation") mass preconditioner.
-#
-# On the reference cube the ``k``-form mass matrix is a sum of geometry-
-# weighted Kronecker products of 1-D mass matrices.  Dropping the geometric
-# weighting yields a single Kronecker product per component
-#
-#     ~M_k^{comp} = M_r^{(α)} ⊗ M_θ^{(β)} ⊗ M_ζ^{(γ)},   α,β,γ ∈ {p, d}
-#
-# where ``p`` is the regular spline mass and ``d`` is the derivative-spline
-# mass along the relevant axis.  Its inverse can be applied as three small
-# dense matvecs per axis (cost O(N^4) flops via einsum), and is spectrally
-# equivalent to ``M_k^{-1}`` on quasi-uniform meshes — typically dropping
-# CG iteration counts by an order of magnitude versus the plain Jacobi
-# preconditioner.  All factors are geometry-independent and assembled once.
-# ---------------------------------------------------------------------------
-
-
-def _assemble_1d_mass_inverse(B, w):
-    """Build ``(B diag(w) B^T)^{-1}`` for a 1-D basis evaluated on quad points."""
-    M = (B * w[None, :]) @ B.T
-    M_inv = jnp.linalg.inv(M)
-    # Symmetrise to wash out floating-point asymmetry.
-    return 0.5 * (M_inv + M_inv.T)
-
-
 def assemble_kron_mass_preconditioner(
         seq, operators: Optional[SequenceOperators] = None):
     """Assemble the 1-D reference mass-matrix inverses on ``operators``.
@@ -381,108 +339,20 @@ def assemble_kron_mass_preconditioner(
     """
     if operators is None:
         operators = SequenceOperators()
-    inv_p_r = _assemble_1d_mass_inverse(seq.basis_r_jk, seq.quad.w_x)
-    inv_p_t = _assemble_1d_mass_inverse(seq.basis_t_jk, seq.quad.w_y)
-    inv_p_z = _assemble_1d_mass_inverse(seq.basis_z_jk, seq.quad.w_z)
-    inv_d_r = _assemble_1d_mass_inverse(seq.d_basis_r_jk, seq.quad.w_x)
-    inv_d_t = _assemble_1d_mass_inverse(seq.d_basis_t_jk, seq.quad.w_y)
-    inv_d_z = _assemble_1d_mass_inverse(seq.d_basis_z_jk, seq.quad.w_z)
+    mass_preconds = set_mass_kronecker(
+        operators.mass_preconds,
+        build_mass_kronecker_preconditioner(seq),
+    )
     return eqx.tree_at(
-        lambda ops: (ops.m1d_inv_p_r, ops.m1d_inv_p_t, ops.m1d_inv_p_z,
-                     ops.m1d_inv_d_r, ops.m1d_inv_d_t, ops.m1d_inv_d_z),
+        lambda ops: ops.mass_preconds,
         operators,
-        (inv_p_r, inv_p_t, inv_p_z, inv_d_r, inv_d_t, inv_d_z),
+        mass_preconds,
         is_leaf=lambda x: x is None,
     )
 
 
-def _kron_component_specs(seq, k: int):
-    """Return ``[(component_shape, (kind_r, kind_t, kind_z)), ...]`` for form ``k``."""
-    nr_p = seq.basis_r_jk.shape[0]
-    nt_p = seq.basis_t_jk.shape[0]
-    nz_p = seq.basis_z_jk.shape[0]
-    nr_d = seq.d_basis_r_jk.shape[0]
-    nt_d = seq.d_basis_t_jk.shape[0]
-    nz_d = seq.d_basis_z_jk.shape[0]
-    if k == 0:
-        return [((nr_p, nt_p, nz_p), ('p', 'p', 'p'))]
-    if k == 1:
-        return [
-            ((nr_d, nt_p, nz_p), ('d', 'p', 'p')),
-            ((nr_p, nt_d, nz_p), ('p', 'd', 'p')),
-            ((nr_p, nt_p, nz_d), ('p', 'p', 'd')),
-        ]
-    if k == 2:
-        return [
-            ((nr_p, nt_d, nz_d), ('p', 'd', 'd')),
-            ((nr_d, nt_p, nz_d), ('d', 'p', 'd')),
-            ((nr_d, nt_d, nz_p), ('d', 'd', 'p')),
-        ]
-    if k == 3:
-        return [((nr_d, nt_d, nz_d), ('d', 'd', 'd'))]
-    raise ValueError("k must be 0, 1, 2 or 3")
-
-
-def _kron_inv_table(operators: SequenceOperators):
-    return {
-        ('p', 'r'): operators.m1d_inv_p_r,
-        ('p', 't'): operators.m1d_inv_p_t,
-        ('p', 'z'): operators.m1d_inv_p_z,
-        ('d', 'r'): operators.m1d_inv_d_r,
-        ('d', 't'): operators.m1d_inv_d_t,
-        ('d', 'z'): operators.m1d_inv_d_z,
-    }
-
-
 def _kron_available(seq, operators: SequenceOperators, k: int) -> bool:
-    table = _kron_inv_table(operators)
-    needed = set()
-    for _, kinds in _kron_component_specs(seq, k):
-        for axis, kind in zip('rtz', kinds):
-            needed.add((kind, axis))
-    return all(table[key] is not None for key in needed)
-
-
-def _kron_apply_3d(Mr_inv, Mt_inv, Mz_inv, x):
-    """Apply ``(Mr_inv ⊗ Mt_inv ⊗ Mz_inv)`` to a 3-tensor ``x``."""
-    x = jnp.einsum('ij,jkl->ikl', Mr_inv, x)
-    x = jnp.einsum('ij,kjl->kil', Mt_inv, x)
-    x = jnp.einsum('ij,klj->kli', Mz_inv, x)
-    return x
-
-
-def _kron_scale_for_k(operators: SequenceOperators, k: int):
-    match k:
-        case 0:
-            return operators.m0_kron_scale
-        case 1:
-            return operators.m1_kron_scale
-        case 2:
-            return operators.m2_kron_scale
-        case 3:
-            return operators.m3_kron_scale
-    raise ValueError("k must be 0, 1, 2 or 3")
-
-
-def _kron_apply_full(seq, operators: SequenceOperators, v_full, k: int):
-    """Apply the block-diagonal Kronecker mass-inverse on a full-grid vector."""
-    table = _kron_inv_table(operators)
-    specs = _kron_component_specs(seq, k)
-    scales = _kron_scale_for_k(operators, k)
-    parts = []
-    offset = 0
-    for i, (shape, kinds) in enumerate(specs):
-        size = shape[0] * shape[1] * shape[2]
-        x = v_full[offset:offset + size].reshape(shape)
-        Mr_inv = table[(kinds[0], 'r')]
-        Mt_inv = table[(kinds[1], 't')]
-        Mz_inv = table[(kinds[2], 'z')]
-        y = _kron_apply_3d(Mr_inv, Mt_inv, Mz_inv, x)
-        if scales is not None:
-            y = y / scales[i]
-        parts.append(y.reshape(-1))
-        offset += size
-    return jnp.concatenate(parts) if len(parts) > 1 else parts[0]
+    return mass_kronecker_available(seq, operators.mass_preconds, k)
 
 
 def apply_mass_kron_preconditioner(
@@ -495,15 +365,49 @@ def apply_mass_kron_preconditioner(
     :func:`apply_mass_matrix_preconditioner` falls back to Jacobi instead
     of calling this function.
     """
-    if dirichlet:
-        e = getattr(seq, f'e{k}_dbc')
-        e_T = getattr(seq, f'e{k}_dbc_T')
-    else:
-        e = getattr(seq, f'e{k}')
-        e_T = getattr(seq, f'e{k}_T')
-    v_full = e_T @ v
-    y_full = _kron_apply_full(seq, operators, v_full, k)
-    return e @ y_full
+    return apply_mass_kronecker_preconditioner(
+        seq, operators.mass_preconds, v, k, dirichlet=dirichlet)
+
+
+def assemble_rtzblock_mass_preconditioner(
+        seq, operators: Optional[SequenceOperators] = None,
+        ks: Sequence[int] = (0, 3),
+        dirichlet_flags: Sequence[bool] = (False, True)):
+    """Assemble the hand-built ``rt-zblock`` mass preconditioner data."""
+    if operators is None:
+        operators = SequenceOperators()
+    mass_preconds = operators.mass_preconds
+    for k in ks:
+        if k == 0:
+            if operators.m0_sp is None:
+                raise ValueError("Mass operator k=0 must be assembled before rt-zblock")
+            full_matrix = jnp.asarray(operators.m0_sp.todense())
+            for dirichlet in dirichlet_flags:
+                mass_preconds = set_mass_rtzblock_factor(
+                    mass_preconds,
+                    0,
+                    dirichlet,
+                    build_mass_rtzblock_k0_factors(seq, full_matrix, dirichlet=dirichlet),
+                )
+        elif k == 3:
+            if operators.m3_sp is None:
+                raise ValueError("Mass operator k=3 must be assembled before rt-zblock")
+            full_matrix = jnp.asarray(operators.m3_sp.todense())
+            for dirichlet in dirichlet_flags:
+                mass_preconds = set_mass_rtzblock_factor(
+                    mass_preconds,
+                    3,
+                    dirichlet,
+                    build_mass_rtzblock_k3_factors(seq, full_matrix, dirichlet=dirichlet),
+                )
+        else:
+            raise ValueError("rt-zblock mass preconditioner only supports k=0 and k=3")
+    return eqx.tree_at(
+        lambda ops: ops.mass_preconds,
+        operators,
+        mass_preconds,
+        is_leaf=lambda x: x is None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -755,15 +659,21 @@ def apply_hodge_kron_preconditioner(
 
 
 def _mass_components(operators: SequenceOperators, k: int):
+    try:
+        diaginv = get_mass_jacobi_diaginv(operators.mass_preconds, k, False)
+        diaginv_dbc = get_mass_jacobi_diaginv(operators.mass_preconds, k, True)
+    except ValueError:
+        diaginv = None
+        diaginv_dbc = None
     match k:
         case 0:
-            return operators.m0_sp, operators.m0_sp_diaginv, operators.m0_sp_diaginv_dbc
+            return operators.m0_sp, diaginv, diaginv_dbc
         case 1:
-            return operators.m1_sp, operators.m1_sp_diaginv, operators.m1_sp_diaginv_dbc
+            return operators.m1_sp, diaginv, diaginv_dbc
         case 2:
-            return operators.m2_sp, operators.m2_sp_diaginv, operators.m2_sp_diaginv_dbc
+            return operators.m2_sp, diaginv, diaginv_dbc
         case 3:
-            return operators.m3_sp, operators.m3_sp_diaginv, operators.m3_sp_diaginv_dbc
+            return operators.m3_sp, diaginv, diaginv_dbc
     raise ValueError("k must be 0, 1, 2 or 3")
 
 
@@ -1351,52 +1261,61 @@ def _assemble_hodge_block(seq, geometry, operators: SequenceOperators, k):
             diaginv_dbc = 1.0 / diag_EAET_matvec(
                 seq.e0_dbc, lambda v: K_apply(v), seq.n0_dbc, seq.e0_dbc_T)
         case 1:
-            if operators.m0_sp_diaginv is None or operators.m0_sp_diaginv_dbc is None:
+            try:
+                mass_diaginv = _mass_diaginv(operators, 0, dirichlet=False)
+                mass_diaginv_dbc = _mass_diaginv(operators, 0, dirichlet=True)
+            except ValueError as exc:
                 raise ValueError(
-                    "Assemble mass operator k=0 before Hodge operator k=1")
+                    "Assemble mass operator k=0 before Hodge operator k=1") from exc
             K_apply = _stiffness_matvec(1)
             DT_apply = _derivative_T_matvec(1)
             d_stiff = diag_EAET_matvec(
                 seq.e1, lambda v: K_apply(v), seq.n1, seq.e1_T)
             d_schur = diag_schur_complement(
                 lambda v: seq.e0 @ DT_apply(seq.e1_T @ v),
-                operators.m0_sp_diaginv, seq.n1)
+                mass_diaginv, seq.n1)
             diaginv = 1.0 / (d_stiff + d_schur)
             d_stiff_dbc = diag_EAET_matvec(
                 seq.e1_dbc, lambda v: K_apply(v), seq.n1_dbc, seq.e1_dbc_T)
             d_schur_dbc = diag_schur_complement(
                 lambda v: seq.e0_dbc @ DT_apply(seq.e1_dbc_T @ v),
-                operators.m0_sp_diaginv_dbc, seq.n1_dbc)
+                mass_diaginv_dbc, seq.n1_dbc)
             diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
         case 2:
-            if operators.m1_sp_diaginv is None or operators.m1_sp_diaginv_dbc is None:
+            try:
+                mass_diaginv = _mass_diaginv(operators, 1, dirichlet=False)
+                mass_diaginv_dbc = _mass_diaginv(operators, 1, dirichlet=True)
+            except ValueError as exc:
                 raise ValueError(
-                    "Assemble mass operator k=1 before Hodge operator k=2")
+                    "Assemble mass operator k=1 before Hodge operator k=2") from exc
             K_apply = _stiffness_matvec(2)
             DT_apply = _derivative_T_matvec(2)
             d_stiff = diag_EAET_matvec(
                 seq.e2, lambda v: K_apply(v), seq.n2, seq.e2_T)
             d_schur = diag_schur_complement(
                 lambda v: seq.e1 @ DT_apply(seq.e2_T @ v),
-                operators.m1_sp_diaginv, seq.n2)
+                mass_diaginv, seq.n2)
             diaginv = 1.0 / (d_stiff + d_schur)
             d_stiff_dbc = diag_EAET_matvec(
                 seq.e2_dbc, lambda v: K_apply(v), seq.n2_dbc, seq.e2_dbc_T)
             d_schur_dbc = diag_schur_complement(
                 lambda v: seq.e1_dbc @ DT_apply(seq.e2_dbc_T @ v),
-                operators.m1_sp_diaginv_dbc, seq.n2_dbc)
+                mass_diaginv_dbc, seq.n2_dbc)
             diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
         case 3:
-            if operators.m2_sp_diaginv is None or operators.m2_sp_diaginv_dbc is None:
+            try:
+                mass_diaginv = _mass_diaginv(operators, 2, dirichlet=False)
+                mass_diaginv_dbc = _mass_diaginv(operators, 2, dirichlet=True)
+            except ValueError as exc:
                 raise ValueError(
-                    "Assemble mass operator k=2 before Hodge operator k=3")
+                    "Assemble mass operator k=2 before Hodge operator k=3") from exc
             DT_apply = _derivative_T_matvec(3)
             diaginv = 1.0 / diag_schur_complement(
                 lambda v: seq.e2 @ DT_apply(seq.e3_T @ v),
-                operators.m2_sp_diaginv, seq.n3)
+                mass_diaginv, seq.n3)
             diaginv_dbc = 1.0 / diag_schur_complement(
                 lambda v: seq.e2_dbc @ DT_apply(seq.e3_dbc_T @ v),
-                operators.m2_sp_diaginv_dbc, seq.n3_dbc)
+                mass_diaginv_dbc, seq.n3_dbc)
         case _:
             raise ValueError("k must be 0, 1, 2, or 3")
 
@@ -1781,7 +1700,7 @@ def apply_mass_matrix_preconditioner(seq, operators: SequenceOperators, v, k: in
 
     Parameters
     ----------
-    kind : {'auto', 'jacobi', 'kronecker'}
+    kind : {'auto', 'jacobi', 'kronecker', 'rt-zblock'}
         Which preconditioner to use.  ``'auto'`` picks ``'kronecker'`` when
         the 1-D mass-matrix inverses have been assembled and are available
         for this ``k`` (see :func:`assemble_kron_mass_preconditioner`),
@@ -1797,12 +1716,12 @@ def apply_mass_matrix_preconditioner(seq, operators: SequenceOperators, v, k: in
         return apply_mass_kron_preconditioner(
             seq, operators, v, k, dirichlet=dirichlet)
     if kind == 'jacobi':
-        _, diaginv, diaginv_dbc = _mass_components(operators, k)
-        if diaginv is None or diaginv_dbc is None:
-            raise ValueError(f"Mass preconditioner k={k} is not assembled")
-        return (diaginv_dbc if dirichlet else diaginv) * v
+        return _mass_diaginv(operators, k, dirichlet) * v
+    if kind == 'rt-zblock':
+        return apply_mass_rtzblock_preconditioner(
+            seq, operators.mass_preconds, v, k, dirichlet=dirichlet)
     raise ValueError(
-        f"kind must be 'auto', 'jacobi' or 'kronecker' (got {kind!r})")
+        f"kind must be 'auto', 'jacobi', 'kronecker' or 'rt-zblock' (got {kind!r})")
 
 
 def apply_inverse_mass_matrix(seq, operators: SequenceOperators, v, k: int,

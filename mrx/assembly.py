@@ -6,6 +6,17 @@ import jax.numpy as jnp
 import mrx
 
 
+_INDEX_DTYPE = jnp.int32
+
+
+def _index_arange(stop):
+    return jnp.arange(stop, dtype=_INDEX_DTYPE)
+
+
+def _as_index_array(values):
+    return jnp.asarray(values, dtype=_INDEX_DTYPE)
+
+
 def _init_triplet_buffers(total_nnz, data_dtype):
     """Allocate fixed-size COO triplet buffers.
 
@@ -14,8 +25,8 @@ def _init_triplet_buffers(total_nnz, data_dtype):
     tensor-product stencil, so this remains compatible with JIT tracing.
     """
     data = jnp.zeros((total_nnz,), dtype=data_dtype)
-    rows = jnp.zeros((total_nnz,), dtype=jnp.int32)
-    cols = jnp.zeros((total_nnz,), dtype=jnp.int32)
+    rows = jnp.zeros((total_nnz,), dtype=_INDEX_DTYPE)
+    cols = jnp.zeros((total_nnz,), dtype=_INDEX_DTYPE)
     return data, rows, cols
 
 
@@ -24,8 +35,8 @@ def _write_triplet_block(data, rows, cols, offset, vals, row_flat, col_flat):
     block_nnz = row_flat.shape[0]
     sl = slice(offset, offset + block_nnz)
     data = data.at[sl].set(vals.ravel())
-    rows = rows.at[sl].set(row_flat)
-    cols = cols.at[sl].set(col_flat)
+    rows = rows.at[sl].set(_as_index_array(row_flat))
+    cols = cols.at[sl].set(_as_index_array(col_flat))
     return data, rows, cols
 
 
@@ -131,9 +142,9 @@ def assemble_scalar_tp(R_row, T_row, Z_row, R_col, T_col, Z_col,
 
     # Row DOF grid indices (flat)
     I1, I2, I3 = jnp.meshgrid(
-        jnp.arange(s1), jnp.arange(s2), jnp.arange(s3), indexing='ij')
-    row_flat = jnp.ravel_multi_index(
-        (I1, I2, I3), dof_shape, mode='wrap').ravel()
+        _index_arange(s1), _index_arange(s2), _index_arange(s3), indexing='ij')
+    row_flat = _as_index_array(jnp.ravel_multi_index(
+        (I1, I2, I3), dof_shape, mode='wrap').ravel())
 
     n_blocks = len(offsets_r) * len(offsets_t) * len(offsets_z)
     block_nnz = row_flat.shape[0]
@@ -152,8 +163,8 @@ def assemble_scalar_tp(R_row, T_row, Z_row, R_col, T_col, Z_col,
                 vals = jnp.einsum('bac,ia,jb,kc->ijk',
                                   W_3d, Pr[dr], Pt[dt], Pz[dz])
 
-                col_flat = jnp.ravel_multi_index(
-                    (M1, M2, M3), dof_shape, mode='wrap').ravel()
+                col_flat = _as_index_array(jnp.ravel_multi_index(
+                    (M1, M2, M3), dof_shape, mode='wrap').ravel())
 
                 data, rows, cols = _write_triplet_block(
                     data, rows, cols, offset, vals, row_flat, col_flat)
@@ -256,13 +267,13 @@ def assemble_vectorial_tp(row_terms, col_terms, W_flat_3x3,
     for c_row in range(len(row_terms)):
         s_row = row_comp_shapes[c_row]
         I1, I2, I3 = jnp.meshgrid(
-            jnp.arange(s_row[0]), jnp.arange(s_row[1]),
-            jnp.arange(s_row[2]), indexing='ij')
-        row_r = jnp.arange(s_row[0])
-        row_t = jnp.arange(s_row[1])
-        row_z = jnp.arange(s_row[2])
-        row_flat = row_starts[c_row] + jnp.ravel_multi_index(
-            (I1, I2, I3), s_row, mode='wrap').ravel()
+            _index_arange(s_row[0]), _index_arange(s_row[1]),
+            _index_arange(s_row[2]), indexing='ij')
+        row_r = _index_arange(s_row[0])
+        row_t = _index_arange(s_row[1])
+        row_z = _index_arange(s_row[2])
+        row_flat = _as_index_array(row_starts[c_row] + jnp.ravel_multi_index(
+            (I1, I2, I3), s_row, mode='wrap').ravel())
 
         for c_col in range(len(col_terms)):
             s_col = col_comp_shapes[c_col]
@@ -290,8 +301,8 @@ def assemble_vectorial_tp(row_terms, col_terms, W_flat_3x3,
                                     Tk * Tl[cidx_t, :],
                                     Zk * Zl[cidx_z, :])
 
-                        col_flat = col_starts[c_col] + jnp.ravel_multi_index(
-                            (J1, J2, J3), s_col, mode='wrap').ravel()
+                        col_flat = _as_index_array(col_starts[c_col] + jnp.ravel_multi_index(
+                            (J1, J2, J3), s_col, mode='wrap').ravel())
 
                         data, rows, cols = _write_triplet_block(
                             data, rows, cols, offset, vals, row_flat, col_flat)
@@ -366,9 +377,9 @@ def assemble_stiffness_scalar_tp(row_basis_1d, col_basis_1d, W_flat_3x3,
 
     # Row DOF grid
     I1, I2, I3 = jnp.meshgrid(
-        jnp.arange(s1), jnp.arange(s2), jnp.arange(s3), indexing='ij')
-    row_flat = jnp.ravel_multi_index(
-        (I1, I2, I3), dof_shape, mode='wrap').ravel()
+        _index_arange(s1), _index_arange(s2), _index_arange(s3), indexing='ij')
+    row_flat = _as_index_array(jnp.ravel_multi_index(
+        (I1, I2, I3), dof_shape, mode='wrap').ravel())
 
     n_blocks = len(offsets_r) * len(offsets_t) * len(offsets_z)
     block_nnz = row_flat.shape[0]
@@ -394,8 +405,8 @@ def assemble_stiffness_scalar_tp(row_basis_1d, col_basis_1d, W_flat_3x3,
                             Pt[(a, b, dt)],
                             Pz[(a, b, dz)])
 
-                col_flat = jnp.ravel_multi_index(
-                    (M1, M2, M3), dof_shape, mode='wrap').ravel()
+                col_flat = _as_index_array(jnp.ravel_multi_index(
+                    (M1, M2, M3), dof_shape, mode='wrap').ravel())
 
                 data, rows, cols = _write_triplet_block(
                     data, rows, cols, offset, vals, row_flat, col_flat)
@@ -469,9 +480,7 @@ def assemble_sparse(getter_1, getter_2, W, n1, n2, max_nnz, neighbors):
         process_row, jnp.arange(n1), batch_size=None)  # (n1, max_nnz)
     # over i (rows) sequentially - not batched
 
-    row_indices = jnp.broadcast_to(
-        jnp.arange(n1)[:, None], all_cols.shape
-    )
+    row_indices = jnp.broadcast_to(_index_arange(n1)[:, None], all_cols.shape)
     indices = jnp.stack([row_indices.ravel(), all_cols.ravel()], axis=-1)
     data = all_vals.ravel()
 
@@ -507,9 +516,9 @@ def build_neighbors(row_form, col_form=None):
     hw_t = max(row_form.pt, col_form.pt)
     hw_z = max(row_form.pz, col_form.pz)
 
-    offsets_r = jnp.arange(-hw_r, hw_r + 1)
-    offsets_t = jnp.arange(-hw_t, hw_t + 1)
-    offsets_z = jnp.arange(-hw_z, hw_z + 1)
+    offsets_r = jnp.arange(-hw_r, hw_r + 1, dtype=_INDEX_DTYPE)
+    offsets_t = jnp.arange(-hw_t, hw_t + 1, dtype=_INDEX_DTYPE)
+    offsets_z = jnp.arange(-hw_z, hw_z + 1, dtype=_INDEX_DTYPE)
     dr, dt, dz = jnp.meshgrid(offsets_r, offsets_t, offsets_z, indexing='ij')
     dr, dt, dz = dr.ravel(), dt.ravel(), dz.ravel()
     per_block = len(dr)
@@ -521,7 +530,7 @@ def build_neighbors(row_form, col_form=None):
             max_nnz = s1 * s2 * s3
 
             def neighbors(i):
-                return jnp.arange(max_nnz)
+                return _index_arange(max_nnz)
         else:
             max_nnz = per_block
 
@@ -530,13 +539,13 @@ def build_neighbors(row_form, col_form=None):
                 j1 = (i1 + dr) % s1
                 j2 = (i2 + dt) % s2
                 j3 = (i3 + dz) % s3
-                return jnp.ravel_multi_index((j1, j2, j3), (s1, s2, s3), mode='wrap')
+                return _as_index_array(jnp.ravel_multi_index((j1, j2, j3), (s1, s2, s3), mode='wrap'))
 
     else:  # k == 1, 2, or -1
         shapes = col_form.shape
         n1, n2 = col_form.n1, col_form.n2
         n_total = col_form.n
-        comp_starts = jnp.array([0, n1, n1 + n2], dtype=jnp.int32)
+        comp_starts = jnp.array([0, n1, n1 + n2], dtype=_INDEX_DTYPE)
         # Check if stencil overflows any component dimension
         overflow = False
         for c in range(3):
@@ -548,7 +557,7 @@ def build_neighbors(row_form, col_form=None):
             max_nnz = n_total
 
             def neighbors(i):
-                return jnp.arange(max_nnz)
+                return _index_arange(max_nnz)
         else:
             max_nnz = 3 * per_block
 
@@ -560,8 +569,8 @@ def build_neighbors(row_form, col_form=None):
                     j1 = (i1 + dr) % s1
                     j2 = (i2 + dt) % s2
                     j3 = (i3 + dz) % s3
-                    local = jnp.ravel_multi_index(
-                        (j1, j2, j3), (s1, s2, s3), mode='wrap')
+                    local = _as_index_array(jnp.ravel_multi_index(
+                        (j1, j2, j3), (s1, s2, s3), mode='wrap'))
                     cols.append(local + comp_starts[c])
                 return jnp.concatenate(cols)
 

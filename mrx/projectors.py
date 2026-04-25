@@ -31,6 +31,11 @@ ScalarFunction = Callable[[Array], Array]  # ξ -> scalar (with trailing dim)
 VectorFunction = Callable[[Array], Array]  # ξ -> 3D vector
 
 
+def _as_single_component(values: Array) -> Array:
+    """Normalize a scalar or length-1 array to shape (1,)."""
+    return jnp.reshape(jnp.asarray(values), (1,))
+
+
 class Projector:
     """
     A class for projecting functions onto finite element spaces.
@@ -129,7 +134,10 @@ class Projector:
         """
         # Evaluate the given function at quadrature points
         f_jk: Array = jax.lax.map(
-            f, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x 1
+            lambda x: _as_single_component(f(x)),
+            self.seq.quad.x,
+            batch_size=mrx.MAP_BATCH_SIZE_INNER,
+        )
         w_jk: Array = f_jk * (self.seq.quad.w * self.seq.jacobian_j)[:, None]
         comp_info, comp_shapes = self.seq._form_comp_info(0)
         quad_shape = (self.seq.quad.ny, self.seq.quad.nx, self.seq.quad.nz)
@@ -196,7 +204,10 @@ class Projector:
         """
         # Evaluate the given function at quadrature points
         f_jk: Array = jax.lax.map(
-            f, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x 1
+            lambda x: _as_single_component(f(x)),
+            self.seq.quad.x,
+            batch_size=mrx.MAP_BATCH_SIZE_INNER,
+        )
         w_jk: Array = f_jk * (self.seq.quad.w)[:, None]
         comp_info, comp_shapes = self.seq._form_comp_info(3)
         quad_shape = (self.seq.quad.ny, self.seq.quad.nx, self.seq.quad.nz)

@@ -43,12 +43,12 @@ jax.config.update("jax_enable_x64", True)
 # Configuration
 # ---------------------------------------------------------------------------
 
-N = 7
+N = 20
 P = 3
-SAMPLE_POINTS = 50
+SAMPLE_POINTS = 80
 AUTO_SAMPLE_POINTS = True
-TOL = 1e-10
-MAXITER = 1000
+TOL = 1e-9
+MAXITER = 2000
 BETTI = (1, 1, 0, 0)
 
 EPS_NULL = TOL**0.5 / 10
@@ -58,7 +58,7 @@ NUM_RHS = 8
 N_MODES = 6
 RHS_SEED = 7
 
-JACOBI_SWEEPS = (2, 4, 8)
+JACOBI_SWEEPS = (2, 4)
 POWER_ITERS = 20
 JACOBI_SAFETY = 1.8
 

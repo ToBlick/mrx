@@ -292,8 +292,8 @@ class DeRhamSequence():
         self.n1 = e1.n
         self.n1_dbc = e1_dbc.n
         self.n1_bc = e1.n - e1_dbc.n
-        self.n1_1, self.n1_2, self.n1_3 = e1.n1, e1.n2, e1.n2
-        self.n1_1_dbc, self.n1_2_dbc, self.n1_3_dbc = e1_dbc.n1, e1_dbc.n2, e1_dbc.n2
+        self.n1_1, self.n1_2, self.n1_3 = e1.n1, e1.n2, e1.n3
+        self.n1_1_dbc, self.n1_2_dbc, self.n1_3_dbc = e1_dbc.n1, e1_dbc.n2, e1_dbc.n3
 
         e2_bcoo = e2.assemble_sparse()
         e2_dbc_bcoo = e2_dbc.assemble_sparse()
@@ -876,15 +876,17 @@ class DeRhamSequence():
             dv_dual, boundary_dual, "apply_weak_div")
         return self.apply_inverse_mass_matrix(dv_dual, 0, dirichlet=dirichlet_out)
 
-    def apply_mass_matrix_preconditioner(self, v, k, dirichlet=True, operators=None):
+    def apply_mass_matrix_preconditioner(self, v, k, dirichlet=True,
+                                         operators=None, kind='auto'):
         """
-        Apply the diagonal Jacobi preconditioner for the mass matrix Mk to a vector v.
+        Apply a configured mass-matrix preconditioner for Mk to a vector v.
         """
         operators = self._require_operators(operators)
         return apply_mass_matrix_preconditioner_ops(
-            self, operators, v, k, dirichlet=dirichlet)
+            self, operators, v, k, dirichlet=dirichlet, kind=kind)
 
-    def apply_inverse_mass_matrix(self, v, k, dirichlet=True, guess=None, operators=None):
+    def apply_inverse_mass_matrix(self, v, k, dirichlet=True, guess=None,
+                                  operators=None, precond='auto'):
         """
         Apply the inverse of the sparse mass matrix Mk⁻¹ for k-forms to a vector v,
         solved via CG with Jacobi preconditioning. An optional initial guess can be
@@ -894,7 +896,7 @@ class DeRhamSequence():
         return apply_inverse_mass_matrix_ops(
             self, operators, v, k,
             dirichlet=dirichlet, guess=guess,
-            tol=self.tol, maxiter=self.maxiter)
+            tol=self.tol, maxiter=self.maxiter, precond=precond)
 
     def apply_mass_matrix(self, v, k, dirichlet=True, operators=None):
         """
