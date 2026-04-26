@@ -338,41 +338,35 @@ and lets us compose preconditioners on the fly. See
 
 ### 5.1 Mass-matrix preconditioners
 
-Two preconditioners for $\mathbb{M}^k$ are available; both are applied
-as matvecs without forming any new sparse matrix.
+The production-facing mass preconditioners are applied as matvecs without
+forming any new sparse matrix.
 
 **Jacobi (default fallback).** We precompute
 $\mathrm{diag}(\mathbb{E} \mathbb{M}^k \mathbb{E}^\top)$ once via
 `diag_EAET` (in `mrx/utils.py`) and store its inverse on
 `SequenceOperators` as `m{k}_sp_diaginv` (with `_dbc` variants).
 
-**Kronecker ("fast diagonalisation").** Because the reference 1-D mass
-matrices $M_r, M_\theta, M_\zeta$ (regular and derivative splines) are
-small and SPD, we precompute their *full* inverses once and apply
-$\widetilde{\mathbb{M}}^k_{\text{ref}}{}^{-1} = M_r^{-1} \otimes
-M_\theta^{-1} \otimes M_\zeta^{-1}$ as a triple `einsum` (no Kronecker
-product ever assembled). Geometry is folded in by a per-component
-scalar $\alpha_i = \langle J\, g^{ii}\rangle_{\text{quad}}$ (length 1
-for $k=0,3$, length 3 for $k=1,2$), giving
-$\widetilde{\mathbb{M}}^k \approx \operatorname{diag}(\alpha_i)
-\cdot (M_r \otimes M_\theta \otimes M_\zeta)$. The resulting fields
-on `SequenceOperators` are `m1d_inv_{p,d}_{r,t,z}` (geometry-independent,
-shared across all $k$) and `m{k}_kron_scale` (geometry-dependent,
-rebuilt with the mass).
+**Tensor (production path).** The production mass preconditioner keeps the
+correct extracted-space block structure for each degree and approximates the
+geometric coefficient fields on the tensor quadrature grid. Those coefficient
+fits assemble short sums of weighted 1-D mass factors, and the inverse apply is
+performed through tensor-product or shared-modal fast-diagonalisation blocks,
+with small dense Schur solves only where the extracted structure forces them.
+
+There is still a legacy Kronecker helper in the codebase for some FD/Hodge
+paths and old debug experiments, but it is no longer part of the production
+mass-preconditioner dispatch.
 
 `apply_mass_matrix_preconditioner(seq, ops, v, k, dirichlet, kind=...)`
 dispatches:
 
-- `kind='kronecker'` — uses the Kronecker apply.
 - `kind='jacobi'`    — uses the diagonal apply.
-- `kind='auto'` (default) — Kronecker when assembled and applicable,
+- `kind='tensor'`    — uses the tensor apply.
+- `kind='auto'` (default) — tensor when assembled and applicable,
   else Jacobi. `apply_inverse_mass_matrix(..., precond='auto')`
   forwards through.
 
-Kronecker is unavailable on axes whose 1-D mass is singular (e.g.
-`constant`-type basis); `auto` falls back to Jacobi in that case.
-
-*Why the per-component scale $\alpha_i = \langle J\,g^{ii}\rangle_{\text{quad}}$?*
+*Why keep a tensor coefficient model?*
 On the mapped domain the weak $k$-form mass is
 $\langle u, v\rangle_{M^k} = \int_{\hat\Omega} \hat u^\top W^k\,\hat v\,\mathrm{d}\hat x$,
 with pull-back weights
@@ -381,17 +375,19 @@ $$
 W^0 = J,\qquad W^1 = J\,g^{-1},\qquad W^2 = g/J,\qquad W^3 = 1/J,
 $$
 
-i.e. the same $W$ that appears in §3.  The reference Kronecker mass
-$M_r \otimes M_\theta \otimes M_\zeta$ corresponds to $W \equiv I$;
-rescaling each component by the *quadrature average of its diagonal*
-$W^k_{ii}$ — $J$ for $k=0$, $J g^{ii}$ for $k=1$, $g_{ii}/J$ for $k=2$,
-$1/J$ for $k=3$ — recovers the leading anisotropy of the metric.  The
-off-diagonal cross terms $g^{ij}$, $i\neq j$ are dropped: they couple
-vector components and therefore break the block-Kronecker structure;
-keeping them would force a full mass solve.  In practice this is a
-spectrally equivalent approximation on quasi-uniform meshes and reduces
-CG iteration counts by roughly an order of magnitude versus plain
-Jacobi.
+i.e. the same $W$ that appears in §3.  The production tensor route keeps the
+degree-dependent extracted block structure and approximates the diagonal
+coefficient fields derived from these weights:
+
+- $J$ for $k=0$,
+- $J g^{ii}$ for $k=1$,
+- $g_{ii}/J$ for $k=2$,
+- $1/J$ for $k=3$.
+
+The off-diagonal cross terms are not modeled inside the diagonal tensor blocks;
+they are handled only through the surrounding exact extracted-space block
+structure. This keeps the production preconditioner scalable while preserving
+the right Schur logic for each degree.
 
 *Asymptotic note for the rotating-ellipse map.*
 For

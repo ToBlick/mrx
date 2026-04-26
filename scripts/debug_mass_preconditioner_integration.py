@@ -14,8 +14,7 @@
 #
 # 1. the scalar mass operators,
 # 2. production `jacobi`,
-# 3. production `kronecker`,
-# 4. and the hand-built `rt-zblock`,
+# 3. and production `tensor`,
 #
 # then records average iteration counts and solve times from a jitted CG solve.
 #
@@ -43,9 +42,8 @@ from mrx.mappings import rotating_ellipse_map
 from mrx.operators import (
     apply_mass_matrix,
     apply_mass_matrix_preconditioner,
-    assemble_kron_mass_preconditioner,
     assemble_mass_operators,
-    assemble_rtzblock_mass_preconditioner,
+    assemble_tensor_mass_preconditioner,
     dense_mass_matrix,
 )
 from mrx.solvers import solve_singular_cg
@@ -89,7 +87,7 @@ RESOLUTIONS = (4, 8, 16)
 PS = (1, 2, 3)
 KS = (0, 3)
 DIRICHLET_FLAGS = (False, True)
-LABELS = ("jacobi", "kronecker", "rt-zblock")
+LABELS = ("jacobi", "tensor")
 N_RHS = 10
 BUILD_CACHE = {}
 BENCHMARK_REPORTS = []
@@ -121,13 +119,7 @@ def build_sequence_and_operators(config: ExperimentConfig = CONFIG):
     )
 
     operators = assemble_mass_operators(seq, seq.geometry, ks=(0, 3))
-    operators = assemble_kron_mass_preconditioner(seq, operators=operators)
-    operators = assemble_rtzblock_mass_preconditioner(
-        seq,
-        operators=operators,
-        ks=(0, 3),
-        dirichlet_flags=(False, True),
-    )
+    operators = assemble_tensor_mass_preconditioner(seq, operators=operators, ks=(0, 3))
     return seq, operators
 
 
@@ -278,13 +270,11 @@ def make_benchmark_figure(reports, metric: str, ylabel: str, filename: str):
     )
     colors = {
         "jacobi": "#264653",
-        "kronecker": "#2a9d8f",
-        "rt-zblock": "#e76f51",
+        "tensor": "#2a9d8f",
     }
     markers = {
         "jacobi": "o",
-        "kronecker": "s",
-        "rt-zblock": "D",
+        "tensor": "s",
     }
     linestyles = {
         1: "-",

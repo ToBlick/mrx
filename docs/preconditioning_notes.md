@@ -162,9 +162,9 @@ SVD stages.
 
 - Benchmark the new hierarchical scalar preconditioner directly against the
   current production scalar mass preconditioners:
-  `jacobi` and production `kronecker`.
+  `jacobi` and the tensor path.
 - Extend the same build-time hierarchical compression to the production scalar
-  mass preconditioner path if those comparisons are favorable.
+  mass preconditioner path only if it beats the existing tensor route.
 - Decide whether the `k=3` default tolerance should target exactness on simple
   maps or just a stable preconditioned spectrum.
 - Investigate analogous low-rank build paths for `W^1` and `W^2`.
@@ -174,7 +174,7 @@ The current debug harness now includes a direct comparison cell in
 that solves scalar mass systems with CG and swaps only the preconditioner:
 
 - `jacobi`
-- production `kronecker`
+- legacy `kronecker`
 - hierarchical `rt|z` then `r|t`
 
 That last option turned out to be only a compressed operator apply, not an

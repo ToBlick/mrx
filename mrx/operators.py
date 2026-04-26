@@ -10,18 +10,17 @@ import jax.scipy as jsp
 from mrx.assembly import assemble_scalar_tp, assemble_vectorial_tp
 from mrx.preconditioners import (
     MassPreconditioners,
+    apply_mass_tensor_preconditioner,
     apply_mass_kronecker_preconditioner,
-    apply_mass_rtzblock_preconditioner,
     build_mass_jacobi_pair,
+    build_mass_tensor_preconditioner,
     build_mass_kronecker_preconditioner,
-    build_mass_rtzblock_k0_factors,
-    build_mass_rtzblock_k3_factors,
     get_mass_jacobi_diaginv,
-    invalidate_mass_rtzblock,
+    mass_tensor_available,
     mass_kronecker_available,
     set_mass_jacobi_pair,
+    set_mass_tensor,
     set_mass_kronecker,
-    set_mass_rtzblock_factor,
 )
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
 from mrx.utils import diag_EAET, diag_EAET_matvec, diag_schur_complement
@@ -280,14 +279,22 @@ def update_mass_operator(seq, geometry, operators: Optional[SequenceOperators], 
     if operators is None:
         operators = SequenceOperators()
     mass_preconds = set_mass_jacobi_pair(operators.mass_preconds, k, jacobi_pair)
-    if mass_preconds is not None and mass_preconds.kronecker is not None:
-        mass_preconds = set_mass_kronecker(
+    if k in (0, 1) and mass_preconds is not None and mass_preconds.tensor is not None:
+        mass_preconds = set_mass_tensor(
             mass_preconds,
-            build_mass_kronecker_preconditioner(seq),
+            build_mass_tensor_preconditioner(
+                seq,
+                jnp.asarray(sp.todense()),
+                k=k,
+                rank=mass_preconds.tensor.rank,
+                cp_kwargs={
+                    "maxiter": mass_preconds.tensor.cp_maxiter,
+                    "tol": mass_preconds.tensor.cp_tol,
+                    "ridge": mass_preconds.tensor.cp_ridge,
+                },
+                existing=mass_preconds.tensor,
+            ),
         )
-    if k in (0, 3):
-        mass_preconds = invalidate_mass_rtzblock(mass_preconds, k)
-
     match k:
         case 0:
             return eqx.tree_at(
@@ -332,9 +339,8 @@ def assemble_kron_mass_preconditioner(
         seq, operators: Optional[SequenceOperators] = None):
     """Assemble the 1-D reference mass-matrix inverses on ``operators``.
 
-    The resulting preconditioner is geometry-independent; call this once
-    after ``seq.evaluate_1d()``.  Subsequent calls to
-    :func:`apply_mass_matrix_preconditioner` will then default to the
+    This is now a legacy helper for FD/Hodge paths and debug experiments.
+    Production mass-preconditioner dispatch no longer routes through the
     Kronecker variant.
     """
     if operators is None:
@@ -355,6 +361,62 @@ def _kron_available(seq, operators: SequenceOperators, k: int) -> bool:
     return mass_kronecker_available(seq, operators.mass_preconds, k)
 
 
+def assemble_tensor_mass_preconditioner(
+        seq, operators: Optional[SequenceOperators] = None,
+        *, ks: Sequence[int] = (1,),
+        rank: int = 3,
+        cp_kwargs: Optional[dict] = None):
+    """Assemble the k=0/k=1/k=2/k=3 tensor mass preconditioner on ``operators``.
+
+    The current production tensor path implements the extracted scalar
+    core-plus-bulk Schur model for polar ``k=0`` and the surgery-plus-Schur
+    model for polar ``k=1``. For polar ``k=2`` it uses an outer Schur split on
+    the extracted ``r`` surgery block together with tensor-diagonal bulk block
+    inverses. For polar ``k=3`` it implements a direct extracted scalar tensor
+    inverse. All use low-rank CP fits of the diagonal metric factors to build
+    tensor block inverse applies.
+    """
+    if operators is None:
+        operators = SequenceOperators()
+    missing_ks = []
+    for k in ks:
+        if k not in (0, 1, 2, 3):
+            raise ValueError("Tensor mass preconditioner assembly only supports k=0, k=1, k=2 and k=3")
+        if getattr(operators, f"m{k}_sp") is None:
+            missing_ks.append(k)
+    if missing_ks:
+        operators = assemble_mass_operators(seq, seq.geometry, operators, ks=tuple(missing_ks))
+
+    tensor_precond = operators.mass_preconds.tensor if operators.mass_preconds is not None else None
+    for k in ks:
+        full_matrix = jnp.asarray(getattr(operators, f"m{k}_sp").todense())
+        tensor_precond = build_mass_tensor_preconditioner(
+            seq,
+            full_matrix,
+            k=k,
+            rank=rank,
+            cp_kwargs=cp_kwargs,
+            existing=tensor_precond,
+        )
+    mass_preconds = set_mass_tensor(operators.mass_preconds, tensor_precond)
+    return eqx.tree_at(
+        lambda ops: ops.mass_preconds,
+        operators,
+        mass_preconds,
+        is_leaf=lambda x: x is None,
+    )
+
+
+def _tensor_available(seq, operators: SequenceOperators, k: int) -> bool:
+    return mass_tensor_available(seq, operators.mass_preconds, k)
+
+
+def apply_mass_tensor_preconditioner_ops(
+        seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True):
+    return apply_mass_tensor_preconditioner(
+        seq, operators.mass_preconds, v, k, dirichlet=dirichlet)
+
+
 def apply_mass_kron_preconditioner(
         seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True):
     """``E (M_r^{-1} ⊗ M_θ^{-1} ⊗ M_ζ^{-1}) E^T v`` (block-diagonal over components).
@@ -367,47 +429,6 @@ def apply_mass_kron_preconditioner(
     """
     return apply_mass_kronecker_preconditioner(
         seq, operators.mass_preconds, v, k, dirichlet=dirichlet)
-
-
-def assemble_rtzblock_mass_preconditioner(
-        seq, operators: Optional[SequenceOperators] = None,
-        ks: Sequence[int] = (0, 3),
-        dirichlet_flags: Sequence[bool] = (False, True)):
-    """Assemble the hand-built ``rt-zblock`` mass preconditioner data."""
-    if operators is None:
-        operators = SequenceOperators()
-    mass_preconds = operators.mass_preconds
-    for k in ks:
-        if k == 0:
-            if operators.m0_sp is None:
-                raise ValueError("Mass operator k=0 must be assembled before rt-zblock")
-            full_matrix = jnp.asarray(operators.m0_sp.todense())
-            for dirichlet in dirichlet_flags:
-                mass_preconds = set_mass_rtzblock_factor(
-                    mass_preconds,
-                    0,
-                    dirichlet,
-                    build_mass_rtzblock_k0_factors(seq, full_matrix, dirichlet=dirichlet),
-                )
-        elif k == 3:
-            if operators.m3_sp is None:
-                raise ValueError("Mass operator k=3 must be assembled before rt-zblock")
-            full_matrix = jnp.asarray(operators.m3_sp.todense())
-            for dirichlet in dirichlet_flags:
-                mass_preconds = set_mass_rtzblock_factor(
-                    mass_preconds,
-                    3,
-                    dirichlet,
-                    build_mass_rtzblock_k3_factors(seq, full_matrix, dirichlet=dirichlet),
-                )
-        else:
-            raise ValueError("rt-zblock mass preconditioner only supports k=0 and k=3")
-    return eqx.tree_at(
-        lambda ops: ops.mass_preconds,
-        operators,
-        mass_preconds,
-        is_leaf=lambda x: x is None,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1033,10 +1054,8 @@ def update_incidence_operator(seq, operators: Optional[SequenceOperators], k: in
 
 def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = None,
                                  ks: Sequence[int] = (0, 1, 2)):
-    """Assemble topological incidence operators (geometry-independent)."""
+    """Assemble topological incidence operators for the requested degrees."""
     for k in ks:
-        if k not in (0, 1, 2):
-            continue
         operators = update_incidence_operator(seq, operators, k)
     return operators
 
@@ -1383,7 +1402,7 @@ def assemble_all_operators(seq, geometry,
                            operators: Optional[SequenceOperators] = None):
     """Assemble all geometry-dependent mass, derivative, and Hodge operators."""
     operators = assemble_mass_operators(seq, geometry, operators=operators)
-    operators = assemble_kron_mass_preconditioner(seq, operators=operators)
+    operators = assemble_tensor_mass_preconditioner(seq, operators=operators, ks=(0, 1, 2, 3))
     operators = assemble_fd_hodge_preconditioner(seq, operators=operators)
     operators = assemble_incidence_operators(seq, operators=operators)
     operators = assemble_derivative_operators(
@@ -1700,28 +1719,27 @@ def apply_mass_matrix_preconditioner(seq, operators: SequenceOperators, v, k: in
 
     Parameters
     ----------
-    kind : {'auto', 'jacobi', 'kronecker', 'rt-zblock'}
-        Which preconditioner to use.  ``'auto'`` picks ``'kronecker'`` when
-        the 1-D mass-matrix inverses have been assembled and are available
-        for this ``k`` (see :func:`assemble_kron_mass_preconditioner`),
-        otherwise ``'jacobi'``.
+    kind : {'auto', 'jacobi', 'tensor'}
+        Which preconditioner to use. ``'auto'`` picks ``'tensor'`` when the
+        tensor mass preconditioner is assembled and available for this ``k``;
+        otherwise it falls back to ``'jacobi'``.
     """
     if kind == 'auto':
-        kind = 'kronecker' if _kron_available(seq, operators, k) else 'jacobi'
-    if kind == 'kronecker':
-        if not _kron_available(seq, operators, k):
+        if _tensor_available(seq, operators, k):
+            kind = 'tensor'
+        else:
+            kind = 'jacobi'
+    if kind == 'tensor':
+        if not _tensor_available(seq, operators, k):
             raise ValueError(
-                f"Kronecker mass preconditioner not assembled for k={k}; "
-                "call assemble_kron_mass_preconditioner(seq, operators) first")
-        return apply_mass_kron_preconditioner(
+                f"Tensor mass preconditioner not assembled for k={k}; "
+                "call assemble_tensor_mass_preconditioner(seq, operators, ...) first")
+        return apply_mass_tensor_preconditioner_ops(
             seq, operators, v, k, dirichlet=dirichlet)
     if kind == 'jacobi':
         return _mass_diaginv(operators, k, dirichlet) * v
-    if kind == 'rt-zblock':
-        return apply_mass_rtzblock_preconditioner(
-            seq, operators.mass_preconds, v, k, dirichlet=dirichlet)
     raise ValueError(
-        f"kind must be 'auto', 'jacobi', 'kronecker' or 'rt-zblock' (got {kind!r})")
+        f"kind must be 'auto', 'jacobi' or 'tensor' (got {kind!r})")
 
 
 def apply_inverse_mass_matrix(seq, operators: SequenceOperators, v, k: int,
@@ -1842,6 +1860,53 @@ def apply_hodge_hx_preconditioner(seq, operators: SequenceOperators, v,
     return smooth + w
 
 
+def apply_hodge_k3_saddle_roundtrip_preconditioner(
+        seq, operators: SequenceOperators, v,
+        dirichlet: bool = True,
+        eps: float = 0.0,
+        mass_kind: str = 'auto'):
+    """Upper-block preconditioner for the k=3 saddle solve.
+
+    This is the HX-style auxiliary-space round trip without the additional
+    standalone smoother used by :func:`apply_hodge_hx_preconditioner`.
+
+    In operator form,
+
+        P_3 B_0 P_3^T,
+
+    where ``P_3`` is the mass-preconditioned ``0 -> 3`` prolongation and
+    ``B_0`` is the scalar auxiliary-space inverse on the dual boundary
+    condition.
+    """
+    if mass_kind not in ('auto', 'jacobi', 'tensor'):
+        raise ValueError(
+            "mass_kind must be 'auto', 'jacobi' or 'tensor' "
+            f"(got {mass_kind!r})")
+    if not _fd_hodge_available(operators, 0):
+        raise ValueError(
+            "k=3 saddle round-trip preconditioner requires the FD Hodge "
+            "preconditioner for k=0; call assemble_fd_hodge_preconditioner first")
+
+    aux_dirichlet = not dirichlet
+
+    # P_3^T: 3-form dual -> 0-form dual.
+    w = apply_mass_matrix_preconditioner(
+        seq, operators, v, 3, dirichlet=dirichlet, kind=mass_kind)
+    w = apply_projection_matrix(
+        seq, operators, w, k_in=0, k_out=3,
+        dirichlet_in=dirichlet, dirichlet_out=aux_dirichlet)
+    # B_0: 0-form dual -> 0-form primal.
+    w = apply_hodge_kron_preconditioner(
+        seq, operators, w, 0, dirichlet=aux_dirichlet, eps=eps)
+    # P_3: 0-form primal -> 3-form primal.
+    w = apply_projection_matrix(
+        seq, operators, w, k_in=3, k_out=0,
+        dirichlet_in=aux_dirichlet, dirichlet_out=dirichlet)
+    w = apply_mass_matrix_preconditioner(
+        seq, operators, w, 3, dirichlet=dirichlet, kind=mass_kind)
+    return w
+
+
 def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
                                          dirichlet: bool = True,
                                          kind: str = 'auto'):
@@ -1916,8 +1981,8 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, v, 
     otherwise.  ``'none'`` is rejected for ``eps > 0``.
 
     For ``k >= 1`` MINRES additionally needs a preconditioner for the
-    lower (k-1)-form mass block.  When the Kronecker mass preconditioner
-    is assembled for ``k-1`` and ``precond_kind != 'jacobi'`` it is used;
+    lower (k-1)-form mass block. When the tensor mass preconditioner is
+    assembled for ``k-1`` and ``precond_kind != 'jacobi'`` it is used;
     otherwise the Jacobi mass diagonal is used.
     """
     tol = seq.tol if tol is None else tol
@@ -1926,17 +1991,26 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, v, 
         raise ValueError(
             f"precond_kind must be 'auto', 'none', 'jacobi' or 'hx' "
             f"(got {precond_kind!r})")
-    if lower_precond_kind not in ('auto', 'jacobi', 'kronecker'):
+    if lower_precond_kind not in ('auto', 'jacobi', 'tensor'):
         raise ValueError(
-            "lower_precond_kind must be 'auto', 'jacobi' or 'kronecker' "
+            "lower_precond_kind must be 'auto', 'jacobi' or 'tensor' "
             f"(got {lower_precond_kind!r})")
 
     def _hodge_precond(x):
         return apply_hodge_laplacian_preconditioner(
             seq, operators, x, k, dirichlet=dirichlet, kind=precond_kind)
 
+    use_k3_saddle_roundtrip = (
+        k == 3 and precond_kind == 'hx' and _fd_hodge_available(operators, 0)
+    )
+
     if eps == 0:
-        precond_upper = _hodge_precond
+        if use_k3_saddle_roundtrip:
+            def precond_upper(x):
+                return apply_hodge_k3_saddle_roundtrip_preconditioner(
+                    seq, operators, x, dirichlet=dirichlet, eps=0.0)
+        else:
+            precond_upper = _hodge_precond
     else:
         if precond_kind not in ('auto', 'jacobi', 'hx'):
             raise ValueError(
@@ -1961,8 +2035,8 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, v, 
         )
         if use_shifted_hx:
             def precond_upper(x):
-                return apply_hodge_hx_preconditioner(
-                    seq, operators, x, 3, dirichlet=dirichlet, eps=eps)
+                return apply_hodge_k3_saddle_roundtrip_preconditioner(
+                    seq, operators, x, dirichlet=dirichlet, eps=eps)
         elif use_shifted_kron:
             def precond_upper(x):
                 return apply_hodge_kron_preconditioner(
@@ -1978,7 +2052,7 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, v, 
 
         if use_harmonic_coarse is None:
             wrap_harmonic_coarse = (
-                (use_shifted_hx and k == 3 and dirichlet)
+                False
                 or (use_shifted_kron and k == 0 and not dirichlet)
             )
         else:
@@ -2013,22 +2087,22 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, v, 
             jnp.zeros((0, v.shape[0])), jnp.zeros((0, 0)))
     mass_lower_diaginv = _mass_diaginv(operators, k - 1, dirichlet)
     if lower_precond_kind == 'auto':
-        use_kron_lower = (precond_kind != 'jacobi'
-                          and _kron_available(seq, operators, k - 1))
-    elif lower_precond_kind == 'kronecker':
-        if not _kron_available(seq, operators, k - 1):
+        use_tensor_lower = (precond_kind != 'jacobi'
+                            and _tensor_available(seq, operators, k - 1))
+    elif lower_precond_kind == 'tensor':
+        if not _tensor_available(seq, operators, k - 1):
             raise ValueError(
-                f"Kronecker lower preconditioner not available for k={k - 1}")
-        use_kron_lower = True
+                f"Tensor lower preconditioner not available for k={k - 1}")
+        use_tensor_lower = True
     else:
-        use_kron_lower = False
+        use_tensor_lower = False
     suffix = "_dbc" if dirichlet else ""
     n_upper = getattr(seq, f"n{k}{suffix}")
     n_lower = getattr(seq, f"n{k-1}{suffix}")
 
-    if use_kron_lower:
+    if use_tensor_lower:
         def precond_lower(x):
-            return apply_mass_kron_preconditioner(
+            return apply_mass_tensor_preconditioner_ops(
                 seq, operators, x, k - 1, dirichlet=dirichlet)
     else:
         def precond_lower(x):
@@ -2172,8 +2246,7 @@ def apply_hodge_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
     """Linear approximation of the Hodge Laplacian apply.
 
     Replaces the exact ``M_{k-1}^{-1}`` in the Schur term of ``L_k`` with one
-    apply of the Kronecker mass preconditioner (a single direct solve of a
-    fast-diagonalisation surrogate).  The result is a fully linear SPD
+    apply of the configured mass preconditioner. The result is a fully linear SPD
     matvec: safe to nest inside Krylov iterations and to use as a
     preconditioner or a diagnostic ``L_k``-apply.  It is not exactly
     ``L_k`` unless the metric is tensor-separable on the reference domain.
@@ -2185,8 +2258,8 @@ def apply_hodge_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
             Dt_v = apply_derivative_matrix(
                 seq, operators, v, 0,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-            Minv_Dt_v = apply_mass_kron_preconditioner(
-                seq, operators, Dt_v, 0, dirichlet=dirichlet)
+            Minv_Dt_v = apply_mass_matrix_preconditioner(
+                seq, operators, Dt_v, 0, dirichlet=dirichlet, kind='auto')
             return apply_stiffness(seq, operators, v, 1, dirichlet=dirichlet) + \
                 apply_derivative_matrix(
                     seq, operators, Minv_Dt_v, 0,
@@ -2195,8 +2268,8 @@ def apply_hodge_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
             Dt_v = apply_derivative_matrix(
                 seq, operators, v, 1,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-            Minv_Dt_v = apply_mass_kron_preconditioner(
-                seq, operators, Dt_v, 1, dirichlet=dirichlet)
+            Minv_Dt_v = apply_mass_matrix_preconditioner(
+                seq, operators, Dt_v, 1, dirichlet=dirichlet, kind='auto')
             return apply_stiffness(seq, operators, v, 2, dirichlet=dirichlet) + \
                 apply_derivative_matrix(
                     seq, operators, Minv_Dt_v, 1,
@@ -2205,8 +2278,8 @@ def apply_hodge_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
             Dt_v = apply_derivative_matrix(
                 seq, operators, v, 2,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-            Minv_Dt_v = apply_mass_kron_preconditioner(
-                seq, operators, Dt_v, 2, dirichlet=dirichlet)
+            Minv_Dt_v = apply_mass_matrix_preconditioner(
+                seq, operators, Dt_v, 2, dirichlet=dirichlet, kind='auto')
             return apply_derivative_matrix(
                 seq, operators, Minv_Dt_v, 2,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet)

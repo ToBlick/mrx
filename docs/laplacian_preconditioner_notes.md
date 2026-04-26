@@ -112,6 +112,21 @@ The shifted experiments support the view that the scalar FD/HX preconditioner is
 
 So for `k = 0`, the non-shifted conclusion is still favorable: after deflating the constant mode, the scalar HX/FD inverse remains a sensible and likely strong preconditioner for the complement solve.
 
+Later dense extracted experiments made this sharper. On the polar extracted
+scalar problem, the free-case nullspace is not removed merely by inverting the
+bulk block; it reappears in the Schur complement. A naive dense Schur inverse
+therefore breaks positivity even when the bulk model itself is accurate.
+
+The practical lesson is:
+
+- project the right-hand side into the range of the operator,
+- use mass-orthogonal normalization for the harmonic mode,
+- and if an extracted block preconditioner is used, treat the free-case Schur
+	block as a deflated / pseudoinverse solve rather than an ordinary inverse.
+
+Once that Schur nullspace handling was added, the higher-rank diagonal scalar
+preconditioners behaved as expected and significantly outperformed Jacobi.
+
 ### 3. The weak point for `k = 3` is still likely the auxiliary transfer sandwich
 
 The shifted data strongly suggests that the weakness of the `k = 3` HX approach is not the harmonic mode itself and not the scalar auxiliary inverse in isolation, but the transferred correction

@@ -971,8 +971,8 @@ class DeRhamSequence():
     def apply_hodge_laplacian_approx(self, v, k, dirichlet=True, operators=None):
         """Linear approximate Hodge-Laplacian apply.
 
-        Replaces ``M_{k-1}^{-1}`` in the Schur term with a single Kronecker
-        fast-diagonalisation apply.  Linear, SPD, safe to nest inside Krylov
+        Replaces ``M_{k-1}^{-1}`` in the Schur term with a single configured
+        mass-preconditioner apply. Linear, SPD, safe to nest inside Krylov
         solvers and to use as a preconditioner.  Not exact unless the metric
         is tensor-separable on the reference domain.
         """
