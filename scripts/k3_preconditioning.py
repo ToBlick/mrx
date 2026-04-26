@@ -26,8 +26,10 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map, toroid_map
 from mrx.operators import (
     apply_derivative_matrix,
+    apply_hodge_laplacian_preconditioner,
     apply_mass_matrix,
     apply_mass_matrix_preconditioner,
+    apply_stiffness,
     assemble_incidence_operators,
     assemble_mass_operators,
     assemble_projection_operators,
@@ -35,7 +37,6 @@ from mrx.operators import (
     dense_derivative_matrix,
     dense_hodge_laplacian,
     dense_mass_matrix,
-    dense_projection_matrix,
     dense_stiffness_matrix,
 )
 from mrx.preconditioners import (
@@ -53,15 +54,15 @@ jax.config.update("jax_enable_x64", True)
 SEQ = None
 OPERATORS = None
 BUILT_CONFIG = None
-TENSOR_CP_KWARGS = {"tol": 1e-9, "maxiter": 100}
+TENSOR_CP_KWARGS = {"tol": 1e-8, "maxiter": 500}
 
 # %% Configuration
 @dataclass(frozen=True)
 class ExperimentConfig:
-    ns: tuple[int, int, int] = (12, 12, 6)
+    ns: tuple[int, int, int] = (8, 10, 6)
     p: int = 3
-    tol: float = 1e-9
-    maxiter: int = 1000
+    tol: float = 1e-8
+    maxiter: int = 500
     betti: tuple[int, int, int, int] = (1, 1, 0, 0)
     map_kind: str = "rotating_ellipse"
     torus_epsilon: float = 1.0 / 3.0
@@ -141,6 +142,33 @@ class K2StiffnessKroneckerApproximationReport:
     range_projector_relative_error: float
     avg_range_action_error: float
     max_range_action_error: float
+
+
+@dataclass
+class K2BenchmarkReport:
+    label: str
+    n_rhs: int
+    avg_iters: float
+    std_iters: float
+    max_iters: int
+    avg_time_ms: float
+    std_time_ms: float
+    max_time_ms: float
+    avg_relative_residual: float
+    std_relative_residual: float
+    max_relative_residual: float
+
+
+@dataclass
+class PreconditionerPropertyReport:
+    label: str
+    metric: str
+    n_probes: int
+    avg_symmetry_defect: float
+    max_symmetry_defect: float
+    min_quadratic_form: float
+    max_quadratic_form: float
+    negative_quadratic_forms: int
 
 
 CONFIG = ExperimentConfig()
@@ -402,7 +430,7 @@ def benchmark_k3_preconditioners(
     n_rhs: int = 8,
     seed: int = 0,
     tensor_ranks: tuple[int, ...] = (1, 3, 5),
-    richardson_steps: tuple[int, ...] = (4, 8, 16),
+    richardson_steps: tuple[int, ...] = (4, 8, 16, 32),
     richardson_power_iterations: int = 20,
     richardson_damping_safety: float = 0.8,
     tensor_operator_cache: dict[int, object] | None = None,
@@ -562,6 +590,7 @@ def benchmark_k3_saddle_preconditioners(
     *,
     dirichlet: bool,
     extra_upper_preconditioners: dict[str, jnp.ndarray] | None = None,
+    extra_block_preconditioners: dict[str, jnp.ndarray] | None = None,
     n_rhs: int = 8,
     seed: int = 0,
 ) -> list[K3SaddleBenchmarkReport]:
@@ -603,24 +632,43 @@ def benchmark_k3_saddle_preconditioners(
     def mass_lower_matvec(s: jnp.ndarray) -> jnp.ndarray:
         return apply_mass_matrix(seq, operators, s, 2, dirichlet=dirichlet)
 
-    labels = {
-        "upper-none": lambda x: x,
-        "upper-jacobi": lambda x: apply_mass_matrix_preconditioner(
-            seq,
-            operators,
-            x,
-            3,
-            dirichlet=dirichlet,
-            kind="jacobi",
+    entries: list[tuple[str, str, callable]] = [
+        (
+            "upper-none",
+            "split",
+            lambda x: x,
         ),
-    }
+        (
+            "upper-jacobi",
+            "split",
+            lambda x: apply_mass_matrix_preconditioner(
+                seq,
+                operators,
+                x,
+                3,
+                dirichlet=dirichlet,
+                kind="jacobi",
+            ),
+        ),
+    ]
 
     if extra_upper_preconditioners is not None:
         for label, upper_preconditioner in extra_upper_preconditioners.items():
             if callable(upper_preconditioner):
-                labels[label] = upper_preconditioner
+                entries.append((label, "split", upper_preconditioner))
             else:
-                labels[label] = lambda x, dense_upper=upper_preconditioner: dense_upper @ x
+                entries.append(
+                    (label, "split", lambda x, dense_upper=upper_preconditioner: dense_upper @ x)
+                )
+
+    if extra_block_preconditioners is not None:
+        for label, block_preconditioner in extra_block_preconditioners.items():
+            if callable(block_preconditioner):
+                entries.append((label, "block", block_preconditioner))
+            else:
+                entries.append(
+                    (label, "block", lambda x, dense_block=block_preconditioner: dense_block @ x)
+                )
 
     def lower_preconditioner(x: jnp.ndarray) -> jnp.ndarray:
         return apply_mass_matrix_preconditioner(
@@ -636,22 +684,36 @@ def benchmark_k3_saddle_preconditioners(
         return derivative_matvec(s), derivative_T_matvec(u) - mass_lower_matvec(s)
 
     reports = []
-    for label, upper_preconditioner in labels.items():
+    for label, preconditioner_kind, preconditioner in entries:
         @jax.jit
         def solve(rhs):
-            u, sigma, info = solve_saddle_point_minres(
-                stiffness_matvec=stiffness_matvec,
-                derivative_matvec=derivative_matvec,
-                derivative_T_matvec=derivative_T_matvec,
-                mass_lower_matvec=mass_lower_matvec,
-                b_upper=rhs,
-                n_upper=n_upper,
-                n_lower=n_lower,
-                precond_upper=upper_preconditioner,
-                precond_lower=lower_preconditioner,
-                tol=seq.tol,
-                maxiter=seq.maxiter,
-            )
+            if preconditioner_kind == "block":
+                u, sigma, info = solve_saddle_point_minres(
+                    stiffness_matvec=stiffness_matvec,
+                    derivative_matvec=derivative_matvec,
+                    derivative_T_matvec=derivative_T_matvec,
+                    mass_lower_matvec=mass_lower_matvec,
+                    b_upper=rhs,
+                    n_upper=n_upper,
+                    n_lower=n_lower,
+                    precond_matvec=preconditioner,
+                    tol=seq.tol,
+                    maxiter=seq.maxiter,
+                )
+            else:
+                u, sigma, info = solve_saddle_point_minres(
+                    stiffness_matvec=stiffness_matvec,
+                    derivative_matvec=derivative_matvec,
+                    derivative_T_matvec=derivative_T_matvec,
+                    mass_lower_matvec=mass_lower_matvec,
+                    b_upper=rhs,
+                    n_upper=n_upper,
+                    n_lower=n_lower,
+                    precond_upper=preconditioner,
+                    precond_lower=lower_preconditioner,
+                    tol=seq.tol,
+                    maxiter=seq.maxiter,
+                )
             res_upper, res_lower = saddle_matvec(u, sigma)
             res_upper = res_upper - rhs
             residual = jnp.sqrt(
@@ -967,12 +1029,541 @@ def print_k2_stiffness_kronecker_approximation_reports(
         )
 
 
+def extract_k2_surgery_split_data_from_apply(
+    seq,
+    *,
+    dirichlet: bool,
+    operator_apply,
+) -> dict[str, jnp.ndarray]:
+    block_indices = _tensor_block_indices_k2(seq, dirichlet)
+    surgery_indices = jnp.asarray(block_indices["surgery"])
+    bulk_indices = jnp.asarray(block_indices["bulk"])
+    n_total = seq.n2_dbc if dirichlet else seq.n2
+    n_surgery = surgery_indices.shape[0]
+
+    ass_columns = []
+    abs_columns = []
+    for local_idx in range(n_surgery):
+        basis = jnp.zeros((n_total,), dtype=jnp.float64)
+        basis = basis.at[surgery_indices[local_idx]].set(1.0)
+        image = operator_apply(basis)
+        ass_columns.append(image[surgery_indices])
+        abs_columns.append(image[bulk_indices])
+
+    ass = _symmetrize(jnp.stack(ass_columns, axis=1))
+    abs_ = jnp.stack(abs_columns, axis=1)
+    asb = abs_.T
+    return {
+        "surgery_indices": surgery_indices,
+        "bulk_indices": bulk_indices,
+        "ass": ass,
+        "asb": asb,
+        "abs": abs_,
+    }
+
+
+def extract_k2_surgery_split_data(
+    seq,
+    operators,
+    *,
+    dirichlet: bool,
+) -> dict[str, jnp.ndarray]:
+    return extract_k2_surgery_split_data_from_apply(
+        seq,
+        dirichlet=dirichlet,
+        operator_apply=lambda x: apply_stiffness(seq, operators, x, 2, dirichlet=dirichlet),
+    )
+
+
+def build_k2_bulk_restricted_apply_from_apply(
+    seq,
+    *,
+    dirichlet: bool,
+    bulk_indices: jnp.ndarray,
+    operator_apply,
+    smoother_apply,
+):
+    n_total = seq.n2_dbc if dirichlet else seq.n2
+
+    def bulk_apply(x_bulk: jnp.ndarray) -> jnp.ndarray:
+        full = jnp.zeros((n_total,), dtype=x_bulk.dtype)
+        full = full.at[bulk_indices].set(x_bulk)
+        return operator_apply(full)[bulk_indices]
+
+    def bulk_smoother_apply(x_bulk: jnp.ndarray) -> jnp.ndarray:
+        full = jnp.zeros((n_total,), dtype=x_bulk.dtype)
+        full = full.at[bulk_indices].set(x_bulk)
+        return smoother_apply(full)[bulk_indices]
+
+    return bulk_apply, bulk_smoother_apply
+
+
+def build_k2_bulk_restricted_apply(
+    seq,
+    operators,
+    *,
+    dirichlet: bool,
+    bulk_indices: jnp.ndarray,
+):
+    return build_k2_bulk_restricted_apply_from_apply(
+        seq,
+        dirichlet=dirichlet,
+        bulk_indices=bulk_indices,
+        operator_apply=lambda x: apply_stiffness(seq, operators, x, 2, dirichlet=dirichlet),
+        smoother_apply=lambda x: apply_hodge_laplacian_preconditioner(
+            seq,
+            operators,
+            x,
+            2,
+            dirichlet=dirichlet,
+            kind="jacobi",
+        ),
+    )
+
+
+def build_k2_surgery_schur_richardson_preconditioner_from_apply(
+    seq,
+    *,
+    dirichlet: bool,
+    split_data: dict[str, jnp.ndarray],
+    steps: int,
+    operator_apply,
+    smoother_apply,
+    power_iterations: int = 20,
+    damping_safety: float = 0.8,
+):
+    bulk_indices = split_data["bulk_indices"]
+    ass = split_data["ass"]
+    asb = split_data["asb"]
+    abs_ = split_data["abs"]
+    bulk_apply, bulk_smoother_apply = build_k2_bulk_restricted_apply_from_apply(
+        seq,
+        dirichlet=dirichlet,
+        bulk_indices=bulk_indices,
+        operator_apply=operator_apply,
+        smoother_apply=smoother_apply,
+    )
+    bulk_size = bulk_indices.shape[0]
+    max_eig = estimate_preconditioned_max_eigenvalue_apply(
+        bulk_apply,
+        bulk_smoother_apply,
+        bulk_size,
+        n_iter=power_iterations,
+    )
+    omega = damping_safety / max_eig if max_eig > 0.0 else 1.0
+    bulk_richardson_apply = build_richardson_apply_preconditioner(
+        bulk_apply,
+        bulk_smoother_apply,
+        steps=steps,
+        omega=omega,
+    )
+    bulk_inv_abs = jnp.stack(
+        [bulk_richardson_apply(abs_[:, idx]) for idx in range(abs_.shape[1])],
+        axis=1,
+    )
+    schur = _symmetrize(ass - asb @ bulk_inv_abs)
+    schur_inverse = _symmetrize(jnp.linalg.inv(schur))
+
+    def apply(rhs: jnp.ndarray) -> jnp.ndarray:
+        rhs_s = rhs[split_data["surgery_indices"]]
+        rhs_b = rhs[split_data["bulk_indices"]]
+        y = bulk_richardson_apply(rhs_b)
+        z = schur_inverse @ (rhs_s - asb @ y)
+        x_b = y - bulk_richardson_apply(abs_ @ z)
+        out = jnp.zeros_like(rhs)
+        out = out.at[split_data["surgery_indices"]].set(z)
+        out = out.at[split_data["bulk_indices"]].set(x_b)
+        return out
+
+    return apply, {"steps": int(steps), "omega": float(omega), "max_eig": float(max_eig)}
+
+
+def build_k2_surgery_schur_richardson_preconditioner(
+    seq,
+    operators,
+    *,
+    dirichlet: bool,
+    split_data: dict[str, jnp.ndarray],
+    steps: int,
+    power_iterations: int = 20,
+    damping_safety: float = 0.8,
+):
+    return build_k2_surgery_schur_richardson_preconditioner_from_apply(
+        seq,
+        dirichlet=dirichlet,
+        split_data=split_data,
+        steps=steps,
+        operator_apply=lambda x: apply_stiffness(seq, operators, x, 2, dirichlet=dirichlet),
+        smoother_apply=lambda x: apply_hodge_laplacian_preconditioner(
+            seq,
+            operators,
+            x,
+            2,
+            dirichlet=dirichlet,
+            kind="jacobi",
+        ),
+        power_iterations=power_iterations,
+        damping_safety=damping_safety,
+    )
+
+
+def benchmark_k2_range_preconditioners(
+    seq,
+    operators,
+    *,
+    dirichlet: bool,
+    richardson_steps: tuple[int, ...] = (4, 8, 16, 32),
+    power_iterations: int = 20,
+    damping_safety: float = 0.8,
+    n_rhs: int = 8,
+    seed: int = 0,
+) -> tuple[list[K2BenchmarkReport], dict[str, dict[str, float | int]]]:
+    if dirichlet:
+        raise ValueError("Start with the nullspace-aware free k=2 case: dirichlet=False")
+
+    n2 = seq.n2_dbc if dirichlet else seq.n2
+    n3 = seq.n3_dbc if dirichlet else seq.n3
+
+    def k2_apply(x: jnp.ndarray) -> jnp.ndarray:
+        return apply_stiffness(seq, operators, x, 2, dirichlet=dirichlet)
+
+    def k2_jacobi_apply(x: jnp.ndarray) -> jnp.ndarray:
+        return apply_hodge_laplacian_preconditioner(
+            seq,
+            operators,
+            x,
+            2,
+            dirichlet=dirichlet,
+            kind="jacobi",
+        )
+
+    raw_batch = jax.random.normal(
+        jax.random.PRNGKey(seed + 2600),
+        (n_rhs, n3),
+        dtype=jnp.float64,
+    )
+    rhs_batch = jnp.stack(
+        [
+            apply_derivative_matrix(
+                seq,
+                operators,
+                raw_batch[idx],
+                2,
+                dirichlet_in=dirichlet,
+                dirichlet_out=dirichlet,
+                transpose=True,
+            )
+            for idx in range(n_rhs)
+        ],
+        axis=0,
+    )
+
+    split_data = extract_k2_surgery_split_data(
+        seq,
+        operators,
+        dirichlet=dirichlet,
+    )
+    pure_max_eig = estimate_preconditioned_max_eigenvalue_apply(
+        k2_apply,
+        k2_jacobi_apply,
+        n2,
+        n_iter=power_iterations,
+        seed=seed + 2700,
+    )
+    pure_omega = damping_safety / pure_max_eig if pure_max_eig > 0.0 else 1.0
+
+    labels = {}
+    parameters = {}
+    for steps in richardson_steps:
+        pure_label = f"pure-richardson-{steps}"
+        labels[pure_label] = build_richardson_apply_preconditioner(
+            k2_apply,
+            k2_jacobi_apply,
+            steps=steps,
+            omega=pure_omega,
+        )
+        parameters[pure_label] = {
+            "steps": int(steps),
+            "omega": float(pure_omega),
+            "max_eig": float(pure_max_eig),
+        }
+
+        split_label = f"surgery-schur-richardson-{steps}"
+        labels[split_label], parameters[split_label] = build_k2_surgery_schur_richardson_preconditioner(
+            seq,
+            operators,
+            dirichlet=dirichlet,
+            split_data=split_data,
+            steps=steps,
+            power_iterations=power_iterations,
+            damping_safety=damping_safety,
+        )
+
+    reports = []
+    for label, preconditioner in labels.items():
+        @jax.jit
+        def solve(rhs):
+            x, info = solve_singular_cg(
+                k2_apply,
+                rhs,
+                precond_matvec=preconditioner,
+                tol=seq.tol,
+                maxiter=seq.maxiter,
+            )
+            residual = k2_apply(x) - rhs
+            rhs_norm = jnp.where(jnp.linalg.norm(rhs) > 0, jnp.linalg.norm(rhs), 1.0)
+            return x, info, jnp.linalg.norm(residual) / rhs_norm
+
+        x0, _, _ = solve(rhs_batch[0])
+        jax.block_until_ready(x0)
+
+        iterations = []
+        times_ms = []
+        residuals = []
+        for rhs in rhs_batch:
+            t0 = time.perf_counter()
+            x, info, residual = solve(rhs)
+            jax.block_until_ready(x)
+            times_ms.append((time.perf_counter() - t0) * 1e3)
+            iterations.append(int(jnp.abs(info)))
+            residuals.append(float(residual))
+
+        iterations_array = jnp.asarray(iterations)
+        times_ms_array = jnp.asarray(times_ms)
+        residuals_array = jnp.asarray(residuals)
+        reports.append(
+            K2BenchmarkReport(
+                label=label,
+                n_rhs=n_rhs,
+                avg_iters=float(jnp.mean(iterations_array)),
+                std_iters=float(jnp.std(iterations_array)),
+                max_iters=int(jnp.max(iterations_array)),
+                avg_time_ms=float(jnp.mean(times_ms_array)),
+                std_time_ms=float(jnp.std(times_ms_array)),
+                max_time_ms=float(jnp.max(times_ms_array)),
+                avg_relative_residual=float(jnp.mean(residuals_array)),
+                std_relative_residual=float(jnp.std(residuals_array)),
+                max_relative_residual=float(jnp.max(residuals_array)),
+            )
+        )
+
+    return reports, parameters
+
+
+def benchmark_k2_mass_preconditioners(
+    seq,
+    operators,
+    *,
+    dirichlet: bool,
+    richardson_steps: tuple[int, ...] = (4, 8, 16, 32),
+    power_iterations: int = 20,
+    damping_safety: float = 0.8,
+    n_rhs: int = 8,
+    seed: int = 0,
+) -> tuple[list[K2BenchmarkReport], dict[str, dict[str, float | int]]]:
+    n2 = seq.n2_dbc if dirichlet else seq.n2
+
+    def m2_apply(x: jnp.ndarray) -> jnp.ndarray:
+        return apply_mass_matrix(seq, operators, x, 2, dirichlet=dirichlet)
+
+    def m2_jacobi_apply(x: jnp.ndarray) -> jnp.ndarray:
+        return apply_mass_matrix_preconditioner(
+            seq,
+            operators,
+            x,
+            2,
+            dirichlet=dirichlet,
+            kind="jacobi",
+        )
+
+    rhs_batch = jax.random.normal(
+        jax.random.PRNGKey(seed + 2800),
+        (n_rhs, n2),
+        dtype=jnp.float64,
+    )
+
+    split_data = extract_k2_surgery_split_data_from_apply(
+        seq,
+        dirichlet=dirichlet,
+        operator_apply=m2_apply,
+    )
+    pure_max_eig = estimate_preconditioned_max_eigenvalue_apply(
+        m2_apply,
+        m2_jacobi_apply,
+        n2,
+        n_iter=power_iterations,
+        seed=seed + 2900,
+    )
+    pure_omega = damping_safety / pure_max_eig if pure_max_eig > 0.0 else 1.0
+
+    labels = {}
+    parameters = {}
+    for steps in richardson_steps:
+        pure_label = f"pure-richardson-{steps}"
+        labels[pure_label] = build_richardson_apply_preconditioner(
+            m2_apply,
+            m2_jacobi_apply,
+            steps=steps,
+            omega=pure_omega,
+        )
+        parameters[pure_label] = {
+            "steps": int(steps),
+            "omega": float(pure_omega),
+            "max_eig": float(pure_max_eig),
+        }
+
+        split_label = f"surgery-schur-richardson-{steps}"
+        labels[split_label], parameters[split_label] = build_k2_surgery_schur_richardson_preconditioner_from_apply(
+            seq,
+            dirichlet=dirichlet,
+            split_data=split_data,
+            steps=steps,
+            operator_apply=m2_apply,
+            smoother_apply=m2_jacobi_apply,
+            power_iterations=power_iterations,
+            damping_safety=damping_safety,
+        )
+
+    reports = []
+    for label, preconditioner in labels.items():
+        @jax.jit
+        def solve(rhs):
+            x, info = solve_singular_cg(
+                m2_apply,
+                rhs,
+                mass_matvec=m2_apply,
+                precond_matvec=preconditioner,
+                tol=seq.tol,
+                maxiter=seq.maxiter,
+            )
+            residual = m2_apply(x) - rhs
+            rhs_norm = jnp.where(jnp.linalg.norm(rhs) > 0, jnp.linalg.norm(rhs), 1.0)
+            return x, info, jnp.linalg.norm(residual) / rhs_norm
+
+        x0, _, _ = solve(rhs_batch[0])
+        jax.block_until_ready(x0)
+
+        iterations = []
+        times_ms = []
+        residuals = []
+        for rhs in rhs_batch:
+            t0 = time.perf_counter()
+            x, info, residual = solve(rhs)
+            jax.block_until_ready(x)
+            times_ms.append((time.perf_counter() - t0) * 1e3)
+            iterations.append(int(jnp.abs(info)))
+            residuals.append(float(residual))
+
+        iterations_array = jnp.asarray(iterations)
+        times_ms_array = jnp.asarray(times_ms)
+        residuals_array = jnp.asarray(residuals)
+        reports.append(
+            K2BenchmarkReport(
+                label=label,
+                n_rhs=n_rhs,
+                avg_iters=float(jnp.mean(iterations_array)),
+                std_iters=float(jnp.std(iterations_array)),
+                max_iters=int(jnp.max(iterations_array)),
+                avg_time_ms=float(jnp.mean(times_ms_array)),
+                std_time_ms=float(jnp.std(times_ms_array)),
+                max_time_ms=float(jnp.max(times_ms_array)),
+                avg_relative_residual=float(jnp.mean(residuals_array)),
+                std_relative_residual=float(jnp.std(residuals_array)),
+                max_relative_residual=float(jnp.max(residuals_array)),
+            )
+        )
+
+    return reports, parameters
+
+
+def print_k2_benchmark_reports(reports: list[K2BenchmarkReport]):
+    print("-" * 112)
+    print(
+        f"{'label':<36} {'avg iters':>10} {'std':>8} {'max':>6} {'avg ms':>10} {'std ms':>10} {'max ms':>10} {'avg relres':>14} {'std relres':>14} {'max relres':>14}"
+    )
+    for report in reports:
+        print(
+            f"{report.label:<36} {report.avg_iters:>10.2f} {report.std_iters:>8.2f} {report.max_iters:>6d} "
+            f"{report.avg_time_ms:>10.2f} {report.std_time_ms:>10.2f} {report.max_time_ms:>10.2f} "
+            f"{report.avg_relative_residual:>14.3e} {report.std_relative_residual:>14.3e} {report.max_relative_residual:>14.3e}"
+        )
+
+
+def diagnose_preconditioner_properties(
+    preconditioners: dict[str, callable],
+    size: int,
+    *,
+    metric: str,
+    metric_apply=None,
+    n_probes: int = 16,
+    seed: int = 0,
+) -> list[PreconditionerPropertyReport]:
+    x_batch = jax.random.normal(
+        jax.random.PRNGKey(seed),
+        (n_probes, size),
+        dtype=jnp.float64,
+    )
+    y_batch = jax.random.normal(
+        jax.random.PRNGKey(seed + 1),
+        (n_probes, size),
+        dtype=jnp.float64,
+    )
+
+    def inner(x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+        if metric_apply is None:
+            return jnp.dot(x, y)
+        return jnp.dot(x, metric_apply(y))
+
+    reports = []
+    for label, apply_preconditioner in preconditioners.items():
+        symmetry_defects = []
+        quadratic_forms = []
+        for idx in range(n_probes):
+            x = x_batch[idx]
+            y = y_batch[idx]
+            px = apply_preconditioner(x)
+            py = apply_preconditioner(y)
+            lhs = float(inner(x, py))
+            rhs = float(inner(px, y))
+            symmetry_scale = max(abs(lhs), abs(rhs), 1.0)
+            symmetry_defects.append(abs(lhs - rhs) / symmetry_scale)
+            quadratic_forms.append(float(inner(x, px)))
+
+        quadratic_array = jnp.asarray(quadratic_forms)
+        symmetry_array = jnp.asarray(symmetry_defects)
+        reports.append(
+            PreconditionerPropertyReport(
+                label=label,
+                metric=metric,
+                n_probes=n_probes,
+                avg_symmetry_defect=float(jnp.mean(symmetry_array)),
+                max_symmetry_defect=float(jnp.max(symmetry_array)),
+                min_quadratic_form=float(jnp.min(quadratic_array)),
+                max_quadratic_form=float(jnp.max(quadratic_array)),
+                negative_quadratic_forms=int(jnp.sum(quadratic_array <= 0.0)),
+            )
+        )
+    return reports
+
+
+def print_preconditioner_property_reports(reports: list[PreconditionerPropertyReport]):
+    print("-" * 112)
+    print(
+        f"{'label':<36} {'metric':<12} {'avg sym defect':>16} {'max sym defect':>16} {'min <x,Px>':>16} {'max <x,Px>':>16} {'# nonpos':>10}"
+    )
+    for report in reports:
+        print(
+            f"{report.label:<36} {report.metric:<12} {report.avg_symmetry_defect:>16.3e} {report.max_symmetry_defect:>16.3e} "
+            f"{report.min_quadratic_form:>16.3e} {report.max_quadratic_form:>16.3e} {report.negative_quadratic_forms:>10d}"
+        )
+
+
 def diagnose_k3_schur_upper_preconditioners(
     seq,
     operators,
     *,
     dirichlet: bool,
-    dense_upper_preconditioners: dict[str, jnp.ndarray] | None = None,
+    upper_preconditioners: dict[str, callable] | None = None,
 ) -> tuple[jnp.ndarray, list[K3SchurApproximationReport]]:
     schur = jnp.asarray(dense_hodge_laplacian(seq, operators, 3, dirichlet=dirichlet))
     schur_inv = _symmetrize(jnp.linalg.inv(schur))
@@ -1012,9 +1603,9 @@ def diagnose_k3_schur_upper_preconditioners(
             )
         )
 
-    if dense_upper_preconditioners is not None:
-        for label, approx_inv in dense_upper_preconditioners.items():
-            approx_inv = _symmetrize(approx_inv)
+    if upper_preconditioners is not None:
+        for label, apply_upper in upper_preconditioners.items():
+            approx_inv = _symmetrize(_dense_operator_from_apply(apply_upper, n_upper))
             preconditioned = _symmetrize(approx_inv @ schur)
             eigvals = jnp.linalg.eigvalsh(preconditioned)
             reports.append(
@@ -1045,106 +1636,6 @@ def print_k3_schur_approximation_reports(reports: list[K3SchurApproximationRepor
             f"{report.label:<48} {report.inverse_relative_error:>16.3e} {report.solve_relative_error:>16.3e} "
             f"{report.min_precond_eig:>16.3e} {report.max_precond_eig:>16.3e}"
         )
-
-
-def build_k3_induced_operator_matrices(seq, operators, *, dirichlet: bool) -> dict[str, jnp.ndarray]:
-    aux_dirichlet = not dirichlet
-    s3 = jnp.asarray(dense_hodge_laplacian(seq, operators, 3, dirichlet=dirichlet))
-    m3 = jnp.asarray(dense_mass_matrix(seq, operators, 3, dirichlet=dirichlet))
-    m3_inv = _symmetrize(jnp.linalg.inv(m3))
-    k2_hodge = jnp.asarray(dense_hodge_laplacian(seq, operators, 2, dirichlet=dirichlet))
-    k2_stiffness = jnp.asarray(dense_stiffness_matrix(seq, operators, 2, dirichlet=dirichlet))
-    d2 = jnp.asarray(
-        dense_derivative_matrix(
-            seq,
-            operators,
-            2,
-            dirichlet_in=dirichlet,
-            dirichlet_out=dirichlet,
-        )
-    )
-    s0 = jnp.asarray(dense_hodge_laplacian(seq, operators, 0, dirichlet=aux_dirichlet))
-    m0 = jnp.asarray(dense_mass_matrix(seq, operators, 0, dirichlet=aux_dirichlet))
-    t03 = jnp.asarray(
-        dense_projection_matrix(
-            seq,
-            operators,
-            0,
-            3,
-            dirichlet_in=dirichlet,
-            dirichlet_out=aux_dirichlet,
-        )
-    )
-    t30 = jnp.asarray(
-        dense_projection_matrix(
-            seq,
-            operators,
-            3,
-            0,
-            dirichlet_in=aux_dirichlet,
-            dirichlet_out=dirichlet,
-        )
-    )
-
-    m0_inv_t03_exact = jnp.linalg.solve(m0, t03)
-    exact_induced = t30 @ jnp.linalg.solve(m0, s0 @ m0_inv_t03_exact)
-
-    m0_inv_t03_tensor = jnp.stack(
-        [
-            apply_mass_matrix_preconditioner(
-                seq,
-                operators,
-                t03[:, idx],
-                0,
-                dirichlet=aux_dirichlet,
-                kind="tensor",
-            )
-            for idx in range(t03.shape[1])
-        ],
-        axis=1,
-    )
-    s0_m0inv_t03_tensor = s0 @ m0_inv_t03_tensor
-    m0_inv_s0_m0inv_t03_tensor = jnp.stack(
-        [
-            apply_mass_matrix_preconditioner(
-                seq,
-                operators,
-                s0_m0inv_t03_tensor[:, idx],
-                0,
-                dirichlet=aux_dirichlet,
-                kind="tensor",
-            )
-            for idx in range(s0_m0inv_t03_tensor.shape[1])
-        ],
-        axis=1,
-    )
-    tensor_induced = t30 @ m0_inv_s0_m0inv_t03_tensor
-    div_k2_hodge_inv_div_t = d2 @ jnp.linalg.solve(k2_hodge, d2.T)
-    k2_stiffness_pinv = _symmetrize(jnp.linalg.pinv(k2_stiffness))
-    div_k2_stiffness_pinv_div_t = d2 @ k2_stiffness_pinv @ d2.T
-    g2 = m3_inv @ d2
-    g2_k2_hodge_inv_g2_t = _symmetrize(g2 @ jnp.linalg.solve(k2_hodge, g2.T))
-    g2_k2_stiffness_pinv_g2_t = _symmetrize(g2 @ k2_stiffness_pinv @ g2.T)
-
-    return {
-        "exact_s3": s3,
-        "mass_3": m3,
-        "mass_3_inv": m3_inv,
-        "k2_hodge": k2_hodge,
-        "k2_stiffness": k2_stiffness,
-        "d2": d2,
-        "g2": g2,
-        "scalar_stiffness": s0,
-        "scalar_mass": m0,
-        "t03": t03,
-        "t30": t30,
-        "exact_induced": exact_induced,
-        "tensor_induced": tensor_induced,
-        "div_k2_hodge_inv_div_t": div_k2_hodge_inv_div_t,
-        "g2_k2_hodge_inv_g2_t": g2_k2_hodge_inv_g2_t,
-        "div_k2_stiffness_pinv_div_t": div_k2_stiffness_pinv_div_t,
-        "g2_k2_stiffness_pinv_g2_t": g2_k2_stiffness_pinv_g2_t,
-    }
 
 
 def build_diagonal_inverse_from_matrix(matrix: jnp.ndarray, *, rtol: float = 1e-12) -> jnp.ndarray:
@@ -1193,109 +1684,145 @@ def build_symmetric_richardson_inverse(
     }
 
 
-def build_k3_tensor_mass_induced_schur(
+def build_k3_tensor_mass_induced_schur_apply(
     seq,
     operators,
     *,
     dirichlet: bool,
-    d2: jnp.ndarray,
-) -> jnp.ndarray:
-    m2_tensor_inv_d2_t = jnp.stack(
-        [
-            apply_mass_matrix_preconditioner(
-                seq,
-                operators,
-                d2.T[:, idx],
-                2,
-                dirichlet=dirichlet,
-                kind="tensor",
-            )
-            for idx in range(d2.shape[0])
-        ],
-        axis=1,
-    )
-    return _symmetrize(d2 @ m2_tensor_inv_d2_t)
+):
+    def apply(x: jnp.ndarray) -> jnp.ndarray:
+        d2_t_x = apply_derivative_matrix(
+            seq,
+            operators,
+            x,
+            2,
+            dirichlet_in=dirichlet,
+            dirichlet_out=dirichlet,
+            transpose=True,
+        )
+        m2_inv_d2_t_x = apply_mass_matrix_preconditioner(
+            seq,
+            operators,
+            d2_t_x,
+            2,
+            dirichlet=dirichlet,
+            kind="tensor",
+        )
+        return apply_derivative_matrix(
+            seq,
+            operators,
+            m2_inv_d2_t_x,
+            2,
+            dirichlet_in=dirichlet,
+            dirichlet_out=dirichlet,
+        )
+
+    return apply
 
 
-def build_k3_richardson_dense_upper_preconditioners(
+def build_k3_richardson_upper_preconditioners(
     seq,
     operators,
     *,
     dirichlet: bool,
-    induced_data: dict[str, jnp.ndarray],
-    k2_stiffness_approx_models: dict[str, dict[str, object]],
     richardson_steps: tuple[int, ...],
     power_iterations: int = 10,
     damping_safety: float = 0.8,
-) -> tuple[dict[str, jnp.ndarray], dict[str, dict[str, float | int]]]:
-    n_upper = induced_data["exact_s3"].shape[0]
-    jacobi_inverse = _symmetrize(
-        _dense_operator_from_apply(
-            lambda x: apply_mass_matrix_preconditioner(
-                seq,
-                operators,
-                x,
-                3,
-                dirichlet=dirichlet,
-                kind="jacobi",
-            ),
-            n_upper,
-        )
+) -> tuple[dict[str, callable], dict[str, dict[str, float | int]]]:
+    n_upper = seq.n3_dbc if dirichlet else seq.n3
+    jacobi_apply = lambda x: apply_mass_matrix_preconditioner(
+        seq,
+        operators,
+        x,
+        3,
+        dirichlet=dirichlet,
+        kind="jacobi",
     )
-    schur_tensor = build_k3_tensor_mass_induced_schur(
+    schur_apply = build_k3_tensor_mass_induced_schur_apply(
         seq,
         operators,
         dirichlet=dirichlet,
-        d2=induced_data["d2"],
     )
-    dense_upper_preconditioners = {}
+    max_eig = estimate_preconditioned_max_eigenvalue_apply(
+        schur_apply,
+        jacobi_apply,
+        n_upper,
+        n_iter=power_iterations,
+    )
+    omega = damping_safety / max_eig if max_eig > 0.0 else 1.0
+    upper_preconditioners = {}
     parameters = {}
-    schur_matrices = {}
 
     for steps in richardson_steps:
-        schur_richardson = build_symmetric_richardson_inverse(
-            schur_tensor,
-            jacobi_inverse,
+        schur_richardson = build_richardson_apply_preconditioner(
+            schur_apply,
+            jacobi_apply,
             steps=steps,
-            power_iterations=power_iterations,
-            damping_safety=damping_safety,
+            omega=omega,
         )
         schur_label = f"upper-schur-richardson-{steps}"
-        schur_matrix = _symmetrize(schur_richardson["matrix"])
-        schur_matrices[steps] = schur_matrix
-        dense_upper_preconditioners[schur_label] = schur_matrix
+        upper_preconditioners[schur_label] = schur_richardson
         parameters[schur_label] = {
-            "steps": int(schur_richardson["steps"]),
-            "omega": float(schur_richardson["omega"]),
-            "max_eig": float(schur_richardson["max_eig"]),
+            "steps": int(steps),
+            "omega": float(omega),
+            "max_eig": float(max_eig),
         }
 
-    for label, model in k2_stiffness_approx_models.items():
-        k2_operator = _symmetrize(jnp.asarray(model["approx_matrix"]))
-        k2_jacobi_inverse = build_diagonal_inverse_from_matrix(k2_operator)
-        label_suffix = "" if label == "exact" else f"-{label}"
-        for steps in richardson_steps:
-            k2_richardson = build_symmetric_richardson_inverse(
-                k2_operator,
-                k2_jacobi_inverse,
-                steps=steps,
-                power_iterations=power_iterations,
-                damping_safety=damping_safety,
-            )
-            upper_inverse = _symmetrize(induced_data["g2"] @ k2_richardson["matrix"] @ induced_data["g2"].T)
-            k2_upper_label = f"upper-k2-richardson{label_suffix}-{steps}"
-            both_label = f"upper-schur-plus-k2-richardson{label_suffix}-{steps}"
-            dense_upper_preconditioners[k2_upper_label] = upper_inverse
-            dense_upper_preconditioners[both_label] = _symmetrize(
-                schur_matrices[steps] + upper_inverse
-            )
-            parameters[k2_upper_label] = {
-                "steps": int(k2_richardson["steps"]),
-                "omega": float(k2_richardson["omega"]),
-                "max_eig": float(k2_richardson["max_eig"]),
-            }
+    return upper_preconditioners, parameters
 
-    return dense_upper_preconditioners, parameters
+
+def build_k3_coupled_preconditioners(
+    seq,
+    operators,
+    *,
+    dirichlet: bool,
+    upper_preconditioners: dict[str, callable],
+) -> dict[str, callable]:
+    def lower_preconditioner(x: jnp.ndarray) -> jnp.ndarray:
+        return apply_mass_matrix_preconditioner(
+            seq,
+            operators,
+            x,
+            2,
+            dirichlet=dirichlet,
+            kind="tensor",
+        )
+
+    coupled_preconditioners = {}
+
+    for label, upper_preconditioner in upper_preconditioners.items():
+        coupled_label = label.replace("upper-", "coupled-", 1)
+
+        def apply(x: jnp.ndarray, upper_apply=upper_preconditioner) -> jnp.ndarray:
+            n_upper = seq.n3_dbc if dirichlet else seq.n3
+            u = x[:n_upper]
+            s = x[n_upper:]
+            d2_t_u = apply_derivative_matrix(
+                seq,
+                operators,
+                u,
+                2,
+                dirichlet_in=dirichlet,
+                dirichlet_out=dirichlet,
+                transpose=True,
+            )
+            y_u = u
+            y_s = s - lower_preconditioner(d2_t_u)
+            z_u = upper_apply(y_u)
+            z_s = lower_preconditioner(y_s)
+            lift = apply_derivative_matrix(
+                seq,
+                operators,
+                z_s,
+                2,
+                dirichlet_in=dirichlet,
+                dirichlet_out=dirichlet,
+            )
+            return jnp.concatenate([z_u - lift, z_s])
+
+        coupled_preconditioners[coupled_label] = apply
+
+    return coupled_preconditioners
 
 
 def print_k3_richardson_parameter_reports(parameters: dict[str, dict[str, float | int]]):
@@ -1364,12 +1891,22 @@ def _dense_preconditioned_saddle_eigvals(
     return jnp.linalg.eigvalsh(preconditioned)
 
 
+def _dense_preconditioned_saddle_eigvals_block(
+    saddle: jnp.ndarray,
+    block_inverse: jnp.ndarray,
+) -> jnp.ndarray:
+    block_sqrt = _dense_spd_matrix_sqrt(block_inverse)
+    preconditioned = _symmetrize(block_sqrt @ saddle @ block_sqrt)
+    return jnp.linalg.eigvalsh(preconditioned)
+
+
 def diagnose_k3_saddle_preconditioned_spectra(
     seq,
     operators,
     *,
     dirichlet: bool,
-    dense_upper_preconditioners: dict[str, jnp.ndarray] | None = None,
+    upper_preconditioners: dict[str, callable] | None = None,
+    block_preconditioners: dict[str, callable] | None = None,
 ) -> list[K3SaddleSpectrumReport]:
     saddle, lower_inverse = _dense_k3_saddle_matrix_and_lower_inverse(
         seq,
@@ -1394,9 +1931,9 @@ def diagnose_k3_saddle_preconditioned_spectra(
             )
         ),
     }
-    if dense_upper_preconditioners is not None:
-        for label, upper_inverse in dense_upper_preconditioners.items():
-            upper_preconditioners[label] = _symmetrize(upper_inverse)
+    if upper_preconditioners is not None:
+        for label, apply_upper in upper_preconditioners.items():
+            upper_preconditioners[label] = _symmetrize(_dense_operator_from_apply(apply_upper, n_upper))
 
     reports = []
     for label, upper_inverse in upper_preconditioners.items():
@@ -1413,6 +1950,27 @@ def diagnose_k3_saddle_preconditioned_spectra(
                 neg_count=int(jnp.sum(eigvals < 0.0)),
             )
         )
+
+    if block_preconditioners is not None:
+        n_total = saddle.shape[0]
+        for label, apply_block in block_preconditioners.items():
+            block_inverse = _symmetrize(_dense_operator_from_apply(apply_block, n_total))
+            eigvals = _dense_preconditioned_saddle_eigvals_block(
+                saddle,
+                block_inverse,
+            )
+            abs_eigvals = jnp.abs(eigvals)
+            reports.append(
+                K3SaddleSpectrumReport(
+                    label=label,
+                    min_eig=float(jnp.min(eigvals)),
+                    max_eig=float(jnp.max(eigvals)),
+                    min_abs_eig=float(jnp.min(abs_eigvals)),
+                    max_abs_eig=float(jnp.max(abs_eigvals)),
+                    pos_count=int(jnp.sum(eigvals > 0.0)),
+                    neg_count=int(jnp.sum(eigvals < 0.0)),
+                )
+            )
     return reports
 
 
@@ -1470,7 +2028,7 @@ print_metric_factor_fit_reports(reports)
 
 
 # %% Assemble production tensor preconditioners once per rank
-TENSOR_BENCHMARK_RANKS = (1, 3, 5)
+TENSOR_BENCHMARK_RANKS = (1, 2, 4, 8)
 TENSOR_OPERATOR_CACHE = {
     rank: assemble_tensor_mass_preconditioner(
         SEQ,
@@ -1495,7 +2053,7 @@ K3_SADDLE_OPERATORS = assemble_tensor_mass_preconditioner(
 
 # %% Benchmark k=3 mass preconditioners against jacobi and tensor
 K3_MASS_BENCHMARKS = {}
-for dirichlet in (False, True):
+for dirichlet in (False,):
     reports = benchmark_k3_preconditioners(
         SEQ,
         K3_SADDLE_OPERATORS,
@@ -1511,73 +2069,101 @@ for dirichlet in (False, True):
     print_k3_benchmark_reports(reports)
 
 
-# %% Dense Hodge-branch upper blocks for the k=3 saddle solve
-K3_INDUCED_OPERATOR_DATA = build_k3_induced_operator_matrices(
-    SEQ,
-    K3_SADDLE_OPERATORS,
-    dirichlet=False,
-)
+# # %% Matrix-level trust checks for compact Kronecker models of the k=2 stiffness bulk block
+# K2_STIFFNESS_COMPARE_RANKS = (1, 3)
+# K2_STIFFNESS_KRONECKER_MODELS = {
+#     f"kron-r{rank}": build_k2_stiffness_kronecker_preconditioner(
+#         SEQ,
+#         K3_SADDLE_OPERATORS,
+#         dirichlet=False,
+#         cp_weights=K3_METRIC_CP[rank]["weights"],
+#         cp_factors=K3_METRIC_CP[rank]["factors"],
+#     )
+#     for rank in K2_STIFFNESS_COMPARE_RANKS
+# }
+# K2_STIFFNESS_BULK_EXACT = next(iter(K2_STIFFNESS_KRONECKER_MODELS.values()))["bulk_exact"]
+# K2_STIFFNESS_KRONECKER_APPROXIMATIONS = {"exact-self": K2_STIFFNESS_BULK_EXACT}
+# for label, model in K2_STIFFNESS_KRONECKER_MODELS.items():
+#     K2_STIFFNESS_KRONECKER_APPROXIMATIONS[label] = model["bulk_model"]
+# K2_STIFFNESS_KRONECKER_REPORTS = compare_k2_stiffness_kronecker_approximations(
+#     K2_STIFFNESS_BULK_EXACT,
+#     K2_STIFFNESS_KRONECKER_APPROXIMATIONS,
+#     n_rhs=8,
+#     seed=0,
+# )
+# print("=" * 112)
+# print("k=2 stiffness Kronecker-bulk diagnostics: matrix and pseudoinverse")
+# print_k2_stiffness_kronecker_approximation_reports(K2_STIFFNESS_KRONECKER_REPORTS)
 
-
-# %% Matrix-level trust checks for compact Kronecker models of the k=2 stiffness bulk block
-K2_STIFFNESS_COMPARE_RANKS = (1, 3)
-K2_STIFFNESS_KRONECKER_MODELS = {
-    f"kron-r{rank}": build_k2_stiffness_kronecker_preconditioner(
-        SEQ,
-        K3_SADDLE_OPERATORS,
-        dirichlet=False,
-        cp_weights=K3_METRIC_CP[rank]["weights"],
-        cp_factors=K3_METRIC_CP[rank]["factors"],
-    )
-    for rank in K2_STIFFNESS_COMPARE_RANKS
-}
-K2_STIFFNESS_BULK_EXACT = next(iter(K2_STIFFNESS_KRONECKER_MODELS.values()))["bulk_exact"]
-K2_STIFFNESS_KRONECKER_APPROXIMATIONS = {"exact-self": K2_STIFFNESS_BULK_EXACT}
-for label, model in K2_STIFFNESS_KRONECKER_MODELS.items():
-    K2_STIFFNESS_KRONECKER_APPROXIMATIONS[label] = model["bulk_model"]
-K2_STIFFNESS_KRONECKER_REPORTS = compare_k2_stiffness_kronecker_approximations(
-    K2_STIFFNESS_BULK_EXACT,
-    K2_STIFFNESS_KRONECKER_APPROXIMATIONS,
-    n_rhs=8,
-    seed=0,
-)
-print("=" * 112)
-print("k=2 stiffness Kronecker-bulk diagnostics: matrix and pseudoinverse")
-print_k2_stiffness_kronecker_approximation_reports(K2_STIFFNESS_KRONECKER_REPORTS)
-
-
-K3_RICHARDSON_STEPS = (4, 8, 16)
+# %%
+K3_RICHARDSON_STEPS = (4, 8, 16, 32)
 K3_RICHARDSON_POWER_ITERATIONS = 20
 K3_RICHARDSON_DAMPING_SAFETY = 0.8
-K3_RICHARDSON_UPPERS, K3_RICHARDSON_PARAMETERS = build_k3_richardson_dense_upper_preconditioners(
+K3_RICHARDSON_UPPERS, K3_RICHARDSON_PARAMETERS = build_k3_richardson_upper_preconditioners(
     SEQ,
     K3_SADDLE_OPERATORS,
     dirichlet=False,
-    induced_data=K3_INDUCED_OPERATOR_DATA,
-    k2_stiffness_approx_models={
-        "exact": {"approx_matrix": K3_INDUCED_OPERATOR_DATA["k2_stiffness"]},
-    },
     richardson_steps=K3_RICHARDSON_STEPS,
     power_iterations=K3_RICHARDSON_POWER_ITERATIONS,
     damping_safety=K3_RICHARDSON_DAMPING_SAFETY,
+)
+K3_COUPLED_PRECONDITIONERS = build_k3_coupled_preconditioners(
+    SEQ,
+    K3_SADDLE_OPERATORS,
+    dirichlet=False,
+    upper_preconditioners=K3_RICHARDSON_UPPERS,
 )
 print("=" * 112)
 print("k=3 Richardson upper-block parameters, dirichlet=False")
 print_k3_richardson_parameter_reports(K3_RICHARDSON_PARAMETERS)
 
 
-# %% k=3 saddle solve with Jacobi, Schur-Richardson, and K2-Richardson upper blocks
+# %% k=3 saddle solve with Jacobi, Schur-Richardson, and coupled SPD blocks
 K3_LAPLACE_BENCHMARKS_RICHARDSON = benchmark_k3_saddle_preconditioners(
     SEQ,
     K3_SADDLE_OPERATORS,
     dirichlet=False,
     extra_upper_preconditioners=K3_RICHARDSON_UPPERS,
+    extra_block_preconditioners=K3_COUPLED_PRECONDITIONERS,
     n_rhs=8,
     seed=0,
 )
 print("=" * 112)
-print("k=3 saddle benchmark: jacobi vs Richardson upper blocks, dirichlet=False")
+print("k=3 saddle benchmark: jacobi, Schur-Richardson, and coupled SPD blocks, dirichlet=False")
 print_k3_saddle_benchmark_reports(K3_LAPLACE_BENCHMARKS_RICHARDSON)
+
+
+# %% Matrix-free symmetry / PSD checks for the coupled saddle preconditioners
+def k3_block_mass_metric_apply(x: jnp.ndarray) -> jnp.ndarray:
+    n_upper = SEQ.n3
+    upper = apply_mass_matrix(SEQ, K3_SADDLE_OPERATORS, x[:n_upper], 3, dirichlet=False)
+    lower = apply_mass_matrix(SEQ, K3_SADDLE_OPERATORS, x[n_upper:], 2, dirichlet=False)
+    return jnp.concatenate([upper, lower])
+
+
+K3_COUPLED_PRECONDITIONER_EUCLIDEAN_REPORTS = diagnose_preconditioner_properties(
+    K3_COUPLED_PRECONDITIONERS,
+    SEQ.n3 + SEQ.n2,
+    metric="euclidean",
+    metric_apply=None,
+    n_probes=16,
+    seed=0,
+)
+print("=" * 112)
+print("k=3 coupled preconditioner checks: Euclidean symmetry / positivity probes")
+print_preconditioner_property_reports(K3_COUPLED_PRECONDITIONER_EUCLIDEAN_REPORTS)
+
+K3_COUPLED_PRECONDITIONER_FEM_REPORTS = diagnose_preconditioner_properties(
+    K3_COUPLED_PRECONDITIONERS,
+    SEQ.n3 + SEQ.n2,
+    metric="block-mass",
+    metric_apply=k3_block_mass_metric_apply,
+    n_probes=16,
+    seed=0,
+)
+print("=" * 112)
+print("k=3 coupled preconditioner checks: block FEM-mass symmetry / positivity probes")
+print_preconditioner_property_reports(K3_COUPLED_PRECONDITIONER_FEM_REPORTS)
 
 
 # %% Dense Schur-complement diagnostics for Jacobi and Richardson upper blocks
@@ -1585,25 +2171,57 @@ K3_SCHUR_MATRIX, K3_SCHUR_REPORTS = diagnose_k3_schur_upper_preconditioners(
     SEQ,
     K3_SADDLE_OPERATORS,
     dirichlet=False,
-    dense_upper_preconditioners=K3_RICHARDSON_UPPERS,
+    upper_preconditioners=K3_RICHARDSON_UPPERS,
 )
 print("=" * 112)
 print("k=3 dense Schur-complement diagnostics: jacobi vs Richardson, dirichlet=False")
 print(f"schur size: {K3_SCHUR_MATRIX.shape[0]}")
-print(f"k=2 stiffness size: {K3_INDUCED_OPERATOR_DATA['k2_stiffness'].shape[0]}")
 print_k3_schur_approximation_reports(K3_SCHUR_REPORTS)
 
 
-# %% Dense preconditioned saddle-spectrum diagnostics for Jacobi and Richardson upper blocks
-K3_SADDLE_SPECTRUM_REPORTS = diagnose_k3_saddle_preconditioned_spectra(
+# %% k=2 stiffness benchmark on rhs in range(div^T): pure Richardson vs surgery-Schur + bulk Richardson
+# K2_RANGE_BENCHMARKS, K2_RANGE_PARAMETERS = benchmark_k2_range_preconditioners(
+#     SEQ,
+#     K3_SADDLE_OPERATORS,
+#     dirichlet=False,
+#     richardson_steps=K3_RICHARDSON_STEPS,
+#     power_iterations=K3_RICHARDSON_POWER_ITERATIONS,
+#     damping_safety=K3_RICHARDSON_DAMPING_SAFETY,
+#     n_rhs=8,
+#     seed=0,
+# )
+# print("=" * 112)
+# print("k=2 stiffness benchmark on rhs in range(div^T): pure Richardson vs surgery-Schur + bulk Richardson")
+# print_k2_benchmark_reports(K2_RANGE_BENCHMARKS)
+
+
+# %% k=2 mass benchmark: pure Richardson vs surgery-Schur + bulk Richardson
+K2_MASS_BENCHMARKS, K2_MASS_PARAMETERS = benchmark_k2_mass_preconditioners(
     SEQ,
     K3_SADDLE_OPERATORS,
     dirichlet=False,
-    dense_upper_preconditioners=K3_RICHARDSON_UPPERS,
+    richardson_steps=K3_RICHARDSON_STEPS,
+    power_iterations=K3_RICHARDSON_POWER_ITERATIONS,
+    damping_safety=K3_RICHARDSON_DAMPING_SAFETY,
+    n_rhs=8,
+    seed=0,
 )
 print("=" * 112)
-print("k=3 preconditioned saddle-spectrum diagnostics: jacobi vs Richardson, dirichlet=False")
-print_k3_saddle_spectrum_reports(K3_SADDLE_SPECTRUM_REPORTS)
+print("k=2 mass benchmark: pure Richardson vs surgery-Schur + bulk Richardson")
+print_k2_benchmark_reports(K2_MASS_BENCHMARKS)
+
+
+# # %% Dense preconditioned saddle-spectrum diagnostics for Jacobi and Richardson upper blocks
+# K3_SADDLE_SPECTRUM_REPORTS = diagnose_k3_saddle_preconditioned_spectra(
+#     SEQ,
+#     K3_SADDLE_OPERATORS,
+#     dirichlet=False,
+#     upper_preconditioners=K3_RICHARDSON_UPPERS,
+#     block_preconditioners=K3_COUPLED_PRECONDITIONERS,
+# )
+# print("=" * 112)
+# print("k=3 preconditioned saddle-spectrum diagnostics: jacobi, Richardson, and coupled, dirichlet=False")
+# print_k3_saddle_spectrum_reports(K3_SADDLE_SPECTRUM_REPORTS)
 
 
 # %% Optional: visualize the extracted k=3 matrix

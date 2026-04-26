@@ -526,3 +526,77 @@ The important simplification is that we are no longer treating the `k = 3`
 story as an open-ended zoo of unrelated coarse corrections. The supported
 building blocks are now `none`, Jacobi-Richardson, and tensor-structured
 inverse surrogates.
+
+## 10. Current TODO
+
+- Drop the `k = 2` Richardson sandwich from the active `k = 3` benchmark
+  surface if the higher-resolution runs keep confirming that it does not help.
+- Keep `upper-none`, `upper-jacobi`, and the Schur-side Jacobi-Richardson
+  family as the active block-diagonal references.
+- Add a symmetric coupled saddle preconditioner as the next structural test,
+  built from the current Schur-side Richardson upper approximation, the fixed
+  rank-3 tensor lower block, and the explicit `D_2` coupling.
+- Keep the coupling experiment compatible with outer `MINRES`, so the coupled
+  preconditioner should stay symmetric positive definite rather than use an
+  ad hoc triangular or indefinite block factorization.
+- Revisit the `k = 2` surgery split with a hybrid inverse: keep the surgery
+  Schur complement exact, but replace the explicit bulk inverse by a fixed-step
+  Richardson solve on the bulk block rather than trying to build a closed-form
+  bulk inverse.
+- Check carefully which inner product the current `MINRES` implementation is
+  actually using in the coupled experiments. At the moment the Krylov
+  recurrence itself is based on Euclidean dot products with preconditioned
+  norms `r^T M r`; the FEM mass matrices only enter through the optional
+  nullspace projections.
+- If the coupled block keeps showing one rogue mode, try a solver-level
+  reformulation with the natural FEM/Riesz metric
+  `\operatorname{diag}(M_3, M_2)` rather than the current Euclidean-dot-product
+  `MINRES` recurrence.
+- Diagnose the remaining rogue coupled mode in the actual matrix-free
+  implementation, without attributing it to a dense inverse artifact. The
+  current coupled prototype applies `\widetilde S^{-1}` and
+  `\widetilde M_2^{-1}` as operator applies; only the tiny surgery Schur blocks
+  are dense.
+- The current coupled / surgery-style Richardson fallbacks are not yet
+  competitive enough to treat as active methods. Keep them around as debug or
+  fallback experiments, but for now prioritize the plain Schur-side
+  Jacobi-Richardson family and revisit the coupled/surgery variants later.
+
+One natural SPD coupled ansatz is the factorized form
+
+$$
+P_{\mathrm{cpl}}^{-1}
+=
+L^T
+\begin{bmatrix}
+\widetilde S^{-1} & 0 \\
+0 & \widetilde M_2^{-1}
+\end{bmatrix}
+L,
+\qquad
+L=
+\begin{bmatrix}
+I & 0 \\
+-\widetilde M_2^{-1} D_2^T & I
+\end{bmatrix},
+$$
+
+with `\widetilde S^{-1}` given by the current Schur-side Richardson
+approximation and `\widetilde M_2^{-1}` given by the fixed rank-3 tensor mass
+preconditioner.
+
+Implementation note: the first coupled prototype applied the lower inverse one
+extra time in the `L^T` lift, i.e. it used `D_2 \widetilde M_2^{-1} z_s` with
+`z_s = \widetilde M_2^{-1}(s - \widetilde M_2^{-1} D_2^T u)`, which turns the
+intended coupling into a spurious `\widetilde M_2^{-2}` term. The fix is to
+apply the transpose lift exactly once,
+
+$$
+z_s = \widetilde M_2^{-1}(s - \widetilde M_2^{-1} D_2^T u),
+\qquad
+u_{\mathrm{out}} = \widetilde S^{-1} u - D_2 z_s,
+$$
+
+so the code now matches the factorization `P_{\mathrm{cpl}}^{-1} = L^T
+\operatorname{diag}(\widetilde S^{-1}, \widetilde M_2^{-1}) L` instead of
+inserting an extra lower solve into the lift.
