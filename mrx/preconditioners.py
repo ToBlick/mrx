@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field as dataclass_field
 from typing import Mapping, Optional
 
 import equinox as eqx
@@ -105,6 +106,41 @@ class MassPreconditioners(eqx.Module):
     jacobi: Optional[JacobiMassPreconditioner] = None
     tensor: Optional[TensorMassPreconditioner] = None
     kronecker: Optional[KroneckerMassPreconditioner] = None
+
+
+@dataclass(frozen=True)
+class MassPreconditionerSpec:
+    kind: str = 'tensor'
+    steps: int = 4
+    power_iterations: int = 30
+    damping_safety: float = 0.8
+    min_eig_fraction: float = 1e-3
+    smoother: Optional[MassPreconditionerSpec] = None
+
+
+@dataclass(frozen=True)
+class SchurPreconditionerSpec:
+    inner: MassPreconditionerSpec = dataclass_field(
+        default_factory=MassPreconditionerSpec)
+    outer: MassPreconditionerSpec = dataclass_field(
+        default_factory=lambda: MassPreconditionerSpec(kind='jacobi'))
+
+
+@dataclass(frozen=True)
+class SaddlePointPreconditionerSpec:
+    mass: MassPreconditionerSpec = dataclass_field(
+        default_factory=MassPreconditionerSpec)
+    schur: SchurPreconditionerSpec = dataclass_field(
+        default_factory=SchurPreconditionerSpec)
+    coupled: bool = False
+
+
+def default_mass_preconditioner() -> MassPreconditionerSpec:
+    return MassPreconditionerSpec()
+
+
+def default_saddle_preconditioner() -> SaddlePointPreconditionerSpec:
+    return SaddlePointPreconditionerSpec()
 
 
 def select_boundary_data(pair: BoundaryConditionPair, dirichlet: bool, label: str):

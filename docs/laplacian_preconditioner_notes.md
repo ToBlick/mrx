@@ -1,190 +1,152 @@
-# Laplacian preconditioner notes
+# Laplacian Preconditioner Notes
 
-This note records what we learned while debugging the shifted Hodge-Laplacian preconditioners, mainly for the toroidal test problems with Betti numbers `(1, 1, 0, 0)`.
+This note records the settled production policy for the Hodge-Laplacian
+preconditioners after the recent `k = 0` shifted/nullspace cleanup.
 
-The main target operators were the shifted systems
-
-$$
-(L_k + \varepsilon M_k) u = f,
-$$
-
-with special attention to `k = 0` without Dirichlet BCs and `k = 3` with Dirichlet BCs, since these are the cases with one-dimensional harmonic spaces.
-
-## Main conclusions
-
-### 1. Shifted `k = 3` needs an explicit harmonic coarse correction
-
-For shifted `k = 3`, the important source-level improvement was the explicit rank-1 correction on the stored harmonic mode. If `z_3` is the stored `M_3`-normalised nullspace vector,
+The target operators are
 
 $$
-z_3^T M_3 z_3 = 1,
+(L_k + \varepsilon M_k) u = f
 $$
 
-then the coarse-aware preconditioner is
+for shifted solves, and the Moore-Penrose inverse action of `L_k` for the
+singular `\varepsilon = 0` case.
+
+Legacy code and scripts may still refer to `hx` or `fd` for the scalar helper.
+In the current implementation and in this note, the preferred term is
+`tensor` for the structured scalar `k = 0` Laplacian-side preconditioner.
+
+## 1. General Rule
+
+The harmonic space must be treated differently in the shifted and unshifted
+problems.
+
+For `\varepsilon = 0`, the correct operation is nullspace deflation:
 
 $$
-P_{3,\mathrm{coarse}}^{-1}
+L_k^{+} = P_{\perp} L_k^{-1} P_{\perp}
+$$
+
+on the range of `L_k`, interpreted as the pseudoinverse action.
+
+For `\varepsilon > 0`, deflation is wrong. The harmonic mode is no longer in
+the kernel; it becomes an eigenmode with eigenvalue `\varepsilon`. The correct
+structure is
+
+$$
+(L_k + \varepsilon M_k)^{-1}
+\approx
+\left(I - Z Z^T M_k\right) B_{\perp}
+\left(I - M_k Z Z^T\right)
++ \frac{1}{\varepsilon} Z Z^T,
+$$
+
+where the columns of `Z` form an `M_k`-orthonormal basis of the harmonic
+subspace.
+
+So the policy is:
+
+- `\varepsilon = 0`: use nullspace deflation.
+- `\varepsilon > 0`: use a complement preconditioner plus an explicit harmonic
+	coarse correction.
+
+## 2. Settled `k = 0` Policy
+
+### 2.1 When the harmonic mode is known
+
+For free `k = 0`, the preferred shifted preconditioner is:
+
+- the structured tensor preconditioner on the complement,
+- plus the exact harmonic coarse term `(1 / \varepsilon) z_0 z_0^T`.
+
+In formula form,
+
+$$
+P_{0,\mathrm{shift}}^{-1}
 =
-\left(I - z_3 z_3^T M_3\right) B_3^{-1} \left(I - M_3 z_3 z_3^T\right)
-+ \frac{1}{\varepsilon} z_3 z_3^T.
+\left(I - z_0 z_0^T M_0\right) B_{0,\perp}
+\left(I - M_0 z_0 z_0^T\right)
++ \frac{1}{\varepsilon} z_0 z_0^T.
 $$
 
-This makes the shifted preconditioner exact on the harmonic direction:
+This is the intended end state for ordinary shifted scalar solves.
+
+### 2.2 When the harmonic mode is not yet known
+
+During inverse iteration, or in any early shifted solve before a valid stored
+coarse vector exists, the solver must stay robust without a nullspace guess.
+
+The current implementation therefore uses this rule:
+
+- inverse iteration explicitly disables the harmonic coarse correction;
+- the shifted free `k = 0` tensor branch falls back to shifted Jacobi until a
+	real coarse vector is available;
+- once the coarse vector is available, ordinary shifted solves switch back to
+	the tensor-plus-coarse path.
+
+This is the key control-flow split in the codebase now.
+
+### 2.3 What not to do
+
+An `L^{-1}`-based expansion such as
 
 $$
-P_{3,\mathrm{coarse}}^{-1}(\varepsilon M_3 z_3) = z_3.
+L^{+} - \varepsilon L^{+} M L^{+}
 $$
 
-In practice this was essential. Without it, shifted `k = 3` solves stall badly.
+is not a complete shifted preconditioner on the full space. It is only a
+complement approximation. On the harmonic mode it misses the required
+`1 / \varepsilon` scaling entirely.
 
-### 2. Shifted `k = 0` also benefits from the same exact rank-1 fix
-
-For `k = 0`, `dirichlet = False`, the harmonic space is the constant mode. The same rank-1 wrapper gives
-
-$$
-P_{0,\mathrm{coarse}}^{-1}
-=
-\left(I - z_0 z_0^T M_0\right) B_0^{-1} \left(I - M_0 z_0 z_0^T\right)
-+ \frac{1}{\varepsilon} z_0 z_0^T,
-$$
-
-where `z_0` is the stored `M_0`-normalised constant mode.
-
-This was worthwhile to keep in `src`. It makes the scalar preconditioner exact on the constant mode and improves the standalone shifted `k = 0` solves.
-
-### 3. The scalar HX/FD preconditioner is genuinely good for `k = 0`
-
-The shifted scalar fast-diagonalisation preconditioner is clearly stronger than shifted Jacobi on its own problem. In the debug runs it reduced iteration counts substantially for random and mixed right-hand sides, while also solving the pure harmonic case in essentially one or two iterations once the explicit coarse correction was enabled.
-
-So there is no evidence that the scalar `k = 0` auxiliary solve itself is broken.
-
-### 4. Better scalar preconditioning does not fix the shifted `k = 3` HX preconditioner
-
-We tried to reuse the improved coarse-aware shifted `k = 0` preconditioner inside the `k = 3` HX auxiliary-space sandwich. This did not materially improve the shifted `k = 3` solve, and that change was removed again.
-
-The reason is that the outer `k = 3` coarse correction already handles the dangerous harmonic mode. Improving the scalar auxiliary solve on its own constant mode does not address the main failure on the `k = 3` complement.
-
-### 5. The hard part is the `3 -> 0 -> 3` auxiliary correction, not the scalar solve
-
-The `k = 3` HX correction has the form
+The same applies to variants like
 
 $$
-\widetilde M_3^{-1} M_{03} P_0^{-1} M_{30} \widetilde M_3^{-1},
+L^{+} - \varepsilon L^{+} M L^{+} + \varepsilon M^{-1}.
 $$
 
-where `P_0^{-1}` is the shifted scalar inverse or preconditioner.
+Those expansions may be useful as complement refinements, but they are not a
+replacement for the explicit harmonic coarse term.
 
-The experiments indicate that the weak point is this whole sandwich, especially how the transferred scalar correction acts on the non-harmonic `k = 3` modes.
+## 3. Settled `k = 3` Policy
 
-The evidence for this is:
+For shifted `k = 3`, the practical production default remains conservative:
 
-- `k = 0` HX/FD is strong on the scalar problem.
-- `k = 3` harmonic-only right-hand sides are already solved in one iteration once the outer coarse correction is present.
-- Yet `k = 3` HX remains much worse than `jacobi + coarse` on random and mixed right-hand sides.
+- use shifted Jacobi on the complement,
+- add the explicit harmonic coarse correction when the harmonic mode is known.
 
-### 6. Exact dense transfer helps relative to ordinary HX, but still loses to `jacobi + coarse`
+The scalar-duality / tensor-duality round trip is still available as an
+experimental upper-block ingredient, but it is not the default practical
+recommendation at this point.
 
-We also tested a debug-only dense exact-lift version of the `0 -> 3` transfer. That improved the auxiliary-space correction somewhat compared with the standard HX path, especially when used with a small hybrid weight, but it still did not beat plain `jacobi + coarse`.
+So the current reading is:
 
-This is important because it rules out the simplest failure mode:
+- `k = 0`: tensor complement preconditioner is a production-quality building
+	block.
+- `k = 3`: explicit coarse handling is production-quality; the transferred
+	scalar-duality correction is still experimental.
 
-- it is not just a bug from using an approximate transfer,
-- it is not just the scalar nullspace handling,
-- and it is probably not a single missing global geometry factor.
+## 4. Nullspace Construction Policy
 
-The current interpretation is that the auxiliary-space correction is not spectrally well matched to the shifted `k = 3` complement, even when the transfer is applied exactly in dense form.
+The nullspace arrays are now always initialized on the operator bundle, with
+zero vectors as placeholders until real harmonic vectors are computed.
 
-## Implications for the non-shifted `eps = 0` case
+That simplifies the control flow, but it does **not** change the solver rules:
 
-The experiments above targeted shifted systems, so they do not transfer verbatim to the singular `eps = 0` problem. Still, they do suggest a fairly clear picture for the pure Hodge-Laplacian solve.
+- unshifted solves still use nullspace deflation;
+- shifted solves still avoid deflation;
+- inverse iteration still disables harmonic coarse correction while it is
+	discovering the harmonic vectors.
 
-### 1. The harmonic space should be handled by nullspace deflation, not by a shifted coarse term
+So the zero placeholders are a storage convention, not a license to treat the
+shifted problem as if its harmonic space should be projected out.
 
-For `eps > 0`, the rank-1 coarse correction works because the harmonic mode becomes an eigenvector with eigenvalue `eps`. For `eps = 0`, that formula is no longer meaningful because the factor `1 / eps` blows up.
+## 5. Practical Summary
 
-So the correct analogue is not a shifted coarse correction but explicit nullspace deflation: project the right-hand side into the range of `L_k`, solve on that complement, and interpret the result as the Moore-Penrose inverse action.
-
-This is already the right conceptual framework for the non-shifted solver.
-
-### 2. The good `k = 0` scalar behaviour should still matter at `eps = 0`
-
-The shifted experiments support the view that the scalar FD/HX preconditioner is fundamentally good on the scalar complement, not just on the lifted constant mode. That should carry over to the pseudoinverse problem as well.
-
-So for `k = 0`, the non-shifted conclusion is still favorable: after deflating the constant mode, the scalar HX/FD inverse remains a sensible and likely strong preconditioner for the complement solve.
-
-Later dense extracted experiments made this sharper. On the polar extracted
-scalar problem, the free-case nullspace is not removed merely by inverting the
-bulk block; it reappears in the Schur complement. A naive dense Schur inverse
-therefore breaks positivity even when the bulk model itself is accurate.
-
-The practical lesson is:
-
-- project the right-hand side into the range of the operator,
-- use mass-orthogonal normalization for the harmonic mode,
-- and if an extracted block preconditioner is used, treat the free-case Schur
-	block as a deflated / pseudoinverse solve rather than an ordinary inverse.
-
-Once that Schur nullspace handling was added, the higher-rank diagonal scalar
-preconditioners behaved as expected and significantly outperformed Jacobi.
-
-### 3. The weak point for `k = 3` is still likely the auxiliary transfer sandwich
-
-The shifted data strongly suggests that the weakness of the `k = 3` HX approach is not the harmonic mode itself and not the scalar auxiliary inverse in isolation, but the transferred correction
-
-$$
-\widetilde M_3^{-1} M_{03} P_0^{-1} M_{30} \widetilde M_3^{-1}
-$$
-
-acting on the `k = 3` complement.
-
-That observation should remain relevant at `eps = 0`. Once the harmonic mode has been removed by nullspace deflation, the non-shifted solve is again controlled by how well the preconditioner acts on the complement. The shifted experiments therefore make it plausible that the same `3 -> 0 -> 3` auxiliary correction may remain the weak component in the pure `k = 3` solve.
-
-This is a suggestive implication, not a proof. The shift changes the spectrum, so the non-shifted complement could still behave differently. But the current evidence points to the same structural bottleneck.
-
-### 4. For `k = 3`, skepticism about HX should carry over unless new evidence appears
-
-The safest practical reading is:
-
-- for `eps = 0`, treat the harmonic mode by deflation,
-- then judge the preconditioner only on the complement,
-- and keep in mind that the shifted experiments gave no indication that the HX-style `3 -> 0 -> 3` correction dominates `jacobi` on that complement.
-
-So the shifted results do not prove that non-shifted `k = 3` HX is bad, but they do remove one optimistic explanation: it is probably not enough to say "the scalar helper is good, therefore the 3-form auxiliary preconditioner must also be good."
-
-### 5. What should be tested separately at `eps = 0`
-
-If we want a clean non-shifted conclusion, the right tests are:
-
-- compare `jacobi` vs `hx` after exact nullspace deflation,
-- focus on random right-hand sides in the range of `L_3`,
-- and measure whether the auxiliary correction improves the complement solve rather than the harmonic direction.
-
-That would turn the current implication into a direct result.
-
-## Practical recommendations
-
-### Shifted `k = 3`, Dirichlet
-
-Use shifted Jacobi plus explicit harmonic coarse correction as the default practical preconditioner:
-
-$$
-P^{-1} \approx P_{\mathrm{jacobi+coarse}}^{-1}.
-$$
-
-At the moment this is the most robust option we tested.
-
-### Shifted `k = 0`, no Dirichlet
-
-Use the shifted FD/HX scalar preconditioner with the explicit rank-1 coarse correction. This is a real improvement and should stay in the source implementation.
-
-## What we are not claiming
-
-- We are not claiming that auxiliary-space methods for `k = 3` are impossible.
-- We are not claiming that geometry plays no role.
-- We are not claiming that the current dense exact-lift experiment is the final word.
-
-What we are claiming is narrower: with the current discrete operators and current experiments, the shifted `k = 3` HX-style correction is inferior to `jacobi + coarse`, while the shifted `k = 0` scalar HX/FD preconditioner is clearly useful.
-
-## Open question
-
-The remaining conceptual question is whether the exact-lift hybrid is simply mis-scaled, or whether it is correcting the wrong `k = 3` modes altogether. A scalar hybrid weight helps slightly when it is small, but not enough to beat `jacobi + coarse`. That suggests the current auxiliary correction may contain useful information, but not in a form that is competitive as the main shifted `k = 3` preconditioner.
+- Unshifted `k = 0`: deflate the constant mode and use the tensor complement
+	preconditioner.
+- Shifted `k = 0`, harmonic mode known: tensor complement plus exact harmonic
+	coarse correction.
+- Shifted `k = 0`, harmonic mode unknown: no harmonic coarse correction; use
+	the robust shifted fallback until the nullspace vector is available.
+- Shifted `k = 3`: Jacobi plus explicit harmonic coarse correction remains the
+	practical default.

@@ -405,7 +405,11 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
                 v, k, dirichlet=dirichlet, operators=operators)
             w = seq.apply_inverse_shifted_hodge_laplacian(
                 Mv, k, eps, dirichlet=dirichlet, guess=v,
-                operators=operators)
+                operators=operators,
+                # Inverse iteration is the mechanism that discovers the
+                # harmonic vectors, so the shifted solve used here must not
+                # depend on any nullspace-aware coarse correction.
+                use_harmonic_coarse=False)
             for u in found:
                 w = w - (u @ seq.apply_mass_matrix(
                     w, k, dirichlet=dirichlet, operators=operators)) * u

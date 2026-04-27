@@ -302,22 +302,22 @@ class TestSaddlePointDenseVerification:
 
 
 # --------------------------------------------------------------------------
-# Diffusion solves: (M_k + alpha * L_k) x = b
+# Solves: (M_k + eps * L_k) x = b
 # --------------------------------------------------------------------------
 
 class TestDiffusionSolves:
-    """Solve (M_k + alpha * L_k) x = b, verify round-trip."""
+    """Solve (M_k + eps * L_k) x = b, verify round-trip."""
 
     @pytest.mark.parametrize("k", [0, 1, 2, 3])
     @pytest.mark.parametrize("dirichlet", [False, True], ids=["no_dbc", "dbc"])
-    @pytest.mark.parametrize("alpha", [1e-2, 1e-4])
-    def test_diffusion_round_trip(self, seq, k, dirichlet, alpha):
-        """Random b → x = (M + αL)^{-1} b → (M + αL) x ≈ b."""
+    @pytest.mark.parametrize("eps", [1e-2, 1e-4])
+    def test_diffusion_round_trip(self, seq, k, dirichlet, eps):
+        """Random b → x = (M + eps L)^{-1} b → (M + eps L) x ≈ b."""
         n = _ndofs(seq, k, dirichlet)
         b = _random_rhs(jax.random.PRNGKey(k + 100 * dirichlet + 7), n)
 
-        x = seq.apply_inverse_diffusion(b, k, alpha, dirichlet=dirichlet)
-        MLx = seq.apply_diffusion(x, k, alpha, dirichlet=dirichlet)
+        x = seq.apply_inverse_mass_plus_eps_laplace_matrix(b, k, eps, dirichlet=dirichlet)
+        MLx = seq.apply_mass_plus_eps_laplace_matrix(x, k, eps, dirichlet=dirichlet)
         npt.assert_allclose(MLx, b, atol=1e-8)
 
 
@@ -326,9 +326,9 @@ class TestDiffusionDenseVerification:
 
     @pytest.mark.parametrize("k", [1, 2, 3])
     @pytest.mark.parametrize("dirichlet", [False, True], ids=["no_dbc", "dbc"])
-    @pytest.mark.parametrize("alpha", [1e-2, 1e-4])
-    def test_diffusion_matches_direct(self, seq, k, dirichlet, alpha):
-        """MINRES diffusion solution matches dense direct solve."""
+    @pytest.mark.parametrize("eps", [1e-2, 1e-4])
+    def test_diffusion_matches_direct(self, seq, k, dirichlet, eps):
+        """MINRES solution matches dense direct solve for M + eps L."""
         suffix = "_dbc" if dirichlet else ""
         n_u = getattr(seq, f"n{k}{suffix}")
         n_s = getattr(seq, f"n{k-1}{suffix}")
@@ -352,8 +352,8 @@ class TestDiffusionDenseVerification:
 
         # Full saddle-point matrix for diffusion
         K = jnp.block([
-            [Mk + alpha * S, alpha * D],
-            [alpha * DT,    -alpha * Ml],
+            [Mk + eps * S, eps * D],
+            [eps * DT,    -eps * Ml],
         ])
 
         b = _random_rhs(jax.random.PRNGKey(k + 100 * dirichlet + 55), n_u)
@@ -364,7 +364,7 @@ class TestDiffusionDenseVerification:
         u_direct = x_direct[:n_u]
 
         # MINRES solve
-        u_mr = seq.apply_inverse_diffusion(b, k, alpha, dirichlet=dirichlet)
+        u_mr = seq.apply_inverse_mass_plus_eps_laplace_matrix(b, k, eps, dirichlet=dirichlet)
 
         npt.assert_allclose(u_mr, u_direct, atol=1e-7)
 

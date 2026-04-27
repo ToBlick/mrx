@@ -213,7 +213,7 @@ def main():
 #
 # Delegates to ``seq.apply_inverse_hodge_laplacian``, which uses CG for
 # k = 0 and saddle-point MINRES for k >= 1 internally, varying only the
-# upper-block preconditioner (``'none' | 'jacobi' | 'hx'``).
+# upper-block preconditioner (``'none' | 'jacobi' | 'tensor'``).
 # On the closed torus k = 3 with and without Dirichlet b.c. are identical,
 # so we only benchmark ``dirichlet=True`` for k = 3.
 # ---------------------------------------------------------------------------
@@ -223,7 +223,7 @@ def make_hodge_solve(seq, k, dirichlet, kind):
     @jax.jit
     def solve(b):
         u, info = seq.apply_inverse_hodge_laplacian(
-            b, k, dirichlet=dirichlet, precond_kind=kind, return_info=True)
+            b, k, dirichlet=dirichlet, preconditioner=kind, return_info=True)
         return u, jnp.abs(info)
     return solve
 
@@ -307,7 +307,7 @@ def benchmark_hodge(seq, operators):
             rhs_batch = jax.vmap(_deflate)(rhs_batch)
 
         results = {}
-        kinds = ("jacobi", "hx")
+        kinds = ("jacobi", "tensor")
         for kind in kinds:
             solve = make_hodge_solve(seq, k, dirichlet, kind)
             try:
@@ -316,12 +316,12 @@ def benchmark_hodge(seq, operators):
                 results[kind] = exc
 
         jac = results["jacobi"]
-        hx = results["hx"]
-        if isinstance(jac, Exception) or isinstance(hx, Exception):
+        tensor_result = results["tensor"]
+        if isinstance(jac, Exception) or isinstance(tensor_result, Exception):
             speedup = float('nan')
         else:
             speedup = jac.avg_time_ms / \
-                hx.avg_time_ms if hx.avg_time_ms > 0 else float('nan')
+                tensor_result.avg_time_ms if tensor_result.avg_time_ms > 0 else float('nan')
         for kind, s in results.items():
             if isinstance(s, Exception):
                 print(
@@ -331,7 +331,7 @@ def benchmark_hodge(seq, operators):
                 continue
             if kind == "jacobi":
                 speed_col = "-"
-            elif kind == "hx":
+            elif kind == "tensor":
                 speed_col = f"x{speedup:5.2f}"
             else:
                 speed_col = ""

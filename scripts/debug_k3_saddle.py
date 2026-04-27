@@ -112,7 +112,7 @@ def main():
     u_dense, *_ = np.linalg.lstsq(L3, b, rcond=None)
     # MINRES
     u_mr, info = seq.apply_inverse_hodge_laplacian(
-        jnp.asarray(b), k, dirichlet=dbc, precond_kind='hx',
+        jnp.asarray(b), k, dirichlet=dbc, preconditioner='tensor',
         return_info=True)
     u_mr = np.asarray(u_mr)
 

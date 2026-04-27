@@ -59,16 +59,16 @@ TENSOR_CP_KWARGS = {"tol": 1e-8, "maxiter": 500}
 # %% Configuration
 @dataclass(frozen=True)
 class ExperimentConfig:
-    ns: tuple[int, int, int] = (8, 10, 6)
+    ns: tuple[int, int, int] = (8, 12, 6)
     p: int = 3
     tol: float = 1e-8
-    maxiter: int = 500
+    maxiter: int = 250
     betti: tuple[int, int, int, int] = (1, 1, 0, 0)
     map_kind: str = "rotating_ellipse"
     torus_epsilon: float = 1.0 / 3.0
     torus_r0: float = 1.0
-    rotating_eps: float = 0.2
-    rotating_kappa: float = 1.1
+    rotating_eps: float = 0.3
+    rotating_kappa: float = 1.2
     rotating_r0: float = 1.0
     rotating_nfp: int = 3
 
@@ -124,6 +124,17 @@ class K3SchurApproximationReport:
 
 
 @dataclass
+class K3SchurSpectrumReport:
+    label: str
+    size: int
+    min_eig: float
+    max_eig: float
+    min_nonzero_abs_eig: float
+    max_abs_eig: float
+    zero_count: int
+
+
+@dataclass
 class K3SaddleSpectrumReport:
     label: str
     min_eig: float
@@ -169,6 +180,26 @@ class PreconditionerPropertyReport:
     min_quadratic_form: float
     max_quadratic_form: float
     negative_quadratic_forms: int
+
+
+@dataclass
+class DenseBlockPreconditionerReport:
+    label: str
+    relative_euclidean_asymmetry: float
+    relative_block_mass_asymmetry: float
+    min_sym_eig_euclidean: float
+    min_sym_eig_block_mass: float
+    max_sym_eig_euclidean: float
+    max_sym_eig_block_mass: float
+
+
+@dataclass
+class DenseBlockBasisProbeReport:
+    label: str
+    min_basis_quadratic_euclidean: float
+    max_basis_quadratic_euclidean: float
+    min_basis_quadratic_block_mass: float
+    max_basis_quadratic_block_mass: float
 
 
 CONFIG = ExperimentConfig()
@@ -430,7 +461,7 @@ def benchmark_k3_preconditioners(
     n_rhs: int = 8,
     seed: int = 0,
     tensor_ranks: tuple[int, ...] = (1, 3, 5),
-    richardson_steps: tuple[int, ...] = (4, 8, 16, 32),
+    richardson_steps: tuple[int, ...] = (2, 4, 8, 16),
     richardson_power_iterations: int = 20,
     richardson_damping_safety: float = 0.8,
     tensor_operator_cache: dict[int, object] | None = None,
@@ -579,6 +610,47 @@ def build_richardson_apply_preconditioner(
             correction = smoother_apply(residual)
             x = x + omega * correction
             residual = residual - omega * operator_apply(correction)
+        return x
+
+    return apply
+
+
+def build_chebyshev_apply_preconditioner(
+    operator_apply,
+    smoother_apply,
+    *,
+    steps: int,
+    min_eig: float,
+    max_eig: float,
+):
+    if steps < 1:
+        raise ValueError("Chebyshev step count must be positive")
+    if max_eig <= 0.0:
+        raise ValueError("Chebyshev requires a positive max_eig")
+    if min_eig <= 0.0:
+        raise ValueError("Chebyshev requires a positive min_eig")
+    if min_eig > max_eig:
+        raise ValueError("Chebyshev requires min_eig <= max_eig")
+
+    d = 0.5 * (max_eig + min_eig)
+    c = 0.5 * (max_eig - min_eig)
+
+    def apply(rhs: jnp.ndarray) -> jnp.ndarray:
+        x = jnp.zeros_like(rhs)
+        residual = rhs
+        direction = jnp.zeros_like(rhs)
+        alpha = 1.0 / d
+
+        for iteration in range(steps):
+            correction = smoother_apply(residual)
+            if iteration == 0:
+                direction = correction
+            else:
+                beta = (0.5 * c * alpha) ** 2
+                alpha = 1.0 / (d - beta)
+                direction = correction + beta * direction
+            x = x + alpha * direction
+            residual = residual - alpha * operator_apply(direction)
         return x
 
     return apply
@@ -1212,7 +1284,7 @@ def benchmark_k2_range_preconditioners(
     operators,
     *,
     dirichlet: bool,
-    richardson_steps: tuple[int, ...] = (4, 8, 16, 32),
+    richardson_steps: tuple[int, ...] = (2, 4, 8),
     power_iterations: int = 20,
     damping_safety: float = 0.8,
     n_rhs: int = 8,
@@ -1355,7 +1427,7 @@ def benchmark_k2_mass_preconditioners(
     operators,
     *,
     dirichlet: bool,
-    richardson_steps: tuple[int, ...] = (4, 8, 16, 32),
+    richardson_steps: tuple[int, ...] = (2, 4, 8),
     power_iterations: int = 20,
     damping_safety: float = 0.8,
     n_rhs: int = 8,
@@ -1558,6 +1630,116 @@ def print_preconditioner_property_reports(reports: list[PreconditionerPropertyRe
         )
 
 
+def diagnose_dense_block_preconditioners(
+    seq,
+    operators,
+    *,
+    dirichlet: bool,
+    block_preconditioners: dict[str, callable],
+) -> list[DenseBlockPreconditionerReport]:
+    n_upper = seq.n3_dbc if dirichlet else seq.n3
+    n_lower = seq.n2_dbc if dirichlet else seq.n2
+    upper_mass = jnp.asarray(dense_mass_matrix(seq, operators, 3, dirichlet=dirichlet))
+    lower_mass = jnp.asarray(dense_mass_matrix(seq, operators, 2, dirichlet=dirichlet))
+    block_mass = jnp.block(
+        [
+            [upper_mass, jnp.zeros((n_upper, n_lower), dtype=jnp.float64)],
+            [jnp.zeros((n_lower, n_upper), dtype=jnp.float64), lower_mass],
+        ]
+    )
+
+    reports = []
+    for label, apply_block in block_preconditioners.items():
+        block_inverse = _dense_operator_from_apply(apply_block, n_upper + n_lower)
+        euclidean_asymmetry = block_inverse - block_inverse.T
+        weighted_asymmetry = block_mass @ block_inverse - block_inverse.T @ block_mass
+        euclidean_scale = jnp.where(jnp.linalg.norm(block_inverse) > 0, jnp.linalg.norm(block_inverse), 1.0)
+        weighted_scale = jnp.where(jnp.linalg.norm(block_mass @ block_inverse) > 0, jnp.linalg.norm(block_mass @ block_inverse), 1.0)
+        euclidean_sym = _symmetrize(block_inverse)
+        weighted_sym = _symmetrize(block_mass @ block_inverse)
+        reports.append(
+            DenseBlockPreconditionerReport(
+                label=label,
+                relative_euclidean_asymmetry=float(jnp.linalg.norm(euclidean_asymmetry) / euclidean_scale),
+                relative_block_mass_asymmetry=float(jnp.linalg.norm(weighted_asymmetry) / weighted_scale),
+                min_sym_eig_euclidean=float(jnp.min(jnp.linalg.eigvalsh(euclidean_sym))),
+                min_sym_eig_block_mass=float(jnp.min(jnp.linalg.eigvalsh(weighted_sym))),
+                max_sym_eig_euclidean=float(jnp.max(jnp.linalg.eigvalsh(euclidean_sym))),
+                max_sym_eig_block_mass=float(jnp.max(jnp.linalg.eigvalsh(weighted_sym))),
+            )
+        )
+    return reports
+
+
+def reconstruct_dense_block_preconditioner_matrices(
+    seq,
+    operators,
+    *,
+    dirichlet: bool,
+    block_preconditioners: dict[str, callable],
+) -> tuple[dict[str, jnp.ndarray], jnp.ndarray]:
+    n_upper = seq.n3_dbc if dirichlet else seq.n3
+    n_lower = seq.n2_dbc if dirichlet else seq.n2
+    upper_mass = jnp.asarray(dense_mass_matrix(seq, operators, 3, dirichlet=dirichlet))
+    lower_mass = jnp.asarray(dense_mass_matrix(seq, operators, 2, dirichlet=dirichlet))
+    block_mass = jnp.block(
+        [
+            [upper_mass, jnp.zeros((n_upper, n_lower), dtype=jnp.float64)],
+            [jnp.zeros((n_lower, n_upper), dtype=jnp.float64), lower_mass],
+        ]
+    )
+    matrices = {
+        label: _dense_operator_from_apply(apply_block, n_upper + n_lower)
+        for label, apply_block in block_preconditioners.items()
+    }
+    return matrices, block_mass
+
+
+def diagnose_dense_block_basis_probes(
+    dense_block_matrices: dict[str, jnp.ndarray],
+    block_mass: jnp.ndarray,
+) -> list[DenseBlockBasisProbeReport]:
+    reports = []
+    for label, matrix in dense_block_matrices.items():
+        euclidean_diagonal = jnp.diag(matrix)
+        block_mass_diagonal = jnp.diag(block_mass @ matrix)
+        reports.append(
+            DenseBlockBasisProbeReport(
+                label=label,
+                min_basis_quadratic_euclidean=float(jnp.min(euclidean_diagonal)),
+                max_basis_quadratic_euclidean=float(jnp.max(euclidean_diagonal)),
+                min_basis_quadratic_block_mass=float(jnp.min(block_mass_diagonal)),
+                max_basis_quadratic_block_mass=float(jnp.max(block_mass_diagonal)),
+            )
+        )
+    return reports
+
+
+def print_dense_block_preconditioner_reports(reports: list[DenseBlockPreconditionerReport]):
+    print("-" * 112)
+    print(
+        f"{'label':<36} {'rel asym E':>14} {'rel asym M':>14} {'min eig sym(E)':>16} {'max eig sym(E)':>16} {'min eig sym(MP)':>16} {'max eig sym(MP)':>16}"
+    )
+    for report in reports:
+        print(
+            f"{report.label:<36} {report.relative_euclidean_asymmetry:>14.3e} {report.relative_block_mass_asymmetry:>14.3e} "
+            f"{report.min_sym_eig_euclidean:>16.3e} {report.max_sym_eig_euclidean:>16.3e} "
+            f"{report.min_sym_eig_block_mass:>16.3e} {report.max_sym_eig_block_mass:>16.3e}"
+        )
+
+
+def print_dense_block_basis_probe_reports(reports: list[DenseBlockBasisProbeReport]):
+    print("-" * 112)
+    print(
+        f"{'label':<36} {'min e_i^T P e_i':>18} {'max e_i^T P e_i':>18} {'min e_i^T MPe_i':>18} {'max e_i^T MPe_i':>18}"
+    )
+    for report in reports:
+        print(
+            f"{report.label:<36} {report.min_basis_quadratic_euclidean:>18.3e} {report.max_basis_quadratic_euclidean:>18.3e} "
+            f"{report.min_basis_quadratic_block_mass:>18.3e} {report.max_basis_quadratic_block_mass:>18.3e}"
+        )
+
+
 def diagnose_k3_schur_upper_preconditioners(
     seq,
     operators,
@@ -1626,6 +1808,58 @@ def diagnose_k3_schur_upper_preconditioners(
     return schur, reports
 
 
+def probe_k3_schur_operator_spectrum(
+    seq,
+    operators,
+    *,
+    dirichlet: bool,
+) -> tuple[jnp.ndarray, jnp.ndarray, K3SchurSpectrumReport]:
+    schur_apply = build_k3_tensor_mass_induced_schur_apply(
+        seq,
+        operators,
+        dirichlet=dirichlet,
+    )
+    n_upper = seq.n3_dbc if dirichlet else seq.n3
+    schur_matrix = _symmetrize(_dense_operator_from_apply(schur_apply, n_upper))
+    jacobi_inverse = _symmetrize(
+        _dense_operator_from_apply(
+            lambda x: apply_mass_matrix_preconditioner(
+                seq,
+                operators,
+                x,
+                3,
+                dirichlet=dirichlet,
+                kind="jacobi",
+            ),
+            n_upper,
+        )
+    )
+    sqrt_diag = jnp.sqrt(jnp.clip(jnp.diag(jacobi_inverse), a_min=0.0))
+    smoother_half = jnp.diag(sqrt_diag)
+    schur_matrix = _symmetrize(smoother_half @ schur_matrix @ smoother_half)
+    eigvals = jnp.linalg.eigvalsh(schur_matrix)
+    abs_eigvals = jnp.abs(eigvals)
+    scale = jnp.max(abs_eigvals)
+    safe_scale = jnp.where(scale > 0, scale, 1.0)
+    zero_tol = 1e-12 * safe_scale
+    nonzero_mask = abs_eigvals > zero_tol
+    min_nonzero_abs_eig = jnp.where(
+        jnp.any(nonzero_mask),
+        jnp.min(abs_eigvals[nonzero_mask]),
+        0.0,
+    )
+    report = K3SchurSpectrumReport(
+        label="jacobi-precond-schur",
+        size=n_upper,
+        min_eig=float(jnp.min(eigvals)),
+        max_eig=float(jnp.max(eigvals)),
+        min_nonzero_abs_eig=float(min_nonzero_abs_eig),
+        max_abs_eig=float(jnp.max(abs_eigvals)),
+        zero_count=int(jnp.sum(~nonzero_mask)),
+    )
+    return schur_matrix, eigvals, report
+
+
 def print_k3_schur_approximation_reports(reports: list[K3SchurApproximationReport]):
     print("-" * 112)
     print(
@@ -1636,6 +1870,17 @@ def print_k3_schur_approximation_reports(reports: list[K3SchurApproximationRepor
             f"{report.label:<48} {report.inverse_relative_error:>16.3e} {report.solve_relative_error:>16.3e} "
             f"{report.min_precond_eig:>16.3e} {report.max_precond_eig:>16.3e}"
         )
+
+
+def print_k3_schur_spectrum_report(report: K3SchurSpectrumReport):
+    print("-" * 112)
+    print(
+        f"{'label':<24} {'size':>8} {'min eig':>16} {'max eig':>16} {'min |nonzero eig|':>20} {'max |eig|':>16} {'#zero':>10}"
+    )
+    print(
+        f"{report.label:<24} {report.size:>8d} {report.min_eig:>16.3e} {report.max_eig:>16.3e} "
+        f"{report.min_nonzero_abs_eig:>20.3e} {report.max_abs_eig:>16.3e} {report.zero_count:>10d}"
+    )
 
 
 def build_diagonal_inverse_from_matrix(matrix: jnp.ndarray, *, rtol: float = 1e-12) -> jnp.ndarray:
@@ -1771,7 +2016,163 @@ def build_k3_richardson_upper_preconditioners(
     return upper_preconditioners, parameters
 
 
+def build_k3_dense_symmetric_richardson_upper_preconditioners(
+    seq,
+    operators,
+    *,
+    dirichlet: bool,
+    richardson_steps: tuple[int, ...],
+    power_iterations: int = 10,
+    damping_safety: float = 0.8,
+) -> tuple[dict[str, callable], dict[str, dict[str, float | int]], jnp.ndarray]:
+    schur = _symmetrize(jnp.asarray(dense_hodge_laplacian(seq, operators, 3, dirichlet=dirichlet)))
+    n_upper = schur.shape[0]
+    jacobi_inverse = _symmetrize(
+        _dense_operator_from_apply(
+            lambda x: apply_mass_matrix_preconditioner(
+                seq,
+                operators,
+                x,
+                3,
+                dirichlet=dirichlet,
+                kind="jacobi",
+            ),
+            n_upper,
+        )
+    )
+
+    upper_preconditioners = {}
+    parameters = {}
+    for steps in richardson_steps:
+        data = build_symmetric_richardson_inverse(
+            schur,
+            jacobi_inverse,
+            steps=steps,
+            power_iterations=power_iterations,
+            damping_safety=damping_safety,
+        )
+        matrix = _symmetrize(jnp.asarray(data["matrix"]))
+        label = f"upper-schur-sym-richardson-{steps}"
+        upper_preconditioners[label] = lambda x, dense_matrix=matrix: dense_matrix @ x
+        parameters[label] = {
+            "steps": int(data["steps"]),
+            "omega": float(data["omega"]),
+            "max_eig": float(data["max_eig"]),
+        }
+
+    return upper_preconditioners, parameters, schur
+
+
+def build_k3_chebyshev_upper_preconditioners(
+    seq,
+    operators,
+    *,
+    dirichlet: bool,
+    chebyshev_steps: tuple[int, ...],
+    power_iterations: int = 10,
+    min_eig_fraction: float = 1e-3,
+) -> tuple[dict[str, callable], dict[str, dict[str, float | int]], jnp.ndarray]:
+    n_upper = seq.n3_dbc if dirichlet else seq.n3
+    schur_apply = build_k3_tensor_mass_induced_schur_apply(
+        seq,
+        operators,
+        dirichlet=dirichlet,
+    )
+    jacobi_apply = lambda x: apply_mass_matrix_preconditioner(
+        seq,
+        operators,
+        x,
+        3,
+        dirichlet=dirichlet,
+        kind="jacobi",
+    )
+    max_eig = estimate_preconditioned_max_eigenvalue_apply(
+        schur_apply,
+        jacobi_apply,
+        n_upper,
+        n_iter=power_iterations,
+    )
+    min_eig = min_eig_fraction * max_eig if max_eig > 0.0 else min_eig_fraction
+
+    upper_preconditioners = {}
+    parameters = {}
+    for steps in chebyshev_steps:
+        apply = build_chebyshev_apply_preconditioner(
+            schur_apply,
+            jacobi_apply,
+            steps=steps,
+            min_eig=min_eig,
+            max_eig=max_eig,
+        )
+        label = f"upper-schur-chebyshev-{steps}"
+        upper_preconditioners[label] = apply
+        parameters[label] = {
+            "steps": int(steps),
+            "min_eig": float(min_eig),
+            "max_eig": float(max_eig),
+            "omega": 0.0,
+        }
+
+    return upper_preconditioners, parameters
+
+
 def build_k3_coupled_preconditioners(
+    seq,
+    operators,
+    *,
+    dirichlet: bool,
+    upper_preconditioners: dict[str, callable],
+) -> dict[str, callable]:
+    def lower_preconditioner(x: jnp.ndarray) -> jnp.ndarray:
+        return apply_mass_matrix_preconditioner(
+            seq,
+            operators,
+            x,
+            2,
+            dirichlet=dirichlet,
+            kind="tensor",
+        )
+
+    coupled_preconditioners = {}
+
+    for label, upper_preconditioner in upper_preconditioners.items():
+        coupled_label = label.replace("upper-", "coupled-", 1)
+
+        def apply(x: jnp.ndarray, upper_apply=upper_preconditioner) -> jnp.ndarray:
+            n_upper = seq.n3_dbc if dirichlet else seq.n3
+            u = x[:n_upper]
+            s = x[n_upper:]
+            m2_inv_s = lower_preconditioner(s)
+            d2_m2_inv_s = apply_derivative_matrix(
+                seq,
+                operators,
+                m2_inv_s,
+                2,
+                dirichlet_in=dirichlet,
+                dirichlet_out=dirichlet,
+            )
+            w_u = u + d2_m2_inv_s
+            w_s = s
+            y_u = upper_apply(w_u)
+            y_s = m2_inv_s
+            d2_t_y_u = apply_derivative_matrix(
+                seq,
+                operators,
+                y_u,
+                2,
+                dirichlet_in=dirichlet,
+                dirichlet_out=dirichlet,
+                transpose=True,
+            )
+            z_s = y_s + lower_preconditioner(d2_t_y_u)
+            return jnp.concatenate([y_u, z_s])
+
+        coupled_preconditioners[coupled_label] = apply
+
+    return coupled_preconditioners
+
+
+def build_k3_symmetric_coupled_preconditioners(
     seq,
     operators,
     *,
@@ -1806,19 +2207,19 @@ def build_k3_coupled_preconditioners(
                 dirichlet_out=dirichlet,
                 transpose=True,
             )
-            y_u = u
-            y_s = s - lower_preconditioner(d2_t_u)
-            z_u = upper_apply(y_u)
-            z_s = lower_preconditioner(y_s)
-            lift = apply_derivative_matrix(
+            w_u = u
+            w_s = s - d2_t_u
+            y_u = upper_apply(w_u)
+            y_s = lower_preconditioner(w_s)
+            z_u = y_u - apply_derivative_matrix(
                 seq,
                 operators,
-                z_s,
+                y_s,
                 2,
                 dirichlet_in=dirichlet,
                 dirichlet_out=dirichlet,
             )
-            return jnp.concatenate([z_u - lift, z_s])
+            return jnp.concatenate([z_u, y_s])
 
         coupled_preconditioners[coupled_label] = apply
 
@@ -1827,11 +2228,20 @@ def build_k3_coupled_preconditioners(
 
 def print_k3_richardson_parameter_reports(parameters: dict[str, dict[str, float | int]]):
     print("-" * 112)
-    print(f"{'label':<40} {'steps':>8} {'omega':>16} {'max eig':>16}")
-    for label, data in parameters.items():
-        print(
-            f"{label:<40} {int(data['steps']):>8d} {float(data['omega']):>16.3e} {float(data['max_eig']):>16.3e}"
-        )
+    show_min_eig = any("min_eig" in data for data in parameters.values())
+    if show_min_eig:
+        print(f"{'label':<40} {'steps':>8} {'omega':>16} {'min eig':>16} {'max eig':>16}")
+        for label, data in parameters.items():
+            min_eig = float(data.get("min_eig", 0.0))
+            print(
+                f"{label:<40} {int(data['steps']):>8d} {float(data['omega']):>16.3e} {min_eig:>16.3e} {float(data['max_eig']):>16.3e}"
+            )
+    else:
+        print(f"{'label':<40} {'steps':>8} {'omega':>16} {'max eig':>16}")
+        for label, data in parameters.items():
+            print(
+                f"{label:<40} {int(data['steps']):>8d} {float(data['omega']):>16.3e} {float(data['max_eig']):>16.3e}"
+            )
 
 
 def _dense_spd_matrix_sqrt(matrix: jnp.ndarray, *, tol: float = 1e-12) -> jnp.ndarray:
@@ -1996,7 +2406,7 @@ K3_PLOT_DATA = build_k3_plot_data(SEQ, OPERATORS)
 
 
 # %% Metric-factor CP-ALS on the quadrature-grid inverse-Jacobian tensor
-METRIC_CP_RANKS = (1, 2, 3, 4, 5)
+METRIC_CP_RANKS = (1, 2, 3, 4)
 K3_METRIC_CP = {}
 reports = []
 metric_tensor = k3_metric_tensor(SEQ)
@@ -2041,7 +2451,7 @@ TENSOR_OPERATOR_CACHE = {
 }
 
 
-# %% Assemble the extra tensor blocks needed for the k=3 saddle/HX experiment
+# %% Assemble the extra tensor blocks needed for the k=3 saddle/tensor experiment
 K3_SADDLE_OPERATORS = assemble_tensor_mass_preconditioner(
     SEQ,
     operators=OPERATORS,
@@ -2096,9 +2506,10 @@ for dirichlet in (False,):
 # print_k2_stiffness_kronecker_approximation_reports(K2_STIFFNESS_KRONECKER_REPORTS)
 
 # %%
-K3_RICHARDSON_STEPS = (4, 8, 16, 32)
-K3_RICHARDSON_POWER_ITERATIONS = 20
+K3_RICHARDSON_STEPS = (2, 4, 8)
+K3_RICHARDSON_POWER_ITERATIONS = 30
 K3_RICHARDSON_DAMPING_SAFETY = 0.8
+K3_CHEBYSHEV_MIN_EIG_FRACTION = 1e-3
 K3_RICHARDSON_UPPERS, K3_RICHARDSON_PARAMETERS = build_k3_richardson_upper_preconditioners(
     SEQ,
     K3_SADDLE_OPERATORS,
@@ -2107,15 +2518,31 @@ K3_RICHARDSON_UPPERS, K3_RICHARDSON_PARAMETERS = build_k3_richardson_upper_preco
     power_iterations=K3_RICHARDSON_POWER_ITERATIONS,
     damping_safety=K3_RICHARDSON_DAMPING_SAFETY,
 )
+K3_CHEBYSHEV_UPPERS, K3_CHEBYSHEV_PARAMETERS = build_k3_chebyshev_upper_preconditioners(
+    SEQ,
+    K3_SADDLE_OPERATORS,
+    dirichlet=False,
+    chebyshev_steps=K3_RICHARDSON_STEPS,
+    power_iterations=K3_RICHARDSON_POWER_ITERATIONS,
+    min_eig_fraction=K3_CHEBYSHEV_MIN_EIG_FRACTION,
+)
+K3_UPPER_PRECONDITIONERS = {
+    **K3_RICHARDSON_UPPERS,
+    **K3_CHEBYSHEV_UPPERS,
+}
+K3_UPPER_PARAMETERS = {
+    **K3_RICHARDSON_PARAMETERS,
+    **K3_CHEBYSHEV_PARAMETERS,
+}
 K3_COUPLED_PRECONDITIONERS = build_k3_coupled_preconditioners(
     SEQ,
     K3_SADDLE_OPERATORS,
     dirichlet=False,
-    upper_preconditioners=K3_RICHARDSON_UPPERS,
+    upper_preconditioners=K3_UPPER_PRECONDITIONERS,
 )
 print("=" * 112)
-print("k=3 Richardson upper-block parameters, dirichlet=False")
-print_k3_richardson_parameter_reports(K3_RICHARDSON_PARAMETERS)
+print("k=3 Richardson/Chebyshev upper-block parameters, dirichlet=False")
+print_k3_richardson_parameter_reports(K3_UPPER_PARAMETERS)
 
 
 # %% k=3 saddle solve with Jacobi, Schur-Richardson, and coupled SPD blocks
@@ -2123,14 +2550,73 @@ K3_LAPLACE_BENCHMARKS_RICHARDSON = benchmark_k3_saddle_preconditioners(
     SEQ,
     K3_SADDLE_OPERATORS,
     dirichlet=False,
-    extra_upper_preconditioners=K3_RICHARDSON_UPPERS,
+    extra_upper_preconditioners=K3_UPPER_PRECONDITIONERS,
     extra_block_preconditioners=K3_COUPLED_PRECONDITIONERS,
     n_rhs=8,
     seed=0,
 )
 print("=" * 112)
-print("k=3 saddle benchmark: jacobi, Schur-Richardson, and coupled SPD blocks, dirichlet=False")
+print("k=3 saddle benchmark: jacobi, Schur-Richardson/Chebyshev, and coupled SPD blocks, dirichlet=False")
 print_k3_saddle_benchmark_reports(K3_LAPLACE_BENCHMARKS_RICHARDSON)
+
+
+# %% k=3 saddle rank sweep for the k=2 mass inverse inside the Schur/coupled blocks
+K3_SADDLE_RANK_SWEEP = (1, 2, 3, 4)
+K3_SADDLE_RANK_SWEEP_OPERATORS = {}
+K3_SADDLE_RANK_SWEEP_PARAMETERS = {}
+K3_SADDLE_RANK_SWEEP_BENCHMARKS = {}
+for rank in K3_SADDLE_RANK_SWEEP:
+    saddle_operators = assemble_tensor_mass_preconditioner(
+        SEQ,
+        operators=OPERATORS,
+        ks=(0, 2, 3),
+        rank=rank,
+        cp_kwargs=TENSOR_CP_KWARGS,
+    )
+    upper_preconditioners, richardson_parameters = build_k3_richardson_upper_preconditioners(
+        SEQ,
+        saddle_operators,
+        dirichlet=False,
+        richardson_steps=K3_RICHARDSON_STEPS,
+        power_iterations=K3_RICHARDSON_POWER_ITERATIONS,
+        damping_safety=K3_RICHARDSON_DAMPING_SAFETY,
+    )
+    chebyshev_preconditioners, chebyshev_parameters = build_k3_chebyshev_upper_preconditioners(
+        SEQ,
+        saddle_operators,
+        dirichlet=False,
+        chebyshev_steps=K3_RICHARDSON_STEPS,
+        power_iterations=K3_RICHARDSON_POWER_ITERATIONS,
+        min_eig_fraction=K3_CHEBYSHEV_MIN_EIG_FRACTION,
+    )
+    upper_preconditioners = {
+        **upper_preconditioners,
+        **chebyshev_preconditioners,
+    }
+    coupled_preconditioners = build_k3_coupled_preconditioners(
+        SEQ,
+        saddle_operators,
+        dirichlet=False,
+        upper_preconditioners=upper_preconditioners,
+    )
+    reports = benchmark_k3_saddle_preconditioners(
+        SEQ,
+        saddle_operators,
+        dirichlet=False,
+        extra_upper_preconditioners=upper_preconditioners,
+        extra_block_preconditioners=coupled_preconditioners,
+        n_rhs=8,
+        seed=0,
+    )
+    K3_SADDLE_RANK_SWEEP_OPERATORS[rank] = saddle_operators
+    K3_SADDLE_RANK_SWEEP_PARAMETERS[rank] = {
+        **richardson_parameters,
+        **chebyshev_parameters,
+    }
+    K3_SADDLE_RANK_SWEEP_BENCHMARKS[rank] = reports
+    print("=" * 112)
+    print(f"k=3 saddle rank sweep: tensor saddle rank={rank}, dirichlet=False")
+    print_k3_saddle_benchmark_reports(reports)
 
 
 # %% Matrix-free symmetry / PSD checks for the coupled saddle preconditioners
@@ -2165,18 +2651,85 @@ print("=" * 112)
 print("k=3 coupled preconditioner checks: block FEM-mass symmetry / positivity probes")
 print_preconditioner_property_reports(K3_COUPLED_PRECONDITIONER_FEM_REPORTS)
 
+# %%
+K3_COUPLED_PRECONDITIONER_DENSE_MATRICES, K3_BLOCK_MASS_MATRIX = reconstruct_dense_block_preconditioner_matrices(
+    SEQ,
+    K3_SADDLE_OPERATORS,
+    dirichlet=False,
+    block_preconditioners=K3_COUPLED_PRECONDITIONERS,
+)
+K3_COUPLED_PRECONDITIONER_BASIS_REPORTS = diagnose_dense_block_basis_probes(
+    K3_COUPLED_PRECONDITIONER_DENSE_MATRICES,
+    K3_BLOCK_MASS_MATRIX,
+)
+print("=" * 112)
+print("k=3 coupled preconditioner checks: unit-basis probes from reconstructed dense matrices")
+print_dense_block_basis_probe_reports(K3_COUPLED_PRECONDITIONER_BASIS_REPORTS)
+
+K3_COUPLED_PRECONDITIONER_DENSE_REPORTS = diagnose_dense_block_preconditioners(
+    SEQ,
+    K3_SADDLE_OPERATORS,
+    dirichlet=False,
+    block_preconditioners=K3_COUPLED_PRECONDITIONERS,
+)
+print("=" * 112)
+print("k=3 coupled preconditioner checks: exact dense asymmetry and symmetric-part spectra")
+print_dense_block_preconditioner_reports(K3_COUPLED_PRECONDITIONER_DENSE_REPORTS)
+
+
+# %% Optional: dense symmetric upper/coupled debug comparison
+# K3_DENSE_SYMMETRIC_UPPERS, K3_DENSE_SYMMETRIC_PARAMETERS, _ = build_k3_dense_symmetric_richardson_upper_preconditioners(
+#     SEQ,
+#     K3_SADDLE_OPERATORS,
+#     dirichlet=False,
+#     richardson_steps=K3_RICHARDSON_STEPS,
+#     power_iterations=K3_RICHARDSON_POWER_ITERATIONS,
+#     damping_safety=K3_RICHARDSON_DAMPING_SAFETY,
+# )
+# K3_SYMMETRIC_COUPLED_PRECONDITIONERS = build_k3_symmetric_coupled_preconditioners(
+#     SEQ,
+#     K3_SADDLE_OPERATORS,
+#     dirichlet=False,
+#     upper_preconditioners=K3_DENSE_SYMMETRIC_UPPERS,
+# )
+# print("=" * 112)
+# print("k=3 dense symmetric upper-block parameters, dirichlet=False")
+# print_k3_richardson_parameter_reports(K3_DENSE_SYMMETRIC_PARAMETERS)
+# K3_SYMMETRIC_COUPLED_BENCHMARKS = benchmark_k3_saddle_preconditioners(
+#     SEQ,
+#     K3_SADDLE_OPERATORS,
+#     dirichlet=False,
+#     extra_block_preconditioners=K3_SYMMETRIC_COUPLED_PRECONDITIONERS,
+#     n_rhs=8,
+#     seed=0,
+# )
+# print("=" * 112)
+# print("k=3 saddle benchmark: dense symmetric coupled Richardson blocks, dirichlet=False")
+# print_k3_saddle_benchmark_reports(K3_SYMMETRIC_COUPLED_BENCHMARKS)
+
 
 # %% Dense Schur-complement diagnostics for Jacobi and Richardson upper blocks
 K3_SCHUR_MATRIX, K3_SCHUR_REPORTS = diagnose_k3_schur_upper_preconditioners(
     SEQ,
     K3_SADDLE_OPERATORS,
     dirichlet=False,
-    upper_preconditioners=K3_RICHARDSON_UPPERS,
+    upper_preconditioners=K3_UPPER_PRECONDITIONERS,
 )
 print("=" * 112)
-print("k=3 dense Schur-complement diagnostics: jacobi vs Richardson, dirichlet=False")
+print("k=3 dense Schur-complement diagnostics: jacobi vs Richardson/Chebyshev, dirichlet=False")
 print(f"schur size: {K3_SCHUR_MATRIX.shape[0]}")
 print_k3_schur_approximation_reports(K3_SCHUR_REPORTS)
+
+# %%
+
+K3_SCHUR_PROBED_MATRIX, K3_SCHUR_PROBED_EIGVALS, K3_SCHUR_PROBED_REPORT = probe_k3_schur_operator_spectrum(
+    SEQ,
+    K3_SADDLE_OPERATORS,
+    dirichlet=False,
+)
+print("=" * 112)
+print("k=3 Jacobi-preconditioned Schur operator from unit-vector probes, dirichlet=False")
+print_k3_schur_spectrum_report(K3_SCHUR_PROBED_REPORT)
 
 
 # %% k=2 stiffness benchmark on rhs in range(div^T): pure Richardson vs surgery-Schur + bulk Richardson

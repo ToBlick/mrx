@@ -189,3 +189,7 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# LaTeX paper sources are tracked; ignore only build artifacts.
+papers/
+

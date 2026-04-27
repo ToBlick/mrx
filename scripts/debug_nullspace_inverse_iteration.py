@@ -329,8 +329,7 @@ def _run_post_nullspace_shifted_exact_lift_compare(args, seq):
             lambda b: apply_inverse_shifted_hodge_laplacian(
                 seq, operators, b, 3, args.eps,
                 dirichlet=True,
-                precond_kind='jacobi',
-                lower_precond_kind='kronecker',
+                preconditioner='jacobi',
                 use_harmonic_coarse=True,
                 tol=seq.tol,
                 maxiter=args.post_exact_lift_compare_maxiter,
@@ -338,12 +337,11 @@ def _run_post_nullspace_shifted_exact_lift_compare(args, seq):
             ),
         ),
         (
-            "hx+coarse",
+            "tensor+coarse",
             lambda b: apply_inverse_shifted_hodge_laplacian(
                 seq, operators, b, 3, args.eps,
                 dirichlet=True,
-                precond_kind='hx',
-                lower_precond_kind='kronecker',
+                preconditioner='tensor',
                 use_harmonic_coarse=True,
                 tol=seq.tol,
                 maxiter=args.post_exact_lift_compare_maxiter,
@@ -412,7 +410,7 @@ def _run_shifted_k0_compare(args, seq):
         for variant_name, precond_kind, use_harmonic_coarse in (
             ("jacobi", "jacobi", False),
             ("jacobi+coarse", "jacobi", True),
-            ("hx+coarse", "hx", None),
+            ("tensor+coarse", "tensor", None),
         ):
             t0 = time.perf_counter()
             u, info = apply_inverse_shifted_hodge_laplacian(
@@ -422,7 +420,7 @@ def _run_shifted_k0_compare(args, seq):
                 0,
                 args.eps,
                 dirichlet=False,
-                precond_kind=precond_kind,
+                preconditioner=precond_kind,
                 use_harmonic_coarse=use_harmonic_coarse,
                 tol=seq.tol,
                 maxiter=args.k0_compare_maxiter,
@@ -456,9 +454,9 @@ def _run_case(args, seq, operators, k, dirichlet, n_vectors_override=None):
         )
         upper_label = args.precond_kind
         if args.eps > 0:
-            if args.precond_kind == "hx" and k == 3 and dirichlet:
-                upper_label = "shifted-hx+coarse"
-            elif args.precond_kind == "hx" and k == 0:
+            if args.precond_kind == "tensor" and k == 3 and dirichlet:
+                upper_label = "shifted-tensor+coarse"
+            elif args.precond_kind == "tensor" and k == 0:
                 upper_label = "shifted-kron"
             else:
                 upper_label = "shifted-jacobi"
@@ -531,7 +529,7 @@ def _run_case(args, seq, operators, k, dirichlet, n_vectors_override=None):
                 args.eps,
                 dirichlet=dirichlet,
                 guess=v,
-                precond_kind=args.precond_kind,
+                preconditioner=args.precond_kind,
                 tol=seq.tol,
                 maxiter=args.inner_maxiter,
                 return_info=True,
@@ -650,8 +648,8 @@ def _build_config():
         raise ValueError("PRINT_EVERY must be >= 1")
     if K not in (0, 1, 2, 3):
         raise ValueError("K must be one of 0, 1, 2, 3")
-    if PRECOND_KIND not in ("auto", "none", "jacobi", "hx"):
-        raise ValueError("PRECOND_KIND must be one of auto, none, jacobi, hx")
+    if PRECOND_KIND not in ("auto", "none", "jacobi", "tensor"):
+        raise ValueError("PRECOND_KIND must be one of auto, none, jacobi, tensor")
     if INNER_MAXITER < 1:
         raise ValueError("INNER_MAXITER must be >= 1")
     if POST_EXACT_LIFT_COMPARE_MAXITER < 1:

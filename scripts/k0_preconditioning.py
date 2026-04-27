@@ -51,18 +51,18 @@ jax.config.update("jax_enable_x64", True)
 # %% Configuration
 @dataclass(frozen=True)
 class ExperimentConfig:
-    ns: tuple[int, int, int] = (8, 8, 8)
-    p: int = 2
+    ns: tuple[int, int, int] = (6, 12, 4)
+    p: int = 3
     tol: float = 1e-9
     maxiter: int = 1000
     betti: tuple[int, int, int, int] = (1, 1, 0, 0)
     map_kind: str = "rotating_ellipse"
     torus_epsilon: float = 1.0 / 3.0
     torus_r0: float = 1.0
-    rotating_eps: float = 0.2
-    rotating_kappa: float = 1.1
+    rotating_eps: float = 0.3
+    rotating_kappa: float = 1.2
     rotating_r0: float = 1.0
-    rotating_nfp: int = 2
+    rotating_nfp: int = 3
 
 
 @dataclass
@@ -481,6 +481,53 @@ def _symmetrize(matrix: jnp.ndarray) -> jnp.ndarray:
     return 0.5 * (matrix + matrix.T)
 
 
+def estimate_preconditioned_max_eigenvalue_apply(
+    operator_apply,
+    smoother_apply,
+    size: int,
+    *,
+    n_iter: int = 10,
+    seed: int = 0,
+) -> float:
+    vector = jax.random.normal(jax.random.PRNGKey(seed), (size,), dtype=jnp.float64)
+
+    def operator_norm(x: jnp.ndarray) -> jnp.ndarray:
+        ax = operator_apply(x)
+        return jnp.sqrt(jnp.abs(jnp.vdot(x, ax).real))
+
+    vector = vector / jnp.where(operator_norm(vector) > 0, operator_norm(vector), 1.0)
+    rayleigh = 0.0
+    for _ in range(n_iter):
+        image = smoother_apply(operator_apply(vector))
+        image_norm = operator_norm(image)
+        safe_norm = jnp.where(image_norm > 0, image_norm, 1.0)
+        vector = image / safe_norm
+        rayleigh = float(jnp.vdot(vector, operator_apply(smoother_apply(operator_apply(vector)))).real)
+    return max(rayleigh, 0.0)
+
+
+def build_richardson_apply_preconditioner(
+    operator_apply,
+    smoother_apply,
+    *,
+    steps: int,
+    omega: float,
+):
+    if steps < 1:
+        raise ValueError("Richardson step count must be positive")
+
+    def apply(rhs: jnp.ndarray) -> jnp.ndarray:
+        x = jnp.zeros_like(rhs)
+        residual = rhs
+        for _ in range(steps):
+            correction = smoother_apply(residual)
+            x = x + omega * correction
+            residual = residual - omega * operator_apply(correction)
+        return x
+
+    return apply
+
+
 def build_dense_k0_block_preconditioner(
     reordered_matrix: jnp.ndarray,
     core_size: int,
@@ -528,7 +575,7 @@ def k0_stiffness_nullspace_vectors(mass_matrix: jnp.ndarray, dirichlet: bool):
     return [vector]
 
 
-def benchmark_dense_k0_stiffness_preconditioners(
+def benchmark_k0_hodge_preconditioners(
     seq,
     mass_plot_data,
     stiffness_plot_data,
@@ -537,6 +584,11 @@ def benchmark_dense_k0_stiffness_preconditioners(
     dirichlet: bool,
     n_rhs: int = 8,
     seed: int = 0,
+    tensor_ranks: tuple[int, ...] = (1, 3, 5),
+    richardson_steps: tuple[int, ...] = (4, 8, 16),
+    richardson_power_iterations: int = 20,
+    richardson_damping_safety: float = 0.8,
+    include_exact_block: bool = False,
 ) -> list[K0BenchmarkReport]:
     mass_reordered = mass_plot_data[dirichlet]["reordered"]
     reordered = stiffness_plot_data[dirichlet]["reordered"]
@@ -568,18 +620,49 @@ def benchmark_dense_k0_stiffness_preconditioners(
 
         return apply
 
+    def stiffness_apply(x: jnp.ndarray) -> jnp.ndarray:
+        return reordered @ x
+
+    def projected_stiffness_apply(x: jnp.ndarray) -> jnp.ndarray:
+        return project_dual(stiffness_apply(project_primal(x)))
+
+    jacobi_apply = make_projected_preconditioner(lambda x: diag_inv * x)
     labels = {
-        "jacobi": make_projected_preconditioner(lambda x: diag_inv * x),
-        "exact-block": make_projected_preconditioner(
+        "none": lambda x: x,
+        "jacobi": jacobi_apply,
+    }
+
+    richardson_max_eig = estimate_preconditioned_max_eigenvalue_apply(
+        projected_stiffness_apply,
+        jacobi_apply,
+        reordered.shape[0],
+        n_iter=richardson_power_iterations,
+        seed=seed + 610 + 100 * int(dirichlet),
+    )
+    richardson_omega = (
+        richardson_damping_safety / richardson_max_eig if richardson_max_eig > 0.0 else 1.0
+    )
+
+    for steps in richardson_steps:
+        labels[f"richardson-{steps}"] = build_richardson_apply_preconditioner(
+            projected_stiffness_apply,
+            jacobi_apply,
+            steps=steps,
+            omega=richardson_omega,
+        )
+
+    if include_exact_block:
+        labels["exact-block"] = make_projected_preconditioner(
             build_dense_k0_block_preconditioner(
                 reordered,
                 core_size,
                 bulk_exact_inv,
                 schur_null_vector=schur_null_vector,
             )
-        ),
-    }
-    for rank, model_data in stiffness_model_cache[dirichlet].items():
+        )
+
+    for rank in tensor_ranks:
+        model_data = stiffness_model_cache[dirichlet][rank]
         bulk_model = model_data["bulk_model"]
         bulk_model_inv = _symmetrize(jnp.linalg.inv(bulk_model))
         block_apply = build_dense_k0_block_preconditioner(
@@ -588,7 +671,7 @@ def benchmark_dense_k0_stiffness_preconditioners(
             bulk_model_inv,
             schur_null_vector=schur_null_vector,
         )
-        labels[f"diag-r{rank}"] = make_projected_preconditioner(block_apply)
+        labels[f"tensor-r{rank}"] = make_projected_preconditioner(block_apply)
 
     rhs_batch = jax.random.normal(
         jax.random.PRNGKey(seed + 300 * int(dirichlet)),
@@ -597,15 +680,12 @@ def benchmark_dense_k0_stiffness_preconditioners(
     )
     rhs_batch = jax.vmap(project_dual)(rhs_batch)
 
-    def A_mv(x):
-        return reordered @ x
-
     reports = []
     for label, preconditioner in labels.items():
         @jax.jit
         def solve(rhs):
             x, info = solve_singular_cg(
-                A_mv,
+                stiffness_apply,
                 rhs,
                 mass_matvec=M_mv,
                 precond_matvec=preconditioner,
@@ -614,7 +694,7 @@ def benchmark_dense_k0_stiffness_preconditioners(
                 maxiter=seq.maxiter,
             )
             rhs_proj = project_dual(rhs)
-            residual = project_dual(A_mv(x) - rhs)
+            residual = project_dual(stiffness_apply(x) - rhs)
             relative_residual = jnp.linalg.norm(residual) / jnp.where(
                 jnp.linalg.norm(rhs_proj) > 0,
                 jnp.linalg.norm(rhs_proj),
@@ -1061,6 +1141,9 @@ def benchmark_k0_preconditioners(
     n_rhs: int = 8,
     seed: int = 0,
     tensor_ranks: tuple[int, ...] = (1, 3, 5),
+    richardson_steps: tuple[int, ...] = (4, 8, 16),
+    richardson_power_iterations: int = 20,
+    richardson_damping_safety: float = 0.8,
     tensor_operator_cache: dict[int, object] | None = None,
 ) -> list[K0BenchmarkReport]:
     rhs_size = seq.n0_dbc if dirichlet else seq.n0
@@ -1070,11 +1153,37 @@ def benchmark_k0_preconditioners(
         dtype=jnp.float64,
     )
 
-    labels = {
-        "jacobi": lambda x: apply_mass_matrix_preconditioner(
+    def mass_apply(x: jnp.ndarray) -> jnp.ndarray:
+        return apply_mass_matrix(seq, operators, x, 0, dirichlet=dirichlet)
+
+    def jacobi_apply(x: jnp.ndarray) -> jnp.ndarray:
+        return apply_mass_matrix_preconditioner(
             seq, operators, x, 0, dirichlet=dirichlet, kind="jacobi"
-        ),
+        )
+
+    richardson_max_eig = estimate_preconditioned_max_eigenvalue_apply(
+        mass_apply,
+        jacobi_apply,
+        rhs_size,
+        n_iter=richardson_power_iterations,
+        seed=seed + 310,
+    )
+    richardson_omega = (
+        richardson_damping_safety / richardson_max_eig if richardson_max_eig > 0.0 else 1.0
+    )
+
+    labels = {
+        "none": lambda x: x,
+        "jacobi": jacobi_apply,
     }
+
+    for steps in richardson_steps:
+        labels[f"richardson-{steps}"] = build_richardson_apply_preconditioner(
+            mass_apply,
+            jacobi_apply,
+            steps=steps,
+            omega=richardson_omega,
+        )
 
     for tensor_rank in tensor_ranks:
         tensor_operators = tensor_operator_cache[tensor_rank] if tensor_operator_cache is not None else assemble_tensor_mass_preconditioner(
@@ -1107,11 +1216,11 @@ def benchmark_k0_preconditioners(
 def print_k0_benchmark_reports(reports: list[K0BenchmarkReport]):
     print("-" * 112)
     print(
-        f"{'label':<16} {'avg iters':>10} {'std':>8} {'max':>6} {'avg ms':>10} {'std ms':>10} {'max ms':>10} {'avg relres':>14} {'std relres':>14} {'max relres':>14}"
+        f"{'label':<20} {'avg iters':>10} {'std':>8} {'max':>6} {'avg ms':>10} {'std ms':>10} {'max ms':>10} {'avg relres':>14} {'std relres':>14} {'max relres':>14}"
     )
     for report in reports:
         print(
-            f"{report.label:<16} {report.avg_iters:>10.2f} {report.std_iters:>8.2f} {report.max_iters:>6d} "
+            f"{report.label:<20} {report.avg_iters:>10.2f} {report.std_iters:>8.2f} {report.max_iters:>6d} "
             f"{report.avg_time_ms:>10.2f} {report.std_time_ms:>10.2f} {report.max_time_ms:>10.2f} "
             f"{report.avg_relative_residual:>14.3e} {report.std_relative_residual:>14.3e} {report.max_relative_residual:>14.3e}"
         )
@@ -1166,9 +1275,12 @@ for dirichlet in (False, True):
 
 
 # %% Benchmark k=0 stiffness preconditioners against Jacobi and diagonal bulk surrogates
-K0_STIFFNESS_BENCHMARKS = {}
+K0_RICHARDSON_STEPS = (4, 8, 16)
+K0_RICHARDSON_POWER_ITERATIONS = 20
+K0_RICHARDSON_DAMPING_SAFETY = 0.8
+K0_HODGE_BENCHMARKS = {}
 for dirichlet in (False, True):
-    reports = benchmark_dense_k0_stiffness_preconditioners(
+    reports = benchmark_k0_hodge_preconditioners(
         SEQ,
         K0_PLOT_DATA,
         K0_STIFFNESS_PLOT_DATA,
@@ -1176,10 +1288,14 @@ for dirichlet in (False, True):
         dirichlet=dirichlet,
         n_rhs=8,
         seed=0,
+        tensor_ranks=K0_STIFFNESS_DIAGONAL_RANKS,
+        richardson_steps=K0_RICHARDSON_STEPS,
+        richardson_power_iterations=K0_RICHARDSON_POWER_ITERATIONS,
+        richardson_damping_safety=K0_RICHARDSON_DAMPING_SAFETY,
     )
-    K0_STIFFNESS_BENCHMARKS[dirichlet] = reports
+    K0_HODGE_BENCHMARKS[dirichlet] = reports
     print("=" * 112)
-    print(f"k=0 stiffness preconditioner benchmark: dirichlet={dirichlet}")
+    print(f"k=0 hodge-laplacian benchmark: dirichlet={dirichlet}")
     print_k0_benchmark_reports(reports)
 
 
@@ -1274,6 +1390,9 @@ for dirichlet in (False, True):
         n_rhs=8,
         seed=0,
         tensor_ranks=TENSOR_BENCHMARK_RANKS,
+        richardson_steps=K0_RICHARDSON_STEPS,
+        richardson_power_iterations=K0_RICHARDSON_POWER_ITERATIONS,
+        richardson_damping_safety=K0_RICHARDSON_DAMPING_SAFETY,
         tensor_operator_cache=TENSOR_OPERATOR_CACHE,
     )
     K0_BENCHMARKS[dirichlet] = reports

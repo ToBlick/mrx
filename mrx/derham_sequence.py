@@ -27,7 +27,10 @@ from mrx.operators import \
     apply_hodge_laplacian_preconditioner_ops
 from mrx.operators import apply_incidence_matrix as apply_incidence_matrix_ops
 from mrx.operators import \
-    apply_inverse_diffusion as apply_inverse_diffusion_ops
+    apply_inverse_mass_plus_eps_laplace_matrix as \
+    apply_inverse_mass_plus_eps_laplace_matrix_ops
+from mrx.operators import \
+    apply_inverse_hodge_laplacian as apply_inverse_hodge_laplacian_ops
 from mrx.operators import \
     apply_inverse_mass_matrix as apply_inverse_mass_matrix_ops
 from mrx.operators import \
@@ -39,7 +42,8 @@ from mrx.operators import \
 from mrx.operators import \
     apply_projection_matrix as apply_projection_matrix_ops
 from mrx.operators import apply_stiffness as apply_stiffness_ops
-from mrx.operators import (assemble_all_operators,
+from mrx.operators import (SequenceOperators,
+                           assemble_all_operators,
                            assemble_derivative_operators,
                            assemble_hodge_operators,
                            assemble_incidence_operators,
@@ -116,6 +120,33 @@ class SequenceGeometry(eqx.Module):
         return cls(spline_map, metric_jkl, metric_inv_jkl, jacobian_j)
 
 
+_EXTRACTION_OPERATOR_NAMES = (
+    'e0', 'e0_T', 'e0_dbc', 'e0_dbc_T', 'e0_bc', 'e0_bc_T',
+    'e1', 'e1_T', 'e1_dbc', 'e1_dbc_T', 'e1_bc', 'e1_bc_T',
+    'e2', 'e2_T', 'e2_dbc', 'e2_dbc_T', 'e2_bc', 'e2_bc_T',
+    'e3', 'e3_T', 'e3_dbc', 'e3_dbc_T', 'e3_bc', 'e3_bc_T',
+)
+
+
+def _operator_bundle_field_property(name: str):
+    def getter(self):
+        return getattr(self._require_operators(), name)
+
+    def setter(self, value):
+        operators = self.get_operators()
+        if operators is None:
+            operators = SequenceOperators()
+        operators = eqx.tree_at(
+            lambda ops: getattr(ops, name),
+            operators,
+            value,
+            is_leaf=lambda x: x is None,
+        )
+        self.operators = operators
+
+    return property(getter, setter)
+
+
 class DeRhamSequence():
     """Discrete de Rham sequence on a mapped 3-D domain.
 
@@ -184,6 +215,31 @@ class DeRhamSequence():
     d_basis_r_jk: jnp.ndarray
     d_basis_t_jk: jnp.ndarray
     d_basis_z_jk: jnp.ndarray
+
+    e0 = _operator_bundle_field_property('e0')
+    e0_T = _operator_bundle_field_property('e0_T')
+    e0_dbc = _operator_bundle_field_property('e0_dbc')
+    e0_dbc_T = _operator_bundle_field_property('e0_dbc_T')
+    e0_bc = _operator_bundle_field_property('e0_bc')
+    e0_bc_T = _operator_bundle_field_property('e0_bc_T')
+    e1 = _operator_bundle_field_property('e1')
+    e1_T = _operator_bundle_field_property('e1_T')
+    e1_dbc = _operator_bundle_field_property('e1_dbc')
+    e1_dbc_T = _operator_bundle_field_property('e1_dbc_T')
+    e1_bc = _operator_bundle_field_property('e1_bc')
+    e1_bc_T = _operator_bundle_field_property('e1_bc_T')
+    e2 = _operator_bundle_field_property('e2')
+    e2_T = _operator_bundle_field_property('e2_T')
+    e2_dbc = _operator_bundle_field_property('e2_dbc')
+    e2_dbc_T = _operator_bundle_field_property('e2_dbc_T')
+    e2_bc = _operator_bundle_field_property('e2_bc')
+    e2_bc_T = _operator_bundle_field_property('e2_bc_T')
+    e3 = _operator_bundle_field_property('e3')
+    e3_T = _operator_bundle_field_property('e3_T')
+    e3_dbc = _operator_bundle_field_property('e3_dbc')
+    e3_dbc_T = _operator_bundle_field_property('e3_dbc_T')
+    e3_bc = _operator_bundle_field_property('e3_bc')
+    e3_bc_T = _operator_bundle_field_property('e3_bc_T')
 
     def __init__(self, ns, ps, q, types, map, polar, tol=1e-12, maxiter=10_000,
                  r_scale=1.0, n_inner=5, betti_numbers=(1, 1, 0, 0)):
@@ -414,6 +470,20 @@ class DeRhamSequence():
         If ``operators`` has no nullspace arrays yet, they are initialised to
         zeros with shapes derived from ``self.betti_numbers``.
         """
+        current = self.get_operators()
+        if operators is not None and current is not None:
+            replacements = {
+                name: getattr(current, name)
+                for name in _EXTRACTION_OPERATOR_NAMES
+                if getattr(operators, name, None) is None and getattr(current, name, None) is not None
+            }
+            if replacements:
+                operators = eqx.tree_at(
+                    lambda ops: tuple(getattr(ops, name) for name in replacements),
+                    operators,
+                    tuple(replacements.values()),
+                    is_leaf=lambda x: x is None,
+                )
         if operators is not None and getattr(operators, 'null_0', None) is None:
             operators = init_nullspaces(self, operators,
                                         betti_numbers=self.betti_numbers)
@@ -516,19 +586,21 @@ class DeRhamSequence():
         self.reference_m0_sp_diaginv_dbc = 1.0 / diag_EAET(
             self.e0_dbc, self.reference_m0_sp, self.e0_dbc_T)
 
-    def apply_inverse_reference_mass_matrix(self, v, dirichlet=True, guess=None):
+    def apply_inverse_reference_mass_matrix(self, rhs, dirichlet=True, guess=None,
+                                            tol=None, maxiter=None):
         """Apply the inverse of the cached reference-domain 0-form mass matrix."""
         self._require_reference_mass_matrix()
         return solve_singular_cg(
             lambda x: self._apply_reference_mass_matrix(
                 x, dirichlet=dirichlet),
-            v,
+            rhs,
             mass_matvec=lambda x: self._apply_reference_mass_matrix(
                 x, dirichlet=dirichlet),
             precond_matvec=lambda x: self._apply_reference_mass_matrix_preconditioner(
                 x, dirichlet=dirichlet),
             x0=guess,
-            tol=self.tol, maxiter=self.maxiter)[0]
+            tol=self.tol if tol is None else tol,
+            maxiter=self.maxiter if maxiter is None else maxiter)[0]
 
     def bc_lift(self, g: jnp.ndarray, k: int) -> jnp.ndarray:
         """Embed boundary DOF values into the full spline basis space.
@@ -885,18 +957,23 @@ class DeRhamSequence():
         return apply_mass_matrix_preconditioner_ops(
             self, operators, v, k, dirichlet=dirichlet, kind=kind)
 
-    def apply_inverse_mass_matrix(self, v, k, dirichlet=True, guess=None,
-                                  operators=None, precond='auto'):
+    def apply_inverse_mass_matrix(self, rhs, k, dirichlet=True, guess=None,
+                                  operators=None, tol=None, maxiter=None,
+                                  preconditioner='auto',
+                                  return_info=False):
         """
-        Apply the inverse of the sparse mass matrix Mk⁻¹ for k-forms to a vector v,
-        solved via CG with Jacobi preconditioning. An optional initial guess can be
-        provided to warm-start the solver.
+        Apply the inverse of the sparse mass matrix Mk⁻¹ for k-forms to a right-hand side,
+        solved via CG with a structured mass preconditioner. An optional initial
+        guess can be provided to warm-start the solver.
         """
         operators = self._require_operators(operators)
         return apply_inverse_mass_matrix_ops(
-            self, operators, v, k,
+            self, operators, rhs, k,
             dirichlet=dirichlet, guess=guess,
-            tol=self.tol, maxiter=self.maxiter, precond=precond)
+            tol=self.tol if tol is None else tol,
+            maxiter=self.maxiter if maxiter is None else maxiter,
+            preconditioner=preconditioner,
+            return_info=return_info)
 
     def apply_mass_matrix(self, v, k, dirichlet=True, operators=None):
         """
@@ -980,10 +1057,12 @@ class DeRhamSequence():
         return apply_hodge_laplacian_approx_ops(
             self, operators, v, k, dirichlet=dirichlet)
 
-    def apply_diffusion(self, v, k, alpha, dirichlet=True):
-        """Apply (M_k + alpha * L_k) to a k-form vector v."""
-        return self.apply_mass_matrix(v, k, dirichlet=dirichlet) \
-            + alpha * self.apply_hodge_laplacian(v, k, dirichlet=dirichlet)
+    def apply_mass_plus_eps_laplace_matrix(self, v, k, eps, dirichlet=True, operators=None):
+        """Apply ``(M_k + eps * L_k)`` to a k-form vector."""
+        return self.apply_mass_matrix(
+            v, k, dirichlet=dirichlet, operators=operators) \
+            + eps * self.apply_hodge_laplacian(
+                v, k, dirichlet=dirichlet, operators=operators)
 
     def apply_stiffness(self, v, k, dirichlet=True, operators=None):
         """
@@ -1007,61 +1086,76 @@ class DeRhamSequence():
         return get_saddle_point_nullspaces(
             self, self._require_operators(), k, dirichlet)
 
-    def apply_inverse_hodge_laplacian(self, v, k, dirichlet=True, guess=None,
-                                      operators=None, precond_kind='auto',
+    def apply_inverse_hodge_laplacian(self, rhs, k, dirichlet=True, guess=None,
+                                      operators=None, tol=None, maxiter=None,
+                                      preconditioner='auto',
                                       return_info=False):
-        """Apply the inverse of the k-th Hodge Laplacian (δd)⁻¹ to a vector v."""
-        return self.apply_inverse_shifted_hodge_laplacian(
-            v, k, 0.0, dirichlet=dirichlet, guess=guess, operators=operators,
-            precond_kind=precond_kind, return_info=return_info)
+        """Apply the inverse of the k-th Hodge Laplacian (δd)⁻¹ to a right-hand side."""
+        operators = self._require_operators(operators)
+        return apply_inverse_hodge_laplacian_ops(
+            self, operators, rhs, k,
+            dirichlet=dirichlet, guess=guess,
+            tol=self.tol if tol is None else tol,
+            maxiter=self.maxiter if maxiter is None else maxiter,
+            preconditioner=preconditioner,
+            return_info=return_info)
 
-    def apply_inverse_shifted_hodge_laplacian(self, v, k, eps, dirichlet=True, guess=None,
-                                              operators=None, precond_kind='auto',
-                                              lower_precond_kind='auto',
+    def apply_inverse_shifted_hodge_laplacian(self, rhs, k, eps, dirichlet=True, guess=None,
+                                              operators=None, tol=None, maxiter=None,
+                                              preconditioner='auto',
                                               use_harmonic_coarse=None,
                                               return_info=False):
         """
-        Solve (L_k + eps * M_k) x = v for the k-form x.
+        Solve (L_k + eps * M_k) x = rhs for the k-form x.
 
         For eps=0 this reduces to the Hodge Laplacian solve; the system may be
         singular and nullspace deflation is applied automatically.
         For eps > 0 the system is nonsingular (shift-invert for L_k u = λ M_k u).
+        The shifted solve itself does not require precomputed nullspace data;
+        any harmonic coarse correction is optional and should stay disabled
+        while inverse iteration is still constructing those vectors.
 
-        For k=0: solved with CG on ``(S_0 + eps M_0) u = v``.
+        For k=0: solved with CG on ``(S_0 + eps M_0) u = rhs``.
         For k>=1: MINRES on the symmetric saddle-point form of L_k + eps M_k:
 
-            | S_k + eps*M_k    D_{k-1}   | | u |   | v |
+            | S_k + eps*M_k    D_{k-1}   | | u |   | rhs |
             | D_{k-1}^T       -M_{k-1}   | | σ | = | 0 |
         """
         operators = self._require_operators(operators)
         return apply_inverse_shifted_hodge_laplacian_ops(
-            self, operators, v, k, eps,
+            self, operators, rhs, k, eps,
             dirichlet=dirichlet, guess=guess,
-            tol=self.tol, maxiter=self.maxiter,
-            precond_kind=precond_kind,
-            lower_precond_kind=lower_precond_kind,
+            tol=self.tol if tol is None else tol,
+            maxiter=self.maxiter if maxiter is None else maxiter,
+            preconditioner=preconditioner,
             use_harmonic_coarse=use_harmonic_coarse,
             return_info=return_info)
 
-    def apply_inverse_diffusion(self, v, k, alpha, dirichlet=True, guess=None,
-                                operators=None):
+    def apply_inverse_mass_plus_eps_laplace_matrix(self, rhs, k, eps, dirichlet=True, guess=None,
+                                                   operators=None, tol=None, maxiter=None,
+                                                   preconditioner='auto',
+                                                   return_info=False):
         """
-        Solve (M_k + alpha * L_k) x = v for the k-form x.
+        Solve (M_k + eps * L_k) x = rhs for the k-form x.
 
-        For k=0: (M_0 + alpha * S_0) is SPD, solved with CG.
+        For k=0: (M_0 + eps * S_0) is SPD, solved with CG.
         For k>=1: uses MINRES on the symmetric saddle-point system:
 
-            | M_k + alpha*S_k    alpha*D_{k-1}   | | u |   | v |
-            | alpha*D_{k-1}^T   -alpha*M_{k-1}   | | σ | = | 0 |
+            | M_k + eps*S_k    eps*D_{k-1}   | | u |   | rhs |
+            | eps*D_{k-1}^T   -eps*M_{k-1}   | | σ | = | 0 |
 
-        The system is nonsingular (no nullspace) since M_k + alpha*L_k is SPD.
-        For small alpha, M_k^{-1} is a good upper block preconditioner.
+        The system is nonsingular (no nullspace) since M_k + eps*L_k is SPD.
+        Out-of-the-box diffusion preconditioners currently use the same mass-side
+        defaults as the other inverse paths: Jacobi, tensor, and Chebyshev.
         """
         operators = self._require_operators(operators)
-        return apply_inverse_diffusion_ops(
-            self, operators, v, k, alpha,
+        return apply_inverse_mass_plus_eps_laplace_matrix_ops(
+            self, operators, rhs, k, eps,
             dirichlet=dirichlet, guess=guess,
-            tol=self.tol, maxiter=self.maxiter)
+            tol=self.tol if tol is None else tol,
+            maxiter=self.maxiter if maxiter is None else maxiter,
+            preconditioner=preconditioner,
+            return_info=return_info)
 
     def apply_hodge_laplacian_preconditioner(self, v, k, dirichlet=True,
                                              operators=None, kind='auto'):
@@ -1069,11 +1163,11 @@ class DeRhamSequence():
         Apply a preconditioner for the k-th Hodge Laplacian to a vector ``v``.
 
         ``kind`` selects between ``'none'`` (identity), ``'jacobi'`` (per-DoF
-        diagonal) and ``'hx'`` (Hiptmair-Xu auxiliary-space preconditioner;
-        available for ``k = 0`` when the FD eigendecompositions are
-        assembled, and for ``k = 3`` with ``dirichlet=True``).  ``'auto'``
-        (the default) uses ``'hx'`` when available and falls back to
-        ``'jacobi'`` otherwise.
+        diagonal) and ``'tensor'`` (tensorized auxiliary-space
+        preconditioner; available for ``k = 0`` when the tensor Hodge data are
+        assembled, and for ``k = 3`` via the tensor round-trip path).
+        ``'auto'`` (the default) uses ``'tensor'`` when available and falls
+        back to ``'jacobi'`` otherwise.
         """
         operators = self._require_operators(operators)
         return apply_hodge_laplacian_preconditioner_ops(

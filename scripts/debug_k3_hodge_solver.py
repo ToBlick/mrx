@@ -13,7 +13,7 @@ Layered diagnostics, each isolating one potential failure mode:
         - apply P^{-1} to a random vector, check output is finite and
           has expected norm;
         - check SPD heuristically: ``v^T P^{-1} v > 0``;
-        - check the individual building blocks of 'hx'.
+                - check the individual building blocks of the tensor round trip.
   (E) MINRES behaviour: run with increasing ``maxiter``, print
       MINRES ``info``, initial/final residuals, and whether convergence
       actually happened or the solver reported ``0`` because the RHS
@@ -32,7 +32,7 @@ import jax
 import jax.numpy as jnp
 
 from mrx.operators import (apply_derivative_matrix,
-                           apply_hodge_hx_preconditioner,
+                           apply_hodge_k3_tensor_preconditioner,
                            apply_hodge_kron_preconditioner,
                            apply_hodge_laplacian,
                            apply_hodge_laplacian_preconditioner,
@@ -118,7 +118,7 @@ def section_D_preconditioners(seq, ops):
     v = jax.random.normal(key, (seq.n3_dbc,))
     v = v / jnp.linalg.norm(v)
     print(f"  input: ||v||_2 = {float(jnp.linalg.norm(v)):.6e}")
-    for kind in ("none", "jacobi", "hx"):
+    for kind in ("none", "jacobi", "tensor"):
         try:
             Pv = apply_hodge_laplacian_preconditioner(
                 seq, ops, v, K, dirichlet=DBC, kind=kind)
@@ -129,7 +129,7 @@ def section_D_preconditioners(seq, ops):
         print(f"  {kind:>10s}: ||P v||_2 = {float(jnp.linalg.norm(Pv)):.3e}  "
               f"v^T P v = {vdotPv:+.3e}  finite={bool(jnp.all(jnp.isfinite(Pv)))}")
 
-    banner("(D') HX preconditioner building blocks")
+    banner("(D') Tensor preconditioner building blocks")
     # Smoother: diag(L_3)^{-1} v
     dinv = _hodge_diaginv(ops, 3, dirichlet=True)
     print(f"  diag(L_3)^{{-1}} min={float(jnp.min(dinv)):.3e}  "
@@ -162,10 +162,10 @@ def section_D_preconditioners(seq, ops):
     print(f"  step 5: tilde(M_3)^-1 : ||.||_2 = "
           f"{float(jnp.linalg.norm(w4)):.3e}")
     full = smooth + w4
-    direct = apply_hodge_hx_preconditioner(seq, ops, v, 3, dirichlet=True)
-    print(f"  reconstructed HX: ||.||_2 = {float(jnp.linalg.norm(full)):.3e}")
+    direct = apply_hodge_k3_tensor_preconditioner(seq, ops, v, 3, dirichlet=True)
+    print(f"  reconstructed tensor apply: ||.||_2 = {float(jnp.linalg.norm(full)):.3e}")
     print(
-        f"  direct HX       : ||.||_2 = {float(jnp.linalg.norm(direct)):.3e}")
+        f"  direct tensor   : ||.||_2 = {float(jnp.linalg.norm(direct)):.3e}")
     print(f"  ||direct - reconstructed|| = "
           f"{float(jnp.linalg.norm(direct - full)):.3e}")
 
@@ -178,7 +178,7 @@ def section_E_minres(seq, ops, b, vs):
     print(f"  ||b||_2               = {float(jnp.linalg.norm(b)):.6e}")
     # What MINRES uses as its relative-tol denominator:
     # bnorm = sqrt(b^T M^{-1} b) with M = block-diag preconditioner.
-    for kind in ("none", "jacobi", "hx"):
+    for kind in ("none", "jacobi", "tensor"):
         try:
             Pb = apply_hodge_laplacian_preconditioner(
                 seq, ops, b, K, dirichlet=DBC, kind=kind)
@@ -189,11 +189,11 @@ def section_E_minres(seq, ops, b, vs):
         print(f"  {kind:>10s}: sqrt(b^T P b) = {bnorm_prec:.6e}  "
               f"(MINRES rel-tol denom; 0 here => instant 'convergence')")
 
-    for kind in ("none", "jacobi", "hx"):
+    for kind in ("none", "jacobi", "tensor"):
         try:
             u, info = apply_inverse_shifted_hodge_laplacian(
                 seq, ops, b, K, 0.0, dirichlet=DBC,
-                precond_kind=kind, return_info=True)
+                preconditioner=kind, return_info=True)
         except Exception as e:
             print(f"  {kind:>10s}: solve FAILED -> {e}")
             continue

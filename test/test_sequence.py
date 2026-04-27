@@ -17,6 +17,11 @@ import pytest
 from scipy.linalg import eigh
 
 from mrx.differential_forms import DiscreteFunction
+from mrx.preconditioners import (
+    MassPreconditionerSpec,
+    SaddlePointPreconditionerSpec,
+    SchurPreconditionerSpec,
+)
 
 ALL_K = (0, 1, 2, 3)
 ALL_DBC = (False, True)
@@ -314,12 +319,12 @@ def test_poisson_k0_matches_analytical(torus_seq):
 
 @pytest.mark.parametrize("dirichlet", ALL_DBC)
 def test_fd_hodge_preconditioner_spd(torus_seq, dirichlet):
-    """``apply_hodge_laplacian_preconditioner(kind='hx')`` is SPD for k=0."""
+    """``apply_hodge_laplacian_preconditioner(kind='tensor')`` is SPD for k=0."""
     seq = torus_seq
     n = _dof(seq, 0, dirichlet)
     P = np.asarray(build_dense(
         lambda v: seq.apply_hodge_laplacian_preconditioner(
-            v, k=0, dirichlet=dirichlet, kind='hx'),
+            v, k=0, dirichlet=dirichlet, kind='tensor'),
         n))
     npt.assert_allclose(P, P.T, atol=1e-9,
                         err_msg="FD Hodge precond not symmetric")
@@ -332,7 +337,7 @@ def test_fd_hodge_preconditioner_spd(torus_seq, dirichlet):
 
 @pytest.mark.parametrize("dirichlet", ALL_DBC)
 def test_fd_hodge_preconditioner_accelerates_cg(torus_seq, dirichlet):
-    """HX Hodge preconditioner runs and converges at k=0."""
+    """Tensor Hodge preconditioner runs and converges at k=0."""
     seq = torus_seq
     from mrx.nullspace import get_nullspace
     from mrx.solvers import solve_singular_cg
@@ -351,11 +356,11 @@ def test_fd_hodge_preconditioner_accelerates_cg(torus_seq, dirichlet):
     _, info = solve_singular_cg(
         matvec, b, mass_matvec=mass_matvec,
         precond_matvec=lambda x: seq.apply_hodge_laplacian_preconditioner(
-            x, k=0, dirichlet=dirichlet, kind='hx'),
+            x, k=0, dirichlet=dirichlet, kind='tensor'),
         vs=vs, tol=1e-8, maxiter=2000,
     )
     assert int(info) <= 0, (
-        f"HX Hodge precond k=0 dirichlet={dirichlet} did not converge "
+        f"Tensor Hodge precond k=0 dirichlet={dirichlet} did not converge "
         f"(info={int(info)})"
     )
 
@@ -365,18 +370,98 @@ def test_fd_hodge_preconditioner_accelerates_cg(torus_seq, dirichlet):
 # ---------------------------------------------------------------------------
 
 def test_fd_hodge_preconditioner_spd_k3(torus_seq):
-    """``apply_hodge_laplacian_preconditioner(kind='hx')`` is SPD for k=3."""
+    """``apply_hodge_laplacian_preconditioner(kind='tensor')`` is SPD for k=3."""
     seq = torus_seq
-    dirichlet = True  # HX for k=3 only defined for Dirichlet BC.
+    dirichlet = True
     n = _dof(seq, 3, dirichlet)
     P = np.asarray(build_dense(
         lambda v: seq.apply_hodge_laplacian_preconditioner(
-            v, k=3, dirichlet=dirichlet, kind='hx'),
+            v, k=3, dirichlet=dirichlet, kind='tensor'),
         n))
     npt.assert_allclose(P, P.T, atol=1e-9,
-                        err_msg="HX Hodge precond k=3 not symmetric")
+                        err_msg="Tensor Hodge precond k=3 not symmetric")
     eigs = np.linalg.eigvalsh(P)
     assert eigs.min() > -1e-9, (
-        f"HX Hodge precond k=3 dirichlet={dirichlet} has large negative "
+        f"Tensor Hodge precond k=3 dirichlet={dirichlet} has large negative "
         f"eigenvalue {eigs.min()}"
+    )
+
+
+@pytest.mark.parametrize("coupled_preconditioner", [False, True])
+def test_chebyshev_preconditioned_k3_solve_converges(torus_seq, coupled_preconditioner):
+    """k=3 inverse Hodge solve accepts the production Chebyshev path."""
+    seq = torus_seq
+    dirichlet = False
+    n = _dof(seq, 3, dirichlet)
+    rhs = jax.random.normal(jax.random.PRNGKey(23), (n,))
+    preconditioner = SaddlePointPreconditionerSpec(
+        mass=MassPreconditionerSpec(kind='tensor'),
+        schur=SchurPreconditionerSpec(
+            inner=MassPreconditionerSpec(kind='tensor'),
+            outer=MassPreconditionerSpec(
+                kind='chebyshev',
+                steps=4,
+                power_iterations=8,
+                min_eig_fraction=1e-3,
+            ),
+        ),
+        coupled=coupled_preconditioner,
+    )
+
+    _, info = seq.apply_inverse_hodge_laplacian(
+        rhs,
+        k=3,
+        dirichlet=dirichlet,
+        preconditioner=preconditioner,
+        return_info=True,
+    )
+
+    assert int(info) <= 0, (
+        "Chebyshev k=3 inverse Hodge solve did not converge "
+        f"(coupled={coupled_preconditioner}, info={int(info)})"
+    )
+
+
+@pytest.mark.parametrize(
+    ("k", "preconditioner"),
+    [
+        (0, 'jacobi'),
+        (0, 'tensor'),
+        (0, MassPreconditionerSpec(
+            kind='chebyshev',
+            steps=4,
+            power_iterations=8,
+            min_eig_fraction=1e-3,
+        )),
+        (3, 'jacobi'),
+        (3, 'tensor'),
+        (3, MassPreconditionerSpec(
+            kind='chebyshev',
+            steps=4,
+            power_iterations=8,
+            min_eig_fraction=1e-3,
+        )),
+    ],
+)
+def test_diffusion_solver_default_preconditioners_converge(
+        torus_seq, k, preconditioner):
+    """Diffusion solve accepts Jacobi, tensor, and Chebyshev out of the box."""
+    seq = torus_seq
+    dirichlet = False
+    eps = 1e-2
+    n = _dof(seq, k, dirichlet)
+    rhs = jax.random.normal(jax.random.PRNGKey(123 + 17 * k), (n,))
+
+    _, info = seq.apply_inverse_mass_plus_eps_laplace_matrix(
+        rhs,
+        k=k,
+        eps=eps,
+        dirichlet=dirichlet,
+        preconditioner=preconditioner,
+        return_info=True,
+    )
+
+    assert int(info) <= 0, (
+        "Diffusion solve did not converge with built-in preconditioner "
+        f"{preconditioner!r} for k={k} (info={int(info)})"
     )
