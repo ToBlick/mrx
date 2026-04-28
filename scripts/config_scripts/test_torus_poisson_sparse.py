@@ -74,9 +74,10 @@ def compute_error(n: int, p: int, epsilon: float,
 
     t0 = time.perf_counter()
     seq = DeRhamSequence(
-        ns, ps, q, types, F, polar=True,
+        ns, ps, q, types, polar=True,
         tol=cg_tol, maxiter=cg_maxiter,
     )
+    seq.set_map(F)
     timings["DeRhamSequence.__init__"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
@@ -93,7 +94,7 @@ def compute_error(n: int, p: int, epsilon: float,
 
     # Sparsity diagnostics
     sparsity = {}
-    for name, mat in [("m0", seq.m0_sp), ("dd0", seq.grad_grad_sp)]:
+    for name, mat in [("m0", seq.m0), ("dd0", seq.grad_grad)]:
         nnz_stored = int(mat.nse)
         nnz_actual = int(jnp.sum(jnp.abs(mat.data) > 1e-12))
         sparsity[f"{name}_nnz_stored"] = nnz_stored

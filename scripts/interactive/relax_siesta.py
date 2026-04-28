@@ -28,6 +28,7 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import interpolate_map
 from mrx.plotting import get_1d_grids
+from mrx.preconditioners import get_mass_jacobi_diaginv
 from mrx.relaxation import (DescentMethod, IntegrationScheme, TimeStepChoice,
                             TimeStepper, apply_diffusion, compute_force,
                             relaxation_loop)
@@ -80,8 +81,9 @@ print("Building map interpolation sequence...")
 map_seq = DeRhamSequence(
     NS, PS, QUAD_ORDER,
     ("clamped", "periodic", "periodic"),
-    lambda x: x, polar=True, tol=1e-9
+    polar=True, tol=1e-9
 )
+map_seq.set_map(lambda x: x)
 map_seq.evaluate_1d()
 map_seq.assemble_mass_matrix(0)
 
@@ -105,8 +107,9 @@ t0 = time.time()
 seq = DeRhamSequence(
     NS, PS, QUAD_ORDER,
     ("clamped", "periodic", "periodic"),
-    map_func, polar=True, tol=1e-6, maxiter=1000
+    polar=True, tol=1e-6, maxiter=1000
 )
+seq.set_map(map_func)
 mrx.MAP_BATCH_SIZE_INNER = 0
 assert jnp.min(seq.jacobian_j) > 0, "Negative Jacobian detected!"
 print(f"Jacobian range: [{float(jnp.min(seq.jacobian_j)):.2e}, "
@@ -423,19 +426,21 @@ plt.show()
 # %%
 for k in range(4):
     M = assemble_dense_mass_matrix(seq, k)
+    operators = seq.get_operators()
+    mass_diaginv_dbc = get_mass_jacobi_diaginv(operators.mass_preconds, k, True)
     match k:
         case 0:
-            pM = jnp.diag(jnp.sqrt(seq.m0_sp_diaginv_dbc)
-                          ) @ M @ jnp.diag(jnp.sqrt(seq.m0_sp_diaginv_dbc))
+            pM = jnp.diag(jnp.sqrt(mass_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(mass_diaginv_dbc))
         case 1:
-            pM = jnp.diag(jnp.sqrt(seq.m1_sp_diaginv_dbc)
-                          ) @ M @ jnp.diag(jnp.sqrt(seq.m1_sp_diaginv_dbc))
+            pM = jnp.diag(jnp.sqrt(mass_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(mass_diaginv_dbc))
         case 2:
-            pM = jnp.diag(jnp.sqrt(seq.m2_sp_diaginv_dbc)
-                          ) @ M @ jnp.diag(jnp.sqrt(seq.m2_sp_diaginv_dbc))
+            pM = jnp.diag(jnp.sqrt(mass_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(mass_diaginv_dbc))
         case 3:
-            pM = jnp.diag(jnp.sqrt(seq.m3_sp_diaginv_dbc)
-                          ) @ M @ jnp.diag(jnp.sqrt(seq.m3_sp_diaginv_dbc))
+            pM = jnp.diag(jnp.sqrt(mass_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(mass_diaginv_dbc))
     print(f"Condition number of M{k}:", jnp.linalg.eigvalsh(
         M)[-1]/jnp.linalg.eigvalsh(M)[0])
     print(f"Condition number of preconditioned M{k}:", jnp.linalg.eigvalsh(
@@ -447,22 +452,24 @@ for k in range(4):
 # %%
 for k in range(4):
     M = assemble_dense_hodge_laplacian(seq, k)
+    operators = seq.get_operators()
+    hodge_diaginv_dbc = getattr(operators, f"dd{k}_sp_diaginv_dbc")
     match k:
         case 0:
-            pM = jnp.diag(jnp.sqrt(seq.dd0_sp_diaginv_dbc)
-                          ) @ M @ jnp.diag(jnp.sqrt(seq.dd0_sp_diaginv_dbc))
+            pM = jnp.diag(jnp.sqrt(hodge_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(hodge_diaginv_dbc))
             has_null = False
         case 1:
-            pM = jnp.diag(jnp.sqrt(seq.dd1_sp_diaginv_dbc)
-                          ) @ M @ jnp.diag(jnp.sqrt(seq.dd1_sp_diaginv_dbc))
+            pM = jnp.diag(jnp.sqrt(hodge_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(hodge_diaginv_dbc))
             has_null = False
         case 2:
-            pM = jnp.diag(jnp.sqrt(seq.dd2_sp_diaginv_dbc)
-                          ) @ M @ jnp.diag(jnp.sqrt(seq.dd2_sp_diaginv_dbc))
+            pM = jnp.diag(jnp.sqrt(hodge_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(hodge_diaginv_dbc))
             has_null = True
         case 3:
-            pM = jnp.diag(jnp.sqrt(seq.dd3_sp_diaginv_dbc)
-                          ) @ M @ jnp.diag(jnp.sqrt(seq.dd3_sp_diaginv_dbc))
+            pM = jnp.diag(jnp.sqrt(hodge_diaginv_dbc)
+                          ) @ M @ jnp.diag(jnp.sqrt(hodge_diaginv_dbc))
             has_null = True
     print(f"Condition number of L{k}:", jnp.linalg.eigvalsh(
         M)[-1]/jnp.linalg.eigvalsh(M)[int(has_null)])

@@ -191,8 +191,9 @@ def main(cfg: DictConfig) -> float:
     seq = DeRhamSequence(
         ns, ps, cfg.fem.quad_order,
         ("clamped", "periodic", "periodic"),
-        map_func, polar=True, dirichlet=True
+        polar=True, dirichlet=True
     )
+    seq.set_map(map_func)
 
     assert jnp.min(seq.jacobian_j) > 0, "Negative Jacobian!"
 

@@ -56,6 +56,10 @@ def build_sequence():
         ns, ps, 2 * P, TYPES, lambda x: x, polar=True,
         tol=TOL, maxiter=MAXITER, betti_numbers=BETTI,
     )
+    seq = DeRhamSequence(
+        ns, ps, 2 * P, TYPES, polar=True,
+        tol=TOL, maxiter=MAXITER, betti_numbers=BETTI,
+    )
     seq.evaluate_1d()
     seq.assemble_reference_mass_matrix()
 

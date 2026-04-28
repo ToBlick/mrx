@@ -98,7 +98,8 @@ def run(CONFIG):
     q = max(ps)
     types = ("clamped", "clamped", "clamped")
 
-    Seq = DeRhamSequence(ns, ps, q, types, F, polar=False)
+    Seq = DeRhamSequence(ns, ps, q, types, polar=False)
+    Seq.set_map(F)
     Seq.evaluate_1d()
     Seq.assemble_m0()   # Assemble 0-form mass matrix
     Seq.assemble_m1()   # Assemble 1-form mass matrix

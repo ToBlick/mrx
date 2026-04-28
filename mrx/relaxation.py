@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 
 from mrx.derham_sequence import DeRhamSequence
+from mrx.preconditioners import get_mass_jacobi_diaginv
 from mrx.solvers import solve_singular_cg
 
 
@@ -14,9 +15,11 @@ def apply_diffusion(B: jnp.ndarray, seq: DeRhamSequence, eta: float, dirichlet: 
 
     B_guess = B if B_guess is None else B_guess
 
-    suffix = "_dbc" if dirichlet else ""
-    m_diaginv = getattr(seq, f"m2_sp_diaginv{suffix}")
-    dd_diaginv = getattr(seq, f"dd2_sp_diaginv{suffix}")
+    operators = seq.get_operators()
+    if operators is None:
+        raise ValueError("Assemble operators first before calling apply_diffusion")
+    m_diaginv = get_mass_jacobi_diaginv(operators.mass_preconds, 2, dirichlet)
+    dd_diaginv = operators.dd2_diaginv_dbc if dirichlet else operators.dd2_diaginv
     combined_diaginv = 1.0 / (1.0 / m_diaginv + eta / dd_diaginv)
 
     def apply_A(x):

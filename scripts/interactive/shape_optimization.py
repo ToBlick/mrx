@@ -92,9 +92,10 @@ aa = 1 / 3
 torus_map = toroid_map(epsilon=aa)
 
 print("Building sequence (reference/identity map) ...")
-seq = DeRhamSequence(ns, ps, 2 * p, types, lambda x: x, polar=True,
+seq = DeRhamSequence(ns, ps, 2 * p, types, polar=True,
                      tol=1e-9, maxiter=500)
 seq.evaluate_1d()
+seq.set_map(lambda x: x)
 seq.assemble_reference_mass_matrix()
 
 n_sample = 50

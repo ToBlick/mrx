@@ -192,7 +192,6 @@ def _build_sequence(config: ExperimentConfig):
         (config.p, config.p, config.p),
         2 * config.p,
         ("clamped", "periodic", "periodic"),
-        lambda x: x,
         polar=True,
         tol=config.tol,
         maxiter=config.maxiter,
@@ -230,9 +229,9 @@ def _scalar_extraction_pair(seq, k: int, dirichlet: bool):
 
 def _scalar_sparse_operator(seq, operators, k: int):
     if k == 0:
-        return operators.m0_sp
+        return operators.m0
     if k == 3:
-        return operators.m3_sp
+        return operators.m3
     raise ValueError("Scalar helpers only support k=0 and k=3")
 
 

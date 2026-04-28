@@ -90,7 +90,8 @@ def get_err(n, p, q):
     ns = (n, n, 1)
     ps = (p, p, 0)
     types = ("clamped", "periodic", "constant")
-    Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=False)
+    Seq = DeRhamSequence(ns, ps, q, types, polar=True, dirichlet=False)
+    Seq.set_map(F)
     Seq.evaluate_1d()   # Precompute 1D basis functions at quadrature points
     Seq.assemble_m2()   # Assemble 2-form mass matrix
     Seq.assemble_m3()   # Assemble 3-form mass matrix

@@ -30,7 +30,6 @@ def build_small_case(ns=(5, 5, 3), p=2):
         (p, p, p),
         2 * p,
         ("clamped", "periodic", "periodic"),
-        lambda x: x,
         polar=True,
         tol=1e-10,
         maxiter=1000,

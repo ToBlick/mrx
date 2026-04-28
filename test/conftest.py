@@ -66,6 +66,11 @@ def torus_seq(torus_map):
         tol=1e-12, maxiter=1000,
         betti_numbers=BETTI,
     )
+    seq = DeRhamSequence(
+        ns, ps, 2 * P, TYPES, polar=True,
+        tol=1e-12, maxiter=1000,
+        betti_numbers=BETTI,
+    )
     seq.evaluate_1d()
     seq.assemble_reference_mass_matrix()
 

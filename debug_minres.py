@@ -11,8 +11,9 @@ jax.config.update('jax_enable_x64', True)
 types = ("clamped", "periodic", "periodic")
 n, p = 6, 2
 F = toroid_map(epsilon=1/3)
-s = DeRhamSequence((n, n, n), (p, p, p), 2*p, types, F,
+s = DeRhamSequence((n, n, n), (p, p, p), 2*p, types,
                    polar=True, tol=1e-10, maxiter=1000)
+s.set_map(F)
 s.evaluate_1d()
 for k in range(4):
     s.assemble_mass_matrix(k)

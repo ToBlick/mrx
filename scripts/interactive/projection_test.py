@@ -85,7 +85,7 @@ print("Building sequence...")
 seq = DeRhamSequence(
     NS, PS, QUAD_ORDER,
     ("clamped", "periodic", "periodic"),
-    lambda x: x, polar=True, tol=1e-9
+    polar=True, tol=1e-9
 )
 seq.evaluate_1d()
 seq.assemble_reference_mass_matrix()
@@ -117,11 +117,11 @@ seq.compute_nullspaces()
 # lambda_h = jax.jit(DiscreteFunction(lambda_interpol["dof"], seq.basis_0, seq.e0))
 
 # %%
-m1_dense = seq.e1_dbc.todense() @ seq.m1_sp.todense() @ seq.e1_dbc_T.todense()
-m2_dense = seq.e2_dbc.todense() @ seq.m2_sp.todense() @ seq.e2_dbc_T.todense()
-m3_dense = seq.e3_dbc.todense() @ seq.m3_sp.todense() @ seq.e3_dbc_T.todense()
-div_dense = seq.e3_dbc.todense() @ seq.d2_sp.todense() @ seq.e2_dbc_T.todense()
-curl_dense = seq.e2_dbc.todense() @ seq.d1_sp.todense() @ seq.e1_dbc_T.todense()
+m1_dense = seq.e1_dbc.todense() @ seq.m1.todense() @ seq.e1_dbc_T.todense()
+m2_dense = seq.e2_dbc.todense() @ seq.m2.todense() @ seq.e2_dbc_T.todense()
+m3_dense = seq.e3_dbc.todense() @ seq.m3.todense() @ seq.e3_dbc_T.todense()
+div_dense = seq.e3_dbc.todense() @ seq.d2.todense() @ seq.e2_dbc_T.todense()
+curl_dense = seq.e2_dbc.todense() @ seq.d1.todense() @ seq.e1_dbc_T.todense()
 
 
 blockmatrix = jnp.block([

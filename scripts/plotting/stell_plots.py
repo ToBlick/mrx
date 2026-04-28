@@ -48,7 +48,8 @@ if __name__ == "__main__":
     types = ("clamped", "periodic",
              "constant" if CONFIG["n_zeta"] == 1 else "periodic")
     print("Setting up FEM spaces...")
-    Seq = DeRhamSequence(ns, ps, q, types, F, polar=True, dirichlet=True)
+    Seq = DeRhamSequence(ns, ps, q, types, polar=True, dirichlet=True)
+    Seq.set_map(F)
 
     assert jnp.min(Seq.jacobian_j) > 0, "Mapping is singular!"
 

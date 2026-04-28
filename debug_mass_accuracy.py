@@ -9,8 +9,9 @@ from mrx.solvers import solve_singular_cg
 jax.config.update('jax_enable_x64', True)
 
 types = ('clamped', 'periodic', 'periodic')
-s = DeRhamSequence((6, 6, 6), (2, 2, 2), 4, types, toroid_map(epsilon=1/3),
+s = DeRhamSequence((6, 6, 6), (2, 2, 2), 4, types,
                    polar=True, tol=1e-10, maxiter=1000)
+s.set_map(toroid_map(epsilon=1/3))
 s.evaluate_1d()
 for k in range(4):
     s.assemble_mass_matrix(k)

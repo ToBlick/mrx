@@ -101,7 +101,6 @@ def build_sequence_and_operators(config: ExperimentConfig = CONFIG):
         (config.p, config.p, config.p),
         2 * config.p,
         ("clamped", "periodic", "periodic"),
-        lambda x: x,
         polar=True,
         tol=config.tol,
         maxiter=config.maxiter,

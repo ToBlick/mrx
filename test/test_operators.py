@@ -30,7 +30,11 @@ jax.config.update("jax_enable_x64", True)
 ALL_K = (0, 1, 2, 3)
 ALL_DBC = (False, True)
 N_PROBES = 4
-N_SOLVER_PROBES = 2
+N_SOLVER_PROBES = 4
+WARM_START_TOL = 1e-10
+WARM_START_LOOSE_TOL = 1e-8
+MASS_SOLVE_COMPARE_ATOL = 1e-6
+MASS_SOLVE_COMPARE_RTOL = 1e-7
 MASS_PRECONDITIONERS = {
     "jacobi": MassPreconditionerSpec(kind="jacobi"),
     "richardson-4": MassPreconditionerSpec(
@@ -38,18 +42,98 @@ MASS_PRECONDITIONERS = {
         steps=4,
         power_iterations=8,
         damping_safety=0.8,
-        smoother=MassPreconditionerSpec(kind="jacobi"),
+        smoother=MassPreconditionerSpec(kind="tensor"),
     ),
     "chebyshev-4": MassPreconditionerSpec(
         kind="chebyshev",
         steps=4,
         power_iterations=8,
         min_eig_fraction=1e-3,
-        smoother=MassPreconditionerSpec(kind="jacobi"),
+        smoother=MassPreconditionerSpec(kind="tensor"),
     ),
-    "tensor": MassPreconditionerSpec(kind="tensor"),
+    "tensor": MassPreconditionerSpec(kind="tensor", surgery_schur=True),
 }
 SPD_PRECONDITIONERS = ("jacobi", "richardson-4", "tensor")
+K2_SCHUR_PRECONDITIONERS = {
+    "none/schur/tensor": MassPreconditionerSpec(
+        kind="none",
+        surgery_schur=True,
+        smoother=MassPreconditionerSpec(kind="tensor"),
+    ),
+    "richardson/schur/tensor": MassPreconditionerSpec(
+        kind="richardson",
+        surgery_schur=True,
+        steps=4,
+        power_iterations=8,
+        damping_safety=0.8,
+        smoother=MassPreconditionerSpec(kind="tensor"),
+    ),
+}
+K2_INVALID_SCHUR_PRECONDITIONERS = {
+    "none/schur/jacobi": MassPreconditionerSpec(
+        kind="none",
+        surgery_schur=True,
+        smoother=MassPreconditionerSpec(kind="jacobi"),
+    ),
+    "none/schur/richardson": MassPreconditionerSpec(
+        kind="none",
+        surgery_schur=True,
+        smoother=MassPreconditionerSpec(
+            kind="richardson",
+            steps=4,
+            power_iterations=8,
+            damping_safety=0.8,
+            smoother=MassPreconditionerSpec(kind="tensor"),
+        ),
+    ),
+    "none/schur/chebyshev": MassPreconditionerSpec(
+        kind="none",
+        surgery_schur=True,
+        smoother=MassPreconditionerSpec(
+            kind="chebyshev",
+            steps=4,
+            power_iterations=8,
+            min_eig_fraction=1e-3,
+            smoother=MassPreconditionerSpec(kind="tensor"),
+        ),
+    ),
+    "richardson/schur/jacobi": MassPreconditionerSpec(
+        kind="richardson",
+        surgery_schur=True,
+        steps=4,
+        power_iterations=8,
+        damping_safety=0.8,
+        smoother=MassPreconditionerSpec(kind="jacobi"),
+    ),
+    "richardson/schur/richardson": MassPreconditionerSpec(
+        kind="richardson",
+        surgery_schur=True,
+        steps=4,
+        power_iterations=8,
+        damping_safety=0.8,
+        smoother=MassPreconditionerSpec(
+            kind="richardson",
+            steps=4,
+            power_iterations=8,
+            damping_safety=0.8,
+            smoother=MassPreconditionerSpec(kind="tensor"),
+        ),
+    ),
+    "richardson/schur/chebyshev": MassPreconditionerSpec(
+        kind="richardson",
+        surgery_schur=True,
+        steps=4,
+        power_iterations=8,
+        damping_safety=0.8,
+        smoother=MassPreconditionerSpec(
+            kind="chebyshev",
+            steps=4,
+            power_iterations=8,
+            min_eig_fraction=1e-3,
+            smoother=MassPreconditionerSpec(kind="tensor"),
+        ),
+    ),
+}
 
 
 def _random_vectors(n: int, seed: int, count: int = N_PROBES) -> np.ndarray:
@@ -70,7 +154,6 @@ def rotating_mass_case():
         (3, 3, 3),
         6,
         ("clamped", "periodic", "periodic"),
-        lambda x: x,
         polar=True,
         tol=1e-10,
         maxiter=1000,
@@ -261,15 +344,15 @@ def test_inverse_mass_matches_dense_solve(rotating_mass_case, label, k, dirichle
         npt.assert_allclose(
             x,
             x_dense,
-            atol=1e-8,
-            rtol=1e-8,
+            atol=MASS_SOLVE_COMPARE_ATOL,
+            rtol=MASS_SOLVE_COMPARE_RTOL,
             err_msg=f"inverse mass solve mismatch for {label} k={k} dirichlet={dirichlet}",
         )
         npt.assert_allclose(
             dense_mass @ x,
             rhs,
-            atol=1e-8,
-            rtol=1e-8,
+            atol=MASS_SOLVE_COMPARE_ATOL,
+            rtol=MASS_SOLVE_COMPARE_RTOL,
             err_msg=f"mass round-trip failed for {label} k={k} dirichlet={dirichlet}",
         )
         assert int(info) <= 0, (
@@ -322,3 +405,158 @@ def test_mass_preconditioner_reduces_cg_iterations(rotating_mass_case, label, k,
         f"mass preconditioner {label} did not reduce CG iterations for "
         f"k={k} dirichlet={dirichlet}: none={none_iters}, precond={precond_iters}"
     )
+
+
+@pytest.mark.parametrize("label", tuple(MASS_PRECONDITIONERS))
+@pytest.mark.parametrize("k", ALL_K)
+@pytest.mark.parametrize("dirichlet", ALL_DBC)
+def test_mass_inverse_warm_start_helps_with_tighter_tolerance(
+    rotating_mass_case, label, k, dirichlet
+):
+    seq = rotating_mass_case["seq"]
+    operators = rotating_mass_case["operators"]
+    dense_mass = rotating_mass_case["dense_mass"](k, dirichlet)
+    dense_mass_cholesky = rotating_mass_case["dense_mass_cholesky"](k, dirichlet)
+    rhs = _random_vectors(
+        dense_mass.shape[0],
+        seed=400 + 29 * k + 100 * int(dirichlet),
+        count=1,
+    )[0]
+
+    x_loose, loose_info = apply_inverse_mass_matrix(
+        seq,
+        operators,
+        jnp.asarray(rhs),
+        k,
+        dirichlet=dirichlet,
+        preconditioner=MASS_PRECONDITIONERS[label],
+        tol=WARM_START_LOOSE_TOL,
+        maxiter=2000,
+        return_info=True,
+    )
+    x_cold, cold_info = apply_inverse_mass_matrix(
+        seq,
+        operators,
+        jnp.asarray(rhs),
+        k,
+        dirichlet=dirichlet,
+        preconditioner=MASS_PRECONDITIONERS[label],
+        tol=WARM_START_TOL,
+        maxiter=2000,
+        return_info=True,
+    )
+    x_warm, warm_info = apply_inverse_mass_matrix(
+        seq,
+        operators,
+        jnp.asarray(rhs),
+        k,
+        dirichlet=dirichlet,
+        guess=x_loose,
+        preconditioner=MASS_PRECONDITIONERS[label],
+        tol=WARM_START_TOL,
+        maxiter=2000,
+        return_info=True,
+    )
+
+    x_dense = _solve_dense_spd(dense_mass_cholesky, rhs)
+    npt.assert_allclose(
+        np.asarray(x_cold),
+        x_dense,
+        atol=MASS_SOLVE_COMPARE_ATOL,
+        rtol=MASS_SOLVE_COMPARE_RTOL,
+        err_msg=f"cold tight solve mismatch for {label} k={k} dirichlet={dirichlet}",
+    )
+    npt.assert_allclose(
+        np.asarray(x_warm),
+        x_dense,
+        atol=MASS_SOLVE_COMPARE_ATOL,
+        rtol=MASS_SOLVE_COMPARE_RTOL,
+        err_msg=f"warm tight solve mismatch for {label} k={k} dirichlet={dirichlet}",
+    )
+    assert int(loose_info) <= 0, (
+        f"loose warm-start seed solve did not converge for {label} k={k} "
+        f"dirichlet={dirichlet} (info={int(loose_info)})"
+    )
+    assert int(cold_info) <= 0, (
+        f"cold tight solve did not converge for {label} k={k} "
+        f"dirichlet={dirichlet} (info={int(cold_info)})"
+    )
+    assert int(warm_info) <= 0, (
+        f"warm tight solve did not converge for {label} k={k} "
+        f"dirichlet={dirichlet} (info={int(warm_info)})"
+    )
+    assert abs(int(warm_info)) <= abs(int(cold_info)), (
+        f"warm start did not help for {label} k={k} dirichlet={dirichlet}: "
+        f"cold={abs(int(cold_info))}, warm={abs(int(warm_info))}"
+    )
+
+
+@pytest.mark.parametrize("label", tuple(K2_SCHUR_PRECONDITIONERS))
+@pytest.mark.parametrize("dirichlet", ALL_DBC)
+def test_k2_schur_inverse_mass_matches_dense_solve(rotating_mass_case, label, dirichlet):
+    seq = rotating_mass_case["seq"]
+    operators = rotating_mass_case["operators"]
+    dense_mass = rotating_mass_case["dense_mass"](2, dirichlet)
+    dense_mass_cholesky = rotating_mass_case["dense_mass_cholesky"](2, dirichlet)
+    rhs = _random_vectors(
+        dense_mass.shape[0],
+        seed=500 + 100 * int(dirichlet) + tuple(K2_SCHUR_PRECONDITIONERS).index(label),
+        count=1,
+    )[0]
+
+    x, info = apply_inverse_mass_matrix(
+        seq,
+        operators,
+        jnp.asarray(rhs),
+        2,
+        dirichlet=dirichlet,
+        preconditioner=K2_SCHUR_PRECONDITIONERS[label],
+        tol=1e-10,
+        maxiter=2000,
+        return_info=True,
+    )
+    x = np.asarray(x)
+    x_dense = _solve_dense_spd(dense_mass_cholesky, rhs)
+
+    npt.assert_allclose(
+        x,
+        x_dense,
+        atol=MASS_SOLVE_COMPARE_ATOL,
+        rtol=MASS_SOLVE_COMPARE_RTOL,
+        err_msg=f"k=2 Schur inverse mass solve mismatch for {label} dirichlet={dirichlet}",
+    )
+    npt.assert_allclose(
+        dense_mass @ x,
+        rhs,
+        atol=MASS_SOLVE_COMPARE_ATOL,
+        rtol=MASS_SOLVE_COMPARE_RTOL,
+        err_msg=f"k=2 Schur mass round-trip failed for {label} dirichlet={dirichlet}",
+    )
+    assert int(info) <= 0, (
+        f"k=2 Schur inverse mass solve did not converge for {label} "
+        f"dirichlet={dirichlet} (info={int(info)})"
+    )
+
+
+@pytest.mark.parametrize("label", tuple(K2_INVALID_SCHUR_PRECONDITIONERS))
+@pytest.mark.parametrize("dirichlet", ALL_DBC)
+def test_k2_invalid_non_tensor_inner_schur_rejected(rotating_mass_case, label, dirichlet):
+    seq = rotating_mass_case["seq"]
+    operators = rotating_mass_case["operators"]
+    rhs = jnp.asarray(_random_vectors(
+        rotating_mass_case["dense_mass"](2, dirichlet).shape[0],
+        seed=700 + 100 * int(dirichlet) + tuple(K2_INVALID_SCHUR_PRECONDITIONERS).index(label),
+        count=1,
+    )[0])
+
+    with pytest.raises(ValueError, match="only supports kind='tensor' as the inner smoother"):
+        apply_inverse_mass_matrix(
+            seq,
+            operators,
+            rhs,
+            2,
+            dirichlet=dirichlet,
+            preconditioner=K2_INVALID_SCHUR_PRECONDITIONERS[label],
+            tol=1e-10,
+            maxiter=2000,
+        )

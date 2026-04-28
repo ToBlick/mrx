@@ -11,6 +11,13 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from mrx.preconditioners import (
+    MassPreconditionerSpec,
+    SaddlePointPreconditionerSpec,
+    SchurPreconditionerSpec,
+    default_mass_preconditioner,
+)
+
 # ---------------------------------------------------------------------------
 # Shape helpers
 # ---------------------------------------------------------------------------
@@ -155,6 +162,79 @@ def _bootstrap_nullspace_guesses(seq, operators, k, dirichlet, guesses):
         values = values.at[idx].set(work)
 
     return _commit(seq, _set_null(operators, k, dirichlet, values))
+
+
+def _nullspace_shifted_preconditioner(k: int):
+    if k == 0:
+        return _validate_nullspace_shifted_preconditioner(
+            k,
+            MassPreconditionerSpec(
+                kind='richardson',
+                steps=2,
+                smoother=MassPreconditionerSpec(kind='tensor'),
+            ),
+        )
+    return _validate_nullspace_shifted_preconditioner(
+        k,
+        SaddlePointPreconditionerSpec(
+            mass=default_mass_preconditioner(),
+            schur=SchurPreconditionerSpec(
+                inner=MassPreconditionerSpec(kind='tensor'),
+                outer=MassPreconditionerSpec(kind='richardson', steps=2),
+            ),
+            coupled=False,
+        ),
+    )
+
+
+def _nullspace_contains_chebyshev(preconditioner) -> bool:
+    if isinstance(preconditioner, MassPreconditionerSpec):
+        return preconditioner.kind == 'chebyshev' or (
+            preconditioner.smoother is not None
+            and _nullspace_contains_chebyshev(preconditioner.smoother)
+        )
+    if isinstance(preconditioner, SaddlePointPreconditionerSpec):
+        return (
+            _nullspace_contains_chebyshev(preconditioner.mass)
+            or _nullspace_contains_chebyshev(preconditioner.schur)
+        )
+    if isinstance(preconditioner, SchurPreconditionerSpec):
+        return (
+            _nullspace_contains_chebyshev(preconditioner.inner)
+            or _nullspace_contains_chebyshev(preconditioner.outer)
+        )
+    return False
+
+
+def _validate_nullspace_shifted_preconditioner(k: int, preconditioner):
+    if _nullspace_contains_chebyshev(preconditioner):
+        raise ValueError(
+            'Nullspace inverse iteration must not use Chebyshev preconditioning; '
+            'deflation is needed before Lanczos-style spectral bounds are reliable.'
+        )
+    if k == 0:
+        if not isinstance(preconditioner, MassPreconditionerSpec):
+            raise TypeError('k=0 nullspace inverse iteration expects a MassPreconditionerSpec')
+        if preconditioner.kind != 'richardson':
+            raise ValueError(
+                'k=0 nullspace inverse iteration must keep Richardson as the shifted solve preconditioner'
+            )
+        if preconditioner.smoother is None or preconditioner.smoother.kind != 'tensor':
+            raise ValueError(
+                'k=0 nullspace inverse iteration requires a tensor inner smoother for Richardson'
+            )
+        return preconditioner
+    if not isinstance(preconditioner, SaddlePointPreconditionerSpec):
+        raise TypeError('k>=1 nullspace inverse iteration expects a SaddlePointPreconditionerSpec')
+    if preconditioner.schur.outer.kind != 'richardson':
+        raise ValueError(
+            'k>=1 nullspace inverse iteration must keep Richardson as the Schur outer preconditioner'
+        )
+    if preconditioner.schur.inner.kind != 'tensor':
+        raise ValueError(
+            'k>=1 nullspace inverse iteration requires tensor schur.inner preconditioning'
+        )
+    return preconditioner
 
 
 # ---------------------------------------------------------------------------
@@ -320,22 +400,6 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
         seq, operators, betti_numbers=betti_numbers))
     info = {}
 
-    for k in range(4):
-        for dirichlet in (False, True):
-            n_vec = _n_vectors(betti_numbers, k, dirichlet)
-            if n_vec == 0:
-                continue
-            x0s = _initial_guesses(seq, operators, k, dirichlet, n_vec)
-            operators = _bootstrap_nullspace_guesses(
-                seq, operators, k, dirichlet, x0s)
-            vs, iters = find_nullspace_vectors(
-                seq, operators, k, n_vec, eps, dirichlet=dirichlet,
-                x0s=x0s, abs_tol=abs_tol)
-            operators = _commit(seq, _set_null(operators, k, dirichlet, vs))
-            info[(k, dirichlet)] = iters
-
-    return operators, info
-
 
 def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
                            x0s=None, abs_tol=None):
@@ -375,6 +439,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
 
     found = []
     iters = []
+    shifted_preconditioner = _nullspace_shifted_preconditioner(k)
 
     for idx in range(n_vectors):
         if x0s is not None and x0s[idx] is not None:
@@ -406,6 +471,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             w = seq.apply_inverse_shifted_hodge_laplacian(
                 Mv, k, eps, dirichlet=dirichlet, guess=v,
                 operators=operators,
+                preconditioner=shifted_preconditioner,
                 # Inverse iteration is the mechanism that discovers the
                 # harmonic vectors, so the shifted solve used here must not
                 # depend on any nullspace-aware coarse correction.

@@ -395,9 +395,9 @@ def test_chebyshev_preconditioned_k3_solve_converges(torus_seq, coupled_precondi
     n = _dof(seq, 3, dirichlet)
     rhs = jax.random.normal(jax.random.PRNGKey(23), (n,))
     preconditioner = SaddlePointPreconditionerSpec(
-        mass=MassPreconditionerSpec(kind='tensor'),
+        mass=MassPreconditionerSpec(kind='tensor', surgery_schur=True),
         schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='tensor'),
+            inner=MassPreconditionerSpec(kind='tensor', surgery_schur=True),
             outer=MassPreconditionerSpec(
                 kind='chebyshev',
                 steps=4,

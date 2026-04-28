@@ -62,12 +62,12 @@ class TestMassMatrixM0:
 
     def test_m0_symmetry(self, seq_and_p):
         seq, _ = seq_and_p
-        M = seq.m0_sp.todense()
+        M = seq.m0.todense()
         npt.assert_allclose(M, M.T, atol=1e-14)
 
     def test_m0_no_negative_entries(self, seq_and_p):
         seq, _ = seq_and_p
-        assert jnp.all(seq.m0_sp.to_bcoo().data > -1e-10)
+        assert jnp.all(seq.m0.to_bcoo().data > -1e-10)
 
 
 class TestMassMatrixM1:
@@ -75,7 +75,7 @@ class TestMassMatrixM1:
 
     def test_m1_symmetry(self, seq_and_p):
         seq, _ = seq_and_p
-        M = seq.m1_sp.todense()
+        M = seq.m1.todense()
         npt.assert_allclose(M, M.T, atol=1e-14)
 
 
@@ -84,7 +84,7 @@ class TestMassMatrixM2:
 
     def test_m2_symmetry(self, seq_and_p):
         seq, _ = seq_and_p
-        M = seq.m2_sp.todense()
+        M = seq.m2.todense()
         npt.assert_allclose(M, M.T, atol=1e-14)
 
 
@@ -93,12 +93,12 @@ class TestMassMatrixM3:
 
     def test_m3_symmetry(self, seq_and_p):
         seq, _ = seq_and_p
-        M = seq.m3_sp.todense()
+        M = seq.m3.todense()
         npt.assert_allclose(M, M.T, atol=1e-14)
 
     def test_m3_no_negative_entries(self, seq_and_p):
         seq, _ = seq_and_p
-        assert jnp.all(seq.m3_sp.to_bcoo().data > -1e-10)
+        assert jnp.all(seq.m3.to_bcoo().data > -1e-10)
 
 
 class TestDiagEAET:

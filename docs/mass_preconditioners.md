@@ -147,7 +147,49 @@ So the common theme is not a single matrix pattern. The common theme is a
 coefficient-first tensor compression wrapped around the correct block structure
 for each degree.
 
-## 6. Current Production Guidance
+## 6. Polynomial Tuning Policy
+
+The polynomial mass preconditioners now store their parameter-generation
+hyperparameters directly on `MassPreconditionerSpec`.
+
+For Richardson, the active tuning fields are:
+
+- `steps`,
+- `power_iterations`,
+- `damping_safety`.
+
+The implementation still uses the existing power-iteration estimate for the
+largest relevant eigenvalue and then sets
+
+$$
+\omega \approx \frac{\text{damping\_safety}}{\lambda_{\max}}.
+$$
+
+So Richardson remains the cheap setup path and is also the path used inside
+nullspace inverse iteration.
+
+For Chebyshev, the active tuning fields are:
+
+- `steps`,
+- `lanczos_iterations`,
+- `lanczos_max_eig_inflation`,
+- `lanczos_min_eig_deflation`,
+- `lanczos_min_eig_floor_fraction`.
+
+The current production policy is:
+
+- estimate the upper and lower bounds from a short Lanczos run on the active
+  preconditioned operator,
+- inflate the upper Ritz value by `lanczos_max_eig_inflation`,
+- deflate the smallest positive Ritz value by
+  `lanczos_min_eig_deflation`,
+- and keep the lower guard above
+  `lanczos_min_eig_floor_fraction * lambda_max_used`.
+
+So `min_eig_fraction` remains the legacy heuristic field, but the active
+Chebyshev setup path now prefers the stored guarded-Lanczos policy instead.
+
+## 7. Current Production Guidance
 
 - Use `jacobi` as the minimal fallback.
 - Use the tensor path as the preferred production mass preconditioner.
@@ -159,7 +201,7 @@ for each degree.
 - Treat rank `3` as the practical reference point in benchmarks, since it has
   typically captured most of the gain while keeping setup moderate.
 
-## 7. Status
+## 8. Status
 
 The mass-preconditioner program is structurally finished:
 
@@ -175,8 +217,10 @@ are tuning and robustness questions:
   from the present benchmark set,
 - whether rank selection should remain fixed by the caller or become more
   automatic again,
-- and whether future geometry pipelines should expose tensor-structured metric
-  fields upstream instead of recovering them from quadrature samples.
+- whether future geometry pipelines should expose tensor-structured metric
+  fields upstream instead of recovering them from quadrature samples,
+- and how much the guarded-Lanczos Chebyshev tuning should eventually be made
+  user-facing versus remaining an internal default policy.
 
 Those are optimization questions. The main structural choice is already made,
 and the production tensor path should now be treated as available across all

@@ -1,23 +1,25 @@
 # %% [markdown]
-# # k=0 / k=1 / k=2 / k=3 Hodge-Laplacian Preconditioner Choices
+# # Hodge-Laplacian Preconditioner Choices
 #
-# This interactive script assembles the production k=0 scalar solve plus the
-# structured saddle-point solves for k=1, k=2, and k=3. It compares the four
-# scalar preconditioner choices for k=0 and the structured saddle-point choices
-# for k=1 / k=2 / k=3, for both the singular Laplacian and a lightly shifted
-# Laplacian:
+# This interactive script benchmarks the current Hodge/Laplacian preconditioner
+# choices over the actively supported saddle-point slices. By default it now:
 #
-# 1. `jacobi`
-# 2. `richardson-4`
-# 3. `chebyshev-4`
-# 4. `tensor`
+# 1. computes and uses the harmonic nullspaces,
+# 2. keeps the benchmark cases explicit in the globals below,
+# 3. and runs the currently selected scalar and saddle-point slices.
+#
+# The scalar `k = 0` comparison now lives in
+# `scripts/interactive/mass_preconditioner_demo.py`, since it shares the
+# scalar `MassPreconditionerSpec` interface.
 
 # %%
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields as dataclass_fields, is_dataclass, replace as dataclass_replace
 from datetime import datetime
 from pathlib import Path
 
@@ -26,12 +28,17 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
-from mrx.nullspace import _set_null, get_nullspace
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map, toroid_map
 from mrx.operators import (
+    _build_schur_operator_apply,
+    _estimate_chebyshev_lanczos_bounds_apply,
+    _estimate_preconditioned_max_eigenvalue_apply,
+    _hodge_diaginv,
+    _mass_diaginv,
     apply_derivative_matrix,
     apply_mass_matrix,
+    apply_mass_tensor_preconditioner_ops,
     apply_stiffness,
     assemble_tensor_hodge_preconditioner,
     assemble_tensor_mass_preconditioner,
@@ -44,7 +51,9 @@ from mrx.preconditioners import (
     MassPreconditionerSpec,
     SaddlePointPreconditionerSpec,
     SchurPreconditionerSpec,
+    _select_mass_tensor_factors,
 )
+from mrx.nullspace import _set_null, get_nullspace
 
 jax.config.update("jax_enable_x64", True)
 
@@ -53,9 +62,9 @@ jax.config.update("jax_enable_x64", True)
 @dataclass(frozen=True)
 class ExperimentConfig:
     ns: tuple[int, int, int] = (8, 12, 6)
-    p: int = 2
+    p: int = 3
     tol: float = 1e-9
-    maxiter: int = 2000
+    maxiter: int = 1000
     betti: tuple[int, int, int, int] = (1, 1, 0, 0)
     map_kind: str = "rotating_ellipse"
     torus_epsilon: float = 1.0 / 3.0
@@ -66,12 +75,81 @@ class ExperimentConfig:
     rotating_nfp: int = 3
 
 
+def _parse_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Cannot parse boolean value from {value!r}")
+
+
+def _coerce_like(value, template):
+    if isinstance(template, bool):
+        return _parse_bool(value)
+    if isinstance(template, tuple):
+        parsed = value
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("["):
+                parsed = json.loads(text)
+            else:
+                parsed = [part.strip() for part in text.split(",") if part.strip()]
+        if not isinstance(parsed, (list, tuple)):
+            raise ValueError(f"Expected a list/tuple override for {template!r}, got {value!r}")
+        if len(template) == 0:
+            return tuple(parsed)
+        elem_template = template[0]
+        return tuple(_coerce_like(item, elem_template) for item in parsed)
+    if isinstance(template, int) and not isinstance(template, bool):
+        return int(value)
+    if isinstance(template, float):
+        return float(value)
+    return value
+
+
+def _apply_override_mapping(current_values: dict[str, object], overrides: dict[str, object], *, label: str):
+    for key, value in overrides.items():
+        if key not in current_values:
+            raise ValueError(f"Unknown {label} override {key!r}")
+        current_values[key] = _coerce_like(value, current_values[key])
+
+
+def _resolve_experiment_config(prefix: str, default: ExperimentConfig) -> ExperimentConfig:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--config-json")
+    args, _ = parser.parse_known_args()
+
+    values = {
+        field.name: getattr(default, field.name)
+        for field in dataclass_fields(default)
+    }
+
+    env_json = os.getenv(f"{prefix}_CONFIG_JSON")
+    if env_json:
+        _apply_override_mapping(values, json.loads(env_json), label=f"{prefix} config")
+    if args.config_json:
+        _apply_override_mapping(values, json.loads(args.config_json), label="CLI config")
+
+    for field in dataclass_fields(default):
+        env_name = f"{prefix}_{field.name.upper()}"
+        if env_name in os.environ:
+            values[field.name] = _coerce_like(os.environ[env_name], values[field.name])
+
+    return dataclass_replace(default, **values)
+
+
 @dataclass
 class K0LaplacianBenchmarkReport:
+    k: int
     label: str
     eps: float
     dirichlet: bool
     n_rhs: int
+    n_converged: int
+    n_not_converged: int
     avg_iters: float
     std_iters: float
     max_iters: int
@@ -81,6 +159,7 @@ class K0LaplacianBenchmarkReport:
     avg_relative_residual: float
     std_relative_residual: float
     max_relative_residual: float
+    diagnostics: dict[str, object] | None = None
 
 
 @dataclass
@@ -100,6 +179,8 @@ class SaddleBenchmarkReport:
     eps: float
     dirichlet: bool
     n_rhs: int
+    n_converged: int
+    n_not_converged: int
     avg_iters: float
     std_iters: float
     max_iters: int
@@ -109,6 +190,7 @@ class SaddleBenchmarkReport:
     avg_relative_residual: float
     std_relative_residual: float
     max_relative_residual: float
+    diagnostics: dict[str, object] | None = None
 
 
 @dataclass
@@ -127,26 +209,386 @@ class DiffusionBenchmarkReport:
     avg_relative_residual: float
     std_relative_residual: float
     max_relative_residual: float
+    diagnostics: dict[str, object] | None = None
 
 # %%
-CONFIG = ExperimentConfig()
+CONFIG = _resolve_experiment_config("MRX_LAPLACE", ExperimentConfig())
 SEQ = None
 OPERATORS = None
+OPERATORS_BY_RANK = None
 BUILT_CONFIG = None
 DENSE = False
 eps = 0.0
-eps_list = (eps,)
-NULLSPACE_ITERATION_EPS = eps if eps > 0.0 else 1e-3
-K3_TENSOR_RANK = 3
+eps_list = (0.0,)
+TENSOR_RANKS = (1, 2, 4, 8)
 TENSOR_CP_KWARGS = {"tol": 1e-8, "maxiter": 500}
-POLY_STEPS = 4
-POWER_ITERATIONS = 30
+POLY_STEP_OPTIONS = (2, 4)
+POWER_ITERATIONS = 50
 RICHARDSON_DAMPING_SAFETY = 0.8
 CHEBYSHEV_MIN_EIG_FRACTION = 1e-4
 DIFFUSION_EPS = 1e-4
+ACTIVE_K0_DIRICHLET_CASES = ()
+ACTIVE_SADDLE_CASES: tuple[tuple[int, bool], ...] = ((1, True), (2, False), (3, False))
+RUN_DIFFUSION = False
+SAVE_ARTIFACTS = True
+COMPUTE_NULLSPACES = True
+NULLSPACE_EPS = 1e-6
+LAPLACE_METADATA_SETTING_NAMES = (
+    "CONFIG",
+    "DENSE",
+    "eps",
+    "eps_list",
+    "TENSOR_RANKS",
+    "TENSOR_CP_KWARGS",
+    "POLY_STEP_OPTIONS",
+    "POWER_ITERATIONS",
+    "RICHARDSON_DAMPING_SAFETY",
+    "CHEBYSHEV_MIN_EIG_FRACTION",
+    "DIFFUSION_EPS",
+    "ACTIVE_K0_DIRICHLET_CASES",
+    "ACTIVE_SADDLE_CASES",
+    "RUN_DIFFUSION",
+    "SAVE_ARTIFACTS",
+    "COMPUTE_NULLSPACES",
+    "NULLSPACE_EPS",
+)
 
 
 # %% Helpers
+def _serialize_metadata_value(value):
+    if is_dataclass(value):
+        return {key: _serialize_metadata_value(val) for key, val in asdict(value).items()}
+    if isinstance(value, dict):
+        return {str(key): _serialize_metadata_value(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_metadata_value(val) for val in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return repr(value)
+
+
+def _float_or_none(value):
+    if value is None:
+        return None
+    return float(jnp.asarray(value, dtype=jnp.float64))
+
+
+def _drop_empty_values(mapping: dict[str, object]) -> dict[str, object]:
+    cleaned = {}
+    for key, value in mapping.items():
+        if value is None:
+            continue
+        if isinstance(value, dict) and not value:
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
+def _tensor_block_fit_diagnostics(block) -> dict[str, float] | None:
+    diagnostics = _drop_empty_values(
+        {
+            "relative_error": _float_or_none(getattr(block, "cp_relative_error", None)),
+            "final_delta": _float_or_none(getattr(block, "cp_final_delta", None)),
+        }
+    )
+    return diagnostics or None
+
+
+def _mass_tensor_fit_diagnostics(operators, *, k: int, dirichlet: bool) -> dict[str, object] | None:
+    preconds = operators.mass_preconds
+    if preconds is None or preconds.tensor is None:
+        return None
+    try:
+        factors = _select_mass_tensor_factors(preconds, k, dirichlet)
+    except ValueError:
+        return None
+    if k == 0:
+        return _tensor_block_fit_diagnostics(factors.bulk)
+    if k == 1:
+        diagnostics = _drop_empty_values(
+            {
+                "arr": _tensor_block_fit_diagnostics(factors.arr),
+                "theta": _tensor_block_fit_diagnostics(factors.theta),
+                "zeta": _tensor_block_fit_diagnostics(factors.zeta),
+            }
+        )
+        return diagnostics or None
+    if k == 2:
+        diagnostics = _drop_empty_values(
+            {
+                "r_bulk": _tensor_block_fit_diagnostics(factors.r_bulk),
+                "theta": _tensor_block_fit_diagnostics(factors.theta),
+                "zeta": _tensor_block_fit_diagnostics(factors.zeta),
+            }
+        )
+        return diagnostics or None
+    if k == 3:
+        return _tensor_block_fit_diagnostics(factors)
+    return None
+
+
+def _nullspace_rows(operators, *, k: int, dirichlet: bool):
+    try:
+        nullspace = get_nullspace(operators, k, dirichlet)
+    except ValueError:
+        return None
+    return nullspace if nullspace.shape[0] > 0 else None
+
+
+def _iterative_tuning_diagnostics(
+    operator_apply,
+    smoother_apply,
+    *,
+    size: int,
+    spec: MassPreconditionerSpec,
+    seed: int,
+    smoother_kind: str,
+    source: str,
+    orthogonal_vectors=None,
+) -> dict[str, object]:
+    max_eig = _estimate_preconditioned_max_eigenvalue_apply(
+        operator_apply,
+        smoother_apply,
+        size,
+        n_iter=spec.power_iterations,
+        seed=seed,
+    )
+    if spec.kind == "richardson":
+        omega = jnp.where(
+            max_eig > 0.0,
+            jnp.asarray(spec.damping_safety, dtype=jnp.float64) / max_eig,
+            jnp.asarray(1.0, dtype=jnp.float64),
+        )
+        return {
+            "method": "richardson",
+            "source": source,
+            "smoother": smoother_kind,
+            "max_eig": float(max_eig),
+            "omega": float(omega),
+        }
+    min_eig, max_eig = _estimate_chebyshev_lanczos_bounds_apply(
+        operator_apply,
+        smoother_apply,
+        size,
+        spec=spec,
+        seed=seed,
+        orthogonal_vectors=orthogonal_vectors,
+    )
+    return {
+        "method": "chebyshev",
+        "source": source,
+        "smoother": smoother_kind,
+        "min_eig": float(min_eig),
+        "max_eig": float(max_eig),
+    }
+
+
+def _mass_iterative_smoother_apply(seq, operators, *, k: int, dirichlet: bool, spec: MassPreconditionerSpec):
+    smoother_spec = spec.smoother
+    if smoother_spec is None:
+        smoother_spec = MassPreconditionerSpec(kind="tensor")
+    if smoother_spec.kind == "tensor":
+        return (
+            lambda x: apply_mass_tensor_preconditioner_ops(
+                seq,
+                operators,
+                x,
+                k,
+                dirichlet=dirichlet,
+            ),
+            "tensor",
+        )
+    if smoother_spec.kind == "jacobi":
+        diaginv = _mass_diaginv(operators, k, dirichlet)
+        return (lambda x, inv=diaginv: inv * x, "jacobi")
+    if smoother_spec.kind == "none":
+        return (lambda x: x, "none")
+    raise ValueError(f"Unsupported iterative smoother kind {smoother_spec.kind!r}")
+
+
+def _mass_preconditioner_diagnostics(seq, operators, *, k: int, dirichlet: bool, preconditioner) -> dict[str, object] | None:
+    if not isinstance(preconditioner, MassPreconditionerSpec):
+        return None
+
+    diagnostics: dict[str, object] = {}
+    uses_tensor = preconditioner.kind == "tensor" or preconditioner.surgery_schur
+    if preconditioner.kind in ("richardson", "chebyshev"):
+        operator_apply = lambda x: apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet)
+        smoother_apply, smoother_kind = _mass_iterative_smoother_apply(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            spec=preconditioner,
+        )
+        diagnostics["tuning"] = _iterative_tuning_diagnostics(
+            operator_apply,
+            smoother_apply,
+            size=getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"),
+            spec=preconditioner,
+            seed=1000 * k + int(dirichlet),
+            smoother_kind=smoother_kind,
+            source="estimated_runtime",
+        )
+        uses_tensor = uses_tensor or smoother_kind == "tensor"
+
+    if uses_tensor:
+        tensor_fit = _mass_tensor_fit_diagnostics(operators, k=k, dirichlet=dirichlet)
+        if tensor_fit is not None:
+            diagnostics["tensor_fit"] = tensor_fit
+
+    return diagnostics or None
+
+
+def _scalar_hodge_preconditioner_diagnostics(seq, operators, *, eps: float, dirichlet: bool, preconditioner) -> dict[str, object] | None:
+    if not isinstance(preconditioner, MassPreconditionerSpec):
+        return None
+    if preconditioner.kind not in ("richardson", "chebyshev"):
+        return None
+
+    stiffness_diaginv = _hodge_diaginv(operators, 0, dirichlet)
+    if eps == 0.0:
+        shifted_diaginv = stiffness_diaginv
+    else:
+        mass_diaginv = _mass_diaginv(operators, 0, dirichlet)
+        shifted_diaginv = 1.0 / (1.0 / stiffness_diaginv + eps / mass_diaginv)
+
+    def operator_apply(x):
+        result = apply_stiffness(seq, operators, x, 0, dirichlet=dirichlet)
+        if eps > 0.0:
+            result = result + eps * apply_mass_matrix(seq, operators, x, 0, dirichlet=dirichlet)
+        return result
+
+    smoother_apply = lambda x, inv=shifted_diaginv: inv * x
+    return {
+        "tuning": _iterative_tuning_diagnostics(
+            operator_apply,
+            smoother_apply,
+            size=seq.n0_dbc if dirichlet else seq.n0,
+            spec=preconditioner,
+            seed=int(dirichlet),
+            smoother_kind="shifted_jacobi" if eps > 0.0 else "jacobi",
+            source="estimated_runtime",
+            orthogonal_vectors=_nullspace_rows(operators, k=0, dirichlet=dirichlet) if eps == 0.0 else None,
+        )
+    }
+
+
+def _saddle_preconditioner_diagnostics(seq, operators, *, k: int, eps: float, dirichlet: bool, preconditioner) -> dict[str, object] | None:
+    if not isinstance(preconditioner, SaddlePointPreconditionerSpec):
+        return None
+
+    diagnostics: dict[str, object] = {}
+    lower = _mass_preconditioner_diagnostics(
+        seq,
+        operators,
+        k=k - 1,
+        dirichlet=dirichlet,
+        preconditioner=preconditioner.mass,
+    )
+    if lower is not None:
+        diagnostics["mass"] = lower
+
+    outer_spec = preconditioner.schur.outer
+    if outer_spec.kind == "exact_jacobi":
+        diagnostics["schur_outer"] = {
+            "method": "exact_jacobi",
+            "source": "operator_diagonal_probe",
+        }
+        return diagnostics or None
+    if outer_spec.kind not in ("richardson", "chebyshev"):
+        return diagnostics or None
+
+    schur_inner = lambda x: apply_mass_tensor_preconditioner_ops(
+        seq,
+        operators,
+        x,
+        k - 1,
+        dirichlet=dirichlet,
+    )
+    schur_apply = _build_schur_operator_apply(
+        seq,
+        operators,
+        k=k,
+        dirichlet=dirichlet,
+        eps=eps,
+        inner_preconditioner_apply=schur_inner,
+    )
+    smoother_apply, smoother_kind = _mass_iterative_smoother_apply(
+        seq,
+        operators,
+        k=k,
+        dirichlet=dirichlet,
+        spec=outer_spec,
+    )
+    diagnostics["schur_outer"] = _iterative_tuning_diagnostics(
+        schur_apply,
+        smoother_apply,
+        size=getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"),
+        spec=outer_spec,
+        seed=1000 * k + int(dirichlet),
+        smoother_kind=smoother_kind,
+        source="estimated_runtime",
+        orthogonal_vectors=_nullspace_rows(operators, k=k, dirichlet=dirichlet) if eps == 0.0 else None,
+    )
+    return diagnostics or None
+
+
+def _diffusion_preconditioner_diagnostics(seq, operators, *, k: int, eps: float, dirichlet: bool, preconditioner) -> dict[str, object] | None:
+    if not isinstance(preconditioner, MassPreconditionerSpec):
+        return None
+
+    diagnostics: dict[str, object] = {}
+    uses_tensor = preconditioner.kind == "tensor" or preconditioner.surgery_schur
+    if preconditioner.kind in ("richardson", "chebyshev"):
+        def operator_apply(x):
+            return apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet) + eps * apply_stiffness(
+                seq, operators, x, k, dirichlet=dirichlet
+            )
+
+        smoother_apply, smoother_kind = _mass_iterative_smoother_apply(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            spec=preconditioner,
+        )
+        diagnostics["tuning"] = _iterative_tuning_diagnostics(
+            operator_apply,
+            smoother_apply,
+            size=getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"),
+            spec=preconditioner,
+            seed=1000 * k + int(dirichlet),
+            smoother_kind=smoother_kind,
+            source="estimated_runtime",
+        )
+        uses_tensor = uses_tensor or smoother_kind == "tensor"
+
+    if uses_tensor:
+        tensor_fit = _mass_tensor_fit_diagnostics(operators, k=k, dirichlet=dirichlet)
+        if tensor_fit is not None:
+            diagnostics["tensor_fit"] = tensor_fit
+
+    return diagnostics or None
+
+
+def _laplacian_run_metadata(benchmarks):
+    return {
+        "script": "laplacian_preconditioner_demo",
+        "experiment_config": _serialize_metadata_value(CONFIG),
+        "script_hyperparameters": {
+            name: _serialize_metadata_value(globals()[name])
+            for name in LAPLACE_METADATA_SETTING_NAMES
+        },
+        "benchmark_cases": [
+            {"k": k, "dirichlet": dirichlet}
+            for k, dirichlet in _available_benchmark_cases(benchmarks)
+        ],
+    }
+
+
 def _build_map(config: ExperimentConfig):
     if config.map_kind == "toroidal":
         return toroid_map(epsilon=config.torus_epsilon, R0=config.torus_r0)
@@ -160,13 +602,25 @@ def _build_map(config: ExperimentConfig):
     raise ValueError(f"Unsupported map kind: {config.map_kind}")
 
 
+def _copy_nullspaces(source_operators, target_operators):
+    updated = target_operators
+    for k in range(4):
+        for dirichlet in (False, True):
+            updated = _set_null(
+                updated,
+                k,
+                dirichlet,
+                get_nullspace(source_operators, k, dirichlet),
+            )
+    return updated
+
+
 def build_case(config: ExperimentConfig = CONFIG):
     seq = DeRhamSequence(
         config.ns,
         (config.p, config.p, config.p),
         2 * config.p,
         ("clamped", "periodic", "periodic"),
-        lambda x: x,
         polar=True,
         tol=config.tol,
         maxiter=config.maxiter,
@@ -175,67 +629,38 @@ def build_case(config: ExperimentConfig = CONFIG):
     seq.evaluate_1d()
     seq.assemble_reference_mass_matrix()
     seq.set_map(_build_map(config))
-    operators = assemble_mass_operators(seq, seq.geometry, ks=(0, 1, 2, 3))
-    operators = assemble_tensor_hodge_preconditioner(seq, operators=operators)
-    operators = assemble_tensor_mass_preconditioner(
-        seq,
-        operators=operators,
-        ks=(0, 1, 2, 3),
-        rank=K3_TENSOR_RANK,
-        cp_kwargs=TENSOR_CP_KWARGS,
-    )
-    operators = assemble_incidence_operators(seq, operators=operators, ks=(0, 1, 2))
-    operators = assemble_hodge_operators(seq, seq.geometry, operators=operators, ks=(0,))
-    operators = seq.set_operators(operators, sync_legacy=False)
-    k0_nullspace_vectors, k0_nullspace_iters = seq._find_nullspace_vectors(
-        0,
-        1,
-        NULLSPACE_ITERATION_EPS,
-        dirichlet=False,
-    )
-    operators = _set_null(operators, 0, False, k0_nullspace_vectors)
-    operators = seq.set_operators(operators, sync_legacy=False)
-    k1_nullspace_vectors, k1_nullspace_iters = seq._find_nullspace_vectors(
-        1,
-        1,
-        NULLSPACE_ITERATION_EPS,
-        dirichlet=False,
-    )
-    operators = _set_null(operators, 1, False, k1_nullspace_vectors)
-    operators = seq.set_operators(operators, sync_legacy=False)
-    k2_nullspace_vectors, k2_nullspace_iters = seq._find_nullspace_vectors(
-        2,
-        1,
-        NULLSPACE_ITERATION_EPS,
-        dirichlet=True,
-    )
-    operators = _set_null(operators, 2, True, k2_nullspace_vectors)
-    operators = seq.set_operators(operators, sync_legacy=False)
-    k3_nullspace_vectors, k3_nullspace_iters = seq._find_nullspace_vectors(
-        3,
-        1,
-        NULLSPACE_ITERATION_EPS,
-        dirichlet=True,
-    )
-    operators = _set_null(operators, 3, True, k3_nullspace_vectors)
-    operators = seq.set_operators(operators, sync_legacy=False)
-    nullspace_info = {
-        (0, False): k0_nullspace_iters,
-        (1, False): k1_nullspace_iters,
-        (2, True): k2_nullspace_iters,
-        (3, True): k3_nullspace_iters,
+    base_operators = assemble_mass_operators(seq, seq.geometry, ks=(0, 1, 2, 3))
+    base_operators = assemble_tensor_hodge_preconditioner(seq, operators=base_operators)
+    base_operators = assemble_incidence_operators(seq, operators=base_operators, ks=(0, 1, 2))
+    base_operators = assemble_hodge_operators(seq, seq.geometry, operators=base_operators, ks=(0, 1, 2, 3))
+    operators_by_rank = {
+        rank: assemble_tensor_mass_preconditioner(
+            seq,
+            operators=base_operators,
+            ks=(0, 1, 2, 3),
+            rank=rank,
+            cp_kwargs=TENSOR_CP_KWARGS,
+        )
+        for rank in TENSOR_RANKS
     }
-    _print_nullspace_iteration_info(nullspace_info, eps=NULLSPACE_ITERATION_EPS)
+    operators = seq.set_operators(operators_by_rank[TENSOR_RANKS[-1]], sync_legacy=False)
     operators = seq._require_operators()
-    return seq, operators
+    if COMPUTE_NULLSPACES:
+        nullspace_info = seq._compute_nullspaces(config.betti, eps=NULLSPACE_EPS)
+        operators = seq._require_operators()
+        operators_by_rank[TENSOR_RANKS[-1]] = operators
+        for rank in TENSOR_RANKS[:-1]:
+            operators_by_rank[rank] = _copy_nullspaces(operators, operators_by_rank[rank])
+        _print_nullspace_iteration_info(nullspace_info, eps=NULLSPACE_EPS)
+    return seq, operators, operators_by_rank
 
 
 def ensure_built(config: ExperimentConfig = CONFIG, rebuild: bool = False):
-    global SEQ, OPERATORS, BUILT_CONFIG
-    if rebuild or SEQ is None or OPERATORS is None or BUILT_CONFIG != config:
-        SEQ, OPERATORS = build_case(config)
+    global SEQ, OPERATORS, OPERATORS_BY_RANK, BUILT_CONFIG
+    if rebuild or SEQ is None or OPERATORS is None or OPERATORS_BY_RANK is None or BUILT_CONFIG != config:
+        SEQ, OPERATORS, OPERATORS_BY_RANK = build_case(config)
         BUILT_CONFIG = config
-    return SEQ, OPERATORS
+    return SEQ, OPERATORS, OPERATORS_BY_RANK
 
 
 def benchmark_labels() -> list[str]:
@@ -245,78 +670,164 @@ def benchmark_labels() -> list[str]:
     return labels
 
 
+def _tensor_rank_label(rank: int) -> str:
+    return f"tensor-r{rank}"
+
+
 def _benchmark_mass_preconditioner_specs() -> dict[str, MassPreconditionerSpec]:
-    labels = [
-        ("jacobi", MassPreconditionerSpec(kind="jacobi")),
-        (
-            f"richardson-{POLY_STEPS}",
-            MassPreconditionerSpec(
-                kind="richardson",
-                steps=POLY_STEPS,
-                power_iterations=POWER_ITERATIONS,
-                damping_safety=RICHARDSON_DAMPING_SAFETY,
-                smoother=MassPreconditionerSpec(kind="jacobi"),
-            ),
-        ),
-        (
-            f"chebyshev-{POLY_STEPS}",
-            MassPreconditionerSpec(
-                kind="chebyshev",
-                steps=POLY_STEPS,
-                power_iterations=POWER_ITERATIONS,
-                min_eig_fraction=CHEBYSHEV_MIN_EIG_FRACTION,
-                smoother=MassPreconditionerSpec(kind="jacobi"),
-            ),
-        ),
-        ("tensor", MassPreconditionerSpec(kind="tensor")),
-    ]
+    labels = [("jacobi", MassPreconditionerSpec(kind="jacobi"))]
+    for steps in POLY_STEP_OPTIONS:
+        labels.append(
+            (
+                f"richardson-{steps}",
+                MassPreconditionerSpec(
+                    kind="richardson",
+                    steps=steps,
+                    power_iterations=POWER_ITERATIONS,
+                    damping_safety=RICHARDSON_DAMPING_SAFETY,
+                ),
+            )
+        )
+    for steps in POLY_STEP_OPTIONS:
+        labels.append(
+            (
+                f"chebyshev-{steps}",
+                MassPreconditionerSpec(
+                    kind="chebyshev",
+                    steps=steps,
+                    power_iterations=POWER_ITERATIONS,
+                    min_eig_fraction=CHEBYSHEV_MIN_EIG_FRACTION,
+                ),
+            )
+        )
+    labels.append(("tensor", MassPreconditionerSpec(kind="tensor", surgery_schur=True)))
     return dict(labels)
 
 
 def _diffusion_preconditioner_specs() -> dict[str, MassPreconditionerSpec]:
     return {
         "jacobi": MassPreconditionerSpec(kind="jacobi"),
-        f"chebyshev-{POLY_STEPS}": MassPreconditionerSpec(
+        f"chebyshev-{POLY_STEP_OPTIONS[1]}": MassPreconditionerSpec(
             kind="chebyshev",
-            steps=POLY_STEPS,
+            steps=POLY_STEP_OPTIONS[1],
             power_iterations=POWER_ITERATIONS,
             min_eig_fraction=CHEBYSHEV_MIN_EIG_FRACTION,
-            smoother=MassPreconditionerSpec(kind="jacobi"),
         ),
-        "tensor": MassPreconditionerSpec(kind="tensor"),
+        "tensor": MassPreconditionerSpec(kind="tensor", surgery_schur=True),
     }
 
 
-def _saddle_preconditioner_specs() -> dict[str, SaddlePointPreconditionerSpec]:
-    mass_spec = MassPreconditionerSpec(kind="tensor")
-    outer_specs = {
-        "jacobi": MassPreconditionerSpec(kind="jacobi"),
-        f"richardson-{POLY_STEPS}": MassPreconditionerSpec(
-            kind="richardson",
-            steps=POLY_STEPS,
-            power_iterations=POWER_ITERATIONS,
-            damping_safety=RICHARDSON_DAMPING_SAFETY,
-            smoother=MassPreconditionerSpec(kind="jacobi"),
-        ),
-        f"chebyshev-{POLY_STEPS}": MassPreconditionerSpec(
-            kind="chebyshev",
-            steps=POLY_STEPS,
-            power_iterations=POWER_ITERATIONS,
-            min_eig_fraction=CHEBYSHEV_MIN_EIG_FRACTION,
-            smoother=MassPreconditionerSpec(kind="jacobi"),
-        ),
-    }
-    return {
-        f"mass=tensor / outer={outer_label}": SaddlePointPreconditionerSpec(
-            mass=mass_spec,
-            schur=SchurPreconditionerSpec(
-                inner=mass_spec,
-                outer=outer_spec,
+def _saddle_preconditioner_specs() -> list[dict]:
+    entries = [
+        {
+            "label": "mass=jacobi / outer=exact_jacobi",
+            "tensor_rank": None,
+            "preconditioner": SaddlePointPreconditionerSpec(
+                mass=MassPreconditionerSpec(kind="jacobi"),
+                schur=SchurPreconditionerSpec(
+                    inner=MassPreconditionerSpec(kind="tensor"),
+                    outer=MassPreconditionerSpec(kind="exact_jacobi"),
+                ),
+                coupled=False,
             ),
-            coupled=False,
+        }
+    ]
+    for steps in POLY_STEP_OPTIONS:
+        entries.append(
+            {
+                "label": f"mass=richardson-{steps} / outer=exact_jacobi",
+                "tensor_rank": None,
+                "preconditioner": SaddlePointPreconditionerSpec(
+                    mass=MassPreconditionerSpec(
+                        kind="richardson",
+                        steps=steps,
+                        power_iterations=POWER_ITERATIONS,
+                        damping_safety=RICHARDSON_DAMPING_SAFETY,
+                    ),
+                    schur=SchurPreconditionerSpec(
+                        inner=MassPreconditionerSpec(kind="tensor"),
+                        outer=MassPreconditionerSpec(kind="exact_jacobi"),
+                    ),
+                    coupled=False,
+                ),
+            }
         )
-        for outer_label, outer_spec in outer_specs.items()
-    }
+    for steps in POLY_STEP_OPTIONS:
+        entries.append(
+            {
+                "label": f"mass=chebyshev-{steps} / outer=exact_jacobi",
+                "tensor_rank": None,
+                "preconditioner": SaddlePointPreconditionerSpec(
+                    mass=MassPreconditionerSpec(
+                        kind="chebyshev",
+                        steps=steps,
+                        power_iterations=POWER_ITERATIONS,
+                        min_eig_fraction=CHEBYSHEV_MIN_EIG_FRACTION,
+                    ),
+                    schur=SchurPreconditionerSpec(
+                        inner=MassPreconditionerSpec(kind="tensor"),
+                        outer=MassPreconditionerSpec(kind="exact_jacobi"),
+                    ),
+                    coupled=False,
+                ),
+            }
+        )
+    for rank in TENSOR_RANKS:
+        entries.append(
+            {
+                "label": f"mass={_tensor_rank_label(rank)} / outer=jacobi",
+                "tensor_rank": rank,
+                "preconditioner": SaddlePointPreconditionerSpec(
+                    mass=MassPreconditionerSpec(kind="tensor", surgery_schur=True),
+                    schur=SchurPreconditionerSpec(
+                        inner=MassPreconditionerSpec(kind="tensor"),
+                        outer=MassPreconditionerSpec(kind="jacobi"),
+                    ),
+                    coupled=False,
+                ),
+            }
+        )
+        for steps in POLY_STEP_OPTIONS:
+            entries.append(
+                {
+                    "label": f"mass={_tensor_rank_label(rank)} / outer=richardson-{steps}",
+                    "tensor_rank": rank,
+                    "preconditioner": SaddlePointPreconditionerSpec(
+                        mass=MassPreconditionerSpec(kind="tensor", surgery_schur=True),
+                        schur=SchurPreconditionerSpec(
+                            inner=MassPreconditionerSpec(kind="tensor"),
+                            outer=MassPreconditionerSpec(
+                                kind="richardson",
+                                steps=steps,
+                                power_iterations=POWER_ITERATIONS,
+                                damping_safety=RICHARDSON_DAMPING_SAFETY,
+                            ),
+                        ),
+                        coupled=False,
+                    ),
+                }
+            )
+        for steps in POLY_STEP_OPTIONS:
+            entries.append(
+                {
+                    "label": f"mass={_tensor_rank_label(rank)} / outer=chebyshev-{steps}",
+                    "tensor_rank": rank,
+                    "preconditioner": SaddlePointPreconditionerSpec(
+                        mass=MassPreconditionerSpec(kind="tensor", surgery_schur=True),
+                        schur=SchurPreconditionerSpec(
+                            inner=MassPreconditionerSpec(kind="tensor"),
+                            outer=MassPreconditionerSpec(
+                                kind="chebyshev",
+                                steps=steps,
+                                power_iterations=POWER_ITERATIONS,
+                                min_eig_fraction=CHEBYSHEV_MIN_EIG_FRACTION,
+                            ),
+                        ),
+                        coupled=False,
+                    ),
+                }
+            )
+    return entries
 
 
 def _log10_safe(values):
@@ -339,12 +850,16 @@ def _print_nullspace_iteration_info(info: dict[tuple[int, bool], list[tuple[int,
 
 
 def _k0_nullspace_vector(seq, operators, dirichlet: bool):
+    del seq
     if dirichlet:
         return None
-    vector = jnp.ones((seq.n0,), dtype=jnp.float64)
-    mass_vector = apply_mass_matrix(seq, operators, vector, 0, dirichlet=dirichlet)
-    norm = jnp.sqrt(jnp.abs(jnp.dot(vector, mass_vector)))
-    return vector / jnp.where(norm > 0, norm, 1.0)
+    try:
+        nullspace = get_nullspace(operators, 0, dirichlet)
+    except ValueError:
+        return None
+    if nullspace.shape[0] == 0:
+        return None
+    return nullspace[0]
 
 
 def _project_rhs_to_range(seq, operators, rhs, dirichlet: bool):
@@ -356,7 +871,10 @@ def _project_rhs_to_range(seq, operators, rhs, dirichlet: bool):
 
 
 def _project_saddle_rhs_to_range(seq, operators, rhs, *, k: int, dirichlet: bool):
-    nullspace = get_nullspace(operators, k, dirichlet)
+    try:
+        nullspace = get_nullspace(operators, k, dirichlet)
+    except ValueError:
+        return rhs
     if nullspace.shape[0] == 0:
         return rhs
     projected = rhs
@@ -378,7 +896,12 @@ def _apply_saddle_hodge_operator(seq, operators, x, *, k: int, eps: float, diric
         dirichlet_out=dirichlet,
         transpose=True,
     )
-    sigma = seq.apply_inverse_mass_matrix(d_t_x, k - 1, dirichlet=dirichlet)
+    sigma = seq.apply_inverse_mass_matrix(
+        d_t_x,
+        k - 1,
+        dirichlet=dirichlet,
+        operators=operators,
+    )
     schur = apply_derivative_matrix(
         seq,
         operators,
@@ -411,13 +934,14 @@ def _dense_k0_hodge_inverse(seq, operators, dirichlet: bool, *, eps: float = 0.0
 
 def benchmark_k0_laplacian_preconditioners(
     seq,
-    operators,
+    operators_by_rank,
     *,
     eps: float,
     dirichlet: bool,
     n_rhs: int = 8,
     seed: int = 0,
 ) -> list[K0LaplacianBenchmarkReport]:
+    operators = operators_by_rank[TENSOR_RANKS[-1]]
     rhs_size = seq.n0_dbc if dirichlet else seq.n0
     rhs_batch = jax.random.normal(
         jax.random.PRNGKey(seed + 100 * int(dirichlet)),
@@ -476,23 +1000,29 @@ def benchmark_k0_laplacian_preconditioners(
         iterations = []
         times_ms = []
         residuals = []
+        n_converged = 0
         for rhs in rhs_batch:
             t0 = time.perf_counter()
             x, info, residual = solve(rhs)
             jax.block_until_ready(x)
+            info_int = int(info)
             times_ms.append((time.perf_counter() - t0) * 1e3)
-            iterations.append(int(jnp.abs(info)))
+            iterations.append(abs(info_int))
             residuals.append(float(residual))
+            n_converged += int(info_int <= 0)
 
         iterations_array = jnp.asarray(iterations)
         times_ms_array = jnp.asarray(times_ms)
         residuals_array = jnp.asarray(residuals)
         reports.append(
             K0LaplacianBenchmarkReport(
+                k=0,
                 label=label,
                 eps=eps,
                 dirichlet=dirichlet,
                 n_rhs=n_rhs,
+                n_converged=n_converged,
+                n_not_converged=n_rhs - n_converged,
                 avg_iters=float(jnp.mean(iterations_array)),
                 std_iters=float(jnp.std(iterations_array)),
                 max_iters=int(jnp.max(iterations_array)),
@@ -502,6 +1032,13 @@ def benchmark_k0_laplacian_preconditioners(
                 avg_relative_residual=float(jnp.mean(residuals_array)),
                 std_relative_residual=float(jnp.std(residuals_array)),
                 max_relative_residual=float(jnp.max(residuals_array)),
+                diagnostics=_scalar_hodge_preconditioner_diagnostics(
+                    seq,
+                    operators,
+                    eps=eps,
+                    dirichlet=dirichlet,
+                    preconditioner=preconditioner,
+                ),
             )
         )
 
@@ -526,8 +1063,9 @@ def benchmark_k0_laplacian_preconditioners(
             t0 = time.perf_counter()
             x, info, residual = solve_dense(rhs)
             jax.block_until_ready(x)
+            info_int = int(info)
             times_ms.append((time.perf_counter() - t0) * 1e3)
-            iterations.append(int(jnp.abs(info)))
+            iterations.append(abs(info_int))
             residuals.append(float(residual))
 
         iterations_array = jnp.asarray(iterations)
@@ -535,10 +1073,13 @@ def benchmark_k0_laplacian_preconditioners(
         residuals_array = jnp.asarray(residuals)
         reports.append(
             K0LaplacianBenchmarkReport(
+                k=0,
                 label="dense-pinv",
                 eps=eps,
                 dirichlet=dirichlet,
                 n_rhs=n_rhs,
+                n_converged=n_rhs,
+                n_not_converged=0,
                 avg_iters=float(jnp.mean(iterations_array)),
                 std_iters=float(jnp.std(iterations_array)),
                 max_iters=int(jnp.max(iterations_array)),
@@ -556,7 +1097,7 @@ def benchmark_k0_laplacian_preconditioners(
 
 def benchmark_saddle_laplacian_preconditioners(
     seq,
-    operators,
+    operators_by_rank,
     *,
     k: int,
     eps: float,
@@ -564,6 +1105,7 @@ def benchmark_saddle_laplacian_preconditioners(
     n_rhs: int = 8,
     seed: int = 0,
 ) -> list[SaddleBenchmarkReport]:
+    default_operators = operators_by_rank[TENSOR_RANKS[-1]]
     suffix = "_dbc" if dirichlet else ""
     rhs_size = getattr(seq, f"n{k}{suffix}")
     rhs_batch = jax.random.normal(
@@ -574,13 +1116,22 @@ def benchmark_saddle_laplacian_preconditioners(
     if eps == 0.0:
         rhs_batch = jax.vmap(
             lambda rhs: _project_saddle_rhs_to_range(
-                seq, operators, rhs, k=k, dirichlet=dirichlet
+                seq, default_operators, rhs, k=k, dirichlet=dirichlet
             )
         )(rhs_batch)
     specs = _saddle_preconditioner_specs()
 
     reports = []
-    for label, preconditioner in specs.items():
+    for entry in specs:
+        label = entry["label"]
+        preconditioner = entry["preconditioner"]
+        tensor_rank = entry["tensor_rank"]
+        operators = (
+            operators_by_rank[tensor_rank]
+            if tensor_rank is not None
+            else default_operators
+        )
+
         @jax.jit
         def solve(rhs):
             rhs_use = rhs if eps > 0.0 else _project_saddle_rhs_to_range(
@@ -629,13 +1180,16 @@ def benchmark_saddle_laplacian_preconditioners(
         iterations = []
         times_ms = []
         residuals = []
+        n_converged = 0
         for rhs in rhs_batch:
             t0 = time.perf_counter()
             x, info = solve(rhs)
             jax.block_until_ready(x)
+            info_int = int(info)
             times_ms.append((time.perf_counter() - t0) * 1e3)
-            iterations.append(int(jnp.abs(info)))
+            iterations.append(abs(info_int))
             residuals.append(float(relative_residual(x, rhs)))
+            n_converged += int(info_int <= 0)
 
         iterations_array = jnp.asarray(iterations)
         times_ms_array = jnp.asarray(times_ms)
@@ -647,6 +1201,8 @@ def benchmark_saddle_laplacian_preconditioners(
                 eps=eps,
                 dirichlet=dirichlet,
                 n_rhs=n_rhs,
+                n_converged=n_converged,
+                n_not_converged=n_rhs - n_converged,
                 avg_iters=float(jnp.mean(iterations_array)),
                 std_iters=float(jnp.std(iterations_array)),
                 max_iters=int(jnp.max(iterations_array)),
@@ -656,6 +1212,14 @@ def benchmark_saddle_laplacian_preconditioners(
                 avg_relative_residual=float(jnp.mean(residuals_array)),
                 std_relative_residual=float(jnp.std(residuals_array)),
                 max_relative_residual=float(jnp.max(residuals_array)),
+                diagnostics=_saddle_preconditioner_diagnostics(
+                    seq,
+                    operators,
+                    k=k,
+                    eps=eps,
+                    dirichlet=dirichlet,
+                    preconditioner=preconditioner,
+                ),
             )
         )
 
@@ -738,6 +1302,14 @@ def benchmark_diffusion_preconditioners(
                 avg_relative_residual=float(jnp.mean(residuals_array)),
                 std_relative_residual=float(jnp.std(residuals_array)),
                 max_relative_residual=float(jnp.max(residuals_array)),
+                diagnostics=_diffusion_preconditioner_diagnostics(
+                    seq,
+                    operators,
+                    k=k,
+                    eps=eps,
+                    dirichlet=dirichlet,
+                    preconditioner=preconditioner,
+                ),
             )
         )
 
@@ -783,6 +1355,287 @@ def print_diffusion_benchmark_reports(reports: list[DiffusionBenchmarkReport]):
         )
 
 
+def _report_display_labels(reports) -> list[str]:
+    labels = []
+    for report in reports:
+        suffix = "*" if getattr(report, "n_not_converged", 0) > 0 else ""
+        labels.append(f"{report.label}{suffix}")
+    return labels
+
+
+def _available_dirichlet_cases_for_k(benchmarks, *, k: int) -> list[bool]:
+    preferred = []
+    if k == 0:
+        preferred = list(ACTIVE_K0_DIRICHLET_CASES)
+    else:
+        preferred = [dirichlet for key_k, dirichlet in ACTIVE_SADDLE_CASES if key_k == k]
+    cases = [dirichlet for dirichlet in preferred if (k, dirichlet) in benchmarks]
+    if cases:
+        return cases
+    discovered = []
+    for key_k, dirichlet in benchmarks:
+        if key_k == k and dirichlet not in discovered:
+            discovered.append(dirichlet)
+    return discovered
+
+
+def _labels_for_k(benchmarks, *, k: int) -> list[str]:
+    labels = []
+    for dirichlet in _available_dirichlet_cases_for_k(benchmarks, k=k):
+        for report in benchmarks[(k, dirichlet)]:
+            if report.label not in labels:
+                labels.append(report.label)
+    return labels
+
+
+def _display_labels_for_k(benchmarks, *, k: int) -> list[str]:
+    labels = _labels_for_k(benchmarks, k=k)
+    cases = _available_dirichlet_cases_for_k(benchmarks, k=k)
+    displays = []
+    for label in labels:
+        failed = False
+        for dirichlet in cases:
+            for report in benchmarks[(k, dirichlet)]:
+                if report.label == label and getattr(report, "n_not_converged", 0) > 0:
+                    failed = True
+                    break
+            if failed:
+                break
+        displays.append(f"{label}*" if failed else label)
+    return displays
+
+
+def _available_benchmark_cases(benchmarks) -> list[tuple[int, bool]]:
+    cases = []
+    for k in (0, 1, 2, 3):
+        for dirichlet in _available_dirichlet_cases_for_k(benchmarks, k=k):
+            cases.append((k, dirichlet))
+    return cases
+
+
+def _all_benchmark_labels(benchmarks) -> list[str]:
+    labels = []
+    for k in (0, 1, 2, 3):
+        for label in _labels_for_k(benchmarks, k=k):
+            if label not in labels:
+                labels.append(label)
+    return labels
+
+
+def _label_family(label: str) -> str:
+    if label.startswith("richardson") or label.startswith("mass=richardson"):
+        return "richardson"
+    if label.startswith("chebyshev") or label.startswith("mass=chebyshev"):
+        return "chebyshev"
+    if label.startswith("tensor") or label.startswith("mass=tensor"):
+        return "tensor"
+    return "jacobi"
+
+
+def _grouped_bar_positions(
+    labels: list[str],
+    *,
+    intra_group_step: float = 1.0,
+    inter_group_gap: float = 0.8,
+) -> jnp.ndarray:
+    positions = []
+    current = 0.0
+    previous_family = None
+    for label in labels:
+        family = _label_family(label)
+        if previous_family is None:
+            positions.append(current)
+        else:
+            current += intra_group_step
+            if family != previous_family:
+                current += inter_group_gap
+            positions.append(current)
+        previous_family = family
+    return jnp.asarray(positions, dtype=jnp.float64)
+
+
+def _blend_toward_white(color, amount: float):
+    red, green, blue = plt.matplotlib.colors.to_rgb(color)
+    return (
+        red + (1.0 - red) * amount,
+        green + (1.0 - green) * amount,
+        blue + (1.0 - blue) * amount,
+    )
+
+
+def _grouped_bar_colors(labels: list[str]):
+    base_colors = {
+        "jacobi": "#1f77b4",
+        "richardson": "#ff7f0e",
+        "chebyshev": "#2ca02c",
+        "tensor": "#d62728",
+    }
+    family_counts = {}
+    family_offsets = {}
+    for label in labels:
+        family = _label_family(label)
+        family_counts[family] = family_counts.get(family, 0) + 1
+
+    colors = []
+    for label in labels:
+        family = _label_family(label)
+        offset = family_offsets.get(family, 0)
+        family_offsets[family] = offset + 1
+        total = family_counts[family]
+        lighten = 0.0 if total <= 1 else 0.18 * offset / (total - 1)
+        colors.append(_blend_toward_white(base_colors.get(family, "#7f7f7f"), lighten))
+    return colors
+
+
+def plot_all_laplacian_benchmark_reports(
+    benchmarks,
+    *,
+    show: bool = True,
+    logscale: bool = True,
+):
+    ks = (0, 1, 2, 3)
+    width = 0.38
+    metrics = [
+        ("avg_iters", "std_iters", "Average Iterations"),
+        ("avg_time_ms", "std_time_ms", "Average Time [ms]"),
+    ]
+
+    fig, axes = plt.subplots(
+        len(metrics),
+        len(ks),
+        figsize=(18, 8.0),
+        sharey="row",
+        constrained_layout=True,
+        squeeze=False,
+    )
+
+    for col, k in enumerate(ks):
+        cases = _available_dirichlet_cases_for_k(benchmarks, k=k)
+        labels = _labels_for_k(benchmarks, k=k)
+        if not labels:
+            continue
+        display_labels = _display_labels_for_k(benchmarks, k=k)
+        x = _grouped_bar_positions(labels)
+        report_maps = {
+            dirichlet: {report.label: report for report in benchmarks[(k, dirichlet)]}
+            for dirichlet in cases
+        }
+        colors = _grouped_bar_colors(labels)
+        if len(cases) == 1:
+            offsets = {cases[0]: 0.0}
+            alphas = {cases[0]: 0.9}
+            bar_width = 0.6
+        else:
+            bar_width = width
+            offsets = {
+                dirichlet: (-bar_width / 2 if index == 0 else bar_width / 2)
+                for index, dirichlet in enumerate(cases)
+            }
+            alphas = {
+                dirichlet: (0.9 if not dirichlet else 0.45)
+                for dirichlet in cases
+            }
+        for row, (metric_name, std_name, metric_label) in enumerate(metrics):
+            ax = axes[row, col]
+            for dirichlet in cases:
+                case_reports = report_maps[dirichlet]
+                values = [
+                    getattr(case_reports[label], metric_name) if label in case_reports else jnp.nan
+                    for label in labels
+                ]
+                errors = [
+                    getattr(case_reports[label], std_name) if label in case_reports else 0.0
+                    for label in labels
+                ]
+                ax.bar(
+                    x + offsets[dirichlet],
+                    values,
+                    width=bar_width,
+                    color=colors,
+                    alpha=alphas[dirichlet],
+                    yerr=errors,
+                    error_kw={"elinewidth": 1.0, "capsize": 3, "capthick": 1.0},
+                )
+            if logscale:
+                ax.set_yscale("log", base=10)
+            ax.set_title(f"k={k} {metric_label}")
+            ax.set_xlim(float(x[0]) - 0.75, float(x[-1]) + 0.75)
+            ax.grid(axis="y", alpha=0.25)
+            if col == 0:
+                ax.set_ylabel(metric_label)
+            if row == len(metrics) - 1:
+                ax.set_xticks(x, display_labels, rotation=25, ha="right")
+            else:
+                ax.set_xticks(x, [])
+
+    present_dirichlet_cases = []
+    for _, dirichlet in _available_benchmark_cases(benchmarks):
+        if dirichlet not in present_dirichlet_cases:
+            present_dirichlet_cases.append(dirichlet)
+    legend_handles = [
+        Patch(
+            facecolor="#595959",
+            alpha=(0.9 if not dirichlet else 0.45),
+            label=f"dirichlet={dirichlet}",
+        )
+        for dirichlet in present_dirichlet_cases
+    ]
+    axes[0, 0].legend(handles=legend_handles, loc="upper right", frameon=False)
+    fig.suptitle("Hodge/Laplacian preconditioner benchmark")
+    if show:
+        plt.show()
+    return fig
+
+
+def plot_all_laplacian_benchmark_heatmaps(
+    benchmarks,
+    *,
+    show: bool = True,
+    logscale: bool = True,
+):
+    labels = _all_benchmark_labels(benchmarks)
+    benchmark_cases = _available_benchmark_cases(benchmarks)
+    case_labels = [f"k={k}, dbc={dirichlet}" for k, dirichlet in benchmark_cases]
+    benchmark_maps = {
+        (k, dirichlet): {report.label: report for report in benchmarks[(k, dirichlet)]}
+        for k, dirichlet in benchmark_cases
+    }
+    iteration_matrix = jnp.asarray([
+        [
+            benchmark_maps[(k, dirichlet)][label].avg_iters if label in benchmark_maps[(k, dirichlet)] else jnp.nan
+            for k, dirichlet in benchmark_cases
+        ]
+        for label in labels
+    ])
+    time_matrix = jnp.asarray([
+        [
+            benchmark_maps[(k, dirichlet)][label].avg_time_ms if label in benchmark_maps[(k, dirichlet)] else jnp.nan
+            for k, dirichlet in benchmark_cases
+        ]
+        for label in labels
+    ])
+
+    fig, axes = plt.subplots(1, 2, figsize=(18, 4.8), constrained_layout=True)
+    for ax, matrix, title, cmap in (
+        (axes[0], iteration_matrix, "Average Iterations", "viridis"),
+        (axes[1], time_matrix, "Average Time [ms]", "magma"),
+    ):
+        display_matrix = _log10_safe(matrix) if logscale else matrix
+        cmap_obj = plt.get_cmap(cmap).copy()
+        cmap_obj.set_bad(color="#f2f2f2")
+        image = ax.imshow(display_matrix, aspect="auto", cmap=cmap_obj)
+        ax.set_title(f"{title} ({'log10' if logscale else 'linear'} scale)")
+        ax.set_xticks(range(len(case_labels)), case_labels, rotation=35, ha="right")
+        ax.set_yticks(range(len(labels)), labels)
+        colorbar = fig.colorbar(image, ax=ax, shrink=0.9)
+        colorbar.set_label(r"$\log_{10}(\mathrm{value})$" if logscale else "value")
+
+    fig.suptitle("Hodge/Laplacian preconditioner benchmark summary")
+    if show:
+        plt.show()
+    return fig
+
+
 def summarize_k0_laplacian(seq, operators, *, dirichlet: bool) -> K0LaplacianSpectrumReport:
     _, _, eigvals = _dense_k0_hodge_inverse(seq, operators, dirichlet)
     abs_eigvals = jnp.abs(eigvals)
@@ -820,14 +1673,7 @@ def plot_k0_laplacian_benchmark_reports(
 ):
     labels = benchmark_labels()
     x = jnp.arange(len(labels))
-    color_map = {
-        "jacobi": "#1f77b4",
-        f"richardson-{POLY_STEPS}": "#ff7f0e",
-        f"chebyshev-{POLY_STEPS}": "#2ca02c",
-        "tensor": "#d62728",
-        "dense-pinv": "#9467bd",
-    }
-    colors = [color_map[label] for label in labels]
+    colors = _grouped_bar_colors(labels)
     metrics = [
         ("avg_iters", "std_iters", "Average Iterations", True),
         ("avg_time_ms", "std_time_ms", "Average Time [ms]", True),
@@ -991,12 +1837,7 @@ def plot_saddle_benchmark_reports(
 ):
     labels = [report.label for report in benchmarks[False]]
     x = jnp.arange(len(labels))
-    color_map = {
-        "mass=tensor / outer=jacobi": "#1f77b4",
-        f"mass=tensor / outer=richardson-{POLY_STEPS}": "#ff7f0e",
-        f"mass=tensor / outer=chebyshev-{POLY_STEPS}": "#2ca02c",
-    }
-    colors = [color_map[label] for label in labels]
+    colors = _grouped_bar_colors(labels)
     metrics = [
         ("avg_iters", "std_iters", "Average Iterations", True),
         ("avg_time_ms", "std_time_ms", "Average Time [ms]", True),
@@ -1110,184 +1951,6 @@ def _saddle_benchmarks_for_eps(
     }
 
 
-def plot_laplacian_benchmark_reports(
-    k0_benchmarks: dict[bool, list[K0LaplacianBenchmarkReport]],
-    saddle_benchmarks: dict[int, dict[bool, list[SaddleBenchmarkReport]]],
-    *,
-    eps: float,
-    show: bool = True,
-):
-    del eps
-    metrics = [
-        ("avg_iters", "std_iters", "Average Iterations", True),
-        ("avg_time_ms", "std_time_ms", "Average Time [ms]", True),
-        ("avg_relative_residual", "std_relative_residual", "Average Relative Residual", True),
-    ]
-    k0_color_map = {
-        "jacobi": "#1f77b4",
-        f"richardson-{POLY_STEPS}": "#ff7f0e",
-        f"chebyshev-{POLY_STEPS}": "#2ca02c",
-        "tensor": "#d62728",
-        "dense-pinv": "#9467bd",
-    }
-    saddle_color_map = {
-        "mass=tensor / outer=jacobi": "#1f77b4",
-        f"mass=tensor / outer=richardson-{POLY_STEPS}": "#ff7f0e",
-        f"mass=tensor / outer=chebyshev-{POLY_STEPS}": "#2ca02c",
-    }
-    column_specs = [
-        (0, benchmark_labels(), k0_benchmarks, k0_color_map),
-        *[
-            (
-                k,
-                [report.label for report in saddle_benchmarks[k][False]],
-                saddle_benchmarks[k],
-                saddle_color_map,
-            )
-            for k in sorted(saddle_benchmarks)
-        ],
-    ]
-
-    fig, axes = plt.subplots(
-        len(metrics),
-        len(column_specs),
-        figsize=(6.0 * len(column_specs), 10),
-        sharey="row",
-        constrained_layout=True,
-        squeeze=False,
-    )
-
-    for col, (k, labels, benchmarks, color_map) in enumerate(column_specs):
-        x = jnp.arange(len(labels))
-        colors = [color_map[label] for label in labels]
-        free_reports = {report.label: report for report in benchmarks[False]}
-        dbc_reports = {report.label: report for report in benchmarks[True]}
-
-        for row, (metric_name, std_name, metric_label, log_scale) in enumerate(metrics):
-            ax = axes[row, col]
-            free_values = [getattr(free_reports[label], metric_name) for label in labels]
-            dbc_values = [getattr(dbc_reports[label], metric_name) for label in labels]
-            free_errors = [getattr(free_reports[label], std_name) for label in labels]
-            dbc_errors = [getattr(dbc_reports[label], std_name) for label in labels]
-            width = 0.38
-            ax.bar(
-                x - width / 2,
-                free_values,
-                width=width,
-                color=colors,
-                alpha=0.9,
-                yerr=free_errors,
-                error_kw={"elinewidth": 1.0, "capsize": 3, "capthick": 1.0},
-            )
-            ax.bar(
-                x + width / 2,
-                dbc_values,
-                width=width,
-                color=colors,
-                alpha=0.45,
-                yerr=dbc_errors,
-                error_kw={"elinewidth": 1.0, "capsize": 3, "capthick": 1.0},
-            )
-            if log_scale:
-                ax.set_yscale("log", base=10)
-            ax.set_title(f"k={k} {metric_label}")
-            ax.grid(axis="y", alpha=0.25)
-            if col == 0:
-                ax.set_ylabel(metric_label)
-            if row == len(metrics) - 1:
-                ax.set_xticks(x, labels, rotation=25, ha="right")
-            else:
-                ax.set_xticks(x, [])
-
-    axes[0, 0].legend(
-        handles=[
-            Patch(facecolor="#595959", alpha=0.9, label="dirichlet=False"),
-            Patch(facecolor="#595959", alpha=0.45, label="dirichlet=True"),
-        ],
-        loc="upper right",
-        frameon=False,
-    )
-    if show:
-        plt.show()
-    return fig
-
-
-def plot_laplacian_benchmark_heatmaps(
-    k0_benchmarks: dict[bool, list[K0LaplacianBenchmarkReport]],
-    saddle_benchmarks: dict[int, dict[bool, list[SaddleBenchmarkReport]]],
-    *,
-    eps: float,
-    show: bool = True,
-):
-    del eps
-    labels = benchmark_labels()
-    saddle_label_map = {
-        "jacobi": "mass=tensor / outer=jacobi",
-        f"richardson-{POLY_STEPS}": f"mass=tensor / outer=richardson-{POLY_STEPS}",
-        f"chebyshev-{POLY_STEPS}": f"mass=tensor / outer=chebyshev-{POLY_STEPS}",
-    }
-    case_labels = ["k=0, dbc=False", "k=0, dbc=True"] + [
-        f"k={k}, dbc={dirichlet}"
-        for k in sorted(saddle_benchmarks)
-        for dirichlet in (False, True)
-    ]
-
-    k0_free_reports = {report.label: report for report in k0_benchmarks[False]}
-    k0_dbc_reports = {report.label: report for report in k0_benchmarks[True]}
-    saddle_free_reports = {
-        k: {report.label: report for report in benchmarks[False]}
-        for k, benchmarks in saddle_benchmarks.items()
-    }
-    saddle_dbc_reports = {
-        k: {report.label: report for report in benchmarks[True]}
-        for k, benchmarks in saddle_benchmarks.items()
-    }
-
-    def _metric_row(metric_name: str, label: str):
-        values = [
-            getattr(k0_free_reports[label], metric_name),
-            getattr(k0_dbc_reports[label], metric_name),
-        ]
-        saddle_label = saddle_label_map.get(label)
-        for k in sorted(saddle_benchmarks):
-            if saddle_label is None:
-                values.extend([jnp.nan, jnp.nan])
-                continue
-            values.extend([
-                getattr(saddle_free_reports[k][saddle_label], metric_name),
-                getattr(saddle_dbc_reports[k][saddle_label], metric_name),
-            ])
-        return values
-
-    iteration_matrix = jnp.asarray([
-        _metric_row("avg_iters", label)
-        for label in labels
-    ], dtype=jnp.float64)
-    time_matrix = jnp.asarray([
-        _metric_row("avg_time_ms", label)
-        for label in labels
-    ], dtype=jnp.float64)
-
-    fig, axes = plt.subplots(1, 2, figsize=(18, 4.8), constrained_layout=True)
-    for ax, matrix, title, cmap_name in (
-        (axes[0], iteration_matrix, "Average Iterations", "viridis"),
-        (axes[1], time_matrix, "Average Time [ms]", "magma"),
-    ):
-        cmap = plt.get_cmap(cmap_name).copy()
-        cmap.set_bad(color="white")
-        log_matrix = _log10_safe(matrix)
-        image = ax.imshow(log_matrix, aspect="auto", cmap=cmap)
-        ax.set_title(f"{title} ($\\log_{{10}}$ scale)")
-        ax.set_xticks(range(len(case_labels)), case_labels, rotation=35, ha="right")
-        ax.set_yticks(range(len(labels)), labels)
-        colorbar = fig.colorbar(image, ax=ax, shrink=0.9)
-        colorbar.set_label(r"$\log_{10}(\mathrm{value})$")
-
-    if show:
-        plt.show()
-    return fig
-
-
 def _flatten_benchmarks(
     benchmarks: dict[bool, list[K0LaplacianBenchmarkReport]],
 ) -> list[dict]:
@@ -1313,76 +1976,44 @@ def _flatten_saddle_benchmarks(
 
 
 def save_k0_laplacian_benchmark_artifacts(
-    benchmarks_by_eps: dict[float, dict[bool, list[K0LaplacianBenchmarkReport]]],
+    benchmarks: dict[tuple[int, bool], list],
     spectra: dict[bool, K0LaplacianSpectrumReport],
-    saddle_benchmarks_by_k: dict[int, dict[float, dict[bool, list[SaddleBenchmarkReport]]]] | None = None,
 ) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path("outputs") / "interactive" / f"k0_laplacian_preconditioner_choices_{timestamp}"
+    output_dir = Path("outputs") / "interactive" / f"laplace_preconditioner_choices_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    metadata = {
-        "config": asdict(CONFIG),
-        "dense": DENSE,
-        "eps_values": list(eps_list),
-        "poly_steps": POLY_STEPS,
-        "power_iterations": POWER_ITERATIONS,
-        "richardson_damping_safety": RICHARDSON_DAMPING_SAFETY,
-        "chebyshev_min_eig_fraction": CHEBYSHEV_MIN_EIG_FRACTION,
-        "k3_tensor_rank": K3_TENSOR_RANK,
-        "tensor_cp_kwargs": TENSOR_CP_KWARGS,
-        "saddle_ks": sorted(saddle_benchmarks_by_k) if saddle_benchmarks_by_k is not None else [],
-    }
+    metadata = _laplacian_run_metadata(benchmarks)
     (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
-    (output_dir / "benchmarks.json").write_text(
-        json.dumps(
-            {
-                f"{eps:.1e}": _flatten_benchmarks(benchmarks)
-                for eps, benchmarks in benchmarks_by_eps.items()
-            },
-            indent=2,
-        )
-    )
-    if DENSE:
+    (output_dir / "benchmarks.json").write_text(json.dumps(
+        [asdict(report) for reports in benchmarks.values() for report in reports],
+        indent=2,
+    ))
+    if DENSE and spectra:
         (output_dir / "spectra.json").write_text(
             json.dumps(_flatten_spectra(spectra), indent=2)
         )
-    if saddle_benchmarks_by_k is not None:
-        (output_dir / "saddle_benchmarks.json").write_text(
-            json.dumps(
-                {
-                    f"k{k}": _flatten_saddle_benchmarks(benchmarks_by_eps)
-                    for k, benchmarks_by_eps in saddle_benchmarks_by_k.items()
-                },
-                indent=2,
-            )
-        )
 
     figures = []
-    for eps, benchmarks in benchmarks_by_eps.items():
-        eps_tag = f"eps_{eps:.1e}".replace("+", "").replace("-", "m")
-        saddle_benchmarks = _saddle_benchmarks_for_eps(saddle_benchmarks_by_k, eps)
-        figures.extend([
-            (
-                f"benchmark_bars_{eps_tag}.png",
-                plot_laplacian_benchmark_reports(
-                    benchmarks,
-                    saddle_benchmarks,
-                    eps=eps,
-                    show=False,
-                ),
+    figures.extend([
+        (
+            "benchmark_bars.png",
+            plot_all_laplacian_benchmark_reports(
+                benchmarks,
+                show=False,
+                logscale=True,
             ),
-            (
-                f"benchmark_heatmaps_{eps_tag}.png",
-                plot_laplacian_benchmark_heatmaps(
-                    benchmarks,
-                    saddle_benchmarks,
-                    eps=eps,
-                    show=False,
-                ),
+        ),
+        (
+            "benchmark_heatmap.png",
+            plot_all_laplacian_benchmark_heatmaps(
+                benchmarks,
+                show=False,
+                logscale=True,
             ),
-        ])
-    if DENSE:
+        ),
+    ])
+    if DENSE and spectra:
         figures.extend([
             (
                 "spectrum_bars.png",
@@ -1402,112 +2033,113 @@ def save_k0_laplacian_benchmark_artifacts(
 
 
 # %% Build once
-SEQ, OPERATORS = ensure_built(CONFIG, rebuild=False)
+SEQ, OPERATORS, OPERATORS_BY_RANK = ensure_built(CONFIG, rebuild=False)
 print(
     f"built Laplacian benchmark case: ns={CONFIG.ns}, p={CONFIG.p}, map_kind={CONFIG.map_kind}, "
     f"eps={CONFIG.rotating_eps}, kappa={CONFIG.rotating_kappa}, nfp={CONFIG.rotating_nfp}"
 )
 print(f"dense diagnostics/pseudoinverse baseline enabled: {DENSE}")
+print(f"active k=0 dirichlet cases (moved to mass demo): {ACTIVE_K0_DIRICHLET_CASES}")
+print(f"active saddle cases: {ACTIVE_SADDLE_CASES}")
+print(f"diffusion benchmark enabled: {RUN_DIFFUSION}")
+print(f"tensor ranks={TENSOR_RANKS}, richardson/chebyshev steps={POLY_STEP_OPTIONS}")
 
 
 # %% Dense spectral diagnostics
 ALL_SPECTRA = {}
 if DENSE:
-    for dirichlet in (False, True):
+    for dirichlet in ACTIVE_K0_DIRICHLET_CASES:
         spectrum = summarize_k0_laplacian(SEQ, OPERATORS, dirichlet=dirichlet)
         ALL_SPECTRA[dirichlet] = spectrum
         print_k0_laplacian_spectrum_report(spectrum)
 
 
 # %% Compare the production-facing preconditioner choices
-ALL_BENCHMARKS = {}
+ALL_BENCHMARKS: dict[tuple[int, bool], list] = {}
 for eps in eps_list:
-    benchmark_by_bc = {}
-    for dirichlet in (False, True):
+    for dirichlet in ACTIVE_K0_DIRICHLET_CASES:
         reports = benchmark_k0_laplacian_preconditioners(
             SEQ,
-            OPERATORS,
+            OPERATORS_BY_RANK,
             eps=eps,
             dirichlet=dirichlet,
             n_rhs=8,
             seed=0,
         )
-        benchmark_by_bc[dirichlet] = reports
+        ALL_BENCHMARKS[(0, dirichlet)] = reports
         print("=" * 112)
         print(
             f"k=0 Laplacian preconditioner comparison: eps={eps:.1e}, dirichlet={dirichlet}, "
-            f"richardson/chebyshev steps={POLY_STEPS}"
+            f"richardson/chebyshev steps={POLY_STEP_OPTIONS}"
         )
         print_k0_laplacian_benchmark_reports(reports)
-    ALL_BENCHMARKS[eps] = benchmark_by_bc
 
 
 # %% Compare the production-facing k=1 / k=2 / k=3 Laplacian preconditioner choices
-SADDLE_BENCHMARKS_BY_K = {}
-for k in (1, 2, 3):
-    benchmarks_by_eps = {}
+for k, dirichlet in ACTIVE_SADDLE_CASES:
     for eps in eps_list:
-        benchmark_by_bc = {}
-        for dirichlet in (False, True):
-            reports = benchmark_saddle_laplacian_preconditioners(
-                SEQ,
-                OPERATORS,
-                k=k,
-                eps=eps,
-                dirichlet=dirichlet,
-                n_rhs=8,
-                seed=0,
-            )
-            benchmark_by_bc[dirichlet] = reports
-            print("=" * 112)
-            print(
-                f"k={k} Laplacian preconditioner comparison: eps={eps:.1e}, dirichlet={dirichlet}, "
-                f"mass=tensor, schur.inner=tensor, coupled=False"
-            )
-            print_saddle_benchmark_reports(reports)
-        benchmarks_by_eps[eps] = benchmark_by_bc
-    SADDLE_BENCHMARKS_BY_K[k] = benchmarks_by_eps
+        reports = benchmark_saddle_laplacian_preconditioners(
+            SEQ,
+            OPERATORS_BY_RANK,
+            k=k,
+            eps=eps,
+            dirichlet=dirichlet,
+            n_rhs=8,
+            seed=0,
+        )
+        ALL_BENCHMARKS[(k, dirichlet)] = reports
+        print("=" * 112)
+        print(
+            f"k={k} Laplacian preconditioner comparison: eps={eps:.1e}, dirichlet={dirichlet}, "
+            f"tensor ranks={TENSOR_RANKS}, richardson/chebyshev steps={POLY_STEP_OPTIONS}"
+        )
+        print_saddle_benchmark_reports(reports)
 
 
 # %% Diffusion smoke benchmark using the new built-in preconditioner options
 DIFFUSION_BENCHMARKS_BY_K = {}
-for k in (0, 1, 2, 3):
-    benchmark_by_bc = {}
-    for dirichlet in (False, True):
-        reports = benchmark_diffusion_preconditioners(
-            SEQ,
-            OPERATORS,
-            k=k,
-            eps=DIFFUSION_EPS,
-            dirichlet=dirichlet,
-            n_rhs=4,
-            seed=11,
-        )
-        benchmark_by_bc[dirichlet] = reports
-        print("=" * 112)
-        print(
-            f"diffusion preconditioner comparison: k={k}, eps={DIFFUSION_EPS:.1e}, "
-            f"dirichlet={dirichlet}, chebyshev steps={POLY_STEPS}"
-        )
-        print_diffusion_benchmark_reports(reports)
-    DIFFUSION_BENCHMARKS_BY_K[k] = benchmark_by_bc
+if RUN_DIFFUSION:
+    for k in (0, 1, 2, 3):
+        benchmark_by_bc = {}
+        for dirichlet in (False, True):
+            reports = benchmark_diffusion_preconditioners(
+                SEQ,
+                OPERATORS,
+                k=k,
+                eps=DIFFUSION_EPS,
+                dirichlet=dirichlet,
+                n_rhs=4,
+                seed=11,
+            )
+            benchmark_by_bc[dirichlet] = reports
+            print("=" * 112)
+            print(
+                f"diffusion preconditioner comparison: k={k}, eps={DIFFUSION_EPS:.1e}, "
+                f"dirichlet={dirichlet}, chebyshev steps={POLY_STEP_OPTIONS}"
+            )
+            print_diffusion_benchmark_reports(reports)
+        DIFFUSION_BENCHMARKS_BY_K[k] = benchmark_by_bc
 
 
 # %% Visualize the benchmark summaries
-for eps, benchmarks in ALL_BENCHMARKS.items():
-    saddle_benchmarks = _saddle_benchmarks_for_eps(SADDLE_BENCHMARKS_BY_K, eps)
-    plot_laplacian_benchmark_reports(benchmarks, saddle_benchmarks, eps=eps)
-    plot_laplacian_benchmark_heatmaps(benchmarks, saddle_benchmarks, eps=eps)
-if DENSE:
+plot_all_laplacian_benchmark_reports(
+    ALL_BENCHMARKS,
+    logscale=True,
+)
+plot_all_laplacian_benchmark_heatmaps(
+    ALL_BENCHMARKS,
+    logscale=True,
+)
+if DENSE and ALL_SPECTRA:
     plot_k0_laplacian_spectrum_reports(ALL_SPECTRA)
     plot_k0_laplacian_spectrum_heatmap(ALL_SPECTRA)
 
 
 # %% Store results and plots
-OUTPUT_DIR = save_k0_laplacian_benchmark_artifacts(
-    ALL_BENCHMARKS,
-    ALL_SPECTRA,
-    saddle_benchmarks_by_k=SADDLE_BENCHMARKS_BY_K,
-)
-print(f"saved benchmark artifacts to: {OUTPUT_DIR}")
+if SAVE_ARTIFACTS:
+    OUTPUT_DIR = save_k0_laplacian_benchmark_artifacts(
+        ALL_BENCHMARKS,
+        ALL_SPECTRA,
+    )
+    print(f"saved benchmark artifacts to: {OUTPUT_DIR}")
 # %%

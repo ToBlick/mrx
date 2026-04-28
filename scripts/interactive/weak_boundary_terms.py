@@ -39,11 +39,11 @@ def build_seq(n=4, p=2):
         (p, p, p),
         2 * p,
         types,
-        rotating_ellipse_map(nfp=3),
         polar=True,
         tol=1e-12,
         maxiter=1000,
     )
+    seq.set_map(rotating_ellipse_map(nfp=3))
     seq.evaluate_1d()
     seq.assemble_all_sparse()
     seq._compute_nullspaces(BETTI)

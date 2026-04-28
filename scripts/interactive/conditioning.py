@@ -28,6 +28,7 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import interpolate_map, rotating_ellipse_map
 from mrx.plotting import get_1d_grids
+from mrx.preconditioners import get_mass_jacobi_diaginv
 from mrx.relaxation import (DescentMethod, IntegrationScheme, TimeStepChoice,
                             TimeStepper, apply_diffusion, compute_force,
                             relaxation_loop)
@@ -44,14 +45,15 @@ map_func = rotating_ellipse_map()
 seq = DeRhamSequence(
     NS, PS, QUAD_ORDER,
     ("clamped", "periodic", "periodic"),
-    map_func, polar=True, tol=1e-6, maxiter=1000
+    polar=True, tol=1e-6, maxiter=1000
 )
+seq.set_map(map_func)
 seq.evaluate_1d()
 seq.assemble_mass_matrix(0)
 seq.assemble_hodge_laplacian(0)
 
 # %%
-m0_dense = seq.e0.todense() @ seq.m0_sp.todense() @ seq.e0_T.todense()
+m0_dense = seq.e0.todense() @ seq.m0.todense() @ seq.e0_T.todense()
 # %%
 plt.imshow(jnp.log10(m0_dense))
 plt.colorbar()
@@ -79,7 +81,8 @@ def preconditioned_matrix(P, M):
     return sqrtP @ np.array(M) @ sqrtP.T
 
 
-D_jac = jnp.sqrt(np.diag(seq.m0_sp_diaginv))
+operators = seq.get_operators()
+D_jac = jnp.sqrt(np.diag(get_mass_jacobi_diaginv(operators.mass_preconds, 0, False)))
 
 preconditioned = {
     "Unpreconditioned": np.array(m0_dense),

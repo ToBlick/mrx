@@ -88,7 +88,6 @@ def _build_sequence(args):
         ps,
         2 * args.p,
         ("clamped", "periodic", "periodic"),
-        lambda x: x,
         polar=True,
         tol=args.tol,
         maxiter=args.maxiter,

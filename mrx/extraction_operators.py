@@ -76,14 +76,6 @@ class PolarExtractionOperator:
             self.n3 = ((self.nr - 2 - self.o) * self.nt + 3) * self.nz
         self.n = self.n1 + self.n2 + self.n3
 
-    def matrix(self):
-        """Wrapper for the assemble method."""
-        return self.assemble()
-
-    def __array__(self):
-        """Convert operator to numpy array."""
-        return np.array(self.matrix())
-
     def _vector_index(self, idx):
         """
         Convert linear index to vector component and local index.
@@ -317,61 +309,339 @@ class PolarExtractionOperator:
                 (i + 1, j, k), (nr, nt, nz), mode="clip")
         )
 
-    def assemble(self):
-        """Assemble the complete operator matrix as a dense array."""
-        return mrx.double_map(
-            self._element,
-            jnp.arange(self.n),
-            jnp.arange(self.Lambda.n),
-        )
+    def _append_triplets(self, rows, cols, data, *, row_idx, col_idx, values):
+        col_idx = np.asarray(col_idx, dtype=np.int32).reshape(-1)
+        values = np.asarray(values, dtype=np.float64).reshape(-1)
+        valid = values != 0.0
+        if not np.any(valid):
+            return
+        nnz = int(np.count_nonzero(valid))
+        rows.append(np.full(nnz, row_idx, dtype=np.int32))
+        cols.append(col_idx[valid])
+        data.append(values[valid])
+
+    def _lambda_col_index(self, component, i, j, k):
+        if self.k == 0:
+            return np.ravel_multi_index(
+                (i, j, k),
+                (self.Lambda.nr, self.Lambda.nt, self.Lambda.nz),
+                mode="clip",
+            )
+        if self.k == 1:
+            if component == 0:
+                return np.ravel_multi_index(
+                    (i, j, k),
+                    (self.Lambda.dr, self.Lambda.nt, self.Lambda.nz),
+                    mode="clip",
+                )
+            if component == 1:
+                return self.Lambda.n1 + np.ravel_multi_index(
+                    (i, j, k),
+                    (self.Lambda.nr, self.Lambda.dt, self.Lambda.nz),
+                    mode="clip",
+                )
+            return self.Lambda.n1 + self.Lambda.n2 + np.ravel_multi_index(
+                (i, j, k),
+                (self.Lambda.nr, self.Lambda.nt, self.Lambda.dz),
+                mode="clip",
+            )
+        if self.k == 2:
+            if component == 0:
+                return np.ravel_multi_index(
+                    (i, j, k),
+                    (self.Lambda.nr, self.Lambda.dt, self.Lambda.dz),
+                    mode="clip",
+                )
+            if component == 1:
+                return self.Lambda.n1 + np.ravel_multi_index(
+                    (i, j, k),
+                    (self.Lambda.dr, self.Lambda.nt, self.Lambda.dz),
+                    mode="clip",
+                )
+            return self.Lambda.n1 + self.Lambda.n2 + np.ravel_multi_index(
+                (i, j, k),
+                (self.Lambda.dr, self.Lambda.dt, self.Lambda.nz),
+                mode="clip",
+            )
+        if self.k == 3:
+            return np.ravel_multi_index(
+                (i, j, k),
+                (self.Lambda.dr, self.Lambda.dt, self.Lambda.dz),
+                mode="clip",
+            )
+        if self.k == -1:
+            base = np.ravel_multi_index(
+                (i, j, k),
+                (self.Lambda.nr, self.Lambda.nt, self.Lambda.nz),
+                mode="clip",
+            )
+            if component == 0:
+                return base
+            if component == 1:
+                return self.Lambda.n1 + base
+            return self.Lambda.n1 + self.Lambda.n2 + base
+        raise ValueError(f"Unsupported form degree k={self.k}")
+
+    def assemble_sparse_tensor(self):
+        """Assemble the operator from its explicit tensor-product sparsity pattern."""
+        xi = np.asarray(self.ξ)
+        rows = []
+        cols = []
+        data = []
+
+        if self.k == 0:
+            for p in range(3):
+                for m in range(self.nz):
+                    row_idx = np.ravel_multi_index((p, m), (3, self.nz))
+                    js = np.arange(self.nt, dtype=np.int32)
+                    for i in range(2):
+                        col_idx = np.ravel_multi_index(
+                            (np.full(self.nt, i, dtype=np.int32), js, np.full(self.nt, m, dtype=np.int32)),
+                            (self.nr, self.nt, self.nz),
+                            mode="clip",
+                        )
+                        self._append_triplets(
+                            rows,
+                            cols,
+                            data,
+                            row_idx=row_idx,
+                            col_idx=col_idx,
+                            values=xi[p, i, :],
+                        )
+
+            radial = self.nr - 2 - self.o
+            outer_offset = 3 * self.nz
+            for i in range(radial):
+                for j in range(self.nt):
+                    for k in range(self.nz):
+                        row_idx = outer_offset + np.ravel_multi_index(
+                            (i, j, k),
+                            (radial, self.nt, self.nz),
+                        )
+                        col_idx = self._lambda_col_index(0, i + 2, j, k)
+                        self._append_triplets(
+                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
+                        )
+
+        elif self.k == 1:
+            for i in range(self.dr - 1):
+                for j in range(self.nt):
+                    for k in range(self.nz):
+                        row_idx = np.ravel_multi_index(
+                            (i, j, k), (self.dr - 1, self.nt, self.nz)
+                        )
+                        col_idx = self._lambda_col_index(0, i + 1, j, k)
+                        self._append_triplets(
+                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
+                        )
+
+            theta_offset = self.n1
+            for p_local in range(2):
+                p = p_local + 1
+                for m in range(self.nz):
+                    row_idx = theta_offset + np.ravel_multi_index(
+                        (p_local, m), (2, self.nz)
+                    )
+                    js_theta = np.arange(self.dt, dtype=np.int32)
+                    col_theta = self.Lambda.n1 + np.ravel_multi_index(
+                        (
+                            np.full(self.dt, 1, dtype=np.int32),
+                            js_theta,
+                            np.full(self.dt, m, dtype=np.int32),
+                        ),
+                        (self.Lambda.nr, self.Lambda.dt, self.Lambda.nz),
+                        mode="clip",
+                    )
+                    val_theta = xi[p, 1, np.mod(js_theta + 1, self.dt)] - xi[p, 1, js_theta]
+                    self._append_triplets(
+                        rows,
+                        cols,
+                        data,
+                        row_idx=row_idx,
+                        col_idx=col_theta,
+                        values=val_theta,
+                    )
+
+                    js_r = np.arange(self.nt, dtype=np.int32)
+                    col_r = np.ravel_multi_index(
+                        (
+                            np.zeros(self.nt, dtype=np.int32),
+                            js_r,
+                            np.full(self.nt, m, dtype=np.int32),
+                        ),
+                        (self.Lambda.dr, self.Lambda.nt, self.Lambda.nz),
+                        mode="clip",
+                    )
+                    val_r = xi[p, 1, js_r] - xi[p, 0, js_r]
+                    self._append_triplets(
+                        rows,
+                        cols,
+                        data,
+                        row_idx=row_idx,
+                        col_idx=col_r,
+                        values=val_r,
+                    )
+
+            radial = self.nr - 2 - self.o
+            theta_outer_offset = theta_offset + 2 * self.nz
+            for i in range(radial):
+                for j in range(self.dt):
+                    for k in range(self.nz):
+                        row_idx = theta_outer_offset + np.ravel_multi_index(
+                            (i, j, k), (radial, self.dt, self.nz)
+                        )
+                        col_idx = self._lambda_col_index(1, i + 2, j, k)
+                        self._append_triplets(
+                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
+                        )
+
+            zeta_offset = self.n1 + self.n2
+            for p in range(3):
+                for m in range(self.dz):
+                    row_idx = zeta_offset + np.ravel_multi_index(
+                        (p, m), (3, self.dz)
+                    )
+                    js = np.arange(self.nt, dtype=np.int32)
+                    for i in range(2):
+                        col_idx = self.Lambda.n1 + self.Lambda.n2 + np.ravel_multi_index(
+                            (
+                                np.full(self.nt, i, dtype=np.int32),
+                                js,
+                                np.full(self.nt, m, dtype=np.int32),
+                            ),
+                            (self.Lambda.nr, self.Lambda.nt, self.Lambda.dz),
+                            mode="clip",
+                        )
+                        self._append_triplets(
+                            rows,
+                            cols,
+                            data,
+                            row_idx=row_idx,
+                            col_idx=col_idx,
+                            values=xi[p, i, :],
+                        )
+
+            zeta_outer_offset = zeta_offset + 3 * self.dz
+            for i in range(radial):
+                for j in range(self.nt):
+                    for k in range(self.dz):
+                        row_idx = zeta_outer_offset + np.ravel_multi_index(
+                            (i, j, k), (radial, self.nt, self.dz)
+                        )
+                        col_idx = self._lambda_col_index(2, i + 2, j, k)
+                        self._append_triplets(
+                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
+                        )
+
+        elif self.k == 2:
+            for p_local in range(2):
+                p = p_local + 1
+                for m in range(self.dz):
+                    row_idx = np.ravel_multi_index((p_local, m), (2, self.dz))
+                    js_theta = np.arange(self.dt, dtype=np.int32)
+                    col_theta = np.ravel_multi_index(
+                        (
+                            np.full(self.dt, 1, dtype=np.int32),
+                            js_theta,
+                            np.full(self.dt, m, dtype=np.int32),
+                        ),
+                        (self.Lambda.nr, self.Lambda.dt, self.Lambda.dz),
+                        mode="clip",
+                    )
+                    val_theta = xi[p, 1, np.mod(js_theta + 1, self.dt)] - xi[p, 1, js_theta]
+                    self._append_triplets(
+                        rows,
+                        cols,
+                        data,
+                        row_idx=row_idx,
+                        col_idx=col_theta,
+                        values=val_theta,
+                    )
+
+                    js_r = np.arange(self.nt, dtype=np.int32)
+                    col_r = self.Lambda.n1 + np.ravel_multi_index(
+                        (
+                            np.zeros(self.nt, dtype=np.int32),
+                            js_r,
+                            np.full(self.nt, m, dtype=np.int32),
+                        ),
+                        (self.Lambda.dr, self.Lambda.nt, self.Lambda.dz),
+                        mode="clip",
+                    )
+                    val_r = -(xi[p, 1, js_r] - xi[p, 0, js_r])
+                    self._append_triplets(
+                        rows,
+                        cols,
+                        data,
+                        row_idx=row_idx,
+                        col_idx=col_r,
+                        values=val_r,
+                    )
+
+            radial = self.nr - 2 - self.o
+            comp0_outer_offset = 2 * self.dz
+            for i in range(radial):
+                for j in range(self.dt):
+                    for k in range(self.dz):
+                        row_idx = comp0_outer_offset + np.ravel_multi_index(
+                            (i, j, k), (radial, self.dt, self.dz)
+                        )
+                        col_idx = self._lambda_col_index(0, i + 2, j, k)
+                        self._append_triplets(
+                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
+                        )
+
+            comp1_offset = self.n1
+            for i in range(self.dr - 1):
+                for j in range(self.nt):
+                    for k in range(self.dz):
+                        row_idx = comp1_offset + np.ravel_multi_index(
+                            (i, j, k), (self.dr - 1, self.nt, self.dz)
+                        )
+                        col_idx = self._lambda_col_index(1, i + 1, j, k)
+                        self._append_triplets(
+                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
+                        )
+
+            comp2_offset = self.n1 + self.n2
+            for i in range(self.dr - 1):
+                for j in range(self.dt):
+                    for k in range(self.nz):
+                        row_idx = comp2_offset + np.ravel_multi_index(
+                            (i, j, k), (self.dr - 1, self.dt, self.nz)
+                        )
+                        col_idx = self._lambda_col_index(2, i + 1, j, k)
+                        self._append_triplets(
+                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
+                        )
+
+        elif self.k == 3:
+            for i in range(self.dr - 1):
+                for j in range(self.dt):
+                    for k in range(self.dz):
+                        row_idx = np.ravel_multi_index(
+                            (i, j, k), (self.dr - 1, self.dt, self.dz)
+                        )
+                        col_idx = self._lambda_col_index(0, i + 1, j, k)
+                        self._append_triplets(
+                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
+                        )
+        else:
+            raise ValueError(f"Sparse tensor assembly is not implemented for k={self.k}")
+
+        if data:
+            row_idx = jnp.asarray(np.concatenate(rows), dtype=jnp.int32)
+            col_idx = jnp.asarray(np.concatenate(cols), dtype=jnp.int32)
+            values = jnp.asarray(np.concatenate(data), dtype=jnp.float64)
+            indices = jnp.stack([row_idx, col_idx], axis=-1)
+        else:
+            values = jnp.zeros((0,), dtype=jnp.float64)
+            indices = jnp.zeros((0, 2), dtype=jnp.int32)
+        return jsparse.BCOO((values, indices), shape=(self.n, self.Lambda.n))
 
     def assemble_sparse(self):
-        """Assemble the operator as a sparse BCOO matrix.
-
-        Returns:
-            jsparse.BCOO: The sparse operator matrix of shape (n, Lambda.n).
-        """
-        ncols = self.Lambda.n
-        nrows = self.n
-        col_indices = jnp.arange(ncols)
-
-        # Upper bound for max non-zeros per row
-        max_nnz = 2 * max(self.nt, self.dt) + 1
-
-        def process_row(row_idx):
-            # Compute all entries in this row
-            def compute_element(col_idx):
-                return self._element(row_idx, col_idx)
-            row = jax.lax.map(
-                compute_element, col_indices,
-                batch_size=mrx.MAP_BATCH_SIZE_INNER,
-            )
-            # Identify non-zeros
-            nz_mask = row != 0
-            # Sort so non-zero entries come first
-            order = jnp.argsort(~nz_mask, stable=True)
-            vals = row[order][:max_nnz]
-            cols = col_indices[order][:max_nnz]
-            # Zero out padding beyond actual non-zero count
-            nz_count = jnp.sum(nz_mask)
-            valid = jnp.arange(max_nnz) < nz_count
-            vals = jnp.where(valid, vals, 0.0)
-            cols = jnp.where(valid, cols, 0)
-            return vals, cols
-
-        all_vals, all_cols = jax.lax.map(
-            process_row, jnp.arange(nrows),
-            batch_size=mrx.MAP_BATCH_SIZE_OUTER,
-        )  # (nrows, max_nnz)
-
-        # Build row indices and flatten
-        row_indices = jnp.broadcast_to(
-            jnp.arange(nrows)[:, None], (nrows, max_nnz)
-        )
-        indices = jnp.stack([row_indices.ravel(), all_cols.ravel()], axis=-1)
-        data = all_vals.ravel()
-
-        return jsparse.BCOO((data, indices), shape=(nrows, ncols))
+        """Assemble the operator as a sparse BCOO matrix."""
+        return self.assemble_sparse_tensor()
 
     def sparse_matrix(self):
         """Wrapper for assemble_sparse."""

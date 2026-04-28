@@ -764,11 +764,11 @@ def assemble_mass_matrix(seq, k):
                 seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk,
                 W_flat, quad_shape, seq.basis_0.shape[0],
                 seq.basis_0.pr, seq.basis_0.pt, seq.basis_0.pz)
-            seq.m0_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.m0_sp_diaginv = 1.0 / \
-                diag_EAET(seq.e0, seq.m0_sp, seq.e0_T)
-            seq.m0_sp_diaginv_dbc = 1.0 / \
-                diag_EAET(seq.e0_dbc, seq.m0_sp, seq.e0_dbc_T)
+            seq.m0 = jsparse.BCSR.from_bcoo(sp)
+            seq.m0_diaginv = 1.0 / \
+                diag_EAET(seq.e0, seq.m0, seq.e0_T)
+            seq.m0_diaginv_dbc = 1.0 / \
+                diag_EAET(seq.e0_dbc, seq.m0, seq.e0_dbc_T)
         case 1:
             W_3x3 = seq.metric_inv_jkl * \
                 (seq.jacobian_j * seq.quad.w)[:, None, None]
@@ -781,11 +781,11 @@ def assemble_mass_matrix(seq, k):
                 terms, terms, W_3x3, quad_shape,
                 list(seq.basis_1.shape),
                 seq.basis_1.pr)
-            seq.m1_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.m1_sp_diaginv = 1.0 / \
-                diag_EAET(seq.e1, seq.m1_sp, seq.e1_T)
-            seq.m1_sp_diaginv_dbc = 1.0 / \
-                diag_EAET(seq.e1_dbc, seq.m1_sp, seq.e1_dbc_T)
+            seq.m1 = jsparse.BCSR.from_bcoo(sp)
+            seq.m1_diaginv = 1.0 / \
+                diag_EAET(seq.e1, seq.m1, seq.e1_T)
+            seq.m1_diaginv_dbc = 1.0 / \
+                diag_EAET(seq.e1_dbc, seq.m1, seq.e1_dbc_T)
         case 2:
             W_3x3 = seq.metric_jkl * \
                 (1 / seq.jacobian_j * seq.quad.w)[:, None, None]
@@ -798,11 +798,11 @@ def assemble_mass_matrix(seq, k):
                 terms, terms, W_3x3, quad_shape,
                 list(seq.basis_2.shape),
                 seq.basis_2.pr)
-            seq.m2_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.m2_sp_diaginv = 1.0 / \
-                diag_EAET(seq.e2, seq.m2_sp, seq.e2_T)
-            seq.m2_sp_diaginv_dbc = 1.0 / \
-                diag_EAET(seq.e2_dbc, seq.m2_sp, seq.e2_dbc_T)
+            seq.m2 = jsparse.BCSR.from_bcoo(sp)
+            seq.m2_diaginv = 1.0 / \
+                diag_EAET(seq.e2, seq.m2, seq.e2_T)
+            seq.m2_diaginv_dbc = 1.0 / \
+                diag_EAET(seq.e2_dbc, seq.m2, seq.e2_dbc_T)
         case 3:
             W_flat = (1 / seq.jacobian_j) * seq.quad.w
             sp = assemble_scalar_tp(
@@ -810,11 +810,11 @@ def assemble_mass_matrix(seq, k):
                 seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk,
                 W_flat, quad_shape, seq.basis_3.shape[0],
                 seq.basis_3.pr, seq.basis_3.pt, seq.basis_3.pz)
-            seq.m3_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.m3_sp_diaginv = 1.0 / \
-                diag_EAET(seq.e3, seq.m3_sp, seq.e3_T)
-            seq.m3_sp_diaginv_dbc = 1.0 / \
-                diag_EAET(seq.e3_dbc, seq.m3_sp, seq.e3_dbc_T)
+            seq.m3 = jsparse.BCSR.from_bcoo(sp)
+            seq.m3_diaginv = 1.0 / \
+                diag_EAET(seq.e3, seq.m3, seq.e3_T)
+            seq.m3_diaginv_dbc = 1.0 / \
+                diag_EAET(seq.e3_dbc, seq.m3, seq.e3_dbc_T)
         case _:
             raise ValueError(
                 "Tensor-product assembly supports k=0, 1, 2, 3")
@@ -845,8 +845,8 @@ def assemble_derivative_matrix(seq, k):
                 row_terms, col_terms, W_3x3, quad_shape,
                 list(seq.basis_1.shape), seq.basis_1.pr,
                 col_comp_shapes=list(seq.basis_0.shape))
-            seq.d0_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.d0_sp_T = jsparse.BCSR.from_bcoo(sp.T)
+            seq.d0 = jsparse.BCSR.from_bcoo(sp)
+            seq.d0_T = jsparse.BCSR.from_bcoo(sp.T)
         case 1:
             W_3x3 = seq.metric_jkl * \
                 (1 / seq.jacobian_j * seq.quad.w)[:, None, None]
@@ -873,8 +873,8 @@ def assemble_derivative_matrix(seq, k):
                 row_terms, col_terms, W_3x3, quad_shape,
                 list(seq.basis_2.shape), seq.basis_2.pr,
                 col_comp_shapes=list(seq.basis_1.shape))
-            seq.d1_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.d1_sp_T = jsparse.BCSR.from_bcoo(sp.T)
+            seq.d1 = jsparse.BCSR.from_bcoo(sp)
+            seq.d1_T = jsparse.BCSR.from_bcoo(sp.T)
         case 2:
             W_scalar = (1 / seq.jacobian_j) * seq.quad.w
             W_1x1 = W_scalar.reshape(-1, 1, 1)
@@ -893,8 +893,8 @@ def assemble_derivative_matrix(seq, k):
                 row_terms, col_terms, W_1x1, quad_shape,
                 list(seq.basis_3.shape), seq.basis_3.pr,
                 col_comp_shapes=list(seq.basis_2.shape))
-            seq.d2_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.d2_sp_T = jsparse.BCSR.from_bcoo(sp.T)
+            seq.d2 = jsparse.BCSR.from_bcoo(sp)
+            seq.d2_T = jsparse.BCSR.from_bcoo(sp.T)
         case _:
             raise ValueError(
                 "Tensor-product derivative assembly supports k=0, 1, 2")
@@ -921,11 +921,11 @@ def assemble_hodge_laplacian(seq, k):
                 grad_basis_1d, grad_basis_1d, W_3x3, quad_shape,
                 seq.basis_0.shape[0],
                 seq.basis_0.pr, seq.basis_0.pt, seq.basis_0.pz)
-            seq.grad_grad_sp = jsparse.BCSR.from_bcoo(sp)
-            seq.dd0_sp_diaginv = 1.0 / \
-                diag_EAET(seq.e0, seq.grad_grad_sp, seq.e0_T)
-            seq.dd0_sp_diaginv_dbc = 1.0 / \
-                diag_EAET(seq.e0_dbc, seq.grad_grad_sp, seq.e0_dbc_T)
+            seq.grad_grad = jsparse.BCSR.from_bcoo(sp)
+            seq.dd0_diaginv = 1.0 / \
+                diag_EAET(seq.e0, seq.grad_grad, seq.e0_T)
+            seq.dd0_diaginv_dbc = 1.0 / \
+                diag_EAET(seq.e0_dbc, seq.grad_grad, seq.e0_dbc_T)
         case 1:
             W_3x3 = seq.metric_jkl * \
                 (1 / seq.jacobian_j * seq.quad.w)[:, None, None]
@@ -946,19 +946,19 @@ def assemble_hodge_laplacian(seq, k):
             sp = assemble_vectorial_tp(
                 curl_terms, curl_terms, W_3x3, quad_shape,
                 list(seq.basis_1.shape), seq.basis_1.pr)
-            seq.curl_curl_sp = jsparse.BCSR.from_bcoo(sp)
-            d_stiff = diag_EAET(seq.e1, seq.curl_curl_sp, seq.e1_T)
+            seq.curl_curl = jsparse.BCSR.from_bcoo(sp)
+            d_stiff = diag_EAET(seq.e1, seq.curl_curl, seq.e1_T)
             d_schur = diag_schur_complement(
-                lambda v: seq.e0 @ (seq.d0_sp_T @ (seq.e1_T @ v)),
-                seq.m0_sp_diaginv, seq.n1)
-            seq.dd1_sp_diaginv = 1.0 / (d_stiff + d_schur)
+                lambda v: seq.e0 @ (seq.d0_T @ (seq.e1_T @ v)),
+                seq.m0_diaginv, seq.n1)
+            seq.dd1_diaginv = 1.0 / (d_stiff + d_schur)
             d_stiff_dbc = diag_EAET(
-                seq.e1_dbc, seq.curl_curl_sp, seq.e1_dbc_T)
+                seq.e1_dbc, seq.curl_curl, seq.e1_dbc_T)
             d_schur_dbc = diag_schur_complement(
-                lambda v: seq.e0_dbc @ (seq.d0_sp_T @
+                lambda v: seq.e0_dbc @ (seq.d0_T @
                                         (seq.e1_dbc_T @ v)),
-                seq.m0_sp_diaginv_dbc, seq.n1_dbc)
-            seq.dd1_sp_diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
+                seq.m0_diaginv_dbc, seq.n1_dbc)
+            seq.dd1_diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
         case 2:
             W_scalar = (1 / seq.jacobian_j) * seq.quad.w
             W_3x3 = W_scalar[:, None, None] * jnp.ones((1, 3, 3))
@@ -970,29 +970,29 @@ def assemble_hodge_laplacian(seq, k):
             sp = assemble_vectorial_tp(
                 div_terms, div_terms, W_3x3, quad_shape,
                 list(seq.basis_2.shape), seq.basis_2.pr)
-            seq.div_div_sp = jsparse.BCSR.from_bcoo(sp)
-            d_stiff = diag_EAET(seq.e2, seq.div_div_sp, seq.e2_T)
+            seq.div_div = jsparse.BCSR.from_bcoo(sp)
+            d_stiff = diag_EAET(seq.e2, seq.div_div, seq.e2_T)
             d_schur = diag_schur_complement(
-                lambda v: seq.e1 @ (seq.d1_sp_T @ (seq.e2_T @ v)),
-                seq.m1_sp_diaginv, seq.n2)
-            seq.dd2_sp_diaginv = 1.0 / (d_stiff + d_schur)
+                lambda v: seq.e1 @ (seq.d1_T @ (seq.e2_T @ v)),
+                seq.m1_diaginv, seq.n2)
+            seq.dd2_diaginv = 1.0 / (d_stiff + d_schur)
             d_stiff_dbc = diag_EAET(
-                seq.e2_dbc, seq.div_div_sp, seq.e2_dbc_T)
+                seq.e2_dbc, seq.div_div, seq.e2_dbc_T)
             d_schur_dbc = diag_schur_complement(
-                lambda v: seq.e1_dbc @ (seq.d1_sp_T @
+                lambda v: seq.e1_dbc @ (seq.d1_T @
                                         (seq.e2_dbc_T @ v)),
-                seq.m1_sp_diaginv_dbc, seq.n2_dbc)
-            seq.dd2_sp_diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
+                seq.m1_diaginv_dbc, seq.n2_dbc)
+            seq.dd2_diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
         case 3:
             d_schur = diag_schur_complement(
-                lambda v: seq.e2 @ (seq.d2_sp_T @ (seq.e3_T @ v)),
-                seq.m2_sp_diaginv, seq.n3)
-            seq.dd3_sp_diaginv = 1.0 / d_schur
+                lambda v: seq.e2 @ (seq.d2_T @ (seq.e3_T @ v)),
+                seq.m2_diaginv, seq.n3)
+            seq.dd3_diaginv = 1.0 / d_schur
             d_schur_dbc = diag_schur_complement(
-                lambda v: seq.e2_dbc @ (seq.d2_sp_T @
+                lambda v: seq.e2_dbc @ (seq.d2_T @
                                         (seq.e3_dbc_T @ v)),
-                seq.m2_sp_diaginv_dbc, seq.n3_dbc)
-            seq.dd3_sp_diaginv_dbc = 1.0 / d_schur_dbc
+                seq.m2_diaginv_dbc, seq.n3_dbc)
+            seq.dd3_diaginv_dbc = 1.0 / d_schur_dbc
         case _:
             raise ValueError("k must be 0, 1, 2, or 3")
 

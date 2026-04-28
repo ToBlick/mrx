@@ -93,7 +93,7 @@ def _solve(seq):
 
     # 3. Stiffness correction for non-zero BC:
     #    rhs_corrected_i = rhs_i - Σ_j S_{ij}^{dbc,bc} g_j
-    correction = seq.e0_dbc @ (seq.grad_grad_sp @ (seq.e0_bc_T @ g_bc))
+    correction = seq.e0_dbc @ (seq.grad_grad @ (seq.e0_bc_T @ g_bc))
     rhs -= correction
 
     # 4. Solve.
@@ -195,11 +195,11 @@ def _solve_k1(seq):
     # 3. Stiffness correction: subtract (L_1)_{dbc,bc} g_bc from RHS.
     #    L_1 = S_1 + D_0 M_0^{-1} D_0^T   where S_1 = curl-curl.
 
-    # Curl-curl part: e1_dbc @ curl_curl_sp @ e1_bc_T @ g_bc
-    cc_corr = seq.e1_dbc @ (seq.curl_curl_sp @ (seq.e1_bc_T @ g_bc))
+    # Curl-curl part: e1_dbc @ curl_curl @ e1_bc_T @ g_bc
+    cc_corr = seq.e1_dbc @ (seq.curl_curl @ (seq.e1_bc_T @ g_bc))
 
     # Grad-div part: D_0 M_0^{-1} D_0^T applied to BC lift, projected to DBC
-    Dt_g = seq.e0_dbc @ (seq.d0_sp_T @ (seq.e1_bc_T @ g_bc))
+    Dt_g = seq.e0_dbc @ (seq.d0_T @ (seq.e1_bc_T @ g_bc))
     MinvDt_g = seq.apply_inverse_mass_matrix(Dt_g, 0, dirichlet=True)
     gd_corr = seq.apply_derivative_matrix(
         MinvDt_g, 0, dirichlet_in=True, dirichlet_out=True)

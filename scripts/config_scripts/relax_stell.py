@@ -293,8 +293,9 @@ def main(cfg: DictConfig) -> float:
     seq = DeRhamSequence(
         ns, ps, cfg.fem.quad_order,
         types,
-        F, polar=True, dirichlet=True
+        polar=True, dirichlet=True
     )
+    seq.set_map(F)
 
     # Check that mapping is not singular
     assert jnp.min(seq.jacobian_j) > 0, "Mapping is singular!"

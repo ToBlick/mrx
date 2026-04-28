@@ -43,12 +43,17 @@ from mrx.operators import \
     apply_projection_matrix as apply_projection_matrix_ops
 from mrx.operators import apply_stiffness as apply_stiffness_ops
 from mrx.operators import (SequenceOperators,
+                           assemble_all_dense_operators,
                            assemble_all_operators,
                            assemble_derivative_operators,
                            assemble_hodge_operators,
                            assemble_incidence_operators,
                            assemble_mass_operators,
-                           assemble_projection_operators)
+                           assemble_projection_operators,
+                           update_diffusion_runtime_tuning as update_diffusion_runtime_tuning_ops,
+                           update_mass_runtime_tuning as update_mass_runtime_tuning_ops,
+                           update_schur_runtime_tuning as update_schur_runtime_tuning_ops,
+                           update_scalar_hodge_runtime_tuning as update_scalar_hodge_runtime_tuning_ops)
 from mrx.projectors import Projector
 from mrx.quadrature import QuadratureRule
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
@@ -241,7 +246,8 @@ class DeRhamSequence():
     e3_bc = _operator_bundle_field_property('e3_bc')
     e3_bc_T = _operator_bundle_field_property('e3_bc_T')
 
-    def __init__(self, ns, ps, q, types, map, polar, tol=1e-12, maxiter=10_000,
+    def __init__(self, ns, ps, q, types, *legacy_args, polar,
+                 tol=1e-12, maxiter=10_000,
                  r_scale=1.0, n_inner=5, betti_numbers=(1, 1, 0, 0)):
         """Construct a de Rham sequence.
 
@@ -256,8 +262,6 @@ class DeRhamSequence():
         types : list of str
             Boundary-condition type string per direction, e.g.
             ``['periodic', 'periodic', 'periodic']``.
-        map : callable
-            Logical-to-physical coordinate map ``F: [0,1]³ → ℝ³``.
         polar : bool
             If ``True``, apply polar extraction operators that enforce
             regularity at the magnetic axis.
@@ -276,12 +280,25 @@ class DeRhamSequence():
             the shapes of the nullspace arrays stored on
             :class:`SequenceOperators`. Defaults to ``(1, 1, 0, 0)`` which
             matches a solid torus.
+
+        Notes
+        -----
+        Geometry is no longer installed during construction. Call
+        :meth:`set_map` or :meth:`set_spline_map` explicitly after building
+        the sequence.
         """
+        if legacy_args:
+            raise TypeError(
+                "DeRhamSequence no longer accepts a map in the constructor; "
+                "construct the sequence first and then call seq.set_map(...) "
+                "or seq.set_spline_map(...)."
+            )
         self.ns = tuple(ns)
         self.ps = tuple(ps)
         self.tol = tol
         self.maxiter = maxiter
         self.n_inner = n_inner
+        self.geometry = None
         assert len(betti_numbers) == 4, "betti_numbers must have length 4"
         self.betti_numbers = tuple(betti_numbers)
         if not polar:
@@ -298,7 +315,6 @@ class DeRhamSequence():
             DifferentialForm(i, ns, ps, types, Ts) for i in range(0, 4)
         ]
         self.quad = QuadratureRule(self.basis_0, q)
-        self.set_map(map)
 
         if polar:
             xi = get_xi(ns[1])
@@ -389,19 +405,19 @@ class DeRhamSequence():
 
     @property
     def map(self):
-        return self.geometry.map
+        return self._require_geometry().map
 
     @property
     def metric_jkl(self):
-        return self.geometry.metric_jkl
+        return self._require_geometry().metric_jkl
 
     @property
     def metric_inv_jkl(self):
-        return self.geometry.metric_inv_jkl
+        return self._require_geometry().metric_inv_jkl
 
     @property
     def jacobian_j(self):
-        return self.geometry.jacobian_j
+        return self._require_geometry().jacobian_j
 
     @property
     def null_0(self):
@@ -439,26 +455,27 @@ class DeRhamSequence():
         """Replace the geometry attached to this sequence."""
         self.geometry = geometry
 
+    def _require_geometry(self):
+        """Return the attached geometry or raise when none is installed."""
+        geometry = getattr(self, 'geometry', None)
+        if geometry is None:
+            raise ValueError(
+                'Set the geometry first, for example with seq.set_map(...) '
+                'or seq.set_spline_map(...).')
+        return geometry
+
     def _sync_operators(self):
         """Mirror bundled operators onto legacy fields during the transition."""
         if not hasattr(self, 'operators') or self.operators is None:
             return
         for k in range(4):
-            setattr(self, f'm{k}_sp', getattr(self.operators, f'm{k}_sp'))
-            setattr(self, f'm{k}_sp_diaginv',
-                    getattr(self.operators, f'm{k}_sp_diaginv'))
-            setattr(self, f'm{k}_sp_diaginv_dbc',
-                    getattr(self.operators, f'm{k}_sp_diaginv_dbc'))
-            setattr(self, f'dd{k}_sp_diaginv',
-                    getattr(self.operators, f'dd{k}_sp_diaginv'))
-            setattr(self, f'dd{k}_sp_diaginv_dbc',
-                    getattr(self.operators, f'dd{k}_sp_diaginv_dbc'))
+            setattr(self, f'm{k}', getattr(self.operators, f'm{k}'))
         for k in range(3):
-            setattr(self, f'd{k}_sp', getattr(self.operators, f'd{k}_sp'))
-            setattr(self, f'd{k}_sp_T', getattr(self.operators, f'd{k}_sp_T'))
-        self.grad_grad_sp = self.operators.grad_grad_sp
-        self.curl_curl_sp = self.operators.curl_curl_sp
-        self.div_div_sp = self.operators.div_div_sp
+            setattr(self, f'd{k}', getattr(self.operators, f'd{k}'))
+            setattr(self, f'd{k}_T', getattr(self.operators, f'd{k}_T'))
+        self.grad_grad = self.operators.grad_grad
+        self.curl_curl = self.operators.curl_curl
+        self.div_div = self.operators.div_div
 
     def get_operators(self):
         """Return the cached operator bundle, if one is attached."""
@@ -551,7 +568,7 @@ class DeRhamSequence():
 
     def _require_reference_mass_matrix(self):
         """Raise if the reference-domain mass matrix has not been assembled."""
-        if not hasattr(self, 'reference_m0_sp'):
+        if not hasattr(self, 'reference_m0'):
             raise ValueError(
                 'Call assemble_reference_mass_matrix() before using reference 0-form operators.')
 
@@ -560,14 +577,14 @@ class DeRhamSequence():
         self._require_reference_mass_matrix()
         e = self.e0_dbc if dirichlet else self.e0
         e_T = self.e0_dbc_T if dirichlet else self.e0_T
-        return e @ (self.reference_m0_sp @ (e_T @ v))
+        return e @ (self.reference_m0 @ (e_T @ v))
 
     def _apply_reference_mass_matrix_preconditioner(self, v, dirichlet=True):
         """Apply the diagonal (Jacobi) preconditioner for the reference mass matrix."""
         self._require_reference_mass_matrix()
         if dirichlet:
-            return self.reference_m0_sp_diaginv_dbc * v
-        return self.reference_m0_sp_diaginv * v
+            return self.reference_m0_diaginv_dbc * v
+        return self.reference_m0_diaginv * v
 
     def assemble_reference_mass_matrix(self):
         """Assemble and cache the 0-form mass matrix on the reference domain."""
@@ -580,11 +597,11 @@ class DeRhamSequence():
             self.basis_r_jk, self.basis_t_jk, self.basis_z_jk,
             self.quad.w, quad_shape, self.basis_0.shape[0],
             self.basis_0.pr, self.basis_0.pt, self.basis_0.pz)
-        self.reference_m0_sp = jsparse.BCSR.from_bcoo(sp)
-        self.reference_m0_sp_diaginv = 1.0 / diag_EAET(
-            self.e0, self.reference_m0_sp, self.e0_T)
-        self.reference_m0_sp_diaginv_dbc = 1.0 / diag_EAET(
-            self.e0_dbc, self.reference_m0_sp, self.e0_dbc_T)
+        self.reference_m0 = jsparse.BCSR.from_bcoo(sp)
+        self.reference_m0_diaginv = 1.0 / diag_EAET(
+            self.e0, self.reference_m0, self.e0_T)
+        self.reference_m0_diaginv_dbc = 1.0 / diag_EAET(
+            self.e0_dbc, self.reference_m0, self.e0_dbc_T)
 
     def apply_inverse_reference_mass_matrix(self, rhs, dirichlet=True, guess=None,
                                             tol=None, maxiter=None):
@@ -645,7 +662,7 @@ class DeRhamSequence():
         -------
         array of shape (n_k_dbc,)
         """
-        m_sp = getattr(self, f'm{k}_sp')
+        m_sp = getattr(self, f'm{k}')
         e_dbc = getattr(self, f'e{k}_dbc')
         e_bc_T = getattr(self, f'e{k}_bc_T')
         return e_dbc @ (m_sp @ (e_bc_T @ g))
@@ -750,16 +767,34 @@ class DeRhamSequence():
         """Return the L² norm of a k-form DOF vector ``v``."""
         return jnp.sqrt(self.l2_norm_sq(v, k, dirichlet=dirichlet))
 
-    def assemble_all_sparse(self):
+    def assemble_all_sparse(self, include_preconditioners: bool = True):
         """Assemble and cache all sparse operator matrices.
 
         Builds mass matrices, derivative matrices, stiffness matrices, and
         Hodge-Laplacian operators for all form degrees, storing the result in
-        ``self.operators`` and mirroring legacy fields.  Returns the operator
-        bundle.
+        ``self.operators`` and mirroring legacy fields. When
+        ``include_preconditioners`` is true, also assemble the eager
+        preconditioner payloads used by solver-facing convenience methods.
+        Returns the operator bundle.
         """
+        geometry = self._require_geometry()
         operators = assemble_all_operators(
-            self, self.geometry, operators=self.get_operators())
+            self,
+            geometry,
+            operators=self.get_operators(),
+            include_preconditioners=include_preconditioners,
+        )
+        self.set_operators(operators)
+        return operators
+
+    def assemble_all_dense(self):
+        """Assemble sparse operators without preconditioners, then cache dense matrices.
+
+        This is a courtesy path for debugging, densification, and direct-solve
+        workflows. Dense operators are stored under ``self.get_operators().dense``.
+        """
+        operators = self.assemble_all_sparse(include_preconditioners=False)
+        operators = assemble_all_dense_operators(self, operators=operators)
         self.set_operators(operators)
         return operators
 
@@ -771,8 +806,9 @@ class DeRhamSequence():
         k : int
             Form degree (0, 1, 2, or 3).
         """
+        geometry = self._require_geometry()
         return self.set_operators(assemble_mass_operators(
-            self, self.geometry,
+            self, geometry,
             operators=self.get_operators(),
             ks=(k,),
         ))
@@ -801,8 +837,9 @@ class DeRhamSequence():
         k : int
             Form degree of the *input* form (0, 1, or 2).
         """
+        geometry = self._require_geometry()
         return self.set_operators(assemble_derivative_operators(
-            self, self.geometry,
+            self, geometry,
             operators=self.get_operators(),
             ks=(k,),
         ))
@@ -819,11 +856,82 @@ class DeRhamSequence():
         k : int
             Form degree (0, 1, 2, or 3).
         """
+        geometry = self._require_geometry()
         return self.set_operators(assemble_hodge_operators(
-            self, self.geometry,
+            self, geometry,
             operators=self.get_operators(),
             ks=(k,),
         ))
+
+    def update_mass_runtime_tuning(self, k, dirichlet=True, operators=None,
+                                   preconditioner='auto'):
+        """Estimate and store runtime tuning for a polynomial mass preconditioner."""
+        using_external_operators = operators is not None
+        operators = self._require_operators(operators)
+        tuned = update_mass_runtime_tuning_ops(
+            self,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            preconditioner=preconditioner,
+        )
+        if using_external_operators:
+            return tuned
+        return self.set_operators(tuned)
+
+    def update_scalar_hodge_runtime_tuning(self, k, eps=0.0,
+                                           dirichlet=True, operators=None,
+                                           preconditioner='auto'):
+        """Estimate and store runtime tuning for a scalar Hodge preconditioner."""
+        using_external_operators = operators is not None
+        operators = self._require_operators(operators)
+        tuned = update_scalar_hodge_runtime_tuning_ops(
+            self,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            eps=eps,
+            preconditioner=preconditioner,
+        )
+        if using_external_operators:
+            return tuned
+        return self.set_operators(tuned)
+
+    def update_schur_runtime_tuning(self, k, eps=0.0,
+                                    dirichlet=True, operators=None,
+                                    preconditioner='auto'):
+        """Estimate and store runtime tuning for a polynomial Schur-outer preconditioner."""
+        using_external_operators = operators is not None
+        operators = self._require_operators(operators)
+        tuned = update_schur_runtime_tuning_ops(
+            self,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            eps=eps,
+            preconditioner=preconditioner,
+        )
+        if using_external_operators:
+            return tuned
+        return self.set_operators(tuned)
+
+    def update_diffusion_runtime_tuning(self, k, eps=0.0,
+                                        dirichlet=True, operators=None,
+                                        preconditioner='auto'):
+        """Estimate and store runtime tuning for a polynomial diffusion preconditioner."""
+        using_external_operators = operators is not None
+        operators = self._require_operators(operators)
+        tuned = update_diffusion_runtime_tuning_ops(
+            self,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            eps=eps,
+            preconditioner=preconditioner,
+        )
+        if using_external_operators:
+            return tuned
+        return self.set_operators(tuned)
 
     def assemble_leray_projection(self):
         """Assemble the auxiliary operators required by :meth:`apply_leray_projection`."""

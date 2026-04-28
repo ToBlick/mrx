@@ -85,7 +85,8 @@ def get_err(n, p, q):
     ns = (n, n, 1)
     ps = (p, p, 0)
     types = ("clamped", "periodic", "constant")
-    Seq = DeRhamSequence(ns, ps, q, types, Phi, polar=True, dirichlet=True)
+    Seq = DeRhamSequence(ns, ps, q, types, polar=True, dirichlet=True)
+    Seq.set_map(Phi)
     Seq.evaluate_1d()   # Precompute 1D basis functions at quadrature points
     Seq.assemble_m0()   # Assemble 0-form mass matrix
     Seq.assemble_dd0()  # Assemble 0-form Laplacian

@@ -213,7 +213,7 @@ class Projector:
         quad_shape = (self.seq.quad.ny, self.seq.quad.nx, self.seq.quad.nz)
         return integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
 
-
+# TODO: requires testing still
 def surface_integral(f: ScalarFunction, seq: "DeRhamSequence") -> Array:
     """Integrate a scalar function over the outer boundary r = 1.
 
@@ -249,7 +249,7 @@ def surface_integral(f: ScalarFunction, seq: "DeRhamSequence") -> Array:
     w_bdy = jnp.outer(seq.quad.w_y, seq.quad.w_z).ravel()
     return jnp.dot(vals, w_bdy)
 
-
+# TODO: requires testing still
 class BoundaryProjector:
     """Project a k-form onto the Dirichlet boundary DOFs via a surface integral.
 
