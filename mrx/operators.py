@@ -21,15 +21,22 @@ from mrx.preconditioners import (
     _apply_k1_bulk_to_surgery_coupling,
     _apply_k1_rt_art_coupling,
     _apply_k1_rt_atr_coupling,
+    _apply_k1_rt_to_zeta_coupling,
     _apply_k1_surgery_to_bulk_coupling,
+    _apply_k1_zeta_to_rt_coupling,
     _apply_k2_bulk_to_surgery_coupling,
+    _apply_k2_r_to_theta_coupling,
     _apply_k2_surgery_to_bulk_coupling,
+    _apply_k2_theta_to_r_coupling,
+    _apply_k2_rt_to_zeta_coupling,
+    _apply_k2_zeta_to_rt_coupling,
     _assemble_schur_inverse_from_applies,
     _bulk_tensor_shape,
     _core_size,
     _cp_als_3tensor,
     _apply_tensor_diagonal_block,
     _split_blocks,
+    _k1_radial_reference_baselines,
     _select_mass_surgery_factors,
     _select_mass_tensor_factors,
     _symmetrize,
@@ -537,18 +544,18 @@ def _k0_tensor_hodge_config(
     return tensor.rank, tensor.cp_maxiter, tensor.cp_tol, tensor.cp_ridge
 
 
-def _k0_tensor_hodge_shared_rank1_metric(
-        seq, *, cp_maxiter: int, cp_tol: float, cp_ridge: float):
-    metric_tensors = _k0_stiffness_diagonal_metric_tensors(seq)
-    direction_scales = _fd_hodge_scales_K(seq, seq.geometry, 0)
-    safe_scales = jnp.where(jnp.abs(direction_scales) > 0, direction_scales, 1.0)
-    normalized_rr = metric_tensors['alpha_rr'] / safe_scales[0]
-    normalized_tt = metric_tensors['alpha_thetatheta'] / safe_scales[1]
-    normalized_zz = metric_tensors['alpha_zetazeta'] / safe_scales[2]
-    shared_target = jnp.cbrt(normalized_rr * normalized_tt * normalized_zz)
+def _fit_positive_rank1_tensor_field(
+        tensor_field: jnp.ndarray, *, cp_maxiter: int, cp_tol: float,
+        cp_ridge: float, radial_baseline: Optional[jnp.ndarray] = None):
+    if radial_baseline is None:
+        corrected_field = tensor_field
+        scaled_radial_baseline = None
+    else:
+        scaled_radial_baseline = jnp.asarray(radial_baseline, dtype=tensor_field.dtype)
+        corrected_field = tensor_field / scaled_radial_baseline[None, :, None]
 
     weights, factors, cp_relative_error, cp_final_delta, _ = _cp_als_3tensor(
-        shared_target,
+        corrected_field,
         1,
         maxiter=cp_maxiter,
         tol=cp_tol,
@@ -571,21 +578,81 @@ def _k0_tensor_hodge_shared_rank1_metric(
     if scale < 0:
         factor_r = -factor_r
         scale = -scale
+    if scaled_radial_baseline is not None:
+        factor_r = scaled_radial_baseline * factor_r
 
-    shared_field = scale * factor_theta[:, None, None] * factor_r[None, :, None] * factor_z[None, None, :]
-    shared_norm_sq = jnp.maximum(jnp.sum(shared_field * shared_field), 1e-30)
-    bulk_alpha = jnp.asarray([
-        jnp.sum(metric_tensors['alpha_rr'] * shared_field) / shared_norm_sq,
-        jnp.sum(metric_tensors['alpha_thetatheta'] * shared_field) / shared_norm_sq,
-        jnp.sum(metric_tensors['alpha_zetazeta'] * shared_field) / shared_norm_sq,
-    ], dtype=jnp.float64)
     return {
-        'radial_factor': scale * factor_r,
+        'scale': scale,
         'theta_factor': factor_theta,
+        'radial_factor': factor_r,
         'zeta_factor': factor_z,
-        'bulk_alpha': bulk_alpha,
         'cp_relative_error': cp_relative_error,
         'cp_final_delta': cp_final_delta,
+    }
+
+
+def _project_rank1_factor_to_shared(target: jnp.ndarray, shared: jnp.ndarray) -> jnp.ndarray:
+    shared_norm_sq = jnp.maximum(jnp.sum(shared * shared), 1e-30)
+    return jnp.sum(target * shared) / shared_norm_sq
+
+
+def _k0_tensor_hodge_directional_rank1_metrics(
+        seq, *, cp_maxiter: int, cp_tol: float, cp_ridge: float):
+    metric_tensors = _k0_stiffness_diagonal_metric_tensors(seq)
+    radial_baselines = _k1_radial_reference_baselines(seq)
+    direction_scales = _fd_hodge_scales_K(seq, seq.geometry, 0)
+    safe_scales = jnp.where(jnp.abs(direction_scales) > 0, direction_scales, 1.0)
+    normalized_rr = metric_tensors['alpha_rr'] / safe_scales[0]
+    normalized_tt = metric_tensors['alpha_thetatheta'] / safe_scales[1]
+    normalized_zz = metric_tensors['alpha_zetazeta'] / safe_scales[2]
+    shared_target = jnp.cbrt(normalized_rr * normalized_tt * normalized_zz)
+
+    shared = _fit_positive_rank1_tensor_field(
+        shared_target,
+        cp_maxiter=cp_maxiter,
+        cp_tol=cp_tol,
+        cp_ridge=cp_ridge,
+    )
+    rr_fit = _fit_positive_rank1_tensor_field(
+        normalized_rr,
+        cp_maxiter=cp_maxiter,
+        cp_tol=cp_tol,
+        cp_ridge=cp_ridge,
+        radial_baseline=radial_baselines[0],
+    )
+    tt_fit = _fit_positive_rank1_tensor_field(
+        normalized_tt,
+        cp_maxiter=cp_maxiter,
+        cp_tol=cp_tol,
+        cp_ridge=cp_ridge,
+        radial_baseline=radial_baselines[1],
+    )
+    zz_fit = _fit_positive_rank1_tensor_field(
+        normalized_zz,
+        cp_maxiter=cp_maxiter,
+        cp_tol=cp_tol,
+        cp_ridge=cp_ridge,
+        radial_baseline=radial_baselines[2],
+    )
+
+    return {
+        'shared': shared,
+        'rr': rr_fit,
+        'tt': tt_fit,
+        'zz': zz_fit,
+        'direction_scales': direction_scales,
+        'cp_relative_error': max(
+            shared['cp_relative_error'],
+            rr_fit['cp_relative_error'],
+            tt_fit['cp_relative_error'],
+            zz_fit['cp_relative_error'],
+        ),
+        'cp_final_delta': max(
+            shared['cp_final_delta'],
+            rr_fit['cp_final_delta'],
+            tt_fit['cp_final_delta'],
+            zz_fit['cp_final_delta'],
+        ),
     }
 
 
@@ -597,15 +664,27 @@ def _assemble_k0_tensor_hodge_rank1_bulk_factors(
     g_r = _dense_incidence_1d(seq.basis_0.nr, types[0])
     g_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
     g_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
-    shared = _k0_tensor_hodge_shared_rank1_metric(
+    fits = _k0_tensor_hodge_directional_rank1_metrics(
         seq,
         cp_maxiter=cp_maxiter,
         cp_tol=cp_tol,
         cp_ridge=cp_ridge,
     )
+    shared = fits['shared']
+
+    rr_theta_proj = _project_rank1_factor_to_shared(fits['rr']['theta_factor'], shared['theta_factor'])
+    rr_zeta_proj = _project_rank1_factor_to_shared(fits['rr']['zeta_factor'], shared['zeta_factor'])
+    tt_radial_proj = _project_rank1_factor_to_shared(fits['tt']['radial_factor'], shared['radial_factor'])
+    tt_zeta_proj = _project_rank1_factor_to_shared(fits['tt']['zeta_factor'], shared['zeta_factor'])
+    zz_radial_proj = _project_rank1_factor_to_shared(fits['zz']['radial_factor'], shared['radial_factor'])
+    zz_theta_proj = _project_rank1_factor_to_shared(fits['zz']['theta_factor'], shared['theta_factor'])
+
+    rr_stiffness_scale = fits['direction_scales'][0] * fits['rr']['scale'] * rr_theta_proj * rr_zeta_proj
+    tt_stiffness_scale = fits['direction_scales'][1] * fits['tt']['scale'] * tt_radial_proj * tt_zeta_proj
+    zz_stiffness_scale = fits['direction_scales'][2] * fits['zz']['scale'] * zz_radial_proj * zz_theta_proj
 
     mass_r = _restrict_radial_window(
-        _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * shared['radial_factor']),
+        _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * (shared['scale'] * shared['radial_factor'])),
         radial_start=2,
         nr=nr_bulk,
     )
@@ -616,7 +695,7 @@ def _assemble_k0_tensor_hodge_rank1_bulk_factors(
         _assemble_weighted_1d_stiffness(
             seq.basis_r_jk,
             seq.d_basis_r_jk,
-            seq.quad.w_x * shared['radial_factor'],
+            seq.quad.w_x * (rr_stiffness_scale * fits['rr']['radial_factor']),
             g_r,
         ),
         radial_start=2,
@@ -625,13 +704,13 @@ def _assemble_k0_tensor_hodge_rank1_bulk_factors(
     stiff_t = _assemble_weighted_1d_stiffness(
         seq.basis_t_jk,
         seq.d_basis_t_jk,
-        seq.quad.w_y * shared['theta_factor'],
+        seq.quad.w_y * (tt_stiffness_scale * fits['tt']['theta_factor']),
         g_t,
     )
     stiff_z = _assemble_weighted_1d_stiffness(
         seq.basis_z_jk,
         seq.d_basis_z_jk,
-        seq.quad.w_z * shared['zeta_factor'],
+        seq.quad.w_z * (zz_stiffness_scale * fits['zz']['zeta_factor']),
         g_z,
     )
 
@@ -640,15 +719,15 @@ def _assemble_k0_tensor_hodge_rank1_bulk_factors(
     V_z, lam_z = _assemble_1d_fd_eigendecomp(mass_z, stiff_z)
     return {
         'bulk_shape': bulk_shape,
-        'bulk_alpha': shared['bulk_alpha'],
+        'bulk_alpha': jnp.ones((3,), dtype=jnp.float64),
         'bulk_V_r': V_r,
         'bulk_V_t': V_t,
         'bulk_V_z': V_z,
         'bulk_lam_r': lam_r,
         'bulk_lam_t': lam_t,
         'bulk_lam_z': lam_z,
-        'cp_relative_error': shared['cp_relative_error'],
-        'cp_final_delta': shared['cp_final_delta'],
+        'cp_relative_error': fits['cp_relative_error'],
+        'cp_final_delta': fits['cp_final_delta'],
     }
 
 
@@ -2844,6 +2923,7 @@ def _build_mass_surgery_bulk_apply(
         tensor = None
         if _tensor_available(seq, operators, k):
             tensor = _select_mass_tensor_factors(operators.mass_preconds, k, dirichlet)
+        use_inner_schur = True if tensor is None else tensor.use_inner_schur
 
         arr_spec = _normalize_recursive_scalar_leaf_spec(spec)
         scalar_spec = _normalize_mass_preconditioner_spec_for_degree(spec, k=3)
@@ -2904,11 +2984,22 @@ def _build_mass_surgery_bulk_apply(
             return jnp.concatenate([x_r, z])
 
         def bulk_apply(rhs_bulk):
-            rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
+            rhs_r = rhs_bulk[:surgery.rt_r_size]
+            rhs_theta = rhs_bulk[surgery.rt_r_size:surgery.bulk_rt_size]
             rhs_zeta = rhs_bulk[
                 surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size
             ]
-            return jnp.concatenate([rt_apply(rhs_rt), zeta_apply(rhs_zeta)])
+            if not use_inner_schur:
+                return jnp.concatenate([
+                    r_apply(rhs_r),
+                    theta_apply(rhs_theta),
+                    zeta_apply(rhs_zeta),
+                ])
+            rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
+            y_rt = rt_apply(rhs_rt)
+            z = zeta_apply(rhs_zeta - _apply_k1_rt_to_zeta_coupling(surgery, y_rt))
+            x_rt = y_rt - rt_apply(_apply_k1_zeta_to_rt_coupling(surgery, z))
+            return jnp.concatenate([x_rt, z])
 
         return surgery, bulk_apply
 
@@ -2917,6 +3008,7 @@ def _build_mass_surgery_bulk_apply(
         tensor = None
         if _tensor_available(seq, operators, k):
             tensor = _select_mass_tensor_factors(operators.mass_preconds, k, dirichlet)
+        use_inner_schur = True if tensor is None else tensor.use_inner_schur
 
         scalar_spec = _normalize_mass_preconditioner_spec_for_degree(spec, k=3)
 
@@ -2976,11 +3068,25 @@ def _build_mass_surgery_bulk_apply(
                 surgery.r_bulk_size + surgery.theta_size:
                 surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size
             ]
-            return jnp.concatenate([
-                r_apply(rhs_r),
-                theta_apply(rhs_theta),
-                zeta_apply(rhs_zeta),
+            if not use_inner_schur:
+                return jnp.concatenate([
+                    r_apply(rhs_r),
+                    theta_apply(rhs_theta),
+                    zeta_apply(rhs_zeta),
+                ])
+            rhs_rt = rhs_bulk[:surgery.r_bulk_size + surgery.theta_size]
+            rhs_r = rhs_rt[:surgery.r_bulk_size]
+            rhs_theta = rhs_rt[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
+            y = r_apply(rhs_r)
+            z_theta = theta_apply(rhs_theta - _apply_k2_r_to_theta_coupling(surgery, y))
+            x_r = y - r_apply(_apply_k2_theta_to_r_coupling(surgery, z_theta))
+            y_rt = jnp.concatenate([x_r, z_theta])
+            z = zeta_apply(rhs_zeta - _apply_k2_rt_to_zeta_coupling(surgery, y_rt))
+            x_rt = y_rt - jnp.concatenate([
+                r_apply(_apply_k2_zeta_to_rt_coupling(surgery, z)[:surgery.r_bulk_size]),
+                theta_apply(_apply_k2_zeta_to_rt_coupling(surgery, z)[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]),
             ])
+            return jnp.concatenate([x_rt, z])
 
         return surgery, bulk_apply
 
@@ -3022,10 +3128,12 @@ def _build_mass_surgery_bulk_apply(
         if k == 0:
             return surgery, lambda rhs: _apply_tensor_diagonal_block(tensor.bulk, rhs)
         if k == 1:
+            use_inner_schur = tensor.use_inner_schur
             r_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.arr, rhs)
             theta_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.theta, rhs)
             zeta_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.zeta, rhs)
         elif k == 2:
+            use_inner_schur = tensor.use_inner_schur
             r_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.r_bulk, rhs)
             theta_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.theta, rhs)
             zeta_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.zeta, rhs)
@@ -3036,6 +3144,7 @@ def _build_mass_surgery_bulk_apply(
         if k == 0:
             return surgery, lambda rhs, inv=diaginv[surgery.surgery_size:]: inv * rhs
         if k == 1:
+            use_inner_schur = True
             r_inv = diaginv[surgery.r_indices]
             theta_inv = diaginv[surgery.theta_bulk_indices]
             zeta_inv = diaginv[surgery.zeta_bulk_indices]
@@ -3043,6 +3152,7 @@ def _build_mass_surgery_bulk_apply(
             theta_apply = lambda rhs, inv=theta_inv: inv * rhs
             zeta_apply = lambda rhs, inv=zeta_inv: inv * rhs
         elif k == 2:
+            use_inner_schur = True
             r_inv = diaginv[surgery.r_bulk_indices]
             theta_inv = diaginv[surgery.theta_indices]
             zeta_inv = diaginv[surgery.zeta_indices]
@@ -3133,11 +3243,26 @@ def _build_mass_surgery_bulk_apply(
                 surgery.r_bulk_size + surgery.theta_size:
                 surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size
             ]
-            return jnp.concatenate([
-                r_apply(rhs_r),
-                theta_apply(rhs_theta),
-                zeta_apply(rhs_zeta),
+            if not use_inner_schur:
+                return jnp.concatenate([
+                    r_apply(rhs_r),
+                    theta_apply(rhs_theta),
+                    zeta_apply(rhs_zeta),
+                ])
+            rhs_rt = rhs_bulk[:surgery.r_bulk_size + surgery.theta_size]
+            rhs_r = rhs_rt[:surgery.r_bulk_size]
+            rhs_theta = rhs_rt[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
+            y = r_apply(rhs_r)
+            z_theta = theta_apply(rhs_theta - _apply_k2_r_to_theta_coupling(surgery, y))
+            x_r = y - r_apply(_apply_k2_theta_to_r_coupling(surgery, z_theta))
+            y_rt = jnp.concatenate([x_r, z_theta])
+            z = zeta_apply(rhs_zeta - _apply_k2_rt_to_zeta_coupling(surgery, y_rt))
+            correction_rt = _apply_k2_zeta_to_rt_coupling(surgery, z)
+            x_rt = y_rt - jnp.concatenate([
+                r_apply(correction_rt[:surgery.r_bulk_size]),
+                theta_apply(correction_rt[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]),
             ])
+            return jnp.concatenate([x_rt, z])
 
         return surgery, bulk_apply
 
@@ -3150,9 +3275,20 @@ def _build_mass_surgery_bulk_apply(
         return jnp.concatenate([x_r, z])
 
     def bulk_apply(rhs_bulk):
-        rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
+        rhs_r = rhs_bulk[:surgery.rt_r_size]
+        rhs_theta = rhs_bulk[surgery.rt_r_size:surgery.bulk_rt_size]
         rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
-        return jnp.concatenate([rt_apply(rhs_rt), zeta_apply(rhs_zeta)])
+        if not use_inner_schur:
+            return jnp.concatenate([
+                r_apply(rhs_r),
+                theta_apply(rhs_theta),
+                zeta_apply(rhs_zeta),
+            ])
+        rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
+        y_rt = rt_apply(rhs_rt)
+        z = zeta_apply(rhs_zeta - _apply_k1_rt_to_zeta_coupling(surgery, y_rt))
+        x_rt = y_rt - rt_apply(_apply_k1_zeta_to_rt_coupling(surgery, z))
+        return jnp.concatenate([x_rt, z])
 
     return surgery, bulk_apply
 

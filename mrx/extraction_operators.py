@@ -96,6 +96,20 @@ class PolarExtractionOperator:
                 n2 * jnp.int32(idx >= n1 + n2)
             return category, index
 
+    def _k1_row_slices(self):
+        theta_surgery = slice(0, 2 * self.nz)
+        zeta_surgery = slice(theta_surgery.stop, theta_surgery.stop + 3 * self.dz)
+        r_slice = slice(zeta_surgery.stop, zeta_surgery.stop + (self.dr - 1) * self.nt * self.nz)
+        theta_bulk = slice(r_slice.stop, r_slice.stop + (self.nr - 2 - self.o) * self.dt * self.nz)
+        zeta_bulk = slice(theta_bulk.stop, theta_bulk.stop + (self.nr - 2 - self.o) * self.nt * self.dz)
+        return {
+            "theta_surgery": theta_surgery,
+            "zeta_surgery": zeta_surgery,
+            "r": r_slice,
+            "theta_bulk": theta_bulk,
+            "zeta_bulk": zeta_bulk,
+        }
+
     def _element(self, row_idx, col_idx):
         """
         Compute the operator element at specified indices.
@@ -118,43 +132,41 @@ class PolarExtractionOperator:
                 ),
             )
         if self.k == 1:
-            # Handle 1-forms
-            cat_row, row_idx = self._vector_index(row_idx)
+            slices = self._k1_row_slices()
             cat_col, col_idx = self.Lambda._vector_index(col_idx)
             return jnp.where(
-                cat_row == 0,
-                # r-component
-                self._threeform(row_idx, col_idx, self.dr, self.nt, self.nz)
-                * jnp.int32(cat_row == cat_col),
+                row_idx < slices["theta_surgery"].stop,
+                self.inner_oneform_r(
+                    row_idx, col_idx, self.dr, self.nt, self.nz
+                )
+                * jnp.int32(cat_col == 0)
+                + self.inner_oneform_θ(
+                    row_idx, col_idx, self.nr, self.dt, self.nz
+                )
+                * jnp.int32(cat_col == 1),
                 jnp.where(
-                    cat_row == 1,
-                    # θ-component
+                    row_idx < slices["zeta_surgery"].stop,
+                    self._inner_zeroform(
+                        row_idx - slices["theta_surgery"].stop, col_idx, self.nr, self.nt, self.dz
+                    )
+                    * jnp.int32(cat_col == 2),
                     jnp.where(
-                        row_idx < 2 * self.nz,
-                        self.inner_oneform_r(
-                            row_idx, col_idx, self.dr, self.nt, self.nz
+                        row_idx < slices["r"].stop,
+                        self._threeform(
+                            row_idx - slices["zeta_surgery"].stop, col_idx, self.dr, self.nt, self.nz
                         )
-                        * jnp.int32(cat_col == 0)
-                        + self.inner_oneform_θ(
-                            row_idx, col_idx, self.nr, self.dt, self.nz
-                        )
-                        * jnp.int32(cat_col == 1),
-                        self._outer_zeroform(
-                            row_idx - 2 * self.nz, col_idx, self.nr, self.dt, self.nz
-                        )
-                        * jnp.int32(cat_row == cat_col),
-                    ),
-                    # ζ-component
-                    jnp.where(
-                        row_idx < 3 * self.dz,
-                        self._inner_zeroform(
-                            row_idx, col_idx, self.nr, self.nt, self.dz
-                        )
-                        * jnp.int32(cat_row == cat_col),
-                        self._outer_zeroform(
-                            row_idx - 3 * self.dz, col_idx, self.nr, self.nt, self.dz
-                        )
-                        * jnp.int32(cat_row == cat_col),
+                        * jnp.int32(cat_col == 0),
+                        jnp.where(
+                            row_idx < slices["theta_bulk"].stop,
+                            self._outer_zeroform(
+                                row_idx - slices["r"].stop, col_idx, self.nr, self.dt, self.nz
+                            )
+                            * jnp.int32(cat_col == 1),
+                            self._outer_zeroform(
+                                row_idx - slices["theta_bulk"].stop, col_idx, self.nr, self.nt, self.dz
+                            )
+                            * jnp.int32(cat_col == 2),
+                        ),
                     ),
                 ),
             )
@@ -424,18 +436,8 @@ class PolarExtractionOperator:
                         )
 
         elif self.k == 1:
-            for i in range(self.dr - 1):
-                for j in range(self.nt):
-                    for k in range(self.nz):
-                        row_idx = np.ravel_multi_index(
-                            (i, j, k), (self.dr - 1, self.nt, self.nz)
-                        )
-                        col_idx = self._lambda_col_index(0, i + 1, j, k)
-                        self._append_triplets(
-                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
-                        )
-
-            theta_offset = self.n1
+            slices = self._k1_row_slices()
+            theta_offset = slices["theta_surgery"].start
             for p_local in range(2):
                 p = p_local + 1
                 for m in range(self.nz):
@@ -482,20 +484,7 @@ class PolarExtractionOperator:
                         values=val_r,
                     )
 
-            radial = self.nr - 2 - self.o
-            theta_outer_offset = theta_offset + 2 * self.nz
-            for i in range(radial):
-                for j in range(self.dt):
-                    for k in range(self.nz):
-                        row_idx = theta_outer_offset + np.ravel_multi_index(
-                            (i, j, k), (radial, self.dt, self.nz)
-                        )
-                        col_idx = self._lambda_col_index(1, i + 2, j, k)
-                        self._append_triplets(
-                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
-                        )
-
-            zeta_offset = self.n1 + self.n2
+            zeta_offset = slices["zeta_surgery"].start
             for p in range(3):
                 for m in range(self.dz):
                     row_idx = zeta_offset + np.ravel_multi_index(
@@ -521,7 +510,32 @@ class PolarExtractionOperator:
                             values=xi[p, i, :],
                         )
 
-            zeta_outer_offset = zeta_offset + 3 * self.dz
+            r_offset = slices["r"].start
+            for i in range(self.dr - 1):
+                for j in range(self.nt):
+                    for k in range(self.nz):
+                        row_idx = r_offset + np.ravel_multi_index(
+                            (i, j, k), (self.dr - 1, self.nt, self.nz)
+                        )
+                        col_idx = self._lambda_col_index(0, i + 1, j, k)
+                        self._append_triplets(
+                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
+                        )
+
+            radial = self.nr - 2 - self.o
+            theta_outer_offset = slices["theta_bulk"].start
+            for i in range(radial):
+                for j in range(self.dt):
+                    for k in range(self.nz):
+                        row_idx = theta_outer_offset + np.ravel_multi_index(
+                            (i, j, k), (radial, self.dt, self.nz)
+                        )
+                        col_idx = self._lambda_col_index(1, i + 2, j, k)
+                        self._append_triplets(
+                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
+                        )
+
+            zeta_outer_offset = slices["zeta_bulk"].start
             for i in range(radial):
                 for j in range(self.nt):
                     for k in range(self.dz):

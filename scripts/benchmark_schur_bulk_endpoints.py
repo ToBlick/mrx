@@ -36,7 +36,7 @@ from mrx.utils import build_random_besov_rhs_batch
 jax.config.update("jax_enable_x64", True)
 
 
-NS = (16, 32, 16)
+NS = (8, 16, 8)
 P = 3
 TYPES = ("clamped", "periodic", "periodic")
 ROTATING_ELLIPSE_EPS = 0.33
@@ -45,17 +45,22 @@ ROTATING_ELLIPSE_R0 = 1.0
 ROTATING_ELLIPSE_NFP = 3
 BETTI = (1, 1, 0, 0)
 DIRICHLET = True
-NUM_RHS = 16
+NUM_RHS = 8
 TOL = 1e-9
 MAXITER = 1000
 CHEB_STEPS = (1, 2, 4)
 TENSOR_CP_KWARGS = {"tol": 1e-9, "maxiter": 100}
+TENSOR_CP_KWARGS_INNER_SCHUR_OFF = {
+    **TENSOR_CP_KWARGS,
+    "k1_inner_schur": False,
+    "k2_inner_schur": False,
+}
 BESOV_RHS_KWARGS = {
     "s": 1.0,
     "upper_limit": 24,
     "num_modes": 64,
     "scale": 1.0,
-    "smoothness_margin": 0.25,
+    "smoothness_margin": 0.0,
     "normalization_samples": 256,
 }
 
@@ -96,17 +101,28 @@ def build_sequence():
 
     operators = None
     operators = assemble_mass_operators(seq, seq.geometry, operators=operators, ks=(0, 1, 2, 3))
-    operators = assemble_tensor_mass_preconditioner(
+    tensor_inner_schur_on = assemble_tensor_mass_preconditioner(
         seq,
         operators=operators,
         ks=(0, 1, 2, 3),
         rank=1,
         cp_kwargs=TENSOR_CP_KWARGS,
     )
-    operators = assemble_incidence_operators(seq, operators=operators, ks=(0,))
+    tensor_inner_schur_off = assemble_tensor_mass_preconditioner(
+        seq,
+        operators=operators,
+        ks=(0, 1, 2, 3),
+        rank=1,
+        cp_kwargs=TENSOR_CP_KWARGS_INNER_SCHUR_OFF,
+    )
+    operators = assemble_incidence_operators(seq, operators=tensor_inner_schur_on, ks=(0,))
     operators = assemble_hodge_operators(seq, seq.geometry, operators=operators, ks=(0,))
     seq.operators = operators
-    return seq, operators
+    return seq, {
+        "default": operators,
+        "tensor_inner_schur_on": operators,
+        "tensor_inner_schur_off": tensor_inner_schur_off,
+    }
 
 
 def build_chebyshev_apply(operator_apply, smoother_apply, size: int, *, steps: int, seed: int):
@@ -200,6 +216,59 @@ def build_mass_cheb_tensor(seq, operators, k: int, steps: int):
         steps=steps,
         seed=40_000 + 100 * k + steps,
     )
+
+
+def mass_tensor_case_factories(seq, operator_bundles, k: int):
+    operators_default = operator_bundles["default"]
+    factories = [("jacobi", build_mass_whole_jacobi(seq, operators_default, k))]
+    factories.extend(
+        (
+            f"whole-cheb{steps}-jacobi",
+            build_mass_whole_cheb_jacobi(seq, operators_default, k, steps),
+        )
+        for steps in CHEB_STEPS
+    )
+
+    if k == 3:
+        factories.append(("tensor", build_mass_tensor(seq, operators_default, k)))
+        factories.extend(
+            (
+                f"cheb{steps}-tensor",
+                build_mass_cheb_tensor(seq, operators_default, k, steps),
+            )
+            for steps in CHEB_STEPS
+        )
+        return factories
+
+    if k == 0:
+        factories.append(("schur-tensor", build_mass_schur_tensor(seq, operators_default, k)))
+        factories.extend(
+            (
+                f"schur-cheb{steps}-tensor",
+                build_mass_schur_cheb_tensor(seq, operators_default, k, steps),
+            )
+            for steps in CHEB_STEPS
+        )
+        return factories
+
+    for coupling_label, operators_tensor in (
+        ("inner-schur-on", operator_bundles["tensor_inner_schur_on"]),
+        ("inner-schur-off", operator_bundles["tensor_inner_schur_off"]),
+    ):
+        factories.append(
+            (
+                f"schur-tensor-{coupling_label}",
+                build_mass_schur_tensor(seq, operators_tensor, k),
+            )
+        )
+        factories.extend(
+            (
+                f"schur-cheb{steps}-tensor-{coupling_label}",
+                build_mass_schur_cheb_tensor(seq, operators_tensor, k, steps),
+            )
+            for steps in CHEB_STEPS
+        )
+    return factories
 
 
 def build_k0_laplacian_whole_jacobi(seq, operators):
@@ -349,7 +418,8 @@ def print_table(title: str, rows: list[BenchmarkRow]):
 def main():
     print("Building sequence and operators...")
     t0 = time.perf_counter()
-    seq, operators = build_sequence()
+    seq, operator_bundles = build_sequence()
+    operators = operator_bundles["default"]
     print(f"built in {time.perf_counter() - t0:.2f} s")
     print(f"resolution={NS}, p={P}, dirichlet={DIRICHLET}, n_rhs={NUM_RHS}")
     print("RHS: random Besov-like functions projected into the FEM space")
@@ -359,32 +429,7 @@ def main():
     for k in (0, 1, 2, 3):
         rhs_batch = build_mass_rhs_batch(seq, k, seed=100 + k)
         operator_apply = lambda x, degree=k: apply_mass_matrix(seq, operators, x, degree, dirichlet=DIRICHLET)
-        factories = [("jacobi", build_mass_whole_jacobi(seq, operators, k))]
-        factories.extend(
-            (
-                f"whole-cheb{steps}-jacobi",
-                build_mass_whole_cheb_jacobi(seq, operators, k, steps),
-            )
-            for steps in CHEB_STEPS
-        )
-        if k == 3:
-            factories.append(("tensor", build_mass_tensor(seq, operators, k)))
-            factories.extend(
-                (
-                    f"cheb{steps}-tensor",
-                    build_mass_cheb_tensor(seq, operators, k, steps),
-                )
-                for steps in CHEB_STEPS
-            )
-        else:
-            factories.append(("schur-tensor", build_mass_schur_tensor(seq, operators, k)))
-            factories.extend(
-                (
-                    f"schur-cheb{steps}-tensor",
-                    build_mass_schur_cheb_tensor(seq, operators, k, steps),
-                )
-                for steps in CHEB_STEPS
-            )
+        factories = mass_tensor_case_factories(seq, operator_bundles, k)
         all_rows.extend(
             benchmark_problem(
                 f"mass-k{k}",

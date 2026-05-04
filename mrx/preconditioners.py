@@ -75,6 +75,7 @@ class K1TensorMassPreconditionerFactors(eqx.Module):
     arr: TensorDiagonalBlockInverseFactors
     theta: TensorDiagonalBlockInverseFactors
     zeta: TensorDiagonalBlockInverseFactors
+    use_inner_schur: bool = eqx.field(static=True, default=True)
     schur_inv: Optional[jnp.ndarray] = None
 
 
@@ -88,6 +89,7 @@ class K2TensorMassPreconditionerFactors(eqx.Module):
     r_bulk: TensorDiagonalBlockInverseFactors
     theta: TensorDiagonalBlockInverseFactors
     zeta: TensorDiagonalBlockInverseFactors
+    use_inner_schur: bool = eqx.field(static=True, default=True)
     schur_inv: Optional[jnp.ndarray] = None
 
 
@@ -119,6 +121,8 @@ class K1MassSurgeryPreconditionerFactors(eqx.Module):
     bulk_to_surgery_data: Optional[RestrictedExtractedMassApplyData] = None
     rt_atr_data: Optional[RestrictedExtractedMassApplyData] = None
     rt_art_data: Optional[RestrictedExtractedMassApplyData] = None
+    rt_to_zeta_data: Optional[RestrictedExtractedMassApplyData] = None
+    zeta_to_rt_data: Optional[RestrictedExtractedMassApplyData] = None
 
 
 class K2MassSurgeryPreconditionerFactors(eqx.Module):
@@ -136,6 +140,10 @@ class K2MassSurgeryPreconditionerFactors(eqx.Module):
     ass: jnp.ndarray
     surgery_to_bulk_data: Optional[RestrictedExtractedMassApplyData] = None
     bulk_to_surgery_data: Optional[RestrictedExtractedMassApplyData] = None
+    r_to_theta_data: Optional[RestrictedExtractedMassApplyData] = None
+    theta_to_r_data: Optional[RestrictedExtractedMassApplyData] = None
+    rt_to_zeta_data: Optional[RestrictedExtractedMassApplyData] = None
+    zeta_to_rt_data: Optional[RestrictedExtractedMassApplyData] = None
 
 
 class MassSurgeryPreconditioner(eqx.Module):
@@ -716,10 +724,15 @@ def _apply_tensor_diagonal_block(factors: TensorDiagonalBlockInverseFactors, rhs
     return x
 
 
-def _component_sizes_k1(seq, dirichlet: bool):
-    if dirichlet:
-        return seq.n1_1_dbc, seq.n1_2_dbc, seq.n1_3_dbc
-    return seq.n1_1, seq.n1_2, seq.n1_3
+def _k1_layout_sizes(seq, dirichlet: bool):
+    boundary_offset = 1 if dirichlet else 0
+    return {
+        "theta_surgery": 2 * seq.basis_1.nz,
+        "zeta_surgery": 3 * seq.basis_1.dz,
+        "r": (seq.basis_1.dr - 1) * seq.basis_1.nt * seq.basis_1.nz,
+        "theta_bulk": (seq.basis_1.nr - 2 - boundary_offset) * seq.basis_1.dt * seq.basis_1.nz,
+        "zeta_bulk": (seq.basis_1.nr - 2 - boundary_offset) * seq.basis_1.nt * seq.basis_1.dz,
+    }
 
 
 def _component_sizes_k2(seq, dirichlet: bool):
@@ -729,14 +742,12 @@ def _component_sizes_k2(seq, dirichlet: bool):
 
 
 def _surgery_slices_k1(seq, dirichlet: bool):
-    n_r, n_theta, n_zeta = _component_sizes_k1(seq, dirichlet)
-    r_slice = slice(0, n_r)
-    theta_slice = slice(r_slice.stop, r_slice.stop + n_theta)
-    zeta_slice = slice(theta_slice.stop, theta_slice.stop + n_zeta)
-    theta_surgery = slice(theta_slice.start, theta_slice.start + 2 * seq.basis_1.nz)
-    theta_bulk = slice(theta_surgery.stop, theta_slice.stop)
-    zeta_surgery = slice(zeta_slice.start, zeta_slice.start + 3 * seq.basis_1.dz)
-    zeta_bulk = slice(zeta_surgery.stop, zeta_slice.stop)
+    sizes = _k1_layout_sizes(seq, dirichlet)
+    theta_surgery = slice(0, sizes["theta_surgery"])
+    zeta_surgery = slice(theta_surgery.stop, theta_surgery.stop + sizes["zeta_surgery"])
+    r_slice = slice(zeta_surgery.stop, zeta_surgery.stop + sizes["r"])
+    theta_bulk = slice(r_slice.stop, r_slice.stop + sizes["theta_bulk"])
+    zeta_bulk = slice(theta_bulk.stop, theta_bulk.stop + sizes["zeta_bulk"])
     return {
         "r": r_slice,
         "theta_surgery": theta_surgery,
@@ -818,7 +829,7 @@ def _tensor_block_indices_k2(seq, dirichlet: bool):
 def _arr_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
     nt = seq.basis_1.nt
     nz = seq.basis_1.nz
-    n_r = _component_sizes_k1(seq, dirichlet)[0]
+    n_r = _k1_layout_sizes(seq, dirichlet)["r"]
     nr = n_r // (nt * nz)
     if nr * nt * nz != n_r:
         raise ValueError(f"Extracted r size {n_r} is not divisible by nt*nz = {nt * nz}")
@@ -828,7 +839,7 @@ def _arr_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
 def _theta_bulk_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
     dt = seq.basis_1.dt
     nz = seq.basis_1.nz
-    n_theta = _component_sizes_k1(seq, dirichlet)[1] - 2 * seq.basis_1.nz
+    n_theta = _k1_layout_sizes(seq, dirichlet)["theta_bulk"]
     nr = n_theta // (dt * nz)
     if nr * dt * nz != n_theta:
         raise ValueError(f"theta_bulk size {n_theta} is not divisible by dt*nz = {dt * nz}")
@@ -838,7 +849,7 @@ def _theta_bulk_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
 def _zeta_bulk_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
     nt = seq.basis_1.nt
     dz = seq.basis_1.dz
-    n_zeta = _component_sizes_k1(seq, dirichlet)[2] - 3 * seq.basis_1.dz
+    n_zeta = _k1_layout_sizes(seq, dirichlet)["zeta_bulk"]
     nr = n_zeta // (nt * dz)
     if nr * nt * dz != n_zeta:
         raise ValueError(f"zeta_bulk size {n_zeta} is not divisible by nt*dz = {nt * dz}")
@@ -1244,6 +1255,18 @@ def _apply_k1_rt_art_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_t
     return _apply_extracted_submatrix(surgery.apply_data, surgery.r_indices, surgery.theta_bulk_indices, rhs_theta)
 
 
+def _apply_k1_rt_to_zeta_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_rt: jnp.ndarray) -> jnp.ndarray:
+    if surgery.rt_to_zeta_data is not None:
+        return _apply_restricted_extracted_mass_operator_data(surgery.rt_to_zeta_data, rhs_rt)
+    return _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_bulk_indices, surgery.rt_indices, rhs_rt)
+
+
+def _apply_k1_zeta_to_rt_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_zeta: jnp.ndarray) -> jnp.ndarray:
+    if surgery.zeta_to_rt_data is not None:
+        return _apply_restricted_extracted_mass_operator_data(surgery.zeta_to_rt_data, rhs_zeta)
+    return _apply_extracted_submatrix(surgery.apply_data, surgery.rt_indices, surgery.zeta_bulk_indices, rhs_zeta)
+
+
 def _apply_k1_rt_preconditioner(
     surgery: K1MassSurgeryPreconditionerFactors,
     arr_factors: TensorDiagonalBlockInverseFactors,
@@ -1267,8 +1290,37 @@ def _apply_k1_bulk_preconditioner(
 ) -> jnp.ndarray:
     rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
     rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
+    y_rt = _apply_k1_rt_preconditioner(surgery, arr_factors, theta_factors, rhs_rt)
+    z = _apply_tensor_exact_block(
+        None,
+        zeta_factors,
+        rhs_zeta - _apply_k1_rt_to_zeta_coupling(surgery, y_rt),
+    )
+    x_rt = y_rt - _apply_k1_rt_preconditioner(
+        surgery,
+        arr_factors,
+        theta_factors,
+        _apply_k1_zeta_to_rt_coupling(surgery, z),
+    )
     return jnp.concatenate([
-        _apply_k1_rt_preconditioner(surgery, arr_factors, theta_factors, rhs_rt),
+        x_rt,
+        z,
+    ])
+
+
+def _apply_k1_bulk_diagonal_preconditioner(
+    surgery: K1MassSurgeryPreconditionerFactors,
+    arr_factors: TensorDiagonalBlockInverseFactors,
+    theta_factors: TensorDiagonalBlockInverseFactors,
+    zeta_factors: TensorDiagonalBlockInverseFactors,
+    rhs_bulk: jnp.ndarray,
+) -> jnp.ndarray:
+    rhs_r = rhs_bulk[:surgery.rt_r_size]
+    rhs_theta = rhs_bulk[surgery.rt_r_size:surgery.bulk_rt_size]
+    rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
+    return jnp.concatenate([
+        _apply_tensor_exact_block(None, arr_factors, rhs_r),
+        _apply_tensor_exact_block(None, theta_factors, rhs_theta),
         _apply_tensor_exact_block(None, zeta_factors, rhs_zeta),
     ])
 
@@ -1285,7 +1337,76 @@ def _apply_k2_bulk_to_surgery_coupling(surgery: K2MassSurgeryPreconditionerFacto
     return _apply_extracted_submatrix(surgery.apply_data, surgery.surgery_indices, surgery.bulk_indices, rhs_b)
 
 
+def _apply_k2_r_to_theta_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_r: jnp.ndarray) -> jnp.ndarray:
+    if surgery.r_to_theta_data is not None:
+        return _apply_restricted_extracted_mass_operator_data(surgery.r_to_theta_data, rhs_r)
+    return _apply_extracted_submatrix(surgery.apply_data, surgery.theta_indices, surgery.r_bulk_indices, rhs_r)
+
+
+def _apply_k2_theta_to_r_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_theta: jnp.ndarray) -> jnp.ndarray:
+    if surgery.theta_to_r_data is not None:
+        return _apply_restricted_extracted_mass_operator_data(surgery.theta_to_r_data, rhs_theta)
+    return _apply_extracted_submatrix(surgery.apply_data, surgery.r_bulk_indices, surgery.theta_indices, rhs_theta)
+
+
+def _k2_rt_indices(surgery: K2MassSurgeryPreconditionerFactors) -> jnp.ndarray:
+    return jnp.concatenate([surgery.r_bulk_indices, surgery.theta_indices])
+
+
+def _apply_k2_rt_to_zeta_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_rt: jnp.ndarray) -> jnp.ndarray:
+    if surgery.rt_to_zeta_data is not None:
+        return _apply_restricted_extracted_mass_operator_data(surgery.rt_to_zeta_data, rhs_rt)
+    return _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_indices, _k2_rt_indices(surgery), rhs_rt)
+
+
+def _apply_k2_zeta_to_rt_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_zeta: jnp.ndarray) -> jnp.ndarray:
+    if surgery.zeta_to_rt_data is not None:
+        return _apply_restricted_extracted_mass_operator_data(surgery.zeta_to_rt_data, rhs_zeta)
+    return _apply_extracted_submatrix(surgery.apply_data, _k2_rt_indices(surgery), surgery.zeta_indices, rhs_zeta)
+
+
+def _apply_k2_rt_preconditioner(
+    surgery: K2MassSurgeryPreconditionerFactors,
+    r_bulk_factors: TensorDiagonalBlockInverseFactors,
+    theta_factors: TensorDiagonalBlockInverseFactors,
+    rhs_rt: jnp.ndarray,
+) -> jnp.ndarray:
+    rhs_r = rhs_rt[:surgery.r_bulk_size]
+    rhs_theta = rhs_rt[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
+    y = _apply_tensor_exact_block(None, r_bulk_factors, rhs_r)
+    z = _apply_tensor_exact_block(None, theta_factors, rhs_theta - _apply_k2_r_to_theta_coupling(surgery, y))
+    x_r = y - _apply_tensor_exact_block(None, r_bulk_factors, _apply_k2_theta_to_r_coupling(surgery, z))
+    return jnp.concatenate([x_r, z])
+
+
 def _apply_k2_bulk_preconditioner(
+    surgery: K2MassSurgeryPreconditionerFactors,
+    r_bulk_factors: TensorDiagonalBlockInverseFactors,
+    theta_factors: TensorDiagonalBlockInverseFactors,
+    zeta_factors: TensorDiagonalBlockInverseFactors,
+    rhs_bulk: jnp.ndarray,
+) -> jnp.ndarray:
+    rhs_rt = rhs_bulk[:surgery.r_bulk_size + surgery.theta_size]
+    rhs_zeta = rhs_bulk[surgery.r_bulk_size + surgery.theta_size:surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size]
+    y_rt = _apply_k2_rt_preconditioner(surgery, r_bulk_factors, theta_factors, rhs_rt)
+    z = _apply_tensor_exact_block(
+        None,
+        zeta_factors,
+        rhs_zeta - _apply_k2_rt_to_zeta_coupling(surgery, y_rt),
+    )
+    x_rt = y_rt - _apply_k2_rt_preconditioner(
+        surgery,
+        r_bulk_factors,
+        theta_factors,
+        _apply_k2_zeta_to_rt_coupling(surgery, z),
+    )
+    return jnp.concatenate([
+        x_rt,
+        z,
+    ])
+
+
+def _apply_k2_bulk_diagonal_preconditioner(
     surgery: K2MassSurgeryPreconditionerFactors,
     r_bulk_factors: TensorDiagonalBlockInverseFactors,
     theta_factors: TensorDiagonalBlockInverseFactors,
@@ -1294,10 +1415,7 @@ def _apply_k2_bulk_preconditioner(
 ) -> jnp.ndarray:
     rhs_r = rhs_bulk[:surgery.r_bulk_size]
     rhs_theta = rhs_bulk[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
-    rhs_zeta = rhs_bulk[
-        surgery.r_bulk_size + surgery.theta_size:
-        surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size
-    ]
+    rhs_zeta = rhs_bulk[surgery.r_bulk_size + surgery.theta_size:surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size]
     return jnp.concatenate([
         _apply_tensor_exact_block(None, r_bulk_factors, rhs_r),
         _apply_tensor_exact_block(None, theta_factors, rhs_theta),
@@ -1387,6 +1505,8 @@ def build_mass_surgery_preconditioner(
                 bulk_to_surgery_data=_build_restricted_extracted_mass_apply_data(apply_data, surgery_indices, bulk_indices),
                 rt_atr_data=_build_restricted_extracted_mass_apply_data(apply_data, theta_bulk_indices, r_indices),
                 rt_art_data=_build_restricted_extracted_mass_apply_data(apply_data, r_indices, theta_bulk_indices),
+                rt_to_zeta_data=_build_restricted_extracted_mass_apply_data(apply_data, zeta_bulk_indices, rt_indices),
+                zeta_to_rt_data=_build_restricted_extracted_mass_apply_data(apply_data, rt_indices, zeta_bulk_indices),
                 surgery_diaginv=1.0 / jnp.diag(ass),
                 ass=ass,
             )
@@ -1427,6 +1547,26 @@ def build_mass_surgery_preconditioner(
                     surgery_indices,
                     block_indices["bulk"],
                 ),
+                r_to_theta_data=_build_restricted_extracted_mass_apply_data(
+                    apply_data,
+                    block_indices["theta"],
+                    block_indices["r_bulk"],
+                ),
+                theta_to_r_data=_build_restricted_extracted_mass_apply_data(
+                    apply_data,
+                    block_indices["r_bulk"],
+                    block_indices["theta"],
+                ),
+                rt_to_zeta_data=_build_restricted_extracted_mass_apply_data(
+                    apply_data,
+                    block_indices["zeta"],
+                    jnp.concatenate([block_indices["r_bulk"], block_indices["theta"]]),
+                ),
+                zeta_to_rt_data=_build_restricted_extracted_mass_apply_data(
+                    apply_data,
+                    jnp.concatenate([block_indices["r_bulk"], block_indices["theta"]]),
+                    block_indices["zeta"],
+                ),
                 ass=ass,
                 surgery_diaginv=1.0 / jnp.diag(ass),
             )
@@ -1464,6 +1604,8 @@ def build_mass_tensor_preconditioner(
     block_lanczos_min_eig_floor_fraction = float(cp_kwargs.get("block_lanczos_min_eig_floor_fraction", 1e-3))
     richardson_steps = int(cp_kwargs.get("richardson_steps", 0))
     richardson_omega = float(cp_kwargs.get("richardson_omega", 1.0))
+    k1_inner_schur = bool(cp_kwargs.get("k1_inner_schur", True))
+    k2_inner_schur = bool(cp_kwargs.get("k2_inner_schur", True))
 
     reuse_existing = (
         existing is not None
@@ -1677,12 +1819,20 @@ def build_mass_tensor_preconditioner(
             schur_inv = _assemble_schur_inverse_from_applies(
                 surgery.ass,
                 lambda rhs_s, surgery=surgery: _apply_k1_surgery_to_bulk_coupling(surgery, rhs_s),
-                lambda rhs_bulk, surgery=surgery, arr_factors=arr_factors, theta_factors=theta_factors, zeta_factors=zeta_factors: _apply_k1_bulk_preconditioner(
-                    surgery,
-                    arr_factors,
-                    theta_factors,
-                    zeta_factors,
-                    rhs_bulk,
+                lambda rhs_bulk, surgery=surgery, arr_factors=arr_factors, theta_factors=theta_factors, zeta_factors=zeta_factors, use_inner_schur=k1_inner_schur: (
+                    _apply_k1_bulk_preconditioner(
+                        surgery,
+                        arr_factors,
+                        theta_factors,
+                        zeta_factors,
+                        rhs_bulk,
+                    ) if use_inner_schur else _apply_k1_bulk_diagonal_preconditioner(
+                        surgery,
+                        arr_factors,
+                        theta_factors,
+                        zeta_factors,
+                        rhs_bulk,
+                    )
                 ),
                 lambda rhs_bulk, surgery=surgery: _apply_k1_bulk_to_surgery_coupling(surgery, rhs_bulk),
             )
@@ -1693,6 +1843,7 @@ def build_mass_tensor_preconditioner(
                 zeta_bulk_indices=zeta_bulk_indices,
                 rt_r_size=rt_r_size,
                 rt_theta_size=rt_theta_size,
+                use_inner_schur=k1_inner_schur,
                 arr=arr_factors,
                 theta=theta_factors,
                 zeta=zeta_factors,
@@ -1823,12 +1974,20 @@ def build_mass_tensor_preconditioner(
             schur_inv = _assemble_schur_inverse_from_applies(
                 surgery.ass,
                 lambda rhs_s, surgery=surgery: _apply_k2_surgery_to_bulk_coupling(surgery, rhs_s),
-                lambda rhs_bulk, surgery=surgery, r_bulk_factors=r_bulk_factors, theta_factors=theta_factors, zeta_factors=zeta_factors: _apply_k2_bulk_preconditioner(
-                    surgery,
-                    r_bulk_factors,
-                    theta_factors,
-                    zeta_factors,
-                    rhs_bulk,
+                lambda rhs_bulk, surgery=surgery, r_bulk_factors=r_bulk_factors, theta_factors=theta_factors, zeta_factors=zeta_factors, use_inner_schur=k2_inner_schur: (
+                    _apply_k2_bulk_preconditioner(
+                        surgery,
+                        r_bulk_factors,
+                        theta_factors,
+                        zeta_factors,
+                        rhs_bulk,
+                    ) if use_inner_schur else _apply_k2_bulk_diagonal_preconditioner(
+                        surgery,
+                        r_bulk_factors,
+                        theta_factors,
+                        zeta_factors,
+                        rhs_bulk,
+                    )
                 ),
                 lambda rhs_bulk, surgery=surgery: _apply_k2_bulk_to_surgery_coupling(surgery, rhs_bulk),
             )
@@ -1839,6 +1998,7 @@ def build_mass_tensor_preconditioner(
                 r_bulk_size=r_bulk_size,
                 theta_size=theta_size,
                 zeta_size=zeta_size,
+                use_inner_schur=k2_inner_schur,
                 r_bulk=r_bulk_factors,
                 theta=theta_factors,
                 zeta=zeta_factors,
@@ -1945,9 +2105,10 @@ def apply_mass_tensor_preconditioner(seq, preconds: Optional[MassPreconditioners
         rhs_s = v[surgery.surgery_indices]
         rhs_b = v[surgery.bulk_indices]
 
-        y = _apply_k2_bulk_preconditioner(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_b)
+        bulk_apply = _apply_k2_bulk_preconditioner if factors.use_inner_schur else _apply_k2_bulk_diagonal_preconditioner
+        y = bulk_apply(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_b)
         z = factors.schur_inv @ (rhs_s - _apply_k2_bulk_to_surgery_coupling(surgery, y))
-        x_b = y - _apply_k2_bulk_preconditioner(
+        x_b = y - bulk_apply(
             surgery,
             factors.r_bulk,
             factors.theta,
@@ -1967,9 +2128,10 @@ def apply_mass_tensor_preconditioner(seq, preconds: Optional[MassPreconditioners
     rhs_s = v[surgery.surgery_indices]
     rhs_b = v[surgery.bulk_indices]
 
-    y = _apply_k1_bulk_preconditioner(surgery, factors.arr, factors.theta, factors.zeta, rhs_b)
+    bulk_apply = _apply_k1_bulk_preconditioner if factors.use_inner_schur else _apply_k1_bulk_diagonal_preconditioner
+    y = bulk_apply(surgery, factors.arr, factors.theta, factors.zeta, rhs_b)
     z = factors.schur_inv @ (rhs_s - _apply_k1_bulk_to_surgery_coupling(surgery, y))
-    x_b = y - _apply_k1_bulk_preconditioner(
+    x_b = y - bulk_apply(
         surgery,
         factors.arr,
         factors.theta,

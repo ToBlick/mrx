@@ -1,241 +1,138 @@
 # Mass Preconditioners
 
-This note summarizes the current production picture for the mass
-preconditioners across all form degrees `k = 0, 1, 2, 3`.
+This note records the current production picture for the mass preconditioners in
+`mrx`. It is intentionally short and only describes the active design.
 
-The shared design principle is simple:
+## 1. Shared Design
 
-- keep the correct extracted-space block structure for the degree,
-- approximate the geometric coefficient fields rather than the assembled
-  inverse,
-- build tensor-product or low-rank sums of tensor-product block models from
-  those coefficient fields,
-- and use dense Schur solves only where the extracted structure forces a small
-  surgery or core block.
+The production tensor route does not try to approximate the inverse of the full
+extracted mass matrix directly. Instead it:
 
-The degree-specific debug scripts remain the regression harnesses. This note is
-meant to explain the ideas behind the production preconditioners, not to keep a
-full research diary.
+- keeps the extracted-space surgery rows exact through a small dense Schur
+  complement,
+- approximates only the bulk tensor blocks,
+- fits the diagonal mapped coefficient fields on the quadrature grid,
+- and builds tensor-diagonal block inverses from those fitted fields.
 
-## 1. Common Geometric Picture
-
-On the mapped domain, the weak mass matrices use the standard pull-back
-weights
-
-$$
-W^0 = J,
-\qquad
-W^1 = J g^{-1},
-\qquad
-W^2 = g / J,
-\qquad
-W^3 = 1 / J.
-$$
-
-The production tensor route keeps only the diagonal coefficient fields that
-belong to the diagonal tensor blocks:
+The active diagonal coefficient fields are:
 
 - `k = 0`: `J`,
 - `k = 1`: `J g^{rr}`, `J g^{theta theta}`, `J g^{zeta zeta}`,
 - `k = 2`: `g_rr / J`, `g_theta theta / J`, `g_zeta zeta / J`,
 - `k = 3`: `1 / J`.
 
-These fields are sampled on the tensor quadrature grid and fitted by low-rank
-CP decompositions. Each rank-1 term assembles one weighted tensor-product mass
-contribution, so a rank-`R` fit becomes a short sum of Kronecker-like blocks.
+Rank-1 fits are the practical default. Higher ranks are supported by the tensor
+block machinery, but the current production guidance is still to treat rank 1
+as the reference choice unless a benchmark shows otherwise.
 
-For `R = 1`, the inverse apply is just a tensor-product inverse. For `R > 1`,
-the current structured inverse uses the shared-modal fast-diagonalisation path
-rather than storing dense 3-D inverse blocks.
-
-So the compression target is the geometry field, not the inverse operator.
-
-## 2. Baselines
-
-Two simpler baselines still exist and remain useful as references:
-
-- `jacobi`: inverse diagonal of the extracted mass matrix,
-- `kronecker`: legacy reference-product inverse with per-component averaged
-  geometric scaling.
-
-The tensor path is now the preferred production route for all four form
-degrees `k = 0, 1, 2, 3`. The baselines remain useful for fallback and
-benchmarking, but the production rollout itself is complete.
-
-## 3. Degree-Specific Structures
+## 2. Degree-by-Degree Structure
 
 ### `k = 0`
 
-`k = 0` is the scalar Schur case.
+`k = 0` is the scalar surgery case.
 
-- The extracted matrix splits into a small core block and one bulk tensor block.
-- The production preconditioner uses a dense Schur solve on the core.
-- The bulk inverse is a tensor-diagonal inverse built from a CP fit of `J`.
+- The extracted matrix is split into a small core block and one scalar bulk
+  tensor block.
+- The core is handled by a dense Schur solve.
+- The bulk is handled by a scalar tensor inverse built from a fit of `J`.
 
-So the structure is:
+So the active route is:
 
-- small dense core Schur,
-- one scalar tensor bulk inverse.
+- outer scalar core Schur,
+- scalar tensor bulk inverse.
 
 ### `k = 1`
 
-`k = 1` is the most complicated mass case.
+`k = 1` uses a surgery-first extracted ordering.
 
-- The extracted `theta` and `zeta` components contain surgery rows.
-- The correct structure is an outer surgery Schur plus an inner Schur on the
-  coupled `(r, theta_bulk)` block.
-- The diagonal bulk inverse drop-ins are modeled from CP fits of
-  `J g^{rr}`, `J g^{theta theta}`, and `J g^{zeta zeta}`.
+- The extracted `theta` and `zeta` surgery rows form the outer Schur block.
+- The bulk is split into `r`, `theta_bulk`, and `zeta_bulk` tensor blocks.
+- The tensor route can optionally treat the bulk by an additional coupled inner
+  Schur, but that coupling is not required for the outer surgery model.
 
-So the structure is:
+So the active route is:
 
 - outer surgery Schur,
-- inner coupled Schur on `(r, theta_bulk)`,
-- tensor-diagonal inverse models for the diagonal bulk blocks.
+- tensor bulk blocks for `r`, `theta_bulk`, and `zeta_bulk`,
+- optional inner bulk Schur coupling.
+
+The assembly-time toggle is:
+
+- `cp_kwargs["k1_inner_schur"] = True` for the coupled bulk model,
+- `cp_kwargs["k1_inner_schur"] = False` for pure diagonal tensor bulk blocks.
 
 ### `k = 2`
 
-`k = 2` mirrors `k = 1`, but the extracted surgery structure is simpler.
+`k = 2` has the same overall philosophy with a smaller surgery block.
 
-- The extracted `r` component contributes the small surgery block.
-- The remaining `r_bulk`, `theta`, and `zeta` blocks stay in the bulk.
-- The bulk inverse models come from CP fits of
-  `g_rr / J`, `g_theta theta / J`, and `g_zeta zeta / J`.
+- The extracted `r` surgery rows form the outer Schur block.
+- The bulk is split into `r_bulk`, `theta`, and `zeta` tensor blocks.
+- The tensor route can optionally treat the bulk by an additional coupled inner
+  Schur, but the outer surgery split remains the dominant structure.
 
-So the structure is:
+So the active route is:
 
-- one smaller outer Schur block than in `k = 1`,
-- three tensor-diagonal bulk inverse blocks.
+- outer surgery Schur,
+- tensor bulk blocks for `r_bulk`, `theta`, and `zeta`,
+- optional inner bulk Schur coupling.
+
+The assembly-time toggle is:
+
+- `cp_kwargs["k2_inner_schur"] = True` for the coupled bulk model,
+- `cp_kwargs["k2_inner_schur"] = False` for pure diagonal tensor bulk blocks.
 
 ### `k = 3`
 
 `k = 3` is the second scalar case.
 
-- There is no extracted-space Schur split.
-- The extracted matrix is one scalar tensor block.
-- The production inverse apply is the tensor-diagonal inverse built from a CP
-  fit of `1 / J`.
+- There is no surgery split.
+- The extracted matrix is treated as one scalar tensor block.
+- The inverse apply uses the tensor model built from a fit of `1 / J`.
 
-So the structure is:
+So the active route is:
 
-- no surgery,
-- no Schur,
-- direct scalar tensor inverse.
+- direct scalar tensor inverse,
+- no surgery Schur.
 
-## 4. Why This Route Won
+## 3. Baselines And Practical Winners
 
-Older debug paths tried to compress inverse-like objects more directly. The
-current route survived because it preserves the right abstraction boundary:
+The useful baselines remain:
 
-- the extracted-space Schur logic stays exact,
-- only the diagonal tensor blocks are approximated,
-- the approximation acts on the coefficient field instead of the dense inverse,
-- and the stored data scales like 1-D factors and small Schur blocks rather
-  than dense per-mode 3-D inverses.
+- whole-matrix Jacobi,
+- whole-matrix Chebyshev built on Jacobi.
 
-That is the main unifying idea across all four degrees.
+Those are still useful for comparison, but they are not the preferred
+production routes.
 
-## 5. Practical Summary
+The current benchmark picture on the rotating-ellipse family is:
 
-- `k = 0`: scalar Schur plus tensor bulk inverse.
-- `k = 1`: outer surgery Schur plus inner coupled Schur plus tensor bulk
-  inverses.
-- `k = 2`: simpler outer Schur plus tensor bulk inverses.
-- `k = 3`: direct scalar tensor inverse.
+- `k = 0` mass: scalar Schur plus tensor bulk is decisively better than whole
+  Jacobi and Jacobi-Chebyshev,
+- `k = 3` mass: direct scalar tensor inversion is decisively better than whole
+  Jacobi and Jacobi-Chebyshev,
+- `k = 1` and `k = 2` mass: the outer surgery Schur plus diagonal tensor bulk
+  blocks already delivers most of the gain,
+- the optional inner bulk Schur for `k = 1` and `k = 2` reduces iteration
+  counts only slightly on the tested family, but increases runtime
+  substantially,
+- wrapping Chebyshev around an already strong tensor route often lowers
+  iteration counts but usually does not improve wall-clock time.
 
-So the common theme is not a single matrix pattern. The common theme is a
-coefficient-first tensor compression wrapped around the correct block structure
-for each degree.
+So the current practical recommendation is:
 
-## 6. Polynomial Tuning Policy
+- `k = 0`: use the scalar Schur-plus-tensor route,
+- `k = 1`: prefer `k1_inner_schur = False` unless a harder case shows a clear
+  robustness benefit from the coupled bulk model,
+- `k = 2`: prefer `k2_inner_schur = False` unless a harder case shows a clear
+  robustness benefit from the coupled bulk model,
+- `k = 3`: use the direct scalar tensor route.
 
-The polynomial mass preconditioners now store their parameter-generation
-hyperparameters directly on `MassPreconditionerSpec`.
+## 4. Final Summary
 
-For Richardson, the active tuning fields are:
+The final mass-preconditioner picture is simple.
 
-- `steps`,
-- `power_iterations`,
-- `damping_safety`.
-
-The implementation still uses the existing power-iteration estimate for the
-largest relevant eigenvalue and then sets
-
-$$
-\omega \approx \frac{\text{damping\_safety}}{\lambda_{\max}}.
-$$
-
-So Richardson remains the cheap setup path and is also the path used inside
-nullspace inverse iteration.
-
-For Chebyshev, the active tuning fields are:
-
-- `steps`,
-- `lanczos_iterations`,
-- `lanczos_max_eig_inflation`,
-- `lanczos_min_eig_deflation`,
-- `lanczos_min_eig_floor_fraction`.
-
-The current production policy is:
-
-- estimate the upper and lower bounds from a short Lanczos run on the active
-  preconditioned operator,
-- inflate the upper Ritz value by `lanczos_max_eig_inflation`,
-- deflate the smallest positive Ritz value by
-  `lanczos_min_eig_deflation`,
-- and keep the lower guard above
-  `lanczos_min_eig_floor_fraction * lambda_max_used`.
-
-So `min_eig_fraction` remains the legacy heuristic field, but the active
-Chebyshev setup path now prefers the stored guarded-Lanczos policy instead.
-
-## 7. Current Production Guidance
-
-- Use `jacobi` as the minimal fallback.
-- Use the tensor path as the preferred production mass preconditioner.
-- Keep the degree-specific debug scripts as regression harnesses:
-  - [scripts/debug_k0_mass_surgery.py](/scratch/tblickhan/mrx/scripts/debug_k0_mass_surgery.py)
-  - [scripts/debug_k1_mass_surgery.py](/scratch/tblickhan/mrx/scripts/debug_k1_mass_surgery.py)
-  - [scripts/debug_k2_mass_surgery.py](/scratch/tblickhan/mrx/scripts/debug_k2_mass_surgery.py)
-  - [scripts/debug_k3_mass_surgery.py](/scratch/tblickhan/mrx/scripts/debug_k3_mass_surgery.py)
-- Treat rank `3` as the practical reference point in benchmarks, since it has
-  typically captured most of the gain while keeping setup moderate.
-
-## 8. Status
-
-The mass-preconditioner program is structurally finished:
-
-- `k = 0`: scalar core-plus-bulk Schur,
-- `k = 1`: outer surgery Schur plus inner coupled Schur,
-- `k = 2`: outer surgery Schur with three tensor bulk blocks,
-- `k = 3`: direct scalar tensor inverse.
-
-So the remaining questions are no longer about missing algebraic cases. They
-are tuning and robustness questions:
-
-- how robust the current CP-ALS/shared-modal route is on geometry families far
-  from the present benchmark set,
-- whether rank selection should remain fixed by the caller or become more
-  automatic again,
-- whether future geometry pipelines should expose tensor-structured metric
-  fields upstream instead of recovering them from quadrature samples,
-- and how much the guarded-Lanczos Chebyshev tuning should eventually be made
-  user-facing versus remaining an internal default policy.
-
-Those are optimization questions. The main structural choice is already made,
-and the production tensor path should now be treated as available across all
-form degrees.
-
-## 9. Follow-Up TODOs
-
-Two concrete follow-up items came out of the high-resolution benchmark work.
-
-- Revisit the `k = 1` surgery split so that it more closely mimics the clean
-  `k = 2` pattern: the goal is to isolate the full special near-axis subspace
-  in the Schur block, so the current internal `r/theta` bulk coupling can
-  disappear rather than being carried inside the bulk solve.
-- Once that revised `k = 1` split is in place, revisit precomputation of the
-  coupling operators/blocks that then become affordable. The current `k = 1`
-  internal `rt` coupling makes naive full-block prebuilds look like an
-  `n^6`-style idea, but the whole point of the revised split is to remove that
-  obstruction and reopen selective precomputation.
+- keep the extracted-space special rows exact through a small Schur solve,
+- compress the diagonal mapped coefficient fields rather than the inverse,
+- use tensor block inverses only on the regular bulk blocks,
+- and keep the optional inner coupled bulk Schur for `k = 1` and `k = 2` as a
+  benchmarked option rather than as the default practical choice.
