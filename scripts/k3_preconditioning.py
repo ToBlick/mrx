@@ -46,6 +46,7 @@ from mrx.preconditioners import (
     _zeta_shape_k2,
 )
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
+from mrx.utils import build_random_besov_rhs_batch
 
 jax.config.update("jax_enable_x64", True)
 
@@ -55,6 +56,14 @@ SEQ = None
 OPERATORS = None
 BUILT_CONFIG = None
 TENSOR_CP_KWARGS = {"tol": 1e-8, "maxiter": 500}
+BESOV_RHS_KWARGS = {
+    "s": 1.0,
+    "upper_limit": 24,
+    "num_modes": 64,
+    "scale": 1.0,
+    "smoothness_margin": 0.25,
+    "normalization_samples": 256,
+}
 
 # %% Configuration
 @dataclass(frozen=True)
@@ -467,10 +476,13 @@ def benchmark_k3_preconditioners(
     tensor_operator_cache: dict[int, object] | None = None,
 ) -> list[K3BenchmarkReport]:
     rhs_size = seq.n3_dbc if dirichlet else seq.n3
-    rhs_batch = jax.random.normal(
-        jax.random.PRNGKey(seed + 100 * int(dirichlet)),
-        (n_rhs, rhs_size),
-        dtype=jnp.float64,
+    rhs_batch = build_random_besov_rhs_batch(
+        seq,
+        3,
+        dirichlet=dirichlet,
+        n_rhs=n_rhs,
+        seed=seed + 100 * int(dirichlet),
+        **BESOV_RHS_KWARGS,
     )
 
     def mass_apply(x: jnp.ndarray) -> jnp.ndarray:

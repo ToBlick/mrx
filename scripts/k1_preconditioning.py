@@ -32,6 +32,7 @@ from mrx.operators import (
     dense_mass_matrix,
 )
 from mrx.solvers import solve_singular_cg
+from mrx.utils import build_random_besov_rhs_batch
 
 jax.config.update("jax_enable_x64", True)
 
@@ -84,6 +85,14 @@ SEQ = None
 OPERATORS = None
 BUILT_CONFIG = None
 TENSOR_CP_KWARGS = {"tol": 1e-9, "maxiter": 100}
+BESOV_RHS_KWARGS = {
+    "s": 1.0,
+    "upper_limit": 24,
+    "num_modes": 64,
+    "scale": 1.0,
+    "smoothness_margin": 0.25,
+    "normalization_samples": 256,
+}
 
 
 # %% Helpers
@@ -433,11 +442,13 @@ def benchmark_k1_preconditioners(
     tensor_ranks: tuple[int, ...] = (1, 3, 5),
     tensor_operator_cache: dict[int, object] | None = None,
 ) -> list[K1BenchmarkReport]:
-    rhs_size = seq.n1_dbc if dirichlet else seq.n1
-    rhs_batch = jax.random.normal(
-        jax.random.PRNGKey(seed + 100 * int(dirichlet)),
-        (n_rhs, rhs_size),
-        dtype=jnp.float64,
+    rhs_batch = build_random_besov_rhs_batch(
+        seq,
+        1,
+        dirichlet=dirichlet,
+        n_rhs=n_rhs,
+        seed=seed + 100 * int(dirichlet),
+        **BESOV_RHS_KWARGS,
     )
 
     labels = {

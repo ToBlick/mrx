@@ -18,6 +18,7 @@ from mrx.mappings import rotating_ellipse_map
 from mrx.operators import (
     _build_mass_preconditioner_apply,
     apply_mass_matrix,
+    apply_mass_tensor_preconditioner_ops,
     apply_inverse_mass_matrix,
     assemble_mass_operators,
     assemble_tensor_mass_preconditioner,
@@ -311,6 +312,60 @@ def test_mass_preconditioner_is_spd(rotating_mass_case, label, k, dirichlet):
     assert eigvals.min() > 1e-12, (
         f"mass preconditioner {label} is not SPD for k={k} dirichlet={dirichlet}: "
         f"lambda_min={eigvals.min()}"
+    )
+
+
+@pytest.mark.parametrize("dirichlet", ALL_DBC)
+def test_direct_k0_tensor_apply_matches_routed_tensor_preconditioner(rotating_mass_case, dirichlet):
+    seq = rotating_mass_case["seq"]
+    operators = rotating_mass_case["operators"]
+    dense_mass = rotating_mass_case["dense_mass"](0, dirichlet)
+    direct_tensor = np.asarray(
+        build_dense(
+            lambda x: apply_mass_tensor_preconditioner_ops(
+                seq,
+                operators,
+                x,
+                0,
+                dirichlet=dirichlet,
+            ),
+            dense_mass.shape[0],
+        )
+    )
+    routed_tensor = rotating_mass_case["dense_preconditioner"](0, dirichlet, "tensor")
+    npt.assert_allclose(
+        direct_tensor,
+        routed_tensor,
+        atol=1e-10,
+        rtol=1e-10,
+        err_msg=f"direct k=0 tensor apply does not match routed tensor preconditioner for dirichlet={dirichlet}",
+    )
+
+
+@pytest.mark.parametrize("dirichlet", ALL_DBC)
+def test_direct_k1_tensor_apply_matches_routed_tensor_preconditioner(rotating_mass_case, dirichlet):
+    seq = rotating_mass_case["seq"]
+    operators = rotating_mass_case["operators"]
+    dense_mass = rotating_mass_case["dense_mass"](1, dirichlet)
+    direct_tensor = np.asarray(
+        build_dense(
+            lambda x: apply_mass_tensor_preconditioner_ops(
+                seq,
+                operators,
+                x,
+                1,
+                dirichlet=dirichlet,
+            ),
+            dense_mass.shape[0],
+        )
+    )
+    routed_tensor = rotating_mass_case["dense_preconditioner"](1, dirichlet, "tensor")
+    npt.assert_allclose(
+        direct_tensor,
+        routed_tensor,
+        atol=1e-10,
+        rtol=1e-10,
+        err_msg=f"direct k=1 tensor apply does not match routed tensor preconditioner for dirichlet={dirichlet}",
     )
 
 

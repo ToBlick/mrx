@@ -400,6 +400,32 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
         seq, operators, betti_numbers=betti_numbers))
     info = {}
 
+    for k in range(4):
+        for dirichlet in (False, True):
+            n_vectors = _n_vectors(betti_numbers, k, dirichlet)
+            guesses = _initial_guesses(seq, operators, k, dirichlet, n_vectors)
+            operators = _bootstrap_nullspace_guesses(
+                seq,
+                operators,
+                k,
+                dirichlet,
+                guesses,
+            )
+            vectors, iters = find_nullspace_vectors(
+                seq,
+                operators,
+                k,
+                n_vectors,
+                eps,
+                dirichlet=dirichlet,
+                x0s=guesses,
+                abs_tol=abs_tol,
+            )
+            operators = _commit(seq, _set_null(operators, k, dirichlet, vectors))
+            info[(k, dirichlet)] = iters
+
+    return operators, info
+
 
 def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
                            x0s=None, abs_tol=None):

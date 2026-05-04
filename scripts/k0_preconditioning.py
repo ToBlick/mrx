@@ -44,6 +44,7 @@ from mrx.operators import (
     dense_projection_matrix,
 )
 from mrx.solvers import solve_singular_cg
+from mrx.utils import build_random_besov_rhs_batch
 
 jax.config.update("jax_enable_x64", True)
 
@@ -128,6 +129,14 @@ SEQ = None
 OPERATORS = None
 BUILT_CONFIG = None
 TENSOR_CP_KWARGS = {"tol": 1e-9, "maxiter": 100}
+BESOV_RHS_KWARGS = {
+    "s": 1.0,
+    "upper_limit": 24,
+    "num_modes": 64,
+    "scale": 1.0,
+    "smoothness_margin": 0.25,
+    "normalization_samples": 256,
+}
 
 
 # %% Helpers
@@ -1146,11 +1155,13 @@ def benchmark_k0_preconditioners(
     richardson_damping_safety: float = 0.8,
     tensor_operator_cache: dict[int, object] | None = None,
 ) -> list[K0BenchmarkReport]:
-    rhs_size = seq.n0_dbc if dirichlet else seq.n0
-    rhs_batch = jax.random.normal(
-        jax.random.PRNGKey(seed + 100 * int(dirichlet)),
-        (n_rhs, rhs_size),
-        dtype=jnp.float64,
+    rhs_batch = build_random_besov_rhs_batch(
+        seq,
+        0,
+        dirichlet=dirichlet,
+        n_rhs=n_rhs,
+        seed=seed + 100 * int(dirichlet),
+        **BESOV_RHS_KWARGS,
     )
 
     def mass_apply(x: jnp.ndarray) -> jnp.ndarray:

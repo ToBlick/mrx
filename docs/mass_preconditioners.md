@@ -225,3 +225,17 @@ are tuning and robustness questions:
 Those are optimization questions. The main structural choice is already made,
 and the production tensor path should now be treated as available across all
 form degrees.
+
+## 9. Follow-Up TODOs
+
+Two concrete follow-up items came out of the high-resolution benchmark work.
+
+- Revisit the `k = 1` surgery split so that it more closely mimics the clean
+  `k = 2` pattern: the goal is to isolate the full special near-axis subspace
+  in the Schur block, so the current internal `r/theta` bulk coupling can
+  disappear rather than being carried inside the bulk solve.
+- Once that revised `k = 1` split is in place, revisit precomputation of the
+  coupling operators/blocks that then become affordable. The current `k = 1`
+  internal `rt` coupling makes naive full-block prebuilds look like an
+  `n^6`-style idea, but the whole point of the revised split is to remove that
+  obstruction and reopen selective precomputation.

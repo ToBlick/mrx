@@ -16,6 +16,15 @@ from mrx.preconditioners import (
     MassPreconditionerSpec,
     SchurPreconditionerSpec,
     SaddlePointPreconditionerSpec,
+    _apply_k0_bulk_to_surgery_coupling,
+    _apply_k0_surgery_to_bulk_coupling,
+    _apply_k1_bulk_to_surgery_coupling,
+    _apply_k1_rt_art_coupling,
+    _apply_k1_rt_atr_coupling,
+    _apply_k1_surgery_to_bulk_coupling,
+    _apply_k2_bulk_to_surgery_coupling,
+    _apply_k2_surgery_to_bulk_coupling,
+    _assemble_schur_inverse_from_applies,
     _bulk_tensor_shape,
     _core_size,
     _cp_als_3tensor,
@@ -25,22 +34,18 @@ from mrx.preconditioners import (
     _select_mass_tensor_factors,
     _symmetrize,
     apply_mass_tensor_preconditioner,
-    apply_mass_kronecker_preconditioner,
     build_mass_surgery_preconditioner,
     build_mass_jacobi_pair,
     build_mass_tensor_preconditioner,
-    build_mass_kronecker_preconditioner,
     default_mass_preconditioner,
     default_saddle_preconditioner,
     get_mass_jacobi_diaginv,
     mass_surgery_available,
     mass_tensor_available,
-    mass_kronecker_available,
     select_boundary_data,
     set_mass_jacobi_pair,
     set_mass_surgery,
     set_mass_tensor,
-    set_mass_kronecker,
 )
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
 from mrx.utils import diag_EAET, diag_EAET_matvec, diag_schur_complement
@@ -208,36 +213,23 @@ class SequenceOperators(eqx.Module):
     mass_preconds: Optional[MassPreconditioners] = None
     runtime_tuning: SequenceRuntimeTuning = eqx.field(default_factory=SequenceRuntimeTuning)
     # Reference-domain 1-D fast-diagonalisation eigendecompositions of the
-    # generalised eigenproblem ``K_a v = λ M_a v`` for the regular ('p')
-    # and derivative ('d') spline spaces along each axis.  ``fd_V_*_a``
-    # columns are the ``M_a``-orthonormal eigenvectors and ``fd_lam_*_a``
-    # the corresponding eigenvalues.  The apply step uses ``V`` directly:
-    # ``K_a^{-1} = V_a Λ^{-1} V_a^T`` (since ``V_a^T M_a V_a = I`` implies
-    # ``V_a^{-1} = V_a^T M_a`` and the ``M_a^{-1}`` factor in ``K_a^{-1}``
-    # cancels).  The ``'p'`` variants drive the ``k = 0`` Hodge
-    # preconditioner; the ``'d'`` variants drive ``k = 3`` via the Hodge
-    # duality ``L_3 ≅ L_0`` on the derivative spline space.  Geometry-
-    # independent, populated by :func:`assemble_fd_hodge_preconditioner`.
+    # generalised eigenproblem ``K_a v = λ M_a v`` for the regular spline
+    # space along each axis. ``fd_V_p_*`` columns are the ``M_a``-orthonormal
+    # eigenvectors and ``fd_lam_p_*`` the corresponding eigenvalues.
+    # Geometry-independent, populated by
+    # :func:`assemble_tensor_hodge_preconditioner`.
     fd_V_p_r: Optional[jnp.ndarray] = None
     fd_V_p_t: Optional[jnp.ndarray] = None
     fd_V_p_z: Optional[jnp.ndarray] = None
     fd_lam_p_r: Optional[jnp.ndarray] = None
     fd_lam_p_t: Optional[jnp.ndarray] = None
     fd_lam_p_z: Optional[jnp.ndarray] = None
-    fd_V_d_r: Optional[jnp.ndarray] = None
-    fd_V_d_t: Optional[jnp.ndarray] = None
-    fd_V_d_z: Optional[jnp.ndarray] = None
-    fd_lam_d_r: Optional[jnp.ndarray] = None
-    fd_lam_d_t: Optional[jnp.ndarray] = None
-    fd_lam_d_z: Optional[jnp.ndarray] = None
     # Per-direction scaling for the FD Hodge preconditioner. The entry along
     # axis ``i`` is the quadrature-average of ``J·g^{ii}``, which is the
     # diagonal of the stiffness integrand on the mapped domain and captures
-    # the leading anisotropy for both ``L_0`` (regular splines) and ``L_3``
-    # (derivative splines, by Hodge duality).  Geometry-dependent;
+    # the leading anisotropy for ``L_0``. Geometry-dependent;
     # reassembled with :func:`update_hodge_operator`.
     dd0_fd_scale_K: Optional[jnp.ndarray] = None
-    dd3_fd_scale_K: Optional[jnp.ndarray] = None
     d0: Optional[jsparse.BCSR] = None
     d0_T: Optional[jsparse.BCSR] = None
     d1: Optional[jsparse.BCSR] = None
@@ -434,11 +426,19 @@ def _set_diffusion_runtime_tuning(
 
 
 class K0TensorHodgePreconditionerFactors(eqx.Module):
-    acb: jnp.ndarray
-    abc: jnp.ndarray
-    bulk_inv: jnp.ndarray
+    core_size: int = eqx.field(static=True)
+    bulk_shape: tuple[int, int, int] = eqx.field(static=True)
     schur_inv: jnp.ndarray
     schur_projector: Optional[jnp.ndarray] = None
+    bulk_alpha: Optional[jnp.ndarray] = None
+    bulk_V_r: Optional[jnp.ndarray] = None
+    bulk_V_t: Optional[jnp.ndarray] = None
+    bulk_V_z: Optional[jnp.ndarray] = None
+    bulk_lam_r: Optional[jnp.ndarray] = None
+    bulk_lam_t: Optional[jnp.ndarray] = None
+    bulk_lam_z: Optional[jnp.ndarray] = None
+    cp_relative_error: Optional[float] = None
+    cp_final_delta: Optional[float] = None
 
 
 _EXTRACTION_OPERATOR_NAMES = (
@@ -507,6 +507,11 @@ def _restrict_radial_window(raw_matrix: jnp.ndarray, radial_start: int,
     return raw_matrix[radial_start:radial_stop, radial_start:radial_stop]
 
 
+def _assemble_dense_from_apply(apply, size: int) -> jnp.ndarray:
+    basis = jnp.eye(size, dtype=jnp.float64)
+    return jax.vmap(apply, in_axes=1, out_axes=1)(basis)
+
+
 def _k0_stiffness_diagonal_metric_tensors(seq) -> dict[str, jnp.ndarray]:
     jacobian = _reshape_quadrature_scalar_field(seq, seq.geometry.jacobian_j)
     metric_inv = _reshape_quadrature_matrix_field(seq, seq.geometry.metric_inv_jkl)
@@ -517,89 +522,191 @@ def _k0_stiffness_diagonal_metric_tensors(seq) -> dict[str, jnp.ndarray]:
     }
 
 
-def _k0_tensor_hodge_config(operators: SequenceOperators):
+def _k0_tensor_hodge_config(
+        operators: SequenceOperators,
+        *,
+        rank: Optional[int] = None,
+        cp_maxiter: Optional[int] = None,
+        cp_tol: Optional[float] = None,
+        cp_ridge: Optional[float] = None):
+    if None not in (rank, cp_maxiter, cp_tol, cp_ridge):
+        return int(rank), int(cp_maxiter), float(cp_tol), float(cp_ridge)
     tensor = None if operators.mass_preconds is None else operators.mass_preconds.tensor
     if tensor is None:
         return 3, 100, 1e-9, 1e-12
     return tensor.rank, tensor.cp_maxiter, tensor.cp_tol, tensor.cp_ridge
 
 
-def _build_k0_tensor_hodge_bulk_model(
-        seq, *, dirichlet: bool, rank: int,
-        cp_maxiter: int, cp_tol: float, cp_ridge: float) -> jnp.ndarray:
+def _k0_tensor_hodge_shared_rank1_metric(
+        seq, *, cp_maxiter: int, cp_tol: float, cp_ridge: float):
+    metric_tensors = _k0_stiffness_diagonal_metric_tensors(seq)
+    direction_scales = _fd_hodge_scales_K(seq, seq.geometry, 0)
+    safe_scales = jnp.where(jnp.abs(direction_scales) > 0, direction_scales, 1.0)
+    normalized_rr = metric_tensors['alpha_rr'] / safe_scales[0]
+    normalized_tt = metric_tensors['alpha_thetatheta'] / safe_scales[1]
+    normalized_zz = metric_tensors['alpha_zetazeta'] / safe_scales[2]
+    shared_target = jnp.cbrt(normalized_rr * normalized_tt * normalized_zz)
+
+    weights, factors, cp_relative_error, cp_final_delta, _ = _cp_als_3tensor(
+        shared_target,
+        1,
+        maxiter=cp_maxiter,
+        tol=cp_tol,
+        ridge=cp_ridge,
+    )
+    factor_theta = jnp.ravel(factors[0][:, 0])
+    factor_r = jnp.ravel(factors[1][:, 0])
+    factor_z = jnp.ravel(factors[2][:, 0])
+    scale = weights[0]
+
+    if jnp.mean(factor_theta) < 0:
+        factor_theta = -factor_theta
+        scale = -scale
+    if jnp.mean(factor_r) < 0:
+        factor_r = -factor_r
+        scale = -scale
+    if jnp.mean(factor_z) < 0:
+        factor_z = -factor_z
+        scale = -scale
+    if scale < 0:
+        factor_r = -factor_r
+        scale = -scale
+
+    shared_field = scale * factor_theta[:, None, None] * factor_r[None, :, None] * factor_z[None, None, :]
+    shared_norm_sq = jnp.maximum(jnp.sum(shared_field * shared_field), 1e-30)
+    bulk_alpha = jnp.asarray([
+        jnp.sum(metric_tensors['alpha_rr'] * shared_field) / shared_norm_sq,
+        jnp.sum(metric_tensors['alpha_thetatheta'] * shared_field) / shared_norm_sq,
+        jnp.sum(metric_tensors['alpha_zetazeta'] * shared_field) / shared_norm_sq,
+    ], dtype=jnp.float64)
+    return {
+        'radial_factor': scale * factor_r,
+        'theta_factor': factor_theta,
+        'zeta_factor': factor_z,
+        'bulk_alpha': bulk_alpha,
+        'cp_relative_error': cp_relative_error,
+        'cp_final_delta': cp_final_delta,
+    }
+
+
+def _assemble_k0_tensor_hodge_rank1_bulk_factors(
+        seq, *, dirichlet: bool, cp_maxiter: int, cp_tol: float, cp_ridge: float):
     bulk_shape = _bulk_tensor_shape(seq, dirichlet)
     nr_bulk, _, _ = bulk_shape
-    metric_tensors = _k0_stiffness_diagonal_metric_tensors(seq)
-    model_size = int(jnp.prod(jnp.asarray(bulk_shape)))
-    model = jnp.zeros((model_size, model_size), dtype=jnp.float64)
     types = seq.basis_0.types
     g_r = _dense_incidence_1d(seq.basis_0.nr, types[0])
     g_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
     g_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
-
-    field_specs = (
-        (
-            'alpha_rr',
-            lambda scaled_weights: _restrict_radial_window(
-                _assemble_weighted_1d_stiffness(
-                    seq.basis_r_jk,
-                    seq.d_basis_r_jk,
-                    scaled_weights,
-                    g_r,
-                ),
-                radial_start=2,
-                nr=nr_bulk,
-            ),
-            lambda scaled_weights: _assemble_weighted_1d_mass(seq.basis_t_jk, scaled_weights),
-            lambda scaled_weights: _assemble_weighted_1d_mass(seq.basis_z_jk, scaled_weights),
-        ),
-        (
-            'alpha_thetatheta',
-            lambda scaled_weights: _restrict_radial_window(
-                _assemble_weighted_1d_mass(seq.basis_r_jk, scaled_weights),
-                radial_start=2,
-                nr=nr_bulk,
-            ),
-            lambda scaled_weights: _assemble_weighted_1d_stiffness(
-                seq.basis_t_jk,
-                seq.d_basis_t_jk,
-                scaled_weights,
-                g_t,
-            ),
-            lambda scaled_weights: _assemble_weighted_1d_mass(seq.basis_z_jk, scaled_weights),
-        ),
-        (
-            'alpha_zetazeta',
-            lambda scaled_weights: _restrict_radial_window(
-                _assemble_weighted_1d_mass(seq.basis_r_jk, scaled_weights),
-                radial_start=2,
-                nr=nr_bulk,
-            ),
-            lambda scaled_weights: _assemble_weighted_1d_mass(seq.basis_t_jk, scaled_weights),
-            lambda scaled_weights: _assemble_weighted_1d_stiffness(
-                seq.basis_z_jk,
-                seq.d_basis_z_jk,
-                scaled_weights,
-                g_z,
-            ),
-        ),
+    shared = _k0_tensor_hodge_shared_rank1_metric(
+        seq,
+        cp_maxiter=cp_maxiter,
+        cp_tol=cp_tol,
+        cp_ridge=cp_ridge,
     )
 
-    for label, radial_builder, theta_builder, zeta_builder in field_specs:
-        weights, factors, _, _, _ = _cp_als_3tensor(
-            metric_tensors[label],
-            rank,
-            maxiter=cp_maxiter,
-            tol=cp_tol,
-            ridge=cp_ridge,
-        )
-        factor_theta, factor_r, factor_z = factors
-        for idx in range(rank):
-            term_r = radial_builder(seq.quad.w_x * (weights[idx] * factor_r[:, idx]))
-            term_t = theta_builder(seq.quad.w_y * factor_theta[:, idx])
-            term_z = zeta_builder(seq.quad.w_z * factor_z[:, idx])
-            model = model + jnp.kron(jnp.kron(term_r, term_t), term_z)
-    return _symmetrize(model)
+    mass_r = _restrict_radial_window(
+        _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * shared['radial_factor']),
+        radial_start=2,
+        nr=nr_bulk,
+    )
+    mass_t = _assemble_weighted_1d_mass(seq.basis_t_jk, seq.quad.w_y * shared['theta_factor'])
+    mass_z = _assemble_weighted_1d_mass(seq.basis_z_jk, seq.quad.w_z * shared['zeta_factor'])
+
+    stiff_r = _restrict_radial_window(
+        _assemble_weighted_1d_stiffness(
+            seq.basis_r_jk,
+            seq.d_basis_r_jk,
+            seq.quad.w_x * shared['radial_factor'],
+            g_r,
+        ),
+        radial_start=2,
+        nr=nr_bulk,
+    )
+    stiff_t = _assemble_weighted_1d_stiffness(
+        seq.basis_t_jk,
+        seq.d_basis_t_jk,
+        seq.quad.w_y * shared['theta_factor'],
+        g_t,
+    )
+    stiff_z = _assemble_weighted_1d_stiffness(
+        seq.basis_z_jk,
+        seq.d_basis_z_jk,
+        seq.quad.w_z * shared['zeta_factor'],
+        g_z,
+    )
+
+    V_r, lam_r = _assemble_1d_fd_eigendecomp(mass_r, stiff_r)
+    V_t, lam_t = _assemble_1d_fd_eigendecomp(mass_t, stiff_t)
+    V_z, lam_z = _assemble_1d_fd_eigendecomp(mass_z, stiff_z)
+    return {
+        'bulk_shape': bulk_shape,
+        'bulk_alpha': shared['bulk_alpha'],
+        'bulk_V_r': V_r,
+        'bulk_V_t': V_t,
+        'bulk_V_z': V_z,
+        'bulk_lam_r': lam_r,
+        'bulk_lam_t': lam_t,
+        'bulk_lam_z': lam_z,
+        'cp_relative_error': shared['cp_relative_error'],
+        'cp_final_delta': shared['cp_final_delta'],
+    }
+
+
+def _apply_k0_tensor_hodge_bulk_inverse(
+        factors: K0TensorHodgePreconditionerFactors,
+        rhs_b: jnp.ndarray) -> jnp.ndarray:
+    tensor = rhs_b.reshape(factors.bulk_shape)
+    out = _fd_apply_3d(
+        factors.bulk_V_r,
+        factors.bulk_V_t,
+        factors.bulk_V_z,
+        factors.bulk_lam_r,
+        factors.bulk_lam_t,
+        factors.bulk_lam_z,
+        factors.bulk_alpha,
+        tensor,
+        eps=0.0,
+    )
+    return out.reshape(-1)
+
+
+def _apply_k0_tensor_hodge_core_block(
+        seq,
+        operators: SequenceOperators,
+        core_size: int,
+        rhs_c: jnp.ndarray,
+        *,
+        dirichlet: bool) -> jnp.ndarray:
+    size = seq.n0_dbc if dirichlet else seq.n0
+    full = jnp.zeros((size,), dtype=rhs_c.dtype)
+    full = full.at[:core_size].set(rhs_c)
+    return apply_stiffness(seq, operators, full, 0, dirichlet=dirichlet)[:core_size]
+
+
+def _apply_k0_tensor_hodge_surgery_to_bulk_coupling(
+        seq,
+        operators: SequenceOperators,
+        core_size: int,
+        rhs_c: jnp.ndarray,
+        *,
+        dirichlet: bool) -> jnp.ndarray:
+    size = seq.n0_dbc if dirichlet else seq.n0
+    full = jnp.zeros((size,), dtype=rhs_c.dtype)
+    full = full.at[:core_size].set(rhs_c)
+    return apply_stiffness(seq, operators, full, 0, dirichlet=dirichlet)[core_size:]
+
+
+def _apply_k0_tensor_hodge_bulk_to_surgery_coupling(
+        seq,
+        operators: SequenceOperators,
+        core_size: int,
+        rhs_b: jnp.ndarray,
+        *,
+        dirichlet: bool) -> jnp.ndarray:
+    size = seq.n0_dbc if dirichlet else seq.n0
+    full = jnp.zeros((size,), dtype=rhs_b.dtype)
+    full = full.at[core_size:].set(rhs_b)
+    return apply_stiffness(seq, operators, full, 0, dirichlet=dirichlet)[:core_size]
 
 
 def _assemble_k0_tensor_hodge_preconditioner(
@@ -609,29 +716,50 @@ def _assemble_k0_tensor_hodge_preconditioner(
     pair = BoundaryConditionPair()
     core_size = _core_size(seq)
 
+    if rank != 1:
+        raise NotImplementedError(
+            f"Tensor Hodge preconditioner is only implemented for rank=1 (got rank={rank})"
+        )
+
     for dirichlet in dirichlet_flags:
-        matrix = jnp.asarray(dense_hodge_laplacian(seq, operators, 0, dirichlet=dirichlet))
-        acc, acb, abc, _ = _split_blocks(matrix, core_size)
-        bulk_model = _build_k0_tensor_hodge_bulk_model(
+        bulk_data = _assemble_k0_tensor_hodge_rank1_bulk_factors(
             seq,
             dirichlet=dirichlet,
-            rank=rank,
             cp_maxiter=cp_maxiter,
             cp_tol=cp_tol,
             cp_ridge=cp_ridge,
         )
-        bulk_inv = _symmetrize(jnp.linalg.inv(bulk_model))
-        schur = _symmetrize(acc - acb @ (bulk_inv @ abc))
+        bulk_factors = K0TensorHodgePreconditionerFactors(
+            core_size=core_size,
+            bulk_shape=bulk_data['bulk_shape'],
+            schur_inv=jnp.eye(core_size, dtype=jnp.float64),
+            bulk_alpha=bulk_data['bulk_alpha'],
+            bulk_V_r=bulk_data['bulk_V_r'],
+            bulk_V_t=bulk_data['bulk_V_t'],
+            bulk_V_z=bulk_data['bulk_V_z'],
+            bulk_lam_r=bulk_data['bulk_lam_r'],
+            bulk_lam_t=bulk_data['bulk_lam_t'],
+            bulk_lam_z=bulk_data['bulk_lam_z'],
+        )
+        ass = _symmetrize(_assemble_dense_from_apply(
+            lambda rhs_c, seq=seq, operators=operators, core_size=core_size, dirichlet=dirichlet:
+            _apply_k0_tensor_hodge_core_block(seq, operators, core_size, rhs_c, dirichlet=dirichlet),
+            core_size,
+        ))
+        bulk_apply = lambda rhs_b, bulk_factors=bulk_factors: _apply_k0_tensor_hodge_bulk_inverse(bulk_factors, rhs_b)
+        surgery_to_bulk_apply = lambda rhs_c, seq=seq, operators=operators, core_size=core_size, dirichlet=dirichlet: _apply_k0_tensor_hodge_surgery_to_bulk_coupling(seq, operators, core_size, rhs_c, dirichlet=dirichlet)
+        bulk_to_surgery_apply = lambda rhs_b, seq=seq, operators=operators, core_size=core_size, dirichlet=dirichlet: _apply_k0_tensor_hodge_bulk_to_surgery_coupling(seq, operators, core_size, rhs_b, dirichlet=dirichlet)
+        schur = _symmetrize(_assemble_dense_from_apply(
+            lambda rhs_c, ass=ass, bulk_apply=bulk_apply, surgery_to_bulk_apply=surgery_to_bulk_apply, bulk_to_surgery_apply=bulk_to_surgery_apply:
+            ass @ rhs_c - bulk_to_surgery_apply(bulk_apply(surgery_to_bulk_apply(rhs_c))),
+            core_size,
+        ))
 
         schur_projector = None
         if dirichlet:
             schur_inv = _symmetrize(jnp.linalg.inv(schur))
         else:
-            mass_matrix = jnp.asarray(dense_mass_matrix(seq, operators, 0, dirichlet=False))
-            null_vector = jnp.ones((mass_matrix.shape[0],), dtype=jnp.float64)
-            null_norm = jnp.sqrt(jnp.abs(null_vector @ (mass_matrix @ null_vector)))
-            null_vector = null_vector / jnp.where(null_norm > 0, null_norm, 1.0)
-            schur_null = null_vector[:core_size]
+            schur_null = jnp.ones((core_size,), dtype=jnp.float64)
             schur_null_norm = jnp.linalg.norm(schur_null)
             schur_null = schur_null / jnp.where(schur_null_norm > 0, schur_null_norm, 1.0)
             schur_projector = jnp.eye(core_size, dtype=jnp.float64) - jnp.outer(schur_null, schur_null)
@@ -639,11 +767,19 @@ def _assemble_k0_tensor_hodge_preconditioner(
             schur_inv = _symmetrize(jnp.linalg.inv(schur_reg))
 
         factors = K0TensorHodgePreconditionerFactors(
-            acb=acb,
-            abc=abc,
-            bulk_inv=bulk_inv,
+            core_size=core_size,
+            bulk_shape=bulk_data['bulk_shape'],
             schur_inv=schur_inv,
             schur_projector=schur_projector,
+            bulk_alpha=bulk_data['bulk_alpha'],
+            bulk_V_r=bulk_data['bulk_V_r'],
+            bulk_V_t=bulk_data['bulk_V_t'],
+            bulk_V_z=bulk_data['bulk_V_z'],
+            bulk_lam_r=bulk_data['bulk_lam_r'],
+            bulk_lam_t=bulk_data['bulk_lam_t'],
+            bulk_lam_z=bulk_data['bulk_lam_z'],
+            cp_relative_error=bulk_data['cp_relative_error'],
+            cp_final_delta=bulk_data['cp_final_delta'],
         )
         pair = eqx.tree_at(
             lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
@@ -660,54 +796,38 @@ def _k0_tensor_hodge_available(operators: SequenceOperators) -> bool:
 
 
 def _apply_k0_tensor_hodge_preconditioner(
-        operators: SequenceOperators, rhs: jnp.ndarray, *, dirichlet: bool) -> jnp.ndarray:
+        seq, operators: SequenceOperators, rhs: jnp.ndarray, *, dirichlet: bool) -> jnp.ndarray:
     pair = operators.k0_tensor_hodge_precond
     if pair is None:
         raise ValueError('Tensor Hodge preconditioner k=0 is not assembled')
     factors = select_boundary_data(pair, dirichlet, 'Tensor Hodge k=0')
-    core_size = factors.acb.shape[0]
+    core_size = factors.core_size
     rhs_c = rhs[:core_size]
     rhs_b = rhs[core_size:]
-    y = factors.bulk_inv @ rhs_b
-    schur_rhs = rhs_c - factors.acb @ y
+    y = _apply_k0_tensor_hodge_bulk_inverse(factors, rhs_b)
+    schur_rhs = rhs_c - _apply_k0_tensor_hodge_bulk_to_surgery_coupling(
+        seq,
+        operators,
+        core_size,
+        y,
+        dirichlet=dirichlet,
+    )
     if factors.schur_projector is not None:
         schur_rhs = factors.schur_projector @ schur_rhs
     z = factors.schur_inv @ schur_rhs
     if factors.schur_projector is not None:
         z = factors.schur_projector @ z
-    x_b = y - factors.bulk_inv @ (factors.abc @ z)
+    x_b = y - _apply_k0_tensor_hodge_bulk_inverse(
+        factors,
+        _apply_k0_tensor_hodge_surgery_to_bulk_coupling(
+            seq,
+            operators,
+            core_size,
+            z,
+            dirichlet=dirichlet,
+        ),
+    )
     return jnp.concatenate([z, x_b])
-
-
-def _kron_geometric_scales(seq, geometry, k):
-    """Quadrature-average of the diagonal mass coefficient per component.
-
-    Used by the Kronecker mass preconditioner so that the approximation
-    ``~M_k^{(i)} ≈ α_i · (M_r ⊗ M_θ ⊗ M_ζ)`` captures the leading
-    geometric anisotropy that is invisible to the reference Kronecker
-    factors.
-    """
-    w = seq.quad.w
-    w_sum = jnp.sum(w)
-    J = geometry.jacobian_j
-    match k:
-        case 0:
-            return jnp.array([jnp.sum(J * w) / w_sum])
-        case 1:
-            g_inv = geometry.metric_inv_jkl  # (n_quad, 3, 3)
-            return jnp.array([
-                jnp.sum(J * g_inv[:, i, i] * w) / w_sum for i in range(3)
-            ])
-        case 2:
-            g = geometry.metric_jkl  # (n_quad, 3, 3)
-            return jnp.array([
-                jnp.sum(g[:, i, i] / J * w) / w_sum for i in range(3)
-            ])
-        case 3:
-            return jnp.array([jnp.sum(w / J) / w_sum])
-    raise ValueError("k must be 0, 1, 2 or 3")
-
-
 def _assemble_mass_block(seq, geometry, k):
     quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
 
@@ -771,7 +891,7 @@ def update_mass_operator(seq, geometry, operators: Optional[SequenceOperators], 
             mass_preconds,
             build_mass_surgery_preconditioner(
                 seq,
-                jnp.asarray(sp.todense()),
+                sp,
                 k=k,
                 existing=mass_preconds.surgery,
             ),
@@ -781,15 +901,23 @@ def update_mass_operator(seq, geometry, operators: Optional[SequenceOperators], 
             mass_preconds,
             build_mass_tensor_preconditioner(
                 seq,
-                jnp.asarray(sp.todense()),
+                sp,
                 k=k,
                 rank=mass_preconds.tensor.rank,
                 cp_kwargs={
                     "maxiter": mass_preconds.tensor.cp_maxiter,
                     "tol": mass_preconds.tensor.cp_tol,
                     "ridge": mass_preconds.tensor.cp_ridge,
+                    "block_chebyshev_steps": mass_preconds.tensor.block_chebyshev_steps,
+                    "block_lanczos_iterations": mass_preconds.tensor.block_lanczos_iterations,
+                    "block_lanczos_max_eig_inflation": mass_preconds.tensor.block_lanczos_max_eig_inflation,
+                    "block_lanczos_min_eig_deflation": mass_preconds.tensor.block_lanczos_min_eig_deflation,
+                    "block_lanczos_min_eig_floor_fraction": mass_preconds.tensor.block_lanczos_min_eig_floor_fraction,
+                    "richardson_steps": mass_preconds.tensor.richardson_steps,
+                    "richardson_omega": mass_preconds.tensor.richardson_omega,
                 },
                 existing=mass_preconds.tensor,
+                surgery_precond=mass_preconds.surgery,
             ),
         )
     match k:
@@ -832,31 +960,6 @@ def assemble_mass_operators(seq, geometry, operators: Optional[SequenceOperators
     return operators
 
 
-def assemble_kron_mass_preconditioner(
-        seq, operators: Optional[SequenceOperators] = None):
-    """Assemble the 1-D reference mass-matrix inverses on ``operators``.
-
-    This is now a legacy helper for FD/Hodge paths and debug experiments.
-    Production mass-preconditioner dispatch no longer routes through the
-    Kronecker variant.
-    """
-    operators = _ensure_extraction_operators(seq, operators)
-    mass_preconds = set_mass_kronecker(
-        operators.mass_preconds,
-        build_mass_kronecker_preconditioner(seq),
-    )
-    return eqx.tree_at(
-        lambda ops: ops.mass_preconds,
-        operators,
-        mass_preconds,
-        is_leaf=lambda x: x is None,
-    )
-
-
-def _kron_available(seq, operators: SequenceOperators, k: int) -> bool:
-    return mass_kronecker_available(seq, operators.mass_preconds, k)
-
-
 def assemble_mass_surgery_preconditioner(
         seq, operators: Optional[SequenceOperators] = None,
         *, ks: Sequence[int] = (0, 1, 2)):
@@ -872,10 +975,9 @@ def assemble_mass_surgery_preconditioner(
 
     surgery_precond = operators.mass_preconds.surgery if operators.mass_preconds is not None else None
     for k in ks:
-        full_matrix = jnp.asarray(getattr(operators, f"m{k}").todense())
         surgery_precond = build_mass_surgery_preconditioner(
             seq,
-            full_matrix,
+            getattr(operators, f"m{k}"),
             k=k,
             existing=surgery_precond,
         )
@@ -891,7 +993,7 @@ def assemble_mass_surgery_preconditioner(
 def assemble_tensor_mass_preconditioner(
         seq, operators: Optional[SequenceOperators] = None,
         *, ks: Sequence[int] = (1,),
-        rank: int = 3,
+    rank: int = 1,
         cp_kwargs: Optional[dict] = None):
     """Assemble the k=0/k=1/k=2/k=3 tensor mass preconditioner on ``operators``.
 
@@ -922,14 +1024,14 @@ def assemble_tensor_mass_preconditioner(
 
     tensor_precond = operators.mass_preconds.tensor if operators.mass_preconds is not None else None
     for k in ks:
-        full_matrix = jnp.asarray(getattr(operators, f"m{k}").todense())
         tensor_precond = build_mass_tensor_preconditioner(
             seq,
-            full_matrix,
+            getattr(operators, f"m{k}"),
             k=k,
             rank=rank,
             cp_kwargs=cp_kwargs,
             existing=tensor_precond,
+            surgery_precond=operators.mass_preconds.surgery,
         )
     mass_preconds = set_mass_tensor(operators.mass_preconds, tensor_precond)
     return eqx.tree_at(
@@ -951,20 +1053,6 @@ def _surgery_available(seq, operators: SequenceOperators, k: int) -> bool:
 def apply_mass_tensor_preconditioner_ops(
         seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True):
     return apply_mass_tensor_preconditioner(
-        seq, operators.mass_preconds, v, k, dirichlet=dirichlet)
-
-
-def apply_mass_kron_preconditioner(
-        seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True):
-    """``E (M_r^{-1} ⊗ M_θ^{-1} ⊗ M_ζ^{-1}) E^T v`` (block-diagonal over components).
-
-    SPD by construction; sandwiches the reference Kronecker inverse with the
-    extraction operators so the same code path handles polar fusion and
-    Dirichlet boundary clamping.  If any 1-D inverse is unavailable,
-    :func:`apply_mass_matrix_preconditioner` falls back to Jacobi instead
-    of calling this function.
-    """
-    return apply_mass_kronecker_preconditioner(
         seq, operators.mass_preconds, v, k, dirichlet=dirichlet)
 
 
@@ -1000,26 +1088,6 @@ def _assemble_1d_mass(B: jnp.ndarray, w: jnp.ndarray) -> jnp.ndarray:
     return 0.5 * (M + M.T)
 
 
-def _assemble_1d_stiffness_d(
-        M_d: jnp.ndarray, M_p: jnp.ndarray, G: jnp.ndarray) -> jnp.ndarray:
-    """1-D stiffness on the derivative spline space.
-
-    ``K^{(d)} = M_d · G · M_p^{-1} · G^T · M_d``, the Hodge-dual of the
-    regular-space stiffness ``G^T M_d G`` obtained by exchanging the roles
-    of primal and derivative spaces via the weighted adjoint of ``G``.  The
-    resulting generalised eigenproblem ``K^{(d)} v = λ M_d v`` has the same
-    nonzero spectrum as ``K^{(p)} v = λ M_p v``.
-    """
-    # Solve M_p X = G^T for X, then K = M_d G X M_d, using Cholesky.
-    L = jnp.linalg.cholesky(M_p)
-    GT = G.T
-    Y = jsp.linalg.solve_triangular(L, GT, lower=True)
-    X = jsp.linalg.solve_triangular(L.T, Y, lower=False)
-    # X = M_p^{-1} G^T,  shape (n_p, n_d); G X has shape (n_d, n_d).
-    K = M_d @ (G @ X) @ M_d
-    return 0.5 * (K + K.T)
-
-
 def _assemble_1d_fd_eigendecomp(M: jnp.ndarray, K: jnp.ndarray):
     """Reduce ``K v = λ M v`` to a standard eigenproblem via Cholesky.
 
@@ -1038,14 +1106,17 @@ def _assemble_1d_fd_eigendecomp(M: jnp.ndarray, K: jnp.ndarray):
 
 
 def assemble_tensor_hodge_preconditioner(
-        seq, operators: Optional[SequenceOperators] = None):
-    """Precompute the tensor-Hodge auxiliary data for ``k = 0`` and ``k = 3``.
+    seq, operators: Optional[SequenceOperators] = None, *,
+    rank: Optional[int] = None,
+    cp_maxiter: Optional[int] = None,
+    cp_tol: Optional[float] = None,
+    cp_ridge: Optional[float] = None):
+    """Precompute the tensor-Hodge auxiliary data for ``k = 0``.
 
     This stores the 1-D eigendecompositions used by the tensorized reference
     Hodge inverse. Geometry-independent; call once after ``seq.evaluate_1d()``.
     After this, :func:`apply_hodge_laplacian_preconditioner` with
-    ``kind='tensor'`` becomes available for ``k = 0`` and is also used by the
-    ``k = 3`` tensor auxiliary-space path.
+    ``kind='tensor'`` becomes available for ``k = 0``.
     """
     operators = _ensure_extraction_operators(seq, operators)
     types = seq.basis_0.types
@@ -1068,44 +1139,21 @@ def assemble_tensor_hodge_preconditioner(
     V_p_r, lam_p_r = _assemble_1d_fd_eigendecomp(M_p_r, K_p_r)
     V_p_t, lam_p_t = _assemble_1d_fd_eigendecomp(M_p_t, K_p_t)
     V_p_z, lam_p_z = _assemble_1d_fd_eigendecomp(M_p_z, K_p_z)
-    # Derivative-space stiffness: K^{(d)} = M_d G M_p^{-1} G^T M_d (Hodge
-    # dual of K^{(p)}).
-    K_d_r = _assemble_1d_stiffness_d(M_d_r, M_p_r, G_r)
-    K_d_t = _assemble_1d_stiffness_d(M_d_t, M_p_t, G_t)
-    K_d_z = _assemble_1d_stiffness_d(M_d_z, M_p_z, G_z)
-    V_d_r, lam_d_r = _assemble_1d_fd_eigendecomp(M_d_r, K_d_r)
-    V_d_t, lam_d_t = _assemble_1d_fd_eigendecomp(M_d_t, K_d_t)
-    V_d_z, lam_d_z = _assemble_1d_fd_eigendecomp(M_d_z, K_d_z)
     return eqx.tree_at(
         lambda ops: (
             ops.fd_V_p_r, ops.fd_V_p_t, ops.fd_V_p_z,
             ops.fd_lam_p_r, ops.fd_lam_p_t, ops.fd_lam_p_z,
-            ops.fd_V_d_r, ops.fd_V_d_t, ops.fd_V_d_z,
-            ops.fd_lam_d_r, ops.fd_lam_d_t, ops.fd_lam_d_z,
         ),
         operators,
-        (V_p_r, V_p_t, V_p_z, lam_p_r, lam_p_t, lam_p_z,
-         V_d_r, V_d_t, V_d_z, lam_d_r, lam_d_t, lam_d_z),
+        (V_p_r, V_p_t, V_p_z, lam_p_r, lam_p_t, lam_p_z),
         is_leaf=lambda x: x is None,
     )
 
 
-def assemble_fd_hodge_preconditioner(
-        seq, operators: Optional[SequenceOperators] = None):
-    """Legacy alias for :func:`assemble_tensor_hodge_preconditioner`."""
-    return assemble_tensor_hodge_preconditioner(seq, operators=operators)
-
-
 def _fd_hodge_scales_K(seq, geometry, k: int) -> jnp.ndarray:
-    """Per-direction quadrature-averaged stiffness coefficients for form ``k``.
-
-    The diagonal of the stiffness integrand on the mapped domain is
-    ``J · g^{ii}`` along axis ``i`` for both ``L_0`` (regular splines) and
-    ``L_3`` (derivative splines, by Hodge duality ``L_3 ≅ L_0`` on the
-    physical manifold).  Only ``k ∈ {0, 3}`` are implemented.
-    """
-    if k not in (0, 3):
-        raise ValueError("FD Hodge scale currently implemented for k ∈ {0, 3}")
+    """Per-direction quadrature-averaged stiffness coefficients for ``k = 0``."""
+    if k != 0:
+        raise ValueError("FD Hodge scale currently implemented for k = 0 only")
     w = seq.quad.w
     w_sum = jnp.sum(w)
     J = geometry.jacobian_j
@@ -1117,21 +1165,14 @@ def _fd_hodge_scales_K(seq, geometry, k: int) -> jnp.ndarray:
 
 def _fd_hodge_available(operators: SequenceOperators, k: int) -> bool:
     """True iff the FD Hodge preconditioner can be applied for form ``k``."""
-    if k == 0:
-        needed = (
-            operators.fd_V_p_r, operators.fd_V_p_t, operators.fd_V_p_z,
-            operators.fd_lam_p_r, operators.fd_lam_p_t, operators.fd_lam_p_z,
-            operators.dd0_fd_scale_K,
-        )
-        return all(x is not None for x in needed)
-    if k == 3:
-        needed = (
-            operators.fd_V_d_r, operators.fd_V_d_t, operators.fd_V_d_z,
-            operators.fd_lam_d_r, operators.fd_lam_d_t, operators.fd_lam_d_z,
-            operators.dd3_fd_scale_K,
-        )
-        return all(x is not None for x in needed)
-    return False
+    if k != 0:
+        return False
+    needed = (
+        operators.fd_V_p_r, operators.fd_V_p_t, operators.fd_V_p_z,
+        operators.fd_lam_p_r, operators.fd_lam_p_t, operators.fd_lam_p_z,
+        operators.dd0_fd_scale_K,
+    )
+    return all(x is not None for x in needed)
 
 
 def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0):
@@ -1172,44 +1213,34 @@ def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0)
 
 def _fd_apply_full(seq, operators: SequenceOperators, v_full, k: int,
                    eps: float = 0.0):
-    if k == 0:
-        nr = seq.basis_r_jk.shape[0]
-        nt = seq.basis_t_jk.shape[0]
-        nz = seq.basis_z_jk.shape[0]
-        x = v_full.reshape((nr, nt, nz))
-        y = _fd_apply_3d(
-            operators.fd_V_p_r, operators.fd_V_p_t, operators.fd_V_p_z,
-            operators.fd_lam_p_r, operators.fd_lam_p_t, operators.fd_lam_p_z,
-            operators.dd0_fd_scale_K, x, eps=eps,
-        )
-        return y.reshape(-1)
-    if k == 3:
-        nr = seq.d_basis_r_jk.shape[0]
-        nt = seq.d_basis_t_jk.shape[0]
-        nz = seq.d_basis_z_jk.shape[0]
-        x = v_full.reshape((nr, nt, nz))
-        y = _fd_apply_3d(
-            operators.fd_V_d_r, operators.fd_V_d_t, operators.fd_V_d_z,
-            operators.fd_lam_d_r, operators.fd_lam_d_t, operators.fd_lam_d_z,
-            operators.dd3_fd_scale_K, x, eps=eps,
-        )
-        return y.reshape(-1)
-    raise ValueError("FD Hodge apply implemented for k ∈ {0, 3} only")
+    if k != 0:
+        raise ValueError("FD Hodge apply implemented for k = 0 only")
+    nr = seq.basis_r_jk.shape[0]
+    nt = seq.basis_t_jk.shape[0]
+    nz = seq.basis_z_jk.shape[0]
+    x = v_full.reshape((nr, nt, nz))
+    y = _fd_apply_3d(
+        operators.fd_V_p_r, operators.fd_V_p_t, operators.fd_V_p_z,
+        operators.fd_lam_p_r, operators.fd_lam_p_t, operators.fd_lam_p_z,
+        operators.dd0_fd_scale_K, x, eps=eps,
+    )
+    return y.reshape(-1)
 
 
 def apply_hodge_kron_preconditioner(
         seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True,
         eps: float = 0.0):
-    """``E · (L_ref + eps * M_ref)^{-1} · E^T v`` via fast diagonalisation (k ∈ {0, 3}).
-
-    ``eps = 0`` gives the usual pseudo-inverse Hodge Laplacian preconditioner.
-    ``eps > 0`` gives a linear, SPD preconditioner for the shifted system
-    ``L_k + eps M_k`` with no kernel handling required.
-    """
-    if not _fd_hodge_available(operators, k):
+    """Apply the legacy tensor-Hodge helper for ``k = 0`` only."""
+    if k != 0:
         raise ValueError(
-            "Tensor Hodge preconditioner not available for k="
-            f"{k}; assemble it via assemble_tensor_hodge_preconditioner")
+            f"Tensor Hodge preconditioner not available for k={k}; use 'jacobi' instead")
+    if eps != 0.0:
+        raise ValueError("Shifted legacy hodge-kron apply is not implemented for k=0")
+    if not _k0_tensor_hodge_available(operators):
+        raise ValueError(
+            "Tensor Hodge preconditioner not available for k=0; "
+            "assemble it via assemble_tensor_hodge_preconditioner"
+        )
     if dirichlet:
         e = getattr(seq, f'e{k}_dbc')
         e_T = getattr(seq, f'e{k}_dbc_T')
@@ -1890,7 +1921,9 @@ def update_hodge_operator(seq, geometry, operators: Optional[SequenceOperators],
     match k:
         case 0:
             fd_scale_K = _fd_hodge_scales_K(seq, geometry, 0)
-            rank, cp_maxiter, cp_tol, cp_ridge = _k0_tensor_hodge_config(operators)
+            rank, cp_maxiter, cp_tol, cp_ridge = _k0_tensor_hodge_config(
+                operators,
+            )
             tensor_precond = _assemble_k0_tensor_hodge_preconditioner(
                 seq,
                 operators,
@@ -1924,12 +1957,10 @@ def update_hodge_operator(seq, geometry, operators: Optional[SequenceOperators],
                 is_leaf=lambda x: x is None,
             )
         case 3:
-            fd_scale_K = _fd_hodge_scales_K(seq, geometry, 3)
             return eqx.tree_at(
-                lambda ops: (ops.dd3_diaginv, ops.dd3_diaginv_dbc,
-                             ops.dd3_fd_scale_K),
+                lambda ops: (ops.dd3_diaginv, ops.dd3_diaginv_dbc),
                 operators,
-                (diaginv, diaginv_dbc, fd_scale_K),
+                (diaginv, diaginv_dbc),
                 is_leaf=lambda x: x is None,
             )
     raise ValueError("k must be 0, 1, 2, or 3")
@@ -1956,7 +1987,7 @@ def assemble_all_operators(seq, geometry,
     operators = assemble_mass_operators(seq, geometry, operators=operators)
     if include_preconditioners:
         operators = assemble_tensor_mass_preconditioner(seq, operators=operators, ks=(0, 1, 2, 3))
-        operators = assemble_fd_hodge_preconditioner(seq, operators=operators)
+        operators = assemble_tensor_hodge_preconditioner(seq, operators=operators)
     operators = assemble_incidence_operators(seq, operators=operators)
     operators = assemble_derivative_operators(
         seq, geometry, operators=operators)
@@ -2397,69 +2428,6 @@ def apply_stiffness(seq, operators: SequenceOperators, v, k: int, dirichlet: boo
     return e @ (g_sp_T @ (m_sp @ (g_sp @ (e_T @ v))))
 
 
-def apply_hodge_k3_tensor_preconditioner(seq, operators: SequenceOperators, rhs,
-                                         k: int, dirichlet: bool = True,
-                                         eps: float = 0.0):
-    """Tensorized auxiliary-space preconditioner for ``L_k + eps M_k``.
-
-    Implemented for ``k = 3`` with both Dirichlet and natural BCs:
-
-        P^{-1} v = (diag(L_3) + eps diag(M_3))^{-1} v
-                 + tilde(M_3)^{-1} M_{03} (tilde(L_0) + eps tilde(M_0))^{-1}
-                                             M_{30} tilde(M_3)^{-1} v
-
-    The first term is a local shifted-Jacobi smoother on the shifted
-    Hodge Laplacian itself, killing high-frequency error components.
-    The second term is the auxiliary-space correction exploiting the
-    Hodge duality ``star : V_3 -> V_0``: it maps into the 0-form space,
-    applies the (well-preconditioned) shifted scalar Laplacian inverse,
-    and maps back. The tildes denote Kronecker fast-diagonalisation
-    preconditioners (one direct apply each). The sandwich is manifestly
-    SPD and so is the whole operator.
-
-    The auxiliary 0-form space uses the **dual** BC: ``dirichlet=True``
-    (DBC on 3-forms) maps to NBC 0-forms, and vice versa.
-
-    For ``eps == 0`` the 0-form inverse is a Moore-Penrose pseudo-inverse
-    (the constant mode is projected out); for ``eps > 0`` the shift lifts
-    every eigenvalue off zero and no null handling is needed.
-    """
-    if k != 3:
-        raise ValueError(
-            "tensor auxiliary-space preconditioner currently only implemented for k=3")
-    # Auxiliary 0-form space uses the Hodge-dual BC.
-    aux_dirichlet = not dirichlet
-    # Local smoother: shifted Jacobi on L_3 + eps M_3.
-    if eps == 0:
-        smooth_diaginv = _hodge_diaginv(operators, 3, dirichlet=dirichlet)
-    else:
-        stiffness_diaginv = _hodge_diaginv(operators, 3, dirichlet=dirichlet)
-        mass_diaginv_3 = _mass_diaginv(operators, 3, dirichlet=dirichlet)
-        smooth_diaginv = 1.0 / \
-            (1.0 / stiffness_diaginv + eps / mass_diaginv_3)
-    smooth = smooth_diaginv * rhs
-    # Auxiliary-space correction: tilde(M_3)^{-1} M_{03}
-    #   (tilde(L_0) + eps tilde(M_0))^{-1} M_{30} tilde(M_3)^{-1}.
-    # Read right-to-left; each step is a single direct apply.
-    w = apply_mass_kron_preconditioner(
-        seq, operators, rhs, 3, dirichlet=dirichlet)
-    # M_{03}: 3-form primal -> 0-form dual (dual BC on 0-forms).
-    w = apply_projection_matrix(
-        seq, operators, w, k_in=0, k_out=3,
-        dirichlet_in=dirichlet, dirichlet_out=aux_dirichlet)
-    # (tilde(L_0) + eps tilde(M_0))^{-1}: 0-form dual -> 0-form primal.
-    w = apply_hodge_kron_preconditioner(
-        seq, operators, w, 0, dirichlet=aux_dirichlet, eps=eps)
-    # M_{30} = M_{03}^T: 0-form primal -> 3-form dual.
-    w = apply_projection_matrix(
-        seq, operators, w, k_in=3, k_out=0,
-        dirichlet_in=aux_dirichlet, dirichlet_out=dirichlet)
-    # tilde(M_3)^{-1}: 3-form dual -> 3-form primal.
-    w = apply_mass_kron_preconditioner(
-        seq, operators, w, 3, dirichlet=dirichlet)
-    return smooth + w
-
-
 def _estimate_preconditioned_max_eigenvalue_apply(
         operator_apply, smoother_apply, size: int, *,
     n_iter: int = 10, seed: int = 0):
@@ -2650,6 +2618,29 @@ def _build_restricted_mass_block_operator_apply(
         return full_y[indices]
 
     return apply
+
+
+def _k0_bulk_indices_from_surgery(surgery):
+    return jnp.arange(surgery.surgery_size, surgery.apply_data.size)
+
+
+def _mass_surgery_coupling_applies(k: int, surgery):
+    if k == 0:
+        return (
+            lambda rhs_s, surgery=surgery: _apply_k0_surgery_to_bulk_coupling(surgery, rhs_s),
+            lambda rhs_b, surgery=surgery: _apply_k0_bulk_to_surgery_coupling(surgery, rhs_b),
+        )
+    if k == 1:
+        return (
+            lambda rhs_s, surgery=surgery: _apply_k1_surgery_to_bulk_coupling(surgery, rhs_s),
+            lambda rhs_b, surgery=surgery: _apply_k1_bulk_to_surgery_coupling(surgery, rhs_b),
+        )
+    if k == 2:
+        return (
+            lambda rhs_s, surgery=surgery: _apply_k2_surgery_to_bulk_coupling(surgery, rhs_s),
+            lambda rhs_b, surgery=surgery: _apply_k2_bulk_to_surgery_coupling(surgery, rhs_b),
+        )
+    raise ValueError(f"Mass surgery coupling is only implemented for k=0,1,2 (got k={k})")
 
 
 def _build_scalar_leaf_preconditioner_apply(
@@ -2908,8 +2899,8 @@ def _build_mass_surgery_bulk_apply(
             rhs_r = rhs_rt[:surgery.rt_r_size]
             rhs_theta = rhs_rt[surgery.rt_r_size:surgery.rt_r_size + surgery.rt_theta_size]
             y = r_apply(rhs_r)
-            z = theta_apply(rhs_theta - surgery.rt_atr @ y)
-            x_r = y - r_apply(surgery.rt_art @ z)
+            z = theta_apply(rhs_theta - _apply_k1_rt_atr_coupling(surgery, y))
+            x_r = y - r_apply(_apply_k1_rt_art_coupling(surgery, z))
             return jnp.concatenate([x_r, z])
 
         def bulk_apply(rhs_bulk):
@@ -3003,7 +2994,14 @@ def _build_mass_surgery_bulk_apply(
             raise ValueError(
                 "kind='none' with surgery_schur requires an explicit smoother"
             )
-        bulk_operator_apply = lambda x: surgery.abb @ x
+        bulk_indices = _k0_bulk_indices_from_surgery(surgery)
+        bulk_operator_apply = _build_restricted_mass_block_operator_apply(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            indices=bulk_indices,
+        )
         bulk_diaginv = _mass_diaginv(operators, k, dirichlet)[surgery.surgery_size:]
         jacobi_apply = lambda rhs, inv=bulk_diaginv: inv * rhs
         tensor_apply = None
@@ -3012,7 +3010,7 @@ def _build_mass_surgery_bulk_apply(
             tensor_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.bulk, rhs)
         return surgery, _build_k0_operator_preconditioner_apply(
             bulk_operator_apply,
-            surgery.abb.shape[0],
+            bulk_indices.shape[0],
             smoother_spec,
             jacobi_apply=jacobi_apply,
             tensor_apply=tensor_apply,
@@ -3065,7 +3063,14 @@ def _build_mass_surgery_bulk_apply(
             raise ValueError(
                 "richardson/schur does not support a surgery_schur smoother"
             )
-        bulk_operator_apply = lambda x: surgery.abb @ x
+        bulk_indices = _k0_bulk_indices_from_surgery(surgery)
+        bulk_operator_apply = _build_restricted_mass_block_operator_apply(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            indices=bulk_indices,
+        )
         bulk_diaginv = _mass_diaginv(operators, k, dirichlet)[surgery.surgery_size:]
         jacobi_apply = lambda rhs, inv=bulk_diaginv: inv * rhs
         tensor_apply = None
@@ -3074,7 +3079,7 @@ def _build_mass_surgery_bulk_apply(
             tensor_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.bulk, rhs)
         return surgery, _build_k0_operator_preconditioner_apply(
             bulk_operator_apply,
-            surgery.abb.shape[0],
+            bulk_indices.shape[0],
             spec,
             jacobi_apply=jacobi_apply,
             tensor_apply=tensor_apply,
@@ -3092,7 +3097,14 @@ def _build_mass_surgery_bulk_apply(
             raise ValueError(
                 "chebyshev/schur does not support a surgery_schur smoother"
             )
-        bulk_operator_apply = lambda x: surgery.abb @ x
+        bulk_indices = _k0_bulk_indices_from_surgery(surgery)
+        bulk_operator_apply = _build_restricted_mass_block_operator_apply(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            indices=bulk_indices,
+        )
         bulk_diaginv = _mass_diaginv(operators, k, dirichlet)[surgery.surgery_size:]
         jacobi_apply = lambda rhs, inv=bulk_diaginv: inv * rhs
         tensor_apply = None
@@ -3101,7 +3113,7 @@ def _build_mass_surgery_bulk_apply(
             tensor_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.bulk, rhs)
         return surgery, _build_k0_operator_preconditioner_apply(
             bulk_operator_apply,
-            surgery.abb.shape[0],
+            bulk_indices.shape[0],
             spec,
             jacobi_apply=jacobi_apply,
             tensor_apply=tensor_apply,
@@ -3133,8 +3145,8 @@ def _build_mass_surgery_bulk_apply(
         rhs_r = rhs_rt[:surgery.rt_r_size]
         rhs_theta = rhs_rt[surgery.rt_r_size:surgery.rt_r_size + surgery.rt_theta_size]
         y = r_apply(rhs_r)
-        z = theta_apply(rhs_theta - surgery.rt_atr @ y)
-        x_r = y - r_apply(surgery.rt_art @ z)
+        z = theta_apply(rhs_theta - _apply_k1_rt_atr_coupling(surgery, y))
+        x_r = y - r_apply(_apply_k1_rt_art_coupling(surgery, z))
         return jnp.concatenate([x_r, z])
 
     def bulk_apply(rhs_bulk):
@@ -3188,17 +3200,32 @@ def _build_mass_surgery_wrapped_preconditioner_apply(
                 smoother=inner_spec,
             ),
         )
-        u_cols = [bulk_apply(surgery.abs_[:, idx]) for idx in range(surgery.abs_.shape[1])]
-        u = jnp.stack(u_cols, axis=1)
-        schur_inv = _symmetrize(jnp.linalg.inv(surgery.ass - surgery.asb @ u))
+        surgery_to_bulk_apply, bulk_to_surgery_apply = _mass_surgery_coupling_applies(k, surgery)
+        schur_inv = _assemble_schur_inverse_from_applies(
+            surgery.ass,
+            surgery_to_bulk_apply,
+            bulk_apply,
+            bulk_to_surgery_apply,
+        )
 
         def base_apply(rhs):
-            rhs_s = rhs[:surgery.surgery_size]
-            rhs_b = rhs[surgery.surgery_size:]
+            if k == 0:
+                rhs_s = rhs[:surgery.surgery_size]
+                rhs_b = rhs[surgery.surgery_size:]
+                y = bulk_apply(rhs_b)
+                z = schur_inv @ (rhs_s - bulk_to_surgery_apply(y))
+                x_b = y - bulk_apply(surgery_to_bulk_apply(z))
+                return jnp.concatenate([z, x_b])
+
+            rhs_s = rhs[surgery.surgery_indices]
+            rhs_b = rhs[surgery.bulk_indices]
             y = bulk_apply(rhs_b)
-            z = schur_inv @ (rhs_s - surgery.asb @ y)
-            x_b = y - bulk_apply(surgery.abs_ @ z)
-            return jnp.concatenate([z, x_b])
+            z = schur_inv @ (rhs_s - bulk_to_surgery_apply(y))
+            x_b = y - bulk_apply(surgery_to_bulk_apply(z))
+            x = jnp.zeros_like(rhs)
+            x = x.at[surgery.surgery_indices].set(z)
+            x = x.at[surgery.bulk_indices].set(x_b)
+            return x
 
         if outer_spec is None:
             return base_apply
@@ -3206,7 +3233,7 @@ def _build_mass_surgery_wrapped_preconditioner_apply(
         def operator_apply(x):
             return apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet)
 
-        size = surgery.surgery_size + surgery.abs_.shape[0]
+        size = surgery.apply_data.size
         return _build_nested_iterative_preconditioner_apply(
             operator_apply,
             base_apply,
@@ -3222,17 +3249,21 @@ def _build_mass_surgery_wrapped_preconditioner_apply(
         dirichlet=dirichlet,
         spec=spec,
     )
-    u_cols = [bulk_apply(surgery.abs_[:, idx]) for idx in range(surgery.abs_.shape[1])]
-    u = jnp.stack(u_cols, axis=1)
-    schur_inv = _symmetrize(jnp.linalg.inv(surgery.ass - surgery.asb @ u))
+    surgery_to_bulk_apply, bulk_to_surgery_apply = _mass_surgery_coupling_applies(k, surgery)
+    schur_inv = _assemble_schur_inverse_from_applies(
+        surgery.ass,
+        surgery_to_bulk_apply,
+        bulk_apply,
+        bulk_to_surgery_apply,
+    )
 
     if k == 0:
         def apply(rhs):
             rhs_s = rhs[:surgery.surgery_size]
             rhs_b = rhs[surgery.surgery_size:]
             y = bulk_apply(rhs_b)
-            z = schur_inv @ (rhs_s - surgery.asb @ y)
-            x_b = y - bulk_apply(surgery.abs_ @ z)
+            z = schur_inv @ (rhs_s - bulk_to_surgery_apply(y))
+            x_b = y - bulk_apply(surgery_to_bulk_apply(z))
             return jnp.concatenate([z, x_b])
 
         return apply
@@ -3241,8 +3272,8 @@ def _build_mass_surgery_wrapped_preconditioner_apply(
         rhs_s = rhs[surgery.surgery_indices]
         rhs_b = rhs[surgery.bulk_indices]
         y = bulk_apply(rhs_b)
-        z = schur_inv @ (rhs_s - surgery.asb @ y)
-        x_b = y - bulk_apply(surgery.abs_ @ z)
+        z = schur_inv @ (rhs_s - bulk_to_surgery_apply(y))
+        x_b = y - bulk_apply(surgery_to_bulk_apply(z))
         x = jnp.zeros_like(rhs)
         x = x.at[surgery.surgery_indices].set(z)
         x = x.at[surgery.bulk_indices].set(x_b)
@@ -3288,17 +3319,25 @@ def _validate_inner_tensor_only_spec(
 
 def _validate_public_k0_mass_preconditioner_spec(spec: MassPreconditionerSpec):
     if not spec.surgery_schur:
-        if spec.smoother is not None:
-            raise ValueError(
-                "k=0 mass preconditioners with surgery_schur=False do not accept an inner smoother"
+        if spec.kind in ('jacobi', 'none'):
+            if spec.smoother is not None:
+                raise ValueError(
+                    f"k=0 kind='{spec.kind}' with surgery_schur=False does not accept an inner smoother"
+                )
+            return
+        if spec.kind in ('richardson', 'chebyshev'):
+            _validate_inner_tensor_only_spec(
+                spec.smoother,
+                require_explicit=False,
+                context=f"k=0 {spec.kind} iterative mass preconditioner",
             )
-        if spec.kind in ('jacobi', 'richardson', 'chebyshev', 'none'):
             return
         if spec.kind == 'tensor':
-            raise ValueError(
-                "k=0 kind='tensor' is only supported via the Schur route; use kind='tensor' as the legacy alias "
-                "for none/schur/tensor"
-            )
+            if spec.smoother is not None:
+                raise ValueError(
+                    "k=0 kind='tensor' with surgery_schur=False does not accept an inner smoother"
+                )
+            return
         return
 
     if spec.kind == 'tensor':
@@ -3337,17 +3376,25 @@ def _validate_public_k0_mass_preconditioner_spec(spec: MassPreconditionerSpec):
 
 def _validate_public_k1_mass_preconditioner_spec(spec: MassPreconditionerSpec):
     if not spec.surgery_schur:
-        if spec.smoother is not None:
-            raise ValueError(
-                "k=1 mass preconditioners with surgery_schur=False do not accept an inner smoother"
+        if spec.kind in ('jacobi', 'none'):
+            if spec.smoother is not None:
+                raise ValueError(
+                    f"k=1 kind='{spec.kind}' with surgery_schur=False does not accept an inner smoother"
+                )
+            return
+        if spec.kind in ('richardson', 'chebyshev'):
+            _validate_inner_tensor_only_spec(
+                spec.smoother,
+                require_explicit=False,
+                context=f"k=1 {spec.kind} iterative mass preconditioner",
             )
-        if spec.kind in ('jacobi', 'richardson', 'chebyshev', 'none'):
             return
         if spec.kind == 'tensor':
-            raise ValueError(
-                "k=1 kind='tensor' is only supported via the Schur route; use kind='tensor' as the legacy alias "
-                "for none/schur/tensor"
-            )
+            if spec.smoother is not None:
+                raise ValueError(
+                    "k=1 kind='tensor' with surgery_schur=False does not accept an inner smoother"
+                )
+            return
         return
 
     if spec.kind == 'tensor':
@@ -4146,7 +4193,7 @@ def _build_scalar_hodge_preconditioner_apply(
             raise ValueError(
                 f"Tensor Hodge preconditioner not assembled for k={k}")
         tensor_apply = lambda x: _apply_k0_tensor_hodge_preconditioner(
-            operators, x, dirichlet=dirichlet)
+            seq, operators, x, dirichlet=dirichlet)
         if eps > 0.0 and not dirichlet:
             # Without a valid coarse vector, the pure tensor Hodge inverse is
             # still singular on the harmonic mode. For shifted solves, fall
@@ -4308,40 +4355,35 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
 
     * ``'none'`` — identity (no preconditioning).
     * ``'jacobi'`` — per-DoF diagonal of ``L_k``; always available.
-    * ``'tensor'`` — tensorized auxiliary-space preconditioner. For ``k = 0``
-      this reduces to the tensorized reference Laplacian inverse (no
-      auxiliary space needed); for ``k = 3`` it uses the ``V_3 ↔ V_0``
-      duality round trip and :func:`apply_hodge_k3_tensor_preconditioner`.
-      Not available for ``k = 1, 2``.
-    * ``'auto'`` — picks ``'tensor'`` when available (``k = 0`` or ``k = 3``
-      with tensor Hodge data assembled) and falls back to ``'jacobi'``.
+        * ``'tensor'`` — assembled surgery-plus-Schur tensor Hodge model for
+            ``k = 0`` only.
+        * ``'auto'`` — picks ``'tensor'`` when available for ``k = 0`` and falls
+            back to ``'jacobi'`` otherwise.
     """
     if kind not in ('auto', 'none', 'jacobi', 'tensor'):
         raise ValueError(
             f"kind must be 'auto', 'none', 'jacobi' or 'tensor' (got {kind!r})")
     if kind == 'auto':
-        kind = 'tensor' if (
-            k in (0, 3) and _fd_hodge_available(operators, k if k == 0 else 0)
-        ) else 'jacobi'
+        if k == 0 and _k0_tensor_hodge_available(operators):
+            kind = 'tensor'
+        else:
+            kind = 'jacobi'
     if kind == 'none':
         return v
     if kind == 'jacobi':
         return _hodge_diaginv(operators, k, dirichlet) * v
     if kind == 'tensor':
         if k == 0:
-            if not _fd_hodge_available(operators, 0):
+            if not _k0_tensor_hodge_available(operators):
                 raise ValueError(
                     "Tensor Hodge preconditioner for k=0 requires the tensor Hodge "
                     "assembly; call assemble_tensor_hodge_preconditioner first")
-            return apply_hodge_kron_preconditioner(
-                seq, operators, v, 0, dirichlet=dirichlet)
-        if k == 3:
-            if not _fd_hodge_available(operators, 0):
-                raise ValueError(
-                    "Tensor Hodge preconditioner for k=3 requires the tensor Hodge "
-                    "assembly; call assemble_tensor_hodge_preconditioner first")
-            return apply_hodge_k3_tensor_preconditioner(
-                seq, operators, v, 3, dirichlet=dirichlet)
+            return _apply_k0_tensor_hodge_preconditioner(
+                seq,
+                operators,
+                v,
+                dirichlet=dirichlet,
+            )
         raise ValueError(
             f"Tensor Hodge preconditioner not available for k={k}; use 'jacobi' instead")
     raise AssertionError("unreachable")

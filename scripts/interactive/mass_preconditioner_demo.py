@@ -46,8 +46,25 @@ from mrx.operators import (
     dense_mass_matrix,
 )
 from mrx.nullspace import get_nullspace
-from mrx.preconditioners import MassPreconditionerSpec, _select_mass_tensor_factors
+from mrx.preconditioners import (
+    MassPreconditionerSpec,
+    _apply_k0_bulk_to_surgery_coupling,
+    _apply_k0_surgery_to_bulk_coupling,
+    _apply_k1_bulk_to_surgery_coupling,
+    _apply_k1_rt_art_coupling,
+    _apply_k1_rt_atr_coupling,
+    _apply_k1_surgery_to_bulk_coupling,
+    _apply_k2_bulk_to_surgery_coupling,
+    _apply_k2_surgery_to_bulk_coupling,
+    _apply_tensor_diagonal_block,
+    _apply_tensor_exact_block,
+    _assemble_schur_inverse_from_applies,
+    _select_mass_surgery_factors,
+    _select_mass_tensor_factors,
+    get_mass_jacobi_diaginv,
+)
 from mrx.solvers import solve_singular_cg
+from mrx.utils import build_random_besov_rhs_batch
 
 jax.config.update("jax_enable_x64", True)
 
@@ -55,7 +72,7 @@ jax.config.update("jax_enable_x64", True)
 # %% Configuration
 @dataclass(frozen=True)
 class ExperimentConfig:
-    ns: tuple[int, int, int] = (16, 16, 8)
+    ns: tuple[int, int, int] = (6, 8, 4)
     p: int = 3
     tol: float = 1e-9
     maxiter: int = 1000
@@ -135,6 +152,13 @@ def _resolve_experiment_config(prefix: str, default: ExperimentConfig) -> Experi
     return dataclass_replace(default, **values)
 
 
+def _resolve_global_override(prefix: str, name: str, default):
+    env_name = f"{prefix}_{name}"
+    if env_name not in os.environ:
+        return default
+    return _coerce_like(os.environ[env_name], default)
+
+
 @dataclass
 class MassBenchmarkReport:
     k: int
@@ -202,17 +226,29 @@ SEQ = None
 OPERATORS = None
 PRODUCTION_OPERATORS = None
 BUILT_CONFIG = None
-DENSE = False
-EXACT_HYPERPARAMS = False
+DENSE = _resolve_global_override("MRX_MASS", "DENSE", False)
+EXACT_HYPERPARAMS = _resolve_global_override("MRX_MASS", "EXACT_HYPERPARAMS", False)
+RUN_TEXT_SANITY = _resolve_global_override("MRX_MASS", "RUN_TEXT_SANITY", True)
+TEXT_SANITY_PROBES = _resolve_global_override("MRX_MASS", "TEXT_SANITY_PROBES", 1)
+DENSE_TEXT_SANITY = _resolve_global_override("MRX_MASS", "DENSE_TEXT_SANITY", False)
 TENSOR_CP_KWARGS = {"tol": 1e-8, "maxiter": 200}
-TENSOR_RANKS = (1, 2, 4, 8)
-POLY_STEP_OPTIONS = (2, 4, 8)
+TENSOR_RANKS = _resolve_global_override("MRX_MASS", "TENSOR_RANKS", (1, 2, 4))
+POLY_STEP_OPTIONS = _resolve_global_override("MRX_MASS", "POLY_STEP_OPTIONS", (1, 2, 4))
+RHS_KIND = _resolve_global_override("MRX_MASS", "RHS_KIND", "besov")
+RHS_S = _resolve_global_override("MRX_MASS", "RHS_S", 1.0)
+RHS_UPPER_LIMIT = _resolve_global_override("MRX_MASS", "RHS_UPPER_LIMIT", 24)
+RHS_NUM_MODES = _resolve_global_override("MRX_MASS", "RHS_NUM_MODES", 64)
+RHS_SCALE = _resolve_global_override("MRX_MASS", "RHS_SCALE", 1.0)
+RHS_SMOOTHNESS_MARGIN = _resolve_global_override("MRX_MASS", "RHS_SMOOTHNESS_MARGIN", 0.25)
+RHS_NORMALIZATION_SAMPLES = _resolve_global_override("MRX_MASS", "RHS_NORMALIZATION_SAMPLES", 256)
+INCLUDE_RICHARDSON = _resolve_global_override("MRX_MASS", "INCLUDE_RICHARDSON", False)
 POWER_ITERATIONS = 30
 RICHARDSON_DAMPING_SAFETY = 0.8
 CHEBYSHEV_MIN_EIG_FRACTION = 1e-4
 BENCHMARK_DIRICHLET_CASES = (False, )
 DEFAULT_DIRICHLET = False
 RUN_K0_LAPLACIAN = True
+RUN_BLOCK_CHEB_BENCHMARK = True
 K0_LAPLACE_EPS_LIST = (0.0,)
 K0_LAPLACE_DIRICHLET_CASES = (True,)
 K0_LAPLACE_NULLSPACE_EPS = 1e-6
@@ -220,15 +256,27 @@ MASS_METADATA_SETTING_NAMES = (
     "CONFIG",
     "DENSE",
     "EXACT_HYPERPARAMS",
+    "RUN_TEXT_SANITY",
+    "TEXT_SANITY_PROBES",
+    "DENSE_TEXT_SANITY",
     "TENSOR_CP_KWARGS",
     "TENSOR_RANKS",
     "POLY_STEP_OPTIONS",
+    "RHS_KIND",
+    "RHS_S",
+    "RHS_UPPER_LIMIT",
+    "RHS_NUM_MODES",
+    "RHS_SCALE",
+    "RHS_SMOOTHNESS_MARGIN",
+    "RHS_NORMALIZATION_SAMPLES",
+    "INCLUDE_RICHARDSON",
     "POWER_ITERATIONS",
     "RICHARDSON_DAMPING_SAFETY",
     "CHEBYSHEV_MIN_EIG_FRACTION",
     "BENCHMARK_DIRICHLET_CASES",
     "DEFAULT_DIRICHLET",
     "RUN_K0_LAPLACIAN",
+    "RUN_BLOCK_CHEB_BENCHMARK",
     "K0_LAPLACE_EPS_LIST",
     "K0_LAPLACE_DIRICHLET_CASES",
     "K0_LAPLACE_NULLSPACE_EPS",
@@ -274,6 +322,32 @@ def _mass_run_metadata(
     return metadata
 
 
+def _build_rhs_batch(seq, *, k: int, dirichlet: bool, n_rhs: int, seed: int) -> jnp.ndarray:
+    rhs_seed = seed + 100 * int(dirichlet) + 1000 * k
+    rhs_size = _mass_rhs_size(seq, k, dirichlet)
+    if RHS_KIND == "gaussian":
+        return jax.random.normal(
+            jax.random.PRNGKey(rhs_seed),
+            (n_rhs, rhs_size),
+            dtype=jnp.float64,
+        )
+    if RHS_KIND == "besov":
+        return build_random_besov_rhs_batch(
+            seq,
+            k,
+            dirichlet=dirichlet,
+            n_rhs=n_rhs,
+            seed=rhs_seed,
+            s=RHS_S,
+            upper_limit=RHS_UPPER_LIMIT,
+            num_modes=RHS_NUM_MODES,
+            scale=RHS_SCALE,
+            smoothness_margin=RHS_SMOOTHNESS_MARGIN,
+            normalization_samples=RHS_NORMALIZATION_SAMPLES,
+        )
+    raise ValueError(f"Unsupported RHS kind: {RHS_KIND!r}")
+
+
 def _float_or_none(value):
     if value is None:
         return None
@@ -291,11 +365,160 @@ def _drop_empty_values(mapping: dict[str, object]) -> dict[str, object]:
     return cleaned
 
 
+def _matrix_from_apply(apply, size: int) -> jnp.ndarray:
+    basis = jnp.eye(size, dtype=jnp.float64)
+    return jax.vmap(apply, in_axes=1, out_axes=1)(basis)
+
+
+def _relative_fro_error(approx: jnp.ndarray, exact: jnp.ndarray) -> float:
+    denom = jnp.linalg.norm(exact)
+    denom = jnp.where(denom > 0, denom, 1.0)
+    return float(jnp.linalg.norm(approx - exact) / denom)
+
+
+def _sampled_identity_sanity(
+    seq,
+    operators,
+    *,
+    k: int,
+    dirichlet: bool,
+    probe_batch: jnp.ndarray,
+    precond_apply,
+) -> dict[str, float]:
+    def operator_apply(x):
+        return apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet)
+
+    n_probes = max(1, min(int(TEXT_SANITY_PROBES), int(probe_batch.shape[0])))
+    pm_errors = []
+    mp_errors = []
+    for rhs in probe_batch[:n_probes]:
+        denom = jnp.where(jnp.linalg.norm(rhs) > 0, jnp.linalg.norm(rhs), 1.0)
+        pm_errors.append(float(jnp.linalg.norm(precond_apply(operator_apply(rhs)) - rhs) / denom))
+        mp_errors.append(float(jnp.linalg.norm(operator_apply(precond_apply(rhs)) - rhs) / denom))
+    pm_errors = jnp.asarray(pm_errors, dtype=jnp.float64)
+    mp_errors = jnp.asarray(mp_errors, dtype=jnp.float64)
+    return {
+        "rel_pm_identity_median": float(jnp.median(pm_errors)),
+        "rel_pm_identity_max": float(jnp.max(pm_errors)),
+        "rel_mp_identity_median": float(jnp.median(mp_errors)),
+        "rel_mp_identity_max": float(jnp.max(mp_errors)),
+    }
+
+
+def _should_collect_text_sanity(label: str) -> bool:
+    if label == "jacobi":
+        return True
+    if label.startswith("tensor-r"):
+        return True
+    if label.startswith("schur-block-cheb"):
+        return True
+    return False
+
+
+def _dense_identity_sanity(matrix: jnp.ndarray, precond_apply) -> dict[str, float]:
+    precond_matrix = _matrix_from_apply(precond_apply, matrix.shape[0])
+    identity = jnp.eye(matrix.shape[0], dtype=jnp.float64)
+    pm = precond_matrix @ matrix
+    mp = matrix @ precond_matrix
+    pm_sym = 0.5 * (pm + pm.T)
+    eigvals = jnp.linalg.eigvalsh(pm_sym)
+    tiny = jnp.asarray(jnp.finfo(jnp.float64).tiny, dtype=jnp.float64)
+    eig_abs_min = jnp.maximum(jnp.min(jnp.abs(eigvals)), tiny)
+    eig_abs_max = jnp.maximum(jnp.max(jnp.abs(eigvals)), eig_abs_min)
+    return {
+        "rel_pm_identity": _relative_fro_error(pm, identity),
+        "rel_mp_identity": _relative_fro_error(mp, identity),
+        "pm_symmetry_defect": _relative_fro_error(pm, pm.T),
+        "pm_sym_eig_min": float(jnp.min(eigvals)),
+        "pm_sym_eig_max": float(jnp.max(eigvals)),
+        "pm_sym_condition_number": float(eig_abs_max / eig_abs_min),
+    }
+
+
+def _mass_preconditioner_apply_from_spec(
+    seq,
+    operators,
+    *,
+    k: int,
+    dirichlet: bool,
+    preconditioner,
+):
+    if not isinstance(preconditioner, MassPreconditionerSpec):
+        return None
+    if preconditioner.kind == "jacobi" and not preconditioner.surgery_schur:
+        diaginv = _mass_diaginv(operators, k, dirichlet)
+        return lambda x, inv=diaginv: inv * x
+    if preconditioner.kind == "tensor":
+        return lambda x: apply_mass_tensor_preconditioner_ops(
+            seq,
+            operators,
+            x,
+            k,
+            dirichlet=dirichlet,
+        )
+    smoother = preconditioner.smoother
+    if (
+        preconditioner.surgery_schur
+        and preconditioner.kind == "none"
+        and smoother is not None
+        and smoother.kind == "tensor"
+    ):
+        return lambda x: apply_mass_tensor_preconditioner_ops(
+            seq,
+            operators,
+            x,
+            k,
+            dirichlet=dirichlet,
+        )
+    return None
+
+
+def _format_metric(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value:.3e}"
+
+
+def _print_mass_preconditioner_sanity(reports: list[MassBenchmarkReport]):
+    rows = []
+    for report in reports:
+        diagnostics = report.diagnostics or {}
+        sampled = diagnostics.get("sampled_identity")
+        dense = diagnostics.get("dense_identity")
+        if sampled is None and dense is None:
+            continue
+        rows.append((report.label, sampled, dense))
+    if not rows:
+        return
+
+    print("preconditioner-apply sanity:")
+    print(
+        f"{'label':<24} {'med ||PM-I||':>12} {'max ||PM-I||':>12} {'med ||MP-I||':>12} {'max ||MP-I||':>12} {'dense PM':>12} {'dense MP':>12} {'asym(PM)':>12}"
+    )
+    for label, sampled, dense in rows:
+        print(
+            f"{label:<24} "
+            f"{_format_metric(None if sampled is None else sampled.get('rel_pm_identity_median')):>12} "
+            f"{_format_metric(None if sampled is None else sampled.get('rel_pm_identity_max')):>12} "
+            f"{_format_metric(None if sampled is None else sampled.get('rel_mp_identity_median')):>12} "
+            f"{_format_metric(None if sampled is None else sampled.get('rel_mp_identity_max')):>12} "
+            f"{_format_metric(None if dense is None else dense.get('rel_pm_identity')):>12} "
+            f"{_format_metric(None if dense is None else dense.get('rel_mp_identity')):>12} "
+            f"{_format_metric(None if dense is None else dense.get('pm_symmetry_defect')):>12}"
+        )
+    if any(dense is not None for _, _, dense in rows):
+        print("  dense PM/MP columns are full-operator Frobenius defects; asym(PM) is ||PM - (PM)^T|| / ||(PM)^T||.")
+    print(f"  sampled columns use the first {int(TEXT_SANITY_PROBES)} probe RHS vectors.")
+
+
 def _tensor_block_fit_diagnostics(block) -> dict[str, float] | None:
     diagnostics = _drop_empty_values(
         {
             "relative_error": _float_or_none(getattr(block, "cp_relative_error", None)),
             "final_delta": _float_or_none(getattr(block, "cp_final_delta", None)),
+            "block_chebyshev_steps": _float_or_none(getattr(block, "chebyshev_steps", None)),
+            "block_lambda_min": _float_or_none(getattr(block, "chebyshev_lambda_min", None)),
+            "block_lambda_max": _float_or_none(getattr(block, "chebyshev_lambda_max", None)),
         }
     )
     return diagnostics or None
@@ -537,7 +760,6 @@ def build_case(config: ExperimentConfig = CONFIG):
     seq.assemble_reference_mass_matrix()
     seq.set_map(_build_map(config))
     operators = assemble_mass_operators(seq, seq.geometry, ks=(0, 1, 2, 3))
-    operators = assemble_tensor_hodge_preconditioner(seq, operators=operators)
     operators = assemble_incidence_operators(seq, operators=operators, ks=(0, 1, 2))
     operators = assemble_hodge_operators(seq, seq.geometry, operators=operators, ks=(0, 1, 2, 3))
     operators = seq.set_operators(operators, sync_legacy=False)
@@ -559,6 +781,14 @@ def build_case(config: ExperimentConfig = CONFIG):
             ks=(0, 1, 2, 3),
             rank=rank,
             cp_kwargs=TENSOR_CP_KWARGS,
+        )
+        rank_operators = assemble_tensor_hodge_preconditioner(
+            seq,
+            operators=rank_operators,
+            rank=rank,
+            cp_maxiter=TENSOR_CP_KWARGS["maxiter"],
+            cp_tol=TENSOR_CP_KWARGS["tol"],
+            cp_ridge=TENSOR_CP_KWARGS.get("ridge", 1e-12),
         )
         rank_operators = assemble_hodge_operators(
             seq,
@@ -585,18 +815,19 @@ def _mass_rhs_size(seq, k: int, dirichlet: bool) -> int:
 
 def _scalar_polynomial_mass_preconditioners():
     configs = []
-    for steps in POLY_STEP_OPTIONS:
-        configs.append(
-            (
-                f"richardson-{steps}",
-                "richardson",
-                dict(
-                    steps=steps,
-                    power_iterations=POWER_ITERATIONS,
-                    damping_safety=RICHARDSON_DAMPING_SAFETY,
-                ),
+    if INCLUDE_RICHARDSON:
+        for steps in POLY_STEP_OPTIONS:
+            configs.append(
+                (
+                    f"richardson-{steps}",
+                    "richardson",
+                    dict(
+                        steps=steps,
+                        power_iterations=POWER_ITERATIONS,
+                        damping_safety=RICHARDSON_DAMPING_SAFETY,
+                    ),
+                )
             )
-        )
     for steps in POLY_STEP_OPTIONS:
         configs.append(
             (
@@ -680,7 +911,7 @@ def _scalar_schur_mass_preconditioner_catalog():
                 outer=kind,
                 schur=False,
                 inner="-",
-                reason="supported polynomial bulk model",
+                reason="full-operator polynomial acceleration with tensor smoother (no surgery)",
                 preconditioner=MassPreconditionerSpec(
                     kind=kind,
                     surgery_schur=False,
@@ -819,6 +1050,258 @@ def _build_tuned_chebyshev_apply_preconditioner(
     return apply
 
 
+def _build_dense_block_chebyshev_apply(
+    block_matrix,
+    smoother_apply,
+    *,
+    steps: int,
+    seed: int,
+    smoother_kind: str,
+):
+    spec = MassPreconditionerSpec(
+        kind="chebyshev",
+        steps=steps,
+        power_iterations=POWER_ITERATIONS,
+        min_eig_fraction=CHEBYSHEV_MIN_EIG_FRACTION,
+    )
+    operator_apply = lambda x, matrix=block_matrix: matrix @ x
+    lambda_min, lambda_max = _estimate_chebyshev_lanczos_bounds_apply(
+        operator_apply,
+        smoother_apply,
+        block_matrix.shape[0],
+        spec=spec,
+        seed=seed,
+    )
+    return (
+        _build_tuned_chebyshev_apply_preconditioner(
+            operator_apply,
+            smoother_apply,
+            steps=steps,
+            lambda_min=lambda_min,
+            lambda_max=lambda_max,
+        ),
+        {
+            "method": "chebyshev",
+            "source": "estimated_runtime",
+            "smoother": smoother_kind,
+            "steps": steps,
+            "lambda_min": float(lambda_min),
+            "lambda_max": float(lambda_max),
+        },
+    )
+
+
+def _stored_tensor_block_tuning(block):
+    return _drop_empty_values(
+        {
+            "method": "chebyshev",
+            "source": "assembled_tensor_block",
+            "smoother": "tensor",
+            "steps": int(getattr(block, "chebyshev_steps", 0)),
+            "lambda_min": _float_or_none(getattr(block, "chebyshev_lambda_min", None)),
+            "lambda_max": _float_or_none(getattr(block, "chebyshev_lambda_max", None)),
+        }
+    )
+
+
+def _build_exact_block_chebyshev_mass_preconditioner_apply(
+    seq,
+    operators,
+    *,
+    k: int,
+    dirichlet: bool,
+    smoother_kind: str,
+):
+    surgery = _select_mass_surgery_factors(operators.mass_preconds, k, dirichlet)
+    tensor = _select_mass_tensor_factors(operators.mass_preconds, k, dirichlet)
+    block_steps = int(operators.mass_preconds.tensor.block_chebyshev_steps)
+    if block_steps <= 0:
+        raise ValueError("Tensor block Chebyshev benchmark requires block_chebyshev_steps > 0")
+    diaginv = get_mass_jacobi_diaginv(operators.mass_preconds, k, dirichlet)
+    diagnostics: dict[str, object] = {"inner_block_tuning": {}}
+    exact_matrix = jnp.asarray(dense_mass_matrix(seq, operators, k, dirichlet=dirichlet))
+
+    if k == 0:
+        bulk_matrix = exact_matrix[surgery.surgery_size:, surgery.surgery_size:]
+        if smoother_kind == "jacobi":
+            bulk_apply, bulk_tuning = _build_dense_block_chebyshev_apply(
+                bulk_matrix,
+                lambda x, inv=diaginv[surgery.surgery_size:]: inv * x,
+                steps=block_steps,
+                seed=8100 + int(dirichlet),
+                smoother_kind="jacobi",
+            )
+        else:
+            bulk_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.bulk, rhs)
+            bulk_tuning = _stored_tensor_block_tuning(tensor.bulk)
+
+        diagnostics["inner_block_tuning"]["bulk"] = bulk_tuning
+        diagnostics["tensor_fit"] = _mass_tensor_fit_diagnostics(operators, k=k, dirichlet=dirichlet)
+        surgery_to_bulk_apply = lambda rhs_s: _apply_k0_surgery_to_bulk_coupling(surgery, rhs_s)
+        bulk_to_surgery_apply = lambda rhs_b: _apply_k0_bulk_to_surgery_coupling(surgery, rhs_b)
+        schur_inv = _assemble_schur_inverse_from_applies(
+            surgery.ass,
+            surgery_to_bulk_apply,
+            bulk_apply,
+            bulk_to_surgery_apply,
+        )
+
+        def apply(rhs):
+            rhs_s = rhs[:surgery.surgery_size]
+            rhs_b = rhs[surgery.surgery_size:]
+            y = bulk_apply(rhs_b)
+            z = schur_inv @ (rhs_s - bulk_to_surgery_apply(y))
+            x_b = y - bulk_apply(surgery_to_bulk_apply(z))
+            return jnp.concatenate([z, x_b])
+
+        return apply, diagnostics
+
+    if k == 1:
+        arr_matrix = exact_matrix[surgery.r_indices][:, surgery.r_indices]
+        theta_matrix = exact_matrix[surgery.theta_bulk_indices][:, surgery.theta_bulk_indices]
+        zeta_matrix = exact_matrix[surgery.zeta_bulk_indices][:, surgery.zeta_bulk_indices]
+        if smoother_kind == "jacobi":
+            r_apply, r_tuning = _build_dense_block_chebyshev_apply(
+                arr_matrix,
+                lambda x, inv=diaginv[tensor.r_indices]: inv * x,
+                steps=block_steps,
+                seed=8200 + int(dirichlet),
+                smoother_kind="jacobi",
+            )
+            theta_apply, theta_tuning = _build_dense_block_chebyshev_apply(
+                theta_matrix,
+                lambda x, inv=diaginv[tensor.theta_bulk_indices]: inv * x,
+                steps=block_steps,
+                seed=8201 + int(dirichlet),
+                smoother_kind="jacobi",
+            )
+            zeta_apply, zeta_tuning = _build_dense_block_chebyshev_apply(
+                zeta_matrix,
+                lambda x, inv=diaginv[tensor.zeta_bulk_indices]: inv * x,
+                steps=block_steps,
+                seed=8202 + int(dirichlet),
+                smoother_kind="jacobi",
+            )
+        else:
+            r_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.arr, rhs)
+            theta_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.theta, rhs)
+            zeta_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.zeta, rhs)
+            r_tuning = _stored_tensor_block_tuning(tensor.arr)
+            theta_tuning = _stored_tensor_block_tuning(tensor.theta)
+            zeta_tuning = _stored_tensor_block_tuning(tensor.zeta)
+
+        diagnostics["inner_block_tuning"] = {
+            "arr": r_tuning,
+            "theta": theta_tuning,
+            "zeta": zeta_tuning,
+        }
+        diagnostics["tensor_fit"] = _mass_tensor_fit_diagnostics(operators, k=k, dirichlet=dirichlet)
+
+        def rt_apply(rhs_rt):
+            rhs_r = rhs_rt[:surgery.rt_r_size]
+            rhs_theta = rhs_rt[surgery.rt_r_size:surgery.rt_r_size + surgery.rt_theta_size]
+            y = r_apply(rhs_r)
+            z = theta_apply(rhs_theta - _apply_k1_rt_atr_coupling(surgery, y))
+            x_r = y - r_apply(_apply_k1_rt_art_coupling(surgery, z))
+            return jnp.concatenate([x_r, z])
+
+        def bulk_apply(rhs_bulk):
+            rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
+            rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
+            return jnp.concatenate([rt_apply(rhs_rt), zeta_apply(rhs_zeta)])
+        surgery_to_bulk_apply = lambda rhs_s: _apply_k1_surgery_to_bulk_coupling(surgery, rhs_s)
+        bulk_to_surgery_apply = lambda rhs_b: _apply_k1_bulk_to_surgery_coupling(surgery, rhs_b)
+        schur_inv = _assemble_schur_inverse_from_applies(
+            surgery.ass,
+            surgery_to_bulk_apply,
+            bulk_apply,
+            bulk_to_surgery_apply,
+        )
+
+        def apply(rhs):
+            rhs_s = rhs[surgery.surgery_indices]
+            rhs_b = rhs[surgery.bulk_indices]
+            y = bulk_apply(rhs_b)
+            z = schur_inv @ (rhs_s - bulk_to_surgery_apply(y))
+            x_b = y - bulk_apply(surgery_to_bulk_apply(z))
+            x = jnp.zeros_like(rhs)
+            x = x.at[surgery.surgery_indices].set(z)
+            x = x.at[surgery.bulk_indices].set(x_b)
+            return x
+
+        return apply, diagnostics
+
+    if k == 2:
+        r_bulk_matrix = exact_matrix[surgery.r_bulk_indices][:, surgery.r_bulk_indices]
+        theta_matrix = exact_matrix[surgery.theta_indices][:, surgery.theta_indices]
+        zeta_matrix = exact_matrix[surgery.zeta_indices][:, surgery.zeta_indices]
+        if smoother_kind == "jacobi":
+            r_apply, r_tuning = _build_dense_block_chebyshev_apply(
+                r_bulk_matrix,
+                lambda x, inv=diaginv[tensor.r_bulk_indices]: inv * x,
+                steps=block_steps,
+                seed=8300 + int(dirichlet),
+                smoother_kind="jacobi",
+            )
+            theta_apply, theta_tuning = _build_dense_block_chebyshev_apply(
+                theta_matrix,
+                lambda x, inv=diaginv[tensor.theta_indices]: inv * x,
+                steps=block_steps,
+                seed=8301 + int(dirichlet),
+                smoother_kind="jacobi",
+            )
+            zeta_apply, zeta_tuning = _build_dense_block_chebyshev_apply(
+                zeta_matrix,
+                lambda x, inv=diaginv[tensor.zeta_indices]: inv * x,
+                steps=block_steps,
+                seed=8302 + int(dirichlet),
+                smoother_kind="jacobi",
+            )
+        else:
+            r_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.r_bulk, rhs)
+            theta_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.theta, rhs)
+            zeta_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.zeta, rhs)
+            r_tuning = _stored_tensor_block_tuning(tensor.r_bulk)
+            theta_tuning = _stored_tensor_block_tuning(tensor.theta)
+            zeta_tuning = _stored_tensor_block_tuning(tensor.zeta)
+
+        diagnostics["inner_block_tuning"] = {
+            "r_bulk": r_tuning,
+            "theta": theta_tuning,
+            "zeta": zeta_tuning,
+        }
+        diagnostics["tensor_fit"] = _mass_tensor_fit_diagnostics(operators, k=k, dirichlet=dirichlet)
+
+        def bulk_apply(rhs_bulk):
+            rhs_r = rhs_bulk[:surgery.r_bulk_size]
+            rhs_theta = rhs_bulk[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
+            rhs_zeta = rhs_bulk[surgery.r_bulk_size + surgery.theta_size:surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size]
+            return jnp.concatenate([r_apply(rhs_r), theta_apply(rhs_theta), zeta_apply(rhs_zeta)])
+        surgery_to_bulk_apply = lambda rhs_s: _apply_k2_surgery_to_bulk_coupling(surgery, rhs_s)
+        bulk_to_surgery_apply = lambda rhs_b: _apply_k2_bulk_to_surgery_coupling(surgery, rhs_b)
+        schur_inv = _assemble_schur_inverse_from_applies(
+            surgery.ass,
+            surgery_to_bulk_apply,
+            bulk_apply,
+            bulk_to_surgery_apply,
+        )
+
+        def apply(rhs):
+            rhs_s = rhs[surgery.surgery_indices]
+            rhs_b = rhs[surgery.bulk_indices]
+            y = bulk_apply(rhs_b)
+            z = schur_inv @ (rhs_s - bulk_to_surgery_apply(y))
+            x_b = y - bulk_apply(surgery_to_bulk_apply(z))
+            x = jnp.zeros_like(rhs)
+            x = x.at[surgery.surgery_indices].set(z)
+            x = x.at[surgery.bulk_indices].set(x_b)
+            return x
+
+        return apply, diagnostics
+
+    raise ValueError(f"Exact block Chebyshev benchmark only supports k=0,1,2 (got k={k})")
+
+
 def _build_tuned_richardson_apply_preconditioner(
     operator_apply,
     smoother_apply,
@@ -926,12 +1409,7 @@ def benchmark_k0_laplacian_preconditioners(
     seed: int = 0,
 ) -> list[K0LaplacianBenchmarkReport]:
     default_operators = operators_by_rank[TENSOR_RANKS[-1]]
-    rhs_size = seq.n0_dbc if dirichlet else seq.n0
-    rhs_batch = jax.random.normal(
-        jax.random.PRNGKey(seed + 100 * int(dirichlet)),
-        (n_rhs, rhs_size),
-        dtype=jnp.float64,
-    )
+    rhs_batch = _build_rhs_batch(seq, k=0, dirichlet=dirichlet, n_rhs=n_rhs, seed=seed)
     if eps == 0.0:
         rhs_batch = jax.vmap(
             lambda rhs: _project_k0_laplacian_rhs_to_range(seq, default_operators, rhs, dirichlet)
@@ -1166,11 +1644,7 @@ def benchmark_mass_preconditioners(
     seed: int = 0,
 ) -> list[MassBenchmarkReport]:
     rhs_size = _mass_rhs_size(seq, k, dirichlet)
-    rhs_batch = jax.random.normal(
-        jax.random.PRNGKey(seed + 100 * int(dirichlet) + 1000 * k),
-        (n_rhs, rhs_size),
-        dtype=jnp.float64,
-    )
+    rhs_batch = _build_rhs_batch(seq, k=k, dirichlet=dirichlet, n_rhs=n_rhs, seed=seed)
 
     catalog = _mass_preconditioner_catalog(k)
     dense_matrix = None
@@ -1303,6 +1777,37 @@ def benchmark_mass_preconditioners(
 
         iterations_array = jnp.asarray(iterations)
         times_ms_array = jnp.asarray(times_ms)
+        diagnostics = _mass_preconditioner_diagnostics(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            preconditioner=preconditioner,
+            exact_tuning=exact_tuning,
+        )
+        precond_apply = _mass_preconditioner_apply_from_spec(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            preconditioner=preconditioner,
+        )
+        if RUN_TEXT_SANITY and precond_apply is not None and _should_collect_text_sanity(label):
+            diagnostics = dict(diagnostics or {})
+            diagnostics["sampled_identity"] = _sampled_identity_sanity(
+                seq,
+                operators,
+                k=k,
+                dirichlet=dirichlet,
+                probe_batch=rhs_batch,
+                precond_apply=precond_apply,
+            )
+            if DENSE and DENSE_TEXT_SANITY:
+                diagnostics["dense_identity"] = _dense_identity_sanity(
+                    dense_matrix,
+                    precond_apply,
+                )
+
         reports.append(
             MassBenchmarkReport(
                 k=k,
@@ -1320,14 +1825,7 @@ def benchmark_mass_preconditioners(
                 avg_time_ms=float(jnp.mean(times_ms_array)),
                 std_time_ms=float(jnp.std(times_ms_array)),
                 max_time_ms=float(jnp.max(times_ms_array)),
-                diagnostics=_mass_preconditioner_diagnostics(
-                    seq,
-                    operators,
-                    k=k,
-                    dirichlet=dirichlet,
-                    preconditioner=preconditioner,
-                    exact_tuning=exact_tuning,
-                ),
+                diagnostics=diagnostics,
             )
         )
 
@@ -1376,6 +1874,103 @@ def benchmark_mass_preconditioners(
     return reports
 
 
+def benchmark_mass_block_chebyshev_preconditioners(
+    seq,
+    operators_by_rank,
+    *,
+    k: int,
+    dirichlet: bool,
+    n_rhs: int = 8,
+    seed: int = 0,
+) -> list[MassBenchmarkReport]:
+    if k not in (0, 1, 2):
+        raise ValueError("Block Chebyshev benchmark only applies to k=0,1,2")
+
+    rhs_batch = _build_rhs_batch(seq, k=k, dirichlet=dirichlet, n_rhs=n_rhs, seed=seed)
+    tensor_rank = TENSOR_RANKS[-1]
+    operators = operators_by_rank[tensor_rank]
+    reports = []
+    dense_matrix = None
+    if DENSE:
+        dense_matrix = jnp.asarray(dense_mass_matrix(seq, operators, k, dirichlet=dirichlet))
+
+    for smoother_kind, label, reason in (
+        ("jacobi", "schur-block-cheb-jacobi", "exact block Chebyshev with Jacobi smoothing"),
+        ("tensor", f"schur-block-cheb-tensor-r{tensor_rank}", "exact block Chebyshev with tensor smoothing"),
+    ):
+        precond_apply, diagnostics = _build_exact_block_chebyshev_mass_preconditioner_apply(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            smoother_kind=smoother_kind,
+        )
+
+        @jax.jit
+        def solve(rhs):
+            return _solve_mass_with_preconditioner_apply(
+                seq,
+                operators,
+                rhs,
+                k=k,
+                dirichlet=dirichlet,
+                precond_apply=precond_apply,
+            )
+
+        x0, _ = solve(rhs_batch[0])
+        jax.block_until_ready(x0)
+
+        iterations = []
+        times_ms = []
+        n_converged = 0
+        for rhs in rhs_batch:
+            t0 = time.perf_counter()
+            x, info = solve(rhs)
+            jax.block_until_ready(x)
+            info_int = int(info)
+            times_ms.append((time.perf_counter() - t0) * 1e3)
+            iterations.append(abs(info_int))
+            n_converged += int(info_int <= 0)
+
+        iterations_array = jnp.asarray(iterations)
+        times_ms_array = jnp.asarray(times_ms)
+        if RUN_TEXT_SANITY and _should_collect_text_sanity(label):
+            diagnostics = dict(diagnostics)
+            diagnostics["sampled_identity"] = _sampled_identity_sanity(
+                seq,
+                operators,
+                k=k,
+                dirichlet=dirichlet,
+                probe_batch=rhs_batch,
+                precond_apply=precond_apply,
+            )
+            if dense_matrix is not None and DENSE_TEXT_SANITY:
+                diagnostics["dense_identity"] = _dense_identity_sanity(dense_matrix, precond_apply)
+
+        reports.append(
+            MassBenchmarkReport(
+                k=k,
+                label=label,
+                outer="schur",
+                inner=f"block-cheb-{smoother_kind}",
+                reason=reason,
+                dirichlet=dirichlet,
+                n_rhs=n_rhs,
+                n_converged=n_converged,
+                n_not_converged=n_rhs - n_converged,
+                avg_iters=float(jnp.mean(iterations_array)),
+                std_iters=float(jnp.std(iterations_array)),
+                max_iters=int(jnp.max(iterations_array)),
+                avg_time_ms=float(jnp.mean(times_ms_array)),
+                std_time_ms=float(jnp.std(times_ms_array)),
+                max_time_ms=float(jnp.max(times_ms_array)),
+                diagnostics=diagnostics,
+            )
+        )
+
+    return reports
+
+
 def print_mass_benchmark_reports(reports: list[MassBenchmarkReport]):
     print("-" * 104)
     print(
@@ -1387,6 +1982,7 @@ def print_mass_benchmark_reports(reports: list[MassBenchmarkReport]):
             f"{report.avg_time_ms:>10.2f} {report.std_time_ms:>10.2f} {report.max_time_ms:>10.2f} "
             f"{report.reason}"
         )
+    _print_mass_preconditioner_sanity(reports)
 
 
 def summarize_mass_matrix(seq, operators, *, k: int, dirichlet: bool) -> MassSpectrumReport:
@@ -2345,6 +2941,28 @@ for dirichlet in BENCHMARK_DIRICHLET_CASES:
             f"tensor ranks={TENSOR_RANKS}, richardson/chebyshev steps={POLY_STEP_OPTIONS}"
         )
         print_mass_benchmark_reports(reports)
+
+
+# %% Compare only the exact-block Chebyshev Schur variants requested for the inner solves
+ALL_BLOCK_CHEB_BENCHMARKS = {}
+if RUN_BLOCK_CHEB_BENCHMARK:
+    for dirichlet in BENCHMARK_DIRICHLET_CASES:
+        for k in (0, 1, 2):
+            reports = benchmark_mass_block_chebyshev_preconditioners(
+                SEQ,
+                PRODUCTION_OPERATORS,
+                k=k,
+                dirichlet=dirichlet,
+                n_rhs=8,
+                seed=0,
+            )
+            ALL_BLOCK_CHEB_BENCHMARKS[(k, dirichlet)] = reports
+            print("=" * 112)
+            print(
+                f"k={k} exact-block Chebyshev comparison: dirichlet={dirichlet}, "
+                f"tensor rank={TENSOR_RANKS[-1]}"
+            )
+            print_mass_benchmark_reports(reports)
 
 
 # %% Compare the scalar k=0 Hodge/Laplacian choices on the shared MassPreconditionerSpec interface
