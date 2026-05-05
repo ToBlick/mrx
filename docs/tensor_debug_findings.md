@@ -66,7 +66,51 @@ So the current benchmark conclusion is that better iteration counts alone are
 not enough to justify extra polynomial work once the tensor route is already
 strong.
 
-## 5. Final Takeaway
+## 5. Forward-Model Diagnostics
+
+The recent small-case forward-model checks on the rotating-ellipse family make
+the model-quality picture much sharper than the solve benchmarks alone.
+
+- `k = 2` `div_div`: the regular-space rank-1 tensor model is decent as a
+  forward model, with about `2.1%` Frobenius error on `ns = (4, 8, 4)`,
+  `p = 3`.
+- But the extracted-space sandwich of that same rank-1 `k = 2` model is much
+  worse, with about `12.9%` Frobenius error, and the extracted bulk-only error
+  is essentially the same.
+- That extracted `k = 2` miss is not a surgery bug. It is mostly a rank issue:
+  on the same case, extracted-space Frobenius error drops to about `0.65%` at
+  rank `2`, `0.36%` at rank `3`, and `0.058%` at rank `4`.
+- Scalar `k = 0` stiffness is the clearest bad rank-1 case: the extracted
+  forward-model error is about `33%` in Frobenius norm, and the extracted
+  bulk-only error is even worse at about `45%`. So the weakness is in the
+  bulk model itself, not in the surgery wrapping.
+- Rank-1 mass forward-model quality is degree dependent on the same test case:
+  `k = 0` is good (`~1.6%` full Frobenius, `~4.7%` bulk-only), `k = 1` is bad
+  (`~24%` full and bulk-only), and `k = 2` / `k = 3` are moderate (`~5%`).
+- Higher-rank mass checks changed the practical recommendation substantially:
+  rank `2` gave large solve improvements for every mass degree on
+  `ns = (8, 16, 8)`, while scalar `k = 0` mass was already essentially exact as
+  a forward model at rank `2`. The measured solve counts were roughly
+  `11 -> 3` for `k = 0`, `28 -> 14 -> 13` for `k = 1`, `26 -> 14 -> 12.5` for
+  `k = 2`, and `11 -> 6 -> 6` for `k = 3` as the rank increased from `1` to
+  `2` to `3`.
+- Scalar `k = 0` stiffness did not follow that pattern. After fixing the local
+  multirank projection bug, rank `2+` no longer blew up, but still did not
+  improve the bulk forward model materially. So the remaining stiffness issue
+  is not just insufficient rank in the current construction.
+
+So the current forward-model reading is:
+
+- higher rank is genuinely useful for all mass blocks, with rank `2` the main
+  practical winner,
+- eager production assembly now reflects that by defaulting the mass blocks to
+  per-degree rank `2` while keeping scalar stiffness on its rank-`1` fallback,
+- scalar `k = 0` stiffness remains a model-construction problem rather than a
+  simple rank shortage,
+- `k = 2` higher-form tensor modeling is viable, but rank `1` is too
+  restrictive after extraction on the tested mapped case.
+
+## 6. Final Takeaway
 
 The final tensor-preconditioner findings are:
 
@@ -75,7 +119,9 @@ The final tensor-preconditioner findings are:
 - vector mass tensor routes are mature,
 - the dominant practical question for `k = 1` and `k = 2` is not whether to add
   more Schur logic, but whether the extra coupled bulk work pays for itself,
-- on the current benchmark family, it does not.
+- on the current benchmark family, it does not,
+- and the remaining weak spots are now identified as bulk-model quality issues
+  rather than routing bugs.
 
 That is the final state of the debugging story that should guide further use of
 the tensor preconditioners.

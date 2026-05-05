@@ -158,6 +158,10 @@ class TensorMassPreconditioner(eqx.Module):
     cp_maxiter: int = eqx.field(static=True)
     cp_tol: float = eqx.field(static=True)
     cp_ridge: float = eqx.field(static=True)
+    k0_rank: int = eqx.field(static=True, default=1)
+    k1_rank: int = eqx.field(static=True, default=1)
+    k2_rank: int = eqx.field(static=True, default=1)
+    k3_rank: int = eqx.field(static=True, default=1)
     block_chebyshev_steps: int = eqx.field(static=True, default=3)
     block_lanczos_iterations: int = eqx.field(static=True, default=16)
     block_lanczos_max_eig_inflation: float = eqx.field(static=True, default=1.1)
@@ -175,6 +179,20 @@ class MassPreconditioners(eqx.Module):
     jacobi: Optional[JacobiMassPreconditioner] = None
     surgery: Optional[MassSurgeryPreconditioner] = None
     tensor: Optional[TensorMassPreconditioner] = None
+
+
+def tensor_mass_rank_for_degree(tensor: TensorMassPreconditioner, k: int) -> int:
+    match k:
+        case 0:
+            return int(getattr(tensor, 'k0_rank', tensor.rank))
+        case 1:
+            return int(getattr(tensor, 'k1_rank', tensor.rank))
+        case 2:
+            return int(getattr(tensor, 'k2_rank', tensor.rank))
+        case 3:
+            return int(getattr(tensor, 'k3_rank', tensor.rank))
+        case _:
+            raise ValueError("k must be 0, 1, 2 or 3")
 
 
 @dataclass(frozen=True)
@@ -1281,6 +1299,19 @@ def _apply_k1_rt_preconditioner(
     return jnp.concatenate([x_r, z])
 
 
+def _apply_k1_rt_forward_model(
+    surgery: K1MassSurgeryPreconditionerFactors,
+    arr_factors: TensorDiagonalBlockInverseFactors,
+    theta_factors: TensorDiagonalBlockInverseFactors,
+    rhs_rt: jnp.ndarray,
+) -> jnp.ndarray:
+    rhs_r = rhs_rt[:surgery.rt_r_size]
+    rhs_theta = rhs_rt[surgery.rt_r_size:surgery.rt_r_size + surgery.rt_theta_size]
+    out_r = _apply_tensor_diagonal_block_forward(arr_factors, rhs_r) + _apply_k1_rt_art_coupling(surgery, rhs_theta)
+    out_theta = _apply_k1_rt_atr_coupling(surgery, rhs_r) + _apply_tensor_diagonal_block_forward(theta_factors, rhs_theta)
+    return jnp.concatenate([out_r, out_theta])
+
+
 def _apply_k1_bulk_preconditioner(
     surgery: K1MassSurgeryPreconditionerFactors,
     arr_factors: TensorDiagonalBlockInverseFactors,
@@ -1306,6 +1337,20 @@ def _apply_k1_bulk_preconditioner(
         x_rt,
         z,
     ])
+
+
+def _apply_k1_bulk_forward_model(
+    surgery: K1MassSurgeryPreconditionerFactors,
+    arr_factors: TensorDiagonalBlockInverseFactors,
+    theta_factors: TensorDiagonalBlockInverseFactors,
+    zeta_factors: TensorDiagonalBlockInverseFactors,
+    rhs_bulk: jnp.ndarray,
+) -> jnp.ndarray:
+    rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
+    rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
+    out_rt = _apply_k1_rt_forward_model(surgery, arr_factors, theta_factors, rhs_rt) + _apply_k1_zeta_to_rt_coupling(surgery, rhs_zeta)
+    out_zeta = _apply_k1_rt_to_zeta_coupling(surgery, rhs_rt) + _apply_tensor_diagonal_block_forward(zeta_factors, rhs_zeta)
+    return jnp.concatenate([out_rt, out_zeta])
 
 
 def _apply_k1_bulk_diagonal_preconditioner(
@@ -1379,6 +1424,19 @@ def _apply_k2_rt_preconditioner(
     return jnp.concatenate([x_r, z])
 
 
+def _apply_k2_rt_forward_model(
+    surgery: K2MassSurgeryPreconditionerFactors,
+    r_bulk_factors: TensorDiagonalBlockInverseFactors,
+    theta_factors: TensorDiagonalBlockInverseFactors,
+    rhs_rt: jnp.ndarray,
+) -> jnp.ndarray:
+    rhs_r = rhs_rt[:surgery.r_bulk_size]
+    rhs_theta = rhs_rt[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
+    out_r = _apply_tensor_diagonal_block_forward(r_bulk_factors, rhs_r) + _apply_k2_theta_to_r_coupling(surgery, rhs_theta)
+    out_theta = _apply_k2_r_to_theta_coupling(surgery, rhs_r) + _apply_tensor_diagonal_block_forward(theta_factors, rhs_theta)
+    return jnp.concatenate([out_r, out_theta])
+
+
 def _apply_k2_bulk_preconditioner(
     surgery: K2MassSurgeryPreconditionerFactors,
     r_bulk_factors: TensorDiagonalBlockInverseFactors,
@@ -1404,6 +1462,21 @@ def _apply_k2_bulk_preconditioner(
         x_rt,
         z,
     ])
+
+
+def _apply_k2_bulk_forward_model(
+    surgery: K2MassSurgeryPreconditionerFactors,
+    r_bulk_factors: TensorDiagonalBlockInverseFactors,
+    theta_factors: TensorDiagonalBlockInverseFactors,
+    zeta_factors: TensorDiagonalBlockInverseFactors,
+    rhs_bulk: jnp.ndarray,
+) -> jnp.ndarray:
+    bulk_rt_size = surgery.r_bulk_size + surgery.theta_size
+    rhs_rt = rhs_bulk[:bulk_rt_size]
+    rhs_zeta = rhs_bulk[bulk_rt_size:bulk_rt_size + surgery.zeta_size]
+    out_rt = _apply_k2_rt_forward_model(surgery, r_bulk_factors, theta_factors, rhs_rt) + _apply_k2_zeta_to_rt_coupling(surgery, rhs_zeta)
+    out_zeta = _apply_k2_rt_to_zeta_coupling(surgery, rhs_rt) + _apply_tensor_diagonal_block_forward(zeta_factors, rhs_zeta)
+    return jnp.concatenate([out_rt, out_zeta])
 
 
 def _apply_k2_bulk_diagonal_preconditioner(
@@ -1587,12 +1660,14 @@ def build_mass_tensor_preconditioner(
     *,
     k: int,
     rank: int = 1,
+    fallback_rank: Optional[int] = None,
     cp_kwargs: Optional[Mapping[str, object]] = None,
     existing: Optional[TensorMassPreconditioner] = None,
     surgery_precond: Optional[MassSurgeryPreconditioner] = None,
     dirichlet_flags: tuple[bool, ...] = (False, True),
 ) -> TensorMassPreconditioner:
     del full_matrix
+    fallback_rank = rank if fallback_rank is None else int(fallback_rank)
     cp_kwargs = {} if cp_kwargs is None else dict(cp_kwargs)
     cp_maxiter = int(cp_kwargs.get("maxiter", 100))
     cp_tol = float(cp_kwargs.get("tol", 1e-9))
@@ -1609,7 +1684,6 @@ def build_mass_tensor_preconditioner(
 
     reuse_existing = (
         existing is not None
-        and existing.rank == rank
         and existing.cp_maxiter == cp_maxiter
         and existing.cp_tol == cp_tol
         and existing.cp_ridge == cp_ridge
@@ -1622,7 +1696,11 @@ def build_mass_tensor_preconditioner(
         and existing.richardson_omega == richardson_omega
     )
     tensor_precond = TensorMassPreconditioner(
-        rank=rank,
+        rank=fallback_rank,
+        k0_rank=(rank if k == 0 else (existing.k0_rank if reuse_existing else fallback_rank)),
+        k1_rank=(rank if k == 1 else (existing.k1_rank if reuse_existing else fallback_rank)),
+        k2_rank=(rank if k == 2 else (existing.k2_rank if reuse_existing else fallback_rank)),
+        k3_rank=(rank if k == 3 else (existing.k3_rank if reuse_existing else fallback_rank)),
         cp_maxiter=cp_maxiter,
         cp_tol=cp_tol,
         cp_ridge=cp_ridge,
@@ -2143,6 +2221,58 @@ def apply_mass_tensor_preconditioner(seq, preconds: Optional[MassPreconditioners
     x = x.at[surgery.surgery_indices].set(z)
     x = x.at[surgery.bulk_indices].set(x_b)
     return x
+
+
+def apply_mass_tensor_forward_model(seq, preconds: Optional[MassPreconditioners], v, k: int, dirichlet: bool = True):
+    del seq
+    factors = _select_mass_tensor_factors(preconds, k, dirichlet)
+
+    if k == 0:
+        surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
+        rhs_s = v[:surgery.surgery_size]
+        rhs_b = v[surgery.surgery_size:]
+        out_s = surgery.ass @ rhs_s + _apply_k0_bulk_to_surgery_coupling(surgery, rhs_b)
+        out_b = _apply_k0_surgery_to_bulk_coupling(surgery, rhs_s) + _apply_tensor_diagonal_block_forward(factors.bulk, rhs_b)
+        return jnp.concatenate([out_s, out_b])
+
+    if k == 3:
+        return _apply_tensor_diagonal_block_forward(factors, v)
+
+    if k == 2:
+        surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
+        rhs_s = v[surgery.surgery_indices]
+        rhs_b = v[surgery.bulk_indices]
+        out_s = surgery.ass @ rhs_s + _apply_k2_bulk_to_surgery_coupling(surgery, rhs_b)
+        out_b = _apply_k2_surgery_to_bulk_coupling(surgery, rhs_s) + _apply_k2_bulk_forward_model(
+            surgery,
+            factors.r_bulk,
+            factors.theta,
+            factors.zeta,
+            rhs_b,
+        )
+        out = jnp.zeros_like(v)
+        out = out.at[surgery.surgery_indices].set(out_s)
+        out = out.at[surgery.bulk_indices].set(out_b)
+        return out
+
+    if k != 1:
+        raise ValueError(f"Tensor mass forward model currently only supports k=0, k=1, k=2 and k=3 (got k={k})")
+
+    surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
+    rhs_s = v[surgery.surgery_indices]
+    rhs_b = v[surgery.bulk_indices]
+    out_s = surgery.ass @ rhs_s + _apply_k1_bulk_to_surgery_coupling(surgery, rhs_b)
+    out_b = _apply_k1_surgery_to_bulk_coupling(surgery, rhs_s) + _apply_k1_bulk_forward_model(
+        surgery,
+        factors.arr,
+        factors.theta,
+        factors.zeta,
+        rhs_b,
+    )
+    out = jnp.zeros_like(v)
+    out = out.at[surgery.surgery_indices].set(out_s)
+    out = out.at[surgery.bulk_indices].set(out_b)
+    return out
 def _symmetrize(matrix: jnp.ndarray) -> jnp.ndarray:
     return 0.5 * (matrix + matrix.T)
 

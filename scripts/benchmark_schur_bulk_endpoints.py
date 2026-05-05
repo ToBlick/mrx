@@ -49,6 +49,7 @@ NUM_RHS = 8
 TOL = 1e-9
 MAXITER = 1000
 CHEB_STEPS = (1, 2, 4)
+BENCHMARK_WHOLE_CHEB_STEPS = tuple(step for step in CHEB_STEPS if step != 1)
 TENSOR_CP_KWARGS = {"tol": 1e-9, "maxiter": 100}
 TENSOR_CP_KWARGS_INNER_SCHUR_OFF = {
     **TENSOR_CP_KWARGS,
@@ -226,29 +227,15 @@ def mass_tensor_case_factories(seq, operator_bundles, k: int):
             f"whole-cheb{steps}-jacobi",
             build_mass_whole_cheb_jacobi(seq, operators_default, k, steps),
         )
-        for steps in CHEB_STEPS
+        for steps in BENCHMARK_WHOLE_CHEB_STEPS
     )
 
     if k == 3:
         factories.append(("tensor", build_mass_tensor(seq, operators_default, k)))
-        factories.extend(
-            (
-                f"cheb{steps}-tensor",
-                build_mass_cheb_tensor(seq, operators_default, k, steps),
-            )
-            for steps in CHEB_STEPS
-        )
         return factories
 
     if k == 0:
         factories.append(("schur-tensor", build_mass_schur_tensor(seq, operators_default, k)))
-        factories.extend(
-            (
-                f"schur-cheb{steps}-tensor",
-                build_mass_schur_cheb_tensor(seq, operators_default, k, steps),
-            )
-            for steps in CHEB_STEPS
-        )
         return factories
 
     for coupling_label, operators_tensor in (
@@ -260,13 +247,6 @@ def mass_tensor_case_factories(seq, operator_bundles, k: int):
                 f"schur-tensor-{coupling_label}",
                 build_mass_schur_tensor(seq, operators_tensor, k),
             )
-        )
-        factories.extend(
-            (
-                f"schur-cheb{steps}-tensor-{coupling_label}",
-                build_mass_schur_cheb_tensor(seq, operators_tensor, k, steps),
-            )
-            for steps in CHEB_STEPS
         )
     return factories
 
@@ -402,16 +382,23 @@ def build_mass_rhs_batch(seq, k: int, *, seed: int):
 def print_table(title: str, rows: list[BenchmarkRow]):
     print()
     print(title)
+    jacobi_baseline_ms = {
+        row.problem: row.avg_ms
+        for row in rows
+        if row.case == "jacobi"
+    }
     header = (
         f"{'problem':<12} {'case':<28} {'avg_it':>8} {'std_it':>8} {'max_it':>8} "
-        f"{'avg_ms':>10} {'std_ms':>10} {'max_ms':>10}"
+        f"{'avg_ms':>10} {'std_ms':>10} {'max_ms':>10} {'speedup':>8}"
     )
     print(header)
     print("-" * len(header))
     for row in rows:
+        baseline_ms = jacobi_baseline_ms.get(row.problem)
+        speedup = float("nan") if baseline_ms is None or row.avg_ms <= 0 else baseline_ms / row.avg_ms
         print(
             f"{row.problem:<12} {row.case:<28} {row.avg_iters:>8.1f} {row.std_iters:>8.2f} {row.max_iters:>8d} "
-            f"{row.avg_ms:>10.2f} {row.std_ms:>10.2f} {row.max_ms:>10.2f}"
+            f"{row.avg_ms:>10.2f} {row.std_ms:>10.2f} {row.max_ms:>10.2f} {speedup:>8.2f}"
         )
 
 
@@ -449,16 +436,9 @@ def main():
             f"whole-cheb{steps}-jacobi",
             build_k0_laplacian_whole_cheb_jacobi(seq, operators, steps),
         )
-        for steps in CHEB_STEPS
+        for steps in BENCHMARK_WHOLE_CHEB_STEPS
     )
     laplace_factories.append(("schur-tensor", build_k0_laplacian_schur_tensor(seq, operators)))
-    laplace_factories.extend(
-        (
-            f"schur-cheb{steps}-tensor",
-            build_k0_laplacian_schur_cheb_tensor(seq, operators, steps),
-        )
-        for steps in CHEB_STEPS
-    )
     all_rows.extend(
         benchmark_problem(
             "laplace-k0",

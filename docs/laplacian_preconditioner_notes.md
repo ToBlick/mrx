@@ -75,8 +75,52 @@ The benchmark and validation picture is:
   Jacobi-Chebyshev on the tested rotating-ellipse family,
 - but the scalar Laplacian tensor route is still a less exact model than the
   corresponding scalar mass tensor routes,
+- and the recent forward-model diagnostics show that this is a bulk-model
+  issue, not a Schur-routing issue: on the small mapped test case
+  `ns = (4, 8, 4)`, `p = 3`, the rank-1 extracted scalar `k = 0` stiffness
+  model has about `33%` Frobenius error, while the extracted bulk-only error is
+  even worse at about `45%`,
 - so the scalar tensor-Hodge path should be viewed as a strong practical
   complement preconditioner rather than as a near-direct inverse.
+
+The important new comparison against the mass side is that higher rank does not
+fix this scalar stiffness weakness in the same way it fixes the mass blocks.
+
+- For the mass matrices, moving from rank `1` to rank `2` gives large forward
+  and solve improvements across all degrees, which means the underlying issue
+  is mostly that the mass-side geometric coefficient fields are not well
+  represented by rank `1`.
+- For scalar `k = 0` stiffness, the multirank path did not show the same
+  behavior: improving the CP fit of the current shared surrogate field did not
+  produce a better assembled bulk operator.
+
+So the current scalar stiffness limitation is not primarily “rank too small”.
+It is that the present multirank fit is aimed at the wrong object. The active
+rank-`r` builder fits a shared proxy field and then reconstructs the three
+directional operator terms from that proxy, but the actual scalar stiffness
+operator is a sum of directional Kronecker terms,
+
+$$
+K_r \otimes M_t \otimes M_z
++
+M_r \otimes K_t \otimes M_z
++
+M_r \otimes M_t \otimes K_z,
+$$
+
+with different directional metric tensors. Better low-rank fit of the proxy
+field does not by itself imply better approximation of that operator sum. So
+the next stiffness-side improvement should change the fit target to an
+operator-aware joint fit, rather than just increasing the rank inside the
+current proxy-field construction.
+
+This is why the production default can now safely diverge between mass and
+stiffness:
+
+- mass defaults to per-degree tensor rank `2`,
+- scalar stiffness/Hodge still keeps its current rank-`1` fallback,
+- and raising the stiffness rank inside the present proxy-field fit is not the
+  preferred next step.
 
 ## 6. Final Summary
 
