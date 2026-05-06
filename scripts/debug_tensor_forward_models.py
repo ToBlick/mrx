@@ -11,6 +11,7 @@ from mrx.operators import (
     _apply_k0_tensor_hodge_forward_model,
     _assemble_dense_from_apply,
     apply_mass_matrix,
+    apply_mass_tensor_preconditioner_ops,
     apply_mass_tensor_forward_model_ops,
     apply_stiffness,
     assemble_hodge_operators,
@@ -70,25 +71,61 @@ def _relative_error(y_model: jnp.ndarray, y_exact: jnp.ndarray) -> jnp.ndarray:
 
 
 def _mass_cp_summary(factors, k: int):
+    def add_block_metadata(summary: dict[str, float], block_factors, prefix: str = ""):
+        summary[f"{prefix}term_count"] = float(len(block_factors.term_r))
+        summary[f"{prefix}richardson_steps"] = float(block_factors.richardson_steps)
+        summary[f"{prefix}richardson_omega"] = float(block_factors.richardson_omega)
+        summary[f"{prefix}has_direct_inv"] = float(block_factors.direct_inv_r is not None)
+        summary[f"{prefix}has_modal_basis"] = float(block_factors.modal_basis_r is not None)
+        summary[f"{prefix}has_backbone_inv"] = float(block_factors.split_backbone_inv_r is not None)
+
+    def add_split_summary(summary: dict[str, float], block_factors, prefix: str = ""):
+        if block_factors.split_backbone_relative_norm is None:
+            return
+        summary[f"{prefix}split_backbone_relative_norm"] = float(block_factors.split_backbone_relative_norm)
+        summary[f"{prefix}split_correction_relative_norm"] = float(block_factors.split_correction_relative_norm)
+        summary[f"{prefix}split_correction_over_backbone"] = float(block_factors.split_correction_over_backbone)
+        summary[f"{prefix}split_backbone_residual_relative"] = float(block_factors.split_backbone_residual_relative)
+
     if k == 0:
-        return {
+        summary = {
             "cp_relative_error_max": float(factors.bulk.cp_relative_error),
             "cp_final_delta_max": float(factors.bulk.cp_final_delta),
         }
+        add_block_metadata(summary, factors.bulk)
+        add_split_summary(summary, factors.bulk)
+        return summary
     if k == 1:
-        return {
+        summary = {
             "cp_relative_error_max": float(max(factors.arr.cp_relative_error, factors.theta.cp_relative_error, factors.zeta.cp_relative_error)),
             "cp_final_delta_max": float(max(factors.arr.cp_final_delta, factors.theta.cp_final_delta, factors.zeta.cp_final_delta)),
         }
+        add_block_metadata(summary, factors.arr, "arr_")
+        add_block_metadata(summary, factors.theta, "theta_")
+        add_block_metadata(summary, factors.zeta, "zeta_")
+        add_split_summary(summary, factors.arr, "arr_")
+        add_split_summary(summary, factors.theta, "theta_")
+        add_split_summary(summary, factors.zeta, "zeta_")
+        return summary
     if k == 2:
-        return {
+        summary = {
             "cp_relative_error_max": float(max(factors.r_bulk.cp_relative_error, factors.theta.cp_relative_error, factors.zeta.cp_relative_error)),
             "cp_final_delta_max": float(max(factors.r_bulk.cp_final_delta, factors.theta.cp_final_delta, factors.zeta.cp_final_delta)),
         }
-    return {
+        add_block_metadata(summary, factors.r_bulk, "r_bulk_")
+        add_block_metadata(summary, factors.theta, "theta_")
+        add_block_metadata(summary, factors.zeta, "zeta_")
+        add_split_summary(summary, factors.r_bulk, "r_bulk_")
+        add_split_summary(summary, factors.theta, "theta_")
+        add_split_summary(summary, factors.zeta, "zeta_")
+        return summary
+    summary = {
         "cp_relative_error_max": float(factors.cp_relative_error),
         "cp_final_delta_max": float(factors.cp_final_delta),
     }
+    add_block_metadata(summary, factors)
+    add_split_summary(summary, factors)
+    return summary
 
 
 def _build_problem(args, seq):
@@ -98,6 +135,10 @@ def _build_problem(args, seq):
         "tol": args.cp_tol,
         "ridge": args.cp_ridge,
     }
+    if args.problem.startswith("mass-k"):
+        cp_kwargs["fit_strategy"] = args.fit_strategy
+        cp_kwargs["richardson_steps"] = args.richardson_steps
+        cp_kwargs["richardson_omega"] = args.richardson_omega
 
     if args.problem == "k0-stiffness":
         operators = None
@@ -162,6 +203,35 @@ def _build_problem(args, seq):
     return operators, exact_apply, model_apply, full_size, bulk_indices, cp_summary
 
 
+def _build_mass_preconditioner_apply(args, seq, *, reference_richardson_steps: int | None = None):
+    if not args.problem.startswith("mass-k"):
+        raise ValueError("Preconditioner comparison is only available for mass problems")
+
+    dirichlet = not args.free
+    cp_kwargs = {
+        "maxiter": args.cp_maxiter,
+        "tol": args.cp_tol,
+        "ridge": args.cp_ridge,
+        "fit_strategy": args.fit_strategy,
+        "richardson_steps": args.richardson_steps if reference_richardson_steps is None else reference_richardson_steps,
+        "richardson_omega": args.richardson_omega,
+    }
+    k = int(args.problem[-1])
+    operators = assemble_tensor_mass_preconditioner(
+        seq,
+        operators=None,
+        ks=(k,),
+        rank=args.rank,
+        cp_kwargs=cp_kwargs,
+    )
+    full_size = getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}")
+
+    def preconditioner_apply(x):
+        return apply_mass_tensor_preconditioner_ops(seq, operators, x, k, dirichlet=dirichlet)
+
+    return preconditioner_apply, full_size
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Benchmark exact vs modeled tensor forward applies for k=0 stiffness and mass operators."
@@ -173,9 +243,14 @@ def main():
     parser.add_argument("--cp-maxiter", type=int, default=100, help="Maximum CP ALS iterations")
     parser.add_argument("--cp-tol", type=float, default=1e-9, help="CP ALS tolerance")
     parser.add_argument("--cp-ridge", type=float, default=1e-12, help="CP ALS ridge regularization")
+    parser.add_argument("--fit-strategy", choices=("multiplicative", "split"), default="multiplicative", help="Mass-only tensor fit strategy")
+    parser.add_argument("--richardson-steps", type=int, default=0, help="Mass-only tensor Richardson steps")
+    parser.add_argument("--richardson-omega", type=float, default=1.0, help="Mass-only tensor Richardson damping")
     parser.add_argument("--n-vectors", type=int, default=8, help="Number of random test vectors")
     parser.add_argument("--seed", type=int, default=0, help="PRNG seed for test vectors")
     parser.add_argument("--dense", action="store_true", help="Also compare dense exact/model matrices")
+    parser.add_argument("--compare-preconditioner", action="store_true", help="Also compare tensor preconditioner outputs against a reference Richardson step count")
+    parser.add_argument("--reference-richardson-steps", type=int, default=0, help="Reference Richardson steps for preconditioner comparison")
     parser.add_argument("--free", action="store_true", help="Use free extraction space")
     parser.add_argument("--bulk-only", action="store_true", help="Restrict the check to the tensor bulk rows/cols when available")
     parser.add_argument("--map-kind", choices=("rotating_ellipse", "identity"), default="rotating_ellipse")
@@ -223,12 +298,41 @@ def main():
     if args.bulk_only:
         space_label = f"{space_label}-bulk"
 
-    print(f"problem={args.problem}, ns={args.ns}, p={args.p}, map_kind={args.map_kind}, rank={args.rank}, space={space_label}")
+    print(f"problem={args.problem}, ns={args.ns}, p={args.p}, map_kind={args.map_kind}, rank={args.rank}, fit_strategy={args.fit_strategy}, richardson_steps={args.richardson_steps}, richardson_omega={args.richardson_omega}, space={space_label}")
     print(f"cp_relative_error_max={cp_summary['cp_relative_error_max']:.16g}")
     print(f"cp_final_delta_max={cp_summary['cp_final_delta_max']:.16g}")
+    for key, value in cp_summary.items():
+        if key in ("cp_relative_error_max", "cp_final_delta_max"):
+            continue
+        print(f"{key}={value:.16g}")
     print(f"forward_relative_error_mean={float(jnp.mean(rel_errors)):.16g}")
     print(f"forward_relative_error_std={float(jnp.std(rel_errors)):.16g}")
     print(f"forward_relative_error_max={float(jnp.max(rel_errors)):.16g}")
+
+    if args.compare_preconditioner:
+        if not args.problem.startswith("mass-k"):
+            raise ValueError("--compare-preconditioner is only available for mass problems")
+
+        preconditioner_apply, preconditioner_size = _build_mass_preconditioner_apply(args, seq)
+        reference_apply, reference_size = _build_mass_preconditioner_apply(
+            args,
+            seq,
+            reference_richardson_steps=args.reference_richardson_steps,
+        )
+        if preconditioner_size != reference_size:
+            raise ValueError("Preconditioner comparison built mismatched vector sizes")
+
+        def preconditioner_error_for_key(key):
+            x = jax.random.normal(key, (preconditioner_size,), dtype=jnp.float64)
+            y = preconditioner_apply(x)
+            y_ref = reference_apply(x)
+            return _relative_error(y, y_ref)
+
+        preconditioner_rel_errors = jax.vmap(preconditioner_error_for_key)(keys)
+        print(f"preconditioner_reference_richardson_steps={args.reference_richardson_steps}")
+        print(f"preconditioner_relative_difference_mean={float(jnp.mean(preconditioner_rel_errors)):.16g}")
+        print(f"preconditioner_relative_difference_std={float(jnp.std(preconditioner_rel_errors)):.16g}")
+        print(f"preconditioner_relative_difference_max={float(jnp.max(preconditioner_rel_errors)):.16g}")
 
     if args.dense:
         exact = _assemble_dense_from_apply(exact_apply, size)

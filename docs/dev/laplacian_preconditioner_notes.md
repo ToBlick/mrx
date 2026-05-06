@@ -114,6 +114,9 @@ the next stiffness-side improvement should change the fit target to an
 operator-aware joint fit, rather than just increasing the rank inside the
 current proxy-field construction.
 
+The design note for that next step is in
+[docs/operator_aware_scalar_stiffness_fit.md](/scratch/tblickhan/mrx/docs/operator_aware_scalar_stiffness_fit.md).
+
 This is why the production default can now safely diverge between mass and
 stiffness:
 
@@ -121,6 +124,51 @@ stiffness:
 - scalar stiffness/Hodge still keeps its current rank-`1` fallback,
 - and raising the stiffness rank inside the present proxy-field fit is not the
   preferred next step.
+
+The first operator-aware replacement check supports that diagnosis. On the same
+small rotating-ellipse case where the old extracted scalar stiffness model was
+about `33%` wrong in Frobenius norm, the new rank-`2` operator-aware bulk model
+reduced the extracted Frobenius error to about `11.7%`, with sampled forward
+error around `11.3%`. So changing the fit target helps materially, even though
+the scalar stiffness model is still not yet as accurate as the mature mass-side
+tensor models.
+
+The follow-up bulk-only sweep showed that the remaining miss is still primarily
+in the bulk tensor approximation rather than in the surgery coupling. On
+`ns = (4, 8, 4)`, `p = 3`, the new operator-aware model gave full-extracted vs
+bulk-only Frobenius errors of about `18.5%` vs `25.3%` at rank `1`,
+`11.7%` vs `16.0%` at rank `2`, and `10.7%` vs `14.6%` at rank `4`. So the
+exact core rows are helping rather than hurting, and the main remaining work is
+still to improve the bulk scalar stiffness ansatz.
+
+The first actual solve benchmark refined that conclusion further. On the
+Dirichlet scalar Laplace solve at `ns = (6, 8, 4)`, `p = 3`, the new
+operator-aware builder did not yet produce a better preconditioner as rank
+increased: rank `1` took about `25` iterations and `6.68 ms`, while rank `2`
+and rank `4` rose to about `30.5` / `7.92 ms` and `29.5` / `7.64 ms`.
+
+The larger benchmark removes any doubt that this is a real inverse-side
+failure rather than a small-case fluctuation. On the same Dirichlet
+rotating-ellipse family at `ns = (16, 32, 8)`, `p = 3`, the scalar tensor-Hodge
+route gave about `58.8` iterations / `287.8 ms` at rank `1`, degraded to about
+`107.2` / `518.6 ms` at rank `2`, and then failed outright at rank `4` by
+hitting the `1000`-iteration cap, even though the CP fit error kept improving
+from about `3.65e-1` to `7.59e-2` to `1.08e-2`.
+
+That large-case result is the clearest current stiffness-side diagnostic.
+Better low-rank fit of the directional coefficient fields is no longer the
+active blocker. The remaining blocker is the higher-rank scalar bulk inverse,
+specifically the shared-basis/modal-denominator approximation used to invert
+the operator-aware sum of directional Kronecker terms.
+
+So the current scalar-stiffness picture is now:
+
+- changing the fit target helped materially at the forward-model level,
+- the remaining error is still mainly in the bulk model,
+- but higher-rank operator-aware fitting does not yet improve the actual solve
+  path and can become dramatically worse on larger cases,
+- so the production default should remain the conservative scalar rank-`1`
+  route until the inverse side is improved further.
 
 ## 6. Final Summary
 

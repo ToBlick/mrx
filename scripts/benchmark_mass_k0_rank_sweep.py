@@ -10,7 +10,12 @@ import jax.numpy as jnp
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
 from mrx.operators import (
+    apply_hodge_laplacian_preconditioner,
+    apply_inverse_hodge_laplacian,
     apply_mass_matrix,
+    apply_stiffness,
+    assemble_hodge_operators,
+    assemble_incidence_operators,
     apply_mass_tensor_preconditioner_ops,
     assemble_mass_operators,
     assemble_tensor_mass_preconditioner,
@@ -38,6 +43,7 @@ BESOV_RHS_KWARGS = {
 @dataclass(frozen=True)
 class BenchmarkRow:
     rank: int
+    inner_schur: str
     cp_relative_error: float
     cp_final_delta: float
     avg_iters: float
@@ -62,6 +68,43 @@ def _parse_int_list(text: str) -> tuple[int, ...]:
     return values
 
 
+def _parse_k_list(text: str) -> tuple[int, ...]:
+    values = _parse_int_list(text)
+    invalid = tuple(k for k in values if k not in (0, 1, 2, 3))
+    if invalid:
+        raise ValueError(f"Mass degrees must be in 0,1,2,3; got {invalid}")
+    return values
+
+
+def _parse_problem_list(text: str) -> tuple[str, ...]:
+    values = tuple(part.strip() for part in text.split(",") if part.strip())
+    valid = {"k0-stiffness", "mass-k0", "mass-k1", "mass-k2", "mass-k3"}
+    if not values:
+        raise ValueError("Expected a non-empty comma-separated list of problems")
+    invalid = tuple(problem for problem in values if problem not in valid)
+    if invalid:
+        raise ValueError(f"Unsupported problems {invalid}; valid choices are {tuple(sorted(valid))}")
+    return values
+
+
+def _inner_schur_modes(mode: str, k: int) -> tuple[bool | None, ...]:
+    if k not in (1, 2):
+        return (None,)
+    if mode == "both":
+        return (True, False)
+    return (mode == "on",)
+
+
+def _inner_schur_label(inner_schur: bool | None, k: int) -> str:
+    if k not in (1, 2) or inner_schur is None:
+        return "n/a"
+    return "on" if inner_schur else "off"
+
+
+def _problem_label(problem: str) -> str:
+    return problem
+
+
 def _mass_cp_summary(factors, k: int) -> tuple[float, float]:
     if k == 0:
         return float(factors.bulk.cp_relative_error), float(factors.bulk.cp_final_delta)
@@ -75,6 +118,10 @@ def _mass_cp_summary(factors, k: int) -> tuple[float, float]:
             float(max(factors.r_bulk.cp_relative_error, factors.theta.cp_relative_error, factors.zeta.cp_relative_error)),
             float(max(factors.r_bulk.cp_final_delta, factors.theta.cp_final_delta, factors.zeta.cp_final_delta)),
         )
+    return float(factors.cp_relative_error), float(factors.cp_final_delta)
+
+
+def _stiffness_cp_summary(factors) -> tuple[float, float]:
     return float(factors.cp_relative_error), float(factors.cp_final_delta)
 
 
@@ -113,6 +160,23 @@ def build_rhs_batch(seq: DeRhamSequence, *, k: int, dirichlet: bool, n_rhs: int,
     )
 
 
+def _mass_problem_k(problem: str) -> int:
+    if not problem.startswith("mass-k"):
+        raise ValueError(f"Not a mass problem: {problem!r}")
+    return int(problem[-1])
+
+
+def build_problem_rhs_batch(seq: DeRhamSequence, *, problem: str, dirichlet: bool, n_rhs: int, seed: int):
+    if problem == "k0-stiffness":
+        size = seq.n0_dbc if dirichlet else seq.n0
+        return jax.random.normal(
+            jax.random.PRNGKey(seed),
+            (n_rhs, size),
+            dtype=jnp.float64,
+        )
+    return build_rhs_batch(seq, k=_mass_problem_k(problem), dirichlet=dirichlet, n_rhs=n_rhs, seed=seed)
+
+
 def time_solve(solve, rhs_batch) -> dict[str, float | int]:
     x, it = solve(rhs_batch[0])
     jax.block_until_ready(x)
@@ -138,51 +202,96 @@ def time_solve(solve, rhs_batch) -> dict[str, float | int]:
     }
 
 
-def benchmark_rank(seq: DeRhamSequence, rhs_batch, args, rank: int) -> BenchmarkRow:
+def benchmark_rank(seq: DeRhamSequence, operators_base, rhs_batch, args, *, problem: str, rank: int, inner_schur: bool | None) -> BenchmarkRow:
     dirichlet = not args.free
     cp_kwargs = {
         "tol": args.cp_tol,
         "maxiter": args.cp_maxiter,
         "ridge": args.cp_ridge,
     }
+    if problem.startswith("mass-k"):
+        k = _mass_problem_k(problem)
+        cp_kwargs["fit_strategy"] = args.fit_strategy
+        cp_kwargs["richardson_steps"] = args.richardson_steps
+        cp_kwargs["richardson_omega"] = args.richardson_omega
+    else:
+        k = 0
 
-    operators = None
-    operators = assemble_mass_operators(seq, seq.geometry, operators=operators, ks=(args.k,))
-    operators = assemble_tensor_mass_preconditioner(
-        seq,
-        operators=operators,
-        ks=(args.k,),
-        rank=rank,
-        cp_kwargs=cp_kwargs,
-    )
+    if problem == "mass-k1" and inner_schur is not None:
+        cp_kwargs["k1_inner_schur"] = inner_schur
+    if problem == "mass-k2" and inner_schur is not None:
+        cp_kwargs["k2_inner_schur"] = inner_schur
 
-    factors = select_boundary_data(getattr(operators.mass_preconds.tensor, f"k{args.k}"), dirichlet, f"Tensor mass k={args.k}")
+    operators = operators_base
+    if problem == "k0-stiffness":
+        operators = assemble_tensor_mass_preconditioner(
+            seq,
+            operators=operators,
+            ks=(0,),
+            rank=rank,
+            cp_kwargs=cp_kwargs,
+        )
+        operators = assemble_hodge_operators(seq, seq.geometry, operators=operators, ks=(0,))
+        factors = select_boundary_data(operators.k0_tensor_hodge_precond, dirichlet, "Tensor Hodge k=0")
+        operator_apply = lambda x: apply_stiffness(seq, operators, x, 0, dirichlet=dirichlet)
+        preconditioner_apply = lambda rhs: apply_hodge_laplacian_preconditioner(
+            seq,
+            operators,
+            rhs,
+            0,
+            dirichlet=dirichlet,
+            kind="tensor",
+        )
+        cp_relative_error, cp_final_delta = _stiffness_cp_summary(factors)
+    else:
+        operators = assemble_tensor_mass_preconditioner(
+            seq,
+            operators=operators,
+            ks=(k,),
+            rank=rank,
+            cp_kwargs=cp_kwargs,
+        )
 
-    operator_apply = lambda x: apply_mass_matrix(seq, operators, x, args.k, dirichlet=dirichlet)
-    preconditioner_apply = lambda rhs: apply_mass_tensor_preconditioner_ops(
-        seq,
-        operators,
-        rhs,
-        args.k,
-        dirichlet=dirichlet,
-    )
+        factors = select_boundary_data(getattr(operators.mass_preconds.tensor, f"k{k}"), dirichlet, f"Tensor mass k={k}")
+        operator_apply = lambda x: apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet)
+        preconditioner_apply = lambda rhs: apply_mass_tensor_preconditioner_ops(
+            seq,
+            operators,
+            rhs,
+            k,
+            dirichlet=dirichlet,
+        )
+        cp_relative_error, cp_final_delta = _mass_cp_summary(factors, k)
 
     @jax.jit
     def solve(rhs):
-        x, info = solve_singular_cg(
-            operator_apply,
-            rhs,
-            mass_matvec=operator_apply,
-            precond_matvec=preconditioner_apply,
-            tol=args.tol,
-            maxiter=args.maxiter,
-        )
+        if problem == "k0-stiffness":
+            x, info = apply_inverse_hodge_laplacian(
+                seq,
+                operators,
+                rhs,
+                0,
+                dirichlet=dirichlet,
+                tol=args.tol,
+                maxiter=args.maxiter,
+                preconditioner="tensor",
+                return_info=True,
+            )
+        else:
+            x, info = solve_singular_cg(
+                operator_apply,
+                rhs,
+                mass_matvec=operator_apply,
+                precond_matvec=preconditioner_apply,
+                tol=args.tol,
+                maxiter=args.maxiter,
+            )
         return x, jnp.abs(info)
 
     stats = time_solve(solve, rhs_batch)
-    cp_relative_error, cp_final_delta = _mass_cp_summary(factors, args.k)
     return BenchmarkRow(
         rank=rank,
+        inner_schur=_inner_schur_label(inner_schur, k if problem.startswith("mass-k") else -1),
         cp_relative_error=cp_relative_error,
         cp_final_delta=cp_final_delta,
         **stats,
@@ -191,15 +300,20 @@ def benchmark_rank(seq: DeRhamSequence, rhs_batch, args, rank: int) -> Benchmark
 
 def print_table(rows: list[BenchmarkRow]) -> None:
     print()
+    show_inner_schur = any(row.inner_schur != "n/a" for row in rows)
     header = (
-        f"{'rank':>6} {'cp_err':>12} {'cp_delta':>12} {'avg_it':>8} {'std_it':>8} {'max_it':>8} "
+        f"{'rank':>6} "
+        + (f"{'inner':>7} " if show_inner_schur else "")
+        + f"{'cp_err':>12} {'cp_delta':>12} {'avg_it':>8} {'std_it':>8} {'max_it':>8} "
         f"{'avg_ms':>10} {'std_ms':>10} {'max_ms':>10}"
     )
     print(header)
     print("-" * len(header))
     for row in rows:
         print(
-            f"{row.rank:>6d} {row.cp_relative_error:>12.5e} {row.cp_final_delta:>12.5e} "
+            f"{row.rank:>6d} "
+            + (f"{row.inner_schur:>7} " if show_inner_schur else "")
+            + f"{row.cp_relative_error:>12.5e} {row.cp_final_delta:>12.5e} "
             f"{row.avg_iters:>8.1f} {row.std_iters:>8.2f} {row.max_iters:>8d} "
             f"{row.avg_ms:>10.2f} {row.std_ms:>10.2f} {row.max_ms:>10.2f}"
         )
@@ -207,12 +321,18 @@ def print_table(rows: list[BenchmarkRow]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Benchmark mass-k solves for several tensor ranks."
+        description="Benchmark tensor-preconditioned mass and scalar stiffness solves for several tensor ranks."
     )
+    parser.add_argument("--problems", type=_parse_problem_list, help="Optional comma-separated list of problems to benchmark in one run")
     parser.add_argument("--k", type=int, choices=(0, 1, 2, 3), default=0, help="Mass degree to benchmark")
+    parser.add_argument("--ks", type=_parse_k_list, help="Optional comma-separated list of mass degrees to benchmark in one run")
     parser.add_argument("--ns", type=_parse_ns, default=(8, 16, 8), help="Grid sizes as nr,nt,nz")
     parser.add_argument("--p", type=int, default=3, help="Spline degree in each direction")
     parser.add_argument("--ranks", type=_parse_int_list, default=(1, 2, 3), help="Comma-separated tensor ranks")
+    parser.add_argument("--inner-schur", choices=("on", "off", "both"), default="on", help="Sweep inner Schur on/off for k=1 and k=2")
+    parser.add_argument("--fit-strategy", choices=("multiplicative", "split"), default="multiplicative", help="Mass-only tensor fit strategy")
+    parser.add_argument("--richardson-steps", type=int, default=0, help="Mass-only tensor Richardson steps")
+    parser.add_argument("--richardson-omega", type=float, default=1.0, help="Mass-only tensor Richardson damping")
     parser.add_argument("--n-rhs", type=int, default=8, help="Number of right-hand sides")
     parser.add_argument("--seed", type=int, default=100, help="PRNG seed for RHS generation")
     parser.add_argument("--free", action="store_true", help="Use free extraction space")
@@ -231,12 +351,36 @@ def main() -> None:
     t0 = time.perf_counter()
     seq = build_sequence(args)
     print(f"built in {time.perf_counter() - t0:.2f} s")
-    print(f"problem=mass-k{args.k}, ns={args.ns}, p={args.p}, ranks={args.ranks}, dirichlet={not args.free}, n_rhs={args.n_rhs}")
+    if args.problems is not None:
+        problems = args.problems
+    else:
+        ks = args.ks if args.ks is not None else (args.k,)
+        problems = tuple(f"mass-k{k}" for k in ks)
+    print(f"problems={problems}, ns={args.ns}, p={args.p}, ranks={args.ranks}, inner_schur={args.inner_schur}, fit_strategy={args.fit_strategy}, richardson_steps={args.richardson_steps}, richardson_omega={args.richardson_omega}, dirichlet={not args.free}, n_rhs={args.n_rhs}")
     print("RHS: random Besov-like functions projected into the FEM space")
 
-    rhs_batch = build_rhs_batch(seq, k=args.k, dirichlet=not args.free, n_rhs=args.n_rhs, seed=args.seed)
-    rows = [benchmark_rank(seq, rhs_batch, args, rank) for rank in args.ranks]
-    print_table(rows)
+    mass_ks = tuple(_mass_problem_k(problem) for problem in problems if problem.startswith("mass-k"))
+    include_k0_stiffness = any(problem == "k0-stiffness" for problem in problems)
+
+    operators_base = None
+    if mass_ks or include_k0_stiffness:
+        mass_operator_ks = tuple(sorted(set(mass_ks + ((1,) if include_k0_stiffness else ()))))
+        operators_base = assemble_mass_operators(seq, seq.geometry, operators=operators_base, ks=mass_operator_ks)
+    if include_k0_stiffness:
+        operators_base = assemble_incidence_operators(seq, operators=operators_base, ks=(0,))
+        operators_base = assemble_hodge_operators(seq, seq.geometry, operators=operators_base, ks=(0,))
+
+    for problem in problems:
+        print()
+        print(f"problem={_problem_label(problem)}, ns={args.ns}, p={args.p}, ranks={args.ranks}, inner_schur={args.inner_schur}, fit_strategy={args.fit_strategy}, richardson_steps={args.richardson_steps}, richardson_omega={args.richardson_omega}, dirichlet={not args.free}, n_rhs={args.n_rhs}")
+        problem_seed = args.seed if problem == "k0-stiffness" else args.seed + _mass_problem_k(problem)
+        rhs_batch = build_problem_rhs_batch(seq, problem=problem, dirichlet=not args.free, n_rhs=args.n_rhs, seed=problem_seed)
+        rows = [
+            benchmark_rank(seq, operators_base, rhs_batch, args, problem=problem, rank=rank, inner_schur=inner_schur)
+            for inner_schur in _inner_schur_modes(args.inner_schur, _mass_problem_k(problem) if problem.startswith("mass-k") else -1)
+            for rank in args.ranks
+        ]
+        print_table(rows)
 
 
 if __name__ == "__main__":

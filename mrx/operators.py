@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 import warnings
 
 import equinox as eqx
@@ -32,16 +32,20 @@ from mrx.preconditioners import (
     _apply_k2_zeta_to_rt_coupling,
     _assemble_schur_inverse_from_applies,
     _assemble_shared_modal_basis,
+    _build_effective_prior_terms,
     _bulk_tensor_shape,
     _core_size,
     _cp_als_3tensor,
+    _expand_residual_terms_with_prior,
     _apply_tensor_diagonal_block,
     _apply_tensor_diagonal_block_forward,
+    _major_radius_prior_terms,
     _split_blocks,
     _k1_radial_reference_baselines,
     _select_mass_surgery_factors,
     _select_mass_tensor_factors,
     _symmetrize,
+    _tensor_from_separated_terms,
     apply_mass_tensor_forward_model,
     apply_mass_tensor_preconditioner,
     build_mass_surgery_preconditioner,
@@ -460,6 +464,9 @@ class K0TensorHodgePreconditionerFactors(eqx.Module):
     bulk_term_stiff_r: tuple[jnp.ndarray, ...] = ()
     bulk_term_stiff_t: tuple[jnp.ndarray, ...] = ()
     bulk_term_stiff_z: tuple[jnp.ndarray, ...] = ()
+    bulk_term_op_r: tuple[jnp.ndarray, ...] = ()
+    bulk_term_op_t: tuple[jnp.ndarray, ...] = ()
+    bulk_term_op_z: tuple[jnp.ndarray, ...] = ()
     bulk_modal_basis_r: Optional[jnp.ndarray] = None
     bulk_modal_basis_t: Optional[jnp.ndarray] = None
     bulk_modal_basis_z: Optional[jnp.ndarray] = None
@@ -469,6 +476,10 @@ class K0TensorHodgePreconditionerFactors(eqx.Module):
     bulk_modal_stiff_r: tuple[jnp.ndarray, ...] = ()
     bulk_modal_stiff_t: tuple[jnp.ndarray, ...] = ()
     bulk_modal_stiff_z: tuple[jnp.ndarray, ...] = ()
+    bulk_modal_op_r: tuple[jnp.ndarray, ...] = ()
+    bulk_modal_op_t: tuple[jnp.ndarray, ...] = ()
+    bulk_modal_op_z: tuple[jnp.ndarray, ...] = ()
+    bulk_modal_denom: Optional[jnp.ndarray] = None
     cp_relative_error: Optional[float] = None
     cp_final_delta: Optional[float] = None
 
@@ -757,13 +768,22 @@ def _normalize_cp_term_signs(
 
 def _fit_positive_rank_tensor_field(
         tensor_field: jnp.ndarray, *, rank: int, cp_maxiter: int, cp_tol: float,
-        cp_ridge: float, radial_baseline: Optional[jnp.ndarray] = None):
-    if radial_baseline is None:
+        cp_ridge: float, radial_baseline: Optional[jnp.ndarray] = None,
+        prior_terms: Optional[tuple[Mapping[str, jnp.ndarray], ...]] = None):
+    effective_prior_terms = _build_effective_prior_terms(
+        tensor_field.shape,
+        radial_baseline=radial_baseline,
+        prior_terms=prior_terms,
+        dtype=tensor_field.dtype,
+    )
+    if effective_prior_terms is None:
         corrected_field = tensor_field
-        scaled_radial_baseline = None
     else:
-        scaled_radial_baseline = jnp.asarray(radial_baseline, dtype=tensor_field.dtype)
-        corrected_field = tensor_field / scaled_radial_baseline[None, :, None]
+        prior_tensor = _tensor_from_separated_terms(effective_prior_terms, tensor_field.shape, tensor_field.dtype)
+        prior_floor = 1e-12 * jnp.max(jnp.abs(prior_tensor))
+        safe_floor = jnp.where(prior_floor > 0, prior_floor, 1.0)
+        safe_prior = jnp.where(jnp.abs(prior_tensor) > safe_floor, prior_tensor, safe_floor)
+        corrected_field = tensor_field / safe_prior
 
     weights, factors, cp_relative_error, cp_final_delta, _ = _cp_als_3tensor(
         corrected_field,
@@ -784,14 +804,14 @@ def _fit_positive_rank_tensor_field(
             factor_r,
             factor_z,
         )
-        if scaled_radial_baseline is not None:
-            factor_r = scaled_radial_baseline * factor_r
         terms.append({
             'scale': scale,
             'theta_factor': factor_theta,
             'radial_factor': factor_r,
             'zeta_factor': factor_z,
         })
+
+    terms = _expand_residual_terms_with_prior(tuple(terms), effective_prior_terms)
 
     return {
         'terms': tuple(terms),
@@ -802,7 +822,8 @@ def _fit_positive_rank_tensor_field(
 
 def _fit_positive_rank1_tensor_field(
         tensor_field: jnp.ndarray, *, cp_maxiter: int, cp_tol: float,
-        cp_ridge: float, radial_baseline: Optional[jnp.ndarray] = None):
+        cp_ridge: float, radial_baseline: Optional[jnp.ndarray] = None,
+        prior_terms: Optional[tuple[Mapping[str, jnp.ndarray], ...]] = None):
     fit = _fit_positive_rank_tensor_field(
         tensor_field,
         rank=1,
@@ -810,6 +831,7 @@ def _fit_positive_rank1_tensor_field(
         cp_tol=cp_tol,
         cp_ridge=cp_ridge,
         radial_baseline=radial_baseline,
+        prior_terms=prior_terms,
     )
     return {
         **fit['terms'][0],
@@ -927,122 +949,328 @@ def _k0_tensor_hodge_directional_rank_metrics(
     normalized_rr = metric_tensors['alpha_rr'] / safe_scales[0]
     normalized_tt = metric_tensors['alpha_thetatheta'] / safe_scales[1]
     normalized_zz = metric_tensors['alpha_zetazeta'] / safe_scales[2]
-    shared_target = jnp.cbrt(normalized_rr * normalized_tt * normalized_zz)
-
-    shared = _fit_positive_rank_tensor_field(
-        shared_target,
-        rank=rank,
+    radial_baselines = _k1_radial_reference_baselines(seq)
+    major_radius_terms = _major_radius_prior_terms(
+        seq,
+        inverse=False,
+        rank=2,
+        cp_maxiter=cp_maxiter,
+        cp_tol=cp_tol,
+        cp_ridge=cp_ridge,
+    )
+    inv_major_radius_terms = _major_radius_prior_terms(
+        seq,
+        inverse=True,
+        rank=2,
         cp_maxiter=cp_maxiter,
         cp_tol=cp_tol,
         cp_ridge=cp_ridge,
     )
 
+    rr_fit = _fit_positive_rank_tensor_field(
+        normalized_rr,
+        rank=rank,
+        cp_maxiter=cp_maxiter,
+        cp_tol=cp_tol,
+        cp_ridge=cp_ridge,
+        radial_baseline=radial_baselines[0],
+        prior_terms=major_radius_terms,
+    )
+    tt_fit = _fit_positive_rank_tensor_field(
+        normalized_tt,
+        rank=rank,
+        cp_maxiter=cp_maxiter,
+        cp_tol=cp_tol,
+        cp_ridge=cp_ridge,
+        radial_baseline=radial_baselines[1],
+        prior_terms=major_radius_terms,
+    )
+    zz_fit = _fit_positive_rank_tensor_field(
+        normalized_zz,
+        rank=rank,
+        cp_maxiter=cp_maxiter,
+        cp_tol=cp_tol,
+        cp_ridge=cp_ridge,
+        radial_baseline=radial_baselines[2],
+        prior_terms=inv_major_radius_terms,
+    )
+
     return {
-        'shared_terms': shared['terms'],
-        'normalized_rr': normalized_rr,
-        'normalized_tt': normalized_tt,
-        'normalized_zz': normalized_zz,
+        'rr_terms': rr_fit['terms'],
+        'tt_terms': tt_fit['terms'],
+        'zz_terms': zz_fit['terms'],
         'direction_scales': direction_scales,
-        'cp_relative_error': shared['cp_relative_error'],
-        'cp_final_delta': shared['cp_final_delta'],
+        'cp_relative_error': max(
+            rr_fit['cp_relative_error'],
+            tt_fit['cp_relative_error'],
+            zz_fit['cp_relative_error'],
+        ),
+        'cp_final_delta': max(
+            rr_fit['cp_final_delta'],
+            tt_fit['cp_final_delta'],
+            zz_fit['cp_final_delta'],
+        ),
     }
 
 
-def _assemble_k0_tensor_hodge_rank1_bulk_factors(
-        seq, *, dirichlet: bool, cp_maxiter: int, cp_tol: float, cp_ridge: float):
+def _weighted_average_dense_matrix_or_default(
+        matrices: tuple[jnp.ndarray, ...],
+        weights: jnp.ndarray,
+        default: jnp.ndarray) -> jnp.ndarray:
+    if len(matrices) == 0:
+        return default
+    return _weighted_average_dense_matrix(matrices, weights)
+
+
+def _nonnegative_separated_term_factors(term: Mapping[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
+    return {
+        'scale': jnp.asarray(term['scale']),
+        'theta_factor': jnp.abs(jnp.asarray(term['theta_factor'])),
+        'radial_factor': jnp.abs(jnp.asarray(term['radial_factor'])),
+        'zeta_factor': jnp.abs(jnp.asarray(term['zeta_factor'])),
+    }
+
+
+def _assemble_k0_tensor_hodge_operator_aware_bulk_factors(
+        seq, *, dirichlet: bool, rank: int,
+        cp_maxiter: int, cp_tol: float, cp_ridge: float):
     bulk_shape = _bulk_tensor_shape(seq, dirichlet)
     nr_bulk, _, _ = bulk_shape
     types = seq.basis_0.types
     g_r = _dense_incidence_1d(seq.basis_0.nr, types[0])
     g_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
     g_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
-    fits = _k0_tensor_hodge_directional_rank1_metrics(
+    fits = _k0_tensor_hodge_directional_rank_metrics(
         seq,
+        rank=rank,
         cp_maxiter=cp_maxiter,
         cp_tol=cp_tol,
         cp_ridge=cp_ridge,
     )
-    shared = fits['shared_terms'][0]
-    radial_baselines = _k1_radial_reference_baselines(seq)
-    shared_radial_mass_factor = shared['scale'] * shared['radial_factor']
-    shared_theta_mass_factor = shared['theta_factor']
-    shared_zeta_mass_factor = shared['zeta_factor']
 
-    rr_active_factor = _project_tensor_to_radial_active_factor(
-        fits['normalized_rr'],
-        shared_theta_mass_factor,
-        shared_zeta_mass_factor,
-        radial_baseline=radial_baselines[0],
-    )
-    tt_active_factor = _project_tensor_to_theta_active_factor(
-        fits['normalized_tt'],
-        shared_radial_mass_factor,
-        shared_zeta_mass_factor,
-    )
-    zz_active_factor = _project_tensor_to_zeta_active_factor(
-        fits['normalized_zz'],
-        shared_radial_mass_factor,
-        shared_theta_mass_factor,
-    )
+    term_op_r = []
+    term_op_t = []
+    term_op_z = []
+    inverse_term_op_r = []
+    inverse_term_op_t = []
+    inverse_term_op_z = []
+    term_weights = []
+    reference_mass_r_terms = []
+    reference_mass_t_terms = []
+    reference_mass_z_terms = []
+    reference_mass_r_weights = []
+    reference_mass_t_weights = []
+    reference_mass_z_weights = []
+    stabilize_inverse = rank > 1
 
-    mass_r = _restrict_radial_window(
-        _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * shared_radial_mass_factor),
+    for term in fits['rr_terms']:
+        inverse_term = _nonnegative_separated_term_factors(term) if stabilize_inverse else term
+        stiff_r = _restrict_radial_window(
+            _assemble_weighted_1d_stiffness(
+                seq.basis_r_jk,
+                seq.d_basis_r_jk,
+                seq.quad.w_x * (fits['direction_scales'][0] * term['scale'] * term['radial_factor']),
+                g_r,
+            ),
+            radial_start=2,
+            nr=nr_bulk,
+        )
+        mass_t = _assemble_weighted_1d_mass(seq.basis_t_jk, seq.quad.w_y * term['theta_factor'])
+        mass_z = _assemble_weighted_1d_mass(seq.basis_z_jk, seq.quad.w_z * term['zeta_factor'])
+        weight = jnp.linalg.norm(stiff_r) * jnp.linalg.norm(mass_t) * jnp.linalg.norm(mass_z)
+        term_op_r.append(stiff_r)
+        term_op_t.append(mass_t)
+        term_op_z.append(mass_z)
+        term_weights.append(weight)
+
+        inverse_stiff_r = _restrict_radial_window(
+            _assemble_weighted_1d_stiffness(
+                seq.basis_r_jk,
+                seq.d_basis_r_jk,
+                seq.quad.w_x * (fits['direction_scales'][0] * inverse_term['scale'] * inverse_term['radial_factor']),
+                g_r,
+            ),
+            radial_start=2,
+            nr=nr_bulk,
+        )
+        inverse_mass_t = _assemble_weighted_1d_mass(
+            seq.basis_t_jk,
+            seq.quad.w_y * inverse_term['theta_factor'],
+        )
+        inverse_mass_z = _assemble_weighted_1d_mass(
+            seq.basis_z_jk,
+            seq.quad.w_z * inverse_term['zeta_factor'],
+        )
+        inverse_term_op_r.append(inverse_stiff_r)
+        inverse_term_op_t.append(inverse_mass_t)
+        inverse_term_op_z.append(inverse_mass_z)
+        reference_mass_t_terms.append(inverse_mass_t)
+        reference_mass_z_terms.append(inverse_mass_z)
+        reference_mass_t_weights.append(weight)
+        reference_mass_z_weights.append(weight)
+
+    for term in fits['tt_terms']:
+        inverse_term = _nonnegative_separated_term_factors(term) if stabilize_inverse else term
+        mass_r = _restrict_radial_window(
+            _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * (term['scale'] * term['radial_factor'])),
+            radial_start=2,
+            nr=nr_bulk,
+        )
+        stiff_t = _assemble_weighted_1d_stiffness(
+            seq.basis_t_jk,
+            seq.d_basis_t_jk,
+            seq.quad.w_y * term['theta_factor'],
+            g_t,
+        )
+        mass_z = _assemble_weighted_1d_mass(seq.basis_z_jk, seq.quad.w_z * term['zeta_factor'])
+        weight = jnp.linalg.norm(mass_r) * jnp.linalg.norm(stiff_t) * jnp.linalg.norm(mass_z)
+        term_op_r.append(mass_r)
+        term_op_t.append(stiff_t)
+        term_op_z.append(mass_z)
+        term_weights.append(weight)
+
+        inverse_mass_r = _restrict_radial_window(
+            _assemble_weighted_1d_mass(
+                seq.basis_r_jk,
+                seq.quad.w_x * (inverse_term['scale'] * inverse_term['radial_factor']),
+            ),
+            radial_start=2,
+            nr=nr_bulk,
+        )
+        inverse_stiff_t = _assemble_weighted_1d_stiffness(
+            seq.basis_t_jk,
+            seq.d_basis_t_jk,
+            seq.quad.w_y * inverse_term['theta_factor'],
+            g_t,
+        )
+        inverse_mass_z = _assemble_weighted_1d_mass(
+            seq.basis_z_jk,
+            seq.quad.w_z * inverse_term['zeta_factor'],
+        )
+        inverse_term_op_r.append(inverse_mass_r)
+        inverse_term_op_t.append(inverse_stiff_t)
+        inverse_term_op_z.append(inverse_mass_z)
+        reference_mass_r_terms.append(inverse_mass_r)
+        reference_mass_z_terms.append(inverse_mass_z)
+        reference_mass_r_weights.append(weight)
+        reference_mass_z_weights.append(weight)
+
+    for term in fits['zz_terms']:
+        inverse_term = _nonnegative_separated_term_factors(term) if stabilize_inverse else term
+        mass_r = _restrict_radial_window(
+            _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * (term['scale'] * term['radial_factor'])),
+            radial_start=2,
+            nr=nr_bulk,
+        )
+        mass_t = _assemble_weighted_1d_mass(seq.basis_t_jk, seq.quad.w_y * term['theta_factor'])
+        stiff_z = _assemble_weighted_1d_stiffness(
+            seq.basis_z_jk,
+            seq.d_basis_z_jk,
+            seq.quad.w_z * term['zeta_factor'],
+            g_z,
+        )
+        weight = jnp.linalg.norm(mass_r) * jnp.linalg.norm(mass_t) * jnp.linalg.norm(stiff_z)
+        term_op_r.append(mass_r)
+        term_op_t.append(mass_t)
+        term_op_z.append(stiff_z)
+        term_weights.append(weight)
+
+        inverse_mass_r = _restrict_radial_window(
+            _assemble_weighted_1d_mass(
+                seq.basis_r_jk,
+                seq.quad.w_x * (inverse_term['scale'] * inverse_term['radial_factor']),
+            ),
+            radial_start=2,
+            nr=nr_bulk,
+        )
+        inverse_mass_t = _assemble_weighted_1d_mass(
+            seq.basis_t_jk,
+            seq.quad.w_y * inverse_term['theta_factor'],
+        )
+        inverse_stiff_z = _assemble_weighted_1d_stiffness(
+            seq.basis_z_jk,
+            seq.d_basis_z_jk,
+            seq.quad.w_z * inverse_term['zeta_factor'],
+            g_z,
+        )
+        inverse_term_op_r.append(inverse_mass_r)
+        inverse_term_op_t.append(inverse_mass_t)
+        inverse_term_op_z.append(inverse_stiff_z)
+        reference_mass_r_terms.append(inverse_mass_r)
+        reference_mass_t_terms.append(inverse_mass_t)
+        reference_mass_r_weights.append(weight)
+        reference_mass_t_weights.append(weight)
+
+    term_op_r = tuple(term_op_r)
+    term_op_t = tuple(term_op_t)
+    term_op_z = tuple(term_op_z)
+    inverse_term_op_r = tuple(inverse_term_op_r)
+    inverse_term_op_t = tuple(inverse_term_op_t)
+    inverse_term_op_z = tuple(inverse_term_op_z)
+    term_weights = jnp.asarray(term_weights, dtype=jnp.float64)
+
+    default_mass_r = _restrict_radial_window(
+        _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x),
         radial_start=2,
         nr=nr_bulk,
     )
-    mass_t = _assemble_weighted_1d_mass(seq.basis_t_jk, seq.quad.w_y * shared_theta_mass_factor)
-    mass_z = _assemble_weighted_1d_mass(seq.basis_z_jk, seq.quad.w_z * shared_zeta_mass_factor)
+    default_mass_t = _assemble_weighted_1d_mass(seq.basis_t_jk, seq.quad.w_y)
+    default_mass_z = _assemble_weighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
 
-    stiff_r = _restrict_radial_window(
-        _assemble_weighted_1d_stiffness(
-            seq.basis_r_jk,
-            seq.d_basis_r_jk,
-            seq.quad.w_x * (fits['direction_scales'][0] * rr_active_factor),
-            g_r,
-        ),
-        radial_start=2,
-        nr=nr_bulk,
+    reference_mass_r = _weighted_average_dense_matrix_or_default(
+        tuple(reference_mass_r_terms),
+        jnp.asarray(reference_mass_r_weights, dtype=jnp.float64),
+        default_mass_r,
     )
-    stiff_t = _assemble_weighted_1d_stiffness(
-        seq.basis_t_jk,
-        seq.d_basis_t_jk,
-        seq.quad.w_y * (fits['direction_scales'][1] * tt_active_factor),
-        g_t,
+    reference_mass_t = _weighted_average_dense_matrix_or_default(
+        tuple(reference_mass_t_terms),
+        jnp.asarray(reference_mass_t_weights, dtype=jnp.float64),
+        default_mass_t,
     )
-    stiff_z = _assemble_weighted_1d_stiffness(
-        seq.basis_z_jk,
-        seq.d_basis_z_jk,
-        seq.quad.w_z * (fits['direction_scales'][2] * zz_active_factor),
-        g_z,
+    reference_mass_z = _weighted_average_dense_matrix_or_default(
+        tuple(reference_mass_z_terms),
+        jnp.asarray(reference_mass_z_weights, dtype=jnp.float64),
+        default_mass_z,
     )
 
-    V_r, lam_r = _assemble_1d_fd_eigendecomp(mass_r, stiff_r)
-    V_t, lam_t = _assemble_1d_fd_eigendecomp(mass_t, stiff_t)
-    V_z, lam_z = _assemble_1d_fd_eigendecomp(mass_z, stiff_z)
+    basis_r, modal_op_r = _assemble_shared_modal_basis(reference_mass_r, inverse_term_op_r, term_weights)
+    basis_t, modal_op_t = _assemble_shared_modal_basis(reference_mass_t, inverse_term_op_t, term_weights)
+    basis_z, modal_op_z = _assemble_shared_modal_basis(reference_mass_z, inverse_term_op_z, term_weights)
+
+    modal_denom = jnp.zeros(bulk_shape, dtype=jnp.float64)
+    for lam_r, lam_t, lam_z in zip(modal_op_r, modal_op_t, modal_op_z):
+        modal_denom = modal_denom + lam_r[:, None, None] * lam_t[None, :, None] * lam_z[None, None, :]
+    modal_denom_floor = 1e-12 * jnp.max(jnp.abs(modal_denom))
+    safe_modal_floor = jnp.where(modal_denom_floor > 0, modal_denom_floor, 1.0)
+    modal_denom = jnp.where(modal_denom > safe_modal_floor, modal_denom, safe_modal_floor)
+
     return {
         'bulk_shape': bulk_shape,
-        'bulk_alpha': jnp.ones((3,), dtype=jnp.float64),
-        'bulk_V_r': V_r,
-        'bulk_V_t': V_t,
-        'bulk_V_z': V_z,
-        'bulk_lam_r': lam_r,
-        'bulk_lam_t': lam_t,
-        'bulk_lam_z': lam_z,
-        'bulk_mass_r': mass_r,
-        'bulk_mass_t': mass_t,
-        'bulk_mass_z': mass_z,
-        'bulk_stiff_r': stiff_r,
-        'bulk_stiff_t': stiff_t,
-        'bulk_stiff_z': stiff_z,
-        'bulk_term_mass_r': (mass_r,),
-        'bulk_term_mass_t': (mass_t,),
-        'bulk_term_mass_z': (mass_z,),
-        'bulk_term_stiff_r': (stiff_r,),
-        'bulk_term_stiff_t': (stiff_t,),
-        'bulk_term_stiff_z': (stiff_z,),
+        'bulk_term_op_r': term_op_r,
+        'bulk_term_op_t': term_op_t,
+        'bulk_term_op_z': term_op_z,
+        'bulk_modal_basis_r': basis_r,
+        'bulk_modal_basis_t': basis_t,
+        'bulk_modal_basis_z': basis_z,
+        'bulk_modal_op_r': modal_op_r,
+        'bulk_modal_op_t': modal_op_t,
+        'bulk_modal_op_z': modal_op_z,
+        'bulk_modal_denom': modal_denom,
         'cp_relative_error': fits['cp_relative_error'],
         'cp_final_delta': fits['cp_final_delta'],
     }
+
+
+def _assemble_k0_tensor_hodge_rank1_bulk_factors(
+        seq, *, dirichlet: bool, cp_maxiter: int, cp_tol: float, cp_ridge: float):
+    return _assemble_k0_tensor_hodge_operator_aware_bulk_factors(
+        seq,
+        dirichlet=dirichlet,
+        rank=1,
+        cp_maxiter=cp_maxiter,
+        cp_tol=cp_tol,
+        cp_ridge=cp_ridge,
+    )
 
 
 def _weighted_average_dense_matrix(
@@ -1063,152 +1291,14 @@ def _assemble_k0_tensor_hodge_multirank_bulk_factors(
         cp_maxiter: int, cp_tol: float, cp_ridge: float):
     if rank < 2:
         raise ValueError(f"multi-rank k=0 tensor Hodge bulk requires rank >= 2 (got rank={rank})")
-
-    bulk_shape = _bulk_tensor_shape(seq, dirichlet)
-    nr_bulk, _, _ = bulk_shape
-    types = seq.basis_0.types
-    g_r = _dense_incidence_1d(seq.basis_0.nr, types[0])
-    g_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
-    g_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
-    fits = _k0_tensor_hodge_directional_rank_metrics(
+    return _assemble_k0_tensor_hodge_operator_aware_bulk_factors(
         seq,
+        dirichlet=dirichlet,
         rank=rank,
         cp_maxiter=cp_maxiter,
         cp_tol=cp_tol,
         cp_ridge=cp_ridge,
     )
-    radial_baselines = _k1_radial_reference_baselines(seq)
-    shared_radial_mass_factors = tuple(shared['scale'] * shared['radial_factor'] for shared in fits['shared_terms'])
-    shared_theta_mass_factors = tuple(shared['theta_factor'] for shared in fits['shared_terms'])
-    shared_zeta_mass_factors = tuple(shared['zeta_factor'] for shared in fits['shared_terms'])
-
-    rr_active_factors = _project_tensor_to_radial_active_factors(
-        fits['normalized_rr'],
-        shared_theta_mass_factors,
-        shared_zeta_mass_factors,
-        radial_baseline=radial_baselines[0],
-    )
-    tt_active_factors = _project_tensor_to_theta_active_factors(
-        fits['normalized_tt'],
-        shared_radial_mass_factors,
-        shared_zeta_mass_factors,
-    )
-    zz_active_factors = _project_tensor_to_zeta_active_factors(
-        fits['normalized_zz'],
-        shared_radial_mass_factors,
-        shared_theta_mass_factors,
-    )
-
-    mass_r_terms = []
-    mass_t_terms = []
-    mass_z_terms = []
-    stiff_r_terms = []
-    stiff_t_terms = []
-    stiff_z_terms = []
-    size_r_terms = []
-    size_t_terms = []
-    size_z_terms = []
-
-    for shared_radial_mass_factor, shared_theta_mass_factor, shared_zeta_mass_factor, rr_active_factor, tt_active_factor, zz_active_factor in zip(
-            shared_radial_mass_factors,
-            shared_theta_mass_factors,
-            shared_zeta_mass_factors,
-            rr_active_factors,
-            tt_active_factors,
-            zz_active_factors):
-
-        mass_r = _restrict_radial_window(
-            _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * shared_radial_mass_factor),
-            radial_start=2,
-            nr=nr_bulk,
-        )
-        mass_t = _assemble_weighted_1d_mass(seq.basis_t_jk, seq.quad.w_y * shared_theta_mass_factor)
-        mass_z = _assemble_weighted_1d_mass(seq.basis_z_jk, seq.quad.w_z * shared_zeta_mass_factor)
-
-        stiff_r = _restrict_radial_window(
-            _assemble_weighted_1d_stiffness(
-                seq.basis_r_jk,
-                seq.d_basis_r_jk,
-                seq.quad.w_x * (fits['direction_scales'][0] * rr_active_factor),
-                g_r,
-            ),
-            radial_start=2,
-            nr=nr_bulk,
-        )
-        stiff_t = _assemble_weighted_1d_stiffness(
-            seq.basis_t_jk,
-            seq.d_basis_t_jk,
-            seq.quad.w_y * (fits['direction_scales'][1] * tt_active_factor),
-            g_t,
-        )
-        stiff_z = _assemble_weighted_1d_stiffness(
-            seq.basis_z_jk,
-            seq.d_basis_z_jk,
-            seq.quad.w_z * (fits['direction_scales'][2] * zz_active_factor),
-            g_z,
-        )
-
-        mass_r_terms.append(mass_r)
-        mass_t_terms.append(mass_t)
-        mass_z_terms.append(mass_z)
-        stiff_r_terms.append(stiff_r)
-        stiff_t_terms.append(stiff_t)
-        stiff_z_terms.append(stiff_z)
-        size_r_terms.append(jnp.linalg.norm(stiff_r) * jnp.linalg.norm(mass_t) * jnp.linalg.norm(mass_z))
-        size_t_terms.append(jnp.linalg.norm(mass_r) * jnp.linalg.norm(stiff_t) * jnp.linalg.norm(mass_z))
-        size_z_terms.append(jnp.linalg.norm(mass_r) * jnp.linalg.norm(mass_t) * jnp.linalg.norm(stiff_z))
-
-    mass_r_terms = tuple(mass_r_terms)
-    mass_t_terms = tuple(mass_t_terms)
-    mass_z_terms = tuple(mass_z_terms)
-    stiff_r_terms = tuple(stiff_r_terms)
-    stiff_t_terms = tuple(stiff_t_terms)
-    stiff_z_terms = tuple(stiff_z_terms)
-    size_r_terms = jnp.asarray(size_r_terms, dtype=jnp.float64)
-    size_t_terms = jnp.asarray(size_t_terms, dtype=jnp.float64)
-    size_z_terms = jnp.asarray(size_z_terms, dtype=jnp.float64)
-    total_sizes = size_r_terms + size_t_terms + size_z_terms
-
-    reference_mass_r = _weighted_average_dense_matrix(mass_r_terms, total_sizes)
-    reference_mass_t = _weighted_average_dense_matrix(mass_t_terms, total_sizes)
-    reference_mass_z = _weighted_average_dense_matrix(mass_z_terms, total_sizes)
-
-    basis_r, modal_r = _assemble_shared_modal_basis(
-        reference_mass_r,
-        stiff_r_terms + mass_r_terms,
-        jnp.concatenate([size_r_terms, size_t_terms + size_z_terms]),
-    )
-    basis_t, modal_t = _assemble_shared_modal_basis(
-        reference_mass_t,
-        stiff_t_terms + mass_t_terms,
-        jnp.concatenate([size_t_terms, size_r_terms + size_z_terms]),
-    )
-    basis_z, modal_z = _assemble_shared_modal_basis(
-        reference_mass_z,
-        stiff_z_terms + mass_z_terms,
-        jnp.concatenate([size_z_terms, size_r_terms + size_t_terms]),
-    )
-
-    return {
-        'bulk_shape': bulk_shape,
-        'bulk_term_mass_r': mass_r_terms,
-        'bulk_term_mass_t': mass_t_terms,
-        'bulk_term_mass_z': mass_z_terms,
-        'bulk_term_stiff_r': stiff_r_terms,
-        'bulk_term_stiff_t': stiff_t_terms,
-        'bulk_term_stiff_z': stiff_z_terms,
-        'bulk_modal_basis_r': basis_r,
-        'bulk_modal_basis_t': basis_t,
-        'bulk_modal_basis_z': basis_z,
-        'bulk_modal_stiff_r': modal_r[:rank],
-        'bulk_modal_stiff_t': modal_t[:rank],
-        'bulk_modal_stiff_z': modal_z[:rank],
-        'bulk_modal_mass_r': modal_r[rank:],
-        'bulk_modal_mass_t': modal_t[rank:],
-        'bulk_modal_mass_z': modal_z[rank:],
-        'cp_relative_error': fits['cp_relative_error'],
-        'cp_final_delta': fits['cp_final_delta'],
-    }
 
 
 def _build_k0_tensor_hodge_preconditioner_factors(
@@ -1238,6 +1328,9 @@ def _build_k0_tensor_hodge_preconditioner_factors(
         bulk_term_stiff_r=bulk_data.get('bulk_term_stiff_r', ()),
         bulk_term_stiff_t=bulk_data.get('bulk_term_stiff_t', ()),
         bulk_term_stiff_z=bulk_data.get('bulk_term_stiff_z', ()),
+        bulk_term_op_r=bulk_data.get('bulk_term_op_r', ()),
+        bulk_term_op_t=bulk_data.get('bulk_term_op_t', ()),
+        bulk_term_op_z=bulk_data.get('bulk_term_op_z', ()),
         bulk_modal_basis_r=bulk_data.get('bulk_modal_basis_r'),
         bulk_modal_basis_t=bulk_data.get('bulk_modal_basis_t'),
         bulk_modal_basis_z=bulk_data.get('bulk_modal_basis_z'),
@@ -1247,6 +1340,10 @@ def _build_k0_tensor_hodge_preconditioner_factors(
         bulk_modal_stiff_r=bulk_data.get('bulk_modal_stiff_r', ()),
         bulk_modal_stiff_t=bulk_data.get('bulk_modal_stiff_t', ()),
         bulk_modal_stiff_z=bulk_data.get('bulk_modal_stiff_z', ()),
+        bulk_modal_op_r=bulk_data.get('bulk_modal_op_r', ()),
+        bulk_modal_op_t=bulk_data.get('bulk_modal_op_t', ()),
+        bulk_modal_op_z=bulk_data.get('bulk_modal_op_z', ()),
+        bulk_modal_denom=bulk_data.get('bulk_modal_denom'),
         cp_relative_error=bulk_data.get('cp_relative_error'),
         cp_final_delta=bulk_data.get('cp_final_delta'),
     )
@@ -1263,6 +1360,25 @@ def _apply_k0_tensor_hodge_bulk_shared_inverse(
     modes = jnp.einsum('ji,jkl->ikl', factors.bulk_modal_basis_r, modes)
     modes = jnp.einsum('ji,kjl->kil', factors.bulk_modal_basis_t, modes)
     modes = jnp.einsum('ji,klj->kli', factors.bulk_modal_basis_z, modes)
+
+    if len(factors.bulk_modal_op_r) > 0:
+        if factors.bulk_modal_denom is not None:
+            modes = modes / factors.bulk_modal_denom.astype(rhs_b.dtype)
+        else:
+            denom = jnp.zeros((nr, nt, nz), dtype=rhs_b.dtype)
+            for op_r, op_t, op_z in zip(
+                    factors.bulk_modal_op_r,
+                    factors.bulk_modal_op_t,
+                    factors.bulk_modal_op_z):
+                denom = denom + op_r[:, None, None] * op_t[None, :, None] * op_z[None, None, :]
+            denom_floor = 1e-12 * jnp.max(jnp.abs(denom))
+            safe_floor = jnp.where(denom_floor > 0, denom_floor, 1.0)
+            modes = modes / jnp.where(denom > safe_floor, denom, safe_floor)
+
+        modes = jnp.einsum('ij,jkl->ikl', factors.bulk_modal_basis_r, modes)
+        modes = jnp.einsum('ij,kjl->kil', factors.bulk_modal_basis_t, modes)
+        modes = jnp.einsum('ij,klj->kli', factors.bulk_modal_basis_z, modes)
+        return modes.reshape(-1)
 
     denom = jnp.zeros((nr, nt, nz), dtype=rhs_b.dtype)
     for stiff_r, mass_r, stiff_t, mass_t, stiff_z, mass_z in zip(
@@ -1313,6 +1429,19 @@ def _apply_k0_tensor_hodge_bulk_inverse(
 def _apply_k0_tensor_hodge_bulk_forward(
         factors: K0TensorHodgePreconditionerFactors,
         rhs_b: jnp.ndarray) -> jnp.ndarray:
+    if len(factors.bulk_term_op_r) > 0:
+        tensor = rhs_b.reshape(factors.bulk_shape)
+        out = jnp.zeros_like(tensor)
+        for op_r, op_t, op_z in zip(
+                factors.bulk_term_op_r,
+                factors.bulk_term_op_t,
+                factors.bulk_term_op_z):
+            term = jnp.einsum('ij,jkl->ikl', op_r, tensor)
+            term = jnp.einsum('ij,kjl->kil', op_t, term)
+            term = jnp.einsum('ij,klj->kli', op_z, term)
+            out = out + term
+        return out.reshape(-1)
+
     term_mass_r = factors.bulk_term_mass_r
     term_mass_t = factors.bulk_term_mass_t
     term_mass_z = factors.bulk_term_mass_z
@@ -2748,10 +2877,10 @@ def assemble_all_operators(seq, geometry,
             ks=(0, 1, 2, 3),
             rank=1,
             cp_kwargs={
-                'k0_rank': 2,
-                'k1_rank': 2,
-                'k2_rank': 2,
-                'k3_rank': 2,
+                'k0_rank': 1,
+                'k1_rank': 1,
+                'k2_rank': 1,
+                'k3_rank': 1,
             },
         )
         operators = assemble_tensor_hodge_preconditioner(seq, operators=operators)
