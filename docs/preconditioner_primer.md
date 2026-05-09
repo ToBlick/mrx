@@ -23,9 +23,14 @@ applied matrix-free:
    from a Lanczos iteration on the preconditioned operator
    (`_estimate_chebyshev_lanczos_bounds_apply`).
 3. **Tensor** — the hand-built structured preconditioner. The production
-   default for mass and the scalar `k = 0` Hodge.
+  default for mass and the chosen route for scalar `k = 0` Hodge / stiffness.
+4. **Hiptmair-Xu auxiliary-space** — the planned higher-form route for
+  `k = 1, 2, 3`: use cheap interpolation into auxiliary scalar spaces so the
+  hard part of the preconditioner is delegated to scalar Poisson solves.
 
-Jacobi and Chebyshev are baselines; the tensor route is what new work targets.
+Jacobi and Chebyshev are baselines; the tensor route is what new work targets
+for mass and scalar `k = 0`, while higher-form work is now aimed at the
+Hiptmair-Xu auxiliary-space construction.
 
 The user-facing handles live in [`mrx/preconditioners.py`](../../mrx/preconditioners.py):
 `MassPreconditionerSpec`, `SchurPreconditionerSpec`, and
@@ -112,7 +117,7 @@ This has two practical effects:
 The production assembled bulk path no longer divides by analytic priors before
 fitting.
 
-## 3. Saddle-Point Solves For `k = 1, 2, 3`
+## 3. Higher-Form Solves For `k = 1, 2, 3`
 
 For `k ≥ 1` the Hodge-Laplacian solve is structurally a saddle-point system,
 solved by `solve_saddle_point_minres`. The exposed handle is
@@ -123,7 +128,7 @@ solved by `solve_saddle_point_minres`. The exposed handle is
 - `schur.outer`: preconditioner on the resulting Schur operator
 - `coupled`: optional full block completion
 
-Production defaults:
+Current code default:
 
 - `mass = tensor`
 - `schur.inner = tensor`
@@ -132,10 +137,42 @@ Production defaults:
   outer; the code rejects `schur.outer = "tensor"`)
 - `coupled = False`
 
+Current benchmark split for the mixed path:
+
+- **Reference baseline**
+  - lower mass block = Jacobi,
+  - Schur outer = `exact_jacobi`, where the diagonal is probed from the true
+    Schur by using actual lower `M^{-1}` applies during setup,
+  - this is intentionally a reference line, not a production route.
+- **Production-oriented comparison**
+  - lower mass block = tensor,
+  - Schur inner = tensor lower apply,
+  - Schur outer = Chebyshev on the approximate Schur
+    `S + D M_precond D^T`,
+  - this avoids exact inner solves inside the outer MINRES iteration.
+
+That mixed benchmark split is now a transition tool, not the intended endpoint.
+The chosen strategy for `k = 1, 2, 3` is a Hiptmair-Xu auxiliary-space
+preconditioner built on top of the same outer higher-form solves:
+
+- keep the higher-form solve in its mixed/saddle formulation,
+- build cheap, local interpolation or projection operators from `H(curl)` and
+  `H(div)` unknowns into the auxiliary scalar spaces,
+- with Greville-point interpolation / histopolation as the preferred first
+  prototype for those maps,
+- apply the already-strong scalar Poisson/Hodge machinery there,
+- and use that as the production-oriented route instead of trying to win by
+  further tuning Schur-outers alone.
+
 `schur.outer` accepts polynomial wrappers (`richardson`, `chebyshev`,
 `exact_jacobi`) for benchmarking; their spectral bounds are estimated via
 Lanczos and cached in the `IterativeRuntimeTuning` payload on
 `SequenceOperators` so they do not have to be re-estimated on every solve.
+
+At the moment the validated mixed benchmarks are still restricted to the
+harmonic-safe cases `k=1` with Dirichlet and `k=2` without Dirichlet. Outside
+those cases, the nullspace / harmonic path still needs cleanup before the same
+strategy should be treated as production-ready.
 
 ## 4. Scalar `k = 0` Hodge
 
@@ -168,12 +205,30 @@ regularizes its small core Schur block, but the singular solve remains
 well-posed because `solve_singular_cg` explicitly projects the nullspace in the
 outer Krylov iteration.
 
+The strategic decision here is now settled: `k = 0` stays on the tensor route.
+The remaining work is validation, not a new preconditioner family. In
+particular, the current smoke tests look good, but broader testing is still
+needed to decide how robust the tensor model is across harder geometries and
+resolutions.
+
+The recent multirank k=`0` checks are worth reading correctly: rank `2` and
+rank `3` improve the fitted forward model a lot, but the dense preconditioned
+`P K` spectrum only improves weakly. So the rank choice for scalar stiffness is
+still driven by inversion quality, not by forward-model fit quality, and the
+default stays at rank `1`.
+
+A possible future refinement is a bulk-local Chebyshev correction on the exact
+bulk operator with the rank-1 tensor inverse used as the smoother. That route
+is still principled, but earlier experiments of that flavor did not pay off;
+outer CG was usually the better place to absorb the remaining error. So it is
+not part of the current plan.
+
 ## 5. Eager Production Defaults
 
 The production assembly path is `assemble_all_operators` in
 [`mrx/operators.py`](../../mrx/operators.py), which by default eagerly builds:
 
-- the per-degree mass tensor preconditioner with `rank = 1` for all four
+- the per-degree mass tensor preconditioner with `rank = 2` for all four
   degrees,
 - the legacy scalar `k = 0` FD Hodge payload via
   `assemble_tensor_hodge_preconditioner`,
@@ -183,8 +238,10 @@ The production assembly path is `assemble_all_operators` in
 Those eager defaults are why `"auto"` resolves to the tensor route in normal
 use: the data is already there.
 
-Even though multirank mass assembly is active, `assemble_all_operators`
-currently chooses the conservative rank-1 eager default.
+The current default policy is therefore:
+
+- mass: rank `3` for all four degrees,
+- stiffness / scalar `k = 0` Hodge: rank `1`.
 
 ## 6. Validation Posture
 
@@ -199,14 +256,20 @@ The current validation status of the production tensor applies
 - Scalar `k = 0` stiffness now has an assembled FD-based tensor inverse. On the
   tested rotating-ellipse family it is decisively better than Jacobi, while the
   effect of increasing rank beyond 1 is presently modest.
+- The mass preconditioners are essentially complete apart from policy and
+  regression-testing cleanup.
+- The main higher-form target is now a Hiptmair-Xu auxiliary-space
+  preconditioner for `k = 1, 2, 3`. The current saddle-point Schur benchmarks
+  and the standalone `k=1` / `k=2` stiffness tensor models are kept as
+  diagnostics and interim references, not as the planned endpoint.
 
 ## 7. Quick Reference
 
 | Solve | Default preconditioner |
 |---|---|
-| `M_k u = f`, all `k` | `tensor` (eager default currently rank 1 per degree; explicit assembly can request higher rank) |
-| `L_0 u = f` (singular) | scalar `k = 0` tensor Hodge + nullspace deflation |
+| `M_k u = f`, all `k` | `tensor` (mass route is essentially settled; eager default is now rank 3 per degree, while explicit assembly can still request other ranks) |
+| `L_0 u = f` (singular) | scalar `k = 0` tensor Hodge + nullspace deflation; main remaining task is stronger validation |
 | `(L_0 + ε M_0) u = f` | scalar `k = 0` tensor Hodge + harmonic coarse correction when available |
-| `L_k u = f`, `k = 1, 2, 3` | saddle MINRES, `mass = tensor`, `schur.inner = tensor`, `schur.outer = jacobi` |
+| `L_k u = f`, `k = 1, 2, 3` | current code path is saddle MINRES; strategic target is a Hiptmair-Xu auxiliary-space preconditioner using cheap local interpolation plus scalar Poisson solves |
 | `(M_k + ε L_k) u = f`, `k = 0` | scalar CG with diffusion preconditioner (mass-tensor when assembled) |
 | `(M_k + ε L_k) u = f`, `k ≥ 1` | saddle MINRES with the same diffusion building blocks |

@@ -1990,7 +1990,7 @@ def assemble_mass_surgery_preconditioner(
 def assemble_tensor_mass_preconditioner(
         seq, operators: Optional[SequenceOperators] = None,
         *, ks: Sequence[int] = (1,),
-    rank: int = 1,
+    rank: int = 3,
         cp_kwargs: Optional[dict] = None):
     """Assemble the k=0/k=1/k=2/k=3 tensor mass preconditioner on ``operators``.
 
@@ -3807,12 +3807,12 @@ def assemble_all_operators(seq, geometry,
             seq,
             operators=operators,
             ks=(0, 1, 2, 3),
-            rank=1,
+            rank=3,
             cp_kwargs={
-                'k0_rank': 1,
-                'k1_rank': 1,
-                'k2_rank': 1,
-                'k3_rank': 1,
+                'k0_rank': 3,
+                'k1_rank': 3,
+                'k2_rank': 3,
+                'k3_rank': 3,
             },
         )
         operators = assemble_tensor_hodge_preconditioner(seq, operators=operators)

@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
-from mrx.spline_bases import SplineBasis, TensorBasis
+from mrx.spline_bases import DerivativeSpline, SplineBasis, TensorBasis
 
 jax.config.update("jax_enable_x64", True)
 
@@ -61,6 +61,35 @@ def test_getitem_matches_call(basis):
             jax.vmap(lambda x, j=j: spl(x, j))(xs),
             atol=1e-12,
         )
+
+
+@pytest.mark.parametrize("typ", ["clamped", "periodic"])
+def test_greville_collocation_recovers_1d_coefficients(typ):
+    spl = SplineBasis(N, P, typ)
+    coll = spl.collocation_matrix()
+    coeffs = jnp.linspace(-1.0, 1.0, spl.n)
+    values = coll @ coeffs
+    recovered = jnp.linalg.solve(coll, values)
+    npt.assert_allclose(recovered, coeffs, atol=1e-12)
+
+
+def test_greville_histopolation_commutes_with_derivative_on_clamped_splines():
+    spl = SplineBasis(N, P, "clamped")
+    dspl = DerivativeSpline(spl)
+
+    coll = spl.collocation_matrix()
+    hist = dspl.histopolation_matrix()
+
+    coeffs = jnp.linspace(-0.8, 0.9, spl.n)
+    greville_values = coll @ coeffs
+    interpolated = jnp.linalg.solve(coll, greville_values)
+
+    # On the Greville spans, integrating du is exactly the endpoint difference.
+    span_moments = greville_values[1:] - greville_values[:-1]
+    histopolated = jnp.linalg.solve(hist, span_moments)
+
+    discrete_derivative = interpolated[1:] - interpolated[:-1]
+    npt.assert_allclose(histopolated, discrete_derivative, atol=1e-12)
 
 
 def test_bad_init_rejected():

@@ -452,6 +452,148 @@ def _run_problem(args, seq, problem: str, *, operators=None):
     return operators
 
 
+def evaluate_forward_model(
+        *,
+        problem: str,
+        ns: tuple[int, int, int],
+        p: int,
+        rank: int = 1,
+        cp_maxiter: int = 100,
+        cp_tol: float = 1e-9,
+        cp_ridge: float = 1e-12,
+        fit_strategy: str = "multiplicative",
+        richardson_steps: int = 0,
+        richardson_omega: float = 1.0,
+        n_vectors: int = 8,
+        seed: int = 0,
+        dense: bool = False,
+        compare_preconditioner: bool = False,
+        reference_richardson_steps: int = 0,
+        free: bool = False,
+        bulk_only: bool = False,
+        map_kind: str = "rotating_ellipse",
+        rotating_eps: float = 0.33,
+        rotating_kappa: float = 1.4,
+        rotating_r0: float = 1.0,
+        rotating_nfp: int = 3,
+        tol: float = 1e-9,
+        maxiter: int = 1000,
+) -> dict[str, float | int | tuple[int, int, int] | str]:
+    args = argparse.Namespace(
+        problem=problem,
+        ns=ns,
+        p=p,
+        rank=rank,
+        cp_maxiter=cp_maxiter,
+        cp_tol=cp_tol,
+        cp_ridge=cp_ridge,
+        fit_strategy=fit_strategy,
+        richardson_steps=richardson_steps,
+        richardson_omega=richardson_omega,
+        n_vectors=n_vectors,
+        seed=seed,
+        dense=dense,
+        compare_preconditioner=compare_preconditioner,
+        reference_richardson_steps=reference_richardson_steps,
+        free=free,
+        bulk_only=bulk_only,
+        map_kind=map_kind,
+        rotating_eps=rotating_eps,
+        rotating_kappa=rotating_kappa,
+        rotating_r0=rotating_r0,
+        rotating_nfp=rotating_nfp,
+        tol=tol,
+        maxiter=maxiter,
+        interactive=False,
+    )
+
+    seq = _build_sequence(args)
+    _, exact_apply_raw, model_apply_raw, full_size, bulk_indices, cp_summary = _build_problem(
+        args,
+        seq,
+        problem,
+        operators=None,
+    )
+
+    if bulk_only:
+        if bulk_indices is None:
+            raise ValueError(f"bulk-only mode is not available for {problem}")
+        size = int(bulk_indices.shape[0])
+
+        def exact_apply(x):
+            full = jnp.zeros((full_size,), dtype=x.dtype)
+            full = full.at[bulk_indices].set(x)
+            return exact_apply_raw(full)[bulk_indices]
+
+        def model_apply(x):
+            full = jnp.zeros((full_size,), dtype=x.dtype)
+            full = full.at[bulk_indices].set(x)
+            return model_apply_raw(full)[bulk_indices]
+    else:
+        size = full_size
+        exact_apply = exact_apply_raw
+        model_apply = model_apply_raw
+
+    keys = jax.random.split(jax.random.PRNGKey(seed), n_vectors)
+
+    def error_for_key(key):
+        x = jax.random.normal(key, (size,), dtype=jnp.float64)
+        y_exact = exact_apply(x)
+        y_model = model_apply(x)
+        return _relative_error(y_model, y_exact)
+
+    rel_errors = jax.vmap(error_for_key)(keys)
+    result: dict[str, float | int | tuple[int, int, int] | str] = {
+        "problem": problem,
+        "ns": ns,
+        "p": p,
+        "rank": rank,
+        "cp_relative_error_max": float(cp_summary["cp_relative_error_max"]),
+        "cp_final_delta_max": float(cp_summary["cp_final_delta_max"]),
+        "forward_relative_error_mean": float(jnp.mean(rel_errors)),
+        "forward_relative_error_std": float(jnp.std(rel_errors)),
+        "forward_relative_error_max": float(jnp.max(rel_errors)),
+    }
+    for key, value in cp_summary.items():
+        if key in result:
+            continue
+        result[key] = float(value)
+
+    if dense:
+        exact = _assemble_dense_from_apply(exact_apply, size)
+        approx = _assemble_dense_from_apply(model_apply, size)
+        fro_rel = jnp.linalg.norm(approx - exact) / jnp.maximum(jnp.linalg.norm(exact), 1e-30)
+        result["fro_relative_error"] = float(fro_rel)
+        result["exact_symmetry_defect"] = float(jnp.linalg.norm(exact - exact.T))
+        result["model_symmetry_defect"] = float(jnp.linalg.norm(approx - approx.T))
+
+    if compare_preconditioner:
+        if not problem.startswith("mass-k"):
+            raise ValueError("compare_preconditioner is only available for mass problems")
+        preconditioner_apply, preconditioner_size = _build_mass_preconditioner_apply(args, seq)
+        reference_apply, reference_size = _build_mass_preconditioner_apply(
+            args,
+            seq,
+            reference_richardson_steps=reference_richardson_steps,
+        )
+        if preconditioner_size != reference_size:
+            raise ValueError("Preconditioner comparison built mismatched vector sizes")
+
+        def preconditioner_error_for_key(key):
+            x = jax.random.normal(key, (preconditioner_size,), dtype=jnp.float64)
+            y = preconditioner_apply(x)
+            y_ref = reference_apply(x)
+            return _relative_error(y, y_ref)
+
+        preconditioner_rel_errors = jax.vmap(preconditioner_error_for_key)(keys)
+        result["preconditioner_reference_richardson_steps"] = reference_richardson_steps
+        result["preconditioner_relative_difference_mean"] = float(jnp.mean(preconditioner_rel_errors))
+        result["preconditioner_relative_difference_std"] = float(jnp.std(preconditioner_rel_errors))
+        result["preconditioner_relative_difference_max"] = float(jnp.max(preconditioner_rel_errors))
+
+    return result
+
+
 def _build_mass_preconditioner_apply(args, seq, *, reference_richardson_steps: int | None = None):
     if not args.problem.startswith("mass-k"):
         raise ValueError("Preconditioner comparison is only available for mass problems")

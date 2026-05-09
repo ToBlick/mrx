@@ -20,8 +20,32 @@ The tensor mass preconditioner is multirank again:
 - The active assembled bulk path treats the coefficient fields as black boxes:
       `radial_baseline`, `prior_terms`, and `fit_strategy` are accepted for API
       compatibility but ignored inside `_build_diagonal_tensor_block_factors`.
-- `assemble_all_operators` still chooses the conservative eager default
-      `k0 = k1 = k2 = k3 = 1`.
+- `assemble_all_operators` now uses eager mass rank
+      `k0 = k1 = k2 = k3 = 3`.
+
+Current reading: the mass preconditioners are essentially done. The remaining
+mass work is mostly policy and validation work rather than new algorithmic
+design:
+
+- keep a few larger regression benchmarks around so the practical winner stays
+      visible,
+- and remove stale API knobs that no longer affect the assembled tensor route.
+
+Latest free-boundary mass sweep worth remembering (`ns = (16, 32, 16)`, `p = 3`,
+`inner_schur = off`):
+
+- `k = 0` and `k = 3` still improved materially from rank `2` to rank `3`,
+      and on this larger case `k = 0` actually looked worse at rank `2` than at
+      rank `1`,
+- `k = 1` and `k = 2` also now look better at rank `3` than at rank `2`, with
+      rank `4` giving little extra,
+- Provisional reading: rank `3` is now the leading candidate for the next mass
+      default update.
+
+Current default policy:
+
+- stiffness (`k = 0, 1, 2`) stays at rank `1`,
+- mass (`k = 0, 1, 2, 3`) now defaults to rank `3`.
 
 The scalar `k = 0` Hodge / stiffness preconditioner is now built by the new
 FD-based bulk builder `_assemble_k0_stiffness_fd_bulk_factors`:
@@ -40,6 +64,25 @@ iterations for the `dbc` scalar stiffness solve and about `15` for the free
 solve with the tensor preconditioner, versus about `115` for Jacobi on the
 `dbc` case. Higher ranks do change the assembled bulk denominator, but on this
 test geometry they do not materially change the iteration count.
+
+Current reading: `k = 0` stiffness will stay on the tensor route. The open work
+there is no longer a search for a different preconditioner family, but better
+testing to decide how good the current tensor model really is across geometry,
+resolution, and boundary-condition choices.
+
+Recent k=`0` multirank checks sharpen that reading:
+
+- higher ranks improve the stored forward model substantially,
+- but on dense DBC `P K` spectra the solver-relevant gain is small,
+- so the present default remains stiffness rank `1` even though the fitted
+      higher-rank model is more accurate as a forward surrogate.
+
+One note for future revisits: a bulk-local Chebyshev correction on the exact
+bulk operator, using the rank-1 tensor inverse as the smoother, is still a
+principled fallback option. But earlier experiments of that flavor did not pay
+off in wall-clock time; it was better to let the outer CG iterations absorb the
+remaining bulk error. So keep it as a future escape hatch, not as the current
+plan.
 
 The higher-form standalone stiffness preconditioner has been debugged far
 enough to separate the basis/nullspace issues from the earlier small-resolution
@@ -114,48 +157,98 @@ useful diagnostically, but the clean `ns = (6, 8, 4)` solves suggest it is an
 edge case of the tiny-bulk outer Schur approximation rather than the main
 blocker for this task.
 
+The active higher-form strategy is no longer to keep tuning standalone
+`k=1` / `k=2` stiffness blocks or Schur-outers as the end state. The mixed
+benchmark work was useful, but the chosen direction for `k = 1, 2, 3` is now a
+Hiptmair-Xu auxiliary-space preconditioner:
+
+- keep the current saddle-point MINRES path as the outer solve,
+- use scalar Poisson-style preconditioners as the cheap auxiliary solves,
+- and build the missing bridge with cheap, local interpolation operators from
+      the `H(curl)` and `H(div)` spaces into the appropriate auxiliary scalar
+      spaces.
+
+In that light, the recent saddle-point benchmark split should be read as a
+transition diagnostic, not as the final higher-form design:
+
+- The mixed solves are benchmarked on the actual MINRES block system rather
+      than on standalone `curl-curl` / `div-div` blocks.
+- The current **reference baseline** is deliberately allowed to cheat a
+      little:
+      - lower mass block = Jacobi,
+      - Schur outer = `exact_jacobi`, meaning its diagonal is probed from the
+        true Schur using actual lower `M^{-1}` applies during setup,
+      - use this only as a reference line, not as the production route.
+- The current **production-oriented comparison** is:
+      - lower mass block = tensor,
+      - Schur inner = tensor mass apply,
+      - Schur outer = Chebyshev wrapped around the approximate Schur
+        `S + D M_precond D^T`,
+      - no inner exact solves inside the outer Krylov loop,
+      - but this should now be treated as an interim comparison point rather
+        than the planned final preconditioner for `k = 1, 2, 3`.
+- For now the safe benchmark cases remain `k=1` with Dirichlet and `k=2`
+      without Dirichlet, because the nullspace / harmonic path outside those
+      cases is not cleaned up yet.
+- The standalone higher-form stiffness scripts stay useful as local
+      diagnostics, but they are no longer the main production target for this
+      task.
+
+Recent benchmark state:
+
+- The larger mass benchmark at `ns = (12, 16, 8)` with all `dbc = False`
+      confirms the main lower-block decision: even rank-1 tensor mass is
+      already clearly better than Jacobi and Jacobi-Chebyshev across
+      `k = 0, 1, 2, 3`.
+- The standalone scalar `k=0` stiffness benchmark also looks healthy at both
+      moderate and larger resolutions, so the scalar path is not the current
+      blocker.
+- The first full saddle-point smoke on `k=1`, DBC shows the intended split
+      between the two comparison strategies:
+      - baseline exact-Jacobi is cheap per iteration but can stall,
+      - tensor + Chebyshev is more expensive per iteration but converges
+        cleanly on the same case.
+
 ### Next session pickup
 
-1. **Move to the full saddle-point Laplace systems.** Use the now-working
-      standalone mass and stiffness ingredients as the local building blocks for
-      the mixed `k=1` / `k=2` Hodge-Laplacian preconditioners, and benchmark the
-      actual saddle-point MINRES path rather than the standalone stiffness
-      blocks.
-2. **Revisit nullspace computation once the mixed Laplace path is in hand.**
-      The next target after the saddle-point preconditioners is to clean up and
-      validate the nullspace / harmonic computation path against the updated
-      operator stack.
-3. **Run focused regression tests after the recent mass/stiffness changes.**
+1. **Design the local Hiptmair-Xu interpolation operators.** Build cheap,
+      local interpolation/projection operators that map the extracted
+      `H(curl)` and `H(div)` unknowns into the auxiliary scalar spaces needed
+      for Poisson-style preconditioning. Current preferred first prototype:
+      Greville-point interpolation / histopolation, since that same machinery
+      should also help with injecting analytic functions into the discrete
+      spaces.
+2. **Hook the scalar auxiliary solves into a higher-form Hiptmair-Xu apply.**
+      Reuse the scalar tensor Poisson/Hodge machinery where it is appropriate,
+      but keep the whole higher-form route free of expensive nested exact
+      solves.
+3. **Revisit nullspace computation once the auxiliary-space route is in hand.**
+      The next target after the Hiptmair-Xu ingredients are assembled is still
+      to clean up and validate the nullspace / harmonic computation path
+      against the updated operator stack.
+4. **Run focused regression tests after the recent mass/stiffness/saddle changes.**
    ```
    pytest test/test_operators.py -k "tensor or mass_preconditioner or k2_schur" -x --tb=short
    ```
-4. **Optionally keep one tiny-bulk note in mind.** If low resolutions such as
+5. **Strengthen `k = 0` stiffness validation.** Add a small benchmark or Ritz /
+      condition-number diagnostic so the scalar tensor route is tested on more
+      than the current smoke cases.
+6. **Optionally keep one tiny-bulk note in mind.** If low resolutions such as
       `ns = (4, 8, 4)` must be production-supported, revisit the `k=1` outer
       Schur approximation there. Otherwise treat it as a diagnostic edge case.
-5. **Prod-vs-Jacobi-vs-Chebyshev mass benchmark** — the user-requested
-   next step. Mirror `scripts/benchmark_richardson_vs_modal.py`: build
-   sequence + bare mass operators once, then for each `k` run
-   `solve_singular_cg(apply_mass_matrix, rhs, ..., precond_matvec=...)`
-   with three `precond_matvec` choices:
-   - production tensor: `apply_mass_tensor_preconditioner_ops`
-   - Jacobi: `apply_mass_jacobi_preconditioner_ops`
-   - Chebyshev (degree 3 over Jacobi-preconditioned mass): existing
-     helper in `mrx/preconditioners.py` (search for
-     `_build_chebyshev_apply_preconditioner` callers).
-   Report avg/max iters and wall time per (k, strategy) cell over a
-   small RHS bank. Sweep at least one `(ns, p)` and one geometry.
-   Script already drafted at
-   [`scripts/benchmark_mass_preconditioners.py`](../scripts/benchmark_mass_preconditioners.py).
-6. **Decide the eager production rank.** The code now supports multirank mass
-      blocks again, but `assemble_all_operators` still wires all four degrees to
-      rank `1`. Re-run at least one larger mass benchmark and decide whether the
-      eager default should stay conservative or move back to rank `2`.
-7. **Measure why scalar k=0 rank changes do not move CG counts much.** The
+7. **Keep validating the new eager mass default.** The code now defaults all
+      four mass blocks to rank `2`; keep one or two larger regression
+      benchmarks around so that choice stays justified.
+8. **Measure why scalar k=0 rank changes do not move CG counts much.** The
       assembled bulk denominator changes with rank on the rotating ellipse, but
       the iteration counts stayed flat. A small Ritz-value or condition-number
       diagnostic on the preconditioned operator would explain whether the extra
       terms are simply too spectrally weak after diagonal truncation.
-8. Then proceed with the dead-code list below.
+9. **Use the current saddle benchmarks as transition diagnostics only.** Keep
+      the exact-Jacobi and tensor+Chebyshev mixed runs around as reference
+      lines while the Hiptmair-Xu auxiliary-space route is being assembled, but
+      do not treat Schur-outer tuning as the final destination.
+10. Then proceed with the dead-code list below.
 
 ## Dead Code To Remove
 
@@ -200,11 +293,9 @@ blocker for this task.
 
 ## Oddities / Changes To Consider
 
-- [ ] **Docs/default mismatch on mass rank.** The multirank mass builder is
-      live again, but `assemble_all_operators` still wires all four mass
-      blocks to rank `1`, while [`mass_preconditioners.md`](../mass_preconditioners.md)
-      still recommends rank `2` as the practical default. Decide explicitly
-      which one is the intended production policy.
+- [x] **Docs/default mismatch on mass rank.** The intended production policy is
+      now explicit: mass defaults to rank `2` for all four degrees, while
+      stiffness stays at rank `1`.
 - [ ] **Krylov-in-Krylov in `mrx/relaxation.py:apply_diffusion`.** It
       builds `apply_A(x) = M_2 x + η · seq.apply_hodge_laplacian(x, 2, ...)`
       and wraps it in an outer `solve_singular_cg`, while
@@ -219,11 +310,18 @@ blocker for this task.
 - [ ] **Confusing API:** `build_mass_tensor_preconditioner(full_matrix,
       ...)` immediately does `del full_matrix`. Drop the parameter and
       update `assemble_tensor_mass_preconditioner` callers.
-- [ ] **Saddle outer = `jacobi` by default** while Chebyshev is the
-      stated second baseline. Decide explicitly: making
-      `default_saddle_preconditioner().schur.outer` = `chebyshev` (or
-      `richardson` with cached spectral bounds) may be the better
-      default. At minimum document why `jacobi` was chosen.
+- [ ] **Higher-form strategy has outgrown Schur-outer tuning.** The current
+      saddle code default is still `schur.outer = jacobi`, and the recent mixed
+      benchmark compares that against tensor + Chebyshev, but the longer-term
+      plan is now a Hiptmair-Xu auxiliary-space preconditioner for
+      `k = 1, 2, 3`. Keep the Schur-outer variants only as transition
+      baselines while the interpolation operators and auxiliary scalar solves
+      are built.
+- [ ] **Possible future k=0 bulk Chebyshev revisit.** A bulk-local Chebyshev
+      correction using the true bulk operator and the rank-1 tensor inverse as
+      smoother is still conceptually clean, but earlier experiments of this
+      kind did not beat just letting the outer CG handle the residual. Revisit
+      only if a harder geometry shows rank-1 tensor is no longer enough.
 - [ ] **Eager assembly of legacy FD Hodge.** `assemble_all_operators`
       still calls `assemble_tensor_hodge_preconditioner` even though the
       production scalar solve reads `k0_tensor_hodge_precond` instead.

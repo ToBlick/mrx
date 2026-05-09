@@ -2,6 +2,7 @@ from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 
 class SplineBasis:
@@ -132,6 +133,42 @@ class SplineBasis:
             return 1.0
         elif self.type == 'fourier':
             return 1.0
+
+    def greville_points(self) -> jnp.ndarray:
+        """Return the Greville abscissae for this one-dimensional spline basis.
+
+        For degree ``p > 0`` this uses the standard average of the interior
+        knots of each basis function support. For degree ``p = 0`` it falls
+        back to support midpoints.
+        """
+        if self.type == 'fourier':
+            raise NotImplementedError(
+                "Greville points are not implemented for fourier bases."
+            )
+
+        if self.p == 0:
+            points = 0.5 * (self.T[:self.n] + self.T[1:self.n + 1])
+        else:
+            offsets = jnp.arange(1, self.p + 1)
+            knot_ids = self.ns[:, None] + offsets[None, :]
+            points = jnp.mean(self.T[knot_ids], axis=1)
+
+        if self.type == 'periodic':
+            points = jnp.mod(points, 1.0)
+
+        return points
+
+    def collocation_matrix(self, points: Optional[jnp.ndarray] = None) -> jnp.ndarray:
+        """Assemble the point-collocation matrix for this basis.
+
+        Parameters
+        ----------
+        points : array, optional
+            Evaluation points. If omitted, the Greville abscissae are used.
+        """
+        if points is None:
+            points = self.greville_points()
+        return jax.vmap(lambda x: jax.vmap(lambda i: self(x, i))(self.ns))(points)
 
     def _evaluate(self, x: float, i: int) -> jnp.ndarray:
         """Evaluate the ith spline at x using the appropriate degree-specific method.
@@ -302,6 +339,7 @@ class DerivativeSpline:
         self.p = s.p if s.type == 'constant' else s.p - 1
         self.type = s.type
         self.T = s.T[1:-1] if s.type == 'periodic' else s.T
+        self.parent = s
         self.s = SplineBasis(self.n, self.p, self.type, self.T)
         self.ns = jnp.arange(self.n)
 
@@ -358,3 +396,48 @@ class DerivativeSpline:
             return self.s(x, j) * (p+1) / (self.s.T[j+p+1] - self.s.T[j])
         else:
             return 1.0
+
+    def greville_spans(self) -> jnp.ndarray:
+        """Return the consecutive Greville intervals of the parent spline basis.
+
+        For clamped splines, the parent Greville points include the endpoints,
+        so the consecutive intervals form the natural histopolation cells.
+        """
+        points = self.parent.greville_points()
+        if self.type == 'periodic':
+            next_points = jnp.roll(points, -1)
+            next_points = next_points.at[-1].set(next_points[-1] + 1.0)
+            return jnp.stack([points, next_points], axis=1)
+        if self.type != 'clamped':
+            raise NotImplementedError(
+                "Greville histopolation spans are currently implemented only "
+                "for clamped and periodic splines."
+            )
+        return jnp.stack([points[:-1], points[1:]], axis=1)
+
+    def histopolation_matrix(
+        self,
+        spans: Optional[jnp.ndarray] = None,
+        quadrature_order: Optional[int] = None,
+    ) -> jnp.ndarray:
+        """Assemble the Greville-span histopolation matrix for this basis."""
+        if spans is None:
+            spans = self.greville_spans()
+        if quadrature_order is None:
+            quadrature_order = max(2, self.p + 2)
+
+        xi_ref, w_ref = np.polynomial.legendre.leggauss(quadrature_order)
+        xi_ref = jnp.asarray(xi_ref)
+        w_ref = jnp.asarray(w_ref)
+
+        def integrate_span(span):
+            a, b = span
+            center = 0.5 * (a + b)
+            halfwidth = 0.5 * (b - a)
+            xs = center + halfwidth * xi_ref
+            values = jax.vmap(
+                lambda x: jax.vmap(lambda i: self(x, i))(self.ns)
+            )(xs)
+            return halfwidth * (w_ref @ values)
+
+        return jax.vmap(integrate_span)(spans)

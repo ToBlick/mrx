@@ -333,9 +333,9 @@ The present production split is:
 
 | Problem | Solver family | Current default preconditioner |
 |---|---|---|
-| Mass inverse `M_k^{-1}` | preconditioned CG | `auto` => tensor if assembled, else Jacobi |
-| Scalar Hodge inverse `L_0^{-1}` and `(L_0 + eps M_0)^{-1}` | singular/shifted CG | scalar tensor complement when available, else Jacobi |
-| Mixed Hodge inverse for `k = 1, 2, 3` | saddle-point MINRES | lower mass `tensor`, Schur inner `tensor`, Schur outer `jacobi` |
+| Mass inverse `M_k^{-1}` | preconditioned CG | `auto` => tensor if assembled, else Jacobi; mass route is essentially settled |
+| Scalar Hodge inverse `L_0^{-1}` and `(L_0 + eps M_0)^{-1}` | singular/shifted CG | scalar tensor complement when available, else Jacobi; chosen long-term route is still tensor, with more validation still needed |
+| Mixed Hodge inverse for `k = 1, 2, 3` | saddle-point MINRES | current code path uses the saddle machinery; planned higher-form direction is a Hiptmair-Xu auxiliary-space preconditioner built from cheap local interpolation plus scalar Poisson solves |
 | Inverse `(M_k + eps L_k)^{-1}` | scalar CG for `k = 0`, saddle MINRES otherwise | simple diagonal block scalings |
 
 Two implementation rules matter throughout:
@@ -344,6 +344,15 @@ Two implementation rules matter throughout:
 - Shifted problems do not deflate the harmonic space; they use a complement
   preconditioner, and for the scalar free-boundary case an explicit harmonic
   coarse correction once that vector is available.
+
+For the current higher-form benchmark campaign, the only validated mixed cases
+are still `k = 1` with Dirichlet and `k = 2` without Dirichlet. Those are the
+harmonic-safe cases under the present nullspace implementation.
+
+The recent exact-Jacobi and tensor+Chebyshev saddle benchmarks should therefore
+be read as transition diagnostics. The intended production direction for
+`k = 1, 2, 3` is now an auxiliary-space construction rather than more tuning of
+the Schur outer alone.
 
 For the degree-by-degree preconditioner structure and current defaults, use the
 solver primer instead of this file:

@@ -3,6 +3,11 @@
 This note records the current production picture for the mass preconditioners in
 `mrx`. It is intentionally short and only describes the active design.
 
+The strategic status is now simple: the mass preconditioners are essentially
+done. The eager default policy is rank `3` for all four mass blocks. The
+remaining work is to keep the benchmark picture current and trim stale options
+that no longer affect the assembled tensor route.
+
 ## 1. Shared Design
 
 The production tensor route does not try to approximate the inverse of the full
@@ -22,8 +27,12 @@ The active diagonal coefficient fields are:
 - `k = 3`: `1 / J`.
 
 Higher ranks are supported by the tensor block machinery. Recent solve and
-forward-model checks now show that rank `2` is the practical default across
-all four mass blocks on the tested rotating-ellipse family.
+forward-model checks now point to rank `3` as the stronger practical default
+across all four mass blocks on the tested rotating-ellipse family.
+
+So the mass question is no longer "which family should we use?" The answer is
+the tensor route with eager default rank `3`. The open question is only how
+much validation we want to keep in the tree.
 
 ## 2. Degree-by-Degree Structure
 
@@ -196,9 +205,40 @@ So the updated practical reading is:
   and `k = 2` cases where setup cost is acceptable and the extra iteration
   reduction matters.
 
+One more free-boundary sweep at `ns = (16, 32, 16)`, `p = 3` is worth noting
+because it sharpens that picture more convincingly.
+
+- `k = 0` mass did **not** improve from rank `1` to rank `2` on this larger
+  free case, but then improved strongly again at rank `3` and `4`: about
+  `12.2` iterations / `8.52 ms` at rank `1`, about `13.0` / `9.63 ms` at rank
+  `2`, and about `4.0` / `3.72 ms` at rank `3` and `4`.
+- `k = 1` mass improved steadily across the ranks, with the main practical win
+  now clearly at rank `3`: about `35.8` iterations / `348.5 ms` at rank `1`,
+  about `30.0` / `297.6 ms` at rank `2`, and about `26.0` / `260.1 ms` at
+  rank `3` and `4`.
+- `k = 2` mass showed the same pattern: about `34.8` iterations / `332.2 ms`
+  at rank `1`, about `29.0` / `282.4 ms` at rank `2`, and about `25.2` to
+  `25.0` / `247.8` to `244.5 ms` at rank `3` and `4`.
+- `k = 3` mass also kept improving beyond rank `2`, though more mildly: about
+  `15` iterations / `4.20 ms` at rank `1`, about `7` / `2.35 ms` at rank `2`,
+  and about `6` / `2.07 ms` at rank `3` and `4`.
+
+So the current default should be read as a policy choice, not as the pointwise
+best rank on every tested case:
+
+- rank `3` is now the chosen eager default for all mass blocks,
+- but free-boundary `k = 0` and `k = 3` now have concrete larger tests where
+  rank `3` materially helps,
+- and free-boundary `k = 1` / `k = 2` on the larger tested case now also look
+  better at rank `3` than at rank `2`, with rank `4` giving little extra.
+
+That said, the current evidence now favors the rank-3 policy directly: taken
+at face value, this larger free-boundary sweep makes rank `3` the stronger
+all-around candidate, while rank `4` adds little extra.
+
 The current production default follows that recommendation in the eager
 operator-assembly path: the mass blocks are assembled with per-degree tensor
-ranks `k0 = k1 = k2 = k3 = 2`, while the scalar stiffness/Hodge fallback rank
+ranks `k0 = k1 = k2 = k3 = 3`, while the scalar stiffness/Hodge fallback rank
 remains at `1`.
 
 ## 5. Analytic Priors And Inversion Strategy

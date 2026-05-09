@@ -16,12 +16,14 @@ import numpy.testing as npt
 import pytest
 from scipy.linalg import eigh
 
+from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.preconditioners import (
     MassPreconditionerSpec,
     SaddlePointPreconditionerSpec,
     SchurPreconditionerSpec,
 )
+from mrx.projectors import Projector
 
 ALL_K = (0, 1, 2, 3)
 ALL_DBC = (False, True)
@@ -29,6 +31,105 @@ ALL_DBC = (False, True)
 
 def _dof(seq, k, dirichlet):
     return getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}")
+
+
+def test_zeroform_greville_interpolation_recovers_discrete_function():
+    seq = DeRhamSequence(
+        (5, 4, 4),
+        (3, 2, 2),
+        6,
+        ("clamped", "periodic", "periodic"),
+        polar=False,
+        tol=1e-12,
+        maxiter=200,
+        betti_numbers=(1, 1, 0, 0),
+    )
+    projector = Projector(seq, 0, dirichlet=False)
+    coeffs = jnp.linspace(-0.75, 0.5, seq.n0)
+    discrete = DiscreteFunction(coeffs, seq.basis_0, seq.e0)
+    recovered = projector.zeroform_interpolation(discrete)
+    npt.assert_allclose(recovered, coeffs, atol=1e-12)
+
+
+def test_polar_zeroform_greville_interpolation_recovers_discrete_function():
+    seq = DeRhamSequence(
+        (5, 4, 4),
+        (3, 2, 2),
+        6,
+        ("clamped", "periodic", "periodic"),
+        polar=True,
+        tol=1e-12,
+        maxiter=200,
+        betti_numbers=(1, 1, 0, 0),
+    )
+    seq.set_map(lambda x: x)
+    projector = Projector(seq, 0, dirichlet=False)
+    coeffs = jnp.linspace(-0.6, 0.7, seq.n0)
+    discrete = DiscreteFunction(coeffs, seq.basis_0, seq.e0)
+    recovered = projector.zeroform_interpolation(discrete)
+    npt.assert_allclose(recovered, coeffs, atol=1e-12)
+
+
+@pytest.fixture(scope="module")
+def identity_clamped_seq():
+    seq = DeRhamSequence(
+        (5, 4, 4),
+        (3, 2, 2),
+        6,
+        ("clamped", "clamped", "clamped"),
+        polar=False,
+        tol=1e-12,
+        maxiter=200,
+        betti_numbers=(1, 1, 0, 0),
+    )
+    seq.set_map(lambda x: x)
+    return seq
+
+
+def test_twoform_histopolation_recovers_discrete_function(identity_clamped_seq):
+    seq = identity_clamped_seq
+    projector = Projector(seq, 2, dirichlet=False)
+    coeffs = jnp.linspace(-0.5, 0.75, seq.n2)
+    discrete = DiscreteFunction(coeffs, seq.basis_2, seq.e2)
+    recovered = projector.twoform_histopolation(discrete)
+    npt.assert_allclose(recovered, coeffs, atol=1e-11)
+
+
+def test_oneform_histopolation_recovers_discrete_function(identity_clamped_seq):
+    seq = identity_clamped_seq
+    projector = Projector(seq, 1, dirichlet=False)
+    coeffs = jnp.linspace(-0.4, 0.6, seq.n1)
+    discrete = DiscreteFunction(coeffs, seq.basis_1, seq.e1)
+    recovered = projector.oneform_histopolation(discrete)
+    npt.assert_allclose(recovered, coeffs, atol=1e-11)
+
+
+def test_threeform_histopolation_recovers_discrete_function(identity_clamped_seq):
+    seq = identity_clamped_seq
+    projector = Projector(seq, 3, dirichlet=False)
+    coeffs = jnp.linspace(-0.3, 0.4, seq.n3)
+    discrete = DiscreteFunction(coeffs, seq.basis_3, seq.e3)
+    recovered = projector.threeform_histopolation(discrete)
+    npt.assert_allclose(recovered, coeffs, atol=1e-11)
+
+
+def test_polar_oneform_histopolation_recovers_discrete_function():
+    seq = DeRhamSequence(
+        (5, 4, 4),
+        (3, 2, 2),
+        6,
+        ("clamped", "periodic", "periodic"),
+        polar=True,
+        tol=1e-12,
+        maxiter=200,
+        betti_numbers=(1, 1, 0, 0),
+    )
+    seq.set_map(lambda x: x)
+    projector = Projector(seq, 1, dirichlet=False)
+    coeffs = jnp.linspace(-0.35, 0.55, seq.n1)
+    discrete = DiscreteFunction(coeffs, seq.basis_1, seq.e1)
+    recovered = projector.oneform_histopolation(discrete)
+    npt.assert_allclose(recovered, coeffs, atol=1e-11)
 
 
 # ---------------------------------------------------------------------------
