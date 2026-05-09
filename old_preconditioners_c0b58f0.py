@@ -42,44 +42,23 @@ class TensorDiagonalBlockInverseFactors(eqx.Module):
     shape: tuple[int, int, int] = eqx.field(static=True)
     cp_relative_error: Optional[float] = None
     cp_final_delta: Optional[float] = None
-    split_backbone_relative_norm: Optional[float] = None
-    split_correction_relative_norm: Optional[float] = None
-    split_correction_over_backbone: Optional[float] = None
-    split_backbone_residual_relative: Optional[float] = None
     chebyshev_steps: int = eqx.field(static=True, default=0)
     chebyshev_lambda_min: Optional[float] = None
     chebyshev_lambda_max: Optional[float] = None
     richardson_steps: int = eqx.field(static=True, default=0)
-    # ``richardson_omega`` is computed from a Lanczos spectral estimate
-    # (see ``_maybe_autotune_richardson_omega``), so it is a dynamic leaf.
-    # The user-facing safety/scale knob lives on ``TensorMassPreconditioner``.
-    richardson_omega: jnp.ndarray = eqx.field(
-        default_factory=lambda: jnp.asarray(1.0, dtype=jnp.float64)
-    )
+    richardson_omega: float = eqx.field(static=True, default=1.0)
     direct_inv_r: Optional[jnp.ndarray] = None
     direct_inv_t: Optional[jnp.ndarray] = None
     direct_inv_z: Optional[jnp.ndarray] = None
-    dense_inverse: Optional[jnp.ndarray] = None
-    split_backbone_inv_r: Optional[jnp.ndarray] = None
-    split_backbone_inv_t: Optional[jnp.ndarray] = None
-    split_backbone_inv_z: Optional[jnp.ndarray] = None
-    # FD-style modal inverse data. When ``fd_V_r`` is non-None the block apply
-    # projects to a per-axis mass-orthonormal basis, multiplies by the stored
-    # modal pseudoinverse denominator ``fd_inv_denom``, then maps back.
-    # The mass-side rank-2 path uses this for the exact ``1 + lam_r lam_t
-    # lam_z`` denominator, while the stiffness-side path reuses the same
-    # storage for mass-referenced modal denominators assembled from additive
-    # directional terms.
-    fd_V_r: Optional[jnp.ndarray] = None
-    fd_V_t: Optional[jnp.ndarray] = None
-    fd_V_z: Optional[jnp.ndarray] = None
-    fd_lam_r: Optional[jnp.ndarray] = None
-    fd_lam_t: Optional[jnp.ndarray] = None
-    fd_lam_z: Optional[jnp.ndarray] = None
-    fd_inv_denom: Optional[jnp.ndarray] = None
     term_r: tuple[jnp.ndarray, ...] = ()
     term_t: tuple[jnp.ndarray, ...] = ()
     term_z: tuple[jnp.ndarray, ...] = ()
+    modal_basis_r: Optional[jnp.ndarray] = None
+    modal_basis_t: Optional[jnp.ndarray] = None
+    modal_basis_z: Optional[jnp.ndarray] = None
+    modal_r: tuple[jnp.ndarray, ...] = ()
+    modal_t: tuple[jnp.ndarray, ...] = ()
+    modal_z: tuple[jnp.ndarray, ...] = ()
 
 
 class K0TensorMassPreconditionerFactors(eqx.Module):
@@ -96,7 +75,6 @@ class K1TensorMassPreconditionerFactors(eqx.Module):
     arr: TensorDiagonalBlockInverseFactors
     theta: TensorDiagonalBlockInverseFactors
     zeta: TensorDiagonalBlockInverseFactors
-    use_inner_schur: bool = eqx.field(static=True, default=False)
     schur_inv: Optional[jnp.ndarray] = None
 
 
@@ -110,7 +88,6 @@ class K2TensorMassPreconditionerFactors(eqx.Module):
     r_bulk: TensorDiagonalBlockInverseFactors
     theta: TensorDiagonalBlockInverseFactors
     zeta: TensorDiagonalBlockInverseFactors
-    use_inner_schur: bool = eqx.field(static=True, default=False)
     schur_inv: Optional[jnp.ndarray] = None
 
 
@@ -142,8 +119,6 @@ class K1MassSurgeryPreconditionerFactors(eqx.Module):
     bulk_to_surgery_data: Optional[RestrictedExtractedMassApplyData] = None
     rt_atr_data: Optional[RestrictedExtractedMassApplyData] = None
     rt_art_data: Optional[RestrictedExtractedMassApplyData] = None
-    rt_to_zeta_data: Optional[RestrictedExtractedMassApplyData] = None
-    zeta_to_rt_data: Optional[RestrictedExtractedMassApplyData] = None
 
 
 class K2MassSurgeryPreconditionerFactors(eqx.Module):
@@ -161,10 +136,6 @@ class K2MassSurgeryPreconditionerFactors(eqx.Module):
     ass: jnp.ndarray
     surgery_to_bulk_data: Optional[RestrictedExtractedMassApplyData] = None
     bulk_to_surgery_data: Optional[RestrictedExtractedMassApplyData] = None
-    r_to_theta_data: Optional[RestrictedExtractedMassApplyData] = None
-    theta_to_r_data: Optional[RestrictedExtractedMassApplyData] = None
-    rt_to_zeta_data: Optional[RestrictedExtractedMassApplyData] = None
-    zeta_to_rt_data: Optional[RestrictedExtractedMassApplyData] = None
 
 
 class MassSurgeryPreconditioner(eqx.Module):
@@ -179,11 +150,6 @@ class TensorMassPreconditioner(eqx.Module):
     cp_maxiter: int = eqx.field(static=True)
     cp_tol: float = eqx.field(static=True)
     cp_ridge: float = eqx.field(static=True)
-    fit_strategy: str = eqx.field(static=True, default='multiplicative')
-    k0_rank: int = eqx.field(static=True, default=1)
-    k1_rank: int = eqx.field(static=True, default=1)
-    k2_rank: int = eqx.field(static=True, default=1)
-    k3_rank: int = eqx.field(static=True, default=1)
     block_chebyshev_steps: int = eqx.field(static=True, default=3)
     block_lanczos_iterations: int = eqx.field(static=True, default=16)
     block_lanczos_max_eig_inflation: float = eqx.field(static=True, default=1.1)
@@ -191,7 +157,6 @@ class TensorMassPreconditioner(eqx.Module):
     block_lanczos_min_eig_floor_fraction: float = eqx.field(static=True, default=1e-3)
     richardson_steps: int = eqx.field(static=True, default=0)
     richardson_omega: float = eqx.field(static=True, default=1.0)
-    surgery_schur_pinv_tol: float = eqx.field(static=True, default=1e-8)
     k0: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
     k1: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
     k2: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
@@ -202,20 +167,6 @@ class MassPreconditioners(eqx.Module):
     jacobi: Optional[JacobiMassPreconditioner] = None
     surgery: Optional[MassSurgeryPreconditioner] = None
     tensor: Optional[TensorMassPreconditioner] = None
-
-
-def tensor_mass_rank_for_degree(tensor: TensorMassPreconditioner, k: int) -> int:
-    match k:
-        case 0:
-            return int(getattr(tensor, 'k0_rank', tensor.rank))
-        case 1:
-            return int(getattr(tensor, 'k1_rank', tensor.rank))
-        case 2:
-            return int(getattr(tensor, 'k2_rank', tensor.rank))
-        case 3:
-            return int(getattr(tensor, 'k3_rank', tensor.rank))
-        case _:
-            raise ValueError("k must be 0, 1, 2 or 3")
 
 
 @dataclass(frozen=True)
@@ -448,10 +399,11 @@ def _safe_radial_quadrature(seq) -> jnp.ndarray:
     return jnp.maximum(jnp.asarray(seq.quad.x_x, dtype=jnp.float64), 1e-8)
 
 
+def _k0_radial_reference_baseline(seq) -> jnp.ndarray:
+    return _mean_one(_safe_radial_quadrature(seq))
+
+
 def _k1_radial_reference_baselines(seq) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    # Kept for `mrx.operators` (Hodge stiffness preconditioner) which still
-    # consumes radial-baseline priors. The mass tensor preconditioner no
-    # longer uses any prior channels.
     safe_r = _safe_radial_quadrature(seq)
     return (
         _mean_one(safe_r),
@@ -460,178 +412,17 @@ def _k1_radial_reference_baselines(seq) -> tuple[jnp.ndarray, jnp.ndarray, jnp.n
     )
 
 
-def _normalize_cp_term_signs(
-    scale: jnp.ndarray,
-    factor_theta: jnp.ndarray,
-    factor_r: jnp.ndarray,
-    factor_z: jnp.ndarray,
-):
-    if jnp.mean(factor_theta) < 0:
-        factor_theta = -factor_theta
-        scale = -scale
-    if jnp.mean(factor_r) < 0:
-        factor_r = -factor_r
-        scale = -scale
-    if jnp.mean(factor_z) < 0:
-        factor_z = -factor_z
-        scale = -scale
-    if scale < 0:
-        factor_r = -factor_r
-        scale = -scale
-    return scale, factor_theta, factor_r, factor_z
-
-
-def _make_separated_term(
-    theta_factor: jnp.ndarray,
-    radial_factor: jnp.ndarray,
-    zeta_factor: jnp.ndarray,
-    *,
-    scale: float | jnp.ndarray = 1.0,
-) -> dict[str, jnp.ndarray]:
-    dtype = jnp.result_type(theta_factor, radial_factor, zeta_factor, scale)
-    return {
-        "scale": jnp.asarray(scale, dtype=dtype),
-        "theta_factor": jnp.asarray(theta_factor, dtype=dtype),
-        "radial_factor": jnp.asarray(radial_factor, dtype=dtype),
-        "zeta_factor": jnp.asarray(zeta_factor, dtype=dtype),
-    }
-
-
-def _combine_separated_term_sets(
-    left_terms: tuple[Mapping[str, jnp.ndarray], ...],
-    right_terms: tuple[Mapping[str, jnp.ndarray], ...],
-) -> tuple[dict[str, jnp.ndarray], ...]:
-    combined = []
-    for left in left_terms:
-        for right in right_terms:
-            combined.append(_make_separated_term(
-                left["theta_factor"] * right["theta_factor"],
-                left["radial_factor"] * right["radial_factor"],
-                left["zeta_factor"] * right["zeta_factor"],
-                scale=left["scale"] * right["scale"],
-            ))
-    return tuple(combined)
-
-
-def _tensor_from_separated_terms(
-    terms: tuple[Mapping[str, jnp.ndarray], ...],
-    shape: tuple[int, int, int],
-    dtype,
-) -> jnp.ndarray:
-    tensor = jnp.zeros(shape, dtype=dtype)
-    for term in terms:
-        tensor = tensor + (
-            jnp.asarray(term["scale"], dtype=dtype)
-            * jnp.asarray(term["theta_factor"], dtype=dtype)[:, None, None]
-            * jnp.asarray(term["radial_factor"], dtype=dtype)[None, :, None]
-            * jnp.asarray(term["zeta_factor"], dtype=dtype)[None, None, :]
-        )
-    return tensor
-
-
-def _build_effective_prior_terms(
-    shape: tuple[int, int, int],
-    *,
-    radial_baseline: Optional[jnp.ndarray] = None,
-    prior_terms: Optional[tuple[Mapping[str, jnp.ndarray], ...]] = None,
-    dtype=jnp.float64,
-) -> Optional[tuple[dict[str, jnp.ndarray], ...]]:
-    radial_terms = None
-    if radial_baseline is not None:
-        radial_terms = (
-            _make_separated_term(
-                jnp.ones((shape[0],), dtype=dtype),
-                jnp.asarray(radial_baseline, dtype=dtype),
-                jnp.ones((shape[2],), dtype=dtype),
-            ),
-        )
-
-    if prior_terms is None:
-        return radial_terms
-
-    cast_prior_terms = tuple(
-        _make_separated_term(
-            term["theta_factor"],
-            term["radial_factor"],
-            term["zeta_factor"],
-            scale=term["scale"],
-        )
-        for term in prior_terms
+def _k2_radial_reference_baselines(seq) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    safe_r = _safe_radial_quadrature(seq)
+    return (
+        _mean_one(1.0 / safe_r),
+        _mean_one(safe_r),
+        _mean_one(1.0 / safe_r),
     )
-    if radial_terms is None:
-        return cast_prior_terms
-    return _combine_separated_term_sets(radial_terms, cast_prior_terms)
 
 
-def _expand_residual_terms_with_prior(
-    residual_terms: tuple[dict[str, jnp.ndarray], ...],
-    prior_terms: Optional[tuple[Mapping[str, jnp.ndarray], ...]],
-) -> tuple[dict[str, jnp.ndarray], ...]:
-    if prior_terms is None:
-        return residual_terms
-    return _combine_separated_term_sets(prior_terms, residual_terms)
-
-
-def _fit_known_prior_terms(
-    tensor_field: jnp.ndarray,
-    *,
-    rank: int,
-    cp_maxiter: int,
-    cp_tol: float,
-    cp_ridge: float,
-) -> tuple[dict[str, jnp.ndarray], ...]:
-    weights, factors, _, _, _ = _cp_als_3tensor(
-        tensor_field,
-        rank,
-        maxiter=cp_maxiter,
-        tol=cp_tol,
-        ridge=cp_ridge,
-    )
-    terms = []
-    for idx in range(rank):
-        factor_theta = jnp.ravel(factors[0][:, idx])
-        factor_r = jnp.ravel(factors[1][:, idx])
-        factor_z = jnp.ravel(factors[2][:, idx])
-        scale, factor_theta, factor_r, factor_z = _normalize_cp_term_signs(
-            weights[idx],
-            factor_theta,
-            factor_r,
-            factor_z,
-        )
-        terms.append(_make_separated_term(
-            factor_theta,
-            factor_r,
-            factor_z,
-            scale=scale,
-        ))
-    return tuple(terms)
-
-
-def _major_radius_tensor(seq) -> jnp.ndarray:
-    mapped = jax.vmap(seq.geometry.map)(seq.quad.x)
-    major_radius = jnp.sqrt(mapped[:, 0] * mapped[:, 0] + mapped[:, 1] * mapped[:, 1])
-    return _mean_one(_reshape_quadrature_scalar_field(seq, major_radius))
-
-
-def _major_radius_prior_terms(
-    seq,
-    *,
-    inverse: bool,
-    rank: int,
-    cp_maxiter: int,
-    cp_tol: float,
-    cp_ridge: float,
-) -> tuple[dict[str, jnp.ndarray], ...]:
-    major_radius = _major_radius_tensor(seq)
-    prior_tensor = 1.0 / jnp.maximum(major_radius, 1e-12) if inverse else major_radius
-    prior_tensor = _mean_one(prior_tensor)
-    return _fit_known_prior_terms(
-        prior_tensor,
-        rank=rank,
-        cp_maxiter=cp_maxiter,
-        cp_tol=cp_tol,
-        cp_ridge=cp_ridge,
-    )
+def _k3_radial_reference_baseline(seq) -> jnp.ndarray:
+    return _mean_one(1.0 / _safe_radial_quadrature(seq))
 
 
 def _mode_unfold_3tensor(tensor: jnp.ndarray, mode: int) -> jnp.ndarray:
@@ -750,45 +541,33 @@ def _apply_tensor_diagonal_block_preconditioner(
     rhs: jnp.ndarray,
 ) -> jnp.ndarray:
     nr, nt, nz = factors.shape
-    if factors.dense_inverse is not None:
-        return factors.dense_inverse @ jnp.asarray(rhs).reshape(-1)
-    if factors.fd_V_r is not None:
-        # Rank-2 fast-diagonalization: exact inverse of the sum of two
-        # Kronecker terms. ``fd_V_*`` are the simultaneous M-orthonormal /
-        # A-diagonalizing eigenvectors per axis.
-        modes = jnp.asarray(rhs).reshape(nr, nt, nz)
-        modes = jnp.einsum("ji,jkl->ikl", factors.fd_V_r, modes)
-        modes = jnp.einsum("ji,kjl->kil", factors.fd_V_t, modes)
-        modes = jnp.einsum("ji,klj->kli", factors.fd_V_z, modes)
-        modes = modes * factors.fd_inv_denom
-        modes = jnp.einsum("ij,jkl->ikl", factors.fd_V_r, modes)
-        modes = jnp.einsum("ij,kjl->kil", factors.fd_V_t, modes)
-        modes = jnp.einsum("ij,klj->kli", factors.fd_V_z, modes)
+    modes = jnp.asarray(rhs).reshape(nr, nt, nz)
+
+    if factors.direct_inv_r is not None:
+        modes = jnp.einsum("ij,jkl->ikl", factors.direct_inv_r, modes)
+        modes = jnp.einsum("ij,kjl->kil", factors.direct_inv_t, modes)
+        modes = jnp.einsum("ij,klj->kli", factors.direct_inv_z, modes)
         return modes.reshape(-1)
-    if factors.direct_inv_r is None:
-        raise ValueError(
-            "TensorDiagonalBlockInverseFactors is missing both direct_inv_* and fd_V_* "
-            "(rank-1 and rank-2 fast paths). The modal/multirank smoother has been retired."
-        )
-    modes = jnp.asarray(rhs).reshape(nr, nt, nz)
-    modes = jnp.einsum("ij,jkl->ikl", factors.direct_inv_r, modes)
-    modes = jnp.einsum("ij,kjl->kil", factors.direct_inv_t, modes)
-    modes = jnp.einsum("ij,klj->kli", factors.direct_inv_z, modes)
-    return modes.reshape(-1)
 
+    if factors.modal_basis_r is None or factors.modal_basis_t is None or factors.modal_basis_z is None:
+        raise ValueError("Missing modal bases for tensor diagonal block preconditioner")
 
-def _apply_tensor_diagonal_block_backbone_preconditioner(
-    factors: TensorDiagonalBlockInverseFactors,
-    rhs: jnp.ndarray,
-) -> jnp.ndarray:
-    if factors.split_backbone_inv_r is None:
-        return _apply_tensor_diagonal_block_preconditioner(factors, rhs)
+    modes = jnp.einsum("ji,jkl->ikl", factors.modal_basis_r, modes)
+    modes = jnp.einsum("ji,kjl->kil", factors.modal_basis_t, modes)
+    modes = jnp.einsum("ji,klj->kli", factors.modal_basis_z, modes)
 
-    nr, nt, nz = factors.shape
-    modes = jnp.asarray(rhs).reshape(nr, nt, nz)
-    modes = jnp.einsum("ij,jkl->ikl", factors.split_backbone_inv_r, modes)
-    modes = jnp.einsum("ij,kjl->kil", factors.split_backbone_inv_t, modes)
-    modes = jnp.einsum("ij,klj->kli", factors.split_backbone_inv_z, modes)
+    denom = jnp.zeros((nr, nt, nz), dtype=rhs.dtype)
+    for lam_r, lam_t, lam_z in zip(factors.modal_r, factors.modal_t, factors.modal_z):
+        denom = denom + lam_r[:, None, None] * lam_t[None, :, None] * lam_z[None, None, :]
+
+    denom_floor = 1e-12 * jnp.max(jnp.abs(denom))
+    safe_floor = jnp.where(denom_floor > 0, denom_floor, 1.0)
+    safe_denom = jnp.where(denom > safe_floor, denom, safe_floor)
+    modes = modes / safe_denom
+
+    modes = jnp.einsum("ij,jkl->ikl", factors.modal_basis_r, modes)
+    modes = jnp.einsum("ij,kjl->kil", factors.modal_basis_t, modes)
+    modes = jnp.einsum("ij,klj->kli", factors.modal_basis_z, modes)
     return modes.reshape(-1)
 
 
@@ -898,40 +677,6 @@ def _estimate_chebyshev_lanczos_bounds_apply(
     return min_eig, max_eig
 
 
-def _estimate_richardson_omega_apply(
-    operator_apply,
-    smoother_apply,
-    size: int,
-    *,
-    lanczos_iterations: int,
-    lanczos_max_eig_inflation: float,
-    lanczos_min_eig_deflation: float,
-    lanczos_min_eig_floor_fraction: float,
-    seed: int = 0,
-) -> float:
-    """Auto-tune the Richardson relaxation parameter via Lanczos.
-
-    Estimates the spectral bounds of the preconditioned operator
-    ``S A`` (where ``A = operator_apply`` and ``S = smoother_apply``) and
-    returns the optimal Richardson weight ``omega = 2 / (lambda_min + lambda_max)``
-    for SPD systems. ``S`` and ``A`` are both required to be SPD so that
-    ``S A`` has positive real eigenvalues.
-    """
-    lambda_min, lambda_max = _estimate_chebyshev_lanczos_bounds_apply(
-        operator_apply,
-        smoother_apply,
-        size,
-        lanczos_iterations=lanczos_iterations,
-        lanczos_max_eig_inflation=lanczos_max_eig_inflation,
-        lanczos_min_eig_deflation=lanczos_min_eig_deflation,
-        lanczos_min_eig_floor_fraction=lanczos_min_eig_floor_fraction,
-        seed=seed,
-    )
-    denom = jnp.maximum(lambda_min + lambda_max,
-                        jnp.asarray(jnp.finfo(jnp.float64).tiny, dtype=jnp.float64))
-    return float(2.0 / denom)
-
-
 def _assemble_shared_modal_basis(
     reference_mass: jnp.ndarray,
     matrices: tuple[jnp.ndarray, ...],
@@ -960,51 +705,21 @@ def _assemble_shared_modal_basis(
     return V, modal_diagonals
 
 
-def _apply_tensor_diagonal_block(
-    factors: TensorDiagonalBlockInverseFactors,
-    rhs: jnp.ndarray,
-    *,
-    true_block_apply=None,
-) -> jnp.ndarray:
-    """Apply the tensor diagonal block inverse, optionally with true-block Richardson.
-
-    When ``true_block_apply`` is provided AND ``richardson_steps > 0``, the
-    Richardson residual is computed against the true (extracted-mass restricted
-    to this block's indices) operator, with the rank-1 backbone tensor inverse
-    serving as the smoother. This is the only configuration in which extra
-    Richardson sweeps actually attack the geometric coupling that the CP fit
-    cannot represent. When ``true_block_apply`` is None, the residual falls
-    back to the rank-r CP forward model (legacy behavior; mostly a no-op for
-    rank 1, hence the parameter).
-    """
-    smoother_apply = _apply_tensor_diagonal_block_preconditioner
-    if factors.split_backbone_inv_r is not None and factors.richardson_steps > 0:
-        smoother_apply = _apply_tensor_diagonal_block_backbone_preconditioner
-
-    x = smoother_apply(factors, rhs)
+def _apply_tensor_diagonal_block(factors: TensorDiagonalBlockInverseFactors, rhs: jnp.ndarray) -> jnp.ndarray:
+    x = _apply_tensor_diagonal_block_preconditioner(factors, rhs)
     if factors.richardson_steps <= 0:
         return x
 
-    if true_block_apply is None:
-        forward_apply = lambda y, block_factors=factors: _apply_tensor_diagonal_block_forward(block_factors, y)
-    else:
-        forward_apply = true_block_apply
-
     for _ in range(factors.richardson_steps):
-        residual = rhs - forward_apply(x)
-        x = x + factors.richardson_omega * smoother_apply(factors, residual)
+        residual = rhs - _apply_tensor_diagonal_block_forward(factors, x)
+        x = x + factors.richardson_omega * _apply_tensor_diagonal_block_preconditioner(factors, residual)
     return x
 
 
-def _k1_layout_sizes(seq, dirichlet: bool):
-    boundary_offset = 1 if dirichlet else 0
-    return {
-        "theta_surgery": 2 * seq.basis_1.nz,
-        "zeta_surgery": 3 * seq.basis_1.dz,
-        "r": (seq.basis_1.dr - 1) * seq.basis_1.nt * seq.basis_1.nz,
-        "theta_bulk": (seq.basis_1.nr - 2 - boundary_offset) * seq.basis_1.dt * seq.basis_1.nz,
-        "zeta_bulk": (seq.basis_1.nr - 2 - boundary_offset) * seq.basis_1.nt * seq.basis_1.dz,
-    }
+def _component_sizes_k1(seq, dirichlet: bool):
+    if dirichlet:
+        return seq.n1_1_dbc, seq.n1_2_dbc, seq.n1_3_dbc
+    return seq.n1_1, seq.n1_2, seq.n1_3
 
 
 def _component_sizes_k2(seq, dirichlet: bool):
@@ -1014,12 +729,14 @@ def _component_sizes_k2(seq, dirichlet: bool):
 
 
 def _surgery_slices_k1(seq, dirichlet: bool):
-    sizes = _k1_layout_sizes(seq, dirichlet)
-    theta_surgery = slice(0, sizes["theta_surgery"])
-    zeta_surgery = slice(theta_surgery.stop, theta_surgery.stop + sizes["zeta_surgery"])
-    r_slice = slice(zeta_surgery.stop, zeta_surgery.stop + sizes["r"])
-    theta_bulk = slice(r_slice.stop, r_slice.stop + sizes["theta_bulk"])
-    zeta_bulk = slice(theta_bulk.stop, theta_bulk.stop + sizes["zeta_bulk"])
+    n_r, n_theta, n_zeta = _component_sizes_k1(seq, dirichlet)
+    r_slice = slice(0, n_r)
+    theta_slice = slice(r_slice.stop, r_slice.stop + n_theta)
+    zeta_slice = slice(theta_slice.stop, theta_slice.stop + n_zeta)
+    theta_surgery = slice(theta_slice.start, theta_slice.start + 2 * seq.basis_1.nz)
+    theta_bulk = slice(theta_surgery.stop, theta_slice.stop)
+    zeta_surgery = slice(zeta_slice.start, zeta_slice.start + 3 * seq.basis_1.dz)
+    zeta_bulk = slice(zeta_surgery.stop, zeta_slice.stop)
     return {
         "r": r_slice,
         "theta_surgery": theta_surgery,
@@ -1101,7 +818,7 @@ def _tensor_block_indices_k2(seq, dirichlet: bool):
 def _arr_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
     nt = seq.basis_1.nt
     nz = seq.basis_1.nz
-    n_r = _k1_layout_sizes(seq, dirichlet)["r"]
+    n_r = _component_sizes_k1(seq, dirichlet)[0]
     nr = n_r // (nt * nz)
     if nr * nt * nz != n_r:
         raise ValueError(f"Extracted r size {n_r} is not divisible by nt*nz = {nt * nz}")
@@ -1111,7 +828,7 @@ def _arr_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
 def _theta_bulk_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
     dt = seq.basis_1.dt
     nz = seq.basis_1.nz
-    n_theta = _k1_layout_sizes(seq, dirichlet)["theta_bulk"]
+    n_theta = _component_sizes_k1(seq, dirichlet)[1] - 2 * seq.basis_1.nz
     nr = n_theta // (dt * nz)
     if nr * dt * nz != n_theta:
         raise ValueError(f"theta_bulk size {n_theta} is not divisible by dt*nz = {dt * nz}")
@@ -1121,7 +838,7 @@ def _theta_bulk_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
 def _zeta_bulk_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
     nt = seq.basis_1.nt
     dz = seq.basis_1.dz
-    n_zeta = _k1_layout_sizes(seq, dirichlet)["zeta_bulk"]
+    n_zeta = _component_sizes_k1(seq, dirichlet)[2] - 3 * seq.basis_1.dz
     nr = n_zeta // (nt * dz)
     if nr * nt * dz != n_zeta:
         raise ValueError(f"zeta_bulk size {n_zeta} is not divisible by nt*dz = {nt * dz}")
@@ -1158,208 +875,6 @@ def _zeta_shape_k2(seq, dirichlet: bool) -> tuple[int, int, int]:
     return nr, dt, nz
 
 
-def _greedy_cp_terms(
-    tensor: jnp.ndarray,
-    *,
-    rank: int,
-    cp_maxiter: int,
-    cp_tol: float,
-    cp_ridge: float,
-) -> tuple[tuple[dict[str, jnp.ndarray], ...], float, float]:
-    """Greedy rank-r CP fit: r sequential rank-1 ALS fits against the residual.
-
-    Returns ``(terms, relative_error, last_step_residual_drop)`` where
-    ``terms`` is a tuple of ``_make_separated_term`` dicts of length ``rank``,
-    ``relative_error = ||tensor - sum(terms)|| / max(||tensor||, 1)``, and
-    ``last_step_residual_drop`` is the drop in residual norm at the final
-    rank-1 step (useful as a convergence diagnostic).
-
-    Greedy rank-r is monotone (rank-(r+1) strictly extends rank-r) and
-    deterministic, which is what we want for a preconditioner: rank-1
-    output is a strict subset of the rank-2 result, etc. Joint rank-r CP
-    can give a slightly tighter fit at the cost of non-uniqueness and
-    randomized restarts; we trade that for monotonicity here.
-    """
-    if rank < 1:
-        raise ValueError(f"_greedy_cp_terms requires rank >= 1; got {rank}.")
-    terms: list[dict[str, jnp.ndarray]] = []
-    residual = tensor
-    last_drop = 0.0
-    tensor_norm = jnp.maximum(jnp.linalg.norm(tensor), 1.0)
-    for _ in range(rank):
-        weights, factors, _, _, _ = _cp_als_3tensor(
-            residual,
-            1,
-            maxiter=cp_maxiter,
-            tol=cp_tol,
-            ridge=cp_ridge,
-        )
-        factor_theta = jnp.ravel(factors[0][:, 0])
-        factor_r = jnp.ravel(factors[1][:, 0])
-        factor_z = jnp.ravel(factors[2][:, 0])
-        scale, factor_theta, factor_r, factor_z = _normalize_cp_term_signs(
-            weights[0], factor_theta, factor_r, factor_z,
-        )
-        new_term = _make_separated_term(
-            factor_theta, factor_r, factor_z, scale=scale,
-        )
-        terms.append(new_term)
-        prev_norm = jnp.linalg.norm(residual)
-        residual = residual - _tensor_from_separated_terms(
-            (new_term,), tensor.shape, tensor.dtype,
-        )
-        new_norm = jnp.linalg.norm(residual)
-        last_drop = float(prev_norm - new_norm)
-    relative_error = float(jnp.linalg.norm(residual) / tensor_norm)
-    return tuple(terms), relative_error, last_drop
-
-
-def _build_tensor_block_factors_from_terms(
-    *,
-    full_shape: tuple[int, int, int],
-    term_matrices: tuple[tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray], ...],
-    cp_relative_error: Optional[float],
-    cp_final_delta: Optional[float],
-    chebyshev_steps: int = 0,
-    chebyshev_lanczos_iterations: int = 16,
-    chebyshev_lanczos_max_eig_inflation: float = 1.1,
-    chebyshev_lanczos_min_eig_deflation: float = 0.85,
-    chebyshev_lanczos_min_eig_floor_fraction: float = 1e-3,
-    chebyshev_seed: int = 0,
-    richardson_steps: int = 0,
-    richardson_omega: float = 1.0,
-    true_block_apply=None,
-) -> TensorDiagonalBlockInverseFactors:
-    if len(term_matrices) < 1:
-        raise ValueError("Tensor block factor builder requires at least one Kronecker term")
-
-    def _direct_axis_inverses(
-        matrices: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
-        *,
-        pseudo: bool = False,
-    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-        inverse = jnp.linalg.pinv if pseudo else jnp.linalg.inv
-        return tuple(_symmetrize(inverse(matrix)) for matrix in matrices)
-
-    def _assemble_dense_surrogate(
-        matrices: tuple[tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray], ...],
-    ) -> jnp.ndarray:
-        shape = matrices[0][0].shape[0] * matrices[0][1].shape[0] * matrices[0][2].shape[0]
-        dense = jnp.zeros((shape, shape), dtype=jnp.float64)
-        for matrix_r, matrix_t, matrix_z in matrices:
-            dense = dense + jnp.kron(matrix_z, jnp.kron(matrix_t, matrix_r))
-        return _symmetrize(dense)
-
-    def _dense_surrogate_inverse(
-        matrices: tuple[tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray], ...],
-    ) -> jnp.ndarray:
-        dense = _assemble_dense_surrogate(matrices)
-        evals = jnp.linalg.eigvalsh(dense)
-        max_abs_eval = jnp.max(jnp.abs(evals))
-        tol = jnp.maximum(jnp.asarray(1e-10, dtype=jnp.float64), 1e-12 * max_abs_eval)
-        if bool(jnp.min(jnp.abs(evals)) <= tol):
-            return _symmetrize(jnp.linalg.pinv(dense))
-        return _symmetrize(jnp.linalg.inv(dense))
-
-    # Vestigial split-backbone metadata (always None now that priors are gone).
-    split_backbone_relative_norm = None
-    split_correction_relative_norm = None
-    split_correction_over_backbone = None
-    split_backbone_residual_relative = None
-    split_backbone_inv_r = None
-    split_backbone_inv_t = None
-    split_backbone_inv_z = None
-
-    if len(term_matrices) == 1:
-        mass_r, mass_t, mass_z = term_matrices[0]
-        fd_V_r = fd_V_t = fd_V_z = None
-        fd_lam_r = fd_lam_t = fd_lam_z = None
-        fd_inv_denom = None
-        dense_inverse = None
-        direct_inv_r, direct_inv_t, direct_inv_z = _direct_axis_inverses(
-            (mass_r, mass_t, mass_z),
-        )
-    else:
-        mass_r_0, mass_t_0, mass_z_0 = term_matrices[0]
-        mass_r_1, mass_t_1, mass_z_1 = term_matrices[1]
-        dense_inverse = None
-        try:
-            fd = _build_kron_sum_fd_factors(
-                mass_r_0, mass_t_0, mass_z_0, mass_r_1, mass_t_1, mass_z_1,
-            )
-            fd_V_r, fd_V_t, fd_V_z = fd["V_r"], fd["V_t"], fd["V_z"]
-            fd_lam_r, fd_lam_t, fd_lam_z = fd["lam_r"], fd["lam_t"], fd["lam_z"]
-            denom = (
-                1.0
-                + fd_lam_r[:, None, None] * fd_lam_t[None, :, None] * fd_lam_z[None, None, :]
-            )
-            for idx in range(2, len(term_matrices)):
-                mass_r_i, mass_t_i, mass_z_i = term_matrices[idx]
-                d_r = jnp.einsum("ji,jk,ki->i", fd_V_r, mass_r_i, fd_V_r)
-                d_t = jnp.einsum("ji,jk,ki->i", fd_V_t, mass_t_i, fd_V_t)
-                d_z = jnp.einsum("ji,jk,ki->i", fd_V_z, mass_z_i, fd_V_z)
-                denom = denom + d_r[:, None, None] * d_t[None, :, None] * d_z[None, None, :]
-            min_denom = float(jnp.min(denom))
-            if not jnp.isfinite(min_denom) or min_denom <= 0.0:
-                raise ValueError(
-                    "Diagonal-truncated rank-r Kronecker sum is not SPD: "
-                    f"min(denom) = {min_denom:.3e}. Reduce rank or check the "
-                    "diagonal-metric tensor."
-                )
-            fd_inv_denom = 1.0 / denom
-            direct_inv_r = direct_inv_t = direct_inv_z = None
-        except ValueError:
-            # Greedy CP terms need not preserve SPD per-axis factors even when
-            # the assembled surrogate block is invertible. Fall back to a dense
-            # inverse/pseudoinverse of the assembled surrogate block instead of
-            # aborting or degrading to a single Kronecker term.
-            fd_V_r = fd_V_t = fd_V_z = None
-            fd_lam_r = fd_lam_t = fd_lam_z = None
-            fd_inv_denom = None
-            direct_inv_r = direct_inv_t = direct_inv_z = None
-            dense_inverse = _dense_surrogate_inverse(term_matrices)
-
-    return _maybe_autotune_richardson_omega(
-        TensorDiagonalBlockInverseFactors(
-            shape=full_shape,
-            cp_relative_error=cp_relative_error,
-            cp_final_delta=cp_final_delta,
-            split_backbone_relative_norm=split_backbone_relative_norm,
-            split_correction_relative_norm=split_correction_relative_norm,
-            split_correction_over_backbone=split_correction_over_backbone,
-            split_backbone_residual_relative=split_backbone_residual_relative,
-            chebyshev_steps=chebyshev_steps,
-            chebyshev_lambda_min=None,
-            chebyshev_lambda_max=None,
-            richardson_steps=richardson_steps,
-            richardson_omega=jnp.asarray(richardson_omega, dtype=jnp.float64),
-            direct_inv_r=direct_inv_r,
-            direct_inv_t=direct_inv_t,
-            direct_inv_z=direct_inv_z,
-            dense_inverse=dense_inverse,
-            split_backbone_inv_r=split_backbone_inv_r,
-            split_backbone_inv_t=split_backbone_inv_t,
-            split_backbone_inv_z=split_backbone_inv_z,
-            fd_V_r=fd_V_r,
-            fd_V_t=fd_V_t,
-            fd_V_z=fd_V_z,
-            fd_lam_r=fd_lam_r,
-            fd_lam_t=fd_lam_t,
-            fd_lam_z=fd_lam_z,
-            fd_inv_denom=fd_inv_denom,
-            term_r=tuple(t[0] for t in term_matrices),
-            term_t=tuple(t[1] for t in term_matrices),
-            term_z=tuple(t[2] for t in term_matrices),
-        ),
-        lanczos_iterations=chebyshev_lanczos_iterations,
-        lanczos_max_eig_inflation=chebyshev_lanczos_max_eig_inflation,
-        lanczos_min_eig_deflation=chebyshev_lanczos_min_eig_deflation,
-        lanczos_min_eig_floor_fraction=chebyshev_lanczos_min_eig_floor_fraction,
-        seed=chebyshev_seed,
-        true_block_apply=true_block_apply,
-    )
-
-
 def _build_diagonal_tensor_block_factors(
     seq,
     tensor: jnp.ndarray,
@@ -1377,8 +892,6 @@ def _build_diagonal_tensor_block_factors(
     cp_tol: float,
     cp_ridge: float,
     radial_baseline: Optional[jnp.ndarray] = None,
-    prior_terms: Optional[tuple[Mapping[str, jnp.ndarray], ...]] = None,
-    fit_strategy: str = 'multiplicative',
     chebyshev_steps: int = 0,
     chebyshev_lanczos_iterations: int = 16,
     chebyshev_lanczos_max_eig_inflation: float = 1.1,
@@ -1387,110 +900,90 @@ def _build_diagonal_tensor_block_factors(
     chebyshev_seed: int = 0,
     richardson_steps: int = 0,
     richardson_omega: float = 1.0,
-    true_block_apply=None,
 ) -> TensorDiagonalBlockInverseFactors:
-    # Tensor preconditioner: greedy rank-r CP fit (sequential rank-1 ALS
-    # against the residual) of the diagonal-metric tensor on the quadrature
-    # grid. The preconditioner is then assembled as:
-    #   rank=1   single Kronecker block (direct per-axis inverse);
-    #   rank=2   sum of two Kronecker terms, EXACT via Lynch fast-
-    #            diagonalization (simultaneous (M, A) generalized eigh);
-    #   rank>=3  Lynch FD on the leading two terms (defines V_r/V_t/V_z);
-    #            the additional terms are projected into that basis and
-    #            their *diagonals* are added to the FD denominator. This
-    #            is no longer exact for the assembled CP fit (off-diagonals
-    #            in V are dropped), but every rank>=3 apply costs the same
-    #            6 einsums as rank=2.
-    # Geometry/prior channels are intentionally NOT used: the preconditioner
-    # treats the diagonal metric tensor as a black box.
-    del radial_baseline, prior_terms, fit_strategy  # accepted for API compat; unused
-    if rank < 1:
-        raise ValueError(
-            f"Tensor diagonal block builder requires rank >= 1; got {rank}."
-        )
-    nr, nt, nz = full_shape
+    if radial_baseline is None:
+        corrected_tensor = tensor
+        scaled_radial_baseline = None
+    else:
+        scaled_radial_baseline = jnp.asarray(radial_baseline, dtype=tensor.dtype)
+        corrected_tensor = tensor / scaled_radial_baseline[None, :, None]
 
-    expanded_terms, cp_relative_error, cp_final_delta = _greedy_cp_terms(
-        tensor,
-        rank=rank,
-        cp_maxiter=cp_maxiter,
-        cp_tol=cp_tol,
-        cp_ridge=cp_ridge,
+    weights, factors, cp_relative_error, cp_final_delta, cp_iterations = _cp_als_3tensor(
+        corrected_tensor,
+        rank,
+        maxiter=cp_maxiter,
+        tol=cp_tol,
+        ridge=cp_ridge,
     )
-
+    nr, nt, nz = full_shape
     term_data = []
-    for term in expanded_terms:
-        radial_weight = term["scale"] * term["radial_factor"]
-        raw_mass_r = _assemble_weighted_1d_mass(radial_basis, radial_weights * radial_weight)
+    for idx in range(rank):
+        factor_theta = jnp.ravel(factors[0][:, idx])
+        factor_r = jnp.ravel(factors[1][:, idx])
+        factor_z = jnp.ravel(factors[2][:, idx])
+        scale = weights[idx]
+        radial_weight = scale * factor_r
+        if scaled_radial_baseline is not None:
+            radial_weight = scaled_radial_baseline * radial_weight
+        raw_mass_r = _assemble_weighted_1d_mass(radial_basis, radial_weights * (scale * factor_r))
+        if scaled_radial_baseline is not None:
+            raw_mass_r = _assemble_weighted_1d_mass(radial_basis, radial_weights * radial_weight)
         mass_r = _restrict_radial_mass(raw_mass_r, radial_start, nr)
-        mass_t = _assemble_weighted_1d_mass(theta_basis, theta_weights * term["theta_factor"])
-        mass_z = _assemble_weighted_1d_mass(zeta_basis, zeta_weights * term["zeta_factor"])
-        term_data.append((mass_r, mass_t, mass_z))
+        mass_t = _assemble_weighted_1d_mass(theta_basis, theta_weights * factor_theta)
+        mass_z = _assemble_weighted_1d_mass(zeta_basis, zeta_weights * factor_z)
+        term_data.append(
+            {
+                "matrices": (mass_r, mass_t, mass_z),
+                "size": float(jnp.linalg.norm(mass_r) * jnp.linalg.norm(mass_t) * jnp.linalg.norm(mass_z)),
+            }
+        )
 
-    return _build_tensor_block_factors_from_terms(
-        full_shape=full_shape,
-        term_matrices=tuple(term_data),
+    term_data.sort(key=lambda item: item["size"], reverse=True)
+    term_matrices = tuple(item["matrices"] for item in term_data)
+    if len(term_matrices) == 1:
+        mass_r, mass_t, mass_z = term_matrices[0]
+        return TensorDiagonalBlockInverseFactors(
+            shape=full_shape,
+            cp_relative_error=cp_relative_error,
+            cp_final_delta=cp_final_delta,
+            chebyshev_steps=chebyshev_steps,
+            chebyshev_lambda_min=None,
+            chebyshev_lambda_max=None,
+            richardson_steps=0,
+            richardson_omega=1.0,
+            direct_inv_r=_symmetrize(jnp.linalg.inv(mass_r)),
+            direct_inv_t=_symmetrize(jnp.linalg.inv(mass_t)),
+            direct_inv_z=_symmetrize(jnp.linalg.inv(mass_z)),
+            term_r=(mass_r,),
+            term_t=(mass_t,),
+            term_z=(mass_z,),
+        )
+
+    term_weights = jnp.asarray([item["size"] for item in term_data], dtype=tensor.dtype)
+    reference_mass_r = _restrict_radial_mass(_assemble_weighted_1d_mass(radial_basis, radial_weights), radial_start, nr)
+    reference_mass_t = _assemble_weighted_1d_mass(theta_basis, theta_weights)
+    reference_mass_z = _assemble_weighted_1d_mass(zeta_basis, zeta_weights)
+    V_r, modal_r = _assemble_shared_modal_basis(reference_mass_r, tuple(mass_r for mass_r, _, _ in term_matrices), term_weights)
+    V_t, modal_t = _assemble_shared_modal_basis(reference_mass_t, tuple(mass_t for _, mass_t, _ in term_matrices), term_weights)
+    V_z, modal_z = _assemble_shared_modal_basis(reference_mass_z, tuple(mass_z for _, _, mass_z in term_matrices), term_weights)
+    return TensorDiagonalBlockInverseFactors(
+        shape=full_shape,
         cp_relative_error=cp_relative_error,
         cp_final_delta=cp_final_delta,
         chebyshev_steps=chebyshev_steps,
-        chebyshev_lanczos_iterations=chebyshev_lanczos_iterations,
-        chebyshev_lanczos_max_eig_inflation=chebyshev_lanczos_max_eig_inflation,
-        chebyshev_lanczos_min_eig_deflation=chebyshev_lanczos_min_eig_deflation,
-        chebyshev_lanczos_min_eig_floor_fraction=chebyshev_lanczos_min_eig_floor_fraction,
-        chebyshev_seed=chebyshev_seed,
+        chebyshev_lambda_min=None,
+        chebyshev_lambda_max=None,
         richardson_steps=richardson_steps,
         richardson_omega=richardson_omega,
-        true_block_apply=true_block_apply,
-    )
-
-
-def _maybe_autotune_richardson_omega(
-    factors: TensorDiagonalBlockInverseFactors,
-    *,
-    lanczos_iterations: int,
-    lanczos_max_eig_inflation: float,
-    lanczos_min_eig_deflation: float,
-    lanczos_min_eig_floor_fraction: float,
-    seed: int,
-    true_block_apply=None,
-) -> TensorDiagonalBlockInverseFactors:
-    """Fill ``richardson_omega`` from a Lanczos estimate when requested.
-
-    The convention is ``richardson_omega <= 0`` opts in to auto-tuning. The
-    backbone smoother (``split_backbone_inv_*``) must be present, otherwise the
-    Richardson loop is inactive and the field is left at 1.0.
-
-    When ``true_block_apply`` is provided, the Lanczos bounds are estimated
-    against the true (extracted-mass restricted to this block) operator rather
-    than the rank-r CP forward; this matches the operator used by the
-    Richardson residual at apply time.
-    """
-    if factors.richardson_steps <= 0 or float(factors.richardson_omega) > 0.0:
-        return factors
-    if factors.split_backbone_inv_r is None:
-        return eqx.tree_at(
-            lambda f: f.richardson_omega,
-            factors,
-            jnp.asarray(1.0, dtype=jnp.float64),
-        )
-    if true_block_apply is None:
-        forward_apply = lambda x, block_factors=factors: _apply_tensor_diagonal_block_forward(block_factors, x)
-    else:
-        forward_apply = true_block_apply
-    omega = _estimate_richardson_omega_apply(
-        forward_apply,
-        lambda x, block_factors=factors: _apply_tensor_diagonal_block_backbone_preconditioner(block_factors, x),
-        int(jnp.prod(jnp.asarray(factors.shape))),
-        lanczos_iterations=lanczos_iterations,
-        lanczos_max_eig_inflation=lanczos_max_eig_inflation,
-        lanczos_min_eig_deflation=lanczos_min_eig_deflation,
-        lanczos_min_eig_floor_fraction=lanczos_min_eig_floor_fraction,
-        seed=seed,
-    )
-    return eqx.tree_at(
-        lambda f: f.richardson_omega,
-        factors,
-        jnp.asarray(omega, dtype=jnp.float64),
+        term_r=tuple(mass_r for mass_r, _, _ in term_matrices),
+        term_t=tuple(mass_t for _, mass_t, _ in term_matrices),
+        term_z=tuple(mass_z for _, _, mass_z in term_matrices),
+        modal_basis_r=V_r,
+        modal_basis_t=V_t,
+        modal_basis_z=V_z,
+        modal_r=modal_r,
+        modal_t=modal_t,
+        modal_z=modal_z,
     )
 
 
@@ -1585,32 +1078,24 @@ def _apply_tensor_exact_block(
     block_matrix: jnp.ndarray,
     factors: TensorDiagonalBlockInverseFactors,
     rhs: jnp.ndarray,
-    *,
-    true_block_apply=None,
 ) -> jnp.ndarray:
     del block_matrix
     if (
         factors.direct_inv_r is None
-        and factors.fd_V_r is None
         and
         factors.chebyshev_steps > 0
         and factors.chebyshev_lambda_min is not None
         and factors.chebyshev_lambda_max is not None
     ):
-        forward = (
-            true_block_apply
-            if true_block_apply is not None
-            else (lambda x, block_factors=factors: _apply_tensor_diagonal_block_forward(block_factors, x))
-        )
         apply = _build_chebyshev_apply_preconditioner(
-            forward,
+            lambda x, block_factors=factors: _apply_tensor_diagonal_block_forward(block_factors, x),
             lambda x, block_factors=factors: _apply_tensor_diagonal_block_preconditioner(block_factors, x),
             steps=factors.chebyshev_steps,
             min_eig=factors.chebyshev_lambda_min,
             max_eig=factors.chebyshev_lambda_max,
         )
         return apply(rhs)
-    return _apply_tensor_diagonal_block(factors, rhs, true_block_apply=true_block_apply)
+    return _apply_tensor_diagonal_block(factors, rhs)
 
 
 def _extraction_operator(seq, k: int, dirichlet: bool):
@@ -1702,23 +1187,11 @@ def _apply_extracted_submatrix(data: ExtractedMassApplyData, row_indices: jnp.nd
     return _apply_extracted_mass_operator_data(data, full)[row_indices]
 
 
-def _symmetric_pseudoinverse(matrix: jnp.ndarray, *, relative_tol: float = 1e-8) -> jnp.ndarray:
-    matrix = _symmetrize(matrix)
-    eigvals, eigvecs = jnp.linalg.eigh(matrix)
-    scale = jnp.max(jnp.abs(eigvals))
-    safe_scale = jnp.where(scale > 0, scale, 1.0)
-    cutoff = relative_tol * safe_scale
-    inv_eigvals = jnp.where(jnp.abs(eigvals) > cutoff, 1.0 / eigvals, 0.0)
-    return _symmetrize((eigvecs * inv_eigvals[jnp.newaxis, :]) @ eigvecs.T)
-
-
-def _assemble_surgery_schur_inverse_from_applies(
+def _assemble_schur_inverse_from_applies(
     ass: jnp.ndarray,
     surgery_to_bulk_apply,
     bulk_apply,
     bulk_to_surgery_apply,
-    *,
-    relative_tol: float = 1e-8,
 ) -> jnp.ndarray:
     basis = jnp.eye(ass.shape[0], dtype=ass.dtype)
 
@@ -1727,8 +1200,8 @@ def _assemble_surgery_schur_inverse_from_applies(
         bulk_response = bulk_apply(bulk_rhs)
         return ass @ rhs_s - bulk_to_surgery_apply(bulk_response)
 
-    surgery_schur = jax.vmap(schur_apply, in_axes=1, out_axes=1)(basis)
-    return _symmetric_pseudoinverse(surgery_schur, relative_tol=relative_tol)
+    schur = jax.vmap(schur_apply, in_axes=1, out_axes=1)(basis)
+    return _symmetrize(jnp.linalg.inv(schur))
 
 
 def _apply_k0_surgery_to_bulk_coupling(surgery: K0MassSurgeryPreconditionerFactors, rhs_s: jnp.ndarray) -> jnp.ndarray:
@@ -1771,18 +1244,6 @@ def _apply_k1_rt_art_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_t
     return _apply_extracted_submatrix(surgery.apply_data, surgery.r_indices, surgery.theta_bulk_indices, rhs_theta)
 
 
-def _apply_k1_rt_to_zeta_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_rt: jnp.ndarray) -> jnp.ndarray:
-    if surgery.rt_to_zeta_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.rt_to_zeta_data, rhs_rt)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_bulk_indices, surgery.rt_indices, rhs_rt)
-
-
-def _apply_k1_zeta_to_rt_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_zeta: jnp.ndarray) -> jnp.ndarray:
-    if surgery.zeta_to_rt_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.zeta_to_rt_data, rhs_zeta)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.rt_indices, surgery.zeta_bulk_indices, rhs_zeta)
-
-
 def _apply_k1_rt_preconditioner(
     surgery: K1MassSurgeryPreconditionerFactors,
     arr_factors: TensorDiagonalBlockInverseFactors,
@@ -1791,25 +1252,10 @@ def _apply_k1_rt_preconditioner(
 ) -> jnp.ndarray:
     rhs_r = rhs_rt[:surgery.rt_r_size]
     rhs_theta = rhs_rt[surgery.rt_r_size:surgery.rt_r_size + surgery.rt_theta_size]
-    arr_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.r_indices, surgery.r_indices, x)
-    theta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.theta_bulk_indices, surgery.theta_bulk_indices, x)
-    y = _apply_tensor_exact_block(None, arr_factors, rhs_r, true_block_apply=arr_true)
-    z = _apply_tensor_exact_block(None, theta_factors, rhs_theta - _apply_k1_rt_atr_coupling(surgery, y), true_block_apply=theta_true)
-    x_r = y - _apply_tensor_exact_block(None, arr_factors, _apply_k1_rt_art_coupling(surgery, z), true_block_apply=arr_true)
+    y = _apply_tensor_exact_block(None, arr_factors, rhs_r)
+    z = _apply_tensor_exact_block(None, theta_factors, rhs_theta - _apply_k1_rt_atr_coupling(surgery, y))
+    x_r = y - _apply_tensor_exact_block(None, arr_factors, _apply_k1_rt_art_coupling(surgery, z))
     return jnp.concatenate([x_r, z])
-
-
-def _apply_k1_rt_forward_model(
-    surgery: K1MassSurgeryPreconditionerFactors,
-    arr_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_rt: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_r = rhs_rt[:surgery.rt_r_size]
-    rhs_theta = rhs_rt[surgery.rt_r_size:surgery.rt_r_size + surgery.rt_theta_size]
-    out_r = _apply_tensor_diagonal_block_forward(arr_factors, rhs_r) + _apply_k1_rt_art_coupling(surgery, rhs_theta)
-    out_theta = _apply_k1_rt_atr_coupling(surgery, rhs_r) + _apply_tensor_diagonal_block_forward(theta_factors, rhs_theta)
-    return jnp.concatenate([out_r, out_theta])
 
 
 def _apply_k1_bulk_preconditioner(
@@ -1821,57 +1267,9 @@ def _apply_k1_bulk_preconditioner(
 ) -> jnp.ndarray:
     rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
     rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
-    zeta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_bulk_indices, surgery.zeta_bulk_indices, x)
-    y_rt = _apply_k1_rt_preconditioner(surgery, arr_factors, theta_factors, rhs_rt)
-    z = _apply_tensor_exact_block(
-        None,
-        zeta_factors,
-        rhs_zeta - _apply_k1_rt_to_zeta_coupling(surgery, y_rt),
-        true_block_apply=zeta_true,
-    )
-    x_rt = y_rt - _apply_k1_rt_preconditioner(
-        surgery,
-        arr_factors,
-        theta_factors,
-        _apply_k1_zeta_to_rt_coupling(surgery, z),
-    )
     return jnp.concatenate([
-        x_rt,
-        z,
-    ])
-
-
-def _apply_k1_bulk_forward_model(
-    surgery: K1MassSurgeryPreconditionerFactors,
-    arr_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    zeta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_bulk: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
-    rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
-    out_rt = _apply_k1_rt_forward_model(surgery, arr_factors, theta_factors, rhs_rt) + _apply_k1_zeta_to_rt_coupling(surgery, rhs_zeta)
-    out_zeta = _apply_k1_rt_to_zeta_coupling(surgery, rhs_rt) + _apply_tensor_diagonal_block_forward(zeta_factors, rhs_zeta)
-    return jnp.concatenate([out_rt, out_zeta])
-
-
-def _apply_k1_bulk_diagonal_preconditioner(
-    surgery: K1MassSurgeryPreconditionerFactors,
-    arr_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    zeta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_bulk: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_r = rhs_bulk[:surgery.rt_r_size]
-    rhs_theta = rhs_bulk[surgery.rt_r_size:surgery.bulk_rt_size]
-    rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
-    arr_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.r_indices, surgery.r_indices, x)
-    theta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.theta_bulk_indices, surgery.theta_bulk_indices, x)
-    zeta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_bulk_indices, surgery.zeta_bulk_indices, x)
-    return jnp.concatenate([
-        _apply_tensor_exact_block(None, arr_factors, rhs_r, true_block_apply=arr_true),
-        _apply_tensor_exact_block(None, theta_factors, rhs_theta, true_block_apply=theta_true),
-        _apply_tensor_exact_block(None, zeta_factors, rhs_zeta, true_block_apply=zeta_true),
+        _apply_k1_rt_preconditioner(surgery, arr_factors, theta_factors, rhs_rt),
+        _apply_tensor_exact_block(None, zeta_factors, rhs_zeta),
     ])
 
 
@@ -1887,108 +1285,7 @@ def _apply_k2_bulk_to_surgery_coupling(surgery: K2MassSurgeryPreconditionerFacto
     return _apply_extracted_submatrix(surgery.apply_data, surgery.surgery_indices, surgery.bulk_indices, rhs_b)
 
 
-def _apply_k2_r_to_theta_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_r: jnp.ndarray) -> jnp.ndarray:
-    if surgery.r_to_theta_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.r_to_theta_data, rhs_r)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.theta_indices, surgery.r_bulk_indices, rhs_r)
-
-
-def _apply_k2_theta_to_r_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_theta: jnp.ndarray) -> jnp.ndarray:
-    if surgery.theta_to_r_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.theta_to_r_data, rhs_theta)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.r_bulk_indices, surgery.theta_indices, rhs_theta)
-
-
-def _k2_rt_indices(surgery: K2MassSurgeryPreconditionerFactors) -> jnp.ndarray:
-    return jnp.concatenate([surgery.r_bulk_indices, surgery.theta_indices])
-
-
-def _apply_k2_rt_to_zeta_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_rt: jnp.ndarray) -> jnp.ndarray:
-    if surgery.rt_to_zeta_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.rt_to_zeta_data, rhs_rt)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_indices, _k2_rt_indices(surgery), rhs_rt)
-
-
-def _apply_k2_zeta_to_rt_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_zeta: jnp.ndarray) -> jnp.ndarray:
-    if surgery.zeta_to_rt_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.zeta_to_rt_data, rhs_zeta)
-    return _apply_extracted_submatrix(surgery.apply_data, _k2_rt_indices(surgery), surgery.zeta_indices, rhs_zeta)
-
-
-def _apply_k2_rt_preconditioner(
-    surgery: K2MassSurgeryPreconditionerFactors,
-    r_bulk_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_rt: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_r = rhs_rt[:surgery.r_bulk_size]
-    rhs_theta = rhs_rt[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
-    r_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.r_bulk_indices, surgery.r_bulk_indices, x)
-    theta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.theta_indices, surgery.theta_indices, x)
-    y = _apply_tensor_exact_block(None, r_bulk_factors, rhs_r, true_block_apply=r_true)
-    z = _apply_tensor_exact_block(None, theta_factors, rhs_theta - _apply_k2_r_to_theta_coupling(surgery, y), true_block_apply=theta_true)
-    x_r = y - _apply_tensor_exact_block(None, r_bulk_factors, _apply_k2_theta_to_r_coupling(surgery, z), true_block_apply=r_true)
-    return jnp.concatenate([x_r, z])
-
-
-def _apply_k2_rt_forward_model(
-    surgery: K2MassSurgeryPreconditionerFactors,
-    r_bulk_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_rt: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_r = rhs_rt[:surgery.r_bulk_size]
-    rhs_theta = rhs_rt[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
-    out_r = _apply_tensor_diagonal_block_forward(r_bulk_factors, rhs_r) + _apply_k2_theta_to_r_coupling(surgery, rhs_theta)
-    out_theta = _apply_k2_r_to_theta_coupling(surgery, rhs_r) + _apply_tensor_diagonal_block_forward(theta_factors, rhs_theta)
-    return jnp.concatenate([out_r, out_theta])
-
-
 def _apply_k2_bulk_preconditioner(
-    surgery: K2MassSurgeryPreconditionerFactors,
-    r_bulk_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    zeta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_bulk: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_rt = rhs_bulk[:surgery.r_bulk_size + surgery.theta_size]
-    rhs_zeta = rhs_bulk[surgery.r_bulk_size + surgery.theta_size:surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size]
-    zeta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_indices, surgery.zeta_indices, x)
-    y_rt = _apply_k2_rt_preconditioner(surgery, r_bulk_factors, theta_factors, rhs_rt)
-    z = _apply_tensor_exact_block(
-        None,
-        zeta_factors,
-        rhs_zeta - _apply_k2_rt_to_zeta_coupling(surgery, y_rt),
-        true_block_apply=zeta_true,
-    )
-    x_rt = y_rt - _apply_k2_rt_preconditioner(
-        surgery,
-        r_bulk_factors,
-        theta_factors,
-        _apply_k2_zeta_to_rt_coupling(surgery, z),
-    )
-    return jnp.concatenate([
-        x_rt,
-        z,
-    ])
-
-
-def _apply_k2_bulk_forward_model(
-    surgery: K2MassSurgeryPreconditionerFactors,
-    r_bulk_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    zeta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_bulk: jnp.ndarray,
-) -> jnp.ndarray:
-    bulk_rt_size = surgery.r_bulk_size + surgery.theta_size
-    rhs_rt = rhs_bulk[:bulk_rt_size]
-    rhs_zeta = rhs_bulk[bulk_rt_size:bulk_rt_size + surgery.zeta_size]
-    out_rt = _apply_k2_rt_forward_model(surgery, r_bulk_factors, theta_factors, rhs_rt) + _apply_k2_zeta_to_rt_coupling(surgery, rhs_zeta)
-    out_zeta = _apply_k2_rt_to_zeta_coupling(surgery, rhs_rt) + _apply_tensor_diagonal_block_forward(zeta_factors, rhs_zeta)
-    return jnp.concatenate([out_rt, out_zeta])
-
-
-def _apply_k2_bulk_diagonal_preconditioner(
     surgery: K2MassSurgeryPreconditionerFactors,
     r_bulk_factors: TensorDiagonalBlockInverseFactors,
     theta_factors: TensorDiagonalBlockInverseFactors,
@@ -1997,14 +1294,14 @@ def _apply_k2_bulk_diagonal_preconditioner(
 ) -> jnp.ndarray:
     rhs_r = rhs_bulk[:surgery.r_bulk_size]
     rhs_theta = rhs_bulk[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
-    rhs_zeta = rhs_bulk[surgery.r_bulk_size + surgery.theta_size:surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size]
-    r_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.r_bulk_indices, surgery.r_bulk_indices, x)
-    theta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.theta_indices, surgery.theta_indices, x)
-    zeta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_indices, surgery.zeta_indices, x)
+    rhs_zeta = rhs_bulk[
+        surgery.r_bulk_size + surgery.theta_size:
+        surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size
+    ]
     return jnp.concatenate([
-        _apply_tensor_exact_block(None, r_bulk_factors, rhs_r, true_block_apply=r_true),
-        _apply_tensor_exact_block(None, theta_factors, rhs_theta, true_block_apply=theta_true),
-        _apply_tensor_exact_block(None, zeta_factors, rhs_zeta, true_block_apply=zeta_true),
+        _apply_tensor_exact_block(None, r_bulk_factors, rhs_r),
+        _apply_tensor_exact_block(None, theta_factors, rhs_theta),
+        _apply_tensor_exact_block(None, zeta_factors, rhs_zeta),
     ])
 
 
@@ -2090,8 +1387,6 @@ def build_mass_surgery_preconditioner(
                 bulk_to_surgery_data=_build_restricted_extracted_mass_apply_data(apply_data, surgery_indices, bulk_indices),
                 rt_atr_data=_build_restricted_extracted_mass_apply_data(apply_data, theta_bulk_indices, r_indices),
                 rt_art_data=_build_restricted_extracted_mass_apply_data(apply_data, r_indices, theta_bulk_indices),
-                rt_to_zeta_data=_build_restricted_extracted_mass_apply_data(apply_data, zeta_bulk_indices, rt_indices),
-                zeta_to_rt_data=_build_restricted_extracted_mass_apply_data(apply_data, rt_indices, zeta_bulk_indices),
                 surgery_diaginv=1.0 / jnp.diag(ass),
                 ass=ass,
             )
@@ -2132,26 +1427,6 @@ def build_mass_surgery_preconditioner(
                     surgery_indices,
                     block_indices["bulk"],
                 ),
-                r_to_theta_data=_build_restricted_extracted_mass_apply_data(
-                    apply_data,
-                    block_indices["theta"],
-                    block_indices["r_bulk"],
-                ),
-                theta_to_r_data=_build_restricted_extracted_mass_apply_data(
-                    apply_data,
-                    block_indices["r_bulk"],
-                    block_indices["theta"],
-                ),
-                rt_to_zeta_data=_build_restricted_extracted_mass_apply_data(
-                    apply_data,
-                    block_indices["zeta"],
-                    jnp.concatenate([block_indices["r_bulk"], block_indices["theta"]]),
-                ),
-                zeta_to_rt_data=_build_restricted_extracted_mass_apply_data(
-                    apply_data,
-                    jnp.concatenate([block_indices["r_bulk"], block_indices["theta"]]),
-                    block_indices["zeta"],
-                ),
                 ass=ass,
                 surgery_diaginv=1.0 / jnp.diag(ass),
             )
@@ -2172,14 +1447,12 @@ def build_mass_tensor_preconditioner(
     *,
     k: int,
     rank: int = 1,
-    fallback_rank: Optional[int] = None,
     cp_kwargs: Optional[Mapping[str, object]] = None,
     existing: Optional[TensorMassPreconditioner] = None,
     surgery_precond: Optional[MassSurgeryPreconditioner] = None,
     dirichlet_flags: tuple[bool, ...] = (False, True),
 ) -> TensorMassPreconditioner:
     del full_matrix
-    fallback_rank = rank if fallback_rank is None else int(fallback_rank)
     cp_kwargs = {} if cp_kwargs is None else dict(cp_kwargs)
     cp_maxiter = int(cp_kwargs.get("maxiter", 100))
     cp_tol = float(cp_kwargs.get("tol", 1e-9))
@@ -2191,19 +1464,13 @@ def build_mass_tensor_preconditioner(
     block_lanczos_min_eig_floor_fraction = float(cp_kwargs.get("block_lanczos_min_eig_floor_fraction", 1e-3))
     richardson_steps = int(cp_kwargs.get("richardson_steps", 0))
     richardson_omega = float(cp_kwargs.get("richardson_omega", 1.0))
-    surgery_schur_pinv_tol = float(
-        cp_kwargs.get("surgery_schur_pinv_tol", cp_kwargs.get("schur_pinv_tol", 1e-8))
-    )
-    k1_inner_schur = bool(cp_kwargs.get("k1_inner_schur", False))
-    k2_inner_schur = bool(cp_kwargs.get("k2_inner_schur", False))
-    fit_strategy = str(cp_kwargs.get("fit_strategy", "multiplicative"))
 
     reuse_existing = (
         existing is not None
+        and existing.rank == rank
         and existing.cp_maxiter == cp_maxiter
         and existing.cp_tol == cp_tol
         and existing.cp_ridge == cp_ridge
-        and existing.fit_strategy == fit_strategy
         and existing.block_chebyshev_steps == block_chebyshev_steps
         and existing.block_lanczos_iterations == block_lanczos_iterations
         and existing.block_lanczos_max_eig_inflation == block_lanczos_max_eig_inflation
@@ -2211,15 +1478,9 @@ def build_mass_tensor_preconditioner(
         and existing.block_lanczos_min_eig_floor_fraction == block_lanczos_min_eig_floor_fraction
         and existing.richardson_steps == richardson_steps
         and existing.richardson_omega == richardson_omega
-        and existing.surgery_schur_pinv_tol == surgery_schur_pinv_tol
     )
     tensor_precond = TensorMassPreconditioner(
-        rank=fallback_rank,
-        fit_strategy=fit_strategy,
-        k0_rank=(rank if k == 0 else (existing.k0_rank if reuse_existing else fallback_rank)),
-        k1_rank=(rank if k == 1 else (existing.k1_rank if reuse_existing else fallback_rank)),
-        k2_rank=(rank if k == 2 else (existing.k2_rank if reuse_existing else fallback_rank)),
-        k3_rank=(rank if k == 3 else (existing.k3_rank if reuse_existing else fallback_rank)),
+        rank=rank,
         cp_maxiter=cp_maxiter,
         cp_tol=cp_tol,
         cp_ridge=cp_ridge,
@@ -2230,7 +1491,6 @@ def build_mass_tensor_preconditioner(
         block_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
         richardson_steps=richardson_steps,
         richardson_omega=richardson_omega,
-        surgery_schur_pinv_tol=surgery_schur_pinv_tol,
         k0=existing.k0 if reuse_existing else BoundaryConditionPair(),
         k1=existing.k1 if reuse_existing else BoundaryConditionPair(),
         k2=existing.k2 if reuse_existing else BoundaryConditionPair(),
@@ -2240,13 +1500,12 @@ def build_mass_tensor_preconditioner(
     pair = BoundaryConditionPair()
     if k == 0:
         weight_tensor = _k0_bulk_weight_tensor(seq)
+        radial_baseline = _k0_radial_reference_baseline(seq)
         if surgery_precond is None:
             raise ValueError("Tensor mass k=0 requires surgery factors to be assembled first")
         for dirichlet in dirichlet_flags:
             surgery = select_boundary_data(surgery_precond.k0, dirichlet, "Mass surgery k=0")
             bulk_shape = _bulk_tensor_shape(seq, dirichlet)
-            bulk_indices_k0 = jnp.arange(surgery.surgery_size, surgery.apply_data.size, dtype=jnp.int32)
-            bulk_true_apply = lambda x, surgery=surgery, bulk_indices_k0=bulk_indices_k0: _apply_extracted_submatrix(surgery.apply_data, bulk_indices_k0, bulk_indices_k0, x)
             bulk_factors = _build_diagonal_tensor_block_factors(
                 seq,
                 weight_tensor,
@@ -2262,9 +1521,7 @@ def build_mass_tensor_preconditioner(
                 cp_maxiter=cp_maxiter,
                 cp_tol=cp_tol,
                 cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                fit_strategy=fit_strategy,
+                radial_baseline=radial_baseline,
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2273,7 +1530,6 @@ def build_mass_tensor_preconditioner(
                 chebyshev_seed=100 + int(dirichlet),
                 richardson_steps=richardson_steps,
                 richardson_omega=richardson_omega,
-                true_block_apply=bulk_true_apply,
             )
             bulk_factors = _annotate_tensor_block_chebyshev_bounds(
                 bulk_factors,
@@ -2283,14 +1539,11 @@ def build_mass_tensor_preconditioner(
                 lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
                 seed=100 + int(dirichlet),
             )
-            bulk_indices_k0 = jnp.arange(surgery.surgery_size, surgery.apply_data.size, dtype=jnp.int32)
-            bulk_true_k0 = lambda x: _apply_extracted_submatrix(surgery.apply_data, bulk_indices_k0, bulk_indices_k0, x)
-            schur_inv = _assemble_surgery_schur_inverse_from_applies(
+            schur_inv = _assemble_schur_inverse_from_applies(
                 surgery.ass,
                 lambda rhs_s, surgery=surgery: _apply_k0_surgery_to_bulk_coupling(surgery, rhs_s),
-                lambda rhs_b, bulk_factors=bulk_factors, bulk_true_k0=bulk_true_k0: _apply_tensor_exact_block(None, bulk_factors, rhs_b, true_block_apply=bulk_true_k0),
+                lambda rhs_b, bulk_factors=bulk_factors: _apply_tensor_exact_block(None, bulk_factors, rhs_b),
                 lambda rhs_b, surgery=surgery: _apply_k0_bulk_to_surgery_coupling(surgery, rhs_b),
-                relative_tol=tensor_precond.surgery_schur_pinv_tol,
             )
             factors = K0TensorMassPreconditionerFactors(
                 bulk=bulk_factors,
@@ -2306,6 +1559,7 @@ def build_mass_tensor_preconditioner(
 
     if k == 1:
         metric_tensors = _k1_diagonal_metric_tensors(seq)
+        radial_baselines = _k1_radial_reference_baselines(seq)
         if surgery_precond is None:
             raise ValueError("Tensor mass k=1 requires surgery factors to be assembled first")
         for dirichlet in dirichlet_flags:
@@ -2320,10 +1574,6 @@ def build_mass_tensor_preconditioner(
             arr_shape = _arr_shape_k1(seq, dirichlet)
             theta_shape = _theta_bulk_shape_k1(seq, dirichlet)
             zeta_shape = _zeta_bulk_shape_k1(seq, dirichlet)
-
-            arr_true_apply = lambda x, surgery=surgery, idx=r_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
-            theta_true_apply = lambda x, surgery=surgery, idx=theta_bulk_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
-            zeta_true_apply = lambda x, surgery=surgery, idx=zeta_bulk_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
 
             arr_factors = _build_diagonal_tensor_block_factors(
                 seq,
@@ -2340,9 +1590,7 @@ def build_mass_tensor_preconditioner(
                 cp_maxiter=cp_maxiter,
                 cp_tol=cp_tol,
                 cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                fit_strategy=fit_strategy,
+                radial_baseline=radial_baselines[0],
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2351,7 +1599,6 @@ def build_mass_tensor_preconditioner(
                 chebyshev_seed=200 + 10 * int(dirichlet),
                 richardson_steps=richardson_steps,
                 richardson_omega=richardson_omega,
-                true_block_apply=arr_true_apply,
             )
             arr_factors = _annotate_tensor_block_chebyshev_bounds(
                 arr_factors,
@@ -2376,9 +1623,7 @@ def build_mass_tensor_preconditioner(
                 cp_maxiter=cp_maxiter,
                 cp_tol=cp_tol,
                 cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                fit_strategy=fit_strategy,
+                radial_baseline=radial_baselines[1],
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2387,7 +1632,6 @@ def build_mass_tensor_preconditioner(
                 chebyshev_seed=201 + 10 * int(dirichlet),
                 richardson_steps=richardson_steps,
                 richardson_omega=richardson_omega,
-                true_block_apply=theta_true_apply,
             )
             theta_factors = _annotate_tensor_block_chebyshev_bounds(
                 theta_factors,
@@ -2412,9 +1656,7 @@ def build_mass_tensor_preconditioner(
                 cp_maxiter=cp_maxiter,
                 cp_tol=cp_tol,
                 cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                fit_strategy=fit_strategy,
+                radial_baseline=radial_baselines[2],
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2423,7 +1665,6 @@ def build_mass_tensor_preconditioner(
                 chebyshev_seed=202 + 10 * int(dirichlet),
                 richardson_steps=richardson_steps,
                 richardson_omega=richardson_omega,
-                true_block_apply=zeta_true_apply,
             )
             zeta_factors = _annotate_tensor_block_chebyshev_bounds(
                 zeta_factors,
@@ -2433,26 +1674,17 @@ def build_mass_tensor_preconditioner(
                 lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
                 seed=202 + 10 * int(dirichlet),
             )
-            schur_inv = _assemble_surgery_schur_inverse_from_applies(
+            schur_inv = _assemble_schur_inverse_from_applies(
                 surgery.ass,
                 lambda rhs_s, surgery=surgery: _apply_k1_surgery_to_bulk_coupling(surgery, rhs_s),
-                lambda rhs_bulk, surgery=surgery, arr_factors=arr_factors, theta_factors=theta_factors, zeta_factors=zeta_factors, use_inner_schur=k1_inner_schur: (
-                    _apply_k1_bulk_preconditioner(
-                        surgery,
-                        arr_factors,
-                        theta_factors,
-                        zeta_factors,
-                        rhs_bulk,
-                    ) if use_inner_schur else _apply_k1_bulk_diagonal_preconditioner(
-                        surgery,
-                        arr_factors,
-                        theta_factors,
-                        zeta_factors,
-                        rhs_bulk,
-                    )
+                lambda rhs_bulk, surgery=surgery, arr_factors=arr_factors, theta_factors=theta_factors, zeta_factors=zeta_factors: _apply_k1_bulk_preconditioner(
+                    surgery,
+                    arr_factors,
+                    theta_factors,
+                    zeta_factors,
+                    rhs_bulk,
                 ),
                 lambda rhs_bulk, surgery=surgery: _apply_k1_bulk_to_surgery_coupling(surgery, rhs_bulk),
-                relative_tol=tensor_precond.surgery_schur_pinv_tol,
             )
 
             factors = K1TensorMassPreconditionerFactors(
@@ -2461,7 +1693,6 @@ def build_mass_tensor_preconditioner(
                 zeta_bulk_indices=zeta_bulk_indices,
                 rt_r_size=rt_r_size,
                 rt_theta_size=rt_theta_size,
-                use_inner_schur=k1_inner_schur,
                 arr=arr_factors,
                 theta=theta_factors,
                 zeta=zeta_factors,
@@ -2477,6 +1708,7 @@ def build_mass_tensor_preconditioner(
 
     if k == 2:
         metric_tensors = _k2_diagonal_metric_tensors(seq)
+        radial_baselines = _k2_radial_reference_baselines(seq)
         if surgery_precond is None:
             raise ValueError("Tensor mass k=2 requires surgery factors to be assembled first")
         for dirichlet in dirichlet_flags:
@@ -2488,10 +1720,6 @@ def build_mass_tensor_preconditioner(
             r_bulk_size = int(block_indices["r_bulk_size"])
             theta_size = int(block_indices["theta_size"])
             zeta_size = int(block_indices["zeta_size"])
-
-            r_bulk_true_apply = lambda x, surgery=surgery, idx=r_bulk_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
-            theta_true_apply = lambda x, surgery=surgery, idx=theta_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
-            zeta_true_apply = lambda x, surgery=surgery, idx=zeta_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
 
             r_bulk_factors = _build_diagonal_tensor_block_factors(
                 seq,
@@ -2508,9 +1736,7 @@ def build_mass_tensor_preconditioner(
                 cp_maxiter=cp_maxiter,
                 cp_tol=cp_tol,
                 cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                fit_strategy=fit_strategy,
+                radial_baseline=radial_baselines[0],
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2519,7 +1745,6 @@ def build_mass_tensor_preconditioner(
                 chebyshev_seed=300 + 10 * int(dirichlet),
                 richardson_steps=richardson_steps,
                 richardson_omega=richardson_omega,
-                true_block_apply=r_bulk_true_apply,
             )
             r_bulk_factors = _annotate_tensor_block_chebyshev_bounds(
                 r_bulk_factors,
@@ -2544,9 +1769,7 @@ def build_mass_tensor_preconditioner(
                 cp_maxiter=cp_maxiter,
                 cp_tol=cp_tol,
                 cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                fit_strategy=fit_strategy,
+                radial_baseline=radial_baselines[1],
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2555,7 +1778,6 @@ def build_mass_tensor_preconditioner(
                 chebyshev_seed=301 + 10 * int(dirichlet),
                 richardson_steps=richardson_steps,
                 richardson_omega=richardson_omega,
-                true_block_apply=theta_true_apply,
             )
             theta_factors = _annotate_tensor_block_chebyshev_bounds(
                 theta_factors,
@@ -2580,9 +1802,7 @@ def build_mass_tensor_preconditioner(
                 cp_maxiter=cp_maxiter,
                 cp_tol=cp_tol,
                 cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                fit_strategy=fit_strategy,
+                radial_baseline=radial_baselines[2],
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2591,7 +1811,6 @@ def build_mass_tensor_preconditioner(
                 chebyshev_seed=302 + 10 * int(dirichlet),
                 richardson_steps=richardson_steps,
                 richardson_omega=richardson_omega,
-                true_block_apply=zeta_true_apply,
             )
             zeta_factors = _annotate_tensor_block_chebyshev_bounds(
                 zeta_factors,
@@ -2601,26 +1820,17 @@ def build_mass_tensor_preconditioner(
                 lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
                 seed=302 + 10 * int(dirichlet),
             )
-            schur_inv = _assemble_surgery_schur_inverse_from_applies(
+            schur_inv = _assemble_schur_inverse_from_applies(
                 surgery.ass,
                 lambda rhs_s, surgery=surgery: _apply_k2_surgery_to_bulk_coupling(surgery, rhs_s),
-                lambda rhs_bulk, surgery=surgery, r_bulk_factors=r_bulk_factors, theta_factors=theta_factors, zeta_factors=zeta_factors, use_inner_schur=k2_inner_schur: (
-                    _apply_k2_bulk_preconditioner(
-                        surgery,
-                        r_bulk_factors,
-                        theta_factors,
-                        zeta_factors,
-                        rhs_bulk,
-                    ) if use_inner_schur else _apply_k2_bulk_diagonal_preconditioner(
-                        surgery,
-                        r_bulk_factors,
-                        theta_factors,
-                        zeta_factors,
-                        rhs_bulk,
-                    )
+                lambda rhs_bulk, surgery=surgery, r_bulk_factors=r_bulk_factors, theta_factors=theta_factors, zeta_factors=zeta_factors: _apply_k2_bulk_preconditioner(
+                    surgery,
+                    r_bulk_factors,
+                    theta_factors,
+                    zeta_factors,
+                    rhs_bulk,
                 ),
                 lambda rhs_bulk, surgery=surgery: _apply_k2_bulk_to_surgery_coupling(surgery, rhs_bulk),
-                relative_tol=tensor_precond.surgery_schur_pinv_tol,
             )
             factors = K2TensorMassPreconditionerFactors(
                 r_bulk_indices=r_bulk_indices,
@@ -2629,7 +1839,6 @@ def build_mass_tensor_preconditioner(
                 r_bulk_size=r_bulk_size,
                 theta_size=theta_size,
                 zeta_size=zeta_size,
-                use_inner_schur=k2_inner_schur,
                 r_bulk=r_bulk_factors,
                 theta=theta_factors,
                 zeta=zeta_factors,
@@ -2646,6 +1855,7 @@ def build_mass_tensor_preconditioner(
     if k == 3:
         weight_tensor = _k3_weight_tensor(seq)
         extracted_shape = _k3_extracted_shape(seq)
+        radial_baseline = _k3_radial_reference_baseline(seq)
         for dirichlet in dirichlet_flags:
             factors = _build_diagonal_tensor_block_factors(
                 seq,
@@ -2662,9 +1872,7 @@ def build_mass_tensor_preconditioner(
                 cp_maxiter=cp_maxiter,
                 cp_tol=cp_tol,
                 cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                fit_strategy=fit_strategy,
+                radial_baseline=radial_baseline,
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2724,11 +1932,9 @@ def apply_mass_tensor_preconditioner(seq, preconds: Optional[MassPreconditioners
         surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
         rhs_s = v[:surgery.surgery_size]
         rhs_b = v[surgery.surgery_size:]
-        bulk_indices = jnp.arange(surgery.surgery_size, surgery.apply_data.size, dtype=jnp.int32)
-        bulk_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, bulk_indices, bulk_indices, x)
-        y = _apply_tensor_exact_block(None, factors.bulk, rhs_b, true_block_apply=bulk_true)
+        y = _apply_tensor_exact_block(None, factors.bulk, rhs_b)
         z = factors.schur_inv @ (rhs_s - _apply_k0_bulk_to_surgery_coupling(surgery, y))
-        x_b = y - _apply_tensor_exact_block(None, factors.bulk, _apply_k0_surgery_to_bulk_coupling(surgery, z), true_block_apply=bulk_true)
+        x_b = y - _apply_tensor_exact_block(None, factors.bulk, _apply_k0_surgery_to_bulk_coupling(surgery, z))
         return jnp.concatenate([z, x_b])
 
     if k == 3:
@@ -2739,10 +1945,9 @@ def apply_mass_tensor_preconditioner(seq, preconds: Optional[MassPreconditioners
         rhs_s = v[surgery.surgery_indices]
         rhs_b = v[surgery.bulk_indices]
 
-        bulk_apply = _apply_k2_bulk_preconditioner if factors.use_inner_schur else _apply_k2_bulk_diagonal_preconditioner
-        y = bulk_apply(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_b)
+        y = _apply_k2_bulk_preconditioner(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_b)
         z = factors.schur_inv @ (rhs_s - _apply_k2_bulk_to_surgery_coupling(surgery, y))
-        x_b = y - bulk_apply(
+        x_b = y - _apply_k2_bulk_preconditioner(
             surgery,
             factors.r_bulk,
             factors.theta,
@@ -2762,10 +1967,9 @@ def apply_mass_tensor_preconditioner(seq, preconds: Optional[MassPreconditioners
     rhs_s = v[surgery.surgery_indices]
     rhs_b = v[surgery.bulk_indices]
 
-    bulk_apply = _apply_k1_bulk_preconditioner if factors.use_inner_schur else _apply_k1_bulk_diagonal_preconditioner
-    y = bulk_apply(surgery, factors.arr, factors.theta, factors.zeta, rhs_b)
+    y = _apply_k1_bulk_preconditioner(surgery, factors.arr, factors.theta, factors.zeta, rhs_b)
     z = factors.schur_inv @ (rhs_s - _apply_k1_bulk_to_surgery_coupling(surgery, y))
-    x_b = y - bulk_apply(
+    x_b = y - _apply_k1_bulk_preconditioner(
         surgery,
         factors.arr,
         factors.theta,
@@ -2777,228 +1981,8 @@ def apply_mass_tensor_preconditioner(seq, preconds: Optional[MassPreconditioners
     x = x.at[surgery.surgery_indices].set(z)
     x = x.at[surgery.bulk_indices].set(x_b)
     return x
-
-
-def apply_mass_tensor_forward_model(seq, preconds: Optional[MassPreconditioners], v, k: int, dirichlet: bool = True):
-    del seq
-    factors = _select_mass_tensor_factors(preconds, k, dirichlet)
-
-    if k == 0:
-        surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
-        rhs_s = v[:surgery.surgery_size]
-        rhs_b = v[surgery.surgery_size:]
-        out_s = surgery.ass @ rhs_s + _apply_k0_bulk_to_surgery_coupling(surgery, rhs_b)
-        out_b = _apply_k0_surgery_to_bulk_coupling(surgery, rhs_s) + _apply_tensor_diagonal_block_forward(factors.bulk, rhs_b)
-        return jnp.concatenate([out_s, out_b])
-
-    if k == 3:
-        return _apply_tensor_diagonal_block_forward(factors, v)
-
-    if k == 2:
-        surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
-        rhs_s = v[surgery.surgery_indices]
-        rhs_b = v[surgery.bulk_indices]
-        out_s = surgery.ass @ rhs_s + _apply_k2_bulk_to_surgery_coupling(surgery, rhs_b)
-        out_b = _apply_k2_surgery_to_bulk_coupling(surgery, rhs_s) + _apply_k2_bulk_forward_model(
-            surgery,
-            factors.r_bulk,
-            factors.theta,
-            factors.zeta,
-            rhs_b,
-        )
-        out = jnp.zeros_like(v)
-        out = out.at[surgery.surgery_indices].set(out_s)
-        out = out.at[surgery.bulk_indices].set(out_b)
-        return out
-
-    if k != 1:
-        raise ValueError(f"Tensor mass forward model currently only supports k=0, k=1, k=2 and k=3 (got k={k})")
-
-    surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
-    rhs_s = v[surgery.surgery_indices]
-    rhs_b = v[surgery.bulk_indices]
-    out_s = surgery.ass @ rhs_s + _apply_k1_bulk_to_surgery_coupling(surgery, rhs_b)
-    out_b = _apply_k1_surgery_to_bulk_coupling(surgery, rhs_s) + _apply_k1_bulk_forward_model(
-        surgery,
-        factors.arr,
-        factors.theta,
-        factors.zeta,
-        rhs_b,
-    )
-    out = jnp.zeros_like(v)
-    out = out.at[surgery.surgery_indices].set(out_s)
-    out = out.at[surgery.bulk_indices].set(out_b)
-    return out
 def _symmetrize(matrix: jnp.ndarray) -> jnp.ndarray:
     return 0.5 * (matrix + matrix.T)
-
-
-def _simultaneous_diagonalize_pair(M: jnp.ndarray, A: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Simultaneously diagonalize an SPD ``M`` and a symmetric ``A``.
-
-    Returns ``(V, lam)`` such that ``V.T @ M @ V = I`` and
-    ``V.T @ A @ V = diag(lam)``, via Cholesky ``M = L L.T`` and a
-    symmetric eigendecomposition of ``L^{-1} A L^{-T}``. This is the
-    per-axis primitive of the Lynch fast-diagonalization (FD) method:
-    given a 3D Kronecker sum ``M_r (x) M_t (x) M_z + A_r (x) A_t (x) A_z``
-    with all ``M_axis`` SPD, applying the per-axis ``V`` reduces it to
-    the diagonal ``1 + lam_r (x) lam_t (x) lam_z`` in the M-orthonormal
-    basis. Reusable by the stiffness preconditioner.
-    """
-    M_sym = _symmetrize(jnp.asarray(M, dtype=jnp.float64))
-    A_sym = _symmetrize(jnp.asarray(A, dtype=jnp.float64))
-    L = jnp.linalg.cholesky(M_sym)
-    Linv_A = jax.scipy.linalg.solve_triangular(L, A_sym, lower=True)
-    B = jax.scipy.linalg.solve_triangular(L, Linv_A.T, lower=True).T
-    B = _symmetrize(B)
-    lam, U = jnp.linalg.eigh(B)
-    V = jax.scipy.linalg.solve_triangular(L.T, U, lower=False)
-    return V, lam
-
-
-def _build_kron_sum_fd_factors(
-    mass_r: jnp.ndarray, mass_t: jnp.ndarray, mass_z: jnp.ndarray,
-    aux_r: jnp.ndarray, aux_t: jnp.ndarray, aux_z: jnp.ndarray,
-) -> dict:
-    """Assemble per-axis FD factors for ``mass + aux`` (sum of two Kron terms).
-
-    Both Kronecker triples must be SPD on their axis; the resulting
-    diagonal ``1 + lam_r (x) lam_t (x) lam_z`` is checked to be positive.
-    Returns a dict with keys ``V_r/V_t/V_z``, ``lam_r/lam_t/lam_z``,
-    and ``inv_denom`` (precomputed reciprocal of ``1 + lam_r lam_t lam_z``).
-    """
-    V_r, lam_r = _simultaneous_diagonalize_pair(mass_r, aux_r)
-    V_t, lam_t = _simultaneous_diagonalize_pair(mass_t, aux_t)
-    V_z, lam_z = _simultaneous_diagonalize_pair(mass_z, aux_z)
-    denom = (
-        1.0
-        + lam_r[:, None, None] * lam_t[None, :, None] * lam_z[None, None, :]
-    )
-    min_denom = float(jnp.min(denom))
-    if not jnp.isfinite(min_denom) or min_denom <= 0.0:
-        raise ValueError(
-            "Rank-2 Kronecker sum is not SPD: min(1 + lam_r*lam_t*lam_z) = "
-            f"{min_denom:.3e}. Reduce to rank-1 or check assembly."
-        )
-    return {
-        "V_r": V_r, "V_t": V_t, "V_z": V_z,
-        "lam_r": lam_r, "lam_t": lam_t, "lam_z": lam_z,
-        "inv_denom": 1.0 / denom,
-    }
-
-
-def _mass_orthonormal_basis(mass: jnp.ndarray) -> jnp.ndarray:
-    mass_sym = _symmetrize(jnp.asarray(mass, dtype=jnp.float64))
-    L = jnp.linalg.cholesky(mass_sym)
-    eye = jnp.eye(mass_sym.shape[0], dtype=mass_sym.dtype)
-    return jax.scipy.linalg.solve_triangular(L.T, eye, lower=False)
-
-
-def _modal_diagonal_from_basis(basis: jnp.ndarray, matrix: jnp.ndarray) -> jnp.ndarray:
-    matrix_sym = _symmetrize(jnp.asarray(matrix, dtype=jnp.float64))
-    return jnp.einsum("ji,jk,ki->i", basis, matrix_sym, basis)
-
-
-def _modal_regularized_inverse_denom(
-    denom: jnp.ndarray,
-    *,
-    relative_tol: float = 1e-8,
-) -> jnp.ndarray:
-    denom = jnp.asarray(denom, dtype=jnp.float64)
-    scale = jnp.max(jnp.abs(denom))
-    cutoff = jnp.maximum(
-        jnp.asarray(relative_tol, dtype=denom.dtype) * scale,
-        jnp.asarray(1e-14, dtype=denom.dtype),
-    )
-    return jnp.where(denom > cutoff, 1.0 / denom, 0.0)
-
-
-def _build_mass_referenced_tensor_block_factors(
-    *,
-    full_shape: tuple[int, int, int],
-    reference_r: jnp.ndarray,
-    reference_t: jnp.ndarray,
-    reference_z: jnp.ndarray,
-    axis_operator_r: Optional[jnp.ndarray],
-    axis_operator_t: Optional[jnp.ndarray],
-    axis_operator_z: Optional[jnp.ndarray],
-    term_matrices: tuple[tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray], ...],
-    cp_relative_error: Optional[float],
-    cp_final_delta: Optional[float],
-    chebyshev_steps: int = 0,
-    chebyshev_lanczos_iterations: int = 16,
-    chebyshev_lanczos_max_eig_inflation: float = 1.1,
-    chebyshev_lanczos_min_eig_deflation: float = 0.85,
-    chebyshev_lanczos_min_eig_floor_fraction: float = 1e-3,
-    chebyshev_seed: int = 0,
-    richardson_steps: int = 0,
-    richardson_omega: float = 1.0,
-    modal_pinv_tol: float = 1e-8,
-    true_block_apply=None,
-) -> TensorDiagonalBlockInverseFactors:
-    if len(term_matrices) < 1:
-        raise ValueError("Mass-referenced tensor block builder requires at least one Kronecker term")
-
-    def _axis_basis(reference_mass: jnp.ndarray, operator: Optional[jnp.ndarray]):
-        if operator is None:
-            basis = _mass_orthonormal_basis(reference_mass)
-            lam = jnp.ones((reference_mass.shape[0],), dtype=jnp.float64)
-            return basis, lam
-        return _simultaneous_diagonalize_pair(reference_mass, operator)
-
-    fd_V_r, fd_lam_r = _axis_basis(reference_r, axis_operator_r)
-    fd_V_t, fd_lam_t = _axis_basis(reference_t, axis_operator_t)
-    fd_V_z, fd_lam_z = _axis_basis(reference_z, axis_operator_z)
-
-    denom = jnp.zeros(full_shape, dtype=jnp.float64)
-    for term_r, term_t, term_z in term_matrices:
-        d_r = _modal_diagonal_from_basis(fd_V_r, term_r)
-        d_t = _modal_diagonal_from_basis(fd_V_t, term_t)
-        d_z = _modal_diagonal_from_basis(fd_V_z, term_z)
-        denom = denom + d_r[:, None, None] * d_t[None, :, None] * d_z[None, None, :]
-
-    return _maybe_autotune_richardson_omega(
-        TensorDiagonalBlockInverseFactors(
-            shape=full_shape,
-            cp_relative_error=cp_relative_error,
-            cp_final_delta=cp_final_delta,
-            split_backbone_relative_norm=None,
-            split_correction_relative_norm=None,
-            split_correction_over_backbone=None,
-            split_backbone_residual_relative=None,
-            chebyshev_steps=chebyshev_steps,
-            chebyshev_lambda_min=None,
-            chebyshev_lambda_max=None,
-            richardson_steps=richardson_steps,
-            richardson_omega=jnp.asarray(richardson_omega, dtype=jnp.float64),
-            direct_inv_r=None,
-            direct_inv_t=None,
-            direct_inv_z=None,
-            dense_inverse=None,
-            split_backbone_inv_r=None,
-            split_backbone_inv_t=None,
-            split_backbone_inv_z=None,
-            fd_V_r=fd_V_r,
-            fd_V_t=fd_V_t,
-            fd_V_z=fd_V_z,
-            fd_lam_r=fd_lam_r,
-            fd_lam_t=fd_lam_t,
-            fd_lam_z=fd_lam_z,
-            fd_inv_denom=_modal_regularized_inverse_denom(
-                denom,
-                relative_tol=modal_pinv_tol,
-            ),
-            term_r=tuple(t[0] for t in term_matrices),
-            term_t=tuple(t[1] for t in term_matrices),
-            term_z=tuple(t[2] for t in term_matrices),
-        ),
-        lanczos_iterations=chebyshev_lanczos_iterations,
-        lanczos_max_eig_inflation=chebyshev_lanczos_max_eig_inflation,
-        lanczos_min_eig_deflation=chebyshev_lanczos_min_eig_deflation,
-        lanczos_min_eig_floor_fraction=chebyshev_lanczos_min_eig_floor_fraction,
-        seed=chebyshev_seed,
-        true_block_apply=true_block_apply,
-    )
 
 
 def _assemble_weighted_1d_mass(B: jnp.ndarray, weights: jnp.ndarray) -> jnp.ndarray:

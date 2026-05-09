@@ -5,47 +5,134 @@ sections: dead code that can be removed, and oddities/changes to consider.
 
 ## Status (resume here)
 
-The tensor mass preconditioner has been compacted to **rank-1 only**, with
-optional Richardson sweeps that default to 0:
+The tensor mass preconditioner is multirank again:
 
-- `TensorDiagonalBlockInverseFactors` no longer carries `modal_basis_*`,
-  `modal_r/t/z`, or `modal_denom`. Only the rank-1 direct-Kronecker path
-  (`direct_inv_r/t/z`) remains.
-- `_apply_tensor_diagonal_block_preconditioner` is rank-1-only and raises
-  if `direct_inv_r is None`.
-- `_build_diagonal_tensor_block_factors` forces `rank = 1` at entry and
-  raises if more than one separable term is produced. The modal/multirank
-  branch (`_assemble_shared_modal_basis`, `eigh` per axis,
-  `modal_denom`) is gone.
-- `_apply_tensor_diagonal_block` keeps the optional true-block Richardson
-  loop (`true_block_apply` callable threaded through
-  `_apply_tensor_exact_block`) plus the omega autotune via Lanczos. With
-  the static `richardson_steps=0` default the loop is constant-folded
-  out under jit.
-- `assemble_all_operators` now passes `k{0,1,2,3}_rank=1`.
-- `_major_radius_prior_terms` is called with `rank=1` at all six sites
-  (the 2x rank-inflation bug from earlier in the multiplicative path).
+- `_build_diagonal_tensor_block_factors` now uses `_greedy_cp_terms` on the
+      mapped diagonal coefficient field.
+- Rank `1` is the exact direct-Kronecker inverse via `direct_inv_{r,t,z}`.
+- Rank `2` is exact Lynch fast-diagonalization on the leading two Kronecker
+      terms via `_build_kron_sum_fd_factors`.
+- Rank `>= 3` reuses that FD basis and adds only projected diagonal
+      contributions from the extra terms. This is approximate but keeps the
+      same six-einsum apply as rank `2`.
+- `_apply_tensor_diagonal_block_preconditioner` therefore has both the direct
+      path and the FD path active again.
+- The active assembled bulk path treats the coefficient fields as black boxes:
+      `radial_baseline`, `prior_terms`, and `fit_strategy` are accepted for API
+      compatibility but ignored inside `_build_diagonal_tensor_block_factors`.
+- `assemble_all_operators` still chooses the conservative eager default
+      `k0 = k1 = k2 = k3 = 1`.
 
-What this buys us in benchmarks: rank-1 production matches the old
-modal multirank path (~13 iters at k=1, ~10 at k=2) at ~1/3 the per-apply
-wall time, because both now run the same direct-Kronecker rank-1
-smoother. Per-block Richardson sweeps were measured to be a no-op (omega
-autotunes to ~1, spectrum already clustered around 1) except for k=3
-rank=3 which saved one iter. Detailed numbers in the conversation
-transcript at
-`/home/tblickhan/.vscode-server/data/User/workspaceStorage/820340d02833ca378f5d79bf88c8c3f9-1/GitHub.copilot-chat/transcripts/284a9347-7d05-4ea1-a9e1-cd1483ebe6c4.jsonl`.
+The scalar `k = 0` Hodge / stiffness preconditioner is now built by the new
+FD-based bulk builder `_assemble_k0_stiffness_fd_bulk_factors`:
+
+- it fits `alpha_rr = J g^{rr}`, `alpha_thetatheta = J g^{θθ}`, and
+      `alpha_zetazeta = J g^{ζζ}` separately,
+- builds the leading modal basis from the rank-1 terms,
+- and for higher ranks reuses that basis while adding only projected diagonal
+      corrections to the additive denominator.
+
+The old prior-based/operator-aware `k = 0` bulk builder stack in
+`mrx/operators.py` has been removed.
+
+Recent smoke checks on the rotating ellipse (`eps = 0.3`) gave about `13`
+iterations for the `dbc` scalar stiffness solve and about `15` for the free
+solve with the tensor preconditioner, versus about `115` for Jacobi on the
+`dbc` case. Higher ranks do change the assembled bulk denominator, but on this
+test geometry they do not materially change the iteration count.
+
+The higher-form standalone stiffness preconditioner has been debugged far
+enough to separate the basis/nullspace issues from the earlier small-resolution
+k=`1` pathology:
+
+- The k=`1`/k=`2` block reference masses now use the true unweighted block
+      masses from the design table (`M` or `M^(d)`), not CP-weighted averages.
+- The active-axis modal bases now use the canonical unweighted 1D stiffness
+      operators `K = G^T M G`; inactive axes remain mass-orthonormal. The
+      scalar k=`0` path was left untouched.
+- The interactive stiffness notebook now checks canonical active-axis spectra,
+      dense nullspaces, projected pure-stiffness solves, and dense `P K`
+      spectra on the positive subspace.
+- In the harmonic-free cases (`k=1` with Dirichlet, `k=2` without Dirichlet),
+      the deflated nullspaces now match the dense generalized kernels:
+      - k=`1`, DBC: dense null dim = exact dim = deflated dim = `44`
+      - k=`2`, free: dense null dim = exact dim = deflated dim = `136`
+- The pure-stiffness RHS projection is not the remaining problem. In the
+      harmonic-free k=`1` DBC case, the projected trial vector, RHS, error,
+      and residual all have negligible overlap with the deflated kernel.
+- The k=`2` free standalone tensor stiffness preconditioner is healthy on the
+      same small rotating-ellipse case: about `19` CG iterations with residual
+      and solution error both at about `1e-9`.
+- On the smaller `ns = (4, 8, 4)` test, the k=`1` DBC standalone tensor
+      stiffness preconditioner stalled even though the nullspace handling was
+      correct. That case now looks like a low-bulk edge case rather than a
+      general algebra failure: at that resolution the radial bulk had only one
+      basis left.
+- Dense positive-subspace diagnostics show the current k=`1` standalone
+      preconditioner can become a bad CG preconditioner on that tiny-bulk case:
+      - `P K` is far from the identity,
+      - `P K` has large symmetry defect,
+      - `P K` has negative real eigenvalues,
+      - the symmetrized `P` has a negative mode on the positive subspace.
+- Enabling `k1_inner_schur` materially improves k=`1` numerically, but it is
+      too expensive for production and still does not make the standalone
+      operator fully SPD. Treat it as a diagnostic endpoint, not the fix.
+- New dense bulk-only audits show the k=`1` bulk inverse is not the main
+      source of the indefiniteness. On the bulk positive subspace, both the
+      default diagonal bulk path and the inner-Schur bulk path remain SPD
+      enough: the minimum real eigenvalue stays positive and the symmetrized
+      bulk preconditioner stays positive.
+- New exact-vs-approx outer-Schur audits isolate the remaining failure to the
+      k=`1` surgery Schur *operator*, not to the matrix inversion step:
+      - the raw surgery block `A_ss` is SPD,
+      - the exact Schur complement `S_exact = A_ss - A_sb A_bb^+ A_bs` is PSD
+        up to roundoff, with the expected near-null modes,
+      - the approximate Schur assembled with the production bulk inverse is
+        strongly indefinite,
+      - the stored `schur_inv` matches the inverse/pseudoinverse of that bad
+        approximate Schur to roundoff, so the inversion is faithful.
+- The k=`1` surgery block is the combined `theta_surgery ⊕ zeta_surgery`
+      block. On the current test this expands to `8` theta-surgery dofs and
+      `12` zeta-surgery dofs. The dominant Schur defect is in the
+      theta-surgery block: its relative error is much larger than the zeta
+      block error, while the theta-zeta coupling error is secondary.
+- Re-running the same notebook workflow at `ns = (6, 8, 4)` changes the
+      conclusion materially:
+      - `k=1`, DBC now converges in about `29` iterations with relative
+        residual about `5.4e-9` and relative solution error about `2.5e-8`,
+      - `k=2`, free still converges cleanly (about `25` iterations, residual
+        about `4.9e-9`, solution error about `7.7e-9`),
+      - the CP fits on the mapped diagonal channels are not exact, but are
+        good enough for the standalone solves at this resolution,
+      - so the earlier `k=1` failure at `ns = (4, 8, 4)` should be treated as
+        a low-resolution / tiny-bulk Schur edge case, not as a blocking bug in
+        the general `k=1` standalone stiffness path.
+
+Current reading: the standalone `k=0,1,2` stiffness ingredients are now in a
+good enough state to move on. The small `k=1` failure at `ns = (4, 8, 4)` was
+useful diagnostically, but the clean `ns = (6, 8, 4)` solves suggest it is an
+edge case of the tiny-bulk outer Schur approximation rather than the main
+blocker for this task.
 
 ### Next session pickup
 
-1. **Test the compacted code.** Cluster was down at handover so this is
-   the first thing to do:
+1. **Move to the full saddle-point Laplace systems.** Use the now-working
+      standalone mass and stiffness ingredients as the local building blocks for
+      the mixed `k=1` / `k=2` Hodge-Laplacian preconditioners, and benchmark the
+      actual saddle-point MINRES path rather than the standalone stiffness
+      blocks.
+2. **Revisit nullspace computation once the mixed Laplace path is in hand.**
+      The next target after the saddle-point preconditioners is to clean up and
+      validate the nullspace / harmonic computation path against the updated
+      operator stack.
+3. **Run focused regression tests after the recent mass/stiffness changes.**
    ```
    pytest test/test_operators.py -k "tensor or mass_preconditioner or k2_schur" -x --tb=short
    ```
-   The fixture builds at `rank=3` but each per-degree call now hard-forces
-   `rank=1`; tests should still pass since the behaviour at `rank=1`
-   matches the previous `len(term_matrices)==1` branch.
-2. **Prod-vs-Jacobi-vs-Chebyshev mass benchmark** — the user-requested
+4. **Optionally keep one tiny-bulk note in mind.** If low resolutions such as
+      `ns = (4, 8, 4)` must be production-supported, revisit the `k=1` outer
+      Schur approximation there. Otherwise treat it as a diagnostic edge case.
+5. **Prod-vs-Jacobi-vs-Chebyshev mass benchmark** — the user-requested
    next step. Mirror `scripts/benchmark_richardson_vs_modal.py`: build
    sequence + bare mass operators once, then for each `k` run
    `solve_singular_cg(apply_mass_matrix, rhs, ..., precond_matvec=...)`
@@ -57,14 +144,18 @@ transcript at
      `_build_chebyshev_apply_preconditioner` callers).
    Report avg/max iters and wall time per (k, strategy) cell over a
    small RHS bank. Sweep at least one `(ns, p)` and one geometry.
-3. **Touch up dead-code references in scripts** if they break after the
-   modal-field removal: `scripts/debug_tensor_forward_models.py`,
-   `scripts/interactive/debug_mass_block_spectra.py`,
-   `scripts/interactive/screen_vlp_neumann_eta.py` reference the now-gone
-   `term_r/t/z` and `modal_basis_r` attributes. Either delete those
-   scripts (they are debug-only) or update them to use the rank-1
-   `direct_inv_*` fields.
-4. Then proceed with the dead-code list below.
+   Script already drafted at
+   [`scripts/benchmark_mass_preconditioners.py`](../scripts/benchmark_mass_preconditioners.py).
+6. **Decide the eager production rank.** The code now supports multirank mass
+      blocks again, but `assemble_all_operators` still wires all four degrees to
+      rank `1`. Re-run at least one larger mass benchmark and decide whether the
+      eager default should stay conservative or move back to rank `2`.
+7. **Measure why scalar k=0 rank changes do not move CG counts much.** The
+      assembled bulk denominator changes with rank on the rotating ellipse, but
+      the iteration counts stayed flat. A small Ritz-value or condition-number
+      diagnostic on the preconditioned operator would explain whether the extra
+      terms are simply too spectrally weak after diagonal truncation.
+8. Then proceed with the dead-code list below.
 
 ## Dead Code To Remove
 
@@ -76,8 +167,9 @@ transcript at
       `MRXHessian`, `TimeStepper` from `relaxation_deprecated`, would
       `ImportError` if called. Zero callers. Live `mrx/relaxation.py`
       already supplies the modern equivalents.
-- [ ] **Legacy `k = 0` fast-diagonalization Hodge stack** in
+- [ ] **Remaining legacy `k = 0` fast-diagonalization Hodge stack** in
       [`mrx/operators.py`](../../mrx/operators.py):
+  - [x] old prior-based/operator-aware bulk builders removed
   - [ ] `assemble_tensor_hodge_preconditioner` (also: drop the call from
         `assemble_all_operators`)
   - [ ] `_fd_apply_3d`, `_fd_apply_full`, `apply_hodge_kron_preconditioner`
@@ -108,31 +200,22 @@ transcript at
 
 ## Oddities / Changes To Consider
 
-- [ ] **Stated direction vs. wired default mismatch.** ~~The "rank-1
-      backbone + Richardson smoother" path is implemented
-      (`fit_strategy="split"`, `split_backbone_inv_*`, the Richardson loop
-      in `_apply_tensor_diagonal_block`) but `assemble_all_operators` only
-      sets per-degree `rank=2` and leaves `richardson_steps=0`,
-      `fit_strategy="multiplicative"`. Production runtime is the
-      shared-modal multirank inverse, not rank-1 + correction.~~
-      **Resolved**: tensor builder is now rank-1-only; modal/multirank
-      retired; `assemble_all_operators` passes `k{0..3}_rank=1`. Open
-      sub-task: decide whether `fit_strategy="split"` should become the
-      default (currently `"multiplicative"`) — at rank 1 the two paths
-      produce the same single Kronecker, but `"split"` populates
-      `split_backbone_inv_*` which is required for the Richardson omega
-      autotune to fire.
+- [ ] **Docs/default mismatch on mass rank.** The multirank mass builder is
+      live again, but `assemble_all_operators` still wires all four mass
+      blocks to rank `1`, while [`mass_preconditioners.md`](../mass_preconditioners.md)
+      still recommends rank `2` as the practical default. Decide explicitly
+      which one is the intended production policy.
 - [ ] **Krylov-in-Krylov in `mrx/relaxation.py:apply_diffusion`.** It
       builds `apply_A(x) = M_2 x + η · seq.apply_hodge_laplacian(x, 2, ...)`
       and wraps it in an outer `solve_singular_cg`, while
       `apply_hodge_laplacian` for `k ≥ 1` runs an inner CG to full
       tolerance. Replace with `apply_inverse_mass_plus_eps_laplace_matrix`
       or use `apply_hodge_laplacian_approx`.
-- [ ] **Builder defaults `k1_inner_schur=True`, `k2_inner_schur=True`** in
-      `build_mass_tensor_preconditioner` contradict the practical
-      guidance in [`mass_preconditioners.md`](../mass_preconditioners.md).
-      Either flip defaults to `False` or override in
-      `assemble_all_operators` so behaviour does not depend on entrypoint.
+- [ ] **`fit_strategy` is still user-visible but inactive in the assembled
+      mass block path.** `build_mass_tensor_preconditioner` still stores and
+      threads it through, but `_build_diagonal_tensor_block_factors` now
+      explicitly ignores it. Either remove it from the public options or make
+      it meaningful again.
 - [ ] **Confusing API:** `build_mass_tensor_preconditioner(full_matrix,
       ...)` immediately does `del full_matrix`. Drop the parameter and
       update `assemble_tensor_mass_preconditioner` callers.
@@ -142,9 +225,9 @@ transcript at
       `richardson` with cached spectral bounds) may be the better
       default. At minimum document why `jacobi` was chosen.
 - [ ] **Eager assembly of legacy FD Hodge.** `assemble_all_operators`
-      calls `assemble_tensor_hodge_preconditioner` even though no
-      production solve reads its outputs. Real GPU memory wasted on 3D
-      runs. Resolved by the dead-code removal above.
+      still calls `assemble_tensor_hodge_preconditioner` even though the
+      production scalar solve reads `k0_tensor_hodge_precond` instead.
+      Real GPU memory is still being spent on the old payload.
 - [ ] **`apply_hodge_laplacian` docstring openly says "inner `M_{k-1}^{-1}`
       solves use CG ... to full solver tolerance".** Either rename it
       (`apply_hodge_laplacian_exact`) and mark not-for-Krylov, or
@@ -152,13 +235,8 @@ transcript at
       (`apply_mass_plus_eps_laplace_matrix`,
       `relaxation.apply_diffusion`) with `apply_hodge_laplacian_approx`.
       The `mrx/nullspace.py` uses are residual-norm probes and fine.
-- [ ] **Rank knob duplication.** ~~`MassPreconditionerSpec` carries
+- [ ] **Rank knob duplication.** `MassPreconditionerSpec` still carries a
       top-level `rank` plus per-degree `k{0,1,2,3}_rank`, resolved by
-      `_tensor_mass_rank`. `assemble_all_operators` then overrides via
-      `cp_kwargs={'k0_rank': 2, ...}` while passing `rank=1`. Works, but
-      easy to misread. Consider a single `mass_ranks: dict[int, int]`
-      entry.~~ **Effectively obsolete:** the builder now hard-forces
-      `rank=1`, so all the rank knobs are decorative. Either remove
-      them entirely (`rank`, `k{0..3}_rank`, `tensor_mass_rank_for_degree`,
-      `_tensor_mass_rank`) or leave them in place as a stub for a future
-      multi-Kronecker path. Dropping is recommended.
+      `_tensor_mass_rank`. That machinery matters again now that multirank is
+      live, but it is still easy to misread. A single per-degree rank map would
+      be clearer.

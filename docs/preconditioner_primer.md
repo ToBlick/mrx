@@ -4,15 +4,12 @@ This note describes the **current production** preconditioning strategy in
 `mrx`. It is intentionally a snapshot of what the code does today, not a record
 of how we got here. For background on operators, extraction, and the de Rham
 sequence, read [`docs/mrx_primer.md`](../mrx_primer.md) first. For the parallel
-solver-side picture, see [`iterative_solver_primer.md`](iterative_solver_primer.md).
+solver-side picture, see [`docs/dev/iterative_solver_primer.md`](dev/iterative_solver_primer.md).
 
-The companion notes in this folder
+The production-facing companion notes are
 ([`mass_preconditioners.md`](../mass_preconditioners.md),
-[`tensor_preconditioner_primer.md`](tensor_preconditioner_primer.md),
-[`laplacian_preconditioner_notes.md`](laplacian_preconditioner_notes.md),
-[`tensor_debug_findings.md`](tensor_debug_findings.md),
-[`surgery_schur_refactor_plan.md`](surgery_schur_refactor_plan.md))
-contain more detail on individual decisions and benchmarks.
+[`preconditioner_cleanup_todo.md`](preconditioner_cleanup_todo.md)).
+More experimental or historical notes live under [`docs/dev/`](dev/).
 
 ## 1. Three Preconditioner Families
 
@@ -57,7 +54,7 @@ The mapped diagonal coefficient fields the bulk fits target are:
 - `k = 1` mass: `J g^{rr}`, `J g^{θθ}`, `J g^{ζζ}`
 - `k = 2` mass: `g_rr / J`, `g_θθ / J`, `g_ζζ / J`
 - `k = 3` mass: `1 / J`
-- `k = 0` scalar Hodge: shared surrogate field plus operator-aware bulk model
+- `k = 0` scalar Hodge / stiffness: `J g^{rr}`, `J g^{θθ}`, `J g^{ζζ}`
 
 ### 2.1 Degree-by-degree mass shape
 
@@ -78,57 +75,42 @@ wall-clock time on the tested geometry family.
 block. The hot apply is `_apply_tensor_diagonal_block` in
 [`mrx/preconditioners.py`](../../mrx/preconditioners.py).
 
-There are two inverse modes packed into the same struct:
+There are three active inverse modes packed into the same struct:
 
-- **Rank 1 (default).** A single separable term `M_r ⊗ M_t ⊗ M_z`. Inversion
-  is exact on three banded 1-D mass factors via `direct_inv_{r,t,z}`. This is
-  cheap and is the *backbone* in the new strategy.
-- **Multi-rank shared modal basis.** When the CP fit produces several terms,
-  the code builds a single shared `M`-orthonormal eigenbasis per axis and
-  inverts the modal denominator `Σ_t λ_r ⊗ λ_t ⊗ λ_z` directly
-  (`modal_basis_*` and `modal_denom`). This is dense in the modal coordinates
-  and was the former multi-rank inverse path.
+- **Rank 1.** A single separable term `M_r ⊗ M_t ⊗ M_z`. Inversion is exact on
+  three dense 1-D factors via `direct_inv_{r,t,z}`.
+- **Rank 2.** Two separable Kronecker terms. The code uses exact Lynch
+  fast-diagonalization per axis, storing `fd_V_{r,t,z}` and the reciprocal of
+  the diagonal denominator `1 + λ_r ⊗ λ_t ⊗ λ_z`.
+- **Rank ≥ 3.** The leading two terms define the same FD basis. Additional
+  terms are projected into that basis and only their per-axis diagonals are
+  added to the modal denominator. This is no longer exact for the assembled
+  rank-`r` tensor model, but the apply cost stays at the same six einsums as
+  the rank-2 case.
 
-The **new "rank 1 + correction" path** is selected by
-`fit_strategy="split"` together with `richardson_steps > 0`:
-
-- The CP fit is split into `B_0 ⊙ C_0 + B_1 ⊙ C_1_tilde`, where the leading
-  geometric backbone term is constrained to rank 1 and inverted exactly via
-  `split_backbone_inv_{r,t,z}`.
-- That backbone inverse becomes the **smoother** for a fixed number of
-  Richardson iterations against the true rank-`r` forward apply
-  (`_apply_tensor_diagonal_block_forward`):
-
-  ```text
-  x = backbone_inv @ rhs
-  for _ in range(richardson_steps):
-      r = rhs - A_full @ x
-      x = x + omega * backbone_inv @ r
-  ```
-
-This is the production direction for higher-rank work: the cheap rank-1
-geometry-aware backbone is preserved for inversion, and the residual is
-absorbed into a small number of Richardson sweeps, instead of paying for the
-shared modal basis.
+The active bulk builder treats the diagonal mapped coefficient fields as black
+boxes. Analytic priors, radial baselines, and `fit_strategy` are still accepted
+by some APIs for compatibility, but the assembled production bulk factors do not
+currently use them.
 
 The dense Schur complement on the surgery rows is built once at assembly time
 and stored as `schur_inv`. At apply time it is just a small `nₛ × nₛ` matvec.
 
 ### 2.3 The CP fit
 
-`_cp_als_3tensor` in [`mrx/preconditioners.py`](../../mrx/preconditioners.py)
-is the underlying CP-ALS routine. Two input regimes feed it:
+`_greedy_cp_terms` in [`mrx/preconditioners.py`](../../mrx/preconditioners.py)
+is the active low-rank fitter. It builds rank `r` sequentially by repeatedly
+fitting a rank-1 CP term to the current residual and subtracting it.
 
-- **Plain multiplicative prior** (default). The diagonal coefficient field is
-  divided by an analytic prior (e.g. major-radius factors via
-  `_major_radius_prior_terms`); CP-ALS fits the residual; the modeled field is
-  `P · C_fit`.
-- **Split prior** (`fit_strategy="split"`). A rank-1 backbone is fit against a
-  geometric channel set built by `_build_split_geometry_prior_channels`, and
-  any remaining rank budget goes into a free correction channel fit on the
-  residual.
+This has two practical effects:
 
-The split path is what the rank-1 + Richardson approach is built on.
+- rank `(r + 1)` extends rank `r` monotonically, rather than refitting all
+  components from scratch,
+- and the resulting bulk builder can use the leading term (or leading two
+  terms) as the inversion backbone while treating the rest as corrections.
+
+The production assembled bulk path no longer divides by analytic priors before
+fitting.
 
 ## 3. Saddle-Point Solves For `k = 1, 2, 3`
 
@@ -159,11 +141,18 @@ Lanczos and cached in the `IterativeRuntimeTuning` payload on
 
 The scalar `k = 0` Laplacian solve stays in scalar form with
 `solve_singular_cg` (or shifted CG). The active tensor route assembles a
-core-plus-bulk Schur structure built from operator-aware stiffness factors
-(`_assemble_k0_tensor_hodge_preconditioner`). The data lives on
-`operators.k0_tensor_hodge_precond`, separately from the legacy fast-diagonal
-data. Stored bulk inverses are dense `core_size × core_size` Schur inverses
-plus one `TensorDiagonalBlockInverseFactors` block.
+core-plus-bulk Schur structure built from the three diagonal stiffness channels
+
+- `α_rr = J g^{rr}` for `K_r ⊗ M_t ⊗ M_z`,
+- `α_θθ = J g^{θθ}` for `M_r ⊗ K_t ⊗ M_z`,
+- `α_ζζ = J g^{ζζ}` for `M_r ⊗ M_t ⊗ K_z`.
+
+Each channel is fit independently. The leading rank-1 terms define the per-axis
+modal basis used by the bulk inverse; higher-rank terms reuse that basis and
+contribute only projected diagonal corrections to the additive denominator.
+The production data lives on `operators.k0_tensor_hodge_precond`. Legacy
+fast-diagonal payloads (`fd_V_p_*`, `dd0_fd_scale_K`) still exist for older
+debug/compatibility paths but are not the active solve route.
 
 Nullspace handling:
 
@@ -174,41 +163,48 @@ Nullspace handling:
   (`_wrap_shifted_harmonic_coarse_correction` is gated by
   `_shifted_harmonic_coarse_ready`).
 
+For free-boundary `k = 0`, the tensor preconditioner also projects and
+regularizes its small core Schur block, but the singular solve remains
+well-posed because `solve_singular_cg` explicitly projects the nullspace in the
+outer Krylov iteration.
+
 ## 5. Eager Production Defaults
 
 The production assembly path is `assemble_all_operators` in
 [`mrx/operators.py`](../../mrx/operators.py), which by default eagerly builds:
 
-- the per-degree mass tensor preconditioner with `rank = 2` for all four
-  degrees (`k0_rank = k1_rank = k2_rank = k3_rank = 2`),
-- the surgery preconditioner data for `k = 0, 1, 2`,
-- the scalar `k = 0` Hodge tensor preconditioner.
+- the per-degree mass tensor preconditioner with `rank = 1` for all four
+  degrees,
+- the legacy scalar `k = 0` FD Hodge payload via
+  `assemble_tensor_hodge_preconditioner`,
+- and, when the Hodge operators are updated, the production scalar `k = 0`
+  tensor Hodge/stiffness preconditioner.
 
 Those eager defaults are why `"auto"` resolves to the tensor route in normal
 use: the data is already there.
 
-The default `richardson_steps` on `TensorMassPreconditioner` is `0`. So the
-**rank-1 + Richardson smoother is currently opt-in** through
-`cp_kwargs={"fit_strategy": "split", "richardson_steps": N, "richardson_omega": ω}`,
-not the default that ships from `assemble_all_operators`.
+Even though multirank mass assembly is active, `assemble_all_operators`
+currently chooses the conservative rank-1 eager default.
 
 ## 6. Validation Posture
 
 The current validation status of the production tensor applies
-([`tensor_debug_findings.md`](tensor_debug_findings.md)):
+([`docs/dev/tensor_debug_findings.md`](dev/tensor_debug_findings.md)):
 
 - The routed algebra is correct: each tensor apply matches the inverse of its
   own assembled tensor model to machine precision. Remaining error is
   model-quality, not routing.
-- Mass-side rank-2 tensor models are mature for all four degrees.
-- Scalar `k = 0` stiffness is the open inverse-construction problem: better
-  fits do not yet imply better solves at higher rank.
+- Mass-side multirank tensor models are active again: rank 2 is exact FD, and
+  rank ≥ 3 uses diagonal-truncated corrections in the fixed FD basis.
+- Scalar `k = 0` stiffness now has an assembled FD-based tensor inverse. On the
+  tested rotating-ellipse family it is decisively better than Jacobi, while the
+  effect of increasing rank beyond 1 is presently modest.
 
 ## 7. Quick Reference
 
 | Solve | Default preconditioner |
 |---|---|
-| `M_k u = f`, all `k` | `tensor` (rank 2 per degree, Schur + tensor bulk) |
+| `M_k u = f`, all `k` | `tensor` (eager default currently rank 1 per degree; explicit assembly can request higher rank) |
 | `L_0 u = f` (singular) | scalar `k = 0` tensor Hodge + nullspace deflation |
 | `(L_0 + ε M_0) u = f` | scalar `k = 0` tensor Hodge + harmonic coarse correction when available |
 | `L_k u = f`, `k = 1, 2, 3` | saddle MINRES, `mass = tensor`, `schur.inner = tensor`, `schur.outer = jacobi` |

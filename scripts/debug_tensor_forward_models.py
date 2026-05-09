@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import code
 
 import jax
 import jax.numpy as jnp
@@ -11,15 +12,23 @@ from mrx.operators import (
     _apply_k0_tensor_hodge_forward_model,
     _assemble_dense_from_apply,
     apply_mass_matrix,
+    apply_stiffness_tensor_forward_model,
     apply_mass_tensor_preconditioner_ops,
     apply_mass_tensor_forward_model_ops,
     apply_stiffness,
     assemble_hodge_operators,
     assemble_incidence_operators,
     assemble_mass_operators,
+    assemble_tensor_stiffness_preconditioner,
+    assemble_tensor_stiffness_models,
     assemble_tensor_mass_preconditioner,
 )
-from mrx.preconditioners import _select_mass_surgery_factors, select_boundary_data
+from mrx.preconditioners import (
+    _select_mass_surgery_factors,
+    _tensor_block_indices_k1,
+    _tensor_block_indices_k2,
+    select_boundary_data,
+)
 
 
 jax.config.update("jax_enable_x64", True)
@@ -128,20 +137,19 @@ def _mass_cp_summary(factors, k: int):
     return summary
 
 
-def _build_problem(args, seq):
+def _build_problem(args, seq, problem: str, *, operators=None):
     dirichlet = not args.free
     cp_kwargs = {
         "maxiter": args.cp_maxiter,
         "tol": args.cp_tol,
         "ridge": args.cp_ridge,
     }
-    if args.problem.startswith("mass-k"):
+    if problem.startswith("mass-k"):
         cp_kwargs["fit_strategy"] = args.fit_strategy
         cp_kwargs["richardson_steps"] = args.richardson_steps
         cp_kwargs["richardson_omega"] = args.richardson_omega
 
-    if args.problem == "k0-stiffness":
-        operators = None
+    if problem == "k0-stiffness":
         operators = assemble_tensor_mass_preconditioner(
             seq,
             operators=operators,
@@ -169,11 +177,48 @@ def _build_problem(args, seq):
         }
         return operators, exact_apply, model_apply, full_size, bulk_indices, cp_summary
 
-    if not args.problem.startswith("mass-k"):
-        raise ValueError(f"Unknown problem {args.problem!r}")
+    if problem in ("k1-stiffness", "k2-stiffness"):
+        k = int(problem[1])
+        operators = assemble_tensor_stiffness_models(
+            seq,
+            operators=operators,
+            ks=(k,),
+            rank=args.rank,
+            cp_kwargs=cp_kwargs,
+        )
+        full_size = getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}")
+        bulk_indices = None
+        if k == 1:
+            bulk_indices = _tensor_block_indices_k1(seq, dirichlet)["bulk"]
+            model = operators.k1_tensor_stiff_model
+        else:
+            bulk_indices = _tensor_block_indices_k2(seq, dirichlet)["bulk"]
+            model = operators.k2_tensor_stiff_model
+        if model is None:
+            raise ValueError(f"Tensor stiffness model k={k} is not assembled")
 
-    k = int(args.problem[-1])
-    operators = None
+        def exact_apply(x):
+            return apply_stiffness(seq, operators, x, k, dirichlet=dirichlet)
+
+        def model_apply(x):
+            return apply_stiffness_tensor_forward_model(
+                seq,
+                operators,
+                x,
+                k,
+                dirichlet=dirichlet,
+            )
+
+        cp_summary = {
+            "cp_relative_error_max": float(model.cp_relative_error),
+            "cp_final_delta_max": float(model.cp_final_delta),
+        }
+        return operators, exact_apply, model_apply, full_size, bulk_indices, cp_summary
+
+    if not problem.startswith("mass-k"):
+        raise ValueError(f"Unknown problem {problem!r}")
+
+    k = int(problem[-1])
     operators = assemble_tensor_mass_preconditioner(
         seq,
         operators=operators,
@@ -201,6 +246,210 @@ def _build_problem(args, seq):
 
     cp_summary = _mass_cp_summary(factors, k)
     return operators, exact_apply, model_apply, full_size, bulk_indices, cp_summary
+
+
+def _run_problem(args, seq, problem: str, *, operators=None):
+    operators, exact_apply_raw, model_apply_raw, full_size, bulk_indices, cp_summary = _build_problem(
+        args,
+        seq,
+        problem,
+        operators=operators,
+    )
+
+    if args.bulk_only:
+        if bulk_indices is None:
+            raise ValueError(f"bulk-only mode is not available for {problem}")
+        size = int(bulk_indices.shape[0])
+
+        def exact_apply(x):
+            full = jnp.zeros((full_size,), dtype=x.dtype)
+            full = full.at[bulk_indices].set(x)
+            return exact_apply_raw(full)[bulk_indices]
+
+        def model_apply(x):
+            full = jnp.zeros((full_size,), dtype=x.dtype)
+            full = full.at[bulk_indices].set(x)
+            return model_apply_raw(full)[bulk_indices]
+    else:
+        size = full_size
+        exact_apply = exact_apply_raw
+        model_apply = model_apply_raw
+
+    keys = jax.random.split(jax.random.PRNGKey(args.seed), args.n_vectors)
+
+    def error_for_key(key):
+        x = jax.random.normal(key, (size,), dtype=jnp.float64)
+        y_exact = exact_apply(x)
+        y_model = model_apply(x)
+        return _relative_error(y_model, y_exact)
+
+    rel_errors = jax.vmap(error_for_key)(keys)
+
+    space_label = "extracted-free" if args.free else "extracted-dbc"
+    if args.bulk_only:
+        space_label = f"{space_label}-bulk"
+
+    print(
+        f"problem={problem}, ns={args.ns}, p={args.p}, map_kind={args.map_kind}, "
+        f"rank={args.rank}, fit_strategy={args.fit_strategy}, "
+        f"richardson_steps={args.richardson_steps}, richardson_omega={args.richardson_omega}, "
+        f"space={space_label}"
+    )
+    print(f"cp_relative_error_max={cp_summary['cp_relative_error_max']:.16g}")
+    print(f"cp_final_delta_max={cp_summary['cp_final_delta_max']:.16g}")
+    for key, value in cp_summary.items():
+        if key in ("cp_relative_error_max", "cp_final_delta_max"):
+            continue
+        print(f"{key}={value:.16g}")
+    print(f"forward_relative_error_mean={float(jnp.mean(rel_errors)):.16g}")
+    print(f"forward_relative_error_std={float(jnp.std(rel_errors)):.16g}")
+    print(f"forward_relative_error_max={float(jnp.max(rel_errors)):.16g}")
+
+    if args.compare_preconditioner:
+        if not problem.startswith("mass-k"):
+            raise ValueError("--compare-preconditioner is only available for mass problems")
+
+        preconditioner_apply, preconditioner_size = _build_mass_preconditioner_apply(args, seq)
+        reference_apply, reference_size = _build_mass_preconditioner_apply(
+            args,
+            seq,
+            reference_richardson_steps=args.reference_richardson_steps,
+        )
+        if preconditioner_size != reference_size:
+            raise ValueError("Preconditioner comparison built mismatched vector sizes")
+
+        def preconditioner_error_for_key(key):
+            x = jax.random.normal(key, (preconditioner_size,), dtype=jnp.float64)
+            y = preconditioner_apply(x)
+            y_ref = reference_apply(x)
+            return _relative_error(y, y_ref)
+
+        preconditioner_rel_errors = jax.vmap(preconditioner_error_for_key)(keys)
+        print(f"preconditioner_reference_richardson_steps={args.reference_richardson_steps}")
+        print(f"preconditioner_relative_difference_mean={float(jnp.mean(preconditioner_rel_errors)):.16g}")
+        print(f"preconditioner_relative_difference_std={float(jnp.std(preconditioner_rel_errors)):.16g}")
+        print(f"preconditioner_relative_difference_max={float(jnp.max(preconditioner_rel_errors)):.16g}")
+
+    if args.dense:
+        exact = _assemble_dense_from_apply(exact_apply, size)
+        approx = _assemble_dense_from_apply(model_apply, size)
+        fro_rel = jnp.linalg.norm(approx - exact) / jnp.maximum(jnp.linalg.norm(exact), 1e-30)
+        print(f"fro_relative_error={float(fro_rel):.16g}")
+        print(f"exact_symmetry_defect={float(jnp.linalg.norm(exact - exact.T)):.16g}")
+        print(f"model_symmetry_defect={float(jnp.linalg.norm(approx - approx.T)):.16g}")
+
+    if args.interactive:
+        dirichlet = not args.free
+
+        def random_vector(seed: int = args.seed):
+            key = jax.random.PRNGKey(seed)
+            return jax.random.normal(key, (size,), dtype=jnp.float64)
+
+        def compare_vector(x):
+            y_exact = exact_apply(x)
+            y_model = model_apply(x)
+            rel = _relative_error(y_model, y_exact)
+            return {
+                "x": x,
+                "y_exact": y_exact,
+                "y_model": y_model,
+                "relative_error": rel,
+            }
+
+        def dense_exact():
+            return _assemble_dense_from_apply(exact_apply, size)
+
+        def dense_model():
+            return _assemble_dense_from_apply(model_apply, size)
+
+        def build_tensor_preconditioner(*, rank: int | None = None, cp_kwargs: dict | None = None):
+            rank_value = args.rank if rank is None else rank
+            kwargs = {
+                "maxiter": args.cp_maxiter,
+                "tol": args.cp_tol,
+                "ridge": args.cp_ridge,
+                "fit_strategy": args.fit_strategy,
+                "richardson_steps": args.richardson_steps,
+                "richardson_omega": args.richardson_omega,
+            }
+            if cp_kwargs is not None:
+                kwargs.update(cp_kwargs)
+
+            if problem == "k0-stiffness":
+                return assemble_tensor_mass_preconditioner(
+                    seq,
+                    operators=operators,
+                    ks=(0,),
+                    rank=rank_value,
+                    cp_kwargs=kwargs,
+                )
+            if problem in ("k1-stiffness", "k2-stiffness"):
+                return assemble_tensor_stiffness_preconditioner(
+                    seq,
+                    operators=operators,
+                    ks=(int(problem[1]),),
+                    rank=rank_value,
+                    cp_kwargs=kwargs,
+                )
+            if problem.startswith("mass-k"):
+                return assemble_tensor_mass_preconditioner(
+                    seq,
+                    operators=operators,
+                    ks=(int(problem[-1]),),
+                    rank=rank_value,
+                    cp_kwargs=kwargs,
+                )
+            raise ValueError(f"Interactive tensor preconditioner helper does not support {problem!r}")
+
+        namespace = {
+            "args": args,
+            "seq": seq,
+            "operators": operators,
+            "problem": problem,
+            "dirichlet": dirichlet,
+            "full_size": full_size,
+            "size": size,
+            "bulk_indices": bulk_indices,
+            "cp_summary": cp_summary,
+            "exact_apply": exact_apply,
+            "model_apply": model_apply,
+            "random_vector": random_vector,
+            "compare_vector": compare_vector,
+            "dense_exact": dense_exact,
+            "dense_model": dense_model,
+            "build_tensor_preconditioner": build_tensor_preconditioner,
+            "jax": jax,
+            "jnp": jnp,
+        }
+
+        if problem == "k0-stiffness":
+            namespace["factors"] = select_boundary_data(
+                operators.k0_tensor_hodge_precond,
+                dirichlet,
+                "Tensor Hodge k=0",
+            )
+        elif problem == "k1-stiffness":
+            namespace["model"] = operators.k1_tensor_stiff_model
+        elif problem == "k2-stiffness":
+            namespace["model"] = operators.k2_tensor_stiff_model
+        elif problem.startswith("mass-k"):
+            k = int(problem[-1])
+            namespace["factors"] = select_boundary_data(
+                getattr(operators.mass_preconds.tensor, f"k{k}"),
+                dirichlet,
+                f"Tensor mass k={k}",
+            )
+
+        banner = (
+            f"Interactive tensor forward-model session for {problem}.\n"
+            "Available names: seq, operators, model/factors, exact_apply, model_apply,\n"
+            "random_vector(seed), compare_vector(x), dense_exact(), dense_model(),\n"
+            "build_tensor_preconditioner(...), bulk_indices, cp_summary, jnp, jax.\n"
+            "Exit the REPL to let the script continue."
+        )
+        code.interact(banner=banner, local=namespace)
+
+    return operators
 
 
 def _build_mass_preconditioner_apply(args, seq, *, reference_richardson_steps: int | None = None):
@@ -234,9 +483,22 @@ def _build_mass_preconditioner_apply(args, seq, *, reference_richardson_steps: i
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark exact vs modeled tensor forward applies for k=0 stiffness and mass operators."
+        description="Benchmark exact vs modeled tensor forward applies for stiffness and mass operators."
     )
-    parser.add_argument("--problem", choices=("k0-stiffness", "mass-k0", "mass-k1", "mass-k2", "mass-k3"), required=True)
+    parser.add_argument(
+        "--problem",
+        choices=(
+            "k0-stiffness",
+            "k1-stiffness",
+            "k2-stiffness",
+            "stiffness-all",
+            "mass-k0",
+            "mass-k1",
+            "mass-k2",
+            "mass-k3",
+        ),
+        required=True,
+    )
     parser.add_argument("--ns", type=_parse_ns, default=(4, 8, 4), help="Grid sizes as nr,nt,nz")
     parser.add_argument("--p", type=int, default=3, help="Spline degree in each direction")
     parser.add_argument("--rank", type=int, default=1, help="Tensor model rank")
@@ -260,87 +522,18 @@ def main():
     parser.add_argument("--rotating-nfp", type=int, default=3)
     parser.add_argument("--tol", type=float, default=1e-9)
     parser.add_argument("--maxiter", type=int, default=1000)
+    parser.add_argument("--interactive", action="store_true", help="Drop into a Python REPL after each assembled problem with the current objects in scope")
     args = parser.parse_args()
 
     seq = _build_sequence(args)
-    _, exact_apply_raw, model_apply_raw, full_size, bulk_indices, cp_summary = _build_problem(args, seq)
-
-    if args.bulk_only:
-        if bulk_indices is None:
-            raise ValueError(f"bulk-only mode is not available for {args.problem}")
-        size = int(bulk_indices.shape[0])
-
-        def exact_apply(x):
-            full = jnp.zeros((full_size,), dtype=x.dtype)
-            full = full.at[bulk_indices].set(x)
-            return exact_apply_raw(full)[bulk_indices]
-
-        def model_apply(x):
-            full = jnp.zeros((full_size,), dtype=x.dtype)
-            full = full.at[bulk_indices].set(x)
-            return model_apply_raw(full)[bulk_indices]
+    if args.problem == "stiffness-all":
+        operators = None
+        for idx, problem in enumerate(("k0-stiffness", "k1-stiffness", "k2-stiffness")):
+            if idx > 0:
+                print()
+            operators = _run_problem(args, seq, problem, operators=operators)
     else:
-        size = full_size
-        exact_apply = exact_apply_raw
-        model_apply = model_apply_raw
-
-    keys = jax.random.split(jax.random.PRNGKey(args.seed), args.n_vectors)
-
-    def error_for_key(key):
-        x = jax.random.normal(key, (size,), dtype=jnp.float64)
-        y_exact = exact_apply(x)
-        y_model = model_apply(x)
-        return _relative_error(y_model, y_exact)
-
-    rel_errors = jax.vmap(error_for_key)(keys)
-
-    space_label = "extracted-free" if args.free else "extracted-dbc"
-    if args.bulk_only:
-        space_label = f"{space_label}-bulk"
-
-    print(f"problem={args.problem}, ns={args.ns}, p={args.p}, map_kind={args.map_kind}, rank={args.rank}, fit_strategy={args.fit_strategy}, richardson_steps={args.richardson_steps}, richardson_omega={args.richardson_omega}, space={space_label}")
-    print(f"cp_relative_error_max={cp_summary['cp_relative_error_max']:.16g}")
-    print(f"cp_final_delta_max={cp_summary['cp_final_delta_max']:.16g}")
-    for key, value in cp_summary.items():
-        if key in ("cp_relative_error_max", "cp_final_delta_max"):
-            continue
-        print(f"{key}={value:.16g}")
-    print(f"forward_relative_error_mean={float(jnp.mean(rel_errors)):.16g}")
-    print(f"forward_relative_error_std={float(jnp.std(rel_errors)):.16g}")
-    print(f"forward_relative_error_max={float(jnp.max(rel_errors)):.16g}")
-
-    if args.compare_preconditioner:
-        if not args.problem.startswith("mass-k"):
-            raise ValueError("--compare-preconditioner is only available for mass problems")
-
-        preconditioner_apply, preconditioner_size = _build_mass_preconditioner_apply(args, seq)
-        reference_apply, reference_size = _build_mass_preconditioner_apply(
-            args,
-            seq,
-            reference_richardson_steps=args.reference_richardson_steps,
-        )
-        if preconditioner_size != reference_size:
-            raise ValueError("Preconditioner comparison built mismatched vector sizes")
-
-        def preconditioner_error_for_key(key):
-            x = jax.random.normal(key, (preconditioner_size,), dtype=jnp.float64)
-            y = preconditioner_apply(x)
-            y_ref = reference_apply(x)
-            return _relative_error(y, y_ref)
-
-        preconditioner_rel_errors = jax.vmap(preconditioner_error_for_key)(keys)
-        print(f"preconditioner_reference_richardson_steps={args.reference_richardson_steps}")
-        print(f"preconditioner_relative_difference_mean={float(jnp.mean(preconditioner_rel_errors)):.16g}")
-        print(f"preconditioner_relative_difference_std={float(jnp.std(preconditioner_rel_errors)):.16g}")
-        print(f"preconditioner_relative_difference_max={float(jnp.max(preconditioner_rel_errors)):.16g}")
-
-    if args.dense:
-        exact = _assemble_dense_from_apply(exact_apply, size)
-        approx = _assemble_dense_from_apply(model_apply, size)
-        fro_rel = jnp.linalg.norm(approx - exact) / jnp.maximum(jnp.linalg.norm(exact), 1e-30)
-        print(f"fro_relative_error={float(fro_rel):.16g}")
-        print(f"exact_symmetry_defect={float(jnp.linalg.norm(exact - exact.T)):.16g}")
-        print(f"model_symmetry_defect={float(jnp.linalg.norm(approx - approx.T)):.16g}")
+        _run_problem(args, seq, args.problem)
 
 
 if __name__ == "__main__":

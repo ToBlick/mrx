@@ -321,18 +321,32 @@ def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x,
     if mass_matvec is None:
         def mass_matvec(x): return x
 
+    if isinstance(vs, (list, tuple)) and len(vs) == 0:
+        vs_stacked = jnp.zeros((0, b.shape[0]), dtype=b.dtype)
+    else:
+        vs_stacked = jnp.asarray(vs, dtype=b.dtype)
+        if vs_stacked.ndim == 1:
+            vs_stacked = vs_stacked[None, :]
+
     def inner_product(x, y):
         return jnp.dot(x, mass_matvec(y))
 
-    def project_primal(x):
-        for v in vs:
-            x = x - inner_product(v, x) * v
-        return x
+    if vs_stacked.shape[0] == 0:
+        def project_primal(x):
+            return x
 
-    def project_dual(f):
-        for v in vs:
-            f = f - jnp.dot(v, f) * mass_matvec(v)
-        return f
+        def project_dual(f):
+            return f
+    else:
+        mass_vs = jax.vmap(mass_matvec)(vs_stacked)
+
+        def project_primal(x):
+            coeffs = vs_stacked @ mass_matvec(x)
+            return x - coeffs @ vs_stacked
+
+        def project_dual(f):
+            coeffs = vs_stacked @ f
+            return f - coeffs @ mass_vs
 
     b_proj = project_dual(b)
 

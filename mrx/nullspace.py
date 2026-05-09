@@ -110,6 +110,88 @@ def get_saddle_point_nullspaces(seq, operators, k, dirichlet):
     return vs_upper, vs_lower
 
 
+def get_stiffness_nullspace(seq, operators, k, dirichlet, *, tol=1e-10):
+    """Return a mass-orthonormal basis for ``ker(K_k)``.
+
+    For the pure stiffness blocks,
+
+    - ``ker(K_1) = im(grad) ⊕ H^1``
+    - ``ker(K_2) = im(curl) ⊕ H^2``
+
+    in the extracted discrete space. This helper builds the image part by
+    probing the extracted strong derivative ``M_k^{-1} D_{k-1}`` on the
+    canonical basis of the previous form space, then appends the stored
+    harmonic vectors from :func:`get_nullspace`, orthonormalising the combined
+    basis in the ``M_k`` inner product.
+
+    This avoids the dense extracted helper matrices, although it still builds
+    a small dense Gram matrix on the domain-space side for rank detection.
+    """
+    if k not in (1, 2):
+        raise ValueError(
+            f"Stiffness nullspace helper only supports k=1 or k=2 (got k={k})"
+        )
+
+    operators = _commit(seq, operators)
+
+    if k == 1:
+        strong_apply = lambda v: seq.apply_strong_grad(
+            v,
+            dirichlet_in=dirichlet,
+            dirichlet_out=dirichlet,
+        )
+    else:
+        strong_apply = lambda v: seq.apply_strong_curl(
+            v,
+            dirichlet_in=dirichlet,
+            dirichlet_out=dirichlet,
+        )
+
+    def mass_apply(v):
+        return seq.apply_mass_matrix(v, k, dirichlet=dirichlet, operators=operators)
+
+    n_prev = _dof_count(seq, k - 1, dirichlet)
+    basis_prev = jnp.eye(n_prev, dtype=jnp.float64)
+    strong = jax.vmap(strong_apply)(basis_prev).T
+    mass_strong = jax.vmap(mass_apply, in_axes=1, out_axes=1)(strong)
+    gram = 0.5 * (strong.T @ mass_strong + (strong.T @ mass_strong).T)
+    if gram.size == 0:
+        exact_basis = jnp.zeros((0, _dof_count(seq, k, dirichlet)), dtype=jnp.float64)
+    else:
+        eigvals, eigvecs = jnp.linalg.eigh(gram)
+        scale = jnp.max(jnp.abs(eigvals)) if eigvals.size > 0 else jnp.asarray(0.0, dtype=strong.dtype)
+        threshold = jnp.asarray(tol, dtype=strong.dtype) * jnp.maximum(scale, 1.0)
+        keep = eigvals > threshold
+        if bool(jnp.any(keep)):
+            kept_vals = eigvals[keep]
+            kept_vecs = eigvecs[:, keep]
+            exact_cols = strong @ (kept_vecs / jnp.sqrt(kept_vals)[None, :])
+            exact_basis = exact_cols.T
+        else:
+            exact_basis = jnp.zeros((0, _dof_count(seq, k, dirichlet)), dtype=strong.dtype)
+
+    harmonics = get_nullspace(operators, k, dirichlet)
+    basis = []
+
+    def _mass_inner(x, y):
+        return jnp.dot(x, mass_apply(y))
+
+    for vector in exact_basis:
+        basis.append(vector)
+
+    for vector in harmonics:
+        work = vector
+        for basis_vector in basis:
+            work = work - _mass_inner(basis_vector, work) * basis_vector
+        norm = jnp.sqrt(jnp.maximum(_mass_inner(work, work), 0.0))
+        if float(norm) > tol:
+            basis.append(work / norm)
+
+    if not basis:
+        return jnp.zeros((0, _dof_count(seq, k, dirichlet)), dtype=strong.dtype)
+    return jnp.stack(basis)
+
+
 def _set_null(operators, k, dirichlet, values):
     """Return ``operators`` with a single nullspace field replaced."""
     name = _null_field(k, dirichlet)
