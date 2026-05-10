@@ -288,6 +288,47 @@ Chebyshev degree, and damping parameter; only Phase 1 carries that
 responsibility, and Phase 2 narrows to the three named strategies per $k$ to
 keep the scaling plots interpretable.
 
+### 4.5 Current sweep takeaways
+
+The Phase 1 and Phase 2 sweeps justify the production defaults more cleanly
+than the earlier small-case diagnostics.
+
+1. **Phase 1 establishes a decisive tensor win at the reference point.** On
+  all four mass blocks, the tensor route beats both whole-matrix baselines in
+  CG iterations and in solve time at the reference geometry. The strongest
+  raw iteration counts often come from either a larger rank or extra bulk
+  Chebyshev polishing, but those gains usually do not survive wall-clock
+  accounting once the tensor apply is already strong.
+2. **`cheb_J(s = 3)` is the right locked polynomial baseline.** Increasing the
+  Chebyshev degree beyond `3` continues to lower iteration counts, but the
+  extra matrix-vector work usually erases the benefit in solve time. So Phase
+  2 fixes the polynomial comparator at `s = 3` rather than chasing the
+  iteration minimum.
+3. **`tensor(r = 3, t = 0)` is the best production compromise.** Rank `1` is
+  already strong on the scalar blocks and useful on the vector blocks, while
+  ranks `2` and `3` capture most of the remaining gain. Rank `5` can still
+  improve some scalar reference cases, but the improvement is small relative
+  to the added setup and model complexity. The rank-`3`, no-polish tensor
+  model is therefore the robust default across all four mass degrees.
+4. **For `k = 1, 2`, `inner_schur = on` is an iteration-count knob, not a
+  time-to-solution winner.** The coupled inner Schur sometimes lowers outer
+  iteration counts on the rotating-ellipse family, but its bulk apply is much
+  more expensive. In the current sweeps the uncoupled bulk model
+  (`inner_schur = False`) is consistently faster in wall-clock time and is the
+  production choice.
+5. **The `\kappa` axis is the clearest stress test of the tensor model.** As
+  `\kappa` increases, the tensor advantage narrows more than it does along the
+  `\varepsilon`, `p`, or Besov-regularity axes. This is consistent with the
+  rotating-ellipse map becoming less orthogonal and less tensor-separable away
+  from `\kappa = 1`. Even so, on the completed moderate-resolution Phase-2
+  points the rank-`3` tensor route remained the best solve-time strategy.
+6. **At large resolution, setup and assembly become the practical bottleneck.**
+  The most aggressive Phase-2 `n_s` points stress reference-mass assembly and
+  geometry evaluation before they stress the outer CG iteration counts. So the
+  Phase-2 plots should be read primarily as *solve-path* comparisons; the
+  one-time setup column remains essential for understanding the full cost at
+  high resolution.
+
 ## 5. Degree-by-Degree Structure
 
 ### `k = 0`

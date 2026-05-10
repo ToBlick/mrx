@@ -849,7 +849,11 @@ def diag_matvec(A_matvec, n, *, dtype=jnp.float64, batch_size=None):
     building one hot vectors inside a traced loop.
     """
     if batch_size is None:
-        batch_size = max(1, min(int(mrx.MAP_BATCH_SIZE_OUTER), 16))
+        configured_batch_size = mrx.MAP_BATCH_SIZE_OUTER
+        if configured_batch_size is None:
+            batch_size = 16
+        else:
+            batch_size = max(1, min(int(configured_batch_size), 16))
     if n == 0:
         return jnp.zeros((0,), dtype=dtype)
 

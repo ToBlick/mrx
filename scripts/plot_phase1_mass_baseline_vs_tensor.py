@@ -49,6 +49,10 @@ CHEB_LINESTYLE = {0: "-", 2: "--", 3: "-.", 5: ":"}
 CASE_ORDER = {"M0": 0, "M1": 1, "M2": 2, "M3": 3, "K0_dbc": 4}
 
 
+def _tensor_marker(strategy: str) -> str:
+    return "D" if strategy == "tensor_inner_schur" else "^"
+
+
 def load_rows(csv_path: Path) -> list[dict]:
     with csv_path.open() as fh:
         reader = csv.DictReader(fh)
@@ -138,14 +142,15 @@ def _draw_data_panel(ax, k_rows: list[dict], metric: str) -> None:
         errs = [_err(r, metric) for r in grp]
         ls = CHEB_LINESTYLE.get(b, "-")
         color = STRATEGY_COLOR.get(strategy, "tab:red")
+        marker = _tensor_marker(strategy)
         if any(e is not None for e in errs):
             lo = np.array([0.0 if e is None else e[0] for e in errs])
             hi = np.array([0.0 if e is None else e[1] for e in errs])
             ax.errorbar(xs, ys, yerr=np.vstack([lo, hi]),
-                        color=color, linestyle=ls, marker="o",
+                        color=color, linestyle=ls, marker=marker,
                         capsize=2.5, elinewidth=0.8)
         else:
-            ax.plot(xs, ys, color=color, linestyle=ls, marker="o")
+            ax.plot(xs, ys, color=color, linestyle=ls, marker=marker)
 
     # Chebyshev baseline: horizontal lines per cheb_steps.
     color = STRATEGY_COLOR["chebyshev"]
@@ -200,6 +205,7 @@ def _build_legend_handles(tensor_keys: list[tuple[str, int]],
         ))
     for strategy, b in tensor_keys:
         ls = CHEB_LINESTYLE.get(b, "-")
+        marker = _tensor_marker(strategy)
         label = (
             fr"tensor + inner schur (bulk-cheb $={b}$)"
             if strategy == "tensor_inner_schur" else
@@ -207,7 +213,7 @@ def _build_legend_handles(tensor_keys: list[tuple[str, int]],
         )
         handles.append(plt.Line2D(
             [], [], color=STRATEGY_COLOR[strategy],
-            linestyle=ls, marker="o",
+            linestyle=ls, marker=marker,
             label=label,
         ))
     return handles
@@ -256,17 +262,18 @@ def plot(rows: list[dict], out_pdf: Path, out_eps: Path, *,
         _i(r, "rank") for r in rows
         if r["strategy"] in ("tensor", "tensor_inner_schur") and _i(r, "rank") >= 0
     })
-    xmin, xmax, ymin, ymax = _axis_limits(rows, metric, rank_ticks)
+    xmin, xmax, _, _ = _axis_limits(rows, metric, rank_ticks)
 
     figsize = (3.4 * len(cases), 3.4)
 
     # ----- Data-only PDF (no chrome) -----------------------------------
     fig_d, axes_d = plt.subplots(
-        1, len(cases), figsize=figsize, squeeze=False, sharey=True,
+        1, len(cases), figsize=figsize, squeeze=False,
     )
     axes_d = axes_d[0]
     for ax, case in zip(axes_d, cases):
         case_rows = [r for r in rows if _case(r) == case]
+        _, _, ymin, ymax = _axis_limits(case_rows, metric, rank_ticks)
         _draw_data_panel(ax, case_rows, metric)
         ax.set_yscale("log")
         ax.set_xlim(xmin, xmax)
@@ -281,10 +288,12 @@ def plot(rows: list[dict], out_pdf: Path, out_eps: Path, *,
 
     # ----- Annotation-only EPS (no data) -------------------------------
     fig_a, axes_a = plt.subplots(
-        1, len(cases), figsize=figsize, squeeze=False, sharey=True,
+        1, len(cases), figsize=figsize, squeeze=False,
     )
     axes_a = axes_a[0]
     for col, (ax, case) in enumerate(zip(axes_a, cases)):
+        case_rows = [r for r in rows if _case(r) == case]
+        _, _, ymin, ymax = _axis_limits(case_rows, metric, rank_ticks)
         ax.set_yscale("log")
         ax.set_xlim(xmin, xmax)
         ax.set_ylim(ymin, ymax)
