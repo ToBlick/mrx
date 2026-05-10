@@ -30,7 +30,7 @@ from mrx.mappings import interpolate_map, rotating_ellipse_map
 from mrx.plotting import get_1d_grids
 from mrx.preconditioners import get_mass_jacobi_diaginv
 from mrx.relaxation import (DescentMethod, IntegrationScheme, TimeStepChoice,
-                            TimeStepper, apply_diffusion, compute_force,
+                            TimeStepper, compute_force,
                             relaxation_loop)
 from mrx.utils import evaluate_at_xq, integrate_against
 

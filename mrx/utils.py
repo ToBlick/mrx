@@ -841,11 +841,38 @@ def square_sparse(mat) -> jsparse.BCOO:
 square_bcoo = square_sparse
 
 
+def diag_matvec(A_matvec, n, *, dtype=jnp.float64, batch_size=None):
+    """Probe ``diag(A)`` from a forward operator on the extracted space.
+
+    The operator is queried on small batches of canonical basis vectors, which
+    avoids the large batched ``lax.map`` allocation pattern that appears when
+    building one hot vectors inside a traced loop.
+    """
+    if batch_size is None:
+        batch_size = max(1, min(int(mrx.MAP_BATCH_SIZE_OUTER), 16))
+    if n == 0:
+        return jnp.zeros((0,), dtype=dtype)
+
+    diag_chunks = []
+    for start in range(0, n, batch_size):
+        stop = min(start + batch_size, n)
+        idx = jnp.arange(start, stop)
+        basis = jax.nn.one_hot(idx, n, dtype=dtype)
+        images = jax.vmap(A_matvec)(basis)
+        diag_chunks.append(images[jnp.arange(stop - start), idx])
+    return jnp.concatenate(diag_chunks)
+
+
 def diag_EAET(E, A, E_T=None):
     """Compute the diagonal of E @ A @ E^T via mapped matvecs.
 
-    Uses diag(E A E^T)_i = v_i^T A v_i  where v_i = E^T e_i (row i of E).
-    This avoids forming any dense matrices.
+    Probes the extracted-space forward operator
+
+        x -> E @ (A @ (E^T @ x))
+
+    on canonical basis vectors in small batches. This avoids forming dense
+    matrices and also avoids the large ``lax.map`` allocation pattern from
+    constructing one-hot vectors inside the traced loop.
     """
     n = E.shape[0]
     if E_T is None:
@@ -854,22 +881,15 @@ def diag_EAET(E, A, E_T=None):
             E_T = jsparse.BCOO((E.data, coo_idx), shape=E.shape).T
         else:
             E_T = E.T
-
-    def entry(i):
-        e_i = jnp.zeros(n).at[i].set(1.0)
-        v = E_T @ e_i
-        return v @ (A @ v)
-
-    return jax.lax.map(entry, jnp.arange(n), batch_size=mrx.MAP_BATCH_SIZE_OUTER)
+    dtype = getattr(A, "dtype", getattr(E, "dtype", jnp.float64))
+    return diag_matvec(lambda x: E @ (A @ (E_T @ x)), n, dtype=dtype)
 
 
 def diag_EAET_matvec(E, A_matvec, n, E_T=None):
     """Compute the diagonal of ``E @ A @ E^T`` with ``A`` given as a matvec.
 
     Identical to :func:`diag_EAET`, but ``A`` is a callable ``v -> A @ v``
-    rather than a materialised matrix.  Useful when ``A`` has a sparse
-    factorisation (e.g. ``A = G^T M G``) that would be expensive to
-    materialise but cheap to apply as a composition of matvecs.
+    rather than a materialised matrix.
 
     Args:
         E: row-extraction operator (BCSR or BCOO or dense).
@@ -883,13 +903,8 @@ def diag_EAET_matvec(E, A_matvec, n, E_T=None):
             E_T = jsparse.BCOO((E.data, coo_idx), shape=E.shape).T
         else:
             E_T = E.T
-
-    def entry(i):
-        e_i = jnp.zeros(n).at[i].set(1.0)
-        v = E_T @ e_i
-        return v @ A_matvec(v)
-
-    return jax.lax.map(entry, jnp.arange(n), batch_size=mrx.MAP_BATCH_SIZE_OUTER)
+    dtype = getattr(E, "dtype", jnp.float64)
+    return diag_matvec(lambda x: E @ A_matvec(E_T @ x), n, dtype=dtype)
 
 
 def diag_schur_complement(apply_DT, diag_inv, n):

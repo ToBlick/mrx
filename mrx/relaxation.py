@@ -7,36 +7,6 @@ import jax
 import jax.numpy as jnp
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.preconditioners import get_mass_jacobi_diaginv
-from mrx.solvers import solve_singular_cg
-
-
-def apply_diffusion(B: jnp.ndarray, seq: DeRhamSequence, eta: float, dirichlet: bool = True, B_guess: jnp.ndarray | None = None) -> jnp.ndarray:
-
-    B_guess = B if B_guess is None else B_guess
-
-    operators = seq.get_operators()
-    if operators is None:
-        raise ValueError("Assemble operators first before calling apply_diffusion")
-    m_diaginv = get_mass_jacobi_diaginv(operators.mass_preconds, 2, dirichlet)
-    dd_diaginv = operators.dd2_diaginv_dbc if dirichlet else operators.dd2_diaginv
-    combined_diaginv = 1.0 / (1.0 / m_diaginv + eta / dd_diaginv)
-
-    def apply_A(x):
-        return seq.apply_mass_matrix(x, 2, dirichlet) \
-            + eta * seq.apply_hodge_laplacian(x, 2, dirichlet)
-
-    def apply_Ainv(x, x0=None):
-        return solve_singular_cg(
-            apply_A,
-            x,
-            mass_matvec=lambda x: seq.apply_mass_matrix(x, 2, dirichlet),
-            precond_matvec=lambda x: combined_diaginv * x,
-            x0=x0,
-            maxiter=seq.maxiter, tol=seq.tol
-        )[0]
-
-    return apply_Ainv(seq.apply_mass_matrix(B, 2, dirichlet), x0=B_guess)
 
 
 def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) -> tuple[float, jnp.ndarray]:
@@ -266,7 +236,9 @@ class TimeStepper(eqx.Module):
 
     def apply_regularization(self, u: jnp.ndarray) -> jnp.ndarray:
         for _ in range(self.gamma):
-            u = apply_diffusion(u, self.seq, self.mu)
+            rhs = self.seq.apply_mass_matrix(u, 2, True)
+            u = self.seq.apply_inverse_mass_plus_eps_laplace_matrix(
+                rhs, 2, self.mu, dirichlet=True, guess=u)
         return u
 
     def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'A', 'dt', 'eta', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'noise_level', 'key'], value) -> State:  # noqa: E501

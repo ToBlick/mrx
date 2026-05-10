@@ -52,6 +52,9 @@ from mrx.preconditioners import (
     _apply_tensor_exact_block,
     _apply_tensor_diagonal_block_forward,
     _arr_shape_k1,
+    _build_chebyshev_apply_preconditioner,
+    _estimate_chebyshev_lanczos_bounds_apply,
+    _estimate_preconditioned_max_eigenvalue_apply,
     _greedy_cp_terms,
     _k2_diagonal_metric_tensors,
     _r_bulk_shape_k2,
@@ -254,24 +257,6 @@ class SequenceOperators(eqx.Module):
     e3_bc_T: Optional[jsparse.BCSR] = None
     mass_preconds: Optional[MassPreconditioners] = None
     runtime_tuning: SequenceRuntimeTuning = eqx.field(default_factory=SequenceRuntimeTuning)
-    # Reference-domain 1-D fast-diagonalisation eigendecompositions of the
-    # generalised eigenproblem ``K_a v = λ M_a v`` for the regular spline
-    # space along each axis. ``fd_V_p_*`` columns are the ``M_a``-orthonormal
-    # eigenvectors and ``fd_lam_p_*`` the corresponding eigenvalues.
-    # Geometry-independent, populated by
-    # :func:`assemble_tensor_hodge_preconditioner`.
-    fd_V_p_r: Optional[jnp.ndarray] = None
-    fd_V_p_t: Optional[jnp.ndarray] = None
-    fd_V_p_z: Optional[jnp.ndarray] = None
-    fd_lam_p_r: Optional[jnp.ndarray] = None
-    fd_lam_p_t: Optional[jnp.ndarray] = None
-    fd_lam_p_z: Optional[jnp.ndarray] = None
-    # Per-direction scaling for the FD Hodge preconditioner. The entry along
-    # axis ``i`` is the quadrature-average of ``J·g^{ii}``, which is the
-    # diagonal of the stiffness integrand on the mapped domain and captures
-    # the leading anisotropy for ``L_0``. Geometry-dependent;
-    # reassembled with :func:`update_hodge_operator`.
-    dd0_fd_scale_K: Optional[jnp.ndarray] = None
     d0: Optional[jsparse.BCSR] = None
     d0_T: Optional[jsparse.BCSR] = None
     d1: Optional[jsparse.BCSR] = None
@@ -1074,7 +1059,7 @@ def _k0_tensor_hodge_config(
     tensor = None if operators.mass_preconds is None else operators.mass_preconds.tensor
     if tensor is None:
         return 3, 100, 1e-9, 1e-12
-    return tensor.rank, tensor.cp_maxiter, tensor.cp_tol, tensor.cp_ridge
+    return tensor.ranks[0], tensor.cp_maxiter, tensor.cp_tol, tensor.cp_ridge
 
 
 def _tensor_mass_rank(rank: int, cp_kwargs: Optional[Mapping[str, object]], k: int) -> int:
@@ -1897,10 +1882,9 @@ def update_mass_operator(seq, geometry, operators: Optional[SequenceOperators], 
             mass_preconds,
             build_mass_tensor_preconditioner(
                 seq,
-                sp,
                 k=k,
                 rank=tensor_rank,
-                fallback_rank=mass_preconds.tensor.rank,
+                fallback_rank=mass_preconds.tensor.ranks[k],
                 cp_kwargs={
                     "maxiter": mass_preconds.tensor.cp_maxiter,
                     "tol": mass_preconds.tensor.cp_tol,
@@ -2022,15 +2006,24 @@ def assemble_tensor_mass_preconditioner(
     tensor_precond = operators.mass_preconds.tensor if operators.mass_preconds is not None else None
     for k in ks:
         tensor_rank = _tensor_mass_rank(rank, cp_kwargs, k)
+        k3_true_block_apply = None
+        if k == 3:
+            ops_for_k3 = operators
+            k3_true_block_apply = {
+                False: lambda x, _ops=ops_for_k3: apply_mass_matrix(
+                    seq, _ops, x, 3, dirichlet=False),
+                True: lambda x, _ops=ops_for_k3: apply_mass_matrix(
+                    seq, _ops, x, 3, dirichlet=True),
+            }
         tensor_precond = build_mass_tensor_preconditioner(
             seq,
-            getattr(operators, f"m{k}"),
             k=k,
             rank=tensor_rank,
             fallback_rank=rank,
             cp_kwargs=cp_kwargs,
             existing=tensor_precond,
             surgery_precond=operators.mass_preconds.surgery,
+            k3_true_block_apply=k3_true_block_apply,
         )
     mass_preconds = set_mass_tensor(operators.mass_preconds, tensor_precond)
     return eqx.tree_at(
@@ -2838,8 +2831,19 @@ def _surgery_available(seq, operators: SequenceOperators, k: int) -> bool:
 
 def apply_mass_tensor_preconditioner_ops(
         seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True):
+    # For k=3 there is no surgery split, so the inner dispatch never had a
+    # handle on the assembled mass and bulk-Chebyshev would polish only
+    # surrogate-against-surrogate (a no-op).  Provide the true mass apply
+    # so Chebyshev can absorb CP modelling error.
+    true_block_apply_k3 = None
+    if k == 3:
+        true_block_apply_k3 = lambda x: apply_mass_matrix(
+            seq, operators, x, 3, dirichlet=dirichlet,
+        )
     return apply_mass_tensor_preconditioner(
-        seq, operators.mass_preconds, v, k, dirichlet=dirichlet)
+        seq, operators.mass_preconds, v, k, dirichlet=dirichlet,
+        true_block_apply_k3=true_block_apply_k3,
+    )
 
 
 def apply_mass_tensor_forward_model_ops(
@@ -2903,68 +2907,10 @@ def assemble_tensor_hodge_preconditioner(
     cp_maxiter: Optional[int] = None,
     cp_tol: Optional[float] = None,
     cp_ridge: Optional[float] = None):
-    """Precompute the tensor-Hodge auxiliary data for ``k = 0``.
-
-    This stores the 1-D eigendecompositions used by the tensorized reference
-    Hodge inverse. Geometry-independent; call once after ``seq.evaluate_1d()``.
-    After this, :func:`apply_hodge_laplacian_preconditioner` with
-    ``kind='tensor'`` becomes available for ``k = 0``.
-    """
-    operators = _ensure_extraction_operators(seq, operators)
-    types = seq.basis_0.types
-    G_r = _dense_incidence_1d(seq.basis_0.nr, types[0])
-    G_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
-    G_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
-    M_p_r = _assemble_1d_mass(seq.basis_r_jk, seq.quad.w_x)
-    M_p_t = _assemble_1d_mass(seq.basis_t_jk, seq.quad.w_y)
-    M_p_z = _assemble_1d_mass(seq.basis_z_jk, seq.quad.w_z)
-    M_d_r = _assemble_1d_mass(seq.d_basis_r_jk, seq.quad.w_x)
-    M_d_t = _assemble_1d_mass(seq.d_basis_t_jk, seq.quad.w_y)
-    M_d_z = _assemble_1d_mass(seq.d_basis_z_jk, seq.quad.w_z)
-    # Regular-space stiffness: K^{(p)} = G^T M_d G.
-    K_p_r = G_r.T @ (M_d_r @ G_r)
-    K_p_r = 0.5 * (K_p_r + K_p_r.T)
-    K_p_t = G_t.T @ (M_d_t @ G_t)
-    K_p_t = 0.5 * (K_p_t + K_p_t.T)
-    K_p_z = G_z.T @ (M_d_z @ G_z)
-    K_p_z = 0.5 * (K_p_z + K_p_z.T)
-    V_p_r, lam_p_r = _assemble_1d_fd_eigendecomp(M_p_r, K_p_r)
-    V_p_t, lam_p_t = _assemble_1d_fd_eigendecomp(M_p_t, K_p_t)
-    V_p_z, lam_p_z = _assemble_1d_fd_eigendecomp(M_p_z, K_p_z)
-    return eqx.tree_at(
-        lambda ops: (
-            ops.fd_V_p_r, ops.fd_V_p_t, ops.fd_V_p_z,
-            ops.fd_lam_p_r, ops.fd_lam_p_t, ops.fd_lam_p_z,
-        ),
-        operators,
-        (V_p_r, V_p_t, V_p_z, lam_p_r, lam_p_t, lam_p_z),
-        is_leaf=lambda x: x is None,
-    )
-
-
-def _fd_hodge_scales_K(seq, geometry, k: int) -> jnp.ndarray:
-    """Per-direction quadrature-averaged stiffness coefficients for ``k = 0``."""
-    if k != 0:
-        raise ValueError("FD Hodge scale currently implemented for k = 0 only")
-    w = seq.quad.w
-    w_sum = jnp.sum(w)
-    J = geometry.jacobian_j
-    g_inv = geometry.metric_inv_jkl  # (n_quad, 3, 3)
-    return jnp.array([
-        jnp.sum(J * g_inv[:, i, i] * w) / w_sum for i in range(3)
-    ])
-
-
-def _fd_hodge_available(operators: SequenceOperators, k: int) -> bool:
-    """True iff the FD Hodge preconditioner can be applied for form ``k``."""
-    if k != 0:
-        return False
-    needed = (
-        operators.fd_V_p_r, operators.fd_V_p_t, operators.fd_V_p_z,
-        operators.fd_lam_p_r, operators.fd_lam_p_t, operators.fd_lam_p_z,
-        operators.dd0_fd_scale_K,
-    )
-    return all(x is not None for x in needed)
+    """Deprecated no-op shim; the legacy FD Hodge auxiliary data has been
+    removed.  The production scalar k=0 tensor Hodge is assembled by
+    :func:`update_hodge_operator`."""
+    return _ensure_extraction_operators(seq, operators)
 
 
 def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0):
@@ -3001,47 +2947,6 @@ def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0)
     y = jnp.einsum('ij,kjl->kil', V_t, y)
     y = jnp.einsum('ij,klj->kli', V_z, y)
     return y
-
-
-def _fd_apply_full(seq, operators: SequenceOperators, v_full, k: int,
-                   eps: float = 0.0):
-    if k != 0:
-        raise ValueError("FD Hodge apply implemented for k = 0 only")
-    nr = seq.basis_r_jk.shape[0]
-    nt = seq.basis_t_jk.shape[0]
-    nz = seq.basis_z_jk.shape[0]
-    x = v_full.reshape((nr, nt, nz))
-    y = _fd_apply_3d(
-        operators.fd_V_p_r, operators.fd_V_p_t, operators.fd_V_p_z,
-        operators.fd_lam_p_r, operators.fd_lam_p_t, operators.fd_lam_p_z,
-        operators.dd0_fd_scale_K, x, eps=eps,
-    )
-    return y.reshape(-1)
-
-
-def apply_hodge_kron_preconditioner(
-        seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True,
-        eps: float = 0.0):
-    """Apply the legacy tensor-Hodge helper for ``k = 0`` only."""
-    if k != 0:
-        raise ValueError(
-            f"Tensor Hodge preconditioner not available for k={k}; use 'jacobi' instead")
-    if eps != 0.0:
-        raise ValueError("Shifted legacy hodge-kron apply is not implemented for k=0")
-    if not _k0_tensor_hodge_available(operators):
-        raise ValueError(
-            "Tensor Hodge preconditioner not available for k=0; "
-            "assemble it via assemble_tensor_hodge_preconditioner"
-        )
-    if dirichlet:
-        e = getattr(seq, f'e{k}_dbc')
-        e_T = getattr(seq, f'e{k}_dbc_T')
-    else:
-        e = getattr(seq, f'e{k}')
-        e_T = getattr(seq, f'e{k}_T')
-    v_full = e_T @ v
-    y_full = _fd_apply_full(seq, operators, v_full, k, eps=eps)
-    return e @ y_full
 
 
 def _mass_components(operators: SequenceOperators, k: int):
@@ -3737,7 +3642,6 @@ def update_hodge_operator(seq, geometry, operators: Optional[SequenceOperators],
 
     match k:
         case 0:
-            fd_scale_K = _fd_hodge_scales_K(seq, geometry, 0)
             rank, cp_maxiter, cp_tol, cp_ridge = _k0_tensor_hodge_config(
                 operators,
             )
@@ -3751,10 +3655,10 @@ def update_hodge_operator(seq, geometry, operators: Optional[SequenceOperators],
             )
             return eqx.tree_at(
                 lambda ops: (ops.grad_grad, ops.dd0_diaginv,
-                             ops.dd0_diaginv_dbc, ops.dd0_fd_scale_K,
+                             ops.dd0_diaginv_dbc,
                              ops.k0_tensor_hodge_precond),
                 operators,
-                (sp, diaginv, diaginv_dbc, fd_scale_K, tensor_precond),
+                (sp, diaginv, diaginv_dbc, tensor_precond),
                 is_leaf=lambda x: x is None,
             )
         case 1:
@@ -3815,7 +3719,6 @@ def assemble_all_operators(seq, geometry,
                 'k3_rank': 3,
             },
         )
-        operators = assemble_tensor_hodge_preconditioner(seq, operators=operators)
     operators = assemble_incidence_operators(seq, operators=operators)
     operators = assemble_derivative_operators(
         seq, geometry, operators=operators)
@@ -4256,133 +4159,6 @@ def apply_stiffness(seq, operators: SequenceOperators, v, k: int, dirichlet: boo
     return e @ (g_sp_T @ (m_sp @ (g_sp @ (e_T @ v))))
 
 
-def _estimate_preconditioned_max_eigenvalue_apply(
-        operator_apply, smoother_apply, size: int, *,
-    n_iter: int = 10, seed: int = 0):
-    vector = jax.random.normal(
-        jax.random.PRNGKey(seed), (size,), dtype=jnp.float64)
-
-    def operator_norm(x):
-        ax = operator_apply(x)
-        return jnp.sqrt(jnp.abs(jnp.vdot(x, ax).real))
-
-    init_norm = operator_norm(vector)
-    vector = vector / jnp.where(init_norm > 0, init_norm, 1.0)
-
-    def body(_, state):
-        current, _ = state
-        image = smoother_apply(operator_apply(current))
-        image_norm = operator_norm(image)
-        safe_norm = jnp.where(image_norm > 0, image_norm, 1.0)
-        updated = image / safe_norm
-        rayleigh = jnp.real(
-            jnp.vdot(updated, operator_apply(smoother_apply(operator_apply(updated)))))
-        return updated, rayleigh
-
-    _, rayleigh = jax.lax.fori_loop(
-        0, n_iter, body, (vector, jnp.asarray(0.0, dtype=jnp.float64)))
-    return jnp.maximum(rayleigh, jnp.asarray(0.0, dtype=jnp.float64))
-
-
-def _project_out_vectors(vector, orthogonal_vectors=None):
-    if orthogonal_vectors is None or orthogonal_vectors.shape[0] == 0:
-        return vector
-    def body(index, projected):
-        basis_vector = orthogonal_vectors[index]
-        denom = jnp.vdot(basis_vector, basis_vector).real
-        coeff = jnp.where(
-            denom > 0.0,
-            jnp.vdot(basis_vector, projected).real / denom,
-            jnp.asarray(0.0, dtype=projected.dtype),
-        )
-        return projected - coeff * basis_vector
-
-    return jax.lax.fori_loop(0, orthogonal_vectors.shape[0], body, vector)
-
-
-def _estimate_chebyshev_lanczos_bounds_apply(
-        operator_apply, smoother_apply, size: int, *,
-        spec: MassPreconditionerSpec, seed: int = 0,
-        orthogonal_vectors=None):
-    if spec.lanczos_iterations < 1:
-        raise ValueError("Lanczos iteration count must be positive")
-
-    tiny = jnp.asarray(jnp.finfo(jnp.float64).tiny, dtype=jnp.float64)
-
-    def operator_norm(x):
-        ax = operator_apply(x)
-        return jnp.sqrt(jnp.maximum(jnp.abs(jnp.vdot(x, ax).real), tiny))
-
-    vector = jax.random.normal(
-        jax.random.PRNGKey(seed), (size,), dtype=jnp.float64)
-    vector = _project_out_vectors(vector, orthogonal_vectors)
-    init_norm = operator_norm(vector)
-    vector = vector / jnp.where(init_norm > 0, init_norm, 1.0)
-
-    def do_iteration(iteration, state):
-        previous, current, beta_prev, alphas, betas, active = state
-
-        def step(active_state):
-            previous, current, beta_prev, alphas, betas, _ = active_state
-            image = smoother_apply(operator_apply(current))
-            alpha = jnp.real(jnp.vdot(current, operator_apply(image)))
-            residual = image - alpha * current
-            residual = residual - jnp.where(iteration > 0, beta_prev, 0.0) * previous
-            residual = _project_out_vectors(residual, orthogonal_vectors)
-            beta = operator_norm(residual)
-
-            alphas = alphas.at[iteration].set(alpha)
-            continue_iteration = (iteration + 1 < spec.lanczos_iterations) & (beta > tiny)
-            betas = betas.at[iteration].set(jnp.where(continue_iteration, beta, 0.0))
-
-            safe_beta = jnp.where(beta > 0.0, beta, 1.0)
-            next_current = residual / safe_beta
-            previous = jnp.where(continue_iteration, current, previous)
-            current = jnp.where(continue_iteration, next_current, current)
-            beta_prev = jnp.where(continue_iteration, beta, beta_prev)
-            return previous, current, beta_prev, alphas, betas, continue_iteration
-
-        return jax.lax.cond(active, step, lambda inactive_state: inactive_state, state)
-
-    initial_state = (
-        jnp.zeros_like(vector),
-        vector,
-        jnp.asarray(0.0, dtype=jnp.float64),
-        jnp.zeros((spec.lanczos_iterations,), dtype=jnp.float64),
-        jnp.zeros((spec.lanczos_iterations,), dtype=jnp.float64),
-        jnp.asarray(True),
-    )
-    _, _, _, alphas, betas, _ = jax.lax.fori_loop(
-        0,
-        spec.lanczos_iterations,
-        do_iteration,
-        initial_state,
-    )
-
-    tridiagonal = jnp.diag(alphas)
-    offdiag = betas[:-1]
-    tridiagonal = tridiagonal + jnp.diag(offdiag, k=1) + jnp.diag(offdiag, k=-1)
-    ritz_values = jnp.linalg.eigvalsh(tridiagonal)
-    max_ritz = jnp.maximum(ritz_values[-1], tiny)
-    max_eig = jnp.maximum(
-        jnp.asarray(spec.lanczos_max_eig_inflation, dtype=jnp.float64) * max_ritz,
-        tiny,
-    )
-    floor = jnp.asarray(
-        spec.lanczos_min_eig_floor_fraction, dtype=jnp.float64
-    ) * max_eig
-    min_positive_ritz = jnp.min(jnp.where(ritz_values > tiny, ritz_values, jnp.inf))
-    guarded_min = jnp.asarray(
-        spec.lanczos_min_eig_deflation, dtype=jnp.float64
-    ) * min_positive_ritz
-    min_eig = jnp.where(
-        jnp.isfinite(min_positive_ritz),
-        jnp.maximum(floor, guarded_min),
-        floor,
-    )
-    return min_eig, max_eig
-
-
 def _diagonal_from_matvec(operator_apply, size: int):
     def entry(i):
         basis = jnp.zeros(size, dtype=jnp.float64).at[i].set(1.0)
@@ -4587,51 +4363,6 @@ def _build_k0_operator_preconditioner_apply(
         spec=spec,
         seed=seed_base + 17,
     )
-
-
-def _build_chebyshev_apply_preconditioner(
-        operator_apply, smoother_apply, *,
-        steps: int, min_eig: float, max_eig: float):
-    if steps < 1:
-        raise ValueError("Chebyshev step count must be positive")
-    tiny = jnp.asarray(jnp.finfo(jnp.float64).tiny, dtype=jnp.float64)
-    max_eig = jnp.maximum(jnp.asarray(max_eig, dtype=jnp.float64), tiny)
-    min_eig = jnp.clip(jnp.asarray(min_eig, dtype=jnp.float64), tiny, max_eig)
-
-    d = 0.5 * (max_eig + min_eig)
-    c = 0.5 * (max_eig - min_eig)
-
-    def apply(rhs):
-        alpha0 = jnp.asarray(1.0, dtype=rhs.dtype) / d.astype(rhs.dtype)
-
-        def body(iteration, state):
-            x, residual, direction, alpha = state
-            correction = smoother_apply(residual)
-            beta = (0.5 * c.astype(rhs.dtype) * alpha) ** 2
-            new_alpha = jnp.where(
-                iteration == 0,
-                alpha,
-                jnp.asarray(1.0, dtype=rhs.dtype)
-                / (d.astype(rhs.dtype) - beta),
-            )
-            new_direction = jnp.where(
-                iteration == 0,
-                correction,
-                correction + beta * direction,
-            )
-            x = x + new_alpha * new_direction
-            residual = residual - new_alpha * operator_apply(new_direction)
-            return x, residual, new_direction, new_alpha
-
-        x, _, _, _ = jax.lax.fori_loop(
-            0,
-            steps,
-            body,
-            (jnp.zeros_like(rhs), rhs, jnp.zeros_like(rhs), alpha0),
-        )
-        return x
-
-    return apply
 
 
 def _build_richardson_apply_preconditioner(
@@ -5045,6 +4776,20 @@ def _build_mass_surgery_bulk_apply(
 def _build_mass_surgery_wrapped_preconditioner_apply(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         spec: MassPreconditionerSpec):
+    # Pure tensor surgery_schur is exactly the production tensor apply
+    # (preconditioners.apply_mass_tensor_preconditioner). Delegate so the
+    # two paths share a single implementation; this is what keeps the
+    # "routed == direct" test invariant when the tensor apply gains
+    # bulk-block Chebyshev polish driven by `true_block_apply`.
+    if (
+        spec.kind == 'tensor'
+        and spec.surgery_schur
+        and spec.smoother is None
+        and k in (0, 1, 2)
+    ):
+        return lambda x: apply_mass_tensor_preconditioner_ops(
+            seq, operators, x, k, dirichlet=dirichlet,
+        )
     if k in (0, 2) and spec.kind in ('none', 'jacobi', 'richardson', 'chebyshev', 'tensor'):
         inner_spec = spec.smoother
         outer_spec = None

@@ -24,8 +24,9 @@ from omegaconf import DictConfig
 import mrx
 import mrx.config  # noqa: F401 — register structured configs in ConfigStore
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction
 from mrx.mappings import toroid_map
+from mrx.operators import assemble_tensor_mass_preconditioner
+from mrx.utils import evaluate_at_xq
 
 jax.config.update("jax_enable_x64", True)
 
@@ -59,14 +60,27 @@ def make_f(a: float):
     return f
 
 
+def exact_u_at_quad(seq: DeRhamSequence) -> jnp.ndarray:
+    """Evaluate the exact scalar solution on the quadrature grid cheaply."""
+    u_r = 0.25 * (seq.quad.x_x**2 - seq.quad.x_x**4)
+    u_z = jnp.cos(2 * π * seq.quad.x_z)
+    values = jnp.ones((seq.quad.ny, 1, 1)) * u_r[None, :, None] * u_z[None, None, :]
+    return values.reshape(-1, 1)
+
+
 # ---------------------------------------------------------------------------
 # Core computation
 # ---------------------------------------------------------------------------
 def compute_error(n: int, p: int, epsilon: float,
                   cg_tol: float, cg_maxiter: int):
-    """Run the sparse Poisson solve and return (error, timings dict)."""
+    """Run the sparse Poisson solve and return (error, timings dict).
+
+    Resolution convention: ``ns = (n, 2*n, n)`` (the toroidal direction
+    carries twice the angular resolution of the radial / vertical
+    directions).
+    """
     timings = {}
-    ns = (n, n, n)
+    ns = (n, 2 * n, n)
     ps = (p, p, p)
     q = 2*p
     F = toroid_map(epsilon=epsilon)
@@ -88,13 +102,34 @@ def compute_error(n: int, p: int, epsilon: float,
     seq.assemble_mass_matrix(0)
     timings["assemble_mass_matrix_0"] = time.perf_counter() - t0
 
+    # K0 = G0^T M1 G0 needs M1 too.
+    t0 = time.perf_counter()
+    seq.assemble_mass_matrix(1)
+    timings["assemble_mass_matrix_1"] = time.perf_counter() - t0
+
+    # Configure the k=0 tensor Hodge preconditioner to use a rank-1 CP fit
+    # of the metric tensor (no Krylov polish, no polynomial outer solve);
+    # `assemble_hodge_laplacian(0)` reads this rank when it builds the
+    # tensor Hodge factors.
+    t0 = time.perf_counter()
+    ops = seq.set_operators(
+        assemble_tensor_mass_preconditioner(
+            seq, seq.get_operators(), ks=(0,), rank=1,
+        )
+    )
+    timings["assemble_tensor_mass_preconditioner_0_rank1"] = (
+        time.perf_counter() - t0
+    )
+
     t0 = time.perf_counter()
     seq.assemble_hodge_laplacian(0)
     timings["assemble_hodge_laplacian_0"] = time.perf_counter() - t0
 
-    # Sparsity diagnostics
+    # Sparsity diagnostics. K0 = G0^T M1 G0 is never materialised
+    # (assemble_hodge_laplacian stores diaginv only and applies K via
+    # composed BCSR matvecs); we report M0 and M1 instead.
     sparsity = {}
-    for name, mat in [("m0", seq.m0), ("dd0", seq.grad_grad)]:
+    for name, mat in [("m0", seq.m0), ("m1", seq.m1)]:
         nnz_stored = int(mat.nse)
         nnz_actual = int(jnp.sum(jnp.abs(mat.data) > 1e-12))
         sparsity[f"{name}_nnz_stored"] = nnz_stored
@@ -112,14 +147,13 @@ def compute_error(n: int, p: int, epsilon: float,
     timings["inverse_hodge_laplacian"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    u_h = DiscreteFunction(u_hat, seq.basis_0, seq.e0_dbc)
-
-    def diff(x):
-        return u(x) - u_h(x)
-
-    df = jax.lax.map(diff, seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_OUTER)
+    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    comp_info_0, comp_shapes_0 = seq._form_comp_info(0)
+    u_h_jk = evaluate_at_xq(seq.e0_dbc_T @ u_hat, comp_info_0, comp_shapes_0,
+                            quad_shape, 1)
+    u_i = exact_u_at_quad(seq)
+    df = u_i - u_h_jk
     L2_df = jnp.einsum("ik,ik,i,i->", df, df, seq.jacobian_j, seq.quad.w)
-    u_i = jax.lax.map(u, seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
     L2_f = jnp.einsum("ik,ik,i,i->", u_i, u_i, seq.jacobian_j, seq.quad.w)
     jax.block_until_ready(L2_f)
     timings["error_computation"] = time.perf_counter() - t0

@@ -175,15 +175,10 @@ class MassSurgeryPreconditioner(eqx.Module):
 
 
 class TensorMassPreconditioner(eqx.Module):
-    rank: int = eqx.field(static=True)
-    cp_maxiter: int = eqx.field(static=True)
-    cp_tol: float = eqx.field(static=True)
-    cp_ridge: float = eqx.field(static=True)
-    fit_strategy: str = eqx.field(static=True, default='multiplicative')
-    k0_rank: int = eqx.field(static=True, default=3)
-    k1_rank: int = eqx.field(static=True, default=3)
-    k2_rank: int = eqx.field(static=True, default=3)
-    k3_rank: int = eqx.field(static=True, default=3)
+    ranks: tuple = eqx.field(static=True, default=(3, 3, 3, 3))
+    cp_maxiter: int = eqx.field(static=True, default=100)
+    cp_tol: float = eqx.field(static=True, default=1e-9)
+    cp_ridge: float = eqx.field(static=True, default=1e-12)
     block_chebyshev_steps: int = eqx.field(static=True, default=3)
     block_lanczos_iterations: int = eqx.field(static=True, default=16)
     block_lanczos_max_eig_inflation: float = eqx.field(static=True, default=1.1)
@@ -205,17 +200,9 @@ class MassPreconditioners(eqx.Module):
 
 
 def tensor_mass_rank_for_degree(tensor: TensorMassPreconditioner, k: int) -> int:
-    match k:
-        case 0:
-            return int(getattr(tensor, 'k0_rank', tensor.rank))
-        case 1:
-            return int(getattr(tensor, 'k1_rank', tensor.rank))
-        case 2:
-            return int(getattr(tensor, 'k2_rank', tensor.rank))
-        case 3:
-            return int(getattr(tensor, 'k3_rank', tensor.rank))
-        case _:
-            raise ValueError("k must be 0, 1, 2 or 3")
+    if k not in (0, 1, 2, 3):
+        raise ValueError("k must be 0, 1, 2 or 3")
+    return int(tensor.ranks[k])
 
 
 @dataclass(frozen=True)
@@ -793,18 +780,11 @@ def _apply_tensor_diagonal_block_backbone_preconditioner(
 
 
 def _estimate_preconditioned_max_eigenvalue_apply(
-    operator_apply,
-    smoother_apply,
-    size: int,
-    *,
-    n_iter: int = 10,
-    seed: int = 0,
-):
+        operator_apply, smoother_apply, size: int, *,
+        n_iter: int = 10, seed: int = 0):
+    """Estimate the largest Rayleigh quotient of ``S A`` via power iteration."""
     vector = jax.random.normal(
-        jax.random.PRNGKey(seed),
-        (size,),
-        dtype=jnp.float64,
-    )
+        jax.random.PRNGKey(seed), (size,), dtype=jnp.float64)
 
     def operator_norm(x):
         ax = operator_apply(x)
@@ -813,34 +793,59 @@ def _estimate_preconditioned_max_eigenvalue_apply(
     init_norm = operator_norm(vector)
     vector = vector / jnp.where(init_norm > 0, init_norm, 1.0)
 
-    rayleigh = jnp.asarray(0.0, dtype=jnp.float64)
-    current = vector
-    for _ in range(n_iter):
+    def body(_, state):
+        current, _ = state
         image = smoother_apply(operator_apply(current))
         image_norm = operator_norm(image)
         safe_norm = jnp.where(image_norm > 0, image_norm, 1.0)
-        current = image / safe_norm
+        updated = image / safe_norm
         rayleigh = jnp.real(
-            jnp.vdot(
-                current,
-                operator_apply(smoother_apply(operator_apply(current))),
-            )
-        )
+            jnp.vdot(updated, operator_apply(smoother_apply(operator_apply(updated)))))
+        return updated, rayleigh
+
+    _, rayleigh = jax.lax.fori_loop(
+        0, n_iter, body, (vector, jnp.asarray(0.0, dtype=jnp.float64)))
     return jnp.maximum(rayleigh, jnp.asarray(0.0, dtype=jnp.float64))
 
 
+def _project_out_vectors(vector, orthogonal_vectors=None):
+    if orthogonal_vectors is None or orthogonal_vectors.shape[0] == 0:
+        return vector
+
+    def body(index, projected):
+        basis_vector = orthogonal_vectors[index]
+        denom = jnp.vdot(basis_vector, basis_vector).real
+        coeff = jnp.where(
+            denom > 0.0,
+            jnp.vdot(basis_vector, projected).real / denom,
+            jnp.asarray(0.0, dtype=projected.dtype),
+        )
+        return projected - coeff * basis_vector
+
+    return jax.lax.fori_loop(0, orthogonal_vectors.shape[0], body, vector)
+
+
 def _estimate_chebyshev_lanczos_bounds_apply(
-    operator_apply,
-    smoother_apply,
-    size: int,
-    *,
-    lanczos_iterations: int,
-    lanczos_max_eig_inflation: float,
-    lanczos_min_eig_deflation: float,
-    lanczos_min_eig_floor_fraction: float,
-    seed: int = 0,
-):
-    if lanczos_iterations < 1:
+        operator_apply, smoother_apply, size: int, *,
+        spec: 'Optional[MassPreconditionerSpec]' = None,
+        lanczos_iterations: Optional[int] = None,
+        lanczos_max_eig_inflation: float = 1.1,
+        lanczos_min_eig_deflation: float = 0.85,
+        lanczos_min_eig_floor_fraction: float = 1e-3,
+        seed: int = 0,
+        orthogonal_vectors=None):
+    """Estimate spectral bounds of the preconditioned operator ``S A`` via Lanczos.
+
+    Either pass a :class:`MassPreconditionerSpec` via ``spec`` (the lanczos_*
+    fields on the spec are used) or pass ``lanczos_iterations`` and the
+    associated knobs explicitly.
+    """
+    if spec is not None:
+        lanczos_iterations = spec.lanczos_iterations
+        lanczos_max_eig_inflation = spec.lanczos_max_eig_inflation
+        lanczos_min_eig_deflation = spec.lanczos_min_eig_deflation
+        lanczos_min_eig_floor_fraction = spec.lanczos_min_eig_floor_fraction
+    if lanczos_iterations is None or lanczos_iterations < 1:
         raise ValueError("Lanczos iteration count must be positive")
 
     tiny = jnp.asarray(jnp.finfo(jnp.float64).tiny, dtype=jnp.float64)
@@ -850,46 +855,67 @@ def _estimate_chebyshev_lanczos_bounds_apply(
         return jnp.sqrt(jnp.maximum(jnp.abs(jnp.vdot(x, ax).real), tiny))
 
     vector = jax.random.normal(
-        jax.random.PRNGKey(seed),
-        (size,),
-        dtype=jnp.float64,
-    )
+        jax.random.PRNGKey(seed), (size,), dtype=jnp.float64)
+    vector = _project_out_vectors(vector, orthogonal_vectors)
     init_norm = operator_norm(vector)
-    current = vector / jnp.where(init_norm > 0, init_norm, 1.0)
-    previous = jnp.zeros_like(current)
-    beta_prev = jnp.asarray(0.0, dtype=jnp.float64)
-    alphas = []
-    betas = []
+    vector = vector / jnp.where(init_norm > 0, init_norm, 1.0)
 
-    for iteration in range(lanczos_iterations):
-        image = smoother_apply(operator_apply(current))
-        alpha = jnp.real(jnp.vdot(current, operator_apply(image)))
-        residual = image - alpha * current
-        if iteration > 0:
-            residual = residual - beta_prev * previous
-        beta = operator_norm(residual)
-        alphas.append(alpha)
-        continue_iteration = iteration + 1 < lanczos_iterations and float(beta) > float(tiny)
-        betas.append(beta if continue_iteration else jnp.asarray(0.0, dtype=jnp.float64))
-        if not continue_iteration:
-            break
-        previous, current = current, residual / beta
-        beta_prev = beta
+    def do_iteration(iteration, state):
+        previous, current, beta_prev, alphas, betas, active = state
 
-    alpha_array = jnp.asarray(alphas, dtype=jnp.float64)
-    beta_array = jnp.asarray(betas[:-1], dtype=jnp.float64) if len(betas) > 1 else jnp.asarray([], dtype=jnp.float64)
-    tridiagonal = jnp.diag(alpha_array)
-    if beta_array.size > 0:
-        tridiagonal = tridiagonal + jnp.diag(beta_array, k=1) + jnp.diag(beta_array, k=-1)
+        def step(active_state):
+            previous, current, beta_prev, alphas, betas, _ = active_state
+            image = smoother_apply(operator_apply(current))
+            alpha = jnp.real(jnp.vdot(current, operator_apply(image)))
+            residual = image - alpha * current
+            residual = residual - jnp.where(iteration > 0, beta_prev, 0.0) * previous
+            residual = _project_out_vectors(residual, orthogonal_vectors)
+            beta = operator_norm(residual)
+
+            alphas = alphas.at[iteration].set(alpha)
+            continue_iteration = (iteration + 1 < lanczos_iterations) & (beta > tiny)
+            betas = betas.at[iteration].set(jnp.where(continue_iteration, beta, 0.0))
+
+            safe_beta = jnp.where(beta > 0.0, beta, 1.0)
+            next_current = residual / safe_beta
+            previous = jnp.where(continue_iteration, current, previous)
+            current = jnp.where(continue_iteration, next_current, current)
+            beta_prev = jnp.where(continue_iteration, beta, beta_prev)
+            return previous, current, beta_prev, alphas, betas, continue_iteration
+
+        return jax.lax.cond(active, step, lambda inactive_state: inactive_state, state)
+
+    initial_state = (
+        jnp.zeros_like(vector),
+        vector,
+        jnp.asarray(0.0, dtype=jnp.float64),
+        jnp.zeros((lanczos_iterations,), dtype=jnp.float64),
+        jnp.zeros((lanczos_iterations,), dtype=jnp.float64),
+        jnp.asarray(True),
+    )
+    _, _, _, alphas, betas, _ = jax.lax.fori_loop(
+        0,
+        lanczos_iterations,
+        do_iteration,
+        initial_state,
+    )
+
+    tridiagonal = jnp.diag(alphas)
+    offdiag = betas[:-1]
+    tridiagonal = tridiagonal + jnp.diag(offdiag, k=1) + jnp.diag(offdiag, k=-1)
     ritz_values = jnp.linalg.eigvalsh(tridiagonal)
     max_ritz = jnp.maximum(ritz_values[-1], tiny)
     max_eig = jnp.maximum(
         jnp.asarray(lanczos_max_eig_inflation, dtype=jnp.float64) * max_ritz,
         tiny,
     )
-    floor = jnp.asarray(lanczos_min_eig_floor_fraction, dtype=jnp.float64) * max_eig
+    floor = jnp.asarray(
+        lanczos_min_eig_floor_fraction, dtype=jnp.float64
+    ) * max_eig
     min_positive_ritz = jnp.min(jnp.where(ritz_values > tiny, ritz_values, jnp.inf))
-    guarded_min = jnp.asarray(lanczos_min_eig_deflation, dtype=jnp.float64) * min_positive_ritz
+    guarded_min = jnp.asarray(
+        lanczos_min_eig_deflation, dtype=jnp.float64
+    ) * min_positive_ritz
     min_eig = jnp.where(
         jnp.isfinite(min_positive_ritz),
         jnp.maximum(floor, guarded_min),
@@ -1378,7 +1404,6 @@ def _build_diagonal_tensor_block_factors(
     cp_ridge: float,
     radial_baseline: Optional[jnp.ndarray] = None,
     prior_terms: Optional[tuple[Mapping[str, jnp.ndarray], ...]] = None,
-    fit_strategy: str = 'multiplicative',
     chebyshev_steps: int = 0,
     chebyshev_lanczos_iterations: int = 16,
     chebyshev_lanczos_max_eig_inflation: float = 1.1,
@@ -1403,7 +1428,7 @@ def _build_diagonal_tensor_block_factors(
     #            6 einsums as rank=2.
     # Geometry/prior channels are intentionally NOT used: the preconditioner
     # treats the diagonal metric tensor as a black box.
-    del radial_baseline, prior_terms, fit_strategy  # accepted for API compat; unused
+    del radial_baseline, prior_terms  # accepted for API compat; unused
     if rank < 1:
         raise ValueError(
             f"Tensor diagonal block builder requires rank >= 1; got {rank}."
@@ -1502,11 +1527,19 @@ def _annotate_tensor_block_chebyshev_bounds(
     lanczos_min_eig_deflation: float,
     lanczos_min_eig_floor_fraction: float,
     seed: int,
+    true_block_apply=None,
 ) -> TensorDiagonalBlockInverseFactors:
-    if factors.chebyshev_steps <= 0 or factors.direct_inv_r is not None:
+    if factors.chebyshev_steps <= 0:
         return factors
 
-    operator_apply = lambda x, block_factors=factors: _apply_tensor_diagonal_block_forward(block_factors, x)
+    # Bounds are estimated against the *operator* the Chebyshev iteration
+    # will see at apply time. When ``true_block_apply`` is provided we
+    # iterate against the assembled bulk mass; otherwise we fall back to
+    # the rank-r CP surrogate forward.
+    if true_block_apply is not None:
+        operator_apply = true_block_apply
+    else:
+        operator_apply = lambda x, block_factors=factors: _apply_tensor_diagonal_block_forward(block_factors, x)
     smoother_apply = lambda x, block_factors=factors: _apply_tensor_diagonal_block_preconditioner(block_factors, x)
     lambda_min, lambda_max = _estimate_chebyshev_lanczos_bounds_apply(
         operator_apply,
@@ -1590,13 +1623,14 @@ def _apply_tensor_exact_block(
 ) -> jnp.ndarray:
     del block_matrix
     if (
-        factors.direct_inv_r is None
-        and factors.fd_V_r is None
-        and
         factors.chebyshev_steps > 0
         and factors.chebyshev_lambda_min is not None
         and factors.chebyshev_lambda_max is not None
     ):
+        # Chebyshev polish: iterate against the true bulk mass when it is
+        # available, otherwise against the rank-r CP surrogate forward.
+        # The smoother is always the tensor surrogate inverse, so this is
+        # the natural way to absorb modelling error from a crude CP fit.
         forward = (
             true_block_apply
             if true_block_apply is not None
@@ -2168,7 +2202,6 @@ def build_mass_surgery_preconditioner(
 
 def build_mass_tensor_preconditioner(
     seq,
-    full_matrix,
     *,
     k: int,
     rank: int = 1,
@@ -2177,8 +2210,8 @@ def build_mass_tensor_preconditioner(
     existing: Optional[TensorMassPreconditioner] = None,
     surgery_precond: Optional[MassSurgeryPreconditioner] = None,
     dirichlet_flags: tuple[bool, ...] = (False, True),
+    k3_true_block_apply: Optional[Mapping[bool, object]] = None,
 ) -> TensorMassPreconditioner:
-    del full_matrix
     fallback_rank = rank if fallback_rank is None else int(fallback_rank)
     cp_kwargs = {} if cp_kwargs is None else dict(cp_kwargs)
     cp_maxiter = int(cp_kwargs.get("maxiter", 100))
@@ -2196,14 +2229,12 @@ def build_mass_tensor_preconditioner(
     )
     k1_inner_schur = bool(cp_kwargs.get("k1_inner_schur", False))
     k2_inner_schur = bool(cp_kwargs.get("k2_inner_schur", False))
-    fit_strategy = str(cp_kwargs.get("fit_strategy", "multiplicative"))
 
     reuse_existing = (
         existing is not None
         and existing.cp_maxiter == cp_maxiter
         and existing.cp_tol == cp_tol
         and existing.cp_ridge == cp_ridge
-        and existing.fit_strategy == fit_strategy
         and existing.block_chebyshev_steps == block_chebyshev_steps
         and existing.block_lanczos_iterations == block_lanczos_iterations
         and existing.block_lanczos_max_eig_inflation == block_lanczos_max_eig_inflation
@@ -2213,13 +2244,13 @@ def build_mass_tensor_preconditioner(
         and existing.richardson_omega == richardson_omega
         and existing.surgery_schur_pinv_tol == surgery_schur_pinv_tol
     )
+    new_ranks = tuple(
+        rank if k == kk
+        else (existing.ranks[kk] if reuse_existing else fallback_rank)
+        for kk in range(4)
+    )
     tensor_precond = TensorMassPreconditioner(
-        rank=fallback_rank,
-        fit_strategy=fit_strategy,
-        k0_rank=(rank if k == 0 else (existing.k0_rank if reuse_existing else fallback_rank)),
-        k1_rank=(rank if k == 1 else (existing.k1_rank if reuse_existing else fallback_rank)),
-        k2_rank=(rank if k == 2 else (existing.k2_rank if reuse_existing else fallback_rank)),
-        k3_rank=(rank if k == 3 else (existing.k3_rank if reuse_existing else fallback_rank)),
+        ranks=new_ranks,
         cp_maxiter=cp_maxiter,
         cp_tol=cp_tol,
         cp_ridge=cp_ridge,
@@ -2264,7 +2295,6 @@ def build_mass_tensor_preconditioner(
                 cp_ridge=cp_ridge,
                 radial_baseline=None,
                 prior_terms=None,
-                fit_strategy=fit_strategy,
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2282,6 +2312,7 @@ def build_mass_tensor_preconditioner(
                 lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
                 lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
                 seed=100 + int(dirichlet),
+                true_block_apply=bulk_true_apply,
             )
             bulk_indices_k0 = jnp.arange(surgery.surgery_size, surgery.apply_data.size, dtype=jnp.int32)
             bulk_true_k0 = lambda x: _apply_extracted_submatrix(surgery.apply_data, bulk_indices_k0, bulk_indices_k0, x)
@@ -2342,7 +2373,6 @@ def build_mass_tensor_preconditioner(
                 cp_ridge=cp_ridge,
                 radial_baseline=None,
                 prior_terms=None,
-                fit_strategy=fit_strategy,
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2360,6 +2390,7 @@ def build_mass_tensor_preconditioner(
                 lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
                 lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
                 seed=200 + 10 * int(dirichlet),
+                true_block_apply=arr_true_apply,
             )
             theta_factors = _build_diagonal_tensor_block_factors(
                 seq,
@@ -2378,7 +2409,6 @@ def build_mass_tensor_preconditioner(
                 cp_ridge=cp_ridge,
                 radial_baseline=None,
                 prior_terms=None,
-                fit_strategy=fit_strategy,
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2396,6 +2426,7 @@ def build_mass_tensor_preconditioner(
                 lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
                 lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
                 seed=201 + 10 * int(dirichlet),
+                true_block_apply=theta_true_apply,
             )
             zeta_factors = _build_diagonal_tensor_block_factors(
                 seq,
@@ -2414,7 +2445,6 @@ def build_mass_tensor_preconditioner(
                 cp_ridge=cp_ridge,
                 radial_baseline=None,
                 prior_terms=None,
-                fit_strategy=fit_strategy,
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2432,6 +2462,7 @@ def build_mass_tensor_preconditioner(
                 lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
                 lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
                 seed=202 + 10 * int(dirichlet),
+                true_block_apply=zeta_true_apply,
             )
             schur_inv = _assemble_surgery_schur_inverse_from_applies(
                 surgery.ass,
@@ -2510,7 +2541,6 @@ def build_mass_tensor_preconditioner(
                 cp_ridge=cp_ridge,
                 radial_baseline=None,
                 prior_terms=None,
-                fit_strategy=fit_strategy,
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2528,6 +2558,7 @@ def build_mass_tensor_preconditioner(
                 lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
                 lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
                 seed=300 + 10 * int(dirichlet),
+                true_block_apply=r_bulk_true_apply,
             )
             theta_factors = _build_diagonal_tensor_block_factors(
                 seq,
@@ -2546,7 +2577,6 @@ def build_mass_tensor_preconditioner(
                 cp_ridge=cp_ridge,
                 radial_baseline=None,
                 prior_terms=None,
-                fit_strategy=fit_strategy,
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2564,6 +2594,7 @@ def build_mass_tensor_preconditioner(
                 lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
                 lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
                 seed=301 + 10 * int(dirichlet),
+                true_block_apply=theta_true_apply,
             )
             zeta_factors = _build_diagonal_tensor_block_factors(
                 seq,
@@ -2582,7 +2613,6 @@ def build_mass_tensor_preconditioner(
                 cp_ridge=cp_ridge,
                 radial_baseline=None,
                 prior_terms=None,
-                fit_strategy=fit_strategy,
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2600,6 +2630,7 @@ def build_mass_tensor_preconditioner(
                 lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
                 lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
                 seed=302 + 10 * int(dirichlet),
+                true_block_apply=zeta_true_apply,
             )
             schur_inv = _assemble_surgery_schur_inverse_from_applies(
                 surgery.ass,
@@ -2647,6 +2678,11 @@ def build_mass_tensor_preconditioner(
         weight_tensor = _k3_weight_tensor(seq)
         extracted_shape = _k3_extracted_shape(seq)
         for dirichlet in dirichlet_flags:
+            true_apply = (
+                k3_true_block_apply.get(dirichlet)
+                if k3_true_block_apply is not None
+                else None
+            )
             factors = _build_diagonal_tensor_block_factors(
                 seq,
                 weight_tensor,
@@ -2664,7 +2700,6 @@ def build_mass_tensor_preconditioner(
                 cp_ridge=cp_ridge,
                 radial_baseline=None,
                 prior_terms=None,
-                fit_strategy=fit_strategy,
                 chebyshev_steps=block_chebyshev_steps,
                 chebyshev_lanczos_iterations=block_lanczos_iterations,
                 chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
@@ -2673,6 +2708,16 @@ def build_mass_tensor_preconditioner(
                 chebyshev_seed=400 + int(dirichlet),
                 richardson_steps=richardson_steps,
                 richardson_omega=richardson_omega,
+                true_block_apply=true_apply,
+            )
+            factors = _annotate_tensor_block_chebyshev_bounds(
+                factors,
+                lanczos_iterations=block_lanczos_iterations,
+                lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                seed=400 + int(dirichlet),
+                true_block_apply=true_apply,
             )
             pair = eqx.tree_at(
                 lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
@@ -2718,7 +2763,7 @@ def _select_mass_tensor_factors(preconds: Optional[MassPreconditioners], k: int,
     raise ValueError(f"Tensor mass preconditioner currently only supports k=0, k=1, k=2 and k=3 (got k={k})")
 
 
-def apply_mass_tensor_preconditioner(seq, preconds: Optional[MassPreconditioners], v, k: int, dirichlet: bool = True):
+def apply_mass_tensor_preconditioner(seq, preconds: Optional[MassPreconditioners], v, k: int, dirichlet: bool = True, *, true_block_apply_k3=None):
     factors = _select_mass_tensor_factors(preconds, k, dirichlet)
     if k == 0:
         surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
@@ -2732,7 +2777,9 @@ def apply_mass_tensor_preconditioner(seq, preconds: Optional[MassPreconditioners
         return jnp.concatenate([z, x_b])
 
     if k == 3:
-        return _apply_tensor_diagonal_block(factors, v)
+        return _apply_tensor_exact_block(
+            None, factors, v, true_block_apply=true_block_apply_k3,
+        )
 
     if k == 2:
         surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
@@ -3043,7 +3090,3 @@ def _k3_weight_tensor(seq) -> jnp.ndarray:
 
 def _k3_extracted_shape(seq) -> tuple[int, int, int]:
     return seq.basis_3.dr - 1, seq.basis_3.dt, seq.basis_3.dz
-
-
-def apply_mass_rtzblock_preconditioner(seq, preconds: Optional[MassPreconditioners], rhs: jnp.ndarray, k: int, dirichlet: bool = True) -> jnp.ndarray:
-    raise ValueError("rt-zblock mass preconditioner has been retired from production")

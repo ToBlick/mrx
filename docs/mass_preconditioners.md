@@ -1,40 +1,294 @@
 # Mass Preconditioners
 
-This note records the current production picture for the mass preconditioners in
-`mrx`. It is intentionally short and only describes the active design.
+This note is the paper-ready writeup of the mass-block preconditioning
+strategy used in MRX, the family of preconditioners we compare, and the
+benchmark protocol used to evaluate them. The later sections (§6 onwards)
+keep the development history — forward-model diagnostics, analytic-prior
+experiments, and earlier sweeps — as supporting material.
 
-The strategic status is now simple: the mass preconditioners are essentially
-done. The eager default policy is rank `3` for all four mass blocks. The
-remaining work is to keep the benchmark picture current and trim stale options
-that no longer affect the assembled tensor route.
+The production policy is the tensor route with eager default rank `3` across
+all four mass blocks. Formulas below are stated for one mass block at a
+time; the same machinery applies for all four de Rham degrees
+$k \in \{0, 1, 2, 3\}$.
 
-## 1. Shared Design
+## 1. Problem Setting
 
-The production tensor route does not try to approximate the inverse of the full
-extracted mass matrix directly. Instead it:
+For each de Rham degree $k$, MRX assembles the symmetric positive
+(semi-)definite mass operator
 
-- keeps the extracted-space surgery rows exact through a small dense Schur
-  complement,
-- approximates only the bulk tensor blocks,
-- fits the diagonal mapped coefficient fields on the quadrature grid,
-- and builds tensor-diagonal block inverses from those fitted fields.
+$$
+M_k \in \mathbb{R}^{N_k \times N_k}, \qquad
+(M_k)_{ij} = \int_{\Omega} \langle \Lambda_i^{(k)},\, \Lambda_j^{(k)} \rangle_{g}\,
+\sqrt{\det g}\, d\xi,
+$$
 
-The active diagonal coefficient fields are:
+where $\{\Lambda_i^{(k)}\}$ are the mapped tensor-product B-spline basis
+functions of the $k$-form space and $g$ is the metric induced by the smooth
+chart $F : \hat\Omega \to \Omega$ on the logical cube
+$\hat\Omega = [0,1]^3$. After polar/extraction surgery the assembled
+operator $M_k$ is split block-wise into a small set of *surgery rows* (the
+polar axis and periodicity identifications) and a large *bulk* block whose
+basis is a true tensor product on $\hat\Omega$.
 
-- `k = 0`: `J`,
-- `k = 1`: `J g^{rr}`, `J g^{theta theta}`, `J g^{zeta zeta}`,
-- `k = 2`: `g_rr / J`, `g_theta theta / J`, `g_zeta zeta / J`,
-- `k = 3`: `1 / J`.
+We solve $M_k u = f$ with conjugate gradients, preconditioned by an operator
+$P_k^{-1}$ that we build matrix-free. Throughout, the iteration count and
+wall-clock time are dominated by the quality of $P_k^{-1}$.
 
-Higher ranks are supported by the tensor block machinery. Recent solve and
-forward-model checks now point to rank `3` as the stronger practical default
-across all four mass blocks on the tested rotating-ellipse family.
+## 2. Preconditioner Family
 
-So the mass question is no longer "which family should we use?" The answer is
-the tensor route with eager default rank `3`. The open question is only how
-much validation we want to keep in the tree.
+We compare three preconditioner families, all matrix-free:
 
-## 2. Degree-by-Degree Structure
+1. **Jacobi.** Inverse of the assembled mass diagonal,
+   $P_{\mathrm{J}}^{-1} = \operatorname{diag}(M_k)^{-1}$.
+2. **Polynomial (Chebyshev) on Jacobi.** A degree-$s$ Chebyshev polynomial in
+   $M_k$ using $P_{\mathrm{J}}^{-1}$ as the inner smoother.
+3. **Tensor (CP) preconditioner.** A separable rank-$r$ approximation of the
+   bulk block combined with an exact dense solve on the surgery rows via a
+   Schur complement. An optional Chebyshev acceleration of the bulk block,
+   running $t$ Chebyshev steps in the bulk operator with the rank-$r$
+   tensor apply as the inner smoother, sits inside the same envelope.
+
+The first two are baselines; the third is the proposed method. All three
+expose the same matrix-free interface to the outer CG.
+
+### 2.1 Jacobi
+
+The diagonal entries of $M_k$ are extracted at assembly time. The
+preconditioner is one elementwise multiply per apply. It is the natural
+cheap reference: its setup cost is negligible and it sets the floor for "do
+nothing clever".
+
+### 2.2 Chebyshev on Jacobi
+
+For a target degree $s \ge 1$, we build the Chebyshev iteration that
+approximates $M_k^{-1}$ on the spectrum interval
+$[\lambda_{\min}, \lambda_{\max}]$ of the Jacobi-preconditioned operator
+$P_{\mathrm{J}}^{-1} M_k$. Concretely, we
+
+1. estimate $\lambda_{\min}, \lambda_{\max}$ once at setup using a short
+   Lanczos run on $P_{\mathrm{J}}^{-1} M_k$ (with a small inflation /
+   deflation safety margin),
+2. emit the standard three-term Chebyshev recursion that, after $s$
+   applications of $P_{\mathrm{J}}^{-1}$, returns an approximate solve of
+   $M_k$ to a polynomial-residual tolerance set by $s$ and the conditioning
+   of $P_{\mathrm{J}}^{-1} M_k$.
+
+This is the standard sparse-matrix textbook baseline. It costs $s$ Jacobi
+applies and $s$ matrix-vector products per outer CG iteration.
+
+### 2.3 Tensor (CP) preconditioner
+
+The mass block on the bulk reads
+
+$$
+(M_k^{\mathrm{bulk}} v)_{ijk} = \int_{\hat\Omega}
+W^{(k)}(\xi)\, \Lambda_i(\xi_1)\Lambda_j(\xi_2)\Lambda_k(\xi_3)\,
+\big[\Lambda \otimes \Lambda \otimes \Lambda\, v\big](\xi)\, d\xi,
+$$
+
+where the *coefficient field* $W^{(k)}$ collects the geometry- and
+form-dependent factors (Jacobian, metric components). The active diagonal
+coefficient fields are:
+
+- $k = 0$: $J$,
+- $k = 1$: $J g^{rr}$, $J g^{\theta\theta}$, $J g^{\zeta\zeta}$,
+- $k = 2$: $g_{rr} / J$, $g_{\theta\theta} / J$, $g_{\zeta\zeta} / J$,
+- $k = 3$: $1 / J$.
+
+The exact $W^{(k)}$ is not separable, but on the rotating-ellipse and
+toroidal mappings of interest it admits an accurate low-rank
+canonical-polyadic (CP) approximation
+
+$$
+W^{(k)}(\xi) \approx \sum_{\rho=1}^{r}
+w^{(k,\rho)}_1(\xi_1)\, w^{(k,\rho)}_2(\xi_2)\, w^{(k,\rho)}_3(\xi_3).
+$$
+
+For each separable summand, the bulk mass operator factors as a Kronecker
+product of three 1-D mass-like operators, each banded. Inverting a single
+rank-1 summand is therefore a sequence of three banded 1-D solves; the
+rank-$r$ inverse uses a shared modal basis on the three axes followed by a
+small dense solve in the modal coefficients.
+
+The surgery rows are *not* approximated. Let $S$ be the set of surgery dofs
+and $B$ the bulk dofs. We block $M_k$ as
+
+$$
+M_k = \begin{pmatrix} M_{SS} & M_{SB} \\ M_{BS} & M_{BB} \end{pmatrix},
+$$
+
+apply the tensor approximation only to $M_{BB}$, and wrap the surgery rows
+in an exact dense Schur complement
+$\Sigma = M_{SS} - M_{SB} M_{BB}^{-1} M_{BS}$. The full preconditioner is
+
+$$
+P_{\mathrm{T}}^{-1} = \begin{pmatrix}
+\Sigma^{-1} & -\Sigma^{-1} M_{SB} M_{BB}^{-1} \\
+-M_{BB}^{-1} M_{BS} \Sigma^{-1} &
+M_{BB}^{-1} + M_{BB}^{-1} M_{BS} \Sigma^{-1} M_{SB} M_{BB}^{-1}
+\end{pmatrix},
+$$
+
+with $M_{BB}^{-1}$ replaced by the rank-$r$ tensor apply. The dense Schur
+block is small because the number of surgery dofs is independent of the
+mesh resolution.
+
+**Optional bulk Chebyshev acceleration.** Because the rank-$r$ tensor apply
+is itself an approximate inverse of $M_{BB}$, we may sharpen it with a
+Chebyshev polynomial in $M_{BB}$ that uses the tensor apply as its inner
+smoother. The number of bulk Chebyshev steps is denoted $t$; $t = 0$ means
+the tensor apply is used as-is. This is the natural way to trade extra
+matvecs against fewer outer CG iterations once the tensor model is already
+strong.
+
+The tensor route exposes two hyperparameters:
+
+- the CP rank $r$, controlling the fidelity of the separable model of
+  $W^{(k)}$;
+- the number of bulk Chebyshev steps $t$, controlling whether and how much
+  the tensor apply is polished by Chebyshev.
+
+For $k \in \{1, 2\}$ the bulk further splits into three vector components,
+each treated as its own block; the Schur complement against the surgery
+rows is handled identically. We expose a binary `inner_schur` toggle that
+controls whether those three bulk components are coupled by an additional
+inner Schur (`on`) or treated independently (`off`). Empirically `off` is
+faster and equally robust on the tested geometry, so we use `off` in this
+study.
+
+## 3. Baselines
+
+For paper-quality comparisons we use two sparse-matrix baselines and the
+proposed tensor route. All three are wrapped in the same outer CG with
+identical tolerances.
+
+| Label | Family | Setup | Per-apply cost |
+|---|---|---|---|
+| `jacobi` | Jacobi | one diagonal extraction | one elementwise multiply |
+| `cheb_J(s)`, $s \in \{2, 3, 5\}$ | Chebyshev on Jacobi | one Lanczos pass to bound the spectrum | $s$ Jacobi applies + $s$ matvecs |
+| `tensor(r, t)`, $r \in \{1, 2, 3, 5\}$, $t \in \{0, 2, 3\}$ | CP + Schur | one greedy CP fit; one dense Schur factor | three banded 1-D solves per rank summand + optional $t$ bulk-Chebyshev steps |
+
+The first two represent what a competent practitioner would reach for given
+the assembled sparse $M_k$. The Chebyshev family covers the standard
+"make Jacobi a polynomial preconditioner" trick; we sweep its degree $s$
+to expose the polynomial-degree / iteration-count tradeoff.
+
+We deliberately do not include incomplete-Cholesky or AMG baselines: both
+require an explicit sparse $M_k$, which MRX never assembles for the bulk
+block in the production solve path. They would not be a like-for-like
+comparison against a matrix-free preconditioner.
+
+## 4. Sweep Strategy
+
+The benchmark is split into two phases.
+
+### 4.1 Phase 1 — fixed reference point
+
+A single de Rham sequence is built once at the reference geometry and
+discretization, and then reused across the entire Cartesian sweep. This
+isolates the *preconditioner* axes from the geometry / discretization axes
+and keeps the cost of the study modest.
+
+**Reference point.**
+
+| Parameter | Value |
+|---|---|
+| Resolution $n_r \times n_\theta \times n_z$ | $16 \times 32 \times 16$ |
+| Spline degree $p$ | $3$ |
+| Aspect ratio $\varepsilon$ | $0.2$ |
+| Major radius $R_0$ | $3.0$ |
+| Mapping | toroidal, polar at the axis |
+| Boundary | free |
+| Form degrees $k$ | $\{0, 1, 2, 3\}$ |
+| RHS regularity (Besov $s$) | $1$ |
+| RHS seeds | $3$ independent draws |
+| Outer CG tolerance | $10^{-12}$ |
+| Outer CG max iterations | $1000$ |
+
+**Cartesian grid.** Per $k$:
+
+- baseline `jacobi`,
+- baseline `cheb_J(s)` with $s \in \{2, 3, 5\}$,
+- tensor `tensor(r, t)` with $r \in \{1, 2, 3, 5\}$ and $t \in \{0, 2, 3\}$,
+
+against three independent right-hand sides drawn from a Besov-$s = 1$
+random ensemble of fixed Fourier truncation. Per $k$ this is 16 cells
+(1 Jacobi + 3 Chebyshev + 12 tensor); times four $k$ values, $64$ cells
+total.
+
+**Reported quantities.** For each cell:
+
+- average and maximum CG iteration count over the three RHS draws,
+- average wall-clock solve time (ms),
+- one-time preconditioner setup cost (ms),
+- final relative residual $\|M_k u - f\|_2 / \|f\|_2$.
+
+The output is a tidy CSV with one row per cell. Phase 1 simultaneously
+answers two questions: (i) does the tensor route beat both baselines on a
+relevant reference problem, and (ii) which $(r, t)$ pair is the best
+finalist for each $k$.
+
+The driver is
+[`scripts/benchmark_phase1_mass_baseline_vs_tensor.py`](../scripts/benchmark_phase1_mass_baseline_vs_tensor.py).
+
+### 4.2 Phase 2 — scaling
+
+Phase 2 now keeps one locked comparison set per $k$ from the Phase-1 results:
+
+- the `jacobi` baseline,
+- the `cheb_J(s)` baseline with $s = 3$,
+- the tensor preconditioner with rank $r = 3$ and bulk Chebyshev disabled
+  ($t = 0$).
+
+These three strategies are then evaluated along five 1-D scaling axes with
+the same driver logic in
+[`scripts/benchmark_phase2_geometry.py`](../scripts/benchmark_phase2_geometry.py)
+and the matching SLURM launcher
+[`slurm/job_phase2_geometry.sh`](../slurm/job_phase2_geometry.sh). Each
+Phase-2 axis varies one parameter at a time while holding the others at the
+reference point
+
+$$
+(\kappa, \varepsilon, p, n_s, n_{\mathrm{fp}}, s)
+= (1.25, 0.2, 3, (16, 32, 16), 3, 1).
+$$
+
+| Axis | Variable | Range | Reassemble? |
+|---|---|---|---|
+| 2a Aspect ratio | $\kappa$ | $\{1.0, 1.25, 1.5, 1.75\}$ | yes |
+| 2b Minor radius | $\varepsilon$ | $\{0.1, 0.2, 0.33, 0.5\}$ | yes |
+| 2c Spline order | $p$ | $\{1, 2, 3, 4\}$ | yes |
+| 2d Resolution | $n_s$ | $\{(8,16,8), (16,32,16), (32,64,32), (64,128,64)\}$ | yes |
+| 2e Right-hand side regularity | Besov exponent $s$ | $\{0, 1, 2, 3\}$ | yes |
+
+The central baseline cell is run once and any axis entry equal to its
+baseline value is deduplicated. `nfp` is not swept in Phase 2; it remains
+fixed at $n_{\mathrm{fp}} = 3$. The CSV schema is shared across phases so the
+same aggregator produces iteration- and time-vs-axis plots and the headline
+tables.
+
+### 4.3 Right-hand sides
+
+All right-hand sides are drawn from a band-limited random Besov ensemble
+parameterized by a smoothness exponent $s$, a Fourier upper limit, a number
+of modes, and a normalization sample count. Holding the seed list fixed
+across cells of the sweep makes the per-cell numbers directly comparable;
+$s$ is one of the five Phase-2 axes. A higher $s$ produces smoother
+right-hand sides and easier solves; a lower $s$ stresses the high-frequency
+end of the spectrum and is where Jacobi is expected to weaken.
+
+### 4.4 Scope
+
+The sweep is designed to (i) establish a clean win for the tensor route on
+a realistic reference problem against two textbook baselines, and (ii)
+characterize how the win scales along the five axes that matter most for the
+current study: $\kappa$, $\varepsilon$, spline order, mesh resolution, and RHS
+regularity. It is deliberately not a fishing expedition over every CP rank,
+Chebyshev degree, and damping parameter; only Phase 1 carries that
+responsibility, and Phase 2 narrows to the three named strategies per $k$ to
+keep the scaling plots interpretable.
+
+## 5. Degree-by-Degree Structure
 
 ### `k = 0`
 
@@ -103,40 +357,28 @@ So the active route is:
 - direct scalar tensor inverse,
 - no surgery Schur.
 
-## 3. Baselines And Practical Winners
+### 5.5 Practical winners on the rotating-ellipse family
 
-The useful baselines remain:
+For the historical record, the benchmark picture on the rotating-ellipse
+family prior to the Phase 1 / Phase 2 sweep was:
 
-- whole-matrix Jacobi,
-- whole-matrix Chebyshev built on Jacobi.
-
-Those are still useful for comparison, but they are not the preferred
-production routes.
-
-The current benchmark picture on the rotating-ellipse family is:
-
-- `k = 0` mass: scalar Schur plus tensor bulk is decisively better than whole
+- `k = 0` mass: scalar Schur plus tensor bulk decisively better than whole
   Jacobi and Jacobi-Chebyshev,
-- `k = 3` mass: direct scalar tensor inversion is decisively better than whole
+- `k = 3` mass: direct scalar tensor inversion decisively better than whole
   Jacobi and Jacobi-Chebyshev,
-- `k = 1` and `k = 2` mass: the outer surgery Schur plus diagonal tensor bulk
-  blocks already delivers most of the gain,
+- `k = 1` and `k = 2` mass: the outer surgery Schur plus diagonal tensor
+  bulk blocks already delivers most of the gain,
 - the optional inner bulk Schur for `k = 1` and `k = 2` reduces iteration
   counts only slightly on the tested family, but increases runtime
   substantially,
 - wrapping Chebyshev around an already strong tensor route often lowers
   iteration counts but usually does not improve wall-clock time.
 
-So the current practical recommendation is:
+This motivated the production defaults `k1_inner_schur = False`,
+`k2_inner_schur = False`, and the rank-3 eager policy. The Phase 1 / Phase
+2 sweep described in §4 is the formal version of these observations.
 
-- `k = 0`: use the scalar Schur-plus-tensor route,
-- `k = 1`: prefer `k1_inner_schur = False` unless a harder case shows a clear
-  robustness benefit from the coupled bulk model,
-- `k = 2`: prefer `k2_inner_schur = False` unless a harder case shows a clear
-  robustness benefit from the coupled bulk model,
-- `k = 3`: use the direct scalar tensor route.
-
-## 4. Forward-Model Diagnostics
+## 6. Forward-Model Diagnostics
 
 The recent small-case forward-model checks help separate model quality from
 solve-path effects.
@@ -241,7 +483,7 @@ operator-assembly path: the mass blocks are assembled with per-degree tensor
 ranks `k0 = k1 = k2 = k3 = 3`, while the scalar stiffness/Hodge fallback rank
 remains at `1`.
 
-## 5. Analytic Priors And Inversion Strategy
+## 7. Analytic Priors And Inversion Strategy
 
 The recent toroidal-prior experiments are useful because they separate two
 different questions:
@@ -502,7 +744,7 @@ This is therefore the practical next-step policy for the split model:
 - and evaluate inversion strategies on top of that split rather than forcing
   the correction itself to remain rank `1`.
 
-## 6. Geometry Sensitivity: `eps = 1/3` vs `eps = 1/7`
+## 8. Geometry Sensitivity: `eps = 1/3` vs `eps = 1/7`
 
 The latest rotating-ellipse sweep compared the same benchmark at
 `ns = (16, 16, 16)`, `p = 3`, ranks `1, 2, 4`, and inner Schur on/off for
@@ -533,7 +775,7 @@ So the practical reading is:
   `k = 2`, turning the coupled inner Schur off is still much faster in
   wall-clock time on the tested family.
 
-## 7. Final Summary
+## 9. Final Summary
 
 The final mass-preconditioner picture is simple.
 
