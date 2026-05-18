@@ -241,3 +241,113 @@ rel_resid_hi = float(
     jnp.linalg.norm(K0_u_proj_hi - rhs_hi) / jnp.linalg.norm(rhs_hi)
 )
 print(f"[E] ||K0 Π_L2(u) - rhs|| / ||rhs|| at q=2p+4:  {rel_resid_hi:.6e}")
+
+
+# %% Cell F: q-sweep at fixed (p, n) -----------------------------------------
+# Decisive plot for the quadrature hypothesis: hold (p, n) fixed, vary q,
+# report (solve_err, proj_err, consistency_residual). If the curve plateaus
+# at machine-precision-floor only for q >> 2p, then q=2p is the bug.
+def _solve_at_q(qx: int) -> tuple[float, float, float]:
+    seq_q = DeRhamSequence(
+        ns, ps, qx, TYPES, polar=True, tol=cg_tol, maxiter=cg_maxiter
+    )
+    seq_q.set_map(toroid_map(epsilon=EPSILON))
+    seq_q.evaluate_1d()
+    seq_q.assemble_mass_matrix(0)
+    seq_q.assemble_mass_matrix(1)
+    seq_q.set_operators(
+        assemble_tensor_mass_preconditioner(
+            seq_q, seq_q.get_operators(), ks=(0,), rank=1
+        )
+    )
+    seq_q.assemble_hodge_laplacian(0)
+    quad_shape_q = (seq_q.quad.ny, seq_q.quad.nx, seq_q.quad.nz)
+    ci_q, cs_q = seq_q._form_comp_info(0)
+    u_exact_q = exact_u_at_quad(seq_q)
+
+    rhs_q = seq_q.p0_dbc(f_callable)
+    u_hat_q = seq_q.apply_inverse_hodge_laplacian(rhs_q, 0, dirichlet=True)
+    u_quad_q = evaluate_at_xq(
+        seq_q.e0_dbc_T @ u_hat_q, ci_q, cs_q, quad_shape_q, 1
+    )
+    e_solve = l2_relative_error(seq_q, u_quad_q, u_exact_q)
+
+    u_load_q = seq_q.p0_dbc(u)
+    u_proj_q = seq_q.apply_inverse_mass_matrix(u_load_q, 0, dirichlet=True)
+    u_proj_quad_q = evaluate_at_xq(
+        seq_q.e0_dbc_T @ u_proj_q, ci_q, cs_q, quad_shape_q, 1
+    )
+    e_proj = l2_relative_error(seq_q, u_proj_quad_q, u_exact_q)
+
+    K_u = seq_q.apply_hodge_laplacian(u_proj_q, 0, dirichlet=True)
+    rel = float(jnp.linalg.norm(K_u - rhs_q) / jnp.linalg.norm(rhs_q))
+    return e_solve, e_proj, rel
+
+
+q_list = (2 * P, 2 * P + 2, 2 * P + 4, 2 * P + 8, 4 * P)
+print(f"[F] q-sweep at p={P}, ns={ns}")
+print(f"    {'q':>4}  {'solve_err':>12}  {'proj_floor':>12}  {'cons_resid':>12}")
+for qx in q_list:
+    e_s, e_p, r = _solve_at_q(qx)
+    print(f"    {qx:>4}  {e_s:>12.4e}  {e_p:>12.4e}  {r:>12.4e}")
+
+
+# %% Cell G: (p, n) sweep of the L2 projection floor only --------------------
+# Cell F showed solve_err == proj_floor at every q, so the CG solve is already
+# returning the best L2 projection and the "floor" IS the discretization
+# error. This cell measures ||u - Π_L2 u|| as a function of (p, n) with no
+# solver in the loop. Expected behaviour: O(h^{p+1}) decay, where h ~ 1/n.
+# If the floor does NOT decay at the expected rate, the space/BC setup is the
+# bug (e.g. clamped+polar can't represent u near the axis/boundary, or the
+# manufactured u violates a regularity constraint of the discrete space).
+def _proj_floor(p_loc: int, n_loc: int, q_loc: int | None = None) -> float:
+    qx = 2 * p_loc + 4 if q_loc is None else q_loc
+    ns_loc = (n_loc, 2 * n_loc, n_loc)
+    ps_loc = (p_loc, p_loc, p_loc)
+    seq_g = DeRhamSequence(
+        ns_loc, ps_loc, qx, TYPES, polar=True, tol=1e-13, maxiter=200_000
+    )
+    seq_g.set_map(toroid_map(epsilon=EPSILON))
+    seq_g.evaluate_1d()
+    seq_g.assemble_mass_matrix(0)
+    ci_g, cs_g = seq_g._form_comp_info(0)
+    quad_shape_g = (seq_g.quad.ny, seq_g.quad.nx, seq_g.quad.nz)
+    u_exact_g = exact_u_at_quad(seq_g)
+    u_load_g = seq_g.p0_dbc(u)
+    u_proj_g = seq_g.apply_inverse_mass_matrix(u_load_g, 0, dirichlet=True)
+    u_proj_quad_g = evaluate_at_xq(
+        seq_g.e0_dbc_T @ u_proj_g, ci_g, cs_g, quad_shape_g, 1
+    )
+    return l2_relative_error(seq_g, u_proj_quad_g, u_exact_g)
+
+
+p_list = (1, 2, 3, 4)
+n_list = (4, 8, 12, 16, 24)
+
+print(f"[G] L2 projection floor ||u - Π_L2 u|| / ||u|| (q = 2p+4)")
+header = "    " + "p\\n".ljust(6) + "".join(f"{n:>12d}" for n in n_list)
+print(header)
+import math
+results: dict[int, list[float]] = {}
+for p_loc in p_list:
+    row = []
+    for n_loc in n_list:
+        e = _proj_floor(p_loc, n_loc)
+        row.append(e)
+    results[p_loc] = row
+    line = f"    p={p_loc:<4d}" + "".join(f"{e:>12.3e}" for e in row)
+    print(line)
+
+print()
+print("[G] observed convergence rates (log2 ratio between successive n):")
+for p_loc, row in results.items():
+    rates = []
+    for i in range(1, len(row)):
+        ratio = row[i - 1] / row[i] if row[i] > 0 else float("nan")
+        h_ratio = n_list[i] / n_list[i - 1]
+        rate = math.log(ratio) / math.log(h_ratio) if ratio > 0 else float("nan")
+        rates.append(rate)
+    rate_str = "".join(f"{r:>12.2f}" for r in rates)
+    print(f"    p={p_loc}  rates: {rate_str}   (expected ~{p_loc + 1})")
+
+# %%

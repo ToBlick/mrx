@@ -219,9 +219,16 @@ default stays at rank `1`.
 
 A possible future refinement is a bulk-local Chebyshev correction on the exact
 bulk operator with the rank-1 tensor inverse used as the smoother. That route
-is still principled, but earlier experiments of that flavor did not pay off;
-outer CG was usually the better place to absorb the remaining error. So it is
-not part of the current plan.
+is still principled, but the current phase-2 sweep
+(`outputs/phase2/2026-05-17/23-30-27`) says it should be viewed narrowly: for
+`K0_dbc`, `tensor(r=1,bcheb=t)` with `t >= 2` cuts outer CG iterations
+substantially at fixed mesh, while `t = 1` is effectively a no-op. However,
+the iteration counts still grow materially under mesh refinement (the polish
+improves the constant, not the scaling), and wall-clock solve time gets worse
+because each preconditioner apply is more expensive. In other words, this
+polynomial refinement is a spectral polish, not a cure for the remaining
+geometry/refinement sensitivity, so plain rank-1 tensor remains the practical
+timing default.
 
 ## 5. Eager Production Defaults
 
@@ -256,6 +263,10 @@ The current validation status of the production tensor applies
 - Scalar `k = 0` stiffness now has an assembled FD-based tensor inverse. On the
   tested rotating-ellipse family it is decisively better than Jacobi, while the
   effect of increasing rank beyond 1 is presently modest.
+- Phase-2 scalar `k = 0` stiffness sweeps with bulk Chebyshev polish on top of
+  the rank-1 tensor preconditioner reduce iteration counts for `bcheb >= 2`,
+  but they do not make the method mesh-independent and they lose in wall-clock
+  time to the unpolished tensor apply.
 - The mass preconditioners are essentially complete apart from policy and
   regression-testing cleanup.
 - The main higher-form target is now a Hiptmair-Xu auxiliary-space

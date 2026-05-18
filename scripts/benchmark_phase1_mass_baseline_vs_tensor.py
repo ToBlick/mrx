@@ -400,19 +400,41 @@ def run_k0_stiffness_chebyshev(seq, operators, rhs_batch, args, *, steps) -> Row
     )
 
 
-def run_k0_stiffness_tensor(seq, operators, rhs_batch, args, *, rank) -> Row:
+def run_k0_stiffness_tensor(seq, operators, rhs_batch, args, *, rank,
+                            bulk_steps: int = 0) -> Row:
     operator_apply = lambda x: apply_stiffness(seq, operators, x, 0, dirichlet=True)
     mass_apply = lambda x: apply_mass_matrix(seq, operators, x, 0, dirichlet=True)
-    precond_apply = lambda rhs: apply_hodge_laplacian_preconditioner(
+    tensor_apply = lambda rhs: apply_hodge_laplacian_preconditioner(
         seq, operators, rhs, 0, dirichlet=True, kind="tensor",
     )
+    if bulk_steps <= 0:
+        precond_apply = tensor_apply
+        extra_setup_ms = 0.0
+    else:
+        # Chebyshev polish on top of the tensor PC: a fixed-degree polynomial
+        # in (K0 * T^{-1}) where T^{-1} is the tensor Hodge preconditioner.
+        dof = int(seq.n0_dbc)
+        spec = MassPreconditionerSpec(
+            kind="chebyshev",
+            steps=int(bulk_steps),
+            smoother=MassPreconditionerSpec(kind="jacobi"),
+        )
+        t_extra = time.perf_counter()
+        min_eig, max_eig = _estimate_chebyshev_lanczos_bounds_apply(
+            operator_apply, tensor_apply, dof, spec=spec, seed=args.seed,
+        )
+        precond_apply = _build_chebyshev_apply_preconditioner(
+            operator_apply, tensor_apply,
+            steps=int(bulk_steps), min_eig=min_eig, max_eig=max_eig,
+        )
+        extra_setup_ms = (time.perf_counter() - t_extra) * 1e3
     solve = make_solve(operator_apply, precond_apply, args, mass_apply=mass_apply)
     stats = time_solve(solve, rhs_batch)
     return Row(
         case=K0_STIFFNESS_DBC_CASE,
         k=0,
         strategy="tensor",
-        method=f"tensor(r={rank},bcheb=0)",
+        method=f"tensor(r={rank},bcheb={bulk_steps})",
         avg_iters=stats["avg_iters"],
         max_iters=stats["max_iters"],
         min_iters=stats["min_iters"],
@@ -421,12 +443,12 @@ def run_k0_stiffness_tensor(seq, operators, rhs_batch, args, *, rank) -> Row:
         min_solve_ms=stats["min_solve_ms"],
         max_solve_ms=stats["max_solve_ms"],
         std_solve_ms=stats["std_solve_ms"],
-        setup_ms=0.0,
+        setup_ms=extra_setup_ms,
         final_residual=stats["residual"],
         rank=rank,
-        bulk_cheb_steps=0,
+        bulk_cheb_steps=int(bulk_steps),
         dirichlet=True,
-        hyperparams=json.dumps({"rank": rank, "bulk_cheb_steps": 0}),
+        hyperparams=json.dumps({"rank": rank, "bulk_cheb_steps": int(bulk_steps)}),
     )
 
 
@@ -589,10 +611,17 @@ def run_benchmark(args) -> list[Row]:
                 )
                 jax.block_until_ready(jnp.zeros(()))
                 setup_ms = (time.perf_counter() - t_setup) * 1e3
-                print(f"    {K0_STIFFNESS_DBC_CASE}  tensor(r={rank},bcheb=0)", flush=True)
-                row = run_k0_stiffness_tensor(seq, operators, rhs_batch, args, rank=rank)
-                row.setup_ms = setup_ms
-                rows.append(row)
+                for bulk_steps in args.bulk_cheb:
+                    print(
+                        f"    {K0_STIFFNESS_DBC_CASE}  tensor(r={rank},bcheb={bulk_steps})",
+                        flush=True,
+                    )
+                    row = run_k0_stiffness_tensor(
+                        seq, operators, rhs_batch, args,
+                        rank=rank, bulk_steps=int(bulk_steps),
+                    )
+                    row.setup_ms = setup_ms + row.setup_ms
+                    rows.append(row)
 
     # Stamp common metadata onto every row.
     for row in rows:

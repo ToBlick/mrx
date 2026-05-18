@@ -402,7 +402,7 @@ def _panel_limits(rows: list[dict], metric: str, yscale: str) -> tuple[float, fl
     return ymin - pad, ymax + pad
 
 
-def plot(rows: list[dict], out_pdf: Path, *, metric: str, yscale: str) -> None:
+def plot(rows: list[dict], out_pdf: Path, *, metric: str, yscale: str, share_y: bool) -> None:
     baselines = infer_baselines(rows)
     cases = sorted({_case(r) for r in rows}, key=_case_key)
     if not cases:
@@ -418,7 +418,7 @@ def plot(rows: list[dict], out_pdf: Path, *, metric: str, yscale: str) -> None:
     for row_idx, (axis, axis_title) in enumerate(AXES):
         axis_rows = [r for r in rows if _row_matches_axis_slice(
             r, axis, baselines)]
-        row_ymin, row_ymax = _panel_limits(axis_rows, metric, yscale)
+        shared_limits = _panel_limits(axis_rows, metric, yscale) if share_y else None
 
         for col_idx, case in enumerate(cases):
             ax = axes[row_idx, col_idx]
@@ -430,6 +430,8 @@ def plot(rows: list[dict], out_pdf: Path, *, metric: str, yscale: str) -> None:
                 ax.set_visible(False)
                 continue
 
+            panel_ymin, panel_ymax = shared_limits or _panel_limits(panel_rows, metric, yscale)
+
             grouped: dict[str, list[dict]] = defaultdict(list)
             x_order = sorted({_x_value(r, axis) for r in panel_rows})
             for row in panel_rows:
@@ -440,10 +442,10 @@ def plot(rows: list[dict], out_pdf: Path, *, metric: str, yscale: str) -> None:
 
             if metric == "avg_solve_ms" and axis == "ns" and triangle_anchor is not None:
                 _draw_ns_growth_triangle(
-                    ax, triangle_anchor, x_order, (row_ymin, row_ymax), yscale)
+                    ax, triangle_anchor, x_order, (panel_ymin, panel_ymax), yscale)
             if metric == "avg_solve_ms" and axis == "p" and triangle_anchor is not None:
                 _draw_p_growth_triangle(
-                    ax, triangle_anchor, x_order, (row_ymin, row_ymax), yscale)
+                    ax, triangle_anchor, x_order, (panel_ymin, panel_ymax), yscale)
 
             for label, grp in grouped.items():
                 grp = sorted(grp, key=lambda r: _x_value(r, axis))
@@ -490,7 +492,7 @@ def plot(rows: list[dict], out_pdf: Path, *, metric: str, yscale: str) -> None:
                 ax.tick_params(labelleft=False)
 
             ax.set_yscale(yscale)
-            ax.set_ylim(row_ymin, row_ymax)
+            ax.set_ylim(panel_ymin, panel_ymax)
             ax.grid(True, which="both", linestyle=":", alpha=0.35)
 
     fig.legend(
@@ -535,6 +537,10 @@ def main() -> None:
         "--yscale", choices=("log", "linear"), default="log",
         help="Y-axis scale (default: log).",
     )
+    parser.add_argument(
+        "--no-share-y", action="store_true",
+        help="Use independent y-limits for each panel instead of sharing them across each axis row.",
+    )
     args = parser.parse_args()
 
     path = args.path.resolve()
@@ -556,7 +562,7 @@ def main() -> None:
     }[args.metric]
     for metric in metric_keys:
         out_pdf = _metric_output(base_pdf, metric)
-        plot(rows, out_pdf, metric=metric, yscale=args.yscale)
+        plot(rows, out_pdf, metric=metric, yscale=args.yscale, share_y=not args.no_share_y)
         print(f"Wrote {out_pdf}")
 
 
