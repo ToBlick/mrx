@@ -46,6 +46,25 @@ PREFERRED_FIELDS = [
     "hyperparams",
 ]
 
+BENCHMARK_KEY_FIELDS = (
+    "kappa",
+    "eps",
+    "p",
+    "n_r",
+    "n_t",
+    "n_z",
+    "nfp",
+    "besov_s",
+    "case",
+    "k",
+    "strategy",
+    "cheb_steps",
+    "rank",
+    "bulk_cheb_steps",
+    "inner_schur",
+    "dirichlet",
+)
+
 
 def iter_csv_files(path: Path) -> list[Path]:
     if path.is_dir():
@@ -77,6 +96,17 @@ def load_rows(paths: list[Path]) -> list[dict[str, str]]:
                 for row in reader:
                     rows.append(_normalize_row(row))
     return rows
+
+
+def benchmark_key(row: dict[str, str]) -> tuple[str, ...]:
+    return tuple(row.get(field, "") for field in BENCHMARK_KEY_FIELDS)
+
+
+def deduplicate_rows(rows: list[dict[str, str]]) -> tuple[list[dict[str, str]], int]:
+    deduped: dict[tuple[str, ...], dict[str, str]] = {}
+    for row in rows:
+        deduped[benchmark_key(row)] = row
+    return list(deduped.values()), len(rows) - len(deduped)
 
 
 def field_order(rows: list[dict[str, str]]) -> list[str]:
@@ -131,12 +161,14 @@ def main() -> None:
         type=Path,
         help="Phase 2 run directories with cell_*.csv files or aggregated CSVs.",
     )
-    parser.add_argument("--out", type=Path, required=True, help="Merged CSV output path.")
+    parser.add_argument("--out", type=Path, required=True,
+                        help="Merged CSV output path.")
     args = parser.parse_args()
 
     rows = load_rows([path.resolve() for path in args.inputs])
     if not rows:
         raise SystemExit("No rows found in inputs.")
+    rows, dropped = deduplicate_rows(rows)
     rows.sort(key=sort_key)
 
     out_path = args.out.resolve()
@@ -147,6 +179,8 @@ def main() -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow({field: row.get(field, "") for field in fields})
+    if dropped:
+        print(f"Dropped {dropped} duplicate benchmark rows while merging.")
     print(f"Wrote {out_path}")
 
 

@@ -28,6 +28,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import NullLocator
 
 
 STRATEGY_COLOR = {
@@ -47,6 +48,41 @@ AXES = (
     ("kappa", r"$\kappa$"),
 )
 
+BENCHMARK_KEY_FIELDS = (
+    "kappa",
+    "eps",
+    "p",
+    "n_r",
+    "n_t",
+    "n_z",
+    "nfp",
+    "besov_s",
+    "case",
+    "k",
+    "strategy",
+    "cheb_steps",
+    "rank",
+    "bulk_cheb_steps",
+    "inner_schur",
+    "dirichlet",
+)
+
+
+def _benchmark_key(row: dict) -> tuple[str, ...]:
+    return tuple(str(row.get(field, "")) for field in BENCHMARK_KEY_FIELDS)
+
+
+def _deduplicate_rows(rows: list[dict]) -> tuple[list[dict], int]:
+    deduped: dict[tuple[str, ...], dict] = {}
+    for row in rows:
+        deduped[_benchmark_key(row)] = row
+    return list(deduped.values()), len(rows) - len(deduped)
+
+
+def _drop_nonconverged_rows(rows: list[dict]) -> tuple[list[dict], int]:
+    kept = [row for row in rows if _i(row, "max_iters") < 1000]
+    return kept, len(rows) - len(kept)
+
 
 def load_rows(path: Path) -> list[dict]:
     if path.is_dir():
@@ -62,6 +98,12 @@ def load_rows(path: Path) -> list[dict]:
     for csv_path in files:
         with csv_path.open() as fh:
             rows.extend(csv.DictReader(fh))
+    rows, dropped = _deduplicate_rows(rows)
+    if dropped:
+        print(f"Dropped {dropped} duplicate benchmark rows from {path}")
+    rows, omitted = _drop_nonconverged_rows(rows)
+    if omitted:
+        print(f"Omitted {omitted} non-converged benchmark rows from {path}")
     return rows
 
 
@@ -193,6 +235,152 @@ def _x_label(axis: str, value) -> str:
     return str(value)
 
 
+def _reference_axis_value(axis: str, value) -> float:
+    if axis == "ns":
+        return float(value[0])
+    return float(value)
+
+
+def _triangle_anchor(axis: str, grouped: dict[str, list[dict]], metric: str):
+    candidates: list[tuple[float, float]] = []
+    fallback: list[tuple[float, float]] = []
+    for grp in grouped.values():
+        if not grp:
+            continue
+        grp_sorted = sorted(grp, key=lambda r: _x_value(r, axis))
+        last = grp_sorted[-1]
+        point = (_reference_axis_value(
+            axis, _x_value(last, axis)), _f(last, metric))
+        fallback.append(point)
+        if last.get("strategy", "") in ("tensor", "tensor_inner_schur"):
+            candidates.append(point)
+    points = candidates or fallback
+    if not points:
+        return None
+    points = [point for point in points if np.isfinite(
+        point[0]) and np.isfinite(point[1]) and point[1] > 0.0]
+    if not points:
+        return None
+    return max(points, key=lambda point: point[0])
+
+
+def _draw_ns_growth_triangle(ax, anchor: tuple[float, float], x_order: list, y_limits: tuple[float, float], yscale: str) -> None:
+    if len(x_order) < 2 or yscale != "log":
+        return
+
+    x_scale = np.array([_reference_axis_value("ns", value)
+                       for value in x_order], dtype=float)
+    ymin, ymax = y_limits
+    if np.any(~np.isfinite(x_scale)) or np.any(x_scale <= 0.0):
+        return
+    if not (np.isfinite(ymin) and np.isfinite(ymax) and ymin > 0.0 and ymax > ymin):
+        return
+
+    x_anchor, y_anchor = anchor
+    if not (np.isfinite(x_anchor) and np.isfinite(y_anchor) and x_anchor > 0.0 and y_anchor > 0.0):
+        return
+
+    log_xmin = np.log(x_scale.min())
+    log_ymin = np.log(ymin)
+    log_xanchor = np.log(x_anchor)
+
+    dx = 0.18 * (np.log(x_scale.max()) - log_xmin)
+    x1 = x_anchor
+    x0 = np.exp(log_xanchor - dx)
+    y1 = y_anchor / 1.80
+    y0 = y1 / (x1 / x0) ** 3.0
+    if x0 <= x_scale.min() or y0 <= ymin or y1 >= ymax:
+        dx = 0.12 * (np.log(x_scale.max()) - log_xmin)
+        x0 = np.exp(log_xanchor - dx)
+        y1 = y_anchor / 1.60
+        y0 = y1 / (x1 / x0) ** 3.0
+        if x0 <= x_scale.min() or y0 <= ymin or y1 >= ymax:
+            return
+
+    style = {
+        "linestyle": "-",
+        "linewidth": 1.0,
+        "color": "0.25",
+        "alpha": 0.9,
+        "zorder": 0,
+        "clip_on": False,
+    }
+    ax.plot([x0, x1], [y0, y0], **style)
+    ax.plot([x1, x1], [y0, y1], **style)
+    ax.plot([x0, x1], [y0, y1], **style)
+    x_text = np.sqrt(x0 * x1)
+    y_text = y0 / 1.60
+    ax.text(
+        x_text,
+        y_text,
+        r"$n^3$",
+        ha="center",
+        va="top",
+        fontsize=9,
+        color="0.15",
+        clip_on=False,
+    )
+
+
+def _draw_p_growth_triangle(ax, anchor: tuple[float, float], x_order: list, y_limits: tuple[float, float], yscale: str) -> None:
+    if len(x_order) < 2 or yscale != "log":
+        return
+
+    x_scale = np.array([_reference_axis_value("p", value)
+                       for value in x_order], dtype=float)
+    ymin, ymax = y_limits
+    if np.any(~np.isfinite(x_scale)):
+        return
+    if not (np.isfinite(ymin) and np.isfinite(ymax) and ymin > 0.0 and ymax > ymin):
+        return
+
+    xmin = float(np.min(x_scale))
+    if float(np.max(x_scale)) <= xmin:
+        return
+    x_anchor, y_anchor = anchor
+    if not (np.isfinite(x_anchor) and np.isfinite(y_anchor) and y_anchor > 0.0):
+        return
+
+    x1 = x_anchor
+    x0 = x_anchor - 0.22 * (float(np.max(x_scale)) - xmin)
+    if x0 <= xmin:
+        x0 = x_anchor - 0.14 * (float(np.max(x_scale)) - xmin)
+    if x0 <= xmin:
+        return
+    x_ref = 0.5 * (x0 + x1)
+    y1 = y_anchor / 1.80
+    y0 = y1 / np.exp((3.0 / x_ref) * (x1 - x0))
+    if y0 <= ymin or y1 >= ymax:
+        y1 = y_anchor / 1.60
+        y0 = y1 / np.exp((3.0 / x_ref) * (x1 - x0))
+        if y0 <= ymin or y1 >= ymax:
+            return
+
+    style = {
+        "linestyle": "-",
+        "linewidth": 1.0,
+        "color": "0.25",
+        "alpha": 0.9,
+        "zorder": 0,
+        "clip_on": False,
+    }
+    ax.plot([x0, x1], [y0, y0], **style)
+    ax.plot([x1, x1], [y0, y1], **style)
+    ax.plot([x0, x1], [y0, y1], **style)
+    x_text = 0.5 * (x0 + x1)
+    y_text = y0 / 1.60
+    ax.text(
+        x_text,
+        y_text,
+        r"$p^3$",
+        ha="center",
+        va="top",
+        fontsize=9,
+        color="0.15",
+        clip_on=False,
+    )
+
+
 def _panel_limits(rows: list[dict], metric: str, yscale: str) -> tuple[float, float]:
     ys: list[float] = []
     for row in rows:
@@ -202,7 +390,8 @@ def _panel_limits(rows: list[dict], metric: str, yscale: str) -> tuple[float, fl
         err = _err(row, metric)
         if err is not None and np.isfinite(y):
             ys.extend([y - err[0], y + err[1]])
-    ys = [y for y in ys if np.isfinite(y) and (y > 0 if yscale == "log" else True)]
+    ys = [y for y in ys if np.isfinite(y) and (
+        y > 0 if yscale == "log" else True)]
     if not ys:
         return (1.0, 10.0) if yscale == "log" else (0.0, 1.0)
     ymin = min(ys)
@@ -221,12 +410,14 @@ def plot(rows: list[dict], out_pdf: Path, *, metric: str, yscale: str) -> None:
     marker_by_label = _marker_map(rows)
 
     metric_label = "avg CG iterations" if metric == "avg_iters" else "avg solve time (ms)"
-    fig, axes = plt.subplots(len(AXES), len(cases), figsize=(3.7 * len(cases), 2.8 * len(AXES)), squeeze=False)
+    fig, axes = plt.subplots(len(AXES), len(cases), figsize=(
+        3.7 * len(cases), 2.8 * len(AXES)), squeeze=False)
 
     legend_handles: OrderedDict[str, plt.Line2D] = OrderedDict()
 
     for row_idx, (axis, axis_title) in enumerate(AXES):
-        axis_rows = [r for r in rows if _row_matches_axis_slice(r, axis, baselines)]
+        axis_rows = [r for r in rows if _row_matches_axis_slice(
+            r, axis, baselines)]
         row_ymin, row_ymax = _panel_limits(axis_rows, metric, yscale)
 
         for col_idx, case in enumerate(cases):
@@ -241,10 +432,18 @@ def plot(rows: list[dict], out_pdf: Path, *, metric: str, yscale: str) -> None:
 
             grouped: dict[str, list[dict]] = defaultdict(list)
             x_order = sorted({_x_value(r, axis) for r in panel_rows})
-            x_pos = {x: i for i, x in enumerate(x_order)}
-
             for row in panel_rows:
                 grouped[_method_label(row)].append(row)
+
+            triangle_anchor = _triangle_anchor(
+                axis, grouped, metric) if metric == "avg_solve_ms" else None
+
+            if metric == "avg_solve_ms" and axis == "ns" and triangle_anchor is not None:
+                _draw_ns_growth_triangle(
+                    ax, triangle_anchor, x_order, (row_ymin, row_ymax), yscale)
+            if metric == "avg_solve_ms" and axis == "p" and triangle_anchor is not None:
+                _draw_p_growth_triangle(
+                    ax, triangle_anchor, x_order, (row_ymin, row_ymax), yscale)
 
             for label, grp in grouped.items():
                 grp = sorted(grp, key=lambda r: _x_value(r, axis))
@@ -254,9 +453,11 @@ def plot(rows: list[dict], out_pdf: Path, *, metric: str, yscale: str) -> None:
                 marker = marker_by_label[label]
 
                 if axis == "ns":
-                    xs = np.array([x_pos[_x_value(r, axis)] for r in grp], dtype=float)
+                    xs = np.array([_reference_axis_value(
+                        axis, _x_value(r, axis)) for r in grp], dtype=float)
                 else:
-                    xs = np.array([_x_value(r, axis) for r in grp], dtype=float)
+                    xs = np.array([_x_value(r, axis)
+                                  for r in grp], dtype=float)
                 ys = np.array([_f(r, metric) for r in grp], dtype=float)
                 errs = [_err(r, metric) for r in grp]
                 yerr = None
@@ -274,8 +475,12 @@ def plot(rows: list[dict], out_pdf: Path, *, metric: str, yscale: str) -> None:
                 legend_handles.setdefault(label, handle.lines[0])
 
             if axis == "ns":
-                ax.set_xticks(np.arange(len(x_order)))
-                ax.set_xticklabels([_x_label(axis, x) for x in x_order], rotation=45, ha="right")
+                ax.set_xscale("log")
+                ax.set_xticks([_reference_axis_value(axis, x)
+                              for x in x_order])
+                ax.xaxis.set_minor_locator(NullLocator())
+                ax.set_xticklabels([_x_label(axis, x)
+                                   for x in x_order], rotation=45, ha="right")
 
             if row_idx == 0:
                 ax.set_title(_case_title(case))
