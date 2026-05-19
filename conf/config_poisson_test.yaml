@@ -3,6 +3,8 @@ defaults:
   - _self_
   - override hydra/launcher: submitit_slurm
 
+quad_order_offset: 4
+
 hydra:
   launcher:
     timeout_min: 240

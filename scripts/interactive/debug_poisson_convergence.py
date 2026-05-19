@@ -37,6 +37,7 @@ Run interactively (cell-by-cell) in VS Code; this is *not* a CLI script.
 
 # %% Imports and JAX setup -----------------------------------------------------
 from __future__ import annotations
+import math
 
 import time
 
@@ -86,7 +87,8 @@ def make_f(a: float):
 def exact_u_at_quad(seq: DeRhamSequence) -> jnp.ndarray:
     u_r = 0.25 * (seq.quad.x_x**2 - seq.quad.x_x**4)
     u_z = jnp.cos(2 * π * seq.quad.x_z)
-    values = jnp.ones((seq.quad.ny, 1, 1)) * u_r[None, :, None] * u_z[None, None, :]
+    values = jnp.ones((seq.quad.ny, 1, 1)) * \
+        u_r[None, :, None] * u_z[None, None, :]
     return values.reshape(-1, 1)
 
 
@@ -123,7 +125,8 @@ seq.evaluate_1d()
 seq.assemble_mass_matrix(0)
 seq.assemble_mass_matrix(1)
 seq.set_operators(
-    assemble_tensor_mass_preconditioner(seq, seq.get_operators(), ks=(0,), rank=1)
+    assemble_tensor_mass_preconditioner(
+        seq, seq.get_operators(), ks=(0,), rank=1)
 )
 seq.assemble_hodge_laplacian(0)
 print(f"assemble: {time.perf_counter() - t0:.2f}s, q={q}, ns={ns}, p={P}")
@@ -163,7 +166,7 @@ print(f"[B] discretization floor (||u - Π_L2 u||): {err_proj:.6e}")
 # Same assembled K0 / rhs / preconditioner; only the outer CG tolerance
 # changes. If the error doesn't move, CG residual is not the floor.
 seq_tight = DeRhamSequence(
-    ns, ps, q, TYPES, polar=True, tol=1e-13, maxiter=200_000
+    ns, ps, q, TYPES, polar=True, tol=1e-12, maxiter=200_000
 )
 seq_tight.set_map(toroid_map(epsilon=EPSILON))
 seq_tight.evaluate_1d()
@@ -186,8 +189,9 @@ u_h_quad_tight = evaluate_at_xq(
     (seq_tight.quad.ny, seq_tight.quad.nx, seq_tight.quad.nz),
     1,
 )
-err_tight = l2_relative_error(seq_tight, u_h_quad_tight, exact_u_at_quad(seq_tight))
-print(f"[C] outer CG tol=1e-13 relative L2 error: {err_tight:.6e}")
+err_tight = l2_relative_error(
+    seq_tight, u_h_quad_tight, exact_u_at_quad(seq_tight))
+print(f"[C] outer CG tol=1e-12 relative L2 error: {err_tight:.6e}")
 
 
 # %% Cell D: bump quadrature order from q=2p to q=2p+4 -----------------------
@@ -300,7 +304,13 @@ for qx in q_list:
 # If the floor does NOT decay at the expected rate, the space/BC setup is the
 # bug (e.g. clamped+polar can't represent u near the axis/boundary, or the
 # manufactured u violates a regularity constraint of the discrete space).
+def _require_valid_resolution(p_loc: int, n_loc: int) -> None:
+    if n_loc <= p_loc:
+        raise ValueError(f"Need n > p; got n={n_loc}, p={p_loc}")
+
+
 def _proj_floor(p_loc: int, n_loc: int, q_loc: int | None = None) -> float:
+    _require_valid_resolution(p_loc, n_loc)
     qx = 2 * p_loc + 4 if q_loc is None else q_loc
     ns_loc = (n_loc, 2 * n_loc, n_loc)
     ps_loc = (p_loc, p_loc, p_loc)
@@ -322,12 +332,11 @@ def _proj_floor(p_loc: int, n_loc: int, q_loc: int | None = None) -> float:
 
 
 p_list = (1, 2, 3, 4)
-n_list = (4, 8, 12, 16, 24)
+n_list = (8, 12, 16)
 
 print(f"[G] L2 projection floor ||u - Π_L2 u|| / ||u|| (q = 2p+4)")
 header = "    " + "p\\n".ljust(6) + "".join(f"{n:>12d}" for n in n_list)
 print(header)
-import math
 results: dict[int, list[float]] = {}
 for p_loc in p_list:
     row = []
@@ -345,7 +354,111 @@ for p_loc, row in results.items():
     for i in range(1, len(row)):
         ratio = row[i - 1] / row[i] if row[i] > 0 else float("nan")
         h_ratio = n_list[i] / n_list[i - 1]
-        rate = math.log(ratio) / math.log(h_ratio) if ratio > 0 else float("nan")
+        rate = math.log(ratio) / \
+            math.log(h_ratio) if ratio > 0 else float("nan")
+        rates.append(rate)
+    rate_str = "".join(f"{r:>12.2f}" for r in rates)
+    print(f"    p={p_loc}  rates: {rate_str}   (expected ~{p_loc + 1})")
+
+
+# %% Cell H: fixed-p mesh sweep, solve error vs projection floor -------------
+# Cell G can show the approximation space is healthy even when the production
+# Poisson solve appears to stall. This cell checks exactly where that happens:
+# hold p fixed (default p=2), run the full production-style K0 solve at q=2p,
+# and compare the solve error to the L2 projection floor as n grows.
+def _solve_vs_proj_at_n(p_loc: int, n_loc: int, q_loc: int | None = None) -> tuple[float, float, float]:
+    _require_valid_resolution(p_loc, n_loc)
+    qx = 2 * p_loc if q_loc is None else q_loc
+    ns_loc = (n_loc, 2 * n_loc, n_loc)
+    ps_loc = (p_loc, p_loc, p_loc)
+    seq_h = DeRhamSequence(
+        ns_loc, ps_loc, qx, TYPES, polar=True, tol=1e-12, maxiter=200_000
+    )
+    seq_h.set_map(toroid_map(epsilon=EPSILON))
+    seq_h.evaluate_1d()
+    seq_h.assemble_mass_matrix(0)
+    seq_h.assemble_mass_matrix(1)
+    seq_h.set_operators(
+        assemble_tensor_mass_preconditioner(
+            seq_h, seq_h.get_operators(), ks=(0,), rank=1
+        )
+    )
+    seq_h.assemble_hodge_laplacian(0)
+
+    ci_h, cs_h = seq_h._form_comp_info(0)
+    quad_shape_h = (seq_h.quad.ny, seq_h.quad.nx, seq_h.quad.nz)
+    u_exact_h = exact_u_at_quad(seq_h)
+
+    rhs_h = seq_h.p0_dbc(f_callable)
+    u_hat_h = seq_h.apply_inverse_hodge_laplacian(rhs_h, 0, dirichlet=True)
+    u_quad_h = evaluate_at_xq(seq_h.e0_dbc_T @ u_hat_h,
+                              ci_h, cs_h, quad_shape_h, 1)
+    solve_err = l2_relative_error(seq_h, u_quad_h, u_exact_h)
+
+    u_load_h = seq_h.p0_dbc(u)
+    u_proj_h = seq_h.apply_inverse_mass_matrix(u_load_h, 0, dirichlet=True)
+    u_proj_quad_h = evaluate_at_xq(
+        seq_h.e0_dbc_T @ u_proj_h, ci_h, cs_h, quad_shape_h, 1
+    )
+    proj_err = l2_relative_error(seq_h, u_proj_quad_h, u_exact_h)
+
+    gap_ratio = solve_err / proj_err if proj_err > 0 else float("nan")
+    return solve_err, proj_err, gap_ratio
+
+
+P_H = 2
+N_LIST_H = (8, 12, 16)
+
+print(
+    f"[H] fixed-p sweep at p={P_H}: production solve vs projection floor (q=2p)")
+print(f"    {'n':>4}  {'solve_err':>12}  {'proj_floor':>12}  {'solve/proj':>12}")
+for n_loc in N_LIST_H:
+    solve_err, proj_err, gap_ratio = _solve_vs_proj_at_n(P_H, n_loc)
+    print(
+        f"    {n_loc:>4}  {solve_err:>12.4e}  {proj_err:>12.4e}  {gap_ratio:>12.4f}")
+
+
+# %% Cell I: compact local convergence sweep at higher quadrature ------------
+# Small non-SLURM convergence check for the full production-style solve using
+# the higher quadrature suggested by the earlier diagnostics.
+P_LIST_I = (1, 2, 3, 4)
+N_LIST_I = (8, 12, 16)
+
+print(f"[I] compact local solve convergence sweep (q = 2p+4)")
+header = "    " + "p\\n".ljust(6) + "".join(f"{n:>12d}" for n in N_LIST_I)
+print(header)
+
+solve_results_i: dict[int, list[float]] = {}
+gap_results_i: dict[int, list[float]] = {}
+for p_loc in P_LIST_I:
+    solve_row = []
+    gap_row = []
+    for n_loc in N_LIST_I:
+        solve_err, proj_err, gap_ratio = _solve_vs_proj_at_n(
+            p_loc, n_loc, q_loc=2 * p_loc + 4
+        )
+        solve_row.append(solve_err)
+        gap_row.append(gap_ratio)
+    solve_results_i[p_loc] = solve_row
+    gap_results_i[p_loc] = gap_row
+    line = f"    p={p_loc:<4d}" + "".join(f"{e:>12.3e}" for e in solve_row)
+    print(line)
+
+print()
+print("[I] solve/projection ratios at the same (p, n):")
+for p_loc, row in gap_results_i.items():
+    line = f"    p={p_loc:<4d}" + "".join(f"{g:>12.4f}" for g in row)
+    print(line)
+
+print()
+print("[I] observed solve convergence rates (log2 ratio between successive n):")
+for p_loc, row in solve_results_i.items():
+    rates = []
+    for i in range(1, len(row)):
+        ratio = row[i - 1] / row[i] if row[i] > 0 else float("nan")
+        h_ratio = N_LIST_I[i] / N_LIST_I[i - 1]
+        rate = math.log(ratio) / \
+            math.log(h_ratio) if ratio > 0 else float("nan")
         rates.append(rate)
     rate_str = "".join(f"{r:>12.2f}" for r in rates)
     print(f"    p={p_loc}  rates: {rate_str}   (expected ~{p_loc + 1})")

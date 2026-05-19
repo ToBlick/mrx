@@ -213,6 +213,8 @@ class PoissonTestConfig:
     n: list[int] = field(default_factory=lambda: [8, 16, 32])
     p: int = 3
     epsilon: float = 1 / 3
+    quad_order: Optional[int] = None
+    quad_order_offset: int = 4
     cg_tol: float = 1e-9
     cg_maxiter: int = 100_000
     map_batch_size_inner: int = 0      # 0 corresponds to vmap

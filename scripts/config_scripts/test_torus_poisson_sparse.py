@@ -64,7 +64,8 @@ def exact_u_at_quad(seq: DeRhamSequence) -> jnp.ndarray:
     """Evaluate the exact scalar solution on the quadrature grid cheaply."""
     u_r = 0.25 * (seq.quad.x_x**2 - seq.quad.x_x**4)
     u_z = jnp.cos(2 * π * seq.quad.x_z)
-    values = jnp.ones((seq.quad.ny, 1, 1)) * u_r[None, :, None] * u_z[None, None, :]
+    values = jnp.ones((seq.quad.ny, 1, 1)) * \
+        u_r[None, :, None] * u_z[None, None, :]
     return values.reshape(-1, 1)
 
 
@@ -72,7 +73,9 @@ def exact_u_at_quad(seq: DeRhamSequence) -> jnp.ndarray:
 # Core computation
 # ---------------------------------------------------------------------------
 def compute_error(n: int, p: int, epsilon: float,
-                  cg_tol: float, cg_maxiter: int):
+                  cg_tol: float, cg_maxiter: int,
+                  quad_order: int | None,
+                  quad_order_offset: int):
     """Run the sparse Poisson solve and return (error, timings dict).
 
     Resolution convention: ``ns = (n, 2*n, n)`` (the toroidal direction
@@ -82,7 +85,11 @@ def compute_error(n: int, p: int, epsilon: float,
     timings = {}
     ns = (n, 2 * n, n)
     ps = (p, p, p)
-    q = 2*p
+    q = 2 * p + quad_order_offset if quad_order is None else quad_order
+    if q < 2 * p:
+        raise ValueError(
+            f"quad_order must satisfy q >= 2*p; got q={q}, p={p}"
+        )
     F = toroid_map(epsilon=epsilon)
     f = make_f(epsilon)
 
@@ -161,7 +168,14 @@ def compute_error(n: int, p: int, epsilon: float,
     error = float((L2_df / L2_f) ** 0.5)
 
     timings["TOTAL"] = sum(timings.values())
-    return {"n": n, "p": p, "error": error, "timings": timings, "sparsity": sparsity}
+    return {
+        "n": n,
+        "p": p,
+        "q": q,
+        "error": error,
+        "timings": timings,
+        "sparsity": sparsity,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +188,10 @@ def main(cfg: DictConfig):
     mrx.MAP_BATCH_SIZE_INNER = cfg.map_batch_size_inner
     mrx.MAP_BATCH_SIZE_OUTER = cfg.map_batch_size_outer
     print(f"Running sparse Poisson solve: n={ns}, p={p}")
+    if cfg.quad_order is None:
+        print(f"Quadrature order: q = 2*p + {cfg.quad_order_offset}")
+    else:
+        print(f"Quadrature order: q = {cfg.quad_order}")
     print(f"JAX devices: {jax.devices()}")
     print(
         f"Batch sizes: inner={mrx.MAP_BATCH_SIZE_INNER}, outer={mrx.MAP_BATCH_SIZE_OUTER}")
@@ -185,7 +203,13 @@ def main(cfg: DictConfig):
         print(f"{'='*60}")
 
         result = compute_error(
-            n, p, cfg.epsilon, cfg.cg_tol, cfg.cg_maxiter,
+            n,
+            p,
+            cfg.epsilon,
+            cfg.cg_tol,
+            cfg.cg_maxiter,
+            cfg.quad_order,
+            cfg.quad_order_offset,
         )
         results.append(result)
 
