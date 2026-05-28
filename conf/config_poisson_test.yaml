@@ -3,7 +3,11 @@ defaults:
   - _self_
   - override hydra/launcher: submitit_slurm
 
-quad_order_offset: 4
+quad_order_offset: 0
+cg_tol: 1.0e-12
+cg_maxiter: 50000
+map_batch_size_inner: 0
+map_batch_size_outer: null
 
 hydra:
   launcher:
