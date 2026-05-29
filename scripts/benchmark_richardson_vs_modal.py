@@ -40,6 +40,7 @@ from mrx.operators import (
 )
 from mrx.preconditioners import select_boundary_data
 from mrx.solvers import solve_singular_cg
+from mrx.io import parse_int_list, parse_ns
 from mrx.utils import build_random_besov_rhs_batch
 
 
@@ -69,17 +70,6 @@ class Row:
     avg_iters: float
     max_iters: int
     avg_ms: float
-
-
-def _parse_int_list(text: str) -> tuple[int, ...]:
-    return tuple(int(s.strip()) for s in text.split(",") if s.strip())
-
-
-def _parse_ns(text: str) -> tuple[int, int, int]:
-    parts = _parse_int_list(text)
-    if len(parts) != 3:
-        raise ValueError(f"Expected ns as 'nr,nt,nz', got {text!r}")
-    return parts  # type: ignore[return-value]
 
 
 def _cp_summary(tensor_factors, k: int) -> tuple[float, float]:
@@ -229,12 +219,12 @@ def print_table(rows: list[Row]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ns", type=_parse_ns, default=(6, 8, 4))
+    parser.add_argument("--ns", type=parse_ns, default=(6, 8, 4))
     parser.add_argument("--p", type=int, default=3)
-    parser.add_argument("--ks", type=_parse_int_list, default=(0,1,2,3),
+    parser.add_argument("--ks", type=parse_int_list, default=(0,1,2,3),
                         help="Mass degrees to benchmark (subset of 0,1,2,3).")
-    parser.add_argument("--ranks", type=_parse_int_list, default=(1, 2, 3))
-    parser.add_argument("--richardson-steps", type=_parse_int_list, default=(0, 1, 2, 4),
+    parser.add_argument("--ranks", type=parse_int_list, default=(1, 2, 3))
+    parser.add_argument("--richardson-steps", type=parse_int_list, default=(0, 1, 2, 4),
                         help="Richardson sweep counts for the split variant.")
     parser.add_argument("--n-rhs", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)

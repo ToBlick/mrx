@@ -63,6 +63,7 @@ from mrx.operators import (
 )
 from mrx.preconditioners import MassPreconditionerSpec
 from mrx.solvers import solve_singular_cg
+from mrx.io import parse_int_list, parse_ns
 from mrx.utils import build_random_besov_rhs_batch
 
 
@@ -457,17 +458,6 @@ def run_k0_stiffness_tensor(seq, operators, rhs_batch, args, *, rank,
 # --------------------------------------------------------------------------- #
 
 
-def _parse_int_list(text: str) -> tuple[int, ...]:
-    return tuple(int(s.strip()) for s in text.split(",") if s.strip())
-
-
-def _parse_ns(text: str) -> tuple[int, int, int]:
-    parts = _parse_int_list(text)
-    if len(parts) != 3:
-        raise ValueError(f"Expected ns as 'nr,nt,nz', got {text!r}")
-    return parts  # type: ignore[return-value]
-
-
 def run_benchmark(args) -> list[Row]:
     """Run the full Phase 1 protocol once for a single ``args`` config.
 
@@ -641,7 +631,7 @@ def run_benchmark(args) -> list[Row]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ns", type=_parse_ns, default=DEFAULT_NS)
+    parser.add_argument("--ns", type=parse_ns, default=DEFAULT_NS)
     parser.add_argument("--p", type=int, default=DEFAULT_P)
     parser.add_argument("--eps", type=float, default=DEFAULT_EPS)
     parser.add_argument("--r0", type=float, default=DEFAULT_R0)
@@ -649,18 +639,18 @@ def main() -> None:
                         help="Rotating-ellipse aspect ratio.")
     parser.add_argument("--nfp", type=int, default=DEFAULT_NFP,
                         help="Number of field periods.")
-    parser.add_argument("--ks", type=_parse_int_list, default=(0, 1, 2, 3))
+    parser.add_argument("--ks", type=parse_int_list, default=(0, 1, 2, 3))
     parser.add_argument("--n-rhs", type=int, default=DEFAULT_N_RHS)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--besov-s", type=float, default=DEFAULT_BESOV_S)
     parser.add_argument("--tol", type=float, default=DEFAULT_TOL)
     parser.add_argument("--maxiter", type=int, default=DEFAULT_MAXITER)
-    parser.add_argument("--ranks", type=_parse_int_list, default=TENSOR_RANKS)
-    parser.add_argument("--bulk-cheb", type=_parse_int_list,
+    parser.add_argument("--ranks", type=parse_int_list, default=TENSOR_RANKS)
+    parser.add_argument("--bulk-cheb", type=parse_int_list,
                         default=TENSOR_BULK_CHEB_STEPS,
                         help="Bulk Chebyshev step counts for the tensor "
                              "preconditioner. 0 disables.")
-    parser.add_argument("--cheb-baseline", type=_parse_int_list,
+    parser.add_argument("--cheb-baseline", type=parse_int_list,
                         default=CHEB_BASELINE_STEPS,
                         help="Polynomial degrees for whole-matrix "
                              "Chebyshev(jacobi) baselines.")

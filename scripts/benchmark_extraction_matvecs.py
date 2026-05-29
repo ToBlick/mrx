@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 
 from mrx.derham_sequence import DeRhamSequence
+from mrx.io import parse_ns
 
 
 jax.config.update("jax_enable_x64", True)
@@ -32,13 +33,6 @@ class BenchmarkRow:
     bcsr_ms: float
     index_ms: float
     speedup: float
-
-
-def _parse_ns(text: str) -> tuple[int, int, int]:
-    parts = tuple(int(part.strip()) for part in text.split(","))
-    if len(parts) != 3:
-        raise ValueError(f"Expected ns as 'nr,nt,nz', got {text!r}")
-    return parts
 
 
 def _parse_k_list(text: str) -> tuple[int, ...]:
@@ -193,7 +187,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Microbenchmark BCSR extraction matvecs against direct gather/scatter-style indexing."
     )
-    parser.add_argument("--ns", type=_parse_ns, default=(16, 32, 16), help="Grid resolution as nr,nt,nz")
+    parser.add_argument("--ns", type=parse_ns, default=(16, 32, 16), help="Grid resolution as nr,nt,nz")
     parser.add_argument("--p", type=int, default=3, help="Spline degree in each dimension")
     parser.add_argument("--ks", type=_parse_k_list, default=(0, 1, 2, 3), help="Comma-separated list of degrees to benchmark")
     parser.add_argument("--boundary", choices=("free", "dbc", "both"), default="both", help="Which extraction operators to benchmark")

@@ -133,6 +133,52 @@ def test_polar_oneform_histopolation_recovers_discrete_function():
 
 
 # ---------------------------------------------------------------------------
+# 0-form interpolation: L2 convergence study
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("p", [1, 2, 3])
+def test_zeroform_interpolation_l2_convergence(p):
+    """Greville collocation of a smooth 0-form converges at rate ≥ p+0.5 in L2."""
+    ns_list = [6, 8, 10, 12]
+
+    def f(xi):
+        return jnp.sin(jnp.pi * xi[0]) * jnp.sin(2 * jnp.pi * xi[1]) * jnp.sin(2 * jnp.pi * xi[2])
+
+    # Independent fine Gauss quadrature on [0,1]^3 — no geometry assembly needed.
+    quad_n = 20
+    xi_1d_np, w_1d_np = np.polynomial.legendre.leggauss(quad_n)
+    xi_1d = jnp.asarray((xi_1d_np + 1.0) / 2.0)
+    w_1d = jnp.asarray(w_1d_np / 2.0)
+    r, t, z = jnp.meshgrid(xi_1d, xi_1d, xi_1d, indexing='ij')
+    wr, wt, wz = jnp.meshgrid(w_1d, w_1d, w_1d, indexing='ij')
+    quad_pts = jnp.stack([r.ravel(), t.ravel(), z.ravel()], axis=-1)
+    quad_w = (wr * wt * wz).ravel()
+    f_exact = jax.lax.map(f, quad_pts)
+
+    errors = []
+    for n in ns_list:
+        seq = DeRhamSequence(
+            (n, n, n), (p, p, p), p + 2,
+            ('clamped', 'clamped', 'clamped'),
+            polar=False, betti_numbers=(1, 1, 0, 0),
+        )
+        projector = Projector(seq, 0, dirichlet=False)
+        dofs = projector.zeroform_interpolation(f)
+        discrete = DiscreteFunction(dofs, seq.basis_0, seq.e0)
+        f_h = jax.lax.map(lambda x: discrete(x)[0], quad_pts)
+        l2_err = float(jnp.sqrt(jnp.sum(quad_w * (f_h - f_exact) ** 2)))
+        errors.append(l2_err)
+
+    log_hs = np.log([1.0 / n for n in ns_list])
+    log_errs = np.log(errors)
+    rate = float(np.polyfit(log_hs, log_errs, 1)[0])
+    assert rate >= p + 0.5, (
+        f"p={p}: expected convergence rate >= {p + 0.5:.1f}, got {rate:.2f}; "
+        f"errors = {[f'{e:.2e}' for e in errors]}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Mass matrix: symmetric positive definite
 # ---------------------------------------------------------------------------
 

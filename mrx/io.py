@@ -56,6 +56,19 @@ def parse_args() -> dict:
     return kwargs
 
 
+def parse_int_list(text: str) -> tuple[int, ...]:
+    """Parse a comma-separated string of integers, e.g. ``'1,2,3'`` → ``(1, 2, 3)``."""
+    return tuple(int(s.strip()) for s in text.split(",") if s.strip())
+
+
+def parse_ns(text: str) -> tuple[int, int, int]:
+    """Parse a resolution triple ``'nr,nt,nz'`` into a 3-tuple of ints."""
+    parts = parse_int_list(text)
+    if len(parts) != 3:
+        raise ValueError(f"Expected ns as 'nr,nt,nz', got {text!r}")
+    return parts  # type: ignore[return-value]
+
+
 def unique_id(n: int) -> str:
     """
     Create a unique alphanumeric ID with low collision probability.

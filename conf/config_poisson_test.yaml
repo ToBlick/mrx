@@ -18,3 +18,5 @@ hydra:
     account: extremedata
     setup:
       - "source /scratch/tblickhan/mrx/.venv/bin/activate"
+      - "export JAX_ENABLE_X64=1"
+      - "export XLA_PYTHON_CLIENT_PREALLOCATE=false"

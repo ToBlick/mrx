@@ -32,3 +32,4 @@ hydra:
     account: extremedata
     setup:
       - "source /scratch/tblickhan/mrx/.venv/bin/activate"
+      - "export JAX_ENABLE_X64=1"

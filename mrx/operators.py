@@ -9,7 +9,7 @@ import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import jax.scipy as jsp
 
-from mrx.assembly import assemble_scalar_tp, assemble_vectorial_tp
+from mrx.assembly import _mass_hw_table, assemble_scalar, assemble_vectorial
 from mrx.preconditioners import (
     BoundaryConditionPair,
     K1MassSurgeryPreconditionerFactors,
@@ -1814,7 +1814,7 @@ def _assemble_mass_block(seq, geometry, k):
     match k:
         case 0:
             W_flat = geometry.jacobian_j * seq.quad.w
-            sp = assemble_scalar_tp(
+            sp = assemble_scalar(
                 seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk,
                 seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk,
                 W_flat, quad_shape, seq.basis_0.shape[0],
@@ -1828,9 +1828,10 @@ def _assemble_mass_block(seq, geometry, k):
                 [(1, seq.basis_r_jk, seq.d_basis_t_jk, seq.basis_z_jk, +1)],
                 [(2, seq.basis_r_jk, seq.basis_t_jk, seq.d_basis_z_jk, +1)],
             ]
-            sp = assemble_vectorial_tp(
+            sp = assemble_vectorial(
                 terms, terms, W_3x3, quad_shape,
-                list(seq.basis_1.shape), seq.basis_1.pr)
+                list(seq.basis_1.shape),
+                _mass_hw_table(seq, terms, terms))
             sp = jsparse.BCSR.from_bcoo(sp)
         case 2:
             W_3x3 = geometry.metric_jkl * \
@@ -1840,17 +1841,19 @@ def _assemble_mass_block(seq, geometry, k):
                 [(1, seq.d_basis_r_jk, seq.basis_t_jk, seq.d_basis_z_jk, +1)],
                 [(2, seq.d_basis_r_jk, seq.d_basis_t_jk, seq.basis_z_jk, +1)],
             ]
-            sp = assemble_vectorial_tp(
+            sp = assemble_vectorial(
                 terms, terms, W_3x3, quad_shape,
-                list(seq.basis_2.shape), seq.basis_2.pr)
+                list(seq.basis_2.shape),
+                _mass_hw_table(seq, terms, terms))
             sp = jsparse.BCSR.from_bcoo(sp)
         case 3:
             W_flat = (1 / geometry.jacobian_j) * seq.quad.w
-            sp = assemble_scalar_tp(
+            # Both sides use the derivative basis on every axis: bandwidth p-1.
+            sp = assemble_scalar(
                 seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk,
                 seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk,
                 W_flat, quad_shape, seq.basis_3.shape[0],
-                seq.basis_3.pr, seq.basis_3.pt, seq.basis_3.pz)
+                seq.basis_3.pr - 1, seq.basis_3.pt - 1, seq.basis_3.pz - 1)
             sp = jsparse.BCSR.from_bcoo(sp)
         case _:
             raise ValueError("k must be 0, 1, 2 or 3")
@@ -3407,7 +3410,7 @@ def _assemble_projection_block(seq, k_in: int, k_out: int):
                 [(1, dR, T, dZ, +1)],
                 [(2, dR, dT, Z, +1)],
             ]
-            sp = assemble_vectorial_tp(
+            sp = assemble_vectorial(
                 row_terms, col_terms, W_3x3, quad_shape,
                 list(seq.basis_1.shape), seq.basis_1.pr,
                 col_comp_shapes=list(seq.basis_2.shape))
@@ -3424,7 +3427,7 @@ def _assemble_projection_block(seq, k_in: int, k_out: int):
                 [(1, dR, T, dZ, +1)],
                 [(2, dR, dT, Z, +1)],
             ]
-            sp = assemble_vectorial_tp(
+            sp = assemble_vectorial(
                 row_terms, col_terms, W_3x3, quad_shape,
                 list(seq.basis_1.shape), seq.basis_1.pr,
                 col_comp_shapes=list(seq.basis_2.shape))
@@ -3437,7 +3440,7 @@ def _assemble_projection_block(seq, k_in: int, k_out: int):
             col_terms = [
                 [(0, dR, dT, dZ, +1)],
             ]
-            sp = assemble_vectorial_tp(
+            sp = assemble_vectorial(
                 row_terms, col_terms, W_1x1, quad_shape,
                 list(seq.basis_0.shape), seq.basis_0.pr,
                 col_comp_shapes=list(seq.basis_3.shape))
@@ -3450,7 +3453,7 @@ def _assemble_projection_block(seq, k_in: int, k_out: int):
             col_terms = [
                 [(0, dR, dT, dZ, +1)],
             ]
-            sp = assemble_vectorial_tp(
+            sp = assemble_vectorial(
                 row_terms, col_terms, W_1x1, quad_shape,
                 list(seq.basis_0.shape), seq.basis_0.pr,
                 col_comp_shapes=list(seq.basis_3.shape))

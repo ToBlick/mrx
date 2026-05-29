@@ -588,11 +588,11 @@ class DeRhamSequence():
 
     def assemble_reference_mass_matrix(self):
         """Assemble and cache the 0-form mass matrix on the reference domain."""
-        from mrx.assembly import assemble_scalar_tp
+        from mrx.assembly import assemble_scalar
         from mrx.utils import diag_EAET
 
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
-        sp = assemble_scalar_tp(
+        sp = assemble_scalar(
             self.basis_r_jk, self.basis_t_jk, self.basis_z_jk,
             self.basis_r_jk, self.basis_t_jk, self.basis_z_jk,
             self.quad.w, quad_shape, self.basis_0.shape[0],

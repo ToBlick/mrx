@@ -149,9 +149,17 @@ def compute_error(n: int, p: int, epsilon: float,
 
     # k=0 with DBC has no nullspace (default betti_numbers=(1,1,0,0))
     t0 = time.perf_counter()
-    u_hat = seq.apply_inverse_hodge_laplacian(rhs, 0, dirichlet=True)
+    u_hat, cg_info = seq.apply_inverse_hodge_laplacian(
+        rhs, 0, dirichlet=True, return_info=True)
     jax.block_until_ready(u_hat)
     timings["inverse_hodge_laplacian"] = time.perf_counter() - t0
+
+    cg_info_int = int(cg_info)
+    cg_iters = abs(cg_info_int)
+    cg_converged = cg_info_int < 0
+    residual = seq.apply_hodge_laplacian(u_hat, 0, dirichlet=True) - rhs
+    final_rel_residual = float(
+        jnp.linalg.norm(residual) / jnp.linalg.norm(rhs))
 
     t0 = time.perf_counter()
     quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
@@ -173,6 +181,9 @@ def compute_error(n: int, p: int, epsilon: float,
         "p": p,
         "q": q,
         "error": error,
+        "cg_iters": cg_iters,
+        "cg_converged": cg_converged,
+        "final_rel_residual": final_rel_residual,
         "timings": timings,
         "sparsity": sparsity,
     }
@@ -183,6 +194,12 @@ def compute_error(n: int, p: int, epsilon: float,
 # ---------------------------------------------------------------------------
 @hydra.main(config_path="../../conf", config_name="config_poisson_test", version_base=None)
 def main(cfg: DictConfig):
+    
+    print(f"x64 enabled: {jax.config.jax_enable_x64}")
+    print(f"epsilon type: {type(cfg.epsilon).__name__} value: {cfg.epsilon!r}")
+    print(f"n type: {type(cfg.n).__name__} value: {list(cfg.n)!r}")
+    print(f"cg_tol type: {type(cfg.cg_tol).__name__} value: {cfg.cg_tol!r}")
+    
     p = cfg.p
     ns = list(cfg.n)
     mrx.MAP_BATCH_SIZE_INNER = cfg.map_batch_size_inner
@@ -220,6 +237,8 @@ def main(cfg: DictConfig):
         for label, val in result["sparsity"].items():
             print(f"  {label:.<30s} {val}")
         print(f"\n  Relative L2 error: {result['error']:.6e}")
+        print(f"  CG iters: {result['cg_iters']}  converged: {result['cg_converged']}"
+              f"  final ||K0 u - b||/||b||: {result['final_rel_residual']:.3e}")
 
     # Summary table
     print(f"\n{'='*60}")

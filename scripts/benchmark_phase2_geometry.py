@@ -31,14 +31,11 @@ from dataclasses import asdict
 from pathlib import Path
 
 import benchmark_phase1_mass_baseline_vs_tensor as phase1
+from mrx.io import parse_int_list, parse_ns
 
 
 def _parse_float_list(text: str) -> tuple[float, ...]:
     return tuple(float(s.strip()) for s in text.split(",") if s.strip())
-
-
-def _parse_int_list(text: str) -> tuple[int, ...]:
-    return tuple(int(s.strip()) for s in text.split(",") if s.strip())
 
 
 def _parse_ns_list(text: str) -> tuple[tuple[int, int, int], ...]:
@@ -48,7 +45,7 @@ def _parse_ns_list(text: str) -> tuple[tuple[int, int, int], ...]:
         chunk = chunk.strip()
         if not chunk:
             continue
-        triples.append(phase1._parse_ns(chunk))
+        triples.append(parse_ns(chunk))
     return tuple(triples)
 
 
@@ -59,7 +56,7 @@ def main() -> None:
                         default=(1.0, 1.25, 1.5, 1.75))
     parser.add_argument("--epses", type=_parse_float_list,
                         default=(0.1, 0.2, 0.33, 0.5))
-    parser.add_argument("--ps", type=_parse_int_list, default=(1, 2, 3, 4))
+    parser.add_argument("--ps", type=parse_int_list, default=(1, 2, 3, 4))
     parser.add_argument("--ns-list", type=_parse_ns_list,
                         default=((8, 16, 8), (16, 32, 16),
                                  (32, 64, 32), (64, 128, 64)),
@@ -72,21 +69,21 @@ def main() -> None:
     parser.add_argument("--eps-baseline", type=float,
                         default=phase1.DEFAULT_EPS)
     parser.add_argument("--p-baseline", type=int, default=phase1.DEFAULT_P)
-    parser.add_argument("--ns-baseline", type=phase1._parse_ns,
+    parser.add_argument("--ns-baseline", type=parse_ns,
                         default=phase1.DEFAULT_NS)
     parser.add_argument("--nfp-baseline", type=int, default=phase1.DEFAULT_NFP)
     parser.add_argument("--besov-s-baseline", type=float,
                         default=phase1.DEFAULT_BESOV_S)
     # Static phase-1 controls.
     parser.add_argument("--r0", type=float, default=phase1.DEFAULT_R0)
-    parser.add_argument("--ks", type=phase1._parse_int_list, default=(0, 1, 2, 3))
+    parser.add_argument("--ks", type=parse_int_list, default=(0, 1, 2, 3))
     parser.add_argument("--n-rhs", type=int, default=phase1.DEFAULT_N_RHS)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--tol", type=float, default=phase1.DEFAULT_TOL)
     parser.add_argument("--maxiter", type=int, default=phase1.DEFAULT_MAXITER)
-    parser.add_argument("--ranks", type=phase1._parse_int_list, default=(3,))
-    parser.add_argument("--bulk-cheb", type=phase1._parse_int_list, default=(0,))
-    parser.add_argument("--cheb-baseline", type=phase1._parse_int_list, default=(3,))
+    parser.add_argument("--ranks", type=parse_int_list, default=(3,))
+    parser.add_argument("--bulk-cheb", type=parse_int_list, default=(0,))
+    parser.add_argument("--cheb-baseline", type=parse_int_list, default=(3,))
     parser.add_argument("--no-jacobi", action="store_true")
     parser.add_argument("--no-chebyshev", action="store_true")
     parser.add_argument("--no-tensor", action="store_true")

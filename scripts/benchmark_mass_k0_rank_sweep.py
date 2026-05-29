@@ -22,6 +22,7 @@ from mrx.operators import (
 )
 from mrx.preconditioners import select_boundary_data
 from mrx.solvers import solve_singular_cg
+from mrx.io import parse_int_list, parse_ns
 from mrx.utils import build_random_besov_rhs_batch
 
 
@@ -54,22 +55,8 @@ class BenchmarkRow:
     max_ms: float
 
 
-def _parse_ns(text: str) -> tuple[int, int, int]:
-    parts = tuple(int(part.strip()) for part in text.split(","))
-    if len(parts) != 3:
-        raise ValueError(f"Expected ns as 'nr,nt,nz', got {text!r}")
-    return parts
-
-
-def _parse_int_list(text: str) -> tuple[int, ...]:
-    values = tuple(int(part.strip()) for part in text.split(",") if part.strip())
-    if not values:
-        raise ValueError("Expected a non-empty comma-separated list of integers")
-    return values
-
-
 def _parse_k_list(text: str) -> tuple[int, ...]:
-    values = _parse_int_list(text)
+    values = parse_int_list(text)
     invalid = tuple(k for k in values if k not in (0, 1, 2, 3))
     if invalid:
         raise ValueError(f"Mass degrees must be in 0,1,2,3; got {invalid}")
@@ -326,9 +313,9 @@ def main() -> None:
     parser.add_argument("--problems", type=_parse_problem_list, help="Optional comma-separated list of problems to benchmark in one run")
     parser.add_argument("--k", type=int, choices=(0, 1, 2, 3), default=0, help="Mass degree to benchmark")
     parser.add_argument("--ks", type=_parse_k_list, help="Optional comma-separated list of mass degrees to benchmark in one run")
-    parser.add_argument("--ns", type=_parse_ns, default=(8, 16, 8), help="Grid sizes as nr,nt,nz")
+    parser.add_argument("--ns", type=parse_ns, default=(8, 16, 8), help="Grid sizes as nr,nt,nz")
     parser.add_argument("--p", type=int, default=3, help="Spline degree in each direction")
-    parser.add_argument("--ranks", type=_parse_int_list, default=(1, 2, 3), help="Comma-separated tensor ranks")
+    parser.add_argument("--ranks", type=parse_int_list, default=(1, 2, 3), help="Comma-separated tensor ranks")
     parser.add_argument("--inner-schur", choices=("on", "off", "both"), default="on", help="Sweep inner Schur on/off for k=1 and k=2")
     parser.add_argument("--fit-strategy", choices=("multiplicative", "split"), default="multiplicative", help="Mass-only tensor fit strategy")
     parser.add_argument("--richardson-steps", type=int, default=0, help="Mass-only tensor Richardson steps")

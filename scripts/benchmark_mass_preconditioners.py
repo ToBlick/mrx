@@ -44,6 +44,7 @@ from mrx.operators import (  # noqa: E402
 )
 from mrx.preconditioners import MassPreconditionerSpec
 from mrx.solvers import solve_singular_cg
+from mrx.io import parse_int_list, parse_ns
 from mrx.utils import build_random_besov_rhs_batch
 
 
@@ -69,18 +70,8 @@ class Row:
     avg_iters: float
     max_iters: int
     avg_ms: float
+    avg_residual: float = float('nan')
     rank: int = -1  # -1 = N/A (not a tensor strategy)
-
-
-def _parse_int_list(text: str) -> tuple[int, ...]:
-    return tuple(int(s.strip()) for s in text.split(",") if s.strip())
-
-
-def _parse_ns(text: str) -> tuple[int, int, int]:
-    parts = _parse_int_list(text)
-    if len(parts) != 3:
-        raise ValueError(f"Expected ns as 'nr,nt,nz', got {text!r}")
-    return parts  # type: ignore[return-value]
 
 
 def build_sequence(args) -> DeRhamSequence:
@@ -107,22 +98,25 @@ def build_sequence(args) -> DeRhamSequence:
     return seq
 
 
-def time_solve(solve, rhs_batch) -> tuple[float, int, float]:
-    x, it = solve(rhs_batch[0])
-    jax.block_until_ready(x)
+def time_solve(solve, rhs_batch) -> tuple[float, int, float, float]:
+    x, it, res = solve(rhs_batch[0])
+    jax.block_until_ready((x, res))
 
     iters: list[int] = []
     times_ms: list[float] = []
+    residuals: list[float] = []
     for rhs in rhs_batch:
         t0 = time.perf_counter()
-        x, it = solve(rhs)
-        jax.block_until_ready(x)
+        x, it, res = solve(rhs)
+        jax.block_until_ready((x, res))
         times_ms.append((time.perf_counter() - t0) * 1e3)
         iters.append(int(it))
+        residuals.append(float(res))
     return (
         float(jnp.mean(jnp.asarray(iters))),
         int(max(iters)),
         float(jnp.mean(jnp.asarray(times_ms))),
+        float(jnp.mean(jnp.asarray(residuals))),
     )
 
 
@@ -185,17 +179,22 @@ def benchmark_cell(
             tol=args.tol,
             maxiter=args.maxiter,
         )
-        return x, jnp.abs(info)
+        r = operator_apply(x) - rhs
+        r_M = seq.l2_norm(r, k, dirichlet=dirichlet)
+        b_M = seq.l2_norm(rhs, k, dirichlet=dirichlet)
+        res = r_M / jnp.where(b_M > 0.0, b_M, 1.0)
+        return x, jnp.abs(info), res
 
-    avg_it, max_it, avg_ms = time_solve(solve, rhs_batch)
+    avg_it, max_it, avg_ms, avg_res = time_solve(solve, rhs_batch)
     return Row(k=k, strategy=strategy, avg_iters=avg_it, max_iters=max_it,
-               avg_ms=avg_ms, rank=getattr(args, "_active_rank", -1) if strategy == "tensor" else -1)
+               avg_ms=avg_ms, avg_residual=avg_res,
+               rank=getattr(args, "_active_rank", -1) if strategy == "tensor" else -1)
 
 
 def print_table(rows: list[Row]) -> None:
     header = (
         f"{'k':>2} {'strategy':>14} "
-        f"{'avg_it':>7} {'max_it':>7} {'avg_ms':>9}"
+        f"{'avg_it':>7} {'max_it':>7} {'avg_ms':>9} {'avg_resM':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -207,14 +206,15 @@ def print_table(rows: list[Row]) -> None:
         print(
             f"{row.k:>2d} {label:>14} "
             f"{row.avg_iters:>7.1f} {row.max_iters:>7d} {row.avg_ms:>9.2f}"
+            f" {row.avg_residual:>10.2e}"
         )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ns", type=_parse_ns, default=(6, 8, 4))
+    parser.add_argument("--ns", type=parse_ns, default=(6, 8, 4))
     parser.add_argument("--p", type=int, default=3)
-    parser.add_argument("--ks", type=_parse_int_list, default=(0, 1, 2, 3))
+    parser.add_argument("--ks", type=parse_int_list, default=(0, 1, 2, 3))
     parser.add_argument("--strategies", type=str,
                         default="tensor,jacobi,chebyshev",
                         help="Comma-separated subset of tensor,jacobi,chebyshev.")
@@ -222,7 +222,7 @@ def main() -> None:
                         help="Polynomial degree for the Chebyshev mass smoother.")
     parser.add_argument("--rank", type=int, default=None,
                         help="Single rank shortcut for --ranks (deprecated; use --ranks).")
-    parser.add_argument("--ranks", type=_parse_int_list, default=(1,),
+    parser.add_argument("--ranks", type=parse_int_list, default=(1,),
                         help="Comma-separated tensor ranks to compare (>=1). "
                              "rank=1 single Kronecker, rank=2 exact two-Kron via "
                              "Lynch FD, rank>=3 Lynch FD on the leading two terms "
@@ -262,6 +262,7 @@ def main() -> None:
     seq = build_sequence(args)
 
     base_operators = assemble_mass_operators(seq, seq.geometry, ks=tuple(args.ks))
+    seq.set_operators(base_operators)
 
     dirichlet = not args.free
 

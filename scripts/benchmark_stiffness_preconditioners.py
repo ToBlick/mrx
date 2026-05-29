@@ -22,7 +22,7 @@ import jax.numpy as jnp
 
 import jax.experimental.sparse as jsparse
 
-from mrx.assembly import assemble_vectorial_tp, grad_1d
+from mrx.assembly import assemble_vectorial, grad_1d
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
 from mrx.nullspace import get_nullspace, get_stiffness_nullspace
@@ -42,6 +42,7 @@ from mrx.operators import (
 )
 from mrx.preconditioners import MassPreconditionerSpec
 from mrx.solvers import solve_singular_cg
+from mrx.io import parse_int_list, parse_ns
 from mrx.utils import diag_EAET
 
 
@@ -80,18 +81,8 @@ class Row:
     max_iters: int
     avg_ms: float
     failures: int
+    avg_residual: float = float('nan')
     rank: int = -1
-
-
-def _parse_int_list(text: str) -> tuple[int, ...]:
-    return tuple(int(s.strip()) for s in text.split(",") if s.strip())
-
-
-def _parse_ns(text: str) -> tuple[int, int, int]:
-    parts = _parse_int_list(text)
-    if len(parts) != 3:
-        raise ValueError(f"Expected ns as 'nr,nt,nz', got {text!r}")
-    return parts  # type: ignore[return-value]
 
 
 def _parse_cases(text: str) -> tuple[Case, ...]:
@@ -197,7 +188,7 @@ def build_sparse_stiffness_operator(seq: DeRhamSequence, case: Case):
             [(0, r, grad_1d(d_t, TYPES[1]), d_z, +1),
              (1, grad_1d(d_r, TYPES[0]), t, d_z, -1)],
         ]
-        sp = assemble_vectorial_tp(
+        sp = assemble_vectorial(
             curl_terms,
             curl_terms,
             w_3x3,
@@ -217,7 +208,7 @@ def build_sparse_stiffness_operator(seq: DeRhamSequence, case: Case):
             [(1, seq.d_basis_r_jk, grad_t, seq.d_basis_z_jk, +1)],
             [(2, seq.d_basis_r_jk, seq.d_basis_t_jk, grad_z, +1)],
         ]
-        sp = assemble_vectorial_tp(
+        sp = assemble_vectorial(
             div_terms,
             div_terms,
             w_3x3,
@@ -259,26 +250,29 @@ def build_rhs_batch(seq: DeRhamSequence, operators, stiffness_sp, case: Case, *,
     )
 
 
-def time_solve(solve, rhs_batch) -> tuple[float, int, float, int]:
-    x, info = solve(rhs_batch[0])
-    jax.block_until_ready((x, info))
+def time_solve(solve, rhs_batch) -> tuple[float, int, float, int, float]:
+    x, info, res = solve(rhs_batch[0])
+    jax.block_until_ready((x, info, res))
 
     iters: list[int] = []
     times_ms: list[float] = []
+    residuals: list[float] = []
     failures = 0
     for rhs in rhs_batch:
         t0 = time.perf_counter()
-        x, info = solve(rhs)
-        jax.block_until_ready((x, info))
+        x, info, res = solve(rhs)
+        jax.block_until_ready((x, info, res))
         info_int = int(info)
         failures += int(info_int >= 0)
         times_ms.append((time.perf_counter() - t0) * 1e3)
         iters.append(abs(info_int))
+        residuals.append(float(res))
     return (
         float(jnp.mean(jnp.asarray(iters))),
         int(max(iters)),
         float(jnp.mean(jnp.asarray(times_ms))),
         failures,
+        float(jnp.mean(jnp.asarray(residuals))),
     )
 
 
@@ -323,7 +317,11 @@ def benchmark_case(
                 tol=args.tol,
                 maxiter=args.maxiter,
             )
-            return x, info
+            r = operator_apply(x) - rhs
+            r_M = seq.l2_norm(r, case.k, dirichlet=case.dirichlet)
+            b_M = seq.l2_norm(rhs, case.k, dirichlet=case.dirichlet)
+            res = r_M / jnp.where(b_M > 0.0, b_M, 1.0)
+            return x, info, res
     elif strategy == "jacobi":
         @jax.jit
         def solve(rhs, vs, diaginv):
@@ -336,7 +334,11 @@ def benchmark_case(
                 tol=args.tol,
                 maxiter=args.maxiter,
             )
-            return x, info
+            r = operator_apply(x) - rhs
+            r_M = seq.l2_norm(r, case.k, dirichlet=case.dirichlet)
+            b_M = seq.l2_norm(rhs, case.k, dirichlet=case.dirichlet)
+            res = r_M / jnp.where(b_M > 0.0, b_M, 1.0)
+            return x, info, res
     elif strategy.startswith("cheb"):
         jacobi_apply = lambda rhs, diaginv: diaginv * rhs
         spec = MassPreconditionerSpec(
@@ -372,7 +374,11 @@ def benchmark_case(
                 tol=args.tol,
                 maxiter=args.maxiter,
             )
-            return x, info
+            r = operator_apply(x) - rhs
+            r_M = seq.l2_norm(r, case.k, dirichlet=case.dirichlet)
+            b_M = seq.l2_norm(rhs, case.k, dirichlet=case.dirichlet)
+            res = r_M / jnp.where(b_M > 0.0, b_M, 1.0)
+            return x, info, res
     else:
         raise ValueError(f"Unknown strategy {strategy!r}")
 
@@ -381,7 +387,7 @@ def benchmark_case(
     else:
         solve_wrapped = lambda rhs: solve(rhs, nullspace)
 
-    avg_it, max_it, avg_ms, failures = time_solve(solve_wrapped, rhs_batch)
+    avg_it, max_it, avg_ms, failures, avg_res = time_solve(solve_wrapped, rhs_batch)
     return Row(
         case=case.label,
         k=case.k,
@@ -391,13 +397,14 @@ def benchmark_case(
         max_iters=max_it,
         avg_ms=avg_ms,
         failures=failures,
+        avg_residual=avg_res,
         rank=getattr(args, "_active_rank", -1) if strategy == "tensor" else -1,
     )
 
 
 def print_table(rows: list[Row]) -> None:
     header = (
-        f"{'case':>9} {'strategy':>14} {'avg_it':>7} {'max_it':>7} {'avg_ms':>9} {'fails':>6}"
+        f"{'case':>9} {'strategy':>14} {'avg_it':>7} {'max_it':>7} {'avg_ms':>9} {'fails':>6} {'avg_resM':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -408,13 +415,13 @@ def print_table(rows: list[Row]) -> None:
         )
         print(
             f"{row.case:>9} {label:>14} {row.avg_iters:>7.1f} {row.max_iters:>7d}"
-            f" {row.avg_ms:>9.2f} {row.failures:>6d}"
+            f" {row.avg_ms:>9.2f} {row.failures:>6d} {row.avg_residual:>10.2e}"
         )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ns", type=_parse_ns, default=(12, 16, 8))
+    parser.add_argument("--ns", type=parse_ns, default=(12, 16, 8))
     parser.add_argument("--p", type=int, default=3)
     parser.add_argument("--cases", type=_parse_cases, default=(Case(1, True), Case(2, False)))
     parser.add_argument(
@@ -428,7 +435,7 @@ def main() -> None:
                         help="Single rank shortcut for --ranks (deprecated; use --ranks).")
     parser.add_argument(
         "--ranks",
-        type=_parse_int_list,
+        type=parse_int_list,
         default=(1,),
         help="Comma-separated tensor ranks to compare (>=1).",
     )
@@ -464,6 +471,7 @@ def main() -> None:
     print(f"Building sequence ns={args.ns} p={args.p} ...", flush=True)
     seq = build_sequence(args)
     base_operators = build_base_operators(seq, args.cases)
+    seq.set_operators(base_operators)
 
     for case in args.cases:
         harmonic_count = int(get_nullspace(base_operators, case.k, case.dirichlet).shape[0])

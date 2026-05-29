@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.assembly import assemble_scalar_tp
+from mrx.assembly import assemble_scalar
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map, toroid_map
 from mrx.operators import assemble_mass_operators, assemble_tensor_mass_preconditioner, dense_mass_matrix
@@ -550,7 +550,7 @@ def _assemble_scalar_block_from_fields(spec: dict[str, object], term_fields: tup
     full_shape = spec["full_shape"]
     weighted_field = field * seq.quad.w.reshape(seq.quad.ny, seq.quad.nx, seq.quad.nz)
     matrix = jnp.asarray(
-        assemble_scalar_tp(
+        assemble_scalar(
             spec["radial_basis"],
             spec["theta_basis"],
             spec["zeta_basis"],

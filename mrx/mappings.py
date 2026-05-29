@@ -327,7 +327,101 @@ def stellarator_map(X1_h: DiscreteFunction, X2_h: DiscreteFunction, nfp: int = 3
                           X2_h(x)[0]])
     return F
 
+def greville_interpolate_map(F_analytic: Callable, seq) -> jnp.ndarray:
+    """Interpolate an analytic logical-to-physical map to spline coefficients.
+
+    Evaluates each Cartesian component of ``F_analytic`` at the
+    tensor-product Greville points and solves the resulting 1-D collocation
+    systems, returning a coefficient array suitable for
+    :meth:`~mrx.derham_sequence.DeRhamSequence.set_spline_map`.
+
+    This replaces the heavier workflow of sampling the map on a regular
+    grid, L²-projecting with the reference-domain mass matrix, and then
+    calling ``set_spline_map``.  No mass matrix is required; the only
+    prerequisite is :meth:`~mrx.derham_sequence.DeRhamSequence.evaluate_1d`.
+
+    Parameters
+    ----------
+    F_analytic : callable
+        Analytic map ``F: R^3 -> R^3`` mapping logical coordinates
+        ``(r, θ, ζ) ∈ [0, 1]^3`` to physical Cartesian coordinates
+        ``(X, Y, Z)``.
+    seq : DeRhamSequence
+        The sequence to interpolate into.  Must have ``evaluate_1d()``
+        called.  Currently requires an all-clamped (non-periodic,
+        non-polar) sequence; periodic or polar sequences raise
+        ``NotImplementedError`` via :meth:`zeroform_interpolation`.
+
+    Returns
+    -------
+    coefficients : jnp.ndarray of shape ``(3, seq.n0)``
+        Spline DOF vectors for the three Cartesian components, stacked
+        along axis 0.  Pass directly to ``seq.set_spline_map(coefficients)``.
+    """
+    component_dofs = [
+        seq.p0.zeroform_interpolation(lambda x, i=i: F_analytic(x)[i])
+        for i in range(3)
+    ]
+    return jnp.stack(component_dofs, axis=0)
+
+
 # Alias for now
+
+
+def greville_interpolate_stellarator_map(
+        F_analytic: Callable, seq, nfp: int, flip_zeta: bool = False) -> Callable:
+    """Build a stellarator map by Greville-interpolating R and Z from an analytic map.
+
+    Extracts the cylindrical radius ``R = sqrt(X² + Y²)`` and vertical
+    coordinate ``Z`` from ``F_analytic``, interpolates each as a scalar
+    0-form via Greville collocation, and wraps the result in
+    :func:`stellarator_map`.
+
+    ``R(r, θ, ζ)`` and ``Z(r, θ, ζ)`` are both periodic in ``θ`` and ``ζ``,
+    so they are naturally representable in a periodic spline basis without any
+    artificial periodicity violation.  This replaces the heavier
+    :func:`interpolate_map` workflow (regular-grid sampling + L²-projection
+    via the reference-domain mass matrix) with a single collocation step.
+
+    No mass matrix is required; the only prerequisite is
+    :meth:`~mrx.derham_sequence.DeRhamSequence.evaluate_1d`.  Works for
+    any non-polar sequence (``polar=False``); polar sequences raise
+    ``NotImplementedError`` via :meth:`zeroform_interpolation` because the
+    polar extraction operator reduces the DOF count.
+
+    Parameters
+    ----------
+    F_analytic : callable
+        Analytic map ``F: R^3 -> R^3`` returning Cartesian ``(X, Y, Z)``.
+    seq : DeRhamSequence
+        The sequence to use for interpolation.  Must have ``evaluate_1d()``
+        called.  Typically built with ``('clamped', 'periodic', 'periodic')``
+        boundary conditions and ``polar=False``.
+    nfp : int
+        Number of field periods.
+    flip_zeta : bool, optional
+        Passed through to :func:`stellarator_map`.
+
+    Returns
+    -------
+    Phi : callable
+        Stellarator map ``Phi(r, θ, ζ) -> (X, Y, Z)`` built from the
+        interpolated spline representations of R and Z.
+    """
+    def R_fn(x):
+        Fxyz = F_analytic(x)
+        return jnp.sqrt(Fxyz[0] ** 2 + Fxyz[1] ** 2)
+
+    def Z_fn(x):
+        return F_analytic(x)[2]
+
+    R_dof = seq.p0.zeroform_interpolation(R_fn)
+    Z_dof = seq.p0.zeroform_interpolation(Z_fn)
+
+    R_h = DiscreteFunction(R_dof, seq.basis_0, seq.e0)
+    Z_h = DiscreteFunction(Z_dof, seq.basis_0, seq.e0)
+
+    return stellarator_map(R_h, Z_h, nfp=nfp, flip_zeta=flip_zeta)
 
 
 def interpolate_map(axes, R_grid, Z_grid, nfp, seq, flip_zeta=False):
@@ -338,6 +432,11 @@ def interpolate_map(axes, R_grid, Z_grid, nfp, seq, flip_zeta=False):
     ``RegularGridInterpolator`` + tensor-product integration) to obtain
     the FEM coefficients for *R* and *Z*, then wraps them in a
     :func:`stellarator_map`.
+
+    .. deprecated::
+        Prefer :func:`greville_interpolate_stellarator_map` when an analytic
+        map is available: it requires no reference-domain mass matrix and no
+        sampled grid.
 
     Parameters
     ----------

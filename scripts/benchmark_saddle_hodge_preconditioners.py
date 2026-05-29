@@ -53,6 +53,7 @@ from mrx.preconditioners import (
     SchurPreconditionerSpec,
 )
 from mrx.solvers import solve_saddle_point_minres
+from mrx.io import parse_int_list, parse_ns
 from mrx.utils import build_random_besov_rhs_batch
 
 
@@ -96,17 +97,6 @@ class Row:
     avg_residual: float
     rank: int = -1
     cheb_steps: int = -1
-
-
-def _parse_int_list(text: str) -> tuple[int, ...]:
-    return tuple(int(s.strip()) for s in text.split(",") if s.strip())
-
-
-def _parse_ns(text: str) -> tuple[int, int, int]:
-    parts = _parse_int_list(text)
-    if len(parts) != 3:
-        raise ValueError(f"Expected ns as 'nr,nt,nz', got {text!r}")
-    return parts  # type: ignore[return-value]
 
 
 def _parse_cases(text: str) -> tuple[Case, ...]:
@@ -375,8 +365,9 @@ def benchmark_case(
             tol=args.tol,
             maxiter=args.maxiter,
         ) - rhs
-        rhs_norm = jnp.where(jnp.linalg.norm(rhs) > 0.0, jnp.linalg.norm(rhs), 1.0)
-        return x, info, jnp.linalg.norm(residual) / rhs_norm
+        r_M = seq.l2_norm(residual, case.k, dirichlet=case.dirichlet)
+        b_M = seq.l2_norm(rhs, case.k, dirichlet=case.dirichlet)
+        return x, info, r_M / jnp.where(b_M > 0.0, b_M, 1.0)
 
     avg_it, max_it, avg_ms, failures, avg_residual = time_solve(solve, rhs_batch)
     return Row(
@@ -394,7 +385,7 @@ def benchmark_case(
 
 def print_table(rows: list[Row]) -> None:
     header = (
-        f"{'case':>9} {'strategy':>18} {'avg_it':>7} {'max_it':>7} {'avg_ms':>9} {'fails':>6} {'avg_res':>10}"
+        f"{'case':>9} {'strategy':>18} {'avg_it':>7} {'max_it':>7} {'avg_ms':>9} {'fails':>6} {'avg_resM':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -412,7 +403,7 @@ def print_table(rows: list[Row]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ns", type=_parse_ns, default=(12, 16, 8))
+    parser.add_argument("--ns", type=parse_ns, default=(12, 16, 8))
     parser.add_argument("--p", type=int, default=3)
     parser.add_argument("--cases", type=_parse_cases, default=(Case(1, True), Case(2, False)))
     parser.add_argument(
@@ -433,7 +424,7 @@ def main() -> None:
                         help="Single rank shortcut for --ranks (deprecated; use --ranks).")
     parser.add_argument(
         "--ranks",
-        type=_parse_int_list,
+        type=parse_int_list,
         default=(1,),
         help="Comma-separated tensor ranks to compare for tensor_chebyshev.",
     )

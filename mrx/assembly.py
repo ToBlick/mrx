@@ -2,6 +2,7 @@
 import jax
 import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
+import numpy as np
 
 import mrx
 
@@ -92,7 +93,7 @@ def assemble(getter_1, getter_2, W, n1, n2):
     return M
 
 
-def assemble_scalar_tp(R_row, T_row, Z_row, R_col, T_col, Z_col,
+def assemble_scalar(R_row, T_row, Z_row, R_col, T_col, Z_col,
                        W_flat, quad_shape, dof_shape, hw_r, hw_t, hw_z):
     """Tensor-product assembly for scalar-valued form mass-like matrices.
 
@@ -175,7 +176,7 @@ def assemble_scalar_tp(R_row, T_row, Z_row, R_col, T_col, Z_col,
     return jsparse.BCOO((data, indices), shape=(n_dof, n_dof))
 
 
-def assemble_vectorial_tp(row_terms, col_terms, W_flat_3x3,
+def assemble_vectorial(row_terms, col_terms, W_flat_3x3,
                           quad_shape, comp_shapes, hw,
                           col_comp_shapes=None):
     """Tensor-product assembly for vectorial DOFs with block structure.
@@ -217,6 +218,23 @@ def assemble_vectorial_tp(row_terms, col_terms, W_flat_3x3,
     if col_comp_shapes is None:
         col_comp_shapes = row_comp_shapes
 
+    # Normalise hw to a per-pair per-axis table. The bandwidth on a given
+    # axis depends on which 1D basis (primal / derivative) each side uses
+    # there; passing a 3-D table avoids over-allocating zero positions when
+    # both sides use the derivative basis (degree p-1 instead of p).
+    n_row_comp = len(row_terms)
+    n_col_comp = len(col_terms)
+    if isinstance(hw, (int, np.integer)):
+        hw_table = [[[int(hw)] * 3 for _ in range(n_col_comp)]
+                    for _ in range(n_row_comp)]
+    else:
+        hw_arr = np.asarray(hw, dtype=int)
+        if hw_arr.shape != (n_row_comp, n_col_comp, 3):
+            raise ValueError(
+                f"hw table shape {hw_arr.shape} does not match "
+                f"({n_row_comp}, {n_col_comp}, 3)")
+        hw_table = hw_arr.tolist()
+
     # Row sizes and offsets
     row_sizes = [s[0] * s[1] * s[2] for s in row_comp_shapes]
     n_row_total = sum(row_sizes)
@@ -253,9 +271,10 @@ def assemble_vectorial_tp(row_terms, col_terms, W_flat_3x3,
         row_block_nnz = s_row[0] * s_row[1] * s_row[2]
         for c_col in range(len(col_terms)):
             s_col = col_comp_shapes[c_col]
-            offsets_r = _offsets(hw, s_col[0])
-            offsets_t = _offsets(hw, s_col[1])
-            offsets_z = _offsets(hw, s_col[2])
+            hw_rt, hw_tt, hw_zt = hw_table[c_row][c_col]
+            offsets_r = _offsets(hw_rt, s_col[0])
+            offsets_t = _offsets(hw_tt, s_col[1])
+            offsets_z = _offsets(hw_zt, s_col[2])
             count = len(offsets_r) * len(offsets_t) * len(offsets_z)
             n_blocks += count
             block_sizes.append(count * row_block_nnz)
@@ -277,9 +296,10 @@ def assemble_vectorial_tp(row_terms, col_terms, W_flat_3x3,
 
         for c_col in range(len(col_terms)):
             s_col = col_comp_shapes[c_col]
-            offsets_r = _offsets(hw, s_col[0])
-            offsets_t = _offsets(hw, s_col[1])
-            offsets_z = _offsets(hw, s_col[2])
+            hw_rt, hw_tt, hw_zt = hw_table[c_row][c_col]
+            offsets_r = _offsets(hw_rt, s_col[0])
+            offsets_t = _offsets(hw_tt, s_col[1])
+            offsets_z = _offsets(hw_zt, s_col[2])
 
             for dr in offsets_r:
                 cidx_r = (row_r + dr) % s_col[0]
@@ -313,7 +333,7 @@ def assemble_vectorial_tp(row_terms, col_terms, W_flat_3x3,
     return jsparse.BCOO((data, indices), shape=(n_row_total, n_col_total))
 
 
-def assemble_stiffness_scalar_tp(row_basis_1d, col_basis_1d, W_flat_3x3,
+def assemble_stiffness_scalar(row_basis_1d, col_basis_1d, W_flat_3x3,
                                  quad_shape, dof_shape, hw_r, hw_t, hw_z):
     """Tensor-product assembly for stiffness-like matrix with scalar DOFs.
 
@@ -752,72 +772,42 @@ def eval_basis_3_ijk(seq, i, j, k):
 # Tensor-product assembly (current)
 # ---------------------------------------------------------------------------
 
-def assemble_mass_matrix(seq, k):
-    """Assemble the mass matrix using tensor-product contraction."""
-    from mrx.utils import diag_EAET
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
-    match k:
-        case 0:
-            W_flat = seq.jacobian_j * seq.quad.w
-            sp = assemble_scalar_tp(
-                seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk,
-                seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk,
-                W_flat, quad_shape, seq.basis_0.shape[0],
-                seq.basis_0.pr, seq.basis_0.pt, seq.basis_0.pz)
-            seq.m0 = jsparse.BCSR.from_bcoo(sp)
-            seq.m0_diaginv = 1.0 / \
-                diag_EAET(seq.e0, seq.m0, seq.e0_T)
-            seq.m0_diaginv_dbc = 1.0 / \
-                diag_EAET(seq.e0_dbc, seq.m0, seq.e0_dbc_T)
-        case 1:
-            W_3x3 = seq.metric_inv_jkl * \
-                (seq.jacobian_j * seq.quad.w)[:, None, None]
-            terms = [
-                [(0, seq.d_basis_r_jk, seq.basis_t_jk, seq.basis_z_jk, +1)],
-                [(1, seq.basis_r_jk, seq.d_basis_t_jk, seq.basis_z_jk, +1)],
-                [(2, seq.basis_r_jk, seq.basis_t_jk, seq.d_basis_z_jk, +1)],
-            ]
-            sp = assemble_vectorial_tp(
-                terms, terms, W_3x3, quad_shape,
-                list(seq.basis_1.shape),
-                seq.basis_1.pr)
-            seq.m1 = jsparse.BCSR.from_bcoo(sp)
-            seq.m1_diaginv = 1.0 / \
-                diag_EAET(seq.e1, seq.m1, seq.e1_T)
-            seq.m1_diaginv_dbc = 1.0 / \
-                diag_EAET(seq.e1_dbc, seq.m1, seq.e1_dbc_T)
-        case 2:
-            W_3x3 = seq.metric_jkl * \
-                (1 / seq.jacobian_j * seq.quad.w)[:, None, None]
-            terms = [
-                [(0, seq.basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk, +1)],
-                [(1, seq.d_basis_r_jk, seq.basis_t_jk, seq.d_basis_z_jk, +1)],
-                [(2, seq.d_basis_r_jk, seq.d_basis_t_jk, seq.basis_z_jk, +1)],
-            ]
-            sp = assemble_vectorial_tp(
-                terms, terms, W_3x3, quad_shape,
-                list(seq.basis_2.shape),
-                seq.basis_2.pr)
-            seq.m2 = jsparse.BCSR.from_bcoo(sp)
-            seq.m2_diaginv = 1.0 / \
-                diag_EAET(seq.e2, seq.m2, seq.e2_T)
-            seq.m2_diaginv_dbc = 1.0 / \
-                diag_EAET(seq.e2_dbc, seq.m2, seq.e2_dbc_T)
-        case 3:
-            W_flat = (1 / seq.jacobian_j) * seq.quad.w
-            sp = assemble_scalar_tp(
-                seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk,
-                seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk,
-                W_flat, quad_shape, seq.basis_3.shape[0],
-                seq.basis_3.pr, seq.basis_3.pt, seq.basis_3.pz)
-            seq.m3 = jsparse.BCSR.from_bcoo(sp)
-            seq.m3_diaginv = 1.0 / \
-                diag_EAET(seq.e3, seq.m3, seq.e3_T)
-            seq.m3_diaginv_dbc = 1.0 / \
-                diag_EAET(seq.e3_dbc, seq.m3, seq.e3_dbc_T)
-        case _:
-            raise ValueError(
-                "Tensor-product assembly supports k=0, 1, 2, 3")
+def _mass_hw_table(seq, row_terms, col_terms):
+    """Per-(row component, col component, axis) half-width table for a
+    vectorial mass-matrix assembly.
+
+    For uniform B-splines on a given axis, the 1D mass-matrix bandwidth
+    between bases of degrees ``a`` and ``b`` is ``max(a, b)``. The
+    derivative basis has degree ``p-1``; the primal basis has degree ``p``.
+    So the half-width is ``p-1`` iff every term-pair contributing to the
+    block uses the derivative basis on that axis on *both* sides.
+
+    Mass matrices have a single term per component, so this reduces to: on
+    axis ``a``, hw = p-1 iff both ``row_terms[c_row]`` and
+    ``col_terms[c_col]`` use ``seq.d_basis_{r,t,z}_jk`` on axis ``a``.
+    """
+    p = seq.basis_0.pr  # all axes share the same primal degree
+    d_bases = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
+
+    def _is_deriv(term, axis):
+        # term entry: (out_idx, R, T, Z, sign); axis 0->R, 1->T, 2->Z
+        return term[1 + axis] is d_bases[axis]
+
+    def _axis_hw(rows, cols, axis):
+        for r in rows:
+            for c in cols:
+                if not (_is_deriv(r, axis) and _is_deriv(c, axis)):
+                    return p
+        return p - 1
+
+    table = [
+        [
+            [_axis_hw(row_terms[cr], col_terms[cc], a) for a in range(3)]
+            for cc in range(len(col_terms))
+        ]
+        for cr in range(len(row_terms))
+    ]
+    return table
 
 
 def assemble_derivative_matrix(seq, k):
@@ -841,7 +831,7 @@ def assemble_derivative_matrix(seq, k):
                  (1, seq.basis_r_jk, gt, seq.basis_z_jk, +1),
                  (2, seq.basis_r_jk, seq.basis_t_jk, gz, +1)],
             ]
-            sp = assemble_vectorial_tp(
+            sp = assemble_vectorial(
                 row_terms, col_terms, W_3x3, quad_shape,
                 list(seq.basis_1.shape), seq.basis_1.pr,
                 col_comp_shapes=list(seq.basis_0.shape))
@@ -869,7 +859,7 @@ def assemble_derivative_matrix(seq, k):
                 [(0, R, gt, dZ, +1),
                  (1, gr, T, dZ, -1)],
             ]
-            sp = assemble_vectorial_tp(
+            sp = assemble_vectorial(
                 row_terms, col_terms, W_3x3, quad_shape,
                 list(seq.basis_2.shape), seq.basis_2.pr,
                 col_comp_shapes=list(seq.basis_1.shape))
@@ -889,7 +879,7 @@ def assemble_derivative_matrix(seq, k):
                 [(0, dR, gt, dZ, +1)],
                 [(0, dR, dT, gz, +1)],
             ]
-            sp = assemble_vectorial_tp(
+            sp = assemble_vectorial(
                 row_terms, col_terms, W_1x1, quad_shape,
                 list(seq.basis_3.shape), seq.basis_3.pr,
                 col_comp_shapes=list(seq.basis_2.shape))
@@ -917,7 +907,7 @@ def assemble_hodge_laplacian(seq, k):
                 (seq.basis_r_jk, gt, seq.basis_z_jk),
                 (seq.basis_r_jk, seq.basis_t_jk, gz),
             ]
-            sp = assemble_stiffness_scalar_tp(
+            sp = assemble_stiffness_scalar(
                 grad_basis_1d, grad_basis_1d, W_3x3, quad_shape,
                 seq.basis_0.shape[0],
                 seq.basis_0.pr, seq.basis_0.pt, seq.basis_0.pz)
@@ -943,7 +933,7 @@ def assemble_hodge_laplacian(seq, k):
                 [(0, R, gt, dZ, +1),
                  (1, gr, T, dZ, -1)],
             ]
-            sp = assemble_vectorial_tp(
+            sp = assemble_vectorial(
                 curl_terms, curl_terms, W_3x3, quad_shape,
                 list(seq.basis_1.shape), seq.basis_1.pr)
             seq.curl_curl = jsparse.BCSR.from_bcoo(sp)
@@ -967,7 +957,7 @@ def assemble_hodge_laplacian(seq, k):
                 [(1, seq.d_basis_r_jk, gt, seq.d_basis_z_jk, +1)],
                 [(2, seq.d_basis_r_jk, seq.d_basis_t_jk, gz, +1)],
             ]
-            sp = assemble_vectorial_tp(
+            sp = assemble_vectorial(
                 div_terms, div_terms, W_3x3, quad_shape,
                 list(seq.basis_2.shape), seq.basis_2.pr)
             seq.div_div = jsparse.BCSR.from_bcoo(sp)

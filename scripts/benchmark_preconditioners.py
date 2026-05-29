@@ -129,15 +129,17 @@ class Stats:
     max_iters: int
     avg_time_ms: float
     std_time_ms: float
+    avg_residual: float = float('nan')
 
 
-def time_solve(solve, rhs_batch):
+def time_solve(solve, rhs_batch, residual_fn=None):
     # Warm-up + JIT compile.
     x, it = solve(rhs_batch[0])
     jax.block_until_ready(x)
 
     iters = []
     times = []
+    residuals = []
     for b in rhs_batch:
         t0 = time.perf_counter()
         x, it = solve(b)
@@ -145,6 +147,8 @@ def time_solve(solve, rhs_batch):
         dt = time.perf_counter() - t0
         iters.append(int(it))
         times.append(dt * 1e3)
+        if residual_fn is not None:
+            residuals.append(float(residual_fn(x, b)))
     iters = jnp.array(iters)
     times = jnp.array(times)
     return Stats(
@@ -153,6 +157,9 @@ def time_solve(solve, rhs_batch):
         max_iters=int(iters.max()),
         avg_time_ms=float(times.mean()),
         std_time_ms=float(times.std()),
+        avg_residual=(
+            float(jnp.mean(jnp.asarray(residuals))) if residuals else float('nan')
+        ),
     )
 
 
@@ -162,7 +169,7 @@ def benchmark_mass(seq, operators):
           f"tol={TOL}, maxiter={MAXITER}\n")
     header = (f"{'k':>2}  {'dbc':>5}  {'n_dof':>6}  {'precond':>10}  "
               f"{'avg_it':>8}  {'std_it':>8}  {'max_it':>7}  "
-              f"{'avg_ms':>9}  {'std_ms':>8}  {'speedup':>8}")
+              f"{'avg_ms':>9}  {'std_ms':>8}  {'avg_resM':>10}  {'speedup':>8}")
     print(header)
     print("-" * len(header))
 
@@ -172,10 +179,17 @@ def benchmark_mass(seq, operators):
             key, sub = jax.random.split(key)
             rhs_batch = jax.random.normal(sub, (NUM_RHS, n))
 
+            def A_residual(x, b, k=k, dirichlet=dirichlet):
+                A = lambda v: apply_mass_matrix(seq, operators, v, k, dirichlet=dirichlet)
+                r = A(x) - b
+                rn = seq.l2_norm(r, k, dirichlet=dirichlet)
+                bn = seq.l2_norm(b, k, dirichlet=dirichlet)
+                return rn / jnp.where(bn > 0.0, bn, 1.0)
+
             results = {}
             for kind in ("jacobi", "kronecker"):
                 solve = make_solve(seq, operators, k, dirichlet, kind)
-                results[kind] = time_solve(solve, rhs_batch)
+                results[kind] = time_solve(solve, rhs_batch, residual_fn=A_residual)
 
             jac = results["jacobi"]
             kro = results["kronecker"]
@@ -192,7 +206,7 @@ def benchmark_mass(seq, operators):
                     f"{k:>2}  {str(dirichlet):>5}  {n:>6}  {kind:>10}  "
                     f"{s.avg_iters:>8.1f}  {s.std_iters:>8.2f}  "
                     f"{s.max_iters:>7d}  {s.avg_time_ms:>9.2f}  "
-                    f"{s.std_time_ms:>8.2f}  "
+                    f"{s.std_time_ms:>8.2f}  {s.avg_residual:>10.2e}  "
                     f"{speed_col:>8}"
                 )
             print()
@@ -289,7 +303,7 @@ def benchmark_hodge(seq, operators):
     print("RHS: smooth random functions projected onto the form space.\n")
     header = (f"{'k':>2}  {'dbc':>5}  {'n_dof':>6}  {'precond':>10}  "
               f"{'avg_it':>8}  {'std_it':>8}  {'max_it':>7}  "
-              f"{'avg_ms':>9}  {'std_ms':>8}  {'speedup':>8}")
+              f"{'avg_ms':>9}  {'std_ms':>8}  {'avg_resM':>10}  {'speedup':>8}")
     print(header)
     print("-" * len(header))
 
@@ -310,12 +324,21 @@ def benchmark_hodge(seq, operators):
                 return b
             rhs_batch = jax.vmap(_deflate)(rhs_batch)
 
+        def L_residual(x, b, k=k, dirichlet=dirichlet):
+            A = lambda v: apply_hodge_laplacian(
+                seq, operators, v, k, dirichlet=dirichlet, tol=TOL, maxiter=MAXITER,
+            )
+            r = A(x) - b
+            rn = seq.l2_norm(r, k, dirichlet=dirichlet)
+            bn = seq.l2_norm(b, k, dirichlet=dirichlet)
+            return rn / jnp.where(bn > 0.0, bn, 1.0)
+
         results = {}
         kinds = ("jacobi", "tensor")
         for kind in kinds:
             solve = make_hodge_solve(seq, k, dirichlet, kind)
             try:
-                results[kind] = time_solve(solve, rhs_batch)
+                results[kind] = time_solve(solve, rhs_batch, residual_fn=L_residual)
             except (ValueError, NotImplementedError) as exc:
                 results[kind] = exc
 
@@ -343,7 +366,7 @@ def benchmark_hodge(seq, operators):
                 f"{k:>2}  {str(dirichlet):>5}  {n:>6}  {kind:>10}  "
                 f"{s.avg_iters:>8.1f}  {s.std_iters:>8.2f}  "
                 f"{s.max_iters:>7d}  {s.avg_time_ms:>9.2f}  "
-                f"{s.std_time_ms:>8.2f}  "
+                f"{s.std_time_ms:>8.2f}  {s.avg_residual:>10.2e}  "
                 f"{speed_col:>8}"
             )
         print()
