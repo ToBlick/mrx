@@ -13,7 +13,7 @@ from matplotlib.ticker import MultipleLocator
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
-from mrx.mappings import cerfon_map, helical_map, rotating_ellipse_map
+from mrx.mappings import one_size_fits_all_map, helical_map, rotating_ellipse_map
 
 # %%
 name = "default"
@@ -38,7 +38,7 @@ eps = CONFIG["eps"]
 alpha = jnp.arcsin(CONFIG["delta"])
 
 if CONFIG["type"] == "tokamak":
-    F = cerfon_map(eps, kappa, alpha)
+    F = one_size_fits_all_map(eps, kappa, alpha)
 elif CONFIG["type"] == "helix":
     F = helical_map(epsilon=CONFIG["eps"], h=CONFIG["h_helix"],
                     n_turns=CONFIG["m_helix"], kappa=CONFIG["kappa"], alpha=alpha)

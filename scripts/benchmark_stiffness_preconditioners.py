@@ -43,7 +43,7 @@ from mrx.operators import (
 from mrx.preconditioners import MassPreconditionerSpec
 from mrx.solvers import solve_singular_cg
 from mrx.io import parse_int_list, parse_ns
-from mrx.utils import diag_EAET
+from mrx.operators import diag_EAET
 
 
 jax.config.update("jax_enable_x64", True)

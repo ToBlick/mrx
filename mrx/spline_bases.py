@@ -47,30 +47,15 @@ class SplineBasis:
         if p >= n and p != 1:  # n = p = 1 is allowed for ignoring the third dimension
             raise ValueError(
                 f"Degree {p} is greater than or equal to the number of splines {n}")
-        if type not in ['clamped', 'periodic', 'constant', 'fourier']:
+        if type not in ['clamped', 'periodic', 'constant']:
             raise ValueError(f"Invalid spline type: {type}")
 
     def __call__(self, x: float, i: int) -> jnp.ndarray:
-        """Evaluate the ith spline at point x.
-
-        Args:
-            x: The point at which to evaluate the spline
-            i: The index of the spline to evaluate
-
-        Returns:
-            The value of the ith spline at x
-        """
+        """Alias for :meth:`evaluate`."""
         return self.evaluate(x, i)
 
     def __getitem__(self, i: int) -> Callable[[float], jnp.ndarray]:
-        """Return a function that evaluates the ith spline.
-
-        Args:
-            i: The index of the spline
-
-        Returns:
-            A function that takes x and returns the value of the ith spline at x
-        """
+        """Return ``lambda x: self(x, i)``."""
         return lambda x: self.evaluate(x, i)
 
     def _init_knots(self) -> jnp.ndarray:
@@ -102,9 +87,6 @@ class SplineBasis:
         elif self.type == 'constant':
             T = jnp.array([0, 1])
             return T
-        elif self.type == 'fourier':
-            T = jnp.linspace(0, 1, n+1)
-            return T
         else:
             raise ValueError(f"Invalid spline type: {self.type}")
 
@@ -131,8 +113,6 @@ class SplineBasis:
                 self._evaluate(x, i))
         elif self.type == 'constant':
             return 1.0
-        elif self.type == 'fourier':
-            return 1.0
 
     def greville_points(self) -> jnp.ndarray:
         """Return the Greville abscissae for this one-dimensional spline basis.
@@ -141,11 +121,6 @@ class SplineBasis:
         knots of each basis function support. For degree ``p = 0`` it falls
         back to support midpoints.
         """
-        if self.type == 'fourier':
-            raise NotImplementedError(
-                "Greville points are not implemented for fourier bases."
-            )
-
         if self.p == 0:
             points = 0.5 * (self.T[:self.n] + self.T[1:self.n + 1])
         else:
@@ -161,10 +136,12 @@ class SplineBasis:
     def collocation_matrix(self, points: Optional[jnp.ndarray] = None) -> jnp.ndarray:
         """Assemble the point-collocation matrix for this basis.
 
-        Parameters
-        ----------
-        points : array, optional
-            Evaluation points. If omitted, the Greville abscissae are used.
+        Args:
+            points: Evaluation points. If omitted, the Greville abscissae are used.
+
+        Returns:
+            Array of shape ``(len(points), n)`` where entry ``[k, i]`` is
+            the value of the ``i``-th basis function at ``points[k]``.
         """
         if points is None:
             points = self.greville_points()
@@ -186,17 +163,21 @@ class SplineBasis:
             self._p_spline(x, knot_slice, self.p),
             0)
 
-    def __safe_divide(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
-        """Safely divide x by y, returning 0 when y is 0.
+    def _safe_divide(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+        """Divide x by y, returning 0 wherever y is zero.
+
+        Uses a dummy denominator of 1 in the zero branch so that ``x / safe_y``
+        is always finite — avoiding ``0 * NaN`` NaN-poisoning in JAX autodiff.
 
         Args:
             x: The numerator
             y: The denominator
 
         Returns:
-            The result of the division, or 0 if y is 0
+            ``x / y`` where ``y != 0``, ``0`` elsewhere.
         """
-        return jnp.where(jnp.isclose(y, 0.0), jnp.zeros_like(x), x / y)
+        safe_y = jnp.where(jnp.isclose(y, 0.0), jnp.ones_like(y), y)
+        return jnp.where(jnp.isclose(y, 0.0), jnp.zeros_like(x), x / safe_y)
 
     def _const_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a constant (degree 0) spline.
@@ -217,8 +198,7 @@ class SplineBasis:
                          )
 
     def _p_spline(self, x, t, p):
-        """
-        Evaluate a p-spline at point x.
+        """Evaluate a p-spline at point x.
 
         Args:
             x: The point at which to evaluate the spline
@@ -231,8 +211,8 @@ class SplineBasis:
         if p == 0:
             return self._const_spline(x, t)
         else:
-            return self.__safe_divide(x - t[0], t[p] - t[0]) * self._p_spline(x, t[:-1], p-1) + \
-                self.__safe_divide(t[p+1] - x, t[p+1] - t[1]) * \
+            return self._safe_divide(x - t[0], t[p] - t[0]) * self._p_spline(x, t[:-1], p-1) + \
+                self._safe_divide(t[p+1] - x, t[p+1] - t[1]) * \
                 self._p_spline(x, t[1:], p-1)
 
 
@@ -282,35 +262,15 @@ class TensorBasis:
         Returns:
             Value of the i-th tensor product basis function at x
         """
-        if x.shape[0] != len(self.bases):
-            raise ValueError(
-                f"Input point dimension {x.shape[0]} does not match number of bases {len(self.bases)}")
-
         ijk = jnp.unravel_index(i, self.shape)
         return self.bases[0](x[0], ijk[0]) * self.bases[1](x[1], ijk[1]) * self.bases[2](x[2], ijk[2])
 
     def __call__(self, x: jnp.ndarray, i: int) -> jnp.ndarray:
-        """Evaluate the i-th tensor product basis function at point x.
-
-        Args:
-            x: Point at which to evaluate the basis function (array of coordinates)
-            i: Index of the tensor product basis function to evaluate
-
-        Returns:
-            Value of the i-th tensor product basis function at x
-        """
+        """Alias for :meth:`evaluate`."""
         return self.evaluate(x, i)
 
     def __getitem__(self, i: int) -> Callable[[jnp.ndarray], jnp.ndarray]:
-        """Return a function that evaluates the i-th tensor product basis function.
-
-        Args:
-            i: Index of the tensor product basis function
-
-        Returns:
-            A function that takes a point x and returns the value of the i-th
-            tensor product basis function at x
-        """
+        """Return ``lambda x: self(x, i)``."""
         return lambda x: self.evaluate(x, i)
 
 
@@ -344,26 +304,11 @@ class DerivativeSpline:
         self.ns = jnp.arange(self.n)
 
     def __call__(self, x: float, i: int) -> jnp.ndarray:
-        """Evaluate the derivative of the ith spline at point x.
-
-        Args:
-            x: The point at which to evaluate the derivative
-            i: The index of the spline derivative to evaluate
-
-        Returns:
-            The value of the derivative of the ith spline at x
-        """
+        """Alias for :meth:`evaluate`."""
         return self.evaluate(x, i)
 
     def __getitem__(self, i: int) -> Callable[[float], jnp.ndarray]:
-        """Return a function that evaluates the derivative of the ith spline.
-
-        Args:
-            i: The index of the spline derivative
-
-        Returns:
-            A function that takes x and returns the derivative value at x
-        """
+        """Return ``lambda x: self(x, i)``."""
         return lambda x: self.evaluate(x, i)
 
     def evaluate(self, x: float, i: int) -> jnp.ndarray:
@@ -373,6 +318,8 @@ class DerivativeSpline:
         - For clamped splines: Uses a forward difference formula with appropriate scaling
         - For periodic splines: Handles wrapping of indices for periodic continuity
         - For constant splines: Returns 1.0 (derivative of constant function)
+        
+        Derivative splines cannot be evaluated at a clamped boundary.
 
         Args:
             x: The point at which to evaluate the derivative
@@ -384,13 +331,7 @@ class DerivativeSpline:
         p = self.p
         n = self.n
         if self.type == 'clamped':
-            return jax.lax.cond(
-                i < n,
-                lambda x: self.s(x, i+1) * (p+1) /
-                (self.s.T[i+p+2] - self.s.T[i+1]),
-                lambda x: 0.0,
-                operand=x
-            )
+            return self.s(x, i+1) * (p+1) / (self.s.T[i+p+2] - self.s.T[i+1])
         elif self.type == 'periodic':
             j = jnp.mod(i + n, n)
             return self.s(x, j) * (p+1) / (self.s.T[j+p+1] - self.s.T[j])
@@ -402,6 +343,10 @@ class DerivativeSpline:
 
         For clamped splines, the parent Greville points include the endpoints,
         so the consecutive intervals form the natural histopolation cells.
+
+        Returns:
+            Array of shape ``(n, 2)`` where each row is ``[a, b]`` defining
+            an integration interval.
         """
         points = self.parent.greville_points()
         if self.type == 'periodic':
@@ -420,7 +365,18 @@ class DerivativeSpline:
         spans: Optional[jnp.ndarray] = None,
         quadrature_order: Optional[int] = None,
     ) -> jnp.ndarray:
-        """Assemble the Greville-span histopolation matrix for this basis."""
+        """Assemble the Greville-span histopolation matrix for this basis.
+
+        Args:
+            spans: Integration intervals of shape ``(n, 2)``. If omitted,
+                the Greville spans from :meth:`greville_spans` are used.
+            quadrature_order: Number of Gauss-Legendre quadrature points per
+                span. Defaults to ``max(2, p + 2)``.
+
+        Returns:
+            Array of shape ``(n, n)`` where entry ``[k, i]`` is the integral
+            of the ``i``-th derivative basis function over ``spans[k]``.
+        """
         if spans is None:
             spans = self.greville_spans()
         if quadrature_order is None:

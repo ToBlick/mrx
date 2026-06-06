@@ -50,7 +50,7 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import toroid_map
 from mrx.operators import assemble_tensor_mass_preconditioner
 from mrx.solvers import solve_singular_cg
-from mrx.utils import evaluate_at_xq
+from mrx.quadrature import evaluate_at_xq
 
 jax.config.update("jax_enable_x64", True)
 

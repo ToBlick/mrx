@@ -5,11 +5,11 @@ Usage (run from the repo root on a login node):
     # Single run (local, no SLURM) — loops over all n values for the given p
     python scripts/config_scripts/test_torus_poisson_sparse.py p=3
 
-    # Multirun sweep — one SLURM job per p, each loops over all n values
-    python scripts/config_scripts/test_torus_poisson_sparse.py -m p=1,2,3,4
+    # Multirun sweep — one SLURM job per (p, n) pair, each with a clean GPU
+    python scripts/config_scripts/test_torus_poisson_sparse.py -m p=1,2,3,4 n=8,12,16,24,32,48,64
 
-    # Override the n list
-    python scripts/config_scripts/test_torus_poisson_sparse.py 'n=[8,16,32,64]' p=2
+    # Override the n list (single job, loops over all n)
+    python scripts/config_scripts/test_torus_poisson_sparse.py 'n=[8,12,16,24,32,48,64]' p=2
 """
 import json
 import os
@@ -25,8 +25,8 @@ import mrx
 import mrx.config  # noqa: F401 — register structured configs in ConfigStore
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import toroid_map
-from mrx.operators import assemble_tensor_mass_preconditioner
-from mrx.utils import evaluate_at_xq
+from mrx.operators import assemble_tensor_laplacian_preconditioner
+from mrx.quadrature import evaluate_at_xq
 
 jax.config.update("jax_enable_x64", True)
 
@@ -105,45 +105,49 @@ def compute_error(n: int, p: int, epsilon: float,
     seq.evaluate_1d()
     timings["evaluate_1d"] = time.perf_counter() - t0
 
-    t0 = time.perf_counter()
-    seq.assemble_mass_matrix(0)
-    timings["assemble_mass_matrix_0"] = time.perf_counter() - t0
+    # Each assembly / solve is timed twice: the first call includes XLA
+    # compilation (``_compile``), the second is execution-only on the cached
+    # compiled kernels (``_exec``).
 
-    # K0 = G0^T M1 G0 needs M1 too.
-    t0 = time.perf_counter()
-    seq.assemble_mass_matrix(1)
-    timings["assemble_mass_matrix_1"] = time.perf_counter() - t0
+    # K0 = G0^T M1 G0 applies M1 matrix-free (sum factorization); M1 is never
+    # assembled or stored. The k=0 tensor Hodge-Laplacian preconditioner below
+    # is the ONLY preconditioner built for the solve. Its apply uses only the
+    # matrix-free stiffness ``apply_stiffness`` plus the bulk FD / Schur
+    # factors it assembles itself; it does NOT consume the tensor *mass*
+    # surgery/block data. The tensor mass preconditioner is therefore not
+    # assembled here -- the CP fit configuration (rank + CP solver tolerances)
+    # is passed directly so the Laplacian builder is self-contained.
+    cp_kwargs = {"maxiter": 100, "tol": 1e-9, "ridge": 1e-12}
 
-    # Configure the k=0 tensor Hodge preconditioner to use a rank-1 CP fit
-    # of the metric tensor (no Krylov polish, no polynomial outer solve);
-    # `assemble_hodge_laplacian(0)` reads this rank when it builds the
-    # tensor Hodge factors.
+    # Build the tensor Hodge-Laplacian preconditioner explicitly. This is the
+    # ONLY preconditioner built for the solve below: the tensor path does not
+    # need (and does not compute) any Jacobi diagonal. `assemble_hodge_laplacian`
+    # is intentionally not called here -- operator assembly is decoupled from
+    # preconditioner construction.
     t0 = time.perf_counter()
     ops = seq.set_operators(
-        assemble_tensor_mass_preconditioner(
-            seq, seq.get_operators(), ks=(0,), rank=1,
+        assemble_tensor_laplacian_preconditioner(
+            seq, seq.get_operators(), ks=(0,), rank=1, cp_kwargs=cp_kwargs,
         )
     )
-    timings["assemble_tensor_mass_preconditioner_0_rank1"] = (
-        time.perf_counter() - t0
+    jax.block_until_ready(ops)
+    timings["build_hodge_preconditioners_0_compile"] = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    ops = seq.set_operators(
+        assemble_tensor_laplacian_preconditioner(
+            seq, seq.get_operators(), ks=(0,), rank=1, cp_kwargs=cp_kwargs,
+        )
     )
+    jax.block_until_ready(ops)
+    timings["build_hodge_preconditioners_0_exec"] = time.perf_counter() - t0
 
-    t0 = time.perf_counter()
-    seq.assemble_hodge_laplacian(0)
-    timings["assemble_hodge_laplacian_0"] = time.perf_counter() - t0
-
-    # Sparsity diagnostics. K0 = G0^T M1 G0 is never materialised
-    # (assemble_hodge_laplacian stores diaginv only and applies K via
-    # composed BCSR matvecs); we report M0 and M1 instead.
+    # Sparsity diagnostics. K0 = G0^T M1 G0 is never materialised (the solve
+    # applies K via composed matvecs, with M1 applied matrix-free), and M0 is
+    # also applied matrix-free, so no mass matrix is stored.
     sparsity = {}
-    for name, mat in [("m0", seq.m0), ("m1", seq.m1)]:
-        nnz_stored = int(mat.nse)
-        nnz_actual = int(jnp.sum(jnp.abs(mat.data) > 1e-12))
-        sparsity[f"{name}_nnz_stored"] = nnz_stored
-        sparsity[f"{name}_nnz_actual"] = nnz_actual
 
     t0 = time.perf_counter()
-    rhs = seq.p0_dbc(f)
+    rhs = seq.load(f, 0, dirichlet=True)
     jax.block_until_ready(rhs)
     timings["P0_dbc(f)"] = time.perf_counter() - t0
 
@@ -152,7 +156,12 @@ def compute_error(n: int, p: int, epsilon: float,
     u_hat, cg_info = seq.apply_inverse_hodge_laplacian(
         rhs, 0, dirichlet=True, return_info=True)
     jax.block_until_ready(u_hat)
-    timings["inverse_hodge_laplacian"] = time.perf_counter() - t0
+    timings["inverse_hodge_laplacian_compile"] = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    u_hat, cg_info = seq.apply_inverse_hodge_laplacian(
+        rhs, 0, dirichlet=True, return_info=True)
+    jax.block_until_ready(u_hat)
+    timings["inverse_hodge_laplacian_exec"] = time.perf_counter() - t0
 
     cg_info_int = int(cg_info)
     cg_iters = abs(cg_info_int)
@@ -197,11 +206,11 @@ def main(cfg: DictConfig):
     
     print(f"x64 enabled: {jax.config.jax_enable_x64}")
     print(f"epsilon type: {type(cfg.epsilon).__name__} value: {cfg.epsilon!r}")
-    print(f"n type: {type(cfg.n).__name__} value: {list(cfg.n)!r}")
+    ns = [cfg.n] if isinstance(cfg.n, int) else list(cfg.n)
+    print(f"n: {ns!r}")
     print(f"cg_tol type: {type(cfg.cg_tol).__name__} value: {cfg.cg_tol!r}")
-    
+
     p = cfg.p
-    ns = list(cfg.n)
     mrx.MAP_BATCH_SIZE_INNER = cfg.map_batch_size_inner
     mrx.MAP_BATCH_SIZE_OUTER = cfg.map_batch_size_outer
     print(f"Running sparse Poisson solve: n={ns}, p={p}")
@@ -212,6 +221,9 @@ def main(cfg: DictConfig):
     print(f"JAX devices: {jax.devices()}")
     print(
         f"Batch sizes: inner={mrx.MAP_BATCH_SIZE_INNER}, outer={mrx.MAP_BATCH_SIZE_OUTER}")
+
+    output_dir = HydraConfig.get().runtime.output_dir
+    outfile = os.path.join(output_dir, "result.json")
 
     results = []
     for n in ns:
@@ -240,6 +252,11 @@ def main(cfg: DictConfig):
         print(f"  CG iters: {result['cg_iters']}  converged: {result['cg_converged']}"
               f"  final ||K0 u - b||/||b||: {result['final_rel_residual']:.3e}")
 
+        # Write incrementally so results are not lost if a later n OOMs
+        with open(outfile, "w") as fh:
+            json.dump(results, fh, indent=2)
+        print(f"  Results saved to {outfile}")
+
     # Summary table
     print(f"\n{'='*60}")
     print(f"  Summary (p={p})")
@@ -248,13 +265,6 @@ def main(cfg: DictConfig):
     for r in results:
         print(
             f"  {r['n']:5d}  {r['error']:12.6e}  {r['timings']['TOTAL']:10.3f}s")
-
-    # Save results into the Hydra output directory
-    output_dir = HydraConfig.get().runtime.output_dir
-    outfile = os.path.join(output_dir, "result.json")
-    with open(outfile, "w") as fh:
-        json.dump(results, fh, indent=2)
-    print(f"\n  Results saved to {outfile}")
 
 
 if __name__ == "__main__":

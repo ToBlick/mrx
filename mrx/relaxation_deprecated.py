@@ -206,7 +206,7 @@
 #                 DFx = jax.jacfwd(self.seq.map)(x)
 #                 Bx = B_h(x)
 #                 return (J_h(x) @ Bx) / ((DFx @ Bx) @ DFx @ Bx) * jnp.linalg.det(DFx) * jnp.ones(1)
-#             return jnp.linalg.solve(self.seq.m0, self.seq.p0(lmbda))
+#             return jnp.linalg.solve(self.seq.m0, self.seq.load(lmbda, 0))
 
 
 # class State(eqx.Module):

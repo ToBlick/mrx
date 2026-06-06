@@ -296,7 +296,7 @@ Recent benchmark state:
 - [x] **Docs/default mismatch on mass rank.** The intended production policy is
       now explicit: mass defaults to rank `2` for all four degrees, while
       stiffness stays at rank `1`.
-- [ ] **Krylov-in-Krylov in `mrx/relaxation.py:apply_diffusion`.** It
+- [x] **Krylov-in-Krylov in `mrx/relaxation.py:apply_diffusion`.** No longer exists as a method; `apply_inverse_mass_plus_eps_laplace_matrix` on `DeRhamSequence` is the correct replacement.
       builds `apply_A(x) = M_2 x + η · seq.apply_hodge_laplacian(x, 2, ...)`
       and wraps it in an outer `solve_singular_cg`, while
       `apply_hodge_laplacian` for `k ≥ 1` runs an inner CG to full

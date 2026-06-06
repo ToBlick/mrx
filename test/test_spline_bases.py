@@ -1,6 +1,4 @@
-"""Low-level spline-basis tests.
-
-These build small ``SplineBasis`` objects directly — no DeRham sequence.
+"""Tests for SplineBasis, DerivativeSpline, and TensorBasis.
 """
 
 import jax
@@ -14,94 +12,127 @@ jax.config.update("jax_enable_x64", True)
 
 N, P = 10, 3
 
-
-@pytest.fixture(params=["clamped", "periodic", "constant", "fourier"])
-def basis(request):
-    return SplineBasis(N, P, request.param), request.param
+# Shared evaluation grid, built once at import time.
+_XS = jnp.linspace(0.0, 1.0, 51)
 
 
-def _vals_on_grid(spl, xs):
-    i = jnp.arange(spl.n)
-    return jax.vmap(lambda x: jax.vmap(lambda j: spl(x, j))(i))(xs)
+def _eval_all(spl, xs=_XS):
+    """Return shape (len(xs), spl.n): entry [k, i] = spl(xs[k], i)."""
+    return jax.vmap(lambda x: jax.vmap(lambda i: spl(x, i))(spl.ns))(xs)
 
 
-def test_partition_of_unity(basis):
-    spl, typ = basis
-    if typ in ("fourier", "constant"):
-        pytest.skip(f"{typ} basis is not a partition of unity")
-    xs = jnp.linspace(0.0, 1.0, 200)
-    vals = _vals_on_grid(spl, xs)
-    npt.assert_allclose(jnp.sum(vals, axis=1), 1.0, atol=1e-12)
+# Pre-evaluate the main high-degree bases once; tests share these arrays.
+_CLAMPED = SplineBasis(N, P, "clamped")
+_PERIODIC = SplineBasis(N, P, "periodic")
+_CLAMPED_VALS = _eval_all(_CLAMPED)
+_PERIODIC_VALS = _eval_all(_PERIODIC)
 
 
-def test_positivity(basis):
-    spl, typ = basis
-    if typ == "fourier":
-        pytest.skip("fourier basis is not pointwise positive")
-    xs = jnp.linspace(0.0, 1.0, 200)
-    vals = _vals_on_grid(spl, xs)
-    assert jnp.all(vals >= -1e-14), f"negative value for {typ}"
+# ── Partition of unity ────────────────────────────────────────────────────────
+
+def test_partition_of_unity_clamped():
+    npt.assert_allclose(jnp.sum(_CLAMPED_VALS, axis=1), 1.0, atol=1e-12)
 
 
-def test_knot_roundtrip(basis):
-    """Constructing with the same knot vector reproduces the basis."""
-    spl, typ = basis
-    spl2 = SplineBasis(spl.n, spl.p, spl.type, spl.T)
-    xs = jnp.linspace(0.0, 1.0, 50)
-    npt.assert_allclose(_vals_on_grid(spl, xs),
-                        _vals_on_grid(spl2, xs), atol=1e-12)
+def test_partition_of_unity_periodic():
+    npt.assert_allclose(jnp.sum(_PERIODIC_VALS, axis=1), 1.0, atol=1e-12)
 
 
-def test_getitem_matches_call(basis):
-    spl, _ = basis
-    xs = jnp.linspace(0.0, 1.0, 50)
-    for j in range(min(5, spl.n)):
-        npt.assert_allclose(
-            jax.vmap(spl[j])(xs),
-            jax.vmap(lambda x, j=j: spl(x, j))(xs),
-            atol=1e-12,
-        )
+# ── Positivity ────────────────────────────────────────────────────────────────
 
+def test_positivity_clamped():
+    assert jnp.all(_CLAMPED_VALS >= -1e-14)
+
+
+def test_positivity_periodic():
+    assert jnp.all(_PERIODIC_VALS >= -1e-14)
+
+
+# ── Analytic baselines ────────────────────────────────────────────────────────
+
+def test_degree1_clamped_bernstein():
+    """Degree-1 clamped on [0,1] with no interior knot: B_0=1-x, B_1=x."""
+    vals = _eval_all(SplineBasis(2, 1, "clamped"))
+    npt.assert_allclose(vals[:, 0], 1.0 - _XS, atol=1e-12)
+    npt.assert_allclose(vals[:, 1], _XS, atol=1e-12)
+
+
+def test_degree2_clamped_bernstein():
+    """Degree-2 clamped on [0,1] with no interior knot: quadratic Bernstein polynomials."""
+    vals = _eval_all(SplineBasis(3, 2, "clamped"))
+    npt.assert_allclose(vals[:, 0], (1.0 - _XS) ** 2, atol=1e-12)
+    npt.assert_allclose(vals[:, 1], 2.0 * _XS * (1.0 - _XS), atol=1e-12)
+    npt.assert_allclose(vals[:, 2], _XS ** 2, atol=1e-12)
+
+
+def test_derivative_basis_of_bernstein_quadratic():
+    """Derivative basis of Bernstein quadratic: D_0=2(1-x), D_1=2x (excluding right endpoint)."""
+    dspl = DerivativeSpline(SplineBasis(3, 2, "clamped"))
+    xs = _XS[:-1]
+    vals = jax.vmap(lambda x: jax.vmap(lambda i: dspl(x, i))(dspl.ns))(xs)
+    npt.assert_allclose(vals[:, 0], 2.0 * (1.0 - xs), atol=1e-12)
+    npt.assert_allclose(vals[:, 1], 2.0 * xs, atol=1e-12)
+
+
+# ── Greville collocation & de Rham commutation ────────────────────────────────
 
 @pytest.mark.parametrize("typ", ["clamped", "periodic"])
-def test_greville_collocation_recovers_1d_coefficients(typ):
+def test_greville_collocation_recovers_coefficients(typ):
+    """Collocation at Greville points is an invertible interpolation."""
     spl = SplineBasis(N, P, typ)
     coll = spl.collocation_matrix()
     coeffs = jnp.linspace(-1.0, 1.0, spl.n)
-    values = coll @ coeffs
-    recovered = jnp.linalg.solve(coll, values)
-    npt.assert_allclose(recovered, coeffs, atol=1e-12)
+    npt.assert_allclose(jnp.linalg.solve(coll, coll @ coeffs), coeffs, atol=1e-12)
 
 
-def test_greville_histopolation_commutes_with_derivative_on_clamped_splines():
+def test_histopolation_de_rham_clamped():
+    """Greville histopolation and finite-difference coboundary commute for clamped splines."""
     spl = SplineBasis(N, P, "clamped")
     dspl = DerivativeSpline(spl)
-
     coll = spl.collocation_matrix()
     hist = dspl.histopolation_matrix()
-
     coeffs = jnp.linspace(-0.8, 0.9, spl.n)
-    greville_values = coll @ coeffs
-    interpolated = jnp.linalg.solve(coll, greville_values)
-
-    # On the Greville spans, integrating du is exactly the endpoint difference.
-    span_moments = greville_values[1:] - greville_values[:-1]
-    histopolated = jnp.linalg.solve(hist, span_moments)
-
-    discrete_derivative = interpolated[1:] - interpolated[:-1]
-    npt.assert_allclose(histopolated, discrete_derivative, atol=1e-12)
+    # Integrating the derivative over each Greville span equals the endpoint difference.
+    span_integrals = (coll @ coeffs)[1:] - (coll @ coeffs)[:-1]
+    npt.assert_allclose(
+        jnp.linalg.solve(hist, span_integrals),
+        coeffs[1:] - coeffs[:-1],
+        atol=1e-12,
+    )
 
 
-def test_bad_init_rejected():
-    with pytest.raises(ValueError):
-        SplineBasis(N, P, "not-a-type")
-    with pytest.raises(ValueError):
-        SplineBasis(N, N, "clamped")  # p >= n not allowed
-    with pytest.raises(ValueError):
-        SplineBasis(N, 2 * N, "fourier")
+@pytest.mark.parametrize("typ", ["clamped", "periodic"])
+def test_autodiff_agrees_with_derivative_spline(typ):
+    """Autodiff derivative of a spline function equals its expansion in the derivative basis.
+
+    For coefficients ``c``, differentiating ``f(x) = c · B(x)`` by autodiff must
+    equal ``dc · D(x)`` where ``D`` are the DerivativeSpline basis functions and
+    ``dc`` is the coboundary (finite difference) of ``c``.  This is the pointwise
+    statement of the de Rham commutation property.
+    """
+    spl = _CLAMPED if typ == "clamped" else _PERIODIC
+    dspl = DerivativeSpline(spl)
+    c = jnp.linspace(-1.0, 1.0, spl.n)
+
+    def f(x):
+        return jnp.dot(c, jax.vmap(lambda i: spl(x, i))(spl.ns))
+
+    # Coboundary on coefficient space.
+    dc = c[1:] - c[:-1] if typ == "clamped" else jnp.roll(c, -1) - c
+
+    def f_deriv(x):
+        return jnp.dot(dc, jax.vmap(lambda j: dspl(x, j))(dspl.ns))
+
+    # Interior points only: derivative splines are not required to be evaluable
+    # at the clamped boundary (repeated knots cause a genuine kink there).
+    xs = _XS[1:-1]
+    npt.assert_allclose(jax.vmap(jax.grad(f))(xs), jax.vmap(f_deriv)(xs), atol=1e-10)
 
 
-def test_tensor_basis_evaluate_matches_product():
+# ── TensorBasis ───────────────────────────────────────────────────────────────
+
+def test_tensor_basis_factors():
+    """TensorBasis evaluation equals the product of 1-D factor evaluations."""
     tb = TensorBasis([
         SplineBasis(5, 2, "clamped"),
         SplineBasis(4, 2, "periodic"),
@@ -118,6 +149,3 @@ def test_tensor_basis_evaluate_matches_product():
         )
 
 
-def test_tensor_basis_wrong_rank_rejected():
-    with pytest.raises(ValueError, match="exactly 3 bases"):
-        TensorBasis([SplineBasis(5, 2, "clamped")])

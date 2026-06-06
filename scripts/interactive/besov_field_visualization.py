@@ -20,7 +20,7 @@ import numpy as np
 
 from mrx.differential_forms import Pullback, Pushforward
 from mrx.mappings import rotating_ellipse_map
-from mrx.utils import build_random_besov_function
+from test.random_fields import build_random_besov_function
 
 jax.config.update("jax_enable_x64", True)
 

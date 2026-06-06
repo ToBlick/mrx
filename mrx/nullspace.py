@@ -106,7 +106,7 @@ def get_saddle_point_nullspaces(seq, operators, k, dirichlet):
         return seq.apply_inverse_mass_matrix(
             Dt_v, k - 1, dirichlet=dirichlet, operators=operators)
 
-    vs_lower = jnp.stack([_lower(v) for v in vs_upper])
+    vs_lower = jax.vmap(_lower)(vs_upper)
     return vs_upper, vs_lower
 
 
@@ -154,7 +154,7 @@ def get_stiffness_nullspace(seq, operators, k, dirichlet, *, tol=1e-10):
     basis_prev = jnp.eye(n_prev, dtype=jnp.float64)
     strong = jax.vmap(strong_apply)(basis_prev).T
     mass_strong = jax.vmap(mass_apply, in_axes=1, out_axes=1)(strong)
-    gram = 0.5 * (strong.T @ mass_strong + (strong.T @ mass_strong).T)
+    gram = strong.T @ mass_strong
     if gram.size == 0:
         exact_basis = jnp.zeros((0, _dof_count(seq, k, dirichlet)), dtype=jnp.float64)
     else:
@@ -171,13 +171,10 @@ def get_stiffness_nullspace(seq, operators, k, dirichlet, *, tol=1e-10):
             exact_basis = jnp.zeros((0, _dof_count(seq, k, dirichlet)), dtype=strong.dtype)
 
     harmonics = get_nullspace(operators, k, dirichlet)
-    basis = []
+    basis = list(exact_basis)
 
     def _mass_inner(x, y):
         return jnp.dot(x, mass_apply(y))
-
-    for vector in exact_basis:
-        basis.append(vector)
 
     for vector in harmonics:
         work = vector
@@ -426,10 +423,10 @@ def _initial_guesses(seq, operators, k, dirichlet, n_vec):
             jnp.ones(seq.n3_dbc), 3, dirichlet=True, operators=operators)
     elif k == 1 and not dirichlet:
         guesses[0] = seq.apply_inverse_mass_matrix(
-            seq.p1(_toroidal_vacuum_field(seq)), 1, dirichlet=False, operators=operators)
+            seq.load(_toroidal_vacuum_field(seq), 1), 1, dirichlet=False, operators=operators)
     elif k == 2 and dirichlet:
         guesses[0] = seq.apply_inverse_mass_matrix(
-            seq.p2_dbc(_toroidal_vacuum_field(seq)), 2, dirichlet=True, operators=operators)
+            seq.load(_toroidal_vacuum_field(seq), 2, dirichlet=True), 2, dirichlet=True, operators=operators)
     return guesses
 
 

@@ -262,9 +262,9 @@ def _smooth_scalar_rhs_batch(seq, key, k, dirichlet, num_rhs, n_modes=3):
     downstream applications are not white-noise in DoF space.
     """
     if k == 0:
-        proj = seq.p0_dbc if dirichlet else seq.p0
+        proj = lambda f: seq.load(f, 0, dirichlet=dirichlet)
     elif k == 3:
-        proj = seq.p3_dbc if dirichlet else seq.p3
+        proj = lambda f: seq.load(f, 3, dirichlet=dirichlet)
     else:
         raise ValueError(
             f"smooth RHS generator only supports k in (0, 3), got {k}")

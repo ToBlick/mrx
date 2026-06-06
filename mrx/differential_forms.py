@@ -1,45 +1,26 @@
-"""
-Differential forms implementation for finite element analysis.
+"""Discrete differential k-forms on tensor-product spline spaces.
 
-This module provides classes for working with differential forms in finite element
-analysis, including discrete differential forms, pushforward and pullback operations,
-and discrete function representations.
-
-The implementation supports forms of different degrees (k = 0, 1, 2, 3) in
-three-dimensional space and includes functionality for evaluation, transformation,
-and basis manipulation.
+Provides :class:`DifferentialForm` (basis), :class:`DiscreteFunction`
+(DOF vector + basis), :class:`Pushforward`, and :class:`Pullback`.
 """
+
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
 
+import mrx
 from mrx.spline_bases import DerivativeSpline, SplineBasis, TensorBasis
-from mrx.utils import inv33
 
 
 class DifferentialForm:
-    """
-    A class representing differential forms of various degrees.
+    """Discrete k-form on a 3-D tensor-product spline space.
 
-    This class implements differential forms using spline bases and supports
-    operations like evaluation, indexing, and basis transformations.
-
-    Attributes:
-        d (int): Dimension of the space
-        k (int): Degree of the differential form (0, 1, 2, or 3. -1 refers to a vector field)
-        n (int): Total number of basis functions
-        nr (int): Number of basis functions in r direction
-        nt (int): Number of basis functions in θ direction
-        nz (int): Number of basis functions in ζ direction
-        pr (int): Polynomial degree in r direction
-        pt (int): Polynomial degree in θ direction
-        pz (int): Polynomial degree in ζ direction
-        ns (jnp.ndarray): Array of indices for basis functions
-        Λ (list): List of SplineBasis objects for each direction
-        dΛ (list): List of derivative spline bases
-        types (list): Boundary condition types for each direction
-        bases (tuple): Tensor bases for the form
-        shape (tuple): Shape of the form in each direction
+    ``k=0`` — scalar; ``k=1`` — 1-form (edge); ``k=2`` — 2-form (face);
+    ``k=3`` — volume form; ``k=-1`` — vector field (3 copies of the
+    0-form space).  **Note:** ``k=-1`` is incompatible with polar setups
+    because the polar extraction operator reduces the 0-form DOF count
+    asymmetrically across the three components.
     """
     d: int
     k: int
@@ -53,15 +34,13 @@ class DifferentialForm:
     ns: jnp.ndarray
 
     def __init__(self, k, ns, ps, types, Ts=None):
-        """
-        Initialize a differential form.
-
-        Args:
-            k (int): Degree of the form, k = 0, 1, 2, 3 are supported.
-            ns (list): Number of basis functions in each direction
-            ps (list): Polynomial degrees for each direction
-            types (list): Boundary condition types for each direction
-            Ts (list, optional): Knot vectors for each direction
+        """Args:
+            k: Form degree (0, 1, 2, 3, or -1 for a vector field).
+            ns: Number of DOFs in each direction.
+            ps: Polynomial degrees in each direction.
+            types: Boundary condition types (``'clamped'``, ``'periodic'``,
+                ``'constant'``) for each direction.
+            Ts: Knot vectors; ``None`` uses uniform knots.
         """
         self.d = len(ns)
         self.k = k
@@ -151,16 +130,7 @@ class DifferentialForm:
         self.ns = jnp.arange(self.n)
 
     def _vector_index(self, idx):
-        """
-        Convert linear index to vector component and local index.
-
-        Args:
-            idx (int): Linear index into the form
-
-        Returns:
-            tuple: (category, index) where category indicates the vector
-                  component and index is the local index within that component
-        """
+        """Return ``(component, local_index)`` for a global DOF index."""
         if self.k == 0 or self.k == 3:
             return jnp.int32(0), idx
         elif self.k == 1 or self.k == 2 or self.k == -1:
@@ -170,18 +140,7 @@ class DifferentialForm:
             return category, index
 
     def _ravel_index(self, c, i, j, k):
-        """
-        Convert multi-dimensional indices to linear index.
-
-        Args:
-            c (int): Component index
-            i (int): Index in radial direction
-            j (int): Index in poloidal direction
-            k (int): Index in toroidal direction
-
-        Returns:
-            int: Linear index into the form
-        """
+        """Return the global DOF index for component ``c`` and grid indices ``(i,j,k)``."""
         if self.k == 0:
             rav = jnp.ravel_multi_index(
                 (i, j, k), (self.nr, self.nt, self.nz), mode="clip"
@@ -247,16 +206,7 @@ class DifferentialForm:
         return jnp.int32(rav)
 
     def _unravel_index(self, idx):
-        """
-        Convert linear index to multi-dimensional indices.
-
-        Args:
-            idx (int): Linear index into the form
-
-        Returns:
-            tuple: (category, i, j, k) where category is the component index
-                  and (i,j,k) are the indices in each direction
-        """
+        """Return ``(component, i, j, k)`` for a global DOF index."""
         if self.k == 0:
             return jnp.int32(0), *jnp.unravel_index(idx, (self.nr, self.nt, self.nz))
         elif self.k == 1:
@@ -296,33 +246,22 @@ class DifferentialForm:
             return c, i, j, k
 
     def __call__(self, x, i):
-        """Evaluate the form at point x with basis function i."""
+        """Alias for :meth:`evaluate`."""
         return self.evaluate(x, i)
 
     def __getitem__(self, i):
-        """Get the i-th basis function of the form."""
+        """Return ``lambda x: self(x, i)``."""
         return lambda x: self.evaluate(x, i)
 
     def __iter__(self):
-        """Iterate over all basis functions of the form."""
         for i in range(self.n):
             yield self[i]
 
     def __len__(self):
-        """Get the total number of basis functions."""
         return self.n
 
     def evaluate(self, x, i):
-        """
-        Evaluate the form at point x with basis function i.
-
-        Args:
-            x (array-like): Point at which to evaluate
-            i (int): Index of basis function to evaluate
-
-        Returns:
-            array-like: Value of the form at x
-        """
+        """Evaluate basis function ``i`` at logical point ``x``."""
         category, index = self._vector_index(i)
         if self.k == 0 or self.k == 3:
             return jnp.ones(1) * self.bases[0](x, index)
@@ -340,28 +279,13 @@ class DifferentialForm:
 
 
 class DiscreteFunction:
-    """
-    A class representing discrete functions using differential forms.
-
-    This class implements discrete functions as linear combinations of basis
-    functions from a differential form.
-
-    Attributes:
-        dof (array-like): Degrees of freedom (coefficients)
-        Λ (DifferentialForm): The underlying differential form
-        n (int): Number of basis functions
-        ns (array-like): Array of indices
-        E (array-like): Transformation matrix
-    """
+    """A discrete function as a linear combination of k-form basis functions."""
 
     def __init__(self, dof, Λ, E=None):
-        """
-        Initialize a discrete function.
-
-        Args:
-            dof (array-like): Degrees of freedom (coefficients)
-            Λ (DifferentialForm): The underlying differential form
-            E (array-like, optional): Transformation matrix
+        """Args:
+            dof: Coefficient vector (DOFs).
+            Λ: Underlying :class:`DifferentialForm`.
+            E: Extraction matrix; defaults to the identity.
         """
         self.dof = dof
         self.Λ = Λ
@@ -370,55 +294,34 @@ class DiscreteFunction:
         self.E = E if E is not None else jnp.eye(self.n)
 
     def __call__(self, x):
-        """
-        Evaluate the function at point x.
-
-        Args:
-            x (array-like): Point at which to evaluate
-
-        Returns:
-            array-like: Value of the function at x
-        """
-        # TODO: Should be fine as a single vmap since it is only over bases.
+        """Evaluate at logical point ``x``."""
         return self.dof @ (self.E @ jax.vmap(self.Λ, (None, 0))(x, self.ns))
 
 
 class Pushforward:
-    """
-    A class implementing pushforward operations on differential forms.
+    """Pushforward of a k-form under the logical-to-physical map F.
 
-    This class implements the pushforward of differential forms under a
-    given transformation.
+    Let J = det(DF).  Transformation rules (ω evaluated at x):
 
-    Attributes:
-        k (int): Degree of the form
-        f (callable): The form to push forward
-        F (callable): The transformation function
+        k= 0   F_* ω = ω
+        k= 1   F_* ω = (DFᵀ)⁻¹ · ω
+        k= 2   F_* ω = DF · ω / J           (Piola)
+        k= 3   F_* ω = ω / J
+        k=−1   F_* v = DF · v               (vector field)
     """
 
     def __init__(self, f, F, k):
-        """
-        Initialize a pushforward operation.
-
-        Args:
-            f (callable): The form to push forward
-            F (callable): The transformation function
-            k (int): Degree of the form
+        """Args:
+            f: The form to push forward.
+            F: Logical-to-physical map.
+            k: Form degree.
         """
         self.k = k
         self.f = f
         self.F = F
 
     def __call__(self, x):
-        """
-        Apply the pushforward at point x.
-
-        Args:
-            x (array-like): Point at which to evaluate - always in the logical domain
-
-        Returns:
-            array-like: Value of the pushed-forward form at x
-        """
+        """Evaluate the pushed-forward form at logical point ``x``."""
         if self.k == 0:
             return self.f(x)
         elif self.k == 1:
@@ -439,41 +342,29 @@ class Pushforward:
 
 
 class Pullback:
-    """
-    A class implementing pullback operations on differential forms.
+    """Pullback of a k-form under the logical-to-physical map F.
 
-    This class implements the pullback of differential forms under a
-    given transformation.
+    Let J = det(DF).  Transformation rules (ω evaluated at F(x)):
 
-    Attributes:
-        k (int): Degree of the form
-        f (callable): The form to pull back
-        F (callable): The transformation function
+        k= 0   F* ω = ω∘F
+        k= 1   F* ω = DFᵀ · (ω∘F)
+        k= 2   F* ω = J · DF⁻¹ · (ω∘F)     (Piola)
+        k= 3   F* ω = J · (ω∘F)
+        k=−1   F* v = DF⁻¹ · (v∘F)         (vector field)
     """
 
     def __init__(self, f, F, k):
-        """
-        Initialize a pullback operation.
-
-        Args:
-            f (callable): The form to pull back
-            F (callable): The transformation function
-            k (int): Degree of the form
+        """Args:
+            f: The form to pull back.
+            F: Logical-to-physical map.
+            k: Form degree.
         """
         self.k = k
         self.f = f
         self.F = F
 
     def __call__(self, x):
-        """
-        Apply the pullback at point x.
-
-        Args:
-            x (array-like): Point at which to evaluate
-
-        Returns:
-            array-like: Value of the pulled-back form at x
-        """
+        """Evaluate the pulled-back form at logical point ``x``."""
         y = self.F(x)
         if self.k == 0:
             return self.f(y)
@@ -491,3 +382,102 @@ class Pullback:
             return (
                 inv33(jax.jacfwd(self.F)(x)) @ self.f(y)
             )
+
+
+# ---------------------------------------------------------------------------
+# Math utility functions (geometry, calculus, norms)
+# ---------------------------------------------------------------------------
+
+def det33(mat: jnp.ndarray) -> jnp.ndarray:
+    """Determinant of a 3×3 matrix via the explicit Sarrus rule."""
+    m1, m2, m3 = mat[0]
+    m4, m5, m6 = mat[1]
+    m7, m8, m9 = mat[2]
+    return m1 * (m5 * m9 - m6 * m8) - m2 * (m4 * m9 - m6 * m7) + m3 * (m4 * m8 - m5 * m7)
+
+
+def inv33(mat: jnp.ndarray) -> jnp.ndarray:
+    """Inverse of a 3×3 matrix via the explicit adjugate formula.
+
+    Returns the zero matrix when the determinant is smaller than ``1e-10``
+    in absolute value.
+    """
+    m1, m2, m3 = mat[0]
+    m4, m5, m6 = mat[1]
+    m7, m8, m9 = mat[2]
+    det = (m1 * (m5 * m9 - m6 * m8)
+           + m4 * (m8 * m3 - m2 * m9)
+           + m7 * (m2 * m6 - m3 * m5))
+    return jnp.where(
+        jnp.abs(det) < 1e-10,
+        jnp.zeros((3, 3)),
+        jnp.array([
+            [m5 * m9 - m6 * m8, m3 * m8 - m2 * m9, m2 * m6 - m3 * m5],
+            [m6 * m7 - m4 * m9, m1 * m9 - m3 * m7, m3 * m4 - m1 * m6],
+            [m4 * m8 - m5 * m7, m2 * m7 - m1 * m8, m1 * m5 - m2 * m4],
+        ]) / det
+    )
+
+
+def jacobian_determinant(f: Callable) -> Callable:
+    """Return a function that computes ``det(jacfwd(f))`` at a point."""
+    return lambda x: jnp.linalg.det(jax.jacfwd(f)(x))
+
+
+def div(F: Callable) -> Callable:
+    """Return a function that computes the divergence of vector field ``F``."""
+    def div_F(x: jnp.ndarray) -> jnp.ndarray:
+        DF = jax.jacfwd(F)(x)
+        return jnp.trace(DF) * jnp.ones(1)
+    return div_F
+
+
+def curl(F: Callable) -> Callable:
+    """Return a function that computes the curl of vector field ``F`` in 3D."""
+    def curl_F(x: jnp.ndarray) -> jnp.ndarray:
+        DF = jax.jacfwd(F)(x)
+        return jnp.array([DF[2, 1] - DF[1, 2],
+                          DF[0, 2] - DF[2, 0],
+                          DF[1, 0] - DF[0, 1]])
+    return curl_F
+
+
+def grad(F: Callable) -> Callable:
+    """Return a function that computes the gradient of scalar field ``F``."""
+    def grad_F(x: jnp.ndarray) -> jnp.ndarray:
+        DF = jax.jacfwd(F)(x)
+        return jnp.ravel(DF)
+    return grad_F
+
+
+def l2_product(f: Callable,
+               g: Callable,
+               Q: Any,
+               F: Callable = lambda x: x) -> jnp.ndarray:
+    """L2 inner product ``<f, g>`` over the domain defined by quadrature ``Q``.
+
+    Args:
+        f: First integrand ``ξ -> array``.
+        g: Second integrand ``ξ -> array``.
+        Q: Quadrature rule with ``Q.x`` (points) and ``Q.w`` (weights).
+        F: Optional coordinate map; Jacobian determinant is included.
+
+    Returns:
+        Scalar inner product value.
+    """
+    J_i = jax.lax.map(jacobian_determinant(F), Q.x,
+                      batch_size=mrx.MAP_BATCH_SIZE_INNER)
+    f_ij = jax.lax.map(f, Q.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
+    g_ij = jax.lax.map(g, Q.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
+    return jnp.einsum("ij,ij,i,i->", f_ij, g_ij, J_i, Q.w)
+
+
+def double_map(f, xs, ys):
+    """Apply ``f(x, y)`` over all ``(xs[i], ys[j])`` via nested ``lax.map``.
+
+    Returns an array of shape ``(len(xs), len(ys), ...)``.
+    """
+    def outer(x):
+        return jax.lax.map(lambda y: f(x, y), ys,
+                           batch_size=mrx.MAP_BATCH_SIZE_INNER)
+    return jax.lax.map(outer, xs, batch_size=mrx.MAP_BATCH_SIZE_OUTER)

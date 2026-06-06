@@ -32,7 +32,7 @@ from mrx.preconditioners import get_mass_jacobi_diaginv
 from mrx.relaxation import (DescentMethod, IntegrationScheme, TimeStepChoice,
                             TimeStepper, compute_force,
                             relaxation_loop)
-from mrx.utils import evaluate_at_xq, integrate_against
+from mrx.quadrature import evaluate_at_xq, integrate_against
 
 jax.config.update("jax_enable_x64", True)
 

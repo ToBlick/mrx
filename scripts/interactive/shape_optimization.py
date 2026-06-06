@@ -31,16 +31,16 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from mrx.derham_sequence import DeRhamSequence, SequenceGeometry
+from mrx.derham_sequence import DeRhamSequence
 from mrx.io import project_sampled_field
 from mrx.mappings import SplineMap, toroid_map
 from mrx.operators import (apply_inverse_shifted_hodge_laplacian,
                            apply_mass_matrix, apply_stiffness,
                            operators_from_coeffs)
 from mrx.solvers import backtracking_line_search
-from mrx.spline_geometry import (min_jacobian_from_coeffs,
-                                 spline_map_jacobian_j_at_quad)
-from mrx.utils import integrate_against
+from mrx.geometry import (SequenceGeometry, min_jacobian_from_coeffs,
+                          spline_map_jacobian_j_at_quad)
+from mrx.quadrature import integrate_against
 
 jax.config.update("jax_enable_x64", True)
 

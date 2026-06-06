@@ -1,5 +1,8 @@
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
+from jax.scipy.sparse.linalg import cg
 
 
 def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm) -> tuple[jnp.ndarray, float, int]:
@@ -27,56 +30,26 @@ def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm) -> 
         iters = picard iteration count.
     """
     def cond_fun(state):
-        """
-        Condition function for the while loop. Continue while either residual or change is above tolerance.
-
-        Parameters
-        ----------
-        state : tuple[jnp.ndarray, jnp.ndarray, int]
-            State of the solver.
-
-        Returns
-        -------
-        bool : Whether to continue the loop.
-        """
-        # z = (x, (aux1, aux2, ...))
-        z_prev, z, i = state
-        # Use the residual ||f(z) - z|| as stopping criterion.
-        residual = norm(f(z)[0] - z[0])
-        # Continue while either residual or change is above tolerance.
+        # fz = f(z) is carried in the state to avoid evaluating f twice per
+        # iteration (once in cond and once in body).
+        _, z, fz, i = state
+        residual = norm(fz[0] - z[0])
         return jnp.logical_and(i < max_iter, jnp.logical_or(residual > tol, jnp.isnan(residual)))
 
     def body_fun(state):
-        """
-        Body function for the while loop.
-
-        Parameters
-        ----------
-        state : tuple[jnp.ndarray, jnp.ndarray, int]
-            State of the solver.
-
-        Returns
-        -------
-        tuple[jnp.ndarray, jnp.ndarray, int] : Next state.
-        """
-        z_prev, z, i = state
-        fz = f(z)
-        alpha = jnp.where(i == 0,
-                          1,
-                          jnp.clip(
-                              norm(fz[0] - z[0]) / (norm(z[0] - z_prev[0]) + 1e-12), 0.0, 1.0)
-                          )
+        z_prev, z, fz, i = state
+        alpha = jnp.where(
+            i == 0,
+            1.0,
+            jnp.clip(norm(fz[0] - z[0]) / (norm(z[0] - z_prev[0]) + 1e-12), 0.0, 1.0),
+        )
         z_next = (alpha * fz[0] + (1 - alpha) * z[0], fz[1])
-        return (z, z_next, i + 1)
+        return (z, z_next, f(z_next), i + 1)
 
-    state = (z_init, f(z_init), 0)
-    _, z_star, iters = jax.lax.while_loop(cond_fun, body_fun, state)
-
-    # If the solver didn't iterate at all (iters == 0), we still want to
-    # evaluate f once so the caller receives the updated auxiliary outputs
-    # that f computes.
-    z_star = jax.lax.cond(iters == 0, lambda z: f(z), lambda z: z, z_star)
-    return z_star, norm(f(z_star)[0] - z_star[0]), iters
+    fz_init = f(z_init)
+    state = (z_init, z_init, fz_init, 0)
+    _, z_star, fz_star, iters = jax.lax.while_loop(cond_fun, body_fun, state)
+    return z_star, norm(fz_star[0] - z_star[0]), iters
 
 
 def newton_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm):
@@ -265,7 +238,7 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
         x0,
         r0,
         z0,
-        z0.copy(),   # p = z0
+        z0,          # p = z0
         rz0,
         0,
         jnp.sqrt(jnp.abs(rz0)) < tol * bnorm_safe,  # check initial
@@ -279,7 +252,8 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
         x, r, z, p, rz, k, _ = state
 
         Ap = A_matvec(p)
-        alpha = rz / jnp.where(jnp.dot(p, Ap) > 0, jnp.dot(p, Ap), 1.0)
+        pAp = jnp.dot(p, Ap)
+        alpha = rz / jnp.where(pAp > 0, pAp, 1.0)
 
         x_new = x + alpha * p
         r_new = r - alpha * Ap
@@ -370,6 +344,24 @@ def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x,
     return project_primal(x), info
 
 
+class _MinresState(NamedTuple):
+    x: jnp.ndarray
+    y: jnp.ndarray
+    r1: jnp.ndarray
+    r2: jnp.ndarray
+    beta: float
+    oldbeta: float
+    cs: float
+    sn: float
+    dbar: float
+    epsln: float
+    phibar: float
+    w_prev: jnp.ndarray
+    w_pp: jnp.ndarray
+    k: int
+    converged: bool
+
+
 def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
     """
     MINRES solver for symmetric (possibly indefinite) linear systems.
@@ -421,27 +413,26 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
     #   w_prev, w_pp: direction vectors (one-back and two-back)
     #   k: iteration count
     #   converged: flag
-    init_state = (
-        x0,                    # x
-        y0,                    # y (preconditioned, divided by beta to get v)
-        jnp.zeros_like(b),    # r1
-        r0,                    # r2
-        beta1,                 # beta
-        0.0,                   # oldbeta
-        -1.0,                  # cs (SOL convention: initialized to -1)
-        0.0,                   # sn
-        0.0,                   # dbar
-        0.0,                   # epsln
-        beta1,                 # phibar
-        jnp.zeros_like(b),    # w_prev
-        jnp.zeros_like(b),    # w_pp
-        0,                     # k
-        False,                 # converged
+    init_state = _MinresState(
+        x=x0,
+        y=y0,
+        r1=jnp.zeros_like(b),
+        r2=r0,
+        beta=beta1,
+        oldbeta=0.0,
+        cs=-1.0,
+        sn=0.0,
+        dbar=0.0,
+        epsln=0.0,
+        phibar=beta1,
+        w_prev=jnp.zeros_like(b),
+        w_pp=jnp.zeros_like(b),
+        k=0,
+        converged=False,
     )
 
     def cond_fn(state):
-        *_, beta, _, _, _, _, _, phibar, _, _, k, converged = state
-        return jnp.logical_and(k < maxiter, ~converged)
+        return jnp.logical_and(state.k < maxiter, ~state.converged)
 
     def body_fn(state):
         (x, y, r1, r2, beta, oldbeta, cs, sn, dbar, epsln, phibar,
@@ -498,28 +489,28 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
         # Check convergence
         converged_new = jnp.abs(phibar_new) < tol * bnorm_safe
 
-        return (
-            x_new,
-            y_prec,         # y <- preconditioned for next iteration
-            r1_new,
-            r2_new,
-            beta_new,
-            oldbeta_new,
-            cs_new,
-            sn_new,
-            dbar_new,
-            epsln_new,
-            phibar_new,
-            w_new,          # w_prev <- current
-            w_prev,         # w_pp <- one-back
-            k + 1,
-            converged_new,
+        return _MinresState(
+            x=x_new,
+            y=y_prec,
+            r1=r1_new,
+            r2=r2_new,
+            beta=beta_new,
+            oldbeta=oldbeta_new,
+            cs=cs_new,
+            sn=sn_new,
+            dbar=dbar_new,
+            epsln=epsln_new,
+            phibar=phibar_new,
+            w_prev=w_new,
+            w_pp=w_prev,
+            k=k + 1,
+            converged=converged_new,
         )
 
     final_state = jax.lax.while_loop(cond_fn, body_fn, init_state)
-    x_final = final_state[0]
-    k_final = final_state[13]
-    converged_final = final_state[14]
+    x_final = final_state.x
+    k_final = final_state.k
+    converged_final = final_state.converged
 
     # info < 0: converged (|info| = iteration count); info > 0: NOT converged
     info = jnp.where(converged_final, -k_final, k_final)
@@ -581,31 +572,29 @@ def solve_saddle_point_minres(
     n_total = n_upper + n_lower
 
     # --- Nullspace projection helpers ---
-    def inner_upper(x, y):
-        return jnp.dot(x, mass_upper_matvec(y))
+    # Pre-compute mass-applied nullspace vectors with vmap (O(n_null) matvecs),
+    # then use matrix ops for projection — matches solve_singular_cg convention.
+    if len(vs_upper) == 0:
+        def project_primal_upper(x): return x
+        def project_dual_upper(f): return f
+    else:
+        _vs_u = jnp.asarray(vs_upper)
+        _mass_vs_u = jax.vmap(mass_upper_matvec)(_vs_u)
+        def project_primal_upper(x):
+            return x - (_vs_u @ mass_upper_matvec(x)) @ _vs_u
+        def project_dual_upper(f):
+            return f - (_vs_u @ f) @ _mass_vs_u
 
-    def inner_lower(x, y):
-        return jnp.dot(x, mass_lower_matvec(y))
-
-    def project_primal_upper(x):
-        for v in vs_upper:
-            x = x - inner_upper(v, x) * v
-        return x
-
-    def project_dual_upper(f):
-        for v in vs_upper:
-            f = f - jnp.dot(v, f) * mass_upper_matvec(v)
-        return f
-
-    def project_primal_lower(x):
-        for v in vs_lower:
-            x = x - inner_lower(v, x) * v
-        return x
-
-    def project_dual_lower(f):
-        for v in vs_lower:
-            f = f - jnp.dot(v, f) * mass_lower_matvec(v)
-        return f
+    if len(vs_lower) == 0:
+        def project_primal_lower(x): return x
+        def project_dual_lower(f): return f
+    else:
+        _vs_l = jnp.asarray(vs_lower)
+        _mass_vs_l = jax.vmap(mass_lower_matvec)(_vs_l)
+        def project_primal_lower(x):
+            return x - (_vs_l @ mass_lower_matvec(x)) @ _vs_l
+        def project_dual_lower(f):
+            return f - (_vs_l @ f) @ _mass_vs_l
 
     def pack(u, s):
         return jnp.concatenate([u, s])
@@ -665,3 +654,48 @@ def solve_saddle_point_minres(
     u, sigma = unpack(project_primal(x))
 
     return u, sigma, info
+
+
+def get_smallest_ev_pair(A_matvec, mass_matvec, x0, precond_matvec=lambda x: x,
+                         vs=[], shift=1e-9, maxiter=20, tol=1e-6):
+    """Find the smallest generalised eigenpair via shifted inverse iteration."""
+    def inner_product(x, y):
+        return jnp.dot(x, mass_matvec(y))
+
+    def normalize(x):
+        return x / jnp.sqrt(inner_product(x, x))
+
+    def project_primal(x):
+        for v in vs:
+            x = x - inner_product(v, x) * v
+        return x
+
+    def project_dual(f):
+        for v in vs:
+            f = f - jnp.dot(v, f) * mass_matvec(v)
+        return f
+
+    def A_shifted(x):
+        x = project_primal(x)
+        Ax = A_matvec(x) + shift * mass_matvec(x)
+        return project_dual(Ax)
+
+    x0 = normalize(project_primal(x0))
+
+    def cond_fun(val):
+        i, x, x_prev = val
+        diff = jnp.minimum(jnp.linalg.norm(x - x_prev),
+                           jnp.linalg.norm(x + x_prev))
+        return jnp.logical_and(i < maxiter, diff > tol)
+
+    def body_fun(val):
+        i, x, _ = val
+        rhs = project_dual(mass_matvec(x))
+        y, _ = cg(A_shifted, rhs, x0=jnp.zeros_like(x),
+                  M=precond_matvec, tol=tol, maxiter=maxiter)
+        x_next = normalize(project_primal(y))
+        return (i + 1, x_next, x)
+
+    _, v, _ = jax.lax.while_loop(cond_fun, body_fun, (0, x0, jnp.zeros_like(x0)))
+    lmbda = jnp.dot(v, A_matvec(v))
+    return v, lmbda

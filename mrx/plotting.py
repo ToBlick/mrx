@@ -5,7 +5,6 @@ This module provides functions for creating visualizations of convergence plots
 and other analysis results using Plotly.
 """
 
-# %%
 from typing import Callable, Optional
 
 import diffrax as dfx
@@ -222,7 +221,6 @@ def get_2d_grids(
     _y1 = _y[:, 0].reshape(n1, n2)
     _y2 = _y[:, 1].reshape(n1, n2)
     _y3 = _y[:, 2].reshape(n1, n2)
-    _y = jax.lax.map(F, _x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
     return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
 
 
@@ -741,22 +739,20 @@ def trace_plot(
     ax2.legend(lines1 + lines2, labels1 + labels2,
                loc="best", fontsize=LEGEND_SIZE)
     # ax1.grid(which="major", linestyle="-", color=color1, linewidth=0.5)
-    ax2.legend(loc="best", fontsize=LEGEND_SIZE)
     ax2.grid(which="both", linestyle="--", linewidth=0.5)
     fig2.tight_layout()
     if filename.endswith("/"):
         filename = filename[:-1]
     plt.savefig(filename + "/force_trace.pdf", bbox_inches="tight")
 
-# %%
 ##################
 # Poincare plots #
 ##################
 
 
 def integrate_fieldlines(x0s, B_dof, p_dof, seq, T, N):
-    B_h = DiscreteFunction(B_dof, seq.Lambda_2, seq.E2)
-    p_h = DiscreteFunction(p_dof, seq.Lambda_0, seq.E0)
+    B_h = DiscreteFunction(B_dof, seq.basis_2, seq.e2)
+    p_h = DiscreteFunction(p_dof, seq.basis_0, seq.e0)
 
     def vector_field(t, x, args):
         # avoid evaluation at x[0] = 0
@@ -764,7 +760,7 @@ def integrate_fieldlines(x0s, B_dof, p_dof, seq, T, N):
         # Ensure periodicity in the last two coordinates
         x = x.at[1:3].set(x[1:3] % 1.0)
         Bx = B_h(x)
-        DFx = jax.jacfwd(seq.F)(x)
+        DFx = jax.jacfwd(seq.map)(x)
         return Bx / (jnp.linalg.norm(DFx @ Bx) + 1e-9)
 
     def integrate_fieldline(x0):
@@ -1302,4 +1298,3 @@ def plot_crossections_separate(
 
     # plt.tight_layout(rect=[0, 0, 0.85, 1])  # leave room for cbar
     return fig, axes
-# %%

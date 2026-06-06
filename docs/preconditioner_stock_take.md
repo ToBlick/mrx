@@ -357,3 +357,32 @@ existing scripts without forking the solve paths.
   `preconditioner_cleanup_todo.md`). Recommended collapse in §5.
 - Concrete dead-code targets are in §6 (most already tracked in the cleanup
   TODO).
+
+---
+
+## 9. Convergence benchmark (2026-06-05, `sparse` branch)
+
+Toroidal domain, `epsilon=1/3`, `ns=(n, 2n, n)`, `cg_tol=1e-12`.
+Error = relative physical L² norm.
+
+### k=0 DBC (tensor Hodge-Laplacian preconditioner)
+
+| p | n=8 | n=12 | n=16 | rate |
+|---|-----|------|------|------|
+| 1 | 4.58e-02 (11) | 1.83e-02 (12) | 9.77e-03 (13) | 2.2 |
+| 2 | 4.12e-03 (10) | 1.04e-03 (12) | 4.12e-04 (12) | 3.3 |
+| 3 | 4.77e-04 (11) | 7.88e-05 (12) | 2.35e-05 (12) | 4.3 |
+
+Iteration counts ~10–13, n- and p-independent. Rates = p+1. ✓
+
+### k=1 DBC, k=3 NBC (Schur Jacobi preconditioner)
+
+| p | k | n=8 | n=12 | rate |
+|---|---|-----|------|------|
+| 1 | 1 | 2.64e-01 (155) | 1.69e-01 (295) | 1.1 |
+| 2 | 1 | 2.19e-02 (110) | 7.84e-03 (201) | 2.5 |
+| 1 | 3 | 3.47e-01 (106) | 2.12e-01 (198) | 1.2 |
+| 2 | 3 | 4.83e-02 (66)  | 1.80e-02 (112) | 2.4 |
+
+Rates = p+1. ✓  Iteration counts ~10–20× higher than k=0 — Schur Jacobi is
+weak.  Hiptmair–Xu (auxiliary space) is the planned successor preconditioner.

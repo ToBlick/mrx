@@ -11,12 +11,14 @@ map_batch_size_outer: null
 
 hydra:
   launcher:
-    timeout_min: 240
+    timeout_min: 120
     mem_gb: 80
     gpus_per_node: 1
+    cpus_per_task: 32
     partition: gpu-h100
     account: extremedata
     setup:
       - "source /scratch/tblickhan/mrx/.venv/bin/activate"
       - "export JAX_ENABLE_X64=1"
       - "export XLA_PYTHON_CLIENT_PREALLOCATE=false"
+      - "export XLA_PYTHON_CLIENT_ALLOCATOR=cuda_async"

@@ -1,19 +1,25 @@
 """
-Projector classes for finite element differential forms.
+Load vector assembly and interpolation for finite element differential forms.
 
-This module provides classes for projecting functions onto finite element spaces
-in the context of differential forms. It supports projections of k-forms
-(k = 0, 1, 2, 3) and includes functionality for handling coordinate transformations
-and curl projections.
+Public API
+----------
+load(seq, f, k, dirichlet=False, bc=False)
+    Assemble the dual load vector  v_i = ∫ Λ^k_i · f dx  for a k-form.
+    Completely matrix-free; only the extraction matrices on ``seq`` are needed.
 
-The module implements two main classes:
-- Projector: For standard projections of k-forms
-- CurlProjection: For projecting curl operations on differential forms
+interpolate(seq, f, k, dirichlet=False)
+    Compute primal DOFs by Greville interpolation (k=0) or histopolation
+    (k=1,2,3).  Collocation/histopolation matrices are built lazily on each
+    call.  TODO: cache them on the sequence object if profiling shows this
+    is a bottleneck.
+
+Both functions are also available as ``seq.load(...)`` and
+``seq.interpolate(...)`` on :class:`~mrx.derham_sequence.DeRhamSequence`.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import TYPE_CHECKING, Callable
 
 import jax
 import jax.numpy as jnp
@@ -22,7 +28,8 @@ from jax import Array
 
 import mrx
 from mrx.extraction_operators import get_xi
-from mrx.utils import integrate_against, inv33
+from mrx.differential_forms import inv33
+from mrx.quadrature import integrate_against
 
 if TYPE_CHECKING:
     from mrx.derham_sequence import DeRhamSequence
@@ -85,24 +92,6 @@ def _require_clamped_histopolation(d_basis, label: str) -> None:
         )
 
 
-def _is_polar_zeroform_shape(seq: "DeRhamSequence", size: int, *, dirichlet: bool) -> bool:
-    nr, nt, nz = seq.basis_0.nr, seq.basis_0.nt, seq.basis_0.nz
-    expected = ((nr - 3) if dirichlet else (nr - 2)) * nt * nz + 3 * nz
-    return size == expected
-
-
-def _is_polar_oneform_shape(seq: "DeRhamSequence", size: int, *, dirichlet: bool) -> bool:
-    nr, nt, nz = seq.basis_1.nr, seq.basis_1.nt, seq.basis_1.nz
-    dr, dt, dz = seq.basis_1.dr, seq.basis_1.dt, seq.basis_1.dz
-    offset = 1 if dirichlet else 0
-    expected = (
-        (dr - 1) * nt * nz
-        + ((nr - 2 - offset) * dt + 2) * nz
-        + ((nr - 2 - offset) * nt + 3) * dz
-    )
-    return size == expected
-
-
 def _matching_discrete_dofs(f, basis, extraction) -> Array | None:
     """Return coefficients when ``f`` is already represented in the target space."""
     dof = getattr(f, 'dof', None)
@@ -117,658 +106,396 @@ def _matching_discrete_dofs(f, basis, extraction) -> Array | None:
     return None
 
 
-class Projector:
+def _extraction(seq, k: int, dirichlet: bool, bc: bool):
+    """Pick the right extraction matrix for degree k."""
+    if bc:
+        return getattr(seq, f'e{k}_bc')
+    elif dirichlet:
+        return getattr(seq, f'e{k}_dbc')
+    else:
+        return getattr(seq, f'e{k}')
+
+
+def _extraction_T(seq, k: int, dirichlet: bool):
+    """Pick the right transpose extraction matrix for degree k."""
+    suffix = '_dbc_T' if dirichlet else '_T'
+    return getattr(seq, f'e{k}{suffix}')
+
+
+# ---------------------------------------------------------------------------
+# Load vector assembly  (matrix-free, works on any seq after set_map)
+# ---------------------------------------------------------------------------
+
+def load(seq: "DeRhamSequence", f, k: int,
+         dirichlet: bool = False, bc: bool = False):
+    """Assemble the dual k-form load vector  v_i = ∫ Λ^k_i · f(ξ) w(ξ) dξ.
+
+    Parameters
+    ----------
+    seq : DeRhamSequence
+    f : callable  ξ → (1,) for k=0,3;  ξ → (3,) for k=1,2.
+        Arguments are logical coordinates; values are in the physical frame.
+    k : int  Form degree (0, 1, 2, 3).
+    dirichlet : bool  Use Dirichlet-constrained DOFs.
+    bc : bool  Use boundary-trace DOFs (takes precedence over dirichlet).
+
+    Returns
+    -------
+    Array  Dual load vector of length n_k (or n_k_dbc / n_k_bc).
     """
-    A class for projecting functions onto finite element spaces.
+    e = _extraction(seq, k, dirichlet, bc)
+    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    comp_info, comp_shapes = seq._form_comp_info(k)
 
-    Functions are represented as functions of the logical coordinate ξ in the 
-    physical (x,y,z) frame, for example:
-    v(ξ) = v_x(ξ) e_x + v_y(ξ) e_y + v_z(ξ) e_z
-
-    This class implements projection operators for differential forms of various
-    degrees (k = 0, 1, 2, 3). It supports coordinate transformations through
-    the mapping F and can handle extraction operators through E.
-
-    Attributes:
-        k (int): Degree of the differential form (0, 1, 2, or 3)
-        seq : DeRham sequence object
-        dirichlet (bool): Whether to use dirichlet boundary conditions
-    """
-
-    k: Literal[0, 1, 2, 3]
-    seq: DeRhamSequence
-    dirichlet: bool = True
-    bc: bool = False
-
-    def __init__(self, seq: DeRhamSequence, k: Literal[0, 1, 2, 3], dirichlet: bool = True, bc: bool = False) -> None:
-        """
-        Initialize the projector.
-
-        Args:
-            seq : DeRham sequence object
-            k : Degree of the differential form
-            dirichlet : Whether to use dirichlet boundary conditions
-            bc : If True, project onto the Dirichlet boundary DOFs only
-                 (uses e_k_bc instead of e_k or e_k_dbc).
-                 Takes precedence over `dirichlet`.
-        """
-        self.k = k
-        self.seq = seq
-        self.dirichlet = dirichlet
-        self.bc = bc
-
-    def __call__(self, f: ScalarFunction | VectorFunction) -> Array:
-        """
-        Project a function onto the finite element space.
-
-        Args:
-            f (callable): Function to project
-
-        Returns:
-            array: Projection coefficients
-        """
-
-        if self.k == 0:
-            if self.bc:
-                e = self.seq.e0_bc
-            elif self.dirichlet:
-                e = self.seq.e0_dbc
-            else:
-                e = self.seq.e0
-            return e @ self.zeroform_projection(f)
-        elif self.k == 1:
-            if self.bc:
-                e = self.seq.e1_bc
-            elif self.dirichlet:
-                e = self.seq.e1_dbc
-            else:
-                e = self.seq.e1
-            return e @ self.oneform_projection(f)
-        elif self.k == 2:
-            if self.bc:
-                e = self.seq.e2_bc
-            elif self.dirichlet:
-                e = self.seq.e2_dbc
-            else:
-                e = self.seq.e2
-            return e @ self.twoform_projection(f)
-        elif self.k == 3:
-            if self.bc:
-                e = self.seq.e3_bc
-            elif self.dirichlet:
-                e = self.seq.e3_dbc
-            else:
-                e = self.seq.e3
-            return e @ self.threeform_projection(f)
-        # TODO: Consider raising an error for invalid k values
-        raise ValueError(f"Invalid k value: {self.k}. Must be 0, 1, 2, or 3.")
-
-    def zeroform_projection(self, f: ScalarFunction) -> Array:
-        """
-        Project a scalar function (0-form).
-
-        Args:
-            f (callable): Scalar function to project
-
-        Returns:
-            array: Projection coefficients for the 0-form
-        """
-        # Evaluate the given function at quadrature points
-        f_jk: Array = jax.lax.map(
+    if k == 0:
+        f_jk = jax.lax.map(
             lambda x: _as_single_component(f(x)),
-            self.seq.quad.x,
-            batch_size=mrx.MAP_BATCH_SIZE_INNER,
-        )
-        w_jk: Array = f_jk * (self.seq.quad.w * self.seq.jacobian_j)[:, None]
-        comp_info, comp_shapes = self.seq._form_comp_info(0)
-        quad_shape = (self.seq.quad.ny, self.seq.quad.nx, self.seq.quad.nz)
-        return integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
+            seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
+        w_jk = f_jk * (seq.quad.w * seq.jacobian_j)[:, None]
 
-    def zeroform_interpolation(self, f: ScalarFunction) -> Array:
-        """Interpolate a scalar function by Greville collocation.
+    elif k == 1:
+        DF = jax.jacfwd(seq.map)
 
-        This first implementation is intentionally restricted to the underlying
-        tensor-product 0-form space before any nontrivial extraction. That is,
-        it currently supports the smallest clean case where the chosen 0-form
-        extraction operator is the identity on the full tensor-product basis.
-        """
-        if self.bc:
-            raise NotImplementedError(
-                "Greville interpolation is not implemented on boundary-only 0-form spaces."
-            )
+        def _pullback(x):
+            return inv33(DF(x)) @ f(x)
 
-        e = self.seq.e0_dbc if self.dirichlet else self.seq.e0
-        exact_dofs = _matching_discrete_dofs(f, self.seq.basis_0, e)
-        if exact_dofs is not None:
-            return exact_dofs
-        if _is_polar_zeroform_shape(self.seq, e.shape[0], dirichlet=self.dirichlet):
-            return self._polar_zeroform_interpolation(f)
-        if e.shape[0] != self.seq.basis_0.n:
-            raise NotImplementedError(
-                "Greville interpolation is currently implemented only for full "
-                "tensor-product 0-form spaces without nontrivial extraction."
-            )
+        f_jk = jax.lax.map(_pullback, seq.quad.x,
+                            batch_size=mrx.MAP_BATCH_SIZE_INNER)
+        w_jk = f_jk * (seq.quad.w * seq.jacobian_j)[:, None]
 
-        bases = self.seq.basis_0.Λ
-        x_r = bases[0].greville_points()
-        x_t = bases[1].greville_points()
-        x_z = bases[2].greville_points()
+    elif k == 2:
+        DF = jax.jacfwd(seq.map)
 
-        r, t, z = jnp.meshgrid(x_r, x_t, x_z, indexing='ij')
-        x = jnp.stack([r.ravel(), t.ravel(), z.ravel()], axis=-1)
-        values = jax.lax.map(
-            lambda xi: _as_single_component(f(xi)),
-            x,
-            batch_size=mrx.MAP_BATCH_SIZE_INNER,
-        ).reshape(len(x_r), len(x_t), len(x_z))
+        def _pullback(x):
+            return DF(x).T @ f(x)
 
-        coll_r = bases[0].collocation_matrix(x_r)
-        coll_t = bases[1].collocation_matrix(x_t)
-        coll_z = bases[2].collocation_matrix(x_z)
+        f_jk = jax.lax.map(_pullback, seq.quad.x,
+                            batch_size=mrx.MAP_BATCH_SIZE_INNER)
+        w_jk = f_jk * seq.quad.w[:, None]
 
-        coeffs = _solve_tensor_collocation_axis(coll_r, values, axis=0)
-        coeffs = _solve_tensor_collocation_axis(coll_t, coeffs, axis=1)
-        coeffs = _solve_tensor_collocation_axis(coll_z, coeffs, axis=2)
-        return e @ coeffs.reshape(-1)
+    elif k == 3:
+        f_jk = jax.lax.map(
+            lambda x: _as_single_component(f(x)),
+            seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
+        w_jk = f_jk * seq.quad.w[:, None]
 
-    def _polar_zeroform_interpolation(self, f: ScalarFunction) -> Array:
-        """Interpolate a scalar 0-form on the Holderied polar blue grid."""
-        points = self._polar_zeroform_points()
+    else:
+        raise ValueError(f"k must be 0, 1, 2 or 3, got {k}")
 
-        values = jax.lax.map(
-            lambda xi: _as_single_component(f(xi)),
-            points,
-            batch_size=mrx.MAP_BATCH_SIZE_INNER,
-        ).reshape(-1)
+    return e @ integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
 
-        e = self.seq.e0_dbc if self.dirichlet else self.seq.e0
-        basis_indices = self.seq.basis_0.ns
-        collocation = jax.lax.map(
-            lambda xi: e @ jax.vmap(
-                lambda basis_idx: self.seq.basis_0(xi, basis_idx)[0]
-            )(basis_indices),
-            points,
-            batch_size=mrx.MAP_BATCH_SIZE_INNER,
-        )
-        return jnp.linalg.solve(collocation, values)
 
-    def _polar_zeroform_points(self) -> Array:
-        """Return the Holderied blue-grid points in reduced-coefficient order."""
-        bases = self.seq.basis_0.Λ
-        x_r = bases[0].greville_points()
-        x_t = bases[1].greville_points()
-        x_z = bases[2].greville_points()
+# ---------------------------------------------------------------------------
+# Interpolation / histopolation  (collocation matrices built lazily)
+# ---------------------------------------------------------------------------
 
-        nr, nt, nz = self.seq.basis_0.nr, self.seq.basis_0.nt, self.seq.basis_0.nz
-        radial_start = 2
-        radial_stop = nr - (1 if self.dirichlet else 0)
-        points = [
-            jnp.array([x_r[1], x_t[p], x_z[m]])
-            for p in range(3)
-            for m in range(nz)
-        ]
-        for i in range(radial_start, radial_stop):
-            for j in range(nt):
-                for k in range(nz):
-                    points.append(jnp.array([x_r[i], x_t[j], x_z[k]]))
-        return jnp.asarray(points)
+def interpolate(seq: "DeRhamSequence", f, k: int, dirichlet: bool = False):
+    """Compute primal DOFs by Greville interpolation (k=0) or histopolation (k=1,2,3).
 
-    def zeroform_quasi_interpolation(self, f: ScalarFunction) -> Array:
-        """Approximate Greville interpolation by dividing by local basis diagonals."""
-        if self.bc:
-            raise NotImplementedError(
-                "Quasi interpolation is not implemented on boundary-only 0-form spaces."
-            )
+    Collocation and histopolation matrices are built lazily on each call.
+    TODO: cache them on the sequence object if profiling shows this is a
+    bottleneck.
 
-        e = self.seq.e0_dbc if self.dirichlet else self.seq.e0
-        exact_dofs = _matching_discrete_dofs(f, self.seq.basis_0, e)
-        if exact_dofs is not None:
-            return exact_dofs
-        bases = self.seq.basis_0.Λ
+    Parameters
+    ----------
+    seq : DeRhamSequence
+    f : callable  ξ → (1,) for k=0,3;  ξ → (3,) for k=1,2.
+    k : int  Form degree (0, 1, 2, 3).
+    dirichlet : bool  Use Dirichlet-constrained DOFs.
 
-        if _is_polar_zeroform_shape(self.seq, e.shape[0], dirichlet=self.dirichlet):
-            points = self._polar_zeroform_points()
-            values = jax.lax.map(
-                lambda xi: _as_single_component(f(xi)),
-                points,
-                batch_size=mrx.MAP_BATCH_SIZE_INNER,
-            ).reshape(-1)
-            basis_indices = self.seq.basis_0.ns
-            diagonal = jax.lax.map(
-                lambda i: (
-                    e @ jax.vmap(
-                        lambda basis_idx: self.seq.basis_0(points[i], basis_idx)[0]
-                    )(basis_indices)
-                )[i],
-                jnp.arange(points.shape[0]),
-                batch_size=mrx.MAP_BATCH_SIZE_INNER,
-            )
-            return values / diagonal
+    Returns
+    -------
+    Array  Primal DOF vector.
+    """
+    if k == 0:
+        return _interpolate_0form(seq, f, dirichlet)
+    elif k == 1:
+        return _histopolate_1form(seq, f, dirichlet)
+    elif k == 2:
+        return _histopolate_2form(seq, f, dirichlet)
+    elif k == 3:
+        return _histopolate_3form(seq, f, dirichlet)
+    else:
+        raise ValueError(f"k must be 0, 1, 2 or 3, got {k}")
 
-        _require_full_tensor_space(e, self.seq.basis_0.n, "0-form quasi interpolation")
-        x_r = bases[0].greville_points()
-        x_t = bases[1].greville_points()
-        x_z = bases[2].greville_points()
 
-        r, t, z = jnp.meshgrid(x_r, x_t, x_z, indexing='ij')
-        x = jnp.stack([r.ravel(), t.ravel(), z.ravel()], axis=-1)
-        values = jax.lax.map(
-            lambda xi: _as_single_component(f(xi)),
-            x,
-            batch_size=mrx.MAP_BATCH_SIZE_INNER,
-        ).reshape(len(x_r), len(x_t), len(x_z))
+def _wrap_periodic_point(seq, xi):
+    wrapped = []
+    for axis, basis in enumerate(seq.basis_0.Λ):
+        coord = xi[axis]
+        if basis.type == 'periodic':
+            coord = jnp.mod(coord, 1.0)
+        wrapped.append(coord)
+    return jnp.asarray(wrapped)
 
-        coll_r = bases[0].collocation_matrix(x_r)
-        coll_t = bases[1].collocation_matrix(x_t)
-        coll_z = bases[2].collocation_matrix(x_z)
-        diagonal = jnp.einsum(
-            'i,j,k->ijk',
-            jnp.diag(coll_r),
-            jnp.diag(coll_t),
-            jnp.diag(coll_z),
-        )
-        return (values / diagonal).reshape(-1)
 
-    def _wrap_periodic_point(self, xi: Array) -> Array:
-        wrapped = []
-        for axis, basis in enumerate(self.seq.basis_0.Λ):
-            coord = xi[axis]
-            if basis.type == 'periodic':
-                coord = jnp.mod(coord, 1.0)
-            wrapped.append(coord)
-        return jnp.asarray(wrapped)
+def _oneform_pullback(seq, v):
+    DF = jax.jacfwd(seq.map)
 
-    def _oneform_pullback(self, v: VectorFunction) -> VectorFunction:
-        DF = jax.jacfwd(self.seq.map)
+    def pullback(x):
+        x_eval = _wrap_periodic_point(seq, x)
+        return inv33(DF(x_eval)) @ v(x_eval)
 
-        def pullback(x: Array) -> Array:
-            x_eval = self._wrap_periodic_point(x)
-            return inv33(DF(x_eval)) @ v(x_eval)
+    return pullback
 
-        return pullback
 
-    def _full_oneform_histopolation_dofs(self, v: VectorFunction) -> tuple[Array, Array, Array]:
-        lam_r, lam_t, lam_z = self.seq.basis_0.Λ
-        d_r, d_t, d_z = self.seq.basis_0.dΛ
-        pts_r = lam_r.greville_points()
-        pts_t = lam_t.greville_points()
-        pts_z = lam_z.greville_points()
-        spans_r = d_r.greville_spans()
-        spans_t = d_t.greville_spans()
-        spans_z = d_z.greville_spans()
+def _interpolate_0form(seq, f, dirichlet: bool) -> Array:
+    """Greville collocation for a scalar 0-form."""
+    e = seq.e0_dbc if dirichlet else seq.e0
+    exact = _matching_discrete_dofs(f, seq.basis_0, e)
+    if exact is not None:
+        return exact
+    _require_full_tensor_space(e, seq.basis_0.n, "0-form interpolation")
+
+    bases = seq.basis_0.Λ
+    x_r = bases[0].greville_points()
+    x_t = bases[1].greville_points()
+    x_z = bases[2].greville_points()
+
+    r, t, z = jnp.meshgrid(x_r, x_t, x_z, indexing='ij')
+    pts = jnp.stack([r.ravel(), t.ravel(), z.ravel()], axis=-1)
+    values = jax.lax.map(
+        lambda xi: _as_single_component(f(xi)), pts,
+        batch_size=mrx.MAP_BATCH_SIZE_INNER,
+    ).reshape(len(x_r), len(x_t), len(x_z))
+
+    # TODO: cache these on seq if collocation matrix build time is significant
+    coll_r = bases[0].collocation_matrix(x_r)
+    coll_t = bases[1].collocation_matrix(x_t)
+    coll_z = bases[2].collocation_matrix(x_z)
+
+    coeffs = _solve_tensor_collocation_axis(coll_r, values, axis=0)
+    coeffs = _solve_tensor_collocation_axis(coll_t, coeffs, axis=1)
+    coeffs = _solve_tensor_collocation_axis(coll_z, coeffs, axis=2)
+    return e @ coeffs.reshape(-1)
+
+
+def _full_oneform_histopolation_dofs(seq, v):
+    lam_r, lam_t, lam_z = seq.basis_0.Λ
+    d_r, d_t, d_z = seq.basis_0.dΛ
+    pts_r = lam_r.greville_points()
+    pts_t = lam_t.greville_points()
+    pts_z = lam_z.greville_points()
+    spans_r = d_r.greville_spans()
+    spans_t = d_t.greville_spans()
+    spans_z = d_z.greville_spans()
+    q_r = _quadrature_order_from_basis_1d(d_r.s)
+    q_t = _quadrature_order_from_basis_1d(d_t.s)
+    q_z = _quadrature_order_from_basis_1d(d_z.s)
+    pullback = _oneform_pullback(seq, v)
+
+    def integrate_component_0(span_r, t_val, z_val):
+        xs_r, ws_r = _interval_rule(span_r, q_r)
+        x = jnp.stack([xs_r, jnp.full(xs_r.shape, t_val),
+                        jnp.full(xs_r.shape, z_val)], axis=-1)
+        vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 0]
+        return jnp.sum(vals * ws_r)
+
+    def integrate_component_1(r_val, span_t, z_val):
+        xs_t, ws_t = _interval_rule(span_t, q_t)
+        x = jnp.stack([jnp.full(xs_t.shape, r_val), xs_t,
+                        jnp.full(xs_t.shape, z_val)], axis=-1)
+        vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 1]
+        return jnp.sum(vals * ws_t)
+
+    def integrate_component_2(r_val, t_val, span_z):
+        xs_z, ws_z = _interval_rule(span_z, q_z)
+        x = jnp.stack([jnp.full(xs_z.shape, r_val),
+                        jnp.full(xs_z.shape, t_val), xs_z], axis=-1)
+        vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 2]
+        return jnp.sum(vals * ws_z)
+
+    comp0 = jnp.asarray([
+        [[integrate_component_0(sr, t, z) for z in pts_z] for t in pts_t]
+        for sr in spans_r
+    ])
+    comp1 = jnp.asarray([
+        [[integrate_component_1(r, st, z) for z in pts_z] for st in spans_t]
+        for r in pts_r
+    ])
+    comp2 = jnp.asarray([
+        [[integrate_component_2(r, t, sz) for sz in spans_z] for t in pts_t]
+        for r in pts_r
+    ])
+    return comp0, comp1, comp2
+
+
+def _histopolate_1form(seq, v, dirichlet: bool) -> Array:
+    """Greville histopolation for a 1-form."""
+    e = seq.e1_dbc if dirichlet else seq.e1
+    exact = _matching_discrete_dofs(v, seq.basis_1, e)
+    if exact is not None:
+        return exact
+    _require_full_tensor_space(e, seq.basis_1.n, "1-form histopolation")
+
+    lam_r, lam_t, lam_z = seq.basis_0.Λ
+    d_r, d_t, d_z = seq.basis_0.dΛ
+
+    # TODO: cache these on seq if matrix build time is significant
+    coll_r = lam_r.collocation_matrix()
+    coll_t = lam_t.collocation_matrix()
+    coll_z = lam_z.collocation_matrix()
+    hist_r = d_r.histopolation_matrix()
+    hist_t = d_t.histopolation_matrix()
+    hist_z = d_z.histopolation_matrix()
+
+    comp0, comp1, comp2 = _full_oneform_histopolation_dofs(seq, v)
+
+    c0 = _solve_tensor_collocation_axis(hist_r, comp0, axis=0)
+    c0 = _solve_tensor_collocation_axis(coll_t, c0, axis=1)
+    c0 = _solve_tensor_collocation_axis(coll_z, c0, axis=2)
+
+    c1 = _solve_tensor_collocation_axis(coll_r, comp1, axis=0)
+    c1 = _solve_tensor_collocation_axis(hist_t, c1, axis=1)
+    c1 = _solve_tensor_collocation_axis(coll_z, c1, axis=2)
+
+    c2 = _solve_tensor_collocation_axis(coll_r, comp2, axis=0)
+    c2 = _solve_tensor_collocation_axis(coll_t, c2, axis=1)
+    c2 = _solve_tensor_collocation_axis(hist_z, c2, axis=2)
+
+    return e @ jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)])
+
+
+def _histopolate_2form(seq, v, dirichlet: bool) -> Array:
+    """Greville histopolation for a 2-form."""
+    e = seq.e2_dbc if dirichlet else seq.e2
+    exact = _matching_discrete_dofs(v, seq.basis_2, e)
+    if exact is not None:
+        return exact
+    _require_full_tensor_space(e, seq.basis_2.n, "2-form histopolation")
+
+    d_r, d_t, d_z = seq.basis_0.dΛ
+    _require_clamped_histopolation(d_r, "2-form histopolation")
+    _require_clamped_histopolation(d_t, "2-form histopolation")
+    _require_clamped_histopolation(d_z, "2-form histopolation")
+
+    lam_r, lam_t, lam_z = seq.basis_0.Λ
+
+    # TODO: cache these on seq if matrix build time is significant
+    coll_r = lam_r.collocation_matrix()
+    coll_t = lam_t.collocation_matrix()
+    coll_z = lam_z.collocation_matrix()
+    hist_r = d_r.histopolation_matrix()
+    hist_t = d_t.histopolation_matrix()
+    hist_z = d_z.histopolation_matrix()
+
+    pts_r = lam_r.greville_points()
+    pts_t = lam_t.greville_points()
+    pts_z = lam_z.greville_points()
+    spans_r = d_r.greville_spans()
+    spans_t = d_t.greville_spans()
+    spans_z = d_z.greville_spans()
+
+    DF = jax.jacfwd(seq.map)
+
+    def pullback(x):
+        return DF(x).T @ v(x)
+
+    def int0(r_val, span_t, span_z):
+        q_t = _quadrature_order_from_basis_1d(d_t.s)
+        q_z = _quadrature_order_from_basis_1d(d_z.s)
+        xs_t, ws_t = _interval_rule(span_t, q_t)
+        xs_z, ws_z = _interval_rule(span_z, q_z)
+        tt, zz = jnp.meshgrid(xs_t, xs_z, indexing='ij')
+        x = jnp.stack([jnp.full(tt.size, r_val), tt.ravel(), zz.ravel()], axis=-1)
+        vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 0]
+        return jnp.sum(vals * (ws_t[:, None] * ws_z[None, :]).reshape(-1))
+
+    def int1(span_r, t_val, span_z):
+        q_r = _quadrature_order_from_basis_1d(d_r.s)
+        q_z = _quadrature_order_from_basis_1d(d_z.s)
+        xs_r, ws_r = _interval_rule(span_r, q_r)
+        xs_z, ws_z = _interval_rule(span_z, q_z)
+        rr, zz = jnp.meshgrid(xs_r, xs_z, indexing='ij')
+        x = jnp.stack([rr.ravel(), jnp.full(rr.size, t_val), zz.ravel()], axis=-1)
+        vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 1]
+        return jnp.sum(vals * (ws_r[:, None] * ws_z[None, :]).reshape(-1))
+
+    def int2(span_r, span_t, z_val):
+        q_r = _quadrature_order_from_basis_1d(d_r.s)
+        q_t = _quadrature_order_from_basis_1d(d_t.s)
+        xs_r, ws_r = _interval_rule(span_r, q_r)
+        xs_t, ws_t = _interval_rule(span_t, q_t)
+        rr, tt = jnp.meshgrid(xs_r, xs_t, indexing='ij')
+        x = jnp.stack([rr.ravel(), tt.ravel(), jnp.full(rr.size, z_val)], axis=-1)
+        vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 2]
+        return jnp.sum(vals * (ws_r[:, None] * ws_t[None, :]).reshape(-1))
+
+    comp0 = jnp.asarray([
+        [[int0(r, st, sz) for sz in spans_z] for st in spans_t]
+        for r in pts_r
+    ])
+    comp1 = jnp.asarray([
+        [[int1(sr, t, sz) for sz in spans_z] for t in pts_t]
+        for sr in spans_r
+    ])
+    comp2 = jnp.asarray([
+        [[int2(sr, st, z) for z in pts_z] for st in spans_t]
+        for sr in spans_r
+    ])
+
+    c0 = _solve_tensor_collocation_axis(coll_r, comp0, axis=0)
+    c0 = _solve_tensor_collocation_axis(hist_t, c0, axis=1)
+    c0 = _solve_tensor_collocation_axis(hist_z, c0, axis=2)
+
+    c1 = _solve_tensor_collocation_axis(hist_r, comp1, axis=0)
+    c1 = _solve_tensor_collocation_axis(coll_t, c1, axis=1)
+    c1 = _solve_tensor_collocation_axis(hist_z, c1, axis=2)
+
+    c2 = _solve_tensor_collocation_axis(hist_r, comp2, axis=0)
+    c2 = _solve_tensor_collocation_axis(hist_t, c2, axis=1)
+    c2 = _solve_tensor_collocation_axis(coll_z, c2, axis=2)
+
+    return e @ jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)])
+
+
+def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
+    """Greville histopolation for a scalar 3-form."""
+    e = seq.e3_dbc if dirichlet else seq.e3
+    exact = _matching_discrete_dofs(f, seq.basis_3, e)
+    if exact is not None:
+        return exact
+    _require_full_tensor_space(e, seq.basis_3.n, "3-form histopolation")
+
+    d_r, d_t, d_z = seq.basis_0.dΛ
+    _require_clamped_histopolation(d_r, "3-form histopolation")
+    _require_clamped_histopolation(d_t, "3-form histopolation")
+    _require_clamped_histopolation(d_z, "3-form histopolation")
+
+    # TODO: cache these on seq if matrix build time is significant
+    hist_r = d_r.histopolation_matrix()
+    hist_t = d_t.histopolation_matrix()
+    hist_z = d_z.histopolation_matrix()
+    spans_r = d_r.greville_spans()
+    spans_t = d_t.greville_spans()
+    spans_z = d_z.greville_spans()
+
+    def integrate_volume(span_r, span_t, span_z):
         q_r = _quadrature_order_from_basis_1d(d_r.s)
         q_t = _quadrature_order_from_basis_1d(d_t.s)
         q_z = _quadrature_order_from_basis_1d(d_z.s)
-        pullback = self._oneform_pullback(v)
-
-        def integrate_component_0(span_r: Array, t_val: Array, z_val: Array) -> Array:
-            xs_r, ws_r = _interval_rule(span_r, q_r)
-            x = jnp.stack([xs_r, jnp.full(xs_r.shape, t_val), jnp.full(xs_r.shape, z_val)], axis=-1)
-            values = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 0]
-            return jnp.sum(values * ws_r)
-
-        def integrate_component_1(r_val: Array, span_t: Array, z_val: Array) -> Array:
-            xs_t, ws_t = _interval_rule(span_t, q_t)
-            x = jnp.stack([jnp.full(xs_t.shape, r_val), xs_t, jnp.full(xs_t.shape, z_val)], axis=-1)
-            values = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 1]
-            return jnp.sum(values * ws_t)
-
-        def integrate_component_2(r_val: Array, t_val: Array, span_z: Array) -> Array:
-            xs_z, ws_z = _interval_rule(span_z, q_z)
-            x = jnp.stack([jnp.full(xs_z.shape, r_val), jnp.full(xs_z.shape, t_val), xs_z], axis=-1)
-            values = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 2]
-            return jnp.sum(values * ws_z)
-
-        comp0 = jnp.asarray([
-            [
-                [integrate_component_0(span_r, t_val, z_val) for z_val in pts_z]
-                for t_val in pts_t
-            ]
-            for span_r in spans_r
-        ])
-        comp1 = jnp.asarray([
-            [
-                [integrate_component_1(r_val, span_t, z_val) for z_val in pts_z]
-                for span_t in spans_t
-            ]
-            for r_val in pts_r
-        ])
-        comp2 = jnp.asarray([
-            [
-                [integrate_component_2(r_val, t_val, span_z) for span_z in spans_z]
-                for t_val in pts_t
-            ]
-            for r_val in pts_r
-        ])
-        return comp0, comp1, comp2
-
-    def _full_oneform_collocation_matrix(self) -> Array:
-        lam_r, lam_t, lam_z = self.seq.basis_0.Λ
-        d_r, d_t, d_z = self.seq.basis_0.dΛ
-        coll_r = lam_r.collocation_matrix()
-        coll_t = lam_t.collocation_matrix()
-        coll_z = lam_z.collocation_matrix()
-        hist_r = d_r.histopolation_matrix()
-        hist_t = d_t.histopolation_matrix()
-        hist_z = d_z.histopolation_matrix()
-
-        comp0 = jnp.kron(coll_z, jnp.kron(coll_t, hist_r))
-        comp1 = jnp.kron(coll_z, jnp.kron(hist_t, coll_r))
-        comp2 = jnp.kron(hist_z, jnp.kron(coll_t, coll_r))
-
-        zeros01 = jnp.zeros((comp0.shape[0], comp1.shape[1]), dtype=comp0.dtype)
-        zeros02 = jnp.zeros((comp0.shape[0], comp2.shape[1]), dtype=comp0.dtype)
-        zeros10 = jnp.zeros((comp1.shape[0], comp0.shape[1]), dtype=comp0.dtype)
-        zeros12 = jnp.zeros((comp1.shape[0], comp2.shape[1]), dtype=comp0.dtype)
-        zeros20 = jnp.zeros((comp2.shape[0], comp0.shape[1]), dtype=comp0.dtype)
-        zeros21 = jnp.zeros((comp2.shape[0], comp1.shape[1]), dtype=comp0.dtype)
-        return jnp.block([
-            [comp0, zeros01, zeros02],
-            [zeros10, comp1, zeros12],
-            [zeros20, zeros21, comp2],
-        ])
-
-    def oneform_projection(self, v: VectorFunction) -> Array:
-        """
-        Project a vector-valued function to a 1-form.
-
-        Args:
-            A (callable): Vector field to project
-
-        Returns:
-            array: Projection coefficients for the 1-form
-        """
-        DF = jax.jacfwd(self.seq.map)
-
-        def _v(x: Array) -> Array:
-            return inv33(DF(x)) @ v(x)
-
-        # Evaluate the given function at quadrature points
-        A_jk: Array = jax.lax.map(
-            _v, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x d
-        w_jk: Array = A_jk * (self.seq.quad.w * self.seq.jacobian_j)[:, None]
-
-        comp_info, comp_shapes = self.seq._form_comp_info(1)
-        quad_shape = (self.seq.quad.ny, self.seq.quad.nx, self.seq.quad.nz)
-        return integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
-
-    def oneform_histopolation(self, v: VectorFunction) -> Array:
-        """Histopolate a vector-valued 1-form by edge moments and point values."""
-        if self.bc:
-            raise NotImplementedError(
-                "Greville histopolation is not implemented on boundary-only 1-form spaces."
-            )
-
-        e = self.seq.e1_dbc if self.dirichlet else self.seq.e1
-        exact_dofs = _matching_discrete_dofs(v, self.seq.basis_1, e)
-        if exact_dofs is not None:
-            return exact_dofs
-        if _is_polar_oneform_shape(self.seq, e.shape[0], dirichlet=self.dirichlet):
-            return self._polar_oneform_histopolation(v)
-        _require_full_tensor_space(e, self.seq.basis_1.n, "1-form histopolation")
-
-        lam_r, lam_t, lam_z = self.seq.basis_0.Λ
-        d_r, d_t, d_z = self.seq.basis_0.dΛ
-        coll_r = lam_r.collocation_matrix()
-        coll_t = lam_t.collocation_matrix()
-        coll_z = lam_z.collocation_matrix()
-        hist_r = d_r.histopolation_matrix()
-        hist_t = d_t.histopolation_matrix()
-        hist_z = d_z.histopolation_matrix()
-
-        comp0, comp1, comp2 = self._full_oneform_histopolation_dofs(v)
-
-        coeff0 = _solve_tensor_collocation_axis(hist_r, comp0, axis=0)
-        coeff0 = _solve_tensor_collocation_axis(coll_t, coeff0, axis=1)
-        coeff0 = _solve_tensor_collocation_axis(coll_z, coeff0, axis=2)
-
-        coeff1 = _solve_tensor_collocation_axis(coll_r, comp1, axis=0)
-        coeff1 = _solve_tensor_collocation_axis(hist_t, coeff1, axis=1)
-        coeff1 = _solve_tensor_collocation_axis(coll_z, coeff1, axis=2)
-
-        coeff2 = _solve_tensor_collocation_axis(coll_r, comp2, axis=0)
-        coeff2 = _solve_tensor_collocation_axis(coll_t, coeff2, axis=1)
-        coeff2 = _solve_tensor_collocation_axis(hist_z, coeff2, axis=2)
-
-        return e @ jnp.concatenate([
-            coeff0.reshape(-1),
-            coeff1.reshape(-1),
-            coeff2.reshape(-1),
-        ])
-
-    def _polar_oneform_histopolation(self, v: VectorFunction) -> Array:
-        """Histopolate a polar 1-form using Holderied-style reduced DOFs."""
-        e = self.seq.e1_dbc if self.dirichlet else self.seq.e1
-        e_t = self.seq.e1_dbc_T if self.dirichlet else self.seq.e1_T
-        comp0, comp1, comp2 = self._full_oneform_histopolation_dofs(v)
-        full_dofs = jnp.concatenate([
-            comp0.reshape(-1),
-            comp1.reshape(-1),
-            comp2.reshape(-1),
-        ])
-        reduced_dofs = e @ full_dofs
-
-        full_collocation = self._full_oneform_collocation_matrix()
-        e_dense = jnp.asarray(e.todense())
-        e_t_dense = jnp.asarray(e_t.todense())
-        reduced_collocation = e_dense @ full_collocation @ e_t_dense
-        return jnp.linalg.solve(reduced_collocation, reduced_dofs)
-
-    def twoform_projection(self, v: VectorFunction) -> Array:
-        """
-        Project to a 2-form.
-
-        Args:
-            v (callable): vector field to project - in physical coordinates
-
-        Returns:
-            array: Projection coefficients for the 2-form
-        """
-        DF = jax.jacfwd(self.seq.map)
-
-        def _v(x: Array) -> Array:
-            return DF(x).T @ v(x)
-
-        # Evaluate the given function at quadrature points
-        B_jk: Array = jax.lax.map(
-            _v, self.seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)  # n_q x d
-
-        w_jk: Array = B_jk * (self.seq.quad.w)[:, None]
-
-        comp_info, comp_shapes = self.seq._form_comp_info(2)
-        quad_shape = (self.seq.quad.ny, self.seq.quad.nx, self.seq.quad.nz)
-        return integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
-
-    def threeform_projection(self, f: ScalarFunction) -> Array:
-        """
-        Project a volume form (3-form).
-
-        Args:
-            f (callable): function
-
-        Returns:
-            array: Projection coefficients for the 3-form
-        """
-        # Evaluate the given function at quadrature points
-        f_jk: Array = jax.lax.map(
-            lambda x: _as_single_component(f(x)),
-            self.seq.quad.x,
+        xs_r, ws_r = _interval_rule(span_r, q_r)
+        xs_t, ws_t = _interval_rule(span_t, q_t)
+        xs_z, ws_z = _interval_rule(span_z, q_z)
+        rr, tt, zz = jnp.meshgrid(xs_r, xs_t, xs_z, indexing='ij')
+        x = jnp.stack([rr.ravel(), tt.ravel(), zz.ravel()], axis=-1)
+        values = jax.lax.map(
+            lambda xi: _as_single_component(f(xi)), x,
             batch_size=mrx.MAP_BATCH_SIZE_INNER,
-        )
-        w_jk: Array = f_jk * (self.seq.quad.w)[:, None]
-        comp_info, comp_shapes = self.seq._form_comp_info(3)
-        quad_shape = (self.seq.quad.ny, self.seq.quad.nx, self.seq.quad.nz)
-        return integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
+        ).reshape(len(xs_r), len(xs_t), len(xs_z))
+        weights = ws_r[:, None, None] * ws_t[None, :, None] * ws_z[None, None, :]
+        return jnp.sum(values * weights)
 
-    def twoform_histopolation(self, v: VectorFunction) -> Array:
-        """Histopolate a vector-valued 2-form on the full tensor-product space.
+    moments = jnp.asarray([
+        [[integrate_volume(sr, st, sz) for sz in spans_z] for st in spans_t]
+        for sr in spans_r
+    ])
 
-        This first implementation targets the reference/nonpolar full tensor
-        space before any nontrivial extraction.
-        """
-        if self.bc:
-            raise NotImplementedError(
-                "Greville histopolation is not implemented on boundary-only 2-form spaces."
-            )
+    coeffs = _solve_tensor_collocation_axis(hist_r, moments, axis=0)
+    coeffs = _solve_tensor_collocation_axis(hist_t, coeffs, axis=1)
+    coeffs = _solve_tensor_collocation_axis(hist_z, coeffs, axis=2)
+    return e @ coeffs.reshape(-1)
 
-        e = self.seq.e2_dbc if self.dirichlet else self.seq.e2
-        exact_dofs = _matching_discrete_dofs(v, self.seq.basis_2, e)
-        if exact_dofs is not None:
-            return exact_dofs
-        _require_full_tensor_space(e, self.seq.basis_2.n, "2-form histopolation")
-
-        d_r, d_t, d_z = self.seq.basis_0.dΛ
-        _require_clamped_histopolation(d_r, "2-form histopolation")
-        _require_clamped_histopolation(d_t, "2-form histopolation")
-        _require_clamped_histopolation(d_z, "2-form histopolation")
-
-        lam_r, lam_t, lam_z = self.seq.basis_0.Λ
-        coll_r = lam_r.collocation_matrix()
-        coll_t = lam_t.collocation_matrix()
-        coll_z = lam_z.collocation_matrix()
-        hist_r = d_r.histopolation_matrix()
-        hist_t = d_t.histopolation_matrix()
-        hist_z = d_z.histopolation_matrix()
-
-        pts_r = lam_r.greville_points()
-        pts_t = lam_t.greville_points()
-        pts_z = lam_z.greville_points()
-        spans_r = d_r.greville_spans()
-        spans_t = d_t.greville_spans()
-        spans_z = d_z.greville_spans()
-
-        DF = jax.jacfwd(self.seq.map)
-
-        def pullback(x: Array) -> Array:
-            return DF(x).T @ v(x)
-
-        def integrate_component_0(r_val: Array, span_t: Array, span_z: Array) -> Array:
-            q_t = _quadrature_order_from_basis_1d(d_t.s)
-            q_z = _quadrature_order_from_basis_1d(d_z.s)
-            xs_t, ws_t = _interval_rule(span_t, q_t)
-            xs_z, ws_z = _interval_rule(span_z, q_z)
-            tt, zz = jnp.meshgrid(xs_t, xs_z, indexing='ij')
-            x = jnp.stack([jnp.full(tt.size, r_val), tt.ravel(), zz.ravel()], axis=-1)
-            values = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 0]
-            weights = (ws_t[:, None] * ws_z[None, :]).reshape(-1)
-            return jnp.sum(values * weights)
-
-        def integrate_component_1(span_r: Array, t_val: Array, span_z: Array) -> Array:
-            q_r = _quadrature_order_from_basis_1d(d_r.s)
-            q_z = _quadrature_order_from_basis_1d(d_z.s)
-            xs_r, ws_r = _interval_rule(span_r, q_r)
-            xs_z, ws_z = _interval_rule(span_z, q_z)
-            rr, zz = jnp.meshgrid(xs_r, xs_z, indexing='ij')
-            x = jnp.stack([rr.ravel(), jnp.full(rr.size, t_val), zz.ravel()], axis=-1)
-            values = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 1]
-            weights = (ws_r[:, None] * ws_z[None, :]).reshape(-1)
-            return jnp.sum(values * weights)
-
-        def integrate_component_2(span_r: Array, span_t: Array, z_val: Array) -> Array:
-            q_r = _quadrature_order_from_basis_1d(d_r.s)
-            q_t = _quadrature_order_from_basis_1d(d_t.s)
-            xs_r, ws_r = _interval_rule(span_r, q_r)
-            xs_t, ws_t = _interval_rule(span_t, q_t)
-            rr, tt = jnp.meshgrid(xs_r, xs_t, indexing='ij')
-            x = jnp.stack([rr.ravel(), tt.ravel(), jnp.full(rr.size, z_val)], axis=-1)
-            values = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 2]
-            weights = (ws_r[:, None] * ws_t[None, :]).reshape(-1)
-            return jnp.sum(values * weights)
-
-        comp0 = jnp.asarray([
-            [
-                [integrate_component_0(r_val, span_t, span_z) for span_z in spans_z]
-                for span_t in spans_t
-            ]
-            for r_val in pts_r
-        ])
-        comp1 = jnp.asarray([
-            [
-                [integrate_component_1(span_r, t_val, span_z) for span_z in spans_z]
-                for t_val in pts_t
-            ]
-            for span_r in spans_r
-        ])
-        comp2 = jnp.asarray([
-            [
-                [integrate_component_2(span_r, span_t, z_val) for z_val in pts_z]
-                for span_t in spans_t
-            ]
-            for span_r in spans_r
-        ])
-
-        coeff0 = _solve_tensor_collocation_axis(coll_r, comp0, axis=0)
-        coeff0 = _solve_tensor_collocation_axis(hist_t, coeff0, axis=1)
-        coeff0 = _solve_tensor_collocation_axis(hist_z, coeff0, axis=2)
-
-        coeff1 = _solve_tensor_collocation_axis(hist_r, comp1, axis=0)
-        coeff1 = _solve_tensor_collocation_axis(coll_t, coeff1, axis=1)
-        coeff1 = _solve_tensor_collocation_axis(hist_z, coeff1, axis=2)
-
-        coeff2 = _solve_tensor_collocation_axis(hist_r, comp2, axis=0)
-        coeff2 = _solve_tensor_collocation_axis(hist_t, coeff2, axis=1)
-        coeff2 = _solve_tensor_collocation_axis(coll_z, coeff2, axis=2)
-
-        return e @ jnp.concatenate([
-            coeff0.reshape(-1),
-            coeff1.reshape(-1),
-            coeff2.reshape(-1),
-        ])
-
-    def threeform_histopolation(self, f: ScalarFunction) -> Array:
-        """Histopolate a scalar 3-form on the full tensor-product space."""
-        if self.bc:
-            raise NotImplementedError(
-                "Greville histopolation is not implemented on boundary-only 3-form spaces."
-            )
-
-        e = self.seq.e3_dbc if self.dirichlet else self.seq.e3
-        exact_dofs = _matching_discrete_dofs(f, self.seq.basis_3, e)
-        if exact_dofs is not None:
-            return exact_dofs
-        _require_full_tensor_space(e, self.seq.basis_3.n, "3-form histopolation")
-
-        d_r, d_t, d_z = self.seq.basis_0.dΛ
-        _require_clamped_histopolation(d_r, "3-form histopolation")
-        _require_clamped_histopolation(d_t, "3-form histopolation")
-        _require_clamped_histopolation(d_z, "3-form histopolation")
-
-        hist_r = d_r.histopolation_matrix()
-        hist_t = d_t.histopolation_matrix()
-        hist_z = d_z.histopolation_matrix()
-        spans_r = d_r.greville_spans()
-        spans_t = d_t.greville_spans()
-        spans_z = d_z.greville_spans()
-
-        def integrate_volume(span_r: Array, span_t: Array, span_z: Array) -> Array:
-            q_r = _quadrature_order_from_basis_1d(d_r.s)
-            q_t = _quadrature_order_from_basis_1d(d_t.s)
-            q_z = _quadrature_order_from_basis_1d(d_z.s)
-            xs_r, ws_r = _interval_rule(span_r, q_r)
-            xs_t, ws_t = _interval_rule(span_t, q_t)
-            xs_z, ws_z = _interval_rule(span_z, q_z)
-            rr, tt, zz = jnp.meshgrid(xs_r, xs_t, xs_z, indexing='ij')
-            x = jnp.stack([rr.ravel(), tt.ravel(), zz.ravel()], axis=-1)
-            values = jax.lax.map(
-                lambda xi: _as_single_component(f(xi)),
-                x,
-                batch_size=mrx.MAP_BATCH_SIZE_INNER,
-            ).reshape(len(xs_r), len(xs_t), len(xs_z))
-            weights = ws_r[:, None, None] * ws_t[None, :, None] * ws_z[None, None, :]
-            return jnp.sum(values * weights)
-
-        moments = jnp.asarray([
-            [
-                [integrate_volume(span_r, span_t, span_z) for span_z in spans_z]
-                for span_t in spans_t
-            ]
-            for span_r in spans_r
-        ])
-
-        coeffs = _solve_tensor_collocation_axis(hist_r, moments, axis=0)
-        coeffs = _solve_tensor_collocation_axis(hist_t, coeffs, axis=1)
-        coeffs = _solve_tensor_collocation_axis(hist_z, coeffs, axis=2)
-        return e @ coeffs.reshape(-1)
 
 # TODO: requires testing still
 def surface_integral(f: ScalarFunction, seq: "DeRhamSequence") -> Array:

@@ -11,7 +11,7 @@ import mrx
 from mrx.derham_sequence import DeRhamSequence, compute_geometry_terms
 from mrx.differential_forms import DiscreteFunction
 from mrx.io import project_sampled_field
-from mrx.mappings import (cerfon_map, cylinder_map, helical_map,
+from mrx.mappings import (one_size_fits_all_map, cylinder_map, helical_map,
                           interpolate_map, polar_map, rotating_ellipse_map,
                           toroid_map)
 from mrx.utils import jacobian_determinant
@@ -25,7 +25,7 @@ pts = jnp.stack([_xi.ravel(), _xj.ravel(), _xk.ravel()], axis=1)
 
 
 @pytest.mark.parametrize("map_factory", [
-    lambda: cerfon_map(epsilon=0.5, kappa=1.2, alpha=0.1, R0=1.0),
+    lambda: one_size_fits_all_map(epsilon=0.5, kappa=1.2, alpha=0.1, R0=1.0),
     lambda: rotating_ellipse_map(eps=0.33, kappa=1.2, nfp=3, R0=1.0),
     lambda: toroid_map(epsilon=1/3, kappa=1.0, R0=1.0),
 ])
@@ -51,7 +51,7 @@ def mapping_seq():
 
 
 @pytest.mark.parametrize("map_factory,nfp", [
-    (lambda: cerfon_map(epsilon=0.5, kappa=1.2, alpha=0.1, R0=1.0), 1),
+    (lambda: one_size_fits_all_map(epsilon=0.5, kappa=1.2, alpha=0.1, R0=1.0), 1),
     (lambda: rotating_ellipse_map(eps=0.33, kappa=1.2, nfp=3, R0=1.0), 3),
     (lambda: toroid_map(epsilon=1/3, kappa=1.0, R0=1.0), 1),
 ], ids=["cerfon", "rotating_ellipse", "toroid"])

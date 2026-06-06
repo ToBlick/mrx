@@ -2,16 +2,16 @@ from typing import Any, Callable
 
 import equinox as eqx
 import jax
-import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 
 import mrx
 from mrx.assembly import (assemble_leray_projection, eval_basis_0_ijk,
                           eval_basis_1_ijk, eval_basis_2_ijk, eval_basis_3_ijk,
                           eval_d_basis_0_ijk, eval_d_basis_1_ijk,
-                          eval_d_basis_2_ijk, grad_1d)
+                          eval_d_basis_2_ijk)
 from mrx.differential_forms import DifferentialForm
 from mrx.extraction_operators import (BoundaryOperator,
+                                      MatrixFreeExtraction,
                                       PolarExtractionOperator,
                                       bc_extraction_op, get_xi)
 from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
@@ -54,75 +54,14 @@ from mrx.operators import (SequenceOperators,
                            update_mass_runtime_tuning as update_mass_runtime_tuning_ops,
                            update_schur_runtime_tuning as update_schur_runtime_tuning_ops,
                            update_scalar_hodge_runtime_tuning as update_scalar_hodge_runtime_tuning_ops)
-from mrx.projectors import Projector
+from mrx.projectors import load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
-from mrx.utils import (evaluate_at_xq_deprecated, extract_diag_vector,
-                       integrate_against_deprecated, inv33,
-                       jacobian_determinant, square_sparse)
+from mrx.geometry import SequenceGeometry, compute_geometry_terms, grad_1d
+from mrx.preconditioners import extract_diag_vector
 
 
-def compute_geometry_terms(map: Callable, quad_x: jnp.ndarray):
-    """Compute metric and Jacobian terms for a map on the quadrature grid."""
 
-    def G(x):
-        DF = jax.jacfwd(map)(x)
-        return DF.T @ DF
-
-    metric_jkl = jax.lax.map(G, quad_x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
-    metric_inv_jkl = jax.lax.map(
-        inv33, metric_jkl, batch_size=mrx.MAP_BATCH_SIZE_INNER)
-    jacobian_j = jax.lax.map(jacobian_determinant(
-        map), quad_x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
-    return metric_jkl, metric_inv_jkl, jacobian_j
-
-
-class SequenceGeometry(eqx.Module):
-    """Geometry data attached to a de Rham sequence.
-
-    An ``eqx.Module`` so that the three quadrature-grid arrays
-    (``metric_jkl``, ``metric_inv_jkl``, ``jacobian_j``) are dynamic
-    pytree leaves and can flow through ``jit`` / ``grad``. ``map`` is
-    kept as a normal field so that if it is itself a pytree (e.g. a
-    :class:`SplineMap`), its coefficient leaves are tracked; plain
-    ``Callable`` maps are treated as opaque leaves.
-    """
-
-    map: Any
-    metric_jkl: jnp.ndarray = None
-    metric_inv_jkl: jnp.ndarray = None
-    jacobian_j: jnp.ndarray = None
-
-    @classmethod
-    def from_map(cls, map: Callable, quad_x: jnp.ndarray) -> "SequenceGeometry":
-        """Build geometry data by evaluating a map on the quadrature grid."""
-        metric_jkl, metric_inv_jkl, jacobian_j = compute_geometry_terms(
-            map, quad_x)
-        return cls(map, metric_jkl, metric_inv_jkl, jacobian_j)
-
-    @classmethod
-    def from_spline_map(cls, spline_map, seq) -> "SequenceGeometry":
-        """Sum-factorized geometry builder for tensor-product spline maps.
-
-        Requires that ``seq.evaluate_1d()`` has already been called (so
-        ``seq.basis_{r,t,z}_jk`` / ``seq.d_basis_{r,t,z}_jk`` are
-        populated) and that ``spline_map.extraction_T`` is set.
-        """
-        from mrx.spline_geometry import compute_geometry_terms_from_spline
-
-        if spline_map.extraction_T is None:
-            raise ValueError(
-                "SplineMap.extraction_T must be set for the sum-factorized "
-                "geometry path; construct the map via "
-                "seq.build_spline_map(coefficients) or pass seq.e0_T.")
-        if not hasattr(seq, "basis_r_jk"):
-            raise ValueError(
-                "Call seq.evaluate_1d() before constructing a "
-                "SequenceGeometry from a SplineMap.")
-        metric_jkl, metric_inv_jkl, jacobian_j = \
-            compute_geometry_terms_from_spline(
-                spline_map.coefficients, spline_map.extraction_T, seq)
-        return cls(spline_map, metric_jkl, metric_inv_jkl, jacobian_j)
 
 
 _EXTRACTION_OPERATOR_NAMES = (
@@ -173,10 +112,10 @@ class DeRhamSequence():
         Tensor-product Gauss quadrature rule used for assembly.
     geometry : SequenceGeometry
         Metric and Jacobian data derived from the logical-to-physical map.
-    e0, e1, e2, e3 : jsparse.BCSR
+    e0, e1, e2, e3 : MatrixFreeExtraction
         Extraction operators mapping constrained DOF vectors to the full
         spline basis for each form degree (no Dirichlet BCs).
-    e0_dbc, e1_dbc, e2_dbc, e3_dbc : jsparse.BCSR
+    e0_dbc, e1_dbc, e2_dbc, e3_dbc : MatrixFreeExtraction
         Extraction operators with homogeneous Dirichlet BCs applied at
         the radial boundary (or axis in polar coordinates).
     basis_r_jk : jnp.ndarray
@@ -206,14 +145,14 @@ class DeRhamSequence():
     basis_3: DifferentialForm
     quad: QuadratureRule
     geometry: SequenceGeometry
-    e0: jsparse.BCOO
-    e1: jsparse.BCOO
-    e2: jsparse.BCOO
-    e3: jsparse.BCOO
-    e0_dbc: jsparse.BCOO
-    e1_dbc: jsparse.BCOO
-    e2_dbc: jsparse.BCOO
-    e3_dbc: jsparse.BCOO
+    e0: MatrixFreeExtraction
+    e1: MatrixFreeExtraction
+    e2: MatrixFreeExtraction
+    e3: MatrixFreeExtraction
+    e0_dbc: MatrixFreeExtraction
+    e1_dbc: MatrixFreeExtraction
+    e2_dbc: MatrixFreeExtraction
+    e3_dbc: MatrixFreeExtraction
     basis_r_jk: jnp.ndarray
     basis_t_jk: jnp.ndarray
     basis_z_jk: jnp.ndarray
@@ -340,68 +279,79 @@ class DeRhamSequence():
                 for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
             ]
 
-        def _to_bcsr_pair(bcoo):
-            return jsparse.BCSR.from_bcoo(bcoo), jsparse.BCSR.from_bcoo(bcoo.T)
+        def _mf_pair(mf):
+            return mf, mf.T
 
-        e0_bcoo = e0.assemble_sparse()
-        e0_dbc_bcoo = e0_dbc.assemble_sparse()
-        self.e0, self.e0_T = _to_bcsr_pair(e0_bcoo)
-        self.e0_dbc, self.e0_dbc_T = _to_bcsr_pair(e0_dbc_bcoo)
-        self.e0_bc, self.e0_bc_T = _to_bcsr_pair(
-            bc_extraction_op(e0_bcoo, e0_dbc_bcoo, self.basis_0.n))
+        e0_mf = e0.build_extraction()
+        e0_dbc_mf = e0_dbc.build_extraction()
+        self.e0, self.e0_T = _mf_pair(e0_mf)
+        self.e0_dbc, self.e0_dbc_T = _mf_pair(e0_dbc_mf)
+        self.e0_bc, self.e0_bc_T = _mf_pair(
+            bc_extraction_op(e0_mf, e0_dbc_mf, self.basis_0.n))
         self.n0 = e0.n
         self.n0_dbc = e0_dbc.n
         self.n0_bc = e0.n - e0_dbc.n
         self.n0_1, self.n0_2, self.n0_3 = e0.n, 0, 0
         self.n0_1_dbc, self.n0_2_dbc, self.n0_3_dbc = e0_dbc.n, 0, 0
 
-        e1_bcoo = e1.assemble_sparse()
-        e1_dbc_bcoo = e1_dbc.assemble_sparse()
-        self.e1, self.e1_T = _to_bcsr_pair(e1_bcoo)
-        self.e1_dbc, self.e1_dbc_T = _to_bcsr_pair(e1_dbc_bcoo)
-        self.e1_bc, self.e1_bc_T = _to_bcsr_pair(
-            bc_extraction_op(e1_bcoo, e1_dbc_bcoo, self.basis_1.n))
+        e1_mf = e1.build_extraction()
+        e1_dbc_mf = e1_dbc.build_extraction()
+        self.e1, self.e1_T = _mf_pair(e1_mf)
+        self.e1_dbc, self.e1_dbc_T = _mf_pair(e1_dbc_mf)
+        self.e1_bc, self.e1_bc_T = _mf_pair(
+            bc_extraction_op(e1_mf, e1_dbc_mf, self.basis_1.n))
         self.n1 = e1.n
         self.n1_dbc = e1_dbc.n
         self.n1_bc = e1.n - e1_dbc.n
         self.n1_1, self.n1_2, self.n1_3 = e1.n1, e1.n2, e1.n3
         self.n1_1_dbc, self.n1_2_dbc, self.n1_3_dbc = e1_dbc.n1, e1_dbc.n2, e1_dbc.n3
 
-        e2_bcoo = e2.assemble_sparse()
-        e2_dbc_bcoo = e2_dbc.assemble_sparse()
-        self.e2, self.e2_T = _to_bcsr_pair(e2_bcoo)
-        self.e2_dbc, self.e2_dbc_T = _to_bcsr_pair(e2_dbc_bcoo)
-        self.e2_bc, self.e2_bc_T = _to_bcsr_pair(
-            bc_extraction_op(e2_bcoo, e2_dbc_bcoo, self.basis_2.n))
+        e2_mf = e2.build_extraction()
+        e2_dbc_mf = e2_dbc.build_extraction()
+        self.e2, self.e2_T = _mf_pair(e2_mf)
+        self.e2_dbc, self.e2_dbc_T = _mf_pair(e2_dbc_mf)
+        self.e2_bc, self.e2_bc_T = _mf_pair(
+            bc_extraction_op(e2_mf, e2_dbc_mf, self.basis_2.n))
         self.n2 = e2.n
         self.n2_dbc = e2_dbc.n
         self.n2_bc = e2.n - e2_dbc.n
         self.n2_1, self.n2_2, self.n2_3 = e2.n1, e2.n2, e2.n3
         self.n2_1_dbc, self.n2_2_dbc, self.n2_3_dbc = e2_dbc.n1, e2_dbc.n2, e2_dbc.n3
 
-        e3_bcoo = e3.assemble_sparse()
-        e3_dbc_bcoo = e3_dbc.assemble_sparse()
-        self.e3, self.e3_T = _to_bcsr_pair(e3_bcoo)
-        self.e3_dbc, self.e3_dbc_T = _to_bcsr_pair(e3_dbc_bcoo)
-        self.e3_bc, self.e3_bc_T = _to_bcsr_pair(
-            bc_extraction_op(e3_bcoo, e3_dbc_bcoo, self.basis_3.n))
+        e3_mf = e3.build_extraction()
+        e3_dbc_mf = e3_dbc.build_extraction()
+        self.e3, self.e3_T = _mf_pair(e3_mf)
+        self.e3_dbc, self.e3_dbc_T = _mf_pair(e3_dbc_mf)
+        self.e3_bc, self.e3_bc_T = _mf_pair(
+            bc_extraction_op(e3_mf, e3_dbc_mf, self.basis_3.n))
         self.n3 = e3.n
         self.n3_dbc = e3_dbc.n
         self.n3_bc = e3.n - e3_dbc.n
         self.n3_1, self.n3_2, self.n3_3 = e3.n1, e3.n2, e3.n3
         self.n3_1_dbc, self.n3_2_dbc, self.n3_3_dbc = e3_dbc.n1, e3_dbc.n2, e3_dbc.n3
 
-        self.p0, self.p1, self.p2, self.p3 = [
-            Projector(self, k, False) for k in range(4)
-        ]
+    def load(self, f, k: int, dirichlet: bool = False, bc: bool = False):
+        """Assemble the dual k-form load vector  v_i = ∫ Λ^k_i · f(ξ) w(ξ) dξ.
 
-        self.p0_dbc, self.p1_dbc, self.p2_dbc, self.p3_dbc = [
-            Projector(self, k, True) for k in range(4)
-        ]
+        Parameters
+        ----------
+        f : callable
+        k : int  Form degree (0, 1, 2, 3).
+        dirichlet : bool  Use Dirichlet-constrained DOFs.
+        bc : bool  Use boundary-trace DOFs (takes precedence over dirichlet).
+        """
+        return _load(self, f, k, dirichlet=dirichlet, bc=bc)
 
-        self.p0_bc, self.p1_bc, self.p2_bc, self.p3_bc = [
-            Projector(self, k, bc=True) for k in range(4)
-        ]
+    def interpolate(self, f, k: int, dirichlet: bool = False):
+        """Compute primal DOFs by Greville interpolation (k=0) or histopolation (k=1,2,3).
+
+        Parameters
+        ----------
+        f : callable
+        k : int  Form degree (0, 1, 2, 3).
+        dirichlet : bool  Use Dirichlet-constrained DOFs.
+        """
+        return _interpolate(self, f, k, dirichlet=dirichlet)
 
     @property
     def map(self):
@@ -589,7 +539,7 @@ class DeRhamSequence():
     def assemble_reference_mass_matrix(self):
         """Assemble and cache the 0-form mass matrix on the reference domain."""
         from mrx.assembly import assemble_scalar
-        from mrx.utils import diag_EAET
+        from mrx.preconditioners import diag_EAET
 
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
         sp = assemble_scalar(
@@ -597,7 +547,7 @@ class DeRhamSequence():
             self.basis_r_jk, self.basis_t_jk, self.basis_z_jk,
             self.quad.w, quad_shape, self.basis_0.shape[0],
             self.basis_0.pr, self.basis_0.pt, self.basis_0.pz)
-        self.reference_m0 = jsparse.BCSR.from_bcoo(sp)
+        self.reference_m0 = MatrixFreeExtraction.from_bcoo(sp)
         self.reference_m0_diaginv = 1.0 / diag_EAET(
             self.e0, self.reference_m0, self.e0_T)
         self.reference_m0_diaginv_dbc = 1.0 / diag_EAET(
@@ -1312,127 +1262,7 @@ class DeRhamSequence():
             self, self._require_operators(), betti_numbers=betti_numbers)
         return self.operators
 
-    # def cross_product_projection_deprecated(
-    #     self, w, u, n, m, k,
-    #     dirichlet_n=True,
-    #     dirichlet_m=True,
-    #     dirichlet_k=True
-    # ):
-    #     """
-    #     Evaluate the projection of the cross product of the m-form w
-    #     and the k-form u onto an n-form.
-    #     TODO: Tobi please add a description of these projections.
-
-    #     Args:
-    #         w (array): m-form dofs
-    #         u (array): k-form dofs
-    #         n, m, k (ints): degree of the forms
-    #         dirichlet_n: boundary condtions on the n-form (default True)
-    #         dirichlet_m: boundary condtions on the m-form (default True)
-    #         dirichlet_k: boundary condtions on the k-form (default True)
-
-    #     Returns:
-    #         array: ∫ (wₕ × uₕ) · Λn[i] dx for all i
-
-    #     """
-    #     match n:
-    #         case 1:
-    #             if dirichlet_n:
-    #                 en = self.e1_dbc
-    #             else:
-    #                 en = self.e1
-    #             eval_basis_n_ijk = self.eval_basis_1_ijk
-    #             nn = self.basis_1.n
-    #         case 2:
-    #             if dirichlet_n:
-    #                 en = self.e2_dbc
-    #             else:
-    #                 en = self.e2
-    #             eval_basis_n_ijk = self.eval_basis_2_ijk
-    #             nn = self.basis_2.n
-    #         case _:
-    #             raise ValueError("n must be 1 or 2")
-    #     match m:
-    #         case 1:
-    #             if dirichlet_m:
-    #                 em_T = self.e1_dbc_T
-    #             else:
-    #                 em_T = self.e1_T
-    #             eval_basis_m_ijk = self.eval_basis_1_ijk
-    #         case 2:
-    #             if dirichlet_m:
-    #                 em_T = self.e2_dbc_T
-    #             else:
-    #                 em_T = self.e2_T
-    #             eval_basis_m_ijk = self.eval_basis_2_ijk
-    #         case _:
-    #             raise ValueError("m must be 1 or 2")
-    #     match k:
-    #         case 1:
-    #             if dirichlet_k:
-    #                 ek_T = self.e1_dbc_T
-    #             else:
-    #                 ek_T = self.e1_T
-    #             eval_basis_k_ijk = self.eval_basis_1_ijk
-    #         case 2:
-    #             if dirichlet_k:
-    #                 ek_T = self.e2_dbc_T
-    #             else:
-    #                 ek_T = self.e2_T
-    #             eval_basis_k_ijk = self.eval_basis_2_ijk
-    #         case _:
-    #             raise ValueError("k must be 1 or 2")
-
-    #     # w and u evaluated at quadrature points: shape: n_q x 3
-    #     w_jk = evaluate_at_xq_deprecated(eval_basis_m_ijk,
-    #                                      em_T @ w, self.quad.n, 3)
-    #     u_jk = evaluate_at_xq_deprecated(eval_basis_k_ijk,
-    #                                      ek_T @ u, self.quad.n, 3)
-
-    #     # now, we compute
-    #     # ∑ Λn[i](x_j)_a w(x_j)_b u(x_j)_c ) t(x_j)_abc
-    #     # where t is some transformation depending on n,m,k and the metric
-    #     # and we sum over j (quadrature points) and b,c (dimensions)
-    #     # To avoid assembling the huge Λn[i](x_j)_a tensor, we scan over i.
-    #     if n == 1 and m == 2 and k == 1:
-    #         # ∫ Λ[i] (Gw x u) / J dx
-    #         Gw_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, w_jk)
-    #         Gw_x_u_jk = jnp.cross(Gw_jk, u_jk, axis=1)
-    #         f_jk = Gw_x_u_jk * (self.quad.w / self.jacobian_j)[:, None]
-    #     elif n == 1 and m == 1 and k == 1:
-    #         # ∫ Λ[i] (w x u) dx
-    #         w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-    #         f_jk = w_x_u_jk * (self.quad.w)[:, None]
-    #     elif n == 2 and m == 1 and k == 1:
-    #         # ∫ Λ[i] G(w x u) / J dx
-    #         w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-    #         G_wxu_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, w_x_u_jk)
-    #         f_jk = G_wxu_jk * (self.quad.w / self.jacobian_j)[:, None]
-    #     elif n == 2 and m == 2 and k == 1:
-    #         # ∫ Λ[i] (w x G_inv u) dx
-    #         Ginvu_jk = jnp.einsum('jkl,jk->jl', self.metric_inv_jkl, u_jk)
-    #         w_x_Ginvu_jk = jnp.cross(w_jk, Ginvu_jk, axis=1)
-    #         f_jk = w_x_Ginvu_jk * (self.quad.w)[:, None]
-    #     elif n == 1 and m == 2 and k == 2:
-    #         # ∫ Λ[i] G_inv(w x u) dx
-    #         w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-    #         Ginv_wxu_jk = jnp.einsum(
-    #             'jkl,jk->jl', self.metric_inv_jkl, w_x_u_jk)
-    #         f_jk = Ginv_wxu_jk * (self.quad.w)[:, None]
-    #     elif n == 2 and m == 1 and k == 2:
-    #         # ∫ Λ[i] (G_inv w x u) dx
-    #         Ginvw_jk = jnp.einsum('jkl,jk->jl', self.metric_inv_jkl, w_jk)
-    #         Ginvw_x_u_jk = jnp.cross(Ginvw_jk, u_jk, axis=1)
-    #         f_jk = Ginvw_x_u_jk * (self.quad.w)[:, None]
-    #     elif n == 2 and m == 2 and k == 2:
-    #         # ∫ Λ[i] (w x u) / J dx
-    #         w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-    #         f_jk = w_x_u_jk * (self.quad.w / self.jacobian_j)[:, None]
-    #     else:
-    #         raise ValueError("Not yet implemented")
-    #     return en @ integrate_against_deprecated(eval_basis_n_ijk, f_jk, nn)
-
-    def cross_product_projection(
+    def cross_product_load(
         self, w, u, n, m, k,
         dirichlet_n=True,
         dirichlet_m=True,
@@ -1472,7 +1302,7 @@ class DeRhamSequence():
         array
             n-form dual DOF vector (apply ``M_n⁻¹`` to obtain primal DOFs).
         """
-        from mrx.utils import evaluate_at_xq, integrate_against
+        from mrx.quadrature import evaluate_at_xq, integrate_against
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
 
         # Extraction matrices and comp_info for output form n
@@ -1551,7 +1381,7 @@ class DeRhamSequence():
         return en @ integrate_against(
             f_jk, comp_info_n, comp_shapes_n, quad_shape)
 
-    def pressure_projection(
+    def pressure_load(
         self, p, u, gamma,
         dirichlet_p=True,
         dirichlet_u=True,
@@ -1578,7 +1408,7 @@ class DeRhamSequence():
         -------
         q_dual : array  –  0-form dual DOFs (apply M0⁻¹ to get primal DOFs)
         """
-        from mrx.utils import evaluate_at_xq, integrate_against
+        from mrx.quadrature import evaluate_at_xq, integrate_against
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
 
         types = self.basis_0.types

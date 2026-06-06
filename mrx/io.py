@@ -1,4 +1,3 @@
-# %%
 import argparse
 import os
 import random
@@ -13,7 +12,6 @@ import numpy as np
 from jax.scipy.interpolate import RegularGridInterpolator
 
 import mrx
-from mrx.differential_forms import Pushforward
 
 
 def parse_args() -> dict:
@@ -265,7 +263,7 @@ def project_sampled_field(
     dof : jnp.ndarray
         Coefficient vector in the k-form FEM space.
     """
-    from mrx.utils import integrate_against
+    from mrx.quadrature import integrate_against
 
     if reference_domain and k != 0:
         raise ValueError("reference_domain is only supported for k=0")

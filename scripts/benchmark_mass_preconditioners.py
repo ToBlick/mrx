@@ -45,7 +45,7 @@ from mrx.operators import (  # noqa: E402
 from mrx.preconditioners import MassPreconditionerSpec
 from mrx.solvers import solve_singular_cg
 from mrx.io import parse_int_list, parse_ns
-from mrx.utils import build_random_besov_rhs_batch
+from test.random_fields import build_random_besov_rhs_batch
 
 
 jax.config.update("jax_enable_x64", True)

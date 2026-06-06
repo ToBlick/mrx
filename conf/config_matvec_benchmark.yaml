@@ -1,0 +1,29 @@
+defaults:
+  - _matvec_benchmark_schema   # structured config (MatvecBenchmarkConfig dataclass)
+  - _self_
+  - override hydra/launcher: submitit_slurm
+
+# Match the Poisson convergence study's resolution convention.
+p: 3
+n: [8, 16, 32]
+ks: [0, 1]
+epsilon: 0.3333333333333333
+quad_order_offset: 0
+reps: 50
+warmup: 3
+seed: 0
+map_batch_size_inner: 0
+map_batch_size_outer: null
+
+hydra:
+  launcher:
+    timeout_min: 240
+    mem_gb: 80
+    gpus_per_node: 1
+    partition: gpu-h100
+    account: extremedata
+    setup:
+      - "source /scratch/tblickhan/mrx/.venv/bin/activate"
+      - "export JAX_ENABLE_X64=1"
+      - "export XLA_PYTHON_CLIENT_PREALLOCATE=false"
+      - "export TF_GPU_ALLOCATOR=cuda_malloc_async"

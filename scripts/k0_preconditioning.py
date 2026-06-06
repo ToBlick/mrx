@@ -44,7 +44,7 @@ from mrx.operators import (
     dense_projection_matrix,
 )
 from mrx.solvers import solve_singular_cg
-from mrx.utils import build_random_besov_rhs_batch
+from test.random_fields import build_random_besov_rhs_batch
 
 jax.config.update("jax_enable_x64", True)
 

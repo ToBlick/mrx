@@ -7,8 +7,10 @@ import equinox as eqx
 import jax
 import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
+import numpy as np
 
-from mrx.utils import diag_EAET
+import mrx
+from mrx.extraction_operators import MatrixFreeExtraction
 
 
 class BoundaryConditionPair(eqx.Module):
@@ -24,14 +26,17 @@ class JacobiMassPreconditioner(eqx.Module):
 
 
 class ExtractedMassApplyData(eqx.Module):
-    mass_sp: object
+    # ``mass_apply`` is a raw-DOF-space matvec callable ``v -> M_k v`` (matrix
+    # free for k=0, a BCSR-wrapped lambda for k=1/k=2). It replaces the former
+    # stored BCSR ``mass_sp`` so no mass matrix needs to be materialised.
+    mass_apply: object
     extraction: object
     extraction_t: object
     size: int = eqx.field(static=True)
 
 
 class RestrictedExtractedMassApplyData(eqx.Module):
-    mass_sp: object
+    mass_apply: object
     row_extraction: object
     col_extraction_t: object
     output_size: int = eqx.field(static=True)
@@ -381,14 +386,19 @@ def invalidate_mass_rtzblock(preconds: Optional[MassPreconditioners], k: int):
     return preconds
 
 
-def build_mass_jacobi_pair(seq, mass_sp, k: int) -> BoundaryConditionPair:
+def build_mass_jacobi_pair(seq, mass_apply, k: int) -> BoundaryConditionPair:
+    """Build a Jacobi (diagonal-inverse) pair for the k-form mass matrix.
+
+    ``mass_apply`` is the raw-DOF-space matvec ``v -> M_k v`` returned by
+    :func:`mrx.operators.build_matrixfree_mass_apply`.  The diagonal
+    ``diag(E M_k E^T)`` is extracted by probing with canonical basis vectors
+    via :func:`diag_matvec`; no assembled sparse matrix is needed.
+    """
     e = getattr(seq, f"e{k}")
-    e_t = getattr(seq, f"e{k}_T")
     e_dbc = getattr(seq, f"e{k}_dbc")
-    e_t_dbc = getattr(seq, f"e{k}_dbc_T")
     return BoundaryConditionPair(
-        free=1.0 / diag_EAET(e, mass_sp, e_t),
-        dbc=1.0 / diag_EAET(e_dbc, mass_sp, e_t_dbc),
+        free=1.0 / diag_matvec(lambda x: e @ mass_apply(e.T @ x), e.shape[0]),
+        dbc=1.0 / diag_matvec(lambda x: e_dbc @ mass_apply(e_dbc.T @ x), e_dbc.shape[0]),
     )
 
 
@@ -1659,45 +1669,21 @@ def _extracted_size(seq, k: int, dirichlet: bool) -> int:
     return int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
 
 
-def _build_extracted_mass_apply_data(seq, mass_sp, k: int, dirichlet: bool) -> ExtractedMassApplyData:
+def _build_extracted_mass_apply_data(seq, mass_apply, k: int, dirichlet: bool) -> ExtractedMassApplyData:
     return ExtractedMassApplyData(
-        mass_sp=mass_sp,
+        mass_apply=mass_apply,
         extraction=_extraction_operator(seq, k, dirichlet),
         extraction_t=_extraction_operator_transpose(seq, k, dirichlet),
         size=_extracted_size(seq, k, dirichlet),
     )
 
 
-def _as_bcoo(matrix):
-    return matrix.to_bcoo() if hasattr(matrix, "to_bcoo") else matrix
-
-
 def _restrict_sparse_rows(matrix, row_indices: jnp.ndarray):
-    row_indices = jnp.asarray(row_indices, dtype=jnp.int32)
-    matrix_bcoo = _as_bcoo(matrix)
-    row_map = jnp.full((matrix_bcoo.shape[0],), -1, dtype=jnp.int32)
-    row_map = row_map.at[row_indices].set(jnp.arange(row_indices.shape[0], dtype=jnp.int32))
-    new_rows = row_map[matrix_bcoo.indices[:, 0]]
-    mask = new_rows >= 0
-    restricted = jsparse.BCOO(
-        (matrix_bcoo.data[mask], jnp.stack([new_rows[mask], matrix_bcoo.indices[mask, 1]], axis=1)),
-        shape=(row_indices.shape[0], matrix_bcoo.shape[1]),
-    )
-    return jsparse.BCSR.from_bcoo(restricted)
+    return matrix.restrict_rows(row_indices)
 
 
 def _restrict_sparse_cols(matrix, col_indices: jnp.ndarray):
-    col_indices = jnp.asarray(col_indices, dtype=jnp.int32)
-    matrix_bcoo = _as_bcoo(matrix)
-    col_map = jnp.full((matrix_bcoo.shape[1],), -1, dtype=jnp.int32)
-    col_map = col_map.at[col_indices].set(jnp.arange(col_indices.shape[0], dtype=jnp.int32))
-    new_cols = col_map[matrix_bcoo.indices[:, 1]]
-    mask = new_cols >= 0
-    restricted = jsparse.BCOO(
-        (matrix_bcoo.data[mask], jnp.stack([matrix_bcoo.indices[mask, 0], new_cols[mask]], axis=1)),
-        shape=(matrix_bcoo.shape[0], col_indices.shape[0]),
-    )
-    return jsparse.BCSR.from_bcoo(restricted)
+    return matrix.restrict_cols(col_indices)
 
 
 def _build_restricted_extracted_mass_apply_data(
@@ -1708,7 +1694,7 @@ def _build_restricted_extracted_mass_apply_data(
     row_indices = jnp.asarray(row_indices, dtype=jnp.int32)
     col_indices = jnp.asarray(col_indices, dtype=jnp.int32)
     return RestrictedExtractedMassApplyData(
-        mass_sp=data.mass_sp,
+        mass_apply=data.mass_apply,
         row_extraction=_restrict_sparse_rows(data.extraction, row_indices),
         col_extraction_t=_restrict_sparse_cols(data.extraction_t, col_indices),
         output_size=int(row_indices.shape[0]),
@@ -1716,18 +1702,18 @@ def _build_restricted_extracted_mass_apply_data(
     )
 
 
-def _apply_extracted_mass_operator(extraction, extraction_t, mass_sp, x: jnp.ndarray) -> jnp.ndarray:
+def _apply_extracted_mass_operator(extraction, extraction_t, mass_apply, x: jnp.ndarray) -> jnp.ndarray:
     raw = extraction_t @ x
-    return jnp.asarray(extraction @ (mass_sp @ raw))
+    return jnp.asarray(extraction @ mass_apply(raw))
 
 
 def _apply_extracted_mass_operator_data(data: ExtractedMassApplyData, x: jnp.ndarray) -> jnp.ndarray:
-    return _apply_extracted_mass_operator(data.extraction, data.extraction_t, data.mass_sp, x)
+    return _apply_extracted_mass_operator(data.extraction, data.extraction_t, data.mass_apply, x)
 
 
 def _apply_restricted_extracted_mass_operator_data(data: RestrictedExtractedMassApplyData, x: jnp.ndarray) -> jnp.ndarray:
     raw = data.col_extraction_t @ x
-    return jnp.asarray(data.row_extraction @ (data.mass_sp @ raw))
+    return jnp.asarray(data.row_extraction @ data.mass_apply(raw))
 
 
 def _apply_extracted_submatrix(data: ExtractedMassApplyData, row_indices: jnp.ndarray, col_indices: jnp.ndarray, x: jnp.ndarray) -> jnp.ndarray:
@@ -1753,6 +1739,7 @@ def _assemble_surgery_schur_inverse_from_applies(
     bulk_to_surgery_apply,
     *,
     relative_tol: float = 1e-8,
+    sequential: bool = False,
 ) -> jnp.ndarray:
     basis = jnp.eye(ass.shape[0], dtype=ass.dtype)
 
@@ -1761,7 +1748,12 @@ def _assemble_surgery_schur_inverse_from_applies(
         bulk_response = bulk_apply(bulk_rhs)
         return ass @ rhs_s - bulk_to_surgery_apply(bulk_response)
 
-    surgery_schur = jax.vmap(schur_apply, in_axes=1, out_axes=1)(basis)
+    if sequential:
+        # The coupling applies may be matrix free; probe columns one at a time
+        # via ``jax.lax.map`` so the dense element transient is not batched.
+        surgery_schur = jax.lax.map(schur_apply, basis).T
+    else:
+        surgery_schur = jax.vmap(schur_apply, in_axes=1, out_axes=1)(basis)
     return _symmetric_pseudoinverse(surgery_schur, relative_tol=relative_tol)
 
 
@@ -2042,21 +2034,28 @@ def _apply_k2_bulk_diagonal_preconditioner(
     ])
 
 
-def _extract_selected_columns(seq, mass_sp, k: int, dirichlet: bool, column_indices: jnp.ndarray) -> jnp.ndarray:
+def _extract_selected_columns(
+    seq, mass_apply, k: int, dirichlet: bool, column_indices: jnp.ndarray,
+    *, sequential: bool = False,
+) -> jnp.ndarray:
     extraction = _extraction_operator(seq, k, dirichlet)
     extraction_t = _extraction_operator_transpose(seq, k, dirichlet)
     size = _extracted_size(seq, k, dirichlet)
     basis = jax.nn.one_hot(jnp.asarray(column_indices), size, dtype=jnp.float64).T
-    return jax.vmap(
-        lambda col: _apply_extracted_mass_operator(extraction, extraction_t, mass_sp, col),
-        in_axes=1,
-        out_axes=1,
-    )(basis)
+    apply_col = lambda col: _apply_extracted_mass_operator(extraction, extraction_t, mass_apply, col)
+    if sequential:
+        # ``mass_apply`` may be a matrix-free element operator whose per-call
+        # transient is a dense O(ne*q^3) tensor. ``jax.vmap`` would batch that
+        # transient by the number of probed columns and blow up memory, so we
+        # probe one column at a time with ``jax.lax.map`` instead.
+        cols = jax.lax.map(apply_col, basis.T)
+        return cols.T
+    return jax.vmap(apply_col, in_axes=1, out_axes=1)(basis)
 
 
 def build_mass_surgery_preconditioner(
     seq,
-    mass_sp,
+    mass_apply,
     *,
     k: int,
     existing: Optional[MassSurgeryPreconditioner] = None,
@@ -2072,9 +2071,9 @@ def build_mass_surgery_preconditioner(
         surgery_size = _core_size(seq)
         for dirichlet in dirichlet_flags:
             surgery_indices = jnp.arange(surgery_size)
-            surgery_cols = _extract_selected_columns(seq, mass_sp, 0, dirichlet, surgery_indices)
+            surgery_cols = _extract_selected_columns(seq, mass_apply, 0, dirichlet, surgery_indices, sequential=True)
             ass = _symmetrize(surgery_cols[surgery_indices, :])
-            apply_data = _build_extracted_mass_apply_data(seq, mass_sp, 0, dirichlet)
+            apply_data = _build_extracted_mass_apply_data(seq, mass_apply, 0, dirichlet)
             bulk_indices = jnp.arange(surgery_size, apply_data.size)
             factors = K0MassSurgeryPreconditionerFactors(
                 surgery_size=surgery_size,
@@ -2102,11 +2101,11 @@ def build_mass_surgery_preconditioner(
             rt_indices = block_indices["rt"]
             zeta_bulk_indices = block_indices["zeta_bulk"]
             surgery_size = int(surgery_indices.shape[0])
-            surgery_cols = _extract_selected_columns(seq, mass_sp, 1, dirichlet, surgery_indices)
+            surgery_cols = _extract_selected_columns(seq, mass_apply, 1, dirichlet, surgery_indices, sequential=True)
             ass = _symmetrize(surgery_cols[surgery_indices, :])
             rt_r_size = int(block_indices["rt_r_size"])
             rt_theta_size = int(block_indices["rt_theta_size"])
-            apply_data = _build_extracted_mass_apply_data(seq, mass_sp, 1, dirichlet)
+            apply_data = _build_extracted_mass_apply_data(seq, mass_apply, 1, dirichlet)
             factors = K1MassSurgeryPreconditionerFactors(
                 surgery_indices=surgery_indices,
                 bulk_indices=bulk_indices,
@@ -2141,9 +2140,9 @@ def build_mass_surgery_preconditioner(
         for dirichlet in dirichlet_flags:
             block_indices = _tensor_block_indices_k2(seq, dirichlet)
             surgery_indices = block_indices["surgery"]
-            apply_data = _build_extracted_mass_apply_data(seq, mass_sp, 2, dirichlet)
+            apply_data = _build_extracted_mass_apply_data(seq, mass_apply, 2, dirichlet)
             ass = _symmetrize(
-                _extract_selected_columns(seq, mass_sp, 2, dirichlet, surgery_indices)[surgery_indices, :]
+                _extract_selected_columns(seq, mass_apply, 2, dirichlet, surgery_indices, sequential=True)[surgery_indices, :]
             )
             factors = K2MassSurgeryPreconditionerFactors(
                 surgery_indices=surgery_indices,
@@ -2322,6 +2321,7 @@ def build_mass_tensor_preconditioner(
                 lambda rhs_b, bulk_factors=bulk_factors, bulk_true_k0=bulk_true_k0: _apply_tensor_exact_block(None, bulk_factors, rhs_b, true_block_apply=bulk_true_k0),
                 lambda rhs_b, surgery=surgery: _apply_k0_bulk_to_surgery_coupling(surgery, rhs_b),
                 relative_tol=tensor_precond.surgery_schur_pinv_tol,
+                sequential=True,
             )
             factors = K0TensorMassPreconditionerFactors(
                 bulk=bulk_factors,
@@ -2484,6 +2484,7 @@ def build_mass_tensor_preconditioner(
                 ),
                 lambda rhs_bulk, surgery=surgery: _apply_k1_bulk_to_surgery_coupling(surgery, rhs_bulk),
                 relative_tol=tensor_precond.surgery_schur_pinv_tol,
+                sequential=True,
             )
 
             factors = K1TensorMassPreconditionerFactors(
@@ -2652,6 +2653,7 @@ def build_mass_tensor_preconditioner(
                 ),
                 lambda rhs_bulk, surgery=surgery: _apply_k2_bulk_to_surgery_coupling(surgery, rhs_bulk),
                 relative_tol=tensor_precond.surgery_schur_pinv_tol,
+                sequential=True,
             )
             factors = K2TensorMassPreconditionerFactors(
                 r_bulk_indices=r_bulk_indices,
@@ -3090,3 +3092,215 @@ def _k3_weight_tensor(seq) -> jnp.ndarray:
 
 def _k3_extracted_shape(seq) -> tuple[int, int, int]:
     return seq.basis_3.dr - 1, seq.basis_3.dt, seq.basis_3.dz
+
+
+# ---------------------------------------------------------------------------
+# Diagonal probing utilities (matrix-free, probing-based)
+# ---------------------------------------------------------------------------
+
+def diag_matvec(A_matvec, n, *, dtype=jnp.float64, batch_size=None):
+    """Probe ``diag(A)`` from a forward operator on the extracted space.
+
+    The operator is queried on small batches of canonical basis vectors.
+    This is the matrix-free-compatible way to extract a diagonal.
+    """
+    if batch_size is None:
+        configured_batch_size = mrx.MAP_BATCH_SIZE_OUTER
+        if configured_batch_size is None:
+            batch_size = 16
+        else:
+            batch_size = max(1, min(int(configured_batch_size), 16))
+    if n == 0:
+        return jnp.zeros((0,), dtype=dtype)
+    diag_chunks = []
+    for start in range(0, n, batch_size):
+        stop = min(start + batch_size, n)
+        idx = jnp.arange(start, stop)
+        basis = jax.nn.one_hot(idx, n, dtype=dtype)
+        images = jax.vmap(A_matvec)(basis)
+        diag_chunks.append(images[jnp.arange(stop - start), idx])
+    return jnp.concatenate(diag_chunks)
+
+
+def diag_EAET(E, A, E_T=None):
+    """Compute ``diag(E @ A @ E^T)`` via probed matvecs (matrix-free)."""
+    n = E.shape[0]
+    if E_T is None:
+        if isinstance(E, jsparse.BCSR):
+            coo_idx = _bcsr_to_coo_indices(E)
+            E_T = jsparse.BCOO((E.data, coo_idx), shape=E.shape).T
+        else:
+            E_T = E.T
+    dtype = getattr(A, "dtype", getattr(E, "dtype", jnp.float64))
+    return diag_matvec(lambda x: E @ (A @ (E_T @ x)), n, dtype=dtype)
+
+
+def diag_EAET_matvec(E, A_matvec, n, E_T=None):
+    """Compute ``diag(E @ A @ E^T)`` with ``A`` given as a matvec (matrix-free)."""
+    if E_T is None:
+        if isinstance(E, jsparse.BCSR):
+            coo_idx = _bcsr_to_coo_indices(E)
+            E_T = jsparse.BCOO((E.data, coo_idx), shape=E.shape).T
+        else:
+            E_T = E.T
+    dtype = getattr(E, "dtype", jnp.float64)
+    return diag_matvec(lambda x: E @ A_matvec(E_T @ x), n, dtype=dtype)
+
+
+def diag_schur_complement(apply_DT, diag_inv, n):
+    """Compute ``diag(D @ diag(diag_inv) @ D^T)`` via probed matvecs (matrix-free).
+
+    For each row ``i``: ``e_i^T D diag(diag_inv) D^T e_i =
+    ||diag_inv^{1/2} D^T e_i||^2``.
+    """
+    def entry(i):
+        e_i = jnp.zeros(n).at[i].set(1.0)
+        Dt_ei = apply_DT(e_i)
+        return jnp.dot(Dt_ei, diag_inv * Dt_ei)
+    return jax.lax.map(entry, jnp.arange(n), batch_size=mrx.MAP_BATCH_SIZE_OUTER)
+
+
+# ---------------------------------------------------------------------------
+# TODO: remove — the functions below access sparse .data arrays directly and
+# are incompatible with the matrix-free paradigm. Jacobi preconditioners
+# should use diag_matvec / diag_EAET probing instead.
+# ---------------------------------------------------------------------------
+
+def _bcsr_to_coo_indices(mat: jsparse.BCSR):
+    """Expand BCSR indptr to COO-style (row, col) index array."""
+    nse = mat.data.shape[0]
+    lengths = mat.indptr[1:] - mat.indptr[:-1]
+    rows = jnp.repeat(jnp.arange(mat.shape[0]), lengths,
+                      total_repeat_length=nse)
+    return jnp.stack([rows, mat.indices], axis=1)
+
+
+def extract_diag_vector(mat) -> jnp.ndarray:
+    """Extract the main diagonal of a sparse matrix as a 1-D array.
+
+    .. deprecated::
+        Reads ``.data`` directly — incompatible with matrix-free paradigm.
+        Use :func:`diag_matvec` instead.
+    """
+    n = mat.shape[0]
+    if isinstance(mat, jsparse.BCSR):
+        indices = _bcsr_to_coo_indices(mat)
+        rows, cols = indices[:, 0], indices[:, 1]
+    else:
+        rows = mat.indices[:, 0]
+        cols = mat.indices[:, 1]
+    is_diag = rows == cols
+    diag_data = jnp.where(is_diag, mat.data, 0.0)
+    return jnp.zeros(n, dtype=mat.dtype).at[rows].add(diag_data)
+
+
+def _coo_indices_host(mat):
+    """Return ``(rows, cols)`` as host int64 numpy arrays.
+
+    .. deprecated:: incompatible with matrix-free paradigm.
+    """
+    if isinstance(mat, jsparse.BCSR):
+        idx = _bcsr_to_coo_indices(mat)
+        rows = np.asarray(idx[:, 0], dtype=np.int64)
+        cols = np.asarray(idx[:, 1], dtype=np.int64)
+    else:
+        rows = np.asarray(mat.indices[:, 0], dtype=np.int64)
+        cols = np.asarray(mat.indices[:, 1], dtype=np.int64)
+    return rows, cols
+
+
+def _coo_host(mat):
+    """Return ``(rows, cols, vals)`` as host numpy arrays.
+
+    .. deprecated:: incompatible with matrix-free paradigm.
+    """
+    rows, cols = _coo_indices_host(mat)
+    vals = np.asarray(mat.data, dtype=np.float64)
+    return rows, cols, vals
+
+
+def _build_diag_EAET_plan(rows_E, cols_E, vals_E, n_in, a_arr, b_arr,
+                           chunk=1_000_000):
+    """Build a static scatter plan for ``diag(E A E^T)``.
+
+    .. deprecated:: incompatible with matrix-free paradigm. Use
+        :func:`diag_EAET` (probing) instead.
+    """
+    counts = np.bincount(cols_E, minlength=n_in)
+    R = int(counts.max()) if counts.size else 0
+    if R == 0:
+        empty_i = np.zeros((0,), dtype=np.int64)
+        return empty_i, empty_i.copy(), np.zeros((0,), dtype=np.float64)
+    order = np.argsort(cols_E, kind="stable")
+    cs = cols_E[order]; rs = rows_E[order]; ws = vals_E[order]
+    start = np.zeros(n_in, dtype=np.int64)
+    if n_in > 0:
+        start[1:] = np.cumsum(counts)[:-1]
+    pos = np.arange(cs.shape[0], dtype=np.int64) - start[cs]
+    row_pad = np.full((n_in, R), -1, dtype=np.int64)
+    w_pad = np.zeros((n_in, R), dtype=np.float64)
+    row_pad[cs, pos] = rs; w_pad[cs, pos] = ws
+    nnz = a_arr.shape[0]
+    seg_i_list, seg_m_list, seg_coef_list = [], [], []
+    for s in range(0, nnz, chunk):
+        e = min(s + chunk, nnz)
+        a = a_arr[s:e]; b = b_arr[s:e]
+        ra = row_pad[a]; wa = w_pad[a]
+        rb = row_pad[b]; wb = w_pad[b]
+        RA = ra[:, :, None]; RB = rb[:, None, :]
+        match = (RA == RB) & (RA >= 0)
+        coef = wa[:, :, None] * wb[:, None, :]
+        mp = np.broadcast_to(
+            np.arange(s, e, dtype=np.int64)[:, None, None], match.shape)
+        iidx = np.broadcast_to(RA, match.shape)
+        seg_i_list.append(iidx[match])
+        seg_m_list.append(mp[match])
+        seg_coef_list.append(coef[match])
+    seg_i = np.concatenate(seg_i_list) if seg_i_list else np.zeros((0,), np.int64)
+    seg_m = np.concatenate(seg_m_list) if seg_m_list else np.zeros((0,), np.int64)
+    seg_coef = (np.concatenate(seg_coef_list)
+                if seg_coef_list else np.zeros((0,), np.float64))
+    return seg_i, seg_m, seg_coef
+
+
+def diag_EAET_direct(E, A):
+    """Compute ``diag(E @ A @ E^T)`` via a static scatter plan.
+
+    .. deprecated:: incompatible with matrix-free paradigm. Use
+        :func:`diag_EAET` (probing) instead.
+    """
+    n_out, n_in = E.shape
+    rows_E, cols_E, vals_E = _coo_host(E)
+    a_arr, b_arr = _coo_indices_host(A)
+    seg_i, seg_m, seg_coef = _build_diag_EAET_plan(
+        rows_E, cols_E, vals_E, n_in, a_arr, b_arr)
+    if seg_i.shape[0] == 0:
+        return jnp.zeros((n_out,), dtype=jnp.float64)
+    contrib = jnp.asarray(seg_coef) * A.data[jnp.asarray(seg_m)]
+    return jax.ops.segment_sum(contrib, jnp.asarray(seg_i), num_segments=n_out)
+
+
+def diag_EGtMGEt_direct(E, G, M):
+    """Compute ``diag(E @ G^T @ M @ G @ E^T)`` via a scatter plan.
+
+    .. deprecated:: incompatible with matrix-free paradigm. Uses
+        ``scipy.sparse`` and reads ``.data`` directly.
+    """
+    import scipy.sparse as sps
+    n_out = E.shape[0]
+    re, ce, ve = _coo_host(E)
+    rg, cg_arr, vg = _coo_host(G)
+    E_sp = sps.csr_matrix((ve, (re, ce)), shape=E.shape)
+    G_sp = sps.csr_matrix((vg, (rg, cg_arr)), shape=G.shape)
+    Eeff = (E_sp @ G_sp.transpose()).tocoo()
+    n_in = M.shape[0]
+    a_arr, b_arr = _coo_indices_host(M)
+    seg_i, seg_m, seg_coef = _build_diag_EAET_plan(
+        np.asarray(Eeff.row, dtype=np.int64),
+        np.asarray(Eeff.col, dtype=np.int64),
+        np.asarray(Eeff.data, dtype=np.float64),
+        n_in, a_arr, b_arr)
+    if seg_i.shape[0] == 0:
+        return jnp.zeros((n_out,), dtype=jnp.float64)
+    contrib = jnp.asarray(seg_coef) * M.data[jnp.asarray(seg_m)]
+    return jax.ops.segment_sum(contrib, jnp.asarray(seg_i), num_segments=n_out)

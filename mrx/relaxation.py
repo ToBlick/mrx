@@ -40,9 +40,9 @@ def compute_force(
     H = seq.apply_inverse_mass_matrix(
         H_dual, 1, dirichlet=dirichlet_H, guess=H_guess)
     # J = seq.apply_strong_curl(H, dirichlet_in=dirichlet_H, dirichlet_out=True)
-    # JxH_dual = seq.cross_product_projection(J, H, 2, 2, 1, True, True, dirichlet_H)
+    # JxH_dual = seq.cross_product_load(J, H, 2, 2, 1, True, True, dirichlet_H)
     J = seq.apply_weak_curl(B, dirichlet_in=True, dirichlet_out=True)
-    JxH_dual = seq.cross_product_projection(
+    JxH_dual = seq.cross_product_load(
         J, H, 2, 1, 1, True, True, dirichlet_H)
     JxH = seq.apply_inverse_mass_matrix(JxH_dual, 2, guess=JxH_guess)
     F, p = seq.apply_leray_projection(JxH, k=2, p_guess=p_guess)
@@ -304,7 +304,7 @@ class TimeStepper(eqx.Module):
         u = self.apply_regularization(u)
         u, p_v = self.seq.apply_leray_projection(u, k=2, p_guess=state.p_v)
 
-        E_dual = self.seq.cross_product_projection(
+        E_dual = self.seq.cross_product_load(
             u, H, 1, 2, 1, True, True, self.dirichlet_H)
         E = self.seq.apply_inverse_mass_matrix(E_dual, 1, guess=state.E)
         E = E - state.eta * J
@@ -513,3 +513,88 @@ def relaxation_loop(B_dof: jnp.ndarray,
             break
 
     return state, traces
+
+
+# ---------------------------------------------------------------------------
+# Trace dictionary helpers (legacy relaxation loop)
+# ---------------------------------------------------------------------------
+
+default_trace_dict = {
+    "iterations": [],
+    "force_trace": [],
+    "energy_trace": [],
+    "helicity_trace": [],
+    "divergence_trace": [],
+    "picard_iterations": [],
+    "picard_errors": [],
+    "timesteps": [],
+    "velocity_trace": [],
+    "wall_time_trace": [],
+    "B_fields": [],
+    "p_fields": [],
+    "start_time": None,
+    "end_time": None,
+}
+
+
+def append_to_trace_dict(trace_dict, i, f, E, H, dvg, v, p_i, e, dt,
+                         end_time, B=None):
+    """Append one iteration's diagnostics to ``trace_dict``."""
+    trace_dict["iterations"].append(i)
+    trace_dict["force_trace"].append(f)
+    trace_dict["energy_trace"].append(E)
+    trace_dict["helicity_trace"].append(H)
+    trace_dict["divergence_trace"].append(dvg)
+    trace_dict["velocity_trace"].append(v)
+    trace_dict["picard_iterations"].append(p_i)
+    trace_dict["picard_errors"].append(e)
+    trace_dict["timesteps"].append(dt)
+    trace_dict["wall_time_trace"].append(end_time - trace_dict["start_time"])
+    if B is not None:
+        trace_dict["B_fields"].append(B)
+    return trace_dict
+
+
+def save_trace_dict_to_hdf5(trace_dict, diagnostics, filename, CONFIG):
+    """Save a trace dictionary to an HDF5 file."""
+    import h5py
+    import numpy as _np
+    import jax.numpy as _jnp
+    Seq = diagnostics.Seq
+    print(filename)
+    with h5py.File(filename + ".h5", "w") as f:
+        for key in ("iterations", "force_trace", "energy_trace",
+                    "helicity_trace", "divergence_trace", "velocity_trace",
+                    "picard_iterations", "picard_errors", "timesteps",
+                    "wall_time_trace"):
+            f.create_dataset(key, data=_jnp.array(trace_dict[key]))
+        f.create_dataset("B_final", data=trace_dict["B_final"])
+        f.create_dataset("p_final", data=trace_dict["p_final"])
+        if CONFIG.get("save_B"):
+            f.create_dataset("B_fields", data=_jnp.array(trace_dict["B_fields"]))
+            f.create_dataset("p_fields", data=_jnp.array(trace_dict["p_fields"]))
+        f.create_dataset("total_time", data=_jnp.array(
+            [trace_dict["end_time"] - trace_dict["start_time"]]))
+        f.create_dataset("time_setup", data=_jnp.array(
+            [trace_dict["setup_done_time"] - trace_dict["start_time"]]))
+        f.create_dataset("time_solve", data=_jnp.array(
+            [trace_dict["end_time"] - trace_dict["setup_done_time"]]))
+        cfg_group = f.create_group("config")
+        for key, val in CONFIG.items():
+            if callable(val):
+                continue
+            if isinstance(val, _np.ndarray) and val.dtype == object:
+                continue
+            try:
+                val_array = _np.asarray(val)
+                if val_array.dtype == object:
+                    continue
+            except (ValueError, TypeError):
+                pass
+            if isinstance(val, str):
+                cfg_group.attrs[key] = _np.bytes_(val)
+            else:
+                try:
+                    cfg_group.attrs[key] = val
+                except (TypeError, ValueError):
+                    continue

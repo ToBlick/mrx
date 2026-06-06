@@ -2,8 +2,8 @@
 
 Builds a DeRhamSequence with identity map, then for each of N_FUNCS random Besov
 k=0 functions computes:
-  - Greville interpolation DOFs via seq.p0.zeroform_interpolation
-  - L2-projection DOFs via seq.p0(f) → seq.apply_inverse_mass_matrix (sparse CG)
+  - Greville interpolation DOFs via seq.l0.zeroform_interpolation
+  - L2-projection DOFs via seq.l0(f) → seq.apply_inverse_mass_matrix (sparse CG)
 
 L2 errors are evaluated on an independent fine Gauss quadrature grid.
 Prints mean, max, min, std of L2 errors for both methods.
@@ -18,7 +18,7 @@ jax.config.update("jax_enable_x64", True)
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.projectors import Projector
-from mrx.utils import build_random_besov_function
+from test.random_fields import build_random_besov_function
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -71,15 +71,15 @@ for i, key in enumerate(keys):
     f_exact = jax.lax.map(lambda x: f(x)[0], quad_pts)
 
     # --- Greville interpolation ---
-    dofs_interp = seq.p0.zeroform_interpolation(f)
+    dofs_interp = seq.interpolate(f, 0)
     disc_interp = DiscreteFunction(dofs_interp, seq.basis_0, seq.e0)
     f_h_interp  = jax.lax.map(lambda x: disc_interp(x)[0], quad_pts)
     err_interp  = float(jnp.sqrt(jnp.sum(quad_w * (f_h_interp - f_exact) ** 2)))
 
     # --- L2 projection ---
-    # seq.p0(f) returns e0 @ (L2 RHS integral), i.e. the extracted dual vector.
+    # seq.l0(f) returns e0 @ (L2 RHS integral), i.e. the extracted dual vector.
     # apply_inverse_mass_matrix solves M0 u = rhs via sparse CG.
-    rhs_l2   = seq.p0(f)
+    rhs_l2   = seq.l0(f)
     dofs_l2  = seq.apply_inverse_mass_matrix(rhs_l2, 0, dirichlet=False)
     disc_l2  = DiscreteFunction(dofs_l2, seq.basis_0, seq.e0)
     f_h_l2   = jax.lax.map(lambda x: disc_l2(x)[0], quad_pts)

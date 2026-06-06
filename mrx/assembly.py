@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 
 import mrx
+from mrx.geometry import grad_1d
 
 
 _INDEX_DTYPE = jnp.int32
@@ -621,15 +622,6 @@ def assemble_dense_hodge_laplacian(seq, k, dirichlet=True, operators=None):
 # Helper
 # ---------------------------------------------------------------------------
 
-def grad_1d(d_basis, boundary_type):
-    """Compute gradient basis from derivative spline: dΛ(i-1) - dΛ(i)."""
-    if boundary_type == 'clamped':
-        padded = jnp.pad(d_basis, ((1, 1), (0, 0)))
-        return padded[:-1] - padded[1:]
-    else:  # periodic
-        return jnp.roll(d_basis, 1, axis=0) - d_basis
-
-
 # ---------------------------------------------------------------------------
 # Element-wise basis evaluation at quadrature points
 # ---------------------------------------------------------------------------
@@ -892,7 +884,7 @@ def assemble_derivative_matrix(seq, k):
 
 def assemble_hodge_laplacian(seq, k):
     """Assemble the stiffness matrix (δd) using tensor-product contraction."""
-    from mrx.utils import diag_EAET, diag_schur_complement
+    from mrx.preconditioners import diag_EAET, diag_schur_complement
     quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
     types = seq.basis_0.types
     gr = grad_1d(seq.d_basis_r_jk, types[0])

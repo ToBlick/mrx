@@ -7,7 +7,7 @@ import jax.numpy as jnp
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
-from mrx.utils import build_random_besov_rhs_batch
+from test.random_fields import build_random_besov_rhs_batch
 
 jax.config.update("jax_enable_x64", True)
 

@@ -15,12 +15,12 @@ import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.io import interpolate_scalar_function
-from mrx.mappings import (cerfon_map, cylinder_map, helical_map,
+from mrx.mappings import (one_size_fits_all_map, cylinder_map, helical_map,
                           interpolate_map, polar_map, rotating_ellipse_map,
                           toroid_map)
 from mrx.solvers import solve_singular_cg
-from mrx.utils import (det33, evaluate_at_xq, integrate_against, inv33,
-                       jacobian_determinant)
+from mrx.differential_forms import det33, inv33, jacobian_determinant
+from mrx.quadrature import evaluate_at_xq, integrate_against
 
 jax.config.update("jax_enable_x64", True)
 

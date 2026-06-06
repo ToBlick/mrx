@@ -70,6 +70,15 @@ Use this skill when working on code in the MRX repository, especially under `mrx
 - Any documentation update reflects current production behavior rather than an intended future design.
 - The final explanation names the validation performed and any unresolved numerical or performance caveats.
 
+## Testing Conventions
+
+- Tests must be cheap. No heavy 3D assembly, large DeRham sequences, or GPU work in tests.
+- Share computation across tests wherever possible: build bases and evaluate on grids at module level, not inside each test function.
+- One test file per source file.
+- No basic inf/nan tests. Every test must verify a specific mathematical property or compare against an analytic baseline.
+- Good test targets: partition of unity, positivity, analytic formulas for low-order splines (e.g. Bernstein), de Rham commutation (histopolation vs. finite-difference coboundary), interpolation/histopolation roundtrips.
+- Removed tests: implementation roundtrips (knot roundtrip), API consistency checks (getitem vs call) — these are not mathematical properties.
+
 ## Good Prompts
 
 - Refactor the MRX mass preconditioner path for k=1 without changing the public API.

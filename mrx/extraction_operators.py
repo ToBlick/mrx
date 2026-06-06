@@ -5,12 +5,194 @@ This module provides classes and functions for handling polar coordinate transfo
 and boundary conditions in finite element computations.
 """
 
+import equinox as eqx
 import jax
 import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
 import mrx
+
+
+class MatrixFreeExtraction(eqx.Module):
+    """Matrix-free polar/boundary extraction operator.
+
+    Applies ``E`` (forward) and ``E^T`` (transpose) as a cached
+    gather/scatter using a static sparsity pattern instead of a stored BCSR
+    matmul. The forward operator maps a full pre-extraction DoF vector (size
+    ``forward_shape[1]``) to the extracted/constrained vector (size
+    ``forward_shape[0]``); the transpose maps back.
+
+    The index pattern (``rows``, ``cols``) and weights (``vals``) are computed
+    once from the assembled sparse operator. The same pattern is reused by the
+    surgery preconditioner through :meth:`to_bcoo`, so no BCSR needs to be
+    materialised or stored for the matvec path.
+
+    ``rows``/``cols``/``vals`` are always stored in the *forward* orientation;
+    the :attr:`transposed` flag selects how they are consumed.
+    """
+
+    rows: jnp.ndarray
+    cols: jnp.ndarray
+    vals: jnp.ndarray
+    forward_shape: tuple = eqx.field(static=True)
+    transposed: bool = eqx.field(static=True)
+
+    @classmethod
+    def from_bcoo(cls, bcoo, transposed: bool = False):
+        """Build a matrix-free extraction from an assembled BCOO matrix."""
+        indices = bcoo.indices
+        return cls(
+            rows=jnp.asarray(indices[:, 0], dtype=jnp.int32),
+            cols=jnp.asarray(indices[:, 1], dtype=jnp.int32),
+            vals=jnp.asarray(bcoo.data, dtype=jnp.float64),
+            forward_shape=(int(bcoo.shape[0]), int(bcoo.shape[1])),
+            transposed=transposed,
+        )
+
+    @property
+    def shape(self):
+        if self.transposed:
+            return (self.forward_shape[1], self.forward_shape[0])
+        return self.forward_shape
+
+    @property
+    def dtype(self):
+        return self.vals.dtype
+
+    @property
+    def data(self):
+        """Nonzero values in the current orientation (BCOO-compatible)."""
+        return self.vals
+
+    @property
+    def indices(self):
+        """``(nnz, 2)`` COO indices in the current orientation."""
+        if self.transposed:
+            return jnp.stack([self.cols, self.rows], axis=1)
+        return jnp.stack([self.rows, self.cols], axis=1)
+
+    @property
+    def T(self):
+        return MatrixFreeExtraction(
+            rows=self.rows,
+            cols=self.cols,
+            vals=self.vals,
+            forward_shape=self.forward_shape,
+            transposed=not self.transposed,
+        )
+
+    def _apply(self, x):
+        x = jnp.asarray(x)
+        if self.transposed:
+            # E^T: gather from extracted rows, scatter into raw cols.
+            gather_idx, segment_idx, num_segments = (
+                self.rows, self.cols, self.forward_shape[1])
+        else:
+            # E: gather from raw cols, scatter into extracted rows.
+            gather_idx, segment_idx, num_segments = (
+                self.cols, self.rows, self.forward_shape[0])
+        weights = self.vals if x.ndim == 1 else self.vals[:, None]
+        contributions = weights * x[gather_idx]
+        return jax.ops.segment_sum(
+            contributions, segment_idx, num_segments=num_segments)
+
+    def __matmul__(self, x):
+        return self._apply(x)
+
+    def __call__(self, x):
+        return self._apply(x)
+
+    def to_bcoo(self):
+        """Materialise the (orientation-aware) sparse pattern as a BCOO."""
+        if self.transposed:
+            indices = jnp.stack([self.cols, self.rows], axis=1)
+            shape = (self.forward_shape[1], self.forward_shape[0])
+        else:
+            indices = jnp.stack([self.rows, self.cols], axis=1)
+            shape = self.forward_shape
+        return jsparse.BCOO((self.vals, indices), shape=shape)
+
+    def todense(self):
+        return self.to_bcoo().todense()
+
+    def restrict_rows(self, row_indices):
+        """Return a copy with the row dimension restricted to ``row_indices``.
+
+        Works in the current orientation (respects ``transposed``). The result
+        keeps only nonzeros whose row (in current orientation) falls in
+        ``row_indices``, with rows remapped to a contiguous 0-based range.
+        Returns a new :class:`MatrixFreeExtraction` — no BCOO materialised.
+        """
+        row_indices = jnp.asarray(row_indices, dtype=jnp.int32)
+        n_new = int(row_indices.shape[0])
+        # "Row in current orientation" lives in self.cols if transposed, else self.rows.
+        if self.transposed:
+            src = self.cols
+            n_old = self.forward_shape[1]
+        else:
+            src = self.rows
+            n_old = self.forward_shape[0]
+        remap = jnp.full((n_old,), -1, dtype=jnp.int32)
+        remap = remap.at[row_indices].set(jnp.arange(n_new, dtype=jnp.int32))
+        new_src = remap[src]
+        mask = new_src >= 0
+        new_vals = self.vals[mask]
+        if self.transposed:
+            return MatrixFreeExtraction(
+                rows=self.rows[mask],
+                cols=new_src[mask],
+                vals=new_vals,
+                forward_shape=(self.forward_shape[0], n_new),
+                transposed=True,
+            )
+        else:
+            return MatrixFreeExtraction(
+                rows=new_src[mask],
+                cols=self.cols[mask],
+                vals=new_vals,
+                forward_shape=(n_new, self.forward_shape[1]),
+                transposed=False,
+            )
+
+    def restrict_cols(self, col_indices):
+        """Return a copy with the column dimension restricted to ``col_indices``.
+
+        Works in the current orientation (respects ``transposed``). The result
+        keeps only nonzeros whose column (in current orientation) falls in
+        ``col_indices``, with columns remapped to a contiguous 0-based range.
+        Returns a new :class:`MatrixFreeExtraction` — no BCOO materialised.
+        """
+        col_indices = jnp.asarray(col_indices, dtype=jnp.int32)
+        n_new = int(col_indices.shape[0])
+        # "Col in current orientation" lives in self.rows if transposed, else self.cols.
+        if self.transposed:
+            src = self.rows
+            n_old = self.forward_shape[0]
+        else:
+            src = self.cols
+            n_old = self.forward_shape[1]
+        remap = jnp.full((n_old,), -1, dtype=jnp.int32)
+        remap = remap.at[col_indices].set(jnp.arange(n_new, dtype=jnp.int32))
+        new_src = remap[src]
+        mask = new_src >= 0
+        new_vals = self.vals[mask]
+        if self.transposed:
+            return MatrixFreeExtraction(
+                rows=new_src[mask],
+                cols=self.cols[mask],
+                vals=new_vals,
+                forward_shape=(n_new, self.forward_shape[1]),
+                transposed=True,
+            )
+        else:
+            return MatrixFreeExtraction(
+                rows=self.rows[mask],
+                cols=new_src[mask],
+                vals=new_vals,
+                forward_shape=(self.forward_shape[0], n_new),
+                transposed=False,
+            )
 
 
 class PolarExtractionOperator:
@@ -75,26 +257,6 @@ class PolarExtractionOperator:
             self.n2 = ((self.nr - 2 - self.o) * self.nt + 3) * self.nz
             self.n3 = ((self.nr - 2 - self.o) * self.nt + 3) * self.nz
         self.n = self.n1 + self.n2 + self.n3
-
-    def _vector_index(self, idx):
-        """
-        Convert linear index to vector component and local index.
-
-        Args:
-            idx (int): Linear index
-
-        Returns:
-            tuple: (category, index) where category indicates the vector component
-                  and index is the local index within that component
-        """
-        n1, n2 = self.n1, self.n2
-        if self.k == 0 or self.k == 3:
-            return 0, idx
-        elif self.k == 1 or self.k == 2 or self.k == -1:
-            category = jnp.int32(idx >= n1) + jnp.int32(idx >= n1 + n2)
-            index = idx - n1 * jnp.int32(idx >= n1) - \
-                n2 * jnp.int32(idx >= n1 + n2)
-            return category, index
 
     def _k1_row_slices(self):
         theta_surgery = slice(0, 2 * self.nz)
@@ -394,8 +556,8 @@ class PolarExtractionOperator:
             return self.Lambda.n1 + self.Lambda.n2 + base
         raise ValueError(f"Unsupported form degree k={self.k}")
 
-    def assemble_sparse_tensor(self):
-        """Assemble the operator from its explicit tensor-product sparsity pattern."""
+    def build_extraction(self):
+        """Build the MatrixFreeExtraction from the explicit tensor-product sparsity pattern."""
         xi = np.asarray(self.ξ)
         rows = []
         cols = []
@@ -644,22 +806,18 @@ class PolarExtractionOperator:
             raise ValueError(f"Sparse tensor assembly is not implemented for k={self.k}")
 
         if data:
-            row_idx = jnp.asarray(np.concatenate(rows), dtype=jnp.int32)
-            col_idx = jnp.asarray(np.concatenate(cols), dtype=jnp.int32)
-            values = jnp.asarray(np.concatenate(data), dtype=jnp.float64)
-            indices = jnp.stack([row_idx, col_idx], axis=-1)
+            rows_arr = jnp.asarray(np.concatenate(rows), dtype=jnp.int32)
+            cols_arr = jnp.asarray(np.concatenate(cols), dtype=jnp.int32)
+            vals_arr = jnp.asarray(np.concatenate(data), dtype=jnp.float64)
         else:
-            values = jnp.zeros((0,), dtype=jnp.float64)
-            indices = jnp.zeros((0, 2), dtype=jnp.int32)
-        return jsparse.BCOO((values, indices), shape=(self.n, self.Lambda.n))
-
-    def assemble_sparse(self):
-        """Assemble the operator as a sparse BCOO matrix."""
-        return self.assemble_sparse_tensor()
-
-    def sparse_matrix(self):
-        """Wrapper for assemble_sparse."""
-        return self.assemble_sparse()
+            rows_arr = jnp.zeros((0,), dtype=jnp.int32)
+            cols_arr = jnp.zeros((0,), dtype=jnp.int32)
+            vals_arr = jnp.zeros((0,), dtype=jnp.float64)
+        return MatrixFreeExtraction(
+            rows=rows_arr, cols=cols_arr, vals=vals_arr,
+            forward_shape=(self.n, self.Lambda.n),
+            transposed=False,
+        )
 
 
 def get_xi(nt):
@@ -777,14 +935,6 @@ class BoundaryOperator:
             self.n2 = self.nr * self.nt * self.nz
             self.n3 = self.nr * self.nt * self.nz
         self.n = self.n1 + self.n2 + self.n3
-
-    def matrix(self):
-        """Wrapper for the assemble method."""
-        return self.assemble()
-
-    def __array__(self):
-        """Convert operator to numpy array."""
-        return np.array(self.matrix())
 
     def _vector_index(self, idx):
         """
@@ -913,28 +1063,12 @@ class BoundaryOperator:
         elif self.k == 3:
             return jnp.int32(row_idx == col_idx)
 
-    def assemble(self):
-        """
-        Assemble the complete boundary operator matrix.
-
-        Returns:
-            jnp.ndarray: The assembled operator matrix
-        """
-        return mrx.double_map(
-            self._element,
-            jnp.arange(self.n),
-            jnp.arange(self.Lambda.n),
-        )
-
-    def assemble_sparse(self):
-        """Assemble the operator as a sparse BCOO matrix.
+    def build_extraction(self):
+        """Build the MatrixFreeExtraction by probing each row against all columns.
 
         Maps over rows sequentially, computing one row at a time with
         batched map over columns. Non-zero indices and values are collected
-        and assembled into a BCOO sparse matrix.
-
-        Returns:
-            jsparse.BCOO: The sparse operator matrix of shape (n, Lambda.n).
+        into a MatrixFreeExtraction (gather/scatter apply, no matrix stored).
         """
         ncols = self.Lambda.n
         nrows = self.n
@@ -963,39 +1097,39 @@ class BoundaryOperator:
         row_indices = jnp.broadcast_to(
             jnp.arange(nrows)[:, None], (nrows, max_nnz)
         )
-        indices = jnp.stack([row_indices.ravel(), all_cols.ravel()], axis=-1)
-        data = all_vals.ravel()
-
-        return jsparse.BCOO((data, indices), shape=(nrows, ncols))
-
-    def sparse_matrix(self):
-        """Wrapper for assemble_sparse."""
-        return self.assemble_sparse()
+        return MatrixFreeExtraction(
+            rows=row_indices.ravel().astype(jnp.int32),
+            cols=all_cols.ravel().astype(jnp.int32),
+            vals=all_vals.ravel(),
+            forward_shape=(nrows, ncols),
+            transposed=False,
+        )
 
 
 def bc_extraction_op(
-    e_bcoo,
-    e_dbc_bcoo,
+    e,
+    e_dbc,
     n_full: int,
 ):
     """Build the extraction operator for Dirichlet boundary DOFs.
 
-    Returns a BCOO matrix of shape (n_bc, n_full) that selects the
-    DOFs present in ``e`` (unrestricted) but absent from ``e_dbc`` (DBC),
-    i.e. the DOFs that are set to zero by the homogeneous Dirichlet BC.
+    Returns a :class:`MatrixFreeExtraction` of shape ``(n_bc, n_full)`` that
+    selects the DOFs present in ``e`` (unrestricted) but absent from ``e_dbc``
+    (DBC), i.e. the DOFs that are set to zero by the homogeneous Dirichlet BC.
 
     Uses the identity: columns present in e but not e_dbc satisfy
         (e.T @ 1  -  e_dbc.T @ 1)[i] == 1
     """
     indicator = np.array(
-        e_bcoo.T @ jnp.ones(e_bcoo.shape[0])
-        - e_dbc_bcoo.T @ jnp.ones(e_dbc_bcoo.shape[0])
+        e.T @ jnp.ones(e.shape[0])
+        - e_dbc.T @ jnp.ones(e_dbc.shape[0])
     )
     bc_cols = np.where(indicator > 0.5)[0]
     n_bc = len(bc_cols)
-    if n_bc == 0:
-        return jsparse.BCOO(
-            (jnp.zeros(0), jnp.zeros((0, 2), dtype=jnp.int32)),
-            shape=(0, n_full))
-    indices = jnp.array(np.stack([np.arange(n_bc), bc_cols], axis=-1))
-    return jsparse.BCOO((jnp.ones(n_bc), indices), shape=(n_bc, n_full))
+    return MatrixFreeExtraction(
+        rows=jnp.asarray(np.arange(n_bc, dtype=np.int32)),
+        cols=jnp.asarray(bc_cols.astype(np.int32)),
+        vals=jnp.ones(n_bc, dtype=jnp.float64),
+        forward_shape=(n_bc, n_full),
+        transposed=False,
+    )

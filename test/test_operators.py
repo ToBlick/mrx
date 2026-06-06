@@ -1,8 +1,34 @@
-"""Mass-operator and mass-preconditioner tests for ``mrx.operators``.
+"""Matrix-free mass, Laplacian, and de Rham complex tests (``mrx.operators``).
 
-These tests keep the geometry genuinely 3D by using a small rotating ellipse,
-assemble the full mass-operator bundle once, then reuse it for dense/sparse
-consistency checks and solver-facing mass-inverse tests.
+All tests use a small all-periodic (4,8,4) / p=2 / q=4 sequence with two
+geometries:
+
+  **Identity map** (first section) — Jacobian is 1 everywhere, providing
+  analytic reference values with no geometry dependence.
+
+  **Rotating-ellipse map** (second section onwards) — nontrivial metric;
+  also used for the Laplacian and de Rham complex tests.
+
+Module-level objects are precomputed once for each geometry section so the
+heavy JIT cost is paid at import time, not per-test.
+
+**Mass tests (both geometries)**
+  Symmetry, positive definiteness via random probes and dense assembly.
+
+**Hodge Laplacian tests (rotating ellipse)**
+  Dense Laplacians assembled from first principles::
+
+      L_0 = G_0^T M_1 G_0
+      L_k = G_k^T M_{k+1} G_k  +  D_{k-1} M_{k-1}^{-1} D_{k-1}^T   (k=1,2,3)
+
+  Checked: symmetry, PSD, and null-space dimension equal to β_k (free BCs)
+  or β_{d-k} (DBC, relative cohomology), with d=3 and β=(1,1,0,0) for a
+  solid torus (clamped-r).
+
+**de Rham complex (identity map, non-polar)**
+  ``curl(grad f) = 0`` and ``div(curl F) = 0`` via random-probe tests on
+  ``_SEQ`` (``polar=False``). Polar extraction is not a 0/1 selection
+  matrix, so the algebraic identity only holds on the non-polar sequence.
 """
 
 import jax
@@ -11,607 +37,315 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from test.conftest import build_dense
+jax.config.update("jax_enable_x64", True)
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
 from mrx.operators import (
-    _build_mass_preconditioner_apply,
+    apply_derivative_matrix,
+    apply_incidence_matrix,
     apply_mass_matrix,
-    apply_mass_tensor_preconditioner_ops,
-    apply_inverse_mass_matrix,
-    assemble_mass_operators,
-    assemble_tensor_mass_preconditioner,
-    dense_mass_matrix,
+    apply_stiffness,
+    assemble_incidence_operators,
+    build_matrixfree_mass_apply,
+    mass_core_apply,
 )
-from mrx.preconditioners import MassPreconditionerSpec
 
-jax.config.update("jax_enable_x64", True)
+# ---------------------------------------------------------------------------
+# Module-level fixtures
+# ---------------------------------------------------------------------------
 
-ALL_K = (0, 1, 2, 3)
-ALL_DBC = (False, True)
-N_PROBES = 4
-N_SOLVER_PROBES = 4
-WARM_START_TOL = 1e-10
-WARM_START_LOOSE_TOL = 1e-8
-MASS_SOLVE_COMPARE_ATOL = 1e-6
-MASS_SOLVE_COMPARE_RTOL = 1e-7
-MASS_PRECONDITIONERS = {
-    "jacobi": MassPreconditionerSpec(kind="jacobi"),
-    "richardson-4": MassPreconditionerSpec(
-        kind="richardson",
-        steps=4,
-        power_iterations=8,
-        damping_safety=0.8,
-        smoother=MassPreconditionerSpec(kind="tensor"),
-    ),
-    "chebyshev-4": MassPreconditionerSpec(
-        kind="chebyshev",
-        steps=4,
-        power_iterations=8,
-        min_eig_fraction=1e-3,
-        smoother=MassPreconditionerSpec(kind="tensor"),
-    ),
-    "tensor": MassPreconditionerSpec(kind="tensor", surgery_schur=True),
-}
-SPD_PRECONDITIONERS = ("jacobi", "richardson-4", "tensor")
-K2_SCHUR_PRECONDITIONERS = {
-    "none/schur/tensor": MassPreconditionerSpec(
-        kind="none",
-        surgery_schur=True,
-        smoother=MassPreconditionerSpec(kind="tensor"),
-    ),
-    "richardson/schur/tensor": MassPreconditionerSpec(
-        kind="richardson",
-        surgery_schur=True,
-        steps=4,
-        power_iterations=8,
-        damping_safety=0.8,
-        smoother=MassPreconditionerSpec(kind="tensor"),
-    ),
-}
-K2_INVALID_SCHUR_PRECONDITIONERS = {
-    "none/schur/jacobi": MassPreconditionerSpec(
-        kind="none",
-        surgery_schur=True,
-        smoother=MassPreconditionerSpec(kind="jacobi"),
-    ),
-    "none/schur/richardson": MassPreconditionerSpec(
-        kind="none",
-        surgery_schur=True,
-        smoother=MassPreconditionerSpec(
-            kind="richardson",
-            steps=4,
-            power_iterations=8,
-            damping_safety=0.8,
-            smoother=MassPreconditionerSpec(kind="tensor"),
-        ),
-    ),
-    "none/schur/chebyshev": MassPreconditionerSpec(
-        kind="none",
-        surgery_schur=True,
-        smoother=MassPreconditionerSpec(
-            kind="chebyshev",
-            steps=4,
-            power_iterations=8,
-            min_eig_fraction=1e-3,
-            smoother=MassPreconditionerSpec(kind="tensor"),
-        ),
-    ),
-    "richardson/schur/jacobi": MassPreconditionerSpec(
-        kind="richardson",
-        surgery_schur=True,
-        steps=4,
-        power_iterations=8,
-        damping_safety=0.8,
-        smoother=MassPreconditionerSpec(kind="jacobi"),
-    ),
-    "richardson/schur/richardson": MassPreconditionerSpec(
-        kind="richardson",
-        surgery_schur=True,
-        steps=4,
-        power_iterations=8,
-        damping_safety=0.8,
-        smoother=MassPreconditionerSpec(
-            kind="richardson",
-            steps=4,
-            power_iterations=8,
-            damping_safety=0.8,
-            smoother=MassPreconditionerSpec(kind="tensor"),
-        ),
-    ),
-    "richardson/schur/chebyshev": MassPreconditionerSpec(
-        kind="richardson",
-        surgery_schur=True,
-        steps=4,
-        power_iterations=8,
-        damping_safety=0.8,
-        smoother=MassPreconditionerSpec(
-            kind="chebyshev",
-            steps=4,
-            power_iterations=8,
-            min_eig_fraction=1e-3,
-            smoother=MassPreconditionerSpec(kind="tensor"),
-        ),
-    ),
+_NR, _NT, _NZ = 4, 8, 4
+_P = 2
+_Q = 4
+_TYPES = ("clamped", "periodic", "periodic")
+
+_SEQ = DeRhamSequence((_NR, _NT, _NZ), (_P, _P, _P), _Q, _TYPES, polar=False)
+_SEQ.evaluate_1d()
+_SEQ.set_map(lambda x: x)
+
+_APPLIES = {k: build_matrixfree_mass_apply(_SEQ, k) for k in (0, 1, 2, 3)}
+
+_N_DOF = {
+    0: int(_SEQ.basis_0.shape[0][0] * _SEQ.basis_0.shape[0][1] * _SEQ.basis_0.shape[0][2]),
+    1: sum(int(s[0] * s[1] * s[2]) for s in _SEQ.basis_1.shape),
+    2: sum(int(s[0] * s[1] * s[2]) for s in _SEQ.basis_2.shape),
+    3: int(_SEQ.basis_3.shape[0][0] * _SEQ.basis_3.shape[0][1] * _SEQ.basis_3.shape[0][2]),
 }
 
+_DENSE = {
+    k: np.asarray(jax.vmap(_APPLIES[k], in_axes=1, out_axes=1)(jnp.eye(_N_DOF[k], dtype=jnp.float64)))
+    for k in (0, 1, 2, 3)
+}
 
-def _random_vectors(n: int, seed: int, count: int = N_PROBES) -> np.ndarray:
-    return np.asarray(
-        jax.random.normal(jax.random.PRNGKey(seed), (count, n), dtype=jnp.float64)
-    )
-
-
-def _solve_dense_spd(cholesky_factor: np.ndarray, rhs: np.ndarray) -> np.ndarray:
-    y = np.linalg.solve(cholesky_factor, rhs)
-    return np.linalg.solve(cholesky_factor.T, y)
+_RNG = np.random.default_rng(42)
+_N_PROBES = 6
 
 
-@pytest.fixture(scope="module")
-def rotating_mass_case():
-    seq = DeRhamSequence(
-        (5, 5, 5),
-        (3, 3, 3),
-        6,
-        ("clamped", "periodic", "periodic"),
-        polar=True,
-        tol=1e-10,
-        maxiter=1000,
-        betti_numbers=(1, 1, 0, 0),
-    )
-    seq.evaluate_1d()
-    seq.assemble_reference_mass_matrix()
-    seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2, R0=1.0, nfp=3))
-
-    operators = assemble_mass_operators(seq, seq.geometry, ks=ALL_K)
-    operators = assemble_tensor_mass_preconditioner(
-        seq,
-        operators=operators,
-        ks=ALL_K,
-        rank=3,
-        cp_kwargs={"tol": 1e-8, "maxiter": 200},
-    )
-
-    dense_mass_cache = {}
-    dense_mass_cholesky_cache = {}
-    dense_preconditioner_cache = {}
-
-    def get_dense_mass(k: int, dirichlet: bool) -> np.ndarray:
-        key = (k, dirichlet)
-        if key not in dense_mass_cache:
-            dense_mass_cache[key] = np.asarray(
-                dense_mass_matrix(seq, operators, k, dirichlet=dirichlet)
-            )
-        return dense_mass_cache[key]
-
-    def get_dense_preconditioner(k: int, dirichlet: bool, label: str) -> np.ndarray:
-        key = (k, dirichlet, label)
-        if key not in dense_preconditioner_cache:
-            precond_apply = _build_mass_preconditioner_apply(
-                seq,
-                operators,
-                k=k,
-                dirichlet=dirichlet,
-                preconditioner=MASS_PRECONDITIONERS[label],
-                allow_none=False,
-            )
-            n = get_dense_mass(k, dirichlet).shape[0]
-            dense_preconditioner_cache[key] = np.asarray(build_dense(precond_apply, n))
-        return dense_preconditioner_cache[key]
-
-    def get_dense_mass_cholesky(k: int, dirichlet: bool) -> np.ndarray:
-        key = (k, dirichlet)
-        if key not in dense_mass_cholesky_cache:
-            dense_mass_cholesky_cache[key] = np.linalg.cholesky(get_dense_mass(k, dirichlet))
-        return dense_mass_cholesky_cache[key]
-
-    return {
-        "seq": seq,
-        "operators": operators,
-        "dense_mass": get_dense_mass,
-        "dense_mass_cholesky": get_dense_mass_cholesky,
-        "dense_preconditioner": get_dense_preconditioner,
-    }
+def _random_vecs(k: int, count: int = _N_PROBES) -> list[np.ndarray]:
+    return list(_RNG.standard_normal((count, _N_DOF[k])))
 
 
-@pytest.mark.parametrize("k", ALL_K)
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_dense_mass_matches_sparse_probe(rotating_mass_case, k, dirichlet):
-    seq = rotating_mass_case["seq"]
-    operators = rotating_mass_case["operators"]
-    dense_mass = rotating_mass_case["dense_mass"](k, dirichlet)
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 
-    for vector in _random_vectors(dense_mass.shape[0], seed=10 + 13 * k + int(dirichlet)):
-        sparse_apply = np.asarray(
-            apply_mass_matrix(
-                seq,
-                operators,
-                jnp.asarray(vector),
-                k,
-                dirichlet=dirichlet,
-            )
-        )
-        dense_apply = dense_mass @ vector
-        npt.assert_allclose(
-            sparse_apply,
-            dense_apply,
-            atol=1e-10,
-            rtol=1e-10,
-            err_msg=f"dense/sparse mass mismatch for k={k} dirichlet={dirichlet}",
+@pytest.mark.parametrize("k", (0, 1, 2, 3))
+def test_mass_symmetry_probe(k):
+    """M_k is symmetric: v^T (M u) = u^T (M v) for random pairs."""
+    apply = _APPLIES[k]
+    vecs = _random_vecs(k, count=8)
+    for u, v in zip(vecs[:4], vecs[4:]):
+        Mu = np.asarray(apply(jnp.asarray(u)))
+        Mv = np.asarray(apply(jnp.asarray(v)))
+        lhs = float(v @ Mu)
+        rhs = float(u @ Mv)
+        scale = max(np.linalg.norm(v) * np.linalg.norm(Mu), 1.0)
+        assert abs(lhs - rhs) < 1e-12 * scale, (
+            f"k={k}: symmetry failed  v^T M u={lhs}  u^T M v={rhs}"
         )
 
 
-@pytest.mark.parametrize("k", ALL_K)
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_mass_symmetry_and_positivity_by_probing(rotating_mass_case, k, dirichlet):
-    seq = rotating_mass_case["seq"]
-    operators = rotating_mass_case["operators"]
-    vectors = _random_vectors(
-        rotating_mass_case["dense_mass"](k, dirichlet).shape[0],
-        seed=100 + 17 * k + int(dirichlet),
-    )
-
-    for left, right in zip(vectors[:-1], vectors[1:]):
-        mass_left = np.asarray(
-            apply_mass_matrix(seq, operators, jnp.asarray(left), k, dirichlet=dirichlet)
-        )
-        mass_right = np.asarray(
-            apply_mass_matrix(seq, operators, jnp.asarray(right), k, dirichlet=dirichlet)
-        )
-        lhs = float(left @ mass_right)
-        rhs = float(right @ mass_left)
-        scale = max(np.linalg.norm(left) * np.linalg.norm(mass_right), 1.0)
-        assert abs(lhs - rhs) < 1e-10 * scale, (
-            f"mass symmetry probe failed for k={k} dirichlet={dirichlet}: "
-            f"lhs={lhs}, rhs={rhs}"
-        )
-
-    for vector in vectors:
-        mass_vector = np.asarray(
-            apply_mass_matrix(seq, operators, jnp.asarray(vector), k, dirichlet=dirichlet)
-        )
-        quadratic_form = float(vector @ mass_vector)
-        assert quadratic_form > 1e-10, (
-            f"mass positivity probe failed for k={k} dirichlet={dirichlet}: "
-            f"x^T M x = {quadratic_form}"
-        )
+@pytest.mark.parametrize("k", (0, 1, 2, 3))
+def test_mass_positive_definite_probe(k):
+    """M_k is positive definite: v^T (M v) > 0 for non-zero v."""
+    apply = _APPLIES[k]
+    for v in _random_vecs(k):
+        Mv = np.asarray(apply(jnp.asarray(v)))
+        qf = float(v @ Mv)
+        assert qf > 1e-12, f"k={k}: x^T M x = {qf} is not positive"
 
 
-@pytest.mark.parametrize("k", ALL_K)
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_dense_mass_is_spd(rotating_mass_case, k, dirichlet):
-    dense_mass = rotating_mass_case["dense_mass"](k, dirichlet)
-    npt.assert_allclose(dense_mass, dense_mass.T, atol=1e-10)
-    eigvals = np.linalg.eigvalsh(dense_mass)
-    assert eigvals.min() > 1e-10, (
-        f"dense mass matrix is not SPD for k={k} dirichlet={dirichlet}: "
-        f"lambda_min={eigvals.min()}"
-    )
-
-
-@pytest.mark.parametrize("label", tuple(MASS_PRECONDITIONERS))
-@pytest.mark.parametrize("k", ALL_K)
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_mass_preconditioner_is_symmetric(rotating_mass_case, label, k, dirichlet):
-    dense_preconditioner = rotating_mass_case["dense_preconditioner"](k, dirichlet, label)
-    npt.assert_allclose(
-        dense_preconditioner,
-        dense_preconditioner.T,
-        atol=1e-10,
-        err_msg=f"mass preconditioner {label} is not symmetric for k={k} dirichlet={dirichlet}",
-    )
-
-
-@pytest.mark.parametrize("label", SPD_PRECONDITIONERS)
-@pytest.mark.parametrize("k", ALL_K)
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_mass_preconditioner_is_spd(rotating_mass_case, label, k, dirichlet):
-    dense_preconditioner = rotating_mass_case["dense_preconditioner"](k, dirichlet, label)
-    eigvals = np.linalg.eigvalsh(dense_preconditioner)
+@pytest.mark.parametrize("k", (0, 1, 2, 3))
+def test_mass_dense_is_spd(k):
+    """Densified M_k is symmetric and has all positive eigenvalues."""
+    M = _DENSE[k]
+    npt.assert_allclose(M, M.T, atol=1e-12, err_msg=f"k={k}: dense M not symmetric")
+    eigvals = np.linalg.eigvalsh(M)
     assert eigvals.min() > 1e-12, (
-        f"mass preconditioner {label} is not SPD for k={k} dirichlet={dirichlet}: "
-        f"lambda_min={eigvals.min()}"
+        f"k={k}: dense M not SPD, lambda_min={eigvals.min()}"
     )
 
+# ---------------------------------------------------------------------------
+# de Rham complex: curl(grad f) = 0  and  div(curl F) = 0
+#
+# These are topology-only tests (no geometry dependence).  Polar extraction
+# is NOT a 0/1 selection matrix, so G_{k+1}^ext G_k^ext = 0 holds only on
+# the non-polar sequence where E_k is a row-subset of the identity.  We use
+# _SEQ (polar=False, identity map) and build its own incidence bundle.
+# ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_direct_k0_tensor_apply_matches_routed_tensor_preconditioner(rotating_mass_case, dirichlet):
-    seq = rotating_mass_case["seq"]
-    operators = rotating_mass_case["operators"]
-    dense_mass = rotating_mass_case["dense_mass"](0, dirichlet)
-    direct_tensor = np.asarray(
-        build_dense(
-            lambda x: apply_mass_tensor_preconditioner_ops(
-                seq,
-                operators,
-                x,
-                0,
-                dirichlet=dirichlet,
-            ),
-            dense_mass.shape[0],
+_SEQ_OPS = assemble_incidence_operators(_SEQ)
+
+# DOF counts for the non-polar sequence.
+_N_NP = {
+    (k, dbc): getattr(_SEQ, f"n{k}_dbc" if dbc else f"n{k}")
+    for k in (0, 1, 2, 3)
+    for dbc in (False, True)
+}
+
+_COMPLEX_RNG = np.random.default_rng(7)
+_N_COMPLEX_PROBES = 10
+
+
+@pytest.mark.parametrize("dirichlet", (False, True))
+def test_curl_of_grad_is_zero(dirichlet):
+    """curl(grad f) = 0: G_1^ext (G_0^ext f) = 0 for random 0-forms f."""
+    n0 = _N_NP[(0, dirichlet)]
+    for _ in range(_N_COMPLEX_PROBES):
+        f = jnp.asarray(_COMPLEX_RNG.standard_normal(n0))
+        grad_f = apply_incidence_matrix(
+            _SEQ, _SEQ_OPS, f, k=0,
+            dirichlet_in=dirichlet, dirichlet_out=dirichlet,
         )
+        curl_grad_f = apply_incidence_matrix(
+            _SEQ, _SEQ_OPS, grad_f, k=1,
+            dirichlet_in=dirichlet, dirichlet_out=dirichlet,
+        )
+        norm = float(jnp.linalg.norm(curl_grad_f))
+        assert norm < 1e-12, (
+            f"dirichlet={dirichlet}: curl(grad f) != 0, ||curl grad f|| = {norm:.3e}"
+        )
+
+
+@pytest.mark.parametrize("dirichlet", (False, True))
+def test_div_of_curl_is_zero(dirichlet):
+    """div(curl F) = 0: G_2^ext (G_1^ext F) = 0 for random 1-forms F."""
+    n1 = _N_NP[(1, dirichlet)]
+    for _ in range(_N_COMPLEX_PROBES):
+        F = jnp.asarray(_COMPLEX_RNG.standard_normal(n1))
+        curl_F = apply_incidence_matrix(
+            _SEQ, _SEQ_OPS, F, k=1,
+            dirichlet_in=dirichlet, dirichlet_out=dirichlet,
+        )
+        div_curl_F = apply_incidence_matrix(
+            _SEQ, _SEQ_OPS, curl_F, k=2,
+            dirichlet_in=dirichlet, dirichlet_out=dirichlet,
+        )
+        norm = float(jnp.linalg.norm(div_curl_F))
+        assert norm < 1e-12, (
+            f"dirichlet={dirichlet}: div(curl F) != 0, ||div curl F|| = {norm:.3e}"
+        )
+#
+# A fresh sequence is built with polar=True so that axis regularity is
+# enforced correctly.  _APPLIES and _DENSE above captured the identity-map
+# geometry in their closures and are unaffected.
+# ---------------------------------------------------------------------------
+
+_RE_MAP = rotating_ellipse_map(eps=0.33, kappa=1.2, R0=1.0, nfp=3)
+_RE_SEQ = DeRhamSequence((_NR, _NT, _NZ), (_P, _P, _P), _Q, _TYPES, polar=True)
+_RE_SEQ.evaluate_1d()
+_RE_SEQ.set_map(_RE_MAP)
+
+_RE_APPLIES = {k: build_matrixfree_mass_apply(_RE_SEQ, k) for k in (0, 1, 2, 3)}
+
+_RE_DENSE = {
+    k: np.asarray(jax.vmap(_RE_APPLIES[k], in_axes=1, out_axes=1)(jnp.eye(_N_DOF[k], dtype=jnp.float64)))
+    for k in (0, 1, 2, 3)
+}
+
+_RE_RNG = np.random.default_rng(99)
+
+
+def _re_random_vecs(k: int, count: int = _N_PROBES) -> list[np.ndarray]:
+    return list(_RE_RNG.standard_normal((count, _N_DOF[k])))
+
+
+@pytest.mark.parametrize("k", (0, 1, 2, 3))
+def test_re_mass_symmetry_probe(k):
+    """M_k (rotating ellipse) is symmetric: v^T (M u) = u^T (M v)."""
+    apply = _RE_APPLIES[k]
+    vecs = _re_random_vecs(k, count=8)
+    for u, v in zip(vecs[:4], vecs[4:]):
+        Mu = np.asarray(apply(jnp.asarray(u)))
+        Mv = np.asarray(apply(jnp.asarray(v)))
+        lhs = float(v @ Mu)
+        rhs = float(u @ Mv)
+        scale = max(np.linalg.norm(v) * np.linalg.norm(Mu), 1.0)
+        assert abs(lhs - rhs) < 1e-12 * scale, (
+            f"k={k}: symmetry failed  v^T M u={lhs}  u^T M v={rhs}"
+        )
+
+
+@pytest.mark.parametrize("k", (0, 1, 2, 3))
+def test_re_mass_positive_definite_probe(k):
+    """M_k (rotating ellipse) is positive definite: v^T (M v) > 0."""
+    apply = _RE_APPLIES[k]
+    for v in _re_random_vecs(k):
+        Mv = np.asarray(apply(jnp.asarray(v)))
+        qf = float(v @ Mv)
+        assert qf > 1e-12, f"k={k}: x^T M x = {qf} is not positive"
+
+
+@pytest.mark.parametrize("k", (0, 1, 2, 3))
+def test_re_mass_dense_is_spd(k):
+    """Densified M_k (rotating ellipse) is symmetric and SPD."""
+    M = _RE_DENSE[k]
+    npt.assert_allclose(M, M.T, atol=1e-12, err_msg=f"k={k}: dense M not symmetric")
+    eigvals = np.linalg.eigvalsh(M)
+    assert eigvals.min() > 1e-12, (
+        f"k={k}: dense M not SPD, lambda_min={eigvals.min()}"
     )
-    routed_tensor = rotating_mass_case["dense_preconditioner"](0, dirichlet, "tensor")
+
+
+# ---------------------------------------------------------------------------
+# Hodge Laplacians (rotating ellipse, polar=True)
+#
+# We need incidence operators for the exterior derivative.  Extraction
+# operators are already on _RE_SEQ.get_operators() from __init__; we only
+# need to assemble G_0, G_1, G_2.
+# ---------------------------------------------------------------------------
+
+_OPS = assemble_incidence_operators(_RE_SEQ)
+
+# Betti numbers of a solid torus (clamped-r, free BCs): β=(1,1,0,0)
+_BETTI_FREE = {0: 1, 1: 1, 2: 0, 3: 0}
+# Betti numbers for DBC (relative cohomology): β_{d-k}, d=3
+_BETTI_DBC = {k: _BETTI_FREE[3 - k] for k in range(4)}
+
+# Extracted DOF counts per (k, dirichlet) pair.
+_N = {
+    (k, dbc): getattr(_RE_SEQ, f"n{k}_dbc" if dbc else f"n{k}")
+    for k in (0, 1, 2, 3)
+    for dbc in (False, True)
+}
+
+
+def _dense_op(apply, n: int) -> np.ndarray:
+    """Densify a linear map R^n -> R^? by scanning unit vectors."""
+    return np.asarray(
+        jax.vmap(apply, in_axes=1, out_axes=1)(jnp.eye(n, dtype=jnp.float64))
+    )
+
+
+def _dense_mass_extracted(k: int, dirichlet: bool) -> np.ndarray:
+    n = _N[(k, dirichlet)]
+    return _dense_op(
+        lambda v: apply_mass_matrix(_RE_SEQ, _OPS, v, k, dirichlet=dirichlet), n
+    )
+
+
+def _dense_laplacian(k: int, dirichlet: bool) -> np.ndarray:
+    n_k = _N[(k, dirichlet)]
+    K = _dense_op(
+        lambda v: apply_stiffness(_RE_SEQ, _OPS, v, k, dirichlet=dirichlet), n_k
+    )
+    if k == 0:
+        return K
+    n_km1 = _N[(k - 1, dirichlet)]
+    D_T = _dense_op(
+        lambda v: apply_derivative_matrix(
+            _RE_SEQ, _OPS, v, k - 1,
+            dirichlet_in=dirichlet, dirichlet_out=dirichlet,
+            transpose=True,
+        ),
+        n_k,
+    )  # shape (n_{k-1}, n_k)
+    M_km1_inv = np.linalg.inv(_dense_mass_extracted(k - 1, dirichlet))
+    return K + D_T.T @ M_km1_inv @ D_T
+
+
+_DENSE_LAP = {
+    (k, dbc): _dense_laplacian(k, dbc)
+    for k in (0, 1, 2, 3)
+    for dbc in (False, True)
+}
+
+_LAP_PARAMS = [(k, dbc) for k in (0, 1, 2, 3) for dbc in (False, True)]
+
+
+@pytest.mark.parametrize("k,dirichlet", _LAP_PARAMS)
+def test_laplacian_symmetry(k, dirichlet):
+    """L_k is symmetric."""
+    L = _DENSE_LAP[(k, dirichlet)]
     npt.assert_allclose(
-        direct_tensor,
-        routed_tensor,
-        atol=1e-10,
-        rtol=1e-10,
-        err_msg=f"direct k=0 tensor apply does not match routed tensor preconditioner for dirichlet={dirichlet}",
+        L, L.T, atol=1e-10,
+        err_msg=f"k={k} dirichlet={dirichlet}: Laplacian not symmetric",
     )
 
 
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_direct_k1_tensor_apply_matches_routed_tensor_preconditioner(rotating_mass_case, dirichlet):
-    seq = rotating_mass_case["seq"]
-    operators = rotating_mass_case["operators"]
-    dense_mass = rotating_mass_case["dense_mass"](1, dirichlet)
-    direct_tensor = np.asarray(
-        build_dense(
-            lambda x: apply_mass_tensor_preconditioner_ops(
-                seq,
-                operators,
-                x,
-                1,
-                dirichlet=dirichlet,
-            ),
-            dense_mass.shape[0],
-        )
-    )
-    routed_tensor = rotating_mass_case["dense_preconditioner"](1, dirichlet, "tensor")
-    npt.assert_allclose(
-        direct_tensor,
-        routed_tensor,
-        atol=1e-10,
-        rtol=1e-10,
-        err_msg=f"direct k=1 tensor apply does not match routed tensor preconditioner for dirichlet={dirichlet}",
+@pytest.mark.parametrize("k,dirichlet", _LAP_PARAMS)
+def test_laplacian_psd(k, dirichlet):
+    """L_k is positive semi-definite."""
+    L = _DENSE_LAP[(k, dirichlet)]
+    eigvals = np.linalg.eigvalsh(L)
+    lam_max = max(float(abs(eigvals).max()), 1.0)
+    assert eigvals.min() >= -1e-10 * lam_max, (
+        f"k={k} dirichlet={dirichlet}: not PSD, "
+        f"lambda_min={eigvals.min():.3e}, lambda_max={eigvals.max():.3e}"
     )
 
 
-@pytest.mark.parametrize("label", tuple(MASS_PRECONDITIONERS))
-@pytest.mark.parametrize("k", ALL_K)
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_inverse_mass_matches_dense_solve(rotating_mass_case, label, k, dirichlet):
-    seq = rotating_mass_case["seq"]
-    operators = rotating_mass_case["operators"]
-    dense_mass = rotating_mass_case["dense_mass"](k, dirichlet)
-    dense_mass_cholesky = rotating_mass_case["dense_mass_cholesky"](k, dirichlet)
-
-    for rhs in _random_vectors(
-        dense_mass.shape[0],
-        seed=200 + 19 * k + 100 * int(dirichlet),
-        count=N_SOLVER_PROBES,
-    ):
-        x, info = apply_inverse_mass_matrix(
-            seq,
-            operators,
-            jnp.asarray(rhs),
-            k,
-            dirichlet=dirichlet,
-            preconditioner=MASS_PRECONDITIONERS[label],
-            tol=1e-10,
-            maxiter=2000,
-            return_info=True,
-        )
-        x = np.asarray(x)
-        x_dense = _solve_dense_spd(dense_mass_cholesky, rhs)
-        npt.assert_allclose(
-            x,
-            x_dense,
-            atol=MASS_SOLVE_COMPARE_ATOL,
-            rtol=MASS_SOLVE_COMPARE_RTOL,
-            err_msg=f"inverse mass solve mismatch for {label} k={k} dirichlet={dirichlet}",
-        )
-        npt.assert_allclose(
-            dense_mass @ x,
-            rhs,
-            atol=MASS_SOLVE_COMPARE_ATOL,
-            rtol=MASS_SOLVE_COMPARE_RTOL,
-            err_msg=f"mass round-trip failed for {label} k={k} dirichlet={dirichlet}",
-        )
-        assert int(info) <= 0, (
-            f"inverse mass solve did not converge for {label} k={k} "
-            f"dirichlet={dirichlet} (info={int(info)})"
-        )
-
-
-@pytest.mark.parametrize("label", tuple(MASS_PRECONDITIONERS))
-@pytest.mark.parametrize("k", ALL_K)
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_mass_preconditioner_reduces_cg_iterations(rotating_mass_case, label, k, dirichlet):
-    seq = rotating_mass_case["seq"]
-    operators = rotating_mass_case["operators"]
-    rhs_batch = _random_vectors(
-        rotating_mass_case["dense_mass"](k, dirichlet).shape[0],
-        seed=300 + 23 * k + 100 * int(dirichlet),
-        count=N_SOLVER_PROBES,
+@pytest.mark.parametrize("k,dirichlet", [(k, dbc) for k in (0, 1, 2, 3) for dbc in (False, True)])
+def test_laplacian_null_space_dim(k, dirichlet):
+    """Null space of L_k has dimension β_k (free BCs) or β_{d-k} (DBC)."""
+    L = _DENSE_LAP[(k, dirichlet)]
+    eigvals = np.linalg.eigvalsh(L)
+    lam_max = max(float(abs(eigvals).max()), 1.0)
+    null_dim = int(np.sum(eigvals < 1e-8 * lam_max))
+    expected = _BETTI_DBC[k] if dirichlet else _BETTI_FREE[k]
+    assert null_dim == expected, (
+        f"k={k} dirichlet={dirichlet}: expected null dim {expected}, got {null_dim}; "
+        f"smallest eigenvalues: {eigvals[:expected + 3]}"
     )
 
-    none_iters = []
-    precond_iters = []
-    for rhs in rhs_batch:
-        _, none_info = apply_inverse_mass_matrix(
-            seq,
-            operators,
-            jnp.asarray(rhs),
-            k,
-            dirichlet=dirichlet,
-            preconditioner="none",
-            tol=1e-10,
-            maxiter=2000,
-            return_info=True,
-        )
-        _, precond_info = apply_inverse_mass_matrix(
-            seq,
-            operators,
-            jnp.asarray(rhs),
-            k,
-            dirichlet=dirichlet,
-            preconditioner=MASS_PRECONDITIONERS[label],
-            tol=1e-10,
-            maxiter=2000,
-            return_info=True,
-        )
-        none_iters.append(abs(int(none_info)))
-        precond_iters.append(abs(int(precond_info)))
-
-    assert np.mean(precond_iters) < np.mean(none_iters), (
-        f"mass preconditioner {label} did not reduce CG iterations for "
-        f"k={k} dirichlet={dirichlet}: none={none_iters}, precond={precond_iters}"
-    )
-
-
-@pytest.mark.parametrize("label", tuple(MASS_PRECONDITIONERS))
-@pytest.mark.parametrize("k", ALL_K)
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_mass_inverse_warm_start_helps_with_tighter_tolerance(
-    rotating_mass_case, label, k, dirichlet
-):
-    seq = rotating_mass_case["seq"]
-    operators = rotating_mass_case["operators"]
-    dense_mass = rotating_mass_case["dense_mass"](k, dirichlet)
-    dense_mass_cholesky = rotating_mass_case["dense_mass_cholesky"](k, dirichlet)
-    rhs = _random_vectors(
-        dense_mass.shape[0],
-        seed=400 + 29 * k + 100 * int(dirichlet),
-        count=1,
-    )[0]
-
-    x_loose, loose_info = apply_inverse_mass_matrix(
-        seq,
-        operators,
-        jnp.asarray(rhs),
-        k,
-        dirichlet=dirichlet,
-        preconditioner=MASS_PRECONDITIONERS[label],
-        tol=WARM_START_LOOSE_TOL,
-        maxiter=2000,
-        return_info=True,
-    )
-    x_cold, cold_info = apply_inverse_mass_matrix(
-        seq,
-        operators,
-        jnp.asarray(rhs),
-        k,
-        dirichlet=dirichlet,
-        preconditioner=MASS_PRECONDITIONERS[label],
-        tol=WARM_START_TOL,
-        maxiter=2000,
-        return_info=True,
-    )
-    x_warm, warm_info = apply_inverse_mass_matrix(
-        seq,
-        operators,
-        jnp.asarray(rhs),
-        k,
-        dirichlet=dirichlet,
-        guess=x_loose,
-        preconditioner=MASS_PRECONDITIONERS[label],
-        tol=WARM_START_TOL,
-        maxiter=2000,
-        return_info=True,
-    )
-
-    x_dense = _solve_dense_spd(dense_mass_cholesky, rhs)
-    npt.assert_allclose(
-        np.asarray(x_cold),
-        x_dense,
-        atol=MASS_SOLVE_COMPARE_ATOL,
-        rtol=MASS_SOLVE_COMPARE_RTOL,
-        err_msg=f"cold tight solve mismatch for {label} k={k} dirichlet={dirichlet}",
-    )
-    npt.assert_allclose(
-        np.asarray(x_warm),
-        x_dense,
-        atol=MASS_SOLVE_COMPARE_ATOL,
-        rtol=MASS_SOLVE_COMPARE_RTOL,
-        err_msg=f"warm tight solve mismatch for {label} k={k} dirichlet={dirichlet}",
-    )
-    assert int(loose_info) <= 0, (
-        f"loose warm-start seed solve did not converge for {label} k={k} "
-        f"dirichlet={dirichlet} (info={int(loose_info)})"
-    )
-    assert int(cold_info) <= 0, (
-        f"cold tight solve did not converge for {label} k={k} "
-        f"dirichlet={dirichlet} (info={int(cold_info)})"
-    )
-    assert int(warm_info) <= 0, (
-        f"warm tight solve did not converge for {label} k={k} "
-        f"dirichlet={dirichlet} (info={int(warm_info)})"
-    )
-    assert abs(int(warm_info)) <= abs(int(cold_info)), (
-        f"warm start did not help for {label} k={k} dirichlet={dirichlet}: "
-        f"cold={abs(int(cold_info))}, warm={abs(int(warm_info))}"
-    )
-
-
-@pytest.mark.parametrize("label", tuple(K2_SCHUR_PRECONDITIONERS))
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_k2_schur_inverse_mass_matches_dense_solve(rotating_mass_case, label, dirichlet):
-    seq = rotating_mass_case["seq"]
-    operators = rotating_mass_case["operators"]
-    dense_mass = rotating_mass_case["dense_mass"](2, dirichlet)
-    dense_mass_cholesky = rotating_mass_case["dense_mass_cholesky"](2, dirichlet)
-    rhs = _random_vectors(
-        dense_mass.shape[0],
-        seed=500 + 100 * int(dirichlet) + tuple(K2_SCHUR_PRECONDITIONERS).index(label),
-        count=1,
-    )[0]
-
-    x, info = apply_inverse_mass_matrix(
-        seq,
-        operators,
-        jnp.asarray(rhs),
-        2,
-        dirichlet=dirichlet,
-        preconditioner=K2_SCHUR_PRECONDITIONERS[label],
-        tol=1e-10,
-        maxiter=2000,
-        return_info=True,
-    )
-    x = np.asarray(x)
-    x_dense = _solve_dense_spd(dense_mass_cholesky, rhs)
-
-    npt.assert_allclose(
-        x,
-        x_dense,
-        atol=MASS_SOLVE_COMPARE_ATOL,
-        rtol=MASS_SOLVE_COMPARE_RTOL,
-        err_msg=f"k=2 Schur inverse mass solve mismatch for {label} dirichlet={dirichlet}",
-    )
-    npt.assert_allclose(
-        dense_mass @ x,
-        rhs,
-        atol=MASS_SOLVE_COMPARE_ATOL,
-        rtol=MASS_SOLVE_COMPARE_RTOL,
-        err_msg=f"k=2 Schur mass round-trip failed for {label} dirichlet={dirichlet}",
-    )
-    assert int(info) <= 0, (
-        f"k=2 Schur inverse mass solve did not converge for {label} "
-        f"dirichlet={dirichlet} (info={int(info)})"
-    )
-
-
-@pytest.mark.parametrize("label", tuple(K2_INVALID_SCHUR_PRECONDITIONERS))
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_k2_invalid_non_tensor_inner_schur_rejected(rotating_mass_case, label, dirichlet):
-    seq = rotating_mass_case["seq"]
-    operators = rotating_mass_case["operators"]
-    rhs = jnp.asarray(_random_vectors(
-        rotating_mass_case["dense_mass"](2, dirichlet).shape[0],
-        seed=700 + 100 * int(dirichlet) + tuple(K2_INVALID_SCHUR_PRECONDITIONERS).index(label),
-        count=1,
-    )[0])
-
-    with pytest.raises(ValueError, match="only supports kind='tensor' as the inner smoother"):
-        apply_inverse_mass_matrix(
-            seq,
-            operators,
-            rhs,
-            2,
-            dirichlet=dirichlet,
-            preconditioner=K2_INVALID_SCHUR_PRECONDITIONERS[label],
-            tol=1e-10,
-            maxiter=2000,
-        )

@@ -46,7 +46,7 @@ from mrx.preconditioners import (
     _zeta_shape_k2,
 )
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
-from mrx.utils import build_random_besov_rhs_batch
+from test.random_fields import build_random_besov_rhs_batch
 
 jax.config.update("jax_enable_x64", True)
 

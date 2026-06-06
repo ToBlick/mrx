@@ -31,7 +31,7 @@ from mrx.io import interpolate_B, interpolate_map_from_points, unique_id
 from mrx.relaxation_deprecated import (DescentMethod, IntegrationScheme,
                                        MRXDiagnostics, TimeStepChoice,
                                        TimeStepper, relaxation_loop)
-from mrx.utils import default_trace_dict
+from mrx.relaxation import default_trace_dict
 
 jax.config.update("jax_enable_x64", True)
 
