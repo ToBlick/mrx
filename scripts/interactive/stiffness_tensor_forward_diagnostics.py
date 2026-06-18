@@ -24,7 +24,7 @@ from mrx.operators import (
     _reshape_quadrature_scalar_field,
     apply_stiffness,
     apply_stiffness_tensor_forward_model,
-    assemble_hodge_operators,
+    assemble_laplacian_operators,
     assemble_incidence_operators,
     assemble_mass_operators,
     assemble_tensor_mass_preconditioner,

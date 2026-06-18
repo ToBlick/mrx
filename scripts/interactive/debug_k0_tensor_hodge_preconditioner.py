@@ -35,14 +35,14 @@ from mrx.operators import (
     _build_k0_tensor_hodge_bulk_model,
     _k0_tensor_hodge_config,
     apply_mass_tensor_preconditioner_ops,
-    apply_hodge_laplacian_preconditioner,
-    assemble_hodge_operators,
+    apply_laplacian_preconditioner,
+    assemble_laplacian_operators,
     assemble_incidence_operators,
     assemble_mass_operators,
     assemble_tensor_hodge_preconditioner,
     assemble_tensor_mass_preconditioner,
     dense_mass_matrix,
-    dense_hodge_laplacian,
+    dense_laplacian,
 )
 from mrx.preconditioners import (
     _apply_k0_bulk_to_surgery_coupling,
@@ -153,7 +153,7 @@ def _build_case(config: Config = CONFIG):
     )
     operators = assemble_tensor_hodge_preconditioner(seq, operators=operators)
     operators = assemble_incidence_operators(seq, operators=operators, ks=(0,))
-    operators = assemble_hodge_operators(seq, seq.geometry, operators=operators, ks=(0,))
+    operators = assemble_laplacian_operators(seq, seq.geometry, operators=operators, ks=(0,))
     operators = seq.set_operators(operators, sync_legacy=False)
     if not config.dirichlet:
         seq._compute_nullspaces(config.betti, eps=config.tol**0.5)
@@ -194,7 +194,7 @@ def _random_rhs_batch(config: Config, size: int, projector: jnp.ndarray) -> jnp.
 
 def _preconditioner_matrix(seq, operators, config: Config, size: int) -> jnp.ndarray:
     return _matrix_from_apply(
-        lambda x: apply_hodge_laplacian_preconditioner(
+        lambda x: apply_laplacian_preconditioner(
             seq,
             operators,
             x,
@@ -823,7 +823,7 @@ def _imshow_signed(ax, matrix: jnp.ndarray, title: str):
 
 def _build_dense_diagnostics(config: Config = CONFIG):
     seq, operators = _build_case(config)
-    matrix = jnp.asarray(dense_hodge_laplacian(seq, operators, 0, dirichlet=config.dirichlet))
+    matrix = jnp.asarray(dense_laplacian(seq, operators, 0, dirichlet=config.dirichlet))
     pinv, projector, eigvals, threshold = _spectral_pseudoinverse(
         matrix,
         rtol=config.spectral_rtol,

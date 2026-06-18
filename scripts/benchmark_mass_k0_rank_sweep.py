@@ -10,11 +10,11 @@ import jax.numpy as jnp
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
 from mrx.operators import (
-    apply_hodge_laplacian_preconditioner,
-    apply_inverse_hodge_laplacian,
+    apply_laplacian_preconditioner,
+    apply_inverse_laplacian,
     apply_mass_matrix,
     apply_stiffness,
-    assemble_hodge_operators,
+    assemble_laplacian_operators,
     assemble_incidence_operators,
     apply_mass_tensor_preconditioner_ops,
     assemble_mass_operators,
@@ -218,10 +218,10 @@ def benchmark_rank(seq: DeRhamSequence, operators_base, rhs_batch, args, *, prob
             rank=rank,
             cp_kwargs=cp_kwargs,
         )
-        operators = assemble_hodge_operators(seq, seq.geometry, operators=operators, ks=(0,))
+        operators = assemble_laplacian_operators(seq, seq.geometry, operators=operators, ks=(0,))
         factors = select_boundary_data(operators.k0_tensor_hodge_precond, dirichlet, "Tensor Hodge k=0")
         operator_apply = lambda x: apply_stiffness(seq, operators, x, 0, dirichlet=dirichlet)
-        preconditioner_apply = lambda rhs: apply_hodge_laplacian_preconditioner(
+        preconditioner_apply = lambda rhs: apply_laplacian_preconditioner(
             seq,
             operators,
             rhs,
@@ -253,7 +253,7 @@ def benchmark_rank(seq: DeRhamSequence, operators_base, rhs_batch, args, *, prob
     @jax.jit
     def solve(rhs):
         if problem == "k0-stiffness":
-            x, info = apply_inverse_hodge_laplacian(
+            x, info = apply_inverse_laplacian(
                 seq,
                 operators,
                 rhs,
@@ -355,7 +355,7 @@ def main() -> None:
         operators_base = assemble_mass_operators(seq, seq.geometry, operators=operators_base, ks=mass_operator_ks)
     if include_k0_stiffness:
         operators_base = assemble_incidence_operators(seq, operators=operators_base, ks=(0,))
-        operators_base = assemble_hodge_operators(seq, seq.geometry, operators=operators_base, ks=(0,))
+        operators_base = assemble_laplacian_operators(seq, seq.geometry, operators=operators_base, ks=(0,))
 
     for problem in problems:
         print()

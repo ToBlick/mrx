@@ -2,7 +2,7 @@
 
 Assembles the full saddle-point matrix densely on the k=3 / k=2 blocks,
 checks symmetry, nullspace alignment, and compares the dense pseudo-inverse
-solution against ``seq.apply_inverse_hodge_laplacian`` (which uses MINRES).
+solution against ``seq.apply_inverse_laplacian`` (which uses MINRES).
 
 Run:
     .venv/bin/python scripts/debug_k3_saddle.py
@@ -18,7 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.nullspace import get_saddle_point_nullspaces
-from mrx.operators import (apply_hodge_laplacian, apply_mass_matrix,
+from mrx.operators import (apply_laplacian, apply_mass_matrix,
                            apply_stiffness)
 
 jax.config.update("jax_enable_x64", True)
@@ -111,7 +111,7 @@ def main():
     # Dense reference: pseudo-inverse of L_3
     u_dense, *_ = np.linalg.lstsq(L3, b, rcond=None)
     # MINRES
-    u_mr, info = seq.apply_inverse_hodge_laplacian(
+    u_mr, info = seq.apply_inverse_laplacian(
         jnp.asarray(b), k, dirichlet=dbc, preconditioner='tensor',
         return_info=True)
     u_mr = np.asarray(u_mr)

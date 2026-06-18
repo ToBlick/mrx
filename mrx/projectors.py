@@ -127,57 +127,85 @@ def _extraction_T(seq, k: int, dirichlet: bool):
 # ---------------------------------------------------------------------------
 
 def load(seq: "DeRhamSequence", f, k: int,
-         dirichlet: bool = False, bc: bool = False):
+         dirichlet: bool = False, bc: bool = False,
+         frame: str = 'phys'):
     """Assemble the dual k-form load vector  v_i = ∫ Λ^k_i · f(ξ) w(ξ) dξ.
 
     Parameters
     ----------
     seq : DeRhamSequence
     f : callable  ξ → (1,) for k=0,3;  ξ → (3,) for k=1,2.
-        Arguments are logical coordinates; values are in the physical frame.
+        Arguments are logical coordinates.  Interpretation depends on `frame`.
     k : int  Form degree (0, 1, 2, 3).
     dirichlet : bool  Use Dirichlet-constrained DOFs.
     bc : bool  Use boundary-trace DOFs (takes precedence over dirichlet).
+    frame : {'phys', 'ref'}
+        'phys' (default): f returns components in the physical frame.
+            A DF-based pullback is applied internally.
+        'ref': f returns the coefficients of the k-form expanded directly in
+            reference coordinates dr, dχ, dζ (and their wedge products).
+            No pullback is applied.  Concretely:
+              k=0: scalar  u(ξ)
+              k=1: covariant ref components  (u_r, u_χ, u_ζ)
+              k=2: ref 2-form proxy  (u_χζ, u_rζ, u_rχ)  (same slot order as
+                   _form_comp_info(2))
+              k=3: scalar coefficient A(ξ) in  A dr∧dχ∧dζ  (i.e. A = f_phys·J)
 
     Returns
     -------
     Array  Dual load vector of length n_k (or n_k_dbc / n_k_bc).
     """
+    if frame not in ('phys', 'ref'):
+        raise ValueError(f"frame must be 'phys' or 'ref', got {frame!r}")
+
     e = _extraction(seq, k, dirichlet, bc)
     quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
     comp_info, comp_shapes = seq._form_comp_info(k)
 
     if k == 0:
+        # Scalar: reference and physical frames are identical.
         f_jk = jax.lax.map(
             lambda x: _as_single_component(f(x)),
             seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
         w_jk = f_jk * (seq.quad.w * seq.jacobian_j)[:, None]
 
     elif k == 1:
-        DF = jax.jacfwd(seq.map)
+        if frame == 'phys':
+            DF = jax.jacfwd(seq.map)
 
-        def _pullback(x):
-            return inv33(DF(x)) @ f(x)
+            def _pullback(x):
+                return inv33(DF(x)) @ f(x)
 
-        f_jk = jax.lax.map(_pullback, seq.quad.x,
-                            batch_size=mrx.MAP_BATCH_SIZE_INNER)
+            f_jk = jax.lax.map(_pullback, seq.quad.x,
+                                batch_size=mrx.MAP_BATCH_SIZE_INNER)
+        else:
+            f_jk = jax.lax.map(f, seq.quad.x,
+                                batch_size=mrx.MAP_BATCH_SIZE_INNER)
         w_jk = f_jk * (seq.quad.w * seq.jacobian_j)[:, None]
 
     elif k == 2:
-        DF = jax.jacfwd(seq.map)
+        if frame == 'phys':
+            DF = jax.jacfwd(seq.map)
 
-        def _pullback(x):
-            return DF(x).T @ f(x)
+            def _pullback(x):
+                return DF(x).T @ f(x)
 
-        f_jk = jax.lax.map(_pullback, seq.quad.x,
-                            batch_size=mrx.MAP_BATCH_SIZE_INNER)
+            f_jk = jax.lax.map(_pullback, seq.quad.x,
+                                batch_size=mrx.MAP_BATCH_SIZE_INNER)
+        else:
+            f_jk = jax.lax.map(f, seq.quad.x,
+                                batch_size=mrx.MAP_BATCH_SIZE_INNER)
         w_jk = f_jk * seq.quad.w[:, None]
 
     elif k == 3:
         f_jk = jax.lax.map(
             lambda x: _as_single_component(f(x)),
             seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
-        w_jk = f_jk * seq.quad.w[:, None]
+        if frame == 'phys':
+            w_jk = f_jk * seq.quad.w[:, None]
+        else:
+            # A = f_phys * J  ⟹  f_phys = A / J,  weight = w (no J factor)
+            w_jk = f_jk * (seq.quad.w / seq.jacobian_j)[:, None]
 
     else:
         raise ValueError(f"k must be 0, 1, 2 or 3, got {k}")

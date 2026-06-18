@@ -22,7 +22,7 @@ import numpy as np
 from jax.scipy.interpolate import RegularGridInterpolator
 
 import mrx
-from mrx.assembly import (assemble_dense_hodge_laplacian,
+from mrx.assembly import (assemble_dense_laplacian,
                           assemble_dense_mass_matrix)
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward

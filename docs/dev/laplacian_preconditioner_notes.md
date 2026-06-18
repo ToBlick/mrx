@@ -1,6 +1,6 @@
 # Laplacian Preconditioner Notes
 
-This note records the current production picture for the Hodge-Laplacian
+This note records the current production picture for the Laplacian
 preconditioners, with emphasis on the scalar `k = 0` route that is presently
 the mature tensor-based path.
 
@@ -51,7 +51,7 @@ iteration does not pretend that the shifted problem should be deflated.
 
 ## 4. Practical Policy For Other Degrees
 
-For `k >= 1`, the Hodge-Laplacian solve path is structurally saddle-point based
+For `k >= 1`, the Laplacian solve path is structurally saddle-point based
 and depends on the corresponding mass preconditioners in its lower or inner mass
 slots.
 

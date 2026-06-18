@@ -78,6 +78,7 @@ from mrx.preconditioners import (
     _zeta_shape_k2,
     apply_mass_tensor_forward_model,
     apply_mass_tensor_preconditioner,
+    diag_EAET_direct,
     build_mass_surgery_preconditioner,
     build_mass_tensor_preconditioner,
     default_mass_preconditioner,
@@ -86,13 +87,11 @@ from mrx.preconditioners import (
     mass_surgery_available,
     mass_tensor_available,
     select_boundary_data,
+    set_mass_jacobi_pair,
     set_mass_surgery,
     set_mass_tensor,
 )
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
-from mrx.preconditioners import diag_matvec
-
-
 def _nullspace_vectors(operators, k: int, dirichlet: bool):
     """Return the stacked nullspace array for ``(k, dirichlet)``."""
     from mrx.nullspace import get_nullspace
@@ -303,8 +302,14 @@ class SequenceOperators(eqx.Module):
     schur_diaginv_k2_dbc: Optional[jnp.ndarray] = None
     schur_diaginv_k3: Optional[jnp.ndarray] = None
     schur_diaginv_k3_dbc: Optional[jnp.ndarray] = None
+    schur_diaginv_mode_k1: Optional[str] = None
+    schur_diaginv_mode_k1_dbc: Optional[str] = None
+    schur_diaginv_mode_k2: Optional[str] = None
+    schur_diaginv_mode_k2_dbc: Optional[str] = None
+    schur_diaginv_mode_k3: Optional[str] = None
+    schur_diaginv_mode_k3_dbc: Optional[str] = None
 
-    # Harmonic nullspaces of the Hodge Laplacians. Each field, when set, holds
+    # Harmonic nullspaces of the k-form Laplacians. Each field, when set, holds
     # a stacked array of shape ``(n_vectors, n_k)`` with one nullspace basis
     # vector per row. Shapes are topology-determined (from the Betti numbers);
     # the DoFs are dynamic and may be overwritten when the geometry changes.
@@ -317,6 +322,58 @@ class SequenceOperators(eqx.Module):
     null_2_dbc: Optional[jnp.ndarray] = None
     null_3_dbc: Optional[jnp.ndarray] = None
     dense: Optional[DenseSequenceOperators] = None
+
+    def _laplacian_diaginv_field_name(self, k: int, dirichlet: bool) -> str:
+        if k not in (0, 1, 2, 3):
+            raise ValueError("k must be 0, 1, 2, or 3")
+        suffix = "_dbc" if dirichlet else ""
+        return f"dd{k}_diaginv{suffix}"
+
+    def get_laplacian_diaginv(self, k: int, dirichlet: bool = True):
+        """Return the stored Jacobi inverse diagonal for ``L_k`` if available."""
+        return getattr(self, self._laplacian_diaginv_field_name(k, dirichlet))
+
+    def with_laplacian_diaginv(self, k: int, value, dirichlet: bool = True):
+        """Return a copy with updated stored Jacobi inverse diagonal for ``L_k``."""
+        field_name = self._laplacian_diaginv_field_name(k, dirichlet)
+        return eqx.tree_at(
+            lambda ops: getattr(ops, field_name),
+            self,
+            value,
+            is_leaf=lambda x: x is None,
+        )
+
+    @property
+    def laplacian0_diaginv(self):
+        return self.dd0_diaginv
+
+    @property
+    def laplacian1_diaginv(self):
+        return self.dd1_diaginv
+
+    @property
+    def laplacian2_diaginv(self):
+        return self.dd2_diaginv
+
+    @property
+    def laplacian3_diaginv(self):
+        return self.dd3_diaginv
+
+    @property
+    def laplacian0_diaginv_dbc(self):
+        return self.dd0_diaginv_dbc
+
+    @property
+    def laplacian1_diaginv_dbc(self):
+        return self.dd1_diaginv_dbc
+
+    @property
+    def laplacian2_diaginv_dbc(self):
+        return self.dd2_diaginv_dbc
+
+    @property
+    def laplacian3_diaginv_dbc(self):
+        return self.dd3_diaginv_dbc
 
     def todense(self, seq, operator: str, k, dirichlet: bool = True,
                 transpose: bool = False):
@@ -333,9 +390,9 @@ class SequenceOperators(eqx.Module):
                 case "stiffness":
                     pair = getattr(self.dense, f"s{k}")
                     return select_boundary_data(pair, dirichlet, f"Dense stiffness k={k}")
-                case "hodge_laplacian":
+                case "hodge_laplacian" | "laplacian":
                     pair = getattr(self.dense, f"l{k}")
-                    return select_boundary_data(pair, dirichlet, f"Dense Hodge Laplacian k={k}")
+                    return select_boundary_data(pair, dirichlet, f"Dense Laplacian k={k}")
                 case "projection":
                     if not isinstance(k, tuple) or len(k) != 2:
                         raise ValueError(
@@ -354,7 +411,7 @@ class SequenceOperators(eqx.Module):
                 )
             case "stiffness":
                 return dense_stiffness_matrix(seq, self, k, dirichlet=dirichlet)
-            case "hodge_laplacian":
+            case "hodge_laplacian" | "laplacian":
                 return dense_hodge_laplacian(seq, self, k, dirichlet=dirichlet)
             case "projection":
                 if not isinstance(k, tuple) or len(k) != 2:
@@ -366,7 +423,7 @@ class SequenceOperators(eqx.Module):
                     dirichlet_out=dirichlet,
                 )
         raise ValueError(
-            "operator must be one of 'mass', 'derivative', 'stiffness', 'hodge_laplacian', or 'projection'"
+            "operator must be one of 'mass', 'derivative', 'stiffness', 'laplacian' (or legacy 'hodge_laplacian'), or 'projection'"
         )
 
 
@@ -1889,6 +1946,41 @@ def assemble_mass_operators(seq, geometry, operators: Optional[SequenceOperators
     return operators
 
 
+def assemble_mass_jacobi_preconditioner(
+        seq, operators: Optional[SequenceOperators] = None,
+        *, ks: Sequence[int] = (0, 1, 2, 3)):
+    """Assemble/store Jacobi mass diagonals eagerly for requested degrees.
+
+    Reuses the existing direct diagonal extraction helper and stores only the
+    inverse-diagonal vectors on ``operators.mass_preconds.jacobi`` (free + DBC)
+    for reuse by Jacobi preconditioners.
+    """
+    operators = _ensure_extraction_operators(seq, operators)
+    preconds = operators.mass_preconds
+
+    for k in ks:
+        if k not in (0, 1, 2, 3):
+            raise ValueError("Mass Jacobi assembly only supports k=0,1,2,3")
+
+        sp = _assemble_mass_block(seq, seq.geometry, k)
+        e_free, _ = _mass_extraction(operators, k, False)
+        e_dbc, _ = _mass_extraction(operators, k, True)
+        diag_free = diag_EAET_direct(e_free, sp)
+        diag_dbc = diag_EAET_direct(e_dbc, sp)
+        pair = BoundaryConditionPair(
+            free=_invert_diagonal(diag_free),
+            dbc=_invert_diagonal(diag_dbc),
+        )
+        preconds = set_mass_jacobi_pair(preconds, k, pair)
+
+    return eqx.tree_at(
+        lambda ops: ops.mass_preconds,
+        operators,
+        preconds,
+        is_leaf=lambda x: x is None,
+    )
+
+
 def assemble_mass_surgery_preconditioner(
         seq, operators: Optional[SequenceOperators] = None,
         *, ks: Sequence[int] = (0, 1, 2)):
@@ -3107,32 +3199,33 @@ def _matrixfree_mass_apply_cached(seq, k: int):
 
 
 def _mass_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
+    del seq
     _, diaginv, diaginv_dbc = _mass_components(operators, k)
     selected = diaginv_dbc if dirichlet else diaginv
     if selected is None:
-        # Build on demand via matrix-free probing: diag(E M_k E^T).
-        core = mass_core_apply(seq, operators, k)
-        e, e_T = _mass_extraction(operators, k, dirichlet)
-        n = e.shape[0]
-        selected = 1.0 / diag_matvec(lambda x: e @ core(e_T @ x), n)
+        side = "dbc" if dirichlet else "free"
+        raise ValueError(
+            f"Jacobi mass diagonal for k={k} ({side}) is not assembled. "
+            "Call assemble_mass_jacobi_preconditioner(...) during operator assembly."
+        )
     return selected
 
 
-def _hodge_components(operators: SequenceOperators, k: int):
+def _laplacian_components(operators: SequenceOperators, k: int):
     match k:
         case 0:
-            return operators.grad_grad, operators.dd0_diaginv, operators.dd0_diaginv_dbc
+            return operators.grad_grad, operators.laplacian0_diaginv, operators.laplacian0_diaginv_dbc
         case 1:
-            return operators.curl_curl, operators.dd1_diaginv, operators.dd1_diaginv_dbc
+            return operators.curl_curl, operators.laplacian1_diaginv, operators.laplacian1_diaginv_dbc
         case 2:
-            return operators.div_div, operators.dd2_diaginv, operators.dd2_diaginv_dbc
+            return operators.div_div, operators.laplacian2_diaginv, operators.laplacian2_diaginv_dbc
         case 3:
-            return None, operators.dd3_diaginv, operators.dd3_diaginv_dbc
+            return None, operators.laplacian3_diaginv, operators.laplacian3_diaginv_dbc
     raise ValueError("k must be 0, 1, 2 or 3")
 
 
-def _hodge_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
-    _, diaginv, diaginv_dbc = _hodge_components(operators, k)
+def _laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
+    _, diaginv, diaginv_dbc = _laplacian_components(operators, k)
     selected = diaginv_dbc if dirichlet else diaginv
     if selected is None:
         if k in (0, 1, 2, 3):
@@ -3152,8 +3245,17 @@ def _hodge_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
             )
             selected = _invert_diagonal(diag)
         else:
-            raise ValueError(f"Hodge preconditioner k={k} is not assembled")
+            raise ValueError(f"Laplacian preconditioner k={k} is not assembled")
     return selected
+
+
+# Backward-compatible aliases during naming transition.
+def _hodge_components(operators: SequenceOperators, k: int):
+    return _laplacian_components(operators, k)
+
+
+def _hodge_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
+    return _laplacian_diaginv(seq, operators, k, dirichlet)
 
 
 def _derivative_components(operators: SequenceOperators, k: int):
@@ -3899,6 +4001,12 @@ def assemble_hodge_operators(seq, geometry, operators: Optional[SequenceOperator
     return operators
 
 
+def assemble_laplacian_operators(seq, geometry, operators: Optional[SequenceOperators] = None,
+                                 ks: Sequence[int] = (0, 1, 2, 3)):
+    """Alias of assemble_hodge_operators using Laplacian naming."""
+    return assemble_hodge_operators(seq, geometry, operators=operators, ks=ks)
+
+
 def assemble_all_operators(seq, geometry,
                            operators: Optional[SequenceOperators] = None,
                            include_preconditioners: bool = True):
@@ -3926,7 +4034,7 @@ def assemble_all_operators(seq, geometry,
     operators = assemble_incidence_operators(seq, operators=operators)
     operators = assemble_derivative_operators(
         seq, geometry, operators=operators)
-    operators = assemble_hodge_operators(seq, geometry, operators=operators)
+    operators = assemble_laplacian_operators(seq, geometry, operators=operators)
     operators = assemble_projection_operators(seq, operators=operators)
     return operators
 
@@ -4047,7 +4155,8 @@ def operators_from_coeffs(seq, coeffs,
     ks : sequence of int
         Form degrees to assemble (subset of ``(0, 1, 2, 3)``).
     kinds : sequence of str
-        Any subset of ``("mass", "derivative", "hodge")``.
+        Any subset of ``("mass", "derivative", "laplacian")``;
+        legacy ``"hodge"`` is also accepted.
 
     Returns
     -------
@@ -4061,7 +4170,7 @@ def operators_from_coeffs(seq, coeffs,
         ops = assemble_incidence_operators(seq, operators=ops, ks=ks)
         ops = assemble_derivative_operators(
             seq, geometry, operators=ops, ks=ks)
-    if "hodge" in kinds:
+    if "laplacian" in kinds or "hodge" in kinds:
         ops = assemble_hodge_operators(seq, geometry, operators=ops, ks=ks)
     return ops, geometry
 
@@ -4218,6 +4327,12 @@ def dense_hodge_laplacian(seq, operators: SequenceOperators, k: int,
             mass = dense_mass_matrix(seq, operators, 2, dirichlet=dirichlet)
             return derivative @ jnp.linalg.solve(mass, derivative.T)
     raise ValueError("k must be 0, 1, 2 or 3")
+
+
+def dense_laplacian(seq, operators: SequenceOperators, k: int,
+                    dirichlet: bool = True):
+    """Alias of dense_hodge_laplacian using Laplacian naming."""
+    return dense_hodge_laplacian(seq, operators, k, dirichlet=dirichlet)
 
 
 def dense_projection_matrix(seq, operators: SequenceOperators, k_in: int, k_out: int,
@@ -4377,34 +4492,152 @@ def _invert_diagonal(diagonal):
     return jnp.where(diagonal != 0.0, 1.0 / diagonal, 0.0)
 
 
-def _get_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool):
-    """Return the pre-probed approximate Schur diaginv for (k, dirichlet), or None."""
+def _get_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool, mode: str):
+    """Return stored Schur diaginv for ``(k, dirichlet, mode)``, or ``None``."""
     suffix = '_dbc' if dirichlet else ''
-    return getattr(operators, f'schur_diaginv_k{k}{suffix}', None)
+    diaginv = getattr(operators, f'schur_diaginv_k{k}{suffix}', None)
+    mode_stored = getattr(operators, f'schur_diaginv_mode_k{k}{suffix}', None)
+    if diaginv is None:
+        return None
+    # Backward-compatible fallback for older caches that predate mode tagging.
+    if mode_stored is None and mode == 'tensor_probe':
+        return diaginv
+    if mode_stored == mode:
+        return diaginv
+    return None
 
 
-def _set_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool, diaginv):
-    """Return operators with the Schur diaginv for (k, dirichlet) updated."""
+def _set_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool, diaginv, mode: str):
+    """Return operators with Schur diaginv + mode tag for ``(k, dirichlet)`` updated."""
     suffix = '_dbc' if dirichlet else ''
     field = f'schur_diaginv_k{k}{suffix}'
+    mode_field = f'schur_diaginv_mode_k{k}{suffix}'
     return eqx.tree_at(
-        lambda ops: getattr(ops, field),
+        lambda ops: (getattr(ops, field), getattr(ops, mode_field)),
         operators,
-        diaginv,
+        (diaginv, mode),
         is_leaf=lambda x: x is None,
     )
+
+
+_SCHUR_DIAG_MODES = ('tensor_probe', 'exact_probe', 'diag')
+
+
+def _coerce_schur_diag_mode(spec: MassPreconditionerSpec, *, context: str) -> str:
+    mode = spec.schur_diag_mode
+    if mode not in _SCHUR_DIAG_MODES:
+        raise ValueError(
+            f"{context} schur_diag_mode must be one of {_SCHUR_DIAG_MODES} "
+            f"(got {mode!r})"
+        )
+    return mode
+
+
+def _build_schur_probe_apply(
+        seq, operators: SequenceOperators, *,
+        k: int, dirichlet: bool, eps: float,
+        mode: str,
+        saddle_preconditioner: SaddlePointPreconditionerSpec):
+    if mode == 'tensor_probe':
+        if not _tensor_available(seq, operators, k - 1):
+            raise ValueError(
+                f"schur_diag_mode='tensor_probe' requires an assembled tensor "
+                f"schur.inner at k={k - 1}"
+            )
+        return _build_schur_apply_from_saddle_preconditioner(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            eps=eps,
+            saddle_preconditioner=saddle_preconditioner,
+        )
+
+    if mode == 'exact_probe':
+        exact_lower = lambda rhs: apply_inverse_mass_matrix(
+            seq,
+            operators,
+            rhs,
+            k - 1,
+            dirichlet=dirichlet,
+            preconditioner='jacobi',
+        )
+        return _build_schur_operator_apply(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            eps=eps,
+            inner_preconditioner_apply=exact_lower,
+        )
+
+    if mode == 'diag':
+        lower_diaginv = _mass_diaginv(seq, operators, k - 1, dirichlet)
+        lower_diag_apply = lambda rhs, d=lower_diaginv: d * rhs
+        return _build_schur_operator_apply(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            eps=eps,
+            inner_preconditioner_apply=lower_diag_apply,
+        )
+
+    raise ValueError(
+        f"Unsupported Schur diagonal probe mode {mode!r}; "
+        f"expected one of {_SCHUR_DIAG_MODES}"
+    )
+
+
+def _build_schur_outer_jacobi_diaginv(
+        seq, operators: SequenceOperators, *,
+        k: int, dirichlet: bool, eps: float,
+        outer_spec: MassPreconditionerSpec,
+        saddle_preconditioner: SaddlePointPreconditionerSpec,
+        allow_stored_tensor_diaginv: bool):
+    mode = _coerce_schur_diag_mode(
+        outer_spec,
+        context=f"schur.outer kind={outer_spec.kind!r}",
+    )
+    if allow_stored_tensor_diaginv:
+        stored_diaginv = _get_schur_diaginv(operators, k, dirichlet, mode)
+        if stored_diaginv is not None:
+            return stored_diaginv
+
+    if mode == 'exact_probe':
+        warnings.warn(
+            "schur_diag_mode='exact_probe' estimates the Schur Jacobi diagonal "
+            "by repeated exact lower mass solves; this is setup-heavy and intended "
+            "as a reference path",
+            stacklevel=2,
+        )
+
+    probe_apply = _build_schur_probe_apply(
+        seq,
+        operators,
+        k=k,
+        dirichlet=dirichlet,
+        eps=eps,
+        mode=mode,
+        saddle_preconditioner=saddle_preconditioner,
+    )
+    suffix = '_dbc' if dirichlet else ''
+    size = getattr(seq, f'n{k}{suffix}')
+    diagonal = _diagonal_from_matvec(probe_apply, size)
+    return _invert_diagonal(diagonal)
 
 
 def assemble_schur_jacobi_preconditioner(
         seq, operators: Optional[SequenceOperators] = None,
         *, ks: Sequence[int] = (1, 2, 3),
         dirichlet_variants: Optional[Sequence[bool]] = None,
-        eps: float = 0.0) -> SequenceOperators:
+    eps: float = 0.0,
+    schur_diag_mode: str = 'tensor_probe') -> SequenceOperators:
     """Probe and store the approximate Schur diagonal at assembly time.
 
     For each (k, dirichlet) pair, builds the approximate Schur operator
 
-        A_k(x) = S_k x + D_{k-1} M_tensor^{-1}_{k-1} D_{k-1}^T x
+        A_k(x) = S_k x + D_{k-1} B_{k-1} D_{k-1}^T x
 
     and probes its diagonal by O(n_k) matrix-vector products.  The
     resulting ``1/diag(A_k)`` is stored on the operator bundle so that
@@ -4422,12 +4655,22 @@ def assemble_schur_jacobi_preconditioner(
     eps : float
         Shift for the stiffness term; 0 gives the unshifted Schur.
 
-    Requires the tensor mass preconditioner for k-1 to be assembled first
-    (call ``assemble_tensor_mass_preconditioner(seq, ops, ks=...)``).
+    where ``B_{k-1}`` is selected by ``schur_diag_mode``:
+    - ``'tensor_probe'``: tensor schur.inner inverse (default)
+    - ``'exact_probe'``: exact lower inverse via CG solve
+    - ``'diag'``: diagonal lower inverse ``diag(M_{k-1})^{-1}``
+
+    ``'tensor_probe'`` requires the tensor mass preconditioner for ``k-1``
+    to be assembled first.
     """
     if dirichlet_variants is None:
         dirichlet_variants = (True, False)
     operators = _ensure_extraction_operators(seq, operators)
+    if schur_diag_mode not in _SCHUR_DIAG_MODES:
+        raise ValueError(
+            "assemble_schur_jacobi_preconditioner schur_diag_mode must be one "
+            f"of {_SCHUR_DIAG_MODES} (got {schur_diag_mode!r})"
+        )
     dummy_spec = SaddlePointPreconditionerSpec(
         mass=MassPreconditionerSpec(kind='tensor'),
         schur=SchurPreconditionerSpec(
@@ -4440,20 +4683,31 @@ def assemble_schur_jacobi_preconditioner(
             raise ValueError(
                 f"assemble_schur_jacobi_preconditioner: k must be 1, 2, or 3 (got {k})")
         for dirichlet in dirichlet_variants:
-            if not _tensor_available(seq, operators, k - 1):
+            if schur_diag_mode == 'tensor_probe' and not _tensor_available(seq, operators, k - 1):
                 raise ValueError(
                     f"tensor mass preconditioner for k={k - 1} must be assembled before "
                     f"probing the Schur diagonal for k={k}"
                 )
-            schur_apply = _build_schur_apply_from_saddle_preconditioner(
-                seq, operators, k=k, dirichlet=dirichlet, eps=eps,
+            schur_apply = _build_schur_probe_apply(
+                seq,
+                operators,
+                k=k,
+                dirichlet=dirichlet,
+                eps=eps,
+                mode=schur_diag_mode,
                 saddle_preconditioner=dummy_spec,
             )
             suffix = '_dbc' if dirichlet else ''
             n = getattr(seq, f'n{k}{suffix}')
             diagonal = _diagonal_from_matvec(schur_apply, n)
             diaginv = _invert_diagonal(diagonal)
-            operators = _set_schur_diaginv(operators, k, dirichlet, diaginv)
+            operators = _set_schur_diaginv(
+                operators,
+                k,
+                dirichlet,
+                diaginv,
+                mode=schur_diag_mode,
+            )
     return operators
 
 
@@ -5754,6 +6008,21 @@ def update_scalar_hodge_runtime_tuning(
     )
 
 
+def update_scalar_laplacian_runtime_tuning(
+        seq, operators: Optional[SequenceOperators], *, k: int,
+        dirichlet: bool = True, eps: float = 0.0,
+        preconditioner='auto'):
+    """Alias of update_scalar_hodge_runtime_tuning using Laplacian naming."""
+    return update_scalar_hodge_runtime_tuning(
+        seq,
+        operators,
+        k=k,
+        dirichlet=dirichlet,
+        eps=eps,
+        preconditioner=preconditioner,
+    )
+
+
 def _coerce_saddle_preconditioner_spec(
         seq, operators: SequenceOperators, *, k: int,
         preconditioner) -> SaddlePointPreconditionerSpec:
@@ -5772,6 +6041,10 @@ def _coerce_saddle_preconditioner_spec(
                 "schur.outer kind='tensor' is not supported; "
                 "tensor saddle preconditioning is only valid for the lower "
                 "mass block and schur.inner")
+        _coerce_schur_diag_mode(
+            preconditioner.schur.outer,
+            context=f"schur.outer kind={preconditioner.schur.outer.kind!r}",
+        )
         if preconditioner.schur.outer.kind != 'exact_jacobi':
             _validate_inner_tensor_only_spec(
                 preconditioner.schur.inner,
@@ -5841,19 +6114,33 @@ def update_schur_runtime_tuning(
         eps=eps,
         saddle_preconditioner=saddle_preconditioner,
     )
-    _validate_inner_tensor_only_spec(
-        outer_spec.smoother,
-        require_explicit=False,
-        context=f"schur.outer {outer_spec.kind} iterative preconditioner",
-    )
-    if not _tensor_available(seq, operators, k):
-        raise ValueError(
-            f"schur.outer {outer_spec.kind} iterative preconditioners require an assembled tensor smoother for k={k}"
+    if outer_spec.smoother is None:
+        diaginv = _build_schur_outer_jacobi_diaginv(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            eps=eps,
+            outer_spec=outer_spec,
+            saddle_preconditioner=saddle_preconditioner,
+            # If a mode-matched Schur Jacobi diagonal was preassembled, reuse it
+            # for all outer kinds to avoid repeated probe builds.
+            allow_stored_tensor_diaginv=True,
         )
-
-    smoother_apply = lambda x: apply_mass_tensor_preconditioner_ops(
-        seq, operators, x, k, dirichlet=dirichlet
-    )
+        smoother_apply = lambda x, d=diaginv: d * x
+    else:
+        _validate_inner_tensor_only_spec(
+            outer_spec.smoother,
+            require_explicit=False,
+            context=f"schur.outer {outer_spec.kind} iterative preconditioner",
+        )
+        if not _tensor_available(seq, operators, k):
+            raise ValueError(
+                f"schur.outer {outer_spec.kind} iterative preconditioners require an assembled tensor smoother for k={k}"
+            )
+        smoother_apply = lambda x: apply_mass_tensor_preconditioner_ops(
+            seq, operators, x, k, dirichlet=dirichlet
+        )
     suffix = '_dbc' if dirichlet else ''
     size = getattr(seq, f'n{k}{suffix}')
     orthogonal_vectors = _saddle_nullspaces(seq, operators, k, dirichlet)[0] if eps == 0.0 else None
@@ -6304,6 +6591,14 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
     raise AssertionError("unreachable")
 
 
+def apply_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
+                                   dirichlet: bool = True,
+                                   kind: str = 'auto'):
+    """Alias of apply_hodge_laplacian_preconditioner using Laplacian naming."""
+    return apply_hodge_laplacian_preconditioner(
+        seq, operators, v, k, dirichlet=dirichlet, kind=kind)
+
+
 def apply_inverse_hodge_laplacian(seq, operators: SequenceOperators, rhs, k: int,
                                   dirichlet: bool = True, guess=None,
                                   tol: Optional[float] = None,
@@ -6362,6 +6657,27 @@ def apply_inverse_hodge_laplacian(seq, operators: SequenceOperators, rhs, k: int
         maxiter=maxiter,
         preconditioner=preconditioner,
         use_harmonic_coarse=None,
+        return_info=return_info,
+    )
+
+
+def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
+                            dirichlet: bool = True, guess=None,
+                            tol: Optional[float] = None,
+                            maxiter: Optional[int] = None,
+                            preconditioner='auto',
+                            return_info: bool = False):
+    """Alias of apply_inverse_hodge_laplacian using Laplacian naming."""
+    return apply_inverse_hodge_laplacian(
+        seq,
+        operators,
+        rhs,
+        k,
+        dirichlet=dirichlet,
+        guess=guess,
+        tol=tol,
+        maxiter=maxiter,
+        preconditioner=preconditioner,
         return_info=return_info,
     )
 
@@ -6484,17 +6800,57 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
             saddle_preconditioner=saddle_preconditioner,
         )
         outer_spec = saddle_preconditioner.schur.outer
-        if outer_spec.kind == 'jacobi':
-            # Use the pre-probed Schur diagonal if available (assembled by
-            # assemble_schur_jacobi_preconditioner at setup time).
-            # Fall back to on-the-fly probing only when not yet assembled.
-            stored_diaginv = _get_schur_diaginv(operators, k, dirichlet)
-            if stored_diaginv is not None:
-                precond_upper = lambda x, d=stored_diaginv: d * x
+        if outer_spec.kind in ('jacobi', 'richardson', 'chebyshev') and outer_spec.smoother is None:
+            schur_diaginv = _build_schur_outer_jacobi_diaginv(
+                seq,
+                operators,
+                k=k,
+                dirichlet=dirichlet,
+                eps=eps,
+                outer_spec=outer_spec,
+                saddle_preconditioner=saddle_preconditioner,
+                # If a mode-matched Schur Jacobi diagonal was preassembled, reuse it
+                # for all outer kinds to avoid repeated probe builds.
+                allow_stored_tensor_diaginv=True,
+            )
+            if outer_spec.kind == 'jacobi':
+                precond_upper = lambda x, d=schur_diaginv: d * x
             else:
-                diagonal = _diagonal_from_matvec(schur_apply, n_upper)
-                diaginv = _invert_diagonal(diagonal)
-                precond_upper = lambda x, d=diaginv: d * x
+                smoother_apply = lambda x, d=schur_diaginv: d * x
+                tuning = _resolve_iterative_runtime_tuning_apply(
+                    schur_apply,
+                    smoother_apply,
+                    n_upper,
+                    spec=outer_spec,
+                    seed=10_000 * k + int(dirichlet),
+                    orthogonal_vectors=vs_upper if eps == 0.0 else None,
+                    runtime_tuning=_select_schur_runtime_tuning(
+                        operators,
+                        k,
+                        dirichlet,
+                        eps,
+                    ),
+                )
+                if outer_spec.kind == 'richardson':
+                    omega = jnp.where(
+                        tuning.lambda_max > 0.0,
+                        jnp.asarray(outer_spec.damping_safety, dtype=jnp.float64) / tuning.lambda_max,
+                        jnp.asarray(1.0, dtype=jnp.float64),
+                    )
+                    precond_upper = _build_richardson_apply_preconditioner(
+                        schur_apply,
+                        smoother_apply,
+                        steps=outer_spec.steps,
+                        omega=omega,
+                    )
+                else:
+                    precond_upper = _build_chebyshev_apply_preconditioner(
+                        schur_apply,
+                        smoother_apply,
+                        steps=outer_spec.steps,
+                        min_eig=tuning.lambda_min,
+                        max_eig=tuning.lambda_max,
+                    )
         else:
             precond_upper = _build_operator_preconditioner_apply(
                 seq,
@@ -6512,6 +6868,23 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
                     eps,
                 ),
             )
+    # Apply 1/eps coarse correction on the harmonic upper-block mode, mirroring
+    # the k=0 treatment.  For k>=1 the DBC nullspace is always empty on this
+    # topology, so only the NBC case is relevant.
+    if use_harmonic_coarse is None:
+        use_harmonic_coarse = eps > 0 and not dirichlet
+    if use_harmonic_coarse and eps > 0:
+        # _shifted_harmonic_coarse_ready may return a traced bool when this
+        # function is called inside a jax.lax.while_loop body.  Use
+        # jax.lax.cond so the selection is JAX-traceable, mirroring the
+        # tensor/jacobi fallback in the k=0 path.
+        coarse_ready = _shifted_harmonic_coarse_ready(seq, operators, k, dirichlet)
+        precond_with_coarse = _wrap_shifted_harmonic_coarse_correction(
+            seq, operators, precond_upper, eps, k, dirichlet)
+        precond_no_coarse = precond_upper
+        precond_upper = lambda x, r=coarse_ready, a=precond_with_coarse, b=precond_no_coarse: (
+            jax.lax.cond(r, a, b, x))
+
     precond_matvec = (
         _build_coupled_saddle_preconditioner(
             seq,
@@ -6551,6 +6924,30 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
         maxiter=maxiter,
     )
     return (u, info) if return_info else u
+
+
+def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: int,
+                                    eps: float, dirichlet: bool = True, guess=None,
+                                    tol: Optional[float] = None,
+                                    maxiter: Optional[int] = None,
+                                    preconditioner='auto',
+                                    use_harmonic_coarse: Optional[bool] = None,
+                                    return_info: bool = False):
+    """Alias of apply_inverse_shifted_hodge_laplacian using Laplacian naming."""
+    return apply_inverse_shifted_hodge_laplacian(
+        seq,
+        operators,
+        rhs,
+        k,
+        eps,
+        dirichlet=dirichlet,
+        guess=guess,
+        tol=tol,
+        maxiter=maxiter,
+        preconditioner=preconditioner,
+        use_harmonic_coarse=use_harmonic_coarse,
+        return_info=return_info,
+    )
 
 
 def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators, rhs, k: int,
@@ -6720,6 +7117,23 @@ def apply_hodge_laplacian(seq, operators: SequenceOperators, v, k: int,
             raise ValueError("k must be 0, 1, 2 or 3")
 
 
+def apply_laplacian(seq, operators: SequenceOperators, v, k: int,
+                    dirichlet: bool = True, guess=None,
+                    tol: Optional[float] = None,
+                    maxiter: Optional[int] = None):
+    """Alias of apply_hodge_laplacian using Laplacian naming."""
+    return apply_hodge_laplacian(
+        seq,
+        operators,
+        v,
+        k,
+        dirichlet=dirichlet,
+        guess=guess,
+        tol=tol,
+        maxiter=maxiter,
+    )
+
+
 def apply_hodge_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
                                  dirichlet: bool = True):
     """Linear approximation of the Hodge Laplacian apply.
@@ -6764,6 +7178,18 @@ def apply_hodge_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         case _:
             raise ValueError("k must be 0, 1, 2 or 3")
+
+
+def apply_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
+                           dirichlet: bool = True):
+    """Alias of apply_hodge_laplacian_approx using Laplacian naming."""
+    return apply_hodge_laplacian_approx(
+        seq,
+        operators,
+        v,
+        k,
+        dirichlet=dirichlet,
+    )
 
 
 # ---------------------------------------------------------------------------

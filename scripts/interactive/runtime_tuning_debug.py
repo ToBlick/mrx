@@ -27,7 +27,7 @@ import jax.numpy as jnp
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map, toroid_map
 from mrx.operators import (
-    assemble_hodge_operators,
+    assemble_laplacian_operators,
     assemble_incidence_operators,
     assemble_mass_operators,
     assemble_tensor_mass_preconditioner,
@@ -260,7 +260,7 @@ def assemble_case(config: ExperimentConfig = CONFIG):
     )
     operators = assemble_incidence_operators(seq, operators=operators, ks=(0,))
     operators = assemble_incidence_operators(seq, operators=operators, ks=(1,))
-    operators = assemble_hodge_operators(seq, seq.geometry, operators=operators, ks=(0, 1))
+    operators = assemble_laplacian_operators(seq, seq.geometry, operators=operators, ks=(0, 1))
     OPERATORS = operators
     print(
         "assembled operators:",
@@ -354,7 +354,7 @@ def run_scalar_hodge_solve(config: ExperimentConfig = CONFIG, rhs=None):
     if rhs is None:
         rhs = jnp.ones(seq.n0_dbc)
     t0 = time.perf_counter()
-    x, info = seq.apply_inverse_shifted_hodge_laplacian(
+    x, info = seq.apply_inverse_shifted_laplacian(
         rhs,
         0,
         config.hodge_eps,
@@ -381,7 +381,7 @@ def run_schur_solve(config: ExperimentConfig = CONFIG, rhs=None):
     if rhs is None:
         rhs = jnp.ones(seq.n1_dbc)
     t0 = time.perf_counter()
-    x, info = seq.apply_inverse_shifted_hodge_laplacian(
+    x, info = seq.apply_inverse_shifted_laplacian(
         rhs,
         1,
         config.hodge_eps,

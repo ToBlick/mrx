@@ -64,10 +64,10 @@ breaks it.
 Added to
 [scripts/config_scripts/test_torus_poisson_sparse.py](../scripts/config_scripts/test_torus_poisson_sparse.py):
 
-- `apply_inverse_hodge_laplacian(..., return_info=True)` to capture CG iter
+- `apply_inverse_laplacian(..., return_info=True)` to capture CG iter
   count and convergence flag.
 - Explicit Euclidean residual `||K0 u_hat - rhs|| / ||rhs||` recomputed via
-  `seq.apply_hodge_laplacian` after the solve.
+  `seq.apply_laplacian` after the solve.
 - All three new fields written to `result.json` and printed in the per-run
   summary.
 
@@ -86,7 +86,7 @@ than interactive's.
 That gap implies one of:
 
 1. The matrix CG uses (`apply_stiffness`) and the matrix we recheck with
-   (`apply_hodge_laplacian`) differ on the submitit path.
+   (`apply_laplacian`) differ on the submitit path.
 2. Either of those apply paths is nondeterministic across calls on submitit,
    so CG's recursive residual decouples from the true residual within a
    handful of iterations.

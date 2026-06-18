@@ -245,21 +245,26 @@ def _bootstrap_nullspace_guesses(seq, operators, k, dirichlet, guesses):
 
 def _nullspace_shifted_preconditioner(k: int):
     if k == 0:
+        # Use the tensor Hodge-Laplacian preconditioner, same as the main solve.
         return _validate_nullspace_shifted_preconditioner(
             k,
-            MassPreconditionerSpec(
-                kind='richardson',
-                steps=2,
-                smoother=MassPreconditionerSpec(kind='tensor'),
-            ),
+            MassPreconditionerSpec(kind='tensor'),
         )
+    # For k >= 1 use a matrix-free saddle preconditioner: tensor lower mass,
+    # tensor Schur inner, Richardson Schur outer (steps=1). This avoids
+    # Schur-Jacobi diagonal probing while keeping per-iteration cost low.
     return _validate_nullspace_shifted_preconditioner(
         k,
         SaddlePointPreconditionerSpec(
             mass=default_mass_preconditioner(),
             schur=SchurPreconditionerSpec(
                 inner=MassPreconditionerSpec(kind='tensor'),
-                outer=MassPreconditionerSpec(kind='richardson', steps=2),
+                outer=MassPreconditionerSpec(
+                    kind='richardson',
+                    steps=1,
+                    power_iterations=30,
+                    damping_safety=0.8,
+                ),
             ),
             coupled=False,
         ),
@@ -294,20 +299,18 @@ def _validate_nullspace_shifted_preconditioner(k: int, preconditioner):
     if k == 0:
         if not isinstance(preconditioner, MassPreconditionerSpec):
             raise TypeError('k=0 nullspace inverse iteration expects a MassPreconditionerSpec')
-        if preconditioner.kind != 'richardson':
+        if preconditioner.kind not in ('tensor', 'jacobi', 'richardson'):
             raise ValueError(
-                'k=0 nullspace inverse iteration must keep Richardson as the shifted solve preconditioner'
-            )
-        if preconditioner.smoother is None or preconditioner.smoother.kind != 'tensor':
-            raise ValueError(
-                'k=0 nullspace inverse iteration requires a tensor inner smoother for Richardson'
+                f'k=0 nullspace inverse iteration got unsupported preconditioner '
+                f'kind={preconditioner.kind!r}; expected tensor, jacobi, or richardson'
             )
         return preconditioner
     if not isinstance(preconditioner, SaddlePointPreconditionerSpec):
         raise TypeError('k>=1 nullspace inverse iteration expects a SaddlePointPreconditionerSpec')
-    if preconditioner.schur.outer.kind != 'richardson':
+    if preconditioner.schur.outer.kind not in ('jacobi', 'richardson', 'exact_jacobi'):
         raise ValueError(
-            'k>=1 nullspace inverse iteration must keep Richardson as the Schur outer preconditioner'
+            f'k>=1 nullspace inverse iteration got unsupported schur.outer '
+            f'kind={preconditioner.schur.outer.kind!r}; expected jacobi, richardson, or exact_jacobi'
         )
     if preconditioner.schur.inner.kind != 'tensor':
         raise ValueError(
@@ -431,7 +434,8 @@ def _initial_guesses(seq, operators, k, dirichlet, n_vec):
 
 
 def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
-                                 eps=1e-6, abs_tol=None):
+                                 eps=1e-6, abs_tol=None, inner_tol=1e-6,
+                                 maxiter=100):
     """Compute harmonic forms via shift-and-invert iteration.
 
     Each ``(k, dirichlet)`` pair with a non-zero harmonic dimension is
@@ -454,6 +458,12 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
     abs_tol : float, optional
         Absolute tolerance on the Hodge-Laplacian residual ``||L_k v||``.
         Defaults to ``seq.tol``.
+    inner_tol : float
+        Tolerance for the inner shifted MINRES solve at each power-iteration
+        step.  Inverse iteration only needs the inner solve to be accurate
+        enough to make progress; the outer loop drives ``||L_k v||`` to
+        ``abs_tol``.  Default 1e-3 is much cheaper than ``seq.tol`` on the
+        near-singular shifted system.
 
     Returns
     -------
@@ -499,6 +509,8 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
                 dirichlet=dirichlet,
                 x0s=guesses,
                 abs_tol=abs_tol,
+                inner_tol=inner_tol,
+                maxiter=maxiter,
             )
             operators = _commit(seq, _set_null(operators, k, dirichlet, vectors))
             info[(k, dirichlet)] = iters
@@ -507,7 +519,8 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
 
 
 def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
-                           x0s=None, abs_tol=None):
+                           x0s=None, abs_tol=None, inner_tol=1e-6,
+                           maxiter=100):
     """Find ``n_vectors`` harmonic ``k``-forms via inverse iteration.
 
     Each vector is found by repeatedly applying ``(S_k + eps M_k)^{-1} M_k``
@@ -570,13 +583,14 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             continue
 
         def body_fn(state):
-            v, res, _, i = state
+            v, res, i = state
             Mv = seq.apply_mass_matrix(
                 v, k, dirichlet=dirichlet, operators=operators)
             w = seq.apply_inverse_shifted_hodge_laplacian(
                 Mv, k, eps, dirichlet=dirichlet, guess=v,
                 operators=operators,
                 preconditioner=shifted_preconditioner,
+                tol=inner_tol,
                 # Inverse iteration is the mechanism that discovers the
                 # harmonic vectors, so the shifted solve used here must not
                 # depend on any nullspace-aware coarse correction.
@@ -588,16 +602,14 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             Lw = seq.apply_hodge_laplacian(
                 w, k, dirichlet=dirichlet, operators=operators)
             res_new = seq.l2_norm(Lw, k, dirichlet=dirichlet)
-            return w, res_new, res, i + 1
+            return w, res_new, i + 1
 
         def cond_fn(state):
-            _, res, res_prev, i = state
-            converged = (res <= abs_tol) | (
-                jnp.abs(res - res_prev) <= abs_tol)
-            return ~converged & (i < seq.maxiter)
+            _, res, i = state
+            return (res > abs_tol) & (i < maxiter)
 
-        init_state = (v0, jnp.inf, jnp.inf, 0)
-        v_final, res_final, _, n_iters = jax.lax.while_loop(
+        init_state = (v0, jnp.inf, 0)
+        v_final, res_final, n_iters = jax.lax.while_loop(
             cond_fn, body_fn, init_state)
         found.append(v_final)
         iters.append((int(n_iters), float(res_final)))

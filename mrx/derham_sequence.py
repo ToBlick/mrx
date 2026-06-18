@@ -19,23 +19,23 @@ from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
                            get_saddle_point_nullspaces, init_nullspaces)
 from mrx.operators import \
     apply_derivative_matrix as apply_derivative_matrix_ops
-from mrx.operators import apply_hodge_laplacian as apply_hodge_laplacian_ops
+from mrx.operators import apply_laplacian as apply_laplacian_ops
 from mrx.operators import \
-    apply_hodge_laplacian_approx as apply_hodge_laplacian_approx_ops
+    apply_laplacian_approx as apply_laplacian_approx_ops
 from mrx.operators import \
-    apply_hodge_laplacian_preconditioner as \
-    apply_hodge_laplacian_preconditioner_ops
+    apply_laplacian_preconditioner as \
+    apply_laplacian_preconditioner_ops
 from mrx.operators import apply_incidence_matrix as apply_incidence_matrix_ops
 from mrx.operators import \
     apply_inverse_mass_plus_eps_laplace_matrix as \
     apply_inverse_mass_plus_eps_laplace_matrix_ops
 from mrx.operators import \
-    apply_inverse_hodge_laplacian as apply_inverse_hodge_laplacian_ops
+    apply_inverse_laplacian as apply_inverse_laplacian_ops
 from mrx.operators import \
     apply_inverse_mass_matrix as apply_inverse_mass_matrix_ops
 from mrx.operators import \
-    apply_inverse_shifted_hodge_laplacian as \
-    apply_inverse_shifted_hodge_laplacian_ops
+    apply_inverse_shifted_laplacian as \
+    apply_inverse_shifted_laplacian_ops
 from mrx.operators import apply_mass_matrix as apply_mass_matrix_ops
 from mrx.operators import \
     apply_mass_matrix_preconditioner as apply_mass_matrix_preconditioner_ops
@@ -53,7 +53,7 @@ from mrx.operators import (SequenceOperators,
                            update_diffusion_runtime_tuning as update_diffusion_runtime_tuning_ops,
                            update_mass_runtime_tuning as update_mass_runtime_tuning_ops,
                            update_schur_runtime_tuning as update_schur_runtime_tuning_ops,
-                           update_scalar_hodge_runtime_tuning as update_scalar_hodge_runtime_tuning_ops)
+                           update_scalar_laplacian_runtime_tuning as update_scalar_laplacian_runtime_tuning_ops)
 from mrx.projectors import load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
@@ -330,7 +330,8 @@ class DeRhamSequence():
         self.n3_1, self.n3_2, self.n3_3 = e3.n1, e3.n2, e3.n3
         self.n3_1_dbc, self.n3_2_dbc, self.n3_3_dbc = e3_dbc.n1, e3_dbc.n2, e3_dbc.n3
 
-    def load(self, f, k: int, dirichlet: bool = False, bc: bool = False):
+    def load(self, f, k: int, dirichlet: bool = False, bc: bool = False,
+             frame: str = 'phys'):
         """Assemble the dual k-form load vector  v_i = ∫ Λ^k_i · f(ξ) w(ξ) dξ.
 
         Parameters
@@ -339,8 +340,9 @@ class DeRhamSequence():
         k : int  Form degree (0, 1, 2, 3).
         dirichlet : bool  Use Dirichlet-constrained DOFs.
         bc : bool  Use boundary-trace DOFs (takes precedence over dirichlet).
+        frame : {'phys', 'ref'}  Passed to :func:`mrx.projectors.load`.
         """
-        return _load(self, f, k, dirichlet=dirichlet, bc=bc)
+        return _load(self, f, k, dirichlet=dirichlet, bc=bc, frame=frame)
 
     def interpolate(self, f, k: int, dirichlet: bool = False):
         """Compute primal DOFs by Greville interpolation (k=0) or histopolation (k=1,2,3).
@@ -798,8 +800,8 @@ class DeRhamSequence():
         """Return the 1-D gradient matrix for the given derivative basis and BC type."""
         return grad_1d(d_basis, boundary_type)
 
-    def assemble_hodge_laplacian(self, k):
-        """Assemble and cache the Hodge-Laplacian stiffness matrix for k-forms.
+    def assemble_laplacian(self, k):
+        """Assemble and cache the Laplacian stiffness data for k-forms.
 
         Parameters
         ----------
@@ -812,6 +814,10 @@ class DeRhamSequence():
             operators=self.get_operators(),
             ks=(k,),
         ))
+
+    def assemble_hodge_laplacian(self, k):
+        """Backward-compatible alias for assemble_laplacian."""
+        return self.assemble_laplacian(k)
 
     def update_mass_runtime_tuning(self, k, dirichlet=True, operators=None,
                                    preconditioner='auto'):
@@ -829,13 +835,13 @@ class DeRhamSequence():
             return tuned
         return self.set_operators(tuned)
 
-    def update_scalar_hodge_runtime_tuning(self, k, eps=0.0,
-                                           dirichlet=True, operators=None,
-                                           preconditioner='auto'):
-        """Estimate and store runtime tuning for a scalar Hodge preconditioner."""
+    def update_scalar_laplacian_runtime_tuning(self, k, eps=0.0,
+                                               dirichlet=True, operators=None,
+                                               preconditioner='auto'):
+        """Estimate and store runtime tuning for a scalar Laplacian preconditioner."""
         using_external_operators = operators is not None
         operators = self._require_operators(operators)
-        tuned = update_scalar_hodge_runtime_tuning_ops(
+        tuned = update_scalar_laplacian_runtime_tuning_ops(
             self,
             operators,
             k=k,
@@ -846,6 +852,18 @@ class DeRhamSequence():
         if using_external_operators:
             return tuned
         return self.set_operators(tuned)
+
+    def update_scalar_hodge_runtime_tuning(self, k, eps=0.0,
+                                           dirichlet=True, operators=None,
+                                           preconditioner='auto'):
+        """Backward-compatible alias for update_scalar_laplacian_runtime_tuning."""
+        return self.update_scalar_laplacian_runtime_tuning(
+            k,
+            eps=eps,
+            dirichlet=dirichlet,
+            operators=operators,
+            preconditioner=preconditioner,
+        )
 
     def update_schur_runtime_tuning(self, k, eps=0.0,
                                     dirichlet=True, operators=None,
@@ -1074,37 +1092,30 @@ class DeRhamSequence():
             transpose=transpose,
         )
 
-    def apply_hodge_laplacian(self, v, k, dirichlet=True, operators=None):
-        """
-        Apply the k-th Hodge Laplacian (δd) to a vector v.
+    def apply_laplacian(self, v, k, dirichlet=True, operators=None):
+        """Apply the k-form Laplacian ``L_k`` to a vector ``v``.
 
-        For k ≥ 1, applied via the saddle-point Schur complement:
+        Naming and structure used throughout MRX:
 
-        | stiffness_k   d_{k-1}  |   | u (k-form)      |
-        | d_{k-1}^T    -M_{k-1}  |   | s ((k-1)-form)  |
+        - ``S_k`` is the k-form stiffness block,
+        - ``L_k = S_k + D_{k-1} M_{k-1}^{-1} D_{k-1}^T``,
+        - equivalently
+          ``L_k = G_k^T M_{k+1} G_k + M_k G_{k-1} M_{k-1}^{-1} G_{k-1}^T M_k``.
 
-        where stiffness_k_ij = ∫ d Λ^k_i · d Λ^k_j dx (assembled directly),
-        and d_{k-1} is the discrete exterior derivative from (k-1)- to k-forms.
-        Eliminating s = M_{k-1}^{-1} d_{k-1}^T u gives the Schur complement:
-
-            (stiffness_k + d_{k-1} M_{k-1}^{-1} d_{k-1}^T) u
-
-        Concretely:
-            k=0: stiffness_0 = grad_grad_ij = ∫ ∇Λ0_i · G⁻¹ ∇Λ0_j det DF dx
-            k=1: stiffness_1 = curl_curl_ij = ∫ curl Λ1_i · G curl Λ1_j (det DF)⁻¹ dx,  d_0 = grad
-            k=2: stiffness_2 = div_div_ij   = ∫ div  Λ2_i div  Λ2_j (det DF)⁻¹ dx,  d_1 = curl
-            k=3: stiffness_3 = 0,  d_2 = div
-
-        The inner M_{k-1}^{-1} solves use CG with Jacobi preconditioning
-        to full solver tolerance.
+        For k >= 1 this is applied through the Schur form above. For k = 0,
+        ``L_0 = S_0``.
         """
         operators = self._require_operators(operators)
-        return apply_hodge_laplacian_ops(
+        return apply_laplacian_ops(
             self, operators, v, k, dirichlet=dirichlet,
             tol=self.tol, maxiter=self.maxiter)
 
-    def apply_hodge_laplacian_approx(self, v, k, dirichlet=True, operators=None):
-        """Linear approximate Hodge-Laplacian apply.
+    def apply_hodge_laplacian(self, v, k, dirichlet=True, operators=None):
+        """Backward-compatible alias for apply_laplacian."""
+        return self.apply_laplacian(v, k, dirichlet=dirichlet, operators=operators)
+
+    def apply_laplacian_approx(self, v, k, dirichlet=True, operators=None):
+        """Linear approximate Laplacian apply.
 
         Replaces ``M_{k-1}^{-1}`` in the Schur term with a single configured
         mass-preconditioner apply. Linear, SPD, safe to nest inside Krylov
@@ -1112,14 +1123,18 @@ class DeRhamSequence():
         is tensor-separable on the reference domain.
         """
         operators = self._require_operators(operators)
-        return apply_hodge_laplacian_approx_ops(
+        return apply_laplacian_approx_ops(
             self, operators, v, k, dirichlet=dirichlet)
+
+    def apply_hodge_laplacian_approx(self, v, k, dirichlet=True, operators=None):
+        """Backward-compatible alias for apply_laplacian_approx."""
+        return self.apply_laplacian_approx(v, k, dirichlet=dirichlet, operators=operators)
 
     def apply_mass_plus_eps_laplace_matrix(self, v, k, eps, dirichlet=True, operators=None):
         """Apply ``(M_k + eps * L_k)`` to a k-form vector."""
         return self.apply_mass_matrix(
             v, k, dirichlet=dirichlet, operators=operators) \
-            + eps * self.apply_hodge_laplacian(
+            + eps * self.apply_laplacian(
                 v, k, dirichlet=dirichlet, operators=operators)
 
     def apply_stiffness(self, v, k, dirichlet=True, operators=None):
@@ -1136,7 +1151,7 @@ class DeRhamSequence():
             self, operators, v, k, dirichlet=dirichlet)
 
     def _get_nullspace(self, k, dirichlet):
-        """Return the nullspace basis for the k-th Hodge Laplacian."""
+        """Return the nullspace basis for the k-form Laplacian."""
         return get_nullspace(self._require_operators(), k, dirichlet)
 
     def _get_saddle_point_nullspaces(self, k, dirichlet):
@@ -1144,13 +1159,13 @@ class DeRhamSequence():
         return get_saddle_point_nullspaces(
             self, self._require_operators(), k, dirichlet)
 
-    def apply_inverse_hodge_laplacian(self, rhs, k, dirichlet=True, guess=None,
-                                      operators=None, tol=None, maxiter=None,
-                                      preconditioner='auto',
-                                      return_info=False):
-        """Apply the inverse of the k-th Hodge Laplacian (δd)⁻¹ to a right-hand side."""
+    def apply_inverse_laplacian(self, rhs, k, dirichlet=True, guess=None,
+                                operators=None, tol=None, maxiter=None,
+                                preconditioner='auto',
+                                return_info=False):
+        """Apply the inverse of the k-form Laplacian to a right-hand side."""
         operators = self._require_operators(operators)
-        return apply_inverse_hodge_laplacian_ops(
+        return apply_inverse_laplacian_ops(
             self, operators, rhs, k,
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
@@ -1158,11 +1173,28 @@ class DeRhamSequence():
             preconditioner=preconditioner,
             return_info=return_info)
 
-    def apply_inverse_shifted_hodge_laplacian(self, rhs, k, eps, dirichlet=True, guess=None,
-                                              operators=None, tol=None, maxiter=None,
-                                              preconditioner='auto',
-                                              use_harmonic_coarse=None,
-                                              return_info=False):
+    def apply_inverse_hodge_laplacian(self, rhs, k, dirichlet=True, guess=None,
+                                      operators=None, tol=None, maxiter=None,
+                                      preconditioner='auto',
+                                      return_info=False):
+        """Backward-compatible alias for apply_inverse_laplacian."""
+        return self.apply_inverse_laplacian(
+            rhs,
+            k,
+            dirichlet=dirichlet,
+            guess=guess,
+            operators=operators,
+            tol=tol,
+            maxiter=maxiter,
+            preconditioner=preconditioner,
+            return_info=return_info,
+        )
+
+    def apply_inverse_shifted_laplacian(self, rhs, k, eps, dirichlet=True, guess=None,
+                                        operators=None, tol=None, maxiter=None,
+                                        preconditioner='auto',
+                                        use_harmonic_coarse=None,
+                                        return_info=False):
         """
         Solve (L_k + eps * M_k) x = rhs for the k-form x.
 
@@ -1180,7 +1212,7 @@ class DeRhamSequence():
             | D_{k-1}^T       -M_{k-1}   | | σ | = | 0 |
         """
         operators = self._require_operators(operators)
-        return apply_inverse_shifted_hodge_laplacian_ops(
+        return apply_inverse_shifted_laplacian_ops(
             self, operators, rhs, k, eps,
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
@@ -1188,6 +1220,26 @@ class DeRhamSequence():
             preconditioner=preconditioner,
             use_harmonic_coarse=use_harmonic_coarse,
             return_info=return_info)
+
+    def apply_inverse_shifted_hodge_laplacian(self, rhs, k, eps, dirichlet=True, guess=None,
+                                              operators=None, tol=None, maxiter=None,
+                                              preconditioner='auto',
+                                              use_harmonic_coarse=None,
+                                              return_info=False):
+        """Backward-compatible alias for apply_inverse_shifted_laplacian."""
+        return self.apply_inverse_shifted_laplacian(
+            rhs,
+            k,
+            eps,
+            dirichlet=dirichlet,
+            guess=guess,
+            operators=operators,
+            tol=tol,
+            maxiter=maxiter,
+            preconditioner=preconditioner,
+            use_harmonic_coarse=use_harmonic_coarse,
+            return_info=return_info,
+        )
 
     def apply_inverse_mass_plus_eps_laplace_matrix(self, rhs, k, eps, dirichlet=True, guess=None,
                                                    operators=None, tol=None, maxiter=None,
@@ -1215,21 +1267,32 @@ class DeRhamSequence():
             preconditioner=preconditioner,
             return_info=return_info)
 
-    def apply_hodge_laplacian_preconditioner(self, v, k, dirichlet=True,
-                                             operators=None, kind='auto'):
+    def apply_laplacian_preconditioner(self, v, k, dirichlet=True,
+                                       operators=None, kind='auto'):
         """
-        Apply a preconditioner for the k-th Hodge Laplacian to a vector ``v``.
+        Apply a preconditioner for the k-form Laplacian to a vector ``v``.
 
         ``kind`` selects between ``'none'`` (identity), ``'jacobi'`` (per-DoF
-        diagonal) and ``'tensor'`` (tensorized auxiliary-space
-        preconditioner; available for ``k = 0`` when the tensor Hodge data are
-        assembled, and for ``k = 3`` via the tensor round-trip path).
+        diagonal) and ``'tensor'`` (tensorized Hodge/Laplacian preconditioner;
+        available for ``k = 0`` when the tensor Hodge data are assembled, and
+        for ``k = 3`` via the tensor round-trip path).
         ``'auto'`` (the default) uses ``'tensor'`` when available and falls
         back to ``'jacobi'`` otherwise.
         """
         operators = self._require_operators(operators)
-        return apply_hodge_laplacian_preconditioner_ops(
+        return apply_laplacian_preconditioner_ops(
             self, operators, v, k, dirichlet=dirichlet, kind=kind)
+
+    def apply_hodge_laplacian_preconditioner(self, v, k, dirichlet=True,
+                                             operators=None, kind='auto'):
+        """Backward-compatible alias for apply_laplacian_preconditioner."""
+        return self.apply_laplacian_preconditioner(
+            v,
+            k,
+            dirichlet=dirichlet,
+            operators=operators,
+            kind=kind,
+        )
 
     def _compute_nullspaces(self, betti_numbers=None, eps=1e-6):
         """Iteratively compute harmonic forms and store them on ``self.operators``.
@@ -1244,7 +1307,7 @@ class DeRhamSequence():
         return info
 
     def _find_nullspace_vectors(self, k, n_vectors, eps, dirichlet=True):
-        """Find ``n_vectors`` nullspace vectors of the k-th Hodge Laplacian via inverse iteration."""
+        """Find ``n_vectors`` nullspace vectors of the k-form Laplacian via inverse iteration."""
         return find_nullspace_vectors(
             self, self._require_operators(), k, n_vectors, eps, dirichlet)
 

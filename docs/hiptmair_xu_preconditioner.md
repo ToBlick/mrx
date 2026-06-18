@@ -1,280 +1,675 @@
-# Hiptmair-Xu Preconditioner Plan
+# HX/AMS Preconditioner Status
 
-This note is a draft implementation plan for the higher-form preconditioner
-work in `mrx`.
+This note tracks the status of the HX/AMS-style upper-block preconditioner for
+higher-form solves. It began as a postmortem (HX/AMS judged not competitive),
+but a gradient-subspace projection has since made an additive `P_A + P_B` upper
+block beat the Jacobi baseline for `k=1`. The sections below carry both the
+retained algebra and the current (positive) result.
 
-The current strategic split is:
+## Outcome
 
-- mass preconditioners are essentially done,
-- scalar `k = 0` stiffness / Hodge stays on the tensor route,
-- and higher forms `k = 1, 2, 3` move toward a Hiptmair-Xu (HX)
-  auxiliary-space preconditioner rather than more tuning of Schur-outers as an
-  end state.
+Status update (2026-06): for the `k=1` grad-div diagnostic, an additive
+`P_A + P_B` upper block **does** beat the Schur-outer Jacobi baseline once
+`P_A` is restricted to the curl-dominated complement by a gradient-subspace
+projection (see "Gradient-subspace projection" below). On the standard `k=1`
+benchmark (`ns=(6,12,4)`, `p=3`, toroid, `ε=1/3`):
 
-The point of this note is not to freeze the exact formula yet. It is to list
-the concrete parts that still have to exist before an HX route can be wired in
-cleanly.
+| upper precond | iters | wall time |
+| --- | --- | --- |
+| `jacobi (diag)` | ~386 | ~290 ms |
+| `P_A + P_B` (raw, no projection) | ~347 | ~787 ms |
+| `P_A + P_B` (gradient-projected) | ~96 | ~267 ms |
+| `P_A + P_B` (gradient-projected, vector-FD true-basis stabilized) | **~84** | **~230 ms** |
 
-## 1. Goal
+So the projected variant cuts iterations ~4× and is faster in wall time than
+Jacobi; the current best experimental variant (true-basis vector-FD with
+stabilized per-mode fallback) improves this further to ~84 it / ~230 ms.
+Adding any Jacobi on top (`α·jacobi + P_A + P_B`) still hurts (`α=0` is best),
+because the projection already removes what Jacobi was patching.
 
-For `k = 1, 2, 3`, keep the existing mixed / saddle-point solve structure, but
-replace the current "better Schur outer" direction with an auxiliary-space
-preconditioner that:
+At slightly higher resolutions the picture changes:
 
-- uses cheap local interpolation / projection operators,
-- reuses scalar Poisson-style preconditioning where possible,
-- avoids expensive nested exact solves inside the outer Krylov method,
-- and respects the discrete de Rham structure already present in the code.
+- `ns=(7,14,5)`: true-basis vector-FD remains better than projected baseline
+  block_fd (about `98.5` it / `388 ms` vs `115.8` it / `456 ms`) but still
+  loses wall time to Jacobi (`~304 ms`).
+- `ns=(7,14,8)`: true-basis vector-FD remains much better than projected
+  baseline block_fd (`~124.8` it / `660.8 ms` vs baseline `~116.5` it /
+  `463.3 ms` at `7,14,5`; baseline `7,14,8` run still pending), and also loses
+  wall time to Jacobi (`~493.8 ms`).
 
-## 2. Current Starting Point
+So the new vector-coupled model is a clear iteration-quality win, but not yet a
+scalable wall-time winner at the larger tested grids.
 
-What already exists and should be reused:
+This reverses the earlier postmortem conclusion. The blocker was never
+indefiniteness or Schur tuning; it was that the raw `P_A` and `P_B` were both
+acting on the gradient subspace and interfering. The remaining caveats are
+that this is shown only for `k=1` in the diagnostic harness, and that `k=2, 3`
+auxiliary-space variants were not retried.
 
-- robust tensor mass preconditioners,
-- a working scalar `k = 0` tensor Hodge / Poisson-style preconditioner,
-- the extracted-space derivative blocks and incidence structure,
-- saddle-point MINRES infrastructure for higher forms,
-- transition benchmark baselines:
-  - Jacobi + `exact_jacobi` Schur as a reference,
-  - tensor lower + Chebyshev outer as an interim production-style comparison.
+## What Was Consolidated
 
-What is still missing:
+This file now serves as the single HX/AMS markdown reference for:
 
-- the local interpolation / projection operators that connect
-  `H(curl)` / `H(div)` unknowns to the auxiliary scalar spaces,
-- the concrete HX apply assembled from those maps and scalar auxiliary solves,
-- nullspace / harmonic handling integrated with that auxiliary-space route.
 
-Current preferred first interpolation idea:
+Related high-level docs now treat HX as historical rather than active roadmap.
 
-- Greville-point interpolation / histopolation built from the existing spline
-  structure.
+## Canonical Debug Script
 
-That is attractive for two reasons:
+Use exactly one HX/AMS diagnostic script:
 
-- it is a plausible cheap, local bridge for the HX auxiliary-space maps,
-- and it is also useful more generally as infrastructure for putting analytic
-  functions into the discrete spaces.
 
-## 3. Required Pieces
+The former k=3 duality-transfer prototype script has been removed during this
+cleanup to avoid split/duplicated experimental entry points.
 
-### 3.1 Auxiliary-space design table
+## Retained Algebra (Useful Reference)
 
-First make the degree-by-degree table explicit.
+Even though HX/AMS is archived as a production direction, the algebra used in
+the diagnostics is still useful.
 
-For each of `k = 1, 2, 3`, record:
+For the higher-form upper block, we used the additive split
 
-- the source discrete space in the extracted system,
-- the auxiliary scalar space or spaces that the HX route needs,
-- which exact topological maps already exist in the de Rham sequence,
-- which interpolation / projection maps are still missing,
-- which scalar Poisson-style operator each auxiliary solve should use,
-- and which boundary-condition variants must be supported first.
+$$
+P = P_A + P_B,
+$$
 
-This table should be written down before implementation so the code does not
-drift into ad hoc case-by-case logic.
+with:
 
-### 3.2 Local interpolation / projection operators
 
-This is the main missing ingredient.
+For the `k=1` grad-div diagnostic path,
 
-We need cheap, local operators that map extracted higher-form unknowns into the
-auxiliary scalar spaces used by the HX construction.
+$$
+L_1 \approx K_1 + D_0 M_0^{-1} D_0^T,
+$$
 
-Requirements:
+and
 
-- locality: no dense global fit or dense global solve during setup,
-- sparsity: assembly and apply should stay cheap enough for routine use,
-- compatibility with extraction: the maps must respect the extracted dof layout,
-- boundary-awareness: Dirichlet / free variants must not be mixed up,
-- geometry robustness: the maps should not depend on fragile global tuning,
-- adjoint availability: the transpose action must be usable in the HX apply.
+$$
+P_B = G_0 L_0^{-1} M_0 L_0^{-1} G_0^T.
+$$
 
-Current preferred first prototype:
+This is the key practical point: applying $P_B$ uses **two scalar Laplacian
+inverse applies** (`L_0^{-1}` appears twice), with one scalar mass apply in
+between.
 
-- Greville-point interpolation for the nodal / point-evaluation side,
-- Greville-based histopolation for the integral / moment side,
-- assembled from local one-dimensional ingredients wherever possible.
+In operator pipeline form (input residual $r \in V_1^*$):
 
-Why start there:
+$$
+\begin{aligned}
+y_1 &= G_0^T r, \\
+y_2 &= L_0^{-1} y_1, \\
+y_3 &= M_0 y_2, \\
+y_4 &= L_0^{-1} y_3, \\
+u   &= G_0 y_4.
+\end{aligned}
+$$
 
-- Greville data is already natural for the spline setting,
-- the resulting maps should stay local and structured,
-- and the same machinery is useful outside HX whenever analytic fields need to
-  be injected into the function spaces.
+So the "two scalar Laplacians" statement is literal for this construction:
+the correction cost is dominated by two scalar `k=0` inverse-Laplacian
+preconditioner applies.
 
-Still open within that choice:
+### Derivation Sketch (Why This Form)
 
-- whether the extracted-space maps should be built directly on extracted dofs or
-  pulled through extraction from tensor-product operators,
-- which pieces need strict commuting behavior in the first prototype,
-- and how much of the histopolation side can be expressed by reusing existing
-  one-dimensional quadrature / basis machinery.
+For `k=1`, the difficult component is the exact/gradient subspace generated by
+`G_0`. If a 1-form unknown is written as
 
-The first prototype does not need to be perfect. It does need to be cheap,
-local, and structurally compatible with the existing extracted sequence.
+$$
+u = G_0 \phi,
+$$
 
-### 3.3 Auxiliary scalar solves
+then the grad-div-like contribution acts through scalar operators on `\phi`.
+An auxiliary-space correction therefore maps 1-form residuals down to scalar
+space with `G_0^T`, applies scalar inverse operators there, and maps back with
+`G_0`.
 
-The auxiliary solves should reuse as much of the scalar `k = 0` machinery as
-possible.
+That motivates a generic structure
 
-Tasks:
+$$
+P_B = G_0 X G_0^T,
+$$
 
-- decide which scalar operator each HX term should call,
-- decide which boundary conditions the auxiliary scalar solve should use,
-- decide whether the auxiliary solves are pure Poisson, shifted Poisson, or a
-  closely related scalar Hodge block,
-- and keep the resulting apply free of nested exact inner solves.
+where `X` is a scalar-space operator approximating the inverse action needed on
+the exact component.
 
-The working assumption is that the scalar tensor route is the right backbone
-here, but the exact auxiliary operator per term still needs to be written down
-carefully.
+In the diagnostic construction we used
 
-### 3.4 Smoother and topological pieces
+$$
+X = L_0^{-1} M_0 L_0^{-1},
+$$
 
-HX is not only the auxiliary interpolation. It also needs the higher-form
-native piece that stays in the original space.
+which gives
 
-Tasks:
+$$
+P_B = G_0 L_0^{-1} M_0 L_0^{-1} G_0^T.
+$$
 
-- choose the higher-form smoother / native block correction,
-- decide whether that native piece is Jacobi, mass-based, or another cheap
-  local block,
-- identify which existing incidence / derivative operators already supply the
-  exact-sequence part of the decomposition,
-- and decide whether the overall HX apply should be additive first, with any
-  multiplicative variant deferred until later.
+So the two `L_0^{-1}` factors appear because the scalar-space core is a
+left-right inverse pairing around `M_0`. Operationally: pull residual to
+scalar dual, invert once, apply scalar mass, invert again, push back to
+1-form space.
+
+## Technical Summary Of Why It Stalled (Historical) — And How It Was Unblocked
+
+The gradient/exact-subspace correction idea (`P_B`) is useful in isolation. The
+original postmortem concluded that the missing piece was *"an effective, cheap,
+and stable native-space correction (`P_A`)"* and that the gap was wall-time
+efficiency.
+
+That conclusion was incomplete. The `block_fd` `P_A` was already a serviceable
+curl-subspace preconditioner; the real blocker was that **raw `P_A` and `P_B`
+both acted on the gradient subspace and interfered additively**. Restricting
+`P_A` to the curl complement with the gradient-subspace projection (above)
+unblocked it: projected `P_A + P_B` now beats Jacobi on iterations and wall
+time for `k=1`. The lesson is that subspace *complementarity*, not more bulk
+accuracy or Schur tuning, was the decisive factor.
 
-The initial implementation should prefer the simplest additive composition that
-is easy to inspect and benchmark.
+## Current `P_A` Path In The Debug Script
+
+The canonical script is `scripts/diag_graddiv_subspace_preconditioner.py`.
+Based on the current benchmark sweep, non-performing `P_A` choices were removed
+from the script interface. The retained `P_A` path is `--pa-mode block_fd`.
+
+`block_fd` targets the extracted `k=1` curl-curl stiffness `K_1` and wraps its
+bulk apply in a surgery Schur complement model. It can run with either:
 
-### 3.5 Nullspace and harmonic handling
+- diagonal bulk blocks (`--pa-block-inner-schur` off, default), or
+- inner bulk Schur coupling (`--pa-block-inner-schur` on).
 
-The higher-form route will not be finished without a compatible coarse/nullspace
-story.
+### Shared Outer Structure: Surgery Schur
 
-Tasks:
+Both prototypes use the same surgery/bulk split: extracted `k=1` DOFs are
+partitioned into *surgery* rows `S` (polar axis + periodicity identifications)
+and a large *bulk* block `B` on a tensor-product index grid. `mode3x3_fd`
+builds this split directly with `_build_k1_stiffness_surgery_factors`; `block_fd`
+reuses the already assembled split from `ops.k1_tensor_stiff_precond`. Writing
 
-- make the first HX prototype work on the already safe cases:
-  - `k = 1` with Dirichlet,
-  - `k = 2` without Dirichlet,
-- decide how the auxiliary-space route interacts with the current deflation and
-  harmonic handling,
-- and only then widen to the cases where the nullspace path is still under
-  cleanup.
+$$
+K_1 =
+\begin{pmatrix} K_{SS} & K_{SB} \\ K_{BS} & K_{BB} \end{pmatrix},
+$$
 
-The nullspace work should be staged after the first auxiliary-space prototype,
-but the prototype should be built so it does not block that follow-up.
+the preconditioner uses the exact block factorization
 
-### 3.6 Runtime interface and assembly storage
+$$
+K_1^{-1} =
+\begin{pmatrix} I & 0 \\ -\tilde K_{BB}^{-1} K_{BS} & I \end{pmatrix}
+\begin{pmatrix} \Sigma^{-1} & 0 \\ 0 & \tilde K_{BB}^{-1} \end{pmatrix}
+\begin{pmatrix} I & -K_{SB}\tilde K_{BB}^{-1} \\ 0 & I \end{pmatrix},
+\qquad
+\Sigma = K_{SS} - K_{SB}\,\tilde K_{BB}^{-1}\,K_{BS}.
+$$
+
+The surgery Schur `Σ` is small (its size is mesh-independent), so it is formed
+densely by probing the chosen bulk surrogate `K̃_BB⁻¹`, then inverted with PSD
+clipping: eigenvalues below a relative cutoff (and any non-positive ones) are
+deflated to zero. This guarantees the surgery contribution stays SPD even when
+the bulk surrogate is only approximate.
+
+### Retained Path — `--pa-mode block_fd`: Production Tensor Bulk Inverse
+
+#### Step 1 — Surgery/bulk split
+
+The extracted `k=1` DOF vector is split into two disjoint index sets before any
+solve begins. This split is taken from the already-assembled tensor stiffness
+payload `ops.k1_tensor_stiff_precond`, which stores it as
+`payload.surgery.surgery_indices` and `payload.surgery.bulk_indices`.
+
+- **Surgery indices** (`S`): the polar-axis rows and periodicity-identification
+  rows. These form a small, mesh-resolution-independent set. Their coupling
+  structure is irregular (not tensor-product) and must be handled separately.
+- **Bulk indices** (`B`): all remaining DOFs. Their structure is a true
+  tensor-product grid over `(r, θ, ζ)` mode indices, which makes fast
+  diagonalization applicable.
+
+#### Step 2 — Bulk surrogate inverse $\tilde K_{BB}^{-1}$
+
+`block_fd` does **not** build a new bulk inverse. It directly calls the
+already-assembled production tensor stiffness factors, via either:
+
+- `_apply_k1_bulk_diagonal_preconditioner` (default, `--pa-block-inner-schur`
+  off): the three vector components `r`, `θ_bulk`, `ζ_bulk` are each inverted
+  **independently** by their own fast-diagonalization (FD) block.
+- `_apply_k1_bulk_preconditioner` (`--pa-block-inner-schur` on): an additional
+  inner Schur sweep couples the `r`/`θ_bulk` block against `ζ_bulk`.
+
+**How a single FD block inverse works** (each of the three components):
+
+Each component's bulk block is approximated as a sum of separable Kronecker
+terms. Specifically, `assemble_tensor_stiffness_preconditioner` (in
+`mrx/operators.py`) CP-decomposes the diagonal metric weight fields (`J g^{rr}`,
+`J g^{θθ}`, `J g^{ζζ}`) and builds per-component bulk factors using
+`_build_mass_referenced_tensor_block_factors` (in `mrx/preconditioners.py`).
+That builder does the following at assembly time:
+
+1. For each of the three axes `(r, θ, ζ)`, simultaneously diagonalize the
+   reference mass matrix `M_axis` and the operator contribution `A_axis`
+   (stiffness or identity depending on which axis is "active" for this
+   component). This yields per-axis eigenvectors `fd_V_axis` and eigenvalues
+   `fd_lam_axis` satisfying `V^T M V = I` and `V^T A V = diag(lam)`.
+2. Form the modal denominator tensor as the sum over CP rank terms:
+
+   $$
+   D_{ijk} = \sum_{\text{terms}} d^r_i \cdot d^t_j \cdot d^z_k,
+   \quad d^{axis}_i = \text{diag}(V_{axis}^T A_{axis} V_{axis})
+   $$
+
+   and store the precomputed elementwise reciprocal `fd_inv_denom = 1 / D`.
+
+At **apply time** `_apply_tensor_diagonal_block_preconditioner` does:
+
+$$
+x = V_r \left( V_\theta \left( V_\zeta \cdot
+    \frac{1}{D} \cdot V_\zeta^T \right) V_\theta^T \right) V_r^T \, b,
+$$
+
+implemented as six sequential `jnp.einsum` calls (forward transform on each
+axis, pointwise divide, inverse transform on each axis). This is the entire
+bulk cost per component: three matrix-vector products in 1D plus a pointwise
+scale.
+
+#### Step 3 — Schur complement for the surgery rows
+
+With $\tilde K_{BB}^{-1}$ in hand, the surgery Schur complement
+
+$$
+\Sigma = K_{SS} - K_{SB}\,\tilde K_{BB}^{-1}\,K_{BS}
+$$
+
+is formed **densely** by probing:  for each column $e_i$ of the identity on the
+surgery block, evaluate $K_{SS} e_i - K_{SB}(\tilde K_{BB}^{-1}(K_{BS} e_i))$.
+The resulting small dense matrix is symmetrised and then pseudoinverted with PSD
+clipping: eigenvalues below `pinv_rtol × max_eigenvalue` (and any negative ones)
+are deflated to zero. The stored `schur_inv` is the resulting
+positive-semidefinite pseudoinverse.
+
+This is the step implemented in `_build_k1_block_fd_preconditioner` in the
+script (not in library code).
+
+#### Step 4 — Full preconditioner apply
+
+Given an input vector $v$ partitioned into surgery part $v_S$ and bulk part
+$v_B$, the apply computes:
+
+$$
+y = \tilde K_{BB}^{-1} v_B
+$$
+$$
+z = \Sigma^{-1} (v_S - K_{SB} y)
+$$
+$$
+x_B = y - \tilde K_{BB}^{-1}(K_{BS} z)
+$$
+
+and scatters $(z, x_B)$ back to the full index layout. This costs exactly
+**two** calls to the bulk surrogate inverse per preconditioner apply (step 1
+and the second use in step 3). The Schur solve $\Sigma^{-1}$ is a small dense
+matrix-vector multiply (surgery size is mesh-independent).
+
+#### What the approximation misses
+
+`block_fd` is a stack of approximations to $K_1^{-1}$. From innermost (per-axis)
+outward, the deliberate simplifications are:
+
+1. **Separable-metric (CP) bulk surrogate.** The metric weight fields
+   $J g^{rr}, J g^{\theta\theta}, J g^{\zeta\zeta}$ are non-separable; they are
+   replaced by a finite CP sum of separable products, and only that surrogate is
+   inverted. Empirically rank 1 ≈ rank 3, so the CP residual is **not** the
+   dominant error for this geometry.
+2. **Off-diagonal metric dropped.** Only the three diagonal weights enter; the
+   non-orthogonal-map terms $g^{r\theta}, g^{r\zeta}, g^{\theta\zeta}$ are absent.
+3. **Cross-component (curl) coupling dropped.** The default bulk inverse treats
+   the three vector components as independent scalar problems — the single
+   largest structural approximation. The optional inner Schur recovers only
+   `r/θ_bulk ↔ ζ_bulk` and is far too slow (~13× apply cost) to compete.
+4. **Surgery Schur inherits the bulk error**, and is PSD-clipped: near-null
+   surgery modes are deflated to zero (required for MINRES), not solved.
+5. **The gradient nullspace is not handled by $P_A$ at all.** $K_1$ is singular
+   on gradients, so the FD modal denominators for gradient modes are near zero
+   and raw `block_fd` acts with large, uncontrolled gain there. This is *by
+   design* delegated to $P_B$, and is exactly why the gradient-subspace
+   projection below is needed (see "Why the low modes fail").
+
+In short: `block_fd` is a good preconditioner for the
+**curl-dominated, component-decoupled, separable-metric** part of $K_1$, and
+defers the gradient subspace (to $P_B$), the cross-component coupling, and the
+off-diagonal metric (to nothing).
+
+Properties observed (rank 1 and rank 3):
+
+- `sym(P_A)` is effectively PSD (min eigenvalue at roundoff).
+- Raw `P_A` alone does not converge the saddle solve.
+- CP rank 1 ≈ rank 3 (the FD approximation saturates at rank 1).
+- Inner bulk Schur is not competitive (large runtime increase).
+- The `P_A S` spectrum has a large exact zero block (the gradient nullspace), so
+  `cond_abs` is meaningless; the curl-restricted `cond_curl` is the meaningful
+  quality metric and is flat across rank.
+
+### Gradient-subspace projection (the change that beats Jacobi)
+
+Raw `block_fd` acts with large, uncontrolled gain on the gradient (curl-free)
+subspace, where $K_1$ is singular and $P_B$ is responsible. The exact-projector
+diagnostic quantifies this: **83% of raw `P_A`'s output energy lives in the
+gradient subspace** (`raw_grad_frac_exact mean=0.83`). So raw `P_A` is not a
+curl preconditioner that merely grazes the gradient modes — it is *dominated*
+by gradient output. Adding `P_A + P_B` therefore swamps `P_B`'s careful
+gradient correction with a large, meaningless gradient vector. The fix is to
+restrict `P_A` to the $M_1$-orthogonal complement of the gradient subspace with
+a symmetric projection sandwich (flag `--pa-grad-project`):
+
+$$
+\tilde P_A = (I - \Pi)\,P_A\,(I - \Pi^\ast),
+\qquad
+\Pi = G_0\,L_0^{-1}\,G_0^T M_1,
+\quad
+\Pi^\ast = M_1 G_0\,L_0^{-1}\,G_0^T,
+$$
+
+where $L_0 = G_0^T M_1 G_0$ is the scalar gradient-space operator and
+$L_0^{-1}$ is approximated, matrix-free, by the same rank-1 tensor `k=0`
+Laplacian preconditioner used inside $P_B$. $\Pi$ maps $V_1 \to V_1$ (it acts
+on `P_A`'s primal output); $\Pi^\ast$ maps $V_1^\ast \to V_1^\ast$ (it acts on
+the dual residual input). The two are adjoints, so the sandwich is symmetric
+and the composite keeps `P_A`'s signature $V_1^\ast \to V_1$. Both arms reuse
+existing applies (two incidence applies, one `L_0^{-1}`, one $M_1$), so the
+projection adds only modest cost.
+
+Key point: the projection does **not** need an exact $L_0^{-1}$ to work. With
+the cheap tensor $L_0^{-1}$, $\Pi$ is not perfectly idempotent, yet the
+sandwich still drives the gradient energy of `P_A`'s output down enough to give
+the ~96 iteration / ~267 ms result. The cleanup is partial, not complete: with
+the tensor $L_0^{-1}$ the projected output still retains ~0.44 gradient energy
+(`proj_grad_frac_exact mean=0.44`), since an inexact $L_0^{-1}$ cannot remove
+all of it. A more accurate (but still non-Krylov, matrix-free) gradient-space
+inverse would push that residual down and is a candidate lever for further
+improvement.
+
+#### How to read the overlap metrics (and what *not* to conclude)
+
+The diagnostic prints two families of numbers. They do **not** agree, and the
+gradient-energy fraction is the correct lens:
+
+- **Gradient-energy fraction (exact projector)** — the trustworthy quality
+  signal. Raw `P_A` = 0.83 (the pathology), projected = 0.44 (imperfect
+  cleanup). This tracks the solver outcome: lower gradient energy ⇒ less
+  interference with `P_B` ⇒ fewer iterations.
+- **Gradient-energy fraction (tensor projector)** — the same quantity measured
+  with the inexact tensor $L_0^{-1}$; it reads ~1.09 (above 1, impossible for a
+  true projection) purely because the tensor projector is not idempotent. Use
+  it only to see the artifact, not as a real fraction.
+- **`|M-cosine(P_A, P_B)|`** — *do not over-interpret this.* Intuition says a
+  low cosine means complementary subspaces and a good blend, but the data
+  contradicts that: the projection that **improves** the solver 4× **raises**
+  the cosine (0.077 raw → 0.57 projected). The cosine measures directional
+  alignment of the two correction vectors, which is not the same as harmful
+  subspace overlap, and here it moves the "wrong" way. It is retained for the
+  record but is not a reliable overlap indicator for this problem.
+
+#### Diagnostic vs. preconditioner: two different $L_0$
+
+There is a subtlety worth recording, and it is why the exact-projector fraction
+is trustworthy only after a fix. The overlap diagnostic measures what fraction
+of `P_A`'s output lives in the gradient subspace by applying $\Pi$. For that
+fraction to be a true energy fraction in $[0,1]$, the $L_0$ inverted inside
+$\Pi$ must be **exactly** $G_0^T M_1 G_0$ built from the *same* incidence and
+mass applies the sandwich uses. The library `apply_stiffness(·,0)` is
+matrix-free but uses the **un-extracted core** $M_1$ with extraction only on
+the 0-form side, i.e. a *different* $M_1$ than the `e1`-extracted
+$M_1^\text{dbc}$ in the projector. Feeding that inconsistent $L_0$ to the
+diagnostic produced gradient fractions above 1 (an artifact, not real energy).
+The script's `l0_inv_exact` therefore builds its $L_0$ matvec from the same
+DBC-extracted `apply_incidence_matrix` + `apply_mass_matrix(·,1)` chain as the
+projector, so $\Pi$ is idempotent by construction and the exact-projector
+fraction lands in $[0,1]$ (measured 0.83 raw / 0.44 projected, as above).
+
+### Retired Script Options
+
+The following options were removed from the script interface after repeated
+underperformance or instability in this benchmark workflow:
+
+- legacy/debug `P_A` modes (`cross`, `kinv`, `stiffness_tensor*`),
+- script-only `mode3x3_fd`,
+- multiplicative/symmetric-composition method rows.
+
+The remaining comparison set is additive-only:
+
+- `jacobi (diag)`,
+- `jacobi(K)+P_B`,
+- `P_A + P_B`,
+- `jacobi + P_A + P_B`,
+- plus `alpha*jacobi(diag) + P_A + P_B` via `--jacobi-scale-sweep`.
+
+### Interpreting Iteration Counts Correctly
+
+When a method does not reach the target residual, its iteration count is **not
+meaningful**. Only converged methods should be compared on iterations or wall
+time.
+
+### Current Takeaway
+
+- The retained `block_fd` variant is numerically PSD in this harness.
+- **With the gradient-subspace projection (`--pa-grad-project`), `P_A + P_B`
+  beats `jacobi (diag)` on both iterations (~96 vs ~386) and wall time (~267 ms
+  vs ~290 ms).**
+- A more principled experimental bulk model,
+  `--pa-block-vector-fd-true-basis`, can improve further to ~84 iterations and
+  ~230 ms when stabilized with per-mode scalar fallback on ill-conditioned
+  coupled symbols.
+- At `ns=(7,14,5)` and `ns=(7,14,8)`, the true-basis vector-FD model remains
+  better than projected baseline block_fd on iterations and `cond_curl`, but
+  still loses wall-time to Jacobi. Current blocker is `P_A` apply cost scaling,
+  not loss of convergence.
+- Without the projection, raw `P_A + P_B` is slower than Jacobi; the projection
+  is what makes the difference, by stopping `P_A` and `P_B` from interfering on
+  the gradient subspace.
+- Adding Jacobi on top of the projected blend does not help: the alpha sweep
+  has its minimum at `α=0`.
+- CP rank is neutral (rank 1 = rank 3); the FD bulk approximation saturates at
+  rank 1. The remaining lever is not CP rank but **vector coupling quality** in
+  the curl bulk model.
+- Open items: confirm on other geometries/resolutions, retry `k=2,3`, and
+  decide whether the projected `P_A + P_B` should be promoted out of the
+  diagnostic harness into a production path.
+
+### Why the low modes fail: the k=0 ↔ k=1 nullspace story
+
+The decisive insight from the spectrum/leakage diagnostics is that the few
+catastrophic modes are **not** a coordinate or axis defect — they are the exact
+cohomology kernel of curl-curl, surfacing in the radial component.
+
+**The singular symbols are the gradient kernel.** `K_1 = curl^T curl`
+annihilates every gradient (`curl∘grad = 0`), so the near-`1e-28` eigenvalues
+are a true nullspace (dimension `n0_dbc`), not ill-conditioning. The
+min-eigenvector of each flagged 3x3 symbol is consistently `[1,0,0]` because
+(a) the block is nearly diagonal there (off-diagonal ~`1e-15`) and (b) the
+near-zero eigenvalue sits in the radial slot. Low-`(m,n)` gradients
+`grad φ ≈ ∂_r φ · r̂` are radial-dominant (the θ/ζ parts scale with the angular
+wavenumber), so the lowest gradient modes live almost entirely in the radial
+component. Surgery does **not** — and should not — remove this: the kernel is a
+property of curl-curl throughout the domain, not a `1/r` axis artifact.
+
+**Why k=0 pinv "just works" but k=1 raw `P_S` does not.** Both operators are
+singular (k=0 has the constant; k=1 has the whole gradient subspace). The
+difference is *alignment with the inversion basis*:
+
+| | k=0 (scalar) | k=1 (vector) |
+| --- | --- | --- |
+| nullspace | the constant: **one** separable tensor mode | gradient subspace: dim `n0_dbc`, **skew** to the blocks |
+| inversion basis | fast-diag tensor modes | same-mode 3x3 blocks |
+| alignment | kernel **is** a basis vector ⇒ pinv zeroes it exactly | ~48% modal leakage ⇒ kernel is off-block |
+| result | exact surgery | block-local cap cannot emulate the projection |
+
+A per-block pinv/regularization is the faithful k=1 analogue of "pinv the
+constant" only if the kernel were block-aligned. The 48% leakage says it is not,
+which is why `raw P_S + P_B` corrupts `P_B`'s clean cohomology treatment (4/4
+fails) while the projector `C P_S C^*` — which deletes the gradient subspace
+*globally* before `P_S` sees it — is the only faithful pseudoinverse.
+
+**The plateau is block error, not the kernel.** Projected `jacobi(S)` (same
+projector `C`) converges cleanly to ~`6e-11`, while projected `P_S` stalls near
+~`2e-10` despite far fewer iterations. Identical projector, different inner
+model ⇒ the residual stagnation is the block approximation error (the leakage),
+not the projection or the nullspace.
+
+**The model error is radial mode-coupling ("banded mode").** The same-mode 3x3
+symbol assumes `K_1`, in the per-component fast-diag basis, only connects mode
+`m` to mode `m`. But curl contains `∂_r`, which is **not** diagonal in the
+radial fast-diag basis — it couples neighboring radial indices. The per-axis
+diagnostic confirms this quantitatively: on a symmetry-breaking
+`rotating_ellipse` (κ=1.2, nfp=3) the off-diagonal modal energy is
+`radial=9.69e-01 poloidal=2.89e-02 toroidal=1.14e-03 mixed=9.29e-04` — ~97%
+radial even when ζ-symmetry is broken. So the band must extend in **radial**
+only; θ/ζ stay (approximately) diagonal.
+
+**The implemented fix (`--pa-block-radial-banded`).** Because
+`TYPES = (clamped, periodic, periodic)` keeps the poloidal/toroidal mode
+*counts* identical across the three vector components (periodic derivative
+spaces have the same dimension; only the radial count differs), the angular
+index `(i_t, i_z)` is a common label. The builder therefore assembles, per
+angular mode, the **dense block `(V^T K_1 V)` over the joint
+`(component, radial mode)` space** — size `(R0+R1+R2)×(R0+R1+R2)` — by probing
+the true extracted bulk operator one modal unit at a time, then SPD-clips and
+inverts each. This is **exact** in radial + cross-component coupling and
+block-diagonal only in the measured ~3% angular leakage; it subsumes the
+same-mode 3x3 (which is the `R*=1` radial truncation) and the "tridiagonal
+radial" idea (the dense radial block is cheap since `R* ≈ ns_r`). Build cost is
+`N_bulk` true-operator probes (same order as the true-basis path); apply is a
+batched `(n_ang, Rsum, Rsum)` solve in the modal coordinates. The builder
+prints `radial-banded angular leakage` — the residual energy outside the
+retained angular block — which should land near the measured ~3% (vs the 0.48
+mean leakage of the 3x3) as the cheap success signal before MINRES.
+
+**What this means for k=0.** The same construction exists for the scalar
+Laplacian `L_0`, but there it is a *luxury*, not a fix, for two structural
+reasons:
+- **No cross-component coupling.** `L_0` is scalar (one field), so the entire
+  3x3 dimension collapses — the angular block is just `R_radial × R_radial`.
+  Only the radial mode-coupling survives; the dominant defect at k=1 (the
+  vector coupling next to a huge gradient kernel) has no k=0 analogue.
+- **No near-kernel for the coupling to interact with.** `L_0` is coercive (SPD
+  with a spectral gap); its only kernel is the **constant**, a single separable
+  tensor mode that the diagonal `fd_inv_denom` + pinv already handles exactly.
+  The radial mode-coupling is a small perturbation of a *dominant* diagonal, so
+  it shifts eigenvalues without creating near-singular blocks and k=0 converges
+  in a handful of iterations. At k=1 the identical relative coupling is
+  catastrophic precisely because it sits next to the `~0` gradient eigenvalues,
+  where the inverse amplifies any aliasing of the near-null radial modes.
+
+So k=0 "just works" not because it lacks radial mode-coupling — it has it — but
+because that coupling never meets a near-kernel. The radial-banded block is the
+right *k=1* fix and only an optional accuracy knob at k=0 (relevant only if a
+badly distorted geometry made the diagonal FD denom a poor preconditioner).
+
+**Per-axis leakage diagnostic.** Whether the *angular* directions also leak is
+measured rather than assumed: the FD builder buckets the true operator's
+off-diagonal modal energy by axis (radial / poloidal / toroidal / mixed) and
+prints it. The axisymmetric `toroid_map` cannot test this (κ only elongates the
+cross-section; it stays ζ-independent), so use `--geometry rotating_ellipse`
+(symmetry-breaking `nu(ζ)`) to probe whether the band must extend into θ/ζ.
+`--leakage-only` stops after assembly for a cheap measurement.
+
+### Stabilization currently in place
+
+The radial-banded block (`--pa-block-radial-banded`) is the root-cause fix.
+Until it is validated in MINRES, the same-mode 3x3 path keeps its guard: coupled
+solves run only where `min_eig(3x3) > cutoff` (cutoff on the PSD-clipping
+relative scale), else a mode-local, symmetry-preserving scalar fallback. The
+flagged set is a small low-index family — modes `0..3` at `ns=(6,12,4)`,
+`0..4` at higher grids, **not** an `n_z` prefix — so forcing
+`--pa-block-vector-fd-low-mode-exclude n_z` over-regularizes. This guard removes
+the outlier collapse (`cond_curl` ~`4e5` → controlled) and gives the ~84 it /
+~230 ms result.
+
+### Next steps
+
+1. **Validate `--pa-block-radial-banded` in MINRES** (root-cause fix, now
+  implemented); confirm `radial-banded angular leakage` drops to the measured
+  ~3% (vs 0.48 mean for the 3x3) and that iteration count / residual floor
+  improve over `P_A + P_B`.
+2. **Confirm radial-only suffices** — the `rotating_ellipse` leakage already
+  says yes (poloidal 2.9%, toroidal 0.1%); revisit only if a more distorted
+  geometry pushes the angular leakage up.
+3. **Keep mode-local fallback** as the safety net meanwhile; track flagged mode
+  identities across geometries to confirm the same structural family recurs.
+4. **Profile `P_A` apply phases** (`--pa-profile`, prints `bulk1/schur/bulk2`)
+  before further algebra changes.
+5. **Promote only after robustness checks** across geometry/resolution.
+
+### Re-running retained cases
+
+```bash
+# CURRENT BEST: gradient-projected P_A + P_B vs Jacobi (k=1)
+# (method key "P.T P_S P + P_B" = projected P_A + P_B; P_S is P_A here)
+python scripts/diag_graddiv_subspace_preconditioner.py \
+  --pa-grad-project --system saddle \
+  --methods "jacobi (diag),P.T P_S P + P_B"
+
+# ROOT-CAUSE FIX: radial-banded bulk (full radial+component per angular mode).
+# Prints "radial-banded angular leakage" (~3% target vs 0.48 for the 3x3).
+python scripts/diag_graddiv_subspace_preconditioner.py \
+  --pa-grad-project --pa-block-radial-banded --system saddle \
+  --methods "jacobi (diag),P.T P_S P + P_B" \
+  --pa-stiffness-spectrum active
+
+# Cheap per-axis leakage measurement on a symmetry-breaking geometry
+# (stops after P_A assembly; no property/overlap/spectrum/MINRES work)
+python scripts/diag_graddiv_subspace_preconditioner.py \
+  --geometry rotating_ellipse --kappa 1.2 --nfp 3 \
+  --pa-block-vector-fd --leakage-only --system saddle
+
+# Experimental: true-basis vector-FD coupled bulk with per-mode fallback
+python scripts/diag_graddiv_subspace_preconditioner.py \
+  --pa-grad-project --pa-block-vector-fd-true-basis --system saddle \
+  --methods "jacobi (diag),P.T P_S P + P_B" \
+  --pa-stiffness-spectrum active
+
+# Same with compact diagnostics and P_A phase profiling
+python scripts/diag_graddiv_subspace_preconditioner.py \
+  --pa-grad-project --pa-block-vector-fd-true-basis --system saddle \
+  --methods "jacobi (diag),P.T P_S P + P_B" \
+  --pa-stiffness-spectrum active \
+  --compact-output --pa-profile
+
+# Probe low-index mode diagnostics on a slightly higher resolution
+python scripts/diag_graddiv_subspace_preconditioner.py \
+  --ns 7,14,8 \
+  --pa-grad-project --pa-block-vector-fd-true-basis --system saddle \
+  --methods "jacobi (diag),P.T P_S P + P_B" \
+  --pa-stiffness-spectrum active --pa-block-vector-fd-report-k 16
+
+# block_fd at tensor rank 3 (default bulk model, no projection)
+python scripts/diag_graddiv_subspace_preconditioner.py \
+  --pa-mode block_fd --rank 3 \
+  --methods "jacobi (diag),jacobi(K)+P_B,raw P_S + P_B,jacobi + raw P_S + P_B"
+
+# optional inner bulk Schur in block_fd
+python scripts/diag_graddiv_subspace_preconditioner.py \
+  --pa-mode block_fd --pa-block-inner-schur --rank 3 \
+  --methods "jacobi (diag),jacobi(K)+P_B,raw P_S + P_B,jacobi + raw P_S + P_B"
+
+# alpha sweep with single-compile runtime parameter path
+python scripts/diag_graddiv_subspace_preconditioner.py \
+  --pa-mode block_fd --rank 3 \
+  --methods "jacobi (diag),jacobi(K)+P_B,P_A + P_B,jacobi + P_A + P_B" \
+  --jacobi-scale-sweep "0,0.5,1,2,4"
+```
+
+Note on spectrum diagnostics: `--pa-stiffness-spectrum all` includes an
+`active:<pa-mode>` row in addition to `jacobi` and `dense pinv`, and the table
+now reports `cond_curl` (curl-subspace-restricted condition number) plus `nnz`
+(count of nonzero modes) alongside the nullspace-polluted `cond_abs`. The
+curl/nullspace split cutoff is set by `--pa-stiffness-spectrum-curl-cutoff`.
+
+## Current Policy
+
+- Production higher-form solves stay on the existing saddle MINRES path for now;
+  the projected `P_A + P_B` win is demonstrated in the diagnostic harness and
+  has not yet been promoted to a production code path.
+- Keep Jacobi Schur outer as the reliability baseline until the projected blend
+  is validated on more geometries/resolutions and for `k=2,3`.
+- The gradient-subspace-projected `P_A + P_B` (`--pa-grad-project`) is the
+  active, most promising direction — no longer archived. Next steps: confirm
+  robustness across cases, then decide on promotion.
+
+If the projected blend is promoted, define acceptance criteria up front (clear
+wall-time win across the target problem family, stable iteration behavior, and
+clean integration with nullspace handling).
 
-Once the ingredients exist, they need a clean place in the operator stack.
-
-Tasks:
-
-- decide whether HX should be a new user-facing preconditioner spec or an
-  extension of the current higher-form saddle spec,
-- decide which assembled interpolation data belongs on `SequenceOperators`,
-- keep setup separate from benchmark timing,
-- and keep the actual apply compatible with the current JAX / matrix-free
-  solver flow.
-
-The first version should optimize for clarity of structure rather than maximum
-API compression.
-
-## 4. Suggested Order Of Work
-
-1. Write the degree-by-degree auxiliary-space table.
-2. Prototype one Greville-based interpolation / histopolation operator on the
-  smallest useful case.
-3. Check basic structural properties of that map:
-   - sparsity,
-   - locality,
-   - correct shape,
-   - sensible behavior under the chosen boundary conditions.
-4. Wire one auxiliary scalar solve through that map into an HX-style additive
-   apply for the first target case.
-5. Benchmark that prototype against the current transition baselines.
-6. Extend the same structure to the next higher-form case.
-7. Revisit nullspace / harmonic handling once the auxiliary-space route exists
-   end-to-end.
-
-The preferred first target is the smallest harmonic-safe higher-form case that
-already behaves well enough for repeated experiments.
-
-## 5. First Milestones
-
-### Milestone A: Paper design
-
-Deliverables:
-
-- a degree-by-degree auxiliary-space table,
-- a decision to start from Greville-point interpolation / histopolation,
-- a decision on the first scalar auxiliary operator to reuse,
-- and a clear statement of the first benchmark case.
-
-### Milestone B: First local map prototype
-
-Deliverables:
-
-- one assembled Greville-based local interpolation / projection operator,
-- shape and sparsity checks,
-- and one small diagnostic showing that the map behaves sensibly on the chosen
-  test case.
-
-### Milestone C: First HX apply
-
-Deliverables:
-
-- one higher-form auxiliary-space preconditioner apply,
-- one benchmark comparison against the current Schur-based transition
-  baselines,
-- and one short note on whether the scalar auxiliary solve is carrying the
-  expected part of the work.
-
-### Milestone D: Nullspace integration
-
-Deliverables:
-
-- the first compatible nullspace / harmonic handling pass,
-- and widened benchmarks beyond the initial safe case.
-
-## 6. Validation Checklist
-
-The HX route should not be called usable until it has all of the following.
-
-- Local interpolation operators have explicit sparsity and setup-cost checks.
-- The transpose actions used in the apply are tested, not assumed.
-- The first prototype is benchmarked against the current transition baselines.
-- The preconditioned higher-form operator is checked on the deflated positive
-  subspace, not only by raw iteration counts.
-- Nullspace-sensitive cases are tested separately from harmonic-safe cases.
-- Setup time and apply time are reported separately in benchmarks.
-
-## 7. Open Design Questions
-
-- What is the cleanest auxiliary scalar space for each of `k = 1, 2, 3` in the
-  extracted formulation used here?
-- Should the first Greville-based map be defined directly on extracted dofs, or
-  built first on a tensor-product space and then pulled through extraction?
-- Which higher-form native smoother is cheap enough to be routine, but still
-  strong enough that the auxiliary scalar pieces do not have to do everything?
-- Does `k = 3` need a distinct HX layer, or does it mostly reuse the same
-  auxiliary infrastructure with a smaller specialization?
-- Which boundary-condition combinations should be declared in-scope for the
-  first full implementation, beyond the current harmonic-safe cases?
-- How much of the analytic-function-to-space interpolation utility should be
-  designed now, rather than as an HX-only special case?
-
-## 8. Non-Goals For The First Draft
-
-To keep scope under control, the first HX implementation should not try to do
-all of the following at once.
-
-- It should not try to solve the full nullspace / harmonic problem first.
-- It should not rely on expensive exact inner solves.
-- It should not begin with a heavily optimized multiplicative variant.
-- It should not try to replace the scalar tensor route.
-- It should not treat the current Schur benchmark tuning as the final
-  production design.

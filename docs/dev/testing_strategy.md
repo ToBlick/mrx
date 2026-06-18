@@ -26,7 +26,7 @@ Most tests should use the rotating ellipse.
 
 - The rotating ellipse is genuinely 3D.
 - It is therefore the right default geometry for checking operator identities,
-  metric-dependent assembly, Hodge-Laplacian structure, projections, and
+  metric-dependent assembly, Laplacian structure, projections, and
   preconditioners.
 
 Some tests should use the torus.

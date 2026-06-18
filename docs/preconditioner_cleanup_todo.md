@@ -158,15 +158,9 @@ edge case of the tiny-bulk outer Schur approximation rather than the main
 blocker for this task.
 
 The active higher-form strategy is no longer to keep tuning standalone
-`k=1` / `k=2` stiffness blocks or Schur-outers as the end state. The mixed
-benchmark work was useful, but the chosen direction for `k = 1, 2, 3` is now a
-Hiptmair-Xu auxiliary-space preconditioner:
-
-- keep the current saddle-point MINRES path as the outer solve,
-- use scalar Poisson-style preconditioners as the cheap auxiliary solves,
-- and build the missing bridge with cheap, local interpolation operators from
-      the `H(curl)` and `H(div)` spaces into the appropriate auxiliary scalar
-      spaces.
+`k=1` / `k=2` stiffness blocks or Schur-outers as the end state. HX/AMS
+auxiliary-space experiments were explored and are now archived (see
+`docs/hiptmair_xu_preconditioner.md`).
 
 In that light, the recent saddle-point benchmark split should be read as a
 transition diagnostic, not as the final higher-form design:
@@ -211,21 +205,10 @@ Recent benchmark state:
 
 ### Next session pickup
 
-1. **Design the local Hiptmair-Xu interpolation operators.** Build cheap,
-      local interpolation/projection operators that map the extracted
-      `H(curl)` and `H(div)` unknowns into the auxiliary scalar spaces needed
-      for Poisson-style preconditioning. Current preferred first prototype:
-      Greville-point interpolation / histopolation, since that same machinery
-      should also help with injecting analytic functions into the discrete
-      spaces.
-2. **Hook the scalar auxiliary solves into a higher-form Hiptmair-Xu apply.**
-      Reuse the scalar tensor Poisson/Hodge machinery where it is appropriate,
-      but keep the whole higher-form route free of expensive nested exact
-      solves.
-3. **Revisit nullspace computation once the auxiliary-space route is in hand.**
-      The next target after the Hiptmair-Xu ingredients are assembled is still
-      to clean up and validate the nullspace / harmonic computation path
-      against the updated operator stack.
+1. Treat HX/AMS content as archived diagnostics unless explicitly re-opened.
+2. Keep production higher-form solves on the saddle MINRES + Jacobi Schur
+   baseline while other cleanup items are completed.
+3. Continue nullspace and regression cleanup independent of HX.
 4. **Run focused regression tests after the recent mass/stiffness/saddle changes.**
    ```
    pytest test/test_operators.py -k "tensor or mass_preconditioner or k2_schur" -x --tb=short
@@ -244,10 +227,9 @@ Recent benchmark state:
       the iteration counts stayed flat. A small Ritz-value or condition-number
       diagnostic on the preconditioned operator would explain whether the extra
       terms are simply too spectrally weak after diagonal truncation.
-9. **Use the current saddle benchmarks as transition diagnostics only.** Keep
-      the exact-Jacobi and tensor+Chebyshev mixed runs around as reference
-      lines while the Hiptmair-Xu auxiliary-space route is being assembled, but
-      do not treat Schur-outer tuning as the final destination.
+9. **Use the current saddle benchmarks as diagnostics only.** Keep
+      exact-Jacobi and tensor+Chebyshev mixed runs as reference lines; treat HX
+      experiments as archived.
 10. Then proceed with the dead-code list below.
 
 ## Dead Code To Remove
@@ -297,11 +279,11 @@ Recent benchmark state:
       now explicit: mass defaults to rank `2` for all four degrees, while
       stiffness stays at rank `1`.
 - [x] **Krylov-in-Krylov in `mrx/relaxation.py:apply_diffusion`.** No longer exists as a method; `apply_inverse_mass_plus_eps_laplace_matrix` on `DeRhamSequence` is the correct replacement.
-      builds `apply_A(x) = M_2 x + η · seq.apply_hodge_laplacian(x, 2, ...)`
+      builds `apply_A(x) = M_2 x + η · seq.apply_laplacian(x, 2, ...)`
       and wraps it in an outer `solve_singular_cg`, while
-      `apply_hodge_laplacian` for `k ≥ 1` runs an inner CG to full
+      `apply_laplacian` for `k ≥ 1` runs an inner CG to full
       tolerance. Replace with `apply_inverse_mass_plus_eps_laplace_matrix`
-      or use `apply_hodge_laplacian_approx`.
+      or use `apply_laplacian_approx`.
 - [ ] **`fit_strategy` is still user-visible but inactive in the assembled
       mass block path.** `build_mass_tensor_preconditioner` still stores and
       threads it through, but `_build_diagonal_tensor_block_factors` now
@@ -310,13 +292,9 @@ Recent benchmark state:
 - [ ] **Confusing API:** `build_mass_tensor_preconditioner(full_matrix,
       ...)` immediately does `del full_matrix`. Drop the parameter and
       update `assemble_tensor_mass_preconditioner` callers.
-- [ ] **Higher-form strategy has outgrown Schur-outer tuning.** The current
-      saddle code default is still `schur.outer = jacobi`, and the recent mixed
-      benchmark compares that against tensor + Chebyshev, but the longer-term
-      plan is now a Hiptmair-Xu auxiliary-space preconditioner for
-      `k = 1, 2, 3`. Keep the Schur-outer variants only as transition
-      baselines while the interpolation operators and auxiliary scalar solves
-      are built.
+- [ ] **Higher-form strategy note cleanup.** The current saddle code default is
+      still `schur.outer = jacobi`; HX/AMS is now archived and should not be
+      described as the active next step in production docs.
 - [ ] **Possible future k=0 bulk Chebyshev revisit.** A bulk-local Chebyshev
       correction using the true bulk operator and the rank-1 tensor inverse as
       smoother is still conceptually clean, but earlier experiments of this
@@ -326,12 +304,12 @@ Recent benchmark state:
       still calls `assemble_tensor_hodge_preconditioner` even though the
       production scalar solve reads `k0_tensor_hodge_precond` instead.
       Real GPU memory is still being spent on the old payload.
-- [ ] **`apply_hodge_laplacian` docstring openly says "inner `M_{k-1}^{-1}`
+- [ ] **`apply_laplacian` docstring openly says "inner `M_{k-1}^{-1}`
       solves use CG ... to full solver tolerance".** Either rename it
-      (`apply_hodge_laplacian_exact`) and mark not-for-Krylov, or
+      (`apply_laplacian_exact`) and mark not-for-Krylov, or
       replace its dangerous call sites
       (`apply_mass_plus_eps_laplace_matrix`,
-      `relaxation.apply_diffusion`) with `apply_hodge_laplacian_approx`.
+      `relaxation.apply_diffusion`) with `apply_laplacian_approx`.
       The `mrx/nullspace.py` uses are residual-norm probes and fine.
 - [ ] **Rank knob duplication.** `MassPreconditionerSpec` still carries a
       top-level `rank` plus per-degree `k{0,1,2,3}_rank`, resolved by

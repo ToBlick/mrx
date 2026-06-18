@@ -142,12 +142,12 @@ def compute_error(n: int, p: int, epsilon: float,
     timings["load_rhs"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    u_hat, info = seq.apply_inverse_hodge_laplacian(rhs, 3, dirichlet=False, return_info=True)
+    u_hat, info = seq.apply_inverse_laplacian(rhs, 3, dirichlet=False, return_info=True)
     jax.block_until_ready(u_hat)
     timings["solve_compile"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    u_hat, info = seq.apply_inverse_hodge_laplacian(rhs, 3, dirichlet=False, return_info=True)
+    u_hat, info = seq.apply_inverse_laplacian(rhs, 3, dirichlet=False, return_info=True)
     jax.block_until_ready(u_hat)
     timings["solve_exec"] = time.perf_counter() - t0
 

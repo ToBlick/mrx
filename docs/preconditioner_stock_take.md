@@ -72,9 +72,9 @@ Notes:
 | Stiffness / `k=0` Hodge fallback rank | `1` |
 | `k=1` / `k=2` mass `inner_schur` toggle | `False` (off) for wall-clock |
 
-The strategic plan for the saddle outer is **Hiptmair–Xu auxiliary-space**
-([docs/hiptmair_xu_preconditioner.md](hiptmair_xu_preconditioner.md)), not
-more tuning of polynomial Schur outers.
+HX/AMS auxiliary-space work is now treated as archived diagnostics
+([docs/hiptmair_xu_preconditioner.md](hiptmair_xu_preconditioner.md)).
+For production reliability, keep Schur-outer Jacobi as the baseline.
 
 ---
 
@@ -166,7 +166,7 @@ In [scripts/](../scripts):
   production path for `k=1,2,3` (those go through saddle MINRES). Useful as
   a diagnostic only.
 - [benchmark_preconditioners.py](../scripts/benchmark_preconditioners.py) —
-  older Hodge-Laplacian smoke benchmark on a torus. Largely superseded by
+  older Laplacian smoke benchmark on a torus. Largely superseded by
   the three above. Candidate for retirement.
 - [benchmark_mass_k0_rank_sweep.py](../scripts/benchmark_mass_k0_rank_sweep.py),
   [benchmark_richardson_vs_modal.py](../scripts/benchmark_richardson_vs_modal.py),
@@ -196,12 +196,12 @@ the "rhs smoothness" axis** of the requested study.
 | [docs/preconditioner_primer.md](preconditioner_primer.md) | **Keep** as the canonical production overview. |
 | [docs/mass_preconditioners.md](mass_preconditioners.md) | **Compact**. §1–§4 are still current; §5 (analytic-priors / Richardson plan), §6 (eps sweep), §7 (final) are speculation/historical and can move under `docs/dev/`. |
 | [docs/preconditioner_cleanup_todo.md](preconditioner_cleanup_todo.md) | **Compact**. Most of the long status preamble duplicates `preconditioner_primer.md`; only the dead-code list and the small "Oddities" list are unique. |
-| [docs/hiptmair_xu_preconditioner.md](hiptmair_xu_preconditioner.md) | Keep — forward-looking plan for `k≥1`. |
+| [docs/hiptmair_xu_preconditioner.md](hiptmair_xu_preconditioner.md) | Keep — consolidated HX/AMS postmortem and archive. |
 | [docs/dev/iterative_solver_primer.md](dev/iterative_solver_primer.md) | **Keep** but de-duplicate against `preconditioner_primer.md` §1. Sections 4–6 already overlap heavily. |
 | [docs/dev/tensor_preconditioner_primer.md](dev/tensor_preconditioner_primer.md) | Keep — the only narrow note on the tensor mechanism. |
 | [docs/dev/laplacian_preconditioner_notes.md](dev/laplacian_preconditioner_notes.md) | Keep, narrow scope. |
 | [docs/dev/operator_aware_scalar_stiffness_fit.md](dev/operator_aware_scalar_stiffness_fit.md) | **Stale** — describes the prior-based scalar `k=0` builder that has since been removed and replaced by the FD-based path. Move to a `docs/dev/archive/` or drop. |
-| [docs/dev/higher_form_hodge_tensor_plan.md](dev/higher_form_hodge_tensor_plan.md) | **Stale relative to HX plan** — the active higher-form direction is Hiptmair–Xu, not more standalone-stiffness tuning. Mark as historical or merge into HX note. |
+| [docs/dev/higher_form_hodge_tensor_plan.md](dev/higher_form_hodge_tensor_plan.md) | Historical diagnostic note; not active production direction. |
 | [docs/dev/surgery_schur_refactor_plan.md](dev/surgery_schur_refactor_plan.md) | Likely landed; review and drop if so. |
 | [docs/dev/tensor_debug_findings.md](dev/tensor_debug_findings.md) | Keep as a debug log. |
 | [docs/dev/benchmark_artifact_diagnostics_report.md](dev/benchmark_artifact_diagnostics_report.md) | Keep, narrow. |
@@ -255,8 +255,8 @@ From the cleanup TODO plus what was visible during this stock-take:
    per-degree map.
 
 7. **Krylov-in-Krylov hazard:** `relaxation.apply_diffusion` calls
-   `apply_hodge_laplacian` (which itself runs an inner CG). Switch to
-   `apply_hodge_laplacian_approx` / `apply_inverse_mass_plus_eps_laplace_matrix`.
+   `apply_laplacian` (which itself runs an inner CG). Switch to
+   `apply_laplacian_approx` / `apply_inverse_mass_plus_eps_laplace_matrix`.
 
 8. **Unused public:** `apply_mass_rtzblock_preconditioner` in
    `mrx/preconditioners.py`.
@@ -347,7 +347,7 @@ existing scripts without forking the solve paths.
   for scalar `k=0` Hodge (rank 1).
 - For `k≥1` the production is saddle MINRES with
   `(mass=tensor, schur.inner=tensor, schur.outer=jacobi)`. The strategic
-  successor is Hiptmair–Xu, not more polynomial-outer tuning.
+  production reliability baseline remains Schur-outer Jacobi.
 - Hyperparameters per kind are listed in §3.
 - The requested ablation needs **only ~3 small flag additions** to the
   existing benchmark scripts plus a thin sweep driver — no new solve
@@ -365,7 +365,7 @@ existing scripts without forking the solve paths.
 Toroidal domain, `epsilon=1/3`, `ns=(n, 2n, n)`, `cg_tol=1e-12`.
 Error = relative physical L² norm.
 
-### k=0 DBC (tensor Hodge-Laplacian preconditioner)
+### k=0 DBC (tensor Laplacian preconditioner)
 
 | p | n=8 | n=12 | n=16 | rate |
 |---|-----|------|------|------|
@@ -385,4 +385,5 @@ Iteration counts ~10–13, n- and p-independent. Rates = p+1. ✓
 | 2 | 3 | 4.83e-02 (66)  | 1.80e-02 (112) | 2.4 |
 
 Rates = p+1. ✓  Iteration counts ~10–20× higher than k=0 — Schur Jacobi is
-weak.  Hiptmair–Xu (auxiliary space) is the planned successor preconditioner.
+weak.  HX/AMS auxiliary-space attempts are archived; Jacobi remains the
+practical baseline.

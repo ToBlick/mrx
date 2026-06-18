@@ -22,7 +22,7 @@ import numpy as np
 from jax.scipy.interpolate import RegularGridInterpolator
 
 import mrx
-from mrx.assembly import (assemble_dense_hodge_laplacian,
+from mrx.assembly import (assemble_dense_laplacian,
                           assemble_dense_mass_matrix)
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
@@ -127,13 +127,13 @@ print(f"Nullspace computation done in {time.time() - t0:.1f}s")
 # %%
 # Check nullspaces
 print(
-    f"0 (no dbc): {jnp.sqrt(seq.null_0[0] @ seq.apply_hodge_laplacian(seq.null_0[0], 0, dirichlet=False))}")
+    f"0 (no dbc): {jnp.sqrt(seq.null_0[0] @ seq.apply_laplacian(seq.null_0[0], 0, dirichlet=False))}")
 print(
-    f"1 (no dbc): {jnp.sqrt(seq.null_1[0] @ seq.apply_hodge_laplacian(seq.null_1[0], 1, dirichlet=False))}")
+    f"1 (no dbc): {jnp.sqrt(seq.null_1[0] @ seq.apply_laplacian(seq.null_1[0], 1, dirichlet=False))}")
 print(
-    f"2 (dbc): {jnp.sqrt(seq.null_2_dbc[0] @ seq.apply_hodge_laplacian(seq.null_2_dbc[0], 2, dirichlet=True))}")
+    f"2 (dbc): {jnp.sqrt(seq.null_2_dbc[0] @ seq.apply_laplacian(seq.null_2_dbc[0], 2, dirichlet=True))}")
 print(
-    f"3 (dbc): {jnp.sqrt(seq.null_3_dbc[0] @ seq.apply_hodge_laplacian(seq.null_3_dbc[0], 3, dirichlet=True))}")
+    f"3 (dbc): {jnp.sqrt(seq.null_3_dbc[0] @ seq.apply_laplacian(seq.null_3_dbc[0], 3, dirichlet=True))}")
 
 
 # %%
@@ -233,13 +233,13 @@ print(f"Clebsch B projection done in {time.time() - t0:.1f}s")
 
 # %%
 # Regularity coeff.
-reg_coeff = B_dof_0 @ seq.apply_hodge_laplacian(
+reg_coeff = B_dof_0 @ seq.apply_laplacian(
     B_dof_0, 2) / seq.l2_norm_sq(B_dof_0, 2)
 print(f"Regularity coefficient: {reg_coeff:.2e}")
 # %%
 # for _ in range(5):
 #     B_dof_0 = apply_diffusion(B_dof_0, seq, eta=1e-4)
-#     reg_coeff = B_dof_0 @ seq.apply_hodge_laplacian(B_dof_0, 2) / seq.l2_norm_sq(B_dof_0, 2)
+#     reg_coeff = B_dof_0 @ seq.apply_laplacian(B_dof_0, 2) / seq.l2_norm_sq(B_dof_0, 2)
 #     print(f"Regularity coefficient: {reg_coeff:.2e}")
 
 # %%
@@ -451,7 +451,7 @@ for k in range(4):
 
 # %%
 for k in range(4):
-    M = assemble_dense_hodge_laplacian(seq, k)
+    M = assemble_dense_laplacian(seq, k)
     operators = seq.get_operators()
     hodge_diaginv_dbc = getattr(operators, f"dd{k}_sp_diaginv_dbc")
     match k:

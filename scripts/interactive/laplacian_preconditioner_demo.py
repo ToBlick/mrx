@@ -42,10 +42,10 @@ from mrx.operators import (
     apply_stiffness,
     assemble_tensor_hodge_preconditioner,
     assemble_tensor_mass_preconditioner,
-    assemble_hodge_operators,
+    assemble_laplacian_operators,
     assemble_incidence_operators,
     assemble_mass_operators,
-    dense_hodge_laplacian,
+    dense_laplacian,
 )
 from mrx.preconditioners import (
     MassPreconditionerSpec,
@@ -632,7 +632,7 @@ def build_case(config: ExperimentConfig = CONFIG):
     base_operators = assemble_mass_operators(seq, seq.geometry, ks=(0, 1, 2, 3))
     base_operators = assemble_tensor_hodge_preconditioner(seq, operators=base_operators)
     base_operators = assemble_incidence_operators(seq, operators=base_operators, ks=(0, 1, 2))
-    base_operators = assemble_hodge_operators(seq, seq.geometry, operators=base_operators, ks=(0, 1, 2, 3))
+    base_operators = assemble_laplacian_operators(seq, seq.geometry, operators=base_operators, ks=(0, 1, 2, 3))
     operators_by_rank = {
         rank: assemble_tensor_mass_preconditioner(
             seq,
@@ -919,7 +919,7 @@ def _apply_saddle_hodge_operator(seq, operators, x, *, k: int, eps: float, diric
 
 
 def _dense_k0_hodge_inverse(seq, operators, dirichlet: bool, *, eps: float = 0.0, rtol: float = 1e-12):
-    matrix = jnp.asarray(dense_hodge_laplacian(seq, operators, 0, dirichlet=dirichlet))
+    matrix = jnp.asarray(dense_laplacian(seq, operators, 0, dirichlet=dirichlet))
     eigvals, eigvecs = jnp.linalg.eigh(matrix)
     scale = jnp.max(jnp.abs(eigvals))
     threshold = rtol * jnp.where(scale > 0, scale, 1.0)
@@ -968,7 +968,7 @@ def benchmark_k0_laplacian_preconditioners(
             rhs_use = rhs if eps > 0.0 else _project_rhs_to_range(
                 seq, operators, rhs, dirichlet)
             if eps == 0.0:
-                x, info = seq.apply_inverse_hodge_laplacian(
+                x, info = seq.apply_inverse_laplacian(
                     rhs_use,
                     0,
                     dirichlet=dirichlet,
@@ -977,7 +977,7 @@ def benchmark_k0_laplacian_preconditioners(
                     return_info=True,
                 )
             else:
-                x, info = seq.apply_inverse_shifted_hodge_laplacian(
+                x, info = seq.apply_inverse_shifted_laplacian(
                     rhs_use,
                     0,
                     eps,
@@ -1138,7 +1138,7 @@ def benchmark_saddle_laplacian_preconditioners(
                 seq, operators, rhs, k=k, dirichlet=dirichlet
             )
             if eps == 0.0:
-                x, info = seq.apply_inverse_hodge_laplacian(
+                x, info = seq.apply_inverse_laplacian(
                     rhs_use,
                     k,
                     dirichlet=dirichlet,
@@ -1147,7 +1147,7 @@ def benchmark_saddle_laplacian_preconditioners(
                     return_info=True,
                 )
             else:
-                x, info = seq.apply_inverse_shifted_hodge_laplacian(
+                x, info = seq.apply_inverse_shifted_laplacian(
                     rhs_use,
                     k,
                     eps,

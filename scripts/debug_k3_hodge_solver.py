@@ -34,8 +34,8 @@ import jax.numpy as jnp
 from mrx.operators import (apply_derivative_matrix,
                            apply_hodge_k3_tensor_preconditioner,
                            apply_hodge_kron_preconditioner,
-                           apply_hodge_laplacian,
-                           apply_hodge_laplacian_preconditioner,
+                           apply_laplacian,
+                           apply_laplacian_preconditioner,
                            apply_inverse_mass_matrix,
                            apply_mass_kron_preconditioner, apply_mass_matrix,
                            apply_projection_matrix)
@@ -69,7 +69,7 @@ def section_A_nullspace(seq, ops):
     vs = get_nullspace(ops, K, DBC)
     print(f"  n_harmonic(k={K}, dbc={DBC}) = {vs.shape[0]}")
     for i, v in enumerate(vs):
-        Lv = apply_hodge_laplacian(seq, ops, v, K, dirichlet=DBC)
+        Lv = apply_laplacian(seq, ops, v, K, dirichlet=DBC)
         nv = float(jnp.linalg.norm(v))
         nLv = float(jnp.linalg.norm(Lv))
         nv_l2 = float(seq.l2_norm(v, K, dirichlet=DBC))
@@ -100,7 +100,7 @@ def section_B_rhs(seq, ops, vs):
 def section_C_operator(seq, ops, b):
     banner("(C) Direct L_3 operator action")
     # L_3 b should be in the dual 3-form space and finite.
-    Lb = apply_hodge_laplacian(seq, ops, b, K, dirichlet=DBC)
+    Lb = apply_laplacian(seq, ops, b, K, dirichlet=DBC)
     print(f"  ||b||_2     = {float(jnp.linalg.norm(b)):.6e}")
     print(f"  ||L_3 b||_2 = {float(jnp.linalg.norm(Lb)):.6e}")
     # Sanity: Rayleigh quotient b^T L_3 b / b^T M_3 b > 0
@@ -120,7 +120,7 @@ def section_D_preconditioners(seq, ops):
     print(f"  input: ||v||_2 = {float(jnp.linalg.norm(v)):.6e}")
     for kind in ("none", "jacobi", "tensor"):
         try:
-            Pv = apply_hodge_laplacian_preconditioner(
+            Pv = apply_laplacian_preconditioner(
                 seq, ops, v, K, dirichlet=DBC, kind=kind)
         except Exception as e:
             print(f"  {kind:>10s}: FAILED -> {e}")
@@ -172,7 +172,7 @@ def section_D_preconditioners(seq, ops):
 
 def section_E_minres(seq, ops, b, vs):
     banner("(E) MINRES behaviour per preconditioner")
-    from mrx.operators import apply_inverse_shifted_hodge_laplacian
+    from mrx.operators import apply_inverse_shifted_laplacian
 
     # Initial residual norms (x0 = 0).
     print(f"  ||b||_2               = {float(jnp.linalg.norm(b)):.6e}")
@@ -180,7 +180,7 @@ def section_E_minres(seq, ops, b, vs):
     # bnorm = sqrt(b^T M^{-1} b) with M = block-diag preconditioner.
     for kind in ("none", "jacobi", "tensor"):
         try:
-            Pb = apply_hodge_laplacian_preconditioner(
+            Pb = apply_laplacian_preconditioner(
                 seq, ops, b, K, dirichlet=DBC, kind=kind)
         except Exception as e:
             print(f"  {kind:>10s}: precond(b) FAILED -> {e}")
@@ -191,13 +191,13 @@ def section_E_minres(seq, ops, b, vs):
 
     for kind in ("none", "jacobi", "tensor"):
         try:
-            u, info = apply_inverse_shifted_hodge_laplacian(
+            u, info = apply_inverse_shifted_laplacian(
                 seq, ops, b, K, 0.0, dirichlet=DBC,
                 preconditioner=kind, return_info=True)
         except Exception as e:
             print(f"  {kind:>10s}: solve FAILED -> {e}")
             continue
-        r = b - apply_hodge_laplacian(seq, ops, u, K, dirichlet=DBC)
+        r = b - apply_laplacian(seq, ops, u, K, dirichlet=DBC)
         # Deflate the residual against the nullspace (that mode is outside
         # range(L_3) and not meaningful).
         for v in vs:

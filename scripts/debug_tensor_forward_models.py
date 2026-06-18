@@ -16,7 +16,7 @@ from mrx.operators import (
     apply_mass_tensor_preconditioner_ops,
     apply_mass_tensor_forward_model_ops,
     apply_stiffness,
-    assemble_hodge_operators,
+    assemble_laplacian_operators,
     assemble_incidence_operators,
     assemble_mass_operators,
     assemble_tensor_stiffness_preconditioner,
@@ -159,7 +159,7 @@ def _build_problem(args, seq, problem: str, *, operators=None):
         )
         operators = assemble_mass_operators(seq, seq.geometry, operators=operators, ks=(1,))
         operators = assemble_incidence_operators(seq, operators=operators, ks=(0,))
-        operators = assemble_hodge_operators(seq, seq.geometry, operators=operators, ks=(0,))
+        operators = assemble_laplacian_operators(seq, seq.geometry, operators=operators, ks=(0,))
         pair = operators.k0_tensor_hodge_precond
         factors = select_boundary_data(pair, dirichlet, "Tensor Hodge k=0")
         full_size = seq.n0_dbc if dirichlet else seq.n0

@@ -11,6 +11,7 @@ import mrx
 # This keeps old import sites (scripts, deprecated tests) working.
 from mrx.differential_forms import (  # noqa: F401
     curl, det33, div, double_map, grad, inv33, jacobian_determinant, l2_product,
+    safe_inv33,
 )
 from mrx.quadrature import evaluate_at_xq, integrate_against  # noqa: F401
 from mrx.solvers import get_smallest_ev_pair  # noqa: F401

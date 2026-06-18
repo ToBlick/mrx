@@ -194,7 +194,7 @@ print(f"assemble: {time.perf_counter() - t0:.2f}s, q={q}, ns={ns}, p={P}")
 f_callable = make_f(EPSILON)
 
 rhs = seq.p0_dbc(f_callable)
-u_hat = seq.apply_inverse_hodge_laplacian(rhs, 0, dirichlet=True)
+u_hat = seq.apply_inverse_laplacian(rhs, 0, dirichlet=True)
 
 quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
 comp_info_0, comp_shapes_0 = seq._form_comp_info(0)
@@ -238,7 +238,7 @@ seq_tight.set_operators(
 seq_tight.assemble_hodge_laplacian(0)
 
 rhs_tight = seq_tight.p0_dbc(f_callable)
-u_hat_tight = seq_tight.apply_inverse_hodge_laplacian(
+u_hat_tight = seq_tight.apply_inverse_laplacian(
     rhs_tight, 0, dirichlet=True
 )
 u_h_quad_tight = evaluate_at_xq(
@@ -274,7 +274,7 @@ seq_hi.set_operators(
 seq_hi.assemble_hodge_laplacian(0)
 
 rhs_hi = seq_hi.p0_dbc(f_callable)
-u_hat_hi = seq_hi.apply_inverse_hodge_laplacian(rhs_hi, 0, dirichlet=True)
+u_hat_hi = seq_hi.apply_inverse_laplacian(rhs_hi, 0, dirichlet=True)
 u_h_quad_hi = evaluate_at_xq(
     seq_hi.e0_dbc_T @ u_hat_hi,
     *seq_hi._form_comp_info(0),
@@ -290,7 +290,7 @@ print(f"[D] q=2p+4 (={q_hi}) relative L2 error: {err_hi:.6e}")
 # is consistent at this q, then K0 @ Π_L2(u_exact) ≈ rhs in the discrete
 # weak sense. A large residual here at q=2p means the *integrals*
 # defining either K0 or rhs are poorly resolved by Gauss-2p quadrature.
-K0_u_proj = seq.apply_hodge_laplacian(u_proj_hat, 0, dirichlet=True)
+K0_u_proj = seq.apply_laplacian(u_proj_hat, 0, dirichlet=True)
 resid = K0_u_proj - rhs
 rel_resid = float(jnp.linalg.norm(resid) / jnp.linalg.norm(rhs))
 print(f"[E] ||K0 Π_L2(u) - rhs|| / ||rhs|| at q=2p:    {rel_resid:.6e}")
@@ -298,7 +298,7 @@ print(f"[E] ||K0 Π_L2(u) - rhs|| / ||rhs|| at q=2p:    {rel_resid:.6e}")
 # Same check at the higher quadrature from cell D, for direct comparison.
 u_load_hi = seq_hi.p0_dbc(u)
 u_proj_hat_hi = seq_hi.apply_inverse_mass_matrix(u_load_hi, 0, dirichlet=True)
-K0_u_proj_hi = seq_hi.apply_hodge_laplacian(u_proj_hat_hi, 0, dirichlet=True)
+K0_u_proj_hi = seq_hi.apply_laplacian(u_proj_hat_hi, 0, dirichlet=True)
 rel_resid_hi = float(
     jnp.linalg.norm(K0_u_proj_hi - rhs_hi) / jnp.linalg.norm(rhs_hi)
 )
@@ -328,7 +328,7 @@ def _solve_at_q(qx: int) -> tuple[float, float, float]:
     u_exact_q = exact_u_at_quad(seq_q)
 
     rhs_q = seq_q.p0_dbc(f_callable)
-    u_hat_q = seq_q.apply_inverse_hodge_laplacian(rhs_q, 0, dirichlet=True)
+    u_hat_q = seq_q.apply_inverse_laplacian(rhs_q, 0, dirichlet=True)
     u_quad_q = evaluate_at_xq(
         seq_q.e0_dbc_T @ u_hat_q, ci_q, cs_q, quad_shape_q, 1
     )
@@ -341,7 +341,7 @@ def _solve_at_q(qx: int) -> tuple[float, float, float]:
     )
     e_proj = l2_relative_error(seq_q, u_proj_quad_q, u_exact_q)
 
-    K_u = seq_q.apply_hodge_laplacian(u_proj_q, 0, dirichlet=True)
+    K_u = seq_q.apply_laplacian(u_proj_q, 0, dirichlet=True)
     rel = float(jnp.linalg.norm(K_u - rhs_q) / jnp.linalg.norm(rhs_q))
     return e_solve, e_proj, rel
 
@@ -448,7 +448,7 @@ def _solve_vs_proj_at_n(p_loc: int, n_loc: int, q_loc: int | None = None) -> tup
     u_exact_h = exact_u_at_quad(seq_h)
 
     rhs_h = seq_h.p0_dbc(f_callable)
-    u_hat_h = seq_h.apply_inverse_hodge_laplacian(rhs_h, 0, dirichlet=True)
+    u_hat_h = seq_h.apply_inverse_laplacian(rhs_h, 0, dirichlet=True)
     u_quad_h = evaluate_at_xq(seq_h.e0_dbc_T @ u_hat_h,
                               ci_h, cs_h, quad_shape_h, 1)
     solve_err = l2_relative_error(seq_h, u_quad_h, u_exact_h)
@@ -595,11 +595,11 @@ def _tol_diagnostic(
         p_loc, n_loc, qx
     )
 
-    u_hat_j, info_j = seq_j.apply_inverse_hodge_laplacian(
+    u_hat_j, info_j = seq_j.apply_inverse_laplacian(
         rhs_j, 0, dirichlet=True, tol=tol_loc, return_info=True
     )
 
-    Ku_j = seq_j.apply_hodge_laplacian(u_hat_j, 0, dirichlet=True)
+    Ku_j = seq_j.apply_laplacian(u_hat_j, 0, dirichlet=True)
     rel_alg_resid = float(jnp.linalg.norm(
         Ku_j - rhs_j) / jnp.linalg.norm(rhs_j))
 
@@ -619,11 +619,11 @@ def _tol_diagnostic_from_case(
     tol_loc: float,
     guess: jnp.ndarray | None = None,
 ) -> tuple[int, float, float, jnp.ndarray]:
-    u_hat_j, info_j = seq_j.apply_inverse_hodge_laplacian(
+    u_hat_j, info_j = seq_j.apply_inverse_laplacian(
         rhs_j, 0, dirichlet=True, tol=tol_loc, guess=guess, return_info=True
     )
 
-    Ku_j = seq_j.apply_hodge_laplacian(u_hat_j, 0, dirichlet=True)
+    Ku_j = seq_j.apply_laplacian(u_hat_j, 0, dirichlet=True)
     rel_alg_resid = float(jnp.linalg.norm(
         Ku_j - rhs_j) / jnp.linalg.norm(rhs_j))
 
@@ -668,10 +668,10 @@ def _direct_vs_iterative_k0(
     n_dof = seq_k.n0_dbc
 
     K_dense = build_dense(
-        lambda x: seq_k.apply_hodge_laplacian(x, 0, dirichlet=True), n_dof
+        lambda x: seq_k.apply_laplacian(x, 0, dirichlet=True), n_dof
     )
     u_direct = jnp.linalg.solve(K_dense, rhs_k)
-    u_iter, info_iter = seq_k.apply_inverse_hodge_laplacian(
+    u_iter, info_iter = seq_k.apply_inverse_laplacian(
         rhs_k, 0, dirichlet=True, tol=tol_loc, return_info=True
     )
 
@@ -682,7 +682,7 @@ def _direct_vs_iterative_k0(
         jnp.linalg.norm(K_dense @ u_direct - rhs_k) / jnp.linalg.norm(rhs_k)
     )
     rel_alg_resid_iter = float(
-        jnp.linalg.norm(seq_k.apply_hodge_laplacian(
+        jnp.linalg.norm(seq_k.apply_laplacian(
             u_iter, 0, dirichlet=True) - rhs_k)
         / jnp.linalg.norm(rhs_k)
     )
@@ -748,7 +748,7 @@ def _dense_projected_consistency_k0(
         lambda x: seq_l.apply_mass_matrix(x, 0, dirichlet=True), n_dof
     )
     K_dense = build_dense(
-        lambda x: seq_l.apply_hodge_laplacian(x, 0, dirichlet=True), n_dof
+        lambda x: seq_l.apply_laplacian(x, 0, dirichlet=True), n_dof
     )
 
     u_load_l = seq_l.p0_dbc(u)
@@ -807,7 +807,7 @@ def _dense_consistency_residual_profile_k0(
         lambda x: seq_m.apply_mass_matrix(x, 0, dirichlet=True), n_dof
     )
     K_dense = build_dense(
-        lambda x: seq_m.apply_hodge_laplacian(x, 0, dirichlet=True), n_dof
+        lambda x: seq_m.apply_laplacian(x, 0, dirichlet=True), n_dof
     )
 
     u_load_m = seq_m.p0_dbc(u)
@@ -1603,7 +1603,7 @@ def _compare_k0_realizations_at_n(
     rhs_prod = seq_prod.p0_dbc(f_callable)
 
     _progress_s(f"[S] n={n_loc}: production path solve")
-    u_hat_prod = seq_prod.apply_inverse_hodge_laplacian(
+    u_hat_prod = seq_prod.apply_inverse_laplacian(
         rhs_prod, 0, dirichlet=True)
     u_quad_prod = evaluate_at_xq(
         seq_prod.e0_dbc_T @ u_hat_prod, ci_prod, cs_prod, quad_shape_prod, 1
@@ -1618,7 +1618,7 @@ def _compare_k0_realizations_at_n(
     )
     proj_err = l2_relative_error(seq_prod, u_proj_quad_prod, u_exact_prod)
 
-    k_prod_u_proj = seq_prod.apply_hodge_laplacian(
+    k_prod_u_proj = seq_prod.apply_laplacian(
         u_proj_prod, 0, dirichlet=True)
     rel_consistency_prod = float(
         jnp.linalg.norm(k_prod_u_proj - rhs_prod) / jnp.linalg.norm(rhs_prod)

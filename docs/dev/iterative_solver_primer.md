@@ -3,7 +3,7 @@
 This note records the current production picture for iterative solves in
 `mrx`. It is meant to be read together with
 [docs/mrx_primer.md](mrx_primer.md), which covers the spaces, extraction
-operators, and Hodge-Laplacian constructions.
+operators, and Laplacian constructions.
 
 The focus here is narrower: which Krylov solve is used for which operator,
 what the default preconditioners are, and how the mass and Laplacian
@@ -74,7 +74,7 @@ The interactive mass benchmark script
 compares the production tensor route against Jacobi and polynomial baselines
 such as Richardson and Chebyshev.
 
-## 3. Hodge-Laplacian Solves
+## 3. Laplacian Solves
 
 ### 3.1 Scalar `k = 0`
 

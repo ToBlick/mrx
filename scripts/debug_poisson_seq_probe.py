@@ -71,7 +71,7 @@ def main():
 
     try:
         rhs = seq.p0_dbc(f)
-        u_hat, info = seq.apply_inverse_hodge_laplacian(
+        u_hat, info = seq.apply_inverse_laplacian(
             rhs, 0, dirichlet=True, return_info=True
         )
         jax.block_until_ready(u_hat)

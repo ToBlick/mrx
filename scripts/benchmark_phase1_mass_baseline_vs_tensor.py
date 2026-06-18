@@ -49,12 +49,12 @@ import jax.numpy as jnp
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
 from mrx.operators import (
-    apply_hodge_laplacian_preconditioner,
+    apply_laplacian_preconditioner,
     apply_mass_matrix,
     apply_mass_matrix_preconditioner,
     apply_mass_tensor_preconditioner_ops,
     apply_stiffness,
-    assemble_hodge_operators,
+    assemble_laplacian_operators,
     assemble_incidence_operators,
     assemble_mass_operators,
     assemble_tensor_mass_preconditioner,
@@ -405,7 +405,7 @@ def run_k0_stiffness_tensor(seq, operators, rhs_batch, args, *, rank,
                             bulk_steps: int = 0) -> Row:
     operator_apply = lambda x: apply_stiffness(seq, operators, x, 0, dirichlet=True)
     mass_apply = lambda x: apply_mass_matrix(seq, operators, x, 0, dirichlet=True)
-    tensor_apply = lambda rhs: apply_hodge_laplacian_preconditioner(
+    tensor_apply = lambda rhs: apply_laplacian_preconditioner(
         seq, operators, rhs, 0, dirichlet=True, kind="tensor",
     )
     if bulk_steps <= 0:
@@ -488,7 +488,7 @@ def run_benchmark(args) -> list[Row]:
     )
     if run_k0_stiffness_dbc:
         base_operators = assemble_incidence_operators(seq, operators=base_operators, ks=(0,))
-        base_operators = assemble_hodge_operators(
+        base_operators = assemble_laplacian_operators(
             seq, seq.geometry, operators=base_operators, ks=(0,),
         )
 
@@ -596,7 +596,7 @@ def run_benchmark(args) -> list[Row]:
                     rank=rank,
                     cp_kwargs={"k0_rank": rank},
                 )
-                operators = assemble_hodge_operators(
+                operators = assemble_laplacian_operators(
                     seq, seq.geometry, operators=operators, ks=(0,),
                 )
                 jax.block_until_ready(jnp.zeros(()))

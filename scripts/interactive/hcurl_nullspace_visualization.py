@@ -24,7 +24,7 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import extend_map_nfp, rotating_ellipse_map
 from mrx.operators import (assemble_derivative_operators,
-                           assemble_hodge_operators,
+                           assemble_laplacian_operators,
                            assemble_incidence_operators,
                            assemble_mass_operators,
                            assemble_tensor_mass_preconditioner)
@@ -307,7 +307,7 @@ def assemble_case():
         operators,
         ks=(0, 1),
     )
-    OPERATORS = assemble_hodge_operators(
+    OPERATORS = assemble_laplacian_operators(
         seq,
         seq.geometry,
         operators,

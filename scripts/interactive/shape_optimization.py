@@ -34,7 +34,7 @@ import numpy as np
 from mrx.derham_sequence import DeRhamSequence
 from mrx.io import project_sampled_field
 from mrx.mappings import SplineMap, toroid_map
-from mrx.operators import (apply_inverse_shifted_hodge_laplacian,
+from mrx.operators import (apply_inverse_shifted_laplacian,
                            apply_mass_matrix, apply_stiffness,
                            operators_from_coeffs)
 from mrx.solvers import backtracking_line_search
@@ -135,7 +135,7 @@ seq.assemble_hodge_laplacian(0)
 f_jk = jax.lax.map(source_f, seq.quad.x, batch_size=20_000)
 
 rhs_ref = seq.p0_dbc(source_f)
-u_bar = seq.apply_inverse_hodge_laplacian(rhs_ref, k=0)
+u_bar = seq.apply_inverse_laplacian(rhs_ref, k=0)
 
 
 # %% ------------------------------------------------------------------
@@ -211,7 +211,7 @@ def apply_M_ref(v):
 
 def _solve_poisson(ops, rhs):
     """Solve S(ops) u = rhs for k=0 with eps=0 using the pure operator bundle."""
-    return apply_inverse_shifted_hodge_laplacian(
+    return apply_inverse_shifted_laplacian(
         seq, ops, rhs, 0, 0.0, dirichlet=True,
         tol=seq.tol, maxiter=seq.maxiter,
     )

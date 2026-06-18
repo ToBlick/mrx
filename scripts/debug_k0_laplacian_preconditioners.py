@@ -30,7 +30,7 @@ from mrx.nullspace import (_bootstrap_nullspace_guesses, _commit,
 from mrx.operators import (_hodge_diaginv, apply_hodge_kron_preconditioner,
                            apply_mass_matrix, apply_stiffness,
                            assemble_fd_hodge_preconditioner,
-                           assemble_hodge_operators,
+                           assemble_laplacian_operators,
                            assemble_incidence_operators,
                            assemble_kron_mass_preconditioner,
                            assemble_mass_operators)
@@ -129,7 +129,7 @@ def _build_sequence(args):
     operators = assemble_kron_mass_preconditioner(seq, operators=operators)
     operators = assemble_fd_hodge_preconditioner(seq, operators=operators)
     operators = assemble_incidence_operators(seq, operators=operators, ks=(0,))
-    operators = assemble_hodge_operators(
+    operators = assemble_laplacian_operators(
         seq, seq.geometry, operators=operators, ks=(0,))
     operators = _commit(seq, init_nullspaces(seq, operators))
     return seq, operators

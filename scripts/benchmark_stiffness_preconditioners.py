@@ -30,11 +30,11 @@ from mrx.operators import (
     _build_chebyshev_apply_preconditioner,
     _estimate_chebyshev_lanczos_bounds_apply,
     _mass_extraction,
-    apply_hodge_laplacian_preconditioner,
+    apply_laplacian_preconditioner,
     apply_mass_matrix,
     apply_stiffness,
     apply_stiffness_tensor_preconditioner,
-    assemble_hodge_operators,
+    assemble_laplacian_operators,
     assemble_incidence_operators,
     assemble_mass_operators,
     assemble_tensor_mass_preconditioner,
@@ -162,7 +162,7 @@ def build_base_operators(seq: DeRhamSequence, cases: tuple[Case, ...]):
     operators = assemble_mass_operators(seq, seq.geometry, ks=mass_ks)
     operators = assemble_incidence_operators(seq, operators=operators, ks=incidence_ks)
     if any(case.k == 0 for case in cases):
-        operators = assemble_hodge_operators(seq, seq.geometry, operators=operators, ks=(0,))
+        operators = assemble_laplacian_operators(seq, seq.geometry, operators=operators, ks=(0,))
     seq.set_operators(operators)
     return operators
 
@@ -306,7 +306,7 @@ def benchmark_case(
                 rhs,
                 mass_matvec=mass_apply,
                 precond_matvec=(
-                    (lambda x: apply_hodge_laplacian_preconditioner(
+                    (lambda x: apply_laplacian_preconditioner(
                         seq, operators, x, 0, dirichlet=case.dirichlet, kind="tensor",
                     )) if case.k == 0 else
                     (lambda x: apply_stiffness_tensor_preconditioner(
@@ -532,7 +532,7 @@ def main() -> None:
                     rank=rank,
                     cp_kwargs={"k0_rank": rank},
                 )
-                operators = assemble_hodge_operators(
+                operators = assemble_laplacian_operators(
                     seq,
                     seq.geometry,
                     operators=operators,

@@ -39,7 +39,7 @@ from mrx.operators import (
     assemble_mass_operators,
     assemble_projection_operators,
     assemble_tensor_mass_preconditioner,
-    dense_hodge_laplacian,
+    dense_laplacian,
     dense_mass_matrix,
     dense_projection_matrix,
 )
@@ -211,7 +211,7 @@ def dense_extracted_mass_matrix(seq, operators, dirichlet: bool) -> jnp.ndarray:
 
 
 def dense_extracted_stiffness_matrix(seq, operators, dirichlet: bool) -> jnp.ndarray:
-    return jnp.asarray(dense_hodge_laplacian(seq, operators, 0, dirichlet=dirichlet))
+    return jnp.asarray(dense_laplacian(seq, operators, 0, dirichlet=dirichlet))
 
 
 def reorder_k0_blocks(seq, matrix: jnp.ndarray, dirichlet: bool):

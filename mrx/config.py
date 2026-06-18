@@ -219,6 +219,7 @@ class PoissonTestConfig:
     cg_maxiter: int = 100_000
     map_batch_size_inner: int = 0      # 0 corresponds to vmap
     map_batch_size_outer: Optional[int] = None    # None means no batching
+    load_frame: str = 'ref'           # 'ref' or 'phys' (see mrx.projectors.load)
 
 
 @dataclass

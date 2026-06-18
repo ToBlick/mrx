@@ -30,7 +30,7 @@ from mrx.nullspace import (_bootstrap_nullspace_guesses, _commit,
                            get_nullspace)
 from mrx.operators import (_hodge_diaginv, _kron_available, _mass_diaginv,
                            apply_hodge_kron_preconditioner,
-                           apply_inverse_shifted_hodge_laplacian,
+                           apply_inverse_shifted_laplacian,
                            apply_mass_kron_preconditioner, apply_mass_matrix,
                            apply_projection_matrix, assemble_all_operators,
                            dense_mass_matrix, dense_projection_matrix)
@@ -204,13 +204,13 @@ def _mass_orthogonalise(seq, operators, v, basis, k, dirichlet):
 
 
 def _residual_norm(seq, operators, v, k, dirichlet):
-    Lv = seq.apply_hodge_laplacian(
+    Lv = seq.apply_laplacian(
         v, k, dirichlet=dirichlet, operators=operators)
     return float(seq.l2_norm(Lv, k, dirichlet=dirichlet))
 
 
 def _shifted_residual_norm(seq, operators, u, rhs, k, dirichlet, eps):
-    Au = seq.apply_hodge_laplacian(
+    Au = seq.apply_laplacian(
         u, k, dirichlet=dirichlet, operators=operators)
     Au = Au + eps * seq.apply_mass_matrix(
         u, k, dirichlet=dirichlet, operators=operators)
@@ -325,7 +325,7 @@ def _run_post_nullspace_shifted_exact_lift_compare(args, seq):
     variants = [
         (
             "jacobi+coarse",
-            lambda b: apply_inverse_shifted_hodge_laplacian(
+            lambda b: apply_inverse_shifted_laplacian(
                 seq, operators, b, 3, args.eps,
                 dirichlet=True,
                 preconditioner='jacobi',
@@ -337,7 +337,7 @@ def _run_post_nullspace_shifted_exact_lift_compare(args, seq):
         ),
         (
             "tensor+coarse",
-            lambda b: apply_inverse_shifted_hodge_laplacian(
+            lambda b: apply_inverse_shifted_laplacian(
                 seq, operators, b, 3, args.eps,
                 dirichlet=True,
                 preconditioner='tensor',
@@ -412,7 +412,7 @@ def _run_shifted_k0_compare(args, seq):
             ("tensor+coarse", "tensor", None),
         ):
             t0 = time.perf_counter()
-            u, info = apply_inverse_shifted_hodge_laplacian(
+            u, info = apply_inverse_shifted_laplacian(
                 seq,
                 operators,
                 rhs,
@@ -520,7 +520,7 @@ def _run_case(args, seq, operators, k, dirichlet, n_vectors_override=None):
             Mv = seq.apply_mass_matrix(
                 v, k, dirichlet=dirichlet, operators=operators
             )
-            w, solve_info = apply_inverse_shifted_hodge_laplacian(
+            w, solve_info = apply_inverse_shifted_laplacian(
                 seq,
                 operators,
                 Mv,

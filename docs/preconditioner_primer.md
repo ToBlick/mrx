@@ -23,14 +23,14 @@ applied matrix-free:
    from a Lanczos iteration on the preconditioned operator
    (`_estimate_chebyshev_lanczos_bounds_apply`).
 3. **Tensor** — the hand-built structured preconditioner. The production
-  default for mass and the chosen route for scalar `k = 0` Hodge / stiffness.
-4. **Hiptmair-Xu auxiliary-space** — the planned higher-form route for
-  `k = 1, 2, 3`: use cheap interpolation into auxiliary scalar spaces so the
-  hard part of the preconditioner is delegated to scalar Poisson solves.
+  default for mass and the chosen route for scalar `k = 0` Laplacian / stiffness.
+4. **HX/AMS auxiliary-space experiments (archived)** — historical higher-form
+  experiments for `k = 1, 2, 3`; retained as diagnostics only, not production
+  default policy.
 
 Jacobi and Chebyshev are baselines; the tensor route is what new work targets
-for mass and scalar `k = 0`, while higher-form work is now aimed at the
-Hiptmair-Xu auxiliary-space construction.
+for mass and scalar `k = 0`. Higher-form HX/AMS material is now historical;
+see `docs/hiptmair_xu_preconditioner.md` for the postmortem.
 
 The user-facing handles live in [`mrx/preconditioners.py`](../../mrx/preconditioners.py):
 `MassPreconditionerSpec`, `SchurPreconditionerSpec`, and
@@ -39,7 +39,7 @@ either string shorthands (`"auto"`, `"jacobi"`, `"tensor"`,
 `"chebyshev"`, `"richardson"`) or these spec objects, and
 [`mrx/operators.py`](../../mrx/operators.py) materializes them into concrete
 matvec applies via `_build_mass_preconditioner_apply`,
-`_build_scalar_hodge_preconditioner_apply`,
+`_build_scalar_hodge_preconditioner_apply` (legacy name; scalar Laplacian apply),
 `_build_diffusion_preconditioner_apply`, and the saddle-point builders.
 
 ## 2. The Tensor Route: Schur + Tensor Block Inverses
@@ -59,7 +59,7 @@ The mapped diagonal coefficient fields the bulk fits target are:
 - `k = 1` mass: `J g^{rr}`, `J g^{θθ}`, `J g^{ζζ}`
 - `k = 2` mass: `g_rr / J`, `g_θθ / J`, `g_ζζ / J`
 - `k = 3` mass: `1 / J`
-- `k = 0` scalar Hodge / stiffness: `J g^{rr}`, `J g^{θθ}`, `J g^{ζζ}`
+- `k = 0` scalar Laplacian / stiffness: `J g^{rr}`, `J g^{θθ}`, `J g^{ζζ}`
 
 ### 2.1 Degree-by-degree mass shape
 
@@ -119,7 +119,7 @@ fitting.
 
 ## 3. Higher-Form Solves For `k = 1, 2, 3`
 
-For `k ≥ 1` the Hodge-Laplacian solve is structurally a saddle-point system,
+For `k ≥ 1` the Laplacian solve is structurally a saddle-point system,
 solved by `solve_saddle_point_minres`. The exposed handle is
 `SaddlePointPreconditionerSpec` with four pieces:
 
@@ -151,18 +151,9 @@ Current benchmark split for the mixed path:
     `S + D M_precond D^T`,
   - this avoids exact inner solves inside the outer MINRES iteration.
 
-That mixed benchmark split is now a transition tool, not the intended endpoint.
-The chosen strategy for `k = 1, 2, 3` is a Hiptmair-Xu auxiliary-space
-preconditioner built on top of the same outer higher-form solves:
-
-- keep the higher-form solve in its mixed/saddle formulation,
-- build cheap, local interpolation or projection operators from `H(curl)` and
-  `H(div)` unknowns into the auxiliary scalar spaces,
-- with Greville-point interpolation / histopolation as the preferred first
-  prototype for those maps,
-- apply the already-strong scalar Poisson/Hodge machinery there,
-- and use that as the production-oriented route instead of trying to win by
-  further tuning Schur-outers alone.
+That mixed benchmark split is now mainly a diagnostic tool. HX/AMS
+auxiliary-space attempts for `k = 1, 2, 3` are archived and did not replace
+the practical Schur-outer Jacobi baseline.
 
 `schur.outer` accepts polynomial wrappers (`richardson`, `chebyshev`,
 `exact_jacobi`) for benchmarking; their spectral bounds are estimated via
@@ -174,7 +165,7 @@ harmonic-safe cases `k=1` with Dirichlet and `k=2` without Dirichlet. Outside
 those cases, the nullspace / harmonic path still needs cleanup before the same
 strategy should be treated as production-ready.
 
-## 4. Scalar `k = 0` Hodge
+## 4. Scalar `k = 0` Laplacian
 
 The scalar `k = 0` Laplacian solve stays in scalar form with
 `solve_singular_cg` (or shifted CG). The active tensor route assembles a
@@ -187,7 +178,8 @@ core-plus-bulk Schur structure built from the three diagonal stiffness channels
 Each channel is fit independently. The leading rank-1 terms define the per-axis
 modal basis used by the bulk inverse; higher-rank terms reuse that basis and
 contribute only projected diagonal corrections to the additive denominator.
-The production data lives on `operators.k0_tensor_hodge_precond`. Legacy
+The production data lives on `operators.k0_tensor_hodge_precond` (legacy field
+name retained for compatibility). Legacy
 fast-diagonal payloads (`fd_V_p_*`, `dd0_fd_scale_K`) still exist for older
 debug/compatibility paths but are not the active solve route.
 
@@ -237,10 +229,10 @@ The production assembly path is `assemble_all_operators` in
 
 - the per-degree mass tensor preconditioner with `rank = 2` for all four
   degrees,
-- the legacy scalar `k = 0` FD Hodge payload via
+- the legacy scalar `k = 0` FD Laplacian payload via
   `assemble_tensor_hodge_preconditioner`,
-- and, when the Hodge operators are updated, the production scalar `k = 0`
-  tensor Hodge/stiffness preconditioner.
+- and, when the Laplacian operators are updated, the production scalar `k = 0`
+  tensor Laplacian/stiffness preconditioner.
 
 Those eager defaults are why `"auto"` resolves to the tensor route in normal
 use: the data is already there.
@@ -248,7 +240,7 @@ use: the data is already there.
 The current default policy is therefore:
 
 - mass: rank `3` for all four degrees,
-- stiffness / scalar `k = 0` Hodge: rank `1`.
+- stiffness / scalar `k = 0` Laplacian: rank `1`.
 
 ## 6. Validation Posture
 
@@ -269,18 +261,17 @@ The current validation status of the production tensor applies
   time to the unpolished tensor apply.
 - The mass preconditioners are essentially complete apart from policy and
   regression-testing cleanup.
-- The main higher-form target is now a Hiptmair-Xu auxiliary-space
-  preconditioner for `k = 1, 2, 3`. The current saddle-point Schur benchmarks
-  and the standalone `k=1` / `k=2` stiffness tensor models are kept as
-  diagnostics and interim references, not as the planned endpoint.
+- Higher-form HX/AMS work for `k = 1, 2, 3` is now archived. The current
+  saddle-point Schur benchmarks and the standalone `k=1` / `k=2` stiffness
+  tensor models are kept as diagnostics and interim references.
 
 ## 7. Quick Reference
 
 | Solve | Default preconditioner |
 |---|---|
 | `M_k u = f`, all `k` | `tensor` (mass route is essentially settled; eager default is now rank 3 per degree, while explicit assembly can still request other ranks) |
-| `L_0 u = f` (singular) | scalar `k = 0` tensor Hodge + nullspace deflation; main remaining task is stronger validation |
-| `(L_0 + ε M_0) u = f` | scalar `k = 0` tensor Hodge + harmonic coarse correction when available |
-| `L_k u = f`, `k = 1, 2, 3` | current code path is saddle MINRES; strategic target is a Hiptmair-Xu auxiliary-space preconditioner using cheap local interpolation plus scalar Poisson solves |
+| `L_0 u = f` (singular) | scalar `k = 0` tensor Laplacian + nullspace deflation; main remaining task is stronger validation |
+| `(L_0 + ε M_0) u = f` | scalar `k = 0` tensor Laplacian + harmonic coarse correction when available |
+| `L_k u = f`, `k = 1, 2, 3` | current code path is saddle MINRES with Schur-outer Jacobi as reliability baseline; HX/AMS attempts are archived |
 | `(M_k + ε L_k) u = f`, `k = 0` | scalar CG with diffusion preconditioner (mass-tensor when assembled) |
 | `(M_k + ε L_k) u = f`, `k ≥ 1` | saddle MINRES with the same diffusion building blocks |

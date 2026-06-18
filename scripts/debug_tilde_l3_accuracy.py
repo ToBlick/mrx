@@ -27,7 +27,7 @@ import jax.numpy as jnp
 from benchmark_preconditioners import build_sequence
 
 from mrx.nullspace import get_nullspace
-from mrx.operators import apply_hodge_laplacian, apply_hodge_laplacian_approx
+from mrx.operators import apply_laplacian, apply_laplacian_approx
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -122,11 +122,11 @@ def _projected_spectrum(seq, operators, basis, dirichlet, exact_apply, approx_ap
 
 def _run_case(seq, operators, batch, dirichlet, label):
     exact_apply = jax.jit(
-        lambda v: apply_hodge_laplacian(
+        lambda v: apply_laplacian(
             seq, operators, v, 3, dirichlet=dirichlet)
     )
     approx_apply = jax.jit(
-        lambda v: apply_hodge_laplacian_approx(
+        lambda v: apply_laplacian_approx(
             seq, operators, v, 3, dirichlet=dirichlet)
     )
 

@@ -398,9 +398,6 @@ def det33(mat: jnp.ndarray) -> jnp.ndarray:
 
 def inv33(mat: jnp.ndarray) -> jnp.ndarray:
     """Inverse of a 3×3 matrix via the explicit adjugate formula.
-
-    Returns the zero matrix when the determinant is smaller than ``1e-10``
-    in absolute value.
     """
     m1, m2, m3 = mat[0]
     m4, m5, m6 = mat[1]
@@ -408,15 +405,28 @@ def inv33(mat: jnp.ndarray) -> jnp.ndarray:
     det = (m1 * (m5 * m9 - m6 * m8)
            + m4 * (m8 * m3 - m2 * m9)
            + m7 * (m2 * m6 - m3 * m5))
-    return jnp.where(
-        jnp.abs(det) < 1e-10,
-        jnp.zeros((3, 3)),
-        jnp.array([
-            [m5 * m9 - m6 * m8, m3 * m8 - m2 * m9, m2 * m6 - m3 * m5],
-            [m6 * m7 - m4 * m9, m1 * m9 - m3 * m7, m3 * m4 - m1 * m6],
-            [m4 * m8 - m5 * m7, m2 * m7 - m1 * m8, m1 * m5 - m2 * m4],
-        ]) / det
-    )
+    return jnp.array([
+        [m5 * m9 - m6 * m8, m3 * m8 - m2 * m9, m2 * m6 - m3 * m5],
+        [m6 * m7 - m4 * m9, m1 * m9 - m3 * m7, m3 * m4 - m1 * m6],
+        [m4 * m8 - m5 * m7, m2 * m7 - m1 * m8, m1 * m5 - m2 * m4],
+    ]) / det
+
+
+def safe_inv33(mat: jnp.ndarray, *, tol: float = 1e-10) -> jnp.ndarray:
+    """Return ``inv33(mat)`` when well-conditioned, else the zero matrix.
+
+    This is the singular-safe variant for modal block solves and other places
+    where nullspace modes should be deflated instead of inverted.
+    """
+    det = det33(mat)
+
+    def _singular(_):
+        return jnp.zeros((3, 3), dtype=mat.dtype)
+
+    def _nonsingular(_):
+        return inv33(mat)
+
+    return jax.lax.cond(jnp.abs(det) < tol, _singular, _nonsingular, operand=None)
 
 
 def jacobian_determinant(f: Callable) -> Callable:

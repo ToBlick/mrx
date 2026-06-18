@@ -153,12 +153,12 @@ def compute_error(n: int, p: int, epsilon: float,
 
     # k=0 with DBC has no nullspace (default betti_numbers=(1,1,0,0))
     t0 = time.perf_counter()
-    u_hat, cg_info = seq.apply_inverse_hodge_laplacian(
+    u_hat, cg_info = seq.apply_inverse_laplacian(
         rhs, 0, dirichlet=True, return_info=True)
     jax.block_until_ready(u_hat)
     timings["inverse_hodge_laplacian_compile"] = time.perf_counter() - t0
     t0 = time.perf_counter()
-    u_hat, cg_info = seq.apply_inverse_hodge_laplacian(
+    u_hat, cg_info = seq.apply_inverse_laplacian(
         rhs, 0, dirichlet=True, return_info=True)
     jax.block_until_ready(u_hat)
     timings["inverse_hodge_laplacian_exec"] = time.perf_counter() - t0
@@ -166,7 +166,7 @@ def compute_error(n: int, p: int, epsilon: float,
     cg_info_int = int(cg_info)
     cg_iters = abs(cg_info_int)
     cg_converged = cg_info_int < 0
-    residual = seq.apply_hodge_laplacian(u_hat, 0, dirichlet=True) - rhs
+    residual = seq.apply_laplacian(u_hat, 0, dirichlet=True) - rhs
     final_rel_residual = float(
         jnp.linalg.norm(residual) / jnp.linalg.norm(rhs))
 

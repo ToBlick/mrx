@@ -155,4 +155,3 @@ The Greville points for polar DOFs are:
 
 For k=1 histopolation the same Schur structure applies per component, using
 histopolation intervals instead of collocation points in the derivative directions.
-

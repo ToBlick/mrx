@@ -22,7 +22,7 @@ from mrx.operators import (
     apply_mass_tensor_preconditioner_ops,
     apply_mass_matrix,
     apply_stiffness,
-    assemble_hodge_operators,
+    assemble_laplacian_operators,
     assemble_incidence_operators,
     assemble_mass_operators,
     assemble_tensor_mass_preconditioner,
@@ -117,7 +117,7 @@ def build_sequence():
         cp_kwargs=TENSOR_CP_KWARGS_INNER_SCHUR_OFF,
     )
     operators = assemble_incidence_operators(seq, operators=tensor_inner_schur_on, ks=(0,))
-    operators = assemble_hodge_operators(seq, seq.geometry, operators=operators, ks=(0,))
+    operators = assemble_laplacian_operators(seq, seq.geometry, operators=operators, ks=(0,))
     seq.operators = operators
     return seq, {
         "default": operators,

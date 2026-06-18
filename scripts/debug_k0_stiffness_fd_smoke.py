@@ -12,7 +12,7 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
 from mrx.nullspace import _overwrite_nullspace_vector, init_nullspaces
 from mrx.operators import (
-    apply_inverse_hodge_laplacian,
+    apply_inverse_laplacian,
     assemble_incidence_operators,
     assemble_mass_operators,
     assemble_tensor_mass_preconditioner,
@@ -58,7 +58,7 @@ def cg_iters(seq, ops, dirichlet, preconditioner):
     rng = jax.random.PRNGKey(0)
     n = seq.n0_dbc if dirichlet else seq.n0
     rhs = jax.random.normal(rng, (n,), dtype=jnp.float64)
-    _, info = apply_inverse_hodge_laplacian(
+    _, info = apply_inverse_laplacian(
         seq, ops, rhs, 0, dirichlet=dirichlet,
         preconditioner=preconditioner, return_info=True,
     )

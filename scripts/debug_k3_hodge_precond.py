@@ -44,12 +44,12 @@ from mrx.operators import (
     _hodge_diaginv,
     apply_mass_matrix_preconditioner,
     assemble_derivative_operators,
-    assemble_hodge_operators,
+    assemble_laplacian_operators,
     assemble_incidence_operators,
     assemble_mass_operators,
     assemble_tensor_mass_preconditioner,
     dense_derivative_matrix,
-    dense_hodge_laplacian,
+    dense_laplacian,
 )
 from mrx.solvers import solve_singular_cg
 
@@ -149,7 +149,7 @@ def build_case(config: ExperimentConfig = CONFIG):
     )
     operators = assemble_incidence_operators(seq, operators=operators, ks=(2,))
     operators = assemble_derivative_operators(seq, seq.geometry, operators=operators, ks=(2,))
-    operators = assemble_hodge_operators(seq, seq.geometry, operators=operators, ks=(3,))
+    operators = assemble_laplacian_operators(seq, seq.geometry, operators=operators, ks=(3,))
 
     seq.operators = operators
     seq._compute_nullspaces(config.betti, eps=seq.tol**0.5)
@@ -188,7 +188,7 @@ def build_dense_k3_data(seq, operators):
         )
     )
     exact_l3 = _symmetrize(
-        jnp.asarray(dense_hodge_laplacian(seq, operators, 3, dirichlet=dirichlet))
+        jnp.asarray(dense_laplacian(seq, operators, 3, dirichlet=dirichlet))
     )
     m2_jacobi_inv = dense_operator_from_apply(
         lambda x: apply_mass_matrix_preconditioner(seq, operators, x, 2, dirichlet=dirichlet, kind="jacobi"),

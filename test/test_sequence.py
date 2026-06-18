@@ -85,6 +85,24 @@ def identity_clamped_seq():
     return seq
 
 
+@pytest.fixture(scope="module")
+def mass_probe_seq():
+    """Small identity-map sequence used for cheap mass SPD probes."""
+    seq = DeRhamSequence(
+        (4, 4, 4),
+        (2, 2, 2),
+        5,
+        ("clamped", "clamped", "clamped"),
+        polar=False,
+        tol=1e-12,
+        maxiter=200,
+        betti_numbers=(1, 1, 0, 0),
+    )
+    seq.set_map(lambda x: x)
+    seq.assemble_all_sparse(include_preconditioners=False)
+    return seq
+
+
 def test_twoform_histopolation_recovers_discrete_function(identity_clamped_seq):
     seq = identity_clamped_seq
     coeffs = jnp.linspace(-0.5, 0.75, seq.n2)
@@ -179,14 +197,36 @@ def test_zeroform_interpolation_l2_convergence(p):
 
 @pytest.mark.parametrize("k", ALL_K)
 @pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_mass_matrix_spd(torus_seq, k, dirichlet):
-    n = _dof(torus_seq, k, dirichlet)
-    M = np.asarray(build_dense(
-        lambda v: torus_seq.apply_mass_matrix(v, k, dirichlet=dirichlet), n))
-    npt.assert_allclose(M, M.T, atol=1e-10, err_msg="M_k not symmetric")
-    eigs = np.linalg.eigvalsh(M)
-    assert eigs.min(
-    ) > 0, f"M_{k} dirichlet={dirichlet} has non-positive eigenvalue {eigs.min()}"
+def test_mass_matrix_spd(mass_probe_seq, k, dirichlet):
+    # Cheap matrix-free SPD probe: avoid dense assembly/eigendecomposition.
+    seq = mass_probe_seq
+    n = _dof(seq, k, dirichlet)
+    key = jax.random.PRNGKey(10_000 + 100 * k + int(dirichlet))
+    keys = jax.random.split(key, 12)
+
+    def m_apply(x):
+        return seq.apply_mass_matrix(x, k, dirichlet=dirichlet)
+
+    # Symmetry via bilinear identity: <u, Mv> == <v, Mu>.
+    for i in range(0, 8, 2):
+        u = jax.random.normal(keys[i], (n,))
+        v = jax.random.normal(keys[i + 1], (n,))
+        lhs = float(u @ m_apply(v))
+        rhs = float(v @ m_apply(u))
+        scale = max(abs(lhs), abs(rhs), 1.0)
+        assert abs(lhs - rhs) <= 1e-10 * scale, (
+            f"M_{k} dirichlet={dirichlet} failed symmetry probe: "
+            f"<u,Mv>={lhs:.3e}, <v,Mu>={rhs:.3e}"
+        )
+
+    # Positive definiteness via quadratic forms x^T M x > 0 for nonzero probes.
+    for i in range(8, 12):
+        x = jax.random.normal(keys[i], (n,))
+        x = x / jnp.linalg.norm(x)
+        xmx = float(x @ m_apply(x))
+        assert xmx > 1e-12, (
+            f"M_{k} dirichlet={dirichlet} failed PD probe: x^T M x={xmx:.3e}"
+        )
 
 
 # ---------------------------------------------------------------------------

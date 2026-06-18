@@ -405,7 +405,7 @@ def validate_k3_hodge_chebyshev(seq: DeRhamSequence):
         )
 
         solve_jit = _jit_warmup_solver(
-            lambda vec, preconditioner=preconditioner: seq.apply_inverse_hodge_laplacian(
+            lambda vec, preconditioner=preconditioner: seq.apply_inverse_laplacian(
                 vec,
                 k=3,
                 dirichlet=dirichlet,
@@ -419,7 +419,7 @@ def validate_k3_hodge_chebyshev(seq: DeRhamSequence):
         x, info = solve_jit(rhs)
         _block_until_ready2(x, info)
         elapsed_ms = (time.perf_counter() - t0) * 1e3
-        residual = seq.apply_hodge_laplacian(x, k=3, dirichlet=dirichlet) - rhs
+        residual = seq.apply_laplacian(x, k=3, dirichlet=dirichlet) - rhs
         relres = _relative_residual(residual, rhs)
         status, iterations = _solver_status(info)
         print(

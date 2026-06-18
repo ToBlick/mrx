@@ -39,7 +39,7 @@ from mrx.operators import (
     _saddle_nullspaces,
     _select_schur_runtime_tuning,
     apply_derivative_matrix,
-    apply_hodge_laplacian,
+    apply_laplacian,
     apply_inverse_mass_matrix,
     apply_mass_matrix,
     apply_stiffness,
@@ -356,7 +356,7 @@ def benchmark_case(
             tol=args.tol,
             maxiter=args.maxiter,
         )
-        residual = apply_hodge_laplacian(
+        residual = apply_laplacian(
             seq,
             operators,
             x,

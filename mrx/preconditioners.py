@@ -222,6 +222,7 @@ class MassPreconditionerSpec:
     lanczos_max_eig_inflation: float = 1.1
     lanczos_min_eig_deflation: float = 0.85
     lanczos_min_eig_floor_fraction: float = 1e-3
+    schur_diag_mode: str = 'tensor_probe'
     smoother: Optional[MassPreconditionerSpec] = None
 
 

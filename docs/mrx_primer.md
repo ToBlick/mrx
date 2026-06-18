@@ -3,7 +3,7 @@
 This note explains the building blocks of `mrx`: the discrete function
 spaces, how tensor-product structure is exploited during assembly, the
 extraction operators that enforce boundary conditions and polar
-geometries, the Hodge Laplacians, the iterative solvers, and the main
+geometries, the k-form Laplacians, the iterative solvers, and the main
 data structures and how they fit together.
 
 All code paths are JIT-compilable and AD-friendly: dense / sparse tensors
@@ -276,15 +276,24 @@ in every matvec (and JAX's `BCSR` does not support transposes).
 
 ---
 
-## 4. Hodge Laplacians
+## 4. Laplacians (k-form)
 
-The **Hodge Laplacian** of degree $k$ is
+The **k-form Laplacian** of degree $k$ is
 
 $$
 \mathbb{L}^k = d^k \delta^{k} + \delta^{k-1} d^{k-1}.
 $$
 
 Discretely these are saddle-point systems that couple $k$-forms and $(k-1)$-forms.
+
+In the code and notes below we use
+
+$$
+L_k = S_k + D_{k-1} M_{k-1}^{-1} D_{k-1}^T
+= G_k^T M_{k+1} G_k + M_k G_{k-1} M_{k-1}^{-1} G_{k-1}^T M_k,
+$$
+
+where $S_k$ is the assembled k-form stiffness block.
 
 Concretely in [mrx/operators.py](mrx/operators.py), these bilinear forms are built:
 
@@ -314,7 +323,7 @@ High-level user-facing matvecs in `mrx.operators`:
 
 - `apply_mass_matrix(seq, ops, v, k, dirichlet=True)`
 - `apply_stiffness(seq, ops, v, k, dirichlet=True)`
-- `apply_hodge_laplacian(seq, ops, v, k, dirichlet=True)`
+- `apply_laplacian(seq, ops, v, k, dirichlet=True)`
 - `apply_inverse_*` counterparts that wrap the iterative solvers
   (see §5).
 
@@ -334,8 +343,8 @@ The present production split is:
 | Problem | Solver family | Current default preconditioner |
 |---|---|---|
 | Mass inverse `M_k^{-1}` | preconditioned CG | `auto` => tensor if assembled, else Jacobi; mass route is essentially settled |
-| Scalar Hodge inverse `L_0^{-1}` and `(L_0 + eps M_0)^{-1}` | singular/shifted CG | scalar tensor complement when available, else Jacobi; chosen long-term route is still tensor, with more validation still needed |
-| Mixed Hodge inverse for `k = 1, 2, 3` | saddle-point MINRES | current code path uses the saddle machinery; planned higher-form direction is a Hiptmair-Xu auxiliary-space preconditioner built from cheap local interpolation plus scalar Poisson solves |
+| Scalar Laplacian inverse `L_0^{-1}` and `(L_0 + eps M_0)^{-1}` | singular/shifted CG | scalar tensor complement when available, else Jacobi; chosen long-term route is still tensor, with more validation still needed |
+| Mixed Laplacian inverse for `k = 1, 2, 3` | saddle-point MINRES | current code path uses the saddle machinery with Schur-outer Jacobi as the practical reliability baseline; HX/AMS notes are archived in `docs/hiptmair_xu_preconditioner.md` |
 | Inverse `(M_k + eps L_k)^{-1}` | scalar CG for `k = 0`, saddle MINRES otherwise | simple diagonal block scalings |
 
 Two implementation rules matter throughout:
@@ -349,10 +358,9 @@ For the current higher-form benchmark campaign, the only validated mixed cases
 are still `k = 1` with Dirichlet and `k = 2` without Dirichlet. Those are the
 harmonic-safe cases under the present nullspace implementation.
 
-The recent exact-Jacobi and tensor+Chebyshev saddle benchmarks should therefore
-be read as transition diagnostics. The intended production direction for
-`k = 1, 2, 3` is now an auxiliary-space construction rather than more tuning of
-the Schur outer alone.
+Recent HX/AMS experiments did not produce a robust improvement over the current
+Schur-outer Jacobi baseline. Treat those experiments as archived diagnostics;
+see `docs/hiptmair_xu_preconditioner.md`.
 
 For the degree-by-degree preconditioner structure and current defaults, use the
 solver primer instead of this file:
@@ -422,7 +430,7 @@ This is the data that depends on the physical map and must be recomputed when th
   `eqx.Module`; every field is `Optional[...]` so you only pay for the
   blocks you actually assemble. Build it with `assemble_mass_operators
   / assemble_kron_mass_preconditioner / assemble_incidence_operators /
-  assemble_derivative_operators / assemble_hodge_operators(seq,
+  assemble_derivative_operators / assemble_laplacian_operators(seq,
   geometry, ks=(0,))` (all wrapped by `assemble_all_operators`), or
   `operators_from_coeffs(seq, coeffs, ks, kinds)` when the map is a
   `SplineMap`.
@@ -448,14 +456,14 @@ seq.evaluate_1d()                              # cache 1D basis @ quad
 
 coeffs = ...                                    # (3, n_dof) from user
 ops, geom = operators_from_coeffs(seq, coeffs, ks=(0,))  # dynamic
-u = apply_inverse_hodge_laplacian_ops(seq, ops, rhs, k=0)
+u = apply_inverse_laplacian_ops(seq, ops, rhs, k=0)
 ```
 
 and, when differentiating:
 
 ```python
 def scalar(coeffs, u, lam):
-    ops, _ = operators_from_coeffs(seq, coeffs, ks=(0,), kinds=("hodge",))
+    ops, _ = operators_from_coeffs(seq, coeffs, ks=(0,), kinds=("laplacian",))
     return jnp.dot(lam, apply_stiffness(seq, ops, u, 0))
 
 grad_coeffs = jax.grad(scalar, argnums=0)(coeffs, u, lam)
@@ -491,14 +499,14 @@ SequenceOperators
       │   1b. kron precond (assemble_kron_mass_preconditioner)   — 1-D mass inverses + per-comp scale
       │   2. incidence    (assemble_incidence_operators)         — topology-only, ±1 entries; no geometry
       │   3. derivative   (assemble_derivative_operators)        — validates G_k and M_{k+1}; D_k applied lazily
-      │   4. hodge        (assemble_hodge_operators)             — Jacobi diagonal of K_k (matvec-free of K_k);
+      │   4. laplacian    (assemble_laplacian_operators)             — Jacobi diagonal of K_k (matvec-free of K_k);
       │                                                            K_k itself is never materialised
       │   5. projection   (assemble_projection_operators)        — topology-only, no geometry
       ▼
 Nullspaces (compute_nullspaces / compute_nullspaces_iterative)
-            needs fully assembled mass, derivative, and Hodge operators
+            needs fully assembled mass, derivative, and Laplacian operators
             because it calls apply_inverse_mass_matrix,
-            apply_leray_projection, and apply_inverse_hodge_laplacian.
+            apply_leray_projection, and apply_inverse_laplacian.
 ```
 
 Concretely, the canonical sequence is:
@@ -512,7 +520,7 @@ ops  = assemble_mass_operators(seq, geom)                 # M^k, diag(M^k)^{-1} 
 ops  = assemble_kron_mass_preconditioner(seq, ops)        # 1-D mass inverses + per-component scale
 ops  = assemble_incidence_operators(seq, ops)             # G^k, ±1 entries; topology only
 ops  = assemble_derivative_operators(seq, geom, ops)      # validates G^k, M^{k+1}; D^k applied lazily
-ops  = assemble_hodge_operators(seq, geom, ops)           # Jacobi/Schur diag of K^k via matvec probes;
+ops  = assemble_laplacian_operators(seq, geom, ops)           # Jacobi/Schur diag of K^k via matvec probes;
                                                           # K^k itself is never materialised
 ops  = assemble_projection_operators(seq, ops)            # optional, topology only
 ```
@@ -524,24 +532,24 @@ the preferred entry point for AD.
 
 Each builder is **incremental**: it takes an optional existing
 `SequenceOperators` and fills in the missing blocks for the requested
-`ks`. You can assemble only what you need (e.g. `ks=(0,)`, `kinds=("hodge",)`)
+`ks`. You can assemble only what you need (e.g. `ks=(0,)`, `kinds=("laplacian",)`)
 and the unused fields stay `None`.
 
 ### 7.2 Why this order
 
-- **Mass before Hodge.** The diagonal preconditioners for the
+- **Mass before Laplacian.** The diagonal preconditioners for the
   Schur-complement contributions $\mathbb{D}^{k-1}(\mathbb{M}^{k-1})^{-1}(\mathbb{D}^{k-1})^\top$
   in `dd*_sp_diaginv` combine `diag(stiffness)` with
   `diag(M^{-1})`-weighted $\mathbb{D}\mathbb{D}^\top$ diagonals, so the
   mass-matrix diagonal inverse must already be available when the
-  Hodge block is assembled.
-- **Derivative before Hodge.** The Schur term also needs the sparse
+  Laplacian block is assembled.
+- **Derivative before Laplacian.** The Schur term also needs the sparse
   $\mathbb{D}^k$ block (and its transpose) to build the diagonal
   preconditioner.
 
 ### 7.3 Nullspaces
 
-Hodge Laplacians generally have a non-trivial kernel and must be
+Laplacians generally have a non-trivial kernel and must be
 deflated in CG. The harmonic-form DoF vectors live on the dynamic
 `SequenceOperators` pytree (not on `seq`), as eight fields
 `null_k` / `null_k_dbc` (`k = 0, 1, 2, 3`). Each is a stacked array
@@ -576,13 +584,13 @@ Two routines populate the arrays, both in
     - $k=1,2$ (plain / DBC): start from $\mathbf{1}$, take a Leray
       projection to get a divergence-free / curl-free seed $v$, then
       subtract its exact curl contribution by solving one auxiliary
-      Hodge Laplacian; the residual $v - \mathrm{curl} a$ is the
+      Laplacian; the residual $v - \mathrm{curl} a$ is the
       harmonic representative. **This relies that the domain has no holes**.
       We will probably remove this soon.
 
 2. **Iterative** — `compute_nullspaces_iterative(seq, operators=None,
    betti_numbers=None, eps=1e-6)`: inverse power iteration with a
-   small shift $\epsilon$ against the Hodge Laplacian for each
+   small shift $\epsilon$ against the Laplacian for each
    $(k, \text{BC})$ pair. Handles arbitrary topology; `betti_numbers`
    defaults to `seq.betti_numbers`. `eps` is a regulariser that keeps
    the shifted system SPD.
@@ -597,7 +605,7 @@ arrays directly from the operator bundle it receives.
 
 **Order requirement.** Nullspace computation calls
 `apply_inverse_mass_matrix`, `apply_leray_projection`, and (for
-$k=1,2$) `apply_inverse_hodge_laplacian`. All of those require a
+$k=1,2$) `apply_inverse_laplacian`. All of those require a
 fully-assembled `SequenceOperators`, so compute nullspaces **after**
 `assemble_all_operators` (or after every relevant `assemble_*` call
 for your chosen `ks`).

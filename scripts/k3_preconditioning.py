@@ -26,7 +26,7 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map, toroid_map
 from mrx.operators import (
     apply_derivative_matrix,
-    apply_hodge_laplacian_preconditioner,
+    apply_laplacian_preconditioner,
     apply_mass_matrix,
     apply_mass_matrix_preconditioner,
     apply_stiffness,
@@ -35,7 +35,7 @@ from mrx.operators import (
     assemble_projection_operators,
     assemble_tensor_mass_preconditioner,
     dense_derivative_matrix,
-    dense_hodge_laplacian,
+    dense_laplacian,
     dense_mass_matrix,
     dense_stiffness_matrix,
 )
@@ -1194,7 +1194,7 @@ def build_k2_bulk_restricted_apply(
         dirichlet=dirichlet,
         bulk_indices=bulk_indices,
         operator_apply=lambda x: apply_stiffness(seq, operators, x, 2, dirichlet=dirichlet),
-        smoother_apply=lambda x: apply_hodge_laplacian_preconditioner(
+        smoother_apply=lambda x: apply_laplacian_preconditioner(
             seq,
             operators,
             x,
@@ -1278,7 +1278,7 @@ def build_k2_surgery_schur_richardson_preconditioner(
         split_data=split_data,
         steps=steps,
         operator_apply=lambda x: apply_stiffness(seq, operators, x, 2, dirichlet=dirichlet),
-        smoother_apply=lambda x: apply_hodge_laplacian_preconditioner(
+        smoother_apply=lambda x: apply_laplacian_preconditioner(
             seq,
             operators,
             x,
@@ -1312,7 +1312,7 @@ def benchmark_k2_range_preconditioners(
         return apply_stiffness(seq, operators, x, 2, dirichlet=dirichlet)
 
     def k2_jacobi_apply(x: jnp.ndarray) -> jnp.ndarray:
-        return apply_hodge_laplacian_preconditioner(
+        return apply_laplacian_preconditioner(
             seq,
             operators,
             x,
@@ -1759,7 +1759,7 @@ def diagnose_k3_schur_upper_preconditioners(
     dirichlet: bool,
     upper_preconditioners: dict[str, callable] | None = None,
 ) -> tuple[jnp.ndarray, list[K3SchurApproximationReport]]:
-    schur = jnp.asarray(dense_hodge_laplacian(seq, operators, 3, dirichlet=dirichlet))
+    schur = jnp.asarray(dense_laplacian(seq, operators, 3, dirichlet=dirichlet))
     schur_inv = _symmetrize(jnp.linalg.inv(schur))
     n_upper = schur.shape[0]
     identity = jnp.eye(n_upper, dtype=jnp.float64)
@@ -2037,7 +2037,7 @@ def build_k3_dense_symmetric_richardson_upper_preconditioners(
     power_iterations: int = 10,
     damping_safety: float = 0.8,
 ) -> tuple[dict[str, callable], dict[str, dict[str, float | int]], jnp.ndarray]:
-    schur = _symmetrize(jnp.asarray(dense_hodge_laplacian(seq, operators, 3, dirichlet=dirichlet)))
+    schur = _symmetrize(jnp.asarray(dense_laplacian(seq, operators, 3, dirichlet=dirichlet)))
     n_upper = schur.shape[0]
     jacobi_inverse = _symmetrize(
         _dense_operator_from_apply(
