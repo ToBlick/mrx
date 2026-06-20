@@ -24,25 +24,21 @@ from mrx.preconditioners import (
     MassPreconditionerSpec,
     SchurPreconditionerSpec,
     SaddlePointPreconditionerSpec,
+    _apply_bulk_to_surgery_coupling,
     _apply_extracted_submatrix,
-    _apply_k0_bulk_to_surgery_coupling,
-    _apply_k0_surgery_to_bulk_coupling,
     _apply_k1_bulk_diagonal_preconditioner,
     _apply_k1_bulk_preconditioner,
-    _apply_k1_bulk_to_surgery_coupling,
     _apply_k1_rt_art_coupling,
     _apply_k1_rt_atr_coupling,
     _apply_k1_rt_to_zeta_coupling,
-    _apply_k1_surgery_to_bulk_coupling,
     _apply_k1_zeta_to_rt_coupling,
     _apply_k2_bulk_diagonal_preconditioner,
     _apply_k2_bulk_preconditioner,
-    _apply_k2_bulk_to_surgery_coupling,
     _apply_k2_r_to_theta_coupling,
-    _apply_k2_surgery_to_bulk_coupling,
     _apply_k2_theta_to_r_coupling,
     _apply_k2_rt_to_zeta_coupling,
     _apply_k2_zeta_to_rt_coupling,
+    _apply_surgery_to_bulk_coupling,
     _assemble_surgery_schur_inverse_from_applies,
     _build_effective_prior_terms,
     _build_extracted_mass_apply_data,
@@ -565,6 +561,14 @@ class K0TensorHodgePreconditionerFactors(eqx.Module):
     bulk_modal_denom: Optional[jnp.ndarray] = None
     cp_relative_error: Optional[float] = None
     cp_final_delta: Optional[float] = None
+    # Whether the dense core<->bulk coupling block was precomputed at build
+    # time (default yes). When ``core_coupling`` is present the apply replaces
+    # the two matrix-free k=0 stiffness couplings (K_0 = G_0^T M_1 G_0, an M_1
+    # mass apply between two incidences, O(n^3 p^6)) with dense matvecs
+    # ``core_coupling @`` / ``core_coupling.T @`` of cost O(bulk * core). The
+    # core (polar-axis) size is small, so the block is cheap to store and probe.
+    precompute_coupling: bool = eqx.field(static=True, default=True)
+    core_coupling: Optional[jnp.ndarray] = None
 
 
 _EXTRACTION_OPERATOR_NAMES = (
@@ -1536,7 +1540,9 @@ def _assemble_k0_stiffness_fd_bulk_factors(
 
 def _build_k0_tensor_hodge_preconditioner_factors(
         *, core_size: int, schur_inv: jnp.ndarray, bulk_data: dict,
-        schur_projector: Optional[jnp.ndarray] = None) -> K0TensorHodgePreconditionerFactors:
+        schur_projector: Optional[jnp.ndarray] = None,
+        precompute_coupling: bool = True,
+        core_coupling: Optional[jnp.ndarray] = None) -> K0TensorHodgePreconditionerFactors:
     return K0TensorHodgePreconditionerFactors(
         core_size=core_size,
         bulk_shape=bulk_data['bulk_shape'],
@@ -1579,6 +1585,8 @@ def _build_k0_tensor_hodge_preconditioner_factors(
         bulk_modal_denom=bulk_data.get('bulk_modal_denom'),
         cp_relative_error=bulk_data.get('cp_relative_error'),
         cp_final_delta=bulk_data.get('cp_final_delta'),
+        precompute_coupling=precompute_coupling,
+        core_coupling=core_coupling,
     )
 
 
@@ -1760,6 +1768,7 @@ def _apply_k0_tensor_hodge_bulk_to_surgery_coupling(
 def _assemble_k0_tensor_hodge_preconditioner(
         seq, operators: SequenceOperators, *,
         rank: int, cp_maxiter: int, cp_tol: float, cp_ridge: float,
+        precompute_coupling: bool = True,
         dirichlet_flags: tuple[bool, ...] = (False, True)) -> BoundaryConditionPair:
     pair = BoundaryConditionPair()
     core_size = _core_size(seq)
@@ -1797,10 +1806,25 @@ def _assemble_k0_tensor_hodge_preconditioner(
 
         schur_inv = _symmetric_pseudoinverse(schur)
 
+        # Precompute the dense core->bulk coupling block C0 (bulk x core) once,
+        # so the per-apply core<->bulk couplings become dense matvecs instead of
+        # full matrix-free k=0 stiffness applies. K_0 is symmetric, so the
+        # bulk->core block is exactly C0^T. Probed sequentially (one matrix-free
+        # stiffness apply per core DOF, same as the Schur build above).
+        core_coupling = None
+        if precompute_coupling:
+            core_coupling = _assemble_dense_from_apply(
+                surgery_to_bulk_apply,
+                core_size,
+                sequential=True,
+            )
+
         factors = _build_k0_tensor_hodge_preconditioner_factors(
             core_size=core_size,
             schur_inv=schur_inv,
             bulk_data=bulk_data,
+            precompute_coupling=precompute_coupling,
+            core_coupling=core_coupling,
         )
         pair = eqx.tree_at(
             lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
@@ -1826,24 +1850,32 @@ def _apply_k0_tensor_hodge_preconditioner(
     rhs_c = rhs[:core_size]
     rhs_b = rhs[core_size:]
     y = _apply_k0_tensor_hodge_bulk_inverse(factors, rhs_b)
-    schur_rhs = rhs_c - _apply_k0_tensor_hodge_bulk_to_surgery_coupling(
-        seq,
-        operators,
-        core_size,
-        y,
-        dirichlet=dirichlet,
-    )
-    z = factors.schur_inv @ schur_rhs
-    x_b = y - _apply_k0_tensor_hodge_bulk_inverse(
-        factors,
-        _apply_k0_tensor_hodge_surgery_to_bulk_coupling(
+    if factors.core_coupling is not None:
+        # Dense precomputed coupling: bulk->core = C0^T (K_0 symmetric).
+        schur_rhs = rhs_c - factors.core_coupling.T @ y
+    else:
+        schur_rhs = rhs_c - _apply_k0_tensor_hodge_bulk_to_surgery_coupling(
             seq,
             operators,
             core_size,
-            z,
+            y,
             dirichlet=dirichlet,
-        ),
-    )
+        )
+    z = factors.schur_inv @ schur_rhs
+    if factors.core_coupling is not None:
+        # Dense precomputed coupling: core->bulk = C0.
+        x_b = y - _apply_k0_tensor_hodge_bulk_inverse(factors, factors.core_coupling @ z)
+    else:
+        x_b = y - _apply_k0_tensor_hodge_bulk_inverse(
+            factors,
+            _apply_k0_tensor_hodge_surgery_to_bulk_coupling(
+                seq,
+                operators,
+                core_size,
+                z,
+                dirichlet=dirichlet,
+            ),
+        )
     return jnp.concatenate([z, x_b])
 
 
@@ -1983,7 +2015,7 @@ def assemble_mass_jacobi_preconditioner(
 
 def assemble_mass_surgery_preconditioner(
         seq, operators: Optional[SequenceOperators] = None,
-        *, ks: Sequence[int] = (0, 1, 2)):
+        *, ks: Sequence[int] = (0, 1, 2), precompute_coupling: bool = True):
     operators = _ensure_extraction_operators(seq, operators)
     for k in ks:
         if k not in (0, 1, 2):
@@ -2000,6 +2032,7 @@ def assemble_mass_surgery_preconditioner(
             mass_apply,
             k=k,
             existing=surgery_precond,
+            precompute_coupling=precompute_coupling,
         )
     mass_preconds = set_mass_surgery(operators.mass_preconds, surgery_precond)
     return eqx.tree_at(
@@ -2026,12 +2059,14 @@ def assemble_tensor_mass_preconditioner(
     tensor block inverse applies.
     """
     operators = _ensure_extraction_operators(seq, operators)
+    precompute_coupling = bool((cp_kwargs or {}).get("precompute_coupling", True))
     surgery_ks = tuple(k for k in ks if k in (0, 1, 2))
     if surgery_ks:
         operators = assemble_mass_surgery_preconditioner(
             seq,
             operators=operators,
             ks=surgery_ks,
+            precompute_coupling=precompute_coupling,
         )
     for k in ks:
         if k not in (0, 1, 2, 3):
@@ -2221,7 +2256,8 @@ def _build_k1_stiffness_surgery_factors(
         seq,
         operators: SequenceOperators,
         *,
-        dirichlet: bool) -> K1MassSurgeryPreconditionerFactors:
+        dirichlet: bool,
+        precompute_coupling: bool = True) -> K1MassSurgeryPreconditionerFactors:
     block_indices = _tensor_block_indices_k1(seq, dirichlet)
     apply_data = _build_extracted_stiffness_apply_data(
         seq,
@@ -2230,6 +2266,7 @@ def _build_k1_stiffness_surgery_factors(
         dirichlet=dirichlet,
     )
     surgery_indices = block_indices["surgery"]
+    bulk_indices = block_indices["bulk"]
     surgery_size = int(surgery_indices.shape[0])
     ass = _symmetrize(_assemble_dense_from_apply(
         lambda x, apply_data=apply_data, idx=surgery_indices: _apply_extracted_submatrix(
@@ -2240,9 +2277,22 @@ def _build_k1_stiffness_surgery_factors(
         ),
         surgery_size,
     ))
+    # Precompute the dense surgery->bulk coupling block C (bulk x surgery) once,
+    # so the per-apply surgery couplings become dense matvecs (C @ / C.T @,
+    # extracted curl-curl is symmetric) instead of a full matrix-free apply of
+    # the extracted operator (O(n^3 p^6) from the M_2 mass apply). The surgery
+    # space is the polar axis (small), so the block is cheap to store/probe.
+    coupling_sb = None
+    if precompute_coupling:
+        coupling_sb = _assemble_dense_from_apply(
+            lambda x, apply_data=apply_data, rows=bulk_indices, cols=surgery_indices:
+            _apply_extracted_submatrix(apply_data, rows, cols, x),
+            surgery_size,
+            sequential=True,
+        )
     return K1MassSurgeryPreconditionerFactors(
         surgery_indices=surgery_indices,
-        bulk_indices=block_indices["bulk"],
+        bulk_indices=bulk_indices,
         r_indices=block_indices["r"],
         theta_bulk_indices=block_indices["theta_bulk"],
         zeta_bulk_indices=block_indices["zeta_bulk"],
@@ -2255,6 +2305,7 @@ def _build_k1_stiffness_surgery_factors(
         apply_data=apply_data,
         surgery_diaginv=_safe_diaginv(jnp.diag(ass)),
         ass=ass,
+        coupling_sb=coupling_sb,
     )
 
 
@@ -2322,6 +2373,7 @@ def assemble_tensor_stiffness_preconditioner(
     block_lanczos_min_eig_floor_fraction = float(cp_kwargs.get("block_lanczos_min_eig_floor_fraction", 1e-3))
     richardson_steps = int(cp_kwargs.get("richardson_steps", 0))
     richardson_omega = float(cp_kwargs.get("richardson_omega", 1.0))
+    precompute_coupling = bool(cp_kwargs.get("precompute_coupling", True))
     surgery_schur_pinv_tol = float(
         cp_kwargs.get("surgery_schur_pinv_tol", cp_kwargs.get("schur_pinv_tol", 1e-8))
     )
@@ -2375,6 +2427,7 @@ def assemble_tensor_stiffness_preconditioner(
                     seq,
                     operators,
                     dirichlet=dirichlet,
+                    precompute_coupling=precompute_coupling,
                 )
                 arr_shape = _arr_shape_k1(seq, dirichlet)
                 theta_shape = _theta_bulk_shape_k1(seq, dirichlet)
@@ -2550,9 +2603,9 @@ def assemble_tensor_stiffness_preconditioner(
                 )
                 schur_inv = _assemble_surgery_schur_inverse_from_applies(
                     surgery.ass,
-                    lambda rhs_s, surgery=surgery: _apply_k1_surgery_to_bulk_coupling(surgery, rhs_s),
+                    lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
                     bulk_apply,
-                    lambda rhs_b, surgery=surgery: _apply_k1_bulk_to_surgery_coupling(surgery, rhs_b),
+                    lambda rhs_b, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_b),
                     relative_tol=surgery_schur_pinv_tol,
                 )
 
@@ -2746,9 +2799,9 @@ def assemble_tensor_stiffness_preconditioner(
             )
             schur_inv = _assemble_surgery_schur_inverse_from_applies(
                 surgery.ass,
-                lambda rhs_s, surgery=surgery: _apply_k2_surgery_to_bulk_coupling(surgery, rhs_s),
+                lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
                 bulk_apply,
-                lambda rhs_b, surgery=surgery: _apply_k2_bulk_to_surgery_coupling(surgery, rhs_b),
+                lambda rhs_b, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_b),
                 relative_tol=surgery_schur_pinv_tol,
             )
 
@@ -2817,13 +2870,13 @@ def apply_stiffness_tensor_preconditioner(
         rhs_b = v[surgery.bulk_indices]
         bulk_apply = _apply_k2_bulk_preconditioner if factors.use_inner_schur else _apply_k2_bulk_diagonal_preconditioner
         y = bulk_apply(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_b)
-        z = factors.schur_inv @ (rhs_s - _apply_k2_bulk_to_surgery_coupling(surgery, y))
+        z = factors.schur_inv @ (rhs_s - _apply_bulk_to_surgery_coupling(surgery, y))
         x_b = y - bulk_apply(
             surgery,
             factors.r_bulk,
             factors.theta,
             factors.zeta,
-            _apply_k2_surgery_to_bulk_coupling(surgery, z),
+            _apply_surgery_to_bulk_coupling(surgery, z),
         )
         x = jnp.zeros_like(v)
         x = x.at[surgery.surgery_indices].set(z)
@@ -2843,13 +2896,13 @@ def apply_stiffness_tensor_preconditioner(
         rhs_b = v[surgery.bulk_indices]
         bulk_apply = _apply_k1_bulk_preconditioner if factors.use_inner_schur else _apply_k1_bulk_diagonal_preconditioner
         y = bulk_apply(surgery, factors.arr, factors.theta, factors.zeta, rhs_b)
-        z = factors.schur_inv @ (rhs_s - _apply_k1_bulk_to_surgery_coupling(surgery, y))
+        z = factors.schur_inv @ (rhs_s - _apply_bulk_to_surgery_coupling(surgery, y))
         x_b = y - bulk_apply(
             surgery,
             factors.arr,
             factors.theta,
             factors.zeta,
-            _apply_k1_surgery_to_bulk_coupling(surgery, z),
+            _apply_surgery_to_bulk_coupling(surgery, z),
         )
         x = jnp.zeros_like(v)
         x = x.at[surgery.surgery_indices].set(z)
@@ -2965,6 +3018,7 @@ def assemble_tensor_laplacian_preconditioner(
     cp_maxiter = cp_kwargs.get("maxiter")
     cp_tol = cp_kwargs.get("tol")
     cp_ridge = cp_kwargs.get("ridge")
+    precompute_coupling = bool(cp_kwargs.get("precompute_coupling", True))
 
     for k in ks:
         if k != 0:
@@ -2991,6 +3045,7 @@ def assemble_tensor_laplacian_preconditioner(
         cp_maxiter=cfg_maxiter,
         cp_tol=cfg_tol,
         cp_ridge=cfg_ridge,
+        precompute_coupling=precompute_coupling,
     )
     return eqx.tree_at(
         lambda ops: ops.k0_tensor_hodge_precond,
@@ -4770,18 +4825,18 @@ def _k0_bulk_indices_from_surgery(surgery):
 def _mass_surgery_coupling_applies(k: int, surgery):
     if k == 0:
         return (
-            lambda rhs_s, surgery=surgery: _apply_k0_surgery_to_bulk_coupling(surgery, rhs_s),
-            lambda rhs_b, surgery=surgery: _apply_k0_bulk_to_surgery_coupling(surgery, rhs_b),
+            lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
+            lambda rhs_b, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_b),
         )
     if k == 1:
         return (
-            lambda rhs_s, surgery=surgery: _apply_k1_surgery_to_bulk_coupling(surgery, rhs_s),
-            lambda rhs_b, surgery=surgery: _apply_k1_bulk_to_surgery_coupling(surgery, rhs_b),
+            lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
+            lambda rhs_b, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_b),
         )
     if k == 2:
         return (
-            lambda rhs_s, surgery=surgery: _apply_k2_surgery_to_bulk_coupling(surgery, rhs_s),
-            lambda rhs_b, surgery=surgery: _apply_k2_bulk_to_surgery_coupling(surgery, rhs_b),
+            lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
+            lambda rhs_b, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_b),
         )
     raise ValueError(f"Mass surgery coupling is only implemented for k=0,1,2 (got k={k})")
 

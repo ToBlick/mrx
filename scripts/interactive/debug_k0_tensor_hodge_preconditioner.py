@@ -45,8 +45,8 @@ from mrx.operators import (
     dense_laplacian,
 )
 from mrx.preconditioners import (
-    _apply_k0_bulk_to_surgery_coupling,
-    _apply_k0_surgery_to_bulk_coupling,
+    _apply_bulk_to_surgery_coupling,
+    _apply_surgery_to_bulk_coupling,
     _apply_k1_rt_art_coupling,
     _apply_k1_rt_atr_coupling,
     _apply_tensor_diagonal_block,
@@ -605,14 +605,14 @@ def _build_mass_diagnostics(seq, operators, config: Config):
                     ),
                     "rel_surgery_asb": _relative_fro_error(
                         _matrix_from_apply(
-                            lambda x: _apply_k0_bulk_to_surgery_coupling(surgery, x),
+                            lambda x: _apply_bulk_to_surgery_coupling(surgery, x),
                             bulk_exact.shape[0],
                         ),
                         asb,
                     ),
                     "rel_surgery_abs": _relative_fro_error(
                         _matrix_from_apply(
-                            lambda x: _apply_k0_surgery_to_bulk_coupling(surgery, x),
+                            lambda x: _apply_surgery_to_bulk_coupling(surgery, x),
                             ass.shape[0],
                         ),
                         abs_,

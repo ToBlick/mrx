@@ -90,8 +90,8 @@ from mrx.preconditioners import (
     _apply_k1_bulk_diagonal_preconditioner,
     _apply_k1_bulk_forward_model,
     _apply_k1_bulk_preconditioner,
-    _apply_k1_bulk_to_surgery_coupling,
-    _apply_k1_surgery_to_bulk_coupling,
+    _apply_bulk_to_surgery_coupling,
+    _apply_surgery_to_bulk_coupling,
     _apply_tensor_diagonal_block_preconditioner,
     _symmetrize,
 )
@@ -346,14 +346,16 @@ def _build_k1_block_fd_preconditioner(
         )
         return _apply_k1_block_fd_bulk_from_state(state, rhs_bulk)
 
-    # Assemble surgery Schur with the chosen bulk surrogate.
+    # Assemble surgery Schur with the chosen bulk surrogate. The surgery
+    # coupling applies now route through the production payload's precomputed
+    # dense coupling block (``surgery.coupling_sb``, built by default in
+    # ``_build_k1_stiffness_surgery_factors``), so no script-local precompute is
+    # needed here.
     n_s = int(surgery.surgery_size)
     eye_s = jnp.eye(n_s, dtype=jnp.float64)
     schur_dense = jax.vmap(
-        lambda v: surgery.ass @ v
-        - _apply_k1_bulk_to_surgery_coupling(
-            surgery,
-            _bulk_apply(_apply_k1_surgery_to_bulk_coupling(surgery, v)),
+        lambda v: surgery.ass @ v - _apply_bulk_to_surgery_coupling(
+            surgery, _bulk_apply(_apply_surgery_to_bulk_coupling(surgery, v))
         ),
         in_axes=1,
         out_axes=1,
@@ -402,7 +404,7 @@ def _apply_k1_block_fd_bulk_from_state(state: K1BlockFDPreconditionerState, rhs_
         )
     bulk_apply_impl = (
         _apply_k1_bulk_preconditioner
-        if state.use_inner_schur
+        if factors.use_inner_schur
         else _apply_k1_bulk_diagonal_preconditioner
     )
     return bulk_apply_impl(
@@ -419,10 +421,10 @@ def _apply_k1_block_fd_preconditioner_from_state(state: K1BlockFDPreconditionerS
     rhs_s = v[surgery.surgery_indices]
     rhs_b = v[surgery.bulk_indices]
     y = _apply_k1_block_fd_bulk_from_state(state, rhs_b)
-    z = state.schur_inv @ (rhs_s - _apply_k1_bulk_to_surgery_coupling(surgery, y))
+    z = state.schur_inv @ (rhs_s - _apply_bulk_to_surgery_coupling(surgery, y))
     x_b = y - _apply_k1_block_fd_bulk_from_state(
         state,
-        _apply_k1_surgery_to_bulk_coupling(surgery, z),
+        _apply_surgery_to_bulk_coupling(surgery, z),
     )
     x = jnp.zeros_like(v)
     x = x.at[surgery.surgery_indices].set(z)
@@ -440,13 +442,13 @@ def _profile_k1_block_fd_preconditioner_from_state(state: K1BlockFDPreconditione
     jax.block_until_ready(y)
     t1 = time.perf_counter()
 
-    coup_sb = _apply_k1_bulk_to_surgery_coupling(surgery, y)
+    coup_sb = _apply_bulk_to_surgery_coupling(surgery, y)
     jax.block_until_ready(coup_sb)
     z = state.schur_inv @ (rhs_s - coup_sb)
     jax.block_until_ready(z)
     t2 = time.perf_counter()
 
-    coup_bs = _apply_k1_surgery_to_bulk_coupling(surgery, z)
+    coup_bs = _apply_surgery_to_bulk_coupling(surgery, z)
     jax.block_until_ready(coup_bs)
     corr = _apply_k1_block_fd_bulk_from_state(state, coup_bs)
     jax.block_until_ready(corr)
@@ -1408,9 +1410,9 @@ def _build_k1_mode3x3_fd_preconditioner(seq, ops, *, dirichlet: bool, pinv_rtol:
     eye_s = jnp.eye(n_s, dtype=jnp.float64)
     schur_dense = jax.vmap(
         lambda v: surgery.ass @ v
-        - _apply_k1_bulk_to_surgery_coupling(
+        - _apply_bulk_to_surgery_coupling(
             surgery,
-            bulk_apply(_apply_k1_surgery_to_bulk_coupling(surgery, v)),
+            bulk_apply(_apply_surgery_to_bulk_coupling(surgery, v)),
         ),
         in_axes=1,
         out_axes=1,
@@ -1426,8 +1428,8 @@ def _build_k1_mode3x3_fd_preconditioner(seq, ops, *, dirichlet: bool, pinv_rtol:
         rhs_s = v[surgery.surgery_indices]
         rhs_b = v[surgery.bulk_indices]
         y = bulk_apply(rhs_b)
-        z = schur_inv @ (rhs_s - _apply_k1_bulk_to_surgery_coupling(surgery, y))
-        x_b = y - bulk_apply(_apply_k1_surgery_to_bulk_coupling(surgery, z))
+        z = schur_inv @ (rhs_s - _apply_bulk_to_surgery_coupling(surgery, y))
+        x_b = y - bulk_apply(_apply_surgery_to_bulk_coupling(surgery, z))
         x = jnp.zeros_like(v)
         x = x.at[surgery.surgery_indices].set(z)
         x = x.at[surgery.bulk_indices].set(x_b)
@@ -1471,6 +1473,7 @@ def assemble_operators(
         *,
         rank: int = RANK,
         k1_stiff_inner_schur: bool = False,
+        precompute_coupling: bool = True,
         timing_breakdown: bool = False):
     def _timed(label, fn, ops_in):
         if not timing_breakdown:
@@ -1501,12 +1504,18 @@ def assemble_operators(
     # Tensor preconditioners (rank set by caller; default RANK).
     ops = _timed(
         "tensor_mass",
-        lambda o: assemble_tensor_mass_preconditioner(seq, operators=o, ks=(0, 1, 2, 3), rank=rank),
+        lambda o: assemble_tensor_mass_preconditioner(
+            seq, operators=o, ks=(0, 1, 2, 3), rank=rank,
+            cp_kwargs={"precompute_coupling": precompute_coupling},
+        ),
         ops,
     )
     ops = _timed(
         "tensor_laplacian",
-        lambda o: assemble_tensor_laplacian_preconditioner(seq, operators=o, ks=(0,), rank=rank),
+        lambda o: assemble_tensor_laplacian_preconditioner(
+            seq, operators=o, ks=(0,), rank=rank,
+            cp_kwargs={"precompute_coupling": precompute_coupling},
+        ),
         ops,
     )
     # Always assemble k=1 tensor stiffness for P_A candidates.
@@ -1517,7 +1526,10 @@ def assemble_operators(
             operators=o,
             ks=(1,),
             rank=rank,
-            cp_kwargs={"k1_inner_schur": k1_stiff_inner_schur},
+            cp_kwargs={
+                "k1_inner_schur": k1_stiff_inner_schur,
+                "precompute_coupling": precompute_coupling,
+            },
         ),
         ops,
     )
@@ -1589,7 +1601,11 @@ def make_apply_routines(
             seq, ops, rhs, 0, dirichlet=DIRICHLET, kind="tensor")
 
     def l0_inv(x):
-        # Rank-1 tensor k=0 Hodge-Laplacian preconditioner: V0* -> V0.
+        # Rank-1 tensor k=0 Hodge-Laplacian preconditioner: V0* -> V0. The
+        # production apply now uses the precomputed dense core<->bulk coupling
+        # block (factors.core_coupling, built by default in
+        # _assemble_k0_tensor_hodge_preconditioner), so no script-local
+        # precompute is needed.
         return apply_laplacian_preconditioner(
             seq, ops, x, 0, dirichlet=DIRICHLET, kind="tensor")
 
@@ -1789,6 +1805,35 @@ def make_apply_routines(
         pa_proj = p_a_raw_with_state(state, project_dual_complement(r))
         return project_primal_complement(pa_proj) + p_b(r)
 
+    def projected_p_a_plus_p_b_fused_with_state(state, r):
+        # Algebraically IDENTICAL to projected_p_a_plus_p_b_with_state
+        # (C P_S C^* + P_B) but evaluated with 2 L_0^{-1} solves instead of 4.
+        # Two redundancies are removed exactly (no approximation):
+        #   1. The dual-projection inner solve and the P_B inner solve are the
+        #      same vector q = L_0^{-1} G_0^T r -> computed once.
+        #   2. The primal-projection outer solve and the P_B outer solve are
+        #      both G_0 L_0^{-1}(.) -> their arguments are summed and solved
+        #      once: G_0 L_0^{-1}(M_0 q - G_0^T M_1 w).
+        # Symmetry (hence MINRES iteration count) is preserved by construction.
+        gtr = apply_incidence_matrix(
+            seq, ops, r, 0,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=True)   # G_0^T r
+        q = l0_inv(gtr)                                                        # L_0^{-1} G_0^T r
+        gq = apply_incidence_matrix(
+            seq, ops, q, 0,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=False)  # G_0 q
+        pstar_r = r - apply_mass_matrix(seq, ops, gq, 1, dirichlet=DIRICHLET)  # C^* r = r - M_1 G_0 q
+        w = p_a_raw_with_state(state, pstar_r)                                 # P_S C^* r
+        m0q = apply_mass_matrix(seq, ops, q, 0, dirichlet=DIRICHLET)           # M_0 q
+        m1w = apply_mass_matrix(seq, ops, w, 1, dirichlet=DIRICHLET)           # M_1 w
+        gtm1w = apply_incidence_matrix(
+            seq, ops, m1w, 0,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=True)   # G_0^T M_1 w
+        outer = apply_incidence_matrix(
+            seq, ops, l0_inv(m0q - gtm1w), 0,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=False)  # G_0 L_0^{-1}(M_0 q - G_0^T M_1 w)
+        return w + outer
+
     def projected_p_b_plus_p_b(r):
         # Same idea as the projected-Jacobi comparator, but using P_B in the
         # projected slot instead of the diagonal Schur approximation.
@@ -1836,6 +1881,7 @@ def make_apply_routines(
         "jacobi_scaled_plus_p_a_plus_p_b_with_state": jacobi_scaled_plus_p_a_plus_p_b_with_state,
         "jacobi_plus_p_a_raw_plus_p_b_with_state": jacobi_plus_p_a_raw_plus_p_b_with_state,
         "projected_p_a_plus_p_b_with_state": projected_p_a_plus_p_b_with_state,
+        "projected_p_a_plus_p_b_fused_with_state": projected_p_a_plus_p_b_fused_with_state,
     }
 
 
@@ -2019,7 +2065,9 @@ def time_solve(solve, rhs_batch, *, solve_state=None, rel_tol: float = 1e-10):
         "avg_iters": float(jnp.mean(jnp.asarray(iters))),
         "max_iters": int(max(iters)),
         "min_iters": int(min(iters)),
+        "std_iters": float(jnp.std(jnp.asarray(iters, dtype=jnp.float64))),
         "avg_ms": float(jnp.mean(jnp.asarray(times_ms))),
+        "std_ms": float(jnp.std(jnp.asarray(times_ms))),
         "max_residual": float(max(residuals)),
         "n_fail": int(n_fail),
         "n_total": int(len(infos)),
@@ -2650,6 +2698,29 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--no-precompute-coupling",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable the production precompute of the dense surgery<->bulk "
+            "coupling blocks (k=1 curl-curl C and k=0 Hodge core coupling C0). "
+            "Precompute is ON by default (set on the preconditioner payload at "
+            "construction); this flag restores the matrix-free coupling path "
+            "for A/B comparison."
+        ),
+    )
+    parser.add_argument(
+        "--mass-benchmark",
+        action="store_true",
+        default=False,
+        help=(
+            "Additionally benchmark pure k=0 mass inversion M_0^{-1} via CG, "
+            "comparing jacobi vs the tensor preconditioner with the dense "
+            "surgery coupling precomputed ON vs OFF (built in the same run). "
+            "Reports a separate table alongside the saddle/condensed results."
+        ),
+    )
+    parser.add_argument(
         "--pa-grad-project",
         action="store_true",
         default=False,
@@ -2776,6 +2847,7 @@ def main() -> None:
         seq,
         rank=rank,
         k1_stiff_inner_schur=use_k1_inner_schur,
+        precompute_coupling=not args.no_precompute_coupling,
         timing_breakdown=args.assembly_breakdown,
     )
     print(f"[diag] operators + rank-{rank} tensor preconditioners assembled in "
@@ -2824,6 +2896,13 @@ def main() -> None:
     else:
         print("[diag] P_A gradient-subspace projection: OFF (raw additive P_A)")
 
+    if args.no_precompute_coupling:
+        print("[diag] dense coupling precompute: OFF "
+              "(k=1 surgery + k=0 Hodge core couplings use matrix-free applies)")
+    else:
+        print("[diag] dense coupling precompute: ON (production default) "
+              "(k=1 surgery C and k=0 Hodge core C0 are dense matvecs)")
+
     if args.leakage_only:
         print("[diag] leakage-only run: skipping property/overlap/spectrum "
               "checks, RHS build, and MINRES table.")
@@ -2858,6 +2937,7 @@ def main() -> None:
         ),
         "jacobi(K)+P_B": (applies["k_jacobi_plus_p_b"], None),
         "P.T P_S P + P_B": (applies["projected_p_a_plus_p_b_with_state"], applies["p_a_state"]),
+        "P.T P_S P + P_B (fused)": (applies["projected_p_a_plus_p_b_fused_with_state"], applies["p_a_state"]),
         "P.T jacobi(S) P + P_B": (applies["projected_jacobi_plus_p_b"], None),
     }
 
@@ -3094,6 +3174,64 @@ def main() -> None:
                 )
                 print(f"{alpha:<10.3g} {stats['avg_iters']:>8.1f} {stats['max_iters']:>7d} "
                       f"{stats['avg_ms']:>9.1f} {stats['max_residual']:>11.2e} "
+                      f"{stats['n_fail']:>7d}/{stats['n_total']:<d}")
+
+    if args.mass_benchmark:
+        print()
+        print("[diag] pure mass inversion M_k^{-1} (CG; dense surgery coupling "
+              "on/off vs jacobi; k=3 has no surgery, so no coupling precompute)")
+        # Rebuild the surgery-bearing mass preconditioners (k=0,1,2) with the
+        # dense coupling precompute OFF on a functional copy of ``ops`` so both
+        # variants live in one run. Bit-identical to ON (only the surgery
+        # coupling apply path differs), so iteration counts must match; only
+        # wall time should move. k=3 has no surgery split (nothing to densify).
+        ops_mass_off = assemble_tensor_mass_preconditioner(
+            seq, operators=ops, ks=(0, 1, 2), rank=rank,
+            cp_kwargs={"precompute_coupling": False},
+        )
+
+        header = (
+            f"{'mass precond':<40} {'avg_it':>8} {'it_std':>7} "
+            f"{'avg_ms':>9} {'ms_std':>8} {'max_res':>11} {'fails':>7}"
+        )
+        print(header)
+        print("-" * len(header))
+        for k in (0, 1, 2, 3):
+            n_k = int(getattr(seq, f"n{k}_dbc" if DIRICHLET else f"n{k}"))
+
+            def _mk_matvec(v, k=k):
+                return apply_mass_matrix(seq, ops, v, k, dirichlet=DIRICHLET)
+
+            methods_k = [
+                (f"k={k} jacobi (diag)",
+                 lambda rhs, k=k: apply_mass_matrix_preconditioner(
+                     seq, ops, rhs, k, dirichlet=DIRICHLET, kind="jacobi")),
+                (f"k={k} tensor (coupling precompute ON)",
+                 lambda rhs, k=k: apply_mass_matrix_preconditioner(
+                     seq, ops, rhs, k, dirichlet=DIRICHLET, kind="tensor")),
+            ]
+            if k != 3:
+                methods_k.append(
+                    (f"k={k} tensor (coupling precompute OFF)",
+                     lambda rhs, k=k: apply_mass_matrix_preconditioner(
+                         seq, ops_mass_off, rhs, k, dirichlet=DIRICHLET, kind="tensor")))
+
+            # b = M_k x_true keeps the RHS well-scaled (M_k is SPD, non-singular).
+            mass_keys = jax.random.split(jax.random.PRNGKey(args.seed + k), args.n_rhs)
+            rhs_batch_k = jnp.stack(
+                [_mk_matvec(jax.random.normal(key, (n_k,), dtype=jnp.float64))
+                 for key in mass_keys],
+                axis=0,
+            )
+            for name, precond in methods_k:
+                solve = make_solve(
+                    _mk_matvec, _mk_matvec, precond,
+                    tol=args.cg_tol, maxiter=args.cg_maxiter,
+                )
+                stats = time_solve(solve, rhs_batch_k, rel_tol=report_rel_tol)
+                print(f"{name:<40} {stats['avg_iters']:>8.1f} {stats['std_iters']:>7.2f} "
+                      f"{stats['avg_ms']:>9.1f} {stats['std_ms']:>8.2f} "
+                      f"{stats['max_residual']:>11.2e} "
                       f"{stats['n_fail']:>7d}/{stats['n_total']:<d}")
 
 

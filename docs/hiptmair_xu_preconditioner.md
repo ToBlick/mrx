@@ -465,9 +465,11 @@ time.
 - CP rank is neutral (rank 1 = rank 3); the FD bulk approximation saturates at
   rank 1. The remaining lever is not CP rank but **vector coupling quality** in
   the curl bulk model.
-- Open items: confirm on other geometries/resolutions, retry `k=2,3`, and
-  decide whether the projected `P_A + P_B` should be promoted out of the
-  diagnostic harness into a production path.
+- Open items: now also confirmed on `rotating_ellipse` (`nfp=3`, rank sweep
+  1/2/3 — see "Rotating-ellipse robustness" below); still to do is more
+  resolution coverage, retry `k=2,3`, and decide whether the projected
+  `P_A + P_B` should be promoted out of the diagnostic harness into a production
+  path.
 
 ### Why the low modes fail: the k=0 ↔ k=1 nullspace story
 
@@ -566,41 +568,365 @@ cross-section; it stays ζ-independent), so use `--geometry rotating_ellipse`
 (symmetry-breaking `nu(ζ)`) to probe whether the band must extend into θ/ζ.
 `--leakage-only` stops after assembly for a cheap measurement.
 
+### MINRES verdict: the radial band buys little here (ns=(6,12,4), p=3, toroid)
+
+Both the radial-banded block and the same-mode 3x3 were run on the *identical*
+geometry/seed with `P.T P_S P + P_B` (gradient-projected `P_A` + `P_B`), 4
+random consistent RHS, MINRES tol `1e-10`:
+
+| upper precond | avg_it | avg_ms | max_res | fails |
+| --- | --- | --- | --- | --- |
+| jacobi (diag) | 386 | ~330 | 9e-11 | 0/4 |
+| 3x3 true-basis | 112.5 | 314 | 2.18e-10 | 3/4 |
+| radial-banded | 101.0 | 346 | 4.24e-11 | 0/4 |
+
+**Read the `max_res`/`fails` columns with care — they are NOT comparable across
+preconditioners.** MINRES minimizes the *preconditioned* residual, so each row
+measures convergence in its own norm; a fixed `1e-10` threshold on `max_res`
+therefore lands differently for each preconditioner, and the 3x3's `2.18e-10`
+vs the radial-banded's `4.24e-11` is a norm-equivalence constant (factor ~5),
+not instability. The 3x3 is converging normally. The honest comparison is on
+the norm-independent quantities:
+- **Iterations are comparable:** 112.5 (3x3) vs 101.0 (radial-banded) — a ~10%
+  edge to the band, well within run-to-run / RHS variation.
+- **Spectra are essentially identical:** cond_curl 127 (3x3) vs 122
+  (radial-banded), both tightly clustered (3x3 p05-p95 0.97-2.05; radial-banded
+  0.79-2.80).
+- **Per-iteration cost favors the 3x3** (2.8 vs 3.4 ms/it).
+
+**Conclusion: at this resolution the radial band buys essentially nothing.** It
+drops the modal `angular leakage` from 0.48 to ~0.05 and resolves the four
+`~1e-27` low modes that the 3x3 only caps, but that extra fidelity does not
+translate into materially fewer MINRES iterations or better conditioning — the
+same-mode 3x3 already captures the iteration-relevant part of the coupling. The
+band only adds apply cost (~20%/it) and an `O(n^6)` probing build that does not
+scale. So the **same-mode 3x3 remains the working model**; the radial-banded
+path stays as a diagnostic/accuracy reference behind its flag.
+
+The defect could still matter where the radial coupling is genuinely stronger
+(higher radial resolution, strongly distorted geometry); that is the only
+regime where re-testing the band — ideally via the scalable `O(n^3)`
+tensor-assembled build below, not the probing one — would be worthwhile.
+
+**Open question / next direction.** The expensive part is *building* the
+per-angular blocks by probing a global operator. The same blocks are assemblable
+in `O(n_terms · n^3)` directly from the stored tensor terms (`term_r/term_t/
+term_z`): in the FD basis that diagonalizes the angular factors, the block at
+angular mode `(i_t,i_z)` is `Σ_terms (V_t^T T_t V_t)_{i_t i_t} (V_z^T T_z
+V_z)_{i_z i_z} (V_r^T T_r V_r)` — a weighted sum of small `R_r×R_r` radial
+matrices, no global matvecs, jittable. That would keep the same `O(n^4)` apply
+while dropping the build from `O(n^6)` to `O(n^3)`, at the price of using the
+diagonal-metric tensor model instead of the true operator (the same
+approximation the non-true-basis vector-FD path already makes; the ~3% angular
+leakage suggests it is accurate enough). Build it only if a stronger-coupling
+regime makes the band actually pay off in iterations.
+
+### Three-resolution sweep: the scalar bulk wins, coupling is counterproductive
+
+Running all three bulk models (scalar / same-mode 3x3 / radial-banded) inside
+the *same* `P.T P_S P + P_B` slot, on `toroid`, p=3, 4 RHS, MINRES tol `1e-10`,
+across three grids (avg MINRES iterations):
+
+| ns | jacobi | **scalar** | radial-banded | 3x3 |
+| --- | --- | --- | --- | --- |
+| (6,12,4) | 387 | **96** | 101 | 112 |
+| (8,16,5) | 387 | **126** | 146 | 175 |
+| (10,20,6) | 670 | **200** | 225 | 283 |
+
+The ordering **scalar < radial-banded < 3x3 < jacobi** is stable across
+resolution and the gaps do *not* close as `n` grows. This refutes the
+hypothesis that the bulk coupling would start to pay off at higher resolution:
+**the richer the bulk model, the more MINRES iterations it needs.** Restoring
+the discarded spectral information (the off-diagonal curl coupling) is, here,
+mildly counterproductive — consistent with the structural fact (below) that the
+per-component *diagonal* blocks of `K_1` already carry the iteration-relevant
+content.
+
+**Why the scalar diagonal is already a faithful model.** Each per-component
+diagonal block of `K_1 = curl^T curl` is a clean Kronecker sum, because `curl`
+differentiates each component only in the two directions *transverse* to it
+(never `∂_r a_r`, `∂_θ a_θ`, `∂_ζ a_ζ`). So the self-energy of component `a_r`
+is `∫ (∂_θ a_r)^2 + (∂_ζ a_r)^2`, giving
+
+```
+K_rr = M_r ⊗ K_θ ⊗ M_ζ  +  M_r ⊗ M_θ ⊗ K_ζ   (2 terms)
+```
+
+— the k=0 Laplacian `K_r⊗M⊗M + M⊗K_θ⊗M + M⊗M⊗K_ζ` (3 terms) with the
+component's *own* derivative direction dropped. Scalar FD diagonalizes each
+`(K,M)` axis pair and inverts this block *exactly* (for a separable metric) via
+a scalar modal denominator `D_jk = λ^θ_j + λ^ζ_k`. All the "complicated"
+`SxDxS · SxSxD` curl cross-structure is purely **off-diagonal** (inter-component
+coupling) or **metric non-separability** — neither of which the scalar model
+needs, and restoring the former does not help convergence. The one genuinely
+non-separable, off-diagonal piece that *does* matter — the gradient nullspace —
+is handled by `P_B` + the projector, not by the bulk FD at all.
+
+**Caveat.** This is `toroid` (axisymmetric) at moderate resolution. The coupling
+might still matter on a strongly distorted geometry; but on the evidence so far
+the bulk-coupling direction is closed as a negative result.
+
+### Rotating-ellipse robustness: projection is essential, rank is neutral
+
+The earlier results are all on the axisymmetric `toroid`. To check that the two
+load-bearing conclusions survive a genuinely 3D, symmetry-breaking geometry, the
+raw-vs-projected `P_S` comparison was rerun on `rotating_ellipse` (`nfp=3`,
+`κ=1.2`, `ε=1/3`), `ns=(6,12,4)`, `p=3`, scalar bulk, precompute on, 4 random
+consistent RHS, MINRES tol `1e-10`, swept over CP rank 1/2/3:
+
+| rank | upper precond | avg_it | avg_ms | fails |
+| --- | --- | --- | --- | --- |
+| 1 | jacobi (diag) | 406.5 | 304 | 0/4 |
+| 1 | raw `P_S + P_B` | 340.2 | 344 | **4/4** |
+| 1 | `P.T P_S P + P_B` | **150.2** | **184** | 0/4 |
+| 2 | jacobi (diag) | 407.0 | 335 | 0/4 |
+| 2 | raw `P_S + P_B` | 339.5 | 366 | **4/4** |
+| 2 | `P.T P_S P + P_B` | **148.8** | **194** | 0/4 |
+| 3 | jacobi (diag) | 406.2 | 331 | 0/4 |
+| 3 | raw `P_S + P_B` | 338.0 | 363 | **4/4** |
+| 3 | `P.T P_S P + P_B` | **150.0** | **194** | 0/4 |
+
+Two takeaways, both consistent with the toroid story:
+
+- **The projection is not optional — it is required for convergence here.** Raw
+  `P_S + P_B` (no gradient-subspace sandwich) **fails on all 4 RHS at every
+  rank** (`max_res ≈ 1.6e-10`, never reaching tol); its ~340 iteration count is
+  therefore meaningless. The projected `P.T P_S P + P_B` converges cleanly and
+  beats jacobi by ~2.7× on iterations (150 vs 407) and ~1.7× on wall time
+  (~190 ms vs ~330 ms). So on the symmetry-breaking geometry the projection is
+  even more decisive than on the toroid (where raw was merely slower, not a hard
+  failure).
+- **CP rank is neutral.** 150.2 / 148.8 / 150.0 iterations across rank 1/2/3
+  (≈±1 iter, flat wall time) confirms the rank-1 saturation seen on the toroid
+  carries over to a non-axisymmetric metric. Rank 1 remains the right default.
+
+Diagnostic note: the gradient-overlap metric on `rotating_ellipse` reads raw
+`grad_exact ≈ 0.565` and projected `≈ 0.85` — i.e. it appears to *raise* the
+gradient-energy fraction, opposite to the toroid (raw 0.83 → proj 0.44). Since
+the MINRES outcome is unambiguous (projected converges, raw fails), this is
+treated as the overlap metric being unreliable on this geometry (consistent with
+the `l0_inv_exact` / non-idempotent-projector caveat above), not a real signal.
+Not investigated further.
+
+### Apply cost: the projector and P_B share one gradient-solve (4 → 2)
+
+With the bulk model settled as scalar, the remaining apply cost is the
+projection + `P_B`, not the bulk. The whole `C P_S C^* + P_B` collapses
+analytically because of the single identity
+
+$$
+L_0 = G_0^\top M_1 G_0,
+$$
+
+i.e. the scalar Dirichlet Laplacian *is* the gradient–mass–gradient form. Define
+the shared "gradient-solve" atom `E := G_0 L_0^{-1}` (and `E^* = L_0^{-1}
+G_0^T`). Then all three pieces are built from `E`:
+
+$$
+\Pi = E\,G_0^\top M_1,\quad \Pi^\* = M_1\,G_0\,E^\*,\quad
+P_B = E\,M_0\,E^\*,\quad S := E\,G_0^\top = G_0 L_0^{-1} G_0^\top .
+$$
+
+The naive sandwich writes **four** `L_0^{-1}` solves (one in `C^*`, one in `C`,
+two in `P_B`). Two pairs coincide: the `C^*` inner solve and the `P_B` inner
+solve are the *same* vector `q = L_0^{-1} G_0^T r`; the `C` outer solve and the
+`P_B` outer solve are both `G_0 L_0^{-1}(·)`. So with `q = L_0^{-1} G_0^T r` and
+`w = P_S (r - M_1 G_0 q)`,
+
+$$
+\boxed{\,M r \;=\; w \;+\; G_0 L_0^{-1}\!\big(M_0\,q - G_0^\top M_1 w\big)\,}
+$$
+
+uses **2** `L_0^{-1}` solves and is *algebraically identical* to `C P_S C^* +
+P_B` (symmetry, hence iteration count, preserved). This is the method key
+`P.T P_S P + P_B (fused)`.
+
+**Measured (ns=(6,12,4), scalar bulk):** fused reproduces the non-fused
+iteration count exactly (96 = 96) and trims wall-clock ~10% (276 → 250 ms).
+**The small gain is itself a finding:** halving the `L_0^{-1}` solves barely
+moves the clock, so the scalar `L_0` tensor preconditioner apply is *cheap* —
+the `P_A` apply cost is **not** in the auxiliary Laplacian. It is in the surgery
+couplings (next section).
+
+### The real apply cost: dense surgery coupling (the win)
+
+Each `P_A` apply contains two surgery↔bulk couplings, and each one runs a
+**full matrix-free curl-curl apply** `K_1 = G_1^T M_2 G_1` (the surgery's
+`apply_data` is the *extracted stiffness*, `row_extraction @ K_1(col_extraction_t
+@ x)`) just to extract a tiny bulk↔axis block. That apply is an `M_2` mass apply
+sandwiched between two sparse incidence applies, so it is `O(n^3 p^6)` (the `M_2`
+`p^6` dominates). But the surgery space is the *polar-axis* treatment, a 1-D set
+of DOFs with `surgery_size = O(n_ζ)` (≈ 20-30 in these runs). So the coupling
+block `C = R K_1 E^T` is `(bulk × O(n_ζ))` — tiny and storable.
+
+Precompute `C` once at build time (now the **production default**, set on the
+`K1MassSurgeryPreconditionerFactors` payload at construction; `n_s` extra
+curl-curl probes, same cost as the Schur build it sits beside). Then the
+per-apply couplings become dense matvecs `C @ rhs_s` and `C^T @ rhs_b` (`K_1` is
+symmetric, so the bulk→surgery block is exactly `C^T`), cost `O(bulk · n_ζ)` —
+the entire `p^6` factor is removed. The Schur complement is unchanged, so the
+preconditioner is **bit-identical** (iteration count must not move). The
+diagnostic harness can disable it for A/B timing with `--no-precompute-coupling`
+(launcher `NO_PRECOMPUTE_COUPLING=1`).
+
+**Measured (scalar bulk, fused, toroid, p=3, 4 RHS, MINRES tol `1e-10`):**
+
+| ns | jacobi it | jacobi ms | P_A it | P_A ms (mat-free coup) | **P_A ms (dense coup)** | speedup vs jacobi |
+| --- | --- | --- | --- | --- | --- | --- |
+| (6,12,4) | 387 | 290 | 96 | 250 | **158** | **1.83×** |
+| (8,16,5) | 387 | 391 | 126 | 664 | **297** | **1.32×** |
+| (10,20,6) | 670 | 846 | 202 | 1746 | **611** | **1.38×** |
+
+Iteration counts are identical with and without the dense coupling (96/126/202),
+confirming exactness. **This flips the verdict: before the dense coupling,
+jacobi *won* wall-clock at the two larger grids (the `P_A` apply was too
+expensive); after it, `P_A` beats jacobi on both axes — ~3.3× fewer iterations
+*and* faster — at every tested resolution.** The dense coupling kills exactly the
+`p^6` cost that grew faster than jacobi's diagonal multiply.
+
+### Same trick for the k=0 auxiliary Laplacian (compounding win)
+
+The fused `l0_inv` (the k=0 Hodge preconditioner `L_0 = G_0^T M_1 G_0`) fires
+**twice per MINRES iteration** (the inner `q` and the fused outer solve), and it
+has the *identical* structure: a core/bulk Schur split whose core↔bulk couplings
+are reconstructed each call by a full matrix-free k=0 stiffness apply (an `M_1`
+mass apply between two incidences, `O(n^3 p^6)`). The core (axis) size is small,
+so the same precompute applies: the dense core↔bulk block `C0` is stored on the
+`K0TensorHodgePreconditionerFactors` payload (production default), and
+`l0_inv`'s couplings become `C0 @ /C0^T @` matvecs. Exact (iteration count
+unchanged); same `--no-precompute-coupling` opt-out for A/B timing.
+
+**Measured (both precomputes on — the production default):**
+
+| ns | jacobi ms | mat-free coup | +dense K_1 | **+dense K_0** | final speedup |
+| --- | --- | --- | --- | --- | --- |
+| (6,12,4) | 290 | 250 | 158 | **117** | **2.47×** |
+| (8,16,5) | 389 | 664 | 297 | **208** | **1.87×** |
+| (10,20,6) | 845 | 1746 | 611 | **418** | **2.02×** |
+
+Iterations still 96/126/202 (exact). Stacking the two precomputes takes `P_A`
+from *losing* wall-clock at scale (1746 vs 845 at the largest grid) to **~2×
+faster than jacobi at every resolution**, on top of ~3.3× fewer iterations. The
+k=0 coupling removed two `M_1`-class applies per iteration, which is why it gave
+a larger absolute cut than the single k=1 `K_1` coupling pair.
+
+This also retroactively vindicates the un-jitted phase profile: it was
+unreliable in *absolute* terms (29 ms reported vs ~2.6 ms/it actual, ~10× off
+from per-kernel dispatch + `block_until_ready` barriers), but its *relative*
+read — `bulk1 : schur : bulk2 = 1 : 1.5 : 2.4`, i.e. "the couplings dominate,
+not the bulk solve" — was correct: the dense coupling removed exactly the
+`schur`/`bulk2` cost it flagged. The trustworthy metric remains the *jitted*
+MINRES `avg_ms`.
+
+**Residual floor.** Three full-size costs remain untouched: (1) the fused
+outer's `M_1 G_0 q` and `M_1 w` (full 1-form `M_1` applies, outside `P_S`);
+(2) the lower k=0 **mass** block (`lower_tensor_precond`), whose own core↔bulk
+coupling is still reconstructed matrix-free — the same precompute trick would
+apply, but to a *different* operator (`M_0`, not `K_0`); (3) the saddle
+`A_matvec`. Together these set the floor. Going below it needs a cheaper mass
+apply itself (matrix-free vs stored — see `benchmark_matvec_sparse.py`), or the
+same dense-coupling trick extended to the lower mass block, not more
+preconditioner algebra on the upper block.
+
+### Does regrouping change the "P_B handles the gradient block" picture? No.
+
+Fully expanding the sandwich with `Π = S M_1`, `Π^* = M_1 S`,
+
+$$
+C P_S C^\* = P_S - \Pi P_S - P_S \Pi^\* + \underbrace{\Pi P_S \Pi^\*}_{=\,E\,(G_0^\top M_1 P_S M_1 G_0)\,E^\*},
+$$
+
+the quartic term has the **exact** form of `P_B = E M_0 E^*` — same outer
+`G_0 L_0^{-1}(·) L_0^{-1} G_0^T`, with `M_0` replaced by `G_0^T M_1 P_S M_1 G_0`.
+So one *can* regroup into a single "effective gradient-subspace solve"
+`E (M_0 + G_0^T M_1 P_S M_1 G_0) E^*` plus the cross terms. But this regrouping
+**does not change the interpretation**, because `C P_S C^*` has range *exactly*
+in the curl complement — `Π (C P_S C^*) = 0`, since `Π C = Π(I - Π) = 0`:
+
+$$
+\Pi\,(P_S - \Pi P_S - P_S \Pi^\* + \Pi P_S \Pi^\*) = \Pi P_S - \Pi P_S - \Pi P_S \Pi^\* + \Pi P_S \Pi^\* = 0 .
+$$
+
+The gradient content of the `P_B`-shaped quartic term is *exactly cancelled* by
+the `-Π P_S` and `-P_S Π^*` cross terms. So the "term from `P_A` that looks like
+`P_B`" is an artifact of tearing a pure-curl-complement operator into pieces
+that individually carry gradient content summing to zero — **`P_A` contributes
+nothing net to the gradient block.** The grouping-independent truth is that `M`
+is block-diagonal on complementary subspaces: `C^*` annihilates the gradient
+part of the input (`C^* M_1 G_0 = 0`) and `C P_S C^*` outputs into the curl
+complement; `P_B = E M_0 E^*` only reads the gradient potential (`E^*`) and
+outputs into `ran(G_0)`. They share the factor `E` for *computation* (why 4
+solves are 2), not because of any conceptual overlap. The honest reading stays:
+**`P_S` on the curl complement, `P_B` on the gradient subspace.**
+
+### Recommended configuration
+
+The current best k=1 upper preconditioner is the **scalar bulk model + fused
+projector + precomputed dense surgery coupling + precomputed dense k=0 Hodge
+coupling**, i.e. `P.T P_S P + P_B (fused)` with the *default* (scalar)
+`block_fd` bulk (no `--pa-block-*` coupling flag). Both dense couplings are now
+the **production default** (built on the preconditioner payloads at
+construction), so no extra flags are needed. Across
+(6,12,4)/(8,16,5)/(10,20,6) it is ~3.3× fewer iterations than jacobi *and* ~2×
+faster wall-clock (2.47×/1.87×/2.02×). The bulk coupling models (3x3,
+radial-banded) are dominated on every axis and are retained only as diagnostic
+references behind their flags.
+
 ### Stabilization currently in place
 
-The radial-banded block (`--pa-block-radial-banded`) is the root-cause fix.
-Until it is validated in MINRES, the same-mode 3x3 path keeps its guard: coupled
-solves run only where `min_eig(3x3) > cutoff` (cutoff on the PSD-clipping
-relative scale), else a mode-local, symmetry-preserving scalar fallback. The
-flagged set is a small low-index family — modes `0..3` at `ns=(6,12,4)`,
-`0..4` at higher grids, **not** an `n_z` prefix — so forcing
-`--pa-block-vector-fd-low-mode-exclude n_z` over-regularizes. This guard removes
-the outlier collapse (`cond_curl` ~`4e5` → controlled) and gives the ~84 it /
-~230 ms result.
+The **scalar** bulk model is the working `block_fd` default (no coupling, no
+SPD-clipping of low modes — the gradient nullspace it would otherwise need to
+clip is handled by `P_B` + the projector). The coupled models keep a guard for
+their near-singular low modes: the 3x3 runs coupled solves only where
+`min_eig(3x3) > cutoff` (cutoff on the PSD-clipping relative scale), else a
+mode-local, symmetry-preserving scalar fallback. The flagged set is a small
+low-index family — modes `0..3` at `ns=(6,12,4)`, `0..4` at higher grids,
+**not** an `n_z` prefix — so forcing `--pa-block-vector-fd-low-mode-exclude n_z`
+over-regularizes. This matters only for the (now-dominated) coupled variants.
 
 ### Next steps
 
-1. **Validate `--pa-block-radial-banded` in MINRES** (root-cause fix, now
-  implemented); confirm `radial-banded angular leakage` drops to the measured
-  ~3% (vs 0.48 mean for the 3x3) and that iteration count / residual floor
-  improve over `P_A + P_B`.
-2. **Confirm radial-only suffices** — the `rotating_ellipse` leakage already
-  says yes (poloidal 2.9%, toroidal 0.1%); revisit only if a more distorted
-  geometry pushes the angular leakage up.
-3. **Keep mode-local fallback** as the safety net meanwhile; track flagged mode
-  identities across geometries to confirm the same structural family recurs.
-4. **Profile `P_A` apply phases** (`--pa-profile`, prints `bulk1/schur/bulk2`)
-  before further algebra changes.
-5. **Promote only after robustness checks** across geometry/resolution.
+1. **Dense couplings are now the production default** (both `K_1` surgery and
+  `K_0` Hodge core), set on the preconditioner payloads at construction via
+  `_build_k1_stiffness_surgery_factors` / `_assemble_k0_tensor_hodge_preconditioner`
+  (toggle: `cp_kwargs["precompute_coupling"]`, default `True`; harness opt-out
+  `--no-precompute-coupling`). No further wiring needed for the upper block.
+2. **Next remaining lever: the lower k=0 mass block.** `lower_tensor_precond`
+  still reconstructs its core↔bulk coupling matrix-free (an `M_0` apply). The
+  same dense-coupling trick applies (different operator), and it fires once per
+  iteration — the obvious next measurement.
+3. **Then the hard floor is the `M_1` apply itself** (the fused outer
+  `M_1 G_0 q` / `M_1 w`, plus the saddle `A_matvec`), not preconditioner
+  algebra. Going below it needs a cheaper mass apply (matrix-free vs stored —
+  see `benchmark_matvec_sparse.py`).
+4. **Retain the coupled models as references only.** 3x3 and radial-banded are
+  dominated; keep `--pa-block-vector-fd-true-basis` / `--pa-block-radial-banded`
+  for diagnostics. Revisit the band only on a strongly distorted geometry where
+  the bulk coupling might start to matter.
+5. **Robustness checks before promotion** across geometry/resolution; track the
+  coupled models' flagged low-mode family if they are ever reconsidered.
 
 ### Re-running retained cases
 
 ```bash
+# RECOMMENDED: scalar bulk + fused projector. The dense couplings (k=1 surgery
+# K_1 and k=0 Hodge K_0) are now the production default, so no extra flags are
+# needed. ~2x faster than jacobi AND ~3.3x fewer iterations at every resolution.
+python scripts/diag_graddiv_subspace_preconditioner.py \
+  --pa-grad-project --system saddle \
+  --methods "jacobi (diag),P.T P_S P + P_B (fused)"
+
 # CURRENT BEST: gradient-projected P_A + P_B vs Jacobi (k=1)
 # (method key "P.T P_S P + P_B" = projected P_A + P_B; P_S is P_A here)
 python scripts/diag_graddiv_subspace_preconditioner.py \
   --pa-grad-project --system saddle \
   --methods "jacobi (diag),P.T P_S P + P_B"
+
+# FUSED projected apply: identical operator, 2 L_0^{-1} solves instead of 4.
+# Verify avg_it matches the non-fused row exactly (algebraic identity).
+python scripts/diag_graddiv_subspace_preconditioner.py \
+  --pa-grad-project --system saddle \
+  --methods "jacobi (diag),P.T P_S P + P_B,P.T P_S P + P_B (fused)"
 
 # ROOT-CAUSE FIX: radial-banded bulk (full radial+component per angular mode).
 # Prints "radial-banded angular leakage" (~3% target vs 0.48 for the 3x3).
