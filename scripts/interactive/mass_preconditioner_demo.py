@@ -48,14 +48,10 @@ from mrx.operators import (
 from mrx.nullspace import get_nullspace
 from mrx.preconditioners import (
     MassPreconditionerSpec,
-    _apply_k0_bulk_to_surgery_coupling,
-    _apply_k0_surgery_to_bulk_coupling,
-    _apply_k1_bulk_to_surgery_coupling,
+    _apply_bulk_to_surgery_coupling,
+    _apply_surgery_to_bulk_coupling,
     _apply_k1_rt_art_coupling,
     _apply_k1_rt_atr_coupling,
-    _apply_k1_surgery_to_bulk_coupling,
-    _apply_k2_bulk_to_surgery_coupling,
-    _apply_k2_surgery_to_bulk_coupling,
     _apply_tensor_diagonal_block,
     _apply_tensor_exact_block,
     _assemble_schur_inverse_from_applies,
@@ -1137,8 +1133,8 @@ def _build_exact_block_chebyshev_mass_preconditioner_apply(
 
         diagnostics["inner_block_tuning"]["bulk"] = bulk_tuning
         diagnostics["tensor_fit"] = _mass_tensor_fit_diagnostics(operators, k=k, dirichlet=dirichlet)
-        surgery_to_bulk_apply = lambda rhs_s: _apply_k0_surgery_to_bulk_coupling(surgery, rhs_s)
-        bulk_to_surgery_apply = lambda rhs_b: _apply_k0_bulk_to_surgery_coupling(surgery, rhs_b)
+        surgery_to_bulk_apply = lambda rhs_s: _apply_surgery_to_bulk_coupling(surgery, rhs_s)
+        bulk_to_surgery_apply = lambda rhs_b: _apply_bulk_to_surgery_coupling(surgery, rhs_b)
         schur_inv = _assemble_schur_inverse_from_applies(
             surgery.ass,
             surgery_to_bulk_apply,
@@ -1209,8 +1205,8 @@ def _build_exact_block_chebyshev_mass_preconditioner_apply(
             rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
             rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
             return jnp.concatenate([rt_apply(rhs_rt), zeta_apply(rhs_zeta)])
-        surgery_to_bulk_apply = lambda rhs_s: _apply_k1_surgery_to_bulk_coupling(surgery, rhs_s)
-        bulk_to_surgery_apply = lambda rhs_b: _apply_k1_bulk_to_surgery_coupling(surgery, rhs_b)
+        surgery_to_bulk_apply = lambda rhs_s: _apply_surgery_to_bulk_coupling(surgery, rhs_s)
+        bulk_to_surgery_apply = lambda rhs_b: _apply_bulk_to_surgery_coupling(surgery, rhs_b)
         schur_inv = _assemble_schur_inverse_from_applies(
             surgery.ass,
             surgery_to_bulk_apply,
@@ -1277,8 +1273,8 @@ def _build_exact_block_chebyshev_mass_preconditioner_apply(
             rhs_theta = rhs_bulk[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
             rhs_zeta = rhs_bulk[surgery.r_bulk_size + surgery.theta_size:surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size]
             return jnp.concatenate([r_apply(rhs_r), theta_apply(rhs_theta), zeta_apply(rhs_zeta)])
-        surgery_to_bulk_apply = lambda rhs_s: _apply_k2_surgery_to_bulk_coupling(surgery, rhs_s)
-        bulk_to_surgery_apply = lambda rhs_b: _apply_k2_bulk_to_surgery_coupling(surgery, rhs_b)
+        surgery_to_bulk_apply = lambda rhs_s: _apply_surgery_to_bulk_coupling(surgery, rhs_s)
+        bulk_to_surgery_apply = lambda rhs_b: _apply_bulk_to_surgery_coupling(surgery, rhs_b)
         schur_inv = _assemble_schur_inverse_from_applies(
             surgery.ass,
             surgery_to_bulk_apply,

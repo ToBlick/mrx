@@ -124,8 +124,20 @@ class K0MassSurgeryPreconditionerFactors(eqx.Module):
     apply_data: ExtractedMassApplyData
     surgery_diaginv: jnp.ndarray
     ass: jnp.ndarray
+    # Explicit index layout (contiguous for k=0: surgery first, then bulk) so the
+    # generic surgery-Schur layer can gather/scatter and fall back to the
+    # extracted-submatrix coupling uniformly with k=1/k=2.
+    surgery_indices: jnp.ndarray
+    bulk_indices: jnp.ndarray
     surgery_to_bulk_data: Optional[RestrictedExtractedMassApplyData] = None
     bulk_to_surgery_data: Optional[RestrictedExtractedMassApplyData] = None
+    # Optional precomputed dense surgery->bulk coupling block (bulk x surgery).
+    # When present, the coupling applies use dense matvecs (``coupling_sb @`` /
+    # ``coupling_sb.T @``; M_0 is symmetric) instead of a full matrix-free M_0
+    # apply (the restricted path still runs a whole-grid mass apply, O(n^3 p^6),
+    # on a mostly-zero input). The surgery space is the polar axis (small), so
+    # the block is cheap to store/probe. Mirrors the k=0 Hodge ``core_coupling``.
+    coupling_sb: Optional[jnp.ndarray] = None
 
 
 class K1MassSurgeryPreconditionerFactors(eqx.Module):
@@ -149,6 +161,17 @@ class K1MassSurgeryPreconditionerFactors(eqx.Module):
     rt_art_data: Optional[RestrictedExtractedMassApplyData] = None
     rt_to_zeta_data: Optional[RestrictedExtractedMassApplyData] = None
     zeta_to_rt_data: Optional[RestrictedExtractedMassApplyData] = None
+    # Optional precomputed dense surgery->bulk coupling block (bulk x surgery).
+    # When present, ``_apply_surgery_to_bulk_coupling`` /
+    # ``_apply_bulk_to_surgery_coupling`` use dense matvecs (``C @`` /
+    # ``C.T @``; the extracted operator is symmetric) instead of a full
+    # matrix-free apply of the extracted operator. Built by the stiffness
+    # surgery factory (curl-curl K_1) and, when ``precompute_coupling`` is on,
+    # by the mass surgery factory (M_1) too -- in both cases the O(n^3 p^6)
+    # per-call apply of the restricted-sparse path is avoided. Only the
+    # *surgery<->bulk* block is densified; the inner r/theta/zeta bulk<->bulk
+    # couplings stay matrix-free (they are bulk-scale, not storable densely).
+    coupling_sb: Optional[jnp.ndarray] = None
 
 
 class K2MassSurgeryPreconditionerFactors(eqx.Module):
@@ -170,6 +193,11 @@ class K2MassSurgeryPreconditionerFactors(eqx.Module):
     theta_to_r_data: Optional[RestrictedExtractedMassApplyData] = None
     rt_to_zeta_data: Optional[RestrictedExtractedMassApplyData] = None
     zeta_to_rt_data: Optional[RestrictedExtractedMassApplyData] = None
+    # Optional precomputed dense surgery->bulk coupling block (bulk x surgery);
+    # see ``K1MassSurgeryPreconditionerFactors.coupling_sb``. Densifies only the
+    # surgery<->bulk coupling (M_2 symmetric => bulk->surgery is its transpose);
+    # the inner r/theta/zeta bulk<->bulk couplings stay matrix-free.
+    coupling_sb: Optional[jnp.ndarray] = None
 
 
 class MassSurgeryPreconditioner(eqx.Module):
@@ -1758,32 +1786,63 @@ def _assemble_surgery_schur_inverse_from_applies(
     return _symmetric_pseudoinverse(surgery_schur, relative_tol=relative_tol)
 
 
-def _apply_k0_surgery_to_bulk_coupling(surgery: K0MassSurgeryPreconditionerFactors, rhs_s: jnp.ndarray) -> jnp.ndarray:
-    if surgery.surgery_to_bulk_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.surgery_to_bulk_data, rhs_s)
-    full = jnp.zeros((surgery.apply_data.size,), dtype=rhs_s.dtype)
-    full = full.at[:surgery.surgery_size].set(rhs_s)
-    return _apply_extracted_mass_operator_data(surgery.apply_data, full)[surgery.surgery_size:]
+def _apply_surgery_to_bulk_coupling(surgery, rhs_s: jnp.ndarray) -> jnp.ndarray:
+    """Apply the surgery->bulk coupling block M[bulk, surgery] @ rhs_s.
 
-
-def _apply_k0_bulk_to_surgery_coupling(surgery: K0MassSurgeryPreconditionerFactors, rhs_b: jnp.ndarray) -> jnp.ndarray:
-    if surgery.bulk_to_surgery_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.bulk_to_surgery_data, rhs_b)
-    full = jnp.zeros((surgery.apply_data.size,), dtype=rhs_b.dtype)
-    full = full.at[surgery.surgery_size:].set(rhs_b)
-    return _apply_extracted_mass_operator_data(surgery.apply_data, full)[:surgery.surgery_size]
-
-
-def _apply_k1_surgery_to_bulk_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_s: jnp.ndarray) -> jnp.ndarray:
+    Generic across k=0/1/2 mass and k=1/2 stiffness surgery factors (all expose
+    ``coupling_sb`` / ``surgery_to_bulk_data`` / ``apply_data`` /
+    ``surgery_indices`` / ``bulk_indices``). Prefers the precomputed dense block,
+    then the restricted-sparse apply, then a full extracted-submatrix probe.
+    """
+    if surgery.coupling_sb is not None:
+        return surgery.coupling_sb @ rhs_s
     if surgery.surgery_to_bulk_data is not None:
         return _apply_restricted_extracted_mass_operator_data(surgery.surgery_to_bulk_data, rhs_s)
     return _apply_extracted_submatrix(surgery.apply_data, surgery.bulk_indices, surgery.surgery_indices, rhs_s)
 
 
-def _apply_k1_bulk_to_surgery_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_b: jnp.ndarray) -> jnp.ndarray:
+def _apply_bulk_to_surgery_coupling(surgery, rhs_b: jnp.ndarray) -> jnp.ndarray:
+    """Apply the bulk->surgery coupling block M[surgery, bulk] @ rhs_b.
+
+    The extracted operator is symmetric, so this is exactly ``coupling_sb.T``
+    when the dense block is present. Generic across the same factor types as
+    :func:`_apply_surgery_to_bulk_coupling`.
+    """
+    if surgery.coupling_sb is not None:
+        return surgery.coupling_sb.T @ rhs_b
     if surgery.bulk_to_surgery_data is not None:
         return _apply_restricted_extracted_mass_operator_data(surgery.bulk_to_surgery_data, rhs_b)
     return _apply_extracted_submatrix(surgery.apply_data, surgery.surgery_indices, surgery.bulk_indices, rhs_b)
+
+
+def _apply_surgery_schur(surgery, schur_inv: jnp.ndarray, bulk_inv, rhs: jnp.ndarray) -> jnp.ndarray:
+    """Generic surgery/bulk block-factorization apply, shared by k=0/1/2 mass.
+
+    ``bulk_inv`` is the (k-specific) bulk inverse callable. The surgery space is
+    small; the bulk space is tensor-product. Computes the exact block inverse
+    ``y = bulk_inv(rhs_b); z = Sigma^{-1}(rhs_s - M_sb y); x_b = y - bulk_inv(M_bs z)``.
+    """
+    rhs_s = rhs[surgery.surgery_indices]
+    rhs_b = rhs[surgery.bulk_indices]
+    y = bulk_inv(rhs_b)
+    z = schur_inv @ (rhs_s - _apply_bulk_to_surgery_coupling(surgery, y))
+    x_b = y - bulk_inv(_apply_surgery_to_bulk_coupling(surgery, z))
+    x = jnp.zeros_like(rhs)
+    x = x.at[surgery.surgery_indices].set(z)
+    x = x.at[surgery.bulk_indices].set(x_b)
+    return x
+
+
+def _apply_surgery_schur_forward(surgery, bulk_fwd, rhs: jnp.ndarray) -> jnp.ndarray:
+    """Generic surgery/bulk forward-model apply (the operator, not its inverse)."""
+    rhs_s = rhs[surgery.surgery_indices]
+    rhs_b = rhs[surgery.bulk_indices]
+    out_s = surgery.ass @ rhs_s + _apply_bulk_to_surgery_coupling(surgery, rhs_b)
+    out_b = _apply_surgery_to_bulk_coupling(surgery, rhs_s) + bulk_fwd(rhs_b)
+    out = jnp.zeros_like(rhs)
+    out = out.at[surgery.surgery_indices].set(out_s)
+    out = out.at[surgery.bulk_indices].set(out_b)
+    return out
 
 
 def _apply_k1_rt_atr_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_r: jnp.ndarray) -> jnp.ndarray:
@@ -1900,18 +1959,6 @@ def _apply_k1_bulk_diagonal_preconditioner(
         _apply_tensor_exact_block(None, theta_factors, rhs_theta, true_block_apply=theta_true),
         _apply_tensor_exact_block(None, zeta_factors, rhs_zeta, true_block_apply=zeta_true),
     ])
-
-
-def _apply_k2_surgery_to_bulk_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_s: jnp.ndarray) -> jnp.ndarray:
-    if surgery.surgery_to_bulk_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.surgery_to_bulk_data, rhs_s)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.bulk_indices, surgery.surgery_indices, rhs_s)
-
-
-def _apply_k2_bulk_to_surgery_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_b: jnp.ndarray) -> jnp.ndarray:
-    if surgery.bulk_to_surgery_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.bulk_to_surgery_data, rhs_b)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.surgery_indices, surgery.bulk_indices, rhs_b)
 
 
 def _apply_k2_r_to_theta_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_r: jnp.ndarray) -> jnp.ndarray:
@@ -2061,6 +2108,7 @@ def build_mass_surgery_preconditioner(
     k: int,
     existing: Optional[MassSurgeryPreconditioner] = None,
     dirichlet_flags: tuple[bool, ...] = (False, True),
+    precompute_coupling: bool = True,
 ) -> MassSurgeryPreconditioner:
     surgery_precond = existing if existing is not None else MassSurgeryPreconditioner()
 
@@ -2076,13 +2124,22 @@ def build_mass_surgery_preconditioner(
             ass = _symmetrize(surgery_cols[surgery_indices, :])
             apply_data = _build_extracted_mass_apply_data(seq, mass_apply, 0, dirichlet)
             bulk_indices = jnp.arange(surgery_size, apply_data.size)
+            # The dense surgery->bulk coupling block (bulk x surgery) is already
+            # contained in ``surgery_cols`` (the extracted-mass columns probed
+            # for ``ass``), so the precompute is free here: it is exactly the
+            # bulk rows of those columns. M_0 is symmetric => bulk->surgery is
+            # its transpose. See ``coupling_sb`` on the factors class.
+            coupling_sb = surgery_cols[bulk_indices, :] if precompute_coupling else None
             factors = K0MassSurgeryPreconditionerFactors(
                 surgery_size=surgery_size,
                 apply_data=apply_data,
+                surgery_indices=surgery_indices,
+                bulk_indices=bulk_indices,
                 surgery_to_bulk_data=_build_restricted_extracted_mass_apply_data(apply_data, bulk_indices, surgery_indices),
                 bulk_to_surgery_data=_build_restricted_extracted_mass_apply_data(apply_data, surgery_indices, bulk_indices),
                 surgery_diaginv=1.0 / jnp.diag(ass),
                 ass=ass,
+                coupling_sb=coupling_sb,
             )
             pair = eqx.tree_at(
                 lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
@@ -2128,6 +2185,10 @@ def build_mass_surgery_preconditioner(
                 zeta_to_rt_data=_build_restricted_extracted_mass_apply_data(apply_data, rt_indices, zeta_bulk_indices),
                 surgery_diaginv=1.0 / jnp.diag(ass),
                 ass=ass,
+                # Dense surgery->bulk block, free from the ``surgery_cols`` probe
+                # done for ``ass``. Only the surgery<->bulk coupling; the inner
+                # rt/zeta couplings stay matrix-free (bulk-scale).
+                coupling_sb=(surgery_cols[bulk_indices, :] if precompute_coupling else None),
             )
             pair = eqx.tree_at(
                 lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
@@ -2142,9 +2203,8 @@ def build_mass_surgery_preconditioner(
             block_indices = _tensor_block_indices_k2(seq, dirichlet)
             surgery_indices = block_indices["surgery"]
             apply_data = _build_extracted_mass_apply_data(seq, mass_apply, 2, dirichlet)
-            ass = _symmetrize(
-                _extract_selected_columns(seq, mass_apply, 2, dirichlet, surgery_indices, sequential=True)[surgery_indices, :]
-            )
+            surgery_cols = _extract_selected_columns(seq, mass_apply, 2, dirichlet, surgery_indices, sequential=True)
+            ass = _symmetrize(surgery_cols[surgery_indices, :])
             factors = K2MassSurgeryPreconditionerFactors(
                 surgery_indices=surgery_indices,
                 bulk_indices=block_indices["bulk"],
@@ -2188,6 +2248,10 @@ def build_mass_surgery_preconditioner(
                 ),
                 ass=ass,
                 surgery_diaginv=1.0 / jnp.diag(ass),
+                # Dense surgery->bulk block, free from the ``surgery_cols`` probe
+                # done for ``ass`` (surgery<->bulk only; inner couplings stay
+                # matrix-free).
+                coupling_sb=(surgery_cols[block_indices["bulk"], :] if precompute_coupling else None),
             )
             pair = eqx.tree_at(
                 lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
@@ -2318,9 +2382,9 @@ def build_mass_tensor_preconditioner(
             bulk_true_k0 = lambda x: _apply_extracted_submatrix(surgery.apply_data, bulk_indices_k0, bulk_indices_k0, x)
             schur_inv = _assemble_surgery_schur_inverse_from_applies(
                 surgery.ass,
-                lambda rhs_s, surgery=surgery: _apply_k0_surgery_to_bulk_coupling(surgery, rhs_s),
+                lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
                 lambda rhs_b, bulk_factors=bulk_factors, bulk_true_k0=bulk_true_k0: _apply_tensor_exact_block(None, bulk_factors, rhs_b, true_block_apply=bulk_true_k0),
-                lambda rhs_b, surgery=surgery: _apply_k0_bulk_to_surgery_coupling(surgery, rhs_b),
+                lambda rhs_b, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_b),
                 relative_tol=tensor_precond.surgery_schur_pinv_tol,
                 sequential=True,
             )
@@ -2467,7 +2531,7 @@ def build_mass_tensor_preconditioner(
             )
             schur_inv = _assemble_surgery_schur_inverse_from_applies(
                 surgery.ass,
-                lambda rhs_s, surgery=surgery: _apply_k1_surgery_to_bulk_coupling(surgery, rhs_s),
+                lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
                 lambda rhs_bulk, surgery=surgery, arr_factors=arr_factors, theta_factors=theta_factors, zeta_factors=zeta_factors, use_inner_schur=k1_inner_schur: (
                     _apply_k1_bulk_preconditioner(
                         surgery,
@@ -2483,7 +2547,7 @@ def build_mass_tensor_preconditioner(
                         rhs_bulk,
                     )
                 ),
-                lambda rhs_bulk, surgery=surgery: _apply_k1_bulk_to_surgery_coupling(surgery, rhs_bulk),
+                lambda rhs_bulk, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_bulk),
                 relative_tol=tensor_precond.surgery_schur_pinv_tol,
                 sequential=True,
             )
@@ -2636,7 +2700,7 @@ def build_mass_tensor_preconditioner(
             )
             schur_inv = _assemble_surgery_schur_inverse_from_applies(
                 surgery.ass,
-                lambda rhs_s, surgery=surgery: _apply_k2_surgery_to_bulk_coupling(surgery, rhs_s),
+                lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
                 lambda rhs_bulk, surgery=surgery, r_bulk_factors=r_bulk_factors, theta_factors=theta_factors, zeta_factors=zeta_factors, use_inner_schur=k2_inner_schur: (
                     _apply_k2_bulk_preconditioner(
                         surgery,
@@ -2652,7 +2716,7 @@ def build_mass_tensor_preconditioner(
                         rhs_bulk,
                     )
                 ),
-                lambda rhs_bulk, surgery=surgery: _apply_k2_bulk_to_surgery_coupling(surgery, rhs_bulk),
+                lambda rhs_bulk, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_bulk),
                 relative_tol=tensor_precond.surgery_schur_pinv_tol,
                 sequential=True,
             )
@@ -2766,119 +2830,60 @@ def _select_mass_tensor_factors(preconds: Optional[MassPreconditioners], k: int,
     raise ValueError(f"Tensor mass preconditioner currently only supports k=0, k=1, k=2 and k=3 (got k={k})")
 
 
+def _make_mass_bulk_inverse(k: int, surgery, factors):
+    """Per-k bulk inverse closure for the generic surgery-Schur layer.
+
+    k=0 is a single scalar fast-diagonalization block; k=1/k=2 are the
+    3-component vector bulk inverses (optionally with the inner r/theta/zeta
+    Schur). These are the genuinely k-specific plug-ins.
+    """
+    if k == 0:
+        bulk_true = lambda x: _apply_extracted_submatrix(
+            surgery.apply_data, surgery.bulk_indices, surgery.bulk_indices, x)
+        return lambda rhs_b: _apply_tensor_exact_block(
+            None, factors.bulk, rhs_b, true_block_apply=bulk_true)
+    if k == 1:
+        bulk_apply = _apply_k1_bulk_preconditioner if factors.use_inner_schur else _apply_k1_bulk_diagonal_preconditioner
+        return lambda rhs_b: bulk_apply(surgery, factors.arr, factors.theta, factors.zeta, rhs_b)
+    if k == 2:
+        bulk_apply = _apply_k2_bulk_preconditioner if factors.use_inner_schur else _apply_k2_bulk_diagonal_preconditioner
+        return lambda rhs_b: bulk_apply(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_b)
+    raise ValueError(f"surgery-Schur mass bulk inverse only supports k=0, k=1, k=2 (got k={k})")
+
+
+def _make_mass_bulk_forward(k: int, surgery, factors):
+    """Per-k bulk forward-model closure for the generic surgery-Schur layer."""
+    if k == 0:
+        return lambda rhs_b: _apply_tensor_diagonal_block_forward(factors.bulk, rhs_b)
+    if k == 1:
+        return lambda rhs_b: _apply_k1_bulk_forward_model(surgery, factors.arr, factors.theta, factors.zeta, rhs_b)
+    if k == 2:
+        return lambda rhs_b: _apply_k2_bulk_forward_model(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_b)
+    raise ValueError(f"surgery-Schur mass bulk forward only supports k=0, k=1, k=2 (got k={k})")
+
+
 def apply_mass_tensor_preconditioner(seq, preconds: Optional[MassPreconditioners], v, k: int, dirichlet: bool = True, *, true_block_apply_k3=None):
     factors = _select_mass_tensor_factors(preconds, k, dirichlet)
-    if k == 0:
-        surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
-        rhs_s = v[:surgery.surgery_size]
-        rhs_b = v[surgery.surgery_size:]
-        bulk_indices = jnp.arange(surgery.surgery_size, surgery.apply_data.size, dtype=jnp.int32)
-        bulk_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, bulk_indices, bulk_indices, x)
-        y = _apply_tensor_exact_block(None, factors.bulk, rhs_b, true_block_apply=bulk_true)
-        z = factors.schur_inv @ (rhs_s - _apply_k0_bulk_to_surgery_coupling(surgery, y))
-        x_b = y - _apply_tensor_exact_block(None, factors.bulk, _apply_k0_surgery_to_bulk_coupling(surgery, z), true_block_apply=bulk_true)
-        return jnp.concatenate([z, x_b])
-
     if k == 3:
-        return _apply_tensor_exact_block(
-            None, factors, v, true_block_apply=true_block_apply_k3,
-        )
-
-    if k == 2:
-        surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
-        rhs_s = v[surgery.surgery_indices]
-        rhs_b = v[surgery.bulk_indices]
-
-        bulk_apply = _apply_k2_bulk_preconditioner if factors.use_inner_schur else _apply_k2_bulk_diagonal_preconditioner
-        y = bulk_apply(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_b)
-        z = factors.schur_inv @ (rhs_s - _apply_k2_bulk_to_surgery_coupling(surgery, y))
-        x_b = y - bulk_apply(
-            surgery,
-            factors.r_bulk,
-            factors.theta,
-            factors.zeta,
-            _apply_k2_surgery_to_bulk_coupling(surgery, z),
-        )
-
-        x = jnp.zeros_like(v)
-        x = x.at[surgery.surgery_indices].set(z)
-        x = x.at[surgery.bulk_indices].set(x_b)
-        return x
-
-    if k != 1:
+        # k=3 has no surgery split: a single scalar tensor block, no coupling.
+        return _apply_tensor_exact_block(None, factors, v, true_block_apply=true_block_apply_k3)
+    if k not in (0, 1, 2):
         raise ValueError(f"Tensor mass preconditioner currently only supports k=0, k=1, k=2 and k=3 (got k={k})")
-
     surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
-    rhs_s = v[surgery.surgery_indices]
-    rhs_b = v[surgery.bulk_indices]
-
-    bulk_apply = _apply_k1_bulk_preconditioner if factors.use_inner_schur else _apply_k1_bulk_diagonal_preconditioner
-    y = bulk_apply(surgery, factors.arr, factors.theta, factors.zeta, rhs_b)
-    z = factors.schur_inv @ (rhs_s - _apply_k1_bulk_to_surgery_coupling(surgery, y))
-    x_b = y - bulk_apply(
-        surgery,
-        factors.arr,
-        factors.theta,
-        factors.zeta,
-        _apply_k1_surgery_to_bulk_coupling(surgery, z),
-    )
-
-    x = jnp.zeros_like(v)
-    x = x.at[surgery.surgery_indices].set(z)
-    x = x.at[surgery.bulk_indices].set(x_b)
-    return x
+    bulk_inv = _make_mass_bulk_inverse(k, surgery, factors)
+    return _apply_surgery_schur(surgery, factors.schur_inv, bulk_inv, v)
 
 
 def apply_mass_tensor_forward_model(seq, preconds: Optional[MassPreconditioners], v, k: int, dirichlet: bool = True):
     del seq
     factors = _select_mass_tensor_factors(preconds, k, dirichlet)
-
-    if k == 0:
-        surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
-        rhs_s = v[:surgery.surgery_size]
-        rhs_b = v[surgery.surgery_size:]
-        out_s = surgery.ass @ rhs_s + _apply_k0_bulk_to_surgery_coupling(surgery, rhs_b)
-        out_b = _apply_k0_surgery_to_bulk_coupling(surgery, rhs_s) + _apply_tensor_diagonal_block_forward(factors.bulk, rhs_b)
-        return jnp.concatenate([out_s, out_b])
-
     if k == 3:
         return _apply_tensor_diagonal_block_forward(factors, v)
-
-    if k == 2:
-        surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
-        rhs_s = v[surgery.surgery_indices]
-        rhs_b = v[surgery.bulk_indices]
-        out_s = surgery.ass @ rhs_s + _apply_k2_bulk_to_surgery_coupling(surgery, rhs_b)
-        out_b = _apply_k2_surgery_to_bulk_coupling(surgery, rhs_s) + _apply_k2_bulk_forward_model(
-            surgery,
-            factors.r_bulk,
-            factors.theta,
-            factors.zeta,
-            rhs_b,
-        )
-        out = jnp.zeros_like(v)
-        out = out.at[surgery.surgery_indices].set(out_s)
-        out = out.at[surgery.bulk_indices].set(out_b)
-        return out
-
-    if k != 1:
+    if k not in (0, 1, 2):
         raise ValueError(f"Tensor mass forward model currently only supports k=0, k=1, k=2 and k=3 (got k={k})")
-
     surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
-    rhs_s = v[surgery.surgery_indices]
-    rhs_b = v[surgery.bulk_indices]
-    out_s = surgery.ass @ rhs_s + _apply_k1_bulk_to_surgery_coupling(surgery, rhs_b)
-    out_b = _apply_k1_surgery_to_bulk_coupling(surgery, rhs_s) + _apply_k1_bulk_forward_model(
-        surgery,
-        factors.arr,
-        factors.theta,
-        factors.zeta,
-        rhs_b,
-    )
-    out = jnp.zeros_like(v)
-    out = out.at[surgery.surgery_indices].set(out_s)
-    out = out.at[surgery.bulk_indices].set(out_b)
-    return out
+    bulk_fwd = _make_mass_bulk_forward(k, surgery, factors)
+    return _apply_surgery_schur_forward(surgery, bulk_fwd, v)
 def _symmetrize(matrix: jnp.ndarray) -> jnp.ndarray:
     return 0.5 * (matrix + matrix.T)
 
