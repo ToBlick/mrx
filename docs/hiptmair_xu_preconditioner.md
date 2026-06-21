@@ -1,10 +1,125 @@
-# HX/AMS Preconditioner Status
+# Higher-form Hodge-Laplacian preconditioners (HX/AMS-style)
 
-This note tracks the status of the HX/AMS-style upper-block preconditioner for
-higher-form solves. It began as a postmortem (HX/AMS judged not competitive),
-but a gradient-subspace projection has since made an additive `P_A + P_B` upper
-block beat the Jacobi baseline for `k=1`. The sections below carry both the
-retained algebra and the current (positive) result.
+Consolidated reference for preconditioning the Hodge Laplacians `L_k` of the
+FEEC B-spline de Rham complex `V0 -G0-> V1 -G1-> V2 -G2-> V3` (grad / curl / div)
+on the polar (clamped × periodic × periodic) torus. It began as an HX/AMS
+postmortem for `k=1`; a gradient-subspace projection then made an additive
+`P_A + P_B` upper block beat Jacobi, and the same building blocks have since
+been extended and measured across the whole family. The consolidated status and
+building blocks are below; the detailed algebra, derivations, and experiment
+history that follow are `k=1` (the first case made to beat Jacobi) but transfer
+to the other degrees.
+
+## Building blocks
+
+Two ingredients, reused across degrees:
+
+1. **Scalar tensor Hodge preconditioner** for the `k=0` Laplacian
+   `L_0 = G_0^T M_1 G_0` (and its `k=3` dual). A CP-tensor / fast-diagonalization
+   inverse with an outer surgery-Schur split for the polar axis. It is
+   **near-exact and cheap** and is the workhorse "atom" that the vector-form
+   corrections reach down to. Both Dirichlet (`dbc`) and free (`no-dbc`)
+   variants are built.
+
+2. **Additive auxiliary-space upper/Schur block** for the vector Laplacians,
+   `P = (I-Π) P_A (I-Π)^T + P_B`, where
+   - `P_A` is a tensor stiffness inverse (`block_fd`: per-component FD bulk +
+     surgery Schur) for the curl-curl / div-div part,
+   - `P_B = G X G^T` reaches down to the scalar atom on the gradient/exact
+     subspace (for `k=1`, `X = L_0^{-1} M_0 L_0^{-1}`), and
+   - `Π` is the subspace projection that confines `P_A` to the complement of
+     `P_B`; without it the two interfere — the decisive ingredient for `k=1`.
+
+Vector-form solves are saddle-point MINRES (the exact `M_{k-1}` sits in the
+lower block, so `M_{k-1}^{-1}` is never forward-applied); `P` is the upper-block
+(Schur) preconditioner. The scalar `k=0` solve is plain (deflated) CG. The
+upper preconditioner acts on the **approximate Schur**
+`Ŝ = S_k + D_{k-1} M̂_{k-1}^{-1} D_{k-1}^T` where `M̂^{-1}` is the mass
+*preconditioner* (one apply), the same operator the Jacobi diagonal is probed
+from — the true Schur's exact `M^{-1}` is never formed.
+
+## Consolidated status (2026-06)
+
+| degree | operator | best preconditioner | vs jacobi | status |
+| --- | --- | --- | --- | --- |
+| k=0 | grad-grad `L_0` | scalar tensor Hodge | ~10× iters, ~7× wall | works, both BCs, nullspace-robust |
+| k=1 | grad-div `L_1` | projected `P_A + P_B` | ~4–6× iters | works, both BCs; true-G projection now *optional* (raw == projected) |
+| k=2 | div-div `L_2` | projected `P_A(cap) + P_B(L_1)` | up to ~7× iters | **works after the true-G fix** (see below); projection essential, cap `P_A` |
+| k=3 | `L_3` | jacobi (transfer studied) | — | sideways transfer rank-deficient |
+
+> **Major correctness fix (2026-06): the polar discrete derivative `G`.** The
+> directly-built incidence apply (`apply_incidence_matrix = Eᵀ sp E`) is **not**
+> the true topological derivative on the *polar* sequence — the polar-axis
+> extraction `E` is not a 0/1 selection (`EᵀE ≠ I`), so it omits the inverse in
+> `G = M⁻¹D = (EᵀE)⁻¹ Eᵀ sp E`, and consequently `d∘d ≠ 0` near the axis
+> (`curl·grad ≈ 1`, not 0). The existing `test_operators` nilpotency tests
+> passed only because they run on a *non-polar* (identity-map) sequence where
+> `E` is a 0/1 selection. `apply_incidence_matrix` is now fixed **in place** to
+> apply the true `G` (a precomputed sparse correction, `G = Gram_{k+1}⁻¹ · Eᵀ sp E`
+> with `Gram = EᵀE` built sparsely, only the small polar-axis block inverted; the
+> apply is a single sparse matvec, no `todense`, no inverse at runtime; identical
+> to the old apply on non-polar). This restores `d∘d = 0` to ~3e-16 on polar
+> (both BCs) and is the change that makes the k=1 projector genuinely idempotent
+> and unlocks k=2. New polar nilpotency test added; full `test_operators` passes.
+
+## k=2 resolution (the true-G fix + capped `P_A`)
+
+Pre-fix, every k=2 variant lost to jacobi (≈480 it) and the projected forms
+*diverged* (res ≈ 0.5). The root cause was **not** a too-rough atom (the original
+diagnosis) but the **wrong polar curl** in the projector/`P_B`: `apply_incidence`
+was `Eᵀ sp E`, so the projector `Π₂ = G₁·atom·G₁ᵀM₂` sandwiched a *different*
+operator than the atom inverted (`apply_stiffness(·,1) ≠ G₁ᵀM₂G₁` by `2.25e-3`),
+and `Π₂` was never idempotent. With the true `G` (above), `apply_stiffness(·,1) =
+G₁ᵀM₂G₁`, so the natural atom makes `Π₂` idempotent (`‖Π²−Π‖`: 0.088 → 2e-14) and
+the construction converges. Dense diagnostics (`scripts/diag_k2_dense_exact_atom.py`,
+`rotating_ellipse`, free BC):
+
+| upper precond (k=2) | iters | note |
+| --- | --- | --- |
+| jacobi (diag) | 226 | baseline |
+| **projected `P_A(cap)+P_B(L_1)`** | **33** | best (capped exact div-div `P_A`) |
+| projected `P_A(tensor)+P_B(L_1)` | 91 | rough tensor `P_A` |
+| jacobi(whole) + `P_B(L_1)` | 146 | no projection, no `P_A` |
+| raw `P_A(cap)+P_B(L_1)` | 1289 | converges (cap → bounded) but slow |
+| raw `P_A(tensor)+P_B(L_1)` | **diverges** | uncapped div-div blows up on curls |
+
+Three load-bearing facts:
+
+- **`P_B` wants the full `L_1` inverse, not the bare curl-curl `K_1`.** The
+  squared `P_B = G_1·atom·M_1·atom·G_1ᵀ` needs the `M_1`-metric inverse; `L_1⁺`
+  gives cond≈9 (91 it) vs `K_1⁺` cond≈236 (251 it). (On `P_B`'s co-exact input
+  the two are analytically equal, but the middle `M_1` of the squared form
+  breaks Euclidean `K_1⁺`.)
+- **`P_A` must be bounded on curls.** The div-div tensor inverse is `1/λ` and
+  blows up on the curl null (`S_2≈0` there), so raw diverges and the projection
+  is mandatory. **Capping** it (`pinv(S_2, rcond)` — zero the curl modes, as
+  k=1's block_fd `pinv` does on gradients) makes raw converge *and* sharpens the
+  projected method (33 vs 91 it). Cap threshold is insensitive (1e-8 ≈ 1e-6).
+- **k=1 vs k=2 projection asymmetry.** With the true `G`, the k=1 gradient
+  projection is now *unnecessary* (raw == projected, 44 == 44 it) because k=1's
+  `P_A` (block_fd `pinv`) is already bounded on its null. k=2's projection stays
+  essential (big accelerator: 33–91 vs 1289) because the div-div `P_A` is not.
+
+Atom-conditioning hierarchy (the lever throughout): k=0 scalar tensor Hodge
+`cond(P_0·L_0) ≈ 2.3 (dbc) / 6.2 (free)` — near-exact; the cheap vector
+curl-curl/`L_1` atoms are `cond ≈ 60` — the gap that distinguishes the
+near-effortless k=0/k=1 from k=2. Open production item: a *cheap* `L_1` curl-aux
+atom near the exact one's cond≈9 (the 33–91 it results use exact dense atoms).
+
+Headline `k=1` benchmark (`ns=(6,12,4)`, `p=3`, toroid, `ε=1/3`; scalar bulk +
+fused projector, dense couplings on):
+
+| upper precond | iters | wall |
+| --- | --- | --- |
+| `jacobi (diag)` | ~386 | ~266 ms |
+| projected `P_A + P_B` (`P.T P_S P + P_B`) | **~96** | **~115 ms** |
+
+Diagnostic harness: `scripts/diag_graddiv_subspace_preconditioner.py`. Form
+degree is selected by `--klevel {0,1,2,3}` (`0` = the `k=0` nullspace test, `1` =
+the default `k=1` path, `2`/`3` run their dedicated benchmarks). `--k1-both-bc`
+runs the `k=1` dbc-vs-free comparison. The consolidated new-result sections
+(nullspace robustness; Richardson/Chebyshev baselines; `k=2`; `k=3`) follow
+immediately; the detailed `k=1` algebra and history are kept below as reference.
 
 ## Outcome
 
@@ -42,24 +157,135 @@ scalable wall-time winner at the larger tested grids.
 
 This reverses the earlier postmortem conclusion. The blocker was never
 indefiniteness or Schur tuning; it was that the raw `P_A` and `P_B` were both
-acting on the gradient subspace and interfering. The remaining caveats are
-that this is shown only for `k=1` in the diagnostic harness, and that `k=2, 3`
-auxiliary-space variants were not retried.
+acting on the gradient subspace and interfering. `k=2` and `k=3` have since been
+retried (see the consolidated sections up top): the same auxiliary-space idea
+does **not** yet net-win there, because the scalar atom that makes `k=1` work
+(`L_0^{-1}`, near-exact) has no equally-cheap counterpart for the `k=2` curl
+block (`K_1^{-1}` is only a rough one-shot apply) or the `k=3` transfer (the
+`V0↔V3` map is rank-deficient by basis order).
 
 ## What Was Consolidated
 
-This file now serves as the single HX/AMS markdown reference for:
-
-
-Related high-level docs now treat HX as historical rather than active roadmap.
+This file is the single markdown reference for the higher-form Hodge-Laplacian
+preconditioners: the scalar `k=0` tensor Hodge inverse, the `k=1` projected
+`P_A + P_B` upper block, the `k=2`/`k=3` auxiliary-space attempts, the
+Jacobi / Richardson / Chebyshev baselines, and nullspace handling for free BCs.
+Related high-level docs treat HX as historical rather than active roadmap.
 
 ## Canonical Debug Script
 
-Use exactly one HX/AMS diagnostic script:
+Use exactly one diagnostic script:
+`scripts/diag_graddiv_subspace_preconditioner.py`, driven by
+`slurm/job_diag_graddiv_pa_compare.sh` (env-var overrides → SLURM). Form degree
+via `--klevel`; the `k=3` duality-transfer prototype now lives inside this
+script (`--klevel 3`) rather than as a separate entry point.
 
+## Nullspace robustness (k=0 and k=1, both BCs)
 
-The former k=3 duality-transfer prototype script has been removed during this
-cleanup to avoid split/duplicated experimental entry points.
+The tensor preconditioners remain effective when the operator is **singular**
+(free / no-dbc BCs, with the harmonic deflated in the Krylov solve). Confirmed
+on `rotating_ellipse` (`nfp=3`, `κ=1.2`, `ns=(8,16,6)` for `k=0`; `toroid`,
+`ns=(6,12,4)` for `k=1`):
+
+| degree / BC | nullspace | jacobi | tensor |
+| --- | --- | --- | --- |
+| k=0 dbc | 0 | 156 it | **16 it** |
+| k=0 free | 1 (constant) | 222 it | **21 it** |
+| k=1 dbc | 0 | 386 it | **96 it** |
+| k=1 free | 1 (harmonic) | 546 it | **168 it** |
+
+Notes:
+- The no-dbc paths were never actually broken — they had simply never been
+  exercised on correctly-sized input. `k=0` free has `n0 = 594` (`= 18` surgery
+  `+ 6·16·6` bulk) vs `n0_dbc = 498`.
+- Free is intrinsically harder than dbc (larger space + Neumann-type spectrum),
+  but the tensor preconditioner keeps its ~4–10× iteration edge at every BC.
+- Saddle nullspace handling: `solve_saddle_point_minres` deflates the harmonic
+  via `vs_upper` / `mass_upper_matvec`; the `k=1` free harmonic count is
+  `b_1 = 1`. Run with `--k1-both-bc` (or `--klevel 0` for the scalar test).
+- **Timing caveat:** `apply_laplacian_preconditioner(kind="jacobi")` re-probes
+  `diag(L_k)` (an `O(n)` stiffness sweep) on every call, which gets traced into
+  the CG loop and inflates Jacobi wall times by orders of magnitude. For fair
+  timing always **precompute the diagonal once** (the saddle benchmarks already
+  use the stored `schur_diaginv`).
+
+## Baselines: Richardson and Chebyshev on the approximate Schur
+
+As a "is the tensor method worth it?" check, the Schur (upper) preconditioner
+can instead be a fixed-degree Richardson or Chebyshev iteration on the
+**approximate Schur** `Ŝ = apply_laplacian_approx(·,k)` (the `M→M̂` operator),
+with the Jacobi diagonal as the inner smoother and the `[λmin, λmax]` of the
+Jacobi-preconditioned `Ŝ` estimated once by Lanczos. Fixed degree ⇒ a linear,
+symmetric operator ⇒ a valid MINRES preconditioner (no Krylov-in-Krylov).
+
+`k=1` toroid `ns=(6,12,4)`, scalar bulk, 4 RHS:
+
+| upper precond | iters | wall |
+| --- | --- | --- |
+| jacobi | 386 | 266 ms |
+| **tensor `P.T P_S P + P_B`** | **96** | **115 ms** |
+| richardson-{2,3,5,8} | 218 / 205 / 157 / 114 | 393 / 504 / 594 / 656 ms |
+| chebyshev-{2,3,5,8} | 238 / 168 / 106 / **67** | 321 / 338 / 355 / 357 ms |
+
+Conclusions:
+- **On iterations**, Chebyshev catches and passes the tensor method
+  (`chebyshev-8` = 67 < 96; `chebyshev-5` ≈ tensor). So the tensor method is
+  *not* fundamentally better-conditioning than a good polynomial smoother on `Ŝ`.
+- **On wall time**, the tensor method wins ~3×: its apply costs ~one `Ŝ`, while
+  Chebyshev-`d` costs `d` (expensive) `Ŝ` applies. The tensor preconditioner's
+  value is its **cheap per-apply cost**, not a lower iteration count.
+- Richardson < Chebyshev at every degree (Chebyshev is the optimal polynomial);
+  low-degree Chebyshev shows near-tolerance fails (non-monotone polynomial +
+  imperfect `[λmin, λmax]`), degree ≥ 5 converges cleanly.
+
+## k=2 (div-div) — open problem
+
+The `k=2` Hodge Laplacian `L_2 = S_2 + D_1 M_1^{-1} D_1^T` is the degree-shifted
+analog of `k=1`: div-div stiffness `S_2 = G_2^T M_3 G_2` (singular on curls
+`ran(G_1)`) plus a curl-handling term. The natural transfer of the `k=1`
+construction is `P_A` = div-div tensor inverse in a **curl**-complement
+sandwich, plus `P_B = G_1 K_1^{-1} M_1 K_1^{-1} G_1^T` (curl-subspace
+correction), where the inner atom is now `K_1^{-1}` (the 1-form curl-curl
+inverse) instead of the scalar `L_0^{-1}`.
+
+This does **not** beat Jacobi (`rotating_ellipse nfp=3`, `ns=(8,16,6)`,
+jacobi = 480 it):
+
+- Projected `P.T P_S P + P_B` and all 2×2 projection-ablation corners **fail**
+  (stall / diverge); every projection added makes it *worse* (monotone).
+- Additive forms (`jacobi + P_B`, clean-split `jacobi(S) + P_B`) converge but at
+  ~2000 it (4× *slower* than jacobi).
+
+Root cause: `k=1` works because its atom `L_0^{-1}` is near-exact and cheap, so
+the projectors built from it are clean and the `P_B` double-inverse is
+well-scaled. The `k=2` atom `K_1^{-1}` is only a rough `block_fd` one-shot apply
+— fatal both as a *projector ingredient* (`Π_2 = G_1 K_1^{-1} G_1^T M_2` is then
+not idempotent and injects error) and as an *additively-scaled block* (wrong
+magnitude relative to Jacobi). An accurate `K_1^{-1}` would require an inner
+Krylov solve, which is disallowed. This is the active thread.
+
+## k=3 — auxiliary-space "sideways" transfer
+
+`L_3 = D_2 M_2^{-1} D_2^T` (no stiffness; saddle with a zero upper block). Its
+dual is `k=0`, so a natural preconditioner maps a `V3` residual **sideways** to
+the scalar `k=0` space — *not* via the derivative (which has a huge kernel) but
+via the metric-free **cross-mass** `V0↔V3` (the stored `p03`/`p30` "projection"
+blocks; the complementary-degree `L²` pairing is metric-independent — the Piola
+Jacobians cancel), realized as the Galerkin transfer `T = M_3^{-1} C` with
+`M_3^{-1}` the tensor mass preconditioner — then inverts with the near-exact
+`k=0` Hodge preconditioner and maps back. BC swap: run `k=3` free so its dual is
+`k=0` dbc (the working tensor `L_0^{-1}`).
+
+Result (`rotating_ellipse nfp=3`, `ns=(8,16,6)`, jacobi = 240 it):
+`P_3 = T L_0^{-1} T^T` is a near-exact inverse **on its range** (62 it, ~4×
+fewer than jacobi) but **hard-stalls** because `T: V0(498) → V3(576)` is
+**rank-deficient** — `k=0` (degree `p`) and `k=3` (degree `p-1`) are
+different-order scalar spaces, so the transfer can never be surjective, leaving
+a basis-order complement unpreconditioned. Adding a smoother (`jacobi + transfer`,
+and an `α·jacobi + transfer` sweep) converges but never beats jacobi: the
+bottleneck shifts to that complement, which only jacobi covers, at its native
+rate. So the sideways transfer is correct and powerful on its range but, in the
+additive form, does not net-win for `k=3`.
 
 ## Retained Algebra (Useful Reference)
 
@@ -74,6 +300,15 @@ $$
 
 with:
 
+- `P_A` — the **native-space stiffness inverse** (`block_fd`: a per-component
+  fast-diagonalization bulk inverse plus an exact surgery Schur for the polar
+  axis), approximating the curl-curl (`k=1`) / div-div (`k=2`) part.
+- `P_B` — the **auxiliary-space (exact/gradient-subspace) correction**
+  `P_B = G X G^T`, mapping the residual down to the scalar `k=0` space, inverting
+  there, and mapping back. `X` is built from the near-exact scalar `L_0^{-1}`.
+
+In production `P_A` is restricted to the complement of `P_B` by the
+gradient-subspace projection `Π` (below), i.e. `P = (I-Π) P_A (I-Π)^T + P_B`.
 
 For the `k=1` grad-div diagnostic path,
 
@@ -457,9 +692,11 @@ time.
   better than projected baseline block_fd on iterations and `cond_curl`, but
   still loses wall-time to Jacobi. Current blocker is `P_A` apply cost scaling,
   not loss of convergence.
-- Without the projection, raw `P_A + P_B` is slower than Jacobi; the projection
-  is what makes the difference, by stopping `P_A` and `P_B` from interfering on
-  the gradient subspace.
+- Without the projection, raw `P_A + P_B` still **converges** (residual reaches
+  ~1.7e-10, below the 1e-9 "essentially done" line — the strict-tol "fail" flag
+  is a preconditioned-vs-true-norm artifact, not a stall); the projection is a
+  ~2.3× **accelerator** on iterations, not a make-or-break for convergence. It
+  helps by stopping `P_A` and `P_B` from interfering on the gradient subspace.
 - Adding Jacobi on top of the projected blend does not help: the alpha sweep
   has its minimum at `α=0`.
 - CP rank is neutral (rank 1 = rank 3); the FD bulk approximation saturates at
@@ -501,9 +738,11 @@ difference is *alignment with the inversion basis*:
 
 A per-block pinv/regularization is the faithful k=1 analogue of "pinv the
 constant" only if the kernel were block-aligned. The 48% leakage says it is not,
-which is why `raw P_S + P_B` corrupts `P_B`'s clean cohomology treatment (4/4
-fails) while the projector `C P_S C^*` — which deletes the gradient subspace
-*globally* before `P_S` sees it — is the only faithful pseudoinverse.
+which is why `raw P_S + P_B` lets `P_A`/`P_B` interfere on the gradient subspace
+and so converges only to the strict-tol edge (~1.7e-10, still below 1e-9 — slow,
+not broken) while the projector `C P_S C^*` — which deletes the gradient subspace
+*globally* before `P_S` sees it — is the faithful pseudoinverse and converges
+~2.3× faster and cleanly under tol.
 
 **The plateau is block error, not the kernel.** Projected `jacobi(S)` (same
 projector `C`) converges cleanly to ~`6e-11`, while projected `P_S` stalls near
@@ -666,7 +905,7 @@ is handled by `P_B` + the projector, not by the bulk FD at all.
 might still matter on a strongly distorted geometry; but on the evidence so far
 the bulk-coupling direction is closed as a negative result.
 
-### Rotating-ellipse robustness: projection is essential, rank is neutral
+### Rotating-ellipse robustness: projection accelerates (~2.3×), rank is neutral
 
 The earlier results are all on the axisymmetric `toroid`. To check that the two
 load-bearing conclusions survive a genuinely 3D, symmetry-breaking geometry, the
@@ -688,14 +927,18 @@ consistent RHS, MINRES tol `1e-10`, swept over CP rank 1/2/3:
 
 Two takeaways, both consistent with the toroid story:
 
-- **The projection is not optional — it is required for convergence here.** Raw
-  `P_S + P_B` (no gradient-subspace sandwich) **fails on all 4 RHS at every
-  rank** (`max_res ≈ 1.6e-10`, never reaching tol); its ~340 iteration count is
-  therefore meaningless. The projected `P.T P_S P + P_B` converges cleanly and
-  beats jacobi by ~2.7× on iterations (150 vs 407) and ~1.7× on wall time
-  (~190 ms vs ~330 ms). So on the symmetry-breaking geometry the projection is
-  even more decisive than on the toroid (where raw was merely slower, not a hard
-  failure).
+- **The projection is an accelerator, not a make-or-break.** Raw `P_S + P_B`
+  (no gradient-subspace sandwich) reaches `max_res ≈ 1.66e-10` in ~341
+  iterations — **below the 1e-9 "essentially converged" line**, so the "4/4
+  fail" flag is purely the preconditioned-vs-true-norm gap against the strict
+  1e-10 tol, *not* a stall. Its iteration count is real and meaningful: raw
+  genuinely drives the residual to machine-ish levels. The projected
+  `P.T P_S P + P_B` is faster — it converges in ~150 it (beating both raw's 341
+  and jacobi's 407 by ~2.3–2.7×) and ~190 ms wall — and it cleanly crosses the
+  strict tol. So the projection buys a ~2.3× speedup over raw, but raw already
+  converges; the projection is not required for convergence (re-confirmed on
+  current HEAD, job 14500415, 2026-06-20: jacobi 407.2/8.7e-11, raw
+  341.5/**1.66e-10**, projected 149.8/5.0e-11).
 - **CP rank is neutral.** 150.2 / 148.8 / 150.0 iterations across rank 1/2/3
   (≈±1 iter, flat wall time) confirms the rank-1 saturation seen on the toroid
   carries over to a non-axisymmetric metric. Rank 1 remains the right default.
@@ -987,13 +1230,21 @@ curl/nullspace split cutoff is set by `--pa-stiffness-spectrum-curl-cutoff`.
 ## Current Policy
 
 - Production higher-form solves stay on the existing saddle MINRES path for now;
-  the projected `P_A + P_B` win is demonstrated in the diagnostic harness and
-  has not yet been promoted to a production code path.
-- Keep Jacobi Schur outer as the reliability baseline until the projected blend
-  is validated on more geometries/resolutions and for `k=2,3`.
+  the projected `P_A + P_B` win (`k=1`) is demonstrated in the diagnostic harness
+  and has not yet been promoted to a production code path.
+- Keep Jacobi Schur outer as the reliability baseline. It remains the best
+  option for `k=2` and `k=3`, where the auxiliary-space variants do not yet
+  net-win (see the consolidated `k=2`/`k=3` sections).
 - The gradient-subspace-projected `P_A + P_B` (`--pa-grad-project`) is the
-  active, most promising direction — no longer archived. Next steps: confirm
-  robustness across cases, then decide on promotion.
+  validated `k=1` direction; it now also works under free BCs with a deflated
+  harmonic. Nullspace robustness is confirmed for `k=0` and `k=1` (both BCs).
+- Baselines: a degree-5–8 Chebyshev on the approximate Schur is
+  iteration-competitive with the tensor method but ~3× slower in wall time; the
+  tensor method's edge is its cheap per-apply cost.
+- Open: `k=2` needs a cheap, accurate `K_1^{-1}` atom (or a different curl-block
+  treatment); `k=3` needs a fuller-rank (or smoother-completed) sideways
+  transfer. Both are blocked on the same theme — the absence of a near-exact,
+  cheap auxiliary inverse for the vector curl block.
 
 If the projected blend is promoted, define acceptance criteria up front (clear
 wall-time win across the target problem family, stable iteration behavior, and
