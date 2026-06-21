@@ -56,6 +56,7 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -68,18 +69,22 @@ from mrx.operators import (
     _diagonal_from_matvec,
     _invert_diagonal,
     _get_schur_diaginv,
+    _nullspace_vectors,
     _build_k1_stiffness_surgery_factors,
+    _mass_extraction,
     apply_derivative_matrix,
     apply_laplacian_approx,
     apply_laplacian_preconditioner,
     apply_incidence_matrix,
     apply_mass_matrix,
     apply_mass_matrix_preconditioner,
+    apply_projection_matrix,
     apply_stiffness_tensor_preconditioner,
     apply_stiffness,
     assemble_laplacian_operators,
     assemble_incidence_operators,
     assemble_mass_jacobi_preconditioner,
+    assemble_projection_operators,
     assemble_schur_jacobi_preconditioner,
     assemble_tensor_laplacian_preconditioner,
     assemble_tensor_mass_preconditioner,
@@ -104,6 +109,44 @@ BETTI = (1, 1, 0, 0)
 DIRICHLET = True  # DBC 1-form -> zero harmonics for BETTI=(1,1,0,0)
 RANK = 1
 AUX0_DIRICHLET = False  # prototype choice: all three auxiliary 0-form channels free
+
+# The raw "directly built" incidence E^T sp E. On the POLAR sequence this is NOT
+# the true topological derivative (E^T E != I at the axis) and is not nilpotent.
+# The TRUE derivative is G = M^{-1} D = Gram^{-1} . (E^T sp E), Gram = E^T E (the
+# cheap coefficient Gram, NO mass assembly; block-diagonal: identity bulk + small
+# axis block). We keep a handle to the raw operator so projectors can opt into
+# the true G via a local name-shadow (see make_apply_routines / *_k2).
+_apply_incidence_raw = apply_incidence_matrix
+
+
+def _build_gram_inv(seq, ops, k: int, dirichlet: bool):
+    """Dense (E_k^T E_k)^{-1} for the extraction of space k. Cheap: no mass."""
+    e, e_T = _mass_extraction(ops, k, dirichlet)
+    n = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
+    cols = []
+    for j in range(n):
+        ej = jnp.zeros((n,), dtype=jnp.float64).at[j].set(1.0)
+        cols.append(np.asarray(jax.device_get(e @ (e_T @ ej))))
+    gram = np.stack(cols, axis=1)
+    return jnp.asarray(np.linalg.inv(gram))
+
+
+def _make_true_incidence(gram_invs):
+    """Return a drop-in replacement for apply_incidence_matrix that applies the
+    TRUE derivative G = Gram_{k+1}^{-1} . (E^T sp E) on the spaces in gram_invs
+    (keyed by OUTPUT space index). Falls back to the raw incidence elsewhere.
+    G^T = (E^T sp E)^T . Gram_{k+1}^{-1} keeps it a proper adjoint."""
+    def true_inc(seq, ops, v, k, dirichlet_in=True, dirichlet_out=True, transpose=False):
+        Ginv = gram_invs.get(k + 1)
+        if Ginv is None:
+            return _apply_incidence_raw(seq, ops, v, k, dirichlet_in=dirichlet_in,
+                                        dirichlet_out=dirichlet_out, transpose=transpose)
+        if transpose:  # V_{k+1} -> V_k : (E^T sp E)^T applied to Gram^{-1} v
+            return _apply_incidence_raw(seq, ops, Ginv @ v, k, dirichlet_in=dirichlet_in,
+                                        dirichlet_out=dirichlet_out, transpose=True)
+        return Ginv @ _apply_incidence_raw(seq, ops, v, k, dirichlet_in=dirichlet_in,
+                                           dirichlet_out=dirichlet_out, transpose=False)
+    return true_inc
 
 
 class K1VectorFDBulkState(NamedTuple):
@@ -1474,7 +1517,9 @@ def assemble_operators(
         rank: int = RANK,
         k1_stiff_inner_schur: bool = False,
         precompute_coupling: bool = True,
-        timing_breakdown: bool = False):
+        timing_breakdown: bool = False,
+        klevel: int = 1,
+        both_bc: bool = False):
     def _timed(label, fn, ops_in):
         if not timing_breakdown:
             return fn(ops_in)
@@ -1518,33 +1563,55 @@ def assemble_operators(
         ),
         ops,
     )
-    # Always assemble k=1 tensor stiffness for P_A candidates.
-    ops = _timed(
-        "tensor_stiffness",
-        lambda o: assemble_tensor_stiffness_preconditioner(
-            seq,
-            operators=o,
-            ks=(1,),
-            rank=rank,
-            cp_kwargs={
-                "k1_inner_schur": k1_stiff_inner_schur,
-                "precompute_coupling": precompute_coupling,
-            },
-        ),
-        ops,
-    )
+    # Tensor stiffness: k=1 for P_A candidates (k=1 run) AND as the K_1^{-1} atom
+    # for the k=2 preconditioner; k=2 div-div P_A is added for the k=2 run.
+    # k=0 (nullspace test) and k=3 (S_3 = 0) need no tensor stiffness.
+    if klevel in (1, 2):
+        stiff_ks = (1, 2) if klevel == 2 else (1,)
+        ops = _timed(
+            "tensor_stiffness",
+            lambda o: assemble_tensor_stiffness_preconditioner(
+                seq,
+                operators=o,
+                ks=stiff_ks,
+                rank=rank,
+                cp_kwargs={
+                    "k1_inner_schur": k1_stiff_inner_schur,
+                    "precompute_coupling": precompute_coupling,
+                },
+            ),
+            ops,
+        )
+    # k=3 auxiliary-space transfer needs the V0<->V3 projection (cross-mass)
+    # blocks; the k=0 tensor Hodge preconditioner (both BC variants) is already
+    # assembled above via tensor_laplacian ks=(0,).
+    if klevel == 3:
+        ops = _timed(
+            "projection_03",
+            lambda o: assemble_projection_operators(
+                seq, operators=o, pairs=((0, 3), (3, 0))),
+            ops,
+        )
     # Production baseline: Schur-outer Jacobi diagonal, rank-independent diag mode.
-    ops = _timed(
-        "schur_jacobi",
-        lambda o: assemble_schur_jacobi_preconditioner(
-            seq,
-            operators=o,
-            ks=(1,),
-            dirichlet_variants=(DIRICHLET,),
-            schur_diag_mode='diag',
-        ),
-        ops,
-    )
+    # k=3 runs the saddle with free BCs (its dual k=0 is dbc), so its baseline
+    # jacobi is the no-dbc Schur diagonal. k=0 is a condensed (non-saddle) solve,
+    # so no Schur jacobi is needed.
+    if klevel in (1, 2, 3):
+        schur_ks = {1: (1,), 2: (1, 2), 3: (3,)}[klevel]
+        schur_bc = (False,) if klevel == 3 else (DIRICHLET,)
+        if both_bc:  # k=1 nullspace test needs the free-BC Schur jacobi too
+            schur_bc = (True, False)
+        ops = _timed(
+            "schur_jacobi",
+            lambda o: assemble_schur_jacobi_preconditioner(
+                seq,
+                operators=o,
+                ks=schur_ks,
+                dirichlet_variants=schur_bc,
+                schur_diag_mode='diag',
+            ),
+            ops,
+        )
     return seq.set_operators(ops)
 
 
@@ -1562,6 +1629,9 @@ def make_apply_routines(
     pa_block_vector_fd_report_k: int = 8,
     pa_block_vector_fd_origin_k: int = 4,
     pa_profile: bool = False,
+    dirichlet_flag: bool = DIRICHLET,
+    true_g: bool = False,
+    l0_inv_custom=None,
 ):
     """Return condensed/saddle applies and upper/lower preconditioners.
 
@@ -1570,7 +1640,21 @@ def make_apply_routines(
     dominated complement, leaving the gradient (curl-free) subspace entirely
     to ``P_B``. This removes the additive double-counting where ``P_A`` and
     ``P_B`` both act on the gradient modes.
+
+    ``dirichlet_flag`` selects the boundary condition for the WHOLE routine
+    (k=1 dbc by default, or free/no-dbc with a b1=1 harmonic). It locally
+    shadows the module ``DIRICHLET`` so all applies below use the chosen BC.
     """
+    DIRICHLET = dirichlet_flag  # local shadow: all uses below use this BC
+
+    # Opt into the TRUE polar derivative G_0 = Gram_1^{-1}.(E^T sp E) by shadowing
+    # apply_incidence_matrix locally (all P_B / projector uses below pick it up).
+    # The k=1 projector only uses G_0 (grad), whose output space is V1.
+    if true_g:
+        apply_incidence_matrix = _make_true_incidence(
+            {1: _build_gram_inv(seq, ops, 1, DIRICHLET)})
+    else:
+        apply_incidence_matrix = _apply_incidence_raw
 
     def a_matvec(v):
         # Linear SPD condensed Hodge Laplacian: K_1 + D_0 (M_0-precond) D_0^T.
@@ -1608,6 +1692,13 @@ def make_apply_routines(
         # precompute is needed.
         return apply_laplacian_preconditioner(
             seq, ops, x, 0, dirichlet=DIRICHLET, kind="tensor")
+
+    # Diagnostic hook: inject an exact (dense) L_0^{-1} so P_B and the gradient
+    # projectors use it instead of the tensor atom -- the k=1 analog of the k=2
+    # script's exact-K_1^{-1} comparison. Overriding l0_inv before the projectors
+    # are built routes it everywhere (p_b, Pi_g).
+    if l0_inv_custom is not None:
+        l0_inv = l0_inv_custom
 
     def l0_inv_exact(x):
         # Exact (CG) solve of the projector's own k=0 operator L_0 y = x,
@@ -1870,6 +1961,7 @@ def make_apply_routines(
         "projected_jacobi_plus_p_b": projected_jacobi_plus_p_b,
         "projected_p_b_plus_p_b": projected_p_b_plus_p_b,
         "jacobi_diag": jacobi_diag,
+        "schur_diaginv": schur_diaginv,
         "k_diaginv": k_diaginv,
         "p_b": p_b,
         "p_a_profile": _block_fd_profile,
@@ -1882,6 +1974,335 @@ def make_apply_routines(
         "jacobi_plus_p_a_raw_plus_p_b_with_state": jacobi_plus_p_a_raw_plus_p_b_with_state,
         "projected_p_a_plus_p_b_with_state": projected_p_a_plus_p_b_with_state,
         "projected_p_a_plus_p_b_fused_with_state": projected_p_a_plus_p_b_fused_with_state,
+    }
+
+
+def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = True,
+                           project_atom: bool = True, atom: str = "block_fd",
+                           k1_inv_custom=None, true_g: bool = False):
+    """k=2 Hodge-Laplacian preconditioner applies (degree-shifted from k=1).
+
+    The k=2 Laplacian ``L_2 = S_2 + D_1 M_1^{-1} D_1^T`` has the div-div
+    stiffness ``S_2 = G_2^T M_3 G_2`` (singular on curls ``ran(G_1)``) plus a
+    curl-handling term. The preconditioner mirrors the validated k=1 path one
+    degree up, with two nested projection sandwiches:
+
+    * Outer (curl-complement): the div-div tensor inverse ``P_A`` is sandwiched
+      between ``I - Pi_2`` so it acts only on the co-exact complement, leaving
+      the curl subspace to ``P_B``. ``Pi_2 = G_1 K_1^{-1} G_1^T M_2``.
+    * ``P_B = G_1 K_1^{-1} M_1 K_1^{-1} G_1^T`` is the curl-subspace correction
+      (the 1:1 analog of k=1's ``G_0 L_0^{-1} M_0 L_0^{-1} G_0^T``).
+    * Atom ``K_1^{-1}`` (``K_1 = G_1^T M_2 G_1`` is the 1-form curl-curl
+      stiffness) is the k=1 stiffness tensor preconditioner, but block_fd is
+      singular on gradients ``ran(G_0)`` so it is itself sandwiched in an inner
+      grad-complement ``I - Pi_g`` built from the cheap, near-exact scalar
+      ``L_0^{-1}`` (k=0 Hodge tensor preconditioner). ``Pi_g = G_0 L_0^{-1}
+      G_0^T M_1``. The outer ``G_1`` shields the inner ``K_1^{-1}`` apply in
+      both ``P_B`` and ``Pi_2``; the inner grad-complement shields the exposed
+      outer ``K_1^{-1}`` apply (where ``M_1`` remixes gradient content back in).
+
+    All applies are matrix-free / dense-tensor (no inner Krylov).
+    """
+
+    # Opt into the TRUE polar curl G_1 = Gram_2^{-1}.(E^T sp E) by shadowing
+    # apply_incidence_matrix locally; the projector/P_B (G_1, output space V2)
+    # then use the true curl, so the composed K_1 = G_1^T M_2 G_1 matches
+    # apply_stiffness(.,1) -- the operator the atoms invert.
+    if true_g:
+        apply_incidence_matrix = _make_true_incidence(
+            {2: _build_gram_inv(seq, ops, 2, DIRICHLET)})
+    else:
+        apply_incidence_matrix = _apply_incidence_raw
+
+    # --- forward matvecs for the k=2 saddle system ---
+    def a_matvec(v):
+        return apply_laplacian_approx(seq, ops, v, 2, dirichlet=DIRICHLET)
+
+    def mass_matvec(v):  # M_2 : V2 -> V2*
+        return apply_mass_matrix(seq, ops, v, 2, dirichlet=DIRICHLET)
+
+    def stiffness_matvec(v):  # S_2 : V2 -> V2*
+        return apply_stiffness(seq, ops, v, 2, dirichlet=DIRICHLET)
+
+    def derivative_matvec(sigma):  # D_1 : V1 -> V2
+        return apply_derivative_matrix(
+            seq, ops, sigma, 1,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=False)
+
+    def derivative_t_matvec(u):  # D_1^T : V2 -> V1
+        return apply_derivative_matrix(
+            seq, ops, u, 1,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=True)
+
+    def mass_lower_matvec(sigma):  # M_1 : V1 -> V1*
+        return apply_mass_matrix(seq, ops, sigma, 1, dirichlet=DIRICHLET)
+
+    def lower_tensor_precond(rhs):  # M_1^{-1} (tensor) : V1* -> V1
+        return apply_mass_matrix_preconditioner(
+            seq, ops, rhs, 1, dirichlet=DIRICHLET, kind="tensor")
+
+    # --- auxiliary inverses ---
+    def l0_inv(x):  # k=0 Hodge tensor precond, V0* -> V0 (cheap, near-exact)
+        return apply_laplacian_preconditioner(
+            seq, ops, x, 0, dirichlet=DIRICHLET, kind="tensor")
+
+    def k1_stiff_inv_raw(x):  # raw k=1 curl-curl tensor precond, V1* -> V1
+        return apply_stiffness_tensor_preconditioner(
+            seq, ops, x, 1, dirichlet=DIRICHLET)
+
+    # Inner grad-complement projectors on V1 (M_1-orthogonal), identical in form
+    # to the k=1 routine's gradient projectors (G_0, L_0^{-1}, M_1).
+    def grad_primal_complement(u):  # (I - Pi_g) u : V1 -> V1
+        y0 = apply_mass_matrix(seq, ops, u, 1, dirichlet=DIRICHLET)             # V1  -> V1*
+        y1 = apply_incidence_matrix(
+            seq, ops, y0, 0,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=True)    # V1* -> V0*
+        y2 = l0_inv(y1)                                                         # V0* -> V0
+        y3 = apply_incidence_matrix(
+            seq, ops, y2, 0,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=False)   # V0  -> V1
+        return u - y3
+
+    def grad_dual_complement(r):  # (I - Pi_g^*) r : V1* -> V1*
+        y1 = apply_incidence_matrix(
+            seq, ops, r, 0,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=True)    # V1* -> V0*
+        y2 = l0_inv(y1)                                                         # V0* -> V0
+        y3 = apply_incidence_matrix(
+            seq, ops, y2, 0,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=False)   # V0  -> V1
+        y4 = apply_mass_matrix(seq, ops, y3, 1, dirichlet=DIRICHLET)            # V1  -> V1*
+        return r - y4
+
+    # Optional: the FULL nonsingular L_1 = K_1 + grad-div as the atom, applied via
+    # the validated k=1 Hodge preconditioner (projected P_A + P_B; a single
+    # matrix-free apply, NO inner Krylov). On the curl-aux input b = G_1^T M_2 r
+    # (which satisfies G_0^T b = 0), the discrete Hodge decomposition gives
+    # L_1^{-1} b = K_1^+ b EXACTLY -- and the M_1 in the squared P_B preserves
+    # G_0^T(.) = 0 so the exposed outer apply is exact too. But L_1 has no
+    # near-kernel, so the cheap apply is robust precisely where the singular
+    # block_fd K_1^{-1} blows up. The inner grad-complement sandwich is then
+    # unnecessary (L_1 is nonsingular); project_atom is ignored for this atom.
+    if atom == "full_l1":
+        _k1_applies = make_apply_routines(
+            seq, ops, pa_mode="block_fd", grad_project=True, dirichlet_flag=DIRICHLET,
+            true_g=true_g)
+        _l1_inv = _k1_applies["projected_p_a_plus_p_b"]  # V1* -> V1, approx L_1^{-1}
+
+        def k1_inv(r):  # full-L_1 pseudoinverse surrogate, V1* -> V1
+            return _l1_inv(r)
+    elif atom == "block_fd":
+        def k1_inv(r):  # (projected) pseudoinverse of curl-curl K_1, V1* -> V1
+            # When project_atom is True, sandwich the inexact block_fd between
+            # grad-complement projectors so its gradient-nullspace gain never
+            # escapes (the exposed-outer-apply fix). When False, raw block_fd.
+            if project_atom:
+                return grad_primal_complement(k1_stiff_inv_raw(grad_dual_complement(r)))
+            return k1_stiff_inv_raw(r)
+    elif atom == "custom":
+        # Diagnostic hook: inject an externally-built atom (e.g. a dense exact
+        # L_1^{-1} from a Cholesky factor -- a FIXED LINEAR operator, so the
+        # outer Krylov stays linear). Used by the dense exact-atom diagnostic to
+        # test whether a kappa~1 inner inverse makes Pi_2 idempotent / the k=2
+        # preconditioner converge.
+        if k1_inv_custom is None:
+            raise ValueError("atom='custom' requires k1_inv_custom")
+        k1_inv = k1_inv_custom
+    else:
+        raise ValueError(
+            f"Unsupported atom={atom!r}; expected 'block_fd', 'full_l1', or 'custom'")
+
+    # --- P_B: curl-subspace correction, V2* -> V2 ---
+    def p_b(r):
+        y1 = apply_incidence_matrix(
+            seq, ops, r, 1,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=True)    # V2* -> V1*  (G_1^T)
+        y2 = k1_inv(y1)                                                         # V1* -> V1
+        y3 = apply_mass_matrix(seq, ops, y2, 1, dirichlet=DIRICHLET)            # V1  -> V1*  (M_1)
+        y4 = k1_inv(y3)                                                         # V1* -> V1
+        return apply_incidence_matrix(
+            seq, ops, y4, 1,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=False)   # V1  -> V2   (G_1)
+
+    # --- div-div tensor block P_A, V2* -> V2 ---
+    def p_a_raw(r):
+        return apply_stiffness_tensor_preconditioner(
+            seq, ops, r, 2, dirichlet=DIRICHLET)
+
+    # Outer curl-complement projectors on V2 (M_2-orthogonal), built from K_1^{-1}.
+    def curl_primal_complement(u):  # (I - Pi_2) u : V2 -> V2
+        y0 = apply_mass_matrix(seq, ops, u, 2, dirichlet=DIRICHLET)             # V2  -> V2*  (M_2)
+        y1 = apply_incidence_matrix(
+            seq, ops, y0, 1,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=True)    # V2* -> V1*  (G_1^T)
+        y2 = k1_inv(y1)                                                         # V1* -> V1
+        y3 = apply_incidence_matrix(
+            seq, ops, y2, 1,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=False)   # V1  -> V2   (G_1)
+        return u - y3
+
+    def curl_dual_complement(r):  # (I - Pi_2^*) r : V2* -> V2*
+        y1 = apply_incidence_matrix(
+            seq, ops, r, 1,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=True)    # V2* -> V1*  (G_1^T)
+        y2 = k1_inv(y1)                                                         # V1* -> V1
+        y3 = apply_incidence_matrix(
+            seq, ops, y2, 1,
+            dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET, transpose=False)   # V1  -> V2   (G_1)
+        y4 = apply_mass_matrix(seq, ops, y3, 2, dirichlet=DIRICHLET)            # V2  -> V2*  (M_2)
+        return r - y4
+
+    def p_a_projected(r):
+        return curl_primal_complement(p_a_raw(curl_dual_complement(r)))
+
+    p_a = p_a_projected if grad_project else p_a_raw
+
+    def raw_p_a_plus_p_b(r):
+        return p_a_raw(r) + p_b(r)
+
+    def projected_p_a_plus_p_b(r):
+        return curl_primal_complement(p_a_raw(curl_dual_complement(r))) + p_b(r)
+
+    # Production baseline: Schur-outer Jacobi diagonal for k=2 (stored multiply).
+    # This is the WHOLE-space diagonal: 1/diag(S_2 + D_1 diag(M_1)^{-1} D_1^T),
+    # i.e. it already includes the curl term -> overlaps/double-counts with P_B.
+    schur_diaginv = _get_schur_diaginv(ops, 2, DIRICHLET, 'diag')
+
+    def jacobi_diag(r):
+        return schur_diaginv * r
+
+    # Stiffness-only Jacobi: 1/diag(S_2) (div-div). S_2 annihilates curls
+    # (ran G_1), so this is ZERO on the curl subspace and does NOT overlap P_B
+    # -> a clean co-exact/curl split (the k=2 analog of k=1 jacobi(S)+P_B).
+    k_diaginv = ops.dd2_diaginv_dbc if DIRICHLET else ops.dd2_diaginv
+    if k_diaginv is None:
+        size = int(seq.n2_dbc if DIRICHLET else seq.n2)
+        k_diag = _diagonal_from_matvec(
+            lambda x: apply_stiffness(seq, ops, x, 2, dirichlet=DIRICHLET), size)
+        k_diaginv = _invert_diagonal(k_diag)
+
+    def jacobi_stiff(r):
+        return k_diaginv * r
+
+    return {
+        "a_matvec": a_matvec,
+        "mass_matvec": mass_matvec,
+        "stiffness_matvec": stiffness_matvec,
+        "derivative_matvec": derivative_matvec,
+        "derivative_t_matvec": derivative_t_matvec,
+        "mass_lower_matvec": mass_lower_matvec,
+        "lower_tensor_precond": lower_tensor_precond,
+        "p_b": p_b,
+        "p_a_raw": p_a_raw,
+        "p_a_projected": p_a_projected,
+        "p_a": p_a,
+        "k1_inv": k1_inv,
+        "curl_primal_complement": curl_primal_complement,
+        "curl_dual_complement": curl_dual_complement,
+        "jacobi_diag": (jacobi_diag if schur_diaginv is not None else None),
+        "jacobi_stiff": jacobi_stiff,
+        "raw_p_a_plus_p_b": raw_p_a_plus_p_b,
+        "projected_p_a_plus_p_b": projected_p_a_plus_p_b,
+    }
+
+
+def make_apply_routines_k3(seq: DeRhamSequence, ops):
+    """k=3 Hodge-Laplacian preconditioner via the auxiliary-space transfer to k=0.
+
+    L_3 = D_2 M_2^{-1} D_2^T has NO stiffness term, so it is solved as a saddle
+    with a zero upper block (MINRES). The exact M_2^{-1} lives in the lower
+    block; it is never forward-applied.
+
+    Two upper-block preconditioners (approximations of L_3^{-1}) are compared:
+      - ``jacobi``: 1/diag(L_3) (stored Schur diagonal probe).
+      - ``transfer`` P_3 = T_{0->3} L_0^{-1} T_{3->0}: map the V3 residual
+        SIDEWAYS to the dual scalar space k=0 (NOT via the derivative, which
+        would kill subspaces) using the Galerkin transfer T = M^{-1} C, with the
+        cross-mass C = projection block ("primal->dual") and M^{-1} done by the
+        (excellent) tensor mass preconditioner ("dual->primal"); invert with the
+        near-exact k=0 Hodge preconditioner; map back.
+
+    BC SWAP (key): we run the WHOLE k=3 problem with dirichlet=False, so its dual
+    k=0 carries dbc=True -- which is exactly the BC variant for which the working
+    tensor k=0 Hodge preconditioner is built. (Dual to k=3-no-dbc is k=0-dbc.)
+    So ``k3_dbc=False`` for the k=3 saddle, ``aux_dbc=True`` for the auxiliary
+    k=0 inverse and the k=0 ends of both transfers.
+
+    P_3 = T_{0->3} L_0^{-1} (T_{0->3})^* is SPD (T_{3->0} is the adjoint of
+    T_{0->3}); all applies are matrix-free / single tensor applies (no inner
+    Krylov).
+    """
+    k3_dbc = False    # run the k=3 problem with free BCs ...
+    aux_dbc = True    # ... so the dual k=0 is dbc -> working tensor L_0^{-1}
+
+    # --- forward saddle matvecs for L_3 (upper block S_3 = 0) ---
+    def a_matvec(v):
+        return apply_laplacian_approx(seq, ops, v, 3, dirichlet=k3_dbc)
+
+    def mass_matvec(v):  # M_3 : V3 -> V3*
+        return apply_mass_matrix(seq, ops, v, 3, dirichlet=k3_dbc)
+
+    def stiffness_matvec(v):  # S_3 = 0
+        return apply_stiffness(seq, ops, v, 3, dirichlet=k3_dbc)
+
+    def derivative_matvec(sigma):  # D_2 : V2 -> V3
+        return apply_derivative_matrix(
+            seq, ops, sigma, 2,
+            dirichlet_in=k3_dbc, dirichlet_out=k3_dbc, transpose=False)
+
+    def derivative_t_matvec(u):  # D_2^T : V3 -> V2
+        return apply_derivative_matrix(
+            seq, ops, u, 2,
+            dirichlet_in=k3_dbc, dirichlet_out=k3_dbc, transpose=True)
+
+    def mass_lower_matvec(sigma):  # M_2 : V2 -> V2*
+        return apply_mass_matrix(seq, ops, sigma, 2, dirichlet=k3_dbc)
+
+    def lower_tensor_precond(rhs):  # M_2^{-1} (tensor) : V2* -> V2
+        return apply_mass_matrix_preconditioner(
+            seq, ops, rhs, 2, dirichlet=k3_dbc, kind="tensor")
+
+    # --- transfer preconditioner P_3 = T_{0->3} L_0^{-1} T_{3->0} ---
+    def mass3_inv(r):  # M_3^{-1} via tensor mass precond, V3* -> V3 (no-dbc)
+        return apply_mass_matrix_preconditioner(
+            seq, ops, r, 3, dirichlet=k3_dbc, kind="tensor")
+
+    def l0_inv(x):  # k=0 Hodge tensor precond, DBC (working), V0* -> V0
+        return apply_laplacian_preconditioner(
+            seq, ops, x, 0, dirichlet=aux_dbc, kind="tensor")
+
+    # NOTE: apply_projection_matrix(v, a, b) maps space b -> space a (the pair is
+    # (output, input); dirichlet_in is the INPUT-space BC, dirichlet_out the
+    # OUTPUT-space BC). So V3->V0 uses (0, 3) and V0->V3 uses (3, 0).
+    def transfer_3_to_0(r):  # T^* = C^T M_3^{-1} : V3*(free) -> V0*(dbc)
+        return apply_projection_matrix(
+            seq, ops, mass3_inv(r), 0, 3,
+            dirichlet_in=k3_dbc, dirichlet_out=aux_dbc)
+
+    def transfer_0_to_3(x):  # T = M_3^{-1} C : V0(dbc) -> V3(free)
+        return mass3_inv(apply_projection_matrix(
+            seq, ops, x, 3, 0,
+            dirichlet_in=aux_dbc, dirichlet_out=k3_dbc))
+
+    def p3_transfer(r):
+        return transfer_0_to_3(l0_inv(transfer_3_to_0(r)))
+
+    # --- jacobi baseline (whole-space diag(L_3)) ---
+    schur_diaginv = _get_schur_diaginv(ops, 3, k3_dbc, 'diag')
+
+    def jacobi_diag(r):
+        return schur_diaginv * r
+
+    return {
+        "a_matvec": a_matvec,
+        "mass_matvec": mass_matvec,
+        "stiffness_matvec": stiffness_matvec,
+        "derivative_matvec": derivative_matvec,
+        "derivative_t_matvec": derivative_t_matvec,
+        "mass_lower_matvec": mass_lower_matvec,
+        "lower_tensor_precond": lower_tensor_precond,
+        "jacobi_diag": (jacobi_diag if schur_diaginv is not None else None),
+        "p3_transfer": p3_transfer,
     }
 
 
@@ -1975,7 +2396,9 @@ def make_saddle_solve(
         n_lower: int,
         tol: float,
         maxiter: int,
-        precond_upper_state=None):
+        precond_upper_state=None,
+        vs_upper=None,
+        mass_upper_matvec=None):
     if precond_upper_state is None:
         @jax.jit
         def solve(rhs_upper):
@@ -1989,6 +2412,8 @@ def make_saddle_solve(
                 n_lower,
                 precond_upper=precond_upper,
                 precond_lower=precond_lower,
+                vs_upper=vs_upper,
+                mass_upper_matvec=mass_upper_matvec,
                 tol=tol,
                 maxiter=maxiter,
             )
@@ -2017,6 +2442,8 @@ def make_saddle_solve(
             n_lower,
             precond_upper=stateful_upper,
             precond_lower=precond_lower,
+            vs_upper=vs_upper,
+            mass_upper_matvec=mass_upper_matvec,
             tol=tol,
             maxiter=maxiter,
         )
@@ -2072,6 +2499,81 @@ def time_solve(solve, rhs_batch, *, solve_state=None, rel_tol: float = 1e-10):
         "n_fail": int(n_fail),
         "n_total": int(len(infos)),
     }
+
+
+def _lanczos_extremal_eigs(matvec, n, *, steps: int = 24, seed: int = 0):
+    """Estimate (lambda_min, lambda_max) of a symmetric operator via Lanczos.
+
+    ``matvec`` must be the SYMMETRIC operator whose spectrum we want (for a
+    jacobi-preconditioned Schur this is M = D^{-1/2} S-hat D^{-1/2}). Returns the
+    extremal Ritz values; cheap setup-time estimate (a handful of applies).
+    """
+    key = jax.random.PRNGKey(seed)
+    v = jax.random.normal(key, (n,), dtype=jnp.float64)
+    v = v / jnp.linalg.norm(v)
+    v_prev = jnp.zeros_like(v)
+    beta = 0.0
+    alphas: list[float] = []
+    betas: list[float] = []
+    for _ in range(steps):
+        w = matvec(v)
+        alpha = float(jnp.dot(v, w))
+        w = w - alpha * v - beta * v_prev
+        alphas.append(alpha)
+        beta = float(jnp.linalg.norm(w))
+        if beta < 1e-10:
+            break
+        betas.append(beta)
+        v_prev, v = v, w / beta
+    T = np.diag(np.asarray(alphas))
+    # The m x m tridiagonal has m-1 off-diagonals; the final beta connects to an
+    # unused (m+1)-th vector, so trim.
+    off = betas[:len(alphas) - 1]
+    if off:
+        b = np.asarray(off)
+        T = T + np.diag(b, 1) + np.diag(b, -1)
+    eigs = np.linalg.eigvalsh(T)
+    return float(eigs[0]), float(eigs[-1])
+
+
+def make_chebyshev_upper(s_hat, jac, lmin: float, lmax: float, degree: int):
+    """Degree-``degree`` Chebyshev iteration approximating S-hat^{-1}, inner
+    (diagonal) preconditioner ``jac`` ~ diag(S-hat)^{-1}, spectrum of jac*S-hat
+    in [lmin, lmax]. Fixed degree -> a linear, symmetric operator (valid MINRES
+    upper preconditioner; no Krylov-in-Krylov). ``s_hat`` is the APPROXIMATE
+    Schur (M replaced by its preconditioner)."""
+    theta = 0.5 * (lmax + lmin)
+    delta = 0.5 * (lmax - lmin)
+    sigma1 = theta / delta
+
+    def apply(b):
+        d_vec = jac(b) / theta
+        x = d_vec
+        rho_prev = 1.0 / sigma1
+        for _ in range(degree - 1):
+            r = b - s_hat(x)
+            rho = 1.0 / (2.0 * sigma1 - rho_prev)
+            d_vec = rho * rho_prev * d_vec + (2.0 * rho / delta) * jac(r)
+            x = x + d_vec
+            rho_prev = rho
+        return x
+
+    return apply
+
+
+def make_richardson_upper(s_hat, jac, lmin: float, lmax: float, degree: int):
+    """Degree-``degree`` (fixed-omega) Richardson iteration approximating
+    S-hat^{-1} with inner preconditioner ``jac``; omega = 2/(lmin+lmax)
+    (optimal for the symmetric case). Linear, symmetric operator."""
+    omega = 2.0 / (lmin + lmax)
+
+    def apply(b):
+        x = jnp.zeros_like(b)
+        for _ in range(degree):
+            x = x + omega * jac(b - s_hat(x))
+        return x
+
+    return apply
 
 
 def time_saddle_solve(solve, rhs_batch, *, solve_state=None, rel_tol: float = 1e-10):
@@ -2546,6 +3048,297 @@ def diagnose_pa_times_stiffness_spectrum(
     }
 
 
+def run_k2_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
+    """k=2 Hodge-Laplacian saddle benchmark: raw vs projected div-div P_A + P_B.
+
+    Mirrors the k=1 saddle table one degree up. The scientific question is
+    whether the block_fd-quality, grad-complement-projected ``K_1^{-1}`` atom is
+    accurate enough to make the curl-complement projected div-div preconditioner
+    converge (and beat the Schur-Jacobi baseline).
+    """
+    # Two atom variants: K_1^{-1} with the inner grad-complement sandwich ON
+    # (production design) and OFF (ablation: raw block_fd, gradient nullspace
+    # exposed at the outer K_1^{-1} apply).
+    tg = bool(getattr(args, "true_g", False))
+    if tg:
+        print("[diag] k=2: using TRUE polar curl G_1 = Gram_2^-1 . (E^T sp E) in projector/P_B")
+    ap_atom_on = make_apply_routines_k2(seq, ops, grad_project=True, project_atom=True, true_g=tg)
+    ap_atom_off = make_apply_routines_k2(seq, ops, grad_project=True, project_atom=False, true_g=tg)
+    # Full-L_1 atom: P_B (and the curl-complement projector) use the validated
+    # k=1 Hodge preconditioner as the inner inverse instead of the rough,
+    # singular block_fd curl-curl K_1^{-1}. This targets the documented k=2 root
+    # cause (the near-kernel of K_1) by regularizing it with the grad-div term.
+    ap_full = make_apply_routines_k2(seq, ops, grad_project=True, atom="full_l1", true_g=tg)
+
+    n_upper = int(seq.n2_dbc if DIRICHLET else seq.n2)
+    n_lower = int(seq.n1_dbc if DIRICHLET else seq.n1)
+    print(f"[diag] k=2 Hodge-Laplacian path (n2_dbc={n_upper}, n1_dbc={n_lower})")
+    print("[diag] 2x2 projection ablation: outer = curl-complement sandwich "
+          "around div-div P_A; inner = grad-complement sandwich inside the "
+          "K_1^{-1} atom (used by P_B and the outer projector).")
+
+    # Consistent RHS: A x_true for random x_true in V2 (guarantees b in range A).
+    keys = jax.random.split(jax.random.PRNGKey(args.seed), args.n_rhs)
+    rhs_batch = jnp.stack(
+        [ap_atom_on["a_matvec"](jax.random.normal(k, (n_upper,), dtype=jnp.float64))
+         for k in keys],
+        axis=0,
+    )
+    jax.block_until_ready(rhs_batch)
+
+    # Additive HX/ADS-style combinations: rough smoother (jacobi) + auxiliary
+    # corrections, NO projectors, NO exact atoms. The solo run showed P_B
+    # (curl-aux) is healthy (0.43%) while P_A and the K_1^{-1}-based projectors
+    # are destructive. ADS philosophy: let the smoother cover the co-exact part
+    # and the outer Krylov clean up the rough single applies.
+    jac = ap_atom_on["jacobi_diag"]       # WHOLE-space diag(L_2) -> overlaps P_B on curls
+    jac_s = ap_atom_on["jacobi_stiff"]    # diag(S_2) only -> ZERO on curls, clean split
+    p_b_raw = ap_atom_off["p_b"]          # curl-aux, raw block_fd atom (cheaper, no worse)
+    p_a_raw = ap_atom_on["p_a_raw"]       # div-div co-exact block
+    methods = {}
+    # Clean co-exact/curl splits (no double-counting): stiffness-only jacobi on
+    # the co-exact part, P_B on curls. The k=2 analog of k=1 jacobi(S)+P_B.
+    methods["jacobi(S) + P_B (clean split)"] = lambda r: jac_s(r) + p_b_raw(r)
+    if jac is not None:
+        methods["jacobi(whole) + P_B (overlaps)"] = lambda r: jac(r) + p_b_raw(r)
+    methods["P_B (curl-aux) only"] = p_b_raw
+    # Full-L_1 atom variants: the central comparison for the "use full L_1 in
+    # P_B" hypothesis. P_B-only isolates the atom swap; the projected and
+    # jacobi(S)-split forms test whether the better atom rescues the full
+    # preconditioner / additive blend that block_fd could not.
+    p_b_full = ap_full["p_b"]
+    methods["P_B (full L_1, curl-aux) only"] = p_b_full
+    methods["jacobi(S) + P_B (full L_1)"] = lambda r: jac_s(r) + p_b_full(r)
+    methods["projected P_A + P_B (full L_1)"] = ap_full["projected_p_a_plus_p_b"]
+    if ap_atom_on["jacobi_diag"] is not None:
+        methods = {"jacobi (diag)": ap_atom_on["jacobi_diag"], **methods}
+    else:
+        print("[diag] note: k=2 Schur-Jacobi baseline unavailable (not assembled)")
+
+    applies = ap_atom_on  # forward matvecs/lower precond are atom-independent
+    print()
+    print("[diag] saddle MINRES (upper varies, lower fixed=tensor mass M_1)")
+    header = (
+        f"{'upper precond':<42} {'avg_it':>8} {'max_it':>7} "
+        f"{'avg_ms':>9} {'max_res':>11} {'fails':>7}"
+    )
+    print(header)
+    print("-" * len(header))
+    for name, precond_upper in methods.items():
+        solve = make_saddle_solve(
+            applies["stiffness_matvec"],
+            applies["derivative_matvec"],
+            applies["derivative_t_matvec"],
+            applies["mass_lower_matvec"],
+            precond_upper,
+            applies["lower_tensor_precond"],
+            n_upper=n_upper,
+            n_lower=n_lower,
+            tol=args.cg_tol,
+            maxiter=args.cg_maxiter,
+        )
+        stats = time_saddle_solve(solve, rhs_batch, rel_tol=report_rel_tol)
+        print(f"{name:<42} {stats['avg_iters']:>8.1f} {stats['max_iters']:>7d} "
+              f"{stats['avg_ms']:>9.1f} {stats['max_residual']:>11.2e} "
+              f"{stats['n_fail']:>7d}/{stats['n_total']:<d}")
+
+
+def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
+    """k=1 Hodge-Laplacian saddle benchmark for BOTH BCs: dbc (nonsingular) and
+    free (b1=1 harmonic nullspace, deflated). Compares jacobi vs the production
+    tensor preconditioner (projected P_A + P_B), testing the vector tensor
+    preconditioner's robustness to a nullspace.
+    """
+    print("[diag] k=1 Hodge-Laplacian saddle (jacobi vs tensor P.T P_S P + P_B); "
+          "dbc = nonsingular, free = b1 harmonic (deflated).")
+    header = (f"{'bc / upper precond':<34} {'avg_it':>8} {'max_it':>7} "
+              f"{'avg_ms':>9} {'max_res':>11} {'fails':>7}")
+    tg = bool(getattr(args, "true_g", False))
+    if tg:
+        print("[diag] k=1: using TRUE polar grad G_0 = Gram_1^-1 . (E^T sp E) in projector/P_B")
+    for dirichlet in (True, False):
+        bc = "dbc" if dirichlet else "free"
+        applies = make_apply_routines(
+            seq, ops, pa_mode="block_fd", grad_project=True, dirichlet_flag=dirichlet,
+            true_g=tg)
+        n_upper = int(seq.n1_dbc if dirichlet else seq.n1)
+        n_lower = int(seq.n0_dbc if dirichlet else seq.n0)
+        vs_upper = _nullspace_vectors(ops, 1, dirichlet)
+        n_harm = int(jnp.asarray(vs_upper).shape[0])
+
+        def mass_upper(v, d=dirichlet):
+            return apply_mass_matrix(seq, ops, v, 1, dirichlet=d)
+
+        keys = jax.random.split(jax.random.PRNGKey(args.seed), args.n_rhs)
+        rhs_batch = jnp.stack(
+            [applies["a_matvec"](jax.random.normal(k, (n_upper,), dtype=jnp.float64))
+             for k in keys], axis=0)
+        jax.block_until_ready(rhs_batch)
+        print()
+        print(f"[diag] k=1 {bc}: n_upper={n_upper}, n_lower={n_lower}, harmonics={n_harm}")
+        print(header)
+        print("-" * len(header))
+
+        methods = {
+            "jacobi (diag)": (applies["jacobi_diag"], None),
+            "P.T P_S P + P_B (tensor)": (
+                applies["projected_p_a_plus_p_b_with_state"], applies["p_a_state"]),
+        }
+        for name, (precond_upper, precond_state) in methods.items():
+            solve = make_saddle_solve(
+                applies["stiffness_matvec"],
+                applies["derivative_matvec"],
+                applies["derivative_t_matvec"],
+                applies["mass_lower_matvec"],
+                precond_upper,
+                applies["lower_tensor_precond"],
+                n_upper=n_upper, n_lower=n_lower,
+                tol=args.cg_tol, maxiter=args.cg_maxiter,
+                precond_upper_state=precond_state,
+                vs_upper=(vs_upper if n_harm > 0 else None),
+                mass_upper_matvec=(mass_upper if n_harm > 0 else None),
+            )
+            stats = time_saddle_solve(
+                solve, rhs_batch, solve_state=precond_state, rel_tol=report_rel_tol)
+            print(f"{bc + ' / ' + name:<34} {stats['avg_iters']:>8.1f} "
+                  f"{stats['max_iters']:>7d} {stats['avg_ms']:>9.1f} "
+                  f"{stats['max_residual']:>11.2e} "
+                  f"{stats['n_fail']:>7d}/{stats['n_total']:<d}")
+
+
+def run_k0_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
+    """k=0 Hodge-Laplacian (stiffness L_0) condensed CG: tensor vs jacobi
+    preconditioner, for dbc (nonsingular) AND free (constant nullspace).
+
+    Tests whether the tensor Hodge preconditioner stays effective when the
+    operator is SINGULAR (free BCs -> constant nullspace, deflated in the CG via
+    the stored nullspace vectors). L_0 = G_0^T M_1 G_0 is applied directly (no
+    inner mass inverse), so this is a plain scalar CG, not a saddle solve.
+    """
+    print("[diag] k=0 stiffness L_0 condensed CG (tensor vs jacobi); "
+          "dbc = nonsingular, free = constant nullspace (deflated).")
+    header = (f"{'bc / precond':<26} {'avg_it':>8} {'max_it':>7} "
+              f"{'avg_ms':>9} {'max_res':>11} {'fails':>7}")
+    print(header)
+    print("-" * len(header))
+    for dirichlet in (True, False):
+        n = int(seq.n0_dbc if dirichlet else seq.n0)
+        vs = _nullspace_vectors(ops, 0, dirichlet)
+        bc = "dbc" if dirichlet else "free"
+
+        def a_matvec(v, d=dirichlet):
+            return apply_stiffness(seq, ops, v, 0, dirichlet=d)
+
+        def mass_matvec(v, d=dirichlet):
+            return apply_mass_matrix(seq, ops, v, 0, dirichlet=d)
+
+        keys = jax.random.split(jax.random.PRNGKey(args.seed), args.n_rhs)
+        rhs_batch = jnp.stack(
+            [a_matvec(jax.random.normal(k, (n,), dtype=jnp.float64)) for k in keys],
+            axis=0)
+        jax.block_until_ready(rhs_batch)
+        print(f"[diag] k=0 {bc}: n={n}, nullspace dim={int(jnp.asarray(vs).shape[0])}")
+
+        # Precompute diag(L_0)^{-1} ONCE for a fair jacobi (apply_laplacian_
+        # preconditioner(kind='jacobi') re-probes the diagonal on every call,
+        # which gets traced into the CG loop -> bogus wall times).
+        l0_diaginv = _invert_diagonal(_diagonal_from_matvec(a_matvec, n))
+
+        def jacobi_precond(v, di=l0_diaginv):
+            return di * v
+
+        def tensor_precond(v, d=dirichlet):
+            return apply_laplacian_preconditioner(
+                seq, ops, v, 0, dirichlet=d, kind="tensor")
+
+        for kind, precond in (("jacobi", jacobi_precond), ("tensor", tensor_precond)):
+            @jax.jit
+            def solve(rhs, a=a_matvec, m=mass_matvec, p=precond, vv=vs):
+                x, info = solve_singular_cg(
+                    a, rhs, mass_matvec=m, precond_matvec=p, vs=vv,
+                    tol=args.cg_tol, maxiter=args.cg_maxiter)
+                r = a(x) - rhs
+                rel = jnp.linalg.norm(r) / jnp.maximum(jnp.linalg.norm(rhs), 1e-30)
+                return x, info, rel
+
+            stats = time_solve(solve, rhs_batch, rel_tol=report_rel_tol)
+            print(f"{bc + ' / ' + kind:<26} {stats['avg_iters']:>8.1f} "
+                  f"{stats['max_iters']:>7d} {stats['avg_ms']:>9.1f} "
+                  f"{stats['max_residual']:>11.2e} "
+                  f"{stats['n_fail']:>7d}/{stats['n_total']:<d}")
+
+
+def run_k3_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
+    """k=3 Hodge-Laplacian saddle benchmark: jacobi vs auxiliary-space transfer.
+
+    Proof-of-concept for the "map sideways" idea on the simplest (scalar) dual
+    pair k=3<->k=0: precondition L_3 by transferring to k=0, applying the
+    near-exact k=0 Hodge preconditioner, and transferring back. If the transfer
+    P_3 beats jacobi here, the same construction (with vector V1<->V2 transfer
+    and the k=1 preconditioner) is the route for k=2.
+    """
+    applies = make_apply_routines_k3(seq, ops)
+
+    # k=3 runs with FREE BCs (its dual k=0 is dbc -> working tensor L_0^{-1}).
+    n_upper = int(seq.n3)
+    n_lower = int(seq.n2)
+    print(f"[diag] k=3 Hodge-Laplacian path, FREE BCs (n3={n_upper}, n2={n_lower})")
+    print("[diag] auxiliary-space transfer to k=0 dbc (BC swap: k=3 no-dbc <-> "
+          "k=0 dbc); M^-1 via tensor mass precond, L_0^-1 via the working dbc "
+          "k=0 tensor Hodge precond.")
+
+    keys = jax.random.split(jax.random.PRNGKey(args.seed), args.n_rhs)
+    rhs_batch = jnp.stack(
+        [applies["a_matvec"](jax.random.normal(k, (n_upper,), dtype=jnp.float64))
+         for k in keys],
+        axis=0,
+    )
+    jax.block_until_ready(rhs_batch)
+
+    methods = {"transfer P_3 = T L_0^-1 T* (aux-space)": applies["p3_transfer"]}
+    if applies["jacobi_diag"] is not None:
+        jac = applies["jacobi_diag"]
+        tr = applies["p3_transfer"]
+        # HX/ADS completion: transfer is rank-deficient (T: V0 -> V3 is not
+        # surjective -- different-order bases), leaving a subspace unpreconditioned
+        # -> hard stall. Add the jacobi smoother to cover that remainder. At unit
+        # weight the near-exact transfer and whole-space jacobi double-count on
+        # the transfer's range; sweep the smoother weight alpha to down-weight it
+        # so the transfer dominates where it is good and jacobi only fills the
+        # complement.
+        for a in (0.05, 0.1, 0.25, 0.5, 1.0):
+            methods[f"{a:g}*jacobi + transfer"] = (lambda r, a=a: a * jac(r) + tr(r))
+        methods = {"jacobi (diag)": jac, **methods}
+    else:
+        print("[diag] note: k=3 Schur-Jacobi baseline unavailable (not assembled)")
+
+    print()
+    print("[diag] saddle MINRES (upper varies, lower fixed=tensor mass M_2)")
+    header = (
+        f"{'upper precond':<42} {'avg_it':>8} {'max_it':>7} "
+        f"{'avg_ms':>9} {'max_res':>11} {'fails':>7}"
+    )
+    print(header)
+    print("-" * len(header))
+    for name, precond_upper in methods.items():
+        solve = make_saddle_solve(
+            applies["stiffness_matvec"],
+            applies["derivative_matvec"],
+            applies["derivative_t_matvec"],
+            applies["mass_lower_matvec"],
+            precond_upper,
+            applies["lower_tensor_precond"],
+            n_upper=n_upper,
+            n_lower=n_lower,
+            tol=args.cg_tol,
+            maxiter=args.cg_maxiter,
+        )
+        stats = time_saddle_solve(solve, rhs_batch, rel_tol=report_rel_tol)
+        print(f"{name:<42} {stats['avg_iters']:>8.1f} {stats['max_iters']:>7d} "
+              f"{stats['avg_ms']:>9.1f} {stats['max_residual']:>11.2e} "
+              f"{stats['n_fail']:>7d}/{stats['n_total']:<d}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ns", type=str, default="6,12,4",
@@ -2584,6 +3377,38 @@ def main() -> None:
         default=RANK,
         help=(
             "CP rank for the tensor preconditioners used by block_fd."
+        ),
+    )
+    parser.add_argument(
+        "--k1-both-bc",
+        action="store_true",
+        help=(
+            "Run the k=1 saddle benchmark for BOTH boundary conditions (dbc, "
+            "nonsingular; and free, with a b1=1 harmonic nullspace deflated), "
+            "comparing jacobi vs the tensor preconditioner, then exit."
+        ),
+    )
+    parser.add_argument(
+        "--true-g",
+        action="store_true",
+        help=(
+            "Use the TRUE polar derivative G = Gram^{-1}.(E^T sp E) (Gram = E^T E, "
+            "no mass assembly) in the projector/P_B, instead of the directly-built "
+            "apply_incidence which is non-nilpotent on the polar axis. Applies to "
+            "the k=1 and k=2 benchmarks."
+        ),
+    )
+    parser.add_argument(
+        "--klevel",
+        type=int,
+        default=1,
+        choices=(0, 1, 2, 3),
+        help=(
+            "Form degree of the Hodge Laplacian to precondition. 0 = k=0 "
+            "stiffness condensed-CG nullspace test (tensor vs jacobi, dbc vs "
+            "free). 1 (default) = the k=1 grad-div path. 2 = the k=2 div-div "
+            "path. 3 = the k=3 auxiliary-space transfer to k=0. "
+            "0, 2, 3 run their dedicated benchmark and exit."
         ),
     )
     parser.add_argument(
@@ -2849,9 +3674,27 @@ def main() -> None:
         k1_stiff_inner_schur=use_k1_inner_schur,
         precompute_coupling=not args.no_precompute_coupling,
         timing_breakdown=args.assembly_breakdown,
+        klevel=args.klevel,
+        both_bc=args.k1_both_bc,
     )
     print(f"[diag] operators + rank-{rank} tensor preconditioners assembled in "
           f"{(time.perf_counter() - t0) * 1e3:.1f} ms")
+
+    if args.k1_both_bc:
+        run_k1_both_bc_benchmark(seq, ops, args, report_rel_tol=report_rel_tol)
+        return
+
+    if args.klevel == 0:
+        run_k0_benchmark(seq, ops, args, report_rel_tol=report_rel_tol)
+        return
+
+    if args.klevel == 2:
+        run_k2_benchmark(seq, ops, args, report_rel_tol=report_rel_tol)
+        return
+
+    if args.klevel == 3:
+        run_k3_benchmark(seq, ops, args, report_rel_tol=report_rel_tol)
+        return
 
     applies = make_apply_routines(
         seq,
@@ -2866,6 +3709,7 @@ def main() -> None:
         pa_block_vector_fd_report_k=args.pa_block_vector_fd_report_k,
         pa_block_vector_fd_origin_k=args.pa_block_vector_fd_origin_k,
         pa_profile=args.pa_profile,
+        true_g=bool(getattr(args, "true_g", False)),
     )
 
     print(f"[diag] using P_A mode: {args.pa_mode}")
@@ -2940,6 +3784,27 @@ def main() -> None:
         "P.T P_S P + P_B (fused)": (applies["projected_p_a_plus_p_b_fused_with_state"], applies["p_a_state"]),
         "P.T jacobi(S) P + P_B": (applies["projected_jacobi_plus_p_b"], None),
     }
+
+    # Richardson / Chebyshev acting on the APPROXIMATE Schur S-hat = a_matvec
+    # (the M->preconditioner approximation, same operator the jacobi diagonal is
+    # probed from), inner smoother = jacobi diag(S-hat)^{-1}. Spectrum of the
+    # jacobi-preconditioned S-hat estimated once via Lanczos on the symmetric
+    # M = D^{-1/2} S-hat D^{-1/2}. Fixed degree -> linear SPD upper precond.
+    s_hat = applies["a_matvec"]
+    jac = applies["jacobi_diag"]
+    sqrt_di = jnp.sqrt(jnp.abs(applies["schur_diaginv"]))
+
+    def _m_sym(v):
+        return sqrt_di * s_hat(sqrt_di * v)
+
+    lmin_raw, lmax = _lanczos_extremal_eigs(
+        _m_sym, int(seq.n1_dbc if DIRICHLET else seq.n1), steps=30, seed=args.seed)
+    lmin = max(lmin_raw, lmax * 1e-3)  # defensive floor for the Chebyshev interval
+    print(f"[diag] approx-Schur jacobi-precond spectrum: raw[{lmin_raw:.3e},{lmax:.3e}] "
+          f"used lmin={lmin:.3e} (cond~{lmax / lmin:.1f})")
+    for d in (2, 3, 5, 8):
+        methods[f"richardson-{d}"] = (make_richardson_upper(s_hat, jac, lmin, lmax, d), None)
+        methods[f"chebyshev-{d}"] = (make_chebyshev_upper(s_hat, jac, lmin, lmax, d), None)
 
     if args.methods.strip().lower() != "all":
         requested = [m.strip() for m in args.methods.split(",") if m.strip()]

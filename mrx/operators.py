@@ -271,6 +271,21 @@ class SequenceOperators(eqx.Module):
     g1_T: Optional[_MatrixFreeIncidence] = None
     g2: Optional[_MatrixFreeIncidence] = None
     g2_T: Optional[_MatrixFreeIncidence] = None
+    # TRUE polar derivative correction. The directly-built incidence
+    # ``E^T sp E`` is the topological d only when the extraction is unitary
+    # (``E^T E = I``); on the polar axis the gluing is non-unitary, so the true
+    # strong derivative is ``G = M^{-1} D = Gram_{k+1}^{-1} (E^T sp E)`` with the
+    # (mass-free) coefficient Gram ``Gram = E^T E``. ``Gram`` is identity in the
+    # bulk plus a small dense axis block, so its inverse is sparse (identity +
+    # axis block) and is stored here per OUTPUT space and BC. ``None`` means the
+    # extraction is unitary there (e.g. non-polar, or V3) so no correction is
+    # needed and the apply is bit-identical to the raw incidence.
+    inc_gram_inv_1: Optional[jsparse.BCSR] = None
+    inc_gram_inv_1_dbc: Optional[jsparse.BCSR] = None
+    inc_gram_inv_2: Optional[jsparse.BCSR] = None
+    inc_gram_inv_2_dbc: Optional[jsparse.BCSR] = None
+    inc_gram_inv_3: Optional[jsparse.BCSR] = None
+    inc_gram_inv_3_dbc: Optional[jsparse.BCSR] = None
     grad_grad: Optional[jsparse.BCSR] = None
     curl_curl: Optional[jsparse.BCSR] = None
     div_div: Optional[jsparse.BCSR] = None
@@ -3800,11 +3815,88 @@ def update_incidence_operator(seq, operators: Optional[SequenceOperators], k: in
     raise ValueError("k must be 0, 1 or 2")
 
 
+def _build_inc_gram_inv(seq, operators, space: int, dirichlet: bool):
+    """Sparse ``(E_space^T E_space)^{-1}`` for the TRUE polar-derivative fix.
+
+    The true strong derivative on extracted DoFs is
+    ``G = M^{-1} D = Gram_{k+1}^{-1} (E^T sp E)`` with the (mass-free) coefficient
+    Gram ``Gram = E^T E``. ``Gram`` is the identity in the bulk plus a small dense
+    block on the polar-axis fusion DoFs, so its inverse is sparse (identity +
+    that block). Returns ``None`` when the extraction is unitary (``Gram = I``,
+    e.g. non-polar or the top space V3) -- then no correction is needed.
+    """
+    import scipy.sparse as _sps
+    e, e_T = _mass_extraction(operators, space, dirichlet)
+    if e is None or e_T is None:
+        return None
+    n_ext = int(getattr(seq, f"n{space}_dbc" if dirichlet else f"n{space}"))
+    # Build the (ext x full) restriction E as a SPARSE matrix straight from the
+    # extraction's own triplets -- never densify the (ext x full) operator (that
+    # is the "densify an incidence operator" madness). The coefficient Gram
+    # E E^T is (ext x ext) and stays sparse; only the small polar-axis fusion
+    # block is touched densely (to invert), exactly the "small dense ops near the
+    # axis" worst case.
+    bcoo = e.to_bcoo()
+    idx = np.asarray(bcoo.indices)
+    dat = np.asarray(bcoo.data)
+    shp = tuple(int(s) for s in bcoo.shape)
+    E = _sps.coo_matrix((dat, (idx[:, 0], idx[:, 1])), shape=shp).tocsr()
+    if E.shape[0] != n_ext and E.shape[1] == n_ext:
+        E = E.T.tocsr()
+    n = E.shape[0]
+    gram = (E @ E.T).tocsr()                          # (ext, ext) coeff Gram, sparse
+    diff = (gram - _sps.identity(n, format="csr", dtype=gram.dtype)).tocoo()
+    mask = np.abs(diff.data) > 1e-10
+    S = np.unique(diff.row[mask]) if mask.any() else np.array([], dtype=int)
+    if S.size == 0:
+        return None                                  # unitary extraction
+    gram_ss_inv = np.linalg.inv(np.asarray(gram[np.ix_(S, S)].todense()))
+    in_S = np.zeros(n, dtype=bool)
+    in_S[S] = True
+    bulk = np.where(~in_S)[0]
+    II, JJ = np.meshgrid(S, S, indexing="ij")
+    rows = np.concatenate([bulk, II.ravel()]).astype(np.int32)
+    cols = np.concatenate([bulk, JJ.ravel()]).astype(np.int32)
+    data = np.concatenate([np.ones(bulk.size), gram_ss_inv.ravel()])
+    bcoo = jsparse.BCOO((jnp.asarray(data), jnp.asarray(np.stack([rows, cols], axis=1))),
+                        shape=(n, n))
+    return jsparse.BCSR.from_bcoo(bcoo)
+
+
+def _inc_gram_inv(operators: SequenceOperators, space: int, dirichlet: bool):
+    """Look up the stored true-derivative Gram^{-1} correction (or None)."""
+    if not (1 <= space <= 3):
+        return None
+    name = f"inc_gram_inv_{space}" + ("_dbc" if dirichlet else "")
+    return getattr(operators, name, None)
+
+
 def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = None,
                                  ks: Sequence[int] = (0, 1, 2)):
-    """Assemble topological incidence operators for the requested degrees."""
+    """Assemble topological incidence operators for the requested degrees.
+
+    Also caches the TRUE polar-derivative Gram^{-1} corrections for the output
+    spaces ``{k+1}`` so :func:`apply_incidence_matrix` returns the strong
+    derivative ``M^{-1} D`` (exact ``d.d = 0`` on extracted DoFs) on polar
+    sequences, while staying bit-identical to the raw incidence elsewhere.
+    """
     for k in ks:
         operators = update_incidence_operator(seq, operators, k)
+    operators = _ensure_extraction_operators(seq, operators)
+    spaces = sorted({k + 1 for k in ks})
+    fields, vals = [], []
+    for s in spaces:
+        for dbc in (True, False):
+            name = f"inc_gram_inv_{s}" + ("_dbc" if dbc else "")
+            if getattr(operators, name, None) is None:
+                fields.append(name)
+                vals.append(_build_inc_gram_inv(seq, operators, s, dbc))
+    if fields:
+        operators = eqx.tree_at(
+            lambda o: tuple(getattr(o, f) for f in fields),
+            operators, tuple(vals),
+            is_leaf=lambda x: x is None,
+        )
     return operators
 
 
@@ -3848,21 +3940,30 @@ def apply_incidence_matrix(seq, operators: SequenceOperators, v, k: int,
                            dirichlet_in: bool = True,
                            dirichlet_out: bool = True,
                            transpose: bool = False):
-    """Apply the topological exterior-derivative incidence matrix Gk.
+    """Apply the strong exterior-derivative ``G_k`` on extracted DoF spaces.
 
-    ``Gk`` maps full k-form DoFs to full (k+1)-form DoFs with entries in
-    ``{-1, 0, +1}``; this routine sandwiches it with the extraction operators
-    so it acts on extracted DoF spaces (periodic and/or Dirichlet-reduced).
+    The raw extracted incidence is ``E_out^T sp E_in`` (``sp`` has entries in
+    ``{-1, 0, +1}``). On polar sequences the extraction is non-unitary at the
+    axis, so the raw form is NOT the topological derivative and ``d.d != 0``.
+    The true strong derivative is ``G = Gram_{k+1}^{-1} (E_out^T sp E_in)`` with
+    the cached coefficient-Gram inverse (``None`` / identity where the extraction
+    is unitary, e.g. non-polar). The correction is a sparse matvec localised to
+    the polar-axis DoFs, so off-axis the result is bit-identical to the raw
+    incidence and ``d.d = 0`` holds exactly on extracted DoFs everywhere.
     """
     sp, sp_T = _incidence_components(operators, k)
     if sp is None or sp_T is None:
         raise ValueError(f"Incidence operator k={k} is not assembled")
     e_in, e_in_T, e_out, e_out_T = _derivative_extraction(
         operators, k, dirichlet_in, dirichlet_out)
+    gram_inv = _inc_gram_inv(operators, k + 1, dirichlet_out)
 
     if transpose:
-        return e_in @ (sp_T @ (e_out_T @ v))
-    return e_out @ (sp @ (e_in_T @ v))
+        # G^T = (E^T sp E)^T Gram_{k+1}^{-1}  (Gram symmetric -> proper adjoint)
+        w = gram_inv @ v if gram_inv is not None else v
+        return e_in @ (sp_T @ (e_out_T @ w))
+    y = e_out @ (sp @ (e_in_T @ v))
+    return gram_inv @ y if gram_inv is not None else y
 
 
 def _assemble_projection_block(seq, k_in: int, k_out: int):

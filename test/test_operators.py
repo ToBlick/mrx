@@ -129,10 +129,12 @@ def test_mass_dense_is_spd(k):
 # ---------------------------------------------------------------------------
 # de Rham complex: curl(grad f) = 0  and  div(curl F) = 0
 #
-# These are topology-only tests (no geometry dependence).  Polar extraction
-# is NOT a 0/1 selection matrix, so G_{k+1}^ext G_k^ext = 0 holds only on
-# the non-polar sequence where E_k is a row-subset of the identity.  We use
-# _SEQ (polar=False, identity map) and build its own incidence bundle.
+# On the non-polar sequence the extraction is a 0/1 selection (E^T E = I), so
+# the raw extracted incidence E^T sp E already satisfies G_{k+1} G_k = 0.  On
+# polar sequences the axis gluing is non-unitary, so apply_incidence_matrix now
+# applies the TRUE strong derivative G = Gram^{-1}(E^T sp E) (cached, mass-free)
+# which restores exact d.d = 0 on extracted DoFs.  We test both: _SEQ
+# (polar=False) below, and a polar sequence in test_polar_complex_is_exact.
 # ---------------------------------------------------------------------------
 
 _SEQ_OPS = assemble_incidence_operators(_SEQ)
@@ -186,6 +188,40 @@ def test_div_of_curl_is_zero(dirichlet):
         assert norm < 1e-12, (
             f"dirichlet={dirichlet}: div(curl F) != 0, ||div curl F|| = {norm:.3e}"
         )
+
+
+# Polar sequence: the axis extraction is non-unitary, so the raw incidence is
+# NOT nilpotent there.  apply_incidence_matrix now applies the true strong
+# derivative G = Gram^{-1}(E^T sp E), which must restore d.d = 0 on extracted
+# DoFs.  This is the regression guard for the polar de Rham exactness fix.
+_POLAR_SEQ = DeRhamSequence((6, 8, 4), (3, 3, 3), 6, _TYPES, polar=True,
+                            betti_numbers=(1, 1, 0, 0))
+_POLAR_SEQ.evaluate_1d()
+_POLAR_SEQ.assemble_reference_mass_matrix()
+_POLAR_SEQ.set_map(rotating_ellipse_map(eps=1.0 / 3.0, kappa=1.2, R0=1.0, nfp=3))
+_POLAR_OPS = assemble_incidence_operators(_POLAR_SEQ, ks=(0, 1, 2))
+
+
+@pytest.mark.parametrize("dirichlet", (False, True))
+@pytest.mark.parametrize("k,name", ((0, "curl(grad)"), (1, "div(curl)")))
+def test_polar_complex_is_exact(k, name, dirichlet):
+    """G_{k+1} G_k = 0 on the POLAR sequence with the true strong derivative."""
+    n = int(getattr(_POLAR_SEQ, f"n{k}_dbc" if dirichlet else f"n{k}"))
+    rng = np.random.default_rng(11)
+    worst = 0.0
+    for _ in range(4):
+        v = jnp.asarray(rng.standard_normal(n))
+        g = apply_incidence_matrix(_POLAR_SEQ, _POLAR_OPS, v, k,
+                                   dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+        gg = apply_incidence_matrix(_POLAR_SEQ, _POLAR_OPS, g, k + 1,
+                                    dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+        rel = float(jnp.linalg.norm(gg)) / max(float(jnp.linalg.norm(g)), 1e-300)
+        worst = max(worst, rel)
+    assert worst < 1e-10, (
+        f"polar dirichlet={dirichlet}: {name} != 0, rel={worst:.3e}"
+    )
+
+
 #
 # A fresh sequence is built with polar=True so that axis regularity is
 # enforced correctly.  _APPLIES and _DENSE above captured the identity-map
