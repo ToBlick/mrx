@@ -49,6 +49,7 @@ keeping the lower block fixed to the rank-1 tensor mass preconditioner.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from typing import NamedTuple
@@ -95,6 +96,8 @@ from mrx.preconditioners import (
     _apply_k1_bulk_diagonal_preconditioner,
     _apply_k1_bulk_forward_model,
     _apply_k1_bulk_preconditioner,
+    _apply_k2_bulk_diagonal_preconditioner,
+    _apply_k2_bulk_preconditioner,
     _apply_bulk_to_surgery_coupling,
     _apply_surgery_to_bulk_coupling,
     _apply_tensor_diagonal_block_preconditioner,
@@ -425,6 +428,61 @@ def _build_k1_block_fd_preconditioner(
     if not return_profile:
         return state
     return state, True
+
+
+def _build_k2_block_fd_preconditioner(seq, ops, *, dirichlet: bool, pinv_rtol: float = 1e-8):
+    """Capped div-div (k=2) P_A, mimicking ``_build_k1_block_fd_preconditioner``.
+
+    Same recipe as the WORKING k=1 block_fd, one degree up: the tensor-factor bulk
+    inverse + a surgery Schur that is RE-PROBED densely (consistent with the bulk
+    surrogate) and PSD-pseudo-inverted with a relative cutoff -- ``where(evals >
+    cutoff, 1/evals, 0)`` drops both the small AND the spurious-negative axis modes.
+    This is the cap that makes P_A BOUNDED on its null (the curls), so raw
+    ``P_A + P_B`` no longer needs the curl-complement projection. (div-div is the
+    EASIER operator vs curl-curl -- whose block_fd already drops all off-diagonal
+    couplings yet works -- so this should be at least as good.) Returns a single
+    matrix-free apply V2* -> V2; no dense inverse beyond the tiny axis Schur.
+    """
+    pair = ops.k2_tensor_stiff_precond
+    if pair is None:
+        raise ValueError("k=2 tensor stiffness preconditioner is not assembled")
+    payload = pair.dbc if dirichlet else pair.free
+    if payload is None:
+        side = "dbc" if dirichlet else "free"
+        raise ValueError(f"k=2 tensor stiffness payload missing for {side}")
+    surgery = payload.surgery
+    factors = payload.factors
+    bulk_impl = (_apply_k2_bulk_preconditioner if factors.use_inner_schur
+                 else _apply_k2_bulk_diagonal_preconditioner)
+
+    def _bulk(rhs_bulk):
+        return bulk_impl(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_bulk)
+
+    n_s = int(surgery.surgery_size)
+    eye_s = jnp.eye(n_s, dtype=jnp.float64)
+    schur_dense = jax.vmap(
+        lambda v: surgery.ass @ v - _apply_bulk_to_surgery_coupling(
+            surgery, _bulk(_apply_surgery_to_bulk_coupling(surgery, v))),
+        in_axes=1, out_axes=1)(eye_s)
+    schur_dense = _symmetrize(schur_dense)
+    evals, evecs = jnp.linalg.eigh(schur_dense)
+    scale = jnp.max(jnp.abs(evals))
+    cutoff = jnp.maximum(pinv_rtol * jnp.where(scale > 0, scale, 1.0), 1e-14)
+    inv_evals = jnp.where(evals > cutoff, 1.0 / evals, 0.0)
+    schur_inv = (evecs * inv_evals[jnp.newaxis, :]) @ evecs.T
+
+    def apply(v):  # V2* -> V2
+        rhs_s = v[surgery.surgery_indices]
+        rhs_b = v[surgery.bulk_indices]
+        y = _bulk(rhs_b)
+        z = schur_inv @ (rhs_s - _apply_bulk_to_surgery_coupling(surgery, y))
+        x_b = y - _bulk(_apply_surgery_to_bulk_coupling(surgery, z))
+        x = jnp.zeros_like(v)
+        x = x.at[surgery.surgery_indices].set(z)
+        x = x.at[surgery.bulk_indices].set(x_b)
+        return x
+
+    return apply
 
 
 def _apply_k1_block_fd_bulk_from_state(state: K1BlockFDPreconditionerState, rhs_bulk):
@@ -1979,7 +2037,8 @@ def make_apply_routines(
 
 def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = True,
                            project_atom: bool = True, atom: str = "block_fd",
-                           k1_inv_custom=None, true_g: bool = False):
+                           k1_inv_custom=None, true_g: bool = False,
+                           atom_cheb_degree: int = 5):
     """k=2 Hodge-Laplacian preconditioner applies (degree-shifted from k=1).
 
     The k=2 Laplacian ``L_2 = S_2 + D_1 M_1^{-1} D_1^T`` has the div-div
@@ -2091,6 +2150,59 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
 
         def k1_inv(r):  # full-L_1 pseudoinverse surrogate, V1* -> V1
             return _l1_inv(r)
+    elif atom == "cheb_tensor":
+        # The cheap, scalable, NEAR-EXACT L_1^{-1} atom: a fixed-degree Chebyshev
+        # iteration on the k=1 approximate Schur S-hat_1 (~ L_1) with the GOOD k=1
+        # Hodge preconditioner (kappa~28) as the inner smoother. All matrix-free
+        # (no inner Krylov, no dense pinv) -> the production-legal version of the
+        # exact L_1^+ that converged the projected k=2 method.
+        #
+        # DEFLATION (free BC): L_1 has the b1 cohomology harmonic h (L_1 h = 0). The
+        # Chebyshev polynomial p(lambda) ~ 1/lambda BLOWS UP at lambda ~ 0, so an
+        # un-deflated atom amplifies h and wrecks the projector Pi_2. We
+        # M_1-orthogonally project h out of the atom's input (dual) and output
+        # (primal), turning it into a proper deflated PSEUDO-inverse L_1^+. dbc has
+        # no harmonic -> no-op. h from _nullspace_vectors (the same harmonic the k=1
+        # free saddle deflates). Interval via A-inner-product Lanczos on the
+        # DEFLATED smoother (so lmin is the bulk min, not the ~0 harmonic).
+        _k1_applies = make_apply_routines(
+            seq, ops, pa_mode="block_fd", grad_project=True, dirichlet_flag=DIRICHLET,
+            true_g=true_g)
+        _s_hat1 = _k1_applies["a_matvec"]                       # ~ L_1 : V1 -> V1*
+        _smoother_raw = _k1_applies["projected_p_a_plus_p_b"]   # ~ L_1^{-1} : V1* -> V1
+        _n1 = int(seq.n1_dbc if DIRICHLET else seq.n1)
+
+        _H = jnp.asarray(_nullspace_vectors(ops, 1, DIRICHLET))  # (n_harm, n1), primal
+        if _H.shape[0] > 0:
+            _MH = jnp.stack(
+                [apply_mass_matrix(seq, ops, _H[i], 1, dirichlet=DIRICHLET)
+                 for i in range(_H.shape[0])], axis=0)           # M_1 h_i (dual reps)
+            _nrm = jnp.sqrt(jnp.einsum("ij,ij->i", _H, _MH))     # ||h_i||_{M_1}
+            _H = _H / _nrm[:, None]
+            _MH = _MH / _nrm[:, None]
+
+            def _defl_primal(x):   # V1 -> V1: M_1-orth projection onto h^perp
+                return x - jnp.einsum("i,ij->j", _MH @ x, _H)
+
+            def _defl_dual(b):     # V1* -> V1*: adjoint of _defl_primal
+                return b - jnp.einsum("i,ij->j", _H @ b, _MH)
+
+            def _smoother(b):
+                return _defl_primal(_smoother_raw(_defl_dual(b)))
+        else:
+            def _defl_primal(x):
+                return x
+
+            _defl_dual = _defl_primal
+            _smoother = _smoother_raw
+
+        _lmin1, _lmax1 = _lanczos_extremal_eigs_precond(
+            _s_hat1, _smoother, _n1, steps=50, seed=0, project=_defl_primal)
+        _lmin1 = max(_lmin1, _lmax1 * 1e-5)  # low floor: keep the bulk small modes in-interval
+        _cheb = make_chebyshev_upper(_s_hat1, _smoother, _lmin1, _lmax1, atom_cheb_degree)
+
+        def k1_inv(r):  # deflated cheb-tensor near-exact L_1^+ (pseudo-inverse), V1* -> V1
+            return _defl_primal(_cheb(_defl_dual(r)))
     elif atom == "block_fd":
         def k1_inv(r):  # (projected) pseudoinverse of curl-curl K_1, V1* -> V1
             # When project_atom is True, sandwich the inexact block_fd between
@@ -2129,6 +2241,15 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
         return apply_stiffness_tensor_preconditioner(
             seq, ops, r, 2, dirichlet=DIRICHLET)
 
+    # CAPPED div-div P_A (block_fd mimic of the working k=1 P_A): PSD-pinv on the
+    # surgery Schur -> BOUNDED on the curl null. Unlike the uncapped tensor P_A
+    # (which leaks onto curls -> raw diverges -> needs the projection), this should
+    # let RAW P_A + P_B converge with no projector and no near-exact atom.
+    _p_a_capped_fn = _build_k2_block_fd_preconditioner(seq, ops, dirichlet=DIRICHLET)
+
+    def p_a_capped(r):
+        return _p_a_capped_fn(r)
+
     # Outer curl-complement projectors on V2 (M_2-orthogonal), built from K_1^{-1}.
     def curl_primal_complement(u):  # (I - Pi_2) u : V2 -> V2
         y0 = apply_mass_matrix(seq, ops, u, 2, dirichlet=DIRICHLET)             # V2  -> V2*  (M_2)
@@ -2162,6 +2283,14 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
 
     def projected_p_a_plus_p_b(r):
         return curl_primal_complement(p_a_raw(curl_dual_complement(r))) + p_b(r)
+
+    # Route (b): CAPPED P_A, no projection. The capped div-div P_A is bounded on
+    # curls (mimics k=1 block_fd), so raw should converge without the projector.
+    def raw_p_a_capped_plus_p_b(r):
+        return p_a_capped(r) + p_b(r)
+
+    def projected_p_a_capped_plus_p_b(r):
+        return curl_primal_complement(p_a_capped(curl_dual_complement(r))) + p_b(r)
 
     # Production baseline: Schur-outer Jacobi diagonal for k=2 (stored multiply).
     # This is the WHOLE-space diagonal: 1/diag(S_2 + D_1 diag(M_1)^{-1} D_1^T),
@@ -2203,6 +2332,9 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
         "jacobi_stiff": jacobi_stiff,
         "raw_p_a_plus_p_b": raw_p_a_plus_p_b,
         "projected_p_a_plus_p_b": projected_p_a_plus_p_b,
+        "p_a_capped": p_a_capped,
+        "raw_p_a_capped_plus_p_b": raw_p_a_capped_plus_p_b,
+        "projected_p_a_capped_plus_p_b": projected_p_a_capped_plus_p_b,
     }
 
 
@@ -2499,6 +2631,64 @@ def time_solve(solve, rhs_batch, *, solve_state=None, rel_tol: float = 1e-10):
         "n_fail": int(n_fail),
         "n_total": int(len(infos)),
     }
+
+
+def _lanczos_extremal_eigs_precond(a_matvec, precond, n, *, steps: int = 30, seed: int = 0,
+                                   project=None):
+    """Estimate (lambda_min, lambda_max) of ``P @ A`` for SPD ``A`` (``a_matvec``)
+    and SPD preconditioner ``P`` (``precond``), via Lanczos in the A-inner product.
+
+    ``B = P A`` is self-adjoint w.r.t. <u,v>_A = u^T A v (A,P symmetric), so its
+    real eigenvalues are the Ritz values of an A-inner-product Lanczos. Used to
+    size the Chebyshev interval for a NON-diagonal (tensor) smoother, where the
+    standard symmetric-Lanczos form D^{-1/2} A D^{-1/2} is unavailable. Costs ~2
+    A-applies + 1 P-apply per step (setup-time only).
+
+    ``project`` (optional): when ``A`` is only SEMI-definite (e.g. free-BC L_1 has
+    the harmonic null h with ||h||_A = 0), the A-inner-product degenerates and the
+    Lanczos blows up (||w||_A -> 0 -> NaN). Pass the M-orthogonal projector onto
+    the complement of ker(A); applied to the start vector AND every basis vector,
+    it confines the recursion to the subspace where A is positive definite. dbc ->
+    pass None (no null).
+    """
+    if project is None:
+        def project(v):
+            return v
+    key = jax.random.PRNGKey(seed)
+    q = project(jax.random.normal(key, (n,), dtype=jnp.float64))
+    Aq = a_matvec(q)
+    qAq = float(jnp.dot(q, Aq))
+    if not np.isfinite(qAq) or qAq <= 1e-30:
+        return 0.0, 1.0  # degenerate; caller floors the interval anyway
+    nrm = float(np.sqrt(qAq))
+    q = q / nrm
+    Aq = Aq / nrm
+    q_prev = jnp.zeros_like(q)
+    beta = 0.0
+    alphas: list[float] = []
+    betas: list[float] = []
+    for _ in range(steps):
+        w = precond(Aq)                      # B q = P (A q)
+        alpha = float(jnp.dot(w, Aq))        # <Bq, q>_A = w^T A q
+        w = project(w - alpha * q - beta * q_prev)  # keep in the A-PD subspace
+        alphas.append(alpha)
+        Aw = a_matvec(w)
+        wAw = float(jnp.dot(w, Aw))          # ||w||_A^2
+        if not np.isfinite(wAw) or wAw < 1e-12:
+            break
+        beta = float(np.sqrt(wAw))
+        betas.append(beta)
+        q_prev, q = q, w / beta
+        Aq = Aw / beta
+    if not alphas:
+        return 0.0, 1.0
+    T = np.diag(np.asarray(alphas))
+    off = betas[:len(alphas) - 1]
+    if off:
+        b = np.asarray(off)
+        T = T + np.diag(b, 1) + np.diag(b, -1)
+    eigs = np.linalg.eigvalsh(T)
+    return float(eigs[0]), float(eigs[-1])
 
 
 def _lanczos_extremal_eigs(matvec, n, *, steps: int = 24, seed: int = 0):
@@ -3110,6 +3300,23 @@ def run_k2_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
     methods["P_B (full L_1, curl-aux) only"] = p_b_full
     methods["jacobi(S) + P_B (full L_1)"] = lambda r: jac_s(r) + p_b_full(r)
     methods["projected P_A + P_B (full L_1)"] = ap_full["projected_p_a_plus_p_b"]
+    # ROUTE (b): CAPPED div-div P_A (block_fd mimic of k=1), bounded on curls.
+    # The test: does raw P_A(capped) + P_B converge with NO projector (and beat
+    # jacobi)? If so, k=2 needs neither the projection nor a near-exact atom.
+    methods["P_A(capped) only"] = ap_full["p_a_capped"]
+    methods["raw P_A(capped) + P_B (full L_1)"] = ap_full["raw_p_a_capped_plus_p_b"]
+    methods["projected P_A(capped) + P_B (full L_1)"] = ap_full["projected_p_a_capped_plus_p_b"]
+    # CHEB-TENSOR atom (the keep-projection path) is DISABLED: it produces NaN in
+    # the squared P_B on the singular free-L_1 even with deflation, and route (b)
+    # (capped P_A, no projection) makes it unnecessary. Re-enable by setting
+    # K2_CHEB_TENSOR=1 if revisiting the deflation bug.
+    if os.environ.get("K2_CHEB_TENSOR", "0") not in ("0", "", "false", "False"):
+        for d in (3, 5, 8):
+            ap_ct = make_apply_routines_k2(
+                seq, ops, grad_project=True, atom="cheb_tensor",
+                atom_cheb_degree=d, true_g=tg)
+            methods[f"P_B (cheb-tensor-{d}) only"] = ap_ct["p_b"]
+            methods[f"projected P_A + P_B (cheb-tensor-{d})"] = ap_ct["projected_p_a_plus_p_b"]
     if ap_atom_on["jacobi_diag"] is not None:
         methods = {"jacobi (diag)": ap_atom_on["jacobi_diag"], **methods}
     else:
@@ -3340,6 +3547,7 @@ def run_k3_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
 
 
 def main() -> None:
+    global DIRICHLET
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ns", type=str, default="6,12,4",
                         help="Comma-separated (n_r,n_theta,n_zeta).")
@@ -3659,6 +3867,14 @@ def main() -> None:
             "--pa-block-vector-fd, or --pa-block-vector-fd-true-basis. Pick one bulk model."
         )
 
+    # k=2 L_2 = S_2 + D_1 M_1^{-1} D_1^T is SINGULAR under DBC (b_1 harmonic via the
+    # BC flip) and nonsingular under free BC; the established dense reference
+    # (exact L_1^+ = 91 it) is free. Force free BC for the k=2 benchmark so the
+    # Schur-jacobi baseline is assembled for the matching BC.
+    if args.klevel == 2:
+        DIRICHLET = False
+        print("[diag] k=2: forcing free BC (L_2 nonsingular; matches dense reference)")
+
     print(f"[diag] building sequence ns={args.ns} p={args.p} {args.geometry} "
           f"epsilon={args.epsilon:.4f} kappa={args.kappa} R0={args.r0} nfp={args.nfp}")
     t0 = time.perf_counter()
@@ -3805,6 +4021,25 @@ def main() -> None:
     for d in (2, 3, 5, 8):
         methods[f"richardson-{d}"] = (make_richardson_upper(s_hat, jac, lmin, lmax, d), None)
         methods[f"chebyshev-{d}"] = (make_chebyshev_upper(s_hat, jac, lmin, lmax, d), None)
+
+    # Polynomial methods with the GOOD TENSOR PRECONDITIONER as the inner smoother
+    # (the k=1 Hodge precond ~ L_1^{-1}, kappa~28, NOT jacobi). This is the right
+    # way to turn the kappa~28 tensor preconditioner into a near-exact L_1^{-1}:
+    # a few Chebyshev iterations should drop the outer MINRES to ~10-20 iters.
+    # That accelerated apply IS the cheap, scalable, near-exact atom k=2 needs.
+    # Interval via A-inner-product Lanczos (the smoother is non-diagonal).
+    tensor_smoother = applies["projected_p_a_plus_p_b"]   # k=1 precond ~ L_1^{-1}
+    lmin_t, lmax_t = _lanczos_extremal_eigs_precond(
+        s_hat, tensor_smoother, int(seq.n1_dbc if DIRICHLET else seq.n1),
+        steps=30, seed=args.seed)
+    lmin_t = max(lmin_t, lmax_t * 1e-3)
+    print(f"[diag] approx-Schur TENSOR-precond spectrum: eig[{lmin_t:.3e},{lmax_t:.3e}] "
+          f"(cond~{lmax_t / lmin_t:.1f}) -> Chebyshev/Richardson smoother")
+    for d in (1, 2, 3, 5, 8, 10):
+        methods[f"cheb-tensor-{d}"] = (
+            make_chebyshev_upper(s_hat, tensor_smoother, lmin_t, lmax_t, d), None)
+        methods[f"rich-tensor-{d}"] = (
+            make_richardson_upper(s_hat, tensor_smoother, lmin_t, lmax_t, d), None)
 
     if args.methods.strip().lower() != "all":
         requested = [m.strip() for m in args.methods.split(",") if m.strip()]

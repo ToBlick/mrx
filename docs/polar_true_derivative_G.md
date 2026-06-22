@@ -100,44 +100,54 @@ k=1 lines 619/639, k=2 lines 727/747.)
 
 ## Where we stand
 
-**Shipped (in `mrx/operators.py`, `apply_incidence_matrix`, validated):** the
-true `G` applied **in place**, equivalently `G = Gram_{k+1}^{-1} · (Eᵀ sp E)`,
-`Gram = EᵀE`. Construction:
-- `Gram` is built **sparsely** (`E` from the extraction's own triplets,
-  `E·Eᵀ` sparse — no `todense` of the incidence/extraction), and is
-  block-diagonal (identity bulk + a small polar-axis fusion block `S×S`);
-- only the small `S×S` axis block is inverted (dense, tiny), stored as a sparse
-  `inc_gram_inv_{1,2,3}[_dbc]` (`identity + axis correction`);
-- runtime is a **single sparse matvec** (`Gram⁻¹ · (Eᵀ sp E)`, and the proper
-  adjoint for transpose) — **inverse-free and `todense`-free at runtime**;
-- bit-identical to the old apply on non-polar (`Gram = I` there).
+**The full polar `G` is now matrix-free and inverse-free — no assembly inverse
+at all.** grad `G_0` and curl `G_1` are analytic `ξ`-stencils; div `G_2` needs no
+correction (its output V3 extraction is unitary). The old `Gram⁻¹` precompute
+(`_build_inc_gram_inv` → `inc_gram_inv_*`) is **no longer built**; it survives
+only as the bit-exact oracle for the validation harness.
 
-Validation (CPU, polar `rotating_ellipse`, `ns=6,8,4`, p=3): new apply == dense
-`Gram⁻¹·raw` reference ≤ 6.7e-16; `d∘d = 0` to ≤ 3.4e-16 (both BCs, k=0/1);
-`pytest test/test_operators.py` — 56 passed (incl. a new polar nilpotency test).
+**Shipped — analytic `ξ`-stencil grad `G_0`** (`build_grad_stencil_g0`, wired into
+`apply_incidence_matrix` `k==0`). Built from the incidence pattern + `ξ` with no
+inverse, all four `(din,dout)` BC pairs (fwd+transpose), stored `g0_grad_{di}{do}[_T]`.
+Stencil: theta-surgery = `±1` apex differences `apex(p,m)−apex(0,m)`; zeta-surgery
+= periodic-`z` apex differences; r-slice (comp0) DoF `i` = `f_{i+2}−f_{i+1}` with
+the first ring `i=0` carrying the `−ξ^ℓ_{1j}` apex couplings (dbc drops the outer
+`+f`); theta/zeta-bulk = `±1`.
 
-**Not yet shipped — the pure analytic `ξ`-stencil.** The intended end state
-(assemble `G` directly from the formulas above, zero inverse even at assembly).
-Status: grad `G_0` was prototyped and validated **bit-exact** against the
-`Gram⁻¹` oracle (max err 8.9e-16, both BCs); the radial subtlety is that the
-r-slice DoF `i` maps to `D_{i+1} = f_{i+2} − f_{i+1}` (full-r index), the first
-ring `i=0` carries the `−ξ^ℓ_{1j}` apex-fusion couplings, and the dbc outer
-boundary drops the trailing `+f`. **curl `G_1` and div `G_2` were not completed**
-— three separate attempts judged shipping all-three-bit-exact into a
-used-everywhere core operator in one pass too risky relative to the gain (the
-shipped Gram apply is already inverse-free at runtime; the analytic only removes
-the one-time `S×S` assembly inverse).
+**Shipped — analytic `ξ`-stencil curl `G_1`** (`build_curl_stencil_g1`, wired into
+`apply_incidence_matrix` `k==1`). Same construction one degree up, stored
+`g1_curl_{di}{do}[_T]`. Full-space curl `P=−d_z b+d_t c`, `Q=d_z a−d_r c`,
+`R=−d_t a+d_r b` (a=s,b=χ,c=ζ); V1 input fusion inverted by an `expand_v1` helper
+(the V1 analog of grad's `expand` — apex/surgery DoFs carry `ξ` weights). The only
+fused V2 *output* DoFs are the comp0 surgery rows, whose stencil is the axis form
+`surgery(pl,m) = [θ_s(pl,m) − θ_s(pl,(m+1)%dz)] + [ζ_s(pl+1,m) − ζ_s(0,m)]`
+(`= −d_z χ + ∂_θ ζ` at the axis). The V2 `Gram⁻¹` cancels analytically.
 
-**Remaining gap vs the ideal:** a small dense `S×S` axis-block inverse at
-**assembly** (the "small dense ops near the axis" worst case). To remove it,
-finish the analytic curl/div using the formulas above, validated column-by-column
-against the current `Gram⁻¹` apply (a bit-exact oracle), then drop
-`_build_inc_gram_inv`.
+**Div `G_2` — already matrix-free, no stencil needed.** Output V3's extraction is
+a plain `0/1` selection (`‖E₃E₃ᵀ − I‖ = 0`, unitary), so `Gram₃ = I` and
+`apply_incidence(.,2)` is already the true div; input V2 fusion is handled by the
+raw `E₂ᵀ` expansion.
+
+Validation (CPU, polar `rotating_ellipse`, `ns=6,8,4` p=3 **and** `4,4,3` p=2,
+`scripts/diag_grad_analytic_stencil.py`): analytic grad **and** curl == the
+independent `Gram⁻¹` oracle **and** the shipped `apply_incidence` to **≤7.8e-16**,
+all four `(din,dout)` pairs, forward + transpose; `curl∘grad` and `div∘curl`
+nilpotency ~1e-16 (both BCs). Gram devs `V1=1.56, V2=0.35, V3=0.00`.
+`pytest test/test_operators.py` — 56 passed (non-polar fallback stays bit-identical).
+
+**No remaining assembly inverse.** Polar is detected Gram-free via
+`_extraction_is_polar` (one `E Eᵀ x ≠ x` probe). On non-polar the stencil fields
+stay `None` → raw incidence fallback (bit-identical). `_build_inc_gram_inv` /
+`_inc_gram_inv` and the `inc_gram_inv_*` fields remain only as the oracle / the
+(always-`None`) div lookup; nothing is precomputed.
 
 ## Pointers
 
-- Apply + construction: `mrx/operators.py` — `apply_incidence_matrix`,
-  `_build_inc_gram_inv`, `_inc_gram_inv`, `SequenceOperators.inc_gram_inv_*`.
+- Analytic stencils: `mrx/operators.py` — `build_grad_stencil_g0`,
+  `build_curl_stencil_g1`, `_grad_stencil`, `_curl_stencil`,
+  `_extraction_is_polar`, `SequenceOperators.{g0_grad,g1_curl}_*`; validation
+  `scripts/diag_grad_analytic_stencil.py`.
+- Oracle (test-only): `mrx/operators.py` — `_build_inc_gram_inv`, `_inc_gram_inv`.
 - Index layout + `ξ` conventions: `mrx/extraction_operators.py` —
   `build_extraction`, `_k1_row_slices`, `_lambda_col_index`.
 - Tests: `test/test_operators.py` — `test_curl_of_grad_is_zero`,

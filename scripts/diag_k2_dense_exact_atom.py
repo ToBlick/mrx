@@ -58,6 +58,7 @@ from mrx.operators import (
     apply_incidence_matrix,
     apply_mass_matrix,
     apply_stiffness,
+    apply_stiffness_tensor_preconditioner,
 )
 # Reuse the proven build/assemble/k2 plumbing so the diagnostic exercises the
 # IDENTICAL P_B / projector / P_A structure as the benchmark.
@@ -65,6 +66,7 @@ import diag_graddiv_subspace_preconditioner as dg  # noqa: E402
 from diag_graddiv_subspace_preconditioner import (  # noqa: E402
     build_sequence,
     assemble_operators,
+    make_apply_routines,
     make_apply_routines_k2,
     make_saddle_solve,
     time_saddle_solve,
@@ -101,6 +103,50 @@ def spectrum_report(name, P, S):
     n_tiny = int(np.sum(ev <= 1e-12 * ev.max()))
     print(f"{name:<34} eig[min,max]=[{lo:.3e},{hi:.3e}] cond={cond:.3e} "
           f"in[0.9,1.1]={in_band:5.1f}%  near-zero={n_tiny}")
+
+
+def make_dense_cheb_atom(L1, P_smooth, degree, lmin, lmax):
+    """Degree-``degree`` Chebyshev iteration approximating ``L1^{-1}`` with inner
+    (tensor) smoother ``P_smooth ~ L1^{-1}``, spectrum of ``P_smooth @ L1`` in
+    ``[lmin, lmax]``. A FIXED LINEAR, symmetric operator (degree is fixed, no inner
+    Krylov), so it is a production-legal embedded atom: the outer MINRES stays
+    linear. Mirrors ``make_chebyshev_upper`` with ``s_hat = L1 @ x`` and
+    ``jac = P_smooth @ r`` (both dense here)."""
+    theta = 0.5 * (lmax + lmin)
+    delta = 0.5 * (lmax - lmin)
+    sigma1 = theta / delta
+    L1_j = jnp.asarray(L1)
+    P_j = jnp.asarray(P_smooth)
+
+    def apply(b):
+        d_vec = (P_j @ b) / theta
+        x = d_vec
+        rho_prev = 1.0 / sigma1
+        for _ in range(degree - 1):
+            r = b - L1_j @ x
+            rho = 1.0 / (2.0 * sigma1 - rho_prev)
+            d_vec = rho * rho_prev * d_vec + (2.0 * rho / delta) * (P_j @ r)
+            x = x + d_vec
+            rho_prev = rho
+        return x
+
+    return apply
+
+
+def make_dense_richardson_atom(L1, P_smooth, lmin, lmax, degree):
+    """Degree-``degree`` fixed-omega Richardson approximating ``L1^{-1}`` with
+    smoother ``P_smooth``, omega = 2/(lmin+lmax). Fixed linear, symmetric."""
+    omega = 2.0 / (lmin + lmax)
+    L1_j = jnp.asarray(L1)
+    P_j = jnp.asarray(P_smooth)
+
+    def apply(b):
+        x = jnp.zeros_like(b)
+        for _ in range(degree):
+            x = x + omega * (P_j @ (b - L1_j @ x))
+        return x
+
+    return apply
 
 
 def main():
@@ -214,6 +260,50 @@ def main():
     def k1_matched(r):  # V1* -> V1, pinv of the projector's composed curl-curl
         return A_plus_j @ r
 
+    # ------------------------------------------------------------------
+    # PRODUCTION-LEGAL embedded L_1^{-1}: a fixed-degree Chebyshev/Richardson
+    # iteration on L_1 with a CHEAP smoother. The exact L_1^+ atom converges the
+    # k=2 solve in ~91 it (projected), but it is a dense pinv -- not deployable.
+    # Two smoothers, both single tensor-matrix-free applies (no inner Krylov):
+    #   * tensor : the k=1 tensor STIFFNESS preconditioner (separable curl-curl
+    #              model) -- the cheapest smoother, untested for L_1 so far.
+    #   * hodge  : the validated k=1 Hodge preconditioner (projected P_A+P_B,
+    #              kappa(P.L_1) small) -- the same operator the "full_l1" atom
+    #              applies ONCE; here we Chebyshev-accelerate it.
+    # Each Chebyshev/Richardson atom is a FIXED LINEAR symmetric operator, so it
+    # is a legal embedded atom (outer MINRES stays linear). Built densely here so
+    # we can measure the degree needed to approach the exact-L_1^+ result before
+    # committing the apply to production.
+    # ------------------------------------------------------------------
+    P_tensor = build_dense(
+        lambda e: apply_stiffness_tensor_preconditioner(seq, ops, e, 1, dirichlet=DBC),
+        n1, label="P_tensor (k=1 tensor stiff)")
+    P_tensor = 0.5 * (P_tensor + P_tensor.T)
+    ap_k1_hodge = make_apply_routines(
+        seq, ops, pa_mode="block_fd", grad_project=True, dirichlet_flag=DBC)
+    P_hodge = build_dense(ap_k1_hodge["projected_p_a_plus_p_b"], n1,
+                          label="P_hodge (k=1 Hodge precond)")
+    P_hodge = 0.5 * (P_hodge + P_hodge.T)
+
+    def _interval(P, name):
+        ev = np.sort(np.real(np.linalg.eigvals(P @ L1)))
+        ev_pos = ev[ev > 1e-10 * ev.max()]
+        lo, hi = float(ev_pos.min()), float(ev_pos.max())
+        lo = max(lo, hi * 1e-3)  # defensive floor for the Chebyshev interval
+        print(f"[diag] smoother {name:<8} eig(P.L_1) in [{lo:.3e},{hi:.3e}] "
+              f"cond={hi/lo:.3e}")
+        return lo, hi
+    lo_t, hi_t = _interval(P_tensor, "tensor")
+    lo_h, hi_h = _interval(P_hodge, "hodge")
+
+    cheb_degrees = (2, 3, 5)
+    cheb_atoms = {}  # name -> k1_inv callable
+    for d in cheb_degrees:
+        cheb_atoms[f"cheb-{d} (tensor smooth)"] = make_dense_cheb_atom(L1, P_tensor, d, lo_t, hi_t)
+        cheb_atoms[f"cheb-{d} (hodge smooth)"] = make_dense_cheb_atom(L1, P_hodge, d, lo_h, hi_h)
+    cheb_atoms["rich-5 (tensor smooth)"] = make_dense_richardson_atom(L1, P_tensor, lo_t, hi_t, 5)
+    cheb_atoms["rich-5 (hodge smooth)"] = make_dense_richardson_atom(L1, P_hodge, lo_h, hi_h, 5)
+
     # k=2 applies for each atom (identical structure, different inner inverse).
     ap_matched = make_apply_routines_k2(
         seq, ops, grad_project=True, atom="custom", k1_inv_custom=k1_matched)
@@ -223,11 +313,15 @@ def main():
         seq, ops, grad_project=True, atom="custom", k1_inv_custom=l1_inv_exact)
     ap_bfd = make_apply_routines_k2(seq, ops, grad_project=True, atom="block_fd")
     ap_full = make_apply_routines_k2(seq, ops, grad_project=True, atom="full_l1")
+    ap_cheb = {name: make_apply_routines_k2(
+        seq, ops, grad_project=True, atom="custom", k1_inv_custom=fn)
+        for name, fn in cheb_atoms.items()}
     atoms = {"A^+ matched (G1^T M2 G1)": ap_matched,
              "K_1^+ (apply_stiffness)": ap_pinv,
              "L_1^+ (exact pinv)": ap_exact,
              "block_fd (curl-curl)": ap_bfd,
-             "full_l1 (k=1 precond)": ap_full}
+             "full_l1 (k=1 precond)": ap_full,
+             **ap_cheb}
 
     # ------------------------------------------------------------------
     # (A) Projector idempotency: Pi_2 = I - curl_primal_complement.
@@ -345,8 +439,15 @@ def main():
                                           pa(r) + ap_pinv["p_b"](r)),
         "P_B only (L_1^+)": p_b_L1,
     }
+    # --- PRODUCTION-LEGAL embedded atoms: the full k=2 preconditioner with a
+    # fixed-degree Chebyshev/Richardson L_1^{-1} (vs the exact-pinv L_1^+ 91 it).
+    # The question: how many smoother applies are needed to approach L_1^+, and
+    # does the cheap tensor smoother suffice or do we need the Hodge smoother? ---
+    for name, apx in ap_cheb.items():
+        methods[f"projected P_A(tensor)+P_B [{name}]"] = apx["projected_p_a_plus_p_b"]
+        methods[f"P_B only [{name}]"] = apx["p_b"]
     print("\n[C] k=2 saddle MINRES (upper varies, lower fixed=tensor mass M_1)")
-    header = (f"{'upper precond':<34} {'avg_it':>8} {'max_it':>7} "
+    header = (f"{'upper precond':<48} {'avg_it':>8} {'max_it':>7} "
               f"{'avg_ms':>9} {'max_res':>11} {'fails':>7}")
     print(header)
     print("-" * len(header))
@@ -364,7 +465,7 @@ def main():
             tol=args.cg_tol, maxiter=args.cg_maxiter,
         )
         stats = time_saddle_solve(solve, rhs_batch, rel_tol=1e-9)
-        print(f"{name:<34} {stats['avg_iters']:>8.1f} {stats['max_iters']:>7d} "
+        print(f"{name:<48} {stats['avg_iters']:>8.1f} {stats['max_iters']:>7d} "
               f"{stats['avg_ms']:>9.1f} {stats['max_residual']:>11.2e} "
               f"{stats['n_fail']:>7d}/{stats['n_total']:<d}")
 
