@@ -43,9 +43,18 @@ from — the true Schur's exact `M^{-1}` is never formed.
 | degree | operator | best preconditioner | vs jacobi | status |
 | --- | --- | --- | --- | --- |
 | k=0 | grad-grad `L_0` | scalar tensor Hodge | ~10× iters, ~7× wall | works, both BCs, nullspace-robust |
-| k=1 | grad-div `L_1` | projected `P_A + P_B` | ~4–6× iters | works, both BCs; true-G projection now *optional* (raw == projected) |
-| k=2 | div-div `L_2` | projected `P_A(cap) + P_B(L_1)` | up to ~7× iters | **works after the true-G fix** (see below); projection essential, cap `P_A` |
+| k=1 | grad-div `L_1` | projected `P_A + P_B` | ~4–6× iters | works, both BCs; true-G projection now *optional* (raw == projected). **Not h-flat with the cheap tensor atom** (88→139→218 over ns 6,12,4→8,16,6→10,20,6); advantage over jacobi erodes with resolution |
+| k=2 | div-div `L_2` | projected `P_A(cap) + P_B(L_1⁺)` | **~10× iters, h-independent** | **works after the true-G fix** (see below); projection essential. Projected with **capped `P_A` + exact `L_1⁺`** is **h-flat (33→34** while jacobi 226→343 — advantage *grows*). **Open: make both components cheap/matrix-free** — capped tensor `P_A` (cap primitive exists) + a cheap near-exact `L_1` atom (current cheap atoms cond≈60, grow with h). Raw / no-projection does **not** scale (refuted by h-test) |
 | k=3 | `L_3` | jacobi (transfer studied) | — | sideways transfer rank-deficient |
+
+> **The discrete derivative `G` is now fully matrix-free / inverse-free (2026-06).**
+> grad `G_0` and curl `G_1` ship as explicit analytic `±1`/`−ξ` sparse stencils
+> built straight from the incidence pattern + polar mapping coefficients `ξ` (no
+> mass, no inverse, bit-exact to ≤2.2e-16 vs the `Gram⁻¹∘incidence` oracle, both
+> BCs, forward+transpose); div `G_2` was already matrix-free (the V3 extraction is
+> a 0/1 selection, `Gram₃=I`). The whole `inc_gram_inv` precompute machinery is
+> removed — **no assembly inverse remains** in the derivative. See
+> `docs/polar_true_derivative_G.md`.
 
 > **Major correctness fix (2026-06): the polar discrete derivative `G`.** The
 > directly-built incidence apply (`apply_incidence_matrix = Eᵀ sp E`) is **not**
@@ -120,6 +129,103 @@ the default `k=1` path, `2`/`3` run their dedicated benchmarks). `--k1-both-bc`
 runs the `k=1` dbc-vs-free comparison. The consolidated new-result sections
 (nullspace robustness; Richardson/Chebyshev baselines; `k=2`; `k=3`) follow
 immediately; the detailed `k=1` algebra and history are kept below as reference.
+
+## Session 2026-06-21: matrix-free `G`, cheap-atom attempts, and h-scaling
+
+This session (a) finished the matrix-free `G`, (b) chased a *cheap* near-exact
+`L_1` atom so the k=2 projected method needs no dense `pinv`, and (c) ran the
+h-scaling tests that reframe what "works" means. **Net: the projected k=2
+construction is sound and ~h-flat *with* a near-exact atom; the one missing
+production piece is a cheap, scalable near-exact `L_1` atom.**
+
+### Matrix-free `G` complete
+grad `G_0` and curl `G_1` are now explicit analytic inverse-free sparse stencils
+(`build_grad_stencil_g0`, `build_curl_stencil_g1` in `mrx/operators.py`),
+bit-exact (≤2.2e-16) vs the `Gram⁻¹∘incidence` oracle on the polar
+`rotating_ellipse`, both BCs, forward+transpose; `div∘curl`/`curl∘grad`
+nilpotency ~1e-16; `pytest test/test_operators.py` 56 passed. div `G_2` was
+already matrix-free (V3 unitary). The `inc_gram_inv` precompute + its small
+axis-block inverse are deleted; polar is detected Gram-free via a one-probe
+`_extraction_is_polar`. Validation harness: `scripts/diag_grad_analytic_stencil.py`.
+
+### The cheap-atom attempt: Chebyshev with the tensor smoother
+The right way to turn the cond≈28 k=1 tensor preconditioner into a near-exact
+`L_1⁻¹` is a **fixed-degree Chebyshev iteration with that preconditioner as the
+inner smoother** (not jacobi). Interval auto-tuned by an A-inner-product Lanczos
+(`_lanczos_extremal_eigs_precond`). On the **k=1 saddle (dbc, nonsingular)** this
+works cleanly: `cheb-tensor-{1,2,3,5,8,10}` → `{80,66,52,32,23,19}` iters (vs
+plain 88), all 0/4, ~3× better per degree than the jacobi smoother. So a cheap
+near-exact `L_1⁻¹` *exists* for the well-conditioned case.
+
+**But it fails as the k=2 embedded atom**, for a now-understood reason: the k=2
+atom runs on **free-BC `L_1`, which is singular** (the `b₁` cohomology harmonic),
+and the k=2 *projector* gives it no outer deflation (unlike the k=1 saddle, which
+deflates). Chebyshev's polynomial `p(λ)≈1/λ` *blows up at the `λ≈0` harmonic*, so
+acceleration is actively harmful in the projector (worse than the un-accelerated
+`full_l1`, which merely *converges slowly*). The independent
+hyperparameter-estimation diagnostic (`scripts/diag_cheb_spectrum_estimation.py`)
+pinned the mechanism: Lanczos estimates `λmax` perfectly and `λmin` well, but the
+**defensive interval floor `lmin = max(lmin, lmax·1e-3)`** clips 14 genuine small
+modes on the free-BC operator (cond 1834 there) — Chebyshev then under-resolves /
+amplifies exactly those near-null modes. Explicit harmonic **deflation** of the
+atom removed the crash path but the deflated form still NaN'd in the squared
+`P_B`; deprioritized in favor of the route below.
+
+### Capping `P_A` like k=1 (route b) — converges but does **not** scale
+"Handle k=2 `P_A` like k=1's": the cap primitive already exists
+(`_symmetric_pseudoinverse(M, relative_tol)`). Mimicked k=1's block_fd for k=2
+(`_build_k2_block_fd_preconditioner`: tensor bulk + re-probed **PSD-pinv-capped**
+surgery Schur). This bounds the div-div `P_A` on the curl null, and **raw
+`P_A(capped) + P_B`, no projector, converges** (824 it, 0/4) where uncapped raw
+diverged. With a *cheap* atom the projection now *hurts* (1229 > 824) — confirming
+`Π₂` needs a near-exact atom. **However the h-test refutes raw-capped as a
+scalable solution:**
+
+| ns (n2) | jacobi | raw `P_A(capped)+P_B` |
+| --- | --- | --- |
+| 6,12,4 (584) | 226 | 824 |
+| 8,16,6 (1740) | 343 | 1825 |
+| 10,20,6 (2892) | 463 | **2000 diverges** |
+
+It grows faster than jacobi and fails at the largest grid. Two structural reasons:
+(1) **raw mode is inherently slower than projected even with a perfect atom**
+(dense, low res: projected+`L_1⁺` = 33 but raw+`L_1⁺` = 1289) because k=2's blocks
+don't auto-separate the way k=1's do (k=1: `P_A`≈0 on its gradient null *and*
+`P_B`≈0 on curls → raw == projected); (2) the cheap/capped `P_A` is not h-flat.
+
+### h-scaling reframes the goal: atom quality is the lever
+| construction | ns 6,12,4 | ns 8,16,6 | ns 10,20,6 | trend |
+| --- | --- | --- | --- | --- |
+| k=2 jacobi | 226 | 343 | 463 | grows ~2× |
+| **k=2 projected `P_A(cap)+P_B(L_1⁺ exact)`** | **33** | **34** | — | **FLAT (h-independent); ~10× jacobi, gap grows** |
+| k=2 projected `P_A(tensor)+P_B(L_1⁺ exact)` | 91 | 107 | — | mild growth (uncapped `P_A`) |
+| k=2 raw `P_A(cap)+P_B(L_1⁺ exact)` | 1289 | 600\* | diverges | raw is the wrong mode even with exact components (\*capped maxiter) |
+| k=2 raw `P_A(capped)+P_B(full_l1 cheap)` | 824 | 1825 | diverges | worse than jacobi |
+| k=1 projected `P_A+P_B` (tensor `L_0` atom, cheap) | 88 | 139 | 218 | grows; advantage erodes |
+
+The clean conclusion: **the projected k=2 construction is h-INDEPENDENT when its
+two components are good — capped `P_A` *and* a near-exact atom give 33→34 (flat),
+10× fewer iters than jacobi with the gap growing.** Capping `P_A` improves
+*h-scaling*, not just convergence (uncapped 91→107 vs capped 33→34); raw fails
+even with exact components (the blocks don't separate); and the cheap tensor atoms
+grow with h. So the construction is *right*, and the **production gap is exactly two
+cheap/matrix-free pieces, both known to help scaling: (1) a capped tensor `P_A`**
+(the `_symmetric_pseudoinverse` cap primitive exists — apply it to the modal
+inverse) **and (2) a cheap near-exact `L_1` atom** (Chebyshev-with-tensor-smoother
+is the candidate, once the singular-free-`L_1` deflation is robust in the squared
+`P_B`). Both are currently dense `pinv` (analysis-only).
+
+### Scalability audit (apply paths are O(N); one setup-time concern)
+All **per-apply** dense work in the k=0/1/2 preconditioners is ≤ the polar-axis
+surgery block `S` (`schur_inv @ ·`) plus per-axis fast-diagonalization einsums
+(`d`); nothing per-iteration scales with the full 3D DoF count `N`. The one
+production dense op larger than `S` is **setup-time only**: the CP-ALS metric-fit
+SVDs (`preconditioners.py:712-714`), which factor mode-unfoldings of the full-3D
+quadrature metric (PLANE-sized, `O(N·direction)`, one-time, thin). Guardrails:
+keep tensor `rank ≤ 2` (rank≥3 hits an `N×N` dense-surrogate fallback) and keep
+the `.todense()` dense-reference builders off the hot path (they are diagnostic
+only). To make *setup* fully scale, replace the three CP-init SVDs with a
+randomized / per-direction-reduced fit.
 
 ## Outcome
 
@@ -239,6 +345,15 @@ Conclusions:
   imperfect `[λmin, λmax]`), degree ≥ 5 converges cleanly.
 
 ## k=2 (div-div) — open problem
+
+> **Historical (pre-true-`G`).** This section recorded the diagnosis *before* the
+> polar-`G` fix, when every k=2 variant lost to jacobi and the projected forms
+> diverged. That was a **wrong-polar-curl** artifact, not a real atom-quality wall:
+> with the true `G` the projected method converges and beats jacobi, and is
+> ~h-flat with a near-exact atom. See "k=2 resolution (the true-G fix…)" and
+> "Session 2026-06-21" above for the current state. The text below is kept for the
+> record (the "rough atom" framing here was superseded — the real walls turned out
+> to be the polar curl, then atom *h-scaling*).
 
 The `k=2` Hodge Laplacian `L_2 = S_2 + D_1 M_1^{-1} D_1^T` is the degree-shifted
 analog of `k=1`: div-div stiffness `S_2 = G_2^T M_3 G_2` (singular on curls

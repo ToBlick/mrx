@@ -151,16 +151,20 @@ def main():
             return apply_mass_matrix(seq, ops, v, 1, dirichlet=DBC)
         print("(D) k=1 saddle MINRES (raw = no gradient-complement projection):")
         methods = [
-            ("    jacobi (diag)", ap_T["jacobi_diag"], None),
-            ("    projected P_A+P_B (exact L_0)",
+            ("jacobi (diag)", ap_T["jacobi_diag"], None),
+            ("projected P_A+P_B (exact L_0)",
              ap_E["projected_p_a_plus_p_b_with_state"], ap_E["p_a_state"]),
-            ("    raw P_A+P_B (exact L_0)",
+            ("raw P_A+P_B (exact L_0)",
              ap_E["p_a_plus_p_b_with_state"], ap_E["p_a_state"]),
-            ("    projected P_A+P_B (tensor L_0)",
+            ("projected P_A+P_B (tensor L_0)",
              ap_T["projected_p_a_plus_p_b_with_state"], ap_T["p_a_state"]),
-            ("    raw P_A+P_B (tensor L_0)",
+            ("raw P_A+P_B (tensor L_0)",
              ap_T["p_a_plus_p_b_with_state"], ap_T["p_a_state"]),
         ]
+        header = (f"    {'upper precond':<34} {'avg_it':>8} {'max_it':>7} "
+                  f"{'avg_ms':>9} {'max_res':>11} {'fails':>7}")
+        print(header)
+        print("    " + "-" * (len(header) - 4))
         for name, pu, st in methods:
             solve = make_saddle_solve(
                 ap_T["stiffness_matvec"], ap_T["derivative_matvec"],
@@ -172,8 +176,9 @@ def main():
             stats = (time_saddle_solve(solve, rhs_batch, solve_state=st, rel_tol=1e-9)
                      if st is not None else
                      time_saddle_solve(solve, rhs_batch, rel_tol=1e-9))
-            print(f"{name:<34} {stats['avg_iters']:>7.1f} it  "
-                  f"{stats['max_residual']:>10.2e}  {stats['n_fail']}/{stats['n_total']}")
+            print(f"    {name:<34} {stats['avg_iters']:>8.1f} {stats['max_iters']:>7d} "
+                  f"{stats['avg_ms']:>9.1f} {stats['max_residual']:>11.2e} "
+                  f"{stats['n_fail']:>7d}/{stats['n_total']:<d}")
 
     print("\n=== DONE ===")
 

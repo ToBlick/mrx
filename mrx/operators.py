@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import jax.scipy as jsp
 
 from mrx.assembly import assemble_vectorial
-from mrx.extraction_operators import MatrixFreeExtraction
+from mrx.extraction_operators import MatrixFreeExtraction, get_xi
 import numpy as np
 
 from mrx.local_assembly import assemble_mass_local
@@ -286,6 +286,28 @@ class SequenceOperators(eqx.Module):
     inc_gram_inv_2_dbc: Optional[jsparse.BCSR] = None
     inc_gram_inv_3: Optional[jsparse.BCSR] = None
     inc_gram_inv_3_dbc: Optional[jsparse.BCSR] = None
+    # Analytic inverse-free polar grad G_0 (V0->V1), built from the incidence
+    # pattern + polar coefficients xi alone (NO assembly inverse). Stored per
+    # (dirichlet_in, dirichlet_out) BC pair, forward + transpose. ``None`` on
+    # non-polar sequences -> apply falls back to the raw/Gram incidence path.
+    g0_grad_00: Optional[jsparse.BCSR] = None
+    g0_grad_00_T: Optional[jsparse.BCSR] = None
+    g0_grad_01: Optional[jsparse.BCSR] = None
+    g0_grad_01_T: Optional[jsparse.BCSR] = None
+    g0_grad_10: Optional[jsparse.BCSR] = None
+    g0_grad_10_T: Optional[jsparse.BCSR] = None
+    g0_grad_11: Optional[jsparse.BCSR] = None
+    g0_grad_11_T: Optional[jsparse.BCSR] = None
+    # Analytic inverse-free polar curl G_1 (V1->V2), same construction one degree
+    # up. ``None`` on non-polar -> raw incidence fallback.
+    g1_curl_00: Optional[jsparse.BCSR] = None
+    g1_curl_00_T: Optional[jsparse.BCSR] = None
+    g1_curl_01: Optional[jsparse.BCSR] = None
+    g1_curl_01_T: Optional[jsparse.BCSR] = None
+    g1_curl_10: Optional[jsparse.BCSR] = None
+    g1_curl_10_T: Optional[jsparse.BCSR] = None
+    g1_curl_11: Optional[jsparse.BCSR] = None
+    g1_curl_11_T: Optional[jsparse.BCSR] = None
     grad_grad: Optional[jsparse.BCSR] = None
     curl_curl: Optional[jsparse.BCSR] = None
     div_div: Optional[jsparse.BCSR] = None
@@ -3815,6 +3837,247 @@ def update_incidence_operator(seq, operators: Optional[SequenceOperators], k: in
     raise ValueError("k must be 0, 1 or 2")
 
 
+def build_grad_stencil_g0(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
+    """Analytic, INVERSE-FREE polar discrete gradient ``G_0`` (V0 -> V1).
+
+    Builds the true strong gradient on extracted DoFs as an explicit sparse
+    matrix straight from the incidence pattern and the polar mapping coefficients
+    ``xi`` (shape ``(3, 2, nt)``) -- coefficient differences and ``xi`` weights
+    only, NO mass and NO matrix inverse. This is the closed form of
+    ``Gram_1^{-1} (E_1 sp_0 E_0^T)``; the axis-fusion inverse cancels to clean
+    ``+/-1`` / ``-xi[l,1,j]`` stencils (verified bit-exact vs that oracle).
+
+    Layout (see ``extraction_operators.build_extraction`` k=0/k=1 branches):
+    V0 extracted = apex ``(p,m) -> p*nz+m`` (p in 0..2) then bulk
+    ``(i,j,k) -> 3 nz + ravel((i,j,k),(radial0,nt,nz))`` with full radial ``i+2``.
+    V1 extracted = theta_surgery ``[0,2 nz)`` | zeta_surgery ``[2 nz, 2 nz+3 dz)``
+    | r-slice (comp0) | theta_bulk (comp1) | zeta_bulk (comp2). The full-space
+    grad is ``d_r f``, ``d_theta f`` (periodic), ``d_z f`` (periodic), with the
+    near-axis full radial rows 0/1 expanded as ``f(0,j,k)=sum_p xi[p,0,j] apex``,
+    ``f(1,j,k)=sum_p xi[p,1,j] apex``.
+    """
+    import scipy.sparse as _sps
+    xi = np.asarray(xi)
+    nr, nt, nz = (int(v) for v in seq.basis_0.shape[0])
+    dr = nr - 1            # clamped r derivative count
+    dt, dz = nt, nz        # periodic theta, z -> derivative count == primal
+    o0 = 1 if dirichlet_in else 0
+    o1 = 1 if dirichlet_out else 0
+    radial0 = nr - 2 - o0  # V0 bulk radial rings (full radial >= 2)
+    radial1 = nr - 2 - o1  # V1 comp1/comp2 bulk radial rings
+
+    base_bulk0 = 3 * nz
+
+    def c_bulk0(i, j, k):           # V0 bulk col for full radial i+2, or None
+        if i < 0 or i >= radial0:
+            return None
+        return base_bulk0 + (i * nt + j) * nz + k
+
+    def expand(a, j, k):           # full V0 (a,j,k) -> list of (v0_col, weight)
+        if a == 0:
+            return [(p * nz + k, float(xi[p, 0, j])) for p in range(3)]
+        if a == 1:
+            return [(p * nz + k, float(xi[p, 1, j])) for p in range(3)]
+        col = c_bulk0(a - 2, j, k)
+        return [(col, 1.0)] if col is not None else []
+
+    # V1 extracted row offsets (must match _k1_row_slices with o == o1).
+    r_theta_s = 0
+    r_zeta_s = 2 * nz
+    r_r = 2 * nz + 3 * dz
+    r_theta_b = r_r + (dr - 1) * nt * nz
+    r_zeta_b = r_theta_b + radial1 * dt * nz
+
+    rows, cols, data = [], [], []
+
+    def add(r, terms):
+        for c, w in terms:
+            if c is None or w == 0.0:
+                continue
+            rows.append(r)
+            cols.append(c)
+            data.append(w)
+
+    # theta_surgery: apex difference  apex(p_local+1, m) - apex(0, m)
+    for pl in range(2):
+        p = pl + 1
+        for m in range(nz):
+            add(r_theta_s + pl * nz + m,
+                [(p * nz + m, 1.0), (0 * nz + m, -1.0)])
+
+    # zeta_surgery: periodic z-difference of the apex DoFs
+    for p in range(3):
+        for m in range(dz):
+            add(r_zeta_s + p * dz + m,
+                [(p * nz + (m + 1) % nz, 1.0), (p * nz + m, -1.0)])
+
+    # r-slice (comp0, radial grad):  full(i+2,j,k) - full(i+1,j,k)
+    for i in range(dr - 1):
+        for j in range(nt):
+            for k in range(nz):
+                r = r_r + (i * nt + j) * nz + k
+                add(r, expand(i + 2, j, k)
+                    + [(c, -w) for c, w in expand(i + 1, j, k)])
+
+    # theta_bulk (comp1, angular grad, periodic):  full(i+2,j+1) - full(i+2,j)
+    for i in range(radial1):
+        for j in range(dt):
+            for k in range(nz):
+                r = r_theta_b + (i * dt + j) * nz + k
+                add(r, expand(i + 2, (j + 1) % nt, k)
+                    + [(c, -w) for c, w in expand(i + 2, j, k)])
+
+    # zeta_bulk (comp2, z grad, periodic):  full(i+2,k+1) - full(i+2,k)
+    for i in range(radial1):
+        for j in range(nt):
+            for k in range(dz):
+                r = r_zeta_b + (i * nt + j) * dz + k
+                add(r, expand(i + 2, j, (k + 1) % nz)
+                    + [(c, -w) for c, w in expand(i + 2, j, k)])
+
+    n0 = int(seq.n0_dbc if dirichlet_in else seq.n0)
+    n1 = int(seq.n1_dbc if dirichlet_out else seq.n1)
+    coo = _sps.coo_matrix(
+        (np.asarray(data, dtype=np.float64),
+         (np.asarray(rows, dtype=np.int32), np.asarray(cols, dtype=np.int32))),
+        shape=(n1, n0)).tocsr()
+    coo.sum_duplicates()
+    bcoo = jsparse.BCOO(
+        (jnp.asarray(coo.data),
+         jnp.asarray(np.stack([coo.tocoo().row, coo.tocoo().col], axis=1))),
+        shape=(n1, n0))
+    return jsparse.BCSR.from_bcoo(bcoo)
+
+
+def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
+    """Analytic, INVERSE-FREE polar discrete curl ``G_1`` (V1 -> V2).
+
+    The degree-1 analog of :func:`build_grad_stencil_g0`: the true strong curl on
+    extracted DoFs as an explicit sparse matrix from the incidence pattern and the
+    polar coefficients ``xi`` (shape ``(3, 2, nt)``) -- coefficient differences and
+    ``xi`` weights only, NO mass and NO matrix inverse. The closed form of
+    ``Gram_2^{-1} (E_2 sp_1 E_1^T)``; the V2 axis-fusion inverse cancels to clean
+    ``+/-1`` / ``xi``-difference stencils (verified bit-exact vs that oracle).
+
+    Full-space curl (a=s, b=chi, c=zeta -> V2 comps P,Q,R; see ``_apply_incidence_mf``):
+    ``P=-d_z b + d_t c``, ``Q=d_z a - d_r c``, ``R=-d_t a + d_r b``. V1 input fusion
+    is inverted by ``expand_v1`` (the V1 analog of grad's ``expand``); the only fused
+    V2 *output* DoFs are the comp0 surgery rows, whose stencil is the axis form of
+    ``P = -d_z(chi apex) + d_t(zeta apex)``.
+    """
+    import scipy.sparse as _sps
+    xi = np.asarray(xi)
+    nr, nt, nz = (int(v) for v in seq.basis_0.shape[0])
+    dr, dt, dz = nr - 1, nt, nz
+    o_in = 1 if dirichlet_in else 0
+    o_out = 1 if dirichlet_out else 0
+    radial_in = nr - 2 - o_in
+    radial_out = nr - 2 - o_out
+
+    # --- V1 extracted (input) columns + fusion-inverting expand ---
+    base_r1 = 2 * nz + 3 * dz
+    base_tb1 = base_r1 + (dr - 1) * nt * nz
+    base_zb1 = base_tb1 + radial_in * dt * nz
+
+    def c_ths(pl, m):                                  # V1 theta_surgery col
+        return pl * nz + m
+    def c_zes(p, m):                                   # V1 zeta_surgery col
+        return 2 * nz + p * dz + m
+    def c_r1(i, j, k):                                 # V1 comp0 r-slice
+        return None if (i < 0 or i >= dr - 1) else base_r1 + (i * nt + j) * nz + k
+    def c_tb1(i, j, k):                                # V1 comp1 theta_bulk
+        return None if (i < 0 or i >= radial_in) else base_tb1 + (i * dt + j) * nz + k
+    def c_zb1(i, j, k):                                # V1 comp2 zeta_bulk
+        return None if (i < 0 or i >= radial_in) else base_zb1 + (i * nt + j) * dz + k
+
+    def expand_v1(comp, a, j, k):  # full V1 (comp,a,j,k) -> [(v1_col, weight)]
+        if comp == 0:                                  # s, full radial a in [0,dr)
+            if a == 0:
+                return [(c_ths(pl, k), float(xi[pl + 1, 1, j] - xi[pl + 1, 0, j]))
+                        for pl in range(2)]
+            c = c_r1(a - 1, j, k)
+            return [(c, 1.0)] if c is not None else []
+        if comp == 1:                                  # chi, full radial a in [0,nr)
+            if a == 1:
+                return [(c_ths(pl, k), float(xi[pl + 1, 1, (j + 1) % dt] - xi[pl + 1, 1, j]))
+                        for pl in range(2)]
+            c = c_tb1(a - 2, j, k)
+            return [(c, 1.0)] if c is not None else []
+        # comp == 2: zeta, full radial a in [0,nr)
+        if a == 0:
+            return [(c_zes(p, k), float(xi[p, 0, j])) for p in range(3)]
+        if a == 1:
+            return [(c_zes(p, k), float(xi[p, 1, j])) for p in range(3)]
+        c = c_zb1(a - 2, j, k)
+        return [(c, 1.0)] if c is not None else []
+
+    # --- V2 extracted (output) row offsets (match build_extraction k==2) ---
+    n1_v2 = (radial_out * dt + 2) * dz   # comp0 extracted size (2dz surgery + bulk)
+    n2_v2 = (dr - 1) * nt * dz           # comp1 extracted size
+    r_c0b = 2 * dz                       # comp0 bulk start
+    r_c1 = n1_v2                         # comp1 bulk start
+    r_c2 = n1_v2 + n2_v2                 # comp2 bulk start
+
+    rows, cols, data = [], [], []
+
+    def add(r, terms):
+        for c, w in terms:
+            if c is None or w == 0.0:
+                continue
+            rows.append(r)
+            cols.append(c)
+            data.append(w)
+
+    def scaled(terms, s):
+        return [(c, s * w) for c, w in terms]
+
+    # comp0 surgery [0,2dz): P axis = -d_z(chi apex) + (zeta apex difference)
+    for pl in range(2):
+        p = pl + 1
+        for m in range(dz):
+            add(pl * dz + m,
+                [(c_ths(pl, m), 1.0), (c_ths(pl, (m + 1) % dz), -1.0),
+                 (c_zes(p, m), 1.0), (c_zes(0, m), -1.0)])
+
+    # comp0 bulk: P[i+2,j,k] = -d_z(chi) + d_t(zeta)
+    for i in range(radial_out):
+        for j in range(dt):
+            for k in range(dz):
+                add(r_c0b + (i * dt + j) * dz + k,
+                    scaled(expand_v1(1, i + 2, j, (k + 1) % nz), -1) + expand_v1(1, i + 2, j, k)
+                    + expand_v1(2, i + 2, (j + 1) % nt, k) + scaled(expand_v1(2, i + 2, j, k), -1))
+
+    # comp1 bulk: Q[i+1,j,k] = d_z(s) - d_r(zeta)
+    for i in range(dr - 1):
+        for j in range(nt):
+            for k in range(dz):
+                add(r_c1 + (i * nt + j) * dz + k,
+                    expand_v1(0, i + 1, j, (k + 1) % nz) + scaled(expand_v1(0, i + 1, j, k), -1)
+                    + scaled(expand_v1(2, i + 2, j, k), -1) + expand_v1(2, i + 1, j, k))
+
+    # comp2 bulk: R[i+1,j,k] = -d_t(s) + d_r(chi)
+    for i in range(dr - 1):
+        for j in range(dt):
+            for k in range(nz):
+                add(r_c2 + (i * dt + j) * nz + k,
+                    scaled(expand_v1(0, i + 1, (j + 1) % nt, k), -1) + expand_v1(0, i + 1, j, k)
+                    + expand_v1(1, i + 2, j, k) + scaled(expand_v1(1, i + 1, j, k), -1))
+
+    n1 = int(seq.n1_dbc if dirichlet_in else seq.n1)
+    n2 = int(seq.n2_dbc if dirichlet_out else seq.n2)
+    coo = _sps.coo_matrix(
+        (np.asarray(data, dtype=np.float64),
+         (np.asarray(rows, dtype=np.int32), np.asarray(cols, dtype=np.int32))),
+        shape=(n2, n1)).tocsr()
+    coo.sum_duplicates()
+    coo = coo.tocoo()
+    bcoo = jsparse.BCOO(
+        (jnp.asarray(coo.data),
+         jnp.asarray(np.stack([coo.row, coo.col], axis=1))),
+        shape=(n2, n1))
+    return jsparse.BCSR.from_bcoo(bcoo)
+
+
 def _build_inc_gram_inv(seq, operators, space: int, dirichlet: bool):
     """Sparse ``(E_space^T E_space)^{-1}`` for the TRUE polar-derivative fix.
 
@@ -3863,12 +4126,51 @@ def _build_inc_gram_inv(seq, operators, space: int, dirichlet: bool):
     return jsparse.BCSR.from_bcoo(bcoo)
 
 
+def _grad_stencil(operators: SequenceOperators, dirichlet_in: bool,
+                  dirichlet_out: bool, transpose: bool):
+    """Look up the analytic inverse-free polar grad ``G_0`` (or None on non-polar)."""
+    name = f"g0_grad_{int(dirichlet_in)}{int(dirichlet_out)}"
+    if transpose:
+        name += "_T"
+    return getattr(operators, name, None)
+
+
+def _curl_stencil(operators: SequenceOperators, dirichlet_in: bool,
+                  dirichlet_out: bool, transpose: bool):
+    """Look up the analytic inverse-free polar curl ``G_1`` (or None on non-polar)."""
+    name = f"g1_curl_{int(dirichlet_in)}{int(dirichlet_out)}"
+    if transpose:
+        name += "_T"
+    return getattr(operators, name, None)
+
+
 def _inc_gram_inv(operators: SequenceOperators, space: int, dirichlet: bool):
-    """Look up the stored true-derivative Gram^{-1} correction (or None)."""
+    """Look up the stored true-derivative Gram^{-1} correction (or None).
+
+    Retained for the k=2 (div) apply path -- V3 is unitary so this is always
+    ``None`` (-> raw incidence = true div). grad/curl use the analytic stencils;
+    the stored Gram inverses are no longer precomputed (see _extraction_is_polar).
+    """
     if not (1 <= space <= 3):
         return None
     name = f"inc_gram_inv_{space}" + ("_dbc" if dirichlet else "")
     return getattr(operators, name, None)
+
+
+def _extraction_is_polar(operators: SequenceOperators, space: int) -> bool:
+    """True iff the extraction of ``space`` is non-unitary (polar axis fusion).
+
+    Gram-free polar signal: tests ``E E^T x != x`` on one probe (E E^T = I on the
+    0/1 non-polar/unitary extractions). Replaces the old "inc_gram_inv non-None"
+    check so the analytic grad/curl stencils can be built without precomputing the
+    Gram inverses at all.
+    """
+    e, e_T = _mass_extraction(operators, space, False)
+    if e is None or e_T is None:
+        return False
+    n_ext = int(e.shape[0])
+    x = jax.random.normal(jax.random.PRNGKey(0), (n_ext,), dtype=jnp.float64)
+    return bool(jnp.max(jnp.abs(e @ (e_T @ x) - x)) > 1e-10)
 
 
 def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = None,
@@ -3883,18 +4185,50 @@ def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = N
     for k in ks:
         operators = update_incidence_operator(seq, operators, k)
     operators = _ensure_extraction_operators(seq, operators)
-    spaces = sorted({k + 1 for k in ks})
-    fields, vals = [], []
-    for s in spaces:
-        for dbc in (True, False):
-            name = f"inc_gram_inv_{s}" + ("_dbc" if dbc else "")
-            if getattr(operators, name, None) is None:
-                fields.append(name)
-                vals.append(_build_inc_gram_inv(seq, operators, s, dbc))
-    if fields:
+
+    # The true polar derivative is realized by the analytic inverse-free stencils
+    # below (grad G_0 for k=0, curl G_1 for k=1); div G_2 (output V3) needs no
+    # correction (V3 extraction is unitary). The old per-operator Gram^{-1}
+    # precompute (`_build_inc_gram_inv` -> inc_gram_inv_*) is therefore NOT built;
+    # `_build_inc_gram_inv` is kept only as an independent oracle for the
+    # validation harness, and `_inc_gram_inv` stays None (-> raw div apply).
+
+    # Analytic inverse-free polar grad G_0 (replaces the Gram^{-1} path for k=0),
+    # built when grad is requested (0 in ks) on a polar sequence (V1 extraction
+    # non-unitary). Stored per BC pair, forward + transpose; bit-exact with Gram.
+    polar = _extraction_is_polar(operators, 1)
+    if 0 in ks and polar and operators.g0_grad_00 is None:
+        xi = get_xi(seq.ns[1])
+        gfields, gvals = [], []
+        for din in (False, True):
+            for dout in (False, True):
+                g0 = build_grad_stencil_g0(seq, xi, din, dout)
+                base = f"g0_grad_{int(din)}{int(dout)}"
+                gfields += [base, base + "_T"]
+                gvals += [g0, jsparse.BCSR.from_bcoo(g0.to_bcoo().T)]
         operators = eqx.tree_at(
-            lambda o: tuple(getattr(o, f) for f in fields),
-            operators, tuple(vals),
+            lambda o: tuple(getattr(o, f) for f in gfields),
+            operators, tuple(gvals),
+            is_leaf=lambda x: x is None,
+        )
+
+    # Analytic inverse-free polar curl G_1 (replaces the Gram^{-1} path for k=1),
+    # built when curl is requested (1 in ks) on a polar sequence. Div (k=2, output
+    # V3) needs no stencil: the V3 extraction is a 0/1 selection (Gram_3 = I), so
+    # apply_incidence(.,2) is already the true div.
+    polar2 = _extraction_is_polar(operators, 2)
+    if 1 in ks and polar2 and operators.g1_curl_00 is None:
+        xi = get_xi(seq.ns[1])
+        cfields, cvals = [], []
+        for din in (False, True):
+            for dout in (False, True):
+                g1 = build_curl_stencil_g1(seq, xi, din, dout)
+                base = f"g1_curl_{int(din)}{int(dout)}"
+                cfields += [base, base + "_T"]
+                cvals += [g1, jsparse.BCSR.from_bcoo(g1.to_bcoo().T)]
+        operators = eqx.tree_at(
+            lambda o: tuple(getattr(o, f) for f in cfields),
+            operators, tuple(cvals),
             is_leaf=lambda x: x is None,
         )
     return operators
@@ -3951,6 +4285,19 @@ def apply_incidence_matrix(seq, operators: SequenceOperators, v, k: int,
     the polar-axis DoFs, so off-axis the result is bit-identical to the raw
     incidence and ``d.d = 0`` holds exactly on extracted DoFs everywhere.
     """
+    # k=0 grad: use the analytic inverse-free polar stencil when available
+    # (built on polar sequences). Bit-exact with the Gram form; on non-polar the
+    # fields are None and we fall through to the raw incidence path below.
+    if k == 0:
+        g0 = _grad_stencil(operators, dirichlet_in, dirichlet_out, transpose)
+        if g0 is not None:
+            return g0 @ v
+    # k=1 curl: analytic inverse-free polar stencil when available (polar only).
+    if k == 1:
+        g1 = _curl_stencil(operators, dirichlet_in, dirichlet_out, transpose)
+        if g1 is not None:
+            return g1 @ v
+
     sp, sp_T = _incidence_components(operators, k)
     if sp is None or sp_T is None:
         raise ValueError(f"Incidence operator k={k} is not assembled")
