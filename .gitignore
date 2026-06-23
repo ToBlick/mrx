@@ -2,6 +2,8 @@
 .vscode
 scripts/experimental
 scripts/deprecated
+scripts/debug
+scripts/benchmark
 scripts/dice
 out
 test_outputs
@@ -12,6 +14,7 @@ multirun*
 *.html
 data
 outputs
+papers
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
