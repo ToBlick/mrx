@@ -59,9 +59,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS = ROOT / "scripts"
+for _p in (ROOT, SCRIPTS, SCRIPTS / "benchmark", SCRIPTS / "debug"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map, toroid_map
@@ -1622,10 +1624,12 @@ def assemble_operators(
         ops,
     )
     # Tensor stiffness: k=1 for P_A candidates (k=1 run) AND as the K_1^{-1} atom
-    # for the k=2 preconditioner; k=2 div-div P_A is added for the k=2 run.
-    # k=0 (nullspace test) and k=3 (S_3 = 0) need no tensor stiffness.
-    if klevel in (1, 2):
-        stiff_ks = (1, 2) if klevel == 2 else (1,)
+    # for the k=2 preconditioner; k=2 div-div P_A is added for the k=2 run. The
+    # k=3 unified P_B uses the whole k=2 preconditioner as its inner L_2^{-1}
+    # atom, so klevel=3 ALSO needs the k=1+k=2 tensor stiffness. k=0 (nullspace
+    # test) needs none (S_3 = 0 itself carries no stiffness).
+    if klevel in (1, 2, 3):
+        stiff_ks = (1, 2) if klevel in (2, 3) else (1,)
         ops = _timed(
             "tensor_stiffness",
             lambda o: assemble_tensor_stiffness_preconditioner(
@@ -1655,7 +1659,10 @@ def assemble_operators(
     # jacobi is the no-dbc Schur diagonal. k=0 is a condensed (non-saddle) solve,
     # so no Schur jacobi is needed.
     if klevel in (1, 2, 3):
-        schur_ks = {1: (1,), 2: (1, 2), 3: (3,)}[klevel]
+        # klevel=3's unified P_B nests the whole k=2 preconditioner (which builds
+        # the k=1 smoother), and both call _get_schur_diaginv eagerly -> assemble
+        # the k=1/k=2/k=3 Schur-Jacobi (all free) for klevel=3.
+        schur_ks = {1: (1,), 2: (1, 2), 3: (1, 2, 3)}[klevel]
         schur_bc = (False,) if klevel == 3 else (DIRICHLET,)
         if both_bc:  # k=1 nullspace test needs the free-BC Schur jacobi too
             schur_bc = (True, False)
@@ -2038,7 +2045,8 @@ def make_apply_routines(
 def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = True,
                            project_atom: bool = True, atom: str = "block_fd",
                            k1_inv_custom=None, true_g: bool = False,
-                           atom_cheb_degree: int = 5):
+                           atom_cheb_degree: int = 5, atom_cheb_eps=None,
+                           atom_cheb_max_degree: int = 100, l0_cheb_eps=None):
     """k=2 Hodge-Laplacian preconditioner applies (degree-shifted from k=1).
 
     The k=2 Laplacian ``L_2 = S_2 + D_1 M_1^{-1} D_1^T`` has the div-div
@@ -2165,11 +2173,68 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
         # no harmonic -> no-op. h from _nullspace_vectors (the same harmonic the k=1
         # free saddle deflates). Interval via A-inner-product Lanczos on the
         # DEFLATED smoother (so lmin is the bulk min, not the ~0 harmonic).
+        # NESTED near-exact inner L_0^{-1}. The rough single-apply tensor l0 was the
+        # DOMINANT limiter on the smoother quality: with an EXACT l0, block_fd P_A
+        # already gives cond(P_hodge.L_1)=9 and NO near-null cluster, vs 152 + a
+        # 17-mode cluster with the single rough tensor l0 (job 14603363). So nest a
+        # near-exact CHEB-L_0 atom -- a Chebyshev on L_0=apply_stiffness(.,0) (exact,
+        # matrix-free) with the CONSTANT-DEFLATED k=0 tensor precond as smoother,
+        # degree from Lanczos kappa -- as the l0 used inside the k=1 smoother. This
+        # recurses the same template one degree down and bottoms out at the
+        # near-exact (kappa~6) scalar k=0. Constant deflation (free k=0 null) is
+        # mandatory: a Chebyshev amplifies the constant null otherwise.
+        _n0 = int(seq.n0_dbc if DIRICHLET else seq.n0)
+        _c0 = jnp.asarray(_nullspace_vectors(ops, 0, DIRICHLET))   # (nc, n0)
+        if _c0.shape[0] > 0:
+            _Mc0 = jnp.stack(
+                [apply_mass_matrix(seq, ops, _c0[i], 0, dirichlet=DIRICHLET)
+                 for i in range(_c0.shape[0])], axis=0)
+            _c0n = jnp.sqrt(jnp.einsum("ij,ij->i", _c0, _Mc0))
+            _c0 = _c0 / _c0n[:, None]
+            _Mc0 = _Mc0 / _c0n[:, None]
+
+            def _defl0_primal(x):  # V0 -> V0: M_0-orth projection off the constant
+                return x - jnp.einsum("i,ij->j", _Mc0 @ x, _c0)
+
+            def _defl0_dual(b):    # V0* -> V0*
+                return b - jnp.einsum("i,ij->j", _c0 @ b, _Mc0)
+        else:
+            def _defl0_primal(x):
+                return x
+            _defl0_dual = _defl0_primal
+
+        def _l0_smoother(b):       # const-deflated k=0 tensor precond ~ L_0^{-1}
+            return _defl0_primal(apply_laplacian_preconditioner(
+                seq, ops, _defl0_dual(b), 0, dirichlet=DIRICHLET, kind="tensor"))
+
+        def _s_hat0(x):            # L_0 = apply_stiffness(.,0): exact, matrix-free
+            return apply_stiffness(seq, ops, x, 0, dirichlet=DIRICHLET)
+
+        _lmin0, _lmax0 = _lanczos_extremal_eigs_precond(
+            _s_hat0, _l0_smoother, _n0, steps=30, seed=0, project=_defl0_primal)
+        _lmin0 = max(_lmin0, _lmax0 * 1e-5)
+        _kap0 = _lmax0 / max(_lmin0, 1e-300)
+        # Inner-l0 accuracy: default TIED to the outer atom eps (eps=1e-2 inner is
+        # overkill when the outer atom is rougher). Explicit l0_cheb_eps overrides.
+        _l0_eps = (l0_cheb_eps if l0_cheb_eps is not None
+                   else (atom_cheb_eps if atom_cheb_eps is not None else 1e-2))
+        _deg0 = int(min(max(int(np.ceil(0.5 * np.sqrt(_kap0) * np.log(2.0 / _l0_eps))),
+                            1), atom_cheb_max_degree))
+        print(f"[atom] inner cheb_L0: kappa={_kap0:.3e} interval=[{_lmin0:.3e},"
+              f"{_lmax0:.3e}] eps={_l0_eps} -> degree={_deg0}", flush=True)
+        _cheb0 = make_chebyshev_upper(_s_hat0, _l0_smoother, _lmin0, _lmax0, _deg0)
+
+        def _l0_inv_cdefl(r):      # near-exact L_0^{-1} (cheb-L_0), V0* -> V0
+            return _defl0_primal(_cheb0(_defl0_dual(r)))
+
         _k1_applies = make_apply_routines(
             seq, ops, pa_mode="block_fd", grad_project=True, dirichlet_flag=DIRICHLET,
-            true_g=true_g)
+            true_g=true_g, l0_inv_custom=_l0_inv_cdefl)
         _s_hat1 = _k1_applies["a_matvec"]                       # ~ L_1 : V1 -> V1*
-        _smoother_raw = _k1_applies["projected_p_a_plus_p_b"]   # ~ L_1^{-1} : V1* -> V1
+        # Use the FUSED k=1 smoother (2 L_0^{-1} solves instead of 4; algebraically
+        # identical) -- halves the nested cheb-L_0 cost per smoother apply.
+        _smoother_raw = (lambda r, _a=_k1_applies:
+                         _a["projected_p_a_plus_p_b_fused_with_state"](_a["p_a_state"], r))
         _n1 = int(seq.n1_dbc if DIRICHLET else seq.n1)
 
         _H = jnp.asarray(_nullspace_vectors(ops, 1, DIRICHLET))  # (n_harm, n1), primal
@@ -2199,7 +2264,17 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
         _lmin1, _lmax1 = _lanczos_extremal_eigs_precond(
             _s_hat1, _smoother, _n1, steps=50, seed=0, project=_defl_primal)
         _lmin1 = max(_lmin1, _lmax1 * 1e-5)  # low floor: keep the bulk small modes in-interval
-        _cheb = make_chebyshev_upper(_s_hat1, _smoother, _lmin1, _lmax1, atom_cheb_degree)
+        # Degree: read it off the Lanczos kappa via the Chebyshev bound
+        # d ~ 0.5 sqrt(kappa) ln(2/eps) when atom_cheb_eps is given, else fixed.
+        _kap1 = _lmax1 / max(_lmin1, 1e-300)
+        if atom_cheb_eps is not None:
+            _deg = int(np.ceil(0.5 * np.sqrt(_kap1) * np.log(2.0 / atom_cheb_eps)))
+            _deg = int(min(max(_deg, 1), atom_cheb_max_degree))
+        else:
+            _deg = atom_cheb_degree
+        print(f"[atom] cheb_tensor: kappa={_kap1:.3e} interval=[{_lmin1:.3e},"
+              f"{_lmax1:.3e}] eps={atom_cheb_eps} -> degree={_deg}", flush=True)
+        _cheb = make_chebyshev_upper(_s_hat1, _smoother, _lmin1, _lmax1, _deg)
 
         def k1_inv(r):  # deflated cheb-tensor near-exact L_1^+ (pseudo-inverse), V1* -> V1
             return _defl_primal(_cheb(_defl_dual(r)))
@@ -2281,8 +2356,35 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
     def raw_p_a_plus_p_b(r):
         return p_a_raw(r) + p_b(r)
 
+    def _projected_plus_pb_fused(p_a_fn, r):
+        # Algebraically IDENTICAL to
+        #   curl_primal_complement(p_a_fn(curl_dual_complement(r))) + p_b(r)
+        # but evaluated with 2 k1_inv solves instead of 4 (the projector and P_B
+        # share the L_1 inverse). Two exact redundancies removed:
+        #   1. curl_dual_complement's inner solve and p_b's inner solve are the
+        #      SAME y = k1_inv(G_1^T r) -> computed once.
+        #   2. curl_primal_complement's outer solve and p_b's outer solve are both
+        #      G_1 k1_inv(.) -> arguments summed and solved once:
+        #      result = pa + G_1 k1_inv(M_1 y - G_1^T M_2 pa).
+        # Symmetry (hence MINRES iteration count) preserved by construction.
+        g1t_r = apply_incidence_matrix(seq, ops, r, 1, dirichlet_in=DIRICHLET,
+                                       dirichlet_out=DIRICHLET, transpose=True)    # G_1^T r
+        y = k1_inv(g1t_r)                                                          # solve 1
+        g1_y = apply_incidence_matrix(seq, ops, y, 1, dirichlet_in=DIRICHLET,
+                                      dirichlet_out=DIRICHLET, transpose=False)    # G_1 y
+        cdc = r - apply_mass_matrix(seq, ops, g1_y, 2, dirichlet=DIRICHLET)        # C^* r  (V2*)
+        pa = p_a_fn(cdc)                                                           # P_A C^* r  (V2)
+        m1_y = apply_mass_matrix(seq, ops, y, 1, dirichlet=DIRICHLET)             # M_1 y  (V1*)
+        m2_pa = apply_mass_matrix(seq, ops, pa, 2, dirichlet=DIRICHLET)           # M_2 pa (V2*)
+        g1t_m2_pa = apply_incidence_matrix(seq, ops, m2_pa, 1, dirichlet_in=DIRICHLET,
+                                           dirichlet_out=DIRICHLET, transpose=True)  # G_1^T M_2 pa
+        outer = apply_incidence_matrix(seq, ops, k1_inv(m1_y - g1t_m2_pa), 1,      # solve 2
+                                       dirichlet_in=DIRICHLET, dirichlet_out=DIRICHLET,
+                                       transpose=False)                            # G_1 k1_inv(...)
+        return pa + outer
+
     def projected_p_a_plus_p_b(r):
-        return curl_primal_complement(p_a_raw(curl_dual_complement(r))) + p_b(r)
+        return _projected_plus_pb_fused(p_a_raw, r)
 
     # Route (b): CAPPED P_A, no projection. The capped div-div P_A is bounded on
     # curls (mimics k=1 block_fd), so raw should converge without the projector.
@@ -2290,7 +2392,7 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
         return p_a_capped(r) + p_b(r)
 
     def projected_p_a_capped_plus_p_b(r):
-        return curl_primal_complement(p_a_capped(curl_dual_complement(r))) + p_b(r)
+        return _projected_plus_pb_fused(p_a_capped, r)
 
     # Production baseline: Schur-outer Jacobi diagonal for k=2 (stored multiply).
     # This is the WHOLE-space diagonal: 1/diag(S_2 + D_1 diag(M_1)^{-1} D_1^T),
@@ -2734,6 +2836,12 @@ def make_chebyshev_upper(s_hat, jac, lmin: float, lmax: float, degree: int):
     Schur (M replaced by its preconditioner)."""
     theta = 0.5 * (lmax + lmin)
     delta = 0.5 * (lmax - lmin)
+    # Degenerate interval (lmin ~ lmax, or a collapsed Lanczos estimate) -> the
+    # recurrence divides by delta -> NaN. Fall back to a single smoother apply.
+    if not np.isfinite(delta) or delta <= 1e-300 or degree < 1:
+        def apply(b):
+            return jac(b)
+        return apply
     sigma1 = theta / delta
 
     def apply(b):

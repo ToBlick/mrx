@@ -1,12 +1,10 @@
 name: CI
 
 on:
-  push:
-    # branches: [ main, master, docs ]
-    branches: [ ]
+  # push:
+  #   branches: [ main, master, docs ]
   pull_request:
-    # branches: [ main, master, docs ]
-    branches: [ ]
+    branches: [ main, master, docs ]
 
 jobs:
   lint:

@@ -2,8 +2,6 @@
 .vscode
 scripts/experimental
 scripts/deprecated
-scripts/debug
-scripts/benchmark
 scripts/dice
 out
 test_outputs

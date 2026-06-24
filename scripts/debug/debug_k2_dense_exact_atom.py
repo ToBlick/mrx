@@ -31,7 +31,7 @@ It runs three diagnostics at low resolution (dense O(n^3), so keep n small):
   (C) The k=2 saddle MINRES with the exact atom vs block_fd vs jacobi.
 
 Usage (submitted to GPU via slurm; CPU py_compile locally):
-    python scripts/diag_k2_dense_exact_atom.py --ns 4,8,4 --p 2
+    python scripts/debug/debug_k2_dense_exact_atom.py --ns 4,8,4 --p 2
 """
 
 import argparse
@@ -44,12 +44,11 @@ import jax.numpy as jnp
 import jax.scipy.linalg as jsl
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-SCRIPTS = Path(__file__).resolve().parent
-if str(SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS))
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS = ROOT / "scripts"
+for _p in (ROOT, SCRIPTS, SCRIPTS / "benchmark", SCRIPTS / "debug"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 jax.config.update("jax_enable_x64", True)
 
@@ -62,8 +61,8 @@ from mrx.operators import (
 )
 # Reuse the proven build/assemble/k2 plumbing so the diagnostic exercises the
 # IDENTICAL P_B / projector / P_A structure as the benchmark.
-import diag_graddiv_subspace_preconditioner as dg  # noqa: E402
-from diag_graddiv_subspace_preconditioner import (  # noqa: E402
+import benchmark_graddiv_k1_preconditioner as dg  # noqa: E402
+from benchmark_graddiv_k1_preconditioner import (  # noqa: E402
     build_sequence,
     assemble_operators,
     make_apply_routines,

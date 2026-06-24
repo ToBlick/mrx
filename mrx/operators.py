@@ -6667,7 +6667,10 @@ def update_schur_runtime_tuning(
 def _coerce_diffusion_preconditioner_spec(
         seq, operators: SequenceOperators, *, k: int, preconditioner):
     if preconditioner is None or preconditioner == 'auto':
-        if _tensor_available(seq, operators, k):
+        # Production default: tensor for the scalar k=0 Laplacian (cheap, near-exact),
+        # Jacobi for the vector/saddle levels k>=1 (the tensor div/curl blocks are not
+        # the production smoother there). Explicit kinds still override.
+        if k == 0 and _tensor_available(seq, operators, k):
             return MassPreconditionerSpec(kind='tensor')
         return MassPreconditionerSpec(kind='jacobi')
     if isinstance(preconditioner, MassPreconditionerSpec):

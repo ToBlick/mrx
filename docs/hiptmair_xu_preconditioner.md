@@ -43,9 +43,9 @@ from — the true Schur's exact `M^{-1}` is never formed.
 | degree | operator | best preconditioner | vs jacobi | status |
 | --- | --- | --- | --- | --- |
 | k=0 | grad-grad `L_0` | scalar tensor Hodge | ~10× iters, ~7× wall | works, both BCs, nullspace-robust |
-| k=1 | grad-div `L_1` | projected `P_A + P_B` | ~4–6× iters | works, both BCs; true-G projection now *optional* (raw == projected). **Not h-flat with the cheap tensor atom** (88→139→218 over ns 6,12,4→8,16,6→10,20,6); advantage over jacobi erodes with resolution |
-| k=2 | div-div `L_2` | projected `P_A(cap) + P_B(L_1⁺)` | **~10× iters, h-independent** | **works after the true-G fix** (see below); projection essential. Projected with **capped `P_A` + exact `L_1⁺`** is **h-flat (33→34** while jacobi 226→343 — advantage *grows*). **Open: make both components cheap/matrix-free** — capped tensor `P_A` (cap primitive exists) + a cheap near-exact `L_1` atom (current cheap atoms cond≈60, grow with h). Raw / no-projection does **not** scale (refuted by h-test) |
-| k=3 | `L_3` | jacobi (transfer studied) | — | sideways transfer rank-deficient |
+| k=1 | grad-div `L_1` | projected `P_A + P_B`, **tensor-Cheb `L_0` atom** | **~2× wall, beats jacobi** | works, both BCs; with the production block_fd `P_A`, **raw == projected** (projection-free). P_B atom = degree-~7 Chebyshev on `L_0` (k=0 tensor smoother, κ≈6 **h-flat**) — matches exact `L_0⁺`; ~11× fewer iters than jacobi (49 vs 553 free), converges where jacobi stalls. See *Unified tensor-Chebyshev* below |
+| k=2 | div-div `L_2` | projected `P_A(cap) + P_B`, **tensor-Cheb `L_1` atom (nested cheb-`L_0`)** | iters better but eroding; wall *slower* & widening | projection **mandatory** (raw fails). P_B atom = Chebyshev on `L_1`, smoother = k=1 Hodge precond whose inner `L_0⁻¹` is a near-exact nested cheb-`L_0`. **Degree near-flat** (κ 9.3→14.3→16.7, degree 5→6→7 over ns 6,12,4→8,16,6→9,18,7), but at the rough ε=0.1 atom **iterations grow** (130→208→221) faster than jacobi (462→590) so the iter advantage erodes (3.6×→2.7×); a more accurate atom (ε=0.01, deg 11) keeps iters flatter (109→123). Wall is **not competitive** and the gap widens (~5.6× slower at 9,18,7). See *Unified tensor-Chebyshev* below |
+| k=3 | `L_3 = D_2 M_2⁻¹ D_2ᵀ` (no stiffness) | **jacobi** | jacobi wins | pure P_B (S_3=0): unified `P_3 = G_2 L_2⁻¹ M_2 L_2⁻¹ G_2ᵀ` with the k=2 preconditioner as inner `L_2⁻¹` **converges** (recursion closes, construction sound) but **loses to jacobi** decisively — 280 it / 10.4 s vs jacobi 186 it / 0.47 s. `L_3` is well-conditioned and tiny (n₃=192) so jacobi suffices; the nested-twice k=2 atom is far too expensive. Use jacobi. (Earlier sideways-transfer-to-k=0 route was rank-deficient.) |
 
 > **The discrete derivative `G` is now fully matrix-free / inverse-free (2026-06).**
 > grad `G_0` and curl `G_1` ship as explicit analytic `±1`/`−ξ` sparse stencils
@@ -71,6 +71,206 @@ from — the true Schur's exact `M^{-1}` is never formed.
 > (both BCs) and is the change that makes the k=1 projector genuinely idempotent
 > and unlocks k=2. New polar nilpotency test added; full `test_operators` passes.
 
+## Unified tensor-Chebyshev preconditioner (2026-06-24)
+
+The family is now unified under one **recursive** template for the `P_B` inner
+inverse of `L_{k-1}`: a **fixed-degree Chebyshev iteration with a tensor
+smoother**, fully matrix-free (no dense `pinv`, no inner Krylov). The recursion
+bottoms out at the near-exact scalar `k=0` tensor Hodge preconditioner (κ≈6):
+
+- **k=1** atom inverts `L_0`: Chebyshev on `L_0 = apply_stiffness(·,0)` (exact,
+  matrix-free) with the k=0 tensor smoother.
+- **k=2** atom inverts `L_1`: Chebyshev on the approximate Schur `Ŝ_1` with the
+  k=1 Hodge preconditioner as smoother — and **that smoother's own inner
+  `L_0⁻¹` is itself a nested near-exact cheb-`L_0`** (the key fix, below).
+
+Three pieces make it work and keep it cheap:
+
+1. **Auto-degree from Lanczos.** The Chebyshev degree is set at build time from
+   the matrix-free Lanczos estimate of `κ = λmax/λmin` of the (deflated,
+   preconditioned) operator, via the standard bound `d ≈ ½√κ · ln(2/ε)`. So the
+   degree adapts per geometry/resolution; no hand-tuning. (`make_chebyshev_upper`
+   guards a degenerate interval.)
+2. **Constant-deflation of the nested free-BC `l_0`.** `apply_laplacian_
+   preconditioner(·,0,tensor)` does **not** deflate the free `k=0` constant
+   nullspace; left raw inside the k=1 smoother it over-amplifies near-constant
+   `V0` modes that grad carries into the near-harmonic `V1` modes. M_0-orthogonally
+   projecting the constant out was **the** fix: it dropped `cond(P_hodge·L_1)`
+   from **152 → 9** and removed the near-null cluster. (Isolation confirmed the
+   limiter was the rough inner `l_0`, *not* block_fd `P_A`: with an exact `l_0`,
+   block_fd already gives cond 9 with zero near-null modes; exact `P_A` only
+   sharpens 9 → 1.4.)
+3. **Fusion — the projector and `P_B` share the `L_{k-1}` inverse.** The projected
+   apply `(I-Π)P_A(I-Π) + P_B` is rewritten to **2 inner solves instead of 4**
+   (algebraically identical, symmetry preserved): the dual-complement and `P_B`
+   share `y = k1_inv(G₁ᵀr)`, and their outer solves combine into
+   `pa + G₁·k1_inv(M₁y − G₁ᵀM₂·pa)`. The k=1 smoother is likewise the pre-existing
+   fused form (2 `L_0⁻¹` instead of 4). Compounded ≈ 4× fewer nested cheb-`L_0`
+   chains per k=2 iteration; wall 6888 → **4209 ms** at identical 130 iters.
+
+**Projection is always on (a free simplification after fusion).** The fused
+projected form does the *same* number of inner `L_{k-1}` solves as raw (the
+projector shares its solve with `P_B`: 2 either way), so the projection adds no
+expensive work; it is identical to raw for k=1 (68==68) and mandatory for k=2.
+The unified preconditioner therefore always uses the projected form — no
+raw/no-projection branch to choose. (Per-ε wall has a sweet spot: the degree
+`d≈½√κ·ln(2/ε)` trades iterations against per-apply cost — e.g. k=2 ns 6,12,4
+ε=1e-1→deg 5, 130 it, 4209 ms vs ε=1e-2→deg 9, 109 it, 6205 ms — so larger ε
+(lower degree) is often the wall optimum; pick ε at the iteration/cost knee.)
+
+**Results (RE, p=3, free BC):**
+
+| | jacobi | unified projected | atom κ / degree | raw == projected? |
+| --- | --- | --- | --- | --- |
+| k=1 ns 6,12,4 | 551 it / 511 ms | 49 it / 204 ms | cheb-`L_0` κ≈6 / deg 7 | **yes** (projection-free) |
+| k=1 ns 10,20,6 | 600 it *(stalls)* | 71 it / 534 ms | κ≈6.7 / deg 7 (h-flat) | yes |
+| k=2 ns 6,12,4 | 462 it / 1265 ms | 130 it / **4209 ms** (fused) | cheb-`L_1` κ 9.3 / deg 5 | **no** (projection mandatory) |
+| k=2 ns 8,16,6 | 584 it / 2522 ms | 208 it / 11.7 s | κ 14.3 / deg 6 | no |
+| k=2 ns 9,18,7 | 590 it / 3119 ms | 221 it / 17.5 s | κ 16.7 / deg 7 | no |
+| k=3 ns 6,12,4 | 186 it / 474 ms | 280 it / 10.4 s (converges) | nested k=2 atom | n/a (pure P_B, no projector) |
+
+**Verdict.**
+- **k=1 (and k=0): ship it.** The cheb-`L_0` atom matches the exact inverse,
+  the degree is h-flat (~7), and with the production block_fd `P_A` the gradient
+  **projection is unnecessary** (raw == projected). It beats jacobi ~2× on wall
+  and converges where jacobi stalls — a clear improvement over the prior k=1
+  preconditioner. Ship the constant-deflation of the `k=0` apply too (it is
+  strictly correct and helps any nested free `L_0⁻¹`).
+- **k=2: degree-scalable and matrix-free, but not wall-competitive.** Nesting
+  the near-exact cheb-`L_0` made the atom's κ nearly h-flat (degree 5→6 over the
+  range, vs the rough-`l_0`'s 21→42), so the construction *scales* in degree and
+  iterations. Projection stays **mandatory** (raw fails at every resolution).
+  After fusion the apply is as cheap as the construction allows, but the deep
+  nesting (outer Chebyshev × k=1 smoother × inner cheb-`L_0`) leaves it ~3.3×
+  *slower* than jacobi on wall time. It is an **iteration/robustness** tool, not
+  a wall-time win at these sizes. A genuine wall win would need a cheaper
+  near-exact `L_1` inverse than "polynomial over the k=1 preconditioner" — e.g. a
+  multilevel vector-Laplacian solver.
+- **k=3: use jacobi.** The unified pure-P_B form converges but loses badly
+  (above); `L_3` is small and well-conditioned, so jacobi is the right tool.
+
+**ε wall sweet-spot.** The degree `d≈½√κ·ln(2/ε)` trades outer iterations
+against per-apply cost, so wall is U-shaped in ε. With the (then-fixed) near-exact
+inner `l_0`, k=2 ns 6,12,4: ε=0.01→deg 9, 109 it, 6.2 s; **ε=0.1→deg 5, 130 it,
+4.2 s (min)**; ε=0.3–0.5→deg 3 but iterations jump to 225 (4.5 s). So larger ε did
+*not* win there — but the inner `l_0` was overkill at every ε. The inner-ε is now
+**tied to the swept outer ε by default** (`l0_cheb_eps=None` → uses `atom_cheb_eps`),
+so rougher outer ε also cheapens the inner atom; whether that shifts the wall
+optimum to larger ε is being measured (consolidated `--all-k` run).
+
+**Competing "Chebyshev-outside" preconditioner (`make_cheb_tensor_upper`).** Since
+the outer saddle MINRES is itself a Krylov accelerator, a *simpler* upper-block
+preconditioner is a Chebyshev directly on `Ŝ_k` whose only smoother is the cheap
+tensor *stiffness* preconditioner — no HX projector, no nested P_B (one tensor
+apply per Chebyshev step, very cheap). Expected caveat: the tensor stiffness
+smoother is ≈0 on the down/gradient modes (models `S_k` only, not `D M⁻¹ Dᵀ`), the
+exact gap P_B fills, so it may need huge degree / fail on those modes. Run
+head-to-head against the HX form in the consolidated test (`--all-k`); results
+pending.
+
+## Tensor rank: why rank=1 is the default (2026-06-24)
+
+**rank=1 is the production default for the stiffness/Hodge atom, and the only
+viable rank for it.** Rank>1 makes the Laplacian preconditioners *dramatically
+slower* — OOM-kill (rank 3 on rotating-ellipse), degree-31 GPU-compile hang
+(rank 2 on axisymmetric). The mass path is the opposite (see below); the
+pathology is specific to **stiffness/Hodge**.
+
+**Why rank>1 hurts.** The k=0 Hodge apply
+(`_apply_k0_tensor_hodge_bulk_shared_inverse`) uses **Lynch fast-diagonalization,
+which is exact only at rank 1.** The per-axis eigenbasis `V_r/V_t/V_z` is built
+from the rank-1 *leading* CP term; for rank>1 the apply keeps only the
+**diagonal** of each extra term in that fixed basis and discards the off-diagonal
+coupling. So a *better* CP field fit (`cp_rel_err` drops monotonically with rank)
+yields a *worse* diagonal-truncated inverse. The deeper mechanism: the rank>1 fit
+rotates a hyper-ill-conditioned bulk near-null eigenvector, corrupting the
+core-Schur interaction — Frobenius accuracy of the separable operator is
+irrelevant (a 3.4%-accurate rank-2 operator gives κ≈1e5 while the 5.9%-accurate
+rank-1 gives κ≈2.9).
+
+**The blow-up is exactly ONE isolated outlier, not a smear** (dense
+`eig(smoother∘L_0)`, `scripts/debug/debug_rank_ritz_spectrum.py`, results in
+`outputs/diag_ritz/2026-06-24/`, ns 6,12,4 p=3 free BC):
+
+| geometry | rank | κ | λmin | gap below | active spectrum (λ₂ … λmax) |
+| --- | --- | --- | --- | --- | --- |
+| rotating-ellipse | 1, 2 | 6.19 | 0.271 | 1.95× | [0.529 … 1.68] |
+| rotating-ellipse | **3** | **384** | **4.3e-3** | **124×** | [0.536 … 1.65] |
+| toroid | 1 | 3.06 | 0.600 | 1.25× | [0.748 … 1.83] |
+| toroid | **2, 3** | **51** | **3.0e-2** | **23.5×** | [0.709 … 1.54] |
+
+The decisive observation is the rightmost column: **everything above the single
+outlier is rank-invariant** — the active spectrum (hence the *effective* κ≈2–3)
+is unchanged across rank. rank>1 leaves the operator excellent on the whole space
+*except one direction*, which it drops into the basement. The threshold is
+geometry-dependent (rot-ellipse breaks at rank 3, toroid at rank 2) but it is
+always a *single* mode below a large (23–124×) gap. This mode is **not** the
+operator's constant nullspace (the cheb-`L_0` atom already deflates that); it is a
+preconditioner-induced near-null mode of the *composite* `smoother∘L_0`.
+
+**Mass path is healthy** (and the contrast that localizes the bug): the `M_0`
+Jacobian `R = 1 + εr cosθ` is genuinely rank-2, and the *mass* tensor
+preconditioner *improves* with rank (`M_0` iters 4.8 → 3.5 → 3.0). Only the
+stiffness/Hodge path has the Lynch-exactness problem.
+
+**Refuted fixes (do not retry).** (1) denom positivity loss — false, the
+pre-floor denom stays SPD across rank; (2) "CP-ALS is broken" — false, it fits
+better with rank; (3) NTF / nonnegative joint CP — removed
+the indefinite "monster" terms but still blew up; (4) **pseudo-inverse /
+deflation of `M_bulk` *operator* modes** — κ never
+recovers for any threshold, *and* zeroing modes breaks the good rank-1 case. The
+outlier is a Schur-interaction mode of the composite, **not** an eigenvector of
+the bulk operator, so you cannot deflate it out of `M_bulk`.
+
+### Do we need to deflate the outlier, or can the outer solve absorb it?
+
+It depends entirely on **what consumes the atom**, and the answer splits cleanly:
+
+- **Direct consumption by an adaptive outer Krylov (PCG on the condensed k=0
+  system, or the k=0 block inside the saddle MINRES): no deflation needed —
+  ignore it.** A single isolated outlier behind a 23–124× gap is the textbook
+  easy case for CG: it is resolved in the Krylov space in ~1 iteration and the
+  rest of convergence follows the active κ≈2–3. The empirical proof is already in
+  hand: **condensed k=0 CG goes 18 → 21 iters across the rank sweep** — +3
+  iterations to absorb the rogue mode, no deflation. The *only* discipline
+  required here is to **stop letting the raw κ drive anything**: the phantom κ's
+  sole concrete cost is inflating the auto-degree `d ≈ ½√κ·ln(2/ε)` until it caps
+  → OOM. Cap the degree / tune the interval on `[λ₂, λmax]` and the "problem"
+  evaporates. The fix in this regime is *"don't trust raw κ,"* not deflation.
+
+- **Consumption by the non-adaptive nested Chebyshev atom (the near-exact
+  fixed-linear `L_{k-1}⁻¹` used inside k=1/k=2, where inner Krylov is
+  forbidden): you cannot ignore it.** Chebyshev is a fixed polynomial for an
+  interval `[lmin, lmax]`; *below* its interval the polynomial **grows**
+  (`|p(λ)| → ∞`), so tuning on `[λ₂, λmax]` and ignoring the outlier makes the
+  atom **amplify** that direction and inject garbage downstream (the documented
+  "cheb on a singular operator amplifies the near-null → projected k=2 diverges"
+  failure). There is no outer CG between the polynomial and the mode to catch it —
+  the Chebyshev *is* the solver for that operator. So here you must deflate (or
+  include the outlier in the interval and eat the OOM degree). And note there is
+  **no cheaper-than-deflation middle option**: tuning honestly on `[λ₂, λmax]`
+  already requires the Lanczos step that *finds* the outlier eigenpair, at which
+  point deflating the vector you are already holding is essentially free.
+
+**Recommendation.** Do **not** build deflated-Chebyshev machinery to enable
+rank>1 in the nest. Either (a) keep the nested atoms at **rank-1** (the
+production default — rank-1 has no outlier at all, so the question is moot exactly
+where it would hurt), or (b) if rank>1 is ever wanted, restrict it to a slot
+where an **adaptive outer Krylov consumes the atom directly** (the condensed k=0
+CG), and there ignore the outlier for free (cap the auto-degree so the phantom κ
+does not size the work). The 1-vector deflated Chebyshev is only worth
+implementing if we acquire a concrete need for a rank>1 *near-exact fixed-linear*
+`L_0⁻¹` — and we currently have no such need, since rank-1 is near-exact (κ≈6)
+and the stiffness path shows no accuracy gain from rank>1 (unlike mass).
+
+Surviving diagnostics for this thread: `scripts/benchmark/benchmark_unified_tensor_cheb_preconditioner.py`
+(rank sweep across k) and `scripts/debug/debug_rank_ritz_spectrum.py` (the dense
+outlier-spectrum probe behind the single-outlier diagnosis; raw spectra in
+`outputs/diag_ritz/2026-06-24/`). The one-off probes that established the rest of
+this section (CP-ALS mechanism, NTF, outlier-mode extraction, bulk pinv sweep,
+ζ-first decoupling, capped-degree) were removed once their conclusions were
+settled here — cheap to re-derive from the two survivors if needed.
+
 ## k=2 resolution (the true-G fix + capped `P_A`)
 
 Pre-fix, every k=2 variant lost to jacobi (≈480 it) and the projected forms
@@ -80,7 +280,7 @@ was `Eᵀ sp E`, so the projector `Π₂ = G₁·atom·G₁ᵀM₂` sandwiched a
 operator than the atom inverted (`apply_stiffness(·,1) ≠ G₁ᵀM₂G₁` by `2.25e-3`),
 and `Π₂` was never idempotent. With the true `G` (above), `apply_stiffness(·,1) =
 G₁ᵀM₂G₁`, so the natural atom makes `Π₂` idempotent (`‖Π²−Π‖`: 0.088 → 2e-14) and
-the construction converges. Dense diagnostics (`scripts/diag_k2_dense_exact_atom.py`,
+the construction converges. Dense diagnostics (`scripts/debug/debug_k2_dense_exact_atom.py`,
 `rotating_ellipse`, free BC):
 
 | upper precond (k=2) | iters | note |
@@ -98,16 +298,29 @@ Three load-bearing facts:
   squared `P_B = G_1·atom·M_1·atom·G_1ᵀ` needs the `M_1`-metric inverse; `L_1⁺`
   gives cond≈9 (91 it) vs `K_1⁺` cond≈236 (251 it). (On `P_B`'s co-exact input
   the two are analytically equal, but the middle `M_1` of the squared form
-  breaks Euclidean `K_1⁺`.)
+  breaks Euclidean `K_1⁺`.) The exact-component sweep (2026-06-23) confirms this
+  with an exact `P_A` and exact projector: whole-`L_1` **31/33** vs
+  stiffness-`K_1`-only **162/242** it (dbc/free), 5–7×; `cond(pinv L_1)≈3.6e3`
+  vs `cond(pinv K_1)≈1.6e18`. At k=1 whole-`L_0` ≡ stiffness(0) (identical it),
+  so the whole-vs-stiffness split only bites at k≥2.
 - **`P_A` must be bounded on curls.** The div-div tensor inverse is `1/λ` and
   blows up on the curl null (`S_2≈0` there), so raw diverges and the projection
   is mandatory. **Capping** it (`pinv(S_2, rcond)` — zero the curl modes, as
   k=1's block_fd `pinv` does on gradients) makes raw converge *and* sharpens the
   projected method (33 vs 91 it). Cap threshold is insensitive (1e-8 ≈ 1e-6).
-- **k=1 vs k=2 projection asymmetry.** With the true `G`, the k=1 gradient
-  projection is now *unnecessary* (raw == projected, 44 == 44 it) because k=1's
-  `P_A` (block_fd `pinv`) is already bounded on its null. k=2's projection stays
-  essential (big accelerator: 33–91 vs 1289) because the div-div `P_A` is not.
+- **Projection is mandatory at k=1 *and* k=2 — no structural asymmetry**
+  (exact-component sweep, 2026-06-23). The raw−projected *operator* difference
+  `‖P_A−(I-Π)P_A(I-Π)ᵀ‖/‖P_A‖` is large at every degree/BC (k=1 ≈1.2, k=2
+  ≈1.9–2.4), with ~70° principal angles between `range(S_k)` (Euclidean
+  co-exact) and the `M`-orthogonal complement `range(I-Π)` — the projection
+  genuinely changes `P_A` everywhere. With an *exact* `P_A`, raw fails/blows up
+  in all four cells (k1-dbc 457, else 600/fail) while projected gives
+  9 / 11 / 31 / 33. The old "k=1 raw == projected (44 == 44)" was an artifact of
+  the *approximate* block_fd `P_A`, whose imperfection happens to damp the leak
+  (approx-`P_A` raw converges at k=1: 66/90, but still *fails* at k=2). The
+  k=1↔k=2 difference is purely **quantitative**: the output leak
+  `‖Π P_A‖/‖P_A‖` is 0.67 at k=1 vs 0.95–1.01 at k=2, so k=2 raw fails harder
+  and tolerates no approximation.
 
 Atom-conditioning hierarchy (the lever throughout): k=0 scalar tensor Hodge
 `cond(P_0·L_0) ≈ 2.3 (dbc) / 6.2 (free)` — near-exact; the cheap vector
@@ -123,7 +336,7 @@ fused projector, dense couplings on):
 | `jacobi (diag)` | ~386 | ~266 ms |
 | projected `P_A + P_B` (`P.T P_S P + P_B`) | **~96** | **~115 ms** |
 
-Diagnostic harness: `scripts/diag_graddiv_subspace_preconditioner.py`. Form
+Diagnostic harness: `scripts/benchmark/benchmark_graddiv_k1_preconditioner.py`. Form
 degree is selected by `--klevel {0,1,2,3}` (`0` = the `k=0` nullspace test, `1` =
 the default `k=1` path, `2`/`3` run their dedicated benchmarks). `--k1-both-bc`
 runs the `k=1` dbc-vs-free comparison. The consolidated new-result sections
@@ -146,7 +359,8 @@ bit-exact (≤2.2e-16) vs the `Gram⁻¹∘incidence` oracle on the polar
 nilpotency ~1e-16; `pytest test/test_operators.py` 56 passed. div `G_2` was
 already matrix-free (V3 unitary). The `inc_gram_inv` precompute + its small
 axis-block inverse are deleted; polar is detected Gram-free via a one-probe
-`_extraction_is_polar`. Validation harness: `scripts/diag_grad_analytic_stencil.py`.
+`_extraction_is_polar`. Validated bit-exact against the `Gram⁻¹∘incidence`
+oracle; the polar nilpotency regression ships in `test/test_operators.py`.
 
 ### The cheap-atom attempt: Chebyshev with the tensor smoother
 The right way to turn the cond≈28 k=1 tensor preconditioner into a near-exact
@@ -163,8 +377,7 @@ and the k=2 *projector* gives it no outer deflation (unlike the k=1 saddle, whic
 deflates). Chebyshev's polynomial `p(λ)≈1/λ` *blows up at the `λ≈0` harmonic*, so
 acceleration is actively harmful in the projector (worse than the un-accelerated
 `full_l1`, which merely *converges slowly*). The independent
-hyperparameter-estimation diagnostic (`scripts/diag_cheb_spectrum_estimation.py`)
-pinned the mechanism: Lanczos estimates `λmax` perfectly and `λmin` well, but the
+hyperparameter-estimation diagnostic pinned the mechanism: Lanczos estimates `λmax` perfectly and `λmin` well, but the
 **defensive interval floor `lmin = max(lmin, lmax·1e-3)`** clips 14 genuine small
 modes on the free-BC operator (cond 1834 there) — Chebyshev then under-resolves /
 amplifies exactly those near-null modes. Explicit harmonic **deflation** of the
@@ -189,9 +402,11 @@ scalable solution:**
 
 It grows faster than jacobi and fails at the largest grid. Two structural reasons:
 (1) **raw mode is inherently slower than projected even with a perfect atom**
-(dense, low res: projected+`L_1⁺` = 33 but raw+`L_1⁺` = 1289) because k=2's blocks
-don't auto-separate the way k=1's do (k=1: `P_A`≈0 on its gradient null *and*
-`P_B`≈0 on curls → raw == projected); (2) the cheap/capped `P_A` is not h-flat.
+(dense, low res: projected+`L_1⁺` = 33 but raw+`L_1⁺` = 1289) because the
+projection removes `P_A`'s leak into the exact subspace — and this is needed at
+k=1 too: the exact-component sweep shows exact-`P_A` raw blows up at k=1 as well,
+so the apparent k=1 "raw == projected" was an approximate-`P_A` artifact (see the
+asymmetry bullet above); (2) the cheap/capped `P_A` is not h-flat.
 
 ### h-scaling reframes the goal: atom quality is the lever
 | construction | ns 6,12,4 | ns 8,16,6 | ns 10,20,6 | trend |
@@ -281,7 +496,7 @@ Related high-level docs treat HX as historical rather than active roadmap.
 ## Canonical Debug Script
 
 Use exactly one diagnostic script:
-`scripts/diag_graddiv_subspace_preconditioner.py`, driven by
+`scripts/benchmark/benchmark_graddiv_k1_preconditioner.py`, driven by
 `slurm/job_diag_graddiv_pa_compare.sh` (env-var overrides → SLURM). Form degree
 via `--klevel`; the `k=3` duality-transfer prototype now lives inside this
 script (`--klevel 3`) rather than as a separate entry point.
@@ -514,7 +729,7 @@ accuracy or Schur tuning, was the decisive factor.
 
 ## Current `P_A` Path In The Debug Script
 
-The canonical script is `scripts/diag_graddiv_subspace_preconditioner.py`.
+The canonical script is `scripts/benchmark/benchmark_graddiv_k1_preconditioner.py`.
 Based on the current benchmark sweep, non-performing `P_A` choices were removed
 from the script interface. The retained `P_A` path is `--pa-mode block_fd`.
 
@@ -1264,73 +1479,91 @@ over-regularizes. This matters only for the (now-dominated) coupled variants.
 5. **Robustness checks before promotion** across geometry/resolution; track the
   coupled models' flagged low-mode family if they are ever reconsidered.
 
+**Pick up from here (2026-06-24):**
+
+6. **Tensor rank decision is settled — keep rank=1.** The rank>1 blow-up is a
+  single isolated outlier in `smoother∘L_0`, and the outer adaptive CG already
+  absorbs it (+3 iters) where it consumes the atom directly; the non-adaptive
+  nested Chebyshev cannot, but rank-1 has no outlier there. Do not build the
+  1-vector deflated Chebyshev absent a concrete rank>1 need (see *Tensor rank*).
+7. **k=2 wall-win lever (the live open problem): a cheaper near-exact `L_1`
+  inverse.** The construction is sound, degree-scalable, and matrix-free; the only
+  thing keeping it from beating jacobi on wall time is the cost of "polynomial
+  over the k=1 preconditioner" as the inner `L_1⁻¹`. A multilevel
+  vector-Laplacian solve for `L_1` is the candidate. This is where to resume the
+  k=2/k=3 thread.
+8. **Resolve the competing "Chebyshev-outside" head-to-head** (`make_cheb_tensor_upper`,
+  `--all-k` run): a Chebyshev directly on `Ŝ_k` with only the cheap tensor
+  stiffness smoother, no HX projector. Confirm whether it fails on the gradient
+  modes as expected, or offers a cheaper-but-weaker alternative for k=2.
+
 ### Re-running retained cases
 
 ```bash
 # RECOMMENDED: scalar bulk + fused projector. The dense couplings (k=1 surgery
 # K_1 and k=0 Hodge K_0) are now the production default, so no extra flags are
 # needed. ~2x faster than jacobi AND ~3.3x fewer iterations at every resolution.
-python scripts/diag_graddiv_subspace_preconditioner.py \
+python scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
   --pa-grad-project --system saddle \
   --methods "jacobi (diag),P.T P_S P + P_B (fused)"
 
 # CURRENT BEST: gradient-projected P_A + P_B vs Jacobi (k=1)
 # (method key "P.T P_S P + P_B" = projected P_A + P_B; P_S is P_A here)
-python scripts/diag_graddiv_subspace_preconditioner.py \
+python scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
   --pa-grad-project --system saddle \
   --methods "jacobi (diag),P.T P_S P + P_B"
 
 # FUSED projected apply: identical operator, 2 L_0^{-1} solves instead of 4.
 # Verify avg_it matches the non-fused row exactly (algebraic identity).
-python scripts/diag_graddiv_subspace_preconditioner.py \
+python scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
   --pa-grad-project --system saddle \
   --methods "jacobi (diag),P.T P_S P + P_B,P.T P_S P + P_B (fused)"
 
 # ROOT-CAUSE FIX: radial-banded bulk (full radial+component per angular mode).
 # Prints "radial-banded angular leakage" (~3% target vs 0.48 for the 3x3).
-python scripts/diag_graddiv_subspace_preconditioner.py \
+python scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
   --pa-grad-project --pa-block-radial-banded --system saddle \
   --methods "jacobi (diag),P.T P_S P + P_B" \
   --pa-stiffness-spectrum active
 
 # Cheap per-axis leakage measurement on a symmetry-breaking geometry
 # (stops after P_A assembly; no property/overlap/spectrum/MINRES work)
-python scripts/diag_graddiv_subspace_preconditioner.py \
+python scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
   --geometry rotating_ellipse --kappa 1.2 --nfp 3 \
   --pa-block-vector-fd --leakage-only --system saddle
 
 # Experimental: true-basis vector-FD coupled bulk with per-mode fallback
-python scripts/diag_graddiv_subspace_preconditioner.py \
+python scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
   --pa-grad-project --pa-block-vector-fd-true-basis --system saddle \
   --methods "jacobi (diag),P.T P_S P + P_B" \
   --pa-stiffness-spectrum active
 
 # Same with compact diagnostics and P_A phase profiling
-python scripts/diag_graddiv_subspace_preconditioner.py \
+python scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
   --pa-grad-project --pa-block-vector-fd-true-basis --system saddle \
   --methods "jacobi (diag),P.T P_S P + P_B" \
   --pa-stiffness-spectrum active \
   --compact-output --pa-profile
 
 # Probe low-index mode diagnostics on a slightly higher resolution
-python scripts/diag_graddiv_subspace_preconditioner.py \
+python scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
   --ns 7,14,8 \
   --pa-grad-project --pa-block-vector-fd-true-basis --system saddle \
   --methods "jacobi (diag),P.T P_S P + P_B" \
   --pa-stiffness-spectrum active --pa-block-vector-fd-report-k 16
 
 # block_fd at tensor rank 3 (default bulk model, no projection)
-python scripts/diag_graddiv_subspace_preconditioner.py \
+python scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
   --pa-mode block_fd --rank 3 \
   --methods "jacobi (diag),jacobi(K)+P_B,raw P_S + P_B,jacobi + raw P_S + P_B"
 
 # optional inner bulk Schur in block_fd
-python scripts/diag_graddiv_subspace_preconditioner.py \
+python scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
   --pa-mode block_fd --pa-block-inner-schur --rank 3 \
   --methods "jacobi (diag),jacobi(K)+P_B,raw P_S + P_B,jacobi + raw P_S + P_B"
 
 # alpha sweep with single-compile runtime parameter path
-python scripts/diag_graddiv_subspace_preconditioner.py \
+python scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
   --pa-mode block_fd --rank 3 \
   --methods "jacobi (diag),jacobi(K)+P_B,P_A + P_B,jacobi + P_A + P_B" \
   --jacobi-scale-sweep "0,0.5,1,2,4"
@@ -1356,10 +1589,24 @@ curl/nullspace split cutoff is set by `--pa-stiffness-spectrum-curl-cutoff`.
 - Baselines: a degree-5–8 Chebyshev on the approximate Schur is
   iteration-competitive with the tensor method but ~3× slower in wall time; the
   tensor method's edge is its cheap per-apply cost.
-- Open: `k=2` needs a cheap, accurate `K_1^{-1}` atom (or a different curl-block
-  treatment); `k=3` needs a fuller-rank (or smoother-completed) sideways
-  transfer. Both are blocked on the same theme — the absence of a near-exact,
-  cheap auxiliary inverse for the vector curl block.
+- `k=1` (and `k=0`) are ready to promote: the unified tensor-Cheb `L_0` atom
+  matches the exact inverse, the degree is h-flat (~7), it beats jacobi ~2× on
+  wall and converges where jacobi stalls, and with the production block_fd `P_A`
+  the gradient projection is unnecessary (raw == projected). Ship the
+  constant-deflation of the `k=0` apply alongside it.
+- `k=2` is degree-scalable, matrix-free, and a robustness win (converges where
+  jacobi is marginal) but **~3.3× slower than jacobi on wall** — the deep nesting
+  (outer Chebyshev × k=1 smoother × inner cheb-`L_0`) is the cost. The one open
+  lever for a wall win is a **cheaper near-exact `L_1` inverse** than "polynomial
+  over the k=1 preconditioner" — i.e. a multilevel vector-Laplacian solver. `k=3`
+  stays on jacobi.
+- **Tensor rank stays at 1** for the stiffness/Hodge atom. rank>1 is OOM-slow via
+  a single phantom outlier; the deflated-Chebyshev fix is *not* worth building
+  unless a concrete need for a rank>1 near-exact fixed-linear `L_0⁻¹` appears (see
+  *Tensor rank*). Where an adaptive outer Krylov consumes the atom directly,
+  rank>1 can be used without deflation by capping the auto-degree.
+- Open theme tying `k=2`/`k=3` together: still the absence of a near-exact,
+  *cheap* auxiliary inverse for the vector curl block.
 
 If the projected blend is promoted, define acceptance criteria up front (clear
 wall-time win across the target problem family, stable iteration behavior, and
