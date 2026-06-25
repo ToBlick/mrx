@@ -606,6 +606,16 @@ class K0TensorHodgePreconditionerFactors(eqx.Module):
     # core (polar-axis) size is small, so the block is cheap to store and probe.
     precompute_coupling: bool = eqx.field(static=True, default=True)
     core_coupling: Optional[jnp.ndarray] = None
+    # Radial-dense bulk inverse (supersedes the diagonal Lynch denom for the
+    # bulk solve). When present, the bulk inverse diagonalises theta,zeta with the
+    # FD eigenbases (rank-1, measured harmless) and inverts an EXACT dense
+    # ``n_r x n_r`` radial block per (theta,zeta) mode -- capturing the radial
+    # mode-coupling the separable denom drops (the conditioning outlier). Shape
+    # ``(n_t, n_z, n_r, n_r)``: one precomputed radial-block inverse per angular
+    # mode. See docs/hiptmair_xu_preconditioner.md "Production radial-dense bulk
+    # inverse". Radial rank is a free accuracy knob (dense inversion -> no Lynch
+    # error); the only approximation is the rank-1 theta,zeta truncation.
+    bulk_radial_block_inv: Optional[jnp.ndarray] = None
 
 
 _EXTRACTION_OPERATOR_NAMES = (
@@ -1396,9 +1406,22 @@ def _sum_dense_matrices(matrices: tuple[jnp.ndarray, ...]) -> jnp.ndarray:
     return _symmetrize(total)
 
 
+def _batched_floored_spd_inverse(blocks: jnp.ndarray, rtol: float = 1e-12) -> jnp.ndarray:
+    """Batched symmetric inverse of ``blocks`` (shape ``(..., n, n)``) that deflates
+    near-null eigenvalues (``λ < rtol·λmax`` → inverse 0). The radial blocks are SPD
+    in the bulk (the constant nullspace lives in the core/surgery, not the bulk), so
+    this is a plain inverse in practice; the deflation is a safety net."""
+    sym = 0.5 * (blocks + jnp.swapaxes(blocks, -1, -2))
+    w, V = jnp.linalg.eigh(sym)
+    wmax = jnp.max(jnp.abs(w), axis=-1, keepdims=True)
+    inv_w = jnp.where(w > rtol * wmax, 1.0 / w, 0.0)
+    return jnp.einsum('...ij,...j,...kj->...ik', V, inv_w, V)
+
+
 def _assemble_k0_stiffness_fd_bulk_factors(
         seq, *, dirichlet: bool, rank: int,
-        cp_maxiter: int, cp_tol: float, cp_ridge: float):
+        cp_maxiter: int, cp_tol: float, cp_ridge: float,
+        radial_dense: bool = False):
     """Build k=0 stiffness bulk factors via Lynch fast diagonalisation.
 
     For k=0 the Hodge Laplacian equals the stiffness ``K_0 = G_0^T M_1 G_0``.
@@ -1561,6 +1584,25 @@ def _assemble_k0_stiffness_fd_bulk_factors(
     safe_floor = jnp.where(denom_floor > 0, denom_floor, 1.0)
     denom = jnp.where(denom > safe_floor, denom, safe_floor)
 
+    # Radial-dense bulk inverse: keep theta,zeta diagonalised (V_t, V_z; rank-1)
+    # but assemble an EXACT dense n_r x n_r radial block per (theta,zeta) mode and
+    # store its inverse, instead of collapsing the radial axis to the scalar denom.
+    # B[j,k] = sum_terms (radial matrix) * diag(V_t^T A_t V_t)_j * diag(V_z^T A_z V_z)_k.
+    # Terms whose theta/zeta modal diagonal is ~0 (e.g. the odd cos(theta) harmonic)
+    # drop out automatically, so this fits the angular-DIAGONAL weight; the radial
+    # rank-2 (even-harmonic) coupling that the denom misses is captured exactly.
+    radial_block_inv = None
+    if radial_dense:
+        nr, nt, nz = bulk_shape
+        radial_blocks = jnp.zeros((nt, nz, nr, nr), dtype=jnp.float64)
+        for op_r, op_t, op_z in zip(term_op_r, term_op_t, term_op_z):
+            d_t = jnp.einsum("ji,jk,ki->i", V_t, op_t, V_t)   # (nt,)
+            d_z = jnp.einsum("ji,jk,ki->i", V_z, op_z, V_z)   # (nz,)
+            radial_blocks = radial_blocks + (
+                d_t[:, None, None, None] * d_z[None, :, None, None]
+                * op_r[None, None, :, :])
+        radial_block_inv = _batched_floored_spd_inverse(radial_blocks)
+
     return {
         'bulk_shape': bulk_shape,
         'bulk_modal_basis_r': V_r,
@@ -1570,6 +1612,7 @@ def _assemble_k0_stiffness_fd_bulk_factors(
         'bulk_term_op_r': tuple(term_op_r),
         'bulk_term_op_t': tuple(term_op_t),
         'bulk_term_op_z': tuple(term_op_z),
+        'bulk_radial_block_inv': radial_block_inv,
         'cp_relative_error': max(rr_rel_err, tt_rel_err, zz_rel_err),
         'cp_final_delta': max(rr_final_delta, tt_final_delta, zz_final_delta),
     }
@@ -1624,6 +1667,7 @@ def _build_k0_tensor_hodge_preconditioner_factors(
         cp_final_delta=bulk_data.get('cp_final_delta'),
         precompute_coupling=precompute_coupling,
         core_coupling=core_coupling,
+        bulk_radial_block_inv=bulk_data.get('bulk_radial_block_inv'),
     )
 
 
@@ -1674,9 +1718,29 @@ def _apply_k0_tensor_hodge_bulk_shared_inverse(
     return modes.reshape(-1)
 
 
+def _apply_k0_tensor_hodge_bulk_radial_dense(
+        factors: K0TensorHodgePreconditionerFactors,
+        rhs_b: jnp.ndarray) -> jnp.ndarray:
+    """Radial-dense bulk inverse: diagonalise theta,zeta (FD eigenbases V_t, V_z;
+    forward V^T, back V) and apply the precomputed dense radial-block inverse per
+    (theta,zeta) mode. Symmetric (W blockdiag W^T form). All einsum + one batched
+    matvec -- the GPU-native form."""
+    nr, nt, nz = factors.bulk_shape
+    V_t = factors.bulk_modal_basis_t
+    V_z = factors.bulk_modal_basis_z
+    b_inv = factors.bulk_radial_block_inv                 # (nt, nz, nr, nr)
+    r = rhs_b.reshape(nr, nt, nz)
+    y = jnp.einsum('tj,zk,rtz->rjk', V_t, V_z, r)         # to angular eigenbasis (V^T)
+    z = jnp.einsum('jkrs,sjk->rjk', b_inv, y)             # dense radial solve per (j,k)
+    x = jnp.einsum('tj,zk,rjk->rtz', V_t, V_z, z)         # back to coefficients (V)
+    return x.reshape(-1)
+
+
 def _apply_k0_tensor_hodge_bulk_inverse(
         factors: K0TensorHodgePreconditionerFactors,
         rhs_b: jnp.ndarray) -> jnp.ndarray:
+    if factors.bulk_radial_block_inv is not None:
+        return _apply_k0_tensor_hodge_bulk_radial_dense(factors, rhs_b)
     if factors.bulk_modal_basis_r is not None:
         return _apply_k0_tensor_hodge_bulk_shared_inverse(factors, rhs_b)
 
@@ -1806,6 +1870,7 @@ def _assemble_k0_tensor_hodge_preconditioner(
         seq, operators: SequenceOperators, *,
         rank: int, cp_maxiter: int, cp_tol: float, cp_ridge: float,
         precompute_coupling: bool = True,
+        radial_dense: bool = False,
         dirichlet_flags: tuple[bool, ...] = (False, True)) -> BoundaryConditionPair:
     pair = BoundaryConditionPair()
     core_size = _core_size(seq)
@@ -1818,6 +1883,7 @@ def _assemble_k0_tensor_hodge_preconditioner(
             cp_maxiter=cp_maxiter,
             cp_tol=cp_tol,
             cp_ridge=cp_ridge,
+            radial_dense=radial_dense,
         )
 
         bulk_factors = _build_k0_tensor_hodge_preconditioner_factors(
@@ -3056,6 +3122,7 @@ def assemble_tensor_laplacian_preconditioner(
     cp_tol = cp_kwargs.get("tol")
     cp_ridge = cp_kwargs.get("ridge")
     precompute_coupling = bool(cp_kwargs.get("precompute_coupling", True))
+    radial_dense = bool(cp_kwargs.get("radial_dense", False))
 
     for k in ks:
         if k != 0:
@@ -3083,6 +3150,7 @@ def assemble_tensor_laplacian_preconditioner(
         cp_tol=cfg_tol,
         cp_ridge=cfg_ridge,
         precompute_coupling=precompute_coupling,
+        radial_dense=radial_dense,
     )
     return eqx.tree_at(
         lambda ops: ops.k0_tensor_hodge_precond,
