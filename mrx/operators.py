@@ -596,6 +596,14 @@ class K0TensorHodgePreconditionerFactors(eqx.Module):
     bulk_modal_op_t: tuple[jnp.ndarray, ...] = ()
     bulk_modal_op_z: tuple[jnp.ndarray, ...] = ()
     bulk_modal_denom: Optional[jnp.ndarray] = None
+    # Precomputed TRUNCATED pseudo-inverse of the modal denom: 1/denom where
+    # denom > pinv_tol*max(|denom|), else 0. Zeroing (rather than pseudo-inverting
+    # / floor-amplifying) the near-null modes avoids injecting the WRONG ζ-rank FD
+    # eigenvalue on the modes the separable model captures worst (helps free BC /
+    # strongly-shaped geometries, and keeps the cheb-L0 smoother from going
+    # indefinite below its spectral interval). When present, the apply multiplies
+    # by this instead of dividing by the floored denom.
+    bulk_modal_inv_denom: Optional[jnp.ndarray] = None
     cp_relative_error: Optional[float] = None
     cp_final_delta: Optional[float] = None
     # Whether the dense core<->bulk coupling block was precomputed at build
@@ -1180,7 +1188,9 @@ def _k0_tensor_hodge_config(
         return int(rank), int(cp_maxiter), float(cp_tol), float(cp_ridge)
     tensor = None if operators.mass_preconds is None else operators.mass_preconds.tensor
     if tensor is None:
-        return 3, 100, 1e-9, 1e-12
+        # Production default for the k=0 atom is rank 1 (separable FD); rank>=2
+        # is the radial_dense path. Only ranks 1 and 2 are supported.
+        return 1, 100, 1e-9, 1e-12
     return tensor.ranks[0], tensor.cp_maxiter, tensor.cp_tol, tensor.cp_ridge
 
 
@@ -1421,7 +1431,7 @@ def _batched_floored_spd_inverse(blocks: jnp.ndarray, rtol: float = 1e-12) -> jn
 def _assemble_k0_stiffness_fd_bulk_factors(
         seq, *, dirichlet: bool, rank: int,
         cp_maxiter: int, cp_tol: float, cp_ridge: float,
-        radial_dense: bool = False):
+        radial_dense: bool = False, pinv_tol: float = 1e-12):
     """Build k=0 stiffness bulk factors via Lynch fast diagonalisation.
 
     For k=0 the Hodge Laplacian equals the stiffness ``K_0 = G_0^T M_1 G_0``.
@@ -1576,10 +1586,20 @@ def _assemble_k0_stiffness_fd_bulk_factors(
         term_op_t.append(term['mass_t'])
         term_op_z.append(term['stiff_z'])
 
+    # TRUNCATED pseudo-inverse of the raw denom (computed BEFORE the legacy floor
+    # below): zero the inverse on modes with denom <= pinv_tol*max(|denom|) rather
+    # than (floor-)inverting them. On free BC / strongly-shaped geometries the
+    # near-null FD denom is both tiny AND the wrong (ζ-rank) eigenvalue; inverting
+    # it injects garbage, while zeroing leaves those modes to the (deflated) Krylov.
+    _cutoff = pinv_tol * jnp.max(jnp.abs(denom))
+    _keep = denom > _cutoff
+    inv_denom = jnp.where(_keep, 1.0 / jnp.where(_keep, denom, 1.0), 0.0)
+
     # Floor near-kernel modes: under free BCs, K_0 has a constant-mode null
     # space; the Schur surgery handles it, but the bulk denom may still touch
     # zero. Under Dirichlet BCs the radial axis is clamped so denom is
-    # strictly positive, but we keep the floor for robustness.
+    # strictly positive, but we keep the floor for robustness. (Legacy fallback
+    # path -- used only when ``bulk_modal_inv_denom`` is absent.)
     denom_floor = 1e-12 * jnp.max(jnp.abs(denom))
     safe_floor = jnp.where(denom_floor > 0, denom_floor, 1.0)
     denom = jnp.where(denom > safe_floor, denom, safe_floor)
@@ -1609,6 +1629,7 @@ def _assemble_k0_stiffness_fd_bulk_factors(
         'bulk_modal_basis_t': V_t,
         'bulk_modal_basis_z': V_z,
         'bulk_modal_denom': denom,
+        'bulk_modal_inv_denom': inv_denom,
         'bulk_term_op_r': tuple(term_op_r),
         'bulk_term_op_t': tuple(term_op_t),
         'bulk_term_op_z': tuple(term_op_z),
@@ -1663,6 +1684,7 @@ def _build_k0_tensor_hodge_preconditioner_factors(
         bulk_modal_op_t=bulk_data.get('bulk_modal_op_t', ()),
         bulk_modal_op_z=bulk_data.get('bulk_modal_op_z', ()),
         bulk_modal_denom=bulk_data.get('bulk_modal_denom'),
+        bulk_modal_inv_denom=bulk_data.get('bulk_modal_inv_denom'),
         cp_relative_error=bulk_data.get('cp_relative_error'),
         cp_final_delta=bulk_data.get('cp_final_delta'),
         precompute_coupling=precompute_coupling,
@@ -1682,6 +1704,16 @@ def _apply_k0_tensor_hodge_bulk_shared_inverse(
     modes = jnp.einsum('ji,jkl->ikl', factors.bulk_modal_basis_r, modes)
     modes = jnp.einsum('ji,kjl->kil', factors.bulk_modal_basis_t, modes)
     modes = jnp.einsum('ji,klj->kli', factors.bulk_modal_basis_z, modes)
+
+    # TRUNCATED pseudo-inverse fast path: multiply by the precomputed 1/denom
+    # (zeroed below pinv_tol*max), then back-transform. Replaces dividing by the
+    # floored denom (which inverts/floor-amplifies the near-null modes).
+    if factors.bulk_modal_inv_denom is not None:
+        modes = modes * factors.bulk_modal_inv_denom.astype(rhs_b.dtype)
+        modes = jnp.einsum('ij,jkl->ikl', factors.bulk_modal_basis_r, modes)
+        modes = jnp.einsum('ij,kjl->kil', factors.bulk_modal_basis_t, modes)
+        modes = jnp.einsum('ij,klj->kli', factors.bulk_modal_basis_z, modes)
+        return modes.reshape(-1)
 
     if factors.bulk_modal_denom is not None:
         denom = factors.bulk_modal_denom.astype(rhs_b.dtype)
@@ -1871,6 +1903,7 @@ def _assemble_k0_tensor_hodge_preconditioner(
         rank: int, cp_maxiter: int, cp_tol: float, cp_ridge: float,
         precompute_coupling: bool = True,
         radial_dense: bool = False,
+        pinv_tol: float = 1e-12,
         dirichlet_flags: tuple[bool, ...] = (False, True)) -> BoundaryConditionPair:
     pair = BoundaryConditionPair()
     core_size = _core_size(seq)
@@ -1884,6 +1917,7 @@ def _assemble_k0_tensor_hodge_preconditioner(
             cp_tol=cp_tol,
             cp_ridge=cp_ridge,
             radial_dense=radial_dense,
+            pinv_tol=pinv_tol,
         )
 
         bulk_factors = _build_k0_tensor_hodge_preconditioner_factors(
@@ -3123,6 +3157,7 @@ def assemble_tensor_laplacian_preconditioner(
     cp_ridge = cp_kwargs.get("ridge")
     precompute_coupling = bool(cp_kwargs.get("precompute_coupling", True))
     radial_dense = bool(cp_kwargs.get("radial_dense", False))
+    pinv_tol = float(cp_kwargs.get("pinv_tol", 1e-12))
 
     for k in ks:
         if k != 0:
@@ -3142,6 +3177,20 @@ def assemble_tensor_laplacian_preconditioner(
         cp_tol=cp_tol,
         cp_ridge=cp_ridge,
     )
+    # Production rank policy for the k=0 Laplacian atom: rank 1 (separable FD)
+    # ONLY. rank>1 separable FD OOMs via the near-axis radial outlier, and the
+    # rank=2 radial_dense ("1-1-dense r") variant -- while spectrally well
+    # conditioned -- stalls a deep free-BC CG at ~1e-6 on curved geometries
+    # (its dense per-mode block inverse mishandles the constant nullspace; see
+    # docs/hiptmair_xu_preconditioner.md). Until that is root-caused the Laplacian
+    # atom is constrained to rank 1. (radial_dense remains reachable only via an
+    # explicit cp_kwargs override for diagnostics.)
+    if cfg_rank != 1:
+        raise ValueError(
+            "k=0 tensor Laplacian preconditioner is constrained to rank 1 "
+            f"(separable FD); got rank={cfg_rank}. The rank=2 radial_dense path "
+            "is not free-BC safe in a deep CG solve -- see "
+            "docs/hiptmair_xu_preconditioner.md.")
     tensor_precond = _assemble_k0_tensor_hodge_preconditioner(
         seq,
         operators,
@@ -3151,6 +3200,7 @@ def assemble_tensor_laplacian_preconditioner(
         cp_ridge=cfg_ridge,
         precompute_coupling=precompute_coupling,
         radial_dense=radial_dense,
+        pinv_tol=pinv_tol,
     )
     return eqx.tree_at(
         lambda ops: ops.k0_tensor_hodge_precond,

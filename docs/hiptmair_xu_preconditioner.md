@@ -181,6 +181,33 @@ a "phantom" or a "Schur-interaction mode." The fix is **radial-dense** (above), 
 radial rank is a *free* accuracy knob (dense inversion → no Lynch). For the separable
 FD path keep rank-1; for radial-dense use CP rank≥2.
 
+**Enforced in code (2026-06): only rank 1 and rank 2 are supported.**
+`assemble_tensor_laplacian_preconditioner` now maps the rank directly to the policy —
+`rank=1` is the separable FD inverse; `rank>=2` *auto-selects* `radial_dense` (so the
+unsupported separable-FD-at-rank>1 OOM path is unreachable), and any rank outside
+`{1, 2}` raises. The k=0 config fallback default is rank 1 (was 3). Mass preconditioners
+are unaffected (rank 1/2 both fine — a rank-2 metric is an exact 2-term Kronecker sum).
+
+**Caveat — `radial_dense` (rank=2) is NOT yet free-BC safe in a deep CG solve.**
+A condensed-CG sweep to `tol=1e-10` across cylinder / toroid / rotating-ellipse at p=3
+(`scripts/benchmark/benchmark_k0_rank_geometries.py`, `slurm/job_k0_rank_geometries.sh`)
+shows:
+- **dbc, all geometries:** rank=2 converges, ~9–10 it, ≈ rank=1 (the κ outlier is a
+  single mode CG absorbs in ~1 extra iter, so radial_dense's κ 6→2 buys ~nothing here).
+- **free BC, toroid + rotating-ellipse:** rank=2 **stalls at ~1e-6 (4/4 fail)** at every
+  resolution, while rank=1 FD converges cleanly to ~1e-11 (11–18 it). The separable
+  **cylinder** free BC is the exception — radial_dense is *exact* there (1 it), because
+  the cylinder metric is genuinely (θ,ζ)-separable.
+- The earlier radial_dense validation was a dense `κ(smoother∘L_0)` spectral check
+  (`debug_rank_ritz_spectrum --radial-dense-prod`), **never a CG-to-1e-10 solve**, so the
+  free-BC convergence stall slipped through. Likely cause: the dense per-mode block
+  inverse (`_batched_floored_spd_inverse`, `rtol=1e-12`) does not deflate the constant
+  nullspace consistently with the FD denom-floor + core-surgery path it replaces (its
+  docstring *assumes* the bulk is SPD / nullspace-free, which fails free-BC + curved).
+- **Net:** until the free-BC stall is root-caused, rank=2 radial_dense is a dbc-only /
+  separable-geometry tool; rank=1 FD remains the robust production k=0 atom for both BCs.
+  Both ranks beat jacobi by ~10–15× iters / ~10× wall wherever they converge.
+
 ## Mass matrices: exact at rank-2, no change needed (all k)
 
 The **mass** has no derivatives, so a rank-2 metric gives exactly **2** Kronecker terms

@@ -212,7 +212,7 @@ class TensorMassPreconditioner(eqx.Module):
     cp_maxiter: int = eqx.field(static=True, default=100)
     cp_tol: float = eqx.field(static=True, default=1e-9)
     cp_ridge: float = eqx.field(static=True, default=1e-12)
-    block_chebyshev_steps: int = eqx.field(static=True, default=3)
+    block_chebyshev_steps: int = eqx.field(static=True, default=0)
     block_lanczos_iterations: int = eqx.field(static=True, default=16)
     block_lanczos_max_eig_inflation: float = eqx.field(static=True, default=1.1)
     block_lanczos_min_eig_deflation: float = eqx.field(static=True, default=0.85)
@@ -2281,7 +2281,12 @@ def build_mass_tensor_preconditioner(
     cp_maxiter = int(cp_kwargs.get("maxiter", 100))
     cp_tol = float(cp_kwargs.get("tol", 1e-9))
     cp_ridge = float(cp_kwargs.get("ridge", 1e-12))
-    block_chebyshev_steps = int(cp_kwargs.get("block_chebyshev_steps", 3))
+    # Default 0 (no block-Chebyshev polish): the polish cuts mass-precond
+    # iterations but costs ~8-11x more wall (each step is a full matrix-free mass
+    # matvec x3 components x2 bulk_inv calls), so it is a large net wall LOSS on
+    # both toroid and W7-X (see outputs/mass_bcheb/sweep/). Matches the validated
+    # 2026-05-09 production config (bcheb=0). Opt in via cp_kwargs if ever wanted.
+    block_chebyshev_steps = int(cp_kwargs.get("block_chebyshev_steps", 0))
     block_lanczos_iterations = int(cp_kwargs.get("block_lanczos_iterations", 16))
     block_lanczos_max_eig_inflation = float(cp_kwargs.get("block_lanczos_max_eig_inflation", 1.1))
     block_lanczos_min_eig_deflation = float(cp_kwargs.get("block_lanczos_min_eig_deflation", 0.85))

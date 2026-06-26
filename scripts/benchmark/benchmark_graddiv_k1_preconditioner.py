@@ -66,7 +66,7 @@ for _p in (ROOT, SCRIPTS, SCRIPTS / "benchmark", SCRIPTS / "debug"):
         sys.path.insert(0, str(_p))
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.mappings import rotating_ellipse_map, toroid_map
+from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map
 from mrx.differential_forms import safe_inv33
 from mrx.operators import (
     _diagonal_from_matvec,
@@ -1558,6 +1558,25 @@ def build_sequence(args) -> DeRhamSequence:
     if args.geometry == "rotating_ellipse":
         seq.set_map(rotating_ellipse_map(
             eps=args.epsilon, kappa=args.kappa, R0=args.r0, nfp=args.nfp))
+    elif args.geometry == "cylinder":
+        # Periodic cylinder F(r, chi, z) = (a r cos2pi chi, a r sin2pi chi, h z),
+        # periodic in chi and z. a = epsilon*R0 keeps the minor radius comparable
+        # to the toroid; h = R0 sets the (periodic) axial length scale.
+        seq.set_map(cylinder_map(a=args.epsilon * args.r0, h=args.r0))
+    elif args.geometry == "w7x":
+        # W7-X stellarator (nfp=5): greville-interpolate R,Z from data/W7-X.h5
+        # at the SAME resolution as the solve seq. Bound the geometry jacfwd
+        # memory (batched lax.map) -- a full-vmap over all quad points of the
+        # recursive-spline map OOMs.
+        import mrx as _mrx  # noqa: PLC0415
+        _mrx.MAP_BATCH_SIZE_INNER = int(os.environ.get("W7X_MAP_BATCH", "256"))
+        _dbg = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "debug")
+        if _dbg not in sys.path:
+            sys.path.insert(0, _dbg)
+        from w7x_geometry import build_w7x_map  # noqa: PLC0415
+        map_func, _ = build_w7x_map(map_ns=ns, p=args.p)
+        seq.set_map(map_func)
     else:
         seq.set_map(toroid_map(epsilon=args.epsilon, kappa=args.kappa, R0=args.r0))
     return seq
@@ -3471,11 +3490,31 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
     tg = bool(getattr(args, "true_g", False))
     if tg:
         print("[diag] k=1: using TRUE polar grad G_0 = Gram_1^-1 . (E^T sp E) in projector/P_B")
+    # P_A bulk model from the CLI flags (default block_fd). Honoring these here
+    # lets --k1-both-bc compare block_fd vs vector-fd vs radial-banded P_A.
+    if getattr(args, "pa_block_radial_banded", False):
+        pa_model = "radial_banded"
+    elif getattr(args, "pa_block_vector_fd_true_basis", False):
+        pa_model = "vector_fd_true_basis"
+    elif getattr(args, "pa_block_vector_fd", False):
+        pa_model = "vector_fd"
+    else:
+        pa_model = "block_fd"
+    print(f"[diag] k=1: P_A bulk model = {pa_model}")
     for dirichlet in (True, False):
         bc = "dbc" if dirichlet else "free"
         applies = make_apply_routines(
             seq, ops, pa_mode="block_fd", grad_project=True, dirichlet_flag=dirichlet,
-            true_g=tg)
+            true_g=tg,
+            pa_block_vector_fd=getattr(args, "pa_block_vector_fd", False),
+            pa_block_vector_fd_true_basis=getattr(
+                args, "pa_block_vector_fd_true_basis", False),
+            pa_block_radial_banded=getattr(args, "pa_block_radial_banded", False),
+            pa_block_vector_fd_regularization_rel=getattr(
+                args, "pa_block_vector_fd_regularization_rel", 1e-2),
+            pa_block_vector_fd_low_mode_exclude=getattr(
+                args, "pa_block_vector_fd_low_mode_exclude", 0),
+        )
         n_upper = int(seq.n1_dbc if dirichlet else seq.n1)
         n_lower = int(seq.n0_dbc if dirichlet else seq.n0)
         vs_upper = _nullspace_vectors(ops, 1, dirichlet)
@@ -3496,7 +3535,7 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
 
         methods = {
             "jacobi (diag)": (applies["jacobi_diag"], None),
-            "P.T P_S P + P_B (tensor)": (
+            f"P.T P_A P + P_B [{pa_model}]": (
                 applies["projected_p_a_plus_p_b_with_state"], applies["p_a_state"]),
         }
         for name, (precond_upper, precond_state) in methods.items():
@@ -3664,9 +3703,11 @@ def main() -> None:
     parser.add_argument("--kappa", type=float, default=1.0)
     parser.add_argument("--r0", type=float, default=1.0)
     parser.add_argument(
-        "--geometry", choices=("toroid", "rotating_ellipse"), default="toroid",
-        help="Mapping: axisymmetric toroid (default) or symmetry-breaking "
-             "rotating ellipse.")
+        "--geometry", choices=("toroid", "rotating_ellipse", "cylinder", "w7x"),
+        default="toroid",
+        help="Mapping: axisymmetric toroid (default), symmetry-breaking "
+             "rotating ellipse, periodic cylinder, or W7-X stellarator "
+             "(nfp=5, from data/W7-X.h5).")
     parser.add_argument(
         "--nfp", type=int, default=3,
         help="Field periods for the rotating-ellipse map (ignored for toroid).")
