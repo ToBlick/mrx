@@ -182,7 +182,7 @@ def k1_ops(seq, ops_mass_r, rank):
         seq, operators=ops, ks=(1,), rank=rank, cp_kwargs=CP)
     ops = assemble_schur_jacobi_preconditioner(
         seq, operators=ops, ks=(1,), dirichlet_variants=(True, False),
-        schur_diag_mode='diag')
+        schur_diag_mode='tensor_probe')
     return ops
 
 

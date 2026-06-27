@@ -568,44 +568,6 @@ class K0TensorHodgePreconditionerFactors(eqx.Module):
     bulk_lam_r: Optional[jnp.ndarray] = None
     bulk_lam_t: Optional[jnp.ndarray] = None
     bulk_lam_z: Optional[jnp.ndarray] = None
-    bulk_mass_r: Optional[jnp.ndarray] = None
-    bulk_mass_t: Optional[jnp.ndarray] = None
-    bulk_mass_z: Optional[jnp.ndarray] = None
-    bulk_stiff_r: Optional[jnp.ndarray] = None
-    bulk_stiff_t: Optional[jnp.ndarray] = None
-    bulk_stiff_z: Optional[jnp.ndarray] = None
-    bulk_term_mass_r: tuple[jnp.ndarray, ...] = ()
-    bulk_term_mass_t: tuple[jnp.ndarray, ...] = ()
-    bulk_term_mass_z: tuple[jnp.ndarray, ...] = ()
-    bulk_term_stiff_r: tuple[jnp.ndarray, ...] = ()
-    bulk_term_stiff_t: tuple[jnp.ndarray, ...] = ()
-    bulk_term_stiff_z: tuple[jnp.ndarray, ...] = ()
-    bulk_term_op_r: tuple[jnp.ndarray, ...] = ()
-    bulk_term_op_t: tuple[jnp.ndarray, ...] = ()
-    bulk_term_op_z: tuple[jnp.ndarray, ...] = ()
-    bulk_modal_basis_r: Optional[jnp.ndarray] = None
-    bulk_modal_basis_t: Optional[jnp.ndarray] = None
-    bulk_modal_basis_z: Optional[jnp.ndarray] = None
-    bulk_modal_mass_r: tuple[jnp.ndarray, ...] = ()
-    bulk_modal_mass_t: tuple[jnp.ndarray, ...] = ()
-    bulk_modal_mass_z: tuple[jnp.ndarray, ...] = ()
-    bulk_modal_stiff_r: tuple[jnp.ndarray, ...] = ()
-    bulk_modal_stiff_t: tuple[jnp.ndarray, ...] = ()
-    bulk_modal_stiff_z: tuple[jnp.ndarray, ...] = ()
-    bulk_modal_op_r: tuple[jnp.ndarray, ...] = ()
-    bulk_modal_op_t: tuple[jnp.ndarray, ...] = ()
-    bulk_modal_op_z: tuple[jnp.ndarray, ...] = ()
-    bulk_modal_denom: Optional[jnp.ndarray] = None
-    # Precomputed TRUNCATED pseudo-inverse of the modal denom: 1/denom where
-    # denom > pinv_tol*max(|denom|), else 0. Zeroing (rather than pseudo-inverting
-    # / floor-amplifying) the near-null modes avoids injecting the WRONG ζ-rank FD
-    # eigenvalue on the modes the separable model captures worst (helps free BC /
-    # strongly-shaped geometries, and keeps the cheb-L0 smoother from going
-    # indefinite below its spectral interval). When present, the apply multiplies
-    # by this instead of dividing by the floored denom.
-    bulk_modal_inv_denom: Optional[jnp.ndarray] = None
-    cp_relative_error: Optional[float] = None
-    cp_final_delta: Optional[float] = None
     # Whether the dense core<->bulk coupling block was precomputed at build
     # time (default yes). When ``core_coupling`` is present the apply replaces
     # the two matrix-free k=0 stiffness couplings (K_0 = G_0^T M_1 G_0, an M_1
@@ -614,25 +576,14 @@ class K0TensorHodgePreconditionerFactors(eqx.Module):
     # core (polar-axis) size is small, so the block is cheap to store and probe.
     precompute_coupling: bool = eqx.field(static=True, default=True)
     core_coupling: Optional[jnp.ndarray] = None
-    # Greville-collocation bulk inverse: when present, the bulk apply sandwiches
-    # the exact additive-FD inverse (_fd_apply_3d on UNWEIGHTED atoms, via
+    # Greville-collocation bulk inverse: the bulk apply sandwiches the exact
+    # additive-FD inverse (_fd_apply_3d on UNWEIGHTED atoms, via
     # bulk_V_*/bulk_lam_*/bulk_alpha) with this pointwise diagonal,
     # x -> D^{-1/2} fd_apply(D^{-1/2} x). D^{-1/2} = bulk_greville_inv_sqrt_D is
-    # the geometry weight collocated at the bulk 0-form Greville abscissae. This
-    # moves the (non-separable) metric into a diagonal and keeps the unweighted
-    # atoms sharing one exact per-axis eigenbasis -- sidestepping the rank>1
-    # Lynch-inexact / free-BC-stall failure of the CP-weighted FD path.
+    # the geometry weight collocated at the bulk 0-form Greville abscissae -- the
+    # non-separable metric becomes a diagonal while the unweighted atoms share one
+    # exact per-axis eigenbasis.
     bulk_greville_inv_sqrt_D: Optional[jnp.ndarray] = None
-    # Radial-dense bulk inverse (supersedes the diagonal Lynch denom for the
-    # bulk solve). When present, the bulk inverse diagonalises theta,zeta with the
-    # FD eigenbases (rank-1, measured harmless) and inverts an EXACT dense
-    # ``n_r x n_r`` radial block per (theta,zeta) mode -- capturing the radial
-    # mode-coupling the separable denom drops (the conditioning outlier). Shape
-    # ``(n_t, n_z, n_r, n_r)``: one precomputed radial-block inverse per angular
-    # mode. See docs/hiptmair_xu_preconditioner.md "Production radial-dense bulk
-    # inverse". Radial rank is a free accuracy knob (dense inversion -> no Lynch
-    # error); the only approximation is the rank-1 theta,zeta truncation.
-    bulk_radial_block_inv: Optional[jnp.ndarray] = None
 
 
 _EXTRACTION_OPERATOR_NAMES = (
@@ -1425,229 +1376,6 @@ def _sum_dense_matrices(matrices: tuple[jnp.ndarray, ...]) -> jnp.ndarray:
     return _symmetrize(total)
 
 
-def _batched_floored_spd_inverse(blocks: jnp.ndarray, rtol: float = 1e-12) -> jnp.ndarray:
-    """Batched symmetric inverse of ``blocks`` (shape ``(..., n, n)``) that deflates
-    near-null eigenvalues (``λ < rtol·λmax`` → inverse 0). The radial blocks are SPD
-    in the bulk (the constant nullspace lives in the core/surgery, not the bulk), so
-    this is a plain inverse in practice; the deflation is a safety net."""
-    sym = 0.5 * (blocks + jnp.swapaxes(blocks, -1, -2))
-    w, V = jnp.linalg.eigh(sym)
-    wmax = jnp.max(jnp.abs(w), axis=-1, keepdims=True)
-    inv_w = jnp.where(w > rtol * wmax, 1.0 / w, 0.0)
-    return jnp.einsum('...ij,...j,...kj->...ik', V, inv_w, V)
-
-
-def _assemble_k0_stiffness_fd_bulk_factors(
-        seq, *, dirichlet: bool, rank: int,
-        cp_maxiter: int, cp_tol: float, cp_ridge: float,
-        radial_dense: bool = False, pinv_tol: float = 1e-12):
-    """Build k=0 stiffness bulk factors via Lynch fast diagonalisation.
-
-    For k=0 the Hodge Laplacian equals the stiffness ``K_0 = G_0^T M_1 G_0``.
-    With a diagonal-metric assumption the bulk operator separates as
-    ``K_r⊗M_t⊗M_z + M_r⊗K_t⊗M_z + M_r⊗M_t⊗K_z`` with *different* metric
-    channels on the three summands:
-
-    - ``alpha_rr = J g^{rr}`` for ``K_r⊗M_t⊗M_z``
-    - ``alpha_thetatheta = J g^{θθ}`` for ``M_r⊗K_t⊗M_z``
-    - ``alpha_zetazeta = J g^{ζζ}`` for ``M_r⊗M_t⊗K_z``
-
-    Each channel is fit independently by greedy rank-r CP. The rank-1
-    leading terms define a per-axis Lynch FD basis ``V_a`` using a
-    reference mass assembled from the rank-1 masses carried by the *other*
-    two summands on that axis. All additive terms, including the leading
-    rank-1 ones, are then projected into this basis and only their
-    diagonal contributions are kept in the denominator. This matches the
-    requested per-channel assembly and keeps the apply at the same six
-    einsums regardless of rank.
-    """
-    bulk_shape = _bulk_tensor_shape(seq, dirichlet)
-    nr_bulk, _, _ = bulk_shape
-    types = seq.basis_0.types
-    g_r = _dense_incidence_1d(seq.basis_0.nr, types[0])
-    g_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
-    g_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
-
-    metric = _k0_stiffness_diagonal_metric_tensors(seq)
-    rr_terms, rr_rel_err, rr_final_delta = _greedy_cp_terms(
-        metric['alpha_rr'],
-        rank=rank,
-        cp_maxiter=cp_maxiter,
-        cp_tol=cp_tol,
-        cp_ridge=cp_ridge,
-    )
-    tt_terms, tt_rel_err, tt_final_delta = _greedy_cp_terms(
-        metric['alpha_thetatheta'],
-        rank=rank,
-        cp_maxiter=cp_maxiter,
-        cp_tol=cp_tol,
-        cp_ridge=cp_ridge,
-    )
-    zz_terms, zz_rel_err, zz_final_delta = _greedy_cp_terms(
-        metric['alpha_zetazeta'],
-        rank=rank,
-        cp_maxiter=cp_maxiter,
-        cp_tol=cp_tol,
-        cp_ridge=cp_ridge,
-    )
-
-    def _assemble_directional_term(term, direction: str):
-        radial_w = seq.quad.w_x * (term['scale'] * term['radial_factor'])
-        theta_w = seq.quad.w_y * term['theta_factor']
-        zeta_w = seq.quad.w_z * term['zeta_factor']
-
-        full_mass_r = _assemble_weighted_1d_mass(seq.basis_r_jk, radial_w)
-        mass_r = _restrict_radial_window(full_mass_r, radial_start=2, nr=nr_bulk)
-        mass_t = _assemble_weighted_1d_mass(seq.basis_t_jk, theta_w)
-        mass_z = _assemble_weighted_1d_mass(seq.basis_z_jk, zeta_w)
-
-        if direction == 'rr':
-            full_stiff_r = _assemble_weighted_1d_stiffness(
-                seq.basis_r_jk, seq.d_basis_r_jk, radial_w, g_r)
-            return {
-                'mass_r': mass_r,
-                'mass_t': mass_t,
-                'mass_z': mass_z,
-                'stiff_r': _restrict_radial_window(full_stiff_r, radial_start=2, nr=nr_bulk),
-            }
-        if direction == 'tt':
-            return {
-                'mass_r': mass_r,
-                'mass_t': mass_t,
-                'mass_z': mass_z,
-                'stiff_t': _assemble_weighted_1d_stiffness(
-                    seq.basis_t_jk, seq.d_basis_t_jk, theta_w, g_t),
-            }
-        if direction == 'zz':
-            return {
-                'mass_r': mass_r,
-                'mass_t': mass_t,
-                'mass_z': mass_z,
-                'stiff_z': _assemble_weighted_1d_stiffness(
-                    seq.basis_z_jk, seq.d_basis_z_jk, zeta_w, g_z),
-            }
-        raise ValueError(f"Unknown k=0 stiffness direction {direction!r}")
-
-    rr_data = tuple(_assemble_directional_term(term, 'rr') for term in rr_terms)
-    tt_data = tuple(_assemble_directional_term(term, 'tt') for term in tt_terms)
-    zz_data = tuple(_assemble_directional_term(term, 'zz') for term in zz_terms)
-
-    rr0 = rr_data[0]
-    tt0 = tt_data[0]
-    zz0 = zz_data[0]
-
-    ref_mass_r = _weighted_average_dense_matrix(
-        (tt0['mass_r'], zz0['mass_r']),
-        jnp.asarray([
-            jnp.linalg.norm(tt0['stiff_t']) * jnp.linalg.norm(tt0['mass_z']),
-            jnp.linalg.norm(zz0['mass_t']) * jnp.linalg.norm(zz0['stiff_z']),
-        ], dtype=jnp.float64),
-    )
-    ref_mass_t = _weighted_average_dense_matrix(
-        (rr0['mass_t'], zz0['mass_t']),
-        jnp.asarray([
-            jnp.linalg.norm(rr0['stiff_r']) * jnp.linalg.norm(rr0['mass_z']),
-            jnp.linalg.norm(zz0['mass_r']) * jnp.linalg.norm(zz0['stiff_z']),
-        ], dtype=jnp.float64),
-    )
-    ref_mass_z = _weighted_average_dense_matrix(
-        (rr0['mass_z'], tt0['mass_z']),
-        jnp.asarray([
-            jnp.linalg.norm(rr0['stiff_r']) * jnp.linalg.norm(rr0['mass_t']),
-            jnp.linalg.norm(tt0['mass_r']) * jnp.linalg.norm(tt0['stiff_t']),
-        ], dtype=jnp.float64),
-    )
-
-    # The rank-1 leading terms define the per-axis Lynch FD basis.
-    V_r, _ = _simultaneous_diagonalize_pair(ref_mass_r, rr0['stiff_r'])
-    V_t, _ = _simultaneous_diagonalize_pair(ref_mass_t, tt0['stiff_t'])
-    V_z, _ = _simultaneous_diagonalize_pair(ref_mass_z, zz0['stiff_z'])
-
-    denom = jnp.zeros(bulk_shape, dtype=jnp.float64)
-    term_op_r = []
-    term_op_t = []
-    term_op_z = []
-
-    for term in rr_data:
-        d_r = jnp.einsum("ji,jk,ki->i", V_r, term['stiff_r'], V_r)
-        d_t = jnp.einsum("ji,jk,ki->i", V_t, term['mass_t'], V_t)
-        d_z = jnp.einsum("ji,jk,ki->i", V_z, term['mass_z'], V_z)
-        denom = denom + d_r[:, None, None] * d_t[None, :, None] * d_z[None, None, :]
-        term_op_r.append(term['stiff_r'])
-        term_op_t.append(term['mass_t'])
-        term_op_z.append(term['mass_z'])
-
-    for term in tt_data:
-        d_r = jnp.einsum("ji,jk,ki->i", V_r, term['mass_r'], V_r)
-        d_t = jnp.einsum("ji,jk,ki->i", V_t, term['stiff_t'], V_t)
-        d_z = jnp.einsum("ji,jk,ki->i", V_z, term['mass_z'], V_z)
-        denom = denom + d_r[:, None, None] * d_t[None, :, None] * d_z[None, None, :]
-        term_op_r.append(term['mass_r'])
-        term_op_t.append(term['stiff_t'])
-        term_op_z.append(term['mass_z'])
-
-    for term in zz_data:
-        d_r = jnp.einsum("ji,jk,ki->i", V_r, term['mass_r'], V_r)
-        d_t = jnp.einsum("ji,jk,ki->i", V_t, term['mass_t'], V_t)
-        d_z = jnp.einsum("ji,jk,ki->i", V_z, term['stiff_z'], V_z)
-        denom = denom + d_r[:, None, None] * d_t[None, :, None] * d_z[None, None, :]
-        term_op_r.append(term['mass_r'])
-        term_op_t.append(term['mass_t'])
-        term_op_z.append(term['stiff_z'])
-
-    # TRUNCATED pseudo-inverse of the raw denom (computed BEFORE the legacy floor
-    # below): zero the inverse on modes with denom <= pinv_tol*max(|denom|) rather
-    # than (floor-)inverting them. On free BC / strongly-shaped geometries the
-    # near-null FD denom is both tiny AND the wrong (ζ-rank) eigenvalue; inverting
-    # it injects garbage, while zeroing leaves those modes to the (deflated) Krylov.
-    _cutoff = pinv_tol * jnp.max(jnp.abs(denom))
-    _keep = denom > _cutoff
-    inv_denom = jnp.where(_keep, 1.0 / jnp.where(_keep, denom, 1.0), 0.0)
-
-    # Floor near-kernel modes: under free BCs, K_0 has a constant-mode null
-    # space; the Schur surgery handles it, but the bulk denom may still touch
-    # zero. Under Dirichlet BCs the radial axis is clamped so denom is
-    # strictly positive, but we keep the floor for robustness. (Legacy fallback
-    # path -- used only when ``bulk_modal_inv_denom`` is absent.)
-    denom_floor = 1e-12 * jnp.max(jnp.abs(denom))
-    safe_floor = jnp.where(denom_floor > 0, denom_floor, 1.0)
-    denom = jnp.where(denom > safe_floor, denom, safe_floor)
-
-    # Radial-dense bulk inverse: keep theta,zeta diagonalised (V_t, V_z; rank-1)
-    # but assemble an EXACT dense n_r x n_r radial block per (theta,zeta) mode and
-    # store its inverse, instead of collapsing the radial axis to the scalar denom.
-    # B[j,k] = sum_terms (radial matrix) * diag(V_t^T A_t V_t)_j * diag(V_z^T A_z V_z)_k.
-    # Terms whose theta/zeta modal diagonal is ~0 (e.g. the odd cos(theta) harmonic)
-    # drop out automatically, so this fits the angular-DIAGONAL weight; the radial
-    # rank-2 (even-harmonic) coupling that the denom misses is captured exactly.
-    radial_block_inv = None
-    if radial_dense:
-        nr, nt, nz = bulk_shape
-        radial_blocks = jnp.zeros((nt, nz, nr, nr), dtype=jnp.float64)
-        for op_r, op_t, op_z in zip(term_op_r, term_op_t, term_op_z):
-            d_t = jnp.einsum("ji,jk,ki->i", V_t, op_t, V_t)   # (nt,)
-            d_z = jnp.einsum("ji,jk,ki->i", V_z, op_z, V_z)   # (nz,)
-            radial_blocks = radial_blocks + (
-                d_t[:, None, None, None] * d_z[None, :, None, None]
-                * op_r[None, None, :, :])
-        radial_block_inv = _batched_floored_spd_inverse(radial_blocks)
-
-    return {
-        'bulk_shape': bulk_shape,
-        'bulk_modal_basis_r': V_r,
-        'bulk_modal_basis_t': V_t,
-        'bulk_modal_basis_z': V_z,
-        'bulk_modal_denom': denom,
-        'bulk_modal_inv_denom': inv_denom,
-        'bulk_term_op_r': tuple(term_op_r),
-        'bulk_term_op_t': tuple(term_op_t),
-        'bulk_term_op_z': tuple(term_op_z),
-        'bulk_radial_block_inv': radial_block_inv,
-        'cp_relative_error': max(rr_rel_err, tt_rel_err, zz_rel_err),
-        'cp_final_delta': max(rr_final_delta, tt_final_delta, zz_final_delta),
-    }
-
-
 def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool,
                                        endpoint_eps: float = 1e-7):
     """Greville-collocation k=0 stiffness bulk factors (exact additive FD).
@@ -1658,10 +1386,10 @@ def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool,
     collocation scaling D^{-1/2} at the bulk 0-form Greville abscissae. The bulk
     apply then evaluates D^{-1/2} fd_apply(alpha, lam; D^{-1/2} .).
 
-    Unlike _assemble_k0_stiffness_fd_bulk_factors (CP-fit weighted atoms + a
-    product-form denom that is exact only at rank 1), this is exact additive FD
-    on a single common spatial weight -- the maximal exactly-invertible Greville
-    model -- so it never goes through the rank>1 OOM / free-BC stall path.
+    This is exact additive FD on a single common spatial weight -- the maximal
+    exactly-invertible Greville model -- and is the sole production k=0 Laplacian
+    atom (it replaced the CP-fit weighted-atom path, which was rank>1 OOM / free-BC
+    stall prone).
     """
     from mrx.geometry import compute_geometry_terms  # noqa: PLC0415
 
@@ -1739,138 +1467,17 @@ def _build_k0_tensor_hodge_preconditioner_factors(
         bulk_lam_r=bulk_data.get('bulk_lam_r'),
         bulk_lam_t=bulk_data.get('bulk_lam_t'),
         bulk_lam_z=bulk_data.get('bulk_lam_z'),
-        bulk_mass_r=bulk_data.get('bulk_mass_r'),
-        bulk_mass_t=bulk_data.get('bulk_mass_t'),
-        bulk_mass_z=bulk_data.get('bulk_mass_z'),
-        bulk_stiff_r=bulk_data.get('bulk_stiff_r'),
-        bulk_stiff_t=bulk_data.get('bulk_stiff_t'),
-        bulk_stiff_z=bulk_data.get('bulk_stiff_z'),
-        bulk_term_mass_r=bulk_data.get('bulk_term_mass_r', ()),
-        bulk_term_mass_t=bulk_data.get('bulk_term_mass_t', ()),
-        bulk_term_mass_z=bulk_data.get('bulk_term_mass_z', ()),
-        bulk_term_stiff_r=bulk_data.get('bulk_term_stiff_r', ()),
-        bulk_term_stiff_t=bulk_data.get('bulk_term_stiff_t', ()),
-        bulk_term_stiff_z=bulk_data.get('bulk_term_stiff_z', ()),
-        bulk_term_op_r=bulk_data.get('bulk_term_op_r', ()),
-        bulk_term_op_t=bulk_data.get('bulk_term_op_t', ()),
-        bulk_term_op_z=bulk_data.get('bulk_term_op_z', ()),
-        bulk_modal_basis_r=bulk_data.get('bulk_modal_basis_r'),
-        bulk_modal_basis_t=bulk_data.get('bulk_modal_basis_t'),
-        bulk_modal_basis_z=bulk_data.get('bulk_modal_basis_z'),
-        bulk_modal_mass_r=bulk_data.get('bulk_modal_mass_r', ()),
-        bulk_modal_mass_t=bulk_data.get('bulk_modal_mass_t', ()),
-        bulk_modal_mass_z=bulk_data.get('bulk_modal_mass_z', ()),
-        bulk_modal_stiff_r=bulk_data.get('bulk_modal_stiff_r', ()),
-        bulk_modal_stiff_t=bulk_data.get('bulk_modal_stiff_t', ()),
-        bulk_modal_stiff_z=bulk_data.get('bulk_modal_stiff_z', ()),
-        bulk_modal_op_r=bulk_data.get('bulk_modal_op_r', ()),
-        bulk_modal_op_t=bulk_data.get('bulk_modal_op_t', ()),
-        bulk_modal_op_z=bulk_data.get('bulk_modal_op_z', ()),
-        bulk_modal_denom=bulk_data.get('bulk_modal_denom'),
-        bulk_modal_inv_denom=bulk_data.get('bulk_modal_inv_denom'),
-        cp_relative_error=bulk_data.get('cp_relative_error'),
-        cp_final_delta=bulk_data.get('cp_final_delta'),
         precompute_coupling=precompute_coupling,
         core_coupling=core_coupling,
-        bulk_radial_block_inv=bulk_data.get('bulk_radial_block_inv'),
         bulk_greville_inv_sqrt_D=bulk_data.get('bulk_greville_inv_sqrt_D'),
     )
-
-
-def _apply_k0_tensor_hodge_bulk_shared_inverse(
-        factors: K0TensorHodgePreconditionerFactors,
-        rhs_b: jnp.ndarray) -> jnp.ndarray:
-    if factors.bulk_modal_basis_r is None or factors.bulk_modal_basis_t is None or factors.bulk_modal_basis_z is None:
-        raise ValueError("Missing shared modal basis for multi-rank k=0 tensor Hodge bulk inverse")
-
-    nr, nt, nz = factors.bulk_shape
-    modes = rhs_b.reshape(nr, nt, nz)
-    # Optional Greville sandwich: D^{-1/2} (...) D^{-1/2}. When present (radial_pencil_d),
-    # the pencil FD captures the radial profile in the basis and this pointwise diagonal
-    # captures the residual ANGULAR weight variation, collocated at the Greville points.
-    if factors.bulk_greville_inv_sqrt_D is not None:
-        modes = modes * factors.bulk_greville_inv_sqrt_D
-    modes = jnp.einsum('ji,jkl->ikl', factors.bulk_modal_basis_r, modes)
-    modes = jnp.einsum('ji,kjl->kil', factors.bulk_modal_basis_t, modes)
-    modes = jnp.einsum('ji,klj->kli', factors.bulk_modal_basis_z, modes)
-
-    # TRUNCATED pseudo-inverse fast path: multiply by the precomputed 1/denom
-    # (zeroed below pinv_tol*max), then back-transform. Replaces dividing by the
-    # floored denom (which inverts/floor-amplifies the near-null modes).
-    if factors.bulk_modal_inv_denom is not None:
-        modes = modes * factors.bulk_modal_inv_denom.astype(rhs_b.dtype)
-        modes = jnp.einsum('ij,jkl->ikl', factors.bulk_modal_basis_r, modes)
-        modes = jnp.einsum('ij,kjl->kil', factors.bulk_modal_basis_t, modes)
-        modes = jnp.einsum('ij,klj->kli', factors.bulk_modal_basis_z, modes)
-        if factors.bulk_greville_inv_sqrt_D is not None:
-            modes = modes * factors.bulk_greville_inv_sqrt_D
-        return modes.reshape(-1)
-
-    if factors.bulk_modal_denom is not None:
-        denom = factors.bulk_modal_denom.astype(rhs_b.dtype)
-    elif len(factors.bulk_modal_op_r) > 0:
-        denom = jnp.zeros((nr, nt, nz), dtype=rhs_b.dtype)
-        for op_r, op_t, op_z in zip(
-                factors.bulk_modal_op_r,
-                factors.bulk_modal_op_t,
-                factors.bulk_modal_op_z):
-            denom = denom + op_r[:, None, None] * op_t[None, :, None] * op_z[None, None, :]
-    else:
-        denom = jnp.zeros((nr, nt, nz), dtype=rhs_b.dtype)
-        for stiff_r, mass_r, stiff_t, mass_t, stiff_z, mass_z in zip(
-                factors.bulk_modal_stiff_r,
-                factors.bulk_modal_mass_r,
-                factors.bulk_modal_stiff_t,
-                factors.bulk_modal_mass_t,
-                factors.bulk_modal_stiff_z,
-                factors.bulk_modal_mass_z):
-            denom = denom + (
-                stiff_r[:, None, None] * mass_t[None, :, None] * mass_z[None, None, :]
-                + mass_r[:, None, None] * stiff_t[None, :, None] * mass_z[None, None, :]
-                + mass_r[:, None, None] * mass_t[None, :, None] * stiff_z[None, None, :]
-            )
-
-    denom_floor = 1e-12 * jnp.max(jnp.abs(denom))
-    safe_floor = jnp.where(denom_floor > 0, denom_floor, 1.0)
-    safe_denom = jnp.where(denom > safe_floor, denom, safe_floor)
-    modes = modes / safe_denom
-
-    modes = jnp.einsum('ij,jkl->ikl', factors.bulk_modal_basis_r, modes)
-    modes = jnp.einsum('ij,kjl->kil', factors.bulk_modal_basis_t, modes)
-    modes = jnp.einsum('ij,klj->kli', factors.bulk_modal_basis_z, modes)
-    return modes.reshape(-1)
-
-
-def _apply_k0_tensor_hodge_bulk_radial_dense(
-        factors: K0TensorHodgePreconditionerFactors,
-        rhs_b: jnp.ndarray) -> jnp.ndarray:
-    """Radial-dense bulk inverse: diagonalise theta,zeta (FD eigenbases V_t, V_z;
-    forward V^T, back V) and apply the precomputed dense radial-block inverse per
-    (theta,zeta) mode. Symmetric (W blockdiag W^T form). All einsum + one batched
-    matvec -- the GPU-native form."""
-    nr, nt, nz = factors.bulk_shape
-    V_t = factors.bulk_modal_basis_t
-    V_z = factors.bulk_modal_basis_z
-    b_inv = factors.bulk_radial_block_inv                 # (nt, nz, nr, nr)
-    r = rhs_b.reshape(nr, nt, nz)
-    y = jnp.einsum('tj,zk,rtz->rjk', V_t, V_z, r)         # to angular eigenbasis (V^T)
-    z = jnp.einsum('jkrs,sjk->rjk', b_inv, y)             # dense radial solve per (j,k)
-    x = jnp.einsum('tj,zk,rjk->rtz', V_t, V_z, z)         # back to coefficients (V)
-    return x.reshape(-1)
 
 
 def _apply_k0_tensor_hodge_bulk_inverse(
         factors: K0TensorHodgePreconditionerFactors,
         rhs_b: jnp.ndarray) -> jnp.ndarray:
-    if factors.bulk_radial_block_inv is not None:
-        return _apply_k0_tensor_hodge_bulk_radial_dense(factors, rhs_b)
-    if factors.bulk_modal_basis_r is not None:
-        return _apply_k0_tensor_hodge_bulk_shared_inverse(factors, rhs_b)
-
-    tensor = rhs_b.reshape(factors.bulk_shape)
     # Greville sandwich: D^{-1/2} (exact unweighted-atom FD inverse) D^{-1/2}.
-    if factors.bulk_greville_inv_sqrt_D is not None:
-        tensor = tensor * factors.bulk_greville_inv_sqrt_D
+    tensor = rhs_b.reshape(factors.bulk_shape) * factors.bulk_greville_inv_sqrt_D
     out = _fd_apply_3d(
         factors.bulk_V_r,
         factors.bulk_V_t,
@@ -1882,76 +1489,7 @@ def _apply_k0_tensor_hodge_bulk_inverse(
         tensor,
         eps=0.0,
     )
-    if factors.bulk_greville_inv_sqrt_D is not None:
-        out = out * factors.bulk_greville_inv_sqrt_D
-    return out.reshape(-1)
-
-
-def _apply_k0_tensor_hodge_bulk_forward(
-        factors: K0TensorHodgePreconditionerFactors,
-        rhs_b: jnp.ndarray) -> jnp.ndarray:
-    if len(factors.bulk_term_op_r) > 0:
-        tensor = rhs_b.reshape(factors.bulk_shape)
-        out = jnp.zeros_like(tensor)
-        for op_r, op_t, op_z in zip(
-                factors.bulk_term_op_r,
-                factors.bulk_term_op_t,
-                factors.bulk_term_op_z):
-            term = jnp.einsum('ij,jkl->ikl', op_r, tensor)
-            term = jnp.einsum('ij,kjl->kil', op_t, term)
-            term = jnp.einsum('ij,klj->kli', op_z, term)
-            out = out + term
-        return out.reshape(-1)
-
-    term_mass_r = factors.bulk_term_mass_r
-    term_mass_t = factors.bulk_term_mass_t
-    term_mass_z = factors.bulk_term_mass_z
-    term_stiff_r = factors.bulk_term_stiff_r
-    term_stiff_t = factors.bulk_term_stiff_t
-    term_stiff_z = factors.bulk_term_stiff_z
-
-    if len(term_mass_r) == 0:
-        if any(matrix is None for matrix in (
-                factors.bulk_mass_r,
-                factors.bulk_mass_t,
-                factors.bulk_mass_z,
-                factors.bulk_stiff_r,
-                factors.bulk_stiff_t,
-                factors.bulk_stiff_z)):
-            raise ValueError("Missing stored bulk matrices for k=0 tensor Hodge forward model")
-        term_mass_r = (factors.bulk_mass_r,)
-        term_mass_t = (factors.bulk_mass_t,)
-        term_mass_z = (factors.bulk_mass_z,)
-        term_stiff_r = (factors.bulk_stiff_r,)
-        term_stiff_t = (factors.bulk_stiff_t,)
-        term_stiff_z = (factors.bulk_stiff_z,)
-
-    if not (len(term_mass_r) == len(term_mass_t) == len(term_mass_z) == len(term_stiff_r) == len(term_stiff_t) == len(term_stiff_z)):
-        raise ValueError("Missing stored bulk matrices for k=0 tensor Hodge forward model")
-
-    tensor = rhs_b.reshape(factors.bulk_shape)
-    out = jnp.zeros_like(tensor)
-    for mass_r, mass_t, mass_z, stiff_r, stiff_t, stiff_z in zip(
-            term_mass_r,
-            term_mass_t,
-            term_mass_z,
-            term_stiff_r,
-            term_stiff_t,
-            term_stiff_z):
-        term = jnp.einsum('ij,jkl->ikl', stiff_r, tensor)
-        term = jnp.einsum('ij,kjl->kil', mass_t, term)
-        term = jnp.einsum('ij,klj->kli', mass_z, term)
-        out = out + term
-
-        term = jnp.einsum('ij,jkl->ikl', mass_r, tensor)
-        term = jnp.einsum('ij,kjl->kil', stiff_t, term)
-        term = jnp.einsum('ij,klj->kli', mass_z, term)
-        out = out + term
-
-        term = jnp.einsum('ij,jkl->ikl', mass_r, tensor)
-        term = jnp.einsum('ij,kjl->kil', mass_t, term)
-        term = jnp.einsum('ij,klj->kli', stiff_z, term)
-        out = out + term
+    out = out * factors.bulk_greville_inv_sqrt_D
     return out.reshape(-1)
 
 
@@ -1996,29 +1534,13 @@ def _apply_k0_tensor_hodge_bulk_to_surgery_coupling(
 
 def _assemble_k0_tensor_hodge_preconditioner(
         seq, operators: SequenceOperators, *,
-        rank: int, cp_maxiter: int, cp_tol: float, cp_ridge: float,
         precompute_coupling: bool = True,
-        radial_dense: bool = False,
-        pinv_tol: float = 1e-12,
-        greville: bool = False,
         dirichlet_flags: tuple[bool, ...] = (False, True)) -> BoundaryConditionPair:
     pair = BoundaryConditionPair()
     core_size = _core_size(seq)
 
     for dirichlet in dirichlet_flags:
-        if greville:
-            bulk_data = _assemble_k0_greville_bulk_factors(seq, dirichlet=dirichlet)
-        else:
-            bulk_data = _assemble_k0_stiffness_fd_bulk_factors(
-                seq,
-                dirichlet=dirichlet,
-                rank=rank,
-                cp_maxiter=cp_maxiter,
-                cp_tol=cp_tol,
-                cp_ridge=cp_ridge,
-                radial_dense=radial_dense,
-                pinv_tol=pinv_tol,
-            )
+        bulk_data = _assemble_k0_greville_bulk_factors(seq, dirichlet=dirichlet)
 
         bulk_factors = _build_k0_tensor_hodge_preconditioner_factors(
             core_size=core_size,
@@ -2116,40 +1638,6 @@ def _apply_k0_tensor_hodge_preconditioner(
     return jnp.concatenate([z, x_b])
 
 
-def _apply_k0_tensor_hodge_forward_model(
-        seq,
-        operators: SequenceOperators,
-        rhs: jnp.ndarray,
-        *,
-        dirichlet: bool) -> jnp.ndarray:
-    pair = operators.k0_tensor_hodge_precond
-    if pair is None:
-        raise ValueError('Tensor Hodge forward model k=0 is not assembled')
-    factors = select_boundary_data(pair, dirichlet, 'Tensor Hodge k=0')
-    core_size = factors.core_size
-    rhs_c = rhs[:core_size]
-    rhs_b = rhs[core_size:]
-    out_c = _apply_k0_tensor_hodge_core_block(
-        seq,
-        operators,
-        core_size,
-        rhs_c,
-        dirichlet=dirichlet,
-    ) + _apply_k0_tensor_hodge_bulk_to_surgery_coupling(
-        seq,
-        operators,
-        core_size,
-        rhs_b,
-        dirichlet=dirichlet,
-    )
-    out_b = _apply_k0_tensor_hodge_surgery_to_bulk_coupling(
-        seq,
-        operators,
-        core_size,
-        rhs_c,
-        dirichlet=dirichlet,
-    ) + _apply_k0_tensor_hodge_bulk_forward(factors, rhs_b)
-    return jnp.concatenate([out_c, out_b])
 # TODO: remove when assembly files are gone
 def _assemble_mass_block(seq, geometry, k):
     if k not in (0, 1, 2, 3):
@@ -3251,13 +2739,7 @@ def assemble_tensor_laplacian_preconditioner(
     """
     operators = _ensure_extraction_operators(seq, operators)
     cp_kwargs = {} if cp_kwargs is None else dict(cp_kwargs)
-    cp_maxiter = cp_kwargs.get("maxiter")
-    cp_tol = cp_kwargs.get("tol")
-    cp_ridge = cp_kwargs.get("ridge")
     precompute_coupling = bool(cp_kwargs.get("precompute_coupling", True))
-    radial_dense = bool(cp_kwargs.get("radial_dense", False))
-    pinv_tol = float(cp_kwargs.get("pinv_tol", 1e-12))
-    greville = bool(cp_kwargs.get("greville", False))
 
     for k in ks:
         if k != 0:
@@ -3270,38 +2752,10 @@ def assemble_tensor_laplacian_preconditioner(
     if _incidence_components(operators, 0)[0] is None:
         operators = update_incidence_operator(seq, operators, 0)
 
-    cfg_rank, cfg_maxiter, cfg_tol, cfg_ridge = _k0_tensor_hodge_config(
-        operators,
-        rank=rank,
-        cp_maxiter=cp_maxiter,
-        cp_tol=cp_tol,
-        cp_ridge=cp_ridge,
-    )
-    # Production rank policy for the k=0 Laplacian atom: rank 1 (separable FD)
-    # ONLY. rank>1 separable FD OOMs via the near-axis radial outlier, and the
-    # rank=2 radial_dense ("1-1-dense r") variant -- while spectrally well
-    # conditioned -- stalls a deep free-BC CG at ~1e-6 on curved geometries
-    # (its dense per-mode block inverse mishandles the constant nullspace; see
-    # docs/hiptmair_xu_preconditioner.md). Until that is root-caused the Laplacian
-    # atom is constrained to rank 1. (radial_dense remains reachable only via an
-    # explicit cp_kwargs override for diagnostics.)
-    if not greville and cfg_rank != 1:
-        raise ValueError(
-            "k=0 tensor Laplacian preconditioner is constrained to rank 1 "
-            f"(separable FD); got rank={cfg_rank}. The rank=2 radial_dense path "
-            "is not free-BC safe in a deep CG solve -- see "
-            "docs/hiptmair_xu_preconditioner.md.")
     tensor_precond = _assemble_k0_tensor_hodge_preconditioner(
         seq,
         operators,
-        rank=cfg_rank,
-        cp_maxiter=cfg_maxiter,
-        cp_tol=cfg_tol,
-        cp_ridge=cfg_ridge,
         precompute_coupling=precompute_coupling,
-        radial_dense=radial_dense,
-        pinv_tol=pinv_tol,
-        greville=greville,
     )
     return eqx.tree_at(
         lambda ops: ops.k0_tensor_hodge_precond,
@@ -5242,7 +4696,7 @@ def _set_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool, di
     )
 
 
-_SCHUR_DIAG_MODES = ('tensor_probe', 'exact_probe', 'diag')
+_SCHUR_DIAG_MODES = ('tensor_probe',)
 
 
 def _coerce_schur_diag_mode(spec: MassPreconditionerSpec, *, context: str) -> str:
@@ -5260,54 +4714,23 @@ def _build_schur_probe_apply(
         k: int, dirichlet: bool, eps: float,
         mode: str,
         saddle_preconditioner: SaddlePointPreconditionerSpec):
-    if mode == 'tensor_probe':
-        if not _tensor_available(seq, operators, k - 1):
-            raise ValueError(
-                f"schur_diag_mode='tensor_probe' requires an assembled tensor "
-                f"schur.inner at k={k - 1}"
-            )
-        return _build_schur_apply_from_saddle_preconditioner(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            eps=eps,
-            saddle_preconditioner=saddle_preconditioner,
+    if mode != 'tensor_probe':
+        raise ValueError(
+            f"Unsupported Schur diagonal probe mode {mode!r}; "
+            f"expected one of {_SCHUR_DIAG_MODES}"
         )
-
-    if mode == 'exact_probe':
-        exact_lower = lambda rhs: apply_inverse_mass_matrix(
-            seq,
-            operators,
-            rhs,
-            k - 1,
-            dirichlet=dirichlet,
-            preconditioner='jacobi',
+    if not _tensor_available(seq, operators, k - 1):
+        raise ValueError(
+            f"schur_diag_mode='tensor_probe' requires an assembled tensor "
+            f"schur.inner at k={k - 1}"
         )
-        return _build_schur_operator_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            eps=eps,
-            inner_preconditioner_apply=exact_lower,
-        )
-
-    if mode == 'diag':
-        lower_diaginv = _mass_diaginv(seq, operators, k - 1, dirichlet)
-        lower_diag_apply = lambda rhs, d=lower_diaginv: d * rhs
-        return _build_schur_operator_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            eps=eps,
-            inner_preconditioner_apply=lower_diag_apply,
-        )
-
-    raise ValueError(
-        f"Unsupported Schur diagonal probe mode {mode!r}; "
-        f"expected one of {_SCHUR_DIAG_MODES}"
+    return _build_schur_apply_from_saddle_preconditioner(
+        seq,
+        operators,
+        k=k,
+        dirichlet=dirichlet,
+        eps=eps,
+        saddle_preconditioner=saddle_preconditioner,
     )
 
 
@@ -5325,14 +4748,6 @@ def _build_schur_outer_jacobi_diaginv(
         stored_diaginv = _get_schur_diaginv(operators, k, dirichlet, mode)
         if stored_diaginv is not None:
             return stored_diaginv
-
-    if mode == 'exact_probe':
-        warnings.warn(
-            "schur_diag_mode='exact_probe' estimates the Schur Jacobi diagonal "
-            "by repeated exact lower mass solves; this is setup-heavy and intended "
-            "as a reference path",
-            stacklevel=2,
-        )
 
     probe_apply = _build_schur_probe_apply(
         seq,

@@ -2517,8 +2517,10 @@ def build_mass_tensor_preconditioner(
     bulk_schur = bool(cp_kwargs.get("bulk_schur", False))
     # Greville collocation: replace the per-component CP-fit bulk factors with the
     # unweighted-atom + pointwise-D sandwich (built by _build_greville_mass_block_factors).
-    # The surgery/Schur envelope and the apply path are unchanged.
-    greville = bool(cp_kwargs.get("greville", False))
+    # The surgery/Schur envelope and the apply path are unchanged. Greville is now the
+    # ONLY mass bulk path (the CP `else` branches below are unreachable dead code,
+    # retained pending a cosmetic cleanup; the shared CP core stays for the stiffness).
+    greville = True
 
     reuse_existing = (
         existing is not None

@@ -14,7 +14,7 @@ Two upper-block preconditioners are compared. The script can run either on
 the condensed operator (CG) or on the full saddle-point system (MINRES):
 
 * ``jacobi (diag)`` -- the current production best: the Schur-outer Jacobi
-                    preconditioner assembled with ``schur_diag_mode='diag'``
+                    preconditioner assembled with ``schur_diag_mode='tensor_probe'``
                     (rank-independent ``diag(M_0)^{-1}`` inner probe). A single
                     stored diagonal multiply. Pairs with the tensor inner that
                     ``A`` already bakes in, i.e. "jacobi outer + tensor inner".
@@ -1692,7 +1692,7 @@ def assemble_operators(
                 operators=o,
                 ks=schur_ks,
                 dirichlet_variants=schur_bc,
-                schur_diag_mode='diag',
+                schur_diag_mode='tensor_probe',
             ),
             ops,
         )
