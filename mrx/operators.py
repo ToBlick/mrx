@@ -633,19 +633,6 @@ class K0TensorHodgePreconditionerFactors(eqx.Module):
     # inverse". Radial rank is a free accuracy knob (dense inversion -> no Lynch
     # error); the only approximation is the rank-1 theta,zeta truncation.
     bulk_radial_block_inv: Optional[jnp.ndarray] = None
-    # Radial-Sylvester bulk inverse (structured-exact, supersedes radial_dense).
-    # Co-diagonalises the two shared-profile channels (rr,zz ~ r) with the radial
-    # pencil V_r, leaving the odd channel (theta ~ 1/r) as one dense matrix Mtil.
-    # Per zeta-mode k the radial block S_{jk}=diag(lam_A_r+lam_z[k])+lam_t[j] Mtil
-    # is diagonalised for ALL theta-modes j at once via the symmetric eig
-    # G^{(k)}=Mtil^{-1/2} D^{(k)} Mtil^{-1/2}=Q_k diag(g_k) Q_k^T, giving
-    # S_{jk}^{-1}=P_k diag(1/(g_k+lam_t[j])) P_k^T with P_k=Mtil^{-1/2} Q_k.
-    # Pivoting on the SPD Mtil (never singular) isolates the global null mode to a
-    # single (g+lam)~0 entry, deflated cleanly -- the robust fix for the dense-pinv
-    # radial_dense free-BC/curved failure. Stored: P (n_z,n_r,n_r), g (n_z,n_r);
-    # uses bulk_modal_basis_r/t/z = V_r,V_t,V_z and bulk_lam_t. See preconditioner_plan.md D1.
-    bulk_sylvester_P: Optional[jnp.ndarray] = None
-    bulk_sylvester_g: Optional[jnp.ndarray] = None
 
 
 _EXTRACTION_OPERATOR_NAMES = (
@@ -1662,9 +1649,6 @@ def _assemble_k0_stiffness_fd_bulk_factors(
 
 
 def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool,
-                                       d_mode: str = "geomean",
-                                       weight_mode: str = "combined",
-                                       alpha_reduce: str = "arith",
                                        endpoint_eps: float = 1e-7):
     """Greville-collocation k=0 stiffness bulk factors (exact additive FD).
 
@@ -1715,54 +1699,19 @@ def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool,
     a_rr = jac * minv[:, 0, 0].reshape(nr_bulk, nt, nz)
     a_tt = jac * minv[:, 1, 1].reshape(nr_bulk, nt, nz)
     a_zz = jac * minv[:, 2, 2].reshape(nr_bulk, nt, nz)
-    if weight_mode == "pair_d":
-        # alpha_rr and alpha_zetazeta share the radial profile (~r); alpha_thetatheta
-        # is the odd one out (~1/r). Use D = sqrt(a_rr a_zz) so the rr and zetazeta
-        # terms are SPATIALLY EXACT (up to the angular residual) and only the theta
-        # term is badly approximated (off by ~r^2 in shape), instead of the geomean's
-        # r^{1/3} that is wrong for all three. See docs/preconditioner_plan.md D0.
-        D = jnp.sqrt(a_rr * a_zz)
-    else:
-        D = jnp.cbrt(a_rr * a_tt * a_zz) if d_mode == "geomean" else jac
+    # D = geometric mean across the three channel weights (the minimax-balanced
+    # common spatial weight). See docs/preconditioner_plan.md D/E.
+    D = jnp.cbrt(a_rr * a_tt * a_zz)
     valid = jnp.isfinite(D) & (D > 0)
     scale = jnp.median(D[valid]) if int(valid.sum()) > 0 else jnp.asarray(1.0)
     D = jnp.where(valid, D, scale)
-    # The directional constants alpha_a reduce a spatial ratio e_a = alpha_aa/D to
-    # one number. alpha_a does NOT change channel a's own spectral spread (a scalar
-    # cancels in max e/min e); it only sets where channel a sits relative to the
-    # others. Candidate reductions of the (multiplicative) field e_a:
-    #  - "arith":   <e_a>             (linear-average; weights large/near-axis values)
-    #  - "geom":    exp<log e_a>      (log-average)
-    #  - "minimax": sqrt(max e_a min e_a)  (geometric centre of the EXTREMES -> the
-    #               error interval e_a/alpha_a is log-symmetric about 1; the
-    #               condition-optimal centring, distribution-independent).
-    # Empirically (2026-06-27) arith wins for the combined-D (mild spread); geom/minimax
-    # help only when one channel has a large irreducible spread (e.g. pair_d theta).
+    # alpha_a = arithmetic mean of alpha_aa/D (the only reduction robust on shaped
+    # geometries; geom/minimax break on W7-X outliers). See preconditioner_plan.md E.
     def _reduce(x):
         xv = x[jnp.isfinite(x) & (x > 0)]
-        if alpha_reduce == "arith":
-            return jnp.mean(xv)
-        if alpha_reduce == "geom":
-            return jnp.exp(jnp.mean(jnp.log(xv)))
-        if alpha_reduce == "minimax":
-            return jnp.sqrt(jnp.max(xv) * jnp.min(xv))
-        raise ValueError(f"unknown alpha_reduce {alpha_reduce!r}")
+        return jnp.mean(xv)
 
-    # Ablation of the two FD-compatible degrees of freedom:
-    #  - "combined": common spatial weight D (geomean of all 3) AND three constants.
-    #  - "pair_d":   common spatial weight D = sqrt(a_rr a_zz) (the shared-profile
-    #                pair) AND three constants; rr,zz spatially exact, theta wrong.
-    #  - "spatial":  common spatial weight D only (directions equal, alpha=1).
-    #  - "constant": three constants only (no spatial weight, D=1).
-    if weight_mode == "spatial":
-        alpha = jnp.ones((3,), dtype=jnp.float64)
-    elif weight_mode == "constant":
-        alpha = jnp.asarray([_reduce(a_rr), _reduce(a_tt), _reduce(a_zz)], dtype=jnp.float64)
-        D = jnp.ones_like(D)
-    elif weight_mode in ("combined", "pair_d"):
-        alpha = jnp.asarray([_reduce(a_rr / D), _reduce(a_tt / D), _reduce(a_zz / D)], dtype=jnp.float64)
-    else:
-        raise ValueError(f"unknown weight_mode {weight_mode!r}")
+    alpha = jnp.asarray([_reduce(a_rr / D), _reduce(a_tt / D), _reduce(a_zz / D)], dtype=jnp.float64)
 
     return {
         "bulk_shape": bulk_shape,
@@ -1770,231 +1719,6 @@ def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool,
         "bulk_lam_r": lam_r, "bulk_lam_t": lam_t, "bulk_lam_z": lam_z,
         "bulk_alpha": alpha,
         "bulk_greville_inv_sqrt_D": 1.0 / jnp.sqrt(D),
-    }
-
-
-def _batched_spd_pinv(blocks: jnp.ndarray, rtol: float = 1e-10) -> jnp.ndarray:
-    """Batched symmetric pseudo-inverse: per (...,n,n) block, ZERO eigenvalues
-    below ``rtol*max`` (clean null deflation) rather than floor-inverting them.
-
-    The old radial-dense path floor-inverted near-null modes, which injected a
-    huge spurious component along the constant on free BC and stalled CG at
-    ~1e-6. Zeroing the null direction is the correct deflation -- the outer CG
-    removes the global constant via its nullspace projection anyway.
-    """
-    n = blocks.shape[-1]
-    flat = blocks.reshape(-1, n, n)
-
-    def pinv_one(A):
-        A = 0.5 * (A + A.T)
-        w, V = jnp.linalg.eigh(A)
-        keep = w > rtol * jnp.max(jnp.abs(w))
-        inv_w = jnp.where(keep, 1.0 / jnp.where(keep, w, 1.0), 0.0)
-        return (V * inv_w) @ V.T
-
-    return jax.vmap(pinv_one)(flat).reshape(blocks.shape)
-
-
-def _assemble_k0_greville_radial_dense_bulk_factors(seq, *, dirichlet: bool,
-                                                    pinv_rtol: float = 1e-10):
-    """Greville radial-dense k=0 stiffness bulk: FD in theta,zeta; dense in r.
-
-    Diagonalises theta,zeta with the UNWEIGHTED angular atoms (one shared basis
-    for all three terms), and keeps r FULLY DENSE so each term carries its OWN
-    radial weight profile rho_a(r) = angular-mean of alpha_aa at the radial quad
-    points. This captures the per-channel radial divergence EXACTLY (alpha_rr ~ r
-    vs alpha_thetatheta ~ 1/r) -- the irreducible residual that a single common
-    spatial weight cannot represent. Per angular mode (j,k) the dense block is
-
-        B[j,k] = K_r[rho_rr] + lam_t[j] M_r[rho_thetatheta] + lam_z[k] M_r[rho_zetazeta],
-
-    inverted by an eigen-pseudo-inverse with clean null deflation. The angular
-    weight variation (theta,zeta dependence of alpha) is the dropped residual
-    (small on a toroid; the W7-X zeta coupling is the separate hard part). Uses
-    the existing _apply_k0_tensor_hodge_bulk_radial_dense apply path.
-    """
-    bulk_shape = _bulk_tensor_shape(seq, dirichlet)
-    nr, nt, nz = (int(s) for s in bulk_shape)
-    types = seq.basis_0.types
-    g_r = _dense_incidence_1d(seq.basis_0.nr, types[0])
-    g_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
-    g_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
-
-    # Unweighted angular FD (shared basis for all terms on theta, zeta).
-    M_t = _assemble_unweighted_1d_mass(seq.basis_t_jk, seq.quad.w_y)
-    M_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
-    K_t = _assemble_weighted_1d_stiffness(seq.basis_t_jk, seq.d_basis_t_jk, seq.quad.w_y, g_t)
-    K_z = _assemble_weighted_1d_stiffness(seq.basis_z_jk, seq.d_basis_z_jk, seq.quad.w_z, g_z)
-    V_t, lam_t = _assemble_1d_fd_eigendecomp(M_t, K_t)
-    V_z, lam_z = _assemble_1d_fd_eigendecomp(M_z, K_z)
-
-    # Per-channel radial profiles (angular-mean of the metric at radial quad pts).
-    # Quad tensor layout is (ny,nx,nz) = (theta, r, zeta); mean over (theta,zeta).
-    metric = _k0_stiffness_diagonal_metric_tensors(seq)
-    rho_rr = jnp.mean(metric["alpha_rr"], axis=(0, 2))
-    rho_tt = jnp.mean(metric["alpha_thetatheta"], axis=(0, 2))
-    rho_zz = jnp.mean(metric["alpha_zetazeta"], axis=(0, 2))
-    K_r_rr = _restrict_radial_window(
-        _assemble_weighted_1d_stiffness(seq.basis_r_jk, seq.d_basis_r_jk, seq.quad.w_x * rho_rr, g_r), 2, nr)
-    M_r_tt = _restrict_radial_window(
-        _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * rho_tt), 2, nr)
-    M_r_zz = _restrict_radial_window(
-        _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * rho_zz), 2, nr)
-
-    # Dense radial block per angular mode (j,k) -> (nt, nz, nr, nr).
-    blocks = (K_r_rr[None, None, :, :]
-              + lam_t[:, None, None, None] * M_r_tt[None, None, :, :]
-              + lam_z[None, :, None, None] * M_r_zz[None, None, :, :])
-    block_inv = _batched_spd_pinv(blocks, pinv_rtol)
-
-    return {
-        "bulk_shape": bulk_shape,
-        "bulk_modal_basis_t": V_t,
-        "bulk_modal_basis_z": V_z,
-        "bulk_radial_block_inv": block_inv,
-    }
-
-
-def _assemble_k0_greville_radial_pencil_bulk_factors(seq, *, dirichlet: bool,
-                                                     pinv_rtol: float = 1e-10):
-    """Greville radial-PENCIL k=0 stiffness bulk: exact FD with a radially-weighted basis.
-
-    The radial direction carries three different weights -- K_r[rho_rr] (~r),
-    M_r[rho_thetatheta] (~1/r), M_r[rho_zetazeta] (~r) -- which cannot all share a
-    single generalised-eigen pencil (forced-dense, see docs/preconditioner_plan.md
-    D2/D3). But alpha_rr and alpha_zetazeta share the SAME radial power (~r), so the
-    pencil (K_r[rho_rr], M_r[rho_zetazeta]) diagonalises the rr and zetazeta channels
-    EXACTLY. The leftover thetatheta channel M_r[rho_thetatheta] is not diagonal in
-    that basis; we keep only its diagonal B_i = diag(V_r^T M_r[rho_tt] V_r) -- a
-    per-radial-mode coefficient (not a scalar like grev-const). The denominator is
-
-        denom[i,j,k] = lam_r[i] + B_i * lam_t[j] + lam_z[k],
-
-    an exact additive scalar form -> the SAME 6-einsum apply as grev-const (shared
-    modal-basis path), zero extra apply cost. SPD by construction (lam_r,lam_t,lam_z
-    >= 0; B_i > 0 as a diagonal of an SPD matrix), so no dense block / no pinv null
-    deflation -- the radial-dense free-BC fragility cannot occur. Drops the ANGULAR
-    weight variation (like radial-dense); good where that is small (cylinder ~0%,
-    toroid ~24%), not on W7-X (~60%, see D3).
-    """
-    bulk_shape = _bulk_tensor_shape(seq, dirichlet)
-    nr, nt, nz = (int(s) for s in bulk_shape)
-    types = seq.basis_0.types
-    g_r = _dense_incidence_1d(seq.basis_0.nr, types[0])
-    g_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
-    g_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
-
-    # Unweighted angular FD (shared basis for all terms on theta, zeta).
-    M_t = _assemble_unweighted_1d_mass(seq.basis_t_jk, seq.quad.w_y)
-    M_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
-    K_t = _assemble_weighted_1d_stiffness(seq.basis_t_jk, seq.d_basis_t_jk, seq.quad.w_y, g_t)
-    K_z = _assemble_weighted_1d_stiffness(seq.basis_z_jk, seq.d_basis_z_jk, seq.quad.w_z, g_z)
-    V_t, lam_t = _assemble_1d_fd_eigendecomp(M_t, K_t)
-    V_z, lam_z = _assemble_1d_fd_eigendecomp(M_z, K_z)
-
-    # Per-channel radial profiles (angular-mean of the metric at radial quad pts).
-    metric = _k0_stiffness_diagonal_metric_tensors(seq)
-    rho_rr = jnp.mean(metric["alpha_rr"], axis=(0, 2))
-    rho_tt = jnp.mean(metric["alpha_thetatheta"], axis=(0, 2))
-    rho_zz = jnp.mean(metric["alpha_zetazeta"], axis=(0, 2))
-    K_r_rr = _restrict_radial_window(
-        _assemble_weighted_1d_stiffness(seq.basis_r_jk, seq.d_basis_r_jk, seq.quad.w_x * rho_rr, g_r), 2, nr)
-    M_r_tt = _restrict_radial_window(
-        _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * rho_tt), 2, nr)
-    M_r_zz = _restrict_radial_window(
-        _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * rho_zz), 2, nr)
-
-    # Pencil (K_r[rho_rr], M_r[rho_zz]): V_r^T M_r_zz V_r = I, V_r^T K_r_rr V_r = diag(lam_r).
-    V_r, lam_r = _assemble_1d_fd_eigendecomp(M_r_zz, K_r_rr)
-    # thetatheta coefficient per radial mode: diagonal of V_r^T M_r[rho_tt] V_r.
-    B = jnp.einsum('ir,rs,is->i', V_r, M_r_tt, V_r)
-
-    denom = (lam_r[:, None, None]
-             + B[:, None, None] * lam_t[None, :, None]
-             + lam_z[None, None, :])
-    keep = denom > pinv_rtol * jnp.max(jnp.abs(denom))
-    inv_denom = jnp.where(keep, 1.0 / jnp.where(keep, denom, 1.0), 0.0)
-
-    return {
-        "bulk_shape": bulk_shape,
-        "bulk_modal_basis_r": V_r,
-        "bulk_modal_basis_t": V_t,
-        "bulk_modal_basis_z": V_z,
-        "bulk_modal_inv_denom": inv_denom,
-    }
-
-
-def _assemble_k0_greville_radial_sylvester_bulk_factors(seq, *, dirichlet: bool):
-    """Greville radial-SYLVESTER k=0 stiffness bulk: structured-exact, robust.
-
-    Inverts the EXACT (angular-averaged) radial operator A+B+C -- same spectral
-    object as radial_dense (1 it cylinder, 13-flat toroid) -- but exploits that the
-    two shared-profile channels co-diagonalise, instead of inverting every angular
-    block densely. With A = K_r[rho_rr]xM_txM_z (~r), C = M_r[rho_zz]xM_txK_z (~r),
-    B = M_r[rho_tt]xK_txM_z (~1/r):
-
-      1. Co-diagonalise A,C by the radial pencil (K_r[rho_rr], M_r[rho_zz]) -> V_r
-         (well conditioned BECAUSE rr,zz share ~r): A->diag(lam_A_r), C->I.
-      2. B's radial part becomes ONE dense SPD matrix  Mtil = V_r^T M_r[rho_tt] V_r.
-      3. Per zeta-mode k the radial block is  S_{jk} = D^{(k)} + lam_t[j] Mtil  with
-         D^{(k)} = diag(lam_A_r + lam_z[k]) DIAGONAL. Pivot on the SPD Mtil:
-         G^{(k)} = Mtil^{-1/2} D^{(k)} Mtil^{-1/2} = Q_k diag(g_k) Q_k^T, so
-         S_{jk}^{-1} = P_k diag(1/(g_k + lam_t[j])) P_k^T,  P_k = Mtil^{-1/2} Q_k,
-         diagonalising the block for ALL theta-modes j at once (one eig per k).
-
-    Pivoting on SPD Mtil (never singular) isolates the global null mode to a single
-    (g+lam)~0 entry -> clean deflation, fixing radial_dense's blanket-pinv free-BC /
-    curved-geometry failure. Setup n_t x cheaper (n_z eigs vs n_t n_z inversions);
-    same apply cost. Drops angular weight variation (the D3 residual), like radial_dense.
-    """
-    bulk_shape = _bulk_tensor_shape(seq, dirichlet)
-    nr, nt, nz = (int(s) for s in bulk_shape)
-    types = seq.basis_0.types
-    g_r = _dense_incidence_1d(seq.basis_0.nr, types[0])
-    g_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
-    g_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
-
-    M_t = _assemble_unweighted_1d_mass(seq.basis_t_jk, seq.quad.w_y)
-    M_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
-    K_t = _assemble_weighted_1d_stiffness(seq.basis_t_jk, seq.d_basis_t_jk, seq.quad.w_y, g_t)
-    K_z = _assemble_weighted_1d_stiffness(seq.basis_z_jk, seq.d_basis_z_jk, seq.quad.w_z, g_z)
-    V_t, lam_t = _assemble_1d_fd_eigendecomp(M_t, K_t)
-    V_z, lam_z = _assemble_1d_fd_eigendecomp(M_z, K_z)
-
-    metric = _k0_stiffness_diagonal_metric_tensors(seq)
-    rho_rr = jnp.mean(metric["alpha_rr"], axis=(0, 2))
-    rho_tt = jnp.mean(metric["alpha_thetatheta"], axis=(0, 2))
-    rho_zz = jnp.mean(metric["alpha_zetazeta"], axis=(0, 2))
-    K_r_rr = _restrict_radial_window(
-        _assemble_weighted_1d_stiffness(seq.basis_r_jk, seq.d_basis_r_jk, seq.quad.w_x * rho_rr, g_r), 2, nr)
-    M_r_tt = _restrict_radial_window(
-        _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * rho_tt), 2, nr)
-    M_r_zz = _restrict_radial_window(
-        _assemble_weighted_1d_mass(seq.basis_r_jk, seq.quad.w_x * rho_zz), 2, nr)
-
-    # Co-diagonalise A,C: V_r^T M_r_zz V_r = I, V_r^T K_r_rr V_r = diag(lam_A_r).
-    V_r, lam_A_r = _assemble_1d_fd_eigendecomp(M_r_zz, K_r_rr)
-    # B's radial part in this basis: dense SPD Mtil; symmetric inverse sqrt.
-    Mtil = V_r.T @ M_r_tt @ V_r
-    Mtil = 0.5 * (Mtil + Mtil.T)
-    sig, Z = jnp.linalg.eigh(Mtil)
-    Mtil_inv_sqrt = (Z * (1.0 / jnp.sqrt(sig))) @ Z.T          # (nr, nr), SPD^{-1/2}
-
-    # Per zeta-mode: G^{(k)} = Mtil^{-1/2} diag(lam_A_r + lam_z[k]) Mtil^{-1/2}.
-    d = lam_A_r[None, :] + lam_z[:, None]                      # (nz, nr) diagonals D^{(k)}
-    G = jnp.einsum('is,ks,sj->kij', Mtil_inv_sqrt, d, Mtil_inv_sqrt)  # (nz, nr, nr)
-    G = 0.5 * (G + jnp.swapaxes(G, -1, -2))
-    g, Q = jnp.linalg.eigh(G)                                  # g (nz,nr), Q (nz,nr,nr)
-    P = jnp.einsum('is,ksj->kij', Mtil_inv_sqrt, Q)            # P_k = Mtil^{-1/2} Q_k, (nz,nr,nr)
-
-    return {
-        "bulk_shape": bulk_shape,
-        "bulk_modal_basis_r": V_r,
-        "bulk_modal_basis_t": V_t,
-        "bulk_modal_basis_z": V_z,
-        "bulk_lam_t": lam_t,
-        "bulk_sylvester_P": P,
-        "bulk_sylvester_g": g,
     }
 
 
@@ -2050,8 +1774,6 @@ def _build_k0_tensor_hodge_preconditioner_factors(
         core_coupling=core_coupling,
         bulk_radial_block_inv=bulk_data.get('bulk_radial_block_inv'),
         bulk_greville_inv_sqrt_D=bulk_data.get('bulk_greville_inv_sqrt_D'),
-        bulk_sylvester_P=bulk_data.get('bulk_sylvester_P'),
-        bulk_sylvester_g=bulk_data.get('bulk_sylvester_g'),
     )
 
 
@@ -2137,46 +1859,9 @@ def _apply_k0_tensor_hodge_bulk_radial_dense(
     return x.reshape(-1)
 
 
-def _apply_k0_tensor_hodge_bulk_radial_sylvester(
-        factors: K0TensorHodgePreconditionerFactors,
-        rhs_b: jnp.ndarray) -> jnp.ndarray:
-    """Radial-Sylvester bulk inverse: transform all 3 axes to the FD eigenbases
-    (V_r co-diagonalises rr,zz; V_t,V_z the angular pencils), then per (theta,zeta)
-    mode the radial block S_{jk}^{-1}=P_k diag(1/(g_k+lam_t[j])) P_k^T is a pair of
-    P_k matvecs and a deflated scalar division. P_k shared across theta-modes j."""
-    nr, nt, nz = factors.bulk_shape
-    V_r, V_t, V_z = factors.bulk_modal_basis_r, factors.bulk_modal_basis_t, factors.bulk_modal_basis_z
-    P = factors.bulk_sylvester_P                          # (nz, nr, nr)
-    g = factors.bulk_sylvester_g                          # (nz, nr)
-    lam_t = factors.bulk_lam_t                            # (nt,)
-
-    x = rhs_b.reshape(nr, nt, nz)
-    y = jnp.einsum('ji,jkl->ikl', V_r, x)                 # V_r^T  (radial)
-    y = jnp.einsum('ji,kjl->kil', V_t, y)                 # V_t^T  (theta)
-    y = jnp.einsum('ji,klj->kli', V_z, y)                 # V_z^T  (zeta)
-    # y[i,j,k]: radial-mode i, theta-mode j, zeta-mode k.
-    w = jnp.einsum('kis,ijk->sjk', P, y)                  # P_k^T  per (j,k)
-    denom = g.T[:, None, :] + lam_t[None, :, None]        # denom[s,j,k] = g[k,s] + lam_t[j]
-    # PER-(j,k)-BLOCK relative deflation (matches radial_dense's per-block pinv):
-    # zero the null/near-null generalised eigenvalues relative to EACH block's own
-    # scale, not a global max (which is dominated by the top mode and mis-scales the
-    # low blocks -> on free BC it fails to isolate the constant cleanly).
-    block_max = jnp.max(denom, axis=0, keepdims=True)     # (1, nt, nz): max over radial modes
-    thr = 1e-10 * block_max
-    inv = jnp.where(denom > thr, 1.0 / jnp.where(denom > thr, denom, 1.0), 0.0)
-    w = w * inv.astype(rhs_b.dtype)
-    z = jnp.einsum('kis,sjk->ijk', P, w)                  # P_k    per (j,k)
-    z = jnp.einsum('ij,jkl->ikl', V_r, z)                 # V_r
-    z = jnp.einsum('ij,kjl->kil', V_t, z)                 # V_t
-    z = jnp.einsum('ij,klj->kli', V_z, z)                 # V_z
-    return z.reshape(-1)
-
-
 def _apply_k0_tensor_hodge_bulk_inverse(
         factors: K0TensorHodgePreconditionerFactors,
         rhs_b: jnp.ndarray) -> jnp.ndarray:
-    if factors.bulk_sylvester_P is not None:
-        return _apply_k0_tensor_hodge_bulk_radial_sylvester(factors, rhs_b)
     if factors.bulk_radial_block_inv is not None:
         return _apply_k0_tensor_hodge_bulk_radial_dense(factors, rhs_b)
     if factors.bulk_modal_basis_r is not None:
@@ -2316,24 +2001,13 @@ def _assemble_k0_tensor_hodge_preconditioner(
         radial_dense: bool = False,
         pinv_tol: float = 1e-12,
         greville: bool = False,
-        greville_d_mode: str = "geomean",
-        greville_weight_mode: str = "combined",
-        greville_alpha_reduce: str = "arith",
         dirichlet_flags: tuple[bool, ...] = (False, True)) -> BoundaryConditionPair:
     pair = BoundaryConditionPair()
     core_size = _core_size(seq)
 
     for dirichlet in dirichlet_flags:
-        if greville and greville_weight_mode == "radial_dense":
-            bulk_data = _assemble_k0_greville_radial_dense_bulk_factors(seq, dirichlet=dirichlet)
-        elif greville and greville_weight_mode == "radial_sylvester":
-            bulk_data = _assemble_k0_greville_radial_sylvester_bulk_factors(seq, dirichlet=dirichlet)
-        elif greville and greville_weight_mode == "radial_pencil":
-            bulk_data = _assemble_k0_greville_radial_pencil_bulk_factors(seq, dirichlet=dirichlet)
-        elif greville:
-            bulk_data = _assemble_k0_greville_bulk_factors(
-                seq, dirichlet=dirichlet, d_mode=greville_d_mode,
-                weight_mode=greville_weight_mode, alpha_reduce=greville_alpha_reduce)
+        if greville:
+            bulk_data = _assemble_k0_greville_bulk_factors(seq, dirichlet=dirichlet)
         else:
             bulk_data = _assemble_k0_stiffness_fd_bulk_factors(
                 seq,
@@ -3584,9 +3258,6 @@ def assemble_tensor_laplacian_preconditioner(
     radial_dense = bool(cp_kwargs.get("radial_dense", False))
     pinv_tol = float(cp_kwargs.get("pinv_tol", 1e-12))
     greville = bool(cp_kwargs.get("greville", False))
-    greville_d_mode = str(cp_kwargs.get("greville_d_mode", "geomean"))
-    greville_weight_mode = str(cp_kwargs.get("greville_weight_mode", "combined"))
-    greville_alpha_reduce = str(cp_kwargs.get("greville_alpha_reduce", "arith"))
 
     for k in ks:
         if k != 0:
@@ -3631,9 +3302,6 @@ def assemble_tensor_laplacian_preconditioner(
         radial_dense=radial_dense,
         pinv_tol=pinv_tol,
         greville=greville,
-        greville_d_mode=greville_d_mode,
-        greville_weight_mode=greville_weight_mode,
-        greville_alpha_reduce=greville_alpha_reduce,
     )
     return eqx.tree_at(
         lambda ops: ops.k0_tensor_hodge_precond,
