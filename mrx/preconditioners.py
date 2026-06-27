@@ -87,6 +87,14 @@ class TensorDiagonalBlockInverseFactors(eqx.Module):
     term_r: tuple[jnp.ndarray, ...] = ()
     term_t: tuple[jnp.ndarray, ...] = ()
     term_z: tuple[jnp.ndarray, ...] = ()
+    # Greville-collocation sandwich. When ``greville_inv_sqrt_D`` is non-None the
+    # block inverse is D^{-1/2} (M0_r^{-1} x M0_t^{-1} x M0_z^{-1}) D^{-1/2}, with
+    # UNWEIGHTED 1D mass inverses and D the metric weight collocated at the
+    # component's Greville abscissae (the CP fields above are then all None).
+    greville_inv_r: Optional[jnp.ndarray] = None
+    greville_inv_t: Optional[jnp.ndarray] = None
+    greville_inv_z: Optional[jnp.ndarray] = None
+    greville_inv_sqrt_D: Optional[jnp.ndarray] = None
 
 
 class K0TensorMassPreconditionerFactors(eqx.Module):
@@ -762,6 +770,12 @@ def _apply_tensor_diagonal_block_forward(
     factors: TensorDiagonalBlockInverseFactors,
     x: jnp.ndarray,
 ) -> jnp.ndarray:
+    if factors.greville_inv_sqrt_D is not None:
+        raise NotImplementedError(
+            "Greville mass block has no forward-model apply (D^{1/2} M0 D^{1/2}); "
+            "only the inverse sandwich is implemented. The forward model is off the "
+            "solve path; wire it before enabling Chebyshev-on-greville."
+        )
     nr, nt, nz = factors.shape
     field = jnp.asarray(x).reshape(nr, nt, nz)
     result = jnp.zeros_like(field)
@@ -778,6 +792,14 @@ def _apply_tensor_diagonal_block_preconditioner(
     rhs: jnp.ndarray,
 ) -> jnp.ndarray:
     nr, nt, nz = factors.shape
+    if factors.greville_inv_sqrt_D is not None:
+        # Greville sandwich: D^{-1/2} (M0_r^{-1} x M0_t^{-1} x M0_z^{-1}) D^{-1/2}.
+        f = jnp.asarray(rhs).reshape(nr, nt, nz) * factors.greville_inv_sqrt_D
+        f = jnp.einsum("ij,jkl->ikl", factors.greville_inv_r, f)
+        f = jnp.einsum("ij,kjl->kil", factors.greville_inv_t, f)
+        f = jnp.einsum("ij,klj->kli", factors.greville_inv_z, f)
+        f = f * factors.greville_inv_sqrt_D
+        return f.reshape(-1)
     if factors.dense_inverse is not None:
         return factors.dense_inverse @ jnp.asarray(rhs).reshape(-1)
     if factors.fd_V_r is not None:
@@ -2381,6 +2403,85 @@ def build_mass_surgery_preconditioner(
     raise ValueError("Mass surgery preconditioner currently only supports k=0, k=1, k=2 and k=3")
 
 
+def _build_greville_mass_block_factors(
+    seq, *, shape, diff, wkind: str, comp: int,
+) -> TensorDiagonalBlockInverseFactors:
+    """Greville-collocation mass bulk block factors.
+
+    P^{-1} = D^{-1/2} (M0_r^{-1} x M0_t^{-1} x M0_z^{-1}) D^{-1/2}, with UNWEIGHTED
+    1D masses (degree p on primal axes, p-1 on the differentiated axis) and D the
+    metric weight collocated at the component's Greville abscissae. Ports
+    scripts/debug/greville_bulk_precond.py:build_greville_component.
+
+    ``diff`` = (r,t,z) booleans (True => differentiated degree-(p-1) axis);
+    ``wkind`` in {'J','invJ','Jginv','ginvJ'}; ``comp`` = metric diagonal index.
+    """
+    from mrx.geometry import compute_geometry_terms  # noqa: PLC0415
+    from mrx.spline_bases import SplineBasis  # noqa: PLC0415
+
+    nr, ntc, nzc = (int(s) for s in shape)
+    radial_start = 1 if diff[0] else 2
+
+    primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
+    deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
+    bases = tuple(deriv[a] if diff[a] else primal[a] for a in range(3))
+    quad_w = (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
+    M0_r = _restrict_radial_mass(_assemble_weighted_1d_mass(bases[0], quad_w[0]), radial_start, nr)
+    M0_t = _assemble_weighted_1d_mass(bases[1], quad_w[1])
+    M0_z = _assemble_weighted_1d_mass(bases[2], quad_w[2])
+    inv_r = jnp.linalg.inv(M0_r)
+    inv_t = jnp.linalg.inv(M0_t)
+    inv_z = jnp.linalg.inv(M0_z)
+
+    # Greville abscissae per axis: primal degree-p, or fresh degree-(p-1) SplineBasis
+    # on the differentiated axis (dΛ[axis].s inherits parent knots -> spurious double
+    # boundary point). Clamped endpoints nudged inward (a spline map's clamped
+    # evaluate() has a constant branch -> jacfwd det=0 at the exact endpoint).
+    types = seq.basis_0.types
+    eps = 1e-7
+    grev = []
+    for axis in range(3):
+        if diff[axis]:
+            d = seq.basis_0.dΛ[axis]
+            g = SplineBasis(int(d.n), int(d.p), d.type).greville_points()
+        else:
+            g = seq.basis_0.Λ[axis].greville_points()
+        if types[axis] == "clamped":
+            g = jnp.clip(g, eps, 1.0 - eps)
+        grev.append(g)
+    grev_r = grev[0][radial_start:radial_start + nr]
+    rr, tt, zz = jnp.meshgrid(grev_r, grev[1], grev[2], indexing="ij")
+    pts = jnp.stack([rr.ravel(), tt.ravel(), zz.ravel()], axis=-1)
+    metric, minv, jac = compute_geometry_terms(seq.map, pts)
+    if wkind == "J":
+        weight = jac
+    elif wkind == "invJ":
+        weight = 1.0 / jac
+    elif wkind == "Jginv":          # k=1: J g^{ii}
+        weight = jac * minv[:, comp, comp]
+    elif wkind == "ginvJ":          # k=2: g_{ii} / J
+        weight = metric[:, comp, comp] / jac
+    else:
+        raise ValueError(f"unknown greville mass wkind {wkind!r}")
+    D = jnp.asarray(weight).reshape(nr, ntc, nzc)
+    # D MUST be positive (SPD); degenerate collocation points (clamped Greville at a
+    # geometry fold) -> positive median, NOT a tiny floor (which would spike
+    # 1/sqrt(D) into a spurious near-null mode); that region is surgery-corrected.
+    valid = jnp.isfinite(D) & (D > 0)
+    fin = D[valid]
+    scale = jnp.median(fin) if fin.size > 0 else jnp.asarray(1.0, dtype=jnp.float64)
+    D = jnp.where(valid, D, scale)
+    inv_sqrt_D = 1.0 / jnp.sqrt(D)
+
+    return TensorDiagonalBlockInverseFactors(
+        shape=(nr, ntc, nzc),
+        greville_inv_r=inv_r,
+        greville_inv_t=inv_t,
+        greville_inv_z=inv_z,
+        greville_inv_sqrt_D=inv_sqrt_D,
+    )
+
+
 def build_mass_tensor_preconditioner(
     seq,
     *,
@@ -2415,6 +2516,10 @@ def build_mass_tensor_preconditioner(
     )
     k1_inner_schur = bool(cp_kwargs.get("k1_inner_schur", False))
     k2_inner_schur = bool(cp_kwargs.get("k2_inner_schur", False))
+    # Greville collocation: replace the per-component CP-fit bulk factors with the
+    # unweighted-atom + pointwise-D sandwich (built by _build_greville_mass_block_factors).
+    # The surgery/Schur envelope and the apply path are unchanged.
+    greville = bool(cp_kwargs.get("greville", False))
 
     reuse_existing = (
         existing is not None
@@ -2464,42 +2569,46 @@ def build_mass_tensor_preconditioner(
             bulk_shape = _bulk_tensor_shape(seq, dirichlet)
             bulk_indices_k0 = jnp.arange(surgery.surgery_size, surgery.apply_data.size, dtype=jnp.int32)
             bulk_true_apply = lambda x, surgery=surgery, bulk_indices_k0=bulk_indices_k0: _apply_extracted_submatrix(surgery.apply_data, bulk_indices_k0, bulk_indices_k0, x)
-            bulk_factors = _build_diagonal_tensor_block_factors(
-                seq,
-                weight_tensor,
-                bulk_shape,
-                rank,
-                radial_basis=seq.basis_r_jk,
-                theta_basis=seq.basis_t_jk,
-                zeta_basis=seq.basis_z_jk,
-                radial_weights=seq.quad.w_x,
-                theta_weights=seq.quad.w_y,
-                zeta_weights=seq.quad.w_z,
-                radial_start=2,
-                cp_maxiter=cp_maxiter,
-                cp_tol=cp_tol,
-                cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                chebyshev_steps=block_chebyshev_steps,
-                chebyshev_lanczos_iterations=block_lanczos_iterations,
-                chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                chebyshev_seed=100 + int(dirichlet),
-                richardson_steps=richardson_steps,
-                richardson_omega=richardson_omega,
-                true_block_apply=bulk_true_apply,
-            )
-            bulk_factors = _annotate_tensor_block_chebyshev_bounds(
-                bulk_factors,
-                lanczos_iterations=block_lanczos_iterations,
-                lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                seed=100 + int(dirichlet),
-                true_block_apply=bulk_true_apply,
-            )
+            if greville:
+                bulk_factors = _build_greville_mass_block_factors(
+                    seq, shape=bulk_shape, diff=(False, False, False), wkind="J", comp=0)
+            else:
+                bulk_factors = _build_diagonal_tensor_block_factors(
+                    seq,
+                    weight_tensor,
+                    bulk_shape,
+                    rank,
+                    radial_basis=seq.basis_r_jk,
+                    theta_basis=seq.basis_t_jk,
+                    zeta_basis=seq.basis_z_jk,
+                    radial_weights=seq.quad.w_x,
+                    theta_weights=seq.quad.w_y,
+                    zeta_weights=seq.quad.w_z,
+                    radial_start=2,
+                    cp_maxiter=cp_maxiter,
+                    cp_tol=cp_tol,
+                    cp_ridge=cp_ridge,
+                    radial_baseline=None,
+                    prior_terms=None,
+                    chebyshev_steps=block_chebyshev_steps,
+                    chebyshev_lanczos_iterations=block_lanczos_iterations,
+                    chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    chebyshev_seed=100 + int(dirichlet),
+                    richardson_steps=richardson_steps,
+                    richardson_omega=richardson_omega,
+                    true_block_apply=bulk_true_apply,
+                )
+                bulk_factors = _annotate_tensor_block_chebyshev_bounds(
+                    bulk_factors,
+                    lanczos_iterations=block_lanczos_iterations,
+                    lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    seed=100 + int(dirichlet),
+                    true_block_apply=bulk_true_apply,
+                )
             bulk_indices_k0 = jnp.arange(surgery.surgery_size, surgery.apply_data.size, dtype=jnp.int32)
             bulk_true_k0 = lambda x: _apply_extracted_submatrix(surgery.apply_data, bulk_indices_k0, bulk_indices_k0, x)
             schur_inv = _assemble_surgery_schur_inverse_from_applies(
@@ -2543,114 +2652,126 @@ def build_mass_tensor_preconditioner(
             theta_true_apply = lambda x, surgery=surgery, idx=theta_bulk_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
             zeta_true_apply = lambda x, surgery=surgery, idx=zeta_bulk_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
 
-            arr_factors = _build_diagonal_tensor_block_factors(
-                seq,
-                metric_tensors["alpha_rr"],
-                arr_shape,
-                rank,
-                radial_basis=seq.d_basis_r_jk,
-                theta_basis=seq.basis_t_jk,
-                zeta_basis=seq.basis_z_jk,
-                radial_weights=seq.quad.w_x,
-                theta_weights=seq.quad.w_y,
-                zeta_weights=seq.quad.w_z,
-                radial_start=1,
-                cp_maxiter=cp_maxiter,
-                cp_tol=cp_tol,
-                cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                chebyshev_steps=block_chebyshev_steps,
-                chebyshev_lanczos_iterations=block_lanczos_iterations,
-                chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                chebyshev_seed=200 + 10 * int(dirichlet),
-                richardson_steps=richardson_steps,
-                richardson_omega=richardson_omega,
-                true_block_apply=arr_true_apply,
-            )
-            arr_factors = _annotate_tensor_block_chebyshev_bounds(
-                arr_factors,
-                lanczos_iterations=block_lanczos_iterations,
-                lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                seed=200 + 10 * int(dirichlet),
-                true_block_apply=arr_true_apply,
-            )
-            theta_factors = _build_diagonal_tensor_block_factors(
-                seq,
-                metric_tensors["alpha_thetatheta"],
-                theta_shape,
-                rank,
-                radial_basis=seq.basis_r_jk,
-                theta_basis=seq.d_basis_t_jk,
-                zeta_basis=seq.basis_z_jk,
-                radial_weights=seq.quad.w_x,
-                theta_weights=seq.quad.w_y,
-                zeta_weights=seq.quad.w_z,
-                radial_start=2,
-                cp_maxiter=cp_maxiter,
-                cp_tol=cp_tol,
-                cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                chebyshev_steps=block_chebyshev_steps,
-                chebyshev_lanczos_iterations=block_lanczos_iterations,
-                chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                chebyshev_seed=201 + 10 * int(dirichlet),
-                richardson_steps=richardson_steps,
-                richardson_omega=richardson_omega,
-                true_block_apply=theta_true_apply,
-            )
-            theta_factors = _annotate_tensor_block_chebyshev_bounds(
-                theta_factors,
-                lanczos_iterations=block_lanczos_iterations,
-                lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                seed=201 + 10 * int(dirichlet),
-                true_block_apply=theta_true_apply,
-            )
-            zeta_factors = _build_diagonal_tensor_block_factors(
-                seq,
-                metric_tensors["alpha_zetazeta"],
-                zeta_shape,
-                rank,
-                radial_basis=seq.basis_r_jk,
-                theta_basis=seq.basis_t_jk,
-                zeta_basis=seq.d_basis_z_jk,
-                radial_weights=seq.quad.w_x,
-                theta_weights=seq.quad.w_y,
-                zeta_weights=seq.quad.w_z,
-                radial_start=2,
-                cp_maxiter=cp_maxiter,
-                cp_tol=cp_tol,
-                cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                chebyshev_steps=block_chebyshev_steps,
-                chebyshev_lanczos_iterations=block_lanczos_iterations,
-                chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                chebyshev_seed=202 + 10 * int(dirichlet),
-                richardson_steps=richardson_steps,
-                richardson_omega=richardson_omega,
-                true_block_apply=zeta_true_apply,
-            )
-            zeta_factors = _annotate_tensor_block_chebyshev_bounds(
-                zeta_factors,
-                lanczos_iterations=block_lanczos_iterations,
-                lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                seed=202 + 10 * int(dirichlet),
-                true_block_apply=zeta_true_apply,
-            )
+            if greville:
+                arr_factors = _build_greville_mass_block_factors(
+                    seq, shape=arr_shape, diff=(True, False, False), wkind="Jginv", comp=0)
+            else:
+                arr_factors = _build_diagonal_tensor_block_factors(
+                    seq,
+                    metric_tensors["alpha_rr"],
+                    arr_shape,
+                    rank,
+                    radial_basis=seq.d_basis_r_jk,
+                    theta_basis=seq.basis_t_jk,
+                    zeta_basis=seq.basis_z_jk,
+                    radial_weights=seq.quad.w_x,
+                    theta_weights=seq.quad.w_y,
+                    zeta_weights=seq.quad.w_z,
+                    radial_start=1,
+                    cp_maxiter=cp_maxiter,
+                    cp_tol=cp_tol,
+                    cp_ridge=cp_ridge,
+                    radial_baseline=None,
+                    prior_terms=None,
+                    chebyshev_steps=block_chebyshev_steps,
+                    chebyshev_lanczos_iterations=block_lanczos_iterations,
+                    chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    chebyshev_seed=200 + 10 * int(dirichlet),
+                    richardson_steps=richardson_steps,
+                    richardson_omega=richardson_omega,
+                    true_block_apply=arr_true_apply,
+                )
+                arr_factors = _annotate_tensor_block_chebyshev_bounds(
+                    arr_factors,
+                    lanczos_iterations=block_lanczos_iterations,
+                    lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    seed=200 + 10 * int(dirichlet),
+                    true_block_apply=arr_true_apply,
+                )
+            if greville:
+                theta_factors = _build_greville_mass_block_factors(
+                    seq, shape=theta_shape, diff=(False, True, False), wkind="Jginv", comp=1)
+            else:
+                theta_factors = _build_diagonal_tensor_block_factors(
+                    seq,
+                    metric_tensors["alpha_thetatheta"],
+                    theta_shape,
+                    rank,
+                    radial_basis=seq.basis_r_jk,
+                    theta_basis=seq.d_basis_t_jk,
+                    zeta_basis=seq.basis_z_jk,
+                    radial_weights=seq.quad.w_x,
+                    theta_weights=seq.quad.w_y,
+                    zeta_weights=seq.quad.w_z,
+                    radial_start=2,
+                    cp_maxiter=cp_maxiter,
+                    cp_tol=cp_tol,
+                    cp_ridge=cp_ridge,
+                    radial_baseline=None,
+                    prior_terms=None,
+                    chebyshev_steps=block_chebyshev_steps,
+                    chebyshev_lanczos_iterations=block_lanczos_iterations,
+                    chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    chebyshev_seed=201 + 10 * int(dirichlet),
+                    richardson_steps=richardson_steps,
+                    richardson_omega=richardson_omega,
+                    true_block_apply=theta_true_apply,
+                )
+                theta_factors = _annotate_tensor_block_chebyshev_bounds(
+                    theta_factors,
+                    lanczos_iterations=block_lanczos_iterations,
+                    lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    seed=201 + 10 * int(dirichlet),
+                    true_block_apply=theta_true_apply,
+                )
+            if greville:
+                zeta_factors = _build_greville_mass_block_factors(
+                    seq, shape=zeta_shape, diff=(False, False, True), wkind="Jginv", comp=2)
+            else:
+                zeta_factors = _build_diagonal_tensor_block_factors(
+                    seq,
+                    metric_tensors["alpha_zetazeta"],
+                    zeta_shape,
+                    rank,
+                    radial_basis=seq.basis_r_jk,
+                    theta_basis=seq.basis_t_jk,
+                    zeta_basis=seq.d_basis_z_jk,
+                    radial_weights=seq.quad.w_x,
+                    theta_weights=seq.quad.w_y,
+                    zeta_weights=seq.quad.w_z,
+                    radial_start=2,
+                    cp_maxiter=cp_maxiter,
+                    cp_tol=cp_tol,
+                    cp_ridge=cp_ridge,
+                    radial_baseline=None,
+                    prior_terms=None,
+                    chebyshev_steps=block_chebyshev_steps,
+                    chebyshev_lanczos_iterations=block_lanczos_iterations,
+                    chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    chebyshev_seed=202 + 10 * int(dirichlet),
+                    richardson_steps=richardson_steps,
+                    richardson_omega=richardson_omega,
+                    true_block_apply=zeta_true_apply,
+                )
+                zeta_factors = _annotate_tensor_block_chebyshev_bounds(
+                    zeta_factors,
+                    lanczos_iterations=block_lanczos_iterations,
+                    lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    seed=202 + 10 * int(dirichlet),
+                    true_block_apply=zeta_true_apply,
+                )
             schur_inv = _assemble_surgery_schur_inverse_from_applies(
                 surgery.ass,
                 lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
@@ -2712,114 +2833,126 @@ def build_mass_tensor_preconditioner(
             theta_true_apply = lambda x, surgery=surgery, idx=theta_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
             zeta_true_apply = lambda x, surgery=surgery, idx=zeta_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
 
-            r_bulk_factors = _build_diagonal_tensor_block_factors(
-                seq,
-                metric_tensors["beta_rr"],
-                _r_bulk_shape_k2(seq, dirichlet),
-                rank,
-                radial_basis=seq.basis_r_jk,
-                theta_basis=seq.d_basis_t_jk,
-                zeta_basis=seq.d_basis_z_jk,
-                radial_weights=seq.quad.w_x,
-                theta_weights=seq.quad.w_y,
-                zeta_weights=seq.quad.w_z,
-                radial_start=2,
-                cp_maxiter=cp_maxiter,
-                cp_tol=cp_tol,
-                cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                chebyshev_steps=block_chebyshev_steps,
-                chebyshev_lanczos_iterations=block_lanczos_iterations,
-                chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                chebyshev_seed=300 + 10 * int(dirichlet),
-                richardson_steps=richardson_steps,
-                richardson_omega=richardson_omega,
-                true_block_apply=r_bulk_true_apply,
-            )
-            r_bulk_factors = _annotate_tensor_block_chebyshev_bounds(
-                r_bulk_factors,
-                lanczos_iterations=block_lanczos_iterations,
-                lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                seed=300 + 10 * int(dirichlet),
-                true_block_apply=r_bulk_true_apply,
-            )
-            theta_factors = _build_diagonal_tensor_block_factors(
-                seq,
-                metric_tensors["beta_thetatheta"],
-                _theta_shape_k2(seq, dirichlet),
-                rank,
-                radial_basis=seq.d_basis_r_jk,
-                theta_basis=seq.basis_t_jk,
-                zeta_basis=seq.d_basis_z_jk,
-                radial_weights=seq.quad.w_x,
-                theta_weights=seq.quad.w_y,
-                zeta_weights=seq.quad.w_z,
-                radial_start=1,
-                cp_maxiter=cp_maxiter,
-                cp_tol=cp_tol,
-                cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                chebyshev_steps=block_chebyshev_steps,
-                chebyshev_lanczos_iterations=block_lanczos_iterations,
-                chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                chebyshev_seed=301 + 10 * int(dirichlet),
-                richardson_steps=richardson_steps,
-                richardson_omega=richardson_omega,
-                true_block_apply=theta_true_apply,
-            )
-            theta_factors = _annotate_tensor_block_chebyshev_bounds(
-                theta_factors,
-                lanczos_iterations=block_lanczos_iterations,
-                lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                seed=301 + 10 * int(dirichlet),
-                true_block_apply=theta_true_apply,
-            )
-            zeta_factors = _build_diagonal_tensor_block_factors(
-                seq,
-                metric_tensors["beta_zetazeta"],
-                _zeta_shape_k2(seq, dirichlet),
-                rank,
-                radial_basis=seq.d_basis_r_jk,
-                theta_basis=seq.d_basis_t_jk,
-                zeta_basis=seq.basis_z_jk,
-                radial_weights=seq.quad.w_x,
-                theta_weights=seq.quad.w_y,
-                zeta_weights=seq.quad.w_z,
-                radial_start=1,
-                cp_maxiter=cp_maxiter,
-                cp_tol=cp_tol,
-                cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                chebyshev_steps=block_chebyshev_steps,
-                chebyshev_lanczos_iterations=block_lanczos_iterations,
-                chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                chebyshev_seed=302 + 10 * int(dirichlet),
-                richardson_steps=richardson_steps,
-                richardson_omega=richardson_omega,
-                true_block_apply=zeta_true_apply,
-            )
-            zeta_factors = _annotate_tensor_block_chebyshev_bounds(
-                zeta_factors,
-                lanczos_iterations=block_lanczos_iterations,
-                lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                seed=302 + 10 * int(dirichlet),
-                true_block_apply=zeta_true_apply,
-            )
+            if greville:
+                r_bulk_factors = _build_greville_mass_block_factors(
+                    seq, shape=_r_bulk_shape_k2(seq, dirichlet), diff=(False, True, True), wkind="ginvJ", comp=0)
+            else:
+                r_bulk_factors = _build_diagonal_tensor_block_factors(
+                    seq,
+                    metric_tensors["beta_rr"],
+                    _r_bulk_shape_k2(seq, dirichlet),
+                    rank,
+                    radial_basis=seq.basis_r_jk,
+                    theta_basis=seq.d_basis_t_jk,
+                    zeta_basis=seq.d_basis_z_jk,
+                    radial_weights=seq.quad.w_x,
+                    theta_weights=seq.quad.w_y,
+                    zeta_weights=seq.quad.w_z,
+                    radial_start=2,
+                    cp_maxiter=cp_maxiter,
+                    cp_tol=cp_tol,
+                    cp_ridge=cp_ridge,
+                    radial_baseline=None,
+                    prior_terms=None,
+                    chebyshev_steps=block_chebyshev_steps,
+                    chebyshev_lanczos_iterations=block_lanczos_iterations,
+                    chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    chebyshev_seed=300 + 10 * int(dirichlet),
+                    richardson_steps=richardson_steps,
+                    richardson_omega=richardson_omega,
+                    true_block_apply=r_bulk_true_apply,
+                )
+                r_bulk_factors = _annotate_tensor_block_chebyshev_bounds(
+                    r_bulk_factors,
+                    lanczos_iterations=block_lanczos_iterations,
+                    lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    seed=300 + 10 * int(dirichlet),
+                    true_block_apply=r_bulk_true_apply,
+                )
+            if greville:
+                theta_factors = _build_greville_mass_block_factors(
+                    seq, shape=_theta_shape_k2(seq, dirichlet), diff=(True, False, True), wkind="ginvJ", comp=1)
+            else:
+                theta_factors = _build_diagonal_tensor_block_factors(
+                    seq,
+                    metric_tensors["beta_thetatheta"],
+                    _theta_shape_k2(seq, dirichlet),
+                    rank,
+                    radial_basis=seq.d_basis_r_jk,
+                    theta_basis=seq.basis_t_jk,
+                    zeta_basis=seq.d_basis_z_jk,
+                    radial_weights=seq.quad.w_x,
+                    theta_weights=seq.quad.w_y,
+                    zeta_weights=seq.quad.w_z,
+                    radial_start=1,
+                    cp_maxiter=cp_maxiter,
+                    cp_tol=cp_tol,
+                    cp_ridge=cp_ridge,
+                    radial_baseline=None,
+                    prior_terms=None,
+                    chebyshev_steps=block_chebyshev_steps,
+                    chebyshev_lanczos_iterations=block_lanczos_iterations,
+                    chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    chebyshev_seed=301 + 10 * int(dirichlet),
+                    richardson_steps=richardson_steps,
+                    richardson_omega=richardson_omega,
+                    true_block_apply=theta_true_apply,
+                )
+                theta_factors = _annotate_tensor_block_chebyshev_bounds(
+                    theta_factors,
+                    lanczos_iterations=block_lanczos_iterations,
+                    lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    seed=301 + 10 * int(dirichlet),
+                    true_block_apply=theta_true_apply,
+                )
+            if greville:
+                zeta_factors = _build_greville_mass_block_factors(
+                    seq, shape=_zeta_shape_k2(seq, dirichlet), diff=(True, True, False), wkind="ginvJ", comp=2)
+            else:
+                zeta_factors = _build_diagonal_tensor_block_factors(
+                    seq,
+                    metric_tensors["beta_zetazeta"],
+                    _zeta_shape_k2(seq, dirichlet),
+                    rank,
+                    radial_basis=seq.d_basis_r_jk,
+                    theta_basis=seq.d_basis_t_jk,
+                    zeta_basis=seq.basis_z_jk,
+                    radial_weights=seq.quad.w_x,
+                    theta_weights=seq.quad.w_y,
+                    zeta_weights=seq.quad.w_z,
+                    radial_start=1,
+                    cp_maxiter=cp_maxiter,
+                    cp_tol=cp_tol,
+                    cp_ridge=cp_ridge,
+                    radial_baseline=None,
+                    prior_terms=None,
+                    chebyshev_steps=block_chebyshev_steps,
+                    chebyshev_lanczos_iterations=block_lanczos_iterations,
+                    chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    chebyshev_seed=302 + 10 * int(dirichlet),
+                    richardson_steps=richardson_steps,
+                    richardson_omega=richardson_omega,
+                    true_block_apply=zeta_true_apply,
+                )
+                zeta_factors = _annotate_tensor_block_chebyshev_bounds(
+                    zeta_factors,
+                    lanczos_iterations=block_lanczos_iterations,
+                    lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    seed=302 + 10 * int(dirichlet),
+                    true_block_apply=zeta_true_apply,
+                )
             schur_inv = _assemble_surgery_schur_inverse_from_applies(
                 surgery.ass,
                 lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
@@ -2872,42 +3005,46 @@ def build_mass_tensor_preconditioner(
                 if k3_true_block_apply is not None
                 else None
             )
-            factors = _build_diagonal_tensor_block_factors(
-                seq,
-                weight_tensor,
-                extracted_shape,
-                rank,
-                radial_basis=seq.d_basis_r_jk,
-                theta_basis=seq.d_basis_t_jk,
-                zeta_basis=seq.d_basis_z_jk,
-                radial_weights=seq.quad.w_x,
-                theta_weights=seq.quad.w_y,
-                zeta_weights=seq.quad.w_z,
-                radial_start=1,
-                cp_maxiter=cp_maxiter,
-                cp_tol=cp_tol,
-                cp_ridge=cp_ridge,
-                radial_baseline=None,
-                prior_terms=None,
-                chebyshev_steps=block_chebyshev_steps,
-                chebyshev_lanczos_iterations=block_lanczos_iterations,
-                chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                chebyshev_seed=400 + int(dirichlet),
-                richardson_steps=richardson_steps,
-                richardson_omega=richardson_omega,
-                true_block_apply=true_apply,
-            )
-            factors = _annotate_tensor_block_chebyshev_bounds(
-                factors,
-                lanczos_iterations=block_lanczos_iterations,
-                lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
-                lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
-                lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
-                seed=400 + int(dirichlet),
-                true_block_apply=true_apply,
-            )
+            if greville:
+                factors = _build_greville_mass_block_factors(
+                    seq, shape=extracted_shape, diff=(True, True, True), wkind="invJ", comp=0)
+            else:
+                factors = _build_diagonal_tensor_block_factors(
+                    seq,
+                    weight_tensor,
+                    extracted_shape,
+                    rank,
+                    radial_basis=seq.d_basis_r_jk,
+                    theta_basis=seq.d_basis_t_jk,
+                    zeta_basis=seq.d_basis_z_jk,
+                    radial_weights=seq.quad.w_x,
+                    theta_weights=seq.quad.w_y,
+                    zeta_weights=seq.quad.w_z,
+                    radial_start=1,
+                    cp_maxiter=cp_maxiter,
+                    cp_tol=cp_tol,
+                    cp_ridge=cp_ridge,
+                    radial_baseline=None,
+                    prior_terms=None,
+                    chebyshev_steps=block_chebyshev_steps,
+                    chebyshev_lanczos_iterations=block_lanczos_iterations,
+                    chebyshev_lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    chebyshev_lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    chebyshev_lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    chebyshev_seed=400 + int(dirichlet),
+                    richardson_steps=richardson_steps,
+                    richardson_omega=richardson_omega,
+                    true_block_apply=true_apply,
+                )
+                factors = _annotate_tensor_block_chebyshev_bounds(
+                    factors,
+                    lanczos_iterations=block_lanczos_iterations,
+                    lanczos_max_eig_inflation=block_lanczos_max_eig_inflation,
+                    lanczos_min_eig_deflation=block_lanczos_min_eig_deflation,
+                    lanczos_min_eig_floor_fraction=block_lanczos_min_eig_floor_fraction,
+                    seed=400 + int(dirichlet),
+                    true_block_apply=true_apply,
+                )
             pair = eqx.tree_at(
                 lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
                 pair,
