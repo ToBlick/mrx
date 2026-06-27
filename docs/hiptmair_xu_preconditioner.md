@@ -351,3 +351,30 @@ python scripts/debug/debug_radial_dense_ranks.py --geometry toroid --ns 6,12,4 -
 - If the projected blend is promoted to production, define acceptance criteria up front
   (clear wall-time win across the target family, stable iteration behavior, clean
   nullspace integration).
+
+# Stellarators (W7-X) and settled production knobs (2026-06)
+
+Geometries now include the **periodic cylinder** and the **W7-X stellarator** (nfp=5,
+built by greville-interpolating R,Z from `data/W7-X.h5`; see `[[w7x-geometry-setup]]`
+memory / `scripts/debug/w7x_geometry.py`).
+
+- **W7-X breaks the ζ-rank-1 foundation.** The FD/CP atom assumes ζ is rank-1; W7-X's
+  metric channels are ζ-rank ~8 (vs toroid's exactly 1). So **free-BC k=0 stalls** and the
+  vector mass degrades. Confirmed *not* fixable by null-handling: a truncated pseudo-inverse
+  (zero near-null modes) does **not** rescue free-BC k=0 (it's whole-spectrum ζ-rank, not
+  the near-null). Real fix = a **ζ-Fourier-block (nfp-harmonic) atom** — open.
+- **Mass at CP rank>2** = exact pair-diagonalization for the leading 2 terms, then extra
+  terms contribute **only their modal diagonals in that frozen pair basis** (off-diagonals
+  cut). Helps where terms align with the pair basis; can't capture W7-X's ζ off-diagonals.
+- **Settled knobs:** mass `block_chebyshev_steps=0` (the polish loses ~8-11× on wall);
+  **inner-Schur off** (halves iters, ~3× wall — not worth it); k=0 Laplacian atom **rank-1
+  only** (radial_dense not free-BC safe); k=0 FD now uses a truncated pseudo-inverse
+  (`cp_kwargs["pinv_tol"]`, default 1e-12, zeroes the exact null). Whole-operator Chebyshev
+  is fine on the SPD **mass** (cheb-jac / cheb-tensor competitors) but **dead on the
+  singular free k=0/k=1** (polynomial indefinite below `lmin`; needs operator near-null
+  deflation, not just a truncated smoother).
+- **2026-06 overnight sweep** (`scripts/benchmark/benchmark_overnight_sweep.py`,
+  `slurm/job_overnight_sweep.sh`): phase2-style 1D sweep, 3 geometries, p 1-5, both BCs,
+  ranks {1,2}, n_rhs=8, maxiter=1e4; masses (jacobi/tensor/cheb-jac/cheb-tensor), k=0
+  (jacobi/FD), k=1 (jacobi/HX), k=2/k=3 (jacobi-only, tensor_probe). Results under
+  `outputs/overnight_sweep/2026-06-26/`. See `[[overnight-sweep-2026-06]]`.

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field as dataclass_field
 from typing import Mapping, Optional
 
+import os
+
 import equinox as eqx
 import jax
 import jax.experimental.sparse as jsparse
@@ -1279,6 +1281,101 @@ def _greedy_cp_terms(
     return tuple(terms), relative_error, last_drop
 
 
+def _cp_ntf_3tensor(
+    tensor: jnp.ndarray,
+    rank: int,
+    *,
+    maxiter: int,
+    tol: float,
+    eps: float = 1e-12,
+) -> tuple[jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray], float, float, int]:
+    """Joint rank-r NON-NEGATIVE CP (NTF) of a non-negative 3-tensor via
+    Lee-Seung multiplicative updates.
+
+    Contrast with :func:`_greedy_cp_terms`, which fits ``rank`` sequential
+    rank-1 terms against a *residual*: the first term subtracts a rank-1 piece
+    from the positive weight tensor, so every later term fits a sign-indefinite
+    target and necessarily has sign-changing factors. Those indefinite factors
+    are what make the assembled rank>=2 Kronecker surrogate indefinite (failed
+    Cholesky anchor / non-positive FD denominator) on a non-separable (W7-X)
+    metric.
+
+    Fitting all ``rank`` terms jointly with the multiplicative update keeps
+    every factor >= 0. A non-negative factor ``w`` gives a per-axis weighted
+    mass ``B diag(quad_w * w) B^T`` that is SPSD, so the Kronecker sum is SPD by
+    construction -- the rank>=2 fast-diagonalization anchor is SPD (Cholesky
+    valid) and its generalized eigenvalues are >= 0, so the FD denominator
+    ``1 + lam_r lam_t lam_z >= 1 > 0`` with no clamp and no dense fallback.
+    """
+    if tensor.ndim != 3:
+        raise ValueError(f"NTF expects a 3-tensor, got shape {tensor.shape}")
+    if rank < 1 or rank > min(tensor.shape):
+        raise ValueError(f"Requested NTF rank {rank} outside valid range [1, {min(tensor.shape)}]")
+
+    # Metric/Jacobian weight tensors are positive; clip tiny negative
+    # interpolation noise so the multiplicative updates stay well-defined.
+    tensor = jnp.maximum(tensor, 0.0)
+    unfolded = [_mode_unfold_3tensor(tensor, mode) for mode in range(3)]
+
+    # Deterministic non-negative init from |leading singular vectors|.
+    factors = [
+        jnp.abs(jnp.linalg.svd(unfolded[mode], full_matrices=False)[0][:, :rank]) + eps
+        for mode in range(3)
+    ]
+
+    tensor_norm = jnp.maximum(jnp.linalg.norm(tensor), 1.0)
+    previous_error = jnp.inf
+    relative_error = jnp.inf
+    final_delta = jnp.inf
+    n_iterations = 0
+    for iteration in range(maxiter):
+        for mode in range(3):
+            others = [factors[axis] for axis in range(3) if axis != mode]
+            khatri_rao = _khatri_rao(others[0], others[1])
+            numerator = unfolded[mode] @ khatri_rao
+            gram = (others[0].T @ others[0]) * (others[1].T @ others[1])
+            denominator = factors[mode] @ gram
+            factors[mode] = factors[mode] * numerator / (denominator + eps)
+
+        reconstruction = _reconstruct_cp_3tensor(
+            jnp.ones((rank,), dtype=tensor.dtype), tuple(factors),
+        )
+        relative_error = float(jnp.linalg.norm(reconstruction - tensor) / tensor_norm)
+        final_delta = abs(relative_error - previous_error) if previous_error < jnp.inf else jnp.inf
+        previous_error = relative_error
+        n_iterations = iteration + 1
+        if final_delta < tol:
+            break
+
+    # Pull per-column norms into weights; factors stay unit-norm and >= 0.
+    weights = jnp.ones((rank,), dtype=tensor.dtype)
+    for mode in range(3):
+        factors[mode], norms = _normalize_cp_columns(factors[mode])
+        weights = weights * norms
+    return weights, (factors[0], factors[1], factors[2]), relative_error, final_delta, n_iterations
+
+
+def _ntf_terms(
+    tensor: jnp.ndarray,
+    *,
+    rank: int,
+    cp_maxiter: int,
+    cp_tol: float,
+) -> tuple[tuple[dict[str, jnp.ndarray], ...], float, float]:
+    """Joint non-negative CP terms -- drop-in replacement for the output of
+    :func:`_greedy_cp_terms` but with every factor (and scale) >= 0, yielding an
+    SPD-by-construction Kronecker surrogate at any rank. See
+    :func:`_cp_ntf_3tensor`."""
+    weights, (factor_0, factor_1, factor_2), relative_error, final_delta, _ = _cp_ntf_3tensor(
+        tensor, rank, maxiter=cp_maxiter, tol=cp_tol,
+    )
+    terms = tuple(
+        _make_separated_term(factor_0[:, k], factor_1[:, k], factor_2[:, k], scale=weights[k])
+        for k in range(rank)
+    )
+    return terms, relative_error, float(final_delta)
+
+
 def _build_tensor_block_factors_from_terms(
     *,
     full_shape: tuple[int, int, int],
@@ -1341,9 +1438,13 @@ def _build_tensor_block_factors_from_terms(
         fd_lam_r = fd_lam_t = fd_lam_z = None
         fd_inv_denom = None
         dense_inverse = None
-        direct_inv_r, direct_inv_t, direct_inv_z = _direct_axis_inverses(
-            (mass_r, mass_t, mass_z),
-        )
+        # SPD-project each per-axis inverse: a no-op for well-conditioned SPD
+        # blocks (cylinder exactness, W7-X <= p3) but lifts the indefinite
+        # factors that arise when a greedy-CP weight changes sign on a
+        # non-separable metric, keeping the rank-1 preconditioner SPD.
+        direct_inv_r = _spd_clamped_inverse(mass_r)
+        direct_inv_t = _spd_clamped_inverse(mass_t)
+        direct_inv_z = _spd_clamped_inverse(mass_z)
     else:
         mass_r_0, mass_t_0, mass_z_0 = term_matrices[0]
         mass_r_1, mass_t_1, mass_z_1 = term_matrices[1]
@@ -1474,13 +1575,29 @@ def _build_diagonal_tensor_block_factors(
         )
     nr, nt, nz = full_shape
 
-    expanded_terms, cp_relative_error, cp_final_delta = _greedy_cp_terms(
-        tensor,
-        rank=rank,
-        cp_maxiter=cp_maxiter,
-        cp_tol=cp_tol,
-        cp_ridge=cp_ridge,
-    )
+    # Default: joint non-negative factorization (NTF) of the diagonal-metric
+    # tensor. NTF keeps every factor >= 0, so each per-axis weighted mass
+    # B diag(quad_w * factor) B^T is SPSD and the assembled Kronecker surrogate
+    # is SPD by construction at ANY rank -- one PSD-by-construction path for
+    # rank 1 and rank 2 alike (no sign-flipped factors -> no indefinite rank-2
+    # FD anchor/denominator, and no reliance on the rank-1 SPD-clamp fallback).
+    # MRX_CP_GREEDY=1 restores the legacy unconstrained greedy rank-1 ALS fit
+    # for A/B comparison. See _cp_ntf_3tensor.
+    if os.environ.get("MRX_CP_GREEDY", "0") == "1":
+        expanded_terms, cp_relative_error, cp_final_delta = _greedy_cp_terms(
+            tensor,
+            rank=rank,
+            cp_maxiter=cp_maxiter,
+            cp_tol=cp_tol,
+            cp_ridge=cp_ridge,
+        )
+    else:
+        expanded_terms, cp_relative_error, cp_final_delta = _ntf_terms(
+            tensor,
+            rank=rank,
+            cp_maxiter=cp_maxiter,
+            cp_tol=cp_tol,
+        )
 
     term_data = []
     for term in expanded_terms:
@@ -2891,6 +3008,26 @@ def apply_mass_tensor_forward_model(seq, preconds: Optional[MassPreconditioners]
     return _apply_surgery_schur_forward(surgery, bulk_fwd, v)
 def _symmetrize(matrix: jnp.ndarray) -> jnp.ndarray:
     return 0.5 * (matrix + matrix.T)
+
+
+def _spd_clamped_inverse(
+    matrix: jnp.ndarray, *, rel_floor: float = 1e-8
+) -> jnp.ndarray:
+    """SPD-projected inverse of a symmetric ``matrix``.
+
+    Eigendecompose, lift any eigenvalue below ``rel_floor * max_eigenvalue``
+    up to that floor, then invert from the clamped spectrum. For a genuinely
+    SPD, well-conditioned block this is a no-op (every eigenvalue already sits
+    above the floor) and reduces to the plain inverse. For an indefinite block
+    -- which the rank-1 Kronecker path can produce when a greedy-CP weight
+    factor changes sign on a non-separable (e.g. W7-X) metric -- it projects the
+    factor back onto the SPD cone, guaranteeing the assembled tensor
+    preconditioner stays SPD so PCG/Chebyshev cannot break down.
+    """
+    evals, vecs = jnp.linalg.eigh(_symmetrize(matrix))
+    floor = rel_floor * jnp.maximum(jnp.max(evals), jnp.asarray(1e-300, jnp.float64))
+    clamped = jnp.maximum(evals, floor)
+    return _symmetrize((vecs * (1.0 / clamped)) @ vecs.T)
 
 
 def _simultaneous_diagonalize_pair(M: jnp.ndarray, A: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:

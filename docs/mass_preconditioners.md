@@ -830,3 +830,185 @@ The final mass-preconditioner picture is simple.
 - with `k = 2` rank `3` left as an exposed tuning option rather than the
   default because the measured extra solve gain has not yet been weighed
   against additional setup cost.
+
+See §10 for the W7-X (strongly non-separable) findings, which add an
+important caveat: on a non-separable metric the CP factorization must be
+**non-negative** (NTF) to stay SPD, and the exact tensor inverse is capped at
+rank `2`.
+
+## 10. Strongly non-separable geometry (W7-X) — NTF and the rank-2 ceiling
+
+*Investigation 2026-06-26. Sweep: `outputs/overnight_sweep/2026-06-26/00-54-05`;
+NTF re-runs under `outputs/ntf_retest/`, `outputs/ntf_validate/`,
+`outputs/ntf_rank34/`.*
+
+### 10.1 The failure and its real cause
+
+On the W7-X stellarator the vector mass tensor preconditioner (`k = 1, 2`)
+**diverges at high polynomial degree** — `k = 1` for `p >= 4`, `k = 2` for
+`p >= 5` — while `k = 0, 3` (scalar) stay cheap at all `p`. The cause is *not*
+the geometry and *not* the dropped off-diagonal metric:
+
+- The geometry is healthy. The Jacobi baseline, which uses the **true** mass
+  matrix built from the same metric/Jacobian fields, converges cleanly to
+  `1e-11` at `p = 5` (`k=1`: 6768 it, `k=2`: 4516 it), only ~30% worse
+  conditioned than the smooth geometries. So the true operator is SPD and
+  well-behaved; no mesh fold, no near-singular Jacobian.
+- The metric is mostly diagonal, so off-diagonal coupling is not the issue.
+
+The real issue is **diagonal ≠ separable**. Each diagonal weight
+`W^{(k)}(r,\theta,\zeta)` is a fully *non-separable* positive function. The
+tensor route forces separability via the CP fit, and the **greedy** CP fit
+(sequential rank-1 against a residual) produces sign-changing factors past
+rank 1 — those make the assembled rank-2 Kronecker surrogate **indefinite**
+(failed Cholesky anchor / non-positive fast-diagonalization denominator),
+which is what blows PCG up to `nan`. Plain rank-1 stays SPD but is too poor an
+approximation and stalls.
+
+### 10.2 Fix: non-negative CP (NTF), now the default
+
+We replace greedy CP with a **joint non-negative tensor factorization** (NTF,
+Lee–Seung multiplicative updates) for the mass coefficient fields
+(`_cp_ntf_3tensor` / `_ntf_terms` in `mrx/preconditioners.py`). Because
+`W^{(k)} >= 0` and every factor is `>= 0`, each per-axis weighted mass
+`B diag(quad·w) B^T` is SPSD and the assembled Kronecker surrogate is **SPD by
+construction at any rank** — no clamp, no dense pseudo-inverse fallback. NTF is
+now the default; `MRX_CP_GREEDY=1` restores the legacy greedy fit for A/B.
+
+Result on W7-X (`12x24x12`, dbc, avg CG iters):
+
+| case | greedy r2 | NTF r2 |
+|---|---|---|
+| `k=1` p4 | `nan` | **68** |
+| `k=1` p5 | `nan` | **91** |
+| `k=2` p4 | 94 | **67** |
+| `k=2` p5 | `nan` | **fails** (rank-2 insufficient) |
+
+NTF rank-1 is numerically identical to greedy rank-1 where the latter worked,
+including **cylinder's exact 1-iteration convergence** (separable metric — the
+NTF SVD init is exact for a rank-1 tensor), so there is no regression on the
+easy cases.
+
+### 10.3 Two hard limits this exposed
+
+1. **Exact inversion is capped at rank 2.** Fast diagonalization inverts a sum
+   of at most two Kronecker terms (one can simultaneously diagonalize a *pair*
+   of symmetric matrices per axis, not three). For `rank >= 3` the code builds
+   the modal basis from the leading two terms and keeps only the **diagonals**
+   of the projected extra terms — the inverse is no longer exact. So rank-3+ is
+   a better *fit* but an approximate *inverse*; gains are not guaranteed.
+
+2. **NTF trades approximation power for the SPD guarantee, and rank does not
+   buy it back.** On the toroid, greedy rank-2 reaches ~5 iters (its
+   sign-changing second term fits the `1/R` coupling efficiently and happens to
+   stay SPD), but NTF is stuck at ~12 iters at **every** rank tested
+   (r2 = 12, r3 = 12, r4 = 11). Non-negativity cannot represent the toroidal
+   metric as compactly, and higher NTF rank does not recover it. So
+   "always-NTF" is robust but pays a real, persistent cost where greedy's
+   sign-changing fit was both better and (by luck) PSD.
+
+### 10.4 Safe envelope and open items
+
+- **Safe today (NTF default):** `k=0,3` all `p`; **`k=1` through `p5`** (NTF
+  rank-2: p4 = 68 it, p5 = 91 it; rank-1 stalls so rank-2 is required); `k=2`
+  through `p4` (67 it). **`k=2` p5 is the only genuine wall** — NTF rank-2/3/4
+  all fail to converge (residual crawls 0.83 -> 0.26 -> 0.10 but never reaches
+  tol), so no rank-≤2 separable surrogate solves it and inexact rank-3/4 only
+  creeps.
+- **Proposed next step — single-out-one-axis / exact cross-section.** Factor
+  out the most-separable axis as rank-1 and keep the hard cross-section as an
+  *exact* 2-D weighted mass (SPD by construction, no separability assumption,
+  no sign issues). This spends the exact 2-term budget where the geometry is
+  hard and side-steps both greedy-indefiniteness and the NTF quality loss. It
+  necessarily makes the singled-out axis rank-1 (a `2-2-1`-type structure);
+  genuine rank-2-in-all-three needs 4 Kronecker terms and is not exactly
+  invertible. Viability hinges on the singular-value decay of the weight
+  tensor's mode unfoldings (which axis is near rank-1) — **diagnostic pending**.
+- **Re-run scope** (all `MRX_CP_GREEDY` unset, `--groups mass`): NTF only moves
+  the mass blocks (`k=0..3`); the stiffness preconditioners in `mrx/operators.py`
+  call greedy CP directly and are unaffected. Necessary: W7-X all `p` + both
+  resolutions; regression guard: cylinder/toroid `p3`/`p5` (done — clean except
+  the documented toroid quality cost). Skip all `k`-stiffness baselines.
+
+### 10.5 Which weights are hard, analytically
+
+From the toroidal metric (orthogonal columns → diagonal `g`):
+`g_rr = a^2`, `g_θθ = a^2 r^2`, `g_ζζ = R^2`, `J = a^2 r R`, with
+`R = R0 + a r cosθ`. Cancelling constants, the diagonal weights reduce to:
+
+| block | weight | ~form | type |
+|---|---|---|---|
+| M0 | `J` | `rR` | grows-with-r — **hard** |
+| M3 | `1/J` | `1/(rR)` | `1/r` — **easy** |
+| M1 `αrr` | `J g^{rr}` | `rR` | **hard** |
+| M1 `αθθ` | `J g^{θθ}` | `R/r` | `1/r` — **easy** |
+| M1 `αζζ` | `J g^{ζζ}` | `r/R` | **hard** |
+| M2 `βrr` | `g_{rr}/J` | `1/(rR)` | `1/r` — **easy** |
+| M2 `βθθ` | `g_{θθ}/J` | `r/R` | **hard** |
+| M2 `βζζ` | `g_{ζζ}/J` | `R/r` | `1/r` — **easy** |
+
+M1 is the diagonal of the IGA-paper coefficient
+`Q = det(J_F) J_F^{-T} K J_F^{-1}` (`K=I`); see
+`papers/preconditioner/IGA_sylvester_revised_submitted.tex` eq. (3.8), whose
+Prop. 4.1 ties CG convergence to the spread of `Q`'s eigenvalues.
+
+**Rule (magnitude-weighted SVD).** `1/r`-type weights peak near the axis where
+they collapse to `1/r ⊗ const` → **rank-1**; the angular coupling lives only
+where the weight is small. `r`-growing weights (`rR`, `r/R`) peak at large `r`,
+exactly where `R`'s θ/ζ variation dominates → **high θ-rank (8–10)**. The
+diagnostic `scripts/debug/w7x_weight_tensor_rank.py` confirms every case on
+W7-X (M3 `1/J` = rank 1/1/1; M2 `βζζ` = 1/1/1; M0 `J` = 3/7/6; the four hard
+weights = r-rank 3, θ-rank 8–10).
+
+Consequences: **r is always the low-rank axis (2–3); θ-ζ is the coupled plane.**
+M1 fails before M2 because M1 has 2/3 hard components vs M2's 1/3. Only the
+**four `r·R`/`r/R` weights need a richer cross-section**; the four `1/r` weights
+are already rank-1-trivial.
+
+### 10.6 Strategy: symmetric CP vs. factor-out-r (open)
+
+The exact tensor inverse is a 2-Kronecker-term budget (§10.3). Two ways to spend
+it on the mass coefficient:
+
+- **(A) symmetric CP-2** — `a1 b1 c1 + a2 b2 c2` (current default under NTF).
+  Maximum freedom for two terms; already gives `k=1` to `p5`, `k=2` to `p4`.
+- **(B) factor-out-r** — `a(r) (b1(θ) c1(ζ) + b2(θ) c2(ζ))`, i.e. rank-1 in `r`
+  times a rank-2 CP cross-section. This is exactly invertible with **only 1-D
+  eigendecompositions** — a 1-D banded solve in `r` tensored with a 2-D fast
+  diagonalization of the two-term θ-ζ sum (no dense 2-D inverse) — and is low
+  rank in every coordinate (1/2/2). It matches the metric structure (§10.5: `r`
+  is rank-1–dominant; the coupling is θ-ζ), and by not spending a term on `r` it
+  gives the cross-section a full rank-2 budget.
+
+**Decision (measured, `scripts/debug/w7x_AB_fit_compare.py`): at rank-2, A and B
+are equivalent — keep A.** B's fit residual equals A's on every weight at every
+`p` (factoring `r` to a single rank-1 profile costs `<= 0.045`, `<= 0.006` on the
+easy weights — r is the universally-separable axis), AND the cost is essentially
+identical: both are 1-D-only fast diagonalization with three paired
+decompositions and ~6 mode-multiplications per apply (B saves at most one
+mode-mult by inverting `A_r` directly). The earlier claim that B is "cheaper /
+better-structured" was wrong: A is also 1-D-only, dense-2-D-free, and low-rank
+in every coordinate. So there is no reason to switch for the rank-2 case.
+
+B becomes a genuinely different object only at `R >= 3` (the inexact regime),
+where it keeps `r` exact and confines the diagonal-truncation approximation to
+the 2-D cross-section — exactly where the fit error lives — whereas symmetric
+A spreads the truncation across all three axes including `r`. Whether that
+better-targeted truncation actually beats symmetric A-rank-R is untested.
+
+**But the binding limit is the cross-section rank, not the structure.** At
+rank-2 both A and B leave large residuals on the hard weights — `αrr`, `βθθ`
+≈ 0.28, `αθθ`, `βrr` ≈ 0.26 — because the θ-ζ cross-section genuinely needs
+**rank 3–7** (measured: M3/βζζ rank 1; αθθ/βrr rank 3; J/αζζ rank 5; αrr/βθθ
+rank 7). This residual is `p`-independent, so it is also why W7-X merely "works"
+rather than excels (M1 p3 = 93 it, not 1: the 28% fit *is* the iteration count),
+and the p5 failures are conditioning tipping a chronically-weak preconditioner
+over. A and B are equally capped here.
+
+**The lever is therefore cross-section rank `R`** (not the A-vs-B structure,
+which is a wash at rank-2). Both A and B can carry higher rank via inexact FD;
+the open question is whether higher `R` helps at all, and if so whether B's
+cross-section-confined truncation beats symmetric A's 3-D truncation. Next
+experiment: test `R = 5` (symmetric A-rank-5, already implementable, vs B-rank-5)
+on `k=2` p5 — does it rescue convergence, and how much does it accelerate the
+working cases.
