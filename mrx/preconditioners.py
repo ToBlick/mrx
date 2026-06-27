@@ -111,7 +111,7 @@ class K1TensorMassPreconditionerFactors(eqx.Module):
     arr: TensorDiagonalBlockInverseFactors
     theta: TensorDiagonalBlockInverseFactors
     zeta: TensorDiagonalBlockInverseFactors
-    use_inner_schur: bool = eqx.field(static=True, default=False)
+    bulk_schur: bool = eqx.field(static=True, default=False)
     schur_inv: Optional[jnp.ndarray] = None
 
 
@@ -125,7 +125,7 @@ class K2TensorMassPreconditionerFactors(eqx.Module):
     r_bulk: TensorDiagonalBlockInverseFactors
     theta: TensorDiagonalBlockInverseFactors
     zeta: TensorDiagonalBlockInverseFactors
-    use_inner_schur: bool = eqx.field(static=True, default=False)
+    bulk_schur: bool = eqx.field(static=True, default=False)
     schur_inv: Optional[jnp.ndarray] = None
 
 
@@ -2514,8 +2514,7 @@ def build_mass_tensor_preconditioner(
     surgery_schur_pinv_tol = float(
         cp_kwargs.get("surgery_schur_pinv_tol", cp_kwargs.get("schur_pinv_tol", 1e-8))
     )
-    k1_inner_schur = bool(cp_kwargs.get("k1_inner_schur", False))
-    k2_inner_schur = bool(cp_kwargs.get("k2_inner_schur", False))
+    bulk_schur = bool(cp_kwargs.get("bulk_schur", False))
     # Greville collocation: replace the per-component CP-fit bulk factors with the
     # unweighted-atom + pointwise-D sandwich (built by _build_greville_mass_block_factors).
     # The surgery/Schur envelope and the apply path are unchanged.
@@ -2775,14 +2774,14 @@ def build_mass_tensor_preconditioner(
             schur_inv = _assemble_surgery_schur_inverse_from_applies(
                 surgery.ass,
                 lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
-                lambda rhs_bulk, surgery=surgery, arr_factors=arr_factors, theta_factors=theta_factors, zeta_factors=zeta_factors, use_inner_schur=k1_inner_schur: (
+                lambda rhs_bulk, surgery=surgery, arr_factors=arr_factors, theta_factors=theta_factors, zeta_factors=zeta_factors, bulk_schur=bulk_schur: (
                     _apply_k1_bulk_preconditioner(
                         surgery,
                         arr_factors,
                         theta_factors,
                         zeta_factors,
                         rhs_bulk,
-                    ) if use_inner_schur else _apply_k1_bulk_diagonal_preconditioner(
+                    ) if bulk_schur else _apply_k1_bulk_diagonal_preconditioner(
                         surgery,
                         arr_factors,
                         theta_factors,
@@ -2801,7 +2800,7 @@ def build_mass_tensor_preconditioner(
                 zeta_bulk_indices=zeta_bulk_indices,
                 rt_r_size=rt_r_size,
                 rt_theta_size=rt_theta_size,
-                use_inner_schur=k1_inner_schur,
+                bulk_schur=bulk_schur,
                 arr=arr_factors,
                 theta=theta_factors,
                 zeta=zeta_factors,
@@ -2956,14 +2955,14 @@ def build_mass_tensor_preconditioner(
             schur_inv = _assemble_surgery_schur_inverse_from_applies(
                 surgery.ass,
                 lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
-                lambda rhs_bulk, surgery=surgery, r_bulk_factors=r_bulk_factors, theta_factors=theta_factors, zeta_factors=zeta_factors, use_inner_schur=k2_inner_schur: (
+                lambda rhs_bulk, surgery=surgery, r_bulk_factors=r_bulk_factors, theta_factors=theta_factors, zeta_factors=zeta_factors, bulk_schur=bulk_schur: (
                     _apply_k2_bulk_preconditioner(
                         surgery,
                         r_bulk_factors,
                         theta_factors,
                         zeta_factors,
                         rhs_bulk,
-                    ) if use_inner_schur else _apply_k2_bulk_diagonal_preconditioner(
+                    ) if bulk_schur else _apply_k2_bulk_diagonal_preconditioner(
                         surgery,
                         r_bulk_factors,
                         theta_factors,
@@ -2982,7 +2981,7 @@ def build_mass_tensor_preconditioner(
                 r_bulk_size=r_bulk_size,
                 theta_size=theta_size,
                 zeta_size=zeta_size,
-                use_inner_schur=k2_inner_schur,
+                bulk_schur=bulk_schur,
                 r_bulk=r_bulk_factors,
                 theta=theta_factors,
                 zeta=zeta_factors,
@@ -3102,10 +3101,10 @@ def _make_mass_bulk_inverse(k: int, surgery, factors):
         return lambda rhs_b: _apply_tensor_exact_block(
             None, factors.bulk, rhs_b, true_block_apply=bulk_true)
     if k == 1:
-        bulk_apply = _apply_k1_bulk_preconditioner if factors.use_inner_schur else _apply_k1_bulk_diagonal_preconditioner
+        bulk_apply = _apply_k1_bulk_preconditioner if factors.bulk_schur else _apply_k1_bulk_diagonal_preconditioner
         return lambda rhs_b: bulk_apply(surgery, factors.arr, factors.theta, factors.zeta, rhs_b)
     if k == 2:
-        bulk_apply = _apply_k2_bulk_preconditioner if factors.use_inner_schur else _apply_k2_bulk_diagonal_preconditioner
+        bulk_apply = _apply_k2_bulk_preconditioner if factors.bulk_schur else _apply_k2_bulk_diagonal_preconditioner
         return lambda rhs_b: bulk_apply(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_b)
     raise ValueError(f"surgery-Schur mass bulk inverse only supports k=0, k=1, k=2 (got k={k})")
 

@@ -387,7 +387,7 @@ def _build_k1_block_fd_preconditioner(
             surgery=surgery,
             factors=factors,
             schur_inv=jnp.zeros((1, 1), dtype=jnp.float64),
-            use_inner_schur=bool(factors.use_inner_schur),
+            use_inner_schur=bool(factors.bulk_schur),
             vector_fd_state=vector_fd_state,
             vector_fd_true_basis_state=vector_fd_true_basis_state,
             radial_banded_state=radial_banded_state,
@@ -421,7 +421,7 @@ def _build_k1_block_fd_preconditioner(
         surgery=surgery,
         factors=factors,
         schur_inv=schur_inv,
-        use_inner_schur=bool(factors.use_inner_schur),
+        use_inner_schur=bool(factors.bulk_schur),
         vector_fd_state=vector_fd_state,
         vector_fd_true_basis_state=vector_fd_true_basis_state,
         radial_banded_state=radial_banded_state,
@@ -454,7 +454,7 @@ def _build_k2_block_fd_preconditioner(seq, ops, *, dirichlet: bool, pinv_rtol: f
         raise ValueError(f"k=2 tensor stiffness payload missing for {side}")
     surgery = payload.surgery
     factors = payload.factors
-    bulk_impl = (_apply_k2_bulk_preconditioner if factors.use_inner_schur
+    bulk_impl = (_apply_k2_bulk_preconditioner if factors.bulk_schur
                  else _apply_k2_bulk_diagonal_preconditioner)
 
     def _bulk(rhs_bulk):
@@ -507,7 +507,7 @@ def _apply_k1_block_fd_bulk_from_state(state: K1BlockFDPreconditionerState, rhs_
         )
     bulk_apply_impl = (
         _apply_k1_bulk_preconditioner
-        if factors.use_inner_schur
+        if factors.bulk_schur
         else _apply_k1_bulk_diagonal_preconditioner
     )
     return bulk_apply_impl(
@@ -610,7 +610,7 @@ def _build_k1_vector_fd_bulk_state(
     model (no dense K_BB assembly).
     """
 
-    if factors.use_inner_schur:
+    if factors.bulk_schur:
         raise ValueError(
             "--pa-block-vector-fd is not compatible with --pa-block-inner-schur; "
             "both add coupling, but on different levels. Disable inner Schur "
@@ -893,7 +893,7 @@ def _build_k1_radial_banded_bulk_state(
     radial+component, block-diagonal-in-angular bulk inverse.
     """
 
-    if factors.use_inner_schur:
+    if factors.bulk_schur:
         raise ValueError(
             "--pa-block-radial-banded is not compatible with --pa-block-inner-schur."
         )
@@ -1134,7 +1134,7 @@ def _build_k1_vector_fd_true_basis_bulk_state(
     approximate FD factor bases for coupling assembly.
     """
 
-    if factors.use_inner_schur:
+    if factors.bulk_schur:
         raise ValueError(
             "--pa-block-vector-fd-true-basis is not compatible with --pa-block-inner-schur."
         )
@@ -1657,7 +1657,7 @@ def assemble_operators(
                 ks=stiff_ks,
                 rank=rank,
                 cp_kwargs={
-                    "k1_inner_schur": k1_stiff_inner_schur,
+                    "bulk_schur": k1_stiff_inner_schur,
                     "precompute_coupling": precompute_coupling,
                 },
             ),

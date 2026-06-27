@@ -226,8 +226,7 @@ def main() -> None:
         for bcheb in bcheb_list:
             for ischur in ischur_list:
                 cpk = {"block_chebyshev_steps": int(bcheb),
-                       "k1_inner_schur": bool(ischur),
-                       "k2_inner_schur": bool(ischur)}
+                       "bulk_schur": bool(ischur)}
                 ops_by_rank = {}
                 for rank in (1, 2):
                     ops_by_rank[rank] = assemble_tensor_mass_preconditioner(

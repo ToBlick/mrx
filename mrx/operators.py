@@ -2941,8 +2941,7 @@ def assemble_tensor_stiffness_preconditioner(
         cp_kwargs.get("surgery_schur_pinv_tol", cp_kwargs.get("schur_pinv_tol", 1e-8))
     )
     bulk_block_pinv_tol = float(cp_kwargs.get("bulk_block_pinv_tol", 1e-8))
-    k1_inner_schur = bool(cp_kwargs.get("k1_inner_schur", False))
-    k2_inner_schur = bool(cp_kwargs.get("k2_inner_schur", False))
+    bulk_schur = bool(cp_kwargs.get("bulk_schur", False))
 
     operators = assemble_tensor_stiffness_models(
         seq,
@@ -3160,7 +3159,7 @@ def assemble_tensor_stiffness_preconditioner(
                 bulk_apply = (
                     lambda rhs_bulk, surgery=surgery, arr_factors=arr_factors, theta_factors=theta_factors, zeta_factors=zeta_factors:
                     _apply_k1_bulk_preconditioner(surgery, arr_factors, theta_factors, zeta_factors, rhs_bulk)
-                ) if k1_inner_schur else (
+                ) if bulk_schur else (
                     lambda rhs_bulk, surgery=surgery, arr_factors=arr_factors, theta_factors=theta_factors, zeta_factors=zeta_factors:
                     _apply_k1_bulk_diagonal_preconditioner(surgery, arr_factors, theta_factors, zeta_factors, rhs_bulk)
                 )
@@ -3180,7 +3179,7 @@ def assemble_tensor_stiffness_preconditioner(
                         zeta_bulk_indices=surgery.zeta_bulk_indices,
                         rt_r_size=surgery.rt_r_size,
                         rt_theta_size=surgery.rt_theta_size,
-                        use_inner_schur=k1_inner_schur,
+                        bulk_schur=bulk_schur,
                         arr=arr_factors,
                         theta=theta_factors,
                         zeta=zeta_factors,
@@ -3356,7 +3355,7 @@ def assemble_tensor_stiffness_preconditioner(
             bulk_apply = (
                 lambda rhs_bulk, surgery=surgery, r_bulk_factors=r_bulk_factors, theta_factors=theta_factors, zeta_factors=zeta_factors:
                 _apply_k2_bulk_preconditioner(surgery, r_bulk_factors, theta_factors, zeta_factors, rhs_bulk)
-            ) if k2_inner_schur else (
+            ) if bulk_schur else (
                 lambda rhs_bulk, surgery=surgery, r_bulk_factors=r_bulk_factors, theta_factors=theta_factors, zeta_factors=zeta_factors:
                 _apply_k2_bulk_diagonal_preconditioner(surgery, r_bulk_factors, theta_factors, zeta_factors, rhs_bulk)
             )
@@ -3377,7 +3376,7 @@ def assemble_tensor_stiffness_preconditioner(
                     r_bulk_size=surgery.r_bulk_size,
                     theta_size=surgery.theta_size,
                     zeta_size=surgery.zeta_size,
-                    use_inner_schur=k2_inner_schur,
+                    bulk_schur=bulk_schur,
                     r_bulk=r_bulk_factors,
                     theta=theta_factors,
                     zeta=zeta_factors,
@@ -3431,7 +3430,7 @@ def apply_stiffness_tensor_preconditioner(
         factors = payload.factors
         rhs_s = v[surgery.surgery_indices]
         rhs_b = v[surgery.bulk_indices]
-        bulk_apply = _apply_k2_bulk_preconditioner if factors.use_inner_schur else _apply_k2_bulk_diagonal_preconditioner
+        bulk_apply = _apply_k2_bulk_preconditioner if factors.bulk_schur else _apply_k2_bulk_diagonal_preconditioner
         y = bulk_apply(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_b)
         z = factors.schur_inv @ (rhs_s - _apply_bulk_to_surgery_coupling(surgery, y))
         x_b = y - bulk_apply(
@@ -3457,7 +3456,7 @@ def apply_stiffness_tensor_preconditioner(
         factors = payload.factors
         rhs_s = v[surgery.surgery_indices]
         rhs_b = v[surgery.bulk_indices]
-        bulk_apply = _apply_k1_bulk_preconditioner if factors.use_inner_schur else _apply_k1_bulk_diagonal_preconditioner
+        bulk_apply = _apply_k1_bulk_preconditioner if factors.bulk_schur else _apply_k1_bulk_diagonal_preconditioner
         y = bulk_apply(surgery, factors.arr, factors.theta, factors.zeta, rhs_b)
         z = factors.schur_inv @ (rhs_s - _apply_bulk_to_surgery_coupling(surgery, y))
         x_b = y - bulk_apply(
@@ -5997,7 +5996,7 @@ def _build_mass_surgery_bulk_apply(
         tensor = None
         if _tensor_available(seq, operators, k):
             tensor = _select_mass_tensor_factors(operators.mass_preconds, k, dirichlet)
-        use_inner_schur = True if tensor is None else tensor.use_inner_schur
+        bulk_schur = True if tensor is None else tensor.bulk_schur
 
         arr_spec = _normalize_recursive_scalar_leaf_spec(spec)
         scalar_spec = _normalize_mass_preconditioner_spec_for_degree(spec, k=3)
@@ -6063,7 +6062,7 @@ def _build_mass_surgery_bulk_apply(
             rhs_zeta = rhs_bulk[
                 surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size
             ]
-            if not use_inner_schur:
+            if not bulk_schur:
                 return jnp.concatenate([
                     r_apply(rhs_r),
                     theta_apply(rhs_theta),
@@ -6082,7 +6081,7 @@ def _build_mass_surgery_bulk_apply(
         tensor = None
         if _tensor_available(seq, operators, k):
             tensor = _select_mass_tensor_factors(operators.mass_preconds, k, dirichlet)
-        use_inner_schur = True if tensor is None else tensor.use_inner_schur
+        bulk_schur = True if tensor is None else tensor.bulk_schur
 
         scalar_spec = _normalize_mass_preconditioner_spec_for_degree(spec, k=3)
 
@@ -6142,7 +6141,7 @@ def _build_mass_surgery_bulk_apply(
                 surgery.r_bulk_size + surgery.theta_size:
                 surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size
             ]
-            if not use_inner_schur:
+            if not bulk_schur:
                 return jnp.concatenate([
                     r_apply(rhs_r),
                     theta_apply(rhs_theta),
@@ -6202,12 +6201,12 @@ def _build_mass_surgery_bulk_apply(
         if k == 0:
             return surgery, lambda rhs: _apply_tensor_diagonal_block(tensor.bulk, rhs)
         if k == 1:
-            use_inner_schur = tensor.use_inner_schur
+            bulk_schur = tensor.bulk_schur
             r_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.arr, rhs)
             theta_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.theta, rhs)
             zeta_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.zeta, rhs)
         elif k == 2:
-            use_inner_schur = tensor.use_inner_schur
+            bulk_schur = tensor.bulk_schur
             r_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.r_bulk, rhs)
             theta_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.theta, rhs)
             zeta_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.zeta, rhs)
@@ -6218,7 +6217,7 @@ def _build_mass_surgery_bulk_apply(
         if k == 0:
             return surgery, lambda rhs, inv=diaginv[surgery.surgery_size:]: inv * rhs
         if k == 1:
-            use_inner_schur = True
+            bulk_schur = True
             r_inv = diaginv[surgery.r_indices]
             theta_inv = diaginv[surgery.theta_bulk_indices]
             zeta_inv = diaginv[surgery.zeta_bulk_indices]
@@ -6226,7 +6225,7 @@ def _build_mass_surgery_bulk_apply(
             theta_apply = lambda rhs, inv=theta_inv: inv * rhs
             zeta_apply = lambda rhs, inv=zeta_inv: inv * rhs
         elif k == 2:
-            use_inner_schur = True
+            bulk_schur = True
             r_inv = diaginv[surgery.r_bulk_indices]
             theta_inv = diaginv[surgery.theta_indices]
             zeta_inv = diaginv[surgery.zeta_indices]
@@ -6317,7 +6316,7 @@ def _build_mass_surgery_bulk_apply(
                 surgery.r_bulk_size + surgery.theta_size:
                 surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size
             ]
-            if not use_inner_schur:
+            if not bulk_schur:
                 return jnp.concatenate([
                     r_apply(rhs_r),
                     theta_apply(rhs_theta),
@@ -6352,7 +6351,7 @@ def _build_mass_surgery_bulk_apply(
         rhs_r = rhs_bulk[:surgery.rt_r_size]
         rhs_theta = rhs_bulk[surgery.rt_r_size:surgery.bulk_rt_size]
         rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
-        if not use_inner_schur:
+        if not bulk_schur:
             return jnp.concatenate([
                 r_apply(rhs_r),
                 theta_apply(rhs_theta),

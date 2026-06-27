@@ -294,8 +294,7 @@ def main() -> None:
             operators = assemble_tensor_mass_preconditioner(
                 seq, operators=base_operators, ks=tuple(args.ks), rank=rank,
                 cp_kwargs={
-                    "k1_inner_schur": args.inner_schur,
-                    "k2_inner_schur": args.inner_schur,
+                    "bulk_schur": args.inner_schur,
                 },
             )
             args._active_rank = rank

@@ -1161,7 +1161,7 @@ def _k1_bulk_inverse_dense(
     )
     surgery = payload.surgery
     factors = payload.factors
-    bulk_apply = _apply_k1_bulk_preconditioner if factors.use_inner_schur else _apply_k1_bulk_diagonal_preconditioner
+    bulk_apply = _apply_k1_bulk_preconditioner if factors.bulk_schur else _apply_k1_bulk_diagonal_preconditioner
     bulk_inv = _assemble_dense_from_apply(
         lambda x: bulk_apply(surgery, factors.arr, factors.theta, factors.zeta, x),
         int(surgery.bulk_indices.shape[0]),
@@ -1194,7 +1194,7 @@ def dense_k1_bulk_inverse_summary(
 
     summary = _dense_local_preconditioned_summary(K_bulk, M_bulk, bulk_inv, tol=tol)
     summary.update({
-        "use_inner_schur": bool(factors.use_inner_schur),
+        "use_inner_schur": bool(factors.bulk_schur),
         "bulk_inverse_vs_exact_pinv_relative_error": _relative_fro_error_matrix(bulk_inv, exact_bulk_pinv),
     })
     return summary
@@ -1268,7 +1268,7 @@ def dense_k1_surgery_schur_summary(
     zeta_local = jnp.arange(theta_size, theta_size + zeta_size)
 
     summary = {
-        "use_inner_schur": bool(factors.use_inner_schur),
+        "use_inner_schur": bool(factors.bulk_schur),
         "surgery_size": int(surgery_indices.shape[0]),
         "theta_surgery_size": int(theta_size),
         "zeta_surgery_size": int(zeta_size),
@@ -1331,7 +1331,7 @@ def dense_k1_schur_correction_summary(
     zeta_local = jnp.arange(theta_size, theta_size + zeta_size)
 
     return {
-        "use_inner_schur": bool(factors.use_inner_schur),
+        "use_inner_schur": bool(factors.bulk_schur),
         "exact_correction": _schur_correction_split_summary(
             exact_correction,
             exact_correction,
@@ -1453,7 +1453,7 @@ def dense_k1_surgery_response_summary(
             zeta_columns.append(entry)
 
     return {
-        "use_inner_schur": bool(factors.use_inner_schur),
+        "use_inner_schur": bool(factors.bulk_schur),
         "theta_surgery_size": int(theta_size),
         "zeta_surgery_size": int(zeta_size),
         "theta_sources": _summarize_response_columns(theta_columns),
@@ -1538,7 +1538,7 @@ ops_k1_inner_schur = assemble_tensor_stiffness_preconditioner(
     operators=ops,
     ks=(1,),
     rank=RANK,
-    cp_kwargs={**CP_KWARGS, "k1_inner_schur": True},
+    cp_kwargs={**CP_KWARGS, "bulk_schur": True},
 )
 
 k1_inner_schur_compare = {
