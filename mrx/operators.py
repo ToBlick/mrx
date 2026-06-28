@@ -43,6 +43,7 @@ from mrx.preconditioners import (
     _build_effective_prior_terms,
     _build_extracted_mass_apply_data,
     _build_mass_referenced_tensor_block_factors,
+    _build_greville_stiffness_block_factors,
     _build_tensor_block_factors_from_terms,
     _bulk_tensor_shape,
     _core_size,
@@ -2104,6 +2105,7 @@ def assemble_tensor_stiffness_preconditioner(
     )
     bulk_block_pinv_tol = float(cp_kwargs.get("bulk_block_pinv_tol", 1e-8))
     bulk_schur = bool(cp_kwargs.get("bulk_schur", False))
+    greville = bool(cp_kwargs.get("greville", False))  # greville P_A stiffness atom (opt-in)
 
     operators = assemble_tensor_stiffness_models(
         seq,
@@ -2205,7 +2207,9 @@ def assemble_tensor_stiffness_preconditioner(
                 arr_ref_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
                 arr_op_t = stiff_t
                 arr_op_z = stiff_z
-                arr_factors = _build_mass_referenced_tensor_block_factors(
+                arr_factors = _build_greville_stiffness_block_factors(
+                    seq, k=1, shape=arr_shape, diff=(True, False, False), comp=0,
+                ) if greville else _build_mass_referenced_tensor_block_factors(
                     full_shape=arr_shape,
                     reference_r=arr_ref_r,
                     reference_t=arr_ref_t,
@@ -2250,7 +2254,9 @@ def assemble_tensor_stiffness_preconditioner(
                 theta_ref_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
                 theta_op_r = _restrict_radial_mass(full_stiff_r, 2, theta_shape[0])
                 theta_op_z = stiff_z
-                theta_factors = _build_mass_referenced_tensor_block_factors(
+                theta_factors = _build_greville_stiffness_block_factors(
+                    seq, k=1, shape=theta_shape, diff=(False, True, False), comp=1,
+                ) if greville else _build_mass_referenced_tensor_block_factors(
                     full_shape=theta_shape,
                     reference_r=theta_ref_r,
                     reference_t=theta_ref_t,
@@ -2295,7 +2301,9 @@ def assemble_tensor_stiffness_preconditioner(
                 zeta_ref_z = _assemble_unweighted_1d_mass(seq.d_basis_z_jk, seq.quad.w_z)
                 zeta_op_r = _restrict_radial_mass(full_stiff_r, 2, zeta_shape[0])
                 zeta_op_t = stiff_t
-                zeta_factors = _build_mass_referenced_tensor_block_factors(
+                zeta_factors = _build_greville_stiffness_block_factors(
+                    seq, k=1, shape=zeta_shape, diff=(False, False, True), comp=2,
+                ) if greville else _build_mass_referenced_tensor_block_factors(
                     full_shape=zeta_shape,
                     reference_r=zeta_ref_r,
                     reference_t=zeta_ref_t,
@@ -2413,7 +2421,9 @@ def assemble_tensor_stiffness_preconditioner(
             r_bulk_ref_t = _assemble_unweighted_1d_mass(seq.d_basis_t_jk, seq.quad.w_y)
             r_bulk_ref_z = _assemble_unweighted_1d_mass(seq.d_basis_z_jk, seq.quad.w_z)
             r_bulk_op_r = _restrict_radial_mass(full_stiff_r, 2, r_bulk_shape[0])
-            r_bulk_factors = _build_mass_referenced_tensor_block_factors(
+            r_bulk_factors = _build_greville_stiffness_block_factors(
+                seq, k=2, shape=r_bulk_shape, diff=(False, True, True), comp=0,
+            ) if greville else _build_mass_referenced_tensor_block_factors(
                 full_shape=r_bulk_shape,
                 reference_r=r_bulk_ref_r,
                 reference_t=r_bulk_ref_t,
@@ -2452,7 +2462,9 @@ def assemble_tensor_stiffness_preconditioner(
             theta_ref_t = _assemble_unweighted_1d_mass(seq.basis_t_jk, seq.quad.w_y)
             theta_ref_z = _assemble_unweighted_1d_mass(seq.d_basis_z_jk, seq.quad.w_z)
             theta_op_t = stiff_t
-            theta_factors = _build_mass_referenced_tensor_block_factors(
+            theta_factors = _build_greville_stiffness_block_factors(
+                seq, k=2, shape=theta_shape, diff=(True, False, True), comp=1,
+            ) if greville else _build_mass_referenced_tensor_block_factors(
                 full_shape=theta_shape,
                 reference_r=theta_ref_r,
                 reference_t=theta_ref_t,
@@ -2491,7 +2503,9 @@ def assemble_tensor_stiffness_preconditioner(
             zeta_ref_t = _assemble_unweighted_1d_mass(seq.d_basis_t_jk, seq.quad.w_y)
             zeta_ref_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
             zeta_op_z = stiff_z
-            zeta_factors = _build_mass_referenced_tensor_block_factors(
+            zeta_factors = _build_greville_stiffness_block_factors(
+                seq, k=2, shape=zeta_shape, diff=(True, True, False), comp=2,
+            ) if greville else _build_mass_referenced_tensor_block_factors(
                 full_shape=zeta_shape,
                 reference_r=zeta_ref_r,
                 reference_t=zeta_ref_t,

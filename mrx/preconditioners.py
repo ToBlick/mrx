@@ -793,12 +793,23 @@ def _apply_tensor_diagonal_block_preconditioner(
 ) -> jnp.ndarray:
     nr, nt, nz = factors.shape
     if factors.greville_inv_sqrt_D is not None:
-        # Greville sandwich: D^{-1/2} (M0_r^{-1} x M0_t^{-1} x M0_z^{-1}) D^{-1/2}.
-        f = jnp.asarray(rhs).reshape(nr, nt, nz) * factors.greville_inv_sqrt_D
-        f = jnp.einsum("ij,jkl->ikl", factors.greville_inv_r, f)
-        f = jnp.einsum("ij,kjl->kil", factors.greville_inv_t, f)
-        f = jnp.einsum("ij,klj->kli", factors.greville_inv_z, f)
-        f = f * factors.greville_inv_sqrt_D
+        s = factors.greville_inv_sqrt_D
+        f = jnp.asarray(rhs).reshape(nr, nt, nz) * s
+        if factors.greville_inv_r is not None:
+            # Product sandwich (mass / single-term): D^{-1/2}(M0_r^{-1}xM0_t^{-1}xM0_z^{-1})D^{-1/2}.
+            f = jnp.einsum("ij,jkl->ikl", factors.greville_inv_r, f)
+            f = jnp.einsum("ij,kjl->kil", factors.greville_inv_t, f)
+            f = jnp.einsum("ij,klj->kli", factors.greville_inv_z, f)
+        else:
+            # Additive-FD sandwich (greville P_A stiffness): D^{-1/2} V diag(1/denom) V^T D^{-1/2}.
+            f = jnp.einsum("ji,jkl->ikl", factors.fd_V_r, f)
+            f = jnp.einsum("ji,kjl->kil", factors.fd_V_t, f)
+            f = jnp.einsum("ji,klj->kli", factors.fd_V_z, f)
+            f = f * factors.fd_inv_denom
+            f = jnp.einsum("ij,jkl->ikl", factors.fd_V_r, f)
+            f = jnp.einsum("ij,kjl->kil", factors.fd_V_t, f)
+            f = jnp.einsum("ij,klj->kli", factors.fd_V_z, f)
+        f = f * s
         return f.reshape(-1)
     if factors.dense_inverse is not None:
         return factors.dense_inverse @ jnp.asarray(rhs).reshape(-1)
@@ -2478,6 +2489,116 @@ def _build_greville_mass_block_factors(
         greville_inv_r=inv_r,
         greville_inv_t=inv_t,
         greville_inv_z=inv_z,
+        greville_inv_sqrt_D=inv_sqrt_D,
+    )
+
+
+def _build_greville_stiffness_block_factors(
+    seq, *, k: int, shape, diff, comp: int,
+) -> TensorDiagonalBlockInverseFactors:
+    """Greville P_A: greville-collocation k=1 curl-curl / k=2 div-div bulk block.
+
+    Mirrors the greville mass atom but for a stiffness block, which is an ADDITIVE-FD
+    form (D^{-1/2} V diag(1/denom) V^T D^{-1/2}) rather than a pure product. UNWEIGHTED
+    1D atoms; the metric weight is collocated as the pointwise D sandwich.
+
+    The PRIMAL (non-differentiated) axes carry the stiffness; the differentiated axis
+    is the de Rham "form" direction (mass only). So:
+      - k=2 div-div: ONE stiff axis (= comp), weight D = 1/J, alpha = 1.
+      - k=1 curl-curl: TWO stiff axes b,c; CROSS-weighted (curl structure) K_b <- channel
+        c, K_c <- channel b; common D = sqrt(beta_cc * beta_bb), arithmetic alpha_b =
+        mean(beta_cc/D), alpha_c = mean(beta_bb/D), with beta_aa = g_aa/J.
+    The 1D stiffness atoms are singular (constant null); the modal denom deflation
+    (`_modal_regularized_inverse_denom`) zeros those modes (surgery-corrected).
+    """
+    from mrx.geometry import compute_geometry_terms  # noqa: PLC0415
+    from mrx.spline_bases import SplineBasis  # noqa: PLC0415
+    from mrx.operators import (  # noqa: PLC0415
+        _assemble_weighted_1d_mass as _m1d,
+        _assemble_weighted_1d_stiffness as _k1d,
+        _dense_incidence_1d,
+    )
+
+    nr, ntc, nzc = (int(s) for s in shape)
+    dims = (nr, ntc, nzc)
+    radial_start = 1 if diff[0] else 2
+    primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
+    deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
+    quad_w = (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
+    types = seq.basis_0.types
+    bsizes = (seq.basis_0.nr, seq.basis_0.nt, seq.basis_0.nz)
+    bases = tuple(deriv[a] if diff[a] else primal[a] for a in range(3))
+
+    def _restrict(mat, axis):
+        return _restrict_radial_mass(mat, radial_start, nr) if axis == 0 else mat
+
+    M0 = [_restrict(_m1d(bases[a], quad_w[a]), a) for a in range(3)]
+    stiff_axes = tuple(a for a in range(3) if not diff[a])
+
+    fd_V, fd_lam = [None, None, None], [None, None, None]
+    for a in range(3):
+        if a in stiff_axes:
+            K0 = _restrict(_k1d(primal[a], deriv[a], quad_w[a],
+                                _dense_incidence_1d(bsizes[a], types[a])), a)
+            fd_V[a], fd_lam[a] = _simultaneous_diagonalize_pair(M0[a], K0)
+        else:
+            fd_V[a] = _mass_orthonormal_basis(M0[a])
+            fd_lam[a] = jnp.ones((M0[a].shape[0],), dtype=jnp.float64)
+
+    # Greville abscissae + metric at the collocation points (as in the mass builder).
+    eps = 1e-7
+    grev = []
+    for axis in range(3):
+        if diff[axis]:
+            d = seq.basis_0.dΛ[axis]
+            g = SplineBasis(int(d.n), int(d.p), d.type).greville_points()
+        else:
+            g = seq.basis_0.Λ[axis].greville_points()
+        if types[axis] == "clamped":
+            g = jnp.clip(g, eps, 1.0 - eps)
+        grev.append(g)
+    grev_r = grev[0][radial_start:radial_start + nr]
+    rr, tt, zz = jnp.meshgrid(grev_r, grev[1], grev[2], indexing="ij")
+    pts = jnp.stack([rr.ravel(), tt.ravel(), zz.ravel()], axis=-1)
+    metric, _, jac = compute_geometry_terms(seq.map, pts)
+
+    def _bcast(vec, axis):
+        sh = [1, 1, 1]; sh[axis] = dims[axis]
+        return jnp.asarray(vec).reshape(sh)
+
+    def _chan(a):  # beta_aa = g_aa / J at the Greville points
+        return jnp.asarray(metric[:, a, a] / jac).reshape(dims)
+
+    denom = jnp.zeros(dims, dtype=jnp.float64)
+    if k == 2:
+        a = stiff_axes[0]
+        D = jnp.asarray(1.0 / jac).reshape(dims)
+        denom = denom + _bcast(fd_lam[a], a)            # alpha = 1 (single channel = D)
+    else:  # k == 1
+        b, c = stiff_axes
+        wb, wc = _chan(c), _chan(b)                     # CROSS: K_b<-chan c, K_c<-chan b
+        prod = jnp.where(jnp.isfinite(wb) & jnp.isfinite(wc) & (wb > 0) & (wc > 0),
+                         wb * wc, jnp.nan)
+        D = jnp.sqrt(prod)
+        good = jnp.isfinite(D) & (D > 0)
+        scale = jnp.median(D[good]) if int(good.sum()) > 0 else jnp.asarray(1.0)
+        Dm = jnp.where(good, D, scale)
+        alpha_b = jnp.mean((wb / Dm)[good]) if int(good.sum()) > 0 else jnp.asarray(1.0)
+        alpha_c = jnp.mean((wc / Dm)[good]) if int(good.sum()) > 0 else jnp.asarray(1.0)
+        denom = denom + alpha_b * _bcast(fd_lam[b], b) + alpha_c * _bcast(fd_lam[c], c)
+        D = Dm
+
+    valid = jnp.isfinite(D) & (D > 0)
+    fin = D[valid]
+    scale = jnp.median(fin) if fin.size > 0 else jnp.asarray(1.0, dtype=jnp.float64)
+    D = jnp.where(valid, D, scale)
+    inv_sqrt_D = 1.0 / jnp.sqrt(D)
+
+    return TensorDiagonalBlockInverseFactors(
+        shape=dims,
+        fd_V_r=fd_V[0], fd_V_t=fd_V[1], fd_V_z=fd_V[2],
+        fd_lam_r=fd_lam[0], fd_lam_t=fd_lam[1], fd_lam_z=fd_lam[2],
+        fd_inv_denom=_modal_regularized_inverse_denom(denom, relative_tol=1e-8),
         greville_inv_sqrt_D=inv_sqrt_D,
     )
 
