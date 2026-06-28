@@ -31,6 +31,7 @@ stiffness = $D^{-1/2}\cdot$ additive-FD (`_fd_apply_3d`) $\cdot D^{-1/2}$.
 | `04ed96b` | 3 | rename inner-Schur → **`bulk_schur`** (one flag, default off). Verified live: ~30–45% on W7-X, inert on toroid (orthogonal metric → no coupling). |
 | `14ac736` | 4a | delete experimental greville Laplacian variants (radial_dense/sylvester/pencil/pair_d, geom/minimax α). |
 | `ccb502e` | 4b | **greville is the production DEFAULT** for mass + k=0 Laplacian. Deleted the k=0 CP-FD path + dead schur modes (kept only `tensor_probe`). Trimmed `K0TensorHodgePreconditionerFactors` to 11 fields. **CP core + stiffness preconditioner KEPT** (P_A substrate). −641 lines. Verified all paths converge on toroid+w7x with the new defaults. |
+| `e5fd04f` | 3-WIP | greville **P_A stiffness** atom (k=1 curl-curl / k=2 div-div), opt-in via `cp_kwargs={'greville':True}`, CP still default. **UNVERIFIED** — see IN PROGRESS below. |
 
 Verified iteration counts (p3, 12³, new defaults, no `greville` kwarg):
 - mass k0–3: cyl 7–10, toroid 7–11, w7x k0/k3 7–10 / k1/k2 55–62.
@@ -39,8 +40,10 @@ Verified iteration counts (p3, 12³, new defaults, no `greville` kwarg):
 - greville vs tensor on the Laplacians: **tie** at p3; greville's edge is robustness (k=0 W7-X *free* where CP stalls; high-p W7-X vector mass where CP NaN'd).
 
 ## IN PROGRESS — step 3: greville P_A (k=1 curl-curl / k=2 div-div stiffness atoms)
-**Code written but UNCOMMITTED→WIP-committed, and UNVERIFIED.** (committed as WIP right after this
-doc — see `git log`; marked clearly.) Built by a fork; needs GPU spectral validation before trusting.
+**Code WIP-COMMITTED (`e5fd04f`), UNVERIFIED.** Built by a fork; needs GPU spectral validation
+before trusting. (Note: an earlier draft of this doc claimed the WIP was already committed when it
+was not — the real commit is `e5fd04f`, made 2026-06-28. The code lives there now, not in the
+working tree.) Resume by running the verify script below on GPU.
 - New: `_build_greville_stiffness_block_factors(seq, *, k, shape, diff, comp)` (preconditioners.py
   ~2484, next to the mass builder). Additive-FD on unweighted atoms + $D^{-1/2}$ sandwich.
 - Apply: extended the greville branch in `_apply_tensor_diagonal_block_preconditioner`
@@ -60,10 +63,22 @@ doc — see `git log`; marked clearly.) Built by a fork; needs GPU spectral vali
 3. Unified diff/stiff-axis rule (stiff = primal axes) — confirm k2 θ/ζ and k1 θ/ζ blocks converge.
 4. k=2 (D=1/J, α=1, single channel) should be clean.
 
-**How to validate:** assemble greville stiffness (`cp_kwargs={'greville':True}`), solve the k=1,2
-stiffness system, compare iters to jacobi AND to the CP stiffness preconditioner (still present) for
-parity, on toroid + w7x. Mirror `scripts/debug/greville_stage4b_verify.py` (use
-`apply_stiffness_tensor_preconditioner` + a stiffness matvec / `apply_stiffness`).
+**How to validate — READY TO RUN.** `scripts/debug/greville_k1_stiffness_verify.py` exists (committed
+in `e5fd04f`). It solves the real K_k x = b (in-range RHS b = K@random, since K is curl/div-singular)
+with preconditioned CG for three variants side-by-side: `none` (baseline), `greville` (the WIP P_A,
+`cp_kwargs={'greville':True}`), `cp` (parity target). Pass criteria: greville beats `none` and ties
+`cp`, k=1 and k=2, dbc + free, on toroid AND w7x. Run on GPU (no CPU solves), per geometry:
+
+```
+W7X_MAP_BATCH=256 XLA_PYTHON_CLIENT_PREALLOCATE=false OMP_NUM_THREADS=8 \
+  .venv/bin/python scripts/debug/greville_k1_stiffness_verify.py --geometry toroid
+W7X_MAP_BATCH=256 XLA_PYTHON_CLIENT_PREALLOCATE=false OMP_NUM_THREADS=8 \
+  .venv/bin/python scripts/debug/greville_k1_stiffness_verify.py --geometry w7x --nfp 5
+```
+
+(p defaults to 3; ns=(12,24,12); `--shift 0` = pure stiffness. Submit via sbatch debug-gpu per the
+env block at the bottom.) If k=1 θ/ζ iters are bad, suspect the curl-symmetry-inferred cross-channel
+weighting (flag #1) — that's the most likely fix site in `_build_greville_stiffness_block_factors`.
 
 ## REMAINING
 - **Finish step 3:** validate greville P_A per above; fix the inferred k=1 θ/ζ weighting if iters are
