@@ -109,7 +109,10 @@ def get_3d_grids(
     _x1 = jnp.linspace(x_min, x_max, nx)
     _x2 = jnp.linspace(y_min, y_max, ny)
     _x3 = jnp.linspace(z_min, z_max, nz)
-    _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
+    # indexing="ij" so the flattened point order matches the (nx, ny, nz)
+    # reshape below; the default "xy" swaps the first two axes and scrambles
+    # the surface connectivity whenever nx != ny.
+    _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3, indexing="ij"))
     _x = _x.transpose(1, 2, 3, 0).reshape(nx * ny * nz, 3)
     _y = jax.lax.map(F, _x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
     _y1 = _y[:, 0].reshape(nx, ny, nz)
@@ -215,7 +218,10 @@ def get_2d_grids(
     else:  # cut_axis == 2
         _x3 = jnp.ones(1) * cut_value
         n1, n2 = nx, ny
-    _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3))
+    # indexing="ij" so the flattened point order matches the (n1, n2) reshape
+    # of the physical coords below; "xy" swaps the first two axes and scrambles
+    # the poloidal-cut surface connectivity whenever n1 != n2 (star artifact).
+    _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3, indexing="ij"))
     _x = _x.transpose(1, 2, 3, 0).reshape(n1 * n2, 3)
     _y = jax.lax.map(F, _x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
     _y1 = _y[:, 0].reshape(n1, n2)
