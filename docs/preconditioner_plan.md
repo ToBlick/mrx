@@ -222,9 +222,6 @@ $L_0$ atom; the radial-exact family cannot beat it on W7-X (angular) and isn't r
 - **Laplacian $k=1,2,3$** — inherit the grev-combined $L_0$ atom through the existing
   Hiptmair–Xu machinery ($P_A+P_B$, gradient projection $\Pi$, nested Chebyshev
   $L_{k-1}^{-1}$); no fresh per-$k$ construction needed.
-- **Mass production integration** — wire the bulk-only debug mass
-  (`greville_bulk_precond.py`) into the production apply path for end-to-end
-  (surgery-Schur + jit) solves/timings against the stored tensor/jacobi baselines.
 - **W7-X angular term** — if better than grev-combined's W7-X iters is needed, add a few
   $(\theta,\zeta)$ cross-section terms / a $\zeta$-Fourier-block atom (the 60% residual,
   cf. [[metric-weight-separability-rule]]). This, not a radial method, is the W7-X lever.

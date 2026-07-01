@@ -1,114 +1,131 @@
 # Greville → production refactor — handoff
 
-**Goal:** make the Greville-collocation preconditioner the production atom everywhere
-and delete the CP/tensor-fit machinery, behind a compact API. Staged, GPU-verified,
-CP preserved on a branch. See `docs/preconditioner_plan.md` for the *why* (the route,
-the D0 theorem, why greville = robust production atom). This file is the *where we are*.
+**Goal:** make Greville collocation the production preconditioner atom everywhere and
+delete the CP/tensor-fit machinery, behind a compact API. See
+`docs/preconditioner_plan.md` for the *why*; this file is *where we are*.
 
 ## Branches
-- **`greville-prod`** — the working branch (all stages below). Branched from `main` (`c0e616a`).
-- **`cp-tensor-archive`** (`04ed96b`) — snapshot with the full CP machinery intact, before any
-  deletion. `git checkout cp-tensor-archive` to return to CP. **Not pushed** — consider
-  `git push -u origin cp-tensor-archive` for durability. CP is also recoverable from history.
+- **`greville-prod`** — working branch, from `main` (`c0e616a`).
+- **`cp-tensor-archive`** (`04ed96b`) — full CP machinery, pre-deletion. Not pushed (also
+  recoverable from history).
 
-## Target API (the end state)
-Replace the `cp_kwargs` sprawl with a compact surface on the preconditioner assemblers/apply:
-- `kind ∈ {"jacobi", "greville"}` — the atom (drop `tensor`/CP; `none` only for baselines).
-- `chebyshev: int` — degree, 0 = off (optional smoother on top; hardcode the Lanczos sub-knobs).
-- `bulk_schur: bool` — default **off**. k≥1 only: nested 3×3 Schur across the (r,θ,ζ) vector
-  components (on) vs omit off-diagonals (off). Already renamed/wired (stage 3).
+## Target API (end state)
+Compact surface replacing the `cp_kwargs` sprawl:
+- `kind ∈ {"jacobi", "greville"}` — atom (drop CP/`tensor`; `none` for baselines).
+- `chebyshev: int` — degree, 0 = off.
+- `bulk_schur: bool` — default off; k≥1 nested 3×3 Schur across (r,θ,ζ).
 - structural: `ks`, `dirichlet`.
 
-Production greville config (locked, see plan §D4/§E): **combined** weight mode, **geometric**
-$D$ = cbrt(channels), **arithmetic** α. Mass = $D^{-1/2}(M_0^{-1}\otimes)D^{-1/2}$; Laplacian/
-stiffness = $D^{-1/2}\cdot$ additive-FD (`_fd_apply_3d`) $\cdot D^{-1/2}$.
+Production greville config (plan §D4/§E): **combined** weight, **geometric** D=cbrt(channels),
+**arithmetic** α. Mass = D^{−1/2}(M0^{−1}⊗)D^{−1/2}; stiffness = D^{−1/2}·additive-FD·D^{−1/2}.
 
-## DONE — committed on `greville-prod`
-| commit | stage | what |
-|---|---|---|
-| `46e601f` | 1 | greville **mass** k=0–3 production-integrated (alongside CP). `_build_greville_mass_block_factors` (preconditioners.py), greville fields on `TensorDiagonalBlockInverseFactors`, sandwich apply. |
-| `f3593cf` | 2 | greville-backed **Schur-Jacobi probe** for vector Laplacians — NO code (the `tensor_probe` probe reads `mass_preconds.tensor`, operators.py ~6934, which is now greville). Verify scripts only. |
-| `04ed96b` | 3 | rename inner-Schur → **`bulk_schur`** (one flag, default off). Verified live: ~30–45% on W7-X, inert on toroid (orthogonal metric → no coupling). |
-| `14ac736` | 4a | delete experimental greville Laplacian variants (radial_dense/sylvester/pencil/pair_d, geom/minimax α). |
-| `ccb502e` | 4b | **greville is the production DEFAULT** for mass + k=0 Laplacian. Deleted the k=0 CP-FD path + dead schur modes (kept only `tensor_probe`). Trimmed `K0TensorHodgePreconditionerFactors` to 11 fields. **CP core + stiffness preconditioner KEPT** (P_A substrate). −641 lines. Verified all paths converge on toroid+w7x with the new defaults. |
-| `e5fd04f` | 3-WIP | greville **P_A stiffness** atom (k=1 curl-curl / k=2 div-div), opt-in via `cp_kwargs={'greville':True}`, CP still default. **UNVERIFIED** — see IN PROGRESS below. |
+## DONE on `greville-prod`
+| commit | what |
+|---|---|
+| `46e601f` | greville **mass** k=0–3 production-integrated (alongside CP). |
+| `04ed96b` | inner-Schur → **`bulk_schur`** (one flag, default off). ~30–45% W7-X, inert toroid. |
+| `14ac736`/`ccb502e` | greville is the **production default** for mass + k=0 Laplacian. Deleted k=0 CP-FD path + dead schur modes (kept only `tensor_probe`). CP core kept as stiffness substrate. |
+| `e5fd04f` | greville **P_A stiffness** atom (k=1 curl-curl / k=2 div-div), opt-in `cp_kwargs={'greville':True}`. **VERIFIED — see below.** |
 
-Verified iteration counts (p3, 12³, new defaults, no `greville` kwarg):
-- mass k0–3: cyl 7–10, toroid 7–11, w7x k0/k3 7–10 / k1/k2 55–62.
-- k=0 Laplacian: toroid 34/50 (dbc/free), w7x 66/97.
-- vector Laplacian (greville mass + probe): toroid 454–838, w7x 1070–3380. All converge.
-- greville vs tensor on the Laplacians: **tie** at p3; greville's edge is robustness (k=0 W7-X *free* where CP stalls; high-p W7-X vector mass where CP NaN'd).
+## Step 3 — greville P_A stiffness atom: VERIFIED (raw)
+GPU, p3, 12³. `greville_k1_stiffness_verify.py` (raw atom).
+- **k=2 div-div: greville wins everywhere** — toroid 15/17, W7-X 16/18 vs cp ~37 (dbc/free).
+  Production-ready.
+- **k=1 curl-curl raw: ties cp on toroid** (43/39); **on W7-X greville AND cp both fail** (raw
+  block-diagonal P_A leaks onto gradients). Not a greville-only defect — but see the atom
+  diagnosis: greville is a *cruder* fit than cp on W7-X and that bites inside HX too.
 
-## IN PROGRESS — step 3: greville P_A (k=1 curl-curl / k=2 div-div stiffness atoms)
-**Code WIP-COMMITTED (`e5fd04f`), UNVERIFIED.** Built by a fork; needs GPU spectral validation
-before trusting. (Note: an earlier draft of this doc claimed the WIP was already committed when it
-was not — the real commit is `e5fd04f`, made 2026-06-28. The code lives there now, not in the
-working tree.) Resume by running the verify script below on GPU.
-- New: `_build_greville_stiffness_block_factors(seq, *, k, shape, diff, comp)` (preconditioners.py
-  ~2484, next to the mass builder). Additive-FD on unweighted atoms + $D^{-1/2}$ sandwich.
-- Apply: extended the greville branch in `_apply_tensor_diagonal_block_preconditioner`
-  (preconditioners.py ~795): `greville_inv_r` set → product sandwich (mass); else → D-sandwiched
-  additive FD ($D^{-1/2}V\,\mathrm{diag}(1/\mathrm{denom})V^\top D^{-1/2}$) for stiffness.
-- Reuses existing `fd_V_*`/`fd_lam_*`/`fd_inv_denom` fields + `greville_inv_sqrt_D` (NO new fields).
-- Wiring: `assemble_tensor_stiffness_preconditioner(cp_kwargs={'greville': True})` → ternary at all
-  6 block sites (k1 arr/θ/ζ, k2 r/θ/ζ). CP is still the default here (greville opt-in).
-- **k=2 deviation from scope:** the fork used the unified additive-FD form for k=2 too (single
-  Kronecker term; singular stiffness deflated via `_modal_regularized_inverse_denom`) instead of
-  the product+pinv the scoping suggested. Cleaner (one apply path) but review.
+## HX (P_A + P_B) — k=1 result (development; prod default stays Schur-diag-Jacobi)
+`M_HX = (I−Π_g)·P_A·(I−Π_g*) + P_B`, `P_B = G0 L0⁻¹ M0 L0⁻¹ G0ᵀ`, `Π_g = G0 L0⁻¹ G0ᵀ M1`,
+`L0⁻¹` = **cheb-L0** (constant-deflated free BC). Deflates **gradients** (Π_g) + **harmonic
+forms** (`vs`). Built in `greville_k1_hx_verify.py` (library tensor P_A, greville + cp). Verified:
+- **Toroid: HX works, ~40 it, greville TIES cp** (dbc 43/40, free 39/40). raw P_A (cp & greville)
+  fails 4000 it → confirms raw was the wrong test; **greville P_A is fine in HX on benign geometry.**
+- **W7-X: HX does NOT fully converge in 4000 it.** HX-cp res 0.013/0.0015 (dbc/free) — big gain
+  over raw 0.6/0.33 but stalls (worse than unprecond. none 2e-7/3e-6). **HX-greville NaN (dbc) /
+  0.42 (free).** Two causes (see below): rough inner L0⁻¹ on W7-X, and the greville atom defect.
 
-**⚠️ MUST VALIDATE before trusting (fork's flags):**
-1. **k=1 cross-channel weighting** (curl structure: K_b←channel c, K_c←channel b). Read directly
-   only for the *arr* block; θ/ζ blocks **inferred by curl symmetry** — validate per-block iters.
-2. k=1 geomean-$D$ + arithmetic-α is an approximation (2 channel weights, one $D$) — validate on **W7-X**.
-3. Unified diff/stiff-axis rule (stiff = primal axes) — confirm k2 θ/ζ and k1 θ/ζ blocks converge.
-4. k=2 (D=1/J, α=1, single channel) should be clean.
+## greville k=1 atom — diagnosis (task #2)
+The cross-channel weighting is **correct** (verified: comp's two stiff axes b,c get `∂_b²←β_cc`,
+`∂_c²←β_bb`, β=g_aa/J — the 2-form curl energy). The W7-X metric is **mostly diagonal** (NOT
+off-diagonal — earlier claim was wrong); the hard part is that the diagonal entries vary **high-rank
+in the θ-ζ plane** like `cos(θ−nfp·ζ)` (~60% angular spread, [[metric-weight-separability-rule]]).
+The atom collapses that high-rank weight field to a **rank-1 constant in space** (single geomean
+`D=√(β_bb β_cc)` + scalar `α=mean(√(β_cc/β_bb))`). This rank-1 collapse is the real limitation —
+**but k=0 does the same collapse and survives** (conditions to ~68, SPD), so it does not by itself
+explain why k=1 NaNs. The k=1-specific failure mode is **not yet pinned**; leading suspects: curl-curl
+is *singular* (atom is its pseudo-inverse → a mis-scaled rank-1 weight misplaces the near-kernel),
+and the *cross-channel* pairing of two different high-rank fields (geomean `D` collapses badly where
+β_bb, β_cc are out of phase). Cheap probe to settle it: densify greville P_A on W7-X and inspect its
+eigenvalues (indefinite vs near-singular vs inf/nan; bulk vs surgery Schur).
 
-**How to validate — READY TO RUN.** `scripts/debug/greville_k1_stiffness_verify.py` exists (committed
-in `e5fd04f`). It solves the real K_k x = b (in-range RHS b = K@random, since K is curl/div-singular)
-with preconditioned CG for three variants side-by-side: `none` (baseline), `greville` (the WIP P_A,
-`cp_kwargs={'greville':True}`), `cp` (parity target). Pass criteria: greville beats `none` and ties
-`cp`, k=1 and k=2, dbc + free, on toroid AND w7x. Run on GPU (no CPU solves), per geometry:
+## W7-X angular atom — design (the next step)
+**FD invertibility constraint (user):** a single per-axis eigenbasis can carry **either**
+different-per-axis scalar weights (`α_rr,α_θθ,α_ζζ`) **or** one spatially-varying weight (a single
+pointwise `D` sandwich, common to all axes) — *never both*. The current atom straddles (geomean
+`D(x)` + ratio `α`); rank-1 best-effort, fine on torus, inadequate on W7-X. Three tiers to fix:
+1. **Band-aid (stay in FD):** drop the straddle — pick spatially-constant per-axis `α` *or* a single
+   varying `D` with equal `α`. Clean SPD atom (likely no NaN), but W7-X stays mediocre.
+2. **θ-ζ out of FD:** FD in r (benign), solve the θ-ζ cross-section directly per radial eigenmode —
+   there you may have both varying & anisotropic weights. Cost: a θ-ζ block solve (`nθ·nζ`) per r-mode.
+3. **(recommended) Fourier-banded** — the W7-X variation is `cos(θ−nfp·ζ)`, high-rank in (θ,ζ) but
+   ONE helical mode → in Fourier `(m_θ,m_ζ)` it couples only neighbours → the θ-ζ block is
+   banded/tridiagonal → cheap. (Or transform to helical `u=θ−nfp·ζ` → 1-D → separable, FD works.)
+   **Also lifts k=0** (same rank-1 collapse, only conditions to ~68 on W7-X) — general W7-X atom.
+**Reality check DONE** (`scripts/debug/w7x_metric_fft.py`, job 14796148, `logs/w7x_fft_14796148.out`):
+2-D FFT of β=g_aa/J over (θ,ζ) at bulk radii. Result: **β_θθ, β_rr vary ~55%** (confirms the wall),
+dominated by the **(m_θ=±2, m_ζ=±1)** mode (W7-X m=2 bean shaping, n=1/period — NOT the (±1,∓nfp)
+I'd guessed); **~70–78% of AC in that one ± pair, ~4–7 modes reach 90%** → low-rank but not rank-1.
+**β_ζζ is nearly flat (~10%)** → ζ-weight can stay constant; only θ/r weights need the angular term.
+So: tier-3 Fourier-banded is viable with a **moderate** band (≈|m_θ|≤3,|m_ζ|≤2 for ~90%), not band-1;
+tier-2 (dense θ-ζ per radial mode) is the safe option and cheap (nθ·nζ modest, captures all modes).
+A definiteness guard on the current atom would meanwhile make greville stall (not NaN) like cp.
 
-```
-W7X_MAP_BATCH=256 XLA_PYTHON_CLIENT_PREALLOCATE=false OMP_NUM_THREADS=8 \
-  .venv/bin/python scripts/debug/greville_k1_stiffness_verify.py --geometry toroid
-W7X_MAP_BATCH=256 XLA_PYTHON_CLIENT_PREALLOCATE=false OMP_NUM_THREADS=8 \
-  .venv/bin/python scripts/debug/greville_k1_stiffness_verify.py --geometry w7x --nfp 5
-```
+## DONE — nullspace solver (mrx/nullspace.py)
+- `_nullspace_shifted_preconditioner` k≥1: Richardson-1 outer → **prod default tensor + jacobi
+  Schur outer** (reads stored `schur_diaginv`, else probes once). Faster inverse iteration.
+- k=1 inverse-iteration guess: physical `1/R e_ζ` → **logical (0,0,1)** via `seq.load(...,
+  frame='ref')` (geometry-robust; coincides with 1/R only on a torus). Validated on toroid (k=0
+  const + k=1 harmonic correct). W7-X validated indirectly via the HX run.
 
-(p defaults to 3; ns=(12,24,12); `--shift 0` = pure stiffness. Submit via sbatch debug-gpu per the
-env block at the bottom.) If k=1 θ/ζ iters are bad, suspect the curl-symmetry-inferred cross-channel
-weighting (flag #1) — that's the most likely fix site in `_build_greville_stiffness_block_factors`.
+## DONE — W7-X dense matrices + conditioning + visualization
+`scripts/debug/w7x_dense_matrices.py` / `_hi.py` / `w7x_dense_derivatives.py` (GPU): dense M0–M3,
+K0–K2 (K3≡0), L1–L3, D0–D2 → `outputs/w7x_matrices/{dbc,free}/*.npy`; κ in `kappas.txt`,
+`kappas_hi.txt`. κ (dbc uncond/jacobi/best): M0 1.4e4/6.2e3/**1.85**, M1 5.6e6/4.5e3/**78**,
+M2 1.9e6/2.0e3/**112**, M3 3.7e3/410/**1.39** (greville mass); K0 2.2e3/609/**68** (greville
+Hodge); K1(L1) & K2(L2) best == jacobi (tensor_probe Schur diag = diag(L); greville lives in the
+operator). Plots: `scripts/plotting/w7x_matrix_fill.py` (per-matrix fill + log-mag, violet
+surgery/component lines) + `w7x_saddle_fill.py` (saddle `[[S_k,D],[Dᵀ,−M]]`, only the 2×2 line).
+Surgery cores: k0/k3 form 3·nz, k1 form 5·nz, k2 form 2·nz; 1-form comps 2940/5532, 2-form 2616/5496.
 
-## REMAINING
-- **Finish step 3:** validate greville P_A per above; fix the inferred k=1 θ/ζ weighting if iters are
-  bad; commit a verified version.
-- **Step 4 — final CP-core deletion** (the "all CP gone" milestone). Once greville P_A is validated:
-  flip `assemble_tensor_stiffness_preconditioner` to greville-default; delete the shared CP core
-  (`_greedy_cp_terms`, `_cp_als_3tensor`, `_build_tensor_block_factors_from_terms`,
-  `_build_diagonal_tensor_block_factors`, `_build_mass_referenced_tensor_block_factors`), the CP
-  fields on `TensorDiagonalBlockInverseFactors`, **Richardson** (`richardson_steps/omega` + applies),
-  and **Chebyshev sub-knobs** (keep only the degree; hardcode lanczos iters/inflation/deflation/
-  floor/seed). Verify stiffness (greville) + the HX benchmark still run.
-- **Step 5 — compact API.** Consolidate `cp_kwargs` → top-level `kind`/`chebyshev`/`bulk_schur`;
-  prune apply-side `kind` strings (`tensor`/`auto`/`richardson`); update callers.
-- **Cleanup:** 8 now-unreachable CP-mass `else`-branches left in `build_mass_tensor_preconditioner`
-  (4b hardwired `greville=True` above them); a stale `radial_pencil_d` comment in
-  `_apply_k0_tensor_hodge_bulk_shared_inverse`'s vicinity (that function was deleted in 4b — recheck);
-  update `docs/preconditioner_plan.md` to record production integration is done.
+## Remaining
+- **greville k=1 atom**: add the W7-X angular term (non-separable) and/or a definiteness guard;
+  re-test HX-greville on W7-X. Optional: tighter inner cheb-L0 (eps 1e-3/1e-4) to test whether the
+  HX-**cp** W7-X stall is just inner-L0⁻¹ accuracy vs a deeper P_A/angular-wall limit.
+- **Step 4 — final CP-core deletion** once greville stiffness is trusted on the production path:
+  flip stiffness default to greville; delete CP core (`_greedy_cp_terms`, `_cp_als_3tensor`,
+  `_build_*_tensor_block_factors*`), CP fields, **Richardson**, **Chebyshev sub-knobs** (keep degree).
+- **Step 5 — compact API:** `cp_kwargs` → top-level `kind`/`chebyshev`/`bulk_schur`.
+- Cleanup: dead CP-mass `else`-branches in `build_mass_tensor_preconditioner`; stale comments.
 
-## OUT OF SCOPE (future, by user's call)
-- **HX-on-greville proper** (the P_A+P_B auxiliary-space combination). "We'll look at HX-style after."
-  This refactor just makes greville the atom everywhere and removes CP. Current production vector
-  Laplacian stays **greville mass + probed Schur-Jacobi** (works, stage 2). HX = 1-to-1 atom swap later.
+## Uncommitted (this session — `greville-prod` working tree, HEAD `cf0548a`)
+Not yet committed; review before committing.
+- **`mrx/nullspace.py`** — PRODUCTION change: nullspace solver → tensor+jacobi outer; k=1 guess →
+  logical (0,0,1). Validated on toroid; W7-X only indirectly. (`docs/{handoff,preconditioner_plan}.md` edited.)
+- New scripts (untracked): `scripts/debug/{greville_k1_hx_verify,w7x_dense_matrices,
+  w7x_dense_matrices_hi,w7x_dense_derivatives,w7x_metric_fft}.py`,
+  `scripts/plotting/{w7x_matrix_fill,w7x_saddle_fill}.py`.
+- Outputs (gitignored/large): `outputs/w7x_matrices/` (npy, kappas, figures).
+- In-flight job: `14796148` (metric FFT reality check) → `logs/w7x_fft_14796148.out`.
 
-## Environment / workflow notes
-- venv python: `/kfs3/scratch/tblickhan/mrx/.venv/bin/python` (system `python3` is too old for `match`).
-- **No CPU solves** — verify on GPU via slurm. Pattern: `sbatch --partition=gpu-h100
+## Environment
+- venv: `.venv/bin/python` (system python3 too old for `match`).
+- **No CPU solves / CPU too slow at 12³** — GPU via slurm: `--partition=gpu-h100
   --account=extremedata --gpus-per-node=1 --cpus-per-task=32 --mem=128G`, env
-  `XLA_PYTHON_CLIENT_PREALLOCATE=false W7X_MAP_BATCH=128 OMP_NUM_THREADS=8 ...`. (debug-gpu caps 2 jobs.)
-- Verify scripts: `scripts/debug/greville_mass_prod_verify.py`, `greville_vec_laplacian_verify.py`,
-  `greville_bulk_schur_verify.py`, `greville_stage4b_verify.py`, `greville_vs_tensor_vec_lap.py`.
-  Build the sequence via `benchmark_graddiv_k1_preconditioner.build_sequence(cfg)`; solve info is a
-  signed scalar (negative=converged, |info|=iters).
-- Each stage: implement → `py_compile mrx/operators.py mrx/preconditioners.py` → GPU-verify → commit.
+  `XLA_PYTHON_CLIENT_PREALLOCATE=false W7X_MAP_BATCH=256 OMP_NUM_THREADS=8`.
+- Scripts in `scripts/debug/`: `greville_k1_stiffness_verify.py` (raw atom), `greville_k1_hx_verify.py`
+  (HX, calls `compute_nullspaces_iterative(betti=(1,1,0,0))` to populate the real k0/k1 nullspaces —
+  `assemble_operators` leaves zero placeholders that silently break free-BC deflation),
+  `w7x_dense_matrices*.py`, `w7x_dense_derivatives.py`. Plotting in `scripts/plotting/`.
+  Sequence via `benchmark_graddiv_k1_preconditioner.build_sequence(cfg)`; solve info signed
+  (negative=converged, |info|=iters).

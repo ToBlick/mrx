@@ -250,21 +250,17 @@ def _nullspace_shifted_preconditioner(k: int):
             k,
             MassPreconditionerSpec(kind='tensor'),
         )
-    # For k >= 1 use a matrix-free saddle preconditioner: tensor lower mass,
-    # tensor Schur inner, Richardson Schur outer (steps=1). This avoids
-    # Schur-Jacobi diagonal probing while keeping per-iteration cost low.
+    # For k >= 1 use the PRODUCTION default saddle preconditioner: tensor lower
+    # mass, tensor Schur inner, Schur-diagonal-Jacobi Schur outer (tensor_probe).
+    # Same solver as the main prod solve. The outer Jacobi diagonal is read from
+    # the stored schur_diaginv when assembled (else probed once on the fly).
     return _validate_nullspace_shifted_preconditioner(
         k,
         SaddlePointPreconditionerSpec(
             mass=default_mass_preconditioner(),
             schur=SchurPreconditionerSpec(
                 inner=MassPreconditionerSpec(kind='tensor'),
-                outer=MassPreconditionerSpec(
-                    kind='richardson',
-                    steps=1,
-                    power_iterations=30,
-                    damping_safety=0.8,
-                ),
+                outer=MassPreconditionerSpec(kind='jacobi'),
             ),
             coupled=False,
         ),
@@ -425,8 +421,13 @@ def _initial_guesses(seq, operators, k, dirichlet, n_vec):
         guesses[0] = seq.apply_inverse_mass_matrix(
             jnp.ones(seq.n3_dbc), 3, dirichlet=True, operators=operators)
     elif k == 1 and not dirichlet:
+        # Logical-frame dzeta = (0, 0, 1): the constant reference covector. This is
+        # the harmonic 1-form on a torus and a geometry-robust guess on W7-X (the
+        # physical 1/R e_zeta field coincides with it only for the toroid map).
         guesses[0] = seq.apply_inverse_mass_matrix(
-            seq.load(_toroidal_vacuum_field(seq), 1), 1, dirichlet=False, operators=operators)
+            seq.load(lambda x_hat: jnp.array([0.0, 0.0, 1.0]), 1, dirichlet=False,
+                     frame='ref'),
+            1, dirichlet=False, operators=operators)
     elif k == 2 and dirichlet:
         guesses[0] = seq.apply_inverse_mass_matrix(
             seq.load(_toroidal_vacuum_field(seq), 2, dirichlet=True), 2, dirichlet=True, operators=operators)
