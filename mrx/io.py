@@ -6,7 +6,6 @@ import time
 from typing import Literal
 
 import h5py
-import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.scipy.interpolate import RegularGridInterpolator
@@ -304,9 +303,7 @@ def project_sampled_field(
             # 1-form RHS_i = ∫ Λ^1_i · (DF^{-1} v) J w dξ
             #               = ∫ Λ^1_i · G^{-1} (DF^T v) w dξ
             # using DF^{-1} = G^{-1} DF^T  (since G = DF^T DF).
-            DF_q = jax.lax.map(
-                jax.jacfwd(seq.map), xq,
-                batch_size=mrx.MAP_BATCH_SIZE_INNER)  # (n_q, 3, 3)
+            DF_q = seq.DF_jkl                            # (n_q, 3, 3), precomputed
             DFt_v = jnp.einsum('qji,qj->qi', DF_q, v_q)  # DF^T @ v
             Ginv_DFt_v = jnp.einsum('qij,qj->qi',
                                     seq.metric_inv_jkl, DFt_v)
@@ -314,9 +311,7 @@ def project_sampled_field(
 
         else:  # k == 2
             # 2-form pullback: DF^T v,  weighted by w  (no J)
-            DF_q = jax.lax.map(
-                jax.jacfwd(seq.map), xq,
-                batch_size=mrx.MAP_BATCH_SIZE_INNER)  # (n_q, 3, 3)
+            DF_q = seq.DF_jkl                            # (n_q, 3, 3), precomputed
             DFt_v = jnp.einsum('qji,qj->qi', DF_q, v_q)  # DF^T @ v
             w_jk = DFt_v * seq.quad.w[:, None]
 
@@ -331,6 +326,98 @@ def project_sampled_field(
     if reference_domain:
         return seq.apply_inverse_reference_mass_matrix(rhs, dirichlet=dirichlet)
     return seq.apply_inverse_mass_matrix(rhs, k=k, dirichlet=dirichlet)
+
+
+def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',
+                    degree=3):
+    """Factorized dual load of a field sampled on a regular logical grid.
+
+    Interpolatory-spline analogue of the pointwise ``seq.load(callable)`` for
+    grid-sampled data.  Steps, all sum-factorized (no pointwise ``lax.map`` and
+    no per-quad-point basis sweep):
+
+    1. fit an interpolatory tensor-product B-spline to ``values`` — one square
+       collocation solve per axis (``n_basis = n_data``);
+    2. evaluate it at ``seq``'s quadrature grid via :func:`_tp_evaluate` — three
+       1D contractions, ``O(N_q (n1+n2+n3))`` instead of ``O(N_q·n1·n2·n3)``;
+    3. apply the k-form frame pullback and quadrature weight (mirrors
+       :func:`mrx.projectors.load`; ``frame='phys'`` uses the stored
+       ``seq.DF_jkl``, so no ``jax.jacfwd``);
+    4. integrate against the k-form basis and extract.
+
+    Returns the **dual load vector** (same as ``seq.load``); pass it to
+    ``seq.apply_inverse_mass_matrix`` for the projected DOFs.
+
+    Parameters
+    ----------
+    axes : tuple of 1-D arrays ``(x1, x2, x3)``  logical grid nodes per axis.
+    values : array  ``(n1,n2,n3)`` for k=0,3;  ``(n1,n2,n3,3)`` for k=1,2
+        (flattened variants accepted).
+    seq : DeRhamSequence  target sequence (``evaluate_1d`` already called).
+    k : {0,1,2,3}  form degree.
+    dirichlet : bool  use Dirichlet-constrained DOFs.
+    frame : {'ref','phys'}  interpretation of ``values`` (see
+        :func:`mrx.projectors.load`).
+    degree : int  spline degree of the interpolatory fit.
+    """
+    from mrx.differential_forms import DifferentialForm
+    from mrx.geometry import _tp_evaluate
+    from mrx.projectors import _solve_tensor_collocation_axis
+    from mrx.quadrature import integrate_against
+
+    if frame not in ('ref', 'phys'):
+        raise ValueError(f"frame must be 'ref' or 'phys', got {frame!r}")
+
+    x1, x2, x3 = (jnp.asarray(a) for a in axes)
+    n1, n2, n3 = len(x1), len(x2), len(x3)
+    ncomp = 1 if k in (0, 3) else 3
+    C = jnp.asarray(values).reshape(n1, n2, n3) if ncomp == 1 \
+        else jnp.asarray(values).reshape(n1, n2, n3, 3).transpose(3, 0, 1, 2)
+    C = C.reshape(ncomp, n1, n2, n3)
+
+    # 1. interpolatory fit basis (n_basis = n_data per axis, seq's BC types)
+    fit = DifferentialForm(0, (n1, n2, n3), (degree,) * 3, seq.basis_0.types)
+    br, bt, bz = fit.Λ
+    solve = (br.collocation_matrix(x1), bt.collocation_matrix(x2),
+             bz.collocation_matrix(x3))
+    for a in range(3):
+        C = _solve_tensor_collocation_axis(solve[a], C, axis=a + 1)  # comp is axis 0
+
+    # 2. factorized evaluation at seq's quadrature grid.  M_axis = fit basis at
+    #    seq's per-axis 1D quad points (r<->x_x, t<->x_y, z<->x_z, per evaluate_1d).
+    Mr = br.collocation_matrix(seq.quad.x_x).T          # (n1, nqr)
+    Mt = bt.collocation_matrix(seq.quad.x_y).T          # (n2, nqt)
+    Mz = bz.collocation_matrix(seq.quad.x_z).T          # (n3, nqz)
+    f = _tp_evaluate(C, Mr, Mt, Mz)                     # (ncomp, nqr, nqt, nqz)
+    # flatten with the same (0,2,1,3) transpose the geometry path uses, so the
+    # per-quad-point order matches seq.quad.x / seq.quad.w (meshgrid 'xy': t,r,z).
+    f_q = f.transpose(0, 2, 1, 3).reshape(ncomp, -1).T  # (n_q, ncomp)
+
+    # 3. frame pullback + quadrature weight (mirrors mrx.projectors.load)
+    w = seq.quad.w
+    if k == 0:
+        w_jk = f_q * (w * seq.jacobian_j)[:, None]
+    elif k == 1:
+        if frame == 'phys':                             # DF^-1 f = G^-1 DF^T f
+            DFt = jnp.einsum('qji,qj->qi', seq.DF_jkl, f_q)
+            f_q = jnp.einsum('qij,qj->qi', seq.metric_inv_jkl, DFt)
+        w_jk = f_q * (w * seq.jacobian_j)[:, None]
+    elif k == 2:
+        if frame == 'phys':                             # DF^T f
+            f_q = jnp.einsum('qji,qj->qi', seq.DF_jkl, f_q)
+        w_jk = f_q * w[:, None]
+    else:  # k == 3
+        w_jk = f_q * (w if frame == 'phys' else w / seq.jacobian_j)[:, None]
+
+    # 4. integrate against the k-form basis + extraction
+    comp_info, comp_shapes = seq._form_comp_info(k)
+    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    match k:
+        case 0: e = seq.e0_dbc if dirichlet else seq.e0
+        case 1: e = seq.e1_dbc if dirichlet else seq.e1
+        case 2: e = seq.e2_dbc if dirichlet else seq.e2
+        case 3: e = seq.e3_dbc if dirichlet else seq.e3
+    return e @ integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
 
 
 def load_and_reshape_GVEC(gvec_eq, nfp):

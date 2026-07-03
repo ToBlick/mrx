@@ -171,13 +171,12 @@ def load(seq: "DeRhamSequence", f, k: int,
 
     elif k == 1:
         if frame == 'phys':
-            DF = jax.jacfwd(seq.map)
-
-            def _pullback(x):
-                return inv33(DF(x)) @ f(x)
-
-            f_jk = jax.lax.map(_pullback, seq.quad.x,
-                                batch_size=mrx.MAP_BATCH_SIZE_INNER)
+            # DF^{-1} v = G^{-1} DF^T v  (G = DF^T DF); reuse the precomputed
+            # DF and inverse metric instead of re-running jax.jacfwd on the map.
+            v_q = jax.lax.map(f, seq.quad.x,
+                               batch_size=mrx.MAP_BATCH_SIZE_INNER)
+            DFt_v = jnp.einsum('qji,qj->qi', seq.DF_jkl, v_q)   # DF^T @ v
+            f_jk = jnp.einsum('qij,qj->qi', seq.metric_inv_jkl, DFt_v)
         else:
             f_jk = jax.lax.map(f, seq.quad.x,
                                 batch_size=mrx.MAP_BATCH_SIZE_INNER)
@@ -185,13 +184,11 @@ def load(seq: "DeRhamSequence", f, k: int,
 
     elif k == 2:
         if frame == 'phys':
-            DF = jax.jacfwd(seq.map)
-
-            def _pullback(x):
-                return DF(x).T @ f(x)
-
-            f_jk = jax.lax.map(_pullback, seq.quad.x,
-                                batch_size=mrx.MAP_BATCH_SIZE_INNER)
+            # 2-form pullback DF^T v; reuse the precomputed DF instead of
+            # re-running jax.jacfwd on the map.
+            v_q = jax.lax.map(f, seq.quad.x,
+                               batch_size=mrx.MAP_BATCH_SIZE_INNER)
+            f_jk = jnp.einsum('qji,qj->qi', seq.DF_jkl, v_q)    # DF^T @ v
         else:
             f_jk = jax.lax.map(f, seq.quad.x,
                                 batch_size=mrx.MAP_BATCH_SIZE_INNER)
