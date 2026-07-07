@@ -1,30 +1,65 @@
 # Geometric Multigrid Preconditioner for the k=0 Laplacian (prototype)
 
-**Status (2026-07-07):** `scripts/debug/laplacian_mg_k0.py` and
-`slurm/job_laplacian_mg_k0.sh` fully written. Phase 0 (cylinder 8×16×8
-`--two-level-check`, CPU) PASSED the machinery gates but exposed a real
-problem:
+**Status (2026-07-07, session 2):** Phase-0 debugging done on cylinder 8×16×8
+(CPU). The original suspects were CLEARED; the real defect was found and
+fixed; equal-area radial knot grading added. Iteration counts (dbc/free):
 
-- All SPD gates pass (sym_err ~1e-17, min_rayleigh > 0, both BCs); jacobi
-  einsum diagonal matches the probed diagonal to 9e-16; runs end-to-end.
-- MG(fd): 8/9 it (dbc/free) vs baseline 24/26 — but on a cylinder the metric
-  is exactly separable, so the FD atom is a near-exact solve; this validates
-  the cycle wiring, not MG strength.
-- **MG(jacobi): 62/94 it; MG(fdax): 62/77 it — far WORSE than baseline.**
-  These smoothers actually exercise the coarse-grid correction, and
-  `P_const_err = 0.63` (constant not reproduced in the ~p-wide axis-side
-  layer of the radial window; plan called it "benign" — it is not). Prime
-  suspect: transfer defect near the axis kills smooth-error correction.
-  Second suspect: upper Chebyshev window `[λmax/4, λmax]` too narrow for a
-  factor-2 coarsening with a plain Jacobi atom (lam_max jacobi 4.6–8.3,
-  fdax 1.23).
-- NEXT: fix the radial transfer (e.g. build P on the FULL radial basis incl.
-  the two axis functions, then restrict rows/cols to the window; or
-  renormalize P rows to reproduce constants) and/or widen `--cheb-window`;
-  rerun Phase 0, expect MG(jacobi) ≲ baseline before moving to toroid.
+- **Transfer defect cleared.** `--p-fix {rownorm,lump}` both restore
+  `P_const_err` 0.63 → ~1e-15 (free) / 5e-3 (dbc outer-layer, legitimate) but
+  iterations DON'T move (jacobi 65/103, fdax 78/98 vs unfixed 62/94, 62/77).
+  rownorm kept as default (mathematically right, free). Not the bottleneck.
+- **`--levels 1` diagnostic:** Chebyshev-only PCG (jacobi 92/132, fdax
+  87/109) ≈ two-level MG → the coarse correction contributed ~nothing; the
+  problem was spectrum coverage, not transfers.
+- **`--cheb-window 16`:** dbc modest gain (57/66); free jacobi STALLED
+  (3000 it, rel 6e-7). Window widening is not the fix and wide windows are
+  fragile under free BC.
+- **ROOT CAUSE (fdax): quadrature-divergent profile average.** The cross-axis
+  mean of `g^θθ ~ 1/r²` over r∈(0,1) is dominated by the innermost Gauss
+  points (∫r⁻² diverges) → θ-stiffness weight inflated by ~an order of
+  magnitude → interior modes of S·A squashed to tiny λ → Chebyshev window
+  missed them. FIXED (no knob): radial integration in the fdax cross-axis
+  means starts at the first interior breakpoint ξ₁ (the surgery element is
+  core-handled by the Schur envelope anyway). Effect on the UNIFORM grid:
+  **MG(fdax) 78/98 → 17/21, beating baseline 24/26**; lam_max 1.23 → 5.25.
+- **Equal-area radial knots** (`--r-scale`, default 0.5; breakpoints
+  `linspace**r_scale` via the existing `DeRhamSequence(r_scale=…)`, now
+  threaded through `build_sequence`): cells ~equal disk area, first
+  breakpoint 1/n_el → 1/√n_el (0.2 → 0.45 at 5 elements) → tames the
+  near-axis 1/r² anisotropy AND helps the production baseline: baseline
+  24/26 → 18/19; **MG(fd) 6/6; MG(fdax) 9 (dbc)**.
+- **MG(jacobi) stays bad** (71/139 at r_scale 0.5) — a pointwise diagonal
+  atom + upper-window Chebyshev cannot cover this spectrum regardless of
+  transfers/window. That answers the smoother comparison: the 1D
+  eigendecomposed atoms (fd/fdax) are the way.
+- **RESOLVED: free-BC fdax SPD failure was the SIGNED pseudoinverse on the
+  rebuilt Schur, NOT the eigenvalue estimate.** Dense probe of S·A (fdax,
+  free): λ ⊂ [0.41, 3.46], Lanczos est 3.81 — a valid bound (power iteration
+  would change nothing; top of spectrum is a cluster 3.46/3.41/3.41…, gap
+  ratio 0.98, where Lanczos ≫ power anyway). The true free-BC core Schur is
+  singular-PSD (constant null vector); the rebuild `ass − C0ᵀ B_mg C0` puts
+  that direction at ± tiny, and a STRONG B_mg (λ(SA) up to 3.46 > 1) can land
+  it slightly negative — `_symmetric_pseudoinverse` inverts by magnitude
+  WITH SIGN (`preconditioners.py:1910`) → −O(10³) Rayleigh. The old weak
+  fdax masked this latent trap (production FD under-approximates → PSD by
+  luck). FIX: `_psd_pseudoinverse` in the script (invert only the positive
+  part) for the Schur rebuild + coarsest solve. ⚠ production
+  `_symmetric_pseudoinverse` carries the same trap for any future strong
+  preconditioner — fix in `mrx/` when wiring production.
+- **Phase 0 PASSES (all gates, both BCs), cylinder 8×16×8, r_scale 0.5:**
+  baseline 18/19 · MG(fd) 6/7 · **MG(fdax) 9/10** · MG(jacobi) 71/139;
+  sym_err ~1e-17, min_rayleigh ∈ [15.6, 56.6]. At ~6.9 A-units/it (m=2) vs
+  baseline 1.4, fdax is ~2× iteration reduction — below the 5× break-even at
+  this size; the h-sweep decides (MG wins if h-flat while baseline grows).
+- NEXT: Phase 1 h-check on cylinder (12,24,12)/(16,32,16), m∈{1,2}, CPU;
+  then toroid (Phase 2) dbc+free — first geometry where fd's 1/3-averaging
+  is inexact and fdax's per-axis capture is actually tested. jacobi is
+  answered (drop from the default smoother list to save run time).
 
 Laptop note: cylinder/toroid/rotating_ellipse run on CPU out of the box; w7x
 needs the fitted map data (gitignored `data/`) and a GPU — cluster only.
+(Currently NO slurm/GPU access — small local CPU tests only; the sweep
+phases 3–4 wait until cluster access returns.)
 Repro: `python scripts/debug/laplacian_mg_k0.py --geometry cylinder --ns 8 16 8 --two-level-check`
 (~2.5 min CPU).
 

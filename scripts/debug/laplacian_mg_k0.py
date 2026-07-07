@@ -14,7 +14,10 @@ one of three smoother atoms (the comparison this prototype exists to measure):
           Greville points + global per-term alpha means (the "1/3 version")
   fdax    axis-averaged FD: D = J at Greville points; per axis the generalized
           eigenpair (M_a, K_a[gbar^aa(x_a)]) with gbar^aa = quad-weighted mean
-          of g^aa over the OTHER two axes; denom lam_r+lam_t+lam_z, no alphas.
+          of g^aa over the OTHER two axes (radial integration from the first
+          interior breakpoint xi_1 outward -- the surgery element is core-
+          handled and mean(1/r^2) over (0,1) is quadrature-divergent); denom
+          lam_r+lam_t+lam_z, no alphas.
           Captures each g-factor's variation along its own axis; the cross-axis
           part (e.g. g^tt ~ 1/r^2) is the structural residual.
 
@@ -101,12 +104,14 @@ def coarsen_ns(ns, p, factors, dirichlet_any=True):
     return None if out == tuple(ns) else out
 
 
-def build_coarse_sequence(fine_seq, ns_c, p, tol, maxiter):
+def build_coarse_sequence(fine_seq, ns_c, p, tol, maxiter, r_scale):
     """Rediscretized coarse level reusing the FINE geometry map (no re-fit;
-    jacfwd re-evaluated at the coarse quad points only)."""
+    jacfwd re-evaluated at the coarse quad points only). Same radial knot
+    grading rule (r_scale) as the fine level."""
     cseq = bench.DeRhamSequence(
         tuple(int(v) for v in ns_c), (p, p, p), 2 * p, TYPES,
-        polar=True, tol=tol, maxiter=maxiter, betti_numbers=BETTI)
+        polar=True, tol=tol, maxiter=maxiter, r_scale=r_scale,
+        betti_numbers=BETTI)
     cseq.evaluate_1d()
     cseq.assemble_reference_mass_matrix()
     cseq.set_map(fine_seq.map)
@@ -152,17 +157,33 @@ def build_prolongation_1d(fine_basis, coarse_basis):
     return jnp.linalg.solve(C_ff, C_cf)
 
 
-def build_bulk_transfers(fine_seq, coarse_seq, dirichlet):
+def build_bulk_transfers(fine_seq, coarse_seq, dirichlet, p_fix="none"):
     """(Pr, Pt, Pz) between the two levels' BULK grids. Radial window starts
     at 2 always; the dirichlet flag drops the LAST radial function (encoded in
-    each level's own nr_bulk)."""
+    each level's own nr_bulk).
+
+    p_fix repairs the axis-side constant-reproduction defect caused by
+    dropping the two coarse axis columns (the full P reproduces constants by
+    partition of unity; the window slice loses their mass in the first ~p
+    fine rows). Both variants touch ONLY the axis-side deficiency -- the dbc
+    outer-side truncation is left alone (error satisfies the BC there):
+      rownorm: scale row i by 1/(1 - c_i), c_i = mass in dropped cols 0,1
+      lump:    add the dropped cols' weights onto the first kept coarse col
+    """
     Ps = []
     for ax in range(3):
         P = build_prolongation_1d(fine_seq.basis_0.Λ[ax], coarse_seq.basis_0.Λ[ax])
         if ax == 0:
             nrb_f = _bulk_tensor_shape(fine_seq, dirichlet)[0]
             nrb_c = _bulk_tensor_shape(coarse_seq, dirichlet)[0]
+            c = P[2:2 + nrb_f, 0] + P[2:2 + nrb_f, 1]
             P = P[2:2 + nrb_f, 2:2 + nrb_c]
+            if p_fix == "rownorm":
+                P = P / (1.0 - c)[:, None]
+            elif p_fix == "lump":
+                P = P.at[:, 0].add(c)
+            elif p_fix != "none":
+                raise ValueError(f"unknown p_fix {p_fix!r}")
         Ps.append(P)
     return tuple(Ps)
 
@@ -221,15 +242,26 @@ def k0_bulk_stiffness_diagonal(seq, bulk_shape):
 
 
 def fdax_axis_profiles(seq):
-    """gbar^aa(x_a): quad-weighted mean of g^aa over the other two axes."""
+    """gbar^aa(x_a): quad-weighted mean of g^aa over the other two axes.
+
+    The radial integration in the cross-axis means (pt, pz) starts at the
+    first interior breakpoint xi_1: the first element is the polar-surgery
+    region (core DOFs, handled exactly by the Schur envelope), and the plain
+    r-mean of g^tt ~ 1/r^2 over (0,1) is quadrature-divergent -- dominated by
+    the innermost Gauss points. Over [xi_1, 1] it is ~1/xi_1, finite and
+    resolution-stable."""
     # quad-field layout is (ny, nx, nz) = (theta, r, zeta); transpose to (r, theta, zeta)
     minv = jnp.transpose(
         _reshape_quadrature_matrix_field(seq, seq.geometry.metric_inv_jkl), (1, 0, 2, 3, 4))
+    p_r = seq.ps[0]
+    xi1 = jnp.asarray(seq.basis_0.Λ[0].T)[p_r + 1]
+    wx_cut = seq.quad.w_x * (jnp.asarray(seq.quad.x_x) >= xi1)
     wx, wy, wz = seq.quad.w_x, seq.quad.w_y, seq.quad.w_z
-    sx, sy, sz = jnp.sum(wx), jnp.sum(wy), jnp.sum(wz)
+    sy, sz = jnp.sum(wy), jnp.sum(wz)
+    sxc = jnp.sum(wx_cut)
     pr = jnp.einsum('qrs,r,s->q', minv[..., 0, 0], wy, wz) / (sy * sz)
-    pt = jnp.einsum('qrs,q,s->r', minv[..., 1, 1], wx, wz) / (sx * sz)
-    pz = jnp.einsum('qrs,q,r->s', minv[..., 2, 2], wx, wy) / (sx * sy)
+    pt = jnp.einsum('qrs,q,s->r', minv[..., 1, 1], wx_cut, wz) / (sxc * sz)
+    pz = jnp.einsum('qrs,q,r->s', minv[..., 2, 2], wx_cut, wy) / (sxc * sy)
     floor = 1e-8
 
     def clip(v):
@@ -342,13 +374,31 @@ def make_cheb_smoother(A, S, steps, lam_min, lam_max):
     return smooth
 
 
-def estimate_lam_max(A, S, nb, free_bc, seed=0, iters=16):
+def estimate_lam_max(A, S, nb, free_bc, seed=0, iters=32):
     orth = (jnp.ones((1, nb), dtype=jnp.float64) / np.sqrt(nb)) if free_bc else None
     _, lam_max = _estimate_chebyshev_lanczos_bounds_apply(
         A, S, nb, lanczos_iterations=iters, lanczos_max_eig_inflation=1.1,
         lanczos_min_eig_deflation=0.85, lanczos_min_eig_floor_fraction=1e-3,
         seed=seed, orthogonal_vectors=orth)
     return float(lam_max)
+
+
+def _psd_pseudoinverse(mat, relative_tol=1e-8):
+    """Pseudoinverse restricted to the POSITIVE part of the spectrum.
+
+    The production `_symmetric_pseudoinverse` inverts eigenvalues by
+    magnitude WITH SIGN. The rebuilt free-BC Schur `ass - C0^T B C0` is
+    singular-PSD analytically (constant null vector), but with a strong B_mg
+    the null direction evaluates to a small value of EITHER sign; a slightly
+    negative eigenvalue then survives the magnitude cutoff and is inverted to
+    a huge negative -> indefinite envelope (observed min_rayleigh ~ -6e3).
+    Projecting onto the positive part restores the true PSD semantics."""
+    mat = _symmetrize(mat)
+    w, v = jnp.linalg.eigh(mat)
+    scale = jnp.max(jnp.abs(w))
+    cutoff = relative_tol * jnp.where(scale > 0, scale, 1.0)
+    inv = jnp.where(w > cutoff, 1.0 / w, 0.0)
+    return _symmetrize((v * inv[jnp.newaxis, :]) @ v.T)
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +451,7 @@ def build_envelope(seq, ops, dirichlet, vcycle, nb, core, schur_mode):
     t_w = time.perf_counter() - t0
 
     if schur_mode == "rebuild":
-        schur_inv = _symmetric_pseudoinverse(_symmetrize(ass - C0.T @ W))
+        schur_inv = _psd_pseudoinverse(_symmetrize(ass - C0.T @ W))
     else:  # 'fd': reuse the production FD-consistent Schur (SPD-safe)
         schur_inv = factors.schur_inv
 
@@ -479,6 +529,11 @@ def main():
     ap.add_argument("--smoothers", default="jacobi,fd,fdax")
     ap.add_argument("--smooth-steps", type=int, default=2)
     ap.add_argument("--cheb-window", type=float, default=4.0)
+    ap.add_argument("--p-fix", default="rownorm", choices=["none", "rownorm", "lump"],
+                    help="repair of the axis-side radial-transfer constant defect")
+    ap.add_argument("--r-scale", type=float, default=0.5,
+                    help="radial knot grading exponent (breakpoints = linspace**r_scale); "
+                         "0.5 = equal-area cells in the disk, 1.0 = uniform")
     ap.add_argument("--schur", default="rebuild", choices=["rebuild", "fd"])
     ap.add_argument("--bc", default="both", choices=["dbc", "free", "both"])
     ap.add_argument("--baseline", action=argparse.BooleanOptionalAction, default=True)
@@ -492,13 +547,15 @@ def main():
 
     cfg = SimpleNamespace(ns=tuple(args.ns), p=args.p, geometry=args.geometry,
                           cg_tol=args.tol, cg_maxiter=args.maxiter,
-                          epsilon=args.epsilon, kappa=args.kappa, r0=args.r0, nfp=args.nfp)
+                          epsilon=args.epsilon, kappa=args.kappa, r0=args.r0, nfp=args.nfp,
+                          r_scale=args.r_scale)
     smoother_modes = [s.strip() for s in args.smoothers.split(",") if s.strip()]
     dirichlet_flags = {"dbc": [True], "free": [False], "both": [True, False]}[args.bc]
     ns_str = "x".join(str(v) for v in args.ns)
     print(f"=== MG k=0 Laplacian  {args.geometry} ns={tuple(args.ns)} p={args.p} "
           f"levels={args.levels} coarsen={tuple(args.coarsen)} m={args.smooth_steps} "
-          f"smoothers={smoother_modes} schur={args.schur} ===", flush=True)
+          f"smoothers={smoother_modes} schur={args.schur} p_fix={args.p_fix} "
+          f"cheb_window={args.cheb_window} r_scale={args.r_scale} ===", flush=True)
 
     # ---- fine level -------------------------------------------------------
     t0 = time.perf_counter()
@@ -525,7 +582,8 @@ def main():
         if nxt is None:
             print(f"[setup] coarsening stopped at {ns_l[-1]} (floors reached)", flush=True)
             break
-        cseq, cops = build_coarse_sequence(seq, nxt, args.p, args.tol, args.maxiter)
+        cseq, cops = build_coarse_sequence(seq, nxt, args.p, args.tol, args.maxiter,
+                                           args.r_scale)
         levels.append((cseq, cops))
         ns_l.append(nxt)
     t_coarse = time.perf_counter() - t0
@@ -576,7 +634,8 @@ def main():
         _, _, nb0, core0 = bulk_slices(seq, dirichlet)
 
         # transfers between consecutive levels
-        P_list = [build_bulk_transfers(levels[i][0], levels[i + 1][0], dirichlet)
+        P_list = [build_bulk_transfers(levels[i][0], levels[i + 1][0], dirichlet,
+                                       p_fix=args.p_fix)
                   for i in range(len(levels) - 1)]
         pce = ""
         if P_list:
@@ -597,7 +656,7 @@ def main():
         if len(levels) > 1:
             A_last(jnp.zeros((nb_last,), dtype=jnp.float64))
             dense = _symmetrize(_assemble_dense_from_apply(A_last, nb_last, sequential=True))
-            dense_inv = _symmetric_pseudoinverse(dense)
+            dense_inv = _psd_pseudoinverse(dense)
             jax.block_until_ready(dense_inv)
         t_dense = time.perf_counter() - t0
         print(f"[{bc}] coarsest dense probe n={nb_last}: {t_dense:.1f} s", flush=True)
@@ -649,7 +708,8 @@ def main():
                   f"({1e3 * dt / max(it, 1):.2f} ms/it) rel={rel:.1e}  "
                   f"[smoother {t_sm:.1f}s, ass {env_t['ass_s']:.1f}s, W {env_t['w_s']:.1f}s]",
                   flush=True)
-            row(bc, f"mg-{mode}", n_ext, it, dt, rel, f"{lam0:.4g}", pce, se, mr,
+            method = f"mg-{mode}" if args.p_fix == "none" else f"mg-{mode}+{args.p_fix}"
+            row(bc, method, n_ext, it, dt, rel, f"{lam0:.4g}", pce, se, mr,
                 f"{t_sm:.2f}", f"{env_t['ass_s']:.2f}", f"{env_t['w_s']:.2f}", f"{t_dense:.2f}")
 
     if csv_f:

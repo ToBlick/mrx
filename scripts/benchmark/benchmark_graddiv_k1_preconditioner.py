@@ -1551,6 +1551,7 @@ def build_sequence(args) -> DeRhamSequence:
         polar=True,
         tol=args.cg_tol,
         maxiter=args.cg_maxiter,
+        r_scale=getattr(args, "r_scale", 1.0),
         betti_numbers=BETTI,
     )
     seq.evaluate_1d()
