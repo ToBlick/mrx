@@ -1,8 +1,8 @@
 # Vector-mass (k=1/2) preconditioner: off-diagonal coupling & lump fidelity
 
-**Resume file: `docs/mass_coupling_preconditioner_handoff.md`.** Companion memory:
-`w7x-k1k2-mass-coupling-diagnosis`, `greville-collocation-route`,
-`metric-weight-separability-rule`, `mass-block-chebyshev-regression`.
+**Resume file: `docs/mass_coupling_preconditioner_handoff.md`.** Settled findings and
+dead ends (separability rule, bcheb regression, greville route, etc.):
+`docs/preconditioner_lessons.md`.
 
 ## Problem
 
@@ -115,7 +115,8 @@ below are the record (full log: `.../05-37-13/slurm_logs/w7x.log`).
 - Coupling half, if revisited: SGS with TRUE off-diagonal blocks (full-M apply per sweep), or
   dominant-pair 2×2 on r-θ only (rθ≈0.49 is the big one). Note the cost model is unfavorable
   (Mbd 4.4×/it); any coupling treatment must beat ~31 it × ~3–4× cost vs 75 × 1.
-- Chebyshev/polynomial over block-Jacobi: previously regressed (`mass-block-chebyshev-regression`).
+- Chebyshev/polynomial over block-Jacobi: previously regressed (bcheb=0 reverted default;
+  see `docs/preconditioner_lessons.md`).
 
 Stiffness (curl-curl / div-div P_A) is deferred — user has a separate plan there. The k=0
 Laplacian multigrid prototype is a separate thread: `docs/laplacian_mg_k0_plan.md`.
