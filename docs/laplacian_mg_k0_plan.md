@@ -51,10 +51,39 @@ fixed; equal-area radial knot grading added. Iteration counts (dbc/free):
   sym_err ~1e-17, min_rayleigh ∈ [15.6, 56.6]. At ~6.9 A-units/it (m=2) vs
   baseline 1.4, fdax is ~2× iteration reduction — below the 5× break-even at
   this size; the h-sweep decides (MG wins if h-flat while baseline grows).
-- NEXT: Phase 1 h-check on cylinder (12,24,12)/(16,32,16), m∈{1,2}, CPU;
-  then toroid (Phase 2) dbc+free — first geometry where fd's 1/3-averaging
-  is inexact and fdax's per-axis capture is actually tested. jacobi is
-  answered (drop from the default smoother list to save run time).
+**Phase 1 (cylinder h-sweep, r_scale 0.5) + Phase 2 (toroid), dbc/free:**
+
+| ns | baseline | MG(fd) | MG(fdax) | fdax λmax(SA) |
+|----|----------|--------|----------|---------------|
+| (8,16,8)   | 18/19 | 6/7   | 9/10  | 3.81 |
+| (12,24,12) | 25/26 | 10/11 | 14/16 | 5.40 |
+| (16,32,16) | 31/32 | 14/14 | 19/21 | 6.75 |
+
+- (m=2, `--cheb-window 4`.) MG grows ×2.1 over the sweep vs baseline ×1.7 —
+  NOT h-flat with a RELATIVE window. Cause identified: **λmax(S·A) ≈ 1.7/ξ₁
+  ~ √n_el** (2.2/3.0/3.6 vs 3.81/5.40/6.75) — the structural cross-axis g^θθ
+  residual widens as the first element shrinks — so the relative window's
+  lower edge rises (0.95→1.7) and a growing band of O(1) modes gets neither
+  smoother nor coarse-grid treatment.
+- **Window design rule (verified in two steps):** pin the lower edge at an
+  ABSOLUTE O(1) value (≈0.85 ⇒ window κ = λmax/0.85) and grow the Chebyshev
+  degree like m ≈ √κ (i.e. m ~ n^{1/4}: 3 at 8³, 4 at 16³). With the edge
+  pinned but m=3 fixed: fd 4/4→8/8, fdax 6/7→12/14 — still ×2 because
+  T₃-damping degrades 10.8→4.6 as κ 4.5→8; m=4 at κ=8 restores T₄≈9.5
+  (run in flight). Iteration counts at matched damping are the h-flatness
+  verdict.
+- **Toroid (12,24,12), all SPD gates pass, no free-BC stall:** baseline
+  26/38, MG(fd) 10/15, MG(fdax) 14/18. Same counts as the cylinder at equal
+  ns ⇒ mild curvature is not the driver; near-axis anisotropy dominates.
+  Baseline degrades under free BC (38) while MG holds ⇒ MG's margin widens
+  exactly where the production FD weakens (the W7-X direction).
+- Historical note: the free-jacobi `--cheb-window 16` stall predates the PSD
+  pseudoinverse fix and matches that bug's signature (indefinite envelope →
+  CG stall at 1e-7); wide windows are not per-se indicted.
+- NEXT: confirm h-flatness with the m~√κ rule (16³ m=4 run), wire the rule
+  into the script (auto m/window per level from λmax), then toroid h-sweep;
+  W7-X + full CSV sweeps wait for cluster access. jacobi is answered — drop
+  from default smoother list.
 
 Laptop note: cylinder/toroid/rotating_ellipse run on CPU out of the box; w7x
 needs the fitted map data (gitignored `data/`) and a GPU — cluster only.
