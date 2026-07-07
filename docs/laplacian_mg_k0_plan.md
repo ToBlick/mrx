@@ -93,9 +93,28 @@ fixed; equal-area radial knot grading added. Iteration counts (dbc/free):
 - Window/degree rule wired into the script: `--cheb-lo 0.85 --auto-m`
   (per-level κ = λmax/cheb_lo, m = max(2, round(1.414·√κ)); CSV `m` column
   reports the actual fine-level m).
-- NEXT: toroid h-sweep with the rule (8³/12³/16³, CPU); W7-X + full CSV
-  sweeps wait for cluster access. jacobi is answered — drop from default
-  smoother list.
+**Toroid h-sweep (auto rule `--cheb-lo 0.85 --auto-m`), dbc/free:**
+
+| ns | baseline | MG(fd) | MG(fdax) | fdax κ/m |
+|----|----------|--------|----------|----------|
+| (8,16,8)   | 19/28 | 7/11  | 6/10  | 4.5/3 |
+| (12,24,12) | 26/38 | 7/11  | 8/10  | 6.4/4 |
+| (16,32,16) | 32/45 | 10/13 | 10/12 | 7.9/4 |
+
+- Growth 8³→16³: baseline ×1.7/×1.6; MG(fdax) ×1.7 dbc (from a base of 6) /
+  **×1.2 free**; MG(fd) ×1.4/×1.2. Free BC meets the ≤1.3× criterion; dbc
+  nominally misses on tiny absolute counts. **The MG:baseline iteration lead
+  WIDENS with size (2.8–3.2× at 8³ → 3.2–3.75× at 16³)** — the right trend
+  for W7-X, where the baseline is weakest. The auto rule halved fdax's 12³
+  counts vs the old relative window (14/18 → 8/10).
+- Wall-clock (CPU, these sizes) still favors the baseline (fdax ~345 ms/it
+  vs ~50; lead 3.2–3.75× < the ~5–9× break-even at m=4). The wall-clock
+  verdict needs W7-X-scale on GPU.
+- Local phases 0–2 are DONE. Remaining: W7-X (`--zeta-diag`, coarsen-policy)
+  + (24,48,24) levels-3 + full CSV sweeps — all cluster-gated. jacobi is
+  answered — drop from default smoother list. Production wiring notes: use
+  the PSD pseudoinverse (`_psd_pseudoinverse`) for any rebuilt Schur; carry
+  `r_scale=0.5` + the fdax ξ₁ profile cutoff + `--cheb-lo/--auto-m` rule.
 
 Laptop note: cylinder/toroid/rotating_ellipse run on CPU out of the box; w7x
 needs the fitted map data (gitignored `data/`) and a GPU — cluster only.
