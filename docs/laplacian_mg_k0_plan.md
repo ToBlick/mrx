@@ -85,10 +85,17 @@ fixed; equal-area radial knot grading added. Iteration counts (dbc/free):
 - Historical note: the free-jacobi `--cheb-window 16` stall predates the PSD
   pseudoinverse fix and matches that bug's signature (indefinite envelope →
   CG stall at 1e-7); wide windows are not per-se indicted.
-- NEXT: confirm h-flatness with the m~√κ rule (16³ m=4 run), wire the rule
-  into the script (auto m/window per level from λmax), then toroid h-sweep;
-  W7-X + full CSV sweeps wait for cluster access. jacobi is answered — drop
-  from default smoother list.
+- **DECISION: the coarse operator stays REDISCRETIZED** (build on the
+  coarser grid, reuse the fine map) — cleaner and production-friendly (no
+  dense Galerkin PᵀAP products at scale). The variational-inconsistency
+  share of the residual ×1.5–1.6 h-growth is accepted unless the toroid
+  sweep says otherwise.
+- Window/degree rule wired into the script: `--cheb-lo 0.85 --auto-m`
+  (per-level κ = λmax/cheb_lo, m = max(2, round(1.414·√κ)); CSV `m` column
+  reports the actual fine-level m).
+- NEXT: toroid h-sweep with the rule (8³/12³/16³, CPU); W7-X + full CSV
+  sweeps wait for cluster access. jacobi is answered — drop from default
+  smoother list.
 
 Laptop note: cylinder/toroid/rotating_ellipse run on CPU out of the box; w7x
 needs the fitted map data (gitignored `data/`) and a GPU — cluster only.

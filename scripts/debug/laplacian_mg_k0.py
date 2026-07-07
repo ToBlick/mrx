@@ -529,6 +529,15 @@ def main():
     ap.add_argument("--smoothers", default="jacobi,fd,fdax")
     ap.add_argument("--smooth-steps", type=int, default=2)
     ap.add_argument("--cheb-window", type=float, default=4.0)
+    ap.add_argument("--cheb-lo", type=float, default=None,
+                    help="ABSOLUTE lower window edge; overrides --cheb-window "
+                         "(per-level window kappa = lam_max/cheb_lo). The h-sweep "
+                         "showed lam_max(SA) ~ 1/xi_1 ~ sqrt(n_el); a relative "
+                         "window then leaves a growing O(1) band untreated.")
+    ap.add_argument("--auto-m", action="store_true",
+                    help="per-level smoothing degree m = max(2, round(1.414*sqrt(kappa))) "
+                         "(matched Chebyshev damping: T_m(d/c) ~ const; calibrated on "
+                         "kappa=4.5->m=3, kappa=8->m=4). Overrides --smooth-steps.")
     ap.add_argument("--p-fix", default="rownorm", choices=["none", "rownorm", "lump"],
                     help="repair of the axis-side radial-transfer constant defect")
     ap.add_argument("--r-scale", type=float, default=0.5,
@@ -600,9 +609,10 @@ def main():
                         "setup_dense_s\n")
 
     def row(bc, method, n, it, dt, rel, lam0="", pce="", se="", mr="",
-            t_sm="", t_ass="", t_w="", t_dense=""):
+            t_sm="", t_ass="", t_w="", t_dense="", m_used=None):
+        m_val = args.smooth_steps if m_used is None else m_used
         line = (f"{args.geometry},{ns_str},{args.p},{bc},{method},{len(levels)},"
-                f"{'-'.join(map(str, args.coarsen))},{args.smooth_steps},{n},{it},"
+                f"{'-'.join(map(str, args.coarsen))},{m_val},{n},{it},"
                 f"{dt:.4f},{1e3 * dt / max(it, 1):.4f},{rel:.3e},{lam0},{pce},{se},{mr},"
                 f"{t_sm},{t_ass},{t_w},{t_coarse:.2f},{t_dense}\n")
         if csv_f:
@@ -673,7 +683,7 @@ def main():
         # MG per smoother mode
         for mode in smoother_modes:
             t0 = time.perf_counter()
-            smooth_list, lam0 = [], None
+            smooth_list, lam0, m0 = [], None, args.smooth_steps
             for lvl in range(len(levels) if len(levels) == 1 else len(levels) - 1):
                 sq, op = levels[lvl]
                 S = build_smoother_atom(sq, op, dirichlet, shape_list[lvl],
@@ -682,9 +692,16 @@ def main():
                                            seed=args.seed + lvl)
                 if lvl == 0:
                     lam0 = lam_max
+                kappa = (lam_max / args.cheb_lo if args.cheb_lo
+                         else args.cheb_window)
+                kappa = max(kappa, 1.5)  # degenerate guard (lam_max ~ cheb_lo)
+                m = (max(2, round(1.4142 * math.sqrt(kappa))) if args.auto_m
+                     else args.smooth_steps)
+                if lvl == 0:
+                    m0 = m
+                    print(f"[{bc}/{mode}] window kappa={kappa:.2f} m={m}", flush=True)
                 smooth_list.append(make_cheb_smoother(
-                    A_list[lvl], S, args.smooth_steps,
-                    lam_max / args.cheb_window, lam_max))
+                    A_list[lvl], S, m, lam_max / kappa, lam_max))
             t_sm = time.perf_counter() - t0
 
             vcycle = make_vcycle(A_list, shape_list, smooth_list, P_list, dense_inv)
@@ -710,7 +727,8 @@ def main():
                   flush=True)
             method = f"mg-{mode}" if args.p_fix == "none" else f"mg-{mode}+{args.p_fix}"
             row(bc, method, n_ext, it, dt, rel, f"{lam0:.4g}", pce, se, mr,
-                f"{t_sm:.2f}", f"{env_t['ass_s']:.2f}", f"{env_t['w_s']:.2f}", f"{t_dense:.2f}")
+                f"{t_sm:.2f}", f"{env_t['ass_s']:.2f}", f"{env_t['w_s']:.2f}",
+                f"{t_dense:.2f}", m_used=m0)
 
     if csv_f:
         csv_f.close()
