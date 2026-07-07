@@ -115,6 +115,22 @@ fixed; equal-area radial knot grading added. Iteration counts (dbc/free):
   answered — drop from default smoother list. Production wiring notes: use
   the PSD pseudoinverse (`_psd_pseudoinverse`) for any rebuilt Schur; carry
   `r_scale=0.5` + the fdax ξ₁ profile cutoff + `--cheb-lo/--auto-m` rule.
+- **Coarsest-solve cleanup (agreed, not yet implemented):** the coarsest
+  BULK block is nonsingular (core=0 ⇒ bulk functions vanish to 2nd order at
+  the axis — a point-Dirichlet-like subspace condition with no kernel
+  capacity for scalars) ⇒ plain Cholesky, no pseudoinverse/threshold. The
+  only genuinely singular object is the FINE-level rebuilt Schur (free BC,
+  analytic null 1_c) ⇒ deflate it explicitly instead of thresholding. Outer
+  CG deflation does NOT protect the envelope (both observed failures
+  happened with it active).
+- **⚠ k=1 (vector Laplacian) warning:** the bulk cutout makes the effective
+  domain a PUNCTURED DISK (annulus topology, b₁=1) — the discrete space
+  contains a mollified `dθ = θ̂/r` harmonic with Rayleigh quotient
+  ~1/log(1/ξ₁): an h-DEPENDENT, geometry-dependent near-kernel (plus
+  possible gradient-family near-kernels depending on the operator). The
+  k=0 recipe does not generalize: at the coarsest level COMPUTE the
+  near-kernel (small dense eigensolve, affordable), deflate it, and ensure
+  the transfers reproduce those vectors across levels.
 
 Laptop note: cylinder/toroid/rotating_ellipse run on CPU out of the box; w7x
 needs the fitted map data (gitignored `data/`) and a GPU — cluster only.
