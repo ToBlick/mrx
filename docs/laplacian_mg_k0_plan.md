@@ -123,14 +123,19 @@ fixed; equal-area radial knot grading added. Iteration counts (dbc/free):
   analytic null 1_c) ⇒ deflate it explicitly instead of thresholding. Outer
   CG deflation does NOT protect the envelope (both observed failures
   happened with it active).
-- **⚠ k=1 (vector Laplacian) warning:** the bulk cutout makes the effective
-  domain a PUNCTURED DISK (annulus topology, b₁=1) — the discrete space
-  contains a mollified `dθ = θ̂/r` harmonic with Rayleigh quotient
-  ~1/log(1/ξ₁): an h-DEPENDENT, geometry-dependent near-kernel (plus
-  possible gradient-family near-kernels depending on the operator). The
-  k=0 recipe does not generalize: at the coarsest level COMPUTE the
-  near-kernel (small dense eigensolve, affordable), deflate it, and ensure
-  the transfers reproduce those vectors across levels.
+- **⚠ k=1 (vector Laplacian) warning:** the bulk cutout turns the solid
+  torus (b₁=1, b₂=0) into a thickened torus SHELL (b₁=2, b₂=1). Near-null
+  count of the k=1 bulk block (Hodge: free/Neumann ↔ b₁ tunnels, dbc ↔ b₂
+  cavities): **free: 2** — the θ-loop around the removed core (mollified
+  `dθ = θ̂/r`) + the toroidal ζ-loop (exact harmonic of the FULL operator,
+  deflated by the BETTI machinery there, but perturbed into a bulk-block
+  near-null by the ring constraint); **dbc: 1** — the cavity field `∇u`,
+  u harmonic and constant per boundary torus (~`r̂/r`, θ-independent).
+  These have Rayleigh quotient ~1/log(1/ξ₁): h-dependent and decaying only
+  LOGARITHMICALLY — no threshold separates them cleanly at any resolution.
+  The k=0 recipe does not generalize: at the coarsest level COMPUTE the
+  1–2 near-kernel vectors (small dense eigensolve; seeds: dθ, ∇log r, ζ̂),
+  deflate explicitly, and ensure the transfers reproduce them across levels.
 
 Laptop note: cylinder/toroid/rotating_ellipse run on CPU out of the box; w7x
 needs the fitted map data (gitignored `data/`) and a GPU — cluster only.
