@@ -124,10 +124,14 @@ fixed; equal-area radial knot grading added. Iteration counts (dbc/free):
   (dominant setup cost) and the rebuilt-Schur fragility class; per-iteration
   cost ~unchanged (bulk apply already calls the full apply_stiffness).
   Design: additive block atom S = blockdiag(ass⁻¹, S_bulk) (core dense
-  3nz×3nz per level) inside the same Chebyshev; full-space transfers
-  P = blockdiag(I₃ ⊗ P_ζ, Pr⊗Pt⊗Pz) — constants exactly reproduced, no
-  rownorm patch; coarsest = dense full-operator probe, rank-1 shift with
-  the analytic null (free BC), Cholesky — no thresholds anywhere. Open
+  3nz×3nz per level) inside the same Chebyshev; **full-space transfers via
+  the extraction operators: P = E_f · T · E_cᵀ** (extend coarse extracted
+  DOFs to the coarse tensor grid, plain tensor-product 1D prolongation T
+  over the FULL radial basis — no window slicing, no core special-casing,
+  no rownorm — then re-extract on the fine level; keeps the cross terms
+  coarse-bulk → fine-core; R = Pᵀ); coarsest = dense full-operator probe +
+  the analytic free-BC null handled by deflation-or-shift (implementation
+  detail), Cholesky/eigh once — no magnitude thresholds anywhere. Open
   empirical question: does λ(S·A) stay tame with the core-bulk coupling
   handled iteratively? Fallback if the axis degrades: symmetric
   core-exact / bulk-Chebyshev multiplicative smoother.
