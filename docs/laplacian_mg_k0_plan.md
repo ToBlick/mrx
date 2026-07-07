@@ -69,9 +69,14 @@ fixed; equal-area radial knot grading added. Iteration counts (dbc/free):
   ABSOLUTE O(1) value (≈0.85 ⇒ window κ = λmax/0.85) and grow the Chebyshev
   degree like m ≈ √κ (i.e. m ~ n^{1/4}: 3 at 8³, 4 at 16³). With the edge
   pinned but m=3 fixed: fd 4/4→8/8, fdax 6/7→12/14 — still ×2 because
-  T₃-damping degrades 10.8→4.6 as κ 4.5→8; m=4 at κ=8 restores T₄≈9.5
-  (run in flight). Iteration counts at matched damping are the h-flatness
-  verdict.
+  T₃-damping degrades 10.8→4.6 as κ 4.5→8; **m=4 at κ=8 (T₄≈9.5, matched
+  damping): fd 6/7, fdax 10/12** ⇒ growth ×1.5–1.6 vs baseline ×1.7. Not
+  fully h-flat (target ≤1.3×) — the residual growth is NOT the smoother
+  (damping matched); leading suspects: the non-Galerkin rediscretized coarse
+  operator, and the fine/coarse ξ₁ gap annulus (fine 0.277 vs coarse 0.38 at
+  16³) invisible to the coarse space. MG holds a ~2.7× iteration lead that
+  erodes only slowly; cylinder wall-clock still favors baseline (m=4 ⇒ 9
+  A-applies/cycle).
 - **Toroid (12,24,12), all SPD gates pass, no free-BC stall:** baseline
   26/38, MG(fd) 10/15, MG(fdax) 14/18. Same counts as the cylinder at equal
   ns ⇒ mild curvature is not the driver; near-axis anisotropy dominates.
