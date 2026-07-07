@@ -115,6 +115,27 @@ fixed; equal-area radial knot grading added. Iteration counts (dbc/free):
   answered — drop from default smoother list. Production wiring notes: use
   the PSD pseudoinverse (`_psd_pseudoinverse`) for any rebuilt Schur; carry
   `r_scale=0.5` + the fdax ξ₁ profile cutoff + `--cheb-lo/--auto-m` rule.
+- **AGREED NEXT EXPERIMENT — full-space MG (drop the Schur envelope):**
+  V-cycle on the WHOLE extracted operator (core included), knob
+  `--envelope {schur,full}` for A/B on cylinder+toroid 8³/12³. Rationale:
+  the punctured-disk near-kernel pathology (k=1 section below) is an
+  artifact of the bulk cutout — the full operator's nullspace is ANALYTIC
+  (constant / BETTI harmonics); also kills the Schur probe + W precompute
+  (dominant setup cost) and the rebuilt-Schur fragility class; per-iteration
+  cost ~unchanged (bulk apply already calls the full apply_stiffness).
+  Design: additive block atom S = blockdiag(ass⁻¹, S_bulk) (core dense
+  3nz×3nz per level) inside the same Chebyshev; full-space transfers
+  P = blockdiag(I₃ ⊗ P_ζ, Pr⊗Pt⊗Pz) — constants exactly reproduced, no
+  rownorm patch; coarsest = dense full-operator probe, rank-1 shift with
+  the analytic null (free BC), Cholesky — no thresholds anywhere. Open
+  empirical question: does λ(S·A) stay tame with the core-bulk coupling
+  handled iteratively? Fallback if the axis degrades: symmetric
+  core-exact / bulk-Chebyshev multiplicative smoother.
+  Supporting changes (useful independently): DeRhamSequence accepts a
+  CUSTOM radial knot vector (not just r_scale) so coarse levels can ANCHOR
+  ξ₁ (identical core footprint across levels — rediscretized coarse op
+  agrees with fine exactly where coupling is stiffest); precompute the
+  per-level surgery ξ's (get_xi at each coarse nt) — minor.
 - **Coarsest-solve cleanup (agreed, not yet implemented):** the coarsest
   BULK block is nonsingular (core=0 ⇒ bulk functions vanish to 2nd order at
   the axis — a point-Dirichlet-like subspace condition with no kernel
