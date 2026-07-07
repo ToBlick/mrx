@@ -49,6 +49,14 @@ class QuadratureRule:
         n = w_x.size * w_y.size * w_z.size
 
         # Create 3D grid of quadrature points and weights
+        # TODO: meshgrid defaults to indexing='xy', which SWAPS the first two
+        # axes -- the flat quad-point ordering is therefore (y, x, z) =
+        # (theta, r, zeta), theta-major, NOT the expected (r, theta, zeta).
+        # Everything downstream depends on this (the (ny, nx, nz) reshape
+        # helpers in operators.py, the (theta, r, z) CP factor order in
+        # preconditioners.py), so switching to indexing='ij' is a coordinated
+        # migration, not a local fix. Until then: any code consuming flat
+        # quad-point fields must reshape to (ny, nx, nz) and transpose.
         x_q = jnp.array(jnp.meshgrid(*x_s))  # shape d, n1, n2, n3, ...
         x_q = x_q.transpose(*range(1, d+1), 0).reshape(n, d)
         w_q = jnp.array(
