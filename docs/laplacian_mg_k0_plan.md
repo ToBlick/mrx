@@ -130,6 +130,32 @@ dominant ζ-modes ⇒ ζ-coarsening 24→12 is safe; P_const_err 3.5e-3/2e-15.
   ~1; iteration lead 3.6–4.3× < the ~10× m=4 break-even). Watch (16,32,32):
   baseline growth + GPU utilization vs MG flatness decides the crossover
   trajectory ((24,48,24)/3-level next if short).
+- **What dominates the W7-X spread — axis (1/r²) vs shaping (θ–ζ)?** Both,
+  comparably, at (12,24,24). Decomposition from same-ξ₁ cross-geometry
+  λmax(S_fd·A): cylinder 3.1 ≈ toroid 3.2 (shared polar axis part) vs W7-X
+  7.2 ⇒ shaping multiplies ×~2.3 (fdax: 5.4→9.9, ×1.8). Scaling differs:
+  axis part grows ~1.7/ξ₁ with refinement; shaping part is h-independent.
+  **Falsifiable prediction for the (16,32,32) sweep row: fd λmax ≈ 8.7
+  (dbc)** — if far off, the factorization misses an interaction. Definitive
+  measurement = `--spectrum-diag` mode (dense S·A probe at (12,24,24),
+  5760², ~265 MB, H100-ok): top-eigenvector radial energy profile + (m,n)
+  Fourier content (axis-dominated: innermost-r, θ at grid limit; shaping:
+  mid-radius, helical m ≈ nfp·n correlation). ~30 lines, not yet written.
+- **Anchored-ξ₁ effect size (expectation):** freezes only the axis factor —
+  ~×1.2 in κ at (16,·,·), ~×1.5 at (24,·,·) ⇒ 10–25% cost via m~√κ at
+  practical sizes; asymptotically √n_el. Does NOT touch the ×2.3 shaping
+  residual. The MG-level-consistency benefits may outweigh the κ itself.
+- **C²-on-axis surgery idea (Tobias):** constrain the 3rd radial ring into
+  the core (3 → 6 polar functions/ζ-plane; Schur 72→144, trivial) ⇒ bulk
+  vanishes to 3rd order at the axis ⇒ the worst 1/r²-vs-average mismatch
+  the atom sees moves OUTWARD — same term anchoring attacks, but through
+  the function space at fixed mesh. Real cost = spline math: C² polar
+  extraction needs map-dependent (axis-Hessian) compatibility conditions.
+  **MEASURE BEFORE BUILDING — "fat core" emulation:** fold ring 2 into the
+  exactly-solved Schur core in the prototype (core 3nz → 3nz + nt·nz, bulk
+  window starts at ring 3 — pure indexing, C¹ extraction untouched). If
+  W7-X κ drops materially ⇒ C² pays; if not, math saved. Validate locally
+  on cylinder/toroid first. Not yet implemented.
 
 - Local phases 0–2 are DONE. Remaining: W7-X (16,32,32) rows + legacy-m
   reference + (24,48,24) levels-3 + full CSV sweeps. jacobi is
