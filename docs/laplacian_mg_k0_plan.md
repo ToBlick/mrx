@@ -140,6 +140,18 @@ fixed; equal-area radial knot grading added. Iteration counts (dbc/free):
   ξ₁ (identical core footprint across levels — rediscretized coarse op
   agrees with fine exactly where coupling is stiffest); precompute the
   per-level surgery ξ's (get_xi at each coarse nt) — minor.
+  **Anchored-ξ₁ rationale (agreed: do not refine the center; the surgery is
+  always just the 3 polar bases per ζ-plane):** one knob r₀ = fixed first
+  breakpoint buys simultaneously (1) fixed physical surgery footprint across
+  h-refinement AND MG levels, (2) fine/coarse core geometric identity, (3) a
+  stationary fdax averaging domain, and (4) — HYPOTHESIS, untested — h-flat
+  atom spread: κ is set by the true-vs-averaged weight mismatch at r ≈ ξ₁
+  (frequency-independent since both θ-energies scale as m²); cylinder sweep
+  gives λmax·ξ₁ ≈ 1.70/1.80/1.87 (≈constant, weak upward creep unexplained;
+  W7-X shaping adds an h-independent cross-axis residual on top). NOTE the
+  current sweep does NOT anchor: each resolution re-grades equal-area, so
+  ξ₁ = 1/√n_el shrinks as it refines (the fdax profile cutoff tracks each
+  grid's own ξ₁).
 - **Coarsest-solve cleanup (agreed, not yet implemented):** the coarsest
   BULK block is nonsingular (core=0 ⇒ bulk functions vanish to 2nd order at
   the axis — a point-Dirichlet-like subspace condition with no kernel
