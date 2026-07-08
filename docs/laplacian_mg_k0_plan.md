@@ -31,7 +31,12 @@ fixed; equal-area radial knot grading added. Iteration counts (dbc/free):
 - **MG(jacobi) stays bad** (71/139 at r_scale 0.5) — a pointwise diagonal
   atom + upper-window Chebyshev cannot cover this spectrum regardless of
   transfers/window. That answers the smoother comparison: the 1D
-  eigendecomposed atoms (fd/fdax) are the way.
+  eigendecomposed atoms (fd/fdax) are the way. CLOSED with data under the
+  auto rule too (cylinder 12³: jacobi 58/86 at m=4/5 vs fd/fdax 7–14/10–16
+  under the identical rule): the diagonal doesn't COMPRESS the near-axis
+  anisotropy into a coverable band, and the left-behind low-λ modes are
+  geometrically oscillatory — invisible to the coarse space. Atom problem,
+  not window problem.
 - **RESOLVED: free-BC fdax SPD failure was the SIGNED pseudoinverse on the
   rebuilt Schur, NOT the eigenvalue estimate.** Dense probe of S·A (fdax,
   free): λ ⊂ [0.41, 3.46], Lanczos est 3.81 — a valid bound (power iteration
