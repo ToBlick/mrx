@@ -110,8 +110,24 @@ fixed; equal-area radial knot grading added. Iteration counts (dbc/free):
 - Wall-clock (CPU, these sizes) still favors the baseline (fdax ~345 ms/it
   vs ~50; lead 3.2–3.75× < the ~5–9× break-even at m=4). The wall-clock
   verdict needs W7-X-scale on GPU.
-- Local phases 0–2 are DONE. Remaining: W7-X (`--zeta-diag`, coarsen-policy)
-  + (24,48,24) levels-3 + full CSV sweeps — all cluster-gated. jacobi is
+**W7-X first results (2026-07-08, cluster, (12,24,24), auto rule), dbc/free:**
+baseline **64/99** (the motivating degradation, finally visible) · MG(fd)
+**18/23** (κ=8.5/8.8, m=4) · MG(fdax) 19/23 (κ=11.7, m=5). All SPD gates
+pass on the fitted map + graded knots; `--zeta-diag`: a_zz cv=0.10, low
+dominant ζ-modes ⇒ ζ-coarsening 24→12 is safe; P_const_err 3.5e-3/2e-15.
+- **ATOM DECISION FORMING: fd (production 1/3 atom) wins or ties on ALL
+  THREE geometries** — on W7-X fdax has LARGER spread (11.7 vs 8.5 ⇒ m=5 vs
+  m=4, ~20% dearer per apply) at equal iterations. Structural reason: W7-X
+  variation is HELICAL (θ − nfp·ζ jointly); the 1D marginals fdax uses wash
+  out on the (θ,ζ)-diagonal, while fd's collocated pointwise-3D D tracks it
+  locally. fdax's own-axis-variation premise does not hold on stellarators.
+- Wall-clock at (12,24,24): baseline still 1.8–2.8× faster (MG ~10 ms/it vs
+  ~1; iteration lead 3.6–4.3× < the ~10× m=4 break-even). Watch (16,32,32):
+  baseline growth + GPU utilization vs MG flatness decides the crossover
+  trajectory ((24,48,24)/3-level next if short).
+
+- Local phases 0–2 are DONE. Remaining: W7-X (16,32,32) rows + legacy-m
+  reference + (24,48,24) levels-3 + full CSV sweeps. jacobi is
   answered — drop from default smoother list. Production wiring notes: use
   the PSD pseudoinverse (`_psd_pseudoinverse`) for any rebuilt Schur; carry
   `r_scale=0.5` + the fdax ξ₁ profile cutoff + `--cheb-lo/--auto-m` rule.
