@@ -231,13 +231,26 @@ class PolarExtractionOperator:
         self.k = Lambda.k
         self.Lambda = Lambda
         self.ξ = xi
+        # xi shape (n_polar, ring_depth, nt): (3, 2, nt) = C¹ (rings 0-1 ->
+        # 3 polar functions), (6, 3, nt) = C² (rings 0-2 -> 6). The C²
+        # generalization currently covers 0-forms and vector fields only;
+        # the k = 1, 2, 3 surgery blocks encode the C¹ gradient/curl
+        # structure and would need the (deferred) C² de Rham rework.
+        self.n_polar = int(xi.shape[0])
+        self.ring_depth = int(xi.shape[1])
+        if self.k in (1, 2, 3) and (self.n_polar, self.ring_depth) != (3, 2):
+            raise ValueError(
+                f"C^{self.ring_depth - 1} polar extraction (xi shape "
+                f"{tuple(xi.shape)}) is only implemented for k in (0, -1); "
+                f"k={self.k} requires the C¹ xi (3, 2, nt)")
         self.nr, self.nt, self.nz = Lambda.nr, Lambda.nt, Lambda.nz
         self.dr, self.dt, self.dz = Lambda.dr, Lambda.dt, Lambda.dz
         self.o = 1 if zero_bc else 0  # offset for boundary conditions
 
         # Set component sizes based on form degree
         if self.k == 0:
-            self.n1 = ((self.nr - 2 - self.o) * self.nt + 3) * self.nz
+            self.n1 = ((self.nr - self.ring_depth - self.o) * self.nt
+                       + self.n_polar) * self.nz
             self.n2 = 0
             self.n3 = 0
         if self.k == 1:
@@ -253,9 +266,9 @@ class PolarExtractionOperator:
             self.n2 = 0
             self.n3 = 0
         if self.k == -1:
-            self.n1 = ((self.nr - 2 - self.o) * self.nt + 3) * self.nz
-            self.n2 = ((self.nr - 2 - self.o) * self.nt + 3) * self.nz
-            self.n3 = ((self.nr - 2 - self.o) * self.nt + 3) * self.nz
+            n_comp = ((self.nr - self.ring_depth - self.o) * self.nt
+                      + self.n_polar) * self.nz
+            self.n1 = self.n2 = self.n3 = n_comp
         self.n = self.n1 + self.n2 + self.n3
 
     def _k1_row_slices(self):
@@ -286,11 +299,12 @@ class PolarExtractionOperator:
         if self.k == 0:
             # Handle 0-forms
             return jnp.where(
-                row_idx < 3 * self.nz,
+                row_idx < self.n_polar * self.nz,
                 self._inner_zeroform(
                     row_idx, col_idx, self.nr, self.nt, self.nz),
                 self._outer_zeroform(
-                    row_idx - 3 * self.nz, col_idx, self.nr, self.nt, self.nz
+                    row_idx - self.n_polar * self.nz, col_idx,
+                    self.nr, self.nt, self.nz
                 ),
             )
         if self.k == 1:
@@ -372,11 +386,12 @@ class PolarExtractionOperator:
             cat_row, row_idx = self._vector_index(row_idx)
             cat_col, col_idx = self.Lambda._vector_index(col_idx)
             return jnp.where(
-                row_idx < 3 * self.nz,
+                row_idx < self.n_polar * self.nz,
                 self._inner_zeroform(
                     row_idx, col_idx, self.nr, self.nt, self.nz),
                 self._outer_zeroform(
-                    row_idx - 3 * self.nz, col_idx, self.nr, self.nt, self.nz
+                    row_idx - self.n_polar * self.nz, col_idx,
+                    self.nr, self.nt, self.nz
                 ),
             ) * jnp.int32(cat_row == cat_col)
 
@@ -394,9 +409,10 @@ class PolarExtractionOperator:
         Returns:
             jnp.ndarray: The basis function value
         """
-        p, m = jnp.unravel_index(row_idx, (3, nz))
+        p, m = jnp.unravel_index(row_idx, (self.n_polar, nz))
         i, j, k = jnp.unravel_index(col_idx, (nr, nt, nz))
-        return jnp.int32(k == m) * jnp.int32(i < 2) * self.ξ[p, i, j]
+        return (jnp.int32(k == m) * jnp.int32(i < self.ring_depth)
+                * self.ξ[p, jnp.minimum(i, self.ring_depth - 1), j])
 
     def _outer_zeroform(self, row_idx, col_idx, nr, nt, nz):
         """
@@ -415,7 +431,7 @@ class PolarExtractionOperator:
         i, j, k = jnp.unravel_index(row_idx, (nr, nt, nz))
         return jnp.int32(
             col_idx == jnp.ravel_multi_index(
-                (i + 2, j, k), (nr, nt, nz), mode="clip")
+                (i + self.ring_depth, j, k), (nr, nt, nz), mode="clip")
         ) * jnp.where(self.o == 1, jnp.int32(i != nr - 1), 1)
 
     def inner_oneform_r(self, row_idx, col_idx, nr, nt, nz):
@@ -564,11 +580,11 @@ class PolarExtractionOperator:
         data = []
 
         if self.k == 0:
-            for p in range(3):
+            for p in range(self.n_polar):
                 for m in range(self.nz):
-                    row_idx = np.ravel_multi_index((p, m), (3, self.nz))
+                    row_idx = np.ravel_multi_index((p, m), (self.n_polar, self.nz))
                     js = np.arange(self.nt, dtype=np.int32)
-                    for i in range(2):
+                    for i in range(self.ring_depth):
                         col_idx = np.ravel_multi_index(
                             (np.full(self.nt, i, dtype=np.int32), js, np.full(self.nt, m, dtype=np.int32)),
                             (self.nr, self.nt, self.nz),
@@ -583,8 +599,8 @@ class PolarExtractionOperator:
                             values=xi[p, i, :],
                         )
 
-            radial = self.nr - 2 - self.o
-            outer_offset = 3 * self.nz
+            radial = self.nr - self.ring_depth - self.o
+            outer_offset = self.n_polar * self.nz
             for i in range(radial):
                 for j in range(self.nt):
                     for k in range(self.nz):
@@ -592,7 +608,7 @@ class PolarExtractionOperator:
                             (i, j, k),
                             (radial, self.nt, self.nz),
                         )
-                        col_idx = self._lambda_col_index(0, i + 2, j, k)
+                        col_idx = self._lambda_col_index(0, i + self.ring_depth, j, k)
                         self._append_triplets(
                             rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
                         )
@@ -820,44 +836,176 @@ class PolarExtractionOperator:
         )
 
 
-def get_xi(nt):
-    """
-    Compute polar mapping coefficients.
+def get_xi(nt, ring1=None):
+    """Polar extraction weights ξ^ℓ_{ij}: barycentric coordinates of the
+    first two control rings with respect to the equilateral control
+    triangle (Toshniwal et al. CMAME 2017; Holderied thesis Eqs. 5.7–5.9).
+
+    Ring 0 sits at the pole (triangle centroid) → weights 1/3. Ring 1 gets
+    the barycentric coordinates of the first-ring control points
+    ``(ΔR_j, ΔY_j)`` w.r.t. the triangle with vertices
+    ``v₁ = (τ, 0), v₂ = (−τ/2, √3τ/2), v₃ = (−τ/2, −√3τ/2)`` (relative to
+    the pole), with the triangle size τ (Eq. 5.9) chosen as the smallest
+    value enclosing the whole ring → all weights in [0, 1], partition of
+    unity by construction.
 
     Parameters
     ----------
     nt : int
         Number of points in poloidal θ-direction.
+    ring1 : array_like, optional
+        ``(2, nt)`` first-ring control-point offsets ``(ΔR_j, ΔY_j)`` from
+        the pole (poloidal-plane coordinates). ``None`` uses the unit
+        circle ``(cos θ_j, sin θ_j)`` — the map-independent logical-disk
+        specialization, exact whenever ``∂F/∂r`` at the axis is pure
+        ``m = ±1`` (circular/elliptic cross sections); shaped cross
+        sections (triangularity, stellarators) should pass the actual
+        ring-1 control points, cf. :func:`ring1_control_points`.
 
     Returns
     -------
     ξ : jnp.ndarray
-        Polar mapping coefficients.
-        Shape: (3, 2, nθ)
+        Polar extraction weights, shape ``(3, 2, nθ)`` indexed ``(ℓ, i, j)``.
     """
-    theta_js = (jnp.arange(nt) / nt) * 2 * jnp.pi
+    if ring1 is None:
+        theta_js = (jnp.arange(nt) / nt) * 2 * jnp.pi
+        dR, dY = jnp.cos(theta_js), jnp.sin(theta_js)
+    else:
+        ring1 = jnp.asarray(ring1, dtype=jnp.float64)
+        if ring1.shape != (2, nt):
+            raise ValueError(f"ring1 must have shape (2, {nt}), got {ring1.shape}")
+        dR, dY = ring1[0], ring1[1]
 
-    M = jnp.array([
-        [1/3, 0],
-        [-1/6, jnp.sqrt(3)/6],
-        [-1/6, -jnp.sqrt(3)/6]
-    ])
-
-    cos_js = jnp.cos(theta_js)
-    sin_js = jnp.sin(theta_js)
-
-    Es = 1/3 + M @ jnp.array([cos_js, sin_js])  # shape (3, nθ)
-
-    ξ00 = jnp.ones(nt) / 3
-    ξ10 = jnp.ones(nt) / 3
-    ξ20 = jnp.ones(nt) / 3
-
-    ξ01 = Es[0]
-    ξ11 = Es[1]
-    ξ21 = Es[2]
+    s3 = jnp.sqrt(3.0)
+    tau = jnp.max(jnp.array([jnp.max(-2.0 * dR),
+                             jnp.max(dR - s3 * dY),
+                             jnp.max(dR + s3 * dY)]))
+    ξ1 = jnp.stack([1/3 + 2.0 * dR / (3.0 * tau),
+                    1/3 - dR / (3.0 * tau) + s3 * dY / (3.0 * tau),
+                    1/3 - dR / (3.0 * tau) - s3 * dY / (3.0 * tau)])  # (3, nθ)
+    ξ0 = jnp.full((3, nt), 1.0 / 3.0)
     # (3, 2, nθ) -> l, i, j
-    ξ = jnp.array([[ξ00, ξ01], [ξ10, ξ11], [ξ20, ξ21]])
-    return ξ
+    return jnp.stack([ξ0, ξ1], axis=1)
+
+
+def get_xi2(nt, basis_r, ring1=None, ring2=None):
+    """C²-at-the-pole polar extraction weights: 6 polar functions per
+    ζ-plane built from the first THREE radial rings.
+
+    Derivation (jet matching against the spline map's axis Taylor; map
+    x_h(s,χ) = Σ_i P_i(χ) N_i(s), ring 0 at the pole). A spline
+    f = Σ c_i(χ) N_i(s) matches the 2-jet of a quadratic polynomial
+    q(x) = q₀ + q₁·x + xᵀQx composed with the map, ∂ᵐ_s f(0,χ) = ∂ᵐ_s
+    (q∘x_h)(0,χ) for m = 0,1,2, iff::
+
+        c₀(χ) = q₀
+        c₁(χ) = q₀ + q₁·ΔP₁(χ)                            (the C¹ condition)
+        c₂(χ) = q₀ + q₁·ΔP₂(χ) + ρ · ΔP₁(χ)ᵀ Q ΔP₁(χ),
+        ρ = 2 N₁'(0)² / N₂''(0).
+
+    The affine terms are exactly representable at the control level; the
+    quadratic term is a product of splines (degree 2p in χ), NOT in the
+    degree-p space — exact C² w.r.t. the discrete map is impossible in the
+    fixed tensor space. Following the same sampled-coefficient philosophy
+    as the C¹ construction (whose pole jets are spline-sampled trig, not
+    exact trig), the quadratic term enters by its VALUES at the Greville
+    angles: c_{2j} = q₀ + q₁·ΔP_{2j} + ρ ΔP₁ⱼᵀQΔP₁ⱼ — collocated C², with
+    the residual pole-jet mismatch of the same O(h^{p+1}) sampling class
+    as C¹'s.
+
+    The 6 basis jets are the quadratic Bernstein polynomials B_α(λ) on the
+    C¹ control triangle (λ_l = the affine barycentric functions of
+    :func:`get_xi`): partition of unity is exact on every ring (Σ_α B_α = 1
+    ⇒ Σ q₀ = 1, Σ q₁ = 0, Σ Q = 0), and the affine (Q = 0) subspace
+    reproduces the C¹ rings-0/1 structure, so the C² space is a genuine
+    subspace of the C¹ space.
+
+    Parameters
+    ----------
+    nt : int
+        Number of poloidal points.
+    basis_r : SplineBasis
+        Clamped radial basis; supplies N₁'(0), N₂''(0) (any knot grading)
+        and the default ring radii (Greville abscissae 1, 2).
+    ring1, ring2 : array_like, optional
+        ``(2, nt)`` control-point offsets of rings 1 and 2 from the pole.
+        ``None`` = logical circles of radius greville₁ / greville₂.
+
+    Returns
+    -------
+    ξ² : jnp.ndarray, shape ``(6, 3, nθ)`` indexed ``(ℓ, i, j)``.
+    """
+    grev = basis_r.greville_points()
+    theta_js = (jnp.arange(nt) / nt) * 2 * jnp.pi
+    circ = jnp.stack([jnp.cos(theta_js), jnp.sin(theta_js)])
+    dP1 = jnp.asarray(ring1, dtype=jnp.float64) if ring1 is not None else grev[1] * circ
+    dP2 = jnp.asarray(ring2, dtype=jnp.float64) if ring2 is not None else grev[2] * circ
+    for name, arr in (("ring1", dP1), ("ring2", dP2)):
+        if arr.shape != (2, nt):
+            raise ValueError(f"{name} must have shape (2, {nt}), got {arr.shape}")
+
+    # radial end-derivatives (one-sided, first element) via AD of the basis
+    n1p = jax.grad(lambda x: basis_r.evaluate(x, 1))(0.0)
+    n2pp = jax.grad(jax.grad(lambda x: basis_r.evaluate(x, 2)))(0.0)
+    rho = 2.0 * n1p ** 2 / n2pp
+
+    # control triangle from ring 1 (Eq. 5.9); affine barycentric gradients
+    s3 = jnp.sqrt(3.0)
+    tau = jnp.max(jnp.array([jnp.max(-2.0 * dP1[0]),
+                             jnp.max(dP1[0] - s3 * dP1[1]),
+                             jnp.max(dP1[0] + s3 * dP1[1])]))
+    grad_lam = jnp.array([[2.0, 0.0], [-1.0, s3], [-1.0, -s3]]) / (3.0 * tau)
+
+    pairs = [(0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2)]
+    xi2 = []
+    for (l, m) in pairs:
+        gl, gm = grad_lam[l], grad_lam[m]
+        if l == m:
+            q0 = 1.0 / 9.0
+            q1 = (2.0 / 3.0) * gl
+            Q = jnp.outer(gl, gl)
+        else:
+            q0 = 2.0 / 9.0
+            q1 = (2.0 / 3.0) * (gl + gm)
+            Q = jnp.outer(gl, gm) + jnp.outer(gm, gl)
+        row0 = jnp.full((nt,), q0)
+        row1 = q0 + q1 @ dP1
+        row2 = q0 + q1 @ dP2 + rho * jnp.einsum('aj,ab,bj->j', dP1, Q, dP1)
+        xi2.append(jnp.stack([row0, row1, row2]))
+    return jnp.stack(xi2)  # (6, 3, nθ)
+
+
+def ring1_control_points(pol_map, basis_r, basis_t):
+    """First-ring control-point offsets of the Greville interpolant of an
+    (axisymmetric) poloidal map, for :func:`get_xi`.
+
+    Parameters
+    ----------
+    pol_map : callable
+        ``(r, θ) → (R, Y)`` poloidal-plane coordinates (vectorized over
+        leading axes is not required).
+    basis_r, basis_t : SplineBasis
+        Radial (clamped) and poloidal (periodic) 1D bases of the 0-form
+        space.
+
+    Returns
+    -------
+    ring1 : jnp.ndarray
+        ``(2, nt)`` offsets ``(ΔR_j, ΔY_j)`` of the ring-1 control points
+        from the pole.
+    """
+    gr = basis_r.greville_points()
+    gt = basis_t.greville_points()
+    vals = jnp.stack([jnp.stack([jnp.asarray(pol_map(float(r), float(t)))
+                                 for t in gt]) for r in gr])   # (nr, nt, 2)
+    C_r = basis_r.collocation_matrix(gr)
+    C_t = basis_t.collocation_matrix(gt)
+    # tensor-product collocation solve: coeffs = C_r^{-1} vals C_t^{-T}
+    coeffs = jnp.linalg.solve(C_r, vals.reshape(gr.shape[0], -1))
+    coeffs = coeffs.reshape(gr.shape[0], gt.shape[0], 2)
+    coeffs = jnp.linalg.solve(C_t, coeffs.transpose(1, 0, 2).reshape(
+        gt.shape[0], -1)).reshape(gt.shape[0], gr.shape[0], 2).transpose(1, 0, 2)
+    return (coeffs[1] - coeffs[0]).T  # (2, nt); ring 0 = pole exactly
 
 
 # Boundary extraction operator for cube-like domains

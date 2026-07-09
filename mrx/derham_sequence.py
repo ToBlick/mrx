@@ -13,7 +13,7 @@ from mrx.differential_forms import DifferentialForm
 from mrx.extraction_operators import (BoundaryOperator,
                                       MatrixFreeExtraction,
                                       PolarExtractionOperator,
-                                      bc_extraction_op, get_xi)
+                                      bc_extraction_op, get_xi, get_xi2)
 from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
                            find_nullspace_vectors, get_nullspace,
                            get_saddle_point_nullspaces, init_nullspaces)
@@ -187,7 +187,8 @@ class DeRhamSequence():
 
     def __init__(self, ns, ps, q, types, *legacy_args, polar,
                  tol=1e-12, maxiter=10_000,
-                 r_scale=1.0, n_inner=5, betti_numbers=(1, 1, 0, 0)):
+                 r_scale=1.0, knots=None, polar_ring1=None, polar_order=1,
+                 n_inner=5, betti_numbers=(1, 1, 0, 0)):
         """Construct a de Rham sequence.
 
         Parameters
@@ -211,6 +212,28 @@ class DeRhamSequence():
         r_scale : float, optional
             Exponent used to cluster radial knots toward the axis
             (knot spacing proportional to ``r**r_scale``).
+        knots : tuple of 3 optional array_like, optional
+            Explicit FULL knot vectors per direction ``(T_r, T_θ, T_ζ)``;
+            any entry ``None`` falls back to the default for that axis
+            (radial: clamped-open padding of the ``r_scale``-graded
+            breakpoints; angular: the :class:`SplineBasis` default for the
+            axis type). The breakpoint/padding structure is implied by the
+            axis regularity, so callers usually build e.g.
+            ``T_r = [0]*p + breakpoints + [1]*p``. Lets multigrid coarse
+            levels ANCHOR the first radial breakpoint (identical polar-core
+            footprint across levels) instead of re-grading.
+        polar_ring1 : array_like, optional
+            ``(2, ns[1])`` first-ring control-point offsets
+            ``(ΔR_j, ΔY_j)`` from the pole, forwarded to :func:`get_xi`
+            for map-adapted polar extraction weights. ``None`` keeps the
+            unit-circle specialization (exact whenever ``∂F/∂r`` at the
+            axis is pure ``m=±1``). Axisymmetric maps only (ξ is shared
+            across ζ-planes).
+        polar_order : int, optional
+            Pole regularity order for 0-forms: 1 (default, C¹ — 3 polar
+            functions from rings 0-1) or 2 (C² — 6 polar functions from
+            rings 0-2, :func:`get_xi2`; k >= 1 spaces stay C¹, so only the
+            k=0 pipeline is supported at order 2).
         n_inner : int, optional
             Number of inner CG iterations used by block preconditioners.
         betti_numbers : tuple of 4 ints, optional
@@ -234,21 +257,28 @@ class DeRhamSequence():
             )
         self.ns = tuple(ns)
         self.ps = tuple(ps)
+        self.polar_order = polar_order
         self.tol = tol
         self.maxiter = maxiter
         self.n_inner = n_inner
         self.geometry = None
         assert len(betti_numbers) == 4, "betti_numbers must have length 4"
         self.betti_numbers = tuple(betti_numbers)
-        if not polar:
-            Ts = [None] * 3
-        else:
-            Tr = jnp.concatenate([
-                jnp.zeros(ps[0]),
-                jnp.linspace(0, 1, ns[0]-ps[0]+1)**r_scale,
-                jnp.ones(ps[0])
-            ])
-            Ts = [Tr, None, None]
+        Ts = list(knots) if knots is not None else [None] * 3
+        if len(Ts) != 3:
+            raise ValueError(f"knots must have 3 entries (got {len(Ts)})")
+        for ax, T in enumerate(Ts):
+            if T is not None:
+                T = jnp.asarray(T, dtype=jnp.float64)
+                n_expected = ns[ax] + ps[ax] + 1
+                if types[ax] == "clamped" and T.shape != (n_expected,):
+                    raise ValueError(
+                        f"knot vector for axis {ax} must have n+p+1 = "
+                        f"{n_expected} entries (got shape {T.shape})")
+                Ts[ax] = T
+        if polar and Ts[0] is None:
+            bp = jnp.linspace(0, 1, ns[0]-ps[0]+1)**r_scale
+            Ts[0] = jnp.concatenate([jnp.zeros(ps[0]), bp, jnp.ones(ps[0])])
 
         self.basis_0, self.basis_1, self.basis_2, self.basis_3 = [
             DifferentialForm(i, ns, ps, types, Ts) for i in range(0, 4)
@@ -256,14 +286,37 @@ class DeRhamSequence():
         self.quad = QuadratureRule(self.basis_0, q)
 
         if polar:
-            xi = get_xi(ns[1])
-            e0, e1, e2, e3 = [
+            xi = get_xi(ns[1], ring1=polar_ring1)
+            xi0 = xi
+            if polar_order == 0:
+                # C⁰ pole regularity: single-valuedness only — ring 0
+                # collapses to ONE polar DOF per ζ-plane, ring 1 stays
+                # free. Largest space of the family (V_C² ⊂ V_C¹ ⊂ V_C⁰),
+                # still H¹-conforming; isolates what pole regularity buys.
+                xi0 = jnp.ones((1, 1, ns[1]), dtype=jnp.float64)
+            elif polar_order == 2:
+                # C² pole regularity for 0-forms: 6 polar functions from
+                # rings 0-2 (collocated C², see get_xi2). k = 1, 2, 3
+                # extractions stay C¹ — the k=0 stiffness/mass/load paths
+                # touch only e0 (tensor incidence + tensor mass sandwich),
+                # so the Poisson k=0 pipeline is fully C²-consistent; the
+                # C² de Rham rework for k >= 1 is deferred.
+                if polar_ring1 is not None:
+                    raise NotImplementedError(
+                        "polar_order=2 with map-adapted polar_ring1 needs "
+                        "ring-2 map data; not wired yet")
+                xi0 = get_xi2(ns[1], self.basis_0.Λ[0])
+            elif polar_order != 1:
+                raise ValueError(f"polar_order must be 1 or 2, got {polar_order}")
+            e0 = PolarExtractionOperator(self.basis_0, xi0, False)
+            e0_dbc = PolarExtractionOperator(self.basis_0, xi0, True)
+            e1, e2, e3 = [
                 PolarExtractionOperator(Λ, xi, False)
-                for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
+                for Λ in [self.basis_1, self.basis_2, self.basis_3]
             ]
-            e0_dbc, e1_dbc, e2_dbc, e3_dbc = [
+            e1_dbc, e2_dbc, e3_dbc = [
                 PolarExtractionOperator(Λ, xi, True)
-                for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
+                for Λ in [self.basis_1, self.basis_2, self.basis_3]
             ]
 
         else:

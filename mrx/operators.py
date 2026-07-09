@@ -3889,7 +3889,12 @@ def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = N
     # built when grad is requested (0 in ks) on a polar sequence (V1 extraction
     # non-unitary). Stored per BC pair, forward + transpose; bit-exact with Gram.
     polar = _extraction_is_polar(operators, 1)
-    if 0 in ks and polar and operators.g0_grad_00 is None:
+    # The analytic grad stencil encodes the C¹ polar surgery structure; a
+    # polar_order=2 sequence has a different 0-form layout (6 polar
+    # functions, rings 0-2) and its weak-form k=0 pipeline never uses the
+    # stencil (apply_stiffness sandwiches the TENSOR incidence) — skip.
+    if (getattr(seq, "polar_order", 1) == 1
+            and 0 in ks and polar and operators.g0_grad_00 is None):
         xi = get_xi(seq.ns[1])
         gfields, gvals = [], []
         for din in (False, True):
