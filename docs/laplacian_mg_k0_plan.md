@@ -120,7 +120,8 @@ baseline **64/99** (the motivating degradation, finally visible) · MG(fd)
 **18/23** (κ=8.5/8.8, m=4) · MG(fdax) 19/23 (κ=11.7, m=5). All SPD gates
 pass on the fitted map + graded knots; `--zeta-diag`: a_zz cv=0.10, low
 dominant ζ-modes ⇒ ζ-coarsening 24→12 is safe; P_const_err 3.5e-3/2e-15.
-- **ATOM DECISION FORMING: fd (production 1/3 atom) wins or ties on ALL
+- **ATOM DECISION FORMING (superseded 2026-07-09: reopened by the
+  fat-core sweep — see below): fd (production 1/3 atom) wins or ties on ALL
   THREE geometries** — on W7-X fdax has LARGER spread (11.7 vs 8.5 ⇒ m=5 vs
   m=4, ~20% dearer per apply) at equal iterations. Structural reason: W7-X
   variation is HELICAL (θ − nfp·ζ jointly); the 1D marginals fdax uses wash
@@ -140,7 +141,9 @@ dominant ζ-modes ⇒ ζ-coarsening 24→12 is safe; P_const_err 3.5e-3/2e-15.
   measurement = `--spectrum-diag` mode (dense S·A probe at (12,24,24),
   5760², ~265 MB, H100-ok): top-eigenvector radial energy profile + (m,n)
   Fourier content (axis-dominated: innermost-r, θ at grid limit; shaping:
-  mid-radius, helical m ≈ nfp·n correlation). ~30 lines, not yet written.
+  mid-radius, helical m ≈ nfp·n correlation). IMPLEMENTED 2026-07-09
+  (`--spectrum-diag`: S^½AS^½ eigh on the fine bulk, cap nb≤6000; reports
+  dense λmax vs Lanczos, per-mode r-peak, inner-2-ring energy, top (m,n)).
 - **Anchored-ξ₁ effect size (expectation):** freezes only the axis factor —
   ~×1.2 in κ at (16,·,·), ~×1.5 at (24,·,·) ⇒ 10–25% cost via m~√κ at
   practical sizes; asymptotically √n_el. Does NOT touch the ×2.3 shaping
@@ -154,8 +157,138 @@ dominant ζ-modes ⇒ ζ-coarsening 24→12 is safe; P_const_err 3.5e-3/2e-15.
   **MEASURE BEFORE BUILDING — "fat core" emulation:** fold ring 2 into the
   exactly-solved Schur core in the prototype (core 3nz → 3nz + nt·nz, bulk
   window starts at ring 3 — pure indexing, C¹ extraction untouched). If
-  W7-X κ drops materially ⇒ C² pays; if not, math saved. Validate locally
-  on cylinder/toroid first. Not yet implemented.
+  W7-X κ drops materially ⇒ C² pays; if not, math saved. IMPLEMENTED +
+  MEASURED locally 2026-07-09 (`--fat-core`; forces `--schur rebuild`,
+  envelope probes ass+C0 in one lax.map pass, PSD pseudoinverse; all SPD
+  gates pass) — results in the local sweep section below.
+
+**Local fat-core + spectrum sweep (2026-07-09, laptop CPU, (8,16,8), auto
+rule `--cheb-lo 0.85 --auto-m`, r_scale 0.5; runs/CSV in
+`outputs/laplacian_mg_k0/local_fatcore_20260709/`, driver
+`scripts/debug/run_mg_k0_local_fatcore.sh`).** New geometry `cerfon` =
+Cerfon–Freidberg one-size-fits-all map wired into `build_sequence`
+(κ=1.7, α=0.4 ⇒ triangularity 0.39; NON-diagonal metric, |g^rθ|max ≈
+1.7·g^rr_max) — axisymmetric shaping. `rotating_ellipse` (κ=1.5, nfp=3) =
+the laptop helical proxy. λmax(S·A) dbc, plain → fat (iterations dbc/free
+plain → fat in parens; baseline degrades toroid 19/28 → cerfon 28/37 →
+rot-ellipse 39/46 while MG holds — the W7-X trend reproduced locally):
+
+| geometry | fd λmax | fdax λmax | fd it | fdax it |
+|----------|---------|-----------|-------|---------|
+| cylinder | 3.1→1.49 | 3.81→(n/a) | 6/7→5/5 (m=2,w=4) | — |
+| toroid | 2.33→1.61 | 3.81→1.83 | 7/11→5/7 | 6/10→4/8 |
+| cerfon | 3.13→2.28 | 4.02→1.96 | 9/12→10/13 (m 3→2, −25%/it) | 9/12→8/11 |
+| rot-ellipse | 4.36→3.54 | 7.29→3.39 | 13/15→12/14 | 13/14→10/12 |
+
+1. **FAT CORE PAYS, biggest exactly where the spread was worst:** fdax
+   helical 7.29→3.39 (×2.15), fdax shaped 4.02→1.96, cylinder-axis fd
+   3.1→1.49. The C²-emulation premise holds: exact core treatment of ring
+   2 absorbs the dominant axis mismatch. NOTE fat-core is not only an
+   emulation — it is a WORKING configuration as-is (core 3nz+nt·nz; Schur
+   still trivial at prototype sizes). Its real cost is the W probe (nt·nz
+   extra V-cycles at setup: 4–5 s vs 1.7 s at 8³, →1152 V-cycles at
+   (24,48,24)) — THAT is what the C² surgery (6/ζ-plane core) buys back.
+2. **ATOM DECISION REOPENED: post-fat fdax wins or ties on all three
+   local geometries** (toroid 4/8, cerfon 8/11, rot-ellipse 10/12 — beats
+   fd everywhere but toroid-free). The W7-X "fd wins" conclusion was
+   drawn WITHOUT fat-core; the fdax helical washout penalty apparently
+   lives mostly in the axis-shaping INTERACTION (plain fdax rot-ellipse
+   top modes: ring 0, E[rings 0-1]=0.99 AND (m,n)=(±7–8, 4) grid-corner
+   helical) which the fat core removes. Re-run the W7-X atom comparison
+   with `--fat-core` when cluster access returns; expect fdax κ 11.7 to
+   drop ~×2 (→ ~5–6) vs fd 8.5→(less).
+3. **Spectrum-diag mode geography (axis vs shaping, confirmed):**
+   cylinder-fat: top modes at innermost kept ring, m=nt/2, n≈0 — pure
+   axis remnant. cerfon-fat fd: modes move to the OUTER boundary (r≈1,
+   inner-ring energy 0.01) — the irreducible shaping residual; cerfon-fat
+   fdax keeps a small axis remnant instead (own-axis θ-averaging captures
+   axisymmetric shaping — fdax premise holds when variation is NOT
+   helical). rot-ellipse: both atoms' survivors are grid-corner (m=8,n=4)
+   helical modes — fd's at the shaped edge, fdax's at the axis.
+4. **Residual after fat is the h-independent shaping share:** κ ≈ 1.9
+   (toroid) / 2.3–2.7 (cerfon) / 4.0–4.3 (rot-ellipse) at cheb_lo 0.85 ⇒
+   m=2–3 everywhere. At κ ≈ 2 a SINGLE damped atom apply (m=1, T₁ ≈ 3
+   band damping) becomes viable — worth an `--auto-m` floor 2→1 A/B on
+   the fat configuration (3 A-units/cycle ⇒ break-even ~3×; the answer to
+   "why Chebyshev at all" is quantitatively "κ > ~2.5", and fat-core puts
+   axisymmetric geometries below that).
+5. **Ring count (`--fat-core R` now an int knob): R=2 confirms diminishing
+   returns** (λmax dbc, R=1→R=2): toroid fd 1.61→1.42, fdax 1.83→1.32
+   (it 4/3); rot-ellipse fd 3.54→3.38, fdax 3.39→2.66 (it 9-11) —
+   ≈ the √((k+1)/k) equal-area prediction; the helical shaping residual
+   survives any R. Decision: **R=1 + anchored-ξ₁** is the design point
+   ("core footprint ~ coarsest first element" is anchoring in disguise:
+   rings cost 2^{L-1}−1·nt·nz core DOFs + W-probe V-cycles; anchoring the
+   knots gives level-identical cores at R=1 for free).
+6. **NEW atom `fdbund`** (per-axis quad-means of the BUNDLED g^aa·J,
+   D = 1 — answers "average g·J instead of g + collocated J?"): keeps the
+   g–J correlation (θ-weight ~ 1/r not 1/r²) but loses pointwise J
+   tracking. Measured: plain toroid λmax 2.32 (7/7 at m=2, beats fdax
+   free 10); plain rot-ellipse 3.83 (vs fdax 7.29!), 13/15 at m=3 not
+   m=4; with fat+anchor: toroid 1.51, **5/5 — best free-BC toroid row**;
+   BUT rot-ellipse dbc 15 it (worst) — the predicted low-λ axis tail
+   (flat-vs-r mismatch in the r/ζ terms) bites exactly on helical+dbc.
+   Two-sided as theorized; candidate default for axisymmetric, keep
+   fdax/fd for stellarators pending a W7-X row.
+7. **Anchored-ξ₁ implemented** (`DeRhamSequence(r_breakpoints=…)` in mrx +
+   `--anchor-xi1`: coarse levels keep the FINE ξ₁, outer coarse elements
+   equal-area over [ξ₁,1]; all levels anchor to the finest). Measured at
+   8³ two-level: **P_const_err 5e-3/1.2e-2 → 7.8e-16 both BCs** (the
+   axis-side transfer defect is GONE — coarse near-axis functions become
+   fine-representable); fine-level λmax unchanged (consistency: it's a
+   fine-grid quantity); iterations neutral (±1) at this size — the payoff
+   (level-consistency, h-flatness) needs the 12³/16³ levels-3 sweep on
+   cluster. All SPD gates pass. (API note: `r_breakpoints` was reworked to
+   `DeRhamSequence(knots=(T_r, T_θ, T_ζ))` — three optional FULL knot
+   vectors, padding implied by axis regularity; regression-identical.)
+8. **get_xi GENERALIZED to map-adapted ξ (thesis Eq. 5.7–5.9)**:
+   `get_xi(nt, ring1)` = barycentric weights of the ACTUAL ring-1 control
+   points w.r.t. the τ-triangle (τ per Eq. 5.9 ⇒ weights ∈ [0,1], PoU
+   exact); `ring1_control_points()` extracts them from the Greville
+   interpolant of a poloidal map; `DeRhamSequence(polar_ring1=…)`,
+   prototype `--xi-adapt` (axisymmetric only — ζ-dependent maps need
+   per-ζ-plane ξ = a PolarExtractionOperator refactor, deferred).
+   ring1=None reproduces the old circle EXACTLY (1e-16); our old get_xi
+   is the circle specialization, exact iff ∂F/∂r|axis is pure m=±1
+   (includes ellipses; cerfon/W7-X are not). Cerfon A/B: **solver-
+   invariant by construction** — measured identical baseline 28/37, λmax
+   3.13/4.02, it 9/12: the BULK block never sees ξ (bulk rows of E are
+   identity; the ξ-mixed polar functions are core, solved exactly by the
+   Schur envelope). The payoff is DISCRETIZATION accuracy near the axis
+   on shaped maps (max weight shift 0.24 on cerfon) — demonstrate with a
+   manufactured-solution L2 study, not iteration counts.
+
+**C²-on-axis surgery IMPLEMENTED for k=0 — full theory/validation
+write-up in `docs/polar_pole_regularity.md` (jet-matching derivation,
+the product-of-splines obstruction, collocated-C² vs the Toshniwal
+multi-degree exact route, C⁰/C¹/C² family, code map).** (2026-07-09,
+`DeRhamSequence(polar_order=2)`, `get_xi2`, verification
+`scripts/debug/verify_c2_polar.py`, convergence
+`scripts/debug/poisson_k0_c2_convergence.py`).** Derivation = jet matching
+against the degenerate spline map: ring-2 condition
+`c₂(χ) = q₀ + q₁·ΔP₂(χ) + ρ·ΔP₁(χ)ᵀQΔP₁(χ)`, ρ = 2N₁'(0)²/N₂''(0) — the
+Hessian enters through the RING-1 offsets with a knot-dependent scale, NOT
+by evaluating q at ring-2 control points. The quadratic term is a product
+of splines (degree 2p in χ) ⇒ EXACT C² w.r.t. the discrete map is
+impossible in the fixed tensor space — that is the precise content of the
+thesis' "in principle possible" and why implementations stop at C¹.
+Resolution: COLLOCATED C² (quadratic term sampled at the Greville angles) —
+the same sampled-coefficient class as C¹'s own spline-sampled pole jets.
+6 polar functions/plane = quadratic Bernstein jets on the C¹ control
+triangle (PoU exact on every ring; V⁰_C² ⊂ V⁰_C¹ by construction, verified
+3e-16). k≥1 extractions stay C¹ (guarded) — the k=0 pipeline is fully
+consistent because apply_stiffness sandwiches the TENSOR incidence + mass
+between E⁰'s only. VERIFIED: Taylor-remainder at the pole order 3.00
+(random C² element) vs <2 (generic C¹ element) — a genuine 2-jet.
+Poisson k=0 toroid dbc p=3, manufactured solutions with poloidal m=0/1/2
+(m=2 = the ring-2-critical case), source by AD through the metric,
+n∈{4,6,8,12}: **C¹ and C² L2 errors IDENTICAL to all printed digits at
+every n; final rates 4.44/4.32/4.39 both orders (O(h⁴) ✓)**; C² has
+10–16% fewer DOFs and consistently fewer jacobi-CG iterations (the
+removed near-axis DOFs were the stiff ones). ⇒ the C² constraint costs
+NOTHING in approximation and delivers the permanently-small exact core
+(6nz vs fat-core's 3nz+nt·nz) — next: wire `--polar-order 2` into the MG
+prototype and measure κ vs fat-core R=1.
 
 - Local phases 0–2 are DONE. Remaining: W7-X (16,32,32) rows + legacy-m
   reference + (24,48,24) levels-3 + full CSV sweeps. jacobi is
@@ -185,8 +318,9 @@ dominant ζ-modes ⇒ ζ-coarsening 24→12 is safe; P_const_err 3.5e-3/2e-15.
   Supporting changes (useful independently): DeRhamSequence accepts a
   CUSTOM radial knot vector (not just r_scale) so coarse levels can ANCHOR
   ξ₁ (identical core footprint across levels — rediscretized coarse op
-  agrees with fine exactly where coupling is stiffest); precompute the
-  per-level surgery ξ's (get_xi at each coarse nt) — minor.
+  agrees with fine exactly where coupling is stiffest) — DONE 2026-07-09
+  (`r_breakpoints=`); precompute the per-level surgery ξ's (get_xi at each
+  coarse nt) — minor.
   **Anchored-ξ₁ rationale (agreed: do not refine the center; the surgery is
   always just the 3 polar bases per ζ-plane):** one knob r₀ = fixed first
   breakpoint buys simultaneously (1) fixed physical surgery footprint across
