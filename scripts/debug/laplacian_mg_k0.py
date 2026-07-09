@@ -20,6 +20,11 @@ one of three smoother atoms (the comparison this prototype exists to measure):
           lam_r+lam_t+lam_z, no alphas.
           Captures each g-factor's variation along its own axis; the cross-axis
           part (e.g. g^tt ~ 1/r^2) is the structural residual.
+  fdbund  like fdax but averages the BUNDLED weight g^aa*J per axis and uses
+          D = 1 (no collocated J): keeps the g-J correlation inside the
+          average (theta-weight ~ 1/r not 1/r^2) but loses pointwise J
+          tracking -- measures whether the correlation or the collocation
+          matters more.
 
 Coarsest solve: dense probe + symmetric pseudoinverse (exact; removes the
 coarse-solve confound). Envelope: W = B_mg C0 probed once => ONE V-cycle per
@@ -104,14 +109,68 @@ def coarsen_ns(ns, p, factors, dirichlet_any=True):
     return None if out == tuple(ns) else out
 
 
-def build_coarse_sequence(fine_seq, ns_c, p, tol, maxiter, r_scale):
+def compute_ring1(geometry, ns, p, r_scale, epsilon, kappa, alpha, r0, Tr=None):
+    """Map-adapted first-ring control points for get_xi (axisymmetric maps
+    only -- xi is shared across zeta-planes). Poloidal section at zeta=0:
+    toroidal maps use (R, Y) = (hypot(x, y), z); the cylinder uses (x, y)."""
+    from mrx.extraction_operators import ring1_control_points  # noqa: PLC0415
+    from mrx.mappings import (cylinder_map, one_size_fits_all_map,  # noqa: PLC0415
+                              toroid_map)
+    from mrx.spline_bases import SplineBasis  # noqa: PLC0415
+    if geometry == "cerfon":
+        F = one_size_fits_all_map(epsilon=epsilon, kappa=kappa, alpha=alpha, R0=r0)
+        def pol(r, t):
+            X = F(jnp.array([r, t, 0.0]))
+            return (jnp.hypot(X[0], X[1]), X[2])
+    elif geometry == "toroid":
+        F = toroid_map(epsilon=epsilon, kappa=kappa, R0=r0)
+        def pol(r, t):
+            X = F(jnp.array([r, t, 0.0]))
+            return (jnp.hypot(X[0], X[1]), X[2])
+    elif geometry == "cylinder":
+        F = cylinder_map(a=epsilon * r0, h=r0)
+        def pol(r, t):
+            X = F(jnp.array([r, t, 0.0]))
+            return (X[0], X[1])
+    else:
+        raise ValueError(f"--xi-adapt unsupported for {geometry!r} "
+                         "(zeta-dependent axis ring; xi is shared across zeta)")
+    if Tr is None:
+        Tr = jnp.concatenate([jnp.zeros(p),
+                              jnp.linspace(0, 1, ns[0] - p + 1) ** r_scale,
+                              jnp.ones(p)])
+    br = SplineBasis(int(ns[0]), p, "clamped", Tr)
+    bt = SplineBasis(int(ns[1]), p, "periodic", None)
+    return ring1_control_points(pol, br, bt)
+
+
+def anchored_breakpoints(fine_seq, ns_c, p):
+    """Coarse radial breakpoints with the FINE first breakpoint ANCHORED:
+    first element [0, xi_1] identical to the fine level (fixed polar-surgery
+    footprint, fine/coarse core geometric identity, stationary fdax averaging
+    domain), remaining elements equal-area over the annulus [xi_1, 1]."""
+    xi1 = float(np.asarray(fine_seq.basis_0.Λ[0].T)[p + 1])
+    e_c = int(ns_c[0]) - p
+    outer = np.sqrt(np.linspace(xi1 ** 2, 1.0, e_c))
+    return jnp.asarray(np.concatenate([[0.0], outer]))
+
+
+def build_coarse_sequence(fine_seq, ns_c, p, tol, maxiter, r_scale,
+                          anchor_xi1=False, ring1_fn=None):
     """Rediscretized coarse level reusing the FINE geometry map (no re-fit;
     jacfwd re-evaluated at the coarse quad points only). Same radial knot
-    grading rule (r_scale) as the fine level."""
+    grading rule (r_scale) as the fine level, or the anchored-xi_1 rule.
+    ring1_fn(ns_c, Tr) supplies map-adapted polar xi weights per level."""
+    knots, Tr_c = None, None
+    if anchor_xi1:
+        bp = anchored_breakpoints(fine_seq, ns_c, p)
+        Tr_c = jnp.concatenate([jnp.zeros(p), bp, jnp.ones(p)])
+        knots = (Tr_c, None, None)
+    ring1 = ring1_fn(ns_c, Tr_c) if ring1_fn is not None else None
     cseq = bench.DeRhamSequence(
         tuple(int(v) for v in ns_c), (p, p, p), 2 * p, TYPES,
         polar=True, tol=tol, maxiter=maxiter, r_scale=r_scale,
-        betti_numbers=BETTI)
+        knots=knots, polar_ring1=ring1, betti_numbers=BETTI)
     cseq.evaluate_1d()
     cseq.assemble_reference_mass_matrix()
     cseq.set_map(fine_seq.map)
@@ -126,16 +185,26 @@ def build_coarse_sequence(fine_seq, ns_c, p, tol, maxiter, r_scale):
     return cseq, cops
 
 
-def bulk_slices(seq, dirichlet):
+def bulk_slices(seq, dirichlet, ring0=0):
+    """ring0=1 is the FAT-CORE emulation: radial ring 2 (the innermost bulk
+    ring, nt*nz DOFs) is folded into the exactly-solved Schur core and the MG
+    bulk window starts at ring 3. Pure indexing -- the C1 polar extraction is
+    untouched; measures whether exact core treatment of the worst 1/r^2
+    mismatch region drops the atom spread kappa (the cheap proxy for the
+    C2-on-axis surgery)."""
     n_ext = int(seq.n0_dbc if dirichlet else seq.n0)
-    bulk_shape = _bulk_tensor_shape(seq, dirichlet)
+    nrb, nt, nz = _bulk_tensor_shape(seq, dirichlet)
+    if nrb - ring0 < 1:
+        raise ValueError(f"fat core R={ring0} leaves no bulk radial ring "
+                         f"(nr_bulk={nrb}); reduce R or --levels")
+    bulk_shape = (nrb - ring0, nt, nz)
     nb = int(np.prod(bulk_shape))
     core = n_ext - nb
     return n_ext, bulk_shape, nb, core
 
 
-def make_bulk_A(seq, ops, dirichlet):
-    n_ext, bulk_shape, nb, core = bulk_slices(seq, dirichlet)
+def make_bulk_A(seq, ops, dirichlet, ring0=0):
+    n_ext, bulk_shape, nb, core = bulk_slices(seq, dirichlet, ring0)
 
     def A(x):
         full = jnp.zeros((n_ext,), dtype=jnp.float64).at[core:].set(x)
@@ -157,7 +226,7 @@ def build_prolongation_1d(fine_basis, coarse_basis):
     return jnp.linalg.solve(C_ff, C_cf)
 
 
-def build_bulk_transfers(fine_seq, coarse_seq, dirichlet, p_fix="none"):
+def build_bulk_transfers(fine_seq, coarse_seq, dirichlet, p_fix="none", ring0=0):
     """(Pr, Pt, Pz) between the two levels' BULK grids. Radial window starts
     at 2 always; the dirichlet flag drops the LAST radial function (encoded in
     each level's own nr_bulk).
@@ -174,10 +243,11 @@ def build_bulk_transfers(fine_seq, coarse_seq, dirichlet, p_fix="none"):
     for ax in range(3):
         P = build_prolongation_1d(fine_seq.basis_0.Λ[ax], coarse_seq.basis_0.Λ[ax])
         if ax == 0:
-            nrb_f = _bulk_tensor_shape(fine_seq, dirichlet)[0]
-            nrb_c = _bulk_tensor_shape(coarse_seq, dirichlet)[0]
-            c = P[2:2 + nrb_f, 0] + P[2:2 + nrb_f, 1]
-            P = P[2:2 + nrb_f, 2:2 + nrb_c]
+            rw = 2 + ring0
+            nrb_f = _bulk_tensor_shape(fine_seq, dirichlet)[0] - ring0
+            nrb_c = _bulk_tensor_shape(coarse_seq, dirichlet)[0] - ring0
+            c = jnp.sum(P[rw:rw + nrb_f, :rw], axis=1)
+            P = P[rw:rw + nrb_f, rw:rw + nrb_c]
             if p_fix == "rownorm":
                 P = P / (1.0 - c)[:, None]
             elif p_fix == "lump":
@@ -208,7 +278,7 @@ def apply_PT(Ps, shape_f, r_f):
 # Smoother atoms
 # ---------------------------------------------------------------------------
 
-def k0_bulk_stiffness_diagonal(seq, bulk_shape):
+def k0_bulk_stiffness_diagonal(seq, bulk_shape, ring0=0):
     """Exact diag(K_0) on the bulk tensor window via sum-factorized quadrature
     einsums over ALL 9 metric blocks g^{ab} J (the polar-extraction bulk rows
     are unit tensor-product rows, so the tensor-space diagonal IS the bulk
@@ -238,11 +308,20 @@ def k0_bulk_stiffness_diagonal(seq, bulk_shape):
             t = jnp.einsum('jr,irs->ijs', factor(1, a, b), t)
             t = jnp.einsum('ks,ijs->ijk', factor(2, a, b), t)
             diag = diag + t
-    return diag[2:2 + nr_bulk].reshape(-1)
+    rw = 2 + ring0
+    return diag[rw:rw + nr_bulk].reshape(-1)
 
 
-def fdax_axis_profiles(seq):
+def fdax_axis_profiles(seq, ring0=0, bundle_j=False):
     """gbar^aa(x_a): quad-weighted mean of g^aa over the other two axes.
+
+    bundle_j=True averages the BUNDLED weight g^aa*J instead (the true
+    per-term quadrature weight) -- the J-correlation stays inside the
+    average (g^tt*J ~ 1/r instead of g^tt ~ 1/r^2, milder cutoff
+    sensitivity) at the price of NO pointwise J tracking (the caller uses
+    D = 1): the atom's theta-weight radial profile is then flat instead of
+    ~r, trading the theta-term over-spread for a low-lambda tail in the
+    r/zeta terms at the axis.
 
     The radial integration in the cross-axis means (pt, pz) starts at the
     first interior breakpoint xi_1: the first element is the polar-surgery
@@ -253,15 +332,23 @@ def fdax_axis_profiles(seq):
     # quad-field layout is (ny, nx, nz) = (theta, r, zeta); transpose to (r, theta, zeta)
     minv = jnp.transpose(
         _reshape_quadrature_matrix_field(seq, seq.geometry.metric_inv_jkl), (1, 0, 2, 3, 4))
+    if bundle_j:
+        jacq = jnp.transpose(
+            _reshape_quadrature_scalar_field(seq, seq.geometry.jacobian_j), (1, 0, 2))
+        w00, w11, w22 = (minv[..., a, a] * jacq for a in range(3))
+    else:
+        w00, w11, w22 = (minv[..., a, a] for a in range(3))
     p_r = seq.ps[0]
-    xi1 = jnp.asarray(seq.basis_0.Λ[0].T)[p_r + 1]
+    # fat core (ring0=1): the exactly-handled region extends one element
+    # further out, so the averaging domain starts at xi_2.
+    xi1 = jnp.asarray(seq.basis_0.Λ[0].T)[p_r + 1 + ring0]
     wx_cut = seq.quad.w_x * (jnp.asarray(seq.quad.x_x) >= xi1)
     wx, wy, wz = seq.quad.w_x, seq.quad.w_y, seq.quad.w_z
     sy, sz = jnp.sum(wy), jnp.sum(wz)
     sxc = jnp.sum(wx_cut)
-    pr = jnp.einsum('qrs,r,s->q', minv[..., 0, 0], wy, wz) / (sy * sz)
-    pt = jnp.einsum('qrs,q,s->r', minv[..., 1, 1], wx_cut, wz) / (sxc * sz)
-    pz = jnp.einsum('qrs,q,r->s', minv[..., 2, 2], wx_cut, wy) / (sxc * sy)
+    pr = jnp.einsum('qrs,r,s->q', w00, wy, wz) / (sy * sz)
+    pt = jnp.einsum('qrs,q,s->r', w11, wx_cut, wz) / (sxc * sz)
+    pz = jnp.einsum('qrs,q,r->s', w22, wx_cut, wy) / (sxc * sy)
     floor = 1e-8
 
     def clip(v):
@@ -271,33 +358,34 @@ def fdax_axis_profiles(seq):
     return clip(pr), clip(pt), clip(pz)
 
 
-def build_fd_atom(seq, bulk_shape, mode):
+def build_fd_atom(seq, bulk_shape, mode, ring0=0):
     """Additive-FD smoother atom apply. mode='fd' = production greville atom
     (unweighted 1D atoms, D = geomean, alpha means); mode='fdax' = axis-averaged
     weighted 1D stiffnesses, D = J, alpha = 1."""
     nr_bulk, nt, nz = (int(s) for s in bulk_shape)
+    rw = 2 + ring0
     types = seq.basis_0.types
     g_r = _dense_incidence_1d(seq.basis_0.nr, types[0])
     g_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
     g_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
 
-    if mode == "fdax":
-        pr, pt, pz = fdax_axis_profiles(seq)
+    if mode in ("fdax", "fdbund"):
+        pr, pt, pz = fdax_axis_profiles(seq, ring0, bundle_j=(mode == "fdbund"))
         kw_x, kw_y, kw_z = seq.quad.w_x * pr, seq.quad.w_y * pt, seq.quad.w_z * pz
     else:
         kw_x, kw_y, kw_z = seq.quad.w_x, seq.quad.w_y, seq.quad.w_z
 
-    M0_r = _restrict_radial_window(_assemble_unweighted_1d_mass(seq.basis_r_jk, seq.quad.w_x), 2, nr_bulk)
+    M0_r = _restrict_radial_window(_assemble_unweighted_1d_mass(seq.basis_r_jk, seq.quad.w_x), rw, nr_bulk)
     M0_t = _assemble_unweighted_1d_mass(seq.basis_t_jk, seq.quad.w_y)
     M0_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
-    K0_r = _restrict_radial_window(_assemble_weighted_1d_stiffness(seq.basis_r_jk, seq.d_basis_r_jk, kw_x, g_r), 2, nr_bulk)
+    K0_r = _restrict_radial_window(_assemble_weighted_1d_stiffness(seq.basis_r_jk, seq.d_basis_r_jk, kw_x, g_r), rw, nr_bulk)
     K0_t = _assemble_weighted_1d_stiffness(seq.basis_t_jk, seq.d_basis_t_jk, kw_y, g_t)
     K0_z = _assemble_weighted_1d_stiffness(seq.basis_z_jk, seq.d_basis_z_jk, kw_z, g_z)
     V_r, lam_r = _assemble_1d_fd_eigendecomp(M0_r, K0_r)
     V_t, lam_t = _assemble_1d_fd_eigendecomp(M0_t, K0_t)
     V_z, lam_z = _assemble_1d_fd_eigendecomp(M0_z, K0_z)
 
-    grev_r = seq.basis_0.Λ[0].greville_points()[2:2 + nr_bulk]
+    grev_r = seq.basis_0.Λ[0].greville_points()[rw:rw + nr_bulk]
     grev_t = seq.basis_0.Λ[1].greville_points()
     grev_z = seq.basis_0.Λ[2].greville_points()
     e = 1e-7
@@ -316,6 +404,8 @@ def build_fd_atom(seq, bulk_shape, mode):
         a_tt = jac * minv[:, 1, 1].reshape(nr_bulk, nt, nz)
         a_zz = jac * minv[:, 2, 2].reshape(nr_bulk, nt, nz)
         D = jnp.cbrt(a_rr * a_tt * a_zz)
+    elif mode == "fdbund":
+        D = jnp.ones_like(jac)   # J lives inside the bundled 1D weights
     else:
         D = jac
     valid = jnp.isfinite(D) & (D > 0)
@@ -338,12 +428,12 @@ def build_fd_atom(seq, bulk_shape, mode):
     return S
 
 
-def build_smoother_atom(seq, ops, dirichlet, bulk_shape, A_bulk, nb, mode):
+def build_smoother_atom(seq, ops, dirichlet, bulk_shape, A_bulk, nb, mode, ring0=0):
     if mode == "jacobi":
-        di = _invert_diagonal(k0_bulk_stiffness_diagonal(seq, bulk_shape))
+        di = _invert_diagonal(k0_bulk_stiffness_diagonal(seq, bulk_shape, ring0))
         return lambda v: di * v
-    if mode in ("fd", "fdax"):
-        return build_fd_atom(seq, bulk_shape, mode)
+    if mode in ("fd", "fdax", "fdbund"):
+        return build_fd_atom(seq, bulk_shape, mode, ring0)
     raise ValueError(f"unknown smoother {mode!r}")
 
 
@@ -428,19 +518,37 @@ def make_vcycle(A_list, shape_list, smooth_list, P_list, coarse_inv):
     return vc
 
 
-def build_envelope(seq, ops, dirichlet, vcycle, nb, core, schur_mode):
+def build_envelope(seq, ops, dirichlet, vcycle, nb, core, schur_mode, ring0=0):
     """Core/bulk Schur envelope around the V-cycle. W = B_mg C0 probed once =>
-    one V-cycle per apply; Schur rebuild is then a dense product."""
-    n_ext = core + nb
-    factors = ops.k0_tensor_hodge_precond.dbc if dirichlet else ops.k0_tensor_hodge_precond.free
-    C0 = factors.core_coupling            # (nb, core), probed by production assembly
+    one V-cycle per apply; Schur rebuild is then a dense product.
 
-    def core_block(rhs_c):
-        full = jnp.zeros((n_ext,), dtype=jnp.float64).at[:core].set(rhs_c)
-        return apply_stiffness(seq, ops, full, 0, dirichlet=dirichlet)[:core]
+    ring0>0 (fat core): the enlarged core (3nz + ring0*nt*nz) has no
+    production coupling matrix -- probe full stiffness columns of the core
+    DOFs once; [:core] gives ass, [core:] gives C0 = A[bulk, core]."""
+    n_ext = core + nb
 
     t0 = time.perf_counter()
-    ass = _symmetrize(_assemble_dense_from_apply(core_block, core, sequential=True))
+    if ring0 > 0:
+        if schur_mode != "rebuild":
+            raise ValueError("--fat-core requires --schur rebuild "
+                             "(production Schur factors cover only the 3nz polar core)")
+
+        def full_col(e_c):
+            full = jnp.zeros((n_ext,), dtype=jnp.float64).at[:core].set(e_c)
+            return apply_stiffness(seq, ops, full, 0, dirichlet=dirichlet)
+
+        cols = jax.lax.map(full_col, jnp.eye(core, dtype=jnp.float64))  # (core, n_ext)
+        ass = _symmetrize(cols[:, :core])
+        C0 = cols[:, core:].T                                            # (nb, core)
+    else:
+        factors = ops.k0_tensor_hodge_precond.dbc if dirichlet else ops.k0_tensor_hodge_precond.free
+        C0 = factors.core_coupling        # (nb, core), probed by production assembly
+
+        def core_block(rhs_c):
+            full = jnp.zeros((n_ext,), dtype=jnp.float64).at[:core].set(rhs_c)
+            return apply_stiffness(seq, ops, full, 0, dirichlet=dirichlet)[:core]
+
+        ass = _symmetrize(_assemble_dense_from_apply(core_block, core, sequential=True))
     jax.block_until_ready(ass)
     t_ass = time.perf_counter() - t0
 
@@ -509,6 +617,47 @@ def zeta_diag(seq, nfp):
           f"dominant zeta modes={list(top)} (map covers one field period; nfp={nfp})", flush=True)
 
 
+def spectrum_diag(A, S, bulk_shape, grev_r, bc, mode, lam_lanczos, topk=4, cap=6000):
+    """Dense probe of the smoothed operator S.A on the fine bulk block:
+    WHERE do the modes at the top of the window live? For each of the topk
+    eigenvectors report the radial energy profile (peak radius + share in the
+    innermost two rings) and the dominant (m_theta, n_zeta) Fourier content.
+    Axis-dominated spread: innermost-r peak, theta modes at the grid limit,
+    n ~ 0. Shaping-dominated: mid-radius peak, low/structured (m, n).
+
+    S.A is similar to the symmetric S^1/2 A S^1/2 (S SPD) -> eigh on that;
+    eigenvectors of S.A are S^1/2 u."""
+    nb = int(np.prod(bulk_shape))
+    if nb > cap:
+        print(f"[{bc}/{mode}] spectrum-diag SKIPPED (nb={nb} > cap {cap})", flush=True)
+        return
+    A_d = _symmetrize(_assemble_dense_from_apply(A, nb, sequential=True))
+    S_d = _symmetrize(_assemble_dense_from_apply(S, nb, sequential=True))
+    ws, vs_ = jnp.linalg.eigh(S_d)
+    S_half = (vs_ * jnp.sqrt(jnp.maximum(ws, 0.0))[jnp.newaxis, :]) @ vs_.T
+    w, u = jnp.linalg.eigh(_symmetrize(S_half @ A_d @ S_half))
+    print(f"[{bc}/{mode}] spectrum-diag nb={nb}: dense lam_max(SA)={float(w[-1]):.4g} "
+          f"(lanczos est {lam_lanczos:.4g}); top-{topk} modes:", flush=True)
+    nrb, nt, nz = (int(s) for s in bulk_shape)
+    grev_r = np.asarray(grev_r)
+    for j in range(topk):
+        vec = np.asarray(S_half @ u[:, -1 - j]).reshape(nrb, nt, nz)
+        e_r = (vec ** 2).sum(axis=(1, 2))
+        e_r = e_r / e_r.sum()
+        i_pk = int(e_r.argmax())
+        inner2 = float(e_r[:2].sum())
+        E_mn = (np.abs(np.fft.fft2(vec, axes=(1, 2))) ** 2).sum(axis=0)
+        E_mn = E_mn / E_mn.sum()
+        flat = np.argsort(E_mn.ravel())[::-1][:3]
+        def _signed(k, n):
+            return k - n if k > n // 2 else k
+        modes = ", ".join(
+            f"(m={_signed(k // nz, nt)},n={_signed(k % nz, nz)}):{E_mn.ravel()[k]:.2f}"
+            for k in flat)
+        print(f"    lam={float(w[-1 - j]):8.4g}  r_peak={grev_r[i_pk]:.3f} "
+              f"(ring {i_pk})  E[rings 0-1]={inner2:.2f}  (m,n): {modes}", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -516,11 +665,14 @@ def zeta_diag(seq, nfp):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--geometry", default="toroid",
-                    choices=["cylinder", "toroid", "rotating_ellipse", "w7x"])
+                    choices=["cylinder", "toroid", "cerfon", "rotating_ellipse", "w7x"])
     ap.add_argument("--ns", type=int, nargs=3, default=[12, 24, 12])
     ap.add_argument("--p", type=int, default=3)
     ap.add_argument("--epsilon", type=float, default=1.0 / 3.0)
     ap.add_argument("--kappa", type=float, default=1.0)
+    ap.add_argument("--alpha", type=float, default=0.0,
+                    help="cerfon poloidal tilt (triangularity = sin(alpha)); "
+                         "kappa != 1 or alpha != 0 makes g^{r theta} != 0")
     ap.add_argument("--r0", type=float, default=1.0)
     ap.add_argument("--nfp", type=int, default=3)
     ap.add_argument("--levels", type=int, default=2)
@@ -540,6 +692,16 @@ def main():
                          "kappa=4.5->m=3, kappa=8->m=4). Overrides --smooth-steps.")
     ap.add_argument("--p-fix", default="rownorm", choices=["none", "rownorm", "lump"],
                     help="repair of the axis-side radial-transfer constant defect")
+    ap.add_argument("--xi-adapt", action="store_true",
+                    help="map-adapted polar extraction weights: get_xi from the "
+                         "actual ring-1 control points of the map's Greville "
+                         "interpolant (thesis Eq. 5.7-5.9) instead of the unit "
+                         "circle. Axisymmetric geometries only.")
+    ap.add_argument("--anchor-xi1", action="store_true",
+                    help="coarse levels keep the FINE first radial breakpoint "
+                         "(first element identical across levels; remaining "
+                         "coarse elements equal-area over [xi_1, 1]) instead of "
+                         "re-grading the whole radius")
     ap.add_argument("--r-scale", type=float, default=0.5,
                     help="radial knot grading exponent (breakpoints = linspace**r_scale); "
                          "0.5 = equal-area cells in the disk, 1.0 = uniform")
@@ -552,19 +714,37 @@ def main():
     ap.add_argument("--csv", default=None)
     ap.add_argument("--two-level-check", action="store_true")
     ap.add_argument("--zeta-diag", action="store_true")
+    ap.add_argument("--fat-core", type=int, nargs="?", const=1, default=0,
+                    metavar="R",
+                    help="fold the innermost R bulk radial rings into the exact "
+                         "Schur core (bulk window starts at ring 2+R) -- emulates "
+                         "the C^{1+R}-on-axis surgery's effect on the atom spread; "
+                         "forces --schur rebuild. Bare flag = 1 ring.")
+    ap.add_argument("--spectrum-diag", action="store_true",
+                    help="dense probe of S.A on the fine bulk: top-eigenvector "
+                         "radial energy + (m,n) Fourier content (axis vs shaping)")
     args = ap.parse_args()
+
+    ring0 = int(args.fat_core)
+
+    def ring1_fn(ns_l, Tr=None):
+        return compute_ring1(args.geometry, ns_l, args.p, args.r_scale,
+                             args.epsilon, args.kappa, args.alpha, args.r0, Tr=Tr)
 
     cfg = SimpleNamespace(ns=tuple(args.ns), p=args.p, geometry=args.geometry,
                           cg_tol=args.tol, cg_maxiter=args.maxiter,
-                          epsilon=args.epsilon, kappa=args.kappa, r0=args.r0, nfp=args.nfp,
-                          r_scale=args.r_scale)
+                          epsilon=args.epsilon, kappa=args.kappa, alpha=args.alpha,
+                          r0=args.r0, nfp=args.nfp,
+                          r_scale=args.r_scale,
+                          polar_ring1=ring1_fn(args.ns) if args.xi_adapt else None)
     smoother_modes = [s.strip() for s in args.smoothers.split(",") if s.strip()]
     dirichlet_flags = {"dbc": [True], "free": [False], "both": [True, False]}[args.bc]
     ns_str = "x".join(str(v) for v in args.ns)
     print(f"=== MG k=0 Laplacian  {args.geometry} ns={tuple(args.ns)} p={args.p} "
           f"levels={args.levels} coarsen={tuple(args.coarsen)} m={args.smooth_steps} "
           f"smoothers={smoother_modes} schur={args.schur} p_fix={args.p_fix} "
-          f"cheb_window={args.cheb_window} r_scale={args.r_scale} ===", flush=True)
+          f"cheb_window={args.cheb_window} r_scale={args.r_scale} "
+          f"fat_core={args.fat_core} ===", flush=True)
 
     # ---- fine level -------------------------------------------------------
     t0 = time.perf_counter()
@@ -592,11 +772,14 @@ def main():
             print(f"[setup] coarsening stopped at {ns_l[-1]} (floors reached)", flush=True)
             break
         cseq, cops = build_coarse_sequence(seq, nxt, args.p, args.tol, args.maxiter,
-                                           args.r_scale)
+                                           args.r_scale, anchor_xi1=args.anchor_xi1,
+                                           ring1_fn=ring1_fn if args.xi_adapt else None)
         levels.append((cseq, cops))
         ns_l.append(nxt)
     t_coarse = time.perf_counter() - t0
-    print(f"[setup] levels: {ns_l}  ({t_coarse:.1f} s)", flush=True)
+    xi1s = [float(np.asarray(sq.basis_0.Λ[0].T)[args.p + 1]) for sq, _ in levels]
+    print(f"[setup] levels: {ns_l}  xi_1: {[f'{x:.3f}' for x in xi1s]}  "
+          f"anchor={args.anchor_xi1}  ({t_coarse:.1f} s)", flush=True)
 
     csv_f = None
     if args.csv:
@@ -630,22 +813,22 @@ def main():
         def m_full(v, d=dirichlet):
             return apply_mass_matrix(seq, ops, v, 0, dirichlet=d)
 
-        n_ext, _, _, _ = bulk_slices(seq, dirichlet)
+        n_ext, _, _, _ = bulk_slices(seq, dirichlet, ring0)
         key = jax.random.PRNGKey(args.seed + (0 if dirichlet else 7))
         rhs = a_full(jax.random.normal(key, (n_ext,), dtype=jnp.float64))
 
         # per-level bulk operators / shapes
         A_list, shape_list, nb_list = [], [], []
         for (sq, op) in levels:
-            A, _, bsh, nb, _ = make_bulk_A(sq, op, dirichlet)
+            A, _, bsh, nb, _ = make_bulk_A(sq, op, dirichlet, ring0)
             A_list.append(A)
             shape_list.append(bsh)
             nb_list.append(nb)
-        _, _, nb0, core0 = bulk_slices(seq, dirichlet)
+        _, _, nb0, core0 = bulk_slices(seq, dirichlet, ring0)
 
         # transfers between consecutive levels
         P_list = [build_bulk_transfers(levels[i][0], levels[i + 1][0], dirichlet,
-                                       p_fix=args.p_fix)
+                                       p_fix=args.p_fix, ring0=ring0)
                   for i in range(len(levels) - 1)]
         pce = ""
         if P_list:
@@ -655,8 +838,12 @@ def main():
             # dropped last radial function) -> exclude the outer p rows there; the
             # meaningful defect is the axis-side window truncation.
             r_stop = shape_list[0][0] - (args.p if dirichlet else 0)
-            pce = float(jnp.max(perr[:r_stop]))
-            print(f"[{bc}] P_const_err (axis-side window truncation) = {pce:.3e}", flush=True)
+            if r_stop >= 1:
+                pce = float(jnp.max(perr[:r_stop]))
+                print(f"[{bc}] P_const_err (axis-side window truncation) = {pce:.3e}", flush=True)
+            else:
+                pce = float("nan")
+                print(f"[{bc}] P_const_err skipped (bulk radial window {shape_list[0][0]} <= p)", flush=True)
 
         # coarsest dense solve (exact; pseudo-inverse handles the free-BC
         # near-null bulk constant like the FD atom's modal threshold does)
@@ -687,11 +874,16 @@ def main():
             for lvl in range(len(levels) if len(levels) == 1 else len(levels) - 1):
                 sq, op = levels[lvl]
                 S = build_smoother_atom(sq, op, dirichlet, shape_list[lvl],
-                                        A_list[lvl], nb_list[lvl], mode)
+                                        A_list[lvl], nb_list[lvl], mode, ring0)
                 lam_max = estimate_lam_max(A_list[lvl], S, nb_list[lvl], free_bc,
                                            seed=args.seed + lvl)
                 if lvl == 0:
                     lam0 = lam_max
+                    if args.spectrum_diag:
+                        grev_r0 = sq.basis_0.Λ[0].greville_points()[
+                            2 + ring0:2 + ring0 + shape_list[0][0]]
+                        spectrum_diag(A_list[0], S, shape_list[0], grev_r0,
+                                      bc, mode, lam_max)
                 kappa = (lam_max / args.cheb_lo if args.cheb_lo
                          else args.cheb_window)
                 kappa = max(kappa, 1.5)  # degenerate guard (lam_max ~ cheb_lo)
@@ -705,7 +897,8 @@ def main():
             t_sm = time.perf_counter() - t0
 
             vcycle = make_vcycle(A_list, shape_list, smooth_list, P_list, dense_inv)
-            precond, env_t = build_envelope(seq, ops, dirichlet, vcycle, nb0, core0, args.schur)
+            precond, env_t = build_envelope(seq, ops, dirichlet, vcycle, nb0, core0,
+                                            args.schur, ring0)
 
             se = mr = ""
             if args.two_level_check:
@@ -715,7 +908,7 @@ def main():
                 assert mr > 0, f"envelope not positive definite ({mr:.3e})"
                 if mode == "jacobi" and nb0 <= 4000:
                     di_ref = _diagonal_from_matvec(A_list[0], nb0)
-                    di_es = k0_bulk_stiffness_diagonal(seq, shape_list[0])
+                    di_es = k0_bulk_stiffness_diagonal(seq, shape_list[0], ring0)
                     derr = float(jnp.max(jnp.abs(di_es - di_ref) / jnp.maximum(jnp.abs(di_ref), 1e-30)))
                     print(f"[{bc}] jacobi diag einsum vs probe: rel err {derr:.2e}", flush=True)
                     assert derr < 1e-8, f"einsum diagonal mismatch ({derr:.2e})"
@@ -726,6 +919,12 @@ def main():
                   f"[smoother {t_sm:.1f}s, ass {env_t['ass_s']:.1f}s, W {env_t['w_s']:.1f}s]",
                   flush=True)
             method = f"mg-{mode}" if args.p_fix == "none" else f"mg-{mode}+{args.p_fix}"
+            if args.fat_core:
+                method += f"+fat{ring0}"
+            if args.anchor_xi1:
+                method += "+anch"
+            if args.xi_adapt:
+                method += "+xia"
             row(bc, method, n_ext, it, dt, rel, f"{lam0:.4g}", pce, se, mr,
                 f"{t_sm:.2f}", f"{env_t['ass_s']:.2f}", f"{env_t['w_s']:.2f}",
                 f"{t_dense:.2f}", m_used=m0)

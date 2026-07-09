@@ -66,7 +66,8 @@ for _p in (ROOT, SCRIPTS, SCRIPTS / "benchmark", SCRIPTS / "debug"):
         sys.path.insert(0, str(_p))
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map
+from mrx.mappings import (cylinder_map, one_size_fits_all_map,
+                          rotating_ellipse_map, toroid_map)
 from mrx.differential_forms import safe_inv33
 from mrx.operators import (
     _diagonal_from_matvec,
@@ -1552,6 +1553,7 @@ def build_sequence(args) -> DeRhamSequence:
         tol=args.cg_tol,
         maxiter=args.cg_maxiter,
         r_scale=getattr(args, "r_scale", 1.0),
+        polar_ring1=getattr(args, "polar_ring1", None),
         betti_numbers=BETTI,
     )
     seq.evaluate_1d()
@@ -1559,6 +1561,14 @@ def build_sequence(args) -> DeRhamSequence:
     if args.geometry == "rotating_ellipse":
         seq.set_map(rotating_ellipse_map(
             eps=args.epsilon, kappa=args.kappa, R0=args.r0, nfp=args.nfp))
+    elif args.geometry == "cerfon":
+        # Cerfon-Freidberg "one size fits all" axisymmetric shaped tokamak:
+        # elongation kappa + poloidal tilt alpha (triangularity = sin(alpha))
+        # make the (r, theta) metric block NON-diagonal -- shaping without
+        # helicity (the intermediate case between toroid and W7-X).
+        seq.set_map(one_size_fits_all_map(
+            epsilon=args.epsilon, kappa=args.kappa,
+            alpha=getattr(args, "alpha", 0.0), R0=args.r0))
     elif args.geometry == "cylinder":
         # Periodic cylinder F(r, chi, z) = (a r cos2pi chi, a r sin2pi chi, h z),
         # periodic in chi and z. a = epsilon*R0 keeps the minor radius comparable
