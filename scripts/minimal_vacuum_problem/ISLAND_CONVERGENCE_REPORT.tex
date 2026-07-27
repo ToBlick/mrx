@@ -55,20 +55,10 @@ those demonstrations reliable.
 \section{Why the vacuum field converges}
 \label{sec:why}
 
-The MRX field is not fit to SIMSOPT data.  It is the harmonic 2-form of the
-domain.  In the finite-element exterior-calculus de~Rham complex it lies in
-the \(H(\mathrm{div})\) space and is the Dirichlet nullspace of
-\begin{equation}
-\label{eq:hodge}
-\Delta_2=d\,\delta+\delta\,d,\qquad \Delta_2u=0 .
-\end{equation}
-For a 2-form, \(du=0\) and \(\delta u=0\) are respectively the solenoidal and
-current-free vacuum conditions.  The nullspace dimension is the relevant
-Betti number and is one for this problem.  FEEC refinement converges to the
-continuous harmonic form, while the Piola pushforward preserves the de~Rham
-structure when mapping it to the physical magnetic field.
-
-The discrete harmonic condition is auditable through
+The MRX vacuum field is the Dirichlet nullspace of the Hodge Laplacian
+\(\Delta_2=d\,\delta+\delta\,d\).  For a 2-form, \(du=0\) and \(\delta u=0\)
+are respectively the solenoidal and current-free vacuum conditions.  The
+discrete harmonic condition is auditable through
 \begin{equation}
 \label{eq:energy}
 \langle u,\Delta_2u\rangle=\lVert du\rVert^2+\lVert\delta u\rVert^2 .
@@ -184,25 +174,28 @@ to \(2.43\times10^{-4}\) in the \(12\times24\times12\) field solve.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=0.88\textwidth]{highres_l2_vs_dofs.png}
+  \includegraphics[width=0.88\textwidth]{robust_l2_vs_dofs.png}
   \caption{Aligned relative \(L^2\) versus \(k=2\) Dirichlet DOFs for the
-  dense-verified ladder (field convergence only).  This ranking does
-  \emph{not} predict island fidelity: \(8\times32\times8\) has worse
-  \(L^2\) than \(12\times24\times12\) yet matches the SIMSOPT island
-  (Section~\ref{sec:width}).}
+  frozen-tracer evaluation pass shared with Table~\ref{tab:highres}
+  (field convergence only).  The red ladder is the fixed-aperture
+  \(8\times n_\theta\times8\) series, including \(8\times36\times8\).
+  This ranking does \emph{not} predict island fidelity:
+  \(8\times32\times8\) has worse \(L^2\) than \(12\times24\times12\) yet
+  matches the SIMSOPT island (Section~\ref{sec:width}).}
   \label{fig:l2dofs}
 \end{figure}
 
-The isotropic ladder is consistent with a high-order spatial law
-\(L^2\sim h^{\,p}\), with fitted \(p\approx4.5\) for the \(p=3\) spline FEEC
-spaces.  Island width instead tracks poloidal elements per lobe
-(Section~\ref{sec:width}): \(a_{6,3}\) is most efficiently reduced by
-increasing \(n_\theta\), not by maximizing total DOFs.
+The isotropic ladder (\(n_r=n_\zeta\), \(n_\theta=2n_r\)) is consistent with
+a high-order spatial law \(L^2\sim h^{\,p}\), with fitted \(p\approx4.3\) for
+the \(p=3\) spline FEEC spaces.  Island width instead tracks poloidal
+elements per lobe (Section~\ref{sec:width}): \(a_{6,3}\) is most efficiently
+reduced by increasing \(n_\theta\), not by maximizing total DOFs.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=0.88\textwidth]{highres_a63_vs_grid.png}
-  \caption{Resonant normal-error amplitude \(a_{6,3}\).  Poloidal refinement
+  \includegraphics[width=0.88\textwidth]{robust_a63_vs_grid.png}
+  \caption{Resonant normal-error amplitude \(a_{6,3}\) on the same
+  frozen-tracer records as Figure~\ref{fig:l2dofs}.  Poloidal refinement
   resolves the \(m=6\) error more efficiently than radial/toroidal enrichment
   at fixed \(n_\theta\).}
   \label{fig:a63}
@@ -370,9 +363,9 @@ recorded identical section events.
 \section{Code changes required}
 \label{sec:code}
 
-The following changes were required to make the \(L^2\) and island-width
-demonstrations reliable.  Each item names the function and the failure mode
-it fixed.
+The following changes were required relative to the original branch to make
+the \(L^2\) and island-width demonstrations reliable.  Each item names the
+function and the failure mode it fixed.
 
 \paragraph{Dense \texttt{eigh} verification.}
 Inexact shift-and-invert inverse iteration can return a vector with high
@@ -380,6 +373,10 @@ scalar \(M_2\) overlap but an impure non-harmonic component.  Dense
 \texttt{eigh} on the assembled Hodge Laplacian replaces that vector with the
 exact discrete harmonic form before any diagnostic is computed.  Without this
 step, field \(L^2\) and island width both fail to converge monotonically.
+Grids whose iterative warm-start has low dense overlap are quarantined from
+headline fits; low overlap of the iterative vector alone remains a
+solver-health caveat when the dense-verified field is still usable
+(\(8\times36\times8\)).
 
 \paragraph{Exact section crossings
 (\texttt{\_exact\_section\_times}).}
@@ -412,42 +409,23 @@ island width.  Subtracting poloidal modes 1--4 from \(\rho(\theta)\) before
 measuring the spread isolates the resonant deformation and yields the stable
 SIMSOPT reference \(w_{\mathrm{phys}}\approx0.050\).
 
-\paragraph{Field-based pitch shear.}
-The helpers are
-\texttt{\_iota\_profile\_from\_physical\_pitch} and
-\texttt{\_local\_shear\_from\_iota\_profile}.
-A five-point fit to a traced \(\iota(\rho)\) profile is noisy near the
-resonance.  Flux-surface-averaged logical pitch on a fine \(\rho\) grid gives
-a stable \(\mathrm{d}\iota/\mathrm{d}\rho\) that is shared between SIMSOPT and
-MRX when forming the relative pendulum law.
-
-\paragraph{Unified pendulum width
-(\texttt{pendulum\_island\_width}).}
-Two earlier scripts used inconsistent shear normalizations (\(2\pi\) versus
-the poloidal mode number \(m=6\)).  The unified prefactor
-\(W=4\sqrt{\lvert c\rvert/(2\pi\,\lvert\mathrm{d}\iota/\mathrm{d}\rho\rvert)}\)
-matches the phase convention \(\psi=2\pi(6\theta-\zeta)\) with \(\iota\) per
-full turn; the accidental \(m=6\) form is correct only to about \(2.3\%\).
-
 \paragraph{Circulation on the native single-period map.}
-Evaluating \(\oint B\!\cdot\!\mathrm{d}\ell\) after artificially unfolding to
-the full torus introduced a gauge mismatch between SIMSOPT and MRX.  Both
-circulations now use the native one-field-period map and the same interior
-loop \(\rho=0.6\), after which \(\alpha\) and \(s^\star\) agree.
-
-\paragraph{Full-torus crossing cadence
-(\texttt{\_physical\_rotational\_transform\_profile}).}
-Physical \(\iota\) must advance by one full toroidal turn between returns,
-not one field period.  Using the field-period cadence under-counted the
-transform by \(n_{\mathrm{fp}}\) and misplaced the resonance.
-
-\paragraph{M2-overlap reliability annotation.}
-The aggregator marks grids with dense/iterative M2 overlap
-\(\lesssim0.75\) as quarantined nullspaces and truncated traces as outliers,
-so the headline elements-per-lobe fit is restricted to trusted records.  Low
-overlap of the \emph{iterative} vector alone is recorded as a solver-health
-caveat when the dense-verified field remains usable
-(\(8\times36\times8\)).
+\leavevmode\\[-0.35em]
+Circulation normalization
+\(\alpha=\Gamma_{\mathrm{SIMSOPT}}/\Gamma_{\mathrm{MRX,unit}}\) was first
+evaluated after unfolding through the legacy full-torus visualization path
+(\path{extend_map_nfp} plus a localized \(k=2\) pushforward).
+That toroidal reparameterization does not preserve the \(k=2\) Piola proxy:
+\(\Gamma_{\mathrm{MRX}}\) acquired the wrong sign relative to
+\(n_{\mathrm{fp}}\) times the single-period value, and \(\alpha/s^\star\)
+drifted from \(0.978\) at \(\rho=0.30\) to \(0.939\) at \(\rho=0.95\)
+(relative span \(4.0\%\) on grid \(11\times22\times11\)).  The fix integrates
+both circulations on the native one-field-period map at the interior loop
+\(\rho=0.6\), where the \(n_{\mathrm{fp}}\) factor cancels in the ratio.
+After the fix, \(\alpha/s^\star\) is flat to \(5\times10^{-5}\) (finest grid
+\(1.000053\)); resolved grids satisfy
+\(\lvert\alpha/s^\star-1\rvert\le9.8\times10^{-5}\), and
+\(s^\star\)-normalized \(L^2\) shifts by at most \(8.3\times10^{-6}\).
 
 \section{Conclusions}
 

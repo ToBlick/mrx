@@ -88,6 +88,44 @@ def build_or_load_phi_zero_slice(
     return physical_slice
 
 
+def _panel_marker_style(
+    n_points: int,
+    *,
+    reference_ink: float = 2.4e4,
+    marker_size: float | None = None,
+    alpha: float = 0.55,
+) -> tuple[float, float]:
+    """Choose scatter size so sparse and dense panels have comparable ink.
+
+    Parameters
+    ----------
+    n_points:
+        Total number of Poincaré hits drawn in the panel.
+    reference_ink:
+        Target product ``size * n_points``.  With the frozen caches this gives
+        SIMSOPT (~5e4 hits) ``s≈0.49`` and MRX (~2e5 hits) ``s≈0.12``.
+    marker_size:
+        Optional explicit override; when set, density scaling is skipped.
+    """
+    if marker_size is not None:
+        return float(marker_size), float(alpha)
+    count = max(1, int(n_points))
+    size = float(reference_ink) / float(count)
+    size = float(np.clip(size, 0.05, 1.2))
+    return size, float(alpha)
+
+
+def _line_point_count(lines: list[np.ndarray]) -> int:
+    total = 0
+    for line in lines:
+        points = np.asarray(line, dtype=np.float64).reshape(-1, 2)
+        if points.size == 0:
+            continue
+        finite = np.isfinite(points).all(axis=1)
+        total += int(np.count_nonzero(finite))
+    return total
+
+
 def plot_manuscript_poincare_figure(
     panels: list[tuple[str, list[np.ndarray]]],
     physical_slice: dict[str, Any],
@@ -96,7 +134,7 @@ def plot_manuscript_poincare_figure(
     stem: str = "manuscript_poincare_simsopt_vs_mrx_8x32_8x36",
     rho_limits: tuple[float, float] = RHO_ZOOM,
     dpi: int = 600,
-    marker_size: float = 0.05,
+    marker_size: float | None = None,
 ) -> tuple[Path, Path]:
     """Write the 2×3 manuscript Poincaré figure as PDF and PNG.
 
@@ -107,6 +145,10 @@ def plot_manuscript_poincare_figure(
         MRX grids.  Each line is an ``(n_hits, 2)`` array of ``(rho, theta)``.
     physical_slice:
         Output of :func:`cmp._physical_phi_zero_slice` (or a cached equivalent).
+    marker_size:
+        Optional fixed scatter size.  When omitted, each panel chooses its
+        own size from :func:`_panel_marker_style` so sparse SIMSOPT traces
+        remain visible beside dense MRX traces.
     """
     if len(panels) != 3:
         raise ValueError("manuscript figure expects exactly three panels")
@@ -139,7 +181,7 @@ def plot_manuscript_poincare_figure(
     figure, axes = plt.subplots(
         2,
         3,
-        figsize=(12.5, 7.8),
+        figsize=(12.5, 7.0),
         sharex="row",
         sharey="row",
         constrained_layout=True,
@@ -147,13 +189,16 @@ def plot_manuscript_poincare_figure(
 
     for column, (title, lines) in enumerate(panels):
         axis = axes[0, column]
+        size, alpha = _panel_marker_style(
+            _line_point_count(lines), marker_size=marker_size
+        )
         for line in lines:
             points = np.asarray(line, dtype=np.float64).reshape(-1, 2)
             axis.scatter(
                 points[:, 1] % 1.0,
                 points[:, 0],
-                s=marker_size,
-                alpha=0.55,
+                s=size,
+                alpha=alpha,
                 c="0.15",
                 linewidths=0,
                 rasterized=True,
@@ -169,6 +214,9 @@ def plot_manuscript_poincare_figure(
 
     for column, (title, lines) in enumerate(physical_panels):
         axis = axes[1, column]
+        size, alpha = _panel_marker_style(
+            _line_point_count(lines), marker_size=marker_size
+        )
         for line in lines:
             points = np.asarray(line, dtype=np.float64).reshape(-1, 2)
             finite = np.isfinite(points).all(axis=1)
@@ -178,8 +226,8 @@ def plot_manuscript_poincare_figure(
             axis.scatter(
                 points[:, 0],
                 points[:, 1],
-                s=marker_size,
-                alpha=0.55,
+                s=size,
+                alpha=alpha,
                 c="0.15",
                 linewidths=0,
                 rasterized=True,
@@ -189,25 +237,11 @@ def plot_manuscript_poincare_figure(
         axis.set_aspect("equal", adjustable="box")
         axis.grid(True, alpha=0.22, linewidth=0.4)
         if column == 0:
-            axis.set_ylabel(r"$Z$ [m]")
+            axis.set_ylabel(r"$Z$ [m] ($\phi=0$ plane)")
         if column == 1:
             axis.set_xlabel(r"$R$ [m]")
-        axis.set_title(title)
-
-    axes[0, 0].annotate(
-        r"logical $(\rho,\theta)$",
-        xy=(0.0, 1.08),
-        xycoords="axes fraction",
-        fontsize=9,
-        fontstyle="italic",
-    )
-    axes[1, 0].annotate(
-        r"physical $\phi=0$ embedding",
-        xy=(0.0, 1.08),
-        xycoords="axes fraction",
-        fontsize=9,
-        fontstyle="italic",
-    )
+        # Column identity lives in the top-row titles only; repeating it here
+        # competed with the former italic row annotations for vertical space.
 
     pdf_path = (output_dir / f"{stem}.pdf").resolve()
     png_path = (output_dir / f"{stem}.png").resolve()

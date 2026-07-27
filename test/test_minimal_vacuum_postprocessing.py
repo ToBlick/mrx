@@ -48,7 +48,11 @@ from scripts.minimal_vacuum_problem.compare_push_u_to_simsopt import (
     _trapped_separatrix_summary,
     pendulum_island_width,
 )
+from scripts.minimal_vacuum_problem.fem_convergence_robust.aggregate_robust_islands import (
+    _isotropic_l2_fit,
+)
 from scripts.minimal_vacuum_problem.fem_convergence_robust.manuscript_poincare_figure import (
+    _panel_marker_style,
     plot_manuscript_poincare_figure,
 )
 
@@ -838,6 +842,40 @@ def test_poincare_chunk_size_env_override(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("MRX_POINCARE_CHUNK", "  ")
     assert _poincare_chunk_size(20) == 8
     assert os.environ.get("MRX_POINCARE_CHUNK") == "  "
+
+
+def test_manuscript_marker_style_scales_with_density() -> None:
+    """Sparse panels get larger markers than dense panels; overrides win."""
+    sparse_size, sparse_alpha = _panel_marker_style(5_000)
+    dense_size, dense_alpha = _panel_marker_style(200_000)
+    assert 0.05 <= dense_size < sparse_size <= 1.2
+    assert sparse_alpha == pytest.approx(0.55)
+    assert dense_alpha == pytest.approx(0.55)
+    override_size, override_alpha = _panel_marker_style(
+        200_000, marker_size=0.8, alpha=0.4
+    )
+    assert override_size == pytest.approx(0.8)
+    assert override_alpha == pytest.approx(0.4)
+
+
+def test_isotropic_l2_fit_recovers_synthetic_order() -> None:
+    """Power-law fit recovers ``L2 = C h^4`` on an isotropic ladder."""
+    records = []
+    for nr in (4, 5, 6, 7, 8, 9, 10):
+        h = 1.0 / float(nr)
+        records.append(
+            {
+                "label": f"{nr}x{2 * nr}x{nr}",
+                "ns": [nr, 2 * nr, nr],
+                "n2_dbc": nr * (2 * nr) * nr,
+                "aligned_metrics": {"rel_l2_aligned": 3.0 * h**4},
+                "reliability": {"quarantined_nullspace": False},
+            }
+        )
+    fit = _isotropic_l2_fit(records)
+    assert fit["order_p"] == pytest.approx(4.0, abs=1e-9)
+    assert fit["r_squared"] == pytest.approx(1.0, abs=1e-12)
+    assert len(fit["labels"]) == 7
 
 
 def test_manuscript_poincare_figure_writes_pdf_and_png(tmp_path: Path) -> None:

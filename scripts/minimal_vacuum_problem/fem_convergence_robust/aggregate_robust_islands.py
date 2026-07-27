@@ -190,6 +190,170 @@ def _fit_width_law(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _a63(record: dict[str, Any]) -> float:
+    value = record.get("a63_relative")
+    if value is not None:
+        return float(value)
+    resonances = record.get("resonant_normal_error") or []
+    for item in resonances:
+        if int(item.get("m", -1)) == 6 and int(item.get("n", -1)) == 3:
+            return float(item["normal_error_fourier_relative"])
+    raise KeyError(f"missing a63 for {record.get('label')}")
+
+
+def _is_isotropic(record: dict[str, Any]) -> bool:
+    nr, nt, nz = (int(value) for value in record["ns"])
+    return nr == nz and nt == 2 * nr
+
+
+def _isotropic_l2_fit(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Fit ``L2 ~ C * h^p`` on the isotropic ladder ``nr = nz``, ``nt = 2 nr``.
+
+    The mesh scale is taken as ``h = 1/nr``.  Quarantined nullspaces are
+    excluded so the fit reflects the dense-verified field ladder.
+    """
+    isotropic = [
+        item
+        for item in records
+        if _is_isotropic(item)
+        and not (item.get("reliability") or {}).get("quarantined_nullspace")
+    ]
+    if len(isotropic) < 3:
+        return {
+            "labels": [item["label"] for item in isotropic],
+            "order_p": float("nan"),
+            "log_prefactor": float("nan"),
+            "r_squared": float("nan"),
+        }
+    h = np.asarray([1.0 / float(item["ns"][0]) for item in isotropic], dtype=np.float64)
+    l2 = np.asarray(
+        [float(item["aligned_metrics"]["rel_l2_aligned"]) for item in isotropic],
+        dtype=np.float64,
+    )
+    log_h = np.log(h)
+    log_l2 = np.log(l2)
+    design = np.column_stack([np.ones_like(log_h), log_h])
+    log_c, order_p = np.linalg.lstsq(design, log_l2, rcond=None)[0]
+    fitted = log_c + order_p * log_h
+    ss_res = float(np.sum((log_l2 - fitted) ** 2))
+    ss_tot = float(np.sum((log_l2 - np.mean(log_l2)) ** 2))
+    r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    return {
+        "labels": [item["label"] for item in isotropic],
+        "order_p": float(order_p),
+        "log_prefactor": float(log_c),
+        "r_squared": float(r_squared),
+        "h": h.tolist(),
+        "rel_l2_aligned": l2.tolist(),
+    }
+
+
+def _record_marker_color(record: dict[str, Any]) -> str:
+    reliability = record.get("reliability") or {}
+    if reliability.get("quarantined_nullspace"):
+        return "0.45"
+    if reliability.get("truncated_trace"):
+        return "tab:orange"
+    if int(record["ns"][0]) == 8:
+        return "tab:red"
+    if int(record["ns"][1]) >= 20:
+        return "tab:blue"
+    return "0.6"
+
+
+def _plot_field_l2(records: list[dict[str, Any]]) -> None:
+    """Log-log aligned relative L2 versus k=2 Dirichlet DOFs."""
+    fig, axis = plt.subplots(figsize=(8.4, 5.2))
+    dofs = np.asarray([int(item["n2_dbc"]) for item in records], dtype=np.float64)
+    l2 = np.asarray(
+        [float(item["aligned_metrics"]["rel_l2_aligned"]) for item in records],
+        dtype=np.float64,
+    )
+    colors = [_record_marker_color(item) for item in records]
+    axis.scatter(dofs, l2, c=colors, s=48, zorder=3)
+    for record, x, y in zip(records, dofs, l2):
+        axis.annotate(
+            record["label"],
+            (x, y),
+            xytext=(4, 3),
+            textcoords="offset points",
+            fontsize=6.5,
+        )
+    # Connect the fixed-aperture 8x poloidal ladder so the new points stand out.
+    poloidal = sorted(
+        (item for item in records if int(item["ns"][0]) == 8),
+        key=lambda item: int(item["ns"][1]),
+    )
+    if len(poloidal) >= 2:
+        axis.plot(
+            [int(item["n2_dbc"]) for item in poloidal],
+            [
+                float(item["aligned_metrics"]["rel_l2_aligned"])
+                for item in poloidal
+            ],
+            color="tab:red",
+            linewidth=1.0,
+            alpha=0.65,
+            zorder=2,
+            label=r"fixed-aperture $8\times n_\theta\times 8$",
+        )
+    axis.set_xscale("log")
+    axis.set_yscale("log")
+    axis.set_xlabel(r"$k=2$ Dirichlet DOFs ($n_{2,\mathrm{dbc}}$)")
+    axis.set_ylabel(r"Aligned relative $L^2$")
+    axis.scatter([], [], color="tab:red", label=r"$n_r=n_\zeta=8$ ladder")
+    axis.scatter([], [], color="tab:blue", label=r"trusted, $n_\theta\geq20$")
+    axis.scatter([], [], color="0.6", label=r"under-resolved ($n_\theta<20$)")
+    axis.scatter([], [], color="tab:orange", label="truncated trace")
+    axis.scatter([], [], color="0.45", label="quarantined nullspace")
+    axis.grid(True, which="both", alpha=0.25)
+    axis.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(OUT / "robust_l2_vs_dofs.png", dpi=180)
+    plt.close(fig)
+
+
+def _plot_resonant_amplitude(records: list[dict[str, Any]]) -> None:
+    """Resonant normal-error amplitude versus grid label, ordered by DOFs."""
+    ordered = sorted(records, key=lambda item: int(item["n2_dbc"]))
+    labels = [item["label"] for item in ordered]
+    a63 = np.asarray([_a63(item) for item in ordered], dtype=np.float64)
+    x = np.arange(len(ordered))
+    colors = [_record_marker_color(item) for item in ordered]
+    fig, axis = plt.subplots(figsize=(10.0, 5.2))
+    axis.scatter(x, a63, c=colors, s=48, zorder=3)
+    axis.plot(x, a63, color="0.75", linewidth=0.8, zorder=1)
+    # Overlay poloidal-ladder trend separately for visual grouping by n_theta.
+    by_theta: dict[int, list[tuple[int, float]]] = {}
+    for index, record in enumerate(ordered):
+        by_theta.setdefault(int(record["ns"][1]), []).append((index, a63[index]))
+    for ntheta, points in sorted(by_theta.items()):
+        if len(points) < 2:
+            continue
+        xs, ys = zip(*points)
+        axis.plot(
+            xs,
+            ys,
+            color="tab:purple",
+            linewidth=0.7,
+            alpha=0.35,
+            zorder=1,
+        )
+    axis.set_yscale("log")
+    axis.set_xticks(x, labels, rotation=38, ha="right")
+    axis.set_ylabel(r"Resonant normal-error amplitude $a_{6,3}$")
+    axis.scatter([], [], color="tab:red", label=r"$n_r=n_\zeta=8$ ladder")
+    axis.scatter([], [], color="tab:blue", label=r"trusted, $n_\theta\geq20$")
+    axis.scatter([], [], color="0.6", label=r"under-resolved ($n_\theta<20$)")
+    axis.scatter([], [], color="tab:orange", label="truncated trace")
+    axis.scatter([], [], color="0.45", label="quarantined nullspace")
+    axis.grid(True, which="both", axis="y", alpha=0.25)
+    axis.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(OUT / "robust_a63_vs_grid.png", dpi=180)
+    plt.close(fig)
+
+
 def _plot_width_law(
     records: list[dict[str, Any]],
     fit: dict[str, Any],
@@ -536,6 +700,9 @@ def main() -> None:
     if not records:
         raise RuntimeError("no robust grid JSON files found")
     fit = _fit_width_law(records)
+    isotropic_l2 = _isotropic_l2_fit(records)
+    _plot_field_l2(records)
+    _plot_resonant_amplitude(records)
     _plot_width_law(records, fit)
     location = _plot_location(records)
     _plot_balanced_width(records)
@@ -562,6 +729,7 @@ def main() -> None:
             }
         ),
         "width_law": fit,
+        "isotropic_l2_fit": isotropic_l2,
         "location": location,
         "self_convergence": self_convergence,
         "detrended_width": detrended,
@@ -570,7 +738,12 @@ def main() -> None:
     (OUT / "robust_island_convergence_summary.json").write_text(
         json.dumps(summary, indent=2) + "\n"
     )
-    print(f"ROBUST_AGGREGATE_COMPLETE records={len(records)}", flush=True)
+    print(
+        "ROBUST_AGGREGATE_COMPLETE "
+        f"records={len(records)} "
+        f"isotropic_p={isotropic_l2['order_p']:.3f}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
