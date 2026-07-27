@@ -1,0 +1,29 @@
+# Heavy local caches and mesh artifacts (not part of the report deliverable)
+*.npz
+*.h5
+*.npy
+
+# latexmk intermediates
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.toc
+*.synctex.gz
+
+# Local scratch / smoke outputs
+*_smoke*.json
+scratch_*.json
+target_*_preview.json
+smoke_*.json
+fem_poincare_smoke.json
+fem_sweep_smoke.json
+poincare_*_smoke.json
+postprocessing_smoke_metrics.json
+solver_island_smoke_fast.json
+solver_*_repair*.json
+resolution_diagnosis_final.json
+push_u2_vs_simsopt*.json
+fem_convergence_*.json
+!fem_convergence_highres/fem_convergence_highres_synthesis.json

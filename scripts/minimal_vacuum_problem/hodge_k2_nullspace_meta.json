@@ -1,0 +1,29 @@
+{
+  "operator": "hodge_laplacian_k2_dirichlet",
+  "form_degree": 2,
+  "map_mode": "gvec",
+  "map_kind": "cerfon",
+  "gvec_runpath": "/Users/aak572/mrx/scripts/wip/quasr0044970_gvec",
+  "nfp": 3,
+  "ns": [
+    8,
+    16,
+    8
+  ],
+  "p": 3,
+  "betti": [
+    1,
+    1,
+    0,
+    0
+  ],
+  "flip_zeta": false,
+  "gvec_flip_r": false,
+  "ellipse_eps": 0.33,
+  "ellipse_kappa": 1.2,
+  "ellipse_r0": 1.0,
+  "cerfon_alpha": 0.0,
+  "shafranov_e0": 0.3,
+  "shafranov_delta0": 0.2,
+  "nullspace_eps": 1e-06
+}

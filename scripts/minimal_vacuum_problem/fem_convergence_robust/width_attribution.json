@@ -1,0 +1,835 @@
+{
+  "model": "W = 4 sqrt(|pitch_6,1| / (2*pi*|diota/drho|)); relative form w_MRX/w_SIMSOPT = sqrt(A_MRX/A_SIMSOPT)",
+  "model_note": "Using m=6 instead of 2*pi is accidentally correct to ~2.3% because the cycle/radian, A=2|c|, and field-period index factors nearly cancel.",
+  "simsopt_traced_width_band": [
+    0.0486,
+    0.0503
+  ],
+  "simsopt_width_reference": 0.0501,
+  "simsopt_reference_shear": 0.023014716675588357,
+  "summary": {
+    "usable_labels": [
+      "8x20x8",
+      "9x18x9",
+      "8x24x8",
+      "8x28x8",
+      "8x32x8",
+      "10x20x10",
+      "8x36x8",
+      "11x18x11",
+      "10x24x10",
+      "11x22x11",
+      "10x30x10"
+    ],
+    "pearson_correlation_predicted_vs_traced": 0.9970753862081602,
+    "best_fit_scale_through_origin": 0.9244894829300573,
+    "scaled_prediction_r_squared": 0.9926415920462266,
+    "scaled_prediction_rms_error": 0.0020018358822978923,
+    "relative_law_rms_error": 0.04654777338203749,
+    "simsopt_width_reference": 0.0501
+  },
+  "records": [
+    {
+      "label": "4x8x4",
+      "ns": [
+        4,
+        8,
+        4
+      ],
+      "n2_dbc": 168,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_final/fem_sweep_4x8x4_dof.npy",
+      "rho_resonance": 0.5959399076890114,
+      "elements_per_lobe": 1.3333333333333333,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.025540541039441284,
+      "aligned_rel_l2": 0.02258380799124328,
+      "traced_detrended_width": 0.10277228900099025,
+      "width_ratio_mrx_over_simsopt": 2.051343093832141,
+      "sqrt_amplitude_ratio": 1.9085434814477689,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        1.9252800587451834e-11,
+        1.5424985837325327e-05
+      ],
+      "simsopt_pitch_amplitude": 1.5424985837337342e-05,
+      "simsopt_pitch_phase_radians": 1.5707950786381208,
+      "mrx_pitch_complex": [
+        2.819822462035271e-07,
+        5.618539286508197e-05
+      ],
+      "mrx_pitch_amplitude": 5.618610046435664e-05,
+      "mrx_pitch_phase_radians": 1.565777586792898,
+      "complex_pitch_error_amplitude": 4.0761382265546906e-05,
+      "amplitude_ratio_mrx_over_simsopt": 3.6425382205767702,
+      "predicted_width_mrx": 0.07884636686641233,
+      "predicted_width_simsopt": 0.0413123241009954
+    },
+    {
+      "label": "5x10x5",
+      "ns": [
+        5,
+        10,
+        5
+      ],
+      "n2_dbc": 410,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_final/fem_sweep_5x10x5_dof.npy",
+      "rho_resonance": 0.6910484976622595,
+      "elements_per_lobe": 1.6666666666666667,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.03507013545346764,
+      "aligned_rel_l2": 0.011556863321140925,
+      "traced_detrended_width": 0.12009481369188917,
+      "width_ratio_mrx_over_simsopt": 2.3971020696983865,
+      "sqrt_amplitude_ratio": 2.2652654130627385,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        -5.3702803822418096e-11,
+        2.453523968123537e-05
+      ],
+      "simsopt_pitch_amplitude": 2.4535239681294144e-05,
+      "simsopt_pitch_phase_radians": 1.5707985155977988,
+      "mrx_pitch_complex": [
+        -1.0306376017527927e-07,
+        -0.0001259007587759504
+      ],
+      "mrx_pitch_amplitude": 0.000125900800960513,
+      "mrx_pitch_phase_radians": -1.5716149377242943,
+      "complex_pitch_error_amplitude": 0.0001504360337249102,
+      "amplitude_ratio_mrx_over_simsopt": 5.131427391618299,
+      "predicted_width_mrx": 0.11802703229511952,
+      "predicted_width_simsopt": 0.05210295959780791
+    },
+    {
+      "label": "6x12x6",
+      "ns": [
+        6,
+        12,
+        6
+      ],
+      "n2_dbc": 804,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_final/fem_sweep_6x12x6_dof.npy",
+      "rho_resonance": 0.6666992386105774,
+      "elements_per_lobe": 2.0,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.05509530458706903,
+      "aligned_rel_l2": 0.006156056052061315,
+      "traced_detrended_width": 0.26691686127009684,
+      "width_ratio_mrx_over_simsopt": 5.32768186167858,
+      "sqrt_amplitude_ratio": 5.076277677730926,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        -8.423255599182227e-12,
+        2.216791616942662e-05
+      ],
+      "simsopt_pitch_amplitude": 2.216791616942822e-05,
+      "simsopt_pitch_phase_radians": 1.570796706769971,
+      "mrx_pitch_complex": [
+        -1.1222492588740599e-07,
+        -0.0005712360441018626
+      ],
+      "mrx_pitch_amplitude": 0.0005712360551257064,
+      "mrx_pitch_phase_radians": -1.5709927866044662,
+      "complex_pitch_error_amplitude": 0.00059340397088172,
+      "amplitude_ratio_mrx_over_simsopt": 25.768595061429284,
+      "predicted_width_mrx": 0.25140565737856085,
+      "predicted_width_simsopt": 0.04952559204581143
+    },
+    {
+      "label": "6x14x6",
+      "ns": [
+        6,
+        14,
+        6
+      ],
+      "n2_dbc": 936,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_run_b/fem_sweep_6x14x6_dof.npy",
+      "rho_resonance": 0.6989085852833142,
+      "elements_per_lobe": 2.3333333333333335,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.05263087355061555,
+      "aligned_rel_l2": 0.004331087439062268,
+      "traced_detrended_width": 0.18216071385043364,
+      "width_ratio_mrx_over_simsopt": 3.6359423922242247,
+      "sqrt_amplitude_ratio": 3.8246761370057465,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        -9.089315646046174e-12,
+        2.530466082363049e-05
+      ],
+      "simsopt_pitch_amplitude": 2.5304660823632123e-05,
+      "simsopt_pitch_phase_radians": 1.5707966859902127,
+      "mrx_pitch_complex": [
+        3.09298157651477e-11,
+        -0.00037016031230623217
+      ],
+      "mrx_pitch_amplitude": 0.00037016031230623347,
+      "mrx_pitch_phase_radians": -1.5707962432370037,
+      "complex_pitch_error_amplitude": 0.0003954649731298647,
+      "amplitude_ratio_mrx_over_simsopt": 14.628147552981199,
+      "predicted_width_mrx": 0.20237747226373193,
+      "predicted_width_simsopt": 0.052913623275347106
+    },
+    {
+      "label": "6x16x6",
+      "ns": [
+        6,
+        16,
+        6
+      ],
+      "n2_dbc": 1068,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_run_b/fem_sweep_6x16x6_dof.npy",
+      "rho_resonance": 0.7016776588278543,
+      "elements_per_lobe": 2.6666666666666665,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.04289811311704384,
+      "aligned_rel_l2": 0.004210266595139466,
+      "traced_detrended_width": 0.12495303358704285,
+      "width_ratio_mrx_over_simsopt": 2.494072526687482,
+      "sqrt_amplitude_ratio": 2.525127603032181,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        4.617653206541874e-11,
+        2.557593432703508e-05
+      ],
+      "simsopt_pitch_amplitude": 2.5575934327076765e-05,
+      "simsopt_pitch_phase_radians": 1.5707945213268548,
+      "mrx_pitch_complex": [
+        7.829645693124446e-11,
+        -0.00016307904772268456
+      ],
+      "mrx_pitch_amplitude": 0.00016307904772270334,
+      "mrx_pitch_phase_radians": -1.5707958466813687,
+      "complex_pitch_error_amplitude": 0.00018865498204972237,
+      "amplitude_ratio_mrx_over_simsopt": 6.376269411595048,
+      "predicted_width_mrx": 0.13432793056163503,
+      "predicted_width_simsopt": 0.05319649209027442
+    },
+    {
+      "label": "7x14x7",
+      "ns": [
+        7,
+        14,
+        7
+      ],
+      "n2_dbc": 1386,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_high_order/fem_sweep_7x14x7_dof.npy",
+      "rho_resonance": 0.6687014402385508,
+      "elements_per_lobe": 2.3333333333333335,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.04546950326932154,
+      "aligned_rel_l2": 0.0043030333876772275,
+      "traced_detrended_width": 0.19639109017460998,
+      "width_ratio_mrx_over_simsopt": 3.9199818398125745,
+      "sqrt_amplitude_ratio": 4.0894202486801285,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        1.365944638124222e-11,
+        2.236148361491533e-05
+      ],
+      "simsopt_pitch_amplitude": 2.2361483614919502e-05,
+      "simsopt_pitch_phase_radians": 1.570795715947843,
+      "mrx_pitch_complex": [
+        -8.746997450716413e-08,
+        -0.0003739590850099094
+      ],
+      "mrx_pitch_amplitude": 0.0003739590952396333,
+      "mrx_pitch_phase_radians": -1.5710302293163707,
+      "complex_pitch_error_amplitude": 0.00039632057828037473,
+      "amplitude_ratio_mrx_over_simsopt": 16.723357970315043,
+      "predicted_width_mrx": 0.20341327444227897,
+      "predicted_width_simsopt": 0.049741347690526835
+    },
+    {
+      "label": "8x16x8",
+      "ns": [
+        8,
+        16,
+        8
+      ],
+      "n2_dbc": 2192,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_high_order_refined/fem_sweep_8x16x8_dof.npy",
+      "rho_resonance": 0.6825675150513253,
+      "elements_per_lobe": 2.6666666666666665,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.03943774270619558,
+      "aligned_rel_l2": 0.003973837850540153,
+      "traced_detrended_width": 0.15763503331094636,
+      "width_ratio_mrx_over_simsopt": 3.1464078505178916,
+      "sqrt_amplitude_ratio": 3.181573128400949,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        1.1678300994038592e-11,
+        2.370772398657859e-05
+      ],
+      "simsopt_pitch_amplitude": 2.3707723986581466e-05,
+      "simsopt_pitch_phase_radians": 1.5707958342001203,
+      "mrx_pitch_complex": [
+        8.744765841403562e-09,
+        -0.00023997924462222826
+      ],
+      "mrx_pitch_amplitude": 0.0002399792447815565,
+      "mrx_pitch_phase_radians": -1.5707598871192434,
+      "complex_pitch_error_amplitude": 0.00026368696875342303,
+      "amplitude_ratio_mrx_over_simsopt": 10.122407571363002,
+      "predicted_width_mrx": 0.1629498938382456,
+      "predicted_width_simsopt": 0.05121676832873674
+    },
+    {
+      "label": "8x20x8",
+      "ns": [
+        8,
+        20,
+        8
+      ],
+      "n2_dbc": 2736,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_highres/fem_sweep_8x20x8_dof.npy",
+      "rho_resonance": 0.7081727700775747,
+      "elements_per_lobe": 3.3333333333333335,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.024973048192857446,
+      "aligned_rel_l2": 0.0007786880745489848,
+      "traced_detrended_width": 0.04368149850243462,
+      "width_ratio_mrx_over_simsopt": 0.8718861976533857,
+      "sqrt_amplitude_ratio": 0.8232709155563648,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        1.8624120461433434e-12,
+        2.621313009229855e-05
+      ],
+      "simsopt_pitch_amplitude": 2.621313009229862e-05,
+      "simsopt_pitch_phase_radians": 1.5707962557460733,
+      "mrx_pitch_complex": [
+        1.5603398150426526e-11,
+        -1.7766604258812707e-05
+      ],
+      "mrx_pitch_amplitude": 1.7766604258819558e-05,
+      "mrx_pitch_phase_radians": -1.5707954485517657,
+      "complex_pitch_error_amplitude": 4.3979734351113407e-05,
+      "amplitude_ratio_mrx_over_simsopt": 0.6777750004010151,
+      "predicted_width_mrx": 0.04433732171272067,
+      "predicted_width_simsopt": 0.05385508084268664
+    },
+    {
+      "label": "9x18x9",
+      "ns": [
+        9,
+        18,
+        9
+      ],
+      "n2_dbc": 3258,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_highres/fem_sweep_9x18x9_dof.npy",
+      "rho_resonance": 0.7012150377272974,
+      "elements_per_lobe": 3.0,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.03761209755482059,
+      "aligned_rel_l2": 0.000682109766242616,
+      "traced_detrended_width": 0.10101313544268481,
+      "width_ratio_mrx_over_simsopt": 2.0162302483569823,
+      "sqrt_amplitude_ratio": 2.085457296554005,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        -8.343950402889772e-11,
+        2.5530636035402028e-05
+      ],
+      "simsopt_pitch_amplitude": 2.5530636035538376e-05,
+      "simsopt_pitch_phase_radians": 1.570799595005838,
+      "mrx_pitch_complex": [
+        6.515533526480857e-11,
+        -0.00011103610962828646
+      ],
+      "mrx_pitch_amplitude": 0.00011103610962830558,
+      "mrx_pitch_phase_radians": -1.5707957400007855,
+      "complex_pitch_error_amplitude": 0.0001365667456637693,
+      "amplitude_ratio_mrx_over_simsopt": 4.349132135750339,
+      "predicted_width_mrx": 0.11084072536318154,
+      "predicted_width_simsopt": 0.053149362274803706
+    },
+    {
+      "label": "8x24x8",
+      "ns": [
+        8,
+        24,
+        8
+      ],
+      "n2_dbc": 3280,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_run_c/fem_sweep_8x24x8_dof.npy",
+      "rho_resonance": 0.6906520322907287,
+      "elements_per_lobe": 4.0,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.015087649889395044,
+      "aligned_rel_l2": 0.0007121577413261549,
+      "traced_detrended_width": 0.04097237369554024,
+      "width_ratio_mrx_over_simsopt": 0.8178118502103842,
+      "sqrt_amplitude_ratio": 0.82890133411265,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        -2.2534959436928417e-11,
+        2.449643632924844e-05
+      ],
+      "simsopt_pitch_amplitude": 2.4496436329258803e-05,
+      "simsopt_pitch_phase_radians": 1.5707972467229683,
+      "mrx_pitch_complex": [
+        -4.6239661721604014e-11,
+        1.6830948313728264e-05
+      ],
+      "mrx_pitch_amplitude": 1.683094831379178e-05,
+      "mrx_pitch_phase_radians": 1.5707990740947433,
+      "complex_pitch_error_amplitude": 7.665488015556826e-06,
+      "amplitude_ratio_mrx_over_simsopt": 0.687077421693731,
+      "predicted_width_mrx": 0.04315404736272187,
+      "predicted_width_simsopt": 0.05206174195499258
+    },
+    {
+      "label": "8x28x8",
+      "ns": [
+        8,
+        28,
+        8
+      ],
+      "n2_dbc": 3824,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_highres/fem_sweep_8x28x8_dof.npy",
+      "rho_resonance": 0.6895217634388009,
+      "elements_per_lobe": 4.666666666666667,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.024736087344406122,
+      "aligned_rel_l2": 0.0007004541323544607,
+      "traced_detrended_width": 0.04697138918579252,
+      "width_ratio_mrx_over_simsopt": 0.9375526783591323,
+      "sqrt_amplitude_ratio": 0.9774796067749346,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        2.856241486634952e-11,
+        2.4385968061293566e-05
+      ],
+      "simsopt_pitch_amplitude": 2.4385968061310294e-05,
+      "simsopt_pitch_phase_radians": 1.5707951555305533,
+      "mrx_pitch_complex": [
+        4.5691444387384914e-11,
+        2.3299972666793146e-05
+      ],
+      "mrx_pitch_amplitude": 2.3299972666837947e-05,
+      "mrx_pitch_phase_radians": 1.5707943657863992,
+      "complex_pitch_error_amplitude": 1.0859953946355058e-06,
+      "amplitude_ratio_mrx_over_simsopt": 0.9554663816608807,
+      "predicted_width_mrx": 0.050774417121178826,
+      "predicted_width_simsopt": 0.051944221413173355
+    },
+    {
+      "label": "8x32x8",
+      "ns": [
+        8,
+        32,
+        8
+      ],
+      "n2_dbc": 4368,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_highres/fem_sweep_8x32x8_dof.npy",
+      "rho_resonance": 0.6901423080079794,
+      "elements_per_lobe": 5.333333333333333,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.014647040260074753,
+      "aligned_rel_l2": 0.0006954043852850177,
+      "traced_detrended_width": 0.05012814867424642,
+      "width_ratio_mrx_over_simsopt": 1.0005618497853577,
+      "sqrt_amplitude_ratio": 1.0049627747315417,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        3.2690655594911356e-12,
+        2.44468001848399e-05
+      ],
+      "simsopt_pitch_amplitude": 2.4446800184840117e-05,
+      "simsopt_pitch_phase_radians": 1.5707961930732834,
+      "mrx_pitch_complex": [
+        6.774983726460049e-11,
+        2.469005021268997e-05
+      ],
+      "mrx_pitch_amplitude": 2.4690050212782922e-05,
+      "mrx_pitch_phase_radians": 1.570793582781147,
+      "complex_pitch_error_amplitude": 2.432500363963572e-07,
+      "amplitude_ratio_mrx_over_simsopt": 1.0099501785961194,
+      "predicted_width_mrx": 0.05226707870292659,
+      "predicted_width_simsopt": 0.05200896990128697
+    },
+    {
+      "label": "10x20x10",
+      "ns": [
+        10,
+        20,
+        10
+      ],
+      "n2_dbc": 4620,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_highres/fem_sweep_10x20x10_dof.npy",
+      "rho_resonance": 0.7034364625294113,
+      "elements_per_lobe": 3.3333333333333335,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.027407118524442893,
+      "aligned_rel_l2": 0.0005009002700379017,
+      "traced_detrended_width": 0.04102657357602927,
+      "width_ratio_mrx_over_simsopt": 0.8188936841522808,
+      "sqrt_amplitude_ratio": 0.9040587529533647,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        1.6302529402329037e-12,
+        2.5748249507395618e-05
+      ],
+      "simsopt_pitch_amplitude": 2.5748249507395672e-05,
+      "simsopt_pitch_phase_radians": 1.5707962634797987,
+      "mrx_pitch_complex": [
+        -1.8035081404313473e-11,
+        -2.1044616674858937e-05
+      ],
+      "mrx_pitch_amplitude": 2.1044616674866666e-05,
+      "mrx_pitch_phase_radians": -1.5707971837875272,
+      "complex_pitch_error_amplitude": 4.6792866182258686e-05,
+      "amplitude_ratio_mrx_over_simsopt": 0.8173222287915929,
+      "predicted_width_mrx": 0.04825449228371051,
+      "predicted_width_simsopt": 0.05337539416113555
+    },
+    {
+      "label": "8x36x8",
+      "ns": [
+        8,
+        36,
+        8
+      ],
+      "n2_dbc": 4912,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_highres/fem_sweep_8x36x8_dof.npy",
+      "rho_resonance": 0.6907682340787435,
+      "elements_per_lobe": 6.0,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.024736087344406122,
+      "aligned_rel_l2": 0.0006961104569431803,
+      "traced_detrended_width": 0.0503989939996752,
+      "width_ratio_mrx_over_simsopt": 1.0059679441052933,
+      "sqrt_amplitude_ratio": 1.013885964086004,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        4.0912626157519165e-11,
+        2.450777871136209e-05
+      ],
+      "simsopt_pitch_amplitude": 2.450777871139624e-05,
+      "simsopt_pitch_phase_radians": 1.5707946574218115,
+      "mrx_pitch_complex": [
+        -4.15400823051175e-11,
+        2.519313257124713e-05
+      ],
+      "mrx_pitch_amplitude": 2.5193132571281377e-05,
+      "mrx_pitch_phase_radians": 1.5707979756602048,
+      "complex_pitch_error_amplitude": 6.853538648448486e-07,
+      "amplitude_ratio_mrx_over_simsopt": 1.027964748170606,
+      "predicted_width_mrx": 0.052796888244078584,
+      "predicted_width_simsopt": 0.05207379341884254
+    },
+    {
+      "label": "11x18x11",
+      "ns": [
+        11,
+        18,
+        11
+      ],
+      "n2_dbc": 5170,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_highres/fem_sweep_11x18x11_dof.npy",
+      "rho_resonance": 0.700918794700365,
+      "elements_per_lobe": 3.0,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.03738410869832304,
+      "aligned_rel_l2": 0.0005656310693470992,
+      "traced_detrended_width": 0.09939659317665442,
+      "width_ratio_mrx_over_simsopt": 1.9839639356617649,
+      "sqrt_amplitude_ratio": 2.058732620528356,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        -4.783327491452076e-12,
+        2.5501416301833238e-05
+      ],
+      "simsopt_pitch_amplitude": 2.5501416301833685e-05,
+      "simsopt_pitch_phase_radians": 1.570796514365949,
+      "mrx_pitch_complex": [
+        -1.4242072728101374e-12,
+        -0.00010808469289747241
+      ],
+      "mrx_pitch_amplitude": 0.00010808469289747242,
+      "mrx_pitch_phase_radians": -1.5707963399716678,
+      "complex_pitch_error_amplitude": 0.00013358610919930568,
+      "amplitude_ratio_mrx_over_simsopt": 4.238380002827552,
+      "predicted_width_mrx": 0.10935769233763322,
+      "predicted_width_simsopt": 0.053118938927371497
+    },
+    {
+      "label": "10x24x10",
+      "ns": [
+        10,
+        24,
+        10
+      ],
+      "n2_dbc": 5540,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_highres/fem_sweep_10x24x10_dof.npy",
+      "rho_resonance": 0.689588957031572,
+      "elements_per_lobe": 4.0,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.015156810810090281,
+      "aligned_rel_l2": 0.000381212552371604,
+      "traced_detrended_width": 0.037333279715295285,
+      "width_ratio_mrx_over_simsopt": 0.7451752438182692,
+      "sqrt_amplitude_ratio": 0.7377341614555739,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        -2.5393654208353673e-11,
+        2.439264154186756e-05
+      ],
+      "simsopt_pitch_amplitude": 2.4392641541880776e-05,
+      "simsopt_pitch_phase_radians": 1.5707973678323819,
+      "mrx_pitch_complex": [
+        7.129890136905768e-11,
+        1.3275736455196276e-05
+      ],
+      "mrx_pitch_amplitude": 1.3275736455387736e-05,
+      "mrx_pitch_phase_radians": 1.5707909561774842,
+      "complex_pitch_error_amplitude": 1.111690508709179e-05,
+      "amplitude_ratio_mrx_over_simsopt": 0.5442516929785588,
+      "predicted_width_mrx": 0.038326269747103306,
+      "predicted_width_simsopt": 0.051951328472419255
+    },
+    {
+      "label": "11x22x11",
+      "ns": [
+        11,
+        22,
+        11
+      ],
+      "n2_dbc": 6314,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_highres/fem_sweep_11x22x11_dof.npy",
+      "rho_resonance": 0.6897348942665169,
+      "elements_per_lobe": 3.6666666666666665,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.021048948569483677,
+      "aligned_rel_l2": 0.00035040152256787967,
+      "traced_detrended_width": 0.02456715841097789,
+      "width_ratio_mrx_over_simsopt": 0.49036244333289203,
+      "sqrt_amplitude_ratio": 0.5305888412251174,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        3.854644285314784e-11,
+        2.440704830212083e-05
+      ],
+      "simsopt_pitch_amplitude": 2.440704830215127e-05,
+      "simsopt_pitch_phase_radians": 1.5707947474788575,
+      "mrx_pitch_complex": [
+        5.5119268104288945e-11,
+        6.87118251940358e-06
+      ],
+      "mrx_pitch_amplitude": 6.871182519624658e-06,
+      "mrx_pitch_phase_radians": 1.5707883049925435,
+      "complex_pitch_error_amplitude": 1.7535865782725078e-05,
+      "amplitude_ratio_mrx_over_simsopt": 0.2815245184326129,
+      "predicted_width_mrx": 0.027572934120124473,
+      "predicted_width_simsopt": 0.05196666793153659
+    },
+    {
+      "label": "10x30x10",
+      "ns": [
+        10,
+        30,
+        10
+      ],
+      "n2_dbc": 6920,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_highres/fem_sweep_10x30x10_dof.npy",
+      "rho_resonance": 0.690270488992234,
+      "elements_per_lobe": 5.0,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.012942903175592223,
+      "aligned_rel_l2": 0.00035231354281231906,
+      "traced_detrended_width": 0.045731634496955456,
+      "width_ratio_mrx_over_simsopt": 0.9128070757875341,
+      "sqrt_amplitude_ratio": 0.8937902411872698,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        -1.3232010413611746e-11,
+        2.4459189467009482e-05
+      ],
+      "simsopt_pitch_amplitude": 2.445918946701306e-05,
+      "simsopt_pitch_phase_radians": 1.5707968677780895,
+      "mrx_pitch_complex": [
+        7.258755148346948e-11,
+        1.9539492440286035e-05
+      ],
+      "mrx_pitch_amplitude": 1.9539492440420862e-05,
+      "mrx_pitch_phase_radians": 1.5707926118800029,
+      "complex_pitch_error_amplitude": 4.9196970274719685e-06,
+      "amplitude_ratio_mrx_over_simsopt": 0.7988609952415979,
+      "predicted_width_mrx": 0.0464968872481907,
+      "predicted_width_simsopt": 0.05202214692613602
+    },
+    {
+      "label": "13x18x13",
+      "ns": [
+        13,
+        18,
+        13
+      ],
+      "n2_dbc": 7514,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_highres/fem_sweep_13x18x13_dof.npy",
+      "rho_resonance": 0.7010074204105099,
+      "elements_per_lobe": 3.0,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.037406385822284595,
+      "aligned_rel_l2": 0.0005300521141366826,
+      "traced_detrended_width": 0.09943370138402713,
+      "width_ratio_mrx_over_simsopt": 1.9847046184436554,
+      "sqrt_amplitude_ratio": 2.0639659074235523,
+      "reliability": {
+        "quarantined": true,
+        "truncated_trace": false,
+        "turns": 2000
+      },
+      "simsopt_pitch_complex": [
+        -7.621092729271983e-12,
+        2.5510208278770537e-05
+      ],
+      "simsopt_pitch_amplitude": 2.5510208278771676e-05,
+      "simsopt_pitch_phase_radians": 1.5707966255416825,
+      "mrx_pitch_complex": [
+        1.8131786126662348e-11,
+        -0.00010867234611959053
+      ],
+      "mrx_pitch_amplitude": 0.00010867234611959205,
+      "mrx_pitch_phase_radians": -1.5707961599466893,
+      "complex_pitch_error_amplitude": 0.00013418255439836353,
+      "amplitude_ratio_mrx_over_simsopt": 4.259955267006728,
+      "predicted_width_mrx": 0.10965457658784988,
+      "predicted_width_simsopt": 0.05312809489413109
+    },
+    {
+      "label": "12x24x12",
+      "ns": [
+        12,
+        24,
+        12
+      ],
+      "n2_dbc": 8376,
+      "dof_npy": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_highres/fem_sweep_12x24x12_dof.npy",
+      "rho_resonance": 0.7089749680708783,
+      "elements_per_lobe": 4.0,
+      "local_shear_diota_drho": 0.023014716675588357,
+      "local_shear_source": "simsopt_pitch_average",
+      "record_local_shear_diota_drho": 0.017324923342711334,
+      "aligned_rel_l2": 0.00024286875489703307,
+      "traced_detrended_width": 0.030655529618735154,
+      "width_ratio_mrx_over_simsopt": 0.6118868187372286,
+      "sqrt_amplitude_ratio": 0.8521323813711198,
+      "reliability": {
+        "quarantined": false,
+        "truncated_trace": true,
+        "turns": 1000
+      },
+      "simsopt_pitch_complex": [
+        3.203002400075308e-11,
+        2.6291647508665087e-05
+      ],
+      "simsopt_pitch_amplitude": 2.62916475086846e-05,
+      "simsopt_pitch_phase_radians": 1.5707951085363607,
+      "mrx_pitch_complex": [
+        3.3574065609882974e-11,
+        1.909114336735717e-05
+      ],
+      "mrx_pitch_amplitude": 1.9091143367386692e-05,
+      "mrx_pitch_phase_radians": 1.5707945681749458,
+      "complex_pitch_error_amplitude": 7.200504141308081e-06,
+      "amplitude_ratio_mrx_over_simsopt": 0.7261295953812156,
+      "predicted_width_mrx": 0.04596033761308187,
+      "predicted_width_simsopt": 0.053935677856918884
+    }
+  ],
+  "figure": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_robust/width_attribution.png",
+  "headline_figure": "/Users/aak572/mrx/scripts/minimal_vacuum_problem/fem_convergence_robust/elements_per_lobe_convergence.png"
+}
