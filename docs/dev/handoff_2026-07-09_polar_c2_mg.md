@@ -1,5 +1,79 @@
 # Handoff — 2026-07-09 session: MG fat-core/anchoring/atoms + C⁰/C¹/C² polar surgery
 
+## Addendum — 2026-07-24 session: off-diagonal lever REFUTED; smoother-question endgame
+
+Dense model-matrix ladder (`verify_hodge_massprecond_k0.py`, new section in
+`docs/dev/k0_massprecond_surgery_findings.md`, logs
+`outputs/k0_offdiag_ladder/`):
+
+- **The 07-22 "open lever" (off-diagonal `g^{rθ}`) is REFUTED.** Dropping ALL
+  off-diagonals costs κ 1.5→2.6 (helical ns=6); the atoms sit at ~12. Adding a
+  ζ-avg `g^{rθ}` cross to fdbund gains nothing (12.05 vs 12.01).
+- **Real lever: averaging/separability error of the DIAGONAL weights**, on
+  helical specifically the ζ-variation (ζ-avg 2D-per-mode candidate: 8.0 vs
+  pointwise-diag 2.6 vs fdbund 12). The atoms' h-growth is averaging error
+  (pointwise rungs nearly h-stable). No practical single-level atom upgrade
+  pays → atom-sophistication line CLOSED; remaining spread belongs to the
+  V-cycle coarse correction (or per-ζ-slab block-Jacobi, unmeasured — only
+  worth it if the smoother A/B shows a gap).
+- **Smoother endgame DECIDED: jacobi is OUT, smoother question CLOSED.**
+  A/B (`scripts/debug/run_mg_k0_jacobi_ab.sh`, results
+  `outputs/laplacian_mg_k0/jacobi_ab_20260724/`): MG(jacobi) needs 47–180 its
+  vs MG(fd/fdbund) 5–15 at ~equal ms/it (A-applies dominate) — and even loses
+  to the single-level baseline. Window tuning is flat in total A-applies.
+  Cause: bulk-wide polar anisotropy (g^tt ~ 1/r², ratio 1..36), the classic
+  point-smoother failure; the fd atoms' averaged θ-stiffness captures it.
+  With the ladder (fancier ≤1.5× κ at real cost) ⇒ fd-family separable atom +
+  exact core surgery is the sweet spot from BOTH directions. fd vs fdbund in
+  MG: tie (atom switch stays W7-X-gated). MG-vs-baseline payoff stays the
+  fine-h/W7-X (cluster) question: baseline wins wall-clock at 8³ (~3 vs ~20
+  ms/it) but its its grow (19→40 dbc) while MG(fd) stays ~5–15.
+
+## Addendum — 2026-07-22 session: k=0 metric handling, axis surgery, atom choice
+
+Dense condition-number study (`scripts/debug/verify_hodge_massprecond_k0.py`,
+full write-up `docs/dev/k0_massprecond_surgery_findings.md`). Key conclusions:
+
+- **Production `apply_laplacian_preconditioner(k=0, tensor)` = `fd`-bulk + exact
+  `3·nz` polar-core Schur surgery.** The bulk is *literally* the `fd` atom
+  (geomean `D`, unweighted atoms). The core surgery (not a better bulk model) is
+  what gives it `kappa 2–17`. Framework cross-check: reconstructed `fd+surgery`
+  reproduces the production column to a few %.
+- **Metric-lumping resolves by region:** off-axis lumping works (anisotropy
+  bounded); on-axis (`g^tt ~ 1/r²`) is not lumped but solved *exactly* by the
+  core surgery. The bulk metric model is **second-order** to the surgery.
+- **The "B" idea (route K₀⁻¹ through the mass preconditioner) is CLOSED.**
+  `B = L₀⁻¹ G₀ᵀ P₁ G₀ L₀⁻¹` is bulk-global curl-leaky (regular-decomposition
+  constant), `kappa ~ 100–1000`, grows with h. **Axis surgery does NOT rescue it**
+  (393→391) — its error is bulk-global, not axis-local. The `M_id`-weighted
+  variant `B'` (reference-domain FEM Laplacian `L' = G₀ᵀ M_id G₀`, separable →
+  FD-exact) improves B 2.6–6× and flattens it across geometry, but stays
+  `kappa ~ 100`, still dominated. Do not pursue routing through the mass matrix.
+- **`fdbund` beats `fdax` (adopt); `fdbund` vs production `fd` is DEFERRED to a
+  real W7-X run — do NOT switch the shipped atom yet.** With exact core surgery
+  fixed, `fdbund > fdax` on every geometry (bundled `g^tt J ~ 1/r` milder than bare
+  `g^tt ~ 1/r²`). `fdbund` is **better-motivated** (represents each directional
+  weight; geomean is one isotropic scalar that gets *none* right pointwise) — BUT
+  the local evidence does not support switching `fd`: `fd` wins on toroid
+  (2.41 vs 2.53) AND on the helical rotating-ellipse (10.87 vs 12.01, the closest
+  local W7-X proxy); `fdbund` wins only on cerfon (4.43 vs 4.70). The
+  rotating-ellipse ellipticity proxy **cannot reach strong anisotropy** — the map
+  folds at `kappa=2` (min J≤0), valid ceiling `kappa=1.5` is only mildly
+  anisotropic (raw κ≈969 ≈ toroid). So the strong-anisotropy payoff is UNCONFIRMED
+  and the one helical point leans to `fd`. **Gate on a real W7-X (cluster) run**
+  (to be done later); if `fdbund` wins there, change
+  `_assemble_k0_greville_bulk_factors` (`mrx/operators.py`) to per-axis
+  bundled-average weighted stiffnesses (`D=1`) + production convergence tests.
+- **Open lever for the shaped/helical `kappa` growth:** the off-diagonal
+  `g^{rθ}` (turned on by shaping/helicity) is discarded by *every* current bulk
+  atom (fd/fdax/fdbund keep only the diagonal). Pursue it **directly** in the atom
+  (off-diagonal coupling, or the rank-2 CP "radial_dense" path), surgery fixed —
+  NOT via `M₁` (which reaches it only bundled with the fatal leakage).
+  **(REFUTED 2026-07-24 — see the addendum above: the off-diagonal is cheap to
+  drop; the real error is diagonal-weight averaging.)**
+
+---
+
 **One-paragraph summary.** Local (laptop CPU, 8³) measurement day for the
 k=0 MG line, followed by implementing the C²-on-axis surgery. Fat-core
 (ring 2 folded into the exact Schur core) absorbs the dominant axis share
