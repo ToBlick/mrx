@@ -25,12 +25,32 @@ the 4-geometry validation of jobs 16131589–98, all thin-core `--schur fd`,
   12³ dbc −10%, the one regression anywhere)
 MG's best (2-level fat-core+anchor fdbund) wins only free-BC wall-clock at
 1.05–1.4× while losing dbc everywhere, at ~2k lines of production
-complexity — shelved as a research branch. Secondary production item: fix
-the `_symmetric_pseudoinverse` by-magnitude sign trap (positive-part
-instead); today's rebuilt-Schur floors were this failure class live. When
-wiring the swap, add the guard invariant `denom_min_nonconst/denom_max >
-1e-6` at atom build (the null-zeroing's benignness rests on the zero mode
-staying paired with the deflated constant).
+complexity — shelved as a research branch.
+
+**WIRED + VERIFIED (same day): production changes are in.**
+`_assemble_k0_greville_bulk_factors` now defaults to the fdbund atom
+(bundled `<g^{aa}J>` per-axis weighted 1D stiffnesses via
+`_k0_bundled_axis_profiles`, D = 1, alpha = 1); `MRX_K0_ATOM=fd` reverts to
+the collocated atom. `_symmetric_pseudoinverse` is positive-part
+(negative/sub-cutoff eigenvalues dropped instead of inverted by magnitude)
+— required for the swap, not just hygiene: the production core Schur is
+REBUILT through the bulk atom (`ass − C0ᵀ·B_bulk·C0`).
+**Schur-probe gotcha found by verification:** probing that rebuild with the
+fdbund bulk itself FLOORS W7-X CG at ~1e-2 both BCs (fdbund's flat theta
+profile overestimates `A_bb^{-1}` near the axis → indefinite rebuilt core);
+production therefore probes the Schur with the COLLOCATED fd atom and
+applies fdbund at runtime (the validated configuration). Verified
+end-to-end (job 16136365): W7-X (12,24,24) baseline 54 dbc / 79 free at
+1e-11 (was 64/100), toroid (16,32,16) 24/30 (was 32/45), and
+`MRX_K0_ATOM=fd` reproduces the old numbers exactly.
+**k=1 P_A bundled (same recipe, one level up):** the curl-curl channel fits
+in `_assemble_k1_curlcurl_regular_tensor_model` now default to
+deterministic mean-field rank-1 bundled factors
+(`_bundled_rank1_mass_factors`: cross-axis quad-mean profiles of the
+`beta_aa = g_aa/J` channels, xi_1 radial cutoff, 1/mean² normalization —
+exact on rank-1 weights) instead of CP-ALS; `MRX_K1_ATOM=cp` reverts.
+W7-X k=1 three-arm benchmark (pre-campaign / k0-swap-only / full-bundled)
+is the validation gate.
 
 **Experiment results (matrix A–E + follow-ons):**
 - A/atom: **fdbund adopted** (decision bullet below). fd λmax prediction 8.7

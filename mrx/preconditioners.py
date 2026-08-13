@@ -1902,12 +1902,19 @@ def _apply_extracted_submatrix(data: ExtractedMassApplyData, row_indices: jnp.nd
 
 
 def _symmetric_pseudoinverse(matrix: jnp.ndarray, *, relative_tol: float = 1e-8) -> jnp.ndarray:
+    """PSD (positive-part) pseudoinverse. Both call sites invert Schur
+    complements of SPD operators, which are PSD analytically but can dip
+    slightly negative when rebuilt through an approximate bulk inverse;
+    inverting a near-null eigenvalue by magnitude WITH its roundoff sign
+    injects a huge negative Rayleigh direction and stalls CG (observed as
+    ~1e-2 residual floors in the 2026-08-13 single-level campaign). Negative
+    and sub-cutoff eigenvalues are dropped instead."""
     matrix = _symmetrize(matrix)
     eigvals, eigvecs = jnp.linalg.eigh(matrix)
     scale = jnp.max(jnp.abs(eigvals))
     safe_scale = jnp.where(scale > 0, scale, 1.0)
     cutoff = relative_tol * safe_scale
-    inv_eigvals = jnp.where(jnp.abs(eigvals) > cutoff, 1.0 / eigvals, 0.0)
+    inv_eigvals = jnp.where(eigvals > cutoff, 1.0 / eigvals, 0.0)
     return _symmetrize((eigvecs * inv_eigvals[jnp.newaxis, :]) @ eigvecs.T)
 
 

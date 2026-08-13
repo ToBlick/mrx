@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Mapping, Optional, Sequence
+import os
 import warnings
 
 import equinox as eqx
@@ -738,6 +739,37 @@ def _apply_kron3_operators(
     )
 
 
+def _bundled_rank1_mass_factors(seq, tensor):
+    """Deterministic mean-field rank-1 factors of a bundled quadrature weight
+    (layout (theta, r, zeta)): cross-axis quad-weighted mean profiles, with
+    the radial averaging cut at xi_1 (the polar-surgery element; the 1/r-type
+    channels otherwise let the innermost Gauss points dominate the mean), and
+    a 1/mean^2 normalization so an exactly rank-1 tensor is reproduced. The
+    fdbund recipe from the 2026-08-13 k=0 campaign, replacing CP-ALS with a
+    deterministic fit (no ALS iteration, W7-X-robust). Returns
+    (scale, f_theta, f_r, f_zeta, relative_error)."""
+    wx = jnp.asarray(seq.quad.w_x, dtype=jnp.float64)
+    wy = jnp.asarray(seq.quad.w_y, dtype=jnp.float64)
+    wz = jnp.asarray(seq.quad.w_z, dtype=jnp.float64)
+    xi1 = jnp.asarray(seq.basis_0.Λ[0].T)[seq.ps[0] + 1]
+    wx_cut = wx * (jnp.asarray(seq.quad.x_x) >= xi1)
+    sy, sz = jnp.sum(wy), jnp.sum(wz)
+    sxc = jnp.sum(wx_cut)
+    f_t = jnp.einsum('trz,r,z->t', tensor, wx_cut, wz) / (sxc * sz)
+    f_r = jnp.einsum('trz,t,z->r', tensor, wy, wz) / (sy * sz)
+    f_z = jnp.einsum('trz,t,r->z', tensor, wy, wx_cut) / (sy * sxc)
+
+    def _floor(v):
+        return jnp.maximum(v, 1e-8 * jnp.abs(jnp.median(v)))
+
+    f_t, f_r, f_z = _floor(f_t), _floor(f_r), _floor(f_z)
+    mean_cut = jnp.einsum('trz,t,r,z->', tensor, wy, wx_cut, wz) / (sy * sxc * sz)
+    scale = 1.0 / jnp.maximum(mean_cut, 1e-30) ** 2
+    model = scale * f_t[:, None, None] * f_r[None, :, None] * f_z[None, None, :]
+    rel_err = float(jnp.linalg.norm(tensor - model) / jnp.maximum(jnp.linalg.norm(tensor), 1e-30))
+    return scale, f_t, f_r, f_z, rel_err
+
+
 def _assemble_weighted_cp_mass_terms(
         *,
         seq,
@@ -748,14 +780,22 @@ def _assemble_weighted_cp_mass_terms(
         basis_z: jnp.ndarray,
         cp_maxiter: int,
         cp_tol: float,
-        cp_ridge: float) -> tuple[tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], float, float]:
-    weights, factors, cp_relative_error, cp_final_delta, _ = _cp_als_3tensor(
-        tensor,
-        rank,
-        maxiter=cp_maxiter,
-        tol=cp_tol,
-        ridge=cp_ridge,
-    )
+        cp_ridge: float,
+        bundled: bool = False) -> tuple[tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], float, float]:
+    if bundled:
+        scale, f_t, f_r, f_z, rel_err = _bundled_rank1_mass_factors(seq, tensor)
+        weights = jnp.asarray([scale])
+        factors = (f_t[:, None], f_r[:, None], f_z[:, None])
+        cp_relative_error, cp_final_delta = rel_err, 0.0
+        rank = 1
+    else:
+        weights, factors, cp_relative_error, cp_final_delta, _ = _cp_als_3tensor(
+            tensor,
+            rank,
+            maxiter=cp_maxiter,
+            tol=cp_tol,
+            ridge=cp_ridge,
+        )
     mass_r_terms = []
     mass_t_terms = []
     mass_z_terms = []
@@ -794,6 +834,9 @@ def _assemble_k1_curlcurl_regular_tensor_model(
     if rank < 1:
         raise ValueError(f"k=1 curl-curl tensor model requires rank >= 1 (got rank={rank})")
 
+    # Bundled deterministic rank-1 channel fits are the default (adopted with
+    # the 2026-08-13 fdbund k=0 campaign); MRX_K1_ATOM=cp reverts to CP-ALS.
+    bundled = os.environ.get("MRX_K1_ATOM", "bundled") != "cp"
     metric_tensors = _k2_diagonal_metric_tensors(seq)
     component_shapes = _k1_regular_component_shapes(seq)
     curl_shapes = _k2_regular_component_shapes(seq)
@@ -806,6 +849,7 @@ def _assemble_k1_curlcurl_regular_tensor_model(
         seq=seq,
         rank=rank,
         tensor=metric_tensors['beta_rr'],
+        bundled=bundled,
         basis_r=seq.basis_r_jk,
         basis_t=seq.d_basis_t_jk,
         basis_z=seq.d_basis_z_jk,
@@ -817,6 +861,7 @@ def _assemble_k1_curlcurl_regular_tensor_model(
         seq=seq,
         rank=rank,
         tensor=metric_tensors['beta_thetatheta'],
+        bundled=bundled,
         basis_r=seq.d_basis_r_jk,
         basis_t=seq.basis_t_jk,
         basis_z=seq.d_basis_z_jk,
@@ -828,6 +873,7 @@ def _assemble_k1_curlcurl_regular_tensor_model(
         seq=seq,
         rank=rank,
         tensor=metric_tensors['beta_zetazeta'],
+        bundled=bundled,
         basis_r=seq.d_basis_r_jk,
         basis_t=seq.d_basis_t_jk,
         basis_z=seq.basis_z_jk,
@@ -1382,23 +1428,54 @@ def _sum_dense_matrices(matrices: tuple[jnp.ndarray, ...]) -> jnp.ndarray:
     return _symmetrize(total)
 
 
+def _k0_bundled_axis_profiles(seq):
+    """Per-axis quad-point profiles of the BUNDLED weight g^{aa} J: the
+    quad-weighted mean over the other two axes. Bundling keeps the g-J
+    correlation inside the average (g^tt J ~ 1/r instead of the divergent
+    bare g^tt ~ 1/r^2), so the radial integration of the angular means only
+    needs to skip the polar-surgery element [0, xi_1] (core DOFs are handled
+    exactly by the Schur envelope)."""
+    minv = jnp.transpose(
+        _reshape_quadrature_matrix_field(seq, seq.geometry.metric_inv_jkl),
+        (1, 0, 2, 3, 4))
+    jacq = jnp.transpose(
+        _reshape_quadrature_scalar_field(seq, seq.geometry.jacobian_j), (1, 0, 2))
+    w00, w11, w22 = (minv[..., a, a] * jacq for a in range(3))
+    xi1 = jnp.asarray(seq.basis_0.Λ[0].T)[seq.ps[0] + 1]
+    wx_cut = seq.quad.w_x * (jnp.asarray(seq.quad.x_x) >= xi1)
+    wy, wz = seq.quad.w_y, seq.quad.w_z
+    sy, sz, sxc = jnp.sum(wy), jnp.sum(wz), jnp.sum(wx_cut)
+    pr = jnp.einsum('qrs,r,s->q', w00, wy, wz) / (sy * sz)
+    pt = jnp.einsum('qrs,q,s->r', w11, wx_cut, wz) / (sxc * sz)
+    pz = jnp.einsum('qrs,q,r->s', w22, wx_cut, wy) / (sxc * sy)
+
+    def clip(v):
+        return jnp.maximum(v, 1e-8 * jnp.abs(jnp.median(v)))
+
+    return clip(pr), clip(pt), clip(pz)
+
+
 def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool,
-                                       endpoint_eps: float = 1e-7):
-    """Greville-collocation k=0 stiffness bulk factors (exact additive FD).
+                                       endpoint_eps: float = 1e-7,
+                                       atom: Optional[str] = None):
+    """k=0 stiffness bulk factors (exact additive FD atom).
 
-    Builds per-axis UNWEIGHTED 1D mass/stiffness atoms, their generalised
-    eigendecomposition (shared exact eigenbasis), the scalar directional
-    anisotropy constants alpha_a = mean(alpha_aa / D), and the pointwise
-    collocation scaling D^{-1/2} at the bulk 0-form Greville abscissae. The bulk
-    apply then evaluates D^{-1/2} fd_apply(alpha, lam; D^{-1/2} .).
+    Two atoms share the apply D^{-1/2} fd_apply(alpha, lam; D^{-1/2} .):
 
-    This is exact additive FD on a single common spatial weight -- the maximal
-    exactly-invertible Greville model -- and is the sole production k=0 Laplacian
-    atom (it replaced the CP-fit weighted-atom path, which was rank>1 OOM / free-BC
-    stall prone).
+    - "fdbund" (default, adopted 2026-08-13 -- see
+      docs/dev/handoff_2026-08-13_gpu_cluster.md): per-axis 1D stiffnesses
+      WEIGHTED by the bundled profiles <g^{aa} J> of the other two axes,
+      D = 1, alpha = 1. Keeping the g-J correlation inside the per-axis
+      averages beat the collocated variant on every geometry tested
+      (W7-X 16,32,32: dbc 80->62, free 117->85 CG its at equal ms/it).
+    - "fd" (MRX_K0_ATOM=fd reverts): UNWEIGHTED 1D atoms + pointwise
+      collocation D = J (g^rr g^tt g^zz)^{1/3} at the bulk Greville
+      abscissae + scalar alpha_a = mean(alpha_aa / D). The previous
+      production atom.
     """
     from mrx.geometry import compute_geometry_terms  # noqa: PLC0415
 
+    atom = atom or os.environ.get("MRX_K0_ATOM", "fdbund")
     bulk_shape = _bulk_tensor_shape(seq, dirichlet)
     nr_bulk, nt, nz = (int(s) for s in bulk_shape)
     types = seq.basis_0.types
@@ -1406,15 +1483,31 @@ def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool,
     g_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
     g_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
 
+    if atom == "fdbund":
+        pr, pt, pz = _k0_bundled_axis_profiles(seq)
+        kw_x, kw_y, kw_z = seq.quad.w_x * pr, seq.quad.w_y * pt, seq.quad.w_z * pz
+    else:
+        kw_x, kw_y, kw_z = seq.quad.w_x, seq.quad.w_y, seq.quad.w_z
+
     M0_r = _restrict_radial_window(_assemble_unweighted_1d_mass(seq.basis_r_jk, seq.quad.w_x), 2, nr_bulk)
     M0_t = _assemble_unweighted_1d_mass(seq.basis_t_jk, seq.quad.w_y)
     M0_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
-    K0_r = _restrict_radial_window(_assemble_weighted_1d_stiffness(seq.basis_r_jk, seq.d_basis_r_jk, seq.quad.w_x, g_r), 2, nr_bulk)
-    K0_t = _assemble_weighted_1d_stiffness(seq.basis_t_jk, seq.d_basis_t_jk, seq.quad.w_y, g_t)
-    K0_z = _assemble_weighted_1d_stiffness(seq.basis_z_jk, seq.d_basis_z_jk, seq.quad.w_z, g_z)
+    K0_r = _restrict_radial_window(_assemble_weighted_1d_stiffness(seq.basis_r_jk, seq.d_basis_r_jk, kw_x, g_r), 2, nr_bulk)
+    K0_t = _assemble_weighted_1d_stiffness(seq.basis_t_jk, seq.d_basis_t_jk, kw_y, g_t)
+    K0_z = _assemble_weighted_1d_stiffness(seq.basis_z_jk, seq.d_basis_z_jk, kw_z, g_z)
     V_r, lam_r = _assemble_1d_fd_eigendecomp(M0_r, K0_r)
     V_t, lam_t = _assemble_1d_fd_eigendecomp(M0_t, K0_t)
     V_z, lam_z = _assemble_1d_fd_eigendecomp(M0_z, K0_z)
+
+    if atom == "fdbund":
+        # J lives inside the bundled 1D weights; no collocated diagonal.
+        return {
+            "bulk_shape": bulk_shape,
+            "bulk_V_r": V_r, "bulk_V_t": V_t, "bulk_V_z": V_z,
+            "bulk_lam_r": lam_r, "bulk_lam_t": lam_t, "bulk_lam_z": lam_z,
+            "bulk_alpha": jnp.ones((3,), dtype=jnp.float64),
+            "bulk_greville_inv_sqrt_D": jnp.ones(bulk_shape, dtype=jnp.float64),
+        }
 
     grev_r = seq.basis_0.Λ[0].greville_points()[2:2 + nr_bulk]
     grev_t = seq.basis_0.Λ[1].greville_points()
@@ -1548,10 +1641,20 @@ def _assemble_k0_tensor_hodge_preconditioner(
     for dirichlet in dirichlet_flags:
         bulk_data = _assemble_k0_greville_bulk_factors(seq, dirichlet=dirichlet)
 
+        # The core Schur is REBUILT through an approximate bulk inverse
+        # (ass - C^T B C below). Probe it with the COLLOCATED fd atom even
+        # when the runtime bulk is fdbund: the true Schur is PSD only if the
+        # probe B does not overestimate A_bb^{-1}, and fdbund's flat theta
+        # profile overestimates near the axis (W7-X dbc CG floored at ~1e-2
+        # when probed with fdbund). fd-probed Schur + fdbund bulk is the
+        # validated 2026-08-13 configuration.
+        probe_bulk_data = (bulk_data if os.environ.get("MRX_K0_ATOM", "fdbund") == "fd"
+                           else _assemble_k0_greville_bulk_factors(seq, dirichlet=dirichlet, atom="fd"))
+
         bulk_factors = _build_k0_tensor_hodge_preconditioner_factors(
             core_size=core_size,
             schur_inv=jnp.eye(core_size, dtype=jnp.float64),
-            bulk_data=bulk_data,
+            bulk_data=probe_bulk_data,
         )
         ass = _symmetrize(_assemble_dense_from_apply(
             lambda rhs_c, seq=seq, operators=operators, core_size=core_size, dirichlet=dirichlet:
