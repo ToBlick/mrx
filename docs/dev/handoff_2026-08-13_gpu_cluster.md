@@ -49,8 +49,32 @@ deterministic mean-field rank-1 bundled factors
 (`_bundled_rank1_mass_factors`: cross-axis quad-mean profiles of the
 `beta_aa = g_aa/J` channels, xi_1 radial cutoff, 1/mean² normalization —
 exact on rank-1 weights) instead of CP-ALS; `MRX_K1_ATOM=cp` reverts.
-W7-X k=1 three-arm benchmark (pre-campaign / k0-swap-only / full-bundled)
-is the validation gate.
+
+**k=1 three-arm W7-X benchmark result (jobs 16139235–41 + toroid controls
+16139355/56; logs `outputs/k1_pa_compare/2026-08-13/`):**
+- **W7-X: the saddle P_A+P_B STALLS in every arm** — pre-campaign,
+  k0-swap-only, full-bundled are indistinguishable (floors 1e-4..1e-7,
+  4/4 fails, both BCs, both sizes; jacobi converges dbc in 949/1509 it).
+  So the k=1 W7-X wall is NOT the k=0 solves in P_B/Π and NOT rank-1
+  channel-weight quality — consistent with the 2026-06 FFT diagnosis
+  (β_θθ/β_rr need 4–7 angular modes; no rank-1 atom reaches it). The
+  stall-not-slow signature points at preconditioner INCONSISTENCY; prime
+  suspect by k=0 analogy: the block_fd surgery-Schur rebuilt through the
+  weak diagonal-metric bulk surrogate going indefinite. First probe:
+  eigencount that rebuilt Schur before its PSD chop, W7-X vs toroid.
+- **Toroid control: bundled P_A is safe and slightly better** (dbc 418→385,
+  free 687→663 it vs CP-ALS) → `MRX_K1_ATOM=bundled` default stands. BUT
+  the tensor path's edge over jacobi shrinks with resolution (doc headline
+  96-vs-386 it at 6,12,4 → 385-vs-522 and a wall-clock LOSS at 8,16,8):
+  k=1 h-scaling needs its own investigation, independent of W7-X.
+- Benchmark harness fix that unblocked all of this: three
+  `_get_schur_diaginv(..., 'diag')` call sites predated the
+  `tensor_probe`-only mode consolidation → always-None → RuntimeError.
+- Parked, fully designed, blocked on the stall fix: div-div auxiliary
+  replacement for P_B (BC-FLIPPED capped k=2 div-div atom + collocated
+  Greville proxy transfer Π₁₂ = J·g⁻¹, NO projection — live with the
+  overlap; L2+mass-precond transfer as fallback arm). Removes all L₀
+  solves from the k=1 apply; linear (not squared) equivalence constants.
 
 **Experiment results (matrix A–E + follow-ons):**
 - A/atom: **fdbund adopted** (decision bullet below). fd λmax prediction 8.7

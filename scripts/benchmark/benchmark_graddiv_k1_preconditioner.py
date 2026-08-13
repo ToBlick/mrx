@@ -1844,7 +1844,7 @@ def make_apply_routines(
 
     # Production baseline: Schur-outer Jacobi diagonal (mode diag), a stored
     # diagonal multiply. The tensor inner is already inside `a_matvec`.
-    schur_diaginv = _get_schur_diaginv(ops, 1, DIRICHLET, 'diag')
+    schur_diaginv = _get_schur_diaginv(ops, 1, DIRICHLET, 'tensor_probe')
     if schur_diaginv is None:
         raise RuntimeError("Schur jacobi diag preconditioner was not assembled")
 
@@ -2428,7 +2428,7 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
     # Production baseline: Schur-outer Jacobi diagonal for k=2 (stored multiply).
     # This is the WHOLE-space diagonal: 1/diag(S_2 + D_1 diag(M_1)^{-1} D_1^T),
     # i.e. it already includes the curl term -> overlaps/double-counts with P_B.
-    schur_diaginv = _get_schur_diaginv(ops, 2, DIRICHLET, 'diag')
+    schur_diaginv = _get_schur_diaginv(ops, 2, DIRICHLET, 'tensor_probe')
 
     def jacobi_diag(r):
         return schur_diaginv * r
@@ -2553,7 +2553,7 @@ def make_apply_routines_k3(seq: DeRhamSequence, ops):
         return transfer_0_to_3(l0_inv(transfer_3_to_0(r)))
 
     # --- jacobi baseline (whole-space diag(L_3)) ---
-    schur_diaginv = _get_schur_diaginv(ops, 3, k3_dbc, 'diag')
+    schur_diaginv = _get_schur_diaginv(ops, 3, k3_dbc, 'tensor_probe')
 
     def jacobi_diag(r):
         return schur_diaginv * r
