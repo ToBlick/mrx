@@ -411,7 +411,11 @@ def _build_k1_block_fd_preconditioner(
     )(eye_s)
     schur_dense = _symmetrize(schur_dense)
 
-    # PSD pseudoinverse: invert only sufficiently positive eigenvalues.
+    # PSD pseudoinverse with a POSITIVE FLOOR on the chopped directions:
+    # zeroing them makes P singular and MINRES stalls at the size of the
+    # residual component in null(P) (the 2026-08-13 W7-X stall mechanism --
+    # 42-50/80 core directions were zeroed). Floor = 1/scale: chopped
+    # directions get a weak jacobi-like response instead of none.
     evals, evecs = jnp.linalg.eigh(schur_dense)
     scale = jnp.max(jnp.abs(evals))
     cutoff = jnp.maximum(pinv_rtol * jnp.where(scale > 0, scale, 1.0), 1e-14)
@@ -422,7 +426,8 @@ def _build_k1_block_fd_preconditioner(
           f"NEGATIVE(<-cutoff)={n_neg} chopped(|ev|<=cutoff)={n_chop} "
           f"neg_mass={float(jnp.sum(jnp.where(evals < 0, -evals, 0.0)) / jnp.maximum(scale, 1e-30)):.3e}",
           flush=True)
-    inv_evals = jnp.where(evals > cutoff, 1.0 / evals, 0.0)
+    floor_inv = 1.0 / jnp.where(scale > 0, scale, 1.0)
+    inv_evals = jnp.where(evals > cutoff, 1.0 / evals, floor_inv)
     schur_inv = (evecs * inv_evals[jnp.newaxis, :]) @ evecs.T
 
     state = K1BlockFDPreconditionerState(
@@ -478,7 +483,8 @@ def _build_k2_block_fd_preconditioner(seq, ops, *, dirichlet: bool, pinv_rtol: f
     evals, evecs = jnp.linalg.eigh(schur_dense)
     scale = jnp.max(jnp.abs(evals))
     cutoff = jnp.maximum(pinv_rtol * jnp.where(scale > 0, scale, 1.0), 1e-14)
-    inv_evals = jnp.where(evals > cutoff, 1.0 / evals, 0.0)
+    floor_inv = 1.0 / jnp.where(scale > 0, scale, 1.0)
+    inv_evals = jnp.where(evals > cutoff, 1.0 / evals, floor_inv)
     schur_inv = (evecs * inv_evals[jnp.newaxis, :]) @ evecs.T
 
     def apply(v):  # V2* -> V2
@@ -3557,6 +3563,22 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
             f"P.T P_A P + P_B [{pa_model}]": (
                 applies["projected_p_a_plus_p_b_with_state"], applies["p_a_state"]),
         }
+        # Symmetry probe: MINRES requires a SYMMETRIC (SPD) upper
+        # preconditioner; a numerically nonsymmetric apply stalls at a
+        # residual floor. Report <Pu,v> vs <u,Pv> on random vectors.
+        _k1p, _k2p = jax.random.split(jax.random.PRNGKey(args.seed + 99))
+        _u_p = jax.random.normal(_k1p, (n_upper,), dtype=jnp.float64)
+        _v_p = jax.random.normal(_k2p, (n_upper,), dtype=jnp.float64)
+        for _name, (_pu_f, _pu_s) in methods.items():
+            _app = ((lambda r, f=_pu_f, st=_pu_s: f(st, r))
+                    if _pu_s is not None else _pu_f)
+            _pu = _app(_u_p)
+            _pv = _app(_v_p)
+            _s1 = float(jnp.vdot(_pu, _v_p))
+            _s2 = float(jnp.vdot(_u_p, _pv))
+            _asym = abs(_s1 - _s2) / max(abs(_s1), abs(_s2), 1e-300)
+            print(f"[diag] symmetry {bc} / {_name}: <Pu,v>={_s1:.6e} "
+                  f"<u,Pv>={_s2:.6e} rel_asym={_asym:.3e}", flush=True)
         for name, (precond_upper, precond_state) in methods.items():
             solve = make_saddle_solve(
                 applies["stiffness_matvec"],

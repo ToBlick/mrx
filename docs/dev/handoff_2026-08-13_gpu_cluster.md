@@ -96,6 +96,18 @@ exact on rank-1 weights) instead of CP-ALS; `MRX_K1_ATOM=cp` reverts.
   W7-X vs toroid — few applies, no solves); (2) under-degreed fixed
   Chebyshev L0^{-1} in P_B/Π at W7-X's κ; (3) the k=1 surgery
   extraction/couplings on the W7-X polar structure.
+  **Symmetry probe (jobs 16142789/90): EXONERATED** — rel_asym ~1e-15
+  everywhere incl. W7-X. **Null(P) floor test (16142917/18): the chopped
+  surgery-Schur directions floored at 1/λmax instead of zeroed** — toroid
+  unharmed (242 vs 237 it), W7-X still maxiter BUT the residual floor
+  moved 2.7× (4.4e-5 → 1.6e-5): a true null(P) stall would not move.
+  **Reframed diagnosis: not a stall — extreme κ(P·Ŝ) on W7-X**; 2000 its
+  is simply the far tail of a convergent process (fits all data: three
+  atoms alike, toroid fine, jacobi's moderate-κ grind converges).
+  **NEXT-SESSION OPENER: densify P·Ŝ at 8,16,16 (n_upper=4176) and
+  eigendecompose** — minutes on H100, ends the guessing: huge-κ continuum
+  → tier-2 dense θ-ζ blocks are the real fix; benign cluster + outliers →
+  find/deflate the outlier modes (cheap); pathology → surgery couplings.
 - **Toroid control: bundled P_A is safe and slightly better** (dbc 418→385,
   free 687→663 it vs CP-ALS) → `MRX_K1_ATOM=bundled` default stands. BUT
   the tensor path's edge over jacobi shrinks with resolution (doc headline
