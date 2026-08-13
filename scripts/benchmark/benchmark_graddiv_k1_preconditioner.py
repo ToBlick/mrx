@@ -222,6 +222,7 @@ class K1BlockFDPreconditionerState(NamedTuple):
     vector_fd_state: object
     vector_fd_true_basis_state: object
     radial_banded_state: object = None
+    coupled_state: object = None
 
 
 def _build_c_matrix(seq: DeRhamSequence) -> jnp.ndarray:
@@ -332,6 +333,9 @@ def _build_k1_block_fd_preconditioner(
     use_vector_fd: bool = False,
     use_vector_fd_true_basis: bool = False,
     use_radial_banded: bool = False,
+    use_coupled: bool = False,
+    coupled_seq=None,
+    coupled_dirichlet: bool = True,
     vector_fd_regularization_rel: float = 1e-2,
     vector_fd_low_mode_exclude: int = 0,
     vector_fd_report_k: int = 8,
@@ -358,6 +362,10 @@ def _build_k1_block_fd_preconditioner(
     vector_fd_state = None
     vector_fd_true_basis_state = None
     radial_banded_state = None
+    coupled_state = None
+    if use_coupled:
+        from k1_coupled_atom import build_k1_coupled_bulk_state
+        coupled_state = build_k1_coupled_bulk_state(coupled_seq, coupled_dirichlet)
     if use_radial_banded:
         radial_banded_state = _build_k1_radial_banded_bulk_state(
             surgery,
@@ -392,6 +400,7 @@ def _build_k1_block_fd_preconditioner(
             vector_fd_state=vector_fd_state,
             vector_fd_true_basis_state=vector_fd_true_basis_state,
             radial_banded_state=radial_banded_state,
+            coupled_state=coupled_state,
         )
         return _apply_k1_block_fd_bulk_from_state(state, rhs_bulk)
 
@@ -438,6 +447,7 @@ def _build_k1_block_fd_preconditioner(
         vector_fd_state=vector_fd_state,
         vector_fd_true_basis_state=vector_fd_true_basis_state,
         radial_banded_state=radial_banded_state,
+        coupled_state=coupled_state,
     )
 
     if not return_profile:
@@ -504,6 +514,9 @@ def _build_k2_block_fd_preconditioner(seq, ops, *, dirichlet: bool, pinv_rtol: f
 def _apply_k1_block_fd_bulk_from_state(state: K1BlockFDPreconditionerState, rhs_bulk):
     surgery = state.surgery
     factors = state.factors
+    if state.coupled_state is not None:
+        from k1_coupled_atom import apply_k1_coupled_bulk
+        return apply_k1_coupled_bulk(state.coupled_state, rhs_bulk)
     if state.radial_banded_state is not None:
         return _apply_k1_radial_banded_bulk_from_state(
             state.radial_banded_state,
@@ -1738,6 +1751,7 @@ def make_apply_routines(
     pa_block_vector_fd: bool = False,
     pa_block_vector_fd_true_basis: bool = False,
     pa_block_radial_banded: bool = False,
+    pa_block_coupled: bool = False,
     pa_block_vector_fd_regularization_rel: float = 1e-2,
     pa_block_vector_fd_low_mode_exclude: int = 0,
     pa_block_vector_fd_report_k: int = 8,
@@ -1895,6 +1909,9 @@ def make_apply_routines(
             use_vector_fd=pa_block_vector_fd,
             use_vector_fd_true_basis=pa_block_vector_fd_true_basis,
             use_radial_banded=pa_block_radial_banded,
+            use_coupled=pa_block_coupled,
+            coupled_seq=seq,
+            coupled_dirichlet=dirichlet_flag,
             vector_fd_regularization_rel=pa_block_vector_fd_regularization_rel,
             vector_fd_low_mode_exclude=pa_block_vector_fd_low_mode_exclude,
             vector_fd_report_k=pa_block_vector_fd_report_k,
@@ -3522,7 +3539,9 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
         print("[diag] k=1: using TRUE polar grad G_0 = Gram_1^-1 . (E^T sp E) in projector/P_B")
     # P_A bulk model from the CLI flags (default block_fd). Honoring these here
     # lets --k1-both-bc compare block_fd vs vector-fd vs radial-banded P_A.
-    if getattr(args, "pa_block_radial_banded", False):
+    if getattr(args, "pa_block_coupled", False):
+        pa_model = "coupled"
+    elif getattr(args, "pa_block_radial_banded", False):
         pa_model = "radial_banded"
     elif getattr(args, "pa_block_vector_fd_true_basis", False):
         pa_model = "vector_fd_true_basis"
@@ -3540,6 +3559,7 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
             pa_block_vector_fd_true_basis=getattr(
                 args, "pa_block_vector_fd_true_basis", False),
             pa_block_radial_banded=getattr(args, "pa_block_radial_banded", False),
+            pa_block_coupled=getattr(args, "pa_block_coupled", False),
             pa_block_vector_fd_regularization_rel=getattr(
                 args, "pa_block_vector_fd_regularization_rel", 1e-2),
             pa_block_vector_fd_low_mode_exclude=getattr(
@@ -3589,11 +3609,13 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
                 print(f"[diag] dense P*S spectrum SKIPPED (n_upper={n_upper})", flush=True)
             else:
                 from mrx.operators import _assemble_dense_from_apply as _dense_from
-                _pf, _ps = methods[f"P.T P_A P + P_B [{pa_model}]"]
+                A_d = _symmetrize(_dense_from(applies["a_matvec"], n_upper, sequential=True))
+            if getattr(args, "dense_ps_spectrum", False) and n_upper <= 6000:
+              for _mname, (_pf, _ps) in methods.items():
                 _papp = ((lambda r, f=_pf, st=_ps: f(st, r))
                          if _ps is not None else _pf)
                 _t0 = time.perf_counter()
-                A_d = _symmetrize(_dense_from(applies["a_matvec"], n_upper, sequential=True))
+                print(f"[diag] dense P*S probe for: {_mname}", flush=True)
                 P_d = _symmetrize(_dense_from(_papp, n_upper, sequential=True))
                 _pw, _pv = jnp.linalg.eigh(P_d)
                 print(f"[diag] dense P spectrum {bc}: min={float(_pw[0]):.3e} "
@@ -3814,6 +3836,12 @@ def main() -> None:
         help=(
             "CP rank for the tensor preconditioners used by block_fd."
         ),
+    )
+    parser.add_argument(
+        "--pa-block-coupled",
+        action="store_true",
+        help="no-mixing coupled k=1 P_A: per-mode 3x3 exact inverse "
+             "keeping the C-terms (k1_coupled_atom module)",
     )
     parser.add_argument(
         "--dense-ps-spectrum",
