@@ -120,6 +120,27 @@ exact on rank-1 weights) instead of CP-ALS; `MRX_K1_ATOM=cp` reverts.
   half-built ladder; pair them with PROFILE weights + per-mode grad-div
   regularization instead of the rel=1e-2 floors), then tier-2 dense θ-ζ
   per r-mode.
+  **P_A atom ladder, measured (8³-class, toroid dbc/free its | W7-X dbc
+  floor @2000):** profile 237/531 | 1.6e-5; greville-D (=diagonal-scaling
+  sandwich D=√(β_bb·β_cc), the June greville P_A via MRX_K1_PA_GREVILLE=1;
+  its old W7-X NaN is GONE post-fixes) 303/439 | 1.5e-6; radial_banded
+  395/806 | 4.0e-7; vector_fd_true_basis 516/925 | 6.8e-6 (legacy floors
+  implicated); **rank1 (MRX_K1_ATOM=rank1) 280/479 | 9.7e-8 — best W7-X
+  crawler by ~450× over the original.** rank1 = full rank-1 weights on
+  EVERY axis inverted EXACTLY: a two-term block has two 1D matrices per
+  axis, any SPD pair is a generalized pencil (mass-mass included) → wire
+  each axis's two term matrices as (reference, operator) and the modal
+  diagonals are exact; denominator λ_θ(j)+μ(i)λ_ζ(k). (Tobias's theorem —
+  corrects the earlier proportionality claim, which applies only to ≥3
+  matrices/axis, i.e. k=0's 3-term case. k=1's blocks are structurally
+  luckier than k=0.) No toroid winner across BCs (profile dbc, greville-D
+  free) → hybrid rank1+D is the indicated next atom. Coupled-exact theory:
+  keeping the C_a⊗C_bᵀ⊗M off-diagonals is exactly invertible per tensor
+  mode via the paired de Rham eigenbases (gV^N = V^D√Λ) but shrinks the
+  weight class to ONE shared rank-1 field × channel scalars (per-channel
+  coupled 2×2 pieces are individually exact at full rank-1 — a
+  channel-Schwarz middle path exists). Extended-maxiter rank1 W7-X run
+  = the convergence test.
 - **Toroid control: bundled P_A is safe and slightly better** (dbc 418→385,
   free 687→663 it vs CP-ALS) → `MRX_K1_ATOM=bundled` default stands. BUT
   the tensor path's edge over jacobi shrinks with resolution (doc headline

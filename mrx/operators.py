@@ -2274,7 +2274,16 @@ def assemble_tensor_stiffness_preconditioner(
                 # below are EXACT (no chopping), the block inverse is exact
                 # Lynch, and the analytic block null (own-axis modes) is
                 # zeroed by the modal denom guard instead of floor-amplified.
-                k1_profile = os.environ.get("MRX_K1_ATOM", "bundled") == "profile"
+                _k1_atom_env = os.environ.get("MRX_K1_ATOM", "bundled")
+                k1_profile = _k1_atom_env == "profile"
+                # MRX_K1_ATOM=rank1: full rank-1 weights on EVERY axis,
+                # inverted EXACTLY. A two-term block carries exactly two 1D
+                # matrices per axis, and any SPD pair is simultaneously
+                # diagonalizable by its generalized pencil (mass-mass pairs
+                # included) -> pass each axis's two term matrices as the
+                # (reference, operator) pencil and the generic modal
+                # diagonals become exact. Only valid at rank 1 (2 terms).
+                k1_rank1 = _k1_atom_env == "rank1"
                 if k1_profile:
                     _mt = _k2_diagonal_metric_tensors(seq)
                     _prof = {ch: _bundled_rank1_mass_factors(seq, _mt[ch])
@@ -2300,10 +2309,13 @@ def assemble_tensor_stiffness_preconditioner(
                     Kt_rr = _wk_t(_prof["beta_rr"][1])
                     Kr_tt = _wk_r(_prof["beta_thetatheta"][2])
 
+                arr_op_r_pencil = None
                 arr_true_apply = lambda x, surgery=surgery: _apply_extracted_submatrix(
                     surgery.apply_data, surgery.r_indices, surgery.r_indices, x)
+                theta_op_t_pencil = None
                 theta_true_apply = lambda x, surgery=surgery: _apply_extracted_submatrix(
                     surgery.apply_data, surgery.theta_bulk_indices, surgery.theta_bulk_indices, x)
+                zeta_op_z_pencil = None
                 zeta_true_apply = lambda x, surgery=surgery: _apply_extracted_submatrix(
                     surgery.apply_data, surgery.zeta_bulk_indices, surgery.zeta_bulk_indices, x)
 
@@ -2354,6 +2366,13 @@ def assemble_tensor_stiffness_preconditioner(
                         (arr_ref_r, arr_ref_t, Kz_tt),
                     ]
                     arr_op_t, arr_op_z = Kt_zz, Kz_tt
+                if k1_rank1:
+                    if len(arr_terms) != 2:
+                        raise ValueError("MRX_K1_ATOM=rank1 requires rank-1 channel fits (2 terms/block)")
+                    # terms: [0] = tt-channel (M_r, M_t, K_z), [1] = zz-channel (M_r, K_t, M_z)
+                    arr_ref_r, arr_op_r_pencil = arr_terms[0][0], arr_terms[1][0]
+                    arr_ref_t, arr_op_t = arr_terms[0][1], arr_terms[1][1]
+                    arr_ref_z, arr_op_z = arr_terms[1][2], arr_terms[0][2]
                 arr_factors = _build_greville_stiffness_block_factors(
                     seq, k=1, shape=arr_shape, diff=(True, False, False), comp=0,
                 ) if greville else _build_mass_referenced_tensor_block_factors(
@@ -2361,7 +2380,7 @@ def assemble_tensor_stiffness_preconditioner(
                     reference_r=arr_ref_r,
                     reference_t=arr_ref_t,
                     reference_z=arr_ref_z,
-                    axis_operator_r=None,
+                    axis_operator_r=arr_op_r_pencil if k1_rank1 else None,
                     axis_operator_t=arr_op_t,
                     axis_operator_z=arr_op_z,
                     term_matrices=tuple(arr_terms),
@@ -2408,6 +2427,11 @@ def assemble_tensor_stiffness_preconditioner(
                         (_Kr_zz_w, theta_ref_t, theta_ref_z),
                     ]
                     theta_op_r, theta_op_z = _Kr_zz_w, Kz_rr
+                if k1_rank1:
+                    # terms: [0] = rr-channel (M_r, M_t, K_z), [1] = zz-channel (K_r, M_t, M_z)
+                    theta_ref_r, theta_op_r = theta_terms[0][0], theta_terms[1][0]
+                    theta_ref_t, theta_op_t_pencil = theta_terms[0][1], theta_terms[1][1]
+                    theta_ref_z, theta_op_z = theta_terms[1][2], theta_terms[0][2]
                 theta_factors = _build_greville_stiffness_block_factors(
                     seq, k=1, shape=theta_shape, diff=(False, True, False), comp=1,
                 ) if greville else _build_mass_referenced_tensor_block_factors(
@@ -2416,7 +2440,7 @@ def assemble_tensor_stiffness_preconditioner(
                     reference_t=theta_ref_t,
                     reference_z=theta_ref_z,
                     axis_operator_r=theta_op_r,
-                    axis_operator_t=None,
+                    axis_operator_t=theta_op_t_pencil if k1_rank1 else None,
                     axis_operator_z=theta_op_z,
                     term_matrices=tuple(theta_terms),
                     cp_relative_error=model.cp_relative_error,
@@ -2462,6 +2486,11 @@ def assemble_tensor_stiffness_preconditioner(
                         (_Kr_tt_w, zeta_ref_t, zeta_ref_z),
                     ]
                     zeta_op_r, zeta_op_t = _Kr_tt_w, Kt_rr
+                if k1_rank1:
+                    # terms: [0] = rr-channel (M_r, K_t, M_z), [1] = tt-channel (K_r, M_t, M_z)
+                    zeta_ref_r, zeta_op_r = zeta_terms[0][0], zeta_terms[1][0]
+                    zeta_ref_t, zeta_op_t = zeta_terms[1][1], zeta_terms[0][1]
+                    zeta_ref_z, zeta_op_z_pencil = zeta_terms[0][2], zeta_terms[1][2]
                 zeta_factors = _build_greville_stiffness_block_factors(
                     seq, k=1, shape=zeta_shape, diff=(False, False, True), comp=2,
                 ) if greville else _build_mass_referenced_tensor_block_factors(
@@ -2471,7 +2500,7 @@ def assemble_tensor_stiffness_preconditioner(
                     reference_z=zeta_ref_z,
                     axis_operator_r=zeta_op_r,
                     axis_operator_t=zeta_op_t,
-                    axis_operator_z=None,
+                    axis_operator_z=zeta_op_z_pencil if k1_rank1 else None,
                     term_matrices=tuple(zeta_terms),
                     cp_relative_error=model.cp_relative_error,
                     cp_final_delta=model.cp_final_delta,

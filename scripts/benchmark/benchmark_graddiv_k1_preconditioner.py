@@ -1684,6 +1684,11 @@ def assemble_operators(
                 cp_kwargs={
                     "bulk_schur": k1_stiff_inner_schur,
                     "precompute_coupling": precompute_coupling,
+                    # MRX_K1_PA_GREVILLE=1: the greville D-sandwich P_A
+                    # (common collocated D = sqrt(beta_bb*beta_cc) per block,
+                    # unweighted 1D atoms + alpha means) -- the per-block
+                    # diagonal-scaling arm.
+                    "greville": os.environ.get("MRX_K1_PA_GREVILLE", "") == "1",
                 },
             ),
             ops,
