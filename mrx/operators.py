@@ -2267,6 +2267,39 @@ def assemble_tensor_stiffness_preconditioner(
                 theta_shape = _theta_bulk_shape_k1(seq, dirichlet)
                 zeta_shape = _zeta_bulk_shape_k1(seq, dirichlet)
 
+                # MRX_K1_ATOM=profile: the exact k=0-fdbund analog. Own-axis
+                # mean profiles of each beta channel go into the K of the term
+                # they weight; ALL masses stay unweighted. Per axis the block
+                # then has one clean pencil (M, K[p]) -> the modal diagonals
+                # below are EXACT (no chopping), the block inverse is exact
+                # Lynch, and the analytic block null (own-axis modes) is
+                # zeroed by the modal denom guard instead of floor-amplified.
+                k1_profile = os.environ.get("MRX_K1_ATOM", "bundled") == "profile"
+                if k1_profile:
+                    _mt = _k2_diagonal_metric_tensors(seq)
+                    _prof = {ch: _bundled_rank1_mass_factors(seq, _mt[ch])
+                             for ch in ("beta_rr", "beta_thetatheta", "beta_zetazeta")}
+                    # _prof[ch] = (scale, f_theta, f_r, f_zeta, rel_err); raw means.
+
+                    def _wk_t(f):
+                        return _assemble_weighted_1d_stiffness(
+                            seq.basis_t_jk, seq.d_basis_t_jk, seq.quad.w_y * f, model.g_t)
+
+                    def _wk_z(f):
+                        return _assemble_weighted_1d_stiffness(
+                            seq.basis_z_jk, seq.d_basis_z_jk, seq.quad.w_z * f, model.g_z)
+
+                    def _wk_r(f):
+                        return _assemble_weighted_1d_stiffness(
+                            seq.basis_r_jk, seq.d_basis_r_jk, seq.quad.w_x * f, model.g_r)
+
+                    Kt_zz = _wk_t(_prof["beta_zetazeta"][1])
+                    Kz_tt = _wk_z(_prof["beta_thetatheta"][3])
+                    Kz_rr = _wk_z(_prof["beta_rr"][3])
+                    Kr_zz = _wk_r(_prof["beta_zetazeta"][2])
+                    Kt_rr = _wk_t(_prof["beta_rr"][1])
+                    Kr_tt = _wk_r(_prof["beta_thetatheta"][2])
+
                 arr_true_apply = lambda x, surgery=surgery: _apply_extracted_submatrix(
                     surgery.apply_data, surgery.r_indices, surgery.r_indices, x)
                 theta_true_apply = lambda x, surgery=surgery: _apply_extracted_submatrix(
@@ -2315,6 +2348,12 @@ def assemble_tensor_stiffness_preconditioner(
                 arr_ref_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
                 arr_op_t = stiff_t
                 arr_op_z = stiff_z
+                if k1_profile:
+                    arr_terms = [
+                        (arr_ref_r, Kt_zz, arr_ref_z),
+                        (arr_ref_r, arr_ref_t, Kz_tt),
+                    ]
+                    arr_op_t, arr_op_z = Kt_zz, Kz_tt
                 arr_factors = _build_greville_stiffness_block_factors(
                     seq, k=1, shape=arr_shape, diff=(True, False, False), comp=0,
                 ) if greville else _build_mass_referenced_tensor_block_factors(
@@ -2362,6 +2401,13 @@ def assemble_tensor_stiffness_preconditioner(
                 theta_ref_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
                 theta_op_r = _restrict_radial_mass(full_stiff_r, 2, theta_shape[0])
                 theta_op_z = stiff_z
+                if k1_profile:
+                    _Kr_zz_w = _restrict_radial_mass(Kr_zz, 2, theta_shape[0])
+                    theta_terms = [
+                        (theta_ref_r, theta_ref_t, Kz_rr),
+                        (_Kr_zz_w, theta_ref_t, theta_ref_z),
+                    ]
+                    theta_op_r, theta_op_z = _Kr_zz_w, Kz_rr
                 theta_factors = _build_greville_stiffness_block_factors(
                     seq, k=1, shape=theta_shape, diff=(False, True, False), comp=1,
                 ) if greville else _build_mass_referenced_tensor_block_factors(
@@ -2409,6 +2455,13 @@ def assemble_tensor_stiffness_preconditioner(
                 zeta_ref_z = _assemble_unweighted_1d_mass(seq.d_basis_z_jk, seq.quad.w_z)
                 zeta_op_r = _restrict_radial_mass(full_stiff_r, 2, zeta_shape[0])
                 zeta_op_t = stiff_t
+                if k1_profile:
+                    _Kr_tt_w = _restrict_radial_mass(Kr_tt, 2, zeta_shape[0])
+                    zeta_terms = [
+                        (zeta_ref_r, Kt_rr, zeta_ref_z),
+                        (_Kr_tt_w, zeta_ref_t, zeta_ref_z),
+                    ]
+                    zeta_op_r, zeta_op_t = _Kr_tt_w, Kt_rr
                 zeta_factors = _build_greville_stiffness_block_factors(
                     seq, k=1, shape=zeta_shape, diff=(False, False, True), comp=2,
                 ) if greville else _build_mass_referenced_tensor_block_factors(

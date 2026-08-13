@@ -80,6 +80,22 @@ exact on rank-1 weights) instead of CP-ALS; `MRX_K1_ATOM=cp` reverts.
   expressiveness ceiling: W7-X β_θθ/β_rr need 4-7 coupled angular modes
   that NO weight-separability-rank-1 atom (CP, bundled, or otherwise)
   can represent.
+  **Profile-atom result (MRX_K1_ATOM=profile, jobs 16142545/46): NEW BEST
+  k=1 toroid atom** — dbc 237 it (vs 385 bundled / 418 CP / 522 jacobi,
+  and a dbc WALL win vs jacobi 336 vs 350 ms), free 531 it: the exact
+  k=0-style construction (own-axis profiles in the K's, unweighted masses,
+  exact pencils, analytic null zeroed) strictly dominates the rank-1
+  product atoms. **W7-X still stalls (~1e-5) → the ENTIRE atom family is
+  exonerated**: CP / bundled / profile stall identically. And the rebuilt
+  surgery Schur stays violently indefinite EVEN on toroid with the exact
+  profile atom (min −567, neg mass 4.8×) while toroid converges fine →
+  indefinite-rebuild is generic to inexact-B Schur rebuilds and NOT the
+  killer. Surviving suspects, in order: (1) numerical SYMMETRY violation
+  of the assembled upper preconditioner (MINRES + slightly nonsymmetric P
+  = stall-at-floor signature; probe: random-vector <Pu,v> vs <u,Pv> on
+  W7-X vs toroid — few applies, no solves); (2) under-degreed fixed
+  Chebyshev L0^{-1} in P_B/Π at W7-X's κ; (3) the k=1 surgery
+  extraction/couplings on the W7-X polar structure.
 - **Toroid control: bundled P_A is safe and slightly better** (dbc 418→385,
   free 687→663 it vs CP-ALS) → `MRX_K1_ATOM=bundled` default stands. BUT
   the tensor path's edge over jacobi shrinks with resolution (doc headline
