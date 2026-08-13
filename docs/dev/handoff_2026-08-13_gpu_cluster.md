@@ -162,6 +162,18 @@ exact on rank-1 weights) instead of CP-ALS; `MRX_K1_ATOM=cp` reverts.
   small marginals. Edge modes (λ=0 columns, periodic D-complement) are the
   fiddly part. Alternatives ranked after it: hybrid rank1+D (toroid free
   says D helps), channel-Schwarz, tier-2.
+  **Shared-slot policy (Tobias): DO NOT MIX metric factors — default the
+  shared derivative-axis slots to CONSTANTS**, i.e. the no-mixing
+  coupled-exact class β_cc ≈ α_c·m_c(x_c) (own-axis profiles only,
+  unweighted ladders; pencil (M^N[m_c], K) per axis; per-mode 3×3 and
+  analytic null unchanged). Rationale: a fitted compromise profile
+  mis-weights BOTH channels multiplicatively and can be worse per channel
+  than a constant; constants are each channel's honest L² projection onto
+  "no information along this axis". On W7-X the free own-axis slots keep
+  each hard channel's hardest direction (β_θθ's bean θ-profile, β_rr's
+  radial profile). Implement the pairwise machinery with the shared slots
+  as a knob (w_a=1 default = no mixing; fitted pairwise mean kept only as
+  an A/B arm expected to lose).
 - **Toroid control: bundled P_A is safe and slightly better** (dbc 418→385,
   free 687→663 it vs CP-ALS) → `MRX_K1_ATOM=bundled` default stands. BUT
   the tensor path's edge over jacobi shrinks with resolution (doc headline
