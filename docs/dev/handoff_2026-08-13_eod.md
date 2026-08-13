@@ -20,9 +20,11 @@ commit(s) after; NOT pushed, NOT merged to main.
 3. **NEW: coupled atom (`MODELS=coupled` / `--pa-block-coupled`,
    `scripts/benchmark/k1_coupled_atom.py`): first k=1 preconditioner to
    beat jacobi on BOTH BCs, iterations AND wall (toroid: dbc 203 it/277 ms
-   vs jacobi 522/349; free 297/532 vs 743/814).** W7-X run in flight at
-   EOD — check `outputs/k1_pa_compare/2026-08-13/*/k1cpl4_w7x*` (job
-   16148205; compare vs rank1 2908/7500 and jacobi 948).
+   vs jacobi 522/349; free 297/532 vs 743/814).** W7-X: coupled HALVES
+   rank1 — dbc 1614 it @3.1e-10 (was 2908), free 3817 (was ~7500) — best
+   atom on every cell measured; still 3.2×/2.4× jacobi wall there (jacobi
+   948/2509 at ~half the per-it cost). The remaining ~3× is the measured
+   top-outlier-deflation territory (queue item 2).
 4. **Jacobi is done evolving** (dense probe: compact spectrum, κ 1.7e3
    dbc / 1.3e4 free on W7-X, no deflatable tail, no block structure worth
    the cost). **The cheap win is on the tensor side: top-outlier
@@ -40,7 +42,7 @@ commit(s) after; NOT pushed, NOT merged to main.
 | greville-D (`MRX_K1_PA_GREVILLE=1`) | 303/**439** | 1.5e-6 | D=√(β_bb·β_cc) sandwich; June NaN fixed |
 | radial_banded | 395/806 | 4.0e-7 | coupled r, legacy floors |
 | rank1 (`=rank1`) | 280/479 | **9.7e-8 → CONVERGES** (2908 @8000) | Tobias's pencil theorem |
-| **coupled** (`MODELS=coupled`) | **203/297** | in flight | C-terms exact, no-mixing weights |
+| **coupled** (`MODELS=coupled`) | **203/297** | **1614 @3e-10 (free 3817)** | C-terms exact, no-mixing weights |
 
 ## The coupled atom (what finally worked and why)
 
