@@ -6,6 +6,86 @@ folds in the four stacked addenda of the retired
 `docs/laplacian_mg_k0_plan.md` (running log + theory), `docs/dev/k0_massprecond_surgery_findings.md`
 (the dense-κ studies), and `docs/polar_pole_regularity.md` (C⁰/C¹/C² theory + convergence)).
 
+## CLUSTER RESULTS + DECISIONS (2026-08-13, same day) — READ THIS FIRST
+
+The full experiment matrix below RAN (all CSVs under
+`outputs/laplacian_mg_k0/2026-08-13/`), plus a same-day pivot to a
+single-level program. Verdicts:
+
+**PRODUCTION DECISION: no MG. Swap the k=0 tensor-hodge atom weights
+fd→fdbund instead.** Single-level fdbund + the EXISTING production thin-core
+Schur factors beats the production baseline (`sl-*` rows, dir `07-39-14` +
+the 4-geometry validation of jobs 16131589–98, all thin-core `--schur fd`,
+`sl-fd` == baseline exactly on every cell). VALIDATED iteration counts
+(baseline → sl-fdbund, dbc | free at the largest size per geometry):
+- W7-X (16,32,32):  80 → 62 | 117 → 85   (wall-clock 1.29× | 1.39×)
+- toroid (24,48,24): 41 → 29 | 59 → 36   (1.45× | 1.64×)
+- cerfon (16,32,16): 47 → 34 | 62 → 39   (1.41× | 1.61×)
+- rot-ellipse (16,32,16): 67 → 68 | 84 → 73  (tie | 1.17×; worst cell
+  12³ dbc −10%, the one regression anywhere)
+MG's best (2-level fat-core+anchor fdbund) wins only free-BC wall-clock at
+1.05–1.4× while losing dbc everywhere, at ~2k lines of production
+complexity — shelved as a research branch. Secondary production item: fix
+the `_symmetric_pseudoinverse` by-magnitude sign trap (positive-part
+instead); today's rebuilt-Schur floors were this failure class live. When
+wiring the swap, add the guard invariant `denom_min_nonconst/denom_max >
+1e-6` at atom build (the null-zeroing's benignness rests on the zero mode
+staying paired with the deflated constant).
+
+**Experiment results (matrix A–E + follow-ons):**
+- A/atom: **fdbund adopted** (decision bullet below). fd λmax prediction 8.7
+  MISSED (9.81 measured at 16,32,32) + fd stalled twice on free BC.
+- B/h-flatness: **C² == fat-core to all digits on every geometry/size**
+  (C² = cheaper realization, confirmed at scale) but **C² does NOT restore
+  h-flatness by itself** — h-flatness is ATOM-dependent: fdbund+surgery is
+  h-flat on toroid/cerfon, still grows ×1.2–1.5 on rot-ellipse/W7-X (the
+  θ-ζ-coupled geometries). Baselines grow ×1.62–1.68/doubling everywhere.
+- C/depth: 3-level is benign WITH surgery (fat-core+anchor 24³ toroid:
+  λmax 2.63, 7–9 it) — the unanchored/plain-C¹ 3-level elevation (λmax 4.03)
+  was the missing surgery, NOT the recursion and NOT the ξ₁ ladder
+  (anchored-vs-not at 3 levels: bit-identical null result). But 3-level
+  LOSES the W7-X free-BC crossover 2-level wins (0.356 vs baseline 0.314;
+  2-level 0.305) — depth adds cost, not value, at these sizes.
+- E/wall-clock: with fat-core+anchor, MG(fdbund) crosses over on free BC on
+  toroid, cerfon AND W7-X (0.305 vs 0.317 at 16,32,32) — but never on dbc,
+  and the per-iteration cost RATIO worsens with size (GPU favors the
+  baseline's single apply). λmax(SA) ≈ 1.7/ξ₁ + shaping CONFIRMED on W7-X:
+  fat-core drops λmax 5.91→3.73 and auto-m 4→3.
+- New atoms (same-day): **fdhel v1 INVALID everywhere** (λmax 19–38; the
+  naive shear leaves the ζ-term weighted g^ζζ while the helical derivative
+  carries ρ²g^θθ — needs the sheared-metric weight
+  g^ζζ+2ρg^θζ+ρ²g^θθ = "v2", future work). Helical-spread diagnostic
+  (`scripts/debug/helical_weight_spread.py`): W7-X θθ spread 0.51→0.26 at
+  ρ*=-0.55 (real but partial; rot-ellipse only ×1.2). **fdslab == fdbund in
+  MG** (no gain); as a smoother it's sound (SPD, mild truncation tax
+  λ 1.51→1.66 on toroid).
+- Single-level program (`--levels 1`, atom-as-preconditioner in the
+  envelope): sl-fd+production-Schur == baseline EXACTLY (path validated).
+  **All fat-core single-level arms FLOOR at rel≈1e-2**: the rebuilt Schur
+  `ass − C0ᵀ·S·C0` with a RAW-atom S goes indefinite → PSD chop →
+  inconsistent preconditioner (V-cycle S ≈ A⁻¹ is why MG-mode rebuild
+  works). Fat-core single-level is BLOCKED on a properly probed coupling.
+  eps-shift (`--sl-eps-frac`) and truncated-pinv (`--sl-trunc-frac`) both
+  REFUTED (mistargeted at atom eigenvalues; τ also floors as predicted).
+- Deflation: **dead end.** Low-tail census (extended `--spectrum-diag`):
+  ZERO modes below 0.03·λmax; κ_eff 12.6 dbc / 18.7 free (fat-core fdbund,
+  W7-X 12,24,24) — smeared spectrum, no tail; single-level counts are near
+  their spectral limit, the lever is κ itself (= the fdbund swap).
+
+**Follow-on queue (non-MG):** (1) fdbund swap in production
+`mrx/operators.py` atom assembly after the 4-geometry validation
+(jobs 16131589–98); (2) `_symmetric_pseudoinverse` fix; (3) fat-core/C²
+single-level, blocked on exact fat-core Schur coupling (probe with real
+solves at setup, or extend production assembly; C² preferred — 3× smaller
+core — once free-BC nullspace plumbing exists); (4) fdhel-v2 sheared-metric
+ζ-weight only if W7-X κ still hurts after (1); (5) bundled weights for the
+k≥1 saddle atoms.
+
+**Gotcha added the hard way:** the launcher stamp is second-resolution —
+two launches in the same second share an output dir and CLOBBER each
+other's sbatch log (CSV appends survive). Sleep 2 between launches or add
+`$$` to STAMP.
+
 ## Where the work stands — the local phase is DONE
 
 The k=0 MG prototype (`scripts/debug/laplacian_mg_k0.py`) and the C⁰/C¹/C²
@@ -72,9 +152,13 @@ All C²/fat-core data is 8³ only. Sweep 8³→16³ and check whether MG(C²) is
 h-flat where MG(C¹) grew ×1.4. If yes, C² fixes what auto-m only papered over.
 ```
 GEOMETRIES="toroid cerfon rotating_ellipse" NS_LIST="8,16,8 12,24,12 16,32,16" \
-  EXTRA_ARGS="--polar-order 2 --anchor-xi1" bash slurm/job_laplacian_mg_k0.sh
+  EXTRA_ARGS="--polar-order 2 --anchor-xi1 --bc dbc" bash slurm/job_laplacian_mg_k0.sh
 # baseline/C¹ reference arm: EXTRA_ARGS="--fat-core 1 --anchor-xi1" (same window, C¹ layout)
 ```
+`--bc dbc` is REQUIRED with `--polar-order 2` — the launcher's default `--bc both`
+makes every invocation SystemExit at startup, and its `|| true` hides that as a
+fast-COMPLETED job (first launch 2026-08-13 died this way in 58 s; relaunched
+under `outputs/laplacian_mg_k0/2026-08-13/03-42-10`).
 
 **C. True multilevel scaling — completely untested.** *Every* result to date
 is two-level with a dense *exact* pseudoinverse coarse solve (deliberately, to
@@ -107,6 +191,19 @@ GPU utilization). This is *the* open question; A/B/C feed it.
   nullspace vectors that assembly fills → not yet supported for order≠1.
   Threading invariant: `ring0 = fat_core + (order-1)` drives ALL bulk-window
   indexing (atoms/transfers/profiles/diagonal).
+  **Decision point (2026-08-13): the dbc-only limit is plumbing, not math** —
+  the C² constraint lives at the axis, the BC at the wall; free BC only lacks
+  its nullspace vectors under the order-2 layout. Do NOT fix preemptively:
+  fat-core is the C¹-compatible spectral twin and covers free BC today.
+  Decide from experiment B: (i) C² separates from fat-core at scale (smaller
+  core → wall-clock win) → add free-BC support: cheap route = represent the
+  constant mode directly in the C²-reduced basis (k=0 nullspace is analytic);
+  proper route = thread `ring0` through `assemble_laplacian_operators`
+  (wanted for production wiring anyway). (ii) They stay identical (as at 8³)
+  → ship fat-core for both BCs, keep C² as a dbc-only DOF optimization or
+  drop it — the limitation becomes moot. Either way the free-BC arm needs its
+  own validation pass (W7-X free stalls + the PSD pseudoinverse trap cluster
+  there); dbc results don't transfer on faith.
 - **PSD pseudoinverse trap.** Any rebuilt Schur (free BC, strong
   preconditioner) can land the analytic null direction slightly negative;
   `_symmetric_pseudoinverse` inverts by magnitude WITH sign → −O(10³)
@@ -114,8 +211,15 @@ GPU utilization). This is *the* open question; A/B/C feed it.
   **Production `mrx/preconditioners.py:_symmetric_pseudoinverse` carries the
   same latent trap — fix when wiring production.**
 - **fdax is retired** (fdbund strictly better: bundled `⟨g^{aa}J⟩` milder than
-  bare `g^{aa}`, cheaper D=1, better-motivated). The atom decision is now
-  fd vs fdbund, W7-X-gated.
+  bare `g^{aa}`, cheaper D=1, better-motivated).
+- **ATOM DECISION (2026-08-13): fdbund is the default going forward** (Tobias's
+  call, on motivation: the bundled per-axis average `⟨g^{aa}J⟩` keeps the g–J
+  correlation — `g^{θθ}J ~ 1/r` vs the divergent bare `1/r²` — which is the
+  principled compression; fd's collocated `J·(∏g^{aa})^{1/3}` is the ad-hoc
+  one). First cluster data agrees: toroid equal-or-fewer its, free-BC 7 vs 11
+  (and an fd free-BC stall at 16³, rel_res 1.3e-4), ~3× cheaper smoother
+  setup. fd stays available as the A/B reference; the W7-X run (experiment A)
+  is now confirmation, not decision.
 - **Background/長 runs:** local Bash tasks die at 10 min — the cluster is
   precisely to escape this; use the sbatch driver, not nohup.
 

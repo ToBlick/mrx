@@ -16,8 +16,10 @@
 #      GEOMETRIES=w7x NS_LIST="12,24,24 16,32,32" bash slurm/job_laplacian_mg_k0.sh
 #   B. fat-core/C2 h-flatness sweep (highest-value new run):
 #      GEOMETRIES="toroid cerfon rotating_ellipse" NS_LIST="8,16,8 12,24,12 16,32,16" \
-#        EXTRA_ARGS="--polar-order 2 --anchor-xi1" bash slurm/job_laplacian_mg_k0.sh
-#      (order!=1 is dbc-only, no baseline; C1 reference arm: EXTRA_ARGS="--fat-core 1 --anchor-xi1")
+#        EXTRA_ARGS="--polar-order 2 --anchor-xi1 --bc dbc" bash slurm/job_laplacian_mg_k0.sh
+#      (--bc dbc REQUIRED with --polar-order 2: default --bc both SystemExits and the
+#      || true below masks it as a fast-COMPLETED job. order!=1 has no baseline arm;
+#      C1 reference arm: EXTRA_ARGS="--fat-core 1 --anchor-xi1")
 #   C. true multilevel: GEOMETRIES=toroid NS_LIST="24,48,24" LEVELS=3 bash slurm/job_laplacian_mg_k0.sh
 # ============================================================================
 set -euo pipefail
@@ -28,7 +30,7 @@ NS_LIST=${NS_LIST:-"12,24,24 16,32,32"}
 P=${P:-3}
 LEVELS=${LEVELS:-2}
 COARSEN=${COARSEN:-"2,2,2"}
-SMOOTHERS=${SMOOTHERS:-"fd,fdbund"}
+SMOOTHERS=${SMOOTHERS:-"fdbund"}   # adopted default 2026-08-13; SMOOTHERS=fd,fdbund for the A/B
 EXTRA_ARGS=${EXTRA_ARGS:-""}   # e.g. "--polar-order 2 --anchor-xi1" or "--fat-core 1"
 # window configs: "auto" = --cheb-lo ${CHEB_LO} --auto-m (validated rule);
 # an integer m = legacy relative window --cheb-window 4 --smooth-steps m
@@ -52,9 +54,16 @@ mkdir -p "${OUTDIR}" "${LOGDIR}"
 echo "MG k=0 Laplacian sweep -> ${OUTDIR}"
 
 for GEO in ${GEOMETRIES}; do
+  # Shape args MUST match scripts/debug/run_mg_k0_polar_order_ab.sh -- the
+  # prototype defaults (kappa=1, alpha=0) silently degenerate cerfon and
+  # rotating_ellipse to the circular toroid (bit-identical operators; caught
+  # 2026-08-13 when the cerfon sweep reproduced toroid to 15 digits).
+  GSHAPE=""
   case "${GEO}" in
-    w7x) NFP=5; ZDIAG="--zeta-diag" ;;
-    *)   NFP=3; ZDIAG="" ;;
+    w7x)              NFP=5; ZDIAG="--zeta-diag" ;;
+    cerfon)           NFP=3; ZDIAG=""; GSHAPE="--kappa 1.7 --alpha 0.4" ;;
+    rotating_ellipse) NFP=2; ZDIAG=""; GSHAPE="--kappa 1.5" ;;
+    *)                NFP=3; ZDIAG="" ;;
   esac
   CSV="${OUTDIR}/mg_${GEO}.csv"
   LOG="${LOGDIR}/${GEO}.log"
@@ -70,7 +79,7 @@ for NS in ${NS_LIST}; do \
     else MARGS=\"--cheb-window 4 --smooth-steps \${M}\"; fi; \
     python -u scripts/debug/laplacian_mg_k0.py --geometry ${GEO} --ns \${NS//,/ } \
       --p ${P} --nfp ${NFP} --levels ${LEVELS} --coarsen ${COARSEN//,/ } \
-      --smoothers ${SMOOTHERS} \${MARGS} --schur ${SCHUR} ${EXTRA_ARGS} \
+      --smoothers ${SMOOTHERS} \${MARGS} --schur ${SCHUR} ${GSHAPE} ${EXTRA_ARGS} \
       --tol ${TOL} --maxiter ${MAXITER} ${ZDIAG} \${TLC} --csv ${CSV} || true; \
   done; \
 done"
