@@ -141,6 +141,27 @@ exact on rank-1 weights) instead of CP-ALS; `MRX_K1_ATOM=cp` reverts.
   coupled 2×2 pieces are individually exact at full rank-1 — a
   channel-Schwarz middle path exists). Extended-maxiter rank1 W7-X run
   = the convergence test.
+  **CONVERGENCE ACHIEVED (job 16146220, maxiter 8000): rank1 CONVERGES on
+  W7-X** — dbc 2908 it to 4.7e-10, free ~7500 to 4.0e-10: the first
+  converging tensor P_A+P_B on W7-X ever. Not yet competitive (jacobi dbc
+  948 it at ~half the per-it cost → ~6× wall gap); the residual κ is the
+  coupled θ-ζ content + dropped C-terms. NEXT BUILD (spec final): the
+  coupled-exact atom with PAIRWISE-shared weights — the coupling constraint
+  is NOT one global field: per derivative axis a, only the TWO channels
+  differentiating along a must share their a-factor w_a (spatial pairwise
+  average, no geometric means); own-axis factors m_c and scalars α_c stay
+  FREE (pencil (M^N[m_a], K[w_a]) per axis; W=gV^N drags M^D[w_a]→I and
+  C[w_a]→Λ^{1/2} along automatically). Weight class:
+  β_cc ≈ α_c·m_c(x_c)·w_a(x_a)·w_b(x_b). Per-mode 3×3 block
+  [[α_ζλ_θ+α_θλ_ζ, −α_ζ s_r s_θ, −α_θ s_r s_ζ], [·, α_ζλ_r+α_rλ_ζ,
+  −α_r s_θ s_ζ], [·,·, α_θλ_r+α_rλ_θ]] with analytic null (s_r,s_θ,s_ζ)
+  = the mode's gradient — regularize with +σ·vvᵀ (grad-div surrogate,
+  physics not floors) or exact per-mode pinv. On W7-X the pairing is kind:
+  β_θθ's θ-profile and β_rr's r-profile land in FREE own-axis slots; the
+  only contested shared slot (w_ζ between the two hard channels) carries
+  small marginals. Edge modes (λ=0 columns, periodic D-complement) are the
+  fiddly part. Alternatives ranked after it: hybrid rank1+D (toroid free
+  says D helps), channel-Schwarz, tier-2.
 - **Toroid control: bundled P_A is safe and slightly better** (dbc 418→385,
   free 687→663 it vs CP-ALS) → `MRX_K1_ATOM=bundled` default stands. BUT
   the tensor path's edge over jacobi shrinks with resolution (doc headline
