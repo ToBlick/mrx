@@ -3579,6 +3579,39 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
             _asym = abs(_s1 - _s2) / max(abs(_s1), abs(_s2), 1e-300)
             print(f"[diag] symmetry {bc} / {_name}: <Pu,v>={_s1:.6e} "
                   f"<u,Pv>={_s2:.6e} rel_asym={_asym:.3e}", flush=True)
+        if getattr(args, "dense_ps_spectrum", False):
+            if n_upper > 6000:
+                print(f"[diag] dense P*S spectrum SKIPPED (n_upper={n_upper})", flush=True)
+            else:
+                from mrx.operators import _assemble_dense_from_apply as _dense_from
+                _pf, _ps = methods[f"P.T P_A P + P_B [{pa_model}]"]
+                _papp = ((lambda r, f=_pf, st=_ps: f(st, r))
+                         if _ps is not None else _pf)
+                _t0 = time.perf_counter()
+                A_d = _symmetrize(_dense_from(applies["a_matvec"], n_upper, sequential=True))
+                P_d = _symmetrize(_dense_from(_papp, n_upper, sequential=True))
+                _pw, _pv = jnp.linalg.eigh(P_d)
+                print(f"[diag] dense P spectrum {bc}: min={float(_pw[0]):.3e} "
+                      f"max={float(_pw[-1]):.3e} "
+                      f"n_neg={int(jnp.sum(_pw < -1e-10 * float(_pw[-1])))}", flush=True)
+                _ph = (_pv * jnp.sqrt(jnp.maximum(_pw, 0.0))[jnp.newaxis, :]) @ _pv.T
+                _w = jnp.linalg.eigh(_symmetrize(_ph @ A_d @ _ph))[0]
+                _wmax = float(_w[-1])
+                _wn = np.asarray(_w)
+                _nonnull = _wn[_wn > 1e-10 * _wmax]
+                _census = "  ".join(
+                    f"<{f:g}*max: {int((_nonnull < f * _wmax).sum())}"
+                    for f in (1e-8, 1e-6, 1e-4, 1e-2))
+                print(f"[diag] dense P*S spectrum {bc}: n={_wn.size} "
+                      f"null(<1e-10*max)={int(_wn.size - _nonnull.size)} "
+                      f"lam_min_nonnull={float(_nonnull[0]):.4e} lam_max={_wmax:.4e} "
+                      f"KAPPA_EFF={_wmax / float(_nonnull[0]):.4e}", flush=True)
+                print(f"[diag]   census (of {_nonnull.size} non-null): {_census}", flush=True)
+                print(f"[diag]   bottom-8: "
+                      + " ".join(f"{v:.3e}" for v in _nonnull[:8]), flush=True)
+                print(f"[diag]   top-4: "
+                      + " ".join(f"{v:.3e}" for v in _wn[-4:])
+                      + f"  ({time.perf_counter() - _t0:.1f}s)", flush=True)
         for name, (precond_upper, precond_state) in methods.items():
             solve = make_saddle_solve(
                 applies["stiffness_matvec"],
@@ -3776,6 +3809,12 @@ def main() -> None:
         help=(
             "CP rank for the tensor preconditioners used by block_fd."
         ),
+    )
+    parser.add_argument(
+        "--dense-ps-spectrum",
+        action="store_true",
+        help="densify P^(1/2) S P^(1/2) (tensor upper P, S=a_matvec) and eigh it; "
+             "prints kappa_eff + census. n_upper <= ~6000 only.",
     )
     parser.add_argument(
         "--k1-both-bc",
@@ -4408,6 +4447,39 @@ def main() -> None:
         )
         print(header)
         print("-" * len(header))
+        if getattr(args, "dense_ps_spectrum", False):
+            if n_upper > 6000:
+                print(f"[diag] dense P*S spectrum SKIPPED (n_upper={n_upper})", flush=True)
+            else:
+                from mrx.operators import _assemble_dense_from_apply as _dense_from
+                _pf, _ps = methods[f"P.T P_A P + P_B [{pa_model}]"]
+                _papp = ((lambda r, f=_pf, st=_ps: f(st, r))
+                         if _ps is not None else _pf)
+                _t0 = time.perf_counter()
+                A_d = _symmetrize(_dense_from(applies["a_matvec"], n_upper, sequential=True))
+                P_d = _symmetrize(_dense_from(_papp, n_upper, sequential=True))
+                _pw, _pv = jnp.linalg.eigh(P_d)
+                print(f"[diag] dense P spectrum {bc}: min={float(_pw[0]):.3e} "
+                      f"max={float(_pw[-1]):.3e} "
+                      f"n_neg={int(jnp.sum(_pw < -1e-10 * float(_pw[-1])))}", flush=True)
+                _ph = (_pv * jnp.sqrt(jnp.maximum(_pw, 0.0))[jnp.newaxis, :]) @ _pv.T
+                _w = jnp.linalg.eigh(_symmetrize(_ph @ A_d @ _ph))[0]
+                _wmax = float(_w[-1])
+                _wn = np.asarray(_w)
+                _nonnull = _wn[_wn > 1e-10 * _wmax]
+                _census = "  ".join(
+                    f"<{f:g}*max: {int((_nonnull < f * _wmax).sum())}"
+                    for f in (1e-8, 1e-6, 1e-4, 1e-2))
+                print(f"[diag] dense P*S spectrum {bc}: n={_wn.size} "
+                      f"null(<1e-10*max)={int(_wn.size - _nonnull.size)} "
+                      f"lam_min_nonnull={float(_nonnull[0]):.4e} lam_max={_wmax:.4e} "
+                      f"KAPPA_EFF={_wmax / float(_nonnull[0]):.4e}", flush=True)
+                print(f"[diag]   census (of {_nonnull.size} non-null): {_census}", flush=True)
+                print(f"[diag]   bottom-8: "
+                      + " ".join(f"{v:.3e}" for v in _nonnull[:8]), flush=True)
+                print(f"[diag]   top-4: "
+                      + " ".join(f"{v:.3e}" for v in _wn[-4:])
+                      + f"  ({time.perf_counter() - _t0:.1f}s)", flush=True)
         for name, (precond_upper, precond_state) in methods.items():
             solve = make_saddle_solve(
                 applies["stiffness_matvec"],

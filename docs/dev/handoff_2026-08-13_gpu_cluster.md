@@ -104,10 +104,22 @@ exact on rank-1 weights) instead of CP-ALS; `MRX_K1_ATOM=cp` reverts.
   **Reframed diagnosis: not a stall — extreme κ(P·Ŝ) on W7-X**; 2000 its
   is simply the far tail of a convergent process (fits all data: three
   atoms alike, toroid fine, jacobi's moderate-κ grind converges).
-  **NEXT-SESSION OPENER: densify P·Ŝ at 8,16,16 (n_upper=4176) and
-  eigendecompose** — minutes on H100, ends the guessing: huge-κ continuum
-  → tier-2 dense θ-ζ blocks are the real fix; benign cluster + outliers →
-  find/deflate the outlier modes (cheap); pathology → surgery couplings.
+  **DENSE P·Ŝ SPECTRUM (--dense-ps-spectrum, job 16144512): CASE CLOSED —
+  it is the huge-κ continuum.** κ_eff: toroid dbc 425 (→ the observed 237
+  MINRES its), toroid free 1.7e6 (paired low-mode ladder 2×4.9e-4, 2×7e-3,
+  2×5.5e-2 — a THIN deflatable set, ~6 modes would cut κ ~1000×: cheap
+  separate win for toroid free), W7-X dbc 7.6e6, free 7.9e7 — seven
+  decades, 3397/4176 modes < 1e-4·max = a CONTINUUM (not deflatable),
+  plus extreme top outliers (32817 vs 7034 vs 3433 dbc). √κ·log ≈ many
+  thousands of its → 2000 lands at ~1e-5: the "stall" was an honest crawl.
+  P itself strictly positive on both geometries (floors did their job).
+  ⇒ Only structural enlargement changes this: vector-FD per-mode 3×3
+  (channel-sparsity: diag block = 2 channels, off-diag (a,b) = single
+  channel c∉{a,b} as ONE Kronecker term of C_a⊗C_b⊗M_c[p_c] — the
+  existing --pa-block-vector-fd-true-basis / radial_banded models are the
+  half-built ladder; pair them with PROFILE weights + per-mode grad-div
+  regularization instead of the rel=1e-2 floors), then tier-2 dense θ-ζ
+  per r-mode.
 - **Toroid control: bundled P_A is safe and slightly better** (dbc 418→385,
   free 687→663 it vs CP-ALS) → `MRX_K1_ATOM=bundled` default stands. BUT
   the tensor path's edge over jacobi shrinks with resolution (doc headline
