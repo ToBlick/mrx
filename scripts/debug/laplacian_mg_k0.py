@@ -156,7 +156,7 @@ def anchored_breakpoints(fine_seq, ns_c, p):
 
 
 def build_coarse_sequence(fine_seq, ns_c, p, tol, maxiter, r_scale,
-                          anchor_xi1=False, ring1_fn=None):
+                          anchor_xi1=False, ring1_fn=None, polar_order=1):
     """Rediscretized coarse level reusing the FINE geometry map (no re-fit;
     jacfwd re-evaluated at the coarse quad points only). Same radial knot
     grading rule (r_scale) as the fine level, or the anchored-xi_1 rule.
@@ -170,13 +170,15 @@ def build_coarse_sequence(fine_seq, ns_c, p, tol, maxiter, r_scale,
     cseq = bench.DeRhamSequence(
         tuple(int(v) for v in ns_c), (p, p, p), 2 * p, TYPES,
         polar=True, tol=tol, maxiter=maxiter, r_scale=r_scale,
-        knots=knots, polar_ring1=ring1, betti_numbers=BETTI)
+        knots=knots, polar_ring1=ring1, polar_order=polar_order,
+        betti_numbers=BETTI)
     cseq.evaluate_1d()
     cseq.assemble_reference_mass_matrix()
     cseq.set_map(fine_seq.map)
     cops = cseq.get_operators()
     cops = assemble_incidence_operators(cseq, operators=cops, ks=(0,))
-    cops = assemble_laplacian_operators(cseq, cseq.geometry, operators=cops, ks=(0,))
+    if polar_order == 1:
+        cops = assemble_laplacian_operators(cseq, cseq.geometry, operators=cops, ks=(0,))
     # eager mass-core warm-up (TracerArrayConversionError guard under lax.map/jit)
     for d in (False, True):
         n = int(cseq.n0_dbc if d else cseq.n0)
@@ -340,8 +342,10 @@ def fdax_axis_profiles(seq, ring0=0, bundle_j=False):
         w00, w11, w22 = (minv[..., a, a] for a in range(3))
     p_r = seq.ps[0]
     # fat core (ring0=1): the exactly-handled region extends one element
-    # further out, so the averaging domain starts at xi_2.
-    xi1 = jnp.asarray(seq.basis_0.Λ[0].T)[p_r + 1 + ring0]
+    # further out, so the averaging domain starts at xi_2. C0 (ring0=-1):
+    # keep the cutoff at xi_1 regardless -- the r-mean of g^tt ~ 1/r^2 over
+    # (0,1) is quadrature-divergent no matter where the bulk window starts.
+    xi1 = jnp.asarray(seq.basis_0.Λ[0].T)[p_r + 1 + max(ring0, 0)]
     wx_cut = seq.quad.w_x * (jnp.asarray(seq.quad.x_x) >= xi1)
     wx, wy, wz = seq.quad.w_x, seq.quad.w_y, seq.quad.w_z
     sy, sz = jnp.sum(wy), jnp.sum(wz)
@@ -518,20 +522,21 @@ def make_vcycle(A_list, shape_list, smooth_list, P_list, coarse_inv):
     return vc
 
 
-def build_envelope(seq, ops, dirichlet, vcycle, nb, core, schur_mode, ring0=0):
+def build_envelope(seq, ops, dirichlet, vcycle, nb, core, schur_mode, ring0=0,
+                   force_probe=False):
     """Core/bulk Schur envelope around the V-cycle. W = B_mg C0 probed once =>
     one V-cycle per apply; Schur rebuild is then a dense product.
 
-    ring0>0 (fat core): the enlarged core (3nz + ring0*nt*nz) has no
-    production coupling matrix -- probe full stiffness columns of the core
-    DOFs once; [:core] gives ass, [core:] gives C0 = A[bulk, core]."""
+    ring0>0 (fat core) or force_probe (polar_order != 1: the {1,6}*nz C0/C2
+    core has no production coupling matrix): probe full stiffness columns of
+    the core DOFs once; [:core] gives ass, [core:] gives C0 = A[bulk, core]."""
     n_ext = core + nb
 
     t0 = time.perf_counter()
-    if ring0 > 0:
+    if ring0 > 0 or force_probe:
         if schur_mode != "rebuild":
-            raise ValueError("--fat-core requires --schur rebuild "
-                             "(production Schur factors cover only the 3nz polar core)")
+            raise ValueError("--fat-core / --polar-order != 1 require --schur rebuild "
+                             "(production Schur factors cover only the C^1 3nz polar core)")
 
         def full_col(e_c):
             full = jnp.zeros((n_ext,), dtype=jnp.float64).at[:core].set(e_c)
@@ -723,9 +728,30 @@ def main():
     ap.add_argument("--spectrum-diag", action="store_true",
                     help="dense probe of S.A on the fine bulk: top-eigenvector "
                          "radial energy + (m,n) Fourier content (axis vs shaping)")
+    ap.add_argument("--polar-order", type=int, default=1, choices=[0, 1, 2],
+                    help="pole regularity of the polar extraction (C^0/C^1/C^2). "
+                         "The exact core is {1,3,6}*nz and the bulk window starts "
+                         "at ring 1+order, so C^2 has the SAME bulk window as "
+                         "--fat-core 1 but a 6nz core instead of 3nz+nt*nz. "
+                         "order != 1: dbc only, no production baseline (the "
+                         "shipped preconditioner hardcodes the C^1 layout).")
     args = ap.parse_args()
 
-    ring0 = int(args.fat_core)
+    order = int(args.polar_order)
+    # Effective extra-ring offset: the exactly-handled core covers radial
+    # rings < (1 + order) + fat_core, and ALL window indexing downstream
+    # (atoms, transfers, diagonal, bulk_slices) is rw = 2 + ring0.
+    ring0 = int(args.fat_core) + (order - 1)
+    if order != 1:
+        if args.xi_adapt:
+            raise SystemExit("--xi-adapt requires --polar-order 1 "
+                             "(map-adapted get_xi2 is not implemented)")
+        if args.bc != "dbc":
+            raise SystemExit("--polar-order != 1 supports --bc dbc only (the "
+                             "free-BC nullspace vectors are filled by the C^1 "
+                             "laplacian assembly, which is skipped)")
+        if args.schur != "rebuild":
+            raise SystemExit("--polar-order != 1 requires --schur rebuild")
 
     def ring1_fn(ns_l, Tr=None):
         return compute_ring1(args.geometry, ns_l, args.p, args.r_scale,
@@ -735,7 +761,7 @@ def main():
                           cg_tol=args.tol, cg_maxiter=args.maxiter,
                           epsilon=args.epsilon, kappa=args.kappa, alpha=args.alpha,
                           r0=args.r0, nfp=args.nfp,
-                          r_scale=args.r_scale,
+                          r_scale=args.r_scale, polar_order=order,
                           polar_ring1=ring1_fn(args.ns) if args.xi_adapt else None)
     smoother_modes = [s.strip() for s in args.smoothers.split(",") if s.strip()]
     dirichlet_flags = {"dbc": [True], "free": [False], "both": [True, False]}[args.bc]
@@ -744,15 +770,19 @@ def main():
           f"levels={args.levels} coarsen={tuple(args.coarsen)} m={args.smooth_steps} "
           f"smoothers={smoother_modes} schur={args.schur} p_fix={args.p_fix} "
           f"cheb_window={args.cheb_window} r_scale={args.r_scale} "
-          f"fat_core={args.fat_core} ===", flush=True)
+          f"fat_core={args.fat_core} polar_order={order} ===", flush=True)
 
     # ---- fine level -------------------------------------------------------
     t0 = time.perf_counter()
     seq = build_sequence(cfg)
     ops = seq.get_operators()
     ops = assemble_incidence_operators(seq, operators=ops, ks=(0,))
-    ops = assemble_laplacian_operators(seq, seq.geometry, operators=ops, ks=(0,))
-    ops = assemble_tensor_laplacian_preconditioner(seq, operators=ops, ks=(0,))
+    if order == 1:
+        ops = assemble_laplacian_operators(seq, seq.geometry, operators=ops, ks=(0,))
+        ops = assemble_tensor_laplacian_preconditioner(seq, operators=ops, ks=(0,))
+    # else: apply_stiffness/apply_mass need only the incidence + matrix-free
+    # mass; the laplacian assembly eagerly warms the production FD
+    # preconditioner, which hardcodes the C^1 polar layout.
     for d in (False, True):
         n = int(seq.n0_dbc if d else seq.n0)
         jax.block_until_ready(apply_stiffness(seq, ops, jnp.zeros((n,)), 0, dirichlet=d))
@@ -773,7 +803,8 @@ def main():
             break
         cseq, cops = build_coarse_sequence(seq, nxt, args.p, args.tol, args.maxiter,
                                            args.r_scale, anchor_xi1=args.anchor_xi1,
-                                           ring1_fn=ring1_fn if args.xi_adapt else None)
+                                           ring1_fn=ring1_fn if args.xi_adapt else None,
+                                           polar_order=order)
         levels.append((cseq, cops))
         ns_l.append(nxt)
     t_coarse = time.perf_counter() - t0
@@ -858,14 +889,17 @@ def main():
         t_dense = time.perf_counter() - t0
         print(f"[{bc}] coarsest dense probe n={nb_last}: {t_dense:.1f} s", flush=True)
 
-        # baseline
-        if args.baseline:
+        # baseline (production FD tensor-hodge: C^1 layout only)
+        if args.baseline and order == 1:
             def base_p(v, d=dirichlet):
                 return apply_laplacian_preconditioner(seq, ops, v, 0, dirichlet=d, kind="tensor")
             it, dt, rel = timed_pcg(a_full, m_full, base_p, rhs, vs, args.tol, args.maxiter)
             print(f"[{bc}] baseline(FD tensor-hodge)  it={it:<5d} {dt:.3f}s "
                   f"({1e3 * dt / max(it, 1):.2f} ms/it) rel={rel:.1e}", flush=True)
             row(bc, "baseline", n_ext, it, dt, rel)
+        elif args.baseline:
+            print(f"[{bc}] baseline SKIPPED (production preconditioner hardcodes "
+                  f"the C^1 polar layout; polar_order={order})", flush=True)
 
         # MG per smoother mode
         for mode in smoother_modes:
@@ -898,7 +932,7 @@ def main():
 
             vcycle = make_vcycle(A_list, shape_list, smooth_list, P_list, dense_inv)
             precond, env_t = build_envelope(seq, ops, dirichlet, vcycle, nb0, core0,
-                                            args.schur, ring0)
+                                            args.schur, ring0, force_probe=(order != 1))
 
             se = mr = ""
             if args.two_level_check:
@@ -919,8 +953,10 @@ def main():
                   f"[smoother {t_sm:.1f}s, ass {env_t['ass_s']:.1f}s, W {env_t['w_s']:.1f}s]",
                   flush=True)
             method = f"mg-{mode}" if args.p_fix == "none" else f"mg-{mode}+{args.p_fix}"
+            if order != 1:
+                method += f"+c{order}"
             if args.fat_core:
-                method += f"+fat{ring0}"
+                method += f"+fat{args.fat_core}"
             if args.anchor_xi1:
                 method += "+anch"
             if args.xi_adapt:

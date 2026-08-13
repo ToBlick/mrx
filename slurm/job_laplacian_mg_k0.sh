@@ -1,15 +1,24 @@
 #!/bin/bash
 # ============================================================================
 # k=0 Laplacian geometric-multigrid prototype sweep.
-# Per geometry: h-sweep of MG-PCG (smoothers fd/fdax; window configs = the
+# Per geometry: h-sweep of MG-PCG (smoothers fd/fdbund; window configs = the
 # validated auto rule --cheb-lo 0.85 --auto-m plus a legacy m=2 relative
 # window for reference) vs the single-level FD tensor-hodge baseline, both
-# BCs. jacobi was answered locally (unusable) and is dropped. r_scale=0.5
-# (equal-area radial knots) and the fdax xi_1 profile cutoff are script
-# defaults. The smallest ns per geometry runs --two-level-check (SPD gates).
-# See scripts/debug/laplacian_mg_k0.py and docs/laplacian_mg_k0_plan.md.
+# BCs. jacobi + fdax are retired (see the handoff). r_scale=0.5 (equal-area
+# radial knots) and the fd-family xi_1 profile cutoff are script defaults.
+# The smallest ns per geometry runs --two-level-check (SPD gates).
+# See scripts/debug/laplacian_mg_k0.py and
+# docs/dev/handoff_2026-08-13_gpu_cluster.md (the cluster experiment matrix).
 # One sbatch per geometry on gpu-h100s. CSVs -> outputs/laplacian_mg_k0/<stamp>/.
-#   GEOMETRIES="w7x" bash slurm/job_laplacian_mg_k0.sh
+#
+# EXTRA_ARGS appends to every python invocation -- how the new experiments run:
+#   A. W7-X reconfirm + atom + lam_max:
+#      GEOMETRIES=w7x NS_LIST="12,24,24 16,32,32" bash slurm/job_laplacian_mg_k0.sh
+#   B. fat-core/C2 h-flatness sweep (highest-value new run):
+#      GEOMETRIES="toroid cerfon rotating_ellipse" NS_LIST="8,16,8 12,24,12 16,32,16" \
+#        EXTRA_ARGS="--polar-order 2 --anchor-xi1" bash slurm/job_laplacian_mg_k0.sh
+#      (order!=1 is dbc-only, no baseline; C1 reference arm: EXTRA_ARGS="--fat-core 1 --anchor-xi1")
+#   C. true multilevel: GEOMETRIES=toroid NS_LIST="24,48,24" LEVELS=3 bash slurm/job_laplacian_mg_k0.sh
 # ============================================================================
 set -euo pipefail
 cd /scratch/tblickhan/mrx
@@ -19,7 +28,8 @@ NS_LIST=${NS_LIST:-"12,24,24 16,32,32"}
 P=${P:-3}
 LEVELS=${LEVELS:-2}
 COARSEN=${COARSEN:-"2,2,2"}
-SMOOTHERS=${SMOOTHERS:-"fd,fdax"}
+SMOOTHERS=${SMOOTHERS:-"fd,fdbund"}
+EXTRA_ARGS=${EXTRA_ARGS:-""}   # e.g. "--polar-order 2 --anchor-xi1" or "--fat-core 1"
 # window configs: "auto" = --cheb-lo ${CHEB_LO} --auto-m (validated rule);
 # an integer m = legacy relative window --cheb-window 4 --smooth-steps m
 M_LIST=${M_LIST:-"auto 2"}
@@ -60,7 +70,7 @@ for NS in ${NS_LIST}; do \
     else MARGS=\"--cheb-window 4 --smooth-steps \${M}\"; fi; \
     python -u scripts/debug/laplacian_mg_k0.py --geometry ${GEO} --ns \${NS//,/ } \
       --p ${P} --nfp ${NFP} --levels ${LEVELS} --coarsen ${COARSEN//,/ } \
-      --smoothers ${SMOOTHERS} \${MARGS} --schur ${SCHUR} \
+      --smoothers ${SMOOTHERS} \${MARGS} --schur ${SCHUR} ${EXTRA_ARGS} \
       --tol ${TOL} --maxiter ${MAXITER} ${ZDIAG} \${TLC} --csv ${CSV} || true; \
   done; \
 done"
