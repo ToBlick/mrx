@@ -415,6 +415,13 @@ def _build_k1_block_fd_preconditioner(
     evals, evecs = jnp.linalg.eigh(schur_dense)
     scale = jnp.max(jnp.abs(evals))
     cutoff = jnp.maximum(pinv_rtol * jnp.where(scale > 0, scale, 1.0), 1e-14)
+    n_neg = int(jnp.sum(evals < -cutoff))
+    n_chop = int(jnp.sum(jnp.abs(evals) <= cutoff))
+    print(f"[diag] k=1 surgery-Schur spectrum (dirichlet={dirichlet}): n={evals.shape[0]} "
+          f"min={float(evals[0]):.3e} max={float(evals[-1]):.3e} "
+          f"NEGATIVE(<-cutoff)={n_neg} chopped(|ev|<=cutoff)={n_chop} "
+          f"neg_mass={float(jnp.sum(jnp.where(evals < 0, -evals, 0.0)) / jnp.maximum(scale, 1e-30)):.3e}",
+          flush=True)
     inv_evals = jnp.where(evals > cutoff, 1.0 / evals, 0.0)
     schur_inv = (evecs * inv_evals[jnp.newaxis, :]) @ evecs.T
 

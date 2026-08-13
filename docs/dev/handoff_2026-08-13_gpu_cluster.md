@@ -58,10 +58,28 @@ exact on rank-1 weights) instead of CP-ALS; `MRX_K1_ATOM=cp` reverts.
   So the k=1 W7-X wall is NOT the k=0 solves in P_B/Π and NOT rank-1
   channel-weight quality — consistent with the 2026-06 FFT diagnosis
   (β_θθ/β_rr need 4–7 angular modes; no rank-1 atom reaches it). The
-  stall-not-slow signature points at preconditioner INCONSISTENCY; prime
-  suspect by k=0 analogy: the block_fd surgery-Schur rebuilt through the
-  weak diagonal-metric bulk surrogate going indefinite. First probe:
-  eigencount that rebuilt Schur before its PSD chop, W7-X vs toroid.
+  stall-not-slow signature points at preconditioner INCONSISTENCY.
+  **Probe result (jobs 16141984/85, eigencount before the PSD chop): the
+  rebuilt surgery Schur is VIOLENTLY indefinite on BOTH geometries** —
+  toroid 23/40 negative (min −256 vs max +1.1, neg mass 5×), W7-X 47/80
+  (min −81 vs max +2.1, neg mass 7.7×). So indefiniteness alone does not
+  discriminate W7-X (toroid converges anyway); the magnitude convicts the
+  bulk surrogate B of OVERSHOOTING A_bb^{-1} by orders of magnitude in
+  core-coupled directions — mechanism: the curl-curl blocks' near-null
+  own-axis modes are floor-regularized in the pinv and 1/floor-amplified
+  (the 2026-06 suspect). That same overshooting B is the solve-time bulk
+  apply; toroid survives because the amplified directions are gradients
+  (P_B/leak-damped), W7-X plausibly not. Next build: the PROFILE atom —
+  k=0-fdbund-STYLE k=1 terms (own-axis profiles in the K's, UNWEIGHTED
+  masses; e.g. A_rr ≈ M⊗K_θ[p(β_ζζ)]⊗M + M⊗M⊗K_ζ[p(β_θθ)]) — exactly
+  Lynch-invertible (conflict-free pencils, unlike the rank-1 product fits
+  whose same-axis weighted masses force modal-diagonal chopping), with the
+  block nullspace analytic → zeroed exactly, non-overestimating B by
+  construction. Converts stall→slow if the overshoot is the stall; then
+  tier-2 (dense θ-ζ block per r-mode, the 2026-06 design) prices the
+  expressiveness ceiling: W7-X β_θθ/β_rr need 4-7 coupled angular modes
+  that NO weight-separability-rank-1 atom (CP, bundled, or otherwise)
+  can represent.
 - **Toroid control: bundled P_A is safe and slightly better** (dbc 418→385,
   free 687→663 it vs CP-ALS) → `MRX_K1_ATOM=bundled` default stands. BUT
   the tensor path's edge over jacobi shrinks with resolution (doc headline
