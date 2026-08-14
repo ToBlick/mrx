@@ -1850,6 +1850,48 @@ def make_apply_routines(
             _L0i = jnp.asarray(np.linalg.pinv(0.5 * (_L0d + _L0d.T), rcond=1e-12))
             l0_inv = lambda x, _M=_L0i: _M @ x
             print(f"[diag] L0INV=dense wired (n0={_n0m})", flush=True)
+        elif _l0_mode.startswith("mg"):
+            # fixed symmetric V-cycles of the k=0 MG (fdbund smoother,
+            # fat-core, anchored) as the stationary L0 inverse. ncyc=2 is
+            # composed symmetrically as 2P - P A P.
+            import sys as _sys
+            _dbg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "debug")
+            if _dbg not in _sys.path:
+                _sys.path.insert(0, _dbg)
+            import laplacian_mg_k0 as _mg
+            _ncyc = int(_l0_mode[2:] or "1")
+            _ring0 = 1
+            _p_deg = int(seq.ps[0])
+            _ns_f = (int(seq.basis_0.nr), int(seq.basis_0.nt), int(seq.basis_0.nz))
+            _A0, _x1, _bsh, _nb, _x2 = _mg.make_bulk_A(seq, ops, DIRICHLET, _ring0)
+            _nsc = _mg.coarsen_ns(_ns_f, _p_deg, (2, 2, 2))
+            _cseq, _cops = _mg.build_coarse_sequence(
+                seq, _nsc, _p_deg, 1e-10, 3000, 0.5,
+                anchor_xi1=True, ring1_fn=None, polar_order=1)
+            _Ac, _y1, _bshc, _nbc, _y2 = _mg.make_bulk_A(_cseq, _cops, DIRICHLET, _ring0)
+            _P = _mg.build_bulk_transfers(seq, _cseq, DIRICHLET, p_fix="rownorm", ring0=_ring0)
+            _S0 = _mg.build_smoother_atom(seq, ops, DIRICHLET, _bsh, _A0, _nb, "fdbund", _ring0)
+            _lam = _mg.estimate_lam_max(_A0, _S0, _nb, not DIRICHLET)
+            _kap = max(_lam / 0.85, 1.5)
+            _m = max(2, round(1.4142 * (_kap ** 0.5)))
+            _m_env = os.environ.get("MRX_K1_MG_M", "")
+            if _m_env:
+                _m = max(1, int(_m_env))  # m=1 = single damped atom apply (exp. D)
+            _sm = _mg.make_cheb_smoother(_A0, _S0, _m, _lam / _kap, _lam)
+            _Ac(jnp.zeros((_nbc,), dtype=jnp.float64))
+            _dinv = _mg._psd_pseudoinverse(_mg._symmetrize(
+                _mg._assemble_dense_from_apply(_Ac, _nbc, sequential=True)))
+            _vc = _mg.make_vcycle([_A0, _Ac], [_bsh, _bshc], [_sm], [_P], _dinv)
+            _n_ext, _z1, _nb0, _core0 = _mg.bulk_slices(seq, DIRICHLET, _ring0)
+            _pre, _envt = _mg.build_envelope(
+                seq, ops, DIRICHLET, _vc, _nb0, _core0, "rebuild", _ring0)
+            def _l0_mg(x, P=_pre, A=_l0_A, n=_ncyc):
+                y = P(x)
+                if n >= 2:
+                    y = 2.0 * y - P(A(y))
+                return y
+            l0_inv = _l0_mg
+            print(f"[diag] L0INV=mg{_ncyc} wired (ns={_ns_f}->{_nsc})", flush=True)
         elif _l0_mode == "ns2":
             _B0 = l0_inv
             def _l0_ns2(x, B=_B0, A=_l0_A):

@@ -133,3 +133,34 @@ now; FIXED symmetric V-cycles of the k=0 MG as the h-scalable successor
 (stationary+symmetric = legal inside P_B; V-cycle count O(1) in h vs
 Chebyshev degree ~√κ) — the shelved k=0 MG's true purpose. Next: wire
 dense-L0 as a production option, validate 12,24,24, then k=2 recursion.
+
+## NEXT BUILD (spec'd, Tobias 2026-08-14): P_A + P12 divdiv P12^T -- no L0 anywhere
+
+Replace P_B/Pi entirely: P = P_A(coupled) + P12^T . B_div . P12, NO
+projection (live with overlap), NO L0 solves.
+- **P12 (V1 -> V2 proxy transfer, Greville collocation):** pointwise
+  v2 = J g^{-1} v1 at each V2 component's Greville grid. 9 component-pair
+  blocks, each = diag((J g^{-1})_ab at grid_a) x (E^ab_r ⊗ E^ab_t ⊗ E^ab_z)
+  where E = 1D spline-evaluation (collocation) matrices of the V1
+  component-b bases at the V2 component-a Greville abscissae (endpoint
+  eps clip 1e-7 for the spline map). Adjoint = transpose. Fallback arm:
+  L2 transfer with the k=2 mass preconditioner as approximate M2^{-1}.
+- **B_div (k=2 div-div atom, built P_A-like = the coupled recipe at k=2):**
+  single channel (weight 1/J, no-mixing marginal m(1/J) if any); per
+  tensor mode the div-div symbol is RANK-1: B = t t^T with
+  t = (s_r, s_t, s_z) in the k=2 paired ladders -> per-mode CAPPED pinv
+  (invert t-direction, zero t-perp = the curls; the cap IS the pinv here)
+  or + curl-curl surrogate sigma*(I - t t^T/|t|^2) for SPD-nonsingular.
+- **BC FLIP (Tobias):** the k=1 weak div with essential BCs pairs with the
+  STRONG k=2 div-div of the OPPOSITE BC -- index the auxiliary payload
+  with `not dirichlet` or the spectrum mismatches at the wall.
+- Wire as a P_B alternative flag (--pb-divdiv) beside MRX_K1_L0INV arms;
+  compare on all four geometries vs dense-L0 (154-172-class counts) and
+  mg2. Expected win: zero L0 solves, one collocation each way + one
+  batched rank-1-pinv per apply -- the cheapest gradient machinery
+  conceivable if the transfer holds on W7-X.
+
+STATUS at close: final4 job's last cell (W7-X mg2 auto-m) still computing
+-- read outputs/k1_pa_compare/dense_spec/final4.log. m=1 arm complete
+(W7-X 204/546 -- even the crudest MG-L0 beats jacobi 4.6x its). All wiring
+knobs: MRX_K1_L0INV=dense|ns2|mg{1,2}, MRX_K1_MG_M, MRX_K1_COUPLED_SIGMA.
