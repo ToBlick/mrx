@@ -215,3 +215,29 @@ same probe cycle. Verdict: the k=3<->k=0 duality WORKS once each
 structural subspace (axis extraction/J-constraint deficit + BC-flip wall
 deficit) gets its small probed core; pure-transfer descent rate beats
 jacobi decisively (96 its to 3.8e-3 vs 193 to 1e-10).
+
+## PRODUCTION POLICY (Tobias, 2026-08-14 — supersedes all preconditioner
+## recommendations above for production use)
+
+- **Masses (all k): Kronecker/tensor preconditioners.** Measured excellent;
+  no change.
+- **k=0 Laplacian: the shipped tensor-hodge preconditioner stands** (fdbund
+  swap, verified 4-geometry, MRX_K0_ATOM=fd reverts).
+- **k=1, k=2, k=3 Laplacians: Schur-outer JACOBI.** Rationale: nothing
+  beats jacobi in production-trustworthy wall-clock on W7-X today. The
+  coupled-atom + dense-L0 result (154/172 it, 3-9x prototype wall win) is
+  real but prototype-grade; MG-L0 wall numbers were unjitted glue; P12
+  fails W7-X pending term-scale calibration; k=3 transfer still floored.
+  Jacobi = robustness + zero new complexity. Block/line-jacobi and
+  Schwarz measured or argued unproductive; Vanka untested (same cost
+  family).
+
+**Shelf (validated research, with reopen conditions):**
+1. k=1 coupled P_A + dense/MG L0 in P_B/Pi — the math risk is RETIRED
+   (geometry-independent ~80-172 it, all four geometries). Reopen when k=1
+   solves bottleneck production: the remaining work is jit + production
+   wiring of dense-L0 (n0 small), not research.
+2. P12 div-div (no-L0): wins 3/4 geometries; needs Lanczos term-scale
+   calibration for W7-X. 3. k=3 transfer: subspace ladder documented;
+   surgical route at 3.8e-3, tensor route two bugs deep. 4. MG-as-L0:
+   iteration-validated (== dense within ~10%); wall needs jitting.
