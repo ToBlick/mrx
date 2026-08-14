@@ -603,6 +603,23 @@ def build_smoother_atom(seq, ops, dirichlet, bulk_shape, A_bulk, nb, mode, ring0
     if mode == "jacobi":
         di = _invert_diagonal(k0_bulk_stiffness_diagonal(seq, bulk_shape, ring0))
         return lambda v: di * v
+    if base == "mass":
+        # pure mass smoother (spectral-element style): exact Lynch inverse
+        # of M_r (x) M_t (x) M_z -- basis-normalizing, metric-BLIND.
+        M0_r = _restrict_radial_window(_assemble_unweighted_1d_mass(seq.basis_r_jk, seq.quad.w_x), 2 + ring0, int(bulk_shape[0]))
+        M0_t = _assemble_unweighted_1d_mass(seq.basis_t_jk, seq.quad.w_y)
+        M0_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
+        import numpy as _np
+        Mi = [jnp.asarray(_np.linalg.inv(_np.asarray(M))) for M in (M0_r, M0_t, M0_z)]
+
+        def S_mass(v):
+            f = jnp.asarray(v).reshape(tuple(int(x) for x in bulk_shape))
+            f = jnp.einsum('ij,jkl->ikl', Mi[0], f)
+            f = jnp.einsum('ij,kjl->kil', Mi[1], f)
+            f = jnp.einsum('ij,klj->kli', Mi[2], f)
+            return f.reshape(-1)
+
+        return S_mass
     if base == "fdslab":
         par = mode.partition(":")[2]
         return build_fdslab_atom(seq, bulk_shape, ring0, n_slab=int(par) if par else 4, sl_eps_frac=sl_eps_frac)
