@@ -2692,11 +2692,19 @@ def make_apply_routines_k3(seq: DeRhamSequence, ops):
     if _k3_rings > 0:
         _nt3, _nz3 = int(seq.basis_3.nt), int(seq.basis_3.nz)
         _n3 = int(seq.n3)
-        _ncore = min(_k3_rings * _nt3 * _nz3, _n3)
+        _ring = _nt3 * _nz3
+        _lead = min(_k3_rings * _ring, _n3)
+        # MRX_K3_WALL=1: also surger the trailing (wall) ring -- the
+        # dbc-dropped outer V0 function leaves V3's outer ring under-covered.
+        _idx = list(range(_lead))
+        if os.environ.get("MRX_K3_WALL", "") == "1":
+            _idx += list(range(max(_n3 - _ring, _lead), _n3))
+        _idx = jnp.asarray(_idx)
+        _ncore = int(_idx.shape[0])
 
         def _col(i):
-            e = jnp.zeros((_n3,), dtype=jnp.float64).at[i].set(1.0)
-            return a_matvec(e)[:_ncore]
+            e = jnp.zeros((_n3,), dtype=jnp.float64).at[_idx[i]].set(1.0)
+            return a_matvec(e)[_idx]
 
         _cols = jnp.stack([_col(i) for i in range(_ncore)], axis=1)
         _Acc = 0.5 * (_cols + _cols.T)
@@ -2707,9 +2715,9 @@ def make_apply_routines_k3(seq: DeRhamSequence, ops):
         _Ci = (_V * _iw[jnp.newaxis, :]) @ _V.T
         _p3_base = p3_transfer
 
-        def p3_transfer(r, _b=_p3_base, _C=_Ci, _n=_ncore):
+        def p3_transfer(r, _b=_p3_base, _C=_Ci, _ix=_idx):
             out = _b(r)
-            return out.at[:_n].add(_C @ r[:_n])
+            return out.at[_ix].add(_C @ r[_ix])
 
         print(f"[diag] k=3 axis-core surgery: R={_k3_rings} rings, "
               f"n_core={_ncore}", flush=True)

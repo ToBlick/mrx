@@ -201,3 +201,17 @@ P = raw P_A + Pi21 B_div Pi21^T (no L0, no projection):
   (MRX_K3_CORE=R: dense-probed leading-R-ring block, positive-part pinv
   with 1/λmax floor, added to the transfer) — 4-geometry test in flight
   (job 16185831).
+
+## k=3 transfer: the missing-subspace ladder (2026-08-14, cylinder)
+
+Pure transfer P_3 = T L0^-1 T* floor: 0.54 (bare) -> 2.4e-2 (axis surgery
+MRX_K3_CORE=2; R-scan 2-5 flat => axis fully captured at R=2) -> 3.8e-3
+(+wall ring MRX_K3_WALL=1: the dbc-dropped outer V0 function's territory,
+6x drop, 96 its and descending faster than jacobi-to-tolerance). axis0
+projector arm = NO-OP (zeroing V0 cores can't extend the reachable set;
+Tobias's constraint idea needs the re-solved axis-Dirichlet L0 if ever).
+Remaining ~4e-3 residue: candidates = 2nd wall ring, harmonic path --
+same probe cycle. Verdict: the k=3<->k=0 duality WORKS once each
+structural subspace (axis extraction/J-constraint deficit + BC-flip wall
+deficit) gets its small probed core; pure-transfer descent rate beats
+jacobi decisively (96 its to 3.8e-3 vs 193 to 1e-10).
