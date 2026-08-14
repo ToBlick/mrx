@@ -2659,6 +2659,25 @@ def make_apply_routines_k3(seq: DeRhamSequence, ops):
     def p3_transfer(r):
         return transfer_0_to_3(l0_inv(transfer_3_to_0(r)))
 
+    # MRX_K3_AXIS0=1 (Tobias): enforce q(0)=0 on the auxiliary V0 side --
+    # V3 densities vanish at the axis (J factor baked into the space), V0
+    # does not; zeroing the polar-core DOFs on both legs matches the axis
+    # behavior, making the cross-pairing uniformly nondegenerate (the soft
+    # J-graded tail becomes a sharp countable complement for the surgery).
+    if os.environ.get("MRX_K3_AXIS0", "") == "1":
+        from mrx.operators import _core_size as _k0_core_size
+        _c0 = int(_k0_core_size(seq))
+
+        def _zero_core(v, c=_c0):
+            return v.at[:c].set(0.0)
+
+        _p3_t = p3_transfer
+
+        def p3_transfer(r):
+            return transfer_0_to_3(_zero_core(l0_inv(_zero_core(transfer_3_to_0(r)))))
+
+        print(f"[diag] k=3 axis0 constraint: zeroing {_c0} V0 polar-core DOFs", flush=True)
+
     # MRX_K3_CORE=R: axis-core surgery. The transfer factors through the
     # POLAR-EXTRACTED V0 (C^1 pole constraint collapses the inner rings to
     # ~3 n_z functions) while V3 keeps its full tensor ring DOFs -> the
