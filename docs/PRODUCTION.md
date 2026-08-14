@@ -38,8 +38,13 @@ The k=1 coupled-atom + exact-L0 solver is mathematically settled
 one wiring day (jit + dense-L0 Cholesky) when k=1 solves bottleneck
 production. Details + all other shelf items: `docs/research/`.
 
-## Open question standing over the Laplacian policy
+## k>0 policy: final assessment (2026-08-14)
 
-If production timestep solves are SHIFTED (`M/dt + L`), the mass
-preconditioners change the ranking; benchmark at the production shift
-before further Laplacian work.
+The k>0 option space is closed — full reasoning in
+`docs/research/k_gt0_final_assessment.md`. Summary: any method that beats
+Jacobi on hard geometry must contain a faithful L0 solve (measured +
+literature-confirmed); everything cheaper is break-even at best. Jacobi
+stays; the coupled+dense-L0 shelf is the only sanctioned opt-in.
+Production timestep solves are shifted (`M/dt + eta*L`), which collapses
+the pure-Laplacian wall to one-off solves; an optional ~1h Lanczos check
+at the production shift would confirm this.
