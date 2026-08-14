@@ -151,10 +151,30 @@ def build_k1_coupled_bulk_state(seq, dirichlet: bool):
     B[..., 1, 2] = B[..., 2, 1] = -st * sz + 0 * lr
     # grad-div surrogate on the analytic per-mode null n = (sr, st, sz)
     n2 = sr**2 + st**2 + sz**2 + 0 * B[..., 0, 0]
-    sigma = lr + lt + lz + 0 * n2
+    # gradient-response scaling: the weak grad-div acts like the SQUARED
+    # Laplacian on gradients (L M0^{-1} L); 'lin' (the original) was
+    # measured to over-respond by ~lambda -- the pure-gradient top outliers
+    # carrying kappa 4e5/5e6. 'sq' matches the squared response; 'inf'
+    # zeroes the gradient response (exact per-mode pinv, P_B owns gradients).
+    import os as _os
+    _sig_mode = _os.environ.get("MRX_K1_COUPLED_SIGMA", "lin")
+    _lsum = lr + lt + lz
+    if _sig_mode == "lin":
+        sigma = _lsum + 0 * n2
+    elif _sig_mode == "inf":
+        sigma = 0.0 * _lsum + 0 * n2  # handled below: zero response on null
+    else:
+        sigma = _lsum ** 2 + 0 * n2
     nvec = np.stack([sr + 0 * n2, st + 0 * n2, sz + 0 * n2], axis=-1)
     safe = np.maximum(n2, 1e-300)
-    B = B + (sigma / safe)[..., None, None] * (nvec[..., :, None] * nvec[..., None, :])
+    if _sig_mode == "inf":
+        # exact pinv along the null: invert on n-perp, zero along n. Realised
+        # by regularising with a HUGE sigma then subtracting its inverse
+        # contribution: equivalently invert B + c*nn^T and project out.
+        c_big = (lr + lt + lz + 1.0) * 1e12
+        B = B + (c_big / safe)[..., None, None] * (nvec[..., :, None] * nvec[..., None, :])
+    else:
+        B = B + (sigma / safe)[..., None, None] * (nvec[..., :, None] * nvec[..., None, :])
     # degenerate corner (all lambdas ~ 0): identity fallback
     dead = sigma < 1e-12 * max(float(sigma.max()), 1e-300)
     B[dead] = np.eye(3)

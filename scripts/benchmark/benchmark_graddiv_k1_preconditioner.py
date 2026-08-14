@@ -3574,9 +3574,21 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
             return apply_mass_matrix(seq, ops, v, 1, dirichlet=d)
 
         keys = jax.random.split(jax.random.PRNGKey(args.seed), args.n_rhs)
-        rhs_batch = jnp.stack(
-            [applies["a_matvec"](jax.random.normal(k, (n_upper,), dtype=jnp.float64))
-             for k in keys], axis=0)
+        if getattr(args, "rhs_kind", "random") == "gradient":
+            # P_B-isolation probe (Tobias): solution = G0 phi, a pure
+            # gradient -- convergence is then governed by the gradient-range
+            # quality of the preconditioner (P_B + the atom's grad response).
+            n_lower_rhs = int(seq.n0_dbc if dirichlet else seq.n0)
+            rhs_batch = jnp.stack(
+                [applies["a_matvec"](apply_incidence_matrix(
+                    seq, ops,
+                    jax.random.normal(k, (n_lower_rhs,), dtype=jnp.float64),
+                    0, dirichlet_in=dirichlet, dirichlet_out=dirichlet))
+                 for k in keys], axis=0)
+        else:
+            rhs_batch = jnp.stack(
+                [applies["a_matvec"](jax.random.normal(k, (n_upper,), dtype=jnp.float64))
+                 for k in keys], axis=0)
         jax.block_until_ready(rhs_batch)
         print()
         print(f"[diag] k=1 {bc}: n_upper={n_upper}, n_lower={n_lower}, harmonics={n_harm}")
@@ -3622,7 +3634,27 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
                       f"max={float(_pw[-1]):.3e} "
                       f"n_neg={int(jnp.sum(_pw < -1e-10 * float(_pw[-1])))}", flush=True)
                 _ph = (_pv * jnp.sqrt(jnp.maximum(_pw, 0.0))[jnp.newaxis, :]) @ _pv.T
-                _w = jnp.linalg.eigh(_symmetrize(_ph @ A_d @ _ph))[0]
+                _w, _u = jnp.linalg.eigh(_symmetrize(_ph @ A_d @ _ph))
+                # gradient-energy decomposition of the extreme modes:
+                # Pi_g = G0 L0^{-1} G0^T M1; fraction = <Pi_g v, M1 v>/<v, M1 v>
+                _n0 = int(seq.n0_dbc if dirichlet else seq.n0)
+                _G_d = jnp.stack([apply_incidence_matrix(
+                    seq, ops, jnp.zeros((_n0,)).at[_i].set(1.0), 0,
+                    dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+                    for _i in range(_n0)], axis=1)
+                _L0_d = _symmetrize(_dense_from(
+                    lambda x: apply_stiffness(seq, ops, x, 0, dirichlet=dirichlet),
+                    _n0, sequential=True))
+                _L0_inv = jnp.linalg.pinv(_L0_d, rcond=1e-12)
+                def _grad_frac(v):
+                    mv = apply_mass_matrix(seq, ops, v, 1, dirichlet=dirichlet)
+                    pg = _G_d @ (_L0_inv @ (_G_d.T @ mv))
+                    num = float(pg @ apply_mass_matrix(seq, ops, pg, 1, dirichlet=dirichlet))
+                    den = float(v @ mv)
+                    return num / max(den, 1e-300)
+                for _lbl, _idxs in (("bottom", range(8)), ("top", range(-8, 0))):
+                    _fr = [f"{_grad_frac(_ph @ _u[:, _ix]):.2f}" for _ix in _idxs]
+                    print(f"[diag]   grad-energy {_lbl}-8: {' '.join(_fr)}", flush=True)
                 _wmax = float(_w[-1])
                 _wn = np.asarray(_w)
                 _nonnull = _wn[_wn > 1e-10 * _wmax]

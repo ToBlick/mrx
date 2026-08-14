@@ -100,3 +100,20 @@ fdslab-in-MG; jacobi improvements (block/deflation — compact spectrum);
 CP-ALS rank>1 stiffness fits; geometric-mean shared weights (no-mixing
 policy); global-shared-w coupled class (superseded by pairwise theory,
 itself defaulted to constants).
+
+## 2026-08-14 addendum: gradient diagnostics close the k=1 single-level story
+
+- Gradient-RHS probe: NULL (identical its to random) — P·Ŝ mixes subspaces.
+- Grad-energy eigenmode decomposition (`--dense-ps-spectrum` now prints it):
+  coupled atom's top outliers are PURE gradient (frac 1.00, λ to 8.6e4);
+  bottom/bulk modes MIXED (0.5–0.6).
+- σ A/B (`MRX_K1_COUPLED_SIGMA` lin|sq|inf, default lin): sq = identical
+  dbc (1612), worse free; inf = FLOORS at 1e-2 (P_B cannot own gradients;
+  the atom's gradient response is load-bearing). ⇒ top outliers are
+  cosmetic for MINRES; the W7-X gap lives in the MIXED bulk.
+- VERDICT: coupled atom is optimal in its class; the mixed smooth bulk is
+  coarse-grid territory ⇒ **k=1 MG revival is the path** (economics invert
+  at k=1: baseline 1600–3800 its). Smoother = Chebyshev-wrapped coupled
+  atom (σ=lin); Hiptmair G₀-pass and the BC-flipped div-div third leg kept
+  as smoother options (mixed-mode evidence favors trying the 3-space form);
+  new code needed = per-component commuting transfers only.
