@@ -1475,7 +1475,16 @@ def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool,
     """
     from mrx.geometry import compute_geometry_terms  # noqa: PLC0415
 
-    atom = atom or os.environ.get("MRX_K0_ATOM", "fdbund")
+    # Production naming (Tobias 2026-08-14): the bundled atom IS "fd" now.
+    # Accepted: fd|fdbund -> bundled (production); fdlegacy -> the old
+    # collocated D=J(prod g)^{1/3} atom (kept for reproduction only).
+    atom = atom or os.environ.get("MRX_K0_ATOM", "fd")
+    if atom == "fdbund":
+        atom = "fd"
+    if atom == "fd":
+        atom = "fdbund"  # internal branch name below
+    elif atom == "fdlegacy":
+        atom = "fd"
     bulk_shape = _bulk_tensor_shape(seq, dirichlet)
     nr_bulk, nt, nz = (int(s) for s in bulk_shape)
     types = seq.basis_0.types

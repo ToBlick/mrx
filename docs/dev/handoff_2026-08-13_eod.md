@@ -269,3 +269,19 @@ jacobi decisively (96 its to 3.8e-3 vs 193 to 1e-10).
 ⇒ Relaxation/smoother ledger CLOSED: plain jacobi is measured-optimal in
 its class at k≥1; the k=0 tensor-hodge and (shelved) atom family remain
 the only things that beat it, and they do so by absorbing the metric.
+
+## FINAL PRODUCTION CONFIGURATION (Tobias, 2026-08-14 — the definitive list)
+
+1. **No multigrid** anywhere in production (research shelf only).
+2. **All mass inverses: the Kronecker/tensor mass preconditioners** (exact
+   at rank 2 for masses; the validated machinery).
+3. **k=0 Laplacian: preconditioned by the bundled atom, now simply called
+   "fd"** (MRX_K0_ATOM: fd == fdbund == production; fdlegacy = the old
+   collocated D=J(prod g)^{1/3} atom, kept for reproduction).
+4. **k>0 Laplacians: Schur-outer JACOBI, with the diagonal probed on
+   Ŝ = S_k + D M̂⁻¹ Dᵀ using the tensor MASS preconditioner as M̂⁻¹ in the
+   weak term** (schur_diag_mode='tensor_probe' — the existing default,
+   now the specified production semantics).
+5. **Saddle lower-block masses: the same tensor mass preconditioners.**
+6. **No Chebyshev anywhere** (no cheb-wrapped L0, no block-Chebyshev in
+   the mass preconditioners [already defaulted 0], no tensor-cheb P_B).
