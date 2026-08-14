@@ -2659,6 +2659,42 @@ def make_apply_routines_k3(seq: DeRhamSequence, ops):
     def p3_transfer(r):
         return transfer_0_to_3(l0_inv(transfer_3_to_0(r)))
 
+    # MRX_K3_CORE=R: axis-core surgery. The transfer factors through the
+    # POLAR-EXTRACTED V0 (C^1 pole constraint collapses the inner rings to
+    # ~3 n_z functions) while V3 keeps its full tensor ring DOFs -> the
+    # transfer is rank-deficient by O(n_t n_z) NEAR-AXIS modes and MINRES
+    # stalls at the residual fraction living there (measured 0.54). Fix:
+    # dense-probe the true upper operator on the first R radial rings of V3
+    # (contiguous leading R*n_t*n_z coefficients, r-major layout), invert
+    # with a positive-part pinv (chopped modes floored at 1/lam_max, not
+    # zeroed -- the singular-P MINRES lesson), and ADD the core block:
+    # rank restored, floor gone, bulk quality = the transfer's.
+    _k3_rings = int(os.environ.get("MRX_K3_CORE", "0"))
+    if _k3_rings > 0:
+        _nt3, _nz3 = int(seq.basis_3.nt), int(seq.basis_3.nz)
+        _n3 = int(seq.n3)
+        _ncore = min(_k3_rings * _nt3 * _nz3, _n3)
+
+        def _col(i):
+            e = jnp.zeros((_n3,), dtype=jnp.float64).at[i].set(1.0)
+            return a_matvec(e)[:_ncore]
+
+        _cols = jnp.stack([_col(i) for i in range(_ncore)], axis=1)
+        _Acc = 0.5 * (_cols + _cols.T)
+        _w, _V = jnp.linalg.eigh(_Acc)
+        _wmax = jnp.maximum(jnp.max(jnp.abs(_w)), 1e-300)
+        _iw = jnp.where(_w > 1e-10 * _wmax, 1.0 / jnp.where(_w > 1e-10 * _wmax, _w, 1.0),
+                        1.0 / _wmax)
+        _Ci = (_V * _iw[jnp.newaxis, :]) @ _V.T
+        _p3_base = p3_transfer
+
+        def p3_transfer(r, _b=_p3_base, _C=_Ci, _n=_ncore):
+            out = _b(r)
+            return out.at[:_n].add(_C @ r[:_n])
+
+        print(f"[diag] k=3 axis-core surgery: R={_k3_rings} rings, "
+              f"n_core={_ncore}", flush=True)
+
     # --- jacobi baseline (whole-space diag(L_3)) ---
     schur_diaginv = _get_schur_diaginv(ops, 3, k3_dbc, 'tensor_probe')
 
