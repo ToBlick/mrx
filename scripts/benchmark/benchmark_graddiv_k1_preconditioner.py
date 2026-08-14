@@ -3757,6 +3757,15 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
             _l1inv = jnp.where(_l1d > 0, 1.0 / _l1d, 0.0)
             methods["l1-jacobi (rownorm)"] = (lambda r, d=_l1inv: d * r, None)
             print("[diag] l1-jacobi arm added", flush=True)
+        if os.environ.get("MRX_K1_MASSPREC", "") == "1":
+            # Tobias test #2: the (excellent) k=1 tensor MASS preconditioner
+            # as the Laplacian preconditioner. Same h^-2 kappa order as
+            # jacobi structurally; the bet is a better constant (exact
+            # handling of the spline Gram overlap vs diag(K)'s mimicry).
+            methods["mass-precond (M1hat^-1)"] = (
+                lambda r, d=dirichlet: apply_mass_matrix_preconditioner(
+                    seq, ops, r, 1, dirichlet=d), None)
+            print("[diag] mass-as-preconditioner arm added", flush=True)
         if os.environ.get("MRX_K1_PB", "") == "divdiv":
             # P = raw P_A + Pi21 B_div Pi21^T -- no L0, no projection.
             from k1_p12_divdiv import build_p12_divdiv
