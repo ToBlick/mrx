@@ -3743,6 +3743,20 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
             f"P.T P_A P + P_B [{pa_model}]": (
                 applies["projected_p_a_plus_p_b_with_state"], applies["p_a_state"]),
         }
+        if os.environ.get("MRX_K1_JAC", "") == "l1":
+            # l1-jacobi: row-norm scaling estimated matrix-free from
+            # random-sign probes of the upper operator (E|(As)_i| ~ row
+            # 2-norm; l1 >= l2 >= diag -- a strictly safer damping than
+            # the plain diagonal). SPD, zero setup beyond 8 matvecs.
+            _l1_keys = jax.random.split(jax.random.PRNGKey(4242), 8)
+            _acc = jnp.zeros((n_upper,))
+            for _k in _l1_keys:
+                _s = jnp.sign(jax.random.normal(_k, (n_upper,)))
+                _acc = _acc + applies["a_matvec"](_s) ** 2
+            _l1d = jnp.sqrt(_acc / len(_l1_keys))
+            _l1inv = jnp.where(_l1d > 0, 1.0 / _l1d, 0.0)
+            methods["l1-jacobi (rownorm)"] = (lambda r, d=_l1inv: d * r, None)
+            print("[diag] l1-jacobi arm added", flush=True)
         if os.environ.get("MRX_K1_PB", "") == "divdiv":
             # P = raw P_A + Pi21 B_div Pi21^T -- no L0, no projection.
             from k1_p12_divdiv import build_p12_divdiv
