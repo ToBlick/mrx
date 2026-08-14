@@ -244,3 +244,14 @@ jacobi decisively (96 its to 3.8e-3 vs 193 to 1e-10).
    suspect: conditioning of the square N-at-D-greville collocation
    pairing; check via SVD of the three E matrices before reviving). 4. MG-as-L0:
    iteration-validated (== dense within ~10%); wall needs jitting.
+
+## Relaxation-class ledger (2026-08-14, closing the standard-methods question)
+
+- **l1-jacobi (row-norm realization): REFUTED** — trails plain jacobi 10%
+  (toroid dbc 583 vs 522) to 30% (W7-X free 3267 vs 2508) everywhere;
+  minor robustness edge at the tolerance boundary only. Exact-Kronecker l1
+  not worth building against a 30% deficit. (True row-l1 IS exactly
+  computable here via Kronecker factorization of |1D| row sums, recorded
+  for reference.)
+- mass-as-Laplacian-preconditioner and MG(mass smoother) arms in flight —
+  results to be appended.
