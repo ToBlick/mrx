@@ -175,3 +175,10 @@ knobs: MRX_K1_L0INV=dense|ns2|mg{1,2}, MRX_K1_MG_M, MRX_K1_COUPLED_SIGMA.
   attributes or construct SplineBasis(n,p-1,type)).
 - Module: scripts/benchmark/k1_p12_divdiv.py; wire as --pb-divdiv beside
   the L0INV arms; B_div per-mode rank-1 ttᵀ capped pinv, BC-flipped.
+
+### FINAL four-geometry table (complete, job 16182715)
+its (dbc/free), coupled P_A: cylinder dense 80/83 mg2 86/95; toroid 87/88,
+89/94; rot-ell 90/91, 92/97; **W7-X dense 155/172, mg2 156/247** — the
+MG-powered L0 matches exact-L0 to ~1 it on W7-X dbc. Jacobi: 403-948 dbc /
+530-2504 free. Architecture validated end-to-end on all four geometries;
+mg2 wall = unjitted prototype glue only.
