@@ -3672,6 +3672,24 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
             f"P.T P_A P + P_B [{pa_model}]": (
                 applies["projected_p_a_plus_p_b_with_state"], applies["p_a_state"]),
         }
+        if os.environ.get("MRX_K1_PB", "") == "divdiv":
+            # P = raw P_A + Pi21 B_div Pi21^T -- no L0, no projection.
+            from k1_p12_divdiv import build_p12_divdiv
+            _pd_bulk = build_p12_divdiv(seq, ops, dirichlet)
+            _pd_pair = ops.k1_tensor_stiff_precond
+            _pd_payload = _pd_pair.dbc if dirichlet else _pd_pair.free
+            _pd_bidx = _pd_payload.surgery.bulk_indices
+
+            def _p_div_full(v, bidx=_pd_bidx, f=_pd_bulk):
+                out = jnp.zeros_like(v)
+                return out.at[bidx].set(f(v[bidx]))
+
+            def _pa_plus_divdiv(state, r, f=_p_div_full):
+                return applies["p_a_raw_with_state"](state, r) + f(r)
+
+            methods[f"P_A + P12divdivP12T [{pa_model}]"] = (
+                _pa_plus_divdiv, applies["p_a_state"])
+            print("[diag] MRX_K1_PB=divdiv: P12 div-div arm added", flush=True)
         # Symmetry probe: MINRES requires a SYMMETRIC (SPD) upper
         # preconditioner; a numerically nonsymmetric apply stalls at a
         # residual floor. Report <Pu,v> vs <u,Pv> on random vectors.
