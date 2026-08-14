@@ -182,3 +182,22 @@ its (dbc/free), coupled P_A: cylinder dense 80/83 mg2 86/95; toroid 87/88,
 MG-powered L0 matches exact-L0 to ~1 it on W7-X dbc. Jacobi: 403-948 dbc /
 530-2504 free. Architecture validated end-to-end on all four geometries;
 mg2 wall = unjitted prototype glue only.
+
+## P12 div-div four-geometry verdict (job 16184910) + k=3 surgery
+
+P = raw P_A + Pi21 B_div Pi21^T (no L0, no projection):
+- cylinder 272/278, toroid 361/363, rot-ell 329/331 its @1e-11 — beats
+  jacobi on BOTH BCs everywhere axisymmetric-class (wall too), trails the
+  L0-based reference ~1.8×. THE TRANSFER WORKS.
+- **W7-X: STALLS at 0.63/0.48 @8000** — the floor ≈ the curl fraction of a
+  random RHS ⇒ scale imbalance: the g/J transfer weights inflate the P12
+  term by orders on W7-X, the sum goes effectively gradient-only, curls
+  unpreconditioned. FIX (v2): Lanczos-normalize the two terms' preconditioned
+  λmax at setup (standard additive calibration, skipped in v1). Then the
+  greville-B_div arm (MRX_K1_BDIV=greville, wired) as quality upgrade.
+- k=3: transfer T = M^{-1}C (Galerkin, mass-precond legs); rank-deficient by
+  the POLAR-EXTRACTION mismatch (V0-extracted loses ~2 n_t n_z − 3 n_z axis
+  DOFs that V3 keeps) → 0.54 floor. AXIS-CORE SURGERY implemented
+  (MRX_K3_CORE=R: dense-probed leading-R-ring block, positive-part pinv
+  with 1/λmax floor, added to the transfer) — 4-geometry test in flight
+  (job 16185831).
