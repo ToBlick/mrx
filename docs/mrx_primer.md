@@ -344,7 +344,7 @@ The present production split is:
 |---|---|---|
 | Mass inverse `M_k^{-1}` | preconditioned CG | `auto` => tensor if assembled, else Jacobi; mass route is essentially settled |
 | Scalar Laplacian inverse `L_0^{-1}` and `(L_0 + eps M_0)^{-1}` | singular/shifted CG | scalar tensor complement when available, else Jacobi; chosen long-term route is still tensor, with more validation still needed |
-| Mixed Laplacian inverse for `k = 1, 2, 3` | saddle-point MINRES | current code path uses the saddle machinery with Schur-outer Jacobi as the practical reliability baseline; HX/AMS notes are archived in `docs/hiptmair_xu_preconditioner.md` |
+| Mixed Laplacian inverse for `k = 1, 2, 3` | saddle-point MINRES | current code path uses the saddle machinery with Schur-outer Jacobi as the practical reliability baseline; HX/AMS notes are archived in `docs/research/hiptmair_xu_preconditioner.md` |
 | Inverse `(M_k + eps L_k)^{-1}` | scalar CG for `k = 0`, saddle MINRES otherwise | simple diagonal block scalings |
 
 Two implementation rules matter throughout:
@@ -360,7 +360,7 @@ harmonic-safe cases under the present nullspace implementation.
 
 Recent HX/AMS experiments did not produce a robust improvement over the current
 Schur-outer Jacobi baseline. Treat those experiments as archived diagnostics;
-see `docs/hiptmair_xu_preconditioner.md`.
+see `docs/research/hiptmair_xu_preconditioner.md`.
 
 For the degree-by-degree preconditioner structure and current defaults, use the
 solver primer instead of this file:

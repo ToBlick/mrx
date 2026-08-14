@@ -73,7 +73,7 @@ to committed scripts / gitignored `outputs/` on the cluster.
 
 ## Active threads (2026-07-07)
 
-- k=0 Laplacian geometric MG: `docs/laplacian_mg_k0_plan.md` (phase-0 done,
+- k=0 Laplacian geometric MG: `docs/research/laplacian_mg_k0_plan.md` (phase-0 done,
   transfers near the axis are the blocker).
 - k=1/2 mass coupling: `docs/mass_coupling_preconditioner_handoff.md`
   (SGS dead; support-integrated diagonal lump next).

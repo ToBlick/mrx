@@ -1,3 +1,5 @@
+> **Reference doc.** What actually runs in production: `docs/PRODUCTION.md`.
+
 # Tensor Preconditioner Primer
 
 This note explains the active tensor-preconditioning idea in `mrx`.

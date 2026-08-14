@@ -1,3 +1,5 @@
+> **STATUS: RESEARCH / EXPERIMENTAL — superseded for production by `docs/PRODUCTION.md`.**
+
 # Greville → production refactor — handoff
 
 **Goal:** make Greville collocation the production preconditioner atom everywhere and

@@ -7,7 +7,7 @@ axisymmetric toroid, rotating ellipse) and reports:
      Hodge preconditioner, for both BCs (dbc = nonsingular, free = constant
      nullspace deflated). The k=0 Laplacian atom is CONSTRAINED to rank-1 FD in
      production (the rank-2 radial_dense path is not free-BC safe in a deep CG
-     solve -- see docs/hiptmair_xu_preconditioner.md).
+     solve -- see docs/research/hiptmair_xu_preconditioner.md).
 
   2. Mass-matrix M_k inversion CG -- jacobi vs the tensor mass preconditioner at
      rank 1 and rank 2, for each requested k. The mass is SPD (no nullspace), so

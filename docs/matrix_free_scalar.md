@@ -248,7 +248,7 @@ must not divide by it — see §6.
 
 Applying `M0` matrix-free is half the story; a Krylov solve needs `M0⁻¹` applied
 cheaply, and that inverse must also follow the geometry without assembly. The
-production atom is **Greville collocation** (`docs/preconditioner_plan.md`).
+production atom is **Greville collocation** (`docs/research/preconditioner_plan.md`).
 
 The idea: factor the geometry out of the spline connectivity. Collocate the
 geometric weight at the **Greville abscissae** (the natural spline nodes) to get a
@@ -302,7 +302,7 @@ Why this is the right tool for *changing* geometry:
   matrices.
 - **Exact for the scalar mass.** Because k=0 has a *single* channel, the weight
   is exactly of the form `c·D(ξ)` and the Greville sandwich conditions `M0` to
-  `κ ≈ 1.3` on all geometries including W7-X (`docs/preconditioner_plan.md` §C/§D).
+  `κ ≈ 1.3` on all geometries including W7-X (`docs/research/preconditioner_plan.md` §C/§D).
   (This is special to the scalar case — the vector Laplacian has three channels
   with non-constant ratios, which is the open W7-X difficulty.)
 

@@ -8,7 +8,7 @@
 # radial knots) and the fd-family xi_1 profile cutoff are script defaults.
 # The smallest ns per geometry runs --two-level-check (SPD gates).
 # See scripts/debug/laplacian_mg_k0.py and
-# docs/dev/handoff_2026-08-13_gpu_cluster.md (the cluster experiment matrix).
+# docs/research/handoff_2026-08-13_gpu_cluster.md (the cluster experiment matrix).
 # One sbatch per geometry on gpu-h100s. CSVs -> outputs/laplacian_mg_k0/<stamp>/.
 #
 # EXTRA_ARGS appends to every python invocation -- how the new experiments run:

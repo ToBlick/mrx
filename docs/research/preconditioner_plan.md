@@ -1,3 +1,5 @@
+> **STATUS: RESEARCH / EXPERIMENTAL — superseded for production by `docs/PRODUCTION.md`.**
+
 # Matrix-Free Preconditioning Strategy for Tensor-Spline Mass Matrices
 ### Algorithmic Blueprint & Implementation Plan
 

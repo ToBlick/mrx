@@ -1463,7 +1463,7 @@ def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool,
     Two atoms share the apply D^{-1/2} fd_apply(alpha, lam; D^{-1/2} .):
 
     - "fdbund" (default, adopted 2026-08-13 -- see
-      docs/dev/handoff_2026-08-13_gpu_cluster.md): per-axis 1D stiffnesses
+      docs/research/handoff_2026-08-13_gpu_cluster.md): per-axis 1D stiffnesses
       WEIGHTED by the bundled profiles <g^{aa} J> of the other two axes,
       D = 1, alpha = 1. Keeping the g-J correlation inside the per-axis
       averages beat the collocated variant on every geometry tested
@@ -1536,7 +1536,7 @@ def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool,
     a_tt = jac * minv[:, 1, 1].reshape(nr_bulk, nt, nz)
     a_zz = jac * minv[:, 2, 2].reshape(nr_bulk, nt, nz)
     # D = geometric mean across the three channel weights (the minimax-balanced
-    # common spatial weight). See docs/preconditioner_plan.md D/E.
+    # common spatial weight). See docs/research/preconditioner_plan.md D/E.
     D = jnp.cbrt(a_rr * a_tt * a_zz)
     valid = jnp.isfinite(D) & (D > 0)
     scale = jnp.median(D[valid]) if int(valid.sum()) > 0 else jnp.asarray(1.0)

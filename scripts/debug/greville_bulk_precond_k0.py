@@ -1,6 +1,6 @@
 """Greville-collocation bulk mass preconditioner -- k=0 proof of concept.
 
-Tests the route in docs/preconditioner_plan.md against the CP/NTF tensor route
+Tests the route in docs/research/preconditioner_plan.md against the CP/NTF tensor route
 on the *same* bulk block. The surgery-Schur split (handled by the production
 machinery) isolates a clean tensor-product bulk; we only precondition that.
 

@@ -1,3 +1,5 @@
+> **STATUS: RESEARCH / EXPERIMENTAL — superseded for production by `docs/PRODUCTION.md`.**
+
 # Geometric Multigrid Preconditioner for the k=0 Laplacian (prototype)
 
 **Status (2026-08-13): LOCAL PHASE DONE — moving to GPU/cluster.** Entry point

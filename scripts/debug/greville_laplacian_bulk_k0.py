@@ -8,7 +8,7 @@ separates into THREE Kronecker terms with DIFFERENT metric channels:
 where alpha_aa = J g^{aa} (non-separable). The production route CP-fits each
 channel and Lynch-diagonalises -- but the three channels do NOT share a per-axis
 eigenbasis, so the FD is inexact (rank-1 "atom" ships; rank>1 blows up -- the
-"basement" / free-BC stall, see docs/hiptmair_xu_preconditioner.md).
+"basement" / free-BC stall, see docs/research/hiptmair_xu_preconditioner.md).
 
 Greville route: move ALL geometry into a single pointwise collocation diagonal D
 (at the 0-form Greville abscissae) and use the UNWEIGHTED atoms, which DO share an

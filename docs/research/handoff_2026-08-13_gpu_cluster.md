@@ -1,3 +1,5 @@
+> **STATUS: RESEARCH / EXPERIMENTAL — superseded for production by `docs/PRODUCTION.md`.**
+
 # Handoff — 2026-08-13: k=0 MG preconditioner moves to GPU / cluster
 
 Single entry point for the k=0 Laplacian multigrid line. Supersedes and

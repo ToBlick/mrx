@@ -146,7 +146,7 @@ is empirically free for analysis.
 
 ## 6. Why this matters for the MG / preconditioner line
 
-The measured fat-core results (`docs/laplacian_mg_k0_plan.md`) showed that
+The measured fat-core results (`docs/research/laplacian_mg_k0_plan.md`) showed that
 exactly solving the innermost bulk ring absorbs the dominant axis share of
 the smoother-atom spread κ — but fat-core's Schur core grows as
 3nz + nt·nz and its setup W-probe with it. `polar_order=2` moves the same

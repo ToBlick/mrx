@@ -1,3 +1,5 @@
+> **Reference doc.** What actually runs in production: `docs/PRODUCTION.md`.
+
 # Preconditioner Primer
 
 This note describes the **current production** preconditioning strategy in

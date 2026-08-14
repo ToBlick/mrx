@@ -1,3 +1,5 @@
+> **Reference doc.** What actually runs in production: `docs/PRODUCTION.md`.
+
 # Mass Preconditioners
 
 This note is the paper-ready writeup of the mass-block preconditioning

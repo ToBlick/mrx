@@ -1,3 +1,5 @@
+> **STATUS: RESEARCH / EXPERIMENTAL — superseded for production by `docs/PRODUCTION.md`.**
+
 # Handoff — 2026-08-13 end of day: k=0 shipped, k=1 wall broken, coupled atom wins toroid
 
 One-day arc from "run the cluster experiment matrix" to a new k=1 atom

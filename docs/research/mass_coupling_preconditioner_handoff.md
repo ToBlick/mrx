@@ -1,3 +1,5 @@
+> **STATUS: RESEARCH / EXPERIMENTAL — superseded for production by `docs/PRODUCTION.md`.**
+
 # Vector-mass (k=1/2) preconditioner: off-diagonal coupling & lump fidelity
 
 **Resume file: `docs/mass_coupling_preconditioner_handoff.md`.** Settled findings and

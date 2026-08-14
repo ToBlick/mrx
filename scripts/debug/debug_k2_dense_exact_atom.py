@@ -1,7 +1,7 @@
 """Dense exact-atom diagnostic for the k=2 (div-div) Hodge preconditioner.
 
 The k=2 preconditioner ``projected P_A + P_B`` fails while the k=1 analogue
-works. The leading hypothesis (see docs/hiptmair_xu_preconditioner.md and the
+works. The leading hypothesis (see docs/research/hiptmair_xu_preconditioner.md and the
 k2-laplacian-preconditioner memory) is that the *inner atom* is the wall:
 
 * The curl-subspace correction and the curl-complement projector ``Pi_2`` both

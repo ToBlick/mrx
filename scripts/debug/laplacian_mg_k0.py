@@ -1,6 +1,6 @@
 """Geometric multigrid V-cycle preconditioner for the k=0 Laplacian -- PROTOTYPE.
 
-Plan: docs/laplacian_mg_k0_plan.md. MG acts on the BULK block of the
+Plan: docs/research/laplacian_mg_k0_plan.md. MG acts on the BULK block of the
 extracted k=0 stiffness (polar core handled by the same Schur envelope as the
 production tensor-hodge preconditioner). Levels are REDISCRETIZED coarse
 DeRhamSequences reusing the fine geometry map (no W7-X re-fit); transfers are

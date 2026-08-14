@@ -1,3 +1,5 @@
+> **STATUS: RESEARCH / EXPERIMENTAL — superseded for production by `docs/PRODUCTION.md`.**
+
 # Higher-form Hodge-Laplacian preconditioners (HX/AMS-style)
 
 Reference for preconditioning the Hodge Laplacians `L_k` of the FEEC B-spline de
