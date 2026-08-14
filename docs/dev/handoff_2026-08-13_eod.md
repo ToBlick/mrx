@@ -253,5 +253,15 @@ jacobi decisively (96 its to 3.8e-3 vs 193 to 1e-10).
   not worth building against a 30% deficit. (True row-l1 IS exactly
   computable here via Kronecker factorization of |1D| row sums, recorded
   for reference.)
-- mass-as-Laplacian-preconditioner and MG(mass smoother) arms in flight —
-  results to be appended.
+- **mass-as-Laplacian-preconditioner: REFUTED** — toroid dbc 3767 it vs
+  jacobi 522 (7×); metric-blindness on the stiffness side, as theorized.
+- **MG(mass smoother): REFUTED by the window measurement alone** — the
+  auto-m rule printed smoother window κ ≈ 9.7e5 (W7-X) / 5.9e5 (toroid),
+  demanding m ≈ 1390/1090 Chebyshev steps per pass (vs the fdbund atom's
+  κ 3–7, m 2–4): the ENTIRE metric contrast lands in the mass smoother's
+  window. Jobs cancelled after the κ print; the number is the finding.
+  (Mass smoothing's spectral-element niche = p-robustness with smooth
+  coefficients — the polar metric is the opposite regime.)
+⇒ Relaxation/smoother ledger CLOSED: plain jacobi is measured-optimal in
+its class at k≥1; the k=0 tensor-hodge and (shelved) atom family remain
+the only things that beat it, and they do so by absorbing the metric.
