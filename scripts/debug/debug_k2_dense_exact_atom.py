@@ -57,6 +57,8 @@ from mrx.operators import (
     apply_incidence_matrix,
     apply_mass_matrix,
     apply_stiffness,
+)
+from mrx.experimental.tensor_stiffness import (  # noqa: E402
     apply_stiffness_tensor_preconditioner,
 )
 # Reuse the proven build/assemble/k2 plumbing so the diagnostic exercises the

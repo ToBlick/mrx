@@ -267,46 +267,25 @@ def _nullspace_shifted_preconditioner(k: int):
     )
 
 
-def _nullspace_contains_chebyshev(preconditioner) -> bool:
-    if isinstance(preconditioner, MassPreconditionerSpec):
-        return preconditioner.kind == 'chebyshev' or (
-            preconditioner.smoother is not None
-            and _nullspace_contains_chebyshev(preconditioner.smoother)
-        )
-    if isinstance(preconditioner, SaddlePointPreconditionerSpec):
-        return (
-            _nullspace_contains_chebyshev(preconditioner.mass)
-            or _nullspace_contains_chebyshev(preconditioner.schur)
-        )
-    if isinstance(preconditioner, SchurPreconditionerSpec):
-        return (
-            _nullspace_contains_chebyshev(preconditioner.inner)
-            or _nullspace_contains_chebyshev(preconditioner.outer)
-        )
-    return False
-
-
 def _validate_nullspace_shifted_preconditioner(k: int, preconditioner):
-    if _nullspace_contains_chebyshev(preconditioner):
-        raise ValueError(
-            'Nullspace inverse iteration must not use Chebyshev preconditioning; '
-            'deflation is needed before Lanczos-style spectral bounds are reliable.'
-        )
+    # chebyshev/richardson kinds were removed from production 2026-08-14
+    # (see mrx/experimental/chebyshev.py), so the old contains-chebyshev
+    # walker is gone; unknown kinds are rejected below.
     if k == 0:
         if not isinstance(preconditioner, MassPreconditionerSpec):
             raise TypeError('k=0 nullspace inverse iteration expects a MassPreconditionerSpec')
-        if preconditioner.kind not in ('tensor', 'jacobi', 'richardson'):
+        if preconditioner.kind not in ('tensor', 'jacobi'):
             raise ValueError(
                 f'k=0 nullspace inverse iteration got unsupported preconditioner '
-                f'kind={preconditioner.kind!r}; expected tensor, jacobi, or richardson'
+                f'kind={preconditioner.kind!r}; expected tensor or jacobi'
             )
         return preconditioner
     if not isinstance(preconditioner, SaddlePointPreconditionerSpec):
         raise TypeError('k>=1 nullspace inverse iteration expects a SaddlePointPreconditionerSpec')
-    if preconditioner.schur.outer.kind not in ('jacobi', 'richardson', 'exact_jacobi'):
+    if preconditioner.schur.outer.kind not in ('jacobi', 'exact_jacobi'):
         raise ValueError(
             f'k>=1 nullspace inverse iteration got unsupported schur.outer '
-            f'kind={preconditioner.schur.outer.kind!r}; expected jacobi, richardson, or exact_jacobi'
+            f'kind={preconditioner.schur.outer.kind!r}; expected jacobi or exact_jacobi'
         )
     if preconditioner.schur.inner.kind != 'tensor':
         raise ValueError(

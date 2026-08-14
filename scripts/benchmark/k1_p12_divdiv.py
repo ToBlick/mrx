@@ -32,9 +32,11 @@ from mrx.operators import (
     _assemble_weighted_1d_mass,
     _assemble_weighted_1d_stiffness,
     _dense_incidence_1d,
+    _symmetrize,
+)
+from mrx.experimental.tensor_stiffness import (
     _bundled_rank1_mass_factors,
     _k2_divdiv_weight_tensor,
-    _symmetrize,
 )
 from mrx.preconditioners import (
     _arr_shape_k1,

@@ -19,7 +19,7 @@ Both functions are also available as ``seq.load(...)`` and
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Literal
 
 import jax
 import jax.numpy as jnp

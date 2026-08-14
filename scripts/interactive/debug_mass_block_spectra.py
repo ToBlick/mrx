@@ -19,13 +19,15 @@ from mrx.preconditioners import (
     _apply_tensor_exact_block,
     _cp_als_3tensor,
     _core_size,
-    _estimate_chebyshev_lanczos_bounds_apply,
     _k1_diagonal_metric_tensors,
     _k2_diagonal_metric_tensors,
     _restrict_radial_mass,
     _select_mass_surgery_factors,
     _select_mass_tensor_factors,
     get_mass_jacobi_diaginv,
+)
+from mrx.experimental.chebyshev import (
+    _estimate_chebyshev_lanczos_bounds_apply,
 )
 
 jax.config.update("jax_enable_x64", True)

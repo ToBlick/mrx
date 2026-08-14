@@ -41,9 +41,15 @@ for _p in (ROOT, SCRIPTS, SCRIPTS / "benchmark", SCRIPTS / "debug"):
 jax.config.update("jax_enable_x64", True)
 
 from mrx.operators import (  # noqa: E402
-    _nullspace_vectors, apply_incidence_matrix, apply_mass_matrix, apply_stiffness,
-    apply_laplacian_preconditioner, apply_stiffness_tensor_preconditioner,
+    _nullspace_vectors,
+    apply_incidence_matrix,
+    apply_laplacian_preconditioner,
+    apply_mass_matrix,
     apply_mass_matrix_preconditioner,
+    apply_stiffness,
+)
+from mrx.experimental.tensor_stiffness import (  # noqa: E402
+    apply_stiffness_tensor_preconditioner,
 )
 import mrx.nullspace as _ns  # noqa: E402
 from mrx.preconditioners import (  # noqa: E402

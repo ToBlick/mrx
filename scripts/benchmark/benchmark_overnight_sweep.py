@@ -45,6 +45,9 @@ from mrx.preconditioners import (  # noqa: E402
     MassPreconditionerSpec, SaddlePointPreconditionerSpec,
     SchurPreconditionerSpec, default_mass_preconditioner,
 )
+from mrx.experimental.tensor_stiffness import (  # noqa: E402
+    assemble_tensor_stiffness_preconditioner,
+)
 
 # --- Nullspace shifted preconditioner -> JACOBI (install BEFORE build_sequence) ---
 _ns_orig = _ns._nullspace_shifted_preconditioner
@@ -71,16 +74,23 @@ from benchmark_graddiv_k1_preconditioner import (  # noqa: E402
     _lanczos_extremal_eigs_precond,
 )
 from mrx.operators import (  # noqa: E402
-    _diagonal_from_matvec, _invert_diagonal, _nullspace_vectors,
+    _diagonal_from_matvec,
     _get_schur_diaginv,
-    apply_mass_matrix, apply_mass_matrix_preconditioner, apply_stiffness,
-    apply_laplacian_preconditioner, apply_laplacian_approx,
+    _invert_diagonal,
+    _nullspace_vectors,
     apply_derivative_matrix,
-    assemble_mass_jacobi_preconditioner, assemble_incidence_operators,
-    assemble_laplacian_operators, assemble_tensor_mass_preconditioner,
+    apply_laplacian_approx,
+    apply_laplacian_preconditioner,
+    apply_mass_matrix,
+    apply_mass_matrix_preconditioner,
+    apply_stiffness,
+    assemble_incidence_operators,
+    assemble_laplacian_operators,
+    assemble_mass_jacobi_preconditioner,
+    assemble_projection_operators,
+    assemble_schur_jacobi_preconditioner,
     assemble_tensor_laplacian_preconditioner,
-    assemble_tensor_stiffness_preconditioner,
-    assemble_schur_jacobi_preconditioner, assemble_projection_operators,
+    assemble_tensor_mass_preconditioner,
 )
 from mrx.solvers import solve_singular_cg  # noqa: E402
 

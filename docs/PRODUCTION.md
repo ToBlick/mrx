@@ -14,19 +14,31 @@ research alternatives live in `docs/research/` with reopen conditions).
 Explicitly **not** in production: multigrid (any k), Chebyshev acceleration
 (anywhere), CP rank>1 stiffness fits, HX / auxiliary-space transfers.
 
+Research machinery lives in **`mrx/experimental/`** (not imported by mrx
+core): `tensor_stiffness.py` (the k>=1 block_fd P_A atoms) and
+`chebyshev.py` (chebyshev/richardson/lanczos). Production preconditioner
+kinds are `none`/`jacobi`/`tensor` only (`exact_jacobi` additionally as a
+debug schur outer). Unmaintained demo scripts: `scripts/deprecated/`.
+
 ## Knobs
 
-- `MRX_K0_ATOM`: `fd` (default, == `fdbund`, the production bundled atom) |
-  `fdlegacy` (pre-2026-08 collocated atom, reproduction only).
 - Mass CP fits: non-negative (NTF) default; `MRX_CP_GREEDY` reverts.
 - Solvers: k=0 = deflated CG (condensed); k>=1 = saddle MINRES with
-  harmonic deflation. No Krylov-in-Krylov anywhere.
+  harmonic deflation. No RUNTIME Krylov-in-Krylov anywhere (the k=0
+  core-Schur rebuild runs 3*n_zeta assembly-time CG solves; the result
+  is a fixed dense matrix).
+- The pre-2026-08 collocated k=0 atom (`fdlegacy`) and the `MRX_K0_ATOM`
+  knob were DELETED 2026-08-14: the bundled "fd" atom is the only k=0
+  atom, and the core-Schur rebuild now uses EXACT bulk solves (the
+  collocated atom's last role was the one-sided Schur probe).
 
 ## Verified numbers (2026-08, CG/MINRES iterations to 1e-10)
 
 - k=0 "fd" vs old atom: W7-X (12,24,24) 64->54 dbc / 100->79 free; toroid
-  (16,32,16) 32->24 / 45->30 (revert `fdlegacy` reproduces old numbers
-  bit-exactly). Vs Jacobi: ~7-10x wall.
+  (16,32,16) 32->24 / 45->30. Vs Jacobi: ~7-10x wall.
+- k=0 exact core-Schur rebuild vs the retired collocated probe
+  (2026-08-14): toroid (8,16,8) 22/25 vs 22/31; W7-X (12,24,24) 53 dbc /
+  80 free vs 56/87, at equal preconditioner assembly cost (~37s GPU).
 - k>=1 Jacobi is measured-optimal in the relaxation class (l1-Jacobi
   10-30% worse; mass-as-preconditioner 7-11x worse; mass/point smoothed MG
   refuted; ledger in `docs/research/handoff_2026-08-13_eod.md`).

@@ -15,12 +15,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))
 from benchmark_graddiv_k1_preconditioner import build_sequence  # noqa: E402
 from mrx.operators import (  # noqa: E402
-    apply_hodge_laplacian, apply_inverse_hodge_laplacian,
-    apply_mass_matrix, apply_inverse_mass_matrix,
+    apply_hodge_laplacian,
+    apply_inverse_hodge_laplacian,
+    apply_inverse_mass_matrix,
+    apply_mass_matrix,
+    assemble_incidence_operators,
+    assemble_laplacian_operators,
+    assemble_mass_surgery_preconditioner,
+    assemble_schur_jacobi_preconditioner,
+    assemble_tensor_laplacian_preconditioner,
+    assemble_tensor_mass_preconditioner,
+)
+from mrx.experimental.tensor_stiffness import (  # noqa: E402
     apply_stiffness_tensor_preconditioner,
-    assemble_incidence_operators, assemble_laplacian_operators,
-    assemble_mass_surgery_preconditioner, assemble_tensor_mass_preconditioner,
-    assemble_schur_jacobi_preconditioner, assemble_tensor_laplacian_preconditioner,
     assemble_tensor_stiffness_preconditioner,
 )
 

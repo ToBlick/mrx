@@ -77,9 +77,9 @@ from mrx.operators import (  # noqa: E402
     _reshape_quadrature_matrix_field,
     _symmetrize,
 )
-from mrx.preconditioners import (  # noqa: E402
+from mrx.preconditioners import _symmetric_pseudoinverse  # noqa: E402
+from mrx.experimental.chebyshev import (  # noqa: E402
     _estimate_chebyshev_lanczos_bounds_apply,
-    _symmetric_pseudoinverse,
 )
 from mrx.solvers import solve_singular_cg  # noqa: E402
 

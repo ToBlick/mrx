@@ -49,11 +49,7 @@ from mrx.operators import (SequenceOperators,
                            assemble_hodge_operators,
                            assemble_incidence_operators,
                            assemble_mass_operators,
-                           assemble_projection_operators,
-                           update_diffusion_runtime_tuning as update_diffusion_runtime_tuning_ops,
-                           update_mass_runtime_tuning as update_mass_runtime_tuning_ops,
-                           update_schur_runtime_tuning as update_schur_runtime_tuning_ops,
-                           update_scalar_laplacian_runtime_tuning as update_scalar_laplacian_runtime_tuning_ops)
+                           assemble_projection_operators)
 from mrx.projectors import load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
@@ -881,88 +877,6 @@ class DeRhamSequence():
         """Backward-compatible alias for assemble_laplacian."""
         return self.assemble_laplacian(k)
 
-    def update_mass_runtime_tuning(self, k, dirichlet=True, operators=None,
-                                   preconditioner='auto'):
-        """Estimate and store runtime tuning for a polynomial mass preconditioner."""
-        using_external_operators = operators is not None
-        operators = self._require_operators(operators)
-        tuned = update_mass_runtime_tuning_ops(
-            self,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            preconditioner=preconditioner,
-        )
-        if using_external_operators:
-            return tuned
-        return self.set_operators(tuned)
-
-    def update_scalar_laplacian_runtime_tuning(self, k, eps=0.0,
-                                               dirichlet=True, operators=None,
-                                               preconditioner='auto'):
-        """Estimate and store runtime tuning for a scalar Laplacian preconditioner."""
-        using_external_operators = operators is not None
-        operators = self._require_operators(operators)
-        tuned = update_scalar_laplacian_runtime_tuning_ops(
-            self,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            eps=eps,
-            preconditioner=preconditioner,
-        )
-        if using_external_operators:
-            return tuned
-        return self.set_operators(tuned)
-
-    def update_scalar_hodge_runtime_tuning(self, k, eps=0.0,
-                                           dirichlet=True, operators=None,
-                                           preconditioner='auto'):
-        """Backward-compatible alias for update_scalar_laplacian_runtime_tuning."""
-        return self.update_scalar_laplacian_runtime_tuning(
-            k,
-            eps=eps,
-            dirichlet=dirichlet,
-            operators=operators,
-            preconditioner=preconditioner,
-        )
-
-    def update_schur_runtime_tuning(self, k, eps=0.0,
-                                    dirichlet=True, operators=None,
-                                    preconditioner='auto'):
-        """Estimate and store runtime tuning for a polynomial Schur-outer preconditioner."""
-        using_external_operators = operators is not None
-        operators = self._require_operators(operators)
-        tuned = update_schur_runtime_tuning_ops(
-            self,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            eps=eps,
-            preconditioner=preconditioner,
-        )
-        if using_external_operators:
-            return tuned
-        return self.set_operators(tuned)
-
-    def update_diffusion_runtime_tuning(self, k, eps=0.0,
-                                        dirichlet=True, operators=None,
-                                        preconditioner='auto'):
-        """Estimate and store runtime tuning for a polynomial diffusion preconditioner."""
-        using_external_operators = operators is not None
-        operators = self._require_operators(operators)
-        tuned = update_diffusion_runtime_tuning_ops(
-            self,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            eps=eps,
-            preconditioner=preconditioner,
-        )
-        if using_external_operators:
-            return tuned
-        return self.set_operators(tuned)
-
     def assemble_leray_projection(self):
         """Assemble the auxiliary operators required by :meth:`apply_leray_projection`."""
         assemble_leray_projection(self)
@@ -1318,7 +1232,7 @@ class DeRhamSequence():
 
         The system is nonsingular (no nullspace) since M_k + eps*L_k is SPD.
         Out-of-the-box diffusion preconditioners currently use the same mass-side
-        defaults as the other inverse paths: Jacobi, tensor, and Chebyshev.
+        defaults as the other inverse paths: Jacobi and tensor.
         """
         operators = self._require_operators(operators)
         return apply_inverse_mass_plus_eps_laplace_matrix_ops(
@@ -1336,8 +1250,8 @@ class DeRhamSequence():
 
         ``kind`` selects between ``'none'`` (identity), ``'jacobi'`` (per-DoF
         diagonal) and ``'tensor'`` (tensorized Hodge/Laplacian preconditioner;
-        available for ``k = 0`` when the tensor Hodge data are assembled, and
-        for ``k = 3`` via the tensor round-trip path).
+        k = 0 only — the "k=3 round-trip" this docstring once promised never
+        existed in the ops layer).
         ``'auto'`` (the default) uses ``'tensor'`` when available and falls
         back to ``'jacobi'`` otherwise.
         """
@@ -1619,31 +1533,29 @@ class DeRhamSequence():
             The pressure form DoFs
 
         """
+        # SIGN CONVENTION (fixed 2026-08-14): both branches remove the
+        # gradient part as sigma = -grad(q) with q the solved multiplier, so
+        # q = -(physical pressure) + gauge. The RETURNED p is negated to be
+        # the physical pressure multiplier (v_out = v - grad p; at MHD
+        # equilibrium J x B = grad p this recovers +p, verified against the
+        # analytic z-pinch in test/test_relaxation.py). Warm starts arrive in
+        # the returned (physical) convention and are negated back on entry.
+        # The gauge of p is solver-defined (a constant offset).
         if k == 2:
             p_guess = jnp.zeros(self.n3_dbc) if p_guess is None else p_guess
             # Assumes dirichlet == True on all spaces.
             div_v = self.apply_derivative_matrix(
                 v, 2, dirichlet_in=True, dirichlet_out=True)
-            p = self.apply_inverse_hodge_laplacian(
-                div_v, 3, dirichlet=True, guess=p_guess)
-            σ = -self.apply_weak_grad(p, True, True)
-            return v - σ, p
+            q = self.apply_inverse_hodge_laplacian(
+                div_v, 3, dirichlet=True, guess=-p_guess)
+            σ = -self.apply_weak_grad(q, True, True)
+            return v - σ, -q
         elif k == 1:
             # Assumes dirichlet == False on all spaces.
             p_guess = jnp.zeros(self.n0) if p_guess is None else p_guess
             div_v = -self.apply_derivative_matrix(
                 v, 0, dirichlet_in=False, dirichlet_out=False, transpose=True)
-            p = self.apply_inverse_hodge_laplacian(
-                div_v, 0, dirichlet=False, guess=p_guess)
-            σ = -self.apply_strong_grad(p, False, False)
-            return v - σ, p
-        elif k == 1:
-            # Assumes dirichlet == False on all spaces.
-            p_guess = jnp.zeros(self.n0) if p_guess is None else p_guess
-            div_v = -self.apply_derivative_matrix(
-                v, 0, dirichlet_in=False, dirichlet_out=False, transpose=True)
-            p = self.apply_inverse_hodge_laplacian(
-                div_v, 0, dirichlet=False, guess=p_guess)
-            σ = -self.apply_strong_grad(p, False, False)
-            return v - σ, p
-            return v - σ, p
+            q = self.apply_inverse_hodge_laplacian(
+                div_v, 0, dirichlet=False, guess=-p_guess)
+            σ = -self.apply_strong_grad(q, False, False)
+            return v - σ, -q

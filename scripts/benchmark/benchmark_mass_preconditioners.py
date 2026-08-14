@@ -13,8 +13,8 @@ Three preconditioners per ``k``:
                   (``apply_mass_matrix_preconditioner(kind='jacobi')``).
 - ``chebyshev`` : matrix-free Chebyshev polynomial of degree ``--cheb-steps``
                   in the mass operator with Jacobi as inner smoother. Spectral
-                  bounds are estimated once at build time via
-                  ``update_mass_runtime_tuning``.
+                  bounds are estimated once at build time via a Lanczos sweep
+                  (mrx.experimental.chebyshev -- not a production path).
 
 Run with ``--help`` for knobs. Defaults are sized to match
 ``benchmark_richardson_vs_modal.py``.
@@ -38,7 +38,7 @@ from mrx.operators import (
     assemble_mass_operators,
     assemble_tensor_mass_preconditioner,
 )
-from mrx.operators import (  # noqa: E402
+from mrx.experimental.chebyshev import (  # noqa: E402
     _build_chebyshev_apply_preconditioner,
     _estimate_chebyshev_lanczos_bounds_apply,
 )
@@ -152,15 +152,8 @@ def benchmark_cell(
         )
         suffix = "_dbc" if dirichlet else ""
         dof = int(getattr(seq, f"n{k}{suffix}"))
-        spec = MassPreconditionerSpec(
-            kind="chebyshev",
-            steps=args.cheb_steps,
-            power_iterations=8,
-            min_eig_fraction=1e-3,
-            smoother=MassPreconditionerSpec(kind="jacobi"),
-        )
         min_eig, max_eig = _estimate_chebyshev_lanczos_bounds_apply(
-            operator_apply, jacobi_apply, dof, spec=spec, seed=args.seed,
+            operator_apply, jacobi_apply, dof, seed=args.seed,
         )
         precond_apply = _build_chebyshev_apply_preconditioner(
             operator_apply, jacobi_apply,

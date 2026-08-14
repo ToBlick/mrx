@@ -47,11 +47,13 @@ from benchmark_graddiv_k1_preconditioner import (  # noqa: E402
 )
 from mrx.operators import (  # noqa: E402
     _nullspace_vectors,
-    apply_stiffness,
-    apply_mass_matrix,
-    apply_incidence_matrix,
     apply_hodge_laplacian_approx,
+    apply_incidence_matrix,
     apply_laplacian_preconditioner,
+    apply_mass_matrix,
+    apply_stiffness,
+)
+from mrx.experimental.tensor_stiffness import (  # noqa: E402
     apply_stiffness_tensor_preconditioner,
     assemble_tensor_stiffness_preconditioner,
 )

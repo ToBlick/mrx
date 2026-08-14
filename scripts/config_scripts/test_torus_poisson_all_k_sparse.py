@@ -534,12 +534,7 @@ def compute_all_k(n: int, p: int, epsilon: float,
         mass=MassPreconditionerSpec(kind='tensor', surgery_schur=True),
         schur=SchurPreconditionerSpec(
             inner=MassPreconditionerSpec(kind='tensor'),
-            outer=MassPreconditionerSpec(
-                kind='richardson',
-                steps=4,
-                power_iterations=30,
-                damping_safety=0.8,
-            ),
+            outer=MassPreconditionerSpec(kind='jacobi'),
         ),
         coupled=False,
     )
@@ -575,7 +570,7 @@ def compute_all_k(n: int, p: int, epsilon: float,
     ops = assemble_tensor_mass_preconditioner(seq, ops, ks=(0, 1, 2, 3), rank=1, cp_kwargs=cp_kwargs)
     _log("  Assembling tensor Hodge-Laplacian preconditioner (k=0)...")
     ops = assemble_tensor_laplacian_preconditioner(seq, ops, ks=(0,), rank=1, cp_kwargs=cp_kwargs)
-    _log("  Skipping Schur-Jacobi diagonal probing (using schur.outer=richardson)...")
+    _log("  Using schur.outer=jacobi (richardson removed 2026-08-14)...")
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)
     timings["assembly"] = time.perf_counter() - t0

@@ -35,8 +35,10 @@ from benchmark_graddiv_k1_preconditioner import build_sequence  # noqa: E402
 from mrx.operators import (  # noqa: E402
     apply_mass_matrix,
     apply_stiffness,
-    apply_stiffness_tensor_preconditioner,
     assemble_incidence_operators,
+)
+from mrx.experimental.tensor_stiffness import (  # noqa: E402
+    apply_stiffness_tensor_preconditioner,
     assemble_tensor_stiffness_preconditioner,
 )
 from mrx.solvers import preconditioned_cg  # noqa: E402
