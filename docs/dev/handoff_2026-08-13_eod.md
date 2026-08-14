@@ -253,8 +253,12 @@ jacobi decisively (96 its to 3.8e-3 vs 193 to 1e-10).
   not worth building against a 30% deficit. (True row-l1 IS exactly
   computable here via Kronecker factorization of |1D| row sums, recorded
   for reference.)
-- **mass-as-Laplacian-preconditioner: REFUTED** — toroid dbc 3767 it vs
-  jacobi 522 (7×); metric-blindness on the stiffness side, as theorized.
+- **mass-as-Laplacian-preconditioner: REFUTED, complete table** — vs
+  jacobi: toroid 3767/522 dbc, 8000-cap/744 free; W7-X 8000-cap/948 dbc
+  (see massprec.log for the free tail). Mechanism: κ(M̂⁻¹K) carries the
+  FULL metric contrast that jacobi's diagonal divides out pointwise;
+  iteration ratio ≈ √contrast (≈7 on toroid, on the nose). Lives only in
+  the SHIFTED-solve regime (M/Δt + L) — the standing open question.
 - **MG(mass smoother): REFUTED by the window measurement alone** — the
   auto-m rule printed smoother window κ ≈ 9.7e5 (W7-X) / 5.9e5 (toroid),
   demanding m ≈ 1390/1090 Chebyshev steps per pass (vs the fdbund atom's
