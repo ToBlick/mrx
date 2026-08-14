@@ -106,11 +106,18 @@ def test_zpinch_pressure_recovery(zpinch_seq, zpinch_B_hat):
     p_h_vals = jax.lax.map(p_phys, seq.quad.x, batch_size=20_000)
     p_exact_vals = jax.vmap(_p_exact)(seq.quad.x)
 
+    # The Leray multiplier's gauge (additive constant) is solver-defined,
+    # while the analytic pressure is gauged by p(1) = 0 -- compare
+    # gauge-invariantly by removing the weighted mean from both. Measured
+    # ~3.4e-2 at (6,6,1) p=3 (spline approximation error).
     wJ = seq.jacobian_j * seq.quad.w
-    diff = p_h_vals - p_exact_vals
+    mean_h = jnp.einsum("ik,i->", p_h_vals, wJ) / wJ.sum()
+    mean_e = jnp.einsum("ik,i->", p_exact_vals, wJ) / wJ.sum()
+    diff = (p_h_vals - mean_h) - (p_exact_vals - mean_e)
+    ref = p_exact_vals - mean_e
     l2_diff = jnp.einsum("ik,ik,i->", diff, diff, wJ)
-    l2_ref  = jnp.einsum("ik,ik,i->", p_exact_vals, p_exact_vals, wJ)
+    l2_ref = jnp.einsum("ik,ik,i->", ref, ref, wJ)
     rel_err = float(jnp.sqrt(l2_diff / l2_ref))
-    print(f"\n  z-pinch pressure relative L2 error: {rel_err:.3e}")
+    print(f"\n  z-pinch pressure relative L2 error (gauge-fixed): {rel_err:.3e}")
     assert rel_err < 1e-1, (
         f"z-pinch pressure L2 error too large: {rel_err:.3e}")

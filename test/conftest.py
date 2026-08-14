@@ -17,6 +17,7 @@ from mrx.mappings import toroid_map
 from mrx.operators import (
     assemble_derivative_operators,
     assemble_incidence_operators,
+    assemble_mass_jacobi_preconditioner,
     assemble_projection_operators,
     assemble_tensor_laplacian_preconditioner,
     assemble_tensor_mass_preconditioner,
@@ -114,6 +115,11 @@ def torus_seq(torus_map):
     )
     # Tensor mass preconditioners for k=0–3 (needed by test_preconditioners.py).
     ops = assemble_tensor_mass_preconditioner(seq, ops, ks=(0, 1, 2, 3), rank=3)
+    # Jacobi mass diagonals (the production FALLBACK preconditioner). Nothing
+    # assembles these implicitly; the jacobi arms in test_preconditioners.py
+    # and test_sequence.py error with "Jacobi mass diagonal ... is not
+    # assembled" without this. Session-once direct diagonal extraction.
+    ops = assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
     seq.set_operators(ops)
     seq._compute_nullspaces(BETTI, eps=1e-6)
 
