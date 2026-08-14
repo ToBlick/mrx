@@ -1828,6 +1828,36 @@ def make_apply_routines(
     if l0_inv_custom is not None:
         l0_inv = l0_inv_custom
 
+    # MRX_K1_L0INV = dense | ns2 : exact-L0 diagnostic arms. 'dense' = exact
+    # pinv of the projector-consistent L0 (stationary, symmetric -- the
+    # exact-L0 limit); 'ns2' = symmetric one-step Newton-Schulz refinement
+    # of the tensor atom (2B' - B'AB', B' = 0.5*atom), a fixed linear
+    # higher-order polynomial inverse (the "larger degree" arm).
+    _l0_mode = os.environ.get("MRX_K1_L0INV", "")
+    if l0_inv_custom is None and _l0_mode:
+        def _l0_A(v):
+            _g = apply_incidence_matrix(
+                seq, ops, v, 0, dirichlet_in=DIRICHLET,
+                dirichlet_out=DIRICHLET, transpose=False)
+            _m = apply_mass_matrix(seq, ops, _g, 1, dirichlet=DIRICHLET)
+            return apply_incidence_matrix(
+                seq, ops, _m, 0, dirichlet_in=DIRICHLET,
+                dirichlet_out=DIRICHLET, transpose=True)
+        if _l0_mode == "dense":
+            from mrx.operators import _assemble_dense_from_apply as _l0df
+            _n0m = int(seq.n0_dbc if DIRICHLET else seq.n0)
+            _L0d = np.asarray(_l0df(_l0_A, _n0m, sequential=True))
+            _L0i = jnp.asarray(np.linalg.pinv(0.5 * (_L0d + _L0d.T), rcond=1e-12))
+            l0_inv = lambda x, _M=_L0i: _M @ x
+            print(f"[diag] L0INV=dense wired (n0={_n0m})", flush=True)
+        elif _l0_mode == "ns2":
+            _B0 = l0_inv
+            def _l0_ns2(x, B=_B0, A=_l0_A):
+                bx = 0.5 * B(x)
+                return 2.0 * bx - 0.5 * B(A(bx))
+            l0_inv = _l0_ns2
+            print("[diag] L0INV=ns2 wired", flush=True)
+
     def l0_inv_exact(x):
         # Exact (CG) solve of the projector's own k=0 operator L_0 y = x,
         # V0* -> V0. To make Pi = G_0 L_0^{-1} G_0^T M_1 a true (idempotent,

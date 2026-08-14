@@ -117,3 +117,19 @@ itself defaulted to constants).
   atom (σ=lin); Hiptmair G₀-pass and the BC-flipped div-div third leg kept
   as smoother options (mixed-mode evidence favors trying the 3-space form);
   new code needed = per-component commuting transfers only.
+
+## 2026-08-14: THE k=1 ANSWER — exact L0 in P_B/Pi (Tobias's block-diagonalization argument)
+
+`MRX_K1_L0INV = dense | ns2` (make_apply_routines hook, projector-consistent
+L0). W7-X 8,16,16, coupled atom, its (dbc | free):
+single-apply L0 1614|3817 → ns2 826|2419 → **dense 154|172 @1e-11 —
+3.3×/9.5× FASTER THAN JACOBI WALL (272/414 ms vs 907/3938).** The whole
+W7-X k=1 wall was L0 fidelity inside P_B and the projector (the default was
+ONE tensor-atom apply); with exact L0 the M1-orthogonal splitting
+block-diagonalizes Ŝ and gradients sit at λ=1 exactly. Fidelity need is
+STEEP (ns2 only halves) ⇒ production = DENSE L0 factorization (n0 is the
+small space: 1.3k here, ~7k at 12,24,24 — one Cholesky, n0² matvec/apply)
+now; FIXED symmetric V-cycles of the k=0 MG as the h-scalable successor
+(stationary+symmetric = legal inside P_B; V-cycle count O(1) in h vs
+Chebyshev degree ~√κ) — the shelved k=0 MG's true purpose. Next: wire
+dense-L0 as a production option, validate 12,24,24, then k=2 recursion.
