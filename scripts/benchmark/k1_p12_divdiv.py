@@ -122,6 +122,26 @@ def build_p12_divdiv(seq, ops, dirichlet: bool):
     wj = _k2_divdiv_weight_tensor(seq)  # 1/J on the quad grid, (t, r, z)
     _sc, f_t, f_r, f_z, _err = _bundled_rank1_mass_factors(seq, wj)
     m = [f_r, f_t, f_z]
+    # MRX_K1_BDIV=greville: ONE channel => the collocated D = 1/J sandwich
+    # is exactly invertible with FULL pointwise weight (no rank-1 residual);
+    # ladders go unweighted, D^{-1/2} applied at the V2 Greville grids.
+    import os as _os
+    _grev_D = _os.environ.get("MRX_K1_BDIV", "") == "greville"
+    if _grev_D:
+        m = [jnp.ones_like(jnp.asarray(f_r)), jnp.ones_like(jnp.asarray(f_t)),
+             jnp.ones_like(jnp.asarray(f_z))]
+        inv_sqrt_D2 = []
+        for b in range(3):
+            grb = _grev(v2_bas[b][0], v2_ax[b][0], clamped=(types[0] == "clamped"))
+            gtb = _grev(v2_bas[b][1], None, clamped=(types[1] == "clamped"))
+            gzb = _grev(v2_bas[b][2], None, clamped=(types[2] == "clamped"))
+            rr2, tt2, zz2 = np.meshgrid(grb, gtb, gzb, indexing="ij")
+            pts2 = jnp.asarray(np.stack([rr2.ravel(), tt2.ravel(), zz2.ravel()], axis=-1))
+            _g2, _mi2, jac2 = compute_geometry_terms(seq.map, pts2)
+            jac2 = np.asarray(jac2).reshape(v2_shapes[b])
+            jac2 = np.where(np.isfinite(jac2) & (jac2 > 0), jac2,
+                            np.median(jac2[np.isfinite(jac2) & (jac2 > 0)]))
+            inv_sqrt_D2.append(jnp.asarray(np.sqrt(jac2)))  # (1/J)^{-1/2} = sqrt(J)
     g1d = [_dense_incidence_1d((nr, nt, nz)[a], types[a]) for a in range(3)]
     q_w = (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
     n_bas = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
@@ -153,12 +173,17 @@ def build_p12_divdiv(seq, ops, dirichlet: bool):
     v2_V = ((Vn[0], Vd[1], Vd[2]), (Vd[0], Vn[1], Vd[2]), (Vd[0], Vd[1], Vn[2]))
 
     def b_div(u2):  # list of 3 dual tensors -> list of 3 primal tensors
+        if _grev_D:
+            u2 = [u2[a] * inv_sqrt_D2[a] for a in range(3)]
         c = [None] * 3
         for a in range(3):
             c[a] = _kron(v2_V[a], u2[a], transpose=True)
         tc = tvec[0] * c[0] + tvec[1] * c[1] + tvec[2] * c[2]
         s = tc * inv_t4
-        return [_kron(v2_V[a], tvec[a] * s) for a in range(3)]
+        out2 = [_kron(v2_V[a], tvec[a] * s) for a in range(3)]
+        if _grev_D:
+            out2 = [out2[a] * inv_sqrt_D2[a] for a in range(3)]
+        return out2
 
     n_sizes = [int(np.prod(s)) for s in v1_shapes]
 
