@@ -164,3 +164,14 @@ STATUS at close: final4 job's last cell (W7-X mg2 auto-m) still computing
 -- read outputs/k1_pa_compare/dense_spec/final4.log. m=1 arm complete
 (W7-X 204/546 -- even the crudest MG-L0 beats jacobi 4.6x its). All wiring
 knobs: MRX_K1_L0INV=dense|ns2|mg{1,2}, MRX_K1_MG_M, MRX_K1_COUPLED_SIGMA.
+
+### P12 implementation breadcrumbs (started)
+- 1D eval: `SplineBasis.collocation_matrix(points)` (mrx/spline_bases.py:136).
+- Metric weight at V2 grids: (J g^{-1})_ab = J*minv_ab from
+  `compute_geometry_terms(seq.map, pts)` (k0 greville pattern, eps-clip 1e-7).
+- V2 comp shapes: _k2_regular_component_shapes -> r:(N_r,D_t,D_z) etc.;
+  V1: r:(D_r,N_t,N_z) etc. OPEN: locate the 1D D-basis OBJECTS (N 1D bases
+  = seq.basis_0.Λ[axis]; D 1D analogs — check seq.basis_1/basis_2
+  attributes or construct SplineBasis(n,p-1,type)).
+- Module: scripts/benchmark/k1_p12_divdiv.py; wire as --pb-divdiv beside
+  the L0INV arms; B_div per-mode rank-1 ttᵀ capped pinv, BC-flipped.
