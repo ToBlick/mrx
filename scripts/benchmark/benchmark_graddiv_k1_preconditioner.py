@@ -2659,6 +2659,14 @@ def make_apply_routines_k3(seq: DeRhamSequence, ops):
     def p3_transfer(r):
         return transfer_0_to_3(l0_inv(transfer_3_to_0(r)))
 
+    # MRX_K3_TENSOR=1: route the auxiliary through the UNEXTRACTED tensor
+    # V0 (square collocated transfer, exact-Lynch tensor L0 inverse, no
+    # surgery) -- removes the extraction root cause of every deficit.
+    if os.environ.get("MRX_K3_TENSOR", "") == "1":
+        from k3_tensor_transfer import build_k3_tensor_transfer
+        p3_transfer = build_k3_tensor_transfer(seq, ops)
+        print("[diag] k=3 TENSOR transfer wired (unextracted V0)", flush=True)
+
     # MRX_K3_AXIS0=1 (Tobias): enforce q(0)=0 on the auxiliary V0 side --
     # V3 densities vanish at the axis (J factor baked into the space), V0
     # does not; zeroing the polar-core DOFs on both legs matches the axis

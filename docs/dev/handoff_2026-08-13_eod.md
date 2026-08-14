@@ -239,5 +239,8 @@ jacobi decisively (96 its to 3.8e-3 vs 193 to 1e-10).
    wiring of dense-L0 (n0 small), not research.
 2. P12 div-div (no-L0): wins 3/4 geometries; needs Lanczos term-scale
    calibration for W7-X. 3. k=3 transfer: subspace ladder documented;
-   surgical route at 3.8e-3, tensor route two bugs deep. 4. MG-as-L0:
+   surgical route at 3.8e-3 (best); UNEXTRACTED-tensor route REFUTED as
+   built (floor 0.62 survives the window fix AND the xi1-cutoff fix --
+   suspect: conditioning of the square N-at-D-greville collocation
+   pairing; check via SVD of the three E matrices before reviving). 4. MG-as-L0:
    iteration-validated (== dense within ~10%); wall needs jitting.
