@@ -3,6 +3,7 @@
 scripts/experimental
 scripts/deprecated
 scripts/dice
+scripts/julianne
 out
 test_outputs
 logs
