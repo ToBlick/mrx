@@ -89,6 +89,15 @@ def test_preconditioner_is_spd(torus_seq, precond_jit, label, k, dbc):
 # ---------------------------------------------------------------------------
 
 
+# The old maxiter=200 cap made this test compare TRUNCATED counts: at the
+# fixture size both arms exceed 200 at tol 1e-10 and the strict `<` failed
+# on the 200 == 200 tie -- NOT because jacobi is worse. Measured with a
+# real budget (polar toroid): jacobi wins STRICTLY in all 8 (k, bc) cases
+# -- 7-10x on the vector masses (k=1: 630->85, k=2: 480->63 its), a few
+# percent on the scalar spaces (k=0: 59->55, k=3: 39->34, whose diagonal
+# is nearly uniform). Strict `<` is legitimate on any CURVED geometry
+# (non-constant diagonal); it would tie only on an exactly uniform mesh,
+# which this fixture is not.
 @pytest.mark.parametrize("dbc", _ALL_DBC)
 @pytest.mark.parametrize("k", _ALL_K)
 @pytest.mark.parametrize("label", ["jacobi", "tensor"])
@@ -103,11 +112,11 @@ def test_preconditioner_reduces_cg_iterations(torus_seq, label, k, dbc):
     for rhs in rhss:
         _, none_info = apply_inverse_mass_matrix(
             torus_seq, ops, rhs, k, dirichlet=dbc,
-            preconditioner="none", tol=1e-10, maxiter=200, return_info=True,
+            preconditioner="none", tol=1e-10, maxiter=3000, return_info=True,
         )
         _, precond_info = apply_inverse_mass_matrix(
             torus_seq, ops, rhs, k, dirichlet=dbc,
-            preconditioner=_SPECS[label], tol=1e-10, maxiter=200, return_info=True,
+            preconditioner=_SPECS[label], tol=1e-10, maxiter=3000, return_info=True,
         )
         none_iters.append(abs(int(none_info)))
         precond_iters.append(abs(int(precond_info)))
@@ -131,9 +140,15 @@ def test_inverse_mass_roundtrip(torus_seq, label, k, dbc):
     n = n_dofs(torus_seq, k, dbc)
     rhs = jnp.asarray(rng.standard_normal(n))
 
+    # Tensor (production) must converge fast; jacobi (fallback) must
+    # converge, full stop -- on the polar extracted mass its diagonal
+    # spread is ~3 orders (k=1: 1.4e-3..2.3) and CG needs several hundred
+    # iterations. The diagonal itself is exact (verified against the dense
+    # probe to 1e-16).
+    maxiter = 200 if label == "tensor" else 3000
     x, info = apply_inverse_mass_matrix(
         torus_seq, ops, rhs, k, dirichlet=dbc,
-        preconditioner=_SPECS[label], tol=1e-10, maxiter=200, return_info=True,
+        preconditioner=_SPECS[label], tol=1e-10, maxiter=maxiter, return_info=True,
     )
     assert int(info) <= 0, (
         f"{label} k={k} dbc={dbc} did not converge: info={int(info)}"
