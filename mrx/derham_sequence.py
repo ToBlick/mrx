@@ -1270,15 +1270,37 @@ class DeRhamSequence():
             kind=kind,
         )
 
-    def _compute_nullspaces(self, betti_numbers=None, eps=1e-6):
-        """Iteratively compute harmonic forms and store them on ``self.operators``.
+    def _compute_nullspaces(self, betti_numbers=None, eps=None, direct=False,
+                            **kwargs):
+        """Compute harmonic forms and store them on ``self.operators``.
 
-        ``betti_numbers`` defaults to ``self.betti_numbers``. Returns the
-        info dict from :func:`compute_nullspaces_iterative`.
+        ``betti_numbers`` defaults to ``self.betti_numbers``.
+
+        ``direct=True`` selects the Hodge-decomposition construction
+        (:func:`~mrx.nullspace.compute_nullspaces`): a fixed pair of Hodge
+        solves per form, with no shift, no outer iteration and no spectral-gap
+        assumption.  It is only self-sufficient when ``b2 == 0`` -- which
+        covers the toroidal geometries we actually run -- and raises with an
+        explanation otherwise, because at ``b2 > 0`` the two constructions
+        each need the other's kernel for deflation.  ``eps`` is unused in that
+        mode.
+
+        ``direct=False`` (default) uses shift-and-invert inverse iteration
+        (:func:`~mrx.nullspace.compute_nullspaces_iterative`), which works for
+        any topology because the shift removes the singularity.
+
+        Returns the info dict for the iterative route, or ``None`` for the
+        direct one (which has no per-vector iteration counts to report).
         """
+        if direct:
+            self.operators = compute_nullspaces(
+                self, self._require_operators(), betti_numbers=betti_numbers)
+            return None
+        if eps is not None:
+            kwargs["eps"] = eps
         operators, info = compute_nullspaces_iterative(
             self, self._require_operators(),
-            betti_numbers=betti_numbers, eps=eps)
+            betti_numbers=betti_numbers, **kwargs)
         self.operators = operators
         return info
 
@@ -1287,9 +1309,14 @@ class DeRhamSequence():
         return find_nullspace_vectors(
             self, self._require_operators(), k, n_vectors, eps, dirichlet)
 
-    def compute_nullspaces(self):
-        """Compute and cache the harmonic forms for all form degrees (closed-form)."""
-        self.operators = compute_nullspaces(self, self._require_operators())
+    def compute_nullspaces(self, betti_numbers=None):
+        """Cache the harmonic forms via the direct Hodge-decomposition route.
+
+        Thin wrapper over :meth:`_compute_nullspaces` with ``direct=True``;
+        raises on topologies where that route is circular (``b2 > 0``).
+        """
+        self.operators = compute_nullspaces(
+            self, self._require_operators(), betti_numbers=betti_numbers)
         return self.operators
 
     def init_nullspaces(self, betti_numbers=None):

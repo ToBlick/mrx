@@ -121,7 +121,10 @@ def torus_seq(torus_map):
     # assembled" without this. Session-once direct diagonal extraction.
     ops = assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
     seq.set_operators(ops)
-    seq._compute_nullspaces(BETTI, eps=1e-6)
+    # No explicit eps: exercise the production shift (1e-4). It is fixed, not
+    # mesh-scaled -- the discrete harmonic space sits exactly in ker(L), so the
+    # only requirement is eps << lambda_1, which is O(1) here.
+    seq._compute_nullspaces(BETTI)
 
     # Pre-compute and cache stiffness-nullspace bases as attributes so any
     # test can read seq.stiffness_null[(k, dbc)] without repeating the

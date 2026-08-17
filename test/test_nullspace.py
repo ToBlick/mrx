@@ -95,24 +95,37 @@ def test_get_nullspace_raises_when_uninitialised():
 @pytest.mark.parametrize("k,dbc", _NONTRIVIAL,
                           ids=["k0","k1","k2dbc","k3dbc"])
 def test_stored_nullspace_vectors_are_harmonic(torus_seq, k, dbc):
-    """Each stored vector v satisfies ‖L_k v‖ ≤ 1e-8 (mass-normalized v).
+    """Each stored vector v has Rayleigh quotient vᵀL v / vᵀM v ≤ 1e-12.
 
-    The stall-based stopping criterion in find_nullspace_vectors terminates
-    when |res - res_prev| ≤ tol, which bounds the residual INCREMENT, not
-    the residual: with geometric convergence ratio rho the final residual
-    sits near stall/(1 - rho), orders above tol when convergence is slow
-    (measured ~1e-9 for k=2/3 dbc on the torus fixture). 1e-8 is ample for
-    the production use of these vectors (deflation only needs harmonicity
-    well below the first nonzero eigenvalue, which is O(1) here).
+    The metric is the Rayleigh quotient, NOT ‖L_k v‖. ``L_k`` is dual-valued,
+    so ``l2_norm(Lv)`` measures a functional in the primal mass norm — an
+    uncompensated mass factor whose scale drifts with resolution *and* with
+    the choice of preconditioner. It was measured spanning five orders across
+    solver arms that produced fields identical to five significant figures, and
+    an earlier version of this test asserting ‖Lv‖ ≤ 1e-8 failed at 5.6e-8 for
+    k=2/3 dbc on vectors whose Rayleigh quotients were ~6e-23, i.e. harmonic to
+    ~1e-12 in eigenvector error. The threshold was measuring the metric, not
+    the vectors.
+
+    The Rayleigh quotient carries the units of an eigenvalue, so it is directly
+    comparable to the first nonzero eigenvalue λ₁ (O(1) on this fixture), which
+    is exactly the quantity deflation cares about. It is quadratic in the
+    eigenvector error, so 1e-12 here corresponds to an error of ~1e-6 — ample,
+    and the measured values sit eleven orders below it.
+
+    See docs/research/gvec_h5_vacuum_comparison.md, "The k=2 solver failure".
     """
     ops = torus_seq.operators
     vs = get_nullspace(ops, k, dbc)
-    atol = max(10 * torus_seq.tol, 1e-8)
     for i, v in enumerate(vs):
         Lv = torus_seq.apply_hodge_laplacian(v, k, dirichlet=dbc, operators=ops)
-        res = float(torus_seq.l2_norm(Lv, k, dirichlet=dbc))
-        assert res <= atol, (
-            f"k={k} dbc={dbc} vec[{i}]: ‖Lv‖ = {res:.2e} > 10·tol {atol:.2e}"
+        nrm2 = float(torus_seq.l2_norm_sq(v, k, dirichlet=dbc))
+        assert nrm2 > 0.0, f"k={k} dbc={dbc} vec[{i}] has zero mass norm"
+        rayleigh = abs(float(v @ Lv)) / nrm2
+        assert rayleigh <= 1e-12, (
+            f"k={k} dbc={dbc} vec[{i}]: Rayleigh = {rayleigh:.2e} > 1e-12 "
+            f"(‖Lv‖ = {float(torus_seq.l2_norm(Lv, k, dirichlet=dbc)):.2e}, "
+            "reported for context only — it is not the criterion)"
         )
 
 

@@ -1223,6 +1223,55 @@ def assemble_mass_surgery_preconditioner(
     )
 
 
+def assemble_mass_raw_kron_preconditioner(
+        seq, operators: Optional[SequenceOperators] = None,
+        *, ks: Sequence[int] = (0, 1, 2, 3),
+        dirichlet_variants: Optional[Sequence[bool]] = None) -> SequenceOperators:
+    """Assemble the raw_kron mass preconditioner on ``operators``.
+
+    This is the production mass path as of 2026-08-17 (see
+    ``docs/research/mass_preconditioner_pivot.md``). Unlike the tensor path it
+    needs no surgery split, no dense Schur complement, no ``A_ss`` probe and no
+    CP/NTF fit -- only the exact mass diagonal, unweighted 1D masses, and the
+    sparsity of ``E``. Nothing assembled here is ``O(N n_z)``.
+    """
+    from mrx.local_assembly import build_mass_diagonal  # noqa: PLC0415
+    from mrx.preconditioners import build_mass_raw_kron_factors  # noqa: PLC0415
+
+    if dirichlet_variants is None:
+        dirichlet_variants = (True, False)
+    operators = _ensure_extraction_operators(seq, operators)
+    for k in ks:
+        if k not in (0, 1, 2, 3):
+            raise ValueError(
+                "raw_kron mass preconditioner assembly only supports k=0..3")
+
+    preconds = operators.mass_preconds
+    store = dict(preconds.raw_kron) if (preconds is not None
+                                    and preconds.raw_kron is not None) else {}
+    for k in ks:
+        d_raw = build_mass_diagonal(seq, k)     # one contraction, shared by both BCs
+        for dirichlet in dirichlet_variants:
+            store[(int(k), bool(dirichlet))] = build_mass_raw_kron_factors(
+                seq, k, dirichlet=dirichlet, d_raw=d_raw)
+
+    if preconds is None:
+        preconds = MassPreconditioners(raw_kron=store)
+    else:
+        preconds = eqx.tree_at(lambda p: p.raw_kron, preconds, store,
+                               is_leaf=lambda x: x is None)
+    return eqx.tree_at(lambda o: o.mass_preconds, operators, preconds,
+                       is_leaf=lambda x: x is None)
+
+
+def _raw_kron_available(seq, operators: SequenceOperators, k: int,
+                    dirichlet: bool) -> bool:
+    preconds = getattr(operators, 'mass_preconds', None)
+    if preconds is None or preconds.raw_kron is None:
+        return False
+    return (int(k), bool(dirichlet)) in preconds.raw_kron
+
+
 def assemble_tensor_mass_preconditioner(
         seq, operators: Optional[SequenceOperators] = None,
         *, ks: Sequence[int] = (1,),
@@ -1306,14 +1355,12 @@ def _materialize_default_saddle_preconditioner(
         coupled_preconditioner: bool = False):
     lower = _materialize_default_mass_preconditioner(
         seq, operators, k=k - 1)
-    if not _tensor_available(seq, operators, k - 1):
-        raise ValueError(
-            "default saddle preconditioners currently require an assembled tensor schur.inner"
-        )
+    # schur.inner is raw_kron as of 2026-08-17: it needs no eager assembly,
+    # so the default saddle preconditioner no longer has a tensor precondition.
     return SaddlePointPreconditionerSpec(
         mass=lower,
         schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='tensor'),
+            inner=MassPreconditionerSpec(kind='raw_kron'),
             outer=MassPreconditionerSpec(kind='jacobi'),
         ),
         coupled=coupled_preconditioner,
@@ -3339,19 +3386,43 @@ def apply_stiffness(seq, operators: SequenceOperators, v, k: int, dirichlet: boo
     return e @ (g_sp_T @ m_apply(g_sp @ (e_T @ v)))
 
 
-def _diagonal_from_matvec(operator_apply, size: int):
+def _diagonal_from_matvec(operator_apply, size: int, *,
+                          batch_size: Optional[int] = None):
+    """Probe ``diag(A)`` from a forward operator, in batches.
+
+    Batched via ``vmap`` over chunks of canonical basis vectors, matching
+    :func:`mrx.preconditioners.diag_matvec`. This was previously an unbatched
+    ``jax.lax.map``, i.e. one apply per DOF with no reuse -- the single largest
+    setup cost in the code at 12x24x12. Batching changes no numerics: each
+    column is still probed with its own unit vector and the same entry read
+    back; only the number of kernel launches changes.
+
+    ``batch_size`` follows ``mrx.MAP_BATCH_SIZE_OUTER`` (capped at 16) so the
+    memory ceiling stays under the same control as the other probes -- a batch
+    holds ``batch_size`` images of length ``size`` at once.
+    """
     # Eager warmup: operator_apply may lazily build host-side static state
     # (e.g. matrix-free mass index plans that call np.asarray internally).
-    # Under lax.map the body is traced as a scan, so those calls would see
-    # tracers and raise TracerArrayConversionError.  One concrete call first
-    # forces that state to be built and cached before the traced loop runs.
+    # Under a traced loop those calls would see tracers and raise
+    # TracerArrayConversionError. One concrete call forces that state to be
+    # built and cached before any tracing happens.
     operator_apply(jnp.zeros(size, dtype=jnp.float64))
 
-    def entry(i):
-        basis = jnp.zeros(size, dtype=jnp.float64).at[i].set(1.0)
-        return operator_apply(basis)[i]
+    if size == 0:
+        return jnp.zeros((0,), dtype=jnp.float64)
+    if batch_size is None:
+        import mrx as _mrx  # noqa: PLC0415
+        configured = _mrx.MAP_BATCH_SIZE_OUTER
+        batch_size = 16 if configured is None else max(1, min(int(configured), 16))
 
-    return jax.lax.map(entry, jnp.arange(size))
+    chunks = []
+    for start in range(0, size, batch_size):
+        stop = min(start + batch_size, size)
+        idx = jnp.arange(start, stop)
+        basis = jax.nn.one_hot(idx, size, dtype=jnp.float64)
+        images = jax.vmap(operator_apply)(basis)
+        chunks.append(images[jnp.arange(stop - start), idx])
+    return jnp.concatenate(chunks)
 
 
 def _invert_diagonal(diagonal):
@@ -3387,7 +3458,7 @@ def _set_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool, di
     )
 
 
-_SCHUR_DIAG_MODES = ('tensor_probe',)
+_SCHUR_DIAG_MODES = ('raw_kron_probe', 'tensor_probe')
 
 
 def _coerce_schur_diag_mode(spec: MassPreconditionerSpec, *, context: str) -> str:
@@ -3405,12 +3476,12 @@ def _build_schur_probe_apply(
         k: int, dirichlet: bool, eps: float,
         mode: str,
         saddle_preconditioner: SaddlePointPreconditionerSpec):
-    if mode != 'tensor_probe':
+    if mode not in _SCHUR_DIAG_MODES:
         raise ValueError(
             f"Unsupported Schur diagonal probe mode {mode!r}; "
             f"expected one of {_SCHUR_DIAG_MODES}"
         )
-    if not _tensor_available(seq, operators, k - 1):
+    if mode == 'tensor_probe' and not _tensor_available(seq, operators, k - 1):
         raise ValueError(
             f"schur_diag_mode='tensor_probe' requires an assembled tensor "
             f"schur.inner at k={k - 1}"
@@ -3460,7 +3531,7 @@ def assemble_schur_jacobi_preconditioner(
         *, ks: Sequence[int] = (1, 2, 3),
         dirichlet_variants: Optional[Sequence[bool]] = None,
     eps: float = 0.0,
-    schur_diag_mode: str = 'tensor_probe') -> SequenceOperators:
+    schur_diag_mode: str = 'raw_kron_probe') -> SequenceOperators:
     """Probe and store the approximate Schur diagonal at assembly time.
 
     For each (k, dirichlet) pair, builds the approximate Schur operator
@@ -3484,7 +3555,9 @@ def assemble_schur_jacobi_preconditioner(
         Shift for the stiffness term; 0 gives the unshifted Schur.
 
     where ``B_{k-1}`` is selected by ``schur_diag_mode``:
-    - ``'tensor_probe'``: tensor schur.inner inverse (default)
+    - ``'raw_kron_probe'``: raw_kron schur.inner inverse (default since
+      2026-08-17; needs no prior assembly)
+    - ``'tensor_probe'``: tensor schur.inner inverse
     - ``'exact_probe'``: exact lower inverse via CG solve
     - ``'diag'``: diagonal lower inverse ``diag(M_{k-1})^{-1}``
 
@@ -3500,9 +3573,11 @@ def assemble_schur_jacobi_preconditioner(
             f"of {_SCHUR_DIAG_MODES} (got {schur_diag_mode!r})"
         )
     dummy_spec = SaddlePointPreconditionerSpec(
-        mass=MassPreconditionerSpec(kind='tensor'),
+        mass=MassPreconditionerSpec(
+            kind='tensor' if schur_diag_mode == 'tensor_probe' else 'raw_kron'),
         schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='tensor'),
+            inner=MassPreconditionerSpec(
+                kind='tensor' if schur_diag_mode == 'tensor_probe' else 'raw_kron'),
             outer=MassPreconditionerSpec(kind='none'),
         ),
     )
@@ -3511,10 +3586,12 @@ def assemble_schur_jacobi_preconditioner(
             raise ValueError(
                 f"assemble_schur_jacobi_preconditioner: k must be 1, 2, or 3 (got {k})")
         for dirichlet in dirichlet_variants:
-            if schur_diag_mode == 'tensor_probe' and not _tensor_available(seq, operators, k - 1):
+            if (schur_diag_mode == 'tensor_probe'
+                    and not _tensor_available(seq, operators, k - 1)):
                 raise ValueError(
                     f"tensor mass preconditioner for k={k - 1} must be assembled before "
-                    f"probing the Schur diagonal for k={k}"
+                    f"probing the Schur diagonal for k={k}; or use the default "
+                    "schur_diag_mode='raw_kron_probe', which needs no assembly"
                 )
             schur_apply = _build_schur_probe_apply(
                 seq,
@@ -4141,16 +4218,26 @@ def _coerce_mass_preconditioner_spec(preconditioner):
 
 def _validate_inner_tensor_only_spec(
         inner_spec: Optional[MassPreconditionerSpec], *,
-        require_explicit: bool, context: str):
+        require_explicit: bool, context: str,
+        allowed: tuple = ('tensor',)):
+    """Validate a terminal inner smoother spec.
+
+    ``allowed`` defaults to tensor only, which is what the k=0 Laplacian inner
+    smoother path requires. The saddle ``schur.inner`` slot passes
+    ``('raw_kron', 'tensor')`` -- raw_kron is the production default there as
+    of 2026-08-17.
+    """
     if inner_spec is None:
         if require_explicit:
             raise ValueError(
-                f"{context} requires an explicit inner smoother with kind='tensor'"
+                f"{context} requires an explicit inner smoother with "
+                f"kind in {allowed}"
             )
-        return MassPreconditionerSpec(kind='tensor')
-    if inner_spec.kind != 'tensor':
+        return MassPreconditionerSpec(kind=allowed[0])
+    if inner_spec.kind not in allowed:
         raise ValueError(
-            f"{context} only supports kind='tensor' as the inner smoother"
+            f"{context} only supports kind in {allowed} as the inner smoother "
+            f"(got {inner_spec.kind!r})"
         )
     if inner_spec.surgery_schur:
         raise ValueError("inner Schur smoothers cannot themselves use surgery_schur")
@@ -4239,11 +4326,46 @@ def _validate_public_k2_mass_preconditioner_spec(spec: MassPreconditionerSpec):
     _validate_public_k1_mass_preconditioner_spec(spec)
 
 
+def _raw_kron_factors_for(seq, operators, k: int, dirichlet: bool):
+    """Return raw_kron factors for ``(k, dirichlet)``, building them if needed.
+
+    An eagerly assembled bundle wins. Otherwise the factors are built on demand
+    and memoised on the sequence, because raw_kron needs only the exact mass
+    diagonal, the unweighted 1D masses and the sparsity of ``E`` -- no probes,
+    no CP fit, no surgery Schur -- so a build is 0.1-2 s rather than the
+    minutes the tensor path costs. That is what lets it be the *default* without
+    every call site having to assemble it first.
+
+    The memo is keyed on the geometry object identity, so ``set_map`` /
+    ``set_spline_map`` invalidate it: ``D`` is derived from the mass diagonal
+    and is metric dependent, even though ``(CC^T)^-1`` is not.
+    """
+    from mrx.preconditioners import build_mass_raw_kron_factors  # noqa: PLC0415
+
+    preconds = getattr(operators, 'mass_preconds', None)
+    if preconds is not None and preconds.raw_kron is not None:
+        stored = preconds.raw_kron.get((int(k), bool(dirichlet)))
+        if stored is not None:
+            return stored
+
+    geometry = seq.geometry
+    cache = getattr(seq, '_raw_kron_cache', None)
+    if cache is None or cache.get('geometry') is not geometry:
+        cache = {'geometry': geometry, 'factors': {}}
+        seq._raw_kron_cache = cache
+    key = (int(k), bool(dirichlet))
+    if key not in cache['factors']:
+        cache['factors'][key] = build_mass_raw_kron_factors(
+            seq, k, dirichlet=dirichlet)
+    return cache['factors'][key]
+
+
 def _resolve_legacy_mass_preconditioner(seq, operators, k: int, preconditioner):
     if isinstance(preconditioner, str) and preconditioner == 'auto':
-        if _tensor_available(seq, operators, k):
-            return default_mass_preconditioner()
-        return MassPreconditionerSpec(kind='jacobi')
+        # raw_kron is the production default and is always buildable (see
+        # _raw_kron_factors_for), so 'auto' resolves to it unconditionally.
+        # The tensor and jacobi paths remain reachable by explicit spec.
+        return default_mass_preconditioner()
     return _coerce_mass_preconditioner_spec(preconditioner)
 
 
@@ -4275,11 +4397,26 @@ def _build_operator_preconditioner_apply(
         _validate_public_k1_mass_preconditioner_spec(spec)
     if k == 2:
         _validate_public_k2_mass_preconditioner_spec(spec)
-    valid_kinds = ('none', 'jacobi', 'tensor')
+    valid_kinds = ('none', 'jacobi', 'tensor', 'raw_kron')
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
             f"{valid_kinds} (got {spec.kind!r})")
+    if spec.kind == 'raw_kron':
+        # raw_kron never splits the space, so it is dispatched ahead of every
+        # surgery branch below and does not accept surgery_schur.
+        if spec.surgery_schur:
+            raise ValueError(
+                "kind='raw_kron' (raw_kron) does not split the space, so "
+                "surgery_schur=True is meaningless; drop it"
+            )
+        if spec.smoother is not None:
+            raise ValueError("kind='raw_kron' does not support a smoother")
+        from mrx.preconditioners import (  # noqa: PLC0415
+            apply_mass_raw_kron_preconditioner)
+        factors = _raw_kron_factors_for(seq, operators, k, dirichlet)
+        e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+        return lambda x, f=factors, e=e: apply_mass_raw_kron_preconditioner(f, e, x)
     if spec.kind == 'none':
         if spec.surgery_schur:
             if k not in (0, 1, 2):
@@ -4384,22 +4521,35 @@ def _build_schur_apply_from_saddle_preconditioner(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         eps: float, saddle_preconditioner: SaddlePointPreconditionerSpec):
     schur_inner_spec = saddle_preconditioner.schur.inner
-    if schur_inner_spec.kind != 'tensor':
+    if schur_inner_spec.kind not in ('tensor', 'raw_kron'):
         raise ValueError(
-            "schur.inner currently only supports kind='tensor'"
+            "schur.inner supports kind='raw_kron' (default) or kind='tensor' "
+            f"(got {schur_inner_spec.kind!r})"
         )
     if schur_inner_spec.surgery_schur or schur_inner_spec.smoother is not None:
         raise ValueError(
-            "schur.inner must be a terminal tensor preconditioner"
-        )
-    if not _tensor_available(seq, operators, k - 1):
-        raise ValueError(
-            "saddle preconditioners currently require an assembled tensor schur.inner"
+            "schur.inner must be a terminal preconditioner"
         )
 
-    schur_inner = lambda x: apply_mass_tensor_preconditioner_ops(
-        seq, operators, x, k - 1, dirichlet=dirichlet
-    )
+    if schur_inner_spec.kind == 'raw_kron':
+        # The weak term B_{k-1} standing in for M_{k-1}^{-1}. raw_kron needs no
+        # eager assembly (see _raw_kron_factors_for), so unlike the tensor path
+        # this cannot fail for want of a prior assemble_* call.
+        from mrx.preconditioners import (  # noqa: PLC0415
+            apply_mass_raw_kron_preconditioner)
+        factors = _raw_kron_factors_for(seq, operators, k - 1, dirichlet)
+        e_lower = getattr(seq, f"e{k - 1}_dbc" if dirichlet else f"e{k - 1}")
+        schur_inner = (lambda x, f=factors, e=e_lower:
+                       apply_mass_raw_kron_preconditioner(f, e, x))
+    else:
+        if not _tensor_available(seq, operators, k - 1):
+            raise ValueError(
+                "schur.inner kind='tensor' requires an assembled tensor "
+                f"mass preconditioner at k={k - 1}"
+            )
+        schur_inner = lambda x: apply_mass_tensor_preconditioner_ops(
+            seq, operators, x, k - 1, dirichlet=dirichlet
+        )
     return _build_schur_operator_apply(
         seq,
         operators,
@@ -4451,6 +4601,7 @@ def _coerce_saddle_preconditioner_spec(
                 preconditioner.schur.inner,
                 require_explicit=True,
                 context="schur.inner",
+                allowed=('raw_kron', 'tensor'),
             )
         return preconditioner
     if isinstance(preconditioner, str):

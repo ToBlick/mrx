@@ -30,6 +30,7 @@
 # %%
 import argparse
 import os
+import time
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
@@ -45,7 +46,12 @@ import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.io import load_grid_field
-from mrx.nullspace import find_nullspace_vectors
+from mrx.nullspace import (
+    _logical_constant_seed,
+    estimate_spectral_gap,
+    find_nullspace_vectors,
+    get_nullspace,
+)
 from mrx.operators import (
     assemble_incidence_operators,
     assemble_mass_surgery_preconditioner,
@@ -71,6 +77,32 @@ p.add_argument("--no-projection", action="store_true",
                help="skip the L2 projection of each reference B onto V2 (harmonics only)")
 p.add_argument("--harmonic-tol", type=float, default=1e-6,
                help="absolute residual tolerance ||L v|| for the harmonic-form solves")
+p.add_argument("--eps", type=float, default=1e-4,
+               help="shift for the inverse iteration; must satisfy eps << lambda_1 "
+                    "(check with --gap-check). Fixed, NOT mesh-dependent: the discrete "
+                    "harmonic space is exactly in ker(L), so there is no h-floor to chase.")
+p.add_argument("--inner-tol", type=float, default=1e-6,
+               help="inner shifted-solve tolerance; sets the accuracy FLOOR of the "
+                    "outer inverse iteration (1e-3 plateaus, 1e-6 converges)")
+p.add_argument("--stall-ratio", type=float, default=0.9,
+               help="outer stall guard: stop when a sweep fails to cut the residual "
+                    "by this factor. 1.0 disables (any decrease counts as progress)")
+p.add_argument("--coarse", action="store_true",
+               help="enable the rank-1 harmonic coarse correction in the shifted solve "
+                    "(measured NOT to pay on W7-X: +1-2 sweeps, worse residual, same field)")
+p.add_argument("--direct", action="store_true",
+               help="build the harmonic forms by direct Hodge decomposition instead of "
+                    "inverse iteration (needs b2==0; no eps / tolerances involved)")
+p.add_argument("--rotate-b-periods", type=float, default=0.0, metavar="F",
+               help="de-rotate the reference B about z by F field periods before ANY "
+                    "diagnostic or comparison. Both simsopt files need F=1 (their B is "
+                    "evaluated one field period off their own R,Z; --rotate-scan finds it).")
+p.add_argument("--rotate-scan", type=int, default=0, metavar="N",
+               help="scan N rigid z-rotations of the REFERENCE B and report the error vs "
+                    "angle; tests whether the file's B frame is rotated off its own R,Z")
+p.add_argument("--gap-check", action="store_true",
+               help="also solve for one extra eigenvector per space to measure lambda_1, "
+                    "the first non-harmonic eigenvalue, and report the eps/lambda_1 margin")
 args = p.parse_args()
 
 mrx.MAP_BATCH_SIZE_INNER = int(os.environ.get("W7X_MAP_BATCH", "2048"))
@@ -125,6 +157,14 @@ def map_and_DF_on_grid(cR, cZ, V, Der, zeta_axis, nfp, sign):
         jnp.stack([Zr, Zt, Zz], axis=-1),
     ], axis=-2)
     return DF
+
+
+def _rotz(B, delta):
+    """Rigid rotation of Cartesian vectors about z."""
+    c, s = np.cos(delta), np.sin(delta)
+    return np.stack([B[:, 0] * c - B[:, 1] * s,
+                     B[:, 0] * s + B[:, 1] * c,
+                     B[:, 2]], axis=1)
 
 
 # ---- reference-field loading ------------------------------------------------
@@ -205,6 +245,11 @@ geo = load_ref(args.h5, stride=args.stride)
 nr, nt, nz = geo["shape"]
 rho, theta, zeta = geo["axes"]
 nfp = args.nfp if args.nfp is not None else geo["nfp"]
+if args.rotate_b_periods:
+    _d = 2.0 * np.pi * float(args.rotate_b_periods) / nfp
+    geo["B"] = _rotz(geo["B"], _d)
+    print(f"[rot ] de-rotated reference B by {np.degrees(_d):.3f} deg "
+          f"({args.rotate_b_periods:+g} field periods, nfp={nfp})")
 R_grid = geo["R"].reshape(nr, nt, nz)
 Z_grid = geo["Z"].reshape(nr, nt, nz)
 
@@ -302,16 +347,44 @@ for label, fld in fields:
 
 # %%
 print(f"[seq ] building polar de Rham seq ns={NS} p={P} ...", flush=True)
-seq = DeRhamSequence(NS, (P,) * 3, 2 * P, TYPES, polar=True,
-                     tol=CG_TOL, maxiter=CG_MAXITER, betti_numbers=(1, 1, 0, 0))
-seq.evaluate_1d(); seq.set_map(map_func)
+
+
+def _phase(name, fn):
+    """Time one setup phase.  These dominate at high resolution, and which one
+    dominates is not obvious -- set_map evaluates the spline map + jacfwd at
+    every quadrature point, which grows as prod(ns)*q^3 independently of the
+    solve cost."""
+    t0 = time.perf_counter()
+    out = fn()
+    # Force completion of anything async. The phases return either an operator
+    # bundle, a sequence, or None; only block on what is actually an array
+    # pytree, and never touch attributes that a later phase creates.
+    try:
+        leaves = [x for x in jax.tree_util.tree_leaves(out)
+                  if isinstance(x, (jnp.ndarray, np.ndarray))]
+        if leaves:
+            jax.block_until_ready(leaves)
+    except Exception:
+        pass
+    print(f"[time] {name:34s} {time.perf_counter() - t0:8.1f}s", flush=True)
+    return out
+
+
+seq = _phase("DeRhamSequence ctor (quad mesh)", lambda: DeRhamSequence(
+    NS, (P,) * 3, 2 * P, TYPES, polar=True,
+    tol=CG_TOL, maxiter=CG_MAXITER, betti_numbers=(1, 1, 0, 0)))
+_phase("evaluate_1d", lambda: seq.evaluate_1d())
+_phase("set_map (geometry at quad pts)",
+       lambda: (seq.set_map(map_func), seq.jacobian_j)[1])
 ops = seq.get_operators()
-ops = assemble_mass_surgery_preconditioner(seq, operators=ops, ks=(0, 1, 2))
-ops = assemble_tensor_mass_preconditioner(
-    seq, operators=ops, ks=(0, 1, 2, 3), cp_kwargs={"greville": True})
-ops = assemble_incidence_operators(seq, operators=ops)
-ops = assemble_schur_jacobi_preconditioner(
-    seq, ops, ks=(1, 2), dirichlet_variants=(False, True))
+ops = _phase("assemble_mass_surgery_precond", lambda: assemble_mass_surgery_preconditioner(
+    seq, operators=ops, ks=(0, 1, 2)))
+ops = _phase("assemble_tensor_mass_precond", lambda: assemble_tensor_mass_preconditioner(
+    seq, operators=ops, ks=(0, 1, 2, 3), cp_kwargs={"greville": True}))
+ops = _phase("assemble_incidence_operators", lambda: assemble_incidence_operators(
+    seq, operators=ops))
+ops = _phase("assemble_schur_jacobi_precond", lambda: assemble_schur_jacobi_preconditioner(
+    seq, ops, ks=(1, 2), dirichlet_variants=(False, True)))
 seq.set_operators(ops)
 print(f"[seq ] V1 dofs={int(seq.n1)}  V2 dofs (free)={int(seq.n2)}")
 
@@ -341,6 +414,34 @@ if not args.no_projection:
         project_report(label, fld)
 
 
+def harmonic_fraction(label, fld, v_harm):
+    """How much of the reference field is the harmonic mode?
+
+    A vacuum field is curl-free AND divergence-free with B.n = 0, i.e. it is
+    *entirely* the harmonic 2-form (the space is 1-dimensional here).  Any
+    energy outside that subspace means the stored field carries current and is
+    therefore not representable as a harmonic form at ANY resolution -- which
+    is what a resolution-independent error floor looks like.
+
+    Projects B onto V2 with the SAME Dirichlet space the harmonic form lives
+    in, then reports the M2-energy fraction along the harmonic direction.
+    """
+    DFf = fld["DF"]
+    proxy_grid = np.einsum("nij,nj->ni", np.transpose(DFf, (0, 2, 1)), fld["B"]
+                           ).reshape(*fld["shape"], 3)
+    dual = load_grid_field(fld["axes"], proxy_grid, seq, 2, frame='ref', dirichlet=True)
+    dof, info = seq.apply_inverse_mass_matrix(
+        dual, 2, dirichlet=True, return_info=True)
+    v = v_harm / seq.l2_norm(v_harm, 2, dirichlet=True)
+    c = float(v @ seq.apply_mass_matrix(dof, 2, dirichlet=True))
+    norm2 = float(seq.l2_norm(dof, 2, dirichlet=True)) ** 2
+    frac = c * c / norm2 if norm2 > 0 else float("nan")
+    print(f"    harmonic content of {label}:  "
+          f"energy fraction={frac:.6f}   non-harmonic amplitude={np.sqrt(max(0.0, 1 - frac)):.4e}"
+          f"   (proj iters={abs(int(info))} conv={int(info) <= 0})")
+    return frac
+
+
 # %% [markdown]
 # ## 5. Harmonic solves + error (xyz frame) at every reference point
 
@@ -351,30 +452,104 @@ def compare(label, fh, k, fld):
     Bp = batched(Pushforward(fh, seq.map, k), eval_pts(fld))
     sc = float(np.sum(Bp * fld["B"]) / np.sum(Bp * Bp))   # best-fit scale
     err_line(f"vs {label}", sc * Bp, fld, extra=f"  scale={sc:+.3e}")
+    return Bp
 
 
-eps_null = 1e-3 / (NS[0] ** 2)
+def rotation_scan(label, Bp, fld, n_ang):
+    """Scan a rigid z-rotation of the REFERENCE field and report the error.
 
-# --- harmonic 2-form (DBC): k=2 nullvector, seeded by logical dzeta ----------
-print("\n[vac2] solving harmonic 2-form (k=2, DBC) ...", flush=True)
-dof2_ic = seq.apply_inverse_mass_matrix(
-    seq.load(lambda x: jnp.array([0.0, 0.0, 1.0]), 2, dirichlet=True, frame='ref'),
-    2, dirichlet=True)
-vs2, it2 = find_nullspace_vectors(seq, seq.get_operators(), 2, 1, eps_null,
-                                  dirichlet=True, x0s=[dof2_ic], abs_tol=args.harmonic_tol)
-print(f"[vac2] nullvector: iters={it2[0][0]}  ||L2 v||={it2[0][1]:.3e}")
-B_vac2 = DiscreteFunction(vs2[0], seq.basis_2, seq.e2_dbc)
+    If a file's B was evaluated at a toroidal angle offset by a whole field
+    period, then on an nfp-symmetric device R,Z are unchanged there while B
+    picks up R_z(2*pi/nfp) -- so the corruption is a pure frame rotation and
+    de-rotating the stored vectors recovers it.  R,Z checks are blind to this
+    (they are rotation-invariant) and so is an L2 projection (it fits whatever
+    it is handed); the harmonic form is the only probe that sees it.
+
+    Cheap: the harmonic form never uses B, so the pushforward `Bp` is computed
+    once and the scan is pure numpy.
+    """
+    B = fld["B"]
+    bn = fld["bnorm"]
+    rows = []
+    for j in range(n_ang):
+        d = 2.0 * np.pi * j / n_ang
+        Br = _rotz(B, d)
+        sc = float(np.sum(Bp * Br) / np.sum(Bp * Bp))
+        e = np.linalg.norm(sc * Bp - Br, axis=1)
+        rows.append((d, float(e.mean() / bn.mean())))
+    best = min(rows, key=lambda r: r[1])
+    nfp_ang = 2.0 * np.pi / nfp
+    print(f"    rotation scan of {label} ({n_ang} angles):")
+    for d, e in rows:
+        mark = "  <== best" if (d, e) == best else ""
+        per = d / nfp_ang
+        print(f"        delta={np.degrees(d):7.2f} deg ({per:+.3f} field periods)"
+              f"   rel err={e:.4e}{mark}")
+    print(f"    best delta={np.degrees(best[0]):.2f} deg "
+          f"= {best[0] / nfp_ang:+.4f} field periods   rel err={best[1]:.4e} "
+          f"(delta=0 gives {rows[0][1]:.4e})")
+
+
+EPS = args.eps
+
+
+def solve_harmonic(tag, k, dirichlet):
+    """Inverse iteration for the single harmonic k-form, seeded by the constant
+    reference-frame form of that degree ((0,0,1) = dzeta for k=1, dr^dchi for
+    k=2).  Both seeds are purely topological -- the geometry enters only via
+    M_k^{-1} -- so they carry over to an arbitrary stellarator unchanged."""
+    ops_now = seq.get_operators()
+    if args.direct:
+        # One fixed pair of Hodge solves per form; no shift, no outer loop.
+        t0 = time.perf_counter()
+        seq._compute_nullspaces(direct=True)
+        v = get_nullspace(seq.get_operators(), k, dirichlet)[0]
+        Lv = seq.apply_hodge_laplacian(v, k, dirichlet=dirichlet)
+        print(f"[{tag}] direct: {time.perf_counter() - t0:.1f}s  "
+              f"||L{k} v||={float(seq.l2_norm(Lv, k, dirichlet=dirichlet)):.3e}  "
+              f"rayleigh={float(v @ Lv):.3e}")
+        return v
+    ic = _logical_constant_seed(seq, ops_now, k, dirichlet, (0.0, 0.0, 1.0))
+    solve_kw = dict(abs_tol=args.harmonic_tol, inner_tol=args.inner_tol,
+                    stall_ratio=args.stall_ratio, use_coarse=args.coarse)
+    if args.gap_check:
+        vs, its, lam1 = estimate_spectral_gap(
+            seq, ops_now, k, dirichlet, EPS, n_harmonic=1, x0s=[ic], **solve_kw)
+    else:
+        vs, its = find_nullspace_vectors(
+            seq, ops_now, k, 1, EPS, dirichlet=dirichlet, x0s=[ic], **solve_kw)
+        lam1 = None
+    n_it, res, rq = its[0]
+    print(f"[{tag}] nullvector: iters={n_it}  ||L{k} v||={res:.3e}  "
+          f"rayleigh={rq:.3e}"
+          + ("   (initial guess accepted as-is)" if n_it == 0 else ""))
+    if lam1 is not None:
+        # The Rayleigh quotient of the extra slot converges to lambda_1 from
+        # above, so this is an estimate, not a bound -- but a factor-2 error in
+        # it does not matter when the margin is orders of magnitude.
+        print(f"[{tag}] lambda_1 ~ {lam1:.3e}   eps/lambda_1 = {EPS / lam1:.2e}"
+              f"   (per-sweep contraction ~ {EPS / (lam1 + EPS):.2e};"
+              f" harmonic contamination <~ {rq / lam1:.2e})")
+        if EPS > 0.1 * lam1:
+            print(f"        WARNING: eps={EPS:.1e} is not small against "
+                  f"lambda_1={lam1:.3e}; inverse iteration will converge slowly "
+                  f"and the residual no longer certifies a small error.")
+    return vs[0]
+
+
+# --- harmonic 2-form (DBC): k=2 nullvector, seeded by logical dr^dchi --------
+print(f"\n[vac2] solving harmonic 2-form (k=2, DBC), eps={EPS:.1e} ...", flush=True)
+v_vac2 = solve_harmonic("vac2", 2, True)
+B_vac2 = DiscreteFunction(v_vac2, seq.basis_2, seq.e2_dbc)
 for label, fld in fields:
-    compare(label, B_vac2, 2, fld)
+    Bp2 = compare(label, B_vac2, 2, fld)
+    if args.rotate_scan:
+        rotation_scan(label, Bp2, fld, int(args.rotate_scan))
+    if not args.no_projection:
+        harmonic_fraction(label, fld, v_vac2)
 
 # --- harmonic 1-form (no-DBC / natural): k=1 nullvector, seeded by logical dzeta
-print("\n[vac1] solving harmonic 1-form (k=1, no-DBC) ...", flush=True)
-dof1_ic = seq.apply_inverse_mass_matrix(
-    seq.load(lambda x: jnp.array([0.0, 0.0, 1.0]), 1, dirichlet=False, frame='ref'),
-    1, dirichlet=False)
-vs1, it1 = find_nullspace_vectors(seq, seq.get_operators(), 1, 1, eps_null,
-                                  dirichlet=False, x0s=[dof1_ic], abs_tol=args.harmonic_tol)
-print(f"[vac1] nullvector: iters={it1[0][0]}  ||L1 v||={it1[0][1]:.3e}")
-B_vac1 = DiscreteFunction(vs1[0], seq.basis_1, seq.e1)
+print(f"\n[vac1] solving harmonic 1-form (k=1, no-DBC), eps={EPS:.1e} ...", flush=True)
+B_vac1 = DiscreteFunction(solve_harmonic("vac1", 1, False), seq.basis_1, seq.e1)
 for label, fld in fields:
     compare(label, B_vac1, 1, fld)

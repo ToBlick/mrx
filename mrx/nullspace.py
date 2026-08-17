@@ -250,16 +250,18 @@ def _nullspace_shifted_preconditioner(k: int):
             k,
             MassPreconditionerSpec(kind='tensor'),
         )
-    # For k >= 1 use the PRODUCTION default saddle preconditioner: tensor lower
-    # mass, tensor Schur inner, Schur-diagonal-Jacobi Schur outer (tensor_probe).
-    # Same solver as the main prod solve. The outer Jacobi diagonal is read from
-    # the stored schur_diaginv when assembled (else probed once on the fly).
+    # For k >= 1 use the PRODUCTION default saddle preconditioner: raw_kron
+    # lower mass, raw_kron Schur inner, Schur-diagonal-Jacobi Schur outer
+    # (raw_kron_probe). Same solver as the main prod solve. The outer Jacobi
+    # diagonal is read from the stored schur_diaginv when assembled (else
+    # probed once on the fly). Repointed from tensor 2026-08-17; raw_kron needs
+    # no eager assembly, so this no longer requires an assembled tensor mass.
     return _validate_nullspace_shifted_preconditioner(
         k,
         SaddlePointPreconditionerSpec(
             mass=default_mass_preconditioner(),
             schur=SchurPreconditionerSpec(
-                inner=MassPreconditionerSpec(kind='tensor'),
+                inner=MassPreconditionerSpec(kind='raw_kron'),
                 outer=MassPreconditionerSpec(kind='jacobi'),
             ),
             coupled=False,
@@ -287,65 +289,146 @@ def _validate_nullspace_shifted_preconditioner(k: int, preconditioner):
             f'k>=1 nullspace inverse iteration got unsupported schur.outer '
             f'kind={preconditioner.schur.outer.kind!r}; expected jacobi or exact_jacobi'
         )
-    if preconditioner.schur.inner.kind != 'tensor':
+    if preconditioner.schur.inner.kind not in ('raw_kron', 'tensor'):
         raise ValueError(
-            'k>=1 nullspace inverse iteration requires tensor schur.inner preconditioning'
+            'k>=1 nullspace inverse iteration requires raw_kron (default) or '
+            f'tensor schur.inner preconditioning; got '
+            f'{preconditioner.schur.inner.kind!r}'
         )
     return preconditioner
 
 
 # ---------------------------------------------------------------------------
-# Closed-form nullspace construction (contractible domain)
+# Direct (Hodge-decomposition) nullspace construction
 # ---------------------------------------------------------------------------
 
-def compute_nullspaces(seq, operators=None):
-    """Closed-form harmonic forms for a contractible domain.
+def direct_construction_unsupported_reason(betti_numbers):
+    """Why the direct route cannot run on this topology, or ``None`` if it can.
 
-    Assumes ``betti = (1, 0, 0, 0)``. For more general topology use
+    The direct construction obtains each harmonic form by stripping the exact
+    and coexact parts off a seed, which costs two Hodge solves in neighbouring
+    degrees.  Those solves are themselves singular whenever the neighbouring
+    harmonic space is non-trivial, so they need deflation vectors -- and the
+    route is only self-sufficient when every kernel it needs has already been
+    built by an earlier step.
+
+    Walking the construction order (k=3 DBC, k=2 DBC, k=0 NBC, k=1 NBC):
+
+    ==================  ===========================  =========================
+    construction        stage 1 (Leray)              stage 2
+    ==================  ===========================  =========================
+    k=3 DBC             closed form (no solve)       --
+    k=2 DBC             ``L_3`` DBC, kernel ``b0``   ``L_1`` DBC, kernel ``b2``
+    k=0 NBC             closed form (no solve)       --
+    k=1 NBC             ``L_0`` NBC, kernel ``b0``   ``L_2`` NBC, kernel ``b2``
+    ==================  ===========================  =========================
+
+    The ``b0`` kernels are the constants, produced in closed form by the step
+    immediately before -- which is exactly why that ordering was chosen.  The
+    ``b2`` kernels are not produced at all, so ``b2 > 0`` breaks the route.
+    Worse, it breaks it circularly: building the harmonic 1-form (DBC) needs
+    ``L_2`` DBC, whose kernel is ``b1`` -- the harmonic 2-form we were trying
+    to construct in the first place.  There is no ordering that fixes it.
+    """
+    b0, b1, b2, b3 = (int(b) for b in betti_numbers)
+    if b0 != 1:
+        return f"b0 = {b0}, expected 1 (connected domain)"
+    if b3 != 0:
+        return f"b3 = {b3}, expected 0"
+    if b2 != 0:
+        return (
+            f"b2 = {b2} > 0 (betti = {(b0, b1, b2, b3)}). The direct route "
+            "strips the exact part of the k=2 seed by inverting L_1 with "
+            "Dirichlet BCs (and the k=1 seed via L_2 with natural BCs); both "
+            "kernels have dimension b2 and neither is available. Building "
+            "them the same way needs L_2 (DBC) and L_1 (NBC), whose kernels "
+            "are the very forms under construction -- the dependency is "
+            "circular, so those Krylov solves cannot be given the deflation "
+            "vectors they need. Use the iterative route (direct=False): its "
+            "shift removes the singularity, so it needs no prior nullspace."
+        )
+    return None
+
+
+def compute_nullspaces(seq, operators=None, betti_numbers=None):
+    """Harmonic forms by direct Hodge decomposition (no inverse iteration).
+
+    Each form is built by removing the exact and coexact parts of a seed, so
+    the cost is a fixed pair of Hodge solves per form -- no shift, no outer
+    loop, and no dependence on a spectral gap.  Requires ``b2 == 0``; see
+    :func:`direct_construction_unsupported_reason`.  For anything else use
     :func:`compute_nullspaces_iterative`.
 
-    Returns the updated ``SequenceOperators`` bundle with the eight
-    ``null_*`` fields populated.
+    ``betti_numbers`` defaults to ``seq.betti_numbers``.  (It used to be
+    hard-wired to ``(1, 0, 0, 0)``, which contradicted the function's own
+    output: that tuple allocates *zero* rows for the k=1 NBC and k=2 DBC
+    slots, and the code then wrote one row into each.  What it actually
+    computes is the ``b1``-driven pair, so the Betti numbers must come from
+    the sequence.)
+
+    Returns the updated ``SequenceOperators`` bundle.
     """
     if operators is None:
         operators = seq._require_operators()
+    if betti_numbers is None:
+        betti_numbers = seq.betti_numbers
+    betti_numbers = tuple(int(b) for b in betti_numbers)
+
+    reason = direct_construction_unsupported_reason(betti_numbers)
+    if reason is not None:
+        raise ValueError(
+            "compute_nullspaces: the direct construction does not support "
+            f"this topology: {reason}"
+        )
 
     operators = _commit(seq, init_nullspaces(
-        seq, operators, betti_numbers=(1, 0, 0, 0)))
+        seq, operators, betti_numbers=betti_numbers))
 
-    # k = 3, Dirichlet: lift the constant 1-vector via M^{-1}.
-    v3 = seq.apply_inverse_mass_matrix(
-        jnp.ones(seq.n3_dbc), 3, dirichlet=True, operators=operators)
-    v3 = v3 / seq.l2_norm(v3, 3, dirichlet=True)
-    operators = _commit(seq, _set_null(operators, 3, True, v3[None, :]))
+    # Order is load-bearing: each solve below is deflated against a kernel
+    # that a previous step has already stored (see the table in
+    # direct_construction_unsupported_reason).
+    if _n_vectors(betti_numbers, 3, True):
+        # k = 3, Dirichlet: lift the constant 1-vector via M^{-1}.
+        v3 = seq.apply_inverse_mass_matrix(
+            jnp.ones(seq.n3_dbc), 3, dirichlet=True, operators=operators)
+        v3 = v3 / seq.l2_norm(v3, 3, dirichlet=True)
+        operators = _commit(seq, _set_null(operators, 3, True, v3[None, :]))
 
-    # k = 2, Dirichlet: Leray-project 1, then subtract its curl contribution.
-    v, _ = seq.apply_leray_projection(jnp.ones(seq.n2_dbc), k=2)
-    curl_v_dual = seq.apply_derivative_matrix(
-        v, 1, dirichlet_in=True, dirichlet_out=True, transpose=True,
-        operators=operators)
-    a = seq.apply_inverse_hodge_laplacian(
-        curl_v_dual, 1, dirichlet=True, operators=operators)
-    curl_a = seq.apply_strong_curl(a, True, True)
-    v2 = v - curl_a
-    v2 = v2 / seq.l2_norm(v2, 2, dirichlet=True)
-    operators = _commit(seq, _set_null(operators, 2, True, v2[None, :]))
+    if _n_vectors(betti_numbers, 2, True):
+        # k = 2, Dirichlet: Leray-project the seed (removes the coexact part
+        # via L_3 DBC, deflated by the k=3 form just stored), then subtract
+        # the im(curl) part via L_1 DBC.
+        seed2 = _logical_constant_seed(seq, operators, 2, True, (0.0, 0.0, 1.0))
+        v, _ = seq.apply_leray_projection(seed2, k=2)
+        curl_v_dual = seq.apply_derivative_matrix(
+            v, 1, dirichlet_in=True, dirichlet_out=True, transpose=True,
+            operators=operators)
+        a = seq.apply_inverse_hodge_laplacian(
+            curl_v_dual, 1, dirichlet=True, operators=operators)
+        curl_a = seq.apply_strong_curl(a, True, True)
+        v2 = v - curl_a
+        v2 = v2 / seq.l2_norm(v2, 2, dirichlet=True)
+        operators = _commit(seq, _set_null(operators, 2, True, v2[None, :]))
 
-    # k = 0, no Dirichlet BC: the constant function.
-    v0 = jnp.ones(seq.n0)
-    v0 = v0 / seq.l2_norm(v0, 0, dirichlet=False)
-    operators = _commit(seq, _set_null(operators, 0, False, v0[None, :]))
+    if _n_vectors(betti_numbers, 0, False):
+        # k = 0, no Dirichlet BC: the constant function.
+        v0 = jnp.ones(seq.n0)
+        v0 = v0 / seq.l2_norm(v0, 0, dirichlet=False)
+        operators = _commit(seq, _set_null(operators, 0, False, v0[None, :]))
 
-    # k = 1, no Dirichlet BC: Leray-project 1, subtract its curl contribution.
-    v, _ = seq.apply_leray_projection(jnp.ones(seq.n1), k=1)
-    curl_v_dual = seq.apply_derivative_matrix(
-        v, 1, dirichlet_in=False, dirichlet_out=False, operators=operators)
-    a = seq.apply_inverse_hodge_laplacian(
-        curl_v_dual, 2, dirichlet=False, operators=operators)
-    curl_a = seq.apply_weak_curl(a, False, False)
-    v1 = v - curl_a
-    v1 = v1 / seq.l2_norm(v1, 1, dirichlet=False)
-    operators = _commit(seq, _set_null(operators, 1, False, v1[None, :]))
+    if _n_vectors(betti_numbers, 1, False):
+        # k = 1, no BC: Leray-project (removes grad via L_0 NBC, deflated by
+        # the constants just stored), then subtract the coexact part via L_2.
+        seed1 = _logical_constant_seed(seq, operators, 1, False, (0.0, 0.0, 1.0))
+        v, _ = seq.apply_leray_projection(seed1, k=1)
+        curl_v_dual = seq.apply_derivative_matrix(
+            v, 1, dirichlet_in=False, dirichlet_out=False, operators=operators)
+        a = seq.apply_inverse_hodge_laplacian(
+            curl_v_dual, 2, dirichlet=False, operators=operators)
+        curl_a = seq.apply_weak_curl(a, False, False)
+        v1 = v - curl_a
+        v1 = v1 / seq.l2_norm(v1, 1, dirichlet=False)
+        operators = _commit(seq, _set_null(operators, 1, False, v1[None, :]))
 
     return operators
 
@@ -354,40 +437,41 @@ def compute_nullspaces(seq, operators=None):
 # Iterative nullspace construction (arbitrary topology)
 # ---------------------------------------------------------------------------
 
-def _toroidal_vacuum_field(seq):
-    """Return ``B(x) = (1/R) e_zeta`` in Cartesian physical coordinates.
+def _logical_constant_seed(seq, operators, k, dirichlet, components):
+    """L2-project a constant *reference-frame* k-form onto V_k.
 
-    ``x`` is the logical coordinate. ``e_zeta`` is the unit tangent along the
-    third logical coordinate direction, i.e. the normalized third column of
-    ``DF(x)``. ``R = sqrt(X^2 + Y^2)`` uses physical coordinates
-    ``F(x) = (X, Y, Z)``.
-
-    Used as the analytic initial guess for the harmonic 1-form (no BC) and
-    2-form (DBC) on toroidal geometries.
+    ``components`` are the coefficients of the form in the reference basis
+    (``dr, dchi, dzeta`` for k=1; ``dchi^dzeta, dr^dzeta, dr^dchi`` for k=2),
+    so the seed is purely topological -- the geometry enters only through the
+    ``M_k^{-1}`` that turns the dual load back into DoFs.  That is what makes
+    these guesses valid on an arbitrary stellarator and not just on a toroid:
+    no ``1/R``, no physical frame, and no sampling of a Cartesian field (so no
+    exposure to the zeta = 0 quasi-periodicity seam).
     """
-    DF = jax.jacfwd(seq.map)
-
-    def B(x_hat):
-        x, y, _ = seq.map(x_hat)
-        dF = DF(x_hat)
-        dzeta = dF[:, 2]
-        dzeta_norm = jnp.linalg.norm(dzeta)
-        R = jnp.sqrt(x**2 + y**2)
-        return dzeta / (dzeta_norm * R)
-
-    return B
+    comps = jnp.asarray(components, dtype=jnp.float64)
+    return seq.apply_inverse_mass_matrix(
+        seq.load(lambda x_hat: comps, k, dirichlet=dirichlet, frame='ref'),
+        k, dirichlet=dirichlet, operators=operators)
 
 
 def _initial_guesses(seq, operators, k, dirichlet, n_vec):
     """Return a length-``n_vec`` list of analytic initial guesses (or ``None``).
 
-    Cases covered (the four non-trivial harmonic spaces on a
-    ``betti = (1, 1, 0, 0)`` solid torus):
+    Every vector-valued case uses the constant reference-frame form of the
+    matching degree (see :func:`_logical_constant_seed`):
 
-    * ``k = 0, no DBC``: the constant scalar field ``1``.
-    * ``k = 1, no DBC``: ``1/R * e_zeta`` projected to a 1-form.
-    * ``k = 2, DBC``  : ``1/R * e_zeta`` projected to a 2-form.
-    * ``k = 3, DBC``  : the constant, lifted via ``M_3^{-1}``.
+    * ``k = 0, no DBC``: the constant scalar field ``1``           (``b0``).
+    * ``k = 1, no DBC``: ``dzeta``          -> ``(0, 0, 1)``       (``b1``).
+    * ``k = 2, DBC``   : ``dr ^ dchi``      -> ``(0, 0, 1)``       (``b1``).
+    * ``k = 3, DBC``   : the constant, lifted via ``M_3^{-1}``     (``b0``).
+
+    The k=1/k=2 pair are the toroidal-loop and toroidal-flux classes on a solid
+    torus.  ``b2 > 0`` topologies (a shell, e.g. betti ``(1, 1, 1, 0)``) also
+    populate ``k = 2, no DBC`` and ``k = 1, DBC``; the natural seeds there are
+    the *poloidal-surface* classes ``dchi ^ dzeta`` and ``dr``, i.e.
+    ``(1, 0, 0)`` in both cases.  Those are left as ``None`` (random init)
+    until a b2 > 0 sequence is actually exercised -- a seed that happens to be
+    M-orthogonal to the harmonic space is worse than a random one.
 
     Any remaining slots are ``None`` (fall back to the random init).
     """
@@ -400,21 +484,18 @@ def _initial_guesses(seq, operators, k, dirichlet, n_vec):
         guesses[0] = seq.apply_inverse_mass_matrix(
             jnp.ones(seq.n3_dbc), 3, dirichlet=True, operators=operators)
     elif k == 1 and not dirichlet:
-        # Logical-frame dzeta = (0, 0, 1): the constant reference covector. This is
-        # the harmonic 1-form on a torus and a geometry-robust guess on W7-X (the
-        # physical 1/R e_zeta field coincides with it only for the toroid map).
-        guesses[0] = seq.apply_inverse_mass_matrix(
-            seq.load(lambda x_hat: jnp.array([0.0, 0.0, 1.0]), 1, dirichlet=False,
-                     frame='ref'),
-            1, dirichlet=False, operators=operators)
+        guesses[0] = _logical_constant_seed(
+            seq, operators, 1, False, (0.0, 0.0, 1.0))
     elif k == 2 and dirichlet:
-        guesses[0] = seq.apply_inverse_mass_matrix(
-            seq.load(_toroidal_vacuum_field(seq), 2, dirichlet=True), 2, dirichlet=True, operators=operators)
+        # dr ^ dchi: zero flux through the rho = const boundary, so the seed
+        # already lives in the DBC space instead of being projected into it.
+        guesses[0] = _logical_constant_seed(
+            seq, operators, 2, True, (0.0, 0.0, 1.0))
     return guesses
 
 
 def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
-                                 eps=1e-6, abs_tol=None, inner_tol=1e-6,
+                                 eps=1e-4, abs_tol=None, inner_tol=1e-6,
                                  maxiter=100):
     """Compute harmonic forms via shift-and-invert iteration.
 
@@ -434,16 +515,26 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
         ``(b0, b1, b2, b3)``. Defaults to ``seq.betti_numbers``. Must have
         ``b0 == 1`` and ``b3 == 0``.
     eps : float
-        Shift used to regularise the stiffness block.
+        Shift used to regularise the stiffness block.  A *fixed* constant, not
+        a mesh-dependent one: in FEEC the discrete harmonic space lies exactly
+        in ``ker(L_k)`` (its dimension is the Betti number), so there is no
+        h-dependent near-null floor to chase.  The only requirement is
+        ``eps << lambda_1``, and ``lambda_1`` -- the first non-harmonic
+        eigenvalue -- is a continuum quantity, independent of the mesh and
+        O(1) once lengths are normalised to a unit major radius.  Shrinking
+        ``eps`` with h therefore buys no outer convergence (the ratio is
+        already ~1e-4 per sweep) while making the shifted solve
+        correspondingly worse conditioned.  Verify the margin with
+        :func:`estimate_spectral_gap` rather than assuming it.
     abs_tol : float, optional
         Absolute tolerance on the Hodge-Laplacian residual ``||L_k v||``.
-        Defaults to ``seq.tol``.
+        Defaults to ``seq.tol``.  Keep it comfortably above ``inner_tol``;
+        the outer loop's stall guard catches the rest.
     inner_tol : float
         Tolerance for the inner shifted MINRES solve at each power-iteration
-        step.  Inverse iteration only needs the inner solve to be accurate
-        enough to make progress; the outer loop drives ``||L_k v||`` to
-        ``abs_tol``.  Default 1e-3 is much cheaper than ``seq.tol`` on the
-        near-singular shifted system.
+        step.  This sets an accuracy floor on the outer iteration (see
+        :func:`find_nullspace_vectors`); 1e-6 is the measured-good value on
+        W7-X and 1e-3 is not.
 
     Returns
     -------
@@ -500,7 +591,8 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
 
 def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
                            x0s=None, abs_tol=None, inner_tol=1e-6,
-                           maxiter=100):
+                           maxiter=100, stall_ratio=0.9,
+                           use_coarse=False):
     """Find ``n_vectors`` harmonic ``k``-forms via inverse iteration.
 
     Each vector is found by repeatedly applying ``(S_k + eps M_k)^{-1} M_k``
@@ -516,18 +608,48 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         Absolute tolerance on the residual ``||L_k v||``. If the normalised
         initial guess already satisfies it (after M-orthogonalisation
         against previously-found vectors), it is accepted directly and no
-        inverse iteration is run for that slot. The inner iteration also
-        terminates once ``||L_k v||`` falls below ``abs_tol`` or stalls.
+        inverse iteration is run for that slot.
+    inner_tol : float
+        Tolerance for the inner shifted saddle solve.  The outer loop tests
+        the *true* residual of whatever vector comes back, so a loose inner
+        solve cannot make the exit criterion lie -- but it does set an
+        accuracy FLOOR: the perturbed iteration's fixed point is displaced by
+        O(inner_tol), so the outer residual plateaus there and no number of
+        sweeps gets below it.  Measured on W7-X: 1e-3 plateaus far above the
+        harmonic vector (30% field error), 1e-6 converges.  Do not loosen this
+        without re-measuring -- and note it interacts with ``stall_ratio``,
+        which will happily accept the plateau as convergence.
+    stall_ratio : float
+        Outer-loop stall guard.  Iteration stops once a sweep fails to reduce
+        the residual by at least this factor.  Without it a request for an
+        ``abs_tol`` below what ``inner_tol`` can deliver silently burns all
+        ``maxiter`` saddle solves.  With it, an ``inner_tol`` that is too loose
+        turns a slow grind into an early wrong answer, so the two must be set
+        together.
+    use_coarse : bool
+        Feed the current iterate to the shifted solve as a rank-1 coarse
+        space (see the note on circularity below).  Default OFF: it is sound
+        but measured NOT to pay.  On W7-X (32^3 h5, ns=(8,16,16)) it cost 1-2
+        extra outer sweeps and left a residual 5 orders larger, for a vector
+        identical to 5 significant figures in the reconstructed field.  The
+        likely mechanism is that scaling the preconditioner by 1/eps along one
+        direction skews the inner MINRES stopping test toward that direction,
+        so the solve exits with the remaining components less converged.
 
     Returns
     -------
     vs : jnp.ndarray
         Stacked array of shape ``(n_vectors, n_k)``. Empty shape
         ``(0, n_k)`` when ``n_vectors == 0``.
-    iters : list of (int, float)
-        ``(n_iters, final_residual_norm)`` per vector, where the residual
-        norm is ``||L_k v||``. ``n_iters == 0`` means the initial guess
-        was accepted without iteration.
+    iters : list of (int, float, float)
+        ``(n_iters, residual, rayleigh)`` per vector: the Hodge-Laplacian
+        residual ``||L_k v||`` and the Rayleigh quotient
+        ``v^T L_k v / v^T M_k v``.  ``n_iters == 0`` means the initial guess
+        was accepted without iteration.  The Rayleigh quotient is the
+        interpretable one -- it carries the units of an eigenvalue, so it is
+        directly comparable to the first non-harmonic eigenvalue (see
+        :func:`estimate_spectral_gap`), whereas ``||L_k v||`` measures a dual
+        vector in the primal mass norm and its scale drifts with resolution.
     """
     if abs_tol is None:
         abs_tol = seq.tol
@@ -540,7 +662,8 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
     shifted_preconditioner = _nullspace_shifted_preconditioner(k)
 
     for idx in range(n_vectors):
-        if x0s is not None and x0s[idx] is not None:
+        seeded = x0s is not None and idx < len(x0s) and x0s[idx] is not None
+        if seeded:
             v0 = x0s[idx]
         else:
             v0 = jax.random.normal(jax.random.PRNGKey(idx), (n,))
@@ -559,22 +682,46 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         res_init = float(seq.l2_norm(Lv0, k, dirichlet=dirichlet))
         if res_init <= abs_tol:
             found.append(v0)
-            iters.append((0, res_init))
+            iters.append((0, res_init, float(v0 @ Lv0)))
             continue
 
-        def body_fn(state):
-            v, res, i = state
+        # Rank-1 coarse space for the shifted solve.  ``S_k + eps M_k`` is
+        # near-singular exactly along the harmonic direction, and the
+        # production preconditioner knows nothing about it, so that direction
+        # survives as a lone ~1/eps outlier in the preconditioned spectrum.
+        # Handing the current iterate over as a coarse vector lets
+        # _wrap_shifted_harmonic_coarse_correction invert that mode exactly
+        # and removes the outlier.
+        #
+        # This is NOT circular.  A preconditioner changes the Krylov path, not
+        # the solution, so the fixed point of the inverse iteration is
+        # untouched; and at eps > 0 the shifted solve does no nullspace
+        # deflation at all (see apply_inverse_shifted_hodge_laplacian, where
+        # vs_upper is empty unless eps == 0), so the stored vector can only
+        # ever reach the preconditioner.  A poor coarse vector costs
+        # convergence rate, never correctness.
+        #
+        # Gated on ``seeded`` because the correction inverts the coarse mode
+        # as 1/eps, which is right only if that mode really is (near) the
+        # kernel.  An unseeded slot is either a random start or -- as in
+        # estimate_spectral_gap -- deliberately aimed *outside* the kernel,
+        # where the true eigenvalue is lambda_1 >> eps and a 1/eps coarse
+        # solve would over-amplify by lambda_1/eps.
+        slot_coarse = bool(use_coarse and seeded)
+        solve_ops = operators
+        if slot_coarse:
+            solve_ops = _set_null(operators, k, dirichlet, v0[None, :])
+
+        def body_fn(state, solve_ops=solve_ops, slot_coarse=slot_coarse):
+            v, res, _res_prev, _rq, i = state
             Mv = seq.apply_mass_matrix(
                 v, k, dirichlet=dirichlet, operators=operators)
             w = seq.apply_inverse_shifted_hodge_laplacian(
                 Mv, k, eps, dirichlet=dirichlet, guess=v,
-                operators=operators,
+                operators=solve_ops,
                 preconditioner=shifted_preconditioner,
                 tol=inner_tol,
-                # Inverse iteration is the mechanism that discovers the
-                # harmonic vectors, so the shifted solve used here must not
-                # depend on any nullspace-aware coarse correction.
-                use_harmonic_coarse=False)
+                use_harmonic_coarse=slot_coarse)
             for u in found:
                 w = w - (u @ seq.apply_mass_matrix(
                     w, k, dirichlet=dirichlet, operators=operators)) * u
@@ -582,16 +729,51 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             Lw = seq.apply_hodge_laplacian(
                 w, k, dirichlet=dirichlet, operators=operators)
             res_new = seq.l2_norm(Lw, k, dirichlet=dirichlet)
-            return w, res_new, i + 1
+            return w, res_new, res, w @ Lw, i + 1
 
         def cond_fn(state):
-            _, res, i = state
-            return (res > abs_tol) & (i < maxiter)
+            _, res, res_prev, _rq, i = state
+            progressing = res < stall_ratio * res_prev
+            # i == 0 forces the first sweep; res/res_prev are inf until then.
+            return (i == 0) | ((res > abs_tol) & (i < maxiter) & progressing)
 
-        init_state = (v0, jnp.inf, 0)
-        v_final, res_final, n_iters = jax.lax.while_loop(
+        init_state = (v0, jnp.inf, jnp.inf, jnp.inf, 0)
+        v_final, res_final, _, rq_final, n_iters = jax.lax.while_loop(
             cond_fn, body_fn, init_state)
         found.append(v_final)
-        iters.append((int(n_iters), float(res_final)))
+        iters.append((int(n_iters), float(res_final), float(rq_final)))
 
     return jnp.stack(found), iters
+
+
+def estimate_spectral_gap(seq, operators, k, dirichlet, eps, *,
+                          n_harmonic=None, x0s=None, maxiter=40, **kwargs):
+    """Estimate the first non-harmonic eigenvalue ``lambda_1`` of ``L_k``.
+
+    Inverse iteration is run for one slot *more* than the harmonic dimension.
+    The extra slot is M-orthogonalised against the harmonic vectors, so it
+    converges to the lowest eigenvector outside the kernel and its Rayleigh
+    quotient converges to ``lambda_1`` -- from above, and quadratically, since
+    the problem is symmetric.  It never reaches ``abs_tol``, so it exits on the
+    stall guard.
+
+    The point of the number is to certify the shift: inverse iteration on
+    ``(S_k + eps M_k)^{-1} M_k`` reduces non-harmonic content by
+    ``eps / (lambda_1 + eps)`` per sweep, and the residual-to-error conversion
+    for the harmonic vectors themselves is also governed by ``lambda_1``.
+    Both statements are assumptions about a quantity nothing else measures.
+
+    Returns
+    -------
+    vs : jnp.ndarray  the harmonic vectors (the extra slot is dropped).
+    iters : list      per-slot ``(n_iters, residual, rayleigh)``.
+    lambda_1 : float  Rayleigh quotient of the extra slot.
+    """
+    if n_harmonic is None:
+        n_harmonic = _n_vectors(seq.betti_numbers, k, dirichlet)
+    if x0s is None:
+        x0s = _initial_guesses(seq, operators, k, dirichlet, n_harmonic)
+    vs, iters = find_nullspace_vectors(
+        seq, operators, k, n_harmonic + 1, eps, dirichlet=dirichlet,
+        x0s=list(x0s) + [None], maxiter=maxiter, **kwargs)
+    return vs[:n_harmonic], iters, iters[-1][2]

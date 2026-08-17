@@ -87,124 +87,18 @@ class TensorDiagonalBlockInverseFactors(eqx.Module):
     greville_inv_sqrt_D: Optional[jnp.ndarray] = None
 
 
-class K0TensorMassPreconditionerFactors(eqx.Module):
-    bulk: TensorDiagonalBlockInverseFactors
-    schur_inv: Optional[jnp.ndarray] = None
 
 
-class K1TensorMassPreconditionerFactors(eqx.Module):
-    r_indices: jnp.ndarray
-    theta_bulk_indices: jnp.ndarray
-    zeta_bulk_indices: jnp.ndarray
-    rt_r_size: int = eqx.field(static=True)
-    rt_theta_size: int = eqx.field(static=True)
-    arr: TensorDiagonalBlockInverseFactors
-    theta: TensorDiagonalBlockInverseFactors
-    zeta: TensorDiagonalBlockInverseFactors
-    bulk_schur: bool = eqx.field(static=True, default=False)
-    schur_inv: Optional[jnp.ndarray] = None
 
 
-class K2TensorMassPreconditionerFactors(eqx.Module):
-    r_bulk_indices: jnp.ndarray
-    theta_indices: jnp.ndarray
-    zeta_indices: jnp.ndarray
-    r_bulk_size: int = eqx.field(static=True)
-    theta_size: int = eqx.field(static=True)
-    zeta_size: int = eqx.field(static=True)
-    r_bulk: TensorDiagonalBlockInverseFactors
-    theta: TensorDiagonalBlockInverseFactors
-    zeta: TensorDiagonalBlockInverseFactors
-    bulk_schur: bool = eqx.field(static=True, default=False)
-    schur_inv: Optional[jnp.ndarray] = None
 
 
-class K0MassSurgeryPreconditionerFactors(eqx.Module):
-    surgery_size: int = eqx.field(static=True)
-    apply_data: ExtractedMassApplyData
-    surgery_diaginv: jnp.ndarray
-    ass: jnp.ndarray
-    # Explicit index layout (contiguous for k=0: surgery first, then bulk) so the
-    # generic surgery-Schur layer can gather/scatter and fall back to the
-    # extracted-submatrix coupling uniformly with k=1/k=2.
-    surgery_indices: jnp.ndarray
-    bulk_indices: jnp.ndarray
-    surgery_to_bulk_data: Optional[RestrictedExtractedMassApplyData] = None
-    bulk_to_surgery_data: Optional[RestrictedExtractedMassApplyData] = None
-    # Optional precomputed dense surgery->bulk coupling block (bulk x surgery).
-    # When present, the coupling applies use dense matvecs (``coupling_sb @`` /
-    # ``coupling_sb.T @``; M_0 is symmetric) instead of a full matrix-free M_0
-    # apply (the restricted path still runs a whole-grid mass apply, O(n^3 p^6),
-    # on a mostly-zero input). The surgery space is the polar axis (small), so
-    # the block is cheap to store/probe. Mirrors the k=0 Hodge ``core_coupling``.
-    coupling_sb: Optional[jnp.ndarray] = None
 
 
-class K1MassSurgeryPreconditionerFactors(eqx.Module):
-    surgery_indices: jnp.ndarray
-    bulk_indices: jnp.ndarray
-    r_indices: jnp.ndarray
-    theta_bulk_indices: jnp.ndarray
-    zeta_bulk_indices: jnp.ndarray
-    rt_indices: jnp.ndarray
-    surgery_size: int = eqx.field(static=True)
-    rt_r_size: int = eqx.field(static=True)
-    rt_theta_size: int = eqx.field(static=True)
-    bulk_rt_size: int = eqx.field(static=True)
-    bulk_zeta_size: int = eqx.field(static=True)
-    apply_data: ExtractedMassApplyData
-    surgery_diaginv: jnp.ndarray
-    ass: jnp.ndarray
-    surgery_to_bulk_data: Optional[RestrictedExtractedMassApplyData] = None
-    bulk_to_surgery_data: Optional[RestrictedExtractedMassApplyData] = None
-    rt_atr_data: Optional[RestrictedExtractedMassApplyData] = None
-    rt_art_data: Optional[RestrictedExtractedMassApplyData] = None
-    rt_to_zeta_data: Optional[RestrictedExtractedMassApplyData] = None
-    zeta_to_rt_data: Optional[RestrictedExtractedMassApplyData] = None
-    # Optional precomputed dense surgery->bulk coupling block (bulk x surgery).
-    # When present, ``_apply_surgery_to_bulk_coupling`` /
-    # ``_apply_bulk_to_surgery_coupling`` use dense matvecs (``C @`` /
-    # ``C.T @``; the extracted operator is symmetric) instead of a full
-    # matrix-free apply of the extracted operator. Built by the stiffness
-    # surgery factory (curl-curl K_1) and, when ``precompute_coupling`` is on,
-    # by the mass surgery factory (M_1) too -- in both cases the O(n^3 p^6)
-    # per-call apply of the restricted-sparse path is avoided. Only the
-    # *surgery<->bulk* block is densified; the inner r/theta/zeta bulk<->bulk
-    # couplings stay matrix-free (they are bulk-scale, not storable densely).
-    coupling_sb: Optional[jnp.ndarray] = None
 
 
-class K2MassSurgeryPreconditionerFactors(eqx.Module):
-    surgery_indices: jnp.ndarray
-    bulk_indices: jnp.ndarray
-    r_bulk_indices: jnp.ndarray
-    theta_indices: jnp.ndarray
-    zeta_indices: jnp.ndarray
-    surgery_size: int = eqx.field(static=True)
-    r_bulk_size: int = eqx.field(static=True)
-    theta_size: int = eqx.field(static=True)
-    zeta_size: int = eqx.field(static=True)
-    apply_data: ExtractedMassApplyData
-    surgery_diaginv: jnp.ndarray
-    ass: jnp.ndarray
-    surgery_to_bulk_data: Optional[RestrictedExtractedMassApplyData] = None
-    bulk_to_surgery_data: Optional[RestrictedExtractedMassApplyData] = None
-    r_to_theta_data: Optional[RestrictedExtractedMassApplyData] = None
-    theta_to_r_data: Optional[RestrictedExtractedMassApplyData] = None
-    rt_to_zeta_data: Optional[RestrictedExtractedMassApplyData] = None
-    zeta_to_rt_data: Optional[RestrictedExtractedMassApplyData] = None
-    # Optional precomputed dense surgery->bulk coupling block (bulk x surgery);
-    # see ``K1MassSurgeryPreconditionerFactors.coupling_sb``. Densifies only the
-    # surgery<->bulk coupling (M_2 symmetric => bulk->surgery is its transpose);
-    # the inner r/theta/zeta bulk<->bulk couplings stay matrix-free.
-    coupling_sb: Optional[jnp.ndarray] = None
 
 
-class MassSurgeryPreconditioner(eqx.Module):
-    k0: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    k1: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    k2: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    k3: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
 
 
 class TensorMassPreconditioner(eqx.Module):
@@ -220,9 +114,16 @@ class TensorMassPreconditioner(eqx.Module):
 
 
 class MassPreconditioners(eqx.Module):
+    # ``surgery`` is annotated loosely because MassSurgeryPreconditioner now
+    # lives in mrx/experimental/mass_surgery.py, and importing it here at class
+    # definition time would defeat the lazy re-export below (and reintroduce the
+    # import cycle). The slot still holds exactly that type when populated.
     jacobi: Optional[JacobiMassPreconditioner] = None
-    surgery: Optional[MassSurgeryPreconditioner] = None
+    surgery: Optional[eqx.Module] = None
     tensor: Optional[TensorMassPreconditioner] = None
+    # raw_kron preconditioner: {(k, dirichlet): RawKronMassFactors}. The default
+    # mass path as of 2026-08-17; see docs/research/mass_preconditioner_pivot.md.
+    raw_kron: Optional[dict] = None
 
 
 def tensor_mass_rank_for_degree(tensor: TensorMassPreconditioner, k: int) -> int:
@@ -233,11 +134,16 @@ def tensor_mass_rank_for_degree(tensor: TensorMassPreconditioner, k: int) -> int
 
 @dataclass(frozen=True)
 class MassPreconditionerSpec:
-    # kinds: none | jacobi | tensor (richardson/chebyshev removed 2026-08-14,
-    # see mrx/experimental/chebyshev.py and docs/PRODUCTION.md)
-    kind: str = 'tensor'
+    # kinds: none | jacobi | tensor | raw_kron
+    #   raw_kron = Kronecker model on the raw grid with pseudoinverse
+    #     extraction transfer; the production default since
+    #     2026-08-17 (docs/research/mass_preconditioner_pivot.md)
+    #   tensor   = surgery/Schur split, retained as a fallback; its machinery
+    #     lives in mrx/experimental/mass_surgery.py
+    #   (richardson/chebyshev removed 2026-08-14, see mrx/experimental/chebyshev.py)
+    kind: str = 'raw_kron'
     surgery_schur: bool = False
-    schur_diag_mode: str = 'tensor_probe'
+    schur_diag_mode: str = 'raw_kron_probe'
     smoother: Optional[MassPreconditionerSpec] = None
 
 
@@ -259,7 +165,14 @@ class SaddlePointPreconditionerSpec:
 
 
 def default_mass_preconditioner() -> MassPreconditionerSpec:
-    return MassPreconditionerSpec(kind='tensor', surgery_schur=True)
+    """The production mass preconditioner: the raw_kron preconditioner.
+
+    Changed 2026-08-17 from ``kind='tensor', surgery_schur=True``. raw_kron needs no
+    surgery split, no dense Schur complement and no CP fit, and its
+    ``(CC^T)^-1`` is metric independent -- it depends only on the sparsity of
+    ``E``, so it never rebuilds when the geometry changes.
+    """
+    return MassPreconditionerSpec(kind='raw_kron', surgery_schur=False)
 
 
 def default_saddle_preconditioner() -> SaddlePointPreconditionerSpec:
@@ -319,53 +232,10 @@ def set_mass_jacobi_pair(preconds: Optional[MassPreconditioners], k: int, pair: 
     )
 
 
-def _mass_surgery_pair(preconds: Optional[MassPreconditioners], k: int) -> Optional[BoundaryConditionPair]:
-    if preconds is None or preconds.surgery is None:
-        return None
-    match k:
-        case 0:
-            return preconds.surgery.k0
-        case 1:
-            return preconds.surgery.k1
-        case 2:
-            return preconds.surgery.k2
-        case 3:
-            return preconds.surgery.k3
-    raise ValueError("k must be 0, 1, 2 or 3")
 
 
-def set_mass_surgery_pair(preconds: Optional[MassPreconditioners], k: int, pair: BoundaryConditionPair):
-    if preconds is None:
-        preconds = MassPreconditioners()
-    surgery = preconds.surgery if preconds.surgery is not None else MassSurgeryPreconditioner()
-    match k:
-        case 0:
-            surgery = eqx.tree_at(lambda data: data.k0, surgery, pair)
-        case 1:
-            surgery = eqx.tree_at(lambda data: data.k1, surgery, pair)
-        case 2:
-            surgery = eqx.tree_at(lambda data: data.k2, surgery, pair)
-        case 3:
-            surgery = eqx.tree_at(lambda data: data.k3, surgery, pair)
-        case _:
-            raise ValueError("k must be 0, 1, 2 or 3")
-    return eqx.tree_at(
-        lambda data: data.surgery,
-        preconds,
-        surgery,
-        is_leaf=lambda x: x is None,
-    )
 
 
-def set_mass_surgery(preconds: Optional[MassPreconditioners], data: MassSurgeryPreconditioner):
-    if preconds is None:
-        preconds = MassPreconditioners()
-    return eqx.tree_at(
-        lambda payload: payload.surgery,
-        preconds,
-        data,
-        is_leaf=lambda x: x is None,
-    )
 
 
 def set_mass_tensor(preconds: Optional[MassPreconditioners], data: TensorMassPreconditioner):
@@ -379,19 +249,8 @@ def set_mass_tensor(preconds: Optional[MassPreconditioners], data: TensorMassPre
     )
 
 
-def mass_surgery_available(seq, preconds: Optional[MassPreconditioners], k: int) -> bool:
-    del seq
-    if k not in (0, 1, 2) or preconds is None or preconds.surgery is None:
-        return False
-    pair = _mass_surgery_pair(preconds, k)
-    return pair is not None and pair.free is not None and pair.dbc is not None
 
 
-def _select_mass_surgery_factors(preconds: Optional[MassPreconditioners], k: int, dirichlet: bool):
-    pair = _mass_surgery_pair(preconds, k)
-    if pair is None:
-        raise ValueError(f"Mass surgery preconditioner k={k} is not assembled")
-    return select_boundary_data(pair, dirichlet, f"Mass surgery k={k}")
 
 
 def set_mass_rtzblock_factor(preconds: Optional[MassPreconditioners], k: int, dirichlet: bool, factor_data):
@@ -402,19 +261,70 @@ def invalidate_mass_rtzblock(preconds: Optional[MassPreconditioners], k: int):
     return preconds
 
 
+def _extracted_mass_diagonal(e, d_raw, mass_apply, *, batch_size: int = 16):
+    """``diag(E M E^T)`` from the raw diagonal, probing only the coupled rows.
+
+    ``E`` has exactly two kinds of row (verified for k=0,1,2 x both BCs at
+    every resolution):
+
+    * **bulk** -- a single nonzero, so ``(E M E^T)_ii = v^2 M_aa`` and the
+      closed-form raw diagonal supplies it outright, with no operator apply;
+    * **coupled** -- the polar rows, which mix several raw DOFs and therefore
+      pick up *off-diagonal* entries of ``M`` that no diagonal can supply.
+
+    Only the coupled rows are probed. There are ``3 n_z / 5 n_z / 2 n_z / 0``
+    of them for k=0/1/2/3, so the apply count drops from ``O(N)`` to
+    ``O(n_z)`` while the result stays exact -- this is not an approximation of
+    the probed diagonal, it agrees with it to floating point.
+    """
+    rows = np.asarray(e.rows)
+    cols = np.asarray(e.cols)
+    vals = np.asarray(e.vals)
+    n_rows, n_raw = (int(s) for s in e.forward_shape)
+    d_raw_np = np.asarray(d_raw)
+
+    counts = np.bincount(rows, minlength=n_rows)
+    diag = np.zeros(n_rows, dtype=np.float64)
+
+    # Bulk rows: one nonzero each, so only the raw diagonal is involved.
+    single = counts[rows] == 1
+    diag[rows[single]] = (vals[single] ** 2) * d_raw_np[cols[single]]
+
+    # Coupled rows: e_i^T M e_i with e_i the (short) raw row of E.
+    coupled = np.flatnonzero(counts > 1)
+    for start in range(0, coupled.size, batch_size):
+        blk = coupled[start:start + batch_size]
+        probe = np.zeros((blk.size, n_raw), dtype=np.float64)
+        for t, r in enumerate(blk):
+            sel = rows == r
+            probe[t, cols[sel]] = vals[sel]
+        probe_j = jnp.asarray(probe)
+        images = jax.vmap(mass_apply)(probe_j)
+        diag[blk] = np.asarray(jnp.sum(images * probe_j, axis=1))
+
+    return jnp.asarray(diag)
+
+
 def build_mass_jacobi_pair(seq, mass_apply, k: int) -> BoundaryConditionPair:
     """Build a Jacobi (diagonal-inverse) pair for the k-form mass matrix.
 
     ``mass_apply`` is the raw-DOF-space matvec ``v -> M_k v`` returned by
-    :func:`mrx.operators.build_matrixfree_mass_apply`.  The diagonal
-    ``diag(E M_k E^T)`` is extracted by probing with canonical basis vectors
-    via :func:`diag_matvec`; no assembled sparse matrix is needed.
+    :func:`mrx.operators.build_matrixfree_mass_apply`.
+
+    ``diag(E M_k E^T)`` comes from the **closed-form** raw mass diagonal
+    (:func:`mrx.local_assembly.build_mass_diagonal` -- one sum-factorized
+    contraction against squared basis tables) rather than from ``O(N)``
+    canonical-basis probes. Only the ``O(n_z)`` coupled polar rows still need
+    an apply. The result is exact, not an estimate.
     """
+    from mrx.local_assembly import build_mass_diagonal  # noqa: PLC0415
+
+    d_raw = build_mass_diagonal(seq, k)
     e = getattr(seq, f"e{k}")
     e_dbc = getattr(seq, f"e{k}_dbc")
     return BoundaryConditionPair(
-        free=1.0 / diag_matvec(lambda x: e @ mass_apply(e.T @ x), e.shape[0]),
-        dbc=1.0 / diag_matvec(lambda x: e_dbc @ mass_apply(e_dbc.T @ x), e_dbc.shape[0]),
+        free=1.0 / _extracted_mass_diagonal(e, d_raw, mass_apply),
+        dbc=1.0 / _extracted_mass_diagonal(e_dbc, d_raw, mass_apply),
     )
 
 
@@ -860,52 +770,12 @@ def _apply_tensor_diagonal_block(
     return _apply_tensor_diagonal_block_preconditioner(factors, rhs)
 
 
-def _k1_layout_sizes(seq, dirichlet: bool):
-    boundary_offset = 1 if dirichlet else 0
-    return {
-        "theta_surgery": 2 * seq.basis_1.nz,
-        "zeta_surgery": 3 * seq.basis_1.dz,
-        "r": (seq.basis_1.dr - 1) * seq.basis_1.nt * seq.basis_1.nz,
-        "theta_bulk": (seq.basis_1.nr - 2 - boundary_offset) * seq.basis_1.dt * seq.basis_1.nz,
-        "zeta_bulk": (seq.basis_1.nr - 2 - boundary_offset) * seq.basis_1.nt * seq.basis_1.dz,
-    }
 
 
-def _component_sizes_k2(seq, dirichlet: bool):
-    if dirichlet:
-        return seq.n2_1_dbc, seq.n2_2_dbc, seq.n2_3_dbc
-    return seq.n2_1, seq.n2_2, seq.n2_3
 
 
-def _surgery_slices_k1(seq, dirichlet: bool):
-    sizes = _k1_layout_sizes(seq, dirichlet)
-    theta_surgery = slice(0, sizes["theta_surgery"])
-    zeta_surgery = slice(theta_surgery.stop, theta_surgery.stop + sizes["zeta_surgery"])
-    r_slice = slice(zeta_surgery.stop, zeta_surgery.stop + sizes["r"])
-    theta_bulk = slice(r_slice.stop, r_slice.stop + sizes["theta_bulk"])
-    zeta_bulk = slice(theta_bulk.stop, theta_bulk.stop + sizes["zeta_bulk"])
-    return {
-        "r": r_slice,
-        "theta_surgery": theta_surgery,
-        "theta_bulk": theta_bulk,
-        "zeta_surgery": zeta_surgery,
-        "zeta_bulk": zeta_bulk,
-    }
 
 
-def _surgery_slices_k2(seq, dirichlet: bool):
-    n_r, n_theta, n_zeta = _component_sizes_k2(seq, dirichlet)
-    r_slice = slice(0, n_r)
-    theta_slice = slice(r_slice.stop, r_slice.stop + n_theta)
-    zeta_slice = slice(theta_slice.stop, theta_slice.stop + n_zeta)
-    r_surgery = slice(r_slice.start, r_slice.start + 2 * seq.basis_2.dz)
-    r_bulk = slice(r_surgery.stop, r_slice.stop)
-    return {
-        "r_surgery": r_surgery,
-        "r_bulk": r_bulk,
-        "theta": theta_slice,
-        "zeta": zeta_slice,
-    }
 
 
 def _schur_blocks(matrix: jnp.ndarray, surgery_size: int):
@@ -916,110 +786,20 @@ def _schur_blocks(matrix: jnp.ndarray, surgery_size: int):
     return ass, asb, abs_, abb
 
 
-def _tensor_block_indices_k1(seq, dirichlet: bool):
-    slices = _surgery_slices_k1(seq, dirichlet)
-    surgery_indices = jnp.concatenate(
-        [
-            jnp.arange(slices["theta_surgery"].start, slices["theta_surgery"].stop),
-            jnp.arange(slices["zeta_surgery"].start, slices["zeta_surgery"].stop),
-        ]
-    )
-    r_indices = jnp.arange(slices["r"].start, slices["r"].stop)
-    theta_bulk_indices = jnp.arange(slices["theta_bulk"].start, slices["theta_bulk"].stop)
-    zeta_bulk_indices = jnp.arange(slices["zeta_bulk"].start, slices["zeta_bulk"].stop)
-    bulk_indices = jnp.concatenate([r_indices, theta_bulk_indices, zeta_bulk_indices])
-    rt_indices = jnp.concatenate([r_indices, theta_bulk_indices])
-    return {
-        "surgery": surgery_indices,
-        "bulk": bulk_indices,
-        "r": r_indices,
-        "theta_bulk": theta_bulk_indices,
-        "rt": rt_indices,
-        "zeta_bulk": zeta_bulk_indices,
-        "rt_r_size": r_indices.shape[0],
-        "rt_theta_size": theta_bulk_indices.shape[0],
-        "bulk_rt_size": rt_indices.shape[0],
-        "bulk_zeta_size": zeta_bulk_indices.shape[0],
-    }
 
 
-def _tensor_block_indices_k2(seq, dirichlet: bool):
-    slices = _surgery_slices_k2(seq, dirichlet)
-    surgery_indices = jnp.arange(slices["r_surgery"].start, slices["r_surgery"].stop)
-    r_bulk_indices = jnp.arange(slices["r_bulk"].start, slices["r_bulk"].stop)
-    theta_indices = jnp.arange(slices["theta"].start, slices["theta"].stop)
-    zeta_indices = jnp.arange(slices["zeta"].start, slices["zeta"].stop)
-    bulk_indices = jnp.concatenate([r_bulk_indices, theta_indices, zeta_indices])
-    return {
-        "surgery": surgery_indices,
-        "bulk": bulk_indices,
-        "r_bulk": r_bulk_indices,
-        "theta": theta_indices,
-        "zeta": zeta_indices,
-        "r_bulk_size": r_bulk_indices.shape[0],
-        "theta_size": theta_indices.shape[0],
-        "zeta_size": zeta_indices.shape[0],
-    }
 
 
-def _arr_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
-    nt = seq.basis_1.nt
-    nz = seq.basis_1.nz
-    n_r = _k1_layout_sizes(seq, dirichlet)["r"]
-    nr = n_r // (nt * nz)
-    if nr * nt * nz != n_r:
-        raise ValueError(f"Extracted r size {n_r} is not divisible by nt*nz = {nt * nz}")
-    return nr, nt, nz
 
 
-def _theta_bulk_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
-    dt = seq.basis_1.dt
-    nz = seq.basis_1.nz
-    n_theta = _k1_layout_sizes(seq, dirichlet)["theta_bulk"]
-    nr = n_theta // (dt * nz)
-    if nr * dt * nz != n_theta:
-        raise ValueError(f"theta_bulk size {n_theta} is not divisible by dt*nz = {dt * nz}")
-    return nr, dt, nz
 
 
-def _zeta_bulk_shape_k1(seq, dirichlet: bool) -> tuple[int, int, int]:
-    nt = seq.basis_1.nt
-    dz = seq.basis_1.dz
-    n_zeta = _k1_layout_sizes(seq, dirichlet)["zeta_bulk"]
-    nr = n_zeta // (nt * dz)
-    if nr * nt * dz != n_zeta:
-        raise ValueError(f"zeta_bulk size {n_zeta} is not divisible by nt*dz = {nt * dz}")
-    return nr, nt, dz
 
 
-def _r_bulk_shape_k2(seq, dirichlet: bool) -> tuple[int, int, int]:
-    dt = seq.basis_2.dt
-    dz = seq.basis_2.dz
-    n_r = _component_sizes_k2(seq, dirichlet)[0] - 2 * seq.basis_2.dz
-    nr = n_r // (dt * dz)
-    if nr * dt * dz != n_r:
-        raise ValueError(f"r_bulk size {n_r} is not divisible by dt*dz = {dt * dz}")
-    return nr, dt, dz
 
 
-def _theta_shape_k2(seq, dirichlet: bool) -> tuple[int, int, int]:
-    nt = seq.basis_2.nt
-    dz = seq.basis_2.dz
-    n_theta = _component_sizes_k2(seq, dirichlet)[1]
-    nr = n_theta // (nt * dz)
-    if nr * nt * dz != n_theta:
-        raise ValueError(f"theta size {n_theta} is not divisible by nt*dz = {nt * dz}")
-    return nr, nt, dz
 
 
-def _zeta_shape_k2(seq, dirichlet: bool) -> tuple[int, int, int]:
-    dt = seq.basis_2.dt
-    nz = seq.basis_2.nz
-    n_zeta = _component_sizes_k2(seq, dirichlet)[2]
-    nr = n_zeta // (dt * nz)
-    if nr * dt * nz != n_zeta:
-        raise ValueError(f"zeta size {n_zeta} is not divisible by dt*nz = {dt * nz}")
-    return nr, dt, nz
 
 
 def _greedy_cp_terms(
@@ -1475,325 +1255,52 @@ def _symmetric_pseudoinverse(matrix: jnp.ndarray, *, relative_tol: float = 1e-8)
     return _symmetrize((eigvecs * inv_eigvals[jnp.newaxis, :]) @ eigvecs.T)
 
 
-def _assemble_surgery_schur_inverse_from_applies(
-    ass: jnp.ndarray,
-    surgery_to_bulk_apply,
-    bulk_apply,
-    bulk_to_surgery_apply,
-    *,
-    relative_tol: float = 1e-8,
-    sequential: bool = False,
-) -> jnp.ndarray:
-    basis = jnp.eye(ass.shape[0], dtype=ass.dtype)
-
-    def schur_apply(rhs_s: jnp.ndarray) -> jnp.ndarray:
-        bulk_rhs = surgery_to_bulk_apply(rhs_s)
-        bulk_response = bulk_apply(bulk_rhs)
-        return ass @ rhs_s - bulk_to_surgery_apply(bulk_response)
-
-    if sequential:
-        # The coupling applies may be matrix free; probe columns one at a time
-        # via ``jax.lax.map`` so the dense element transient is not batched.
-        surgery_schur = jax.lax.map(schur_apply, basis).T
-    else:
-        surgery_schur = jax.vmap(schur_apply, in_axes=1, out_axes=1)(basis)
-    return _symmetric_pseudoinverse(surgery_schur, relative_tol=relative_tol)
 
 
-def _apply_surgery_to_bulk_coupling(surgery, rhs_s: jnp.ndarray) -> jnp.ndarray:
-    """Apply the surgery->bulk coupling block M[bulk, surgery] @ rhs_s.
-
-    Generic across k=0/1/2 mass and k=1/2 stiffness surgery factors (all expose
-    ``coupling_sb`` / ``surgery_to_bulk_data`` / ``apply_data`` /
-    ``surgery_indices`` / ``bulk_indices``). Prefers the precomputed dense block,
-    then the restricted-sparse apply, then a full extracted-submatrix probe.
-    """
-    if surgery.coupling_sb is not None:
-        return surgery.coupling_sb @ rhs_s
-    if surgery.surgery_to_bulk_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.surgery_to_bulk_data, rhs_s)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.bulk_indices, surgery.surgery_indices, rhs_s)
 
 
-def _apply_bulk_to_surgery_coupling(surgery, rhs_b: jnp.ndarray) -> jnp.ndarray:
-    """Apply the bulk->surgery coupling block M[surgery, bulk] @ rhs_b.
-
-    The extracted operator is symmetric, so this is exactly ``coupling_sb.T``
-    when the dense block is present. Generic across the same factor types as
-    :func:`_apply_surgery_to_bulk_coupling`.
-    """
-    if surgery.coupling_sb is not None:
-        return surgery.coupling_sb.T @ rhs_b
-    if surgery.bulk_to_surgery_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.bulk_to_surgery_data, rhs_b)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.surgery_indices, surgery.bulk_indices, rhs_b)
 
 
-def _apply_surgery_schur(surgery, schur_inv: jnp.ndarray, bulk_inv, rhs: jnp.ndarray) -> jnp.ndarray:
-    """Generic surgery/bulk block-factorization apply, shared by k=0/1/2 mass.
-
-    ``bulk_inv`` is the (k-specific) bulk inverse callable. The surgery space is
-    small; the bulk space is tensor-product. Computes the exact block inverse
-    ``y = bulk_inv(rhs_b); z = Sigma^{-1}(rhs_s - M_sb y); x_b = y - bulk_inv(M_bs z)``.
-    """
-    rhs_s = rhs[surgery.surgery_indices]
-    rhs_b = rhs[surgery.bulk_indices]
-    y = bulk_inv(rhs_b)
-    z = schur_inv @ (rhs_s - _apply_bulk_to_surgery_coupling(surgery, y))
-    x_b = y - bulk_inv(_apply_surgery_to_bulk_coupling(surgery, z))
-    x = jnp.zeros_like(rhs)
-    x = x.at[surgery.surgery_indices].set(z)
-    x = x.at[surgery.bulk_indices].set(x_b)
-    return x
 
 
-def _apply_surgery_schur_forward(surgery, bulk_fwd, rhs: jnp.ndarray) -> jnp.ndarray:
-    """Generic surgery/bulk forward-model apply (the operator, not its inverse)."""
-    rhs_s = rhs[surgery.surgery_indices]
-    rhs_b = rhs[surgery.bulk_indices]
-    out_s = surgery.ass @ rhs_s + _apply_bulk_to_surgery_coupling(surgery, rhs_b)
-    out_b = _apply_surgery_to_bulk_coupling(surgery, rhs_s) + bulk_fwd(rhs_b)
-    out = jnp.zeros_like(rhs)
-    out = out.at[surgery.surgery_indices].set(out_s)
-    out = out.at[surgery.bulk_indices].set(out_b)
-    return out
 
 
-def _apply_k1_rt_atr_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_r: jnp.ndarray) -> jnp.ndarray:
-    if surgery.rt_atr_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.rt_atr_data, rhs_r)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.theta_bulk_indices, surgery.r_indices, rhs_r)
 
 
-def _apply_k1_rt_art_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_theta: jnp.ndarray) -> jnp.ndarray:
-    if surgery.rt_art_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.rt_art_data, rhs_theta)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.r_indices, surgery.theta_bulk_indices, rhs_theta)
 
 
-def _apply_k1_rt_to_zeta_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_rt: jnp.ndarray) -> jnp.ndarray:
-    if surgery.rt_to_zeta_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.rt_to_zeta_data, rhs_rt)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_bulk_indices, surgery.rt_indices, rhs_rt)
 
 
-def _apply_k1_zeta_to_rt_coupling(surgery: K1MassSurgeryPreconditionerFactors, rhs_zeta: jnp.ndarray) -> jnp.ndarray:
-    if surgery.zeta_to_rt_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.zeta_to_rt_data, rhs_zeta)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.rt_indices, surgery.zeta_bulk_indices, rhs_zeta)
 
 
-def _apply_k1_rt_preconditioner(
-    surgery: K1MassSurgeryPreconditionerFactors,
-    arr_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_rt: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_r = rhs_rt[:surgery.rt_r_size]
-    rhs_theta = rhs_rt[surgery.rt_r_size:surgery.rt_r_size + surgery.rt_theta_size]
-    arr_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.r_indices, surgery.r_indices, x)
-    theta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.theta_bulk_indices, surgery.theta_bulk_indices, x)
-    y = _apply_tensor_exact_block(None, arr_factors, rhs_r, true_block_apply=arr_true)
-    z = _apply_tensor_exact_block(None, theta_factors, rhs_theta - _apply_k1_rt_atr_coupling(surgery, y), true_block_apply=theta_true)
-    x_r = y - _apply_tensor_exact_block(None, arr_factors, _apply_k1_rt_art_coupling(surgery, z), true_block_apply=arr_true)
-    return jnp.concatenate([x_r, z])
 
 
-def _apply_k1_rt_forward_model(
-    surgery: K1MassSurgeryPreconditionerFactors,
-    arr_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_rt: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_r = rhs_rt[:surgery.rt_r_size]
-    rhs_theta = rhs_rt[surgery.rt_r_size:surgery.rt_r_size + surgery.rt_theta_size]
-    out_r = _apply_tensor_diagonal_block_forward(arr_factors, rhs_r) + _apply_k1_rt_art_coupling(surgery, rhs_theta)
-    out_theta = _apply_k1_rt_atr_coupling(surgery, rhs_r) + _apply_tensor_diagonal_block_forward(theta_factors, rhs_theta)
-    return jnp.concatenate([out_r, out_theta])
 
 
-def _apply_k1_bulk_preconditioner(
-    surgery: K1MassSurgeryPreconditionerFactors,
-    arr_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    zeta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_bulk: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
-    rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
-    zeta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_bulk_indices, surgery.zeta_bulk_indices, x)
-    y_rt = _apply_k1_rt_preconditioner(surgery, arr_factors, theta_factors, rhs_rt)
-    z = _apply_tensor_exact_block(
-        None,
-        zeta_factors,
-        rhs_zeta - _apply_k1_rt_to_zeta_coupling(surgery, y_rt),
-        true_block_apply=zeta_true,
-    )
-    x_rt = y_rt - _apply_k1_rt_preconditioner(
-        surgery,
-        arr_factors,
-        theta_factors,
-        _apply_k1_zeta_to_rt_coupling(surgery, z),
-    )
-    return jnp.concatenate([
-        x_rt,
-        z,
-    ])
 
 
-def _apply_k1_bulk_forward_model(
-    surgery: K1MassSurgeryPreconditionerFactors,
-    arr_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    zeta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_bulk: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
-    rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
-    out_rt = _apply_k1_rt_forward_model(surgery, arr_factors, theta_factors, rhs_rt) + _apply_k1_zeta_to_rt_coupling(surgery, rhs_zeta)
-    out_zeta = _apply_k1_rt_to_zeta_coupling(surgery, rhs_rt) + _apply_tensor_diagonal_block_forward(zeta_factors, rhs_zeta)
-    return jnp.concatenate([out_rt, out_zeta])
 
 
-def _apply_k1_bulk_diagonal_preconditioner(
-    surgery: K1MassSurgeryPreconditionerFactors,
-    arr_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    zeta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_bulk: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_r = rhs_bulk[:surgery.rt_r_size]
-    rhs_theta = rhs_bulk[surgery.rt_r_size:surgery.bulk_rt_size]
-    rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
-    arr_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.r_indices, surgery.r_indices, x)
-    theta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.theta_bulk_indices, surgery.theta_bulk_indices, x)
-    zeta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_bulk_indices, surgery.zeta_bulk_indices, x)
-    return jnp.concatenate([
-        _apply_tensor_exact_block(None, arr_factors, rhs_r, true_block_apply=arr_true),
-        _apply_tensor_exact_block(None, theta_factors, rhs_theta, true_block_apply=theta_true),
-        _apply_tensor_exact_block(None, zeta_factors, rhs_zeta, true_block_apply=zeta_true),
-    ])
 
 
-def _apply_k2_r_to_theta_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_r: jnp.ndarray) -> jnp.ndarray:
-    if surgery.r_to_theta_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.r_to_theta_data, rhs_r)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.theta_indices, surgery.r_bulk_indices, rhs_r)
 
 
-def _apply_k2_theta_to_r_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_theta: jnp.ndarray) -> jnp.ndarray:
-    if surgery.theta_to_r_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.theta_to_r_data, rhs_theta)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.r_bulk_indices, surgery.theta_indices, rhs_theta)
 
 
-def _k2_rt_indices(surgery: K2MassSurgeryPreconditionerFactors) -> jnp.ndarray:
-    return jnp.concatenate([surgery.r_bulk_indices, surgery.theta_indices])
 
 
-def _apply_k2_rt_to_zeta_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_rt: jnp.ndarray) -> jnp.ndarray:
-    if surgery.rt_to_zeta_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.rt_to_zeta_data, rhs_rt)
-    return _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_indices, _k2_rt_indices(surgery), rhs_rt)
 
 
-def _apply_k2_zeta_to_rt_coupling(surgery: K2MassSurgeryPreconditionerFactors, rhs_zeta: jnp.ndarray) -> jnp.ndarray:
-    if surgery.zeta_to_rt_data is not None:
-        return _apply_restricted_extracted_mass_operator_data(surgery.zeta_to_rt_data, rhs_zeta)
-    return _apply_extracted_submatrix(surgery.apply_data, _k2_rt_indices(surgery), surgery.zeta_indices, rhs_zeta)
 
 
-def _apply_k2_rt_preconditioner(
-    surgery: K2MassSurgeryPreconditionerFactors,
-    r_bulk_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_rt: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_r = rhs_rt[:surgery.r_bulk_size]
-    rhs_theta = rhs_rt[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
-    r_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.r_bulk_indices, surgery.r_bulk_indices, x)
-    theta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.theta_indices, surgery.theta_indices, x)
-    y = _apply_tensor_exact_block(None, r_bulk_factors, rhs_r, true_block_apply=r_true)
-    z = _apply_tensor_exact_block(None, theta_factors, rhs_theta - _apply_k2_r_to_theta_coupling(surgery, y), true_block_apply=theta_true)
-    x_r = y - _apply_tensor_exact_block(None, r_bulk_factors, _apply_k2_theta_to_r_coupling(surgery, z), true_block_apply=r_true)
-    return jnp.concatenate([x_r, z])
 
 
-def _apply_k2_rt_forward_model(
-    surgery: K2MassSurgeryPreconditionerFactors,
-    r_bulk_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_rt: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_r = rhs_rt[:surgery.r_bulk_size]
-    rhs_theta = rhs_rt[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
-    out_r = _apply_tensor_diagonal_block_forward(r_bulk_factors, rhs_r) + _apply_k2_theta_to_r_coupling(surgery, rhs_theta)
-    out_theta = _apply_k2_r_to_theta_coupling(surgery, rhs_r) + _apply_tensor_diagonal_block_forward(theta_factors, rhs_theta)
-    return jnp.concatenate([out_r, out_theta])
 
 
-def _apply_k2_bulk_preconditioner(
-    surgery: K2MassSurgeryPreconditionerFactors,
-    r_bulk_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    zeta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_bulk: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_rt = rhs_bulk[:surgery.r_bulk_size + surgery.theta_size]
-    rhs_zeta = rhs_bulk[surgery.r_bulk_size + surgery.theta_size:surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size]
-    zeta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_indices, surgery.zeta_indices, x)
-    y_rt = _apply_k2_rt_preconditioner(surgery, r_bulk_factors, theta_factors, rhs_rt)
-    z = _apply_tensor_exact_block(
-        None,
-        zeta_factors,
-        rhs_zeta - _apply_k2_rt_to_zeta_coupling(surgery, y_rt),
-        true_block_apply=zeta_true,
-    )
-    x_rt = y_rt - _apply_k2_rt_preconditioner(
-        surgery,
-        r_bulk_factors,
-        theta_factors,
-        _apply_k2_zeta_to_rt_coupling(surgery, z),
-    )
-    return jnp.concatenate([
-        x_rt,
-        z,
-    ])
 
 
-def _apply_k2_bulk_forward_model(
-    surgery: K2MassSurgeryPreconditionerFactors,
-    r_bulk_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    zeta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_bulk: jnp.ndarray,
-) -> jnp.ndarray:
-    bulk_rt_size = surgery.r_bulk_size + surgery.theta_size
-    rhs_rt = rhs_bulk[:bulk_rt_size]
-    rhs_zeta = rhs_bulk[bulk_rt_size:bulk_rt_size + surgery.zeta_size]
-    out_rt = _apply_k2_rt_forward_model(surgery, r_bulk_factors, theta_factors, rhs_rt) + _apply_k2_zeta_to_rt_coupling(surgery, rhs_zeta)
-    out_zeta = _apply_k2_rt_to_zeta_coupling(surgery, rhs_rt) + _apply_tensor_diagonal_block_forward(zeta_factors, rhs_zeta)
-    return jnp.concatenate([out_rt, out_zeta])
 
 
-def _apply_k2_bulk_diagonal_preconditioner(
-    surgery: K2MassSurgeryPreconditionerFactors,
-    r_bulk_factors: TensorDiagonalBlockInverseFactors,
-    theta_factors: TensorDiagonalBlockInverseFactors,
-    zeta_factors: TensorDiagonalBlockInverseFactors,
-    rhs_bulk: jnp.ndarray,
-) -> jnp.ndarray:
-    rhs_r = rhs_bulk[:surgery.r_bulk_size]
-    rhs_theta = rhs_bulk[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
-    rhs_zeta = rhs_bulk[surgery.r_bulk_size + surgery.theta_size:surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size]
-    r_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.r_bulk_indices, surgery.r_bulk_indices, x)
-    theta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.theta_indices, surgery.theta_indices, x)
-    zeta_true = lambda x: _apply_extracted_submatrix(surgery.apply_data, surgery.zeta_indices, surgery.zeta_indices, x)
-    return jnp.concatenate([
-        _apply_tensor_exact_block(None, r_bulk_factors, rhs_r, true_block_apply=r_true),
-        _apply_tensor_exact_block(None, theta_factors, rhs_theta, true_block_apply=theta_true),
-        _apply_tensor_exact_block(None, zeta_factors, rhs_zeta, true_block_apply=zeta_true),
-    ])
 
 
 def _extract_selected_columns(
@@ -1815,167 +1322,6 @@ def _extract_selected_columns(
     return jax.vmap(apply_col, in_axes=1, out_axes=1)(basis)
 
 
-def build_mass_surgery_preconditioner(
-    seq,
-    mass_apply,
-    *,
-    k: int,
-    existing: Optional[MassSurgeryPreconditioner] = None,
-    dirichlet_flags: tuple[bool, ...] = (False, True),
-    precompute_coupling: bool = True,
-) -> MassSurgeryPreconditioner:
-    surgery_precond = existing if existing is not None else MassSurgeryPreconditioner()
-
-    if k == 3:
-        return surgery_precond
-
-    pair = BoundaryConditionPair()
-    if k == 0:
-        surgery_size = _core_size(seq)
-        for dirichlet in dirichlet_flags:
-            surgery_indices = jnp.arange(surgery_size)
-            surgery_cols = _extract_selected_columns(seq, mass_apply, 0, dirichlet, surgery_indices, sequential=True)
-            ass = _symmetrize(surgery_cols[surgery_indices, :])
-            apply_data = _build_extracted_mass_apply_data(seq, mass_apply, 0, dirichlet)
-            bulk_indices = jnp.arange(surgery_size, apply_data.size)
-            # The dense surgery->bulk coupling block (bulk x surgery) is already
-            # contained in ``surgery_cols`` (the extracted-mass columns probed
-            # for ``ass``), so the precompute is free here: it is exactly the
-            # bulk rows of those columns. M_0 is symmetric => bulk->surgery is
-            # its transpose. See ``coupling_sb`` on the factors class.
-            coupling_sb = surgery_cols[bulk_indices, :] if precompute_coupling else None
-            factors = K0MassSurgeryPreconditionerFactors(
-                surgery_size=surgery_size,
-                apply_data=apply_data,
-                surgery_indices=surgery_indices,
-                bulk_indices=bulk_indices,
-                surgery_to_bulk_data=_build_restricted_extracted_mass_apply_data(apply_data, bulk_indices, surgery_indices),
-                bulk_to_surgery_data=_build_restricted_extracted_mass_apply_data(apply_data, surgery_indices, bulk_indices),
-                surgery_diaginv=1.0 / jnp.diag(ass),
-                ass=ass,
-                coupling_sb=coupling_sb,
-            )
-            pair = eqx.tree_at(
-                lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
-                pair,
-                factors,
-                is_leaf=lambda x: x is None,
-            )
-        return eqx.tree_at(lambda data: data.k0, surgery_precond, pair)
-
-    if k == 1:
-        for dirichlet in dirichlet_flags:
-            block_indices = _tensor_block_indices_k1(seq, dirichlet)
-            surgery_indices = block_indices["surgery"]
-            bulk_indices = block_indices["bulk"]
-            r_indices = block_indices["r"]
-            theta_bulk_indices = block_indices["theta_bulk"]
-            rt_indices = block_indices["rt"]
-            zeta_bulk_indices = block_indices["zeta_bulk"]
-            surgery_size = int(surgery_indices.shape[0])
-            surgery_cols = _extract_selected_columns(seq, mass_apply, 1, dirichlet, surgery_indices, sequential=True)
-            ass = _symmetrize(surgery_cols[surgery_indices, :])
-            rt_r_size = int(block_indices["rt_r_size"])
-            rt_theta_size = int(block_indices["rt_theta_size"])
-            apply_data = _build_extracted_mass_apply_data(seq, mass_apply, 1, dirichlet)
-            factors = K1MassSurgeryPreconditionerFactors(
-                surgery_indices=surgery_indices,
-                bulk_indices=bulk_indices,
-                r_indices=r_indices,
-                theta_bulk_indices=theta_bulk_indices,
-                zeta_bulk_indices=zeta_bulk_indices,
-                rt_indices=rt_indices,
-                surgery_size=surgery_size,
-                rt_r_size=rt_r_size,
-                rt_theta_size=rt_theta_size,
-                bulk_rt_size=int(block_indices["bulk_rt_size"]),
-                bulk_zeta_size=int(block_indices["bulk_zeta_size"]),
-                apply_data=apply_data,
-                surgery_to_bulk_data=_build_restricted_extracted_mass_apply_data(apply_data, bulk_indices, surgery_indices),
-                bulk_to_surgery_data=_build_restricted_extracted_mass_apply_data(apply_data, surgery_indices, bulk_indices),
-                rt_atr_data=_build_restricted_extracted_mass_apply_data(apply_data, theta_bulk_indices, r_indices),
-                rt_art_data=_build_restricted_extracted_mass_apply_data(apply_data, r_indices, theta_bulk_indices),
-                rt_to_zeta_data=_build_restricted_extracted_mass_apply_data(apply_data, zeta_bulk_indices, rt_indices),
-                zeta_to_rt_data=_build_restricted_extracted_mass_apply_data(apply_data, rt_indices, zeta_bulk_indices),
-                surgery_diaginv=1.0 / jnp.diag(ass),
-                ass=ass,
-                # Dense surgery->bulk block, free from the ``surgery_cols`` probe
-                # done for ``ass``. Only the surgery<->bulk coupling; the inner
-                # rt/zeta couplings stay matrix-free (bulk-scale).
-                coupling_sb=(surgery_cols[bulk_indices, :] if precompute_coupling else None),
-            )
-            pair = eqx.tree_at(
-                lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
-                pair,
-                factors,
-                is_leaf=lambda x: x is None,
-            )
-        return eqx.tree_at(lambda data: data.k1, surgery_precond, pair)
-
-    if k == 2:
-        for dirichlet in dirichlet_flags:
-            block_indices = _tensor_block_indices_k2(seq, dirichlet)
-            surgery_indices = block_indices["surgery"]
-            apply_data = _build_extracted_mass_apply_data(seq, mass_apply, 2, dirichlet)
-            surgery_cols = _extract_selected_columns(seq, mass_apply, 2, dirichlet, surgery_indices, sequential=True)
-            ass = _symmetrize(surgery_cols[surgery_indices, :])
-            factors = K2MassSurgeryPreconditionerFactors(
-                surgery_indices=surgery_indices,
-                bulk_indices=block_indices["bulk"],
-                r_bulk_indices=block_indices["r_bulk"],
-                theta_indices=block_indices["theta"],
-                zeta_indices=block_indices["zeta"],
-                surgery_size=int(surgery_indices.shape[0]),
-                r_bulk_size=int(block_indices["r_bulk_size"]),
-                theta_size=int(block_indices["theta_size"]),
-                zeta_size=int(block_indices["zeta_size"]),
-                apply_data=apply_data,
-                surgery_to_bulk_data=_build_restricted_extracted_mass_apply_data(
-                    apply_data,
-                    block_indices["bulk"],
-                    surgery_indices,
-                ),
-                bulk_to_surgery_data=_build_restricted_extracted_mass_apply_data(
-                    apply_data,
-                    surgery_indices,
-                    block_indices["bulk"],
-                ),
-                r_to_theta_data=_build_restricted_extracted_mass_apply_data(
-                    apply_data,
-                    block_indices["theta"],
-                    block_indices["r_bulk"],
-                ),
-                theta_to_r_data=_build_restricted_extracted_mass_apply_data(
-                    apply_data,
-                    block_indices["r_bulk"],
-                    block_indices["theta"],
-                ),
-                rt_to_zeta_data=_build_restricted_extracted_mass_apply_data(
-                    apply_data,
-                    block_indices["zeta"],
-                    jnp.concatenate([block_indices["r_bulk"], block_indices["theta"]]),
-                ),
-                zeta_to_rt_data=_build_restricted_extracted_mass_apply_data(
-                    apply_data,
-                    jnp.concatenate([block_indices["r_bulk"], block_indices["theta"]]),
-                    block_indices["zeta"],
-                ),
-                ass=ass,
-                surgery_diaginv=1.0 / jnp.diag(ass),
-                # Dense surgery->bulk block, free from the ``surgery_cols`` probe
-                # done for ``ass`` (surgery<->bulk only; inner couplings stay
-                # matrix-free).
-                coupling_sb=(surgery_cols[block_indices["bulk"], :] if precompute_coupling else None),
-            )
-            pair = eqx.tree_at(
-                lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
-                pair,
-                factors,
-                is_leaf=lambda x: x is None,
-            )
-        return eqx.tree_at(lambda data: data.k2, surgery_precond, pair)
-
-    raise ValueError("Mass surgery preconditioner currently only supports k=0, k=1, k=2 and k=3")
 
 
 def _build_greville_mass_block_factors(
@@ -2057,433 +1403,8 @@ def _build_greville_mass_block_factors(
     )
 
 
-def build_mass_tensor_preconditioner(
-    seq,
-    *,
-    k: int,
-    rank: int = 1,
-    fallback_rank: Optional[int] = None,
-    cp_kwargs: Optional[Mapping[str, object]] = None,
-    existing: Optional[TensorMassPreconditioner] = None,
-    surgery_precond: Optional[MassSurgeryPreconditioner] = None,
-    dirichlet_flags: tuple[bool, ...] = (False, True),
-    k3_true_block_apply: Optional[Mapping[bool, object]] = None,
-) -> TensorMassPreconditioner:
-    fallback_rank = rank if fallback_rank is None else int(fallback_rank)
-    cp_kwargs = {} if cp_kwargs is None else dict(cp_kwargs)
-    cp_maxiter = int(cp_kwargs.get("maxiter", 100))
-    cp_tol = float(cp_kwargs.get("tol", 1e-9))
-    cp_ridge = float(cp_kwargs.get("ridge", 1e-12))
-    # Default 0 (no block-Chebyshev polish): the polish cuts mass-precond
-    # iterations but costs ~8-11x more wall (each step is a full matrix-free mass
-    # matvec x3 components x2 bulk_inv calls), so it is a large net wall LOSS on
-    # both toroid and W7-X (see outputs/mass_bcheb/sweep/). Matches the validated
-    # 2026-05-09 production config (bcheb=0). Opt in via cp_kwargs if ever wanted.
-    surgery_schur_pinv_tol = float(
-        cp_kwargs.get("surgery_schur_pinv_tol", cp_kwargs.get("schur_pinv_tol", 1e-8))
-    )
-    bulk_schur = bool(cp_kwargs.get("bulk_schur", False))
-    # Greville collocation: replace the per-component CP-fit bulk factors with the
-    # unweighted-atom + pointwise-D sandwich (built by _build_greville_mass_block_factors).
-    # The surgery/Schur envelope and the apply path are unchanged. Greville is now the
-    # ONLY mass bulk path (the CP `else` branches below are unreachable dead code,
-    # retained pending a cosmetic cleanup; the shared CP core stays for the stiffness).
-    greville = True
-
-    reuse_existing = (
-        existing is not None
-        and existing.cp_maxiter == cp_maxiter
-        and existing.cp_tol == cp_tol
-        and existing.cp_ridge == cp_ridge
-        and existing.surgery_schur_pinv_tol == surgery_schur_pinv_tol
-    )
-    new_ranks = tuple(
-        rank if k == kk
-        else (existing.ranks[kk] if reuse_existing else fallback_rank)
-        for kk in range(4)
-    )
-    tensor_precond = TensorMassPreconditioner(
-        ranks=new_ranks,
-        cp_maxiter=cp_maxiter,
-        cp_tol=cp_tol,
-        cp_ridge=cp_ridge,
-        surgery_schur_pinv_tol=surgery_schur_pinv_tol,
-        k0=existing.k0 if reuse_existing else BoundaryConditionPair(),
-        k1=existing.k1 if reuse_existing else BoundaryConditionPair(),
-        k2=existing.k2 if reuse_existing else BoundaryConditionPair(),
-        k3=existing.k3 if reuse_existing else BoundaryConditionPair(),
-    )
-
-    pair = BoundaryConditionPair()
-    if k == 0:
-        weight_tensor = _k0_bulk_weight_tensor(seq)
-        if surgery_precond is None:
-            raise ValueError("Tensor mass k=0 requires surgery factors to be assembled first")
-        for dirichlet in dirichlet_flags:
-            surgery = select_boundary_data(surgery_precond.k0, dirichlet, "Mass surgery k=0")
-            bulk_shape = _bulk_tensor_shape(seq, dirichlet)
-            bulk_indices_k0 = jnp.arange(surgery.surgery_size, surgery.apply_data.size, dtype=jnp.int32)
-            bulk_true_apply = lambda x, surgery=surgery, bulk_indices_k0=bulk_indices_k0: _apply_extracted_submatrix(surgery.apply_data, bulk_indices_k0, bulk_indices_k0, x)
-            if greville:
-                bulk_factors = _build_greville_mass_block_factors(
-                    seq, shape=bulk_shape, diff=(False, False, False), wkind="J", comp=0)
-            else:
-                bulk_factors = _build_diagonal_tensor_block_factors(
-                    seq,
-                    weight_tensor,
-                    bulk_shape,
-                    rank,
-                    radial_basis=seq.basis_r_jk,
-                    theta_basis=seq.basis_t_jk,
-                    zeta_basis=seq.basis_z_jk,
-                    radial_weights=seq.quad.w_x,
-                    theta_weights=seq.quad.w_y,
-                    zeta_weights=seq.quad.w_z,
-                    radial_start=2,
-                    cp_maxiter=cp_maxiter,
-                    cp_tol=cp_tol,
-                    cp_ridge=cp_ridge,
-                    radial_baseline=None,
-                    prior_terms=None,
-                )
-            bulk_indices_k0 = jnp.arange(surgery.surgery_size, surgery.apply_data.size, dtype=jnp.int32)
-            bulk_true_k0 = lambda x: _apply_extracted_submatrix(surgery.apply_data, bulk_indices_k0, bulk_indices_k0, x)
-            schur_inv = _assemble_surgery_schur_inverse_from_applies(
-                surgery.ass,
-                lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
-                lambda rhs_b, bulk_factors=bulk_factors, bulk_true_k0=bulk_true_k0: _apply_tensor_exact_block(None, bulk_factors, rhs_b, true_block_apply=bulk_true_k0),
-                lambda rhs_b, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_b),
-                relative_tol=tensor_precond.surgery_schur_pinv_tol,
-                sequential=True,
-            )
-            factors = K0TensorMassPreconditionerFactors(
-                bulk=bulk_factors,
-                schur_inv=schur_inv,
-            )
-            pair = eqx.tree_at(
-                lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
-                pair,
-                factors,
-                is_leaf=lambda x: x is None,
-            )
-        return eqx.tree_at(lambda data: data.k0, tensor_precond, pair)
-
-    if k == 1:
-        metric_tensors = _k1_diagonal_metric_tensors(seq)
-        if surgery_precond is None:
-            raise ValueError("Tensor mass k=1 requires surgery factors to be assembled first")
-        for dirichlet in dirichlet_flags:
-            block_indices = _tensor_block_indices_k1(seq, dirichlet)
-            surgery = select_boundary_data(surgery_precond.k1, dirichlet, "Mass surgery k=1")
-            r_indices = block_indices["r"]
-            theta_bulk_indices = block_indices["theta_bulk"]
-            zeta_bulk_indices = block_indices["zeta_bulk"]
-            rt_r_size = surgery.rt_r_size
-            rt_theta_size = surgery.rt_theta_size
-
-            arr_shape = _arr_shape_k1(seq, dirichlet)
-            theta_shape = _theta_bulk_shape_k1(seq, dirichlet)
-            zeta_shape = _zeta_bulk_shape_k1(seq, dirichlet)
-
-            arr_true_apply = lambda x, surgery=surgery, idx=r_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
-            theta_true_apply = lambda x, surgery=surgery, idx=theta_bulk_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
-            zeta_true_apply = lambda x, surgery=surgery, idx=zeta_bulk_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
-
-            if greville:
-                arr_factors = _build_greville_mass_block_factors(
-                    seq, shape=arr_shape, diff=(True, False, False), wkind="Jginv", comp=0)
-            else:
-                arr_factors = _build_diagonal_tensor_block_factors(
-                    seq,
-                    metric_tensors["alpha_rr"],
-                    arr_shape,
-                    rank,
-                    radial_basis=seq.d_basis_r_jk,
-                    theta_basis=seq.basis_t_jk,
-                    zeta_basis=seq.basis_z_jk,
-                    radial_weights=seq.quad.w_x,
-                    theta_weights=seq.quad.w_y,
-                    zeta_weights=seq.quad.w_z,
-                    radial_start=1,
-                    cp_maxiter=cp_maxiter,
-                    cp_tol=cp_tol,
-                    cp_ridge=cp_ridge,
-                    radial_baseline=None,
-                    prior_terms=None,
-                )
-            if greville:
-                theta_factors = _build_greville_mass_block_factors(
-                    seq, shape=theta_shape, diff=(False, True, False), wkind="Jginv", comp=1)
-            else:
-                theta_factors = _build_diagonal_tensor_block_factors(
-                    seq,
-                    metric_tensors["alpha_thetatheta"],
-                    theta_shape,
-                    rank,
-                    radial_basis=seq.basis_r_jk,
-                    theta_basis=seq.d_basis_t_jk,
-                    zeta_basis=seq.basis_z_jk,
-                    radial_weights=seq.quad.w_x,
-                    theta_weights=seq.quad.w_y,
-                    zeta_weights=seq.quad.w_z,
-                    radial_start=2,
-                    cp_maxiter=cp_maxiter,
-                    cp_tol=cp_tol,
-                    cp_ridge=cp_ridge,
-                    radial_baseline=None,
-                    prior_terms=None,
-                )
-            if greville:
-                zeta_factors = _build_greville_mass_block_factors(
-                    seq, shape=zeta_shape, diff=(False, False, True), wkind="Jginv", comp=2)
-            else:
-                zeta_factors = _build_diagonal_tensor_block_factors(
-                    seq,
-                    metric_tensors["alpha_zetazeta"],
-                    zeta_shape,
-                    rank,
-                    radial_basis=seq.basis_r_jk,
-                    theta_basis=seq.basis_t_jk,
-                    zeta_basis=seq.d_basis_z_jk,
-                    radial_weights=seq.quad.w_x,
-                    theta_weights=seq.quad.w_y,
-                    zeta_weights=seq.quad.w_z,
-                    radial_start=2,
-                    cp_maxiter=cp_maxiter,
-                    cp_tol=cp_tol,
-                    cp_ridge=cp_ridge,
-                    radial_baseline=None,
-                    prior_terms=None,
-                )
-            schur_inv = _assemble_surgery_schur_inverse_from_applies(
-                surgery.ass,
-                lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
-                lambda rhs_bulk, surgery=surgery, arr_factors=arr_factors, theta_factors=theta_factors, zeta_factors=zeta_factors, bulk_schur=bulk_schur: (
-                    _apply_k1_bulk_preconditioner(
-                        surgery,
-                        arr_factors,
-                        theta_factors,
-                        zeta_factors,
-                        rhs_bulk,
-                    ) if bulk_schur else _apply_k1_bulk_diagonal_preconditioner(
-                        surgery,
-                        arr_factors,
-                        theta_factors,
-                        zeta_factors,
-                        rhs_bulk,
-                    )
-                ),
-                lambda rhs_bulk, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_bulk),
-                relative_tol=tensor_precond.surgery_schur_pinv_tol,
-                sequential=True,
-            )
-
-            factors = K1TensorMassPreconditionerFactors(
-                r_indices=r_indices,
-                theta_bulk_indices=theta_bulk_indices,
-                zeta_bulk_indices=zeta_bulk_indices,
-                rt_r_size=rt_r_size,
-                rt_theta_size=rt_theta_size,
-                bulk_schur=bulk_schur,
-                arr=arr_factors,
-                theta=theta_factors,
-                zeta=zeta_factors,
-                schur_inv=schur_inv,
-            )
-            pair = eqx.tree_at(
-                lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
-                pair,
-                factors,
-                is_leaf=lambda x: x is None,
-            )
-        return eqx.tree_at(lambda data: data.k1, tensor_precond, pair)
-
-    if k == 2:
-        metric_tensors = _k2_diagonal_metric_tensors(seq)
-        if surgery_precond is None:
-            raise ValueError("Tensor mass k=2 requires surgery factors to be assembled first")
-        for dirichlet in dirichlet_flags:
-            block_indices = _tensor_block_indices_k2(seq, dirichlet)
-            surgery = select_boundary_data(surgery_precond.k2, dirichlet, "Mass surgery k=2")
-            r_bulk_indices = block_indices["r_bulk"]
-            theta_indices = block_indices["theta"]
-            zeta_indices = block_indices["zeta"]
-            r_bulk_size = int(block_indices["r_bulk_size"])
-            theta_size = int(block_indices["theta_size"])
-            zeta_size = int(block_indices["zeta_size"])
-
-            r_bulk_true_apply = lambda x, surgery=surgery, idx=r_bulk_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
-            theta_true_apply = lambda x, surgery=surgery, idx=theta_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
-            zeta_true_apply = lambda x, surgery=surgery, idx=zeta_indices: _apply_extracted_submatrix(surgery.apply_data, idx, idx, x)
-
-            if greville:
-                r_bulk_factors = _build_greville_mass_block_factors(
-                    seq, shape=_r_bulk_shape_k2(seq, dirichlet), diff=(False, True, True), wkind="ginvJ", comp=0)
-            else:
-                r_bulk_factors = _build_diagonal_tensor_block_factors(
-                    seq,
-                    metric_tensors["beta_rr"],
-                    _r_bulk_shape_k2(seq, dirichlet),
-                    rank,
-                    radial_basis=seq.basis_r_jk,
-                    theta_basis=seq.d_basis_t_jk,
-                    zeta_basis=seq.d_basis_z_jk,
-                    radial_weights=seq.quad.w_x,
-                    theta_weights=seq.quad.w_y,
-                    zeta_weights=seq.quad.w_z,
-                    radial_start=2,
-                    cp_maxiter=cp_maxiter,
-                    cp_tol=cp_tol,
-                    cp_ridge=cp_ridge,
-                    radial_baseline=None,
-                    prior_terms=None,
-                )
-            if greville:
-                theta_factors = _build_greville_mass_block_factors(
-                    seq, shape=_theta_shape_k2(seq, dirichlet), diff=(True, False, True), wkind="ginvJ", comp=1)
-            else:
-                theta_factors = _build_diagonal_tensor_block_factors(
-                    seq,
-                    metric_tensors["beta_thetatheta"],
-                    _theta_shape_k2(seq, dirichlet),
-                    rank,
-                    radial_basis=seq.d_basis_r_jk,
-                    theta_basis=seq.basis_t_jk,
-                    zeta_basis=seq.d_basis_z_jk,
-                    radial_weights=seq.quad.w_x,
-                    theta_weights=seq.quad.w_y,
-                    zeta_weights=seq.quad.w_z,
-                    radial_start=1,
-                    cp_maxiter=cp_maxiter,
-                    cp_tol=cp_tol,
-                    cp_ridge=cp_ridge,
-                    radial_baseline=None,
-                    prior_terms=None,
-                )
-            if greville:
-                zeta_factors = _build_greville_mass_block_factors(
-                    seq, shape=_zeta_shape_k2(seq, dirichlet), diff=(True, True, False), wkind="ginvJ", comp=2)
-            else:
-                zeta_factors = _build_diagonal_tensor_block_factors(
-                    seq,
-                    metric_tensors["beta_zetazeta"],
-                    _zeta_shape_k2(seq, dirichlet),
-                    rank,
-                    radial_basis=seq.d_basis_r_jk,
-                    theta_basis=seq.d_basis_t_jk,
-                    zeta_basis=seq.basis_z_jk,
-                    radial_weights=seq.quad.w_x,
-                    theta_weights=seq.quad.w_y,
-                    zeta_weights=seq.quad.w_z,
-                    radial_start=1,
-                    cp_maxiter=cp_maxiter,
-                    cp_tol=cp_tol,
-                    cp_ridge=cp_ridge,
-                    radial_baseline=None,
-                    prior_terms=None,
-                )
-            schur_inv = _assemble_surgery_schur_inverse_from_applies(
-                surgery.ass,
-                lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
-                lambda rhs_bulk, surgery=surgery, r_bulk_factors=r_bulk_factors, theta_factors=theta_factors, zeta_factors=zeta_factors, bulk_schur=bulk_schur: (
-                    _apply_k2_bulk_preconditioner(
-                        surgery,
-                        r_bulk_factors,
-                        theta_factors,
-                        zeta_factors,
-                        rhs_bulk,
-                    ) if bulk_schur else _apply_k2_bulk_diagonal_preconditioner(
-                        surgery,
-                        r_bulk_factors,
-                        theta_factors,
-                        zeta_factors,
-                        rhs_bulk,
-                    )
-                ),
-                lambda rhs_bulk, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_bulk),
-                relative_tol=tensor_precond.surgery_schur_pinv_tol,
-                sequential=True,
-            )
-            factors = K2TensorMassPreconditionerFactors(
-                r_bulk_indices=r_bulk_indices,
-                theta_indices=theta_indices,
-                zeta_indices=zeta_indices,
-                r_bulk_size=r_bulk_size,
-                theta_size=theta_size,
-                zeta_size=zeta_size,
-                bulk_schur=bulk_schur,
-                r_bulk=r_bulk_factors,
-                theta=theta_factors,
-                zeta=zeta_factors,
-                schur_inv=schur_inv,
-            )
-            pair = eqx.tree_at(
-                lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
-                pair,
-                factors,
-                is_leaf=lambda x: x is None,
-            )
-        return eqx.tree_at(lambda data: data.k2, tensor_precond, pair)
-
-    if k == 3:
-        weight_tensor = _k3_weight_tensor(seq)
-        extracted_shape = _k3_extracted_shape(seq)
-        for dirichlet in dirichlet_flags:
-            true_apply = (
-                k3_true_block_apply.get(dirichlet)
-                if k3_true_block_apply is not None
-                else None
-            )
-            if greville:
-                factors = _build_greville_mass_block_factors(
-                    seq, shape=extracted_shape, diff=(True, True, True), wkind="invJ", comp=0)
-            else:
-                factors = _build_diagonal_tensor_block_factors(
-                    seq,
-                    weight_tensor,
-                    extracted_shape,
-                    rank,
-                    radial_basis=seq.d_basis_r_jk,
-                    theta_basis=seq.d_basis_t_jk,
-                    zeta_basis=seq.d_basis_z_jk,
-                    radial_weights=seq.quad.w_x,
-                    theta_weights=seq.quad.w_y,
-                    zeta_weights=seq.quad.w_z,
-                    radial_start=1,
-                    cp_maxiter=cp_maxiter,
-                    cp_tol=cp_tol,
-                    cp_ridge=cp_ridge,
-                    radial_baseline=None,
-                    prior_terms=None,
-                )
-            pair = eqx.tree_at(
-                lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
-                pair,
-                factors,
-                is_leaf=lambda x: x is None,
-            )
-        return eqx.tree_at(lambda data: data.k3, tensor_precond, pair)
-
-    raise ValueError("Tensor mass preconditioner currently only supports k=0, k=1, k=2 and k=3")
 
 
-def mass_tensor_available(seq, preconds: Optional[MassPreconditioners], k: int) -> bool:
-    if k not in (0, 1, 2, 3) or preconds is None or preconds.tensor is None:
-        return False
-    if k == 0:
-        pair = preconds.tensor.k0
-    elif k == 1:
-        pair = preconds.tensor.k1
-    elif k == 2:
-        pair = preconds.tensor.k2
-    else:
-        pair = preconds.tensor.k3
-    ready = pair.free is not None and pair.dbc is not None
-    if not ready:
-        return False
-    if k in (0, 1, 2):
-        return mass_surgery_available(seq, preconds, k)
-    return True
 
 
 def _select_mass_tensor_factors(preconds: Optional[MassPreconditioners], k: int, dirichlet: bool):
@@ -2500,60 +1421,12 @@ def _select_mass_tensor_factors(preconds: Optional[MassPreconditioners], k: int,
     raise ValueError(f"Tensor mass preconditioner currently only supports k=0, k=1, k=2 and k=3 (got k={k})")
 
 
-def _make_mass_bulk_inverse(k: int, surgery, factors):
-    """Per-k bulk inverse closure for the generic surgery-Schur layer.
-
-    k=0 is a single scalar fast-diagonalization block; k=1/k=2 are the
-    3-component vector bulk inverses (optionally with the inner r/theta/zeta
-    Schur). These are the genuinely k-specific plug-ins.
-    """
-    if k == 0:
-        bulk_true = lambda x: _apply_extracted_submatrix(
-            surgery.apply_data, surgery.bulk_indices, surgery.bulk_indices, x)
-        return lambda rhs_b: _apply_tensor_exact_block(
-            None, factors.bulk, rhs_b, true_block_apply=bulk_true)
-    if k == 1:
-        bulk_apply = _apply_k1_bulk_preconditioner if factors.bulk_schur else _apply_k1_bulk_diagonal_preconditioner
-        return lambda rhs_b: bulk_apply(surgery, factors.arr, factors.theta, factors.zeta, rhs_b)
-    if k == 2:
-        bulk_apply = _apply_k2_bulk_preconditioner if factors.bulk_schur else _apply_k2_bulk_diagonal_preconditioner
-        return lambda rhs_b: bulk_apply(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_b)
-    raise ValueError(f"surgery-Schur mass bulk inverse only supports k=0, k=1, k=2 (got k={k})")
 
 
-def _make_mass_bulk_forward(k: int, surgery, factors):
-    """Per-k bulk forward-model closure for the generic surgery-Schur layer."""
-    if k == 0:
-        return lambda rhs_b: _apply_tensor_diagonal_block_forward(factors.bulk, rhs_b)
-    if k == 1:
-        return lambda rhs_b: _apply_k1_bulk_forward_model(surgery, factors.arr, factors.theta, factors.zeta, rhs_b)
-    if k == 2:
-        return lambda rhs_b: _apply_k2_bulk_forward_model(surgery, factors.r_bulk, factors.theta, factors.zeta, rhs_b)
-    raise ValueError(f"surgery-Schur mass bulk forward only supports k=0, k=1, k=2 (got k={k})")
 
 
-def apply_mass_tensor_preconditioner(seq, preconds: Optional[MassPreconditioners], v, k: int, dirichlet: bool = True, *, true_block_apply_k3=None):
-    factors = _select_mass_tensor_factors(preconds, k, dirichlet)
-    if k == 3:
-        # k=3 has no surgery split: a single scalar tensor block, no coupling.
-        return _apply_tensor_exact_block(None, factors, v, true_block_apply=true_block_apply_k3)
-    if k not in (0, 1, 2):
-        raise ValueError(f"Tensor mass preconditioner currently only supports k=0, k=1, k=2 and k=3 (got k={k})")
-    surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
-    bulk_inv = _make_mass_bulk_inverse(k, surgery, factors)
-    return _apply_surgery_schur(surgery, factors.schur_inv, bulk_inv, v)
 
 
-def apply_mass_tensor_forward_model(seq, preconds: Optional[MassPreconditioners], v, k: int, dirichlet: bool = True):
-    del seq
-    factors = _select_mass_tensor_factors(preconds, k, dirichlet)
-    if k == 3:
-        return _apply_tensor_diagonal_block_forward(factors, v)
-    if k not in (0, 1, 2):
-        raise ValueError(f"Tensor mass forward model currently only supports k=0, k=1, k=2 and k=3 (got k={k})")
-    surgery = _select_mass_surgery_factors(preconds, k, dirichlet)
-    bulk_fwd = _make_mass_bulk_forward(k, surgery, factors)
-    return _apply_surgery_schur_forward(surgery, bulk_fwd, v)
 def _symmetrize(matrix: jnp.ndarray) -> jnp.ndarray:
     return 0.5 * (matrix + matrix.T)
 
@@ -2726,6 +1599,313 @@ def _build_mass_referenced_tensor_block_factors(
 
 def _assemble_weighted_1d_mass(B: jnp.ndarray, weights: jnp.ndarray) -> jnp.ndarray:
     return (B * weights[None, :]) @ B.T
+
+
+def _raw_kron_diff_flags(k: int, c: int) -> tuple:
+    """Differentiated-axis flags for component ``c`` of a k-form.
+
+    Mirrors ``_component_axis_bases_k0/k1/k2/k3`` in :mod:`mrx.local_assembly`:
+    k=0 differentiates nothing, k=3 everything, k=1 only axis ``c``, and k=2
+    every axis *except* ``c``.
+    """
+    match k:
+        case 0:
+            return (False, False, False)
+        case 3:
+            return (True, True, True)
+        case 1:
+            return tuple(a == c for a in range(3))
+        case 2:
+            return tuple(a != c for a in range(3))
+    raise ValueError("k must be 0, 1, 2 or 3")
+
+
+def _extraction_gram_inverse(e):
+    """``(E E^T)^{-1}`` for raw_kron, as ``(coupled_rows, inverse)``.
+
+    ``E E^T = diag(C C^T, I)``: bulk rows of ``E`` are orthonormal selectors, and
+    the coupled/bulk cross block is exactly zero, so the Gram restricted to the
+    coupled rows *is* ``C C^T``. It is block diagonal with blocks of size <= 3,
+    so a dense inverse over the ``O(n_z)`` coupled rows reproduces the blocked
+    inverse exactly while keeping the construction trivial.
+
+    Returns ``(None, None)`` when there are no coupled rows (k=3), where the
+    pseudoinverse degenerates to ``E^T`` and raw_kron is a plain tensor block.
+
+    The returned ``cross`` is the largest coupled-bulk overlap found; it must be
+    zero for the block structure to hold, and the caller asserts that rather
+    than trusting the documented invariant.
+    """
+    rows = np.asarray(e.rows)
+    cols = np.asarray(e.cols)
+    vals = np.asarray(e.vals)
+    n_rows = int(e.forward_shape[0])
+
+    counts = np.bincount(rows, minlength=n_rows)
+    coupled = np.flatnonzero(counts > 1)
+    if coupled.size == 0:
+        return None, None, 0.0
+
+    pos = -np.ones(n_rows, dtype=np.int64)
+    pos[coupled] = np.arange(coupled.size)
+
+    by_col: dict = {}
+    for r, c, v in zip(rows, cols, vals):
+        by_col.setdefault(int(c), []).append((int(r), float(v)))
+
+    m = int(coupled.size)
+    gram = np.zeros((m, m), dtype=np.float64)
+    cross = 0.0
+    for entries in by_col.values():
+        cp = [(pos[r], v) for r, v in entries if pos[r] >= 0]
+        bulk = [v for r, v in entries if pos[r] < 0]
+        if cp and bulk:
+            cross = max(cross, max(abs(v1 * v2) for _, v1 in cp for v2 in bulk))
+        for i, vi in cp:
+            for j, vj in cp:
+                gram[i, j] += vi * vj
+
+    return jnp.asarray(coupled), jnp.asarray(np.linalg.inv(gram)), cross
+
+
+def _raw_kron_block_apply(inv3, X):
+    """Apply ``(M_r^{-1} x M_t^{-1} x M_z^{-1})`` to a ``(Sx,Sy,Sz)`` block."""
+    X = jnp.tensordot(inv3[0], X, axes=([1], [0]))
+    X = jnp.tensordot(inv3[1], X, axes=([1], [1])).transpose(1, 0, 2)
+    X = jnp.tensordot(inv3[2], X, axes=([1], [2])).transpose(1, 2, 0)
+    return X
+
+
+def build_mass_raw_kron_factors(seq, k: int, *, dirichlet: bool, d_raw=None):
+    """Build the raw_kron mass preconditioner factors for ``M_k``.
+
+    The space is never split. A per-component diagonally-scaled Kronecker
+    inverse acts on the full raw grid, and the pseudoinverse
+    ``E+ = E^T (E E^T)^{-1}`` moves between raw and extracted coordinates::
+
+        M^-1 ~ (E+)^T [ (+)_c D_c^-1/2 (M_r^-1 x M_t^-1 x M_z^-1)_c D_c^-1/2 ] E+
+
+    with unweighted 1D masses (degree ``p`` on primal axes, ``p-1`` on each
+    differentiated axis) and ``D`` the phi^2-weighted support average of the
+    metric weight, taken straight from the exact mass diagonal.
+
+    This is the same model class as the Greville-collocation sandwich --
+    both are ``M_ab ~ sqrt(v_a v_b) (M_unw)_ab`` -- differing only in whether
+    the weight is sampled at a point or averaged over the support. The averaged
+    form is what makes it well defined on the innermost rings, where a Greville
+    point sits at ``r ~ 0`` and ``J -> 0``.
+
+    **Both sides must carry the full** ``(E E^T)^{-1}``, and this is the single
+    easiest thing to get wrong: substituting ``E^T`` for ``E+`` still runs, and
+    still looks acceptable on the easiest test case. In the pivot doc's
+    pow0/pow1/pow2 ablation sweep -- pow-n = the correction applied n times --
+    dropping it entirely (pow0) costs 2.3x the iterations at k=1 and drifts
+    upward under refinement, because the mis-scaled subspace has dimension
+    ``O(n_z)`` and grows; applying it once (pow1) recovers about half of that.
+    ``raw_kron`` is the pow2 arm, i.e. the correction on both sides.
+
+    Returns :class:`RawKronMassFactors`; use
+    :func:`apply_mass_raw_kron_preconditioner` to apply them, or
+    :func:`build_mass_raw_kron_preconditioner` for a ready-made jitted callable.
+    """
+    from mrx.local_assembly import build_mass_diagonal  # noqa: PLC0415
+
+    e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+    form = getattr(seq, f"basis_{k}")
+    shapes = [tuple(int(s) for s in sh) for sh in form.shape]
+    n_comp = len(shapes)
+
+    if d_raw is None:
+        d_raw = build_mass_diagonal(seq, k)
+    d_raw = jnp.asarray(d_raw)
+
+    primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
+    deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
+    quad_w = (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
+
+    inv_1d, inv_sqrt_D, starts = [], [], [0]
+    for c in range(n_comp):
+        diff = _raw_kron_diff_flags(k, c)
+        bases = tuple(deriv[a] if diff[a] else primal[a] for a in range(3))
+        m1 = [_assemble_weighted_1d_mass(bases[a], quad_w[a]) for a in range(3)]
+        for a in range(3):
+            if int(m1[a].shape[0]) != shapes[c][a]:
+                raise ValueError(
+                    f"raw_kron k={k} component {c} axis {a}: 1D mass is "
+                    f"{m1[a].shape[0]} but the raw block axis is {shapes[c][a]}"
+                )
+        inv_1d.append(tuple(jnp.linalg.inv(m) for m in m1))
+
+        # D = exact mass diagonal / unweighted Kronecker diagonal.
+        kron_diag = jnp.einsum('i,j,l->ijl', jnp.diag(m1[0]),
+                               jnp.diag(m1[1]), jnp.diag(m1[2]))
+        size = int(np.prod(shapes[c]))
+        d_c = d_raw[starts[-1]:starts[-1] + size].reshape(shapes[c])
+        inv_sqrt_D.append(1.0 / jnp.sqrt(d_c / kron_diag))
+        starts.append(starts[-1] + size)
+
+    coupled, gram_inv, cross = _extraction_gram_inverse(e)
+    if cross > 1e-12:
+        raise ValueError(
+            f"raw_kron k={k} dirichlet={dirichlet}: E E^T is not block diagonal "
+            f"(max coupled-bulk overlap {cross:.3e}); the (CC^T, I) split that "
+            "the pseudoinverse relies on does not hold here"
+        )
+
+    return RawKronMassFactors(
+        inv_1d=tuple(inv_1d),
+        inv_sqrt_D=tuple(inv_sqrt_D),
+        coupled=coupled,
+        gram_inv=gram_inv,
+        shapes=tuple(shapes),
+        starts=tuple(starts),
+    )
+
+
+class RawKronMassFactors(eqx.Module):
+    """Precomputed raw_kron factors for one ``(k, dirichlet)`` pair.
+
+    Storage is ``O(n_z)``: the 1D inverses are tiny dense blocks and
+    ``gram_inv`` covers only the coupled rows. Nothing here depends on the
+    element count, and ``gram_inv`` depends only on the *sparsity* of ``E``, so
+    it never rebuilds when the geometry changes -- unlike ``coupling_sb``,
+    which is ``O(N n_z)`` and metric dependent.
+    """
+    inv_1d: tuple
+    inv_sqrt_D: tuple
+    coupled: Optional[jnp.ndarray]
+    gram_inv: Optional[jnp.ndarray]
+    shapes: tuple = eqx.field(static=True)
+    starts: tuple = eqx.field(static=True)
+
+
+def apply_mass_raw_kron_preconditioner(factors: RawKronMassFactors, e, x):
+    """Apply the raw_kron preconditioner to an extracted-space vector."""
+    def gram_apply(v):
+        if factors.coupled is None:
+            return v
+        return v.at[factors.coupled].set(factors.gram_inv @ v[factors.coupled])
+
+    raw = e.T @ gram_apply(x)
+    parts = []
+    for c, shape in enumerate(factors.shapes):
+        Xc = raw[factors.starts[c]:factors.starts[c + 1]].reshape(shape)
+        Xc = _raw_kron_block_apply(
+            factors.inv_1d[c], Xc * factors.inv_sqrt_D[c]) * factors.inv_sqrt_D[c]
+        parts.append(Xc.reshape(-1))
+    return gram_apply(e @ jnp.concatenate(parts))
+
+
+def build_raw_kron_pinv_columns(factors: RawKronMassFactors, e):
+    """Columns of ``E+ = E^T (E E^T)^{-1}`` in padded form.
+
+    Returns ``(idx, coef)`` of shape ``(n_ext, w)``: for extracted index ``a``,
+    ``E+[:, a]`` has raw entries ``coef[a, m]`` at raw index ``idx[a, m]``,
+    zero-padded to a common width ``w``. Bulk columns carry a single entry
+    (``(E E^T)^{-1}`` is the identity there); coupled polar columns carry the
+    small ``(CC^T)^{-1}`` combination, so ``w`` stays tiny.
+
+    This is what makes entrywise access to the raw_kron operator O(1): together
+    with :func:`raw_kron_entry` it gives ``P_ab`` without any operator apply.
+    """
+    rows = np.asarray(e.rows)
+    cols = np.asarray(e.cols)
+    vals = np.asarray(e.vals)
+    n_ext = int(e.forward_shape[0])
+
+    # E^T column a  <-  row a of E.
+    by_row: dict = {}
+    for r, c, v in zip(rows, cols, vals):
+        by_row.setdefault(int(r), []).append((int(c), float(v)))
+
+    coupled = (np.asarray(factors.coupled) if factors.coupled is not None
+               else np.zeros(0, dtype=np.int64))
+    gram_inv = (np.asarray(factors.gram_inv) if factors.gram_inv is not None
+                else np.zeros((0, 0)))
+    pos = {int(r): t for t, r in enumerate(coupled)}
+
+    entries = []
+    for a in range(n_ext):
+        if a in pos:
+            # column a mixes the coupled rows through (CC^T)^{-1}
+            acc: dict = {}
+            ta = pos[a]
+            for tb, b in enumerate(coupled):
+                g = float(gram_inv[tb, ta])
+                if g == 0.0:
+                    continue
+                for c, v in by_row.get(int(b), ()):
+                    acc[c] = acc.get(c, 0.0) + v * g
+            entries.append(sorted(acc.items()))
+        else:
+            entries.append(by_row.get(a, []))
+
+    w = max((len(x) for x in entries), default=1)
+    idx = np.zeros((n_ext, w), dtype=np.int64)
+    coef = np.zeros((n_ext, w), dtype=np.float64)
+    for a, ent in enumerate(entries):
+        for m, (c, v) in enumerate(ent):
+            idx[a, m] = c
+            coef[a, m] = v
+    return jnp.asarray(idx), jnp.asarray(coef)
+
+
+def raw_kron_entry(factors: RawKronMassFactors, alpha, beta):
+    """Raw-space entries ``K[alpha, beta]`` of the raw_kron kernel, vectorized.
+
+    ``K = (+)_c D_c^{-1/2} (M_r^{-1} x M_t^{-1} x M_z^{-1})_c D_c^{-1/2}`` is
+    block diagonal over components and a Kronecker product within each, so a
+    single entry is three 1D-inverse lookups times two diagonal scalars -- O(1),
+    no solve and no apply. Entries across different components are zero.
+
+    ``alpha``/``beta`` are flat raw indices (any broadcastable shape).
+    """
+    alpha = jnp.asarray(alpha)
+    beta = jnp.asarray(beta)
+    starts = factors.starts
+    total = jnp.zeros(jnp.broadcast_shapes(alpha.shape, beta.shape))
+    for c, shape in enumerate(factors.shapes):
+        lo, hi = starts[c], starts[c + 1]
+        in_a = (alpha >= lo) & (alpha < hi)
+        in_b = (beta >= lo) & (beta < hi)
+        both = in_a & in_b
+        la = jnp.clip(alpha - lo, 0, hi - lo - 1)
+        lb = jnp.clip(beta - lo, 0, hi - lo - 1)
+        sy, sz = shape[1], shape[2]
+        ia, ja, ka = la // (sy * sz), (la // sz) % sy, la % sz
+        ib, jb, kb = lb // (sy * sz), (lb // sz) % sy, lb % sz
+        inv_r, inv_t, inv_z = factors.inv_1d[c]
+        sD = factors.inv_sqrt_D[c]
+        val = (sD[ia, ja, ka] * sD[ib, jb, kb]
+               * inv_r[ia, ib] * inv_t[ja, jb] * inv_z[ka, kb])
+        total = total + jnp.where(both, val, 0.0)
+    return total
+
+
+def raw_kron_extracted_entry(factors: RawKronMassFactors, pinv_idx, pinv_coef,
+                             a, b):
+    """Extracted-space entries ``P[a, b] = (E+)^T K E+`` at index pairs ``(a, b)``.
+
+    ``a``/``b`` are extracted indices. Uses the padded ``E+`` columns from
+    :func:`build_raw_kron_pinv_columns`, so the cost is ``w^2`` calls to
+    :func:`raw_kron_entry` with ``w <= 3``.
+    """
+    ia, ca = pinv_idx[a], pinv_coef[a]        # (..., w)
+    ib, cb = pinv_idx[b], pinv_coef[b]
+    w = ia.shape[-1]
+    acc = 0.0
+    for m in range(w):
+        for n_ in range(w):
+            acc = acc + (ca[..., m] * cb[..., n_]
+                         * raw_kron_entry(factors, ia[..., m], ib[..., n_]))
+    return acc
+
+
+def build_mass_raw_kron_preconditioner(seq, k: int, *, dirichlet: bool, d_raw=None):
+    """Convenience wrapper: build the raw_kron factors and return a jitted apply."""
+    e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+    factors = build_mass_raw_kron_factors(seq, k, dirichlet=dirichlet, d_raw=d_raw)
+    return jax.jit(lambda x: apply_mass_raw_kron_preconditioner(factors, e, x))
 
 
 def _restrict_radial_mass(matrix: jnp.ndarray, radial_start: int, nr: int) -> jnp.ndarray:
@@ -2978,3 +2158,90 @@ def diag_EGtMGEt_direct(E, G, M):
         return jnp.zeros((n_out,), dtype=jnp.float64)
     contrib = jnp.asarray(seg_coef) * M.data[jnp.asarray(seg_m)]
     return jax.ops.segment_sum(contrib, jnp.asarray(seg_i), num_segments=n_out)
+
+
+# --------------------------------------------------------------------------- #
+# Retired surgery / Schur / tensor machinery
+# --------------------------------------------------------------------------- #
+# Moved to mrx/experimental/mass_surgery.py on 2026-08-17, when raw_kron became
+# the default mass preconditioner. Re-exported lazily rather than imported at
+# module load, so that the dependency stays one-way: mass_surgery imports
+# primitives from here, and this module never imports it at load time. A module
+# __getattr__ only fires once THIS module has finished executing, so the
+# back-import always sees a fully initialised module and there is no cycle.
+#
+# NOTE: this hook serves ATTRIBUTE access (``preconditioners.foo`` and
+# ``from mrx.preconditioners import foo``). It does NOT serve bare global
+# lookups from functions defined in this file -- Python resolves those against
+# the module dict and builtins only. That is why the whole tensor path moved as
+# a dependency closure rather than just the surgery leaves: anything left behind
+# that called into the moved code would raise NameError at runtime, not resolve
+# through here.
+_SURGERY_EXPORTS = frozenset({
+    "K0MassSurgeryPreconditionerFactors",
+    "K0TensorMassPreconditionerFactors",
+    "K1MassSurgeryPreconditionerFactors",
+    "K1TensorMassPreconditionerFactors",
+    "K2MassSurgeryPreconditionerFactors",
+    "K2TensorMassPreconditionerFactors",
+    "MassSurgeryPreconditioner",
+    "_apply_bulk_to_surgery_coupling",
+    "_apply_k1_bulk_diagonal_preconditioner",
+    "_apply_k1_bulk_forward_model",
+    "_apply_k1_bulk_preconditioner",
+    "_apply_k1_rt_art_coupling",
+    "_apply_k1_rt_atr_coupling",
+    "_apply_k1_rt_forward_model",
+    "_apply_k1_rt_preconditioner",
+    "_apply_k1_rt_to_zeta_coupling",
+    "_apply_k1_zeta_to_rt_coupling",
+    "_apply_k2_bulk_diagonal_preconditioner",
+    "_apply_k2_bulk_forward_model",
+    "_apply_k2_bulk_preconditioner",
+    "_apply_k2_r_to_theta_coupling",
+    "_apply_k2_rt_forward_model",
+    "_apply_k2_rt_preconditioner",
+    "_apply_k2_rt_to_zeta_coupling",
+    "_apply_k2_theta_to_r_coupling",
+    "_apply_k2_zeta_to_rt_coupling",
+    "_apply_surgery_schur",
+    "_apply_surgery_schur_forward",
+    "_apply_surgery_to_bulk_coupling",
+    "_arr_shape_k1",
+    "_assemble_surgery_schur_inverse_from_applies",
+    "_component_sizes_k2",
+    "_k1_layout_sizes",
+    "_k2_rt_indices",
+    "_make_mass_bulk_forward",
+    "_make_mass_bulk_inverse",
+    "_mass_surgery_pair",
+    "_r_bulk_shape_k2",
+    "_select_mass_surgery_factors",
+    "_surgery_slices_k1",
+    "_surgery_slices_k2",
+    "_tensor_block_indices_k1",
+    "_tensor_block_indices_k2",
+    "_theta_bulk_shape_k1",
+    "_theta_shape_k2",
+    "_zeta_bulk_shape_k1",
+    "_zeta_shape_k2",
+    "apply_mass_tensor_forward_model",
+    "apply_mass_tensor_preconditioner",
+    "build_mass_surgery_preconditioner",
+    "build_mass_tensor_preconditioner",
+    "mass_surgery_available",
+    "mass_tensor_available",
+    "set_mass_surgery",
+    "set_mass_surgery_pair",
+})
+
+
+def __getattr__(name):
+    if name in _SURGERY_EXPORTS:
+        from mrx.experimental import mass_surgery  # noqa: PLC0415
+        return getattr(mass_surgery, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | _SURGERY_EXPORTS)

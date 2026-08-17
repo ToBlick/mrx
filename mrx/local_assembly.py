@@ -28,6 +28,8 @@ import numpy as np
 
 __all__ = [
     "assemble_m0_local",
+    "build_mass_diagonal",
+    "build_stiffness_diagonal",
     "assemble_m1_local",
     "assemble_m2_local",
     "assemble_m3_local",
@@ -440,26 +442,20 @@ def _element_apply(Bvals_r, Bvals_c, W, x_flat_c, gather_idx_c):
     return y_local
 
 
-def build_matrixfree_mass_apply(seq, k, geometry=None):
-    """Return a jitted raw-DOF-space ``x -> M_k x`` that never stores ``M_k``.
+def _mass_form_and_weights(seq, k, geometry):
+    """Shared element plan for the ``M_k`` matvec and its exact diagonal.
 
-    The returned callable acts on a vector in the *raw tensor-product* DOF
-    space (the unextracted, periodic DOF layout that the stored ``M_k`` matrix
-    also acts on). Boundary / polar extraction ``E (.) E^T`` is applied by the
-    caller exactly as for the stored path.
+    Returns ``(form, comp, pairs, weight_of, n_comp)``: the form object, the
+    per-component 1D basis tables from :func:`_bases_for_form`, the list of
+    ``(row_comp, col_comp)`` pairs, the quadrature-point metric weight for each
+    pair, and the component count.
 
-    The element plan (basis values, gather indices, scatter segment ids and
-    metric weights) is built once on the host; the jitted matvec performs a
-    single gather and a single ``segment_sum`` per component pair with no index
-    arithmetic. The plan arrays are passed as runtime arguments to the jitted
-    kernel (not captured as constants) to avoid XLA constant-folding of the
-    large integer index tensors.
+    Both :func:`build_matrixfree_mass_apply` and :func:`build_mass_diagonal`
+    go through here so the diagonal is derived from *the same tables the solver
+    applies*. The removed ``diag_EAET_direct`` route recomputed its own tables
+    and drifted from the matvec; that failure mode is structural, not a bug to
+    be fixed once, so the plan is shared rather than mirrored.
     """
-    geometry = seq.geometry if geometry is None else geometry
-    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
-    ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
-    gw = _quad_gauss_weight(seq)
-
     if k == 0:
         form = seq.basis_0
         comp = _bases_for_form(seq, form, lambda f, c: [f.Λ[0], f.Λ[1], f.Λ[2]], 1)
@@ -490,6 +486,127 @@ def build_matrixfree_mass_apply(seq, k, geometry=None):
         n_comp = 3
     else:
         raise ValueError("k must be 0, 1, 2 or 3")
+    return form, comp, pairs, weight_of, n_comp
+
+
+def build_mass_diagonal(seq, k, geometry=None):
+    """Return ``diag(M_k)`` in raw DOF space, exactly and probe-free.
+
+    A diagonal entry only ever sees its own component, so only the ``(c, c)``
+    metric blocks contribute and the contraction of :func:`_element_apply`
+    collapses to the *same* sum factorization against **squared** basis tables
+    with no input vector:
+
+        d[a,b,e] = sum_elem sum_{q,r,s} Bx[q,a]^2 By[r,b]^2 Bz[s,e]^2 W(q,r,s)
+
+    Cost is one contraction -- O(1) applies -- against the O(n) full applies a
+    probed diagonal needs. The result is exact to floating point, not an
+    estimate, and is the ``D`` of the pow2 sandwich as well as the diagonal of
+    the Jacobi mass preconditioner.
+
+    The returned vector is the components concatenated in form order, matching
+    the layout of :func:`build_matrixfree_mass_apply`.
+    """
+    geometry = seq.geometry if geometry is None else geometry
+    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
+    ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
+    gw = _quad_gauss_weight(seq)
+
+    form, comp, _pairs, weight_of, n_comp = _mass_form_and_weights(seq, k, geometry)
+    shapes = form.shape
+
+    parts = []
+    for c in range(n_comp):
+        Wf = _split_field(weight_of[(c, c)], nx, ny, nz,
+                          ne_x, ne_y, ne_z, qx, qy, qz) * gw
+        Bx, By, Bz = comp[c][0], comp[c][2], comp[c][4]
+        # Squared basis tables: the row and column bases coincide on the diagonal.
+        t1 = jnp.einsum('xqa,xyzqrs->xyzars', Bx * Bx, Wf)
+        t2 = jnp.einsum('yrb,xyzars->xyzabs', By * By, t1)
+        d_local = jnp.einsum('zse,xyzabs->xyzabe', Bz * Bz, t2)
+        seg = _flat_dof_plan(comp[c][1], comp[c][3], comp[c][5],
+                             shapes[c]).reshape(-1)
+        parts.append(jax.ops.segment_sum(
+            d_local.reshape(-1), seg, num_segments=int(np.prod(shapes[c]))))
+    return jnp.concatenate(parts)
+
+
+def build_stiffness_diagonal(seq, k, geometry=None):
+    """Return ``diag(S_k)`` in raw DOF space, exactly and probe-free.
+
+    ``S_k = sum_{i,j} B_i^T W_ij B_j`` with ``B_i`` the tensor basis
+    differentiated along axis ``i`` and ``W_ij = g^{ij} J`` the metric weight.
+    Unlike the mass, the **off-diagonal** metric blocks ``i != j`` contribute to
+    the diagonal, since both factors carry the same DOF index::
+
+        d[a] = sum_{i,j} sum_q (d_i phi_a)(q) W_ij(q) (d_j phi_a)(q)
+
+    so the contraction runs over 9 metric pairs, each a product of two 1D tables
+    per axis. Still one sum factorization -- no probes, no operator applies.
+
+    ``d_i phi_a`` is the derivative of the *primal* basis, which is
+    :func:`mrx.geometry.grad_1d` applied to the degree-``p-1`` table -- **not**
+    ``dLambda`` itself, which spans a different (smaller) DOF set and would not
+    even conform in shape.
+
+    Only k=0 is implemented: k=3 has no stiffness block (``S_3 = 0``), and
+    k=1/k=2 add a component index on top of the metric-pair index.
+    """
+    if k != 0:
+        raise NotImplementedError(
+            "build_stiffness_diagonal currently supports k=0 only; k=3 has no "
+            "stiffness block and k=1/k=2 need the component-pair extension")
+    from mrx.geometry import grad_1d  # noqa: PLC0415
+
+    geometry = seq.geometry if geometry is None else geometry
+    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
+    types = seq.basis_0.types
+
+    val = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
+    grad = (grad_1d(seq.d_basis_r_jk, types[0]),
+            grad_1d(seq.d_basis_t_jk, types[1]),
+            grad_1d(seq.d_basis_z_jk, types[2]))
+
+    # Metric weight with the Gauss weights folded in, on the (nx, ny, nz) grid.
+    metric_inv = geometry.metric_inv_jkl
+    w = geometry.jacobian_j * seq.quad.w
+
+    total = None
+    for i in range(3):
+        for j in range(3):
+            Wf = (metric_inv[:, i, j] * w).reshape(ny, nx, nz).transpose(1, 0, 2)
+            Tx = (grad[0] if i == 0 else val[0]) * (grad[0] if j == 0 else val[0])
+            Ty = (grad[1] if i == 1 else val[1]) * (grad[1] if j == 1 else val[1])
+            Tz = (grad[2] if i == 2 else val[2]) * (grad[2] if j == 2 else val[2])
+            t1 = jnp.einsum('ax,xyz->ayz', Tx, Wf)
+            t2 = jnp.einsum('by,ayz->abz', Ty, t1)
+            blk = jnp.einsum('cz,abz->abc', Tz, t2)
+            total = blk if total is None else total + blk
+
+    return total.reshape(-1)
+
+
+def build_matrixfree_mass_apply(seq, k, geometry=None):
+    """Return a jitted raw-DOF-space ``x -> M_k x`` that never stores ``M_k``.
+
+    The returned callable acts on a vector in the *raw tensor-product* DOF
+    space (the unextracted, periodic DOF layout that the stored ``M_k`` matrix
+    also acts on). Boundary / polar extraction ``E (.) E^T`` is applied by the
+    caller exactly as for the stored path.
+
+    The element plan (basis values, gather indices, scatter segment ids and
+    metric weights) is built once on the host; the jitted matvec performs a
+    single gather and a single ``segment_sum`` per component pair with no index
+    arithmetic. The plan arrays are passed as runtime arguments to the jitted
+    kernel (not captured as constants) to avoid XLA constant-folding of the
+    large integer index tensors.
+    """
+    geometry = seq.geometry if geometry is None else geometry
+    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
+    ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
+    gw = _quad_gauss_weight(seq)
+
+    form, comp, pairs, weight_of, n_comp = _mass_form_and_weights(seq, k, geometry)
 
     shapes = form.shape
     starts = [0]
