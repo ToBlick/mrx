@@ -1708,41 +1708,15 @@ def build_mass_raw_kron_factors(seq, k: int, *, dirichlet: bool, d_raw=None):
     :func:`apply_mass_raw_kron_preconditioner` to apply them, or
     :func:`build_mass_raw_kron_preconditioner` for a ready-made jitted callable.
     """
-    from mrx.local_assembly import build_mass_diagonal  # noqa: PLC0415
-
     e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
-    form = getattr(seq, f"basis_{k}")
-    shapes = [tuple(int(s) for s in sh) for sh in form.shape]
-    n_comp = len(shapes)
+    shapes, mass_1d, lam = _kron_mass_model_1d(seq, k, d_raw=d_raw)
 
-    if d_raw is None:
-        d_raw = build_mass_diagonal(seq, k)
-    d_raw = jnp.asarray(d_raw)
-
-    primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
-    deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
-    quad_w = (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
-
-    inv_1d, inv_sqrt_D, starts = [], [], [0]
-    for c in range(n_comp):
-        diff = _raw_kron_diff_flags(k, c)
-        bases = tuple(deriv[a] if diff[a] else primal[a] for a in range(3))
-        m1 = [_assemble_weighted_1d_mass(bases[a], quad_w[a]) for a in range(3)]
-        for a in range(3):
-            if int(m1[a].shape[0]) != shapes[c][a]:
-                raise ValueError(
-                    f"raw_kron k={k} component {c} axis {a}: 1D mass is "
-                    f"{m1[a].shape[0]} but the raw block axis is {shapes[c][a]}"
-                )
-        inv_1d.append(tuple(jnp.linalg.inv(m) for m in m1))
-
-        # D = exact mass diagonal / unweighted Kronecker diagonal.
-        kron_diag = jnp.einsum('i,j,l->ijl', jnp.diag(m1[0]),
-                               jnp.diag(m1[1]), jnp.diag(m1[2]))
-        size = int(np.prod(shapes[c]))
-        d_c = d_raw[starts[-1]:starts[-1] + size].reshape(shapes[c])
-        inv_sqrt_D.append(1.0 / jnp.sqrt(d_c / kron_diag))
-        starts.append(starts[-1] + size)
+    inv_1d = [tuple(jnp.linalg.inv(m) for m in mass_1d[c])
+              for c in range(len(shapes))]
+    inv_sqrt_D = [1.0 / lam_c for lam_c in lam]
+    starts = [0]
+    for sh in shapes:
+        starts.append(starts[-1] + int(np.prod(sh)))
 
     coupled, gram_inv, cross = _extraction_gram_inverse(e)
     if cross > 1e-12:
@@ -1760,6 +1734,57 @@ def build_mass_raw_kron_factors(seq, k: int, *, dirichlet: bool, d_raw=None):
         shapes=tuple(shapes),
         starts=tuple(starts),
     )
+
+
+def _kron_mass_model_1d(seq, k: int, d_raw=None):
+    """1-D factors of the Kronecker model of ``M_k``::
+
+        M_k  ~  (+)_c  Lam_c (A^c_r x A^c_t x A^c_z) Lam_c
+
+    with *unweighted* 1-D masses (degree ``p`` on primal axes, ``p-1`` on each
+    differentiated axis) and the diagonal scaling ``Lam_c`` chosen so that the
+    model reproduces ``diag(M_k)`` **exactly**: it is the support-averaged
+    metric weight, ``sqrt(diag(M_k)_c / diag(A^c_r x A^c_t x A^c_z))``.
+
+    This is the forward half of :func:`build_mass_raw_kron_factors` -- that one
+    inverts the 1-D masses and stores ``1/Lam`` -- and it is also the mass model
+    the weak-term diagonal builds on. Measured ``||M~ - M||_F / ||M||_F`` on a
+    spline toroid: ``3.1e-2`` at k=1, ``7e-3`` at k=2 and k=3.
+
+    Returns ``(shapes, mass_1d, lam)``: the raw block shapes, the three 1-D
+    masses per component, and the 3-D scaling per component.
+    """
+    from mrx.local_assembly import build_mass_diagonal  # noqa: PLC0415
+
+    form = getattr(seq, f"basis_{k}")
+    shapes = [tuple(int(s) for s in sh) for sh in form.shape]
+
+    if d_raw is None:
+        d_raw = build_mass_diagonal(seq, k)
+    d_raw = jnp.asarray(d_raw)
+
+    primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
+    deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
+    quad_w = (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
+
+    mass_1d, lam, start = [], [], 0
+    for c, shape in enumerate(shapes):
+        diff = _raw_kron_diff_flags(k, c)
+        bases = tuple(deriv[a] if diff[a] else primal[a] for a in range(3))
+        m1 = tuple(_assemble_weighted_1d_mass(bases[a], quad_w[a]) for a in range(3))
+        for a in range(3):
+            if int(m1[a].shape[0]) != shape[a]:
+                raise ValueError(
+                    f"kron mass model k={k} component {c} axis {a}: 1D mass is "
+                    f"{m1[a].shape[0]} but the raw block axis is {shape[a]}"
+                )
+        kron_diag = jnp.einsum('i,j,l->ijl', jnp.diag(m1[0]),
+                               jnp.diag(m1[1]), jnp.diag(m1[2]))
+        size = int(np.prod(shape))
+        mass_1d.append(m1)
+        lam.append(jnp.sqrt(d_raw[start:start + size].reshape(shape) / kron_diag))
+        start += size
+    return shapes, tuple(mass_1d), tuple(lam)
 
 
 class RawKronMassFactors(eqx.Module):
@@ -2245,3 +2270,469 @@ def __getattr__(name):
 
 def __dir__():
     return sorted(set(globals()) | _SURGERY_EXPORTS)
+
+
+# --------------------------------------------------------------------------- #
+# Closed-form diagonal of the WEAK term of the Hodge Laplacian                 #
+# --------------------------------------------------------------------------- #
+#
+#   L_k = S_k + W_k ,   W_k = D_{k-1} B_{k-1} D_{k-1}^T ,   D_l = E_k M_k G_l E_l^T
+#
+# with ``B`` the raw_kron mass preconditioner standing in for ``M_{k-1}^{-1}``.
+# ``diag(S_k)`` is already closed form (:func:`mrx.local_assembly.
+# build_stiffness_diagonal`); this is the other half, and it is what forced
+# k>=1 Jacobi to probe the Laplacian at O(N) applies.
+#
+# Substituting ``B = (E+)^T K E+`` and folding the two pseudoinverses into the
+# extraction projector ``Pi = E_l^T (E_l E_l^T)^{-1} E_l`` gives
+#
+#     W_k = E_k [ M_k G_l Pi ] K [ Pi G_l^T M_k ] E_k^T
+#
+# in which EVERY factor is a sum of Kronecker products.  A Kronecker product's
+# diagonal is the outer product of its 1-D diagonals, so the whole thing
+# collapses to a handful of small 1-D matrix chains plus one outer product per
+# term pair -- O(N), against the O(N) full applies a probe needs.
+#
+#   M_k, M_{k-1}  ->  the raw_kron model ``Lam (x)_a A_a Lam`` of
+#            :func:`_kron_mass_model_1d`, in all three places -- so
+#            ``M_{k-1}^{-1}`` here is literally the production mass
+#            preconditioner, not a second model built alongside it.
+#   G_l  ->  exact, one Kronecker term per (out component, in component) pair.
+#   Pi   ->  exact, see :func:`_extraction_projector_kron_terms`.
+#
+# Note ``K = Sig (x)_a Cinv_a Sig`` with ``Sig = Lam_l^-1`` is EXACTLY the
+# inverse of the raw_kron model of ``M_{k-1}``, so "raw_kron preconditioner" and
+# "Kronecker model of the mass, inverted" are the same object here.
+#
+# The one wrinkle is that ``Lam (x)_a A_a Lam`` is a Kronecker product SANDWICHED
+# by a non-separable diagonal, and a diagonal does not push through a Kronecker
+# factorization.  Of the six diagonals in ``M_k G M_{k-1}^-1 G^T M_k`` -- two per
+# mass -- the two OUTERMOST are free: they multiply the finished diagonal
+# pointwise, so they are kept EXACT and cost nothing.  The remaining four are
+# interior (they land between a 1-D mass and the incidence) and are split rank-1
+# in closed form by :func:`_rank1_diagonal_split`: no iteration, no fit, and no
+# extra term pairs.  Measured against the same expansion with every ``Lam`` kept
+# exact, the split costs a 2.4e-2 / 5.3e-3 / 2.5e-3 median at k=1/2/3.
+#
+# Do NOT replace M by its diagonal instead: that discards the mass coupling
+# entirely and was rejected on 2026-08-18.
+#
+# Pi is NOT optional and NOT diagonal.  Both cheap surrogates were measured and
+# both fail: masking (Pi ~ the bulk indicator) and the exact leverage diagonal
+# (Pi ~ diag(Pi)) each leave ~90% error on the near-axis rows -- p99 8.9e-1 and
+# 9.1e-1 against 3.1e-2 for the exact expansion, on a 10x8x6 toroid at k=1.
+
+# Out component -> ((in component, differentiated axis, sign), ...) for G_l.
+# Read off ``_apply_incidence_mf``: grad = (d_r, d_t, d_z);
+# curl P = -d_z b + d_t c, Q = d_z a - d_r c, R = -d_t a + d_r b;
+# div = d_r a + d_t b + d_z c.
+_INCIDENCE_KRON_TERMS = {
+    0: {0: ((0, 0, 1.0),),
+        1: ((0, 1, 1.0),),
+        2: ((0, 2, 1.0),)},
+    1: {0: ((1, 2, -1.0), (2, 1, 1.0)),
+        1: ((0, 2, 1.0), (2, 0, -1.0)),
+        2: ((0, 1, -1.0), (1, 0, 1.0))},
+    2: {0: ((0, 0, 1.0), (1, 1, 1.0), (2, 2, 1.0))},
+}
+
+
+def _raw_block_starts(shapes):
+    starts = [0]
+    for shape in shapes:
+        starts.append(starts[-1] + int(np.prod(shape)))
+    return np.asarray(starts)
+
+
+def _decode_raw_indices(flat, shapes, starts):
+    """Flat raw DOF indices -> (component, i_r, i_t, i_z)."""
+    flat = np.asarray(flat)
+    comp = np.searchsorted(starts, flat, side='right') - 1
+    loc = flat - starts[comp]
+    shape = np.asarray(shapes)[comp]
+    nt, nz = shape[:, 1], shape[:, 2]
+    return comp, loc // (nt * nz), (loc // nz) % nt, loc % nz
+
+
+def _extraction_projector_kron_terms(e, shapes, *, tol=1e-10):
+    """Exact Kronecker expansion of ``Pi = E^T (E E^T)^{-1} E``.
+
+    ``Pi`` is the identity on the bulk raw DOFs, zero on the raw DOFs that
+    ``E`` drops, and a rank-deficient projector on the POLAR RING -- and the
+    ring is only ``ring_depth`` radial indices thick, sits at a single zeta
+    index per coupled row, and is the same block in every zeta plane.  So
+
+        Pi = (+)_c diag(chi^c_r) x I_t x I_z  +  sum_{c,c'} sum_j F_r x F_t x I_z
+
+    with ``chi^c_r`` the bulk radial indicator.  The ring blocks are split by an
+    SVD in the ``(i_r, j_r)`` vs ``(i_t, j_t)`` grouping; that split is EXACT
+    and its rank is at most ``ring_depth^2 <= 4`` per component pair, because
+    the ring is radially thin.  Hence a handful of terms, not O(n_t).
+
+    Every structural assumption is checked against the actual ``E`` and raises
+    rather than silently degrading -- an unnoticed failure here is a ~90% error
+    on the near-axis rows, which is exactly where a Jacobi diagonal matters.
+
+    Returns a list of ``(src_component, dst_component, (F_r, F_t, F_z))``.
+    """
+    rows = np.asarray(e.rows)
+    cols = np.asarray(e.cols)
+    vals = np.asarray(e.vals)
+    n_ext = int(e.forward_shape[0])
+    n_raw = int(e.forward_shape[1])
+    starts = _raw_block_starts(shapes)
+
+    counts = np.bincount(rows, minlength=n_ext)
+    coupled_rows = np.flatnonzero(counts > 1)
+    ring_cols = np.unique(cols[np.isin(rows, coupled_rows)])
+    touched = np.unique(cols)
+    bulk_cols = np.setdiff1d(touched, ring_cols)
+
+    terms = []
+
+    # --- identity part: the bulk radial indicator ---------------------------
+    # Pi is exactly the identity on a bulk column and exactly zero on a dropped
+    # one, so this part is a 0/1 diagonal; it is separable only if it is
+    # constant over (theta, zeta) at fixed (component, i_r).
+    if np.bincount(cols[np.isin(cols, bulk_cols)]).max(initial=0) > 1:
+        raise ValueError(
+            "extraction projector: a bulk raw DOF is shared by more than one "
+            "extracted row, so Pi is not the identity there")
+    mask = np.zeros(n_raw)
+    mask[bulk_cols] = 1.0
+    for c, shape in enumerate(shapes):
+        block = mask[starts[c]:starts[c + 1]].reshape(shape)
+        chi = block[:, 0, 0]
+        if not np.array_equal(block, np.broadcast_to(chi[:, None, None], shape)):
+            raise ValueError(
+                f"extraction projector component {c}: the bulk indicator is not "
+                "a radial slab, so the identity part of Pi is not separable")
+        terms.append((c, c, (np.diag(chi), np.eye(shape[1]), np.eye(shape[2]))))
+
+    if coupled_rows.size == 0:
+        return terms
+
+    # --- ring part ----------------------------------------------------------
+    coupled, gram_inv, _ = _extraction_gram_inverse(e)
+    coupled = np.asarray(coupled)
+    gram_inv = np.asarray(gram_inv)
+    pos = {int(r): t for t, r in enumerate(coupled)}
+
+    _, _, _, ring_iz = _decode_raw_indices(ring_cols, shapes, starts)
+    row_zeta = {}
+    for i in coupled_rows:
+        _, _, _, iz = _decode_raw_indices(cols[rows == i], shapes, starts)
+        if len(set(iz.tolist())) != 1:
+            raise ValueError(
+                f"extraction projector: coupled row {int(i)} spans more than one "
+                "zeta index, so Pi is not block diagonal in zeta")
+        row_zeta[int(i)] = int(iz[0])
+
+    # Ring index space at one zeta plane: (component, ring radial index, theta).
+    ring_comp, ring_ir, _, _ = _decode_raw_indices(ring_cols, shapes, starts)
+    ring_radial = {c: np.unique(ring_ir[ring_comp == c])
+                   for c in np.unique(ring_comp)}
+
+    def plane_block(z0):
+        """Dense ``Pi`` restricted to the ring at zeta index ``z0``."""
+        plane_rows = [i for i in coupled_rows if row_zeta[int(i)] == z0]
+        offsets, size = {}, 0
+        for c, radial in ring_radial.items():
+            offsets[c] = size
+            size += len(radial) * shapes[c][1]
+        cmat = np.zeros((len(plane_rows), size))
+        for n, i in enumerate(plane_rows):
+            sel = rows == i
+            comp, ir, it, _ = _decode_raw_indices(cols[sel], shapes, starts)
+            for c, r, t, v in zip(comp, ir, it, vals[sel]):
+                radial = ring_radial[int(c)]
+                loc = int(np.searchsorted(radial, r)) * shapes[int(c)][1] + int(t)
+                cmat[n, offsets[int(c)] + loc] += float(v)
+        idx = np.array([pos[int(i)] for i in plane_rows])
+        return cmat.T @ gram_inv[np.ix_(idx, idx)] @ cmat, offsets
+
+    zetas = sorted(set(row_zeta.values()))
+    block, offsets = plane_block(zetas[0])
+    for z0 in zetas[1:]:
+        other, _ = plane_block(z0)
+        if not np.allclose(other, block, atol=1e-11, rtol=1e-9):
+            raise ValueError(
+                "extraction projector: the polar ring block differs between "
+                "zeta planes, so Pi does not factor as (ring block) x I_z")
+
+    for c1, radial1 in ring_radial.items():
+        for c2, radial2 in ring_radial.items():
+            c1, c2 = int(c1), int(c2)
+            nt1, nt2 = shapes[c1][1], shapes[c2][1]
+            if shapes[c1][2] != shapes[c2][2]:
+                raise ValueError(
+                    f"extraction projector: components {c1} and {c2} are coupled "
+                    "by the polar ring but have different zeta dimensions")
+            sub = block[offsets[c1]:offsets[c1] + len(radial1) * nt1,
+                        offsets[c2]:offsets[c2] + len(radial2) * nt2]
+            sub = sub.reshape(len(radial1), nt1, len(radial2), nt2)
+            flat = sub.transpose(0, 2, 1, 3).reshape(
+                len(radial1) * len(radial2), nt1 * nt2)
+            u, s, vt = np.linalg.svd(flat, full_matrices=False)
+            keep = s > max(tol * s[0], 0.0) if s.size else s
+            for j in np.flatnonzero(keep):
+                root = np.sqrt(s[j])
+                f_r = np.zeros((shapes[c1][0], shapes[c2][0]))
+                f_r[np.ix_(radial1, radial2)] = (
+                    root * u[:, j]).reshape(len(radial1), len(radial2))
+                f_t = (root * vt[j]).reshape(nt1, nt2)
+                terms.append((c1, c2, (f_r, f_t, np.eye(shapes[c1][2]))))
+    return terms
+
+
+def _rank1_diagonal_split(tensor, *, mode: str = "geometric"):
+    """Closed-form rank-1 separable split of a positive 3-D diagonal.
+
+    Returns ``(f_r, f_t, f_z)`` with ``T ~ f_r x f_t x f_z``.  Each factor is
+    the average of ``T`` over the other two axes, rescaled by the global mean so
+    the product reproduces ``T`` EXACTLY whenever ``T`` really is separable.
+    Three contractions, deterministic, symmetric in the axes -- no iteration and
+    no fit to babysit.
+
+    ``mode='geometric'`` averages ``log T`` -- the multiplicative version, and
+    the default because ``T`` is a multiplicative scaling: against the unsplit
+    raw_kron model of the weak term on a spline toroid it is 2-20x closer than
+    the arithmetic split at every k (median 2.4e-2 / 5.3e-3 / 2.5e-3 at
+    k=1/2/3, against 4.9e-2 / 4.1e-2 / 6.0e-2).  ``mode='arithmetic'`` averages
+    ``T`` itself.  Both are exact on a separable tensor and differ only in how
+    they spread a non-separable residual.
+    """
+    tensor = np.asarray(tensor)
+    if mode == "geometric":
+        work = np.log(tensor)
+    elif mode == "arithmetic":
+        work = tensor
+    else:
+        raise ValueError(f"unknown rank-1 split mode {mode!r}")
+    mean = work.mean()
+    factors = []
+    for a in range(3):
+        others = tuple(b for b in range(3) if b != a)
+        factors.append(work.mean(axis=others) - (2.0 / 3.0) * mean
+                       if mode == "geometric" else
+                       work.mean(axis=others) / mean ** (2.0 / 3.0))
+    return [np.exp(f) for f in factors] if mode == "geometric" else factors
+
+
+def _weak_term_kron_terms(seq, k: int, *, dirichlet: bool, split: str = "geometric"):
+    """Kronecker terms of ``X = A^u Lam~^u G_{k-1} Pi Sig~``, grouped by the
+    pair ``(upper component, lower component)`` that ``M_{k-1}^{-1}`` couples.
+
+    Each entry is ``(sign, L, L_inv)`` with ``L`` the three 1-D factors and
+    ``L_inv = L (A^l)^-1`` pre-multiplied, so a term PAIR costs one row-wise dot
+    per axis instead of a matrix chain.
+    """
+    from mrx.operators import _dense_incidence_1d  # noqa: PLC0415
+
+    lower = k - 1
+    shapes_u, mass_u, lam_u = _kron_mass_model_1d(seq, k)
+    factors = build_mass_raw_kron_factors(seq, lower, dirichlet=dirichlet)
+    shapes_l = [tuple(int(s) for s in sh) for sh in factors.shapes]
+    inv_l = [tuple(np.asarray(m) for m in factors.inv_1d[c])
+             for c in range(len(shapes_l))]
+    e_lower = getattr(seq, f"e{lower}_dbc" if dirichlet else f"e{lower}")
+    pi_terms = _extraction_projector_kron_terms(e_lower, shapes_l)
+    types = seq.basis_0.types
+
+    # The two INNER diagonal scalings, split rank-1 so they fold into the 1-D
+    # factors. The upper Lam appears once more on the OUTSIDE, where it is kept
+    # exact (see build_weak_term_raw_diagonal).
+    lam_split = [_rank1_diagonal_split(lam_u[c], mode=split)
+                 for c in range(len(shapes_u))]
+    sigma_split = [_rank1_diagonal_split(factors.inv_sqrt_D[c], mode=split)
+                   for c in range(len(shapes_l))]
+
+    groups: dict = {}
+    for c_u, contributions in _INCIDENCE_KRON_TERMS[lower].items():
+        for (c_g, axis, sign) in contributions:
+            y = []
+            for a in range(3):
+                a_mass = np.asarray(mass_u[c_u][a]) * lam_split[c_u][a][None, :]
+                if a == axis:
+                    g = np.asarray(_dense_incidence_1d(shapes_l[c_g][a], types[a]))
+                    y.append(a_mass @ g)
+                elif shapes_u[c_u][a] != shapes_l[c_g][a]:
+                    raise ValueError(
+                        f"weak-term k={k}: undifferentiated axis {a} has size "
+                        f"{shapes_l[c_g][a]} below and {shapes_u[c_u][a]} above")
+                else:
+                    y.append(a_mass)
+                if y[a].shape != (shapes_u[c_u][a], shapes_l[c_g][a]):
+                    raise ValueError(
+                        f"weak-term k={k}: axis {a} factor has shape {y[a].shape}, "
+                        f"expected {(shapes_u[c_u][a], shapes_l[c_g][a])}")
+            for (src, dst, f_axes) in pi_terms:
+                if src != c_g:
+                    continue
+                left = [(y[a] @ f_axes[a]) * sigma_split[dst][a][None, :]
+                        for a in range(3)]
+                groups.setdefault((c_u, dst), []).append(
+                    (sign, left, [left[a] @ inv_l[dst][a] for a in range(3)]))
+    return groups, shapes_u, lam_u
+
+
+def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
+                                 split: str = "geometric",
+                                 return_info: bool = False):
+    """Raw-DOF-space diagonal of the weak term, closed form and O(N).
+
+    ``diag(W)`` for ``W = M_k G Pi M_{k-1}^{-1} Pi G^T M_k`` with every mass
+    replaced by the raw_kron Kronecker model -- so ``M_{k-1}^{-1}`` here is
+    literally the production mass preconditioner.  Each term of the expansion is
+    then a pure Kronecker product, whose diagonal is the OUTER PRODUCT of its
+    three 1-D diagonals::
+
+        diag(term_{t,t'})_i = Lam_i^2  prod_a [ L^t_a (A^l_a)^-1 (L^t'_a)^T ]_{i_a i_a}
+
+    with ``L^t_a = A^u_a lam_a g_a F_a sig_a`` -- upper 1-D mass, the rank-1
+    split of the inner scaling, the 1-D incidence, one Kronecker factor of
+    ``Pi``, and the rank-1 split of the lower scaling.  The pair sum is
+    symmetric, so only ``t <= t'`` is formed.
+
+    The OUTER ``Lam^2`` is the exact, unsplit scaling: it multiplies the
+    finished diagonal pointwise, so it costs nothing and needs no separability.
+    Only the two inner copies are split.
+    """
+    if k not in (1, 2, 3):
+        raise ValueError("the weak term exists only for k = 1, 2, 3")
+    groups, shapes_u, lam_u = _weak_term_kron_terms(
+        seq, k, dirichlet=dirichlet, split=split)
+
+    parts = [np.zeros(shape) for shape in shapes_u]
+    n_pairs = 0
+    for (c_u, _), entries in groups.items():
+        for i, (sign_i, _, linv_i) in enumerate(entries):
+            for j in range(i, len(entries)):
+                sign_j, l_j, _ = entries[j]
+                z = [np.einsum('mn,mn->m', linv_i[a], l_j[a]) for a in range(3)]
+                weight = (sign_i * sign_j) * (1.0 if i == j else 2.0)
+                parts[c_u] += weight * np.einsum('i,j,l->ijl', *z)
+                n_pairs += 1
+
+    raw = np.concatenate([(p * np.asarray(lam_u[c]) ** 2).reshape(-1)
+                          for c, p in enumerate(parts)])
+    if return_info:
+        return jnp.asarray(raw), {
+            "term_pairs": n_pairs,
+            "terms": {key: len(v) for key, v in groups.items()}}
+    return jnp.asarray(raw)
+
+
+def _weak_term_rows_by_apply(seq, operators, k: int, *, dirichlet: bool, indices):
+    """Exact ``diag(W)`` at a handful of extracted rows, by operator applies."""
+    from mrx.operators import (apply_derivative_matrix,  # noqa: PLC0415
+                               apply_mass_matrix_preconditioner)
+
+    lower = k - 1
+    suffix = "_dbc" if dirichlet else ""
+    size = int(getattr(seq, f"n{k}{suffix}"))
+
+    def weak_apply(x):
+        d_t_x = apply_derivative_matrix(
+            seq, operators, x, lower, dirichlet_in=dirichlet,
+            dirichlet_out=dirichlet, transpose=True)
+        inner = apply_mass_matrix_preconditioner(
+            seq, operators, d_t_x, lower, dirichlet=dirichlet, kind='auto')
+        return apply_derivative_matrix(
+            seq, operators, inner, lower, dirichlet_in=dirichlet,
+            dirichlet_out=dirichlet)
+
+    def row(i):
+        return weak_apply(jnp.zeros(size).at[i].set(1.0))[i]
+
+    # Warm the apply on a concrete vector first: the matrix-free mass plan is
+    # HOST-built, so building it inside the trace raises
+    # TracerArrayConversionError.
+    weak_apply(jnp.zeros(size))
+    # lax.map, never vmap: a batched probe fuses into a transpose kernel that
+    # spills registers and crashes ptxas. See _diagonal_from_matvec.
+    return np.asarray(jax.lax.map(row, jnp.asarray(indices)))
+
+
+def build_weak_term_diagonal(seq, operators, k: int, *, dirichlet: bool, **kwargs):
+    """``diag(E_k W_k E_k^T)``, the weak half of the k>=1 Jacobi Laplacian.
+
+    Bulk extracted rows are pure selectors, so the closed-form raw diagonal
+    supplies them directly.  The ``n_polar * n_zeta`` coupled rows would need
+    off-diagonal raw entries of ``W``; they are taken EXACTLY instead, by one
+    operator apply each.  That is a handful of applies against the probe's one
+    per extracted row -- and it puts the exact value on the near-axis rows,
+    which is where the Kronecker mass model is least accurate.
+    """
+    raw = np.asarray(build_weak_term_raw_diagonal(
+        seq, k, dirichlet=dirichlet, **kwargs))
+
+    e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+    rows = np.asarray(e.rows)
+    cols = np.asarray(e.cols)
+    vals = np.asarray(e.vals)
+    n_ext = int(e.forward_shape[0])
+    counts = np.bincount(rows, minlength=n_ext)
+
+    diag = np.zeros(n_ext)
+    single = counts[rows] == 1
+    diag[rows[single]] = (vals[single] ** 2) * raw[cols[single]]
+
+    coupled = np.flatnonzero(counts > 1)
+    if coupled.size:
+        diag[coupled] = _weak_term_rows_by_apply(
+            seq, operators, k, dirichlet=dirichlet, indices=coupled)
+    return jnp.asarray(diag)
+
+
+def build_extracted_laplacian_diagonal(seq, operators, k: int, *, dirichlet: bool,
+                                       **kwargs):
+    """``diag(E_k L_k E_k^T)`` for ``k >= 1``, with no O(N) probe.
+
+    ``L_k = S_k + W_k``.  Both halves are closed form in the raw DOF space --
+    :func:`mrx.local_assembly.build_stiffness_diagonal` exactly, and
+    :func:`build_weak_term_raw_diagonal` under the Kronecker mass model -- and
+    the bulk rows of ``E`` are pure selectors, so the raw diagonal transfers
+    straight through.  The ``n_polar * n_zeta`` coupled rows are taken exactly,
+    by one apply of ``L_k`` each.
+
+    ``L_0 = S_0`` has no weak term at all and is handled by
+    :func:`mrx.local_assembly.build_extracted_stiffness_diagonal_k0`.
+    """
+    from mrx.local_assembly import build_stiffness_diagonal  # noqa: PLC0415
+    from mrx.operators import apply_hodge_laplacian_approx  # noqa: PLC0415
+
+    if k not in (1, 2, 3):
+        raise ValueError("use build_extracted_stiffness_diagonal_k0 for k=0")
+
+    raw = (np.asarray(build_stiffness_diagonal(seq, k))
+           + np.asarray(build_weak_term_raw_diagonal(
+               seq, k, dirichlet=dirichlet, **kwargs)))
+
+    e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+    rows = np.asarray(e.rows)
+    cols = np.asarray(e.cols)
+    vals = np.asarray(e.vals)
+    n_ext = int(e.forward_shape[0])
+    counts = np.bincount(rows, minlength=n_ext)
+
+    diag = np.zeros(n_ext)
+    single = counts[rows] == 1
+    diag[rows[single]] = (vals[single] ** 2) * raw[cols[single]]
+
+    coupled = np.flatnonzero(counts > 1)
+    if coupled.size:
+        size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
+
+        def row(i):
+            x = jnp.zeros(size).at[i].set(1.0)
+            return apply_hodge_laplacian_approx(
+                seq, operators, x, k, dirichlet=dirichlet)[i]
+
+        # Warm the apply outside the trace: its matrix-free mass plan is
+        # host-built and cannot be constructed on tracers.
+        apply_hodge_laplacian_approx(
+            seq, operators, jnp.zeros(size), k, dirichlet=dirichlet)
+        # lax.map, never vmap -- see _diagonal_from_matvec.
+        diag[coupled] = np.asarray(jax.lax.map(row, jnp.asarray(coupled)))
+    return jnp.asarray(diag)

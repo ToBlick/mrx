@@ -1862,13 +1862,11 @@ def _laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: boo
     selected = diaginv_dbc if dirichlet else diaginv
     if selected is None:
         if k in (0, 1, 2, 3):
-            # The Hodge Jacobi diagonal (a comparison preconditioner; the
-            # tensor model is the production path) is no longer assembled
-            # eagerly. With the incidence ``G_k`` matrix-free and the mass
-            # ``M_{k+1}`` stored nowhere, the direct entry-scatter form is
-            # unavailable, so probe the matrix-free Hodge-Laplacian apply
-            # ``L_k`` sequentially with unit vectors to recover its diagonal.
-            # Returns the inverse diagonal.
+            # The Laplacian Jacobi diagonal is not assembled eagerly: with the
+            # incidence ``G_k`` matrix-free and the mass ``M_{k+1}`` stored
+            # nowhere, the direct entry-scatter form is unavailable. It is
+            # built here in closed form instead -- no probe at any k. Returns
+            # the inverse diagonal.
             if k == 0:
                 # L_0 = S_0 (no lower term), and diag(E S_0 E^T) is the energy
                 # of the extracted basis functions -- closed form, O(N), no
@@ -1877,10 +1875,9 @@ def _laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: boo
                     build_extracted_stiffness_diagonal_k0)
                 selected = _invert_diagonal(
                     build_extracted_stiffness_diagonal_k0(seq, dirichlet))
-            else:
-                # k>=1 still carries the weak term D M^-1 D^T and is probed at
-                # O(N) applies. The closed form is sum-factorizable (see
-                # docs/research/) but not yet implemented.
+            elif os.environ.get("MRX_LAPLACIAN_DIAG_PROBE", "0") == "1":
+                # A/B escape hatch: the exact but O(N)-applies probe that the
+                # closed form below replaced.
                 suffix = "_dbc" if dirichlet else ""
                 size = int(getattr(seq, f"n{k}{suffix}"))
                 diag = _diagonal_from_matvec(
@@ -1889,6 +1886,16 @@ def _laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: boo
                     size,
                 )
                 selected = _invert_diagonal(diag)
+            else:
+                # k>=1 also carries the weak term D B D^T. Both halves are
+                # closed form in the raw DOF space and only the O(n_polar n_z)
+                # coupled rows need an apply -- see
+                # ``build_extracted_laplacian_diagonal``.
+                from mrx.preconditioners import (  # noqa: PLC0415
+                    build_extracted_laplacian_diagonal)
+                selected = _invert_diagonal(
+                    build_extracted_laplacian_diagonal(
+                        seq, operators, k, dirichlet=dirichlet))
         else:
             raise ValueError(f"Laplacian preconditioner k={k} is not assembled")
     return selected
