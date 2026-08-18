@@ -177,19 +177,52 @@ Three conclusions:
    2-4.4x worse. The weak term has to be there; this is what the closed form
    buys.
 
-**The build column does not yet favour the closed form, and that is expected.**
-At n~2300 on an H100 the probe is ~2300 kernel-launch-bound applies at ~2 ms —
+**The build column does not favour the closed form at n~2300, and that is
+expected.** There the probe is ~2300 kernel-launch-bound applies at ~2 ms —
 cheap *because the problem is tiny*. Almost none of the closed form's 3-7 s is
 the O(N) algebra (`Pi` terms 0.11 s, 18 term pairs at k=1, the pair sum ~0); it
 is fixed overhead: two `build_mass_diagonal` JIT compiles at levels k and k-1,
 plus the compile for the coupled-row applies. A constant, against a probe cost
-that grows as `n_ext x (cost per apply)`. **The crossover is not yet measured**
-— `--build-only` scaling jobs are queued at 8x16x8 / 12x24x12 / 16x32x16 /
-20x40x20 (slurm 16343593/6/8 and 16343604,
-`outputs/diag_jacobi_ab/scaling_toroid_*_p3.json`), and they also report the
-closed-vs-probe diagonal error at each resolution. Read those before quoting a
-speedup: the 642x / 13658x figures earlier in this document are operation
-counts, not measurements.
+that grows as `n_ext x (cost per apply)`.
+
+**Measured crossover** (`--build-only`, toroid, p=3, gpu-h100; build seconds,
+and the relative error of the *shifted Jacobi diagonal actually used* —
+`1/(diag(L) + eps/diag(M))` — not of the weak term alone):
+
+| k | bc | 8x16x8 probe / closed | 12x24x12 probe / closed | relerr med 8 -> 12 | relerr max 8 -> 12 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | free | 15.0 / 7.9 | **27.8 / 8.5** | 1.6e-3 -> 6.1e-4 | 2.8e-2 -> 2.4e-2 |
+| 1 | dbc | 4.5 / 5.2 | **15.8 / 5.6** | 3.1e-3 -> 9.6e-4 | 6.5e-2 -> 3.4e-2 |
+| 2 | free | 6.5 / 5.7 | **15.3 / 6.0** | 1.0e-2 -> 5.6e-3 | 4.5e-2 -> 3.3e-2 |
+| 2 | dbc | 4.7 / 5.7 | **13.3 / 5.9** | 1.7e-2 -> 6.9e-3 | 8.2e-2 -> 4.1e-2 |
+| 3 | free | 3.2 / 3.1 | **3.7 / 3.2** | 1.7e-2 -> 8.0e-3 | 4.0e-2 -> 3.6e-2 |
+| 3 | dbc | 2.9 / 3.1 | **3.5 / 3.2** | 2.5e-2 -> 9.3e-3 | 7.3e-2 -> 3.6e-2 |
+
+Two things fall out, and the second is the more important one:
+
+1. **The crossover is already past by 12x24x12** (n~8700), where the closed form
+   is 2.2-3.3x faster at k=1/2. Its build time is essentially FLAT under
+   refinement (7.9 -> 8.5, 5.2 -> 5.6, 5.7 -> 6.0) while the probe roughly
+   doubles per resolution step. The remaining fixed cost is the JIT compiles,
+   not the algebra.
+2. **The model gets BETTER under refinement**, at every k and both BCs — median
+   error roughly halves from 8x16x8 to 12x24x12, and the max falls too. That is
+   the opposite of the usual worry and it directly de-risks the W7-X gap: the
+   support-averaged weights become more locally separable as elements shrink, so
+   the rank-1 split of the inner `Lam` costs *less* at production resolution,
+   not more. Two points only; 16x32x16 and 20x40x20 (slurm 16343598, 16343604)
+   were still running when this was written and will confirm or kill it.
+
+Note also that these are errors in the **preconditioner entries**, which are far
+smaller than the 2-3.5% median / 32% max quoted above for the weak term in
+isolation: the stiffness half dominates the Laplacian diagonal and is exact on
+bulk rows. Worst case here is `rho = 1.08`, i.e. <=1.08x iterations, which is
+exactly what the toroid A/B shows (+-3 iterations).
+
+Full data: `outputs/diag_jacobi_ab/scaling_toroid_*_p3.json`, one row flushed as
+it completes. The 642x / 13658x figures earlier in this document are operation
+counts and remain unmeasured; the numbers above are the real ones at these
+sizes.
 
 ### What is still open
 
@@ -202,8 +235,9 @@ counts, not measurements.
 * Cache `build_mass_diagonal` / the raw_kron factors across the two levels.
   They are essentially the whole of the closed form's build cost, and raw_kron
   already pays for them elsewhere — a caching fix, not an algorithmic one.
-* Read the `--build-only` scaling jobs and replace the estimated speedups with
-  measured ones.
+* Read the two remaining `--build-only` scaling jobs (16x32x16 slurm 16343598,
+  20x40x20 slurm 16343604) and confirm both trends: flat build time, and error
+  falling under refinement.
 * No test asserts the *iteration* behaviour yet; `test/test_preconditioners.py`
   pins the exact parts (`Pi` expansion) and the diagonal error against exact
   rows, and the A/B script is the iteration check.
