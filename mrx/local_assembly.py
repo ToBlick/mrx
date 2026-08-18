@@ -26,10 +26,13 @@ import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
+from mrx.geometry import grad_1d
+
 __all__ = [
     "assemble_m0_local",
     "build_mass_diagonal",
     "build_stiffness_diagonal",
+    "build_extracted_stiffness_diagonal_k0",
     "assemble_m1_local",
     "assemble_m2_local",
     "assemble_m3_local",
@@ -531,59 +534,180 @@ def build_mass_diagonal(seq, k, geometry=None):
     return jnp.concatenate(parts)
 
 
+# For k=1 (curl) and k=2 (div): which (k+1)-form component each k-form
+# component feeds, with what sign, by differentiating along which axis.
+# Read off _apply_incidence_mf:
+#     curl: P = -d_z b + d_t c ,  Q = +d_z a - d_r c ,  R = -d_t a + d_r b
+#     div : d_r P + d_t Q + d_z R
+# Note the differentiated axis is never the component's own derivative axis, so
+# the axis being differentiated always carries a PRIMAL table and its derivative
+# is grad_1d of the degree-(p-1) table.
+_CURL_CONTRIB = {0: ((1, +1.0, 2), (2, -1.0, 1)),
+                 1: ((0, -1.0, 2), (2, +1.0, 0)),
+                 2: ((0, +1.0, 1), (1, -1.0, 0))}
+_DIV_CONTRIB = {0: ((0, +1.0, 0),), 1: ((0, +1.0, 1),), 2: ((0, +1.0, 2),)}
+
+
 def build_stiffness_diagonal(seq, k, geometry=None):
     """Return ``diag(S_k)`` in raw DOF space, exactly and probe-free.
 
-    ``S_k = sum_{i,j} B_i^T W_ij B_j`` with ``B_i`` the tensor basis
-    differentiated along axis ``i`` and ``W_ij = g^{ij} J`` the metric weight.
-    Unlike the mass, the **off-diagonal** metric blocks ``i != j`` contribute to
-    the diagonal, since both factors carry the same DOF index::
+    ``S_k = G_k^T M_{k+1} G_k``, so the diagonal is the ``M_{k+1}``-energy of
+    the DERIVATIVE of each basis function::
 
-        d[a] = sum_{i,j} sum_q (d_i phi_a)(q) W_ij(q) (d_j phi_a)(q)
+        diag(S_k)_a = || d phi_a ||^2_{M_{k+1}}
+                    = sum_{i,j} sum_q (d phi_a)_i W_ij (d phi_a)_j
 
-    so the contraction runs over 9 metric pairs, each a product of two 1D tables
-    per axis. Still one sum factorization -- no probes, no operator applies.
+    Every component of ``d phi_a`` is still a tensor product of 1D tables --
+    the incidence differentiates one axis at a time -- so this is the same sum
+    factorization as the mass diagonal, with one term per pair of
+    ``(k+1)``-form components that ``phi_a`` feeds.
 
-    ``d_i phi_a`` is the derivative of the *primal* basis, which is
-    :func:`mrx.geometry.grad_1d` applied to the degree-``p-1`` table -- **not**
-    ``dLambda`` itself, which spans a different (smaller) DOF set and would not
-    even conform in shape.
-
-    Only k=0 is implemented: k=3 has no stiffness block (``S_3 = 0``), and
-    k=1/k=2 add a component index on top of the metric-pair index.
+    * k=0: 3 components (grad), ``W = g^ij J`` (the 1-form weight)
+    * k=1: 2 components per 1-form component (curl), ``W = g_ij / J``
+    * k=2: 1 component (div), ``W = 1/J`` (scalar 3-form weight)
+    * k=3: ``S_3 = 0`` -- there is nothing above V3.
     """
-    if k != 0:
-        raise NotImplementedError(
-            "build_stiffness_diagonal currently supports k=0 only; k=3 has no "
-            "stiffness block and k=1/k=2 need the component-pair extension")
-    from mrx.geometry import grad_1d  # noqa: PLC0415
-
     geometry = seq.geometry if geometry is None else geometry
     nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
     types = seq.basis_0.types
 
-    val = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
-    grad = (grad_1d(seq.d_basis_r_jk, types[0]),
-            grad_1d(seq.d_basis_t_jk, types[1]),
-            grad_1d(seq.d_basis_z_jk, types[2]))
+    primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
+    deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
+    grad = tuple(grad_1d(deriv[a], types[a]) for a in range(3))
 
-    # Metric weight with the Gauss weights folded in, on the (nx, ny, nz) grid.
-    metric_inv = geometry.metric_inv_jkl
-    w = geometry.jacobian_j * seq.quad.w
+    def rs(field):
+        return jnp.asarray(field).reshape(ny, nx, nz).transpose(1, 0, 2)
 
-    total = None
-    for i in range(3):
-        for j in range(3):
-            Wf = (metric_inv[:, i, j] * w).reshape(ny, nx, nz).transpose(1, 0, 2)
-            Tx = (grad[0] if i == 0 else val[0]) * (grad[0] if j == 0 else val[0])
-            Ty = (grad[1] if i == 1 else val[1]) * (grad[1] if j == 1 else val[1])
-            Tz = (grad[2] if i == 2 else val[2]) * (grad[2] if j == 2 else val[2])
-            t1 = jnp.einsum('ax,xyz->ayz', Tx, Wf)
-            t2 = jnp.einsum('by,ayz->abz', Ty, t1)
-            blk = jnp.einsum('cz,abz->abc', Tz, t2)
-            total = blk if total is None else total + blk
+    if k == 3:
+        form = seq.basis_3
+        return jnp.zeros(int(np.prod(form.shape[0])))
 
-    return total.reshape(-1)
+    if k == 0:
+        form = seq.basis_0
+        comps = [((primal[0], primal[1], primal[2]), (0, 0, 0))]
+        contrib = {0: ((0, +1.0, 0), (1, +1.0, 1), (2, +1.0, 2))}
+        Wq = rs(geometry.jacobian_j)[..., None, None] * jnp.transpose(
+            geometry.metric_inv_jkl.reshape(ny, nx, nz, 3, 3), (1, 0, 2, 3, 4))
+        n_tgt = 3
+    elif k == 1:
+        form = seq.basis_1
+        comps = [tuple(deriv[a] if a == c else primal[a] for a in range(3))
+                 for c in range(3)]
+        contrib = _CURL_CONTRIB
+        Wq = jnp.transpose(geometry.metric_jkl.reshape(ny, nx, nz, 3, 3),
+                           (1, 0, 2, 3, 4)) / rs(geometry.jacobian_j)[..., None, None]
+        n_tgt = 3
+    elif k == 2:
+        form = seq.basis_2
+        comps = [tuple(primal[a] if a == c else deriv[a] for a in range(3))
+                 for c in range(3)]
+        contrib = _DIV_CONTRIB
+        Wq = (1.0 / rs(geometry.jacobian_j))[..., None, None]
+        n_tgt = 1
+    else:
+        raise ValueError("k must be 0, 1, 2 or 3")
+
+    wq = rs(seq.quad.w)
+    parts = []
+    for c, base in enumerate(comps if k != 0 else [comps[0][0]]):
+        base = base if k != 0 else comps[0][0]
+        terms = contrib[c if k != 0 else 0]
+        total = None
+        for (tgt_p, sgn_p, ax_p) in terms:
+            for (tgt_q, sgn_q, ax_q) in terms:
+                Wf = wq * Wq[..., tgt_p if n_tgt > 1 else 0,
+                             tgt_q if n_tgt > 1 else 0]
+                tp = [grad[a] if a == ax_p else base[a] for a in range(3)]
+                tq = [grad[a] if a == ax_q else base[a] for a in range(3)]
+                t1 = jnp.einsum('ax,xyz->ayz', tp[0] * tq[0], Wf)
+                t2 = jnp.einsum('by,ayz->abz', tp[1] * tq[1], t1)
+                blk = sgn_p * sgn_q * jnp.einsum('cz,abz->abc', tp[2] * tq[2], t2)
+                total = blk if total is None else total + blk
+        parts.append(total.reshape(-1))
+    return jnp.concatenate(parts)
+
+
+def build_extracted_stiffness_diagonal_k0(seq, dirichlet: bool):
+    """``diag(E S_0 E^T)`` with no operator applies at all.
+
+    At k=0 there is no lower term (``L_0 = S_0``), so this is the whole
+    Laplacian Jacobi diagonal.
+
+    The extracted diagonal is an ENERGY, not a sum of raw matrix entries::
+
+        (E S E^T)_ii = int <grad psi_i, W grad psi_i>,   psi_i = sum_a E_ia phi_a
+
+    so it never needs off-diagonal entries of ``S`` and never needs a probe.
+
+    * **bulk rows** -- ``E`` is a pure selector there, so ``psi_i = phi_a`` and
+      the raw closed-form diagonal supplies them directly.
+    * **polar rows** -- ``psi`` mixes a ring, but a k=0 polar row sits at a
+      SINGLE zeta index, so it factors as a 2D ``(r,theta)`` shape times a 1D
+      zeta table. Only ``n_polar`` distinct 2D shapes exist and they do not
+      depend on the zeta index, so the cost is
+      ``O(n_polar * n_q^{r,theta} * n_q^z)``.
+
+    Verified against the probe to 3.3e-16 on the polar rows (see
+    ``scripts/debug/polar_row_energy.py``).
+    """
+    from mrx.geometry import grad_1d  # noqa: PLC0415
+
+    e = getattr(seq, "e0_dbc" if dirichlet else "e0")
+    n_ext = int(e.shape[0])
+    rows = np.asarray(e.rows)
+    cols = np.asarray(e.cols)
+    vals = np.asarray(e.vals)
+    counts = np.bincount(rows, minlength=n_ext)
+
+    diag = np.zeros(n_ext, dtype=np.float64)
+
+    # --- bulk rows: pure selectors, straight from the raw closed form --------
+    d_raw = np.asarray(build_stiffness_diagonal(seq, 0))
+    single = counts[rows] == 1
+    diag[rows[single]] = (vals[single] ** 2) * d_raw[cols[single]]
+
+    polar = np.flatnonzero(counts > 1)
+    if polar.size == 0:
+        return jnp.asarray(diag)
+
+    # --- polar rows: energy of the extracted basis function ------------------
+    types = seq.basis_0.types
+    Rt, Tt, Zt = (np.asarray(t) for t in
+                  (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk))
+    Rd = np.asarray(grad_1d(seq.d_basis_r_jk, types[0]))
+    Td = np.asarray(grad_1d(seq.d_basis_t_jk, types[1]))
+    Zd = np.asarray(grad_1d(seq.d_basis_z_jk, types[2]))
+
+    minv = np.asarray(jnp.transpose(
+        seq.geometry.metric_inv_jkl.reshape(
+            seq.quad.ny, seq.quad.nx, seq.quad.nz, 3, 3), (1, 0, 2, 3, 4)))
+    jq = np.asarray(jnp.transpose(
+        seq.geometry.jacobian_j.reshape(
+            seq.quad.ny, seq.quad.nx, seq.quad.nz), (1, 0, 2)))
+    W = minv * jq[..., None, None]
+    wr = np.asarray(seq.quad.w_x)
+    wt = np.asarray(seq.quad.w_y)
+    wz = np.asarray(seq.quad.w_z)
+
+    nt, nzb = seq.basis_0.nt, seq.basis_0.nz
+    for i in polar:
+        sel = rows == i
+        c, v = cols[sel], vals[sel]
+        ir, it, iz = c // (nt * nzb), (c // nzb) % nt, c % nzb
+        m = int(iz[0])
+        # 2D (r,theta) shape and its partials; zeta stays a 1D factor.
+        X = (np.einsum('a,aq,ar->qr', v, Rd[ir], Tt[it]),
+             np.einsum('a,aq,ar->qr', v, Rt[ir], Td[it]),
+             np.einsum('a,aq,ar->qr', v, Rt[ir], Tt[it]))
+        Y = (Zt[m], Zt[m], Zd[m])
+        total = 0.0
+        for a in range(3):
+            for b in range(3):
+                # contract zeta first, then the (r,theta) plane
+                F = np.einsum('qrs,s,s,s->qr', W[..., a, b], wz, Y[a], Y[b])
+                total += float(np.einsum('qr,q,r,qr->', X[a] * X[b], wr, wt, F))
+        diag[i] = total
+    return jnp.asarray(diag)
 
 
 def build_matrixfree_mass_apply(seq, k, geometry=None):

@@ -416,6 +416,29 @@ class K0TensorHodgePreconditionerFactors(eqx.Module):
     # non-separable metric becomes a diagonal while the unweighted atoms share one
     # exact per-axis eigenbasis.
     bulk_greville_inv_sqrt_D: Optional[jnp.ndarray] = None
+    # --- modal-radial bulk atom (production default since 2026-08-18) --------
+    # Diagonalize only the theta and zeta pencils and keep the radial direction
+    # exact.  Because <g^rr J> and <g^zz J> have proportional radial profiles
+    # (measured: log-log slopes both +1, ||M_r[c] - kappa M_r[a]||/||M_r[c]||
+    # = 0.014 on toroid / rotating ellipse / W7-X alike), the mode dependence
+    # separates as A_jk = (K_r[a] + kappa nu_k M_r[a]) + mu_j M_r[b] = P_k +
+    # mu_j Q, so ONE pencil (Q, P_k) per k serves every j:
+    #     A_jk^-1 = W_k diag(1 / (d_k + mu_j)) W_k^T
+    # Storage is O(n_z n_r^2), independent of n_t -- 2.0 MB at 64x128x64 against
+    # 252 MB for a per-(j,k) dense inverse.
+    modal_V_t: Optional[jnp.ndarray] = None
+    modal_V_z: Optional[jnp.ndarray] = None
+    modal_mu: Optional[jnp.ndarray] = None
+    modal_W: Optional[jnp.ndarray] = None
+    modal_d: Optional[jnp.ndarray] = None
+    # Block-diagonal mode: no core<->bulk coupling, and ``schur_inv`` holds the
+    # plain dense inverse of the core block rather than a Schur complement.
+    # Measured 2026-08-18 (16x32x32, dbc, full grid): the coupling is worth
+    # 1.86x on the axisymmetric toroid but 0.98x on the rotating ellipse and
+    # 0.89x on W7-X -- i.e. nothing, or slightly negative, on the geometries
+    # production targets -- while costing 1.29x per iteration AND ~55 s of
+    # assembly (3 n_z exact bulk CG solves) that block-diagonal skips entirely.
+    block_diagonal: bool = eqx.field(static=True, default=False)
 
 
 _EXTRACTION_OPERATOR_NAMES = (
@@ -835,6 +858,116 @@ def _k0_bundled_axis_profiles(seq):
     return clip(pr), clip(pt), clip(pz)
 
 
+def _k0_radial_profiles(seq):
+    """Quadrature-weighted harmonic means of ``g^aa J`` over theta and zeta.
+
+    Returns three RADIAL profiles ``(a, b, c)``.  Unlike
+    :func:`_k0_bundled_axis_profiles`, which averages each weight over the other
+    two axes to give a profile along its own axis, these keep the full radial
+    dependence -- which is what the modal-radial atom exploits and what the
+    additive-FD atom throws away.  Measured slopes are exactly ``d log w /
+    d log r = +1, -1, +1`` on toroid, rotating ellipse and W7-X alike, so this
+    is a property of the (rho, theta, zeta) coordinate system rather than of any
+    equilibrium.
+
+    Harmonic rather than arithmetic because the ``1/r``-type ``g^tt J`` has a
+    divergent arithmetic mean at the axis.  (NOTE: harmonic profiles are correct
+    *here*, on radial profiles.  Substituting them into the additive-FD atom's
+    own-axis profiles is a different change and measured clearly worse off-axis
+    -- W7-X 88 -> 152 iterations at 16x32x32.  See
+    ``mrx/experimental/modal_radial.py:fd_harmonic_bulk_data``.)
+    """
+    minv = jnp.transpose(
+        _reshape_quadrature_matrix_field(seq, seq.geometry.metric_inv_jkl),
+        (1, 0, 2, 3, 4))
+    jacq = jnp.transpose(
+        _reshape_quadrature_scalar_field(seq, seq.geometry.jacobian_j), (1, 0, 2))
+    wy, wz = seq.quad.w_y, seq.quad.w_z
+    scale = jnp.sum(wy) * jnp.sum(wz)
+
+    def harmonic(vals):
+        x = 1.0 / jnp.clip(vals, 1e-30)
+        x = jnp.tensordot(x, wz, axes=([2], [0]))
+        x = jnp.tensordot(x, wy, axes=([1], [0]))
+        return scale / jnp.clip(x, 1e-30)
+
+    return tuple(harmonic(minv[..., i, i] * jacq) for i in range(3))
+
+
+def _assemble_k0_modal_radial_bulk_factors(seq, *, dirichlet: bool) -> dict:
+    """Modal-radial k=0 stiffness bulk atom with the per-k pencil reduction.
+
+    Diagonalizes the theta and zeta pencils and solves the radial direction
+    EXACTLY, so no radial averaging enters anywhere.  That removes the
+    mesh-dependent error of the additive-FD atom: measured full-grid dbc, fd ->
+    modal-radial, 8x16x16 / 12x24x24 / 16x32x32 --
+
+        toroid       22 / 32 / 40   ->   13 / 13 / 14     (mesh-independent)
+        rot-ellipse  48 / 71 / 89   ->   36 / 43 / 48
+        W7-X         48 / 69 / 88   ->   40 / 49 / 56
+
+    The advantage compounds with resolution because the fd atom's radial
+    averaging error is worst on the innermost element, which shrinks under
+    refinement.
+    """
+    bulk_shape = _bulk_tensor_shape(seq, dirichlet)
+    nr_bulk = int(bulk_shape[0])
+    types = seq.basis_0.types
+
+    a_r, b_r, c_r = _k0_radial_profiles(seq)
+    g_r = _dense_incidence_1d(seq.basis_0.nr, types[0])
+    g_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
+    g_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
+
+    K_r = _restrict_radial_window(_assemble_weighted_1d_stiffness(
+        seq.basis_r_jk, seq.d_basis_r_jk, seq.quad.w_x * a_r, g_r), 2, nr_bulk)
+    M_a = _restrict_radial_window(_assemble_unweighted_1d_mass(
+        seq.basis_r_jk, seq.quad.w_x * a_r), 2, nr_bulk)
+    M_b = _restrict_radial_window(_assemble_unweighted_1d_mass(
+        seq.basis_r_jk, seq.quad.w_x * b_r), 2, nr_bulk)
+    M_c = _restrict_radial_window(_assemble_unweighted_1d_mass(
+        seq.basis_r_jk, seq.quad.w_x * c_r), 2, nr_bulk)
+    M_t = _assemble_unweighted_1d_mass(seq.basis_t_jk, seq.quad.w_y)
+    M_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
+    K_t = _assemble_weighted_1d_stiffness(
+        seq.basis_t_jk, seq.d_basis_t_jk, seq.quad.w_y, g_t)
+    K_z = _assemble_weighted_1d_stiffness(
+        seq.basis_z_jk, seq.d_basis_z_jk, seq.quad.w_z, g_z)
+
+    V_t, mu = _assemble_1d_fd_eigendecomp(M_t, K_t)
+    V_z, nu = _assemble_1d_fd_eigendecomp(M_z, K_z)
+
+    # kappa from the assembled matrices: M_r[c] ~ kappa M_r[a] (resid ~ 0.014).
+    kappa = jnp.sum(M_c * M_a) / jnp.sum(M_a * M_a)
+    Ws, ds = [], []
+    for k in range(int(nu.shape[0])):
+        W_k, d_k = _assemble_1d_fd_eigendecomp(M_b, K_r + (kappa * nu[k]) * M_a)
+        Ws.append(W_k)
+        ds.append(d_k)
+    return {"bulk_shape": bulk_shape, "modal_V_t": V_t, "modal_V_z": V_z,
+            "modal_mu": mu, "modal_W": jnp.stack(Ws), "modal_d": jnp.stack(ds)}
+
+
+def _apply_k0_modal_radial_bulk_inverse(factors, rhs_b: jnp.ndarray) -> jnp.ndarray:
+    """FFT-like transforms in theta/zeta, a diagonal scale, and back."""
+    x = rhs_b.reshape(factors.bulk_shape)
+    x = jnp.einsum('tj,rtz->rjz', factors.modal_V_t, x)
+    x = jnp.einsum('zk,rjz->rjk', factors.modal_V_z, x)
+    x = jnp.einsum('krs,rjk->sjk', factors.modal_W, x)
+    den = factors.modal_d.T[:, None, :] + factors.modal_mu[None, :, None]
+    # RELATIVE threshold, matching _fd_apply_3d. The (j,k) = (0,0) mode has
+    # mu_0 = nu_0 = 0 and d_0 ~ 0, so its denominator is numerical noise; an
+    # absolute cutoff lets ~1e-13 through and amplifies that direction by 1e13,
+    # which stalls CG outright rather than failing loudly.
+    den_max = jnp.max(jnp.abs(den))
+    null_mask = jnp.abs(den) < 1e-10 * den_max
+    x = jnp.where(null_mask, 0.0, x / jnp.where(null_mask, 1.0, den))
+    x = jnp.einsum('krs,sjk->rjk', factors.modal_W, x)
+    x = jnp.einsum('zk,rjk->rjz', factors.modal_V_z, x)
+    x = jnp.einsum('tj,rjz->rtz', factors.modal_V_t, x)
+    return x.reshape(-1)
+
+
 def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool):
     """k=0 stiffness bulk factors: the "fd" atom (exact additive FD inverse).
 
@@ -882,7 +1015,8 @@ def _build_k0_tensor_hodge_preconditioner_factors(
         *, core_size: int, schur_inv: jnp.ndarray, bulk_data: dict,
         schur_projector: Optional[jnp.ndarray] = None,
         precompute_coupling: bool = True,
-        core_coupling: Optional[jnp.ndarray] = None) -> K0TensorHodgePreconditionerFactors:
+        core_coupling: Optional[jnp.ndarray] = None,
+        block_diagonal: bool = False) -> K0TensorHodgePreconditionerFactors:
     return K0TensorHodgePreconditionerFactors(
         core_size=core_size,
         bulk_shape=bulk_data['bulk_shape'],
@@ -898,12 +1032,20 @@ def _build_k0_tensor_hodge_preconditioner_factors(
         precompute_coupling=precompute_coupling,
         core_coupling=core_coupling,
         bulk_greville_inv_sqrt_D=bulk_data.get('bulk_greville_inv_sqrt_D'),
+        modal_V_t=bulk_data.get('modal_V_t'),
+        modal_V_z=bulk_data.get('modal_V_z'),
+        modal_mu=bulk_data.get('modal_mu'),
+        modal_W=bulk_data.get('modal_W'),
+        modal_d=bulk_data.get('modal_d'),
+        block_diagonal=block_diagonal,
     )
 
 
 def _apply_k0_tensor_hodge_bulk_inverse(
         factors: K0TensorHodgePreconditionerFactors,
         rhs_b: jnp.ndarray) -> jnp.ndarray:
+    if factors.modal_W is not None:
+        return _apply_k0_modal_radial_bulk_inverse(factors, rhs_b)
     # Greville sandwich: D^{-1/2} (exact unweighted-atom FD inverse) D^{-1/2}.
     tensor = rhs_b.reshape(factors.bulk_shape) * factors.bulk_greville_inv_sqrt_D
     out = _fd_apply_3d(
@@ -964,89 +1106,57 @@ def _assemble_k0_tensor_hodge_preconditioner(
         seq, operators: SequenceOperators, *,
         precompute_coupling: bool = True,
         dirichlet_flags: tuple[bool, ...] = (False, True)) -> BoundaryConditionPair:
+    """Production k=0 Laplacian preconditioner: core Schur + additive-FD atom.
+
+    REVERTED 2026-08-18 to this path. The block-diagonal variant
+    (:func:`assemble_k0_blockdiag_preconditioner`) measures better on stellarator
+    geometry -- see docs/research/mass_preconditioner_pivot.md section 7 -- but
+    stalls the session fixture in ``test/conftest.py``, root cause not yet
+    identified, so it is opt-in until that is understood.
+    """
+    from mrx.experimental.k0_core_schur import (  # noqa: PLC0415
+        assemble_k0_core_schur_preconditioner)
+    return assemble_k0_core_schur_preconditioner(
+        seq, operators,
+        precompute_coupling=precompute_coupling,
+        dirichlet_flags=dirichlet_flags,
+    )
+
+
+def assemble_k0_blockdiag_preconditioner(
+        seq, operators: SequenceOperators, *,
+        dirichlet_flags: tuple[bool, ...] = (False, True)) -> BoundaryConditionPair:
+    """Block-diagonal k=0 preconditioner: dense core inverse + modal-radial bulk.
+
+    OPT-IN, not the default -- see the note in
+    :func:`_assemble_k0_tensor_hodge_preconditioner`.
+
+    Measured full-grid dbc (bulk-block gate numbers in
+    ``scripts/debug/modal_radial_gate.py``), 16x32x32, vs the production Schur
+    path: toroid 26 its / 268 ms vs 14 / 186 ms; rotating ellipse 47 / 491 ms vs
+    48 / 663 ms -- and it skips the ~55 s Schur assembly and the 780 MB
+    ``core_coupling`` block entirely.
+    """
     pair = BoundaryConditionPair()
     core_size = _core_size(seq)
-
     for dirichlet in dirichlet_flags:
-        bulk_data = _assemble_k0_greville_bulk_factors(seq, dirichlet=dirichlet)
-
-        ass = _symmetrize(_assemble_dense_from_apply(
-            lambda rhs_c, seq=seq, operators=operators, core_size=core_size, dirichlet=dirichlet:
-            _apply_k0_tensor_hodge_core_block(seq, operators, core_size, rhs_c, dirichlet=dirichlet),
-            core_size,
-            sequential=True,
-        ))
-        surgery_to_bulk_apply = lambda rhs_c, seq=seq, operators=operators, core_size=core_size, dirichlet=dirichlet: _apply_k0_tensor_hodge_surgery_to_bulk_coupling(seq, operators, core_size, rhs_c, dirichlet=dirichlet)
-
-        # Dense core->bulk coupling block C0 (bulk x core), one matrix-free
-        # stiffness apply per core DOF. K_0 is symmetric, so the bulk->core
-        # block is exactly C0^T. Always built here (the Schur probe below
-        # consumes it); it is only STORED in the factors when
-        # precompute_coupling is set.
-        core_coupling = _assemble_dense_from_apply(
-            surgery_to_bulk_apply,
-            core_size,
-            sequential=True,
-        )
-
-        # Core Schur rebuilt with EXACT bulk solves:
-        # schur = ass - C0^T A_bb^{-1} C0, one atom-preconditioned CG per
-        # core DOF (3*n_zeta solves, assembly-time only -- no runtime
-        # Krylov nesting; the result is a fixed dense matrix). The exact
-        # Schur of the SPD stiffness is PSD by construction, which retired
-        # the 2026-08-13 collocated-probe one-sidedness rule (and with it
-        # the collocated atom itself); truncated CG even errs on the PSD
-        # side (partial iterates UNDERestimate <c, A_bb^{-1} c>).
-        # Validated 2026-08-14: toroid 22/25 its (vs 22/31 atom-probed),
-        # W7-X 12,24,24: 53 dbc / 80 free (vs 56/87) at equal assembly cost.
-        runtime_bulk_factors = _build_k0_tensor_hodge_preconditioner_factors(
-            core_size=core_size,
-            schur_inv=jnp.eye(core_size, dtype=jnp.float64),
-            bulk_data=bulk_data,
-        )
-        atom_apply = lambda rhs_b, f=runtime_bulk_factors: _apply_k0_tensor_hodge_bulk_inverse(f, rhs_b)
-
-        def bulk_operator(x_b, seq=seq, operators=operators,
-                          core_size=core_size, dirichlet=dirichlet):
-            size = seq.n0_dbc if dirichlet else seq.n0
-            full = jnp.zeros((size,), dtype=x_b.dtype)
-            full = full.at[core_size:].set(x_b)
-            return apply_stiffness(seq, operators, full, 0,
-                                   dirichlet=dirichlet)[core_size:]
-
-        bulk_solve = jax.jit(lambda b: solve_singular_cg(
-            bulk_operator, b, precond_matvec=atom_apply,
-            maxiter=1000, tol=1e-12)[0])
-        solve_cols = []
-        for i in range(core_size):
-            c_i = core_coupling[:, i]
-            y_i = bulk_solve(c_i)
-            b_norm = float(jnp.linalg.norm(c_i))
-            rel_res = float(jnp.linalg.norm(bulk_operator(y_i) - c_i)) / max(b_norm, 1e-300)
-            if b_norm > 0.0 and rel_res > 1e-8:
-                warnings.warn(
-                    f"k=0 core-Schur exact probe: bulk CG for core DOF {i} "
-                    f"stalled at rel res {rel_res:.2e} (dirichlet={dirichlet}); "
-                    "the rebuilt Schur stays on the PSD side but may lose accuracy.")
-            solve_cols.append(y_i)
-        bulk_solves = jnp.stack(solve_cols, axis=1)
-        schur = _symmetrize(ass - core_coupling.T @ bulk_solves)
-
-        schur_inv = _symmetric_pseudoinverse(schur)
-
+        bulk_data = _assemble_k0_modal_radial_bulk_factors(seq, dirichlet=dirichlet)
+        core_block = _symmetrize(_assemble_dense_from_apply(
+            lambda rhs_c, seq=seq, operators=operators, core_size=core_size,
+            dirichlet=dirichlet: _apply_k0_tensor_hodge_core_block(
+                seq, operators, core_size, rhs_c, dirichlet=dirichlet),
+            core_size, sequential=True))
         factors = _build_k0_tensor_hodge_preconditioner_factors(
             core_size=core_size,
-            schur_inv=schur_inv,
+            schur_inv=_symmetric_pseudoinverse(core_block),
             bulk_data=bulk_data,
-            precompute_coupling=precompute_coupling,
-            core_coupling=core_coupling if precompute_coupling else None,
+            precompute_coupling=False,
+            core_coupling=None,
+            block_diagonal=True,
         )
         pair = eqx.tree_at(
-            lambda boundary_pair: boundary_pair.dbc if dirichlet else boundary_pair.free,
-            pair,
-            factors,
-            is_leaf=lambda x: x is None,
-        )
+            lambda bp: bp.dbc if dirichlet else bp.free,
+            pair, factors, is_leaf=lambda x: x is None)
     return pair
 
 
@@ -1065,6 +1175,9 @@ def _apply_k0_tensor_hodge_preconditioner(
     rhs_c = rhs[:core_size]
     rhs_b = rhs[core_size:]
     y = _apply_k0_tensor_hodge_bulk_inverse(factors, rhs_b)
+    if factors.block_diagonal:
+        # No core<->bulk coupling: schur_inv is the plain dense core inverse.
+        return jnp.concatenate([factors.schur_inv @ rhs_c, y])
     if factors.core_coupling is not None:
         # Dense precomputed coupling: bulk->core = C0^T (K_0 symmetric).
         schur_rhs = rhs_c - factors.core_coupling.T @ y
@@ -1369,8 +1482,12 @@ def _materialize_default_saddle_preconditioner(
 
 def _materialize_default_scalar_hodge_preconditioner(
         seq, operators: SequenceOperators, *, k: int):
-    if k == 0 and _k0_tensor_hodge_available(operators):
-        return MassPreconditionerSpec(kind='tensor', surgery_schur=True)
+    # Jacobi at every k as of 2026-08-18. The k=0 tensor-Hodge path is
+    # measurably better per SOLVE (1.2-3.6x) but costs 26-136 s of assembly
+    # against Jacobi's ~1 s, so it only repays past 24-372 solves depending on
+    # geometry and resolution -- and Jacobi's diagonal is now closed-form
+    # (L_0 = S_0, no probe). It stays reachable as kind='tensor'.
+    del operators, k
     return MassPreconditionerSpec(kind='jacobi')
 
 
@@ -1752,14 +1869,26 @@ def _laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: boo
             # unavailable, so probe the matrix-free Hodge-Laplacian apply
             # ``L_k`` sequentially with unit vectors to recover its diagonal.
             # Returns the inverse diagonal.
-            suffix = "_dbc" if dirichlet else ""
-            size = int(getattr(seq, f"n{k}{suffix}"))
-            diag = _diagonal_from_matvec(
-                lambda x: apply_hodge_laplacian_approx(
-                    seq, operators, x, k, dirichlet=dirichlet),
-                size,
-            )
-            selected = _invert_diagonal(diag)
+            if k == 0:
+                # L_0 = S_0 (no lower term), and diag(E S_0 E^T) is the energy
+                # of the extracted basis functions -- closed form, O(N), no
+                # applies at all. Verified against this probe to <1e-15.
+                from mrx.local_assembly import (  # noqa: PLC0415
+                    build_extracted_stiffness_diagonal_k0)
+                selected = _invert_diagonal(
+                    build_extracted_stiffness_diagonal_k0(seq, dirichlet))
+            else:
+                # k>=1 still carries the weak term D M^-1 D^T and is probed at
+                # O(N) applies. The closed form is sum-factorizable (see
+                # docs/research/) but not yet implemented.
+                suffix = "_dbc" if dirichlet else ""
+                size = int(getattr(seq, f"n{k}{suffix}"))
+                diag = _diagonal_from_matvec(
+                    lambda x: apply_hodge_laplacian_approx(
+                        seq, operators, x, k, dirichlet=dirichlet),
+                    size,
+                )
+                selected = _invert_diagonal(diag)
         else:
             raise ValueError(f"Laplacian preconditioner k={k} is not assembled")
     return selected
@@ -2073,6 +2202,52 @@ def _diff_fwd(V, axis: int, typ: str):
     if typ == 'constant':
         return jnp.zeros_like(V)
     raise ValueError(f"Unknown basis type {typ!r}")
+
+
+def _diff_fwd_abs(V, axis: int, typ: str):
+    """UNSIGNED forward incidence ``|G|`` along ``axis``.
+
+    The incidence carries only ``{-1, 0, +1}``, so ``G_ia^2 = |G_ia|``. The
+    weak-term diagonal needs the unsigned operator: the signed one cancels
+    exactly where the diagonal has to accumulate.
+    """
+    if typ == 'clamped':
+        return jnp.abs(jnp.diff(V, axis=axis)) if False else (
+            jnp.roll(V, -1, axis=axis) + V).take(
+                jnp.arange(V.shape[axis] - 1), axis=axis)
+    if typ == 'periodic':
+        return jnp.roll(V, -1, axis=axis) + V
+    if typ == 'constant':
+        return jnp.zeros_like(V)
+    raise NotImplementedError(typ)
+
+
+def _apply_abs_incidence(seq, k: int, x):
+    """``|G_k| x``: map k-form magnitudes up to (k+1)-form rows.
+
+    Mirrors :func:`_apply_incidence_mf` forward with every sign replaced by
+    ``+``. Used only to accumulate magnitudes for the weak-term diagonal.
+    """
+    tr, tt, tz = seq.basis_0.types
+    s0 = tuple(int(v) for v in seq.basis_0.shape[0])
+    s1 = tuple(tuple(int(v) for v in sh) for sh in seq.basis_1.shape)
+    s2 = tuple(tuple(int(v) for v in sh) for sh in seq.basis_2.shape)
+    if k == 0:
+        V = x.reshape(s0)
+        return jnp.concatenate([_diff_fwd_abs(V, 0, tr).ravel(),
+                                _diff_fwd_abs(V, 1, tt).ravel(),
+                                _diff_fwd_abs(V, 2, tz).ravel()])
+    if k == 1:
+        a, b, c = _split3(x, s1)
+        P = _diff_fwd_abs(b, 2, tz) + _diff_fwd_abs(c, 1, tt)
+        Q = _diff_fwd_abs(a, 2, tz) + _diff_fwd_abs(c, 0, tr)
+        R = _diff_fwd_abs(a, 1, tt) + _diff_fwd_abs(b, 0, tr)
+        return jnp.concatenate([P.ravel(), Q.ravel(), R.ravel()])
+    if k == 2:
+        P, Q, R = _split3(x, s2)
+        return (_diff_fwd_abs(P, 0, tr) + _diff_fwd_abs(Q, 1, tt)
+                + _diff_fwd_abs(R, 2, tz)).ravel()
+    raise ValueError("k must be 0, 1 or 2")
 
 
 def _diff_adj(Y, axis: int, typ: str):
@@ -3386,43 +3561,29 @@ def apply_stiffness(seq, operators: SequenceOperators, v, k: int, dirichlet: boo
     return e @ (g_sp_T @ m_apply(g_sp @ (e_T @ v)))
 
 
-def _diagonal_from_matvec(operator_apply, size: int, *,
-                          batch_size: Optional[int] = None):
-    """Probe ``diag(A)`` from a forward operator, in batches.
+def _diagonal_from_matvec(operator_apply, size: int):
+    """Probe ``diag(A)`` one column at a time via ``jax.lax.map``.
 
-    Batched via ``vmap`` over chunks of canonical basis vectors, matching
-    :func:`mrx.preconditioners.diag_matvec`. This was previously an unbatched
-    ``jax.lax.map``, i.e. one apply per DOF with no reuse -- the single largest
-    setup cost in the code at 12x24x12. Batching changes no numerics: each
-    column is still probed with its own unit vector and the same entry read
-    back; only the number of kernel launches changes.
-
-    ``batch_size`` follows ``mrx.MAP_BATCH_SIZE_OUTER`` (capped at 16) so the
-    memory ceiling stays under the same control as the other probes -- a batch
-    holds ``batch_size`` images of length ``size`` at once.
+    DO NOT batch this with ``vmap`` over chunks of canonical basis vectors, the
+    way :func:`mrx.preconditioners.diag_matvec` does. It was tried on 2026-08-17
+    and crashes the CUDA toolchain: the batched kernel fuses into a large
+    transpose that spills registers and ptxas exits with an internal compiler
+    error (``ptxas fatal: Internal compiler error``, 94 test errors, all inside
+    the ``lax.while_loop`` in ``nullspace.find_nullspace_vectors``). The
+    sequential map keeps each kernel small enough to compile.
     """
     # Eager warmup: operator_apply may lazily build host-side static state
     # (e.g. matrix-free mass index plans that call np.asarray internally).
-    # Under a traced loop those calls would see tracers and raise
-    # TracerArrayConversionError. One concrete call forces that state to be
-    # built and cached before any tracing happens.
+    # Under lax.map the body is traced as a scan, so those calls would see
+    # tracers and raise TracerArrayConversionError.  One concrete call first
+    # forces that state to be built and cached before the traced loop runs.
     operator_apply(jnp.zeros(size, dtype=jnp.float64))
 
-    if size == 0:
-        return jnp.zeros((0,), dtype=jnp.float64)
-    if batch_size is None:
-        import mrx as _mrx  # noqa: PLC0415
-        configured = _mrx.MAP_BATCH_SIZE_OUTER
-        batch_size = 16 if configured is None else max(1, min(int(configured), 16))
+    def entry(i):
+        basis = jnp.zeros(size, dtype=jnp.float64).at[i].set(1.0)
+        return operator_apply(basis)[i]
 
-    chunks = []
-    for start in range(0, size, batch_size):
-        stop = min(start + batch_size, size)
-        idx = jnp.arange(start, stop)
-        basis = jax.nn.one_hot(idx, size, dtype=jnp.float64)
-        images = jax.vmap(operator_apply)(basis)
-        chunks.append(images[jnp.arange(stop - start), idx])
-    return jnp.concatenate(chunks)
+    return jax.lax.map(entry, jnp.arange(size))
 
 
 def _invert_diagonal(diagonal):
@@ -4780,10 +4941,7 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
         raise ValueError(
             f"kind must be 'auto', 'none', 'jacobi' or 'tensor' (got {kind!r})")
     if kind == 'auto':
-        if k == 0 and _k0_tensor_hodge_available(operators):
-            kind = 'tensor'
-        else:
-            kind = 'jacobi'
+        kind = 'jacobi'          # see _materialize_default_scalar_hodge_preconditioner
     if kind == 'none':
         return v
     if kind == 'jacobi':

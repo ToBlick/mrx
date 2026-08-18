@@ -14,6 +14,7 @@ import numpy.testing as npt
 import pytest
 
 from mrx.derham_sequence import DeRhamSequence
+from mrx.operators import assemble_mass_jacobi_preconditioner
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import cylinder_map
 from mrx.relaxation import compute_force
@@ -61,7 +62,12 @@ def zpinch_seq():
     )
     seq.evaluate_1d()
     seq.set_map(F_cyl)
-    seq.assemble_all_sparse()
+    # Skip the eager payloads (CP/NTF fits, core Schur) that production no
+    # longer uses, but the Leray/force solves DO read the Jacobi mass
+    # diagonals, so assemble just those.
+    seq.assemble_all_sparse(include_preconditioners=False)
+    seq.set_operators(assemble_mass_jacobi_preconditioner(
+        seq, seq.get_operators(), ks=(0, 1, 2, 3)))
     return seq
 
 

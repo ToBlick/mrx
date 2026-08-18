@@ -46,7 +46,9 @@ dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
-norecursedirs = ["test/deprecated", "deprecated"]
+# Report the slowest tests so suite cost is measured rather than guessed.
+addopts = "--durations=15"
+norecursedirs = ["test/deprecated", "deprecated", "test/experimental"]
 
 [tool.ruff]
 target-version = "py312"

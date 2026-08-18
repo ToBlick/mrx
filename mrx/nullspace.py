@@ -245,10 +245,11 @@ def _bootstrap_nullspace_guesses(seq, operators, k, dirichlet, guesses):
 
 def _nullspace_shifted_preconditioner(k: int):
     if k == 0:
-        # Use the tensor Hodge-Laplacian preconditioner, same as the main solve.
+        # Jacobi, same as the main solve (production default since 2026-08-18);
+        # its diagonal is closed-form since L_0 = S_0.
         return _validate_nullspace_shifted_preconditioner(
             k,
-            MassPreconditionerSpec(kind='tensor'),
+            MassPreconditionerSpec(kind='jacobi'),
         )
     # For k >= 1 use the PRODUCTION default saddle preconditioner: raw_kron
     # lower mass, raw_kron Schur inner, Schur-diagonal-Jacobi Schur outer

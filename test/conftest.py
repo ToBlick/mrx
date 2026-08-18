@@ -19,8 +19,6 @@ from mrx.operators import (
     assemble_incidence_operators,
     assemble_mass_jacobi_preconditioner,
     assemble_projection_operators,
-    assemble_tensor_laplacian_preconditioner,
-    assemble_tensor_mass_preconditioner,
 )
 
 jax.config.update("jax_enable_x64", True)
@@ -32,7 +30,9 @@ BETTI = (1, 1, 0, 0)
 # to resolve the azimuthal variation in the Poisson tests.
 NS = (8, 16, 8)
 N = NS[0]  # kept for legacy references in other tests
-P = 3
+P = 2   # was 3: the matvec is O(N p^4), so this is ~5x on every solve in the
+        # suite. Convergence-ORDER tests that depend on p must parametrise it
+        # themselves rather than inherit this fixture default.
 TYPES = ("clamped", "periodic", "periodic")
 
 # Donut-torus parameters.
@@ -80,7 +80,9 @@ def torus_seq(torus_map):
 
     # Step 2: sample the analytical donut map and project to splines.
     F_ana = toroid_map(epsilon=TORUS_EPSILON, R0=TORUS_R0)
-    n_sample = 40
+    # 16^3 is ample: this fits an ANALYTIC map into a few-thousand-DOF
+    # spline space. 40^3 = 64000 samples was ~4x the cost for no accuracy.
+    n_sample = 16
     r = jnp.linspace(0.0, 1.0, n_sample)
     chi = jnp.linspace(0.0, 1.0, n_sample)
     zeta = jnp.linspace(0.0, 1.0, n_sample)
@@ -108,13 +110,10 @@ def torus_seq(torus_map):
     ops = assemble_incidence_operators(seq)           # G0, G1, G2 (matrix-free)
     ops = assemble_derivative_operators(seq, geometry, operators=ops)   # validates G_k
     ops = assemble_projection_operators(seq, operators=ops)             # P21, P12, P03, P30
-    # k=0 tensor Laplacian preconditioner (rank-1, same as the Poisson script).
-    ops = assemble_tensor_laplacian_preconditioner(
-        seq, ops, ks=(0,), rank=1,
-        cp_kwargs={"maxiter": 100, "tol": 1e-9, "ridge": 1e-12},
-    )
-    # Tensor mass preconditioners for k=0–3 (needed by test_preconditioners.py).
-    ops = assemble_tensor_mass_preconditioner(seq, ops, ks=(0, 1, 2, 3), rank=3)
+    # NO tensor Laplacian / tensor mass preconditioners here any more: both are
+    # retired paths (production = raw_kron masses + Jacobi Laplacians) and their
+    # CP/NTF fits plus core-Schur build dominated fixture setup. The tests that
+    # still cover them live in test/experimental/ and assemble them there.
     # Jacobi mass diagonals (the production FALLBACK preconditioner). Nothing
     # assembles these implicitly; the jacobi arms in test_preconditioners.py
     # and test_sequence.py error with "Jacobi mass diagonal ... is not
@@ -157,13 +156,12 @@ def n_dofs(seq, k, dirichlet):
 def precond_jit(torus_seq):
     """JIT-compiled and warmed-up preconditioner applies, keyed by (label, k, dbc).
 
-    Computes jacobi and tensor applies for every (k, dirichlet) pair once per
+    Computes the jacobi applies for every (k, dirichlet) pair once per
     session. Tests that need fast repeated preconditioner calls index into this
     dict rather than re-JITting.
     """
     from mrx.operators import (
         apply_mass_matrix_preconditioner,
-        apply_mass_tensor_preconditioner_ops,
     )
     ops = torus_seq.operators
     jit_dict = {}
@@ -172,11 +170,6 @@ def precond_jit(torus_seq):
             jit_dict[("jacobi", k, dbc)] = jax.jit(
                 lambda v, k=k, dbc=dbc: apply_mass_matrix_preconditioner(
                     torus_seq, ops, v, k, dirichlet=dbc, kind="jacobi",
-                )
-            )
-            jit_dict[("tensor", k, dbc)] = jax.jit(
-                lambda v, k=k, dbc=dbc: apply_mass_tensor_preconditioner_ops(
-                    torus_seq, ops, v, k, dirichlet=dbc,
                 )
             )
     # Warm up: pay all JIT compilation costs once here.

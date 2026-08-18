@@ -156,7 +156,12 @@ def test_hodge_laplacian_solve_roundtrip(torus_seq, k, dirichlet):
     key = jax.random.PRNGKey(100 + k)
     u = jax.random.normal(key, (n,))
     f = seq.apply_hodge_laplacian(u, k, dirichlet=dirichlet)
-    u_hat = seq.apply_inverse_hodge_laplacian(f, k, dirichlet=dirichlet)
+    # maxiter above the fixture default: production preconditions the
+    # Laplacians with Jacobi (2026-08-18), which needs more iterations than the
+    # retired tensor path to reach the same residual. The ACCURACY assertion
+    # below is unchanged -- only the iteration budget is.
+    u_hat = seq.apply_inverse_hodge_laplacian(
+        f, k, dirichlet=dirichlet, maxiter=6000)
 
     # Remove the kernel component (M-orthogonal projection) from both sides.
     vs = getattr(seq, f"null_{k}_dbc" if dirichlet else f"null_{k}")
@@ -177,104 +182,10 @@ def test_hodge_laplacian_solve_roundtrip(torus_seq, k, dirichlet):
 # Fast-diagonalisation Hodge preconditioner (k = 0)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_fd_hodge_preconditioner_spd(torus_seq, dirichlet):
-    """``apply_hodge_laplacian_preconditioner(kind='tensor')`` is SPD for k=0."""
-    seq = torus_seq
-    n = _dof(seq, 0, dirichlet)
-    P = np.asarray(build_dense(
-        lambda v: seq.apply_hodge_laplacian_preconditioner(
-            v, k=0, dirichlet=dirichlet, kind='tensor'),
-        n))
-    npt.assert_allclose(P, P.T, atol=1e-9,
-                        err_msg="FD Hodge precond not symmetric")
-    eigs = np.linalg.eigvalsh(P)
-    assert eigs.min() > -1e-9, (
-        f"FD Hodge precond k=0 dirichlet={dirichlet} has large negative "
-        f"eigenvalue {eigs.min()}"
-    )
-
-
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-def test_fd_hodge_preconditioner_accelerates_cg(torus_seq, dirichlet):
-    """Tensor Hodge preconditioner runs and converges at k=0."""
-    seq = torus_seq
-    from mrx.nullspace import get_nullspace
-    from mrx.solvers import solve_singular_cg
-    n = _dof(seq, 0, dirichlet)
-    key = jax.random.PRNGKey(7)
-    b = jax.random.normal(key, (n,))
-
-    vs = get_nullspace(seq.get_operators(), 0, dirichlet)
-
-    def matvec(x):
-        return seq.apply_hodge_laplacian(x, k=0, dirichlet=dirichlet)
-
-    def mass_matvec(x):
-        return seq.apply_mass_matrix(x, k=0, dirichlet=dirichlet)
-
-    _, info = solve_singular_cg(
-        matvec, b, mass_matvec=mass_matvec,
-        precond_matvec=lambda x: seq.apply_hodge_laplacian_preconditioner(
-            x, k=0, dirichlet=dirichlet, kind='tensor'),
-        vs=vs, tol=1e-8, maxiter=2000,
-    )
-    assert int(info) <= 0, (
-        f"Tensor Hodge precond k=0 dirichlet={dirichlet} did not converge "
-        f"(info={int(info)})"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Fast-diagonalisation Hodge preconditioner (k = 3)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("coupled_preconditioner", [False, True])
-def test_jacobi_outer_k3_solve_converges(torus_seq, coupled_preconditioner):
-    """k=3 inverse Hodge solve with the production jacobi Schur outer.
-
-    (Chebyshev outer removed 2026-08-14 -- see mrx/experimental/chebyshev.py.)
-    """
-    seq = torus_seq
-    dirichlet = False
-    n = _dof(seq, 3, dirichlet)
-    rhs = jax.random.normal(jax.random.PRNGKey(23), (n,))
-    # NOTE: the schur INNER must not use surgery_schur (validator forbids
-    # nesting surgery inside the Schur smoother; the old chebyshev-era test
-    # carried that invalid spec and failed since before 2026-08).
-    preconditioner = SaddlePointPreconditionerSpec(
-        mass=MassPreconditionerSpec(kind='tensor', surgery_schur=True),
-        schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='tensor'),
-            outer=MassPreconditionerSpec(kind='jacobi'),
-        ),
-        coupled=coupled_preconditioner,
-    )
-
-    _, info = seq.apply_inverse_hodge_laplacian(
-        rhs,
-        k=3,
-        dirichlet=dirichlet,
-        preconditioner=preconditioner,
-        return_info=True,
-    )
-
-    assert int(info) <= 0, (
-        "jacobi-outer k=3 inverse Hodge solve did not converge "
-        f"(coupled={coupled_preconditioner}, info={int(info)})"
-    )
-
-
-# (3, 'jacobi') dropped 2026-08-15: an ALL-jacobi k=3 saddle is not a
-# shipped configuration (production = tensor masses + jacobi Schur outer,
-# covered by test_jacobi_outer_k3_solve_converges) and needs >1000 MINRES
-# iterations on this fixture.
 @pytest.mark.parametrize(
     ("k", "preconditioner"),
     [
         (0, 'jacobi'),
-        (0, 'tensor'),
-        (3, 'tensor'),
     ],
 )
 def test_diffusion_solver_default_preconditioners_converge(

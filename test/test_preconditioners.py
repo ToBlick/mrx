@@ -36,8 +36,9 @@ _ALL_DBC = (False, True)
 _N_PROBES = 4
 
 _JACOBI_SPEC = MassPreconditionerSpec(kind="jacobi")
-_TENSOR_SPEC = MassPreconditionerSpec(kind="tensor", surgery_schur=True)
-_SPECS = {"jacobi": _JACOBI_SPEC, "tensor": _TENSOR_SPEC}
+# The kind="tensor" arms moved to test/experimental/ on 2026-08-18 with the
+# surgery/Schur code itself; production is raw_kron + jacobi only.
+_SPECS = {"jacobi": _JACOBI_SPEC}
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +47,7 @@ _SPECS = {"jacobi": _JACOBI_SPEC, "tensor": _TENSOR_SPEC}
 
 @pytest.mark.parametrize("dbc", _ALL_DBC)
 @pytest.mark.parametrize("k", _ALL_K)
-@pytest.mark.parametrize("label", ["jacobi", "tensor"])
+@pytest.mark.parametrize("label", ["jacobi"])
 def test_preconditioner_is_symmetric(torus_seq, precond_jit, label, k, dbc):
     n = n_dofs(torus_seq, k, dbc)
     rng = np.random.default_rng(seed=1 + 7 * k + 50 * int(dbc))
@@ -71,7 +72,7 @@ def test_preconditioner_is_symmetric(torus_seq, precond_jit, label, k, dbc):
 
 @pytest.mark.parametrize("dbc", _ALL_DBC)
 @pytest.mark.parametrize("k", _ALL_K)
-@pytest.mark.parametrize("label", ["jacobi", "tensor"])
+@pytest.mark.parametrize("label", ["jacobi"])
 def test_preconditioner_is_spd(torus_seq, precond_jit, label, k, dbc):
     n = n_dofs(torus_seq, k, dbc)
     rng = np.random.default_rng(seed=2 + 11 * k + 50 * int(dbc))
@@ -100,7 +101,7 @@ def test_preconditioner_is_spd(torus_seq, precond_jit, label, k, dbc):
 # which this fixture is not.
 @pytest.mark.parametrize("dbc", _ALL_DBC)
 @pytest.mark.parametrize("k", _ALL_K)
-@pytest.mark.parametrize("label", ["jacobi", "tensor"])
+@pytest.mark.parametrize("label", ["jacobi"])
 def test_preconditioner_reduces_cg_iterations(torus_seq, label, k, dbc):
     ops = torus_seq.operators
     rng = np.random.default_rng(seed=42 + 13 * k + 100 * int(dbc))
@@ -133,7 +134,7 @@ def test_preconditioner_reduces_cg_iterations(torus_seq, label, k, dbc):
 
 @pytest.mark.parametrize("dbc", _ALL_DBC)
 @pytest.mark.parametrize("k", _ALL_K)
-@pytest.mark.parametrize("label", ["jacobi", "tensor"])
+@pytest.mark.parametrize("label", ["jacobi"])
 def test_inverse_mass_roundtrip(torus_seq, label, k, dbc):
     ops = torus_seq.operators
     rng = np.random.default_rng(seed=7 + 5 * k + 50 * int(dbc))
