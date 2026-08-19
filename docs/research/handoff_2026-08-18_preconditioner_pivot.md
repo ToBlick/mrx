@@ -185,39 +185,66 @@ is fixed overhead: two `build_mass_diagonal` JIT compiles at levels k and k-1,
 plus the compile for the coupled-row applies. A constant, against a probe cost
 that grows as `n_ext x (cost per apply)`.
 
-**Measured crossover** (`--build-only`, toroid, p=3, gpu-h100; build seconds,
-and the relative error of the *shifted Jacobi diagonal actually used* —
-`1/(diag(L) + eps/diag(M))` — not of the weak term alone):
+**Measured crossover** (`--build-only`, toroid, p=3, gpu-h100, four resolutions;
+build seconds, and the relative error of the *shifted Jacobi diagonal actually
+used* -- `1/(diag(L) + eps/diag(M))` -- not of the weak term alone). All four
+jobs have now landed.
 
-| k | bc | 8x16x8 probe / closed | 12x24x12 probe / closed | relerr med 8 -> 12 | relerr max 8 -> 12 |
-| --- | --- | --- | --- | --- | --- |
-| 1 | free | 15.0 / 7.9 | **27.8 / 8.5** | 1.6e-3 -> 6.1e-4 | 2.8e-2 -> 2.4e-2 |
-| 1 | dbc | 4.5 / 5.2 | **15.8 / 5.6** | 3.1e-3 -> 9.6e-4 | 6.5e-2 -> 3.4e-2 |
-| 2 | free | 6.5 / 5.7 | **15.3 / 6.0** | 1.0e-2 -> 5.6e-3 | 4.5e-2 -> 3.3e-2 |
-| 2 | dbc | 4.7 / 5.7 | **13.3 / 5.9** | 1.7e-2 -> 6.9e-3 | 8.2e-2 -> 4.1e-2 |
-| 3 | free | 3.2 / 3.1 | **3.7 / 3.2** | 1.7e-2 -> 8.0e-3 | 4.0e-2 -> 3.6e-2 |
-| 3 | dbc | 2.9 / 3.1 | **3.5 / 3.2** | 2.5e-2 -> 9.3e-3 | 7.3e-2 -> 3.6e-2 |
+Build seconds, probe / closed:
 
-Two things fall out, and the second is the more important one:
+| k | bc | 8x16x8 (n~2.3k) | 12x24x12 (n~8.7k) | 16x32x16 (n~21k) | 20x40x20 (n~43k) | speedup at 20 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | free | 15.0 / 7.9 | 27.8 / 8.5 | 88.2 / 8.7 | **271.1 / 9.3** | **29x** |
+| 1 | dbc | 4.5 / 5.2 | 15.8 / 5.6 | 72.7 / 5.9 | **250.3 / 6.3** | **40x** |
+| 2 | free | 6.5 / 5.7 | 15.3 / 6.0 | 56.8 / 6.1 | **185.6 / 6.5** | **29x** |
+| 2 | dbc | 4.7 / 5.7 | 13.3 / 5.9 | 53.6 / 6.2 | **180.4 / 6.3** | **29x** |
+| 3 | free | 3.2 / 3.1 | 3.7 / 3.2 | 5.6 / 3.2 | **11.5 / 3.5** | 3.3x |
+| 3 | dbc | 2.9 / 3.1 | 3.5 / 3.2 | 5.3 / 3.3 | **11.2 / 3.5** | 3.2x |
 
-1. **The crossover is already past by 12x24x12** (n~8700), where the closed form
-   is 2.2-3.3x faster at k=1/2. Its build time is essentially FLAT under
-   refinement (7.9 -> 8.5, 5.2 -> 5.6, 5.7 -> 6.0) while the probe roughly
-   doubles per resolution step. The remaining fixed cost is the JIT compiles,
-   not the algebra.
-2. **The model gets BETTER under refinement**, at every k and both BCs — median
-   error roughly halves from 8x16x8 to 12x24x12, and the max falls too. That is
-   the opposite of the usual worry and it directly de-risks the W7-X gap: the
-   support-averaged weights become more locally separable as elements shrink, so
-   the rank-1 split of the inner `Lam` costs *less* at production resolution,
-   not more. Two points only; 16x32x16 and 20x40x20 (slurm 16343598, 16343604)
-   were still running when this was written and will confirm or kill it.
+Relative error of the preconditioner entries, median (max):
 
-Note also that these are errors in the **preconditioner entries**, which are far
-smaller than the 2-3.5% median / 32% max quoted above for the weak term in
-isolation: the stiffness half dominates the Laplacian diagonal and is exact on
-bulk rows. Worst case here is `rho = 1.08`, i.e. <=1.08x iterations, which is
-exactly what the toroid A/B shows (+-3 iterations).
+| k | bc | 8x16x8 | 12x24x12 | 16x32x16 | 20x40x20 | median rate |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | free | 1.6e-3 (2.8e-2) | 6.1e-4 (2.4e-2) | 4.6e-4 (2.2e-2) | 3.6e-4 (2.1e-2) | O(h) |
+| 1 | dbc | 3.1e-3 (6.5e-2) | 9.6e-4 (3.4e-2) | 5.5e-4 (2.3e-2) | 4.5e-4 (2.1e-2) | O(h) |
+| 2 | free | 1.0e-2 (4.5e-2) | 5.6e-3 (3.3e-2) | 3.1e-3 (3.4e-2) | 1.9e-3 (3.4e-2) | O(h^2) |
+| 2 | dbc | 1.7e-2 (8.2e-2) | 6.9e-3 (4.1e-2) | 3.4e-3 (3.4e-2) | 2.0e-3 (3.4e-2) | O(h^2) |
+| 3 | free | 1.7e-2 (4.0e-2) | 8.0e-3 (3.6e-2) | 4.0e-3 (3.6e-2) | 2.6e-3 (3.5e-2) | O(h^2) |
+| 3 | dbc | 2.5e-2 (7.3e-2) | 9.3e-3 (3.6e-2) | 4.7e-3 (3.6e-2) | 2.9e-3 (3.5e-2) | O(h^2) |
+
+Three things fall out, and the third is new:
+
+1. **The crossover is past by 12x24x12 (n~8.7k) and then it runs away.** The
+   closed form's build time is flat under an 18x growth in DOFs -- 7.9 -> 9.3 s
+   at k=1 free, 5.2 -> 6.3 dbc, 5.7 -> 6.5 at k=2 -- while the probe grows
+   ~3.1-3.4x per resolution step (it is `n_ext` applies, each also getting more
+   expensive). By 20x40x20 the closed form is **29-40x faster at k=1/2** and
+   3.2x at k=3, where `n` is 3x smaller. Extrapolating the probe one more step
+   puts it near 15 minutes per build; that is the wall this removed.
+2. **The model gets better under refinement, and the rate is clean.** Median
+   error falls at every k and both BCs across all four points: `O(h)` at k=1 and
+   `O(h^2)` at k=2/3 (fitted per step; the first 8 -> 12 step is faster than
+   asymptotic in every row). p90 falls with it -- k=1 free goes 2.2e-2 ->
+   4.9e-3. The support-averaged weights do become more locally separable as
+   elements shrink, so the rank-1 split of the inner `Lam` costs *less* at
+   production resolution, exactly as hoped. This de-risks the W7-X gap.
+3. **The max does NOT refine away -- it plateaus.** Yesterday's two-point read
+   said the max falls too; with four points that is wrong. It settles at
+   **2.1e-2 (k=1), 3.4e-2 (k=2), 3.5e-2 (k=3)** and is flat or very slightly
+   rising over the last two steps. Two tells about what that row is: once the grid
+   is fine enough the free and dbc runs report the **same max to 13 digits**
+   (k=2 and k=3 from 16x32x16 on, k=1 at 20x40x20; at coarser grids they still
+   differ), so in the limit the worst row is a shared INTERIOR row, not a
+   boundary artefact; and being resolution-independent it is a fixed geometric
+   feature, not a discretisation error --
+   i.e. a spot where the metric weight is genuinely not rank-1 in the
+   theta-zeta plane, which is what the separability notes predict. It is the
+   same term the W7-X gap is made of, and it will not be refined away; it has to
+   be modelled (see the `(diag(M)/diag(M^))^2` rescale below).
+
+Practically this is good news anyway: worst-case `rho` at production resolution
+is **1.034**, down from the 1.08 quoted at 12x24x12, so <=1.034x iterations from
+the diagonal model on this geometry.
 
 Full data: `outputs/diag_jacobi_ab/scaling_toroid_*_p3.json`, one row flushed as
 it completes. The 642x / 13658x figures earlier in this document are operation
@@ -231,13 +258,12 @@ sizes.
   median ~11%. One free lever is untried — splitting the inner `Lam` breaks the
   model's exact `diag(M~) = diag(M)`, and rescaling the result by
   `(diag(M)/diag(M^))^2` costs nothing because both diagonals are already closed
-  form. Try that before anything with more terms in it.
+  form. Try that before anything with more terms in it. The scaling sweep
+  sharpens the case: the *max* error plateaus under refinement (see above), so
+  the worst rows are a modelling defect that resolution will not fix.
 * Cache `build_mass_diagonal` / the raw_kron factors across the two levels.
   They are essentially the whole of the closed form's build cost, and raw_kron
   already pays for them elsewhere — a caching fix, not an algorithmic one.
-* Read the two remaining `--build-only` scaling jobs (16x32x16 slurm 16343598,
-  20x40x20 slurm 16343604) and confirm both trends: flat build time, and error
-  falling under refinement.
 * No test asserts the *iteration* behaviour yet; `test/test_preconditioners.py`
   pins the exact parts (`Pi` expansion) and the diagonal error against exact
   rows, and the A/B script is the iteration check.
