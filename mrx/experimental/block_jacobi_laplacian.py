@@ -270,17 +270,34 @@ def _weak_inverse_amplification(seq, k, c):
     i.e. ~0.55/h) -- and it differs by degree through the V_{k-1} mass weight,
     which is why k=1 wanted ~4x and k=2 ~100x.
 
-    The V_{k-1} radial basis is PRIMAL for every matching component: V_0 always,
-    V_1 component c is a derivative only on axis c (and c != r whenever k = 2
-    has a trace), V_2 component r is a derivative on theta and zeta only.
+    WHICH component of V_{k-1} it pairs with is not always ``c``. At k=2 the
+    trace is ``int (w x n).tau`` and the cross product SWAPS the tangential
+    components: ``w_theta`` pairs with ``tau_zeta``. The bases confirm it --
+    V_2 at c=theta has angular bases (theta primal, zeta derivative), which are
+    V_1's at c=ZETA, not V_1's at c=theta -- and the angular cancellation above
+    only holds for that partner. On the toroid the two weights differ by
+    ``(R/a)^2``, so getting this wrong is not a small perturbation.
+
+        k=1  c=r      -> V_0, the only component
+        k=2  c=theta  -> V_1 c=zeta ,  c=zeta -> V_1 c=theta   (3 - c)
+        k=3  c=r      -> V_2 c=r  (the normal component, int om (tau.n))
+
+    The V_{k-1} radial basis is PRIMAL for every one of those: V_0 always, V_1
+    component c is a derivative only on axis c (and the partner is never r when
+    k=2 has a trace), V_2 component r is a derivative on theta and zeta only.
     """
     fields = weight_fields(seq)
     ginv, met, jac = fields["ginv_aa"], fields["met_aa"], fields["jac"]
-    weight = {0: jac, 1: ginv[c] * jac, 2: met[c] / jac}[k - 1]
+    partner = 3 - c if k == 2 else c
+    weight = {0: jac, 1: ginv[partner] * jac, 2: met[partner] / jac}[k - 1]
     prof = bundled_axis_profiles(seq, weight)[0]
     primal, _, quad_w = _axis_bases(seq)
     m_r = np.asarray(_assemble_weighted_1d_mass(primal[0], quad_w[0] * prof))
-    return float(np.linalg.inv(m_r)[-1, -1])
+    # Lam(1) = e_last for a clamped spline, so this is (M_r^-1)[last, last];
+    # a solve rather than a full inverse.
+    rhs = np.zeros(m_r.shape[0])
+    rhs[-1] = 1.0
+    return float(np.linalg.solve(m_r, rhs)[-1])
 
 
 def _boundary_entry_direct(seq, axis, weight_field, window, dirichlet):
