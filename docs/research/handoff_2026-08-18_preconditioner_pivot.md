@@ -251,16 +251,87 @@ it completes. The 642x / 13658x figures earlier in this document are operation
 counts and remain unmeasured; the numbers above are the real ones at these
 sizes.
 
+### 2026-08-19: what the weak-term gap actually is
+
+Production is unchanged by this session -- `split=geometric`, `rescale=none`.
+Everything below is opt-in, and the point of it is the measurement, not the
+code.
+
+**Every number in this document before this section is at `eps = 1e-4`.** The
+A/B hardcoded the shift; it is now `--eps`. At k=3 free it turns out to make no
+difference (W7-X probe 120 / closed 150 / exact 119 at `eps=0`, against
+120 / 151 / 120 at `eps=1e-4`), so the k=3 free conclusions carry over to the
+true Laplacian. Nothing else does: k=3 **dbc** is SINGULAR at `eps=0` -- under
+Dirichlet the divergence of a field with vanishing normal trace integrates to
+zero, so `range(D_2)` is proper and constants sit in the nullspace of `W_3`;
+CG divides by zero. k=1 and k=2 carry harmonic fields (`b_1 = 1`). Those need a
+deflated CG before their `eps=1e-4` numbers mean anything.
+
+**The oracle that splits the gap.** `MRX_LAPLACIAN_DIAG_SPLIT=exact` runs the
+same expansion with both inner scalings kept EXACT (dense, diagnostic only,
+capped by `MRX_WEAK_EXACT_MAXDIM`). So `probe - exact` is the mass-model error
+and `exact - closed` is the rank-1 split error. W7-X 8x16x8 p=3:
+
+| k | bc | probe | closed | exact | closed med / max | exact med / max |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | free | 1076 | 1250 | 1358 | .199 / 11.7 | .061 / 9.07 |
+| 2 | dbc | 585 | 643 | **602** | .324 / 2.38 | .085 / 1.73 |
+| 3 | free | 121 | 143 | **119** | .228 / 2.70 | .0114 / 0.062 |
+| 3 | dbc | 283 | 317 | **284** | .219 / 2.57 | .0223 / 0.080 |
+
+Two conclusions, and they point opposite ways:
+
+1. **At k=3 the split is the whole gap.** `exact` reaches the probe outright,
+   and cuts the max error 43x. Better still, the split that matters is the
+   LOWER `Sig`, not the upper `Lam`: `rescale=upper` and `taylor1` (both
+   upper-only) gain ~2% at k=3, while `rescale=both` gains 59%.
+2. **At k=1/2 the split is NOT the gap.** `exact` cuts the median 3-4x but the
+   max only 1.2-1.3x, and iterations get WORSE (1250 -> 1358). The tail is the
+   mass model, `M~` vs `M`, and the tail is what sets iterations here -- a 3x
+   better median bought nothing. Any idea aimed at the separable split is aimed
+   at the wrong term at k=1/2.
+
+**Where the bad rows are** (`--exact-rings`, and the radial profile the A/B now
+prints). Two hot spots, neither near the middle: the ring adjacent to the polar
+block, and the OUTER radial ring under free BC. The latter is where
+`det(DF) = 0` at the last knot; a Dirichlet BC drops those rows, which is why
+the k=1 free max is 11.7 against dbc's 1.84. `MRX_LAPLACIAN_DIAG_EXACT_RINGS=n`
+takes the innermost `n` rings by exact applies -- the mechanism the coupled rows
+already use. It rescues the transfer models (k=3 W7-X 253 -> 159) and slightly
+HURTS `closed` (143 -> 151), which is the same non-monotonicity as above.
+
+**Four alternatives, all refuted on W7-X.** Kept because they bound what is
+available and close off whole families of fix:
+
+| arm | idea | k=3 W7-X free | why it fails |
+| --- | --- | --- | --- |
+| `taylor1` | expand the inner `Lam` locally about the row instead of fitting it globally | 148 | 90% of the achievable median at k=1, no iterations; k=3's error is in `Sig`, which it does not touch |
+| `codiff` | `\|delta phi_i\|^2` by quadrature | 494 | needs a 2nd derivative and `dJ`; interior beats `closed` on a toroid, loses on W7-X |
+| `transfer*` | represent `star phi_i` in `V_0`, take the gradient there | 159 | best of the four, and metric-free once the spurious `1/J` is removed |
+| `aux` | `M_3^-1 Q P_0 Q^T M_3^-1`, the full round trip | 3000 | does not converge at all; rank/`M_3^-1` untriaged |
+
+`codiff` and the first `transfer` failed for one shared reason worth recording:
+both tried to represent a k=3 basis FUNCTION pointwise in another space. A basis
+function varies on the scale of one element, so that is an O(1) request which
+does not converge in `h`. Mapping DOF vectors (interpolation <-> histopolation)
+asks nothing of the shapes. The transfer that works is metric-free and
+separable, `(x)_a (A_a^-1 B_a)` -- three 1-D matrices, no geometry, and
+truncating them to bandwidth 2 is FREE (264 vs 264 iterations, 230 vs 229).
+
+**`rescale` stays off.** `MRX_LAPLACIAN_DIAG_RESCALE=upper|both` repairs the
+inner splits to leading order, free and positivity-preserving. It is the best
+k=3 result we have (W7-X 143 -> 124 free, 317 -> 289 dbc) and it COSTS 8-10% at
+k=1/2 free. A per-k default was rejected: one setting everywhere is worth more
+than the k=3 win.
+
 ### What is still open
 
-* **Close the W7-X 11% gap.** The rank-1 split of the inner `Lam` is the
-  dominant error term and W7-X has now priced it: 0-19% extra iterations,
-  median ~11%. One free lever is untried — splitting the inner `Lam` breaks the
-  model's exact `diag(M~) = diag(M)`, and rescaling the result by
-  `(diag(M)/diag(M^))^2` costs nothing because both diagonals are already closed
-  form. Try that before anything with more terms in it. The scaling sweep
-  sharpens the case: the *max* error plateaus under refinement (see above), so
-  the worst rows are a modelling defect that resolution will not fix.
+* **Close the W7-X gap.** DONE as a diagnosis, not as a fix — see the
+  2026-08-19 section. The rescale lever was tried (`(diag(M)/diag(M^))`, to the
+  FIRST power: there are two inner `Lam`, not four) and it wins at k=3 only.
+  The k=1/2 gap is the mass model, not the split; the next idea aimed at k=1/2
+  should target `M~` vs `M` on the outer radial ring, not the separability of
+  the scalings.
 * Cache `build_mass_diagonal` / the raw_kron factors across the two levels.
   They are essentially the whole of the closed form's build cost, and raw_kron
   already pays for them elsewhere — a caching fix, not an algorithmic one.

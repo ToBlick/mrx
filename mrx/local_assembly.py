@@ -627,6 +627,133 @@ def build_stiffness_diagonal(seq, k, geometry=None):
     return jnp.concatenate(parts)
 
 
+def _second_derivative_tables(seq):
+    """``d/dxi`` of the DERIVATIVE-spline 1-D tables at the quadrature nodes.
+
+    :func:`build_stiffness_diagonal` never needs these: it differentiates the
+    PRIMAL basis, and ``grad_1d`` lifts the cached derivative tables for that.
+    The codifferential of a 3-form differentiates the k=3 basis itself, which is
+    already a derivative spline, so it is one order deeper than anything the
+    sequence caches.  Taken by autodiff rather than by another knot-index
+    recursion -- ``SplineBasis._safe_divide`` guards its denominator before
+    dividing, so the ``x``-gradient is clean.
+    """
+    dlam = seq.basis_0.dΛ
+    nodes = (seq.quad.x_x, seq.quad.x_y, seq.quad.x_z)
+    tables = []
+    for a in range(3):
+        def value(x, i, a=a):
+            return jnp.sum(dlam[a](x, i))
+        grad = jax.grad(value, argnums=0)
+        tables.append(jax.vmap(jax.vmap(grad, (0, None)), (None, 0))(
+            nodes[a], dlam[a].ns))
+    return tuple(tables)
+
+
+def _jacobian_gradient(seq, geometry, batch_size=None):
+    """``dJ/dxi_a`` at every quadrature point, by autodiff of the map.
+
+    One order past what ``SequenceGeometry`` stores (it keeps ``DF``, i.e. the
+    first derivative), so this is a second pass over the map and costs about
+    what the geometry build costs.  Batched, because the unbatched vmap over the
+    full quad grid is what OOMs an 80 GB card on W7-X.
+    """
+    import mrx  # noqa: PLC0415
+
+    if batch_size is None:
+        batch_size = mrx.MAP_BATCH_SIZE_INNER
+    def jdet(x):
+        return jnp.linalg.det(jax.jacfwd(geometry.map)(x))
+    return jax.lax.map(jax.jacfwd(jdet), seq.quad.x, batch_size=batch_size)
+
+
+def build_codifferential_diagonal(seq, k, geometry=None):
+    """``diag(W_k)`` as the energy of the CODIFFERENTIAL of each basis function.
+
+    ``W_k = M_k D M_{k-1}^{-1} D^T M_k`` is the ``d delta`` half of the Hodge
+    Laplacian, and for a basis function that diagonal is exactly
+
+        diag(W_k)_i = <d delta phi_i, phi_i> = || delta_h phi_i ||^2
+
+    with ``delta_h`` the DISCRETE codifferential (``<delta_h w, t> = <w, dt>``
+    for all ``t`` in ``V_{k-1}``).  Since ``delta_h = P_{V_{k-1}} . delta``,
+    dropping the projection gives a computable surrogate::
+
+        diag(W_k)_i ~ || delta phi_i ||^2
+
+    which for k=3 (``delta = star d star``, and ``star phi_i = phi_i / J`` is a
+    SCALAR) is a k=0 stiffness integrand::
+
+        diag(W_3)_i ~ integral g^{ab} d_a(phi_i/J) d_b(phi_i/J) J
+
+    **We never differentiate the 3-form.** ``d`` on a 3-form in 3D is zero --
+    that is why ``S_3 = 0``.  What is differentiated is ``star phi_i``, a
+    0-form; the ``star`` is what makes the gradient legal, and it is also what
+    puts ``1/J`` (and hence ``dJ``) in the integrand and takes the result out of
+    the spline space.
+
+    Properties, against the rank-1-split closed form it competes with:
+
+    * No mass model and no ``Sig``: both measured error sources are absent by
+      construction.
+    * The error is ``||(I-P) delta phi_i||^2`` -- an APPROXIMATION defect that
+      shrinks with the mesh, not a SEPARABILITY defect, which was measured to
+      plateau.  It vanishes identically when ``delta phi_i`` lands in
+      ``V_{k-1}`` (trivial or affine metric).
+    * It is an UPPER bound (``||P u|| <= ||u||``), so the Jacobi entries err
+      toward under-relaxation -- the safe direction.  The current failure is
+      entries 9-12x too LARGE.
+    * Cost is one ``build_stiffness_diagonal``: same sum factorization, 36
+      einsum triples instead of 9, plus one extra pass over the map for ``dJ``.
+
+    Two caveats that are real and are NOT modelled here: the integration by
+    parts carries a boundary trace, so free-BC rows touching the boundary are
+    approximate for a second reason; and ``star`` divides by ``J``, which
+    degenerates on the polar ring and at the outer knot.  Both are the rows the
+    caller already takes by exact applies.
+    """
+    if k != 3:
+        raise NotImplementedError(
+            "codifferential diagonal is implemented for k=3 only; k=1 gives a "
+            "div^2 integrand and k=2 a curl^2 one, same machinery, different "
+            "metric factors")
+    geometry = seq.geometry if geometry is None else geometry
+    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
+
+    def rs(field):
+        return jnp.asarray(field).reshape(ny, nx, nz).transpose(1, 0, 2)
+
+    b_val = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
+    b_der = _second_derivative_tables(seq)
+
+    jac = rs(geometry.jacobian_j)
+    d_jac = _jacobian_gradient(seq, geometry)
+    d_jac = jnp.stack([rs(d_jac[:, a]) for a in range(3)], axis=-1)
+    ginv = jnp.transpose(geometry.metric_inv_jkl.reshape(ny, nx, nz, 3, 3),
+                         (1, 0, 2, 3, 4))
+    wq = rs(seq.quad.w)
+
+    # d_a(phi/J) = (d_a phi)/J - phi (d_a J)/J^2: two separable pieces per axis,
+    # each a 1-D table triple times its own quadrature weight field.
+    def pieces(a):
+        return [([b_der[c] if c == a else b_val[c] for c in range(3)],
+                 1.0 / jac),
+                ([b_val[c] for c in range(3)],
+                 -d_jac[..., a] / jac ** 2)]
+
+    total = None
+    for a in range(3):
+        for b in range(3):
+            for (tp, wp) in pieces(a):
+                for (tq, wt) in pieces(b):
+                    weight = wq * jac * ginv[..., a, b] * wp * wt
+                    t1 = jnp.einsum('ax,xyz->ayz', tp[0] * tq[0], weight)
+                    t2 = jnp.einsum('by,ayz->abz', tp[1] * tq[1], t1)
+                    blk = jnp.einsum('cz,abz->abc', tp[2] * tq[2], t2)
+                    total = blk if total is None else total + blk
+    return total.reshape(-1)
+
+
 def build_extracted_stiffness_diagonal_k0(seq, dirichlet: bool):
     """``diag(E S_0 E^T)`` with no operator applies at all.
 

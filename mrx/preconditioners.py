@@ -2519,13 +2519,84 @@ def _rank1_diagonal_split(tensor, *, mode: str = "geometric"):
     return [np.exp(f) for f in factors] if mode == "geometric" else factors
 
 
-def _weak_term_kron_terms(seq, k: int, *, dirichlet: bool, split: str = "geometric"):
-    """Kronecker terms of ``X = A^u Lam~^u G_{k-1} Pi Sig~``, grouped by the
-    pair ``(upper component, lower component)`` that ``M_{k-1}^{-1}`` couples.
+def _rank1_split_residual(tensor, factors):
+    """``T / (f_r x f_t x f_z)`` -- what :func:`_rank1_diagonal_split` missed.
 
-    Each entry is ``(sign, L, L_inv)`` with ``L`` the three 1-D factors and
-    ``L_inv = L (A^l)^-1`` pre-multiplied, so a term PAIR costs one row-wise dot
-    per axis instead of a matrix chain.
+    Positive, and identically 1 wherever ``T`` really is separable, so every
+    correction built from it is a no-op on a separable weight.
+    """
+    return np.asarray(tensor) / np.einsum('i,j,l->ijl', *[np.asarray(f)
+                                                          for f in factors])
+
+
+def _axis_resample(m: int, n: int) -> Optional[np.ndarray]:
+    """Linear interpolation from an ``m``-point axis onto an ``n``-point one.
+
+    ``None`` for ``m == n`` (identity).  Only ever called with ``|m - n| = 1``:
+    differentiating a clamped axis drops one DOF and a periodic axis none, so
+    this is the two-point average between a degree-``p`` and a degree-``p-1``
+    grid, written generically because which axis is differentiated depends on
+    the component pair.
+    """
+    if m == n:
+        return None
+    src = np.linspace(0.0, 1.0, m)
+    dst = np.linspace(0.0, 1.0, n)
+    idx = np.clip(np.searchsorted(src, dst) - 1, 0, m - 2)
+    w = (dst - src[idx]) / (src[idx + 1] - src[idx])
+    out = np.zeros((n, m))
+    out[np.arange(n), idx] = 1.0 - w
+    out[np.arange(n), idx + 1] = w
+    return out
+
+
+def _transfer_tensor(tensor, shape_out) -> np.ndarray:
+    """Resample a positive 3-D tensor onto ``shape_out``, axis by axis.
+
+    Multiplicative (works on ``log T``), so the result stays positive and a
+    constant tensor transfers to itself.
+    """
+    work = np.log(np.asarray(tensor))
+    for a in range(3):
+        T = _axis_resample(work.shape[a], int(shape_out[a]))
+        if T is not None:
+            work = np.moveaxis(np.tensordot(T, work, axes=([1], [a])), 0, a)
+    return np.exp(work)
+
+
+def _axis_index_delta(n: int, typ: str) -> np.ndarray:
+    """``j - i`` on an ``n``-point axis, wrapped to the short way round if the
+    axis is periodic.  Only ever multiplied against a banded 1-D mass, so the
+    entries that survive are ``|j - i| <= p``.
+    """
+    d = np.arange(n)[None, :] - np.arange(n)[:, None]
+    if typ == "periodic":
+        d = (d + n // 2) % n - n // 2
+    return d.astype(float)
+
+
+def _log_index_gradient(tensor, types) -> list:
+    """``d(log T) / d(index)`` per axis: central differences on the DOF grid,
+    wrapping on periodic axes and one-sided at a clamped end.
+    """
+    work = np.log(np.asarray(tensor))
+    out = []
+    for a in range(3):
+        if types[a] == "periodic":
+            out.append(0.5 * (np.roll(work, -1, axis=a) - np.roll(work, 1, axis=a)))
+        else:
+            out.append(np.gradient(work, axis=a))
+    return out
+
+
+def _weak_term_raw_terms(seq, k: int, *, dirichlet: bool):
+    """Unscaled Kronecker terms of ``X = A^u [Lam] G Pi [Sig]``.
+
+    Each term is ``(c_u, dst, sign, gf)`` with ``gf`` the three 1-D factors of
+    ``G Pi`` -- everything BETWEEN the two inner scalings, which is the part
+    that is genuinely separable.  What to do about the scalings in brackets is
+    left to the caller: split them rank-1, expand them locally, or keep them
+    exact.  ``ctx`` carries the 1-D masses, both scalings and the lower inverse.
     """
     from mrx.operators import _dense_incidence_1d  # noqa: PLC0415
 
@@ -2539,45 +2610,472 @@ def _weak_term_kron_terms(seq, k: int, *, dirichlet: bool, split: str = "geometr
     pi_terms = _extraction_projector_kron_terms(e_lower, shapes_l)
     types = seq.basis_0.types
 
+    terms = []
+    for c_u, contributions in _INCIDENCE_KRON_TERMS[lower].items():
+        for (c_g, axis, sign) in contributions:
+            g = np.asarray(_dense_incidence_1d(shapes_l[c_g][axis], types[axis]))
+            for a in range(3):
+                if a != axis and shapes_u[c_u][a] != shapes_l[c_g][a]:
+                    raise ValueError(
+                        f"weak-term k={k}: undifferentiated axis {a} has size "
+                        f"{shapes_l[c_g][a]} below and {shapes_u[c_u][a]} above")
+            if g.shape != (shapes_u[c_u][axis], shapes_l[c_g][axis]):
+                raise ValueError(
+                    f"weak-term k={k}: incidence on axis {axis} has shape "
+                    f"{g.shape}, expected "
+                    f"{(shapes_u[c_u][axis], shapes_l[c_g][axis])}")
+            for (src, dst, f_axes) in pi_terms:
+                if src != c_g:
+                    continue
+                gf = [np.asarray(g @ f_axes[a]) if a == axis
+                      else np.asarray(f_axes[a]) for a in range(3)]
+                for a in range(3):
+                    if gf[a].shape != (shapes_u[c_u][a], shapes_l[dst][a]):
+                        raise ValueError(
+                            f"weak-term k={k}: axis {a} factor has shape "
+                            f"{gf[a].shape}, expected "
+                            f"{(shapes_u[c_u][a], shapes_l[dst][a])}")
+                terms.append((c_u, dst, sign, gf))
+
+    ctx = {"shapes_u": shapes_u, "mass_u": mass_u, "lam_u": lam_u,
+           "shapes_l": shapes_l, "inv_l": inv_l,
+           "sigma": factors.inv_sqrt_D, "types": types}
+    return terms, ctx
+
+
+def _group_terms(terms) -> dict:
+    """Terms bucketed by ``(upper component, Pi destination)``."""
+    groups: dict = {}
+    for (c_u, dst, sign, gf) in terms:
+        groups.setdefault((c_u, dst), []).append((sign, gf))
+    return groups
+
+
+def _weak_term_kron_terms(seq, k: int, *, dirichlet: bool, split: str = "geometric",
+                          rescale: str = "none"):
+    """Kronecker terms of ``X = A^u Lam~^u G_{k-1} Pi Sig~``, grouped by the
+    pair ``(upper component, lower component)`` that ``M_{k-1}^{-1}`` couples.
+
+    Each entry is ``(sign, L, L_inv)`` with ``L`` the three 1-D factors and
+    ``L_inv = L (A^l)^-1`` pre-multiplied, so a term PAIR costs one row-wise dot
+    per axis instead of a matrix chain.
+
+    Also returns a per-group multiplicative CORRECTION, see ``rescale`` in
+    :func:`build_weak_term_raw_diagonal`; ``'none'`` gives all-ones.
+    """
+    terms, ctx = _weak_term_raw_terms(seq, k, dirichlet=dirichlet)
+    shapes_u, mass_u, lam_u = ctx["shapes_u"], ctx["mass_u"], ctx["lam_u"]
+    shapes_l, inv_l, sigma = ctx["shapes_l"], ctx["inv_l"], ctx["sigma"]
+
     # The two INNER diagonal scalings, split rank-1 so they fold into the 1-D
     # factors. The upper Lam appears once more on the OUTSIDE, where it is kept
     # exact (see build_weak_term_raw_diagonal).
     lam_split = [_rank1_diagonal_split(lam_u[c], mode=split)
                  for c in range(len(shapes_u))]
-    sigma_split = [_rank1_diagonal_split(factors.inv_sqrt_D[c], mode=split)
+    sigma_split = [_rank1_diagonal_split(sigma[c], mode=split)
                    for c in range(len(shapes_l))]
 
+    # Leading-order repair of the two inner splits, off by default. Only the
+    # residuals are needed; see build_weak_term_raw_diagonal for the counting.
+    if rescale not in ("none", "upper", "both"):
+        raise ValueError(f"unknown weak-term rescale mode {rescale!r}")
+    resid_u = [_rank1_split_residual(lam_u[c], lam_split[c]) ** 2
+               for c in range(len(shapes_u))] if rescale != "none" else None
+    resid_l = [_rank1_split_residual(sigma[c], sigma_split[c]) ** 2
+               for c in range(len(shapes_l))] if rescale == "both" else None
+
     groups: dict = {}
-    for c_u, contributions in _INCIDENCE_KRON_TERMS[lower].items():
-        for (c_g, axis, sign) in contributions:
-            y = []
+    for (c_u, dst, sign, gf) in terms:
+        left = [((np.asarray(mass_u[c_u][a]) * lam_split[c_u][a][None, :])
+                 @ gf[a]) * sigma_split[dst][a][None, :] for a in range(3)]
+        groups.setdefault((c_u, dst), []).append(
+            (sign, left, [left[a] @ inv_l[dst][a] for a in range(3)]))
+
+    corr = {}
+    for (c_u, dst) in groups:
+        if rescale == "none":
+            corr[(c_u, dst)] = None
+            continue
+        factor = resid_u[c_u]
+        if resid_l is not None:
+            factor = factor * _transfer_tensor(resid_l[dst], shapes_u[c_u])
+        corr[(c_u, dst)] = factor
+    return groups, shapes_u, lam_u, corr
+
+
+def _weak_term_taylor_parts(seq, k: int, *, dirichlet: bool,
+                            split: str = "geometric"):
+    """``split='taylor1'``: expand the inner ``Lam`` LOCALLY instead of fitting
+    it globally.
+
+    The rank-1 split is a global fit to a quantity that is only ever sampled
+    locally: ``A^u`` has bandwidth ``p``, so ``Lam_j`` enters only for ``j``
+    within a few knots of the row ``i``.  Expand about the row instead::
+
+        Lam_j ~ Lam_i (1 + g_i . (j - i)) ,   g = grad log Lam at i
+
+    ``A_ij (j_a - i_a)`` is a first-moment 1-D mass -- still one small dense
+    matrix per axis, still separable -- and ``g_a(i)`` is evaluated at the ROW,
+    so like the outer ``Lam^2`` it multiplies pointwise and costs nothing.  Each
+    term therefore splits into four (no moment, plus one per axis) and the pair
+    sum is bucketed by which moments the two sides carry.
+
+    The point of it: the error is now ``O(h^2 |grad^2 log Lam|)``, a local
+    SMOOTHNESS assumption that refines away, instead of a global SEPARABILITY
+    assumption that does not -- and the measured max error of the rank-1 split
+    plateaus under refinement, which is what a global fit residual looks like.
+    Positivity survives because the correction stays inside ``X``: the result is
+    still ``diag(X~ B X~^T)`` for a genuine ``X~``.
+
+    Only the upper ``Lam`` is expanded.  ``Sig`` sits against the DENSE (though
+    exponentially decaying) ``(A^l)^-1``, where the locality argument is much
+    weaker, so it keeps the rank-1 split given by ``split``.
+    """
+    terms, ctx = _weak_term_raw_terms(seq, k, dirichlet=dirichlet)
+    shapes_u, mass_u, lam_u = ctx["shapes_u"], ctx["mass_u"], ctx["lam_u"]
+    shapes_l, inv_l, sigma = ctx["shapes_l"], ctx["inv_l"], ctx["sigma"]
+    types = ctx["types"]
+
+    sigma_split = [_rank1_diagonal_split(sigma[c], mode=split)
+                   for c in range(len(shapes_l))]
+    grads = [_log_index_gradient(lam_u[c], types) for c in range(len(shapes_u))]
+    deltas = [[_axis_index_delta(shapes_u[c][a], types[a]) for a in range(3)]
+              for c in range(len(shapes_u))]
+
+    entries: dict = {}
+    for (c_u, dst, sign, gf) in terms:
+        for v in range(4):  # 0 = plain mass, v = 1..3 = first moment on axis v-1
+            fac = []
             for a in range(3):
-                a_mass = np.asarray(mass_u[c_u][a]) * lam_split[c_u][a][None, :]
-                if a == axis:
-                    g = np.asarray(_dense_incidence_1d(shapes_l[c_g][a], types[a]))
-                    y.append(a_mass @ g)
-                elif shapes_u[c_u][a] != shapes_l[c_g][a]:
-                    raise ValueError(
-                        f"weak-term k={k}: undifferentiated axis {a} has size "
-                        f"{shapes_l[c_g][a]} below and {shapes_u[c_u][a]} above")
-                else:
-                    y.append(a_mass)
-                if y[a].shape != (shapes_u[c_u][a], shapes_l[c_g][a]):
-                    raise ValueError(
-                        f"weak-term k={k}: axis {a} factor has shape {y[a].shape}, "
-                        f"expected {(shapes_u[c_u][a], shapes_l[c_g][a])}")
-            for (src, dst, f_axes) in pi_terms:
-                if src != c_g:
-                    continue
-                left = [(y[a] @ f_axes[a]) * sigma_split[dst][a][None, :]
-                        for a in range(3)]
-                groups.setdefault((c_u, dst), []).append(
-                    (sign, left, [left[a] @ inv_l[dst][a] for a in range(3)]))
-    return groups, shapes_u, lam_u
+                m = np.asarray(mass_u[c_u][a])
+                if v == a + 1:
+                    m = m * deltas[c_u][a]
+                fac.append((m @ gf[a]) * sigma_split[dst][a][None, :])
+            entries.setdefault((c_u, dst), []).append(
+                (sign, v, fac, [fac[a] @ inv_l[dst][a] for a in range(3)]))
+
+    parts = [np.zeros(shape) for shape in shapes_u]
+    n_pairs = 0
+    for (c_u, dst), group in entries.items():
+        blocks: dict = {}
+        for i, (sign_i, v_i, _, linv_i) in enumerate(group):
+            for j in range(i, len(group)):
+                sign_j, v_j, l_j, _ = group[j]
+                z = [np.einsum('mn,mn->m', linv_i[a], l_j[a]) for a in range(3)]
+                weight = (sign_i * sign_j) * (1.0 if i == j else 2.0)
+                key = (min(v_i, v_j), max(v_i, v_j))
+                block = weight * np.einsum('i,j,l->ijl', *z)
+                blocks[key] = blocks.get(key, 0.0) + block
+                n_pairs += 1
+        total = np.zeros(shapes_u[c_u])
+        for (v_i, v_j), block in blocks.items():
+            coef = 1.0
+            if v_i:
+                coef = coef * grads[c_u][v_i - 1]
+            if v_j:
+                coef = coef * grads[c_u][v_j - 1]
+            total += coef * block
+        # The Taylor prefactor: Lam_i factors out of the row on both sides. The
+        # OUTER Lam^2 is applied by the caller, so the model carries Lam^4 in
+        # all -- the same power the split form carries when Lam is constant.
+        parts[c_u] += np.asarray(lam_u[c_u]) ** 2 * total
+    return parts, lam_u, n_pairs
+
+
+def _weak_term_exact_parts(seq, k: int, *, dirichlet: bool):
+    """``split='exact'``: the same expansion with BOTH inner scalings kept
+    exact -- the oracle that separates the two error sources.
+
+    The closed form carries two independent approximations: the mass model
+    (``M~`` vs ``M``, Kronecker 1-D masses) and the rank-1 split of the inner
+    scalings.  Against the operator probe they are measured together.  This
+    path removes the second one, so ``probe - exact`` is the mass-model error
+    and ``exact - closed`` is the split error.
+
+    There is no cheap way to do it -- an exact non-separable diagonal between
+    two Kronecker factors is precisely what does not factorize, which is why
+    the split exists at all.  So this forms ``X`` DENSELY per group, one
+    ``(N_u x N_l)`` matrix, and is a diagnostic at A/B resolution only, never
+    production.  ``MRX_WEAK_EXACT_MAXDIM`` (default 2e7 entries, ~160 MB) caps
+    it rather than letting it OOM a node.
+    """
+    terms, ctx = _weak_term_raw_terms(seq, k, dirichlet=dirichlet)
+    shapes_u, mass_u, lam_u = ctx["shapes_u"], ctx["mass_u"], ctx["lam_u"]
+    shapes_l, inv_l, sigma = ctx["shapes_l"], ctx["inv_l"], ctx["sigma"]
+
+    max_dense = float(os.environ.get("MRX_WEAK_EXACT_MAXDIM", 2e7))
+    parts = [np.zeros(shape) for shape in shapes_u]
+    a_kron: dict = {}
+    for (c_u, dst), group in _group_terms(terms).items():
+        n_u = int(np.prod(shapes_u[c_u]))
+        n_l = int(np.prod(shapes_l[dst]))
+        if n_u * n_l > max_dense or n_l * n_l > max_dense:
+            raise MemoryError(
+                f"weak-term split='exact' k={k} needs a dense {n_u}x{n_l} "
+                f"block ({n_u * n_l:.3g} entries) over the "
+                f"{max_dense:.3g} cap. It is a diagnostic oracle; run it at "
+                "A/B resolution or raise MRX_WEAK_EXACT_MAXDIM.")
+        # X = (x)A^u . D_Lam . [sum_t sign_t (x)gf_t] . D_Sig -- the bracket is
+        # the only part that differs between terms, so it is summed first and
+        # the two dense products are paid once per group.
+        y = np.zeros((n_u, n_l))
+        for (sign, gf) in group:
+            y += sign * np.kron(np.kron(gf[0], gf[1]), gf[2])
+        if c_u not in a_kron:
+            a_kron[c_u] = np.kron(np.kron(np.asarray(mass_u[c_u][0]),
+                                          np.asarray(mass_u[c_u][1])),
+                                  np.asarray(mass_u[c_u][2]))
+        x = a_kron[c_u] @ (np.asarray(lam_u[c_u]).reshape(-1)[:, None] * y)
+        x *= np.asarray(sigma[dst]).reshape(-1)[None, :]
+        v = np.kron(np.kron(inv_l[dst][0], inv_l[dst][1]), inv_l[dst][2])
+        parts[c_u] += ((x @ v) * x).sum(axis=1).reshape(shapes_u[c_u])
+    return parts, lam_u
+
+
+def _greville_transfer_v3_to_v0(seq, geometry, *, bandwidth=None,
+                                metric_free=False):
+    """Sparse-ish transfer ``Pi: V_3 -> V_0`` representing ``star phi_i``.
+
+    ``star`` of the k=3 basis function is the SCALAR ``phi_i / J`` (the k=3 mass
+    weight is ``1/J``, which pins the convention).  Rather than differentiate
+    that -- which needs a derivative of an already-differentiated spline and a
+    ``dJ`` pass over the map -- represent it in ``V_0`` first, where the basis
+    carries no derivative at all, and differentiate THERE.  The gradient is then
+    an ordinary k=0 stiffness energy.
+
+    The representation is Greville collocation: match ``phi_i / J`` at the k=0
+    Greville abscissae, i.e. ``Pi = (x)A_a^-1 . diag(1/J_g) . (x)B_a``, with
+    ``A_a`` the 1-D collocation matrix of the degree-``p`` basis and ``B_a`` the
+    degree-``p-1`` (k=3) basis sampled at the same points.  ``A_a`` is
+    metric-free, so its inverse decays at a rate that depends only on ``p``:
+    ``bandwidth`` truncates it to make ``Pi`` genuinely local, and ``None``
+    keeps it exact, which measures the ceiling before locality costs anything.
+
+    Note ``J`` is needed only at the ``n_0`` Greville points, not on the
+    quadrature grid, and only ``det DF`` -- no second derivatives anywhere.
+    """
+    lam, dlam = seq.basis_0.Λ, seq.basis_0.dΛ
+    pts = [np.asarray(lam[a].greville_points()) for a in range(3)]
+
+    # Greville abscissae of a CLAMPED basis include the endpoints, and
+    # det(DF) = 0 at the outer knot of a spline map -- so 1/J is infinite there.
+    # Quadrature points never land on the boundary, which is exactly why this
+    # trap does not show up in any of the assembly paths. Pull the sample points
+    # in by eps; the collocation matrix is evaluated at the SAME points, so the
+    # interpolation stays consistent (and Schoenberg-Whitney still holds).
+    eps = 1e-8
+    for a in range(3):
+        if lam[a].type != "periodic":
+            pts[a] = np.clip(pts[a], eps, 1.0 - eps)
+
+    b_g, a_inv = [], []
+    for a in range(3):
+        tbl = jax.vmap(lambda x, a=a: jax.vmap(
+            lambda i, x=x, a=a: jnp.sum(dlam[a](x, i)))(dlam[a].ns))(
+                jnp.asarray(pts[a]))
+        b_g.append(np.asarray(tbl))                       # (n_g_a, n_3_a)
+        coll = np.asarray(lam[a].collocation_matrix(jnp.asarray(pts[a])))
+        inv = np.linalg.inv(coll)
+        if bandwidth is not None:
+            n = inv.shape[0]
+            off = np.abs(np.arange(n)[:, None] - np.arange(n)[None, :])
+            if lam[a].type == "periodic":
+                off = np.minimum(off, n - off)
+            inv = np.where(off <= bandwidth, inv, 0.0)
+        a_inv.append(inv)
+
+    if metric_free:
+        # The L2 pairing <u, s> between a 0-form and a 3-form's physical proxy
+        # carries no metric at all: the 1/J in the proxy cancels the J in the
+        # 0-form measure. So interpolating the k=3 COEFFICIENT function is the
+        # metric-free transfer, and dividing by J here -- as the original
+        # version did -- inserts a factor the correct pairing cancels. That
+        # spurious 1/J is what produced the Jacobian-shaped error peaking on
+        # the ring next to the axis, where the cells collapse.
+        #
+        # Without it the whole transfer is a pure Kronecker product of three
+        # 1-D matrices, needs no map evaluation whatsoever, and is banded as
+        # soon as the collocation inverse is truncated.
+        return np.kron(np.kron(a_inv[0] @ b_g[0], a_inv[1] @ b_g[1]),
+                       a_inv[2] @ b_g[2])
+
+    # J at the tensor Greville grid: n_0 map evaluations, against n_q for the
+    # quadrature grid -- and jacfwd only, no second derivative.
+    grid = np.stack(np.meshgrid(*pts, indexing="ij"), axis=-1).reshape(-1, 3)
+    def jdet(x):
+        return jnp.linalg.det(jax.jacfwd(geometry.map)(x))
+    jac_g = np.asarray(jax.lax.map(jdet, jnp.asarray(grid),
+                                   batch_size=mrx.MAP_BATCH_SIZE_INNER or 256))
+    if not np.isfinite(jac_g).all() or np.abs(jac_g).min() == 0.0:
+        raise ValueError(
+            f"det(DF) at the Greville grid is degenerate: finite="
+            f"{np.isfinite(jac_g).all()} min|J|={np.abs(jac_g).min():.3e}. "
+            "The star divides by it, so this has to be caught here rather "
+            "than surface as a NaN diagonal.")
+
+    kron_b = np.kron(np.kron(b_g[0], b_g[1]), b_g[2])     # (n_g, n_3)
+    work = kron_b / jac_g[:, None]
+    shape_g = tuple(len(p_) for p_ in pts)
+    work = work.reshape(*shape_g, -1)
+    for a in range(3):
+        work = np.moveaxis(np.tensordot(a_inv[a], work, axes=([1], [a])), 0, a)
+    return work.reshape(int(np.prod(shape_g)), -1)         # (n_0, n_3)
+
+
+def _metric_free_star_1d(seq, axis):
+    """1-D metric-free, local discrete Hodge star ``V_3 axis -> V_0 axis``.
+
+    The IGA/FEEC construction, on DEGREES OF FREEDOM rather than on function
+    values.  The degree-``p-1`` (k=3) basis is dual to HISTOPOLATION over the
+    Greville spans -- its DOF is the integral over a cell -- and the degree-``p``
+    (k=0) basis is dual to INTERPOLATION at the Greville points -- its DOF is a
+    point value.  So the star between them is "cell integral -> point value",
+    i.e. divide by the cell measure and average the cells meeting at a point::
+
+        d_j = (c_{j-1} + c_j) / (h_{j-1} + h_j)
+
+    with ``h`` the Greville-span widths, one-sided at a clamped end.  Everything
+    here comes from the KNOT VECTOR: the operator is bandwidth-1, exactly local,
+    and carries no geometry at all -- the metric stays in the mass matrices,
+    where FEEC puts it.
+
+    This is the thing the previous two attempts were not.  Both of those tried
+    to represent the k=3 basis FUNCTION in ``V_0`` (pointwise, by collocation),
+    which is an O(1) request: a basis function varies on the scale of one
+    element, so approximating its shape in a different space on the same mesh
+    does not converge in ``h``.  Mapping DOF vectors asks nothing of the shapes
+    and reproduces constants exactly.
+    """
+    lam, dlam = seq.basis_0.Λ[axis], seq.basis_0.dΛ[axis]
+    typ = lam.type
+    grev = np.asarray(lam.greville_points())
+    n0, n3 = int(lam.n), int(dlam.n)
+
+    if typ == "periodic":
+        h = np.diff(np.concatenate([grev, [grev[0] + 1.0]]))
+    else:
+        h = np.diff(grev)
+    h = np.abs(h)
+    if h.shape[0] != n3:
+        raise ValueError(
+            f"axis {axis}: {h.shape[0]} Greville spans but {n3} k=3 DOFs; the "
+            "histopolation duality this star relies on does not hold here")
+
+    star = np.zeros((n0, n3))
+    for j in range(n0):
+        left = (j - 1) % n3 if typ == "periodic" else j - 1
+        right = j % n3 if typ == "periodic" else j
+        cells = [c for c in (left, right) if 0 <= c < n3]
+        denom = sum(h[c] for c in cells)
+        for c in cells:
+            star[j, c] = 1.0 / denom
+    return star
+
+
+def _raw_grad_incidence(seq):
+    """Raw ``G_0: V_0 -> V_1`` as one dense matrix, component-blocked to match
+    the flat layout ``assemble_m1_local`` uses."""
+    from mrx.operators import _dense_incidence_1d  # noqa: PLC0415
+
+    types = seq.basis_0.types
+    shape0 = tuple(int(s) for s in seq.basis_0.shape[0])
+    blocks = []
+    for c in range(3):
+        factors = []
+        for a in range(3):
+            if a == c:
+                factors.append(np.asarray(
+                    _dense_incidence_1d(shape0[a], types[a])))
+            else:
+                factors.append(np.eye(shape0[a]))
+        blocks.append(np.kron(np.kron(factors[0], factors[1]), factors[2]))
+    return np.concatenate(blocks, axis=0)
+
+
+def build_transfer_weak_diagonal(seq, k: int, *, dirichlet: bool,
+                                 bandwidth=None, geometry=None):
+    """``diag(W_3)`` as the k=0 stiffness energy of the transferred basis.
+
+    ``diag(W_k)_i = ||delta_h phi_i||^2``, and at k=3 ``delta = star d star``
+    with ``star phi_i`` a scalar.  Transfer that scalar into ``V_0``
+    (:func:`_greville_transfer_v3_to_v0`) and the remaining ``d`` is the
+    ordinary gradient of a degree-``p`` spline::
+
+        diag(W_3)_i ~ || grad (Pi e_i) ||^2 = (Pi^T G_0^T M_1 G_0 Pi)_ii
+
+    which is exactly what :func:`diag_EGtMGEt_direct` computes.  No derivative
+    of the k=3 basis, no ``dJ``, and every factor is a standard object.
+
+    **BC pairing.** Hodge duality flips essential and natural conditions, so the
+    partner of k=3 DIRICHLET is k=0 FREE and vice versa.  This builds the raw
+    (free) k=0 energy, so it is the k=3 ``dirichlet=True`` case that is clean;
+    the k=3 free case additionally needs the boundary trace that the k=2
+    Dirichlet condition otherwise kills.  Measured directly: on a toroid the
+    outer-ring error of the un-traced form is 0.072 under k=3 dbc against 5.1
+    free -- a factor of 70, entirely from that term.
+
+    Dense at present: ``Pi`` is built as one ``(n_0 x n_3)`` array, so this is
+    an A/B-resolution diagnostic.  Making it production means truncating with
+    ``bandwidth`` (the collocation inverse is metric-free, so its decay depends
+    only on ``p``) and assembling ``Pi`` as sparse.
+    """
+    if k != 3:
+        raise NotImplementedError("transfer diagonal is k=3 only so far")
+    from mrx.local_assembly import assemble_m1_local  # noqa: PLC0415
+
+    geometry = seq.geometry if geometry is None else geometry
+    if bandwidth == "star":
+        t = [_metric_free_star_1d(seq, a) for a in range(3)]
+        pi = np.kron(np.kron(t[0], t[1]), t[2])
+    elif isinstance(bandwidth, tuple):        # ('free', band)
+        pi = _greville_transfer_v3_to_v0(seq, geometry, bandwidth=bandwidth[1],
+                                         metric_free=True)
+    else:
+        pi = _greville_transfer_v3_to_v0(seq, geometry, bandwidth=bandwidth)
+
+    # BC FLIP. Hodge duality swaps essential and natural conditions, so the
+    # partner of k=3 DIRICHLET is the FREE k=0 operator and the partner of k=3
+    # FREE is the k=0 DIRICHLET one. Evaluating the k=0 energy in its extracted
+    # space is what imposes that: embed back through E^T so the quadratic form
+    # is the extracted operator's, not the raw one's.
+    e0 = seq.e0 if dirichlet else seq.e0_dbc
+    e0_mat = np.zeros((int(e0.forward_shape[0]), pi.shape[0]))
+    e0_mat[np.asarray(e0.rows), np.asarray(e0.cols)] = np.asarray(e0.vals)
+    pi = e0_mat.T @ (e0_mat @ pi)
+
+    grad = _raw_grad_incidence(seq)
+    m1 = assemble_m1_local(seq, geometry)
+
+    # diag_EGtMGEt_direct scatters an O(nnz_per_row^2) plan, which suits a
+    # sparse EXTRACTION and blows up (748 GiB) on a transfer whose columns are
+    # dense. The columns are what we want here, so contract them directly:
+    # diag(Pi^T S Pi)_i = <(S Pi)_i, Pi_i>, three matrix products, no plan.
+    pi_j = jnp.asarray(pi)
+    gp = jnp.asarray(grad) @ pi_j
+    energy_s = jnp.einsum('ai,ai->i', jnp.asarray(grad).T @ (m1 @ gp), pi_j)
+
+    # MASS NORMALIZATION. The spectral statement is between the mass-normalized
+    # operators, M_3^-1 W_3 ~ M_0^-1 S_0, so what transfers is the RAYLEIGH
+    # QUOTIENT, not the energy:
+    #
+    #   diag(W_3)_i ~ diag(M_3)_i * (T^T S_0 T)_ii / (T^T M_0 T)_ii
+    #
+    # Both diagonals are exact closed forms already in the code. Note this is
+    # invariant under T -> cT, so however the metric-free star is normalized --
+    # cell measures, averaging weights -- it cannot affect the answer. That
+    # invariance is the reason to trust the form.
+    from mrx.local_assembly import (assemble_m0_local,  # noqa: PLC0415
+                                    build_mass_diagonal)
+    m0 = assemble_m0_local(seq, geometry)
+    energy_m = jnp.einsum('ai,ai->i', m0 @ pi_j, pi_j)
+    floor = 1e-300 + jnp.zeros_like(energy_m)
+    return jnp.asarray(build_mass_diagonal(seq, 3)) * energy_s / jnp.maximum(
+        energy_m, floor)
 
 
 def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
-                                 split: str = "geometric",
+                                 split: Optional[str] = None,
+                                 rescale: Optional[str] = None,
                                  return_info: bool = False):
     """Raw-DOF-space diagonal of the weak term, closed form and O(N).
 
@@ -2597,29 +3095,114 @@ def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
     The OUTER ``Lam^2`` is the exact, unsplit scaling: it multiplies the
     finished diagonal pointwise, so it costs nothing and needs no separability.
     Only the two inner copies are split.
+
+    **split** -- how the two inner scalings are handled.  Global default from
+    ``MRX_LAPLACIAN_DIAG_SPLIT``.
+
+    * ``'geometric'`` (default) / ``'arithmetic'`` -- rank-1 split, see
+      :func:`_rank1_diagonal_split`.
+    * ``'taylor1'`` -- local first-order expansion about the row instead of a
+      global fit, see :func:`_weak_term_taylor_parts`.
+    * ``'exact'`` -- no separation at all; dense, diagnostic only, see
+      :func:`_weak_term_exact_parts`.
+    * ``'codiff'`` -- abandons the expansion entirely for the codifferential
+      energy ``||delta phi_i||^2``, by quadrature; k=3 only so far.  See
+      :func:`mrx.local_assembly.build_codifferential_diagonal`.
+
+    **rescale** -- leading-order repair of the inner splits, off by default and
+    settable globally with ``MRX_LAPLACIAN_DIAG_RESCALE``.  Write the model as
+
+        W = Lam A [Lam] G Pi Sig [A^l]^-1 Sig Pi G^T [Lam] A Lam
+
+    Of the four ``Lam`` the two outer are exact; the two bracketed inner ones
+    are split, as are the two ``Sig = Lam_l^-1`` inside ``B``.  ``A`` is a 1-D
+    mass, so its bandwidth is ``p``: the inner scaling is sampled at rows ``j``
+    a few knots from ``i``, and to leading order in ``h`` it is just
+    ``Lam_i / lam_i``.  Two copies, so:
+
+    * ``'upper'`` multiplies each group by ``(Lam / lam)^2`` on the upper grid.
+      That ratio IS ``diag(M_k) / diag(M^_k)``: the split breaks the raw_kron
+      model's defining property that it reproduces the exact mass diagonal, and
+      this restores it.  Note the exponent -- the handoff note said
+      ``(diag(M)/diag(M^))^2``, which double counts; there are two inner
+      copies, not four.
+    * ``'both'`` additionally multiplies by ``(Sig / sig)^2`` for the lower
+      component of the group, resampled onto the upper grid (linear per axis,
+      in log space).  The transfer is the approximation here: ``[A^l]^-1`` is
+      dense, though exponentially decaying, so the locality argument is weaker
+      than for the upper half.
+
+    Both are free -- the residuals are byproducts of the split already computed
+    -- exact on a separable weight, and positive, so each group's contribution
+    stays ``diag(X_g [A^l]^-1 X_g^T) >= 0`` and the total stays positive.
+    ``'upper'`` is the zeroth-order term of the ``'taylor1'`` series; measured
+    against the probe it helps only where the weak term IS the operator (k=3)
+    and costs iterations at k=1/2, so both stay off by default.
     """
     if k not in (1, 2, 3):
         raise ValueError("the weak term exists only for k = 1, 2, 3")
-    groups, shapes_u, lam_u = _weak_term_kron_terms(
-        seq, k, dirichlet=dirichlet, split=split)
+    if split is None:
+        split = os.environ.get("MRX_LAPLACIAN_DIAG_SPLIT", "geometric")
+    if rescale is None:
+        rescale = os.environ.get("MRX_LAPLACIAN_DIAG_RESCALE", "none")
 
-    parts = [np.zeros(shape) for shape in shapes_u]
-    n_pairs = 0
-    for (c_u, _), entries in groups.items():
-        for i, (sign_i, _, linv_i) in enumerate(entries):
-            for j in range(i, len(entries)):
-                sign_j, l_j, _ = entries[j]
-                z = [np.einsum('mn,mn->m', linv_i[a], l_j[a]) for a in range(3)]
-                weight = (sign_i * sign_j) * (1.0 if i == j else 2.0)
-                parts[c_u] += weight * np.einsum('i,j,l->ijl', *z)
-                n_pairs += 1
+    info = {"split": split, "rescale": rescale}
+    if split.startswith("transfer"):
+        # Represent star(phi_i) in V_0 and take the gradient THERE: no
+        # derivative of the k=3 basis and no dJ. See
+        # build_transfer_weak_diagonal.
+        if split == "transfer":
+            band = None
+        elif split == "transfer_star":
+            band = "star"          # metric-free, bandwidth-1 DOF star
+        elif split == "transfer_free":
+            band = ("free", None)  # metric-free interpolation, exact inverse
+        elif split.startswith("transfer_free_"):
+            band = ("free", int(split.rsplit("_", 1)[1]))
+        else:
+            band = int(split.split("_")[1])
+        raw = jnp.asarray(build_transfer_weak_diagonal(
+            seq, k, dirichlet=dirichlet, bandwidth=band))
+        return (raw, info) if return_info else raw
+    if split == "codiff":
+        # Not an expansion at all: diag(W)_i = ||delta phi_i||^2 by quadrature.
+        # No mass model, no Sig, no separability assumption -- see
+        # mrx.local_assembly.build_codifferential_diagonal.
+        from mrx.local_assembly import (  # noqa: PLC0415
+            build_codifferential_diagonal)
+        raw = jnp.asarray(build_codifferential_diagonal(seq, k))
+        return (raw, info) if return_info else raw
+    if split == "exact":
+        parts, lam_u = _weak_term_exact_parts(seq, k, dirichlet=dirichlet)
+    elif split == "taylor1":
+        parts, lam_u, info["term_pairs"] = _weak_term_taylor_parts(
+            seq, k, dirichlet=dirichlet)
+    else:
+        groups, shapes_u, lam_u, corr = _weak_term_kron_terms(
+            seq, k, dirichlet=dirichlet, split=split, rescale=rescale)
+        parts = [np.zeros(shape) for shape in shapes_u]
+        n_pairs = 0
+        for key, entries in groups.items():
+            c_u = key[0]
+            block = np.zeros(shapes_u[c_u])
+            for i, (sign_i, _, linv_i) in enumerate(entries):
+                for j in range(i, len(entries)):
+                    sign_j, l_j, _ = entries[j]
+                    z = [np.einsum('mn,mn->m', linv_i[a], l_j[a]) for a in range(3)]
+                    weight = (sign_i * sign_j) * (1.0 if i == j else 2.0)
+                    block += weight * np.einsum('i,j,l->ijl', *z)
+                    n_pairs += 1
+            # Per GROUP, not per term: the group is one diag(X B_g X^T) with
+            # B_g SPD, so it is nonnegative and a positive rescale cannot flip
+            # it.
+            parts[c_u] += block if corr[key] is None else block * corr[key]
+        info["term_pairs"] = n_pairs
+        info["terms"] = {key: len(v) for key, v in groups.items()}
 
     raw = np.concatenate([(p * np.asarray(lam_u[c]) ** 2).reshape(-1)
                           for c, p in enumerate(parts)])
     if return_info:
-        return jnp.asarray(raw), {
-            "term_pairs": n_pairs,
-            "terms": {key: len(v) for key, v in groups.items()}}
+        return jnp.asarray(raw), info
     return jnp.asarray(raw)
 
 
@@ -2721,6 +3304,26 @@ def build_extracted_laplacian_diagonal(seq, operators, k: int, *, dirichlet: boo
     diag[rows[single]] = (vals[single] ** 2) * raw[cols[single]]
 
     coupled = np.flatnonzero(counts > 1)
+
+    # MRX_LAPLACIAN_DIAG_EXACT_RINGS=n also takes the n innermost radial rings
+    # exactly. Every closed-form and transfer model measured so far degrades
+    # sharply on the ring next to the polar block -- the transfer routes by
+    # 20-50x, because V_3's extraction is unitary while V_0's folds that ring
+    # into polar rows -- and it is a thin set, O(n_theta n_zeta) applies, the
+    # same mechanism the coupled rows already use.
+    n_rings = int(os.environ.get("MRX_LAPLACIAN_DIAG_EXACT_RINGS", "0"))
+    if n_rings > 0:
+        shapes_k = [tuple(int(v) for v in sh)
+                    for sh in getattr(seq, f"basis_{k}").shape]
+        starts_k = np.cumsum([0] + [int(np.prod(sh)) for sh in shapes_k])
+        single_rows, single_cols = rows[single], cols[single]
+        comp = np.searchsorted(starts_k[1:], single_cols, side="right")
+        loc = single_cols - starts_k[comp]
+        nt = np.array([sh[1] for sh in shapes_k])[comp]
+        nz = np.array([sh[2] for sh in shapes_k])[comp]
+        i_r = loc // (nt * nz)
+        coupled = np.union1d(coupled, single_rows[i_r < n_rings])
+
     if coupled.size:
         size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
 
