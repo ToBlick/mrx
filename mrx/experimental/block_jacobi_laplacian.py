@@ -49,7 +49,7 @@ Approximations, all deliberate:
 5. no bulk<->core coupling.
 
 The natural-BC boundary term IS carried, by default, as a rank-one update to
-the radial stiffness (``bc_entry="direct"``): under a free condition the weak
+the radial stiffness (``bc_entry="exact"``): under a free condition the weak
 block's integration by parts leaves ``int_{r=1} w u_r^2``, which for a tensor
 basis is ``alpha (e e^T) (x) M_t (x) M_z`` -- the same shape as the first
 Kronecker term, so it merges into ``K_r`` for free.  It is exactly zero under
@@ -61,6 +61,8 @@ much for a scalar. Carrying that variation needs an exact outer ring.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 import jax
@@ -68,6 +70,7 @@ import jax.numpy as jnp
 
 from mrx.operators import (
     _assemble_weighted_1d_mass,
+    _fd_apply_3d,
     _assemble_weighted_1d_stiffness,
     _dense_incidence_1d,
     _reshape_quadrature_matrix_field,
@@ -251,6 +254,35 @@ def _fd_stiffness_degree0(seq, axis, profile):
     return jnp.asarray(0.5 * (k + k.T))
 
 
+def _weak_inverse_amplification(seq, k, c):
+    """``(M_r^{(k-1)})^{-1}[last, last]`` -- the 1/h the surface term picks up.
+
+    The natural-BC term is not the bare surface integral. It enters ``W_k`` as
+    ``E^T M_{k-1}^{-1} E`` with ``E`` the pairing of the V_k boundary trace
+    against V_{k-1}::
+
+        radial:  dLam_i(1) Lam_j(1)      angular: M_t (x) M_z
+
+    and the angular masses cancel against the same factors in ``M_{k-1}^{-1}``,
+    leaving one scalar: the last diagonal entry of the INVERSE radial mass of
+    V_{k-1}.  That entry scales like ``1/h_last``, which is what the measured
+    optimum does (toroid k=1 free: best scale 3 / 4.5 / 6.5 at n_r = 6 / 8 / 12,
+    i.e. ~0.55/h) -- and it differs by degree through the V_{k-1} mass weight,
+    which is why k=1 wanted ~4x and k=2 ~100x.
+
+    The V_{k-1} radial basis is PRIMAL for every matching component: V_0 always,
+    V_1 component c is a derivative only on axis c (and c != r whenever k = 2
+    has a trace), V_2 component r is a derivative on theta and zeta only.
+    """
+    fields = weight_fields(seq)
+    ginv, met, jac = fields["ginv_aa"], fields["met_aa"], fields["jac"]
+    weight = {0: jac, 1: ginv[c] * jac, 2: met[c] / jac}[k - 1]
+    prof = bundled_axis_profiles(seq, weight)[0]
+    primal, _, quad_w = _axis_bases(seq)
+    m_r = np.asarray(_assemble_weighted_1d_mass(primal[0], quad_w[0] * prof))
+    return float(np.linalg.inv(m_r)[-1, -1])
+
+
 def _boundary_entry_direct(seq, axis, weight_field, window, dirichlet):
     """The natural-BC boundary term, straight from the surface integral.
 
@@ -274,6 +306,13 @@ def _boundary_entry_direct(seq, axis, weight_field, window, dirichlet):
     # <w> over theta,zeta on the last radial quadrature slice.
     alpha = float(jnp.einsum('rs,r,s->', jnp.asarray(weight_field)[-1], wy, wz)
                   / (jnp.sum(wy) * jnp.sum(wz)))
+
+    # Penalty STRENGTH. The natural condition here is u.n = 0 -- an essential
+    # condition on the normal trace, which the free-BC weak block enforces by a
+    # mesh-dependent penalty rather than by removing a DOF. alpha as assembled
+    # is the exact surface integral; this knob asks whether the atom wants the
+    # exact penalty or the hard u_r = 0 limit it approximates.
+    alpha *= float(os.environ.get("MRX_BJ_BC_SCALE", "1.0"))
 
     dlam = seq.basis_0.dΛ[axis]
     end = 1.0 - 1e-8 if dlam.type != "periodic" else 0.0
@@ -319,7 +358,7 @@ def _boundary_entry(seq, k, c, axis, ktilde, m_d, prof_primal, window,
 
 
 def component_factors(seq, k, c, window=None, ktilde_mode="roundtrip",
-                      lumped=False, bc_entry="direct", dirichlet=False):
+                      lumped=False, bc_entry="exact", dirichlet=False):
     """``(masses, stiffnesses)`` per axis for component ``c`` of ``L_k``.
 
     The component's basis is a derivative spline on the axes it is
@@ -442,12 +481,32 @@ def component_factors(seq, k, c, window=None, ktilde_mode="roundtrip",
             else:
                 kt = cut(_assemble_weighted_1d_mass(
                     seq._bj_dd_tables[a], quad_w[a] * prof), a)
-                if bc_entry == "direct":
+                # a is a derivative axis here; the trace only lives on the
+                # RADIAL one (a == 0), the boundary face being r = 1.
+                if bc_entry in ("direct", "face", "exact") and a == 0:
+                    # "face": the REAL surface element. On r = const,
+                    #   sqrt(g_tt g_zz - g_tz^2) = J / sqrt(g_rr) = J sqrt(g^rr),
+                    # exact whenever the radial direction is orthogonal to the
+                    # surface (g_rt = g_rz = 0) -- no assumption on g_tz, which
+                    # is the large off-diagonal on W7-X. Carrying the physical
+                    # component factor through each degree turns the whole
+                    # correction into ONE substitution: g^rr -> sqrt(g^rr),
+                    # at k=1 (normal trace), k=2 (tangential) and k=3 alike.
+                    w_face = (mass_weight * jnp.sqrt(ginv[a])
+                              if bc_entry in ("face", "exact")
+                              else mass_weight * ginv[a])
                     corr = _boundary_entry_direct(
-                        seq, a, mass_weight * ginv[a], window, dirichlet)
+                        seq, a, w_face, window, dirichlet)
+                    if bc_entry == "exact" and corr is not None:
+                        corr = corr * _weak_inverse_amplification(seq, k, c)
                     if corr is not None:
                         kt = kt + jnp.asarray(corr)
-                elif bc_entry:
+                elif bc_entry and a == 0:
+                    # a == 0 ONLY: the boundary face is r = 1. theta and zeta
+                    # are periodic and have no boundary, so any entry added
+                    # there is pure noise -- it was measurably harmful (k=3 free
+                    # 97 vs 87 for no correction at all, and it perturbed the
+                    # DIRICHLET cases where the term must vanish identically).
                     corr = _boundary_entry(seq, k, c, a, kt, m,
                                            primal_prof[a], window,
                                            dirichlet=dirichlet)
@@ -515,7 +574,7 @@ def component_diagonal(seq, k, c, shape):
 
 
 def build_bulk_atom(seq, k, c, window=None, ktilde_mode="roundtrip",
-                    lumped=False, bc_entry="direct", dirichlet=False):
+                    lumped=False, bc_entry="exact", dirichlet=False):
     """Fast-diagonalisation factors for component ``c`` of ``L_k``.
 
     Returns ``(V_r, V_t, V_z, lam_r, lam_t, lam_z)`` ready for
@@ -556,6 +615,7 @@ def core_rows(seq, k, dirichlet, extra_rings=0, outer_rings=0):
     n_ext = int(e.forward_shape[0])
     counts = np.bincount(rows, minlength=n_ext)
     core = np.flatnonzero(counts > 1)
+    inner_rows = outer_rows = np.array([], dtype=int)
 
     if extra_rings > 0 or outer_rings > 0:
         shapes = [tuple(int(v) for v in sh)
@@ -570,12 +630,17 @@ def core_rows(seq, k, dirichlet, extra_rings=0, outer_rings=0):
         nr = np.array([sh[0] for sh in shapes])[comp]
         i_r = loc // (nt * nz)
         if extra_rings > 0:
-            core = np.union1d(core, r_s[i_r < extra_rings])
+            inner_rows = r_s[i_r < extra_rings]
+            core = np.union1d(core, inner_rows)
         if outer_rings > 0:
-            core = np.union1d(core, r_s[i_r >= nr - outer_rings])
+            outer_rows = r_s[i_r >= nr - outer_rings]
+            core = np.union1d(core, outer_rows)
 
+    polar = np.flatnonzero(counts > 1)
+    inner = np.setdiff1d(inner_rows, polar)
+    outer = np.setdiff1d(outer_rows, polar)
     bulk = np.setdiff1d(np.arange(n_ext), core)
-    return core, bulk, e
+    return core, bulk, e, polar, inner, outer
 
 
 def probe_core_block(seq, operators, k, dirichlet, rows):
@@ -598,6 +663,91 @@ def probe_core_block(seq, operators, k, dirichlet, rows):
     return 0.5 * (block + block.T)
 
 
+def build_ring_atom(seq, k, c, ring_index, radial_pair, alpha,
+                    ktilde_mode="honest"):
+    """2-D atom for ONE radial ring: `(theta, zeta)` fast diagonalisation.
+
+    Restricting the three-term Kronecker sum to a single radial index leaves a
+    2-D Kronecker sum plus a shift::
+
+        K_r[i,i] M_t (x) M_z  +  M_r[i,i] ( K_t (x) M_z + M_t (x) K_z )
+
+    so one pair of small eigendecompositions inverts it, with denominator
+    ``alpha_r K_r[i,i] + M_r[i,i] (alpha_t lam_t + alpha_z lam_z)``.
+
+    The point is NOT the storage (though ``O(n_t^2 + n_z^2)`` against
+    ``(n_t n_z)^2`` and no probe applies are both welcome).  A ring atom built
+    from the BULK atom's 1-D factors would reproduce the bulk atom's error on
+    those rows and gain exactly nothing.  What it must carry instead is the
+    information the bulk atom throws away: the angular weight profiles here are
+    averaged over the OTHER angular axis only, with the radial direction
+    collapsed by the ring's OWN basis function rather than by a global radial
+    mean.  On the innermost rings ``g^tt J ~ 1/r`` varies fastest, and on the
+    outermost ``det(DF) -> 0``; both are precisely where a global radial average
+    is worst.
+    """
+    primal, deriv, quad_w = _axis_bases(seq)
+    fields = weight_fields(seq)
+    ginv, jac = fields["ginv_aa"], fields["jac"]
+    deriv_axes = {0: (), 1: (c,), 3: (0, 1, 2)}.get(
+        k, tuple(a for a in range(3) if a != c))
+
+    # Collapse the radial direction with THIS ring's own basis function, not
+    # with a global mean: w_r(q) = phi_i(q)^2 * wq.
+    tab_r = np.asarray(deriv[0] if 0 in deriv_axes else primal[0])
+    w_r = jnp.asarray(tab_r[ring_index] ** 2) * quad_w[0]
+    s_r = jnp.sum(w_r)
+
+    def ring_profile(field, axis):
+        wy, wz = quad_w[1], quad_w[2]
+        if axis == 1:
+            p = jnp.einsum('qrs,q,s->r', field, w_r, wz) / (s_r * jnp.sum(wz))
+        else:
+            p = jnp.einsum('qrs,q,r->s', field, w_r, wy) / (s_r * jnp.sum(wy))
+        return jnp.maximum(p, 1e-8 * jnp.abs(jnp.median(p)))
+
+    def angular(axis):
+        # k=0 weights only: the component factor g^{cc} rides on the diagonal
+        # sandwich, exactly as in the bulk atom's "diag" lumping.
+        prof = ring_profile(ginv[axis] * jac, axis)
+        basis = deriv[axis] if axis in deriv_axes else primal[axis]
+        m = _assemble_weighted_1d_mass(basis, quad_w[axis])
+        if axis in deriv_axes and ktilde_mode == "honest":
+            if int(seq.basis_0.Λ[0].p) < 2:
+                kk = _fd_stiffness_degree0(seq, axis, prof)
+            else:
+                if not hasattr(seq, "_bj_dd_tables"):
+                    from mrx.local_assembly import (  # noqa: PLC0415
+                        _second_derivative_tables)
+                    seq._bj_dd_tables = _second_derivative_tables(seq)
+                kk = _assemble_weighted_1d_mass(
+                    seq._bj_dd_tables[axis], quad_w[axis] * prof)
+        elif axis in deriv_axes:
+            kk = _ktilde_1d(seq, axis, m,
+                            bundled_axis_profiles(seq, jac)[axis])
+        else:
+            kk = _assemble_weighted_1d_stiffness(
+                primal[axis], deriv[axis], quad_w[axis] * prof,
+                jnp.asarray(_dense_incidence_1d(int(m.shape[0]),
+                                                seq.basis_0.types[axis])))
+        return _simultaneous_diagonalize_pair(m, kk)
+
+    v_t, lam_t = angular(1)
+    v_z, lam_z = angular(2)
+    k_rr, m_rr = radial_pair
+    den = (alpha[0] * k_rr
+           + m_rr * (alpha[1] * lam_t[:, None] + alpha[2] * lam_z[None, :]))
+    dmax = jnp.max(jnp.abs(den))
+    den = jnp.where(jnp.abs(den) < 1e-10 * dmax, jnp.inf, den)
+    return {"v_t": v_t, "v_z": v_z, "inv_den": 1.0 / den}
+
+
+def apply_ring_atom(fac, x2d):
+    y = fac["v_t"].T @ jnp.asarray(x2d) @ fac["v_z"]
+    y = y * fac["inv_den"]
+    return fac["v_t"] @ y @ fac["v_z"].T
+
+
 class BlockJacobiLaplacian:
     """Bulk FD atoms + a dense core inverse, applied independently.
 
@@ -613,14 +763,17 @@ class BlockJacobiLaplacian:
 
     def __init__(self, seq, operators, k, dirichlet, *, core_tol=1e-12,
                  ktilde_mode="roundtrip", lumped=False, extra_rings=0,
-                 outer_rings=0, radial="averaged", bc_entry="direct"):
+                 outer_rings=0, radial="averaged", bc_entry="exact",
+                 core_mode="dense"):
         self.k, self.dirichlet = k, dirichlet
+        self.ktilde_mode, self.lumped = ktilde_mode, lumped
         self.shapes = [tuple(int(s) for s in sh)
                        for sh in getattr(seq, f"basis_{k}").shape]
         starts = np.cumsum([0] + [int(np.prod(s)) for s in self.shapes])
 
-        core, bulk, e = core_rows(seq, k, dirichlet, extra_rings=extra_rings,
-                                  outer_rings=outer_rings)
+        core, bulk, e, polar, inner_rings, outer_ring_rows = core_rows(
+            seq, k, dirichlet, extra_rings=extra_rings,
+            outer_rings=outer_rings)
         self.core, self.bulk = core, bulk
         self.n_ext = int(e.forward_shape[0])
         rows, cols, vals = (np.asarray(e.rows), np.asarray(e.cols),
@@ -653,9 +806,31 @@ class BlockJacobiLaplacian:
                 atom = ("modal", build_modal_radial_atom(
                     seq, k, c, (r0, nr), ktilde_mode=ktilde_mode))
             else:
-                atom = build_bulk_atom(seq, k, c, window=(r0, nr),
-                                       ktilde_mode=ktilde_mode, lumped=lumped,
-                                       bc_entry=bc_entry, dirichlet=dirichlet)
+                atom = build_bulk_atom(
+                    seq, k, c, window=(r0, nr), ktilde_mode=ktilde_mode,
+                    lumped=lumped, dirichlet=dirichlet,
+                    bc_entry=(False if bc_entry in ("woodbury", "wdiag")
+                              else bc_entry))
+            cap = None
+            # The natural-BC trace exists only on the components the
+            # integration by parts actually touches:
+            #   k=1  <u, grad tau>   -> +int (u.n) tau        -> NORMAL, c = r
+            #   k=2  <w, curl tau>   -> +int (w x n).tau      -> TANGENTIAL, c = t,z
+            #   k=3  <om, div tau>   -> +int om (tau.n)       -> the one component
+            #   k=0  W_0 = 0                                  -> none
+            # Equivalently: wherever the component's RADIAL axis is a derivative
+            # axis, which is where delta acts. Building it on w_r at k=2 adds a
+            # term the operator does not have.
+            has_trace = k > 0 and (0 in {0: (), 1: (c,), 3: (0, 1, 2)}.get(
+                k, tuple(a for a in range(3) if a != c)))
+            if (bc_entry in ("woodbury", "wdiag") and not dirichlet
+                    and has_trace):
+                # Natural BC by capacitance: the term is assembled on the face
+                # by quadrature (no probes) and folded in exactly through
+                # Woodbury, so nothing is lumped to a scalar.
+                cap = capacitance_correction(
+                    atom, face_operator(seq, k, c, (r0, nr)),
+                    diagonal_only=(bc_entry == "wdiag"))
             dscale = None
             if lumped == "diag":
                 d_full = component_diagonal(seq, k, c, shape)
@@ -664,9 +839,25 @@ class BlockJacobiLaplacian:
             self.blocks.append({
                 "rows": rows_b[sel], "vals": vals_b[sel],
                 "idx": (i_r - r0, i_t, i_z), "shape": (nr, shape[1], shape[2]),
-                "atom": atom, "dscale": dscale})
+                "atom": atom, "dscale": dscale, "cap": cap})
 
-        block = probe_core_block(seq, operators, k, dirichlet, core)
+        # "dense": probe the whole core (polar + rings) and invert it exactly.
+        # "atom2d": probe only the POLAR rows -- whose extraction genuinely
+        # mixes a ring of raw DOFs -- and give each added radial ring a
+        # separable 2-D atom instead. No probe applies for the rings, and
+        # O(n_t^2 + n_z^2) storage rather than (n_t n_z)^2.
+        # The split is not cosmetic: measured, the 2-D atom MATCHES the dense
+        # probe on the inner rings at a tenth of the build cost, and LOSES
+        # badly on the outer ones (toroid k=3 free 65 vs 24, W7-X k=2 free 616
+        # vs 198).  The outer ring earns its keep through the radial coupling a
+        # separable ring cannot carry -- the Steklov/DtN operator is nonlocal --
+        # while the inner rings only ever fixed a bad radial AVERAGE, which is
+        # exactly what a ring-local profile fixes for free.
+        self.core_mode = core_mode
+        probe_rows = (np.union1d(polar, outer_ring_rows)
+                      if core_mode == "atom2d" else core)
+        self.probe_rows = probe_rows
+        block = probe_core_block(seq, operators, k, dirichlet, probe_rows)
         if block.size:
             w, v = np.linalg.eigh(block)
             keep_w = np.abs(w) > core_tol * np.abs(w).max()
@@ -674,33 +865,142 @@ class BlockJacobiLaplacian:
         else:
             self.core_inv = np.zeros((0, 0))
 
-    def apply(self, x):
-        """Apply the preconditioner to an extracted-space vector."""
-        from mrx.operators import _fd_apply_3d  # noqa: PLC0415
+        self.rings = []
+        if core_mode == "atom2d" and inner_rings.size:
+            self.rings = self._build_ring_blocks(seq, k, dirichlet, inner_rings)
 
-        x = np.asarray(x)
-        out = np.zeros_like(x)
+    def _build_ring_blocks(self, seq, k, dirichlet, ring_rows):
+        """One 2-D atom per (component, radial ring) among the added rings."""
+        e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+        rows, cols, vals = (np.asarray(e.rows), np.asarray(e.cols),
+                            np.asarray(e.vals))
+        keep = np.isin(rows, ring_rows)
+        rows_r, cols_r, vals_r = rows[keep], cols[keep], vals[keep]
+        starts = np.cumsum([0] + [int(np.prod(s_)) for s_ in self.shapes])
+        comp = np.searchsorted(starts[1:], cols_r, side="right")
+        loc = cols_r - starts[comp]
+
+        out = []
+        for c, shape in enumerate(self.shapes):
+            sel = comp == c
+            if not sel.any():
+                continue
+            # Radial factors only for their DIAGONAL entries: restricted to
+            # one ring, the radial term is the scalar K_r[i,i], and the mass
+            # scale multiplying the angular part is M_r[i,i].
+            masses, stiffs, alpha = component_factors(
+                seq, k, c, window=None, ktilde_mode=self.ktilde_mode,
+                lumped=self.lumped, bc_entry=False, dirichlet=dirichlet)
+            k_r = np.asarray(stiffs[0])
+            m_r = np.asarray(masses[0])
+            lidx = loc[sel]
+            i_r = lidx // (shape[1] * shape[2])
+            i_t = (lidx // shape[2]) % shape[1]
+            i_z = lidx % shape[2]
+            dfull = (component_diagonal(seq, k, c, shape)
+                     if self.lumped == "diag" else np.ones(shape))
+            for ridx in np.unique(i_r):
+                m = i_r == ridx
+                d = np.maximum(dfull[int(ridx)], 1e-300)
+                out.append({
+                    "rows": jnp.asarray(rows_r[sel][m]),
+                    "vals": jnp.asarray(vals_r[sel][m]),
+                    "flat": jnp.asarray(i_t[m] * shape[2] + i_z[m]),
+                    "shape2": (shape[1], shape[2]),
+                    # the ring's own metric, kept EXACTLY as a diagonal -- this
+                    # is the information the axis-averaged bulk atom discards
+                    # and the only reason a separable ring can compete with an
+                    # exact one.
+                    "dscale": jnp.asarray(1.0 / np.sqrt(d)),
+                    "atom": build_ring_atom(
+                        seq, k, c, int(ridx),
+                        (float(k_r[int(ridx), int(ridx)]),
+                         float(m_r[int(ridx), int(ridx)])),
+                        alpha, ktilde_mode=self.ktilde_mode)})
+        return out
+
+    def _build_apply(self):
+        """Compile the apply. Everything here is on-device and jitted.
+
+        Build-time work (eigendecompositions, the dense core inverse, the face
+        operator) is host-side numpy and belongs there -- it happens once. The
+        APPLY runs once per CG iteration, thousands of times per solve, so it
+        must not round-trip through the host: the scatter/gather use flat index
+        arrays computed once, and _fd_apply_3d is inside the jit rather than
+        called per component from Python.
+        """
+        blocks = []
         for blk in self.blocks:
             if blk is None:
                 continue
-            buf = np.zeros(blk["shape"])
+            nr, nt, nz = blk["shape"]
             ir, it, iz = blk["idx"]
-            buf[ir, it, iz] = blk["vals"] * x[blk["rows"]]
-            if blk["dscale"] is not None:
-                buf = buf * blk["dscale"]
-            if isinstance(blk["atom"], tuple) and blk["atom"][0] == "modal":
-                sol = np.asarray(apply_modal_radial(blk["atom"][1],
-                                                    jnp.asarray(buf)))
-            else:
-                (v_r, v_t, v_z), (l_r, l_t, l_z), alpha = blk["atom"]
-                sol = np.asarray(_fd_apply_3d(v_r, v_t, v_z, l_r, l_t, l_z,
-                                              alpha, jnp.asarray(buf)))
-            if blk["dscale"] is not None:
-                sol = sol * blk["dscale"]
-            out[blk["rows"]] = blk["vals"] * sol[ir, it, iz]
-        if self.core.size:
-            out[self.core] = self.core_inv @ x[self.core]
-        return jnp.asarray(out)
+            flat = jnp.asarray((ir * nt + it) * nz + iz)
+            (v_r, v_t, v_z), (l_r, l_t, l_z), alpha = blk["atom"]
+            blocks.append({
+                "rows": jnp.asarray(blk["rows"]),
+                "vals": jnp.asarray(blk["vals"]),
+                "flat": flat, "shape": (nr, nt, nz),
+                "v": (v_r, v_t, v_z), "lam": (l_r, l_t, l_z),
+                "alpha": tuple(float(a) for a in alpha),
+                "dscale": (None if blk["dscale"] is None
+                           else jnp.asarray(blk["dscale"])),
+                "cap": (None if blk.get("cap") is None
+                        else _cap_arrays(blk["cap"])),
+            })
+        core = jnp.asarray(self.probe_rows)
+        core_inv = jnp.asarray(self.core_inv)
+        has_core = np.asarray(self.probe_rows).size > 0
+        rings = self.rings
+
+        def impl(x):
+            out = jnp.zeros_like(x)
+            for b in blocks:
+                buf = jnp.zeros(int(np.prod(b["shape"]))).at[b["flat"]].set(
+                    b["vals"] * x[b["rows"]]).reshape(b["shape"])
+                if b["dscale"] is not None:
+                    buf = buf * b["dscale"]
+                sol = _fd_apply_3d(*b["v"], *b["lam"], b["alpha"], buf)
+                if b["cap"] is not None:
+                    ring = sol[-1].reshape(-1)
+                    upd = jnp.zeros(b["shape"]).at[-1].set(
+                        _apply_cap_jax(b["cap"], ring).reshape(
+                            b["shape"][1], b["shape"][2]))
+                    sol = sol - _fd_apply_3d(*b["v"], *b["lam"], b["alpha"], upd)
+                if b["dscale"] is not None:
+                    sol = sol * b["dscale"]
+                out = out.at[b["rows"]].set(b["vals"] * sol.reshape(-1)[b["flat"]])
+            if has_core:
+                out = out.at[core].set(core_inv @ x[core])
+            for r in rings:
+                buf = jnp.zeros(int(np.prod(r["shape2"]))).at[r["flat"]].set(
+                    r["vals"] * x[r["rows"]]).reshape(r["shape2"])
+                buf = buf * r["dscale"]
+                sol = apply_ring_atom(r["atom"], buf) * r["dscale"]
+                out = out.at[r["rows"]].set(
+                    r["vals"] * sol.reshape(-1)[r["flat"]])
+            return out
+
+        return jax.jit(impl)
+
+    def apply(self, x):
+        """Apply the preconditioner to an extracted-space vector."""
+        if getattr(self, "_jit", None) is None:
+            self._jit = self._build_apply()
+        return self._jit(jnp.asarray(x))
+
+
+def _cap_arrays(cap):
+    if cap["mode"] == "diag":
+        return ("diag", jnp.asarray(cap["q"]), jnp.asarray(cap["coef"]))
+    return ("dense", jnp.asarray(cap["c"]))
+
+
+def _apply_cap_jax(cap, ring):
+    if cap[0] == "diag":
+        _, q, coef = cap
+        return q @ (coef * (q.T @ ring))
+    return cap[1] @ ring
 
 
 # --------------------------------------------------------------------------- #
@@ -900,7 +1200,8 @@ class BlockJacobiMass:
         self.shapes = [tuple(int(v) for v in sh) for sh in shapes]
         starts = np.cumsum([0] + [int(np.prod(s)) for s in self.shapes])
 
-        core, bulk, e = core_rows(seq, k, dirichlet, extra_rings=extra_rings)
+        core, bulk, e = core_rows(seq, k, dirichlet,
+                                 extra_rings=extra_rings)[:3]
         self.core, self.bulk = core, bulk
         rows, cols, vals = (np.asarray(e.rows), np.asarray(e.cols),
                             np.asarray(e.vals))
@@ -974,3 +1275,94 @@ class BlockJacobiMass:
         if self.core.size:
             out[self.core] = self.core_inv @ x[self.core]
         return jnp.asarray(out)
+
+
+# --------------------------------------------------------------------------- #
+# Natural BC by capacitance (Woodbury) -- no operator probes                    #
+# --------------------------------------------------------------------------- #
+
+def face_operator(seq, k, c, window):
+    """The natural-BC face operator ``B`` on the outer radial ring.
+
+    The boundary term is a surface integral on ``r = 1``, so it is assembled by
+    2-D QUADRATURE over the face -- no operator applies at all, which is the
+    whole point next to probing the ring.  It keeps the full angular dependence
+    of ``w(1, theta, zeta)``: nothing is lumped to a scalar.
+
+    Returned in the physical ``(theta, zeta)`` face basis, shape
+    ``(n_t n_z, n_t n_z)``, already carrying the radial basis value at the
+    boundary so that ``E B E^T`` is the term as it acts on the full grid.
+    """
+    fields = weight_fields(seq)
+    ginv, met, jac = fields["ginv_aa"], fields["met_aa"], fields["jac"]
+    mass_weight = {0: jac, 1: ginv[c] * jac, 2: met[c] / jac, 3: 1.0 / jac}[k]
+    w_face = np.asarray(mass_weight * ginv[0])[-1]          # (n_qt, n_qz)
+
+    # The ANGULAR factors must be the component's own bases, not always the
+    # primal ones: at k=2 one angular axis is a derivative axis (w_t has zeta
+    # differentiated, w_z has theta) and at k=3 both are. A derivative basis is
+    # O(1/h) larger, so each wrong axis costs (1/h)^2 -- measured as 41x, 174x
+    # and 7100x against the k=1 reference, with 41 * 174 = 7134 confirming that
+    # k=3 is just the two single-axis errors compounding.
+    primal, deriv, _ = _axis_bases(seq)
+    deriv_axes = {0: (), 1: (c,), 3: (0, 1, 2)}.get(
+        k, tuple(a for a in range(3) if a != c))
+    t_tab = np.asarray(deriv[1] if 1 in deriv_axes else primal[1])
+    z_tab = np.asarray(deriv[2] if 2 in deriv_axes else primal[2])
+    wy, wz = np.asarray(seq.quad.w_y), np.asarray(seq.quad.w_z)
+
+    # sum-factorised: theta mass per zeta quad point, then contract zeta
+    b_t = np.einsum('t,tz,jt,Jt->jJz', wy, w_face, t_tab, t_tab)
+    b4 = np.einsum('jJz,z,kz,Kz->jkJK', b_t, wz, z_tab, z_tab)
+    n_t, n_z = t_tab.shape[0], z_tab.shape[0]
+    b = b4.reshape(n_t * n_z, n_t * n_z)
+
+    dlam = seq.basis_0.dΛ[0]
+    end = 1.0 - 1e-8 if dlam.type != "periodic" else 0.0
+    e_r = np.asarray(jax.vmap(lambda i: jnp.sum(dlam(end, i)))(dlam.ns))
+    if window is not None:
+        e_r = e_r[window[0]:window[0] + window[1]]
+    return 0.5 * (b + b.T) * float(e_r[-1]) ** 2
+
+
+def capacitance_correction(atom, b_face, diagonal_only=False):
+    """Woodbury data for ``(A + E B E^T)^-1``.
+
+    ``E`` injects onto the LAST radial index, so ``E^T A^-1 E`` never mixes
+    angular modes: in the angular eigenbasis it is exactly
+
+        d_jk = sum_i V_r[last,i]^2 / (a0 lam_r(i) + a1 lam_t(j) + a2 lam_z(k))
+
+    -- closed form, one O(n_r n_t n_z) pass, no solves and no probes.  What is
+    left is a purely 2-D system of size ``n_t n_z``.
+
+    ``diagonal_only`` keeps only ``B``'s diagonal in the angular eigenbasis: no
+    dense 2-D solve at all, and strictly better than collapsing the face weight
+    to a scalar.
+    """
+    (v_r, v_t, v_z), (l_r, l_t, l_z), alpha = atom
+    v_r, v_t, v_z = (np.asarray(v) for v in (v_r, v_t, v_z))
+    l_r, l_t, l_z = (np.asarray(lam) for lam in (l_r, l_t, l_z))
+
+    denom = (alpha[0] * l_r[:, None, None] + alpha[1] * l_t[None, :, None]
+             + alpha[2] * l_z[None, None, :])
+    dmax = np.abs(denom).max()
+    safe = np.where(np.abs(denom) < 1e-10 * dmax, np.inf, denom)
+    d = np.einsum('i,ijk->jk', v_r[-1] ** 2, 1.0 / safe).reshape(-1)
+
+    q = np.kron(v_t, v_z)                       # angular eigenbasis
+    if diagonal_only:
+        b_hat_diag = np.einsum('ij,jk,ki->i', q.T, b_face, q)
+        return {"mode": "diag", "q": q, "coef": b_hat_diag / (1.0 + b_hat_diag * d)}
+    d_phys = q @ (d[:, None] * q.T)
+    n = b_face.shape[0]
+    c = np.linalg.solve(np.eye(n) + b_face @ d_phys, b_face)
+    return {"mode": "dense", "c": c}
+
+
+def apply_capacitance(corr, ring):
+    """Apply the 2-D correction to one ring slice (flattened ``(n_t, n_z)``)."""
+    if corr["mode"] == "diag":
+        q = corr["q"]
+        return q @ (corr["coef"] * (q.T @ ring))
+    return corr["c"] @ ring

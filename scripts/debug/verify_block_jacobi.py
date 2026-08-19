@@ -46,9 +46,9 @@ from mrx.nullspace import compute_nullspaces, get_nullspace  # noqa: E402
 mrx.MAP_BATCH_SIZE_INNER = int(os.environ.get("W7X_MAP_BATCH", "256"))
 
 
-def build_sequence(geometry, ns, p, maxiter, tol):
+def build_sequence(geometry, ns, p, maxiter, inner_tol=1e-13):
     seq = DeRhamSequence(ns, (p,) * 3, 2 * p, ("clamped", "periodic", "periodic"),
-                         polar=True, tol=tol, maxiter=maxiter,
+                         polar=True, tol=inner_tol, maxiter=maxiter,
                          betti_numbers=(1, 1, 0, 0))
     seq.evaluate_1d()
     if geometry == "toroid":
@@ -117,7 +117,7 @@ def main():
     cli = ap.parse_args()
 
     ns = tuple(int(v) for v in cli.ns.split(","))
-    seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter, cli.tol)
+    seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter)
     arms = cli.arms.split(",")
     print(f"geometry={cli.geometry} ns={ns} p={cli.p} UNSHIFTED tol={cli.tol}",
           flush=True)
@@ -130,7 +130,7 @@ def main():
     seq.set_operators(ops)
     print(f"\ncompute_nullspaces (direct) {time.perf_counter() - t0:.1f}s",
           flush=True)
-    print(f"{'k':>2} {'dbc':>5} {'n_null':>7} {'||L v||/||v||':>15}", flush=True)
+    print(f"{'k':>2} {'dbc':>5} {'n_null':>7} {'rayleigh q':>13} {'rel L2 err':>12}", flush=True)
     kernels = {}
     for k in range(4):
         for dbc in (False, True):
@@ -138,16 +138,25 @@ def main():
             kernels[(k, dbc)] = vecs if vecs.shape[0] else None
             worst = 0.0
             for v in vecs:
+                # RAYLEIGH QUOTIENT, not ||Lv||/||v||. Lv is a DUAL vector, so
+                # pairing it with v is the coherent contraction, and dividing by
+                # the L2 norm makes the result an eigenvalue -- comparable to the
+                # spectrum. lambda_1 is O(1) independent of h, so this is
+                # resolution independent, where ||Lv||/||v|| carries ||L|| ~ h^-2
+                # and degrades 30-1300x from 8^3 to 12^3 for the same vector.
+                # sqrt(lambda) is then the relative L2 error in the form.
                 lv = op.apply_hodge_laplacian(seq, ops, jnp.asarray(v), k,
                                               dirichlet=dbc)
-                worst = max(worst, float(jnp.linalg.norm(lv))
-                            / float(np.linalg.norm(v)))
+                mv = op.apply_mass_matrix(seq, ops, jnp.asarray(v), k,
+                                          dirichlet=dbc)
+                worst = max(worst, abs(float(v @ lv)) / float(v @ mv))
             print(f"{k:>2} {dbc!s:>5} {vecs.shape[0]:>7} "
-                  f"{worst if vecs.shape[0] else float('nan'):>15.3e}",
+                  f"{worst if vecs.shape[0] else float('nan'):>13.3e} "
+                  f"{worst ** 0.5 if vecs.shape[0] else float('nan'):>12.3e}",
                   flush=True)
             results["nullspaces"].append(
                 {"k": k, "dbc": dbc, "n": int(vecs.shape[0]),
-                 "residual": worst})
+                 "rayleigh": worst, "rel_l2_err": worst ** 0.5})
 
     print("\nUnshifted solves (deflated where singular)", flush=True)
     print(f"{'k':>2} {'dbc':>5} {'n':>7} {'sing':>5} " +
@@ -175,6 +184,11 @@ def main():
                         def minv(v, d=d):
                             return d * v
                     else:
+                        # bcsN: multiply the natural-BC penalty by N. N -> inf
+                        # is the hard u.n = 0 limit that penalty approximates.
+                        sc = re.search(r"bcs(\d+)", arm)
+                        os.environ["MRX_BJ_BC_SCALE"] = (
+                            sc.group(1) if sc else "1.0")
                         m = re.search(r"r(\d+)", arm)
                         o = re.search(r"o(\d+)", arm)
                         pre = BlockJacobiLaplacian(
@@ -182,8 +196,13 @@ def main():
                             lumped="diag",
                             extra_rings=int(m.group(1)) if m else 0,
                             outer_rings=int(o.group(1)) if o else 0,
-                            bc_entry=(False if "nobc" in arm else "direct"),
-                            radial=("modal" if "modal" in arm else "averaged"))
+                            bc_entry=("woodbury" if "wood" in arm else
+                                      "wdiag" if "wdiag" in arm else
+                                      "exact" if "exact" in arm else
+                                      "face" if "face" in arm else
+                                      False if "nobc" in arm else "direct"),
+                            radial=("modal" if "modal" in arm else "averaged"),
+                            core_mode=("atom2d" if "a2d" in arm else "dense"))
                         minv = pre.apply
                     t_build = time.perf_counter() - t0
                     it, rel, ok = pcg(a_apply, b, minv, proj, tol=cli.tol,

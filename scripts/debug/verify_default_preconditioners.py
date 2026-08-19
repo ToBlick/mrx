@@ -106,7 +106,12 @@ def main():
     # Poisson stage: W7-X k=1 needs >1000 iterations even with an exact Jacobi
     # diagonal, and a truncated inner solve silently poisons the harmonic form.
     seq.maxiter = cli.maxiter
-    seq.tol = cli.tol
+    # NOT cli.tol: that is the OUTER CG tolerance. seq.tol bounds the
+    # sequence's INNER solves, and the k=3 dbc harmonic form is a raw
+    # M_3^-1 solve -- at tol=1e-10 its ||Lv||/||v|| is 1.3e-5 against
+    # 2.6e-8 at 1e-12, since the residual is the solve error times
+    # ||L_3||.
+    seq.tol = 1e-13
     print(f"geometry={cli.geometry} ns={ns} p={cli.p} betti={seq.betti_numbers} "
           f"tol={cli.tol} UNSHIFTED (eps=0)", flush=True)
 
@@ -120,7 +125,7 @@ def main():
     seq.set_operators(ops)
     t_null = time.perf_counter() - t0
     print(f"\ncompute_nullspaces (direct) took {t_null:.1f}s", flush=True)
-    print(f"{'k':>2} {'dbc':>5} {'n_null':>7} {'||L v||/||v||':>15} "
+    print(f"{'k':>2} {'dbc':>5} {'n_null':>7} {'rayleigh q':>13} {'rel L2 err':>12} "
           f"{'orthonormality':>15}", flush=True)
 
     kernels = {}
@@ -138,8 +143,9 @@ def main():
             for v in vecs:
                 lv = op.apply_hodge_laplacian(seq, ops, jnp.asarray(v), k,
                                               dirichlet=dbc)
-                worst_res = max(worst_res, float(jnp.linalg.norm(lv))
-                                / float(np.linalg.norm(v)))
+                mv = op.apply_mass_matrix(seq, ops, jnp.asarray(v), k,
+                                          dirichlet=dbc)
+                worst_res = max(worst_res, abs(float(v @ lv)) / float(v @ mv))
             orth = float(np.abs(gram / np.diag(gram)[:, None]
                                 - np.eye(vecs.shape[0])).max())
             print(f"{k:>2} {dbc!s:>5} {vecs.shape[0]:>7} {worst_res:>15.3e} "
