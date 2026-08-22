@@ -22,11 +22,31 @@ the 2x lives (§15.1: rot-ellipse n=20 k=1 free, total time 26.3s vs 53.7s).
 
 ## 1. Phase 0 — resolve two defaults BEFORE landing (blocking, cheap)
 
-1. **`ktilde_mode`.** The class default is `"roundtrip"`; **every sweep in the
-   handoff used `"honest"`**. Nothing in §12-§19 validates `roundtrip`. One A/B
-   job (4 geometries x k=1,3 x n=12,20) settles it. Do not land with this
-   unresolved -- it is exactly the kind of implicit default that §3's two
-   hidden metric factors hid behind.
+1. **`ktilde_mode` -- ANSWERED 2026-08-22, and the class default is WRONG.**
+   `outputs/diag_ktilde/`, four geometries x k=0..3 x free and dbc at n=12
+   (bcp10, the landing scale). **`roundtrip` loses every single row**, 28 of 28:
+
+   | geom | k=1 free | k=1 dbc | k=2 free | k=3 free |
+   | --- | --- | --- | --- | --- |
+   | cylinder | 70 / **689** | 68 / 632 | 75 / 455 | 63 / 274 |
+   | toroid | 110 / **789** | 92 / 551 | 95 / 634 | 63 / 391 |
+   | rot-ellipse | 416 / **1549** | 218 / 878 | 453 / 1362 | 142 / 566 |
+   | w7x | 1103 / **6540** | 320 / 2918 | -- | -- |
+
+   (honest / roundtrip). Median ratio **4.37x**, worst 9.84x, and `roundtrip`
+   is worse than plain JACOBI in several rows. k=0 is identical (1.00) on every
+   geometry, as it must be: `ktilde_mode` only differs on DERIVATIVE axes and
+   k=0 has none -- the same reason `bc_scale` is inert at k=0.
+
+   **Action: flip the default to `"honest"`** in `component_factors`,
+   `build_bulk_atom` and `BlockJacobiLaplacian`. No production caller relies on
+   it; every debug script that sets it explicitly already passes `"honest"`,
+   and the only `"roundtrip"` users are the `rt` A/B arms in
+   `verify_block_jacobi.py` / `block_jacobi_spectrum.py`, which should keep
+   working for the record.
+
+   This is exactly the kind of implicit default that §3's two hidden metric
+   factors hid behind, and it would have shipped a 3-10x regression.
 2. **`bc_scale = 0.10`.** Settled (§19.4): minimax 1.11 over the shaped
    geometries and over n>=16, across 82 cells / 4 geometries / k=1,2,3 /
    n=8..32 / p=2..5. No further sweeps needed.
@@ -120,9 +140,20 @@ Minimum set, all cheap:
 3. **`bc_scale=0` reproduces `bc_entry=False`** bit-for-bit.
 4. **SPD**: `min eig(P) > 0` for k=0..3, free and dbc, on two geometries. This
    is what `ibpr` failed (§12.2) and a rank-one update can in principle break.
-5. **Iteration regression**: one small case per geometry, asserted against a
-   recorded count with a generous band -- the noise floor is ~1%, up to 2.4% at
-   k=1 free (§13.1), so use +/-10%.
+5. **Iteration regression**: k=1 Dirichlet (non-singular, so no nullspace
+   needed), against a recorded count with a generous band.
+6. **The term earns its place**: k=3 FREE (also non-singular, and the term is
+   live and large there) asserted against the SAME solve with the term off.
+   Tests 1-5 all run where the term is inert or only check its PRESENCE; this
+   is the only one that guards its MAGNITUDE.
+
+DONE 2026-08-22: `test/test_block_jacobi_laplacian.py`, 9 tests, all passing,
+~38 s of test time on top of the shared session fixture (which the rest of the
+suite already pays for). Each inertness check carries a POSITIVE CONTROL -- the
+same comparison where the term is live -- so none of them can pass against a
+preconditioner that simply lost the boundary term. Thresholds come from the
+measured separation (inert ~1e-11, live 2.5e-3 at the weakest k), not from
+round numbers.
 
 ## 6. Phase 5 — later, optional
 
@@ -150,7 +181,7 @@ Minimum set, all cheap:
 
 | phase | effort | blocking? |
 | --- | --- | --- |
-| 0. `ktilde_mode` A/B | 1 job | **yes** |
+| 0. `ktilde_mode` A/B | **DONE -- flip the default to `honest`** | was blocking |
 | 1. production surface | small | -- |
 | 2. delete refuted machinery | medium, mostly deletion | -- |
 | 3. probed-jacobi reference | medium (new code) | no -- can follow |
