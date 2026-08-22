@@ -183,7 +183,7 @@ round numbers.
 | --- | --- | --- |
 | 0. `ktilde_mode` A/B | **DONE -- flip the default to `honest`** | was blocking |
 | 1. production surface | small | -- |
-| 2. delete refuted machinery | medium, mostly deletion | -- |
+| 2. delete refuted machinery | **DONE 2026-08-22 -- 2099 -> 1332 lines** | -- |
 | 3. probed-jacobi reference | medium (new code) | no -- can follow |
 | 4. tests | small | should precede the default flip |
 | 5. auto `bc_scale`, `fm` opt-in | later | no |
@@ -191,3 +191,46 @@ round numbers.
 Suggested landing order: **0 -> 4 -> 1 -> 2 -> 3**. Tests before the default
 flip, deletion after the new default is proven, and the reference last so it
 measures the finished thing.
+
+
+---
+
+## 9. PHASE 2 AS EXECUTED (2026-08-22)
+
+`mrx/experimental/block_jacobi_laplacian.py`: **2099 -> 1332 lines (-37%)**.
+
+| surface | before | after |
+| --- | --- | --- |
+| `bc_entry` variants | 11 | **2** (`"ibpd"`, `False`) |
+| `MRX_BJ_*` env knobs | 9 | **1** (`MRX_BJ_BC_SCALE`) |
+| constructor kwargs | 17 | 12 |
+
+Deleted outright (each measured and lost; § refs in the handoff): the
+`ibpr`/`ibpf` cross-term corrections, `wibp`/`wibpd`/`woodbury`/`wdiag` and the
+whole capacitance/Woodbury path, `ibp`/`ibps`/`face`/`direct`/`exact`, the
+`pin` (all three kwargs and its `core_rows` plumbing), Nitsche consistency, the
+`tg` tangential penalty, `tm`/`mode_beta_correction` (BROKEN, measured), the
+`atom2d` 2-D ring atoms, `radial="modal"`, `TransferK3Preconditioner`, and the
+two p=1 diagnostic knobs (the fix they compared is landed).
+
+KEPT deliberately:
+
+* `_weak_inverse_amplification`, `_face_metric_scalar`, `face_operator` -- no
+  longer reachable from the class, but they are what `bc_alpha_compare.py`,
+  `edge_vector_check.py` and `face_weight_probe.py` use to VALIDATE the derived
+  coefficient. Those are the scripts to re-run if the derivation is questioned.
+* `extra_rings` / `outer_rings` and `probe_core_block` -- the exact-boundary
+  diagnostic and the upper bound on what any boundary method can buy.
+* `BlockJacobiMass` -- now wired as the mass swap candidate (§4).
+* `coarse_*` (5 kwargs, `fm`) -- STILL THERE. Extracting it to its own module
+  is a refactor rather than a deletion, and it is a measured 1.18-1.32x option.
+  **This is the remaining Phase 2 work.**
+* `ktilde_mode` -- kept as a knob (correctly defaulted now). Deleting
+  `"roundtrip"` would also remove the `ratios`/`alpha` machinery threaded
+  through `build_ring_atom` and `_fd_apply_3d`; worth doing, not worth
+  bundling with this.
+
+**Method note.** `ruff` catches F821 at module scope but **did not** catch three
+dead calls inside the jitted `m_apply` closure (`_cap_arrays`, `_apply_cap_jax`,
+`apply_ring_atom`). Grep for the deleted names as well as linting -- the memory
+note about F821-after-deletions understates it.

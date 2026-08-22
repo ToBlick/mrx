@@ -130,7 +130,7 @@ def main():
         os.environ["MRX_BJ_BC_SCALE"] = "1.0"
 
         for d in depths:
-            _, _, _, _, _, outer, _ = core_rows(seq, k, False, outer_rings=d)
+            _, _, _, _, _, outer = core_rows(seq, k, False, outer_rings=d)
             R = np.sort(np.asarray(outer))
             if R.size == 0:
                 print(f"  depth {d}: no outer rows"); continue

@@ -211,69 +211,17 @@ def main():
                         # sub-unity range the cross term lives in.
                         sc = re.search(r"bcs(\d+)", arm)
                         pc = re.search(r"bcp(\d+)", arm)
-                        # tgN: boundary penalty on the NON-trace components,
-                        # N/100 of the same alpha. Tests whether their silent
-                        # homogeneous-Neumann condition is the k=1/2 free lever.
-                        tg = re.search(r"tg(\d+)", arm)
-                        os.environ["MRX_BJ_TANG_BC"] = (
-                            tg.group(1) if tg else "0")
-                        # tmN: MODE-DEPENDENT beta on the non-trace components,
-                        # c = N/100. The principled version of tgN.
-                        # dbN: NEGATIVE boundary term under Dirichlet, N/100
-                        # of the same alpha. Tests the weight-placement
-                        # mismatch that §6.3's invariant has been hiding.
-                        db = re.search(r"db(\d+)", arm)
-                        os.environ["MRX_BJ_DBC_BC"] = (
-                            db.group(1) if db else "0")
-                        # ntN: Nitsche CONSISTENCY term, N/100. Cross-component
-                        # boundary coupling; k=1 free only.
-                        nt = re.search(r"nt(\d+)", arm)
-                        os.environ["MRX_BJ_NITSCHE"] = (
-                            nt.group(1) if nt else "0")
-                        tm = re.search(r"tm(\d+)", arm)
-                        os.environ["MRX_BJ_TANG_MODE"] = (
-                            tm.group(1) if tm else "0")
                         os.environ["MRX_BJ_BC_SCALE"] = (
                             str(int(pc.group(1)) / 100.0) if pc else
                             sc.group(1) if sc else "1.0")
-                        # d0sN: multiply the p=1 degree-0 (jump) radial
-                        # stiffness by N/100. Diagnostic only.
-                        d0 = re.search(r"d0s(\d+)", arm)
-                        os.environ["MRX_BJ_D0_SCALE"] = (
-                            str(int(d0.group(1)) / 100.0) if d0 else "1.0")
-                        # d0old: assemble the p=1 jump form on COEFFICIENTS
-                        # (the pre-fix behaviour, under-scaled by h^2).
-                        os.environ["MRX_BJ_D0_FORM"] = (
-                            "coef" if "d0old" in arm else "value")
                         m = re.search(r"_r(\d+)", arm)
                         o = re.search(r"_o(\d+)", arm)
-                        # pin[o|a][d]N: HARD-pin N outer rings of a component
-                        # set -- their rows leave the bulk, so the atom sees
-                        # the DIRICHLET-eliminated radial factor.
-                        #   (none) trace components (they carry the natural
-                        #          term, which is switched off when pinned)
-                        #   o      the OTHER components -- where the high
-                        #          outliers live; the hard limit of tg
-                        #   a      all of them
-                        #   d      evicted rows get the Jacobi DIAGONAL
-                        #          instead of a probe column (no dense block)
-                        pin = re.search(r"pin([oa]?)(d?)(\d+)", arm)
                         # fmM / frR: ADDITIVE truncated-Fourier coarse
                         # correction on the outer R rings, modes |m|,|n| <= M.
                         # R L R^T with R a RESTRICTION rather than a row
                         # selection -- one probe apply per coarse vector.
                         fm = re.search(r"fm(\d+)", arm)
                         fr = re.search(r"fr(\d+)", arm)
-                        # pinN: HARD-pin the trace components' outer N rings
-                        # (their rows go to the exact probe, so the atom sees
-                        # the Dirichlet-eliminated radial factor). The other
-                        # components' scalar Neumann conditions then ARE the
-                        # operator's natural conditions, because pinning the
-                        # trace kills the tangential-derivative coupling.
-                        # pindN: the same pin, but the evicted rows get the
-                        # operator's Jacobi DIAGONAL instead of a probe column.
-                        # Separates the pin (free) from the exact boundary
-                        # treatment (a dense probe, which does not scale).
                         pre = BlockJacobiLaplacian(
                             seq, ops, k, dbc,
                             ktilde_mode=("roundtrip" if "rt" in arm
@@ -281,26 +229,13 @@ def main():
                             lumped="diag",
                             extra_rings=int(m.group(1)) if m else 0,
                             outer_rings=int(o.group(1)) if o else 0,
-                            bc_entry=("wibpd" if "wibpd" in arm else
-                                      "wibp" if "wibp" in arm else
-                                      "woodbury" if "wood" in arm else
-                                      "wdiag" if "wdiag" in arm else
-                                      "ibpf" if "ibpf" in arm else
-                                      "ibpr" if "ibpr" in arm else
-                                      "ibps" if "ibps" in arm else
-                                      "ibpd" if "ibpd" in arm else
-                                      "ibp" if "ibp" in arm else
-                                      "exact" if "exact" in arm else
-                                      "face" if "face" in arm else
-                                      False if "nobc" in arm else "direct"),
-                            radial=("modal" if "modal" in arm else "averaged"),
-                            core_mode=("atom2d" if "a2d" in arm else "dense"),
-                            pin_trace=int(pin.group(3)) if pin else 0,
-                            pin_mode=("diag" if pin and pin.group(2)
-                                      else "probe"),
-                            pin_set=({"o": "other", "a": "all",
-                                      "": "trace"}[pin.group(1)]
-                                     if pin else "trace"),
+                            # Ten other spellings of the boundary term were
+                            # measured and lost -- the exact 2-D face shape,
+                            # both cross-term corrections (one INDEFINITE) and
+                            # the "exact" sqrt(g^rr) form, which is worse than
+                            # NO term at k=1/2 free. See handoff §9, §12.3,
+                            # §14.3. Only the derived term and "off" remain.
+                            bc_entry=(False if "nobc" in arm else "ibpd"),
                             coarse_rings=(int(fr.group(1)) if fr else
                                           1 if fm else 0),
                             coarse_modes=((int(fm.group(1)),) * 2 if fm

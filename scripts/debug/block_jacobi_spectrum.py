@@ -88,21 +88,8 @@ def make_preconditioner(seq, ops, k, dbc, arm):
         return lambda v: d * v, None
     pc = re.search(r"bcp(\d+)", arm)
     sc = re.search(r"bcs(\d+)", arm)
-    tg = re.search(r"tg(\d+)", arm)
-    tm = re.search(r"tm(\d+)", arm)
-    db = re.search(r"db(\d+)", arm)
-    nt = re.search(r"nt(\d+)", arm)
-    m = re.search(r"_r(\d+)", arm)
-    o = re.search(r"_o(\d+)", arm)
-    # pin[o|a][d]N -- N rings, component set (trace / other / all), and whether
-    # the evicted rows go to the probe or to the Jacobi diagonal.
-    pin = re.search(r"pin([oa]?)(d?)(\d+)", arm)
     fm = re.search(r"fm(\d+)", arm)
     fr = re.search(r"fr(\d+)", arm)
-    os.environ["MRX_BJ_TANG_BC"] = tg.group(1) if tg else "0"
-    os.environ["MRX_BJ_TANG_MODE"] = tm.group(1) if tm else "0"
-    os.environ["MRX_BJ_DBC_BC"] = db.group(1) if db else "0"
-    os.environ["MRX_BJ_NITSCHE"] = nt.group(1) if nt else "0"
     os.environ["MRX_BJ_BC_SCALE"] = (str(int(pc.group(1)) / 100.0) if pc else
                                      sc.group(1) if sc else "1.0")
     pre = BlockJacobiLaplacian(
@@ -111,24 +98,8 @@ def make_preconditioner(seq, ops, k, dbc, arm):
         lumped="diag",
         extra_rings=int(m.group(1)) if m else 0,
         outer_rings=int(o.group(1)) if o else 0,
-        bc_entry=("wibpd" if "wibpd" in arm else
-                  "wibp" if "wibp" in arm else
-                  "woodbury" if "wood" in arm else
-                  "wdiag" if "wdiag" in arm else
-                  "ibpf" if "ibpf" in arm else
-                  "ibpr" if "ibpr" in arm else
-                  "ibps" if "ibps" in arm else
-                  "ibpd" if "ibpd" in arm else
-                  "ibp" if "ibp" in arm else
-                  "exact" if "exact" in arm else
-                  "face" if "face" in arm else
-                  False if "nobc" in arm else "direct"),
-        radial=("modal" if "modal" in arm else "averaged"),
-        core_mode=("atom2d" if "a2d" in arm else "dense"),
-        pin_trace=int(pin.group(3)) if pin else 0,
-        pin_mode="diag" if pin and pin.group(2) else "probe",
-        pin_set=({"o": "other", "a": "all", "": "trace"}[pin.group(1)]
-                 if pin else "trace"),
+        # Only the derived term and "off" remain; see verify_block_jacobi.py.
+        bc_entry=(False if "nobc" in arm else "ibpd"),
         coarse_rings=(int(fr.group(1)) if fr else 1 if fm else 0),
         coarse_modes=((int(fm.group(1)),) * 2 if fm else (3, 3)),
         coarse_set=("other" if "fso" in arm else

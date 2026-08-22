@@ -75,10 +75,12 @@ def main():
                     rt = np.asarray(_ktilde_1d(seq, a, m, primal_prof[a]))
                     lam_rt = gen_eigs(rt, m)
                     if degree0:
-                        os.environ["MRX_BJ_D0_FORM"] = "coef"
-                        old = np.asarray(_fd_stiffness_degree0(seq, a, prof))
-                        os.environ["MRX_BJ_D0_FORM"] = "value"
+                        # The "coef" form (the pre-fix behaviour, under-scaled
+                        # by h^2) is gone with its knob -- the value form is
+                        # landed and is now the only one. See the memory note
+                        # p1-degree0-coefficient-vs-value for what it cost.
                         alt = np.asarray(_fd_stiffness_degree0(seq, a, prof))
+                        old = alt
                         lam_old = gen_eigs(old, m)
                         nz0 = lam_rt > 1e-12 * max(lam_rt.max(), 1e-300)
                         r0 = lam_old[nz0] / lam_rt[nz0]
