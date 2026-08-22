@@ -48,6 +48,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mrx  # noqa: E402
 import mrx.operators as op  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
+from mrx.experimental.block_jacobi_coarse import (  # noqa: E402
+    CoarseCorrectedBlockJacobi,
+)
 from mrx.experimental.block_jacobi_laplacian import (  # noqa: E402
     BlockJacobiLaplacian)
 from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: E402
@@ -88,25 +91,34 @@ def make_preconditioner(seq, ops, k, dbc, arm):
         return lambda v: d * v, None
     pc = re.search(r"bcp(\d+)", arm)
     sc = re.search(r"bcs(\d+)", arm)
+    m = re.search(r"_r(\d+)", arm)
+    o = re.search(r"_o(\d+)", arm)
     fm = re.search(r"fm(\d+)", arm)
     fr = re.search(r"fr(\d+)", arm)
+    ft = re.search(r"ft(\d+)", arm)
     os.environ["MRX_BJ_BC_SCALE"] = (str(int(pc.group(1)) / 100.0) if pc else
                                      sc.group(1) if sc else "1.0")
-    pre = BlockJacobiLaplacian(
-        seq, ops, k, dbc,
+    kwargs = dict(
         ktilde_mode=("roundtrip" if "rt" in arm else "honest"),
         lumped="diag",
         extra_rings=int(m.group(1)) if m else 0,
         outer_rings=int(o.group(1)) if o else 0,
         # Only the derived term and "off" remain; see verify_block_jacobi.py.
-        bc_entry=(False if "nobc" in arm else "ibpd"),
-        coarse_rings=(int(fr.group(1)) if fr else 1 if fm else 0),
-        coarse_modes=((int(fm.group(1)),) * 2 if fm else (3, 3)),
-        coarse_set=("other" if "fso" in arm else
-                    "trace" if "fst" in arm else "all"),
-        coarse_mode="additive" if "fadd" in arm else "hybrid",
-        coarse_trunc=(int(re.search(r"ft(\d+)", arm).group(1))
-                      if re.search(r"ft(\d+)", arm) else 0))
+        bc_entry=(False if "nobc" in arm else "ibpd"))
+    if fm or fr:
+        # `fm` is EXPERIMENTAL and opt-in -- it lives in block_jacobi_coarse,
+        # not on the production class. See that module for why.
+        pre = CoarseCorrectedBlockJacobi(
+            seq, ops, k, dbc,
+            coarse_rings=(int(fr.group(1)) if fr else 1),
+            coarse_modes=((int(fm.group(1)),) * 2 if fm else (3, 3)),
+            coarse_set=("other" if "fso" in arm else
+                        "trace" if "fst" in arm else "all"),
+            coarse_mode="additive" if "fadd" in arm else "hybrid",
+            coarse_trunc=int(ft.group(1)) if ft else 0,
+            **kwargs)
+    else:
+        pre = BlockJacobiLaplacian(seq, ops, k, dbc, **kwargs)
     return pre.apply, pre
 
 

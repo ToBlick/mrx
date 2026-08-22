@@ -38,6 +38,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mrx  # noqa: E402
 import mrx.operators as op  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
+from mrx.experimental.block_jacobi_coarse import (  # noqa: E402
+    CoarseCorrectedBlockJacobi,
+)
 from mrx.experimental.block_jacobi_laplacian import (  # noqa: E402
     BlockJacobiLaplacian)
 from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: E402
@@ -222,8 +225,7 @@ def main():
                         # selection -- one probe apply per coarse vector.
                         fm = re.search(r"fm(\d+)", arm)
                         fr = re.search(r"fr(\d+)", arm)
-                        pre = BlockJacobiLaplacian(
-                            seq, ops, k, dbc,
+                        kwargs = dict(
                             ktilde_mode=("roundtrip" if "rt" in arm
                                          else "honest"),
                             lumped="diag",
@@ -235,19 +237,29 @@ def main():
                             # the "exact" sqrt(g^rr) form, which is worse than
                             # NO term at k=1/2 free. See handoff §9, §12.3,
                             # §14.3. Only the derived term and "off" remain.
-                            bc_entry=(False if "nobc" in arm else "ibpd"),
-                            coarse_rings=(int(fr.group(1)) if fr else
-                                          1 if fm else 0),
-                            coarse_modes=((int(fm.group(1)),) * 2 if fm
-                                          else (3, 3)),
-                            coarse_set=("other" if "fso" in arm else
-                                        "trace" if "fst" in arm else "all"),
-                            coarse_mode=("additive" if "fadd" in arm
-                                         else "hybrid"),
-                            # ftD: hold V and LV only on a slab D rings deep.
-                            # ft9 must reproduce the untruncated arm exactly.
-                            coarse_trunc=(int(re.search(r"ft(\d+)", arm).group(1))
-                                          if re.search(r"ft(\d+)", arm) else 0))
+                            bc_entry=(False if "nobc" in arm else "ibpd"))
+                        if fm or fr:
+                            # `fm` is EXPERIMENTAL and opt-in: it lives in
+                            # block_jacobi_coarse, NOT on the production
+                            # class. ftD holds V and LV only on a slab D
+                            # rings deep; ft9 must reproduce the untruncated
+                            # arm exactly.
+                            ft = re.search(r"ft(\d+)", arm)
+                            pre = CoarseCorrectedBlockJacobi(
+                                seq, ops, k, dbc,
+                                coarse_rings=(int(fr.group(1)) if fr else 1),
+                                coarse_modes=((int(fm.group(1)),) * 2 if fm
+                                              else (3, 3)),
+                                coarse_set=("other" if "fso" in arm else
+                                            "trace" if "fst" in arm
+                                            else "all"),
+                                coarse_mode=("additive" if "fadd" in arm
+                                             else "hybrid"),
+                                coarse_trunc=int(ft.group(1)) if ft else 0,
+                                **kwargs)
+                        else:
+                            pre = BlockJacobiLaplacian(seq, ops, k, dbc,
+                                                       **kwargs)
                         minv = pre.apply
                     t_build = time.perf_counter() - t0
                     it, rel, ok = pcg(a_apply, b, minv, proj, tol=cli.tol,
