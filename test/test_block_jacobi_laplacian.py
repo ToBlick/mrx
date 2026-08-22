@@ -316,3 +316,116 @@ def test_defaults_are_the_production_configuration(torus_seq):
     assert d < INERT, (
         f"bare defaults differ from the explicit production configuration by "
         f"{d:.2e} (identical-build floor is {floor:.2e})")
+
+
+def test_production_dispatch_wiring(torus_seq):
+    """`kind='block'` reaches the atom, and `kind='auto'` prefers it once it is
+    assembled -- the Phase 1b wiring.
+
+    `'auto'` used to resolve to `'jacobi'` unconditionally while its docstring
+    claimed it preferred `'tensor'` at k=0, so this pins the new behaviour on
+    both sides: jacobi before assembly, block after.
+    """
+    from mrx.operators import (
+        BLOCK_JACOBI_CACHE_ATTR, assemble_block_jacobi_laplacian_preconditioner,
+    )
+
+    k, dbc = 3, False          # non-singular, single component: the cheap case
+    n = int(getattr(torus_seq, f"n{k}"))
+    rng = np.random.default_rng(11)
+    v = jnp.asarray(rng.standard_normal(n))
+    ops = torus_seq.get_operators()
+
+    prev = getattr(torus_seq, BLOCK_JACOBI_CACHE_ATTR, None)
+    try:
+        # Before assembly: 'auto' must fall back, and 'block' must say so
+        # clearly rather than silently doing something else.
+        setattr(torus_seq, BLOCK_JACOBI_CACHE_ATTR, None)
+        auto_before = torus_seq.apply_laplacian_preconditioner(
+            v, k, dirichlet=dbc, kind='auto')
+        jac = torus_seq.apply_laplacian_preconditioner(
+            v, k, dirichlet=dbc, kind='jacobi')
+        # `_rel`, not exact equality: two calls down the SAME path differ by
+        # ~1 ULP (jax re-tracing), which is the third time in this file that
+        # bit-identity turned out to be the wrong assertion. INERT is four
+        # orders below the LIVE separation asserted at the end of this test.
+        assert _rel(np.asarray(auto_before), np.asarray(jac)) < INERT, (
+            "kind='auto' did not fall back to jacobi before assembly")
+        with pytest.raises(ValueError, match="not assembled"):
+            torus_seq.apply_laplacian_preconditioner(
+                v, k, dirichlet=dbc, kind='block')
+
+        # After assembly: 'block' is the atom, and 'auto' now picks it.
+        assemble_block_jacobi_laplacian_preconditioner(
+            torus_seq, ops, ks=(k,), dirichlets=(dbc,))
+        blk = torus_seq.apply_laplacian_preconditioner(
+            v, k, dirichlet=dbc, kind='block')
+        auto_after = torus_seq.apply_laplacian_preconditioner(
+            v, k, dirichlet=dbc, kind='auto')
+        assert _rel(np.asarray(auto_after), np.asarray(blk)) < INERT, (
+            "kind='auto' did not prefer the block atom after assembly")
+        assert _rel(np.asarray(blk), np.asarray(jac)) > LIVE, (
+            "kind='block' returned essentially the jacobi diagonal; the "
+            "dispatch is not reaching the atom")
+    finally:
+        setattr(torus_seq, BLOCK_JACOBI_CACHE_ATTR, prev)
+
+
+def test_block_jacobi_mass_is_wired_but_not_default(torus_seq):
+    """The mass swap must be a ONE-LINE change, and that has to be verified
+    rather than asserted in a docstring.
+
+    Checks the three things a swap needs -- the spec kind is accepted, the
+    dispatch reaches `BlockJacobiMass`, and `schur.inner` takes it -- while
+    pinning the default as raw_kron so that flipping it is deliberate. See
+    `default_mass_preconditioner` for why it has not been flipped: the mass
+    preconditioner is the inner inverse of the weak term, so swapping it
+    changes `L_k` at k>=1 and invalidates the measurements the Laplacian scale
+    was fitted against.
+    """
+    from mrx.operators import _build_operator_preconditioner_apply
+    from mrx.preconditioners import (
+        MassPreconditionerSpec, default_mass_preconditioner,
+    )
+
+    # The default is deliberately NOT block_jacobi yet.
+    assert default_mass_preconditioner().kind == 'raw_kron'
+
+    k, dbc = 3, False       # single component: the cheapest mass to build
+    n = int(getattr(torus_seq, f"n{k}"))
+    ops = torus_seq.get_operators()
+    rng = np.random.default_rng(5)
+    v = jnp.asarray(rng.standard_normal(n))
+
+    applies = {}
+    for kind in ('raw_kron', 'block_jacobi'):
+        applies[kind] = _build_operator_preconditioner_apply(
+            torus_seq, ops, k=k, dirichlet=dbc, operator_apply=None,
+            preconditioner=MassPreconditionerSpec(kind=kind,
+                                                  surgery_schur=False))(v)
+
+    for kind, out in applies.items():
+        assert np.all(np.isfinite(np.asarray(out))), f"{kind} produced non-finite output"
+    # Both approximate the same M^-1, so they must agree in DIRECTION far
+    # better than two unrelated operators would, without being identical --
+    # they differ precisely in how the polar core is handled.
+    a, b = np.asarray(applies['raw_kron']), np.asarray(applies['block_jacobi'])
+    cos = float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
+    assert cos > 0.9, (
+        f"raw_kron and block_jacobi mass preconditioners disagree badly "
+        f"(cos={cos:.3f}); one of them is not approximating M^-1")
+
+    # ... and a nonsensical spec fails loudly rather than quietly doing
+    # something else. Checked at k=1, NOT at the k=3 used above:
+    # `_normalize_mass_preconditioner_spec_for_degree` rewrites specs only at
+    # k=3, where it strips `surgery_schur` and substitutes the smoother, so
+    # these guards are unreachable there. (The same is true of the equivalent
+    # raw_kron guards -- worth knowing before trusting either at k=3.)
+    # Both raise before anything is built, so this costs nothing.
+    for bad in (MassPreconditionerSpec(kind='block_jacobi', surgery_schur=True),
+                MassPreconditionerSpec(kind='block_jacobi',
+                                       smoother=MassPreconditionerSpec(kind='jacobi'))):
+        with pytest.raises(ValueError):
+            _build_operator_preconditioner_apply(
+                torus_seq, ops, k=1, dirichlet=dbc, operator_apply=None,
+                preconditioner=bad)

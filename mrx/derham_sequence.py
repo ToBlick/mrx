@@ -1249,11 +1249,16 @@ class DeRhamSequence():
         Apply a preconditioner for the k-form Laplacian to a vector ``v``.
 
         ``kind`` selects between ``'none'`` (identity), ``'jacobi'`` (per-DoF
-        diagonal) and ``'tensor'`` (tensorized Hodge/Laplacian preconditioner;
-        k = 0 only — the "k=3 round-trip" this docstring once promised never
-        existed in the ops layer).
-        ``'auto'`` (the default) uses ``'tensor'`` when available and falls
-        back to ``'jacobi'`` otherwise.
+        diagonal — the REFERENCE, not the production choice), ``'block'`` (the
+        tensor block-Jacobi atom, k = 0..3, free and Dirichlet — the production
+        preconditioner; call
+        :func:`~mrx.operators.assemble_block_jacobi_laplacian_preconditioner`
+        first) and ``'tensor'`` (k = 0 only, retired).
+
+        ``'auto'`` (the default) uses ``'block'`` when it has been assembled
+        for this ``(k, BC)`` and falls back to ``'jacobi'`` otherwise. It used
+        to resolve to ``'jacobi'`` unconditionally while claiming to prefer
+        ``'tensor'`` at k = 0.
         """
         operators = self._require_operators(operators)
         return apply_laplacian_preconditioner_ops(

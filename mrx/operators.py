@@ -4528,6 +4528,56 @@ def _raw_kron_factors_for(seq, operators, k: int, dirichlet: bool):
     return cache['factors'][key]
 
 
+def _mass_block_jacobi_for(seq, operators, k: int, dirichlet: bool, **kwargs):
+    """Return the block-Jacobi MASS preconditioner for ``(k, dirichlet)``.
+
+    Mirrors :func:`_raw_kron_factors_for` exactly -- lazily built and memoised
+    on the sequence, keyed on GEOMETRY IDENTITY so ``set_map`` /
+    ``set_spline_map`` invalidate it. That is what lets a kind be the *default*
+    without every call site having to assemble it first.
+
+    NOT YET THE DEFAULT. See :func:`~mrx.preconditioners.default_mass_preconditioner`
+    for the one line that switches it on, and the warning there about what else
+    has to be re-measured first.
+    """
+    from mrx.experimental.block_jacobi_laplacian import (  # noqa: PLC0415
+        BlockJacobiMass,
+    )
+    geometry = seq.geometry
+    cache = getattr(seq, '_mass_block_jacobi_cache', None)
+    if cache is None or cache.get('geometry') is not geometry:
+        cache = {'geometry': geometry, 'factors': {}}
+        seq._mass_block_jacobi_cache = cache
+    key = (int(k), bool(dirichlet))
+    if key not in cache['factors']:
+        cache['factors'][key] = BlockJacobiMass(
+            seq, operators, int(k), bool(dirichlet), **kwargs)
+    return cache['factors'][key]
+
+
+def assemble_mass_block_jacobi_preconditioner(
+        seq, operators: Optional[SequenceOperators] = None,
+        *, ks: Sequence[int] = (0, 1, 2, 3),
+        dirichlet_variants: Optional[Sequence[bool]] = None,
+        **kwargs) -> SequenceOperators:
+    """Eagerly build the block-Jacobi mass preconditioner for the given degrees.
+
+    Optional -- :func:`_mass_block_jacobi_for` builds on demand -- but a
+    BlockJacobiMass build probes a dense core, so it is far from free and is
+    usually worth doing up front rather than inside the first solve.
+    """
+    operators = _ensure_extraction_operators(seq, operators)
+    if dirichlet_variants is None:
+        dirichlet_variants = (True, False)
+    for k in ks:
+        if k not in (0, 1, 2, 3):
+            raise ValueError(
+                "block_jacobi mass preconditioner supports k=0..3")
+        for dirichlet in dirichlet_variants:
+            _mass_block_jacobi_for(seq, operators, k, dirichlet, **kwargs)
+    return operators
+
+
 def _resolve_legacy_mass_preconditioner(seq, operators, k: int, preconditioner):
     if isinstance(preconditioner, str) and preconditioner == 'auto':
         # raw_kron is the production default and is always buildable (see
@@ -4565,11 +4615,24 @@ def _build_operator_preconditioner_apply(
         _validate_public_k1_mass_preconditioner_spec(spec)
     if k == 2:
         _validate_public_k2_mass_preconditioner_spec(spec)
-    valid_kinds = ('none', 'jacobi', 'tensor', 'raw_kron')
+    valid_kinds = ('none', 'jacobi', 'tensor', 'raw_kron', 'block_jacobi')
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
             f"{valid_kinds} (got {spec.kind!r})")
+    if spec.kind == 'block_jacobi':
+        # Same shape as raw_kron -- separable bulk plus a sandwich -- so it is
+        # dispatched here too and likewise never splits the space. What differs
+        # is the CORE: probed and inverted densely instead of reached through
+        # the E+ pseudoinverse.
+        if spec.surgery_schur:
+            raise ValueError(
+                "kind='block_jacobi' does not split the space, so "
+                "surgery_schur=True is meaningless; drop it")
+        if spec.smoother is not None:
+            raise ValueError("kind='block_jacobi' does not support a smoother")
+        pre = _mass_block_jacobi_for(seq, operators, k, dirichlet)
+        return lambda x, pre=pre: pre.apply(x)
     if spec.kind == 'raw_kron':
         # raw_kron never splits the space, so it is dispatched ahead of every
         # surgery branch below and does not accept surgery_schur.
@@ -4689,9 +4752,10 @@ def _build_schur_apply_from_saddle_preconditioner(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         eps: float, saddle_preconditioner: SaddlePointPreconditionerSpec):
     schur_inner_spec = saddle_preconditioner.schur.inner
-    if schur_inner_spec.kind not in ('tensor', 'raw_kron'):
+    if schur_inner_spec.kind not in ('tensor', 'raw_kron', 'block_jacobi'):
         raise ValueError(
-            "schur.inner supports kind='raw_kron' (default) or kind='tensor' "
+            "schur.inner supports kind='raw_kron' (default), "
+            "kind='block_jacobi' or kind='tensor' "
             f"(got {schur_inner_spec.kind!r})"
         )
     if schur_inner_spec.surgery_schur or schur_inner_spec.smoother is not None:
@@ -4699,7 +4763,12 @@ def _build_schur_apply_from_saddle_preconditioner(
             "schur.inner must be a terminal preconditioner"
         )
 
-    if schur_inner_spec.kind == 'raw_kron':
+    if schur_inner_spec.kind == 'block_jacobi':
+        # The weak term B_{k-1} standing in for M_{k-1}^{-1}. Builds on demand
+        # like raw_kron, so this cannot fail for want of a prior assemble_*.
+        pre = _mass_block_jacobi_for(seq, operators, k - 1, dirichlet)
+        schur_inner = (lambda x, pre=pre: pre.apply(x))
+    elif schur_inner_spec.kind == 'raw_kron':
         # The weak term B_{k-1} standing in for M_{k-1}^{-1}. raw_kron needs no
         # eager assembly (see _raw_kron_factors_for), so unlike the tensor path
         # this cannot fail for want of a prior assemble_* call.
@@ -4930,6 +4999,48 @@ def _build_coupled_saddle_preconditioner(
     return apply
 
 
+BLOCK_JACOBI_CACHE_ATTR = "_block_jacobi_laplacian"
+
+
+def assemble_block_jacobi_laplacian_preconditioner(
+        seq, operators: SequenceOperators, ks=(0, 1, 2, 3),
+        dirichlets=(False, True), **kwargs):
+    """Build the tensor block-Jacobi Laplacian preconditioner for ``L_k``.
+
+    This is the production Laplacian preconditioner for k = 0..3. It replaces
+    the per-DoF ``'jacobi'`` diagonal, which is what ``k >= 1`` silently fell
+    back to; see ``docs/research/production_simplification_plan.md``.
+
+    Build ONCE per (k, BC) -- the atom is a factorisation, not a per-apply
+    computation, so it is cached on ``seq`` rather than rebuilt in the apply.
+    It is deliberately NOT stored on ``operators``: that is an ``eqx.Module``,
+    and a dict of preconditioner objects is neither a sensible pytree leaf nor
+    a hashable static field, so parking it there would risk ``filter_jit``.
+
+    ``kwargs`` go to :class:`BlockJacobiLaplacian`. The defaults are already the
+    production configuration -- pass nothing.
+
+    Returns ``operators`` unchanged, for symmetry with the other assemble_*
+    helpers.
+    """
+    # Deferred: the experimental module imports back from mrx.operators.
+    from mrx.experimental.block_jacobi_laplacian import (  # noqa: PLC0415
+        BlockJacobiLaplacian,
+    )
+    cache = dict(getattr(seq, BLOCK_JACOBI_CACHE_ATTR, None) or {})
+    for k in ks:
+        for dbc in dirichlets:
+            cache[(int(k), bool(dbc))] = BlockJacobiLaplacian(
+                seq, operators, int(k), bool(dbc), **kwargs)
+    setattr(seq, BLOCK_JACOBI_CACHE_ATTR, cache)
+    return operators
+
+
+def _block_jacobi_available(seq, k: int, dirichlet: bool) -> bool:
+    cache = getattr(seq, BLOCK_JACOBI_CACHE_ATTR, None)
+    return bool(cache) and (int(k), bool(dirichlet)) in cache
+
+
 def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
                                          dirichlet: bool = True,
                                          kind: str = 'auto'):
@@ -4938,21 +5049,37 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
     ``kind`` options:
 
     * ``'none'`` — identity (no preconditioning).
-    * ``'jacobi'`` — per-DoF diagonal of ``L_k``; always available.
-        * ``'tensor'`` — assembled surgery-plus-Schur tensor Hodge model for
-            ``k = 0`` only.
-        * ``'auto'`` — picks ``'tensor'`` when available for ``k = 0`` and falls
-            back to ``'jacobi'`` otherwise.
+    * ``'jacobi'`` — per-DoF diagonal of ``L_k``; always available, and the
+      REFERENCE rather than the production choice: it degrades 7.6-12.2x over
+      p = 2..5 where the block atom grows only 2.3-2.8x.
+    * ``'block'`` — the tensor block-Jacobi atom, k = 0..3, free and Dirichlet.
+      Requires :func:`assemble_block_jacobi_laplacian_preconditioner` first.
+    * ``'tensor'`` — assembled surgery-plus-Schur tensor Hodge model for
+      ``k = 0`` only. Retired; see ``mrx/experimental/``.
+    * ``'auto'`` — ``'block'`` when it has been assembled for this ``(k, BC)``,
+      otherwise ``'jacobi'``.
+
+    (``'auto'`` previously resolved to ``'jacobi'`` unconditionally while this
+    docstring claimed it preferred ``'tensor'`` at k = 0. It did not.)
     """
-    if kind not in ('auto', 'none', 'jacobi', 'tensor'):
+    if kind not in ('auto', 'none', 'jacobi', 'block', 'tensor'):
         raise ValueError(
-            f"kind must be 'auto', 'none', 'jacobi' or 'tensor' (got {kind!r})")
+            "kind must be 'auto', 'none', 'jacobi', 'block' or 'tensor' "
+            f"(got {kind!r})")
     if kind == 'auto':
-        kind = 'jacobi'          # see _materialize_default_scalar_hodge_preconditioner
+        kind = 'block' if _block_jacobi_available(seq, k, dirichlet) else 'jacobi'
     if kind == 'none':
         return v
     if kind == 'jacobi':
         return _hodge_diaginv(seq, operators, k, dirichlet) * v
+    if kind == 'block':
+        if not _block_jacobi_available(seq, k, dirichlet):
+            raise ValueError(
+                f"block-Jacobi Laplacian preconditioner not assembled for "
+                f"k={k}, dirichlet={dirichlet}; call "
+                "assemble_block_jacobi_laplacian_preconditioner first")
+        cache = getattr(seq, BLOCK_JACOBI_CACHE_ATTR)
+        return cache[(int(k), bool(dirichlet))].apply(v)
     if kind == 'tensor':
         if k == 0:
             if not _k0_tensor_hodge_available(operators):

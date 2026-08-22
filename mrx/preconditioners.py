@@ -134,10 +134,15 @@ def tensor_mass_rank_for_degree(tensor: TensorMassPreconditioner, k: int) -> int
 
 @dataclass(frozen=True)
 class MassPreconditionerSpec:
-    # kinds: none | jacobi | tensor | raw_kron
+    # kinds: none | jacobi | tensor | raw_kron | block_jacobi
     #   raw_kron = Kronecker model on the raw grid with pseudoinverse
     #     extraction transfer; the production default since
     #     2026-08-17 (docs/research/mass_preconditioner_pivot.md)
+    #   block_jacobi = the same separable-bulk shape, but the polar core is
+    #     probed and inverted DENSELY instead of reached through the E+
+    #     pseudoinverse. Fully wired (assemble, dispatch, schur.inner) and
+    #     buildable on demand, but NOT the default -- see
+    #     default_mass_preconditioner() for the switch and what it costs.
     #   tensor   = surgery/Schur split, retained as a fallback; its machinery
     #     lives in mrx/experimental/mass_surgery.py
     #   (richardson/chebyshev removed 2026-08-14, see mrx/experimental/chebyshev.py)
@@ -171,6 +176,29 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
     surgery split, no dense Schur complement and no CP fit, and its
     ``(CC^T)^-1`` is metric independent -- it depends only on the sparsity of
     ``E``, so it never rebuilds when the geometry changes.
+
+    **THIS IS THE SWAP POINT.** Every mass-preconditioner decision routes
+    through this function (``mrx/operators.py`` x3 and ``mrx/nullspace.py``),
+    so moving to the block-Jacobi mass is exactly::
+
+        return MassPreconditionerSpec(kind='block_jacobi', surgery_schur=False)
+
+    Everything else is already in place: ``kind='block_jacobi'`` is accepted by
+    the spec validator, dispatched in
+    ``_build_operator_preconditioner_apply``, available as ``schur.inner``, and
+    built on demand by ``_mass_block_jacobi_for`` (memoised on the sequence and
+    invalidated by ``set_map``), with
+    ``assemble_mass_block_jacobi_preconditioner`` for an eager build.
+
+    **Do not flip it without re-measuring.** The mass preconditioner is not
+    only a preconditioner: ``apply_hodge_laplacian_approx`` uses it as the
+    inner inverse of the weak term, so swapping it changes the OPERATOR
+    ``L_k`` at k >= 1, not just the solve. Every number in
+    ``docs/research/natural_bc_coefficient_handoff.md`` -- 82 cells across four
+    geometries, and the ``PRODUCTION_BC_SCALE = 0.10`` fitted against them --
+    was measured with raw_kron in that slot. Flipping this needs a mass A/B
+    across the four geometries AND a re-check that the Laplacian scale still
+    holds under the new ``L``.
     """
     return MassPreconditionerSpec(kind='raw_kron', surgery_schur=False)
 
