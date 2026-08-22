@@ -22,9 +22,11 @@ or would have caught -- a real bug:
 the configuration where the term IS live, asserted to differ by a large factor.
 Without it these would pass just as happily against a preconditioner that had
 lost the boundary term entirely. The inertness tolerance is 1e-8 relative and
-the control asserts >1e-2, so the two are separated by six orders of magnitude;
-the residual ~1e-11 is the two code paths reaching the eigendecomposition as
-numpy vs jax arrays, not the term leaking.
+the control asserts >1e-2, so the two are separated by six orders of magnitude.
+The residual is BUILD NOISE, not the term leaking: two builds of the IDENTICAL
+configuration differ by the same ~1e-14 on the same ~1.7% of rows (the dense
+polar core), which `test_defaults_are_the_production_configuration` measures
+explicitly rather than assuming.
 
 Everything reuses the session `torus_seq` fixture and a module-scoped build
 cache, so no test here assembles a sequence, computes a nullspace, or builds
@@ -49,9 +51,10 @@ KS = (1, 3)
 PROD_SCALE = 0.10
 # Thresholds are set from the MEASURED separation, not chosen round numbers.
 # On the session fixture the two populations are eight orders apart:
-#   inert (Dirichlet, bc_scale 0 vs 100)   ~1e-11  -- the two code paths reach
-#       the eigendecomposition as numpy vs jax arrays; that is the whole
-#       difference, and it is floating point, not the term leaking.
+#   inert (Dirichlet, bc_scale 0 vs 100)   ~1e-11  -- pure build noise: the
+#       dense polar-core block is not reproducible to the last bit between
+#       builds, and it is ~1.7% of the rows. Measured, not assumed, in
+#       test_defaults_are_the_production_configuration.
 #   live  (free, bc_scale 0 vs 0.10 or 100) 2.5e-3 to 3.2e-3 at k=1, the
 #       WEAKEST case (the term touches one radial row of one component in
 #       three, and P's response saturates -- cf. min eig(P) = 1/(1+r s), so
@@ -255,3 +258,61 @@ def test_boundary_term_earns_its_place_at_k3_free(torus_seq, bj):
         f"k=3 free: {on} iterations with the boundary term vs {off} without. "
         "The term should be worth well over 25% here (2.6-3.3x measured across "
         "geometries), so this close means it is mis-scaled or not applied.")
+
+
+def test_defaults_are_the_production_configuration(torus_seq):
+    """Calling with NO keyword arguments must BE the production configuration.
+
+    That is the whole point of Phase 1 of the production plan: one method, no
+    required parameters. If a default drifts, every caller that relies on it
+    silently changes -- which is exactly how `ktilde_mode="roundtrip"` survived
+    as the default while being 3-10x worse than `"honest"` on all 28 A/B rows
+    (docs/research/production_simplification_plan.md §1).
+    """
+    import inspect
+
+    import mrx.experimental.block_jacobi_laplacian as bjl
+
+    assert bjl.PRODUCTION_BC_SCALE == PROD_SCALE
+
+    # Cheap and directly on the thing that was wrong: the defaults themselves.
+    for fn in (bjl.BlockJacobiLaplacian.__init__, bjl.component_factors,
+               bjl.build_bulk_atom):
+        params = inspect.signature(fn).parameters
+        assert params["ktilde_mode"].default == "honest", (
+            f"{fn.__qualname__}: ktilde_mode default is "
+            f"{params['ktilde_mode'].default!r}; 'roundtrip' loses every A/B row")
+        assert params["lumped"].default == "diag", fn.__qualname__
+        assert params["bc_entry"].default == "ibpd", fn.__qualname__
+
+    # And behaviourally: bare defaults == the explicit production config.
+    prev = os.environ.pop("MRX_BJ_BC_SCALE", None)
+    try:
+        n = int(getattr(torus_seq, "n1"))
+        rng = np.random.default_rng(3)
+        vecs = [jnp.asarray(rng.standard_normal(n)) for _ in range(2)]
+        ops = torus_seq.get_operators()
+        bare = BlockJacobiLaplacian(torus_seq, ops, 1, False)
+        spelled = BlockJacobiLaplacian(
+            torus_seq, ops, 1, False, ktilde_mode="honest", lumped="diag",
+            bc_entry="ibpd", bc_scale=bjl.PRODUCTION_BC_SCALE,
+            extra_rings=0, outer_rings=0)
+    finally:
+        if prev is not None:
+            os.environ["MRX_BJ_BC_SCALE"] = prev
+        # CONTROL: two builds of the IDENTICAL configuration. Establishes the
+        # reproducibility floor, so the comparison below is read against a
+        # measured number rather than a guessed tolerance. The dense polar-core
+        # block is not bit-reproducible between builds (~1.7% of rows move by
+        # ~1e-14), which is also the residual every inertness test above sees.
+        twin = BlockJacobiLaplacian(torus_seq, ops, 1, False)
+
+    probe = lambda pre: np.stack([np.asarray(pre.apply(v)) for v in vecs])
+    floor = _rel(probe(twin), probe(bare))
+    assert floor < INERT, (
+        f"two identical builds differ by {floor:.2e}, above the {INERT:.0e} "
+        "tolerance every inertness test in this file relies on")
+    d = _rel(probe(spelled), probe(bare))
+    assert d < INERT, (
+        f"bare defaults differ from the explicit production configuration by "
+        f"{d:.2e} (identical-build floor is {floor:.2e})")

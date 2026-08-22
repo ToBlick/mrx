@@ -420,8 +420,34 @@ def _edge_vector(seq, axis, window):
     return e
 
 
+#: The production natural-BC penalty scale. `alpha` as derived is the exact
+#: surface integral and is the best NORM approximation to `L`'s boundary block,
+#: but `P` minimises kappa(P^-1 L), which wants a much smaller number. 0.10 is
+#: the minimax over 82 measured cells (4 geometries x k=0..3 x n=8..32 x
+#: p=2..5): worst case 1.11x each cell's own optimum on the shaped geometries.
+#: EMPIRICAL, not derived -- see docs/research/natural_bc_coefficient_handoff.md
+#: §16 (what to ship) and §17.5 (why a scale is needed at all). The optimum
+#: drifts DOWN with n and p; at p >= 5 or very high resolution prefer 0.05.
+PRODUCTION_BC_SCALE = 0.10
+
+
+def _resolve_bc_scale(bc_scale=None):
+    """Resolve the natural-BC penalty scale.
+
+    ``MRX_BJ_BC_SCALE`` OVERRIDES the argument when set. That ordering is
+    deliberate: the sweep harnesses (``verify_block_jacobi.py``,
+    ``block_jacobi_spectrum.py``) always set the variable -- to "1.0" when the
+    arm names no scale -- so every recorded arm keeps meaning exactly what it
+    meant before this default existed.
+    """
+    env = os.environ.get("MRX_BJ_BC_SCALE")
+    if env is not None:
+        return float(env)
+    return PRODUCTION_BC_SCALE if bc_scale is None else float(bc_scale)
+
+
 def _boundary_entry_direct(seq, axis, weight_field, window, dirichlet,
-                           scalar=None):
+                           scalar=None, bc_scale=None):
     """The natural-BC boundary term, straight from the surface integral.
 
     Under a natural (free) condition the weak block's integration by parts
@@ -454,7 +480,7 @@ def _boundary_entry_direct(seq, axis, weight_field, window, dirichlet,
     # mesh-dependent penalty rather than by removing a DOF. alpha as assembled
     # is the exact surface integral; this knob asks whether the atom wants the
     # exact penalty or the hard u_r = 0 limit it approximates.
-    alpha *= float(os.environ.get("MRX_BJ_BC_SCALE", "1.0"))
+    alpha *= _resolve_bc_scale(bc_scale)
 
     e = _edge_vector(seq, axis, window)
     return alpha * np.outer(e, e)
@@ -495,8 +521,9 @@ def _boundary_entry(seq, k, c, axis, ktilde, m_d, prof_primal, window,
     return f - np.asarray(ktilde)
 
 
-def component_factors(seq, k, c, window=None, ktilde_mode="roundtrip",
-                      lumped=False, bc_entry="exact", dirichlet=False):
+def component_factors(seq, k, c, window=None, ktilde_mode="honest",
+                      lumped="diag", bc_entry="ibpd", dirichlet=False,
+                      bc_scale=None):
     """``(masses, stiffnesses)`` per axis for component ``c`` of ``L_k``.
 
     The component's basis is a derivative spline on the axes it is
@@ -657,7 +684,7 @@ def component_factors(seq, k, c, window=None, ktilde_mode="roundtrip",
                         ev = _edge_vector(seq, a, window)
                         ee = float(ev @ ev)
                         add = (float(ev @ full @ ev) / ee ** 2) * np.outer(ev, ev)
-                    add = add * float(os.environ.get("MRX_BJ_BC_SCALE", "1.0"))
+                    add = add * _resolve_bc_scale(bc_scale)
                     kt = jnp.asarray(np.asarray(kt) + add)
             elif bc_entry in ("direct", "face", "exact",
                               "ibp", "ibpd", "ibps") and a == 0:
@@ -707,7 +734,8 @@ def component_factors(seq, k, c, window=None, ktilde_mode="roundtrip",
                         dbc_pct * scalar * _mesh_amplification(seq)
                         * np.outer(e_d, e_d))
                 corr = _boundary_entry_direct(
-                    seq, a, w_face, window, dirichlet, scalar=scalar)
+                    seq, a, w_face, window, dirichlet, scalar=scalar,
+                    bc_scale=bc_scale)
                 if corr is not None:
                     if bc_entry == "exact":
                         corr = corr * _weak_inverse_amplification(seq, k, c)
@@ -807,14 +835,16 @@ def component_diagonal(seq, k, c, shape):
     return np.asarray(num / den).reshape(shape)
 
 
-def build_bulk_atom(seq, k, c, window=None, ktilde_mode="roundtrip",
-                    lumped=False, bc_entry="exact", dirichlet=False):
+def build_bulk_atom(seq, k, c, window=None, ktilde_mode="honest",
+                    lumped="diag", bc_entry="ibpd", dirichlet=False,
+                    bc_scale=None):
     """Fast-diagonalisation factors for component ``c`` of ``L_k``.
 
     Returns ``(V_r, V_t, V_z, lam_r, lam_t, lam_z)`` ready for
     :func:`mrx.operators._fd_apply_3d` with ``alpha = (1, 1, 1)``.
     """
     masses, stiffs, alpha = component_factors(seq, k, c, window=window,
+                                             bc_scale=bc_scale,
                                               ktilde_mode=ktilde_mode,
                                               lumped=lumped, bc_entry=bc_entry,
                                               dirichlet=dirichlet)
@@ -1146,14 +1176,16 @@ class BlockJacobiLaplacian:
     """
 
     def __init__(self, seq, operators, k, dirichlet, *, core_tol=1e-12,
-                 ktilde_mode="roundtrip", lumped=False, extra_rings=0,
-                 outer_rings=0, radial="averaged", bc_entry="exact",
+                 ktilde_mode="honest", lumped="diag", extra_rings=0,
+                 outer_rings=0, radial="averaged", bc_entry="ibpd",
+                 bc_scale=None,
                  core_mode="dense", pin_trace=0, pin_mode="probe",
                  pin_set="trace", coarse_rings=0, coarse_modes=(3, 3),
                  coarse_set="all", coarse_mode="hybrid",
                  coarse_trunc=0):
         self.k, self.dirichlet = k, dirichlet
         self.ktilde_mode, self.lumped = ktilde_mode, lumped
+        self.bc_scale = bc_scale
         self.shapes = [tuple(int(s) for s in sh)
                        for sh in getattr(seq, f"basis_{k}").shape]
         starts = np.cumsum([0] + [int(np.prod(s)) for s in self.shapes])
@@ -1222,7 +1254,7 @@ class BlockJacobiLaplacian:
             else:
                 atom = build_bulk_atom(
                     seq, k, c, window=(r0, nr), ktilde_mode=ktilde_mode,
-                    lumped=lumped, dirichlet=dirichlet,
+                    lumped=lumped, dirichlet=dirichlet, bc_scale=bc_scale,
                     # A pinned component has no boundary DOF left in its atom;
                     # the natural-BC term would land on the wrong row (the last
                     # WINDOW index, not the face), so it must come off.
