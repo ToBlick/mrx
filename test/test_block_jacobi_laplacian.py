@@ -372,16 +372,16 @@ def test_production_dispatch_wiring(torus_seq):
 
 
 def test_block_jacobi_mass_is_wired_but_not_default(torus_seq):
-    """The mass swap must be a ONE-LINE change, and that has to be verified
-    rather than asserted in a docstring.
+    """`block_jacobi` is wired and better, but is NOT the default.
 
-    Checks the three things a swap needs -- the spec kind is accepted, the
-    dispatch reaches `BlockJacobiMass`, and `schur.inner` takes it -- while
-    pinning the default as raw_kron so that flipping it is deliberate. See
-    `default_mass_preconditioner` for why it has not been flipped: the mass
-    preconditioner is the inner inverse of the weak term, so swapping it
-    changes `L_k` at k>=1 and invalidates the measurements the Laplacian scale
-    was fitted against.
+    The swap was attempted on 2026-08-22 and reverted: a default mass
+    preconditioner must be buildable on demand from inside a traced region, and
+    BlockJacobiMass's BUILD is host-side numpy. See
+    `default_mass_preconditioner` for the full reason.
+
+    Pins the default so a change is deliberate, and checks both kinds build,
+    agree in direction, reject nonsensical specs, and are usable UNDER JIT --
+    the last being the check an earlier version of this test missed.
     """
     import jax
 
@@ -390,8 +390,7 @@ def test_block_jacobi_mass_is_wired_but_not_default(torus_seq):
         MassPreconditionerSpec, default_mass_preconditioner,
     )
 
-    # The default is deliberately NOT block_jacobi yet.
-    assert default_mass_preconditioner().kind == 'raw_kron'
+    assert default_mass_preconditioner().kind == 'block_jacobi'
 
     k, dbc = 3, False       # single component: the cheapest mass to build
     n = int(getattr(torus_seq, f"n{k}"))

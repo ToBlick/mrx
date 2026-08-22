@@ -170,41 +170,64 @@ class SaddlePointPreconditionerSpec:
 
 
 def default_mass_preconditioner() -> MassPreconditionerSpec:
-    """The production mass preconditioner: the raw_kron preconditioner.
+    """The production mass preconditioner: block_jacobi.
 
-    Changed 2026-08-17 from ``kind='tensor', surgery_schur=True``. raw_kron needs no
-    surgery split, no dense Schur complement and no CP fit, and its
-    ``(CC^T)^-1`` is metric independent -- it depends only on the sparsity of
-    ``E``, so it never rebuilds when the geometry changes.
+    Changed 2026-08-22 from ``kind='raw_kron'`` (which had replaced
+    ``kind='tensor', surgery_schur=True`` on 2026-08-17). Same separable-bulk
+    shape as raw_kron, but the polar core rows are PROBED AND INVERTED DENSELY
+    instead of reached through the ``E+`` pseudoinverse, whose "both sides must
+    carry the full ``(CC^T)^-1``" requirement raw_kron's own docstring calls
+    the single easiest thing to get wrong.
+
+    MEASURED (docs/research/production_simplification_plan.md
+    §10), 224 cells over four geometries, n = 8..20, p = 2..5:
+
+    * the mass solve itself: median **0.83x** raw_kron's iterations, and
+      **0.70-0.77x** at k=1,2 where the cost is. The advantage HOLDS OR GROWS
+      with h and is flat in p. Build time is equal (2.0 vs 2.2 s median), which
+      matters because needing no eager assemble is why raw_kron was the
+      default.
+    * the effect on ``L_k`` -- the mass preconditioner is the weak term's inner
+      inverse, so this changes the OPERATOR at k >= 1, not just the solve:
+      **median 0.91x, better in 12 of 16 cells**, up to 0.79x on the Dirichlet
+      rows. Only regression is cylinder k=1 (1.07x).
+    * ``PRODUCTION_BC_SCALE = 0.10`` SURVIVES: worst-case penalty against each
+      cell's own optimum moves 1.14 -> 1.22, and only on the toroid, where the
+      basin is flat. The shaped geometries are unchanged (1.01-1.04).
+
+    Only regression anywhere is ~5% at k=0, on mass solves that take 7-17
+    iterations either way.
 
     **THIS IS THE SWAP POINT.** Every mass-preconditioner decision routes
     through this function (``mrx/operators.py`` x3 and ``mrx/nullspace.py``),
     so moving to the block-Jacobi mass is exactly::
 
-        return MassPreconditionerSpec(kind='block_jacobi', surgery_schur=False)
+        return MassPreconditionerSpec(kind='raw_kron', surgery_schur=False)
 
-    Everything else is already in place: ``kind='block_jacobi'`` is accepted by
+    to go back. Everything is in place for either: ``kind='block_jacobi'`` is accepted by
     the spec validator, dispatched in
     ``_build_operator_preconditioner_apply``, available as ``schur.inner``, and
     built on demand by ``_mass_block_jacobi_for`` (memoised on the sequence and
     invalidated by ``set_map``), with
     ``assemble_mass_block_jacobi_preconditioner`` for an eager build.
 
-    **Do not flip it without re-measuring.** The mass preconditioner is not
-    only a preconditioner: ``apply_hodge_laplacian_approx`` uses it as the
-    inner inverse of the weak term, so swapping it changes the OPERATOR
-    ``L_k`` at k >= 1, not just the solve. Every number in
-    ``docs/research/natural_bc_coefficient_handoff.md`` -- 82 cells across four
-    geometries, and the ``PRODUCTION_BC_SCALE = 0.10`` fitted against them --
-    was measured with raw_kron in that slot. Flipping this needs a mass A/B
-    across the four geometries AND a re-check that the Laplacian scale still
-    holds under the new ``L``.
+    THE BUILD IS NOT JIT-SAFE, AND DOES NOT NEED TO BE. It is host-side numpy
+    (1-D inverses, a dense core probe). What that costs is that a COLD cache
+    inside a traced loop dies -- and once the main kind and ``schur.inner``
+    differ, schur.inner's raw_kron factors are cold exactly there. The apply
+    was made jit-safe in 3bd62aa; the build is instead warmed OUTSIDE the loop
+    by ``operators.warm_mass_preconditioner_cache``. Any new traced entry point
+    that solves must warm first.
+
+    CAVEAT ON THE EVIDENCE: the mass A/B covers h = 8..20 and p = 2..5, but the
+    effect on ``L_k`` was measured at n=12, p=3 only. The overnight sweep in
+    ``outputs/diag_newstack/`` extends that to n = 8..32 and p = 2..5.
     """
     # DIAGNOSTIC override, so the swap can be MEASURED without editing code:
     # MRX_MASS_KIND=block_jacobi flips every mass decision at once, which is
     # what makes an honest A/B possible -- including its effect on L_k, since
     # the mass preconditioner is the weak term's inner inverse.
-    kind = os.environ.get("MRX_MASS_KIND", "raw_kron")
+    kind = os.environ.get("MRX_MASS_KIND", "block_jacobi")
     if kind not in ('raw_kron', 'block_jacobi'):
         raise ValueError(
             f"MRX_MASS_KIND must be 'raw_kron' or 'block_jacobi' (got {kind!r})")

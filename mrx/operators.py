@@ -5076,6 +5076,43 @@ def _probed_laplacian_diaginv(seq, operators: SequenceOperators, k: int,
     return cache['diag'][key]
 
 
+def warm_mass_preconditioner_cache(seq, operators: SequenceOperators,
+                                   ks=(0, 1, 2, 3), dirichlets=(False, True)):
+    """Build every lazily-cached mass preconditioner OUTSIDE any trace.
+
+    The mass factors are built on first use and memoised on the sequence. That
+    is fine as long as the first use is not inside a ``jax.lax.while_loop`` --
+    the BUILD is host-side numpy (mass diagonals, 1-D inverses, and for
+    block_jacobi a dense core probe), so a cold cache inside a traced body dies
+    with TracerArrayConversionError.
+
+    It used to be warm by luck: the main mass preconditioner and ``schur.inner``
+    were both raw_kron, so the main path populated the cache before any solve
+    entered its loop. The moment the two kinds differ, ``schur.inner``'s
+    factors are cold when the trace reaches them.
+
+    So warm BOTH the configured kind and ``schur.inner``'s, before the loop.
+    Cheap and idempotent -- every builder below memoises.
+    """
+    from mrx.preconditioners import (  # noqa: PLC0415
+        default_mass_preconditioner, default_saddle_preconditioner,
+    )
+    kinds = {default_mass_preconditioner().kind,
+             default_saddle_preconditioner().schur.inner.kind}
+    for k in [int(v) for v in ks if 0 <= int(v) <= 3]:
+        for dirichlet in dirichlets:
+            for kind in kinds:
+                try:
+                    if kind == 'raw_kron':
+                        _raw_kron_factors_for(seq, operators, k, dirichlet)
+                    elif kind == 'block_jacobi':
+                        _mass_block_jacobi_for(seq, operators, k, dirichlet)
+                except Exception:            # noqa: BLE001
+                    # A degree/BC this kind does not support is not an error
+                    # here -- the real call site will raise with context.
+                    pass
+
+
 def _block_jacobi_available(seq, k: int, dirichlet: bool) -> bool:
     cache = getattr(seq, BLOCK_JACOBI_CACHE_ATTR, None)
     return bool(cache) and (int(k), bool(dirichlet)) in cache
