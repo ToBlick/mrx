@@ -1249,7 +1249,9 @@ class DeRhamSequence():
         Apply a preconditioner for the k-form Laplacian to a vector ``v``.
 
         ``kind`` selects between ``'none'`` (identity), ``'jacobi'`` (per-DoF
-        diagonal — the REFERENCE, not the production choice), ``'block'`` (the
+        diagonal; for k >= 1 its weak half is a Kronecker mass MODEL),
+        ``'probed_jacobi'`` (the same diagonal taken exactly, one apply per DOF
+        — the honest REFERENCE baseline), ``'block'`` (the
         tensor block-Jacobi atom, k = 0..3, free and Dirichlet — the production
         preconditioner; call
         :func:`~mrx.operators.assemble_block_jacobi_laplacian_preconditioner`

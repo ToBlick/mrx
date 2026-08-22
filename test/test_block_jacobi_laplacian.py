@@ -429,3 +429,43 @@ def test_block_jacobi_mass_is_wired_but_not_default(torus_seq):
             _build_operator_preconditioner_apply(
                 torus_seq, ops, k=1, dirichlet=dbc, operator_apply=None,
                 preconditioner=bad)
+
+
+def test_probed_jacobi_is_the_honest_reference(torus_seq):
+    """`kind='probed_jacobi'` is the exact diagonal of `L_k` as applied.
+
+    `kind='jacobi'` is NOT that for k >= 1: its weak half is a closed form
+    under the Kronecker mass model, i.e. a model of `D M^-1 D^T` rather than
+    the operator's own. Any gap between the two is the mass model's error, and
+    a preconditioner measured against `jacobi` inherits it. This pins the
+    distinction so the reference cannot silently drift back to the model.
+    """
+    from mrx.operators import PROBED_DIAG_CACHE_ATTR, _hodge_diaginv
+
+    ops = torus_seq.get_operators()
+    prev = getattr(torus_seq, PROBED_DIAG_CACHE_ATTR, None)
+    try:
+        for k, dbc in ((3, False), (0, False)):
+            n = int(getattr(torus_seq, f"n{k}"))
+            rng = np.random.default_rng(17)
+            v = jnp.asarray(rng.standard_normal(n))
+            probed = torus_seq.apply_laplacian_preconditioner(
+                v, k, dirichlet=dbc, kind='probed_jacobi')
+            modelled = np.asarray(_hodge_diaginv(torus_seq, ops, k, dbc)) * np.asarray(v)
+            assert np.all(np.isfinite(np.asarray(probed)))
+            d = _rel(np.asarray(probed), modelled)
+            if k == 0:
+                # L_0 = S_0 has NO weak term, so there is no mass model to be
+                # wrong: the closed form is exact and the two must agree.
+                assert d < 1e-8, (
+                    f"k=0: probed and closed-form diagonals differ by {d:.2e}, "
+                    "but L_0 has no weak term for the model to approximate")
+            else:
+                # k >= 1: they may differ (that IS the mass model's error), but
+                # both must be genuine diagonals of the same operator, so they
+                # cannot disagree wildly.
+                assert d < 1.0, (
+                    f"k={k}: probed vs modelled diagonal differ by {d:.2e}; "
+                    "one of them is not diag(L_k)")
+    finally:
+        setattr(torus_seq, PROBED_DIAG_CACHE_ATTR, prev)

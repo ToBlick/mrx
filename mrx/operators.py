@@ -5036,6 +5036,46 @@ def assemble_block_jacobi_laplacian_preconditioner(
     return operators
 
 
+PROBED_DIAG_CACHE_ATTR = "_probed_laplacian_diag"
+
+
+def _probed_laplacian_diaginv(seq, operators: SequenceOperators, k: int,
+                              dirichlet: bool):
+    """``1 / diag(L_k)`` taken EXACTLY, by one apply per DOF. The REFERENCE.
+
+    ``kind='jacobi'`` is not this. For k >= 1 it uses
+    :func:`~mrx.preconditioners.build_extracted_laplacian_diagonal`, whose weak
+    half is a closed form under the KRONECKER MASS MODEL -- a model of
+    ``D M^-1 D^T``, not the thing the operator actually applies. This probes
+    ``apply_hodge_laplacian_approx`` itself, which uses the production mass
+    preconditioner as the inner inverse, so it is the exact diagonal of the
+    operator as it is really applied.
+
+    That makes it the honest baseline to measure a preconditioner against, and
+    the reason to prefer it over ``'jacobi'``: any gap between the two is the
+    mass model's error, which has nothing to do with the preconditioner under
+    test.
+
+    O(N) applies, so it is cached on the sequence and keyed on geometry
+    identity (``set_map`` invalidates it). Far too expensive to rebuild per
+    apply, and expensive enough that it is a REFERENCE, not a production
+    candidate.
+    """
+    geometry = seq.geometry
+    cache = getattr(seq, PROBED_DIAG_CACHE_ATTR, None)
+    if cache is None or cache.get('geometry') is not geometry:
+        cache = {'geometry': geometry, 'diag': {}}
+        setattr(seq, PROBED_DIAG_CACHE_ATTR, cache)
+    key = (int(k), bool(dirichlet))
+    if key not in cache['diag']:
+        size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
+        cache['diag'][key] = _invert_diagonal(_diagonal_from_matvec(
+            lambda x: apply_hodge_laplacian_approx(
+                seq, operators, x, k, dirichlet=dirichlet),
+            size))
+    return cache['diag'][key]
+
+
 def _block_jacobi_available(seq, k: int, dirichlet: bool) -> bool:
     cache = getattr(seq, BLOCK_JACOBI_CACHE_ATTR, None)
     return bool(cache) and (int(k), bool(dirichlet)) in cache
@@ -5049,9 +5089,12 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
     ``kind`` options:
 
     * ``'none'`` — identity (no preconditioning).
-    * ``'jacobi'`` — per-DoF diagonal of ``L_k``; always available, and the
-      REFERENCE rather than the production choice: it degrades 7.6-12.2x over
-      p = 2..5 where the block atom grows only 2.3-2.8x.
+    * ``'jacobi'`` — per-DoF diagonal of ``L_k``, always available, but for
+      k >= 1 the weak half is a MODEL (the Kronecker mass model), not the
+      operator's own ``D M^-1 D^T``.
+    * ``'probed_jacobi'`` — the same idea taken exactly, by one apply per DOF.
+      The honest REFERENCE baseline: no mass model, so a comparison against it
+      measures the preconditioner and nothing else. O(N) applies to build.
     * ``'block'`` — the tensor block-Jacobi atom, k = 0..3, free and Dirichlet.
       Requires :func:`assemble_block_jacobi_laplacian_preconditioner` first.
     * ``'tensor'`` — assembled surgery-plus-Schur tensor Hodge model for
@@ -5062,16 +5105,19 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
     (``'auto'`` previously resolved to ``'jacobi'`` unconditionally while this
     docstring claimed it preferred ``'tensor'`` at k = 0. It did not.)
     """
-    if kind not in ('auto', 'none', 'jacobi', 'block', 'tensor'):
+    if kind not in ('auto', 'none', 'jacobi', 'probed_jacobi', 'block',
+                    'tensor'):
         raise ValueError(
-            "kind must be 'auto', 'none', 'jacobi', 'block' or 'tensor' "
-            f"(got {kind!r})")
+            "kind must be 'auto', 'none', 'jacobi', 'probed_jacobi', 'block' "
+            f"or 'tensor' (got {kind!r})")
     if kind == 'auto':
         kind = 'block' if _block_jacobi_available(seq, k, dirichlet) else 'jacobi'
     if kind == 'none':
         return v
     if kind == 'jacobi':
         return _hodge_diaginv(seq, operators, k, dirichlet) * v
+    if kind == 'probed_jacobi':
+        return _probed_laplacian_diaginv(seq, operators, k, dirichlet) * v
     if kind == 'block':
         if not _block_jacobi_available(seq, k, dirichlet):
             raise ValueError(
