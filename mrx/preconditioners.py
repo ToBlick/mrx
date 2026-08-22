@@ -200,7 +200,15 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
     across the four geometries AND a re-check that the Laplacian scale still
     holds under the new ``L``.
     """
-    return MassPreconditionerSpec(kind='raw_kron', surgery_schur=False)
+    # DIAGNOSTIC override, so the swap can be MEASURED without editing code:
+    # MRX_MASS_KIND=block_jacobi flips every mass decision at once, which is
+    # what makes an honest A/B possible -- including its effect on L_k, since
+    # the mass preconditioner is the weak term's inner inverse.
+    kind = os.environ.get("MRX_MASS_KIND", "raw_kron")
+    if kind not in ('raw_kron', 'block_jacobi'):
+        raise ValueError(
+            f"MRX_MASS_KIND must be 'raw_kron' or 'block_jacobi' (got {kind!r})")
+    return MassPreconditionerSpec(kind=kind, surgery_schur=False)
 
 
 def default_saddle_preconditioner() -> SaddlePointPreconditionerSpec:

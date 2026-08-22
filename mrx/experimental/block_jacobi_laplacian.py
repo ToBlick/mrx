@@ -1080,24 +1080,60 @@ class BlockJacobiMass:
         b = np.stack(cols, axis=1)
         return 0.5 * (b + b.T)
 
-    def apply(self, x):
-        x = np.asarray(x)
-        out = np.zeros_like(x)
+    def _build_apply(self):
+        """Compile the apply, exactly as BlockJacobiLaplacian does.
+
+        This has to be on-device and jitted, not host-side numpy: the mass
+        preconditioner is applied INSIDE ``solve_singular_cg``'s
+        ``jax.lax.while_loop``, so an ``np.asarray(x)`` on the input raises
+        TracerArrayConversionError there while working fine when called with a
+        concrete array. Build-time work (the 1-D inverses, the dense core) is
+        host-side numpy and belongs there -- it happens once.
+        """
+        blocks = []
         for blk in self.blocks:
             if blk is None:
                 continue
-            buf = np.zeros(blk["shape"])
             ir, it, iz = blk["idx"]
-            buf[ir, it, iz] = blk["vals"] * x[blk["rows"]]
-            buf = buf / blk["lam"]
-            for a in range(3):
-                buf = np.moveaxis(np.tensordot(blk["inv"][a], buf,
-                                               axes=([1], [a])), 0, a)
-            buf = buf / blk["lam"]
-            out[blk["rows"]] = blk["vals"] * buf[ir, it, iz]
-        if self.core.size:
-            out[self.core] = self.core_inv @ x[self.core]
-        return jnp.asarray(out)
+            nr, nt, nz = blk["shape"]
+            blocks.append({
+                "rows": jnp.asarray(blk["rows"]),
+                "vals": jnp.asarray(blk["vals"]),
+                "flat": jnp.asarray((ir * nt + it) * nz + iz),
+                "shape": (nr, nt, nz),
+                "inv": tuple(jnp.asarray(m) for m in blk["inv"]),
+                "lam": jnp.asarray(blk["lam"]),
+            })
+        core = jnp.asarray(self.core)
+        core_inv = jnp.asarray(self.core_inv)
+        has_core = np.asarray(self.core).size > 0
+
+        def m_apply(x):
+            out = jnp.zeros_like(x)
+            for b in blocks:
+                buf = jnp.zeros(int(np.prod(b["shape"]))).at[b["flat"]].set(
+                    b["vals"] * x[b["rows"]]).reshape(b["shape"])
+                buf = buf / b["lam"]
+                # A mass is a single Kronecker PRODUCT, not a sum, so the bulk
+                # inverse is three 1-D solves and no fast diagonalisation is
+                # involved.
+                for a in range(3):
+                    buf = jnp.moveaxis(
+                        jnp.tensordot(b["inv"][a], buf, axes=([1], [a])), 0, a)
+                buf = buf / b["lam"]
+                out = out.at[b["rows"]].set(
+                    b["vals"] * buf.reshape(-1)[b["flat"]])
+            if has_core:
+                out = out.at[core].set(core_inv @ x[core])
+            return out
+
+        return jax.jit(m_apply)
+
+    def apply(self, x):
+        """Apply the preconditioner to an extracted-space vector."""
+        if getattr(self, "_jit", None) is None:
+            self._jit = self._build_apply()
+        return self._jit(jnp.asarray(x))
 
 
 # --------------------------------------------------------------------------- #

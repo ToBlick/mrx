@@ -383,6 +383,8 @@ def test_block_jacobi_mass_is_wired_but_not_default(torus_seq):
     changes `L_k` at k>=1 and invalidates the measurements the Laplacian scale
     was fitted against.
     """
+    import jax
+
     from mrx.operators import _build_operator_preconditioner_apply
     from mrx.preconditioners import (
         MassPreconditionerSpec, default_mass_preconditioner,
@@ -406,6 +408,21 @@ def test_block_jacobi_mass_is_wired_but_not_default(torus_seq):
 
     for kind, out in applies.items():
         assert np.all(np.isfinite(np.asarray(out))), f"{kind} produced non-finite output"
+
+    # TRACEABILITY. The mass preconditioner is applied INSIDE
+    # solve_singular_cg's jax.lax.while_loop, so an apply that touches the host
+    # (np.asarray on the input) dies with TracerArrayConversionError there
+    # while working perfectly when called with a concrete array. That is
+    # exactly how an earlier version of this test passed against a
+    # BlockJacobiMass that could not be used in production at all.
+    for kind in ('raw_kron', 'block_jacobi'):
+        fn = _build_operator_preconditioner_apply(
+            torus_seq, ops, k=k, dirichlet=dbc, operator_apply=None,
+            preconditioner=MassPreconditionerSpec(kind=kind,
+                                                  surgery_schur=False))
+        out = jax.jit(fn)(v)
+        assert np.all(np.isfinite(np.asarray(out))), (
+            f"{kind} is not usable under jit")
     # Both approximate the same M^-1, so they must agree in DIRECTION far
     # better than two unrelated operators would, without being identical --
     # they differ precisely in how the polar core is handled.

@@ -37,7 +37,7 @@ import mrx  # noqa: E402
 import mrx.operators as op  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
 from mrx.experimental.block_jacobi_laplacian import BlockJacobiMass  # noqa: E402
-from mrx.mappings import toroid_map  # noqa: E402
+from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: E402
 from mrx.preconditioners import (  # noqa: E402
     apply_mass_raw_kron_preconditioner, build_mass_raw_kron_factors)
 
@@ -51,6 +51,10 @@ def build_sequence(geometry, ns, p, r_scale=1.0):
     seq.evaluate_1d()
     if geometry == "toroid":
         seq.set_map(toroid_map(epsilon=1 / 3, R0=1.0))
+    elif geometry == "cylinder":
+        seq.set_map(cylinder_map(a=0.33, h=1.0))
+    elif geometry == "rot-ellipse":
+        seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.5, nfp=3))
     else:
         from w7x_geometry import build_w7x_map  # noqa: PLC0415
         map_func, _ = build_w7x_map(map_ns=ns, p=p)
@@ -89,7 +93,8 @@ def pcg(a_apply, b, minv, tol=1e-8, maxiter=5000):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--geometry", default="toroid", choices=("toroid", "w7x"))
+    ap.add_argument("--geometry", default="toroid",
+                    choices=("toroid", "w7x", "cylinder", "rot-ellipse"))
     ap.add_argument("--ns", default="8,16,8")
     ap.add_argument("--p", type=int, default=3)
     ap.add_argument("--r-scale", type=float, default=1.0)
