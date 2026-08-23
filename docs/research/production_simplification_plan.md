@@ -234,3 +234,92 @@ KEPT deliberately:
 dead calls inside the jitted `m_apply` closure (`_cap_arrays`, `_apply_cap_jax`,
 `apply_ring_atom`). Grep for the deleted names as well as linting -- the memory
 note about F821-after-deletions understates it.
+
+---
+
+## 10. THE NEW STACK, MEASURED (overnight 2026-08-22, 40 jobs, no failures)
+
+`outputs/diag_newstack/` (h) + `outputs/diag_newstackp/` (p). Block-Jacobi
+Laplacian at `bc_scale=0.10` with **block_jacobi as the mass**, four geometries,
+n = 8..32, p = 2..5. 168 cells.
+
+### 10.1 `PRODUCTION_BC_SCALE = 0.10` SURVIVES THE MASS SWAP
+
+Penalty of the flat 0.10 against each cell's own optimum, free BC, p=3:
+
+| geom | k | n=8 | 12 | 16 | 20 | 24 | 28 | 32 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| cylinder | 1 | 1.19 | 1.10 | 1.02 | 1.02 | 1.01 | 1.01 | **1.00** |
+| toroid | 1 | 1.29 | 1.19 | 1.11 | 1.03 | 1.02 | 1.01 | **1.01** |
+| rot-ell | 1 | 1.04 | 1.00 | 1.00 | 1.00 | 1.02 | 1.01 | **1.00** |
+| w7x | 1 | 1.00 | 1.01 | 1.04 | 1.07 | 1.05 | 1.07 | **1.07** |
+| cylinder | 3 | 1.15 | 1.05 | 1.00 | 1.00 | 1.01 | 1.00 | **1.00** |
+| toroid | 3 | 1.24 | 1.11 | 1.05 | 1.00 | 1.00 | 1.00 | **1.00** |
+| rot-ell | 3 | 1.07 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | **1.01** |
+| w7x | 3 | 1.14 | 1.02 | 1.00 | 1.00 | 1.00 | 1.00 | **1.00** |
+
+**Median 1.01 over 96 free cells, and it IMPROVES with resolution** -- every
+geometry converges to 1.00-1.07 by n >= 16. The worst case anywhere is 1.55,
+and every case above 1.2 is at **p=2** or n=8:
+
+| p-sweep, n=12, 0.10 penalty | p=2 | p=3 | p=4 | p=5 |
+| --- | --- | --- | --- | --- |
+| toroid k=3 | **1.55** | 1.11 | 1.00 | 1.00 |
+| toroid k=1 | 1.39 | 1.19 | 1.07 | 1.05 |
+| cylinder k=3 | 1.32 | 1.05 | 1.00 | 1.01 |
+| w7x k=3 | 1.27 | 1.02 | 1.00 | 1.00 |
+| rot-ell k=1 | 1.00 | 1.00 | 1.00 | 1.00 |
+
+So the constant is worst exactly where the problem is cheapest (p=2, coarse
+meshes) and is essentially free at production resolution and degree. **No
+re-fit.** The argmin trend is also unchanged by the swap: it drifts DOWN with n
+(rot-ellipse 0.30 -> 0.06, W7-X pinned at 0.06), toroid stays highest, cylinder
+converges to 0.10 -- the same ordering §16.2 and §19.3 found under raw_kron.
+
+### 10.2 THE HEADLINE: block@0.10 vs point jacobi, new stack
+
+| geom | k, bc | n=8 | 16 | 24 | 32 |
+| --- | --- | --- | --- | --- | --- |
+| toroid | 1 free | 0.29 | 0.19 | 0.14 | **0.12** |
+| toroid | 3 free | 0.44 | 0.22 | 0.16 | **0.13** |
+| cylinder | 1 free | 0.28 | 0.25 | 0.23 | **0.21** |
+| w7x | 3 free | 0.54 | 0.31 | 0.23 | **0.19** |
+| rot-ell | 1 free | 0.57 | 0.50 | 0.41 | **0.36** |
+| w7x | 1 free | 0.56 | 0.67 | 0.60 | **0.52** |
+
+**Median 0.31 over 120 cells; 0.25 for n >= 24.** The ratio IMPROVES with
+refinement everywhere -- 3-8x at production resolution. The hardest cell
+remains W7-X k=1 free (0.52), which is the same case that has been hardest
+throughout.
+
+Read against `probed_jacobi` rather than `jacobi` these are ~20% less
+flattering at k=1/2 on the shaped geometries (§ reference A/B) -- but probed
+jacobi is O(N) applies to build and is a reference, not a candidate.
+
+### 10.3 Status
+
+| phase | |
+| --- | --- |
+| 0 `ktilde_mode` | done -- default was 3-10x wrong |
+| 1 production surface + dispatch | done |
+| 2 delete refuted machinery | done, 2099 -> 1154 lines; `fm` moved out |
+| 3 probed-jacobi reference | done |
+| 4 tests | done, 13 |
+| 5 mass -> block_jacobi | **done**, with one recorded regression (§ commit 5f0d69e) |
+
+OPEN, in rough priority order:
+
+1. **Model the weak term under the new mass.** `build_weak_term_diagonal` is
+   calibrated for raw_kron; under block_jacobi its error goes from ~2-4% median
+   to 22% (k=1 dbc), which is why
+   `test_weak_term_diagonal_matches_exact_rows` now skips. Costs `kind='jacobi'`
+   1-10% today. It is a shared production artefact and should not stay wrong.
+2. **Make the BlockJacobiMass BUILD jit-safe**, removing the warm-up
+   requirement. Tobias's observation is that it should be possible: the probe
+   vectors are one-hot on STATIC row indices and no structural property depends
+   on the metric payload. The three blockers are mechanical -- `np.linalg.inv`
+   and `np.linalg.eigh` -> `jnp`, and the data-dependent `keep_w` mask ->
+   a static-shape `jnp.where(|w| > tol, 1/w, 0)` pseudo-inverse.
+3. Auto-compute `bc_scale` from the §17.5 ring-block match, removing the last
+   fitted constant.
+4. `fm` (`mrx/experimental/block_jacobi_coarse.py`) is untested at k=0 and dbc.
