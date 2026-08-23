@@ -1,28 +1,76 @@
 # MRX production solver configuration
 
-**The single authority on what runs in production** (decided 2026-08-14;
-research alternatives live in `docs/research/` with reopen conditions).
+**The single authority on what runs in production.** Last revised 2026-08-22
+(preconditioner stack replaced; see "2026-08-22 change" below). Research
+alternatives live in `docs/research/` with reopen conditions.
 
 ## Preconditioners
 
 | solve | preconditioner | where |
 | --- | --- | --- |
-| Mass matrices, all k (incl. saddle lower blocks) | Kronecker/tensor mass preconditioners (exact at rank 2 for masses; NTF/non-negative CP fits) | `mrx/preconditioners.py` |
-| k=0 Laplacian | **"fd" atom** = the bundled per-axis `<g^{aa}J>` tensor-Hodge atom + thin C1 polar core Schur (fd-probed) | `mrx/operators.py:_assemble_k0_greville_bulk_factors` |
-| k=1,2,3 Laplacians | **Schur-outer Jacobi**: diagonal tensor-probed on the approximate Schur `S_hat = S_k + D M_hat^{-1} D^T`, with the tensor MASS preconditioner as `M_hat^{-1}` in the weak term (`schur_diag_mode='tensor_probe'`) | `mrx/operators.py` |
+| Mass matrices, all k (incl. saddle lower blocks) | **`kind='block_jacobi'`** -- separable bulk with the polar core PROBED AND INVERTED DENSELY (no `E+` pseudoinverse) | `mrx/experimental/block_jacobi_laplacian.py:BlockJacobiMass` |
+| Laplacians, **k = 0,1,2,3** | **`kind='block'`** -- the tensor block-Jacobi atom: per-component Kronecker sum inverted by fast diagonalisation, dense polar core, plus a rank-one natural-BC term at `bc_scale=0.10` | `mrx/experimental/block_jacobi_laplacian.py:BlockJacobiLaplacian` |
+
+Build the Laplacian one once per `(k, BC)` with
+`assemble_block_jacobi_laplacian_preconditioner(seq, ops)`; then
+`seq.apply_laplacian_preconditioner(v, k, dirichlet)` (`kind='auto'` picks
+`'block'` when assembled, else `'jacobi'`). It takes NO required parameters.
+
+### 2026-08-22 change: the preconditioner stack was replaced
+
+The mass went `tensor/CP -> raw_kron (2026-08-17) -> block_jacobi (2026-08-22)`;
+the Laplacian at k>=1 went `Schur-outer Jacobi -> the block atom`. Both are
+measured over four geometries, n = 8..32, p = 2..5:
+
+* **Laplacian vs point Jacobi: median 0.31 over 120 cells, 0.25 for n >= 24**,
+  and the ratio IMPROVES with refinement (3-8x at production resolution). The
+  advantage also grows with degree -- Jacobi degrades 7.6-12.2x over p = 2..5
+  where the block arms grow 2.3-2.8x.
+* **Mass vs raw_kron: 0.83x iterations median, 0.70-0.77x at k=1,2**, at equal
+  build cost.
+
+**This overturns the 2026-08-14 "k>0 policy" below.** That assessment concluded
+the k>0 option space was closed and Jacobi should stay, on the grounds that
+anything beating Jacobi on hard geometry must contain a faithful `L0` solve.
+The block atom does beat it, everywhere, without one. The section is kept for
+its reasoning and its reopen conditions, but its VERDICT is superseded --
+see `docs/research/preconditioner_technical_note_source.md`.
 
 Explicitly **not** in production: multigrid (any k), Chebyshev acceleration
-(anywhere), CP rank>1 stiffness fits, HX / auxiliary-space transfers.
+(anywhere), CP rank>1 stiffness fits, HX / auxiliary-space transfers, dense
+outer-ring probes (`outer_rings`), and the truncated-Fourier coarse correction
+(`fm`, opt-in only, `mrx/experimental/block_jacobi_coarse.py`).
 
-Research machinery lives in **`mrx/experimental/`** (not imported by mrx
-core): `tensor_stiffness.py` (the k>=1 block_fd P_A atoms) and
-`chebyshev.py` (chebyshev/richardson/lanczos). Production preconditioner
-kinds are `none`/`jacobi`/`tensor` only (`exact_jacobi` additionally as a
-debug schur outer). Unmaintained demo scripts: `scripts/deprecated/`.
+Research machinery lives in **`mrx/experimental/`**: `tensor_stiffness.py`
+(the k>=1 block_fd P_A atoms), `chebyshev.py`, and `block_jacobi_coarse.py`
+(`fm`). NOTE that `block_jacobi_laplacian.py` also lives there but IS now
+production -- it should move to `mrx/` when convenient.
+
+Preconditioner kinds. Laplacian: `none` / `jacobi` / **`block`** /
+`probed_jacobi` / `tensor` (k=0, retired). Mass: `none` / `jacobi` /
+**`block_jacobi`** / `raw_kron` / `tensor` (retired).
+`kind='probed_jacobi'` is the exact `diag(L_k)` by probing -- the honest
+REFERENCE for benchmarks, never a candidate (O(N) applies to build).
+`kind='jacobi'` is NOT that at k>=1: its weak half is a Kronecker mass MODEL,
+and it costs up to 21% extra iterations against the exact diagonal.
+Unmaintained demo scripts: `scripts/deprecated/`.
 
 ## Knobs
 
-- Mass CP fits: non-negative (NTF) default; `MRX_CP_GREEDY` reverts.
+- `PRODUCTION_BC_SCALE = 0.10` scales the natural-BC term. EMPIRICAL (a
+  kappa-balance point, not a derived factor); minimax over 168 cells, median
+  penalty 1.01 against each cell's own optimum. `MRX_BJ_BC_SCALE` overrides.
+- `MRX_MASS_KIND=raw_kron` reverts the mass swap wholesale.
+- **Any new traced entry point that solves must first call
+  `operators.warm_mass_preconditioner_cache`.** Mass factors build lazily and
+  the build is host-side numpy, so a cold cache inside a `jax.lax.while_loop`
+  dies. This bit once, in `nullspace.py`.
+- KNOWN REGRESSION: `build_weak_term_diagonal` is still calibrated for
+  raw_kron, so `kind='jacobi'` costs 1-10% more than it used to and
+  `test_weak_term_diagonal_matches_exact_rows` skips unless the mass is
+  raw_kron. Top open item in `docs/research/HANDOFF_open_items.md`.
+- Mass CP fits (retired path): non-negative (NTF) default; `MRX_CP_GREEDY`
+  reverts.
 - Solvers: k=0 = deflated CG (condensed); k>=1 = saddle MINRES with
   harmonic deflation. No RUNTIME Krylov-in-Krylov anywhere (the k=0
   core-Schur rebuild runs 3*n_zeta assembly-time CG solves; the result
@@ -50,7 +98,12 @@ The k=1 coupled-atom + exact-L0 solver is mathematically settled
 one wiring day (jit + dense-L0 Cholesky) when k=1 solves bottleneck
 production. Details + all other shelf items: `docs/research/`.
 
-## k>0 policy: final assessment (2026-08-14)
+## k>0 policy: final assessment (2026-08-14) — VERDICT SUPERSEDED 2026-08-22
+
+> Kept for the reasoning and the reopen conditions. Its conclusion ("Jacobi
+> stays") is no longer production: the tensor block-Jacobi atom beats Jacobi by
+> 2-8x at k=1,2,3 without a faithful `L0` solve, which is the premise this
+> assessment rests on.
 
 The k>0 option space is closed — full reasoning in
 `docs/research/k_gt0_final_assessment.md`. Summary: any method that beats

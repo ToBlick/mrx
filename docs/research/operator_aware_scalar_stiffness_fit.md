@@ -1,3 +1,7 @@
+> **NOT PURSUED, 2026-08-22.** A proposed next design step for the k=0
+> scalar stiffness that was never taken; the k=0 route is now the
+> block-Jacobi atom. Historical only.
+
 # Operator-Aware Scalar Stiffness Fit
 
 This note records the next design step for the scalar `k = 0` tensor-Hodge

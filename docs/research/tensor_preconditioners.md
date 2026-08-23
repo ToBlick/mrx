@@ -1,3 +1,8 @@
+> **PARTLY OUTDATED 2026-08-22.** Its "Production is unchanged (raw_kron
+> masses, closed-form Jacobi Laplacians)" is no longer true -- both were
+> replaced. The design reasoning is still current;
+> `preconditioner_technical_note_source.md` is the consolidated version.
+
 # Tensor preconditioners for the mass and Hodge Laplacian
 
 **Status: experimental**, all in `mrx/experimental/block_jacobi_laplacian.py`

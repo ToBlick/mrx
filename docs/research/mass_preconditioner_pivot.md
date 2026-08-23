@@ -1,3 +1,9 @@
+> **SUPERSEDED 2026-08-22** for the production decision: the mass moved
+> raw_kron -> block_jacobi. Still worth reading -- its analysis of the
+> `E+` pseudoinverse ("both sides must carry the full `(CC^T)^-1`") is
+> exactly what block_jacobi's dense polar core avoids, and it is the
+> reason the swap was worth 0.70-0.77x at k=1,2.
+
 # Mass preconditioners: pivot from Schur to the pow2 extraction sandwich
 
 **Decided 2026-08-17.** Two independent outcomes in this document:

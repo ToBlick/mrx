@@ -1,3 +1,7 @@
+> **RETIRED 2026-08-22.** The surgery/Schur mass architecture is two
+> pivots behind production (-> raw_kron 2026-08-17 -> block_jacobi
+> 2026-08-22). Historical record only.
+
 # Surgery-Schur Mass Architecture
 
 This note records the current mass-side architecture after the surgery-Schur

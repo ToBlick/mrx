@@ -1,3 +1,7 @@
+> **OVERTAKEN 2026-08-22.** This plans an extension of the k=0 tensor-Hodge
+> route to k>=1. That goal was reached by a different construction (the
+> block-Jacobi atom); the plan was not followed. Historical only.
+
 # Higher-Form Hodge Tensor Plan
 
 This note records the implementation plan for extending the tensor-Hodge ideas

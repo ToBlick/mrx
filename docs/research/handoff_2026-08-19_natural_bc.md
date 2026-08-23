@@ -1,3 +1,7 @@
+> **SUPERSEDED 2026-08-22** by `natural_bc_coefficient_handoff.md`, which
+> continues this and carries the derivation, the refutations and all the
+> measurements. Kept for the day-by-day record.
+
 # Handoff 2026-08-19 — the natural BC in the tensor block-Jacobi atom
 
 Continues `handoff_2026-08-18_preconditioner_pivot.md` and the reasoning in

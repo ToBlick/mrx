@@ -1,3 +1,7 @@
+> **SUPERSEDED 2026-08-22.** An earlier chapter of the story now told in
+> full by `natural_bc_coefficient_handoff.md` (§1-§19) and
+> `production_simplification_plan.md`. Kept for the day-by-day record.
+
 # Handoff 2026-08-18 — production preconditioner pivot
 
 Suite green at **179 passed, 1 skipped, 4 xfailed** (800 s); experimental suite

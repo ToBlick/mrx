@@ -1,3 +1,8 @@
+> **OUTDATED 2026-08-22.** Describes the k=0-only tensor route as "the
+> current production picture". Production is now the block-Jacobi atom at
+> k=0..3; see `docs/PRODUCTION.md` and
+> `preconditioner_technical_note_source.md`.
+
 # Laplacian Preconditioner Notes
 
 This note records the current production picture for the Laplacian

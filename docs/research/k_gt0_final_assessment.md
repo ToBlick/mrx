@@ -1,3 +1,10 @@
+> **VERDICT SUPERSEDED 2026-08-22.** This assessment closed the k>0 option
+> space on the premise that anything beating Jacobi on hard geometry must
+> contain a faithful `L0` solve. The tensor block-Jacobi atom beats it by
+> 2-8x at k=1,2,3 without one. Kept for the reasoning and the measured
+> ledger of what else was tried. Current picture:
+> `preconditioner_technical_note_source.md`.
+
 # k>0 Laplacian preconditioning: final assessment
 
 > **STATUS: DECISION RECORD (2026-08-14) — closes the k>0 preconditioner
