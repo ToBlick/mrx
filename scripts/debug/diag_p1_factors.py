@@ -28,7 +28,7 @@ import scipy.linalg as sla  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mrx.experimental.block_jacobi_laplacian import (  # noqa: E402
+from mrx.block_jacobi_laplacian import (  # noqa: E402
     _axis_bases, _fd_stiffness_degree0, _ktilde_1d, bundled_axis_profiles,
     component_factors, weight_fields)
 from mrx.operators import _assemble_weighted_1d_mass  # noqa: E402

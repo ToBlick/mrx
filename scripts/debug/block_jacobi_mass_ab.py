@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mrx  # noqa: E402
 import mrx.operators as op  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
-from mrx.experimental.block_jacobi_laplacian import BlockJacobiMass  # noqa: E402
+from mrx.block_jacobi_laplacian import BlockJacobiMass  # noqa: E402
 from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: E402
 from mrx.preconditioners import (  # noqa: E402
     apply_mass_raw_kron_preconditioner, build_mass_raw_kron_factors)

@@ -16,7 +16,7 @@ Full suite 199 passed, 2 skipped, 4 xfailed. Nothing is half-applied.
 | reference baseline | `kind='probed_jacobi'` -- exact `diag(L_k)`, O(N) applies, never a candidate |
 | tests | `test/test_block_jacobi_laplacian.py`, 13 |
 
-`mrx/experimental/block_jacobi_laplacian.py` went 2099 -> 1154 lines; the class
+`mrx/block_jacobi_laplacian.py` went 2099 -> 1154 lines; the class
 went from 17 constructor kwargs to 7; nine `MRX_BJ_*` env knobs to one.
 
 ---

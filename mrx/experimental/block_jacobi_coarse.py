@@ -33,7 +33,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.experimental.block_jacobi_laplacian import (
+from mrx.block_jacobi_laplacian import (
     BlockJacobiLaplacian, trace_components,
 )
 

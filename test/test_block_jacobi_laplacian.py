@@ -1,8 +1,8 @@
 """Guards for the block-Jacobi Laplacian preconditioner.
 
-`mrx/experimental/block_jacobi_laplacian.py` is being promoted to the
-production Laplacian preconditioner for k = 0..3 (see
-`docs/research/production_simplification_plan.md`). It had NO test coverage;
+`mrx/block_jacobi_laplacian.py` IS the production Laplacian
+preconditioner for k = 0..3 (see `docs/PRODUCTION.md`). It had no test
+coverage when it was promoted;
 these are the checks that plan calls for, each chosen because it has caught --
 or would have caught -- a real bug:
 
@@ -40,7 +40,7 @@ import pytest
 jnp = pytest.importorskip("jax.numpy")
 
 import mrx.operators as op  # noqa: E402
-from mrx.experimental.block_jacobi_laplacian import (  # noqa: E402
+from mrx.block_jacobi_laplacian import (  # noqa: E402
     BlockJacobiLaplacian, trace_components,
 )
 
@@ -271,7 +271,7 @@ def test_defaults_are_the_production_configuration(torus_seq):
     """
     import inspect
 
-    import mrx.experimental.block_jacobi_laplacian as bjl
+    import mrx.block_jacobi_laplacian as bjl
 
     assert bjl.PRODUCTION_BC_SCALE == PROD_SCALE
 

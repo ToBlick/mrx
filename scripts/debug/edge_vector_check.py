@@ -30,7 +30,7 @@ import numpy as np  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from block_jacobi_spectrum import build_sequence  # noqa: E402
-from mrx.experimental.block_jacobi_laplacian import (  # noqa: E402
+from mrx.block_jacobi_laplacian import (  # noqa: E402
     _edge_vector, _face_metric_scalar, _mesh_amplification, component_factors,
     trace_components)
 

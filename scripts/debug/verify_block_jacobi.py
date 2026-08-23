@@ -41,7 +41,7 @@ from mrx.derham_sequence import DeRhamSequence  # noqa: E402
 from mrx.experimental.block_jacobi_coarse import (  # noqa: E402
     CoarseCorrectedBlockJacobi,
 )
-from mrx.experimental.block_jacobi_laplacian import (  # noqa: E402
+from mrx.block_jacobi_laplacian import (  # noqa: E402
     BlockJacobiLaplacian)
 from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: E402
 from mrx.nullspace import compute_nullspaces, get_nullspace  # noqa: E402

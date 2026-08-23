@@ -8,8 +8,8 @@ alternatives live in `docs/research/` with reopen conditions.
 
 | solve | preconditioner | where |
 | --- | --- | --- |
-| Mass matrices, all k (incl. saddle lower blocks) | **`kind='block_jacobi'`** -- separable bulk with the polar core PROBED AND INVERTED DENSELY (no `E+` pseudoinverse) | `mrx/experimental/block_jacobi_laplacian.py:BlockJacobiMass` |
-| Laplacians, **k = 0,1,2,3** | **`kind='block'`** -- the tensor block-Jacobi atom: per-component Kronecker sum inverted by fast diagonalisation, dense polar core, plus a rank-one natural-BC term at `bc_scale=0.10` | `mrx/experimental/block_jacobi_laplacian.py:BlockJacobiLaplacian` |
+| Mass matrices, all k (incl. saddle lower blocks) | **`kind='block_jacobi'`** -- separable bulk with the polar core PROBED AND INVERTED DENSELY (no `E+` pseudoinverse) | `mrx/block_jacobi_laplacian.py:BlockJacobiMass` |
+| Laplacians, **k = 0,1,2,3** | **`kind='block'`** -- the tensor block-Jacobi atom: per-component Kronecker sum inverted by fast diagonalisation, dense polar core, plus a rank-one natural-BC term at `bc_scale=0.10` | `mrx/block_jacobi_laplacian.py:BlockJacobiLaplacian` |
 
 Build the Laplacian one once per `(k, BC)` with
 `assemble_block_jacobi_laplacian_preconditioner(seq, ops)`; then
@@ -43,8 +43,8 @@ outer-ring probes (`outer_rings`), and the truncated-Fourier coarse correction
 
 Research machinery lives in **`mrx/experimental/`**: `tensor_stiffness.py`
 (the k>=1 block_fd P_A atoms), `chebyshev.py`, and `block_jacobi_coarse.py`
-(`fm`). NOTE that `block_jacobi_laplacian.py` also lives there but IS now
-production -- it should move to `mrx/` when convenient.
+(`fm`). `block_jacobi_laplacian.py` moved to `mrx/` on 2026-08-22 when it
+became production.
 
 Preconditioner kinds. Laplacian: `none` / `jacobi` / **`block`** /
 `probed_jacobi` / `tensor` (k=0, retired). Mass: `none` / `jacobi` /

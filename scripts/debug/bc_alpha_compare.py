@@ -40,7 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mrx  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
-from mrx.experimental.block_jacobi_laplacian import (  # noqa: E402
+from mrx.block_jacobi_laplacian import (  # noqa: E402
     _axis_bases, _face_metric_scalar, _mesh_amplification,
     _weak_inverse_amplification, bundled_axis_profiles, weight_fields)
 from mrx.operators import (  # noqa: E402

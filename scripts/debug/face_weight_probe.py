@@ -44,7 +44,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mrx  # noqa: E402
 import mrx.operators as op  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
-from mrx.experimental.block_jacobi_laplacian import (  # noqa: E402
+from mrx.block_jacobi_laplacian import (  # noqa: E402
     BlockJacobiLaplacian, component_factors, face_operator)
 from mrx.mappings import toroid_map  # noqa: E402
 

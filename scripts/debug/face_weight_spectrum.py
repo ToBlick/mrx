@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mrx  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
-from mrx.experimental.block_jacobi_laplacian import weight_fields  # noqa: E402
+from mrx.block_jacobi_laplacian import weight_fields  # noqa: E402
 from mrx.mappings import rotating_ellipse_map, toroid_map  # noqa: E402
 
 mrx.MAP_BATCH_SIZE_INNER = int(os.environ.get("W7X_MAP_BATCH", "256"))

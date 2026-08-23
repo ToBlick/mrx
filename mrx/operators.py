@@ -4540,7 +4540,7 @@ def _mass_block_jacobi_for(seq, operators, k: int, dirichlet: bool, **kwargs):
     for the one line that switches it on, and the warning there about what else
     has to be re-measured first.
     """
-    from mrx.experimental.block_jacobi_laplacian import (  # noqa: PLC0415
+    from mrx.block_jacobi_laplacian import (  # noqa: PLC0415
         BlockJacobiMass,
     )
     geometry = seq.geometry
@@ -5024,7 +5024,7 @@ def assemble_block_jacobi_laplacian_preconditioner(
     helpers.
     """
     # Deferred: the experimental module imports back from mrx.operators.
-    from mrx.experimental.block_jacobi_laplacian import (  # noqa: PLC0415
+    from mrx.block_jacobi_laplacian import (  # noqa: PLC0415
         BlockJacobiLaplacian,
     )
     cache = dict(getattr(seq, BLOCK_JACOBI_CACHE_ATTR, None) or {})
