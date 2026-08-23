@@ -16,10 +16,21 @@ MRX discretises a de Rham complex `V_0 -> V_1 -> V_2 -> V_3` with tensor-product
 B-splines on a logically-cubic domain `(r, theta, zeta)`, mapped to the physical
 torus/stellarator by `F`. The Hodge Laplacian at degree `k` is
 
-    L_k  =  S_k + W_k ,     S_k = D_k^T M_{k+1} D_k ,   W_k = D_{k-1} M_{k-1}^{-1} D_{k-1}^T
+    L_k  =  S_k + W_k ,     S_k = G_k^T M_{k+1} G_k ,   W_k = D_{k-1} M_{k-1}^{-1} D_{k-1}^T
 
-with `D` the (metric-free) incidence operators and `M` the metric-carrying mass
-matrices. Two facts drive everything:
+with `G` the (metric-free) incidence operators, `M` the metric-carrying mass
+matrices, and
+
+    D_l  =  M_{l+1} G_l          (mass TIMES incidence, not the incidence alone)
+
+so that written out in incidence operators only,
+
+    L_k  =  G_k^T M_{k+1} G_k  +  M_k G_{k-1} M_{k-1}^{-1} G_{k-1}^T M_k .
+
+`D_l` is the weak-derivative (codifferential-adjoint) matrix; in the code it also
+carries the extraction operators, `D_l = E_{l+1} M_{l+1} G_l E_l^T`. The `M_k`
+factors flanking `W_k` are not decoration -- they are why the weak term is the
+part that carries the metric twice. Two facts drive everything:
 
 * **`M_{k-1}^{-1}` is never formed.** `W_k` is applied with a mass
   PRECONDITIONER standing in for the inverse. So the mass preconditioner is
