@@ -621,7 +621,11 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         Per-vector initial guesses. Entries that are ``None`` fall back to
         a deterministic random initialisation.
     abs_tol : float
-        Absolute tolerance on the residual ``||L_k v||``. If the normalised
+        Tolerance on ``sqrt(v^T L_k v / v^T M_k v)`` -- the relative L2 error
+        of the form, which is what callers judge the vector by. NOT on
+        ``||L_k v||``: that measures a dual vector in the primal mass norm, so
+        it carries ``||L|| ~ h^-2`` and a fixed bound on it moves the stopping
+        point with resolution and degree. If the normalised
         initial guess already satisfies it (after M-orthogonalisation
         against previously-found vectors), it is accepted directly and no
         inverse iteration is run for that slot.
@@ -689,16 +693,18 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
                 v0, k, dirichlet=dirichlet, operators=operators)) * u
         v0 = v0 / seq.l2_norm(v0, k, dirichlet=dirichlet)
 
-        # Early exit if the initial guess is already harmonic to tolerance.
-        # Metric: ``||L v||`` (residual norm of the Hodge Laplacian). For
-        # k = 3 the stiffness block is zero, so the Rayleigh quotient
-        # ``v^T S v`` gives 0 regardless -- we must use the full L.
+        # Early exit if the initial guess is already harmonic to tolerance,
+        # on the SAME criterion the loop uses: the Rayleigh quotient of the
+        # full L (not of the stiffness block alone -- at k = 3 that block is
+        # zero and v^T S v would read 0 for any vector). v0 is M-normalised
+        # just above, so v0 @ Lv0 is the quotient.
         Lv0 = seq.apply_hodge_laplacian(
             v0, k, dirichlet=dirichlet, operators=operators)
         res_init = float(seq.l2_norm(Lv0, k, dirichlet=dirichlet))
-        if res_init <= abs_tol:
+        rq_init = float(v0 @ Lv0)
+        if rq_init <= abs_tol ** 2:
             found.append(v0)
-            iters.append((0, res_init, float(v0 @ Lv0)))
+            iters.append((0, res_init, rq_init))
             continue
 
         # Rank-1 coarse space for the shifted solve.  ``S_k + eps M_k`` is
@@ -737,7 +743,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
                                        dirichlets=(dirichlet,))
 
         def body_fn(state, solve_ops=solve_ops, slot_coarse=slot_coarse):
-            v, res, _res_prev, _rq, i = state
+            v, rq, _rq_prev, i = state
             Mv = seq.apply_mass_matrix(
                 v, k, dirichlet=dirichlet, operators=operators)
             w = seq.apply_inverse_shifted_hodge_laplacian(
@@ -752,20 +758,34 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             w = w / seq.l2_norm(w, k, dirichlet=dirichlet)
             Lw = seq.apply_hodge_laplacian(
                 w, k, dirichlet=dirichlet, operators=operators)
-            res_new = seq.l2_norm(Lw, k, dirichlet=dirichlet)
-            return w, res_new, res, w @ Lw, i + 1
+            # w is M-normalised on the line above, so w @ Lw IS the Rayleigh
+            # quotient w^T L w / w^T M w.
+            return w, w @ Lw, rq, i + 1
 
         def cond_fn(state):
-            _, res, res_prev, _rq, i = state
-            progressing = res < stall_ratio * res_prev
-            # i == 0 forces the first sweep; res/res_prev are inf until then.
-            return (i == 0) | ((res > abs_tol) & (i < maxiter) & progressing)
+            _, rq, rq_prev, i = state
+            progressing = rq < stall_ratio * rq_prev
+            # i == 0 forces the first sweep; rq/rq_prev are inf until then.
+            # Terminate on the RAYLEIGH QUOTIENT, not on ||L v||. The latter
+            # measures a dual vector in the primal mass norm, so its scale
+            # drifts with resolution (this function's own docstring says so)
+            # and comparing it to a fixed tolerance means the stopping point
+            # moves with h and p. `rq` is a generalized eigenvalue, directly
+            # comparable to lambda_1, and `sqrt(rq)` is the relative L2 error
+            # in the form -- the quantity every caller actually judges the
+            # vector by. abs_tol is a bound on sqrt(rq).
+            return (i == 0) | ((rq > abs_tol ** 2) & (i < maxiter)
+                               & progressing)
 
-        init_state = (v0, jnp.inf, jnp.inf, jnp.inf, 0)
-        v_final, res_final, _, rq_final, n_iters = jax.lax.while_loop(
+        init_state = (v0, jnp.inf, jnp.inf, 0)
+        v_final, rq_final, _, n_iters = jax.lax.while_loop(
             cond_fn, body_fn, init_state)
         found.append(v_final)
-        iters.append((int(n_iters), float(res_final), float(rq_final)))
+        res_final = float(seq.l2_norm(
+            seq.apply_hodge_laplacian(
+                v_final, k, dirichlet=dirichlet, operators=operators),
+            k, dirichlet=dirichlet))
+        iters.append((int(n_iters), res_final, float(rq_final)))
 
     return jnp.stack(found), iters
 
