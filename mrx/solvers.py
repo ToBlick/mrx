@@ -213,7 +213,15 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
 
     Returns:
         x: Solution vector.
-        info: 0 if converged, >0 = number of iterations if not converged.
+        info: ``-k`` if converged after ``k`` iterations, ``+k`` if not.
+            (This docstring said "0 if converged" until 2026-08-24; the code
+            has always returned the signed iteration count -- see the
+            ``jnp.where(converged_final, -k_final, k_final)`` below. The stale
+            version caused converged solves to be read as failures.)
+
+    ``M`` must be SPD. That is not checked, and it is not defended against
+    either: a non-SPD ``M`` makes ``beta`` the square root of a negative
+    number and the whole run turns to NaN, which is the intended outcome.
     """
     n = b.shape[0]
     if maxiter is None:
@@ -223,9 +231,13 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
     if M is None:
         def M(x): return x
 
-    # ||b||_M for relative tolerance
+    # ||b||_M for relative tolerance.
+    #
+    # No abs(): b^T M^-1 b is an inner product and CG requires M SPD. If it
+    # comes out negative the preconditioner is broken and every subsequent
+    # number is noise -- NaN is the honest report.
     Mb = M(b)
-    bnorm_M = jnp.sqrt(jnp.abs(jnp.dot(b, Mb)))
+    bnorm_M = jnp.sqrt(jnp.dot(b, Mb))
     bnorm_safe = jnp.where(bnorm_M > 0, bnorm_M, 1.0)
 
     # Initial residual
@@ -241,7 +253,7 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
         z0,          # p = z0
         rz0,
         0,
-        jnp.sqrt(jnp.abs(rz0)) < tol * bnorm_safe,  # check initial
+        jnp.sqrt(rz0) < tol * bnorm_safe,  # check initial
     )
 
     def cond_fn(state):
@@ -253,18 +265,24 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
 
         Ap = A_matvec(p)
         pAp = jnp.dot(p, Ap)
-        alpha = rz / jnp.where(pAp > 0, pAp, 1.0)
+        # p^T A p <= 0 means A is NOT positive definite, and CG is simply not
+        # applicable -- the iteration has no minimisation to perform and the
+        # answer is meaningless. Substituting 1.0 turned that into a silently
+        # wrong solve that still reports iteration counts. Divide by it.
+        alpha = rz / pAp
 
         x_new = x + alpha * p
         r_new = r - alpha * Ap
         z_new = M(r_new)
         rz_new = jnp.dot(r_new, z_new)
 
-        beta = rz_new / jnp.where(rz > 0, rz, 1.0)
+        # rz > 0 for any SPD M and nonzero r; rz == 0 is exact convergence,
+        # which cond_fn has already caught, so there is nothing to guard.
+        beta = rz_new / rz
         p_new = z_new + beta * p
 
         # Convergence: ||r||_M = sqrt(r^T M r) = sqrt(rz)
-        rnorm_M = jnp.sqrt(jnp.abs(rz_new))
+        rnorm_M = jnp.sqrt(rz_new)
         converged_new = rnorm_M < tol * bnorm_safe
 
         return (x_new, r_new, z_new, p_new, rz_new, k + 1, converged_new)
@@ -390,15 +408,23 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
     if M is None:
         def M(x): return x
 
-    # Initial residual
+    # Initial residual.
+    #
+    # NO abs() HERE, DELIBERATELY. r0^T M^-1 r0 is an inner product in the
+    # M^-1 metric and is positive for any M that MINRES is entitled to be
+    # given -- the method REQUIRES an SPD preconditioner. If it is negative,
+    # M is not SPD, the Lanczos basis that follows is meaningless, and every
+    # number this function returns is noise. An abs() here converts that from
+    # a NaN you cannot miss into "it just needs more iterations", which is
+    # exactly how a non-SPD preconditioner hides. Let it produce NaN.
     r0 = b - A_matvec(x0)
     y0 = M(r0)
-    beta1 = jnp.sqrt(jnp.abs(jnp.dot(r0, y0)))
+    beta1 = jnp.sqrt(jnp.dot(r0, y0))
 
     # Use preconditioned norm of b for relative tolerance:
     # ||b||_{M^{-1}} = sqrt(b^T M^{-1} b)
     Mb = M(b)
-    bnorm = jnp.sqrt(jnp.abs(jnp.dot(b, Mb)))
+    bnorm = jnp.sqrt(jnp.dot(b, Mb))
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
 
     # State variables following SOL MINRES convention:
@@ -461,9 +487,10 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
         r2_new = y_new
         oldbeta_new = beta
 
-        # Precondition and compute next beta
+        # Precondition and compute next beta. No abs(), same reason as beta1:
+        # a negative y^T M^-1 y means M is not SPD and the run is void.
         y_prec = M(y_new)
-        beta_new = jnp.sqrt(jnp.abs(jnp.dot(y_new, y_prec)))
+        beta_new = jnp.sqrt(jnp.dot(y_new, y_prec))
 
         # Apply previous Givens rotation to get QR factorization entries
         oldeps = epsln
@@ -486,8 +513,11 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
         w_new = (v - oldeps * w_pp - delta * w_prev) / safe_gamma
         x_new = x + phi * w_new
 
-        # Check convergence
-        converged_new = jnp.abs(phibar_new) < tol * bnorm_safe
+        # Check convergence. phibar is a residual-norm estimate built as
+        # sn*phibar from phibar_0 = beta1 >= 0 and sn = beta/gamma >= 0, so it
+        # is non-negative by construction; abs() here only hid a beta that had
+        # gone imaginary.
+        converged_new = phibar_new < tol * bnorm_safe
 
         return _MinresState(
             x=x_new,
