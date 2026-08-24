@@ -1458,23 +1458,66 @@ def _surgery_available(seq, operators: SequenceOperators, k: int) -> bool:
 
 def _materialize_default_mass_preconditioner(
         seq, operators: SequenceOperators, *, k: int):
-    if _tensor_available(seq, operators, k):
-        return default_mass_preconditioner()
-    return MassPreconditionerSpec(kind='jacobi')
+    # The `_tensor_available` gate here was a leftover from when
+    # `default_mass_preconditioner()` meant kind='tensor', which DOES need an
+    # eager assembly and so needed a fallback. It has meant 'block_jacobi'
+    # since 2026-08-22, and that is always buildable -- so the gate was
+    # silently downgrading the saddle solve's LOWER block to a per-DoF
+    # diagonal whenever the tensor factors happened not to be assembled,
+    # which is the normal case.
+    #
+    # MEASURED (2026-08-24), same operator, same block-Jacobi upper block,
+    # toroid p=3 k=2 free: 84 iterations with block_jacobi below, 9612 with
+    # the jacobi diagonal. The k>=1 saddle solves were not "badly
+    # conditioned"; they were running without the mass preconditioner.
+    del seq, operators, k
+    return default_mass_preconditioner()
 
 
 def _materialize_default_saddle_preconditioner(
-        seq, operators: SequenceOperators, *, k: int,
+        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         coupled_preconditioner: bool = False):
+    """The default k>=1 saddle preconditioner.
+
+    ``schur.outer`` is the block-Jacobi Laplacian atom when it has been
+    assembled for this ``(k, BC)``, and the per-DoF diagonal otherwise. The
+    Schur complement of the saddle system IS ``L_k``, which is what the atom
+    approximates, so this is where it belongs.
+
+    It was ``'jacobi'`` unconditionally until 2026-08-24, and the cost was not
+    small: over 18 cells (3 geometries x k=1,2,3 x free/dbc) the block outer is
+    2.5x fewer iterations, and the inner ``L_2`` free solve inside
+    ``compute_nullspaces`` needed 20k-38k MINRES iterations at p=5 on shaped
+    geometries against a 10k budget -- so it silently returned an unconverged
+    harmonic form, which every deflated solve then used.
+
+    ``schur.inner`` stays raw_kron: it needs no eager assembly, and with
+    ``outer='block'`` it is not used at all.
+    """
     lower = _materialize_default_mass_preconditioner(
         seq, operators, k=k - 1)
-    # schur.inner is raw_kron as of 2026-08-17: it needs no eager assembly,
-    # so the default saddle preconditioner no longer has a tensor precondition.
+    if _block_jacobi_available(seq, k, dirichlet):
+        outer = MassPreconditionerSpec(kind='block')
+    else:
+        # NOT silent. The fallback is a real downgrade and the last one of
+        # these hid for months; the caller is meant to assemble the atom at
+        # setup, exactly as warm_mass_preconditioner_cache is called for the
+        # mass factors. Building it here is not an option -- it is a host-side
+        # build and this can be reached under a trace.
+        warnings.warn(
+            f"saddle solve for k={k}, dirichlet={dirichlet} is falling back to "
+            "schur.outer='jacobi': the block-Jacobi Laplacian atom is not "
+            "assembled for this (k, BC). That is ~2.5x more iterations and can "
+            "leave hard solves unconverged. Call "
+            "assemble_block_jacobi_laplacian_preconditioner(seq, operators) "
+            "at setup.",
+            RuntimeWarning, stacklevel=2)
+        outer = MassPreconditionerSpec(kind='jacobi')
     return SaddlePointPreconditionerSpec(
         mass=lower,
         schur=SchurPreconditionerSpec(
             inner=MassPreconditionerSpec(kind='raw_kron'),
-            outer=MassPreconditionerSpec(kind='jacobi'),
+            outer=outer,
         ),
         coupled=coupled_preconditioner,
     )
@@ -4812,13 +4855,19 @@ def _coerce_scalar_hodge_preconditioner(
 
 
 def _coerce_saddle_preconditioner_spec(
-        seq, operators: SequenceOperators, *, k: int,
+        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         preconditioner) -> SaddlePointPreconditionerSpec:
     if preconditioner is None or preconditioner == 'auto':
         return _materialize_default_saddle_preconditioner(
-            seq, operators, k=k)
+            seq, operators, k=k, dirichlet=dirichlet)
     if isinstance(preconditioner, SaddlePointPreconditionerSpec):
-        valid_outer_kinds = ('none', 'jacobi', 'exact_jacobi')
+        # 'block' added 2026-08-24. The Schur complement of this saddle system
+        # IS L_k = S_k + D M^-1 D^T, which is exactly what the block-Jacobi
+        # atom preconditions, so it belongs here -- and MINRES needs its
+        # preconditioner SPD, which the atom is (test_preconditioner_is_spd).
+        # Until now the only outer option was the per-DoF diagonal, whose weak
+        # half is itself a Kronecker mass MODEL, i.e. doubly approximate.
+        valid_outer_kinds = ('none', 'jacobi', 'exact_jacobi', 'block')
         if preconditioner.schur.outer.kind not in valid_outer_kinds:
             raise ValueError(
                 "schur.outer kind must be one of "
@@ -4833,7 +4882,7 @@ def _coerce_saddle_preconditioner_spec(
             preconditioner.schur.outer,
             context=f"schur.outer kind={preconditioner.schur.outer.kind!r}",
         )
-        if preconditioner.schur.outer.kind != 'exact_jacobi':
+        if preconditioner.schur.outer.kind not in ('exact_jacobi', 'block'):
             _validate_inner_tensor_only_spec(
                 preconditioner.schur.inner,
                 require_explicit=True,
@@ -4857,7 +4906,7 @@ def _coerce_saddle_preconditioner_spec(
                 "schur.outer kind='tensor' is not supported; "
                 "tensor saddle preconditioning is only valid for the lower "
                 "mass block and schur.inner")
-        valid_outer_kinds = ('none', 'jacobi', 'exact_jacobi')
+        valid_outer_kinds = ('none', 'jacobi', 'exact_jacobi', 'block')
         if preconditioner not in valid_outer_kinds:
             raise ValueError(
                 "saddle outer kind must be one of "
@@ -5337,7 +5386,7 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
     n_upper = getattr(seq, f"n{k}{suffix}")
     n_lower = getattr(seq, f"n{k-1}{suffix}")
     saddle_preconditioner = _coerce_saddle_preconditioner_spec(
-        seq, operators, k=k, preconditioner=preconditioner)
+        seq, operators, k=k, dirichlet=dirichlet, preconditioner=preconditioner)
 
     if saddle_preconditioner.schur.inner.kind == 'none':
         raise ValueError("schur.inner cannot use kind='none'")
@@ -5389,7 +5438,19 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
             saddle_preconditioner=saddle_preconditioner,
         )
         outer_spec = saddle_preconditioner.schur.outer
-        if outer_spec.kind == 'jacobi' and outer_spec.smoother is None:
+        if outer_spec.kind == 'block':
+            # The atom approximates L_k directly, so it needs neither the
+            # Schur probe nor schur.inner -- it IS the upper-block inverse.
+            if not _block_jacobi_available(seq, k, dirichlet):
+                raise ValueError(
+                    "schur.outer kind='block' needs the block-Jacobi Laplacian "
+                    f"assembled for k={k}, dirichlet={dirichlet}; call "
+                    "assemble_block_jacobi_laplacian_preconditioner first")
+
+            def precond_upper(x, _k=k, _d=dirichlet):
+                return apply_hodge_laplacian_preconditioner(
+                    seq, operators, x, _k, dirichlet=_d, kind='block')
+        elif outer_spec.kind == 'jacobi' and outer_spec.smoother is None:
             schur_diaginv = _build_schur_outer_jacobi_diaginv(
                 seq,
                 operators,

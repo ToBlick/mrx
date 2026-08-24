@@ -382,6 +382,21 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
             f"this topology: {reason}"
         )
 
+    # The construction below is a chain of Hodge-Laplacian solves -- L_1 DBC
+    # for the k=2 form, L_2 FREE for the k=1 form, L_3 DBC inside the Leray
+    # projection -- and every one of them goes through the k>=1 saddle path.
+    # Assemble the block-Jacobi atom so those solves get it as schur.outer.
+    # This is a setup routine and is never under a trace, so building here is
+    # safe; without it the solves fall back to the per-DoF diagonal and the
+    # L_2 free one needs 20k-38k MINRES iterations at p=5 on shaped geometries,
+    # silently returning an unconverged form that every deflated solve then
+    # deflates against (measured 2026-08-24: relL2 6e-4 instead of 1.5e-11).
+    from mrx.operators import (  # noqa: PLC0415
+        assemble_block_jacobi_laplacian_preconditioner,
+    )
+    operators = assemble_block_jacobi_laplacian_preconditioner(
+        seq, operators, ks=(1, 2, 3), dirichlets=(False, True))
+
     operators = _commit(seq, init_nullspaces(
         seq, operators, betti_numbers=betti_numbers))
 
