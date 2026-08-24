@@ -120,15 +120,23 @@ One correction worth knowing: the quasr "A5 is worse out of sample" result was a
 grid artefact. The matched-scale grids used a toroid conversion factor of 28.3;
 the true factor is 108 on quasr9983.
 
-## 6. Still running (harvest these)
+## 6. Trajectory runs — complete
 
-```
-traj_w7x_k1, traj_w7x_k1_eps2, traj_w7x_k1_eps6
-    outputs/invit_traj/2026-08-24/16-47-18/
-```
-The k=3 control finished and is reported above. The three k=1 runs were flat
-across every sweep count tested, so the remaining rows will not change the
-conclusion.
+`outputs/invit_traj/2026-08-24/16-47-18/`. All four finished; the k=1 runs are
+flat from sweep 1 to sweep 100 (w7x k=1, eps=1e-4: relL2 1.36e-04 at 1 sweep,
+1.32e-04 at 100). Two things this pins down beyond the conclusion above:
+
+**The stall guard now works.** `n_iters = 2` at every requested maxiter from 1
+to 100, and the wall time is flat at 151 s. Before the Rayleigh-quotient
+termination change the same case burned 176 s grinding toward maxiter. So the
+criterion fix did have a real effect — it just cannot rescue a vector the inner
+solve is unable to represent.
+
+**A smaller shift makes it worse, not better.** eps=1e-6 gives an inner residual
+of 5.8e-03 (against 1.09e-04 at eps=1e-4) and a correspondingly worse output,
+4.9e-04 against 1.36e-04. That is the expected direction — a smaller shift is
+more ill-conditioned — and it confirms the inner solve, not the iteration, is
+the binding constraint.
 
 ## 7. NOT committed and cannot be
 
