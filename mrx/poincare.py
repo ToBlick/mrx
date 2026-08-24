@@ -1,0 +1,288 @@
+r"""Poincaré sections of a discrete field, parameterised by the toroidal angle.
+
+Three things differ from :func:`mrx.plotting.integrate_fieldlines`, and each
+one removes a specific error source rather than trading one for another.
+
+**1. The independent variable is the toroidal angle, not arclength.**
+The field line satisfies :math:`d\hat x/ds \propto \hat B` for any
+parameterisation, so dividing through by the third contravariant component
+gives
+
+.. math:: dr/d\zeta = \hat B^r/\hat B^\zeta, \qquad
+          d\theta/d\zeta = \hat B^\theta/\hat B^\zeta ,
+
+a *non-autonomous two-dimensional* system whose independent variable is the
+section coordinate itself.  Crossings of the plane :math:`\zeta = \zeta_0` then
+occur at :math:`\zeta = \zeta_0 + m` exactly -- they are integration times, not
+roots to be hunted.  Nothing is detected and nothing is interpolated, so the
+phase error an arclength integrator accumulates over thousands of turns (each
+crossing located to the tolerance of a bracketed root, each error fed into the
+next) does not exist.  The reparameterisation is exact wherever
+:math:`\hat B^\zeta \ne 0`, which for a toroidal field is everywhere.
+
+**2. The step schedule is prescribed, so lanes do not couple.**
+``diffrax`` adaptive controllers run a whole ``vmap``ed batch on the *smallest*
+step any lane asks for: one seed in a chaotic edge region drags the entire
+batch down, which is why the old code chunked into groups of eight and still
+paid for the worst seed in each group.  With :math:`\zeta` as the independent
+variable the natural step is a fixed fraction of a field period -- geometry-
+uniform, unlike arclength -- so ``StepTo`` can prescribe the whole schedule up
+front.  Every lane then executes the same number of identical-cost steps,
+batching becomes a pure memory knob, and a pathological seed costs what a
+healthy one costs.  :func:`step_convergence` is the price: fixed steps have no
+error control, so the step count has to be *justified* by refinement instead of
+assumed.
+
+**3. The state is a Cartesian chart on the cross-section.**
+:math:`\hat B^\theta \sim 1/r` near the polar axis (the coordinate vector
+:math:`\partial_\theta` has length :math:`O(r)`), so :math:`d\theta/d\zeta`
+diverges at the origin and the innermost seeds -- the ones that resolve the
+axis and the low-shear core -- are exactly the ones an integrator handles
+worst.  In :math:`(u, v) = (r\cos 2\pi\theta, r\sin 2\pi\theta)` the
+:math:`1/r` cancels against the :math:`O(r)` length of the same coordinate
+vector and the right-hand side is bounded through the origin.
+"""
+from __future__ import annotations
+
+import diffrax as dfx
+import jax
+import jax.numpy as jnp
+
+TWO_PI = 2.0 * jnp.pi
+
+#: Field lines are frozen once they reach this logical radius.  The spline maps
+#: are genuinely singular at ``r = 1`` (``det DF = 0`` at the outer knot), so
+#: the domain has to stop just short of it.
+R_MAX = 1.0 - 1e-6
+
+
+# ---------------------------------------------------------------------------
+# The field
+# ---------------------------------------------------------------------------
+
+def logical_field(seq, dof, k, dirichlet):
+    r"""Contravariant logical components of the vector field behind a k-form.
+
+    A 2-form pushes forward by Piola, :math:`B = DF\,\hat B/J`, so its
+    coefficients *are* the contravariant components and the field-line
+    direction in logical space is :math:`\hat B` itself.  A 1-form pushes
+    forward as :math:`v = DF^{-T}\hat A`, so the logical direction is
+    :math:`DF^{-1} v = g^{-1}\hat A` with :math:`g = DF^T DF`.
+
+    Only the direction matters below -- the third component divides out -- so
+    no Jacobian factor is applied.
+    """
+    if k not in (1, 2):
+        raise ValueError(f"logical_field: k must be 1 or 2, got {k}")
+    basis = seq.basis_2 if k == 2 else seq.basis_1
+    extraction = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+    # dof @ (E @ V) == (E^T dof) @ V: fold the extraction into the coefficients
+    # once instead of applying it at every one of the millions of evaluations.
+    weights = extraction.T @ jnp.asarray(dof)
+    ns = basis.ns
+
+    if k == 2:
+        def field(x):
+            return weights @ jax.vmap(basis, (None, 0))(x, ns)
+    else:
+        def field(x):
+            a = weights @ jax.vmap(basis, (None, 0))(x, ns)
+            df = jax.jacfwd(seq.map)(x)
+            return jnp.linalg.solve(df.T @ df, a)
+    return field
+
+
+def _uv_to_logical(y, zeta):
+    r = jnp.sqrt(y[0] ** 2 + y[1] ** 2)
+    theta = jnp.arctan2(y[1], y[0]) / TWO_PI
+    return jnp.array([r, theta % 1.0, zeta % 1.0]), r, theta
+
+
+def cross_section_rhs(field):
+    """``dy/dzeta`` for ``y = (u, v)``, the Cartesian cross-section chart.
+
+    Freezing a line at ``r >= R_MAX`` is an *event*, not a guard: the physical
+    field of a harmonic form is tangent to the boundary, so a line that gets
+    there has left the domain the discrete field is defined on, and the only
+    honest thing to do is stop it and count it (see :func:`escaped_mask`).
+    Freezing rather than erroring also keeps a lost lane from costing anything.
+    """
+    def rhs(zeta, y, args):
+        x, r, theta = _uv_to_logical(y, zeta)
+        b = field(x)
+        dr, dtheta = b[0] / b[2], b[1] / b[2]
+        c, s = jnp.cos(TWO_PI * theta), jnp.sin(TWO_PI * theta)
+        du = c * dr - TWO_PI * r * s * dtheta
+        dv = s * dr + TWO_PI * r * c * dtheta
+        return jnp.where(r < R_MAX, jnp.array([du, dv]), jnp.zeros(2))
+    return rhs
+
+
+# ---------------------------------------------------------------------------
+# The trace
+# ---------------------------------------------------------------------------
+
+def trace(field, seeds, n_periods, steps_per_period=32, saves_per_period=8,
+          batch_size=None, adaptive=False, rtol=1e-8, atol=1e-10):
+    """Integrate ``seeds`` for ``n_periods`` units of logical zeta.
+
+    Args:
+        field: ``x -> (B^r, B^theta, B^zeta)``, from :func:`logical_field`.
+        seeds: ``(n_seeds, 2)`` array of logical ``(r, theta)`` start points at
+            ``zeta = 0``.
+        n_periods: number of field periods to follow.  One unit of logical zeta
+            is one field period for the stellarator maps and one full toroidal
+            turn for the axisymmetric ones.
+        steps_per_period: prescribed steps per period.  Must be a multiple of
+            ``saves_per_period`` so that every save time is a step endpoint and
+            no dense interpolation enters the saved values.
+        saves_per_period: samples kept per period.  One would suffice for the
+            section itself; more are needed to unwrap the poloidal angle
+            without aliasing (``saves_per_period`` must exceed twice the
+            poloidal turns per period).
+        adaptive: use a PID controller instead of the prescribed schedule.
+            Only for measuring what the prescribed schedule buys.
+
+    Returns:
+        ``(ys, ok)`` with ``ys`` of shape
+        ``(n_seeds, n_periods * saves_per_period + 1, 2)`` in the ``(u, v)``
+        chart, and ``ok`` a per-seed boolean from the solver.
+    """
+    if steps_per_period % saves_per_period:
+        raise ValueError(
+            f"steps_per_period={steps_per_period} must be a multiple of "
+            f"saves_per_period={saves_per_period}; otherwise the saved values "
+            "come from dense interpolation rather than from steps")
+
+    n_steps = n_periods * steps_per_period
+    step_ts = jnp.arange(n_steps + 1) / steps_per_period
+    save_ts = jnp.arange(n_periods * saves_per_period + 1) / saves_per_period
+
+    seeds = jnp.asarray(seeds)
+    r, theta = seeds[:, 0], seeds[:, 1]
+    y0s = jnp.stack([r * jnp.cos(TWO_PI * theta),
+                     r * jnp.sin(TWO_PI * theta)], axis=1)
+
+    term = dfx.ODETerm(cross_section_rhs(field))
+    if adaptive:
+        controller = dfx.PIDController(rtol=rtol, atol=atol)
+        dt0, max_steps = 1.0 / steps_per_period, 100 * n_steps + 1000
+    else:
+        controller = dfx.StepTo(ts=step_ts)
+        dt0, max_steps = None, n_steps + 1
+
+    def one(y0):
+        sol = dfx.diffeqsolve(
+            terms=term, solver=dfx.Tsit5(),
+            t0=0.0, t1=float(n_periods), dt0=dt0, y0=y0,
+            saveat=dfx.SaveAt(ts=save_ts),
+            stepsize_controller=controller,
+            max_steps=max_steps, throw=False,
+        )
+        return sol.ys, sol.result == dfx.RESULTS.successful
+
+    # Full vmap by default.  With a prescribed schedule every lane executes the
+    # same steps, so there is nothing to gain from chunking and the batch size
+    # is purely a memory knob -- the opposite of the adaptive case, where the
+    # chunk exists to stop one bad seed from setting the step for the rest.
+    if batch_size is None:
+        return jax.vmap(one)(y0s)
+    return jax.lax.map(one, y0s, batch_size=batch_size)
+
+
+def escaped_mask(ys):
+    """``True`` for seeds whose line reached the domain boundary."""
+    r = jnp.sqrt(ys[..., 0] ** 2 + ys[..., 1] ** 2)
+    return jnp.any(r >= R_MAX, axis=-1) | jnp.any(~jnp.isfinite(r), axis=-1)
+
+
+def step_convergence(field, seeds, n_periods, steps_per_period,
+                     saves_per_period=8, batch_size=None):
+    """Max cross-section displacement between ``steps_per_period`` and twice it.
+
+    Fixed steps carry no error estimate, so the step count has to be earned.
+    Returned in units of the logical minor radius, over healthy seeds only.
+    """
+    lo, _ = trace(field, seeds, n_periods, steps_per_period, saves_per_period,
+                  batch_size=batch_size)
+    hi, _ = trace(field, seeds, n_periods, 2 * steps_per_period,
+                  saves_per_period, batch_size=batch_size)
+    good = ~(escaped_mask(lo) | escaped_mask(hi))
+    d = jnp.linalg.norm(lo - hi, axis=-1).max(axis=-1)
+    return float(jnp.max(jnp.where(good, d, -jnp.inf)))
+
+
+# ---------------------------------------------------------------------------
+# Rotational transform
+# ---------------------------------------------------------------------------
+
+def axis_track(ys, saves_per_period):
+    """The magnetic axis as a function of zeta, from the innermost seed.
+
+    ``ys[0]`` must be the innermost seed.  Its orbit is a small invariant curve
+    encircling the axis, so the mean over turns at a *fixed* phase within the
+    period is the axis position at that phase -- exact for a circle, and
+    second order in the orbit radius otherwise.  Doing it per phase rather than
+    once matters because the axis moves within a period, and the poloidal angle
+    has to be measured about the axis *at the same zeta* or the winding picks
+    up the axis excursion.
+    """
+    inner = ys[0, :-1].reshape(-1, saves_per_period, 2)
+    center = jnp.mean(inner, axis=0)                    # (saves_per_period, 2)
+    n_saves = ys.shape[1]
+    reps = -(-n_saves // saves_per_period)
+    return jnp.tile(center, (reps, 1))[:n_saves]
+
+
+def rotational_transform(ys, saves_per_period, nfp, center=None):
+    """Iota (poloidal turns per *toroidal* turn) by least squares on the angle.
+
+    One unit of logical zeta is one field period, i.e. ``1/nfp`` of a toroidal
+    turn, hence the ``nfp`` factor.  A least-squares slope over every sample is
+    used rather than the endpoint difference: on an island chain or a noisy
+    orbit the endpoints are two arbitrary points on a bounded oscillation,
+    while the slope is the winding rate that oscillation is riding on.
+
+    Returns ``(iota, residual)``, the residual being the RMS deviation of the
+    unwrapped angle from the fitted line in poloidal turns -- small on an
+    invariant surface, ``O(island width)`` on an island, large in a chaotic
+    region.
+    """
+    if center is None:
+        center = axis_track(ys, saves_per_period)
+    d = ys - center
+    angle = jnp.unwrap(jnp.arctan2(d[..., 1], d[..., 0]), axis=-1) / TWO_PI
+    zeta = jnp.arange(ys.shape[1]) / saves_per_period
+
+    zc = zeta - jnp.mean(zeta)
+    ac = angle - jnp.mean(angle, axis=-1, keepdims=True)
+    slope = (ac @ zc) / (zc @ zc)
+    resid = jnp.sqrt(jnp.mean((ac - slope[:, None] * zc) ** 2, axis=-1))
+    return jnp.abs(slope) * nfp, resid
+
+
+# ---------------------------------------------------------------------------
+# Physical coordinates
+# ---------------------------------------------------------------------------
+
+def to_RZ(seq, ys, zeta):
+    """Map ``(u, v)`` cross-section points at fixed logical zeta to ``(R, Z)``."""
+    r = jnp.sqrt(ys[..., 0] ** 2 + ys[..., 1] ** 2)
+    theta = jnp.arctan2(ys[..., 1], ys[..., 0]) / TWO_PI % 1.0
+    x = jnp.stack([r, theta, jnp.full_like(r, zeta % 1.0)], axis=-1)
+    xyz = jax.vmap(seq.map)(x.reshape(-1, 3)).reshape(x.shape)
+    R = jnp.sqrt(xyz[..., 0] ** 2 + xyz[..., 1] ** 2)
+    return R, xyz[..., 2]
+
+
+def seed_line(n_seeds, r_min=0.03, r_max=0.97, theta=0.0, r_axis=0.01):
+    """Seeds along a logical radial ray at ``zeta = 0``, axis probe first.
+
+    Entry 0 is a dedicated probe at ``r_axis`` whose only job is to supply the
+    centre for :func:`axis_track`.  It has to be a separate seed: the angle of
+    the reference orbit *about itself* is the difference of two identical
+    floats, so its own winding is pure rounding noise and any iota reported for
+    it is meaningless.  Callers should drop entry 0 from anything they plot.
+    """
+    r = jnp.concatenate([jnp.array([r_axis]), jnp.linspace(r_min, r_max, n_seeds)])
+    return jnp.stack([r, jnp.full_like(r, theta)], axis=1)
