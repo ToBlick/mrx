@@ -275,6 +275,76 @@ def to_RZ(seq, ys, zeta):
     return R, xyz[..., 2]
 
 
+def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
+                   axis_RZ=None, path=None):
+    """The two-panel figure: the section coloured by iota, and the profile.
+
+    Pure arrays in, so a run can be re-rendered from its archive without
+    rebuilding the map -- which is the expensive half of producing it.
+    """
+    import matplotlib.pyplot as plt  # noqa: PLC0415  (keep the module headless)
+
+    fig = plt.figure(figsize=(11.5, 5.0), constrained_layout=True)
+    ax, bx = fig.subplots(1, 2, width_ratios=[1.3, 1.0])
+
+    good = iota[keep][jnp.isfinite(iota[keep])] if keep.any() else iota[:0]
+    lo, hi = (float(jnp.min(good)), float(jnp.max(good))) if good.size else (0.0, 1.0)
+    if hi - lo < 1e-9:
+        lo, hi = lo - 5e-3, hi + 5e-3
+
+    # One marker per crossing: ~10^4 points want a hairline to show the surface
+    # texture, ~10^2 want something you can actually see.
+    npts = max(int(keep.sum()) * R.shape[1], 1)
+    size = float(jnp.clip(3000.0 / npts, 0.35, 15.0))
+    colour = jnp.broadcast_to(iota[:, None], R.shape)
+    sc = ax.scatter(R[keep], Z[keep], c=colour[keep], s=size, vmin=lo, vmax=hi,
+                    cmap="turbo", linewidths=0, rasterized=True)
+    if (~keep).any():
+        ax.scatter(R[~keep], Z[~keep], c="0.7", s=size, linewidths=0,
+                   rasterized=True, label=f"lost ({int((~keep).sum())})")
+        ax.legend(loc="upper right", fontsize=7, markerscale=4)
+    if axis_RZ is not None:
+        ax.plot(axis_RZ[0], axis_RZ[1], "k+", ms=5, mew=0.8)
+    fig.colorbar(sc, ax=ax, label=r"$\iota$", fraction=0.046, pad=0.02)
+
+    # An axisymmetric vacuum field has iota = 0, so every line is a fixed point
+    # of the return map and the section collapses onto the midplane.  That is
+    # the right answer, but equal aspect renders it as a hairline, so the aspect
+    # is only held when the two spans are within a factor of 20.
+    xlim, ylim = _padded(R[keep]), _padded(Z[keep])
+    spans = (xlim[1] - xlim[0], ylim[1] - ylim[0])
+    to_scale = max(spans) / max(min(spans), 1e-30) < 20.0
+    ax.set_aspect("equal" if to_scale else "auto")
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    ax.set_xlabel("R")
+    ax.set_ylabel("Z")
+    ax.set_title(title + ("" if to_scale else "\nAXES NOT TO SCALE"),
+                 fontsize=10)
+
+    bx.plot(seed_r[keep], iota[keep], "o-", ms=3, lw=0.8)
+    bx.set_xlabel("seed radius $r$")
+    bx.set_ylabel(r"$\iota$")
+    bx.grid(alpha=0.3)
+    bx2 = bx.twinx()
+    bx2.semilogy(seed_r[keep], jnp.maximum(resid[keep], 1e-16), ".", ms=4,
+                 color="tab:red", alpha=0.7)
+    bx2.set_ylabel("angle-fit residual [turns]", color="tab:red")
+    bx.set_title(subtitle, fontsize=10)
+
+    if path is not None:
+        fig.savefig(path, dpi=200)
+        plt.close(fig)
+    return fig
+
+
+def _padded(v, pad=0.06, floor=1e-9):
+    lo, hi = float(jnp.nanmin(v)), float(jnp.nanmax(v))
+    span = max(hi - lo, floor)
+    mid = 0.5 * (lo + hi)
+    return mid - 0.5 * span - pad * span, mid + 0.5 * span + pad * span
+
+
 def seed_line(n_seeds, r_min=0.03, r_max=0.97, theta=0.0, r_axis=0.01):
     """Seeds along a logical radial ray at ``zeta = 0``, axis probe first.
 

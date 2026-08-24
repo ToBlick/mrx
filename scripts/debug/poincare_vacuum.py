@@ -36,15 +36,14 @@ import matplotlib  # noqa: E402
 matplotlib.use("Agg")
 
 import jax.numpy as jnp  # noqa: E402
-import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mrx.nullspace import compute_nullspaces  # noqa: E402
 from mrx.poincare import (  # noqa: E402
-    escaped_mask, logical_field, rotational_transform, seed_line,
-    step_convergence, to_RZ, trace,
+    escaped_mask, logical_field, render_section, rotational_transform,
+    seed_line, step_convergence, to_RZ, trace,
 )
 from verify_block_jacobi import build_sequence  # noqa: E402
 
@@ -127,53 +126,25 @@ def run_field(seq, dof, k, dirichlet, nfp, cli):
             "walltime": walltime, "drift": drift}
 
 
-def plot(seq, res, geometry, label, plane, nfp, path):
-    ys, saves = res["ys"], res["saves_per_period"]
+def section_RZ(seq, res, plane):
+    """(R, Z) of the crossings and of the axis, at one logical zeta plane."""
+    saves = res["saves_per_period"]
+    off = int(round(plane * saves))
+    R, Z = to_RZ(seq, jnp.asarray(res["ys"][:, off::saves, :]), plane)
+    aR, aZ = to_RZ(seq, jnp.asarray(res["axis"][off::saves, :]), plane)
+    return (np.asarray(R), np.asarray(Z),
+            np.asarray(aR), np.asarray(aZ))
+
+
+def plot(res, geometry, label, plane, nfp, RZ, path):
+    R, Z, aR, aZ = RZ
     keep = ~(res["escaped"] | ~res["ok"])
-    section = ys[:, int(round(plane * saves)):: saves, :]
-    R, Z = to_RZ(seq, jnp.asarray(section), plane)
-    R, Z = np.asarray(R), np.asarray(Z)
-    iota = res["iota"]
-
-    fig, (ax, bx) = plt.subplots(
-        1, 2, figsize=(11, 4.6), gridspec_kw={"width_ratios": [1.35, 1]})
-
-    finite = np.isfinite(iota[keep])
-    lo, hi = (float(np.min(iota[keep][finite])),
-              float(np.max(iota[keep][finite]))) if finite.any() else (0.0, 1.0)
-    if hi - lo < 1e-12:
-        lo, hi = lo - 5e-3, hi + 5e-3
-
-    colour = np.broadcast_to(iota[:, None], R.shape)
-    sc = ax.scatter(R[keep], Z[keep], c=colour[keep], s=0.35, vmin=lo, vmax=hi,
-                    cmap="turbo", linewidths=0, rasterized=True)
-    if (~keep).any():
-        ax.scatter(R[~keep], Z[~keep], c="0.7", s=0.25, linewidths=0,
-                   rasterized=True, label=f"lost ({int((~keep).sum())})")
-        ax.legend(loc="upper right", fontsize=7, markerscale=8)
-    axis_uv = res["axis"][int(round(plane * saves)):: saves, :]
-    aR, aZ = to_RZ(seq, jnp.asarray(axis_uv), plane)
-    ax.plot(np.asarray(aR), np.asarray(aZ), "k+", ms=4, mew=0.6)
-    fig.colorbar(sc, ax=ax, label=r"$\iota$")
-    ax.set_aspect("equal")
-    ax.set_xlabel("R")
-    ax.set_ylabel("Z")
-    ax.set_title(f"{geometry} — {label} — $\\zeta = {plane:g}$ "
-                 f"({ys.shape[1] // saves} crossings/line)")
-
-    bx.plot(res["seeds"][keep, 0], iota[keep], "o-", ms=3, lw=0.8)
-    bx.set_xlabel("seed radius $r$")
-    bx.set_ylabel(r"$\iota$")
-    bx.grid(alpha=0.3)
-    bx2 = bx.twinx()
-    bx2.semilogy(res["seeds"][keep, 0], np.maximum(res["resid"][keep], 1e-16),
-                 ".", ms=3, color="tab:red", alpha=0.6)
-    bx2.set_ylabel("angle-fit residual [turns]", color="tab:red")
-    bx.set_title(f"nfp = {nfp},  step drift {res['drift']:.1e}")
-
-    fig.tight_layout()
-    fig.savefig(path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
+    render_section(
+        R, Z, res["iota"], res["resid"], res["seeds"][:, 0], keep,
+        title=f"{geometry}  |  {label}  |  $\\zeta = {plane:g}$\n"
+              f"{R.shape[1]} crossings/line",
+        subtitle=f"nfp = {nfp}   |   h/2 step drift {res['drift']:.1e}",
+        axis_RZ=(aR, aZ), path=path)
 
 
 def main():
@@ -239,16 +210,23 @@ def main():
               f"iota {float(iota.min()):.4f}..{float(iota.max()):.4f}",
               flush=True)
 
+        # (R, Z) goes into the archive alongside (u, v): re-deriving it needs
+        # the map, and rebuilding the map is the expensive half of this script.
+        sections = {}
         for plane in (float(v) for v in cli.planes.split(",")):
             path = os.path.join(
                 cli.out, f"poincare_{cli.geometry}_{name}_zeta{plane:g}.png")
-            plot(seq, res, cli.geometry, label, plane, nfp, path)
+            RZ = section_RZ(seq, res, plane)
+            plot(res, cli.geometry, label, plane, nfp, RZ, path)
             print(f"        -> {path}", flush=True)
+            for key, arr in zip(("R", "Z", "axisR", "axisZ"), RZ):
+                sections[f"{key}_zeta{plane:g}"] = arr
 
         np.savez_compressed(
             os.path.join(cli.out, f"trace_{cli.geometry}_{name}.npz"),
             ys=res["ys"], iota=res["iota"], resid=res["resid"],
-            seeds=res["seeds"], escaped=res["escaped"], ok=res["ok"])
+            seeds=res["seeds"], escaped=res["escaped"], ok=res["ok"],
+            axis=res["axis"], **sections)
         summary["fields"][name] = {
             "walltime_s": res["walltime"], "step_drift": res["drift"],
             "lost": int((~keep).sum()),
