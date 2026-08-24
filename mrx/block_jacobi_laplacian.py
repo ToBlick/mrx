@@ -172,8 +172,6 @@ def _axis_bases(seq):
     deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
     quad_w = (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
     return primal, deriv, quad_w
-
-
 def _ktilde_1d(seq, axis, mass_deriv, profile_primal, window=None):
     """``Ktilde = M^(d) G A^-1 G^T M^(d)`` -- the weak half's 1-D factor.
 
@@ -275,128 +273,39 @@ def _fd_stiffness_degree0(seq, axis, profile):
     return jnp.asarray(0.5 * (k + k.T))
 
 
-def _weak_inverse_amplification(seq, k, c):
-    """``(M_r^{(k-1)})^{-1}[last, last]`` -- the 1/h the surface term picks up.
+def _h_last(seq):
+    """Width of the last radial element, from the knot vector."""
+    t = np.asarray(seq.basis_0.Λ[0].T)
+    uniq = np.unique(np.round(t, 12))
+    return float(uniq[-1] - uniq[-2])
 
-    The natural-BC term is not the bare surface integral. It enters ``W_k`` as
-    ``E^T M_{k-1}^{-1} E`` with ``E`` the pairing of the V_k boundary trace
-    against V_{k-1}::
 
-        radial:  dLam_i(1) Lam_j(1)      angular: M_t (x) M_z
+def _face_alpha(seq, k, c, lumped):
+    r"""``(scalar, amplification)`` for the natural-BC face term.
 
-    and the angular masses cancel against the same factors in ``M_{k-1}^{-1}``,
-    leaving one scalar: the last diagonal entry of the INVERSE radial mass of
-    V_{k-1}.  That entry scales like ``1/h_last``, which is what the measured
-    optimum does (toroid k=1 free: best scale 3 / 4.5 / 6.5 at n_r = 6 / 8 / 12,
-    i.e. ~0.55/h) -- and it differs by degree through the V_{k-1} mass weight,
-    which is why k=1 wanted ~4x and k=2 ~100x.
+    The boundary term is a penalty on the trace of the form at ``r = 1``:
+    ``u . n`` at ``k=1``, ``w x n`` at ``k=2``, ``omega`` at ``k=3``, squared
+    and integrated over the surface.  With ``n = grad r / sqrt(g^rr)`` and
+    ``dsigma = J sqrt(g^rr) dtheta dzeta``, the integrand is ``m_k sqrt(g^rr)``
+    at every degree, where ``m_k`` is the component's mass weight::
 
-    WHICH component of V_{k-1} it pairs with is not always ``c``. At k=2 the
-    trace is ``int (w x n).tau`` and the cross product SWAPS the tangential
-    components: ``w_theta`` pairs with ``tau_zeta``. The bases confirm it --
-    V_2 at c=theta has angular bases (theta primal, zeta derivative), which are
-    V_1's at c=ZETA, not V_1's at c=theta -- and the angular cancellation above
-    only holds for that partner. On the toroid the two weights differ by
-    ``(R/a)^2``, so getting this wrong is not a small perturbation.
+        k=1   (u.n)^2 dsigma  =  g^rr u_r^2        . J sqrt(g^rr)
+        k=2   |w x n|^2       =  g_cc w^c w^c/J^2  . J sqrt(g^rr)
+        k=3   omega^2 dsigma  =  omega^2/J^2       . J sqrt(g^rr)
 
-        k=1  c=r      -> V_0, the only component
-        k=2  c=theta  -> V_1 c=zeta ,  c=zeta -> V_1 c=theta   (3 - c)
-        k=3  c=r      -> V_2 c=r  (the normal component, int om (tau.n))
+    so the coefficient is the face average of ``m_k sqrt(g^rr)`` over
+    ``theta, zeta``, and the amplification is a bare ``1/h`` on the last
+    radial element.
 
-    The V_{k-1} radial basis is PRIMAL for every one of those: V_0 always, V_1
-    component c is a derivative only on axis c (and the partner is never r when
-    k=2 has a trace), V_2 component r is a derivative on theta and zeta only.
+    Under ``lumped="diag"`` the component factor ``w_comp = m_k/J`` is carried
+    outside as the ``D`` sandwich, so it has to come back out here or it is
+    counted twice.  That division is also what makes the coefficient
+    ``(k,c)``-dependent -- ``m_k`` survives as a WEIGHT on the average rather
+    than cancelling -- which is why the scale is degree-dependent and why it is
+    exact on a face where ``J`` is constant.  See the paper, natural-BC section.
     """
     fields = weight_fields(seq)
     ginv, met, jac = fields["ginv_aa"], fields["met_aa"], fields["jac"]
-    partner = 3 - c if k == 2 else c
-    weight = {0: jac, 1: ginv[partner] * jac, 2: met[partner] / jac}[k - 1]
-    prof = bundled_axis_profiles(seq, weight)[0]
-    primal, _, quad_w = _axis_bases(seq)
-    m_r = np.asarray(_assemble_weighted_1d_mass(primal[0], quad_w[0] * prof))
-    # Lam(1) = e_last for a clamped spline, so this is (M_r^-1)[last, last];
-    # a solve rather than a full inverse.
-    rhs = np.zeros(m_r.shape[0])
-    rhs[-1] = 1.0
-    return float(np.linalg.solve(m_r, rhs)[-1])
-
-
-def _mesh_amplification(seq):
-    """``(M_r^{logical})^{-1}[last, last]`` -- the ``1/h``, with NO metric.
-
-    The counterpart to :func:`_weak_inverse_amplification`, and the reason that
-    one is wrong.  Reducing ``E^T M_{k-1}^{-1} E`` to a scalar means taking the
-    weight of each of the three matrices at ``r = 1``, averaging over
-    ``theta, zeta``, and multiplying::
-
-        E            ->  m_k          := mass weight of V_k component c
-        M_{k-1}^{-1} ->  1 / m_{k-1}  := INVERSE mass weight of the partner
-        E^T          ->  m_k
-
-        w_face = m_k^2 / m_{k-1}
-
-    and with ``J^2 = prod g_aa`` that product is ``m_k g^rr`` for EVERY degree:
-
-        k=1  (g^rr J)^2 / J          = (g^rr)^2 J        = m_1 g^rr
-        k=2  (g_tt/J)^2 / (g^zz J)   = g_tt/(g_rr J)     = m_2 g^rr
-        k=3  (1/J)^2 / (g_rr/J)      = 1/(g_rr J)        = m_3 g^rr
-
-    So the face weight is ``mass_weight * g^rr`` -- the ORIGINAL ``direct``
-    weight -- and what is left of ``M_{k-1}^{-1}`` is a purely LOGICAL
-    quantity: the last diagonal entry of the inverse of the unweighted radial
-    mass, ``~ c(p)/h_last``.  No metric, no ``k``, no component, no geometry:
-    one number per (radial mesh, degree).  The partner's radial basis is primal
-    for every degree (see :func:`_weak_inverse_amplification`), so it really is
-    the same matrix in all eight cases.
-
-    ``bc_entry="exact"`` instead put ``m_{k-1}`` INSIDE this mass and then
-    substituted ``g^rr -> sqrt(g^rr)`` in the face weight to compensate; the
-    two errors do not cancel and the net result is short by one surface
-    element, ``J sqrt(g^rr)|_{r=1}`` (~13x on the epsilon=1/3 toroid).
-    """
-    primal, _, quad_w = _axis_bases(seq)
-    m_r = np.asarray(_assemble_weighted_1d_mass(primal[0], quad_w[0]))
-    rhs = np.zeros(m_r.shape[0])
-    rhs[-1] = 1.0
-    return float(np.linalg.solve(m_r, rhs)[-1])
-
-
-def _face_metric_scalar(seq, k, c, lumped, separate=False):
-    r"""ALL the metric in one number: pullback x measure at r=1, over theta,zeta.
-
-    Everything except the ``1/h`` (:func:`_mesh_amplification`) is geometry,
-    and it collapses to a single scalar. With ``m_k`` the component's mass
-    weight, ``m_{k-1}`` the partner's and ``w_comp = m_k/J`` the factor the
-    diag lumping carries outside as the ``D`` sandwich::
-
-        no lumping   m_k^2 / m_{k-1}              = m_k g^rr
-        diag lumping m_k^2 / (m_{k-1} w_comp)     = m_k J / m_{k-1} = J g^rr
-
-    and ``J g^rr`` is the SAME for k=1,2,3 (use ``J^2 = prod g_aa``): the whole
-    per-degree spread was the double-counted ``w_comp``. It factors into the
-    two geometric ingredients, and nothing else::
-
-        J g^rr = (J sqrt(g^rr))  x  (sqrt(g^rr))
-                  surface element    pullback of the normal component
-
-    ``separate`` averages those factors INDEPENDENTLY over theta,zeta and then
-    multiplies, instead of averaging their product. They differ by the
-    covariance, so they agree exactly wherever ``g^rr`` is constant on the face
-    (the toroid -- a control), and ``<S><P> <= <SP>`` by Chebyshev whenever the
-    two are positively correlated, which is the case on a shaped boundary.
-
-    NOTE this is the opposite convention to :func:`bundled_axis_profiles`,
-    deliberately: bundling `g * J` as a unit is there to keep `g^tt J ~ 1/r`
-    integrable toward the AXIS. On the r=1 face there is no such singularity,
-    so the argument does not carry over.
-    """
-    fields = weight_fields(seq)
-    ginv, met, jac = fields["ginv_aa"], fields["met_aa"], fields["jac"]
-    m_k = {0: jac, 1: ginv[c] * jac, 2: met[c] / jac, 3: 1.0 / jac}[k]
-    surf = jac * jnp.sqrt(ginv[0])          # J sqrt(g^rr), the surface element
-    pull = jnp.sqrt(ginv[0])                # sqrt(g^rr), the normal pullback
-    comp = None if lumped == "diag" else m_k / jac
-
     wy, wz = seq.quad.w_y, seq.quad.w_z
     norm = jnp.sum(wy) * jnp.sum(wz)
 
@@ -404,10 +313,9 @@ def _face_metric_scalar(seq, k, c, lumped, separate=False):
         return float(jnp.einsum('rs,r,s->', jnp.asarray(field)[-1], wy, wz)
                      / norm)
 
-    if separate:
-        val = fm(surf) * fm(pull)
-        return val if comp is None else val * fm(comp)
-    return fm(surf * pull if comp is None else surf * pull * comp)
+    m_k = {0: jac, 1: ginv[c] * jac, 2: met[c] / jac, 3: 1.0 / jac}[k]
+    div = fm(m_k / jac) if lumped == "diag" else 1.0
+    return fm(m_k * jnp.sqrt(ginv[0])) / div, 1.0 / _h_last(seq)
 
 
 def _edge_vector(seq, axis, window):
@@ -420,15 +328,37 @@ def _edge_vector(seq, axis, window):
     return e
 
 
-#: The production natural-BC penalty scale. `alpha` as derived is the exact
-#: surface integral and is the best NORM approximation to `L`'s boundary block,
-#: but `P` minimises kappa(P^-1 L), which wants a much smaller number. 0.10 is
-#: the minimax over 82 measured cells (4 geometries x k=0..3 x n=8..32 x
-#: p=2..5): worst case 1.11x each cell's own optimum on the shaped geometries.
-#: EMPIRICAL, not derived -- see docs/research/natural_bc_coefficient_handoff.md
-#: §16 (what to ship) and §17.5 (why a scale is needed at all). The optimum
-#: drifts DOWN with n and p; at p >= 5 or very high resolution prefer 0.05.
-PRODUCTION_BC_SCALE = 0.10
+#: The production natural-BC penalty scale.
+#: `alpha` as spelled is the surface integral itself and is the best NORM
+#: approximation to `L`'s boundary block, but `P` minimises kappa(P^-1 L),
+#: which wants a much smaller number. EMPIRICAL, not derived -- see
+#: docs/research/natural_bc_coefficient_handoff.md §16 (what to ship) and
+#: §17.5 (why a scale is needed at all).
+#:
+#: 3.0 is the `penalty` value, from the merged phase2+phase3 grids (24 cells
+#: that bracket their optimum: 4 geometries x k=1,2,3 x p=2,3,5 x two meshes),
+#: ranked by TOTAL iterations -- sum over cells of iterations at fixed s, over
+#: the sum of the per-cell optima. Worst-case ranking is the wrong metric here
+#: and says otherwise: it lets a 34-iteration cell outvote a 1450-iteration
+#: one. Measured 1.062 / 1.060 / 1.066 at s = 2 / 2.828 / 4, so the basin is
+#: flat over [2, 4] and 3.0 is a round number inside it, not a fitted optimum.
+#:
+#: It is also not an independent fit: 2.828 / 0.10 = 28.3, and the derivation's
+#: own conversion factor is c(p)/a = 31 at p=3 (measured 28-32). This is the
+#: superseded `product` value of 0.10 pushed through §5.2(e).
+#:
+#: NO p CAVEAT. `product` needed one ("prefer 0.05 at p >= 5") because its
+#: mu_0 = c(p)/h carries a c(p) that triples over p=2..5. `penalty` uses a bare
+#: 1/h and its best single s is 2 / 2 / 2.83 at p = 2 / 3 / 5 -- a 1.4x drift
+#: costing 1.8-3.5%, i.e. nothing. Do not re-add a degree-dependent default.
+#:
+#: KNOWN GAP: on rot-ellipse at p=5, k=1 and k=2, the sweep grid stopped at
+#: s=8 with the optimum still there, so those two cells are not bracketed and
+#: are excluded from the 24. Holding s=3 costs ~10% on them (630 vs 574, 635 vs
+#: 578), which is the one place `penalty` at a fixed scale loses to `product`.
+#: Including them moves the head-to-head from +0.8% to +1.7%. Shipped with that
+#: known and accepted; extending that grid is 2 jobs if it ever looks relevant.
+PRODUCTION_BC_SCALE = 3.0
 
 
 def _resolve_bc_scale(bc_scale=None):
@@ -622,27 +552,21 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
                 # periodic axes and perturbed the Dirichlet cases where the
                 # term must vanish identically.)
                 #
-                # The face weight keeps its FULL g^rr -- E^T M_{k-1}^-1 E
-                # carries two powers of the surface weight and one inverse
-                # mass, and that combination collapses to m_k g^rr at every
-                # degree -- while the amplification stays metric-FREE (see
-                # _mesh_amplification). Under `lumped="diag"` the component
-                # factor w_comp is carried outside as the D sandwich, so
-                # _face_metric_scalar drops it here.
+                # The coefficient is the face average of the squared trace
+                # against the surface element; see _face_alpha.
                 #
-                # Ten other spellings of this term were measured and lost; see
+                # Other spellings of this term were measured and lost; see
                 # docs/research/natural_bc_coefficient_handoff.md §9, §12.3 and
-                # §14.3. Do not re-add them: the exact 2-D face shape, the
-                # cross-term corrections (one of which is INDEFINITE), and the
-                # "exact" sqrt(g^rr) form are all refuted, the last being worse
-                # than no boundary term at all at k=1/2 free.
-                scalar = _face_metric_scalar(seq, k, c, lumped)
+                # §14.3. Do not re-add them: the exact 2-D face shape and the
+                # cross-term corrections (one of which is INDEFINITE) are both
+                # refuted.
+                scalar, amp = _face_alpha(seq, k, c, lumped)
                 w_face = mass_weight * ginv[a]
                 corr = _boundary_entry_direct(
                     seq, a, w_face, window, dirichlet, scalar=scalar,
                     bc_scale=bc_scale)
                 if corr is not None:
-                    kt = kt + jnp.asarray(corr * _mesh_amplification(seq))
+                    kt = kt + jnp.asarray(corr * amp)
             stiffs.append(kt)
         elif a in deriv_axes:
             stiffs.append(_ktilde_1d(seq, a, m, primal_prof[a],
@@ -1140,7 +1064,7 @@ class BlockJacobiMass:
 # Natural BC by capacitance (Woodbury) -- no operator probes                    #
 # --------------------------------------------------------------------------- #
 
-def face_operator(seq, k, c, window, corrected=True):
+def face_operator(seq, k, c, window):
     """The natural-BC face operator ``B`` on the outer radial ring.
 
     The boundary term is a surface integral on ``r = 1``, so it is assembled by
@@ -1155,13 +1079,11 @@ def face_operator(seq, k, c, window, corrected=True):
     fields = weight_fields(seq)
     ginv, met, jac = fields["ginv_aa"], fields["met_aa"], fields["jac"]
     mass_weight = {0: jac, 1: ginv[c] * jac, 2: met[c] / jac, 3: 1.0 / jac}[k]
-    # Same weight as the scalar route (§6.1), but NOT collapsed: this is the
-    # only object that can carry the theta,zeta dependence the scalar drops.
-    #   corrected = True   J g^rr, and x mu_0 -- the diag-lumped coefficient
-    #                      with the full angular profile kept
-    #   corrected = False  the historical m_k g^rr with no amplification, i.e.
-    #                      w_comp double counted and the 1/h missing
-    w_face = np.asarray((jac if corrected else mass_weight) * ginv[0])[-1]
+    # The same integrand as the scalar route, `m_k sqrt(g^rr)` (see
+    # _face_alpha), but NOT collapsed to a number: this is the only object that
+    # carries the theta,zeta dependence the scalar average drops, which is what
+    # it exists to measure.
+    w_face = np.asarray(mass_weight * jnp.sqrt(ginv[0]))[-1]
 
     # The ANGULAR factors must be the component's own bases, not always the
     # primal ones: at k=2 one angular axis is a derivative axis (w_t has zeta
@@ -1187,5 +1109,5 @@ def face_operator(seq, k, c, window, corrected=True):
     e_r = np.asarray(jax.vmap(lambda i: jnp.sum(dlam(end, i)))(dlam.ns))
     if window is not None:
         e_r = e_r[window[0]:window[0] + window[1]]
-    amp = _mesh_amplification(seq) if corrected else 1.0
-    return 0.5 * (b + b.T) * float(e_r[-1]) ** 2 * amp
+    return (0.5 * (b + b.T) * float(e_r[-1]) ** 2
+            / _h_last(seq))

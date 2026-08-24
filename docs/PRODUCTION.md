@@ -9,7 +9,7 @@ alternatives live in `docs/research/` with reopen conditions.
 | solve | preconditioner | where |
 | --- | --- | --- |
 | Mass matrices, all k (incl. saddle lower blocks) | **`kind='block_jacobi'`** -- separable bulk with the polar core PROBED AND INVERTED DENSELY (no `E+` pseudoinverse) | `mrx/block_jacobi_laplacian.py:BlockJacobiMass` |
-| Laplacians, **k = 0,1,2,3** | **`kind='block'`** -- the tensor block-Jacobi atom: per-component Kronecker sum inverted by fast diagonalisation, dense polar core, plus a rank-one natural-BC term at `bc_scale=0.10` | `mrx/block_jacobi_laplacian.py:BlockJacobiLaplacian` |
+| Laplacians, **k = 0,1,2,3** | **`kind='block'`** -- the tensor block-Jacobi atom: per-component Kronecker sum inverted by fast diagonalisation, dense polar core, plus a rank-one natural-BC boundary penalty at `bc_scale=3.0` | `mrx/block_jacobi_laplacian.py:BlockJacobiLaplacian` |
 
 Build the Laplacian one once per `(k, BC)` with
 `assemble_block_jacobi_laplacian_preconditioner(seq, ops)`; then
@@ -57,9 +57,13 @@ Unmaintained demo scripts: `scripts/deprecated/`.
 
 ## Knobs
 
-- `PRODUCTION_BC_SCALE = 0.10` scales the natural-BC term. EMPIRICAL (a
-  kappa-balance point, not a derived factor); minimax over 168 cells, median
-  penalty 1.01 against each cell's own optimum. `MRX_BJ_BC_SCALE` overrides.
+- `PRODUCTION_BC_SCALE = 3.0` scales the natural-BC term, a penalty on the
+  boundary trace (`u.n`, `w x n`, `omega`) integrated over the r=1 surface.
+  EMPIRICAL (a kappa-balance point, not a derived factor); best single value by
+  TOTAL iterations, basin flat over `[2, 4]`. The coefficient is degree
+  dependent, so one constant is a compromise across k -- see
+  `docs/research/handoff_2026-08-23_bc_alpha_sweep.md`. `MRX_BJ_BC_SCALE`
+  overrides.
 - `MRX_MASS_KIND=raw_kron` reverts the mass swap wholesale.
 - **Any new traced entry point that solves must first call
   `operators.warm_mass_preconditioner_cache`.** Mass factors build lazily and

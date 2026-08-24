@@ -48,17 +48,17 @@ from mrx.block_jacobi_laplacian import (  # noqa: E402
 # production cares most about. k = 2 tracks k = 1 in every measurement in the
 # handoff, so it does not earn its own build here.
 KS = (1, 3)
-PROD_SCALE = 0.10
+PROD_SCALE = 3.0
 # Thresholds are set from the MEASURED separation, not chosen round numbers.
 # On the session fixture the two populations are eight orders apart:
 #   inert (Dirichlet, bc_scale 0 vs 100)   ~1e-11  -- pure build noise: the
 #       dense polar-core block is not reproducible to the last bit between
 #       builds, and it is ~1.7% of the rows. Measured, not assumed, in
 #       test_defaults_are_the_production_configuration.
-#   live  (free, bc_scale 0 vs 0.10 or 100) 2.5e-3 to 3.2e-3 at k=1, the
+#   live  (free, bc_scale 0 vs 3.0 or 100) 2.5e-3 to 3.2e-3 at k=1, the
 #       WEAKEST case (the term touches one radial row of one component in
 #       three, and P's response saturates -- cf. min eig(P) = 1/(1+r s), so
-#       0.10 and 100 move it by nearly the same amount).
+#       3.0 and 100 move it by nearly the same amount).
 # 1e-8 sits three orders above the noise; 1e-4 sits 25x below the weakest real
 # effect and four orders above the inert bound.
 INERT = 1e-8      # two builds that must agree

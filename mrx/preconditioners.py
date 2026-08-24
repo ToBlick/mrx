@@ -191,9 +191,9 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
       inverse, so this changes the OPERATOR at k >= 1, not just the solve:
       **median 0.91x, better in 12 of 16 cells**, up to 0.79x on the Dirichlet
       rows. Only regression is cylinder k=1 (1.07x).
-    * ``PRODUCTION_BC_SCALE = 0.10`` SURVIVES: worst-case penalty against each
-      cell's own optimum moves 1.14 -> 1.22, and only on the toroid, where the
-      basin is flat. The shaped geometries are unchanged (1.01-1.04).
+    * the natural-BC scale SURVIVES: worst-case penalty against each cell's
+      own optimum moves 1.14 -> 1.22, and only on the toroid, where the basin
+      is flat. The shaped geometries are unchanged (1.01-1.04).
 
     Only regression anywhere is ~5% at k=0, on mass solves that take 7-17
     iterations either way.
