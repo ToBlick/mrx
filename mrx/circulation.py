@@ -375,20 +375,3 @@ def boundary_toroidal_circulation(
     return out
 
 
-def scale_u_to_target_circulation(
-    u: jnp.ndarray,
-    *,
-    gamma_current: float,
-    gamma_target: float,
-) -> tuple[jnp.ndarray, float]:
-    """
-    Scale harmonic DOF ``u`` so its boundary circulation matches ``gamma_target``.
-
-    Returns the scaled DOF vector and the multiplicative factor applied.
-    """
-    gamma_current = float(gamma_current)
-    gamma_target = float(gamma_target)
-    if abs(gamma_current) < 1.0e-30:
-        raise ValueError(f"gamma_current too small to rescale: {gamma_current}")
-    factor = gamma_target / gamma_current
-    return jnp.asarray(u, dtype=jnp.float64) * factor, float(factor)

@@ -892,30 +892,8 @@ class BlockJacobiLaplacian:
         if getattr(self, "_jit", None) is None:
             self._jit = self._build_apply()
         return self._jit(jnp.asarray(x))
-def mixed_mass_1d(seq, axis):
-    """``P[j, i] = int Lam0_j dLam_i dxi`` on one axis -- METRIC FREE.
 
-    The V_0 / V_3 pairing carries no geometry at all: a 3-form's physical proxy
-    is ``phi/J`` and the 0-form measure is ``J dxi``, so the Jacobian cancels
-    and what is left is a knot-determined banded matrix.  The 3-D transfer is
-    therefore a pure Kronecker product of three of these.
-    """
-    primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)[axis]
-    deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)[axis]
-    w = (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)[axis]
-    return np.asarray((jnp.asarray(primal) * w[None, :]) @ jnp.asarray(deriv).T)
-def radial_profiles(seq, field):
-    """Quad-weighted mean of a weight field over theta and zeta -- a RADIAL
-    profile, keeping the full radial dependence.
 
-    :func:`bundled_axis_profiles` averages each weight over the other two axes,
-    which throws the radial dependence away on the theta and zeta terms -- and
-    ``g^{tt}J ~ 1/r``, so that is exactly where it hurts. The k=0 campaign
-    measured the difference as mesh-DEPENDENT vs mesh-independent (toroid
-    22/32/40 -> 13/13/14 over three refinements).
-    """
-    wy, wz = seq.quad.w_y, seq.quad.w_z
-    return jnp.einsum('qrs,r,s->q', field, wy, wz) / (jnp.sum(wy) * jnp.sum(wz))
 class BlockJacobiMass:
     """``M_k^-1`` as a separable bulk plus a densely-probed core.
 

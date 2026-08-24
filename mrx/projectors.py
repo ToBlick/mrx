@@ -52,14 +52,6 @@ def _solve_tensor_collocation_axis(matrix: Array, values: Array, axis: int) -> A
     return jnp.moveaxis(solved.reshape(moved.shape), 0, axis)
 
 
-def _apply_tensor_operator_axis(matrix: Array, values: Array, axis: int) -> Array:
-    """Apply one tensor-product operator axis against a dense 1D matrix."""
-    moved = jnp.moveaxis(values, axis, 0)
-    applied = matrix @ moved.reshape(matrix.shape[1], -1)
-    out_shape = (matrix.shape[0],) + moved.shape[1:]
-    return jnp.moveaxis(applied.reshape(out_shape), 0, axis)
-
-
 def _leggauss_rule(order: int) -> tuple[Array, Array]:
     xi, w = np.polynomial.legendre.leggauss(order)
     return jnp.asarray(xi), jnp.asarray(w)
@@ -114,12 +106,6 @@ def _extraction(seq, k: int, dirichlet: bool, bc: bool):
         return getattr(seq, f'e{k}_dbc')
     else:
         return getattr(seq, f'e{k}')
-
-
-def _extraction_T(seq, k: int, dirichlet: bool):
-    """Pick the right transpose extraction matrix for degree k."""
-    suffix = '_dbc_T' if dirichlet else '_T'
-    return getattr(seq, f'e{k}{suffix}')
 
 
 # ---------------------------------------------------------------------------
@@ -523,41 +509,6 @@ def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
 
 
 # TODO: requires testing still
-def surface_integral(f: ScalarFunction, seq: "DeRhamSequence") -> Array:
-    """Integrate a scalar function over the outer boundary r = 1.
-
-    The surface element is  dS = ‖∂_θ F × ∂_ζ F‖ dθ dζ  evaluated at r = 1.
-    Quadrature in (θ, ζ) is reused from ``seq.quad``.
-
-    Parameters
-    ----------
-    f : callable  ξ → array of shape (1,)
-        Function of logical coordinates, called at ξ = (1, θ_q, ζ_q).
-    seq : DeRhamSequence
-
-    Returns
-    -------
-    scalar Array
-    """
-    nt, nz = seq.quad.ny, seq.quad.nz
-    X_t, X_z = jnp.meshgrid(seq.quad.x_y, seq.quad.x_z, indexing='ij')
-    xi_bdy = jnp.stack(
-        [jnp.ones(nt * nz), X_t.ravel(), X_z.ravel()], axis=-1
-    )  # (nt*nz, 3)
-
-    DF = jax.jacfwd(seq.map)
-
-    def _integrand(xi: Array) -> Array:
-        dF = DF(xi)
-        surf_jac = jnp.linalg.norm(jnp.cross(dF[:, 1], dF[:, 2]))
-        return jnp.squeeze(f(xi)) * surf_jac
-
-    vals = jax.lax.map(
-        _integrand, xi_bdy, batch_size=mrx.MAP_BATCH_SIZE_INNER
-    )  # (nt*nz,)
-    w_bdy = jnp.outer(seq.quad.w_y, seq.quad.w_z).ravel()
-    return jnp.dot(vals, w_bdy)
-
 # TODO: requires testing still
 class BoundaryProjector:
     """Project a k-form onto the Dirichlet boundary DOFs via a surface integral.

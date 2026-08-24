@@ -126,25 +126,21 @@ class MassPreconditioners(eqx.Module):
     raw_kron: Optional[dict] = None
 
 
-def tensor_mass_rank_for_degree(tensor: TensorMassPreconditioner, k: int) -> int:
-    if k not in (0, 1, 2, 3):
-        raise ValueError("k must be 0, 1, 2 or 3")
-    return int(tensor.ranks[k])
-
-
 @dataclass(frozen=True)
 class MassPreconditionerSpec:
     # kinds: none | jacobi | tensor | raw_kron | block_jacobi
-    #   raw_kron = Kronecker model on the raw grid with pseudoinverse
-    #     extraction transfer; the production default since
-    #     2026-08-17 (docs/research/mass_preconditioner_pivot.md)
-    #   block_jacobi = the same separable-bulk shape, but the polar core is
-    #     probed and inverted DENSELY instead of reached through the E+
-    #     pseudoinverse. Fully wired (assemble, dispatch, schur.inner) and
-    #     buildable on demand, but NOT the default -- see
-    #     default_mass_preconditioner() for the switch and what it costs.
-    #   tensor   = surgery/Schur split, retained as a fallback; its machinery
-    #     lives in mrx/experimental/mass_surgery.py
+    #   block_jacobi = separable bulk with the polar core probed and inverted
+    #     DENSELY. THE PRODUCTION DEFAULT since 2026-08-22 -- but that default
+    #     lives in default_mass_preconditioner(), NOT in the field default
+    #     below, which is still 'raw_kron'. Anything constructing a bare
+    #     MassPreconditionerSpec() gets raw_kron, including
+    #     SchurPreconditionerSpec.inner and default_saddle_preconditioner().
+    #   raw_kron = the same separable-bulk shape, but the polar core is reached
+    #     through the E+ pseudoinverse instead. Production 2026-08-17..08-22,
+    #     still the schur.inner default (docs/research/mass_preconditioner_pivot.md).
+    #   tensor   = surgery/Schur split. RETIRED from production 2026-08-17; kept
+    #     reachable by explicit spec only, and its machinery lives in
+    #     mrx/experimental/mass_surgery.py. Nothing in mrx/ or test/ selects it.
     #   (richardson/chebyshev removed 2026-08-14, see mrx/experimental/chebyshev.py)
     kind: str = 'raw_kron'
     surgery_schur: bool = False
@@ -312,14 +308,6 @@ def set_mass_tensor(preconds: Optional[MassPreconditioners], data: TensorMassPre
 
 
 
-def set_mass_rtzblock_factor(preconds: Optional[MassPreconditioners], k: int, dirichlet: bool, factor_data):
-    raise ValueError("rt-zblock mass preconditioner has been retired from production")
-
-
-def invalidate_mass_rtzblock(preconds: Optional[MassPreconditioners], k: int):
-    return preconds
-
-
 def _extracted_mass_diagonal(e, d_raw, mass_apply, *, batch_size: int = 16):
     """``diag(E M E^T)`` from the raw diagonal, probing only the coupled rows.
 
@@ -426,22 +414,6 @@ def _mean_one(values: jnp.ndarray) -> jnp.ndarray:
     return values / safe_mean
 
 
-def _safe_radial_quadrature(seq) -> jnp.ndarray:
-    return jnp.maximum(jnp.asarray(seq.quad.x_x, dtype=jnp.float64), 1e-8)
-
-
-def _k1_radial_reference_baselines(seq) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    # Kept for `mrx.operators` (Hodge stiffness preconditioner) which still
-    # consumes radial-baseline priors. The mass tensor preconditioner no
-    # longer uses any prior channels.
-    safe_r = _safe_radial_quadrature(seq)
-    return (
-        _mean_one(safe_r),
-        _mean_one(1.0 / safe_r),
-        _mean_one(safe_r),
-    )
-
-
 def _normalize_cp_term_signs(
     scale: jnp.ndarray,
     factor_theta: jnp.ndarray,
@@ -479,22 +451,6 @@ def _make_separated_term(
     }
 
 
-def _combine_separated_term_sets(
-    left_terms: tuple[Mapping[str, jnp.ndarray], ...],
-    right_terms: tuple[Mapping[str, jnp.ndarray], ...],
-) -> tuple[dict[str, jnp.ndarray], ...]:
-    combined = []
-    for left in left_terms:
-        for right in right_terms:
-            combined.append(_make_separated_term(
-                left["theta_factor"] * right["theta_factor"],
-                left["radial_factor"] * right["radial_factor"],
-                left["zeta_factor"] * right["zeta_factor"],
-                scale=left["scale"] * right["scale"],
-            ))
-    return tuple(combined)
-
-
 def _tensor_from_separated_terms(
     terms: tuple[Mapping[str, jnp.ndarray], ...],
     shape: tuple[int, int, int],
@@ -509,111 +465,6 @@ def _tensor_from_separated_terms(
             * jnp.asarray(term["zeta_factor"], dtype=dtype)[None, None, :]
         )
     return tensor
-
-
-def _build_effective_prior_terms(
-    shape: tuple[int, int, int],
-    *,
-    radial_baseline: Optional[jnp.ndarray] = None,
-    prior_terms: Optional[tuple[Mapping[str, jnp.ndarray], ...]] = None,
-    dtype=jnp.float64,
-) -> Optional[tuple[dict[str, jnp.ndarray], ...]]:
-    radial_terms = None
-    if radial_baseline is not None:
-        radial_terms = (
-            _make_separated_term(
-                jnp.ones((shape[0],), dtype=dtype),
-                jnp.asarray(radial_baseline, dtype=dtype),
-                jnp.ones((shape[2],), dtype=dtype),
-            ),
-        )
-
-    if prior_terms is None:
-        return radial_terms
-
-    cast_prior_terms = tuple(
-        _make_separated_term(
-            term["theta_factor"],
-            term["radial_factor"],
-            term["zeta_factor"],
-            scale=term["scale"],
-        )
-        for term in prior_terms
-    )
-    if radial_terms is None:
-        return cast_prior_terms
-    return _combine_separated_term_sets(radial_terms, cast_prior_terms)
-
-
-def _expand_residual_terms_with_prior(
-    residual_terms: tuple[dict[str, jnp.ndarray], ...],
-    prior_terms: Optional[tuple[Mapping[str, jnp.ndarray], ...]],
-) -> tuple[dict[str, jnp.ndarray], ...]:
-    if prior_terms is None:
-        return residual_terms
-    return _combine_separated_term_sets(prior_terms, residual_terms)
-
-
-def _fit_known_prior_terms(
-    tensor_field: jnp.ndarray,
-    *,
-    rank: int,
-    cp_maxiter: int,
-    cp_tol: float,
-    cp_ridge: float,
-) -> tuple[dict[str, jnp.ndarray], ...]:
-    weights, factors, _, _, _ = _cp_als_3tensor(
-        tensor_field,
-        rank,
-        maxiter=cp_maxiter,
-        tol=cp_tol,
-        ridge=cp_ridge,
-    )
-    terms = []
-    for idx in range(rank):
-        factor_theta = jnp.ravel(factors[0][:, idx])
-        factor_r = jnp.ravel(factors[1][:, idx])
-        factor_z = jnp.ravel(factors[2][:, idx])
-        scale, factor_theta, factor_r, factor_z = _normalize_cp_term_signs(
-            weights[idx],
-            factor_theta,
-            factor_r,
-            factor_z,
-        )
-        terms.append(_make_separated_term(
-            factor_theta,
-            factor_r,
-            factor_z,
-            scale=scale,
-        ))
-    return tuple(terms)
-
-
-def _major_radius_tensor(seq) -> jnp.ndarray:
-    mapped = jax.vmap(seq.geometry.map)(seq.quad.x)
-    major_radius = jnp.sqrt(mapped[:, 0] * mapped[:, 0] + mapped[:, 1] * mapped[:, 1])
-    return _mean_one(_reshape_quadrature_scalar_field(seq, major_radius))
-
-
-def _major_radius_prior_terms(
-    seq,
-    *,
-    inverse: bool,
-    rank: int,
-    cp_maxiter: int,
-    cp_tol: float,
-    cp_ridge: float,
-) -> tuple[dict[str, jnp.ndarray], ...]:
-    major_radius = _major_radius_tensor(seq)
-    prior_tensor = 1.0 / jnp.maximum(major_radius, 1e-12) if inverse else major_radius
-    prior_tensor = _mean_one(prior_tensor)
-    return _fit_known_prior_terms(
-        prior_tensor,
-        rank=rank,
-        cp_maxiter=cp_maxiter,
-        cp_tol=cp_tol,
-        cp_ridge=cp_ridge,
-    )
 
 
 def _mode_unfold_3tensor(tensor: jnp.ndarray, mode: int) -> jnp.ndarray:
@@ -784,34 +635,6 @@ def _apply_tensor_diagonal_block_preconditioner(
     return modes.reshape(-1)
 
 
-def _assemble_shared_modal_basis(
-    reference_mass: jnp.ndarray,
-    matrices: tuple[jnp.ndarray, ...],
-    term_weights: jnp.ndarray,
-) -> tuple[jnp.ndarray, tuple[jnp.ndarray, ...]]:
-    if not matrices:
-        raise ValueError("shared modal basis requires at least one matrix")
-
-    L = jnp.linalg.cholesky(reference_mass)
-    whitened_matrices = []
-    for matrix in matrices:
-        Y = jnp.linalg.solve(L, matrix)
-        matrix_tilde = jnp.linalg.solve(L, Y.T).T
-        whitened_matrices.append(0.5 * (matrix_tilde + matrix_tilde.T))
-
-    reference_tilde = jnp.zeros_like(whitened_matrices[0])
-    for weight, matrix_tilde in zip(term_weights, whitened_matrices):
-        reference_tilde = reference_tilde + weight * matrix_tilde
-    weight_sum = jnp.sum(term_weights)
-    safe_weight_sum = jnp.where(weight_sum > 0, weight_sum, 1.0)
-    reference_tilde = 0.5 * (reference_tilde + reference_tilde.T) / safe_weight_sum
-
-    _, Q = jnp.linalg.eigh(reference_tilde)
-    V = jnp.linalg.solve(L.T, Q)
-    modal_diagonals = tuple(jnp.diag(Q.T @ matrix_tilde @ Q) for matrix_tilde in whitened_matrices)
-    return V, modal_diagonals
-
-
 def _apply_tensor_diagonal_block(
     factors: TensorDiagonalBlockInverseFactors,
     rhs: jnp.ndarray,
@@ -835,14 +658,6 @@ def _apply_tensor_diagonal_block(
 
 
 
-
-
-def _schur_blocks(matrix: jnp.ndarray, surgery_size: int):
-    ass = matrix[:surgery_size, :surgery_size]
-    asb = matrix[:surgery_size, surgery_size:]
-    abs_ = matrix[surgery_size:, :surgery_size]
-    abb = matrix[surgery_size:, surgery_size:]
-    return ass, asb, abs_, abb
 
 
 
@@ -1878,111 +1693,6 @@ def apply_mass_raw_kron_preconditioner(factors: RawKronMassFactors, e, x):
             factors.inv_1d[c], Xc * factors.inv_sqrt_D[c]) * factors.inv_sqrt_D[c]
         parts.append(Xc.reshape(-1))
     return gram_apply(e @ jnp.concatenate(parts))
-
-
-def build_raw_kron_pinv_columns(factors: RawKronMassFactors, e):
-    """Columns of ``E+ = E^T (E E^T)^{-1}`` in padded form.
-
-    Returns ``(idx, coef)`` of shape ``(n_ext, w)``: for extracted index ``a``,
-    ``E+[:, a]`` has raw entries ``coef[a, m]`` at raw index ``idx[a, m]``,
-    zero-padded to a common width ``w``. Bulk columns carry a single entry
-    (``(E E^T)^{-1}`` is the identity there); coupled polar columns carry the
-    small ``(CC^T)^{-1}`` combination, so ``w`` stays tiny.
-
-    This is what makes entrywise access to the raw_kron operator O(1): together
-    with :func:`raw_kron_entry` it gives ``P_ab`` without any operator apply.
-    """
-    rows = np.asarray(e.rows)
-    cols = np.asarray(e.cols)
-    vals = np.asarray(e.vals)
-    n_ext = int(e.forward_shape[0])
-
-    # E^T column a  <-  row a of E.
-    by_row: dict = {}
-    for r, c, v in zip(rows, cols, vals):
-        by_row.setdefault(int(r), []).append((int(c), float(v)))
-
-    coupled = (np.asarray(factors.coupled) if factors.coupled is not None
-               else np.zeros(0, dtype=np.int64))
-    gram_inv = (np.asarray(factors.gram_inv) if factors.gram_inv is not None
-                else np.zeros((0, 0)))
-    pos = {int(r): t for t, r in enumerate(coupled)}
-
-    entries = []
-    for a in range(n_ext):
-        if a in pos:
-            # column a mixes the coupled rows through (CC^T)^{-1}
-            acc: dict = {}
-            ta = pos[a]
-            for tb, b in enumerate(coupled):
-                g = float(gram_inv[tb, ta])
-                if g == 0.0:
-                    continue
-                for c, v in by_row.get(int(b), ()):
-                    acc[c] = acc.get(c, 0.0) + v * g
-            entries.append(sorted(acc.items()))
-        else:
-            entries.append(by_row.get(a, []))
-
-    w = max((len(x) for x in entries), default=1)
-    idx = np.zeros((n_ext, w), dtype=np.int64)
-    coef = np.zeros((n_ext, w), dtype=np.float64)
-    for a, ent in enumerate(entries):
-        for m, (c, v) in enumerate(ent):
-            idx[a, m] = c
-            coef[a, m] = v
-    return jnp.asarray(idx), jnp.asarray(coef)
-
-
-def raw_kron_entry(factors: RawKronMassFactors, alpha, beta):
-    """Raw-space entries ``K[alpha, beta]`` of the raw_kron kernel, vectorized.
-
-    ``K = (+)_c D_c^{-1/2} (M_r^{-1} x M_t^{-1} x M_z^{-1})_c D_c^{-1/2}`` is
-    block diagonal over components and a Kronecker product within each, so a
-    single entry is three 1D-inverse lookups times two diagonal scalars -- O(1),
-    no solve and no apply. Entries across different components are zero.
-
-    ``alpha``/``beta`` are flat raw indices (any broadcastable shape).
-    """
-    alpha = jnp.asarray(alpha)
-    beta = jnp.asarray(beta)
-    starts = factors.starts
-    total = jnp.zeros(jnp.broadcast_shapes(alpha.shape, beta.shape))
-    for c, shape in enumerate(factors.shapes):
-        lo, hi = starts[c], starts[c + 1]
-        in_a = (alpha >= lo) & (alpha < hi)
-        in_b = (beta >= lo) & (beta < hi)
-        both = in_a & in_b
-        la = jnp.clip(alpha - lo, 0, hi - lo - 1)
-        lb = jnp.clip(beta - lo, 0, hi - lo - 1)
-        sy, sz = shape[1], shape[2]
-        ia, ja, ka = la // (sy * sz), (la // sz) % sy, la % sz
-        ib, jb, kb = lb // (sy * sz), (lb // sz) % sy, lb % sz
-        inv_r, inv_t, inv_z = factors.inv_1d[c]
-        sD = factors.inv_sqrt_D[c]
-        val = (sD[ia, ja, ka] * sD[ib, jb, kb]
-               * inv_r[ia, ib] * inv_t[ja, jb] * inv_z[ka, kb])
-        total = total + jnp.where(both, val, 0.0)
-    return total
-
-
-def raw_kron_extracted_entry(factors: RawKronMassFactors, pinv_idx, pinv_coef,
-                             a, b):
-    """Extracted-space entries ``P[a, b] = (E+)^T K E+`` at index pairs ``(a, b)``.
-
-    ``a``/``b`` are extracted indices. Uses the padded ``E+`` columns from
-    :func:`build_raw_kron_pinv_columns`, so the cost is ``w^2`` calls to
-    :func:`raw_kron_entry` with ``w <= 3``.
-    """
-    ia, ca = pinv_idx[a], pinv_coef[a]        # (..., w)
-    ib, cb = pinv_idx[b], pinv_coef[b]
-    w = ia.shape[-1]
-    acc = 0.0
-    for m in range(w):
-        for n_ in range(w):
-            acc = acc + (ca[..., m] * cb[..., n_]
-                         * raw_kron_entry(factors, ia[..., m], ib[..., n_]))
-    return acc
 
 
 def build_mass_raw_kron_preconditioner(seq, k: int, *, dirichlet: bool, d_raw=None):

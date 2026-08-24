@@ -764,44 +764,6 @@ def eval_basis_3_ijk(seq, i, j, k):
 # Tensor-product assembly (current)
 # ---------------------------------------------------------------------------
 
-def _mass_hw_table(seq, row_terms, col_terms):
-    """Per-(row component, col component, axis) half-width table for a
-    vectorial mass-matrix assembly.
-
-    For uniform B-splines on a given axis, the 1D mass-matrix bandwidth
-    between bases of degrees ``a`` and ``b`` is ``max(a, b)``. The
-    derivative basis has degree ``p-1``; the primal basis has degree ``p``.
-    So the half-width is ``p-1`` iff every term-pair contributing to the
-    block uses the derivative basis on that axis on *both* sides.
-
-    Mass matrices have a single term per component, so this reduces to: on
-    axis ``a``, hw = p-1 iff both ``row_terms[c_row]`` and
-    ``col_terms[c_col]`` use ``seq.d_basis_{r,t,z}_jk`` on axis ``a``.
-    """
-    p = seq.basis_0.pr  # all axes share the same primal degree
-    d_bases = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
-
-    def _is_deriv(term, axis):
-        # term entry: (out_idx, R, T, Z, sign); axis 0->R, 1->T, 2->Z
-        return term[1 + axis] is d_bases[axis]
-
-    def _axis_hw(rows, cols, axis):
-        for r in rows:
-            for c in cols:
-                if not (_is_deriv(r, axis) and _is_deriv(c, axis)):
-                    return p
-        return p - 1
-
-    table = [
-        [
-            [_axis_hw(row_terms[cr], col_terms[cc], a) for a in range(3)]
-            for cc in range(len(col_terms))
-        ]
-        for cr in range(len(row_terms))
-    ]
-    return table
-
-
 def assemble_derivative_matrix(seq, k):
     """Assemble the exterior derivative matrix using tensor-product contraction."""
     quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)

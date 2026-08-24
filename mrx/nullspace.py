@@ -200,12 +200,6 @@ def _set_null(operators, k, dirichlet, values):
     )
 
 
-def _overwrite_nullspace_vector(operators, k, dirichlet, idx, value):
-    """Return ``operators`` with one stored nullspace vector overwritten."""
-    values = get_nullspace(operators, k, dirichlet)
-    return _set_null(operators, k, dirichlet, values.at[idx].set(value))
-
-
 def _commit(seq, operators):
     """Set ``seq.operators`` to ``operators`` so fallback lookups see the
     latest null fields, and return the bundle unchanged.
@@ -245,18 +239,34 @@ def _bootstrap_nullspace_guesses(seq, operators, k, dirichlet, guesses):
 
 def _nullspace_shifted_preconditioner(k: int):
     if k == 0:
-        # Jacobi, same as the main solve (production default since 2026-08-18);
-        # its diagonal is closed-form since L_0 = S_0.
+        # Jacobi on the shifted operator; its diagonal is closed-form since
+        # L_0 = S_0. NOT what the main k=0 solve uses any more -- that is the
+        # block-Jacobi atom (kind='block') as of 2026-08-22.
         return _validate_nullspace_shifted_preconditioner(
             k,
             MassPreconditionerSpec(kind='jacobi'),
         )
-    # For k >= 1 use the PRODUCTION default saddle preconditioner: raw_kron
-    # lower mass, raw_kron Schur inner, Schur-diagonal-Jacobi Schur outer
-    # (raw_kron_probe). Same solver as the main prod solve. The outer Jacobi
-    # diagonal is read from the stored schur_diaginv when assembled (else
-    # probed once on the fly). Repointed from tensor 2026-08-17; raw_kron needs
-    # no eager assembly, so this no longer requires an assembled tensor mass.
+    # STALE, FLAGGED 2026-08-24, deliberately not changed here.
+    #
+    # This pins schur.outer='jacobi' -- the per-DoF diagonal whose weak half is
+    # itself a Kronecker mass MODEL. It no longer matches the production saddle
+    # default: _materialize_default_saddle_preconditioner has used the
+    # block-Jacobi atom ('block') since 2026-08-24, worth 2.5x fewer MINRES
+    # iterations over 18 cells, and the harmonic-form investigation
+    # (docs/research/handoff_2026-08-24_harmonic_k1_free.md) traced the
+    # degraded k=1 free form to exactly this jacobi outer.
+    #
+    # So `find_nullspace_vectors` does NOT inherit the assembled block atom:
+    # this spec overrides it, and _validate_nullspace_shifted_preconditioner
+    # below actively REJECTS kind='block'. Any job comment claiming inverse
+    # iteration "picks up the block atom automatically" is wrong.
+    #
+    # Changing it means re-running the S5 nullspace gate, so it is left alone
+    # until that sweep is scheduled -- the shift is S_k + eps M_k, not L_k, so
+    # the atom's fit there wants measuring rather than assuming.
+    #
+    # `mass=default_mass_preconditioner()` IS current (block_jacobi); only the
+    # outer is stale. schur.inner stays raw_kron, which needs no eager assembly.
     return _validate_nullspace_shifted_preconditioner(
         k,
         SaddlePointPreconditionerSpec(
