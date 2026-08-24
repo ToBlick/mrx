@@ -47,6 +47,7 @@ from __future__ import annotations
 import diffrax as dfx
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 TWO_PI = 2.0 * jnp.pi
 
@@ -311,10 +312,18 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     # of the return map and the section collapses onto the midplane.  That is
     # the right answer, but equal aspect renders it as a hairline, so the aspect
     # is only held when the two spans are within a factor of 20.
-    xlim, ylim = _padded(R[keep]), _padded(Z[keep])
+    xlim = _padded(R[keep])
+    # The floor has to be RELATIVE to the other axis: an absolute one is
+    # meaningless against whatever units R happens to be in, and leaves a 1e-16
+    # Z-range labelled in units of 1e-16.
+    ylim = _padded(Z[keep], floor=0.04 * (xlim[1] - xlim[0]))
     spans = (xlim[1] - xlim[0], ylim[1] - ylim[0])
     to_scale = max(spans) / max(min(spans), 1e-30) < 20.0
     ax.set_aspect("equal" if to_scale else "auto")
+    if np.ptp(Z[keep]) < 1e-6 * (xlim[1] - xlim[0]):
+        ax.text(0.5, 0.86, "iota = 0: every line is a fixed point of the\n"
+                           "return map, so each surface is a single dot",
+                transform=ax.transAxes, ha="center", fontsize=8, color="0.35")
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.set_xlabel("R")
@@ -338,7 +347,7 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     return fig
 
 
-def _padded(v, pad=0.06, floor=1e-9):
+def _padded(v, pad=0.06, floor=0.0):
     lo, hi = float(jnp.nanmin(v)), float(jnp.nanmax(v))
     span = max(hi - lo, floor)
     mid = 0.5 * (lo + hi)
