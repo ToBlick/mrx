@@ -49,7 +49,7 @@ from mrx.nullspace import compute_nullspaces, get_nullspace  # noqa: E402
 mrx.MAP_BATCH_SIZE_INNER = int(os.environ.get("W7X_MAP_BATCH", "256"))
 
 
-def build_sequence(geometry, ns, p, maxiter, inner_tol=1e-13):
+def build_sequence(geometry, ns, p, maxiter, inner_tol=1e-12):
     seq = DeRhamSequence(ns, (p,) * 3, 2 * p, ("clamped", "periodic", "periodic"),
                          polar=True, tol=inner_tol, maxiter=maxiter,
                          betti_numbers=(1, 1, 0, 0))
@@ -66,13 +66,29 @@ def build_sequence(geometry, ns, p, maxiter, inner_tol=1e-13):
         # Same parameters as every other debug script in this directory
         # (raw_kron_mass_gate, modal_radial_gate, radial_profile_pairs).
         seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.5, nfp=3))
-    else:
+    elif geometry == "w7x":
         from w7x_geometry import build_w7x_map  # noqa: PLC0415
         map_func, _ = build_w7x_map(map_ns=ns, p=p)
         seq.set_map(map_func)
         jac = np.asarray(seq.geometry.jacobian_j)
         if not np.isfinite(jac).all() or jac.min() <= 0:
             raise RuntimeError("W7-X geometry is degenerate")
+    else:
+        # The GVEC flat-schema exports: quasr (nfp=2,3), a second W7-X source
+        # (nfp=5) and hegna (nfp=3, 80^3). Handedness is measured, not assumed
+        # -- raw GVEC data is mirrored relative to mrx.mappings.stellarator_map
+        # and would otherwise arrive with det DF < 0. See gvec_geometry.py.
+        from gvec_geometry import (  # noqa: PLC0415
+            GVEC_GEOMETRIES, build_gvec_map)
+        map_func, info = build_gvec_map(GVEC_GEOMETRIES[geometry],
+                                        map_ns=ns, p=p)
+        print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
+              f"det DF in [{info['det_range'][0]:.3e}, "
+              f"{info['det_range'][1]:.3e}]", flush=True)
+        seq.set_map(map_func)
+        jac = np.asarray(seq.geometry.jacobian_j)
+        if not np.isfinite(jac).all() or jac.min() <= 0:
+            raise RuntimeError(f"{geometry} geometry is degenerate")
     ops = op.assemble_incidence_operators(seq)
     ops = op.assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
     seq.set_operators(ops)
@@ -121,13 +137,36 @@ def pcg(a_apply, b, minv, proj, tol=1e-10, maxiter=20000):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--geometry", default="toroid",
-                    choices=("toroid", "rot-ellipse", "w7x", "cylinder"))
+                    choices=("toroid", "rot-ellipse", "w7x", "cylinder",
+                             "quasr9983", "quasr44970", "w7x-gvec", "hegna"))
     ap.add_argument("--ns", default="8,16,8")
     ap.add_argument("--p", type=int, default=3)
     ap.add_argument("--arms", default="jacobi,blockjac_r3")
     ap.add_argument("--tol", type=float, default=1e-10)
-    ap.add_argument("--maxiter", type=int, default=20000)
+    ap.add_argument("--maxiter", type=int, default=10000)
+    # DECOUPLED from --maxiter on purpose: --maxiter also sets the SEQUENCE's
+    # inner solver budget (build_sequence passes it through). This caps the
+    # OUTER CG only, so a stalling arm cannot eat a whole sweep job.
+    #
+    # 2026-08-24: was 20000, with inner_tol 1e-13, and a comment claiming "the
+    # W7-X free L_2 solves are known to need all of it". They do not need it --
+    # they were STALLING, and the budget was hiding it. The k=1 free harmonic
+    # form is `v - weak_curl(L_2^-1 D_1 v)` and inherits that solve's residual
+    # 1:1 (measured: relL2 4.9e-08 / 5.7e-10 / 5.6e-12 at inner tol 1e-08 /
+    # 1e-10 / 1e-12 on W7-X p=2), which is why the recorded forms degrade with
+    # p -- 8.4e-13 at p=2, 3.0e-04 at p=3, 1.7e-01 at p=5. Both numbers now
+    # match the DeRhamSequence defaults (tol 1e-12, maxiter 10_000); a solve
+    # that cannot finish inside those is a preconditioner problem to fix, not a
+    # budget to raise. See docs/research/handoff_2026-08-24_harmonic_k1_free.md.
+    ap.add_argument("--cg-maxiter", type=int, default=None)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--operator", default="approx", choices=("approx", "exact"),
+                    help="which L_k the CG iterates on; see a_apply. 'approx' "
+                         "is what all recorded sweeps used -- keep it as the "
+                         "default so those stay comparable.")
+    ap.add_argument("--inner-mass-tol", type=float, default=None,
+                    help="--operator exact only: tolerance of the nested mass "
+                         "solve (default: the sequence's own tol)")
     # Restrict which (k, dbc) rows are solved. The nullspaces are still built
     # for all k (they are shared), but the CG sweeps are the expensive part.
     ap.add_argument("--ks", default="0,1,2,3",
@@ -139,10 +178,14 @@ def main():
     ns = tuple(int(v) for v in cli.ns.split(","))
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter)
     arms = cli.arms.split(",")
-    print(f"geometry={cli.geometry} ns={ns} p={cli.p} UNSHIFTED tol={cli.tol}",
-          flush=True)
+    print(f"geometry={cli.geometry} ns={ns} p={cli.p} UNSHIFTED tol={cli.tol} "
+          f"operator={cli.operator}"
+          + (f" inner_mass_tol={cli.inner_mass_tol}"
+             if cli.operator == "exact" else ""), flush=True)
 
     results = {"geometry": cli.geometry, "ns": list(ns), "p": cli.p,
+               "operator": cli.operator,
+               "inner_mass_tol": cli.inner_mass_tol,
                "eps": 0.0, "tol": cli.tol, "nullspaces": [], "rows": []}
 
     t0 = time.perf_counter()
@@ -180,7 +223,7 @@ def main():
 
     print("\nUnshifted solves (deflated where singular)", flush=True)
     print(f"{'k':>2} {'dbc':>5} {'n':>7} {'sing':>5} " +
-          " ".join(f"{a:>26}" for a in arms), flush=True)
+          " ".join(f"{a:>34}" for a in arms), flush=True)
     want_k = {int(v) for v in cli.ks.split(",")}
     want_bc = set(cli.bcs.split(","))
     for k in range(4):
@@ -195,7 +238,28 @@ def main():
                       "singular": vecs is not None}
             cells = []
 
+            # WHICH OPERATOR IS BEING SOLVED. This was a silent choice until
+            # 2026-08-24; it is now a flag, because the two are NOT the same
+            # operator at k>=1:
+            #
+            #   approx  S_k + D B D^T,      B = one mass-preconditioner apply
+            #   exact   S_k + D M^-1 D^T,   M^-1 by a nested mass CG
+            #
+            # `approx` is what every bc-alpha sweep number was measured on. It
+            # is a legitimate SPD operator and is cheap, but the library's own
+            # k>=1 Laplacian solve (`apply_inverse_hodge_laplacian` -> saddle
+            # MINRES) solves the EXACT one, so absolute iteration counts here
+            # do not describe that path. The natural-BC term being tuned is
+            # added to the radial STIFFNESS, i.e. to S_k, which is identical in
+            # both -- the reason to expect the a0/a5 ranking to transfer even
+            # though the counts do not. `exact` is ~30x more expensive per
+            # apply (it is Krylov-in-Krylov) and exists to TEST that transfer,
+            # not to sweep with.
             def a_apply(x, k=k, dbc=dbc):
+                if cli.operator == "exact":
+                    return op.apply_hodge_laplacian(
+                        seq, ops, x, k, dirichlet=dbc,
+                        tol=cli.inner_mass_tol, maxiter=cli.maxiter)
                 return op.apply_hodge_laplacian_approx(seq, ops, x, k,
                                                        dirichlet=dbc)
 
@@ -217,6 +281,14 @@ def main():
                         os.environ["MRX_BJ_BC_SCALE"] = (
                             str(int(pc.group(1)) / 100.0) if pc else
                             sc.group(1) if sc else "1.0")
+                        # bcmN: N/1000, for the arms whose alpha is a
+                        # different SIZE (the penalty convention drops the
+                        # c(p) amplification, so its optimal s is ~c(p)x
+                        # larger and the bcp grid cannot reach it).
+                        mc = re.search(r"bcm(\d+)", arm)
+                        if mc:
+                            os.environ["MRX_BJ_BC_SCALE"] = str(
+                                int(mc.group(1)) / 1000.0)
                         m = re.search(r"_r(\d+)", arm)
                         o = re.search(r"_o(\d+)", arm)
                         # fmM / frR: ADDITIVE truncated-Fourier coarse
@@ -262,11 +334,15 @@ def main():
                                                        **kwargs)
                         minv = pre.apply
                     t_build = time.perf_counter() - t0
+                    t1 = time.perf_counter()
                     it, rel, ok = pcg(a_apply, b, minv, proj, tol=cli.tol,
-                                      maxiter=cli.maxiter)
-                    cells.append(f"{t_build:6.1f}s {it:6d}it "
+                                      maxiter=cli.cg_maxiter or cli.maxiter)
+                    t_solve = time.perf_counter() - t1
+                    cells.append(f"{t_build:6.1f}s {it:6d}it {t_solve:6.1f}s "
                                  f"{'y' if ok else 'N'} {rel:8.1e}")
                     record[arm] = {"build_s": t_build, "iters": it,
+                                   "solve_s": t_solve,
+                                   "total_s": t_build + t_solve,
                                    "rel": rel, "converged": ok}
                 except Exception as exc:  # noqa: BLE001
                     cells.append(f"{type(exc).__name__}: {str(exc)[:30]}")
