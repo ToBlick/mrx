@@ -30,7 +30,31 @@ arms), 16770040 / 16770416 / 16770741 (helicity diagnosis), 16771114 /
 * **Not verified:** one geometry, one resolution, one IC, 250 steps, no
   convergence-to-equilibrium, no p- or h-refinement. See section 8.
 
-**What Tobias must decide** is in section 9.
+### AND THE BIGGEST FINDING, which is in PART II -- read section 19 first
+
+* **The maximal linesearch step destroys field-line topology.** Several runs
+  relaxed from cleanly nested surfaces into full chaos. The mechanism is
+  measured, not guessed: `ANALYTIC_LINESEARCH` takes the largest step that
+  still lowers E, and the O(dt^2) frozen-flux error of explicit Euler then acts
+  as numerical reconnection. **The clean experiment is LR3 vs W5** -- same
+  geometry, IC, optimizer and step count, differing only in the step -- where
+  the small step loses **58x less helicity per unit energy removed** and keeps
+  its surfaces. The linesearch buys ~2x energy per step and pays 58x in
+  topology.
+* **Almost nothing the scheme enforces noticed.** Energy monotone 3000/3000,
+  `||div B||` 6.7e-14, the linesearch identity at 6.5e-17, the harmonic
+  amplitude at 1e-16 -- all satisfied while the physics was destroyed.
+* **But one diagnostic does detect it**, and it was in the traces all along:
+  the ABSOLUTE helicity change `|dH|` at `||B||_M = 1`, monotone with a blind
+  visual classification of every Poincare pair, survivors and casualties
+  separated ~30x. Normalising by H -- which is what I had been doing --
+  destroys the signal, since H spans three orders of magnitude here.
+
+**Sections 12 and 17 are SUPERSEDED.** 12 called the chaos universal and
+fundamental; 17 blamed `beta_max = 13%`. Both are wrong and section 19 says why
+with the numbers.
+
+**What Tobias must decide** is in section 9, as revised by 19.5.
 
 ---
 
