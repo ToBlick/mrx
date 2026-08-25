@@ -1,161 +1,174 @@
-# Handoff — Poincaré plotter refinement, 2026-08-25
+# Handoff — Poincaré plotter and relaxed-state tracer, 2026-08-25
 
-Branch `poincare-plotter`, one commit `fd757eb` on top of `greville-prod`
-@ `44fbda3`. Worktree `.claude/worktrees/poincare-plotter`.
+Supersedes the two separate 2026-08-25 Poincaré handoffs. Continues
+`handoff_2026-08-24_poincare.md`, which stands unchanged — nothing here
+revisits the tracer's physics.
 
-**NOT PUSHED.** `git push` fails with `could not read Username for
-'https://github.com'` — no credentials in this environment, the same limitation
-`handoff_2026-08-24_poincare.md` recorded. The branch is local; someone with
-credentials needs to push it.
+`fd757eb` (plotter) is merged into `greville-prod`. **`5d30a3c` (relaxed-state
+tracer, shared driver glue, drift-metric fix) is NOT** — it is only on
+`poincare-plotter`, worktree `.claude/worktrees/poincare-plotter`, and neither
+branch is pushed (no GitHub credentials in this environment, same as the two
+prior handoffs).
 
-Continues `handoff_2026-08-24_poincare.md`, which stands unchanged — nothing
-here revisits the tracer's physics, only its interface and its figure.
+## Status
 
----
+| | |
+|---|---|
+| Arbitrary ζ slices — `--planes` / `--n-planes`, mutually exclusive | SETTLED |
+| `B^ζ` gate **raises** at `BZETA_MIN_FRACTION = 0.05`, no clamp | SETTLED |
+| `SECTION_CMAP = gist_rainbow` | SETTLED |
+| Three-panel layout: section, iota profile, p | SETTLED |
+| iota-above / p-below split about the magnetic axis | SETTLED as a flag — **not the default**, §3.1 |
+| Relaxed-state tracer `poincare_relaxed.py` + its four gates | SETTLED (unmerged) |
+| Step drift measured over regular lines only | SETTLED (unmerged) |
+| **A real pressure through this tracer** | **OPEN — §3.2, the load-bearing caveat** |
+| `poincare_vacuum.py` re-run after the shared-helper refactor | OPEN |
+| Axis-probe blob at the section centre | OPEN |
+| Crossing density vs the reference figure | OPEN |
+| Reproducing either verification run | OPEN — job scripts are gitignored, §5 |
 
-## 1. What changed
+## 1. What shipped in the plotter (`fd757eb`)
 
-### 1.1 Arbitrary zeta slices
+**Arbitrary ζ slices.** `--n-planes N` puts N evenly spaced sections over one
+field period (`ζ = k/N`); `--planes` takes explicit positions. Mutually
+exclusive — a run states either where the sections are or how many.
 
-`--n-planes N` puts N evenly spaced sections over one field period,
-`zeta = k/N` for `k = 0..N-1`. `--planes` still takes explicit positions. They
-are **mutually exclusive** and the driver errors if given both — a run states
-either where the sections are or how many, never both.
+**The `B^ζ` gate now FAILS.** `require_zeta_parameterisation` raises
+`BzetaParameterisationError` on a sign change in `B^ζ` over the interior, and
+on `|B^ζ|/|B|` coming within `BZETA_MIN_FRACTION = 0.05` of zero, naming the
+measured range and the worst logical `(r, θ, ζ)`. It used to warn and trace
+anyway, which put the burden on whoever read the log — and the failure it
+guards against renders as a *plausible chaotic sea*, so nobody would.
 
-### 1.2 The B^zeta gate now FAILS
+The threshold is not tuned: the quasr family, **including** the genuinely
+chaotic k=1 cases, measured ≥ 0.774, so a field that trips this is
+qualitatively different from anything seen, not marginally worse.
 
-`zeta_component_report` printed a warning and traced anyway. That put the
-burden on whoever read the log to spot one line among hundreds, and the failure
-it guards against renders as a plausible chaotic sea — so nobody would.
+**No clamp**, and the reason is recorded in both directions. Clamped to `+ε` the
+RHS becomes `~1/ε · B^r` and the line flies off. Clamped on the negative side of
+a genuine zero crossing it flips the sign of the whole RHS and the line traces
+**backwards** — a rendered plot with no NaN and no warning.
 
-`mrx.poincare.require_zeta_parameterisation()` now raises
-`BzetaParameterisationError` on
+**`gist_rainbow`.** One colour per nested surface; a hue cycle separates
+*adjacent* surfaces, which is what the eye follows here. Turbo's luminance ramp
+suits a continuous field and is worse for a stack of discrete curves. `--cmap`
+on `poincare_replot.py` overrides.
 
-* a **sign change** in `B^zeta` over the interior, and
-* `|B^zeta|/|B|` coming within `BZETA_MIN_FRACTION = 0.05` of zero,
+**Three panels and the split.** With a `pressure` array the third panel becomes
+p (the iota profile is unchanged); `split_iota_p=True` colours the section by
+iota above the magnetic axis and p below it, with both colorbars and a dotted
+line at the axis. "Above" is defined against the **magnetic** axis, not `Z = 0`
+— splitting on `Z = 0` cuts a Shafranov-shifted plasma off-centre and the two
+halves are not the same surfaces. The dividing line is the *mean* of the tracked
+axis crossings; the axis wanders ~1e-3 of the minor radius over a period and one
+sample would tilt the split by that much. The split raises without both
+`pressure` and `axis_RZ` rather than drawing half a panel. Chaotic lines keep
+dark grey in **both** halves and stay out of the colour limits and the fit.
 
-naming the measured range and the worst logical `(r, theta, zeta)`.
+## 2. What shipped in the tracer (`5d30a3c`, unmerged)
 
-The threshold is not tuned. The quasr family — *including* the genuinely
-chaotic k=1 cases — measured `>= 0.774` (`handoff_2026-08-24_poincare.md` §4.2),
-so a field that trips this is qualitatively different from anything seen, not
-marginally worse. The near-zero arm matters as much as the sign-change arm: a
-stiff `B^r/B^zeta` under a *prescribed* step schedule surfaces as drift that
-does not fall under refinement, which is precisely the signature that was read
-as chaos once already.
+`scripts/debug/poincare_relaxed.py` traces a relaxation state file directly —
+both `B_dof_initial` and `B_dof_final`, on one shared iota scale (`iota_lim`,
+new on `render_section`; `--iota-lim` on replot). Two separately fitted scales
+make the same hue mean a different transform in each figure, so the pair is not
+comparable by colour at all.
 
-**No clamp**, per `no-defensive-code`, and the docstring records why in both
-directions: clamped to `+eps` the RHS becomes `~1/eps * B^r` and the line flies
-off; clamped on the negative side of a genuine zero crossing it flips the sign
-of the whole RHS and the line traces **backwards** — a rendered plot with no NaN
-and no warning.
+Four gates run before any line is traced, each because its failure *renders*
+rather than raises: the map round-trips against the cloud the config names, the
+Jacobian keeps one sign, `len(B_dof) == n2_dbc`, and `|D2 B| / (|D2| |B|)` sits
+at the Leray solve's tolerance rather than O(1). The last is the only one that
+tests *which space* the DOFs live in — a different radial grading or pole
+extraction can match the dimension by coincidence.
 
-### 1.3 Colour by iota and by p, and the up/down split
+`section_RZ`, `surface_label` and `trace_and_classify` moved into
+`mrx/poincare.py`; `poincare_vacuum.py` calls them and, as a consequence, now
+greys chaotic lines in its own figures. It did not before, so it and
+`poincare_replot.py` disagreed about the same trace.
 
-`render_section` takes an optional per-crossing `pressure`:
+## 3. The two judgements
 
-* with it, the third panel becomes the **p profile** (the three panels: section,
-  the iota profile *unchanged*, p);
-* `split_iota_p=True` colours the section by **iota above the magnetic axis and
-  p below it**, with both colorbars and a dotted line at the axis.
+### 3.1 The up/down split should not be the default
 
-Pressure is **optional** because these fields are harmonic and carry none — a
-vacuum run leaves it `None` and gets exactly the previous figure. This is what
-Tobias asked for when he said the split is a flag you turn off for vacuum
-fields.
+It reads acceptably — the axis line separates the halves cleanly and `plasma`
+against `gist_rainbow` do not collide. But it buys the comparison by **throwing
+away half the iota information and half the p information**, and a W7-X section
+is not up/down symmetric, so the two halves are not the same set of surfaces
+sampled twice. Worth having as a flag. Not the default figure.
 
-The split **raises** without a pressure array and without `axis_RZ`, rather than
-drawing half a panel. "Above" and "below" are defined against the *magnetic*
-axis: splitting on `Z = 0` would cut a Shafranov-shifted plasma off-centre and
-the two halves would not be the same set of surfaces. The dividing line is the
-**mean** of the tracked axis crossings — the axis wanders by ~1e-3 of the minor
-radius over a period and one sample would tilt the split by that much.
+### 3.2 Nothing here has met a real pressure
 
-Chaotic lines keep dark grey (0.25) in **both** halves and stay out of the
-colour limits and the profile fit, so the split cannot assign them an iota.
+**Scope this precisely: it is a statement about what this tracer's inputs were
+on 2026-08-25, not about the repo today.**
 
-### 1.4 Pretty
+At the time, no path in this repo produced a pressure for this tracer. p lives
+in the relaxation route (`mrx/plotting.py`, "color by pressure if available")
+and this tracer traces harmonic nullspace fields. The wiring was proven with a
+**synthetic** p, labelled `SYNTHETIC p` on the check figure for that reason; the
+physics path was unexercised.
 
-`SECTION_CMAP = "gist_rainbow"`, matching the reference figure
-(`data/poincare_plot_pretty_w7x.pdf` — gitignored, read from the main checkout).
-With one colour per nested surface a hue cycle separates *adjacent* surfaces,
-which is what the eye follows here; turbo's luminance ramp suits a continuous
-field and is worse for a stack of discrete curves. `--cmap` on
-`poincare_replot.py` overrides.
+Two consequences that outlive the caveat:
 
-What the reference actually is, for whoever matches it next: a landscape
-742x270 pt figure, physical `R-z` section (W7-X, R 4.8–6.0 m) beside a logical
-`r-theta` panel, a thin `gist_rainbow` colorbar ticked with resonant rationals
-(10/11, 15/16, 15/17, 20/21, 20/23), tiny rasterised markers on white. Its
-third element is the colorbar, not a profile panel.
+* **The vertical stripes in the check figure are the synthetic p, not a bug.**
+  It is driven by a peaked function of distance from the axis, which is *not* a
+  flux function, so p varies along each line and every line draws a stripe. A
+  real equilibrium p is nearly constant on a flux surface and collapses each
+  stripe to a point — which makes **stripe width a free diagnostic of how far
+  from a flux function the pressure is.** Do not read the check figure as a
+  pressure profile.
+* Whoever first traces a relaxed equilibrium should expect to plumb p from the
+  relaxation state into `render_section(pressure=...)`.
 
----
+Since then the relaxation workstream has run the tracer on Clebsch ICs from
+finite-beta W7-X equilibria — see `handoff_2026-08-25_relaxation_prelim.md` for
+their numbers; not restated here. That closes the *input* half. It does not
+close this item: `relax_from_nfs.py` stores no `p_dof`, so §2's own runs are the
+three-panel iota form and `render_section(pressure=...)` and `--split-iota-p`
+are still unexercised on real physics.
 
-## 2. Verification
+## 4. One trap worth carrying
 
-GPU job `16767729`, `scripts/debug/poincare_render_check.py`, rendering from an
-archived trace (`outputs/render_check/2026-08-25/06-19-03/`). Presentation only
-— it never solves — but it went through slurm like everything else.
+The first relaxed run reported `h/2 drift 5.7e-01` — character for character the
+signature §1 documents as a broken ζ parameterisation, "drift that does not fall
+under refinement". It refined to 0.51 at 48 steps/period and 0.71 at 96. It was
+not a broken trace: iota agreed to four decimals (1.1739…1.2235) across the same
+4× refinement.
 
-```
-=== B^zeta gate ===
-  [PASS] healthy field passes: |B^z|/|B| min 0.994
-  [PASS] sign change raises: B^zeta CHANGES SIGN over the interior
-  [PASS] near-zero raises: comes within 7.071e-03 of zero (tol 0.05)
-=== renders ===
-  wrote w7x_zeta0_iota.png
-  wrote w7x_zeta0_split.png
-  [PASS] split refuses without a pressure array
-  [PASS] split refuses without axis_RZ
-ALL CHECKS PASSED
-```
+`step_convergence` was sampling seeds by stride and this field's stride hit the
+**chaotic** ones, where two nearby trajectories separate exponentially and the
+h vs h/2 displacement saturates at the size of the stochastic region no matter
+how small h is. It measures the Lyapunov exponent, not the integration error.
+`trace_and_classify` now draws the subsample from the regular lines only and
+reports `drift_lines`; the number becomes 1.6e-04. It is NaN when no line is
+regular — on such a trace the step cannot be checked this way at all.
 
-The w7x k=2 section re-renders with the 10/11 island lobes at top and bottom and
-iota 0.851–0.948 — the published standard-configuration vacuum range — so the
-colormap change did not disturb the content. One chaotic line, greyed.
+**Never read a large drift as a broken parameterisation without first checking
+that iota is stable under refinement.**
 
-`ruff` clean on all four touched files.
+## 5. Open, with the cheapest next step
 
----
-
-## 3. Judgement calls, for Tobias
-
-**The split reads acceptably, with a real cost.** The axis line separates the
-halves cleanly and `plasma` against `gist_rainbow` do not collide (purple→yellow
-against a full spectrum). But it buys the comparison by throwing away half the
-iota information and half the p information, and a W7-X section is not up/down
-symmetric, so the two halves are not the same surfaces sampled twice. It is
-worth having as a flag; I would not make it the default figure.
-
-**The vertical stripes in the p panel are the synthetic pressure, not a bug.**
-The check drives it with a peaked function of distance from the axis, which is
-*not* a flux function, so p varies along each line and every line draws a
-vertical stripe. A real equilibrium `p` is nearly constant on a flux surface and
-would collapse each stripe to a point — which makes stripe width a free
-diagnostic of how far from a flux function the pressure is. Do not read the
-check figure as a pressure profile; it is labelled `SYNTHETIC p` on the figure
-for that reason.
-
-**Nothing here has been exercised on a real pressure**, because no path in this
-repo produces one for the Poincaré tracer — pressure lives in the relaxation
-route (`mrx/plotting.py:928`, "color by pressure if available"), and this tracer
-traces harmonic nullspace fields. The wiring is proven; the physics path is not.
-Whoever first traces a relaxed equilibrium should expect to plumb `p` from the
-relaxation state into `render_section(pressure=...)` and will be the first to
-see a real p panel.
-
----
-
-## 4. Not done
-
-* `slurm/job_poincare_render_check.sh` exists in the worktree but is **not
-  committed** — `.gitignore` carries `slurm/job_*` and only four legacy scripts
-  are tracked. Re-create it or run the check script directly under slurm.
-* The axis probe seed (entry 0, the small orbit `seed_from_axis` keeps around
-  the axis) classifies as chaotic and renders as a dark blob at the centre of
-  the section. Cosmetic, and it is the expected consequence of its angle being
-  the difference of two nearly identical floats — but on a publication figure it
-  wants either excluding from the render or drawing as a marker.
-* The reference's density is not matched: it carries far more crossings per line
-  than the 1001 in the archived trace, which is a `--periods` choice at trace
-  time, not a rendering one.
+* **Real pressure (§3.2).** Cheapest: have the relaxation route store `p_dof`
+  beside `B_dof_*`, then pass it to `render_section(pressure=...)`.
+* **`poincare_vacuum.py` unverified since the refactor.** `ruff`-clean and the
+  moved code is exercised by the new driver, but no nullspace run since.
+  Cheapest: `--geometry toroid --periods 40`.
+* **Merge `5d30a3c`.** Cheapest: cherry-pick onto `greville-prod`; the plotter
+  code is untouched by the histopolation / Stage C+D / docs work.
+* **The axis-probe seed** (entry 0, the small orbit `seed_from_axis` keeps around
+  the axis) classifies as chaotic and renders as a dark blob at the section
+  centre. Cosmetic, and the expected consequence of its angle being the
+  difference of two nearly identical floats — but a publication figure wants it
+  excluded or drawn as a marker.
+* **Density is not matched to the reference figure** (`data/poincare_plot_pretty_w7x.pdf`,
+  gitignored, read from the main checkout): it carries far more crossings per
+  line than the archived trace. That is a `--periods` choice at trace time, not
+  a rendering one.
+* **Neither verification is reproducible from the repo.** `.gitignore` carries
+  `slurm/job_*`. `slurm/job_poincare_render_check.sh` — which produced the
+  plotter verification (GPU job 16767729) — is **not committed** and must be
+  re-created or the script run directly under slurm.
+  `slurm/job_poincare_relaxed.sh` **is** committed, via `git add -f`.
+* **Worktree jobs need `PYTHONPATH=$WT`.** `python scripts/debug/x.py` puts the
+  *script's* directory on `sys.path`, never the cwd, so `import mrx` resolves to
+  the venv's editable install — the main checkout. `job_poincare_relaxed.sh`
+  sets it; `job_poincare_render_check.sh` does not, so job 16767729 verified
+  `mrx.poincare` from the main checkout rather than the branch. Re-run it.
