@@ -63,8 +63,13 @@ DIRICHLET = True
 # ---------------------------------------------------------------------------
 # Source functions
 # ---------------------------------------------------------------------------
-def make_f2_ref(a: float):
-    """f₂ = ⋆(df₀) in reference 2-form proxy components (slot order χζ, rζ, rχ)."""
+def make_f2_proxy(a: float):
+    """f₂ = ⋆(df₀) as the reference 2-form proxy (slot order χζ, rζ, rχ).
+
+    The physics; not a load. These are the primal components ω, i.e. the ones
+    a DiscreteFunction evaluates, related to the physical field by
+    B_phys = DF ω / J.
+    """
     def f(x):
         r, chi, z = x
         R = 1.0 + a * r * jnp.cos(2 * π * chi)
@@ -75,12 +80,42 @@ def make_f2_ref(a: float):
     return f
 
 
-def make_f2_phys(a: float, F):
-    """f₂_phys = DF⁻ᵀ @ f₂_ref; load applies DFᵀ internally, recovering f₂_ref."""
+# ---------------------------------------------------------------------------
+# Frame adapters.  NEITHER frame takes the bare proxy components.
+#
+# `load` pairs its argument directly against the basis with weight w (no J at
+# k=2), while M₂ = ∫ Λᵀ g Λ / J. So recovering a primal ω from M₂⁻¹·load needs
+# the load integrand to be g·ω/J, not ω.
+#
+# These previously INVERTED load's internal pullback (f₂_phys was DF⁻ᵀf₂_ref,
+# so load's DFᵀ handed the bare components straight back), making both frames
+# agree with each other and both wrong by one factor of the metric. That does
+# not vanish under refinement, so the study reported a FLAT relative L2 error of
+# 1.7818/1.7819/1.7819 at n=6/8/10 with MINRES converged=True. The k=1 NBC study
+# had the same defect with a different factor (G⁻¹ there, g/J here), which is
+# why the two flat constants differed. See
+# scripts/debug/poisson_rhs_frame_probe.py for the k=1 measurement.
+# ---------------------------------------------------------------------------
+def make_f2_ref(a: float, F):
+    """g·f₂/J — what load(frame='ref') pairs against the k=2 basis."""
     DF = jax.jacfwd(F)
-    f2r = make_f2_ref(a)
+    f2p = make_f2_proxy(a)
     def f(x):
-        return jnp.linalg.solve(DF(x).T, f2r(x))
+        dF = DF(x)
+        return (dF.T @ dF) @ f2p(x) / jnp.linalg.det(dF)
+    return f
+
+
+def make_f2_phys(a: float, F):
+    """DF·f₂/J — the true physical proxy of a 2-form (Piola).
+
+    load(frame='phys') then forms DFᵀ·DF f₂/J = g·f₂/J, matching make_f2_ref.
+    """
+    DF = jax.jacfwd(F)
+    f2p = make_f2_proxy(a)
+    def f(x):
+        dF = DF(x)
+        return dF @ f2p(x) / jnp.linalg.det(dF)
     return f
 
 
@@ -110,7 +145,7 @@ def compute_error(n: int, p: int, epsilon: float,
     q = 2 * p + quad_order_offset if quad_order is None else quad_order
 
     F = toroid_map(epsilon=epsilon)
-    f2 = make_f2_ref(epsilon) if load_frame == 'ref' else make_f2_phys(epsilon, F)
+    f2 = make_f2_ref(epsilon, F) if load_frame == 'ref' else make_f2_phys(epsilon, F)
     w2_exact = make_w2_exact_ref(epsilon)
 
     # --- Sequence setup ------------------------------------------------
