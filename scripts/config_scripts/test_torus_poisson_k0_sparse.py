@@ -25,7 +25,11 @@ import mrx
 import mrx.config  # noqa: F401 — register structured configs in ConfigStore
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import toroid_map
-from mrx.operators import assemble_metric_lumping_laplacian_preconditioner
+from mrx.operators import (
+    assemble_incidence_operators,
+    assemble_metric_lumping_laplacian_preconditioner,
+    assemble_projection_operators,
+)
 from mrx.quadrature import evaluate_at_xq
 
 jax.config.update("jax_enable_x64", True)
@@ -110,30 +114,41 @@ def compute_error(n: int, p: int, epsilon: float,
     # compiled kernels (``_exec``).
 
     # K0 = G0^T M1 G0 applies M1 matrix-free (sum factorization); M1 is never
-    # assembled or stored. The k=0 tensor Hodge-Laplacian preconditioner below
-    # is the ONLY preconditioner built for the solve. Its apply uses only the
-    # matrix-free stiffness ``apply_stiffness`` plus the bulk FD / Schur
-    # factors it assembles itself; it does NOT consume the tensor *mass*
-    # surgery/block data. The tensor mass preconditioner is therefore not
-    # assembled here -- the CP fit configuration (rank + CP solver tolerances)
-    # is passed directly so the Laplacian builder is self-contained.
-
-    # Build the block-Jacobi Laplacian atom explicitly. This is the ONLY
-    # preconditioner built for the solve below. `assemble_hodge_laplacian` is
-    # intentionally not called here -- operator assembly is decoupled from
-    # preconditioner construction.
+    # assembled or stored. The block-Jacobi Laplacian atom below is the ONLY
+    # preconditioner built for the solve; it does NOT consume any mass
+    # surgery/block data, so no mass preconditioner is assembled here.
+    #
+    # The incidence operators ARE required, and were the k=0 study's failure:
+    # the atom's constructor probes its core block via probe_core_block ->
+    # apply_hodge_laplacian_approx -> apply_stiffness, which raises
+    # "Incidence operator G0 is required to apply K0" without them. The
+    # retired tensor preconditioner this script used before 7cead35 did not
+    # take that path, so the swap introduced the dependency silently. This is
+    # the only one of the nine poisson scripts that had omitted the call.
+    #
+    # NOTE the atom also NEEDS n >= p + 2 (see
+    # assemble_metric_lumping_laplacian_preconditioner's docstring): below that
+    # component_factors goes non-finite and numpy raises LinAlgError from
+    # inside eigvals. Keep the configured sweep at or above that floor.
+    #
+    # `assemble_hodge_laplacian` is intentionally not called here -- operator
+    # assembly is decoupled from preconditioner construction.
     t0 = time.perf_counter()
+    ops = assemble_incidence_operators(seq)
+    ops = assemble_projection_operators(seq, operators=ops)
     ops = seq.set_operators(
         assemble_metric_lumping_laplacian_preconditioner(
-            seq, seq.get_operators(), ks=(0,), dirichlets=(True, False),
+            seq, ops, ks=(0,), dirichlets=(True, False),
         )
     )
     jax.block_until_ready(ops)
     timings["build_hodge_preconditioners_0_compile"] = time.perf_counter() - t0
     t0 = time.perf_counter()
+    ops = assemble_incidence_operators(seq)
+    ops = assemble_projection_operators(seq, operators=ops)
     ops = seq.set_operators(
         assemble_metric_lumping_laplacian_preconditioner(
-            seq, seq.get_operators(), ks=(0,), dirichlets=(True, False),
+            seq, ops, ks=(0,), dirichlets=(True, False),
         )
     )
     jax.block_until_ready(ops)
