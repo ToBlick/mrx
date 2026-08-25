@@ -2,7 +2,7 @@
 Laplacian; stiffness CP core kept. Verifies (no 'greville' kwarg anywhere):
   1. k=0 scalar Laplacian solve (greville-only).
   2. mass k=0..3 solves (greville-only default).
-  3. vector Laplacian k=1,2,3 (greville mass + tensor_probe Schur-Jacobi).
+  3. vector Laplacian k=1,2,3 (greville mass + metric_lumping_probe Schur-Jacobi).
   4. stiffness preconditioner k=1,2 assembles + applies finite (CP core intact).
 """
 from __future__ import annotations
@@ -68,7 +68,7 @@ def main():
     ops = assemble_tensor_laplacian_preconditioner(seq, operators=ops, ks=(0,))
     ops = assemble_schur_jacobi_preconditioner(seq, operators=ops, ks=(1, 2, 3),
                                                dirichlet_variants=(True, False),
-                                               schur_diag_mode="tensor_probe")
+                                               schur_diag_mode="metric_lumping_probe")
     # CP-core stiffness preconditioner must still build.
     try:
         ops = assemble_tensor_stiffness_preconditioner(seq, operators=ops, ks=(1, 2))

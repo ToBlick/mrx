@@ -1,8 +1,8 @@
 """Stage-2 verification: k=1,2,3 vector Hodge-Laplacian via greville mass + the
-tensor_probe Schur-Jacobi (which auto-uses the greville mass inner inverse).
+metric_lumping_probe Schur-Jacobi (which auto-uses the greville mass inner inverse).
 
 Assembles greville mass (cp_kwargs={'greville':True}) + surgery + schur-jacobi
-(schur_diag_mode='tensor_probe'), then solves L_k x = b through the production
+(schur_diag_mode='metric_lumping_probe'), then solves L_k x = b through the production
 saddle path apply_inverse_hodge_laplacian(preconditioner='auto'). Confirms the
 greville-backed probe drives convergence for the vector Laplacians.
 """
@@ -54,7 +54,7 @@ def main():
                                               cp_kwargs={"greville": True})
     ops = assemble_schur_jacobi_preconditioner(seq, operators=ops, ks=(1, 2, 3),
                                                dirichlet_variants=(True, False),
-                                               schur_diag_mode="tensor_probe")
+                                               schur_diag_mode="metric_lumping_probe")
 
     def it_conv(info):
         v = int(info)
