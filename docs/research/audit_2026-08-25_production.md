@@ -11,6 +11,11 @@ decide it, and what a null result means — that last line is the one people ski
 and the one that stops a sweep being run twice. **Class A** restores or confirms
 something already half-known; **Class B** opens new territory.
 
+**Adding an entry: write the null-result line first.** If the answer changing
+nothing leaves you with nothing to write there, the entry should not exist. Two
+candidates were dropped from this list on that test, and it only bites once you
+are forced to say what the answer would MEAN rather than what it would be.
+
 Nothing here is launched. Tobias, 2026-08-25: *"We are not launching anything
 more, but we can collect ideas and open questions for future sweeps."*
 
@@ -146,10 +151,15 @@ preconditioner apply versus the operator apply?
 **Decides.** The denominator for every future preconditioner comparison. Today's
 entire constants-vs-parameters investigation — four jobs, two retractions — used
 the preconditioner apply as its own baseline and produced break-even figures
-that were arithmetically correct and practically meaningless. Tobias settled it
-from knowledge: *"the preconditioner apply is not the dominating cost, the
-dominating cost is in fact applying the operator itself."* **Nobody has
-measured it.**
+that were arithmetically correct and practically meaningless.
+
+Tobias settled it from knowing his own code: *"the preconditioner apply is not
+the dominating cost, the dominating cost is in fact applying the operator
+itself."* He was right — **and a correct judgement is not the same as a known
+quantity.** There is no number. The next person comparing preconditioners will
+either re-derive his judgement or, far more likely, do exactly what we did and
+use the preconditioner apply as its own denominator without noticing. **Half a
+GPU-hour buys the number that makes that mistake impossible.**
 
 **Experiment.** Time `apply_hodge_laplacian_approx` against the preconditioner
 apply inside one MINRES iteration, k=1,2, W7-X, p=3 and 5. Report the ratio.
@@ -157,8 +167,10 @@ apply inside one MINRES iteration, k=1,2, W7-X, p=3 and 5. Report the ratio.
 **Cost.** ~0.5 GPU-hours (estimate).
 
 **Null result.** If the two are comparable, then preconditioner-apply cost DOES
-matter and the constants-vs-parameters trade should be reopened with the right
-denominator — which is exactly the case this measurement exists to detect.
+matter and the constants-vs-parameters trade should be **reopened** with the
+right denominator — which is exactly the case this measurement exists to detect.
+Note this is the one entry on the shelf that can **overturn a decision already
+taken**, which is worth knowing before deciding it is not urgent.
 
 ## 8. `nbc_k1` converges at ~3.3, not 4 — **Class A, carried from `Poisson convergence`**
 
