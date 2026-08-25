@@ -219,7 +219,17 @@ def harmonic_alignment(seq, ops, B_dof):
     bb = float(seq.l2_norm_sq(B_dof, 2))
     cos = abs(bh) / (bb * hh) ** 0.5
     resid = B_dof - (bh / hh) * h
-    return cos, float(seq.l2_norm(resid, 2) / bb ** 0.5)
+    # The harmonic AMPLITUDE is an EXACT invariant of this scheme, and it is
+    # why the field cannot relax to B = 0.  The update is dB = curl E, i.e. an
+    # exact form, and a harmonic 2-form of the Dirichlet complex satisfies
+    # D_1^T h = 0; since D_1 = M_2 G_1,
+    #     <h, dB>_M2 = h^T M_2 G_1 E = h^T D_1 E = (D_1^T h)^T E = 0
+    # identically.  That component IS the net toroidal flux: B carries a
+    # frozen flux it cannot shed, and by the M-orthogonal Hodge split
+    # ||B||^2 = ||B_harm||^2 + ||B_exact||^2 the descent can only remove the
+    # exact part.  Returned so the run MEASURES the invariant rather than
+    # asserting it.
+    return cos, float(seq.l2_norm(resid, 2) / bb ** 0.5), bh / hh
 
 
 def make_force_normaliser(seq):
@@ -682,13 +692,15 @@ def main():
     gradp_mag0 = gp_l2_0
     F0v, _, _, _, _ = compute_force(B0, seq)
     print(f"[ic] E = {E0:.6e}   ||F||_M = {float(seq.l2_norm(F0v, 2)):.4e}   "
-          f"residual ||F||/<|grad(B^2/2)|> = "
+          f"residual ||F||_L2/||grad(B^2/2)||_L2 = "
           f"{float(seq.l2_norm(F0v, 2)) / gradp_mag0:.4e}",
           flush=True)
     harm0 = harmonic_alignment(seq, ops, B0)
     if harm0 is not None:
-        print(f"[ic] harmonic 2-form alignment: cos = {harm0[0]:.6f}   "
-              f"residual off span(h) = {harm0[1]:.4e}")
+        print(f"[ic] harmonic 2-form: cos = {harm0[0]:.6f}   residual off "
+              f"span(h) = {harm0[1]:.4e}   amplitude = {harm0[2]:+.8e}")
+        print("[ic]   the amplitude is an EXACT invariant of dB = curl E "
+              "(D_1^T h = 0), which is why the field cannot relax to B = 0")
         results["harmonic_ic"] = list(harm0)
     results.update(B_norm_raw=B_norm, div_ic=div0, leray_ic=leray0,
                    Brho_max=float(max(brho)), H_code_ic=float(H0h),
@@ -847,10 +859,13 @@ def main():
         print(f"    E {E0:.8e} -> {tr['E'][-1]:.8e}   "
               f"({(E0 - tr['E'][-1]) / E0:.4%} of the initial energy removed)")
         print(f"    |F| {results['F_ic']:.4e} -> {tr['F'][-1]:.4e}")
-        print(f"    RESIDUAL ||F||/<|grad(B^2/2)|>  {tr['resid'][0]:.4e} -> "
+        print(f"    RESIDUAL ||F||_L2 / ||grad(B^2/2)||_L2  "
+              f"{tr['resid'][0]:.4e} -> "
               f"{tr['resid'][-1]:.4e}   ({tr['resid'][0] / tr['resid'][-1]:.2f}x"
-              f" reduction);  <|grad(B^2/2)|> {tr['gradp_mag'][0]:.4e} -> "
-              f"{tr['gradp_mag'][-1]:.4e}")
+              f" reduction);  ||grad(B^2/2)||_L2 {tr['gradp_mag'][0]:.4e} -> "
+              f"{tr['gradp_mag'][-1]:.4e}"
+              f"   [volume average, recorded only: "
+              f"{tr['gradp_avg'][0]:.4e} -> {tr['gradp_avg'][-1]:.4e}]")
         if cli.eta_max > 0.0:
             print(f"    eta schedule '{cli.eta_schedule}' peak {cli.eta_max:.3e}"
                   f":  {tr['eta'][0]:.3e} -> {max(tr['eta']):.3e} -> "
@@ -876,9 +891,12 @@ def main():
         print(f"    ||div B|| max {max(tr['div']):.3e}")
         harm = harmonic_alignment(seq, ops, state.B_n)
         if harm is not None:
-            print(f"    HARMONIC alignment cos {harm0[0]:.6f} -> "
-                  f"{harm[0]:.6f}   residual off span(h) {harm0[1]:.4e} -> "
-                  f"{harm[1]:.4e}")
+            print(f"    HARMONIC cos {harm0[0]:.6f} -> {harm[0]:.6f}   "
+                  f"residual off span(h) {harm0[1]:.4e} -> {harm[1]:.4e}")
+            print(f"    HARMONIC AMPLITUDE {harm0[2]:+.8e} -> {harm[2]:+.8e}"
+                  f"   relative drift "
+                  f"{(harm[2] - harm0[2]) / abs(harm0[2]):+.3e}"
+                  f"   -- EXACT invariant, must be at round-off")
         print(f"    PRESSURE profile spread (max-min)/E: "
               f"{tr['p_spread'][0]:.4e} -> {tr['p_spread'][-1]:.4e}   -- the "
               f"fixed point is JxB = grad p, so this going to ZERO means "
