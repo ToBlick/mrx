@@ -135,27 +135,53 @@ def render_poincare(seq, B_dof, nfp, tag, outdir, cli):
           f"[{info['bz_over_b_min']:+.3e}, {info['bz_over_b_max']:+.3e}]",
           flush=True)
 
+    # steps_per_period must be a multiple of saves_per_period, so that every
+    # save time is a step endpoint and no dense interpolation enters the
+    # section (mrx.poincare.trace's own requirement).
+    if cli.pc_steps % cli.pc_saves:
+        raise ValueError(f"--pc-steps {cli.pc_steps} must be a multiple of "
+                         f"--pc-saves {cli.pc_saves}")
     pc = SimpleNamespace(
-        seeds=cli.pc_seeds, saves=8, steps=24, periods=cli.pc_periods,
-        r_min=0.03, r_max=0.97, seed_from="axis", batch_size=None,
-        drift_periods=min(cli.pc_periods, 32))
+        seeds=cli.pc_seeds, saves=cli.pc_saves, steps=cli.pc_steps,
+        periods=cli.pc_periods, r_min=0.03, r_max=0.97, seed_from="axis",
+        batch_size=None, drift_periods=min(cli.pc_periods, 32))
+
+    t0 = time.perf_counter()
     res = pv.run_field(seq, B_dof, 2, True, nfp, pc)
     res["saves_per_period"] = pc.saves
-    plane = cli.pc_zeta
-    RZ = pv.section_RZ(seq, res, plane)
-    a_eff = np.asarray(pv.effective_radius(
-        RZ[0], RZ[1], RZ[2].mean(), RZ[3].mean()))
-    path = os.path.join(outdir, f"poincare_{tag}.png")
-    offset = pv.plot(res, cli.geometry, tag, plane, nfp, RZ, a_eff,
-                     "a_eff [m]", path)
-    print(f"[poincare] {tag}: wrote {path}   axis offset {offset:.3e}   "
-          f"iota {np.nanmin(res['iota']):+.4f} .. {np.nanmax(res['iota']):+.4f}",
+    print(f"[poincare] {tag}: traced {cli.pc_seeds} seeds x "
+          f"{cli.pc_periods} periods in {time.perf_counter() - t0:.0f}s   "
+          f"iota {np.nanmin(res['iota']):+.4f} .. "
+          f"{np.nanmax(res['iota']):+.4f}   drift {res['drift']:.2e}",
           flush=True)
-    return {"path": path, "axis_offset": offset,
-            "iota_min": float(np.nanmin(res["iota"])),
-            "iota_max": float(np.nanmax(res["iota"])),
-            "escaped": int(res["escaped"].sum()),
-            "bz_min": info["bz_over_b_min"], "bz_max": info["bz_over_b_max"]}
+
+    # EVERY PLANE COMES FROM THE SAME TRACE.  section_RZ just picks the save
+    # offset round(plane*saves), so additional zeta planes cost a plot each
+    # and no integration at all -- which is why --pc-saves is worth raising.
+    planes = [float(v) for v in str(cli.pc_zeta).split(",")]
+    out = {"iota_min": float(np.nanmin(res["iota"])),
+           "iota_max": float(np.nanmax(res["iota"])),
+           "escaped": int(res["escaped"].sum()), "drift": float(res["drift"]),
+           "crossings_per_line": int(res["ys"].shape[1] // pc.saves),
+           "bz_min": info["bz_over_b_min"], "bz_max": info["bz_over_b_max"],
+           "planes": {}}
+    for plane in planes:
+        k = round(plane * pc.saves)
+        if abs(k - plane * pc.saves) > 1e-9:
+            raise ValueError(
+                f"zeta plane {plane} is not a save time: plane*saves must be "
+                f"an integer, got {plane * pc.saves} with saves={pc.saves}")
+        RZ = pv.section_RZ(seq, res, plane)
+        a_eff = np.asarray(pv.effective_radius(
+            RZ[0], RZ[1], RZ[2].mean(), RZ[3].mean()))
+        suffix = "" if len(planes) == 1 else f"_z{plane:g}".replace(".", "p")
+        path = os.path.join(outdir, f"poincare_{tag}{suffix}.png")
+        offset = pv.plot(res, cli.geometry, tag, plane, nfp, RZ, a_eff,
+                         "a_eff [m]", path)
+        out["planes"][f"{plane:g}"] = {"path": path, "axis_offset": offset}
+        print(f"[poincare] {tag}: zeta={plane:g} -> {path}   "
+              f"axis offset {offset:.3e}", flush=True)
+    return out
 
 
 def make_pressure_profiler(seq, rhos, n_ang=8):
@@ -398,7 +424,17 @@ def main():
                          "arm's final field, AFTER all arms have finished")
     ap.add_argument("--pc-seeds", type=int, default=40)
     ap.add_argument("--pc-periods", type=int, default=150)
-    ap.add_argument("--pc-zeta", type=float, default=0.0)
+    ap.add_argument("--pc-zeta", default="0.0",
+                    help="comma-separated zeta planes, e.g. '0,0.25,0.5'. "
+                         "Each must be a save time (plane*--pc-saves integral). "
+                         "Extra planes are nearly free: they reuse one trace.")
+    ap.add_argument("--pc-saves", type=int, default=8,
+                    help="samples kept per period. Raise it to get more zeta "
+                         "planes; must exceed twice the poloidal turns per "
+                         "period or the angle unwrapping aliases.")
+    ap.add_argument("--pc-steps", type=int, default=24,
+                    help="integration steps per period; must be a multiple "
+                         "of --pc-saves.")
     ap.add_argument("--save-b", default=None,
                     help="HDF5 path for the IC and per-arm final B DoFs")
     ap.add_argument("--dt-mode", default="linesearch",
@@ -483,6 +519,16 @@ def main():
             attrs = {k: f.attrs[k] for k in f.attrs}
         print(f"[replot] {cli.poincare_from}: {list(fields)}   attrs {attrs}",
               flush=True)
+        # The DoF vectors only mean anything against the sequence they were
+        # built on.  A mismatch would fail on shape anyway, but say so here
+        # rather than in a einsum traceback.
+        saved = (str(attrs.get("geometry")), list(attrs.get("ns", [])),
+                 int(attrs.get("p", -1)))
+        asked = (cli.geometry, list(ns), cli.p)
+        if saved != asked:
+            raise ValueError(
+                f"saved field is {saved} but this run built {asked}; "
+                f"re-render with matching --geometry/--ns/--p")
         out = {}
         for tag, dof in fields.items():
             out[tag] = render_poincare(seq, dof, nfp, tag, outdir, cli)
