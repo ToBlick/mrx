@@ -425,6 +425,44 @@ def _padded(v, pad=0.06, floor=0.0):
     return mid - 0.5 * span - pad * span, mid + 0.5 * span + pad * span
 
 
+def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
+                   r_edge=0.97, theta=0.0, probe_periods=64,
+                   steps_per_period=24, t_min=0.02):
+    """Seeds spaced from the MAGNETIC axis to the edge, not from ``r = 0``.
+
+    :func:`seed_line` walks out along constant *logical* radius, i.e. from the
+    coordinate axis. That is fine only while the two axes coincide. They do not
+    have to: the maps come from equilibria, and a finite-beta one puts ``r = 0``
+    at its own Shafranov-shifted axis, which is not where the vacuum field's
+    axis is. Measured on ``w7x-ini`` (beta 4.2%): 4.9 cm apart, against 0.6 mm
+    on vacuum W7-X.
+
+    When they differ, every inner seed lands on a surface of size comparable to
+    the OFFSET rather than a small one -- w7x-ini's innermost surface came out
+    at ``a_eff = 0.10 m`` -- and the section has a hole in the middle with no
+    lines sampling the core at all.
+
+    So find the axis first (one short probe trace, mean of its crossings) and
+    lay the seeds along the ray from there to the edge point in the ``(u, v)``
+    chart. Entry 0 is still the ``r_axis`` probe, unmoved: it is the centre
+    reference for :func:`axis_track`, and it has to keep a small ORBIT around
+    the axis rather than sit on it, or its own angle is rounding noise.
+    """
+    probe = jnp.array([[r_axis, theta], [r_edge, theta]])
+    ys, _ = trace(field, probe, probe_periods, steps_per_period,
+                  saves_per_period)
+    centre = jnp.mean(ys[0, ::saves_per_period], axis=0)
+    edge = jnp.array([r_edge * jnp.cos(TWO_PI * theta),
+                      r_edge * jnp.sin(TWO_PI * theta)])
+
+    t = jnp.linspace(t_min, 1.0, n_seeds)[:, None]
+    uv = centre[None, :] + t * (edge - centre)[None, :]
+    r = jnp.sqrt(uv[:, 0] ** 2 + uv[:, 1] ** 2)
+    th = jnp.arctan2(uv[:, 1], uv[:, 0]) / TWO_PI % 1.0
+    seeds = jnp.stack([r, th], axis=1)
+    return jnp.concatenate([jnp.array([[r_axis, theta]]), seeds], axis=0)
+
+
 def seed_line(n_seeds, r_min=0.03, r_max=0.97, theta=0.0, r_axis=0.01):
     """Seeds along a logical radial ray at ``zeta = 0``, axis probe first.
 

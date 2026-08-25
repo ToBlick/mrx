@@ -48,7 +48,8 @@ from mrx.nullspace import (  # noqa: E402
 )
 from mrx.poincare import (  # noqa: E402
     effective_radius, escaped_mask, logical_field, render_section,
-    rotational_transform, seed_line, step_convergence, to_RZ, trace,
+    rotational_transform, seed_from_axis, seed_line, step_convergence, to_RZ,
+    trace,
 )
 from verify_block_jacobi import build_sequence  # noqa: E402
 
@@ -175,8 +176,12 @@ def bench(field, seeds, cli):
 
 
 def run_field(seq, dof, k, dirichlet, nfp, cli):
-    seeds = seed_line(cli.seeds, r_min=cli.r_min, r_max=cli.r_max)
     field = logical_field(seq, dof, k, dirichlet)
+    if cli.seed_from == "axis":
+        seeds = seed_from_axis(field, cli.seeds, cli.saves, r_edge=cli.r_max,
+                               steps_per_period=cli.steps)
+    else:
+        seeds = seed_line(cli.seeds, r_min=cli.r_min, r_max=cli.r_max)
 
     t0 = time.perf_counter()
     ys, ok = trace(field, seeds, cli.periods, cli.steps, cli.saves,
@@ -256,6 +261,11 @@ def main():
     ap.add_argument("--bench", action="store_true",
                     help="time the prescribed schedule against the adaptive one")
     ap.add_argument("--bench-periods", type=int, default=20)
+    ap.add_argument("--seed-from", default="coord", choices=("coord", "axis"),
+                    help="'coord' walks out from the logical r=0; 'axis' from "
+                         "the MAGNETIC axis, which matters whenever the two "
+                         "differ (finite-beta maps: 4.9 cm on w7x-ini) and "
+                         "leaves a hole in the section otherwise")
     ap.add_argument("--drift-periods", type=int, default=64,
                     help="periods over which the h vs h/2 step check runs")
     ap.add_argument("--maxiter", type=int, default=200000,
