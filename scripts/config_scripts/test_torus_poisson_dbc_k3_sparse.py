@@ -38,7 +38,6 @@ from mrx.operators import (
     assemble_incidence_operators,
     assemble_projection_operators,
     assemble_schur_jacobi_preconditioner,
-    assemble_tensor_mass_preconditioner,
 )
 from mrx.quadrature import evaluate_at_xq
 
@@ -98,7 +97,6 @@ def compute_error(n: int, p: int, epsilon: float,
 
     F = toroid_map(epsilon=epsilon)
     f3 = make_f3_ref(epsilon, F) if load_frame == 'ref' else make_f3_phys(epsilon)
-    cp_kwargs = {"maxiter": 100, "tol": 1e-9, "ridge": 1e-12}
 
     # --- Sequence setup ------------------------------------------------
     t0 = time.perf_counter()
@@ -118,7 +116,6 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
-    ops = assemble_tensor_mass_preconditioner(seq, ops, ks=(2, 3), rank=1, cp_kwargs=cp_kwargs)
     ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(3,), dirichlet_variants=(True,))
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)
@@ -128,7 +125,6 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
-    ops = assemble_tensor_mass_preconditioner(seq, ops, ks=(2, 3), rank=1, cp_kwargs=cp_kwargs)
     ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(3,), dirichlet_variants=(True,))
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)
@@ -140,7 +136,7 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     ops = init_nullspaces(seq, seq.get_operators(), BETTI)
     ones3 = jnp.ones(seq.n3_dbc)
-    v3 = seq.apply_inverse_mass_matrix(ones3, 3, dirichlet=True, preconditioner='tensor')
+    v3 = seq.apply_inverse_mass_matrix(ones3, 3, dirichlet=True)
     norm3 = seq.l2_norm(v3, 3, dirichlet=True)
     ops = _set_null(ops, 3, True, (v3 / norm3)[None, :])
     ops = seq.set_operators(ops)

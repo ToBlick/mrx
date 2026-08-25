@@ -25,7 +25,7 @@ import mrx
 import mrx.config  # noqa: F401 — register structured configs in ConfigStore
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import toroid_map
-from mrx.operators import assemble_tensor_laplacian_preconditioner
+from mrx.operators import assemble_block_jacobi_laplacian_preconditioner
 from mrx.quadrature import evaluate_at_xq
 
 jax.config.update("jax_enable_x64", True)
@@ -117,25 +117,23 @@ def compute_error(n: int, p: int, epsilon: float,
     # surgery/block data. The tensor mass preconditioner is therefore not
     # assembled here -- the CP fit configuration (rank + CP solver tolerances)
     # is passed directly so the Laplacian builder is self-contained.
-    cp_kwargs = {"maxiter": 100, "tol": 1e-9, "ridge": 1e-12}
 
-    # Build the tensor Hodge-Laplacian preconditioner explicitly. This is the
-    # ONLY preconditioner built for the solve below: the tensor path does not
-    # need (and does not compute) any Jacobi diagonal. `assemble_hodge_laplacian`
-    # is intentionally not called here -- operator assembly is decoupled from
+    # Build the block-Jacobi Laplacian atom explicitly. This is the ONLY
+    # preconditioner built for the solve below. `assemble_hodge_laplacian` is
+    # intentionally not called here -- operator assembly is decoupled from
     # preconditioner construction.
     t0 = time.perf_counter()
     ops = seq.set_operators(
-        assemble_tensor_laplacian_preconditioner(
-            seq, seq.get_operators(), ks=(0,), rank=1, cp_kwargs=cp_kwargs,
+        assemble_block_jacobi_laplacian_preconditioner(
+            seq, seq.get_operators(), ks=(0,), dirichlets=(True, False),
         )
     )
     jax.block_until_ready(ops)
     timings["build_hodge_preconditioners_0_compile"] = time.perf_counter() - t0
     t0 = time.perf_counter()
     ops = seq.set_operators(
-        assemble_tensor_laplacian_preconditioner(
-            seq, seq.get_operators(), ks=(0,), rank=1, cp_kwargs=cp_kwargs,
+        assemble_block_jacobi_laplacian_preconditioner(
+            seq, seq.get_operators(), ks=(0,), dirichlets=(True, False),
         )
     )
     jax.block_until_ready(ops)

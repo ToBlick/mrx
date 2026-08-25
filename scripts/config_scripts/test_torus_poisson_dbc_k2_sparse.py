@@ -45,7 +45,6 @@ from mrx.operators import (
     assemble_incidence_operators,
     assemble_projection_operators,
     assemble_schur_jacobi_preconditioner,
-    assemble_tensor_mass_preconditioner,
 )
 from mrx.quadrature import evaluate_at_xq
 
@@ -113,7 +112,6 @@ def compute_error(n: int, p: int, epsilon: float,
     F = toroid_map(epsilon=epsilon)
     f2 = make_f2_ref(epsilon) if load_frame == 'ref' else make_f2_phys(epsilon, F)
     w2_exact = make_w2_exact_ref(epsilon)
-    cp_kwargs = {"maxiter": 100, "tol": 1e-9, "ridge": 1e-12}
 
     # --- Sequence setup ------------------------------------------------
     t0 = time.perf_counter()
@@ -135,7 +133,6 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
-    ops = assemble_tensor_mass_preconditioner(seq, ops, ks=(0, 1, 2), rank=1, cp_kwargs=cp_kwargs)
     ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(2,), dirichlet_variants=(True,))
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)
@@ -145,7 +142,6 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
-    ops = assemble_tensor_mass_preconditioner(seq, ops, ks=(0, 1, 2), rank=1, cp_kwargs=cp_kwargs)
     ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(2,), dirichlet_variants=(True,))
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)
