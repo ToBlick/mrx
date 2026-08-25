@@ -1,13 +1,20 @@
 """raw_kron vs the metric-lumped atom as the Schur-Jacobi probe: A/B.
 
-`assemble_schur_jacobi_preconditioner` probes and STORES 1/diag(A_k) with
-A_k(x) = S_k x + D_{k-1} B_{k-1} D_{k-1}^T x, and B_{k-1} is the schur.inner
-inverse. That inner was raw_kron; it is now the block-Jacobi mass atom (the
-metric-lumped FD preconditioner that superseded the CP/ALS "tensor").
+THIS COMPARISON CAN ONLY BE RUN WHILE raw_kron EXISTS. Once it is deleted the
+numbers below are unreproducible forever, so the OUTPUT is the deliverable here,
+not the decision it informs -- the decision is already made. Commit the raw log.
+
+Why the deletion forces this measurement. `assemble_schur_jacobi_preconditioner`
+probes and STORES 1/diag(A_k) with A_k(x) = S_k x + D_{k-1} B_{k-1} D_{k-1}^T x,
+where B_{k-1} is the schur.inner inverse. Today that inner is raw_kron and it is
+the ONLY surviving probe mode. Delete raw_kron and there is no backing left, so
+the Schur-Jacobi diagonal must be probed from the metric-lumped atom instead --
+the jacobi baseline changes not by choice but because nothing else survives.
+This measures exactly that forced switch.
 
 Three measurements, in the order they can invalidate each other:
 
-1. LIVENESS. The two stored diagonals must DIFFER. A swap that silently does
+1. LIVENESS. The two probed diagonals must DIFFER. A swap that silently does
    not take effect passes every correctness check perfectly and means nothing,
    so this is asserted before anything else is believed.
 2. CORRECTNESS. A converged solve is preconditioner-independent, so the two
@@ -18,12 +25,23 @@ Three measurements, in the order they can invalidate each other:
    inverse directly and the probe is never consulted -- measuring there would
    be measuring nothing.
 
+A SECOND liveness trap, specific to the merit arm: `outer='jacobi'` calls
+`_build_schur_outer_jacobi_diaginv` with `allow_stored_tensor_diaginv=True`, so
+if a mode-matched diagonal has been preassembled BOTH arms silently reuse that
+one stored vector and the iteration counts come out identical for a reason that
+has nothing to do with the preconditioners. This script never assembles one, and
+asserts none is present, so each arm probes fresh from its own schur.inner.
+(`_build_schur_probe_apply` validates its `mode` token and then ignores it --
+the actual backing is `saddle_preconditioner.schur.inner`, which is what the
+arms vary.)
+
     python scripts/debug/schur_probe_ab.py --geometry w7x --ns 12,24,12
 """
 from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 
 import jax
@@ -42,6 +60,8 @@ from mrx.preconditioners import (  # noqa: E402
 )
 from verify_block_jacobi import build_sequence  # noqa: E402
 
+ARMS = ("raw_kron", "block_jacobi")
+
 
 def spec_for(inner_kind, outer_kind):
     return SaddlePointPreconditionerSpec(
@@ -53,9 +73,69 @@ def spec_for(inner_kind, outer_kind):
     )
 
 
+def run_geometry(geometry, ns, p, tol, maxiter, ks):
+    seq, ops = build_sequence(geometry, ns, p, maxiter)
+    print(f"\n[geom ] {geometry} ns={ns} p={p} tol={tol:g}", flush=True)
+
+    for k in ks:
+        for dbc in (False, True):
+            n = int(getattr(seq, f"n{k}_dbc" if dbc else f"n{k}"))
+            side = "dbc " if dbc else "free"
+
+            # (1) LIVENESS -- probe each arm's Schur diagonal directly.
+            diags = {}
+            for kind in ARMS:
+                apply_ = op._build_schur_apply_from_saddle_preconditioner(
+                    seq, ops, k=k, dirichlet=dbc, eps=0.0,
+                    saddle_preconditioner=spec_for(kind, 'none'))
+                diags[kind] = np.asarray(op._diagonal_from_matvec(apply_, n))
+            a, b = diags["raw_kron"], diags["block_jacobi"]
+            rel = float(np.linalg.norm(a - b) / np.linalg.norm(a))
+            if rel <= 1e-12:
+                print(f"[diag ] k={k} {side} n={n:7d}  rel={rel:.3e}  "
+                      "*** IDENTICAL: the swap is a no-op here, so nothing "
+                      "below means anything ***", flush=True)
+                continue
+            print(f"[diag ] k={k} {side} n={n:7d}  "
+                  f"|d_rk - d_atom|/|d_rk| = {rel:.3e}  LIVE", flush=True)
+
+            # Guard the second liveness trap: a preassembled diagonal would be
+            # shared by both arms and the merit numbers would be meaningless.
+            for kind in ARMS:
+                mode = op._coerce_schur_diag_mode(
+                    MassPreconditionerSpec(kind='jacobi'), context='ab-guard')
+                stored = op._get_schur_diaginv(ops, k, dbc, mode)
+                assert stored is None, (
+                    f"a Schur diagonal is already stored for k={k}, "
+                    f"dirichlet={dbc}, mode={mode!r}; both arms would reuse it "
+                    "and the merit comparison would be void")
+
+            # (2)+(3) CORRECTNESS and MERIT.
+            rhs = jax.random.normal(jax.random.PRNGKey(7 * k + int(dbc)), (n,))
+            out = {}
+            for kind in ARMS:
+                x, info = op.apply_inverse_hodge_laplacian(
+                    seq, ops, rhs, k, dirichlet=dbc, tol=tol,
+                    maxiter=maxiter, return_info=True,
+                    preconditioner=spec_for(kind, 'jacobi'))
+                x.block_until_ready()
+                iters = int(jnp.abs(jnp.asarray(info)))
+                converged = int(jnp.asarray(info)) < 0
+                out[kind] = (np.asarray(x), iters, converged)
+            xr, ir, okr = out["raw_kron"]
+            xb, ib, okb = out["block_jacobi"]
+            dx = float(np.linalg.norm(xb - xr) / max(np.linalg.norm(xr), 1e-300))
+            verdict = "OK" if dx < 1e-6 else "*** ARMS DISAGREE ***"
+            print(f"[solve] k={k} {side} raw_kron {ir:6d} it (conv {okr})   "
+                  f"atom {ib:6d} it (conv {okb})   |dx|/|x| = {dx:.3e}  "
+                  f"{verdict}", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--geometry", default="w7x")
+    ap.add_argument("--geometries", default="toroid,w7x",
+                    help="comma-separated; a single-geometry number is a much "
+                         "weaker permanent record")
     ap.add_argument("--ns", default="12,24,12")
     ap.add_argument("--p", type=int, default=3)
     ap.add_argument("--ks", default="1,2,3")
@@ -63,51 +143,17 @@ def main():
     ap.add_argument("--maxiter", type=int, default=20000)
     cli = ap.parse_args()
     ns = tuple(int(v) for v in cli.ns.split(","))
+    ks = [int(v) for v in cli.ks.split(",")]
 
-    seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter)
-    print(f"[setup] {cli.geometry} ns={ns} p={cli.p}", flush=True)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                         text=True).stdout.strip()
+    print(f"[sha  ] both arms measured at {sha}", flush=True)
+    print("[note ] raw_kron is deleted after this run; these numbers cannot "
+          "be regenerated.", flush=True)
 
-    for k in [int(v) for v in cli.ks.split(",")]:
-        for dbc in (False, True):
-            n = int(getattr(seq, f"n{k}_dbc" if dbc else f"n{k}"))
-            side = "dbc " if dbc else "free"
-
-            # (1) LIVENESS: probe the Schur diagonal both ways.
-            diags = {}
-            for kind in ("raw_kron", "block_jacobi"):
-                apply_ = op._build_schur_apply_from_saddle_preconditioner(
-                    seq, ops, k=k, dirichlet=dbc, eps=0.0,
-                    saddle_preconditioner=spec_for(kind, 'none'))
-                diags[kind] = np.asarray(op._diagonal_from_matvec(apply_, n))
-            a, b = diags["raw_kron"], diags["block_jacobi"]
-            rel = float(np.linalg.norm(a - b) / np.linalg.norm(a))
-            live = rel > 1e-12
-            print(f"[diag ] k={k} {side} n={n:7d}  |d_rk - d_atom|/|d_rk| = "
-                  f"{rel:.3e}  {'LIVE' if live else '*** IDENTICAL: swap is a '
-                                                    'no-op, nothing below means '
-                                                    'anything ***'}", flush=True)
-            if not live:
-                continue
-
-            # (2)+(3) CORRECTNESS and MERIT, with outer='jacobi' so the probed
-            # diagonal is what preconditions the solve.
-            rhs = jax.random.normal(jax.random.PRNGKey(7 * k + dbc), (n,))
-            out = {}
-            for kind in ("raw_kron", "block_jacobi"):
-                x, info = op.apply_inverse_hodge_laplacian(
-                    seq, ops, rhs, k, dirichlet=dbc, tol=cli.tol,
-                    maxiter=cli.maxiter, return_info=True,
-                    preconditioner=spec_for(kind, 'jacobi'))
-                x.block_until_ready()
-                out[kind] = (np.asarray(x), int(jnp.abs(jnp.asarray(info))),
-                             int(jnp.asarray(info)) < 0)
-            xr, ir, okr = out["raw_kron"]
-            xb, ib, okb = out["block_jacobi"]
-            dx = float(np.linalg.norm(xb - xr) / max(np.linalg.norm(xr), 1e-300))
-            print(f"[solve] k={k} {side} raw_kron {ir:6d} it (conv {okr})   "
-                  f"atom {ib:6d} it (conv {okb})   |dx|/|x| = {dx:.3e}",
-                  flush=True)
-    print("[done]", flush=True)
+    for geometry in cli.geometries.split(","):
+        run_geometry(geometry.strip(), ns, cli.p, cli.tol, cli.maxiter, ks)
+    print("\n[done]", flush=True)
 
 
 if __name__ == "__main__":
