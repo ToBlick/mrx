@@ -32,6 +32,20 @@ record only; the banner names what replaced them.
 - `laplacian_mg_k0_plan.md` — k=0 MG theory/log (shelved: research branch).
 - `hiptmair_xu_preconditioner.md` — HX/aux-space reference.
 
+## Relaxation initial conditions (2026-08-25)
+
+- **`relaxation_ic_2026-08-25.md`** — how to build a relaxation IC without
+  interpolating `B`. Our reference 2-form components ARE GVEC/VMEC's
+  `sqrt(g) B^i`, so the field rebuilds from three scalars
+  (`dPhi_dr`, `dchi_dr`, `LA`) instead of a resampled vector — verified against
+  the hegna export's own B with no free factor. Also: helicity in closed form
+  (metric-free, and zero for constant iota); why lambda changes the energy but
+  never the fluxes or the helicity; the exact screw-pinch pressure for
+  polynomial profiles; and the lambda equation (elliptic, decoupled per flux
+  surface) as a data-free warm start. §10 records two silent traps —
+  `load(frame='ref')` wants `g omega / J`, not `omega`, and histopolation is
+  blocked for DBC/polar spaces.
+
 ## Unrelated topics
 
 - `w7x_vacuum_bfield_handoff.md`, `gvec_h5_vacuum_comparison.md`,

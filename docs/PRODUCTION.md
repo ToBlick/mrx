@@ -65,6 +65,19 @@ Unmaintained demo scripts: `scripts/deprecated/`.
   `docs/research/handoff_2026-08-23_bc_alpha_sweep.md`. `MRX_BJ_BC_SCALE`
   overrides.
 - `MRX_MASS_KIND=raw_kron` reverts the mass swap wholesale.
+- **`frame='ref'` in `load`/`interpolate` is NOT the primal component vector.**
+  `M_k` carries a `g/J` weight (k=2: `M2_ij = int Lambda_i^T g Lambda_j / J`),
+  so the DOFs from `M_k^{-1} load` are the primal `omega` with
+  `B_phys = DF omega / J` -- what `DiscreteFunction` evaluates and
+  `Pushforward` consumes -- whereas `frame='ref'` pairs its argument straight
+  against the basis and therefore wants `g omega / J`. To build a field from
+  known primal components, push them forward and pass `frame='phys'`; the
+  pullback recovers `g omega / J` on its own. Handing `omega` to `frame='ref'`
+  fails SILENTLY, off by a component- and rho-dependent factor even on a
+  cylinder. `interpolate` gained `frame='ref'` (k=1,2) on 2026-08-25 for
+  symmetry with `load`; it is still gated by `_require_full_tensor_space`, so
+  it rejects `dirichlet=True` and `polar=True`. See
+  `docs/research/relaxation_ic_2026-08-25.md` §10.
 - **Any new traced entry point that solves must first call
   `operators.warm_mass_preconditioner_cache`.** Mass factors build lazily and
   the build is host-side numpy, so a cold cache inside a `jax.lax.while_loop`
