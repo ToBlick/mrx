@@ -452,8 +452,15 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
     from mrx.operators import (  # noqa: PLC0415
         assemble_block_jacobi_laplacian_preconditioner,
     )
+    # k=0 is in the list because the k=1 chain reaches L_0 through
+    # apply_leray_projection(v, k=1), and MEASURED on w7x ns=(12,24,12) p=3 the
+    # atom is worth it there: 311 -> 74 iterations dbc and 585 -> 114 free,
+    # against 0.25 s to assemble, i.e. break-even after 0.4 solves. (I argued
+    # the opposite when the k=0 default was fixed -- that one solve could not
+    # repay an assembly -- and the measurement says otherwise.) Both arms return
+    # the same vector to 1.1e-12, as a converged solve must.
     operators = assemble_block_jacobi_laplacian_preconditioner(
-        seq, operators, ks=(1, 2, 3), dirichlets=(False, True))
+        seq, operators, ks=(0, 1, 2, 3), dirichlets=(False, True))
 
     operators = _commit(seq, init_nullspaces(
         seq, operators, betti_numbers=betti_numbers))

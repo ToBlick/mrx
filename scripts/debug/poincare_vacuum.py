@@ -106,12 +106,15 @@ def report_preconditioners(seq, ops):
                 raise RuntimeError(
                     f"k={k} dirichlet={dbc} resolved schur.outer={outer!r}, "
                     "not the block atom")
-    k0 = op._materialize_default_scalar_hodge_preconditioner(seq, ops, k=0)
-    print(f"[precond] k=0 scalar: {k0.kind}  -- known stale default, item 3.1/3.7 "
-          "of docs/research/TODO_2026-08-24_precond_audit.md. The k=1 harmonic "
-          "chain reaches it through apply_leray_projection(v, k=1); L_0 "
-          "converges in ~1e2 iterations, so it is a cost item, not a stall risk",
-          flush=True)
+    for dbc in (False, True):
+        k0 = op._materialize_default_scalar_hodge_preconditioner(
+            seq, ops, k=0, dirichlet=dbc)
+        print(f"[precond] k=0 {'dbc ' if dbc else 'free'}: {k0.kind:12s} "
+              f"(atom assembled: {op._block_jacobi_available(seq, 0, dbc)})",
+              flush=True)
+        if k0.kind != 'block':
+            raise RuntimeError(
+                f"k=0 dirichlet={dbc} resolved {k0.kind!r}, not the block atom")
 
 
 def report_harmonic(seq, ops):

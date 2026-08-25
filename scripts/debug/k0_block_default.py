@@ -14,11 +14,11 @@ buys, none of which were true before:
 3. both arms converge to the SAME vector, and the iteration counts say whether
    assembling a k=0 atom is worth it for a given call site.
 
-(3) is the open question the fix deliberately does not answer for
-`compute_nullspaces`: it does exactly ONE k=0 solve, inside
-`apply_leray_projection(v, k=1)`, and an atom built for one solve is unlikely
-to repay its assembly. That call site is left on `ks=(1,2,3)` until this says
-otherwise.
+(3) ANSWERED, and against my prediction. I argued `compute_nullspaces` should
+stay on `ks=(1,2,3)` because its single k=0 solve -- inside
+`apply_leray_projection(v, k=1)` -- could not repay an atom. Measured on w7x
+ns=(12,24,12) p=3: 311 -> 74 iterations dbc, 585 -> 114 free, 0.25 s to
+assemble, break-even after 0.4 solves. It is now on `ks=(0,1,2,3)`.
 
     python scripts/debug/k0_block_default.py --geometry w7x --ns 12,24,12
 """
@@ -85,7 +85,11 @@ def main():
                 one, seq.apply_mass_matrix(one, 0, dirichlet=False))
 
         # (1) no k=0 atom assembled -> the default must still be jacobi.
-        #     compute_nullspaces assembles ks=(1,2,3) only, so this holds.
+        #     compute_nullspaces now assembles k=0 too (it is worth it, which is
+        #     what this script measured), so drop it to recover the baseline.
+        cache = dict(getattr(seq, op.BLOCK_JACOBI_CACHE_ATTR, None) or {})
+        cache.pop((0, bool(dbc)), None)
+        setattr(seq, op.BLOCK_JACOBI_CACHE_ATTR, cache)
         assert not op._block_jacobi_available(seq, 0, dbc)
         pre = op._materialize_default_scalar_hodge_preconditioner(
             seq, ops, k=0, dirichlet=dbc)
@@ -120,9 +124,11 @@ def main():
         print(f"           break-even after {breakeven:.1f} solves "
               f"(negative means the atom never repays here)", flush=True)
 
-        # Drop it so the next BC starts from the same state.
-        if hasattr(seq, op.BLOCK_JACOBI_CACHE_ATTR):
-            delattr(seq, op.BLOCK_JACOBI_CACHE_ATTR)
+        # Drop the k=0 atom so the next BC starts from the same state. The
+        # k>=1 ones must survive -- compute_nullspaces' solves needed them.
+        cache = dict(getattr(seq, op.BLOCK_JACOBI_CACHE_ATTR, None) or {})
+        cache.pop((0, bool(dbc)), None)
+        setattr(seq, op.BLOCK_JACOBI_CACHE_ATTR, cache)
 
     print("[done]", flush=True)
 
