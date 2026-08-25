@@ -2206,3 +2206,55 @@ valid if the preconditioner change riding along with it is inert. It is.
 counterexample: `||F||` is the gradient's norm, is not monotone, and is a
 pointwise reading at an arbitrary stopping step. Energy and helicity -- the
 integrated quantities -- agree.
+
+### 35.3 An independent check of 35.1 that came back FLAT
+
+The p-refinement result in s35.1 rests on `|dH|`, and the whole reason s35
+exists is that the helicity denominator on `fmm002` is untrustworthy. So it is
+worth testing the same claim with a diagnostic that has no such denominator:
+roughness `||J||/||B||`, where growth means grid-scale structure and decay
+means the field is getting smoother.
+
+    fmm002 8^3, ||J||/||B|| first -> last        (* pre-fix even p)
+
+    p=1    7.034e-01 -> 1.298e-01    x0.185
+    p=2*   2.850e-01 -> 5.339e-02    x0.187
+    p=3    -- NOT RECORDED, see below
+    p=4*   4.441e-01 -> 5.150e-02    x0.116
+    p=5    3.198e-01 -> 6.062e-02    x0.190
+
+**Flat.** Every degree lands between 0.116 and 0.190, with no trend in p. The
+h-sweep is the same story (12^3 x0.287, 16^3 x0.308).
+
+**This does NOT corroborate s35.1, and it does not contradict it either.** The
+two diagnostics measure different things: `|dH|` is an integral, topological
+quantity, and `||J||/||B||` is a gradient scale. p-refinement improving
+absolute helicity conservation 47x while leaving the final smoothness
+unchanged is coherent -- it just means the independent confirmation I went
+looking for is not available from this diagnostic. Recorded because a check
+that comes back null is worth as much as one that lands, and burying it would
+leave the next person to run it again.
+
+### 35.4 The roughness diagnostic is missing from the two arms that need it most
+
+`JoverB` was added to the trace partway through the campaign, so it is absent
+from:
+
+* **W1** -- the p=3 baseline, which puts a hole in the MIDDLE of the p series
+  above, and W1 is the reference every other `fmm002` arm is compared against.
+* **LR3** -- the chaotic linesearch arm. This is the sharpest gap: the
+  diagnostic exists precisely to separate "physically chaotic but smooth" from
+  "numerically shredded at the grid scale", and it is missing from the one arm
+  in the campaign that is unambiguously chaotic (s(poincare): nested -> pure
+  chaos).
+
+So the question the diagnostic was added to answer -- **was LR3's chaos
+physical or numerical?** -- is still open, and cannot be closed from what is on
+disk. Both fields are saved (`B.h5`), so this needs a short re-run rather than
+a full arm, but it does need GPU time and nothing is being launched.
+
+**Shelf item A5** (class A, restores a confounded claim): re-measure
+`||J||/||B||` at the IC and final state for W1 and LR3 from their saved
+fields. ~0.2 GPU-h estimated, both are 8^3. NULL = LR3's roughness is flat
+like every other arm, which would say its chaos is physical rather than
+grid-scale, and would materially change how s(poincare) should be read.
