@@ -364,16 +364,32 @@ PRODUCTION_BC_SCALE = 3.0
 def _resolve_bc_scale(bc_scale=None):
     """Resolve the natural-BC penalty scale.
 
-    ``MRX_BJ_BC_SCALE`` OVERRIDES the argument when set. That ordering is
-    deliberate: the sweep harnesses (``verify_block_jacobi.py``,
-    ``block_jacobi_spectrum.py``) always set the variable -- to "1.0" when the
-    arm names no scale -- so every recorded arm keeps meaning exactly what it
-    meant before this default existed.
+    Precedence, highest first: the explicit ``bc_scale`` argument, then
+    ``MRX_BJ_BC_SCALE``, then :data:`PRODUCTION_BC_SCALE`. **An explicit
+    argument always wins.**
+
+    The ordering was the other way round until 2026-08-25 -- the environment
+    variable overrode the argument -- on the reasoning that the sweep harnesses
+    always set the variable, so every recorded arm kept its meaning. The cost
+    was that a caller passing ``bc_scale=2.0`` was silently ignored whenever
+    the variable happened to be set, including by a leftover export in a shell,
+    and nothing reported it. A hidden factor that overrides an explicit one is
+    exactly the failure the no-implicit-weights rule exists to prevent.
+
+    The flip changes NO existing caller. Checked repo-wide: nothing sets the
+    variable AND passes the argument. The four sweep harnesses
+    (``verify_block_jacobi``, ``block_jacobi_spectrum``, ``bench_real_solves``,
+    ``bc_schur_effective``) set the variable and pass no argument, so the env
+    still supplies their default; ``test_metric_lumping_laplacian``'s fixture
+    does the same, and its defaults test pops the variable before passing an
+    argument. Recorded arms keep meaning what they meant.
     """
+    if bc_scale is not None:
+        return float(bc_scale)
     env = os.environ.get("MRX_BJ_BC_SCALE")
     if env is not None:
         return float(env)
-    return PRODUCTION_BC_SCALE if bc_scale is None else float(bc_scale)
+    return PRODUCTION_BC_SCALE
 
 
 def _boundary_entry_direct(seq, axis, weight_field, window, dirichlet,
