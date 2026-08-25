@@ -922,3 +922,97 @@ degenerate -- `iota = 0` by construction makes the poloidal angle about the
 magnetic axis nearly undefined, and the IC Poincare is correspondingly poor.
 It remains useful for the harmonic-amplitude test in section 12 and useless as
 a picture.
+
+## 19. WHAT DESTROYS THE SURFACES: step size, measured
+
+Tobias read all the Poincare pairs and classified them. Cross-referencing that
+against the traces settles the question sections 12 and 17 left open, and
+overturns two of my own claims.
+
+### 19.1 The classification, against the numbers
+
+`||B||_M = 1` in every run, so absolute helicity changes are comparable.
+
+| run | geometry / IC | dt | dE | \|dH\| | \|dH\|/dE | Poincare |
+|---|---|---|---|---|---|---|
+| W1 | `fmm002` clebsch | linesearch | 1.22e-04 | 1.54e-06 | 1.3e-02 | good -> good |
+| **W5** | `w7x_ini` clebsch | **fixed 1e-3** | 2.09e-03 | 2.00e-06 | **9.6e-04** | nice -> mostly nice |
+| LR4 | `quasr` logical | linesearch | 3.24e-03 | 5.93e-05 | 1.8e-02 | mostly chaos |
+| W3 | `w7x` dzeta | linesearch | 2.67e-01 | 6.42e-05 | 2.4e-04 | chaos -> more chaos |
+| LR3 | `w7x_ini` clebsch | linesearch | 4.22e-03 | 2.33e-04 | 5.5e-02 | **pure chaos** |
+| W2 | `w7x` logical | linesearch | 4.13e-03 | 3.00e-04 | 7.3e-02 | **pure chaos** |
+
+### 19.2 ABSOLUTE helicity change predicts surface loss; RELATIVE drift does not
+
+Ordered by `|dH|`, the classification is monotone, with the survivors and the
+casualties separated by a factor ~30:
+
+    1.54e-06  good        6.42e-05  chaos
+    2.00e-06  mostly nice 2.33e-04  pure chaos
+    5.93e-05  mostly chaos 3.00e-04  pure chaos
+
+**Relative drift is actively misleading here.** W1 has the LARGEST relative
+drift of any run (-8.66e-03) and perfect surfaces, because its helicity is
+itself tiny (-1.78e-04). Helicity spans three orders of magnitude across these
+cases, so dividing by it destroys the signal.
+
+This partly closes the gap section 12 opened. There IS a scalar diagnostic that
+detects surface destruction — it is `|dH|` at fixed `||B||_M`, and it was in
+the traces the whole time, misread because it was normalised.
+
+### 19.3 STEP SIZE IS THE CONTROL VARIABLE — the clean experiment
+
+**LR3 vs W5**: same geometry, same IC, same optimizer, same step count. The
+only difference is that W5 takes a fixed `dt = 1e-3` instead of the linesearch
+step. Everything moves together:
+
+    quantity                       LR3 (linesearch)   W5 (dt = 1e-3)
+    energy removed                    0.8448%            0.4179%
+    ||F|| reduction                     5.6x               2.7x
+    |dH| per unit energy removed      5.5e-02            9.6e-04     (58x less)
+    pressure shape vs GVEC        8.9e-02 -> 3.2e-01  8.9e-02 -> 2.8e-02
+    roughness ||J||/||B||               --            1.62 -> 1.37 (smoother)
+    Poincare                        pure chaos         mostly nested
+
+The maximal linesearch step buys about **2x more energy per step and pays 58x
+in topology**. That is a bad trade, and it is the mechanism behind everything
+in sections 12 and 17.
+
+**It also rescues the prediction section 13 recorded as failed.** With small
+steps the Leray multiplier converges TOWARD GVEC's pressure (3.2x closer)
+instead of away (3.5x further). The prediction was right; LR3's large steps
+were numerically reconnecting the field away from the equilibrium, and the
+"failure" was a symptom of that, not a flaw in the reasoning.
+
+### 19.4 Two of my earlier claims, withdrawn
+
+**Beta is not the discriminator.** Section 17 proposed that `w7x_ini`'s
+`beta_max = 13%` made it ideally unstable and that the relaxation was finding
+the instability. W5 is the same file at the same beta and keeps its surfaces.
+An ideal instability would not care about the time step. **Refuted.**
+
+**W1 is much weaker evidence than I presented it as.** Section 17 said W1 shows
+"the relaxation working". W1 removed **0.0244%** of the initial energy -- it
+began near equilibrium (`||F||/||B|| = 1.9e-02`) and barely moved. Its
+reconnection per unit energy (1.3e-02) is no better than the chaotic LR4's
+(1.8e-02). Its surfaces survived because it did not go anywhere. The nested
+section and the clean island chains are still worth having as evidence that the
+*discretisation* represents such a field faithfully, but they are not evidence
+that the *relaxation* preserves topology.
+
+### 19.5 What this means for the scheme
+
+`ANALYTIC_LINESEARCH` maximises energy removed per step, and the quantity it
+spends to get there is exactly the topology. Options, in the order I would try
+them:
+
+1. **Cap the step.** A safety factor on the linesearch `dt`, chosen so `|dH|`
+   per step stays under a threshold. Cheap, and `|dH|` is already measured.
+2. **Gate on `|dH|` directly** -- reject or halve a step that costs more than a
+   budget. This is a control loop on a measured invariant, not a fudge.
+3. **Give up the linesearch** for a genuinely small fixed or adaptive step, and
+   accept the ~2x cost in energy per step.
+
+Not yet known: whether the trade improves with resolution (S01-S03, S13-S14) or
+with `gamma > 0` (S04-S06, W4), both of which were running when this was
+written.
