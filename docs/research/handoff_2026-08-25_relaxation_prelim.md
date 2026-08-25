@@ -1555,3 +1555,41 @@ mechanism is responsible.
 the wrong quantity -- but the instinct was right and the ENERGY shows it
 cleanly. Third instance of the same error in this study (see the trap in
 section 2).*
+
+## 29. THE COMPLETE dt BRACKET: a cliff, not a trade
+
+`w7x_ini`, Clebsch IC, cg. Step counts scaled so the small-dt arms are not
+confounded with "barely moved" (section 19.4's error):
+
+| run | dt | steps | dE | \|dH\|/H | **per unit dE** | \|\|F\|\| | axis |
+|---|---|---|---|---|---|---|---|
+| LR3 | linesearch | 3000 | 4.224e-03 | 5.808e-03 | **1.3750** | 8.452e-03 | 1.027e-01 |
+| **D1** | **3e-3** | 3000 | 3.032e-03 | 7.897e-05 | **0.0260** | 8.265e-03 | 1.640e-02 |
+| W5 | 1e-3 | 3000 | 2.089e-03 | 4.994e-05 | 0.0239 | 1.789e-02 | 1.157e-02 |
+| D2 | 3e-4 | 11000 | 2.181e-03 | 5.304e-05 | 0.0243 | 1.709e-02 | 1.204e-02 |
+| D3 | 1e-4 | 12000 | 1.282e-03 | 2.769e-05 | 0.0216 | 2.538e-02 | 6.440e-03 |
+
+**Reconnection efficiency is FLAT across two decades of dt** -- 0.0216 to
+0.0260 from 1e-4 to 3e-3 -- and then jumps **53x** at the linesearch. This is a
+threshold, not a gradual trade: there is a cliff somewhere between 3e-3 and the
+linesearch's own step (~5e-3 to 1.4e-2 on this case).
+
+**dt = 3e-3 is therefore optimal**: it sits just under the cliff, so it removes
+the most energy per step of any safe choice. Going smaller is pure waste --
+D3 at 1e-4 spent 4x the steps to remove 2.4x LESS energy, for a 17% better
+efficiency nobody needs.
+
+### 29.1 The operating point, for this problem
+
+Combining with section 28 (energy converged by ~3000 steps on the healthy
+case):
+
+    dt ~ 3e-3, ~3000 steps, gamma = 1 / mu = 1e-3 when topology matters
+    more than wall-clock.
+
+**But 3e-3 is problem-specific and should not be hardcoded.** The cliff is in
+`|dH|` per step, which is already traced. A step policy that caps the
+linesearch by a `|dH|` budget would find this point automatically and would
+transfer to problems where the number differs -- which is the recommendation in
+section 19.5, now with a measured threshold behind it rather than an
+intuition.
