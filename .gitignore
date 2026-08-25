@@ -196,3 +196,6 @@ cython_debug/
 # LaTeX paper sources are tracked; ignore only build artifacts.
 papers/
 
+
+# Claude Code session state, agent worktrees, and local settings.
+.claude/
