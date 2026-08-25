@@ -1119,13 +1119,30 @@ def _materialize_default_saddle_preconditioner(
 
 
 def _materialize_default_scalar_hodge_preconditioner(
-        seq, operators: SequenceOperators, *, k: int):
-    # Jacobi at every k as of 2026-08-18. The k=0 tensor-Hodge path is
-    # measurably better per SOLVE (1.2-3.6x) but costs 26-136 s of assembly
-    # against Jacobi's ~1 s, so it only repays past 24-372 solves depending on
-    # geometry and resolution -- and Jacobi's diagonal is now closed-form
-    # (L_0 = S_0, no probe). It stays reachable as kind='tensor'.
-    del operators, k
+        seq, operators: SequenceOperators, *, k: int, dirichlet: bool = True,
+        eps: float = 0.0):
+    """The scalar (k=0) Laplacian preconditioner: the block atom, else jacobi.
+
+    Resolved exactly as ``apply_laplacian_preconditioner(kind='auto')`` does --
+    the block-Jacobi atom when it has been assembled for this ``(k, BC)``, the
+    per-DoF diagonal otherwise. Until 2026-08-24 this returned ``jacobi``
+    unconditionally, so the two 'auto' paths for the SAME operator disagreed:
+    the preconditioner-apply entry point picked the atom and the SOLVE entry
+    point could not. That is item 3.1/3.7 of
+    ``docs/research/TODO_2026-08-24_precond_audit.md``.
+
+    The old comment weighed jacobi against ``kind='tensor'`` and its 26-136 s
+    assembly; it predates the atom, which is the documented production
+    Laplacian preconditioner for k = 0..3 and is assembled by the same call
+    that serves k >= 1. Consulting it costs nothing when it is absent, so
+    callers that never assemble a k=0 atom are unaffected.
+
+    ``eps > 0`` keeps jacobi: the atom approximates ``L_k``, not
+    ``L_k + eps M_k``, and how well it fits the shifted operator is unmeasured
+    (the same reason inverse iteration stays pinned, audit item 3.2).
+    """
+    if eps == 0.0 and _block_jacobi_available(seq, k, dirichlet):
+        return MassPreconditionerSpec(kind='block')
     return MassPreconditionerSpec(kind='jacobi')
 
 
@@ -4372,10 +4389,11 @@ def _build_schur_apply_from_saddle_preconditioner(
 
 
 def _coerce_scalar_hodge_preconditioner(
-        seq, operators: SequenceOperators, *, k: int, preconditioner):
+        seq, operators: SequenceOperators, *, k: int, preconditioner,
+        dirichlet: bool = True, eps: float = 0.0):
     if preconditioner is None or preconditioner == 'auto':
         return _materialize_default_scalar_hodge_preconditioner(
-            seq, operators, k=k)
+            seq, operators, k=k, dirichlet=dirichlet, eps=eps)
     if isinstance(preconditioner, MassPreconditionerSpec):
         return preconditioner
     if isinstance(preconditioner, str):
@@ -4501,7 +4519,7 @@ def _build_scalar_hodge_preconditioner_apply(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         eps: float, preconditioner, allow_none: bool = True):
     spec = _coerce_mass_preconditioner_spec(preconditioner)
-    valid_kinds = ('none', 'jacobi', 'tensor')
+    valid_kinds = ('none', 'jacobi', 'tensor', 'block')
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
@@ -4510,6 +4528,25 @@ def _build_scalar_hodge_preconditioner_apply(
         if not allow_none:
             raise ValueError("this preconditioner slot does not allow kind='none'")
         return lambda x: x
+    if spec.kind == 'block':
+        # The block-Jacobi atom, i.e. the same production Laplacian
+        # preconditioner k >= 1 gets through schur.outer. It approximates
+        # L_k, so it is admissible only for the UNSHIFTED operator; there is
+        # no fallback here on purpose, because a shifted solve quietly
+        # dropping to the diagonal is the exact failure this stack has already
+        # shipped twice.
+        if eps != 0.0:
+            raise ValueError(
+                "scalar preconditioner kind='block' approximates L_k, not "
+                f"L_k + eps M_k (got eps={eps!r}); how the atom fits the "
+                "shifted operator is unmeasured -- see audit item 3.2")
+        if not _block_jacobi_available(seq, k, dirichlet):
+            raise ValueError(
+                f"scalar preconditioner kind='block' needs the block-Jacobi "
+                f"Laplacian assembled for k={k}, dirichlet={dirichlet}; call "
+                "assemble_block_jacobi_laplacian_preconditioner first")
+        return lambda x: apply_hodge_laplacian_preconditioner(
+            seq, operators, x, k, dirichlet=dirichlet, kind='block')
     if spec.kind == 'jacobi':
         stiffness_diaginv = _hodge_diaginv(seq, operators, k, dirichlet)
         if eps == 0.0:
@@ -4783,8 +4820,11 @@ def apply_inverse_hodge_laplacian(seq, operators: SequenceOperators, rhs, k: int
     maxiter = seq.maxiter if maxiter is None else maxiter
 
     if k == 0:
+        # The UNSHIFTED path: this is L_0 itself, so eps = 0 and the block atom
+        # is admissible (it approximates L_k, not L_k + eps M_k).
         selected_preconditioner = _coerce_scalar_hodge_preconditioner(
-            seq, operators, k=k, preconditioner=preconditioner)
+            seq, operators, k=k, preconditioner=preconditioner,
+            dirichlet=dirichlet, eps=0.0)
 
         precond_upper = _build_scalar_hodge_preconditioner_apply(
             seq,
@@ -4871,7 +4911,8 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
             use_harmonic_coarse = eps > 0 and not dirichlet
 
         selected_preconditioner = _coerce_scalar_hodge_preconditioner(
-            seq, operators, k=k, preconditioner=preconditioner)
+            seq, operators, k=k, preconditioner=preconditioner,
+            dirichlet=dirichlet, eps=eps)
 
         precond_upper = _build_scalar_hodge_preconditioner_apply(
             seq,

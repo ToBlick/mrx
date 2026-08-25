@@ -231,7 +231,36 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
 
 
 def default_saddle_preconditioner() -> SaddlePointPreconditionerSpec:
-    return SaddlePointPreconditionerSpec()
+    """The k>=1 saddle default, as far as a no-argument function can state it.
+
+    It used to return a bare ``SaddlePointPreconditionerSpec()``, i.e. mass
+    ``raw_kron`` and outer ``jacobi`` -- neither of which has been the default
+    since 2026-08-22 and 2026-08-24 respectively. The field default
+    ``MassPreconditionerSpec.kind = 'raw_kron'`` never moved when
+    :func:`default_mass_preconditioner` did, so every bare spec still carries
+    it. That made this function a plausible-looking answer to "what is the
+    default saddle preconditioner" that disagreed with the real one; audit item
+    3.4.
+
+    The authoritative resolver is
+    ``operators._materialize_default_saddle_preconditioner``, because the outer
+    block depends on whether the atom has been assembled for a given
+    ``(k, BC)`` and that needs a sequence. ``outer`` is stated as ``jacobi``
+    here for exactly that reason: it is the value the real default falls back
+    to, and it upgrades to ``'block'`` whenever the atom is present.
+
+    ``schur.inner`` stays ``raw_kron``: that IS the real default's inner, and
+    :func:`~mrx.operators.warm_mass_preconditioner_cache` -- this function's
+    only caller -- needs it warmed, because the Schur operator is built before
+    the outer branch is taken even when the atom ends up serving the apply.
+    """
+    return SaddlePointPreconditionerSpec(
+        mass=default_mass_preconditioner(),
+        schur=SchurPreconditionerSpec(
+            inner=MassPreconditionerSpec(kind='raw_kron'),
+            outer=MassPreconditionerSpec(kind='jacobi'),
+        ),
+    )
 
 
 def select_boundary_data(pair: BoundaryConditionPair, dirichlet: bool, label: str):
