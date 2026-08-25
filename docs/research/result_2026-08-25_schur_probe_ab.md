@@ -195,3 +195,22 @@ baseline at 76bf5f3 was ALSO nine failures — and a completely different nine:
 histopolation merge fixed those at odd p and added three designed controls, so
 the total landed back on nine by coincidence. **Gating on "still nine" would have
 passed for entirely the wrong reason.**
+
+### This baseline has a known expiry date
+
+All nine failures trace to ONE outstanding defect: even-p spans straddling
+interior knots, making the span quadrature inexact. The six
+`interpolation_reproduces_its_own_space[p2-...]` cases are it directly, and the
+three `test_pi_full_is_idempotent` cases are a deliberate isolation of it
+(p=2 only, non-polar, identity extraction — no extraction in the loop).
+
+**Work on that defect is in progress as of 2026-08-25.** When it lands, this
+nine will drop — possibly to zero, possibly to some other number if new
+controls arrive with the fix.
+
+So: **do not reuse the nine in this note as a baseline.** Re-derive it on
+whatever tree you are actually gating against, and compare BY NAME. That is not
+generic caution — it is the specific mistake this very gate came within one
+message of making. The pre-merge baseline was also nine, and a completely
+different nine; the count matching was a coincidence that would have hidden both
+the merge's real fixes and three new failures at the same time.
