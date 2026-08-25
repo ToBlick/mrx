@@ -3416,6 +3416,23 @@ def _build_diffusion_preconditioner_apply(
         # towards "a very good preconditioner for the part of the operator
         # that still dominates".  If you push eps until it does not, use
         # kind='jacobi', which stays valid for every eps.
+        #
+        # NOT DONE, BUT AVAILABLE IF THIS EVER NEEDS TO REACH LARGER eps.
+        # Expand the inverse in eps and keep the first order:
+        #
+        #     (M + eps L)^-1 = M^-1 - eps M^-1 L M^-1 + O(eps^2)
+        #     P_1 = P_M - theta eps P_M L P_M      (2 applies + 1 matvec)
+        #
+        # Note the MINUS.  Accuracy is not the issue -- a preconditioner may
+        # truncate freely -- but SPD is: P_1 goes indefinite once
+        # theta eps lambda_max(P_M^1/2 L P_M^1/2) > 1, and MINRES on an
+        # indefinite preconditioner returns noise rather than converging
+        # slowly (see mrx/solvers.py's deliberate refusal to abs() the
+        # initial inner product).  Damping with theta < 1 keeps it SPD
+        # without needing lambda_max.  Judged not worth it at the mu this
+        # is used at: eps lambda_max ~ 0.26 there, so the first-order term
+        # moves the spread ~1.26 -> ~1.07, against block_jacobi's 0.70-0.83x
+        # on iterations outright.
         return _build_mass_preconditioner_apply(
             seq,
             operators,
