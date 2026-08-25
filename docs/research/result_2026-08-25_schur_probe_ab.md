@@ -95,8 +95,12 @@ rather than an inherited figure:
 | k=1 dbc | 16773428 | 2334 | 1952 |
 | k=2 free | 16773614 | 5862 | 5896 |
 | k=2 free | 16773428 | 5865 | 5890 |
+| k=3 free | 16773614 | 1076 | 1050 |
+| k=3 free | 16773428 | 1076 | 1051 |
 
-Spreads: raw_kron 6 and 3 iterations (0.26%, 0.05%); atom 0 and 6 (0%, 0.10%).
+Spreads: raw_kron 6, 3 and 0 iterations (0.26%, 0.05%, 0%); atom 0, 6 and 1
+(0%, 0.10%, 0.10%). The second pass also reproduces all three non-converged
+cells and every probed diagonal to the digits printed.
 **Both arms vary by a handful of iterations and neither is reproducibly more
 deterministic than the other.** An earlier draft of this note claimed the atom
 was bit-identical while raw_kron drifted — that was drawn from the k=1 dbc cell

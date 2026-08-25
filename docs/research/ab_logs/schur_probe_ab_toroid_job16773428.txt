@@ -22,3 +22,11 @@
 [solve] k=1 dbc  raw_kron   2334 it (conv True)   atom   1952 it (conv True)   |dx|/|x| = 3.108e-10  OK
 [diag ] k=2 free n=   8664  |d_rk - d_atom|/|d_rk| = 2.577e-01  LIVE
 [solve] k=2 free raw_kron   5865 it (conv True)   atom   5890 it (conv True)   |dx|/|x| = 1.077e-09  OK
+[diag ] k=2 dbc  n=   8376  |d_rk - d_atom|/|d_rk| = 2.585e-01  LIVE
+[solve] k=2 dbc  raw_kron  20000 it (conv False)   atom  20000 it (conv False)   |dx|/|x| = 9.158e-01  *** ARMS DISAGREE ***
+[diag ] k=3 free n=   2880  |d_rk - d_atom|/|d_rk| = 2.521e-01  LIVE
+[solve] k=3 free raw_kron   1076 it (conv True)   atom   1051 it (conv True)   |dx|/|x| = 2.295e-10  OK
+[diag ] k=3 dbc  n=   2880  |d_rk - d_atom|/|d_rk| = 2.526e-01  LIVE
+[solve] k=3 dbc  raw_kron  20000 it (conv False)   atom  20000 it (conv False)   |dx|/|x| = 1.026e+00  *** ARMS DISAGREE ***
+
+[done]
