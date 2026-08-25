@@ -58,13 +58,38 @@ using the standard average ``(1/2pi) int dtheta/(A + B cos theta)
 identically and (2) is the whole of lambda; div B stays exactly zero because
 B^chi is rho-only and nothing depends on zeta.
 
-The decisive arm is **iota = 0**.  There the closed form (2) should reproduce
-the VACUUM field exactly -- curl-free, J = 0 -- so ``||F||/||B||`` must collapse
-to discretisation error, while lambda = 0 leaves an O(1) force.  At iota != 0
-the force should drop but NOT vanish: (2) fixes the toroidal-field condition
-only, and Grad-Shafranov also constrains the surface SHAPES (the Shafranov
-shift), which is a property of the map and not something lambda can supply.
-The run reports the ratio so the residual is visible rather than asserted.
+LAMBDA IS NOT ENOUGH ON ITS OWN -- measured 2026-08-25, and it corrected me.
+The first version of this script asserted that ``iota = 0`` plus the closed form
+(2) would BE the vacuum field, so its force would collapse while lambda = 0 left
+an O(1) force.  The run said the opposite: lambda = 0 gave 3.93e-05 and the
+closed form gave 1.73e-02.  Both numbers are right and the ASSERTION was wrong.
+
+A purely toroidal vacuum field needs ``R B_phi`` to be a GLOBAL CONSTANT, not a
+flux function.  Eq. (2) only forces ``1 + lam_chi = c(rho)/R``, so
+
+    R B_phi = c(rho) Phi'(rho) / (2 pi eps^2 rho)
+
+is still free to vary with rho -- with ``Phi' = rho`` it goes as
+``sqrt(R0^2 - eps^2 rho^2)``, a 5.4% spread, so the field carries poloidal
+current and a nonzero force is CORRECT.  Fixing it is a job for the FLUX
+profile, not for lambda:
+
+    Phi'(rho) = rho <1/R> = rho / sqrt(R0^2 - eps^2 rho^2)      (``--flux vacuum``)
+
+gives ``B_phi = 1/(2 pi eps^2 R)`` and ``R B_phi`` constant to 1e-12.  THAT pair
+is the vacuum field, and it is the arm whose force must collapse.
+
+The lambda = 0 arm is small for its own reason, also not anticipated: with
+``Phi' = rho`` and ``iota = 0`` the R cancels out of B_phi entirely (see above),
+leaving ``B_phi = const``, so ``J x B = grad(-B_phi^2 ln R)`` is a PURE GRADIENT
+and P_Leray removes all of it.  A tiny force there means "the residual was a
+gradient", NOT "the field was an equilibrium".
+
+At iota != 0 a residual force is expected regardless: (2) fixes the
+toroidal-field condition only, and Grad-Shafranov also constrains the surface
+SHAPES (the Shafranov shift), which is a property of the map and not something
+lambda can supply.  The run reports the ratio so the residual is visible rather
+than asserted.
 
     python scripts/debug/analytic_ic_verify.py --case screwpinch --iota 0.4,0,0.5
     python scripts/debug/analytic_ic_verify.py --case toroid --iota 0.0
@@ -139,6 +164,11 @@ def main():
                     help="polynomial coefficients in rho, LOWEST order first")
     ap.add_argument("--flux-exp", type=int, default=1,
                     help="Phi' = rho^q; q >= 1 keeps eq. (1) polynomial")
+    ap.add_argument("--flux", choices=("power", "vacuum"), default="power",
+                    help="'vacuum' overrides --flux-exp with "
+                         "Phi' = rho <1/R> = rho / sqrt(R0^2 - eps^2 rho^2), "
+                         "which is what the closed-form lambda needs to give "
+                         "the TRUE vacuum field (see below). toroid only.")
     ap.add_argument("--ns", default="12,24,4")
     ap.add_argument("--p", type=int, default=3)
     ap.add_argument("--a", type=float, default=0.33)
@@ -156,6 +186,9 @@ def main():
     q = cli.flux_exp
     if q < 1:
         raise ValueError("flux-exp must be >= 1 for eq. (1) to stay polynomial")
+    if cli.flux == "vacuum" and cli.case != "toroid":
+        raise ValueError("--flux vacuum is defined only for --case toroid; the "
+                         "screwpinch analytic pressure assumes Phi' = rho^q")
     iota_j = jnp.asarray(iota_c)
 
     print(f"[setup] case={cli.case} ns={ns} p={cli.p}  iota(rho) coeffs "
@@ -176,10 +209,16 @@ def main():
 
     DF_map = jax.jacfwd(seq.map)
 
+    def dPhi_fn(r):
+        """Phi'(rho).  'vacuum' is rho <1/R>; see the note in main()."""
+        if cli.flux == "vacuum":
+            return r / jnp.sqrt(cli.R0 ** 2 - (cli.eps * r) ** 2)
+        return r ** q
+
     def make_field(with_lambda):
         def omega_ref(x):
             r = x[0]
-            f = r ** q
+            f = dPhi_fn(r)
             lam_c = lam_chi_toroid(x) if (with_lambda and cli.case == "toroid") \
                 else 0.0
             # lam_zeta is identically zero in both cases: the cylinder has

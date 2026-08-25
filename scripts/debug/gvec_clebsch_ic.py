@@ -142,6 +142,12 @@ def fit_scalar_spline(axes, values, seq, degree=3):
     fit ``mrx.io.load_grid_field`` step 1 does, but kept as a FUNCTION so its
     derivatives can be taken exactly rather than baked in at load time.
     Periodic axes are handed the half-open sample (see the caller).
+
+    Evaluation is three 1-D contractions, NOT a ``DiscreteFunction``.  The fit
+    basis here has ``n = 80*79*79 = 499280`` functions: ``DiscreteFunction``
+    would default ``E`` to ``jnp.eye(n)`` (1.81 TiB -- this is how the first
+    run died) and, even matrix-free, would evaluate all ``n`` basis functions
+    per point.  The tensor product costs ``n1 + n2 + n3`` instead.
     """
     n = tuple(len(a) for a in axes)
     fit = DifferentialForm(0, n, (degree,) * 3, seq.basis_0.types)
@@ -149,7 +155,16 @@ def fit_scalar_spline(axes, values, seq, degree=3):
     for a, (basis, x) in enumerate(zip(fit.Λ, axes)):
         C = _solve_tensor_collocation_axis(
             basis.collocation_matrix(jnp.asarray(x)), C, axis=a)
-    return DiscreteFunction(C.reshape(-1), fit)
+
+    br, bt, bz = fit.Λ
+
+    def evaluate(x):
+        vr = jax.vmap(lambda i: br(x[0], i))(br.ns)
+        vt = jax.vmap(lambda i: bt(x[1], i))(bt.ns)
+        vz = jax.vmap(lambda i: bz(x[2], i))(bz.ns)
+        return jnp.einsum('ijk,i,j,k->', C, vr, vt, vz)
+
+    return evaluate
 
 
 def load_clebsch(path, seq):
@@ -263,7 +278,7 @@ def main():
 
     # Both lambda derivatives come from the SAME spline, so d_zeta(lam_theta)
     # and d_theta(lam_zeta) cancel identically and div B stays at round-off.
-    grad_lam = jax.grad(lambda x: lam_h(x)[0])
+    grad_lam = jax.grad(lam_h)
 
     # Primal reference 2-form components, straight off the verified identities.
     # See logical_profile_ic.py for why this is pushed forward rather than

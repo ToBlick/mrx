@@ -6,9 +6,11 @@ field can be rebuilt from three scalars instead of resampled as a vector — and
 when no data exists at all, the same ansatz gives analytic ICs and, on a
 cylinder, exact analytic equilibria.
 
-Status: derivations complete and checked against data. Of the GPU arms, the
-cylinder has landed and passes every structural gate at round-off (`§7.1`);
-the rest were still queued (`§7.2`).
+Status: derivations complete and checked against data. Landed: the cylinder
+structure gates (§7.1), all four screw-pinch arms against the closed-form
+pressure (§7.3), both toroid arms including one that OVERTURNED a claim in this
+document (§8.1), and the lambda equation on both a toroid and a real
+stellarator (§9.1). Still queued: §7.2.
 
 Scripts: `scripts/debug/logical_profile_ic.py`,
 `scripts/debug/gvec_clebsch_ic.py`, `scripts/debug/analytic_ic_verify.py`,
@@ -300,7 +302,7 @@ the radius. So the measured pressure agrees with the exact screw-pinch balance
 to sub-percent; the direct test is `aic_sp_*`, which uses the FULL balance and
 should return slope 1.0 with no fit.
 
-### 7.2 Still queued
+### 7.2 Arm ledger
 
 Output dirs:
 `outputs/analytic_ic/2026-08-25/03-30-32/`,
@@ -309,13 +311,48 @@ Output dirs:
 
 | arm | what it decides |
 | --- | --- |
-| `aic_sp_{sheared,flat,zero,q2}` | cylinder: `\|\|F\|\|/\|\|B\|\|` must sit at discretisation error, and `dp/drho` must match (1) with NO fitted parameter |
-| `aic_tor_vacuum` | **decisive**: at iota=0 the closed-form lambda should BE the vacuum field (J=0), so its force must collapse; lambda=0 leaves O(1) |
-| `aic_tor_sheared` | residual force EXPECTED — see §8 |
+| ~~`aic_sp_{sheared,flat,zero,q2}`~~ | LANDED — see §7.3 |
+| ~~`aic_tor_vacuum`~~ | LANDED, and the arm was MIS-SPECIFIED — see §8.1. Replaced by `--flux vacuum` (job 16764594) |
+| ~~`aic_tor_sheared`~~ | LANDED — 8.2x force reduction from eq. (2); see §8.1 |
 | ~~`lic_cyl`~~ | LANDED -- see §7.1 |
 | `lic_gvec` | GVEC reconstruction; the invariance test (H and the iota column must not move with `--no-lambda`; force and pressure must) |
 | `lws_toroid` | general lambda solve vs the closed form |
 | `lws_hegna` | general lambda solve vs GVEC's own lambda |
+
+### 7.3 LANDED: the screw pinch, against the closed-form pressure
+
+All four cylinder arms, `ns=(12,24,4)` p=3. `p` is compared with NO fitted
+parameter -- B is normalised and p is quadratic in B, so the measured p is
+scaled back by `B_norm^2`; only the solver-defined additive constant is removed.
+
+| arm | iota(rho), Phi' | `\|\|F\|\|/\|\|B\|\|` | `p` vs exact | `B^rho` rel | `\|\|div B\|\|` |
+| --- | --- | --- | --- | --- | --- |
+| `sp_sheared` | `0.4+0.5 rho^2`, `rho` | 1.29e-12 | **1.80e-03** | 1.17e-16 | 3.5e-14 |
+| `sp_flat` | `0.7`, `rho` | 1.07e-12 | **9.01e-04** | 1.47e-16 | 4.1e-14 |
+| `sp_q2` | `0.3+0.6 rho^2`, `rho^2` | 3.80e-12 | 4.84e-03 | 1.10e-16 | 3.1e-14 |
+| `sp_zero` | `0`, `rho` | **7.61e-15** | n/a | **0.0** | 1.2e-14 |
+
+Three independent profile shapes agree with the closed-form pressure to **under
+0.5%, nothing fitted**, with the force at ~1e-12. This is the first test in this
+document that checks `compute_force` against an EXTERNAL truth rather than an
+internal consistency relation. `sp_q2` is loosest in the expected direction:
+`Phi' = rho^2` makes B_z non-uniform and pushes p to a higher-degree polynomial.
+
+**`sp_zero` is the control that makes the rest meaningful.** With `iota = 0` and
+`q = 1` the field is a uniform axial field, current-free, so the force must be
+pure round-off -- it comes back at **7.61e-15**, three orders below the others,
+and `max|B^rho|` is IDENTICALLY zero. Without it, the ~1e-12 elsewhere could not
+be distinguished from a floor in the diagnostic.
+
+Two caveats about the script's own metrics, neither affecting the above:
+
+* The reported `dp/drho` errors (1.14e-02 to 3.19e-02) are dominated by the
+  diagnostic, not the solver: applying `np.gradient` to the EXACT p on the same
+  41-point grid already gives 1.60e-02. The `p` column is the informative one.
+  Fix would be to apply the same finite difference to both sides.
+* `sp_zero` has `p = 0` analytically, so its relative-error denominator is zero
+  and both pressure metrics print `inf`. Harmless, but uninformative -- the
+  force and `B^rho` are what decide that arm.
 
 ## 8. The toroid: lambda = 0 is not even the vacuum field
 
@@ -344,6 +381,59 @@ lambda ~ -e sin(theta) + (e^2/4) sin(2 theta) + O(e^3)
 Even with (2) it is **still not a full equilibrium**: Grad-Shafranov also
 constrains the surface SHAPES (the Shafranov shift), which is a property of the
 map and not something lambda can supply.
+
+### 8.1 MEASURED — and (2) alone does NOT give the vacuum field
+
+Both toroid arms landed on 2026-08-25 and one of them overturned what this
+section originally claimed.
+
+| arm | lambda = 0 | closed-form lambda | |
+| --- | --- | --- | --- |
+| `iota = 0` | 3.93e-05 | 1.73e-02 | prediction INVERTED — see below |
+| `iota = 0.4 + 0.5 rho^2` | 9.02e-02 | **1.10e-02** | **8.2x better**, as designed |
+
+**The iota != 0 arm vindicates (2)**: an 8.2x force reduction, with the 1.10e-02
+residual being exactly the Shafranov term this section already predicted would
+survive. Eq. (2) itself was never in doubt -- `lws_toroid` reproduces it from
+the general lambda equation to 1.30e-08 (§9).
+
+**The iota = 0 arm was mis-specified**, and both halves of the original claim
+were wrong for separate reasons:
+
+* A purely toroidal VACUUM field needs `R B_phi` to be a **global constant**,
+  not a flux function. Eq. (2) only forces `1 + lam_chi = c(rho)/R`, leaving
+  `R B_phi = c(rho) Phi'(rho) / (2 pi eps^2 rho)` free to vary with rho. With
+  `Phi' = rho` it goes as `sqrt(R0^2 - eps^2 rho^2)` -- a measured 1.054x
+  spread -- so the field carries poloidal current and a nonzero force is
+  CORRECT.
+* The lambda = 0 force was small for an unrelated reason. With `Phi' = rho` and
+  `iota = 0` the R cancels out of `B_phi` entirely, leaving `B_phi = const`, so
+  `J x B = grad(-B_phi^2 ln R)` is a **pure gradient** and `P_Leray` removes all
+  of it. A small force there means "the residual was a gradient", NOT "the field
+  was an equilibrium". Distinguishing those two is the whole point of the arm.
+
+The fix is on the FLUX side, not lambda:
+
+```
+Phi'(rho) = rho <1/R> = rho / sqrt(R0^2 - eps^2 rho^2)        (--flux vacuum)
+```
+
+which gives `B_phi = 1/(2 pi eps^2 R)` and `R B_phi` constant to 1e-12. THAT
+pair -- eq. (2) together with this Phi' -- is the vacuum field, and it is the
+arm whose force must collapse. Job 16764594.
+
+**How the error got in, which is the transferable part.** The original
+derivation was CORRECT: verifying (2) against the known vacuum field
+`B_phi = B0 R0 / R` produced `Phi' = 2 pi eps^2 B0 R0 * rho * <1/R>` -- WITH the
+`<1/R>`. The script then exposed only `--flux-exp`, i.e. `Phi' = rho^q`, which
+cannot express `rho <1/R>`. So a correct derivation was silently discarded at
+the parameterisation step, and the arm went on to "test" a pair that was never
+the vacuum field.
+
+> **Lesson.** An inexpressive knob can quietly drop a correct derivation, and
+> nothing downstream complains -- the run completes, the gates pass, and only
+> the physics is wrong. The guard is to check the derived object against the
+> code's actually reachable set before trusting an arm labelled "decisive".
 
 ## 9. Solving for lambda instead of approximating it
 
@@ -378,6 +468,44 @@ No equilibrium iteration, no data file, any geometry.
 `d_chi[g_zz(1+lam_chi)/J] = 0`; for `toroid_map`, `g_zz/J = R/(eps^2 rho)`,
 giving `(1 + lam_chi) ∝ 1/R` — exactly (2). So (2) is not ad hoc; it is the
 axisymmetric solution of the lambda equation.
+
+### 9.1 LANDED: it works, and it is cheap
+
+| run | result |
+| --- | --- |
+| `lws_toroid` (axisymmetric, mpol=10) | general solve vs the closed form (2): worst relative residual **1.30e-08** over 17 surfaces, 4e-14 near the axis. **207 ms/surface** |
+| `lws_hegna` (nfp=3, mpol=8 ntor=6, 220 coeffs) | vs GVEC's OWN lambda: median corr **+0.9984** on `lam_chi`, **+0.9992** on `lam_zeta`; median relative residual **0.061** and **0.045**. **3.06 s/surface** |
+
+`lws_toroid` is mutual validation: the general elliptic solve and the closed
+form (2) were derived independently, so agreeing to 1e-8 confirms both, and
+confirms (2) is the axisymmetric special case of the lambda equation rather than
+a coincidence.
+
+`lws_hegna` is the headline. **A data-free, fixed-geometry energy minimisation
+reproduces a real stellarator's lambda to about 5% in both components.** The bar
+it clears: the 1/R closed form manages corr +0.83 on `lam_chi` and captures NONE
+of `lam_zeta` by construction -- and `lam_zeta` is the ~2x larger effect
+(§5.4). The comparison is also UNFAIR to the solve, which was fed a constant
+`iota = 0.17` while hegna's actual `iota_MRX` runs 0.150 -> 0.237; it still hits
+0.99 correlation, which says lambda here is dominated by geometry rather than by
+iota, and that feeding the true profile should only improve it.
+
+Cost is the practical point: setup (sequence + nullspaces) takes 190-240 s in
+these runs, so solving lambda on every flux surface is ~1.5% of setup. The warm
+start is effectively free.
+
+**The limit is the edge.** `lam_zeta` degrades to residual 0.378 (corr +0.943)
+at rho = 0.95, `lam_chi` to 0.104. Three effects compound there: Fourier
+truncation is weakest where shaping is strongest; the fixed-geometry assumption
+is worst where VMEC would move the surfaces most; and it is against the clamped
+boundary. Job 16764437 (mpol=14, ntor=10, n_ang=48 -- 608 coefficients)
+separates truncation from model error. If the residual collapses it is basis
+resolution; if it plateaus near 0.378 it is the frozen surfaces, and no basis
+change helps.
+
+Incidental: the hegna map came back `sign=-1` (mirrored, as `gvec_geometry.py`
+warns) and every correlation is still POSITIVE, so the mirror does not flip
+lambda's sign relative to GVEC's.
 
 **CAVEAT:** this is the FIXED-GEOMETRY lambda. Full VMEC varies R, Z and lambda
 together, so the surfaces relax too; ours cannot. `lws_hegna` measures what
