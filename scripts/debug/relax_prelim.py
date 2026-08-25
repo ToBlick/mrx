@@ -197,6 +197,31 @@ def pressure_shape_residual(p_ours, p_file):
                     / np.linalg.norm(a_file))
 
 
+def harmonic_alignment(seq, ops, B_dof):
+    """How close ``B`` is to the harmonic 2-form, in the M2 inner product.
+
+    Returns ``(cos, rel_err)``: the alignment ``|<B,h>_M| / (|B|_M |h|_M)``
+    and the relative M-norm of what is left after projecting B onto span(h).
+    A field that has relaxed to the harmonic one has cos -> 1 and
+    rel_err -> 0.  The harmonic vector comes from compute_nullspaces, i.e.
+    from a completely different solve chain than the relaxation, so this is a
+    genuine cross-check and not an internal consistency relation.
+    """
+    from mrx.nullspace import get_nullspace  # noqa: PLC0415
+
+    h = get_nullspace(ops, 2, True)
+    if h is None or np.asarray(h).size == 0:
+        return None
+    h = jnp.asarray(h)[0]
+    Mh = seq.apply_mass_matrix(h, 2)
+    hh = float(h @ Mh)
+    bh = float(B_dof @ Mh)
+    bb = float(seq.l2_norm_sq(B_dof, 2))
+    cos = abs(bh) / (bb * hh) ** 0.5
+    resid = B_dof - (bh / hh) * h
+    return cos, float(seq.l2_norm(resid, 2) / bb ** 0.5)
+
+
 def make_force_normaliser(seq):
     """The magnetic-pressure-gradient scale the force residual is measured against.
 
@@ -347,10 +372,14 @@ def main():
     ap.add_argument("--gamma", type=int, default=0)
     ap.add_argument("--mu", type=float, default=0.0)
     ap.add_argument("--maxiter", type=int, default=10000)
-    ap.add_argument("--ic", default="logical", choices=("logical", "clebsch"),
+    ap.add_argument("--ic", default="logical",
+                    choices=("logical", "clebsch", "dzeta"),
                     help="'logical' builds the IC from prescribed profiles; "
                          "'clebsch' rebuilds GVEC's own equilibrium from the "
-                         "clebsch/* ingredients in the geometry file.")
+                         "clebsch/* ingredients in the geometry file; "
+                         "'dzeta' is the bare logical 2-form (0,0,1), whose "
+                         "relaxation has an EXACTLY known target -- see "
+                         "harmonic_alignment.")
     ap.add_argument("--no-lambda", action="store_true",
                     help="clebsch only: zero lambda out. The fluxes, iota and "
                          "the helicity must NOT move; the force must.")
@@ -362,6 +391,26 @@ def main():
     ap.add_argument("--pc-zeta", type=float, default=0.0)
     ap.add_argument("--save-b", default=None,
                     help="HDF5 path for the IC and per-arm final B DoFs")
+    ap.add_argument("--eta-max", type=float, default=0.0,
+                    help="peak resistivity. eta > 0 RELAXES the topological "
+                         "constraint: helicity is no longer conserved, the "
+                         "field can reconnect, and it can reach states the "
+                         "ideal flow cannot. Expect helicity to fall -- that "
+                         "is the mechanism, not a failure.")
+    ap.add_argument("--eta-schedule", default="tanh",
+                    choices=("tanh", "constant", "linear"),
+                    help="tanh drops eta_max -> ~0 over the middle third, so "
+                         "the run ends ideal and the final state is a genuine "
+                         "ideal equilibrium rather than a resistively "
+                         "supported one.")
+    ap.add_argument("--cold-start", action="store_true",
+                    help="zero the solver warm-start slots (p, p_v, H, JxH, E) "
+                         "between steps, so every Krylov solve starts from "
+                         "zero. Measures what the warm starts are worth: the "
+                         "guesses only set the starting vector, so the "
+                         "converged answers -- and hence the trajectory -- "
+                         "are the same to solver tolerance and ONLY the cost "
+                         "differs.")
     ap.add_argument("--no-leray-ic", action="store_true",
                     help="skip the Leray clean-up of the initial condition")
     ap.add_argument("--gates-only", action="store_true")
@@ -448,6 +497,22 @@ def main():
             return jnp.array([0.0,
                               f_chi - f_phi * lam_z,
                               f_phi * (1.0 + lam_t)])
+    elif cli.ic == "dzeta":
+        clebsch_data = None
+        # B_hat = dzeta, i.e. the constant reference 2-form (0, 0, 1).
+        #
+        # This IC has an EXACTLY KNOWN relaxation target, which nothing else
+        # in this study does.  B^rho = 0 and the components are constant, so
+        # div B = 0 identically and iota = B^chi/B^zeta = 0 -- zero shear,
+        # hence zero helicity by eq.(2).  Minimising B^2 at fixed toroidal
+        # flux with zero helicity lands on the HARMONIC field: the unique
+        # (b_2^rel = 1) harmonic 2-form of the Dirichlet complex, which
+        # compute_nullspaces has already produced.  So the test is not "did
+        # the residual fall" but "did it converge to that vector".
+        # Doubly falsifiable: the harmonic field is curl-free, so J = 0 and
+        # the pressure spread must go to zero too.
+        def omega_ref(x):
+            return jnp.array([0.0, 0.0, 1.0])
     else:
         clebsch_data = None
 
@@ -582,6 +647,12 @@ def main():
         print(f"[ic] helicity: code {float(H0h):+.6e}   eq.(2) natural gauge "
               f"{H_an:+.6e}   difference (harmonic gauge) "
               f"{float(H0h) - H_an:+.3e}")
+    elif cli.ic == "dzeta":
+        # Zero shear, so eq.(2) gives exactly zero: dzeta carries toroidal
+        # flux and no linked poloidal flux.  The measured value is the
+        # discretisation's answer to a question with an exact answer.
+        print(f"[ic] helicity: code {float(H0h):+.6e}   eq.(2) = 0 exactly "
+              f"(zero shear)")
     else:
         print(f"[ic] helicity: code {float(H0h):+.6e}   (eq.(2) does not "
               f"apply -- the Clebsch profiles come from the file, not from a "
@@ -614,6 +685,11 @@ def main():
           f"residual ||F||/<|grad(B^2/2)|> = "
           f"{float(seq.l2_norm(F0v, 2)) / gradp_mag0:.4e}",
           flush=True)
+    harm0 = harmonic_alignment(seq, ops, B0)
+    if harm0 is not None:
+        print(f"[ic] harmonic 2-form alignment: cos = {harm0[0]:.6f}   "
+              f"residual off span(h) = {harm0[1]:.4e}")
+        results["harmonic_ic"] = list(harm0)
     results.update(B_norm_raw=B_norm, div_ic=div0, leray_ic=leray0,
                    Brho_max=float(max(brho)), H_code_ic=float(H0h),
                    H_analytic_ic=H_an, E_ic=E0,
@@ -674,7 +750,7 @@ def main():
             lambda s: (s.F_norm, s.F_prev, s.p, s.H, s.JxH), state,
             (seq.l2_norm(F0, 2), F0, p0, H0f, JxH0))
 
-        tr = {k: [] for k in ("E", "F", "dt", "div", "Fu", "cos", "sy",
+        tr = {k: [] for k in ("E", "F", "dt", "div", "Fu", "cos", "sy", "eta",
                               "gain", "dE_meas", "dE_pred", "helicity",
                               "hel_it", "gradp_mag", "gradp_avg", "resid",
                               "p_scale", "p_resid", "p_spread")}
@@ -682,8 +758,30 @@ def main():
         t_arm = time.perf_counter()
         n_done = 0
         print(f"\n=== arm {name}  (method={method.name} m={cli.history} "
-              f"gamma={cli.gamma} mu={cli.mu}) ===", flush=True)
+              f"gamma={cli.gamma} mu={cli.mu} "
+              f"{'COLD' if cli.cold_start else 'warm'}-start) ===", flush=True)
+        zero_guesses = jax.jit(lambda st: eqx.tree_at(
+            lambda t: (t.p, t.p_v, t.H, t.JxH, t.E), st,
+            (jnp.zeros_like(st.p), jnp.zeros_like(st.p_v),
+             jnp.zeros_like(st.H), jnp.zeros_like(st.JxH),
+             jnp.zeros_like(st.E))))
+
+        def eta_at(it):
+            if cli.eta_max == 0.0:
+                return 0.0
+            frac = it / max(cli.steps, 1)
+            if cli.eta_schedule == "tanh":
+                return cli.eta_max * 0.5 * (
+                    1.0 - np.tanh(4.0 * np.pi * (frac - 0.5)))
+            if cli.eta_schedule == "linear":
+                return cli.eta_max * (1.0 - frac)
+            return cli.eta_max
+
         for it in range(1, cli.steps + 1):
+            if cli.cold_start:
+                state = zero_guesses(state)
+            if cli.eta_max > 0.0:
+                state = eqx.tree_at(lambda t: t.eta, state, eta_at(it))
             state = step(state)
             E, div, Fu, cos, sy, gain = (float(v) for v in probe(state))
             dE_meas = E - E_prev
@@ -696,6 +794,7 @@ def main():
             tr["cos"].append(cos)
             tr["sy"].append(sy)
             tr["gain"].append(gain)
+            tr["eta"].append(float(state.eta))
             tr["dE_meas"].append(dE_meas)
             tr["dE_pred"].append(dE_pred)
             E_prev = E
@@ -752,6 +851,16 @@ def main():
               f"{tr['resid'][-1]:.4e}   ({tr['resid'][0] / tr['resid'][-1]:.2f}x"
               f" reduction);  <|grad(B^2/2)|> {tr['gradp_mag'][0]:.4e} -> "
               f"{tr['gradp_mag'][-1]:.4e}")
+        if cli.eta_max > 0.0:
+            print(f"    eta schedule '{cli.eta_schedule}' peak {cli.eta_max:.3e}"
+                  f":  {tr['eta'][0]:.3e} -> {max(tr['eta']):.3e} -> "
+                  f"{tr['eta'][-1]:.3e}")
+            print("    NOTE the G1 identity below is EXPECTED to break here. "
+                  "With eta > 0 the step is dB = curl(u x H - eta J), so "
+                  "<B,dB>_M = -(F,u)_M - eta||J||^2_M1, but ANALYTIC_LINESEARCH "
+                  "computes dt = (F,u)/||dB||^2 and omits the resistive term. "
+                  "dt is then no longer the line minimiser -- it UNDER-steps. "
+                  "The discrepancy is the size of what it omits.")
         print(f"    G1 linesearch identity |dE_meas - dE_pred|/|dE_pred|: "
               f"median {np.median(ident):.3e}  max {ident.max():.3e}")
         print(f"    G1 same, against the energy scale /E0: "
@@ -765,6 +874,11 @@ def main():
               f"steps;  s.My < 0 on "
               f"{int((np.array(tr['sy']) < 0).sum())}/{n_done} steps")
         print(f"    ||div B|| max {max(tr['div']):.3e}")
+        harm = harmonic_alignment(seq, ops, state.B_n)
+        if harm is not None:
+            print(f"    HARMONIC alignment cos {harm0[0]:.6f} -> "
+                  f"{harm[0]:.6f}   residual off span(h) {harm0[1]:.4e} -> "
+                  f"{harm[1]:.4e}")
         print(f"    PRESSURE profile spread (max-min)/E: "
               f"{tr['p_spread'][0]:.4e} -> {tr['p_spread'][-1]:.4e}   -- the "
               f"fixed point is JxB = grad p, so this going to ZERO means "
@@ -796,7 +910,8 @@ def main():
             p_resid_first=(tr["p_resid"][0] if tr["p_resid"] else None),
             p_resid_final=(tr["p_resid"][-1] if tr["p_resid"] else None),
             gradp_l2_final=tr["gradp_mag"][-1],
-            gradp_avg_final=tr["gradp_avg"][-1])
+            gradp_avg_final=tr["gradp_avg"][-1],
+            harmonic_final=(list(harm) if harm is not None else None))
         final_B[name] = np.asarray(state.B_n)
         if cli.out:
             json.dump(results, open(cli.out, "w"), indent=1)
