@@ -3371,7 +3371,14 @@ def _build_diffusion_preconditioner_apply(
     # raise saying it was unsupported.  Same accept-list/dispatch mismatch that
     # has produced several instances in this file; the accept list now names
     # exactly what is implemented.
-    valid_kinds = ('none', 'jacobi', 'block_jacobi')
+    # Named through default_mass_preconditioner() rather than spelled out, so
+    # this survives the production atom being renamed -- it has been
+    # 'raw_kron', then 'block_jacobi', then 'metric_lumping' inside a month.
+    # What this branch wants is "whatever the production mass preconditioner
+    # currently is", and saying that literally is both more honest and
+    # rename-proof.
+    production_kind = default_mass_preconditioner().kind
+    valid_kinds = ('none', 'jacobi', production_kind)
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
@@ -3402,7 +3409,7 @@ def _build_diffusion_preconditioner_apply(
             shifted_diaginv = 1.0 / (
                 1.0 / mass_diaginv + eps / stiffness_diaginv)
         return lambda x, diaginv=shifted_diaginv: diaginv * x
-    if spec.kind == 'block_jacobi':
+    if spec.kind == production_kind:
         # The production MASS preconditioner.  It approximates M_k and knows
         # nothing about eps L_k, so it is admissible exactly while the
         # operator is mass-dominated, i.e. eps * lambda_max(M^-1 L) << 1
@@ -3438,7 +3445,7 @@ def _build_diffusion_preconditioner_apply(
             operators,
             k=k,
             dirichlet=dirichlet,
-            preconditioner=MassPreconditionerSpec(kind='block_jacobi'),
+            preconditioner=default_mass_preconditioner(),
             allow_none=allow_none,
         )
     raise ValueError(
