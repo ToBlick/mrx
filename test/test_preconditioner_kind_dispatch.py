@@ -38,6 +38,7 @@ from __future__ import annotations
 import ast
 import pathlib
 
+
 OPERATORS = pathlib.Path(__file__).resolve().parents[1] / "mrx" / "operators.py"
 ACCEPT_LIST_NAMES = ("valid_kinds", "valid_outer_kinds")
 
@@ -64,6 +65,15 @@ STRUCTURAL_KINDS = {
 # Every kind name production code may legitimately construct. raw_kron was
 # deleted 2026-08-25; 'tensor' before it.
 LIVE_KINDS = {"none", "jacobi", "metric_lumping", "auto"}
+
+# Functions whose `kind=` keyword is a preconditioner kind. Named explicitly:
+# `kind=` is a common keyword elsewhere (np.argsort(kind="stable")), and a
+# check that cries wolf gets disabled rather than fixed.
+KIND_TAKING_CALLS = {
+    "apply_laplacian_preconditioner",
+    "apply_hodge_laplacian_preconditioner",
+    "apply_mass_matrix_preconditioner",
+}
 
 
 def _accept_list_functions(tree: ast.Module) -> dict:
@@ -170,7 +180,14 @@ def _constructed_kinds(path: pathlib.Path) -> dict:
         if isinstance(node, ast.Call):
             fname = getattr(node.func, "id", None) or getattr(
                 node.func, "attr", None) or ""
-            if not fname.endswith("PreconditionerSpec"):
+            # Spec constructors, AND the apply entry points that take a kind=
+            # keyword. The second group is how ~32 stale kind="tensor" sites
+            # survived the tensor deletion: the earlier version of this check
+            # matched only *PreconditionerSpec(kind=...) and never looked at
+            # apply_laplacian_preconditioner(..., kind="tensor") two lines
+            # away in the same files.
+            if not (fname.endswith("PreconditionerSpec")
+                    or fname in KIND_TAKING_CALLS):
                 continue
             for kw in node.keywords:
                 if kw.arg == "kind" and isinstance(kw.value, ast.Constant):
@@ -205,3 +222,46 @@ def test_no_production_code_constructs_a_kind_nothing_accepts():
     assert not offenders, (
         "production code constructs a preconditioner kind that is not a live "
         f"kind {sorted(LIVE_KINDS)}:\n  " + "\n  ".join(offenders))
+
+
+def test_no_script_asks_for_a_kind_nothing_accepts():
+    """The same check over scripts/, which is where the class actually hid.
+
+    `test_no_production_code_constructs_a_kind_nothing_accepts` scans mrx/ only,
+    and that gap let ~32 stale `kind="tensor"` sites survive the tensor
+    deletion across 10 live scripts -- every one of which raised, because
+    `apply_hodge_laplacian_preconditioner` accepts only
+    ('auto', 'none', 'jacobi', 'metric_lumping').
+
+    THIS TEST WAS BORN xfail(strict=True) AND RETIRED ITS OWN MARKER. It went
+    green the moment the last stale site was resolved on 2026-08-25 -- 6 leaf
+    scripts deleted, 3 non-leaves repointed -- and strict turned that into an
+    XPASS failure, which is the signal that said to delete the marker. A
+    permanently-red test would have hidden the fix; a non-strict xfail would
+    have stayed quietly green and kept the marker forever.
+
+    A script that asks for a kind production cannot supply is broken whether or
+    not anyone has run it lately.
+
+    scripts/deprecated/ is excluded by directory rather than by weakening the
+    check -- 24 further sites live there and are ignorable by construction.
+    """
+    root = OPERATORS.parents[1]
+    scripts = sorted(p for p in (root / "scripts").rglob("*.py")
+                     if "deprecated" not in p.parts)
+    offenders = []
+    for path in scripts:
+        try:
+            found = _constructed_kinds(path)
+        except SyntaxError:
+            continue
+        for kind, lines in found.items():
+            if kind not in LIVE_KINDS:
+                rel = path.relative_to(root)
+                offenders.append(f"{rel}:{lines[0]} asks for kind={kind!r}"
+                                 + (f" (+{len(lines) - 1} more)"
+                                    if len(lines) > 1 else ""))
+    assert not offenders, (
+        f"{len(offenders)} script site(s) ask for a preconditioner kind that "
+        f"no accept-list admits (live kinds: {sorted(LIVE_KINDS)}). These raise "
+        "when run:\n  " + "\n  ".join(offenders))

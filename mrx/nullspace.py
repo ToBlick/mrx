@@ -24,7 +24,37 @@ from mrx.preconditioners import (
 
 
 def _n_vectors(betti_numbers, k, dirichlet):
-    """Number of harmonic ``k``-forms for the given Betti numbers."""
+    """Number of harmonic ``k``-forms for the given Betti numbers.
+
+    ``betti_numbers`` are the ABSOLUTE Betti numbers, which is what the free
+    (natural-BC) branch reads directly. The Dirichlet branch needs the RELATIVE
+    ones, and they are not the same list -- they are the reversed one::
+
+        b_k^rel = b_{3-k}^abs
+
+    which is what the ``(0, b2, b1, b0)[k]`` reversal below is. Poincare-Lefschetz
+    duality on a 3-manifold with boundary; nothing in any call signature says so.
+
+    WORKED, because the default matters and the reversal is easy to miss.
+    ``betti_numbers=(1, 1, 0, 0)`` -- the DeRhamSequence default -- gives
+
+        free (absolute)   k=0: 1   k=1: 1   k=2: 0   k=3: 0
+        dbc  (relative)   k=0: 0   k=1: 0   k=2: 1   k=3: 1
+
+    so harmonic forms exist at exactly ``(0, free)``, ``(1, free)``,
+    ``(2, dbc)`` and ``(3, dbc)`` -- and NOT at ``(1, dbc)`` or ``(2, free)``.
+
+    THIS HAS COST TWO PEOPLE ONE DAY (2026-08-25), from opposite directions:
+    once by reading absolute ``(1,1,0,0)`` as "no harmonic 2-forms anywhere"
+    when ``compute_helicity`` works in the Dirichlet complex where there IS
+    one; and once by A/B-ing a preconditioner on ``(1, dbc)`` and ``(2, free)``,
+    where BOTH arms returned the same non-harmonic vector because there was no
+    harmonic form to find -- which reads as reassuring agreement rather than as
+    a measurement of nothing.
+
+    If you are choosing ``(k, dirichlet)`` cells to test, check this function
+    first. A cell with zero harmonic forms still RETURNS a vector.
+    """
     b0, b1, b2, _b3 = betti_numbers
     if dirichlet:
         return (0, b2, b1, b0)[k]

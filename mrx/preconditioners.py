@@ -136,8 +136,28 @@ class MassPreconditionerSpec:
 class SchurPreconditionerSpec:
     inner: MassPreconditionerSpec = dataclass_field(
         default_factory=MassPreconditionerSpec)
+    #: ``'none'`` since 2026-08-25, was ``'jacobi'``.
+    #:
+    #: A bare spec must not silently mean SOME preconditioner. 'jacobi' here
+    #: was the same silent-substitution failure this stack has spent a week
+    #: purging -- structurally identical to the ``MassPreconditionerSpec.kind
+    #: = 'raw_kron'`` field default that disagreed with
+    #: ``default_mass_preconditioner()`` and quietly gave every bare spec a
+    #: kind the production resolver never chose.
+    #:
+    #: 'none' rather than 'metric_lumping' on purpose: 'none' fails VISIBLY at
+    #: the first solve, where 'metric_lumping' would quietly work with
+    #: something the caller never asked for. The authoritative answer is
+    #: ``operators._materialize_default_saddle_preconditioner``, which needs a
+    #: sequence and so cannot live in a field default at all.
+    #:
+    #: Blast radius when changed: ZERO. Every one of the 20 construction sites
+    #: in mrx/, test/ and non-deprecated scripts/ passes ``outer=``
+    #: explicitly, and there is no bare ``SchurPreconditionerSpec()`` or
+    #: ``SaddlePointPreconditionerSpec()`` anywhere. This closes a trap for the
+    #: next bare construction at the one moment it costs nothing.
     outer: MassPreconditionerSpec = dataclass_field(
-        default_factory=lambda: MassPreconditionerSpec(kind='jacobi'))
+        default_factory=lambda: MassPreconditionerSpec(kind='none'))
 
 
 @dataclass(frozen=True)
