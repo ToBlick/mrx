@@ -61,10 +61,12 @@ much for a scalar. Carrying that variation needs an exact outer ring.
 
 from __future__ import annotations
 
+import functools
 import os
 
 import numpy as np
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 
@@ -759,6 +761,121 @@ def probe_core_block(seq, operators, k, dirichlet, rows):
         cols.append(np.asarray(col)[rows])
     block = np.stack(cols, axis=1)
     return 0.5 * (block + block.T)
+# --------------------------------------------------------------------------- #
+# The applied payload, as a pytree                                             #
+# --------------------------------------------------------------------------- #
+#
+# WHY THIS EXISTS. `_build_apply` used to close over its arrays and return
+# `jax.jit(m_apply)`, so every array reached jit as a CLOSURE CONSTANT. A new
+# preconditioner object was a new closure and therefore a new compilation, no
+# matter where the object was stored -- measured 2026-08-25 at ~287 ms of
+# recurring compile per payload change, about 4,100 applies' worth of work
+# (scripts/debug/precond_compile_count.py).
+#
+# As a pytree the arrays are LEAVES passed as arguments. Two payloads with the
+# same shapes share a treedef, so changing the NUMBERS reuses the compiled
+# apply. `alpha` in particular was `tuple(float(a) for a in alpha)` -- Python
+# floats baked in as constants, and alpha is where bc_scale lands.
+#
+# STATIC vs LEAF, and getting this wrong is the whole risk: leaves are arrays
+# whose VALUES change and whose SHAPES do not; static is anything used in
+# Python control flow or as a reshape target. Wrong one way and every change
+# retraces and the exercise buys nothing; wrong the other and a traced value
+# gets used as a Python bool.
+
+
+class _LumpBlock(eqx.Module):
+    """One component's separable atom. Arrays are leaves; the shape is static."""
+
+    rows: jnp.ndarray            # leaf: scatter/gather indices
+    vals: jnp.ndarray            # leaf: extraction weights
+    flat: jnp.ndarray            # leaf: flat index plan
+    v_r: jnp.ndarray             # leaf: per-axis eigenvectors
+    v_t: jnp.ndarray
+    v_z: jnp.ndarray
+    lam_r: jnp.ndarray           # leaf: per-axis eigenvalues
+    lam_t: jnp.ndarray
+    lam_z: jnp.ndarray
+    alpha: jnp.ndarray           # leaf: was a tuple of Python floats
+    dscale: jnp.ndarray          # leaf: ALWAYS an array (None was a treedef split)
+    shape: tuple = eqx.field(static=True)     # STATIC: reshape target
+
+
+class _LumpPayload(eqx.Module):
+    """Everything the apply reads. One treedef per (k, BC, discretisation).
+
+    CONCATENATING these leaves was tried on 2026-08-25 and REVERTED. The theory
+    was that ~35 array arguments cost ~0.6 us each in dispatch, so folding them
+    into nine arrays would recover most of the 21.5 us regression. Measured, the
+    concatenated version was SLOWER -- 98.0 us against 91.4 -- so argument count
+    is not the mechanism and the extra in-trace slicing cost more than it saved.
+    See the note above `_apply_lump_payload`.
+    """
+
+    blocks: tuple                # leaves, one _LumpBlock per component
+    core: jnp.ndarray            # leaf
+    core_inv: jnp.ndarray        # leaf
+    has_core: bool = eqx.field(static=True)   # STATIC: guards a branch
+
+
+def _apply_lump_payload(payload: _LumpPayload, x):
+    """The apply, with the payload as an ARGUMENT rather than a closure."""
+    out = jnp.zeros_like(x)
+    for b in payload.blocks:
+        n = int(np.prod(b.shape))
+        buf = jnp.zeros(n).at[b.flat].set(b.vals * x[b.rows]).reshape(b.shape)
+        buf = buf * b.dscale
+        sol = _fd_apply_3d(b.v_r, b.v_t, b.v_z,
+                           b.lam_r, b.lam_t, b.lam_z, b.alpha, buf)
+        sol = sol * b.dscale
+        out = out.at[b.rows].set(b.vals * sol.reshape(-1)[b.flat])
+    if payload.has_core:
+        out = out.at[payload.core].set(payload.core_inv @ x[payload.core])
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Flatten once, compile once per treedef                                       #
+# --------------------------------------------------------------------------- #
+#
+# `eqx.filter_jit(payload, x)` re-PARTITIONS the module on every call, walking
+# ~35 leaves each time. Measured 2026-08-25: that cost 194 us per apply
+# (69.9 -> 264.4 us/call), against a 284.5 ms saving per payload change --
+# break-even at ~1,460 applies, and a production k>=1 solve runs thousands. The
+# first version of this refactor was therefore a NET LOSS on real work despite
+# taking recompiles to zero.
+#
+# The payload does not change between calls, so the flattening is hoisted to
+# BUILD time: the leaves are stored as a flat tuple and the jitted function is
+# cached on the TREEDEF. Per call there is no tree walk, just a jitted call on
+# a tuple of arrays. Two payloads of the same shapes still share one compile
+# because the cache key is the treedef -- which is what keeps arms C and D at
+# zero recompiles.
+
+
+#: BOUNDED deliberately. The entries hold COMPILED functions, so an unbounded
+#: cache is a slow leak. At a fixed discretisation this holds one or two
+#: entries; a sweep over resolutions grows it by one treedef per shape, and 32
+#: covers any realistic sweep. Eviction is harmless -- it costs one recompile,
+#: which is the 2.8 ms this whole mechanism reduced it to.
+@functools.lru_cache(maxsize=32)
+def _jitted_for(treedef, impl):
+    """One jitted apply per (treedef, impl). Unflattening is inside the trace."""
+
+    def run(leaves, x):
+        return impl(jax.tree_util.tree_unflatten(treedef, leaves), x)
+
+    return jax.jit(run)
+
+
+def _flatten_payload(payload):
+    """(leaves, jitted) for a payload, computed once at build time."""
+    leaves, treedef = jax.tree_util.tree_flatten(payload)
+    impl = (_apply_lump_payload if isinstance(payload, _LumpPayload)
+            else _apply_mass_payload)
+    return tuple(leaves), _jitted_for(treedef, impl)
+
+
 class MetricLumpingLaplacian:
     """Bulk FD atoms + a dense core inverse, applied independently.
 
@@ -855,15 +972,16 @@ class MetricLumpingLaplacian:
             self.core_inv = np.zeros((0, 0))
 
 
-    def _build_apply(self):
-        """Compile the apply. Everything here is on-device and jitted.
+    def _build_payload(self):
+        """Pack the host-built factors into the :class:`_LumpPayload` pytree.
 
         Build-time work (eigendecompositions, the dense core inverse, the face
-        operator) is host-side numpy and belongs there -- it happens once. The
-        APPLY runs once per CG iteration, thousands of times per solve, so it
-        must not round-trip through the host: the scatter/gather use flat index
-        arrays computed once, and _fd_apply_3d is inside the jit rather than
-        called per component from Python.
+        operator) is host-side numpy and stays there -- it happens once. What
+        changed on 2026-08-25 is that the result is now a PYTREE handed to a
+        module-level jitted apply as an argument, rather than closed over by a
+        per-instance `jax.jit`. Two payloads with the same shapes share a
+        treedef, so rebuilding one reuses the compiled apply instead of paying
+        ~287 ms to compile an identical program again.
         """
         blocks = []
         for blk in self.blocks:
@@ -871,43 +989,71 @@ class MetricLumpingLaplacian:
                 continue
             nr, nt, nz = blk["shape"]
             ir, it, iz = blk["idx"]
-            flat = jnp.asarray((ir * nt + it) * nz + iz)
             (v_r, v_t, v_z), (l_r, l_t, l_z), alpha = blk["atom"]
-            blocks.append({
-                "rows": jnp.asarray(blk["rows"]),
-                "vals": jnp.asarray(blk["vals"]),
-                "flat": flat, "shape": (nr, nt, nz),
-                "v": (v_r, v_t, v_z), "lam": (l_r, l_t, l_z),
-                "alpha": tuple(float(a) for a in alpha),
-                "dscale": (None if blk["dscale"] is None
-                           else jnp.asarray(blk["dscale"])),
-            })
-        core = jnp.asarray(self.probe_rows)
-        core_inv = jnp.asarray(self.core_inv)
-        has_core = np.asarray(self.probe_rows).size > 0
-
-        def m_apply(x):
-            out = jnp.zeros_like(x)
-            for b in blocks:
-                buf = jnp.zeros(int(np.prod(b["shape"]))).at[b["flat"]].set(
-                    b["vals"] * x[b["rows"]]).reshape(b["shape"])
-                if b["dscale"] is not None:
-                    buf = buf * b["dscale"]
-                sol = _fd_apply_3d(*b["v"], *b["lam"], b["alpha"], buf)
-                if b["dscale"] is not None:
-                    sol = sol * b["dscale"]
-                out = out.at[b["rows"]].set(b["vals"] * sol.reshape(-1)[b["flat"]])
-            if has_core:
-                out = out.at[core].set(core_inv @ x[core])
-            return out
-
-        return jax.jit(m_apply)
+            shape = (nr, nt, nz)
+            blocks.append(_LumpBlock(
+                rows=jnp.asarray(blk["rows"]),
+                vals=jnp.asarray(blk["vals"]),
+                flat=jnp.asarray((ir * nt + it) * nz + iz),
+                v_r=jnp.asarray(v_r), v_t=jnp.asarray(v_t),
+                v_z=jnp.asarray(v_z),
+                lam_r=jnp.asarray(l_r), lam_t=jnp.asarray(l_t),
+                lam_z=jnp.asarray(l_z),
+                alpha=jnp.asarray([float(a) for a in alpha]),
+                dscale=(jnp.ones(shape) if blk["dscale"] is None
+                        else jnp.asarray(blk["dscale"])),
+                shape=shape,
+            ))
+        return _LumpPayload(
+            blocks=tuple(blocks),
+            core=jnp.asarray(self.probe_rows),
+            core_inv=jnp.asarray(self.core_inv),
+            has_core=bool(np.asarray(self.probe_rows).size > 0),
+        )
 
     def apply(self, x):
         """Apply the preconditioner to an extracted-space vector."""
-        if getattr(self, "_jit", None) is None:
-            self._jit = self._build_apply()
-        return self._jit(jnp.asarray(x))
+        if getattr(self, "_flat", None) is None:
+            self._flat = _flatten_payload(self._build_payload())
+        leaves, jitted = self._flat
+        return jitted(leaves, jnp.asarray(x))
+
+
+class _MassBlock(eqx.Module):
+    """One component of the separable mass inverse."""
+
+    rows: jnp.ndarray            # leaf
+    vals: jnp.ndarray            # leaf
+    flat: jnp.ndarray            # leaf
+    inv_r: jnp.ndarray           # leaf: the three 1-D inverses
+    inv_t: jnp.ndarray
+    inv_z: jnp.ndarray
+    lam: jnp.ndarray             # leaf: the diagonal sandwich
+    shape: tuple = eqx.field(static=True)     # STATIC: reshape target
+
+
+class _MassPayload(eqx.Module):
+    blocks: tuple
+    core: jnp.ndarray
+    core_inv: jnp.ndarray
+    has_core: bool = eqx.field(static=True)   # STATIC: guards a branch
+
+
+def _apply_mass_payload(payload: _MassPayload, x):
+    out = jnp.zeros_like(x)
+    for b in payload.blocks:
+        n = int(np.prod(b.shape))
+        buf = jnp.zeros(n).at[b.flat].set(b.vals * x[b.rows]).reshape(b.shape)
+        buf = buf / b.lam
+        # A mass is a single Kronecker PRODUCT, not a sum, so the bulk inverse
+        # is three 1-D solves and no fast diagonalisation is involved.
+        for a, inv in enumerate((b.inv_r, b.inv_t, b.inv_z)):
+            buf = jnp.moveaxis(jnp.tensordot(inv, buf, axes=([1], [a])), 0, a)
+        buf = buf / b.lam
+        out = out.at[b.rows].set(b.vals * buf.reshape(-1)[b.flat])
+    if payload.has_core:
+        out = out.at[payload.core].set(payload.core_inv @ x[payload.core])
+    return out
 
 
 class MetricLumpingMass:
@@ -998,8 +1144,8 @@ class MetricLumpingMass:
         b = np.stack(cols, axis=1)
         return 0.5 * (b + b.T)
 
-    def _build_apply(self):
-        """Compile the apply, exactly as MetricLumpingLaplacian does.
+    def _build_payload(self):
+        """Pack the host-built factors into the :class:`_MassPayload` pytree.
 
         This has to be on-device and jitted, not host-side numpy: the mass
         preconditioner is applied INSIDE ``solve_singular_cg``'s
@@ -1014,44 +1160,29 @@ class MetricLumpingMass:
                 continue
             ir, it, iz = blk["idx"]
             nr, nt, nz = blk["shape"]
-            blocks.append({
-                "rows": jnp.asarray(blk["rows"]),
-                "vals": jnp.asarray(blk["vals"]),
-                "flat": jnp.asarray((ir * nt + it) * nz + iz),
-                "shape": (nr, nt, nz),
-                "inv": tuple(jnp.asarray(m) for m in blk["inv"]),
-                "lam": jnp.asarray(blk["lam"]),
-            })
-        core = jnp.asarray(self.core)
-        core_inv = jnp.asarray(self.core_inv)
-        has_core = np.asarray(self.core).size > 0
-
-        def m_apply(x):
-            out = jnp.zeros_like(x)
-            for b in blocks:
-                buf = jnp.zeros(int(np.prod(b["shape"]))).at[b["flat"]].set(
-                    b["vals"] * x[b["rows"]]).reshape(b["shape"])
-                buf = buf / b["lam"]
-                # A mass is a single Kronecker PRODUCT, not a sum, so the bulk
-                # inverse is three 1-D solves and no fast diagonalisation is
-                # involved.
-                for a in range(3):
-                    buf = jnp.moveaxis(
-                        jnp.tensordot(b["inv"][a], buf, axes=([1], [a])), 0, a)
-                buf = buf / b["lam"]
-                out = out.at[b["rows"]].set(
-                    b["vals"] * buf.reshape(-1)[b["flat"]])
-            if has_core:
-                out = out.at[core].set(core_inv @ x[core])
-            return out
-
-        return jax.jit(m_apply)
+            shape = (nr, nt, nz)
+            inv_r, inv_t, inv_z = (jnp.asarray(m) for m in blk["inv"])
+            blocks.append(_MassBlock(
+                rows=jnp.asarray(blk["rows"]),
+                vals=jnp.asarray(blk["vals"]),
+                flat=jnp.asarray((ir * nt + it) * nz + iz),
+                inv_r=inv_r, inv_t=inv_t, inv_z=inv_z,
+                lam=jnp.asarray(blk["lam"]),
+                shape=shape,
+            ))
+        return _MassPayload(
+            blocks=tuple(blocks),
+            core=jnp.asarray(self.core),
+            core_inv=jnp.asarray(self.core_inv),
+            has_core=bool(np.asarray(self.core).size > 0),
+        )
 
     def apply(self, x):
         """Apply the preconditioner to an extracted-space vector."""
-        if getattr(self, "_jit", None) is None:
-            self._jit = self._build_apply()
-        return self._jit(jnp.asarray(x))
+        if getattr(self, "_flat", None) is None:
+            self._flat = _flatten_payload(self._build_payload())
+        leaves, jitted = self._flat
+        return jitted(leaves, jnp.asarray(x))
 
 
 # --------------------------------------------------------------------------- #
