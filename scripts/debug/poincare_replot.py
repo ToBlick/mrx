@@ -43,10 +43,18 @@ def main():
                          "and by p below it. Needs a pressure array in the "
                          "archive; these vacuum traces carry none, so this "
                          "raises on them rather than drawing half a panel")
+    ap.add_argument("--iota-lim", default=None, metavar="LO,HI",
+                    help="pin the iota colour scale and profile axis across "
+                         "every trace given. Without it each figure is scaled "
+                         "to its own lines, and two sections meant to be read "
+                         "side by side -- two relaxation states, a plane scan "
+                         "-- are not comparable by colour at all")
     cli = ap.parse_args()
+    iota_lim = (tuple(float(v) for v in cli.iota_lim.split(","))
+                if cli.iota_lim else None)
 
     for path in cli.traces:
-        m = re.match(r"trace_(.+)_(k[12])\.npz$", os.path.basename(path))
+        m = re.match(r"trace_(.+)_([^_]+)\.npz$", os.path.basename(path))
         if not m:
             raise ValueError(f"cannot parse geometry/field out of {path!r}")
         geometry, field = m.groups()
@@ -58,11 +66,22 @@ def main():
                 f"{path} has no R_zeta* arrays -- it predates the (R, Z) "
                 "archive, so re-rendering it needs the map and a rerun")
 
+        # Newer archives are self-describing: they carry the nfp, the label and
+        # the classification the run itself used. The tables below are the
+        # fallback for the older ones, and are keyed by a GEOMETRY name -- which
+        # a trace of a saved relaxation state does not have.
+        nfp = int(d["nfp"]) if "nfp" in d.files else NFP[geometry]
+        label = str(d["label"]) if "label" in d.files else LABEL[field]
+        saves = int(d["saves_per_period"]) if "saves_per_period" in d.files else 8
         keep = ~(d["escaped"] | ~d["ok"])
-        # A line with no converged winding number has no iota. Computed here
-        # from the archived (u,v), so reclassifying costs no GPU.
-        split = np.asarray(iota_convergence(d["ys"], 8, NFP[geometry]))
-        chaotic = split > CHAOS_TOL
+        if "chaotic" in d.files:
+            # Preferred over recomputing: the run classified about the axis
+            # probe's centre, and the probe is not in the archived `ys`.
+            chaotic = d["chaotic"]
+        else:
+            # A line with no converged winding number has no iota. Computed here
+            # from the archived (u,v), so reclassifying costs no GPU.
+            chaotic = np.asarray(iota_convergence(d["ys"], saves, nfp)) > CHAOS_TOL
         outdir = cli.outdir or os.path.dirname(path) or "."
         os.makedirs(outdir, exist_ok=True)
         for plane in planes:
@@ -88,19 +107,19 @@ def main():
             else:
                 # Older archives predate the logical panel; (u,v) is always
                 # there, and the section is a stride of it.
-                uv = d["ys"][:, int(round(plane * 8)):: 8, :]
+                uv = d["ys"][:, int(round(plane * saves)):: saves, :]
                 logical = (np.hypot(uv[..., 0], uv[..., 1]),
                            np.arctan2(uv[..., 1], uv[..., 0]) / (2 * np.pi) % 1.0)
             out = os.path.join(
                 outdir, f"poincare_{geometry}_{field}_zeta{plane:g}.png")
             render_section(
                 R, Z, d["iota"], d["resid"], d["seeds"][:, 0], keep,
-                title=f"{geometry}  |  {LABEL[field]}  |  $\\zeta = {plane:g}$\n"
+                title=f"{geometry}  |  {label}  |  $\\zeta = {plane:g}$\n"
                       f"{R.shape[1]} crossings/line",
-                subtitle=f"nfp = {NFP[geometry]}   |   "
+                subtitle=f"nfp = {nfp}   |   "
                          f"{int(keep.sum())}/{len(keep)} lines kept",
-                axis_RZ=axis, path=out, profile_x=a_eff, nfp=NFP[geometry],
-                logical=logical, chaotic=chaotic,
+                axis_RZ=axis, path=out, profile_x=a_eff, nfp=nfp,
+                logical=logical, chaotic=chaotic, iota_lim=iota_lim,
                 pressure=(d["pressure"] if "pressure" in d.files else None),
                 split_iota_p=cli.split_iota_p,
                 **({"cmap": cli.cmap} if cli.cmap else {}),
