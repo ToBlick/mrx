@@ -16,6 +16,16 @@ nothing leaves you with nothing to write there, the entry should not exist. Two
 candidates were dropped from this list on that test, and it only bites once you
 are forced to say what the answer would MEAN rather than what it would be.
 
+**Gating a change: diff the failures BY NAME. The count is not evidence.**
+Three baselines on 2026-08-25 — 76bf5f3, c57e8c8, fded2d0 — each reported
+exactly **nine** failures, and the three sets are NOT the same nine. Fixes
+landed and new controls appeared in the same merges, and the total happened to
+return to nine every time. "Still nine" would have read as stability on three
+separate occasions and been wrong on all three. A count that keeps matching for
+different reasons is worse than one that moves, because nothing prompts you to
+look. `slurm/job_pytest_baseline.sh` builds a baseline from any ref in a
+throwaway worktree; diff the sorted `FAILED` lines.
+
 Nothing here is launched. Tobias, 2026-08-25: *"We are not launching anything
 more, but we can collect ideas and open questions for future sweeps."*
 
