@@ -139,7 +139,51 @@ Hegna is self-consistent. Both W7-X files claim the axis is at index 49 — the
 end with the LARGER spread, i.e. the edge — and neither end has spread ≈ 0, so
 the axis may not be sampled at all. **Make `rho = 0` the axis and say so.**
 
-### 4.3 Angular sampling
+### 4.3 The radial label — is `r` the flux or its square root?
+
+VMEC and GVEC both appear in the wild with `s = normalised toroidal flux` and
+with `rho = sqrt(s)`. That choice changes every profile, so state it.
+
+**What the hegna export actually does** — measured, not read off a doc:
+
+```
+Phi / rho^2   = 0.15915  at every radius       (= 1/2pi)
+dPhi_dr / rho = 0.31831  at every radius       (= 1/pi)
+Phi ~ rho^k     ->  k = 2.0000
+dPhi_dr ~ rho^k ->  k = 1.0000
+```
+
+so `Phi(rho) = rho^2 / 2pi` exactly: **`rho` is the SQUARE ROOT of normalised
+toroidal flux**, and `dPhi_dr` is linear in `rho`.
+
+Crucially, `dPhi_dr` is the derivative with respect to the *same* `rho` that
+indexes `eval_points` — the file carries both `Phi` and `dPhi_dr`, so this is
+checkable without trusting anything:
+
+```
+cumulative int(dPhi_dr d rho)  vs  stored Phi  ->  max rel 3.5e-16
+```
+
+(`chi` gives 3.9e-5, looser only because it carries slight angular variation.)
+**Please keep shipping both `Phi` and `dPhi_dr`** — that redundancy is what
+makes the convention self-verifying.
+
+**The diagnostic**, if the label ever changes:
+
+| `dPhi_dr` profile | radial label |
+| --- | --- |
+| proportional to `rho` | `rho = sqrt(s)` — current |
+| constant | `s` |
+
+**Why it matters:** switching to `s` while `eval_points` stays `rho` introduces
+a factor `ds/drho = 2 rho`. That is RADIUS-DEPENDENT, so it distorts the field's
+radial profile rather than its overall scale, and no global normalisation
+absorbs it. Note that `iota = dchi_dr/dPhi_dr` is IMMUNE, since a common chain
+factor cancels — a wrong radial label corrupts `Phi'` and the field profile
+while leaving `iota` looking perfectly correct, which is exactly the failure
+that survives a spot-check.
+
+### 4.4 Angular sampling
 
 Prefer half-open `[0,1)`. Hegna is closed `[0,1]` (80 points, step 1/79) while
 quasr is half-open (50 points, step 1/50). MRX detects which, but the
