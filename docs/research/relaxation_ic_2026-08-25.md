@@ -567,14 +567,34 @@ Cost is the practical point: setup (sequence + nullspaces) takes 190-240 s in
 these runs, so solving lambda on every flux surface is ~1.5% of setup. The warm
 start is effectively free.
 
-**The limit is the edge.** `lam_zeta` degrades to residual 0.378 (corr +0.943)
-at rho = 0.95, `lam_chi` to 0.104. Three effects compound there: Fourier
-truncation is weakest where shaping is strongest; the fixed-geometry assumption
-is worst where VMEC would move the surfaces most; and it is against the clamped
-boundary. Job 16764437 (mpol=14, ntor=10, n_ang=48 -- 608 coefficients)
-separates truncation from model error. If the residual collapses it is basis
-resolution; if it plateaus near 0.378 it is the frozen surfaces, and no basis
-change helps.
+**The limit is the edge, and it is MODEL ERROR, not truncation.** `lam_zeta`
+degrades to residual 0.378 (corr +0.943) at rho = 0.95, `lam_chi` to 0.104.
+Job 16764437 re-ran the identical case at `mpol=14, ntor=10, n_ang=48` -- 608
+coefficients against 220, a 2.8x increase -- to separate the two candidates:
+
+| rho | `lam_chi` 220 -> 608 | `lam_zeta` 220 -> 608 |
+| --- | --- | --- |
+| 0.100 | 0.0850 -> 0.0853 | 0.0452 -> 0.0479 |
+| 0.525 | 0.0489 -> 0.0490 | 0.0394 -> 0.0406 |
+| **0.950** | 0.1040 -> **0.1046** | 0.3778 -> **0.3769** |
+| median | 0.0606 -> 0.0607 | 0.0452 -> 0.0479 |
+
+**Nothing moved.** The edge residual changes by 0.2% and several values get
+marginally WORSE. The Fourier series was already converged at 220 coefficients,
+so the residual is the FIXED-GEOMETRY assumption: VMEC relaxes R, Z and lambda
+together and we hold the surfaces frozen, which costs most at rho = 0.95.
+
+Two consequences worth recording, because both stop work that looked justified:
+
+* **Discretising the lambda equation on the 2-D `r = const` surfaces with the
+  FEEC machinery would buy NOTHING in accuracy.** A spline space would reproduce
+  these numbers; the error is not in the basis. Improving lambda requires
+  letting the surfaces move, i.e. solving the VMEC problem, not rediscretising.
+* The cost argument for splines also fails: 3.06 -> 3.38 s/surface for 2.8x the
+  coefficients, so the DENSE O(N^3) mode solve is not the bottleneck (quadrature
+  is) at any resolution worth using. The remaining reasons to want surface FEEC
+  are local radial refinement and one-code-path tidiness -- both real, neither
+  worth building 2-D surface geometry plumbing that does not exist.
 
 Incidental: the hegna map came back `sign=-1` (mirrored, as `gvec_geometry.py`
 warns) and every correlation is still POSITIVE, so the mirror does not flip
