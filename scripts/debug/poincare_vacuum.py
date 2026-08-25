@@ -26,6 +26,7 @@ import json
 import os
 import sys
 import time
+import warnings
 
 import jax
 
@@ -40,7 +41,11 @@ import numpy as np  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mrx.nullspace import compute_nullspaces  # noqa: E402
+import mrx.operators as op  # noqa: E402
+from mrx.nullspace import (  # noqa: E402
+    compute_nullspaces, exact_derivative_residual, generic_rayleigh,
+    harmonic_rayleigh,
+)
 from mrx.poincare import (  # noqa: E402
     effective_radius, escaped_mask, logical_field, render_section,
     rotational_transform, seed_line, step_convergence, to_RZ, trace,
@@ -64,6 +69,61 @@ NFP = {
 #: (k, dirichlet, label) for the two harmonic fields.
 FIELDS = {"k2": (2, True, "k=2, essential BC"),
           "k1": (1, False, "k=1, natural BC")}
+
+
+def report_preconditioners(seq, ops):
+    """Print what every solve in this run will ACTUALLY be preconditioned with.
+
+    The default resolution is a chain of private materialisers, and the last
+    time one of them quietly degraded (the `_tensor_available` gate on the
+    saddle lower block, and `schur.outer` pinned to 'jacobi') the k>=1 solves
+    ran effectively unpreconditioned for months. So resolve them here and say
+    so, rather than trusting that 'auto' means what it should.
+
+    RuntimeWarning is promoted to an error for the whole run: the one fallback
+    that is still reachable -- schur.outer dropping to the per-DoF diagonal
+    when the block atom was not assembled -- announces itself that way, and a
+    warning in a 25-job overnight log is a warning nobody reads.
+    """
+    for k in (1, 2, 3):
+        for dbc in (False, True):
+            spec = op._materialize_default_saddle_preconditioner(
+                seq, ops, k=k, dirichlet=dbc)
+            avail = op._block_jacobi_available(seq, k, dbc)
+            print(f"[precond] k={k} {'dbc ' if dbc else 'free'}: "
+                  f"mass={spec.mass.kind:12s} schur.inner={spec.schur.inner.kind:9s} "
+                  f"schur.outer={spec.schur.outer.kind:7s} (atom assembled: {avail})",
+                  flush=True)
+    k0 = op._materialize_default_scalar_hodge_preconditioner(seq, ops, k=0)
+    print(f"[precond] k=0 scalar: {k0.kind}  (block atom assembled: "
+          f"{op._block_jacobi_available(seq, 0, False)}) -- the k=0 auto path "
+          "hardcodes jacobi and never consults the atom; L_0 converges in ~1e2 "
+          "iterations so this is a cost nit, not a stall risk, but the k=1 "
+          "harmonic chain does go through it via the Leray projection",
+          flush=True)
+
+
+def report_harmonic(seq, ops):
+    """Rayleigh quotient of each stored harmonic form. Zero if it is harmonic.
+
+    `compute_nullspaces` is a chain of Hodge solves with a fixed budget and no
+    convergence gate of its own: a solve that runs out of iterations returns a
+    non-harmonic vector and every deflated solve downstream inherits it in
+    silence. This is the number that catches that.
+    """
+    out = {}
+    for name, (k, dbc) in ((n, FIELDS[n][:2]) for n in ("k2", "k1")):
+        v = ops.null_2_dbc[0] if k == 2 else ops.null_1[0]
+        lam = harmonic_rayleigh(seq, v, k, dirichlet=dbc, operators=ops)
+        lam_rand = generic_rayleigh(seq, k, dirichlet=dbc, operators=ops,
+                                    seed=11 * k)
+        dres = exact_derivative_residual(seq, v, k, dirichlet=dbc)
+        out[name] = {"rayleigh": lam, "rayleigh_random": lam_rand,
+                     "ratio": lam / lam_rand, "exact_derivative_rel": dres}
+        print(f"[harmonic] {name}: rayleigh={lam:12.5e}  "
+              f"random={lam_rand:12.5e}  ratio={lam / lam_rand:10.3e}  "
+              f"|dv|/|v|={dres:10.3e}", flush=True)
+    return out
 
 
 def field_agreement(seq, ops, n=512):
@@ -189,9 +249,16 @@ def main():
     ap.add_argument("--bench-periods", type=int, default=20)
     ap.add_argument("--drift-periods", type=int, default=64,
                     help="periods over which the h vs h/2 step check runs")
-    ap.add_argument("--maxiter", type=int, default=10000)
+    ap.add_argument("--maxiter", type=int, default=200000,
+                    help="inner-solve iteration budget; the nullspace chain "
+                         "has no convergence gate, so a budget that is too "
+                         "small returns a non-harmonic form in silence")
     ap.add_argument("--out", default="outputs/poincare")
     cli = ap.parse_args()
+
+    # BEFORE compute_nullspaces, which is where a schur.outer fallback would
+    # fire: promoted here so a silent downgrade cannot survive the run.
+    warnings.simplefilter("error", RuntimeWarning)
 
     ns = tuple(int(v) for v in cli.ns.split(","))
     nfp = NFP[cli.geometry]
@@ -201,8 +268,11 @@ def main():
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter)
     ops = compute_nullspaces(seq, ops)
     seq.set_operators(ops)
-    print(f"[setup] {cli.geometry} ns={ns} p={cli.p} "
+    op.warm_mass_preconditioner_cache(seq, ops)
+    print(f"[setup] {cli.geometry} ns={ns} p={cli.p} maxiter={cli.maxiter} "
           f"{time.perf_counter() - t0:.1f}s", flush=True)
+    report_preconditioners(seq, ops)
+    harmonic = report_harmonic(seq, ops)
 
     angle = field_agreement(seq, ops)
     print(f"[check] max angle between the k=2 and k=1 harmonic fields: "
@@ -211,7 +281,8 @@ def main():
     summary = {"geometry": cli.geometry, "ns": list(ns), "p": cli.p,
                "nfp": nfp, "periods": cli.periods, "steps": cli.steps,
                "saves": cli.saves, "seeds": cli.seeds,
-               "field_angle_rad": angle, "fields": {}}
+               "field_angle_rad": angle, "maxiter": cli.maxiter,
+               "harmonic": harmonic, "fields": {}}
 
     for name in cli.fields.split(","):
         k, dirichlet, label = FIELDS[name]

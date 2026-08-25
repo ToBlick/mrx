@@ -361,6 +361,54 @@ def direct_construction_unsupported_reason(betti_numbers):
     return None
 
 
+def harmonic_rayleigh(seq, v, k, dirichlet=True, operators=None):
+    """``v^T L_k v / v^T M_k v`` -- how far ``v`` is from being harmonic.
+
+    Zero for a true harmonic form, ``O(lambda_1)`` for anything else.  This is
+    the number that tells you whether :func:`compute_nullspaces` succeeded: the
+    construction is a chain of Hodge solves with a fixed iteration budget and no
+    gate of its own, so a solve that runs out of iterations returns a
+    non-harmonic vector, every deflated solve downstream deflates against it,
+    and nothing says a word.
+
+    ``L_k`` is applied EXACTLY (nested mass solve).  That shape is banned inside
+    a Krylov solve; a diagnostic evaluated once per vector is the one place it
+    is legitimate.
+
+    Quote it against :func:`generic_rayleigh` -- the quotient is not
+    dimensionless, so a raw value carries the units of the geometry and means
+    nothing on its own.
+    """
+    lv = seq.apply_hodge_laplacian(v, k, dirichlet=dirichlet,
+                                   operators=operators)
+    mv = seq.apply_mass_matrix(v, k, dirichlet=dirichlet, operators=operators)
+    return float(jnp.dot(v, lv) / jnp.dot(v, mv))
+
+
+def generic_rayleigh(seq, k, dirichlet=True, operators=None, seed=0):
+    """The same quotient for a random vector: the scale to read against."""
+    n = _dof_count(seq, k, dirichlet)
+    v = jax.random.normal(jax.random.PRNGKey(seed), (n,))
+    return harmonic_rayleigh(seq, v, k, dirichlet=dirichlet,
+                             operators=operators)
+
+
+def exact_derivative_residual(seq, v, k, dirichlet=True):
+    """``|d v| / |v|`` in L2 -- the ``d v = 0`` half of "harmonic".
+
+    Cheaper and more localised than the Rayleigh quotient: it says *which* half
+    of the harmonic condition broke, where the quotient only says one did.
+    """
+    if k == 2:
+        dv, out_k = seq.apply_strong_div(v, dirichlet, dirichlet), 3
+    elif k == 1:
+        dv, out_k = seq.apply_strong_curl(v, dirichlet, dirichlet), 2
+    else:
+        raise ValueError(f"exact_derivative_residual: k must be 1 or 2, got {k}")
+    return float(seq.l2_norm(dv, out_k, dirichlet=dirichlet)
+                 / seq.l2_norm(v, k, dirichlet=dirichlet))
+
+
 def compute_nullspaces(seq, operators=None, betti_numbers=None):
     """Harmonic forms by direct Hodge decomposition (no inverse iteration).
 
