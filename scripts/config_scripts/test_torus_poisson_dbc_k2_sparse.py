@@ -70,11 +70,24 @@ def make_f2_proxy(a: float):
     a DiscreteFunction evaluates, related to the physical field by
     B_phys = DF ω / J.
     """
+    # SIGN, fixed 2026-08-25: frzeta was NEGATIVE. Measured against the working
+    # ⋆ in test_torus_poisson_all_k_sparse.py (_hodge_star_1to2_ref, whose
+    # cyclic convention (J/g_rr, J/g_χχ, J/g_ζζ) is all-positive), applied to
+    # the same f₁ this f₂ is the dual of, the ratio f₂_here / ⋆f₁ was
+    # (+ε, −ε, +ε) — exact to 6 decimals at four unrelated points.
+    #
+    # The uniform ε is harmless: ω₂ below carries the same spurious factor, so
+    # it cancels between source and solution, which is why the pair looked
+    # self-consistent and why projecting ω₂ alone converges at order 4.5. The
+    # MIDDLE SLOT'S SIGN does not cancel -- it is the dr∧dζ vs dζ∧dr
+    # orientation -- and a wrong source that does not scale out leaves a fixed,
+    # resolution-independent error. That was the residual flat 1.6796e-01 left
+    # after the load-frame fix (which had taken it from 1.7818).
     def f(x):
         r, chi, z = x
         R = 1.0 + a * r * jnp.cos(2 * π * chi)
         fchizeta = -8.0 * π**2 * a**2 * r * jnp.cos(2 * π * chi) * jnp.cos(2 * π * z) / R**2
-        frzeta   = -4.0 * π * a**2 * jnp.sin(2 * π * chi) * jnp.cos(2 * π * z) / R**2
+        frzeta   =  4.0 * π * a**2 * jnp.sin(2 * π * chi) * jnp.cos(2 * π * z) / R**2
         frchi    = -2.0 * π * a**3 * r * jnp.sin(2 * π * z) / R**3
         return jnp.array([fchizeta, frzeta, frchi])
     return f
