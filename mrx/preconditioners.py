@@ -1986,89 +1986,20 @@ def diag_EGtMGEt_direct(E, G, M):
 # --------------------------------------------------------------------------- #
 # Retired surgery / Schur / tensor machinery
 # --------------------------------------------------------------------------- #
-# Moved to mrx/experimental/mass_surgery.py on 2026-08-17, when raw_kron became
-# the default mass preconditioner. Re-exported lazily rather than imported at
-# module load, so that the dependency stays one-way: mass_surgery imports
-# primitives from here, and this module never imports it at load time. A module
-# __getattr__ only fires once THIS module has finished executing, so the
-# back-import always sees a fully initialised module and there is no cycle.
+# The surgery/tensor mass preconditioner was retired on 2026-08-17 and DELETED
+# on 2026-08-25 along with mrx/experimental/mass_surgery.py and
+# tensor_stiffness.py. A module __getattr__ here re-exported ~25 of its names so
+# old call sites kept working; nothing calls them now.
 #
-# NOTE: this hook serves ATTRIBUTE access (``preconditioners.foo`` and
-# ``from mrx.preconditioners import foo``). It does NOT serve bare global
-# lookups from functions defined in this file -- Python resolves those against
-# the module dict and builtins only. That is why the whole tensor path moved as
-# a dependency closure rather than just the surgery leaves: anything left behind
-# that called into the moved code would raise NameError at runtime, not resolve
-# through here.
-_SURGERY_EXPORTS = frozenset({
-    "K0MassSurgeryPreconditionerFactors",
-    "K0TensorMassPreconditionerFactors",
-    "K1MassSurgeryPreconditionerFactors",
-    "K1TensorMassPreconditionerFactors",
-    "K2MassSurgeryPreconditionerFactors",
-    "K2TensorMassPreconditionerFactors",
-    "MassSurgeryPreconditioner",
-    "_apply_bulk_to_surgery_coupling",
-    "_apply_k1_bulk_diagonal_preconditioner",
-    "_apply_k1_bulk_forward_model",
-    "_apply_k1_bulk_preconditioner",
-    "_apply_k1_rt_art_coupling",
-    "_apply_k1_rt_atr_coupling",
-    "_apply_k1_rt_forward_model",
-    "_apply_k1_rt_preconditioner",
-    "_apply_k1_rt_to_zeta_coupling",
-    "_apply_k1_zeta_to_rt_coupling",
-    "_apply_k2_bulk_diagonal_preconditioner",
-    "_apply_k2_bulk_forward_model",
-    "_apply_k2_bulk_preconditioner",
-    "_apply_k2_r_to_theta_coupling",
-    "_apply_k2_rt_forward_model",
-    "_apply_k2_rt_preconditioner",
-    "_apply_k2_rt_to_zeta_coupling",
-    "_apply_k2_theta_to_r_coupling",
-    "_apply_k2_zeta_to_rt_coupling",
-    "_apply_surgery_schur",
-    "_apply_surgery_schur_forward",
-    "_apply_surgery_to_bulk_coupling",
-    "_arr_shape_k1",
-    "_assemble_surgery_schur_inverse_from_applies",
-    "_component_sizes_k2",
-    "_k1_layout_sizes",
-    "_k2_rt_indices",
-    "_make_mass_bulk_forward",
-    "_make_mass_bulk_inverse",
-    "_mass_surgery_pair",
-    "_r_bulk_shape_k2",
-    "_select_mass_surgery_factors",
-    "_surgery_slices_k1",
-    "_surgery_slices_k2",
-    "_tensor_block_indices_k1",
-    "_tensor_block_indices_k2",
-    "_theta_bulk_shape_k1",
-    "_theta_shape_k2",
-    "_zeta_bulk_shape_k1",
-    "_zeta_shape_k2",
-    "apply_mass_tensor_forward_model",
-    "apply_mass_tensor_preconditioner",
-    "build_mass_surgery_preconditioner",
-    "build_mass_tensor_preconditioner",
-    "mass_surgery_available",
-    "mass_tensor_available",
-    "set_mass_surgery",
-    "set_mass_surgery_pair",
-})
-
-
-def __getattr__(name):
-    if name in _SURGERY_EXPORTS:
-        from mrx.experimental import mass_surgery  # noqa: PLC0415
-        return getattr(mass_surgery, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def __dir__():
-    return sorted(set(globals()) | _SURGERY_EXPORTS)
-
+# What it was: a dense surgery Schur complement over the polar core plus a
+# coupling_sb block that is O(N n_z) -- asymptotically O(n^4), larger than the
+# solution vector by a factor of n, an estimated 24 GB at 64x128x64 in a code
+# whose premise is matrix-free.
+#
+# The core/bulk split itself is NOT gone: BlockJacobiLaplacian and
+# BlockJacobiMass do their own in mrx/block_jacobi_laplacian.py (core_rows),
+# taking the polar ring densely and leaving the separable bulk, at O(n_z).
+# Same idea, without the coupling block.
 
 # --------------------------------------------------------------------------- #
 # Closed-form diagonal of the WEAK term of the Hodge Laplacian                 #

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Mapping, Optional, Sequence
+from typing import Optional, Sequence
 import os
 
 import equinox as eqx
@@ -20,40 +20,18 @@ from mrx.preconditioners import (
     MassPreconditionerSpec,
     SchurPreconditionerSpec,
     SaddlePointPreconditionerSpec,
-    _apply_bulk_to_surgery_coupling,
-    _apply_k1_rt_art_coupling,
-    _apply_k1_rt_atr_coupling,
-    _apply_k1_rt_to_zeta_coupling,
-    _apply_k1_zeta_to_rt_coupling,
-    _apply_k2_r_to_theta_coupling,
-    _apply_k2_theta_to_r_coupling,
-    _apply_k2_rt_to_zeta_coupling,
-    _apply_k2_zeta_to_rt_coupling,
-    _apply_surgery_to_bulk_coupling,
-    _assemble_surgery_schur_inverse_from_applies,
     _bulk_tensor_shape,
-    # Re-export, not a local use: mrx/experimental/k0_core_schur.py and two
-    # debug scripts import _core_size FROM mrx.operators. `ruff --fix` will
-    # happily delete it as F401 and break them at import time.
+    # Re-export, not a local use: two debug scripts import _core_size FROM
+    # mrx.operators (mrx/experimental/k0_core_schur.py did too until it was
+    # deleted with the tensor-Hodge path it was built on). `ruff --fix` will
+    # happily delete this as F401 and break them at import time.
     _core_size,  # noqa: F401
-    _apply_tensor_diagonal_block,
-    _k2_diagonal_metric_tensors,
-    _select_mass_surgery_factors,
-    _select_mass_tensor_factors,
     _symmetrize,
-    apply_mass_tensor_preconditioner,
-    diag_EAET_direct,
-    build_mass_surgery_preconditioner,
-    build_mass_tensor_preconditioner,
     default_mass_preconditioner,
     default_saddle_preconditioner,
     get_mass_jacobi_diaginv,
-    mass_surgery_available,
-    mass_tensor_available,
     select_boundary_data,
     set_mass_jacobi_pair,
-    set_mass_surgery,
-    set_mass_tensor,
 )
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
 def _nullspace_vectors(operators, k: int, dirichlet: bool):
@@ -131,8 +109,6 @@ class DenseSequenceOperators(eqx.Module):
     p12: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
     p03: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
     p30: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-
-
 
 
 class SequenceOperators(eqx.Module):
@@ -569,40 +545,6 @@ def _assemble_dense_from_apply(apply, size: int, *, sequential: bool = False) ->
     return jax.vmap(apply, in_axes=1, out_axes=1)(basis)
 
 
-def _k0_stiffness_diagonal_metric_tensors(seq) -> dict[str, jnp.ndarray]:
-    jacobian = _reshape_quadrature_scalar_field(seq, seq.geometry.jacobian_j)
-    metric_inv = _reshape_quadrature_matrix_field(seq, seq.geometry.metric_inv_jkl)
-    return {
-        'alpha_rr': jacobian * metric_inv[..., 0, 0],
-        'alpha_thetatheta': jacobian * metric_inv[..., 1, 1],
-        'alpha_zetazeta': jacobian * metric_inv[..., 2, 2],
-    }
-
-
-def _k0_tensor_hodge_config(
-        operators: SequenceOperators,
-        *,
-        rank: Optional[int] = None,
-        cp_maxiter: Optional[int] = None,
-        cp_tol: Optional[float] = None,
-        cp_ridge: Optional[float] = None):
-    if None not in (rank, cp_maxiter, cp_tol, cp_ridge):
-        return int(rank), int(cp_maxiter), float(cp_tol), float(cp_ridge)
-    tensor = None if operators.mass_preconds is None else operators.mass_preconds.tensor
-    if tensor is None:
-        # Production default for the k=0 atom is rank 1 (separable FD); rank>=2
-        # is the radial_dense path. Only ranks 1 and 2 are supported.
-        return 1, 100, 1e-9, 1e-12
-    return tensor.ranks[0], tensor.cp_maxiter, tensor.cp_tol, tensor.cp_ridge
-
-
-def _tensor_mass_rank(rank: int, cp_kwargs: Optional[Mapping[str, object]], k: int) -> int:
-    if cp_kwargs is None:
-        return int(rank)
-    override = cp_kwargs.get(f"k{k}_rank")
-    return int(rank if override is None else override)
-
-
 def _normalize_cp_term_signs(
         scale: jnp.ndarray,
         factor_theta: jnp.ndarray,
@@ -693,170 +635,11 @@ def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool):
     }
 
 
-def _build_k0_tensor_hodge_preconditioner_factors(
-        *, core_size: int, schur_inv: jnp.ndarray, bulk_data: dict,
-        schur_projector: Optional[jnp.ndarray] = None,
-        precompute_coupling: bool = True,
-        core_coupling: Optional[jnp.ndarray] = None,
-        block_diagonal: bool = False) -> K0TensorHodgePreconditionerFactors:
-    return K0TensorHodgePreconditionerFactors(
-        core_size=core_size,
-        bulk_shape=bulk_data['bulk_shape'],
-        schur_inv=schur_inv,
-        schur_projector=schur_projector,
-        bulk_alpha=bulk_data.get('bulk_alpha'),
-        bulk_V_r=bulk_data.get('bulk_V_r'),
-        bulk_V_t=bulk_data.get('bulk_V_t'),
-        bulk_V_z=bulk_data.get('bulk_V_z'),
-        bulk_lam_r=bulk_data.get('bulk_lam_r'),
-        bulk_lam_t=bulk_data.get('bulk_lam_t'),
-        bulk_lam_z=bulk_data.get('bulk_lam_z'),
-        precompute_coupling=precompute_coupling,
-        core_coupling=core_coupling,
-        bulk_greville_inv_sqrt_D=bulk_data.get('bulk_greville_inv_sqrt_D'),
-        block_diagonal=block_diagonal,
-    )
-
-
-def _apply_k0_tensor_hodge_bulk_inverse(
-        factors: K0TensorHodgePreconditionerFactors,
-        rhs_b: jnp.ndarray) -> jnp.ndarray:
-    # Greville sandwich: D^{-1/2} (exact unweighted-atom FD inverse) D^{-1/2}.
-    tensor = rhs_b.reshape(factors.bulk_shape) * factors.bulk_greville_inv_sqrt_D
-    out = _fd_apply_3d(
-        factors.bulk_V_r,
-        factors.bulk_V_t,
-        factors.bulk_V_z,
-        factors.bulk_lam_r,
-        factors.bulk_lam_t,
-        factors.bulk_lam_z,
-        factors.bulk_alpha,
-        tensor,
-        eps=0.0,
-    )
-    out = out * factors.bulk_greville_inv_sqrt_D
-    return out.reshape(-1)
-
-
-def _apply_k0_tensor_hodge_core_block(
-        seq,
-        operators: SequenceOperators,
-        core_size: int,
-        rhs_c: jnp.ndarray,
-        *,
-        dirichlet: bool) -> jnp.ndarray:
-    size = seq.n0_dbc if dirichlet else seq.n0
-    full = jnp.zeros((size,), dtype=rhs_c.dtype)
-    full = full.at[:core_size].set(rhs_c)
-    return apply_stiffness(seq, operators, full, 0, dirichlet=dirichlet)[:core_size]
-
-
-def _apply_k0_tensor_hodge_surgery_to_bulk_coupling(
-        seq,
-        operators: SequenceOperators,
-        core_size: int,
-        rhs_c: jnp.ndarray,
-        *,
-        dirichlet: bool) -> jnp.ndarray:
-    size = seq.n0_dbc if dirichlet else seq.n0
-    full = jnp.zeros((size,), dtype=rhs_c.dtype)
-    full = full.at[:core_size].set(rhs_c)
-    return apply_stiffness(seq, operators, full, 0, dirichlet=dirichlet)[core_size:]
-
-
-def _apply_k0_tensor_hodge_bulk_to_surgery_coupling(
-        seq,
-        operators: SequenceOperators,
-        core_size: int,
-        rhs_b: jnp.ndarray,
-        *,
-        dirichlet: bool) -> jnp.ndarray:
-    size = seq.n0_dbc if dirichlet else seq.n0
-    full = jnp.zeros((size,), dtype=rhs_b.dtype)
-    full = full.at[core_size:].set(rhs_b)
-    return apply_stiffness(seq, operators, full, 0, dirichlet=dirichlet)[:core_size]
-
-
-def _assemble_k0_tensor_hodge_preconditioner(
-        seq, operators: SequenceOperators, *,
-        precompute_coupling: bool = True,
-        dirichlet_flags: tuple[bool, ...] = (False, True)) -> BoundaryConditionPair:
-    """The k=0 tensor-Hodge preconditioner: core Schur + additive-FD atom.
-
-    NOT production since 2026-08-22 -- the production k=0 Laplacian is the
-    block-Jacobi atom (``kind='block'``, see docs/PRODUCTION.md). This path is
-    reachable only through :func:`assemble_tensor_hodge_preconditioner`.
-
-    The block-diagonal variant (dense core inverse + modal-radial bulk) measured
-    better on stellarator geometry -- docs/research/mass_preconditioner_pivot.md
-    section 7 -- but stalled the session fixture in ``test/conftest.py`` with the
-    root cause never identified, and was deleted unused on 2026-08-24 along with
-    the modal-radial bulk factors. Both live in git history and in
-    ``mrx/experimental/modal_radial.py``.
-    """
-    from mrx.experimental.k0_core_schur import (  # noqa: PLC0415
-        assemble_k0_core_schur_preconditioner)
-    return assemble_k0_core_schur_preconditioner(
-        seq, operators,
-        precompute_coupling=precompute_coupling,
-        dirichlet_flags=dirichlet_flags,
-    )
-
-
-def _k0_tensor_hodge_available(operators: SequenceOperators) -> bool:
-    pair = operators.k0_tensor_hodge_precond
-    return pair is not None and pair.free is not None and pair.dbc is not None
-
-
-def _apply_k0_tensor_hodge_preconditioner(
-        seq, operators: SequenceOperators, rhs: jnp.ndarray, *, dirichlet: bool) -> jnp.ndarray:
-    pair = operators.k0_tensor_hodge_precond
-    if pair is None:
-        raise ValueError('Tensor Hodge preconditioner k=0 is not assembled')
-    factors = select_boundary_data(pair, dirichlet, 'Tensor Hodge k=0')
-    core_size = factors.core_size
-    rhs_c = rhs[:core_size]
-    rhs_b = rhs[core_size:]
-    y = _apply_k0_tensor_hodge_bulk_inverse(factors, rhs_b)
-    if factors.block_diagonal:
-        # No core<->bulk coupling: schur_inv is the plain dense core inverse.
-        return jnp.concatenate([factors.schur_inv @ rhs_c, y])
-    if factors.core_coupling is not None:
-        # Dense precomputed coupling: bulk->core = C0^T (K_0 symmetric).
-        schur_rhs = rhs_c - factors.core_coupling.T @ y
-    else:
-        schur_rhs = rhs_c - _apply_k0_tensor_hodge_bulk_to_surgery_coupling(
-            seq,
-            operators,
-            core_size,
-            y,
-            dirichlet=dirichlet,
-        )
-    z = factors.schur_inv @ schur_rhs
-    if factors.core_coupling is not None:
-        # Dense precomputed coupling: core->bulk = C0.
-        x_b = y - _apply_k0_tensor_hodge_bulk_inverse(factors, factors.core_coupling @ z)
-    else:
-        x_b = y - _apply_k0_tensor_hodge_bulk_inverse(
-            factors,
-            _apply_k0_tensor_hodge_surgery_to_bulk_coupling(
-                seq,
-                operators,
-                core_size,
-                z,
-                dirichlet=dirichlet,
-            ),
-        )
-    return jnp.concatenate([z, x_b])
-
-
-# TODO: remove when assembly files are gone
 def _assemble_mass_block(seq, geometry, k):
     if k not in (0, 1, 2, 3):
         raise ValueError("k must be 0, 1, 2 or 3")
     sp = assemble_mass_local(seq, k, geometry)
     return jsparse.BCSR.from_bcoo(sp)
-
 
 
 # TODO: remove when assembly files are gone (mass apply is matrix-free via build_matrixfree_mass_apply)
@@ -949,107 +732,6 @@ def assemble_mass_jacobi_preconditioner(
     )
 
 
-def assemble_mass_surgery_preconditioner(
-        seq, operators: Optional[SequenceOperators] = None,
-        *, ks: Sequence[int] = (0, 1, 2), precompute_coupling: bool = True):
-    operators = _ensure_extraction_operators(seq, operators)
-    for k in ks:
-        if k not in (0, 1, 2):
-            raise ValueError("Mass surgery preconditioner assembly only supports k=0, k=1 and k=2")
-
-    surgery_precond = operators.mass_preconds.surgery if operators.mass_preconds is not None else None
-    for k in ks:
-        # The surgery preconditioner is built entirely matrix-free: it only
-        # probes/applies M_k through the sum-factorized kernel, so no BCSR mass
-        # matrix is ever assembled.
-        mass_apply = mass_core_apply(seq, operators, k)
-        surgery_precond = build_mass_surgery_preconditioner(
-            seq,
-            mass_apply,
-            k=k,
-            existing=surgery_precond,
-            precompute_coupling=precompute_coupling,
-        )
-    mass_preconds = set_mass_surgery(operators.mass_preconds, surgery_precond)
-    return eqx.tree_at(
-        lambda ops: ops.mass_preconds,
-        operators,
-        mass_preconds,
-        is_leaf=lambda x: x is None,
-    )
-
-
-def assemble_tensor_mass_preconditioner(
-        seq, operators: Optional[SequenceOperators] = None,
-        *, ks: Sequence[int] = (1,),
-    rank: int = 3,
-        cp_kwargs: Optional[dict] = None):
-    """Assemble the k=0/k=1/k=2/k=3 tensor mass preconditioner on ``operators``.
-
-    The current production tensor path implements the extracted scalar
-    core-plus-bulk Schur model for polar ``k=0`` and the surgery-plus-Schur
-    model for polar ``k=1``. For polar ``k=2`` it uses an outer Schur split on
-    the extracted ``r`` surgery block together with tensor-diagonal bulk block
-    inverses. For polar ``k=3`` it implements a direct extracted scalar tensor
-    inverse. All use low-rank CP fits of the diagonal metric factors to build
-    tensor block inverse applies.
-    """
-    operators = _ensure_extraction_operators(seq, operators)
-    precompute_coupling = bool((cp_kwargs or {}).get("precompute_coupling", True))
-    surgery_ks = tuple(k for k in ks if k in (0, 1, 2))
-    if surgery_ks:
-        operators = assemble_mass_surgery_preconditioner(
-            seq,
-            operators=operators,
-            ks=surgery_ks,
-            precompute_coupling=precompute_coupling,
-        )
-    for k in ks:
-        if k not in (0, 1, 2, 3):
-            raise ValueError("Tensor mass preconditioner assembly only supports k=0, k=1, k=2 and k=3")
-    # The tensor mass preconditioner is built entirely matrix-free (surgery
-    # probes/applies and the k=3 true block all go through ``mass_core_apply``),
-    # so no BCSR mass matrix is assembled here.
-
-    tensor_precond = operators.mass_preconds.tensor if operators.mass_preconds is not None else None
-    for k in ks:
-        tensor_rank = _tensor_mass_rank(rank, cp_kwargs, k)
-        k3_true_block_apply = None
-        if k == 3:
-            ops_for_k3 = operators
-            k3_true_block_apply = {
-                False: lambda x, _ops=ops_for_k3: apply_mass_matrix(
-                    seq, _ops, x, 3, dirichlet=False),
-                True: lambda x, _ops=ops_for_k3: apply_mass_matrix(
-                    seq, _ops, x, 3, dirichlet=True),
-            }
-        tensor_precond = build_mass_tensor_preconditioner(
-            seq,
-            k=k,
-            rank=tensor_rank,
-            fallback_rank=rank,
-            cp_kwargs=cp_kwargs,
-            existing=tensor_precond,
-            surgery_precond=operators.mass_preconds.surgery,
-            k3_true_block_apply=k3_true_block_apply,
-        )
-    mass_preconds = set_mass_tensor(operators.mass_preconds, tensor_precond)
-    return eqx.tree_at(
-        lambda ops: ops.mass_preconds,
-        operators,
-        mass_preconds,
-        is_leaf=lambda x: x is None,
-    )
-
-
-def _tensor_available(seq, operators: SequenceOperators, k: int) -> bool:
-    return mass_tensor_available(seq, operators.mass_preconds, k)
-
-
-def _surgery_available(seq, operators: SequenceOperators, k: int) -> bool:
-    return mass_surgery_available(seq, operators.mass_preconds, k)
-
-
 def _materialize_default_mass_preconditioner(
         seq, operators: SequenceOperators, *, k: int):
     # The `_tensor_available` gate here was a leftover from when
@@ -1129,12 +811,11 @@ def _materialize_default_scalar_hodge_preconditioner(
 def _coerce_diffusion_preconditioner_spec(
         seq, operators: SequenceOperators, *, k: int, preconditioner):
     if preconditioner is None or preconditioner == 'auto':
-        # Production default: tensor for the scalar k=0 Laplacian (cheap,
-        # near-exact), Jacobi for the vector/saddle levels k>=1 (the tensor
-        # div/curl blocks are not the production smoother there). Explicit
-        # kinds still override.
-        if k == 0 and _tensor_available(seq, operators, k):
-            return MassPreconditionerSpec(kind='tensor')
+        # Jacobi at every k. The timestep solve (M + eps L) is audit item 3.1:
+        # it never got either 2026-08 swap, and the block atom approximates
+        # L_k, not L_k + eps M_k, so it is not a drop-in here. Explicit kinds
+        # still override.
+        del seq, operators, k
         return MassPreconditionerSpec(kind='jacobi')
     if isinstance(preconditioner, MassPreconditionerSpec):
         return preconditioner
@@ -1144,23 +825,6 @@ def _coerce_diffusion_preconditioner_spec(
         return MassPreconditionerSpec(kind=preconditioner)
     raise TypeError(
         'diffusion preconditioner must be a kind string or MassPreconditionerSpec')
-
-
-def apply_mass_tensor_preconditioner_ops(
-        seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True):
-    # For k=3 there is no surgery split, so the inner dispatch never had a
-    # handle on the assembled mass and bulk-Chebyshev would polish only
-    # surrogate-against-surrogate (a no-op).  Provide the true mass apply
-    # so Chebyshev can absorb CP modelling error.
-    true_block_apply_k3 = None
-    if k == 3:
-        true_block_apply_k3 = lambda x: apply_mass_matrix(
-            seq, operators, x, 3, dirichlet=dirichlet,
-        )
-    return apply_mass_tensor_preconditioner(
-        seq, operators.mass_preconds, v, k, dirichlet=dirichlet,
-        true_block_apply_k3=true_block_apply_k3,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1207,56 +871,6 @@ def _assemble_1d_fd_eigendecomp(M: jnp.ndarray, K: jnp.ndarray):
 
 
 # TODO: remove (deprecated no-op shim)
-def assemble_tensor_hodge_preconditioner(
-    seq, operators: Optional[SequenceOperators] = None, *,
-    rank: Optional[int] = None,
-    cp_maxiter: Optional[int] = None,
-    cp_tol: Optional[float] = None,
-    cp_ridge: Optional[float] = None):
-    """Deprecated no-op; use :func:`assemble_tensor_laplacian_preconditioner`."""
-    return _ensure_extraction_operators(seq, operators)
-
-
-def assemble_tensor_laplacian_preconditioner(
-        seq, operators: Optional[SequenceOperators] = None, *,
-        ks: Sequence[int] = (0,),
-        rank: Optional[int] = None,
-        cp_kwargs: Optional[dict] = None):
-    """Assemble the scalar k=0 tensor Hodge-Laplacian preconditioner.
-
-    Only k=0 is supported. ``rank`` and ``cp_kwargs`` override the CP fit
-    parameters; when ``None`` the values stored on the tensor mass
-    preconditioner are used.
-    """
-    operators = _ensure_extraction_operators(seq, operators)
-    cp_kwargs = {} if cp_kwargs is None else dict(cp_kwargs)
-    precompute_coupling = bool(cp_kwargs.get("precompute_coupling", True))
-
-    for k in ks:
-        if k != 0:
-            raise ValueError(
-                "Tensor Laplacian preconditioner assembly only supports k=0")
-
-    # The core-block apply uses ``apply_stiffness(seq, operators, ., 0)`` which
-    # composes ``G0`` and a matrix-free ``M1`` apply, so ``M1`` need not be
-    # stored; only ``G0`` is required here.
-    if _incidence_components(operators, 0)[0] is None:
-        operators = update_incidence_operator(seq, operators, 0)
-
-    tensor_precond = _assemble_k0_tensor_hodge_preconditioner(
-        seq,
-        operators,
-        precompute_coupling=precompute_coupling,
-    )
-    return eqx.tree_at(
-        lambda ops: ops.k0_tensor_hodge_precond,
-        operators,
-        tensor_precond,
-        is_leaf=lambda x: x is None,
-    )
-
-
-
 def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0):
     """Apply ``(L + eps M)^{-1}`` via fast diagonalisation on a 3-tensor ``x``."""
     # Forward transform: y = V^T x (in all three axes).
@@ -2618,12 +2232,6 @@ def update_hodge_operator(seq, geometry, operators: Optional[SequenceOperators],
             # tensor-Hodge preconditioner (the surgery core is the C^1 polar
             # core, 3*n_zeta, and the atom needs basis_r_jk). Non-polar or
             # unevaluated sequences (e.g. small identity-map test sequences)
-            # fall through to the Jacobi path at solve time.
-            if (operators.k0_tensor_hodge_precond is None
-                    and getattr(seq, "polar", False)
-                    and hasattr(seq, "basis_r_jk")):
-                operators = assemble_tensor_laplacian_preconditioner(
-                    seq, operators, ks=(0,))
             return operators
         case 1:
             return eqx.tree_at(
@@ -2676,19 +2284,6 @@ def assemble_all_operators(seq, geometry,
     for densification or direct solves.
     """
     operators = assemble_mass_operators(seq, geometry, operators=operators)
-    if include_preconditioners:
-        operators = assemble_tensor_mass_preconditioner(
-            seq,
-            operators=operators,
-            ks=(0, 1, 2, 3),
-            rank=3,
-            cp_kwargs={
-                'k0_rank': 3,
-                'k1_rank': 3,
-                'k2_rank': 3,
-                'k3_rank': 3,
-            },
-        )
     operators = assemble_incidence_operators(seq, operators=operators)
     operators = assemble_derivative_operators(
         seq, geometry, operators=operators)
@@ -3213,11 +2808,6 @@ def _build_schur_probe_apply(
             f"Unsupported Schur diagonal probe mode {mode!r}; "
             f"expected one of {_SCHUR_DIAG_MODES}"
         )
-    if mode == 'tensor_probe' and not _tensor_available(seq, operators, k - 1):
-        raise ValueError(
-            f"schur_diag_mode='tensor_probe' requires an assembled tensor "
-            f"schur.inner at k={k - 1}"
-        )
     return _build_schur_apply_from_saddle_preconditioner(
         seq,
         operators,
@@ -3318,13 +2908,6 @@ def assemble_schur_jacobi_preconditioner(
             raise ValueError(
                 f"assemble_schur_jacobi_preconditioner: k must be 1, 2, or 3 (got {k})")
         for dirichlet in dirichlet_variants:
-            if (schur_diag_mode == 'tensor_probe'
-                    and not _tensor_available(seq, operators, k - 1)):
-                raise ValueError(
-                    f"tensor mass preconditioner for k={k - 1} must be assembled before "
-                    f"probing the Schur diagonal for k={k}; or use the default "
-                    "schur_diag_mode='raw_kron_probe', which needs no assembly"
-                )
             schur_apply = _build_schur_probe_apply(
                 seq,
                 operators,
@@ -3348,7 +2931,6 @@ def assemble_schur_jacobi_preconditioner(
     return operators
 
 
-
 def _normalize_recursive_scalar_leaf_spec(spec: MassPreconditionerSpec):
     if spec.kind == 'tensor':
         return MassPreconditionerSpec(kind='tensor')
@@ -3363,61 +2945,6 @@ def _normalize_recursive_scalar_leaf_spec(spec: MassPreconditionerSpec):
     return MassPreconditionerSpec(
         kind=spec.kind,
         smoother=smoother_spec,
-    )
-
-
-def _build_restricted_mass_block_operator_apply(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-        indices):
-    suffix = '_dbc' if dirichlet else ''
-    size = getattr(seq, f'n{k}{suffix}')
-
-    def apply(block_x):
-        full_x = jnp.zeros(size, dtype=block_x.dtype)
-        full_x = full_x.at[indices].set(block_x)
-        full_y = apply_mass_matrix(seq, operators, full_x, k, dirichlet=dirichlet)
-        return full_y[indices]
-
-    return apply
-
-
-def _k0_bulk_indices_from_surgery(surgery):
-    return jnp.arange(surgery.surgery_size, surgery.apply_data.size)
-
-
-def _mass_surgery_coupling_applies(k: int, surgery):
-    if k == 0:
-        return (
-            lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
-            lambda rhs_b, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_b),
-        )
-    if k == 1:
-        return (
-            lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
-            lambda rhs_b, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_b),
-        )
-    if k == 2:
-        return (
-            lambda rhs_s, surgery=surgery: _apply_surgery_to_bulk_coupling(surgery, rhs_s),
-            lambda rhs_b, surgery=surgery: _apply_bulk_to_surgery_coupling(surgery, rhs_b),
-        )
-    raise ValueError(f"Mass surgery coupling is only implemented for k=0,1,2 (got k={k})")
-
-
-def _build_scalar_leaf_preconditioner_apply(
-        operator_apply, size: int, spec: MassPreconditionerSpec, *,
-        jacobi_diaginv, tensor_factors=None, seed_base: int = 0):
-    jacobi_apply = lambda rhs, inv=jacobi_diaginv: inv * rhs
-    tensor_apply = None
-    if tensor_factors is not None:
-        tensor_apply = lambda rhs: _apply_tensor_diagonal_block(tensor_factors, rhs)
-    return _build_k0_operator_preconditioner_apply(
-        operator_apply,
-        size,
-        spec,
-        jacobi_apply=jacobi_apply,
-        tensor_apply=tensor_apply,
-        seed_base=seed_base,
     )
 
 
@@ -3443,485 +2970,17 @@ def _build_nested_iterative_preconditioner_apply(
 def _build_k0_operator_preconditioner_apply(
         operator_apply, size: int, spec: MassPreconditionerSpec, *,
         jacobi_apply, tensor_apply=None, seed_base: int = 0):
-    valid_kinds = ('none', 'jacobi', 'tensor')
+    valid_kinds = ('none', 'jacobi')
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
             f"{valid_kinds} (got {spec.kind!r})"
         )
-    if spec.surgery_schur:
-        raise ValueError(
-            "nested k=0 smoothers do not support surgery_schur"
-        )
+    if spec.smoother is not None:
+        raise ValueError(f"kind={spec.kind!r} does not support a smoother")
     if spec.kind == 'none':
-        if spec.smoother is not None:
-            raise ValueError("kind='none' does not support an additional smoother")
         return lambda x: x
-    if spec.kind == 'tensor':
-        if spec.smoother is not None:
-            raise ValueError("kind='tensor' does not support an additional smoother")
-        if tensor_apply is None:
-            raise ValueError("Tensor mass preconditioner not assembled for k=0")
-        return tensor_apply
-    if spec.kind == 'jacobi' and spec.smoother is None:
-        return jacobi_apply
-
-    smoother_spec = _validate_inner_tensor_only_spec(
-        spec.smoother,
-        require_explicit=False,
-        context=f"{spec.kind} iterative mass preconditioner",
-    )
-    if tensor_apply is None:
-        raise ValueError(
-            f"{spec.kind} iterative mass preconditioners currently require an assembled tensor smoother"
-        )
-    smoother_apply = _build_k0_operator_preconditioner_apply(
-        operator_apply,
-        size,
-        smoother_spec,
-        jacobi_apply=jacobi_apply,
-        tensor_apply=tensor_apply,
-        seed_base=seed_base + 1000,
-    )
-    return _build_nested_iterative_preconditioner_apply(
-        operator_apply,
-        smoother_apply,
-        size,
-        spec=spec,
-        seed=seed_base + 17,
-    )
-
-
-def _build_mass_surgery_bulk_apply(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-        spec: MassPreconditionerSpec):
-    surgery = _select_mass_surgery_factors(operators.mass_preconds, k, dirichlet)
-    kind = spec.kind
-
-    if k == 1 and spec.surgery_schur:
-        diaginv = _mass_diaginv(seq, operators, k, dirichlet)
-        tensor = None
-        if _tensor_available(seq, operators, k):
-            tensor = _select_mass_tensor_factors(operators.mass_preconds, k, dirichlet)
-        bulk_schur = True if tensor is None else tensor.bulk_schur
-
-        arr_spec = _normalize_recursive_scalar_leaf_spec(spec)
-        scalar_spec = _normalize_mass_preconditioner_spec_for_degree(spec, k=3)
-
-        r_operator_apply = _build_restricted_mass_block_operator_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            indices=surgery.r_indices,
-        )
-        theta_operator_apply = _build_restricted_mass_block_operator_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            indices=surgery.theta_bulk_indices,
-        )
-        zeta_operator_apply = _build_restricted_mass_block_operator_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            indices=surgery.zeta_bulk_indices,
-        )
-
-        r_apply = _build_scalar_leaf_preconditioner_apply(
-            r_operator_apply,
-            surgery.r_indices.shape[0],
-            arr_spec,
-            jacobi_diaginv=diaginv[surgery.r_indices],
-            tensor_factors=None if tensor is None else tensor.arr,
-            seed_base=2100 + 100 * k + int(dirichlet),
-        )
-        theta_apply = _build_scalar_leaf_preconditioner_apply(
-            theta_operator_apply,
-            surgery.theta_bulk_indices.shape[0],
-            scalar_spec,
-            jacobi_diaginv=diaginv[surgery.theta_bulk_indices],
-            tensor_factors=None if tensor is None else tensor.theta,
-            seed_base=2200 + 100 * k + int(dirichlet),
-        )
-        zeta_apply = _build_scalar_leaf_preconditioner_apply(
-            zeta_operator_apply,
-            surgery.zeta_bulk_indices.shape[0],
-            scalar_spec,
-            jacobi_diaginv=diaginv[surgery.zeta_bulk_indices],
-            tensor_factors=None if tensor is None else tensor.zeta,
-            seed_base=2300 + 100 * k + int(dirichlet),
-        )
-
-        def rt_apply(rhs_rt):
-            rhs_r = rhs_rt[:surgery.rt_r_size]
-            rhs_theta = rhs_rt[surgery.rt_r_size:surgery.rt_r_size + surgery.rt_theta_size]
-            y = r_apply(rhs_r)
-            z = theta_apply(rhs_theta - _apply_k1_rt_atr_coupling(surgery, y))
-            x_r = y - r_apply(_apply_k1_rt_art_coupling(surgery, z))
-            return jnp.concatenate([x_r, z])
-
-        def bulk_apply(rhs_bulk):
-            rhs_r = rhs_bulk[:surgery.rt_r_size]
-            rhs_theta = rhs_bulk[surgery.rt_r_size:surgery.bulk_rt_size]
-            rhs_zeta = rhs_bulk[
-                surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size
-            ]
-            if not bulk_schur:
-                return jnp.concatenate([
-                    r_apply(rhs_r),
-                    theta_apply(rhs_theta),
-                    zeta_apply(rhs_zeta),
-                ])
-            rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
-            y_rt = rt_apply(rhs_rt)
-            z = zeta_apply(rhs_zeta - _apply_k1_rt_to_zeta_coupling(surgery, y_rt))
-            x_rt = y_rt - rt_apply(_apply_k1_zeta_to_rt_coupling(surgery, z))
-            return jnp.concatenate([x_rt, z])
-
-        return surgery, bulk_apply
-
-    if k == 2 and spec.surgery_schur:
-        diaginv = _mass_diaginv(seq, operators, k, dirichlet)
-        tensor = None
-        if _tensor_available(seq, operators, k):
-            tensor = _select_mass_tensor_factors(operators.mass_preconds, k, dirichlet)
-        bulk_schur = True if tensor is None else tensor.bulk_schur
-
-        scalar_spec = _normalize_mass_preconditioner_spec_for_degree(spec, k=3)
-
-        r_operator_apply = _build_restricted_mass_block_operator_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            indices=surgery.r_bulk_indices,
-        )
-        theta_operator_apply = _build_restricted_mass_block_operator_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            indices=surgery.theta_indices,
-        )
-        zeta_operator_apply = _build_restricted_mass_block_operator_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            indices=surgery.zeta_indices,
-        )
-
-        r_apply = _build_scalar_leaf_preconditioner_apply(
-            r_operator_apply,
-            surgery.r_bulk_indices.shape[0],
-            scalar_spec,
-            jacobi_diaginv=diaginv[surgery.r_bulk_indices],
-            tensor_factors=None if tensor is None else tensor.r_bulk,
-            seed_base=2400 + 100 * k + int(dirichlet),
-        )
-        theta_apply = _build_scalar_leaf_preconditioner_apply(
-            theta_operator_apply,
-            surgery.theta_indices.shape[0],
-            scalar_spec,
-            jacobi_diaginv=diaginv[surgery.theta_indices],
-            tensor_factors=None if tensor is None else tensor.theta,
-            seed_base=2500 + 100 * k + int(dirichlet),
-        )
-        zeta_apply = _build_scalar_leaf_preconditioner_apply(
-            zeta_operator_apply,
-            surgery.zeta_indices.shape[0],
-            scalar_spec,
-            jacobi_diaginv=diaginv[surgery.zeta_indices],
-            tensor_factors=None if tensor is None else tensor.zeta,
-            seed_base=2600 + 100 * k + int(dirichlet),
-        )
-
-        def bulk_apply(rhs_bulk):
-            rhs_r = rhs_bulk[:surgery.r_bulk_size]
-            rhs_theta = rhs_bulk[
-                surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size
-            ]
-            rhs_zeta = rhs_bulk[
-                surgery.r_bulk_size + surgery.theta_size:
-                surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size
-            ]
-            if not bulk_schur:
-                return jnp.concatenate([
-                    r_apply(rhs_r),
-                    theta_apply(rhs_theta),
-                    zeta_apply(rhs_zeta),
-                ])
-            rhs_rt = rhs_bulk[:surgery.r_bulk_size + surgery.theta_size]
-            rhs_r = rhs_rt[:surgery.r_bulk_size]
-            rhs_theta = rhs_rt[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
-            y = r_apply(rhs_r)
-            z_theta = theta_apply(rhs_theta - _apply_k2_r_to_theta_coupling(surgery, y))
-            x_r = y - r_apply(_apply_k2_theta_to_r_coupling(surgery, z_theta))
-            y_rt = jnp.concatenate([x_r, z_theta])
-            z = zeta_apply(rhs_zeta - _apply_k2_rt_to_zeta_coupling(surgery, y_rt))
-            x_rt = y_rt - jnp.concatenate([
-                r_apply(_apply_k2_zeta_to_rt_coupling(surgery, z)[:surgery.r_bulk_size]),
-                theta_apply(_apply_k2_zeta_to_rt_coupling(surgery, z)[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]),
-            ])
-            return jnp.concatenate([x_rt, z])
-
-        return surgery, bulk_apply
-
-    if kind == 'none':
-        if k != 0:
-            raise ValueError(
-                "surgery_schur for kind='none' is currently only implemented for k=0"
-            )
-        smoother_spec = spec.smoother
-        if smoother_spec is None:
-            raise ValueError(
-                "kind='none' with surgery_schur requires an explicit smoother"
-            )
-        bulk_indices = _k0_bulk_indices_from_surgery(surgery)
-        bulk_operator_apply = _build_restricted_mass_block_operator_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            indices=bulk_indices,
-        )
-        bulk_diaginv = _mass_diaginv(seq, operators, k, dirichlet)[surgery.surgery_size:]
-        jacobi_apply = lambda rhs, inv=bulk_diaginv: inv * rhs
-        tensor_apply = None
-        if _tensor_available(seq, operators, k):
-            tensor = _select_mass_tensor_factors(operators.mass_preconds, k, dirichlet)
-            tensor_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.bulk, rhs)
-        return surgery, _build_k0_operator_preconditioner_apply(
-            bulk_operator_apply,
-            bulk_indices.shape[0],
-            smoother_spec,
-            jacobi_apply=jacobi_apply,
-            tensor_apply=tensor_apply,
-            seed_base=1700 + 100 * k + int(dirichlet),
-        )
-
-    if kind == 'tensor':
-        tensor = _select_mass_tensor_factors(operators.mass_preconds, k, dirichlet)
-        if k == 0:
-            return surgery, lambda rhs: _apply_tensor_diagonal_block(tensor.bulk, rhs)
-        if k == 1:
-            bulk_schur = tensor.bulk_schur
-            r_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.arr, rhs)
-            theta_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.theta, rhs)
-            zeta_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.zeta, rhs)
-        elif k == 2:
-            bulk_schur = tensor.bulk_schur
-            r_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.r_bulk, rhs)
-            theta_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.theta, rhs)
-            zeta_apply = lambda rhs: _apply_tensor_diagonal_block(tensor.zeta, rhs)
-        else:
-            raise ValueError(f"Mass surgery wrapper is not used for k={k}")
-    elif kind == 'jacobi':
-        diaginv = _mass_diaginv(seq, operators, k, dirichlet)
-        if k == 0:
-            return surgery, lambda rhs, inv=diaginv[surgery.surgery_size:]: inv * rhs
-        if k == 1:
-            bulk_schur = True
-            r_inv = diaginv[surgery.r_indices]
-            theta_inv = diaginv[surgery.theta_bulk_indices]
-            zeta_inv = diaginv[surgery.zeta_bulk_indices]
-            r_apply = lambda rhs, inv=r_inv: inv * rhs
-            theta_apply = lambda rhs, inv=theta_inv: inv * rhs
-            zeta_apply = lambda rhs, inv=zeta_inv: inv * rhs
-        elif k == 2:
-            bulk_schur = True
-            r_inv = diaginv[surgery.r_bulk_indices]
-            theta_inv = diaginv[surgery.theta_indices]
-            zeta_inv = diaginv[surgery.zeta_indices]
-            r_apply = lambda rhs, inv=r_inv: inv * rhs
-            theta_apply = lambda rhs, inv=theta_inv: inv * rhs
-            zeta_apply = lambda rhs, inv=zeta_inv: inv * rhs
-        else:
-            raise ValueError(f"Mass surgery wrapper is not used for k={k}")
-    else:
-        raise ValueError(
-            "surgery_schur is currently only implemented for jacobi and tensor "
-            "mass preconditioners (richardson/chebyshev removed 2026-08-14, "
-            f"see mrx/experimental/chebyshev.py); got {kind!r}"
-        )
-
-    if k == 2:
-        def bulk_apply(rhs_bulk):
-            rhs_r = rhs_bulk[:surgery.r_bulk_size]
-            rhs_theta = rhs_bulk[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
-            rhs_zeta = rhs_bulk[
-                surgery.r_bulk_size + surgery.theta_size:
-                surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size
-            ]
-            if not bulk_schur:
-                return jnp.concatenate([
-                    r_apply(rhs_r),
-                    theta_apply(rhs_theta),
-                    zeta_apply(rhs_zeta),
-                ])
-            rhs_rt = rhs_bulk[:surgery.r_bulk_size + surgery.theta_size]
-            rhs_r = rhs_rt[:surgery.r_bulk_size]
-            rhs_theta = rhs_rt[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
-            y = r_apply(rhs_r)
-            z_theta = theta_apply(rhs_theta - _apply_k2_r_to_theta_coupling(surgery, y))
-            x_r = y - r_apply(_apply_k2_theta_to_r_coupling(surgery, z_theta))
-            y_rt = jnp.concatenate([x_r, z_theta])
-            z = zeta_apply(rhs_zeta - _apply_k2_rt_to_zeta_coupling(surgery, y_rt))
-            correction_rt = _apply_k2_zeta_to_rt_coupling(surgery, z)
-            x_rt = y_rt - jnp.concatenate([
-                r_apply(correction_rt[:surgery.r_bulk_size]),
-                theta_apply(correction_rt[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]),
-            ])
-            return jnp.concatenate([x_rt, z])
-
-        return surgery, bulk_apply
-
-    def rt_apply(rhs_rt):
-        rhs_r = rhs_rt[:surgery.rt_r_size]
-        rhs_theta = rhs_rt[surgery.rt_r_size:surgery.rt_r_size + surgery.rt_theta_size]
-        y = r_apply(rhs_r)
-        z = theta_apply(rhs_theta - _apply_k1_rt_atr_coupling(surgery, y))
-        x_r = y - r_apply(_apply_k1_rt_art_coupling(surgery, z))
-        return jnp.concatenate([x_r, z])
-
-    def bulk_apply(rhs_bulk):
-        rhs_r = rhs_bulk[:surgery.rt_r_size]
-        rhs_theta = rhs_bulk[surgery.rt_r_size:surgery.bulk_rt_size]
-        rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
-        if not bulk_schur:
-            return jnp.concatenate([
-                r_apply(rhs_r),
-                theta_apply(rhs_theta),
-                zeta_apply(rhs_zeta),
-            ])
-        rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
-        y_rt = rt_apply(rhs_rt)
-        z = zeta_apply(rhs_zeta - _apply_k1_rt_to_zeta_coupling(surgery, y_rt))
-        x_rt = y_rt - rt_apply(_apply_k1_zeta_to_rt_coupling(surgery, z))
-        return jnp.concatenate([x_rt, z])
-
-    return surgery, bulk_apply
-
-
-def _build_mass_surgery_wrapped_preconditioner_apply(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-        spec: MassPreconditionerSpec):
-    # Pure tensor surgery_schur is exactly the production tensor apply
-    # (preconditioners.apply_mass_tensor_preconditioner). Delegate so the
-    # two paths share a single implementation; this is what keeps the
-    # "routed == direct" test invariant when the tensor apply gains
-    # bulk-block Chebyshev polish driven by `true_block_apply`.
-    if (
-        spec.kind == 'tensor'
-        and spec.surgery_schur
-        and spec.smoother is None
-        and k in (0, 1, 2)
-    ):
-        return lambda x: apply_mass_tensor_preconditioner_ops(
-            seq, operators, x, k, dirichlet=dirichlet,
-        )
-    if k in (0, 2) and spec.kind in ('none', 'jacobi', 'tensor'):
-        inner_spec = spec.smoother
-        if spec.kind == 'none':
-            if inner_spec is None:
-                raise ValueError(
-                    "kind='none' with surgery_schur requires an explicit smoother"
-                )
-        elif spec.kind == 'tensor':
-            if inner_spec is not None:
-                raise ValueError(
-                    "kind='tensor' with surgery_schur is a legacy alias and does not accept a smoother"
-                )
-            inner_spec = MassPreconditionerSpec(kind='tensor')
-        else:
-            # jacobi/surgery_schur is rejected by the public validators; the
-            # richardson/chebyshev outer wrap was removed 2026-08-14.
-            raise ValueError(
-                "surgery_schur outer wrapping only supports kind='none' or "
-                f"kind='tensor' (got {spec.kind!r})"
-            )
-
-        surgery, bulk_apply = _build_mass_surgery_bulk_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            spec=MassPreconditionerSpec(
-                kind='none',
-                surgery_schur=True,
-                smoother=inner_spec,
-            ),
-        )
-        surgery_to_bulk_apply, bulk_to_surgery_apply = _mass_surgery_coupling_applies(k, surgery)
-        schur_inv = _assemble_surgery_schur_inverse_from_applies(
-            surgery.ass,
-            surgery_to_bulk_apply,
-            bulk_apply,
-            bulk_to_surgery_apply,
-        )
-
-        def base_apply(rhs):
-            if k == 0:
-                rhs_s = rhs[:surgery.surgery_size]
-                rhs_b = rhs[surgery.surgery_size:]
-                y = bulk_apply(rhs_b)
-                z = schur_inv @ (rhs_s - bulk_to_surgery_apply(y))
-                x_b = y - bulk_apply(surgery_to_bulk_apply(z))
-                return jnp.concatenate([z, x_b])
-
-            rhs_s = rhs[surgery.surgery_indices]
-            rhs_b = rhs[surgery.bulk_indices]
-            y = bulk_apply(rhs_b)
-            z = schur_inv @ (rhs_s - bulk_to_surgery_apply(y))
-            x_b = y - bulk_apply(surgery_to_bulk_apply(z))
-            x = jnp.zeros_like(rhs)
-            x = x.at[surgery.surgery_indices].set(z)
-            x = x.at[surgery.bulk_indices].set(x_b)
-            return x
-
-        return base_apply
-
-    surgery, bulk_apply = _build_mass_surgery_bulk_apply(
-        seq,
-        operators,
-        k=k,
-        dirichlet=dirichlet,
-        spec=spec,
-    )
-    surgery_to_bulk_apply, bulk_to_surgery_apply = _mass_surgery_coupling_applies(k, surgery)
-    schur_inv = _assemble_surgery_schur_inverse_from_applies(
-        surgery.ass,
-        surgery_to_bulk_apply,
-        bulk_apply,
-        bulk_to_surgery_apply,
-    )
-
-    if k == 0:
-        def apply(rhs):
-            rhs_s = rhs[:surgery.surgery_size]
-            rhs_b = rhs[surgery.surgery_size:]
-            y = bulk_apply(rhs_b)
-            z = schur_inv @ (rhs_s - bulk_to_surgery_apply(y))
-            x_b = y - bulk_apply(surgery_to_bulk_apply(z))
-            return jnp.concatenate([z, x_b])
-
-        return apply
-
-    def apply(rhs):
-        rhs_s = rhs[surgery.surgery_indices]
-        rhs_b = rhs[surgery.bulk_indices]
-        y = bulk_apply(rhs_b)
-        z = schur_inv @ (rhs_s - bulk_to_surgery_apply(y))
-        x_b = y - bulk_apply(surgery_to_bulk_apply(z))
-        x = jnp.zeros_like(rhs)
-        x = x.at[surgery.surgery_indices].set(z)
-        x = x.at[surgery.bulk_indices].set(x_b)
-        return x
-
-    return apply
+    return jacobi_apply
 
 
 def _coerce_mass_preconditioner_spec(preconditioner):
@@ -3930,121 +2989,34 @@ def _coerce_mass_preconditioner_spec(preconditioner):
     if isinstance(preconditioner, MassPreconditionerSpec):
         return preconditioner
     if isinstance(preconditioner, str):
-        if preconditioner == 'tensor':
-            return MassPreconditionerSpec(kind='tensor', surgery_schur=True)
         return MassPreconditionerSpec(kind=preconditioner)
     raise TypeError(
         "mass preconditioner must be a kind string or MassPreconditionerSpec")
 
 
-def _validate_inner_tensor_only_spec(
-        inner_spec: Optional[MassPreconditionerSpec], *,
-        require_explicit: bool, context: str,
-        allowed: tuple = ('tensor',)):
-    """Validate a terminal inner smoother spec.
+def _validate_public_mass_preconditioner_spec(spec: MassPreconditionerSpec):
+    """The whole of the public mass-spec contract, now that it is small.
 
-    ``allowed`` defaults to tensor only, which is what the k=0 Laplacian inner
-    smoother path requires. The saddle ``schur.inner`` slot passes
-    ``('raw_kron', 'tensor')`` -- raw_kron is the production default there as
-    of 2026-08-17.
+    Was three per-degree validators built entirely around ``surgery_schur`` and
+    ``kind='tensor'``: which combinations took an inner smoother, which were
+    legacy aliases, which were disabled. Both are gone, so what is left is that
+    the terminal kinds take no smoother.
     """
-    if inner_spec is None:
-        if require_explicit:
-            raise ValueError(
-                f"{context} requires an explicit inner smoother with "
-                f"kind in {allowed}"
-            )
-        return MassPreconditionerSpec(kind=allowed[0])
-    if inner_spec.kind not in allowed:
+    if spec.smoother is not None:
         raise ValueError(
-            f"{context} only supports kind in {allowed} as the inner smoother "
-            f"(got {inner_spec.kind!r})"
-        )
-    if inner_spec.surgery_schur:
-        raise ValueError("inner Schur smoothers cannot themselves use surgery_schur")
-    if inner_spec.smoother is not None:
-        raise ValueError(
-            f"{context} only supports a terminal tensor inner smoother"
-        )
-    return inner_spec
+            f"kind={spec.kind!r} does not accept an inner smoother")
 
 
 def _validate_public_k0_mass_preconditioner_spec(spec: MassPreconditionerSpec):
-    if not spec.surgery_schur:
-        if spec.kind in ('jacobi', 'none'):
-            if spec.smoother is not None:
-                raise ValueError(
-                    f"k=0 kind='{spec.kind}' with surgery_schur=False does not accept an inner smoother"
-                )
-            return
-        if spec.kind == 'tensor':
-            if spec.smoother is not None:
-                raise ValueError(
-                    "k=0 kind='tensor' with surgery_schur=False does not accept an inner smoother"
-                )
-            return
-        return
-
-    if spec.kind == 'tensor':
-        if spec.smoother is not None:
-            raise ValueError(
-                "kind='tensor' with surgery_schur=True is a legacy alias and does not accept an inner smoother"
-            )
-        return
-
-    if spec.kind == 'none':
-        _validate_inner_tensor_only_spec(
-            spec.smoother,
-            require_explicit=True,
-            context="kind='none' with surgery_schur=True",
-        )
-        return
-
-    if spec.kind == 'jacobi':
-        raise ValueError(
-            "jacobi/surgery_schur is disabled: the outer Jacobi sees a non-local Schur-preconditioned operator"
-        )
+    _validate_public_mass_preconditioner_spec(spec)
 
 
 def _validate_public_k1_mass_preconditioner_spec(spec: MassPreconditionerSpec):
-    if not spec.surgery_schur:
-        if spec.kind in ('jacobi', 'none'):
-            if spec.smoother is not None:
-                raise ValueError(
-                    f"k=1 kind='{spec.kind}' with surgery_schur=False does not accept an inner smoother"
-                )
-            return
-        if spec.kind == 'tensor':
-            if spec.smoother is not None:
-                raise ValueError(
-                    "k=1 kind='tensor' with surgery_schur=False does not accept an inner smoother"
-                )
-            return
-        return
-
-    if spec.kind == 'tensor':
-        if spec.smoother is not None:
-            raise ValueError(
-                "kind='tensor' with surgery_schur=True is a legacy alias and does not accept an inner smoother"
-            )
-        return
-
-    if spec.kind == 'none':
-        _validate_inner_tensor_only_spec(
-            spec.smoother,
-            require_explicit=True,
-            context="kind='none' with surgery_schur=True",
-        )
-        return
-
-    if spec.kind == 'jacobi':
-        raise ValueError(
-            "jacobi/surgery_schur is disabled: the outer Jacobi sees a non-local Schur-preconditioned operator"
-        )
+    _validate_public_mass_preconditioner_spec(spec)
 
 
 def _validate_public_k2_mass_preconditioner_spec(spec: MassPreconditionerSpec):
-    _validate_public_k1_mass_preconditioner_spec(spec)
+    _validate_public_mass_preconditioner_spec(spec)
 
 
 def _raw_kron_factors_for(seq, operators, k: int, dirichlet: bool):
@@ -4209,57 +3181,13 @@ def _build_operator_preconditioner_apply(
         e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
         return lambda x, f=factors, e=e: apply_mass_raw_kron_preconditioner(f, e, x)
     if spec.kind == 'none':
-        if spec.surgery_schur:
-            if k not in (0, 1, 2):
-                raise ValueError(
-                    f"surgery_schur is not used for k={k} with kind='none'"
-                )
-            if not _surgery_available(seq, operators, k):
-                raise ValueError(
-                    f"Mass surgery preconditioner not assembled for k={k}; "
-                    "call assemble_mass_surgery_preconditioner(seq, operators, ...) first"
-                )
-            return _build_mass_surgery_wrapped_preconditioner_apply(
-                seq,
-                operators,
-                k=k,
-                dirichlet=dirichlet,
-                spec=spec,
-            )
         if not allow_none:
             raise ValueError("this preconditioner slot does not allow kind='none'")
         return lambda x: x
-    if spec.surgery_schur and spec.kind in ('jacobi', 'tensor') and k in (0, 1, 2):
-        if not _surgery_available(seq, operators, k):
-            raise ValueError(
-                f"Mass surgery preconditioner not assembled for k={k}; "
-                "call assemble_mass_surgery_preconditioner(seq, operators, ...) first"
-            )
-        if spec.kind == 'tensor' and not _tensor_available(seq, operators, k):
-            raise ValueError(
-                f"Tensor mass preconditioner not assembled for k={k}; "
-                "call assemble_tensor_mass_preconditioner(seq, operators, ...) first"
-            )
-        return _build_mass_surgery_wrapped_preconditioner_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            spec=spec,
-        )
     if spec.kind == 'jacobi':
         diaginv = _mass_diaginv(seq, operators, k, dirichlet)
         return lambda x, diaginv=diaginv: diaginv * x
-    if spec.kind == 'tensor':
-        if not _tensor_available(seq, operators, k):
-            raise ValueError(
-                f"Tensor mass preconditioner not assembled for k={k}")
-        return lambda x: apply_mass_tensor_preconditioner_ops(
-            seq, operators, x, k, dirichlet=dirichlet)
-    raise ValueError(
-        "surgery_schur is currently only implemented for jacobi and tensor "
-        f"mass preconditioners (got {spec.kind!r})"
-    )
+    raise ValueError(f"unsupported mass preconditioner kind {spec.kind!r}")
 
 
 def _build_mass_preconditioner_apply(
@@ -4339,14 +3267,8 @@ def _build_schur_apply_from_saddle_preconditioner(
         schur_inner = (lambda x, f=factors, e=e_lower:
                        apply_mass_raw_kron_preconditioner(f, e, x))
     else:
-        if not _tensor_available(seq, operators, k - 1):
-            raise ValueError(
-                "schur.inner kind='tensor' requires an assembled tensor "
-                f"mass preconditioner at k={k - 1}"
-            )
-        schur_inner = lambda x: apply_mass_tensor_preconditioner_ops(
-            seq, operators, x, k - 1, dirichlet=dirichlet
-        )
+        raise ValueError(
+            f"schur.inner kind {schur_inner_spec.kind!r} is not supported")
     return _build_schur_operator_apply(
         seq,
         operators,
@@ -4393,37 +3315,14 @@ def _coerce_saddle_preconditioner_spec(
             )
         if preconditioner.schur.outer.kind == 'tensor':
             raise ValueError(
-                "schur.outer kind='tensor' is not supported; "
-                "tensor saddle preconditioning is only valid for the lower "
-                "mass block and schur.inner")
+                "schur.outer kind='tensor' is not supported")
         _coerce_schur_diag_mode(
             preconditioner.schur.outer,
             context=f"schur.outer kind={preconditioner.schur.outer.kind!r}",
         )
-        if preconditioner.schur.outer.kind != 'block':
-            _validate_inner_tensor_only_spec(
-                preconditioner.schur.inner,
-                require_explicit=True,
-                context="schur.inner",
-                allowed=('raw_kron', 'tensor'),
-            )
         return preconditioner
     if isinstance(preconditioner, str):
-        if preconditioner == 'tensor' and k == 3:
-            raise ValueError(
-                "preconditioner='tensor' is not supported for saddle solves; "
-                "tensor saddle preconditioning is only valid for the lower "
-                "mass block and schur.inner")
-        if not _tensor_available(seq, operators, k - 1):
-            raise ValueError(
-                "saddle preconditioners currently require an assembled tensor schur.inner"
-            )
-        lower_kind = 'tensor' if preconditioner != 'jacobi' else 'jacobi'
-        if preconditioner == 'tensor':
-            raise ValueError(
-                "schur.outer kind='tensor' is not supported; "
-                "tensor saddle preconditioning is only valid for the lower "
-                "mass block and schur.inner")
+        lower_kind = 'jacobi'
         valid_outer_kinds = ('none', 'jacobi', 'block')
         if preconditioner not in valid_outer_kinds:
             raise ValueError(
@@ -4469,15 +3368,6 @@ def _build_diffusion_preconditioner_apply(
     if spec.kind == 'jacobi':
         diaginv = _mass_diaginv(seq, operators, k, dirichlet)
         return lambda x, diaginv=diaginv: diaginv * x
-    if spec.kind == 'tensor':
-        if not _tensor_available(seq, operators, k):
-            raise ValueError(
-                f"Tensor diffusion preconditioner not assembled for k={k}"
-            )
-        return lambda x: apply_mass_tensor_preconditioner_ops(
-            seq, operators, x, k, dirichlet=dirichlet
-        )
-
     raise ValueError(
         f"unsupported diffusion preconditioner kind {spec.kind!r} "
         "(richardson/chebyshev removed 2026-08-14, see mrx/experimental/chebyshev.py)"
@@ -4524,38 +3414,6 @@ def _build_scalar_hodge_preconditioner_apply(
             mass_diaginv_k = _mass_diaginv(seq, operators, k, dirichlet)
             shifted_diaginv = 1.0 / (1.0 / stiffness_diaginv + eps / mass_diaginv_k)
         return lambda x, diaginv=shifted_diaginv: diaginv * x
-    if spec.kind == 'tensor':
-        if k != 0:
-            raise ValueError(
-                f"Tensor Hodge preconditioner is only implemented for k=0 (got k={k})")
-        if not _k0_tensor_hodge_available(operators):
-            raise ValueError(
-                f"Tensor Hodge preconditioner not assembled for k={k}")
-        tensor_apply = lambda x: _apply_k0_tensor_hodge_preconditioner(
-            seq, operators, x, dirichlet=dirichlet)
-        if eps > 0.0 and not dirichlet:
-            # Without a valid coarse vector, the pure tensor Hodge inverse is
-            # still singular on the harmonic mode. For shifted solves, fall
-            # back to the regular shifted Jacobi apply until a real coarse
-            # vector is available.
-            jacobi_apply = _build_scalar_hodge_preconditioner_apply(
-                seq,
-                operators,
-                k=k,
-                dirichlet=dirichlet,
-                eps=eps,
-                preconditioner=MassPreconditionerSpec(kind='jacobi'),
-                allow_none=False,
-            )
-            coarse_ready = _shifted_harmonic_coarse_ready(
-                seq, operators, k, dirichlet)
-            return lambda x: jax.lax.cond(
-                coarse_ready,
-                tensor_apply,
-                jacobi_apply,
-                x,
-            )
-        return tensor_apply
     raise ValueError(
         f"unsupported scalar Hodge preconditioner kind {spec.kind!r} "
         "(richardson/chebyshev removed 2026-08-14, see mrx/experimental/chebyshev.py)"
@@ -4740,20 +3598,6 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
                 "assemble_block_jacobi_laplacian_preconditioner first")
         cache = getattr(seq, BLOCK_JACOBI_CACHE_ATTR)
         return cache[(int(k), bool(dirichlet))].apply(v)
-    if kind == 'tensor':
-        if k == 0:
-            if not _k0_tensor_hodge_available(operators):
-                raise ValueError(
-                    "Tensor Hodge preconditioner for k=0 requires the tensor Hodge "
-                    "assembly; call assemble_tensor_hodge_preconditioner first")
-            return _apply_k0_tensor_hodge_preconditioner(
-                seq,
-                operators,
-                v,
-                dirichlet=dirichlet,
-            )
-        raise ValueError(
-            f"Tensor Hodge preconditioner not available for k={k}; use 'jacobi' instead")
     raise AssertionError("unreachable")
 
 
@@ -5168,8 +4012,6 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
         maxiter=maxiter,
     )
     return (u, info) if return_info else u
-
-
 
 
 def apply_hodge_laplacian(seq, operators: SequenceOperators, v, k: int,
