@@ -1258,3 +1258,30 @@ gain over `eta = 0` (9.63e-05 against 9.95e-05).
 
 The G1 identity breaks by 5-50x at every nonzero eta, as predicted in section
 18.1: `dt = (F,u)/||dB||^2` omits the `-eta||J||^2` term in `<B,dB>`.
+
+### 23.1 S17 was a badly designed arm -- recorded as such, not as a result
+
+`S17` put `eta = 1e-3` on `w7x_ini` UNDER THE LINESEARCH, i.e. on the case
+already being destroyed by step size (section 22). It stacks two destructive
+mechanisms and the output is uninterpretable:
+
+    iota          0.855 - 0.975 (IC)  ->  0.0000 - 0.6933
+    axis offset   1.433e-04           ->  1.536e-01
+    helicity      -50.3%
+
+iota collapsing to zero means the field lines have stopped winding poloidally.
+That is a wrecked field, not a measurement.
+
+My stated rationale was "if numerical reconnection is what destroys the
+surfaces, adding real resistivity should not make it notably worse". That test
+cannot work when the baseline is already destroyed -- there is nothing to
+compare against. The eta question was answered cleanly by S08-S10 on the
+HEALTHY file, where the baseline is intact and the trend is monotone.
+
+**The correct version, if anyone wants it,** holds `dt` fixed at 3e-3 (D1's
+setting, which preserves surfaces on this file) and varies only eta. Not run:
+S08-S10 already answer the question.
+
+*Lesson, and it is the same one as the W1 confound in section 19.4: an arm that
+varies one thing on top of an already-broken baseline measures nothing. Check
+that the control is healthy before adding a variable to it.*
