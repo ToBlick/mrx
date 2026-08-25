@@ -435,6 +435,13 @@ def main():
                          "differs.")
     ap.add_argument("--no-leray-ic", action="store_true",
                     help="skip the Leray clean-up of the initial condition")
+    ap.add_argument("--poincare-from", default=None,
+                    help="path to a B.h5 written by --save-b. Renders a "
+                         "Poincare section of EVERY field in it and exits, "
+                         "with no relaxation: the geometry build is ~5 min "
+                         "against hours to re-relax, so presentation can be "
+                         "changed without paying for the run again. Same "
+                         "reasoning as scripts/debug/poincare_replot.py.")
     ap.add_argument("--gates-only", action="store_true")
     ap.add_argument("--ic-only", action="store_true")
     ap.add_argument("--out", default=None)
@@ -465,6 +472,23 @@ def main():
     seq.set_operators(ops)
     print(f"[setup] {cli.geometry} ns={ns} p={cli.p}  n2_dbc={seq.n2_dbc}  "
           f"operators+nullspaces {time.perf_counter() - t0:.1f}s", flush=True)
+
+    # --- render from a saved field, then stop ------------------------------
+    if cli.poincare_from:
+        nfp = geometry_nfp(cli.geometry)
+        outdir = os.path.dirname(cli.out) if cli.out else os.path.dirname(
+            cli.poincare_from)
+        with h5py.File(cli.poincare_from, "r") as f:
+            fields = {k: jnp.asarray(f[k][:]) for k in f.keys()}
+            attrs = {k: f.attrs[k] for k in f.attrs}
+        print(f"[replot] {cli.poincare_from}: {list(fields)}   attrs {attrs}",
+              flush=True)
+        out = {}
+        for tag, dof in fields.items():
+            out[tag] = render_poincare(seq, dof, nfp, tag, outdir, cli)
+            if cli.out:
+                json.dump(out, open(cli.out, "w"), indent=1)
+        return
 
     # --- gate 0 -----------------------------------------------------------
     tg = time.perf_counter()
@@ -956,6 +980,24 @@ def main():
             gradp_avg_final=tr["gradp_avg"][-1],
             harmonic_final=(list(harm) if harm is not None else None))
         final_B[name] = np.asarray(state.B_n)
+        # Write after EVERY arm, not once at the end.  Deferring the whole
+        # save until all arms finish means a job that hits its time limit --
+        # which is the normal outcome of a --seconds-per-arm budget -- loses
+        # every field it computed.  Rewriting the file per arm costs
+        # milliseconds and the last complete arm always survives.
+        if cli.save_b:
+            with h5py.File(cli.save_b, "w") as f:
+                f.create_dataset("B_ic", data=np.asarray(B0))
+                for nm, arr in final_B.items():
+                    f.create_dataset(f"B_final_{nm}", data=arr)
+                f.attrs["geometry"] = cli.geometry
+                f.attrs["ns"] = list(ns)
+                f.attrs["p"] = cli.p
+                f.attrs["ic"] = cli.ic
+                f.attrs["steps"] = cli.steps
+                f.attrs["gamma"] = cli.gamma
+                f.attrs["mu"] = cli.mu
+            print(f"    wrote {cli.save_b} (through arm '{name}')", flush=True)
         if cli.out:
             json.dump(results, open(cli.out, "w"), indent=1)
 
