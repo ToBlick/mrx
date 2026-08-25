@@ -1452,3 +1452,34 @@ S13 is the one place the distinction nearly misleads: at 12^3 the `_ini` case
 improves 100x on every scalar and still does not recover nested surfaces, which
 is a real statement about the SCHEME's step-size sensitivity, not about the
 device.
+
+## 27. THE gamma / mu STUDY SATURATES IMMEDIATELY
+
+`w7x_fmm002`, Clebsch IC, cg. S05 and S06 hit their 9000 s cap at 2410 and
+1961 steps, so `||F||` is not comparable across the row -- but all four removed
+~1.2e-04 of energy, so helicity lost PER UNIT ENERGY REMOVED is:
+
+| arm | gamma | mu | \|dH\|/H per unit dE | axis offset | s/step |
+|---|---|---|---|---|---|
+| W1 | 0 | -- | 70.9 | 3.071e-03 | 0.87 |
+| **S04** | **1** | **1e-3** | **30.1** | **3.386e-04** | 2.74 |
+| S05 | 1 | 1e-2 | 43.9 | 1.945e-03 | 3.74 |
+| S06 | 2 | 1e-3 | 31.5 | 1.659e-03 | 4.59 |
+
+**`gamma = 1, mu = 1e-3` is the sweet spot and both ways of pushing further are
+dead ends:**
+
+* **More smoothing HURTS.** `mu = 1e-2` is markedly worse than `mu = 1e-3`
+  (43.9 against 30.1), presumably because it smooths away real structure along
+  with the noise -- the roughness ratio is the same 0.36x in both, so it is not
+  buying extra smoothness for the cost either.
+* **`gamma = 2` buys nothing** over `gamma = 1` (31.5 against 30.1) at 1.7x the
+  per-step cost.
+
+So the lever saturates at its cheapest useful setting, which is a convenient
+place for it to saturate. All four keep their surfaces (axis offsets
+<= 3.4e-03).
+
+Note this makes `gamma = 1, mu = 1e-3` -- the value used throughout sections 9
+and 25 because it was the first thing tried -- the right choice by measurement
+rather than by luck.
