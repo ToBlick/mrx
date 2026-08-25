@@ -6,12 +6,19 @@ Re-run it to refresh as jobs land.
 Narrative, mechanisms and corrections live in
 `handoff_2026-08-25_relaxation_prelim.md`; this is the numbers.
 
-Cost and quality are SEPARATE columns and an arm can win one while
-losing the other. `|dH|/H per dE` is quality and is cost-free;
-`dE/GPU-hr` is cost. On w7x_ini, 16^3 loses 260x less helicity per
-unit energy than 8^3 but takes 4.8x longer to remove it, while
-capping dt at 8^3 gets 53x of that quality for 1.3x the time --
-which is why the recommendation is the cap, not the refinement.
+**NO ARM IN THIS TABLE REACHED A FLOOR.** Every run is still
+descending at its last step (handoff s32.1), and the resolution
+arms were truncated on a budget set from the coarse case, so the
+FINEST arms are furthest from their floors. The point of refining
+h or p is to reach a LOWER floor, not to get there faster -- so
+nothing here is a verdict on refinement, and a finer arm being
+slower is expected rather than a finding.
+
+Cost and quality are SEPARATE columns. `|dH|/H per dE` measures
+reconnection efficiency; `dE/GPU-hr` measures cost. Neither is a
+floor. Do NOT rank refinement on either -- capping dt and refining
+h are not substitutes: the cap reduces time-integration error at
+fixed h, refinement changes where the floor is.
 
 `dE` is energy removed -- the only guaranteed-monotone quantity, and
 what every ranking is normalised by. `|F|` is reported but never
@@ -37,6 +44,7 @@ resolution, p) -- H itself is not converged across those.
 | S04 | gamma=1 mu=1e-3 | cg | 3000 | 1.207e-04 | 1.139e-04 | 3.633e-03 | 30.09 | 1.365e-13 | 2.74 | 5.292e-05 |
 | S05 | gamma=1 mu=1e-2 (truncated) | cg | 2410 | 1.182e-04 | 3.159e-04 | 5.187e-03 | 43.88 | 1.252e-13 | 3.74 | 4.727e-05 |
 | S06 | gamma=2 mu=1e-3 (truncated) | cg | 1961 | 1.189e-04 | 2.950e-04 | 3.742e-03 | 31.49 | 1.267e-13 | 4.59 | 4.752e-05 |
+| M1 | gamma=1 mu=1e-4, NEW precond | cg | 3000 | 1.212e-04 | 8.574e-05 | 2.084e-04 | 1.719 | 1.308e-13 | 1.24 | 1.171e-04 |
 | S08 | eta=1e-4 | cg | 4000 | 1.291e-04 | 9.628e-05 | 2.563e-01 | 1986 | 1.420e-13 | 0.86 | 1.343e-04 |
 | S09 | eta=1e-3 | cg | 4000 | 1.385e-04 | 1.404e-05 | 8.200e-01 | 5920 | 1.268e-13 | 0.86 | 1.445e-04 |
 | S10 | eta=1e-2 | cg | 4000 | 1.387e-04 | 2.203e-09 | 9.998e-01 | 7208 | 1.320e-13 | 0.87 | 1.428e-04 |
@@ -61,7 +69,6 @@ resolution, p) -- H itself is not converged across those.
 ## Not yet landed
 
 * **P5** -- fmm002 p=5
-* **M1** -- gamma=1 mu=1e-4, NEW precond
 * **M2** -- gamma=1 mu=1e-3, NEW precond
 * **M3** -- gamma=1 mu=1e-2, NEW precond
 * **M4** -- gamma=1 mu=1e-1, NEW precond

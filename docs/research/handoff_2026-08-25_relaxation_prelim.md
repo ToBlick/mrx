@@ -1690,3 +1690,96 @@ driven fraction is only 1.7%, falling to 0.9% as the grid resolves it. So the
 denominator, and its apparent 469 at 16^3 means nothing. `w7x_ini`, whose
 current-driven fraction is 17%, is where this metric is sound -- and that is
 where every step-size conclusion was measured.
+
+## 32. RETRACTION: every resolution conclusion here is a RATE claim, and rate was never the question
+
+Tobias, 2026-08-25: **"The goal of h-refinement is not to converge faster, it
+is to converge to a lower -- or more physically accurate -- floor."**
+
+A finer arm taking more steps, more wall clock, or more iterations per step is
+EXPECTED. It is not a regression and not a finding. The measurable claim of an
+h-refinement study is WHERE THE RUN FLOORS: does ||F|| bottom out lower, does
+the energy settle nearer the true minimum. That is the number and it is the
+only number. And if refining does NOT lower the floor, that is a real finding,
+because it says something other than the discretisation is limiting the
+result.
+
+This is the same family as the monotonicity correction in s2 TRAP 2 -- both are
+cases of judging a run by a quantity that was never the point.
+
+### 32.1 Measured: NOT ONE ARM FLOORED
+
+A floor claim requires the run to have flattened. Two tests: is ||F|| still
+moving over the last 20%, and is the dissipation rate still above round-off?
+
+                     steps   |F| end   |F| last20%  -dE/dt end  rate/rate@50%
+    fmm002   8^3      3000  9.95e-05      x0.74      9.7e-09        1.02
+            12^3      3000  1.62e-04      x0.64      1.8e-08        0.68
+            16^3      1567  7.93e-04      x1.05      2.8e-07        0.23
+    w7x_ini  8^3 ls   3000  8.45e-03      x1.87      4.2e-05        1.21
+             8^3 cap  3000  8.27e-03      x0.81      6.9e-05        0.34
+            12^3      3000  1.71e-03      x0.69      1.3e-06        0.026
+            16^3      1330  4.57e-02      x0.72      1.2e-03        0.85
+
+Every arm is still descending at its last step. The rates run 1e-9 to 1e-3
+against the ~1e-16 round-off floor that S10 demonstrated is reachable (s31
+note). **There is no floor measurement anywhere in this campaign.**
+
+### 32.2 Worse: the truncation biases every comparison AGAINST refinement
+
+S02 (16^3) stopped at 1567 steps and S14 (16^3) at 1330, both on a wall-clock
+budget set from the coarse case's 3000. So the finest arms are the ones
+FURTHEST from their floors, and every resolution comparison in this document
+is biased in the direction of the conclusion it reached. Matching step counts
+across resolutions is the wrong design; the dt bracket got this right (s20,
+step counts scaled inversely so each arm removed comparable energy) and the
+resolution arms did not.
+
+### 32.3 RETRACTED
+
+**"Capping dt at 8^3 gets 53x of the quality for 1.3x the time, so the cap
+stays the recommendation and refinement is the expensive substitute"**
+(commit c01c2ce). Two errors:
+
+1. It rejects refinement on COST, which is the error above.
+2. More fundamentally, **capping dt and refining h are not substitutes.**
+   Capping reduces the time-integration error at a FIXED discretisation.
+   Refining changes what the discretisation can represent -- that is, where
+   the floor is. They answer different questions and s31.1 put them on one
+   axis. The step-size finding (s20-s22) stands on its own; it is a statement
+   about dt at fixed h and nothing in it was ever a resolution claim.
+
+**QUALIFIED, not withdrawn**: s25.2's "h-refinement buys nothing" and s31's
+"buys nothing or 260x". ``|dH|/H per unit energy removed`` is a real
+measurement of reconnection efficiency and those numbers stand as that. What
+does not stand is presenting it as the verdict on refinement, which is a floor
+question this campaign never asked.
+
+### 32.4 The one hint, offered as a hint
+
+S13 (w7x_ini, 12^3) is the closest thing to a floored arm here: its
+dissipation rate fell to **2.6% of its mid-run value**, by far the flattest of
+the set, and it reached ``||F|| = 1.71e-03`` -- **5x lower than either 8^3 arm**
+(8.45e-03, 8.27e-03) at the same 3000 steps and comparable energy removed.
+
+That is consistent with refinement lowering the floor. It is NOT evidence of
+it: S13 has not floored either, and one arm nearer flat than the others is a
+hint about direction, not a measurement of where either lands.
+
+### 32.5 What it would take, and why it was not launched
+
+Establishing the floor needs each resolution run to FLAT -- rate at round-off,
+||F|| stationary -- not to a step count. I have not estimated how long that is
+and will not invent a number: S13 needed 3000 steps to reach 2.6% of mid-run
+rate and the remaining distance to 1e-16 is not something to extrapolate from
+one arm. The honest way to find out is to run ONE arm to flat and measure.
+
+Not launched because the user's standing instruction as of 2026-08-25 is to
+stop launching and drain the queue. This is the user's call on their own GPU
+budget, and it is recorded here rather than acted on.
+
+**Until such a run exists, this document contains no claim about whether
+h-refinement lowers the relaxation floor.** The same caveat applies to the
+p-sweep in s25.1: "p buys 3.4x" is the identical category of claim about a
+different refinement axis, measured the same way, and it is equally not a
+floor result.

@@ -25,12 +25,19 @@ THE COLUMNS, AND WHY THESE
 ``s/step``        wall clock per step.  A step is NOT a unit of cost -- these
                   arms span 0.23 to 22.6 s/step -- so any ranking that counts
                   steps is ranking on an axis nobody pays in.
-``dE/GPU-hr``     energy removed per GPU-hour: the cost-side counterpart to
-                  ``|dH|/H per dE``.  Read the two together.  The quality
-                  question is "how much helicity does this arm spend to
-                  remove a given dE", which is cost-free; the cost question
-                  is "how long does removing it take".  An arm can win one
-                  and lose the other, and on this campaign several do.
+``dE/GPU-hr``     energy removed per GPU-hour.  Useful for planning a run;
+                  NOT a quality measure and never a reason to prefer one
+                  discretisation over another.  A finer arm costing more is
+                  expected, not a finding.
+
+NONE OF THESE COLUMNS IS A FLOOR
+--------------------------------
+The measurable claim of a refinement study is where the run FLOORS -- does
+``||F||`` bottom out lower, does the energy settle nearer the true minimum.
+No arm in this campaign floored: all are still descending at their last step,
+with dissipation rates 1e-9 to 1e-3 against a demonstrated ~1e-16 round-off
+floor.  Reading any row here as a verdict on refinement is the error handoff
+s32 retracts.
 """
 from __future__ import annotations
 
@@ -112,12 +119,18 @@ def main():
     print("Re-run it to refresh as jobs land.\n")
     print("Narrative, mechanisms and corrections live in")
     print("`handoff_2026-08-25_relaxation_prelim.md`; this is the numbers.\n")
-    print("Cost and quality are SEPARATE columns and an arm can win one while")
-    print("losing the other. `|dH|/H per dE` is quality and is cost-free;")
-    print("`dE/GPU-hr` is cost. On w7x_ini, 16^3 loses 260x less helicity per")
-    print("unit energy than 8^3 but takes 4.8x longer to remove it, while")
-    print("capping dt at 8^3 gets 53x of that quality for 1.3x the time --")
-    print("which is why the recommendation is the cap, not the refinement.\n")
+    print("**NO ARM IN THIS TABLE REACHED A FLOOR.** Every run is still")
+    print("descending at its last step (handoff s32.1), and the resolution")
+    print("arms were truncated on a budget set from the coarse case, so the")
+    print("FINEST arms are furthest from their floors. The point of refining")
+    print("h or p is to reach a LOWER floor, not to get there faster -- so")
+    print("nothing here is a verdict on refinement, and a finer arm being")
+    print("slower is expected rather than a finding.\n")
+    print("Cost and quality are SEPARATE columns. `|dH|/H per dE` measures")
+    print("reconnection efficiency; `dE/GPU-hr` measures cost. Neither is a")
+    print("floor. Do NOT rank refinement on either -- capping dt and refining")
+    print("h are not substitutes: the cap reduces time-integration error at")
+    print("fixed h, refinement changes where the floor is.\n")
     print("`dE` is energy removed -- the only guaranteed-monotone quantity, and")
     print("what every ranking is normalised by. `|F|` is reported but never")
     print("ranked on: it is the gradient's norm and has no monotonicity")
