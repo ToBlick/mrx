@@ -401,6 +401,18 @@ def main():
     ap.add_argument("--pc-zeta", type=float, default=0.0)
     ap.add_argument("--save-b", default=None,
                     help="HDF5 path for the IC and per-arm final B DoFs")
+    ap.add_argument("--dt-mode", default="linesearch",
+                    choices=("linesearch", "fixed"),
+                    help="'linesearch' takes the exact energy-minimising step, "
+                         "which is the LARGEST step that still reduces E. "
+                         "Frozen-in flux is only preserved to O(dt^2) by "
+                         "explicit Euler, so a big step can destroy field-line "
+                         "topology while div B and energy monotonicity stay "
+                         "exact -- nested surfaces are protected by NO "
+                         "invariant this scheme enforces. 'fixed' with a small "
+                         "--dt0 is the control that tests exactly that.")
+    ap.add_argument("--dt0", type=float, default=1.0,
+                    help="the fixed step, when --dt-mode fixed")
     ap.add_argument("--eta-max", type=float, default=0.0,
                     help="peak resistivity. eta > 0 RELAXES the topological "
                          "constraint: helicity is no longer conserved, the "
@@ -723,7 +735,9 @@ def main():
         method = ARMS[name]
         ts = TimeStepper(
             seq=seq, descent_method=method,
-            dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH,
+            dt_mode=(TimeStepChoice.ANALYTIC_LINESEARCH
+                     if cli.dt_mode == "linesearch"
+                     else TimeStepChoice.FIXED),
             timestep_mode=IntegrationScheme.EXPLICIT,
             history_size=cli.history, gamma=cli.gamma, mu=cli.mu)
 
@@ -755,7 +769,7 @@ def main():
                     state.lbfgs_sy,
                     (Fu / state.dt) ** 0.5 / state.v_norm)
 
-        state = initial_state(B0, ts, dt=1.0)
+        state = initial_state(B0, ts, dt=cli.dt0)
         F0, p0, _, H0f, JxH0 = compute_force(
             B0, seq, dirichlet_H=ts.dirichlet_H)
         state = eqx.tree_at(
@@ -765,7 +779,7 @@ def main():
         tr = {k: [] for k in ("E", "F", "dt", "div", "Fu", "cos", "sy", "eta",
                               "gain", "dE_meas", "dE_pred", "helicity",
                               "hel_it", "gradp_mag", "gradp_avg", "resid",
-                              "p_scale", "p_resid", "p_spread")}
+                              "p_scale", "p_resid", "p_spread", "JoverB")}
         E_prev = E0
         t_arm = time.perf_counter()
         n_done = 0
@@ -814,6 +828,13 @@ def main():
             if it % cli.helicity_every == 0 or it == 1:
                 # The denominator moves as B does, so it is re-measured here
                 # rather than frozen at the IC.
+                # ||J||/||B|| with J = weak_curl(B) = the codifferential.
+                # For a smooth field this is O(1/a); if the descent is
+                # shredding B at the grid scale it GROWS, which separates
+                # "physically chaotic but smooth" from "numerically rough".
+                tr["JoverB"].append(float(
+                    seq.l2_norm(seq.apply_weak_curl(state.B_n), 1)
+                    / seq.l2_norm(state.B_n, 2)))
                 gp_l2, gp_avg = (float(v) for v in normaliser(state.B_n))
                 tr["gradp_mag"].append(gp_l2)
                 tr["gradp_avg"].append(gp_avg)
@@ -897,6 +918,10 @@ def main():
                   f"   relative drift "
                   f"{(harm[2] - harm0[2]) / abs(harm0[2]):+.3e}"
                   f"   -- EXACT invariant, must be at round-off")
+        print(f"    ROUGHNESS ||J||/||B||: {tr['JoverB'][0]:.4e} -> "
+              f"{tr['JoverB'][-1]:.4e}   ({tr['JoverB'][-1] / tr['JoverB'][0]:.2f}x)"
+              f"   -- growth means grid-scale structure, i.e. numerically "
+              f"shredded rather than merely chaotic")
         print(f"    PRESSURE profile spread (max-min)/E: "
               f"{tr['p_spread'][0]:.4e} -> {tr['p_spread'][-1]:.4e}   -- the "
               f"fixed point is JxB = grad p, so this going to ZERO means "
