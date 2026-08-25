@@ -92,6 +92,11 @@ def build_sequence(geometry, ns, p, maxiter, inner_tol=1e-12):
             raise RuntimeError(f"{geometry} geometry is degenerate")
     ops = op.assemble_incidence_operators(seq)
     ops = op.assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
+    # The block-Jacobi atoms, explicitly. compute_nullspaces no longer builds
+    # them behind the caller's back, and the k>=1 saddle default REQUIRES them.
+    ops = op.assemble_block_jacobi_laplacian_preconditioner(
+        seq, ops, ks=(0, 1, 2, 3), dirichlets=(False, True))
+    op.warm_mass_preconditioner_cache(seq, ops)
     seq.set_operators(ops)
     return seq, ops
 

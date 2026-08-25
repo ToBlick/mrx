@@ -295,10 +295,10 @@ def _validate_nullspace_shifted_preconditioner(k: int, preconditioner):
         return preconditioner
     if not isinstance(preconditioner, SaddlePointPreconditionerSpec):
         raise TypeError('k>=1 nullspace inverse iteration expects a SaddlePointPreconditionerSpec')
-    if preconditioner.schur.outer.kind not in ('jacobi', 'exact_jacobi'):
+    if preconditioner.schur.outer.kind != 'jacobi':
         raise ValueError(
             f'k>=1 nullspace inverse iteration got unsupported schur.outer '
-            f'kind={preconditioner.schur.outer.kind!r}; expected jacobi or exact_jacobi'
+            f'kind={preconditioner.schur.outer.kind!r}; expected jacobi'
         )
     if preconditioner.schur.inner.kind not in ('raw_kron', 'tensor'):
         raise ValueError(
@@ -442,32 +442,15 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
 
     # The construction below is a chain of Hodge-Laplacian solves -- L_1 DBC
     # for the k=2 form, L_2 FREE for the k=1 form, L_3 DBC inside the Leray
-    # projection -- and every one of them goes through the k>=1 saddle path.
-    # Assemble the block-Jacobi atom so those solves get it as schur.outer.
-    # This is a setup routine and is never under a trace, so building here is
-    # safe; without it the solves fall back to the per-DoF diagonal and the
-    # L_2 free one needs 20k-38k MINRES iterations at p=5 on shaped geometries,
-    # silently returning an unconverged form that every deflated solve then
-    # deflates against (measured 2026-08-24: relL2 6e-4 instead of 1.5e-11).
-    from mrx.operators import (  # noqa: PLC0415
-        assemble_block_jacobi_laplacian_preconditioner,
-    )
-    operators = assemble_block_jacobi_laplacian_preconditioner(
-        seq, operators, ks=(1, 2, 3), dirichlets=(False, True))
-    # k=0 FREE only, and only that. The single k=0 Laplacian solve anywhere in
-    # mrx/ is the one the k=1 chain reaches through apply_leray_projection(
-    # seed1, k=1) -> apply_inverse_hodge_laplacian(div_v, 0, dirichlet=False);
-    # k=0 dbc is never solved here, so assembling it would be 0.25 s spent on an
-    # atom nothing asks for.
+    # projection, and L_0 FREE inside the k=1 Leray -- and every one of them
+    # takes the block-Jacobi atom, which is now REQUIRED rather than consulted.
     #
-    # Worth keeping in proportion: measured on w7x ns=(12,24,12) p=3 the atom
-    # takes that solve from 585 to 114 iterations, 2.19 s to 1.46 s, for 0.25 s
-    # of assembly. A 5x iteration cut, and ~0.6 s off a 220 s setup. It is a
-    # real win on the solve and a marginal one end to end; the default fix it
-    # rests on matters far more to callers that do MANY k=0 solves.
-    operators = assemble_block_jacobi_laplacian_preconditioner(
-        seq, operators, ks=(0,), dirichlets=(False,))
-
+    # This function does NOT build it. It used to, and that was a setup step
+    # hidden inside a solve routine: the caller could not tell which
+    # preconditioners existed, and a geometry change afterwards left them stale.
+    # Build them explicitly, or in one call with
+    # ``seq.set_map_and_preconditioners(map)``. A missing atom raises here with
+    # a message naming the assembler.
     operators = _commit(seq, init_nullspaces(
         seq, operators, betti_numbers=betti_numbers))
 

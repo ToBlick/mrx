@@ -447,8 +447,8 @@ def test_block_jacobi_mass_is_wired_but_not_default(torus_seq):
                 preconditioner=bad)
 
 
-def test_probed_jacobi_is_the_honest_reference(torus_seq):
-    """`kind='probed_jacobi'` is the exact diagonal of `L_k` as applied.
+def test_probed_diagonal_is_the_honest_reference(torus_seq):
+    """`_probed_laplacian_diaginv` is the exact diagonal of `L_k` as applied.
 
     `kind='jacobi'` is NOT that for k >= 1: its weak half is a closed form
     under the Kronecker mass model, i.e. a model of `D M^-1 D^T` rather than
@@ -456,7 +456,11 @@ def test_probed_jacobi_is_the_honest_reference(torus_seq):
     a preconditioner measured against `jacobi` inherits it. This pins the
     distinction so the reference cannot silently drift back to the model.
     """
-    from mrx.operators import PROBED_DIAG_CACHE_ATTR, _hodge_diaginv
+    # Not a preconditioner KIND any more -- the modes are none/jacobi/tensor --
+    # but still the reference the jacobi diagonal has to be checked against.
+    from mrx.operators import (
+        PROBED_DIAG_CACHE_ATTR, _hodge_diaginv, _probed_laplacian_diaginv,
+    )
 
     ops = torus_seq.get_operators()
     prev = getattr(torus_seq, PROBED_DIAG_CACHE_ATTR, None)
@@ -465,8 +469,8 @@ def test_probed_jacobi_is_the_honest_reference(torus_seq):
             n = int(getattr(torus_seq, f"n{k}"))
             rng = np.random.default_rng(17)
             v = jnp.asarray(rng.standard_normal(n))
-            probed = torus_seq.apply_laplacian_preconditioner(
-                v, k, dirichlet=dbc, kind='probed_jacobi')
+            probed = _probed_laplacian_diaginv(
+                torus_seq, ops, k, dbc) * v
             modelled = np.asarray(_hodge_diaginv(torus_seq, ops, k, dbc)) * np.asarray(v)
             assert np.all(np.isfinite(np.asarray(probed)))
             d = _rel(np.asarray(probed), modelled)

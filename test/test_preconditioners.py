@@ -254,7 +254,7 @@ def test_weak_term_diagonal_matches_exact_rows(torus_seq):
         # Practical cost, measured in outputs/diag_masslap before the swap:
         # `kind='jacobi'` iteration counts move by 1-10% (cylinder k=1 free
         # 262 -> 287, W7-X k=1 free 1658 -> 1668), while the production
-        # `kind='block'` gets ~9% better. `kind='probed_jacobi'` is exact.
+        # `kind='block'` gets ~9% better. `_probed_laplacian_diaginv` is exact.
         pytest.skip(
             f"weak-term closed form is calibrated for raw_kron; mass is "
             f"{mass_kind}. See mrx/preconditioners.build_weak_term_raw_diagonal")

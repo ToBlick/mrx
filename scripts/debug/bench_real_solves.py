@@ -16,7 +16,7 @@ script sweeps THAT solve.
 The preconditioner is block-diagonal, SPD as MINRES requires, and its upper
 block preconditions the Schur complement -- which IS L_k, so the block-Jacobi
 atom belongs there. Until 2026-08-24 `schur.outer` accepted only
-('none','jacobi','exact_jacobi'): the production Laplacian preconditioner was
+('none','jacobi'): the production Laplacian preconditioner was
 unreachable from the production solve. Arms here compare that.
 
 Iteration counts come from the solver itself: `minres` returns
