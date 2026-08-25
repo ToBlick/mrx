@@ -1510,3 +1510,48 @@ get both right; a fixed choice cannot.
 Note this makes `gamma = 1, mu = 1e-3` -- the value used throughout sections 9
 and 25 because it was the first thing tried -- the right choice by measurement
 rather than by luck.
+
+## 28. RUNNING LONGER IS NOT FREE (S07)
+
+`w7x_fmm002`, W1's exact settings, 13018 steps instead of 3000:
+
+    quantity          3000 steps    13018 steps
+    energy removed      0.0244%       0.0253%
+    ||F||             9.950e-05     1.812e-04     <- 1.8x WORSE
+    |dH|              1.542e-06     3.343e-06     <- 2.2x more
+    roughness             --          0.26x       <- SMOOTHER
+    h/2 drift         2.6e-04       3.1e-03       <- 12x worse, still small
+    axis offset       3.071e-03     2.087e-03
+    iota range        0.907-1.048   0.857-1.624   <- greatly expanded
+
+**The extra 10000 steps bought 0.0009% more energy** and cost a 1.8x worse
+force residual, twice the helicity, and the core. The section shows the outer
+surfaces still cleanly nested but the core restructured: large island chains at
+mid-radius, scattered points near the axis, and an iota profile that now rises
+to 1.62 near the axis with a shear reversal down to 0.85 at `a_eff ~ 0.18`.
+
+**The energy is converged by ~3000 steps on this case.** Everything after that
+is the field rearranging structure at no benefit.
+
+### 28.1 The energy episode: neither hypothesis won
+
+Section 22 noted the energy re-accelerating after a plateau -- decrement per 500
+steps 5.6e-08 (plateau) -> 6.53e-07 (burst) -> 1.13e-07 (settled). I read that
+as topology tearing releasing locked energy; Tobias pointed out it could equally
+be the field escaping a shallow basin toward a smoother minimum, and that
+nothing in the energy curve distinguishes them.
+
+The three discriminators SPLIT:
+
+* roughness FELL (0.26x) -- supports the smoother-minimum reading
+* `|dH|` DOUBLED -- supports the tearing reading
+* the section shows PARTIAL core restructuring -- neither
+
+So it is recorded as undetermined. What is NOT undetermined is the practical
+consequence: on this case the extra steps are not worth taking, whichever
+mechanism is responsible.
+
+*Method note: my earlier "||F|| looks like it is flooring out" was reaching for
+the wrong quantity -- but the instinct was right and the ENERGY shows it
+cleanly. Third instance of the same error in this study (see the trap in
+section 2).*
