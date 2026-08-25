@@ -28,7 +28,6 @@ from mrx.preconditioners import (
     _core_size,  # noqa: F401
     _symmetrize,
     default_mass_preconditioner,
-    default_saddle_preconditioner,
     get_mass_jacobi_diaginv,
     select_boundary_data,
     set_mass_jacobi_pair,
@@ -323,7 +322,7 @@ class SequenceOperators(eqx.Module):
                 case "stiffness":
                     pair = getattr(self.dense, f"s{k}")
                     return select_boundary_data(pair, dirichlet, f"Dense stiffness k={k}")
-                case "hodge_laplacian" | "laplacian":
+                case "laplacian":
                     pair = getattr(self.dense, f"l{k}")
                     return select_boundary_data(pair, dirichlet, f"Dense Laplacian k={k}")
                 case "projection":
@@ -344,7 +343,7 @@ class SequenceOperators(eqx.Module):
                 )
             case "stiffness":
                 return dense_stiffness_matrix(seq, self, k, dirichlet=dirichlet)
-            case "hodge_laplacian" | "laplacian":
+            case "laplacian":
                 return dense_hodge_laplacian(seq, self, k, dirichlet=dirichlet)
             case "projection":
                 if not isinstance(k, tuple) or len(k) != 2:
@@ -356,52 +355,9 @@ class SequenceOperators(eqx.Module):
                     dirichlet_out=dirichlet,
                 )
         raise ValueError(
-            "operator must be one of 'mass', 'derivative', 'stiffness', 'laplacian' (or legacy 'hodge_laplacian'), or 'projection'"
+            "operator must be one of 'mass', 'derivative', 'stiffness', "
+            "'laplacian' or 'projection'"
         )
-
-
-class K0TensorHodgePreconditionerFactors(eqx.Module):
-    core_size: int = eqx.field(static=True)
-    bulk_shape: tuple[int, int, int] = eqx.field(static=True)
-    schur_inv: jnp.ndarray
-    schur_projector: Optional[jnp.ndarray] = None
-    bulk_alpha: Optional[jnp.ndarray] = None
-    bulk_V_r: Optional[jnp.ndarray] = None
-    bulk_V_t: Optional[jnp.ndarray] = None
-    bulk_V_z: Optional[jnp.ndarray] = None
-    bulk_lam_r: Optional[jnp.ndarray] = None
-    bulk_lam_t: Optional[jnp.ndarray] = None
-    bulk_lam_z: Optional[jnp.ndarray] = None
-    # Whether the dense core<->bulk coupling block was precomputed at build
-    # time (default yes). When ``core_coupling`` is present the apply replaces
-    # the two matrix-free k=0 stiffness couplings (K_0 = G_0^T M_1 G_0, an M_1
-    # mass apply between two incidences, O(n^3 p^6)) with dense matvecs
-    # ``core_coupling @`` / ``core_coupling.T @`` of cost O(bulk * core). The
-    # core (polar-axis) size is small, so the block is cheap to store and probe.
-    precompute_coupling: bool = eqx.field(static=True, default=True)
-    core_coupling: Optional[jnp.ndarray] = None
-    # Greville-collocation bulk inverse: the bulk apply sandwiches the exact
-    # additive-FD inverse (_fd_apply_3d on UNWEIGHTED atoms, via
-    # bulk_V_*/bulk_lam_*/bulk_alpha) with this pointwise diagonal,
-    # x -> D^{-1/2} fd_apply(D^{-1/2} x). D^{-1/2} = bulk_greville_inv_sqrt_D is
-    # the geometry weight collocated at the bulk 0-form Greville abscissae -- the
-    # non-separable metric becomes a diagonal while the unweighted atoms share one
-    # exact per-axis eigenbasis.
-    bulk_greville_inv_sqrt_D: Optional[jnp.ndarray] = None
-    # The modal-radial bulk atom (modal_V_t / modal_V_z / modal_mu / modal_W /
-    # modal_d, and the apply that consumed them) lived here until 2026-08-24.
-    # Its only producer was `assemble_k0_blockdiag_preconditioner`, which
-    # nothing called, so the `if factors.modal_W is not None` branch in
-    # `_apply_k0_tensor_hodge_bulk_inverse` had been dead by dataflow for some
-    # time. Git history and `mrx/experimental/modal_radial.py` keep it.
-    # Block-diagonal mode: no core<->bulk coupling, and ``schur_inv`` holds the
-    # plain dense inverse of the core block rather than a Schur complement.
-    # Measured 2026-08-18 (16x32x32, dbc, full grid): the coupling is worth
-    # 1.86x on the axisymmetric toroid but 0.98x on the rotating ellipse and
-    # 0.89x on W7-X -- i.e. nothing, or slightly negative, on the geometries
-    # production targets -- while costing 1.29x per iteration AND ~55 s of
-    # assembly (3 n_z exact bulk CG solves) that block-diagonal skips entirely.
-    block_diagonal: bool = eqx.field(static=True, default=False)
 
 
 _EXTRACTION_OPERATOR_NAMES = (
@@ -2929,40 +2885,6 @@ def assemble_schur_jacobi_preconditioner(
                 mode=schur_diag_mode,
             )
     return operators
-
-
-def _normalize_recursive_scalar_leaf_spec(spec: MassPreconditionerSpec):
-    if spec.kind == 'none':
-        if spec.smoother is None:
-            return MassPreconditionerSpec(kind='none')
-        return _normalize_recursive_scalar_leaf_spec(spec.smoother)
-
-    smoother_spec = spec.smoother
-    if smoother_spec is not None:
-        smoother_spec = _normalize_recursive_scalar_leaf_spec(smoother_spec)
-    return MassPreconditionerSpec(
-        kind=spec.kind,
-        smoother=smoother_spec,
-    )
-
-
-def _build_nested_iterative_preconditioner_apply(
-        operator_apply, smoother_apply, size: int, *,
-    spec: MassPreconditionerSpec, seed: int,
-    orthogonal_vectors=None):
-    del seed, orthogonal_vectors
-    if spec.kind == 'jacobi':
-        diagonal = _diagonal_from_matvec(
-            lambda x: smoother_apply(operator_apply(x)),
-            size,
-        )
-        diaginv = _invert_diagonal(diagonal)
-        return lambda rhs, inv=diaginv: inv * smoother_apply(rhs)
-    raise ValueError(
-        "nested iterative smoothers only support kind='jacobi' "
-        "(richardson/chebyshev removed 2026-08-14, see mrx/experimental/chebyshev.py); "
-        f"got {spec.kind!r}"
-    )
 
 
 def _coerce_mass_preconditioner_spec(preconditioner):

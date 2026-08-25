@@ -12,7 +12,6 @@ import jax.numpy as jnp
 import numpy as np
 
 import mrx
-from mrx.extraction_operators import MatrixFreeExtraction
 
 
 class BoundaryConditionPair(eqx.Module):
@@ -35,14 +34,6 @@ class ExtractedMassApplyData(eqx.Module):
     extraction: object
     extraction_t: object
     size: int = eqx.field(static=True)
-
-
-class RestrictedExtractedMassApplyData(eqx.Module):
-    mass_apply: object
-    row_extraction: object
-    col_extraction_t: object
-    output_size: int = eqx.field(static=True)
-    input_size: int = eqx.field(static=True)
 
 
 class TensorDiagonalBlockInverseFactors(eqx.Module):
@@ -298,21 +289,6 @@ def set_mass_jacobi_pair(preconds: Optional[MassPreconditioners], k: int, pair: 
 
 
 
-def set_mass_tensor(preconds: Optional[MassPreconditioners], data: TensorMassPreconditioner):
-    if preconds is None:
-        preconds = MassPreconditioners()
-    return eqx.tree_at(
-        lambda payload: payload.tensor,
-        preconds,
-        data,
-        is_leaf=lambda x: x is None,
-    )
-
-
-
-
-
-
 def _extracted_mass_diagonal(e, d_raw, mass_apply, *, batch_size: int = 16):
     """``diag(E M E^T)`` from the raw diagonal, probing only the coupled rows.
 
@@ -434,27 +410,6 @@ def _normalize_cp_term_signs(
     return scale, factor_theta, factor_r, factor_z
 
 
-def _apply_tensor_diagonal_block_forward(
-    factors: TensorDiagonalBlockInverseFactors,
-    x: jnp.ndarray,
-) -> jnp.ndarray:
-    if factors.greville_inv_sqrt_D is not None:
-        raise NotImplementedError(
-            "Greville mass block has no forward-model apply (D^{1/2} M0 D^{1/2}); "
-            "only the inverse sandwich is implemented. The forward model is off the "
-            "solve path; wire it before enabling Chebyshev-on-greville."
-        )
-    nr, nt, nz = factors.shape
-    field = jnp.asarray(x).reshape(nr, nt, nz)
-    result = jnp.zeros_like(field)
-    for mass_r, mass_t, mass_z in zip(factors.term_r, factors.term_t, factors.term_z):
-        term = jnp.einsum("ij,jkl->ikl", mass_r, field)
-        term = jnp.einsum("ij,kjl->kil", mass_t, term)
-        term = jnp.einsum("ij,klj->kli", mass_z, term)
-        result = result + term
-    return result.reshape(-1)
-
-
 def _apply_tensor_diagonal_block_preconditioner(
     factors: TensorDiagonalBlockInverseFactors,
     rhs: jnp.ndarray,
@@ -547,51 +502,6 @@ def _apply_tensor_diagonal_block(
 
 
 
-def _extraction_operator(seq, k: int, dirichlet: bool):
-    return getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
-
-
-def _extraction_operator_transpose(seq, k: int, dirichlet: bool):
-    return getattr(seq, f"e{k}_dbc_T" if dirichlet else f"e{k}_T")
-
-
-def _extracted_size(seq, k: int, dirichlet: bool) -> int:
-    return int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
-
-
-def _build_extracted_mass_apply_data(seq, mass_apply, k: int, dirichlet: bool) -> ExtractedMassApplyData:
-    return ExtractedMassApplyData(
-        mass_apply=mass_apply,
-        extraction=_extraction_operator(seq, k, dirichlet),
-        extraction_t=_extraction_operator_transpose(seq, k, dirichlet),
-        size=_extracted_size(seq, k, dirichlet),
-    )
-
-
-def _restrict_sparse_rows(matrix, row_indices: jnp.ndarray):
-    return matrix.restrict_rows(row_indices)
-
-
-def _restrict_sparse_cols(matrix, col_indices: jnp.ndarray):
-    return matrix.restrict_cols(col_indices)
-
-
-def _build_restricted_extracted_mass_apply_data(
-    data: ExtractedMassApplyData,
-    row_indices: jnp.ndarray,
-    col_indices: jnp.ndarray,
-) -> RestrictedExtractedMassApplyData:
-    row_indices = jnp.asarray(row_indices, dtype=jnp.int32)
-    col_indices = jnp.asarray(col_indices, dtype=jnp.int32)
-    return RestrictedExtractedMassApplyData(
-        mass_apply=data.mass_apply,
-        row_extraction=_restrict_sparse_rows(data.extraction, row_indices),
-        col_extraction_t=_restrict_sparse_cols(data.extraction_t, col_indices),
-        output_size=int(row_indices.shape[0]),
-        input_size=int(col_indices.shape[0]),
-    )
-
-
 def _apply_extracted_mass_operator(extraction, extraction_t, mass_apply, x: jnp.ndarray) -> jnp.ndarray:
     raw = extraction_t @ x
     return jnp.asarray(extraction @ mass_apply(raw))
@@ -599,11 +509,6 @@ def _apply_extracted_mass_operator(extraction, extraction_t, mass_apply, x: jnp.
 
 def _apply_extracted_mass_operator_data(data: ExtractedMassApplyData, x: jnp.ndarray) -> jnp.ndarray:
     return _apply_extracted_mass_operator(data.extraction, data.extraction_t, data.mass_apply, x)
-
-
-def _apply_restricted_extracted_mass_operator_data(data: RestrictedExtractedMassApplyData, x: jnp.ndarray) -> jnp.ndarray:
-    raw = data.col_extraction_t @ x
-    return jnp.asarray(data.row_extraction @ data.mass_apply(raw))
 
 
 def _apply_extracted_submatrix(data: ExtractedMassApplyData, row_indices: jnp.ndarray, col_indices: jnp.ndarray, x: jnp.ndarray) -> jnp.ndarray:
@@ -673,27 +578,6 @@ def _symmetric_pseudoinverse(matrix: jnp.ndarray, *, relative_tol: float = 1e-8)
 
 
 
-
-
-
-
-def _extract_selected_columns(
-    seq, mass_apply, k: int, dirichlet: bool, column_indices: jnp.ndarray,
-    *, sequential: bool = False,
-) -> jnp.ndarray:
-    extraction = _extraction_operator(seq, k, dirichlet)
-    extraction_t = _extraction_operator_transpose(seq, k, dirichlet)
-    size = _extracted_size(seq, k, dirichlet)
-    basis = jax.nn.one_hot(jnp.asarray(column_indices), size, dtype=jnp.float64).T
-    apply_col = lambda col: _apply_extracted_mass_operator(extraction, extraction_t, mass_apply, col)
-    if sequential:
-        # ``mass_apply`` may be a matrix-free element operator whose per-call
-        # transient is a dense O(ne*q^3) tensor. ``jax.vmap`` would batch that
-        # transient by the number of probed columns and blow up memory, so we
-        # probe one column at a time with ``jax.lax.map`` instead.
-        cols = jax.lax.map(apply_col, basis.T)
-        return cols.T
-    return jax.vmap(apply_col, in_axes=1, out_axes=1)(basis)
 
 
 
@@ -899,16 +783,8 @@ def _extraction_gram_inverse(e):
     return jnp.asarray(coupled), jnp.asarray(np.linalg.inv(gram)), cross
 
 
-def _metric_lumping_block_apply(inv3, X):
-    """Apply ``(M_r^{-1} x M_t^{-1} x M_z^{-1})`` to a ``(Sx,Sy,Sz)`` block."""
-    X = jnp.tensordot(inv3[0], X, axes=([1], [0]))
-    X = jnp.tensordot(inv3[1], X, axes=([1], [1])).transpose(1, 0, 2)
-    X = jnp.tensordot(inv3[2], X, axes=([1], [2])).transpose(1, 2, 0)
-    return X
-
-
 def build_mass_metric_lumping_factors(seq, k: int, *, dirichlet: bool, d_raw=None):
-    """Build the raw_kron mass preconditioner factors for ``M_k``.
+    """Build the separable Kronecker mass factors for ``M_k``.
 
     The space is never split. A per-component diagonally-scaled Kronecker
     inverse acts on the full raw grid, and the pseudoinverse

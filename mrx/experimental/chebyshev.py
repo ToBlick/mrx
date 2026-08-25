@@ -19,35 +19,6 @@ from typing import Optional
 import jax
 import jax.numpy as jnp
 
-def _estimate_preconditioned_max_eigenvalue_apply(
-        operator_apply, smoother_apply, size: int, *,
-        n_iter: int = 10, seed: int = 0):
-    """Estimate the largest Rayleigh quotient of ``S A`` via power iteration."""
-    vector = jax.random.normal(
-        jax.random.PRNGKey(seed), (size,), dtype=jnp.float64)
-
-    def operator_norm(x):
-        ax = operator_apply(x)
-        return jnp.sqrt(jnp.abs(jnp.vdot(x, ax).real))
-
-    init_norm = operator_norm(vector)
-    vector = vector / jnp.where(init_norm > 0, init_norm, 1.0)
-
-    def body(_, state):
-        current, _ = state
-        image = smoother_apply(operator_apply(current))
-        image_norm = operator_norm(image)
-        safe_norm = jnp.where(image_norm > 0, image_norm, 1.0)
-        updated = image / safe_norm
-        rayleigh = jnp.real(
-            jnp.vdot(updated, operator_apply(smoother_apply(operator_apply(updated)))))
-        return updated, rayleigh
-
-    _, rayleigh = jax.lax.fori_loop(
-        0, n_iter, body, (vector, jnp.asarray(0.0, dtype=jnp.float64)))
-    return jnp.maximum(rayleigh, jnp.asarray(0.0, dtype=jnp.float64))
-
-
 def _project_out_vectors(vector, orthogonal_vectors=None):
     if orthogonal_vectors is None or orthogonal_vectors.shape[0] == 0:
         return vector
@@ -156,40 +127,6 @@ def _estimate_chebyshev_lanczos_bounds_apply(
         floor,
     )
     return min_eig, max_eig
-
-
-def _estimate_richardson_omega_apply(
-    operator_apply,
-    smoother_apply,
-    size: int,
-    *,
-    lanczos_iterations: int,
-    lanczos_max_eig_inflation: float,
-    lanczos_min_eig_deflation: float,
-    lanczos_min_eig_floor_fraction: float,
-    seed: int = 0,
-) -> float:
-    """Auto-tune the Richardson relaxation parameter via Lanczos.
-
-    Estimates the spectral bounds of the preconditioned operator
-    ``S A`` (where ``A = operator_apply`` and ``S = smoother_apply``) and
-    returns the optimal Richardson weight ``omega = 2 / (lambda_min + lambda_max)``
-    for SPD systems. ``S`` and ``A`` are both required to be SPD so that
-    ``S A`` has positive real eigenvalues.
-    """
-    lambda_min, lambda_max = _estimate_chebyshev_lanczos_bounds_apply(
-        operator_apply,
-        smoother_apply,
-        size,
-        lanczos_iterations=lanczos_iterations,
-        lanczos_max_eig_inflation=lanczos_max_eig_inflation,
-        lanczos_min_eig_deflation=lanczos_min_eig_deflation,
-        lanczos_min_eig_floor_fraction=lanczos_min_eig_floor_fraction,
-        seed=seed,
-    )
-    denom = jnp.maximum(lambda_min + lambda_max,
-                        jnp.asarray(jnp.finfo(jnp.float64).tiny, dtype=jnp.float64))
-    return float(2.0 / denom)
 
 
 def _build_chebyshev_apply_preconditioner(
