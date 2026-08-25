@@ -3464,16 +3464,16 @@ def assemble_block_jacobi_laplacian_preconditioner(
     ``kwargs`` go to :class:`BlockJacobiLaplacian`. The defaults are already the
     production configuration -- pass nothing.
 
-    NEEDS A GRID IT CAN FIT ON. ``component_factors`` forms ``A^-1 M`` per axis
+    NEEDS ``n >= p + 2``. ``component_factors`` forms ``A^-1 M`` per axis
     (``A`` a 1-D mass weighted by the stiffness profile) and takes its mean
-    eigenvalue as a scale. At ``n = 4`` with ``p = 3`` -- four radial DOFs for a
-    cubic basis -- that solve goes non-finite and numpy raises
-    ``LinAlgError: Array must not contain infs or NaNs`` from inside
-    ``eigvals``, which is an unhelpful place to learn it. The retired tensor
-    path tolerated such grids, so nothing noticed until the Poisson convergence
-    study was repointed here on 2026-08-25 and died on its own coarsest mesh.
-    Start convergence studies at ``n >= 6``; see
-    ``scripts/debug/atom_coarse_grid.py`` for where the floor actually sits.
+    eigenvalue as a scale; below that the solve goes non-finite and numpy
+    raises ``LinAlgError: Array must not contain infs or NaNs`` from inside
+    ``eigvals``. ``n - p`` is the number of radial elements, so ``n = 4`` at
+    ``p = 3`` is a ONE-element radial mesh. Measured on a toroid
+    (``scripts/debug/atom_coarse_grid.py``): at ``p = 3``, ``n = 4`` fails for
+    k = 0, 1, 2 in both BCs and ``n = 5, 6, 8, 12`` all build; k = 3 builds even
+    at ``n = 4``. The geometry is healthy throughout, so this is the 1-D
+    factorisation, not the map.
 
     Returns ``operators`` unchanged, for symmetry with the other assemble_*
     helpers.
