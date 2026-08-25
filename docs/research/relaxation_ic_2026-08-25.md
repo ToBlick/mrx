@@ -404,8 +404,52 @@ both `dirichlet=True` (`n2_dbc < basis_2.n`) and `polar=True`, and this IC is
 both. `interpolate` gained `frame='ref'` for k=1,2 (the counterpart `load`
 already had) in anticipation, but it sits behind that guard. The scripts
 therefore use `load` + `M_2^{-1}` and MEASURE what the metric coupling costs
-(the `B^rho` gate) rather than assuming it away. Lifting the guard for
-selection-type extractions is the follow-up if that number is large.
+(the `B^rho` gate) rather than assuming it away.
+
+### 10.1 Unlocking it is cheaper than it first looked
+
+The literature route is exactly "histopolate on the FULL tensor-product space,
+then restrict with one coefficient apply" —
+[arXiv:2505.15996](https://arxiv.org/html/2505.15996v1) (Güçlü & Campos Pinto),
+which defines
+
+```
+Pi_Z = P_Z . Pi_W
+```
+
+with `Pi_W` the tensor-product geometric projector and `P_Z` a **local,
+explicit, matrix-free** conforming projection acting on coefficients.
+Idempotency comes from the coefficient rules being self-consistent, NOT from a
+biorthogonality condition: for the C^0 sequence (Thm 3.8) `P_Z` averages the
+pole coefficients (`phibar_0j = (1/n_theta) sum_k phi_0k`), zeroes the `i=0`
+circumferential coefficients, and sets the `i=1` ones to finite differences
+(`vbar^theta_1j = v^s_0(j+1) - v^s_0j`); the near-axis parameters come from
+angular DFTs (`gamma_1 = (2/n_theta) sum_j phi_1j cos theta_j`, likewise sin).
+
+**`_histopolate_2form` already implements this shape** — it computes the full
+tensor coefficients and returns `e @ concat(c0, c1, c2)`. Only the guard stops
+it running. So the cost is:
+
+| case | work |
+| --- | --- |
+| `E^T E` idempotent (MRX's `e` IS the conforming projection) | delete one guard call + a test — hours |
+| not idempotent | port the paper's explicit local `P_Z` — ~a day, formulas given |
+
+`scripts/debug/extraction_unitarity_probe.py` measures exactly the paper's
+criterion (`\|\|P^2 - P\|\|` for `P = E^T E`, plus `\|\|E E^T - I\|\|` and the row
+structure) across k=1,2,3, free and dbc, polar and non-polar. **Job 16762711,
+queued.**
+
+Two things already known: `BoundaryOperator._element` returns 0/1 with exactly
+one nonzero per row, so the NON-polar DBC extraction is a pure SELECTION and
+`e @ c_full` is trivially correct there — the guard is simply too strict for
+that case. And the C^0 formulas above do not transfer verbatim: MRX runs C^1
+polar (`xi` shape `(3, 2, n_theta)`), so the coefficient rules differ.
+
+Note the priority: §7.1 measured `B^rho` at **1.1e-16 in the bulk** on the
+cylinder through the L2 route, so this may be unnecessary. `lic_gvec` (hegna,
+real theta-zeta coupling) is the arm that decides whether it is worth doing at
+all.
 
 ## 11. Data note
 
@@ -424,5 +468,10 @@ target in the set.
   https://github.com/jonathanschilling/educational_VMEC/blob/master/vmec_info.md
 - Landreman & Sengupta, near-axis expansion at arbitrary order:
   https://arxiv.org/pdf/1911.02659
+- Guclu & Campos Pinto, broken-FEEC on polar domains with tensor-product
+  splines (the Pi_Z = P_Z . Pi_W construction; use the HTML render, the PDF
+  extract mangles the equations): https://arxiv.org/html/2505.15996v1
+- Toshniwal, Speleers, Hiemstra & Hughes, multi-degree C^k smooth polar
+  splines, CMAME 316 (2017) 1005-1061 -- the extraction operator itself.
 - Hirshman, Transformation from VMEC to Boozer Coordinates:
   https://princetonuniversity.github.io/STELLOPT/docs/Transformation%20from%20VMEC%20to%20Boozer%20Coordinates.pdf
