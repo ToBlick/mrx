@@ -6,6 +6,8 @@
 # otherwise "small dt keeps its surfaces" is confounded with "small dt barely
 # moved", which is exactly the confound that made me over-read W1.
 set -u
+# RUN FROM THE REPO ROOT: the paths below (slurm/job_relax_prelim.sh)
+# are relative to it, not to this file's directory.
 G="--geometry w7x-ini-clebsch --ic clebsch --ns 8,16,8 --p 3"
 PC="--poincare --pc-seeds 40 --pc-periods 150"
 O=/scratch/tblickhan/mrx/out/relax_prelim

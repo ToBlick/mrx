@@ -2,6 +2,8 @@
 # Second batch.  The first covered W1's own axes; this one covers the
 # COMBINATIONS that matter and the one control the chaotic case still lacks.
 set -u
+# RUN FROM THE REPO ROOT: the paths below (slurm/job_relax_prelim.sh)
+# are relative to it, not to this file's directory.
 PC="--poincare --pc-seeds 40 --pc-periods 150"
 O=/scratch/tblickhan/mrx/out/relax_prelim
 S=slurm/job_relax_prelim.sh
