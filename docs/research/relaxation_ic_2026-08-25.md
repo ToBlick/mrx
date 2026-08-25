@@ -769,7 +769,84 @@ Corollary observed here: a scalar summary of a field that varies over the domain
 is almost never the right diagnostic for a question about WHERE something
 happens. Report the profile.
 
-## 13. Sources
+## 13. State, and what is available to redistribute
+
+Written 2026-08-25 at wind-down. Everything below is committed on
+`greville-prod`; the tree is clean.
+
+### 13.1 Settled — do not re-derive
+
+| result | where | status |
+| --- | --- | --- |
+| Our reference 2-form components ARE GVEC's `sqrt(g) B^i` | §1, §5 | verified against hegna's own B, no free factor |
+| Unit conversions into MRX coords (`1/nfp` on iota, `/2pi` on lambda) | §5.1 | measured; without `1/nfp` iota is nfp times too large |
+| Store `LA`, not its derivatives | §5.3 | the mixed-partial identity survives only from one interpolant |
+| Helicity closed form, metric-free, zero at constant iota | §3 | 1e-13 vs quadrature; `+0.000000e+00` on the real solve path |
+| lambda changes energy/force but never fluxes, iota or helicity | §2 | derived; the invariance arms were never run (see 13.3) |
+| The screw pinch is an exact analytic equilibrium family | §6.2, §7.3 | p to <0.5% with nothing fitted, force ~1e-12 |
+| The lambda equation is elliptic and decouples per surface | §9 | 1.30e-08 vs the closed form |
+| lambda solves to ~5% of GVEC's own, data-free, ~1.5% of setup | §9.1 | median corr +0.9984 / +0.9992 |
+| The edge residual is MODEL error, not truncation | §9.1 | 2.8x coefficients moved it 0.2% |
+| **The L2 leak criterion: `g_rho-chi = g_rho-zeta = 0`** | §8.2 | predicts magnitude AND radial growth, no free parameter |
+| Histopolation is immune to that leak BY CONSTRUCTION | §8.2 | component-wise face integrals; structural, not numerical |
+
+### 13.2 Decided against — do not restart
+
+* **FEEC on 2-D `r = const` surfaces for the lambda equation** (§9.1). The
+  basis is already converged; the residual is the frozen surfaces. A spline
+  space reproduces the same numbers. The cost argument fails too.
+* **Per-geometry calibration of the boundary scale** -- see
+  `s_scale_2026-08-25.md`, unrelated thread but same conclusion shape.
+
+### 13.3 In flight at wind-down, unfinished
+
+* **`histo_tests3` (16765707)** decides whether commit `1cf9cbd` is correct.
+  That commit is marked UNVERIFIED. The two assertions that matter are
+  `test_interpolation_reproduces_its_own_space` (the paper's projector
+  property) and `test_phys_pullback_inverts_pushforward` (the convention fix).
+  `histo_tests2` (16765013) is SUPERSEDED -- it runs the pre-fix pullbacks.
+* **The lambda invariance arms were never run.** `slurm/job_logical_ic.sh`
+  defines `toroid_lam` / `w7x_lam` / `w7x_noshear` and the `--no-lambda` pair
+  for the GVEC route; none executed. They are the falsifiable test of §2:
+  turning lambda on must leave H and the iota column EXACTLY where they were
+  while moving force, energy and the Pfirsch-Schlueter spread.
+* **`aic_tor_vac2` (16764594)** -- the corrected `--flux vacuum` arm. Landed
+  but not read.
+
+### 13.4 Known-broken, cheap to fix
+
+* `gvec_clebsch_ic.py` iota table divides by the wrong reference: `iota_ours`
+  carries `1/nfp` and `iota_file` does not, so the ratio is `1/nfp` by
+  construction. The real signal is the drift, `0.3342 -> 0.3304`, ~1%.
+* The GVEC pressure comparison is inconclusive while `B^rho` leaks 6.8e-03.
+  Re-run it only after histopolation lands (§13.3).
+* `analytic_ic_verify.py` compares `dp/drho` against the exact derivative while
+  computing the measured one with `np.gradient`; the artefact alone is 1.60e-02.
+  Apply the same finite difference to both sides. Also guard the `p == 0`
+  denominator, which prints `inf` on `sp_zero`.
+* `logical_profile_ic.py` normalises both bands by a GLOBAL `max|B^zeta|`,
+  which flatters the axis by ~7x. Use the per-surface profile that
+  `gvec_clebsch_ic.py` now has.
+
+### 13.5 Open questions, no work started
+
+1. **The toroid's 4.6e-09 leak with an exactly diagonal metric** (§8.2). Six
+   orders below hegna, unexplained. Polar extraction? Conditioning?
+2. **Does histopolation actually fix the hegna leak?** The argument is
+   structural (§8.2) but unmeasured. Rebuild the GVEC IC through
+   `interpolate(frame='ref')` once `1cf9cbd` is verified and compare `B^rho`
+   against 6.8e-03.
+3. **`data/w7x_ini_mrx.h5` has no `clebsch/` group** (§11) -- 5.8% beta W7-X,
+   the only real finite-beta target besides hegna. Re-exporting it with
+   `dPhi_dr / dchi_dr / LA` would unlock it.
+4. **Feed the true `iota(rho)` profile to the lambda solve.** §9.1 used a
+   constant 0.17 against an actual 0.150-0.237 and still hit corr 0.99;
+   the profile should only improve it.
+5. **The `frame='phys'` convention for `interpolate` at k=3** is unresolved --
+   its histopolation carries no Jacobian factor, so `frame='ref'` is rejected
+   there rather than defined (§10).
+
+## 14. Sources
 
 - booz_xform theory (VMEC angles, lambda and nu):
   https://hiddensymmetries.github.io/booz_xform/theory.html
