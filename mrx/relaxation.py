@@ -201,18 +201,6 @@ class TimeStepper(eqx.Module):
         Number of stored pairs for CG / L-BFGS.
     dirichlet_H : bool
         Dirichlet BC on H.
-    lbfgs_pairing : str
-        Which (s, y) pair the L-BFGS two-loop recursion is fed.  See
-        ``_relaxation_step``; ``'velocity'`` is the only self-consistent one.
-
-        - ``'velocity'`` : ``s_k = dt_k u_k``, ``y_k = F_k - F_{k+1}``, aligned.
-        - ``'paired'``   : ``s_k = B_{k+1} - B_k``, ``y_k`` aligned.
-        - ``'legacy'``   : ``s_k = B_{k+1} - B_k`` with ``y`` lagging one step.
-    cg_beta : str
-        Which vector plays the previous GRADIENT in the Polak-Ribiere formula.
-
-        - ``'gradient'`` : ``F_prev``, i.e. the previous gradient (correct).
-        - ``'legacy'``   : ``v``, i.e. the previous search DIRECTION.
     """
     seq: DeRhamSequence
     gamma: int = 0
@@ -227,17 +215,11 @@ class TimeStepper(eqx.Module):
     stochastic: bool = False
     history_size: int = 1
     dirichlet_H: bool = False
-    lbfgs_pairing: str = "velocity"
-    cg_beta: str = "gradient"
 
     def __post_init__(self):
         if self.descent_method in (DescentMethod.CONJUGATE_GRADIENT, DescentMethod.LBFGS) and self.history_size < 1:
             raise ValueError(
                 "history_size must be at least 1 when using CG or L-BFGS.")
-        if self.lbfgs_pairing not in ("velocity", "paired", "legacy"):
-            raise ValueError(f"Unknown lbfgs_pairing: {self.lbfgs_pairing}")
-        if self.cg_beta not in ("gradient", "legacy"):
-            raise ValueError(f"Unknown cg_beta: {self.cg_beta}")
 
     def _lbfgs_direction(self, F: jnp.ndarray, s: jnp.ndarray,
                          y: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -251,8 +233,9 @@ class TimeStepper(eqx.Module):
         NOTE that ``grad_M E = -F`` is a derivative with respect to the
         VELOCITY u, not with respect to B: the admissible variation is
         ``dB = curl(u x H)``, and ``dE[dB] = -(F, u)_M``.  So both members of
-        an L-BFGS pair have to live in velocity space, which is what
-        ``lbfgs_pairing='velocity'`` arranges; see ``_relaxation_step``.
+        an L-BFGS pair have to live in velocity space; see
+        ``_relaxation_step`` for how that is arranged and what happens when
+        it is not.
 
         Parameters
         ----------
@@ -282,11 +265,29 @@ class TimeStepper(eqx.Module):
             alpha = alpha.at[i].set(alpha_i)
             q = q - alpha_i * y[i]
 
-        # initial Hessian scaling: gamma = (s_0^T M y_0) / (y_0^T M y_0)
+        # Initial Hessian scaling: gamma = (s_0^T M y_0) / (y_0^T M y_0).
+        #
+        # The branch is on `sy > 0`, i.e. on whether a USABLE curvature pair
+        # exists at all, and NOT on `yy > 1e-30`.  On the first step the
+        # history is zero, so sy = 0 exactly and the recursion must fall back
+        # to steepest descent (gamma = 1, r = q = F).  Keying on yy instead
+        # gets that wrong: y_0 = F_prev - F is not exactly zero even on the
+        # first step, because F_prev comes from a separate compute_force call
+        # whose warm-started solves land at tolerance rather than bit-identity
+        # (yy ~ 1e-24).  The yy branch is then not taken, gamma = 0/yy = 0,
+        # the direction is exactly zero, dB is exactly zero, and the
+        # linesearch dt = (F,u)/||dB||^2 is 0/0 = NaN on step one.  Measured.
+        #
+        # There is deliberately NO `maximum(gamma, 1e-30)` floor.  Flooring
+        # does not repair negative curvature: it silently annihilates q, i.e.
+        # the gradient's entire contribution to the direction, leaving only
+        # the stored-s combination from the second loop.  That is how this
+        # failed for months -- the returned "descent direction" came out
+        # orthogonal to F, ||dB|| collapsed to solver noise, and dt exploded
+        # to compensate.  sy is returned so the caller records it instead.
         sy = s[0] @ apply_M(y[0])
         yy = y[0] @ apply_M(y[0])
-        gamma = jnp.where(yy > 1e-30, sy / yy, 1.0)
-        gamma = jnp.maximum(gamma, 1e-30)
+        gamma = jnp.where(sy > 0, sy / jnp.where(yy > 0, yy, 1.0), 1.0)
         r = gamma * q
 
         # second loop: oldest (i=m-1) to newest (i=0)
@@ -347,24 +348,23 @@ class TimeStepper(eqx.Module):
         # --- history bookkeeping, part 1: push y BEFORE the direction -------
         # y_{k-1} = grad_M E_k - grad_M E_{k-1} = F_prev - F is a difference
         # over the step that ALREADY happened, so it pairs with s_{k-1}, which
-        # the end of the previous step put in s_history[0].  Pushing it here,
+        # the end of the previous step put in s_history[0].  Pushing it HERE,
         # rather than next to the brand-new s_k at the end of this step, is
-        # what keeps (s_i, y_i) aligned.  'legacy' skips this and pushes y at
-        # the end alongside s, which leaves y lagging s by exactly one step.
+        # what keeps (s_i, y_i) aligned.  Pushing it at the end instead leaves
+        # y lagging its paired s by exactly one step.
         y_new = state.F_prev - F
-        s_hist, y_hist = state.s_history, state.y_history
-        if self.lbfgs_pairing != "legacy":
-            y_hist = jnp.roll(y_hist, 1, axis=0).at[0].set(y_new)
+        s_hist = state.s_history
+        y_hist = jnp.roll(state.y_history, 1, axis=0).at[0].set(y_new)
 
         sy = jnp.array(0.0)
         if self.descent_method == DescentMethod.LBFGS:
             u, sy = self._lbfgs_direction(F, s_hist, y_hist)
         elif self.descent_method == DescentMethod.CONJUGATE_GRADIENT:
             u = F
-            # Polak-Ribiere. The previous GRADIENT is -F_prev; 'legacy' puts
-            # the previous search DIRECTION v there instead, which is only the
-            # same vector on the first step (where beta is 0 anyway).
-            g_prev = state.v if self.cg_beta == "legacy" else state.F_prev
+            # Polak-Ribiere.  The previous GRADIENT is -F_prev, which is why
+            # F_prev and not the previous search DIRECTION v belongs here;
+            # the two coincide only on the first step, where beta is 0 anyway.
+            g_prev = state.F_prev
             g_prev_norm_sq = self.seq.l2_norm_sq(g_prev, 2)
             beta = jnp.where(
                 g_prev_norm_sq > 0,
@@ -404,19 +404,15 @@ class TimeStepper(eqx.Module):
         # --- history bookkeeping, part 2: push the step just taken ----------
         # The descent variable is the VELOCITY u, not B: grad_M E = -F is the
         # derivative of E with respect to u (dE = -(F, u)_M), and the direction
-        # the recursion returns is consumed as a velocity.  The step in that
-        # variable is dt*u.  B moves by dt*curl(u x H) instead, which is a
-        # different vector in a different space -- 'paired'/'legacy' store that
-        # one, so their s and their y are secants of different maps.
-        if self.lbfgs_pairing == "velocity":
-            s_new = dt * u
-        else:
-            s_new = B_nplus1 - state.B_n
+        # the recursion returns is consumed as a velocity.  So the step in the
+        # descent variable is dt*u.  B moves by dt*curl(u x H) instead, which
+        # is a different vector in a different space; storing THAT as s pairs
+        # it with a y that is a secant of a different map entirely, and the
+        # curvature <s, y>_M goes negative on a third to a half of all steps.
+        # See docs/research/handoff_2026-08-25_relaxation_prelim.md.
+        s_new = dt * u
         s_history = jnp.roll(s_hist, 1, axis=0).at[0].set(s_new)
-        if self.lbfgs_pairing == "legacy":
-            y_history = jnp.roll(y_hist, 1, axis=0).at[0].set(y_new)
-        else:
-            y_history = y_hist
+        y_history = y_hist
 
         return eqx.tree_at(
             lambda s: (s.B_nplus1, s.v, s.p, s.p_v, s.H, s.JxH, s.E,

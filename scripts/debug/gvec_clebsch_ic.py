@@ -215,16 +215,34 @@ def load_clebsch(path, seq):
         np.abs(dchi / dPhi - (prof_dchi / prof_dPhi)[:, None, None])
         [nr // 4:3 * nr // 4]))
 
-    # Drop the duplicated endpoint on every periodic axis before fitting.
+    # Drop the duplicated endpoint on every periodic axis before fitting --
+    # but ONLY where there actually is one.
+    #
+    # The files disagree, and getting this wrong is silent.  hegna samples the
+    # angles CLOSED on [0, 1] with the endpoint duplicating the start, so the
+    # last point must go or a periodic spline with n_basis = n_data is
+    # singular.  The finite-beta W7-X exports sample HALF-OPEN (0 .. 0.98,
+    # step 0.02) like the quasr files, where dropping the last point throws
+    # away real data AND mis-registers the grid at the wrap.  So DECIDE it
+    # from the data: a genuine duplicate agrees to round-off (~1e-16),
+    # whereas the half-open files differ by ~7e-02 here.  Same reasoning, and
+    # the same 1e-8 cut, as `_periodic_axis` in gvec_geometry.py.
     fit_axes, LA_fit = list(axes), LA
     for a, kind in enumerate(seq.basis_0.types):
-        if kind == 'periodic':
-            dup = float(np.abs(np.take(LA_fit, 0, axis=a)
-                               - np.take(LA_fit, -1, axis=a)).max())
+        if kind != 'periodic':
+            continue
+        gap = float(np.abs(np.take(LA_fit, 0, axis=a)
+                           - np.take(LA_fit, -1, axis=a)).max())
+        span = float(np.abs(LA_fit).max()) or 1.0
+        if gap <= 1e-8 * span:
             fit_axes[a] = fit_axes[a][:-1]
             LA_fit = np.take(LA_fit, np.arange(len(fit_axes[a])), axis=a)
-            print(f"[data] axis {a} periodic: dropped duplicate endpoint "
-                  f"(|LA(0) - LA(1)| max = {dup:.2e})")
+            print(f"[data] axis {a} periodic, CLOSED sample: dropped the "
+                  f"duplicate endpoint (|LA(0) - LA(1)| max = {gap:.2e})")
+        else:
+            print(f"[data] axis {a} periodic, HALF-OPEN sample: kept all "
+                  f"{len(fit_axes[a])} points (|LA(0) - LA(1)| max = "
+                  f"{gap:.2e}, not a duplicate)")
     lam_h = fit_scalar_spline(fit_axes, LA_fit, seq)
 
     return dict(nfp=nfp, rho=axes[0], dPhi=prof_dPhi, dchi=prof_dchi,

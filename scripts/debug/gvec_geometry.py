@@ -71,6 +71,14 @@ GVEC_GEOMETRIES = {
     #   -- the data has the axis at rho[0] (mean theta-extent 3.4e-3 there
     #   against 1.8 at rho=1), so no radial reversal is applied.
     "hegna": "data/gvec_nfp3_hegna_80cubed_clebsch.h5",   # nfp=3, 80^3
+    #: FINITE-BETA W7-X exports carrying the clebsch/* ingredients, nfp=5,
+    #: 50^3.  Unlike hegna these sample the angles HALF-OPEN (0 .. 0.98, step
+    #: 0.02), the quasr convention -- see load_clebsch in gvec_clebsch_ic.py,
+    #: which must detect that rather than assume the closed one.  Both carry
+    #: `axis_radial_index = 49`, which is wrong in the same way w7x-ini's is:
+    #: eval_points rho runs 0.002041 -> 1.0, so the axis is at rho[0].
+    "w7x-ini-clebsch": "data/w7x_ini_00000000_clebsch_mrx.h5",   # beta_mean 5.8%
+    "w7x-fmm002": "data/w7x_fmm002_clebsch_mrx.h5",              # beta_mean 1.8%
     #: The 8^3-ish quasr44970 baseline and its two interior perturbations.  All
     #: three share one 8x16x8 grid, so they are directly differenceable.
     "quasr44970-c": "data/quasr0044970_gvec_nr8_nt16_nz8.h5",     # nfp=3

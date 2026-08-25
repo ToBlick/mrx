@@ -49,11 +49,14 @@ TWO CONSEQUENCES, one of which is a trap
 WHAT THE ARMS ARE
 -----------------
   gradient          u = F.
-  cg / cg-legacy    Polak-Ribiere with the previous GRADIENT / the previous
-                    DIRECTION in the beta formula (``cg_beta``).
-  lbfgs-legacy      s = B_{k+1} - B_k, y lagging one step  (the shipped code).
-  lbfgs-paired      s = B_{k+1} - B_k, y aligned.          (isolates the lag)
-  lbfgs             s = dt u_k, y aligned.                 (isolates the space)
+  cg                Polak-Ribiere, previous GRADIENT in the beta formula.
+  lbfgs             two-loop recursion, s = dt u_k and y aligned with it.
+
+The three broken variants that produced the L-BFGS diagnosis (B-increment s;
+y lagging one step; the previous DIRECTION in CG's beta) were deliberately
+DELETED once they had done their job rather than left behind as knobs -- see
+the handoff.  Commit ecfa3ef is the one that still carries them if the
+factorial ever needs re-running.
 
 The IC is the logical-profile one, B_hat = (0, Phi'(iota - lam_z),
 Phi'(1 + lam_c)), built exactly as ``logical_profile_ic.py`` builds it and
@@ -61,7 +64,7 @@ imported from there rather than copied.  The GEOMETRY is loaded from an HDF5
 file through ``build_sequence``.
 
     python scripts/debug/relax_prelim.py --geometry quasr44970 --ns 8,16,8 \
-        --arms gradient,cg,lbfgs-legacy,lbfgs --steps 200
+        --arms gradient,cg,lbfgs --steps 250
 """
 from __future__ import annotations
 
@@ -72,6 +75,7 @@ import sys
 import time
 
 import equinox as eqx
+import h5py
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -88,23 +92,129 @@ from mrx.relaxation import (DescentMethod, IntegrationScheme,  # noqa: E402
                             compute_helicity, initial_state)
 from logical_profile_ic import (analytic_helicity, make_lambda,  # noqa: E402
                                 make_profiles, parse_lambda)
+from gvec_clebsch_ic import load_clebsch  # noqa: E402
+from gvec_geometry import GVEC_GEOMETRIES  # noqa: E402
 from verify_block_jacobi import build_sequence  # noqa: E402
 
 
 ARMS = {
-    # name           descent method                   lbfgs_pairing  cg_beta
-    "gradient":     (DescentMethod.GRADIENT,           "velocity", "gradient"),
-    "cg":           (DescentMethod.CONJUGATE_GRADIENT, "velocity", "gradient"),
-    "cg-legacy":    (DescentMethod.CONJUGATE_GRADIENT, "velocity", "legacy"),
-    "lbfgs-legacy": (DescentMethod.LBFGS,              "legacy",   "gradient"),
-    "lbfgs-paired": (DescentMethod.LBFGS,              "paired",   "gradient"),
-    "lbfgs":        (DescentMethod.LBFGS,              "velocity", "gradient"),
+    "gradient": DescentMethod.GRADIENT,
+    "cg": DescentMethod.CONJUGATE_GRADIENT,
+    "lbfgs": DescentMethod.LBFGS,
 }
 
 
 # ---------------------------------------------------------------------------
 # Gate 0: operator identities.  No descent method, no IC quality, no fitting.
 # ---------------------------------------------------------------------------
+
+def geometry_nfp(geometry):
+    """Field periods spanned by logical zeta in [0, 1], read not assumed."""
+    if geometry in GVEC_GEOMETRIES:
+        with h5py.File(GVEC_GEOMETRIES[geometry], "r") as h:
+            return int(h.attrs["nfp"])
+    return {"toroid": 1, "cylinder": 1, "rot-ellipse": 3, "w7x": 5}[geometry]
+
+
+def render_poincare(seq, B_dof, nfp, tag, outdir, cli):
+    """Poincare section of one field.  Returns the summary dict, or raises.
+
+    Deliberately run AFTER every arm has finished and its traces are on disk:
+    ``require_zeta_parameterisation`` RAISES when B^zeta changes sign, which is
+    a real finding about a relaxed field and not something to swallow, but it
+    must not be able to destroy the run it is reporting on.
+    """
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    import poincare_vacuum as pv  # noqa: PLC0415
+    from mrx.poincare import logical_field, require_zeta_parameterisation  # noqa: PLC0415, E501
+
+    field = logical_field(seq, B_dof, 2, True)
+    info = require_zeta_parameterisation(field, name=tag)
+    print(f"[poincare] {tag}: B^zeta/|B| in "
+          f"[{info['bz_over_b_min']:+.3e}, {info['bz_over_b_max']:+.3e}]",
+          flush=True)
+
+    pc = SimpleNamespace(
+        seeds=cli.pc_seeds, saves=8, steps=24, periods=cli.pc_periods,
+        r_min=0.03, r_max=0.97, seed_from="axis", batch_size=None,
+        drift_periods=min(cli.pc_periods, 32))
+    res = pv.run_field(seq, B_dof, 2, True, nfp, pc)
+    res["saves_per_period"] = pc.saves
+    plane = cli.pc_zeta
+    RZ = pv.section_RZ(seq, res, plane)
+    a_eff = np.asarray(pv.effective_radius(
+        RZ[0], RZ[1], RZ[2].mean(), RZ[3].mean()))
+    path = os.path.join(outdir, f"poincare_{tag}.png")
+    offset = pv.plot(res, cli.geometry, tag, plane, nfp, RZ, a_eff,
+                     "a_eff [m]", path)
+    print(f"[poincare] {tag}: wrote {path}   axis offset {offset:.3e}   "
+          f"iota {np.nanmin(res['iota']):+.4f} .. {np.nanmax(res['iota']):+.4f}",
+          flush=True)
+    return {"path": path, "axis_offset": offset,
+            "iota_min": float(np.nanmin(res["iota"])),
+            "iota_max": float(np.nanmax(res["iota"])),
+            "escaped": int(res["escaped"].sum()),
+            "bz_min": info["bz_over_b_min"], "bz_max": info["bz_over_b_max"]}
+
+
+def make_force_normaliser(seq):
+    """The magnetic-pressure-gradient scale the force residual is measured against.
+
+    WHY NOT grad p.  The pressure the Leray projection returns is a multiplier
+    whose gauge is solver-defined, and it goes to ZERO as the run approaches a
+    force-free state -- so normalising by it makes the reported residual
+    diverge for the best possible reason.  ``grad(B^2/2)`` has the same units
+    (pressure per length), is built from the field itself, and stays finite.
+
+    HOW.  Not by autodiffing a DiscreteFunction at every quadrature point --
+    that is one basis evaluation plus one reverse-mode pass per point, ~2e5
+    points, and it dominated everything else in the step.  Instead go through
+    the sequence, which already has fast tensor-product machinery for exactly
+    this shape of object (it is what ``cross_product_load`` does for J x B):
+
+        1. project B^2/2 onto 0-forms   -- one load + one M_0 solve
+        2. take the DISCRETE gradient   -- strong_grad = M_1^-1 D_0, a 1-form
+        3. measure it
+
+    Step 1 is the operator we do not otherwise have.  The integrand: for a
+    2-form, ``B_phys = DF B_hat / J``, so ``|B_phys|^2 = B_hat^T g B_hat / J^2``,
+    and the 0-form dual pairing carries a J from the volume element, leaving
+    ``q_i = int Lambda0_i (B_hat^T g B_hat) / (2 J)``.
+
+    Returns both measures, because they are not the same number:
+      * ``||grad(B^2/2)||_{L2}`` -- pairs with ``||F||_{L2}``, so their ratio is
+        dimensionless with the volume factored out of both. This is the one
+        the residual uses.
+      * ``<|grad(B^2/2)|>_vol``  -- the literal volume average of the
+        magnitude, ``sum w J |v| / sum w J`` with ``|v|^2 = g1^T g^-1 g1``.
+    """
+    from mrx.quadrature import evaluate_at_xq, integrate_against  # noqa: PLC0415, E501
+
+    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    ci0, cs0 = seq._form_comp_info(0)
+    ci1, cs1 = seq._form_comp_info(1)
+    ci2, cs2 = seq._form_comp_info(2)
+    wJ = seq.quad.w * seq.jacobian_j
+    vol = jnp.sum(wJ)
+
+    def normaliser(B_dof):
+        B_jk = evaluate_at_xq(seq.e2_dbc_T @ B_dof, ci2, cs2, quad_shape, 3)
+        bsq = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk)
+        f_jk = (0.5 * bsq * seq.quad.w / seq.jacobian_j)[:, None]
+        q = seq.e0 @ integrate_against(f_jk, ci0, cs0, quad_shape)
+
+        w0 = seq.apply_inverse_mass_matrix(q, 0, dirichlet=False)
+        g1 = seq.apply_strong_grad(w0, dirichlet_in=False, dirichlet_out=False)
+
+        l2 = seq.l2_norm(g1, 1, dirichlet=False)
+        g1_jk = evaluate_at_xq(seq.e1_T @ g1, ci1, cs1, quad_shape, 3)
+        mag = jnp.sqrt(jnp.einsum('qi,qij,qj->q', g1_jk,
+                                  seq.metric_inv_jkl, g1_jk))
+        return l2, jnp.sum(wJ * mag) / vol
+
+    return normaliser
+
 
 def operator_gates(seq, key):
     """Identities the discrete operators must satisfy on random inputs.
@@ -157,8 +267,7 @@ def main():
     ap.add_argument("--iota-exp", type=float, default=2.0)
     ap.add_argument("--flux-exp", type=float, default=1.0)
     ap.add_argument("--lam", default="")
-    ap.add_argument("--arms", default="gradient,cg,cg-legacy,"
-                                      "lbfgs-legacy,lbfgs-paired,lbfgs")
+    ap.add_argument("--arms", default="gradient,cg,lbfgs")
     ap.add_argument("--history", type=int, default=1)
     ap.add_argument("--steps", type=int, default=200)
     ap.add_argument("--helicity-every", type=int, default=25)
@@ -166,6 +275,23 @@ def main():
     ap.add_argument("--gamma", type=int, default=0)
     ap.add_argument("--mu", type=float, default=0.0)
     ap.add_argument("--maxiter", type=int, default=10000)
+    ap.add_argument("--ic", default="logical", choices=("logical", "clebsch"),
+                    help="'logical' builds the IC from prescribed profiles; "
+                         "'clebsch' rebuilds GVEC's own equilibrium from the "
+                         "clebsch/* ingredients in the geometry file.")
+    ap.add_argument("--no-lambda", action="store_true",
+                    help="clebsch only: zero lambda out. The fluxes, iota and "
+                         "the helicity must NOT move; the force must.")
+    ap.add_argument("--poincare", action="store_true",
+                    help="render a Poincare section of the IC and of each "
+                         "arm's final field, AFTER all arms have finished")
+    ap.add_argument("--pc-seeds", type=int, default=40)
+    ap.add_argument("--pc-periods", type=int, default=150)
+    ap.add_argument("--pc-zeta", type=float, default=0.0)
+    ap.add_argument("--save-b", default=None,
+                    help="HDF5 path for the IC and per-arm final B DoFs")
+    ap.add_argument("--no-leray-ic", action="store_true",
+                    help="skip the Leray clean-up of the initial condition")
     ap.add_argument("--gates-only", action="store_true")
     ap.add_argument("--ic-only", action="store_true")
     ap.add_argument("--out", default=None)
@@ -215,11 +341,46 @@ def main():
     # silently on omega.  Push forward explicitly instead.
     DF_map = jax.jacfwd(seq.map)
 
-    def omega_ref(x):
-        r = x[0]
-        f = dPhi(r)
-        d_chi, d_zeta = dlam(x)
-        return jnp.array([0.0, f * (iota(r) - d_zeta), f * (1.0 + d_chi)])
+    if cli.ic == "clebsch":
+        # GVEC's own ingredients.  Its reference 2-form components ARE
+        # sqrt(g) B^i, so the field is rebuilt from three scalars rather than
+        # resampled as a vector: div B = 0 and B^rho = 0 then hold by
+        # construction and not by fit quality.  Units, measured against these
+        # files' own stored derivatives rather than assumed: the derivatives
+        # are w.r.t. RADIAN angles, so Phi' = 2 pi dPhi_dr, iota = (1/nfp)
+        # dchi_dr/dPhi_dr and lambda = LA / 2 pi.
+        cb = load_clebsch(GVEC_GEOMETRIES[cli.geometry], seq)
+        rho_g = jnp.asarray(cb["rho"])
+        dPhi_g = jnp.asarray(cb["dPhi"])
+        dchi_g = jnp.asarray(cb["dchi"])
+        grad_lam = jax.grad(cb["lam_h"])
+        nfp_c = cb["nfp"]
+        two_pi = 2.0 * jnp.pi
+        use_lam = 0.0 if cli.no_lambda else 1.0
+        print(f"[ic] clebsch from {GVEC_GEOMETRIES[cli.geometry]}  "
+              f"nfp={nfp_c}  lambda={'OFF' if cli.no_lambda else 'on'}")
+        print(f"[ic]   iota = dchi/dPhi (full turn) "
+              f"{cb['dchi'][1] / cb['dPhi'][1]:+.5f} (axis) -> "
+              f"{cb['dchi'][-1] / cb['dPhi'][-1]:+.5f} (edge);  per MRX field "
+              f"period divide by nfp={nfp_c}")
+        print(f"[ic]   max angular departure of dchi/dPhi from a flux "
+              f"function, mid-radius: {cb['iota_spread']:.3e}")
+
+        def omega_ref(x):
+            r = jnp.clip(x[0], rho_g[0], rho_g[-1])
+            f_phi = jnp.interp(r, rho_g, dPhi_g)
+            f_chi = jnp.interp(r, rho_g, dchi_g) / nfp_c
+            g = grad_lam(jnp.array([r, x[1] % 1.0, x[2] % 1.0])) / two_pi
+            lam_t, lam_z = g[1] * use_lam, g[2] * use_lam
+            return jnp.array([0.0,
+                              f_chi - f_phi * lam_z,
+                              f_phi * (1.0 + lam_t)])
+    else:
+        def omega_ref(x):
+            r = x[0]
+            f = dPhi(r)
+            d_chi, d_zeta = dlam(x)
+            return jnp.array([0.0, f * (iota(r) - d_zeta), f * (1.0 + d_chi)])
 
     def B_phys(x):
         dF = DF_map(x)
@@ -230,12 +391,25 @@ def main():
         seq.load(B_phys, 2, dirichlet=True), 2, dirichlet=True)
     B_norm = float(seq.l2_norm(B_raw, 2))
     B0 = B_raw / B_norm
-    print(f"\n[ic] logical-profile IC in {time.perf_counter() - t1:.1f}s   "
+    print(f"\n[ic] {cli.ic} IC in {time.perf_counter() - t1:.1f}s   "
           f"||B||_M raw = {B_norm:.6e}", flush=True)
 
     div0 = float(seq.l2_norm(seq.apply_strong_div(B0), 3))
     B_leray, _ = seq.apply_leray_projection(B0, k=2)
     leray0 = float(seq.l2_norm(B_leray - B0, 2))
+    if not cli.no_leray_ic:
+        # The evolution is dB = curl E, which preserves div B EXACTLY, so
+        # whatever divergence the IC carries it carries for the whole run.
+        # The Clebsch IC is div-free by construction in the reference frame
+        # but the L2 projection through M_2 reintroduces a component
+        # (measured 2.7e-02 at ns=(8,16,8) on w7x-ini-clebsch, against
+        # 3.7e-04 for the logical IC), so clean it once, up front.
+        B0 = B_leray / float(seq.l2_norm(B_leray, 2))
+        div_after = float(seq.l2_norm(seq.apply_strong_div(B0), 3))
+        print(f"[ic] Leray-projected the IC: ||div B|| {div0:.3e} -> "
+              f"{div_after:.3e}   (moved the field by {leray0:.3e})")
+        results["div_ic_before_leray"] = div0
+        div0 = div_after
     # --- is compute_helicity even a FUNCTION of B here? --------------------
     # It solves a k=1 Hodge Laplacian which on a torus (b1 = 1) is SINGULAR,
     # so the answer depends on the deflation and on how far the solve got --
@@ -312,8 +486,11 @@ def main():
           f"(eq.(2) natural gauge is printed below)")
     results.update(H_dual_rhs=H_d, B_harm_rel_dual=rem_d,
                    A_norm_dual=float(seq.l2_norm(A_d, 1)))
-    H_an = analytic_helicity(iota0, iota1, cli.iota_exp,
-                             cli.flux_exp) / B_norm ** 2
+    # eq.(2) is the closed form for the PRESCRIBED power-law profiles, so it
+    # exists only for the logical IC; the Clebsch IC's profiles come from the
+    # file and have no such closed form.
+    H_an = (analytic_helicity(iota0, iota1, cli.iota_exp, cli.flux_exp)
+            / B_norm ** 2) if cli.ic == "logical" else float("nan")
     # B^rho leak, per surface (the IC's own structural gate)
     B_h = DiscreteFunction(B0, seq.basis_2, seq.e2_dbc)
     ang = (np.arange(8) + 0.5) / 8
@@ -324,11 +501,29 @@ def main():
         brho.append(vals[0] / vals[2])
     print(f"[ic] ||div B||_L2 = {div0:.3e}   ||P_Leray B - B|| = {leray0:.3e}"
           f"   max|B^rho|/max|B^zeta| = {max(brho):.3e}")
-    print(f"[ic] helicity: code {float(H0h):+.6e}   eq.(2) natural gauge "
-          f"{H_an:+.6e}   difference (harmonic gauge) {float(H0h) - H_an:+.3e}")
+    if cli.ic == "logical":
+        print(f"[ic] helicity: code {float(H0h):+.6e}   eq.(2) natural gauge "
+              f"{H_an:+.6e}   difference (harmonic gauge) "
+              f"{float(H0h) - H_an:+.3e}")
+    else:
+        print(f"[ic] helicity: code {float(H0h):+.6e}   (eq.(2) does not "
+              f"apply -- the Clebsch profiles come from the file, not from a "
+              f"power law)")
     E0 = 0.5 * float(seq.l2_norm_sq(B0, 2))
+    normaliser = jax.jit(make_force_normaliser(seq))
+    tn = time.perf_counter()
+    gp_l2_0, gp_avg_0 = (float(v) for v in normaliser(B0))
+    print(f"[ic] grad(B^2/2):  ||.||_L2 = {gp_l2_0:.6e}   "
+          f"<|.|>_vol = {gp_avg_0:.6e}   ({time.perf_counter() - tn:.1f}s)")
+    print("[ic]   this is the force-residual denominator -- NOT grad p, "
+          "which is gauge-dependent and vanishes at a force-free state")
+    results["gradp_l2_ic"] = gp_l2_0
+    results["gradp_avg_ic"] = gp_avg_0
+    gradp_mag0 = gp_l2_0
     F0v, _, _, _, _ = compute_force(B0, seq)
-    print(f"[ic] E = {E0:.6e}   ||F||_M = {float(seq.l2_norm(F0v, 2)):.4e}",
+    print(f"[ic] E = {E0:.6e}   ||F||_M = {float(seq.l2_norm(F0v, 2)):.4e}   "
+          f"residual ||F||/<|grad(B^2/2)|> = "
+          f"{float(seq.l2_norm(F0v, 2)) / gradp_mag0:.4e}",
           flush=True)
     results.update(B_norm_raw=B_norm, div_ic=div0, leray_ic=leray0,
                    Brho_max=float(max(brho)), H_code_ic=float(H0h),
@@ -345,15 +540,15 @@ def main():
     get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
 
     results["arms"] = {}
+    final_B = {}
     for name in cli.arms.split(","):
         name = name.strip()
-        method, pairing, cgbeta = ARMS[name]
+        method = ARMS[name]
         ts = TimeStepper(
             seq=seq, descent_method=method,
             dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH,
             timestep_mode=IntegrationScheme.EXPLICIT,
-            history_size=cli.history, gamma=cli.gamma, mu=cli.mu,
-            lbfgs_pairing=pairing, cg_beta=cgbeta)
+            history_size=cli.history, gamma=cli.gamma, mu=cli.mu)
 
         @jax.jit
         def step(state, ts=ts):
@@ -390,12 +585,12 @@ def main():
 
         tr = {k: [] for k in ("E", "F", "dt", "div", "Fu", "cos", "sy",
                               "gain", "dE_meas", "dE_pred", "helicity",
-                              "hel_it")}
+                              "hel_it", "gradp_mag", "gradp_avg", "resid")}
         E_prev = E0
         t_arm = time.perf_counter()
         n_done = 0
-        print(f"\n=== arm {name}  (method={method.name} pairing={pairing} "
-              f"cg_beta={cgbeta} m={cli.history}) ===", flush=True)
+        print(f"\n=== arm {name}  (method={method.name} m={cli.history} "
+              f"gamma={cli.gamma} mu={cli.mu}) ===", flush=True)
         for it in range(1, cli.steps + 1):
             state = step(state)
             E, div, Fu, cos, sy, gain = (float(v) for v in probe(state))
@@ -414,6 +609,12 @@ def main():
             E_prev = E
             n_done = it
             if it % cli.helicity_every == 0 or it == 1:
+                # The denominator moves as B does, so it is re-measured here
+                # rather than frozen at the IC.
+                gp_l2, gp_avg = (float(v) for v in normaliser(state.B_n))
+                tr["gradp_mag"].append(gp_l2)
+                tr["gradp_avg"].append(gp_avg)
+                tr["resid"].append(float(state.F_norm) / gp_l2)
                 h, A_new = get_helicity(state.B_n, seq, state.A)
                 state = eqx.tree_at(lambda s: s.A, state, A_new)
                 tr["helicity"].append(float(h))
@@ -445,6 +646,10 @@ def main():
         print(f"    E {E0:.8e} -> {tr['E'][-1]:.8e}   "
               f"({(E0 - tr['E'][-1]) / E0:.4%} of the initial energy removed)")
         print(f"    |F| {results['F_ic']:.4e} -> {tr['F'][-1]:.4e}")
+        print(f"    RESIDUAL ||F||/<|grad(B^2/2)|>  {tr['resid'][0]:.4e} -> "
+              f"{tr['resid'][-1]:.4e}   ({tr['resid'][0] / tr['resid'][-1]:.2f}x"
+              f" reduction);  <|grad(B^2/2)|> {tr['gradp_mag'][0]:.4e} -> "
+              f"{tr['gradp_mag'][-1]:.4e}")
         print(f"    G1 linesearch identity |dE_meas - dE_pred|/|dE_pred|: "
               f"median {np.median(ident):.3e}  max {ident.max():.3e}")
         print(f"    G1 same, against the energy scale /E0: "
@@ -474,13 +679,47 @@ def main():
             cos_median=float(np.median(tr["cos"])),
             n_dt_negative=int((np.array(tr["dt"]) < 0).sum()),
             n_sy_negative=int((np.array(tr["sy"]) < 0).sum()),
-            div_max=float(max(tr["div"])))
+            div_max=float(max(tr["div"])),
+            resid_first=tr["resid"][0], resid_final=tr["resid"][-1],
+            gradp_l2_final=tr["gradp_mag"][-1],
+            gradp_avg_final=tr["gradp_avg"][-1])
+        final_B[name] = np.asarray(state.B_n)
         if cli.out:
             json.dump(results, open(cli.out, "w"), indent=1)
 
+    # --- persist the fields BEFORE any tracing, so a raised zeta gate cannot
+    #     cost the run its data --------------------------------------------
+    if cli.save_b:
+        with h5py.File(cli.save_b, "w") as f:
+            f.create_dataset("B_ic", data=np.asarray(B0))
+            for name, arr in final_B.items():
+                f.create_dataset(f"B_final_{name}", data=arr)
+            f.attrs["geometry"] = cli.geometry
+            f.attrs["ns"] = list(ns)
+            f.attrs["p"] = cli.p
+            f.attrs["ic"] = cli.ic
+            f.attrs["steps"] = cli.steps
+            f.attrs["gamma"] = cli.gamma
+            f.attrs["mu"] = cli.mu
+        print(f"\nwrote {cli.save_b}", flush=True)
+
     if cli.out:
         json.dump(results, open(cli.out, "w"), indent=1)
-        print(f"\nwrote {cli.out}", flush=True)
+        print(f"wrote {cli.out}", flush=True)
+
+    # --- Poincare, last ---------------------------------------------------
+    if cli.poincare:
+        nfp = geometry_nfp(cli.geometry)
+        outdir = os.path.dirname(cli.out) if cli.out else "."
+        results["poincare"] = {}
+        print(f"\n[poincare] nfp={nfp}  seeds={cli.pc_seeds}  "
+              f"periods={cli.pc_periods}  zeta={cli.pc_zeta}", flush=True)
+        for tag, dof in [("ic", jnp.asarray(B0))] + [
+                (f"final_{k}", jnp.asarray(v)) for k, v in final_B.items()]:
+            results["poincare"][tag] = render_poincare(
+                seq, dof, nfp, tag, outdir, cli)
+            if cli.out:
+                json.dump(results, open(cli.out, "w"), indent=1)
 
 
 if __name__ == "__main__":
