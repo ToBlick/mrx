@@ -876,3 +876,49 @@ The section-12 lesson that **no guaranteed invariant detects a bad answer**
 still stands, and is still the most transferable thing in this document. What
 does not stand is the inference from it that the scheme was fundamentally
 wrong.
+
+## 18. Resistivity, and three more geometries
+
+### 18.1 eta works, and breaks the linesearch by exactly the predicted term
+
+`quasr44970`, logical IC, `eta_max = 1e-4`, tanh schedule tapering to 3.5e-10:
+
+    energy removed     0.6798% in 4000 steps   (0.6493% in 6266 steps at eta=0)
+    ||F||              7.055e-01 -> 6.492e-02
+    helicity drift     -6.8e-03                (-3.4e-03 at eta=0)
+    G1 identity        median 1.830e-01        (1.3e-11 at eta=0)
+
+Resistivity does what it is supposed to: it relaxes the topological
+constraint, so helicity drifts about twice as much and roughly 1.6x more
+energy becomes accessible per step.
+
+**The G1 break was predicted before the run and confirmed in size and sign.**
+With `eta > 0` the step is `dB = curl(u x H - eta J)`, so
+`<B,dB>_M = -(F,u)_M - eta||J||^2_M1`, while `ANALYTIC_LINESEARCH` computes
+`dt = (F,u)/||dB||^2` and omits the resistive term. The measured drop is
+therefore MORE negative than the predicted one -- `dE_meas = -3.898e-04`
+against `dE_pred = -3.798e-04` on step 1 -- and `dt` UNDER-steps. Energy still
+falls, since the omitted term is sign-definite, so this is a loss of
+optimality rather than of correctness. Anyone using `eta > 0` with
+`ANALYTIC_LINESEARCH` should know the step is not the line minimiser.
+
+### 18.2 Three geometries, ranked by how well the surfaces survived
+
+All Clebsch or logical ICs, 3000 CG steps, `gamma = 0`, `ns=(8,16,8)`, p=3.
+
+| run | geometry / IC | axis offset IC -> final | h/2 drift final | verdict |
+|---|---|---|---|---|
+| **W1** | `w7x_fmm002` clebsch, beta 1.8% | 2.548e-04 -> 3.071e-03 | **2.6e-04** | nested, islands at 5/6, 10/11, 5/5 |
+| W2 | `w7x` (W7-X.h5) logical, invented | 1.195e-04 -> 5.828e-02 | -- | degraded, iota 0.848-0.991 -> 0.299-1.059 |
+| LR3 | `w7x_ini` clebsch, beta 5.8% | 1.433e-04 -> 1.027e-01 | 1.6e+00 | chaotic |
+
+W2 is worth noting separately: it is an INVENTED field (`iota` 0.17 -> 0.20
+prescribed) on a real W7-X map, so it starts far from equilibrium and its
+degradation is much less surprising than LR3's, which started from GVEC's own
+solution.
+
+`W3` (`dzeta` on W7-X) is not tabulated because its IC section is already
+degenerate -- `iota = 0` by construction makes the poloidal angle about the
+magnetic axis nearly undefined, and the IC Poincare is correspondingly poor.
+It remains useful for the harmonic-amplitude test in section 12 and useless as
+a picture.
