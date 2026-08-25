@@ -6,8 +6,9 @@ field can be rebuilt from three scalars instead of resampled as a vector — and
 when no data exists at all, the same ansatz gives analytic ICs and, on a
 cylinder, exact analytic equilibria.
 
-Status: derivations complete and checked against data; the GPU arms were
-queued at the end of the session and had not landed (`§7`).
+Status: derivations complete and checked against data. Of the GPU arms, the
+cylinder has landed and passes every structural gate at round-off (`§7.1`);
+the rest were still queued (`§7.2`).
 
 Scripts: `scripts/debug/logical_profile_ic.py`,
 `scripts/debug/gvec_clebsch_ic.py`, `scripts/debug/analytic_ic_verify.py`,
