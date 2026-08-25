@@ -1634,3 +1634,59 @@ and the retraction was wrong.
 *Third time in this study that I have attached a mechanism to an observation
 before checking whether the mechanism could produce it. The check here was one
 question: does this quantity depend on the preconditioner at all?*
+
+## 31. h-REFINEMENT: it buys nothing, or it buys 260x, depending on the case
+
+Section 25.2 concluded "h-refinement buys nothing" from `fmm002` alone. With
+`w7x_ini` refined at the same linesearch, that is only half the story.
+
+    |dH|/H per unit energy removed, LINESEARCH throughout
+
+    grid    fmm002        w7x_ini
+    8^3      70.9          1.375
+    12^3     81.0          0.01346     (102x better)
+    16^3    469.2*         0.005286    (260x better)
+
+    * see the caveat below -- fmm002's H is not converged and this number
+      is not physical.
+
+**The three `w7x_ini` arms removed COMPARABLE energy** -- 4.224e-03, 3.823e-03,
+3.714e-03 -- so this is emphatically NOT the stiffness slowdown that explained
+the `fmm002` column. The dynamics did not slow; the reconnection genuinely fell
+260x.
+
+**The conditional is the same one that runs through this whole study:**
+refinement fixes reconnection where reconnection is the limiting factor, and
+does nothing where it is not. On `fmm002` the run was never
+reconnection-limited, so there was nothing to buy.
+
+### 31.1 Refinement and step-capping are ALTERNATIVE routes to the same floor
+
+    w7x_ini, |dH|/H per unit dE
+
+    8^3  linesearch        1.375        chaotic
+    8^3  dt = 3e-3         0.02605      nested
+    12^3 linesearch        0.01346
+    16^3 linesearch        0.005286
+
+The refined arms at the greedy step reach a LOWER reconnection rate than the
+coarse arm with a capped step. So the two levers substitute for one another,
+and the cheaper one wins on cost: D1 is 0.91 s/step against S14's ~7 s/step for
+the same job.
+
+That said, section 22 already showed 12^3-at-linesearch does not recover nested
+SURFACES even though its scalars are good, so "same reconnection rate" is not
+"same outcome" -- the accumulated damage over 3000 greedy steps still matters.
+Capping the step remains the recommendation; refinement is the expensive
+substitute, not the cheap one.
+
+### 31.2 fmm002's numbers in that column are not physical
+
+`fmm002`'s H collapses under refinement (-1.780e-04, -3.162e-05, -5.756e-06)
+because `compute_helicity` returns exactly zero for a purely harmonic field
+(`delta B = 0` gives `A = 0`) and this field is ~99% harmonic -- the current-
+driven fraction is only 1.7%, falling to 0.9% as the grid resolves it. So the
+`fmm002` column is the drift of a vanishing residue divided by a vanishing
+denominator, and its apparent 469 at 16^3 means nothing. `w7x_ini`, whose
+current-driven fraction is 17%, is where this metric is sound -- and that is
+where every step-size conclusion was measured.
