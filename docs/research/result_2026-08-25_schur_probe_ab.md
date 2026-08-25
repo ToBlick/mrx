@@ -145,9 +145,24 @@ The `|dx|/|x|` values printed for those cells by the job's script version
 (`ARMS DISAGREE`, ~1.4–6.4) **must not be quoted.** `|dx|/|x|` is a correctness
 check only because a converged solve is preconditioner-independent; with neither
 arm converged it compares two arbitrary partial iterates and means nothing. That
-verdict text is a bug in the script, fixed in `17adc04` — after these jobs
-launched. See the three traps in
-`plan_2026-08-25_raw_kron_deletion.md`.
+verdict text is a bug in the script, fixed after these jobs launched.
+
+### Three traps, for whoever runs the next A/B here
+
+Each survives the guards for the ones before it:
+
+1. **No-op SWAP** — the change never took effect and both arms are the same
+   operator. Guard: assert the two probed diagonals DIFFER. (Here: 16-45%.)
+2. **No-op COMPARISON** — the swap took effect, but `outer='jacobi'` passes
+   `allow_stored_tensor_diaginv=True`, so a preassembled mode-matched diagonal
+   is reused by BOTH arms and the counts are unrelated to either
+   preconditioner. Guard: assert no stored diagonal before the merit runs.
+3. **INVALID SOLVE** — both arms genuinely differ and were genuinely measured,
+   but neither converged, so `|dx|/|x|` compares two arbitrary partial iterates.
+   Guard: judge agreement only when BOTH arms converge, and report the true
+   `||Lx - b||/||b||`, which stays meaningful either way.
+
+Trap 3 was live in this run and nearly reached this file.
 
 **Why `outer='jacobi'` at all, when it is not a production path?** Because it is
 the *only* configuration where `schur.inner` is live. Under `outer='block'` the
@@ -200,3 +215,19 @@ All nine trace to the one outstanding even-p span-quadrature defect, which was
 being worked on as this landed — so this count is expected to change. Re-derive
 against the tree you are gating (`slurm/job_pytest_baseline.sh`) rather than
 reusing the number here.
+
+## Open follow-ups left by the deletion
+
+* `outer='none'` still builds the Schur apply and discards it. 31ef58f fixed
+  that for `outer='block'` only; the deletion changed WHAT is wasted, not THAT
+  it is.
+* `warm_mass_preconditioner_cache`'s `except Exception: pass` now guards a
+  single kind, so it hides genuine build failures. Removing it would turn an
+  unsupported `(k, BC)` into a hard failure during warming rather than at the
+  real call site — a behaviour change, so it is flagged at the site rather than
+  folded in.
+* `build_weak_term_raw_diagonal`'s closed form is calibrated for raw_kron;
+  against metric_lumping its error is 22% median / 114% max. Re-deriving that
+  bound is open work, noted on the function.
+* `scripts/debug/verify_block_jacobi.py` keeps its pre-rename name; 22 scripts
+  import `build_sequence` from it.
