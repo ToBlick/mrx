@@ -215,10 +215,27 @@ external. What finally worked was comparing against an INDEPENDENT
 implementation — `all_k_sparse`'s Hodge star for §4, and the projection test for
 the reference.
 
-**Flat error means converging to the wrong thing.** A relative error that is
-constant in n is not a solver problem: any positive weight gives 0 as
-`w_h -> w_ex`, so flatness proves `w_h` converges to something that is not
-`w_ex`. That single observation eliminated the error metric as a suspect in both
+**A converged solver with a wrong answer: two modes, and a free discriminator.**
+These look identical from the summary line — *"the solver reports convergence
+and the answer is wrong"* — and they want opposite responses:
+
+> **Mode A.** The solver passes its OWN criterion while an INDEPENDENT residual
+> disagrees. Real; documented in `poisson_convergence_submitit_bug.md`, where CG
+> reported 11 iterations and met its M-norm criterion while the recomputed
+> Euclidean residual was 4.93e-07 against 8.17e-14. The recheck instinct is
+> correct here.
+>
+> **Mode B.** The solver and the residual AGREE, and the SOURCE is wrong. Both
+> studies here. An independent residual recheck comes back CLEAN and sends you
+> to the solver, which is the one place the fault is not.
+>
+> **Discriminator: is the error FLAT IN N?** Any positive weight gives 0 as
+> `w_h -> w_ex`, so a relative error that is constant in n proves `w_h` is
+> converging to something that is not `w_ex` — which cannot be a solver problem
+> at all. Mode A degrades with refinement; mode B does not move.
+
+This costs nothing: it reads off the convergence table you already have, before
+reaching for any instrument. It ruled out the error metric as a suspect in both
 studies and pointed at the source both times.
 
 **Check what an arm can emit before calling it decisive.** Three arms today were
