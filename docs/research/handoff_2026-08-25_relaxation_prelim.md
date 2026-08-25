@@ -1459,12 +1459,15 @@ device.
 1961 steps, so `||F||` is not comparable across the row -- but all four removed
 ~1.2e-04 of energy, so helicity lost PER UNIT ENERGY REMOVED is:
 
-| arm | gamma | mu | \|dH\|/H per unit dE | axis offset | s/step |
-|---|---|---|---|---|---|
-| W1 | 0 | -- | 70.9 | 3.071e-03 | 0.87 |
-| **S04** | **1** | **1e-3** | **30.1** | **3.386e-04** | 2.74 |
-| S05 | 1 | 1e-2 | 43.9 | 1.945e-03 | 3.74 |
-| S06 | 2 | 1e-3 | 31.5 | 1.659e-03 | 4.59 |
+| arm | steps | wall s | dE | \|\|F\|\| | resid x | \|dH\|/H | **/dE** | axis |
+|---|---|---|---|---|---|---|---|---|
+| W1 g=0 | 3000 | **2624** | 1.220e-04 | **9.950e-05** | **166.2** | 8.659e-03 | 70.9 | 3.071e-03 |
+| **S04 g=1 mu=1e-3** | 3000 | 8212 | 1.207e-04 | 1.139e-04 | 145.9 | 3.633e-03 | **30.1** | **3.386e-04** |
+| S05 g=1 mu=1e-2 | 2410 | 9002 | 1.182e-04 | 3.159e-04 | 50.3 | 5.187e-03 | 43.9 | 1.945e-03 |
+| S06 g=2 mu=1e-3 | 1961 | 9004 | 1.189e-04 | 2.950e-04 | 50.0 | 3.742e-03 | 31.5 | 1.659e-03 |
+
+All four removed the SAME energy (1.18-1.22e-04), so the comparison is fair
+despite S05/S06 hitting their 9000 s cap at fewer steps.
 
 **`gamma = 1, mu = 1e-3` is the sweet spot and both ways of pushing further are
 dead ends:**
@@ -1479,6 +1482,30 @@ dead ends:**
 So the lever saturates at its cheapest useful setting, which is a convenient
 place for it to saturate. All four keep their surfaces (axis offsets
 <= 3.4e-03).
+
+### 27.1 But on THIS case gamma is a trade, not a win -- and I said otherwise
+
+**`gamma = 0` wins on force outright here**: 9.950e-05, the lowest of the four,
+in 2624 s -- **3.1x faster** than any `gamma > 0` arm. `gamma = 1, mu = 1e-3`
+is 14% WORSE on force at 3.1x the cost, and buys 2.4x on topology and a 9x
+tighter axis.
+
+Reporting LR1 I wrote that `gamma = 1` gave "the best force reduction of any
+arm". That was true THERE -- `quasr44970`, logical IC, far from equilibrium --
+and is false here. The benefit is conditional, and stating it unconditionally
+was wrong.
+
+**Both levers turn out to have the same conditional**, which is the useful
+generalisation:
+
+| | far from equilibrium | near equilibrium |
+|---|---|---|
+| small step | FREE -- same force, 73x topology (D1 vs LR3) | costs 30x force (D4 vs W1) |
+| gamma = 1 | improves force AND topology (LR1) | costs 14% force + 3.1x time, buys 2.4x topology |
+
+Both pay when the field has far to travel and charge when it does not -- the
+same conditional as section 22.1. A policy that switches on the residual would
+get both right; a fixed choice cannot.
 
 Note this makes `gamma = 1, mu = 1e-3` -- the value used throughout sections 9
 and 25 because it was the first thing tried -- the right choice by measurement
