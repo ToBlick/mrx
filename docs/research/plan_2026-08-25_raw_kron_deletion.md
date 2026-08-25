@@ -36,22 +36,45 @@ The only place the mode genuinely selects a backing is
 `assemble_schur_jacobi_preconditioner`, which builds a `dummy_spec` from it.
 **That one line is what the deletion must change** — not a missing dispatch.
 
-## 1b. Two liveness traps, for whoever runs the next A/B here
+## 1b. Three traps, for whoever runs the next A/B here
 
-Both must be guarded, and the second one is the nastier because it survives a
-correct swap:
+Only the first is obvious, and each survives the guards for the ones before it.
+A bad number in a reproducible experiment is an inconvenience; a bad number in
+an UNREPEATABLE one is permanent misinformation, which is why all three are
+guarded rather than watched for.
 
-* **No-op SWAP.** The change fails to take effect and the two arms are the same
-  preconditioner. Guard: assert the two probed diagonals DIFFER before believing
-  anything downstream.
-* **No-op COMPARISON.** The swap works, but `outer='jacobi'` calls
-  `_build_schur_outer_jacobi_diaginv` with `allow_stored_tensor_diaginv=True`, so
-  if a mode-matched diagonal was preassembled BOTH arms silently reuse that one
-  stored vector. Iteration counts then match for a reason unrelated to either
-  preconditioner. Guard: assert no stored diagonal is present before the merit
-  runs.
+**1. No-op SWAP.** The change never took effect and both arms are the same
+operator. Guard: assert the two probed diagonals DIFFER before believing
+anything downstream. (Measured here: they differ by 18-43%, so the swap is
+decisively live.)
 
-Only the first is obvious. `scripts/debug/schur_probe_ab.py` asserts both.
+**2. No-op COMPARISON.** The swap took effect, but `outer='jacobi'` calls
+`_build_schur_outer_jacobi_diaginv` with `allow_stored_tensor_diaginv=True`, so
+a preassembled mode-matched diagonal is reused by BOTH arms and the iteration
+counts are unrelated to either preconditioner. Guard: assert no stored diagonal
+is present before the merit runs. Survives guard 1 -- the swap really was live.
+
+**3. INVALID SOLVE.** Both arms are genuinely different AND genuinely measured,
+but neither converged, so `|dx|/|x|` compares two arbitrary partial iterates and
+means nothing. Survives guards 1 AND 2. `|dx|/|x|` is a correctness check ONLY
+because a converged solve is preconditioner-independent; the moment convergence
+fails, that premise is gone. Guard: judge agreement only when BOTH arms report
+convergence, and report the true `||Lx - b||/||b||` per arm, which stays
+meaningful either way.
+
+Trap 3 was live in this very run and nearly reached the permanent record: k=1
+free on the toroid ran both arms to the 20000 cap and the first version of the
+script printed `|dx|/|x| = 1.454e+01 *** ARMS DISAGREE ***`. That is not a
+disagreement between preconditioners; it is two unconverged iterates.
+
+`scripts/debug/schur_probe_ab.py` guards all three as of `17adc04`. Note the
+in-flight runs at `988a29b`/`7cb753a` predate the trap-3 fix, so their
+non-converged cells carry the misleading verdict TEXT and must be annotated
+rather than quoted.
+
+**The k=1 free non-convergence is NOT caused by either arm.** It is the known
+saddle-outer gap: under `outer='jacobi'`, k=1 free does not converge, which is
+already in the record independent of this comparison.
 
 ## 2. Plumbing that SURVIVES, under the metric_lumping name
 
