@@ -266,6 +266,45 @@ def rotational_transform(ys, saves_per_period, nfp, center=None):
 # Physical coordinates
 # ---------------------------------------------------------------------------
 
+#: Half-split |d iota| above which a line is treated as chaotic and given NO
+#: iota. Measured over the archived traces: quasi-periodic lines score ~1e-6
+#: (median) with a p90 of ~1e-5, while the chaotic quasr65530 k=1 sea scores
+#: 5.6e-04 median. Three orders of magnitude of separation, so the threshold is
+#: not delicate.
+CHAOS_TOL = 1e-4
+
+
+def iota_convergence(ys, saves_per_period, nfp, center=None):
+    """``|iota(first half) - iota(second half)|`` -- has the winding converged?
+
+    A quasi-periodic line has a rotational transform and its estimate converges
+    like ``1/N``, so the two halves of a long trace agree. A chaotic line has no
+    rotational transform at all: the estimate does not converge and the halves
+    disagree at the scale of the shear. That is the honest test of whether iota
+    EXISTS for a line, which is a different question from whether the trace was
+    accurate.
+
+    Preferred over the angle-fit residual, which was measured and does not
+    separate: hegna's clean lines score 2.4e-02 against 2.0e-02 for the chaotic
+    quasr65530 k=1 sea, while this splits them 1e-06 against 5.6e-04.
+    """
+    if center is None:
+        center = axis_track(ys, saves_per_period)
+    d = ys - center
+    angle = jnp.unwrap(jnp.arctan2(d[..., 1], d[..., 0]), axis=-1) / TWO_PI
+    zeta = jnp.arange(ys.shape[1]) / saves_per_period
+    half = ys.shape[1] // 2
+
+    def slope(a, z):
+        zc = z - jnp.mean(z)
+        ac = a - jnp.mean(a, axis=-1, keepdims=True)
+        return (ac @ zc) / (zc @ zc)
+
+    i1 = jnp.abs(slope(angle[:, :half], zeta[:half])) * nfp
+    i2 = jnp.abs(slope(angle[:, half:], zeta[half:])) * nfp
+    return jnp.abs(i1 - i2)
+
+
 def to_RZ(seq, ys, zeta):
     """Map ``(u, v)`` cross-section points at fixed logical zeta to ``(R, Z)``."""
     r = jnp.sqrt(ys[..., 0] ** 2 + ys[..., 1] ** 2)
@@ -415,7 +454,7 @@ def resonant_rationals(iota_min, iota_max, nfp, denom_max=15):
 def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
                    axis_RZ=None, path=None, profile_x=None,
                    profile_xlabel="seed radius $r$", nfp=None, denom_max=15,
-                   logical=None):
+                   logical=None, chaotic=None):
     """The two-panel figure: the section coloured by iota, and the profile.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -431,7 +470,14 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         fig = plt.figure(figsize=(15.5, 4.8), constrained_layout=True)
         ax, lx, bx = fig.subplots(1, 3, width_ratios=[1.15, 1.0, 1.15])
 
-    good = iota[keep][jnp.isfinite(iota[keep])] if keep.any() else iota[:0]
+    # Chaotic lines are REAL and get plotted -- they are the physics of an
+    # overlapped island region -- but they have no rotational transform, so
+    # they must not be painted on the iota scale or fitted into the profile.
+    # Dark grey, the convention for "iota could not be inferred".
+    if chaotic is None:
+        chaotic = jnp.zeros_like(keep)
+    shown = keep & ~chaotic
+    good = iota[shown][jnp.isfinite(iota[shown])] if shown.any() else iota[:0]
     lo, hi = (float(jnp.min(good)), float(jnp.max(good))) if good.size else (0.0, 1.0)
     if hi - lo < 1e-9:
         lo, hi = lo - 5e-3, hi + 5e-3
@@ -441,13 +487,18 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     npts = max(int(keep.sum()) * R.shape[1], 1)
     size = float(jnp.clip(3000.0 / npts, 0.35, 15.0))
     colour = jnp.broadcast_to(iota[:, None], R.shape)
-    sc = ax.scatter(R[keep], Z[keep], c=colour[keep], s=size, vmin=lo, vmax=hi,
-                    cmap="turbo", linewidths=0, rasterized=True)
+    sc = ax.scatter(R[shown], Z[shown], c=colour[shown], s=size, vmin=lo,
+                    vmax=hi, cmap="turbo", linewidths=0, rasterized=True)
+    if (keep & chaotic).any():
+        m = keep & chaotic
+        ax.scatter(R[m], Z[m], c="0.25", s=size, linewidths=0, rasterized=True,
+                   label=f"chaotic ({int(m.sum())})")
     res_ticks, res_labels = (resonant_rationals(lo, hi, int(nfp), denom_max)
                              if nfp else ([], []))
     if (~keep).any():
-        ax.scatter(R[~keep], Z[~keep], c="0.7", s=size, linewidths=0,
+        ax.scatter(R[~keep], Z[~keep], c="0.55", s=size, linewidths=0,
                    rasterized=True, label=f"lost ({int((~keep).sum())})")
+    if (~keep).any() or (keep & chaotic).any():
         ax.legend(loc="upper right", fontsize=7, markerscale=4)
     if axis_RZ is not None:
         ax.plot(axis_RZ[0], axis_RZ[1], "k+", ms=5, mew=0.8)
@@ -488,10 +539,14 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         # because the magnetic axis is not at r=0 -- shows up immediately,
         # where the physical panel hides it behind the shaping.
         lr, lth = logical
-        lx.scatter(lr[keep], lth[keep], c=colour[keep], s=size, vmin=lo,
+        lx.scatter(lr[shown], lth[shown], c=colour[shown], s=size, vmin=lo,
                    vmax=hi, cmap="turbo", linewidths=0, rasterized=True)
+        if (keep & chaotic).any():
+            m = keep & chaotic
+            lx.scatter(lr[m], lth[m], c="0.25", s=size, linewidths=0,
+                       rasterized=True)
         if (~keep).any():
-            lx.scatter(lr[~keep], lth[~keep], c="0.7", s=size, linewidths=0,
+            lx.scatter(lr[~keep], lth[~keep], c="0.55", s=size, linewidths=0,
                        rasterized=True)
         lx.set_xlim(0.0, 1.0)
         lx.set_ylim(0.0, 1.0)
@@ -500,7 +555,7 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         lx.set_title("logical chart", fontsize=10)
 
     x = seed_r if profile_x is None else profile_x
-    bx.plot(x[keep], iota[keep], "o-", ms=3, lw=0.8)
+    bx.plot(x[shown], iota[shown], "o-", ms=3, lw=0.8)
     for value, lab in zip(res_ticks, res_labels):
         bx.axhline(value, color="0.55", lw=0.6, ls="--", zorder=0)
         bx.annotate(lab, (0.995, value), xycoords=("axes fraction", "data"),
@@ -509,7 +564,7 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     bx.set_ylabel(r"$\iota$")
     bx.grid(alpha=0.3)
     bx2 = bx.twinx()
-    bx2.semilogy(x[keep], jnp.maximum(resid[keep], 1e-16), ".", ms=4,
+    bx2.semilogy(x[shown], jnp.maximum(resid[shown], 1e-16), ".", ms=4,
                  color="tab:red", alpha=0.7)
     bx2.set_ylabel("angle-fit residual [turns]", color="tab:red")
     bx.set_title(subtitle, fontsize=10)

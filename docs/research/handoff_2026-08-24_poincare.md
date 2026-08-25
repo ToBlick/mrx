@@ -258,6 +258,38 @@ So the k=1 sections on this family are showing real chaos of a slightly-wrong
 field, not a broken tracer. They should be labelled that way, not published as
 flux surfaces.
 
+### 4.2.1 Chaotic lines get no iota — done
+
+A chaotic line HAS no rotational transform, so painting it on the iota colour
+scale invents one. Chaos is real physics and gets plotted; it is drawn in **dark
+grey** (0.25), the historic convention for "iota could not be inferred", and is
+excluded from the colour limits and from the profile fit. Lost/escaped lines
+stay a lighter grey (0.55).
+
+The classifier is `iota_convergence`: iota over the first half of the trace
+against the second. A quasi-periodic winding number converges like `1/N` so the
+halves agree; a chaotic one does not converge at all. Measured:
+
+| case | half-split med / p90 / max | angle residual med / max |
+| --- | --- | --- |
+| w7x k2 | 9.1e-07 / 8.7e-06 / 7.6e-05 | 1.1e-02 / 2.2e-02 |
+| quasr9983 k2 | 1.7e-06 / 3.5e-06 / 3.6e-06 | 7.6e-03 / 1.0e-02 |
+| quasr44970 k1 | 9.1e-07 / 8.1e-06 / 4.5e-04 | 7.2e-03 / 1.5e-02 |
+| hegna k2 | 3.3e-06 / 4.5e-05 / 4.5e-03 | 2.4e-02 / 1.3e-01 |
+| **quasr65530 k1** | **5.6e-04** / 2.5e-03 / 5.8e-03 | 2.0e-02 / 1.1e-01 |
+
+Three orders of magnitude of separation, so `CHAOS_TOL = 1e-4` is not delicate.
+**The angle-fit residual does NOT separate** — hegna's clean lines score 2.4e-02
+against the chaotic sea's 2.0e-02 — so the claim in section 1 that the residual
+distinguishes surface from island from chaos was too optimistic; it flags
+islands, not chaos. Classified counts: quasr65530 k1 25 chaotic / 21 lost of 48
+(only two lines have an iota at all), hegna k2 4 chaotic, w7x k2 none.
+
+The classification is post-hoc from the archived `(u,v)`, so
+`poincare_replot.py` applies it to any run for free. **The `poincare_final`
+figures still need one replot pass** — the driver was deliberately not edited
+while 25 jobs were queued against it.
+
 **This exposes a flaw in `step_convergence`**: it conflates integration error
 with Lyapunov divergence, and reports a huge number for a perfectly integrated
 chaotic line. It is a max over seeds, so one chaotic line dominates it. Fix

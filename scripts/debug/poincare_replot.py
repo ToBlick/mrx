@@ -19,7 +19,9 @@ matplotlib.use("Agg")
 
 import numpy as np  # noqa: E402
 
-from mrx.poincare import render_section  # noqa: E402
+from mrx.poincare import (  # noqa: E402
+    CHAOS_TOL, iota_convergence, render_section,
+)
 
 NFP = {"toroid": 1, "cylinder": 1, "rot-ellipse": 3, "w7x": 5,
        "quasr9983": 2, "quasr44970": 3, "w7x-gvec": 5, "hegna": 3,
@@ -49,17 +51,30 @@ def main():
                 "archive, so re-rendering it needs the map and a rerun")
 
         keep = ~(d["escaped"] | ~d["ok"])
+        # A line with no converged winding number has no iota. Computed here
+        # from the archived (u,v), so reclassifying costs no GPU.
+        split = np.asarray(iota_convergence(d["ys"], 8, NFP[geometry]))
+        chaotic = split > CHAOS_TOL
         outdir = cli.outdir or os.path.dirname(path) or "."
         os.makedirs(outdir, exist_ok=True)
         for plane in planes:
             R, Z = d[f"R_zeta{plane:g}"], d[f"Z_zeta{plane:g}"]
             axis = ((d[f"axisR_zeta{plane:g}"], d[f"axisZ_zeta{plane:g}"])
                     if f"axisR_zeta{plane:g}" in d.files else None)
-            a_eff = d.get(f"a_mid_zeta{plane:g}")
-            xlab = "outboard midplane distance to axis [m]"
-            if a_eff is None:
-                a_eff = d.get(f"a_eff_zeta{plane:g}")
+            # `a_eff` changed meaning as the label did: it held sqrt(A/pi)
+            # until `a_area` appeared beside it, and the mean distance after.
+            # The presence of `a_area` is what disambiguates an old archive
+            # from a new one -- guessing would put a wrong label on a real plot.
+            key = f"a_mid_zeta{plane:g}"
+            if key in d.files:
+                a_eff = d[key]
+                xlab = "outboard midplane distance to axis [m]"
+            elif f"a_area_zeta{plane:g}" in d.files:
+                a_eff = d[f"a_eff_zeta{plane:g}"]
                 xlab = "mean distance to magnetic axis [m]"
+            else:
+                a_eff = d.get(f"a_eff_zeta{plane:g}")
+                xlab = r"$\sqrt{A/\pi}$ [m]"
             if f"logr_zeta{plane:g}" in d.files:
                 logical = (d[f"logr_zeta{plane:g}"], d[f"logth_zeta{plane:g}"])
             else:
@@ -77,10 +92,11 @@ def main():
                 subtitle=f"nfp = {NFP[geometry]}   |   "
                          f"{int(keep.sum())}/{len(keep)} lines kept",
                 axis_RZ=axis, path=out, profile_x=a_eff, nfp=NFP[geometry],
-                logical=logical,
+                logical=logical, chaotic=chaotic,
                 profile_xlabel=(xlab if a_eff is not None
                                 else "seed radius $r$"))
-            print(out, flush=True)
+            print(f"{out}   ({int((chaotic & keep).sum())} chaotic, "
+                  f"{int((~keep).sum())} lost)", flush=True)
 
 
 if __name__ == "__main__":
