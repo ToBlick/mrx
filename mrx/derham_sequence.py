@@ -393,7 +393,8 @@ class DeRhamSequence():
         """
         return _load(self, f, k, dirichlet=dirichlet, bc=bc, frame=frame)
 
-    def interpolate(self, f, k: int, dirichlet: bool = False):
+    def interpolate(self, f, k: int, dirichlet: bool = False,
+                    frame: str = 'phys'):
         """Compute primal DOFs by Greville interpolation (k=0) or histopolation (k=1,2,3).
 
         Parameters
@@ -401,8 +402,9 @@ class DeRhamSequence():
         f : callable
         k : int  Form degree (0, 1, 2, 3).
         dirichlet : bool  Use Dirichlet-constrained DOFs.
+        frame : {'phys', 'ref'}  Passed to :func:`mrx.projectors.interpolate`.
         """
-        return _interpolate(self, f, k, dirichlet=dirichlet)
+        return _interpolate(self, f, k, dirichlet=dirichlet, frame=frame)
 
     @property
     def map(self):

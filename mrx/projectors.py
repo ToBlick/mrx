@@ -200,7 +200,8 @@ def load(seq: "DeRhamSequence", f, k: int,
 # Interpolation / histopolation  (collocation matrices built lazily)
 # ---------------------------------------------------------------------------
 
-def interpolate(seq: "DeRhamSequence", f, k: int, dirichlet: bool = False):
+def interpolate(seq: "DeRhamSequence", f, k: int, dirichlet: bool = False,
+                frame: str = 'phys'):
     """Compute primal DOFs by Greville interpolation (k=0) or histopolation (k=1,2,3).
 
     Collocation and histopolation matrices are built lazily on each call.
@@ -213,18 +214,35 @@ def interpolate(seq: "DeRhamSequence", f, k: int, dirichlet: bool = False):
     f : callable  ξ → (1,) for k=0,3;  ξ → (3,) for k=1,2.
     k : int  Form degree (0, 1, 2, 3).
     dirichlet : bool  Use Dirichlet-constrained DOFs.
+    frame : {'phys', 'ref'}
+        'phys' (default): ``f`` returns components in the physical frame, which
+        are pulled back before the moments are taken.  'ref': ``f`` already
+        returns reference-frame components -- the same convention
+        :func:`load` takes with ``frame='ref'`` and the one
+        :class:`~mrx.differential_forms.DiscreteFunction` evaluates in.
+
+        Only k = 1 and k = 2 have a pullback in this path; k = 0 is a scalar,
+        for which the two frames coincide.  k = 3 is rejected: its
+        histopolation carries no Jacobian factor, so its convention does not
+        line up with :func:`load`'s and resolving that is a separate question.
 
     Returns
     -------
     Array  Primal DOF vector.
     """
+    if frame not in ('phys', 'ref'):
+        raise ValueError(f"frame must be 'phys' or 'ref', got {frame!r}")
     if k == 0:
         return _interpolate_0form(seq, f, dirichlet)
     elif k == 1:
-        return _histopolate_1form(seq, f, dirichlet)
+        return _histopolate_1form(seq, f, dirichlet, frame)
     elif k == 2:
-        return _histopolate_2form(seq, f, dirichlet)
+        return _histopolate_2form(seq, f, dirichlet, frame)
     elif k == 3:
+        if frame == 'ref':
+            raise ValueError(
+                "frame='ref' is not defined for k=3 histopolation; see the "
+                "`frame` note in interpolate.__doc__")
         return _histopolate_3form(seq, f, dirichlet)
     else:
         raise ValueError(f"k must be 0, 1, 2 or 3, got {k}")
@@ -240,7 +258,9 @@ def _wrap_periodic_point(seq, xi):
     return jnp.asarray(wrapped)
 
 
-def _oneform_pullback(seq, v):
+def _oneform_pullback(seq, v, frame: str = 'phys'):
+    if frame == 'ref':
+        return lambda x: v(_wrap_periodic_point(seq, x))
     DF = jax.jacfwd(seq.map)
 
     def pullback(x):
@@ -281,7 +301,7 @@ def _interpolate_0form(seq, f, dirichlet: bool) -> Array:
     return e @ coeffs.reshape(-1)
 
 
-def _full_oneform_histopolation_dofs(seq, v):
+def _full_oneform_histopolation_dofs(seq, v, frame: str = 'phys'):
     lam_r, lam_t, lam_z = seq.basis_0.Λ
     d_r, d_t, d_z = seq.basis_0.dΛ
     pts_r = lam_r.greville_points()
@@ -293,7 +313,7 @@ def _full_oneform_histopolation_dofs(seq, v):
     q_r = _quadrature_order_from_basis_1d(d_r.s)
     q_t = _quadrature_order_from_basis_1d(d_t.s)
     q_z = _quadrature_order_from_basis_1d(d_z.s)
-    pullback = _oneform_pullback(seq, v)
+    pullback = _oneform_pullback(seq, v, frame)
 
     def integrate_component_0(span_r, t_val, z_val):
         xs_r, ws_r = _interval_rule(span_r, q_r)
@@ -331,7 +351,7 @@ def _full_oneform_histopolation_dofs(seq, v):
     return comp0, comp1, comp2
 
 
-def _histopolate_1form(seq, v, dirichlet: bool) -> Array:
+def _histopolate_1form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     """Greville histopolation for a 1-form."""
     e = seq.e1_dbc if dirichlet else seq.e1
     exact = _matching_discrete_dofs(v, seq.basis_1, e)
@@ -350,7 +370,7 @@ def _histopolate_1form(seq, v, dirichlet: bool) -> Array:
     hist_t = d_t.histopolation_matrix()
     hist_z = d_z.histopolation_matrix()
 
-    comp0, comp1, comp2 = _full_oneform_histopolation_dofs(seq, v)
+    comp0, comp1, comp2 = _full_oneform_histopolation_dofs(seq, v, frame)
 
     c0 = _solve_tensor_collocation_axis(hist_r, comp0, axis=0)
     c0 = _solve_tensor_collocation_axis(coll_t, c0, axis=1)
@@ -367,7 +387,7 @@ def _histopolate_1form(seq, v, dirichlet: bool) -> Array:
     return e @ jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)])
 
 
-def _histopolate_2form(seq, v, dirichlet: bool) -> Array:
+def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     """Greville histopolation for a 2-form."""
     e = seq.e2_dbc if dirichlet else seq.e2
     exact = _matching_discrete_dofs(v, seq.basis_2, e)
@@ -397,10 +417,13 @@ def _histopolate_2form(seq, v, dirichlet: bool) -> Array:
     spans_t = d_t.greville_spans()
     spans_z = d_z.greville_spans()
 
-    DF = jax.jacfwd(seq.map)
+    if frame == 'ref':
+        pullback = v
+    else:
+        DF = jax.jacfwd(seq.map)
 
-    def pullback(x):
-        return DF(x).T @ v(x)
+        def pullback(x):
+            return DF(x).T @ v(x)
 
     def int0(r_val, span_t, span_z):
         q_t = _quadrature_order_from_basis_1d(d_t.s)
