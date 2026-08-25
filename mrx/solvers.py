@@ -398,7 +398,11 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
 
     Returns:
         x: Solution vector.
-        info: 0 if converged, >0 = number of iterations if not converged.
+        info: ``-k`` if converged after ``k`` iterations, ``+k`` if not.
+            (This docstring said "0 if converged" until 2026-08-25; the code
+            has always returned the signed iteration count -- see the
+            ``jnp.where(converged_final, -k_final, k_final)`` below. The stale
+            version caused a converged solve to be read as a failure.)
     """
     n = b.shape[0]
     if maxiter is None:
