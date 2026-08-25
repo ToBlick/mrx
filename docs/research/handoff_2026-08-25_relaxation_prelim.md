@@ -1425,3 +1425,30 @@ the field is ~99.99% harmonic (`||B - curl A||/||B||` = 0.9999 at 8^3, 1.000 at
 12^3). **So compare `|dH|` absolutely within a resolution and relatively across
 resolutions**, and do not read a cross-resolution `|dH|` ratio as a physical
 statement. The table in 25.2 uses the relative form for exactly this reason.
+
+## 26. WHAT THE w7x_ini RUNS ARE AND ARE NOT FOR
+
+Every run on `w7x_ini_00000000_clebsch_mrx.h5` -- LR3, W4, W5, D1, D2, D3,
+S13, S14, S17 -- starts from GVEC's INITIAL GUESS, not a converged equilibrium
+(section 20). They are a **stress test**, and should be read only as one.
+
+**What they are good for, and it is a lot:** a field with far to travel
+exercises the reconnection failure mode hard, which is what made the
+step-size mechanism isolable at all. LR3 vs W5 vs D1 is a clean controlled
+experiment precisely because the case is stressed -- on `fmm002` the effect is
+too small to separate from noise in 3000 steps.
+
+**What they are NOT good for:** any statement about W7-X equilibria, about
+what this scheme converges to physically, or about pressure profiles. The
+target was never an equilibrium, so `J x B = grad p` does not hold at the
+start and the pressure comparison has no reference (section 13).
+
+**All physics conclusions in this document rest on `w7x_fmm002`**, the
+converged state: the 166x residual reduction with surfaces intact (section
+20.1), the optimizer ranking (24), the eta sweep (23), the gamma and p levers
+(25), and the lambda = 0 convergence to the harmonic field (21).
+
+S13 is the one place the distinction nearly misleads: at 12^3 the `_ini` case
+improves 100x on every scalar and still does not recover nested surfaces, which
+is a real statement about the SCHEME's step-size sensitivity, not about the
+device.
