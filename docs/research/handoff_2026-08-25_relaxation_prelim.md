@@ -1331,3 +1331,69 @@ A ratio near 2 is the HEALTHY signature for a small fixed step, not a fault.
 The script now prints that warning next to the number. The identity remains a
 genuine operator test only for `ANALYTIC_LINESEARCH`, where it holds at 1e-11
 relative / 1e-16 against the energy scale.
+
+## 25. THREE LEVERS ON NUMERICAL RECONNECTION, ranked
+
+Everything in sections 19-24 points at one quantity -- how much topology the
+descent destroys per unit progress. Three independent controls have now been
+measured on real cases.
+
+| lever | helicity loss reduced by | cost |
+|---|---|---|
+| **step size** (LR3 -> D1, linesearch -> fixed 3e-3) | **73x** | **none** -- same force reduction |
+| hyperregularisation gamma=1 (LR1 / S04) | 15x / 2.4x | ~3x per step, ~12% less force reduction |
+| resolution 8^3 -> 12^3 (S01) | 3.4x relative | ~3x per step |
+
+**Step size is by far the largest lever, and the only free one.** On the case
+where it matters, capping the step cost nothing at all in force reduction
+(5.75x against the linesearch's 5.63x) while keeping the surfaces.
+
+### 25.1 gamma = 1 on the healthy case (S04)
+
+| | gamma=0 (W1) | gamma=1 (S04) |
+|---|---|---|
+| energy removed | 0.0244% | 0.0241% |
+| \\|\\|F\\|\\| | 9.950e-05 (189x) | 1.139e-04 (165x) |
+| \\|dH\\| | 1.54e-06 | **6.47e-07** |
+| axis offset | 3.071e-03 | **3.386e-04** |
+| roughness | -- | 0.281 -> 0.0756 (0.27x) |
+
+Same energy removed, ~12% less force reduction, 2.4x less helicity lost and a
+**9x tighter axis**. Consistent with LR1, where gamma=1 cut helicity loss 15x
+on `quasr44970` while giving the best force reduction of any arm there. So
+hyperregularisation is a genuine topology-preserving lever and not a
+coarse-grid artefact -- it now holds on two geometries and two IC routes.
+
+### 25.2 Resolution: the safe regime survives refinement (S01, S03)
+
+`w7x_fmm002`, 3000 CG steps:
+
+| | 8^3 p=3 (W1) | 12^3 p=3 (S01) | 8^3 p=4 (S03) |
+|---|---|---|---|
+| n2_dbc | 2192 | 8376 | 2192 |
+| energy removed | 0.0244% | 0.0063% | 0.0276% |
+| \\|\\|F\\|\\| reduction | 189x | 77x | 230x |
+| \\|dH\\|/H | 0.87% | **0.25%** | 0.29% |
+| axis offset | 3.071e-03 | **9.483e-04** | 1.568e-03 |
+| roughness | -- | 0.29x | **0.12x** |
+
+Both refinements preserve the surfaces and IMPROVE the topology metrics. The
+finer grid removes **3.9x less energy** in the same number of steps, which is
+consistent with part of the coarse grid's energy release having been numerical
+rather than physical -- though that is an inference, not a measurement.
+
+### 25.3 A CAVEAT ON MY OWN CRITERION: helicity is not resolution-converged
+
+Section 19.2 established that ABSOLUTE `|dH|` predicts surface destruction
+where relative drift does not. That stands WITHIN a resolution. It does not
+transfer across one:
+
+    IC helicity, same field, same file:   -1.780e-04 at 8^3
+                                          -3.162e-05 at 12^3
+
+a factor 5.6. The helicity of this field is simply not converged between those
+grids -- unsurprising, since it is a small number arising from cancellation and
+the field is ~99.99% harmonic (`||B - curl A||/||B||` = 0.9999 at 8^3, 1.000 at
+12^3). **So compare `|dH|` absolutely within a resolution and relatively across
+resolutions**, and do not read a cross-resolution `|dH|` ratio as a physical
+statement. The table in 25.2 uses the relative form for exactly this reason.
