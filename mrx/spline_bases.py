@@ -397,14 +397,30 @@ class DerivativeSpline:
         xi_ref = jnp.asarray(xi_ref)
         w_ref = jnp.asarray(w_ref)
 
+        # Sub-interval endpoints: split every span at the knots it contains.
+        # A Greville span straddles an interior knot whenever p is EVEN (the
+        # Greville point is the mean of p knots, i + (p+1)/2 in units of the
+        # spacing -- integral for odd p, half-integral for even p), and Gauss
+        # is exact only for POLYNOMIALS.  Across a knot the spline has a
+        # derivative jump, and a single rule then converges only algebraically:
+        # measured on an off-centre knot, 40 points still left 3.6e-07 where
+        # splitting is exact at 2 points.  See _interval_rule in projectors.py,
+        # which splits identically so H and the moments use the SAME rule.
+        knots = jnp.unique(self.T)
+
         def integrate_span(span):
             a, b = span
-            center = 0.5 * (a + b)
-            halfwidth = 0.5 * (b - a)
-            xs = center + halfwidth * xi_ref
-            values = jax.vmap(
-                lambda x: jax.vmap(lambda i: self(x, i))(self.ns)
-            )(xs)
-            return halfwidth * (w_ref @ values)
+            # Clip the knots into [a, b]; duplicates give zero-width pieces
+            # that contribute nothing, so this stays a fixed-size computation.
+            cuts = jnp.clip(knots, a, b)
+            cuts = jnp.concatenate([jnp.array([a]), cuts, jnp.array([b])])
+            cuts = jnp.sort(cuts)
+            lo, hi = cuts[:-1], cuts[1:]
+            centers = 0.5 * (lo + hi)
+            halfwidths = 0.5 * (hi - lo)
+            xs = centers[:, None] + halfwidths[:, None] * xi_ref[None, :]
+            values = jax.vmap(jax.vmap(
+                lambda x: jax.vmap(lambda i: self(x, i))(self.ns)))(xs)
+            return jnp.einsum('s,q,sqi->i', halfwidths, w_ref, values)
 
         return jax.vmap(integrate_span)(spans)

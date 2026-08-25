@@ -8,7 +8,22 @@ worked on the sequences MRX actually builds, because the code had never
 executed — two guards blocked every polar and every Dirichlet case, so four
 `xfail(strict)` tests hid the fact that nothing behind them was correct.
 
-**Three distinct defects were found. Two are fixed and one is not.**
+> # *** SHIP-WITH-ASTERISK ***
+> **At ODD `p` the operators are EXACT at every k = 0,1,2,3 and both BCs**
+> (round-trip ~5e-16 — the deliverable, achieved).
+> **At EVEN `p`, k >= 1 is NOT a projector: 7e-2 to 1.3e-1. THE CAUSE IS
+> UNKNOWN and this is an open bug to hunt.** `k = 0` is exact at both parities.
+>
+> Two candidate mechanisms were proposed and **both refuted by measurement**:
+> the extraction (k=3 has `E E^T = I` to 0.000 and still fails) and quadrature
+> exactness (splitting spans at knots did not fix it and made it slightly
+> *worse*). See §5 and §7.
+>
+> `conf/config_relax_from_nfs.yaml` runs `ps = 4`, which is **even**. Its ingest
+> goes through collocation so it is *probably* unaffected — **not verified per
+> call site**.
+
+**Four distinct defects were found. Three are fixed; the fourth is open.**
 
 ---
 
@@ -19,11 +34,13 @@ executed — two guards blocked every polar and every Dirichlet case, so four
 | A | **Physical pullbacks were the wrong objects** (k=1, k=2) | **SETTLED — measured** |
 | B | **Extraction is non-biorthogonal**; needs `(E E^T)^-1` explicitly | **FIXED at k=0, measured**; k>=1 pending |
 | C | **Periodic Greville spans are unsorted** → negative-width spans | **FIXED, verification pending** |
-| D | **Even-p Greville spans straddle knots** → quadrature inexact | **CONFIRMED, NOT FIXED** |
+| D | **Even-p Greville spans straddle knots** → moments inexact | **FIXED** (accuracy 3.272e-01 → 2.960e-01) |
+| **F** | **Even-p, k>=1 is not a projector (7e-2 … 1.3e-1)** | **OPEN — CAUSE UNKNOWN** |
 | E | The 1cf9cbd justification for removing the guards | **RETRACTED** (see §6) |
 
-Everything marked pending rests on job **16770362**, the first run with B and C
-both in place, over p=2 and p=3 x k=0..3 x free/dbc.
+All of A-E are measured. **F is open**: see §9 for the two mechanisms that were
+proposed for it and refuted (§7). Evidence: jobs 16770362 (B+C) and 16773716 (B+C+D),
+both over p=2 and p=3 x k=0..3 x free/dbc.
 
 ---
 
@@ -129,7 +146,7 @@ goes through `Pushforward` and would blow up on a permuted DOF vector.
 
 ---
 
-## 5. CONFIRMED BUT NOT FIXED: even-p spans straddle knots (defect D)
+## 5. FIXED: even-p spans straddle knots (defect D)
 
 A Greville point of degree p is the mean of p consecutive knots. On uniform
 knots, `g_i = i + (p+1)/2` — an **integer for odd p** (lands on a knot) and a
@@ -148,7 +165,14 @@ knots, `g_i = i + (p+1)/2` — an **integer for odd p** (lands on a knot) and a
 For even p **every** span straddles an interior knot. Gauss-Legendre is exact
 for *polynomials*; a spline is only *piecewise* polynomial, with a derivative
 jump at each knot, so a single rule spanning one is inexact **at any quadrature
-order**. `Pi_1D` is then not idempotent and no restriction can repair it.
+order**. Measured on an off-centre knot: 40 Gauss points still leave 3.6e-07,
+while splitting at the knot is exact at 2 points.
+
+**FIXED** — `_interval_rule` and `SplineBasis.histopolation_matrix` both split
+every span at the knots it contains, so `H` and the moments keep an identical
+rule. Effect: `k=1` histopolation accuracy `3.272e-01 -> 2.960e-01`.
+
+**This did NOT fix the identity failures, and was never going to.** See §7.
 
 **THE FIX IS NOT APPLIED.** It is: split each Greville span at its interior
 knots and apply the Gauss rule per sub-interval. Exact for piecewise polynomials
@@ -183,7 +207,61 @@ is in `projectors.py` at the site, above the guards it justified.
 
 ---
 
-## 7. Method notes — these cost real time this week
+## 7. OPEN BUG (defect F): even-p, k>=1 is not a projector
+
+**This is the asterisk. Hunt this.**
+
+```
+                 p = 3 (ODD)                    p = 2 (EVEN)
+k=0   7.677e-16 / 5.375e-16   PASS     2.672e-16 / 2.619e-16   PASS
+k=1   5.198e-16 / 6.131e-16   PASS     7.111e-02 / 6.755e-02   FAIL
+k=2   4.556e-16 /     ...     PASS     8.626e-02 / 1.137e-01   FAIL
+k=3         ...               PASS     1.026e-01 / 1.293e-01   FAIL
+```
+
+`k = 0` is exact at BOTH parities — it is the only degree that never
+histopolates, which is the control that keeps the attribution honest.
+
+### Two mechanisms proposed, both REFUTED by measurement
+
+**1. The extraction.** Refuted by k=3: its extraction is a pure selection with
+`||E E^T - I|| = 0.000` measured, and it fails anyway. Whatever breaks even-p
+k>=1 is upstream of the extraction entirely.
+
+**2. Quadrature inexactness (defect D).** Refuted directly: splitting spans at
+knots did not fix the identity and made it slightly WORSE
+(`5.736e-02 -> 7.111e-02` at k=1). It could not have been the cause, and the
+argument was available before the run: `solve(H, m) = c` requires only
+`m = H c`, and since `H` and the moments use the SAME rule and quadrature is
+LINEAR, that holds whether the rule is exact or not. **Exactness was never what
+the identity depended on.** Defect D is real and worth fixing for ACCURACY; it
+is simply a different defect.
+
+### What is known, to constrain the next hypothesis
+
+* It is exactly a parity effect in `p`, not a degree-`k` effect: every `k >= 1`
+  fails at even p and passes at odd p.
+* It scales with the number of histopolated axes (k=1 < k=2 < k=3), so each
+  histopolated axis contributes an independent factor that compounds.
+* It survives BOTH a correct extraction restriction and exact quadrature.
+* `k=0` (collocation only, no spans) is immune.
+* `test_pi_full_is_idempotent` runs on a NON-POLAR, IDENTITY-EXTRACTION fixture
+  at p=2 and fails at k=1,2,3 — so it reproduces with no extraction in the loop
+  at all. **That is the cheapest place to debug it**: one degree, one axis, no
+  polar surgery, no Dirichlet rows.
+
+### Where I would look next
+
+The 1-D step `solve(H, moments(f)) = c` must hold whenever `moments` is a linear
+functional applied to `f = sum c_j D_j`. It does not. So either the moments are
+NOT `H c` for some structural reason (the integrand is not in `span{D_j}` on the
+span, or the two use different bases), or `H` is not the matrix the moments are
+built against. Comparing `moments(D_i)` against `H[:, i]` column by column, in
+1-D at p=2, would settle it in one cheap run and needs no sequence at all.
+
+---
+
+## 8. Method notes — these cost real time this week
 
 * **Accuracy tests pass on wrong operators; identity tests do not.** k=0
   Greville interpolation of a smooth function returned 2.225e-02, comfortably
@@ -218,7 +296,7 @@ is in `projectors.py` at the site, above the guards it justified.
 
 ---
 
-## 8. What is left
+## 9. What is left
 
 1. **Read 16770362.** It decides whether B+C are sufficient. If k=3 still fails,
    defect D is the next suspect — the fixture includes p=2 and k=3 histopolates
