@@ -155,3 +155,48 @@ standing no-defensive-code rule exists to prevent. Removing the swallow could
 also turn an unsupported (k, BC) into a hard failure during *warming* rather
 than at the real call site, which is a behaviour change. **Flag to Tobias
 rather than fold into the deletion.**
+
+## Postscript: a one-directional invariant is half an invariant
+
+`test/test_preconditioner_kind_dispatch.py` was written during D0 to make the
+accept-list/dispatch agreement mechanical, and both I and the reviewer treated
+it as complete from that point on.
+
+During the metric_lumping rename the tree reached a state where
+`MassPreconditionerSpec.kind` defaulted to `'metric_lumping'` while EVERY
+accept-list still said `'block_jacobi'` — a spec naming a kind nothing would
+accept, which is the same class of defect D0 existed to eliminate.
+
+**All three dispatch tests passed.**
+
+The invariant only ran one way: accept-list → dispatch. Nothing checked
+spec → accept-list. The half that was missing is the half the rename broke.
+
+`test_no_production_code_constructs_a_kind_nothing_accepts` closes it, and
+immediately earned its place by catching a straggler I had missed —
+`nullspace.py` still constructing `kind='raw_kron'`, because the earlier spec
+replacements had only been applied to `operators.py`. That is proof the gap was
+real rather than theoretical.
+
+Its first version matched every `kind=` keyword in the file and flagged
+`np.argsort(kind='stable')`. Narrowed to spec constructors, for the same reason
+the dispatcher/forwarder split is spelled out rather than sniffed: **a check
+that cries wolf gets an exemption bolted on, or gets deleted, rather than
+getting a bug fixed.**
+
+Generalisable: when an invariant relates two things, write the test in both
+directions, or state in the test which direction is unchecked and why.
+
+## Postscript 2: which stale names to fix, and which to keep
+
+The no-zombie rule is about code paths and aliases, not about erasing history.
+After the deletion the split is:
+
+* **Prose that RECORDS what went and what was measured** — keep. "raw_kron was
+  deleted 2026-08-25; six converged cells, five favouring this by 2.4-16.6%" is
+  exactly what should survive, and a future reader needs it.
+* **Text a user or log reader will SEE** — rename. Four instances survived the
+  bulk rename inside error messages, including one inside
+  `build_mass_metric_lumping_factors` that told anyone who tripped it about
+  "raw_kron", from a function whose own name no longer contained the word.
+  Message text is not a record; it is the interface.

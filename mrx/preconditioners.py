@@ -1602,7 +1602,7 @@ def build_mass_metric_lumping_factors(seq, k: int, *, dirichlet: bool, d_raw=Non
     coupled, gram_inv, cross = _extraction_gram_inverse(e)
     if cross > 1e-12:
         raise ValueError(
-            f"raw_kron k={k} dirichlet={dirichlet}: E E^T is not block diagonal "
+            f"metric_lumping k={k} dirichlet={dirichlet}: E E^T is not block diagonal "
             f"(max coupled-bulk overlap {cross:.3e}); the (CC^T, I) split that "
             "the pseudoinverse relies on does not hold here"
         )

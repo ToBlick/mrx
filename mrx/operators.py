@@ -753,7 +753,7 @@ def _materialize_default_mass_preconditioner(
 def _materialize_default_saddle_preconditioner(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         coupled_preconditioner: bool = False):
-    """The k>=1 saddle default: block_jacobi mass, block-Jacobi atom outer.
+    """The k>=1 saddle default: metric_lumping mass, metric_lumping outer.
 
     You get what you built. The atom when it has been assembled for this
     ``(k, BC)``, and ``'none'`` otherwise -- never a substitute.
@@ -3045,7 +3045,7 @@ def assemble_mass_metric_lumping_preconditioner(
     for k in ks:
         if k not in (0, 1, 2, 3):
             raise ValueError(
-                "block_jacobi mass preconditioner supports k=0..3")
+                "metric_lumping mass preconditioner supports k=0..3")
         for dirichlet in dirichlet_variants:
             _mass_metric_lumping_for(seq, operators, k, dirichlet, **kwargs)
     return operators
@@ -3314,7 +3314,7 @@ def _build_scalar_hodge_preconditioner_apply(
                 "shifted operator is unmeasured -- see audit item 3.2")
         if not _metric_lumping_available(seq, k, dirichlet):
             raise ValueError(
-                f"scalar preconditioner kind='metric_lumping' needs the block-Jacobi "
+                f"scalar preconditioner kind='metric_lumping' needs the metric_lumping "
                 f"Laplacian assembled for k={k}, dirichlet={dirichlet}; call "
                 "assemble_metric_lumping_laplacian_preconditioner first")
         return lambda x: apply_hodge_laplacian_preconditioner(
@@ -3492,7 +3492,7 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
     * ``'jacobi'`` — per-DoF diagonal of ``L_k``, always available, but for
       k >= 1 the weak half is a MODEL (the Kronecker mass model), not the
       operator's own ``D M^-1 D^T``.
-    * ``'metric_lumping'`` — the tensor block-Jacobi atom, k = 0..3, free and Dirichlet.
+    * ``'metric_lumping'`` — the metric-lumped atom, k = 0..3, free and Dirichlet.
       Requires :func:`assemble_metric_lumping_laplacian_preconditioner` first.
     * ``'auto'`` — ``'metric_lumping'`` when it has been assembled for this ``(k, BC)``,
       otherwise ``'jacobi'``.
@@ -3516,7 +3516,7 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
     if kind == 'metric_lumping':
         if not _metric_lumping_available(seq, k, dirichlet):
             raise ValueError(
-                f"block-Jacobi Laplacian preconditioner not assembled for "
+                f"metric_lumping Laplacian preconditioner not assembled for "
                 f"k={k}, dirichlet={dirichlet}; call "
                 "assemble_metric_lumping_laplacian_preconditioner first")
         cache = getattr(seq, METRIC_LUMPING_CACHE_ATTR)
