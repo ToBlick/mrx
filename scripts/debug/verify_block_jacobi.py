@@ -79,9 +79,10 @@ def build_sequence(geometry, ns, p, maxiter, inner_tol=1e-12):
         # -- raw GVEC data is mirrored relative to mrx.mappings.stellarator_map
         # and would otherwise arrive with det DF < 0. See gvec_geometry.py.
         from gvec_geometry import (  # noqa: PLC0415
-            GVEC_GEOMETRIES, build_gvec_map)
-        map_func, info = build_gvec_map(GVEC_GEOMETRIES[geometry],
-                                        map_ns=ns, p=p)
+            GVEC_GEOMETRIES, GVEC_NFP_OVERRIDE, build_gvec_map)
+        map_func, info = build_gvec_map(
+            GVEC_GEOMETRIES[geometry], map_ns=ns, p=p,
+            nfp=GVEC_NFP_OVERRIDE.get(geometry))
         print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
               f"det DF in [{info['det_range'][0]:.3e}, "
               f"{info['det_range'][1]:.3e}]", flush=True)
@@ -91,6 +92,11 @@ def build_sequence(geometry, ns, p, maxiter, inner_tol=1e-12):
             raise RuntimeError(f"{geometry} geometry is degenerate")
     ops = op.assemble_incidence_operators(seq)
     ops = op.assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
+    # The block-Jacobi atoms, explicitly. compute_nullspaces no longer builds
+    # them behind the caller's back, and the k>=1 saddle default REQUIRES them.
+    ops = op.assemble_block_jacobi_laplacian_preconditioner(
+        seq, ops, ks=(0, 1, 2, 3), dirichlets=(False, True))
+    op.warm_mass_preconditioner_cache(seq, ops)
     seq.set_operators(ops)
     return seq, ops
 

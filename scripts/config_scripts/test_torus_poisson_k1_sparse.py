@@ -40,7 +40,6 @@ from mrx.operators import (
     assemble_incidence_operators,
     assemble_projection_operators,
     assemble_schur_jacobi_preconditioner,
-    assemble_tensor_mass_preconditioner,
 )
 from mrx.nullspace import init_nullspaces
 from mrx.quadrature import evaluate_at_xq
@@ -114,13 +113,11 @@ def compute_error(n: int, p: int, epsilon: float,
     # ---------------------------------------------------------------------------
     # Assembly: tensor mass (k=0,1) + incidence/projection + Schur Jacobi
     # ---------------------------------------------------------------------------
-    cp_kwargs = {"maxiter": 100, "tol": 1e-9, "ridge": 1e-12}
 
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
     # Tensor mass for k=0 (Schur inner) and k=1 (lower block).
-    ops = assemble_tensor_mass_preconditioner(seq, ops, ks=(0, 1), rank=1, cp_kwargs=cp_kwargs)
     # Pre-probe the Schur diagonal (D M0_tensor^{-1} D^T) for k=1 DBC.
     ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(1,), dirichlet_variants=(True,))
     # Zero-initialize nullspaces (b₂=0, so k=1 DBC has no harmonic forms).
@@ -132,7 +129,6 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
-    ops = assemble_tensor_mass_preconditioner(seq, ops, ks=(0, 1), rank=1, cp_kwargs=cp_kwargs)
     ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(1,), dirichlet_variants=(True,))
     ops = init_nullspaces(seq, ops, BETTI)
     ops = seq.set_operators(ops)
@@ -145,7 +141,7 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     # rhs₁ = D₀ (M₀⁻¹ load(f₀, 0))  —  dual k=1 DBC load vector
     b0 = seq.load(f0, 0, dirichlet=True)
-    u0_primal = seq.apply_inverse_mass_matrix(b0, 0, dirichlet=True, preconditioner='tensor')
+    u0_primal = seq.apply_inverse_mass_matrix(b0, 0, dirichlet=True)
     rhs = seq.apply_derivative_matrix(u0_primal, 0, dirichlet_in=True, dirichlet_out=True)
     jax.block_until_ready(rhs)
     timings["load_rhs"] = time.perf_counter() - t0

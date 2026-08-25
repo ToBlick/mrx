@@ -459,8 +459,59 @@ class DeRhamSequence():
         return get_nullspace(self._require_operators(), 3, True)
 
     def set_geometry(self, geometry: SequenceGeometry):
-        """Replace the geometry attached to this sequence."""
+        """Replace the geometry attached to this sequence.
+
+        Drops any block-Jacobi Laplacian atoms with it. They are factorisations
+        of ``L_k`` for the OLD metric, so keeping them would precondition the
+        wrong operator -- silently, as slow convergence. (The mass block-Jacobi
+        cache already keys on geometry identity and rebuilds itself; this cache
+        is keyed on ``(k, BC)`` alone and cannot.)
+
+        Rebuilding is the caller's job, not this method's: see
+        :meth:`set_map_and_preconditioners`. Dropping here only makes the next
+        solve fail loudly instead of quietly using the previous geometry's
+        factorisation.
+        """
         self.geometry = geometry
+        from mrx.operators import BLOCK_JACOBI_CACHE_ATTR  # noqa: PLC0415
+        if hasattr(self, BLOCK_JACOBI_CACHE_ATTR):
+            delattr(self, BLOCK_JACOBI_CACHE_ATTR)
+
+    def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3),
+                                    dirichlets=(False, True), operators=None):
+        """Install a map and build every preconditioner that depends on it.
+
+        The convenience wrapper over the setup sequence, so that "I did not know
+        I had to build those" is not a way to end up on a worse preconditioner.
+        Equivalent to, and replaceable by, the explicit calls::
+
+            seq.set_map(map)
+            ops = assemble_incidence_operators(seq)
+            ops = assemble_mass_jacobi_preconditioner(seq, ops, ks=ks)
+            ops = assemble_block_jacobi_laplacian_preconditioner(
+                seq, ops, ks=ks, dirichlets=dirichlets)
+            warm_mass_preconditioner_cache(seq, ops)
+            seq.set_operators(ops)
+
+        Call it again after any geometry change -- :meth:`set_geometry` drops
+        the atoms precisely so that a stale one cannot be used by accident.
+
+        Returns the operator bundle, which is also installed on the sequence.
+        """
+        from mrx.operators import (  # noqa: PLC0415
+            assemble_block_jacobi_laplacian_preconditioner,
+            assemble_incidence_operators,
+            assemble_mass_jacobi_preconditioner,
+            warm_mass_preconditioner_cache,
+        )
+        self.set_map(map)
+        ops = assemble_incidence_operators(self) if operators is None else operators
+        ops = assemble_mass_jacobi_preconditioner(self, ops, ks=ks)
+        ops = assemble_block_jacobi_laplacian_preconditioner(
+            self, ops, ks=ks, dirichlets=dirichlets)
+        warm_mass_preconditioner_cache(self, ops, ks=ks, dirichlets=dirichlets)
+        self.set_operators(ops)
+        return ops
 
     def _require_geometry(self):
         """Return the attached geometry or raise when none is installed."""
@@ -1252,8 +1303,7 @@ class DeRhamSequence():
 
         ``kind`` selects between ``'none'`` (identity), ``'jacobi'`` (per-DoF
         diagonal; for k >= 1 its weak half is a Kronecker mass MODEL),
-        ``'probed_jacobi'`` (the same diagonal taken exactly, one apply per DOF
-        — the honest REFERENCE baseline), ``'block'`` (the
+        ``'block'`` (the
         tensor block-Jacobi atom, k = 0..3, free and Dirichlet — the production
         preconditioner; call
         :func:`~mrx.operators.assemble_block_jacobi_laplacian_preconditioner`

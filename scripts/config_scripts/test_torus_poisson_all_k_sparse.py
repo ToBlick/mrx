@@ -57,13 +57,7 @@ from mrx.nullspace import _n_vectors, compute_nullspaces_iterative, get_nullspac
 from mrx.operators import (
     assemble_incidence_operators,
     assemble_projection_operators,
-    assemble_tensor_laplacian_preconditioner,
-    assemble_tensor_mass_preconditioner,
-)
-from mrx.preconditioners import (
-    MassPreconditionerSpec,
-    SaddlePointPreconditionerSpec,
-    SchurPreconditionerSpec,
+    assemble_block_jacobi_laplacian_preconditioner,
 )
 from mrx.quadrature import evaluate_at_xq
 
@@ -529,15 +523,11 @@ def compute_all_k(n: int, p: int, epsilon: float,
     q = 2 * p + quad_order_offset if quad_order is None else quad_order
 
     F = toroid_map(epsilon=epsilon)
-    cp_kwargs = {"maxiter": 100, "tol": 1e-9, "ridge": 1e-12}
-    saddle_preconditioner = SaddlePointPreconditionerSpec(
-        mass=MassPreconditionerSpec(kind='tensor', surgery_schur=True),
-        schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='tensor'),
-            outer=MassPreconditionerSpec(kind='jacobi'),
-        ),
-        coupled=False,
-    )
+    # The production default: block_jacobi mass, the block-Jacobi atom as
+    # schur.outer. This was a hand-written spec naming the tensor stack retired
+    # on 2026-08-17 and replaced again on 2026-08-22, so the convergence study
+    # was not solving what production solves (audit item 3.3).
+    saddle_preconditioner = 'auto'
 
     # --- Sequence setup ------------------------------------------------
     _log(f"Building DeRhamSequence: ns={ns} ps={ps} q={q}")
@@ -566,11 +556,9 @@ def compute_all_k(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
-    _log("  Assembling tensor mass preconditioner (k=0,1,2,3)...")
-    ops = assemble_tensor_mass_preconditioner(seq, ops, ks=(0, 1, 2, 3), rank=1, cp_kwargs=cp_kwargs)
-    _log("  Assembling tensor Hodge-Laplacian preconditioner (k=0)...")
-    ops = assemble_tensor_laplacian_preconditioner(seq, ops, ks=(0,), rank=1, cp_kwargs=cp_kwargs)
-    _log("  Using schur.outer=jacobi (richardson removed 2026-08-14)...")
+    _log("  Assembling the block-Jacobi Laplacian atom (k=0)...")
+    ops = assemble_block_jacobi_laplacian_preconditioner(seq, ops, ks=(0,), dirichlets=(True, False))
+    _log("  schur.outer = the block-Jacobi atom (production default)...")
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)
     timings["assembly"] = time.perf_counter() - t0

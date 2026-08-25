@@ -61,10 +61,40 @@ TWO_PI = 2.0 * np.pi
 GVEC_GEOMETRIES = {
     "quasr9983": "data/quasr_0009983.h5",       # nfp=2, 50^3
     "quasr44970": "data/quasr_0044970.h5",      # nfp=3, 50^3
+    "quasr65530": "data/quasr0065530_gvec_mrx_nr50_nt50_nz50.h5",  # nfp=4
+    "quasr65575": "data/quasr0065575_gvec_mrx_nr50_nt50_nz50.h5",  # nfp=4
     "w7x-gvec": "data/w7x_vacuum_co_contra.h5",  # nfp=5, 50^3 -- a second,
     #   independent W7-X source; a cross-check on the `w7x` map, not a new device
+    "w7x-ini": "data/w7x_ini_mrx.h5",           # nfp=5, 50^3, FINITE BETA
+    #   (beta_volume_mean 4.2%): a different equilibrium of the same device, not
+    #   a second vacuum source.  Its `axis_radial_index = 49` attribute is wrong
+    #   -- the data has the axis at rho[0] (mean theta-extent 3.4e-3 there
+    #   against 1.8 at rho=1), so no radial reversal is applied.
     "hegna": "data/gvec_nfp3_hegna_80cubed_clebsch.h5",   # nfp=3, 80^3
+    #: The 8^3-ish quasr44970 baseline and its two interior perturbations.  All
+    #: three share one 8x16x8 grid, so they are directly differenceable.
+    "quasr44970-c": "data/quasr0044970_gvec_nr8_nt16_nz8.h5",     # nfp=3
+    "pert-axis": "data/axis_pert_dR5e-05_dZ3.75e-05.h5",
+    "pert-interior": "data/interior_pert_dR5e-05_dZ3.75e-05.h5",
 }
+
+#: nfp that the file gets WRONG, keyed by geometry name.
+#:
+#: The two perturbed files declare ``nfp = 2``.  Their R/Z data is
+#: `quasr0044970_gvec_nr8_nt16_nz8.h5` shifted by exactly the amplitudes in
+#: their own filenames (max|dR| 5.000e-05, max|dZ| 3.750e-05), and that device
+#: is nfp=3; against quasr0009983, which their `dof_npy` and `perturb_source_h5`
+#: attributes name, they differ by 0.15, i.e. a different machine.  Their
+#: `geometry_source` and `template_h5` attributes both say quasr0044970 and
+#: agree with the measurement, so `nfp = 2` travelled in with the stale
+#: quasr0009983 paths.
+#:
+#: This is not cosmetic.  ``_map_with_sign`` builds
+#: ``F = (R cos(2 pi zeta/nfp), +- R sin(2 pi zeta/nfp), Z)``, so nfp=2 would
+#: wrap one field period of quasr44970 cross-sections through 180 degrees
+#: instead of 120 -- a different domain, and a different iota, with a perfectly
+#: healthy positive Jacobian to hide it.
+GVEC_NFP_OVERRIDE = {"pert-axis": 3, "pert-interior": 3}
 
 
 def _take(grid, axis, sl):
@@ -108,8 +138,10 @@ def _radial_axis(vals, grid, axis, stride=1):
     return v[keep], _take(grid, axis, keep)
 
 
-def load_gvec_grids(h5_path, stride=1):
+def load_gvec_grids(h5_path, stride=1, nfp=None):
     """Return ``(axes, R_grid, Z_grid, nfp, layout)`` from a flat-schema file.
+
+    ``nfp`` overrides the file's own attribute; see ``GVEC_NFP_OVERRIDE``.
 
     ``stride`` subsamples the DATA grid per axis (it stays a tensor grid).
     Default 1, i.e. all of it, and that is the right default: the data grid is
@@ -126,10 +158,15 @@ def load_gvec_grids(h5_path, stride=1):
     """
     with h5py.File(h5_path, "r") as f:
         ep = np.asarray(f["eval_points"], dtype=np.float64)
-        nr, nt, nz = (int(f.attrs[k]) for k in ("n_rho", "n_theta", "n_zeta"))
-        nfp = int(f.attrs["nfp"])
+        # Newer exports carry only `precomputed_*`; older ones carry both.
+        nr, nt, nz = (int(f.attrs[k] if k in f.attrs else f.attrs[alt])
+                      for k, alt in (("n_rho", "precomputed_nr"),
+                                     ("n_theta", "precomputed_ntheta"),
+                                     ("n_zeta", "precomputed_nzeta")))
+        file_nfp = int(f.attrs["nfp"])
         R = np.asarray(f["R"], dtype=np.float64).reshape(nr, nt, nz)
         Z = np.asarray(f["Z"], dtype=np.float64).reshape(nr, nt, nz)
+    nfp = file_nfp if nfp is None else int(nfp)
 
     r_raw = ep[:, 0].reshape(nr, nt, nz)[:, 0, 0]
     t_raw = ep[:, 1].reshape(nr, nt, nz)[0, :, 0]
@@ -181,14 +218,16 @@ def _det_DF(map_func, n=64, seed=0):
     return np.asarray(dets)
 
 
-def build_gvec_map(h5_path, map_ns=(12, 24, 12), p=3, sign=None, stride=1):
+def build_gvec_map(h5_path, map_ns=(12, 24, 12), p=3, sign=None, stride=1,
+                   nfp=None):
     """Build the stellarator map for one flat-schema file.
 
     ``sign`` is the toroidal handedness ``Y = sign * R sin(2 pi zeta/nfp)``.
     Left as ``None`` it is MEASURED: whichever sign makes ``det DF`` positive
     wins, and a file that is degenerate under both raises.
     """
-    axes, R_grid, Z_grid, nfp, layout = load_gvec_grids(h5_path, stride=stride)
+    axes, R_grid, Z_grid, nfp, layout = load_gvec_grids(
+        h5_path, stride=stride, nfp=nfp)
     R_fn, Z_fn = _rgi_fn(axes, R_grid), _rgi_fn(axes, Z_grid)
 
     map_seq = DeRhamSequence(map_ns, (p, p, p), 2 * p,

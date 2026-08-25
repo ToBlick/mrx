@@ -295,10 +295,10 @@ def _validate_nullspace_shifted_preconditioner(k: int, preconditioner):
         return preconditioner
     if not isinstance(preconditioner, SaddlePointPreconditionerSpec):
         raise TypeError('k>=1 nullspace inverse iteration expects a SaddlePointPreconditionerSpec')
-    if preconditioner.schur.outer.kind not in ('jacobi', 'exact_jacobi'):
+    if preconditioner.schur.outer.kind != 'jacobi':
         raise ValueError(
             f'k>=1 nullspace inverse iteration got unsupported schur.outer '
-            f'kind={preconditioner.schur.outer.kind!r}; expected jacobi or exact_jacobi'
+            f'kind={preconditioner.schur.outer.kind!r}; expected jacobi'
         )
     if preconditioner.schur.inner.kind not in ('raw_kron', 'tensor'):
         raise ValueError(
@@ -361,6 +361,54 @@ def direct_construction_unsupported_reason(betti_numbers):
     return None
 
 
+def harmonic_rayleigh(seq, v, k, dirichlet=True, operators=None):
+    """``v^T L_k v / v^T M_k v`` -- how far ``v`` is from being harmonic.
+
+    Zero for a true harmonic form, ``O(lambda_1)`` for anything else.  This is
+    the number that tells you whether :func:`compute_nullspaces` succeeded: the
+    construction is a chain of Hodge solves with a fixed iteration budget and no
+    gate of its own, so a solve that runs out of iterations returns a
+    non-harmonic vector, every deflated solve downstream deflates against it,
+    and nothing says a word.
+
+    ``L_k`` is applied EXACTLY (nested mass solve).  That shape is banned inside
+    a Krylov solve; a diagnostic evaluated once per vector is the one place it
+    is legitimate.
+
+    Quote it against :func:`generic_rayleigh` -- the quotient is not
+    dimensionless, so a raw value carries the units of the geometry and means
+    nothing on its own.
+    """
+    lv = seq.apply_hodge_laplacian(v, k, dirichlet=dirichlet,
+                                   operators=operators)
+    mv = seq.apply_mass_matrix(v, k, dirichlet=dirichlet, operators=operators)
+    return float(jnp.dot(v, lv) / jnp.dot(v, mv))
+
+
+def generic_rayleigh(seq, k, dirichlet=True, operators=None, seed=0):
+    """The same quotient for a random vector: the scale to read against."""
+    n = _dof_count(seq, k, dirichlet)
+    v = jax.random.normal(jax.random.PRNGKey(seed), (n,))
+    return harmonic_rayleigh(seq, v, k, dirichlet=dirichlet,
+                             operators=operators)
+
+
+def exact_derivative_residual(seq, v, k, dirichlet=True):
+    """``|d v| / |v|`` in L2 -- the ``d v = 0`` half of "harmonic".
+
+    Cheaper and more localised than the Rayleigh quotient: it says *which* half
+    of the harmonic condition broke, where the quotient only says one did.
+    """
+    if k == 2:
+        dv, out_k = seq.apply_strong_div(v, dirichlet, dirichlet), 3
+    elif k == 1:
+        dv, out_k = seq.apply_strong_curl(v, dirichlet, dirichlet), 2
+    else:
+        raise ValueError(f"exact_derivative_residual: k must be 1 or 2, got {k}")
+    return float(seq.l2_norm(dv, out_k, dirichlet=dirichlet)
+                 / seq.l2_norm(v, k, dirichlet=dirichlet))
+
+
 def compute_nullspaces(seq, operators=None, betti_numbers=None):
     """Harmonic forms by direct Hodge decomposition (no inverse iteration).
 
@@ -394,19 +442,15 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
 
     # The construction below is a chain of Hodge-Laplacian solves -- L_1 DBC
     # for the k=2 form, L_2 FREE for the k=1 form, L_3 DBC inside the Leray
-    # projection -- and every one of them goes through the k>=1 saddle path.
-    # Assemble the block-Jacobi atom so those solves get it as schur.outer.
-    # This is a setup routine and is never under a trace, so building here is
-    # safe; without it the solves fall back to the per-DoF diagonal and the
-    # L_2 free one needs 20k-38k MINRES iterations at p=5 on shaped geometries,
-    # silently returning an unconverged form that every deflated solve then
-    # deflates against (measured 2026-08-24: relL2 6e-4 instead of 1.5e-11).
-    from mrx.operators import (  # noqa: PLC0415
-        assemble_block_jacobi_laplacian_preconditioner,
-    )
-    operators = assemble_block_jacobi_laplacian_preconditioner(
-        seq, operators, ks=(1, 2, 3), dirichlets=(False, True))
-
+    # projection, and L_0 FREE inside the k=1 Leray -- and every one of them
+    # takes the block-Jacobi atom, which is now REQUIRED rather than consulted.
+    #
+    # This function does NOT build it. It used to, and that was a setup step
+    # hidden inside a solve routine: the caller could not tell which
+    # preconditioners existed, and a geometry change afterwards left them stale.
+    # Build them explicitly, or in one call with
+    # ``seq.set_map_and_preconditioners(map)``. A missing atom raises here with
+    # a message naming the assembler.
     operators = _commit(seq, init_nullspaces(
         seq, operators, betti_numbers=betti_numbers))
 

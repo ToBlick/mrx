@@ -1,0 +1,24 @@
+# Same study as config_poisson_test, run IN-PROCESS.
+#
+# config_poisson_test pins `override hydra/launcher: submitit_slurm` and then
+# sets submitit-only keys (timeout_min, mem_gb, ...). Overriding the launcher
+# back to basic on the command line leaves those keys behind and composition
+# fails with `Key 'timeout_min' not in 'BasicLauncherConf'`. This config just
+# does not set them, so the script runs inside whatever job already launched it
+# instead of submitting a nested one.
+defaults:
+  - _poisson_test_schema
+  - _self_
+
+quad_order_offset: 0
+cg_tol: 1.0e-9
+cg_maxiter: 50000
+load_frame: ref
+map_batch_size_inner: 0
+map_batch_size_outer: null
+
+# n >= 6. The block-Jacobi atom cannot build at n=4, p=3: component_factors
+# solves a 1-D system with four DOFs for a cubic basis and it goes non-finite.
+# The retired tensor stack this study used to run tolerated it. See
+# assemble_block_jacobi_laplacian_preconditioner's docstring.
+n: [6, 8, 10]
