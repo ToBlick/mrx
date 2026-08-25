@@ -955,10 +955,24 @@ class DeRhamSequence():
         Gk has entries in {-1, 0, +1} and is geometry-independent. On DoF
         spaces where the extraction operators are "unitary" (``e @ e^T = I``),
         this equals ``M_{k+1}^{-1} @ apply_derivative_matrix``. For non-unitary
-        extractions (e.g. polar axis gluing) the two differ; in that regime
-        :meth:`apply_strong_grad` / curl / div remain the mass-projected form
-        and should be preferred when exact d∘d = 0 on extracted DoFs is
-        required.
+        extractions (e.g. polar axis gluing) the two differ.
+
+        PREFER THIS FORM. Until 2026-08-25 this docstring said the
+        mass-projected :meth:`apply_strong_grad` / curl / div "should be
+        preferred when exact d∘d = 0 on extracted DoFs is required". That is
+        stale: :func:`~mrx.operators.apply_incidence_matrix` applies the cached
+        coefficient-Gram correction ``G = Gram_{k+1}^{-1} (E_out^T sp E_in)``,
+        which makes this form the true strong derivative on polar sequences
+        too. Measured on quasr44970 ns=(8,16,8) p=3:
+
+            div.curl, mass-projected   1.261e-10
+            div.curl, incidence        8.641e-16   (machine zero)
+            curl agreement between them 1.025e-12   (so the swap is free)
+
+        The mass-projected path also costs a Krylov solve per apply. The stale
+        advice cost a relaxation study a spurious 1e-10 "floor" on div B that
+        was read as a property of the discretisation rather than of the
+        operator choice.
         """
         operators = self._require_operators(operators)
         return apply_incidence_matrix_ops(
