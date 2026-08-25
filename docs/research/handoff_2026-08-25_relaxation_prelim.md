@@ -1927,6 +1927,14 @@ time, and it is a hard prerequisite for B1 and B2.
 get around to the floor run", but "the tool has no way to say *run until
 flat*".
 
+This is a missing VOCABULARY, not a missing feature, and the distinction is
+the whole reason P0 outranks every sweep below it: **every arm in this
+campaign stopped somewhere arbitrary because arbitrary was the only thing the
+interface could say.** `--steps` and `--seconds-per-arm` are both BUDGETS, and
+a budget cannot express a convergence criterion no matter how large you make
+it. Running longer does not fix this; it just moves where the arbitrary stop
+lands.
+
 Anyone reading B1 as a sweep will queue a job and get another arm that stops
 where the budget stopped it, which is the exact failure s32 documents.
 
