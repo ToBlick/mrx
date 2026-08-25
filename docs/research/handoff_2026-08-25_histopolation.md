@@ -46,8 +46,8 @@ executed — two guards blocked every polar and every Dirichlet case, so four
 | # | finding | status |
 | --- | --- | --- |
 | A | **Physical pullbacks were the wrong objects** (k=1, k=2) | **SETTLED — measured** |
-| B | **Extraction is non-biorthogonal**; needs `(E E^T)^-1` explicitly | **FIXED at k=0, measured**; k>=1 pending |
-| C | **Periodic Greville spans are unsorted** → negative-width spans | **FIXED, verification pending** |
+| B | **Extraction is non-biorthogonal**; needs `(E E^T)^-1` explicitly | **FIXED, measured at k=0..3** |
+| C | **Periodic Greville spans are unsorted** → negative-width spans | **FIXED, verified** (16776655) |
 | D | **Even-p Greville spans straddle knots** → moments inexact | **FIXED** (accuracy 3.272e-01 → 2.960e-01) |
 | F | **Even-p, k>=1 is not a projector (7e-2 … 1.3e-1)**: periodic spans cross the seam, H evaluated unwrapped | **FIXED, measured** (§7) |
 | E | The 1cf9cbd justification for removing the guards | **RETRACTED** (see §6) |
@@ -118,8 +118,8 @@ per-component structure and handles any extraction; for a pure selection it
 returns immediately.
 
 **Measured: k=0 round-trip 5.290e-01 -> 2.796e-16.** k>=1 was still failing at
-that point for reasons C and D, so B's sufficiency at k>=1 is what 16770362
-decides.
+that point, for reason F; once that was fixed the same restriction carried
+k=1,2,3 to ~1e-16 at both parities (§7), so B is sufficient at every k.
 
 ---
 
@@ -193,11 +193,9 @@ tabulated here is also what puts the last PERIODIC span across the seam, which
 is defect F — one geometric fact, two independent consequences: an accuracy one
 on every axis, and an identity one on the periodic axes only.)
 
-`conf/config_relax_from_nfs.yaml` sets `ps_r/ps_theta/ps_zeta = 4` at lines
-19-21 and 30-32 — a production relaxation config at EVEN p (`config_stell.yaml`
-is 3; those are the only `ps_*` entries). Settled per call site: that driver
-ingests through `interpolate_B` / `load_grid_field`, which use collocation
-(`n_basis = n_data`) and never form a span, so it did not reach either defect.
+(`conf/config_relax_from_nfs.yaml` runs at EVEN `p = 4`; `config_stell.yaml`
+at 3, and those are the only `ps_*` entries in the repo. Production reach is
+settled in the header banner.)
 
 ---
 
@@ -289,6 +287,23 @@ correct extraction and exact quadrature (neither touches the integrand), and
 `k = 0` is immune (collocation points are wrapped, no spans).  The radial axis
 is clamped and never crosses.
 
+### The two mechanisms this replaced, and what killed them
+
+Both were pursued for a day; neither is recoverable from the code, because
+neither left a diff.
+
+* **The extraction (`(E E^T)^-1 E`) is still incomplete at k >= 1.** REFUTED by
+  k = 3, which was named as the discriminator *before* the run: at k = 3 the
+  extraction is a pure selection, `||E E^T - I||_max = 0.000`, 0 violating rows
+  (§3) — and k = 3 failed anyway, at 1.026e-01 / 1.293e-01. An operator that
+  is exactly the identity cannot be the defect.
+* **The quadrature is inexact because even-p spans straddle knots.** REFUTED by
+  its own fix: splitting every span at its knots made the round-trip slightly
+  WORSE, 5.736e-02 -> 7.111e-02 at k = 1. It should have: `solve(H, m) = c`
+  needs only `m = H c`, which holds by LINEARITY whenever `H` and the moments
+  share a rule — exact or not. Exactness was never what the identity depended
+  on. (The split was kept: it is a genuine ACCURACY fix, defect D.)
+
 ### Where the earlier reasoning went wrong
 
 The refutation of mechanism 2 was correct as far as it went -- exactness was
@@ -367,6 +382,17 @@ one consumer, and it changes the value of the `p = 0` periodic basis at
 3. Whether `SplineBasis.evaluate` should be periodic in `x` for periodic bases
    (see §7, "The fix") is a design question, not a defect: nothing else feeds
    it points outside `[0, 1]`.
+4. **The closed-last-piece convention (§10, "Proposed fix") is offered and not
+   applied.** It touches every assembly path, so it wants its own commit behind
+   a full GPU suite run. It would also let `block_jacobi_laplacian.py` drop its
+   `end = 1.0 - 1e-8` in `_edge_vector` and `face_operator` (relative error
+   ~`(p-1) * 1e-8 / h`) and take the true face metric instead of the last Gauss
+   node (`field[-1]`, an O(h) bias currently absorbed by the fitted
+   `bc_scale = 3.0`).
+5. **`block_jacobi_laplacian.py:682`'s docstring attributes the 4-6x
+   free-vs-dbc iteration lag to `det(DF) = 0` at the last knot. That looks
+   wrong** — §10 shows the zero is an autodiff artefact at `x = 1.0` exactly,
+   and quadrature never samples `rho = 1`. Treat the lag as unexplained.
 
 ---
 
