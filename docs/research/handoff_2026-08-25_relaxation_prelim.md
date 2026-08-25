@@ -1593,3 +1593,44 @@ linesearch by a `|dH|` budget would find this point automatically and would
 transfer to problems where the number differs -- which is the recommendation in
 section 19.5, now with a measured threshold behind it rather than an
 intuition.
+
+## 30. WHAT THE PRECONDITIONER FIX BOUGHT, AND WHERE IT DID NOT
+
+`w7x_fmm002`, gamma=1, 300 steps, before and after swapping the diffusion
+solve's `diag(M)^-1` for the production `block_jacobi` (a93bec5):
+
+| mu | eps * lambda_max | before | after | change |
+|---|---|---|---|---|
+| 1e-3 | ~0.26 | 2.74 s/step | **2.10 s/step** | **-23%** |
+| 1e-2 | ~2.6 | 3.74 s/step | 3.85 s/step | +3% (noise) |
+
+**Exactly what the theory predicts, including the null result.**
+`block_jacobi` approximates `M` and knows nothing about `eps L`, so it is a
+large win while the operator is mass-dominated and does nothing once it is not.
+At `mu = 1e-2` the Laplacian term is what hurts, and improving the
+M-approximation cannot touch it. Per the standing single-digit rule the +3% is
+noise and was not investigated.
+
+This also bounds what the Neumann correction of section 25's note could buy: it
+is the term that WOULD address `eps L`, and `mu = 1e-2` is where it would pay
+-- but that is also where it goes indefinite, which is why it was not taken.
+
+### 30.1 I retracted section 27 too hastily
+
+I wrote that section 27's "more smoothing hurts" conclusion was "partly a
+preconditioner artefact and should be re-measured". That was over-stated.
+
+**A preconditioner changes wall-clock, not the converged answer.** Section 27
+ranked mu on `|dH|` per unit energy removed (43.9 at 1e-2 against 30.1 at
+1e-3), computed from solves that converged to tolerance either way. That
+number is contaminated only if those solves were FAILING to converge, which I
+never checked before announcing the retraction.
+
+So the correct statement is narrower: section 27's TIMING column was
+preconditioner-limited; its QUALITY conclusion probably stands. The re-run
+settles it -- if `mu = 1e-2` comes back at 43.9 again, over-smoothing is real
+and the retraction was wrong.
+
+*Third time in this study that I have attached a mechanism to an observation
+before checking whether the mechanism could produce it. The check here was one
+question: does this quantity depend on the preconditioner at all?*
