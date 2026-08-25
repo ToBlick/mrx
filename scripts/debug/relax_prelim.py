@@ -509,6 +509,12 @@ def main():
                          "differs.")
     ap.add_argument("--no-leray-ic", action="store_true",
                     help="skip the Leray clean-up of the initial condition")
+    ap.add_argument("--beta-from", default=None,
+                    help="path to a B.h5 written by --save-b. Reports beta, "
+                         "the force residual and the harmonic split for EVERY "
+                         "field in it and exits -- so the relaxed state is "
+                         "measured, not just the IC. No relaxation, no "
+                         "tracing; the sequence build is the only cost.")
     ap.add_argument("--poincare-from", default=None,
                     help="path to a B.h5 written by --save-b. Renders a "
                          "Poincare section of EVERY field in it and exits, "
@@ -546,6 +552,52 @@ def main():
     seq.set_operators(ops)
     print(f"[setup] {cli.geometry} ns={ns} p={cli.p}  n2_dbc={seq.n2_dbc}  "
           f"operators+nullspaces {time.perf_counter() - t0:.1f}s", flush=True)
+
+    # --- beta (and friends) from saved fields, then stop -------------------
+    if cli.beta_from:
+        with h5py.File(cli.beta_from, "r") as f:
+            fields = {k: jnp.asarray(f[k][:]) for k in f.keys()}
+            attrs = {k: f.attrs[k] for k in f.attrs}
+        saved = (str(attrs.get("geometry")), list(attrs.get("ns", [])),
+                 int(attrs.get("p", -1)))
+        asked = (cli.geometry, list(ns), cli.p)
+        if saved != asked:
+            raise ValueError(
+                f"saved field is {saved} but this run built {asked}; "
+                f"re-measure with matching --geometry/--ns/--p")
+        print(f"[beta] {cli.beta_from}: {list(fields)}   attrs {attrs}",
+              flush=True)
+
+        p_rhos = np.linspace(0.05, 0.95, 19)
+        prof = jax.jit(make_pressure_profiler(seq, jnp.asarray(p_rhos)))
+        out = {}
+        for tag, dof in fields.items():
+            Fv, pv, _, _, _ = compute_force(dof, seq)
+            pp, bb, vv = prof(pv, dof)
+            beta_prof, beta_vol = beta_from_profiles(
+                np.asarray(pp), np.asarray(bb), np.asarray(vv))
+            # Hodge split: ||B||^2 = ||B_harm||^2 + ||curl A||^2, so the
+            # current-driven fraction is what is left over from the harmonic
+            # part.  That is the quantity that should track beta.
+            _, A_c = compute_helicity(dof, seq, jnp.zeros(seq.n1_dbc))
+            harm = float(seq.l2_norm(dof - seq.apply_incidence_matrix(
+                A_c, 1, dirichlet_in=True, dirichlet_out=True), 2)
+                / seq.l2_norm(dof, 2))
+            cur = float(np.sqrt(max(0.0, 1.0 - harm ** 2)))
+            fnorm = float(seq.l2_norm(Fv, 2))
+            out[tag] = dict(beta_vol=beta_vol,
+                            beta_max=float(np.max(np.abs(beta_prof))),
+                            beta_axis=float(beta_prof[0]),
+                            harmonic=harm, current_driven=cur, F=fnorm,
+                            E=0.5 * float(seq.l2_norm_sq(dof, 2)))
+            print(f"[beta] {tag:16s} beta_vol={beta_vol:+.4e}  "
+                  f"beta_max={out[tag]['beta_max']:.4e}  "
+                  f"beta_axis={out[tag]['beta_axis']:+.4e}  "
+                  f"harmonic={harm:.6f}  current-driven={100 * cur:.2f}%  "
+                  f"||F||={fnorm:.4e}", flush=True)
+        if cli.out:
+            json.dump(out, open(cli.out, "w"), indent=1)
+        return
 
     # --- render from a saved field, then stop ------------------------------
     if cli.poincare_from:
