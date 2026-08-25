@@ -8,36 +8,36 @@ worked on the sequences MRX actually builds, because the code had never
 executed — two guards blocked every polar and every Dirichlet case, so four
 `xfail(strict)` tests hid the fact that nothing behind them was correct.
 
-> # *** SHIP-WITH-ASTERISK ***
-> **At ODD `p` the operators are EXACT at every k = 0,1,2,3 and both BCs**
-> (round-trip ~5e-16 — the deliverable, achieved).
-> **At EVEN `p`, k >= 1 is NOT a projector: 7e-2 to 1.3e-1. THE CAUSE IS
-> UNKNOWN and this is an open bug to hunt.** `k = 0` is exact at both parities.
+> # *** RESOLVED 2026-08-25: exact at BOTH parities ***
+> **The operators are EXACT at every k = 0,1,2,3, both BCs, at EVEN and ODD
+> `p`** (round-trip ~1e-16; table in §7).
 >
-> Two candidate mechanisms were proposed and **both refuted by measurement**:
-> the extraction (k=3 has `E E^T = I` to 0.000 and still fails) and quadrature
-> exactness (splitting spans at knots did not fix it and made it slightly
-> *worse*). See §5 and §7.
+> The even-p defect (F) was the periodic seam: at even `p` the Greville points
+> sit at half-knots, so the last sorted periodic span is `[1 - h/2, 1 + h/2]`
+> and crosses `x = 1`.  The moments wrap their points and integrate the
+> periodic extension; `histopolation_matrix` evaluated the basis UNWRAPPED
+> there, where `SplineBasis.evaluate` is not periodic (the image of basis
+> function `p-1` is missing from the extended knot vector and comes back as
+> zero).  So H and the moments shared the RULE but not the INTEGRAND -- the
+> loophole in the "same rule => m = H c" argument.  Fix: wrap the matrix's
+> quadrature points.  See §7.
 >
-> **PRODUCTION EXPOSURE — settled, not hedged.** `conf/config_relax_from_nfs.yaml`
-> runs `ps = 4` (even), so this mattered. Checked repo-wide: the only files that
-> reach `histopolation_matrix` / `greville_spans` are `mrx/projectors.py`,
-> `mrx/spline_bases.py` and their two test files. `relax_from_nfs.py` ingests via
-> `interpolate_B` / `interpolate_map_from_points` in `mrx/io.py`, which uses
-> `collocation_matrix` only. **No production path reaches Greville
-> histopolation at any p**, so the open even-p bug (§7) is confined to an API
-> nothing in production calls at k >= 1.
+> **PRODUCTION EXPOSURE.** `conf/config_relax_from_nfs.yaml` runs `ps = 4`
+> (even).  Checked repo-wide: the only files that reach `histopolation_matrix`
+> / `greville_spans` are `mrx/projectors.py`, `mrx/spline_bases.py` and their
+> two test files.  `relax_from_nfs.py` ingests via `interpolate_B` /
+> `interpolate_map_from_points` in `mrx/io.py`, which uses `collocation_matrix`
+> only.  So no production path reached the defect while it was open.
 >
-> **But `interpolate` IS called in production — at k = 0.** `mrx/geometry.py:380`
+> **`interpolate` IS called in production -- at k = 0.** `mrx/geometry.py:380`
 > and `:425-426` build the R/Z spline maps with `seq.interpolate(..., 0)`. That
-> is pure collocation, it never forms a span, and **k = 0 is exact at BOTH
-> parities** (2.672e-16 at p=2), so it is unaffected by §7. It does now route
-> through `_conforming_restriction`, and that is an improvement rather than a
-> risk: k=0 accuracy went `2.225e-02 -> 1.540e-02` and the round-trip went
-> `5.290e-01 -> ~2.7e-16`. Flagged because this change is NOT confined to an
-> unused API, and a reader should know map construction goes through it.
+> is pure collocation, never forms a span, and was exact at both parities
+> throughout (2.672e-16 at p=2).  It does now route through
+> `_conforming_restriction`, an improvement rather than a risk: k=0 accuracy
+> went `2.225e-02 -> 1.540e-02` and the round-trip `5.290e-01 -> ~2.7e-16`.
+> Flagged because map construction goes through it.
 
-**Four distinct defects were found. Three are fixed; the fourth is open.**
+**Five distinct defects were found (A-D, F). All are fixed.**
 
 ---
 
@@ -46,15 +46,15 @@ executed — two guards blocked every polar and every Dirichlet case, so four
 | # | finding | status |
 | --- | --- | --- |
 | A | **Physical pullbacks were the wrong objects** (k=1, k=2) | **SETTLED — measured** |
-| B | **Extraction is non-biorthogonal**; needs `(E E^T)^-1` explicitly | **FIXED at k=0, measured**; k>=1 pending |
-| C | **Periodic Greville spans are unsorted** → negative-width spans | **FIXED, verification pending** |
+| B | **Extraction is non-biorthogonal**; needs `(E E^T)^-1` explicitly | **FIXED, measured at k=0..3** |
+| C | **Periodic Greville spans are unsorted** → negative-width spans | **FIXED, verified** (16776655) |
 | D | **Even-p Greville spans straddle knots** → moments inexact | **FIXED** (accuracy 3.272e-01 → 2.960e-01) |
-| **F** | **Even-p, k>=1 is not a projector (7e-2 … 1.3e-1)** | **OPEN — CAUSE UNKNOWN** |
+| F | **Even-p, k>=1 is not a projector (7e-2 … 1.3e-1)**: periodic spans cross the seam, H evaluated unwrapped | **FIXED, measured** (§7) |
 | E | The 1cf9cbd justification for removing the guards | **RETRACTED** (see §6) |
 
-All of A-E are measured. **F is open**: see §9 for the two mechanisms that were
-proposed for it and refuted (§7). Evidence: jobs 16770362 (B+C) and 16773716 (B+C+D),
-both over p=2 and p=3 x k=0..3 x free/dbc.
+All of A-F are measured. Evidence: jobs 16770362 (B+C), 16773716 (B+C+D) and
+16776655 (B+C+D+F), all over p=2 and p=3 x k=0..3 x free/dbc; 16776655 also
+carries the 1-D seam discriminator (§7).
 
 ---
 
@@ -118,8 +118,8 @@ per-component structure and handles any extraction; for a pure selection it
 returns immediately.
 
 **Measured: k=0 round-trip 5.290e-01 -> 2.796e-16.** k>=1 was still failing at
-that point for reasons C and D, so B's sufficiency at k>=1 is what 16770362
-decides.
+that point, for reason F; once that was fixed the same restriction carried
+k=1,2,3 to ~1e-16 at both parities (§7), so B is sufficient at every k.
 
 ---
 
@@ -188,18 +188,14 @@ rule. Effect: `k=1` histopolation accuracy `3.272e-01 -> 2.960e-01`.
 
 **This did NOT fix the identity failures, and was never going to.** See §7.
 
-**THE FIX IS NOT APPLIED.** It is: split each Greville span at its interior
-knots and apply the Gauss rule per sub-interval. Exact for piecewise polynomials
-at any p and any parity, confined to the span quadrature, and only marginally
-more expensive (one extra sub-interval per span).
+(Those two paragraphs above are the whole of defect D. The half-knot offset
+tabulated here is also what puts the last PERIODIC span across the seam, which
+is defect F — one geometric fact, two independent consequences: an accuracy one
+on every axis, and an identity one on the periodic axes only.)
 
-**This is required, not optional.** `conf/config_relax_from_nfs.yaml` sets
-`ps_r/ps_theta/ps_zeta = 4` at lines 19-21 and 30-32 — a production relaxation
-config at EVEN p. (`config_stell.yaml` is 3; those are the only `ps_*` entries.)
-Whether that driver actually reaches Greville histopolation is **unsettled** —
-its ingest goes through `interpolate_B` / `load_grid_field`, which use
-collocation (`n_basis = n_data`), so it is *probably* safe. Do not let that
-"probably" be rounded up.
+(`conf/config_relax_from_nfs.yaml` runs at EVEN `p = 4`; `config_stell.yaml`
+at 3, and those are the only `ps_*` entries in the repo. Production reach is
+settled in the header banner.)
 
 ---
 
@@ -221,57 +217,113 @@ is in `projectors.py` at the site, above the guards it justified.
 
 ---
 
-## 7. OPEN BUG (defect F): even-p, k>=1 is not a projector
+## 7. FIXED: even-p periodic spans cross the seam (defect F)
 
-**This is the asterisk. Hunt this.**
+**Before (jobs 16770362 / 16773716) and after (job 16776655):**
 
 ```
-                 p = 3 (ODD)                    p = 2 (EVEN)
-k=0   7.677e-16 / 5.375e-16   PASS     2.672e-16 / 2.619e-16   PASS
-k=1   5.198e-16 / 6.131e-16   PASS     7.111e-02 / 6.755e-02   FAIL
-k=2   4.556e-16 /     ...     PASS     8.626e-02 / 1.137e-01   FAIL
-k=3         ...               PASS     1.026e-01 / 1.293e-01   FAIL
+                 p = 3 (ODD)                    p = 2 (EVEN), before         p = 2 (EVEN), after
+k=0   7.677e-16 / 5.375e-16   PASS     2.672e-16 / 2.619e-16   PASS     3.008e-16 / 2.649e-16   PASS
+k=1   5.198e-16 / 6.131e-16   PASS     7.111e-02 / 6.755e-02   FAIL     2.248e-16 / 3.135e-16   PASS
+k=2   4.556e-16 / 3.870e-16   PASS     8.626e-02 / 1.137e-01   FAIL     2.689e-16 / 2.247e-16   PASS
+k=3   3.630e-16 / 5.234e-16   PASS     1.026e-01 / 1.293e-01   FAIL     2.977e-16 / 3.471e-16   PASS
 ```
+(free / dirichlet.  The p=3 column is from the earlier job; in 16776655 the
+p=3 cases stayed exact -- 7.402e-16 / 4.673e-16, 3.837e-16 / 5.297e-16,
+3.341e-16 / 3.831e-16, 4.198e-16 / 3.812e-16 at k=0..3 -- so the wrap costs the
+odd-p path nothing.  `test_pi_full_is_idempotent` on the non-polar,
+identity-extraction fixture: 2.849e-16 / 2.571e-16 / 2.761e-16 / 2.392e-16 at
+k=0/1/2/3, all PASS.  Whole file: **32 passed, 0 failed** in 1:06:34, against
+9 failed / 23 passed before.)
 
-`k = 0` is exact at BOTH parities — it is the only degree that never
-histopolates, which is the control that keeps the attribution honest.
+### The mechanism
 
-### Two mechanisms proposed, both REFUTED by measurement
+The periodic Greville point of degree `p` is `g_i = (i + (1-p)/2) / n`: ON a
+knot for odd `p`, HALFWAY between knots for even `p`.  After the wrap-and-sort
+of defect C the spans tile `[g_0, g_0 + 1)`.  For odd `p`, `g_0 = 0` and every
+span lies in `[0, 1]` (up to rounding -- see below).  For even `p`,
+`g_0 = h/2` and the last span is `[1 - h/2, 1 + h/2]` -- it **crosses the
+period seam**.
 
-**1. The extraction.** Refuted by k=3: its extraction is a pure selection with
-`||E E^T - I|| = 0.000` measured, and it fails anyway. Whatever breaks even-p
-k>=1 is upstream of the extraction entirely.
+Over that span the integrand must be the PERIODIC extension of the basis.  The
+moments get it: every `_interval_rule` site feeds a pullback that calls
+`_wrap_periodic_point`, so `f` is evaluated at `x mod 1`.
+`histopolation_matrix` did not: it evaluated `self(x, i)` at the raw `x > 1`,
+and `SplineBasis.evaluate` is NOT periodic there.  It folds only the `p'` raw
+functions `n .. n+p'-1` that exist in the extended knot vector; the raw image
+of basis function `p'` (support `[0, (p'+1)h]`) would be index `n+p'`, which
+does not exist, so on `(1, 1 + h/2]` that basis function evaluates to ZERO.
 
-**2. Quadrature inexactness (defect D).** Refuted directly: splitting spans at
-knots did not fix the identity and made it slightly WORSE
-(`5.736e-02 -> 7.111e-02` at k=1). It could not have been the cause, and the
-argument was available before the run: `solve(H, m) = c` requires only
-`m = H c`, and since `H` and the moments use the SAME rule and quadrature is
-LINEAR, that holds whether the rule is exact or not. **Exactness was never what
-the identity depended on.** Defect D is real and worth fixing for ACCURACY; it
-is simply a different defect.
+So `H` and the moments shared the quadrature RULE but not the INTEGRAND.  That
+is precisely the loophole in the linearity argument of §5: "same rule =>
+`m = H c`" assumes the rule is applied to the same functions on both sides.
 
-### What is known, to constrain the next hypothesis
+**1-D discriminator (job 16776655, `histo_seam_check.py`)**, `p=2, n=4`, de
+Rham ground truth `H dc = s(b) - s(a)` with `s` evaluated periodically at the
+span endpoints:
 
-* It is exactly a parity effect in `p`, not a degree-`k` effect: every `k >= 1`
-  fails at even p and passes at odd p.
-* It scales with the number of histopolated axes (k=1 < k=2 < k=3), so each
-  histopolated axis contributes an independent factor that compounds.
-* It survives BOTH a correct extraction restriction and exact quadrature.
-* `k=0` (collocation only, no spans) is immune.
-* `test_pi_full_is_idempotent` runs on a NON-POLAR, IDENTITY-EXTRACTION fixture
-  at p=2 and fails at k=1,2,3 — so it reproduces with no extraction in the loop
-  at all. **That is the cheapest place to debug it**: one degree, one axis, no
-  polar surgery, no Dirichlet rows.
+* unwrapped `H`: seam row off by **1.250e-01**, every other row ~1e-16.  That
+  number is analytic: the dropped `D_1 = 16 x` integrated over `(0, 1/8]` is
+  `8 (1/8)^2 = 0.125`.  `solve(H, ds) - dc = 1.717e-01`.
+* wrapped `H`: `1.110e-16` on every row; `H` equals the wrapped moments to
+  `1.110e-16`; `solve(H, ds) - dc = 3.331e-16`.
+* the same holds at `n = 6, 8` and `p = 2, 4, 5`: unwrapped seam-row defects
+  `1.25e-01 / 2.6e-03 / 8.3e-03` (p = 2 / 4 / 5), wrapped ~1e-16 throughout.
 
-### Where I would look next
+**The odd-p exactness was a rounding accident.**  At `n = 6, p = 3` the
+Greville point that should be exactly `0` came out as `-eps`, wrapped to
+`1 - eps`, and the last span became `[1 - eps, 1 + 1/6]` -- across the seam
+at ODD p.  The unwrapped matrix was then wrong by `8.333e-02` at `p = 3`, and
+`8.333e-03` at `p = 5`.  At `n = 4` and `n = 8` the knots are exact binary
+fractions, the point is exactly `0`, and odd p never crosses -- which is why
+the `(4,4,4)` fixtures passed at p=3.  Any production resolution that is not
+a power of two would have hit this at odd p as well.  With the wrap the
+matrix is exact regardless of where rounding puts the seam.
 
-The 1-D step `solve(H, moments(f)) = c` must hold whenever `moments` is a linear
-functional applied to `f = sum c_j D_j`. It does not. So either the moments are
-NOT `H c` for some structural reason (the integrand is not in `span{D_j}` on the
-span, or the two use different bases), or `H` is not the matrix the moments are
-built against. Comparing `moments(D_i)` against `H[:, i]` column by column, in
-1-D at p=2, would settle it in one cheap run and needs no sequence at all.
+Every measured constraint from the earlier hunt follows: it is a parity effect
+in `p` (only even `p` crosses the seam), it scales with the number of
+histopolated axes (one seam row per periodic histopolated axis), it survives a
+correct extraction and exact quadrature (neither touches the integrand), and
+`k = 0` is immune (collocation points are wrapped, no spans).  The radial axis
+is clamped and never crosses.
+
+### The two mechanisms this replaced, and what killed them
+
+Both were pursued for a day; neither is recoverable from the code, because
+neither left a diff.
+
+* **The extraction (`(E E^T)^-1 E`) is still incomplete at k >= 1.** REFUTED by
+  k = 3, which was named as the discriminator *before* the run: at k = 3 the
+  extraction is a pure selection, `||E E^T - I||_max = 0.000`, 0 violating rows
+  (§3) — and k = 3 failed anyway, at 1.026e-01 / 1.293e-01. An operator that
+  is exactly the identity cannot be the defect.
+* **The quadrature is inexact because even-p spans straddle knots.** REFUTED by
+  its own fix: splitting every span at its knots made the round-trip slightly
+  WORSE, 5.736e-02 -> 7.111e-02 at k = 1. It should have: `solve(H, m) = c`
+  needs only `m = H c`, which holds by LINEARITY whenever `H` and the moments
+  share a rule — exact or not. Exactness was never what the identity depended
+  on. (The split was kept: it is a genuine ACCURACY fix, defect D.)
+
+### Where the earlier reasoning went wrong
+
+The refutation of mechanism 2 was correct as far as it went -- exactness was
+not the issue -- but the linearity argument was then held as a proof that the
+rule could not be the problem at all.  It assumed the integrand was the same
+on both sides.  The moments wrap; the matrix did not.  The column-by-column
+comparison suggested at the end of the earlier §7 found it in one 1-D run.
+
+### The fix
+
+`SplineBasis.histopolation_matrix` reduces its quadrature points `mod 1` for
+periodic bases (one line; the comment at the site records the mechanism), and
+`greville_spans` documents that its last span crosses the seam at even `p`.
+`test_histopolation_de_rham_periodic` in `test_spline_bases.py` asserts the de
+Rham commutation on the periodic axis at `p = 2, 3, 4` against the periodic
+ground truth -- it fails on the seam row without the wrap and needs no
+sequence.  The alternative, making `SplineBasis.evaluate` itself periodic in
+`x`, was NOT done: it would touch every assembly path for a defect confined to
+one consumer, and it changes the value of the `p = 0` periodic basis at
+`x = 1.0` exactly.
 
 ---
 
@@ -321,16 +373,91 @@ built against. Comparing `moments(D_i)` against `H[:, i]` column by column, in
 
 ## 9. What is left
 
-1. **Read 16770362.** It decides whether B+C are sufficient. If k=3 still fails,
-   defect D is the next suspect — the fixture includes p=2 and k=3 histopolates
-   all three axes at once.
-2. **Implement defect D's fix** (split spans at interior knots). Required
-   regardless of (1), because of the p=4 production config.
-3. **Tighten the accuracy tolerances.** They are still the `< 1.0` placeholders
-   from the file's first commit and are nearly vacuous. Once the operators are
-   correct, set them from measured values.
-4. **Settle whether `config_relax_from_nfs` reaches Greville histopolation.**
-   Per call site, not by inference.
-5. The `frame='phys'` convention for `interpolate` at k=3 is unresolved; its
+1. **Tighten the accuracy tolerances.** They are still the `< 1.0` placeholders
+   from the file's first commit and are nearly vacuous. Now that the operators
+   are exact at both parities, set them from measured values.
+2. The `frame='phys'` convention for `interpolate` at k=3 is unresolved; its
    histopolation carries no Jacobian factor, so `frame='ref'` is rejected there
    rather than defined.
+3. Whether `SplineBasis.evaluate` should be periodic in `x` for periodic bases
+   (see §7, "The fix") is a design question, not a defect: nothing else feeds
+   it points outside `[0, 1]`.
+4. **The closed-last-piece convention (§10, "Proposed fix") is offered and not
+   applied.** It touches every assembly path, so it wants its own commit behind
+   a full GPU suite run. It would also let `block_jacobi_laplacian.py` drop its
+   `end = 1.0 - 1e-8` in `_edge_vector` and `face_operator` (relative error
+   ~`(p-1) * 1e-8 / h`) and take the true face metric instead of the last Gauss
+   node (`field[-1]`, an O(h) bias currently absorbed by the fitted
+   `bc_scale = 3.0`).
+5. **`block_jacobi_laplacian.py:682`'s docstring attributes the 4-6x
+   free-vs-dbc iteration lag to `det(DF) = 0` at the last knot. That looks
+   wrong** — §10 shows the zero is an autodiff artefact at `x = 1.0` exactly,
+   and quadrature never samples `rho = 1`. Treat the lag as unexplained.
+
+---
+
+## 10. Spline evaluation at knots and boundary points (measured, NOT fixed)
+
+Asked after §7, because that bug was a boundary-evaluation defect.  Job
+16778427 (`spline_boundary_check.py`), clamped `n = 6`, `p = 1..4`, and
+periodic `p = 1..3`.  Every number below is measured.
+
+**Interior knots are fine.** Values and `jax.grad` agree from the left, the
+right, and exactly at the knot for all `p` (p=1 gets the right-derivative,
+which is the only possible convention).  Partition of unity holds everywhere.
+
+**The clamped right boundary `x = 1.0` EXACTLY is a dead point for autodiff.**
+`_const_spline` is half-open `[t0, t1)`, so at the last knot every degree-0
+piece selects the zero branch of its `jnp.where`.  The VALUE is rescued by the
+`i == n-1 and x == T[-1]` patch in `evaluate` -- but a patch is a constant:
+
+```
+p=2   grad at 1.0     : [0 0 0 0  0  0]
+      grad at 1-1e-12 : [0 0 0 0 -8  8]     = left finite difference
+```
+
+So **every clamped basis function has gradient 0 at `x = 1.0`**, for every
+`p`.  That is the whole content of the "spline map `DF` singular at the outer
+knot, `det DF = 0` at `rho = 1`" finding of 2026-08-19: the map is fine, its
+`jacfwd` at `rho = 1.0` is structurally zero because of this.  The
+`1 - 1e-7` workaround in the eval scripts, and the clipping of clamped
+Greville points to `[eps, 1 - eps]`, were both treating a symptom of this.
+
+**`DerivativeSpline` at `x = 1.0` is wrong, not just undefined.**  Its inner
+basis `s` has `n - 1` functions on the parent's knot vector, so the patch
+fires on index `n - 2` where index `n - 1` is the one that is nonzero at the
+wall, and it fires with the wrong scale:
+
+```
+p=2   Dspl at 1.0     : [0 0 0 4 0]
+      Dspl at 1-1e-12 : [0 0 0 0 8]
+```
+
+The docstring says "cannot be evaluated at a clamped boundary"; it returns a
+plausible-looking wrong vector rather than failing.  `x = 0.0` is correct for
+both bases (the first piece is closed on the left).
+
+**Periodic bases are not periodic in `x`.**  Values at `x = 1.0` fold
+correctly, but outside `[0, 1]` the image of basis function `p` is missing
+(`value at 1.05` lacks the `0.3 / 0.045 / 0.0045` entry that `0.05` has at
+p = 1/2/3) -- the mechanism of §7.  At `p = 1` the gradient at `1.0` is also
+missing its `+n` entry (`[-6, 0, ...]` vs `[-6, 6, ...]` at `0.0`); `p >= 2`
+is fine there because the true derivative of that function vanishes at 0.
+
+**Stability.** `_safe_divide` (`isclose(y, 0)` with a dummy denominator of 1
+in the zero branch) is the correct NaN-safe pattern for the repeated end
+knots and survives `jacfwd(jacfwd(.))`.  The Cox-de Boor recursion in
+`_p_spline` re-evaluates the lower-degree pieces `2^p` times; at `p <= 5`
+that is cost, not accuracy.  The only exact float comparison, `x == T[-1]`, is
+against a knot that is exactly representable, so it does what it says.
+
+**Proposed fix (one place, deletes a patch).** Make the LAST piece closed:
+in `_const_spline`, `t0 <= x < t1` becomes `t0 <= x <= t1` when `t1` is the
+final knot `T[-1]`, and the `i == n-1 and x == T[-1]` patch in `evaluate` is
+deleted.  Then the value at `1.0` comes from the polynomial branch, the
+gradient is the left-derivative (the finite-difference value above), and
+`DerivativeSpline` needs no special case because its inner basis inherits the
+closed last piece.  For periodic bases `T[-1] = 1 + p h` is never reached, so
+they are unaffected.  Periodicity in `x` for periodic bases is a separate
+design choice (§9 item 3).  Neither is applied here: this section is an
+assessment, and the fix touches every assembly path.

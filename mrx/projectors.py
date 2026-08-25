@@ -96,33 +96,18 @@ def _quadrature_order_from_basis_1d(basis) -> int:
     return max(2, basis.p + 2)
 
 
-#: ***********************************************************************
-#: *  KNOWN LIMITATION -- EVEN SPLINE DEGREE.  READ BEFORE RELYING ON     *
-#: *  interpolate() AT k >= 1.                                            *
-#: *                                                                      *
-#: *  At ODD p these operators are EXACT: interpolating a function that   *
-#: *  already lies in the target space returns its own DOFs to machine    *
-#: *  precision, at every k = 0,1,2,3 and both BCs (measured ~5e-16).     *
-#: *                                                                      *
-#: *  At EVEN p, k >= 1 is NOT a projector -- the same round-trip comes   *
-#: *  back at 7e-2 to 1.3e-1.  k = 0 is exact at both parities.           *
-#: *  THE CAUSE IS UNKNOWN.  Two mechanisms were proposed and both were   *
-#: *  REFUTED by measurement:                                             *
-#: *    - the extraction: k=3 has E E^T = I to 0.000 and still fails;     *
-#: *    - quadrature exactness: splitting spans at knots did NOT fix it   *
-#: *      and made it slightly WORSE (5.7e-2 -> 7.1e-2).  It could not    *
-#: *      have been the cause: solve(H, m) = c needs only m = H c, and    *
-#: *      that holds by LINEARITY whenever H and m share a rule, exact    *
-#: *      or not.                                                         *
-#: *                                                                      *
-#: *  conf/config_relax_from_nfs.yaml runs ps = 4, which is EVEN.  Its    *
-#: *  ingest goes through collocation (n_basis = n_data) so it is         *
-#: *  PROBABLY unaffected -- that has NOT been verified per call site.    *
-#: *                                                                      *
-#: *  test_projectors.py parametrises the identity fixture over p=2 and   *
-#: *  p=3, so the p2 cases fail on purpose and are the standing reminder. *
-#: *  See docs/research/handoff_2026-08-25_histopolation.md.              *
-#: ***********************************************************************
+#: PERIODIC SPANS CROSS THE SEAM AT EVEN p.  Periodic Greville points sit ON
+#: knots for odd p and HALFWAY between knots for even p, so at even p the last
+#: sorted span is [1 - h/2, 1 + h/2] -- and at odd p a point that is 0 up to
+#: rounding can wrap to 1 - eps and cross it too (n=6, p=3 did).  The moments
+#: below wrap their quadrature points (``_wrap_periodic_point``) and so
+#: integrate the periodic extension; ``SplineBasis.evaluate`` does NOT extend
+#: periodically past x = 1 (the image of basis function p' is missing from the
+#: extended knot vector), so ``histopolation_matrix`` wraps its points too.
+#: Until it did, H and the moments shared the RULE but not the INTEGRAND, and
+#: k >= 1 was not a projector at even p (7e-2 .. 1.3e-1) while passing at odd
+#: p on the power-of-two fixtures -- the loophole in "same rule => m = H c".
+#: See docs/research/handoff_2026-08-25_histopolation.md, section 7.
 #:
 #: Interpolation and histopolation are done on the FULL tensor-product space
 #: and then restricted onto the extracted space.  That composition is the
