@@ -106,15 +106,22 @@ def report_preconditioners(seq, ops):
                 raise RuntimeError(
                     f"k={k} dirichlet={dbc} resolved schur.outer={outer!r}, "
                     "not the block atom")
+    # Only k=0 FREE is assembled: it is the one k=0 Laplacian solve in mrx/,
+    # reached through apply_leray_projection(seed1, k=1). k=0 dbc is expected to
+    # read 'jacobi' here and that is correct, not a fallback -- nothing solves
+    # it, so nothing should pay to precondition it.
     for dbc in (False, True):
         k0 = op._materialize_default_scalar_hodge_preconditioner(
             seq, ops, k=0, dirichlet=dbc)
         print(f"[precond] k=0 {'dbc ' if dbc else 'free'}: {k0.kind:12s} "
-              f"(atom assembled: {op._block_jacobi_available(seq, 0, dbc)})",
+              f"(atom assembled: {op._block_jacobi_available(seq, 0, dbc)})"
+              + ("" if dbc else "   <- the Leray solve in the k=1 chain"),
               flush=True)
-        if k0.kind != 'block':
-            raise RuntimeError(
-                f"k=0 dirichlet={dbc} resolved {k0.kind!r}, not the block atom")
+    k0_free = op._materialize_default_scalar_hodge_preconditioner(
+        seq, ops, k=0, dirichlet=False)
+    if k0_free.kind != 'block':
+        raise RuntimeError(
+            f"k=0 free resolved {k0_free.kind!r}, not the block atom")
 
 
 def report_harmonic(seq, ops):

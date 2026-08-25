@@ -452,15 +452,21 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
     from mrx.operators import (  # noqa: PLC0415
         assemble_block_jacobi_laplacian_preconditioner,
     )
-    # k=0 is in the list because the k=1 chain reaches L_0 through
-    # apply_leray_projection(v, k=1), and MEASURED on w7x ns=(12,24,12) p=3 the
-    # atom is worth it there: 311 -> 74 iterations dbc and 585 -> 114 free,
-    # against 0.25 s to assemble, i.e. break-even after 0.4 solves. (I argued
-    # the opposite when the k=0 default was fixed -- that one solve could not
-    # repay an assembly -- and the measurement says otherwise.) Both arms return
-    # the same vector to 1.1e-12, as a converged solve must.
     operators = assemble_block_jacobi_laplacian_preconditioner(
-        seq, operators, ks=(0, 1, 2, 3), dirichlets=(False, True))
+        seq, operators, ks=(1, 2, 3), dirichlets=(False, True))
+    # k=0 FREE only, and only that. The single k=0 Laplacian solve anywhere in
+    # mrx/ is the one the k=1 chain reaches through apply_leray_projection(
+    # seed1, k=1) -> apply_inverse_hodge_laplacian(div_v, 0, dirichlet=False);
+    # k=0 dbc is never solved here, so assembling it would be 0.25 s spent on an
+    # atom nothing asks for.
+    #
+    # Worth keeping in proportion: measured on w7x ns=(12,24,12) p=3 the atom
+    # takes that solve from 585 to 114 iterations, 2.19 s to 1.46 s, for 0.25 s
+    # of assembly. A 5x iteration cut, and ~0.6 s off a 220 s setup. It is a
+    # real win on the solve and a marginal one end to end; the default fix it
+    # rests on matters far more to callers that do MANY k=0 solves.
+    operators = assemble_block_jacobi_laplacian_preconditioner(
+        seq, operators, ks=(0,), dirichlets=(False,))
 
     operators = _commit(seq, init_nullspaces(
         seq, operators, betti_numbers=betti_numbers))
