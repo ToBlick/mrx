@@ -293,6 +293,14 @@ Three things settled:
   and the radial force a flux function to machine precision, exactly as §6.2
   requires.
 
+`lic_cyl_noshear` (constant `iota = 0.7`) adds the helicity check: eq. (2)
+returns **`+0.000000e+00`** at zero shear, exactly as the closed form requires,
+and `iota` is recovered as `0.700000` at every radius (ratio `+1.0000`, a
+constant profile being exactly representable). Force 1.68e-12, PS spread
+2.13e-14. `compute_helicity` returns `+7.81` for the same field -- so for a
+constant-iota field the ENTIRE value MRX reports is the harmonic gauge term and
+none of it is shear helicity, which is the §3 ambiguity made concrete.
+
 The one non-zero number, `[press] slope 1.5094, unexplained 3.05e-02`, is
 EXPECTED and is not an error: eq. (4)'s `-du/drho` omits the tension term
 `-B_theta^2/rho` of the exact balance (1). Predicting the slope from (1)
@@ -434,6 +442,59 @@ the vacuum field.
 > nothing downstream complains -- the run completes, the gates pass, and only
 > the physics is wrong. The guard is to check the derived object against the
 > code's actually reachable set before trusting an arm labelled "decisive".
+
+### 8.2 WHERE THE L2 ROUTE FIRST LEAKS -- and it is not what I first said
+
+`aic_tor_sheared` is the first case in this document where the L2 projection
+fails to hold the structure exactly:
+
+| case | `max\|B^rho\|/max\|B^zeta\|` | `\|\|div B\|\|` |
+| --- | --- | --- |
+| cylinder, every arm | ~1e-16 | ~3e-14 |
+| toroid, `iota = 0` | 4.2e-16 | 3.5e-15 |
+| **toroid, `iota != 0`** | **4.6e-09** | **9.4e-08** |
+
+Structure holds at machine precision until `B^chi = Phi' iota(rho)` is nonzero
+AND the geometry varies over a surface -- then it loses seven orders.
+
+**The mechanism is NOT off-diagonal metric coupling.** That was my first
+explanation and it is wrong: `toroid_map` at kappa = 1 has an EXACTLY DIAGONAL
+metric, `g_rt = g_rz = g_tz == 0` identically, same as the cylinder. What
+distinguishes them is the CHI-DEPENDENCE of the diagonal mass weights `g_ii/J`
+over a surface:
+
+```
+spread of g_ii/J over chi     rho=0.25   rho=0.50   rho=0.95
+  toroid  (all three i)         16.7%      33.8%      66.8%
+  cylinder                       0.0%       0.0%       0.0%
+```
+
+tracking `eps rho / R0` exactly. So the leak condition is **chi-dependent
+metric weights**, not "toroidal geometry" -- the toroid is just the cheapest
+example of one.
+
+HYPOTHESIS, not verified: with `g` diagonal the full-space mass matrix is
+block-diagonal per component, so a zero comp0 load should stay zero; the leak
+would then have to enter through the POLAR EXTRACTION, since
+`M2_reduced = e2 M2_full e2^T` is not block-diagonal where `e2` mixes components
+near the axis, and a chi-independent weight makes those cross terms cancel by
+angular symmetry while a chi-dependent one does not. The polar-mixing step has
+NOT been checked.
+
+Two falsifiable predictions follow, both already measurable:
+
+1. the leak should be LOCALISED near the axis rather than spread through the
+   bulk. `logical_profile_ic.py` reports an axis band separately -- and on the
+   cylinder it is 4.7e-18 axis vs 1.4e-16 bulk, i.e. the axis is CLEANER, which
+   is mild evidence AGAINST the polar-mixing story. `lic_gvec` reports the same
+   split on a shaped map and is the real test.
+2. the leak should scale with the surface spread of `g_ii/J`, so **hegna should
+   leak considerably more than the toroid's 4.6e-09**, since a shaped
+   stellarator varies far more than 34% over a surface.
+
+Prediction (2) is what decides §10.1: if hegna returns ~1e-9 the weight-spread
+explanation is wrong and should be dropped; if it returns 1e-5 or worse, the
+case for exact histopolation stops being "it might help" and becomes a number.
 
 ## 9. Solving for lambda instead of approximating it
 
