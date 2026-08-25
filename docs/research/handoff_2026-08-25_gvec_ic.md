@@ -50,7 +50,8 @@ therefore DROPPED, not merely unstarted.
 | That residual is MODEL error, not truncation | mpol 8->14, ntor 6->10 (220 -> 608 coeffs): median 0.0606 -> 0.0607, some values worse |
 | **Metric-orthogonality criterion**: the L2 route preserves `B^rho = 0` exactly iff `g_rho-chi = g_rho-zeta = 0` | re-established WITHOUT hegna — see §3.1 |
 | `load(frame='ref')` wants `g omega / J`, not `omega` — fails SILENTLY | `PRODUCTION.md` Knobs; push forward, use `frame='phys'` |
-| Physical histopolation pullbacks were wrong at k=1 and k=2 | `Pushforward` (`differential_forms.py:301`) is the authority: `omega = DF^T v` at k=1, `adj(DF) v` at k=2; code had `DF^-1` and `DF^T` |
+| Physical histopolation pullbacks were wrong at k=1 and k=2 | `Pushforward` (`differential_forms.py:301`) is the authority: `omega = DF^T v` at k=1, `adj(DF) v` at k=2; code had `DF^-1` and `DF^T`. **Fixed and confirmed**: k=1 went nan -> 1.545e+00 (finite), the axis singularity gone because `DF^T` has no inverse. Build `adj` as cofactors, NOT `det*inv33` — that is `0*inf` at the axis |
+| **`E . Pi_full` is NOT a projector**, so MRX's extraction is not the conforming `P_Z` and dropping the guards is NOT sufficient | round-trip (interpolate a function already in the target space, expect its own DOFs): k=0 free **5.290e-01**, k=0 dbc **3.609e-01**. The explicit local `P_Z` port is genuinely required — the ~a-day branch, not the hours branch |
 
 ## 3. hegna: audited, found bad, and DELETED
 
@@ -202,6 +203,17 @@ k=2. Roughly a dozen arms were designated in total, so that is a real rate.
 What caught all three was the same move: **reading the source of the thing meant
 to produce the evidence, rather than the claim about it.** Cheap, and it worked
 every time.
+
+**Accuracy tests pass on wrong operators; identity tests do not.** Two
+independent instances, one at each end of this thread. The k=0 Greville
+interpolation of a smooth function returns 2.225e-02 — comfortably inside the L2
+bound — while the very same operator fails its round-trip at 5.290e-01. An
+accuracy assertion would have passed and hidden the fact that `E . Pi_full` is
+not a projector at all. Symmetrically, a finiteness assertion at k=2 would have
+passed on `DF^T v`, which is finite at the axis and also the wrong object. In
+both cases the test that discriminates is the one asserting an EXACT identity
+the operator must satisfy — idempotency on its own space, or round-tripping a
+known primal field — not one asserting that an error is small.
 
 Second note: I twice generalised a geometric property from the two easy maps.
 "The metric is diagonal" is true of cylinder and toroid and spectacularly false
