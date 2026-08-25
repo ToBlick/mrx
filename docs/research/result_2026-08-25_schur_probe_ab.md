@@ -167,3 +167,31 @@ substantially, and loses nowhere outside noise.
 Does not support: any claim about production solve times. Production does not
 use this path. The result is that the *baseline* the deletion forces us onto is
 at least as good as the one it replaces.
+
+## Gate: the deletion introduced no regressions
+
+Full suite, GPU, on the rebased branch versus a fresh baseline built from
+`c57e8c8` itself in a throwaway worktree:
+
+| | failed | passed | skipped |
+|---|---|---|---|
+| stage-cd (job 16774872) | 9 | 222 | 1 |
+| c57e8c8 baseline (job 16774899) | 9 | 218 | 2 |
+
+The deltas are exactly accounted for: **+4** are the dispatch tests added by this
+work, and **−1 skipped** is `test_weak_term_diagonal_matches_exact_rows`, deleted
+because its raw_kron gate could never open again.
+
+**The nine failures are IDENTICAL BY NAME** (`gate_failures_*.txt` beside this
+file; `diff` is empty). Six are even-p `test_interpolation_reproduces_its_own_space[p2-...]`
+cases from the outstanding span-quadrature defect, and three are
+`test_pi_full_is_idempotent[1,2,3]`, which is a deliberate isolation of that same
+defect rather than a regression.
+
+**Why comparing by name rather than by count mattered here.** The pre-merge
+baseline at 76bf5f3 was ALSO nine failures — and a completely different nine:
+`test_k1_histopolation_error_is_small` plus all eight
+`interpolation_reproduces_its_own_space[k0..k3]` parametrisations. The
+histopolation merge fixed those at odd p and added three designed controls, so
+the total landed back on nine by coincidence. **Gating on "still nine" would have
+passed for entirely the wrong reason.**
