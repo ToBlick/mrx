@@ -1187,3 +1187,74 @@ Measured at the IC: **-1.780589e-04 with lambda on, -1.843373e-04 with it off**,
 a 3.5% difference. I had attributed that to discretisation. It is not
 discretisation; it is two different functionals, and the docstring warned that
 they "do NOT have to agree".
+
+## 22. THE dt BRACKET: the greedy step is pure loss when the field is far from equilibrium
+
+`w7x_ini` clebsch IC, 3000 CG steps, only the step size differing:
+
+| run | dt | dE | \|dH\| | \|\|F\|\| reduction | h/2 drift | surfaces |
+|---|---|---|---|---|---|---|
+| LR3 | linesearch (~5e-3 .. 1.4e-2) | 4.22e-03 | 2.33e-04 | 5.63x | 1.57e+00 | destroyed |
+| **D1** | **fixed 3e-3** | 3.03e-03 | **3.17e-06** | **5.75x** | **2.3e-03** | **preserved** |
+| W5 | fixed 1e-3 | 2.09e-03 | 2.00e-06 | 2.67x | 1.06e-04 | preserved |
+
+**D1 gets the SAME force reduction as the linesearch while destroying 73x less
+helicity, and keeps its surfaces.** On this case the greedy step buys no extra
+progress at all -- it is pure loss. Its section has 1 line lost of 40, clean
+5/6 and 10/11 island chains, and a smooth iota 0.78 -> 0.975.
+
+**The threshold is sharp, not graded.** `dt = 3e-3` is only two to four times
+below the linesearch's own step, and the outcome is categorical.
+
+### 22.1 But the opposite holds near equilibrium
+
+On `w7x_fmm002` -- a CONVERGED equilibrium -- the comparison inverts:
+
+| run | dt | \|\|F\|\| | \|dH\| | surfaces |
+|---|---|---|---|---|
+| **W1** | **linesearch** | 1.877e-02 -> **9.950e-05 (189x)** | 1.54e-06 | preserved |
+| D4 | fixed 1e-3 | 1.877e-02 -> 2.913e-03 (6.4x) | 1.17e-07 | preserved |
+
+The linesearch is **thirty times more productive** here and perfectly safe. So
+the rule is not "the linesearch is bad":
+
+    The greedy step is worth taking when the field is NEAR equilibrium,
+    and catastrophic when it is FAR.
+
+Which is the same statement as section 20's: distance from equilibrium is what
+makes a large step expensive. A step-size policy should therefore be adaptive
+in the residual, not fixed -- and `|dH|` per step is the quantity to gate on,
+since it is already measured and it is what actually goes wrong.
+
+## 23. THE eta SWEEP: converging by forgetting the problem
+
+`w7x_fmm002`, 4000 CG steps, tanh schedule tapering to ~0:
+
+| eta_max | \|\|F\|\| final | helicity drift | G1 identity break (median) |
+|---|---|---|---|
+| 0 (W1) | 9.950e-05 | -0.9% | 1.3e-11 |
+| 1e-4 | 9.628e-05 | +25.6% | 5.25 |
+| 1e-3 | 1.405e-05 | +82.0% | 49.5 |
+| **1e-2** | **2.203e-09** | **+99.98%** | 7.41 |
+
+At `eta = 1e-2` the force residual reaches **2.2e-09** -- a numerically exact
+equilibrium -- and the section is perfectly nested, zero lines lost, h/2 drift
+2.8e-05, iota smooth and monotone 0.873 -> 1.040, **with the islands gone**.
+W1's 5/6, 10/11 and 5/5 chains have vanished and the profile crosses those
+resonances with no island structure.
+
+That is exactly what a vacuum field looks like: no current, so no resonant
+islands, so perfect nesting. The run is a complete and physically correct
+demonstration of Taylor relaxation -- destroy the topological constraint and
+the field falls to the lowest state available, which at H = 0 is the vacuum
+field.
+
+**And it is a demonstration of why strong eta is useless in an equilibrium
+solver: it converges beautifully by forgetting the equilibrium it was given.**
+99.98% of the helicity is gone; the answer is no longer related to the input.
+
+`eta = 1e-4` is simply a bad trade -- 25.6% of the helicity spent for no force
+gain over `eta = 0` (9.63e-05 against 9.95e-05).
+
+The G1 identity breaks by 5-50x at every nonzero eta, as predicted in section
+18.1: `dt = (F,u)/||dB||^2` omits the `-eta||J||^2` term in `<B,dB>`.
