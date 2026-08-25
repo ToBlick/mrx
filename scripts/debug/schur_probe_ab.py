@@ -121,14 +121,33 @@ def run_geometry(geometry, ns, p, tol, maxiter, ks):
                 x.block_until_ready()
                 iters = int(jnp.abs(jnp.asarray(info)))
                 converged = int(jnp.asarray(info)) < 0
-                out[kind] = (np.asarray(x), iters, converged)
-            xr, ir, okr = out["raw_kron"]
-            xb, ib, okb = out["block_jacobi"]
-            dx = float(np.linalg.norm(xb - xr) / max(np.linalg.norm(xr), 1e-300))
-            verdict = "OK" if dx < 1e-6 else "*** ARMS DISAGREE ***"
-            print(f"[solve] k={k} {side} raw_kron {ir:6d} it (conv {okr})   "
-                  f"atom {ib:6d} it (conv {okb})   |dx|/|x| = {dx:.3e}  "
-                  f"{verdict}", flush=True)
+                # The TRUE residual, which stays meaningful when a solve does
+                # not converge -- unlike |dx|/|x|, which then compares two
+                # arbitrary partial iterates and says nothing about either.
+                lx = op.apply_hodge_laplacian(seq, ops, x, k, dirichlet=dbc)
+                res = float(np.linalg.norm(np.asarray(lx) - np.asarray(rhs))
+                            / np.linalg.norm(np.asarray(rhs)))
+                out[kind] = (np.asarray(x), iters, converged, res)
+            xr, ir, okr, rr = out["raw_kron"]
+            xb, ib, okb, rb = out["block_jacobi"]
+            print(f"[solve] k={k} {side} raw_kron {ir:6d} it (conv {okr}) "
+                  f"res {rr:.2e}   atom {ib:6d} it (conv {okb}) res {rb:.2e}",
+                  flush=True)
+
+            # A converged solve is preconditioner-independent, so the arms must
+            # agree -- but ONLY converged solves carry that guarantee. If either
+            # hit the iteration cap, |dx|/|x| is undefined as a correctness
+            # check and reporting it as a disagreement is simply wrong.
+            if okr and okb:
+                dx = float(np.linalg.norm(xb - xr)
+                           / max(np.linalg.norm(xr), 1e-300))
+                verdict = "OK" if dx < 1e-6 else "*** ARMS DISAGREE ***"
+                print(f"[check] k={k} {side} |dx|/|x| = {dx:.3e}  {verdict}",
+                      flush=True)
+            else:
+                print(f"[check] k={k} {side} NOT CONVERGED (cap {maxiter}) -- "
+                      "correctness undefined; rank the arms by residual above, "
+                      "not by |dx|/|x|", flush=True)
 
 
 def main():
