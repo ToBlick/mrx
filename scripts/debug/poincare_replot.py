@@ -55,7 +55,11 @@ def main():
             R, Z = d[f"R_zeta{plane:g}"], d[f"Z_zeta{plane:g}"]
             axis = ((d[f"axisR_zeta{plane:g}"], d[f"axisZ_zeta{plane:g}"])
                     if f"axisR_zeta{plane:g}" in d.files else None)
-            a_eff = d.get(f"a_eff_zeta{plane:g}")
+            a_eff = d.get(f"a_mid_zeta{plane:g}")
+            xlab = "outboard midplane distance to axis [m]"
+            if a_eff is None:
+                a_eff = d.get(f"a_eff_zeta{plane:g}")
+                xlab = "mean distance to magnetic axis [m]"
             if f"logr_zeta{plane:g}" in d.files:
                 logical = (d[f"logr_zeta{plane:g}"], d[f"logth_zeta{plane:g}"])
             else:
@@ -74,8 +78,8 @@ def main():
                          f"{int(keep.sum())}/{len(keep)} lines kept",
                 axis_RZ=axis, path=out, profile_x=a_eff, nfp=NFP[geometry],
                 logical=logical,
-                profile_xlabel=("mean distance to magnetic axis [m]"
-                                if a_eff is not None else "seed radius $r$"))
+                profile_xlabel=(xlab if a_eff is not None
+                                else "seed radius $r$"))
             print(out, flush=True)
 
 

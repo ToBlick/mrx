@@ -48,7 +48,7 @@ from mrx.nullspace import (  # noqa: E402
 )
 from mrx.poincare import (  # noqa: E402
     effective_radius, escaped_mask, logical_field,
-    mean_axis_distance, render_section,
+    mean_axis_distance, midplane_radius, render_section,
     rotational_transform, seed_from_axis, seed_line, step_convergence, to_RZ,
     trace,
 )
@@ -298,12 +298,14 @@ def main():
     ap.add_argument("--bench", action="store_true",
                     help="time the prescribed schedule against the adaptive one")
     ap.add_argument("--bench-periods", type=int, default=20)
-    ap.add_argument("--profile-x", default="mean",
-                    choices=("mean", "area", "seed"),
-                    help="surface label on the iota profile: 'mean' distance "
-                         "to the magnetic axis (physical, comparable across "
-                         "maps), 'area' sqrt(A/pi), or 'seed' radius (monotone "
-                         "by construction but map-dependent)")
+    ap.add_argument("--profile-x", default="midplane",
+                    choices=("midplane", "mean", "area", "seed"),
+                    help="surface label on the iota profile: 'midplane' "
+                         "distance from the axis on the outboard midplane "
+                         "(physical AND monotone by nesting -- the default), "
+                         "'mean' distance over all crossings, 'area' "
+                         "sqrt(A/pi), or 'seed' radius (monotone by "
+                         "construction but map-dependent)")
     ap.add_argument("--seed-from", default="coord", choices=("coord", "axis"),
                     help="'coord' walks out from the logical r=0; 'axis' from "
                          "the MAGNETIC axis, which matters whenever the two "
@@ -387,8 +389,19 @@ def main():
                 jnp.asarray(R), jnp.asarray(Z), aR.mean(), aZ.mean()))
             a_mean = np.asarray(mean_axis_distance(
                 jnp.asarray(R), jnp.asarray(Z), aR.mean(), aZ.mean()))
+            a_mid = np.asarray(midplane_radius(
+                jnp.asarray(R), jnp.asarray(Z), aR.mean(), aZ.mean()))
             a_eff, xlabel = {
-                # Physical and comparable across maps, no ordering needed.
+                # Monotone BY NESTING: nested curves cross a fixed ray from the
+                # axis at strictly increasing distance, and fixing the ray also
+                # removes the crossing-point sampling weight that makes the mean
+                # non-monotone. NaN where an orbit misses the ray entirely,
+                # which is a broken trace saying so.
+                "midplane": (a_mid,
+                             "outboard midplane distance to axis  [m]"),
+                # Physical and comparable across maps, no ordering needed, but
+                # averages over crossings whose angular distribution is set by
+                # the dynamics rather than by the surface.
                 "mean": (a_mean, "mean distance to magnetic axis  [m]"),
                 # Physical too, but the shoelace needs the crossings sorted by
                 # angle and assumes star-shapedness about the axis.
@@ -408,6 +421,7 @@ def main():
                 sections[f"{key}_zeta{plane:g}"] = arr
             sections[f"a_eff_zeta{plane:g}"] = a_eff
             sections[f"a_area_zeta{plane:g}"] = a_area
+            sections[f"a_mid_zeta{plane:g}"] = a_mid
             sections[f"coordaxis_zeta{plane:g}"] = np.array([cR, cZ])
             if a_eff0 is None:
                 a_eff0 = a_eff

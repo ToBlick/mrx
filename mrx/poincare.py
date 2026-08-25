@@ -300,6 +300,50 @@ def enclosed_area(R, Z, centre_R, centre_Z):
     return 0.5 * jnp.abs(jnp.sum(cross, axis=-1))
 
 
+def midplane_radius(R, Z, centre_R, centre_Z):
+    """Distance from the magnetic axis to each surface on the OUTBOARD midplane.
+
+    The surface label to prefer. Nested curves cross any fixed ray from the axis
+    at strictly increasing distance, so this is monotone *by nesting* -- which
+    neither :func:`mean_axis_distance` nor :func:`effective_radius` is.
+
+    That is not a technicality. The mean averages over the CROSSING POINTS, and
+    their distribution in poloidal angle is set by the field-line dynamics, not
+    by the surface, so two properly nested surfaces can come out non-monotone
+    from sampling weight alone. Fixing the ray removes the weighting entirely.
+
+    It is a property of the physical curve, so it stays comparable across maps,
+    unlike the seed radius.
+
+    The ray is the outboard midplane THROUGH THE AXIS (``Z = centre_Z``), not
+    ``Z = 0``; they coincide when the axis is on the midplane, which is the
+    usual case here, and the axis-centred one keeps meaning when it is not.
+
+    Returns NaN for a surface whose crossings do not straddle the ray -- that
+    needs the orbit to miss an entire half-plane, so it is a real defect and is
+    left visible rather than patched.
+    """
+    dR, dZ = R - centre_R, Z - centre_Z
+    ang = jnp.arctan2(dZ, dR)
+    rad = jnp.sqrt(dR ** 2 + dZ ** 2)
+
+    big = jnp.asarray(jnp.inf)
+    above = jnp.where(ang >= 0.0, ang, big)          # smallest angle above
+    below = jnp.where(ang < 0.0, -ang, big)          # smallest |angle| below
+    i = jnp.argmin(above, axis=-1)
+    j = jnp.argmin(below, axis=-1)
+
+    take = jnp.take_along_axis
+    a_hi = take(ang, i[..., None], -1)[..., 0]
+    a_lo = take(ang, j[..., None], -1)[..., 0]
+    r_hi = take(rad, i[..., None], -1)[..., 0]
+    r_lo = take(rad, j[..., None], -1)[..., 0]
+
+    straddles = (jnp.min(above, axis=-1) < jnp.inf) & (jnp.min(below, axis=-1) < jnp.inf)
+    t = (0.0 - a_lo) / (a_hi - a_lo)
+    return jnp.where(straddles, r_lo + t * (r_hi - r_lo), jnp.nan)
+
+
 def mean_axis_distance(R, Z, centre_R, centre_Z):
     """Mean distance from the magnetic axis over a surface's crossings.
 

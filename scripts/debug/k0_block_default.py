@@ -38,6 +38,7 @@ import jax.numpy as jnp  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mrx.operators as op  # noqa: E402
+from mrx.nullspace import compute_nullspaces  # noqa: E402
 from verify_block_jacobi import build_sequence  # noqa: E402
 
 
@@ -63,13 +64,28 @@ def main():
     ns = tuple(int(v) for v in cli.ns.split(","))
 
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter)
+    # L_0 with NATURAL BCs is singular -- its kernel is the constants -- so the
+    # solve deflates against the stored k=0 nullvector. Without
+    # compute_nullspaces that slot is zeros, the deflation is a no-op, and the
+    # free arm cannot converge no matter what preconditions it. (Measured: both
+    # arms ran to 200000 iterations before this line existed.)
+    ops = compute_nullspaces(seq, ops)
+    seq.set_operators(ops)
     print(f"[setup] {cli.geometry} ns={ns} p={cli.p}", flush=True)
 
     for dbc in (True, False):
         n = int(getattr(seq, "n0_dbc" if dbc else "n0"))
         rhs = jax.random.normal(jax.random.PRNGKey(3), (n,))
+        if not dbc:
+            # ... and the right-hand side has to be in the range, i.e. L2
+            # orthogonal to the constants, or no solution exists at all.
+            one = ops.null_0[0]
+            rhs = rhs - one * jnp.dot(
+                one, seq.apply_mass_matrix(rhs, 0, dirichlet=False)) / jnp.dot(
+                one, seq.apply_mass_matrix(one, 0, dirichlet=False))
 
-        # (1) no atom assembled -> the default must still be jacobi.
+        # (1) no k=0 atom assembled -> the default must still be jacobi.
+        #     compute_nullspaces assembles ks=(1,2,3) only, so this holds.
         assert not op._block_jacobi_available(seq, 0, dbc)
         pre = op._materialize_default_scalar_hodge_preconditioner(
             seq, ops, k=0, dirichlet=dbc)
