@@ -1132,3 +1132,58 @@ coherent field to be tested on.
 
 Read as: the scheme is sound. It costs topology in proportion to how far it has
 to move and how greedily it moves, and both of those are controllable.
+
+## 21. lambda = 0 relaxes to the PURELY HARMONIC field
+
+`S12`, `w7x_fmm002`, Clebsch IC with `--no-lambda`, 3000 CG steps:
+
+    energy removed        2.9040%          (against 0.0244% with lambda on)
+    ||F||                 4.587e-02 -> 6.271e-04        73x
+    residual              6.006e-02 -> 4.001e-03        15.0x
+    HARMONIC cos          0.985353 -> 0.999980
+    residual off span(h)  1.705e-01 -> 6.355e-03
+    harmonic amplitude    drift 1.13e-16   (the exact invariant, holding)
+
+**The field converges to the harmonic field to five nines.** That is the
+cleanest convergence result in this study, and it is consistent rather than
+coincidental: this IC's helicity is ~0 (-1.8e-04), and the minimum-energy state
+at zero helicity IS the harmonic (vacuum) field -- the same argument that
+governs the `dzeta` case in section 12, arrived at from a completely different
+starting field.
+
+It also shows what lambda is FOR. lambda carries the within-surface
+redistribution, i.e. the Pfirsch-Schlueter current, i.e. the part of the field
+that supports pressure. Delete it and there is nothing left to hold the field
+off the vacuum state, so it sheds 2.9% of its energy -- a hundred and twenty
+times what the lambda-on case had to shed -- and lands on the harmonic mode.
+
+### 21.1 A correction: lambda does NOT leave `compute_helicity` invariant
+
+I claimed in discussion that lambda preserves helicity, and cited it as a gate
+the `--no-lambda` arm should satisfy. **That is wrong, and the gate as I framed
+it was testing a quantity with no reason to be invariant.**
+
+The lambda-invariance belongs to the NATURAL-GAUGE analytic helicity, eq. (1)
+of `logical_profile_ic.py`:
+
+    A = Phi(rho) dchi - X(rho) dzeta
+    H = int_0^1 (Phi X' - X Phi') drho
+
+lambda does not appear in that formula at all -- it is built from the flux
+functions alone, which lambda preserves -- so it is invariant by construction,
+trivially.
+
+`compute_helicity` computes a DIFFERENT functional, and
+`logical_profile_ic.py`'s own docstring says so: it solves for the CO-EXACT `A`
+via the Hodge Laplacian and adds the harmonic remainder back, giving the
+relative/generalised helicity `<A, B + B_harm>`. That is a functional of `B`
+alone with its own gauge fixing, so "lambda is a pure gauge transformation of
+A" does not apply to it. lambda genuinely changes `B` -- it redistributes field
+within each surface, which is exact-form content -- and the co-exact `A`
+changes with it. Only `B_harm` is lambda-invariant, since lambda preserves the
+fluxes.
+
+Measured at the IC: **-1.780589e-04 with lambda on, -1.843373e-04 with it off**,
+a 3.5% difference. I had attributed that to discretisation. It is not
+discretisation; it is two different functionals, and the docstring warned that
+they "do NOT have to agree".
