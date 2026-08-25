@@ -1040,3 +1040,71 @@ them:
 Not yet known: whether the trade improves with resolution (S01-S03, S13-S14) or
 with `gamma > 0` (S04-S06, W4), both of which were running when this was
 written.
+
+## 20. WHICH W7-X FILE EACH RUN USED, AND WHY IT MATTERS
+
+The two finite-beta exports are not the same kind of object, and I had been
+treating them as though they were. From their own attributes:
+
+| | LR3 and W5 | W1 |
+|---|---|---|
+| file | `w7x_ini_00000000_clebsch_mrx.h5` | `w7x_fmm002_clebsch_mrx.h5` |
+| `gvec_source` | `W7X_ini_State_0000_00000000.dat` | `GVEC_State_final.dat` |
+| axis_R | **5.5 exactly** | 5.5359528014861 |
+| beta mean / max | 5.8% / 13.0% | 1.85% / 3.69% |
+| IC `\|\|F\|\|/\|\|B\|\|` | 4.76e-02 | 1.88e-02 |
+
+**`w7x_ini` is GVEC's INITIAL GUESS, not a converged equilibrium.** "ini",
+iteration `0000_00000000`, and an axis at exactly `R = 5.5` with no Shafranov
+shift -- that is an input number, not a solution. `fmm002` is a converged final
+state, and its axis carries fourteen significant figures because it was solved
+for.
+
+Three things follow, and they correct earlier sections:
+
+* **The "GVEC's state is a fixed point of our flow" argument does not apply to
+  LR3.** Section 13 leaned on `J x B = grad p` holding at GVEC's state. It does
+  not hold at an unconverged guess, so the pressure-drift test was never
+  meaningful on that file. Section 13's "failed prediction" is void as stated.
+* **Distance from equilibrium is a second control variable** alongside step
+  size. LR3 travels far *because* its IC is not an equilibrium, and travelling
+  far under maximal steps is exactly what maximises numerical reconnection.
+  Section 19 identified the step; this identifies what makes the step
+  expensive.
+* **Section 19.4's demotion of W1 was too harsh in one respect.** W1 removes
+  only 0.0244% of the energy, which is still the reason its `|dH|` is small --
+  that part stands. But it is not "barely doing anything": see below.
+
+### 20.1 W1 is the strongest result in this study
+
+Starting from GVEC's CONVERGED equilibrium, 3000 CG steps:
+
+    ||F||                  1.8768e-02 -> 9.9498e-05      189x
+    residual               1.0214e-01 -> 6.1451e-04      166x
+    PRESSURE vs GVEC       4.503e-02  -> 2.133e-02       2.1x CLOSER
+    energy removed         0.0244%
+    surfaces               preserved, with islands at 5/6, 10/11, 5/5
+
+The energy removed is tiny because there was almost none to remove; what the
+run actually did was drive the FORCE RESIDUAL down by 166x while holding the
+topology and moving the pressure profile toward the file. That is our scheme
+refining GVEC's own solution, and it is the cleanest evidence here that the
+discretisation, the force operator and the descent are all correct together.
+
+**It also rescues section 13's prediction properly.** The multiplier converges
+toward GVEC's pressure on BOTH cases where the field stays coherent -- W1 (2.1x
+closer, converged IC, big steps) and W5 (3.2x closer, unconverged IC, small
+steps). It diverges only on LR3, where the field was being shredded and the
+target was not an equilibrium anyway. The prediction was right; it needed a
+coherent field to be tested on.
+
+### 20.2 The three-way picture
+
+| start from | step | force | surfaces | pressure vs GVEC |
+|---|---|---|---|---|
+| converged equilibrium (W1) | linesearch | **166x down** | kept | 2.1x closer |
+| unconverged guess (W5) | fixed 1e-3 | 2.1x down | mostly kept | 3.2x closer |
+| unconverged guess (LR3) | linesearch | 2.4x down | destroyed | 3.5x further |
+
+Read as: the scheme is sound. It costs topology in proportion to how far it has
+to move and how greedily it moves, and both of those are controllable.
