@@ -230,11 +230,14 @@ def test_no_production_code_constructs_a_kind_nothing_accepts():
     "for kind='tensor', deleted with the tensor stack. Whether those scripts "
     "are repointed or retired is a scope decision that has not been taken -- "
     "several are benchmarks measuring a preconditioner that no longer exists. "
-    "STRICT on purpose: this flips to a FAILURE the moment the last site is "
-    "fixed, which is the signal to delete this marker rather than let the test "
-    "sit green-by-exception forever. A permanently-red test trains people to "
-    "ignore red; a permanently-xfailed one without strict trains them to "
-    "ignore the marker."))
+    "STRICT ON PURPOSE, and this is why it is xfail rather than red or absent "
+    "-- nobody gave up. A permanently-RED test is the stale-baseline trap in a "
+    "new costume: every future gate carries a known failure, and a NEW failure "
+    "hides behind it. A plain xfail rots the other way, staying quietly green "
+    "long after the reason expires. strict=True is honest in both directions: "
+    "it catches the class today, and it converts to a HARD FAILURE the moment "
+    "the last stale site is fixed -- which is precisely the signal to delete "
+    "this marker. The test tells you when to remove the test."))
 def test_no_script_asks_for_a_kind_nothing_accepts():
     """The same check over scripts/, which is where the class actually hid.
 
