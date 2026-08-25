@@ -590,11 +590,16 @@ Two consequences worth recording, because both stop work that looked justified:
   FEEC machinery would buy NOTHING in accuracy.** A spline space would reproduce
   these numbers; the error is not in the basis. Improving lambda requires
   letting the surfaces move, i.e. solving the VMEC problem, not rediscretising.
-* The cost argument for splines also fails: 3.06 -> 3.38 s/surface for 2.8x the
-  coefficients, so the DENSE O(N^3) mode solve is not the bottleneck (quadrature
-  is) at any resolution worth using. The remaining reasons to want surface FEEC
-  are local radial refinement and one-code-path tidiness -- both real, neither
-  worth building 2-D surface geometry plumbing that does not exist.
+* The cost argument for splines also fails: 3.06 -> 3.38 s/surface, **+10%**,
+  for 2.8x the coefficients AND 2.25x the quadrature points. Assembly is
+  `O(n_q * n_modes^2)` (~17x here) and the dense solve `O(n_modes^3)` (~21x);
+  neither grew the wall time, so NEITHER dominates -- something roughly fixed
+  per surface does (tracing/compilation, or the spline map evaluation). The
+  conclusion that the dense mode solve is not the bottleneck stands; naming
+  quadrature as the replacement would be unmeasured, so it is not named. The
+  remaining reasons to want surface FEEC are local radial refinement and
+  one-code-path tidiness -- both real, neither worth building 2-D surface
+  geometry plumbing that does not exist.
 
 Incidental: the hegna map came back `sign=-1` (mirrored, as `gvec_geometry.py`
 warns) and every correlation is still POSITIVE, so the mirror does not flip
