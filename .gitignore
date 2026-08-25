@@ -15,6 +15,10 @@ data
 outputs
 papers
 docs/*.pdf
+# Tooling/session state, not project sources.
+.claude
+.github
+.hydra
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -195,7 +199,3 @@ cython_debug/
 
 # LaTeX paper sources are tracked; ignore only build artifacts.
 papers/
-
-
-# Claude Code session state, agent worktrees, and local settings.
-.claude/
