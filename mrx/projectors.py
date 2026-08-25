@@ -59,18 +59,71 @@ def _leggauss_rule(order: int) -> tuple[Array, Array]:
     return jnp.asarray(xi), jnp.asarray(w)
 
 
-def _interval_rule(span: Array, order: int) -> tuple[Array, Array]:
+def _interval_rule(span: Array, order: int, knots: Array | None = None
+                   ) -> tuple[Array, Array]:
+    """Gauss rule on ``span``, SPLIT at any knots the span contains.
+
+    Greville spans straddle an interior knot whenever the degree is EVEN --
+    ``g_i = i + (p+1)/2`` in units of the knot spacing, integral for odd p and
+    half-integral for even p -- and Gauss-Legendre is exact only for
+    POLYNOMIALS.  A spline has a derivative jump at each knot, so a single rule
+    spanning one converges algebraically rather than exactly: measured on an
+    off-centre knot, 40 points still left 3.6e-07 where splitting is exact at 2.
+
+    ``SplineBasis.histopolation_matrix`` splits identically, so the matrix and
+    the moments are built with the SAME rule -- which matters independently of
+    exactness, since ``solve(H, m) = c`` needs ``m = H c`` and quadrature is
+    linear.
+    """
     xi_ref, w_ref = _leggauss_rule(order)
     a, b = span
-    center = 0.5 * (a + b)
-    halfwidth = 0.5 * (b - a)
-    return center + halfwidth * xi_ref, halfwidth * w_ref
+    if knots is None:
+        center = 0.5 * (a + b)
+        halfwidth = 0.5 * (b - a)
+        return center + halfwidth * xi_ref, halfwidth * w_ref
+
+    cuts = jnp.clip(jnp.unique(knots), a, b)
+    cuts = jnp.sort(jnp.concatenate([jnp.array([a]), cuts, jnp.array([b])]))
+    lo, hi = cuts[:-1], cuts[1:]
+    centers = 0.5 * (lo + hi)
+    halfwidths = 0.5 * (hi - lo)
+    xs = (centers[:, None] + halfwidths[:, None] * xi_ref[None, :]).reshape(-1)
+    ws = (halfwidths[:, None] * w_ref[None, :]).reshape(-1)
+    return xs, ws
 
 
 def _quadrature_order_from_basis_1d(basis) -> int:
     return max(2, basis.p + 2)
 
 
+#: ***********************************************************************
+#: *  KNOWN LIMITATION -- EVEN SPLINE DEGREE.  READ BEFORE RELYING ON     *
+#: *  interpolate() AT k >= 1.                                            *
+#: *                                                                      *
+#: *  At ODD p these operators are EXACT: interpolating a function that   *
+#: *  already lies in the target space returns its own DOFs to machine    *
+#: *  precision, at every k = 0,1,2,3 and both BCs (measured ~5e-16).     *
+#: *                                                                      *
+#: *  At EVEN p, k >= 1 is NOT a projector -- the same round-trip comes   *
+#: *  back at 7e-2 to 1.3e-1.  k = 0 is exact at both parities.           *
+#: *  THE CAUSE IS UNKNOWN.  Two mechanisms were proposed and both were   *
+#: *  REFUTED by measurement:                                             *
+#: *    - the extraction: k=3 has E E^T = I to 0.000 and still fails;     *
+#: *    - quadrature exactness: splitting spans at knots did NOT fix it   *
+#: *      and made it slightly WORSE (5.7e-2 -> 7.1e-2).  It could not    *
+#: *      have been the cause: solve(H, m) = c needs only m = H c, and    *
+#: *      that holds by LINEARITY whenever H and m share a rule, exact    *
+#: *      or not.                                                         *
+#: *                                                                      *
+#: *  conf/config_relax_from_nfs.yaml runs ps = 4, which is EVEN.  Its    *
+#: *  ingest goes through collocation (n_basis = n_data) so it is         *
+#: *  PROBABLY unaffected -- that has NOT been verified per call site.    *
+#: *                                                                      *
+#: *  test_projectors.py parametrises the identity fixture over p=2 and   *
+#: *  p=3, so the p2 cases fail on purpose and are the standing reminder. *
+#: *  See docs/research/handoff_2026-08-25_histopolation.md.              *
+#: ***********************************************************************
+#:
 #: Interpolation and histopolation are done on the FULL tensor-product space
 #: and then restricted onto the extracted space.  That composition is the
 #: construction of Guclu & Campos Pinto (arXiv:2505.15996),
@@ -431,21 +484,21 @@ def _full_oneform_histopolation_dofs(seq, v, frame: str = 'phys'):
     pullback = _oneform_pullback(seq, v, frame)
 
     def integrate_component_0(span_r, t_val, z_val):
-        xs_r, ws_r = _interval_rule(span_r, q_r)
+        xs_r, ws_r = _interval_rule(span_r, q_r, d_r.T)
         x = jnp.stack([xs_r, jnp.full(xs_r.shape, t_val),
                         jnp.full(xs_r.shape, z_val)], axis=-1)
         vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 0]
         return jnp.sum(vals * ws_r)
 
     def integrate_component_1(r_val, span_t, z_val):
-        xs_t, ws_t = _interval_rule(span_t, q_t)
+        xs_t, ws_t = _interval_rule(span_t, q_t, d_t.T)
         x = jnp.stack([jnp.full(xs_t.shape, r_val), xs_t,
                         jnp.full(xs_t.shape, z_val)], axis=-1)
         vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 1]
         return jnp.sum(vals * ws_t)
 
     def integrate_component_2(r_val, t_val, span_z):
-        xs_z, ws_z = _interval_rule(span_z, q_z)
+        xs_z, ws_z = _interval_rule(span_z, q_z, d_z.T)
         x = jnp.stack([jnp.full(xs_z.shape, r_val),
                         jnp.full(xs_z.shape, t_val), xs_z], axis=-1)
         vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 2]
@@ -536,8 +589,8 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     def int0(r_val, span_t, span_z):
         q_t = _quadrature_order_from_basis_1d(d_t.s)
         q_z = _quadrature_order_from_basis_1d(d_z.s)
-        xs_t, ws_t = _interval_rule(span_t, q_t)
-        xs_z, ws_z = _interval_rule(span_z, q_z)
+        xs_t, ws_t = _interval_rule(span_t, q_t, d_t.T)
+        xs_z, ws_z = _interval_rule(span_z, q_z, d_z.T)
         tt, zz = jnp.meshgrid(xs_t, xs_z, indexing='ij')
         x = jnp.stack([jnp.full(tt.size, r_val), tt.ravel(), zz.ravel()], axis=-1)
         vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 0]
@@ -546,8 +599,8 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     def int1(span_r, t_val, span_z):
         q_r = _quadrature_order_from_basis_1d(d_r.s)
         q_z = _quadrature_order_from_basis_1d(d_z.s)
-        xs_r, ws_r = _interval_rule(span_r, q_r)
-        xs_z, ws_z = _interval_rule(span_z, q_z)
+        xs_r, ws_r = _interval_rule(span_r, q_r, d_r.T)
+        xs_z, ws_z = _interval_rule(span_z, q_z, d_z.T)
         rr, zz = jnp.meshgrid(xs_r, xs_z, indexing='ij')
         x = jnp.stack([rr.ravel(), jnp.full(rr.size, t_val), zz.ravel()], axis=-1)
         vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 1]
@@ -556,8 +609,8 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     def int2(span_r, span_t, z_val):
         q_r = _quadrature_order_from_basis_1d(d_r.s)
         q_t = _quadrature_order_from_basis_1d(d_t.s)
-        xs_r, ws_r = _interval_rule(span_r, q_r)
-        xs_t, ws_t = _interval_rule(span_t, q_t)
+        xs_r, ws_r = _interval_rule(span_r, q_r, d_r.T)
+        xs_t, ws_t = _interval_rule(span_t, q_t, d_t.T)
         rr, tt = jnp.meshgrid(xs_r, xs_t, indexing='ij')
         x = jnp.stack([rr.ravel(), tt.ravel(), jnp.full(rr.size, z_val)], axis=-1)
         vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 2]
@@ -613,9 +666,9 @@ def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
         q_r = _quadrature_order_from_basis_1d(d_r.s)
         q_t = _quadrature_order_from_basis_1d(d_t.s)
         q_z = _quadrature_order_from_basis_1d(d_z.s)
-        xs_r, ws_r = _interval_rule(span_r, q_r)
-        xs_t, ws_t = _interval_rule(span_t, q_t)
-        xs_z, ws_z = _interval_rule(span_z, q_z)
+        xs_r, ws_r = _interval_rule(span_r, q_r, d_r.T)
+        xs_t, ws_t = _interval_rule(span_t, q_t, d_t.T)
+        xs_z, ws_z = _interval_rule(span_z, q_z, d_z.T)
         rr, tt, zz = jnp.meshgrid(xs_r, xs_t, xs_z, indexing='ij')
         x = jnp.stack([rr.ravel(), tt.ravel(), zz.ravel()], axis=-1)
         values = jax.lax.map(
