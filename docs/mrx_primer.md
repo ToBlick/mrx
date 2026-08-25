@@ -368,7 +368,7 @@ solver primer instead of this file:
 - [docs/iterative_solver_primer.md](iterative_solver_primer.md)
 - [docs/mass_preconditioners.md](mass_preconditioners.md)
 - [docs/tensor_preconditioner_primer.md](tensor_preconditioner_primer.md)
-- [docs/laplacian_preconditioner_notes.md](laplacian_preconditioner_notes.md)
+- [preconditioner_lessons.md](preconditioner_lessons.md)
 
 This primer now keeps only the high-level routing. The detailed mass and
 Laplacian preconditioner discussion lives in the specialized notes above.

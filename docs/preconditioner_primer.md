@@ -247,7 +247,7 @@ The current default policy is therefore:
 ## 6. Validation Posture
 
 The current validation status of the production tensor applies
-([`docs/dev/tensor_debug_findings.md`](dev/tensor_debug_findings.md)):
+([`preconditioner_lessons.md`](preconditioner_lessons.md)):
 
 - The routed algebra is correct: each tensor apply matches the inverse of its
   own assembled tensor model to machine precision. Remaining error is

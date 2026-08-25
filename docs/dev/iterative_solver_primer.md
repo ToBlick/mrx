@@ -191,7 +191,7 @@ but they do not change the rule above.
 - Read [docs/tensor_preconditioner_primer.md](tensor_preconditioner_primer.md)
   for the tensor-preconditioner mechanism and why it does not extend directly
   to `schur.outer`.
-- Read [docs/laplacian_preconditioner_notes.md](laplacian_preconditioner_notes.md)
+- Read [preconditioner_lessons.md](preconditioner_lessons.md)
   for the settled scalar shifted-Laplacian policy.
 
 This note is the status-quo summary. The two detailed notes above hold the more

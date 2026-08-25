@@ -5,7 +5,7 @@
 Single entry point for the k=0 Laplacian multigrid line. Supersedes and
 folds in the four stacked addenda of the retired
 `handoff_2026-07-09_polar_c2_mg.md` (removed; all technical detail lives on in
-`docs/laplacian_mg_k0_plan.md` (running log + theory), `docs/dev/k0_massprecond_surgery_findings.md`
+`docs/laplacian_mg_k0_plan.md` (running log + theory), `preconditioner_lessons.md`
 (the dense-κ studies), and `docs/polar_pole_regularity.md` (C⁰/C¹/C² theory + convergence)).
 
 ## CLUSTER RESULTS + DECISIONS (2026-08-13, same day) — READ THIS FIRST
@@ -262,7 +262,7 @@ which need the GPU. Concretely:
    averaging/separability of the *diagonal* weights, and the best
    production-shaped fix (2D-per-ζ-mode solves) buys only ~1.5× at real cost.
    ⇒ **fd-family separable atom + exact core surgery is the sweet spot.**
-   (`k0_massprecond_surgery_findings.md`; `run_mg_k0_jacobi_ab.sh`.)
+   (`preconditioner_lessons.md`; `run_mg_k0_jacobi_ab.sh`.)
 
 2. **C²-on-axis == fat-core R=1, but cheaper (priority-1, DONE).**
    `--polar-order {0,1,2}` is wired into the prototype. C² reproduces the

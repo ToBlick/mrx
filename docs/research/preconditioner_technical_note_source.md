@@ -6,7 +6,7 @@ construction, the derivation, the mechanism, every measurement, and the list of
 what was tried and failed. Numbers are transcribed from the JSON of the runs
 named in each section; the raw data is in `outputs/<name>/` on the cluster.
 
-Companion: `HANDOFF_open_items.md` (what is unfinished).
+Companion: `preconditioner_lessons.md` (what is unfinished).
 
 ---
 
