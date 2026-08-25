@@ -822,3 +822,57 @@ several hours (the residual printed volume-average brackets while dividing by
 the L2 norm, which is the correct pairing — numbers were always right). Worth a
 line because a mislabeled diagnostic is one step from someone recomputing a
 correct quantity to "fix" it.
+
+## 17. THE CHAOS IS NOT UNIVERSAL — section 12 substantially revised
+
+Section 12 reported the `w7x-ini-clebsch` run relaxing into chaos and called it
+the headline. More cases have since finished and the picture is different.
+
+### `w7x-fmm002` keeps its surfaces, and looks like real physics
+
+Same IC route, same 3000 CG steps, same everything except the file:
+
+| run | file | beta_mean | \|\|F\|\|/\|\|B\|\| at IC | h/2 drift final | axis offset IC -> final | iota final |
+|---|---|---|---|---|---|---|
+| **W1** | `w7x_fmm002` | 1.8% | 1.88e-02 | **2.6e-04** | 2.548e-04 -> 3.071e-03 | 0.833 -> 1.050 |
+| LR3 | `w7x_ini` | 5.8% | 4.76e-02 | 1.6e+00 | 1.433e-04 -> 1.027e-01 | 0.008 -> 1.031 |
+
+W1's final section has **nested surfaces across the whole volume**, an
+integrator that is CONVERGED (h/2 drift 2.6e-04, against 1.6 for LR3), and
+clean **island chains at the 5/6, 10/11 and 5/5 resonances** — physical
+magnetic islands at rational surfaces, which is what a genuine 3-D equilibrium
+has. This is the relaxation working.
+
+**So "the scheme is fundamentally broken" is not supported.** Whatever happens
+in LR3 is specific to that case.
+
+### What distinguishes them, and what that suggests
+
+`w7x_ini` has `beta_mean` 5.8% and `beta_max` **13%**, and its IC sits 2.5x
+further from equilibrium than `fmm002`'s. A high-beta equilibrium can be
+ideally UNSTABLE, and an energy-minimising relaxation would find the
+instability and destroy the surfaces — which would be physics, not a bug.
+That is now the leading hypothesis for LR3. It is NOT established: the
+numerical alternatives (step size, unregularised high-k content, resolution)
+are being tested on that same case by W4 (`gamma=1`) and W5 (small fixed dt),
+and resolution remains untested.
+
+### Two corrections to section 12's reasoning
+
+* **h/2 drift does not discriminate.** I offered `h/2 drift = 1.6` as evidence
+  the integration was broken. For a genuinely chaotic field, O(1) drift under
+  step-halving is EXPECTED — Lyapunov divergence — so it separates "chaotic"
+  from "not chaotic" and says nothing about whether the chaos is numerical.
+  The `||J||/||B||` roughness diagnostic is the one that discriminates, and it
+  postdates the runs in section 12.
+* **Unconverged is not broken.** The `dzeta` run converged to
+  `cos = 0.991348` against the harmonic field — it IS going to the right
+  answer — and its section is still chaotic, because 13% of its norm is not yet
+  harmonic and a 13% perturbation on a vacuum field overlaps islands easily. A
+  chaotic section on an unconverged intermediate state is not evidence of a
+  broken scheme. None of these runs is converged.
+
+The section-12 lesson that **no guaranteed invariant detects a bad answer**
+still stands, and is still the most transferable thing in this document. What
+does not stand is the inference from it that the scheme was fundamentally
+wrong.
