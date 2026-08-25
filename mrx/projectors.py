@@ -28,7 +28,7 @@ from jax import Array
 
 import mrx
 from mrx.extraction_operators import get_xi
-from mrx.differential_forms import inv33
+from mrx.differential_forms import adj33, inv33
 from mrx.quadrature import integrate_against
 
 if TYPE_CHECKING:
@@ -69,19 +69,25 @@ def _quadrature_order_from_basis_1d(basis) -> int:
     return max(2, basis.p + 2)
 
 
-def _require_full_tensor_space(extraction: Array, full_size: int, label: str) -> None:
-    if extraction.shape[0] != full_size:
-        raise NotImplementedError(
-            f"{label} is currently implemented only for full tensor-product "
-            "spaces without nontrivial extraction."
-        )
-
-
-def _require_clamped_histopolation(d_basis, label: str) -> None:
-    if d_basis.type != 'clamped':
-        raise NotImplementedError(
-            f"{label} currently supports only clamped Greville histopolation axes."
-        )
+#: Interpolation and histopolation are done on the FULL tensor-product space
+#: and then restricted by a single extraction apply, ``e @ c_full``.  That
+#: composition is the construction of Guclu & Campos Pinto (arXiv:2505.15996),
+#: ``Pi_Z = P_Z . Pi_W``: the tensor-product geometric projector followed by a
+#: local, explicit, matrix-free conforming projection on the coefficients.
+#: Idempotency comes from the coefficient rules being self-consistent, not from
+#: any biorthogonality condition on the extraction.
+#:
+#: Two guards used to sit here and both were stale:
+#:   * a full-tensor-space check, which rejected every nontrivial extraction --
+#:     i.e. both ``dirichlet=True`` and ``polar=True`` -- although the restrict
+#:     step above is exactly what makes those cases work;
+#:   * a clamped-only check on the histopolation axes, although
+#:     ``SplineBasis.greville_spans`` has handled periodic axes (wrapping the
+#:     final span by +1) for as long as it has existed, and raises its own
+#:     NotImplementedError for anything it does not support.
+#:
+#: ``test_projectors.py`` pins the property that matters: interpolating a
+#: function that already lives in the target space returns its own DOFs.
 
 
 def _matching_discrete_dofs(f, basis, extraction) -> Array | None:
@@ -268,13 +274,27 @@ def _wrap_periodic_point(seq, xi):
 
 
 def _oneform_pullback(seq, v, frame: str = 'phys'):
+    """Physical 1-form proxy -> PRIMAL reference components.
+
+    ``Pushforward`` (differential_forms.py:301) is the authority:
+    ``F_* omega = (DF^T)^-1 omega`` at k=1, so ``omega = DF^T v_phys``.
+
+    This is NOT what ``load`` uses.  ``load`` builds a DUAL vector and pairs
+    against the pushed-forward basis, giving ``DF^-1 v``, and ``M_1^{-1}``
+    then converts back to primal -- correct for that path.  Histopolation has
+    no mass solve to undo the weight, so it needs the primal pullback directly.
+    ``DF^-1`` here was the k=-1 VECTOR-FIELD rule, off by ``G^-1``.
+
+    The transpose has the side benefit of being finite on the polar axis, where
+    ``det DF -> 0`` and the clamped radial Greville points land exactly.
+    """
     if frame == 'ref':
         return lambda x: v(_wrap_periodic_point(seq, x))
     DF = jax.jacfwd(seq.map)
 
     def pullback(x):
         x_eval = _wrap_periodic_point(seq, x)
-        return inv33(DF(x_eval)) @ v(x_eval)
+        return DF(x_eval).T @ v(x_eval)
 
     return pullback
 
@@ -285,7 +305,6 @@ def _interpolate_0form(seq, f, dirichlet: bool) -> Array:
     exact = _matching_discrete_dofs(f, seq.basis_0, e)
     if exact is not None:
         return exact
-    _require_full_tensor_space(e, seq.basis_0.n, "0-form interpolation")
 
     bases = seq.basis_0.Λ
     x_r = bases[0].greville_points()
@@ -308,6 +327,29 @@ def _interpolate_0form(seq, f, dirichlet: bool) -> Array:
     coeffs = _solve_tensor_collocation_axis(coll_t, coeffs, axis=1)
     coeffs = _solve_tensor_collocation_axis(coll_z, coeffs, axis=2)
     return e @ coeffs.reshape(-1)
+
+
+def _twoform_pullback(seq, v, frame: str = 'phys'):
+    """Physical 2-form proxy -> PRIMAL reference components.
+
+    ``Pushforward`` gives ``F_* omega = DF omega / J`` at k=2, so
+    ``omega = J DF^-1 v = adj(DF) v``.  ``DF^T`` -- what this used to be -- is
+    ``load``'s DUAL pairing, correct there because ``M_2^{-1}`` undoes the
+    ``g/J`` weight afterwards, and wrong here where nothing does: it returned
+    ``g omega / J``.
+
+    ``adj(DF)`` is built from the cofactors (:func:`~mrx.differential_forms.adj33`)
+    rather than as ``det * inv``, so it stays finite where ``det DF -> 0``.
+    """
+    if frame == 'ref':
+        return lambda x: v(_wrap_periodic_point(seq, x))
+    DF = jax.jacfwd(seq.map)
+
+    def pullback(x):
+        x_eval = _wrap_periodic_point(seq, x)
+        return adj33(DF(x_eval)) @ v(x_eval)
+
+    return pullback
 
 
 def _full_oneform_histopolation_dofs(seq, v, frame: str = 'phys'):
@@ -366,7 +408,6 @@ def _histopolate_1form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     exact = _matching_discrete_dofs(v, seq.basis_1, e)
     if exact is not None:
         return exact
-    _require_full_tensor_space(e, seq.basis_1.n, "1-form histopolation")
 
     lam_r, lam_t, lam_z = seq.basis_0.Λ
     d_r, d_t, d_z = seq.basis_0.dΛ
@@ -402,12 +443,8 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     exact = _matching_discrete_dofs(v, seq.basis_2, e)
     if exact is not None:
         return exact
-    _require_full_tensor_space(e, seq.basis_2.n, "2-form histopolation")
 
     d_r, d_t, d_z = seq.basis_0.dΛ
-    _require_clamped_histopolation(d_r, "2-form histopolation")
-    _require_clamped_histopolation(d_t, "2-form histopolation")
-    _require_clamped_histopolation(d_z, "2-form histopolation")
 
     lam_r, lam_t, lam_z = seq.basis_0.Λ
 
@@ -426,13 +463,10 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     spans_t = d_t.greville_spans()
     spans_z = d_z.greville_spans()
 
-    if frame == 'ref':
-        pullback = v
-    else:
-        DF = jax.jacfwd(seq.map)
-
-        def pullback(x):
-            return DF(x).T @ v(x)
+    # Periodic Greville spans run past 1 (greville_spans wraps the last one by
+    # +1), so evaluation points must be folded back before v or the map sees
+    # them -- the 1-form path does the same via _oneform_pullback.
+    pullback = _twoform_pullback(seq, v, frame)
 
     def int0(r_val, span_t, span_z):
         q_t = _quadrature_order_from_basis_1d(d_t.s)
@@ -498,12 +532,8 @@ def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
     exact = _matching_discrete_dofs(f, seq.basis_3, e)
     if exact is not None:
         return exact
-    _require_full_tensor_space(e, seq.basis_3.n, "3-form histopolation")
 
     d_r, d_t, d_z = seq.basis_0.dΛ
-    _require_clamped_histopolation(d_r, "3-form histopolation")
-    _require_clamped_histopolation(d_t, "3-form histopolation")
-    _require_clamped_histopolation(d_z, "3-form histopolation")
 
     # TODO: cache these on seq if matrix build time is significant
     hist_r = d_r.histopolation_matrix()
@@ -523,7 +553,7 @@ def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
         rr, tt, zz = jnp.meshgrid(xs_r, xs_t, xs_z, indexing='ij')
         x = jnp.stack([rr.ravel(), tt.ravel(), zz.ravel()], axis=-1)
         values = jax.lax.map(
-            lambda xi: _as_single_component(f(xi)), x,
+            lambda xi: _as_single_component(f(_wrap_periodic_point(seq, xi))), x,
             batch_size=mrx.MAP_BATCH_SIZE_INNER,
         ).reshape(len(xs_r), len(xs_t), len(xs_z))
         weights = ws_r[:, None, None] * ws_t[None, :, None] * ws_z[None, None, :]

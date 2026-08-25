@@ -31,6 +31,7 @@ import pytest
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import rotating_ellipse_map
+from mrx.projectors import _oneform_pullback, _twoform_pullback
 
 jax.config.update("jax_enable_x64", True)
 
@@ -130,7 +131,6 @@ def test_k0_l2_projection_error_is_small(proj_seq):
     assert err < 1.0, f"k=0 L2 projection error unreasonably large: {err:.3e}"
 
 
-@pytest.mark.xfail(reason="polar zeroform interpolation not yet implemented", raises=NotImplementedError, strict=True)
 def test_k0_greville_interpolation_error_is_small(proj_seq):
     dofs = proj_seq.interpolate(_f0, 0)
     err = _phys_l2_rel_error(proj_seq, dofs, proj_seq.e0, 0, _f0)
@@ -138,7 +138,6 @@ def test_k0_greville_interpolation_error_is_small(proj_seq):
     assert err < 1.0, f"k=0 Greville interpolation error unreasonably large: {err:.3e}"
 
 
-@pytest.mark.xfail(reason="polar zeroform interpolation not yet implemented", raises=NotImplementedError, strict=True)
 def test_k0_l2_projection_leq_interpolation(proj_seq):
     """L2 projection is best-approximation: its error ≤ interpolation error."""
     dofs_proj = proj_seq.apply_inverse_mass_matrix(proj_seq.load(_f0, 0), 0, dirichlet=False)
@@ -163,7 +162,6 @@ def test_k1_l2_projection_error_is_small(proj_seq):
     assert err < 1.0, f"k=1 L2 projection error unreasonably large: {err:.3e}"
 
 
-@pytest.mark.xfail(reason="polar oneform histopolation not yet implemented", raises=NotImplementedError, strict=True)
 def test_k1_histopolation_error_is_small(proj_seq):
     dofs = proj_seq.interpolate(_v1, 1)
     err = _phys_l2_rel_error(proj_seq, dofs, proj_seq.e1, 1, _v1)
@@ -171,7 +169,6 @@ def test_k1_histopolation_error_is_small(proj_seq):
     assert err < 1.0, f"k=1 histopolation error unreasonably large: {err:.3e}"
 
 
-@pytest.mark.xfail(reason="polar oneform histopolation not yet implemented", raises=NotImplementedError, strict=True)
 def test_k1_l2_projection_leq_histopolation(proj_seq):
     """L2 projection is best-approximation: its error ≤ histopolation error."""
     dofs_proj = proj_seq.apply_inverse_mass_matrix(proj_seq.load(_v1, 1), 1, dirichlet=False)
@@ -202,3 +199,142 @@ def test_k3_l2_projection_error_is_small(proj_seq):
     err = _phys_l2_rel_error(proj_seq, dofs, proj_seq.e3, 3, _f3)
     print(f"\n  k=3 L2 projection relative error: {err:.3e}")
     assert err < 1.0, f"k=3 L2 projection error unreasonably large: {err:.3e}"
+
+
+# ---------------------------------------------------------------------------
+# The property that makes "histopolate on the full tensor space, then restrict
+# with one extraction apply" legitimate.
+#
+# That composition is Pi_Z = P_Z . Pi_W of Guclu & Campos Pinto
+# (arXiv:2505.15996).  For it to be a PROJECTOR, interpolating a function that
+# ALREADY lives in the target space must return that function's own DOFs:
+#
+#     e @ Pi_full(e^T a)  ==  a
+#
+# This is the test that decides whether MRX's own extraction is the conforming
+# projection, on the polar sequence and on the Dirichlet subspace -- exactly
+# the two cases the removed guard used to reject.
+#
+# The function must be wrapped in a plain lambda: handing a DiscreteFunction
+# straight to interpolate() short-circuits through _matching_discrete_dofs and
+# returns the DOFs untouched, which would pass without testing anything.
+# ---------------------------------------------------------------------------
+
+_ROUNDTRIP_CASES = [
+    pytest.param(0, False, id="k0-free"),
+    pytest.param(0, True, id="k0-dbc"),
+    pytest.param(1, False, id="k1-free"),
+    pytest.param(1, True, id="k1-dbc"),
+    pytest.param(2, False, id="k2-free"),
+    pytest.param(2, True, id="k2-dbc"),
+    pytest.param(3, False, id="k3-free"),
+    pytest.param(3, True, id="k3-dbc"),
+]
+
+
+@pytest.mark.parametrize("k, dirichlet", _ROUNDTRIP_CASES)
+def test_interpolation_reproduces_its_own_space(proj_seq, k, dirichlet):
+    """Interpolating a function already in the space returns its own DOFs."""
+    basis = getattr(proj_seq, _BASIS_ATTR[k])
+    e = getattr(proj_seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+    n = int(getattr(proj_seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
+
+    a = jax.random.normal(jax.random.PRNGKey(11 * k + dirichlet), (n,))
+    discrete = DiscreteFunction(a, basis, e)
+    # plain lambda: defeats the _matching_discrete_dofs short-circuit
+    kwargs = {} if k in (0, 3) else {"frame": "ref"}
+    got = proj_seq.interpolate(
+        lambda x: discrete(x), k, dirichlet=dirichlet, **kwargs)
+
+    err = float(jnp.linalg.norm(got - a) / jnp.linalg.norm(a))
+    print(f"\n  k={k} dirichlet={dirichlet} round-trip relative error: {err:.3e}")
+    assert err < 1e-10, (
+        f"k={k} dirichlet={dirichlet}: interpolation is not a projector onto "
+        f"its own space, relative error {err:.3e}. The extraction is then not "
+        f"the conforming projection P_Z and needs the explicit local rules of "
+        f"arXiv:2505.15996."
+    )
+
+
+def test_k2_histopolation_is_finite(proj_seq):
+    """Isolates the polar-axis singularity to the k=1 physical pullback.
+
+    The three degrees differ in exactly one way at the axis:
+
+        k=0  _interpolate_0form     no pullback at all (scalar)
+        k=1  _oneform_pullback      inv33(DF(x)) @ v(x)   <- INVERTS DF
+        k=2  _histopolate_2form     DF(x).T @ v(x)        <- no inverse
+
+    ``det DF -> 0`` on the polar axis, and the clamped radial Greville points
+    include rho = 0 EXACTLY (quadrature never samples the endpoint, which is why
+    this class of bug survives quad-point checks -- see the note on det(DF) = 0
+    at the outer knot in docs/research).  So only k=1 evaluates an inverse at the
+    singular point.
+
+    This asserts FINITENESS rather than accuracy on purpose: with
+    ``frame='phys'`` the k=2 histopolation returns coefficients of ``g omega/J``
+    rather than ``omega`` (``M_k`` carries the ``g/J`` weight and there is no
+    mass solve here to undo it), so an accuracy assertion would fail for a
+    reason unrelated to the axis.  Finite-vs-nan is the discriminator.
+    """
+    dofs = proj_seq.interpolate(_v2, 2)
+    n_bad = int(jnp.sum(~jnp.isfinite(dofs)))
+    print(f"\n  k=2 histopolation non-finite DOFs: {n_bad} of {dofs.size}")
+    assert n_bad == 0, (
+        f"k=2 histopolation produced {n_bad} non-finite DOFs. Its pullback has "
+        f"no inverse, so if this fails the polar-axis explanation for the k=1 "
+        f"nan is WRONG and something shared by both degrees is at fault."
+    )
+
+
+def test_k0_interpolation_is_finite(proj_seq):
+    """Companion to the k=2 finiteness test: k=0 has no pullback at all."""
+    dofs = proj_seq.interpolate(_f0, 0)
+    n_bad = int(jnp.sum(~jnp.isfinite(dofs)))
+    print(f"\n  k=0 interpolation non-finite DOFs: {n_bad} of {dofs.size}")
+    assert n_bad == 0
+
+
+@pytest.mark.parametrize("k", [1, 2])
+def test_phys_pullback_inverts_pushforward(proj_seq, k):
+    """interpolate's physical pullback must be the INVERSE of Pushforward.
+
+    Pushforward (differential_forms.py:301) is the authority on the convention:
+
+        k=1  F_* omega = (DF^T)^-1 omega   =>   omega = DF^T   v_phys
+        k=2  F_* omega = DF omega / J      =>   omega = adj(DF) v_phys
+
+    Before 2026-08-25 the histopolation paths used load's DUAL pullbacks instead
+    -- DF^-1 at k=1 (that is the k=-1 VECTOR-FIELD rule, off by G^-1) and DF^T at
+    k=2 (off by g/J).  load is right to use them: it builds a dual vector and
+    M_k^{-1} converts back to primal.  Histopolation has no mass solve, so
+    reusing them silently returned the wrong object -- and it PASSED every
+    structural gate, because being off by a metric factor is still finite,
+    smooth and divergence-free-looking.
+
+    Tested on the pullbacks directly, at INTERIOR points only, on purpose:
+    routing this through histopolation would conflate the convention with the
+    polar-axis singularity, since Pushforward at k=1 is itself unbounded at
+    rho = 0 where det DF -> 0.
+    """
+    basis = getattr(proj_seq, _BASIS_ATTR[k])
+    e = getattr(proj_seq, f"e{k}")
+    n = int(getattr(proj_seq, f"n{k}"))
+    a = jax.random.normal(jax.random.PRNGKey(7 * k), (n,))
+    omega = DiscreteFunction(a, basis, e)
+    pushed = Pushforward(omega, proj_seq.map, k)
+    pull = (_oneform_pullback if k == 1 else _twoform_pullback)(proj_seq, pushed)
+
+    # interior only: rho in [0.2, 0.9], away from the degenerate axis
+    key = jax.random.PRNGKey(101)
+    pts = jax.random.uniform(key, (24, 3))
+    pts = pts.at[:, 0].set(0.2 + 0.7 * pts[:, 0])
+
+    got = jax.vmap(pull)(pts)
+    want = jax.vmap(omega)(pts)
+    err = float(jnp.linalg.norm(got - want) / jnp.linalg.norm(want))
+    print(f"\n  k={k} phys pullback vs Pushforward inverse: {err:.3e}")
+    assert err < 1e-10, (
+        f"k={k} physical pullback does not invert Pushforward (rel {err:.3e}). "
+        f"Expected omega = {'DF^T v' if k == 1 else 'adj(DF) v'}."
+    )
