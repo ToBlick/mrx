@@ -3,21 +3,51 @@
 ``data/gvec_nfp3_hegna_80cubed_clebsch.h5`` carries every ingredient by name:
 
     clebsch/dPhi_dr   clebsch/dchi_dr      the two radial profiles
-    clebsch/dLA_dt    clebsch/dLA_dz       lambda's angular derivatives
+    clebsch/LA                             lambda itself (NOT dLA_dt/dLA_dz --
+                                           see load_clebsch for why)
     pressure                               and a finite-beta pressure profile
 
-and the identities below were VERIFIED against that file's own B, in its own
-normalised [0,1] coordinates, with no free factor -- no 2 pi, no sign flip:
+and the identities below were VERIFIED against that file's own B, using the
+file's own grad_rho / grad_theta / grad_zeta, with no free factor:
 
     sqrt(g) B^rho   = 0                          (measured 3.8e-16)
     sqrt(g) B^theta = dchi_dr - dPhi_dr * dLA_dz (ratio 1.00000000, std 2.9e-13)
     sqrt(g) B^zeta  = dPhi_dr * (1 + dLA_dt)     (ratio 1.00000000, std 1.7e-16)
 
-Those three ARE the primal reference 2-form components of ``logical_profile_ic``:
-``B_hat = (0, dPhi(iota - lam_zeta), dPhi(1 + lam_chi))`` with
-``iota = dchi_dr / dPhi_dr``.  GVEC's representation and ours are the same
-object, so the equilibrium field can be rebuilt from four scalars rather than
-resampled as a vector.
+Those three ARE the primal reference 2-form components of ``logical_profile_ic``,
+``B_hat = (0, dPhi(iota - lam_zeta), dPhi(1 + lam_chi))`` -- GVEC's
+representation and ours are the same object, so the equilibrium field can be
+rebuilt from three scalars rather than resampled as a vector.
+
+UNITS, and they are not the identity.  The identities above hold in GVEC's OWN
+units, which are not MRX's.  ``eval_points`` is normalised to [0,1] on all three
+axes, but the DERIVATIVES are taken with respect to RADIAN angles
+``theta_G = 2 pi theta`` and ``zeta_G = 2 pi zeta / nfp``.  Measured, by finite
+differences of ``LA`` against the stored derivatives:
+
+    FD(d/dtheta_norm) / dLA_dt = 6.274   vs  2 pi     = 6.283
+    FD(d/dzeta_norm)  / dLA_dz = 2.0905  vs  2 pi/nfp = 2.0944
+
+(the gap is the O(h^2) finite-difference error at 80^3).  Converting the
+2-form components into MRX's normalised coordinates -- B^i picks up 1/a or 1/b
+while sqrt(g) picks up a*b, with a = 2 pi, b = 2 pi/nfp -- collapses to three
+rules:
+
+    Phi'(rho) = 2 pi * dPhi_dr
+    iota(rho) = (1/nfp) * dchi_dr / dPhi_dr
+    lambda    = LA / (2 pi)
+
+with every derivative then taken in the normalised [0,1] coordinates.  The
+1/nfp is physically right: MRX's zeta spans ONE FIELD PERIOD, so the transform
+per MRX toroidal turn is 1/nfp of the transform per full turn.  Dropping it
+would make the reconstructed iota nfp times too large.  The 2 pi on Phi' is an
+overall scale and divides out of ||B||_M = 1, but it is applied anyway so the
+profiles mean what they say.
+
+Also measured: in consistent radian units the mixed partial
+``d_zetaG(dLA_dt) - d_thetaG(dLA_dz)`` is 6.6e-3 relative, i.e. the stored
+derivatives really are derivatives of one lambda -- so fitting LA and
+differentiating it loses nothing and gains the exactness (see load_clebsch).
 
 
 WHY THIS BEATS INTERPOLATING B
@@ -96,33 +126,61 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mrx.operators as op  # noqa: E402
-from jax.scipy.interpolate import RegularGridInterpolator  # noqa: E402
-from mrx.differential_forms import DiscreteFunction, Pushforward  # noqa: E402
+from mrx.differential_forms import (  # noqa: E402
+    DifferentialForm, DiscreteFunction, Pushforward)
+from mrx.projectors import _solve_tensor_collocation_axis  # noqa: E402
 from mrx.nullspace import compute_nullspaces  # noqa: E402
 from mrx.relaxation import compute_force, compute_helicity  # noqa: E402
 from gvec_geometry import GVEC_GEOMETRIES  # noqa: E402
 from verify_block_jacobi import build_sequence  # noqa: E402
 
 
-def load_clebsch(path):
-    """Return radial profiles, lambda-derivative interpolants and p(rho).
+def fit_scalar_spline(axes, values, seq, degree=3):
+    """Interpolatory tensor-product spline through grid data -> a callable.
+
+    ``n_basis = n_data`` per axis, one square collocation solve each -- the same
+    fit ``mrx.io.load_grid_field`` step 1 does, but kept as a FUNCTION so its
+    derivatives can be taken exactly rather than baked in at load time.
+    Periodic axes are handed the half-open sample (see the caller).
+    """
+    n = tuple(len(a) for a in axes)
+    fit = DifferentialForm(0, n, (degree,) * 3, seq.basis_0.types)
+    C = jnp.asarray(values).reshape(n)
+    for a, (basis, x) in enumerate(zip(fit.Λ, axes)):
+        C = _solve_tensor_collocation_axis(
+            basis.collocation_matrix(jnp.asarray(x)), C, axis=a)
+    return DiscreteFunction(C.reshape(-1), fit)
+
+
+def load_clebsch(path, seq):
+    """Return the radial profiles, a lambda CALLABLE, and p(rho).
+
+    lambda is stored and fitted as the SCALAR, never as its two derivatives.
+    ``div B = 0`` holds because ``d_zeta(lam_theta) = d_theta(lam_zeta)`` -- the
+    mixed partials cancel -- and that identity survives only if both derivatives
+    come from the SAME interpolant.  Reading ``dLA_dt`` and ``dLA_dz`` as two
+    independently interpolated fields would degrade div B from machine precision
+    to the interpolation error, which is exactly the guarantee this whole route
+    exists to provide.
+
+    ``dPhi_dr`` and ``dchi_dr`` are read as derivatives, on purpose: nothing
+    differentiates them (div B applies only d_theta and d_zeta, and both are
+    rho-only), so no identity needs protecting, and integrating is stable where
+    differentiating is not.
 
     The hegna export samples all three logical axes CLOSED on [0, 1] (80 points,
-    step 1/79), the angular endpoints duplicating the start -- so the grid is
-    directly usable by RegularGridInterpolator with no wrap padding.  That is
-    the opposite of the quasr files and is why the axes are read from the file
-    rather than assumed (see gvec_geometry.py).
+    step 1/79), the angular endpoints duplicating the start.  A periodic spline
+    with n_basis = n_data would be singular on that, so the duplicate endpoint
+    is dropped on periodic axes -- the opposite convention from the quasr files,
+    which is why the axes are read rather than assumed (see gvec_geometry.py).
     """
     with h5py.File(path, "r") as h:
-        nr = int(h.attrs["n_rho"])
-        nt = int(h.attrs["n_theta"])
-        nz = int(h.attrs["n_zeta"])
-        shape = (nr, nt, nz)
+        shape = (int(h.attrs["n_rho"]), int(h.attrs["n_theta"]),
+                 int(h.attrs["n_zeta"]))
         c = h["clebsch"]
         dPhi = np.asarray(c["dPhi_dr"]).reshape(shape)
         dchi = np.asarray(c["dchi_dr"]).reshape(shape)
-        dLt = np.asarray(c["dLA_dt"]).reshape(shape)
-        dLz = np.asarray(c["dLA_dz"]).reshape(shape)
+        LA = np.asarray(c["LA"]).reshape(shape)
         pres = np.asarray(h["pressure"]).reshape(shape)
         ep = np.asarray(h["eval_points"])
         nfp = int(h.attrs["nfp"])
@@ -134,17 +192,28 @@ def load_clebsch(path):
 
     # dPhi_dr and dchi_dr are flux functions; the surface mean is the profile
     # and the surface spread says how well that holds in the data itself.
+    nr = shape[0]
     prof_dPhi = dPhi.mean(axis=(1, 2))
     prof_dchi = dchi.mean(axis=(1, 2))
     prof_p = pres.mean(axis=(1, 2))
-    spread = float(np.nanmax(np.abs(dchi / dPhi - (prof_dchi / prof_dPhi)[:, None, None])
-                             [nr // 4:3 * nr // 4]))
+    spread = float(np.nanmax(
+        np.abs(dchi / dPhi - (prof_dchi / prof_dPhi)[:, None, None])
+        [nr // 4:3 * nr // 4]))
 
-    grid = tuple(jnp.asarray(a) for a in axes)
-    rgi_Lt = RegularGridInterpolator(grid, jnp.asarray(dLt), method='linear')
-    rgi_Lz = RegularGridInterpolator(grid, jnp.asarray(dLz), method='linear')
+    # Drop the duplicated endpoint on every periodic axis before fitting.
+    fit_axes, LA_fit = list(axes), LA
+    for a, kind in enumerate(seq.basis_0.types):
+        if kind == 'periodic':
+            dup = float(np.abs(np.take(LA_fit, 0, axis=a)
+                               - np.take(LA_fit, -1, axis=a)).max())
+            fit_axes[a] = fit_axes[a][:-1]
+            LA_fit = np.take(LA_fit, np.arange(len(fit_axes[a])), axis=a)
+            print(f"[data] axis {a} periodic: dropped duplicate endpoint "
+                  f"(|LA(0) - LA(1)| max = {dup:.2e})")
+    lam_h = fit_scalar_spline(fit_axes, LA_fit, seq)
+
     return dict(nfp=nfp, rho=axes[0], dPhi=prof_dPhi, dchi=prof_dchi,
-                p=prof_p, iota_spread=spread, rgi_Lt=rgi_Lt, rgi_Lz=rgi_Lz)
+                p=prof_p, iota_spread=spread, lam_h=lam_h)
 
 
 def main():
@@ -164,15 +233,6 @@ def main():
 
     ns = tuple(int(v) for v in cli.ns.split(","))
     h5 = GVEC_GEOMETRIES[cli.geometry]
-    cb = load_clebsch(h5)
-    print(f"[data] {h5}  nfp={cb['nfp']}  n_rho={len(cb['rho'])}")
-    print(f"[data] iota = dchi_dr/dPhi_dr : "
-          f"{cb['dchi'][1] / cb['dPhi'][1]:+.5f} (axis) -> "
-          f"{cb['dchi'][-1] / cb['dPhi'][-1]:+.5f} (edge);  max angular "
-          f"departure from a flux function in the mid-radius = "
-          f"{cb['iota_spread']:.3e}")
-    print(f"[data] pressure {cb['p'][0]:.5e} -> {cb['p'][-1]:.5e} Pa"
-          f"   (lambda {'ZEROED' if cli.no_lambda else 'on'})")
 
     t0 = time.perf_counter()
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter)
@@ -184,24 +244,41 @@ def main():
     print(f"[setup] operators + nullspaces {time.perf_counter() - t0:.1f}s",
           flush=True)
 
+    # After the sequence: the lambda fit borrows its per-axis BC types.
+    cb = load_clebsch(h5, seq)
+    print(f"[data] {h5}  nfp={cb['nfp']}  n_rho={len(cb['rho'])}")
+    print(f"[data] iota = dchi_dr/dPhi_dr : "
+          f"{cb['dchi'][1] / cb['dPhi'][1]:+.5f} (axis) -> "
+          f"{cb['dchi'][-1] / cb['dPhi'][-1]:+.5f} (edge);  max angular "
+          f"departure from a flux function in the mid-radius = "
+          f"{cb['iota_spread']:.3e}")
+    print(f"[data] pressure {cb['p'][0]:.5e} -> {cb['p'][-1]:.5e} Pa"
+          f"   (lambda {'ZEROED' if cli.no_lambda else 'on'})")
+
     rho_g = jnp.asarray(cb["rho"])
     dPhi_g = jnp.asarray(cb["dPhi"])
     dchi_g = jnp.asarray(cb["dchi"])
-    rgi_Lt, rgi_Lz = cb["rgi_Lt"], cb["rgi_Lz"]
-    use_lam = not cli.no_lambda
+    lam_h = cb["lam_h"]
+    use_lam = 0.0 if cli.no_lambda else 1.0
+
+    # Both lambda derivatives come from the SAME spline, so d_zeta(lam_theta)
+    # and d_theta(lam_zeta) cancel identically and div B stays at round-off.
+    grad_lam = jax.grad(lambda x: lam_h(x)[0])
 
     # Primal reference 2-form components, straight off the verified identities.
     # See logical_profile_ic.py for why this is pushed forward rather than
     # handed to load(frame='ref'): that entry point wants g omega / J, not omega.
     DF_map = jax.jacfwd(seq.map)
 
+    nfp = cb["nfp"]
+    two_pi = 2.0 * jnp.pi
+
     def omega_ref(x):
         r = jnp.clip(x[0], rho_g[0], rho_g[-1])
         f_phi = jnp.interp(r, rho_g, dPhi_g)
-        f_chi = jnp.interp(r, rho_g, dchi_g)
-        pt = jnp.array([[r, x[1] % 1.0, x[2] % 1.0]])
-        lam_t = rgi_Lt(pt)[0] * use_lam
-        lam_z = rgi_Lz(pt)[0] * use_lam
+        f_chi = jnp.interp(r, rho_g, dchi_g) / nfp
+        g = grad_lam(jnp.array([r, x[1] % 1.0, x[2] % 1.0])) / two_pi
+        lam_t, lam_z = g[1] * use_lam, g[2] * use_lam
         return jnp.array([0.0, f_chi - f_phi * lam_z, f_phi * (1.0 + lam_t)])
 
     def B_phys(x):
