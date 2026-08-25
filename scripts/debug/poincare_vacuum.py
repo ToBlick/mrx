@@ -151,7 +151,12 @@ def field_agreement(seq, ops, n=512):
     v2 = v2 / jnp.linalg.norm(v2, axis=1, keepdims=True)
     v1 = v1 / jnp.linalg.norm(v1, axis=1, keepdims=True)
     cos = jnp.abs(jnp.sum(v2 * v1, axis=1))
-    return float(jnp.max(jnp.arccos(jnp.clip(cos, -1.0, 1.0))))
+    ang = jnp.arccos(jnp.clip(cos, -1.0, 1.0))
+    # Max AND median. The max is one point out of 512 and is easily set by a
+    # single sample near r -> 1, where the spline map is nearly singular; it is
+    # not a statistic to read a convergence rate off. The median is.
+    return (float(jnp.max(ang)), float(jnp.median(ang)),
+            float(jnp.percentile(ang, 90)))
 
 
 def zeta_component_report(field, name, n=4096):
@@ -324,14 +329,17 @@ def main():
     report_preconditioners(seq, ops)
     harmonic = report_harmonic(seq, ops)
 
-    angle = field_agreement(seq, ops)
-    print(f"[check] max angle between the k=2 and k=1 harmonic fields: "
-          f"{angle:.3e} rad", flush=True)
+    angle, angle_med, angle_p90 = field_agreement(seq, ops)
+    print(f"[check] angle between the k=2 and k=1 harmonic fields: "
+          f"max {angle:.3e}  p90 {angle_p90:.3e}  median {angle_med:.3e} rad",
+          flush=True)
 
     summary = {"geometry": cli.geometry, "ns": list(ns), "p": cli.p,
                "nfp": nfp, "periods": cli.periods, "steps": cli.steps,
                "saves": cli.saves, "seeds": cli.seeds,
-               "field_angle_rad": angle, "maxiter": cli.maxiter,
+               "field_angle_rad": angle,
+               "field_angle_median_rad": angle_med,
+               "field_angle_p90_rad": angle_p90, "maxiter": cli.maxiter,
                "harmonic": harmonic, "fields": {}}
 
     for name in cli.fields.split(","):
