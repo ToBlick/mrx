@@ -228,7 +228,7 @@ spline map is nearly singular. I read a rate off two points and the third
 contradicted it. Median and p90 are now reported alongside; re-read this table
 from the `poincare_final` runs before concluding anything.
 
-### 4.2 k=1 traces break on the quasr44970/65530 family — mechanism unconfirmed
+### 4.2 k=1 traces break on the quasr44970/65530 family — it is chaos
 
 quasr44970's k=1 step drift is **3.5e-02 → 2.8e-02 → 3.6e-02** across ns
 8/12/16. *Flat.* Refinement does not touch it, so it is not a resolution
@@ -236,11 +236,42 @@ deficit. quasr65530 k=1 loses 21 of 48 lines with drift 1.5e-01 and a section
 that reads as a chaotic sea. w7x and quasr9983 sit at 1e-06–1e-08 for k=1 at
 ns >= 12, and the k=2 arm is clean everywhere (1e-10 to 5e-4, zero lost).
 
-Hypothesis: the tracer divides by `B^zeta`, exact only where that is non-zero —
-true of a converged toroidal field, not guaranteed of a poorly resolved discrete
-one. `zeta_component_report` samples `B^zeta/|B|` and says loudly when it
-straddles zero; **the confirming run is queued and unread**. If it confirms,
-those k=1 sections must be marked invalid, not published.
+**My `B^zeta` hypothesis is REFUTED.** I proposed that the tracer's division by
+`B^zeta` was the culprit. Measured on quasr65530 over 4096 interior points:
+
+    ns=(12,24,12)  k2: B^zeta/|B| in [+0.828, +1.000]
+                   k1: B^zeta/|B| in [+0.774, +1.000]
+    ns=(8,16,8)    k2: B^zeta/|B| in [+0.976, +1.000]
+
+It never approaches zero and never changes sign, so the reparameterisation is
+well conditioned for both fields and there is nothing wrong with the ODE.
+
+**The corrected reading is chaos.** A step drift that does not fall when the
+step is refined, lines escaping to r >= 1, and a meaningless least-squares angle
+slope are all what a stochastic region produces: two integrations at different
+step sizes diverge exponentially there no matter how accurate each one is. The
+k=1 form sits 0.276 rad from the k=2 one, wide enough for its island chains to
+overlap, and once they overlap the chaos is present at any resolution — which is
+exactly why quasr44970's k=1 drift is flat at 3e-02 across ns 8/12/16.
+
+So the k=1 sections on this family are showing real chaos of a slightly-wrong
+field, not a broken tracer. They should be labelled that way, not published as
+flux surfaces.
+
+**This exposes a flaw in `step_convergence`**: it conflates integration error
+with Lyapunov divergence, and reports a huge number for a perfectly integrated
+chaotic line. It is a max over seeds, so one chaotic line dominates it. Fix
+after the sweep (changing its return type would break jobs in flight): report
+the median alongside the max, and measure over a short horizon where algebraic
+integration error still dominates the exponential separation. The
+angle-fit residual already identifies which lines are chaotic and should be the
+thing that gates it.
+
+**Clamping `B^zeta` is not the answer** and was considered: with the denominator
+clamped to 1e-9 the right-hand side becomes ~1e9 * B^r and the line flies off,
+and if `B^zeta` genuinely crossed zero, clamping to +1e-9 on the negative side
+flips the sign of the whole RHS and the line silently traces backwards — a
+rendered plot with no NaN and no warning. Here it would never fire anyway.
 
 ### 4.3 Activate the k=0 atom in `compute_nullspaces`
 
