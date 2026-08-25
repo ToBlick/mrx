@@ -1,0 +1,183 @@
+# GVEC → MRX interface
+
+What MRX needs out of a GVEC export, why, and which conventions must be stated
+rather than inferred. Names in `code font` are GVEC `state.evaluate()`
+quantities ([GVEC docs](https://gvec.readthedocs.io/)).
+
+## 0. The premise
+
+**MRX's primal reference 2-form components ARE GVEC's `sqrt(g) B^i`.** Since
+`B_phys = DF omega / J`, the two codes describe the same object in the same
+frame. So a field does not need to be *resampled as a vector* — it can be
+*rebuilt from scalars*, and the structural guarantees then hold independently
+of interpolation quality.
+
+That is the whole reason for this interface. Reconstructing from scalars gives
+`div B = 0`, `B.n = 0` and nested flux surfaces EXACTLY, and leaves the fluxes,
+`iota` and the helicity exact even when `lambda` is interpolated badly. Fitting
+the Cartesian `B` instead puts every interpolation error straight onto `div B`,
+`B.n` and the fluxes, and then needs a Leray clean-up to hide it.
+
+## 1. The contract
+
+```
+sqrt(g) B^rho   = 0
+sqrt(g) B^theta = dchi_dr - dPhi_dr * dLA_dz
+sqrt(g) B^zeta  = dPhi_dr * (1 + dLA_dt)
+```
+
+Verified on `gvec_nfp3_hegna_80cubed_clebsch.h5` against that file's own `B`,
+using its own `grad_rho / grad_theta / grad_zeta`:
+
+| identity | measured |
+| --- | --- |
+| `sqrt(g) B^rho = 0` | 3.8e-16 |
+| `B^theta` relation | ratio 1.00000000, std 2.9e-13 |
+| `B^zeta` relation | ratio 1.00000000, std 1.7e-16 |
+
+Any new export must reproduce this check before it is trusted — see §5.
+
+## 2. Required
+
+### 2.1 The field
+
+| GVEC quantity | why |
+| --- | --- |
+| `LA` | **lambda as the SCALAR.** Not its derivatives — see §3. |
+| `dPhi_dr` | toroidal flux derivative |
+| `dchi_dr` | poloidal flux derivative |
+| `iota` | **send it directly.** `dchi_dr/dPhi_dr` is 0/0 at the axis (both vanish); a stored profile removes the division and is the dimensionless O(1) quantity anyway. |
+| `p` | pressure — the end-to-end validation target |
+
+### 2.2 The map and grid
+
+`X1`, `X2` (or `pos`) → R, Z; plus the evaluation points and the attributes
+`n_rho`, `n_theta`, `n_zeta`, `nfp`.
+
+### 2.3 Geometry — send GVEC's own, do not make MRX re-derive it
+
+| GVEC quantity | why |
+| --- | --- |
+| `Jac` | the Jacobian directly, rather than MRX forming `1/[grad_rho . (grad_theta x grad_zeta)]` |
+| `g_tt`, `g_tz`, `g_zz` | the angular metric block. MRX's energy model needs the surface averages `<g_tt/J>`, `<g_tz/J>`, `<g_zz/J>`; having GVEC's own metric lets us validate MRX's **spline map** against GVEC's geometry, which separates "our map is wrong" from "our field is wrong". |
+| `grad_rho`, `grad_theta`, `grad_zeta` | needed for the §1 verification |
+| `B` | likewise — without it the §1 check cannot be run at all |
+
+`g_rr`, `g_rt`, `g_rz` and `e_rho/e_theta/e_zeta` are welcome but not required.
+
+### 2.4 Cross-checks — cheap, and each one localises a different failure
+
+| GVEC quantity | what it pins down |
+| --- | --- |
+| `F` | **GVEC's own MHD force residual.** This sets the FLOOR for our `\|\|F\|\|/\|\|B\|\|`; without it we cannot tell "our operator is wrong" from "the equilibrium is only converged to 1e-6". |
+| `J`, `I_tor`, `I_pol` | lets us check `J x B = grad p` against GVEC's own current instead of only against its pressure |
+| `B_theta_avg`, `B_zeta_avg` | flux-surface averages — a direct check on our `<B^chi>/<B^zeta>` recovery of `iota` |
+| `mod_B` | cheap check on the reconstructed energy |
+| `V`, `dp_dr`, `diota_dr` | volume profile and profile gradients; saves differentiating interpolated data |
+| `dLA_dt`, `dLA_dz` | **cross-check ONLY** — see §3. Their real value is pinning the angle convention of §4.1. |
+
+## 3. Storage rule: derivative or parent?
+
+> **Store the derivative — unless two derivatives are tied by an exactness
+> identity, in which case store the parent.**
+
+* **`LA` (parent).** `div B = 0` holds because
+  `d_zeta(lam_theta) = d_theta(lam_zeta)` — the mixed partials cancel. That
+  survives interpolation ONLY if both derivatives come from the same
+  interpolant. Two independently interpolated derivative fields degrade
+  `div B` from round-off to the interpolation error, discarding the one
+  guarantee this interface exists to provide.
+* **`dPhi_dr`, `dchi_dr` (derivatives).** Nothing differentiates them —
+  `div B` applies only `d_theta` and `d_zeta`, and both are rho-only — so no
+  identity needs protecting, and integrating is stable where differentiating
+  is not.
+
+`Phi` and `chi` themselves are optional (they are the integrals). Do send the
+scalar `Phi(edge)` for the physical flux normalisation.
+
+## 4. Conventions that MUST be stated, not inferred
+
+### 4.1 Angle units
+
+On hegna the angular derivatives are with respect to **radians**
+(`theta_G = 2 pi theta`, `zeta_G = 2 pi zeta / nfp`) while `eval_points` is
+normalised to [0,1]. This is documented nowhere and had to be recovered by
+finite differences:
+
+```
+FD(d/dtheta_norm) / dLA_dt = 6.274   vs  2 pi     = 6.283
+FD(d/dzeta_norm)  / dLA_dz = 2.0905  vs  2 pi/nfp = 2.0944
+```
+
+Please write it into the attributes, e.g. `angle_units: "radians"`,
+`zeta_convention: "per_field_period"`, `radial_label: "rho = sqrt(s)"`.
+
+**Why it matters:** converting into MRX's normalised coordinates gives
+
+```
+Phi'(rho) = 2 pi * dPhi_dr
+iota(rho) = (1/nfp) * dchi_dr / dPhi_dr
+lambda    = LA / (2 pi)
+```
+
+MRX's `zeta` spans ONE FIELD PERIOD, so the transform per MRX toroidal turn is
+`1/nfp` of the transform per full turn. **A missed `1/nfp` makes `iota` nfp
+times too large — 5x on W7-X — while passing every structural gate.**
+
+### 4.2 Radial orientation — the existing exports contradict each other
+
+R-spread → 0 marks the magnetic axis (the surface collapses to a curve):
+
+| file | nfp | `axis_radial_index` | R-spread @ idx 0 | @ idx -1 |
+| --- | --- | --- | --- | --- |
+| hegna_80cubed_clebsch | 3 | 0 | 0.0407 | 3.0194 |
+| quasr_0009983 | 2 | 0 | 0.1287 | 0.3168 |
+| w7x_vacuum_co_contra | 5 | **49** | 0.7458 | 1.5769 |
+| w7x_ini_mrx | 5 | **49** | 0.7190 | 1.5730 |
+
+Hegna is self-consistent. Both W7-X files claim the axis is at index 49 — the
+end with the LARGER spread, i.e. the edge — and neither end has spread ≈ 0, so
+the axis may not be sampled at all. **Make `rho = 0` the axis and say so.**
+
+### 4.3 Angular sampling
+
+Prefer half-open `[0,1)`. Hegna is closed `[0,1]` (80 points, step 1/79) while
+quasr is half-open (50 points, step 1/50). MRX detects which, but the
+disagreement has already caused one bug: a periodic spline with
+`n_basis = n_data` is singular on the closed sample unless the duplicated
+endpoint is dropped.
+
+## 5. What MRX checks on load
+
+Every one of these is a measurement, not an assumption. A new export should be
+put through them before it is used for anything.
+
+1. **§1 identity** against the file's own `B` and grad vectors — pins the
+   conventions of §4.1 rather than inheriting hegna's.
+2. `max|B^rho| / max|B^zeta|` — nested surfaces survived the projection.
+3. `||div B||` by both the combinatorial and mass-projected routes.
+4. Leray projection is a no-op.
+5. `<B^chi>/<B^zeta>` against the stored `iota` — catches a missed `1/nfp` or a
+   sign flip. (`build_gvec_map` MIRRORS raw GVEC data to keep `det DF > 0`, so
+   the orientation is measured, never assumed.)
+6. Reconstructed `<B^2>/2` against the metric-based energy model.
+7. Recovered `p(rho)` against the stored `p` — the end-to-end test of map,
+   representation and force operator together, floored by `F` (§2.4).
+8. Helicity — must be unchanged when lambda is switched off, since lambda is a
+   pure gauge transformation.
+
+## 6. Traps, all of them already paid for
+
+* **`load(frame='ref')` does not take the primal components.** `M_k` carries a
+  `g/J` weight, so `M_k^{-1} load` returns `omega` with `B_phys = DF omega / J`,
+  while `frame='ref'` wants `g omega / J`. Passing `omega` fails SILENTLY —
+  every structural gate passes and only `iota` comes out wrong. Push forward and
+  use `frame='phys'`.
+* **Cartesian `Bx, By` are zeta-quasiperiodic**, rotating by `R_z(-2pi/nfp)`
+  per field period, and need de-rotating before interpolation. `LA` is a scalar
+  in logical coordinates and has no such seam — another reason to ship scalars.
+* **Do not evaluate a large tensor fit through a dense basis.** A
+  `80 x 79 x 79` fit has 499280 functions; a dense identity extraction is
+  1.81 TiB, and even matrix-free, evaluating all `n` basis functions per point
+  is unusable. Contract the tensor product instead — `O(n1+n2+n3)` per point,
+  and it stays differentiable, which §3 requires.
