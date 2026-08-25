@@ -3791,14 +3791,12 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
         preconditioner=saddle_preconditioner.mass,
         allow_none=True,
     )
-    schur_apply = _build_schur_apply_from_saddle_preconditioner(
-        seq,
-        operators,
-        k=k,
-        dirichlet=dirichlet,
-        eps=eps,
-        saddle_preconditioner=saddle_preconditioner,
-    )
+    # NOTE the Schur apply is built inside the `else` branch below, not here.
+    # It is the ONLY consumer. Building it up front cost a full
+    # schur.inner construction -- raw_kron factors and all -- on every
+    # production solve, and then discarded it, because `outer='block'` uses the
+    # atom as the upper-block inverse directly and `outer='jacobi'` builds its
+    # own through _build_schur_probe_apply.
     outer_spec = saddle_preconditioner.schur.outer
     if outer_spec.kind == 'block':
         # The atom approximates L_k directly, so it needs neither the
@@ -3827,6 +3825,14 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
         )
         precond_upper = lambda x, d=schur_diaginv: d * x
     else:
+        schur_apply = _build_schur_apply_from_saddle_preconditioner(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            eps=eps,
+            saddle_preconditioner=saddle_preconditioner,
+        )
         precond_upper = _build_operator_preconditioner_apply(
             seq,
             operators,
