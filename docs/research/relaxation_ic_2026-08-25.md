@@ -661,7 +661,43 @@ finite-beta W7-X — but carries only `B` and `pressure`, **no `clebsch/` group*
 Re-exporting that one with `dPhi_dr / dchi_dr / LA` would make it the best
 target in the set.
 
-## 12. Sources
+## 12. Method note: two "decisive" arms that could not decide
+
+Worth recording because it happened TWICE in one session, out of roughly a dozen
+designated arms, and the same cheap move caught both.
+
+**`aic_tor_vacuum` (§8.1).** Labelled decisive on the grounds that eq. (2) at
+`iota = 0` "should BE the vacuum field". The derivation behind it was correct
+and carried a `<1/R>` factor in `Phi'`. The script then exposed only
+`--flux-exp`, i.e. `Phi' = rho^q`, which cannot express `rho <1/R>`. So the arm
+never contained the vacuum field at all. The run completed, every structural
+gate passed, and only the physics was wrong.
+
+**`gvec_clebsch_ic.py:329` (§8.2).** Labelled the real test of §10.1, i.e. of
+whether the L2 leak scales with metric weight spread. But it reported ONE global
+scalar for `B^rho`, so it could emit no radial information and could not have
+discriminated the candidate mechanisms whatever the answer came out to be.
+
+The failure mode is identical: **stating what an arm would prove without
+checking what it could actually emit.** In the first case the input
+parameterisation could not reach the intended field; in the second the output
+was too coarse to carry the intended signal. Neither shows up as an error --
+both runs succeed and produce plausible numbers.
+
+What caught both was the same move, and it is cheap: **read the source of the
+thing that is supposed to produce the evidence, not the claim about it.**
+
+> **Guard.** Before calling an arm decisive, check two reachable sets against
+> the discriminating quantity: what the input knobs can EXPRESS, and what the
+> output actually EMITS. A correct derivation upstream does not survive a
+> parameterisation that cannot represent it, and a correct mechanism question
+> does not survive a diagnostic that integrates the answer away.
+
+Corollary observed here: a scalar summary of a field that varies over the domain
+is almost never the right diagnostic for a question about WHERE something
+happens. Report the profile.
+
+## 13. Sources
 
 - booz_xform theory (VMEC angles, lambda and nu):
   https://hiddensymmetries.github.io/booz_xform/theory.html
