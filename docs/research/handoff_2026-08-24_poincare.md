@@ -341,7 +341,39 @@ timestep solve (`_coerce_diffusion_preconditioner_spec`, `valid_kinds` without
 the atom's fit there is unmeasured. `kind='block'` *raises* for `eps != 0` for
 the same reason, deliberately without a fallback.
 
-### 4.4 Housekeeping
+### 4.4 The relaxation loop runs on the jacobi fallback — found by pytest
+
+`pytest test/` is **green on this branch** (199 passed, 2 skipped, 4 xfailed,
+0 failed, 13m20s on a GPU node, `outputs/pytest/poincare/pytest.log`), but three
+tests emit the fallback RuntimeWarning:
+
+    test_relaxation.py::test_zpinch_force_balance
+    test_relaxation.py::test_zpinch_pressure_recovery
+    test_sequence.py::test_hodge_laplacian_solve_roundtrip[3-True]
+
+    RuntimeWarning: saddle solve for k=3, dirichlet=True is falling back to
+    schur.outer='jacobi': the block-Jacobi Laplacian atom is not assembled for
+    this (k, BC). That is ~2.5x more iterations and can leave hard solves
+    unconverged.
+
+`assemble_block_jacobi_laplacian_preconditioner` is called from exactly two
+places in the tree: `mrx/nullspace.py` (i.e. `compute_nullspaces`) and
+`test/test_block_jacobi_laplacian.py`. So **every path that does not go through
+`compute_nullspaces` takes the per-DoF diagonal for all its k>=1 saddle solves**,
+and the relaxation loop is such a path — `mrx/relaxation.py` and
+`scripts/config_scripts/relax_stell.py` never assemble it.
+
+That is the same shape as audit item 3.1 (the timestep solve never got either
+2026-08 swap) seen from the other side, and it is now *visible* rather than
+inferred, because the fallback warns. The fix is one call at relaxation setup,
+but it changes production behaviour on a hot path I have not measured, so it is
+flagged rather than done — same stance the audit took.
+
+Note the warning only appears because these tests do not filter it. Production
+runs print it once to stderr and it is easy to miss; the Poincaré driver
+promotes it to an error for exactly that reason.
+
+### 4.5 Housekeeping
 
 - `mrx/plotting.py`'s `integrate_fieldlines` / `get_periodic_intersections` /
   `get_iota_log` are superseded here but still used by
