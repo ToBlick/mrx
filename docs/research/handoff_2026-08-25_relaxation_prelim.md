@@ -616,6 +616,18 @@ than silence.
         --steps 250 --gamma 1 --mu 1e-3 --arms gradient,cg,lbfgs \
         --out out/relax_prelim/gamma1.json
 
+    # re-render a saved field at high resolution, NO relaxation.  MEASURED:
+    # 100 seeds x 400 periods x 8 zeta planes, both fields, ~10 min TOTAL --
+    # ~6 min of that is sequence setup and ~1 min per field is the trace.
+    # I twice estimated this at 1-2.5 h by scaling from a small trace whose
+    # 300 s was almost entirely JIT COMPILATION rather than integration.
+    # Do not budget a replot from a single small trace; the compile dominates
+    # it.  Extra zeta planes are free -- they reuse the trace.
+    sbatch slurm/job_relax_prelim.sh --geometry w7x-fmm002 --ns 8,16,8 --p 3 \
+        --poincare-from out/relax_prelim/W1/B.h5 --pc-seeds 100 \
+        --pc-periods 400 --pc-saves 16 --pc-steps 48 \
+        --pc-zeta 0,0.125,0.25,0.375,0.5,0.625,0.75,0.875 --out .../hi.json
+
     # operator identities / IC gates only, no descent (cheap, ~6 min)
     sbatch slurm/job_relax_prelim.sh --geometry quasr44970 --ic-only \
         --out out/relax_prelim/ic.json
