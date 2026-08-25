@@ -1343,7 +1343,29 @@ measured on real cases.
 | **step size** (LR3 -> D1, linesearch -> fixed 3e-3) | **73x** | **none** -- same force reduction |
 | hyperregularisation gamma=1 (LR1 / S04) | 15x / 2.4x | ~3x per step, ~12% less force reduction |
 | ~~**p-refinement** p=3 -> p=4 (S03)~~ | ~~**3.4x**~~ **WITHDRAWN, s33.2** | 1.7x per step, no extra DoFs |
-| h-refinement 8^3 -> 12^3 (S01) | **none** (see 25.2) | 3x per step |
+| h-refinement 8^3 -> 12^3 (S01) | ~~**none**~~ **QUALIFIED, s31/s32** | 3x per step |
+
+**READ THE TWO STRUCK ROWS BEFORE THE TABLE.** Both refinement rows are
+withdrawn or qualified, for two SEPARATE reasons that a reader should not
+merge:
+
+* **s32 -- no arm in this campaign floored.** Every run is still descending at
+  its last step, so neither refinement row was ever a floor result. The point
+  of refining is to reach a LOWER floor, not to get there faster; a finer arm
+  being slower is expected and is not a finding.
+* **s33.2 -- the p sweep alternates operators.** p=2 and p=4 are the only
+  even-p runs here and both predate the even-p quadrature parity fix, so the
+  sweep's shape is not readable and `3.4x` divides a post-fix point by a
+  pre-fix one.
+
+**The p axis is not gone.** What survives, plainly: p=1, p=3 and p=5 are
+internally comparable to each other and to every other run in this document.
+`n2_dbc` is 2192 at BOTH p=3 and p=4 -- raising the order there adds no DoFs
+and does not shrink the step -- which is a fact about the SPACES and stands on
+its own; it simply no longer has a measurement attached to it. Re-measuring P2
+and S03 post-merge (~2 GPU-hours total) restores the axis outright.
+
+The three unstruck rows are unaffected by both: none is a refinement claim.
 
 **Step size is by far the largest lever, and the only free one.** On the case
 where it matters, capping the step cost nothing at all in force reduction
