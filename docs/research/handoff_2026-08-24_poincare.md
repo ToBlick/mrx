@@ -373,7 +373,37 @@ Note the warning only appears because these tests do not filter it. Production
 runs print it once to stderr and it is easy to miss; the Poincaré driver
 promotes it to an error for exactly that reason.
 
-### 4.5 Housekeeping
+### 4.5 The Laplacian atom cache is NOT invalidated by set_map — latent
+
+The two block-Jacobi caches disagree about geometry. The MASS one keys on it:
+
+    # operators._mass_block_jacobi_for
+    if cache is None or cache.get('geometry') is not geometry:
+        cache = {'geometry': geometry, 'factors': {}}
+
+so `set_map` / `set_spline_map` invalidate it, and that is exactly what lets
+`block_jacobi` be the mass default without every call site assembling. The
+LAPLACIAN one does not:
+
+    # operators.assemble_block_jacobi_laplacian_preconditioner
+    cache[(int(k), bool(dbc))] = BlockJacobiLaplacian(seq, operators, k, dbc)
+
+a plain dict keyed on `(k, BC)` only. So
+
+    seq.set_map(map_A); assemble_block_jacobi_laplacian_preconditioner(seq, ops)
+    seq.set_map(map_B)          # atom still holds map_A's factorisation
+
+is silently stale. It preconditions the wrong metric, which shows up as slow
+convergence, never as an error — the failure mode `no-defensive-code` warns
+about. Not currently triggered by anything in `mrx/` (assembly follows
+`set_map` in every path checked), but any loop that updates the geometry —
+shape optimisation, a moving-boundary relaxation — walks straight into it.
+
+Keying the atom cache on geometry identity, as the mass one already is, fixes
+this AND is the same change that would make eager assembly at `set_geometry`
+correct. Worth doing together.
+
+### 4.6 Housekeeping
 
 - `mrx/plotting.py`'s `integrate_fieldlines` / `get_periodic_intersections` /
   `get_iota_log` are superseded here but still used by
