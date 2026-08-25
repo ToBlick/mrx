@@ -1285,3 +1285,31 @@ S08-S10 already answer the question.
 *Lesson, and it is the same one as the W1 confound in section 19.4: an arm that
 varies one thing on top of an already-broken baseline measures nothing. Check
 that the control is healthy before adding a variable to it.*
+
+## 24. THE OPTIMIZER RANKING, on a case that behaves
+
+Section 4's factorial ran on `quasr44970` with an INVENTED far-from-equilibrium
+IC, and could not separate CG from fixed L-BFGS. `S11` repeats the comparison
+on `w7x_fmm002` from GVEC's converged equilibrium -- a well-conditioned case --
+3000 CG steps each:
+
+| arm | \|\|F\|\| final | residual reduction | cos median | sy<0 | \|dH\| |
+|---|---|---|---|---|---|
+| gradient | 4.616e-04 | 36.1x | +1.0000 | 0/3000 | **1.96e-07** |
+| lbfgs (fixed) | 1.570e-04 | 105.3x | +0.0365 | **0/3000** | 1.43e-06 |
+| **cg** | **9.950e-05** | **166.2x** | -- | -- | 1.54e-06 |
+
+**CG > L-BFGS > gradient**, and 166 / 105 / 36 is well outside the ~10%
+run-to-run reproducibility measured in section 10.2 -- so unlike section 4,
+this comparison DOES separate them. Section 4's "no winner can be called"
+stands for that configuration and is superseded here for this one.
+
+The fixed L-BFGS is healthy throughout (`sy < 0` on 0/3000), which confirms the
+section-5 repair on a second geometry and a second IC route.
+
+**And the same trade appears in miniature:** plain gradient loses ~7x less
+helicity (1.96e-07 against ~1.5e-06) for 3-5x less force reduction.
+Acceleration costs topology here too, just mildly enough that all three keep
+their surfaces (axis offsets <= 3e-03).
+
+Caveat: one run per arm, not replicated.
