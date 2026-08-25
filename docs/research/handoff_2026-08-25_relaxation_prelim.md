@@ -949,9 +949,16 @@ a picture.
 
 ## 19. WHAT DESTROYS THE SURFACES: step size, measured
 
-Tobias read all the Poincare pairs and classified them. Cross-referencing that
-against the traces settles the question sections 12 and 17 left open, and
-overturns two of my own claims.
+Tobias read all the Poincare pairs and classified them **BLIND** -- he gave the
+verdicts (good / mostly nice / mostly chaos / pure chaos) from the plots alone,
+before seeing any of the traces and before I had computed `|dH|` for any run.
+Cross-referencing that classification against the traces afterwards is what
+makes what follows evidence rather than pattern-matching: the ordering below
+could not have been contaminated by the numbers, because the numbers did not
+exist when the ordering was made.
+
+It settles the question sections 12 and 17 left open, and overturns two of my
+own claims.
 
 ### 19.1 The classification, against the numbers
 
@@ -1013,7 +1020,12 @@ were numerically reconnecting the field away from the equilibrium, and the
 **Beta is not the discriminator.** Section 17 proposed that `w7x_ini`'s
 `beta_max = 13%` made it ideally unstable and that the relaxation was finding
 the instability. W5 is the same file at the same beta and keeps its surfaces.
-An ideal instability would not care about the time step. **Refuted.**
+
+The refutation is by MECHANISM, not by measurement, which is why it is
+decisive: an ideal instability is a property of the equilibrium and its
+spectrum. It cannot depend on the integrator's time step. If beta-driven
+instability were destroying the surfaces, shrinking `dt` would change how fast
+they were destroyed and not whether. It changed whether. **Refuted.**
 
 **W1 is much weaker evidence than I presented it as.** Section 17 said W1 shows
 "the relaxation working". W1 removed **0.0244%** of the initial energy -- it
