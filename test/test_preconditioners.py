@@ -32,9 +32,7 @@ from mrx.preconditioners import (
     _extraction_gram_inverse,
     _extraction_projector_kron_terms,
     _raw_block_starts,
-    _weak_term_rows_by_apply,
     build_extracted_laplacian_diagonal,
-    build_weak_term_diagonal,
 )
 
 jax.config.update("jax_enable_x64", True)
