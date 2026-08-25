@@ -457,7 +457,54 @@ fails to hold the structure exactly:
 Structure holds at machine precision until `B^chi = Phi' iota(rho)` is nonzero
 AND the geometry varies over a surface -- then it loses seven orders.
 
-**The mechanism is NOT off-diagonal metric coupling.** That was my first
+**MEASURED 2026-08-25 on hegna, and it settles the mechanism.** Per-surface
+`max|B^rho(rho)|/max|B^zeta(rho)|` grows MONOTONICALLY, 1.37e-04 at rho=0.05 to
+3.16e-03 at rho=0.894, axis-band max 3.25e-04 against bulk max 6.77e-03 -- the
+bulk is ~20x the axis. That kills the polar-extraction hypothesis below (which
+predicts concentration in the first rings) and it is not a weight-spread effect
+either. The actual criterion is:
+
+> **The L2 route preserves `B^rho = 0` EXACTLY if and only if
+> `g_rho-chi = g_rho-zeta = 0`** -- i.e. iff the radial coordinate is
+> metric-orthogonal to the flux surfaces.
+
+The channel is the mass matrix, and it is structural rather than numerical:
+`M2_ij = int Lambda_i^T g Lambda_j / J`, so a CROSS-COMPONENT entry (comp0
+against comp1) carries `g_rho-chi`. `M_2` is block-diagonal in components iff
+`g` is diagonal. When it is not, the L2 best approximation of a field with
+`omega^rho = 0` does NOT have `omega^rho = 0`, because the rho-flux basis
+functions are not `M_2`-orthogonal to the surface-tangent ones.
+
+Measured off-diagonals, relative to `sqrt(g_ii g_jj)`:
+
+```
+rho      |g_rt|      |g_rz|      |g_tz|
+0.051    7.681e-01   4.891e-02   4.304e-02
+0.506    8.469e-01   3.436e-01   3.476e-01
+0.899    9.510e-01   5.532e-01   5.402e-01
+```
+
+against toroid and cylinder, where all three are IDENTICALLY zero. That
+predicts both the magnitude (0.77-0.95 coupling -> 6.8e-03, versus exactly zero
+-> 1e-16, six orders) and the monotonic radial growth, with no free parameter.
+**Cylinder and toroid satisfy the criterion accidentally; no shaped stellarator
+does.**
+
+UNEXPLAINED RESIDUAL, not folded into the above: the toroid leaks 4.6e-09 with
+an exactly diagonal `g`. Six orders below hegna, so a different and much smaller
+effect -- possibly the polar extraction after all, possibly conditioning. Left
+open rather than absorbed into the story.
+
+**Why this settles §10.1.** Histopolation never forms the dual pairing at all:
+`_histopolate_2form` takes `int0` from `pullback(x)[0]`, `int1` from `[1]`,
+`int2` from `[2]` -- strictly COMPONENT-WISE face integrals of `omega`. So
+`omega^rho == 0` gives `comp0 == 0` identically, whatever the metric does. It is
+immune to `g_rho-chi` BY CONSTRUCTION, not merely more accurate. The case for
+histopolation is therefore structural, not a measured 6.8e-03: *the L2 route
+cannot hold `B^rho = 0` on any geometry whose radial coordinate is not
+metric-orthogonal to its flux surfaces, which is every real device.*
+
+**Superseded: the mechanism is NOT off-diagonal metric coupling ON THE TOROID.** That was my first
 explanation and it is wrong: `toroid_map` at kappa = 1 has an EXACTLY DIAGONAL
 metric, `g_rt = g_rz = g_tz == 0` identically, same as the cylinder. What
 distinguishes them is the CHI-DEPENDENCE of the diagonal mass weights `g_ii/J`
