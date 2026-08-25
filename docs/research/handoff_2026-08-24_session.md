@@ -76,10 +76,12 @@ same criterion.
 One expression, one code path: `alpha_k = <m_k sqrt(g^rr)> / <m_k/J> / h_last`.
 All other conventions and their probes are deleted (-152 lines).
 
-**The scale is the open problem.** Measured on the real solve path, free rows,
-p=3 — the optimum spans **0.5 (hegna) to ~16-32 (quasr9983, toroid)**, and
-`s=3` makes hegna's k=2 free solve diverge. `s=0` is the worst value in all 18
-rows, so the term always earns its place.
+**The scale is settled — see `s_scale_2026-08-25.md`.** Measured on the real
+solve path, free rows, p=3 — the optimum spans **0.5 (hegna) to 16
+(quasr9983)**, but the basin is flat and `s = 3` is within 27% of every
+geometry's own optimum. `s=0` is the worst value in 17 of 18 rows, so the term
+always earns its place. hegna k=2 free does not converge at *any* `s`, so it is
+a geometry problem, not a scale one.
 
 Four predictors tested against the six k=3 optima (2.37 / 5.37 / 9.64 / 9.05 /
 19.60 / 22.63):
@@ -152,10 +154,15 @@ gone in it predates the fixes above.
 
 ## 8. Open
 
-1. **The scale.** No single value works. Options: per-geometry from
-   `alpha_exact/alpha_5` (needs `alpha_exact` back in the code, ~5 lines), a
-   per-k table (the (k,c) spread is only 1.065-1.29, so this buys little), or
-   state it as measured in the paper.
+1. ~~**The scale.**~~ **CLOSED 2026-08-25** — `s_scale_2026-08-25.md`. Merging
+   the s-zero, cheap-S2 and round-2 grids gives `s` from 0 to 512 at ratio
+   `sqrt(2)`, and all 18 free rows bracket on both sides. Larger `s` was not the
+   answer: everything turns around by 32 and `s >= 64` stalls cells. The
+   per-geometry optima do span 0.5-16, but the basin is flat enough that the
+   worst geometry pays only 1.27x at `s = 3` (1.21x at the minimax point
+   `s = 4`) — so a factor-32 spread in `argmin` is worth at most 27%.
+   Per-geometry calibration and `alpha_exact` are dropped; `PRODUCTION_BC_SCALE
+   = 3.0` stands, now measured. The paper reports the basin, not the argmin.
 2. **hegna** is the standing anomaly: smallest `1/ratio`, k=2 free diverges at
    s>=4, the only S1 cell where the block atom LOST to jacobi, and the only
    geometry whose harmonic form is still weak at p=5.
