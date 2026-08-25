@@ -319,6 +319,21 @@ def midplane_radius(R, Z, centre_R, centre_Z):
     ``Z = 0``; they coincide when the axis is on the midplane, which is the
     usual case here, and the axis-centred one keeps meaning when it is not.
 
+    A closed surface meets the midplane TWICE, outboard at ``alpha = 0`` and
+    inboard at ``alpha = +-pi``. Both argmins below minimise ``|alpha|``, so
+    they bracket ``alpha = 0`` and the inboard crossing, sitting at the far end
+    of the angle range, can never win -- ``arctan2``'s branch cut falling on the
+    inboard midplane is what makes the two unambiguous.
+
+    Outboard is a CONVENTION, not a robustness argument. The interpolation
+    wants ``r(alpha)`` single-valued near the ray, and it was tempting to argue
+    that the inboard side is the risky one because that is where a bean section
+    carries its indentation. Measured on w7x, w7x-ini and hegna, that is wrong:
+    the relative residual of a linear ``r(alpha)`` fit in a window either side
+    is ~3e-4 on BOTH, and the inboard side is slightly the better behaved.
+    Concave curvature is not the same as a ray crossing twice, and about the
+    magnetic axis these sections are star-shaped either way.
+
     Returns NaN for a surface whose crossings do not straddle the ray -- that
     needs the orbit to miss an entire half-plane, so it is a real defect and is
     left visible rather than patched.

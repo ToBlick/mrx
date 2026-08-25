@@ -1,182 +1,293 @@
-# Poincaré sections of the harmonic field — 2026-08-24
+# Handoff — Poincaré tracer and the overnight sweeps, 2026-08-24
 
-`mrx/poincare.py` + `scripts/debug/poincare_vacuum.py` + `scripts/debug/poincare_replot.py`.
-Run: `outputs/poincare_v2/2026-08-24/17-02-56/`, ns = (12,24,12), p = 3, 48 lines,
-200 field periods, 24 prescribed steps/period, sections at ζ = 0 and ζ = 0.5.
+Branch `worktree-poincare`, based on `greville-prod` at `7e89525`. **Local only,
+never pushed** — push needs credentials I do not have.
 
-## What the tracer does differently
+Code: `mrx/poincare.py`, `scripts/debug/poincare_{vacuum,replot,converge,
+pullback_check}.py`, `scripts/debug/k0_block_default.py`,
+`slurm/job_poincare_{vacuum,sweep}.sh`, `slurm/job_k0_block.sh`.
+Prod change: `mrx/operators.py`, `mrx/preconditioners.py`, `mrx/nullspace.py`.
 
-1. **The toroidal angle is the independent variable.** Dividing the field-line
-   ODE through by `B^ζ` gives `dr/dζ = B^r/B^ζ`, `dθ/dζ = B^θ/B^ζ`, so crossings
-   land at `ζ = ζ₀ + m` exactly. Nothing is detected, nothing is interpolated,
-   and there is no per-crossing root-finding error to accumulate over thousands
-   of turns. Exact wherever `B^ζ ≠ 0`, which for a toroidal field is everywhere.
+---
 
-2. **The step schedule is prescribed** (`diffrax.StepTo`), so lanes do not
-   couple. An adaptive controller runs a vmapped batch on the smallest step any
-   lane asks for; chunking bounds how many healthy seeds one pathological seed
-   holds up, it does not isolate it. See the benchmark below. The price is that
-   fixed steps carry no error estimate, so `step_convergence` earns the step
-   count by h-vs-h/2 refinement and the number is printed on every figure.
+## 1. The tracer
 
-3. **The state is `(u,v) = (r cos 2πθ, r sin 2πθ)`.** `B^θ ~ 1/r` near the polar
-   axis, so `dθ/dζ` diverges there and the innermost seeds — the ones resolving
-   the axis and the low-shear core — are the ones an integrator handles worst.
-   In the Cartesian chart the `1/r` cancels against the `O(r)` length of the
-   same coordinate vector.
+Four things differ from `mrx.plotting.integrate_fieldlines`.
 
-Iota is measured about the magnetic axis, tracked *per phase within the period*
-from a dedicated innermost probe, by a least-squares slope on the unwrapped
-angle rather than an endpoint difference — on an island the endpoints are two
-arbitrary points on a bounded oscillation. The fit residual is reported with it.
-This replaces the KS-uniformity screen in `mrx/plotting.py`, which was
-discarding lines whose angle had been measured about `r = 0` instead of about
-the axis: a bad centre, not a bad line.
+**Toroidal angle as the independent variable.** Dividing the field-line ODE by
+`B^zeta` gives `dr/dzeta = B^r/B^zeta`, `dtheta/dzeta = B^theta/B^zeta`, so
+crossings land at `zeta = zeta_0 + m` *exactly*. No crossing detection, no
+interpolation, no accumulated root-finding error over thousands of turns.
 
-## Results (k = 2, essential BC)
-
-| geometry | nfp | iota | h/2 step drift | lines lost |
-|---|---|---|---|---|
-| toroid | 1 | 0.0000 – 0.0000 | 3.6e-15 | 0/48 |
-| rot-ellipse | 3 | 0.0000 – 0.0000 | 4.7e-05 | 0/48 |
-| quasr9983 | 2 | 0.0971 – 0.0980 | 1.2e-08 | 0/48 |
-| quasr44970 | 3 | 0.4823 – 0.5051 | 2.4e-06 | 0/48 |
-| hegna | 3 | 0.4457 – 0.7057 | 8.4e-05 | 0/48 |
-| w7x | 5 | 0.8523 – 0.9481 | 1.3e-05 | 0/48 |
-
-Two of these are known answers and both come out right.
-
-* **toroid** — an axisymmetric vacuum field has iota = 0, so every line is a
-  fixed point of the return map. Radial drift is 0 and iota is 0 to 1e-17.
-* **rot-ellipse** — also exactly 0 (5e-12), and this one is worth spelling out
-  because it is surprising until you look at the map. See the next section.
-* **w7x** — 0.851 at the axis rising to 0.948 at the edge, which is the
-  published standard-configuration vacuum range, from a harmonic form the code
-  computes for itself. The profile plateaus near 0.909 ≈ 10/11 and the section
-  shows an island chain at exactly the two seeds where the angle-fit residual
-  spikes.
-
-## `rotating_ellipse_map` does not rotate
-
-Zero vacuum transform on a rotating ellipse would be wrong. Zero on *this* map
-is forced by symmetry, because the map does not rotate anything:
-
-```
-R - R0 = eps * nu(zeta)            * r * cos(2 pi theta)
-Z      = eps * nu(zeta + 0.5/nfp)  * r * sin(2 pi theta)
-```
-
-The two semi-axes lie along `R̂` and `Ẑ` at every `zeta` — there is no tilt term
-and no cross term. With `kappa = 1.5` the section runs tall (0.5 × 1.5) at
-`zeta = 0`, through an exact circle at `zeta = 0.25`, to wide (1.5 × 0.5) at
-`zeta = 0.5`. It *pulsates*; the ellipticity phase is locked at 0 or π/2 and
-only the magnitude oscillates.
-
-That leaves the domain invariant under `(X, Y, Z) -> (X, Y, -Z)`, i.e.
-`theta -> -theta`, at every `zeta`. The harmonic field is unique up to scale and
-the reflection preserves toroidal circulation, so it maps `B` to `+B`; a
-reflection-invariant field has zero net poloidal winding, hence `iota = -iota`
-and `iota = 0`. Measured 5e-12, with a Z excursion of 1e-10.
-
-l = 2 vacuum transform comes from the ellipse axis *rotating* with `zeta`. In
-complex form a real rotating ellipse is
-
-```
-(R - R0) + i Z  ∝  r ( e^{2 pi i theta} + delta e^{-2 pi i theta} e^{2 pi i nfp zeta_phys} )
-```
-
-where the second term's phase advances. Adding that phase — or equivalently a
-tilt angle `alpha(zeta) = pi nfp zeta_phys` applied to the section — turns this
-into a geometry with transform. Nothing in the library is wrong: `rot-ellipse`
-exists as a metric-variation test case for the preconditioner, where iota is
-irrelevant. Only the name misleads.
-
-## The two harmonic routes disagree in the core
-
-Both `null_2_dbc` (Neumann harmonic 2-form, `n·B = 0`) and `null_1` (absolute
-harmonic 1-form, `n⌟A = 0`) are d- and δ-closed, boundary-tangent, and live on a
-one-dimensional harmonic space, so they are the same physical field reached by
-two different solve chains. `field_agreement` reports the max angle between them
-over 512 random points, and the iota profiles measure the same thing again:
-
-| geometry | max angle [rad] | iota k=2 | iota k=1 |
-|---|---|---|---|
-| toroid | 0.0 | 0.0000 – 0.0000 | 0.0000 – 0.0000 |
-| rot-ellipse | 7.1e-03 | 0.0000 – 0.0000 | 0.0000 – 0.0000 |
-| quasr44970 | 3.2e-02 | 0.4823 – 0.5051 | 0.4766 – 0.5050 |
-| hegna | 4.8e-02 | 0.4457 – 0.7057 | 0.4467 – 0.6798 |
-| quasr9983 | 7.0e-02 | 0.0971 – 0.0980 | 0.0933 – 0.0980 |
-| w7x | 1.8e-01 | 0.8523 – 0.9481 | 0.8333 – 0.9459 |
-
-The edges agree to 0.2 % everywhere. The **cores** do not: W7-X differs by 2.2 %
-on the axis, quasr9983 by 3.9 %, hegna by 3.7 % at the edge. So the 0.18 rad max
-angle on W7-X is not one bad point near the `r → 1` map singularity — it is a
-systematic core disagreement between the two nullspace routes at this
-resolution. The k=2 value is the one matching the published W7-X axis figure.
-Not chased further here; it wants an h- and p-refinement study.
-
-## Batch coupling, measured
-
-49 seeds × 20 periods, including JIT compile in each arm.
+**Prescribed step schedule** (`diffrax.StepTo`), so lanes do not couple.
+Adaptive controllers run a vmapped batch on the smallest step any lane asks for;
+chunking bounds how many healthy seeds one bad seed holds up, it does not
+isolate it. Benchmark, 49 seeds x 20 periods, compile included:
 
 | field | prescribed, vmap | adaptive, vmap | adaptive, chunk 8 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | w7x k=2 | 9.9 s | 12.8 s | 22.6 s |
 | w7x k=1 | 26.0 s | 43.0 s | 66.9 s |
-| hegna k=1 | 21.3 s | 36.0 s | 57.3 s |
-| quasr9983 k=1 | 22.4 s | 35.4 s | 59.9 s |
 | **quasr44970 k=1** | **22.4 s** | **215.0 s** | — |
 
-The last row is the failure mode: one seed's adaptive step collapsed and dragged
-the whole vmap to 9.6× the prescribed cost. Note also that **chunking is worse
-than not chunking** — eight-seed chunks run sequentially and each pays its own
-worst-seed step, where a single vmap pays the global worst once. The old
-`min(8, nseeds)` default was the worst of the three.
+The last row is the failure mode: one seed's step collapsed and dragged the
+whole vmap to 9.6x. Note chunking is *worse* than not chunking — eight-seed
+chunks run sequentially, each paying its own worst-seed step. The old
+`min(8, nseeds)` default was the worst of the three. The price of a prescribed
+schedule is no error estimate, so `step_convergence` earns the step count by
+h-vs-h/2 refinement and the number is printed on every figure.
 
-## Open
+**Cartesian cross-section chart.** `B^theta ~ 1/r` near the polar axis, so
+`dtheta/dzeta` diverges there and the innermost seeds — the ones resolving the
+core — are the ones an integrator handles worst. In
+`(u,v) = (r cos 2pi theta, r sin 2pi theta)` the `1/r` cancels against the
+`O(r)` length of the same coordinate vector.
 
-* **The k=1 traces are not step-converged.** h/2 drift is 2.3e-02 on quasr44970
-  and 4.4e-03 on hegna, against 1e-05 – 1e-08 for k=2. 24 steps/period is not
-  enough for the 1-form field; the iota profiles still land within 1.2 % of the
-  k=2 ones, but the k=1 numbers above should not be quoted without a rerun at
-  more steps. The k=2 traces are converged.
-* The core disagreement between the two harmonic routes (above).
-* `mrx/plotting.py`'s `integrate_fieldlines` / `get_periodic_intersections` /
-  `get_iota_log` are now superseded for this purpose but still used by
-  `scripts/config_scripts/poincare_plots.py`, which traces relaxation states
-  rather than a harmonic field. Porting it is untouched work.
+**Iota about the tracked magnetic axis**, per phase within the period, by a
+least-squares slope on the unwrapped angle rather than an endpoint difference
+(on an island the endpoints are two arbitrary points on a bounded oscillation).
+The fit residual comes back with it and separates surface from island from
+chaos. This replaces the KS-uniformity screen in `mrx/plotting.py`, which was
+discarding lines whose angle had been measured about `r = 0` instead of about
+the axis — a bad centre, not a bad line.
 
-## How to run it
+### 1.1 Surface label — settled
+
+The iota profile is drawn against the **outboard midplane distance from the
+magnetic axis** (`--profile-x midplane`, the default). Nested curves cross a
+fixed ray at strictly increasing distance, so it is monotone *by nesting*.
+Reversals along the seed ordering, measured on the archived traces:
+
+| case | `sqrt(A/pi)` | mean distance | **midplane** |
+| --- | --- | --- | --- |
+| w7x k2 | 1 (−7.9e-03) | 1 (−5.1e-04) | **0** |
+| w7x-ini k2 | 2 (−1.5e-02) | 1 (−2.7e-03) | **0** |
+| hegna k2 | 0 | 0 | **0** |
+| quasr9983 k2 | 0 | 0 | **0** |
+| quasr65530 k2 | 0 | 0 | **0** |
+| quasr44970 k1 | 1 (−1.2e-03) | 1 (−1.7e-03) | **0** |
+| quasr65530 k1 (broken) | 0 | 1 | **3 NaN** |
+
+The mean is non-monotone because it averages over the *crossing points*, whose
+angular distribution is set by the field-line dynamics rather than by the
+surface; fixing the ray removes that weighting. On the broken k=1 trace the
+midplane label returns NaN for the surfaces that are not surfaces, so it doubles
+as a diagnostic rather than laundering garbage into a plausible number.
+
+A surface meets the midplane twice. Both argmins minimise `|alpha|`, so they
+bracket `alpha = 0` and the inboard crossing at `alpha = +-pi` can never win —
+`arctan2`'s branch cut falling inboard is what disambiguates. **Outboard is a
+convention, not a robustness argument**: I predicted the inboard side would be
+the risky one because a bean section carries its indentation there, and measured
+it is not — the relative residual of a linear `r(alpha)` fit either side is
+~3e-4 on both, inboard slightly better. Concave curvature is not a ray crossing
+twice.
+
+### 1.2 Seeding
+
+`seed_line` walks out at constant *logical* radius, i.e. from the coordinate
+axis, which is only the magnetic axis when the two coincide. On **w7x-ini**
+(beta 4.2%) they are 4.86e-02 m apart — `r = 0` is the *equilibrium's*
+Shafranov-shifted axis, the vacuum field's is 4.9 cm inboard — so the innermost
+seed traced a surface at `a_eff = 0.1017` and the section had a hole in the
+middle. On vacuum w7x the offset is 6.1e-04 m and there is no hole. That 4.9 cm
+is a measurement of the Shafranov shift, not a defect.
+
+`seed_from_axis` (`--seed-from axis`) finds the axis with one short probe trace
+and lays seeds along the ray from there to the edge. Entry 0 stays the `r_axis`
+probe: it is `axis_track`'s centre and must keep a small *orbit* around the
+axis, not sit on it, or its own angle is the difference of two identical floats.
+
+`axis_offset` is printed for every run and is the screen for this.
+
+---
+
+## 2. Results
+
+`outputs/poincare_night/2026-08-24/20-39-41/` — 25 cells, coord seeding.
+`outputs/poincare_final/2026-08-24/21-26-16/` — the same 25 re-run with axis
+seeding, the logical panel and the rational ticks, held on `afterok` of the
+seeding smoke test (job 16743506) so a broken path cannot burn the night.
+
+Iota, k=2 essential BC, ns=(12,24,12) p=3:
+
+| geometry | nfp | iota | k2 drift | lost |
+| --- | --- | --- | --- | --- |
+| toroid | 1 | 0.0000 – 0.0000 | 3.6e-15 | 0/48 |
+| rot-ellipse | 3 | 0.0000 – 0.0000 | 4.7e-05 | 0/48 |
+| quasr65530 | 4 | 0.0883 – 0.0955 | 4.5e-05 | 0/48 |
+| quasr9983 | 2 | 0.0971 – 0.0980 | 2.2e-10 | 0/48 |
+| quasr44970 | 3 | 0.4823 – 0.5051 | 1.8e-07 | 0/48 |
+| hegna | 3 | 0.4457 – 0.7057 | 9.9e-06 | 0/48 |
+| w7x | 5 | 0.8523 – 0.9481 | 5.3e-07 | 0/48 |
+| w7x-ini | 5 | 0.8675 – 1.0000 | 1.6e-06 | 0/48 |
+
+Two known answers come out right: the axisymmetric **toroid** gives iota 0 to
+1e-17 with zero radial drift, and **w7x** gives 0.851 rising to 0.948, the
+published standard-configuration vacuum range, from a harmonic form the code
+computes for itself.
+
+**rot-ellipse is exactly 0 (5e-12) and this is forced**, not incidental.
+`rotating_ellipse_map` builds an axis-aligned ellipse, `R-R0 = eps nu(zeta) r
+cos`, `Z = eps nu(zeta+0.5/nfp) r sin`, with no tilt term: the section runs tall
+at `zeta=0`, through an exact circle at 0.25, to wide at 0.5. It *pulsates*. The
+domain is then invariant under `Z -> -Z` at every zeta, the harmonic field maps
+to itself, and a reflection-invariant field has zero net poloidal winding. l=2
+transform needs the ellipse *axis* to rotate. The name misleads; the map is fine
+as the metric-variation preconditioner test case it exists to be.
+
+### 2.1 Resonant rationals
+
+The colorbar carries only the rationals an island can form on: `iota = n/m` with
+`n = 0 mod nfp`, since an nfp-periodic field carries only those toroidal
+harmonics. Reproduced from geometry alone what the trace had already found:
+**w7x has exactly one resonance in range, 10/11 = 0.9091**, and that is where
+the measured profile flattens, where the angle-fit residual spikes on two seeds,
+and where the island lobes sit in the section. w7x-ini reaches 5/5 = 1 at its
+edge. quasr9983 and quasr65530 have none, matching their clean nested surfaces.
+hegna has seven, matching its being the worst behaved.
+
+### 2.2 Perturbation invariance — passes
+
+`pert-axis` and `pert-interior` at ns=(12,24,12) both give iota
+**0.4461 – 0.4688**, identical to four decimals. Both move only the map interior
+with the boundary fixed (`perturb_boundary_max_abs_dR_m = 0`), so the domain and
+therefore the harmonic field are unchanged, and a displaced magnetic axis does
+not perturb it.
+
+**Their `nfp = 2` attribute is wrong; they are quasr0044970, nfp = 3.** Their
+R/Z is `quasr0044970_gvec_nr8_nt16_nz8` shifted by exactly the amplitudes in
+their filenames (max|dR| 5.000e-05, max|dZ| 3.750e-05) and that device is nfp=3;
+against quasr0009983, which their `dof_npy` and `perturb_source_h5` name, they
+differ by 0.15. Their `geometry_source` and `template_h5` agree with the
+measurement. Confirmed three ways: the offsets, a det DF range matching
+quasr44970's, and iota matching. `GVEC_NFP_OVERRIDE` corrects it — nfp=2 would
+wrap one field period through 180 degrees instead of 120, a different domain and
+a different iota behind a healthy positive Jacobian. **Worth fixing at source.**
+
+Also: `w7x_ini_mrx.h5`'s `axis_radial_index = 49` is wrong (the axis is at
+rho[0]; mean theta-extent 3.4e-3 there against 1.8 at rho=1), and four of the
+new files carry only `precomputed_*` sizes, not `n_rho`/`n_theta`/`n_zeta`.
+
+### 2.3 Do not build ns finer than the data grid
+
+The perturbed pair and `quasr44970-c` share an 8x16x8 grid. At *matched*
+ns=(8,16,8) they give 0.4838–0.5060 and the independent 50^3 `quasr44970` file
+gives 0.4823–0.5051 at ns=(12,24,12) — agreement to 0.4%. At ns=(12,24,12) on
+the 8^3 data they give 0.4461–0.4688, an 8% outlier: 12 radial DOFs over 8
+radial data points over-resolves a piecewise-linear RGI interpolant and
+reproduces its kinks.
+
+---
+
+## 3. Solver verification
+
+**Every nullspace solve is exact.** `harmonic_rayleigh` (`v^T L v / v^T M v`,
+quoted against a random vector because the quotient is not dimensionless) reads
+**7e-27 to 5e-26** across every geometry and resolution, with `|dv|/|v|` at
+1e-11. This is the gate `handoff_2026-08-24_harmonic_k1_free.md` specified and
+never implemented; it now lives in `mrx/nullspace.py` and prints on every run.
+My earlier "not confident in k=1" was wrong in its diagnosis.
+
+**Both pullbacks are correct**, max relative error **1.8e-15** over all four
+(k, BC) pairs on three geometries (`poincare_pullback_check.py`): k=2
+coefficients *are* the contravariant components (`DF B/J` is Piola), k=1 needs
+`g^-1 A` (since `DF (DF^T DF)^-1 A = DF^-T A`). Tested against
+`mrx.differential_forms.Pushforward` with a *random* dof, because a harmonic
+form can be dominated by one component and hide an error in the others.
+
+**Preconditioners resolve to the intended stack and now prove it**: `mass =
+block_jacobi` (metric-lumped — its `Lam_c = sqrt(diag(M_k)/diag(A_r x A_t x
+A_z))` is the support-averaged metric weight), `schur.outer = block` (the atom
+at `PRODUCTION_BC_SCALE = 3.0`, i.e. A5), `lumped="diag"` on both. A resolved
+outer that is not `block` now *raises*, and `RuntimeWarning` is promoted to an
+error before `compute_nullspaces`, so neither of the 2026-08-24 silent
+downgrades can recur. `schur.inner` is deliberately not printed: it is still
+raw_kron in the spec but with `outer='block'` the atom *is* the upper-block
+inverse and the field does no work.
+
+---
+
+## 4. Open
+
+### 4.1 The k=2 / k=1 angle does not converge in h — unexplained
+
+Both forms are exactly harmonic *in their own complex* (V_2 with essential BCs,
+V_1 without), so the angle between them is discretisation error. But it is not
+converging cleanly:
+
+| geometry | ns 8 | ns 12 | ns 16 | ns 12, p=4 |
+| --- | --- | --- | --- | --- |
+| w7x | 0.3797 | 0.1829 | 0.1627 | **0.1175** |
+| quasr9983 | 0.1802 | 0.0697 | **0.1916** | — |
+| quasr44970 | 0.2424 | 0.0315 | **0.1128** | pending |
+
+Two of three get *worse* at 16^3 while p-refinement helps. **Caveat: this is a
+max over 512 random points**, easily set by one sample near `r -> 1` where the
+spline map is nearly singular. I read a rate off two points and the third
+contradicted it. Median and p90 are now reported alongside; re-read this table
+from the `poincare_final` runs before concluding anything.
+
+### 4.2 k=1 traces break on the quasr44970/65530 family — mechanism unconfirmed
+
+quasr44970's k=1 step drift is **3.5e-02 → 2.8e-02 → 3.6e-02** across ns
+8/12/16. *Flat.* Refinement does not touch it, so it is not a resolution
+deficit. quasr65530 k=1 loses 21 of 48 lines with drift 1.5e-01 and a section
+that reads as a chaotic sea. w7x and quasr9983 sit at 1e-06–1e-08 for k=1 at
+ns >= 12, and the k=2 arm is clean everywhere (1e-10 to 5e-4, zero lost).
+
+Hypothesis: the tracer divides by `B^zeta`, exact only where that is non-zero —
+true of a converged toroidal field, not guaranteed of a poorly resolved discrete
+one. `zeta_component_report` samples `B^zeta/|B|` and says loudly when it
+straddles zero; **the confirming run is queued and unread**. If it confirms,
+those k=1 sections must be marked invalid, not published.
+
+### 4.3 Activate the k=0 atom in `compute_nullspaces`
+
+The default now consults the atom at k=0 (audit item 3.1/3.7 — the solve path
+could not reach what `apply_laplacian_preconditioner(kind='auto')` already
+picked). Measured on w7x dbc: **277 → 45 iterations, 8.58 → 1.36 s**, 6.15 s to
+assemble, break-even after **0.9 solves**. It repays on the first solve, which
+is the opposite of the reasoning I used to leave `compute_nullspaces` at
+`ks=(1,2,3)`. The free-BC arm needs re-reading first — my harness omitted
+`compute_nullspaces`, so L_0's constant kernel had nothing to deflate against
+and both arms ran to 200000 iterations; fixed, rerun queued (job 16743527).
+
+Not touched, both with stated reasons in the audit: **3.1** the production
+timestep solve (`_coerce_diffusion_preconditioner_spec`, `valid_kinds` without
+`block_jacobi`) — the hot path, unmeasured; **3.2** inverse iteration pinned to
+`schur.outer='jacobi'` — the shifted operator is `S_k + eps M_k`, not `L_k`, and
+the atom's fit there is unmeasured. `kind='block'` *raises* for `eps != 0` for
+the same reason, deliberately without a fallback.
+
+### 4.4 Housekeeping
+
+- `mrx/plotting.py`'s `integrate_fieldlines` / `get_periodic_intersections` /
+  `get_iota_log` are superseded here but still used by
+  `scripts/config_scripts/poincare_plots.py`, which traces relaxation states.
+- Results are copied out of the worktree to `/kfs3/scratch/tblickhan/mrx/outputs/`
+  by a background watcher when the last job clears; `outputs/` is gitignored, so
+  anything left in the worktree dies with it.
+
+---
+
+## 5. How to run
 
 ```bash
-# one job per geometry, ~5 min each on an H100 (the nullspace solves dominate)
-GEOMS="rot-ellipse w7x quasr9983 quasr44970 hegna toroid" OUTSUB=poincare \
-  ARGS="--ns 12,24,12 --p 3 --seeds 48 --periods 200 --steps 24 --saves 8 --planes 0,0.5" \
-  bash slurm/job_poincare_vacuum.sh
+# full sweep, one job per (geometry, ns, p)
+SPECS="w7x:12,24,12:3 hegna:12,24,12:3" OUTSUB=poincare \
+  ARGS="--seeds 48 --periods 1000 --steps 96 --saves 8 --planes 0,0.5 \
+        --seed-from axis --profile-x midplane" \
+  bash slurm/job_poincare_sweep.sh
 
 # change presentation without re-solving (login node, <1 s, no GPU)
-python scripts/debug/poincare_replot.py outputs/poincare/*/trace_*.npz
+python scripts/debug/poincare_replot.py outputs/.../trace_*.npz
 
-# quantify the batch coupling
-... --bench --bench-periods 20
+# overlay resolutions / perturbations against the physical label
+python scripts/debug/poincare_converge.py --label ns8=... --label ns12=... \
+  --title w7x --out conv_w7x.png
 ```
 
 `--steps` must be a multiple of `--saves` so every saved value is a step
-endpoint rather than a dense-interpolation value. `--saves` must exceed twice
-the poloidal turns per period or the angle unwrap aliases; 8 covers everything
-here.
-
-## Next steps, in the order I would do them
-
-1. **Rerun the k=1 fields at `--steps 96`** and check whether the core iota
-   moves. That is one cheap job and it decides whether the k=2/k=1 core
-   disagreement is a discretisation statement about the harmonic forms or an
-   artefact of an under-resolved k=1 trace. Until it is done, the k=1 iota
-   column above is not quotable.
-2. **h- and p-refine W7-X** (ns 12→16→20 at p=3, then p=4) and watch the axis
-   iota against the published 0.85. If both routes converge to it, the core
-   disagreement is just resolution; if one stalls, that route has a problem.
-3. Optionally add a tilt to `rotating_ellipse_map` (or a new
-   `helical_ellipse_map`) to get a *cheap analytic* geometry with nonzero
-   vacuum transform — useful as a tracer test case with a known answer, which
-   right now only the toroid provides.
+endpoint, not a dense-interpolation value. `--saves` must exceed twice the
+poloidal turns per period or the angle unwrap aliases; 8 covers everything here.
