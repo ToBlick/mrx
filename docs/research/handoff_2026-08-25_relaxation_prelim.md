@@ -1783,3 +1783,40 @@ h-refinement lowers the relaxation floor.** The same caveat applies to the
 p-sweep in s25.1: "p buys 3.4x" is the identical category of claim about a
 different refinement axis, measured the same way, and it is equally not a
 floor result.
+
+## 33. PROVENANCE: which mrx produced these numbers
+
+Checked 2026-08-25 after a cross-session warning that the venv's editable
+install pins `mrx` to the MAIN checkout regardless of cwd, so a slurm job
+without the `PYTHONPATH` shim silently runs the main line's library and
+nothing errors.
+
+**Every job in this campaign is clear.** All launches went through
+`slurm/job_relax_prelim.sh` or `slurm/job_clebsch_ic.sh`, both of which export
+`PYTHONPATH="$WORKTREE:$PYTHONPATH"`; all six `scripts/sweeps/*.sh` reference
+the former and nothing else. The two wraps in `slurm/` that do NOT export it
+(`job_poincare.sh`, `job_relax_from_nfs.sh`) are tracked files from main and
+were never used here.
+
+The evidence is in the logs, not in the wrap: `relax_prelim.py` prints
+`[env] mrx from <path>` as its first line, and **all 45 archived run logs carry
+the worktree path**, with zero deviations -- including the jobs in flight at
+the time of the check.
+
+### 33.1 The flip side: these numbers describe a STALE mrx
+
+The shim pins the library, which is the point -- but it pins it to
+**76bf5f3 plus this branch's own commits**, and `greville-prod` moved roughly
+twenty commits on 2026-08-25 without any of it reaching this worktree. Missing
+here: the `raw_kron` deletion, the atom's rename to `metric_lumping`,
+histopolation, the Poincare work, the eqx payload change.
+
+So the results are provenance-KNOWN, not provenance-clean. One concrete
+consequence is already identified: **P2 (`fmm002` p=2) was measured before the
+even-p quadrature parity fix**, which Tobias confirms is solved on main. Read
+that arm as pre-fix. Any other even-p or `raw_kron`-dependent number here
+carries the same caveat.
+
+Merging `greville-prod` in is the fix and it is deliberately deferred until
+the queue drains: merging mid-flight would change the library under running
+jobs, which is the exact failure the shim exists to prevent.
