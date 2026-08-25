@@ -988,6 +988,19 @@ def main():
                 state = eqx.tree_at(lambda s: s.A, state, A_new)
                 tr["helicity"].append(float(h))
                 tr["hel_it"].append(it)
+                # PRINT it, do not merely record it.  Helicity used to appear
+                # only in the end-of-arm summary, which makes a running job
+                # impossible to judge: energy and ||F|| alone cannot tell a
+                # healthy descent from one that is dissolving the topology.
+                # Both forms are shown -- the ABSOLUTE change is what
+                # correlates with surface destruction (handoff s19.2), the
+                # relative one is what is conventionally quoted, and they
+                # disagree badly when H itself is near zero.
+                h0 = tr["helicity"][0]
+                print(f"  it {it:>5d}  E={E:.8e}  |F|={float(state.F_norm):.4e}"
+                      f"  H={float(h):+.6e}  dH={float(h) - h0:+.3e}"
+                      f"  dH/H={(float(h) - h0) / abs(h0):+.3e}"
+                      f"  beta_vol={beta_vol:+.3e}", flush=True)
             if it <= 5 or it % 20 == 0:
                 print(f"  it {it:>5d}  E={E:.8e}  |F|={state.F_norm:.4e}  "
                       f"dt={float(state.dt):+.3e}  cos={cos:+.4f}  "
