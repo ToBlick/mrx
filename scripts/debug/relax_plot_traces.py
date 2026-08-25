@@ -7,9 +7,18 @@ uses for its archived orbits.
 
 WHAT IS PLOTTED, AND WHY THOSE
 ------------------------------
-ENERGY is the only quantity this scheme guarantees, so it goes first and it
-goes on a log scale of ``E(0) - E(t)`` -- the energy REMOVED -- because the
-absolute values agree to five digits and a linear axis shows nothing.
+ENERGY is the only quantity this scheme guarantees, so it goes first -- as the
+DISSIPATION RATE ``-dE/dt``, positive by that guarantee.  Not the absolute
+energy (the runs agree to five digits, a linear axis shows nothing) and not the
+cumulative energy removed either: that curve saturates within a few hundred
+steps and every arm then looks like the same flat line.  The rate keeps
+resolving, and falls four to five decades over a run, which is the thing worth
+seeing -- it says how far from stationary the arm actually is.
+
+``dt`` varies per step under the linesearch, so the rate is
+``-dE_meas/dt`` step by step, NOT a difference of the energy trace against a
+step index.  Dividing by the actual step is what makes linesearch and
+fixed-dt arms comparable on one axis at all.
 
 ``||F||`` is a diagnostic and is NOT guaranteed to fall: F is the gradient of
 the objective, and a descent method promises the objective decreases, not the
@@ -38,6 +47,11 @@ import numpy as np  # noqa: E402
 
 ROOT = "/scratch/tblickhan/mrx/out/relax_prelim"
 
+#: Line alpha.  These arms differ by design and their traces sit on top of one
+#: another for hundreds of steps; opaque lines mean the last one plotted is the
+#: only one visible and the overlap reads as agreement of a single curve.
+A = 0.5
+
 
 def load(tag, fname=None):
     """Return {arm_name: trace} for one run directory, or {} if absent."""
@@ -65,9 +79,19 @@ def series(tr, key):
     return np.asarray(v, dtype=float) if v else None
 
 
-def energy_removed(tr):
-    E = series(tr, "E")
-    return None if E is None else np.maximum(0.5 - E, 1e-18)
+def dissipation_rate(tr):
+    """-dE/dt per step, positive wherever the descent guarantee holds.
+
+    ``dE_meas`` is the SIGNED energy change and is negative on a healthy step,
+    so the rate is its negation.  Non-positive entries are dropped rather than
+    clamped: on a log axis a clamp invents a point at the floor, and a step
+    that failed to decrease the energy is a real finding that should show up
+    as a GAP, not as a spurious data point.
+    """
+    dE, dt = series(tr, "dE_meas"), series(tr, "dt")
+    if dE is None or dt is None or len(dE) != len(dt):
+        return None
+    return -dE / dt
 
 
 def panel(ax, title, xlabel, ylabel, logy=True):
@@ -83,8 +107,8 @@ def panel(ax, title, xlabel, ylabel, logy=True):
 def plot_group(runs, title, path, hel_absolute=True):
     """One figure per comparison: energy removed, ||F||, |dH|, div B."""
     fig, axes = plt.subplots(1, 4, figsize=(19, 4.0))
-    panel(axes[0], f"{title}\nenergy REMOVED (the guaranteed quantity)",
-          "step", "E(0) - E(t)")
+    panel(axes[0], f"{title}\ndissipation rate -dE/dt (the guaranteed sign)",
+          "step", "-dE/dt")
     panel(axes[1], "force residual ||F||  (NOT guaranteed monotone)",
           "step", "||F||_M")
     panel(axes[2], "|dH| absolute  (relative form misleads here)",
@@ -96,26 +120,40 @@ def plot_group(runs, title, path, hel_absolute=True):
         if not tr:
             continue
         any_data = True
-        dE = energy_removed(tr)
-        if dE is not None:
-            axes[0].plot(np.arange(1, len(dE) + 1), dE, lw=1.2, label=label)
+        rate = dissipation_rate(tr)
+        if rate is not None:
+            ok = rate > 0
+            if ok.any():
+                axes[0].plot(np.arange(1, len(rate) + 1)[ok], rate[ok],
+                             lw=1.2, alpha=A, label=label)
         F = series(tr, "F")
         if F is not None:
-            axes[1].plot(np.arange(1, len(F) + 1), F, lw=1.2, label=label)
+            axes[1].plot(np.arange(1, len(F) + 1), F, lw=1.2, alpha=A,
+                         label=label)
         H, it = series(tr, "helicity"), series(tr, "hel_it")
         if H is not None and it is not None and len(H) == len(it):
             dH = np.abs(H - H[0]) if hel_absolute else np.abs((H - H[0]) / H[0])
-            axes[2].plot(it, np.maximum(dH, 1e-18), lw=1.2, marker='o',
-                         ms=2.5, label=label)
+            # DROP THE FIRST SAMPLE.  dH(0) = |H(0) - H(0)| is zero by
+            # construction, not a measurement, and on a log axis it lands at
+            # whatever floor we clamp to -- a dozen decades below every real
+            # point, flattening the actual spread into one line.  Any later
+            # exact zero is dropped for the same reason.
+            keep = dH > 0
+            keep[0] = False
+            if keep.any():
+                axes[2].plot(it[keep], dH[keep], lw=1.2, alpha=A, marker='o',
+                             ms=2.5, label=label)
         dv = series(tr, "div")
         if dv is not None:
             axes[3].plot(np.arange(1, len(dv) + 1), np.maximum(dv, 1e-18),
-                         lw=1.2, label=label)
+                         lw=1.2, alpha=A, label=label)
     if not any_data:
         plt.close(fig)
         return False
     for a in axes:
-        a.legend(fontsize=7, framealpha=0.9)
+        leg = a.legend(fontsize=7, framealpha=0.9)
+        for line in leg.get_lines():   # legend keys stay readable at alpha 0.5
+            line.set_alpha(1.0)
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)
