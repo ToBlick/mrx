@@ -203,12 +203,50 @@ def make_pressure_profiler(seq, rhos, n_ang=8):
     ang = (jnp.arange(n_ang) + 0.5) / n_ang
     pts = jnp.asarray([[[r, c, z] for c in ang for z in ang] for r in rhos])
 
-    def profile(p_dof):
+    # Volume weight per surface, V'(rho) = <J>.  Pure geometry, so computed
+    # once: it is what turns a surface-grid mean into a volume average.
+    DF = jax.jacfwd(seq.map)
+    Vp = jax.vmap(lambda P: jnp.mean(
+        jax.vmap(lambda x: jnp.linalg.det(DF(x)))(P)))(pts)
+
+    def profile(p_dof, B_dof=None):
         p_h = Pushforward(
             DiscreteFunction(p_dof, seq.basis_3, seq.e3_dbc), seq.map, 3)
-        return jax.vmap(lambda P: jnp.mean(jax.vmap(p_h)(P)[:, 0]))(pts)
+        p_prof = jax.vmap(lambda P: jnp.mean(jax.vmap(p_h)(P)[:, 0]))(pts)
+        if B_dof is None:
+            return p_prof
+        B_phys = Pushforward(
+            DiscreteFunction(B_dof, seq.basis_2, seq.e2_dbc), seq.map, 2)
+
+        def bsq_at(x):
+            v = B_phys(x)
+            return v @ v
+
+        bsq_prof = jax.vmap(lambda P: jnp.mean(jax.vmap(bsq_at)(P)))(pts)
+        return p_prof, bsq_prof, Vp
 
     return profile
+
+
+def beta_from_profiles(p_prof, bsq_prof, Vp):
+    """``beta(rho) = 2 (p - p_edge) / <|B|^2>``, and its volume average.
+
+    ``mu0 = 1`` in these units -- the force operator uses ``J = curl B`` with
+    no ``mu0`` -- so beta is just ``2 p / B^2``.
+
+    THE GAUGE MATTERS.  The Leray multiplier is defined only up to an additive
+    constant, so a raw ``2p/B^2`` is not a physical beta and would change if
+    the solver returned a different constant.  The physical convention is
+    ``p = 0`` at the edge, so the outermost sampled surface is subtracted
+    first.  This is the same gauge fix the pressure-shape comparison makes.
+
+    Beta is otherwise scale-invariant: p is quadratic in B (it comes from
+    J x B), so normalising ``||B||_M = 1`` does not change the ratio.
+    """
+    p0 = p_prof - p_prof[-1]
+    beta = 2.0 * p0 / bsq_prof
+    beta_vol = float(np.sum(Vp * beta) / np.sum(Vp))
+    return beta, beta_vol
 
 
 def pressure_shape_residual(p_ours, p_file):
@@ -772,7 +810,27 @@ def main():
     results["gradp_l2_ic"] = gp_l2_0
     results["gradp_avg_ic"] = gp_avg_0
     gradp_mag0 = gp_l2_0
-    F0v, _, _, _, _ = compute_force(B0, seq)
+    F0v, p0v, _, _, _ = compute_force(B0, seq)
+    # Beta at the IC is a free cross-check: it is scale-invariant (p is
+    # quadratic in B) and mu0 = 1 here, so 2*p_ours/B^2 IS 2*mu0*p_SI/B^2 --
+    # the same quantity the export's own `beta_mean` attribute reports.  If
+    # the two disagree, either the force operator or the units are wrong.
+    _pp, _bb, _vv = p_profiler(p0v, B0)
+    beta_ic_prof, beta_ic_vol = beta_from_profiles(
+        np.asarray(_pp), np.asarray(_bb), np.asarray(_vv))
+    file_beta = None
+    if cli.geometry in GVEC_GEOMETRIES:
+        with h5py.File(GVEC_GEOMETRIES[cli.geometry], "r") as _h:
+            file_beta = (float(_h.attrs["beta_mean"])
+                         if "beta_mean" in _h.attrs else None)
+    print(f"[ic] BETA (mu0=1, gauge p_edge=0): volume-avg {beta_ic_vol:+.4e}"
+          f"   max |beta| {float(np.max(np.abs(beta_ic_prof))):.4e}"
+          f"   axis {float(beta_ic_prof[0]):+.4e}"
+          + (f"   file beta_mean {file_beta:.4e}" if file_beta is not None
+             else "   (file carries no beta_mean)"))
+    results.update(beta_ic_vol=beta_ic_vol,
+                   beta_ic_max=float(np.max(np.abs(beta_ic_prof))),
+                   beta_file_mean=file_beta)
     print(f"[ic] E = {E0:.6e}   ||F||_M = {float(seq.l2_norm(F0v, 2)):.4e}   "
           f"residual ||F||_L2/||grad(B^2/2)||_L2 = "
           f"{float(seq.l2_norm(F0v, 2)) / gradp_mag0:.4e}",
@@ -849,7 +907,8 @@ def main():
         tr = {k: [] for k in ("E", "F", "dt", "div", "Fu", "cos", "sy", "eta",
                               "gain", "dE_meas", "dE_pred", "helicity",
                               "hel_it", "gradp_mag", "gradp_avg", "resid",
-                              "p_scale", "p_resid", "p_spread", "JoverB")}
+                              "p_scale", "p_resid", "p_spread", "JoverB",
+                              "beta_vol", "beta_max", "beta_axis")}
         E_prev = E0
         t_arm = time.perf_counter()
         n_done = 0
@@ -911,7 +970,13 @@ def main():
                 tr["resid"].append(float(state.F_norm) / gp_l2)
                 # state.p is the multiplier from compute_force(B_n), in the
                 # physical-pressure convention apply_leray_projection returns.
-                p_prof = np.asarray(p_profiler(state.p))
+                p_prof, bsq_prof, Vp = p_profiler(state.p, state.B_n)
+                p_prof = np.asarray(p_prof)
+                beta_prof, beta_vol = beta_from_profiles(
+                    p_prof, np.asarray(bsq_prof), np.asarray(Vp))
+                tr["beta_vol"].append(beta_vol)
+                tr["beta_max"].append(float(np.max(np.abs(beta_prof))))
+                tr["beta_axis"].append(float(beta_prof[0]))
                 tr["p_spread"].append(float(p_prof.max() - p_prof.min()) / E)
                 if p_file_ref is not None:
                     # If the scheme really converges to JxB = grad p, this
@@ -992,6 +1057,10 @@ def main():
               f"{tr['JoverB'][-1]:.4e}   ({tr['JoverB'][-1] / tr['JoverB'][0]:.2f}x)"
               f"   -- growth means grid-scale structure, i.e. numerically "
               f"shredded rather than merely chaotic")
+        print(f"    BETA (mu0=1, gauge p_edge=0): volume-avg "
+              f"{tr['beta_vol'][0]:+.4e} -> {tr['beta_vol'][-1]:+.4e}   "
+              f"max |beta| {tr['beta_max'][0]:.4e} -> {tr['beta_max'][-1]:.4e}"
+              f"   axis {tr['beta_axis'][0]:+.4e} -> {tr['beta_axis'][-1]:+.4e}")
         print(f"    PRESSURE profile spread (max-min)/E: "
               f"{tr['p_spread'][0]:.4e} -> {tr['p_spread'][-1]:.4e}   -- the "
               f"fixed point is JxB = grad p, so this going to ZERO means "
@@ -1024,6 +1093,9 @@ def main():
             p_resid_final=(tr["p_resid"][-1] if tr["p_resid"] else None),
             gradp_l2_final=tr["gradp_mag"][-1],
             gradp_avg_final=tr["gradp_avg"][-1],
+            beta_vol_first=tr["beta_vol"][0],
+            beta_vol_final=tr["beta_vol"][-1],
+            beta_max_final=tr["beta_max"][-1],
             harmonic_final=(list(harm) if harm is not None else None))
         final_B[name] = np.asarray(state.B_n)
         # Write after EVERY arm, not once at the end.  Deferring the whole
