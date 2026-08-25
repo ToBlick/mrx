@@ -38,7 +38,6 @@ from __future__ import annotations
 import ast
 import pathlib
 
-import pytest
 
 OPERATORS = pathlib.Path(__file__).resolve().parents[1] / "mrx" / "operators.py"
 ACCEPT_LIST_NAMES = ("valid_kinds", "valid_outer_kinds")
@@ -225,32 +224,24 @@ def test_no_production_code_constructs_a_kind_nothing_accepts():
         f"kind {sorted(LIVE_KINDS)}:\n  " + "\n  ".join(offenders))
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "KNOWN AND TRIAGED, 2026-08-25: ~32 live sites across 10 scripts still ask "
-    "for kind='tensor', deleted with the tensor stack. Whether those scripts "
-    "are repointed or retired is a scope decision that has not been taken -- "
-    "several are benchmarks measuring a preconditioner that no longer exists. "
-    "STRICT ON PURPOSE, and this is why it is xfail rather than red or absent "
-    "-- nobody gave up. A permanently-RED test is the stale-baseline trap in a "
-    "new costume: every future gate carries a known failure, and a NEW failure "
-    "hides behind it. A plain xfail rots the other way, staying quietly green "
-    "long after the reason expires. strict=True is honest in both directions: "
-    "it catches the class today, and it converts to a HARD FAILURE the moment "
-    "the last stale site is fixed -- which is precisely the signal to delete "
-    "this marker. The test tells you when to remove the test."))
 def test_no_script_asks_for_a_kind_nothing_accepts():
     """The same check over scripts/, which is where the class actually hid.
 
     `test_no_production_code_constructs_a_kind_nothing_accepts` scans mrx/ only,
     and that gap let ~32 stale `kind="tensor"` sites survive the tensor
-    deletion across 10 live scripts -- every one of which raises, because
+    deletion across 10 live scripts -- every one of which raised, because
     `apply_hodge_laplacian_preconditioner` accepts only
     ('auto', 'none', 'jacobi', 'metric_lumping').
 
+    THIS TEST WAS BORN xfail(strict=True) AND RETIRED ITS OWN MARKER. It went
+    green the moment the last stale site was resolved on 2026-08-25 -- 6 leaf
+    scripts deleted, 3 non-leaves repointed -- and strict turned that into an
+    XPASS failure, which is the signal that said to delete the marker. A
+    permanently-red test would have hidden the fix; a non-strict xfail would
+    have stayed quietly green and kept the marker forever.
+
     A script that asks for a kind production cannot supply is broken whether or
-    not anyone has run it lately. Catching the CLASS is worth more than fixing
-    any one instance, so this test exists even while the known instances are
-    still being triaged.
+    not anyone has run it lately.
 
     scripts/deprecated/ is excluded by directory rather than by weakening the
     check -- 24 further sites live there and are ignorable by construction.
