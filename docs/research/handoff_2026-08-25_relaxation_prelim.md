@@ -1342,7 +1342,8 @@ measured on real cases.
 |---|---|---|
 | **step size** (LR3 -> D1, linesearch -> fixed 3e-3) | **73x** | **none** -- same force reduction |
 | hyperregularisation gamma=1 (LR1 / S04) | 15x / 2.4x | ~3x per step, ~12% less force reduction |
-| resolution 8^3 -> 12^3 (S01) | 3.4x relative | ~3x per step |
+| **p-refinement** p=3 -> p=4 (S03) | **3.4x** | 1.7x per step, no extra DoFs |
+| h-refinement 8^3 -> 12^3 (S01) | **none** (see 25.2) | 3x per step |
 
 **Step size is by far the largest lever, and the only free one.** On the case
 where it matters, capping the step cost nothing at all in force reduction
@@ -1377,10 +1378,37 @@ coarse-grid artefact -- it now holds on two geometries and two IC routes.
 | axis offset | 3.071e-03 | **9.483e-04** | 1.568e-03 |
 | roughness | -- | 0.29x | **0.12x** |
 
-Both refinements preserve the surfaces and IMPROVE the topology metrics. The
-finer grid removes **3.9x less energy** in the same number of steps, which is
-consistent with part of the coarse grid's energy release having been numerical
-rather than physical -- though that is an inference, not a measurement.
+Both refinements preserve the surfaces. **But the apparent improvement from
+h-refinement is not real, and my first reading of it was wrong.**
+
+I inferred that the finer grid removing 3.9x less energy meant part of the
+coarse grid's release had been numerical. Tobias proposed the simpler
+explanation -- a finer grid is STIFFER, so `dt` shrinks and ALL the dynamics
+slow together, which accounts for less energy removed, larger `||F||` and less
+drift with one mechanism instead of three. Normalising helicity loss by energy
+actually removed settles it:
+
+| run | dE | \|dH\|/H | **per unit dE** |
+|---|---|---|---|
+| 8^3 p=3 (W1) | 1.220e-04 | 8.659e-03 | **70.9** |
+| 12^3 p=3 (S01) | 3.146e-05 | 2.548e-03 | **81.0** |
+| 8^3 p=4 (S03) | 1.380e-04 | 2.884e-03 | **20.9** |
+
+**h-refinement buys nothing** -- per unit progress the 12^3 grid destroys as
+much helicity as the 8^3 one, marginally more. My inference is refuted: had the
+coarse grid's release been numerical, the fine grid would show LESS loss per
+unit progress.
+
+**p-refinement is genuinely 3.4x better**, and consistently with the same
+mechanism rather than as an exception to it: `n2_dbc` is 2192 at BOTH p=3 and
+p=4, so raising the order does not shrink the grid scale or the step. It
+resolves the curl better at the same h and the same dt. So h-refinement changes
+the RATE; p-refinement changes the FIDELITY PER STEP. p is also the cheaper of
+the two -- 1.47 s/step against 2.71 s/step.
+
+*Lesson: "everything got better" across a refinement usually means "everything
+got slower". Normalise by progress before reading a refinement as an
+improvement.*
 
 ### 25.3 A CAVEAT ON MY OWN CRITERION: helicity is not resolution-converged
 
