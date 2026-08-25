@@ -25,6 +25,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from scipy import sparse
+from scipy.sparse import csgraph
 
 import mrx
 from mrx.extraction_operators import get_xi
@@ -70,12 +72,28 @@ def _quadrature_order_from_basis_1d(basis) -> int:
 
 
 #: Interpolation and histopolation are done on the FULL tensor-product space
-#: and then restricted by a single extraction apply, ``e @ c_full``.  That
-#: composition is the construction of Guclu & Campos Pinto (arXiv:2505.15996),
+#: and then restricted onto the extracted space.  That composition is the
+#: construction of Guclu & Campos Pinto (arXiv:2505.15996),
 #: ``Pi_Z = P_Z . Pi_W``: the tensor-product geometric projector followed by a
 #: local, explicit, matrix-free conforming projection on the coefficients.
-#: Idempotency comes from the coefficient rules being self-consistent, not from
-#: any biorthogonality condition on the extraction.
+#:
+#: RETRACTION.  Commit 1cf9cbd's message, and an earlier version of this
+#: comment, said "idempotency comes from the coefficient rules being
+#: self-consistent, not from any biorthogonality condition on the extraction".
+#: That is TRUE OF THE PAPER'S ``P_Z`` AND FALSE OF MRX'S EXTRACTION -- the
+#: claim was imported across an operator boundary it does not cross.  MRX's
+#: ``E`` is not ``P_Z``: measured, ``||E E^T - I||_max = 1.556`` at k=1 and
+#: ``0.352`` at k=2 (``scripts/debug/extraction_unitarity_probe.py``).  So
+#: ``e @ c_full`` alone is NOT a projector, and the k=0 round-trip duly came
+#: back at 5.29e-01.  Supplying ``(E E^T)^{-1}`` explicitly, as
+#: :func:`_conforming_restriction` does, is therefore the CORRECT CONSTRUCTION
+#: for a non-biorthogonal extraction -- not a fudge factor bolted on to force a
+#: test green.  With it, k=0 round-trips at 2.5e-16.
+#:
+#: The same retracted claim was the stated justification for removing the two
+#: guards below.  Removing them still looks right -- the construction does work
+#: once the extraction is handled properly -- but the REASON recorded at the
+#: time was not sound.  History is not rewritten; this is the retraction.
 #:
 #: Two guards used to sit here and both were stale:
 #:   * a full-tensor-space check, which rejected every nontrivial extraction --
@@ -88,6 +106,52 @@ def _quadrature_order_from_basis_1d(basis) -> int:
 #:
 #: ``test_projectors.py`` pins the property that matters: interpolating a
 #: function that already lives in the target space returns its own DOFs.
+
+
+def _conforming_restriction(e, c_full):
+    """Restrict full tensor-product coefficients onto the extracted space.
+
+    ``a = (E E^T)^{-1} E c_full``.  ``E^T (E E^T)^{-1} E`` is idempotent, so
+    interpolating a function that ALREADY lies in the extracted space returns
+    its own DOFs exactly.  Plain ``e @ c_full`` does not have that property --
+    measured, the k=0 round-trip came back at 5.29e-01 without this.
+
+    ``E`` is a pure SELECTION on every row but the polar ones (the same
+    ``counts > 1`` discriminator ``block_jacobi_laplacian.core_rows`` uses), and
+    the polar surgery acts only in (rho, theta) while the zeta index is carried
+    along untouched.  So ``E E^T`` is the IDENTITY PLUS SMALL DENSE BLOCKS --
+    one per zeta slice per affected component, of size ``n_polar``.  Confirmed
+    against the component sizes: k=1 contributes ``2*nz + 3*dz`` such rows and
+    k=2 contributes ``2*dz``, reproducing the measured 30-of-606 and 12-of-588
+    exactly; k=3 contributes none and is already a pure selection.
+
+    The blocks are inverted DENSELY -- the same separable-bulk-plus-dense-core
+    idiom as ``BlockJacobiMass``, and for the same reason: an ``E+``
+    pseudoinverse is what that analysis rejected.  For a pure selection (k=3,
+    and every non-polar sequence) this returns immediately.
+
+    TODO: cache on the sequence alongside the collocation matrices if it ever
+    shows up in a profile; the blocks depend only on the extraction.
+    """
+    a = e @ c_full
+    rows = np.asarray(e.rows)
+    counts = np.bincount(rows, minlength=int(e.forward_shape[0]))
+    core = counts > 1
+    if not core.any():
+        return a                       # pure selection: E E^T = I already
+
+    E = sparse.csr_matrix(
+        (np.asarray(e.vals), (rows, np.asarray(e.cols))), shape=e.forward_shape)
+    gram = (E @ E.T).tocsr()
+    _, labels = csgraph.connected_components(gram, directed=False)
+
+    out = np.asarray(a).copy()
+    order = np.argsort(labels, kind="stable")
+    bounds = np.searchsorted(labels[order], np.arange(labels.max() + 2))
+    for lab in np.unique(labels[core]):
+        idx = order[bounds[lab]:bounds[lab + 1]]
+        out[idx] = np.linalg.solve(gram[np.ix_(idx, idx)].toarray(), out[idx])
+    return jnp.asarray(out)
 
 
 def _matching_discrete_dofs(f, basis, extraction) -> Array | None:
@@ -326,7 +390,7 @@ def _interpolate_0form(seq, f, dirichlet: bool) -> Array:
     coeffs = _solve_tensor_collocation_axis(coll_r, values, axis=0)
     coeffs = _solve_tensor_collocation_axis(coll_t, coeffs, axis=1)
     coeffs = _solve_tensor_collocation_axis(coll_z, coeffs, axis=2)
-    return e @ coeffs.reshape(-1)
+    return _conforming_restriction(e, coeffs.reshape(-1))
 
 
 def _twoform_pullback(seq, v, frame: str = 'phys'):
@@ -434,7 +498,8 @@ def _histopolate_1form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     c2 = _solve_tensor_collocation_axis(coll_t, c2, axis=1)
     c2 = _solve_tensor_collocation_axis(hist_z, c2, axis=2)
 
-    return e @ jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)])
+    return _conforming_restriction(
+        e, jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)]))
 
 
 def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
@@ -523,7 +588,8 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     c2 = _solve_tensor_collocation_axis(hist_t, c2, axis=1)
     c2 = _solve_tensor_collocation_axis(coll_z, c2, axis=2)
 
-    return e @ jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)])
+    return _conforming_restriction(
+        e, jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)]))
 
 
 def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
@@ -567,7 +633,7 @@ def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
     coeffs = _solve_tensor_collocation_axis(hist_r, moments, axis=0)
     coeffs = _solve_tensor_collocation_axis(hist_t, coeffs, axis=1)
     coeffs = _solve_tensor_collocation_axis(hist_z, coeffs, axis=2)
-    return e @ coeffs.reshape(-1)
+    return _conforming_restriction(e, coeffs.reshape(-1))
 
 
 # TODO: requires testing still

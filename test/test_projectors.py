@@ -220,6 +220,50 @@ def test_k3_l2_projection_error_is_small(proj_seq):
 # returns the DOFs untouched, which would pass without testing anything.
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(scope="module", params=[2, 3], ids=["p2", "p3"])
+def identity_seq(request):
+    """Small polar sequence for the EXACT-IDENTITY tests, at EVEN and ODD p.
+
+    The degree is parametrised because it is the discriminating variable for
+    histopolation exactness, not an incidental setting.
+
+    A Greville point of degree ``p`` is the mean of ``p`` consecutive knots.  On
+    a uniform knot vector that lands ON a knot for ODD p and exactly HALFWAY
+    BETWEEN two knots for EVEN p (measured offset 0.500h for p = 2, 4, 6 and
+    0.000h for p = 1, 3, 5).  So for even p EVERY Greville histopolation span
+    straddles an interior knot -- and a Gauss rule spanning a knot integrates
+    across a derivative jump, which is not exact at any quadrature order,
+    because a spline is only PIECEWISE polynomial.
+
+    If that is the cause, the p3 cases pass and the p2 cases fail with NO code
+    change, and the fault is the span quadrature rather than the extraction or
+    the periodic bases.  Keeping both degrees in the suite means a future fix
+    has to hold for both rather than being tuned to one.
+
+    Idempotency holds at any resolution, so these tests do not need a fine
+    mesh -- and they are quadratically expensive in it.  The round-trip feeds
+    ``lambda x: discrete(x)`` into the quadrature and
+    ``DiscreteFunction.__call__`` evaluates ALL ``n`` basis functions per point,
+    so the cost is ``O(n^2 q^d)`` with ``d`` the number of histopolated axes.
+
+    On the (6,6,6) fixture that made a single k=2 round-trip run past TEN
+    MINUTES and a full pass unable to finish inside a 90-minute job -- and it
+    was mistaken for a hang by a separate full-suite gate.  (4,4,4) cuts ``n``
+    by ~3.4x, hence the wall time by ~11x, while testing the identical
+    identity.  Accuracy tests stay on ``proj_seq``, where resolution is the
+    point.
+    """
+    deg = request.param
+    seq = DeRhamSequence(
+        (4, 4, 4), (deg,) * 3, 2 * deg, ("clamped", "periodic", "periodic"),
+        polar=True, tol=1e-10, maxiter=200, betti_numbers=(1, 1, 0, 0),
+    )
+    seq.evaluate_1d()
+    seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2))
+    seq.assemble_all_sparse(include_preconditioners=False)
+    return seq
+
+
 _ROUNDTRIP_CASES = [
     pytest.param(0, False, id="k0-free"),
     pytest.param(0, True, id="k0-dbc"),
@@ -233,8 +277,9 @@ _ROUNDTRIP_CASES = [
 
 
 @pytest.mark.parametrize("k, dirichlet", _ROUNDTRIP_CASES)
-def test_interpolation_reproduces_its_own_space(proj_seq, k, dirichlet):
+def test_interpolation_reproduces_its_own_space(identity_seq, k, dirichlet):
     """Interpolating a function already in the space returns its own DOFs."""
+    proj_seq = identity_seq
     basis = getattr(proj_seq, _BASIS_ATTR[k])
     e = getattr(proj_seq, f"e{k}_dbc" if dirichlet else f"e{k}")
     n = int(getattr(proj_seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
@@ -337,4 +382,65 @@ def test_phys_pullback_inverts_pushforward(proj_seq, k):
     assert err < 1e-10, (
         f"k={k} physical pullback does not invert Pushforward (rel {err:.3e}). "
         f"Expected omega = {'DF^T v' if k == 1 else 'adj(DF) v'}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pi_full in ISOLATION.
+#
+# The restriction (E E^T)^-1 E makes the round-trip exact BY CONSTRUCTION -- but
+# only if Pi_full, the tensor-product projector it composes with, is itself
+# idempotent.  That is a separate claim and deserves a separate test.
+#
+# A NON-POLAR, NON-DIRICHLET sequence has BoundaryOperator(('none',)*3), so its
+# extraction is the identity and `interpolate` IS Pi_full with nothing else in
+# the loop.  If these fail while the polar round-trips pass, the fault is the
+# tensor-product projector; if they pass while polar fails, it is the extraction.
+#
+# The degrees exercise different axes, so a failure localises:
+#   k=0  coll_r, coll_t, coll_z              pure collocation, no histopolation
+#   k=1  hist_r / hist_t / hist_z            one histopolated axis per component
+#   k=2  two histopolated axes per component
+#   k=3  hist_r, hist_t, hist_z              all three
+# theta and zeta are PERIODIC here, so k>=1 exercises periodic histopolation --
+# which `interpolate` only reaches at all because a clamped-only guard was
+# removed on the grounds that greville_spans supports periodic spans.  Producing
+# spans is a weaker claim than the resulting DOFs being unisolvent.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def tensor_seq():
+    """Full tensor-product sequence: no polar surgery, no Dirichlet rows."""
+    seq = DeRhamSequence(
+        (4, 4, 4), (2, 2, 2), 4, ("clamped", "periodic", "periodic"),
+        polar=False, tol=1e-10, maxiter=200, betti_numbers=(1, 1, 0, 0),
+    )
+    seq.evaluate_1d()
+    seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2))
+    seq.assemble_all_sparse(include_preconditioners=False)
+    return seq
+
+
+@pytest.mark.parametrize("k", [0, 1, 2, 3])
+def test_pi_full_is_idempotent(tensor_seq, k):
+    """Pi_full must reproduce a function already in the full tensor space."""
+    basis = getattr(tensor_seq, _BASIS_ATTR[k])
+    e = getattr(tensor_seq, f"e{k}")
+    n = int(getattr(tensor_seq, f"n{k}"))
+    assert n == int(basis.n), (
+        f"k={k}: expected an identity extraction on a non-polar free sequence, "
+        f"got {n} extracted of {int(basis.n)} raw -- this test no longer "
+        f"isolates Pi_full"
+    )
+
+    a = jax.random.normal(jax.random.PRNGKey(23 * k + 5), (n,))
+    discrete = DiscreteFunction(a, basis, e)
+    kwargs = {} if k in (0, 3) else {"frame": "ref"}
+    got = tensor_seq.interpolate(lambda x: discrete(x), k, **kwargs)
+
+    err = float(jnp.linalg.norm(got - a) / jnp.linalg.norm(a))
+    print(f"\n  k={k} Pi_full idempotency relative error: {err:.3e}")
+    assert err < 1e-10, (
+        f"k={k}: Pi_full is not idempotent (rel {err:.3e}) on the FULL tensor "
+        f"space, with no extraction involved. No restriction can repair this."
     )
