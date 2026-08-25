@@ -484,10 +484,22 @@ NOT been checked.
 Two falsifiable predictions follow, both already measurable:
 
 1. the leak should be LOCALISED near the axis rather than spread through the
-   bulk. `logical_profile_ic.py` reports an axis band separately -- and on the
-   cylinder it is 4.7e-18 axis vs 1.4e-16 bulk, i.e. the axis is CLEANER, which
-   is mild evidence AGAINST the polar-mixing story. `lic_gvec` reports the same
-   split on a shaped map and is the real test.
+   bulk. `logical_profile_ic.py` reports an axis band separately and the axis
+   looks ~30x CLEANER on both cylinder arms (4.7e-18 vs 1.4e-16) -- but that
+   number is CONFOUNDED and should not be read as 30x. Both bands are divided
+   by a single GLOBAL `max|B^zeta|` (`logical_profile_ic.py:409`), while
+   `B^zeta ~ Phi'(rho) = rho` is itself about 7x smaller inside `rho < 0.15`.
+   So roughly a factor 7 is pure normalisation artefact and only the remaining
+   ~4x is potentially real. Weak evidence against polar mixing, not strong.
+
+   The honest form of this test is a PER-SURFACE ratio
+   `max|B^rho(rho)| / max|B^zeta(rho)|` reported as a profile, which is also
+   the only form that discriminates the mechanisms at all: weight-spread
+   predicts the leak tracks `eps rho / R0` (quadrupling from rho=0.25 to 0.95),
+   polar-mixing predicts concentration in the first rings, and neither predicts
+   flat. Two band maxima cannot tell those apart. Added to
+   `gvec_clebsch_ic.py`; `logical_profile_ic.py` still has the global
+   normaliser and its two landed runs are not re-run for this.
 2. the leak should scale with the surface spread of `g_ii/J`, so **hegna should
    leak considerably more than the toroid's 4.6e-09**, since a shaped
    stellarator varies far more than 34% over a surface.

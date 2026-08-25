@@ -326,7 +326,26 @@ def main():
         comp_max.append(np.abs(vals).max(axis=0))
         comp_mean.append(vals.mean(axis=0))
     comp_max, comp_mean = np.array(comp_max), np.array(comp_mean)
-    brho = comp_max[:, 0].max() / comp_max[:, 2].max()
+    # PER-SURFACE ratio, not a globally normalised one.  Dividing every band by
+    # a single global max|B^zeta| makes the axis look clean for free, because
+    # B^zeta ~ Phi'(rho) is itself small there -- roughly a factor 7 of the
+    # apparent axis/bulk contrast on the cylinder arms was that artefact.  The
+    # profile below is also the only form that DISCRIMINATES the two candidate
+    # leak mechanisms (see relaxation_ic_2026-08-25.md §8.2):
+    #   weight-spread driven -> tracks eps rho / R0, growing strongly with rho
+    #   polar-extraction      -> concentrated in the first rings, near rho = 0
+    #   neither               -> flat
+    brho_prof = comp_max[:, 0] / comp_max[:, 2]
+    brho = float(brho_prof.max())
+    print("\n[gate] max|B^rho|/max|B^zeta| PER SURFACE "
+          "(the mechanism discriminator)")
+    for i in range(0, cli.n_rho, max(1, cli.n_rho // 10)):
+        print(f"       rho={rhos[i]:5.3f}   {brho_prof[i]:.4e}")
+    axis_band = rhos < 0.15
+    print(f"[gate]   axis band (rho<0.15) max {brho_prof[axis_band].max():.4e}"
+          f"   bulk max {brho_prof[~axis_band].max():.4e}"
+          f"   worst-surface {brho:.4e}")
+    results["Brho_profile"] = brho_prof.tolist()
 
     div_str = float(seq.l2_norm(seq.apply_strong_div(B), 3, dirichlet=True))
     B_leray, _ = seq.apply_leray_projection(B, k=2)
