@@ -22,6 +22,15 @@ THE COLUMNS, AND WHY THESE
                   is a small residue).
 ``div B``         should sit at round-off; it is conserved exactly by the
                   topological curl.
+``s/step``        wall clock per step.  A step is NOT a unit of cost -- these
+                  arms span 0.23 to 22.6 s/step -- so any ranking that counts
+                  steps is ranking on an axis nobody pays in.
+``dE/GPU-hr``     energy removed per GPU-hour: the cost-side counterpart to
+                  ``|dH|/H per dE``.  Read the two together.  The quality
+                  question is "how much helicity does this arm spend to
+                  remove a given dE", which is cost-free; the cost question
+                  is "how long does removing it take".  An arm can win one
+                  and lose the other, and on this campaign several do.
 """
 from __future__ import annotations
 
@@ -103,15 +112,21 @@ def main():
     print("Re-run it to refresh as jobs land.\n")
     print("Narrative, mechanisms and corrections live in")
     print("`handoff_2026-08-25_relaxation_prelim.md`; this is the numbers.\n")
+    print("Cost and quality are SEPARATE columns and an arm can win one while")
+    print("losing the other. `|dH|/H per dE` is quality and is cost-free;")
+    print("`dE/GPU-hr` is cost. On w7x_ini, 16^3 loses 260x less helicity per")
+    print("unit energy than 8^3 but takes 4.8x longer to remove it, while")
+    print("capping dt at 8^3 gets 53x of that quality for 1.3x the time --")
+    print("which is why the recommendation is the cap, not the refinement.\n")
     print("`dE` is energy removed -- the only guaranteed-monotone quantity, and")
     print("what every ranking is normalised by. `|F|` is reported but never")
     print("ranked on: it is the gradient's norm and has no monotonicity")
     print("guarantee. `|dH|/H per dE` compares only WITHIN a fixed (geometry,")
     print("resolution, p) -- H itself is not converged across those.\n")
     hdr = ("| run | what varied | arm | steps | dE | \\|F\\| final | "
-           "\\|dH\\|/H | per dE | div B |")
+           "\\|dH\\|/H | per dE | div B | s/step | dE/GPU-hr |")
     print(hdr)
-    print("|" + "---|" * 9)
+    print("|" + "---|" * 11)
 
     missing = []
     for tag, label, what in RUNS:
@@ -126,9 +141,13 @@ def main():
             H = tr.get("helicity") or []
             rel = abs((H[-1] - H[0]) / H[0]) if len(H) > 1 and H[0] else None
             per = rel / dE if (rel is not None and dE) else None
+            wall, n = a.get("wall"), a.get("steps")
+            per_step = wall / n if (wall and n) else None
+            per_hour = dE / (wall / 3600.0) if (wall and dE) else None
             print(f"| {label} | {what} | {arm} | {a.get('steps','--')} | "
                   f"{fmt(dE)} | {fmt(a.get('F_final'))} | {fmt(rel)} | "
-                  f"{fmt(per, '.4g')} | {fmt(a.get('div_max'))} |")
+                  f"{fmt(per, '.4g')} | {fmt(a.get('div_max'))} | "
+                  f"{fmt(per_step, '.2f')} | {fmt(per_hour)} |")
 
     if missing:
         print("\n## Not yet landed\n")

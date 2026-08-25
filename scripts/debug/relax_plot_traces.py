@@ -30,7 +30,26 @@ magnitude between cases, and the arm with the largest relative drift (W1) has
 the cleanest surfaces.  Absolute |dH| is what correlated with surface
 destruction under a blind classification of every Poincare pair.
 
+THE WALL-CLOCK AXIS
+-------------------
+``--x wall`` replots everything against GPU-seconds instead of step index,
+which is the axis to rank arms on: a step is not a unit of cost, and the
+arms here differ by 10x in seconds/step (0.87 at 8^3, 9.03 at 16^3).
+
+Runs from 2026-08-25 onward carry real sampled timing in ``trace['wall']``,
+taken at the helicity iterations and NET of the diagnostic block.  For those
+the per-step axis is a linear interpolation BETWEEN those samples, which
+tracks the real cost drift (warm starts get cheaper as the field settles).
+
+Older runs have only a per-arm total, so their axis is that total spread
+uniformly over the steps.  This is exact at the endpoint and an approximation
+in between; its known error is JIT compilation, which lands entirely in step 1
+and shifts such a curve left near the origin.  Curves reconstructed this way
+are drawn DASHED and marked "(uniform)" in the legend, so a uniform-axis arm
+is never silently compared against a measured one.
+
     python scripts/debug/relax_plot_traces.py --out out/relax_prelim/figs
+    python scripts/debug/relax_plot_traces.py --x wall
 """
 from __future__ import annotations
 
@@ -52,6 +71,10 @@ ROOT = "/scratch/tblickhan/mrx/out/relax_prelim"
 #: only one visible and the overlap reads as agreement of a single curve.
 A = 0.5
 
+#: Set by main() from --x.  Module-level because every panel needs it and
+#: threading it through four plot calls buys nothing.
+WALL = False
+
 
 def load(tag, fname=None):
     """Return {arm_name: trace} for one run directory, or {} if absent."""
@@ -70,8 +93,35 @@ def load(tag, fname=None):
         except Exception:
             continue
         if isinstance(blob, dict) and "arms" in blob:
-            return {k: v.get("trace", {}) for k, v in blob["arms"].items()}
+            return dict(blob["arms"])
     return {}
+
+
+def xaxis(arm, n):
+    """(x values for steps 1..n, label, is_measured).
+
+    Returns the step index unchanged unless a wall-clock axis is asked for.
+    """
+    if not WALL:
+        return np.arange(1, n + 1), "step", True
+    tr = arm.get("trace", {})
+    w, it = series(tr, "wall"), series(tr, "hel_it")
+    idx = np.arange(1, n + 1)
+    if w is not None and it is not None and len(w) == len(it) >= 2:
+        # Real samples: interpolate between them.  np.interp CLAMPS outside the
+        # sample range rather than extrapolating, which would flatten the tail
+        # of a budget-truncated arm onto its last sample; extend with the local
+        # slope instead.
+        x = np.interp(idx, it, w)
+        tail = idx > it[-1]
+        if tail.any():
+            slope = (w[-1] - w[-2]) / max(it[-1] - it[-2], 1.0)
+            x[tail] = w[-1] + slope * (idx[tail] - it[-1])
+        return x / 3600.0, "GPU-hours", True
+    total, steps = arm.get("wall"), arm.get("steps")
+    if total and steps:
+        return idx * (total / steps) / 3600.0, "GPU-hours", False
+    return idx, "step", True
 
 
 def series(tr, key):
@@ -116,20 +166,26 @@ def plot_group(runs, title, path, hel_absolute=True):
     panel(axes[3], "||div B||", "step", "||div B||")
 
     any_data = False
-    for label, tr in runs:
+    xlabel = "step"
+    for label, arm in runs:
+        tr = arm.get("trace", {}) if arm else {}
         if not tr:
             continue
         any_data = True
+        n = len(tr.get("E") or [])
+        x, xlabel, measured = xaxis(arm, n)
+        style = {} if measured else {"ls": "--"}
+        if not measured:
+            label = f"{label} (uniform)"
         rate = dissipation_rate(tr)
         if rate is not None:
             ok = rate > 0
             if ok.any():
-                axes[0].plot(np.arange(1, len(rate) + 1)[ok], rate[ok],
-                             lw=1.2, alpha=A, label=label)
+                axes[0].plot(x[:len(rate)][ok], rate[ok],
+                             lw=1.2, alpha=A, label=label, **style)
         F = series(tr, "F")
         if F is not None:
-            axes[1].plot(np.arange(1, len(F) + 1), F, lw=1.2, alpha=A,
-                         label=label)
+            axes[1].plot(x[:len(F)], F, lw=1.2, alpha=A, label=label, **style)
         H, it = series(tr, "helicity"), series(tr, "hel_it")
         if H is not None and it is not None and len(H) == len(it):
             dH = np.abs(H - H[0]) if hel_absolute else np.abs((H - H[0]) / H[0])
@@ -141,16 +197,20 @@ def plot_group(runs, title, path, hel_absolute=True):
             keep = dH > 0
             keep[0] = False
             if keep.any():
-                axes[2].plot(it[keep], dH[keep], lw=1.2, alpha=A, marker='o',
-                             ms=2.5, label=label)
+                # hel_it are STEP indices; map them onto whichever axis is in
+                # use rather than plotting steps against hours.
+                xh = x[np.clip(it.astype(int) - 1, 0, len(x) - 1)]
+                axes[2].plot(xh[keep], dH[keep], lw=1.2, alpha=A, marker='o',
+                             ms=2.5, label=label, **style)
         dv = series(tr, "div")
         if dv is not None:
-            axes[3].plot(np.arange(1, len(dv) + 1), np.maximum(dv, 1e-18),
-                         lw=1.2, alpha=A, label=label)
+            axes[3].plot(x[:len(dv)], np.maximum(dv, 1e-18),
+                         lw=1.2, alpha=A, label=label, **style)
     if not any_data:
         plt.close(fig)
         return False
     for a in axes:
+        a.set_xlabel(xlabel, fontsize=9)
         leg = a.legend(fontsize=7, framealpha=0.9)
         for line in leg.get_lines():   # legend keys stay readable at alpha 0.5
             line.set_alpha(1.0)
@@ -164,8 +224,13 @@ def plot_group(runs, title, path, hel_absolute=True):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default=os.path.join(ROOT, "figs"))
+    ap.add_argument("--x", choices=("step", "wall"), default="step",
+                    help="x axis: step index, or GPU-hours (see module docs)")
     cli = ap.parse_args()
     os.makedirs(cli.out, exist_ok=True)
+    global WALL
+    WALL = cli.x == "wall"
+    suffix = "_wall" if WALL else ""
 
     def one(tag, arm=None):
         arms = load(tag)
@@ -212,7 +277,8 @@ def main():
     ]
     made = 0
     for title, fname, runs in groups:
-        if plot_group(runs, title, os.path.join(cli.out, fname)):
+        out = os.path.join(cli.out, fname.replace(".png", suffix + ".png"))
+        if plot_group(runs, title, out):
             made += 1
     print(f"\n{made}/{len(groups)} figures written to {cli.out}")
 

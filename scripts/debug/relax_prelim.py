@@ -960,9 +960,20 @@ def main():
                               "gain", "dE_meas", "dE_pred", "helicity",
                               "hel_it", "gradp_mag", "gradp_avg", "resid",
                               "p_scale", "p_resid", "p_spread", "JoverB",
-                              "beta_vol", "beta_max", "beta_axis")}
+                              "beta_vol", "beta_max", "beta_axis", "wall")}
         E_prev = E0
         t_arm = time.perf_counter()
+        # Wall clock is sampled at the helicity iterations, NOT every step: a
+        # per-step timer would need a device sync to mean anything, and that
+        # sync is itself a cost the method does not otherwise pay.
+        #
+        # t_diag accumulates the time spent inside the diagnostic block, and
+        # the recorded wall EXCLUDES it.  The diagnostics are expensive --
+        # helicity alone is a k=1 Hodge solve -- and they are a measurement
+        # apparatus, not part of the method.  Leaving them in would make an
+        # arm look slower purely for having been watched more closely, and
+        # --helicity-every would silently become a performance knob.
+        t_diag = 0.0
         n_done = 0
         print(f"\n=== arm {name}  (method={method.name} m={cli.history} "
               f"gamma={cli.gamma} mu={cli.mu} "
@@ -1007,6 +1018,10 @@ def main():
             E_prev = E
             n_done = it
             if it % cli.helicity_every == 0 or it == 1:
+                t_diag0 = time.perf_counter()
+                # Sampled BEFORE the diagnostics run and already net of every
+                # earlier one, so this is solve-only wall clock at this step.
+                tr["wall"].append(t_diag0 - t_arm - t_diag)
                 # The denominator moves as B does, so it is re-measured here
                 # rather than frozen at the IC.
                 # ||J||/||B|| with J = weak_curl(B) = the codifferential.
@@ -1052,7 +1067,10 @@ def main():
                 print(f"  it {it:>5d}  E={E:.8e}  |F|={float(state.F_norm):.4e}"
                       f"  H={float(h):+.6e}  dH={float(h) - h0:+.3e}"
                       f"  dH/H={(float(h) - h0) / abs(h0):+.3e}"
-                      f"  beta_vol={beta_vol:+.3e}", flush=True)
+                      f"  beta_vol={beta_vol:+.3e}"
+                      f"  [{t_diag0 - t_arm - t_diag:.0f}s solve"
+                      f" +{t_diag:.0f}s diag]", flush=True)
+                t_diag += time.perf_counter() - t_diag0
             if it <= 5 or it % 20 == 0:
                 print(f"  it {it:>5d}  E={E:.8e}  |F|={state.F_norm:.4e}  "
                       f"dt={float(state.dt):+.3e}  cos={cos:+.4f}  "
