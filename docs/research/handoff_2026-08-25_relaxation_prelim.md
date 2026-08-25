@@ -1903,3 +1903,172 @@ survives; it just no longer has a measurement attached to it.
 
 **Re-measure P2 and S03 after merging `greville-prod`.** Two 8^3 arms at ~0.5
 and ~1.5 GPU-hours; this is the cheapest open item in the study.
+
+## 34. FUTURE SWEEPS: a shelf of experiments
+
+Tobias, 2026-08-25: *"We are not launching anything more, but we can collect
+ideas and open questions for future sweeps."* Nothing below was run. Each entry
+is meant to be pickable off the shelf without re-deriving anything, so it
+carries the question, what it decides, the cheapest experiment that decides it,
+a cost ESTIMATE, and what a null result means.
+
+Costs are estimates from measured s/step in s33 and are flagged as such. Class
+A restores something already half-known; class B opens new ground. Within B,
+some are bounded and some are not, and that is stated per item.
+
+### CLASS A -- restores a withdrawn or confounded claim
+
+**A1. Re-measure P2 and S03 on the post-fix operator.**
+1. Does p-refinement reduce helicity loss per unit energy, once every point in
+   the sweep is measured on the same operator?
+2. Restores or kills the withdrawn `3.4x` (s33.2) and makes the whole p axis
+   readable. Currently p=2 and p=4 are comparable to nothing.
+3. After merging `greville-prod`, re-run P2 and S03 exactly as launched:
+   `--geometry w7x-fmm002 --ic clebsch --ns 8,16,8 --p {2,4} --steps 3000
+   --arms cg`. Nothing else needs re-running -- the other 41 runs are odd-p.
+4. **~1.6 GPU-h** (estimate: 0.46 and 1.47 s/step measured x 3000).
+5. NULL = the even-p numbers come back unchanged, the parity fix does not
+   touch this quantity, the sweep's shape was real all along and `3.4x` is
+   reinstated as a measurement. That is a useful answer, not a wasted run.
+
+**A2. Bracket the mu minimum.**
+1. Where is the minimum of `|dH|/H per unit dE` in mu, and is 1e-4 it?
+2. Whether `gamma=1, mu~1e-4` is a recommendable default -- M1 gives 1.719
+   against 70.94 at mu=0, a 41x reduction for 1.4x the cost per step -- or
+   whether one interior sample is being over-read.
+3. **Wait for M2-M5 first; they may already bracket it.** If they do not: two
+   more `gamma=1` 8^3 fmm002 arms at `--mu 3e-5` and `--mu 3e-4`, 3000 steps,
+   otherwise identical to the M-series.
+4. **~2 GPU-h** (estimate, 1.24 s/step measured).
+5. NULL = 3e-5 and 3e-4 also land near 1.7, so the minimum is a broad basin
+   rather than a point, mu is insensitive, and no tuning is needed. That is
+   the better outcome for anyone using this.
+
+**A3. Isolate polish from the preconditioner.**
+1. Does harmonic-form inverse-iteration polish help or hurt at k=1,2 once its
+   shifted solve uses the atom instead of `schur.outer='jacobi'`?
+2. Whether polish stays gated off. My run did not separate the two, so "the
+   atom fixes polish" is consistent-with, not demonstrated-by, this data.
+3. `--ic-only`, both geometries, polish on/off x preconditioner old/new = 4
+   short arms, judged on `relL2_direct`. No relaxation loop needed.
+4. **~0.5 GPU-h** (estimate; IC only).
+5. NULL = polish is neutral in all four, and the machinery can be deleted
+   rather than left gated.
+
+**A4. S15's cost anomaly.**
+1. Is fmm002 12^3 `gamma=1` really 22.6 s/step -- ~2.5x slower than the h- and
+   gamma-scalings predict together -- or was that the pre-fix `M + eps L`
+   preconditioner?
+2. Only whether a cost anomaly exists. Nothing physical rides on it, and if
+   the answer is "the preconditioner", it is already fixed.
+3. **Probably no experiment at all**: H1/H2 are 12^3 `gamma=1` on the new
+   preconditioner and are in flight -- just read their s/step when they land.
+   Only if BOTH truncate: one 12^3 `gamma=1 mu=1e-3` arm, 500 steps, timing
+   only.
+4. **0 GPU-h** if H1/H2 land, else ~0.5.
+5. NULL = H1/H2 also show ~22 s/step, so the anomaly is real and predates the
+   preconditioner. Then it belongs in the solver, not in this study.
+
+### CLASS B -- opens new territory
+
+**B1. Run ONE arm to FLAT. (NOT bounded)**
+1. Where does a relaxation arm actually floor -- what `||F||` and what
+   dissipation rate does it reach when run to flat rather than to a step count?
+2. **This is a prerequisite for EVERY refinement claim in this document.** No
+   arm in this campaign has ever floored (s32), which is why s31 and s33.2 are
+   withdrawn or qualified rather than merely uncertain.
+3. One arm, fmm002 8^3 p=3 gamma=0 -- cheapest per step (0.87 s) and the
+   best-behaved case. No step cap. Stop when `-dE/dt` has stayed within 2x of
+   its round-off floor for 500 consecutive steps. **This needs a stopping
+   criterion added to `relax_prelim.py`**, which today has only `--steps` and
+   `--seconds-per-arm`.
+4. **NOT ESTIMABLE.** S13 reached 2.6% of its mid-run rate in 3000 steps and
+   the remaining distance to ~1e-16 cannot be extrapolated from one arm. Budget
+   it as open-ended with a wall-clock cap and accept it may not finish.
+5. NULL = it never flattens within a large budget. That IS the finding: the
+   scheme has no reachable floor at this discretisation, and the floor framing
+   itself needs rethinking before any refinement study is worth running.
+
+**B2. Resolution ladder on a floor criterion. (gated on B1)**
+1. Does finer h floor LOWER?
+2. The actual h-refinement question, which this campaign never asked -- it
+   measured rate and efficiency instead.
+3. 8^3 / 12^3 / 16^3, each run to B1's criterion, **NOT to a common step
+   count**. Matching step budgets is the design flaw that invalidated s31: the
+   finest arms truncated hardest, so every comparison was biased toward the
+   conclusion it reached.
+4. Unknown, gated on B1's timescale; at least 3x B1, dominated by the finest
+   arm.
+5. NULL = the same floor at every h, which is a REAL and more interesting
+   result than a lower one: it says something other than the discretisation is
+   limiting the answer, and that is worth chasing.
+
+**B3. Find the dt knee. (bounded)**
+1. Where between `dt=3e-3` and the linesearch's ~3e-2 does reconnection go
+   over the cliff?
+2. How much of the linesearch's speed can be kept without losing surfaces.
+   Today there is a flat shelf (0.0216-0.0261 across dt=1e-4..3e-3) and a jump
+   to 1.375 at the linesearch, with **a full decade unsampled between them**.
+   58-73x is one comparison, not a curve.
+3. Two w7x_ini 8^3 arms at fixed `dt=1e-2` and `dt=3e-2`, 3000 steps, Poincare
+   on, otherwise as D1.
+4. **~1.5 GPU-h** (estimate, 0.91 s/step measured).
+5. NULL = 1e-2 is already over the cliff, so the shelf simply ends at 3e-3 and
+   the cap is the recommendation with no tuning available.
+
+**B4. L-BFGS at m > 1. (bounded)**
+1. Does history `m > 1` help now that the velocity-space secant bug is fixed?
+2. Whether the repaired L-BFGS has more to give. Every number in the L-BFGS
+   factorial (s(lbfgs)) was measured at `m=1`, and an earlier m=5 probe
+   suggested pairs go stale fast -- but that probe predates the fix.
+3. fmm002 8^3 p=3, `--arms lbfgs --history {2,5,10}`, 3000 steps each.
+4. **~2.5 GPU-h** (estimate).
+5. NULL = m>1 is flat or worse, `m=1` is the setting, the staleness
+   observation is confirmed post-fix, and nobody needs to look again.
+
+**B5. The pressure-shape TURNAROUND. (bounded)**
+1. Why does the pressure-shape residual move TOWARD the reference profile and
+   then AWAY as a run lengthens?
+2. Whether the scheme's fixed point IS the file's equilibrium or merely passes
+   near it -- which is the substance of "does relaxation recover the
+   equilibrium".
+3. One fmm002 8^3 arm, 14000 steps, `--helicity-every 100` (S07 sampled at
+   500, too coarse to locate the turn), to find the turnaround step and check
+   it against the helicity trace.
+4. **~3.4 GPU-h** (estimate, 0.87 s/step x 14000).
+5. NULL = the turnaround tracks accumulated `|dH|`, in which case it is the
+   same reconnection mechanism as everything else here and needs no separate
+   explanation.
+
+**B6. IMPLICIT_MIDPOINT. (NOT bounded)**
+The brief explicitly forbade attempting it and asked for an opinion instead;
+that opinion is recorded earlier in this document and is unchanged. It stays
+on the shelf as design work, not as a sweep -- there is nothing to launch
+until someone decides the nonlinear solve is worth building.
+
+### 34.1 CONSIDERED AND DROPPED, because the data already decides them
+
+**"Does the pressure profile drift only on cases that are NOT equilibria?"**
+This was the proposed framing, on the reasoning that `w7x_ini` is GVEC's
+initial guess while `fmm002` is a real equilibrium at beta 1.8%. **DROPPED --
+the data refutes the premise.** `p_resid` first -> final:
+
+    fmm002  8^3    3000 steps    0.0450 -> 0.0213   TOWARD  x0.47
+    fmm002  8^3   13018 steps    0.0450 -> 0.0789   AWAY    x1.75
+    fmm002 12^3    3000 steps    0.0253 -> 0.0158   TOWARD  x0.62
+    w7x_ini 8^3    linesearch    0.0894 -> 0.3157   AWAY    x3.53
+    w7x_ini 8^3    capped dt     0.0894 -> 0.0122   TOWARD  x0.14
+    w7x_ini 12^3   linesearch    0.0928 -> 0.0846   TOWARD  x0.91
+
+The split is **not** equilibrium-versus-guess. D1 -- `w7x_ini`, GVEC's initial
+guess, capped step -- shows the STRONGEST convergence in the whole set
+(x0.14), while S07 -- `fmm002`, a genuine equilibrium, run long -- moves AWAY
+(x1.75). S07 and W1 are the same case with **identical geometry, ns, p, gamma
+and mu**, differing only in length (14000 vs 3000 steps), so the residual
+turns around within a single configuration.
+
+What the table is consistent with is the mechanism that runs through this
+whole study: greedy-and-short goes toward, greedy-and-long goes away, capped
+goes strongly toward. That is accumulated reconnection, not a property of the
+target. Stated as consistent-with, not demonstrated -- which is exactly why B5
+replaces this item rather than deleting it.
