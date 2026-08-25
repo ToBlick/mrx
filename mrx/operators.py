@@ -3464,6 +3464,17 @@ def assemble_block_jacobi_laplacian_preconditioner(
     ``kwargs`` go to :class:`BlockJacobiLaplacian`. The defaults are already the
     production configuration -- pass nothing.
 
+    NEEDS A GRID IT CAN FIT ON. ``component_factors`` forms ``A^-1 M`` per axis
+    (``A`` a 1-D mass weighted by the stiffness profile) and takes its mean
+    eigenvalue as a scale. At ``n = 4`` with ``p = 3`` -- four radial DOFs for a
+    cubic basis -- that solve goes non-finite and numpy raises
+    ``LinAlgError: Array must not contain infs or NaNs`` from inside
+    ``eigvals``, which is an unhelpful place to learn it. The retired tensor
+    path tolerated such grids, so nothing noticed until the Poisson convergence
+    study was repointed here on 2026-08-25 and died on its own coarsest mesh.
+    Start convergence studies at ``n >= 6``; see
+    ``scripts/debug/atom_coarse_grid.py`` for where the floor actually sits.
+
     Returns ``operators`` unchanged, for symmetry with the other assemble_*
     helpers.
     """
