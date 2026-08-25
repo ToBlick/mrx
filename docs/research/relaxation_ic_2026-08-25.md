@@ -260,9 +260,48 @@ single z-pinch, which is the `B_z = 0` corner.
 
 **Anything else is not an equilibrium.** In particular on a torus, see §8.
 
-## 7. Open — the GPU arms
+## 7. The GPU arms
 
-Queued at session end, none landed. Output dirs:
+### 7.1 LANDED: `lic_cyl` — the cylinder passes every structural gate
+
+`outputs/logical_ic/2026-08-25/03-02-51/cyl.log`, iota 0.4 -> 0.9 (exp 2),
+`Phi' = rho`, ns=(12,24,12) p=3.
+
+| gate | result |
+| --- | --- |
+| `max\|B^rho\|/max\|B^zeta\|` | 4.8e-18 axis band, **1.1e-16 bulk** |
+| `\|\|div B\|\|` (incidence AND strong_div) | 3.6e-14 |
+| `\|\|P_Leray B - B\|\|` | 4.7e-16 |
+| iota from `<B^chi>/<B^zeta>` | ratio **1.0000**, POSITIVE |
+| eq. (4) vs measured `<B^2>/2` | 3.7e-05 |
+| `b = <g_chizeta/J>`, `iota* = -b/a` | **exactly 0** |
+| `\|\|F\|\|/\|\|B\|\|` | **3.0e-12** |
+| Pfirsch-Schlueter spread `std/\|mean\|` | **2.4e-14** median |
+
+Three things settled:
+
+* **The L2 route costs nothing here.** `B^rho` at 1e-16 means the metric
+  coupling did NOT reintroduce a radial component on this geometry, so
+  unlocking histopolation (§10) is not urgent — though the cylinder is the
+  easy case and W7-X may differ.
+* **The sign convention is settled**: `<B^chi>/<B^zeta>` comes back as `+iota`,
+  no flip. The `dr^dzeta = -dzeta^dr` worry was unfounded.
+* **The ansatz really is an equilibrium on a cylinder** — force at round-off
+  and the radial force a flux function to machine precision, exactly as §6.2
+  requires.
+
+The one non-zero number, `[press] slope 1.5094, unexplained 3.05e-02`, is
+EXPECTED and is not an error: eq. (4)'s `-du/drho` omits the tension term
+`-B_theta^2/rho` of the exact balance (1). Predicting the slope from (1)
+directly gives **1.5153 against the measured 1.5094** (0.4% apart) and residual
+2.64e-2 against 3.05e-2. The tension term carries 33-49% of `dp/drho` across
+the radius. So the measured pressure agrees with the exact screw-pinch balance
+to sub-percent; the direct test is `aic_sp_*`, which uses the FULL balance and
+should return slope 1.0 with no fit.
+
+### 7.2 Still queued
+
+Output dirs:
 `outputs/analytic_ic/2026-08-25/03-30-32/`,
 `outputs/logical_ic/2026-08-25/03-02-51/`,
 `outputs/lambda_ws/2026-08-25/03-49-49/`.
@@ -272,7 +311,7 @@ Queued at session end, none landed. Output dirs:
 | `aic_sp_{sheared,flat,zero,q2}` | cylinder: `\|\|F\|\|/\|\|B\|\|` must sit at discretisation error, and `dp/drho` must match (1) with NO fitted parameter |
 | `aic_tor_vacuum` | **decisive**: at iota=0 the closed-form lambda should BE the vacuum field (J=0), so its force must collapse; lambda=0 leaves O(1) |
 | `aic_tor_sheared` | residual force EXPECTED — see §8 |
-| `lic_cyl` | the six structure gates on the L2 route |
+| ~~`lic_cyl`~~ | LANDED -- see §7.1 |
 | `lic_gvec` | GVEC reconstruction; the invariance test (H and the iota column must not move with `--no-lambda`; force and pressure must) |
 | `lws_toroid` | general lambda solve vs the closed form |
 | `lws_hegna` | general lambda solve vs GVEC's own lambda |
