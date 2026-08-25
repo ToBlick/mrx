@@ -1710,12 +1710,24 @@ substitute, not the cheap one.
 
 `fmm002`'s H collapses under refinement (-1.780e-04, -3.162e-05, -5.756e-06)
 because `compute_helicity` returns exactly zero for a purely harmonic field
-(`delta B = 0` gives `A = 0`) and this field is ~99% harmonic -- the current-
-driven fraction is only 1.7%, falling to 0.9% as the grid resolves it. So the
-`fmm002` column is the drift of a vanishing residue divided by a vanishing
-denominator, and its apparent 469 at 16^3 means nothing. `w7x_ini`, whose
-current-driven fraction is 17%, is where this metric is sound -- and that is
-where every step-size conclusion was measured.
+(`delta B = 0` gives `A = 0`) and this field is almost entirely harmonic. So
+the `fmm002` column is the drift of a vanishing residue divided by a vanishing
+denominator, and its apparent 469 at 16^3 means nothing.
+
+**CORRECTED 2026-08-25 (s35).** This paragraph originally put the
+current-driven fraction at "1.7%, falling to 0.9%" for `fmm002` and "17%" for
+`w7x_ini`. Both numbers were wrong, by two orders of magnitude and by one
+respectively. Measured `1 - B_harm_rel`:
+
+    fmm002    8^3  0.0139%   12^3  0.0048%   16^3  0.0037%   <- COLLAPSES
+    w7x_ini   8^3  1.4162%   12^3  1.4227%   16^3  1.4236%   <- STABLE
+
+The conclusion survives and is strengthened: what separates the two cases is
+not the size of the fraction but that `fmm002`'s **collapses** under
+refinement while `w7x_ini`'s is **stable to three digits**. A denominator that
+moves with the grid cannot normalise a comparison across grids. `w7x_ini` is
+where this metric is sound, and that is where every step-size conclusion was
+measured.
 
 ## 32. RETRACTION: every resolution conclusion here is a RATE claim, and rate was never the question
 
@@ -2108,3 +2120,89 @@ whole study: greedy-and-short goes toward, greedy-and-long goes away, capped
 goes strongly toward. That is accumulated reconnection, not a property of the
 target. Stated as consistent-with, not demonstrated -- which is exactly why B5
 replaces this item rather than deleting it.
+
+## 35. THE p-SWEEP REVERSES SIGN ON THE HONEST METRIC -- and P5 shows why
+
+P5 landed and completes the odd-p series, which is the part of the sweep that
+is readable at all (s33.2: p=2 and p=4 are pre-fix).
+
+    fmm002 8^3, gamma=0, 3000 steps
+
+    p    H(0)          |dH|/H per dE      |dH| per dE
+    1    -3.792e-03        13.74           5.209e-02
+    2*   -5.380e-04        11.38           6.123e-03
+    3    -1.781e-04        70.94           1.263e-02
+    4*   -1.692e-04        20.90           3.535e-03
+    5    +6.878e-06       161.80           1.113e-03
+                                  * pre-fix even p, s33.2
+
+**H(0) CHANGES SIGN BETWEEN p=4 AND p=5.** It is negative at every other
+degree and lands at +6.88e-06 at p=5 -- 550x smaller in magnitude than p=1 and
+straddling zero. So on the readable points the RELATIVE metric is dividing by a
+quantity that is passing through its own zero, and `161.8` is not a
+measurement of anything.
+
+### 35.1 The absolute metric says the OPPOSITE, and monotonically
+
+`|dH|` normalised by energy removed, which is the form s19.2 established
+correlates with surface destruction under blind classification of the Poincare
+pairs:
+
+    p=1  5.209e-02
+    p=3  1.263e-02
+    p=5  1.113e-03      <- 47x better than p=1, monotone
+
+The relative metric said p-refinement makes reconnection 12x WORSE from p=1 to
+p=5. The absolute metric says it makes it **47x better, monotonically**. The
+difference is entirely the denominator: `H` falls 550x across that range while
+`|dH|` falls 790x, so their ratio rises even as the thing anyone cares about
+improves.
+
+The even points, pre-fix as they are, sit below their odd neighbours on this
+metric too (6.12e-03 and 3.54e-03) -- so the even/odd split noted in s33.2 is
+still visible and A1 is still worth running. But it is now a second-order
+effect on top of a clean monotone trend, rather than the whole signal.
+
+### 35.2 What this costs the rest of the document
+
+**The `|dH|/H per dE` column is unusable for every `fmm002` row**, not just the
+p-sweep ones. Its denominator is a vanishing, sign-changing residue of a field
+that is 99.99% harmonic, and it collapses with BOTH h and p (s31.2 as
+corrected). That column is most of the table.
+
+It remains sound on `w7x_ini`, whose current-driven fraction is stable to three
+digits under refinement -- and every step-size conclusion, which is the
+study's main result, was measured there. So the finding that survives
+untouched is the one that mattered most.
+
+**What this does NOT do:** it does not reinstate the withdrawn "p buys 3.4x"
+(s33.2), which compared p=3 to p=4 and therefore still straddles the operator
+fix. And s32 applies here as everywhere -- no arm floored, so none of this is a
+floor result. It is a statement about helicity conservation per unit energy
+removed at a fixed step budget, which is a real quantity and not the same
+thing.
+
+## 36. The preconditioner A/B, cleanly: same answer, 1.54x faster
+
+M2 landed and is the controlled comparison the mu sweep was missing -- S04 and
+M2 are `gamma=1, mu=1e-3` on `fmm002` 8^3, differing ONLY in the `M + eps L`
+preconditioner (s(precond)).
+
+              dE          |dH|/H per dE    s/step
+    S04   1.207e-04          30.09          2.74     old (diag(M), eps ignored)
+    M2    1.207e-04          28.98          1.78     new (metric-lumping)
+
+Energy removed agrees **to four digits**. The helicity ratio differs by 3.7%,
+which is below the two-digit threshold this project treats as worth
+investigating. Cost falls **1.54x**.
+
+This is exactly what the theory predicts and what I claimed before measuring
+it: a preconditioner changes the path to the answer, not the answer. It is
+worth having measured rather than asserted, because the claim was load-bearing
+-- M1's 41x result (s(mu)) is attributed to `mu`, and that attribution is only
+valid if the preconditioner change riding along with it is inert. It is.
+
+`||F||` final differs more (1.139e-04 vs 2.017e-04). That is not a
+counterexample: `||F||` is the gradient's norm, is not monotone, and is a
+pointwise reading at an arbitrary stopping step. Energy and helicity -- the
+integrated quantities -- agree.
