@@ -1,6 +1,6 @@
 """Guards for the block-Jacobi Laplacian preconditioner.
 
-`mrx/block_jacobi_laplacian.py` IS the production Laplacian
+`mrx/metric_lumping_laplacian.py` IS the production Laplacian
 preconditioner for k = 0..3 (see `docs/PRODUCTION.md`). It had no test
 coverage when it was promoted;
 these are the checks that plan calls for, each chosen because it has caught --
@@ -40,8 +40,8 @@ import pytest
 jnp = pytest.importorskip("jax.numpy")
 
 import mrx.operators as op  # noqa: E402
-from mrx.block_jacobi_laplacian import (  # noqa: E402
-    BlockJacobiLaplacian, trace_components,
+from mrx.metric_lumping_laplacian import (  # noqa: E402
+    MetricLumpingLaplacian, trace_components,
 )
 
 # k = 3 is the cheapest vector case (one component); k = 1 is the one
@@ -76,7 +76,7 @@ def bj(torus_seq):
             prev = os.environ.get("MRX_BJ_BC_SCALE")
             os.environ["MRX_BJ_BC_SCALE"] = str(bc_scale)
             try:
-                pre = BlockJacobiLaplacian(
+                pre = MetricLumpingLaplacian(
                     torus_seq, torus_seq.get_operators(), k, dbc,
                     ktilde_mode="honest", lumped="diag", bc_entry=bc_entry,
                     extra_rings=0, outer_rings=0)
@@ -271,12 +271,12 @@ def test_defaults_are_the_production_configuration(torus_seq):
     """
     import inspect
 
-    import mrx.block_jacobi_laplacian as bjl
+    import mrx.metric_lumping_laplacian as bjl
 
     assert bjl.PRODUCTION_BC_SCALE == PROD_SCALE
 
     # Cheap and directly on the thing that was wrong: the defaults themselves.
-    for fn in (bjl.BlockJacobiLaplacian.__init__, bjl.component_factors,
+    for fn in (bjl.MetricLumpingLaplacian.__init__, bjl.component_factors,
                bjl.build_bulk_atom):
         params = inspect.signature(fn).parameters
         assert params["ktilde_mode"].default == "honest", (
@@ -292,8 +292,8 @@ def test_defaults_are_the_production_configuration(torus_seq):
         rng = np.random.default_rng(3)
         vecs = [jnp.asarray(rng.standard_normal(n)) for _ in range(2)]
         ops = torus_seq.get_operators()
-        bare = BlockJacobiLaplacian(torus_seq, ops, 1, False)
-        spelled = BlockJacobiLaplacian(
+        bare = MetricLumpingLaplacian(torus_seq, ops, 1, False)
+        spelled = MetricLumpingLaplacian(
             torus_seq, ops, 1, False, ktilde_mode="honest", lumped="diag",
             bc_entry="ibpd", bc_scale=bjl.PRODUCTION_BC_SCALE,
             extra_rings=0, outer_rings=0)
@@ -305,7 +305,7 @@ def test_defaults_are_the_production_configuration(torus_seq):
         # measured number rather than a guessed tolerance. The dense polar-core
         # block is not bit-reproducible between builds (~1.7% of rows move by
         # ~1e-14), which is also the residual every inertness test above sees.
-        twin = BlockJacobiLaplacian(torus_seq, ops, 1, False)
+        twin = MetricLumpingLaplacian(torus_seq, ops, 1, False)
 
     probe = lambda pre: np.stack([np.asarray(pre.apply(v)) for v in vecs])
     floor = _rel(probe(twin), probe(bare))
@@ -319,7 +319,7 @@ def test_defaults_are_the_production_configuration(torus_seq):
 
 
 def test_production_dispatch_wiring(torus_seq):
-    """`kind='block'` reaches the atom, and `kind='auto'` prefers it once it is
+    """`kind='metric_lumping'` reaches the atom, and `kind='auto'` prefers it once it is
     assembled -- the Phase 1b wiring.
 
     `'auto'` used to resolve to `'jacobi'` unconditionally while its docstring
@@ -327,7 +327,7 @@ def test_production_dispatch_wiring(torus_seq):
     both sides: jacobi before assembly, block after.
     """
     from mrx.operators import (
-        BLOCK_JACOBI_CACHE_ATTR, assemble_block_jacobi_laplacian_preconditioner,
+        METRIC_LUMPING_CACHE_ATTR, assemble_metric_lumping_laplacian_preconditioner,
     )
 
     k, dbc = 3, False          # non-singular, single component: the cheap case
@@ -336,11 +336,11 @@ def test_production_dispatch_wiring(torus_seq):
     v = jnp.asarray(rng.standard_normal(n))
     ops = torus_seq.get_operators()
 
-    prev = getattr(torus_seq, BLOCK_JACOBI_CACHE_ATTR, None)
+    prev = getattr(torus_seq, METRIC_LUMPING_CACHE_ATTR, None)
     try:
-        # Before assembly: 'auto' must fall back, and 'block' must say so
+        # Before assembly: 'auto' must fall back, and 'metric_lumping' must say so
         # clearly rather than silently doing something else.
-        setattr(torus_seq, BLOCK_JACOBI_CACHE_ATTR, None)
+        setattr(torus_seq, METRIC_LUMPING_CACHE_ATTR, None)
         auto_before = torus_seq.apply_laplacian_preconditioner(
             v, k, dirichlet=dbc, kind='auto')
         jac = torus_seq.apply_laplacian_preconditioner(
@@ -353,35 +353,39 @@ def test_production_dispatch_wiring(torus_seq):
             "kind='auto' did not fall back to jacobi before assembly")
         with pytest.raises(ValueError, match="not assembled"):
             torus_seq.apply_laplacian_preconditioner(
-                v, k, dirichlet=dbc, kind='block')
+                v, k, dirichlet=dbc, kind='metric_lumping')
 
-        # After assembly: 'block' is the atom, and 'auto' now picks it.
-        assemble_block_jacobi_laplacian_preconditioner(
+        # After assembly: 'metric_lumping' is the atom, and 'auto' now picks it.
+        assemble_metric_lumping_laplacian_preconditioner(
             torus_seq, ops, ks=(k,), dirichlets=(dbc,))
         blk = torus_seq.apply_laplacian_preconditioner(
-            v, k, dirichlet=dbc, kind='block')
+            v, k, dirichlet=dbc, kind='metric_lumping')
         auto_after = torus_seq.apply_laplacian_preconditioner(
             v, k, dirichlet=dbc, kind='auto')
         assert _rel(np.asarray(auto_after), np.asarray(blk)) < INERT, (
             "kind='auto' did not prefer the block atom after assembly")
         assert _rel(np.asarray(blk), np.asarray(jac)) > LIVE, (
-            "kind='block' returned essentially the jacobi diagonal; the "
+            "kind='metric_lumping' returned essentially the jacobi diagonal; the "
             "dispatch is not reaching the atom")
     finally:
-        setattr(torus_seq, BLOCK_JACOBI_CACHE_ATTR, prev)
+        setattr(torus_seq, METRIC_LUMPING_CACHE_ATTR, prev)
 
 
-def test_block_jacobi_mass_is_wired_but_not_default(torus_seq):
-    """`block_jacobi` is wired and better, but is NOT the default.
+def test_metric_lumping_mass_is_the_default_and_jit_safe(torus_seq):
+    """`metric_lumping` IS the production mass preconditioner, and works in a trace.
 
-    The swap was attempted on 2026-08-22 and reverted: a default mass
-    preconditioner must be buildable on demand from inside a traced region, and
-    BlockJacobiMass's BUILD is host-side numpy. See
-    `default_mass_preconditioner` for the full reason.
+    This test used to be `..._is_wired_but_not_default` and compared two arms,
+    metric_lumping against raw_kron. raw_kron was deleted on 2026-08-25 after the
+    A/B recorded in docs/research/result_2026-08-25_schur_probe_ab.md, so the
+    comparison is gone and the "not the default" claim is now false -- it is the
+    only mass preconditioner besides jacobi and none.
 
-    Pins the default so a change is deliberate, and checks both kinds build,
-    agree in direction, reject nonsensical specs, and are usable UNDER JIT --
-    the last being the check an earlier version of this test missed.
+    What survives is the part that was load-bearing: the build is host-side
+    numpy, so an apply that touches the host dies with
+    TracerArrayConversionError inside `solve_singular_cg`'s `jax.lax.while_loop`
+    while working perfectly on a concrete array. That is exactly how an earlier
+    version of this test passed against a mass preconditioner that could not be
+    used in production at all.
     """
     import jax
 
@@ -390,7 +394,7 @@ def test_block_jacobi_mass_is_wired_but_not_default(torus_seq):
         MassPreconditionerSpec, default_mass_preconditioner,
     )
 
-    assert default_mass_preconditioner().kind == 'block_jacobi'
+    assert default_mass_preconditioner().kind == 'metric_lumping'
 
     k, dbc = 3, False       # single component: the cheapest mass to build
     n = int(getattr(torus_seq, f"n{k}"))
@@ -398,48 +402,27 @@ def test_block_jacobi_mass_is_wired_but_not_default(torus_seq):
     rng = np.random.default_rng(5)
     v = jnp.asarray(rng.standard_normal(n))
 
-    applies = {}
-    for kind in ('raw_kron', 'block_jacobi'):
-        applies[kind] = _build_operator_preconditioner_apply(
-            torus_seq, ops, k=k, dirichlet=dbc, operator_apply=None,
-            preconditioner=MassPreconditionerSpec(kind=kind,
-                                                  surgery_schur=False))(v)
+    spec = MassPreconditionerSpec(kind='metric_lumping', surgery_schur=False)
+    out = _build_operator_preconditioner_apply(
+        torus_seq, ops, k=k, dirichlet=dbc, operator_apply=None,
+        preconditioner=spec)(v)
+    assert np.all(np.isfinite(np.asarray(out)))
 
-    for kind, out in applies.items():
-        assert np.all(np.isfinite(np.asarray(out))), f"{kind} produced non-finite output"
-
-    # TRACEABILITY. The mass preconditioner is applied INSIDE
-    # solve_singular_cg's jax.lax.while_loop, so an apply that touches the host
-    # (np.asarray on the input) dies with TracerArrayConversionError there
-    # while working perfectly when called with a concrete array. That is
-    # exactly how an earlier version of this test passed against a
-    # BlockJacobiMass that could not be used in production at all.
-    for kind in ('raw_kron', 'block_jacobi'):
-        fn = _build_operator_preconditioner_apply(
-            torus_seq, ops, k=k, dirichlet=dbc, operator_apply=None,
-            preconditioner=MassPreconditionerSpec(kind=kind,
-                                                  surgery_schur=False))
-        out = jax.jit(fn)(v)
-        assert np.all(np.isfinite(np.asarray(out))), (
-            f"{kind} is not usable under jit")
-    # Both approximate the same M^-1, so they must agree in DIRECTION far
-    # better than two unrelated operators would, without being identical --
-    # they differ precisely in how the polar core is handled.
-    a, b = np.asarray(applies['raw_kron']), np.asarray(applies['block_jacobi'])
-    cos = float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
-    assert cos > 0.9, (
-        f"raw_kron and block_jacobi mass preconditioners disagree badly "
-        f"(cos={cos:.3f}); one of them is not approximating M^-1")
+    # THE CHECK THAT MATTERS: usable under jit, not merely callable.
+    fn = _build_operator_preconditioner_apply(
+        torus_seq, ops, k=k, dirichlet=dbc, operator_apply=None,
+        preconditioner=spec)
+    assert np.all(np.isfinite(np.asarray(jax.jit(fn)(v)))), (
+        "metric_lumping is not usable under jit")
 
     # ... and a nonsensical spec fails loudly rather than quietly doing
     # something else. Checked at k=1, NOT at the k=3 used above:
     # `_normalize_mass_preconditioner_spec_for_degree` rewrites specs only at
     # k=3, where it strips `surgery_schur` and substitutes the smoother, so
-    # these guards are unreachable there. (The same is true of the equivalent
-    # raw_kron guards -- worth knowing before trusting either at k=3.)
+    # these guards are unreachable there.
     # Both raise before anything is built, so this costs nothing.
-    for bad in (MassPreconditionerSpec(kind='block_jacobi', surgery_schur=True),
-                MassPreconditionerSpec(kind='block_jacobi',
+    for bad in (MassPreconditionerSpec(kind='metric_lumping', surgery_schur=True),
+                MassPreconditionerSpec(kind='metric_lumping',
                                        smoother=MassPreconditionerSpec(kind='jacobi'))):
         with pytest.raises(ValueError):
             _build_operator_preconditioner_apply(
@@ -456,7 +439,7 @@ def test_probed_diagonal_is_the_honest_reference(torus_seq):
     a preconditioner measured against `jacobi` inherits it. This pins the
     distinction so the reference cannot silently drift back to the model.
     """
-    # Not a preconditioner KIND any more -- the modes are none/jacobi/tensor --
+    # Not a preconditioner KIND any more -- the kinds are none/jacobi/metric_lumping --
     # but still the reference the jacobi diagonal has to be checked against.
     from mrx.operators import (
         PROBED_DIAG_CACHE_ATTR, _hodge_diaginv, _probed_laplacian_diaginv,

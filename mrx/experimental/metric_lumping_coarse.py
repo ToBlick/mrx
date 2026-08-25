@@ -7,7 +7,7 @@ of their build cost (docs/research/natural_bc_coefficient_handoff.md §14.4,
 §15.1).
 
 It is NOT in the production preconditioner, and lives here rather than on
-`BlockJacobiLaplacian` for reasons that are all cost rather than correctness:
+`MetricLumpingLaplacian` for reasons that are all cost rather than correctness:
 
 * five parameters against the production class's zero;
 * storage LINEAR in `n_dof` -- 102 MB at n=20 where the atom uses 0.1 MB;
@@ -26,15 +26,15 @@ needs no extra operator apply because `L Q` reuses the stored `L V`.
 
 Usage::
 
-    pre = CoarseCorrectedBlockJacobi(seq, ops, k, dirichlet, coarse_modes=(3, 3))
+    pre = CoarseCorrectedMetricLumping(seq, ops, k, dirichlet, coarse_modes=(3, 3))
     pre.apply(x)
 """
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.block_jacobi_laplacian import (
-    BlockJacobiLaplacian, trace_components,
+from mrx.metric_lumping_laplacian import (
+    MetricLumpingLaplacian, trace_components,
 )
 
 def coarse_ring_basis(seq, k, dirichlet, rings, m_max, n_max, comps=None,
@@ -152,8 +152,8 @@ def coarse_correction(seq, operators, k, dirichlet, v_mat, tol=1e-12,
                 lv[trunc_rows], trunc_rows)
     return v_mat, (u[:, keep] / w[keep]) @ u[:, keep].T, lv, None
 
-class CoarseCorrectedBlockJacobi:
-    """`BlockJacobiLaplacian` plus a truncated-Fourier coarse correction.
+class CoarseCorrectedMetricLumping:
+    """`MetricLumpingLaplacian` plus a truncated-Fourier coarse correction.
 
     Holds the atom rather than subclassing it, so the production class keeps
     no knowledge of this and the two can be compared directly.
@@ -162,7 +162,7 @@ class CoarseCorrectedBlockJacobi:
     def __init__(self, seq, operators, k, dirichlet, *, coarse_rings=1,
                  coarse_modes=(3, 3), coarse_set="all", coarse_mode="hybrid",
                  coarse_trunc=0, **atom_kwargs):
-        self.atom = BlockJacobiLaplacian(seq, operators, k, dirichlet,
+        self.atom = MetricLumpingLaplacian(seq, operators, k, dirichlet,
                                          **atom_kwargs)
         self.coarse = None
         self.coarse_mode = coarse_mode

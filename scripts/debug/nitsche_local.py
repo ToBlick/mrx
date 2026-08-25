@@ -34,7 +34,7 @@ import numpy as np  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from mrx.block_jacobi_laplacian import (  # noqa: E402
+from mrx.metric_lumping_laplacian import (  # noqa: E402
     _assemble_weighted_1d_mass, _axis_bases, _edge_vector, _face_alpha,
     _h_last, bundled_axis_profiles, component_factors, trace_components,
     weight_fields,

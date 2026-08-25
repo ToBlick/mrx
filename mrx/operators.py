@@ -736,7 +736,7 @@ def _materialize_default_mass_preconditioner(
         seq, operators: SequenceOperators, *, k: int):
     # The `_tensor_available` gate here was a leftover from when
     # `default_mass_preconditioner()` meant kind='tensor', which DOES need an
-    # eager assembly and so needed a fallback. It has meant 'block_jacobi'
+    # eager assembly and so needed a fallback. It has meant 'metric_lumping'
     # since 2026-08-22, and that is always buildable -- so the gate was
     # silently downgrading the saddle solve's LOWER block to a per-DoF
     # diagonal whenever the tensor factors happened not to be assembled,
@@ -772,15 +772,18 @@ def _materialize_default_saddle_preconditioner(
     ``set_geometry`` drops the atoms, so "assembled" always means "assembled for
     the geometry now installed".
 
-    ``schur.inner`` stays raw_kron: with ``outer='block'`` the atom IS the
-    upper-block inverse and the inner slot does no work in the apply, but the
-    Schur operator is still built before the branch, so the factors are needed.
+    ``schur.inner`` is metric_lumping. It was raw_kron until 2026-08-25,
+    justified here by "the Schur operator is still built before the branch, so
+    the factors are needed" -- which stopped being true at 31ef58f, when the
+    Schur apply was moved into the only branch that consumes it. Under
+    ``outer='metric_lumping'`` the atom IS the upper-block inverse and the inner slot
+    does no work at all.
     """
-    outer = ('block' if _block_jacobi_available(seq, k, dirichlet) else 'none')
+    outer = ('metric_lumping' if _metric_lumping_available(seq, k, dirichlet) else 'none')
     return SaddlePointPreconditionerSpec(
         mass=_materialize_default_mass_preconditioner(seq, operators, k=k - 1),
         schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='raw_kron'),
+            inner=MassPreconditionerSpec(kind='metric_lumping'),
             outer=MassPreconditionerSpec(kind=outer),
         ),
         coupled=coupled_preconditioner,
@@ -803,8 +806,8 @@ def _materialize_default_scalar_hodge_preconditioner(
     del operators
     if eps != 0.0:
         return MassPreconditionerSpec(kind='none')
-    if _block_jacobi_available(seq, k, dirichlet):
-        return MassPreconditionerSpec(kind='block')
+    if _metric_lumping_available(seq, k, dirichlet):
+        return MassPreconditionerSpec(kind='metric_lumping')
     return MassPreconditionerSpec(kind='none')
 
 
@@ -2655,9 +2658,9 @@ def apply_mass_matrix_preconditioner(seq, operators: SequenceOperators, v, k: in
 
     Parameters
     ----------
-    kind : {'auto', 'jacobi', 'raw_kron', 'block_jacobi'}
-        Which preconditioner to use. The retired ``'tensor'`` kind this
-        docstring used to advertise was deleted on 2026-08-25.
+    kind : {'auto', 'jacobi', 'metric_lumping'}
+        Which preconditioner to use. The retired ``'tensor'`` and
+        ``'raw_kron'`` kinds were deleted on 2026-08-25.
     """
     apply = _build_mass_preconditioner_apply(
         seq,
@@ -2682,7 +2685,7 @@ def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
     :class:`MassPreconditionerSpec`. When omitted (``'auto'``) it resolves to
     :func:`~mrx.preconditioners.default_mass_preconditioner`, i.e. block_jacobi
     since 2026-08-22. (It read "tensor when assembled and Jacobi otherwise"
-    until 2026-08-24; that has not been true since the raw_kron pivot.)
+    until 2026-08-24; that has not been true since the 2026-08-17 pivot.)
     """
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
@@ -2761,9 +2764,6 @@ def _get_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool, mo
     mode_stored = getattr(operators, f'schur_diaginv_mode_k{k}{suffix}', None)
     if diaginv is None:
         return None
-    # Backward-compatible fallback for older caches that predate mode tagging.
-    if mode_stored is None and mode == 'tensor_probe':
-        return diaginv
     if mode_stored == mode:
         return diaginv
     return None
@@ -2782,7 +2782,7 @@ def _set_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool, di
     )
 
 
-_SCHUR_DIAG_MODES = ('raw_kron_probe',)
+_SCHUR_DIAG_MODES = ('metric_lumping_probe',)
 
 
 def _coerce_schur_diag_mode(spec: MassPreconditionerSpec, *, context: str) -> str:
@@ -2850,7 +2850,7 @@ def assemble_schur_jacobi_preconditioner(
         *, ks: Sequence[int] = (1, 2, 3),
         dirichlet_variants: Optional[Sequence[bool]] = None,
     eps: float = 0.0,
-    schur_diag_mode: str = 'raw_kron_probe') -> SequenceOperators:
+    schur_diag_mode: str = 'metric_lumping_probe') -> SequenceOperators:
     """Probe and store the approximate Schur diagonal at assembly time.
 
     For each (k, dirichlet) pair, builds the approximate Schur operator
@@ -2874,8 +2874,10 @@ def assemble_schur_jacobi_preconditioner(
         Shift for the stiffness term; 0 gives the unshifted Schur.
 
     where ``B_{k-1}`` is selected by ``schur_diag_mode``. There is exactly ONE
-    mode, ``'raw_kron_probe'`` -- the raw_kron schur.inner inverse, which needs
-    no prior assembly.
+    mode, ``'metric_lumping_probe'`` -- the metric_lumping schur.inner inverse,
+    which needs no prior assembly. It was raw_kron-backed until 2026-08-25; the
+    switch was forced by that deletion and measured first, see
+    docs/research/result_2026-08-25_schur_probe_ab.md.
 
     This docstring used to advertise four (``'tensor_probe'``, ``'exact_probe'``
     and ``'diag'`` as well) against a guard that accepted two, so two of them
@@ -2895,9 +2897,9 @@ def assemble_schur_jacobi_preconditioner(
             f"of {_SCHUR_DIAG_MODES} (got {schur_diag_mode!r})"
         )
     dummy_spec = SaddlePointPreconditionerSpec(
-        mass=MassPreconditionerSpec(kind='raw_kron'),
+        mass=MassPreconditionerSpec(kind='metric_lumping'),
         schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='raw_kron'),
+            inner=MassPreconditionerSpec(kind='metric_lumping'),
             outer=MassPreconditionerSpec(kind='none'),
         ),
     )
@@ -2999,44 +3001,10 @@ def _validate_public_k2_mass_preconditioner_spec(spec: MassPreconditionerSpec):
     _validate_public_mass_preconditioner_spec(spec)
 
 
-def _raw_kron_factors_for(seq, operators, k: int, dirichlet: bool):
-    """Return raw_kron factors for ``(k, dirichlet)``, building them if needed.
-
-    An eagerly assembled bundle wins. Otherwise the factors are built on demand
-    and memoised on the sequence, because raw_kron needs only the exact mass
-    diagonal, the unweighted 1D masses and the sparsity of ``E`` -- no probes,
-    no CP fit, no surgery Schur -- so a build is 0.1-2 s rather than the
-    minutes the tensor path costs. That is what lets it be the *default* without
-    every call site having to assemble it first.
-
-    The memo is keyed on the geometry object identity, so ``set_map`` /
-    ``set_spline_map`` invalidate it: ``D`` is derived from the mass diagonal
-    and is metric dependent, even though ``(CC^T)^-1`` is not.
-    """
-    from mrx.preconditioners import build_mass_raw_kron_factors  # noqa: PLC0415
-
-    preconds = getattr(operators, 'mass_preconds', None)
-    if preconds is not None and preconds.raw_kron is not None:
-        stored = preconds.raw_kron.get((int(k), bool(dirichlet)))
-        if stored is not None:
-            return stored
-
-    geometry = seq.geometry
-    cache = getattr(seq, '_raw_kron_cache', None)
-    if cache is None or cache.get('geometry') is not geometry:
-        cache = {'geometry': geometry, 'factors': {}}
-        seq._raw_kron_cache = cache
-    key = (int(k), bool(dirichlet))
-    if key not in cache['factors']:
-        cache['factors'][key] = build_mass_raw_kron_factors(
-            seq, k, dirichlet=dirichlet)
-    return cache['factors'][key]
-
-
-def _mass_block_jacobi_for(seq, operators, k: int, dirichlet: bool, **kwargs):
+def _mass_metric_lumping_for(seq, operators, k: int, dirichlet: bool, **kwargs):
     """Return the block-Jacobi MASS preconditioner for ``(k, dirichlet)``.
 
-    Mirrors :func:`_raw_kron_factors_for` exactly -- lazily built and memoised
+    Lazily built and memoised
     on the sequence, keyed on GEOMETRY IDENTITY so ``set_map`` /
     ``set_spline_map`` invalidate it. That is what lets a kind be the *default*
     without every call site having to assemble it first.
@@ -3045,30 +3013,30 @@ def _mass_block_jacobi_for(seq, operators, k: int, dirichlet: bool, **kwargs):
     :func:`~mrx.preconditioners.default_mass_preconditioner`. (This line read
     "NOT YET THE DEFAULT" until 2026-08-24; the swap had already happened.)
     """
-    from mrx.block_jacobi_laplacian import (  # noqa: PLC0415
-        BlockJacobiMass,
+    from mrx.metric_lumping_laplacian import (  # noqa: PLC0415
+        MetricLumpingMass,
     )
     geometry = seq.geometry
-    cache = getattr(seq, '_mass_block_jacobi_cache', None)
+    cache = getattr(seq, '_mass_metric_lumping_cache', None)
     if cache is None or cache.get('geometry') is not geometry:
         cache = {'geometry': geometry, 'factors': {}}
-        seq._mass_block_jacobi_cache = cache
+        seq._mass_metric_lumping_cache = cache
     key = (int(k), bool(dirichlet))
     if key not in cache['factors']:
-        cache['factors'][key] = BlockJacobiMass(
+        cache['factors'][key] = MetricLumpingMass(
             seq, operators, int(k), bool(dirichlet), **kwargs)
     return cache['factors'][key]
 
 
-def assemble_mass_block_jacobi_preconditioner(
+def assemble_mass_metric_lumping_preconditioner(
         seq, operators: Optional[SequenceOperators] = None,
         *, ks: Sequence[int] = (0, 1, 2, 3),
         dirichlet_variants: Optional[Sequence[bool]] = None,
         **kwargs) -> SequenceOperators:
     """Eagerly build the block-Jacobi mass preconditioner for the given degrees.
 
-    Optional -- :func:`_mass_block_jacobi_for` builds on demand -- but a
-    BlockJacobiMass build probes a dense core, so it is far from free and is
+    Optional -- :func:`_mass_metric_lumping_for` builds on demand -- but a
+    MetricLumpingMass build probes a dense core, so it is far from free and is
     usually worth doing up front rather than inside the first solve.
     """
     operators = _ensure_extraction_operators(seq, operators)
@@ -3079,15 +3047,15 @@ def assemble_mass_block_jacobi_preconditioner(
             raise ValueError(
                 "block_jacobi mass preconditioner supports k=0..3")
         for dirichlet in dirichlet_variants:
-            _mass_block_jacobi_for(seq, operators, k, dirichlet, **kwargs)
+            _mass_metric_lumping_for(seq, operators, k, dirichlet, **kwargs)
     return operators
 
 
 def _resolve_legacy_mass_preconditioner(seq, operators, k: int, preconditioner):
     if isinstance(preconditioner, str) and preconditioner == 'auto':
         # 'auto' resolves to default_mass_preconditioner() UNCONDITIONALLY --
-        # block_jacobi since 2026-08-22, raw_kron before it. Both are always
-        # buildable on demand (_mass_block_jacobi_for / _raw_kron_factors_for),
+        # metric_lumping since 2026-08-22. Always buildable on demand
+        # (_mass_metric_lumping_for),
         # which is what makes the unconditional resolve safe. The tensor and
         # jacobi paths remain reachable by explicit spec.
         #
@@ -3127,39 +3095,22 @@ def _build_operator_preconditioner_apply(
         _validate_public_k1_mass_preconditioner_spec(spec)
     if k == 2:
         _validate_public_k2_mass_preconditioner_spec(spec)
-    valid_kinds = ('none', 'jacobi', 'raw_kron', 'block_jacobi')
+    valid_kinds = ('none', 'jacobi', 'metric_lumping')
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
             f"{valid_kinds} (got {spec.kind!r})")
-    if spec.kind == 'block_jacobi':
-        # Same shape as raw_kron -- separable bulk plus a sandwich -- so it is
-        # dispatched here too and likewise never splits the space. What differs
-        # is the CORE: probed and inverted densely instead of reached through
-        # the E+ pseudoinverse.
+    if spec.kind == 'metric_lumping':
+        # Separable Kronecker bulk plus a sandwich, with the polar CORE probed
+        # and inverted densely. Never splits the space.
         if spec.surgery_schur:
             raise ValueError(
-                "kind='block_jacobi' does not split the space, so "
+                "kind='metric_lumping' does not split the space, so "
                 "surgery_schur=True is meaningless; drop it")
         if spec.smoother is not None:
-            raise ValueError("kind='block_jacobi' does not support a smoother")
-        pre = _mass_block_jacobi_for(seq, operators, k, dirichlet)
+            raise ValueError("kind='metric_lumping' does not support a smoother")
+        pre = _mass_metric_lumping_for(seq, operators, k, dirichlet)
         return lambda x, pre=pre: pre.apply(x)
-    if spec.kind == 'raw_kron':
-        # raw_kron never splits the space, so it is dispatched ahead of every
-        # surgery branch below and does not accept surgery_schur.
-        if spec.surgery_schur:
-            raise ValueError(
-                "kind='raw_kron' (raw_kron) does not split the space, so "
-                "surgery_schur=True is meaningless; drop it"
-            )
-        if spec.smoother is not None:
-            raise ValueError("kind='raw_kron' does not support a smoother")
-        from mrx.preconditioners import (  # noqa: PLC0415
-            apply_mass_raw_kron_preconditioner)
-        factors = _raw_kron_factors_for(seq, operators, k, dirichlet)
-        e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
-        return lambda x, f=factors, e=e: apply_mass_raw_kron_preconditioner(f, e, x)
     if spec.kind == 'none':
         if not allow_none:
             raise ValueError("this preconditioner slot does not allow kind='none'")
@@ -3220,34 +3171,20 @@ def _build_schur_apply_from_saddle_preconditioner(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         eps: float, saddle_preconditioner: SaddlePointPreconditionerSpec):
     schur_inner_spec = saddle_preconditioner.schur.inner
-    if schur_inner_spec.kind not in ('raw_kron', 'block_jacobi'):
+    if schur_inner_spec.kind != 'metric_lumping':
         raise ValueError(
-            "schur.inner supports kind='raw_kron' (default) or "
-            f"kind='block_jacobi' (got {schur_inner_spec.kind!r})"
+            "schur.inner supports kind='metric_lumping' only "
+            f"(got {schur_inner_spec.kind!r})"
         )
     if schur_inner_spec.surgery_schur or schur_inner_spec.smoother is not None:
         raise ValueError(
             "schur.inner must be a terminal preconditioner"
         )
 
-    if schur_inner_spec.kind == 'block_jacobi':
-        # The weak term B_{k-1} standing in for M_{k-1}^{-1}. Builds on demand
-        # like raw_kron, so this cannot fail for want of a prior assemble_*.
-        pre = _mass_block_jacobi_for(seq, operators, k - 1, dirichlet)
-        schur_inner = (lambda x, pre=pre: pre.apply(x))
-    elif schur_inner_spec.kind == 'raw_kron':
-        # The weak term B_{k-1} standing in for M_{k-1}^{-1}. raw_kron needs no
-        # eager assembly (see _raw_kron_factors_for), so unlike the tensor path
-        # this cannot fail for want of a prior assemble_* call.
-        from mrx.preconditioners import (  # noqa: PLC0415
-            apply_mass_raw_kron_preconditioner)
-        factors = _raw_kron_factors_for(seq, operators, k - 1, dirichlet)
-        e_lower = getattr(seq, f"e{k - 1}_dbc" if dirichlet else f"e{k - 1}")
-        schur_inner = (lambda x, f=factors, e=e_lower:
-                       apply_mass_raw_kron_preconditioner(f, e, x))
-    else:
-        raise ValueError(
-            f"schur.inner kind {schur_inner_spec.kind!r} is not supported")
+    # The weak term B_{k-1} standing in for M_{k-1}^{-1}. Builds on demand, so
+    # this cannot fail for want of a prior assemble_*.
+    pre = _mass_metric_lumping_for(seq, operators, k - 1, dirichlet)
+    schur_inner = (lambda x, pre=pre: pre.apply(x))
     return _build_schur_operator_apply(
         seq,
         operators,
@@ -3280,13 +3217,13 @@ def _coerce_saddle_preconditioner_spec(
         return _materialize_default_saddle_preconditioner(
             seq, operators, k=k, dirichlet=dirichlet)
     if isinstance(preconditioner, SaddlePointPreconditionerSpec):
-        # 'block' added 2026-08-24. The Schur complement of this saddle system
+        # 'metric_lumping' added 2026-08-24. The Schur complement of this saddle system
         # IS L_k = S_k + D M^-1 D^T, which is exactly what the block-Jacobi
         # atom preconditions, so it belongs here -- and MINRES needs its
         # preconditioner SPD, which the atom is (test_preconditioner_is_spd).
         # Until now the only outer option was the per-DoF diagonal, whose weak
         # half is itself a Kronecker mass MODEL, i.e. doubly approximate.
-        valid_outer_kinds = ('none', 'jacobi', 'block')
+        valid_outer_kinds = ('none', 'jacobi', 'metric_lumping')
         if preconditioner.schur.outer.kind not in valid_outer_kinds:
             raise ValueError(
                 "schur.outer kind must be one of "
@@ -3299,7 +3236,7 @@ def _coerce_saddle_preconditioner_spec(
         return preconditioner
     if isinstance(preconditioner, str):
         lower_kind = 'jacobi'
-        valid_outer_kinds = ('none', 'jacobi', 'block')
+        valid_outer_kinds = ('none', 'jacobi', 'metric_lumping')
         if preconditioner not in valid_outer_kinds:
             raise ValueError(
                 "saddle outer kind must be one of "
@@ -3309,7 +3246,7 @@ def _coerce_saddle_preconditioner_spec(
         return SaddlePointPreconditionerSpec(
             mass=lower,
             schur=SchurPreconditionerSpec(
-                inner=MassPreconditionerSpec(kind='raw_kron'),
+                inner=MassPreconditionerSpec(kind='metric_lumping'),
                 outer=MassPreconditionerSpec(kind=preconditioner),
             ),
         )
@@ -3354,7 +3291,7 @@ def _build_scalar_hodge_preconditioner_apply(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         eps: float, preconditioner, allow_none: bool = True):
     spec = _coerce_mass_preconditioner_spec(preconditioner)
-    valid_kinds = ('none', 'jacobi', 'block')
+    valid_kinds = ('none', 'jacobi', 'metric_lumping')
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
@@ -3363,7 +3300,7 @@ def _build_scalar_hodge_preconditioner_apply(
         if not allow_none:
             raise ValueError("this preconditioner slot does not allow kind='none'")
         return lambda x: x
-    if spec.kind == 'block':
+    if spec.kind == 'metric_lumping':
         # The block-Jacobi atom, i.e. the same production Laplacian
         # preconditioner k >= 1 gets through schur.outer. It approximates
         # L_k, so it is admissible only for the UNSHIFTED operator; there is
@@ -3372,16 +3309,16 @@ def _build_scalar_hodge_preconditioner_apply(
         # shipped twice.
         if eps != 0.0:
             raise ValueError(
-                "scalar preconditioner kind='block' approximates L_k, not "
+                "scalar preconditioner kind='metric_lumping' approximates L_k, not "
                 f"L_k + eps M_k (got eps={eps!r}); how the atom fits the "
                 "shifted operator is unmeasured -- see audit item 3.2")
-        if not _block_jacobi_available(seq, k, dirichlet):
+        if not _metric_lumping_available(seq, k, dirichlet):
             raise ValueError(
-                f"scalar preconditioner kind='block' needs the block-Jacobi "
+                f"scalar preconditioner kind='metric_lumping' needs the block-Jacobi "
                 f"Laplacian assembled for k={k}, dirichlet={dirichlet}; call "
-                "assemble_block_jacobi_laplacian_preconditioner first")
+                "assemble_metric_lumping_laplacian_preconditioner first")
         return lambda x: apply_hodge_laplacian_preconditioner(
-            seq, operators, x, k, dirichlet=dirichlet, kind='block')
+            seq, operators, x, k, dirichlet=dirichlet, kind='metric_lumping')
     if spec.kind == 'jacobi':
         stiffness_diaginv = _hodge_diaginv(seq, operators, k, dirichlet)
         if eps == 0.0:
@@ -3419,10 +3356,10 @@ def _build_coupled_saddle_preconditioner(
     return apply
 
 
-BLOCK_JACOBI_CACHE_ATTR = "_block_jacobi_laplacian"
+METRIC_LUMPING_CACHE_ATTR = "_metric_lumping_laplacian"
 
 
-def assemble_block_jacobi_laplacian_preconditioner(
+def assemble_metric_lumping_laplacian_preconditioner(
         seq, operators: SequenceOperators, ks=(0, 1, 2, 3),
         dirichlets=(False, True), **kwargs):
     """Build the tensor block-Jacobi Laplacian preconditioner for ``L_k``.
@@ -3437,7 +3374,7 @@ def assemble_block_jacobi_laplacian_preconditioner(
     and a dict of preconditioner objects is neither a sensible pytree leaf nor
     a hashable static field, so parking it there would risk ``filter_jit``.
 
-    ``kwargs`` go to :class:`BlockJacobiLaplacian`. The defaults are already the
+    ``kwargs`` go to :class:`MetricLumpingLaplacian`. The defaults are already the
     production configuration -- pass nothing.
 
     NEEDS ``n >= p + 2``. ``component_factors`` forms ``A^-1 M`` per axis
@@ -3455,15 +3392,15 @@ def assemble_block_jacobi_laplacian_preconditioner(
     helpers.
     """
     # Deferred: the experimental module imports back from mrx.operators.
-    from mrx.block_jacobi_laplacian import (  # noqa: PLC0415
-        BlockJacobiLaplacian,
+    from mrx.metric_lumping_laplacian import (  # noqa: PLC0415
+        MetricLumpingLaplacian,
     )
-    cache = dict(getattr(seq, BLOCK_JACOBI_CACHE_ATTR, None) or {})
+    cache = dict(getattr(seq, METRIC_LUMPING_CACHE_ATTR, None) or {})
     for k in ks:
         for dbc in dirichlets:
-            cache[(int(k), bool(dbc))] = BlockJacobiLaplacian(
+            cache[(int(k), bool(dbc))] = MetricLumpingLaplacian(
                 seq, operators, int(k), bool(dbc), **kwargs)
-    setattr(seq, BLOCK_JACOBI_CACHE_ATTR, cache)
+    setattr(seq, METRIC_LUMPING_CACHE_ATTR, cache)
     return operators
 
 
@@ -3518,31 +3455,29 @@ def warm_mass_preconditioner_cache(seq, operators: SequenceOperators,
     with TracerArrayConversionError.
 
     It used to be warm by luck: the main mass preconditioner and ``schur.inner``
-    were both raw_kron, so the main path populated the cache before any solve
-    entered its loop. The moment the two kinds differ, ``schur.inner``'s
-    factors are cold when the trace reaches them.
-
-    So warm BOTH the configured kind and ``schur.inner``'s, before the loop.
-    Cheap and idempotent -- every builder below memoises.
+    were the same kind, so the main path populated the cache before any solve
+    entered its loop. Since 2026-08-25 there is only one mass kind, so this
+    warms it for every ``(k, BC)`` before the loop. Cheap and idempotent --
+    the builder memoises.
     """
-    kinds = {default_mass_preconditioner().kind,
-             default_saddle_preconditioner().schur.inner.kind}
     for k in [int(v) for v in ks if 0 <= int(v) <= 3]:
         for dirichlet in dirichlets:
-            for kind in kinds:
-                try:
-                    if kind == 'raw_kron':
-                        _raw_kron_factors_for(seq, operators, k, dirichlet)
-                    elif kind == 'block_jacobi':
-                        _mass_block_jacobi_for(seq, operators, k, dirichlet)
-                except Exception:            # noqa: BLE001
-                    # A degree/BC this kind does not support is not an error
-                    # here -- the real call site will raise with context.
-                    pass
+            try:
+                _mass_metric_lumping_for(seq, operators, k, dirichlet)
+            except Exception:                # noqa: BLE001
+                # A degree/BC this kind does not support is not an error here
+                # -- the real call site will raise with context.
+                # FOLLOW-UP: with one kind left this swallow hides genuine
+                # build failures, which is the failure mode the no-defensive-
+                # code rule exists to prevent. Removing it would turn an
+                # unsupported (k, BC) into a hard failure during WARMING
+                # rather than at the real call site, so it is a behaviour
+                # change and is flagged rather than folded into this commit.
+                pass
 
 
-def _block_jacobi_available(seq, k: int, dirichlet: bool) -> bool:
-    cache = getattr(seq, BLOCK_JACOBI_CACHE_ATTR, None)
+def _metric_lumping_available(seq, k: int, dirichlet: bool) -> bool:
+    cache = getattr(seq, METRIC_LUMPING_CACHE_ATTR, None)
     return bool(cache) and (int(k), bool(dirichlet)) in cache
 
 
@@ -3557,9 +3492,9 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
     * ``'jacobi'`` — per-DoF diagonal of ``L_k``, always available, but for
       k >= 1 the weak half is a MODEL (the Kronecker mass model), not the
       operator's own ``D M^-1 D^T``.
-    * ``'block'`` — the tensor block-Jacobi atom, k = 0..3, free and Dirichlet.
-      Requires :func:`assemble_block_jacobi_laplacian_preconditioner` first.
-    * ``'auto'`` — ``'block'`` when it has been assembled for this ``(k, BC)``,
+    * ``'metric_lumping'`` — the tensor block-Jacobi atom, k = 0..3, free and Dirichlet.
+      Requires :func:`assemble_metric_lumping_laplacian_preconditioner` first.
+    * ``'auto'`` — ``'metric_lumping'`` when it has been assembled for this ``(k, BC)``,
       otherwise ``'jacobi'``.
 
     (``'auto'`` previously resolved to ``'jacobi'`` unconditionally while this
@@ -3568,23 +3503,23 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
     accepted here until 2026-08-25 with no dispatch branch of its own, so it
     fell through to the ``unreachable`` assertion below.)
     """
-    if kind not in ('auto', 'none', 'jacobi', 'block'):
+    if kind not in ('auto', 'none', 'jacobi', 'metric_lumping'):
         raise ValueError(
-            "kind must be 'auto', 'none', 'jacobi' or 'block' "
+            "kind must be 'auto', 'none', 'jacobi' or 'metric_lumping' "
             f"(got {kind!r})")
     if kind == 'auto':
-        kind = 'block' if _block_jacobi_available(seq, k, dirichlet) else 'jacobi'
+        kind = 'metric_lumping' if _metric_lumping_available(seq, k, dirichlet) else 'jacobi'
     if kind == 'none':
         return v
     if kind == 'jacobi':
         return _hodge_diaginv(seq, operators, k, dirichlet) * v
-    if kind == 'block':
-        if not _block_jacobi_available(seq, k, dirichlet):
+    if kind == 'metric_lumping':
+        if not _metric_lumping_available(seq, k, dirichlet):
             raise ValueError(
                 f"block-Jacobi Laplacian preconditioner not assembled for "
                 f"k={k}, dirichlet={dirichlet}; call "
-                "assemble_block_jacobi_laplacian_preconditioner first")
-        cache = getattr(seq, BLOCK_JACOBI_CACHE_ATTR)
+                "assemble_metric_lumping_laplacian_preconditioner first")
+        cache = getattr(seq, METRIC_LUMPING_CACHE_ATTR)
         return cache[(int(k), bool(dirichlet))].apply(v)
     raise AssertionError("unreachable")
 
@@ -3764,23 +3699,23 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
     )
     # NOTE the Schur apply is built inside the `else` branch below, not here.
     # It is the ONLY consumer. Building it up front cost a full
-    # schur.inner construction -- raw_kron factors and all -- on every
-    # production solve, and then discarded it, because `outer='block'` uses the
+    # schur.inner construction -- the whole atom build -- on every
+    # production solve, and then discarded it, because `outer='metric_lumping'` uses the
     # atom as the upper-block inverse directly and `outer='jacobi'` builds its
     # own through _build_schur_probe_apply.
     outer_spec = saddle_preconditioner.schur.outer
-    if outer_spec.kind == 'block':
+    if outer_spec.kind == 'metric_lumping':
         # The atom approximates L_k directly, so it needs neither the
         # Schur probe nor schur.inner -- it IS the upper-block inverse.
-        if not _block_jacobi_available(seq, k, dirichlet):
+        if not _metric_lumping_available(seq, k, dirichlet):
             raise ValueError(
-                "schur.outer kind='block' needs the block-Jacobi Laplacian "
+                "schur.outer kind='metric_lumping' needs the block-Jacobi Laplacian "
                 f"assembled for k={k}, dirichlet={dirichlet}; call "
-                "assemble_block_jacobi_laplacian_preconditioner first")
+                "assemble_metric_lumping_laplacian_preconditioner first")
 
         def precond_upper(x, _k=k, _d=dirichlet):
             return apply_hodge_laplacian_preconditioner(
-                seq, operators, x, _k, dirichlet=_d, kind='block')
+                seq, operators, x, _k, dirichlet=_d, kind='metric_lumping')
     elif outer_spec.kind == 'jacobi' and outer_spec.smoother is None:
         schur_diaginv = _build_schur_outer_jacobi_diaginv(
             seq,

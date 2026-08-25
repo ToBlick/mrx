@@ -80,14 +80,14 @@ def main():
         for dbc in (False, True):
             if ("dbc" if dbc else "free") not in cli.bcs.split(","):
                 continue
-            op.assemble_block_jacobi_laplacian_preconditioner(
+            op.assemble_metric_lumping_laplacian_preconditioner(
                 seq, ops, ks=(k,), dirichlets=(dbc,))
             spec = SaddlePointPreconditionerSpec(
                 mass=op._materialize_default_mass_preconditioner(
                     seq, ops, k=k - 1),
                 schur=SchurPreconditionerSpec(
-                    inner=MassPreconditionerSpec(kind='raw_kron'),
-                    outer=MassPreconditionerSpec(kind='block')))
+                    inner=MassPreconditionerSpec(kind='metric_lumping'),
+                    outer=MassPreconditionerSpec(kind='metric_lumping')))
             n = int(getattr(seq, f"n{k}_dbc" if dbc else f"n{k}"))
             rhs = jax.random.normal(jax.random.PRNGKey(31 * k + dbc), (n,))
 

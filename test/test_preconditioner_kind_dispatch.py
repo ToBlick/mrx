@@ -59,10 +59,11 @@ FORWARDERS = {
 STRUCTURAL_KINDS = {
     # resolved to a concrete kind before dispatch
     "auto",
-    # forwarded to a shared builder rather than branched on
-    "raw_kron",
-    "block_jacobi",
 }
+
+# Every kind name production code may legitimately construct. raw_kron was
+# deleted 2026-08-25; 'tensor' before it.
+LIVE_KINDS = {"none", "jacobi", "metric_lumping", "auto"}
 
 
 def _accept_list_functions(tree: ast.Module) -> dict:
@@ -152,3 +153,55 @@ def test_the_retired_tensor_kind_is_accepted_nowhere():
     ]
     assert not offenders, (
         "the retired 'tensor' kind is accepted by: " + ", ".join(offenders))
+
+
+def _constructed_kinds(path: pathlib.Path) -> dict:
+    """{kind string: [lines]} for every `kind='...'` and `kind: str = '...'`."""
+    tree = ast.parse(path.read_text())
+    found = {}
+
+    def note(value, lineno):
+        found.setdefault(value, []).append(lineno)
+
+    for node in ast.walk(tree):
+        # MassPreconditionerSpec(kind='...') -- and ONLY spec constructors.
+        # `kind=` is a common keyword elsewhere (np.argsort(kind='stable')),
+        # so matching every call would cry wolf and get the check disabled.
+        if isinstance(node, ast.Call):
+            fname = getattr(node.func, "id", None) or getattr(
+                node.func, "attr", None) or ""
+            if not fname.endswith("PreconditionerSpec"):
+                continue
+            for kw in node.keywords:
+                if kw.arg == "kind" and isinstance(kw.value, ast.Constant):
+                    if isinstance(kw.value.value, str):
+                        note(kw.value.value, node.lineno)
+        # dataclass field default:  kind: str = '...'
+        elif isinstance(node, ast.AnnAssign):
+            t = node.target
+            if (isinstance(t, ast.Name) and t.id == "kind"
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)):
+                note(node.value.value, node.lineno)
+    return found
+
+
+def test_no_production_code_constructs_a_kind_nothing_accepts():
+    """The OTHER direction, which this file did not check until it bit.
+
+    The tests above verify accept-list -> dispatch. Nothing verified
+    spec -> accept-list, and during the 2026-08-25 metric_lumping rename that
+    gap let the tree reach a state where `MassPreconditionerSpec.kind` defaulted
+    to 'metric_lumping' while every accept-list still said 'block_jacobi'. Every
+    test here passed. A one-directional invariant is half an invariant.
+    """
+    offenders = []
+    for name in ("operators.py", "preconditioners.py", "nullspace.py",
+                 "derham_sequence.py"):
+        path = OPERATORS.parent / name
+        for kind, lines in _constructed_kinds(path).items():
+            if kind not in LIVE_KINDS:
+                offenders.append(f"{name}:{lines[0]} constructs kind={kind!r}")
+    assert not offenders, (
+        "production code constructs a preconditioner kind that is not a live "
+        f"kind {sorted(LIVE_KINDS)}:\n  " + "\n  ".join(offenders))

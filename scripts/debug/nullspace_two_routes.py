@@ -122,7 +122,7 @@ def main():
           flush=True)
     print("  library default). S1 measured the block atom at 2.5x on average.",
           flush=True)
-    op.assemble_block_jacobi_laplacian_preconditioner(
+    op.assemble_metric_lumping_laplacian_preconditioner(
         seq, ops, ks=(2,), dirichlets=(False,))
     from mrx.operators import _materialize_default_mass_preconditioner  # noqa: PLC0415
     from mrx.preconditioners import (  # noqa: PLC0415
@@ -131,8 +131,8 @@ def main():
     spec = SaddlePointPreconditionerSpec(
         mass=_materialize_default_mass_preconditioner(seq, ops, k=1),
         schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='raw_kron'),
-            outer=MassPreconditionerSpec(kind='block')))
+            inner=MassPreconditionerSpec(kind='metric_lumping'),
+            outer=MassPreconditionerSpec(kind='metric_lumping')))
     print(f"  {'tol':>8}{'maxiter':>9}{'code':>9}{'relL2':>13}{'s':>8}",
           flush=True)
     for mi in (10000,):

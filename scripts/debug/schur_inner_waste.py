@@ -2,8 +2,8 @@
 
 `_build_saddle_preconditioner` used to construct `schur_apply` before branching
 on `schur.outer`, but `schur_apply` has exactly one consumer, in the `else`
-branch. With the production default `outer='block'` the atom IS the upper-block
-inverse, so the whole schur.inner construction -- raw_kron factors included --
+branch. With the production default `outer='metric_lumping'` the atom IS the upper-block
+inverse, so the whole schur.inner construction -- the atom build included --
 was built and thrown away on every k>=1 saddle solve setup.
 
 This times the build both ways. It does NOT test correctness: the value was
@@ -47,7 +47,7 @@ def main():
         for dbc in (False, True):
             spec = op._materialize_default_saddle_preconditioner(
                 seq, ops, k=k, dirichlet=dbc)
-            assert spec.schur.outer.kind == 'block', spec.schur.outer.kind
+            assert spec.schur.outer.kind == 'metric_lumping', spec.schur.outer.kind
 
             # The discarded half, timed on its own: this is exactly the call
             # that used to run before the branch.

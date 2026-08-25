@@ -666,7 +666,7 @@ def trace_components(k):
     on the face kills the tangential derivatives of that component, and the
     remaining components' natural conditions then collapse onto the scalar
     per-component conditions the atom already imposes.  See
-    :meth:`BlockJacobiLaplacian.__init__`.
+    :meth:`MetricLumpingLaplacian.__init__`.
     """
     return {0: (), 1: (0,), 2: (1, 2), 3: (0, 1, 2)}[k]
 
@@ -743,7 +743,7 @@ def probe_core_block(seq, operators, k, dirichlet, rows):
         cols.append(np.asarray(col)[rows])
     block = np.stack(cols, axis=1)
     return 0.5 * (block + block.T)
-class BlockJacobiLaplacian:
+class MetricLumpingLaplacian:
     """Bulk FD atoms + a dense core inverse, applied independently.
 
     Block Jacobi, deliberately: the bulk and core blocks are not coupled, so
@@ -894,7 +894,7 @@ class BlockJacobiLaplacian:
         return self._jit(jnp.asarray(x))
 
 
-class BlockJacobiMass:
+class MetricLumpingMass:
     """``M_k^-1`` as a separable bulk plus a densely-probed core.
 
     raw_kron is already half of this shape -- ``M ~ Lam (A_r x A_t x A_z) Lam``
@@ -983,7 +983,7 @@ class BlockJacobiMass:
         return 0.5 * (b + b.T)
 
     def _build_apply(self):
-        """Compile the apply, exactly as BlockJacobiLaplacian does.
+        """Compile the apply, exactly as MetricLumpingLaplacian does.
 
         This has to be on-device and jitted, not host-side numpy: the mass
         preconditioner is applied INSIDE ``solve_singular_cg``'s

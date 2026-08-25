@@ -57,7 +57,7 @@ from mrx.nullspace import _n_vectors, compute_nullspaces_iterative, get_nullspac
 from mrx.operators import (
     assemble_incidence_operators,
     assemble_projection_operators,
-    assemble_block_jacobi_laplacian_preconditioner,
+    assemble_metric_lumping_laplacian_preconditioner,
 )
 from mrx.quadrature import evaluate_at_xq
 
@@ -557,7 +557,7 @@ def compute_all_k(n: int, p: int, epsilon: float,
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
     _log("  Assembling the block-Jacobi Laplacian atom (k=0)...")
-    ops = assemble_block_jacobi_laplacian_preconditioner(seq, ops, ks=(0,), dirichlets=(True, False))
+    ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(0,), dirichlets=(True, False))
     _log("  schur.outer = the block-Jacobi atom (production default)...")
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)

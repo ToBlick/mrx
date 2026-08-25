@@ -52,7 +52,7 @@ def rayleigh_approx(seq, ops, v, k, dbc):
     """Same quotient against the operator the SOLVES actually use.
 
     ``verify_block_jacobi`` iterates on ``apply_hodge_laplacian_approx`` (the
-    Schur-inner mass inverse replaced by one raw_kron apply), so its deflation
+    Schur-inner mass inverse replaced by one atom apply), so its deflation
     is only as good as the harmonic vector is a kernel vector OF THAT operator.
     A vector can be exactly harmonic for the true ``L_k`` and still leave a
     residual here."""
