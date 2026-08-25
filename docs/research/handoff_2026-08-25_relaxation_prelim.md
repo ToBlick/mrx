@@ -1342,7 +1342,7 @@ measured on real cases.
 |---|---|---|
 | **step size** (LR3 -> D1, linesearch -> fixed 3e-3) | **73x** | **none** -- same force reduction |
 | hyperregularisation gamma=1 (LR1 / S04) | 15x / 2.4x | ~3x per step, ~12% less force reduction |
-| **p-refinement** p=3 -> p=4 (S03) | **3.4x** | 1.7x per step, no extra DoFs |
+| ~~**p-refinement** p=3 -> p=4 (S03)~~ | ~~**3.4x**~~ **WITHDRAWN, s33.2** | 1.7x per step, no extra DoFs |
 | h-refinement 8^3 -> 12^3 (S01) | **none** (see 25.2) | 3x per step |
 
 **Step size is by far the largest lever, and the only free one.** On the case
@@ -1398,6 +1398,10 @@ actually removed settles it:
 much helicity as the 8^3 one, marginally more. My inference is refuted: had the
 coarse grid's release been numerical, the fine grid would show LESS loss per
 unit progress.
+
+**WITHDRAWN 2026-08-25 -- see s33.2. The p=4 arm was measured on the pre-fix
+even-p quadrature operator, so this comparison divides a post-fix point by a
+pre-fix one.** The paragraph below is left as written for the record.
 
 **p-refinement is genuinely 3.4x better**, and consistently with the same
 mechanism rather than as an exception to it: `n2_dbc` is 2192 at BOTH p=3 and
@@ -1820,3 +1824,60 @@ carries the same caveat.
 Merging `greville-prod` in is the fix and it is deliberately deferred until
 the queue drains: merging mid-flight would change the library under running
 jobs, which is the exact failure the shim exists to prevent.
+
+## 33.2 WITHDRAWN: the p-refinement headline rests on a pre-fix operator
+
+The Coordinator asked me to flag every even-p result, not just P2. There are
+exactly two in the whole campaign, and their identity is the problem:
+
+    P2    p=2   fmm002 8^3     <- pre-fix
+    S03   p=4   fmm002 8^3     <- pre-fix
+    (41 other runs are p=1, 3 or 5 and are unaffected)
+
+The fix: periodic Greville spans cross x=1 at even p, and the basis was
+evaluated unwrapped while the moments wrapped. One line, 32 passed / 0 failed
+on `greville-prod`. So at p=2 and p=4 -- and only there -- these runs used an
+operator that has since changed.
+
+**The p-sweep is therefore alternating pre- and post-fix operators**, and the
+headline claim sits exactly on the seam:
+
+    |dH|/H per unit dE, fmm002 8^3
+
+    p=1   13.74     post-fix
+    p=2   11.38     PRE-FIX
+    p=3   70.94     post-fix
+    p=4   20.90     PRE-FIX
+    p=5   (not landed)
+
+"p-refinement buys 3.4x" is `70.94 / 20.90` -- **one post-fix point divided by
+one pre-fix point.** It is not a measurement of p-refinement; it is a
+measurement of p-refinement confounded with an operator change, and the two
+cannot be separated from this data.
+
+### The direction makes it worse, not better
+
+The two pre-fix arms are the two BEST-LOOKING points in the sweep. p=3, the
+only interior post-fix point, is the worst at 70.94, and it is flanked by
+11.38 and 20.90. If the parity bug made the even-p operators wrong, then the
+"improvement" at p=4 may be an artefact of the bug rather than a benefit of
+raising the order -- a wrong quadrature can easily look like less reconnection
+per unit energy while simply mis-measuring both.
+
+I cannot tell which it is from here, and I am not going to argue it either
+way. What I can say is that the sweep's SHAPE -- the non-monotonicity, with
+even points sitting below odd ones -- is exactly the pattern an even/odd
+operator split would produce, and that alone is enough to stop quoting the
+number.
+
+### What stands
+
+Nothing in the p-sweep is a floor result (s32.5 already applies). Beyond that,
+p=1, p=3 and p=5 are internally comparable to each other and to every other
+run here; p=2 and p=4 are comparable to nothing until re-measured. The
+observation that `n2_dbc` is 2192 at both p=3 and p=4 -- so raising the order
+adds no DoFs and does not shrink the step -- is a fact about the spaces and
+survives; it just no longer has a measurement attached to it.
+
+**Re-measure P2 and S03 after merging `greville-prod`.** Two 8^3 arms at ~0.5
+and ~1.5 GPU-hours; this is the cheapest open item in the study.

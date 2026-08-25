@@ -59,8 +59,8 @@ RUNS = [
     ("S01_res12", "S01", "fmm002 at 12^3"),
     ("S02_res16", "S02", "fmm002 at 16^3"),
     ("P1", "P1", "fmm002 p=1"),
-    ("P2", "P2", "fmm002 p=2"),
-    ("S03_p4", "S03", "fmm002 p=4"),
+    ("P2", "P2", "fmm002 p=2 **PRE-FIX EVEN-p, s33.2**"),
+    ("S03_p4", "S03", "fmm002 p=4 **PRE-FIX EVEN-p, s33.2**"),
     ("P5", "P5", "fmm002 p=5"),
     ("S04_g1mu3", "S04", "gamma=1 mu=1e-3"),
     ("S05_g1mu2", "S05", "gamma=1 mu=1e-2 (truncated)"),
@@ -131,6 +131,14 @@ def main():
     print("floor. Do NOT rank refinement on either -- capping dt and refining")
     print("h are not substitutes: the cap reduces time-integration error at")
     print("fixed h, refinement changes where the floor is.\n")
+    print("**P2 and S03 are the only EVEN-p runs here and both predate the")
+    print("even-p quadrature parity fix** (periodic Greville spans cross x=1")
+    print("at even p; basis evaluated unwrapped while moments wrapped). They")
+    print("used an operator that has since changed, so they are comparable to")
+    print("nothing in this table until re-measured. The p-sweep alternates")
+    print("pre- and post-fix operators, which is why handoff s33.2 withdraws")
+    print("the `p buys 3.4x` claim -- it divided a post-fix point by a")
+    print("pre-fix one.\n")
     print("`dE` is energy removed -- the only guaranteed-monotone quantity, and")
     print("what every ranking is normalised by. `|F|` is reported but never")
     print("ranked on: it is the gradient's norm and has no monotonicity")

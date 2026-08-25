@@ -20,6 +20,15 @@ floor. Do NOT rank refinement on either -- capping dt and refining
 h are not substitutes: the cap reduces time-integration error at
 fixed h, refinement changes where the floor is.
 
+**P2 and S03 are the only EVEN-p runs here and both predate the
+even-p quadrature parity fix** (periodic Greville spans cross x=1
+at even p; basis evaluated unwrapped while moments wrapped). They
+used an operator that has since changed, so they are comparable to
+nothing in this table until re-measured. The p-sweep alternates
+pre- and post-fix operators, which is why handoff s33.2 withdraws
+the `p buys 3.4x` claim -- it divided a post-fix point by a
+pre-fix one.
+
 `dE` is energy removed -- the only guaranteed-monotone quantity, and
 what every ranking is normalised by. `|F|` is reported but never
 ranked on: it is the gradient's norm and has no monotonicity
@@ -39,8 +48,8 @@ resolution, p) -- H itself is not converged across those.
 | S01 | fmm002 at 12^3 | cg | 3000 | 3.146e-05 | 1.619e-04 | 2.548e-03 | 81 | 1.448e-13 | 2.71 | 1.391e-05 |
 | S02 | fmm002 at 16^3 | cg | 1567 | 2.028e-05 | 7.932e-04 | 9.517e-03 | 469.2 | 1.794e-13 | 7.66 | 6.085e-06 |
 | P1 | fmm002 p=1 | cg | 3000 | 1.593e-03 | 1.806e-04 | 2.188e-02 | 13.74 | 7.352e-13 | 0.23 | 8.345e-03 |
-| P2 | fmm002 p=2 | cg | 3000 | 1.934e-04 | 4.373e-05 | 2.201e-03 | 11.38 | 8.072e-14 | 0.46 | 5.034e-04 |
-| S03 | fmm002 p=4 | cg | 3000 | 1.380e-04 | 9.379e-05 | 2.884e-03 | 20.9 | 1.754e-13 | 1.47 | 1.123e-04 |
+| P2 | fmm002 p=2 **PRE-FIX EVEN-p, s33.2** | cg | 3000 | 1.934e-04 | 4.373e-05 | 2.201e-03 | 11.38 | 8.072e-14 | 0.46 | 5.034e-04 |
+| S03 | fmm002 p=4 **PRE-FIX EVEN-p, s33.2** | cg | 3000 | 1.380e-04 | 9.379e-05 | 2.884e-03 | 20.9 | 1.754e-13 | 1.47 | 1.123e-04 |
 | S04 | gamma=1 mu=1e-3 | cg | 3000 | 1.207e-04 | 1.139e-04 | 3.633e-03 | 30.09 | 1.365e-13 | 2.74 | 5.292e-05 |
 | S05 | gamma=1 mu=1e-2 (truncated) | cg | 2410 | 1.182e-04 | 3.159e-04 | 5.187e-03 | 43.88 | 1.252e-13 | 3.74 | 4.727e-05 |
 | S06 | gamma=2 mu=1e-3 (truncated) | cg | 1961 | 1.189e-04 | 2.950e-04 | 3.742e-03 | 31.49 | 1.267e-13 | 4.59 | 4.752e-05 |
