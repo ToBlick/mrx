@@ -235,10 +235,15 @@ def identity_seq(request):
     across a derivative jump, which is not exact at any quadrature order,
     because a spline is only PIECEWISE polynomial.
 
-    If that is the cause, the p3 cases pass and the p2 cases fail with NO code
-    change, and the fault is the span quadrature rather than the extraction or
-    the periodic bases.  Keeping both degrees in the suite means a future fix
-    has to hold for both rather than being tuned to one.
+    That straddling turned out to be a moment-ACCURACY defect only (fixed by
+    splitting spans at knots).  The parity effect on the IDENTITY was a second
+    consequence of the same half-knot offset: on a PERIODIC axis the last
+    sorted span is ``[1 - h/2, 1 + h/2]`` and crosses the seam, and
+    ``histopolation_matrix`` evaluated the basis unwrapped there, where
+    ``SplineBasis.evaluate`` is not periodic.  The moments wrapped their points,
+    so H and the moments disagreed on the integrand at even p only.  Keeping
+    both degrees in the suite means a fix has to hold for both rather than
+    being tuned to one.
 
     Idempotency holds at any resolution, so these tests do not need a fine
     mesh -- and they are quadratically expensive in it.  The round-trip feeds
