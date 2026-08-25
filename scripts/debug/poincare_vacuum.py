@@ -232,7 +232,7 @@ def plot(res, geometry, label, plane, nfp, RZ, a_eff, path):
         subtitle=f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "
                  f"axis offset {offset:.2e}",
         axis_RZ=(aR, aZ), path=path, profile_x=a_eff,
-        profile_xlabel=r"$a_{\mathrm{eff}} = \sqrt{A/\pi}$  [m]")
+        profile_xlabel=r"$a_{\mathrm{eff}} = \sqrt{A/\pi}$  [m]", nfp=nfp)
     return offset
 
 

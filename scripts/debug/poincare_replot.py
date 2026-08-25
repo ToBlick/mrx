@@ -64,7 +64,7 @@ def main():
                       f"{R.shape[1]} crossings/line",
                 subtitle=f"nfp = {NFP[geometry]}   |   "
                          f"{int(keep.sum())}/{len(keep)} lines kept",
-                axis_RZ=axis, path=out, profile_x=a_eff,
+                axis_RZ=axis, path=out, profile_x=a_eff, nfp=NFP[geometry],
                 profile_xlabel=(r"$a_{\mathrm{eff}}$ [m]" if a_eff is not None
                                 else "seed radius $r$"))
             print(out, flush=True)

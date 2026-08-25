@@ -305,9 +305,38 @@ def effective_radius(R, Z, centre_R, centre_Z):
     return jnp.sqrt(enclosed_area(R, Z, centre_R, centre_Z) / jnp.pi)
 
 
+def resonant_rationals(iota_min, iota_max, nfp, denom_max=15):
+    """Rationals in ``[iota_min, iota_max]`` where an island chain can form.
+
+    An island chain needs a resonant perturbation: ``iota = n/m`` with ``n`` the
+    toroidal and ``m`` the poloidal mode number. A field with ``nfp`` field
+    periods carries only toroidal harmonics ``n = 0 (mod nfp)``, so the only
+    rationals that can open an island are those whose NUMERATOR is a multiple
+    of ``nfp``. Every other rational surface is resonance-free and closes on
+    itself harmlessly.
+
+    Returned lowest-numerator-first and deduplicated by VALUE, so ``5/6`` is
+    kept and ``10/12`` -- the same surface, driven by a weaker harmonic -- is
+    not repeated.
+
+    Ported from the ``denom_max`` ticks in :func:`mrx.plotting.poincare_plot`.
+    """
+    ticks, labels, seen = [], [], set()
+    for j in range(1, max(denom_max // nfp, 1) + 1):
+        n_tor = j * nfp
+        for m_pol in range(1, denom_max + 1):
+            value = n_tor / m_pol
+            if iota_min <= value <= iota_max and value not in seen:
+                ticks.append(value)
+                labels.append(f"{n_tor}/{m_pol}")
+                seen.add(value)
+    order = sorted(range(len(ticks)), key=lambda i: ticks[i])
+    return [ticks[i] for i in order], [labels[i] for i in order]
+
+
 def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
                    axis_RZ=None, path=None, profile_x=None,
-                   profile_xlabel="seed radius $r$"):
+                   profile_xlabel="seed radius $r$", nfp=None, denom_max=15):
     """The two-panel figure: the section coloured by iota, and the profile.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -330,13 +359,20 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     colour = jnp.broadcast_to(iota[:, None], R.shape)
     sc = ax.scatter(R[keep], Z[keep], c=colour[keep], s=size, vmin=lo, vmax=hi,
                     cmap="turbo", linewidths=0, rasterized=True)
+    res_ticks, res_labels = (resonant_rationals(lo, hi, int(nfp), denom_max)
+                             if nfp else ([], []))
     if (~keep).any():
         ax.scatter(R[~keep], Z[~keep], c="0.7", s=size, linewidths=0,
                    rasterized=True, label=f"lost ({int((~keep).sum())})")
         ax.legend(loc="upper right", fontsize=7, markerscale=4)
     if axis_RZ is not None:
         ax.plot(axis_RZ[0], axis_RZ[1], "k+", ms=5, mew=0.8)
-    fig.colorbar(sc, ax=ax, label=r"$\iota$", fraction=0.046, pad=0.02)
+    cbar = fig.colorbar(sc, ax=ax, label=r"$\iota$", fraction=0.046, pad=0.02)
+    if res_ticks:
+        # Only the rationals an nfp-periodic field can actually resonate with:
+        # everything else on the colorbar is a surface no island can open on.
+        cbar.set_ticks(res_ticks)
+        cbar.set_ticklabels(res_labels)
 
     # An axisymmetric vacuum field has iota = 0, so every line is a fixed point
     # of the return map and the section collapses onto the midplane.  That is
@@ -363,6 +399,10 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
 
     x = seed_r if profile_x is None else profile_x
     bx.plot(x[keep], iota[keep], "o-", ms=3, lw=0.8)
+    for value, lab in zip(res_ticks, res_labels):
+        bx.axhline(value, color="0.55", lw=0.6, ls="--", zorder=0)
+        bx.annotate(lab, (0.995, value), xycoords=("axes fraction", "data"),
+                    ha="right", va="bottom", fontsize=6.5, color="0.4")
     bx.set_xlabel(profile_xlabel)
     bx.set_ylabel(r"$\iota$")
     bx.grid(alpha=0.3)
