@@ -105,9 +105,26 @@ axis, not sit on it, or its own angle is the difference of two identical floats.
 ## 2. Results
 
 `outputs/poincare_night/2026-08-24/20-39-41/` — 25 cells, coord seeding.
-`outputs/poincare_final/2026-08-24/21-26-16/` — the same 25 re-run with axis
-seeding, the logical panel and the rational ticks, held on `afterok` of the
-seeding smoke test (job 16743506) so a broken path cannot burn the night.
+`outputs/poincare_final/2026-08-24/21-26-16/` — **the run to use**: axis
+seeding, logical panel, rational ticks, midplane profile axis, chaos greying.
+24 of 25 cells completed.
+
+### 2.0 Three geometry files fold — the map is degenerate, loudly
+
+| cell | failure |
+| --- | --- |
+| `quasr65575` ns=(12,24,12) p=3 | `no handedness gives det DF > 0`; det DF spans **[−0.236, +1.543]** |
+| `quasr65530` ns=(16,32,16) p=3 | `geometry is degenerate` (`jac.min() <= 0`) |
+| `quasr65530` ns=(12,24,12) p=4 | same |
+
+det DF *changing sign* is a fold, and no handedness fixes a fold — the sign
+search only chooses an orientation. quasr65530 builds fine at ns=(8,16,8) and
+(12,24,12) p=3 and folds above that, so the R/Z data carries a near-fold that a
+coarse spline smooths over and a finer one resolves into a real one. Both jobs
+raised at setup rather than solving on a negative Jacobian, which is the
+behaviour to keep. quasr65575 is unusable at this resolution as it stands;
+quasr65530 is usable only at or below ns=(12,24,12) p=3, and note its k=1 field
+is also the chaotic one.
 
 Iota, k=2 essential BC, ns=(12,24,12) p=3:
 
@@ -210,23 +227,24 @@ inverse and the field does no work.
 
 ## 4. Open
 
-### 4.1 The k=2 / k=1 angle does not converge in h — unexplained
+### 4.1 The k=2 / k=1 angle DOES converge — resolved, it was the statistic
 
-Both forms are exactly harmonic *in their own complex* (V_2 with essential BCs,
-V_1 without), so the angle between them is discretisation error. But it is not
-converging cleanly:
+Both forms are exactly harmonic in their own complex (V_2 with essential BCs,
+V_1 without), so the angle between them is discretisation error. Read on the
+MEDIAN over 512 sample points it converges cleanly, roughly 2nd-4th order:
 
 | geometry | ns 8 | ns 12 | ns 16 | ns 12, p=4 |
 | --- | --- | --- | --- | --- |
-| w7x | 0.3797 | 0.1829 | 0.1627 | **0.1175** |
-| quasr9983 | 0.1802 | 0.0697 | **0.1916** | — |
-| quasr44970 | 0.2424 | 0.0315 | **0.1128** | pending |
+| w7x | 0.0471 | 0.0153 | 0.0113 | 0.0069 |
+| quasr9983 | 0.0195 | 0.0067 | 0.0037 | 0.0050 |
+| quasr44970 | 0.0204 | 0.0031 | 0.0014 | 0.0012 |
+| hegna | 0.0261 | 0.0058 | 0.0017 | 0.0028 |
 
-Two of three get *worse* at 16^3 while p-refinement helps. **Caveat: this is a
-max over 512 random points**, easily set by one sample near `r -> 1` where the
-spline map is nearly singular. I read a rate off two points and the third
-contradicted it. Median and p90 are now reported alongside; re-read this table
-from the `poincare_final` runs before concluding anything.
+The MAX over the same points does not, and that is what I alarmed about: w7x
+0.3797 / 0.1829 / 0.1627, quasr9983 0.1802 / 0.0697 / 0.1916, quasr44970
+0.2424 / 0.0315 / 0.1128 -- two of three worse at 16^3. One sample out of 512,
+near `r -> 1` where the spline map is nearly singular, sets it. Quote the
+median; the max is a map-singularity probe, not a convergence measure.
 
 ### 4.2 k=1 traces break on the quasr44970/65530 family — it is chaos
 
