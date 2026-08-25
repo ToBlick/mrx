@@ -1916,6 +1916,34 @@ Costs are estimates from measured s/step in s33 and are flagged as such. Class
 A restores something already half-known; class B opens new ground. Within B,
 some are bounded and some are not, and that is stated per item.
 
+**Read P0 first.** It is a code change rather than a sweep, it costs no GPU
+time, and it is a hard prerequisite for B1 and B2.
+
+### PREREQUISITE (P0) -- a CODE change, not a sweep. Different owner.
+
+**`relax_prelim.py` cannot express the floor experiment.** It stops on
+`--steps` or `--seconds-per-arm` and has no convergence criterion of any kind.
+**That is why nothing in this campaign ever floored** (s32) -- not "we did not
+get around to the floor run", but "the tool has no way to say *run until
+flat*".
+
+Anyone reading B1 as a sweep will queue a job and get another arm that stops
+where the budget stopped it, which is the exact failure s32 documents.
+
+1. Can `relax_prelim.py` terminate on convergence rather than on a budget?
+2. Unblocks **B1 and B2, and with them any h- or p-refinement claim at all.**
+   Nothing in this document currently supports one.
+3. Add `--stop-rate`: track `-dE_meas/dt`, maintain its running minimum, and
+   stop once the rate has stayed within a factor of the round-off floor for N
+   consecutive steps. S10 gives the calibration -- its energy is constant to 16
+   digits from step ~500 with `dE_meas` at 1.11e-16, so the floor is
+   observable and the criterion is testable against an arm already on disk.
+   Keep `--seconds-per-arm` as the outer guard.
+4. **0 GPU-h.** It is a code change. Validate it by REPLAYING S10's archived
+   trace, not by running anything.
+5. NULL is not applicable -- this is not an experiment. It either lands or it
+   does not, and until it lands B1 and B2 cannot be run as written.
+
 ### CLASS A -- restores a withdrawn or confounded claim
 
 **A1. Re-measure P2 and S03 on the post-fix operator.**
@@ -1979,9 +2007,9 @@ some are bounded and some are not, and that is stated per item.
    withdrawn or qualified rather than merely uncertain.
 3. One arm, fmm002 8^3 p=3 gamma=0 -- cheapest per step (0.87 s) and the
    best-behaved case. No step cap. Stop when `-dE/dt` has stayed within 2x of
-   its round-off floor for 500 consecutive steps. **This needs a stopping
-   criterion added to `relax_prelim.py`**, which today has only `--steps` and
-   `--seconds-per-arm`.
+   its round-off floor for 500 consecutive steps -- i.e. **P0 must land
+   first**. Do NOT queue this as a sweep before it does: without P0 the arm
+   stops where its budget stops it and you get another unfloored run.
 4. **NOT ESTIMABLE.** S13 reached 2.6% of its mid-run rate in 3000 steps and
    the remaining distance to ~1e-16 cannot be extrapolated from one arm. Budget
    it as open-ended with a wall-clock cap and accept it may not finish.
@@ -1993,8 +2021,8 @@ some are bounded and some are not, and that is stated per item.
 1. Does finer h floor LOWER?
 2. The actual h-refinement question, which this campaign never asked -- it
    measured rate and efficiency instead.
-3. 8^3 / 12^3 / 16^3, each run to B1's criterion, **NOT to a common step
-   count**. Matching step budgets is the design flaw that invalidated s31: the
+3. 8^3 / 12^3 / 16^3, each run to B1's criterion (so **P0 first, then B1**),
+   **NOT to a common step count**. Matching step budgets is the design flaw that invalidated s31: the
    finest arms truncated hardest, so every comparison was biased toward the
    conclusion it reached.
 4. Unknown, gated on B1's timescale; at least 3x B1, dominated by the finest
