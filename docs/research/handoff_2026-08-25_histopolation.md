@@ -19,9 +19,23 @@ executed — two guards blocked every polar and every Dirichlet case, so four
 > exactness (splitting spans at knots did not fix it and made it slightly
 > *worse*). See §5 and §7.
 >
-> `conf/config_relax_from_nfs.yaml` runs `ps = 4`, which is **even**. Its ingest
-> goes through collocation so it is *probably* unaffected — **not verified per
-> call site**.
+> **PRODUCTION EXPOSURE — settled, not hedged.** `conf/config_relax_from_nfs.yaml`
+> runs `ps = 4` (even), so this mattered. Checked repo-wide: the only files that
+> reach `histopolation_matrix` / `greville_spans` are `mrx/projectors.py`,
+> `mrx/spline_bases.py` and their two test files. `relax_from_nfs.py` ingests via
+> `interpolate_B` / `interpolate_map_from_points` in `mrx/io.py`, which uses
+> `collocation_matrix` only. **No production path reaches Greville
+> histopolation at any p**, so the open even-p bug (§7) is confined to an API
+> nothing in production calls at k >= 1.
+>
+> **But `interpolate` IS called in production — at k = 0.** `mrx/geometry.py:380`
+> and `:425-426` build the R/Z spline maps with `seq.interpolate(..., 0)`. That
+> is pure collocation, it never forms a span, and **k = 0 is exact at BOTH
+> parities** (2.672e-16 at p=2), so it is unaffected by §7. It does now route
+> through `_conforming_restriction`, and that is an improvement rather than a
+> risk: k=0 accuracy went `2.225e-02 -> 1.540e-02` and the round-trip went
+> `5.290e-01 -> ~2.7e-16`. Flagged because this change is NOT confined to an
+> unused API, and a reader should know map construction goes through it.
 
 **Four distinct defects were found. Three are fixed; the fourth is open.**
 
@@ -288,6 +302,15 @@ built against. Comparing `moments(D_i)` against `H[:, i]` column by column, in
 * **`faulthandler_exit_on_timeout` on JAX code manufactures fake segfaults.** It
   kills the process mid-compilation and the stack lands in JAX tracing. Use
   `faulthandler_timeout` alone, which dumps without killing.
+* **Evidence can outrank a proof you already hold — do not let it.** The span
+  split was run despite an argument, already made and written down, that it
+  could not fix the identity: `solve(H, m) = c` needs only `m = H c`, which
+  holds by LINEARITY whenever `H` and the moments share a rule, exact or not.
+  A strong empirical signal (parity) was allowed to override reasoning already
+  in hand. This is a different failure from insufficient evidence, and harder
+  to notice: the measurement looked like it was leading, when it was actually
+  overruling something settled. When a measurement contradicts a proof you
+  have, find the flaw in the proof FIRST — do not just follow the data.
 * **Check what a run can EMIT before calling it decisive.** Twice an arm was
   designated decisive while structurally unable to decide: one whose input
   parameterisation could not express the intended field, one whose output was a
