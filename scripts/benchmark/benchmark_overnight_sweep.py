@@ -61,7 +61,9 @@ def _jacobi_shifted(k):
         k, SaddlePointPreconditionerSpec(
             mass=default_mass_preconditioner(),
             schur=SchurPreconditionerSpec(
-                inner=MassPreconditionerSpec(kind="tensor"),   # validator forces tensor
+                # 'tensor' until 2026-08-25, when the stack behind it was
+                # deleted; the nullspace validator now requires metric_lumping.
+                inner=MassPreconditionerSpec(kind="metric_lumping"),
                 outer=MassPreconditionerSpec(kind="jacobi"))))
 
 

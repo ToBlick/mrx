@@ -38,6 +38,8 @@ from __future__ import annotations
 import ast
 import pathlib
 
+import pytest
+
 OPERATORS = pathlib.Path(__file__).resolve().parents[1] / "mrx" / "operators.py"
 ACCEPT_LIST_NAMES = ("valid_kinds", "valid_outer_kinds")
 
@@ -64,6 +66,15 @@ STRUCTURAL_KINDS = {
 # Every kind name production code may legitimately construct. raw_kron was
 # deleted 2026-08-25; 'tensor' before it.
 LIVE_KINDS = {"none", "jacobi", "metric_lumping", "auto"}
+
+# Functions whose `kind=` keyword is a preconditioner kind. Named explicitly:
+# `kind=` is a common keyword elsewhere (np.argsort(kind="stable")), and a
+# check that cries wolf gets disabled rather than fixed.
+KIND_TAKING_CALLS = {
+    "apply_laplacian_preconditioner",
+    "apply_hodge_laplacian_preconditioner",
+    "apply_mass_matrix_preconditioner",
+}
 
 
 def _accept_list_functions(tree: ast.Module) -> dict:
@@ -170,7 +181,14 @@ def _constructed_kinds(path: pathlib.Path) -> dict:
         if isinstance(node, ast.Call):
             fname = getattr(node.func, "id", None) or getattr(
                 node.func, "attr", None) or ""
-            if not fname.endswith("PreconditionerSpec"):
+            # Spec constructors, AND the apply entry points that take a kind=
+            # keyword. The second group is how ~32 stale kind="tensor" sites
+            # survived the tensor deletion: the earlier version of this check
+            # matched only *PreconditionerSpec(kind=...) and never looked at
+            # apply_laplacian_preconditioner(..., kind="tensor") two lines
+            # away in the same files.
+            if not (fname.endswith("PreconditionerSpec")
+                    or fname in KIND_TAKING_CALLS):
                 continue
             for kw in node.keywords:
                 if kw.arg == "kind" and isinstance(kw.value, ast.Constant):
@@ -205,3 +223,51 @@ def test_no_production_code_constructs_a_kind_nothing_accepts():
     assert not offenders, (
         "production code constructs a preconditioner kind that is not a live "
         f"kind {sorted(LIVE_KINDS)}:\n  " + "\n  ".join(offenders))
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "KNOWN AND TRIAGED, 2026-08-25: ~32 live sites across 10 scripts still ask "
+    "for kind='tensor', deleted with the tensor stack. Whether those scripts "
+    "are repointed or retired is a scope decision that has not been taken -- "
+    "several are benchmarks measuring a preconditioner that no longer exists. "
+    "STRICT on purpose: this flips to a FAILURE the moment the last site is "
+    "fixed, which is the signal to delete this marker rather than let the test "
+    "sit green-by-exception forever. A permanently-red test trains people to "
+    "ignore red; a permanently-xfailed one without strict trains them to "
+    "ignore the marker."))
+def test_no_script_asks_for_a_kind_nothing_accepts():
+    """The same check over scripts/, which is where the class actually hid.
+
+    `test_no_production_code_constructs_a_kind_nothing_accepts` scans mrx/ only,
+    and that gap let ~32 stale `kind="tensor"` sites survive the tensor
+    deletion across 10 live scripts -- every one of which raises, because
+    `apply_hodge_laplacian_preconditioner` accepts only
+    ('auto', 'none', 'jacobi', 'metric_lumping').
+
+    A script that asks for a kind production cannot supply is broken whether or
+    not anyone has run it lately. Catching the CLASS is worth more than fixing
+    any one instance, so this test exists even while the known instances are
+    still being triaged.
+
+    scripts/deprecated/ is excluded by directory rather than by weakening the
+    check -- 24 further sites live there and are ignorable by construction.
+    """
+    root = OPERATORS.parents[1]
+    scripts = sorted(p for p in (root / "scripts").rglob("*.py")
+                     if "deprecated" not in p.parts)
+    offenders = []
+    for path in scripts:
+        try:
+            found = _constructed_kinds(path)
+        except SyntaxError:
+            continue
+        for kind, lines in found.items():
+            if kind not in LIVE_KINDS:
+                rel = path.relative_to(root)
+                offenders.append(f"{rel}:{lines[0]} asks for kind={kind!r}"
+                                 + (f" (+{len(lines) - 1} more)"
+                                    if len(lines) > 1 else ""))
+    assert not offenders, (
+        f"{len(offenders)} script site(s) ask for a preconditioner kind that "
+        f"no accept-list admits (live kinds: {sorted(LIVE_KINDS)}). These raise "
+        "when run:\n  " + "\n  ".join(offenders))
