@@ -287,10 +287,10 @@ def _validate_nullspace_shifted_preconditioner(k: int, preconditioner):
     if k == 0:
         if not isinstance(preconditioner, MassPreconditionerSpec):
             raise TypeError('k=0 nullspace inverse iteration expects a MassPreconditionerSpec')
-        if preconditioner.kind not in ('tensor', 'jacobi'):
+        if preconditioner.kind != 'jacobi':
             raise ValueError(
                 f'k=0 nullspace inverse iteration got unsupported preconditioner '
-                f'kind={preconditioner.kind!r}; expected tensor or jacobi'
+                f'kind={preconditioner.kind!r}; expected jacobi'
             )
         return preconditioner
     if not isinstance(preconditioner, SaddlePointPreconditionerSpec):
@@ -300,11 +300,10 @@ def _validate_nullspace_shifted_preconditioner(k: int, preconditioner):
             f'k>=1 nullspace inverse iteration got unsupported schur.outer '
             f'kind={preconditioner.schur.outer.kind!r}; expected jacobi'
         )
-    if preconditioner.schur.inner.kind not in ('raw_kron', 'tensor'):
+    if preconditioner.schur.inner.kind != 'raw_kron':
         raise ValueError(
-            'k>=1 nullspace inverse iteration requires raw_kron (default) or '
-            f'tensor schur.inner preconditioning; got '
-            f'{preconditioner.schur.inner.kind!r}'
+            'k>=1 nullspace inverse iteration requires raw_kron schur.inner '
+            f'preconditioning; got {preconditioner.schur.inner.kind!r}'
         )
     return preconditioner
 

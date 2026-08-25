@@ -1303,16 +1303,15 @@ class DeRhamSequence():
 
         ``kind`` selects between ``'none'`` (identity), ``'jacobi'`` (per-DoF
         diagonal; for k >= 1 its weak half is a Kronecker mass MODEL),
-        ``'block'`` (the
-        tensor block-Jacobi atom, k = 0..3, free and Dirichlet — the production
-        preconditioner; call
+        and ``'block'`` (the metric-lumped block-Jacobi atom, k = 0..3, free
+        and Dirichlet — the production preconditioner; call
         :func:`~mrx.operators.assemble_block_jacobi_laplacian_preconditioner`
-        first) and ``'tensor'`` (k = 0 only, retired).
+        first).
 
         ``'auto'`` (the default) uses ``'block'`` when it has been assembled
         for this ``(k, BC)`` and falls back to ``'jacobi'`` otherwise. It used
         to resolve to ``'jacobi'`` unconditionally while claiming to prefer
-        ``'tensor'`` at k = 0.
+        ``'tensor'`` at k = 0; ``'tensor'`` itself was deleted 2026-08-25.
         """
         operators = self._require_operators(operators)
         return apply_laplacian_preconditioner_ops(

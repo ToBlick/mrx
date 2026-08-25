@@ -820,8 +820,6 @@ def _coerce_diffusion_preconditioner_spec(
     if isinstance(preconditioner, MassPreconditionerSpec):
         return preconditioner
     if isinstance(preconditioner, str):
-        if preconditioner == 'tensor':
-            return MassPreconditionerSpec(kind='tensor')
         return MassPreconditionerSpec(kind=preconditioner)
     raise TypeError(
         'diffusion preconditioner must be a kind string or MassPreconditionerSpec')
@@ -2657,10 +2655,9 @@ def apply_mass_matrix_preconditioner(seq, operators: SequenceOperators, v, k: in
 
     Parameters
     ----------
-    kind : {'auto', 'jacobi', 'tensor'}
-        Which preconditioner to use. ``'auto'`` picks ``'tensor'`` when the
-        tensor mass preconditioner is assembled and available for this ``k``;
-        otherwise it falls back to ``'jacobi'``.
+    kind : {'auto', 'jacobi', 'raw_kron', 'block_jacobi'}
+        Which preconditioner to use. The retired ``'tensor'`` kind this
+        docstring used to advertise was deleted on 2026-08-25.
     """
     apply = _build_mass_preconditioner_apply(
         seq,
@@ -2785,7 +2782,7 @@ def _set_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool, di
     )
 
 
-_SCHUR_DIAG_MODES = ('raw_kron_probe', 'tensor_probe')
+_SCHUR_DIAG_MODES = ('raw_kron_probe',)
 
 
 def _coerce_schur_diag_mode(spec: MassPreconditionerSpec, *, context: str) -> str:
@@ -2876,15 +2873,18 @@ def assemble_schur_jacobi_preconditioner(
     eps : float
         Shift for the stiffness term; 0 gives the unshifted Schur.
 
-    where ``B_{k-1}`` is selected by ``schur_diag_mode``:
-    - ``'raw_kron_probe'``: raw_kron schur.inner inverse (default since
-      2026-08-17; needs no prior assembly)
-    - ``'tensor_probe'``: tensor schur.inner inverse
-    - ``'exact_probe'``: exact lower inverse via CG solve
-    - ``'diag'``: diagonal lower inverse ``diag(M_{k-1})^{-1}``
+    where ``B_{k-1}`` is selected by ``schur_diag_mode``. There is exactly ONE
+    mode, ``'raw_kron_probe'`` -- the raw_kron schur.inner inverse, which needs
+    no prior assembly.
 
-    ``'tensor_probe'`` requires the tensor mass preconditioner for ``k-1``
-    to be assembled first.
+    This docstring used to advertise four (``'tensor_probe'``, ``'exact_probe'``
+    and ``'diag'`` as well) against a guard that accepted two, so two of them
+    were rejected by this function's own ValueError and a third pointed at the
+    tensor path deleted on 2026-08-25. Callers still passing ``'tensor_probe'``
+    (six sites across scripts/benchmark and scripts/debug) therefore raise; what
+    they should point at instead is a MEASUREMENT decision, not a repoint, and
+    is open -- benchmark_overnight_sweep.py builds its cross-k baseline on that
+    mode and switching it silently redefines what the baseline is.
     """
     if dirichlet_variants is None:
         dirichlet_variants = (True, False)
@@ -2895,11 +2895,9 @@ def assemble_schur_jacobi_preconditioner(
             f"of {_SCHUR_DIAG_MODES} (got {schur_diag_mode!r})"
         )
     dummy_spec = SaddlePointPreconditionerSpec(
-        mass=MassPreconditionerSpec(
-            kind='tensor' if schur_diag_mode == 'tensor_probe' else 'raw_kron'),
+        mass=MassPreconditionerSpec(kind='raw_kron'),
         schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(
-                kind='tensor' if schur_diag_mode == 'tensor_probe' else 'raw_kron'),
+            inner=MassPreconditionerSpec(kind='raw_kron'),
             outer=MassPreconditionerSpec(kind='none'),
         ),
     )
@@ -2932,8 +2930,6 @@ def assemble_schur_jacobi_preconditioner(
 
 
 def _normalize_recursive_scalar_leaf_spec(spec: MassPreconditionerSpec):
-    if spec.kind == 'tensor':
-        return MassPreconditionerSpec(kind='tensor')
     if spec.kind == 'none':
         if spec.smoother is None:
             return MassPreconditionerSpec(kind='none')
@@ -2965,22 +2961,6 @@ def _build_nested_iterative_preconditioner_apply(
         "(richardson/chebyshev removed 2026-08-14, see mrx/experimental/chebyshev.py); "
         f"got {spec.kind!r}"
     )
-
-
-def _build_k0_operator_preconditioner_apply(
-        operator_apply, size: int, spec: MassPreconditionerSpec, *,
-        jacobi_apply, tensor_apply=None, seed_base: int = 0):
-    valid_kinds = ('none', 'jacobi')
-    if spec.kind not in valid_kinds:
-        raise ValueError(
-            "preconditioner kind must be one of "
-            f"{valid_kinds} (got {spec.kind!r})"
-        )
-    if spec.smoother is not None:
-        raise ValueError(f"kind={spec.kind!r} does not support a smoother")
-    if spec.kind == 'none':
-        return lambda x: x
-    return jacobi_apply
 
 
 def _coerce_mass_preconditioner_spec(preconditioner):
@@ -3147,7 +3127,7 @@ def _build_operator_preconditioner_apply(
         _validate_public_k1_mass_preconditioner_spec(spec)
     if k == 2:
         _validate_public_k2_mass_preconditioner_spec(spec)
-    valid_kinds = ('none', 'jacobi', 'tensor', 'raw_kron', 'block_jacobi')
+    valid_kinds = ('none', 'jacobi', 'raw_kron', 'block_jacobi')
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
@@ -3240,11 +3220,10 @@ def _build_schur_apply_from_saddle_preconditioner(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         eps: float, saddle_preconditioner: SaddlePointPreconditionerSpec):
     schur_inner_spec = saddle_preconditioner.schur.inner
-    if schur_inner_spec.kind not in ('tensor', 'raw_kron', 'block_jacobi'):
+    if schur_inner_spec.kind not in ('raw_kron', 'block_jacobi'):
         raise ValueError(
-            "schur.inner supports kind='raw_kron' (default), "
-            "kind='block_jacobi' or kind='tensor' "
-            f"(got {schur_inner_spec.kind!r})"
+            "schur.inner supports kind='raw_kron' (default) or "
+            f"kind='block_jacobi' (got {schur_inner_spec.kind!r})"
         )
     if schur_inner_spec.surgery_schur or schur_inner_spec.smoother is not None:
         raise ValueError(
@@ -3313,9 +3292,6 @@ def _coerce_saddle_preconditioner_spec(
                 "schur.outer kind must be one of "
                 f"{valid_outer_kinds} (got {preconditioner.schur.outer.kind!r})"
             )
-        if preconditioner.schur.outer.kind == 'tensor':
-            raise ValueError(
-                "schur.outer kind='tensor' is not supported")
         _coerce_schur_diag_mode(
             preconditioner.schur.outer,
             context=f"schur.outer kind={preconditioner.schur.outer.kind!r}",
@@ -3333,7 +3309,7 @@ def _coerce_saddle_preconditioner_spec(
         return SaddlePointPreconditionerSpec(
             mass=lower,
             schur=SchurPreconditionerSpec(
-                inner=MassPreconditionerSpec(kind='tensor'),
+                inner=MassPreconditionerSpec(kind='raw_kron'),
                 outer=MassPreconditionerSpec(kind=preconditioner),
             ),
         )
@@ -3352,7 +3328,7 @@ def _build_diffusion_preconditioner_apply(
         preconditioner=preconditioner,
     )
     spec = _normalize_mass_preconditioner_spec_for_degree(spec, k=k)
-    valid_kinds = ('none', 'jacobi', 'tensor')
+    valid_kinds = ('none', 'jacobi')
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
@@ -3378,7 +3354,7 @@ def _build_scalar_hodge_preconditioner_apply(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         eps: float, preconditioner, allow_none: bool = True):
     spec = _coerce_mass_preconditioner_spec(preconditioner)
-    valid_kinds = ('none', 'jacobi', 'tensor', 'block')
+    valid_kinds = ('none', 'jacobi', 'block')
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
@@ -3583,18 +3559,19 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
       operator's own ``D M^-1 D^T``.
     * ``'block'`` — the tensor block-Jacobi atom, k = 0..3, free and Dirichlet.
       Requires :func:`assemble_block_jacobi_laplacian_preconditioner` first.
-    * ``'tensor'`` — assembled surgery-plus-Schur tensor Hodge model for
-      ``k = 0`` only. Retired; see ``mrx/experimental/``.
     * ``'auto'`` — ``'block'`` when it has been assembled for this ``(k, BC)``,
       otherwise ``'jacobi'``.
 
     (``'auto'`` previously resolved to ``'jacobi'`` unconditionally while this
-    docstring claimed it preferred ``'tensor'`` at k = 0. It did not.)
+    docstring claimed it preferred ``'tensor'`` at k = 0. It did not. The
+    ``'tensor'`` kind itself -- the surgery-plus-Schur k = 0 model -- was
+    accepted here until 2026-08-25 with no dispatch branch of its own, so it
+    fell through to the ``unreachable`` assertion below.)
     """
-    if kind not in ('auto', 'none', 'jacobi', 'block', 'tensor'):
+    if kind not in ('auto', 'none', 'jacobi', 'block'):
         raise ValueError(
-            "kind must be 'auto', 'none', 'jacobi', 'block' "
-            f"or 'tensor' (got {kind!r})")
+            "kind must be 'auto', 'none', 'jacobi' or 'block' "
+            f"(got {kind!r})")
     if kind == 'auto':
         kind = 'block' if _block_jacobi_available(seq, k, dirichlet) else 'jacobi'
     if kind == 'none':
@@ -3777,12 +3754,6 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
 
     if saddle_preconditioner.schur.inner.kind == 'none':
         raise ValueError("schur.inner cannot use kind='none'")
-    if saddle_preconditioner.schur.outer.kind == 'tensor':
-        raise ValueError(
-            "schur.outer kind='tensor' is not supported; "
-            "tensor saddle preconditioning is only valid for the lower "
-            "mass block and schur.inner")
-
     precond_lower = _build_mass_preconditioner_apply(
         seq,
         operators,
