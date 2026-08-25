@@ -1,7 +1,7 @@
 """Greville vs CP-tensor on the VECTOR Hodge-Laplacians (k=1,2,3).
 
 Same production saddle solve (apply_inverse_hodge_laplacian, preconditioner='auto'
-= mass + tensor_probe Schur-Jacobi); only the MASS atom feeding the probe differs:
+= mass + metric_lumping_probe Schur-Jacobi); only the MASS atom feeding the probe differs:
   greville: cp_kwargs={'greville': True}
   tensor:   cp_kwargs={} (CP fit, rank 3)
 Reports PCG/MINRES iters + convergence for each, on cyl/toroid/w7x, both BCs.
@@ -66,7 +66,7 @@ def main():
                                                       rank=args.rank, cp_kwargs={})
         ops = assemble_schur_jacobi_preconditioner(seq, operators=ops, ks=(1, 2, 3),
                                                    dirichlet_variants=(True, False),
-                                                   schur_diag_mode="tensor_probe")
+                                                   schur_diag_mode="metric_lumping_probe")
         return ops
 
     results = {}

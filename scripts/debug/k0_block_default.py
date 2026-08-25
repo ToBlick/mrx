@@ -87,10 +87,10 @@ def main():
         # (1) no k=0 atom assembled -> the default must still be jacobi.
         #     compute_nullspaces now assembles k=0 too (it is worth it, which is
         #     what this script measured), so drop it to recover the baseline.
-        cache = dict(getattr(seq, op.BLOCK_JACOBI_CACHE_ATTR, None) or {})
+        cache = dict(getattr(seq, op.METRIC_LUMPING_CACHE_ATTR, None) or {})
         cache.pop((0, bool(dbc)), None)
-        setattr(seq, op.BLOCK_JACOBI_CACHE_ATTR, cache)
-        assert not op._block_jacobi_available(seq, 0, dbc)
+        setattr(seq, op.METRIC_LUMPING_CACHE_ATTR, cache)
+        assert not op._metric_lumping_available(seq, 0, dbc)
         pre = op._materialize_default_scalar_hodge_preconditioner(
             seq, ops, k=0, dirichlet=dbc)
         assert pre.kind == 'jacobi', pre.kind
@@ -98,13 +98,13 @@ def main():
 
         # (2) assemble it -> the default must flip to block.
         t0 = time.perf_counter()
-        ops = op.assemble_block_jacobi_laplacian_preconditioner(
+        ops = op.assemble_metric_lumping_laplacian_preconditioner(
             seq, ops, ks=(0,), dirichlets=(dbc,))
         seq.set_operators(ops)
         t_assemble = time.perf_counter() - t0
         pre = op._materialize_default_scalar_hodge_preconditioner(
             seq, ops, k=0, dirichlet=dbc)
-        assert pre.kind == 'block', pre.kind
+        assert pre.kind == 'metric_lumping', pre.kind
         x_b, it_b, ok_b, t_b = solve(seq, ops, rhs, dbc, cli.tol, cli.maxiter)
 
         # (3) same operator, so the same answer.
@@ -126,9 +126,9 @@ def main():
 
         # Drop the k=0 atom so the next BC starts from the same state. The
         # k>=1 ones must survive -- compute_nullspaces' solves needed them.
-        cache = dict(getattr(seq, op.BLOCK_JACOBI_CACHE_ATTR, None) or {})
+        cache = dict(getattr(seq, op.METRIC_LUMPING_CACHE_ATTR, None) or {})
         cache.pop((0, bool(dbc)), None)
-        setattr(seq, op.BLOCK_JACOBI_CACHE_ATTR, cache)
+        setattr(seq, op.METRIC_LUMPING_CACHE_ATTR, cache)
 
     print("[done]", flush=True)
 

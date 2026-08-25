@@ -32,9 +32,7 @@ from mrx.preconditioners import (
     _extraction_gram_inverse,
     _extraction_projector_kron_terms,
     _raw_block_starts,
-    _weak_term_rows_by_apply,
     build_extracted_laplacian_diagonal,
-    build_weak_term_diagonal,
 )
 
 jax.config.update("jax_enable_x64", True)
@@ -225,63 +223,6 @@ def test_extraction_projector_kron_expansion_is_exact(torus_seq, k, dbc):
             _apply_pi_terms(terms, shapes, v), expected, rtol=0, atol=1e-11,
             err_msg=f"Pi expansion is not exact for k={k} dbc={dbc}",
         )
-
-
-def test_weak_term_diagonal_matches_exact_rows(torus_seq):
-    """The closed-form weak diagonal against exact rows of the same operator.
-
-    Tolerances are the measured Kronecker-model error, not aspirations: on a
-    spline toroid the closed form sits at ~2-4% median and ~30% max against the
-    exact probe. That is far inside what a Jacobi diagonal tolerates -- a
-    diagonal accurate to a factor rho perturbs the preconditioned condition
-    number by at most rho^2, so CG iterations by at most rho -- and the A/B in
-    ``scripts/debug/laplacian_jacobi_ab.py`` shows the closed form matching the
-    exact probe iteration for iteration.
-    """
-    from mrx.preconditioners import default_mass_preconditioner
-
-    mass_kind = default_mass_preconditioner().kind
-    if mass_kind != 'raw_kron':
-        # KNOWN, MEASURED REGRESSION -- not a tolerance to be widened.
-        # `build_weak_term_diagonal` models `D M^-1 D^T` under the Kronecker
-        # mass model and was calibrated when `M^-1` was raw_kron. With
-        # block_jacobi the model's error against the exact operator grows from
-        # ~2-4% median / ~30% max to 22% median / 114% max (k=1 dbc, spline
-        # toroid 8,16,8 p=2). The right fix is to model the new mass, not to
-        # move the bound; until then this invariant is only meaningful for
-        # raw_kron.
-        #
-        # Practical cost, measured in outputs/diag_masslap before the swap:
-        # `kind='jacobi'` iteration counts move by 1-10% (cylinder k=1 free
-        # 262 -> 287, W7-X k=1 free 1658 -> 1668), while the production
-        # `kind='block'` gets ~9% better. `_probed_laplacian_diaginv` is exact.
-        pytest.skip(
-            f"weak-term closed form is calibrated for raw_kron; mass is "
-            f"{mass_kind}. See mrx/preconditioners.build_weak_term_raw_diagonal")
-
-    ops = torus_seq.operators
-    rng = np.random.default_rng(seed=3)
-    for k in _WEAK_K:
-        for dbc in _ALL_DBC:
-            got = np.asarray(build_weak_term_diagonal(
-                torus_seq, ops, k, dirichlet=dbc))
-            assert np.all(got > 0), (
-                f"weak-term diagonal is not positive for k={k} dbc={dbc}; "
-                "the construction is diag(X A^-1 X^T) and must be SPSD"
-            )
-            n = n_dofs(torus_seq, k, dbc)
-            rows = rng.choice(n, size=12, replace=False)
-            exact = _weak_term_rows_by_apply(
-                torus_seq, ops, k, dirichlet=dbc, indices=rows)
-            rel = np.abs(got[rows] - exact) / np.abs(exact)
-            assert np.median(rel) < 0.10, (
-                f"weak-term diagonal k={k} dbc={dbc}: median relative error "
-                f"{np.median(rel):.3e} exceeds the measured model error"
-            )
-            assert rel.max() < 0.60, (
-                f"weak-term diagonal k={k} dbc={dbc}: max relative error "
-                f"{rel.max():.3e} exceeds the measured model error"
-            )
 
 
 def test_laplacian_jacobi_diagonal_is_positive(torus_seq):

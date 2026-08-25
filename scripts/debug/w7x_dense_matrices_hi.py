@@ -87,7 +87,7 @@ def main():
             seq, ops, v, 2, dirichlet=d, kind="tensor"), n2)
         grevM3 = densify(lambda v: apply_mass_matrix_preconditioner(
             seq, ops, v, 3, dirichlet=d, kind="tensor"), n3)
-        schur2 = _get_schur_diaginv(ops, 2, d, "tensor_probe")
+        schur2 = _get_schur_diaginv(ops, 2, d, "metric_lumping_probe")
         schur2 = None if schur2 is None else np.asarray(schur2)
 
         rows = [

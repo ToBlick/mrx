@@ -91,18 +91,17 @@ def report_preconditioners(seq, ops):
         for dbc in (False, True):
             spec = op._materialize_default_saddle_preconditioner(
                 seq, ops, k=k, dirichlet=dbc)
-            avail = op._block_jacobi_available(seq, k, dbc)
+            avail = op._metric_lumping_available(seq, k, dbc)
             outer = spec.schur.outer.kind
-            # schur.inner is deliberately NOT printed. It is still raw_kron in
-            # the default spec, but with outer='block' the atom approximates
-            # L_k directly and "needs neither the Schur probe nor schur.inner
-            # -- it IS the upper-block inverse" (operators.py, the block
-            # branch). Printing it invites reading a dead field as the thing
-            # doing the work.
+            # schur.inner is deliberately NOT printed. With
+            # outer='metric_lumping' the atom approximates L_k directly and
+            # "needs neither the Schur probe nor schur.inner -- it IS the
+            # upper-block inverse" (operators.py). Printing it invites reading
+            # a dead field as the thing doing the work.
             print(f"[precond] k={k} {'dbc ' if dbc else 'free'}: "
                   f"mass={spec.mass.kind:12s} schur.outer={outer:7s} "
                   f"(atom assembled: {avail})", flush=True)
-            if outer != 'block':
+            if outer != 'metric_lumping':
                 raise RuntimeError(
                     f"k={k} dirichlet={dbc} resolved schur.outer={outer!r}, "
                     "not the block atom")
@@ -114,12 +113,12 @@ def report_preconditioners(seq, ops):
         k0 = op._materialize_default_scalar_hodge_preconditioner(
             seq, ops, k=0, dirichlet=dbc)
         print(f"[precond] k=0 {'dbc ' if dbc else 'free'}: {k0.kind:12s} "
-              f"(atom assembled: {op._block_jacobi_available(seq, 0, dbc)})"
+              f"(atom assembled: {op._metric_lumping_available(seq, 0, dbc)})"
               + ("" if dbc else "   <- the Leray solve in the k=1 chain"),
               flush=True)
     k0_free = op._materialize_default_scalar_hodge_preconditioner(
         seq, ops, k=0, dirichlet=False)
-    if k0_free.kind != 'block':
+    if k0_free.kind != 'metric_lumping':
         raise RuntimeError(
             f"k=0 free resolved {k0_free.kind!r}, not the block atom")
 

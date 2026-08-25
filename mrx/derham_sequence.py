@@ -473,9 +473,9 @@ class DeRhamSequence():
         factorisation.
         """
         self.geometry = geometry
-        from mrx.operators import BLOCK_JACOBI_CACHE_ATTR  # noqa: PLC0415
-        if hasattr(self, BLOCK_JACOBI_CACHE_ATTR):
-            delattr(self, BLOCK_JACOBI_CACHE_ATTR)
+        from mrx.operators import METRIC_LUMPING_CACHE_ATTR  # noqa: PLC0415
+        if hasattr(self, METRIC_LUMPING_CACHE_ATTR):
+            delattr(self, METRIC_LUMPING_CACHE_ATTR)
 
     def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3),
                                     dirichlets=(False, True), operators=None):
@@ -488,7 +488,7 @@ class DeRhamSequence():
             seq.set_map(map)
             ops = assemble_incidence_operators(seq)
             ops = assemble_mass_jacobi_preconditioner(seq, ops, ks=ks)
-            ops = assemble_block_jacobi_laplacian_preconditioner(
+            ops = assemble_metric_lumping_laplacian_preconditioner(
                 seq, ops, ks=ks, dirichlets=dirichlets)
             warm_mass_preconditioner_cache(seq, ops)
             seq.set_operators(ops)
@@ -499,7 +499,7 @@ class DeRhamSequence():
         Returns the operator bundle, which is also installed on the sequence.
         """
         from mrx.operators import (  # noqa: PLC0415
-            assemble_block_jacobi_laplacian_preconditioner,
+            assemble_metric_lumping_laplacian_preconditioner,
             assemble_incidence_operators,
             assemble_mass_jacobi_preconditioner,
             warm_mass_preconditioner_cache,
@@ -507,7 +507,7 @@ class DeRhamSequence():
         self.set_map(map)
         ops = assemble_incidence_operators(self) if operators is None else operators
         ops = assemble_mass_jacobi_preconditioner(self, ops, ks=ks)
-        ops = assemble_block_jacobi_laplacian_preconditioner(
+        ops = assemble_metric_lumping_laplacian_preconditioner(
             self, ops, ks=ks, dirichlets=dirichlets)
         warm_mass_preconditioner_cache(self, ops, ks=ks, dirichlets=dirichlets)
         self.set_operators(ops)
@@ -1317,16 +1317,15 @@ class DeRhamSequence():
 
         ``kind`` selects between ``'none'`` (identity), ``'jacobi'`` (per-DoF
         diagonal; for k >= 1 its weak half is a Kronecker mass MODEL),
-        ``'block'`` (the
-        tensor block-Jacobi atom, k = 0..3, free and Dirichlet — the production
-        preconditioner; call
-        :func:`~mrx.operators.assemble_block_jacobi_laplacian_preconditioner`
-        first) and ``'tensor'`` (k = 0 only, retired).
+        and ``'metric_lumping'`` (the metric-lumped block-Jacobi atom, k = 0..3, free
+        and Dirichlet — the production preconditioner; call
+        :func:`~mrx.operators.assemble_metric_lumping_laplacian_preconditioner`
+        first).
 
-        ``'auto'`` (the default) uses ``'block'`` when it has been assembled
+        ``'auto'`` (the default) uses ``'metric_lumping'`` when it has been assembled
         for this ``(k, BC)`` and falls back to ``'jacobi'`` otherwise. It used
         to resolve to ``'jacobi'`` unconditionally while claiming to prefer
-        ``'tensor'`` at k = 0.
+        ``'tensor'`` at k = 0; ``'tensor'`` itself was deleted 2026-08-25.
         """
         operators = self._require_operators(operators)
         return apply_laplacian_preconditioner_ops(

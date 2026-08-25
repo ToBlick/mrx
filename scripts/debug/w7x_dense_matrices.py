@@ -116,7 +116,7 @@ def main():
             seq, ops, v, 1, dirichlet=d, kind="tensor"), n1)
         grevK0 = densify(lambda v: apply_hodge_laplacian_preconditioner(
             seq, ops, v, 0, dirichlet=d, kind="auto"), n0)
-        schur1 = np.asarray(_get_schur_diaginv(ops, 1, d, "tensor_probe"))
+        schur1 = np.asarray(_get_schur_diaginv(ops, 1, d, "metric_lumping_probe"))
 
         def dinv(A):
             dd = np.diag(A).copy()

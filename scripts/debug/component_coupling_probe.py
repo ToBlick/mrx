@@ -43,7 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mrx  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
-from mrx.block_jacobi_laplacian import (  # noqa: E402
+from mrx.metric_lumping_laplacian import (  # noqa: E402
     _reshape_quadrature_matrix_field)
 from mrx.mappings import rotating_ellipse_map, toroid_map  # noqa: E402
 

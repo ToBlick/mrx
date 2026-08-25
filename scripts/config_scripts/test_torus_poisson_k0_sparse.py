@@ -25,7 +25,7 @@ import mrx
 import mrx.config  # noqa: F401 — register structured configs in ConfigStore
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import toroid_map
-from mrx.operators import assemble_block_jacobi_laplacian_preconditioner
+from mrx.operators import assemble_metric_lumping_laplacian_preconditioner
 from mrx.quadrature import evaluate_at_xq
 
 jax.config.update("jax_enable_x64", True)
@@ -124,7 +124,7 @@ def compute_error(n: int, p: int, epsilon: float,
     # preconditioner construction.
     t0 = time.perf_counter()
     ops = seq.set_operators(
-        assemble_block_jacobi_laplacian_preconditioner(
+        assemble_metric_lumping_laplacian_preconditioner(
             seq, seq.get_operators(), ks=(0,), dirichlets=(True, False),
         )
     )
@@ -132,7 +132,7 @@ def compute_error(n: int, p: int, epsilon: float,
     timings["build_hodge_preconditioners_0_compile"] = time.perf_counter() - t0
     t0 = time.perf_counter()
     ops = seq.set_operators(
-        assemble_block_jacobi_laplacian_preconditioner(
+        assemble_metric_lumping_laplacian_preconditioner(
             seq, seq.get_operators(), ks=(0,), dirichlets=(True, False),
         )
     )

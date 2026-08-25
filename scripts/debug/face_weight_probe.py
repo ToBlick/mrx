@@ -44,8 +44,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mrx  # noqa: E402
 import mrx.operators as op  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
-from mrx.block_jacobi_laplacian import (  # noqa: E402
-    BlockJacobiLaplacian, component_factors, face_operator)
+from mrx.metric_lumping_laplacian import (  # noqa: E402
+    MetricLumpingLaplacian, component_factors, face_operator)
 from mrx.mappings import toroid_map  # noqa: E402
 
 mrx.MAP_BATCH_SIZE_INNER = int(os.environ.get("W7X_MAP_BATCH", "256"))
@@ -103,7 +103,7 @@ def main():
     print(f"geometry={cli.geometry} ns={ns} p={cli.p}", flush=True)
 
     for k in (int(v) for v in cli.ks.split(",")):
-        pres = {d: BlockJacobiLaplacian(seq, ops, k, d, ktilde_mode="honest",
+        pres = {d: MetricLumpingLaplacian(seq, ops, k, d, ktilde_mode="honest",
                                         lumped="diag", extra_rings=0,
                                         bc_entry=False)
                 for d in (False, True)}

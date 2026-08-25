@@ -7,7 +7,7 @@ complement is what can be solved without projecting the right-hand side.
 
 Arms:
   jacobi    -- the production closed-form Jacobi diagonal, 1/diag(L_k).
-  blockjac  -- mrx.block_jacobi_laplacian: one separable
+  blockjac  -- mrx.metric_lumping_laplacian: one separable
                three-term Kronecker-sum atom per component (fast
                diagonalisation) plus a densely-probed core, uncoupled.
 
@@ -34,8 +34,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mrx  # noqa: E402
 import mrx.operators as op  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
-from mrx.block_jacobi_laplacian import (  # noqa: E402
-    BlockJacobiLaplacian)
+from mrx.metric_lumping_laplacian import (  # noqa: E402
+    MetricLumpingLaplacian)
 from mrx.mappings import toroid_map  # noqa: E402
 
 mrx.MAP_BATCH_SIZE_INNER = int(os.environ.get("W7X_MAP_BATCH", "256"))
@@ -134,14 +134,14 @@ def main():
                     def minv(v, inv=inv):
                         return inv * v
                 elif arm == "xfer3":
-                    from mrx.block_jacobi_laplacian import (
+                    from mrx.metric_lumping_laplacian import (
                         TransferK3Preconditioner)
                     pre = TransferK3Preconditioner(
                         seq, ops, dbc, ktilde_mode="honest", lumped="diag")
                     minv = pre.apply
                 elif arm.startswith("blockjac"):
                     mode = ("honest" if "honest" in arm else "roundtrip")
-                    pre = BlockJacobiLaplacian(seq, ops, k, dbc,
+                    pre = MetricLumpingLaplacian(seq, ops, k, dbc,
                                                ktilde_mode=mode,
                                                lumped=("diag" if "diag" in arm
                                                        else "lumped" in arm),

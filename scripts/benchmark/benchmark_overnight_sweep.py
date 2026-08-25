@@ -12,7 +12,7 @@ Operator groups (both BCs unless noted):
   - k=1 Laplacian (saddle HX)    : jacobi vs projected P_A+P_B with a Chebyshev
                                    L_0 atom, sweeping eps (degree auto from kappa,
                                    recorded), rank {1,2}
-  - k=2,k=3 Laplacian (saddle)   : Schur-Jacobi only, schur_diag_mode tensor_probe
+  - k=2,k=3 Laplacian (saddle)   : Schur-Jacobi only, schur_diag_mode metric_lumping_probe
                                    (rank-dependent) at rank {1,2}, plus a plain
                                    'diag' baseline (rank-independent)
 
@@ -192,12 +192,12 @@ def k1_ops(seq, ops_mass_r, rank):
         seq, operators=ops, ks=(1,), rank=rank, cp_kwargs=CP)
     ops = assemble_schur_jacobi_preconditioner(
         seq, operators=ops, ks=(1,), dirichlet_variants=(True, False),
-        schur_diag_mode='tensor_probe')
+        schur_diag_mode='metric_lumping_probe')
     return ops
 
 
 def saddle_ops(seq, ops_mass_r, k, schur_mode):
-    # k=2/k=3 JACOBI-only: needs ONLY the schur-jacobi diagonal. 'tensor_probe'
+    # k=2/k=3 JACOBI-only: needs ONLY the schur-jacobi diagonal. 'metric_lumping_probe'
     # builds it from the tensor MASS already in ops_mass_r (rank-R). Do NOT
     # assemble the tensor STIFFNESS P_A -- it is unused for the jacobi baseline
     # and OOMs the GPU at rank>2 (Lynch), which try/except cannot catch.
@@ -434,9 +434,9 @@ def group_k1_hx(seq, ops_k1, args, W, setup_ms):
 
 
 def group_saddle_jacobi(seq, ops, rank, k, schur_mode, args, W, setup_ms):
-    """k=2 / k=3 Schur-Jacobi-only saddle. schur_mode in {tensor_probe, diag}."""
+    """k=2 / k=3 Schur-Jacobi-only saddle. schur_mode in {metric_lumping_probe, diag}."""
     config = schur_mode
-    rtag = rank if schur_mode == "tensor_probe" else "-"
+    rtag = rank if schur_mode == "metric_lumping_probe" else "-"
     for dirichlet in (True, False):
         bc = "dbc" if dirichlet else "free"
         n_upper = _sz(seq, k, dirichlet)
@@ -512,7 +512,7 @@ def main():
                     help="Fixed Chebyshev degrees for the mass cheb-jac/cheb-tensor "
                          "competitors (the only Chebyshev users; k0/k1 L0-cheb dropped).")
     ap.add_argument("--mass-ranks", type=str, default="1,2",
-                    help="Ranks for tensor MASS + k2/k3 tensor_probe jacobi "
+                    help="Ranks for tensor MASS + k2/k3 metric_lumping_probe jacobi "
                          "(mass-only assembly; safe at high rank). k=1 HX is "
                          "always rank-1; k=0 Laplacian rank-1.")
     ap.add_argument("--groups", type=str, default="mass,k0,k1,k2,k3")
@@ -566,7 +566,22 @@ def main():
                   msg=traceback.format_exc(), setup_ms=setup_ms)
         print("[cell] k0 done", flush=True)
 
-    # k=1, k=2, k=3 share an IDENTICAL jacobi baseline: tensor_probe Schur-Jacobi
+    # k=1, k=2, k=3 share an IDENTICAL jacobi baseline: metric_lumping_probe
+    # Schur-Jacobi.
+    #
+    # THE BASELINE ITSELF CHANGED ON 2026-08-25 -- this claim stays true (all
+    # three still share ONE baseline) but it is no longer the SAME baseline as
+    # runs recorded before that date. The mode was 'tensor_probe', backed by
+    # the CP/ALS tensor stack; that stack was deleted, the probe was briefly
+    # backed by raw_kron, and raw_kron was then deleted too. The Schur diagonal
+    # is now probed from the metric_lumping atom. The switch was forced (no
+    # other backing survives) and was measured before it landed:
+    # docs/research/result_2026-08-25_schur_probe_ab.md -- six converged cells,
+    # five favouring the atom by 2.4-16.6%, one at +0.6% inside measured noise.
+    #
+    # DO NOT compare numbers from this script across that date without reading
+    # that note first.
+    #
     # via group_saddle_jacobi (rank sweep, both BC, harmonic-deflated). k=1
     # ADDITIONALLY runs the HX competitor (group_k1_hx) on the same matvec/rhs
     # construction; k=2/k=3 are jacobi-only (per spec).
@@ -577,11 +592,11 @@ def main():
             if r not in ops_mass:
                 continue
             try:
-                osad = saddle_ops(seq, ops_mass[r], kk, "tensor_probe")
-                group_saddle_jacobi(seq, osad, r, kk, "tensor_probe", args, W, setup_ms)
+                osad = saddle_ops(seq, ops_mass[r], kk, "metric_lumping_probe")
+                group_saddle_jacobi(seq, osad, r, kk, "metric_lumping_probe", args, W, setup_ms)
             except Exception:
                 W.err(case=f"K{kk}", k=kk, bc="-", method="assembly", rank=r,
-                      config="tensor_probe", msg=traceback.format_exc(), setup_ms=setup_ms)
+                      config="metric_lumping_probe", msg=traceback.format_exc(), setup_ms=setup_ms)
         if kk == 1:
             try:
                 ok1 = k1_ops(seq, ops_mass[1], 1)

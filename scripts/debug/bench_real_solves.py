@@ -67,8 +67,8 @@ def spec_for(arm, seq, ops, k):
     return SaddlePointPreconditionerSpec(
         mass=op._materialize_default_mass_preconditioner(seq, ops, k=k - 1),
         schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='raw_kron'),
-            outer=MassPreconditionerSpec(kind='block'),
+            inner=MassPreconditionerSpec(kind='metric_lumping'),
+            outer=MassPreconditionerSpec(kind='metric_lumping'),
         ),
     )
 
@@ -117,13 +117,13 @@ def main():
                     os.environ["MRX_BJ_BC_SCALE"] = scale
                 # The atom is cached on seq; drop it so each arm rebuilds with
                 # its own bc settings rather than inheriting the previous arm's.
-                if hasattr(seq, op.BLOCK_JACOBI_CACHE_ATTR):
-                    delattr(seq, op.BLOCK_JACOBI_CACHE_ATTR)
+                if hasattr(seq, op.METRIC_LUMPING_CACHE_ATTR):
+                    delattr(seq, op.METRIC_LUMPING_CACHE_ATTR)
                 t1 = time.perf_counter()
                 build_s = 0.0
                 try:
                     if scale is not None:
-                        op.assemble_block_jacobi_laplacian_preconditioner(
+                        op.assemble_metric_lumping_laplacian_preconditioner(
                             seq, ops, ks=(k,), dirichlets=(dbc,))
                         build_s = time.perf_counter() - t1
                     t2 = time.perf_counter()

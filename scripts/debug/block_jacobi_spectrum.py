@@ -48,11 +48,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mrx  # noqa: E402
 import mrx.operators as op  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
-from mrx.experimental.block_jacobi_coarse import (  # noqa: E402
-    CoarseCorrectedBlockJacobi,
+from mrx.experimental.metric_lumping_coarse import (  # noqa: E402
+    CoarseCorrectedMetricLumping,
 )
-from mrx.block_jacobi_laplacian import (  # noqa: E402
-    BlockJacobiLaplacian)
+from mrx.metric_lumping_laplacian import (  # noqa: E402
+    MetricLumpingLaplacian)
 from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: E402
 
 mrx.MAP_BATCH_SIZE_INNER = int(os.environ.get("W7X_MAP_BATCH", "256"))
@@ -106,9 +106,9 @@ def make_preconditioner(seq, ops, k, dbc, arm):
         # Only the derived term and "off" remain; see verify_block_jacobi.py.
         bc_entry=(False if "nobc" in arm else "ibpd"))
     if fm or fr:
-        # `fm` is EXPERIMENTAL and opt-in -- it lives in block_jacobi_coarse,
+        # `fm` is EXPERIMENTAL and opt-in -- it lives in metric_lumping_coarse,
         # not on the production class. See that module for why.
-        pre = CoarseCorrectedBlockJacobi(
+        pre = CoarseCorrectedMetricLumping(
             seq, ops, k, dbc,
             coarse_rings=(int(fr.group(1)) if fr else 1),
             coarse_modes=((int(fm.group(1)),) * 2 if fm else (3, 3)),
@@ -118,7 +118,7 @@ def make_preconditioner(seq, ops, k, dbc, arm):
             coarse_trunc=int(ft.group(1)) if ft else 0,
             **kwargs)
     else:
-        pre = BlockJacobiLaplacian(seq, ops, k, dbc, **kwargs)
+        pre = MetricLumpingLaplacian(seq, ops, k, dbc, **kwargs)
     return pre.apply, pre
 
 

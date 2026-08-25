@@ -14,7 +14,7 @@ Two upper-block preconditioners are compared. The script can run either on
 the condensed operator (CG) or on the full saddle-point system (MINRES):
 
 * ``jacobi (diag)`` -- the current production best: the Schur-outer Jacobi
-                    preconditioner assembled with ``schur_diag_mode='tensor_probe'``
+                    preconditioner assembled with ``schur_diag_mode='metric_lumping_probe'``
                     (rank-independent ``diag(M_0)^{-1}`` inner probe). A single
                     stored diagonal multiply. Pairs with the tensor inner that
                     ``A`` already bakes in, i.e. "jacobi outer + tensor inner".
@@ -1737,7 +1737,7 @@ def assemble_operators(
                 operators=o,
                 ks=schur_ks,
                 dirichlet_variants=schur_bc,
-                schur_diag_mode='tensor_probe',
+                schur_diag_mode='metric_lumping_probe',
             ),
             ops,
         )
@@ -1950,7 +1950,7 @@ def make_apply_routines(
 
     # Production baseline: Schur-outer Jacobi diagonal (mode diag), a stored
     # diagonal multiply. The tensor inner is already inside `a_matvec`.
-    schur_diaginv = _get_schur_diaginv(ops, 1, DIRICHLET, 'tensor_probe')
+    schur_diaginv = _get_schur_diaginv(ops, 1, DIRICHLET, 'metric_lumping_probe')
     if schur_diaginv is None:
         raise RuntimeError("Schur jacobi diag preconditioner was not assembled")
 
@@ -2537,7 +2537,7 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
     # Production baseline: Schur-outer Jacobi diagonal for k=2 (stored multiply).
     # This is the WHOLE-space diagonal: 1/diag(S_2 + D_1 diag(M_1)^{-1} D_1^T),
     # i.e. it already includes the curl term -> overlaps/double-counts with P_B.
-    schur_diaginv = _get_schur_diaginv(ops, 2, DIRICHLET, 'tensor_probe')
+    schur_diaginv = _get_schur_diaginv(ops, 2, DIRICHLET, 'metric_lumping_probe')
 
     def jacobi_diag(r):
         return schur_diaginv * r
@@ -2733,7 +2733,7 @@ def make_apply_routines_k3(seq: DeRhamSequence, ops):
               f"n_core={_ncore}", flush=True)
 
     # --- jacobi baseline (whole-space diag(L_3)) ---
-    schur_diaginv = _get_schur_diaginv(ops, 3, k3_dbc, 'tensor_probe')
+    schur_diaginv = _get_schur_diaginv(ops, 3, k3_dbc, 'metric_lumping_probe')
 
     def jacobi_diag(r):
         return schur_diaginv * r
