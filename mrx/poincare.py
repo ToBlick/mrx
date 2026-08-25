@@ -93,6 +93,86 @@ def logical_field(seq, dof, k, dirichlet):
     return field
 
 
+class BzetaParameterisationError(RuntimeError):
+    """``B^zeta`` is not bounded away from zero, so ``zeta`` is not a valid
+    independent variable for the field-line ODE on this field.
+
+    Raised by :func:`require_zeta_parameterisation`. It carries the measured
+    range so the caller can report it rather than guess at it.
+    """
+
+    def __init__(self, message, *, lo, hi, tol, worst_x=None):
+        super().__init__(message)
+        self.lo, self.hi, self.tol, self.worst_x = lo, hi, tol, worst_x
+
+
+#: ``|B^zeta|/|B|`` below which the toroidal-angle parameterisation is refused.
+#: Not a tuned number -- it is far below anything a usable field produces. The
+#: quasr family, including the genuinely chaotic k=1 cases, measured >= 0.774
+#: (handoff_2026-08-24_poincare.md section 4.2), so a field that trips this is
+#: qualitatively different from anything seen, not marginally worse.
+BZETA_MIN_FRACTION = 0.05
+
+
+def require_zeta_parameterisation(field, *, n=4096, tol=BZETA_MIN_FRACTION,
+                                  name="field", seed=23):
+    r"""Refuse to trace unless ``B^zeta`` keeps one sign and stays off zero.
+
+    The tracer integrates :math:`dr/d\zeta = \hat B^r/\hat B^\zeta`, which is a
+    valid change of variables only where :math:`\hat B^\zeta \neq 0`. Where it
+    is not, the section still *renders* -- as something that looks like a
+    chaotic sea and is really a broken parameterisation. Distinguishing those
+    two after the fact cost a full investigation once already.
+
+    This FAILS rather than repairing. Clamping the denominator was considered
+    and is wrong in both directions: clamped to ``+eps`` the right-hand side
+    becomes ``~1/eps * B^r`` and the line flies off, and if ``B^zeta`` genuinely
+    crossed zero, clamping on the negative side flips the sign of the whole RHS
+    and the line silently traces BACKWARDS -- a rendered plot with no NaN and no
+    warning. A masked invariant here would resurface as "the tracer is noisy".
+
+    Returns the measured diagnostics on success so callers can record them.
+    """
+    x = jax.random.uniform(jax.random.PRNGKey(seed), (n, 3))
+    # Sample the interior only: r -> 1 is where the spline map is singular, and
+    # r -> 0 is the polar axis. Neither is where a parameterisation failure
+    # would be a property of the FIELD.
+    x = x.at[:, 0].multiply(0.96).at[:, 0].add(0.02)
+    b = jax.vmap(field)(x)
+    bz = b[:, 2]
+    frac = bz / jnp.linalg.norm(b, axis=1)
+    lo, hi = float(jnp.min(frac)), float(jnp.max(frac))
+    worst = int(jnp.argmin(jnp.abs(frac)))
+    worst_x = tuple(float(v) for v in x[worst])
+    info = {"bz_over_b_min": lo, "bz_over_b_max": hi,
+            "bz_over_b_absmin": float(jnp.min(jnp.abs(frac))),
+            "sign_change": bool(lo < 0.0 < hi), "worst_x": worst_x, "tol": tol}
+
+    if lo < 0.0 < hi:
+        raise BzetaParameterisationError(
+            f"{name}: B^zeta CHANGES SIGN over the interior "
+            f"(B^zeta/|B| in [{lo:+.3e}, {hi:+.3e}], {n} samples). The "
+            "toroidal angle is not a valid independent variable for this "
+            "field: where B^zeta = 0 the field line is locally tangent to the "
+            "section plane and dr/dzeta is undefined. Trace this field by "
+            "arclength instead, or fix the field -- do NOT clamp the "
+            "denominator, which makes the line trace backwards silently.",
+            lo=lo, hi=hi, tol=tol, worst_x=worst_x)
+    if info["bz_over_b_absmin"] <= tol:
+        raise BzetaParameterisationError(
+            f"{name}: B^zeta comes within {info['bz_over_b_absmin']:.3e} of "
+            f"zero relative to |B| (tol {tol:g}; range [{lo:+.3e}, {hi:+.3e}], "
+            f"{n} samples, worst at logical (r, theta, zeta) = "
+            f"({worst_x[0]:.4f}, {worst_x[1]:.4f}, {worst_x[2]:.4f})). The "
+            "toroidal-angle parameterisation is ill conditioned here: "
+            "dr/dzeta ~ B^r/B^zeta is stiff and the step schedule is "
+            "prescribed, so this would surface as drift that does not fall "
+            "under refinement -- indistinguishable from chaos. Trace by "
+            "arclength instead of raising the tolerance.",
+            lo=lo, hi=hi, tol=tol, worst_x=worst_x)
+    return info
+
+
 def _uv_to_logical(y, zeta):
     r = jnp.sqrt(y[0] ** 2 + y[1] ** 2)
     theta = jnp.arctan2(y[1], y[0]) / TWO_PI
@@ -451,24 +531,69 @@ def resonant_rationals(iota_min, iota_max, nfp, denom_max=15):
     return [ticks[i] for i in order], [labels[i] for i in order]
 
 
+#: Colormap for the iota scale. ``gist_rainbow`` rather than ``turbo`` to match
+#: the reference figure (data/poincare_plot_pretty_w7x.pdf): with one colour per
+#: nested surface, a rainbow's hue cycle separates ADJACENT surfaces, which is
+#: what the eye follows here. turbo's luminance ramp is better for a continuous
+#: field and worse for a stack of discrete curves.
+SECTION_CMAP = "gist_rainbow"
+
+#: Colormap for pressure. Sequential, because p is a magnitude with a zero,
+#: unlike iota which is read against its rationals.
+PRESSURE_CMAP = "plasma"
+
+
 def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
                    axis_RZ=None, path=None, profile_x=None,
                    profile_xlabel="seed radius $r$", nfp=None, denom_max=15,
-                   logical=None, chaotic=None):
-    """The two-panel figure: the section coloured by iota, and the profile.
+                   logical=None, chaotic=None, pressure=None,
+                   split_iota_p=False, cmap=SECTION_CMAP):
+    """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
     rebuilding the map -- which is the expensive half of producing it.
+
+    ``pressure`` is per-crossing, the same shape as ``R``. It is OPTIONAL
+    because the fields this traces are harmonic (vacuum-like) and carry no
+    pressure at all; a vacuum run leaves it ``None`` and gets exactly the
+    previous figure. When it is given, the third panel becomes the p profile.
+
+    ``split_iota_p`` colours the section by iota ABOVE the magnetic axis and by
+    p BELOW it, in one panel. It needs both ``pressure`` and ``axis_RZ`` and
+    raises without them rather than quietly drawing a half-empty panel: the
+    whole point of the split is the comparison, and a silently one-sided figure
+    reads as a physical statement about the device.
     """
     import matplotlib.pyplot as plt  # noqa: PLC0415  (keep the module headless)
 
-    if logical is None:
+    if split_iota_p and pressure is None:
+        raise ValueError(
+            "split_iota_p=True needs a pressure array: the below-axis half of "
+            "the section is coloured by p. These fields are harmonic and carry "
+            "no pressure, so for a vacuum run leave the split off.")
+    if split_iota_p and axis_RZ is None:
+        raise ValueError(
+            "split_iota_p=True needs axis_RZ: 'above' and 'below' are defined "
+            "against the MAGNETIC axis, not against Z = 0. Splitting on Z = 0 "
+            "would cut a Shafranov-shifted plasma off-centre and the two halves "
+            "would not be the same set of surfaces.")
+
+    has_p = pressure is not None
+    if logical is None and not has_p:
         fig = plt.figure(figsize=(11.5, 5.0), constrained_layout=True)
         ax, bx = fig.subplots(1, 2, width_ratios=[1.3, 1.0])
+        lx = px = None
+    elif has_p:
+        # The three panels Tobias asked for: the section, the iota profile
+        # unchanged, and p. The logical chart is dropped here rather than made
+        # a fourth -- it is a diagnostic, and this is the presentation figure.
+        fig = plt.figure(figsize=(15.5, 4.8), constrained_layout=True)
+        ax, bx, px = fig.subplots(1, 3, width_ratios=[1.3, 1.0, 1.0])
         lx = None
     else:
         fig = plt.figure(figsize=(15.5, 4.8), constrained_layout=True)
         ax, lx, bx = fig.subplots(1, 3, width_ratios=[1.15, 1.0, 1.15])
+        px = None
 
     # Chaotic lines are REAL and get plotted -- they are the physics of an
     # overlapped island region -- but they have no rotational transform, so
@@ -487,8 +612,38 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     npts = max(int(keep.sum()) * R.shape[1], 1)
     size = float(jnp.clip(3000.0 / npts, 0.35, 15.0))
     colour = jnp.broadcast_to(iota[:, None], R.shape)
-    sc = ax.scatter(R[shown], Z[shown], c=colour[shown], s=size, vmin=lo,
-                    vmax=hi, cmap="turbo", linewidths=0, rasterized=True)
+
+    # The split is per CROSSING, not per line: a surface straddles the axis, so
+    # the same line is iota-coloured where it is above and p-coloured below.
+    if split_iota_p:
+        # axis_RZ carries the axis crossing at each save, not a single point,
+        # so the dividing line is their mean. The axis wanders by ~1e-3 of the
+        # minor radius over a period; taking one sample would tilt the split by
+        # that much for no reason.
+        z_axis = float(jnp.mean(jnp.asarray(axis_RZ[1])))
+        upper = Z >= z_axis
+    else:
+        z_axis = None
+        upper = jnp.ones_like(R, dtype=bool)
+
+    # `shown` selects LINES, `upper` selects CROSSINGS, so the line mask has to
+    # be broadcast onto the crossing grid before they can be combined. With the
+    # split off, `upper` is all-True and this selects exactly what `R[shown]`
+    # used to.
+    shown2 = jnp.broadcast_to(shown[:, None], R.shape)
+    sel_iota = shown2 & upper
+    sc = ax.scatter(R[sel_iota], Z[sel_iota], c=colour[sel_iota],
+                    s=size, vmin=lo, vmax=hi, cmap=cmap, linewidths=0,
+                    rasterized=True)
+    psc = None
+    if split_iota_p:
+        # Chaotic lines keep their grey in BOTH halves. p is a field value and
+        # is perfectly well defined on a chaotic line, but colouring one half of
+        # a line and greying the other reads as two different objects.
+        sel_p = shown2 & ~upper
+        if sel_p.any():
+            psc = ax.scatter(R[sel_p], Z[sel_p], c=pressure[sel_p], s=size,
+                             cmap=PRESSURE_CMAP, linewidths=0, rasterized=True)
     if (keep & chaotic).any():
         m = keep & chaotic
         ax.scatter(R[m], Z[m], c="0.25", s=size, linewidths=0, rasterized=True,
@@ -508,6 +663,10 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         # everything else on the colorbar is a surface no island can open on.
         cbar.set_ticks(res_ticks)
         cbar.set_ticklabels(res_labels)
+    if psc is not None:
+        pbar = fig.colorbar(psc, ax=ax, label=r"$p$", fraction=0.046, pad=0.02)
+        pbar.ax.tick_params(labelsize=7)
+        ax.axhline(z_axis, color="0.35", lw=0.6, ls=":", zorder=1)
 
     # An axisymmetric vacuum field has iota = 0, so every line is a fixed point
     # of the return map and the section collapses onto the midplane.  That is
@@ -540,7 +699,7 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         # where the physical panel hides it behind the shaping.
         lr, lth = logical
         lx.scatter(lr[shown], lth[shown], c=colour[shown], s=size, vmin=lo,
-                   vmax=hi, cmap="turbo", linewidths=0, rasterized=True)
+                   vmax=hi, cmap=cmap, linewidths=0, rasterized=True)
         if (keep & chaotic).any():
             m = keep & chaotic
             lx.scatter(lr[m], lth[m], c="0.25", s=size, linewidths=0,
@@ -568,6 +727,20 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
                  color="tab:red", alpha=0.7)
     bx2.set_ylabel("angle-fit residual [turns]", color="tab:red")
     bx.set_title(subtitle, fontsize=10)
+
+    if px is not None:
+        # p against the same surface label the iota profile uses, so the two
+        # panels read against a common abscissa. One point per crossing rather
+        # than a per-line mean: on an island chain p is not constant along the
+        # line, and averaging would hide exactly that.
+        pv = pressure[shown]
+        xv = jnp.broadcast_to(jnp.asarray(x)[:, None], R.shape)[shown]
+        px.scatter(xv, pv, s=max(size, 1.5), c=pv, cmap=PRESSURE_CMAP,
+                   linewidths=0, rasterized=True)
+        px.set_xlabel(profile_xlabel)
+        px.set_ylabel(r"$p$")
+        px.grid(alpha=0.3)
+        px.set_title("pressure", fontsize=10)
 
     if path is not None:
         fig.savefig(path, dpi=200)

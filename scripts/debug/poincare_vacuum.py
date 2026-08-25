@@ -49,8 +49,8 @@ from mrx.nullspace import (  # noqa: E402
 from mrx.poincare import (  # noqa: E402
     effective_radius, escaped_mask, logical_field,
     mean_axis_distance, midplane_radius, render_section,
-    rotational_transform, seed_from_axis, seed_line, step_convergence, to_RZ,
-    trace,
+    require_zeta_parameterisation, rotational_transform, seed_from_axis,
+    seed_line, step_convergence, to_RZ, trace,
 )
 from verify_block_jacobi import build_sequence  # noqa: E402
 
@@ -182,19 +182,18 @@ def zeta_component_report(field, name, n=4096):
 
     Refining the step does not help, which is the signature to look for: a step
     drift that stays large as the step shrinks.
+
+    Since 2026-08-25 this RAISES rather than printing and carrying on. It used
+    to warn and trace anyway, which put the burden on whoever read the log to
+    notice one line among hundreds -- and the failure it guards against renders
+    as a plausible chaotic sea, so nobody would.
     """
-    x = jax.random.uniform(jax.random.PRNGKey(23), (n, 3))
-    x = x.at[:, 0].multiply(0.96).at[:, 0].add(0.02)
-    b = jax.vmap(field)(x)
-    bz = b[:, 2]
-    scale = jnp.linalg.norm(b, axis=1)
-    lo, hi = float(jnp.min(bz / scale)), float(jnp.max(bz / scale))
-    flips = bool(lo < 0.0 < hi)
-    print(f"[zeta] {name}: B^zeta/|B| in [{lo:+.3e}, {hi:+.3e}]"
-          + ("   *** CHANGES SIGN -- the zeta parameterisation is invalid "
-             "here and this trace is meaningless ***" if flips else ""),
-          flush=True)
-    return {"bz_over_b_min": lo, "bz_over_b_max": hi, "sign_change": flips}
+    info = require_zeta_parameterisation(field, n=n, name=name)
+    print(f"[zeta] {name}: B^zeta/|B| in "
+          f"[{info['bz_over_b_min']:+.3e}, {info['bz_over_b_max']:+.3e}]  "
+          f"(closest approach to zero {info['bz_over_b_absmin']:.3e}, "
+          f"tol {info['tol']:g})", flush=True)
+    return info
 
 
 def bench(field, seeds, cli):
@@ -302,8 +301,13 @@ def main():
                     help="prescribed steps per field period")
     ap.add_argument("--saves", type=int, default=8,
                     help="samples kept per period; must divide --steps")
-    ap.add_argument("--planes", default="0",
-                    help="logical zeta of each section, comma separated")
+    ap.add_argument("--planes", default=None,
+                    help="logical zeta of each section, comma separated. "
+                         "Mutually exclusive with --n-planes")
+    ap.add_argument("--n-planes", type=int, default=None,
+                    help="number of EVENLY SPACED sections over one field "
+                         "period: zeta = k/N for k in 0..N-1. Any N; use this "
+                         "instead of --planes when the positions do not matter")
     ap.add_argument("--batch-size", type=int, default=None)
     ap.add_argument("--bench", action="store_true",
                     help="time the prescribed schedule against the adaptive one")
@@ -329,6 +333,16 @@ def main():
                          "small returns a non-harmonic form in silence")
     ap.add_argument("--out", default="outputs/poincare")
     cli = ap.parse_args()
+
+    if cli.planes is not None and cli.n_planes is not None:
+        ap.error("--planes and --n-planes are mutually exclusive: pass the "
+                 "positions or the count, not both")
+    if cli.n_planes is not None:
+        if cli.n_planes < 1:
+            ap.error(f"--n-planes must be >= 1 (got {cli.n_planes})")
+        planes = [k / cli.n_planes for k in range(cli.n_planes)]
+    else:
+        planes = [float(v) for v in (cli.planes or "0").split(",")]
 
     # BEFORE compute_nullspaces, which is where a schur.outer fallback would
     # fire: promoted here so a silent downgrade cannot survive the run.
@@ -386,7 +400,7 @@ def main():
         # (R, Z) goes into the archive alongside (u, v): re-deriving it needs
         # the map, and rebuilding the map is the expensive half of this script.
         sections, offsets, a_eff0 = {}, {}, None
-        for plane in (float(v) for v in cli.planes.split(",")):
+        for plane in planes:
             path = os.path.join(
                 cli.out, f"poincare_{cli.geometry}_{name}_zeta{plane:g}.png")
             R, Z, aR, aZ, cR, cZ, lr, lth = section_RZ(seq, res, plane)

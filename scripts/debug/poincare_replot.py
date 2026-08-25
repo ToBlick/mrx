@@ -35,6 +35,14 @@ def main():
     ap.add_argument("traces", nargs="+", help="trace_*.npz files")
     ap.add_argument("--outdir", default=None,
                     help="defaults to the directory each trace sits in")
+    ap.add_argument("--cmap", default=None,
+                    help="colormap for the iota scale; defaults to "
+                         "mrx.poincare.SECTION_CMAP")
+    ap.add_argument("--split-iota-p", action="store_true",
+                    help="colour the section by iota ABOVE the magnetic axis "
+                         "and by p below it. Needs a pressure array in the "
+                         "archive; these vacuum traces carry none, so this "
+                         "raises on them rather than drawing half a panel")
     cli = ap.parse_args()
 
     for path in cli.traces:
@@ -93,6 +101,9 @@ def main():
                          f"{int(keep.sum())}/{len(keep)} lines kept",
                 axis_RZ=axis, path=out, profile_x=a_eff, nfp=NFP[geometry],
                 logical=logical, chaotic=chaotic,
+                pressure=(d["pressure"] if "pressure" in d.files else None),
+                split_iota_p=cli.split_iota_p,
+                **({"cmap": cli.cmap} if cli.cmap else {}),
                 profile_xlabel=(xlab if a_eff is not None
                                 else "seed radius $r$"))
             print(f"{out}   ({int((chaotic & keep).sum())} chaotic, "
