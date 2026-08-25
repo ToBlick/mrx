@@ -617,3 +617,208 @@ its first line so the log always says which copy ran.
 
 `data/` is gitignored; the worktree has it as a symlink to
 `/scratch/tblickhan/mrx/data`.
+
+---
+---
+
+# PART II — findings after the first write-up
+
+Sections 1-11 above were written before Tobias supplied the finite-beta Clebsch
+exports and before the Poincare sections were rendered. Everything below is
+later and, where it conflicts with the above, supersedes it.
+
+## 12. THE FIELD RELAXES INTO CHAOS — the most important result here
+
+`w7x-ini-clebsch`, Clebsch IC, 3000 CG steps, `gamma=0`. Poincare of the
+initial and final fields, 40 seeds x 150 periods:
+
+    quantity              IC          final
+    lines lost           1/40        15/40
+    axis offset       1.433e-04    1.027e-01
+    h/2 drift         1.800e-03    1.600e+00
+    B^zeta/|B| min      +0.520       +0.137
+
+Every field line fills the volume; the logical chart is uniformly filled, so
+`B^rho` is large everywhere. **All nested surfaces are destroyed.** The h/2
+drift at 1.6 turns means the field-line integration is not even converged.
+
+### NOT ONE GUARANTEED INVARIANT NOTICED
+
+    energy monotone            3000/3000 steps
+    ||div B|| max              6.685e-14
+    G1 linesearch identity     6.5e-17 against the energy scale
+    helicity drift             -5.8e-03
+
+Everything this scheme enforces was satisfied while the physics was destroyed,
+because **nested surfaces are protected by none of them**. A diagnostic suite
+can be complete with respect to what a scheme conserves and still be blind to
+whether the answer is any good. That lesson generalises past this study.
+
+### Working hypothesis — testable, NOT asserted
+
+The scheme is an energy **descent**, not an ideal **flow**. Explicit Euler on
+`dB/dt = curl(v x B)` preserves frozen-in flux only to O(dt^2) per step, and
+`ANALYTIC_LINESEARCH` deliberately takes the LARGEST step that still lowers E.
+That error acts as **numerical reconnection**, applied 3000 times.
+
+What makes this more than a story: the survivors are exactly those Taylor's
+argument says survive reconnection — helicity (0.58% drift), `div B` and the
+harmonic flux — while the ideal Casimirs that hold surfaces together are not
+conserved at all. A Taylor state in stellarator geometry generically has islands
+and chaos. **So the chaos may be the correct answer to the variational problem
+the code is solving, rather than the one we want solved.** If so,
+`ANALYTIC_LINESEARCH` is fundamentally at odds with ideal relaxation: it
+maximises progress per step and pays in topology.
+
+Controls run to separate this (results in the run directories): a much smaller
+fixed step (`--dt-mode fixed --dt0 1e-3`), which should retain surfaces if
+numerical reconnection is the mechanism; and `gamma=1`, testing whether
+smoothing the velocity suffices. A roughness diagnostic `||J||/||B||` separates
+"physically chaotic but smooth" from "numerically shredded at the grid scale".
+**Resolution has NOT been tested and is the first thing to check.**
+
+### The counter-example: `dzeta` behaves exactly as predicted
+
+`B_hat = (0,0,1)` has an exactly known target AND an exactly known energy floor,
+because the harmonic amplitude is conserved by construction:
+
+    dB = curl E is an EXACT form, and a harmonic 2-form of the Dirichlet
+    complex satisfies D_1^T h = 0, so with D_1 = M_2 G_1
+        <h, dB>_M2 = h^T M_2 G_1 E = h^T D_1 E = (D_1^T h)^T E = 0
+
+identically, every step, for any E. That component IS the net toroidal flux, so
+by the M-orthogonal split `||B||^2 = ||B_harm||^2 + ||B_exact||^2` the descent
+can only remove the exact part:
+
+    E_min = (1/2) cos^2 ||B||_M^2 = (1/2)(0.682018)^2 = 0.2325746
+
+Measured: `E` fell 0.5 -> 0.2438 by step 1560, still descending — 87% of the
+removable energy gone, 4.8% above the predicted floor.
+
+**This is why the field cannot relax to B = 0, and it is NOT helicity.** `dzeta`
+has zero shear, so its helicity is zero analytically (measured -2.48e-03) and a
+helicity-based argument would permit collapse. The flux invariant explains the
+case where the obvious answer fails.
+
+Corroboration from two independent solve chains: at the `dzeta` IC the harmonic
+remainder from the k=1 Hodge decomposition (6.8202e-01) and the alignment
+against `compute_nullspaces`' harmonic vector (0.682018) agree to five digits.
+
+## 13. The Clebsch IC validated end to end on finite beta
+
+Route 2b was blocked on a missing file at the start of this study; Tobias
+supplied two finite-beta W7-X exports and it became the best-validated route
+here. `gvec_clebsch_ic.py` rebuilds B from three scalars, pushes it through OUR
+force operator, and compares the recovered pressure with GVEC's stored profile:
+
+| file | beta_mean | iota ratio vs file | \|\|F\|\|/\|\|B\|\| | pressure shape residual |
+|---|---|---|---|---|
+| `w7x_ini_00000000` | 5.8% | +0.2000 (= 1/nfp) | 4.76e-02 | **8.93e-02** |
+| `w7x_fmm002` | 1.8% | +0.2000 (= 1/nfp) | 1.88e-02 | **4.51e-02** |
+
+The value is in the **conjunction** — map, representation and force operator
+validated together, on a finite-beta target, which is much harder than a vacuum
+field. A reader skimming "4.5%" will not see that unless told.
+
+**`1/nfp` measured three independent ways**, being the factor most likely to be
+wrong by inheritance: (1) finite differences of `LA` against the stored
+derivatives, 6.2602 vs `2pi` and 1.2535 vs `2pi/nfp`; (2) `dchi_dr/dPhi_dr` runs
++0.86 -> +1.00, W7-X's published full-turn iota; (3) the reconstructed-to-file
+ratio is +0.2000 at every radius. On `fmm002` the file's `dchi/dPhi` is
+**negative** (-0.93 -> -1.05) with the reconstruction tracking it sign and all,
+ratio still +0.2000 — closing the mirror-flip question `gvec_clebsch_ic.py`'s
+own docstring flagged as open. `dchi_dr/dPhi_dr` is a flux function to 6.7e-16.
+
+**`load_clebsch` had a silent convention bug.** It dropped the last point on
+every periodic axis unconditionally — right for hegna (closed sample, duplicated
+endpoint), wrong for these (half-open, like quasr), where it discards real data
+and mis-registers the wrap. Now decided from the data with the same 1e-8 cut
+`_periodic_axis` already used for the map: `|LA(0) - LA(1)| = 6.9e-02` here
+against ~1e-16 for a genuine duplicate.
+
+**The IC must be Leray-cleaned.** `dB = curl E` preserves `div B` exactly, so
+the IC's divergence is carried for the whole run. The Clebsch IC is div-free in
+the reference frame but the L2 projection through `M_2` reintroduces
+`||div B|| = 2.7e-02` at `ns=(8,16,8)` — seventy times the logical IC's 3.7e-04.
+Cleaning once up front takes it to 6.5e-14 and it stays ~1e-12 throughout.
+
+**A prediction of mine failed.** I said the multiplier's shape would stay
+consistent with the file; over 3000 steps it drifted 8.94e-02 -> 3.16e-01. The
+prediction was invalid, not the run: convergence to `J x B = grad p` does not
+pin down WHICH equilibrium. GVEC prescribes `p(s)` and `iota(s)` and solves for
+shapes; this scheme fixes topology, minimises energy, and lets `p` be whatever
+the multiplier turns out to be. GVEC's state being a fixed point says nothing
+about it being a minimum. Candidates not distinguished: (a) it is a saddle of
+our functional, (b) discretisation error, (c) the run went chaotic (section 12)
+and the multiplier followed.
+
+## 14. Hyperregularisation, resistivity, warm starts
+
+### gamma > 0 helps the force residual a lot, and reverses the ranking
+
+`gamma=1`, `mu=1e-3`, 250 steps, `quasr44970`:
+
+| arm | gamma | energy removed | \|\|F\|\| final | s/step |
+|---|---|---|---|---|
+| gradient | 0 | 0.2497% | 5.210e-01 | 1.22 |
+| **gradient** | **1** | **0.5228%** | **1.016e-01** | 4.26 |
+| cg | 0 | 0.5554% | 2.869e-01 | 1.12 |
+| **cg** | **1** | 0.5013% | **1.247e-01** | 4.07 |
+| lbfgs | 1 | 0.4675% | 2.445e-01 | 3.94 |
+
+5.1x better on force for gradient, 2.3x for CG, at 3.5x cost per step — and it
+wins per unit wall-clock too. The `M + eps L` solve gave no preconditioner
+trouble at `mu = 1e-3`. **The ordering REVERSES**: at `gamma=0` the accelerated
+methods beat gradient 2.2x; at `gamma=1` plain gradient is best. That would make
+"fix L-BFGS" and "add hyperregularisation" partly ALTERNATIVE routes. One
+geometry, one `mu`: a hint, not a result.
+
+### gamma > 0 voids the descent guarantee for quasi-Newton
+
+At `gamma=1` the `lbfgs` arm took an ASCENT step on 5/250 while `sy > 0` on
+250/250. Not a curvature failure: the direction is `u = R H_k F` with
+`R = (I + mu L)^-1`, and **the product of two SPD operators need not be SPD**,
+so `(F, R H_k F)_M` can go negative. Plain gradient is safe (`u = R F`). The
+exact linesearch absorbs it silently, so it would never surface as a failure.
+
+### Warm starts are worth about 1%
+
+Zeroing `p, p_v, H, JxH, E` between steps changes only each Krylov solve's
+starting vector, so the trajectory is unchanged and only cost differs:
+
+    warm  1.16 s/step   energy removed 0.5682%   ||F|| 3.111e-01
+    cold  1.17 s/step   energy removed 0.5682%   ||F|| 3.075e-01
+
+**0.9%.** The solves are well enough preconditioned that the starting vector
+barely matters — a real simplification opportunity, within the envelope
+`quasr44970`, `ns=(8,16,8)`, `p=3`, `gamma=0`.
+
+### Resistivity breaks the linesearch, predictably
+
+With `eta > 0` the step is `dB = curl(u x H - eta J)`, so
+`<B,dB>_M = -(F,u)_M - eta ||J||^2_M1`, but `ANALYTIC_LINESEARCH` computes
+`dt = (F,u)/||dB||^2` and **omits the resistive term**. `dt` then under-steps.
+Energy still falls (the omitted term is sign-definite), so this is a loss of
+optimality, not correctness; the G1 identity breaks by exactly
+`dt*eta*||J||^2`.
+
+## 15. Decisions, revised
+
+**Section 12 comes first.** Is the chaos acceptable physics for this variational
+problem, or must the scheme become an actual ideal flow? If the latter,
+`ANALYTIC_LINESEARCH` is the thing to give up — a design decision, not tuning.
+Test resolution before anything else.
+
+Then: CG vs fixed L-BFGS (level, unresolvable here); hyperregularisation vs
+acceleration; `gamma > 0` with quasi-Newton silently producing ascent
+directions; and whether the warm-start plumbing can go.
+
+## 16. Also not verified
+
+Everything in section 10, plus: the chaos has not been tested against
+resolution; no `mu` sweep; the W7-X warm/cold repeat and the `gamma>0`
+warm-start case were still running; and a mislabeled diagnostic shipped for
+several hours (the residual printed volume-average brackets while dividing by
+the L2 norm, which is the correct pairing — numbers were always right). Worth a
+line because a mislabeled diagnostic is one step from someone recomputing a
+correct quantity to "fix" it.
