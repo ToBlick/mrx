@@ -6,6 +6,23 @@ field can be rebuilt from three scalars instead of resampled as a vector — and
 when no data exists at all, the same ansatz gives analytic ICs and, on a
 cylinder, exact analytic equilibria.
 
+> **DATA WARNING (2026-08-25, after wind-down).**
+> `data/gvec_nfp3_hegna_80cubed_clebsch.h5` has been DELETED and was the only
+> Clebsch-carrying export. It was also audited before deletion and is **not a
+> converged equilibrium**: its stored pressure does not balance its own B --
+> `sin(angle(J,B)) = 0.022` (nearly force-free), `|J x B|/|grad p| = 0.042`, and
+> `2 mu0 p / B^2 = 1.09` on axis, i.e. beta ~ 100%. `pres_scale_pa` does not
+> reconcile it; applying the implied 28.7 makes the residual WORSE (1.00 ->
+> 1.36). Triage for everything below that quotes hegna (§5, §5.4, §7.2, §8.2):
+> * the end-to-end PRESSURE test is invalidated;
+> * the Clebsch identities, the unit conversions and the radial label are
+>   UNAFFECTED -- they check the file against ITSELF, not against convergence;
+> * §9.1's `lambda` result weakens from "reproduces a converged equilibrium's
+>   lambda" to "reproduces THIS FILE's lambda", which is still a real test of
+>   the lambda equation but not of physics;
+> * the numbers were correctly measured and are not wrong; they are now
+>   UNREPRODUCIBLE until a replacement file arrives.
+
 Status: derivations complete and checked against data. Landed: the cylinder
 structure gates (§7.1), all four screw-pinch arms against the closed-form
 pressure (§7.3), both toroid arms including one that OVERTURNED a claim in this
@@ -484,7 +501,22 @@ rho      |g_rt|      |g_rz|      |g_tz|
 0.899    9.510e-01   5.532e-01   5.402e-01
 ```
 
-against toroid and cylinder, where all three are IDENTICALLY zero. That
+against toroid and cylinder, where all three are IDENTICALLY zero.
+
+**Re-established WITHOUT hegna**, since that file is now deleted (see the banner
+at the top). `|g_rho-chi| / sqrt(g_rr g_tt)` from R, Z alone, rho 0.20 -> 0.86,
+on three exports that still exist:
+
+```
+  quasr9983  (nfp=2)   0.54 -> 0.64
+  quasr44970 (nfp=3)   0.87 -> 0.91
+  w7x-gvec   (nfp=5)   0.88 -> 0.93
+  cylinder / toroid    IDENTICALLY ZERO
+```
+
+So the criterion and its prediction do not depend on the deleted file, and
+`logical_profile_ic.py` can re-measure the leak on any of those with NO GVEC
+field data at all, since it builds its own analytic profiles. That
 predicts both the magnitude (0.77-0.95 coupling -> 6.8e-03, versus exactly zero
 -> 1e-16, six orders) and the monotonic radial growth, with no free parameter.
 **Cylinder and toroid satisfy the criterion accidentally; no shaped stellarator
@@ -788,7 +820,7 @@ Written 2026-08-25 at wind-down. Everything below is committed on
 | lambda solves to ~5% of GVEC's own, data-free, ~1.5% of setup | §9.1 | median corr +0.9984 / +0.9992 |
 | The edge residual is MODEL error, not truncation | §9.1 | 2.8x coefficients moved it 0.2% |
 | **The L2 leak criterion: `g_rho-chi = g_rho-zeta = 0`** | §8.2 | predicts magnitude AND radial growth, no free parameter |
-| Histopolation is immune to that leak BY CONSTRUCTION | §8.2 | component-wise face integrals; structural, not numerical |
+| Histopolation is immune to that leak BY CONSTRUCTION | §8.2 | structural argument, but see §13.3 -- MRX cannot yet DO polar histopolation correctly |
 
 ### 13.2 Decided against — do not restart
 
@@ -800,10 +832,34 @@ Written 2026-08-25 at wind-down. Everything below is committed on
 
 ### 13.3 In flight at wind-down, unfinished
 
-* **`histo_tests3` (16765707)** decides whether commit `1cf9cbd` is correct.
-  That commit is marked UNVERIFIED. The two assertions that matter are
-  `test_interpolation_reproduces_its_own_space` (the paper's projector
-  property) and `test_phys_pullback_inverts_pushforward` (the convention fix).
+* **`histo_tests3` (16765707) REPORTED, and the answer is SPLIT.** Commit
+  `1cf9cbd` is half right.
+
+  **The pullback fix is CONFIRMED.** k=1 histopolation went from `nan` to
+  `1.545e+00` -- finite. `DF^T` has no inverse, so the polar-axis singularity
+  is gone, exactly as diagnosed. (1.545 still fails its own `err < 1.0`
+  accuracy assert, which is a separate question from the nan.)
+
+  **The guard removal ALONE is NOT sufficient. The round-trip FAILS:**
+
+  ```
+  k=0 dirichlet=False   round-trip relative error   5.290e-01
+  k=0 dirichlet=True    round-trip relative error   3.609e-01
+  ```
+
+  Interpolating a function that ALREADY lives in the target space does not
+  return its own DOFs. So `E . Pi_full` is **not** a projector onto the polar
+  space -- `E E^T != I` -- and MRX's extraction is NOT the conforming
+  projection `P_Z`. The literature route is right, but it needs the paper's
+  EXPLICIT LOCAL `P_Z` (pole averaging, zeroing the `i=0` circumferential
+  coefficients, finite differences at `i=1`, angular DFTs), which MRX does not
+  have. This is the ~a-day branch of the §10.1 table, not the hours branch.
+
+  Note the discriminating power of this test: the k=0 Greville interpolation of
+  a SMOOTH function is fine (2.225e-02 against the analytic field, and better
+  than the L2 projection's bound requires), so an accuracy test alone would
+  have passed and hidden this. Only idempotency on the space itself exposes it.
+
   `histo_tests2` (16765013) is SUPERSEDED -- it runs the pre-fix pullbacks.
 * **The lambda invariance arms were never run.** `slurm/job_logical_ic.sh`
   defines `toroid_lam` / `w7x_lam` / `w7x_noshear` and the `--no-lambda` pair
