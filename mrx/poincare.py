@@ -276,8 +276,38 @@ def to_RZ(seq, ys, zeta):
     return R, xyz[..., 2]
 
 
+def enclosed_area(R, Z, centre_R, centre_Z):
+    """Section area enclosed by each surface, by shoelace on the crossings.
+
+    The surface label has to be map-independent for two runs to be comparable:
+    the seed radius ``r`` names a different surface as soon as the map changes,
+    which is exactly what a resolution sweep or an interior perturbation does.
+    Area is a property of the physical curve, so it is the same label in every
+    run.
+
+    Sorting the crossings by poloidal angle about the axis and running the
+    shoelace formula converges to the true area from below as the crossings
+    fill the curve.  It assumes the surface is star-shaped about the axis --
+    true for a flux surface, false for an island chain, where the crossings are
+    disjoint lobes and the number is meaningless.  The angle-fit residual from
+    :func:`rotational_transform` is what flags those.
+    """
+    ang = jnp.arctan2(Z - centre_Z, R - centre_R)
+    order = jnp.argsort(ang, axis=-1)
+    Rs = jnp.take_along_axis(R, order, axis=-1)
+    Zs = jnp.take_along_axis(Z, order, axis=-1)
+    cross = Rs * jnp.roll(Zs, -1, axis=-1) - jnp.roll(Rs, -1, axis=-1) * Zs
+    return 0.5 * jnp.abs(jnp.sum(cross, axis=-1))
+
+
+def effective_radius(R, Z, centre_R, centre_Z):
+    """``sqrt(area/pi)`` -- the enclosed area as a length."""
+    return jnp.sqrt(enclosed_area(R, Z, centre_R, centre_Z) / jnp.pi)
+
+
 def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
-                   axis_RZ=None, path=None):
+                   axis_RZ=None, path=None, profile_x=None,
+                   profile_xlabel="seed radius $r$"):
     """The two-panel figure: the section coloured by iota, and the profile.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -331,12 +361,13 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     ax.set_title(title + ("" if to_scale else "\nAXES NOT TO SCALE"),
                  fontsize=10)
 
-    bx.plot(seed_r[keep], iota[keep], "o-", ms=3, lw=0.8)
-    bx.set_xlabel("seed radius $r$")
+    x = seed_r if profile_x is None else profile_x
+    bx.plot(x[keep], iota[keep], "o-", ms=3, lw=0.8)
+    bx.set_xlabel(profile_xlabel)
     bx.set_ylabel(r"$\iota$")
     bx.grid(alpha=0.3)
     bx2 = bx.twinx()
-    bx2.semilogy(seed_r[keep], jnp.maximum(resid[keep], 1e-16), ".", ms=4,
+    bx2.semilogy(x[keep], jnp.maximum(resid[keep], 1e-16), ".", ms=4,
                  color="tab:red", alpha=0.7)
     bx2.set_ylabel("angle-fit residual [turns]", color="tab:red")
     bx.set_title(subtitle, fontsize=10)

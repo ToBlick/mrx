@@ -42,8 +42,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mrx.nullspace import compute_nullspaces  # noqa: E402
 from mrx.poincare import (  # noqa: E402
-    escaped_mask, logical_field, render_section, rotational_transform,
-    seed_line, step_convergence, to_RZ, trace,
+    effective_radius, escaped_mask, logical_field, render_section,
+    rotational_transform, seed_line, step_convergence, to_RZ, trace,
 )
 from verify_block_jacobi import build_sequence  # noqa: E402
 
@@ -54,6 +54,11 @@ from verify_block_jacobi import build_sequence  # noqa: E402
 NFP = {
     "toroid": 1, "cylinder": 1, "rot-ellipse": 3, "w7x": 5,
     "quasr9983": 2, "quasr44970": 3, "w7x-gvec": 5, "hegna": 3,
+    "quasr65530": 4, "quasr65575": 4, "w7x-ini": 5,
+    # The 8x16x8 quasr44970 baseline and its two interior perturbations.  The
+    # perturbed files declare nfp=2 and their R/Z data says otherwise; see
+    # GVEC_NFP_OVERRIDE in gvec_geometry.py.
+    "quasr44970-c": 3, "pert-axis": 3, "pert-interior": 3,
 }
 
 #: (k, dirichlet, label) for the two harmonic fields.
@@ -114,7 +119,8 @@ def run_field(seq, dof, k, dirichlet, nfp, cli):
     iota, resid = rotational_transform(ys, cli.saves, nfp)
 
     drift = step_convergence(field, seeds[:: max(1, cli.seeds // 8)],
-                             min(cli.periods, 32), cli.steps, cli.saves)
+                             min(cli.periods, cli.drift_periods),
+                             cli.steps, cli.saves)
 
     # Seed 0 is the axis probe: it defines the centre, so its own winding is
     # the difference of two identical numbers.  Keep its orbit for the plot,
@@ -127,24 +133,38 @@ def run_field(seq, dof, k, dirichlet, nfp, cli):
 
 
 def section_RZ(seq, res, plane):
-    """(R, Z) of the crossings and of the axis, at one logical zeta plane."""
+    """(R, Z) of the crossings, of the magnetic axis, and of the coordinate axis.
+
+    The last one is ``F(r=0, ., zeta)``.  The magnetic axis of the harmonic
+    field has no reason to sit on it -- the maps come from finite-beta
+    equilibria, and the two perturbed files displace it on purpose -- so the
+    distance between them is reported as ``axis_offset``.  Nothing downstream
+    depends on the two coinciding: the poloidal angle is measured about the
+    tracked magnetic axis, which is what makes the offset measurable rather
+    than fatal.
+    """
     saves = res["saves_per_period"]
     off = int(round(plane * saves))
     R, Z = to_RZ(seq, jnp.asarray(res["ys"][:, off::saves, :]), plane)
     aR, aZ = to_RZ(seq, jnp.asarray(res["axis"][off::saves, :]), plane)
-    return (np.asarray(R), np.asarray(Z),
-            np.asarray(aR), np.asarray(aZ))
+    cR, cZ = to_RZ(seq, jnp.zeros((1, 2)), plane)
+    return (np.asarray(R), np.asarray(Z), np.asarray(aR), np.asarray(aZ),
+            float(cR[0]), float(cZ[0]))
 
 
-def plot(res, geometry, label, plane, nfp, RZ, path):
-    R, Z, aR, aZ = RZ
+def plot(res, geometry, label, plane, nfp, RZ, a_eff, path):
+    R, Z, aR, aZ, cR, cZ = RZ
     keep = ~(res["escaped"] | ~res["ok"])
+    offset = float(np.hypot(aR.mean() - cR, aZ.mean() - cZ))
     render_section(
         R, Z, res["iota"], res["resid"], res["seeds"][:, 0], keep,
         title=f"{geometry}  |  {label}  |  $\\zeta = {plane:g}$\n"
               f"{R.shape[1]} crossings/line",
-        subtitle=f"nfp = {nfp}   |   h/2 step drift {res['drift']:.1e}",
-        axis_RZ=(aR, aZ), path=path)
+        subtitle=f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "
+                 f"axis offset {offset:.2e}",
+        axis_RZ=(aR, aZ), path=path, profile_x=a_eff,
+        profile_xlabel=r"$a_{\mathrm{eff}} = \sqrt{A/\pi}$  [m]")
+    return offset
 
 
 def main():
@@ -167,6 +187,8 @@ def main():
     ap.add_argument("--bench", action="store_true",
                     help="time the prescribed schedule against the adaptive one")
     ap.add_argument("--bench-periods", type=int, default=20)
+    ap.add_argument("--drift-periods", type=int, default=64,
+                    help="periods over which the h vs h/2 step check runs")
     ap.add_argument("--maxiter", type=int, default=10000)
     ap.add_argument("--out", default="outputs/poincare")
     cli = ap.parse_args()
@@ -212,15 +234,27 @@ def main():
 
         # (R, Z) goes into the archive alongside (u, v): re-deriving it needs
         # the map, and rebuilding the map is the expensive half of this script.
-        sections = {}
+        sections, offsets, a_eff0 = {}, {}, None
         for plane in (float(v) for v in cli.planes.split(",")):
             path = os.path.join(
                 cli.out, f"poincare_{cli.geometry}_{name}_zeta{plane:g}.png")
-            RZ = section_RZ(seq, res, plane)
-            plot(res, cli.geometry, label, plane, nfp, RZ, path)
-            print(f"        -> {path}", flush=True)
-            for key, arr in zip(("R", "Z", "axisR", "axisZ"), RZ):
+            R, Z, aR, aZ, cR, cZ = section_RZ(seq, res, plane)
+            # a_eff is the map-INDEPENDENT surface label: the seed radius names
+            # a different surface as soon as the map changes, which is exactly
+            # what a resolution sweep and an interior perturbation both do.
+            a_eff = np.asarray(effective_radius(
+                jnp.asarray(R), jnp.asarray(Z), aR.mean(), aZ.mean()))
+            off = plot(res, cli.geometry, label, plane, nfp,
+                       (R, Z, aR, aZ, cR, cZ), a_eff, path)
+            offsets[f"zeta{plane:g}"] = off
+            print(f"        -> {path}  (axis offset {off:.3e} m)", flush=True)
+            for key, arr in zip(("R", "Z", "axisR", "axisZ"),
+                                (R, Z, aR, aZ)):
                 sections[f"{key}_zeta{plane:g}"] = arr
+            sections[f"a_eff_zeta{plane:g}"] = a_eff
+            sections[f"coordaxis_zeta{plane:g}"] = np.array([cR, cZ])
+            if a_eff0 is None:
+                a_eff0 = a_eff
 
         np.savez_compressed(
             os.path.join(cli.out, f"trace_{cli.geometry}_{name}.npz"),
@@ -232,6 +266,8 @@ def main():
             "lost": int((~keep).sum()),
             "iota_min": float(iota.min()), "iota_max": float(iota.max()),
             "resid_max": float(res["resid"][keep].max()),
+            "axis_offset_m": offsets,
+            "a_eff_max": float(a_eff0[keep].max()),
         }
 
     with open(os.path.join(cli.out, f"summary_{cli.geometry}.json"), "w") as f:

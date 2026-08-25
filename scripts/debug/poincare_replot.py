@@ -22,7 +22,9 @@ import numpy as np  # noqa: E402
 from mrx.poincare import render_section  # noqa: E402
 
 NFP = {"toroid": 1, "cylinder": 1, "rot-ellipse": 3, "w7x": 5,
-       "quasr9983": 2, "quasr44970": 3, "w7x-gvec": 5, "hegna": 3}
+       "quasr9983": 2, "quasr44970": 3, "w7x-gvec": 5, "hegna": 3,
+       "quasr65530": 4, "quasr65575": 4, "w7x-ini": 5,
+       "quasr44970-c": 3, "pert-axis": 3, "pert-interior": 3}
 LABEL = {"k2": "k=2, essential BC", "k1": "k=1, natural BC"}
 
 
@@ -53,6 +55,7 @@ def main():
             R, Z = d[f"R_zeta{plane:g}"], d[f"Z_zeta{plane:g}"]
             axis = ((d[f"axisR_zeta{plane:g}"], d[f"axisZ_zeta{plane:g}"])
                     if f"axisR_zeta{plane:g}" in d.files else None)
+            a_eff = d.get(f"a_eff_zeta{plane:g}")
             out = os.path.join(
                 outdir, f"poincare_{geometry}_{field}_zeta{plane:g}.png")
             render_section(
@@ -61,7 +64,9 @@ def main():
                       f"{R.shape[1]} crossings/line",
                 subtitle=f"nfp = {NFP[geometry]}   |   "
                          f"{int(keep.sum())}/{len(keep)} lines kept",
-                axis_RZ=axis, path=out)
+                axis_RZ=axis, path=out, profile_x=a_eff,
+                profile_xlabel=(r"$a_{\mathrm{eff}}$ [m]" if a_eff is not None
+                                else "seed radius $r$"))
             print(out, flush=True)
 
 
