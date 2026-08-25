@@ -350,6 +350,17 @@ class DerivativeSpline:
         """
         points = self.parent.greville_points()
         if self.type == 'periodic':
+            # greville_points() applies mod(., 1) to the periodic abscissae,
+            # which WRAPS the ones that fall outside [0, 1) and so destroys
+            # their monotonicity for every p >= 2.  Rolling an unsorted array
+            # produced one span of NEGATIVE width and one of width > 1 -- e.g.
+            # n=6 gave widths spanning [-0.833, +1.167] at p = 2, 3 and 4 alike
+            # -- so the spans did not tile the period and the histopolation
+            # matrix was built over nonsense intervals.  Sorting first is safe:
+            # the spans and the moments both come from this function, so they
+            # stay consistent, and sorted points tile [g_0, g_0 + 1) exactly
+            # once.
+            points = jnp.sort(points)
             next_points = jnp.roll(points, -1)
             next_points = next_points.at[-1].set(next_points[-1] + 1.0)
             return jnp.stack([points, next_points], axis=1)
