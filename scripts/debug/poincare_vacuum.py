@@ -90,16 +90,25 @@ def report_preconditioners(seq, ops):
             spec = op._materialize_default_saddle_preconditioner(
                 seq, ops, k=k, dirichlet=dbc)
             avail = op._block_jacobi_available(seq, k, dbc)
+            outer = spec.schur.outer.kind
+            # schur.inner is deliberately NOT printed. It is still raw_kron in
+            # the default spec, but with outer='block' the atom approximates
+            # L_k directly and "needs neither the Schur probe nor schur.inner
+            # -- it IS the upper-block inverse" (operators.py, the block
+            # branch). Printing it invites reading a dead field as the thing
+            # doing the work.
             print(f"[precond] k={k} {'dbc ' if dbc else 'free'}: "
-                  f"mass={spec.mass.kind:12s} schur.inner={spec.schur.inner.kind:9s} "
-                  f"schur.outer={spec.schur.outer.kind:7s} (atom assembled: {avail})",
-                  flush=True)
+                  f"mass={spec.mass.kind:12s} schur.outer={outer:7s} "
+                  f"(atom assembled: {avail})", flush=True)
+            if outer != 'block':
+                raise RuntimeError(
+                    f"k={k} dirichlet={dbc} resolved schur.outer={outer!r}, "
+                    "not the block atom")
     k0 = op._materialize_default_scalar_hodge_preconditioner(seq, ops, k=0)
-    print(f"[precond] k=0 scalar: {k0.kind}  (block atom assembled: "
-          f"{op._block_jacobi_available(seq, 0, False)}) -- the k=0 auto path "
-          "hardcodes jacobi and never consults the atom; L_0 converges in ~1e2 "
-          "iterations so this is a cost nit, not a stall risk, but the k=1 "
-          "harmonic chain does go through it via the Leray projection",
+    print(f"[precond] k=0 scalar: {k0.kind}  -- known stale default, item 3.1/3.7 "
+          "of docs/research/TODO_2026-08-24_precond_audit.md. The k=1 harmonic "
+          "chain reaches it through apply_leray_projection(v, k=1); L_0 "
+          "converges in ~1e2 iterations, so it is a cost item, not a stall risk",
           flush=True)
 
 
