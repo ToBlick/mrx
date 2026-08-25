@@ -363,15 +363,34 @@ def main():
     # --- the IC ------------------------------------------------------------
     # L2 route: histopolation is unavailable here (see the module docstring),
     # so the metric enters through M_2 and gate 1 below measures what that costs.
-    def B_ref(x):
+    #
+    # CONVENTION TRAP.  The DoFs that come out of M_2^{-1} are the PRIMAL
+    # reference components omega, i.e. ``B_phys = DF omega / J`` -- that is what
+    # DiscreteFunction evaluates and what Pushforward(., 2) consumes.  But
+    # ``load(frame='ref')`` pairs its argument straight against the basis, and
+    # M_2 itself carries a g/J weight (M2_ij = int Lambda_i^T g Lambda_j / J),
+    # so ``load(frame='ref')`` wants ``g omega / J``, NOT omega.  Handing it
+    # omega silently builds a different field, off by a metric factor that is
+    # component-dependent and rho-dependent even on a cylinder.
+    #
+    # So push omega forward explicitly and use the physical frame, which does
+    # ``DF^T (DF omega / J) = g omega / J`` internally and is unambiguous.
+    DF_map = jax.jacfwd(seq.map)
+
+    def omega_ref(x):
+        """Primal reference 2-form components -- the GVEC B_hat."""
         r = x[0]
         f = dPhi(r)
         d_chi, d_zeta = dlam(x)
         return jnp.array([0.0, f * (iota(r) - d_zeta), f * (1.0 + d_chi)])
 
+    def B_phys(x):
+        dF = DF_map(x)
+        return dF @ omega_ref(x) / jnp.linalg.det(dF)
+
     t1 = time.perf_counter()
     B_raw = seq.apply_inverse_mass_matrix(
-        seq.load(B_ref, 2, dirichlet=True, frame='ref'), 2, dirichlet=True)
+        seq.load(B_phys, 2, dirichlet=True), 2, dirichlet=True)
     B_norm = float(seq.l2_norm(B_raw, 2, dirichlet=True))
     B = B_raw / B_norm
     print(f"\n[ic] L2-projected in {time.perf_counter() - t1:.1f}s   "

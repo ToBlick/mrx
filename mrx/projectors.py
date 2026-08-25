@@ -217,9 +217,18 @@ def interpolate(seq: "DeRhamSequence", f, k: int, dirichlet: bool = False,
     frame : {'phys', 'ref'}
         'phys' (default): ``f`` returns components in the physical frame, which
         are pulled back before the moments are taken.  'ref': ``f`` already
-        returns reference-frame components -- the same convention
-        :func:`load` takes with ``frame='ref'`` and the one
-        :class:`~mrx.differential_forms.DiscreteFunction` evaluates in.
+        returns reference-frame components, in exactly the convention
+        :func:`load` takes with ``frame='ref'`` -- that is, the pulled-back
+        integrand ``DF^T v``, NOT the primal coefficient vector.
+
+        These are not the same object for k = 2.  ``M_2`` carries a ``g/J``
+        weight (``M2_ij = int Lambda_i^T g Lambda_j / J``), so the DoFs from
+        ``M_2^{-1} load`` are the PRIMAL components ``omega`` with
+        ``B_phys = DF omega / J`` -- what
+        :class:`~mrx.differential_forms.DiscreteFunction` evaluates -- whereas
+        ``frame='ref'`` wants ``g omega / J``.  To build a field from known
+        primal components, push them forward and use ``frame='phys'``; the
+        pullback recovers ``g omega / J`` on its own.
 
         Only k = 1 and k = 2 have a pullback in this path; k = 0 is a scalar,
         for which the two frames coincide.  k = 3 is rejected: its
