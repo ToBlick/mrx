@@ -39,7 +39,8 @@ def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) 
         seq.apply_derivative_matrix(
             B, 1, dirichlet_in=True, dirichlet_out=True, transpose=True),
         1, guess=A_guess)
-    B_harm = B - seq.apply_strong_curl(A)
+    B_harm = B - seq.apply_incidence_matrix(
+        A, 1, dirichlet_in=True, dirichlet_out=True)
     # <A, B + B_harm>_{L^2} via the 1->2 projection matrix
     helicity = A @ seq.apply_projection_matrix(
         B + B_harm, 2, 1, True, dirichlet_out=True)
@@ -48,7 +49,10 @@ def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) 
 
 def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
     # hard-coded dirichlet=True for now
-    div_B = seq.apply_strong_div(B)
+    # Incidence, so this measures the field's divergence and not the
+    # mass solver's residual -- see _relaxation_step.
+    div_B = seq.apply_incidence_matrix(
+        B, 2, dirichlet_in=True, dirichlet_out=True)
     return seq.l2_norm_sq(div_B, 3)**0.5
 
 # %%
@@ -390,7 +394,22 @@ class TimeStepper(eqx.Module):
         E = self.seq.apply_inverse_mass_matrix(E_dual, 1, guess=state.E)
         E = E - state.eta * J
 
-        dB = self.seq.apply_strong_curl(E)
+        # The TOPOLOGICAL curl, not M_2^-1 D_1.  Three reasons, all measured
+        # on quasr44970 ns=(8,16,8) p=3:
+        #   * div . curl is 8.6e-16 this way against 1.3e-10 for the
+        #     mass-projected form, so div B is conserved EXACTLY along the
+        #     trajectory instead of to the mass solver's tolerance;
+        #   * it is matrix-free, so it removes one Krylov solve per step from
+        #     the hot path;
+        #   * the two curls agree to 1.0e-12, so the swap does not move the
+        #     trajectory -- it only removes an error that had no business
+        #     being there.
+        # NB DeRhamSequence.apply_incidence_matrix's docstring still says the
+        # mass-projected form should be preferred for exact d.d on extracted
+        # DoFs; mrx/operators.py:2039 is the code that runs, and its Gram
+        # correction at the polar axis is what makes the incidence form exact.
+        dB = self.seq.apply_incidence_matrix(
+            E, 1, dirichlet_in=True, dirichlet_out=True)
         if self.dt_mode == TimeStepChoice.FIXED or self.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:
             dt = state.dt
         elif self.dt_mode == TimeStepChoice.ANALYTIC_LINESEARCH:

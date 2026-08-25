@@ -85,7 +85,7 @@ jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mrx.operators as op  # noqa: E402
-from mrx.differential_forms import DiscreteFunction  # noqa: E402
+from mrx.differential_forms import DiscreteFunction, Pushforward  # noqa: E402, E501
 from mrx.nullspace import compute_nullspaces  # noqa: E402
 from mrx.relaxation import (DescentMethod, IntegrationScheme,  # noqa: E402
                             TimeStepChoice, TimeStepper, compute_force,
@@ -158,14 +158,62 @@ def render_poincare(seq, B_dof, nfp, tag, outdir, cli):
             "bz_min": info["bz_over_b_min"], "bz_max": info["bz_over_b_max"]}
 
 
+def make_pressure_profiler(seq, rhos, n_ang=8):
+    """Surface-averaged pressure profile from the Leray multiplier.
+
+    The scheme minimises magnetic energy under an INCOMPRESSIBLE flow, so the
+    pressure is the Lagrange multiplier enforcing div v = 0 and the part of
+    J x B the Leray projection removes IS grad p.  The fixed point is therefore
+    J x B = grad p -- a finite-beta equilibrium, not a force-free state -- and
+    ``compute_force`` has been returning that multiplier all along.
+
+    Which makes this a real convergence test rather than a diagnostic: on a
+    geometry whose file carries GVEC's own ``pressure``, the multiplier along
+    the trajectory should stay CONSISTENT with it instead of wandering off.
+    Compared as a SHAPE with one fitted scale, since B is normalised to
+    ||B||_M = 1 and the multiplier inherits that arbitrary scale, and with the
+    edge offset removed since p's gauge is an additive constant.
+    """
+    ang = (jnp.arange(n_ang) + 0.5) / n_ang
+    pts = jnp.asarray([[[r, c, z] for c in ang for z in ang] for r in rhos])
+
+    def profile(p_dof):
+        p_h = Pushforward(
+            DiscreteFunction(p_dof, seq.basis_3, seq.e3_dbc), seq.map, 3)
+        return jax.vmap(lambda P: jnp.mean(jax.vmap(p_h)(P)[:, 0]))(pts)
+
+    return profile
+
+
+def pressure_shape_residual(p_ours, p_file):
+    """One fitted scale, edge offset removed; returns (scale, residual)."""
+    a_ours = p_ours - p_ours[-1]
+    a_file = p_file - p_file[-1]
+    denom = float(a_ours @ a_ours)
+    if denom == 0.0:
+        return 0.0, float("nan")
+    k = float(a_ours @ a_file / denom)
+    return k, float(np.linalg.norm(a_file - k * a_ours)
+                    / np.linalg.norm(a_file))
+
+
 def make_force_normaliser(seq):
     """The magnetic-pressure-gradient scale the force residual is measured against.
 
-    WHY NOT grad p.  The pressure the Leray projection returns is a multiplier
-    whose gauge is solver-defined, and it goes to ZERO as the run approaches a
-    force-free state -- so normalising by it makes the reported residual
-    diverge for the best possible reason.  ``grad(B^2/2)`` has the same units
-    (pressure per length), is built from the field itself, and stays finite.
+    WHY NOT grad p.  NOT because the pressure is absent -- it is not.  The
+    velocity is Leray-projected, so incompressibility is a CONSTRAINT and the
+    pressure is its Lagrange multiplier; the part of J x B the projection
+    removes IS grad p, and this scheme converges to J x B = grad p, a genuine
+    finite-beta equilibrium.  ``compute_force`` already returns that
+    multiplier.  grad p is therefore a real and gauge-independent scale (p
+    itself is defined only up to a constant, its gradient is not).
+
+    The reason to prefer ``grad(B^2/2)`` is CONDITIONING across cases.  grad p
+    goes to zero in the low-beta / near-force-free limit, which is where the
+    logical-profile arms sit, so a residual normalised by it blows up exactly
+    when the run is doing well.  ``grad(B^2/2)`` has the same units, is built
+    from the field itself, and stays O(1) in every case here -- finite-beta
+    W7-X and near-force-free alike.
 
     HOW.  Not by autodiffing a DiscreteFunction at every quadrature point --
     that is one basis evaluation plus one reverse-mode pass per point, ~2e5
@@ -250,11 +298,35 @@ def operator_gates(seq, key):
     den = float(seq.l2_norm(w_l, 2) * seq.l2_norm(sigma, 2))
     out["leray_orth_rel"] = num / den
 
-    # (d) strong div o strong curl == 0 exactly (the topological identity that
-    #     makes dB = curl E divergence free for free).
+    # (d) d.d == 0, by BOTH routes, because they are not the same operator and
+    #     only one of them is topological.
+    #
+    #   strong_curl = M_2^-1 D_1 -- a Krylov solve, so d.d inherits the solver
+    #     tolerance rather than vanishing.
+    #   apply_incidence_matrix = Gram^-1 (E^T sp E) -- the TRUE strong
+    #     derivative on extracted DoFs, with the Gram correction localised to
+    #     the polar axis.  Matrix-free, and d.d = 0 identically.
+    #
+    # DeRhamSequence.apply_incidence_matrix's own docstring still claims the
+    # opposite (that the mass-projected form "should be preferred when exact
+    # d.d = 0 on extracted DoFs is required"); mrx/operators.py:2039, which is
+    # what actually runs, says the correction makes d.d exact.  These gates
+    # settle which is true here rather than trusting either docstring.
     cE = seq.apply_strong_curl(E)
-    out["div_curl_rel"] = float(
+    out["div_curl_rel_massproj"] = float(
         seq.l2_norm(seq.apply_strong_div(cE), 3) / seq.l2_norm(cE, 2))
+
+    gE = seq.apply_incidence_matrix(E, 1, dirichlet_in=True,
+                                    dirichlet_out=True)
+    dgE = seq.apply_incidence_matrix(gE, 2, dirichlet_in=True,
+                                     dirichlet_out=True)
+    out["div_curl_rel_incidence"] = float(
+        seq.l2_norm(dgE, 3) / seq.l2_norm(gE, 2))
+
+    # and how far apart are the two curls?  If this is at round-off the swap
+    # is free; if not, it changes the trajectory and has to be justified.
+    out["curl_massproj_vs_incidence"] = float(
+        seq.l2_norm(cE - gE, 2) / seq.l2_norm(cE, 2))
     return out
 
 
@@ -350,6 +422,7 @@ def main():
         # are w.r.t. RADIAN angles, so Phi' = 2 pi dPhi_dr, iota = (1/nfp)
         # dchi_dr/dPhi_dr and lambda = LA / 2 pi.
         cb = load_clebsch(GVEC_GEOMETRIES[cli.geometry], seq)
+        clebsch_data = cb
         rho_g = jnp.asarray(cb["rho"])
         dPhi_g = jnp.asarray(cb["dPhi"])
         dchi_g = jnp.asarray(cb["dchi"])
@@ -376,6 +449,8 @@ def main():
                               f_chi - f_phi * lam_z,
                               f_phi * (1.0 + lam_t)])
     else:
+        clebsch_data = None
+
         def omega_ref(x):
             r = x[0]
             f = dPhi(r)
@@ -394,7 +469,8 @@ def main():
     print(f"\n[ic] {cli.ic} IC in {time.perf_counter() - t1:.1f}s   "
           f"||B||_M raw = {B_norm:.6e}", flush=True)
 
-    div0 = float(seq.l2_norm(seq.apply_strong_div(B0), 3))
+    div0 = float(seq.l2_norm(seq.apply_incidence_matrix(
+        B0, 2, dirichlet_in=True, dirichlet_out=True), 3))
     B_leray, _ = seq.apply_leray_projection(B0, k=2)
     leray0 = float(seq.l2_norm(B_leray - B0, 2))
     if not cli.no_leray_ic:
@@ -405,7 +481,8 @@ def main():
         # (measured 2.7e-02 at ns=(8,16,8) on w7x-ini-clebsch, against
         # 3.7e-04 for the logical IC), so clean it once, up front.
         B0 = B_leray / float(seq.l2_norm(B_leray, 2))
-        div_after = float(seq.l2_norm(seq.apply_strong_div(B0), 3))
+        div_after = float(seq.l2_norm(seq.apply_incidence_matrix(
+            B0, 2, dirichlet_in=True, dirichlet_out=True), 3))
         print(f"[ic] Leray-projected the IC: ||div B|| {div0:.3e} -> "
               f"{div_after:.3e}   (moved the field by {leray0:.3e})")
         results["div_ic_before_leray"] = div0
@@ -511,12 +588,22 @@ def main():
               f"power law)")
     E0 = 0.5 * float(seq.l2_norm_sq(B0, 2))
     normaliser = jax.jit(make_force_normaliser(seq))
+    # Pressure tracking is only meaningful where the file carries GVEC's own
+    # profile to compare against.
+    p_rhos = np.linspace(0.05, 0.95, 19)
+    if clebsch_data is not None:
+        p_profiler = jax.jit(make_pressure_profiler(seq, jnp.asarray(p_rhos)))
+        p_file_ref = np.interp(p_rhos, clebsch_data["rho"], clebsch_data["p"])
+    else:
+        p_profiler = None
+        p_file_ref = None
     tn = time.perf_counter()
     gp_l2_0, gp_avg_0 = (float(v) for v in normaliser(B0))
     print(f"[ic] grad(B^2/2):  ||.||_L2 = {gp_l2_0:.6e}   "
           f"<|.|>_vol = {gp_avg_0:.6e}   ({time.perf_counter() - tn:.1f}s)")
-    print("[ic]   this is the force-residual denominator -- NOT grad p, "
-          "which is gauge-dependent and vanishes at a force-free state")
+    print("[ic]   force-residual denominator.  grad p is also a real scale "
+          "here -- the scheme converges to JxB = grad p -- but it vanishes "
+          "in the low-beta limit, and this one stays O(1) in every case.")
     results["gradp_l2_ic"] = gp_l2_0
     results["gradp_avg_ic"] = gp_avg_0
     gradp_mag0 = gp_l2_0
@@ -570,7 +657,9 @@ def main():
             # dB is solver noise, dt explodes to compensate, and the quadratic
             # line model stops meaning anything.
             return (0.5 * seq.l2_norm_sq(state.B_n, 2),
-                    seq.l2_norm(seq.apply_strong_div(state.B_n), 3),
+                    seq.l2_norm(seq.apply_incidence_matrix(
+                        state.B_n, 2, dirichlet_in=True,
+                        dirichlet_out=True), 3),
                     Fu,
                     Fu / (state.F_norm * state.v_norm),
                     state.lbfgs_sy,
@@ -585,7 +674,8 @@ def main():
 
         tr = {k: [] for k in ("E", "F", "dt", "div", "Fu", "cos", "sy",
                               "gain", "dE_meas", "dE_pred", "helicity",
-                              "hel_it", "gradp_mag", "gradp_avg", "resid")}
+                              "hel_it", "gradp_mag", "gradp_avg", "resid",
+                              "p_scale", "p_resid")}
         E_prev = E0
         t_arm = time.perf_counter()
         n_done = 0
@@ -615,6 +705,16 @@ def main():
                 tr["gradp_mag"].append(gp_l2)
                 tr["gradp_avg"].append(gp_avg)
                 tr["resid"].append(float(state.F_norm) / gp_l2)
+                if p_profiler is not None:
+                    # state.p is the multiplier from compute_force(B_n), in
+                    # the physical-pressure convention apply_leray_projection
+                    # returns.  If the scheme really converges to
+                    # JxB = grad p, this shape must not drift away from the
+                    # file's own pressure.
+                    k_p, r_p = pressure_shape_residual(
+                        np.asarray(p_profiler(state.p)), p_file_ref)
+                    tr["p_scale"].append(k_p)
+                    tr["p_resid"].append(r_p)
                 h, A_new = get_helicity(state.B_n, seq, state.A)
                 state = eqx.tree_at(lambda s: s.A, state, A_new)
                 tr["helicity"].append(float(h))
@@ -663,6 +763,11 @@ def main():
               f"steps;  s.My < 0 on "
               f"{int((np.array(tr['sy']) < 0).sum())}/{n_done} steps")
         print(f"    ||div B|| max {max(tr['div']):.3e}")
+        if tr["p_resid"]:
+            print(f"    PRESSURE vs GVEC (shape, one fitted scale): "
+                  f"{tr['p_resid'][0]:.4e} -> {tr['p_resid'][-1]:.4e}"
+                  f"   -- the scheme's fixed point is JxB = grad p, so this "
+                  f"should NOT drift away from the file")
         if tr["helicity"]:
             h = np.array(tr["helicity"])
             print(f"    helicity {h[0]:+.6e} -> {h[-1]:+.6e}  "
@@ -681,6 +786,8 @@ def main():
             n_sy_negative=int((np.array(tr["sy"]) < 0).sum()),
             div_max=float(max(tr["div"])),
             resid_first=tr["resid"][0], resid_final=tr["resid"][-1],
+            p_resid_first=(tr["p_resid"][0] if tr["p_resid"] else None),
+            p_resid_final=(tr["p_resid"][-1] if tr["p_resid"] else None),
             gradp_l2_final=tr["gradp_mag"][-1],
             gradp_avg_final=tr["gradp_avg"][-1])
         final_B[name] = np.asarray(state.B_n)
