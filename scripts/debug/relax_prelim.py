@@ -590,13 +590,15 @@ def main():
     normaliser = jax.jit(make_force_normaliser(seq))
     # Pressure tracking is only meaningful where the file carries GVEC's own
     # profile to compare against.
+    # ALWAYS profile the multiplier, even with no file to compare against.
+    # The scheme's fixed point is J x B = grad p, so the SHAPE of p answers a
+    # question the force residual cannot: p -> constant means J x B -> 0, i.e.
+    # the run is heading for a force-free (current-free, vacuum-like) state;
+    # p staying structured means it settles on a pressure-balanced equilibrium.
     p_rhos = np.linspace(0.05, 0.95, 19)
-    if clebsch_data is not None:
-        p_profiler = jax.jit(make_pressure_profiler(seq, jnp.asarray(p_rhos)))
-        p_file_ref = np.interp(p_rhos, clebsch_data["rho"], clebsch_data["p"])
-    else:
-        p_profiler = None
-        p_file_ref = None
+    p_profiler = jax.jit(make_pressure_profiler(seq, jnp.asarray(p_rhos)))
+    p_file_ref = (np.interp(p_rhos, clebsch_data["rho"], clebsch_data["p"])
+                  if clebsch_data is not None else None)
     tn = time.perf_counter()
     gp_l2_0, gp_avg_0 = (float(v) for v in normaliser(B0))
     print(f"[ic] grad(B^2/2):  ||.||_L2 = {gp_l2_0:.6e}   "
@@ -675,7 +677,7 @@ def main():
         tr = {k: [] for k in ("E", "F", "dt", "div", "Fu", "cos", "sy",
                               "gain", "dE_meas", "dE_pred", "helicity",
                               "hel_it", "gradp_mag", "gradp_avg", "resid",
-                              "p_scale", "p_resid")}
+                              "p_scale", "p_resid", "p_spread")}
         E_prev = E0
         t_arm = time.perf_counter()
         n_done = 0
@@ -705,14 +707,14 @@ def main():
                 tr["gradp_mag"].append(gp_l2)
                 tr["gradp_avg"].append(gp_avg)
                 tr["resid"].append(float(state.F_norm) / gp_l2)
-                if p_profiler is not None:
-                    # state.p is the multiplier from compute_force(B_n), in
-                    # the physical-pressure convention apply_leray_projection
-                    # returns.  If the scheme really converges to
-                    # JxB = grad p, this shape must not drift away from the
-                    # file's own pressure.
-                    k_p, r_p = pressure_shape_residual(
-                        np.asarray(p_profiler(state.p)), p_file_ref)
+                # state.p is the multiplier from compute_force(B_n), in the
+                # physical-pressure convention apply_leray_projection returns.
+                p_prof = np.asarray(p_profiler(state.p))
+                tr["p_spread"].append(float(p_prof.max() - p_prof.min()) / E)
+                if p_file_ref is not None:
+                    # If the scheme really converges to JxB = grad p, this
+                    # shape must not drift away from the file's own pressure.
+                    k_p, r_p = pressure_shape_residual(p_prof, p_file_ref)
                     tr["p_scale"].append(k_p)
                     tr["p_resid"].append(r_p)
                 h, A_new = get_helicity(state.B_n, seq, state.A)
@@ -763,6 +765,11 @@ def main():
               f"steps;  s.My < 0 on "
               f"{int((np.array(tr['sy']) < 0).sum())}/{n_done} steps")
         print(f"    ||div B|| max {max(tr['div']):.3e}")
+        print(f"    PRESSURE profile spread (max-min)/E: "
+              f"{tr['p_spread'][0]:.4e} -> {tr['p_spread'][-1]:.4e}   -- the "
+              f"fixed point is JxB = grad p, so this going to ZERO means "
+              f"force-free / vacuum-like, and staying finite means a "
+              f"pressure-balanced equilibrium")
         if tr["p_resid"]:
             print(f"    PRESSURE vs GVEC (shape, one fitted scale): "
                   f"{tr['p_resid'][0]:.4e} -> {tr['p_resid'][-1]:.4e}"

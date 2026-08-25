@@ -119,7 +119,40 @@ does; a good CG or L-BFGS direction is SUPPOSED to differ from the gradient.
 In the table below `cg-legacy` has the *higher* cos (0.79) and performs
 *worse* than `cg` (0.15), precisely because it stays closer to plain gradient
 descent. Do not optimise for cos. Breakage looks like cos ~ 0 or negative
-*together with* a collapsed `gain` and an exploding `dt`.
+together with an exploding `dt` and a SPIKING `gain`.
+
+(`gain = ||dB||_M / ||u||_M`, the amplification of `C_B: u -> curl(u x H)` on
+the chosen direction, and free to compute since `||dB||^2 = (F,u)/dt` exactly.
+An earlier draft of this document said breakage shows up as a *collapsed*
+gain. That is wrong and the measured numbers say so: the broken L-BFGS arm's
+gain ROSE, median 6.96e+01 and max 9.53e+03 against 2.72e+01 for healthy CG.
+What collapsed was the MAGNITUDE of `u` and of `dB` -- to ~3e-14 and ~3e-11
+once the clamp annihilated the gradient term -- not the ratio between them.)
+
+### AND A SECOND TRAP, in the other direction: ||F|| IS NOT GUARANTEED TO FALL
+
+`F` **is** the gradient of the objective being minimised. A descent method
+promises the OBJECTIVE decreases; it promises nothing at all about the norm of
+its own gradient along the path. `||grad||` rises routinely on a perfectly
+correct descent trajectory — through a narrowing valley, past a region of
+higher curvature, any time the landscape steepens on the way down.
+
+So an early rise in `||F||` is not an anomaly, not a discretisation artefact,
+and not evidence about the IC. It requires no explanation, and "I could not
+determine why it rises" would be just as wrong, because it implies a gap where
+there is none.
+
+    ENERGY monotonicity is the guarantee.  ||F|| is a diagnostic.
+
+Report `||F||`, plot it, use it to rank arms at the end. Never gate on it,
+never assert it is monotone, and do not explain excursions in it. Every
+comparison below therefore leads with ENERGY REMOVED and carries `||F||` as
+supporting evidence.
+
+**Method note, earned the hard way:** two of us independently started
+inventing a physical cause for this non-anomaly before Tobias pointed out that
+the quantity was never guaranteed to trend that way. *Before explaining a
+trend, check whether the thing was ever guaranteed to trend.*
 
 ---
 
@@ -137,14 +170,29 @@ none on this path):
 `seq.tol` is 1e-12 and each of these routes through mass solves, so these ARE
 the round-off floor.
 
-**Worth keeping: `div_curl_rel` is 1.3e-10, not machine zero.** The strong
-operators are M-projected (`M2^-1 D1`) rather than raw incidence — which is
-deliberate and correct under polar extraction, where the extraction is
-non-unitary and only the mass-projected form preserves `d.d = 0` on extracted
-DoFs. The consequence is that **1e-10 is the best any trajectory can hold
-`div B` on this discretisation**, by any method. Observed `div B` never moved
-off its IC value of 3.676e-04 in any run, so this floor was never the binding
-constraint here — but it is the number people otherwise rediscover as a bug.
+**`div_curl_rel` was 1.3e-10 because of an operator choice I got wrong; it is
+now 8.6e-16.** I used `apply_strong_curl = M_2^-1 D_1` and then described its
+residual as a property of the discretisation — "the floor on how well `div B`
+can be held, by anyone". **There is no such floor.** Measured, same geometry:
+
+    div_curl_rel_massproj        1.261e-10
+    div_curl_rel_incidence       8.641e-16     <- machine zero
+    curl_massproj_vs_incidence   1.025e-12     <- so the swap is free
+
+`dB = curl E` now uses `apply_incidence_matrix`. Three consequences, all
+measured: `div B` is conserved EXACTLY rather than to the mass solver's
+tolerance, one Krylov solve leaves the hot path, and the trajectory does not
+move (the two curls agree to 1e-12).
+
+**Why the wrong one got picked — the same trap as §6.2.**
+`DeRhamSequence.apply_incidence_matrix`'s docstring still says the raw
+incidence breaks `d.d` under polar extraction and that the mass-projected
+`strong_*` forms "should be preferred when exact `d.d = 0` on extracted DoFs
+is required". `mrx/operators.py:2039`, the code that actually runs, says its
+Gram correction at the polar axis makes the incidence form exact everywhere. I
+read the docstring on the method I was calling and believed it. That is two
+stale docstrings in `mrx/` that each cost real work in a single day; a docs
+pass should grep for claims about `d.d` and about solver return conventions.
 
 ---
 
@@ -268,11 +316,16 @@ Measured firing rate (`sy <= 0`): **31/250 legacy, 135/250 paired, 0/250
 fixed.** It fires, it fires a lot, and it stops entirely once the pairs are
 right.
 
-**I left it in place** so the `legacy` arm reproduces shipped behaviour
-faithfully for the A/B, and instead surfaced `sy` every step as a new `State`
-field. **Recommendation: delete the clamp and skip the update on
-`sy <= 0`.** With the pairing fixed it never fires on this problem, so it is
-dead weight that can only hide a future regression.
+It was left in place while the `legacy` arm still existed, so the A/B
+reproduced shipped behaviour faithfully. **It has since been DELETED** (see
+section 9), and `sy` is surfaced every step as a new `State` field instead. No
+`skip on sy <= 0` guard was added in its place: with the pairing fixed, a
+correct run keeps `sy > 0` (0/250 measured), so a guard there would be exactly
+the kind of defensive code that turns a future regression into "slow
+convergence". The `1e-30` terms that remain in `_lbfgs_direction` are a
+different thing and are kept — they cover the first step, where the history is
+exactly zero by construction and the recursion is meant to fall back to
+steepest descent.
 
 ### history_size
 
@@ -392,11 +445,15 @@ actually drifts — which needs the corrected `compute_helicity` from section
   and is not in doubt.
 * **The GVEC Clebsch IC** was never run (missing data file, section 1), so
   nothing here says whether it works.
-* **Helicity conservation.** Every helicity number produced before the section
-  6.1 fix is void. Corrected numbers are in section 10 if job 16771114 landed
-  before this was written; if that section says otherwise, they are not
-  available and no claim about helicity conservation should be read into this
-  document.
+* **Helicity conservation** is verified only on this one configuration and
+  only over 250 steps (section 10.1). Every helicity number produced BEFORE
+  the section 6.1 fix is void, including those in earlier logs of this study.
+* **Hyperregularisation** was tested at exactly one setting, `gamma=1`,
+  `mu=1e-3`, on one geometry. No `mu` sweep, no `gamma=2`, and no check that
+  the `M + eps L` preconditioner behaves at larger `mu` or higher `p`.
+* **The reversal in 10.3** (gradient beating the accelerated methods once
+  hyperregularised) rests on a single arm on a single geometry and should be
+  confirmed before it is acted on.
 * **The `1e-30` guards** in `_lbfgs_direction` other than the `gamma` clamp
   (the `rho_i` denominators) were not individually audited; they are reachable
   only when a history slot is exactly zero, which happens on the first step.
@@ -411,34 +468,138 @@ actually drifts — which needs the corrected `compute_helicity` from section
 1. **The missing Clebsch export.** `data/gvec_nfp3_hegna_80cubed_clebsch.h5`
    is not on this host and is the only file carrying the groups
    `gvec_clebsch_ic.py` needs. Route 2b cannot be tested until it is restored.
-2. **Delete the `gamma` clamp in `_lbfgs_direction`** and skip the update on
-   `sy <= 0` instead. With the pairing fixed it never fires, so it can now only
-   hide a regression.
-3. **Whether `lbfgs_pairing` / `cg_beta` should stay as knobs at all.** I added
-   them to make the A/B decisive in a single job. The `legacy` and `paired`
-   values are now known-bad and exist only to reproduce the bug. If they are
-   not wanted in production, delete them and keep only the fixed path — the
-   defaults already select it.
-4. **Whether to keep chasing L-BFGS or settle on CG.** They are level here
-   (section 8), and CG is simpler, has no curvature condition to violate, and
-   its `history_size` is inert. Fixed L-BFGS gained nothing from m=5.
+   This is the one item nobody here can unblock.
+2. **Whether to keep chasing L-BFGS or settle on CG.** They are level and
+   cannot be separated by this study (section 10.2). CG is simpler, has no
+   curvature condition to violate, and its `history_size` is inert by
+   construction. Fixed L-BFGS gained nothing from m=5. If something has to be
+   dropped, CG is the cheaper thing to keep.
+3. **Hyperregularisation vs acceleration** (section 10.3). At `gamma = 1`
+   plain gradient becomes the best arm and the acceleration advantage
+   disappears. If that holds up on other geometries, the two are partly
+   alternatives rather than complements, and that changes where effort should
+   go. Worth one confirming run on a second geometry before believing it.
+4. **`gamma > 0` combined with a quasi-Newton direction** silently produces
+   ascent directions (section 10.4). The linesearch hides it. Needs a decision
+   if that combination is ever used in production.
+
+Two things that were open when this study started and are now settled, so they
+do NOT need a decision: the `gamma` clamp in `_lbfgs_direction` has been
+deleted, and the `lbfgs_pairing` / `cg_beta` knobs I added to make the
+factorial decisive in a single job have been deleted too, per the standing
+rule that production stays clean and known-bad paths are not kept as knobs.
+**Commit `ecfa3ef` is the one that still carries them** if the factorial ever
+needs re-running; everything after it has only the corrected path.
 
 ---
 
-## 10. Hyperregularisation, and corrected helicity
+## 10. Corrected helicity, and hyperregularisation
 
-`gamma = 0` throughout sections 4 and 5, as the brief instructs.
+### 10.1 Helicity is conserved, once the diagnostic is fixed
 
-RESULTS PENDING — jobs 16771114 (helicity-corrected repeat) and 16771115
-(`gamma=1`, `mu=1e-3`) were still running when this section was written.
+Repeat of the `gamma=0` arms with the section 6.1 fix in place (job 16771114).
+Energy reproduces section 4 to four digits, confirming the helicity fix is
+diagnostic-only and does not touch the descent path:
+
+| arm | energy removed | \|\|F\|\| final | helicity drift |
+|---|---|---|---|
+| gradient | 0.2497% | 5.2105e-01 | **-1.095e-05** |
+| cg | 0.5554% | 2.8692e-01 | -4.216e-04 |
+| lbfgs | 0.5572% | 2.9315e-01 | -4.809e-04 |
+
+**Helicity is conserved to 1.1e-05 relative over 250 gradient steps**, against
+a spurious +1.558e-01 for the same arm before the fix. The scheme does
+preserve the ideal invariant; the 15-30% "drift" seen in every run before
+section 6.1 was entirely the broken diagnostic. The accelerated arms drift
+~40x more than `gradient`, which is consistent with their taking larger and
+less physical steps, but 5e-04 over 250 steps is still small.
+
+### 10.2 RUN-TO-RUN REPRODUCIBILITY, and why no winner is called
+
+The `lbfgs` arm's final `||F||` is **2.9315e-01 here against 3.2734e-01 in
+section 4** — the same computation, same m=1, same IC, different job. CG by
+contrast reproduces across three jobs to 0.5% (2.8833 / 2.8693 / 2.8692e-01).
+
+So the final `||F||` is reproducible only to ~10% for L-BFGS run-to-run (XLA
+reduction-order differences amplified through 250 steps of a stiff nonlinear
+iteration), while the integral quantity — energy removed — is stable to four
+digits. **Neither metric separates CG from fixed L-BFGS**: 0.5553/0.5554% vs
+0.5571/0.5572% on energy is a 0.3% gap, and the `||F||` gap is inside the
+reproducibility noise. Do not read a winner out of these two. The separation
+from `gradient` and from the broken L-BFGS variants is 2x or more and is not
+in doubt.
+
+### 10.3 Hyperregularisation looks NEEDED
+
+The brief says to keep `gamma = 0` and report on whether it looks needed, and
+sections 4-5 are all `gamma = 0`. One arm at `gamma = 1`, `mu = 1e-3` was run
+to answer the question with data (job 16771115):
+
+| arm | gamma | energy removed | \|\|F\|\| final | s/step | helicity drift |
+|---|---|---|---|---|---|
+| gradient | 0 | 0.2497% | 5.210e-01 | 1.22 | -1.1e-05 |
+| **gradient** | **1** | **0.5228%** | **1.016e-01** | 4.26 | -2.8e-05 |
+| cg | 0 | 0.5554% | 2.869e-01 | 1.12 | -4.2e-04 |
+| **cg** | **1** | 0.5013% | **1.247e-01** | 4.07 | +7.5e-04 |
+| lbfgs | 0 | 0.5572% | 2.932e-01 | 1.09 | -4.8e-04 |
+| **lbfgs** | **1** | 0.4675% | **2.445e-01** | 3.94 | +6.7e-04 |
+
+The force residual — the quantity that actually measures approach to
+equilibrium — improves **5.1x for gradient** and 2.3x for CG. It also wins per
+unit wall-clock, not just per step: `gamma=1` CG passes `||F|| ~ 1.8e-01` by
+step 100 (~407 s) whereas `gamma=0` CG needs all 250 steps (~280 s) to reach
+only 2.87e-01. Helicity conservation is unaffected.
+
+**The `M + eps L` solve gave no trouble at `mu = 1e-3`**, costing ~3.1 s/step
+on top of the ~1.1 s/step baseline. Whether that holds at larger `mu`, higher
+`p`, or on W7-X was not tested.
+
+**Note the ordering REVERSES.** At `gamma = 0` the accelerated methods beat
+gradient 2.2x; at `gamma = 1` plain gradient is the BEST arm on final force
+(1.016e-01), ahead of CG (1.247e-01) and L-BFGS (2.445e-01). Hyperregularising
+appears to condition the problem enough that acceleration stops paying — which
+would make "fix L-BFGS" and "add hyperregularisation" partly ALTERNATIVE routes
+to the same end rather than complementary ones. On one geometry at one `mu`,
+this is a hint and not a result.
+
+### 10.4 A real interaction: gamma > 0 voids the descent guarantee for L-BFGS
+
+At `gamma = 1` the `lbfgs` arm took a step with `dt < 0` — i.e. an ASCENT
+direction — on 5/250 steps, while `sy > 0` on 250/250. That is not a curvature
+failure.
+
+`apply_regularization` is applied to `u` AFTER the direction is formed, so the
+direction actually used is `u = R H_k F` with `R = (I - mu*Delta)^{-1}`. Both
+`R` and `H_k` are SPD, but **the product of two SPD operators need not be SPD**
+in the relevant inner product, so `(F, R H_k F)_M` can be negative. Plain
+gradient is safe because there `u = R F` and `R` alone is SPD.
+
+The exact linesearch absorbs it (a negative `dt` still minimises along the
+ray, so energy still fell on 250/250 steps), which is precisely why this would
+never show up as a visible failure. If `gamma > 0` and a quasi-Newton
+direction are ever used together in production, this needs a decision rather
+than silence.
 
 ---
 
 ## 11. Reproduction
 
     sbatch slurm/job_relax_prelim.sh --geometry quasr44970 --ns 8,16,8 --p 3 \
-        --steps 250 --arms gradient,cg,cg-legacy,lbfgs-legacy,lbfgs-paired,lbfgs \
-        --out out/relax_prelim/mainA.json
+        --steps 250 --arms gradient,cg,lbfgs --out out/relax_prelim/main.json
+
+    # hyperregularisation (section 10.3)
+    sbatch slurm/job_relax_prelim.sh --geometry quasr44970 --ns 8,16,8 --p 3 \
+        --steps 250 --gamma 1 --mu 1e-3 --arms gradient,cg,lbfgs \
+        --out out/relax_prelim/gamma1.json
+
+    # operator identities / IC gates only, no descent (cheap, ~6 min)
+    sbatch slurm/job_relax_prelim.sh --geometry quasr44970 --ic-only \
+        --out out/relax_prelim/ic.json
+
+**The factorial in section 5 needs commit `ecfa3ef`**, which still carries the
+`--arms cg-legacy,lbfgs-legacy,lbfgs-paired` variants and the
+`lbfgs_pairing` / `cg_beta` knobs behind them. They were deleted afterwards
+(section 9); on the current HEAD those arm names do not exist.
 
 `slurm/job_relax_prelim.sh` is NOT committed — `.gitignore` carries
 `slurm/job_*`. It is a stock `gpu-h100` job with one non-obvious line that
