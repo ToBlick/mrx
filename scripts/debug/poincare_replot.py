@@ -56,6 +56,14 @@ def main():
             axis = ((d[f"axisR_zeta{plane:g}"], d[f"axisZ_zeta{plane:g}"])
                     if f"axisR_zeta{plane:g}" in d.files else None)
             a_eff = d.get(f"a_eff_zeta{plane:g}")
+            if f"logr_zeta{plane:g}" in d.files:
+                logical = (d[f"logr_zeta{plane:g}"], d[f"logth_zeta{plane:g}"])
+            else:
+                # Older archives predate the logical panel; (u,v) is always
+                # there, and the section is a stride of it.
+                uv = d["ys"][:, int(round(plane * 8)):: 8, :]
+                logical = (np.hypot(uv[..., 0], uv[..., 1]),
+                           np.arctan2(uv[..., 1], uv[..., 0]) / (2 * np.pi) % 1.0)
             out = os.path.join(
                 outdir, f"poincare_{geometry}_{field}_zeta{plane:g}.png")
             render_section(
@@ -65,6 +73,7 @@ def main():
                 subtitle=f"nfp = {NFP[geometry]}   |   "
                          f"{int(keep.sum())}/{len(keep)} lines kept",
                 axis_RZ=axis, path=out, profile_x=a_eff, nfp=NFP[geometry],
+                logical=logical,
                 profile_xlabel=(r"$a_{\mathrm{eff}}$ [m]" if a_eff is not None
                                 else "seed radius $r$"))
             print(out, flush=True)

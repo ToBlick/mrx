@@ -336,7 +336,8 @@ def resonant_rationals(iota_min, iota_max, nfp, denom_max=15):
 
 def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
                    axis_RZ=None, path=None, profile_x=None,
-                   profile_xlabel="seed radius $r$", nfp=None, denom_max=15):
+                   profile_xlabel="seed radius $r$", nfp=None, denom_max=15,
+                   logical=None):
     """The two-panel figure: the section coloured by iota, and the profile.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -344,8 +345,13 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     """
     import matplotlib.pyplot as plt  # noqa: PLC0415  (keep the module headless)
 
-    fig = plt.figure(figsize=(11.5, 5.0), constrained_layout=True)
-    ax, bx = fig.subplots(1, 2, width_ratios=[1.3, 1.0])
+    if logical is None:
+        fig = plt.figure(figsize=(11.5, 5.0), constrained_layout=True)
+        ax, bx = fig.subplots(1, 2, width_ratios=[1.3, 1.0])
+        lx = None
+    else:
+        fig = plt.figure(figsize=(15.5, 4.8), constrained_layout=True)
+        ax, lx, bx = fig.subplots(1, 3, width_ratios=[1.15, 1.0, 1.15])
 
     good = iota[keep][jnp.isfinite(iota[keep])] if keep.any() else iota[:0]
     lo, hi = (float(jnp.min(good)), float(jnp.max(good))) if good.size else (0.0, 1.0)
@@ -396,6 +402,24 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     ax.set_ylabel("Z")
     ax.set_title(title + ("" if to_scale else "\nAXES NOT TO SCALE"),
                  fontsize=10)
+
+    if lx is not None:
+        # The SAME crossings in the logical chart: r against theta, both in
+        # [0,1]. Nested surfaces are horizontal bands here, and anything that
+        # is not -- a chain of islands, or surfaces sitting off-centre in r
+        # because the magnetic axis is not at r=0 -- shows up immediately,
+        # where the physical panel hides it behind the shaping.
+        lr, lth = logical
+        lx.scatter(lr[keep], lth[keep], c=colour[keep], s=size, vmin=lo,
+                   vmax=hi, cmap="turbo", linewidths=0, rasterized=True)
+        if (~keep).any():
+            lx.scatter(lr[~keep], lth[~keep], c="0.7", s=size, linewidths=0,
+                       rasterized=True)
+        lx.set_xlim(0.0, 1.0)
+        lx.set_ylim(0.0, 1.0)
+        lx.set_xlabel(r"logical $r$")
+        lx.set_ylabel(r"logical $\theta$")
+        lx.set_title("logical chart", fontsize=10)
 
     x = seed_r if profile_x is None else profile_x
     bx.plot(x[keep], iota[keep], "o-", ms=3, lw=0.8)

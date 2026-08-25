@@ -154,6 +154,33 @@ def field_agreement(seq, ops, n=512):
     return float(jnp.max(jnp.arccos(jnp.clip(cos, -1.0, 1.0))))
 
 
+def zeta_component_report(field, name, n=4096):
+    """Does ``B^zeta`` keep one sign? The reparameterisation dies if it does not.
+
+    The tracer integrates ``dr/dzeta = B^r/B^zeta``, which is exact only where
+    ``B^zeta != 0``. For a converged toroidal field that is everywhere. For a
+    badly resolved DISCRETE one it need not be, and when it is not the ODE is
+    singular, lines leave the domain, and the section still plots -- as
+    something that looks like a chaotic sea and is really a broken change of
+    variables.
+
+    Refining the step does not help, which is the signature to look for: a step
+    drift that stays large as the step shrinks.
+    """
+    x = jax.random.uniform(jax.random.PRNGKey(23), (n, 3))
+    x = x.at[:, 0].multiply(0.96).at[:, 0].add(0.02)
+    b = jax.vmap(field)(x)
+    bz = b[:, 2]
+    scale = jnp.linalg.norm(b, axis=1)
+    lo, hi = float(jnp.min(bz / scale)), float(jnp.max(bz / scale))
+    flips = bool(lo < 0.0 < hi)
+    print(f"[zeta] {name}: B^zeta/|B| in [{lo:+.3e}, {hi:+.3e}]"
+          + ("   *** CHANGES SIGN -- the zeta parameterisation is invalid "
+             "here and this trace is meaningless ***" if flips else ""),
+          flush=True)
+    return {"bz_over_b_min": lo, "bz_over_b_max": hi, "sign_change": flips}
+
+
 def bench(field, seeds, cli):
     """Time the prescribed schedule against the adaptive one it replaces.
 
@@ -219,15 +246,18 @@ def section_RZ(seq, res, plane):
     """
     saves = res["saves_per_period"]
     off = int(round(plane * saves))
-    R, Z = to_RZ(seq, jnp.asarray(res["ys"][:, off::saves, :]), plane)
+    uv = res["ys"][:, off::saves, :]
+    R, Z = to_RZ(seq, jnp.asarray(uv), plane)
     aR, aZ = to_RZ(seq, jnp.asarray(res["axis"][off::saves, :]), plane)
     cR, cZ = to_RZ(seq, jnp.zeros((1, 2)), plane)
+    lr = np.hypot(uv[..., 0], uv[..., 1])
+    lth = np.arctan2(uv[..., 1], uv[..., 0]) / (2.0 * np.pi) % 1.0
     return (np.asarray(R), np.asarray(Z), np.asarray(aR), np.asarray(aZ),
-            float(cR[0]), float(cZ[0]))
+            float(cR[0]), float(cZ[0]), lr, lth)
 
 
 def plot(res, geometry, label, plane, nfp, RZ, a_eff, path):
-    R, Z, aR, aZ, cR, cZ = RZ
+    R, Z, aR, aZ, cR, cZ, lr, lth = RZ
     keep = ~(res["escaped"] | ~res["ok"])
     offset = float(np.hypot(aR.mean() - cR, aZ.mean() - cZ))
     render_section(
@@ -237,7 +267,8 @@ def plot(res, geometry, label, plane, nfp, RZ, a_eff, path):
         subtitle=f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "
                  f"axis offset {offset:.2e}",
         axis_RZ=(aR, aZ), path=path, profile_x=a_eff,
-        profile_xlabel=r"$a_{\mathrm{eff}} = \sqrt{A/\pi}$  [m]", nfp=nfp)
+        profile_xlabel=r"$a_{\mathrm{eff}} = \sqrt{A/\pi}$  [m]", nfp=nfp,
+        logical=(lr, lth))
     return offset
 
 
@@ -311,6 +342,9 @@ def main():
                 logical_field(seq, dof, k, dirichlet),
                 seed_line(cli.seeds, cli.r_min, cli.r_max), cli)
 
+        zeta = zeta_component_report(
+            logical_field(seq, dof, k, dirichlet), name)
+
         res = run_field(seq, dof, k, dirichlet, nfp, cli)
         res["saves_per_period"] = cli.saves
 
@@ -328,18 +362,18 @@ def main():
         for plane in (float(v) for v in cli.planes.split(",")):
             path = os.path.join(
                 cli.out, f"poincare_{cli.geometry}_{name}_zeta{plane:g}.png")
-            R, Z, aR, aZ, cR, cZ = section_RZ(seq, res, plane)
+            R, Z, aR, aZ, cR, cZ, lr, lth = section_RZ(seq, res, plane)
             # a_eff is the map-INDEPENDENT surface label: the seed radius names
             # a different surface as soon as the map changes, which is exactly
             # what a resolution sweep and an interior perturbation both do.
             a_eff = np.asarray(effective_radius(
                 jnp.asarray(R), jnp.asarray(Z), aR.mean(), aZ.mean()))
             off = plot(res, cli.geometry, label, plane, nfp,
-                       (R, Z, aR, aZ, cR, cZ), a_eff, path)
+                       (R, Z, aR, aZ, cR, cZ, lr, lth), a_eff, path)
             offsets[f"zeta{plane:g}"] = off
             print(f"        -> {path}  (axis offset {off:.3e} m)", flush=True)
-            for key, arr in zip(("R", "Z", "axisR", "axisZ"),
-                                (R, Z, aR, aZ)):
+            for key, arr in zip(("R", "Z", "axisR", "axisZ", "logr", "logth"),
+                                (R, Z, aR, aZ, lr, lth)):
                 sections[f"{key}_zeta{plane:g}"] = arr
             sections[f"a_eff_zeta{plane:g}"] = a_eff
             sections[f"coordaxis_zeta{plane:g}"] = np.array([cR, cZ])
@@ -356,7 +390,7 @@ def main():
             "lost": int((~keep).sum()),
             "iota_min": float(iota.min()), "iota_max": float(iota.max()),
             "resid_max": float(res["resid"][keep].max()),
-            "axis_offset_m": offsets,
+            "axis_offset_m": offsets, "zeta_component": zeta,
             "a_eff_max": float(a_eff0[keep].max()),
         }
 
