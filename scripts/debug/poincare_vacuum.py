@@ -47,7 +47,8 @@ from mrx.nullspace import (  # noqa: E402
     harmonic_rayleigh,
 )
 from mrx.poincare import (  # noqa: E402
-    effective_radius, escaped_mask, logical_field, render_section,
+    effective_radius, escaped_mask, logical_field,
+    mean_axis_distance, render_section,
     rotational_transform, seed_from_axis, seed_line, step_convergence, to_RZ,
     trace,
 )
@@ -261,7 +262,7 @@ def section_RZ(seq, res, plane):
             float(cR[0]), float(cZ[0]), lr, lth)
 
 
-def plot(res, geometry, label, plane, nfp, RZ, a_eff, path):
+def plot(res, geometry, label, plane, nfp, RZ, a_eff, xlabel, path):
     R, Z, aR, aZ, cR, cZ, lr, lth = RZ
     keep = ~(res["escaped"] | ~res["ok"])
     offset = float(np.hypot(aR.mean() - cR, aZ.mean() - cZ))
@@ -272,7 +273,7 @@ def plot(res, geometry, label, plane, nfp, RZ, a_eff, path):
         subtitle=f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "
                  f"axis offset {offset:.2e}",
         axis_RZ=(aR, aZ), path=path, profile_x=a_eff,
-        profile_xlabel=r"$a_{\mathrm{eff}} = \sqrt{A/\pi}$  [m]", nfp=nfp,
+        profile_xlabel=xlabel, nfp=nfp,
         logical=(lr, lth))
     return offset
 
@@ -297,6 +298,12 @@ def main():
     ap.add_argument("--bench", action="store_true",
                     help="time the prescribed schedule against the adaptive one")
     ap.add_argument("--bench-periods", type=int, default=20)
+    ap.add_argument("--profile-x", default="mean",
+                    choices=("mean", "area", "seed"),
+                    help="surface label on the iota profile: 'mean' distance "
+                         "to the magnetic axis (physical, comparable across "
+                         "maps), 'area' sqrt(A/pi), or 'seed' radius (monotone "
+                         "by construction but map-dependent)")
     ap.add_argument("--seed-from", default="coord", choices=("coord", "axis"),
                     help="'coord' walks out from the logical r=0; 'axis' from "
                          "the MAGNETIC axis, which matters whenever the two "
@@ -374,16 +381,33 @@ def main():
             # a_eff is the map-INDEPENDENT surface label: the seed radius names
             # a different surface as soon as the map changes, which is exactly
             # what a resolution sweep and an interior perturbation both do.
-            a_eff = np.asarray(effective_radius(
+            # Both labels are archived; the profile is drawn against the mean
+            # distance, which needs no ordering and no star-shape assumption.
+            a_area = np.asarray(effective_radius(
                 jnp.asarray(R), jnp.asarray(Z), aR.mean(), aZ.mean()))
+            a_mean = np.asarray(mean_axis_distance(
+                jnp.asarray(R), jnp.asarray(Z), aR.mean(), aZ.mean()))
+            a_eff, xlabel = {
+                # Physical and comparable across maps, no ordering needed.
+                "mean": (a_mean, "mean distance to magnetic axis  [m]"),
+                # Physical too, but the shoelace needs the crossings sorted by
+                # angle and assumes star-shapedness about the axis.
+                "area": (a_area, r"$\sqrt{A/\pi}$  [m]"),
+                # Monotone BY CONSTRUCTION, so the curve can never double back
+                # -- at the cost of being a logical label, which names a
+                # different surface as soon as the map changes. Fine for
+                # reading one plot, useless for comparing two resolutions.
+                "seed": (res["seeds"][:, 0], "seed radius $r$  (logical)"),
+            }[cli.profile_x]
             off = plot(res, cli.geometry, label, plane, nfp,
-                       (R, Z, aR, aZ, cR, cZ, lr, lth), a_eff, path)
+                       (R, Z, aR, aZ, cR, cZ, lr, lth), a_eff, xlabel, path)
             offsets[f"zeta{plane:g}"] = off
             print(f"        -> {path}  (axis offset {off:.3e} m)", flush=True)
             for key, arr in zip(("R", "Z", "axisR", "axisZ", "logr", "logth"),
                                 (R, Z, aR, aZ, lr, lth)):
                 sections[f"{key}_zeta{plane:g}"] = arr
             sections[f"a_eff_zeta{plane:g}"] = a_eff
+            sections[f"a_area_zeta{plane:g}"] = a_area
             sections[f"coordaxis_zeta{plane:g}"] = np.array([cR, cZ])
             if a_eff0 is None:
                 a_eff0 = a_eff

@@ -74,8 +74,8 @@ def main():
                          f"{int(keep.sum())}/{len(keep)} lines kept",
                 axis_RZ=axis, path=out, profile_x=a_eff, nfp=NFP[geometry],
                 logical=logical,
-                profile_xlabel=(r"$a_{\mathrm{eff}}$ [m]" if a_eff is not None
-                                else "seed radius $r$"))
+                profile_xlabel=("mean distance to magnetic axis [m]"
+                                if a_eff is not None else "seed radius $r$"))
             print(out, flush=True)
 
 

@@ -300,6 +300,25 @@ def enclosed_area(R, Z, centre_R, centre_Z):
     return 0.5 * jnp.abs(jnp.sum(cross, axis=-1))
 
 
+def mean_axis_distance(R, Z, centre_R, centre_Z):
+    """Mean distance from the magnetic axis over a surface's crossings.
+
+    The surface label of choice. Like :func:`effective_radius` it is a property
+    of the physical curve, so two runs on different maps are comparable -- the
+    seed radius is not, it names a different surface as soon as the map changes.
+    Unlike the area it needs NO ordering of the crossings and makes no
+    star-shape assumption, so it degrades gracefully: on an island chain or a
+    broken trace it is still the mean radius of whatever was traced, where the
+    shoelace area silently stops being monotone and the profile curve doubles
+    back on itself.
+
+    Equals the radius exactly on a circle, and lies between the semi-axes on an
+    ellipse.
+    """
+    return jnp.mean(jnp.sqrt((R - centre_R) ** 2 + (Z - centre_Z) ** 2),
+                    axis=-1)
+
+
 def effective_radius(R, Z, centre_R, centre_Z):
     """``sqrt(area/pi)`` -- the enclosed area as a length."""
     return jnp.sqrt(enclosed_area(R, Z, centre_R, centre_Z) / jnp.pi)
