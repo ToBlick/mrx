@@ -1032,6 +1032,13 @@ def main():
                   "computes dt = (F,u)/||dB||^2 and omits the resistive term. "
                   "dt is then no longer the line minimiser -- it UNDER-steps. "
                   "The discrepancy is the size of what it omits.")
+        if cli.dt_mode == "fixed":
+            print("    NOTE G1 below does NOT apply: dE_pred = -dt(F,u)/2 is "
+                  "derived assuming dt is the exact line MINIMISER. Under a "
+                  "fixed dt the true drop is dE = -dt(F,u) + dt^2/2||dB||^2, "
+                  "so for dt well below the minimiser dE_meas -> 2*dE_pred "
+                  "and the 'identity' reads as broken by a factor 2 BY "
+                  "CONSTRUCTION. A ratio near 2 is the healthy signature here.")
         print(f"    G1 linesearch identity |dE_meas - dE_pred|/|dE_pred|: "
               f"median {np.median(ident):.3e}  max {ident.max():.3e}")
         print(f"    G1 same, against the energy scale /E0: "

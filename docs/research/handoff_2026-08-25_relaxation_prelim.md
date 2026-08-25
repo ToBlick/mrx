@@ -1313,3 +1313,21 @@ Acceleration costs topology here too, just mildly enough that all three keep
 their surfaces (axis offsets <= 3e-03).
 
 Caveat: one run per arm, not replicated.
+
+### 22.2 The G1 identity does NOT apply under a fixed dt -- a reading trap
+
+`dE_pred = -dt (F,u)_M / 2` is derived assuming `dt` is the EXACT line
+minimiser. Under `--dt-mode fixed` the true drop is
+
+    dE = -dt (F,u)_M + (dt^2 / 2) ||dB||_M^2
+
+so for a `dt` well below the minimiser the quadratic term is negligible and
+`dE_meas -> 2 * dE_pred`. **Every fixed-dt run therefore reports the G1
+identity as "broken by a factor 2", by construction.** Measured on D2
+(`dt = 3e-4`): `dE_meas = -1.447e-07` against `dE_pred = -7.233e-08`, i.e.
+2.0000.
+
+A ratio near 2 is the HEALTHY signature for a small fixed step, not a fault.
+The script now prints that warning next to the number. The identity remains a
+genuine operator test only for `ANALYTIC_LINESEARCH`, where it holds at 1e-11
+relative / 1e-16 against the energy scale.
