@@ -692,9 +692,12 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
     @jax.jit
     def _impl(x, Bvals_r, Bvals_c, DF, jac, gauss, gather_idx, seg_idx):
         # DF and J to element layout once (one transpose each), then the
-        # k-specific weight is elementwise on that layout.
-        W = {pair: w * gauss
-             for pair, w in weight_fn(split(DF), split(jac)).items()}
+        # k-specific weight is elementwise on that layout. The barrier makes
+        # XLA materialise the weight ONCE: without it the cheap elementwise
+        # producer is duplicated into every consumer below and DF is re-read
+        # n_comp^2 times (measured +50% on the k=1/2 apply).
+        W = jax.lax.optimization_barrier(
+            {pair: w * gauss for pair, w in weight_fn(split(DF), split(jac)).items()})
         u = [_to_quadrature(Bvals_c[c], x[starts_c[c]:starts_c[c + 1]],
                             gather_idx[c]) for c in range(n_c)]
         y_parts = []
