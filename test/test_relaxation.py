@@ -131,7 +131,9 @@ def test_relaxation(tiny_seq):
 
     # The helicity rate, at eps and eps/2.
     half = step(eqx.tree_at(lambda s: s.eta, pre, 0.5 * ETA))
-    assert abs(float(half.dt) - float(check_state.dt)) <= 8 * mrx.eps() * float(check_state.dt)
+    # The same executable on the same state: dt differs only by the GPU's
+    # reduction order (measured 3.6e-13 at dt = 1.17 on the H100, 1.4e3 eps).
+    assert abs(float(half.dt) - float(check_state.dt)) <= mrx.eps(1e4) * float(check_state.dt)
     H_ideal, A = get_helicity(check_B_ideal, seq, A)
     results = {}
     for label, B_new, e in (("eps", B1, eps), ("eps/2", half.B_n, 0.5 * eps)):
