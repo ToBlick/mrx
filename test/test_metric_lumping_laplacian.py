@@ -302,13 +302,14 @@ def test_defaults_are_the_production_configuration(tiny_seq):
         f"{d:.2e} (identical-build floor is {floor:.2e})")
 
 
-def test_production_dispatch_wiring(tiny_seq):
+def test_production_dispatch_wiring(tiny_seq, laplacian_jacobi_diag):
     """`kind='metric_lumping'` reaches the atom, and `kind='auto'` prefers it once it is
     assembled -- the Phase 1b wiring.
 
     `'auto'` used to resolve to `'jacobi'` unconditionally while its docstring
     claimed it preferred `'tensor'` at k=0, so this pins the new behaviour on
-    both sides: jacobi before assembly, block after.
+    both sides: jacobi before assembly, block after. The jacobi diagonals
+    come from the session fixture rather than a rebuild here.
     """
     from mrx.operators import (
         METRIC_LUMPING_CACHE_ATTR, assemble_metric_lumping_laplacian_preconditioner,

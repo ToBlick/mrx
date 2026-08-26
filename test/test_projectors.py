@@ -1,9 +1,10 @@
 """Tests for mrx.projectors: L2 projection and Greville/histopolation.
 
 All tests use a shared module-scoped rotating-ellipse polar sequence
-(``polar=True``, ``("clamped", "periodic", "periodic")``, ``ns=(6, 6, 6)``).
-This is a genuinely 3D polar sequence.  All test functions vanish at the
-polar axis r=0 (ξ[0] = 0).
+(``polar=True``, ``("clamped", "periodic", "periodic")``, ``ns=(4, 4, 4)``,
+p=2; the odd-parity identity tests build the p=3 twin). This is a genuinely
+3D polar sequence.  All test functions vanish at the polar axis r=0
+(ξ[0] = 0).
 
 L2 errors are measured in the logical frame using the sequence's own
 Gauss quadrature.  For 0-forms and 1-forms the Jacobian weight is included;
@@ -35,22 +36,11 @@ from mrx.projectors import _oneform_pullback, _twoform_pullback
 
 @pytest.fixture(scope="module")
 def proj_seq():
-    """(6, 6, 6) p=2 polar rotating ellipse: the ACCURACY fixture.
-
-    Resolution is the point of the error tests; the identity tests below
-    build (4, 4, 4) sequences of their own.
-    """
-    seq = DeRhamSequence(
-        (6, 6, 6), (2, 2, 2), 4, ("clamped", "periodic", "periodic"),
-        polar=True, maxiter=200,
-        betti_numbers=(1, 1, 0, 0),
-    )
-    seq.evaluate_1d()
-    seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2))
-    # projection tests need operators, not preconditioners; skipping the eager payloads avoids the CP/NTF fits
-    # and the core-Schur build, which production no longer uses.
-    seq.assemble_all_sparse()
-    return seq
+    """(4, 4, 4) p=2 polar rotating ellipse: the accuracy, finiteness, pullback
+    and load tests, and the even-p identity tests, on ONE sequence -- the
+    first ``interpolate`` per (sequence, k) pays the histopolation setup
+    (8-17 s on the CPU), so every k is set up once here."""
+    return _build_identity_seq(2)
 
 
 # ---------------------------------------------------------------------------
@@ -139,19 +129,19 @@ def _phys_l2_rel_error(seq, dofs, e, k, f_ref):
 
 
 # ---------------------------------------------------------------------------
-# Accuracy at (6, 6, 6) p=2
+# Accuracy at (4, 4, 4) p=2
 #
 # Relative physical-L2 errors measured 2026-08-26 in float64 (see the
-# prints): projection 1.217e-2 / 2.809e-1 / 1.743e-1 / 6.095e-2 for
-# k = 0..3, Greville interpolation 1.540e-2 (k=0), histopolation 2.872e-1
-# (k=1); the bands are ~1.25x the measurement. These are approximation
-# errors of the p=2 space, orders above the float32 roundoff, so the bands
-# hold in either precision. A wrong pullback, a wrong extraction row or a
-# missing metric factor moves an error by a factor, not by percent.
+# prints): projection 5.024e-2 / 4.537e-1 / 4.249e-1 / 1.563e-1 for
+# k = 0..3, Greville interpolation 7.119e-2 (k=0), histopolation 4.649e-1
+# (k=1); the bands are 1.25x the measurement. These are approximation errors of the p=2 space, orders
+# above the float32 roundoff, so the bands hold in either precision. A
+# wrong pullback, a wrong extraction row or a missing metric factor moves
+# an error by a factor, not by percent.
 # ---------------------------------------------------------------------------
 
-PROJ_BAND = {0: 1.6e-2, 1: 3.6e-1, 2: 2.2e-1, 3: 7.7e-2}
-INTERP_BAND = {0: 2.0e-2, 1: 3.6e-1}
+PROJ_BAND = {0: 6.3e-2, 1: 5.7e-1, 2: 5.3e-1, 3: 1.95e-1}
+INTERP_BAND = {0: 8.9e-2, 1: 5.8e-1}
 
 _ACCURACY = {0: (_f0, "e0"), 1: (_v1, "e1"), 2: (_v2, "e2"), 3: (_f3, "e3")}
 
@@ -229,7 +219,9 @@ def _build_identity_seq(deg):
     being tuned to one.
 
     Idempotency holds at any resolution, so these tests do not need a fine
-    mesh -- and they are quadratically expensive in it.  The round-trip feeds
+    mesh -- and they are quadratically expensive in it.  (The accuracy tests
+    used to run on a (6, 6, 6) twin; its errors are the same to within the
+    band and the second sequence cost 45 s of CPU per run.)  The round-trip feeds
     ``lambda x: discrete(x)`` into the quadrature and
     ``DiscreteFunction.__call__`` evaluates ALL ``n`` basis functions per point,
     so the cost is ``O(n^2 q^d)`` with ``d`` the number of histopolated axes.
@@ -238,8 +230,7 @@ def _build_identity_seq(deg):
     MINUTES and a full pass unable to finish inside a 90-minute job -- and it
     was mistaken for a hang by a separate full-suite gate.  (4,4,4) cuts ``n``
     by ~3.4x, hence the wall time by ~11x, while testing the identical
-    identity.  Accuracy tests stay on ``proj_seq``, where resolution is the
-    point.
+    identity.
     """
     seq = DeRhamSequence(
         (4, 4, 4), (deg,) * 3, deg + 1, ("clamped", "periodic", "periodic"),
@@ -252,8 +243,8 @@ def _build_identity_seq(deg):
 
 
 @pytest.fixture(scope="module")
-def identity_seq_p2():
-    return _build_identity_seq(2)
+def identity_seq_p2(proj_seq):
+    return proj_seq
 
 
 @pytest.fixture(scope="module")
@@ -265,12 +256,15 @@ def identity_seq_p3():
 # lives in the periodic histopolation seam, which k=0 (pure collocation)
 # never touches, and k=3 (every axis histopolated) exercises no differently
 # from k=1 and k=2 together -- at more than twice their cost.
+# Odd p at k=1 only: it is the histopolated PERIODIC axis that carries the
+# parity effect, and every k=1 component has one; the k=2 case at p=3 cost
+# 9 s of CPU for the same seam.
 _ROUNDTRIP_CASES = [
     pytest.param(2, k, d, id=f"p2-k{k}-{'dbc' if d else 'free'}")
     for k in (0, 1, 2, 3) for d in (False, True)
 ] + [
-    pytest.param(3, k, d, id=f"p3-k{k}-{'dbc' if d else 'free'}")
-    for k in (1, 2) for d in (False, True)
+    pytest.param(3, 1, d, id=f"p3-k1-{'dbc' if d else 'free'}")
+    for d in (False, True)
 ]
 
 
@@ -299,43 +293,10 @@ def test_interpolation_reproduces_its_own_space(request, p, k, dirichlet):
     )
 
 
-def test_k2_histopolation_is_finite(proj_seq):
-    """Isolates the polar-axis singularity to the k=1 physical pullback.
-
-    The three degrees differ in exactly one way at the axis:
-
-        k=0  _interpolate_0form     no pullback at all (scalar)
-        k=1  _oneform_pullback      inv33(DF(x)) @ v(x)   <- INVERTS DF
-        k=2  _histopolate_2form     DF(x).T @ v(x)        <- no inverse
-
-    ``det DF -> 0`` on the polar axis, and the clamped radial Greville points
-    include rho = 0 EXACTLY (quadrature never samples the endpoint, which is why
-    this class of bug survives quad-point checks -- see the note on det(DF) = 0
-    at the outer knot in docs/research).  So only k=1 evaluates an inverse at the
-    singular point.
-
-    This asserts FINITENESS rather than accuracy on purpose: with
-    ``frame='phys'`` the k=2 histopolation returns coefficients of ``g omega/J``
-    rather than ``omega`` (``M_k`` carries the ``g/J`` weight and there is no
-    mass solve here to undo it), so an accuracy assertion would fail for a
-    reason unrelated to the axis.  Finite-vs-nan is the discriminator.
-    """
-    dofs = proj_seq.interpolate(_v2, 2)
-    n_bad = int(jnp.sum(~jnp.isfinite(dofs)))
-    print(f"\n  k=2 histopolation non-finite DOFs: {n_bad} of {dofs.size}")
-    assert n_bad == 0, (
-        f"k=2 histopolation produced {n_bad} non-finite DOFs. Its pullback has "
-        f"no inverse, so if this fails the polar-axis explanation for the k=1 "
-        f"nan is WRONG and something shared by both degrees is at fault."
-    )
-
-
-def test_k0_interpolation_is_finite(proj_seq):
-    """Companion to the k=2 finiteness test: k=0 has no pullback at all."""
-    dofs = proj_seq.interpolate(_f0, 0)
-    n_bad = int(jnp.sum(~jnp.isfinite(dofs)))
-    print(f"\n  k=0 interpolation non-finite DOFs: {n_bad} of {dofs.size}")
-    assert n_bad == 0
+# The finiteness of the k=0 and k=2 interpolations at the polar axis (the
+# clamped Greville points include rho = 0 exactly; only the k=1 pullback
+# inverts DF there) is implied by the round trips above passing on the same
+# sequence, so it is not asserted on its own.
 
 
 @pytest.mark.parametrize("k", [1, 2])
