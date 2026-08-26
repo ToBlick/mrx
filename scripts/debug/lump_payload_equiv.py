@@ -37,18 +37,17 @@ def legacy_apply(pre):
     for blk in pre.blocks:
         if blk is None:
             continue
-        nr, nt, nz = blk["shape"]
-        ir, it, iz = blk["idx"]
-        flat = jnp.asarray((ir * nt + it) * nz + iz)
         (v_r, v_t, v_z), (l_r, l_t, l_z), alpha = blk["atom"]
+        # The block now stores rows/vals in TENSOR order, so the legacy flat
+        # index plan is the identity.
         blocks.append({
             "rows": jnp.asarray(blk["rows"]),
             "vals": jnp.asarray(blk["vals"]),
-            "flat": flat, "shape": (nr, nt, nz),
+            "flat": jnp.arange(int(np.prod(blk["shape"]))),
+            "shape": tuple(blk["shape"]),
             "v": (v_r, v_t, v_z), "lam": (l_r, l_t, l_z),
             "alpha": tuple(float(a) for a in alpha),
-            "dscale": (None if blk["dscale"] is None
-                       else jnp.asarray(blk["dscale"])),
+            "dscale": jnp.asarray(blk["dscale"]),
         })
     core = jnp.asarray(pre.probe_rows)
     core_inv = jnp.asarray(pre.core_inv)
@@ -59,11 +58,9 @@ def legacy_apply(pre):
         for b in blocks:
             buf = jnp.zeros(int(np.prod(b["shape"]))).at[b["flat"]].set(
                 b["vals"] * x[b["rows"]]).reshape(b["shape"])
-            if b["dscale"] is not None:
-                buf = buf * b["dscale"]
+            buf = buf * b["dscale"]
             sol = _fd_apply_3d(*b["v"], *b["lam"], b["alpha"], buf)
-            if b["dscale"] is not None:
-                sol = sol * b["dscale"]
+            sol = sol * b["dscale"]
             out = out.at[b["rows"]].set(b["vals"] * sol.reshape(-1)[b["flat"]])
         if has_core:
             out = out.at[core].set(core_inv @ x[core])
