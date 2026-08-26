@@ -23,7 +23,6 @@ prior handoffs).
 | Step drift measured over regular lines only | SETTLED (unmerged) |
 | **A real pressure through this tracer** | **OPEN — §3.2, the load-bearing caveat** |
 | Does the stochastic core survive refinement? | OPEN — §2.1, never tested |
-| Producer of `data/w7x_fmm002_relaxed_100.h5` | OPEN — uncommitted, §5 |
 | `poincare_vacuum.py` re-run after the shared-helper refactor | OPEN |
 | Axis-probe blob at the section centre | OPEN |
 | Crossing density vs the reference figure | OPEN |
@@ -81,6 +80,13 @@ Jacobian keeps one sign, `len(B_dof) == n2_dbc`, and `|D2 B| / (|D2| |B|)` sits
 at the Leray solve's tolerance rather than O(1). The last is the only one that
 tests *which space* the DOFs live in — a different radial grading or pole
 extraction can match the dimension by coincidence.
+
+The gates are what let a state file be traced without knowing what wrote it,
+and that is not hypothetical: `data/w7x_fmm002_relaxed_100.h5` has no committed
+producer, and its config carries `map.flip_r` / `auto_flip_r` /
+`auto_flip_jacobian` keys that nothing in the tree consumes. Not worth chasing
+— but it is the reason the gates check the rebuilt space *against the DOFs*
+rather than trusting the config that travels with them.
 
 `section_RZ`, `surface_label` and `trace_and_classify` moved into
 `mrx/poincare.py`; `poincare_vacuum.py` calls them and, as a consequence, now
@@ -195,18 +201,6 @@ that iota is stable under refinement.**
   plotter verification (GPU job 16767729) — is **not committed** and must be
   re-created or the script run directly under slurm.
   `slurm/job_poincare_relaxed.sh` **is** committed, via `git add -f`.
-* **`data/w7x_fmm002_relaxed_100.h5` has no committed producer.** Its stored
-  config carries `map.flip_r`, `map.auto_flip_r`, `map.auto_flip_jacobian` and
-  `map.rho0_theta_independent`, and a `grep -rl` across `mrx/`, `scripts/`,
-  `conf/` and every worktree finds **zero** consumers of the first three. On top
-  of that, `relax_from_nfs.py` on every branch calls
-  `DeRhamSequence(..., dirichlet=True)`, which the current constructor rejects
-  with `TypeError`. So the script that wrote this file is uncommitted somewhere,
-  and the file's config is not round-trippable from the repo. This is survivable
-  only because §2's four gates check the rebuilt space against the DOFs rather
-  than trusting the config — the weak-divergence gate in particular. Cheapest
-  next step: whoever ran it commits the script, or confirms the flips are dead
-  keys and drops them from the config schema.
 * **Worktree jobs need `PYTHONPATH=$WT`.** `python scripts/debug/x.py` puts the
   *script's* directory on `sys.path`, never the cwd, so `import mrx` resolves to
   the venv's editable install — the main checkout. `job_poincare_relaxed.sh`
