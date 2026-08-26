@@ -39,6 +39,7 @@ dependencies = [
     "autopep8",
     "diffrax",
     "equinox",
+    "h5py",
 ]
 
 [tool.pytest.ini_options]

@@ -1596,7 +1596,7 @@ class DeRhamSequence():
         # q = -(physical pressure) + gauge. The RETURNED p is negated to be
         # the physical pressure multiplier (v_out = v - grad p; at MHD
         # equilibrium J x B = grad p this recovers +p, verified against the
-        # analytic z-pinch in test/test_relaxation.py). Warm starts arrive in
+        # analytic z-pinch, 2026-08-14). Warm starts arrive in
         # the returned (physical) convention and are negated back on entry.
         # The gauge of p is solver-defined (a constant offset).
         if k == 2:

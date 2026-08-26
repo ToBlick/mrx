@@ -13,7 +13,9 @@ session fixture and keeps every object small.
 - `tiny_seq` (`test/conftest.py`) is the production setup on a (4, 6, 4) p=2
   spline-interpolated torus: `build_preconditioners` for all eight `(k, BC)`
   pairs and the harmonic forms. It is built once per session; every
-  solve-based test runs on it.
+  solve-based test runs on it, except the GVEC-route tests and the
+  relaxation run, which share one module-scoped (4, 8, 4) p=2 sequence
+  built by `build_sequence` from the synthetic export.
 - Low-level tests (quadrature, spline bases, the evaluator, projector
   identities, operator identities on the rotating ellipse) build their own
   tiny objects, module-scoped.
@@ -47,11 +49,18 @@ Coverage of the production path, by test file:
   solved with the production `'auto'` preconditioner against the
   manufactured solutions of `test/manufactured.py` (shared with
   `scripts/poisson_study.py`), and the Leray projection.
-- `test_relaxation.py`: one relaxation run with the most general stepper
-  (CG, linesearch, CFL cap, hyperregularisation, resistivity from the first
-  step): energy descent against the linesearch prediction, `div B`, the CFL
-  invariant, and the helicity rate `dH/dt = -2 eta <J, B>` of the resistive
-  step checked at two step sizes.
+- `test_synthetic_gvec.py`: the GVEC route (`build_sequence` on a file,
+  `load_clebsch`, `clebsch_form`, the projection) on a synthetic export
+  written by `mrx.synthetic_gvec` -- the layout of the W7-X file, filled
+  from closed formulas on a circular torus, so map, field, transform and
+  lambda handling are checked against the formulas -- and, on that
+  sequence's Clebsch initial condition, the one relaxation run of the
+  suite with the most general stepper (CG, linesearch, CFL cap,
+  hyperregularisation, resistivity from the first step): energy descent
+  against the linesearch prediction, `div B`, the CFL invariant, and the
+  helicity rate `dH/dt = -2 eta <J, B>` of the resistive step checked at
+  two step sizes. `docs/gvec_mrx_interface.md` section 7 describes the
+  synthetic file.
 - the remaining files test the module they are named after.
 
 Tests that read files outside the repository (`MRX_W7X_FILE`,
