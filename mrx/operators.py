@@ -13,7 +13,7 @@ from mrx.assembly import assemble_vectorial
 from mrx.extraction_operators import MatrixFreeExtraction, get_xi
 import numpy as np
 
-from mrx.local_assembly import assemble_mass_local
+from mrx.local_assembly import assemble_mass_local, build_matrixfree_mass_apply
 from mrx.preconditioners import (
     BoundaryConditionPair,
     MassPreconditioners,
@@ -33,6 +33,7 @@ from mrx.preconditioners import (
     set_mass_jacobi_pair,
 )
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
+import mrx
 def _nullspace_vectors(operators, k: int, dirichlet: bool):
     """Return the stacked nullspace array for ``(k, dirichlet)``."""
     from mrx.nullspace import get_nullspace
@@ -479,14 +480,16 @@ def _restrict_radial_window(raw_matrix: jnp.ndarray, radial_start: int,
 
 
 def _assemble_dense_from_apply(apply, size: int, *, sequential: bool = False) -> jnp.ndarray:
-    basis = jnp.eye(size, dtype=jnp.float64)
+    def column(j):
+        return apply(jnp.zeros(size, dtype=mrx.DTYPE).at[j].set(1.0))
+
     if sequential:
-        # Probe one column at a time. ``vmap`` batches every transient of the
-        # probed apply by ``size``; for a matrix-free (sum-factorized) operator
-        # the per-apply transient is a dense ``(ne, q, q, q)`` tensor, so the
-        # batched peak is ``size``x larger and overflows device memory at high
-        # resolution. ``lax.map`` evaluates the columns sequentially, keeping
-        # the peak to a single apply at the cost of a serial build.
+        # Probe a few columns at a time. ``vmap`` batches every transient of
+        # the probed apply by ``size``; for a matrix-free (sum-factorized)
+        # operator the per-apply transient is a dense ``(ne, q, q, q)`` tensor,
+        # so the fully batched peak is ``size``x larger and overflows device
+        # memory at high resolution. ``lax.map`` with a small batch keeps the
+        # peak to a few applies at the cost of a mostly serial build.
         #
         # One eager warmup call first: ``apply`` may build host-side static
         # state lazily (e.g. the matrix-free mass index plan, which converts
@@ -495,10 +498,10 @@ def _assemble_dense_from_apply(apply, size: int, *, sequential: bool = False) ->
         # ``TracerArrayConversionError``. The eager call builds and caches that
         # state with concrete arrays, after which ``lax.map`` only re-invokes
         # the already-jitted apply.
-        apply(basis[0])
-        cols = jax.lax.map(apply, basis)  # cols[j] = apply(e_j)
+        column(0)
+        cols = jax.lax.map(column, jnp.arange(size), batch_size=16)
         return cols.T
-    return jax.vmap(apply, in_axes=1, out_axes=1)(basis)
+    return jax.vmap(column, out_axes=1)(jnp.arange(size))
 
 
 def _normalize_cp_term_signs(
@@ -543,7 +546,7 @@ def _k0_bundled_axis_profiles(seq):
     pz = jnp.einsum('qrs,q,r->s', w22, wx_cut, wy) / (sxc * sy)
 
     def clip(v):
-        return jnp.maximum(v, 1e-8 * jnp.abs(jnp.median(v)))
+        return jnp.maximum(v, mrx.sqrt_eps(0.67) * jnp.abs(jnp.median(v)))
 
     return clip(pr), clip(pt), clip(pz)
 
@@ -586,8 +589,8 @@ def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool):
         "bulk_shape": bulk_shape,
         "bulk_V_r": V_r, "bulk_V_t": V_t, "bulk_V_z": V_z,
         "bulk_lam_r": lam_r, "bulk_lam_t": lam_t, "bulk_lam_z": lam_z,
-        "bulk_alpha": jnp.ones((3,), dtype=jnp.float64),
-        "bulk_greville_inv_sqrt_D": jnp.ones(bulk_shape, dtype=jnp.float64),
+        "bulk_alpha": jnp.ones((3,), dtype=mrx.DTYPE),
+        "bulk_greville_inv_sqrt_D": jnp.ones(bulk_shape, dtype=mrx.DTYPE),
     }
 
 
@@ -857,7 +860,7 @@ def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0)
         # to the largest entry so we don't amplify it into a huge spurious
         # negative direction.
         denom_max = jnp.max(jnp.abs(denom))
-        null_mask = jnp.abs(denom) < 1e-10 * denom_max
+        null_mask = jnp.abs(denom) < mrx.sqrt_eps(6.7e-3) * denom_max
         safe = jnp.where(null_mask, 1.0, denom)
         y = jnp.where(null_mask, 0.0, y / safe)
     else:
@@ -867,124 +870,6 @@ def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0)
     y = jnp.einsum('ij,kjl->kil', V_t, y)
     y = jnp.einsum('ij,klj->kli', V_z, y)
     return y
-
-
-# ---------------------------------------------------------------------------
-# Matrix-free mass apply
-# ---------------------------------------------------------------------------
-
-def _flat_dof_plan(gx, gy, gz, shape):
-    """Static flat index plan into a component's flattened DOF grid."""
-    Sx, Sy, Sz = (int(s) for s in shape)
-    gx = np.asarray(gx)
-    gy = np.asarray(gy)
-    gz = np.asarray(gz)
-    idx = (gx[:, None, None, :, None, None] * (Sy * Sz)
-           + gy[None, :, None, None, :, None] * Sz
-           + gz[None, None, :, None, None, :])
-    return jnp.asarray(idx.astype(np.int32))
-
-
-def _element_apply(Bvals_r, Bvals_c, W, x_flat_c, gather_idx_c):
-    """One (row-comp, col-comp) element contraction folded against a vector."""
-    Bxr, Byr, Bzr = Bvals_r
-    Bxc, Byc, Bzc = Bvals_c
-    x_local = x_flat_c[gather_idx_c]
-    t1 = jnp.einsum('xqb,xyzbdf->xyzqdf', Bxc, x_local)
-    t2 = jnp.einsum('yrd,xyzqdf->xyzqrf', Byc, t1)
-    u = jnp.einsum('zsf,xyzqrf->xyzqrs', Bzc, t2)
-    u = u * W
-    s1 = jnp.einsum('xqa,xyzqrs->xyzars', Bxr, u)
-    s2 = jnp.einsum('yrc,xyzars->xyzacs', Byr, s1)
-    return jnp.einsum('zse,xyzacs->xyzace', Bzr, s2)
-
-
-def build_matrixfree_mass_apply(seq, k, geometry=None):
-    """Return a jitted raw-DOF-space ``x -> M_k x`` that never stores ``M_k``."""
-    from mrx.local_assembly import (
-        _elem_counts, _split_field, _component_axis_bases_k1,
-        _component_axis_bases_k2, _quad_gauss_weight, _bases_for_form,
-    )
-    geometry = seq.geometry if geometry is None else geometry
-    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
-    ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
-    gw = _quad_gauss_weight(seq)
-
-    if k == 0:
-        form = seq.basis_0
-        comp = _bases_for_form(seq, form, lambda f, c: [f.Λ[0], f.Λ[1], f.Λ[2]], 1)
-        weight = geometry.jacobian_j
-        pairs = [(0, 0)]
-        weight_of = {(0, 0): weight}
-        n_comp = 1
-    elif k == 3:
-        form = seq.basis_3
-        comp = _bases_for_form(seq, form, lambda f, c: [f.dΛ[0], f.dΛ[1], f.dΛ[2]], 1)
-        weight = 1.0 / geometry.jacobian_j
-        pairs = [(0, 0)]
-        weight_of = {(0, 0): weight}
-        n_comp = 1
-    elif k == 1:
-        form = seq.basis_1
-        comp = _bases_for_form(seq, form, _component_axis_bases_k1, 3)
-        metric = geometry.metric_inv_jkl * geometry.jacobian_j[:, None, None]
-        pairs = [(cr, cc) for cr in range(3) for cc in range(3)]
-        weight_of = {(cr, cc): metric[:, cr, cc] for cr, cc in pairs}
-        n_comp = 3
-    elif k == 2:
-        form = seq.basis_2
-        comp = _bases_for_form(seq, form, _component_axis_bases_k2, 3)
-        metric = geometry.metric_jkl * (1.0 / geometry.jacobian_j)[:, None, None]
-        pairs = [(cr, cc) for cr in range(3) for cc in range(3)]
-        weight_of = {(cr, cc): metric[:, cr, cc] for cr, cc in pairs}
-        n_comp = 3
-    else:
-        raise ValueError("k must be 0, 1, 2 or 3")
-
-    shapes = form.shape
-    starts = [0]
-    for c in range(n_comp):
-        Sx, Sy, Sz = shapes[c]
-        starts.append(starts[-1] + Sx * Sy * Sz)
-
-    W_split = {}
-    for (cr, cc) in pairs:
-        Wf = _split_field(weight_of[(cr, cc)], nx, ny, nz,
-                          ne_x, ne_y, ne_z, qx, qy, qz)
-        W_split[(cr, cc)] = Wf * gw
-
-    Bvals = tuple((c[0], c[2], c[4]) for c in comp)
-    gather_idx = tuple(
-        _flat_dof_plan(comp[cc][1], comp[cc][3], comp[cc][5], shapes[cc])
-        for cc in range(n_comp))
-    seg_idx = tuple(
-        _flat_dof_plan(comp[cr][1], comp[cr][3], comp[cr][5],
-                       shapes[cr]).reshape(-1)
-        for cr in range(n_comp))
-    nseg = tuple(int(np.prod(shapes[c])) for c in range(n_comp))
-    starts_t = tuple(int(s) for s in starts)
-
-    @jax.jit
-    def _impl(x, Bvals, W_split, gather_idx, seg_idx):
-        Xc = [x[starts_t[c]:starts_t[c + 1]] for c in range(n_comp)]
-        out_parts = []
-        for cr in range(n_comp):
-            acc = jnp.zeros((nseg[cr],), dtype=x.dtype)
-            for cc in range(n_comp):
-                if (cr, cc) not in W_split:
-                    continue
-                y_local = _element_apply(
-                    Bvals[cr], Bvals[cc], W_split[(cr, cc)],
-                    Xc[cc], gather_idx[cc])
-                acc = acc + jax.ops.segment_sum(
-                    y_local.reshape(-1), seg_idx[cr], num_segments=nseg[cr])
-            out_parts.append(acc)
-        return jnp.concatenate(out_parts)
-
-    def apply(x):
-        return _impl(x, Bvals, W_split, gather_idx, seg_idx)
-
-    return apply
 
 
 def _mass_components(operators: SequenceOperators, k: int):
@@ -1590,6 +1475,61 @@ def update_incidence_operator(seq, operators: Optional[SequenceOperators], k: in
     raise ValueError("k must be 0, 1 or 2")
 
 
+def _stencil_grid(*dims):
+    """Flattened C-order index grids of ``np.arange(d)`` for each dim, so the
+    flat position of ``(i, j, k)`` is ``ravel_multi_index((i, j, k), dims)``."""
+    return [g.reshape(-1) for g in np.meshgrid(*(np.arange(d) for d in dims),
+                                               indexing='ij')]
+
+
+class _StencilTriplets:
+    """COO triplet collector; ``emit`` drops zero weights and masked columns."""
+
+    def __init__(self):
+        self.rows, self.cols, self.data = [], [], []
+
+    def emit(self, rows, cols, data):
+        rows, cols = np.broadcast_arrays(rows, cols)
+        data = np.broadcast_to(np.asarray(data, dtype=np.float64), rows.shape)
+        keep = data != 0.0
+        self.rows.append(rows[keep])
+        self.cols.append(cols[keep])
+        self.data.append(data[keep])
+
+    def bcsr(self, shape):
+        import scipy.sparse as _sps
+        csr = _sps.coo_matrix(
+            (np.concatenate(self.data),
+             (np.concatenate(self.rows).astype(np.int32),
+              np.concatenate(self.cols).astype(np.int32))),
+            shape=shape).tocsr()
+        return _bcsr_from_csr(csr)
+
+
+def _bcsr_from_csr(csr):
+    """Device ``BCSR`` from a canonical (sorted, duplicate-free) scipy CSR.
+
+    Built from the host arrays directly: ``BCSR.from_bcoo`` is a jitted
+    conversion that compiles once per matrix shape, which for the four
+    boundary-condition variants of two stencils is most of the build time.
+    """
+    csr.sum_duplicates()
+    return jsparse.BCSR(
+        (jnp.asarray(csr.data), jnp.asarray(csr.indices.astype(np.int32)),
+         jnp.asarray(csr.indptr.astype(np.int32))),
+        shape=tuple(int(s) for s in csr.shape),
+        indices_sorted=True, unique_indices=True)
+
+
+def _bcsr_transpose(m):
+    """Transpose a host-buildable ``BCSR`` through scipy (no device compile)."""
+    import scipy.sparse as _sps
+    csr = _sps.csr_matrix(
+        (np.asarray(m.data), np.asarray(m.indices), np.asarray(m.indptr)),
+        shape=tuple(int(s) for s in m.shape))
+    return _bcsr_from_csr(csr.T.tocsr())
+
+
 def build_grad_stencil_g0(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
     """Analytic, INVERSE-FREE polar discrete gradient ``G_0`` (V0 -> V1).
 
@@ -1608,8 +1548,11 @@ def build_grad_stencil_g0(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
     grad is ``d_r f``, ``d_theta f`` (periodic), ``d_z f`` (periodic), with the
     near-axis full radial rows 0/1 expanded as ``f(0,j,k)=sum_p xi[p,0,j] apex``,
     ``f(1,j,k)=sum_p xi[p,1,j] apex``.
+
+    Every block is emitted as whole index grids (no per-DoF Python loop): the
+    row of bulk entry ``(i, j, k)`` is its ravelled position plus the block
+    offset, and ``expand`` applies the apex/bulk column rule to index arrays.
     """
-    import scipy.sparse as _sps
     xi = np.asarray(xi)
     nr, nt, nz = (int(v) for v in seq.basis_0.shape[0])
     dr = nr - 1            # clamped r derivative count
@@ -1620,19 +1563,16 @@ def build_grad_stencil_g0(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
     radial1 = nr - 2 - o1  # V1 comp1/comp2 bulk radial rings
 
     base_bulk0 = 3 * nz
+    out = _StencilTriplets()
 
-    def c_bulk0(i, j, k):           # V0 bulk col for full radial i+2, or None
-        if i < 0 or i >= radial0:
-            return None
-        return base_bulk0 + (i * nt + j) * nz + k
-
-    def expand(a, j, k):           # full V0 (a,j,k) -> list of (v0_col, weight)
-        if a == 0:
-            return [(p * nz + k, float(xi[p, 0, j])) for p in range(3)]
-        if a == 1:
-            return [(p * nz + k, float(xi[p, 1, j])) for p in range(3)]
-        col = c_bulk0(a - 2, j, k)
-        return [(col, 1.0)] if col is not None else []
+    def expand(r, a, j, k, s):
+        """``s`` times the full V0 DoF ``(a, j, k)`` on rows ``r`` (arrays)."""
+        for ring in (0, 1):
+            m = a == ring
+            for p in range(3):
+                out.emit(r[m], p * nz + k[m], s * xi[p, ring, j[m]])
+        m = (a >= 2) & (a - 2 < radial0)
+        out.emit(r[m], base_bulk0 + ((a[m] - 2) * nt + j[m]) * nz + k[m], s)
 
     # V1 extracted row offsets (must match _k1_row_slices with o == o1).
     r_theta_s = 0
@@ -1641,65 +1581,37 @@ def build_grad_stencil_g0(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
     r_theta_b = r_r + (dr - 1) * nt * nz
     r_zeta_b = r_theta_b + radial1 * dt * nz
 
-    rows, cols, data = [], [], []
-
-    def add(r, terms):
-        for c, w in terms:
-            if c is None or w == 0.0:
-                continue
-            rows.append(r)
-            cols.append(c)
-            data.append(w)
-
     # theta_surgery: apex difference  apex(p_local+1, m) - apex(0, m)
-    for pl in range(2):
-        p = pl + 1
-        for m in range(nz):
-            add(r_theta_s + pl * nz + m,
-                [(p * nz + m, 1.0), (0 * nz + m, -1.0)])
+    pl, m = _stencil_grid(2, nz)
+    out.emit(r_theta_s + pl * nz + m, (pl + 1) * nz + m, 1.0)
+    out.emit(r_theta_s + pl * nz + m, m, -1.0)
 
     # zeta_surgery: periodic z-difference of the apex DoFs
-    for p in range(3):
-        for m in range(dz):
-            add(r_zeta_s + p * dz + m,
-                [(p * nz + (m + 1) % nz, 1.0), (p * nz + m, -1.0)])
+    p, m = _stencil_grid(3, dz)
+    out.emit(r_zeta_s + p * dz + m, p * nz + (m + 1) % nz, 1.0)
+    out.emit(r_zeta_s + p * dz + m, p * nz + m, -1.0)
 
     # r-slice (comp0, radial grad):  full(i+2,j,k) - full(i+1,j,k)
-    for i in range(dr - 1):
-        for j in range(nt):
-            for k in range(nz):
-                r = r_r + (i * nt + j) * nz + k
-                add(r, expand(i + 2, j, k)
-                    + [(c, -w) for c, w in expand(i + 1, j, k)])
+    i, j, k = _stencil_grid(dr - 1, nt, nz)
+    r = r_r + np.arange(i.size)
+    expand(r, i + 2, j, k, 1.0)
+    expand(r, i + 1, j, k, -1.0)
 
     # theta_bulk (comp1, angular grad, periodic):  full(i+2,j+1) - full(i+2,j)
-    for i in range(radial1):
-        for j in range(dt):
-            for k in range(nz):
-                r = r_theta_b + (i * dt + j) * nz + k
-                add(r, expand(i + 2, (j + 1) % nt, k)
-                    + [(c, -w) for c, w in expand(i + 2, j, k)])
+    i, j, k = _stencil_grid(radial1, dt, nz)
+    r = r_theta_b + np.arange(i.size)
+    expand(r, i + 2, (j + 1) % nt, k, 1.0)
+    expand(r, i + 2, j, k, -1.0)
 
     # zeta_bulk (comp2, z grad, periodic):  full(i+2,k+1) - full(i+2,k)
-    for i in range(radial1):
-        for j in range(nt):
-            for k in range(dz):
-                r = r_zeta_b + (i * nt + j) * dz + k
-                add(r, expand(i + 2, j, (k + 1) % nz)
-                    + [(c, -w) for c, w in expand(i + 2, j, k)])
+    i, j, k = _stencil_grid(radial1, nt, dz)
+    r = r_zeta_b + np.arange(i.size)
+    expand(r, i + 2, j, (k + 1) % nz, 1.0)
+    expand(r, i + 2, j, k, -1.0)
 
     n0 = int(seq.n0_dbc if dirichlet_in else seq.n0)
     n1 = int(seq.n1_dbc if dirichlet_out else seq.n1)
-    coo = _sps.coo_matrix(
-        (np.asarray(data, dtype=np.float64),
-         (np.asarray(rows, dtype=np.int32), np.asarray(cols, dtype=np.int32))),
-        shape=(n1, n0)).tocsr()
-    coo.sum_duplicates()
-    bcoo = jsparse.BCOO(
-        (jnp.asarray(coo.data),
-         jnp.asarray(np.stack([coo.tocoo().row, coo.tocoo().col], axis=1))),
-        shape=(n1, n0))
-    return jsparse.BCSR.from_bcoo(bcoo)
+    return out.bcsr((n1, n0))
 
 
 def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
@@ -1718,7 +1630,6 @@ def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
     V2 *output* DoFs are the comp0 surgery rows, whose stencil is the axis form of
     ``P = -d_z(chi apex) + d_t(zeta apex)``.
     """
-    import scipy.sparse as _sps
     xi = np.asarray(xi)
     nr, nt, nz = (int(v) for v in seq.basis_0.shape[0])
     dr, dt, dz = nr - 1, nt, nz
@@ -1731,38 +1642,37 @@ def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
     base_r1 = 2 * nz + 3 * dz
     base_tb1 = base_r1 + (dr - 1) * nt * nz
     base_zb1 = base_tb1 + radial_in * dt * nz
+    out = _StencilTriplets()
 
     def c_ths(pl, m):                                  # V1 theta_surgery col
         return pl * nz + m
+
     def c_zes(p, m):                                   # V1 zeta_surgery col
         return 2 * nz + p * dz + m
-    def c_r1(i, j, k):                                 # V1 comp0 r-slice
-        return None if (i < 0 or i >= dr - 1) else base_r1 + (i * nt + j) * nz + k
-    def c_tb1(i, j, k):                                # V1 comp1 theta_bulk
-        return None if (i < 0 or i >= radial_in) else base_tb1 + (i * dt + j) * nz + k
-    def c_zb1(i, j, k):                                # V1 comp2 zeta_bulk
-        return None if (i < 0 or i >= radial_in) else base_zb1 + (i * nt + j) * dz + k
 
-    def expand_v1(comp, a, j, k):  # full V1 (comp,a,j,k) -> [(v1_col, weight)]
+    def expand_v1(r, comp, a, j, k, s):
+        """``s`` times the full V1 DoF ``(comp, a, j, k)`` on rows ``r``."""
         if comp == 0:                                  # s, full radial a in [0,dr)
-            if a == 0:
-                return [(c_ths(pl, k), float(xi[pl + 1, 1, j] - xi[pl + 1, 0, j]))
-                        for pl in range(2)]
-            c = c_r1(a - 1, j, k)
-            return [(c, 1.0)] if c is not None else []
-        if comp == 1:                                  # chi, full radial a in [0,nr)
-            if a == 1:
-                return [(c_ths(pl, k), float(xi[pl + 1, 1, (j + 1) % dt] - xi[pl + 1, 1, j]))
-                        for pl in range(2)]
-            c = c_tb1(a - 2, j, k)
-            return [(c, 1.0)] if c is not None else []
-        # comp == 2: zeta, full radial a in [0,nr)
-        if a == 0:
-            return [(c_zes(p, k), float(xi[p, 0, j])) for p in range(3)]
-        if a == 1:
-            return [(c_zes(p, k), float(xi[p, 1, j])) for p in range(3)]
-        c = c_zb1(a - 2, j, k)
-        return [(c, 1.0)] if c is not None else []
+            m = a == 0
+            for pl in range(2):
+                out.emit(r[m], c_ths(pl, k[m]),
+                         s * (xi[pl + 1, 1, j[m]] - xi[pl + 1, 0, j[m]]))
+            m = (a >= 1) & (a - 1 < dr - 1)
+            out.emit(r[m], base_r1 + ((a[m] - 1) * nt + j[m]) * nz + k[m], s)
+        elif comp == 1:                                # chi, full radial a in [0,nr)
+            m = a == 1
+            for pl in range(2):
+                out.emit(r[m], c_ths(pl, k[m]),
+                         s * (xi[pl + 1, 1, (j[m] + 1) % dt] - xi[pl + 1, 1, j[m]]))
+            m = (a >= 2) & (a - 2 < radial_in)
+            out.emit(r[m], base_tb1 + ((a[m] - 2) * dt + j[m]) * nz + k[m], s)
+        else:                                          # zeta, full radial a in [0,nr)
+            for ring in (0, 1):
+                m = a == ring
+                for p in range(3):
+                    out.emit(r[m], c_zes(p, k[m]), s * xi[p, ring, j[m]])
+            m = (a >= 2) & (a - 2 < radial_in)
+            out.emit(r[m], base_zb1 + ((a[m] - 2) * nt + j[m]) * dz + k[m], s)
 
     # --- V2 extracted (output) row offsets (match build_extraction k==2) ---
     n1_v2 = (radial_out * dt + 2) * dz   # comp0 extracted size (2dz surgery + bulk)
@@ -1771,65 +1681,41 @@ def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
     r_c1 = n1_v2                         # comp1 bulk start
     r_c2 = n1_v2 + n2_v2                 # comp2 bulk start
 
-    rows, cols, data = [], [], []
-
-    def add(r, terms):
-        for c, w in terms:
-            if c is None or w == 0.0:
-                continue
-            rows.append(r)
-            cols.append(c)
-            data.append(w)
-
-    def scaled(terms, s):
-        return [(c, s * w) for c, w in terms]
-
     # comp0 surgery [0,2dz): P axis = -d_z(chi apex) + (zeta apex difference)
-    for pl in range(2):
-        p = pl + 1
-        for m in range(dz):
-            add(pl * dz + m,
-                [(c_ths(pl, m), 1.0), (c_ths(pl, (m + 1) % dz), -1.0),
-                 (c_zes(p, m), 1.0), (c_zes(0, m), -1.0)])
+    pl, m = _stencil_grid(2, dz)
+    r = pl * dz + m
+    out.emit(r, c_ths(pl, m), 1.0)
+    out.emit(r, c_ths(pl, (m + 1) % dz), -1.0)
+    out.emit(r, c_zes(pl + 1, m), 1.0)
+    out.emit(r, c_zes(0, m), -1.0)
 
     # comp0 bulk: P[i+2,j,k] = -d_z(chi) + d_t(zeta)
-    for i in range(radial_out):
-        for j in range(dt):
-            for k in range(dz):
-                add(r_c0b + (i * dt + j) * dz + k,
-                    scaled(expand_v1(1, i + 2, j, (k + 1) % nz), -1) + expand_v1(1, i + 2, j, k)
-                    + expand_v1(2, i + 2, (j + 1) % nt, k) + scaled(expand_v1(2, i + 2, j, k), -1))
+    i, j, k = _stencil_grid(radial_out, dt, dz)
+    r = r_c0b + np.arange(i.size)
+    expand_v1(r, 1, i + 2, j, (k + 1) % nz, -1.0)
+    expand_v1(r, 1, i + 2, j, k, 1.0)
+    expand_v1(r, 2, i + 2, (j + 1) % nt, k, 1.0)
+    expand_v1(r, 2, i + 2, j, k, -1.0)
 
     # comp1 bulk: Q[i+1,j,k] = d_z(s) - d_r(zeta)
-    for i in range(dr - 1):
-        for j in range(nt):
-            for k in range(dz):
-                add(r_c1 + (i * nt + j) * dz + k,
-                    expand_v1(0, i + 1, j, (k + 1) % nz) + scaled(expand_v1(0, i + 1, j, k), -1)
-                    + scaled(expand_v1(2, i + 2, j, k), -1) + expand_v1(2, i + 1, j, k))
+    i, j, k = _stencil_grid(dr - 1, nt, dz)
+    r = r_c1 + np.arange(i.size)
+    expand_v1(r, 0, i + 1, j, (k + 1) % nz, 1.0)
+    expand_v1(r, 0, i + 1, j, k, -1.0)
+    expand_v1(r, 2, i + 2, j, k, -1.0)
+    expand_v1(r, 2, i + 1, j, k, 1.0)
 
     # comp2 bulk: R[i+1,j,k] = -d_t(s) + d_r(chi)
-    for i in range(dr - 1):
-        for j in range(dt):
-            for k in range(nz):
-                add(r_c2 + (i * dt + j) * nz + k,
-                    scaled(expand_v1(0, i + 1, (j + 1) % nt, k), -1) + expand_v1(0, i + 1, j, k)
-                    + expand_v1(1, i + 2, j, k) + scaled(expand_v1(1, i + 1, j, k), -1))
+    i, j, k = _stencil_grid(dr - 1, dt, nz)
+    r = r_c2 + np.arange(i.size)
+    expand_v1(r, 0, i + 1, (j + 1) % nt, k, -1.0)
+    expand_v1(r, 0, i + 1, j, k, 1.0)
+    expand_v1(r, 1, i + 2, j, k, 1.0)
+    expand_v1(r, 1, i + 1, j, k, -1.0)
 
     n1 = int(seq.n1_dbc if dirichlet_in else seq.n1)
     n2 = int(seq.n2_dbc if dirichlet_out else seq.n2)
-    coo = _sps.coo_matrix(
-        (np.asarray(data, dtype=np.float64),
-         (np.asarray(rows, dtype=np.int32), np.asarray(cols, dtype=np.int32))),
-        shape=(n2, n1)).tocsr()
-    coo.sum_duplicates()
-    coo = coo.tocoo()
-    bcoo = jsparse.BCOO(
-        (jnp.asarray(coo.data),
-         jnp.asarray(np.stack([coo.row, coo.col], axis=1))),
-        shape=(n2, n1))
-    return jsparse.BCSR.from_bcoo(bcoo)
-
+    return out.bcsr((n2, n1))
 
 def _build_inc_gram_inv(seq, operators, space: int, dirichlet: bool):
     """Sparse ``(E_space^T E_space)^{-1}`` for the TRUE polar-derivative fix.
@@ -1963,7 +1849,7 @@ def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = N
                 g0 = build_grad_stencil_g0(seq, xi, din, dout)
                 base = f"g0_grad_{int(din)}{int(dout)}"
                 gfields += [base, base + "_T"]
-                gvals += [g0, jsparse.BCSR.from_bcoo(g0.to_bcoo().T)]
+                gvals += [g0, _bcsr_transpose(g0)]
         operators = eqx.tree_at(
             lambda o: tuple(getattr(o, f) for f in gfields),
             operators, tuple(gvals),
@@ -1983,7 +1869,7 @@ def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = N
                 g1 = build_curl_stencil_g1(seq, xi, din, dout)
                 base = f"g1_curl_{int(din)}{int(dout)}"
                 cfields += [base, base + "_T"]
-                cvals += [g1, jsparse.BCSR.from_bcoo(g1.to_bcoo().T)]
+                cvals += [g1, _bcsr_transpose(g1)]
         operators = eqx.tree_at(
             lambda o: tuple(getattr(o, f) for f in cfields),
             operators, tuple(cvals),
@@ -2698,32 +2584,34 @@ def apply_stiffness(seq, operators: SequenceOperators, v, k: int, dirichlet: boo
 
 
 def _diagonal_from_matvec(operator_apply, size: int):
-    """Probe ``diag(A)`` one column at a time via ``jax.lax.map``.
+    """Probe ``diag(A)`` 16 columns at a time via ``jax.lax.map``.
 
-    DO NOT batch this with ``vmap`` over chunks of canonical basis vectors, the
-    way :func:`mrx.preconditioners.diag_matvec` does. It was tried on 2026-08-17
-    and crashes the CUDA toolchain: the batched kernel fuses into a large
-    transpose that spills registers and ptxas exits with an internal compiler
-    error (``ptxas fatal: Internal compiler error``, 94 test errors, all inside
-    the ``lax.while_loop`` in ``nullspace.find_nullspace_vectors``). The
-    sequential map keeps each kernel small enough to compile.
+    DO NOT batch this with a full ``vmap`` over chunks of canonical basis
+    vectors, the way :func:`mrx.preconditioners.diag_matvec` does. It was
+    tried on 2026-08-17 and crashes the CUDA toolchain: the batched kernel
+    fuses into a large transpose that spills registers and ptxas exits with an
+    internal compiler error (``ptxas fatal: Internal compiler error``, 94 test
+    errors, all inside the ``lax.while_loop`` in
+    ``nullspace.find_nullspace_vectors``). ``batch_size=16`` keeps each kernel
+    small enough to compile (clean on the nullspace tests 2026-08-26) and is
+    1.3-2x faster than the fully sequential map.
     """
     # Eager warmup: operator_apply may lazily build host-side static state
     # (e.g. matrix-free mass index plans that call np.asarray internally).
     # Under lax.map the body is traced as a scan, so those calls would see
     # tracers and raise TracerArrayConversionError.  One concrete call first
     # forces that state to be built and cached before the traced loop runs.
-    operator_apply(jnp.zeros(size, dtype=jnp.float64))
+    operator_apply(jnp.zeros(size, dtype=mrx.DTYPE))
 
     def entry(i):
-        basis = jnp.zeros(size, dtype=jnp.float64).at[i].set(1.0)
+        basis = jnp.zeros(size, dtype=mrx.DTYPE).at[i].set(1.0)
         return operator_apply(basis)[i]
 
-    return jax.lax.map(entry, jnp.arange(size))
+    return jax.lax.map(entry, jnp.arange(size), batch_size=16)
 
 
 def _invert_diagonal(diagonal):
-    diagonal = jnp.asarray(diagonal, dtype=jnp.float64)
+    diagonal = jnp.asarray(diagonal, dtype=mrx.DTYPE)
     return jnp.where(diagonal != 0.0, 1.0 / diagonal, 0.0)
 
 

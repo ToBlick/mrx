@@ -9,7 +9,6 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.interpolate import RegularGridInterpolator
 
-import mrx
 
 
 def parse_args() -> dict:
@@ -157,52 +156,6 @@ def load_sweep(
                 f"Skipped {fname} (unexpected diffs: {list(unexpected_diffs.keys())})")
 
     return cfgs, forces, iter_counts
-
-
-def interpolate_scalar_function(x, f_vals, seq, weights=None, rcond=None):
-    """
-    Least-squares interpolation of a scalar field onto a 0-form FEM basis.
-
-    Given evaluations *f_vals* of a scalar function at points *x*, find the
-    coefficient vector ``c`` such that ``∑_i c_i Λ0[i](x_j) ≈ f(x_j)``
-    in the least-squares sense.
-
-    Parameters
-    ----------
-    x : jnp.ndarray
-        Evaluation points, shape ``(n_pts, 3)``.
-    f_vals : jnp.ndarray
-        Scalar values at evaluation points, shape ``(n_pts,)``.
-    seq : DeRhamSequence
-        Pre-built DeRham sequence to use for the basis.
-    weights : jnp.ndarray, optional
-        Weights for the least-squares problem, shape ``(n_pts,)``.
-    rcond : float, optional
-        Relative condition number cutoff for small singular values in lstsq.
-
-    Returns
-    -------
-    dict
-        Dictionary containing 'dof' (the coefficient vector) and lstsq diagnostics.
-    """
-    if weights is None:
-        weights = jnp.ones_like(f_vals)
-
-    M = mrx.double_map(
-        lambda i, pt: seq.basis_0[i](pt)[0],
-        seq.basis_0.ns, x,
-    )  # shape (n_dof, n_pts)
-
-    A = jnp.einsum('ij,j,jk->ik', M, weights, M.T)  # shape (n_dof, n_dof)
-    rhs = jnp.einsum('ij,j,j->i', M, weights, f_vals)  # shape (n_dof,)
-
-    c, residual, rank, s = jnp.linalg.lstsq(A, rhs, rcond=rcond)
-    return {
-        "dof": c,
-        "residual": residual,
-        "rank": rank,
-        "singular_values": s,
-    }
 
 
 def project_sampled_field(

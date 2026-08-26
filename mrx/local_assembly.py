@@ -26,6 +26,7 @@ import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
+import mrx
 from mrx.geometry import grad_1d
 
 __all__ = [
@@ -418,31 +419,27 @@ def _flat_dof_plan(gx, gy, gz, shape):
     return jnp.asarray(idx.astype(np.int32))
 
 
-def _element_apply(Bvals_r, Bvals_c, W, x_flat_c, gather_idx_c):
-    """One (row-comp, col-comp) element contraction folded against a vector.
+def _to_quadrature(Bvals, x_flat, gather_idx):
+    """Column half of :func:`_elem_block_mixed` folded against a vector.
 
-    Mirrors :func:`_elem_block_mixed` but contracts against the gathered input
-    instead of forming the dense element block. The gather uses a precomputed
-    flat index plan (``gather_idx_c``); no index arithmetic runs in the matvec.
+    Gathers the element-local input with the precomputed flat index plan (no
+    index arithmetic in the matvec) and evaluates the component's field at the
+    element quadrature points, ``(ne_x, ne_y, ne_z, qx, qy, qz)``.
     """
-    Bxr, Byr, Bzr = Bvals_r
-    Bxc, Byc, Bzc = Bvals_c
-    # Gather element-local input for the column component (single gather).
-    x_local = x_flat_c[gather_idx_c]  # (ne_x,ne_y,ne_z,nxc,nyc,nzc)
+    Bx, By, Bz = Bvals
+    x_local = x_flat[gather_idx]  # (ne_x,ne_y,ne_z,nxc,nyc,nzc)
+    t1 = jnp.einsum('xqb,xyzbdf->xyzqdf', Bx, x_local)
+    t2 = jnp.einsum('yrd,xyzqdf->xyzqrf', By, t1)
+    return jnp.einsum('zsf,xyzqrf->xyzqrs', Bz, t2)
 
-    # Column bases -> quadrature points.
-    t1 = jnp.einsum('xqb,xyzbdf->xyzqdf', Bxc, x_local)
-    t2 = jnp.einsum('yrd,xyzqdf->xyzqrf', Byc, t1)
-    u = jnp.einsum('zsf,xyzqrf->xyzqrs', Bzc, t2)
 
-    # Metric weight at the quadrature points (already includes Gauss weights).
-    u = u * W
-
-    # Row bases <- quadrature points.
-    s1 = jnp.einsum('xqa,xyzqrs->xyzars', Bxr, u)
-    s2 = jnp.einsum('yrc,xyzars->xyzacs', Byr, s1)
-    y_local = jnp.einsum('zse,xyzacs->xyzace', Bzr, s2)
-    return y_local
+def _from_quadrature(Bvals, u):
+    """Row half of :func:`_elem_block_mixed`: test a quadrature-point field
+    (Gauss weights already folded in) against the element-local row basis."""
+    Bx, By, Bz = Bvals
+    s1 = jnp.einsum('xqa,xyzqrs->xyzars', Bx, u)
+    s2 = jnp.einsum('yrc,xyzars->xyzacs', By, s1)
+    return jnp.einsum('zse,xyzacs->xyzace', Bz, s2)
 
 
 def _mass_form_and_weights(seq, k, geometry):
@@ -496,8 +493,8 @@ def build_mass_diagonal(seq, k, geometry=None):
     """Return ``diag(M_k)`` in raw DOF space, exactly and probe-free.
 
     A diagonal entry only ever sees its own component, so only the ``(c, c)``
-    metric blocks contribute and the contraction of :func:`_element_apply`
-    collapses to the *same* sum factorization against **squared** basis tables
+    metric blocks contribute and the ``_to_quadrature`` / ``_from_quadrature``
+    pair of the matvec collapses to the *same* sum factorization against **squared** basis tables
     with no input vector:
 
         d[a,b,e] = sum_elem sum_{q,r,s} Bx[q,a]^2 By[r,b]^2 Bz[s,e]^2 W(q,r,s)
@@ -658,8 +655,6 @@ def _jacobian_gradient(seq, geometry, batch_size=None):
     what the geometry build costs.  Batched, because the unbatched vmap over the
     full quad grid is what OOMs an 80 GB card on W7-X.
     """
-    import mrx  # noqa: PLC0415
-
     if batch_size is None:
         batch_size = mrx.MAP_BATCH_SIZE_INNER
     def jdet(x):
@@ -786,7 +781,7 @@ def build_extracted_stiffness_diagonal_k0(seq, dirichlet: bool):
     vals = np.asarray(e.vals)
     counts = np.bincount(rows, minlength=n_ext)
 
-    diag = np.zeros(n_ext, dtype=np.float64)
+    diag = np.zeros(n_ext, dtype=mrx.DTYPE)
 
     # --- bulk rows: pure selectors, straight from the raw closed form --------
     d_raw = np.asarray(build_stiffness_diagonal(seq, 0))
@@ -816,23 +811,32 @@ def build_extracted_stiffness_diagonal_k0(seq, dirichlet: bool):
     wt = np.asarray(seq.quad.w_y)
     wz = np.asarray(seq.quad.w_z)
 
+    # zeta stays a 1D factor of every polar row, so the zeta contraction of
+    # the weight is done once for every (a, b) and every zeta basis index m:
+    #   F[a][b][m] = sum_s W[..., a, b] wz Y_a[m] Y_b[m]
+    Yz = (Zt, Zt, Zd)
+    F = [[np.einsum('qrs,ms->mqr', W[..., a, b] * wz, Yz[a] * Yz[b])
+          for b in range(3)] for a in range(3)]
+
     nt, nzb = seq.basis_0.nt, seq.basis_0.nz
-    for i in polar:
-        sel = rows == i
-        c, v = cols[sel], vals[sel]
+    # Group the triplets by row once (stable, so each row keeps its original
+    # triplet order) instead of scanning every triplet per polar row.
+    order = np.argsort(rows, kind="stable")
+    lo = np.searchsorted(rows[order], polar, side="left")
+    hi = np.searchsorted(rows[order], polar, side="right")
+    for i, a, b in zip(polar, lo, hi):
+        c, v = cols[order[a:b]], vals[order[a:b]]
         ir, it, iz = c // (nt * nzb), (c // nzb) % nt, c % nzb
         m = int(iz[0])
-        # 2D (r,theta) shape and its partials; zeta stays a 1D factor.
+        # 2D (r,theta) shape and its partials.
         X = (np.einsum('a,aq,ar->qr', v, Rd[ir], Tt[it]),
              np.einsum('a,aq,ar->qr', v, Rt[ir], Td[it]),
              np.einsum('a,aq,ar->qr', v, Rt[ir], Tt[it]))
-        Y = (Zt[m], Zt[m], Zd[m])
         total = 0.0
         for a in range(3):
             for b in range(3):
-                # contract zeta first, then the (r,theta) plane
-                F = np.einsum('qrs,s,s,s->qr', W[..., a, b], wz, Y[a], Y[b])
-                total += float(np.einsum('qr,q,r,qr->', X[a] * X[b], wr, wt, F))
+                total += float(np.einsum('qr,q,r,qr->', X[a] * X[b], wr, wt,
+                                         F[a][b][m]))
         diag[i] = total
     return jnp.asarray(diag)
 
@@ -846,11 +850,17 @@ def build_matrixfree_mass_apply(seq, k, geometry=None):
     caller exactly as for the stored path.
 
     The element plan (basis values, gather indices, scatter segment ids and
-    metric weights) is built once on the host; the jitted matvec performs a
-    single gather and a single ``segment_sum`` per component pair with no index
-    arithmetic. The plan arrays are passed as runtime arguments to the jitted
-    kernel (not captured as constants) to avoid XLA constant-folding of the
-    large integer index tensors.
+    metric weights) is built once on the host and passed to the jitted kernel
+    as runtime arguments (not captured as constants) to avoid XLA
+    constant-folding of the large integer index tensors.
+
+    The matvec is the sum factorization split at the quadrature points: each
+    column component is gathered and pushed to the quadrature points ONCE, the
+    metric ``W[cr, cc]`` (Gauss weights folded in) mixes the components
+    pointwise, and each row component is tested ONCE. That is ``n_comp``
+    column transforms, ``n_comp^2`` pointwise multiply-adds and ``n_comp`` row
+    transforms -- a third of the einsum work of transforming per ``(cr, cc)``
+    pair -- followed by a single ``segment_sum`` into the concatenated output.
     """
     geometry = seq.geometry if geometry is None else geometry
     nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
@@ -864,6 +874,7 @@ def build_matrixfree_mass_apply(seq, k, geometry=None):
     for c in range(n_comp):
         Sx, Sy, Sz = shapes[c]
         starts.append(starts[-1] + Sx * Sy * Sz)
+    starts_t = tuple(int(s) for s in starts)
 
     # Pre-split + fold Gauss weights into each (cr, cc) metric field.
     W_split = {}
@@ -872,43 +883,29 @@ def build_matrixfree_mass_apply(seq, k, geometry=None):
                           ne_x, ne_y, ne_z, qx, qy, qz)
         W_split[(cr, cc)] = Wf * gw
 
-    # --- Static element plan (built ONCE, reused for every matvec) -----------
     # Basis VALUES (for the einsums) are separated from the gather/scatter
-    # index plans. The index plans -- flat gather indices per column component
-    # and flat scatter (segment-id) arrays per row component -- depend only on
-    # the mesh topology, so they are precomputed here and passed in as device
-    # int32 arrays. The matvec then performs a single gather and a single
-    # segment_sum per (cr, cc) pair with NO index arithmetic.
+    # index plans, which depend only on the mesh topology: flat gather indices
+    # per column component and one flat scatter (segment-id) array for the
+    # whole output, offset by the component starts.
     Bvals = tuple((c[0], c[2], c[4]) for c in comp)          # (Bx, By, Bz)
     gather_idx = tuple(
-        _flat_dof_plan(comp[cc][1], comp[cc][3], comp[cc][5], shapes[cc])
-        for cc in range(n_comp))
-    seg_idx = tuple(
-        _flat_dof_plan(comp[cr][1], comp[cr][3], comp[cr][5],
-                       shapes[cr]).reshape(-1)
-        for cr in range(n_comp))
-    nseg = tuple(int(np.prod(shapes[c])) for c in range(n_comp))
-
-    starts_t = tuple(int(s) for s in starts)
+        _flat_dof_plan(comp[c][1], comp[c][3], comp[c][5], shapes[c])
+        for c in range(n_comp))
+    seg_idx = jnp.concatenate([
+        gather_idx[c].reshape(-1) + starts_t[c] for c in range(n_comp)])
+    n_out = starts_t[-1]
 
     @jax.jit
     def _impl(x, Bvals, W_split, gather_idx, seg_idx):
-        # Split the input into flattened component DOF vectors.
-        Xc = [x[starts_t[c]:starts_t[c + 1]] for c in range(n_comp)]
-
-        out_parts = []
+        u = [_to_quadrature(Bvals[c], x[starts_t[c]:starts_t[c + 1]],
+                            gather_idx[c]) for c in range(n_comp)]
+        y_parts = []
         for cr in range(n_comp):
-            acc = jnp.zeros((nseg[cr],), dtype=x.dtype)
-            for cc in range(n_comp):
-                if (cr, cc) not in W_split:
-                    continue
-                y_local = _element_apply(
-                    Bvals[cr], Bvals[cc], W_split[(cr, cc)],
-                    Xc[cc], gather_idx[cc])
-                acc = acc + jax.ops.segment_sum(
-                    y_local.reshape(-1), seg_idx[cr], num_segments=nseg[cr])
-            out_parts.append(acc)
-        return jnp.concatenate(out_parts)
+            v = sum(W_split[(cr, cc)] * u[cc]
+                    for cc in range(n_comp) if (cr, cc) in W_split)
+            y_parts.append(_from_quadrature(Bvals[cr], v).reshape(-1))
+        return jax.ops.segment_sum(jnp.concatenate(y_parts), seg_idx,
+                                   num_segments=n_out)
 
     def apply(x):
         return _impl(x, Bvals, W_split, gather_idx, seg_idx)

@@ -108,7 +108,7 @@ def map_logical_points(
     mapped = np.asarray(
         jax.lax.map(
             jax.jit(map_fn),
-            jnp.asarray(points, dtype=jnp.float64),
+            jnp.asarray(points),
             batch_size=int(batch_size),
         ),
         dtype=np.float64,
@@ -139,9 +139,9 @@ def evaluate_harmonic_pushforward_B(
         ``extend_map_nfp`` with one-period localization (legacy).
     """
     mode = str(circulation_map).strip().lower().replace("-", "_")
-    u = jnp.asarray(u, dtype=jnp.float64)
+    u = jnp.asarray(u)
     logical_np = np.asarray(logical, dtype=np.float64).reshape(-1, 3)
-    logical_j = jnp.asarray(logical_np, dtype=jnp.float64)
+    logical_j = jnp.asarray(logical_np)
 
     if int(k) == 1:
         disc = DiscreteFunction(u, seq.basis_1, seq.e1)
@@ -161,7 +161,7 @@ def evaluate_harmonic_pushforward_B(
         nfp_i = int(nfp)
 
         def localized(x: jnp.ndarray) -> jnp.ndarray:
-            x = jnp.asarray(x, dtype=jnp.float64).reshape(3)
+            x = jnp.asarray(x).reshape(3)
             xi = x[2] * float(nfp_i)
             zloc = xi - jnp.floor(xi)
             return disc(x.at[2].set(zloc))
@@ -192,7 +192,7 @@ def evaluate_harmonic_curl_pushforward_B(
 ) -> np.ndarray:
     """Evaluate ``Pushforward(strong_curl(u))`` as Cartesian **B** (k=1 only)."""
     B_dof = seq.apply_strong_curl(
-        jnp.asarray(u, dtype=jnp.float64),
+        jnp.asarray(u),
         dirichlet_in=False,
         dirichlet_out=True,
     )
@@ -208,7 +208,7 @@ def evaluate_harmonic_curl_pushforward_B(
         nfp_i = int(nfp)
 
         def localized(x: jnp.ndarray) -> jnp.ndarray:
-            x = jnp.asarray(x, dtype=jnp.float64).reshape(3)
+            x = jnp.asarray(x).reshape(3)
             xi = x[2] * float(nfp_i)
             zloc = xi - jnp.floor(xi)
             return disc(x.at[2].set(zloc))

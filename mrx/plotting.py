@@ -1007,7 +1007,7 @@ def poincare_plot(logical_intersections,
     if jnp.any(valid_mask):
         # Add colorbar to left plot for pressure if available
         if p_values is not None and jnp.any(valid_mask):
-            cbar1 = fig.colorbar(s1, cax=cax1, label=r"$p \; [\times 100]$")
+            fig.colorbar(s1, cax=cax1, label=r"$p \; [\times 100]$")
         else:
             cax1.set_visible(False)  # Hide left colorbar axis if no pressure
 

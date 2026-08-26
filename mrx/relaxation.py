@@ -103,12 +103,19 @@ class State(eqx.Module):
         The resistivity.
     F_prev : jnp.ndarray (optional)
         The force from the previous time step (for L-BFGS y computation).
+    MF_prev : jnp.ndarray (optional)
+        ``M_2 F_prev``.  Carried so that the secant ``M y = M F_prev - M F``
+        and the CG beta cost no mass apply of their own.
     s_history : jnp.ndarray (optional)
-        History of iterate differences s_k = B_{k+1} - B_k (for L-BFGS).
+        History of steps in the descent variable, s_k = dt_k u_k (for L-BFGS).
     y_history : jnp.ndarray (optional)
         History of L^2-gradient differences y_k = grad_M E_{k+1} - grad_M E_k
         = F_k - F_{k+1} (for L-BFGS).  Here grad_M E = -F is the Riesz
         representative of dE w.r.t. the M2 inner product.
+    Ms_history, My_history : jnp.ndarray (optional)
+        ``M_2 s_k`` and ``M_2 y_k``, row-aligned with the histories above.
+        Every M-inner product the two-loop recursion takes is against a
+        stored vector, so with these in hand it applies M zero times.
     picard_iterations : int
         The number of Picard iterations.
     picard_residuum : float
@@ -136,8 +143,11 @@ class State(eqx.Module):
     JxH: Optional[jnp.ndarray] = None
     E: Optional[jnp.ndarray] = None
     F_prev: Optional[jnp.ndarray] = None
+    MF_prev: Optional[jnp.ndarray] = None
     s_history: Optional[jnp.ndarray] = None
     y_history: Optional[jnp.ndarray] = None
+    Ms_history: Optional[jnp.ndarray] = None
+    My_history: Optional[jnp.ndarray] = None
     A: Optional[jnp.ndarray] = None
     dt: float = 1e-2
     eta: float = 0.0
@@ -225,8 +235,9 @@ class TimeStepper(eqx.Module):
             raise ValueError(
                 "history_size must be at least 1 when using CG or L-BFGS.")
 
-    def _lbfgs_direction(self, F: jnp.ndarray, s: jnp.ndarray,
-                         y: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+    def _lbfgs_direction(self, F: jnp.ndarray, s: jnp.ndarray, y: jnp.ndarray,
+                         Ms: jnp.ndarray, My: jnp.ndarray
+                         ) -> tuple[jnp.ndarray, jnp.ndarray]:
         """
         Compute the L-BFGS descent direction v = H_k F using the two-loop recursion.
 
@@ -246,6 +257,12 @@ class TimeStepper(eqx.Module):
         F : the force / negative gradient at the current iterate.
         s : (m, n) newest-first step history in the descent variable.
         y : (m, n) newest-first gradient-difference history, ALIGNED with s.
+        Ms, My : (m, n) ``M s`` and ``M y``, row by row.  Every inner product
+            the recursion takes is against a STORED vector, and M is
+            symmetric, so ``<s_i, q>_M = (M s_i)^T q`` and
+            ``<y_i, r>_M = (M y_i)^T r``: this function applies M zero times.
+            (It used to apply it 4m + 2 times per step, re-forming ``M y_i``
+            in both loops and ``M q``, ``M r`` once per pair.)
 
         Returns
         -------
@@ -256,17 +273,25 @@ class TimeStepper(eqx.Module):
         Falls back to steepest descent (F) when all history entries are zero.
         """
         m = self.history_size
-        def apply_M(x): return self.seq.apply_mass_matrix(x, 2)
+
+        # <s_i, y_i>_M for every stored pair.  An EMPTY slot -- s_i identically
+        # zero, as the history is before it fills -- has sy_i = 0 exactly and
+        # contributes nothing to either loop; rho_i = 0 states that.  (The
+        # old ``1 / (sy + 1e-30)`` gave the same result only because
+        # 1e30 * 0 happens to be 0.)  A NEGATIVE sy_i is a non-descent pair;
+        # it is used as stored and reported through ``sy`` below, not
+        # repaired here.
+        sy_all = jnp.einsum('in,in->i', s, My)
+        filled = jnp.any(s != 0, axis=1)
+        rho = jnp.where(filled, 1.0 / jnp.where(filled, sy_all, 1.0), 0.0)
 
         # --- two-loop recursion ---
-        q = F.copy()
-        alpha = jnp.zeros(m)
-
         # first loop: newest (i=0) to oldest (i=m-1)
+        q = F
+        alpha = []
         for i in range(m):
-            rho_i = 1.0 / (s[i] @ apply_M(y[i]) + 1e-30)
-            alpha_i = rho_i * (s[i] @ apply_M(q))
-            alpha = alpha.at[i].set(alpha_i)
+            alpha_i = rho[i] * (Ms[i] @ q)
+            alpha.append(alpha_i)
             q = q - alpha_i * y[i]
 
         # Initial Hessian scaling: gamma = (s_0^T M y_0) / (y_0^T M y_0).
@@ -289,15 +314,14 @@ class TimeStepper(eqx.Module):
         # failed for months -- the returned "descent direction" came out
         # orthogonal to F, ||dB|| collapsed to solver noise, and dt exploded
         # to compensate.  sy is returned so the caller records it instead.
-        sy = s[0] @ apply_M(y[0])
-        yy = y[0] @ apply_M(y[0])
+        sy = sy_all[0]
+        yy = y[0] @ My[0]
         gamma = jnp.where(sy > 0, sy / jnp.where(yy > 0, yy, 1.0), 1.0)
         r = gamma * q
 
         # second loop: oldest (i=m-1) to newest (i=0)
         for i in range(m - 1, -1, -1):
-            rho_i = 1.0 / (s[i] @ apply_M(y[i]) + 1e-30)
-            beta_i = rho_i * (y[i] @ apply_M(r))
+            beta_i = rho[i] * (My[i] @ r)
             r = r + (alpha[i] - beta_i) * s[i]
 
         return r, sy
@@ -309,7 +333,7 @@ class TimeStepper(eqx.Module):
                 rhs, 2, self.mu, dirichlet=True, guess=u)
         return u
 
-    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'A', 'dt', 'eta', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'lbfgs_sy', 'noise_level', 'key'], value) -> State:  # noqa: E501
+    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'eta', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'lbfgs_sy', 'noise_level', 'key'], value) -> State:  # noqa: E501
         return eqx.tree_at(
             lambda s: getattr(s, field_name),
             state,
@@ -348,6 +372,11 @@ class TimeStepper(eqx.Module):
         F, p, J, H, JxH = compute_force(
             B_n, self.seq, dirichlet_H=self.dirichlet_H,
             p_guess=state.p, H_guess=state.H, JxH_guess=state.JxH)
+        # M F ONCE.  It serves ||F||_M, the CG beta and the L-BFGS secant
+        # M y = M F_prev - M F; the step applies M_2 three times in total
+        # (M F, M u, M dB) whichever method is running -- L-BFGS used to
+        # apply it 4m + 6 times.
+        MF = self.seq.apply_mass_matrix(F, 2)
 
         # --- history bookkeeping, part 1: push y BEFORE the direction -------
         # y_{k-1} = grad_M E_k - grad_M E_{k-1} = F_prev - F is a difference
@@ -357,25 +386,26 @@ class TimeStepper(eqx.Module):
         # what keeps (s_i, y_i) aligned.  Pushing it at the end instead leaves
         # y lagging its paired s by exactly one step.
         y_new = state.F_prev - F
+        My_new = state.MF_prev - MF
         s_hist = state.s_history
+        Ms_hist = state.Ms_history
         y_hist = jnp.roll(state.y_history, 1, axis=0).at[0].set(y_new)
+        My_hist = jnp.roll(state.My_history, 1, axis=0).at[0].set(My_new)
 
         sy = jnp.array(0.0)
         if self.descent_method == DescentMethod.LBFGS:
-            u, sy = self._lbfgs_direction(F, s_hist, y_hist)
+            u, sy = self._lbfgs_direction(F, s_hist, y_hist, Ms_hist, My_hist)
         elif self.descent_method == DescentMethod.CONJUGATE_GRADIENT:
             u = F
             # Polak-Ribiere.  The previous GRADIENT is -F_prev, which is why
             # F_prev and not the previous search DIRECTION v belongs here;
             # the two coincide only on the first step, where beta is 0 anyway.
-            g_prev = state.F_prev
-            g_prev_norm_sq = self.seq.l2_norm_sq(g_prev, 2)
+            # <F, F - F_prev>_M = F^T M F - F^T (M F_prev) by symmetry of M.
+            g_prev_norm_sq = state.F_prev @ state.MF_prev
             beta = jnp.where(
                 g_prev_norm_sq > 0,
                 jnp.maximum(
-                    (u @ self.seq.apply_mass_matrix(u - g_prev, 2))
-                    / g_prev_norm_sq,
-                    0.0),
+                    (F @ MF - F @ state.MF_prev) / g_prev_norm_sq, 0.0),
                 0.0)
             u = u + beta * state.v
         elif self.descent_method == DescentMethod.GRADIENT:
@@ -388,6 +418,8 @@ class TimeStepper(eqx.Module):
                 u, key, state.noise_level * self.seq.l2_norm(u, 2))
         u = self.apply_regularization(u)
         u, p_v = self.seq.apply_leray_projection(u, k=2, p_guess=state.p_v)
+        # M u once: the linesearch numerator, ||u||_M and the stored M s.
+        Mu = self.seq.apply_mass_matrix(u, 2)
 
         E_dual = self.seq.cross_product_load(
             u, H, 1, 2, 1, True, True, self.dirichlet_H)
@@ -417,8 +449,7 @@ class TimeStepper(eqx.Module):
         if self.dt_mode == TimeStepChoice.FIXED or self.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:
             dt = state.dt
         elif self.dt_mode == TimeStepChoice.ANALYTIC_LINESEARCH:
-            dt = F @ self.seq.apply_mass_matrix(u, 2) / \
-                self.seq.l2_norm_sq(dB, 2)
+            dt = F @ Mu / self.seq.l2_norm_sq(dB, 2)
         else:
             raise ValueError(
                 f"Unknown dt_mode: {self.dt_mode}. Supported modes are given by the TimeStepChoice enum.")
@@ -435,16 +466,19 @@ class TimeStepper(eqx.Module):
         # See docs/research/handoff_2026-08-25_relaxation_prelim.md.
         s_new = dt * u
         s_history = jnp.roll(s_hist, 1, axis=0).at[0].set(s_new)
+        Ms_history = jnp.roll(Ms_hist, 1, axis=0).at[0].set(dt * Mu)
         y_history = y_hist
+        My_history = My_hist
 
         return eqx.tree_at(
             lambda s: (s.B_nplus1, s.v, s.p, s.p_v, s.H, s.JxH, s.E,
-                       s.F_prev, s.F_norm, s.v_norm, s.lbfgs_sy, s.dt,
-                       s.s_history, s.y_history),
+                       s.F_prev, s.MF_prev, s.F_norm, s.v_norm, s.lbfgs_sy,
+                       s.dt, s.s_history, s.y_history, s.Ms_history,
+                       s.My_history),
             state,
             (B_nplus1, u, p, p_v, H, JxH, E,
-             F, self.seq.l2_norm(F, 2), self.seq.l2_norm(u, 2), sy, dt,
-             s_history, y_history))
+             F, MF, jnp.sqrt(F @ MF), jnp.sqrt(u @ Mu), sy,
+             dt, s_history, y_history, Ms_history, My_history))
 
     def midpoint_picard_step(self, state: State, key: jax.random.PRNGKey) -> State:
         """
@@ -492,22 +526,36 @@ class TimeStepper(eqx.Module):
 
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State:
-    n = ts.seq.n2_dbc
-    n1 = ts.seq.n1 if not ts.dirichlet_H else ts.seq.n1_dbc
+    """Build the state at ``B_dof`` with its force already evaluated.
+
+    ``F_prev``, ``MF_prev``, ``F_norm`` and the warm-start guesses ``p``,
+    ``H``, ``JxH`` are seeded from one ``compute_force`` here, so the first
+    step's secant ``y = F_prev - F`` and CG beta see the true previous
+    gradient.  Callers used to repeat this seeding by hand (and could not
+    have seeded ``MF_prev``, which did not exist).
+    """
+    seq = ts.seq
+    n = seq.n2_dbc
     m = ts.history_size
+    F0, p0, _, H0, JxH0 = compute_force(B_dof, seq, dirichlet_H=ts.dirichlet_H)
+    MF0 = seq.apply_mass_matrix(F0, 2)
     return State(
         B_n=B_dof,
         dt=dt,
         v=jnp.zeros(n),
-        p=jnp.zeros(ts.seq.n3_dbc),
-        p_v=jnp.zeros(ts.seq.n3_dbc),
-        H=jnp.zeros(n1),
-        JxH=jnp.zeros(n),
-        E=jnp.zeros(ts.seq.n1_dbc),
-        A=jnp.zeros(ts.seq.n1_dbc),
-        F_prev=jnp.zeros(n),
+        p=p0,
+        p_v=jnp.zeros(seq.n3_dbc),
+        H=H0,
+        JxH=JxH0,
+        E=jnp.zeros(seq.n1_dbc),
+        A=jnp.zeros(seq.n1_dbc),
+        F_prev=F0,
+        MF_prev=MF0,
+        F_norm=jnp.sqrt(F0 @ MF0),
         s_history=jnp.zeros((m, n)),
         y_history=jnp.zeros((m, n)),
+        Ms_history=jnp.zeros((m, n)),
+        My_history=jnp.zeros((m, n)),
     )
 
 
@@ -588,12 +636,6 @@ def relaxation_loop(B_dof: jnp.ndarray,
         traces["iteration"].append(iteration)
         return eqx.tree_at(lambda s: s.A, state, A_new)
 
-    F0, p0, _, H0, JxH0 = compute_force(
-        state.B_n, seq, dirichlet_H=ts.dirichlet_H, p_guess=state.p)
-    state = eqx.tree_at(
-        lambda s: (s.F_norm, s.F_prev, s.p, s.H, s.JxH),
-        state,
-        (seq.l2_norm(F0, 2), F0, p0, H0, JxH0))
     state = record(state, 0)
     print(f"Initial: |F|={state.F_norm:.2e}  "
           f"H={traces['helicity'][-1]:.2e}  "

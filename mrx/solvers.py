@@ -1,11 +1,23 @@
+"""Matrix-free Krylov and fixed-point solvers.
+
+Every solver takes a relative tolerance ``tol``.  ``tol=None`` -- the default
+everywhere -- resolves to :func:`mrx.precision.sqrt_eps`, the square root of
+the working dtype's machine epsilon (1.5e-8 at float64, 3.5e-4 at float32):
+the residual of a matrix-free solve is limited by roundoff in the matvec, and
+that is the tightest tolerance which does not send the loop to ``maxiter``.
+Anything tighter or looser is an ALGORITHMIC choice and is passed explicitly.
+"""
+
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 from jax.scipy.sparse.linalg import cg
 
+from mrx.precision import sqrt_eps
 
-def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm) -> tuple[jnp.ndarray, float, int]:
+
+def picard_solver(f, z_init, tol=None, max_iter=2000, norm=jnp.linalg.norm) -> tuple[jnp.ndarray, float, int]:
     """
     Picard solver for fixed-point iteration.
 
@@ -15,8 +27,8 @@ def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm) -> 
         Function to perform the solve on.
     z_init : jnp.ndarray
         Initial guess for the solution.
-    tol : float, default=1e-12
-        Tolerance for convergence.
+    tol : float, optional
+        Tolerance for convergence; ``None`` is ``mrx.sqrt_eps()``.
     max_iter : int, default=1000
         Maximum number of iterations.
     norm : callable, default=jnp.linalg.norm
@@ -29,6 +41,9 @@ def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm) -> 
         residual = ||f(z_star)[0] - x*||.
         iters = picard iteration count.
     """
+    if tol is None:
+        tol = sqrt_eps()
+
     def cond_fun(state):
         # fz = f(z) is carried in the state to avoid evaluating f twice per
         # iteration (once in cond and once in body).
@@ -38,10 +53,14 @@ def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm) -> 
 
     def body_fun(state):
         z_prev, z, fz, i = state
+        # For i >= 1, z = alpha fz_prev + (1 - alpha) z_prev with alpha > 0,
+        # so z == z_prev would mean fz_prev == z_prev -- a zero residual, at
+        # which cond_fun has already stopped the loop.  The denominator is
+        # therefore nonzero whenever this runs; it used to carry a 1e-12.
         alpha = jnp.where(
             i == 0,
             1.0,
-            jnp.clip(norm(fz[0] - z[0]) / (norm(z[0] - z_prev[0]) + 1e-12), 0.0, 1.0),
+            jnp.clip(norm(fz[0] - z[0]) / norm(z[0] - z_prev[0]), 0.0, 1.0),
         )
         z_next = (alpha * fz[0] + (1 - alpha) * z[0], fz[1])
         return (z, z_next, f(z_next), i + 1)
@@ -148,7 +167,7 @@ def backtracking_line_search(
     }
 
 
-def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
+def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     """
     Preconditioned Conjugate Gradient with M-norm convergence check.
 
@@ -163,7 +182,7 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
         b: Right-hand side vector.
         x0: Optional initial guess.
         M: Optional preconditioner callable, x -> M @ x (approx A^{-1}, SPD).
-        tol: Relative tolerance in M-norm.
+        tol: Relative tolerance in M-norm; ``None`` is ``mrx.sqrt_eps()``.
         maxiter: Maximum number of iterations (default: len(b)).
 
     Returns:
@@ -179,6 +198,8 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
     number and the whole run turns to NaN, which is the intended outcome.
     """
     n = b.shape[0]
+    if tol is None:
+        tol = sqrt_eps()
     if maxiter is None:
         maxiter = n
     if x0 is None:
@@ -252,7 +273,7 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
     return x_final, info
 
 
-def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x, x0=None, vs=[], maxiter=None, tol=1e-6):
+def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x, x0=None, vs=[], maxiter=None, tol=None):
     """
     Solve the singular SPSD system for the minimum norm solution using CG.
 
@@ -263,7 +284,7 @@ def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x,
         x0: Optional initial guess (Primal vector).
         vs: List of mass-normalized zero eigenvectors (Primal vectors).
         maxiter: Maximum number of CG iterations.
-        tol: CG tolerance.
+        tol: CG tolerance; ``None`` is ``mrx.sqrt_eps()``.
     """
     if mass_matvec is None:
         def mass_matvec(x): return x
@@ -335,7 +356,7 @@ class _MinresState(NamedTuple):
     converged: bool
 
 
-def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
+def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     """
     MINRES solver for symmetric (possibly indefinite) linear systems.
 
@@ -348,7 +369,7 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
         x0: Optional initial guess.
         M: Optional preconditioner callable, x -> M^{-1} @ x.
            Must be symmetric positive definite.
-        tol: Relative residual tolerance.
+        tol: Relative residual tolerance; ``None`` is ``mrx.sqrt_eps()``.
         maxiter: Maximum number of iterations (default: len(b)).
 
     Returns:
@@ -360,6 +381,8 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
             version caused a converged solve to be read as a failure.)
     """
     n = b.shape[0]
+    if tol is None:
+        tol = sqrt_eps()
     if maxiter is None:
         maxiter = n
     if x0 is None:
@@ -513,7 +536,7 @@ def solve_saddle_point_minres(
         mass_upper_matvec=None,
         vs_upper=None, vs_lower=None,
         x0_upper=None, x0_lower=None,
-        tol=1e-6, maxiter=None):
+        tol=None, maxiter=None):
     """
     Solve the saddle-point system using preconditioned MINRES:
 
@@ -543,7 +566,7 @@ def solve_saddle_point_minres(
         vs_lower: List of nullspace vectors for the (k-1)-form block.
         x0_upper: Initial guess for u.
         x0_lower: Initial guess for σ.
-        tol: MINRES tolerance.
+        tol: MINRES tolerance; ``None`` is ``mrx.sqrt_eps()``.
         maxiter: Maximum iterations.
 
     Returns:
@@ -651,23 +674,38 @@ def solve_saddle_point_minres(
 
 
 def get_smallest_ev_pair(A_matvec, mass_matvec, x0, precond_matvec=lambda x: x,
-                         vs=[], shift=1e-9, maxiter=20, tol=1e-6):
-    """Find the smallest generalised eigenpair via shifted inverse iteration."""
+                         vs=[], shift=1e-9, maxiter=20, tol=None):
+    """Find the smallest generalised eigenpair via shifted inverse iteration.
+
+    ``vs`` are mass-normalised vectors to deflate.  ``tol=None`` is
+    ``mrx.sqrt_eps()``; ``shift`` is an algorithmic choice.
+    """
+    if tol is None:
+        tol = sqrt_eps()
+
     def inner_product(x, y):
         return jnp.dot(x, mass_matvec(y))
 
     def normalize(x):
         return x / jnp.sqrt(inner_product(x, x))
 
-    def project_primal(x):
-        for v in vs:
-            x = x - inner_product(v, x) * v
-        return x
+    # Stacked deflation, as in solve_singular_cg: one mass apply per
+    # projection instead of one per deflated vector inside the loop body.
+    if len(vs) == 0:
+        def project_primal(x):
+            return x
 
-    def project_dual(f):
-        for v in vs:
-            f = f - jnp.dot(v, f) * mass_matvec(v)
-        return f
+        def project_dual(f):
+            return f
+    else:
+        vs_stacked = jnp.asarray(vs)
+        mass_vs = jax.vmap(mass_matvec)(vs_stacked)
+
+        def project_primal(x):
+            return x - (vs_stacked @ mass_matvec(x)) @ vs_stacked
+
+        def project_dual(f):
+            return f - (vs_stacked @ f) @ mass_vs
 
     def A_shifted(x):
         x = project_primal(x)

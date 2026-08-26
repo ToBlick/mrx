@@ -45,7 +45,7 @@ class MatrixFreeExtraction(eqx.Module):
         return cls(
             rows=jnp.asarray(indices[:, 0], dtype=jnp.int32),
             cols=jnp.asarray(indices[:, 1], dtype=jnp.int32),
-            vals=jnp.asarray(bcoo.data, dtype=jnp.float64),
+            vals=jnp.asarray(bcoo.data, dtype=mrx.DTYPE),
             forward_shape=(int(bcoo.shape[0]), int(bcoo.shape[1])),
             transposed=transposed,
         )
@@ -285,220 +285,6 @@ class PolarExtractionOperator:
             "zeta_bulk": zeta_bulk,
         }
 
-    def _element(self, row_idx, col_idx):
-        """
-        Compute the operator element at specified indices.
-
-        Args:
-            row_idx (int): Row index
-            col_idx (int): Column index
-
-        Returns:
-            jnp.ndarray: The operator element value
-        """
-        if self.k == 0:
-            # Handle 0-forms
-            return jnp.where(
-                row_idx < self.n_polar * self.nz,
-                self._inner_zeroform(
-                    row_idx, col_idx, self.nr, self.nt, self.nz),
-                self._outer_zeroform(
-                    row_idx - self.n_polar * self.nz, col_idx,
-                    self.nr, self.nt, self.nz
-                ),
-            )
-        if self.k == 1:
-            slices = self._k1_row_slices()
-            cat_col, col_idx = self.Lambda._vector_index(col_idx)
-            return jnp.where(
-                row_idx < slices["theta_surgery"].stop,
-                self.inner_oneform_r(
-                    row_idx, col_idx, self.dr, self.nt, self.nz
-                )
-                * jnp.int32(cat_col == 0)
-                + self.inner_oneform_θ(
-                    row_idx, col_idx, self.nr, self.dt, self.nz
-                )
-                * jnp.int32(cat_col == 1),
-                jnp.where(
-                    row_idx < slices["zeta_surgery"].stop,
-                    self._inner_zeroform(
-                        row_idx - slices["theta_surgery"].stop, col_idx, self.nr, self.nt, self.dz
-                    )
-                    * jnp.int32(cat_col == 2),
-                    jnp.where(
-                        row_idx < slices["r"].stop,
-                        self._threeform(
-                            row_idx - slices["zeta_surgery"].stop, col_idx, self.dr, self.nt, self.nz
-                        )
-                        * jnp.int32(cat_col == 0),
-                        jnp.where(
-                            row_idx < slices["theta_bulk"].stop,
-                            self._outer_zeroform(
-                                row_idx - slices["r"].stop, col_idx, self.nr, self.dt, self.nz
-                            )
-                            * jnp.int32(cat_col == 1),
-                            self._outer_zeroform(
-                                row_idx - slices["theta_bulk"].stop, col_idx, self.nr, self.nt, self.dz
-                            )
-                            * jnp.int32(cat_col == 2),
-                        ),
-                    ),
-                ),
-            )
-        if self.k == 2:
-            # Handle 2-forms
-            cat_row, row_idx = self._vector_index(row_idx)
-            cat_col, col_idx = self.Lambda._vector_index(col_idx)
-            return jnp.where(
-                cat_row == 0,
-                # r-component
-                jnp.where(
-                    row_idx < 2 * self.nz,
-                    self.inner_oneform_θ(
-                        row_idx, col_idx, self.nr, self.dt, self.dz)
-                    * jnp.int32(cat_col == 0)
-                    - self.inner_oneform_r(row_idx, col_idx,
-                                           self.dr, self.nt, self.dz)
-                    * jnp.int32(cat_col == 1),
-                    self._outer_zeroform(
-                        row_idx - 2 * self.nz, col_idx, self.nr, self.dt, self.dz
-                    )
-                    * jnp.int32(cat_row == cat_col),
-                ),
-                jnp.where(
-                    cat_row == 1,
-                    # θ-component
-                    self._threeform(row_idx, col_idx,
-                                    self.dr, self.nt, self.dz)
-                    * jnp.int32(cat_row == cat_col),
-                    # ζ-component
-                    self._threeform(row_idx, col_idx,
-                                    self.dr, self.dt, self.nz)
-                    * jnp.int32(cat_row == cat_col),
-                ),
-            )
-        if self.k == 3:
-            # Handle 3-forms
-            return self._threeform(row_idx, col_idx, self.nr, self.nt, self.nz)
-        if self.k == -1:
-            # Handle vector fields
-            cat_row, row_idx = self._vector_index(row_idx)
-            cat_col, col_idx = self.Lambda._vector_index(col_idx)
-            return jnp.where(
-                row_idx < self.n_polar * self.nz,
-                self._inner_zeroform(
-                    row_idx, col_idx, self.nr, self.nt, self.nz),
-                self._outer_zeroform(
-                    row_idx - self.n_polar * self.nz, col_idx,
-                    self.nr, self.nt, self.nz
-                ),
-            ) * jnp.int32(cat_row == cat_col)
-
-    def _inner_zeroform(self, row_idx, col_idx, nr, nt, nz):
-        """
-        Compute inner zero-form basis function.
-
-        Args:
-            row_idx (int): Row index
-            col_idx (int): Column index
-            nr (int): Number of points in r-direction
-            nt (int): Number of points in θ-direction
-            nz (int): Number of points in ζ-direction
-
-        Returns:
-            jnp.ndarray: The basis function value
-        """
-        p, m = jnp.unravel_index(row_idx, (self.n_polar, nz))
-        i, j, k = jnp.unravel_index(col_idx, (nr, nt, nz))
-        return (jnp.int32(k == m) * jnp.int32(i < self.ring_depth)
-                * self.ξ[p, jnp.minimum(i, self.ring_depth - 1), j])
-
-    def _outer_zeroform(self, row_idx, col_idx, nr, nt, nz):
-        """
-        Compute outer zero-form basis function.
-
-        Args:
-            row_idx (int): Row index
-            col_idx (int): Column index
-            nr (int): Number of points in r-direction
-            nt (int): Number of points in θ-direction
-            nz (int): Number of points in ζ-direction
-
-        Returns:
-            jnp.ndarray: The basis function value
-        """
-        i, j, k = jnp.unravel_index(row_idx, (nr, nt, nz))
-        return jnp.int32(
-            col_idx == jnp.ravel_multi_index(
-                (i + self.ring_depth, j, k), (nr, nt, nz), mode="clip")
-        ) * jnp.where(self.o == 1, jnp.int32(i != nr - 1), 1)
-
-    def inner_oneform_r(self, row_idx, col_idx, nr, nt, nz):
-        """
-        Compute inner one-form basis function in r-direction.
-
-        Args:
-            row_idx (int): Row index
-            col_idx (int): Column index
-            nr (int): Number of points in r-direction
-            nt (int): Number of points in θ-direction
-            nz (int): Number of points in ζ-direction
-
-        Returns:
-            jnp.ndarray: The basis function value
-        """
-        p, m = jnp.unravel_index(row_idx, (2, nz))
-        p += 1
-        i, j, k = jnp.unravel_index(col_idx, (nr, nt, nz))
-        return (
-            jnp.int32(k == m) * jnp.int32(i == 0) *
-            (self.ξ[p, 1, j] - self.ξ[p, 0, j])
-        )
-
-    def inner_oneform_θ(self, row_idx, col_idx, nr, nt, nz):
-        """
-        Compute inner one-form basis function in θ-direction.
-
-        Args:
-            row_idx (int): Row index
-            col_idx (int): Column index
-            nr (int): Number of points in r-direction
-            nt (int): Number of points in θ-direction
-            nz (int): Number of points in ζ-direction
-
-        Returns:
-            jnp.ndarray: The basis function value
-        """
-        p, m = jnp.unravel_index(row_idx, (2, nz))
-        p += 1
-        i, j, k = jnp.unravel_index(col_idx, (nr, nt, nz))
-        return (
-            jnp.int32(k == m)
-            * jnp.int32(i == 1)
-            * (self.ξ[p, 1, jnp.mod(j + 1, nt)] - self.ξ[p, 1, j])
-        )
-
-    def _threeform(self, row_idx, col_idx, nr, nt, nz):
-        """
-        Compute three-form basis function.
-
-        Args:
-            row_idx (int): Row index
-            col_idx (int): Column index
-            nr (int): Number of points in r-direction
-            nt (int): Number of points in θ-direction
-            nz (int): Number of points in ζ-direction
-
-        Returns:
-            jnp.ndarray: The basis function value
-        """
-        i, j, k = jnp.unravel_index(row_idx, (nr, nt, nz))
-        return jnp.int32(
-            col_idx == jnp.ravel_multi_index(
-                (i + 1, j, k), (nr, nt, nz), mode="clip")
-        )
-
     def _append_triplets(self, rows, cols, data, *, row_idx, col_idx, values):
         col_idx = np.asarray(col_idx, dtype=np.int32).reshape(-1)
         values = np.asarray(values, dtype=np.float64).reshape(-1)
@@ -572,6 +358,17 @@ class PolarExtractionOperator:
             return self.Lambda.n1 + self.Lambda.n2 + base
         raise ValueError(f"Unsupported form degree k={self.k}")
 
+    def _append_bulk_selector(self, rows, cols, data, *, row_offset, row_shape,
+                              component, i_offset):
+        """Append the identity block that copies the bulk DOFs ``(i + i_offset, j, k)``
+        of ``component`` onto the rows ``row_offset + ravel(i, j, k)``."""
+        i, j, k = (ax.ravel() for ax in np.indices(row_shape))
+        n = i.shape[0]
+        rows.append((row_offset + np.arange(n)).astype(np.int32))
+        cols.append(np.asarray(self._lambda_col_index(
+            component, i + i_offset, j, k), dtype=np.int32))
+        data.append(np.ones(n, dtype=np.float64))
+
     def build_extraction(self):
         """Build the MatrixFreeExtraction from the explicit tensor-product sparsity pattern."""
         xi = np.asarray(self.ξ)
@@ -600,18 +397,10 @@ class PolarExtractionOperator:
                         )
 
             radial = self.nr - self.ring_depth - self.o
-            outer_offset = self.n_polar * self.nz
-            for i in range(radial):
-                for j in range(self.nt):
-                    for k in range(self.nz):
-                        row_idx = outer_offset + np.ravel_multi_index(
-                            (i, j, k),
-                            (radial, self.nt, self.nz),
-                        )
-                        col_idx = self._lambda_col_index(0, i + self.ring_depth, j, k)
-                        self._append_triplets(
-                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
-                        )
+            self._append_bulk_selector(
+                rows, cols, data, row_offset=self.n_polar * self.nz,
+                row_shape=(radial, self.nt, self.nz), component=0,
+                i_offset=self.ring_depth)
 
         elif self.k == 1:
             slices = self._k1_row_slices()
@@ -688,42 +477,19 @@ class PolarExtractionOperator:
                             values=xi[p, i, :],
                         )
 
-            r_offset = slices["r"].start
-            for i in range(self.dr - 1):
-                for j in range(self.nt):
-                    for k in range(self.nz):
-                        row_idx = r_offset + np.ravel_multi_index(
-                            (i, j, k), (self.dr - 1, self.nt, self.nz)
-                        )
-                        col_idx = self._lambda_col_index(0, i + 1, j, k)
-                        self._append_triplets(
-                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
-                        )
-
             radial = self.nr - 2 - self.o
-            theta_outer_offset = slices["theta_bulk"].start
-            for i in range(radial):
-                for j in range(self.dt):
-                    for k in range(self.nz):
-                        row_idx = theta_outer_offset + np.ravel_multi_index(
-                            (i, j, k), (radial, self.dt, self.nz)
-                        )
-                        col_idx = self._lambda_col_index(1, i + 2, j, k)
-                        self._append_triplets(
-                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
-                        )
-
-            zeta_outer_offset = slices["zeta_bulk"].start
-            for i in range(radial):
-                for j in range(self.nt):
-                    for k in range(self.dz):
-                        row_idx = zeta_outer_offset + np.ravel_multi_index(
-                            (i, j, k), (radial, self.nt, self.dz)
-                        )
-                        col_idx = self._lambda_col_index(2, i + 2, j, k)
-                        self._append_triplets(
-                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
-                        )
+            self._append_bulk_selector(
+                rows, cols, data, row_offset=slices["r"].start,
+                row_shape=(self.dr - 1, self.nt, self.nz), component=0,
+                i_offset=1)
+            self._append_bulk_selector(
+                rows, cols, data, row_offset=slices["theta_bulk"].start,
+                row_shape=(radial, self.dt, self.nz), component=1,
+                i_offset=2)
+            self._append_bulk_selector(
+                rows, cols, data, row_offset=slices["zeta_bulk"].start,
+                row_shape=(radial, self.nt, self.dz), component=2,
+                i_offset=2)
 
         elif self.k == 2:
             for p_local in range(2):
@@ -771,64 +537,35 @@ class PolarExtractionOperator:
                     )
 
             radial = self.nr - 2 - self.o
-            comp0_outer_offset = 2 * self.dz
-            for i in range(radial):
-                for j in range(self.dt):
-                    for k in range(self.dz):
-                        row_idx = comp0_outer_offset + np.ravel_multi_index(
-                            (i, j, k), (radial, self.dt, self.dz)
-                        )
-                        col_idx = self._lambda_col_index(0, i + 2, j, k)
-                        self._append_triplets(
-                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
-                        )
-
-            comp1_offset = self.n1
-            for i in range(self.dr - 1):
-                for j in range(self.nt):
-                    for k in range(self.dz):
-                        row_idx = comp1_offset + np.ravel_multi_index(
-                            (i, j, k), (self.dr - 1, self.nt, self.dz)
-                        )
-                        col_idx = self._lambda_col_index(1, i + 1, j, k)
-                        self._append_triplets(
-                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
-                        )
-
-            comp2_offset = self.n1 + self.n2
-            for i in range(self.dr - 1):
-                for j in range(self.dt):
-                    for k in range(self.nz):
-                        row_idx = comp2_offset + np.ravel_multi_index(
-                            (i, j, k), (self.dr - 1, self.dt, self.nz)
-                        )
-                        col_idx = self._lambda_col_index(2, i + 1, j, k)
-                        self._append_triplets(
-                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
-                        )
+            self._append_bulk_selector(
+                rows, cols, data, row_offset=2 * self.dz,
+                row_shape=(radial, self.dt, self.dz), component=0,
+                i_offset=2)
+            self._append_bulk_selector(
+                rows, cols, data, row_offset=self.n1,
+                row_shape=(self.dr - 1, self.nt, self.dz), component=1,
+                i_offset=1)
+            self._append_bulk_selector(
+                rows, cols, data, row_offset=self.n1 + self.n2,
+                row_shape=(self.dr - 1, self.dt, self.nz), component=2,
+                i_offset=1)
 
         elif self.k == 3:
-            for i in range(self.dr - 1):
-                for j in range(self.dt):
-                    for k in range(self.dz):
-                        row_idx = np.ravel_multi_index(
-                            (i, j, k), (self.dr - 1, self.dt, self.dz)
-                        )
-                        col_idx = self._lambda_col_index(0, i + 1, j, k)
-                        self._append_triplets(
-                            rows, cols, data, row_idx=row_idx, col_idx=[col_idx], values=[1.0]
-                        )
+            self._append_bulk_selector(
+                rows, cols, data, row_offset=0,
+                row_shape=(self.dr - 1, self.dt, self.dz), component=0,
+                i_offset=1)
         else:
             raise ValueError(f"Sparse tensor assembly is not implemented for k={self.k}")
 
         if data:
             rows_arr = jnp.asarray(np.concatenate(rows), dtype=jnp.int32)
             cols_arr = jnp.asarray(np.concatenate(cols), dtype=jnp.int32)
-            vals_arr = jnp.asarray(np.concatenate(data), dtype=jnp.float64)
+            vals_arr = jnp.asarray(np.concatenate(data), dtype=mrx.DTYPE)
         else:
             rows_arr = jnp.zeros((0,), dtype=jnp.int32)
             cols_arr = jnp.zeros((0,), dtype=jnp.int32)
-            vals_arr = jnp.zeros((0,), dtype=jnp.float64)
+            vals_arr = jnp.zeros((0,), dtype=mrx.DTYPE)
         return MatrixFreeExtraction(
             rows=rows_arr, cols=cols_arr, vals=vals_arr,
             forward_shape=(self.n, self.Lambda.n),
@@ -871,7 +608,7 @@ def get_xi(nt, ring1=None):
         theta_js = (jnp.arange(nt) / nt) * 2 * jnp.pi
         dR, dY = jnp.cos(theta_js), jnp.sin(theta_js)
     else:
-        ring1 = jnp.asarray(ring1, dtype=jnp.float64)
+        ring1 = jnp.asarray(ring1, dtype=mrx.DTYPE)
         if ring1.shape != (2, nt):
             raise ValueError(f"ring1 must have shape (2, {nt}), got {ring1.shape}")
         dR, dY = ring1[0], ring1[1]
@@ -938,8 +675,8 @@ def get_xi2(nt, basis_r, ring1=None, ring2=None):
     grev = basis_r.greville_points()
     theta_js = (jnp.arange(nt) / nt) * 2 * jnp.pi
     circ = jnp.stack([jnp.cos(theta_js), jnp.sin(theta_js)])
-    dP1 = jnp.asarray(ring1, dtype=jnp.float64) if ring1 is not None else grev[1] * circ
-    dP2 = jnp.asarray(ring2, dtype=jnp.float64) if ring2 is not None else grev[2] * circ
+    dP1 = jnp.asarray(ring1, dtype=mrx.DTYPE) if ring1 is not None else grev[1] * circ
+    dP2 = jnp.asarray(ring2, dtype=mrx.DTYPE) if ring2 is not None else grev[2] * circ
     for name, arr in (("ring1", dP1), ("ring2", dP2)):
         if arr.shape != (2, nt):
             raise ValueError(f"{name} must have shape (2, {nt}), got {arr.shape}")
@@ -996,8 +733,9 @@ def ring1_control_points(pol_map, basis_r, basis_t):
     """
     gr = basis_r.greville_points()
     gt = basis_t.greville_points()
-    vals = jnp.stack([jnp.stack([jnp.asarray(pol_map(float(r), float(t)))
-                                 for t in gt]) for r in gr])   # (nr, nt, 2)
+    pol = jax.vmap(jax.vmap(lambda r, t: jnp.asarray(pol_map(r, t)),
+                            in_axes=(None, 0)), in_axes=(0, None))
+    vals = pol(gr, gt)                                          # (nr, nt, 2)
     C_r = basis_r.collocation_matrix(gr)
     C_t = basis_t.collocation_matrix(gt)
     # tensor-product collocation solve: coeffs = C_r^{-1} vals C_t^{-T}
@@ -1084,172 +822,47 @@ class BoundaryOperator:
             self.n3 = self.nr * self.nt * self.nz
         self.n = self.n1 + self.n2 + self.n3
 
-    def _vector_index(self, idx):
-        """
-        Convert linear index to vector component and local index.
-
-        Args:
-            idx (int): Linear index
-
-        Returns:
-            tuple: (category, local_index) where category indicates the vector
-                  component and local_index is the index within that component
-        """
-        if self.k == 0 or self.k == 3:
-            return jnp.int32(0), idx
-        elif self.k == 1 or self.k == 2 or self.k == -1:
-            n1, n2 = self.n1, self.n2
-            category = jnp.int32(idx >= n1) + jnp.int32(idx >= n1 + n2)
-            local_idx = jnp.int32(
-                idx - n1 * (idx >= n1) - n2 * (idx >= n1 + n2))
-            return category, local_idx
-
-    def _unravel_index(self, idx):
-        """
-        Convert linear index to multi-dimensional coordinates.
-
-        Args:
-            idx (int): Linear index
-
-        Returns:
-            tuple: (category, i, j, k) where category indicates the vector
-                  component and (i,j,k) are the spatial coordinates
-        """
-        if self.k == 0:
-            return jnp.int32(0), *jnp.unravel_index(idx, (self.nr, self.nt, self.nz))
-        elif self.k == 1:
-            category, ijk = self._vector_index(idx)
-            i, j, k = jnp.where(
-                category == 0,
-                jnp.array(jnp.unravel_index(ijk, (self.dr, self.nt, self.nz))),
-                jnp.where(
-                    category == 1,
-                    jnp.array(jnp.unravel_index(
-                        ijk, (self.nr, self.dt, self.nz))),
-                    jnp.array(jnp.unravel_index(
-                        ijk, (self.nr, self.nt, self.dz))),
-                ),
-            )
-            return category, i, j, k
-        elif self.k == 2:
-            category, ijk = self._vector_index(idx)
-            i, j, k = jnp.where(
-                category == 0,
-                jnp.array(jnp.unravel_index(ijk, (self.nr, self.dt, self.dz))),
-                jnp.where(
-                    category == 1,
-                    jnp.array(jnp.unravel_index(
-                        ijk, (self.dr, self.nt, self.dz))),
-                    jnp.array(jnp.unravel_index(
-                        ijk, (self.dr, self.dt, self.nz))),
-                ),
-            )
-            return category, i, j, k
-        elif self.k == 3:
-            return jnp.int32(0), *jnp.unravel_index(idx, (self.dr, self.dt, self.dz))
-        elif self.k == -1:
-            category, ijk = self._vector_index(idx)
-            i, j, k = jnp.array(jnp.unravel_index(
-                ijk, (self.nr, self.nt, self.nz)))
-            return category, i, j, k
-
-    def _element(self, row_idx, col_idx):
-        """
-        Compute the operator element at specified indices.
-
-        Args:
-            row_idx (int): Row index
-            col_idx (int): Column index
-
-        Returns:
-            jnp.ndarray: The operator element value
-        """
-        cat_row, i, j, k = self._unravel_index(row_idx)
-        cat_col, p, m, n = self.Lambda._unravel_index(col_idx)
-
-        target_l = jnp.where(jnp.logical_or(
-            self.types[0] == "dirichlet", self.types[0] == "left"), p - 1, p)
-        target_m = jnp.where(jnp.logical_or(
-            self.types[1] == "dirichlet", self.types[1] == "left"), m - 1, m)
-        target_n = jnp.where(jnp.logical_or(
-            self.types[2] == "dirichlet", self.types[2] == "left"), n - 1, n)
-
-        if self.k == 0:
-            return jnp.int32((i == target_l) * (j == target_m) * (k == target_n))
-        elif self.k == 1:
-            return jnp.int32(
-                jnp.where(
-                    cat_row == cat_col,
-                    jnp.where(
-                        cat_row == 0,
-                        (i == p) * (j == target_m) * (k == target_n),
-                        jnp.where(
-                            cat_row == 1,
-                            (i == target_l) * (j == m) * (k == target_n),
-                            (i == target_l) * (j == target_m) * (k == n),
-                        ),
-                    ),
-                    0,
-                )
-            )
-        elif self.k == 2 or self.k == -1:
-            return jnp.int32(
-                jnp.where(
-                    cat_row == cat_col,
-                    jnp.where(
-                        cat_row == 0,
-                        (i == target_l) * (j == m) * (k == n),
-                        jnp.where(
-                            cat_row == 1,
-                            (i == p) * (j == target_m) * (k == n),
-                            (i == p) * (j == m) * (k == target_n),
-                        ),
-                    ),
-                    0,
-                )
-            )
-        elif self.k == 3:
-            return jnp.int32(row_idx == col_idx)
-
     def build_extraction(self):
-        """Build the MatrixFreeExtraction by probing each row against all columns.
+        """Build the MatrixFreeExtraction of this selection matrix.
 
-        Maps over rows sequentially, computing one row at a time with
-        batched map over columns. Non-zero indices and values are collected
-        into a MatrixFreeExtraction (gather/scatter apply, no matrix stored).
+        Every extracted row keeps exactly one raw DOF: the one whose index on
+        a constrained axis is shifted by one for ``'dirichlet'`` / ``'left'``
+        (the first raw DOF is dropped) and unshifted otherwise (``'right'``
+        drops the last raw DOF by the smaller row count alone). The axis that
+        carries the derivative basis of a component is never constrained.
         """
-        ncols = self.Lambda.n
-        nrows = self.n
-        col_indices = jnp.arange(ncols)
+        L = self.Lambda
+        shift = tuple(int(t in ("dirichlet", "left")) for t in self.types)
+        n, d = (self.nr, self.nt, self.nz), (self.dr, self.dt, self.dz)
+        if self.k == 0:
+            row_shapes, constrained = [n], [(1, 1, 1)]
+        elif self.k == 1:
+            row_shapes = [(d[0], n[1], n[2]), (n[0], d[1], n[2]), (n[0], n[1], d[2])]
+            constrained = [(0, 1, 1), (1, 0, 1), (1, 1, 0)]
+        elif self.k == 2:
+            row_shapes = [(n[0], d[1], d[2]), (d[0], n[1], d[2]), (d[0], d[1], n[2])]
+            constrained = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        elif self.k == 3:
+            row_shapes, constrained = [d], [(0, 0, 0)]
+        else:
+            row_shapes, constrained = [n] * 3, [(1, 1, 1)] * 3
 
-        # Each row has at most 1 non-zero (selection/permutation matrix)
-        max_nnz = 1
-
-        def process_row(row_idx):
-            row = jax.lax.map(lambda col_idx: self._element(
-                row_idx, col_idx), col_indices, batch_size=mrx.MAP_BATCH_SIZE_INNER)
-            nz_mask = row != 0
-            order = jnp.argsort(~nz_mask, stable=True)
-            vals = row[order][:max_nnz]
-            cols = col_indices[order][:max_nnz]
-            nz_count = jnp.sum(nz_mask)
-            valid = jnp.arange(max_nnz) < nz_count
-            vals = jnp.where(valid, vals, 0.0)
-            cols = jnp.where(valid, cols, 0)
-            return vals, cols
-
-        all_vals, all_cols = jax.lax.map(
-            process_row, jnp.arange(nrows), batch_size=mrx.MAP_BATCH_SIZE_OUTER
-        )  # (nrows, max_nnz)
-
-        row_indices = jnp.broadcast_to(
-            jnp.arange(nrows)[:, None], (nrows, max_nnz)
-        )
+        rows, cols = [], []
+        row_start = col_start = 0
+        for row_shape, col_shape, axes in zip(row_shapes, L.shape, constrained):
+            idx = [ax.ravel() for ax in np.indices(row_shape)]
+            src = tuple(idx[a] + shift[a] * axes[a] for a in range(3))
+            rows.append(row_start + np.arange(idx[0].shape[0]))
+            cols.append(col_start + np.ravel_multi_index(src, col_shape))
+            row_start += int(np.prod(row_shape))
+            col_start += int(np.prod(col_shape))
+        rows = np.concatenate(rows)
+        cols = np.concatenate(cols)
         return MatrixFreeExtraction(
-            rows=row_indices.ravel().astype(jnp.int32),
-            cols=all_cols.ravel().astype(jnp.int32),
-            vals=all_vals.ravel(),
-            forward_shape=(nrows, ncols),
+            rows=jnp.asarray(rows, dtype=jnp.int32),
+            cols=jnp.asarray(cols, dtype=jnp.int32),
+            vals=jnp.ones(rows.shape[0], dtype=mrx.DTYPE),
+            forward_shape=(self.n, L.n),
             transposed=False,
         )
 
@@ -1277,7 +890,7 @@ def bc_extraction_op(
     return MatrixFreeExtraction(
         rows=jnp.asarray(np.arange(n_bc, dtype=np.int32)),
         cols=jnp.asarray(bc_cols.astype(np.int32)),
-        vals=jnp.ones(n_bc, dtype=jnp.float64),
+        vals=jnp.ones(n_bc, dtype=mrx.DTYPE),
         forward_shape=(n_bc, n_full),
         transposed=False,
     )
