@@ -128,11 +128,11 @@ def test_cfl_cap(tiny_seq, B0, free_stepper):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
-def B_logical(tiny_seq):
-    """The production initial condition on the toroid: logical profiles,
-    projected and Leray-cleaned (test_initial_conditions.logical_ic)."""
-    from test.test_initial_conditions import logical_ic
-    return logical_ic(tiny_seq)
+def B_analytic(tiny_seq):
+    """The analytic initial condition on the toroid: prescribed profiles,
+    projected and Leray-cleaned (test_initial_conditions.analytic_ic)."""
+    from test.test_initial_conditions import analytic_ic
+    return analytic_ic(tiny_seq)
 
 
 # Relative helicity drift over the sixteen ideal (eta = 0) steps: 4.88e-3
@@ -143,7 +143,7 @@ def B_logical(tiny_seq):
 HELICITY_DRIFT = 1e-2
 
 
-def test_relaxation_loop(tiny_seq, B_logical):
+def test_relaxation_loop(tiny_seq, B_analytic):
     """``relaxation_loop`` with the production stepper (CG descent, analytic
     linesearch, ``cfl = 0.5``): five blocks of four steps, the last one
     resistive through ``resistivity_schedule``.
@@ -161,7 +161,7 @@ def test_relaxation_loop(tiny_seq, B_logical):
                      resistive=True)
     outer, inner, eta = 5, 4, 1e-2
     state, traces = relaxation_loop(
-        B_logical, ts, outer, inner,
+        B_analytic, ts, outer, inner,
         resistivity_schedule=lambda i: eta if i == outer else 0.0)
 
     E = [float(e) for e in traces["energy"]]

@@ -8,28 +8,27 @@ runs the script, and reads its output. The algorithm is in
 
 ## Geometry
 
-`mrx.geometries.build_sequence` turns a geometry name into a polar
-sequence with the map installed and every solver operator built:
+`mrx.geometries.build_sequence` turns a geometry into a polar sequence
+with the map installed and every solver operator built:
 
 ```python
 from mrx.geometries import build_sequence
 
 seq, ops = build_sequence("toroid", ns=(8, 16, 8), p=3)
+seq, ops = build_sequence("data/w7x_fmm002_clebsch_mrx.h5", ns=(8, 16, 16), p=2)
 ```
 
-Names:
-
-| name | map |
+| geometry | map |
 |---|---|
 | `toroid`, `cylinder`, `rot-ellipse` | analytic, from `mrx.mappings` |
-| `w7x` | the W7-X map fitted from `W7-X.h5` |
-| any key of `mrx.gvec.GVEC_GEOMETRIES` | a GVEC export, for example `quasr44970`, `w7x-fmm002` |
+| the path of a GVEC export (`.h5`) | fitted from the file; `os.path.isfile` decides |
 
-Files are read from `MRX_DATA` (default `data/`). A GVEC file is fitted
-as three scalar splines on the sequence's own spline space, so `ns` and
-`p` are also the map resolution. `build_gvec_map` checks that
-$\det D\Phi > 0$ everywhere and raises otherwise. What a GVEC export must
-contain is in [GVEC → MRX interface](concepts/gvec_mrx_interface.md).
+Any other string raises. A GVEC file is fitted as three scalar splines on
+the sequence's own spline space, so `ns` and `p` are also the map
+resolution. `build_gvec_map` checks that $\det D\Phi > 0$ everywhere and
+raises otherwise. `nfp=` overrides the file's attribute for a file that
+declares it wrong. What a GVEC export must contain is in
+[GVEC → MRX interface](concepts/gvec_mrx_interface.md).
 
 ## Initial condition
 
@@ -47,18 +46,18 @@ $\lambda$ and any geometry. Three sources of the profiles:
 
 | `--ic` | profiles |
 |---|---|
-| `logical` | power laws: $\iota = \iota_0 + (\iota_1 - \iota_0)\rho^e$, $\Phi' = \rho^q$; no external data |
-| `clebsch` | GVEC's own `dPhi_dr`, `dchi_dr`, and `LA` from the geometry file |
+| `clebsch` (default) | GVEC's own `dPhi_dr`, `dchi_dr`, and `LA` from the geometry file; needs a file geometry |
+| `analytic` | prescribed power laws on the logical grid: $\iota = \iota_0 + (\iota_1 - \iota_0)\rho^e$, $\Phi' = \rho^q$; no external data |
 | `dzeta` | the constant 2-form $(0, 0, 1)$; relaxes to the harmonic field |
 
 In code:
 
 ```python
-from mrx.initial_conditions import (logical_profile_form, make_lambda, make_profiles,
+from mrx.initial_conditions import (analytic_profile_form, make_lambda, make_profiles,
                                     project_reference_two_form, leray_clean)
 
 iota, dPhi = make_profiles(iota0=0.4, iota1=0.9, iota_exp=2.0, flux_exp=1.0)
-omega_ref = logical_profile_form(iota, dPhi, make_lambda([]))
+omega_ref = analytic_profile_form(iota, dPhi, make_lambda([]))
 B0, B_norm = project_reference_two_form(seq, omega_ref)   # DoFs of the Dirichlet k=2 space
 B0, moved = leray_clean(seq, B0)                            # remove the projection's divergence
 ```
@@ -66,18 +65,18 @@ B0, moved = leray_clean(seq, B0)                            # remove the project
 `project_reference_two_form` pushes the form forward and projects with
 `load(frame='phys')`. Do not pass the primal components to
 `load(frame='ref')`: that argument wants $g\omega/J$ and fails silently.
+The script always Leray-projects the initial condition.
 
 ## Run
 
 Every run is a GPU job through `slurm/run.sh`:
 
 ```bash
-SCRIPT=scripts/relax.py JOB_NAME=relax_smoke TIMEOUT_MIN=30 \
-  ARGS="--geometry toroid --ns 6,12,6 --p 2 --steps 50 --diag-every 25" \
-  bash slurm/run.sh
+SCRIPT=scripts/relax.py JOB_NAME=relax_w7x TIMEOUT_MIN=60 \
+  ARGS="--geometry data/w7x_fmm002_clebsch_mrx.h5" bash slurm/run.sh
 
-SCRIPT=scripts/relax.py JOB_NAME=relax_w1 TIMEOUT_MIN=90 \
-  ARGS="--geometry w7x-fmm002 --ic clebsch --ns 8,16,8 --p 3 --steps 3000" \
+SCRIPT=scripts/relax.py JOB_NAME=relax_smoke TIMEOUT_MIN=30 \
+  ARGS="--geometry toroid --ic analytic --ns 6,12,6 --steps 50 --qoi-every 25" \
   bash slurm/run.sh
 ```
 
@@ -85,36 +84,40 @@ Flags, defaults in brackets:
 
 | flag | meaning |
 |---|---|
-| `--geometry NAME [quasr44970]` | a name from the table above |
-| `--ns R,T,Z [8,16,8]`, `--p P [3]` | resolution (also the map's) and degree |
-| `--maxiter N [10000]`, `--tol TOL [sqrt(eps)]` | budget and tolerance of every inner solve |
-| `--precision {float64,float32} [float64]` | exported as `MRX_DTYPE` before `mrx` is imported |
-| `--ic {logical,clebsch,dzeta} [logical]` | initial condition |
-| `--iota I0,I1 [0.4,0.9]`, `--iota-exp E [2.0]`, `--flux-exp Q [1.0]`, `--lam SPEC [""]` | the logical profiles; `SPEC` is `"m,n,amp;..."` |
-| `--no-lambda`, `--no-leray-ic` | clebsch with $\lambda = 0$; skip the Leray clean-up |
-| `--method {gradient,cg,lbfgs} [cg]`, `--history M [1]` | descent method and history length |
-| `--gamma G [0]`, `--mu MU [0.0]` | hyperregularisation $v = (I - \mu L)^{-G} F$ |
-| `--dt-mode {linesearch,fixed} [linesearch]`, `--dt0 DT [1.0]` | exact energy-minimising step, or a fixed one |
-| `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]` | resistivity; `tanh` drops it to zero over the middle third of the run |
+| `--geometry G` (required) | `toroid`, `cylinder`, `rot-ellipse`, or the path of a GVEC export |
+| `--nfp N [file attribute]` | field periods, for a file that declares them wrong |
+| `--ns R,T,Z [8,16,16]`, `--p P [2]` | resolution (also the map's) and degree |
+| `--maxiter N [2000]`, `--tol TOL [sqrt(eps)]` | budget and tolerance of every inner solve |
+| `--precision {float32,float64} [float32]` | exported as `MRX_DTYPE` before `mrx` is imported |
+| `--ic {clebsch,analytic,dzeta} [clebsch]` | initial condition; `clebsch` with an analytic geometry stops with `use --ic analytic` |
+| `--iota I0,I1 [0.4,0.9]`, `--iota-exp E [2.0]`, `--flux-exp Q [1.0]`, `--lam SPEC [""]` | analytic IC only: the profiles above and $\lambda$ modes `"m,n,amp;..."`; ignored for `--ic clebsch` |
+| `--method {gradient,cg,lbfgs} [cg]`, `--history M [3]` | descent method and history length |
+| `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.0]` | smoothed direction $v = (I - \mu L)^{-G} F$ |
+| `--dt-mode {linesearch,fixed} [linesearch]`, `--dt0 DT [1.0]`, `--cfl C [0.5]` | exact energy-minimising step or a fixed one, and the CFL cap |
+| `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]`, `--eta-every K [1]` | resistivity; `tanh` drops it to zero over the middle third of the run; the solve runs every `K` steps |
 | `--steps N [3000]`, `--seconds S [none]` | outer budgets |
-| `--floor-tol TOL [10*eps]`, `--floor-window W [100]` | stopping criterion |
-| `--diag-every N [250]` | steps between helicity and residual samples; each is a k=1 Hodge solve |
+| `--floor-tol TOL [1e-3]`, `--floor-steps W [100]` | stopping criterion |
+| `--qoi-every N [250]` | steps between helicity samples; each is a k=1 Hodge solve |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 
 `python scripts/relax.py --help` prints the same list.
 
 ## Stopping criterion
 
-The run stops when the energy decrease over the last `W` steps, relative
-to the energy and per step,
+The relative force residual $\|F\|_M / \|\nabla(B^2/2)\|$ is recorded at
+every step. The run stops when its mean over the last `W` steps,
 
 $$
-\frac{E[i - W] - E[i]}{W\,|E[i]|} < \texttt{floor-tol},
+\frac{1}{W} \sum_{j=i-W+1}^{i} \mathrm{resid}[j] < \texttt{floor-tol},
 $$
 
 or when the step or wall-clock budget runs out. The relaxation guarantees
-$dE/dt \le 0$ only. The force residual need not fall monotonically and is
-not used to stop.
+$dE/dt \le 0$ only, so the residual is not monotone; the window mean is
+the quantity, never the last value. On the W7-X Clebsch run at `(8,16,8)`,
+`p = 3`, float64, the residual reaches $1.7 \times 10^{-3}$ at step 500
+and floors around $10^{-3}$ by step 1000-3000. In float32 it floors at the
+solve-tolerance level ($\sim 2 \times 10^{-3}$ at tol $10^{-5}$), so a
+`--floor-tol` below that never fires.
 
 ## Output
 
@@ -122,11 +125,11 @@ not used to stop.
 
 | file | content |
 |---|---|
-| `relax.json` | `params`; `trace` with per-step `E`, `F`, `dt`, `div`, `cos`, `gain`, `eta`, `dE_meas`, `dE_pred`; `diagnostics` with `it`, `helicity`, `resid`, `gradp`, `JoverB`, `wall`; the `ic` summary and the `summary` with the stopping reason |
-| `B.h5` | datasets `B_ic` and `B_final` (Dirichlet k=2 DoFs) with the run parameters as attributes |
+| `relax.json` | `params`; `trace` with per-step `E`, `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `eta`, `res_it`, `res_delta`, `dE_meas`, `dE_pred`; `qoi` with `it`, `helicity`, `JoverB`, `wall`; the `ic` summary and the `summary` with the stopping reason |
+| `B.h5` | datasets `B_ic`, `B_final` (Dirichlet k=2 DoFs), `p_ic`, `p_final` (the Leray pressures, 3-form DoFs) with the run parameters as attributes; `geometry` as given and `geometry_path` resolved |
 
-`relax.json` is rewritten at every diagnostic sample, so a run that runs
-out of time still leaves its trace.
+`relax.json` is rewritten at every qoi sample, so a run that runs out of
+time still leaves its trace.
 
 ## Inspect
 
@@ -136,8 +139,8 @@ Read the trace with the standard library:
 import json
 run = json.load(open("outputs/relax/<date>/<time>/relax.json"))
 E = run["trace"]["E"]                     # energy after every step
-resid = run["diagnostics"]["resid"]       # ||F|| / ||grad(B²/2)|| at the sampled steps
-H = run["diagnostics"]["helicity"]
+resid = run["trace"]["resid"]             # ||F|| / ||grad(B²/2)|| after every step
+H = run["qoi"]["helicity"]                # at the sampled steps
 ```
 
 Three checks of a healthy ideal run (`--eta-max 0`, `--dt-mode linesearch`):
@@ -159,7 +162,8 @@ from mrx.differential_forms import DiscreteFunction, Pushforward
 
 with h5py.File("outputs/relax/<date>/<time>/B.h5") as fh:
     B = fh["B_final"][...]
-seq, ops = build_sequence("toroid", ns=(8, 16, 8), p=3)
+    geometry, ns, p = str(fh.attrs["geometry_path"]), tuple(fh.attrs["ns"]), int(fh.attrs["p"])
+seq, ops = build_sequence(geometry, ns=ns, p=p)
 B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.e2_dbc), seq.map, 2)
 ```
 
@@ -184,8 +188,9 @@ Its module docstring lists the flags.
 
 ## float32
 
-Pass `--precision float32`. The script exports `MRX_DTYPE` before `mrx`
-is imported. A 200-step CG relaxation on W7-X runs at half the time per
-step, with the energy agreeing to five digits. The stopping tolerance
-scales with the precision: `--floor-tol` defaults to `10 * eps`, which is
-$1.2 \times 10^{-6}$ in float32. See [Precision](concepts/precision.md).
+The default. `--precision float64` exports `MRX_DTYPE` before `mrx` is
+imported. A 200-step CG relaxation on W7-X runs at half the time per step
+in float32, with the energy agreeing to five digits. The force residual in
+float32 floors at the solve-tolerance level, $\sim 2 \times 10^{-3}$ at
+tol $10^{-5}$, so a `--floor-tol` below that never fires and the run ends
+on `--steps` or `--seconds`. See [Precision](concepts/precision.md).

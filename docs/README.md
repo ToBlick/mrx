@@ -46,5 +46,5 @@ deselects the `gpu` tier by default (see `slurm/README.md`).
 `mrx/metric_lumping_laplacian.py`, the cut-off constants at the top of
 `mrx/preconditioners.py`, `build_sequence` in `mrx/geometries.py` for the
 canonical sequence and operator build, `NumericsConfig` in `mrx/config.py`
-for the Hydra entry points, and the environment variables `MRX_DTYPE`,
-`MRX_DATA`, `MRX_BJ_BC_SCALE`.
+for the Hydra entry points, and the environment variables `MRX_DTYPE` and
+`MRX_BJ_BC_SCALE` (`MRX_DATA` only locates the gpu-tier data test's file).

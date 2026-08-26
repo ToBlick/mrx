@@ -29,7 +29,7 @@ def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) 
     # Dirichlet complex b_2 = 1 (relative cohomology: b_k^rel = b_{3-k}^abs,
     # and a solid torus has b_1^abs = 1), so B_harm is a genuine harmonic
     # remainder and MUST satisfy ||B_harm|| <= ||B||.  Measured on the
-    # logical-profile IC at quasr44970 ns=(8,16,8) p=3:
+    # analytic-profile IC at quasr44970 ns=(8,16,8) p=3:
     #
     #     primal rhs (old):  ||B - curl A|| / ||B|| = 8.56e+01   H = +1.99e+01
     #     dual rhs   (new):  ||B - curl A|| / ||B|| = 9.74e-01   H = +1.73e-02
@@ -52,7 +52,7 @@ def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) 
 def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
     # hard-coded dirichlet=True for now
     # Incidence, so this measures the field's divergence and not the
-    # mass solver's residual -- see _relaxation_step.
+    # mass solver's residual -- see TimeStepper.relaxation_step.
     div_B = seq.apply_incidence_matrix(
         B, 2, dirichlet_in=True, dirichlet_out=True)
     return seq.l2_norm_sq(div_B, 3)**0.5
@@ -132,7 +132,7 @@ class State(eqx.Module):
         |u_ref^i| / (J h_i)`` (see ``logical_cfl_weights``).
     eta : float
         The resistivity. The resistive part of the step is backward Euler
-        (see ``TimeStepper._relaxation_step``), so it does not restrict
+        (see ``TimeStepper.relaxation_step``), so it does not restrict
         ``dt``.
     resistive_info : int
         The signed MINRES iteration count of the resistive solve on the last
@@ -160,10 +160,6 @@ class State(eqx.Module):
         ``M_2 s_k`` and ``M_2 y_k``, row-aligned with the histories above.
         Every M-inner product the two-loop recursion takes is against a
         stored vector, so with these in hand it applies M zero times.
-    picard_iterations : int
-        The number of Picard iterations.
-    picard_residuum : float
-        The residuum of the Picard solver.
     F_norm : float
         The norm of the force.
     v_norm : float
@@ -201,8 +197,6 @@ class State(eqx.Module):
     resistive_delta: float = 0.0
     resistive_count: int = 0
     resistive_time: float = 0.0
-    picard_iterations: int = 0
-    picard_residuum: float = 0.0
     F_norm: float = 0.0
     v_norm: float = 0.0
     lbfgs_sy: float = 0.0
@@ -216,15 +210,9 @@ class State(eqx.Module):
 # %%
 
 
-class IntegrationScheme(Enum):
-    EXPLICIT = 0
-    IMPLICIT_MIDPOINT = 1
-
-
 class TimeStepChoice(Enum):
     FIXED = 0
-    PICARD_ADAPTIVE = 1
-    ANALYTIC_LINESEARCH = 2
+    ANALYTIC_LINESEARCH = 1
 
 
 class DescentMethod(Enum):
@@ -234,72 +222,52 @@ class DescentMethod(Enum):
 
 
 class TimeStepper(eqx.Module):
-    """
-    TimeStepper for MRX relaxation.
+    """One explicit step of the energy descent.
 
-    Fields
-    ----------
-    seq : DeRhamSequence
-        The de Rham sequence.
-    gamma : int
-        Hyperregularization exponent: v = (I - mu * Δ)^{-gamma} f.
-    mu : float
-        Length scale for hyperregularization.
-    descent_method : DescentMethod
-        GRADIENT, CONJUGATE_GRADIENT, or LBFGS.
-    dt_mode : TimeStepChoice
-        FIXED, PICARD_ADAPTIVE, or ANALYTIC_LINESEARCH.
-    cfl : float
-        Cap on the step: ``dt = min(dt_star, cfl / cfl_max)`` with
-        ``cfl_max`` the largest logical CFL number of the velocity. The
-        linesearch minimiser cannot raise the energy, but a large step
-        leaves the ideal-induction flow (frozen-in topology violated at
-        O(dt^2)) and diverges when ``||dB||`` collapses. ``inf`` disables
-        the cap and leaves the trajectory untouched.
-    cfl_weights : jnp.ndarray
-        ``logical_cfl_weights(seq)``, built by ``__post_init__``.
-    resistive : bool
-        Compile the resistive solve into the step. False (the default)
-        traces the ideal step only: no ``cond``, no MINRES, regardless of
-        ``state.eta``. Set it when the run has ``eta > 0`` anywhere.
-    eta_every : int
-        Apply the resistive solve every ``eta_every`` steps, diffusing over
-        the time accumulated since the last one (operator splitting). In
-        float32 a per-step increment of 1-10 ulps of ``B`` is not
-        representable, so ``eta ~ 1e-4`` at ``dt ~ 1e-3`` needs 10-100
-        here; the diffusive time of even the finest mode,
-        ``1 / (eta lambda_max) ~ 1000`` such steps, makes ``<= 100``
-        physically harmless.
-    timestep_mode : IntegrationScheme
-        EXPLICIT or IMPLICIT_MIDPOINT.
-    picard_tol : float
-        Tolerance for implicit midpoint Picard solver.
-    picard_k_restart : int
-        Max Picard iterations before restart.
-    picard_k_crit : int
-        Threshold: fewer iterations -> increase dt, more -> decrease.
-    picard_dt_increment : float
-        Factor for adaptive dt adjustment.
-    stochastic : bool
-        Whether to add noise to the velocity.
-    history_size : int
-        Number of stored pairs for CG / L-BFGS.
-    dirichlet_H : bool
-        Dirichlet BC on H.
+    The step is an operator splitting (Lie): ideal transport,
+    ``B_ideal = B_n + dt curl E_ideal`` with ``E_ideal = u x H`` and the
+    descent velocity ``u``, then implicit (backward-Euler) resistive
+    diffusion of ``B_ideal``. The splitting is first order in ``dt``.
+
+    Attributes:
+        seq: The de Rham sequence.
+        velocity_smoothing_order: Number of smoothing solves applied to the
+            descent direction, ``v = (I - scale * Laplacian)^-order F``.
+            0 (the default) leaves the direction as it is.
+        velocity_smoothing_scale: Length scale of the smoothing,
+            the ``mu`` in ``(M_2 + mu L_2)^-1 M_2``.
+        descent_method: GRADIENT, CONJUGATE_GRADIENT, or LBFGS.
+        dt_mode: FIXED or ANALYTIC_LINESEARCH.
+        cfl: Cap on the step: ``dt = min(dt_star, cfl / cfl_max)`` with
+            ``cfl_max`` the largest logical CFL number of the velocity. The
+            linesearch minimiser cannot raise the energy, but a large step
+            leaves the ideal-induction flow (frozen-in topology violated at
+            O(dt^2)) and diverges when ``||dB||`` collapses. ``inf`` disables
+            the cap and leaves the trajectory untouched.
+        cfl_weights: ``logical_cfl_weights(seq)``, built by ``__post_init__``.
+        resistive: Compile the resistive solve into the step. False (the
+            default) traces the ideal step only: no ``cond``, no MINRES,
+            regardless of ``state.eta``. Set it when the run has ``eta > 0``
+            anywhere.
+        eta_every: Apply the resistive solve every ``eta_every`` steps,
+            diffusing over the time accumulated since the last one. In
+            float32 a per-step increment of 1-10 ulps of ``B`` is not
+            representable, so ``eta ~ 1e-4`` at ``dt ~ 1e-3`` needs 10-100
+            here; the diffusive time of even the finest mode,
+            ``1 / (eta lambda_max) ~ 1000`` such steps, makes ``<= 100``
+            physically harmless.
+        stochastic: Whether to add noise to the velocity.
+        history_size: Number of stored pairs for CG / L-BFGS.
+        dirichlet_H: Dirichlet BC on H.
     """
     seq: DeRhamSequence
-    gamma: int = 0
-    mu: float = 0.0
+    velocity_smoothing_order: int = 0
+    velocity_smoothing_scale: float = 0.0
     descent_method: DescentMethod = DescentMethod.GRADIENT
     dt_mode: TimeStepChoice = TimeStepChoice.ANALYTIC_LINESEARCH
     cfl: float = 0.5
     eta_every: int = 1
     resistive: bool = False
-    timestep_mode: IntegrationScheme = IntegrationScheme.EXPLICIT
-    picard_tol: float = 1e-9
-    picard_k_restart: int = 20
-    picard_k_crit: int = 4
-    picard_dt_increment: float = 1.01
     stochastic: bool = False
     history_size: int = 1
     dirichlet_H: bool = False
@@ -325,7 +293,7 @@ class TimeStepper(eqx.Module):
         VELOCITY u, not with respect to B: the admissible variation is
         ``dB = curl(u x H)``, and ``dE[dB] = -(F, u)_M``.  So both members of
         an L-BFGS pair have to live in velocity space; see
-        ``_relaxation_step`` for how that is arranged and what happens when
+        ``relaxation_step`` for how that is arranged and what happens when
         it is not.
 
         Parameters
@@ -402,14 +370,15 @@ class TimeStepper(eqx.Module):
 
         return r, sy
 
-    def apply_regularization(self, u: jnp.ndarray) -> jnp.ndarray:
-        for _ in range(self.gamma):
+    def smooth_velocity(self, u: jnp.ndarray) -> jnp.ndarray:
+        """Apply ``(M_2 + scale L_2)^-1 M_2`` to ``u`` ``velocity_smoothing_order`` times."""
+        for _ in range(self.velocity_smoothing_order):
             rhs = self.seq.apply_mass_matrix(u, 2, True)
             u = self.seq.apply_inverse_mass_plus_eps_laplace_matrix(
-                rhs, 2, self.mu, dirichlet=True, guess=u)
+                rhs, 2, self.velocity_smoothing_scale, dirichlet=True, guess=u)
         return u
 
-    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'dt_star', 'cfl_max', 'eta', 'resistive_info', 'resistive_delta', 'resistive_count', 'resistive_time', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'lbfgs_sy', 'noise_level', 'key'], value) -> State:  # noqa: E501
+    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'dt_star', 'cfl_max', 'eta', 'resistive_info', 'resistive_delta', 'resistive_count', 'resistive_time', 'F_norm', 'v_norm', 'lbfgs_sy', 'noise_level', 'key'], value) -> State:  # noqa: E501
         return eqx.tree_at(
             lambda s: getattr(s, field_name),
             state,
@@ -424,27 +393,16 @@ class TimeStepper(eqx.Module):
             jax.random.normal(key, v.shape), 2)
         return v + strength * self.seq.apply_leray_projection(noise, k=2)[0]
 
-    def midpoint_residuum(self, state: State) -> State:
-        B_guess = state.B_nplus1
-        # this updates B_nplus1, force_norm, velocity_norm
-        state = self._relaxation_step(state, state.key)
-        residuum = self.seq.l2_norm(state.B_nplus1 - B_guess, 2)
-        return eqx.tree_at(
-            lambda s: (s.picard_residuum,
-                       s.picard_iterations),
-            state,
-            (residuum,
-             state.picard_iterations + 1,)
-        )
+    def relaxation_step(self, state: State, key: jax.random.PRNGKey) -> State:
+        """Advance ``state.B_n`` by one step into ``state.B_nplus1``.
 
-    def _relaxation_step(self, state: State, key: jax.random.PRNGKey) -> State:
-        if self.timestep_mode == IntegrationScheme.EXPLICIT:
-            B_n = state.B_n
-        elif self.timestep_mode == IntegrationScheme.IMPLICIT_MIDPOINT:
-            B_n = 0.5 * (state.B_n + state.B_nplus1)
-        else:
-            raise ValueError(
-                f"Unknown timestep_mode: {self.timestep_mode}. Supported modes are given by the IntegrationScheme enum.")
+        Operator-split (Lie): ideal transport, then implicit resistive
+        diffusion. The ideal half is explicit Euler on the descent
+        velocity, ``B_ideal = B_n + dt curl(u x H)``; the resistive half is
+        backward Euler on ``B_ideal``. The splitting is first order in
+        ``dt``; resistivity is not applied to ``B_n``.
+        """
+        B_n = state.B_n
         F, p, _, H, JxH = compute_force(
             B_n, self.seq, dirichlet_H=self.dirichlet_H,
             p_guess=state.p, H_guess=state.H, JxH_guess=state.JxH)
@@ -492,7 +450,7 @@ class TimeStepper(eqx.Module):
         if self.stochastic:
             u = self.apply_noise(
                 u, key, state.noise_level * self.seq.l2_norm(u, 2))
-        u = self.apply_regularization(u)
+        u = self.smooth_velocity(u)
         u, p_v = self.seq.apply_leray_projection(u, k=2, p_guess=state.p_v)
         # M u once: the linesearch numerator, ||u||_M and the stored M s.
         Mu = self.seq.apply_mass_matrix(u, 2)
@@ -537,6 +495,7 @@ class TimeStepper(eqx.Module):
         B_ideal = B_n + dt * dB
 
         # Resistive diffusion, BACKWARD Euler on top of the ideal step, in
+        # Second half of the Lie splitting: backward Euler on B_ideal in
         # DEFECT form:
         #     (M_2 + eps L_2) delta = -eps L_2 B_ideal,   B_{n+1} = B_ideal + delta,
         # eps = eta * (time since the last resistive solve), guess 0.
@@ -611,50 +570,6 @@ class TimeStepper(eqx.Module):
              resistive_delta, resistive_count, resistive_time,
              s_history, y_history, Ms_history, My_history))
 
-    def midpoint_picard_step(self, state: State, key: jax.random.PRNGKey) -> State:
-        """
-        Picard solver for the MRX relaxation.
-
-        Parameters
-        ----------
-        state : State
-            The state of the MRX relaxation.
-        key : jax.random.PRNGKey
-            The random key for noise generation.
-
-        Returns
-        -------
-        state : State
-            The updated state of the MRX relaxation.
-        """
-        def cond_fun(state: State) -> bool:
-            return jnp.logical_and(
-                state.picard_iterations < self.picard_k_restart,
-                jnp.logical_or(state.picard_residuum > self.picard_tol,
-                               jnp.isnan(state.picard_residuum)))
-
-        def body_fun(state: State) -> State:
-            return self.midpoint_residuum(state)
-
-        state = eqx.tree_at(
-            lambda s: (s.picard_residuum, s.picard_iterations, s.key),
-            state,
-            (1.0, 0, key)
-        )
-
-        # While loop in the Picard solver.
-        state = jax.lax.while_loop(cond_fun, body_fun, state)
-        return state
-
-    def relaxation_step(self, state: State, key: jax.random.PRNGKey) -> State:
-        if self.timestep_mode == IntegrationScheme.EXPLICIT:
-            return self._relaxation_step(state, key)
-        elif self.timestep_mode == IntegrationScheme.IMPLICIT_MIDPOINT:
-            return self.midpoint_picard_step(state, key)
-        else:
-            raise ValueError(
-                f"Unknown timestep_mode: {self.timestep_mode}. Supported modes are given by the IntegrationScheme enum.")
-
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State:
     """Build the state at ``B_dof`` with its force already evaluated.
@@ -715,33 +630,14 @@ def relaxation_loop(B_dof: jnp.ndarray,
     -------
     state : State
     traces : dict  with keys: force_norm, helicity, timestep, energy,
-             picard_residua, picard_iterations, resistive_info, velocity_norm,
-             divergence_B, eta, iteration
+             resistive_info, velocity_norm, divergence_B, eta, iteration
     """
     seq = ts.seq
     state = initial_state(B_dof, ts, dt0)
 
     def body_fn(state, key):
         state = ts.relaxation_step(state, key)
-        failed = (state.picard_residuum > ts.picard_tol) | (
-            ~jnp.isfinite(state.picard_residuum))
-
-        def on_fail(s):
-            return eqx.tree_at(
-                lambda s: (s.dt, s.B_nplus1),
-                s, (s.dt / 2, s.B_n))
-
-        def on_success(s):
-            s = eqx.tree_at(lambda s: s.B_n, s, s.B_nplus1)
-            if ts.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:
-                dt_new = jnp.where(
-                    s.picard_iterations < ts.picard_k_crit,
-                    s.dt * ts.picard_dt_increment,
-                    s.dt / ts.picard_dt_increment)
-                s = eqx.tree_at(lambda s: s.dt, s, dt_new)
-            return s
-
-        state = jax.lax.cond(failed, on_fail, on_success, state)
+        state = eqx.tree_at(lambda s: s.B_n, state, state.B_nplus1)
         return state, None
 
     @jax.jit
@@ -753,8 +649,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
     get_div_norm = jax.jit(compute_divergence_norm, static_argnames=["seq"])
 
     traces = {k: [] for k in (
-        "force_norm", "helicity", "timestep", "energy",
-        "picard_residua", "picard_iterations", "resistive_info",
+        "force_norm", "helicity", "timestep", "energy", "resistive_info",
         "velocity_norm", "divergence_B", "eta", "iteration")}
 
     def record(state, iteration):
@@ -763,8 +658,6 @@ def relaxation_loop(B_dof: jnp.ndarray,
         traces["helicity"].append(h)
         traces["timestep"].append(state.dt)
         traces["energy"].append(get_energy(state.B_n))
-        traces["picard_residua"].append(state.picard_residuum)
-        traces["picard_iterations"].append(state.picard_iterations)
         traces["resistive_info"].append(state.resistive_info)
         traces["velocity_norm"].append(state.v_norm)
         traces["divergence_B"].append(get_div_norm(state.B_n, seq))

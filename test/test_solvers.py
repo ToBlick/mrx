@@ -8,7 +8,6 @@ import numpy.testing as npt
 import mrx
 from mrx.solvers import (
     minres,
-    picard_solver,
     preconditioned_cg,
     solve_saddle_point_minres,
     solve_singular_cg,
@@ -171,22 +170,3 @@ def test_saddle_point_minres_converges():
                         err_msg="saddle-point u solution mismatch")
     npt.assert_allclose(np.asarray(s), s_exact, atol=1e3 * TOL,
                         err_msg="saddle-point s solution mismatch")
-
-
-# ---------------------------------------------------------------------------
-# picard_solver
-# ---------------------------------------------------------------------------
-
-def test_picard_scalar_contraction():
-    """picard_solver converges for a scalar linear contraction x -> 0.5*x + c."""
-    c = jnp.asarray(3.0)
-    # Fixed point: x* = 2c = 6.0
-    def f(z):
-        x, aux = z
-        return (0.5 * x + c, aux)
-
-    z0 = (jnp.asarray(0.0), jnp.asarray(0.0))
-    tol = 1e-2 * TOL
-    (x_star, _), res, iters = picard_solver(f, z0, tol=tol, max_iter=200)
-    assert abs(float(x_star) - 6.0) < 100 * tol, f"fixed point {float(x_star):.6f} != 6.0"
-    assert res < 10 * tol, f"residual {res:.3e}"

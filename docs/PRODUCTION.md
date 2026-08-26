@@ -7,7 +7,8 @@ One page. Every identifier exists in `mrx/` or `scripts/`. The reasoning is in
 ## Sequence and operators
 
 `build_sequence(geometry, ns, p)` in `mrx/geometries.py` is the production
-build: `DeRhamSequence(ns, (p,)*3, p + 1, ("clamped", "periodic", "periodic"),
+build (`geometry` is `toroid`, `cylinder`, `rot-ellipse`, or the path of a
+GVEC export): `DeRhamSequence(ns, (p,)*3, p + 1, ("clamped", "periodic", "periodic"),
 polar=True, betti_numbers=(1, 1, 0, 0))`, `evaluate_1d()`, `set_map`, then
 `assemble_incidence_operators`, `assemble_mass_jacobi_preconditioner`,
 `assemble_metric_lumping_laplacian_preconditioner` for `k = 0..3` and both
@@ -82,9 +83,13 @@ of those, memoised per degree in the element layout. `DF` is not stored --
 
 ## Relaxation
 
-`scripts/relax.py`: `--method cg`, `--dt-mode linesearch`, `--ic logical`,
-`--floor-tol 10*eps`, `--floor-window 100`; one method per run; output
-`relax.json` and `B.h5`. Details in [relaxation.md](relaxation.md).
+`scripts/relax.py --geometry <GVEC export>`: `--ns 8,16,16`, `--p 2`,
+`--maxiter 2000`, `--precision float32`, `--ic clebsch`, `--method cg`,
+`--history 3`, `--dt-mode linesearch`, `--cfl 0.5`; stops when the mean of
+the relative force residual over `--floor-steps 100` steps is below
+`--floor-tol 1e-3`; one method per run; output `relax.json` and `B.h5`.
+Each step is operator-split (Lie): ideal transport, then implicit resistive
+diffusion. Details in [relaxation.md](relaxation.md).
 
 ## Traps
 

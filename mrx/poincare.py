@@ -356,7 +356,7 @@ def rotational_transform(ys, saves_per_period, nfp, center=None):
 #: chaotic line's difference does not fall with ``N``. Measured 2026-08-26 on
 #: W7-X fmm002 at 400 and 800 periods: converged Clebsch relaxations score
 #: <= 9e-04 / 1.2e-04 on their regular lines (islands included) while the
-#: chaotic logical-profile field scores >= 1.4e-03 / 3.7e-03 on 29 of 40
+#: chaotic analytic-profile field scores >= 1.4e-03 / 3.7e-03 on 29 of 40
 #: lines at both lengths. ``0.4 / N`` (1e-03 at 400 periods) separates them
 #: with a decade to spare at both lengths.
 CHAOS_TOL_PER_PERIOD = 0.4
@@ -555,7 +555,8 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
                    axis_RZ=None, path=None, profile_x=None,
                    profile_xlabel="seed radius $r$", nfp=None, denom_max=15,
                    logical=None, chaotic=None, pressure=None,
-                   split_iota_p=False, cmap=SECTION_CMAP, iota_lim=None):
+                   pressure_label=r"$p$", split_iota_p=False,
+                   cmap=SECTION_CMAP, iota_lim=None):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -570,7 +571,8 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     ``pressure`` is per-crossing, the same shape as ``R``. It is OPTIONAL
     because the fields this traces are harmonic (vacuum-like) and carry no
     pressure at all; a vacuum run leaves it ``None`` and gets exactly the
-    previous figure. When it is given, the third panel becomes the p profile.
+    previous figure. When it is given, the third panel becomes the p profile,
+    labelled ``pressure_label`` on the colorbar and the profile axis.
 
     ``split_iota_p`` colours the section by iota ABOVE the magnetic axis and by
     p BELOW it, in one panel. It needs both ``pressure`` and ``axis_RZ`` and
@@ -690,7 +692,7 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         cbar.set_ticks(res_ticks)
         cbar.set_ticklabels(res_labels)
     if psc is not None:
-        pbar = fig.colorbar(psc, ax=ax, label=r"$p$", fraction=0.046, pad=0.02)
+        pbar = fig.colorbar(psc, ax=ax, label=pressure_label, fraction=0.046, pad=0.02)
         pbar.ax.tick_params(labelsize=7)
         ax.axhline(z_axis, color="0.35", lw=0.6, ls=":", zorder=1)
 
@@ -768,7 +770,7 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         px.scatter(xv, pv, s=max(size, 1.5), c=pv, cmap=PRESSURE_CMAP,
                    linewidths=0, rasterized=True)
         px.set_xlabel(profile_xlabel)
-        px.set_ylabel(r"$p$")
+        px.set_ylabel(pressure_label)
         px.grid(alpha=0.3)
         px.set_title("pressure", fontsize=10)
 

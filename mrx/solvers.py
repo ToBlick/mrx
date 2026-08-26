@@ -1,4 +1,4 @@
-"""Matrix-free Krylov and fixed-point solvers.
+"""Matrix-free Krylov solvers and a backtracking line search.
 
 Every solver takes a relative tolerance ``tol``.  ``tol=None`` -- the default
 everywhere -- resolves to :func:`mrx.precision.sqrt_eps`, the square root of
@@ -14,60 +14,6 @@ import jax
 import jax.numpy as jnp
 
 from mrx.precision import sqrt_eps
-
-
-def picard_solver(f, z_init, tol=None, max_iter=2000, norm=jnp.linalg.norm) -> tuple[jnp.ndarray, float, int]:
-    """
-    Picard solver for fixed-point iteration.
-
-    Parameters
-    ----------
-    f : callable
-        Function to perform the solve on.
-    z_init : jnp.ndarray
-        Initial guess for the solution.
-    tol : float, optional
-        Tolerance for convergence; ``None`` is ``mrx.sqrt_eps()``.
-    max_iter : int, default=1000
-        Maximum number of iterations.
-    norm : callable, default=jnp.linalg.norm
-        Norm function definition.
-
-    Returns
-    -------
-    (z_star, residual, iters) : tuple[jnp.ndarray, float, int]
-        z_star = (x*, aux*) with x* the fixed point.
-        residual = ||f(z_star)[0] - x*||.
-        iters = picard iteration count.
-    """
-    if tol is None:
-        tol = sqrt_eps()
-
-    def cond_fun(state):
-        # fz = f(z) is carried in the state to avoid evaluating f twice per
-        # iteration (once in cond and once in body).
-        _, z, fz, i = state
-        residual = norm(fz[0] - z[0])
-        return jnp.logical_and(i < max_iter, jnp.logical_or(residual > tol, jnp.isnan(residual)))
-
-    def body_fun(state):
-        z_prev, z, fz, i = state
-        # For i >= 1, z = alpha fz_prev + (1 - alpha) z_prev with alpha > 0,
-        # so z == z_prev would mean fz_prev == z_prev -- a zero residual, at
-        # which cond_fun has already stopped the loop.  The denominator is
-        # therefore nonzero whenever this runs; it used to carry a 1e-12.
-        alpha = jnp.where(
-            i == 0,
-            1.0,
-            jnp.clip(norm(fz[0] - z[0]) / norm(z[0] - z_prev[0]), 0.0, 1.0),
-        )
-        z_next = (alpha * fz[0] + (1 - alpha) * z[0], fz[1])
-        return (z, z_next, f(z_next), i + 1)
-
-    fz_init = f(z_init)
-    state = (z_init, z_init, fz_init, 0)
-    _, z_star, fz_star, iters = jax.lax.while_loop(cond_fun, body_fun, state)
-    return z_star, norm(fz_star[0] - z_star[0]), iters
 
 
 def backtracking_line_search(

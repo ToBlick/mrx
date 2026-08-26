@@ -27,7 +27,8 @@ the harmonic contribution.
 
 Three sources of the profiles:
 
-* :func:`logical_profile_form`: prescribed power laws, no external data.
+* :func:`analytic_profile_form`: prescribed power laws, no external data;
+  the ``analytic`` initial condition of ``scripts/relax.py``.
 * :func:`clebsch_form`: GVEC's own ``dPhi_dr``, ``dchi_dr`` and ``lambda``
   from a file read by :func:`mrx.gvec.load_clebsch`; the equilibrium field
   rebuilt from three scalars instead of resampled as a vector.
@@ -141,7 +142,7 @@ def metric_coefficients(seq, rhos, n_ang):
 # Reference 2-forms
 # ---------------------------------------------------------------------------
 
-def logical_profile_form(iota, dPhi, dlam):
+def analytic_profile_form(iota, dPhi, dlam):
     """Reference 2-form of prescribed ``iota(rho)``, ``dPhi(rho)`` and lambda."""
     def omega_ref(x):
         r = x[0]
@@ -152,15 +153,14 @@ def logical_profile_form(iota, dPhi, dlam):
     return omega_ref
 
 
-def clebsch_form(cb, use_lambda=True):
+def clebsch_form(cb):
     """Reference 2-form of the Clebsch data ``cb`` from
     :func:`mrx.gvec.load_clebsch`.
 
     Units: the file's derivatives are with respect to radian angles and MRX's
     zeta spans one field period, so ``Phi' = 2 pi dPhi_dr``,
     ``iota = dchi_dr / (nfp dPhi_dr)`` and ``lambda = LA / 2 pi``. The 2 pi on
-    ``Phi'`` divides out of the normalised field. ``use_lambda=False`` zeroes
-    lambda: the fluxes, iota and the helicity must not move, the force must.
+    ``Phi'`` divides out of the normalised field.
     """
     rho_g = jnp.asarray(cb["rho"])
     dPhi_g = jnp.asarray(cb["dPhi"])
@@ -168,14 +168,13 @@ def clebsch_form(cb, use_lambda=True):
     grad_lam = jax.grad(cb["lam_h"])
     nfp = cb["nfp"]
     two_pi = 2.0 * jnp.pi
-    use = 1.0 if use_lambda else 0.0
 
     def omega_ref(x):
         r = jnp.clip(x[0], rho_g[0], rho_g[-1])
         f_phi = jnp.interp(r, rho_g, dPhi_g)
         f_chi = jnp.interp(r, rho_g, dchi_g) / nfp
         g = grad_lam(jnp.array([r, x[1] % 1.0, x[2] % 1.0])) / two_pi
-        lam_t, lam_z = g[1] * use, g[2] * use
+        lam_t, lam_z = g[1], g[2]
         return jnp.array([0.0, f_chi - f_phi * lam_z, f_phi * (1.0 + lam_t)])
 
     return omega_ref

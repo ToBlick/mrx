@@ -6,7 +6,7 @@ script as a single-GPU job and prints the log path.
 ## slurm/run.sh
 
 ```
-SCRIPT=scripts/relax.py ARGS="--geometry toroid --steps 50" JOB_NAME=smoke bash slurm/run.sh
+SCRIPT=scripts/relax.py ARGS="--geometry toroid --ic analytic --steps 50" JOB_NAME=smoke bash slurm/run.sh
 SCRIPT="-m pytest -q test/test_solvers.py" JOB_NAME=tests TIMEOUT_MIN=120 bash slurm/run.sh
 ```
 

@@ -56,15 +56,10 @@ pinned to another checkout shadows the one you meant to test. See
 
 ## Data files
 
-Geometry files (GVEC exports, the W7-X map) are read from the directory
-named by `MRX_DATA`, default `data/` in the working directory. Point
-`MRX_DATA` at a shared location instead of copying files:
-
-```bash
-export MRX_DATA=/path/to/mrx-data
-```
-
-`mrx.gvec.GVEC_GEOMETRIES` lists the file-based geometry names.
+Geometry files (GVEC exports) are passed by path: `--geometry
+/path/to/w7x_fmm002_clebsch_mrx.h5` to the scripts,
+`build_sequence("/path/to/file.h5", ns, p)` in code. Only the gpu-tier data
+test reads a directory name, `MRX_DATA` (default `data/`).
 
 ## Next steps
 
