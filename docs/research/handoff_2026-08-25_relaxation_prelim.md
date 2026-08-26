@@ -2684,3 +2684,54 @@ The two validation job scripts are `slurm/job_merge_tests.sh` and
 `slurm/job_merge_poisson.sh`.  They are UNTRACKED: `.gitignore` carries
 `slurm/job_*`, and that convention was left alone rather than force-added
 around.
+
+## 43. REMARK: the test suite is dominated by a handful of very long tests
+
+Flagging this separately from s42.4 because it is not a merge fact -- it is a
+standing property of the suite that will cost the next person an hour and a
+cancelled job if they do not know it.
+
+Full `test/` on an H100: **1:19:40** wall, 235 passed, 1 skipped.  The slowest
+15, from `--durations=15`:
+
+```
+579.25s  test_projectors.py::test_interpolation_reproduces_its_own_space[p3-k1-free]
+569.13s  test_projectors.py::test_interpolation_reproduces_its_own_space[p3-k1-dbc]
+416.11s  test_projectors.py::test_interpolation_reproduces_its_own_space[p3-k2-dbc]
+414.67s  test_projectors.py::test_interpolation_reproduces_its_own_space[p3-k2-free]
+296.55s  test_projectors.py::test_interpolation_reproduces_its_own_space[p2-k1-free]
+282.90s  test_projectors.py::test_pi_full_is_idempotent[1]
+276.29s  test_projectors.py::test_interpolation_reproduces_its_own_space[p2-k1-dbc]
+212.17s  test_projectors.py::test_interpolation_reproduces_its_own_space[p2-k2-free]
+211.26s  test_projectors.py::test_pi_full_is_idempotent[2]
+207.00s  test_projectors.py::test_interpolation_reproduces_its_own_space[p2-k2-dbc]
+160.38s  (setup) test_metric_lumping_laplacian.py::test_boundary_term_vanishes_under_dirichlet[1]
+ 88.39s  (setup) test_relaxation.py::test_zpinch_force_balance
+ 68.34s  (setup) test_projectors.py::test_k0_l2_projection_error_is_small
+ 61.03s  (setup) test_projectors.py::test_interpolation_reproduces_its_own_space[p2-k0-free]
+ 59.92s  test_projectors.py::test_k2_histopolation_is_finite
+```
+
+Three consequences.
+
+**A 1 h walltime is not enough.**  The first attempt at this run was cancelled
+by SLURM at 61% having passed every test it reached -- which is a result that
+looks like a failure in `sacct` and is not one.  Budget 2 h; 4 h was used here
+with room to spare.
+
+**`test_projectors` is ~76% of the suite** (~3650 s of 4780 s once its setup
+time is counted).  A single parametrisation,
+`test_interpolation_reproduces_its_own_space[p3-k1-free]`, is **9.7 minutes on
+its own**.  Anyone iterating on projectors, splines or the de Rham sequence
+should run that file alone and skip the rest, not the reverse.
+
+**Setup costs are large and are charged to whichever test runs first.**  Four
+entries in the list above are `setup`, not `call` -- 160 s of it on a single
+`test_metric_lumping_laplacian` parametrisation.  Reading the durations as
+"this test is slow" is wrong for those rows; the fixture is slow, and the cost
+moves if the ordering changes.
+
+NOT INVESTIGATED, and worth someone's time: whether the p3-k1 interpolation
+cases are slow for a legitimate reason (dense projection at high p) or are
+quadratic in something they need not be.  A suite where one assertion costs ten
+minutes gets run less often, which is its own correctness risk.
