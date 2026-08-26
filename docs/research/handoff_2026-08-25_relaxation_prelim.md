@@ -2258,3 +2258,50 @@ a full arm, but it does need GPU time and nothing is being launched.
 fields. ~0.2 GPU-h estimated, both are 8^3. NULL = LR3's roughness is flat
 like every other arm, which would say its chaos is physical rather than
 grid-scale, and would materially change how s(poincare) should be read.
+
+## 37. The mu sweep completes: a SHARP minimum at 1e-4, and it is also the cheapest
+
+M1-M5 all landed. `fmm002` 8^3 p=3, 3000 steps, every arm removing the same
+energy to three digits (1.17-1.22e-04), so these are directly comparable -- and
+because they share a geometry, resolution and p, they share an `H(0)` too, so
+s35's collapsing-denominator objection does NOT apply within this group.
+
+    gamma  mu       |dH|/H per dE     s/step
+    0      --          70.94           0.87     W1
+    1      1e-4         1.719          1.24     M1   <- minimum
+    1      1e-3        28.98           1.78     M2
+    1      1e-2        41.71           3.49     M3
+    1      1e-1        43.76           7.99     M4   (truncated, 2004 steps)
+    2      1e-3        28.36           2.64     M5
+
+**The minimum is sharp, not a shelf.** M1 is 17x better than its nearest
+neighbour one decade away and 41x better than no hyperregularisation at all.
+Above 1e-4 the metric climbs back toward the gamma=0 value and flattens near
+it -- so strong smoothing buys nothing, which matches the mechanism: at
+mu*lambda_max >> 1 the smoother is damping resolved modes, i.e. physics, not
+grid noise.
+
+**And 1e-4 is the CHEAPEST of the hyperregularised arms**, at 1.24 s/step
+against 1.78, 3.49 and 7.99. Cost rises steeply with mu because the shifted
+solve gets harder, so there is no trade to make here: the best setting is also
+the fastest. That is unusual in this study and worth stating plainly.
+
+**gamma barely matters; mu is the lever.** M5 (gamma=2) and M2 (gamma=1) at the
+same mu land at 28.36 and 28.98 -- a 2% difference, well inside the noise floor
+this project treats as uninteresting. Raising the hyperregularisation ORDER is
+not what produced M1's result; the SCALE is.
+
+### 37.1 Two things this does not settle
+
+**The dip could be deeper.** Nothing has sampled below 1e-4, so 1e-4 may be the
+minimum or merely the best of four decades. That is shelf item A2, and it is
+the arm I trimmed from the `w7x-ini-conv` sweep to stay inside 20 GPU-h --
+which now looks like the wrong trim.
+
+**It may not transfer.** M1-M5 are one geometry. H1/H2 (12^3, mu = 4.4e-4 and
+1e-3) test whether the optimum moves with resolution as `mu ~ h^2` predicts,
+and C5-C7 re-test the bracket on `w7x-ini-conv`. Both were in flight when this
+was written.
+
+s32 applies as everywhere: no arm floored, so this is helicity conservation per
+unit energy removed at a fixed step budget, not a floor result.

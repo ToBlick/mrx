@@ -56,6 +56,9 @@ resolution, p) -- H itself is not converged across those.
 | S06 | gamma=2 mu=1e-3 (truncated) | cg | 1961 | 1.189e-04 | 2.950e-04 | 3.742e-03 | 31.49 | 1.267e-13 | 4.59 | 4.752e-05 |
 | M1 | gamma=1 mu=1e-4, NEW precond | cg | 3000 | 1.212e-04 | 8.574e-05 | 2.084e-04 | 1.719 | 1.308e-13 | 1.24 | 1.171e-04 |
 | M2 | gamma=1 mu=1e-3, NEW precond | cg | 3000 | 1.207e-04 | 2.017e-04 | 3.498e-03 | 28.98 | 1.284e-13 | 1.78 | 8.156e-05 |
+| M3 | gamma=1 mu=1e-2, NEW precond | cg | 3000 | 1.186e-04 | 2.772e-04 | 4.948e-03 | 41.71 | 1.226e-13 | 3.49 | 4.077e-05 |
+| M4 | gamma=1 mu=1e-1, NEW precond | cg | 2004 | 1.174e-04 | 3.351e-04 | 5.139e-03 | 43.76 | 1.411e-13 | 7.99 | 2.641e-05 |
+| M5 | gamma=2 mu=1e-3, NEW precond | cg | 3000 | 1.195e-04 | 2.472e-04 | 3.389e-03 | 28.36 | 1.339e-13 | 2.64 | 5.432e-05 |
 | S08 | eta=1e-4 | cg | 4000 | 1.291e-04 | 9.628e-05 | 2.563e-01 | 1986 | 1.420e-13 | 0.86 | 1.343e-04 |
 | S09 | eta=1e-3 | cg | 4000 | 1.385e-04 | 1.404e-05 | 8.200e-01 | 5920 | 1.268e-13 | 0.86 | 1.445e-04 |
 | S10 | eta=1e-2 | cg | 4000 | 1.387e-04 | 2.203e-09 | 9.998e-01 | 7208 | 1.320e-13 | 0.87 | 1.428e-04 |
@@ -79,9 +82,6 @@ resolution, p) -- H itself is not converged across those.
 
 ## Not yet landed
 
-* **M3** -- gamma=1 mu=1e-2, NEW precond
-* **M4** -- gamma=1 mu=1e-1, NEW precond
-* **M5** -- gamma=2 mu=1e-3, NEW precond
 * **H1** -- 12^3 mu=4.4e-4 (mu~h^2 test)
 * **H2** -- 12^3 mu=1e-3 (mu~h^2 test)
 
