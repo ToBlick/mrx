@@ -77,8 +77,11 @@ SCRIPT="-m pytest -q test" JOB_NAME=tests_cpu CPUS=4 EXTRA_ENV="JAX_PLATFORMS=cp
 ```
 
 `EXTRA_ENV="MRX_DTYPE=float32"` selects single precision for any of these.
-The `gpu` tier is a float64 tier; see "Known float32 failures" below for
-what does not hold there in single precision.
+The `gpu` tier is a float64 tier; it is not required to pass in float32.
+Measured 2026-08-26 (H100, tree at the two-tier commit): the CPU tier is
+243 items and passes in both precisions (~9 min on the GPU, ~6 min on four
+CPU cores -- it is compile-bound); the `gpu` tier is 21 items and passed in
+both precisions as well (~6.5 min), so there are no known float32 failures.
 
 ## Wait for a job
 

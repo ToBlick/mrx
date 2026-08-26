@@ -35,6 +35,12 @@ jobs:
     strategy:
       matrix:
         python-version: ['3.12']
+        dtype: ['float64', 'float32']
+    env:
+      MRX_DTYPE: ${{ matrix.dtype }}
+      # The CPU tier is XLA-compile-bound (4 cores run it as fast as 32), so
+      # the persistent compilation cache is the main lever on wall time.
+      JAX_COMPILATION_CACHE_DIR: ${{ github.workspace }}/.jax_cache
     steps:
     - uses: actions/checkout@v4
 
@@ -50,13 +56,15 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e . pytest
 
-    - name: Run the CPU tier (float64)
-      run: |
-        pytest
+    - name: Restore the XLA compilation cache
+      uses: actions/cache@v4
+      with:
+        path: .jax_cache
+        key: jax-cache-${{ runner.os }}-${{ matrix.dtype }}-${{ github.sha }}
+        restore-keys: |
+          jax-cache-${{ runner.os }}-${{ matrix.dtype }}-
 
-    - name: Run the CPU tier (float32)
-      env:
-        MRX_DTYPE: float32
+    - name: Run the CPU tier (${{ matrix.dtype }})
       run: |
         pytest
 
