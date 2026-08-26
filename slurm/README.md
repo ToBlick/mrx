@@ -50,6 +50,39 @@ under `conf/` add `export PYTHONPATH=${oc.env:MRX_ROOT}` to the launcher
 `setup` list, so `MRX_ROOT` must be set in the submitting shell for a hydra
 multirun; a single run through `run.sh` needs nothing else.
 
+## The test tiers
+
+`pytest` (no arguments) is the CPU tier: it deselects the `gpu` marker
+through `pyproject.toml`, needs no data files and runs in float64 and
+float32 on the GitHub runners (`.github/workflows/ci.yml`). The `gpu` tier
+holds the production-resolution fixture, the iteration-count bands measured
+on it, the accuracy-at-resolution tests and everything that reads data
+outside the repository. Run it nightly-style as a GPU job:
+
+```
+SCRIPT="-m pytest -q test -m gpu" JOB_NAME=tests_gpu TIMEOUT_MIN=60 MEM_GB=96 bash slurm/run.sh
+```
+
+and the whole suite (both tiers) with `ARGS='-m "gpu or not gpu"'`:
+
+```
+SCRIPT="-m pytest -q test" ARGS='-m "gpu or not gpu"' JOB_NAME=tests_all TIMEOUT_MIN=90 MEM_GB=96 bash slurm/run.sh
+```
+
+To measure the CPU tier as a runner would see it, run it inside a GPU job
+with the GPU hidden and four cores:
+
+```
+SCRIPT="-m pytest -q test" JOB_NAME=tests_cpu CPUS=4 EXTRA_ENV="JAX_PLATFORMS=cpu" bash slurm/run.sh
+```
+
+`EXTRA_ENV="MRX_DTYPE=float32"` selects single precision for any of these.
+The `gpu` tier is a float64 tier; it is not required to pass in float32.
+Measured 2026-08-26 (H100, tree at the two-tier commit): the CPU tier is
+243 items and passes in both precisions (~9 min on the GPU, ~6 min on four
+CPU cores -- it is compile-bound); the `gpu` tier is 21 items and passed in
+both precisions as well (~6.5 min), so there are no known float32 failures.
+
 ## Wait for a job
 
 ```

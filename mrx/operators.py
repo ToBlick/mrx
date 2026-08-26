@@ -771,39 +771,51 @@ def _laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: boo
             # nowhere, the direct entry-scatter form is unavailable. It is
             # built here in closed form instead -- no probe at any k. Returns
             # the inverse diagonal.
-            if k == 0:
-                # L_0 = S_0 (no lower term), and diag(E S_0 E^T) is the energy
-                # of the extracted basis functions -- closed form, O(N), no
-                # applies at all. Verified against this probe to <1e-15.
-                from mrx.local_assembly import (  # noqa: PLC0415
-                    build_extracted_stiffness_diagonal_k0)
-                selected = _invert_diagonal(
-                    build_extracted_stiffness_diagonal_k0(seq, dirichlet))
-            elif os.environ.get("MRX_LAPLACIAN_DIAG_PROBE", "0") == "1":
-                # A/B escape hatch: the exact but O(N)-applies probe that the
-                # closed form below replaced.
-                suffix = "_dbc" if dirichlet else ""
-                size = int(getattr(seq, f"n{k}{suffix}"))
-                diag = _diagonal_from_matvec(
-                    lambda x: apply_hodge_laplacian_approx(
-                        seq, operators, x, k, dirichlet=dirichlet),
-                    size,
-                )
-                selected = _invert_diagonal(diag)
-            else:
-                # k>=1 also carries the weak term D B D^T. Both halves are
-                # closed form in the raw DOF space and only the O(n_polar n_z)
-                # coupled rows need an apply -- see
-                # ``build_extracted_laplacian_diagonal``.
-                from mrx.preconditioners import (  # noqa: PLC0415
-                    build_extracted_laplacian_diagonal)
-                selected = _invert_diagonal(
-                    build_extracted_laplacian_diagonal(
-                        seq, operators, k, dirichlet=dirichlet))
+            #
+            # The closed forms are host-side numpy over the (concrete) basis
+            # tables and geometry, and the first call can sit inside a traced
+            # loop body (the inverse iteration of ``find_nullspace_vectors``
+            # solves the shifted k=0 Laplacian with this diagonal). Under a
+            # trace every jnp op is staged, so the ``np.asarray`` in the
+            # builder would see a tracer; ``ensure_compile_time_eval`` runs
+            # the build eagerly on the concrete inputs instead.
+            with jax.ensure_compile_time_eval():
+                selected = _build_laplacian_diaginv(seq, operators, k, dirichlet)
         else:
-            raise ValueError(f"Laplacian preconditioner k={k} is not assembled")
+            raise ValueError("k must be 0, 1, 2 or 3")
     return selected
 
+
+def _build_laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
+    """Closed-form inverse diagonal of the extracted Laplacian ``E L_k E^T``."""
+    if k == 0:
+        # L_0 = S_0 (no lower term), and diag(E S_0 E^T) is the energy
+        # of the extracted basis functions -- closed form, O(N), no
+        # applies at all. Verified against this probe to <1e-15.
+        from mrx.local_assembly import (  # noqa: PLC0415
+            build_extracted_stiffness_diagonal_k0)
+        return _invert_diagonal(
+            build_extracted_stiffness_diagonal_k0(seq, dirichlet))
+    if os.environ.get("MRX_LAPLACIAN_DIAG_PROBE", "0") == "1":
+        # A/B escape hatch: the exact but O(N)-applies probe that the
+        # closed form below replaced.
+        suffix = "_dbc" if dirichlet else ""
+        size = int(getattr(seq, f"n{k}{suffix}"))
+        diag = _diagonal_from_matvec(
+            lambda x: apply_hodge_laplacian_approx(
+                seq, operators, x, k, dirichlet=dirichlet),
+            size,
+        )
+        return _invert_diagonal(diag)
+    # k>=1 also carries the weak term D B D^T. Both halves are
+    # closed form in the raw DOF space and only the O(n_polar n_z)
+    # coupled rows need an apply -- see
+    # ``build_extracted_laplacian_diagonal``.
+    from mrx.preconditioners import (  # noqa: PLC0415
+        build_extracted_laplacian_diagonal)
+    return _invert_diagonal(
+        build_extracted_laplacian_diagonal(
+            seq, operators, k, dirichlet=dirichlet))
 
 def update_derivative_operator(seq, geometry, operators: Optional[SequenceOperators], k: int):
     """Ensure the k-th incidence ``G_k`` is present (``D_k = M_{k+1} G_k`` is applied lazily)."""
@@ -2079,7 +2091,10 @@ def _build_schur_apply_from_saddle_preconditioner(
     # The weak term B_{k-1} standing in for M_{k-1}^{-1}. Builds on demand, so
     # this cannot fail for want of a prior assemble_*.
     pre = _mass_metric_lumping_for(seq, operators, k - 1, dirichlet)
-    schur_inner = (lambda x, pre=pre: pre.apply(x))
+
+    def schur_inner(x, pre=pre):
+        return pre.apply(x)
+
     return _build_schur_operator_apply(
         seq,
         operators,
@@ -2694,7 +2709,9 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
             # reuse it to avoid repeated probe builds.
             allow_stored_tensor_diaginv=True,
         )
-        precond_upper = lambda x, d=schur_diaginv: d * x
+
+        def precond_upper(x, d=schur_diaginv):
+            return d * x
     else:
         schur_apply = _build_schur_apply_from_saddle_preconditioner(
             seq,
@@ -2728,8 +2745,10 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
         precond_with_coarse = _wrap_shifted_harmonic_coarse_correction(
             seq, operators, precond_upper, eps, k, dirichlet)
         precond_no_coarse = precond_upper
-        precond_upper = lambda x, r=coarse_ready, a=precond_with_coarse, b=precond_no_coarse: (
-            jax.lax.cond(r, a, b, x))
+
+        def precond_upper(x, r=coarse_ready, a=precond_with_coarse,
+                          b=precond_no_coarse):
+            return jax.lax.cond(r, a, b, x)
 
     precond_matvec = (
         _build_coupled_saddle_preconditioner(

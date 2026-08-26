@@ -199,3 +199,4 @@ cython_debug/
 # LaTeX paper sources are tracked; ignore only build artifacts.
 papers/
 slurm/site.env
+.jax_cache

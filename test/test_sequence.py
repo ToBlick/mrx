@@ -1,10 +1,8 @@
-"""Tests on the shared session-scoped DeRham sequence.
+"""Interpolation identities, the local evaluator, and the Hodge Laplacian
+solve on the session ``tiny_seq``.
 
-These all reuse the ``torus_seq`` fixture so the expensive assembly runs
-exactly once. Each test builds a dense view of whatever operator it needs by
-probing the sparse matvec with unit vectors. At the session's (n, p) this is
-cheap (a few hundred columns at most) and lets us verify global spectral
-properties with ``scipy.linalg.eigh``.
+Each test either builds its own small identity-map sequence or reuses the
+session fixture; nothing here depends on resolution.
 """
 
 
@@ -13,11 +11,21 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
+import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 
 ALL_K = (0, 1, 2, 3)
 ALL_DBC = (False, True)
+
+# Greville interpolation and histopolation recover the coefficients of a
+# function already in the space up to the roundoff of the collocation solves:
+# 1e4 eps = 2.2e-12 f64 / 1.2e-3 f32 (the histopolation of a 1-form goes
+# through a solve per histopolated axis, the polar extraction adds its
+# pseudo-inverse). The local evaluator against the dense sum is a pure
+# roundoff identity: 1e3 eps.
+RECOVER = mrx.eps(1e4)
+IDENT = mrx.eps(1e3)
 
 
 def _dof(seq, k, dirichlet):
@@ -31,18 +39,17 @@ def test_zeroform_greville_interpolation_recovers_discrete_function():
         6,
         ("clamped", "periodic", "periodic"),
         polar=False,
-        tol=1e-12,
         maxiter=200,
         betti_numbers=(1, 1, 0, 0),
     )
     coeffs = jnp.linspace(-0.75, 0.5, seq.n0)
     discrete = DiscreteFunction(coeffs, seq.basis_0, seq.e0)
     recovered = seq.interpolate(discrete, 0)
-    npt.assert_allclose(recovered, coeffs, atol=1e-12)
+    npt.assert_allclose(recovered, coeffs, atol=RECOVER)
 
 
 @pytest.fixture(scope="module", params=[False, True], ids=["tensor", "polar"])
-def tiny_seq(request):
+def evaluator_seq(request):
     """(4,4,4) sequence with a clamped and a periodic axis at both parities of p."""
     seq = DeRhamSequence(
         (4, 4, 4),
@@ -51,7 +58,6 @@ def tiny_seq(request):
         ("clamped", "periodic", "clamped") if not request.param
         else ("clamped", "periodic", "periodic"),
         polar=request.param,
-        tol=1e-12,
         maxiter=200,
         betti_numbers=(1, 1, 0, 0),
     )
@@ -61,9 +67,9 @@ def tiny_seq(request):
 
 @pytest.mark.parametrize("k", ALL_K)
 @pytest.mark.parametrize("dirichlet", ALL_DBC, ids=["free", "dbc"])
-def test_discrete_function_matches_dense_evaluation(tiny_seq, k, dirichlet):
+def test_discrete_function_matches_dense_evaluation(evaluator_seq, k, dirichlet):
     """The local-support evaluator equals ``dof @ (E @ Λ(x))`` over ALL basis functions."""
-    seq = tiny_seq
+    seq = evaluator_seq
     basis = getattr(seq, f"basis_{k}")
     e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
     dof = jax.random.normal(jax.random.PRNGKey(7 * k + dirichlet), (int(_dof(seq, k, dirichlet)),))
@@ -77,7 +83,7 @@ def test_discrete_function_matches_dense_evaluation(tiny_seq, k, dirichlet):
     want = jax.vmap(dense)(xs)
     assert got.shape == want.shape
     err = float(jnp.linalg.norm(got - want) / jnp.linalg.norm(want))
-    assert err < 1e-12, f"k={k} dirichlet={dirichlet}: local evaluator off by {err:.2e}"
+    assert err < IDENT, f"k={k} dirichlet={dirichlet}: local evaluator off by {err:.2e}"
 
 
 def test_polar_zeroform_greville_interpolation_recovers_discrete_function():
@@ -87,7 +93,6 @@ def test_polar_zeroform_greville_interpolation_recovers_discrete_function():
         6,
         ("clamped", "periodic", "periodic"),
         polar=True,
-        tol=1e-12,
         maxiter=200,
         betti_numbers=(1, 1, 0, 0),
     )
@@ -95,7 +100,7 @@ def test_polar_zeroform_greville_interpolation_recovers_discrete_function():
     coeffs = jnp.linspace(-0.6, 0.7, seq.n0)
     discrete = DiscreteFunction(coeffs, seq.basis_0, seq.e0)
     recovered = seq.interpolate(discrete, 0)
-    npt.assert_allclose(recovered, coeffs, atol=1e-12)
+    npt.assert_allclose(recovered, coeffs, atol=RECOVER)
 
 
 @pytest.fixture(scope="module")
@@ -106,7 +111,6 @@ def identity_clamped_seq():
         6,
         ("clamped", "clamped", "clamped"),
         polar=False,
-        tol=1e-12,
         maxiter=200,
         betti_numbers=(1, 1, 0, 0),
     )
@@ -119,7 +123,7 @@ def test_twoform_histopolation_recovers_discrete_function(identity_clamped_seq):
     coeffs = jnp.linspace(-0.5, 0.75, seq.n2)
     discrete = DiscreteFunction(coeffs, seq.basis_2, seq.e2)
     recovered = seq.interpolate(discrete, 2)
-    npt.assert_allclose(recovered, coeffs, atol=1e-11)
+    npt.assert_allclose(recovered, coeffs, atol=RECOVER)
 
 
 def test_oneform_histopolation_recovers_discrete_function(identity_clamped_seq):
@@ -127,7 +131,7 @@ def test_oneform_histopolation_recovers_discrete_function(identity_clamped_seq):
     coeffs = jnp.linspace(-0.4, 0.6, seq.n1)
     discrete = DiscreteFunction(coeffs, seq.basis_1, seq.e1)
     recovered = seq.interpolate(discrete, 1)
-    npt.assert_allclose(recovered, coeffs, atol=1e-11)
+    npt.assert_allclose(recovered, coeffs, atol=RECOVER)
 
 
 def test_threeform_histopolation_recovers_discrete_function(identity_clamped_seq):
@@ -135,7 +139,7 @@ def test_threeform_histopolation_recovers_discrete_function(identity_clamped_seq
     coeffs = jnp.linspace(-0.3, 0.4, seq.n3)
     discrete = DiscreteFunction(coeffs, seq.basis_3, seq.e3)
     recovered = seq.interpolate(discrete, 3)
-    npt.assert_allclose(recovered, coeffs, atol=1e-11)
+    npt.assert_allclose(recovered, coeffs, atol=RECOVER)
 
 
 def test_polar_oneform_histopolation_recovers_discrete_function():
@@ -145,7 +149,6 @@ def test_polar_oneform_histopolation_recovers_discrete_function():
         6,
         ("clamped", "periodic", "periodic"),
         polar=True,
-        tol=1e-12,
         maxiter=200,
         betti_numbers=(1, 1, 0, 0),
     )
@@ -153,7 +156,7 @@ def test_polar_oneform_histopolation_recovers_discrete_function():
     coeffs = jnp.linspace(-0.35, 0.55, seq.n1)
     discrete = DiscreteFunction(coeffs, seq.basis_1, seq.e1)
     recovered = seq.interpolate(discrete, 1)
-    npt.assert_allclose(recovered, coeffs, atol=1e-11)
+    npt.assert_allclose(recovered, coeffs, atol=RECOVER)
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +164,13 @@ def test_polar_oneform_histopolation_recovers_discrete_function():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("k,dirichlet", [(0, False), (1, False), (1, True), (2, True)])
-def test_harmonic_forms_closed(torus_seq, k, dirichlet):
-    """For a harmonic k-form v, d v = 0 in the dual sense."""
-    seq = torus_seq
+def test_harmonic_forms_closed(tiny_seq, k, dirichlet):
+    """For a harmonic k-form v, d v = 0 in the dual sense.
+
+    The harmonic forms come out of an iterative solve at ``seq.tol``; closedness
+    is checked to a hundred times that (1.5e-6 f64 / 3.5e-2 f32).
+    """
+    seq = tiny_seq
     vs = getattr(seq, f"null_{k}_dbc" if dirichlet else f"null_{k}")
     if vs.shape[0] == 0:
         pytest.skip("no harmonic forms for this (k, dirichlet)")
@@ -172,7 +179,7 @@ def test_harmonic_forms_closed(torus_seq, k, dirichlet):
             v, k, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         # normalise by the mass of v to get a scale-invariant tolerance.
         v_mass = float(seq.l2_norm(v, k, dirichlet=dirichlet))
-        assert jnp.linalg.norm(dv) < 1e-6 * max(v_mass, 1.0), (
+        assert jnp.linalg.norm(dv) < 100 * seq.tol * max(v_mass, 1.0), (
             f"harmonic k={k} dbc={dirichlet} is not closed: ||dv|| = {jnp.linalg.norm(dv)}")
 
 
@@ -181,9 +188,14 @@ def test_harmonic_forms_closed(torus_seq, k, dirichlet):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("k,dirichlet", [(0, True), (3, True)])
-def test_hodge_laplacian_solve_roundtrip(torus_seq, k, dirichlet):
-    """L_k u = L_k u_0  =>  apply_inverse returns u_0 (up to kernel)."""
-    seq = torus_seq
+def test_hodge_laplacian_solve_roundtrip(tiny_seq, k, dirichlet):
+    """L_k u = L_k u_0  =>  apply_inverse returns u_0 (up to kernel).
+
+    The solve stops at ``seq.tol``; the round-trip error is bounded by a
+    thousand times that (1.5e-5 f64 / 0.35 f32), the condition number of the
+    Laplacian on this fixture.
+    """
+    seq = tiny_seq
     n = _dof(seq, k, dirichlet)
     key = jax.random.PRNGKey(100 + k)
     u = jax.random.normal(key, (n,))
@@ -206,7 +218,7 @@ def test_hodge_laplacian_solve_roundtrip(torus_seq, k, dirichlet):
     diff = float(seq.l2_norm(
         deflate(u) - deflate(u_hat), k, dirichlet=dirichlet))
     u_mass = float(seq.l2_norm(deflate(u), k, dirichlet=dirichlet))
-    assert diff < 1e-5 * max(u_mass, 1.0), (
+    assert diff < 1e3 * seq.tol * max(u_mass, 1.0), (
         f"L_{k} solve round-trip residual {diff} too large (|u|_M = {u_mass})")
 
 
@@ -221,9 +233,9 @@ def test_hodge_laplacian_solve_roundtrip(torus_seq, k, dirichlet):
     ],
 )
 def test_diffusion_solver_default_preconditioners_converge(
-        torus_seq, k, preconditioner):
-    """Diffusion solve accepts Jacobi and tensor out of the box."""
-    seq = torus_seq
+        tiny_seq, k, preconditioner):
+    """Diffusion solve accepts Jacobi out of the box."""
+    seq = tiny_seq
     dirichlet = False
     eps = 1e-2
     n = _dof(seq, k, dirichlet)

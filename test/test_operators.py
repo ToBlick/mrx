@@ -36,7 +36,7 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-
+import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.local_assembly import build_matrixfree_mass_apply
 from mrx.mappings import rotating_ellipse_map
@@ -76,6 +76,19 @@ _DENSE = {k: dense_from_apply(_APPLIES[k], _N_DOF[k]) for k in (0, 1, 2, 3)}
 _RNG = np.random.default_rng(42)
 _N_PROBES = 6
 
+# Roundoff identities relative to the size of the quantity: 1e3 eps
+# (2.2e-13 f64 / 1.2e-4 f32).
+IDENT = mrx.eps(1e3)
+# The numerical-zero band of a dense Laplacian, relative to lambda_max:
+# 50 eps (1.1e-14 f64 / 6e-6 f32). Measured on the dense Laplacians below
+# in float32 (2026-08-26): the harmonic eigenvalues come out at most
+# 0.27 eps lambda_max (k=3 dbc, through the dense M_2^-1), the first
+# non-harmonic eigenvalue at least 1.7e-4 lambda_max (k=1 free), so a band
+# of 50 eps sits a decade inside the gap on both sides in either precision.
+# The dense M^-1 leaves an asymmetry of order kappa(M) eps ~ sqrt(eps).
+BAND = mrx.eps(50)
+ASYM = mrx.sqrt_eps()
+
 
 def _random_vecs(k: int, count: int = _N_PROBES) -> list[np.ndarray]:
     return list(_RNG.standard_normal((count, _N_DOF[k])))
@@ -96,7 +109,7 @@ def test_mass_symmetry_probe(k):
         lhs = float(v @ Mu)
         rhs = float(u @ Mv)
         scale = max(np.linalg.norm(v) * np.linalg.norm(Mu), 1.0)
-        assert abs(lhs - rhs) < 1e-12 * scale, (
+        assert abs(lhs - rhs) < IDENT * scale, (
             f"k={k}: symmetry failed  v^T M u={lhs}  u^T M v={rhs}"
         )
 
@@ -108,17 +121,20 @@ def test_mass_positive_definite_probe(k):
     for v in _random_vecs(k):
         Mv = np.asarray(apply(jnp.asarray(v)))
         qf = float(v @ Mv)
-        assert qf > 1e-12, f"k={k}: x^T M x = {qf} is not positive"
+        assert qf > IDENT * np.linalg.norm(v) * np.linalg.norm(Mv), (
+            f"k={k}: x^T M x = {qf} is not positive")
 
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
 def test_mass_dense_is_spd(k):
     """Densified M_k is symmetric and has all positive eigenvalues."""
     M = _DENSE[k]
-    npt.assert_allclose(M, M.T, atol=1e-12, err_msg=f"k={k}: dense M not symmetric")
+    npt.assert_allclose(M, M.T, atol=IDENT * np.abs(M).max(),
+                        err_msg=f"k={k}: dense M not symmetric")
     eigvals = np.linalg.eigvalsh(M)
-    assert eigvals.min() > 1e-12, (
-        f"k={k}: dense M not SPD, lambda_min={eigvals.min()}"
+    # positive beyond the eigensolver's own resolution, 10 eps lambda_max
+    assert eigvals.min() > mrx.eps(10) * eigvals.max(), (
+        f"k={k}: dense M not SPD, lambda_min={eigvals.min()}, lambda_max={eigvals.max()}"
     )
 
 # ---------------------------------------------------------------------------
@@ -160,7 +176,7 @@ def test_curl_of_grad_is_zero(dirichlet):
             dirichlet_in=dirichlet, dirichlet_out=dirichlet,
         )
         norm = float(jnp.linalg.norm(curl_grad_f))
-        assert norm < 1e-12, (
+        assert norm < IDENT * float(jnp.linalg.norm(grad_f)), (
             f"dirichlet={dirichlet}: curl(grad f) != 0, ||curl grad f|| = {norm:.3e}"
         )
 
@@ -180,7 +196,7 @@ def test_div_of_curl_is_zero(dirichlet):
             dirichlet_in=dirichlet, dirichlet_out=dirichlet,
         )
         norm = float(jnp.linalg.norm(div_curl_F))
-        assert norm < 1e-12, (
+        assert norm < IDENT * float(jnp.linalg.norm(curl_F)), (
             f"dirichlet={dirichlet}: div(curl F) != 0, ||div curl F|| = {norm:.3e}"
         )
 
@@ -211,7 +227,9 @@ def test_polar_complex_is_exact(k, name, dirichlet):
                                     dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         rel = float(jnp.linalg.norm(gg)) / max(float(jnp.linalg.norm(g)), 1e-300)
         worst = max(worst, rel)
-    assert worst < 1e-10, (
+    # The polar strong derivative carries the Gram inverse of the axis
+    # extraction, hence 1e4 eps rather than 1e3 (2.2e-12 f64 / 1.2e-3 f32).
+    assert worst < 10 * IDENT, (
         f"polar dirichlet={dirichlet}: {name} != 0, rel={worst:.3e}"
     )
 
@@ -249,7 +267,7 @@ def test_re_mass_symmetry_probe(k):
         lhs = float(v @ Mu)
         rhs = float(u @ Mv)
         scale = max(np.linalg.norm(v) * np.linalg.norm(Mu), 1.0)
-        assert abs(lhs - rhs) < 1e-12 * scale, (
+        assert abs(lhs - rhs) < IDENT * scale, (
             f"k={k}: symmetry failed  v^T M u={lhs}  u^T M v={rhs}"
         )
 
@@ -261,17 +279,19 @@ def test_re_mass_positive_definite_probe(k):
     for v in _re_random_vecs(k):
         Mv = np.asarray(apply(jnp.asarray(v)))
         qf = float(v @ Mv)
-        assert qf > 1e-12, f"k={k}: x^T M x = {qf} is not positive"
+        assert qf > IDENT * np.linalg.norm(v) * np.linalg.norm(Mv), (
+            f"k={k}: x^T M x = {qf} is not positive")
 
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
 def test_re_mass_dense_is_spd(k):
     """Densified M_k (rotating ellipse) is symmetric and SPD."""
     M = _RE_DENSE[k]
-    npt.assert_allclose(M, M.T, atol=1e-12, err_msg=f"k={k}: dense M not symmetric")
+    npt.assert_allclose(M, M.T, atol=IDENT * np.abs(M).max(),
+                        err_msg=f"k={k}: dense M not symmetric")
     eigvals = np.linalg.eigvalsh(M)
-    assert eigvals.min() > 1e-12, (
-        f"k={k}: dense M not SPD, lambda_min={eigvals.min()}"
+    assert eigvals.min() > mrx.eps(10) * eigvals.max(), (
+        f"k={k}: dense M not SPD, lambda_min={eigvals.min()}, lambda_max={eigvals.max()}"
     )
 
 
@@ -335,21 +355,21 @@ _LAP_PARAMS = [(k, dbc) for k in (0, 1, 2, 3) for dbc in (False, True)]
 
 @pytest.mark.parametrize("k,dirichlet", _LAP_PARAMS)
 def test_laplacian_symmetry(k, dirichlet):
-    """L_k is symmetric."""
+    """L_k is symmetric, to the accuracy of the dense M_{k-1}^-1 it carries."""
     L = _DENSE_LAP[(k, dirichlet)]
     npt.assert_allclose(
-        L, L.T, atol=1e-10,
+        L, L.T, atol=ASYM * np.abs(L).max(),
         err_msg=f"k={k} dirichlet={dirichlet}: Laplacian not symmetric",
     )
 
 
 @pytest.mark.parametrize("k,dirichlet", _LAP_PARAMS)
 def test_laplacian_psd(k, dirichlet):
-    """L_k is positive semi-definite."""
+    """L_k is positive semi-definite: no eigenvalue below the numerical zero."""
     L = _DENSE_LAP[(k, dirichlet)]
     eigvals = np.linalg.eigvalsh(L)
-    lam_max = max(float(abs(eigvals).max()), 1.0)
-    assert eigvals.min() >= -1e-10 * lam_max, (
+    lam_max = float(abs(eigvals).max())
+    assert eigvals.min() >= -BAND * lam_max, (
         f"k={k} dirichlet={dirichlet}: not PSD, "
         f"lambda_min={eigvals.min():.3e}, lambda_max={eigvals.max():.3e}"
     )
@@ -357,14 +377,34 @@ def test_laplacian_psd(k, dirichlet):
 
 @pytest.mark.parametrize("k,dirichlet", [(k, dbc) for k in (0, 1, 2, 3) for dbc in (False, True)])
 def test_laplacian_null_space_dim(k, dirichlet):
-    """Null space of L_k has dimension β_k (free BCs) or β_{d-k} (DBC)."""
+    """Null space of L_k has dimension β_k (free BCs) or β_{d-k} (DBC).
+
+    The count is the number of eigenvalues below ``BAND * lambda_max``. A
+    count is only meaningful if the spectrum has a GAP where the band cuts,
+    so the last eigenvalue counted must sit a decade inside the band and the
+    first one not counted a decade outside it; otherwise the band is cutting
+    through a cluster and the Betti number read off it is an artefact of the
+    threshold. The gap of 100 is what the measured spectra support in
+    float32 (harmonic eigenvalues <= 0.27 eps lambda_max, first non-harmonic
+    >= 1.7e-4 lambda_max = 1.4e3 eps); in float64 the same bound leaves
+    nine orders of margin on the far side.
+    """
     L = _DENSE_LAP[(k, dirichlet)]
     eigvals = np.linalg.eigvalsh(L)
-    lam_max = max(float(abs(eigvals).max()), 1.0)
-    null_dim = int(np.sum(eigvals < 1e-8 * lam_max))
+    lam_max = float(abs(eigvals).max())
+    band = BAND * lam_max
+    null_dim = int(np.sum(eigvals < band))
     expected = _BETTI_DBC[k] if dirichlet else _BETTI_FREE[k]
+    detail = (f"smallest eigenvalues: {eigvals[:expected + 3]}, "
+              f"lambda_max={lam_max:.3e}, band={band:.3e}")
     assert null_dim == expected, (
         f"k={k} dirichlet={dirichlet}: expected null dim {expected}, got {null_dim}; "
-        f"smallest eigenvalues: {eigvals[:expected + 3]}"
-    )
+        + detail)
+    assert float(eigvals[expected]) > 10 * band, (
+        f"k={k} dirichlet={dirichlet}: no spectral gap above the band -- "
+        f"lambda_{expected} = {float(eigvals[expected]):.3e}; " + detail)
+    if expected:
+        assert abs(float(eigvals[expected - 1])) < band / 10, (
+            f"k={k} dirichlet={dirichlet}: no spectral gap below the band -- "
+            f"lambda_{expected - 1} = {float(eigvals[expected - 1]):.3e}; " + detail)
 
