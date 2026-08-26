@@ -68,5 +68,21 @@ Measured on 2026-08-26, toroid and W7-X, `(8,16,8)`, `p=3`:
   Use `--eta-every K` (`K` of 10 to 100 at `eta ~ 1e-4`) so each solve applies
   a representable increment.
 
+Measured on the same Clebsch relaxation after 111 steps, both states evaluated
+in float64 (mass norms, force, helicity):
+
+| quantity | float32 vs float64 |
+|---|---|
+| `||B32 - B64||_M / ||B64||_M` | 1.1e-5 at the initial condition, 5.4e-4 at step 111 |
+| `|E32 - E64| / E` | 5.6e-7 |
+| force norms | 2.06e-3 vs 2.46e-3; the force *vectors* differ by 126 % |
+| helicity | absolute difference 3e-7 (relative 1.6e-3: H itself is 1.8e-4) |
+| `||div B|| / ||B||` | 7e-5 vs 6e-12 (each at its own solve tolerance) |
+
+The float32 run follows the same descent to the same energy, but its residual
+force is not resolved below the solve-tolerance floor (~2e-3 here). Going
+further in float32 needs a float64 state with float32 operators, not a
+tolerance.
+
 Every test tolerance is expressed through `eps()` or the solver tolerance; the
 `ci` and `gpu` tiers pass in both precisions.
