@@ -101,15 +101,18 @@ linesearch (`dt ~ 1.7`, `eps ~ 0.17`) and `eta = 1` hit `maxiter = 10000` on
 longer monotone (`+3e-7`) and `div B` reaches `6e-6`. The working range of
 the current preconditioner is `eta <= 1e-2` (the production range is
 `<= 1e-2`, mostly `1e-4`); the `--cfl 0.5` default keeps `dt` near `0.02`
-and so keeps `eps` in range for `eta <= 1e-1` too. *Fix (follow-up task):* a
-SHIFTED metric-lumping atom. The fast-diagonalisation atom's mass (Kronecker
-product of 1-D masses) and stiffness (Kronecker sum) share the generalised
-eigenbasis, so `(M + eps L)^-1` on the atom is the same eigenvectors with
-eigenvalues `1 + eps lambda_i`: a one-line change in the atom's spectral
-inverse plus a shift argument through `apply_inverse_mass_plus_eps_laplace_matrix`.
-The same shifted atom would unpin the harmonic-form polish solve (3.2). The
-shifted-Jacobi kind exists but its lazy Laplacian-diagonal builder converts
-to numpy at trace time, so it cannot be used inside the jitted step as is.
+and so keeps `eps` in range for `eta <= 1e-1` too. *Fix (follow-up task, no
+implementation yet):* a dedicated separable `(M + eps L)` atom. NOT a spectral
+shift of either existing atom: the metric-lumping MASS atom lumps the metric
+while the LAPLACIAN atom averages it differently, so their Kronecker
+structures do not share a generalised eigenbasis and a shift of either is
+wrong. The atom has to be built from ONE consistent 1-D factorisation (the
+same metric treatment for both terms) and fast-diagonalised as a whole for
+each `eps` -- or for a small set of `eps` values, since
+`eps = eta * (accumulated dt)` changes every step under the line search.
+The shifted-Jacobi kind exists but its lazy Laplacian-diagonal builder
+converts to numpy at trace time, so it cannot be used inside the jitted step
+as is.
 *Detail:* `docs/relaxation.md` §2; the resistive handoff report.
 
 ## 4. Where the folding time goes
