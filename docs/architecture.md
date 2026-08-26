@@ -177,13 +177,18 @@ constructor argument. Extra arguments: `polar_order` (0, 1, or 2; see
 ### Dynamic: `SequenceGeometry`
 
 `SequenceGeometry` in `mrx/geometry.py` is an `eqx.Module` with the map and
-two arrays on the quadrature grid: `DF_jkl` of shape `(N_q, 3, 3)` and
-`jacobian_j` of shape `(N_q,)`. The metric `metric_jkl = DF^T DF` and its
-inverse `metric_inv_jkl` are properties contracted on demand; the mass
-applies form their weights from `DF` and `J` inside the kernel. Build
-it with `SequenceGeometry.from_map(F, seq.quad.x)` (autodiff of `F` under
-`jax.lax.map`) or `SequenceGeometry.from_spline_map(spline_map, seq)` (sum
-factorisation of the spline coefficients). `seq.set_map(F)` and
+three arrays on the quadrature grid: the metric `metric_jkl = DF^T DF` of
+shape `(N_q, 3, 3)`, its inverse `metric_inv_jkl` `(N_q, 3, 3)` and
+`jacobian_j = det DF` `(N_q,)`. They are built once from `DF` by the
+constructors and never recomputed; `DF` itself is not kept, because its only
+consumers are the physical-frame pullbacks at load time (`load(frame='phys')`,
+`io.load_grid_field(frame='phys')`), which recompute it with
+`map_jacobian_at(seq.map, seq.quad.x)`. Everything on the hot path -- the mass
+weights `J`, `J G^-1`, `G/J`, `1/J`, the force step's `cross_product_load`,
+the lumped preconditioner builds -- reads the stored arrays. Build the
+geometry with `SequenceGeometry.from_map(F, seq.quad.x)` (autodiff of `F`
+under `jax.lax.map`) or `SequenceGeometry.from_spline_map(spline_map, seq)`
+(sum factorisation of the spline coefficients). `seq.set_map(F)` and
 `seq.set_spline_map(coefficients)` install it as `seq.geometry` and drop any
 Laplacian preconditioner built for the previous geometry.
 

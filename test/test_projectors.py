@@ -448,3 +448,79 @@ def test_pi_full_is_idempotent(tensor_seq, k):
         f"k={k}: Pi_full is not idempotent (rel {err:.3e}) on the FULL tensor "
         f"space, with no extraction involved. No restriction can repair this."
     )
+
+
+# ---------------------------------------------------------------------------
+# Physical-frame loads.
+#
+# ``load(frame='phys')`` and ``io.load_grid_field(frame='phys')`` are the only
+# consumers of the raw map Jacobian, which the geometry does not store; both
+# recompute ``DF`` at the quadrature points on demand.  These tests pin the two
+# entry points against the reference-frame path, which never touches ``DF``:
+# the dual pullbacks are ``DF^-1 v`` at k=1 and ``DF^T v`` at k=2, so loading
+# the pulled-back field with ``frame='ref'`` must give the same dual vector.
+# ---------------------------------------------------------------------------
+
+def _v_phys(xi):
+    """Smooth physical vector field; no axis condition is needed (quadrature
+    never samples r=0 and the pullbacks are evaluated at quadrature only)."""
+    return jnp.array([
+        0.3 + xi[0] ** 2 * jnp.cos(2 * jnp.pi * xi[1]),
+        xi[0] * jnp.sin(2 * jnp.pi * xi[2]),
+        0.5 - xi[0] ** 3,
+    ])
+
+
+def _pulled_back(seq, k):
+    """``f_ref(xi)`` such that ``load(f_ref, k, 'ref') == load(_v_phys, k, 'phys')``."""
+    from mrx.differential_forms import inv33
+
+    DF = jax.jacfwd(seq.map)
+    if k == 1:
+        return lambda xi: inv33(DF(xi)) @ _v_phys(xi)
+    return lambda xi: DF(xi).T @ _v_phys(xi)
+
+
+@pytest.mark.parametrize("k", [1, 2])
+def test_load_phys_frame_matches_ref_frame_of_pulled_back_field(proj_seq, k):
+    dual_phys = proj_seq.load(_v_phys, k, frame='phys')
+    dual_ref = proj_seq.load(_pulled_back(proj_seq, k), k, frame='ref')
+    err = float(jnp.linalg.norm(dual_phys - dual_ref) / jnp.linalg.norm(dual_ref))
+    print(f"\n  k={k} load phys-vs-ref relative difference: {err:.3e}")
+    assert err < 1e-12, (
+        f"k={k}: load(frame='phys') disagrees with load(frame='ref') of the "
+        f"pulled-back field (rel {err:.3e}); the on-demand DF pullback is wrong."
+    )
+
+
+@pytest.mark.parametrize("k", [1, 2])
+def test_load_grid_field_phys_frame_matches_pointwise_load(proj_seq, k):
+    """Grid-sampled physical data must load like the analytic field.
+
+    The sampled field is a cubic in r and constant in the angles, which the
+    degree-3 interpolatory fit reproduces exactly, so the only thing left to
+    differ is the pullback -- done by ``load_grid_field`` from ``DF`` at the
+    quadrature points, exactly as ``load`` does it.
+    """
+    from mrx.differential_forms import DifferentialForm
+    from mrx.io import load_grid_field
+
+    def v(xi):
+        return jnp.array([0.3 + xi[0] ** 2, 0.1 * xi[0], 0.5 - xi[0] ** 3])
+
+    n = (8, 6, 6)
+    fit = DifferentialForm(0, n, (3, 3, 3), proj_seq.basis_0.types)
+    axes = (fit.Λ[0].greville_points(),
+            jnp.linspace(0.0, 1.0, n[1], endpoint=False),
+            jnp.linspace(0.0, 1.0, n[2], endpoint=False))
+    grid = jnp.stack(jnp.meshgrid(*axes, indexing='ij'), axis=-1)   # (n1,n2,n3,3)
+    values = jax.vmap(v)(grid.reshape(-1, 3)).reshape(*n, 3)
+
+    dual_grid = load_grid_field(axes, values, proj_seq, k, frame='phys')
+    dual_load = proj_seq.load(v, k, frame='phys')
+    err = float(jnp.linalg.norm(dual_grid - dual_load) / jnp.linalg.norm(dual_load))
+    print(f"\n  k={k} load_grid_field phys vs load phys relative difference: {err:.3e}")
+    assert err < 1e-10, (
+        f"k={k}: load_grid_field(frame='phys') disagrees with load(frame='phys') "
+        f"on a field the fit reproduces exactly (rel {err:.3e})."
+    )

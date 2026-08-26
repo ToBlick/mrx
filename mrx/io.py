@@ -169,8 +169,10 @@ def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',
     2. evaluate it at ``seq``'s quadrature grid via :func:`_tp_evaluate` — three
        1D contractions, ``O(N_q (n1+n2+n3))`` instead of ``O(N_q·n1·n2·n3)``;
     3. apply the k-form frame pullback and quadrature weight (mirrors
-       :func:`mrx.projectors.load`; ``frame='phys'`` uses the stored
-       ``seq.DF_jkl``, so no ``jax.jacfwd``);
+       :func:`mrx.projectors.load`; ``frame='phys'`` recomputes ``DF`` at the
+       quadrature points with :func:`mrx.geometry.map_jacobian_at` -- this
+       and ``load`` are the only consumers of ``DF``, which the geometry does
+       not store);
     4. integrate against the k-form basis and extract.
 
     Returns the **dual load vector** (same as ``seq.load``); pass it to
@@ -189,7 +191,7 @@ def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',
     degree : int  spline degree of the interpolatory fit.
     """
     from mrx.differential_forms import DifferentialForm
-    from mrx.geometry import _tp_evaluate
+    from mrx.geometry import _tp_evaluate, map_jacobian_at
     from mrx.projectors import _solve_tensor_collocation_axis
     from mrx.quadrature import integrate_against
 
@@ -227,12 +229,14 @@ def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',
         w_jk = f_q * (w * seq.jacobian_j)[:, None]
     elif k == 1:
         if frame == 'phys':                             # DF^-1 f = G^-1 DF^T f
-            DFt = jnp.einsum('qji,qj->qi', seq.DF_jkl, f_q)
+            DF_q = map_jacobian_at(seq.map, seq.quad.x)
+            DFt = jnp.einsum('qji,qj->qi', DF_q, f_q)
             f_q = jnp.einsum('qij,qj->qi', seq.metric_inv_jkl, DFt)
         w_jk = f_q * (w * seq.jacobian_j)[:, None]
     elif k == 2:
         if frame == 'phys':                             # DF^T f
-            f_q = jnp.einsum('qji,qj->qi', seq.DF_jkl, f_q)
+            DF_q = map_jacobian_at(seq.map, seq.quad.x)
+            f_q = jnp.einsum('qji,qj->qi', DF_q, f_q)
         w_jk = f_q * w[:, None]
     else:  # k == 3
         w_jk = f_q * (w if frame == 'phys' else w / seq.jacobian_j)[:, None]
