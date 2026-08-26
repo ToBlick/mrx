@@ -2495,3 +2495,75 @@ That is a better-posed sweep than the one the shelf currently carries.
 
 Also truncated and worth flagging for anyone reading the M-series: M4_mu1e1
 stopped at 2000/3000 and S15_res12_g1 at 520/3000, both on wall-clock.
+
+## 41. Poincare on w7x-ini-conv: |dH| predicts the surfaces, force does NOT
+
+Every arm writes `poincare_ic.png` and `poincare_final_cg.png` into its own
+directory under `out/relax_prelim/<arm>/`.  Ranked on ABSOLUTE |dH| -- the
+metric a blind classification of the earlier campaign's Poincare pairs picked
+out as the one that tracks surface destruction -- and then inspected:
+
+```
+arm                |dH|       lost  h/2 drift  axis offset  surfaces
+C10b_r12_dt1e3     5.52e-08     1    5.1e-03     8.03e-04   nested, clean
+C8_mu1e4_dt3e3     6.70e-07     2    4.2e-03     1.29e-03   nested + small
+                                                            island chains near axis
+C2_dt3e3           7.65e-07     -          -            -   (not inspected)
+C12_dt3e3_long     1.84e-06     -          -            -   (not inspected)
+C9_r12_ls          6.98e-06     1    1.1e-01     2.98e-03   CHAOTIC core,
+                                                            5/6 + 5/5 edge islands
+C11_eta3           1.80e-02     -    2.7e-01     1.47e-02   islands throughout,
+                                                            iota REVERSED
+```
+
+Two things this settles.
+
+### 41.1 The predictor survives a change of geometry, and holds WITHIN a resolution
+
+The cleanest test in the table is C10b vs C9: same geometry, same 12^3 mesh,
+same 3000 steps, differing only in the stepper (fixed dt=1e-3 vs linesearch).
+They differ 126x in |dH|, and the surfaces differ accordingly -- C10b is
+cleanly nested with iota rising monotonically 0.855 -> 0.96 and crossing 10/11
+only near the edge, while C9's core is a broad stochastic band across
+logical r ~ 0.25-0.75 with a ragged, non-monotone iota profile.  That is a
+CONTROLLED comparison: nothing but the time-stepping differs, so the |dH|
+ordering is not standing in for resolution or budget.
+
+### 41.2 The lowest force in the campaign has the worst surfaces in it
+
+C11 (eta=1e-3) removed 21x more energy than any other arm and reached the
+lowest F_final in the campaign (4.50e-4).  Its surfaces are destroyed: islands
+at every scale, axis offset 18x C10b's, and an iota profile that does not merely
+degrade but REVERSES -- falling 1.25 -> 0 where every other arm rises.
+
+So on this geometry, ranking arms by final force would have selected the single
+worst physical result available.  This is the third and sharpest form of the
+||F|| warning: s38 said only the final value is a quantity, s39.2 said even
+that value is noisy and its noise depends on the stepper, and this says that
+even a clean, well-resolved, genuinely-lowest final force can correspond to a
+field that has thrown away its topology to get there.  Force measures distance
+to A stationary point, not to the RIGHT one; only helicity says which basin the
+descent stayed in.
+
+### 41.3 Do not rank on the drift number in the plot title
+
+C8's h/2 drift (4.2e-03) is LOWER than C10b's (5.1e-03), which would rank C8
+first on that column alone -- and it is wrong.  h-vs-h/2 drift measures the
+Lyapunov exponent on chaotic lines, so it is only a quality metric where the
+lines are regular.  Rank on |dH| and axis offset; read drift as a descriptor
+of a field already known to be good.
+
+### 41.4 Figures
+
+`scripts/debug/relax_plot_traces.py` now also writes, on both the step and the
+wall-clock axis:
+
+* `mu_sweep.png` -- the resolved s37 ladder at 8^3 (gamma=0, mu=1e-4/1e-3/
+  1e-2/1e-1, gamma=2 mu=1e-3).  The |dH| panel shows gamma=0 rising past step
+  2000 and crossing ABOVE mu=1e-4, which stays lowest throughout.
+* `mu_h_reversal.png` -- s40, the 8^3-vs-12^3 mu reversal.
+
+Kept as separate figures rather than merged into `gamma_sweep.png`: six arms on
+four panels is the readability limit at alpha=0.5.  Truncated arms carry their
+cut step in the legend (`cut 2000`, `cut 1760`, `cut 1200`) so an arm that
+stopped on wall-clock is never read as one that converged.
