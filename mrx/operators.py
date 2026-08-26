@@ -2175,8 +2175,8 @@ def assemble_metric_lumping_laplacian_preconditioner(
     eigenvalue as a scale; below that the solve goes non-finite and numpy
     raises ``LinAlgError: Array must not contain infs or NaNs`` from inside
     ``eigvals``. ``n - p`` is the number of radial elements, so ``n = 4`` at
-    ``p = 3`` is a ONE-element radial mesh. Measured on a toroid
-    (``scripts/debug/atom_coarse_grid.py``): at ``p = 3``, ``n = 4`` fails for
+    ``p = 3`` is a ONE-element radial mesh. Measured on a toroid: at
+    ``p = 3``, ``n = 4`` fails for
     k = 0, 1, 2 in both BCs and ``n = 5, 6, 8, 12`` all build; k = 3 builds even
     at ``n = 4``. The geometry is healthy throughout, so this is the 1-D
     factorisation, not the map.

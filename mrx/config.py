@@ -3,6 +3,12 @@
 Every configuration is a dataclass registered with Hydra's ConfigStore. This
 module imports no JAX, so importing it never creates an array.
 
+One entry point uses it: ``scripts/poisson_study.py`` composes
+``conf/config_poisson_test.yaml`` on top of the ``_poisson_test_schema`` node
+(:class:`PoissonTestConfig`). The yaml overrides a few dataclass defaults and
+configures the submitit launcher for multiruns; the dataclass is the typed
+schema.
+
 Every top-level config inherits :class:`NumericsConfig`, which carries the two
 numerics knobs shared by all entry points:
 
@@ -18,22 +24,15 @@ numerics knobs shared by all entry points:
 
 Usage from CLI::
 
-    python scripts/config_scripts/test_torus_poisson_k0_sparse.py p=3
-    python scripts/config_scripts/test_torus_poisson_k0_sparse.py p=3 precision=float32
-    python scripts/config_scripts/test_torus_poisson_k0_sparse.py -m p=2,3 n=8,16
-    python scripts/config_scripts/poincare_plots.py run_dir=out/relax_from_nfs/<stamp>
-
-Resolution group overrides:  ``resolution=low`` / ``medium`` / ``high``
+    python scripts/poisson_study.py p=3
+    python scripts/poisson_study.py p=3 precision=float32
+    python scripts/poisson_study.py -m p=2,3 n=8,16
 """
 
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from hydra.core.config_store import ConfigStore
-
-# ---------------------------------------------------------------------------
-#  Shared sub-configs
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -51,190 +50,8 @@ class NumericsConfig:
 
 
 @dataclass
-class FEMConfig:
-    ns_r: int = 8
-    ns_theta: int = 8
-    ns_zeta: int = 8
-    ps_r: int = 4
-    ps_theta: int = 4
-    ps_zeta: int = 4
-    quad_order: int = 4
-
-
-@dataclass
-class MapConfig:
-    ns_r: int = 8
-    ns_theta: int = 8
-    ns_zeta: int = 8
-    ps_r: int = 4
-    ps_theta: int = 4
-    ps_zeta: int = 4
-    quad_order: int = 4
-    flip_zeta: bool = False
-
-
-@dataclass
-class RelaxationConfig:
-    num_iters_inner: int = 100
-    num_iters_outer: int = 100
-    dt0: float = 1.0
-    force_tolerance: float = 1e-9
-    descent_method: str = "gradient"  # gradient | conjugate_gradient | newton | bfgs
-
-
-@dataclass
-class EtaConfig:
-    max: float = 0.0
-    schedule_type: str = "tanh"  # tanh | constant | linear
-
-
-@dataclass
-class NoiseConfig:
-    max: float = 0.0
-    schedule_type: str = "tanh"  # tanh | constant | linear
-    key: int = 42
-
-
-@dataclass
-class InterpolationConfig:
-    val_stride: int = 4
-    exclude_axis_tol: float = 1e-3
-
-
-@dataclass
-class OutputConfig:
-    dir: str = "out"
-    save_every: int = 1
-    save_final: bool = True
-    verbose: bool = True
-    print_every: int = 1
-
-
-@dataclass
-class GeometryConfig:
-    eps: float = 0.33
-    kappa: float = 1.1
-    nfp: int = 3
-
-
-@dataclass
-class InitialFieldConfig:
-    q_star: float = 1.54
-
-
-@dataclass
-class FieldlineConfig:
-    enabled: bool = True
-    every: int = 100
-    T: float = 2500.0
-    n_traj: int = 32
-    rtol: float = 1e-5
-    atol: float = 1e-5
-
-
-@dataclass
-class StellPlottingConfig:
-    zeta_values: list[float] = field(default_factory=lambda: [0.33])
-    interpolation_degree: int = 3
-    markersize: float = 0.1
-    cmap_iota: str = "berlin"
-    cmap_p: str = "plasma"
-    ks_thresh: int = 10
-    denom_max: int = 15
-    dpi: int = 150
-    Rlim: list[float] = field(default_factory=lambda: [0.6, 1.4])
-    zlim: list[float] = field(default_factory=lambda: [-0.4, 0.4])
-
-
-@dataclass
-class PoincareFieldlineConfig:
-    n_scan: int = 1
-    n_vmap: int = 32
-    T_factor: int = 300
-    axis_margin: float = 0.05
-
-
-@dataclass
-class PoincareClassificationConfig:
-    zeta_values: list[float] = field(default_factory=lambda: [0.33])
-    ks_thresh: int = 10
-
-
-@dataclass
-class PoincarePlottingConfig:
-    markersize: float = 0.005
-    dpi: int = 150
-    denom_max: int = 15
-    cmap_iota: str = "nipy_spectral"
-    cmap_p: str = "plasma"
-    plot_pressure: bool = True
-    Rlim: Optional[list[float]] = None   # None -> auto
-    zlim: Optional[list[float]] = None   # None -> auto
-
-
-@dataclass
-class PoincareOutputConfig:
-    subdir: str = "poincare_plots"
-    format: str = "pdf"
-    verbose: bool = True
-
-
-# ---------------------------------------------------------------------------
-#  Top-level configs
-# ---------------------------------------------------------------------------
-
-@dataclass
-class RelaxFromNFSConfig(NumericsConfig):
-    """Config for ``relax_from_nfs.py``.
-
-    By default the ``resolution: low`` preset is composed in (overrides
-    ``map.ns_*`` and ``fem.ns_*``).  Pass ``resolution=medium`` etc. on the
-    CLI to change.
-    """
-    defaults: list[Any] = field(default_factory=lambda: [
-        "_self_",
-        {"resolution": "low"},
-    ])
-
-    run_name: Optional[str] = None
-    nfs_file: str = "data/gvec_w7x.h5"
-    nfp: int = 5
-
-    map: MapConfig = field(default_factory=MapConfig)
-    fem: FEMConfig = field(default_factory=FEMConfig)
-    interpolation: InterpolationConfig = field(
-        default_factory=InterpolationConfig)
-    relaxation: RelaxationConfig = field(default_factory=RelaxationConfig)
-    eta: EtaConfig = field(default_factory=EtaConfig)
-    noise: NoiseConfig = field(default_factory=NoiseConfig)
-    output: OutputConfig = field(default_factory=lambda: OutputConfig(
-        dir="out/relax_from_nfs"))
-
-
-@dataclass
-class RelaxStellConfig(NumericsConfig):
-    """Config for ``relax_stell.py``."""
-    run_name: Optional[str] = None
-
-    geometry: GeometryConfig = field(default_factory=GeometryConfig)
-    initial_field: InitialFieldConfig = field(
-        default_factory=InitialFieldConfig)
-    fem: FEMConfig = field(default_factory=lambda: FEMConfig(
-        ns_r=6, ns_theta=10, ns_zeta=6,
-        ps_r=3, ps_theta=3, ps_zeta=3, quad_order=3))
-    relaxation: RelaxationConfig = field(default_factory=lambda: RelaxationConfig(
-        num_iters_inner=10, descent_method="conjugate_gradient",
-        force_tolerance=1e-6))
-    eta: EtaConfig = field(default_factory=lambda: EtaConfig(max=1e-6))
-    fieldline: FieldlineConfig = field(default_factory=FieldlineConfig)
-    plotting: StellPlottingConfig = field(default_factory=StellPlottingConfig)
-    output: OutputConfig = field(default_factory=lambda: OutputConfig(
-        dir="out/stell_relaxation", print_every=10))
-
-
-@dataclass
 class PoissonTestConfig(NumericsConfig):
-    """Application parameters for ``test_torus_poisson_sparse.py``."""
+    """Application parameters for ``scripts/poisson_study.py``."""
     n: Any = field(default_factory=lambda: [8, 12, 16, 24, 32, 48, 64])
     p: int = 3
     epsilon: float = 1 / 3
@@ -246,68 +63,8 @@ class PoissonTestConfig(NumericsConfig):
     load_frame: str = 'ref'           # 'ref' or 'phys' (see mrx.projectors.load)
 
 
-@dataclass
-class MCPoissonConfig(NumericsConfig):
-    """Schema of ``conf/config_mc_poisson.yaml``; its driver
-    ``scripts/dice/mc_poisson.py`` is not in the repository."""
-    n: int = 10
-    p: int = 3
-    N: list[int] = field(default_factory=lambda: [
-                         100, 500, 1000, 5000, 10_000])
-    outer_batch_size: Optional[int] = None
-    inner_batch_size: Optional[int] = 10_000
-    seed: int = 42
-    replicates: int = 1
-
-
-@dataclass
-class PoincarePlotsConfig(NumericsConfig):
-    """Config for ``poincare_plots.py``.
-
-    Tip: pass ``hydra.job.chdir=false hydra.run.dir=.`` on the CLI to
-    keep the working directory unchanged and avoid creating an output dir.
-    """
-    run_dir: Optional[str] = None
-
-    fieldline: PoincareFieldlineConfig = field(
-        default_factory=PoincareFieldlineConfig)
-    poincare: PoincareClassificationConfig = field(
-        default_factory=PoincareClassificationConfig)
-    plotting: PoincarePlottingConfig = field(
-        default_factory=PoincarePlottingConfig)
-    output: PoincareOutputConfig = field(default_factory=PoincareOutputConfig)
-
-
-# ---------------------------------------------------------------------------
-#  Resolution presets  (registered as group overrides at _global_ package)
-# ---------------------------------------------------------------------------
-
-_low_res = {"map": {"ns_r": 4, "ns_theta": 4, "ns_zeta": 4},
-            "fem": {"ns_r": 4, "ns_theta": 4, "ns_zeta": 4}}
-
-_medium_res = {"map": {"ns_r": 5, "ns_theta": 8, "ns_zeta": 8},
-               "fem": {"ns_r": 6, "ns_theta": 10, "ns_zeta": 8}}
-
-_high_res = {"map": {"ns_r": 6, "ns_theta": 12, "ns_zeta": 12},
-             "fem": {"ns_r": 8, "ns_theta": 16, "ns_zeta": 12}}
-
-
-# ---------------------------------------------------------------------------
-#  ConfigStore registration  (executed on import)
-# ---------------------------------------------------------------------------
-
 def _register() -> None:
-    cs = ConfigStore.instance()
-
-    # Main configs
-    cs.store(name="config_relax_from_nfs", node=RelaxFromNFSConfig)
-    cs.store(name="config_stell",         node=RelaxStellConfig)
-    cs.store(name="config_poincare",      node=PoincarePlotsConfig)
-    cs.store(name="_poisson_test_schema",  node=PoissonTestConfig)
-    cs.store(name="_mc_poisson_schema",     node=MCPoissonConfig)
-    # Resolution group (usage: ``resolution=low``)
-    for name, node in [("low", _low_res), ("medium", _medium_res), ("high", _high_res)]:
-        cs.store(group="resolution", name=name, node=node, package="_global_")
+    ConfigStore.instance().store(name="_poisson_test_schema", node=PoissonTestConfig)
 
 
 _register()

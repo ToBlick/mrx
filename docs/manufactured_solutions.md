@@ -2,7 +2,7 @@
 
 Reference notes so we stop re-deriving these. All verified by finite-difference
 Laplace–Beltrami against the real `toroid_map` metric (see commit history /
-`scripts/config_scripts/test_torus_poisson_all_k*.py`).
+`scripts/poisson_study.py`).
 
 ## Geometry: `toroid_map(epsilon=ε, R0=1, kappa=1)`
 
@@ -42,7 +42,7 @@ Verified: coefficients equal `J/g_ii` exactly, and `‖⋆α‖₂ = ‖α‖₁
 
 ---
 
-## Consolidated script — `test_torus_poisson_all_k_sparse.py`
+## The study script — `scripts/poisson_study.py`
 
 A single script sweeps the eight `(k, boundary-condition)` Laplace problems.
 Cases pair under Hodge duality `⋆: k ↔ (3-k)`, `NBC ↔ DBC`, into four generators:

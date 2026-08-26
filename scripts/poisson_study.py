@@ -71,19 +71,19 @@ Configuration:
 Usage:
     Single run, all listed n in one process::
 
-        python -u scripts/config_scripts/test_torus_poisson_all_k_sparse.py p=3
-        python -u scripts/config_scripts/test_torus_poisson_all_k_sparse.py p=2 n=16 precision=float32
+        python -u scripts/poisson_study.py p=3
+        python -u scripts/poisson_study.py p=2 n=16 precision=float32
 
     Single GPU job through ``slurm/run.sh``::
 
-        SCRIPT=scripts/config_scripts/test_torus_poisson_all_k_sparse.py ARGS="p=3 n=16" \
+        SCRIPT=scripts/poisson_study.py ARGS="p=3 n=16" \
             JOB_NAME=pois_all_k MEM_GB=80 TIMEOUT_MIN=120 bash slurm/run.sh
 
     Multirun, one submitit job per (p, n) pair. Needs ``SLURM_ACCOUNT``,
     ``SLURM_PARTITION`` and ``MRX_ROOT`` exported; the launcher allots one
     GPU, 80 GB and 120 min per job::
 
-        python scripts/config_scripts/test_torus_poisson_all_k_sparse.py -m p=2,3 n=8,16
+        python scripts/poisson_study.py -m p=2,3 n=8,16
 
 Runtime:
     Not measured. The multirun launcher allots one GPU, 80 GB and 120 min
@@ -680,7 +680,7 @@ def compute_all_k(n: int, p: int, epsilon: float,
 # ---------------------------------------------------------------------------
 # Hydra entry point
 # ---------------------------------------------------------------------------
-@hydra.main(config_path="../../conf", config_name="config_poisson_test", version_base=None)
+@hydra.main(config_path="../conf", config_name="config_poisson_test", version_base=None)
 def main(cfg: DictConfig):
     print(f"precision: {mrx.DTYPE}  solver_tol: {cfg.solver_tol}")
     if cfg.precision != str(mrx.DTYPE):

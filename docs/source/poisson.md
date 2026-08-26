@@ -244,27 +244,26 @@ components by default and pulls them back; pass `frame='ref'` to hand
 over reference components instead, in the convention of `load`'s
 docstring, which is not the primal coefficient vector for 2-forms.
 
-## The batch studies
+## The batch study
 
-`scripts/config_scripts/test_torus_poisson_*_sparse.py` are the
-convergence studies on the toroid: `k0`, `k1`, `k2`, `k3` (Dirichlet),
-`nbc_k0`, `nbc_k1` (free), `dbc_k2`, `dbc_k3`, and `all_k` for all eight
-cases in one process. They share `conf/config_poisson_test.yaml` with
-schema `mrx.config.PoissonTestConfig`. Override any key on the command
-line:
+`scripts/poisson_study.py` is the convergence study on the toroid: all
+eight `(k, boundary condition)` cases in one process, sharing one
+sequence and one assembly pass per resolution. Its config is
+`conf/config_poisson_test.yaml` with schema `mrx.config.PoissonTestConfig`.
+Override any key on the command line:
 
 ```bash
-python -u scripts/config_scripts/test_torus_poisson_k0_sparse.py p=3 n=[8,16]
-python -u scripts/config_scripts/test_torus_poisson_k0_sparse.py p=2 n=16 precision=float32
+python -u scripts/poisson_study.py p=3 n=[8,16]
+python -u scripts/poisson_study.py p=2 n=16 precision=float32
 ```
 
 Each run writes `outputs/<date>/<time>/result.json`, a list with one
-entry per `n`:
+entry per `n`, each a dict over the eight cases:
 
 | key | meaning |
 |---|---|
 | `error` | relative L2 error against the manufactured solution |
-| `cg_iters`, `cg_converged` | iteration count and convergence flag |
+| `iters`, `converged` | iteration count and convergence flag |
 | `final_rel_residual` | $\|L u - b\| / \|b\|$ after the solve |
 | `timings` | seconds per stage, compile and execute separately |
 

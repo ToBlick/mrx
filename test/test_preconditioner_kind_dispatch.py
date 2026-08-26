@@ -241,13 +241,9 @@ def test_no_script_asks_for_a_kind_nothing_accepts():
 
     A script that asks for a kind production cannot supply is broken whether or
     not anyone has run it lately.
-
-    scripts/deprecated/ is excluded by directory rather than by weakening the
-    check -- 24 further sites live there and are ignorable by construction.
     """
     root = OPERATORS.parents[1]
-    scripts = sorted(p for p in (root / "scripts").rglob("*.py")
-                     if "deprecated" not in p.parts)
+    scripts = sorted((root / "scripts").rglob("*.py"))
     offenders = []
     for path in scripts:
         try:

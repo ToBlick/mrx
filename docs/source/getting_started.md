@@ -2,7 +2,7 @@
 
 ## Install
 
-MRX needs Python 3.10 or newer. Clone the repository and install it in
+MRX needs Python 3.11 or newer. Clone the repository and install it in
 editable mode with the cluster extras:
 
 ```bash

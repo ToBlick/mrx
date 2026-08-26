@@ -569,7 +569,7 @@ class DeRhamSequence():
         # than three.
         #
         # HOW WELL FOUNDED IS RAISING HERE -- read this before widening the
-        # except. Measured 2026-08-25 (scripts/debug/warm_strictness_probe.py):
+        # except. Measured 2026-08-25:
         # all EIGHT (k, BC) pairs build on the toroid AND on W7-X at
         # ns=(8,16,8) p=3, so the swallow this replaces was catching nothing
         # where it had been exercised, and raising costs no working path.

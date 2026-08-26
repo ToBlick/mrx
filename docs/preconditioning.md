@@ -176,14 +176,13 @@ verdicts are in `docs/research/preconditioner_lessons.md`.
 
 ## 8. Measuring
 
-- `scripts/benchmark/precond_build_apply.py`: build time, apply time, a
-  full-precision checksum of one apply, and the iteration counts of every
-  mass solve, the k=0 Poisson solve and the k=1 Hodge solve through the
-  production `'auto'` dispatch. Flags `--ns`, `--p`, `--tol`, `--reps`,
-  `--ks`, `--hlo`.
-- `scripts/debug/verify_default_preconditioners.py`: all eight `(k, BC)`
-  unshifted solves with nullspaces, true residuals and kernel leakage.
-  Flags `--geometry {toroid,w7x}`, `--ns`, `--p`, `--nrhs`, `--tol`.
+- `scripts/poisson_study.py`: all eight `(k, BC)` Hodge-Laplacian solves on
+  the toroid through the production `'auto'` dispatch, with the nullspace
+  iteration counts, the true residuals and the solve iteration counts per
+  resolution. `n=[8] p=3` is the smoke run.
+- `test/test_poisson.py` and `test/test_preconditioners.py` pin the
+  iteration counts of the production preconditioners on the tiny and the
+  production-resolution fixtures (the latter in the `gpu` tier).
 
 Rank alternatives by total time, not iterations: every arm costs the same per
 iteration, so build cost decides. Iteration counts move by about 1% between

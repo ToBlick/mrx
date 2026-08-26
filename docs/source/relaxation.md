@@ -172,9 +172,15 @@ an integration time and nothing is interpolated. The building blocks are
 `seed_line` or `seed_from_axis` for the seeds, `trace` for the
 integration, and `rotational_transform` and `to_RZ` for the section.
 `step_convergence` justifies the fixed step count by refinement. The module
-docstring explains the three design choices. There is no production driver
-for it yet; `scripts/config_scripts/poincare_plots.py` reads the output of
-an older Hydra pipeline.
+docstring explains the three design choices. `scripts/poincare_relax.py`
+is the driver: it reads the `B.h5` a relaxation wrote, traces `B_ic` and
+`B_final`, and renders one section per requested plane:
+
+```bash
+python -u scripts/poincare_relax.py outputs/run/B.h5 --periods 400 --out outputs/run/poincare
+```
+
+Its module docstring lists the flags.
 
 ## float32
 

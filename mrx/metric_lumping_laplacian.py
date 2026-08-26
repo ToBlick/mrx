@@ -803,8 +803,7 @@ def probe_core_block(seq, operators, k, dirichlet, rows):
 # `jax.jit(m_apply)`, so every array reached jit as a CLOSURE CONSTANT. A new
 # preconditioner object was a new closure and therefore a new compilation, no
 # matter where the object was stored -- measured 2026-08-25 at ~287 ms of
-# recurring compile per payload change, about 4,100 applies' worth of work
-# (scripts/debug/precond_compile_count.py).
+# recurring compile per payload change, about 4,100 applies' worth of work.
 #
 # As a pytree the arrays are LEAVES passed as arguments. Two payloads with the
 # same shapes share a treedef, so changing the NUMBERS reuses the compiled

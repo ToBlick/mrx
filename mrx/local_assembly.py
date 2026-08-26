@@ -572,8 +572,7 @@ def build_extracted_stiffness_diagonal_k0(seq, dirichlet: bool):
       depend on the zeta index, so the cost is
       ``O(n_polar * n_q^{r,theta} * n_q^z)``.
 
-    Verified against the probe to 3.3e-16 on the polar rows (see
-    ``scripts/debug/polar_row_energy.py``).
+    Verified against the probe to 3.3e-16 on the polar rows.
     """
     from mrx.geometry import grad_1d  # noqa: PLC0415
 

@@ -40,7 +40,7 @@ condition contains a product of splines of degree `2p`, which the degree-`p`
 angular space cannot hold; MRX samples the quadratic term at the Greville
 angles instead. Measured on the toroid Poisson problem with poloidal modes
 `m = 0, 1, 2` at `p = 3`, the C² errors equal the C¹ errors to every printed
-digit at 10-16% fewer degrees of freedom (`scripts/debug/poisson_k0_c2_convergence.py`).
+digit at 10-16% fewer degrees of freedom.
 Only the k=0 pipeline supports order 2; the k >= 1 extractions and the
 derivative stencils below encode C¹. `polar_order=0` builds the C⁰ space.
 

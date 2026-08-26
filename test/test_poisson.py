@@ -16,7 +16,7 @@
    idempotent and does not increase the energy.
 
 The manufactured solutions are a compact copy of the k=0 generators in
-``scripts/config_scripts/test_torus_poisson_all_k_sparse.py``, which sets
+``scripts/poisson_study.py``, which sets
 ``MRX_DTYPE`` and imports hydra on import, so it is not imported here.
 """
 

@@ -30,7 +30,7 @@ jax.config.update("jax_enable_x64", _NAME == "float64")
 # terms -- the W7-X map's dR/dtheta on the innermost quadrature ring came
 # out 19% wrong and det DF went negative in float32, while the 1-D basis
 # values and the coefficients themselves were accurate to 1e-6 (measured
-# 2026-08-26, scripts/debug/f32_df_bisect.py). Nothing in MRX wants a
+# 2026-08-26 by bisecting the map evaluation). Nothing in MRX wants a
 # 10-bit product; float64 is unaffected by this setting.
 jax.config.update("jax_default_matmul_precision", "highest")
 

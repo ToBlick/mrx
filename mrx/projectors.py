@@ -164,7 +164,7 @@ def _greville_data(seq) -> tuple[_GrevilleAxis, _GrevilleAxis, _GrevilleAxis]:
 #: That is TRUE OF THE PAPER'S ``P_Z`` AND FALSE OF MRX'S EXTRACTION -- the
 #: claim was imported across an operator boundary it does not cross.  MRX's
 #: ``E`` is not ``P_Z``: measured, ``||E E^T - I||_max = 1.556`` at k=1 and
-#: ``0.352`` at k=2 (``scripts/debug/extraction_unitarity_probe.py``).  So
+#: ``0.352`` at k=2.  So
 #: ``e @ c_full`` alone is NOT a projector, and the k=0 round-trip duly came
 #: back at 5.29e-01.  Supplying ``(E E^T)^{-1}`` explicitly, as
 #: :func:`_conforming_restriction` does, is therefore the CORRECT CONSTRUCTION

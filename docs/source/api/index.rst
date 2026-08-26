@@ -6,7 +6,6 @@ One page per module of ``mrx``. ``mrx.experimental`` is not documented.
 .. toctree::
    :maxdepth: 1
 
-   circulation
    config
    derham_sequence
    differential_forms
@@ -15,7 +14,6 @@ One page per module of ``mrx``. ``mrx.experimental`` is not documented.
    geometry
    gvec
    initial_conditions
-   io_nfs_map
    io
    local_assembly
    mappings
