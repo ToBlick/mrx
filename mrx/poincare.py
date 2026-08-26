@@ -403,119 +403,51 @@ def to_RZ(seq, ys, zeta):
     return R, xyz[..., 2]
 
 
-def enclosed_area(R, Z, centre_R, centre_Z):
-    """Section area enclosed by each surface, by shoelace on the crossings.
+def midplane_crossings(R, Z, centre_R, centre_Z, max_gap=0.5):
+    """``R`` where each line crosses the midplane through the magnetic axis,
+    outboard and inboard: shape ``(n_lines, 2)``.
 
-    The surface label has to be map-independent for two runs to be comparable:
-    the seed radius ``r`` names a different surface as soon as the map changes,
-    which is exactly what a resolution sweep or an interior perturbation does.
-    Area is a property of the physical curve, so it is the same label in every
-    run.
+    The profile panels are a SLICE of the section along ``Z = centre_Z``, so
+    their abscissa is the physical ``R`` of the crossing and every line
+    appears twice, once on each side of the axis. Sorted by ``R`` the profile
+    reads as one curve inboard -> axis -> outboard, and an island chain is hit
+    on whichever side has a lobe on the midplane.
 
-    Sorting the crossings by poloidal angle about the axis and running the
-    shoelace formula converges to the true area from below as the crossings
-    fill the curve.  It assumes the surface is star-shaped about the axis --
-    true for a flux surface, false for an island chain, where the crossings are
-    disjoint lobes and the number is meaningless.  The angle-fit residual from
-    :func:`rotational_transform` is what flags those.
-    """
-    ang = jnp.arctan2(Z - centre_Z, R - centre_R)
-    order = jnp.argsort(ang, axis=-1)
-    Rs = jnp.take_along_axis(R, order, axis=-1)
-    Zs = jnp.take_along_axis(Z, order, axis=-1)
-    cross = Rs * jnp.roll(Zs, -1, axis=-1) - jnp.roll(Rs, -1, axis=-1) * Zs
-    return 0.5 * jnp.abs(jnp.sum(cross, axis=-1))
-
-
-def midplane_radius(R, Z, centre_R, centre_Z, max_gap=0.5):
-    """Distance from the magnetic axis to each surface on the OUTBOARD midplane.
-
-    The surface label to prefer. Nested curves cross any fixed ray from the axis
-    at strictly increasing distance, so this is monotone *by nesting* -- which
-    neither :func:`mean_axis_distance` nor :func:`effective_radius` is.
-
-    That is not a technicality. The mean averages over the CROSSING POINTS, and
-    their distribution in poloidal angle is set by the field-line dynamics, not
-    by the surface, so two properly nested surfaces can come out non-monotone
-    from sampling weight alone. Fixing the ray removes the weighting entirely.
-
-    It is a property of the physical curve, so it stays comparable across maps,
-    unlike the seed radius.
-
-    The ray is the outboard midplane THROUGH THE AXIS (``Z = centre_Z``), not
-    ``Z = 0``; they coincide when the axis is on the midplane, which is the
-    usual case here, and the axis-centred one keeps meaning when it is not.
-
-    A closed surface meets the midplane TWICE, outboard at ``alpha = 0`` and
-    inboard at ``alpha = +-pi``. Both argmins below minimise ``|alpha|``, so
-    they bracket ``alpha = 0`` and the inboard crossing, sitting at the far end
-    of the angle range, can never win -- ``arctan2``'s branch cut falling on the
-    inboard midplane is what makes the two unambiguous.
-
-    Outboard is a CONVENTION, not a robustness argument. The interpolation
-    wants ``r(alpha)`` single-valued near the ray, and it was tempting to argue
-    that the inboard side is the risky one because that is where a bean section
-    carries its indentation. Measured on w7x, w7x-ini and hegna, that is wrong:
-    the relative residual of a linear ``r(alpha)`` fit in a window either side
-    is ~3e-4 on BOTH, and the inboard side is slightly the better behaved.
-    Concave curvature is not the same as a ray crossing twice, and about the
-    magnetic axis these sections are star-shaped either way.
-
-    Returns NaN for an orbit whose crossings do not straddle the ray within an
-    angular gap of ``max_gap``: a closed curve sampled by hundreds of crossings
-    always does, an island chain (crossings on separate lobes, the ray between
-    two of them) does not and neither does a broken trace. The NaN is the
-    statement that this orbit is not a nested surface with a midplane radius.
+    Each crossing is interpolated between the two orbit points that bracket
+    the ray in poloidal angle about the axis (``alpha = 0`` outboard,
+    ``alpha = +-pi`` inboard; ``arctan2``'s branch cut lies on the inboard ray,
+    so that side is handled by reflecting ``dR``). The interpolation assumes
+    the two points are NEIGHBOURS on one curve. On an island chain they can
+    sit on two different lobes with the ray between them, and the chord
+    between the lobes crosses the ray anywhere (measured 0.3-0.5 m for a 5/5
+    chain on a 0.25 m plasma), so a bracketing gap wider than ``max_gap``
+    radians is NaN: this line has no crossing on that side, and the profiles
+    leave it out there. Measured on w7x, w7x-ini and hegna, the relative
+    residual of a linear ``r(alpha)`` fit either side of the ray is ~3e-4 on
+    both sides, far below the marker size.
     """
     dR, dZ = R - centre_R, Z - centre_Z
-    ang = jnp.arctan2(dZ, dR)
     rad = jnp.sqrt(dR ** 2 + dZ ** 2)
 
-    big = jnp.asarray(jnp.inf)
-    above = jnp.where(ang >= 0.0, ang, big)          # smallest angle above
-    below = jnp.where(ang < 0.0, -ang, big)          # smallest |angle| below
-    i = jnp.argmin(above, axis=-1)
-    j = jnp.argmin(below, axis=-1)
+    def crossing(ang):
+        big = jnp.asarray(jnp.inf)
+        above = jnp.where(ang >= 0.0, ang, big)          # smallest angle above
+        below = jnp.where(ang < 0.0, -ang, big)          # smallest |angle| below
+        i = jnp.argmin(above, axis=-1)
+        j = jnp.argmin(below, axis=-1)
+        take = jnp.take_along_axis
+        a_hi = take(ang, i[..., None], -1)[..., 0]
+        a_lo = take(ang, j[..., None], -1)[..., 0]
+        r_hi = take(rad, i[..., None], -1)[..., 0]
+        r_lo = take(rad, j[..., None], -1)[..., 0]
+        ok = (jnp.min(above, axis=-1) < jnp.inf) & (jnp.min(below, axis=-1) < jnp.inf)
+        ok &= (a_hi - a_lo) <= max_gap
+        t = (0.0 - a_lo) / (a_hi - a_lo)
+        return jnp.where(ok, r_lo + t * (r_hi - r_lo), jnp.nan)
 
-    take = jnp.take_along_axis
-    a_hi = take(ang, i[..., None], -1)[..., 0]
-    a_lo = take(ang, j[..., None], -1)[..., 0]
-    r_hi = take(rad, i[..., None], -1)[..., 0]
-    r_lo = take(rad, j[..., None], -1)[..., 0]
-
-    straddles = (jnp.min(above, axis=-1) < jnp.inf) & (jnp.min(below, axis=-1) < jnp.inf)
-    # The interpolation assumes the two bracketing crossings are NEIGHBOURS on
-    # one curve. On an island chain they are on two different lobes with the
-    # ray passing between them, and the chord between the lobes crosses the
-    # ray anywhere -- measured 0.3-0.5 m for a 5/5 chain on a 0.25 m plasma.
-    # A gap wider than max_gap is not a curve crossing the ray.
-    straddles &= (a_hi - a_lo) <= max_gap
-    t = (0.0 - a_lo) / (a_hi - a_lo)
-    return jnp.where(straddles, r_lo + t * (r_hi - r_lo), jnp.nan)
-
-
-def mean_axis_distance(R, Z, centre_R, centre_Z):
-    """Mean distance from the magnetic axis over a surface's crossings.
-
-    The surface label of choice. Like :func:`effective_radius` it is a property
-    of the physical curve, so two runs on different maps are comparable -- the
-    seed radius is not, it names a different surface as soon as the map changes.
-    Unlike the area it needs NO ordering of the crossings and makes no
-    star-shape assumption, so it degrades gracefully: on an island chain or a
-    broken trace it is still the mean radius of whatever was traced, where the
-    shoelace area silently stops being monotone and the profile curve doubles
-    back on itself.
-
-    Equals the radius exactly on a circle, and lies between the semi-axes on an
-    ellipse.
-    """
-    return jnp.mean(jnp.sqrt((R - centre_R) ** 2 + (Z - centre_Z) ** 2),
-                    axis=-1)
-
-
-def effective_radius(R, Z, centre_R, centre_Z):
-    """``sqrt(area/pi)`` -- the enclosed area as a length."""
-    return jnp.sqrt(enclosed_area(R, Z, centre_R, centre_Z) / jnp.pi)
+    r_out = crossing(jnp.arctan2(dZ, dR))
+    r_in = crossing(jnp.arctan2(dZ, -dR))
+    return jnp.stack([centre_R + r_out, centre_R - r_in], axis=-1)
 
 
 def resonant_rationals(iota_min, iota_max, nfp, denom_max=30, min_sep=0.06):
@@ -750,8 +682,22 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         lx.set_title("logical chart", fontsize=10)
 
     x = seed_r if profile_x is None else profile_x
-    # Seeds from several rays interleave in the surface label, so the profile
-    # is sorted by it: in seed order the line would zigzag between rays.
+    # The abscissa may carry several crossings per line (both midplane
+    # crossings, see midplane_crossings): per-line quantities are tiled to
+    # match, and a NaN crossing drops that entry -- an island chain whose
+    # lobes the ray passes between is in the section but has no honest place
+    # in the profile on that side. Sorted by abscissa, the curve runs
+    # inboard -> axis -> outboard as a slice of the section panel.
+    X = jnp.asarray(x)
+    X = X[:, None] if X.ndim == 1 else X
+    xs = X.ravel()
+
+    def per_line(a):
+        return jnp.broadcast_to(jnp.asarray(a)[:, None], X.shape).ravel()
+
+    prof = per_line(shown) & jnp.isfinite(xs)
+    order = jnp.argsort(xs[prof])
+    xo, io, ro = xs[prof][order], per_line(iota)[prof][order], per_line(resid)[prof][order]
     # The error bar is the angle-fit residual -- how far the unwrapped angle
     # departs from a straight line in poloidal turns. The standard error of
     # the fitted iota is that residual times one constant for the whole trace
@@ -760,13 +706,6 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     # chosen to make the largest span a tenth of the range: only their
     # relative size is the information -- a flux surface's bar is a point, an
     # island's is its width, a chaotic line's is large.
-    # A line with no surface label -- an island chain whose lobes the
-    # midplane ray passes between -- is in the section but not in the
-    # profiles: there is no honest abscissa for it.
-    prof = shown & jnp.isfinite(jnp.asarray(x))
-    order = jnp.argsort(jnp.asarray(x)[prof]) if prof.any() else jnp.arange(0)
-    xo, io, ro = (jnp.asarray(x)[prof][order], iota[prof][order],
-                  jnp.asarray(resid)[prof][order])
     scale = 0.1 * (hi - lo) / float(jnp.max(ro)) if ro.size and float(jnp.max(ro)) > 0 else 1.0
     bx.errorbar(xo, io, yerr=scale * ro, fmt="o-", ms=3, lw=0.8, capsize=2,
                 elinewidth=0.8, label=f"angle-fit residual x {scale:.3g}")
@@ -790,9 +729,8 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         # over its crossings, with the spread as a band: a flux surface has a
         # constant p and no band, an island chain or a chaotic line does not,
         # and the band width is how far that line is from B . grad p = 0.
-        xs = jnp.asarray(x)
-        p_mean = jnp.mean(pressure_scale * pressure, axis=1)
-        p_std = jnp.std(pressure_scale * pressure, axis=1)
+        p_mean = per_line(jnp.mean(pressure_scale * pressure, axis=1))
+        p_std = per_line(jnp.std(pressure_scale * pressure, axis=1))
         if prof.any():
             order = jnp.argsort(xs[prof])
             xo, mo, so = xs[prof][order], p_mean[prof][order], p_std[prof][order]
@@ -979,49 +917,13 @@ def section_RZ(seq, ys, axis_uv, saves_per_period, plane):
 
 
 #: Choices for :func:`surface_label`, best first.
-SURFACE_LABELS = ("midplane", "mean", "area", "seed")
-
-
-def surface_label(kind, R, Z, axis_R, axis_Z, seed_r):
-    """The x-axis of the iota profile: one physical size per surface.
-
-    Returns ``(values, xlabel)``.  ``seed`` is the fallback that needs no
-    geometry, and is the only one of the four that is not physical.
-    ``midplane`` is the one to plot: it is NaN for a line that never crosses
-    the outboard midplane ray (an island chain whose lobes the ray passes
-    between), and :func:`render_section` leaves such lines out of the
-    profiles. ``mean`` would place every line, but it averages over the
-    poloidal extent and hides what the profile is for -- on an elongated
-    section it puts an island at the tips three plasma radii out, and the
-    flattening of p across a chain disappears into the scatter.
+def surface_label(R, Z, axis_R, axis_Z):
+    """The abscissa of the profile panels and its axis label: ``R`` on the
+    midplane through the magnetic axis, both crossings per line
+    (:func:`midplane_crossings`). A property of the physical curve, so two
+    runs on different maps are comparable -- a logical seed radius names a
+    different surface as soon as the map changes.
     """
     aR, aZ = float(np.mean(axis_R)), float(np.mean(axis_Z))
-    Rj, Zj = jnp.asarray(R), jnp.asarray(Z)
-    if kind == "midplane":
-        # Monotone BY NESTING: nested curves cross a fixed ray from the axis at
-        # strictly increasing distance, and fixing the ray also removes the
-        # crossing-point sampling weight that makes the mean non-monotone.
-        # NaN on an island chain: its crossings sit on lobes the ray passes
-        # between, and it has no midplane radius. Use ``mean`` for a figure
-        # that has to place every line.
-        return (np.asarray(midplane_radius(Rj, Zj, aR, aZ)),
-                "outboard midplane distance to axis  [m]")
-    if kind == "mean":
-        # Physical and comparable across maps, no ordering needed, but averages
-        # over crossings whose angular distribution is set by the dynamics
-        # rather than by the surface.
-        return (np.asarray(mean_axis_distance(Rj, Zj, aR, aZ)),
-                "mean distance to magnetic axis  [m]")
-    if kind == "area":
-        # Physical too, but the shoelace needs the crossings sorted by angle and
-        # assumes star-shapedness about the axis.
-        return (np.asarray(effective_radius(Rj, Zj, aR, aZ)),
-                r"$\sqrt{A/\pi}$  [m]")
-    if kind == "seed":
-        # Monotone BY CONSTRUCTION, so the curve can never double back -- at the
-        # cost of being a logical label, which names a different surface as soon
-        # as the map changes. Fine for reading one plot, useless for comparing
-        # two resolutions.
-        return np.asarray(seed_r), "seed radius $r$  (logical)"
-    raise ValueError(f"surface_label: kind must be one of {SURFACE_LABELS}, "
-                     f"got {kind!r}")
+    return (np.asarray(midplane_crossings(jnp.asarray(R), jnp.asarray(Z), aR, aZ)),
+            r"$R$ on the midplane through the axis  [m]")
