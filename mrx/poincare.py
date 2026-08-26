@@ -532,9 +532,9 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     and the labels say so.
 
     Every kept line is drawn and fitted, chaotic ones included: the iota
-    profile carries the angle-fit residual as an error bar (see the comment
+    profile carries the angle-fit residual as a ribbon (see the comment
     at the plot), so a line without a rotational transform shows as a point
-    with a large bar rather than as a separate category.
+    with a wide ribbon rather than as a separate category.
 
     ``split_iota_p`` colours the section by iota ABOVE the magnetic axis and by
     p BELOW it, in one panel; the default is on whenever ``pressure`` is given.
@@ -698,17 +698,15 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     prof = per_line(shown) & jnp.isfinite(xs)
     order = jnp.argsort(xs[prof])
     xo, io, ro = xs[prof][order], per_line(iota)[prof][order], per_line(resid)[prof][order]
-    # The error bar is the angle-fit residual -- how far the unwrapped angle
-    # departs from a straight line in poloidal turns. The standard error of
-    # the fitted iota is that residual times one constant for the whole trace
-    # (nfp / sqrt(sum (zeta - mean zeta)^2), ~1e-5 for 400 periods), which is
-    # invisible on the iota range, so the bars are drawn at one common scale
-    # chosen to make the largest span a tenth of the range: only their
-    # relative size is the information -- a flux surface's bar is a point, an
-    # island's is its width, a chaotic line's is large.
-    scale = 0.1 * (hi - lo) / float(jnp.max(ro)) if ro.size and float(jnp.max(ro)) > 0 else 1.0
-    bx.errorbar(xo, io, yerr=scale * ro, fmt="o-", ms=3, lw=0.8, capsize=2,
-                elinewidth=0.8, label=f"angle-fit residual x {scale:.3g}")
+    # The ribbon is iota +- the angle-fit residual as it is: the RMS departure
+    # of the unwrapped angle from a straight line, in poloidal turns, on the
+    # iota axis. Its absolute size is not a standard error (that would carry
+    # a 1/sqrt(sum (zeta - mean zeta)^2) factor); its relative size is the
+    # information -- a flux surface's ribbon is a hairline, an island's is
+    # its width, a chaotic line's is wide.
+    bx.fill_between(xo, io - ro, io + ro, color="tab:blue", alpha=0.2, lw=0,
+                    label=r"$\iota \pm$ angle-fit residual")
+    bx.plot(xo, io, "o-", ms=3, lw=0.8, color="tab:blue")
     bx.legend(loc="upper left", fontsize=7)
     for value, lab in zip(res_ticks, res_labels):
         bx.axhline(value, color="0.55", lw=0.6, ls="--", zorder=0)
