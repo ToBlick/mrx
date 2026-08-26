@@ -42,7 +42,7 @@ def _step(ts):
 
 def test_resistive_step(tiny_seq, B0):
     seq = tiny_seq
-    ts = TimeStepper(seq=seq, cfl=float("inf"))
+    ts = TimeStepper(seq=seq, cfl=float("inf"), resistive=True)
     step = _step(ts)
     state0 = initial_state(B0, ts, dt=1.0)
     E0 = _energy(seq, B0)
@@ -80,7 +80,7 @@ def test_resistive_step(tiny_seq, B0):
     assert div_res <= 100 * mrx.sqrt_eps() * float(res.resistive_delta) * scale
 
     # eta_every = 2: the first step is not due; it accumulates dt and skips.
-    every2 = TimeStepper(seq=seq, cfl=float("inf"), eta_every=2)
+    every2 = TimeStepper(seq=seq, cfl=float("inf"), eta_every=2, resistive=True)
     s2 = _step(every2)(eqx.tree_at(lambda s: s.eta, state0, eta))
     assert int(s2.resistive_info) == 0 and int(s2.resistive_count) == 1
     assert float(s2.resistive_time) == float(s2.dt)
