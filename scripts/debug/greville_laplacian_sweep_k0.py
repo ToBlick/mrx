@@ -26,7 +26,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))
@@ -86,7 +85,9 @@ def build_greville_laplacian_apply(seq, bulk_shape, d_mode, eps_shift):
     scale = jnp.median(D[valid]) if D[valid].size > 0 else jnp.asarray(1.0)
     n_bad = int((~valid).sum())
     D = jnp.where(valid, D, scale)
-    c_r = float(jnp.mean(a_rr / D)); c_t = float(jnp.mean(a_tt / D)); c_z = float(jnp.mean(a_zz / D))
+    c_r = float(jnp.mean(a_rr / D))
+    c_t = float(jnp.mean(a_tt / D))
+    c_z = float(jnp.mean(a_zz / D))
     alpha = (c_r, c_t, c_z)
     inv_sqrt_D = 1.0 / jnp.sqrt(D)
 
@@ -105,18 +106,24 @@ def pcg(A_apply, Minv_apply, n, tol=1e-10, maxiter=3000, project=None, seed=0):
     if project is not None:
         b = project(b)
     b /= np.linalg.norm(b)
-    x = np.zeros(n); r = b.copy()
+    x = np.zeros(n)
+    r = b.copy()
     z = np.asarray(jax.device_get(Minv_apply(jnp.asarray(r))))
-    p = z.copy(); rz = r @ z; last = 1.0
+    p = z.copy()
+    rz = r @ z
+    last = 1.0
     for it in range(1, maxiter + 1):
         Ap = np.asarray(jax.device_get(A_apply(jnp.asarray(p))))
         alpha = rz / (p @ Ap)
-        x += alpha * p; r -= alpha * Ap
+        x += alpha * p
+        r -= alpha * Ap
         last = np.linalg.norm(r)
         if last < tol:
             return it, last
         z = np.asarray(jax.device_get(Minv_apply(jnp.asarray(r))))
-        rz_new = r @ z; p = z + (rz_new / rz) * p; rz = rz_new
+        rz_new = r @ z
+        p = z + (rz_new / rz) * p
+        rz = rz_new
     return maxiter, last
 
 
@@ -168,7 +175,8 @@ def main():
     project = None
     if not args.dirichlet:
         ones = np.ones(nb) / np.sqrt(nb)
-        project = lambda v, u=ones: v - u * (u @ v)
+        def project(v, u=ones):
+            return v - u * (u @ v)
 
     it, res = 0, np.nan
     t0 = time.perf_counter()

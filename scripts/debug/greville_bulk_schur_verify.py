@@ -6,10 +6,12 @@ Both must compose with the greville per-component sandwich. Solves M_k x = b
 through the production apply_inverse_mass_matrix(preconditioner='tensor').
 """
 from __future__ import annotations
-import argparse, os, sys
+import argparse
+import os
+import sys
 from types import SimpleNamespace
-import jax, jax.numpy as jnp
-jax.config.update("jax_enable_x64", True)
+import jax
+import jax.numpy as jnp
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))
@@ -76,7 +78,8 @@ def main():
     for k in (1, 2):
         for dirichlet in (True, False):
             bc = "dbc" if dirichlet else "free"
-            o = res.get((False, k, dirichlet)); n = res.get((True, k, dirichlet))
+            o = res.get((False, k, dirichlet))
+            n = res.get((True, k, dirichlet))
             oi = f"{o[0]}" if o and o[0] is not None else f"ERR({o[2] if o else '-'})"
             ni = f"{n[0]}" if n and n[0] is not None else f"ERR({n[2] if n else '-'})"
             print(f"{k:>2} {bc:5} {oi:>7} {str(o[1]) if o else '-':>6} {ni:>7} {str(n[1]) if n else '-':>6}", flush=True)

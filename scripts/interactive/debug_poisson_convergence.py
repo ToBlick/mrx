@@ -52,7 +52,6 @@ from mrx.operators import assemble_tensor_mass_preconditioner
 from mrx.solvers import solve_singular_cg
 from mrx.quadrature import evaluate_at_xq
 
-jax.config.update("jax_enable_x64", True)
 
 # For local CPU debugging, unbatched outer loops have been faster and more
 # stable than forcing a positive outer batch size.
@@ -392,7 +391,7 @@ def _proj_floor(p_loc: int, n_loc: int, q_loc: int | None = None) -> float:
 p_list = (1, 2, 3, 4)
 n_list = (8, 12, 16)
 
-print(f"[G] L2 projection floor ||u - Π_L2 u|| / ||u|| (q = 2p+4)")
+print("[G] L2 projection floor ||u - Π_L2 u|| / ||u|| (q = 2p+4)")
 header = "    " + "p\\n".ljust(6) + "".join(f"{n:>12d}" for n in n_list)
 print(header)
 results: dict[int, list[float]] = {}
@@ -538,7 +537,7 @@ for n_loc in N_LIST_H:
 P_LIST_I = (3, 4)
 N_LIST_I = (6, 8, 10, 12, 14, 16)
 
-print(f"[I] compact local solve convergence sweep (q = 2p+4)")
+print("[I] compact local solve convergence sweep (q = 2p+4)")
 header = "    " + "p\\n".ljust(6) + "".join(f"{n:>12d}" for n in N_LIST_I)
 print(header)
 
@@ -975,7 +974,6 @@ print(
 # %% Cell O: self-contained non-DBC projection sweep ------------------------
 
 
-jax.config.update("jax_enable_x64", True)
 mrx.MAP_BATCH_SIZE_OUTER = None
 
 π = jnp.pi
@@ -983,33 +981,17 @@ EPSILON = 1 / 3
 TYPES = ("clamped", "periodic", "periodic")
 
 
-def _require_valid_resolution(p_loc: int, n_loc: int) -> None:
-    if n_loc <= p_loc:
-        raise ValueError(f"Need n > p; got n={n_loc}, p={p_loc}")
-
-
-def v_non_dbc(x: jnp.ndarray) -> jnp.ndarray:
+def v_non_dbc_o(x: jnp.ndarray) -> jnp.ndarray:
     r, _chi, z = x
     return (0.5 + r**2 + r**4) * jnp.cos(2 * π * z) * jnp.ones(1)
 
 
-def exact_v_non_dbc_at_quad(seq: DeRhamSequence) -> jnp.ndarray:
+def exact_v_non_dbc_o_at_quad(seq: DeRhamSequence) -> jnp.ndarray:
     vr = 0.5 + seq.quad.x_x**2 + seq.quad.x_x**4
     vz = jnp.cos(2 * π * seq.quad.x_z)
     values = jnp.ones((seq.quad.ny, 1, 1)) * \
         vr[None, :, None] * vz[None, None, :]
     return values.reshape(-1, 1)
-
-
-def l2_relative_error(
-    seq: DeRhamSequence, u_h_quad: jnp.ndarray, u_exact_quad: jnp.ndarray
-) -> float:
-    df = u_exact_quad - u_h_quad
-    num = jnp.einsum("ik,ik,i,i->", df, df, seq.jacobian_j, seq.quad.w)
-    den = jnp.einsum(
-        "ik,ik,i,i->", u_exact_quad, u_exact_quad, seq.jacobian_j, seq.quad.w
-    )
-    return float((num / den) ** 0.5)
 
 
 def _non_dbc_projection_probe(
@@ -1029,7 +1011,7 @@ def _non_dbc_projection_probe(
     seq_n.evaluate_1d()
     seq_n.assemble_mass_matrix(0)
 
-    v_load = seq_n.p0(v_non_dbc)
+    v_load = seq_n.p0(v_non_dbc_o)
     v_proj = seq_n.apply_inverse_mass_matrix(v_load, 0, dirichlet=False)
 
     mass_resid = float(
@@ -1042,7 +1024,7 @@ def _non_dbc_projection_probe(
     quad_shape_n = (seq_n.quad.ny, seq_n.quad.nx, seq_n.quad.nz)
     v_proj_quad = evaluate_at_xq(
         seq_n.e0_T @ v_proj, ci_n, cs_n, quad_shape_n, 1)[:, 0]
-    v_exact_quad = exact_v_non_dbc_at_quad(seq_n)[:, 0]
+    v_exact_quad = exact_v_non_dbc_o_at_quad(seq_n)[:, 0]
     rel_l2_err = l2_relative_error(
         seq_n, v_proj_quad[:, None], v_exact_quad[:, None])
 
@@ -1103,7 +1085,6 @@ for p_loc, row in results_o.items():
 # %% Cell P: self-contained DBC projection sweep for manufactured u ---------
 
 
-jax.config.update("jax_enable_x64", True)
 mrx.MAP_BATCH_SIZE_OUTER = None
 
 π = jnp.pi
@@ -1111,33 +1092,9 @@ EPSILON = 1 / 3
 TYPES = ("clamped", "periodic", "periodic")
 
 
-def _require_valid_resolution(p_loc: int, n_loc: int) -> None:
-    if n_loc <= p_loc:
-        raise ValueError(f"Need n > p; got n={n_loc}, p={p_loc}")
-
-
 def u(x: jnp.ndarray) -> jnp.ndarray:
     r, _chi, z = x
     return 0.25 * (r**2 - r**4) * jnp.cos(2 * π * z) * jnp.ones(1)
-
-
-def exact_u_at_quad(seq: DeRhamSequence) -> jnp.ndarray:
-    u_r = 0.25 * (seq.quad.x_x**2 - seq.quad.x_x**4)
-    u_z = jnp.cos(2 * π * seq.quad.x_z)
-    values = jnp.ones((seq.quad.ny, 1, 1)) * \
-        u_r[None, :, None] * u_z[None, None, :]
-    return values.reshape(-1, 1)
-
-
-def l2_relative_error(
-    seq: DeRhamSequence, u_h_quad: jnp.ndarray, u_exact_quad: jnp.ndarray
-) -> float:
-    df = u_exact_quad - u_h_quad
-    num = jnp.einsum("ik,ik,i,i->", df, df, seq.jacobian_j, seq.quad.w)
-    den = jnp.einsum(
-        "ik,ik,i,i->", u_exact_quad, u_exact_quad, seq.jacobian_j, seq.quad.w
-    )
-    return float((num / den) ** 0.5)
 
 
 def _dbc_projection_probe_u(
@@ -1212,17 +1169,11 @@ for p_loc, row in results_p.items():
 # %% Cell Q: self-contained unrestricted projection sweep for manufactured f -
 
 
-jax.config.update("jax_enable_x64", True)
 mrx.MAP_BATCH_SIZE_OUTER = None
 
 π = jnp.pi
 EPSILON = 1 / 3
 TYPES = ("clamped", "periodic", "periodic")
-
-
-def _require_valid_resolution(p_loc: int, n_loc: int) -> None:
-    if n_loc <= p_loc:
-        raise ValueError(f"Need n > p; got n={n_loc}, p={p_loc}")
 
 
 def make_f(a: float):
@@ -1243,33 +1194,6 @@ def make_f(a: float):
 
 
 f_callable = make_f(EPSILON)
-
-
-def exact_f_at_quad(seq: DeRhamSequence) -> jnp.ndarray:
-    r = seq.quad.x_x
-    chi = seq.quad.x_y
-    z = seq.quad.x_z
-    cos_chi = jnp.cos(2 * π * chi)[:, None, None]
-    cos_z = jnp.cos(2 * π * z)[None, None, :]
-    r_term = r[None, :, None]
-    R = 1.0 + EPSILON * r_term * cos_chi
-    values = cos_z * (
-        -1.0 / EPSILON**2 * (1.0 - 4.0 * r_term**2)
-        - 1.0 / (EPSILON * R) * (r_term / 2.0 - r_term**3) * cos_chi
-        + 0.25 * (r_term**2 - r_term**4) / R**2
-    )
-    return values.reshape(-1, 1)
-
-
-def l2_relative_error(
-    seq: DeRhamSequence, u_h_quad: jnp.ndarray, u_exact_quad: jnp.ndarray
-) -> float:
-    df = u_exact_quad - u_h_quad
-    num = jnp.einsum("ik,ik,i,i->", df, df, seq.jacobian_j, seq.quad.w)
-    den = jnp.einsum(
-        "ik,ik,i,i->", u_exact_quad, u_exact_quad, seq.jacobian_j, seq.quad.w
-    )
-    return float((num / den) ** 0.5)
 
 
 def _non_dbc_projection_probe_f(
@@ -1346,17 +1270,11 @@ for p_loc, row in results_q.items():
 # %% Cell R: self-contained assembled-k0 debug solve sweep ------------------
 
 
-jax.config.update("jax_enable_x64", True)
 mrx.MAP_BATCH_SIZE_OUTER = None
 
 π = jnp.pi
 EPSILON = 1 / 3
 TYPES = ("clamped", "periodic", "periodic")
-
-
-def _require_valid_resolution(p_loc: int, n_loc: int) -> None:
-    if n_loc <= p_loc:
-        raise ValueError(f"Need n > p; got n={n_loc}, p={p_loc}")
 
 
 def u(x: jnp.ndarray) -> jnp.ndarray:
@@ -1382,25 +1300,6 @@ def make_f(a: float):
 
 
 f_callable = make_f(EPSILON)
-
-
-def exact_u_at_quad(seq: DeRhamSequence) -> jnp.ndarray:
-    u_r = 0.25 * (seq.quad.x_x**2 - seq.quad.x_x**4)
-    u_z = jnp.cos(2 * π * seq.quad.x_z)
-    values = jnp.ones((seq.quad.ny, 1, 1)) * \
-        u_r[None, :, None] * u_z[None, None, :]
-    return values.reshape(-1, 1)
-
-
-def l2_relative_error(
-    seq: DeRhamSequence, u_h_quad: jnp.ndarray, u_exact_quad: jnp.ndarray
-) -> float:
-    df = u_exact_quad - u_h_quad
-    num = jnp.einsum("ik,ik,i,i->", df, df, seq.jacobian_j, seq.quad.w)
-    den = jnp.einsum(
-        "ik,ik,i,i->", u_exact_quad, u_exact_quad, seq.jacobian_j, seq.quad.w
-    )
-    return float((num / den) ** 0.5)
 
 
 def _solve_vs_proj_at_n_fast_k0(
@@ -1509,18 +1408,12 @@ for p_loc, row in solve_results_r.items():
 # still probing whether the old production floor starts to appear locally.
 
 
-jax.config.update("jax_enable_x64", True)
 mrx.MAP_BATCH_SIZE_OUTER = None
 mrx.MAP_BATCH_SIZE_INNER = 0
 
 π = jnp.pi
 EPSILON = 1 / 3
 TYPES = ("clamped", "periodic", "periodic")
-
-
-def _require_valid_resolution(p_loc: int, n_loc: int) -> None:
-    if n_loc <= p_loc:
-        raise ValueError(f"Need n > p; got n={n_loc}, p={p_loc}")
 
 
 def u(x: jnp.ndarray) -> jnp.ndarray:
@@ -1546,25 +1439,6 @@ def make_f(a: float):
 
 
 f_callable = make_f(EPSILON)
-
-
-def exact_u_at_quad(seq: DeRhamSequence) -> jnp.ndarray:
-    u_r = 0.25 * (seq.quad.x_x**2 - seq.quad.x_x**4)
-    u_z = jnp.cos(2 * π * seq.quad.x_z)
-    values = jnp.ones((seq.quad.ny, 1, 1)) * \
-        u_r[None, :, None] * u_z[None, None, :]
-    return values.reshape(-1, 1)
-
-
-def l2_relative_error(
-    seq: DeRhamSequence, u_h_quad: jnp.ndarray, u_exact_quad: jnp.ndarray
-) -> float:
-    df = u_exact_quad - u_h_quad
-    num = jnp.einsum("ik,ik,i,i->", df, df, seq.jacobian_j, seq.quad.w)
-    den = jnp.einsum(
-        "ik,ik,i,i->", u_exact_quad, u_exact_quad, seq.jacobian_j, seq.quad.w
-    )
-    return float((num / den) ** 0.5)
 
 
 def _progress_s(message: str) -> None:

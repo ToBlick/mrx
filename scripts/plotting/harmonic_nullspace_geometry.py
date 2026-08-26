@@ -24,7 +24,6 @@ from mrx.io_nfs_map import (
     interpolate_map_from_points,
 )
 
-jax.config.update("jax_enable_x64", True)
 
 
 def default_meta_path(dof_npy: Path, *, k: int) -> Path:

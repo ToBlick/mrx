@@ -27,8 +27,9 @@ Run (GPU):
 import os
 os.environ.setdefault("MPLBACKEND", "Agg")
 import jax
-jax.config.update("jax_enable_x64", True)
-import h5py, jax.numpy as jnp, numpy as np
+import h5py
+import jax.numpy as jnp
+import numpy as np
 import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
@@ -41,8 +42,11 @@ mrx.MAP_BATCH_SIZE_INNER = int(os.environ.get("W7X_MAP_BATCH", "2048"))
 H5 = "data/quasr_0009983.h5"
 NFP = 2
 TYPES = ("clamped", "periodic", "periodic")
-NS = (8, 16, 16); P = 3; FIT_P = 3
-EVAL_EPS = 1e-6; CG_TOL, CG_MAXITER = 1e-7, 3000
+NS = (8, 16, 16)
+P = 3
+FIT_P = 3
+EVAL_EPS = 1e-6
+CG_TOL, CG_MAXITER = 1e-7, 3000
 # fit_seq's quadrature is never used here (we only use its 1D bases / e0 /
 # collocation, all independent of q), so keep its quad order minimal -- a full
 # 2*FIT_P rule at 50^3 builds a ~2.7e7-point 3D grid in the constructor.
@@ -56,9 +60,12 @@ STRIDE = int(os.environ.get("EVAL_STRIDE", "1"))
 TOR_SIGN = float(os.environ.get("TOR_SIGN", "1.0"))
 
 with h5py.File(H5, "r") as f:
-    ep = np.asarray(f["eval_points"]); B = np.asarray(f["B"])
-    Bco = np.asarray(f["B_cov"]); Bct = np.asarray(f["B_contra"])
-    Rv = np.asarray(f["R"]); Zv = np.asarray(f["Z"])
+    ep = np.asarray(f["eval_points"])
+    B = np.asarray(f["B"])
+    Bco = np.asarray(f["B_cov"])
+    Bct = np.asarray(f["B_contra"])
+    Rv = np.asarray(f["R"])
+    Zv = np.asarray(f["Z"])
     nr, nt, nz = [int(f.attrs[k]) for k in ("n_rho", "n_theta", "n_zeta")]
 
 # reshape to the full tensor grid, then subsample per-axis (keeps tensor form)
@@ -76,12 +83,15 @@ nr, nt, nz = R_grid.shape
 # rebuild flat arrays from the (sub)grid in matching C-order (rho outer, zeta inner)
 rr, tt, zz = np.meshgrid(rho, theta, zeta, indexing="ij")
 ep = np.stack([rr.ravel(), tt.ravel(), zz.ravel()], axis=1)
-B = Bca_grid.reshape(-1, 3); Bco = Bco_grid.reshape(-1, 3); Bct = Bct_grid.reshape(-1, 3)
+B = Bca_grid.reshape(-1, 3)
+Bco = Bco_grid.reshape(-1, 3)
+Bct = Bct_grid.reshape(-1, 3)
 N = ep.shape[0]
 bnorm = np.linalg.norm(B, axis=1)
 rho_eval = np.minimum(rho, 1.0 - EVAL_EPS)      # nudge off the singular rho=1 knot
 
-ep_eval = ep.copy(); ep_eval[:, 0] = np.minimum(ep_eval[:, 0], 1.0 - EVAL_EPS)
+ep_eval = ep.copy()
+ep_eval[:, 0] = np.minimum(ep_eval[:, 0], 1.0 - EVAL_EPS)
 pts_eval = jnp.asarray(ep_eval)
 print(f"[load] grid={nr}x{nt}x{nz} (stride={s})  N={N}")
 
@@ -99,7 +109,8 @@ def coll_val(b, pts):
 
 def coll_der(b, pts):
     ns = b.ns
-    g = lambda x: jax.vmap(lambda i: jax.grad(lambda xx: b(xx, i))(x))(ns)
+    def g(x):
+        return jax.vmap(lambda i: jax.grad(lambda xx: b(xx, i))(x))(ns)
     return jax.vmap(g)(jnp.asarray(pts))                                # (npt, nbasis)
 
 def grid_eval(c, Mr, Mt, Mz):
@@ -126,14 +137,20 @@ def map_and_DF_on_grid(cR, cZ, V, Der, zeta_axis, nfp, sign=TOR_SIGN):
     V=(Vr,Vt,Vz) value colloc mats, Der=(Dr,Dt,Dz) derivative colloc mats.
     Returns F (na,nb,nc,3) and DF (na,nb,nc,3,3), reshape(-1,...) matches ep order.
     """
-    Vr, Vt, Vz = V; Dr, Dt, Dz = Der
+    Vr, Vt, Vz = V
+    Dr, Dt, Dz = Der
     R  = grid_eval(cR, Vr, Vt, Vz)
-    Rr = grid_eval(cR, Dr, Vt, Vz); Rt = grid_eval(cR, Vr, Dt, Vz); Rz = grid_eval(cR, Vr, Vt, Dz)
+    Rr = grid_eval(cR, Dr, Vt, Vz)
+    Rt = grid_eval(cR, Vr, Dt, Vz)
+    Rz = grid_eval(cR, Vr, Vt, Dz)
     Z  = grid_eval(cZ, Vr, Vt, Vz)
-    Zr = grid_eval(cZ, Dr, Vt, Vz); Zt = grid_eval(cZ, Vr, Dt, Vz); Zz = grid_eval(cZ, Vr, Vt, Dz)
+    Zr = grid_eval(cZ, Dr, Vt, Vz)
+    Zt = grid_eval(cZ, Vr, Dt, Vz)
+    Zz = grid_eval(cZ, Vr, Vt, Dz)
     a = 2 * jnp.pi / nfp
     g = a * jnp.asarray(zeta_axis)                     # (nc,)
-    cos = jnp.cos(g)[None, None, :]; sin = jnp.sin(g)[None, None, :]
+    cos = jnp.cos(g)[None, None, :]
+    sin = jnp.sin(g)[None, None, :]
     F = jnp.stack([R * cos, sign * R * sin, Z], axis=-1)
     DF = jnp.stack([
         jnp.stack([Rr * cos, Rt * cos, Rz * cos - R * a * sin], axis=-1),
@@ -154,7 +171,8 @@ Vgrid = (coll_val(_br, rho_eval), coll_val(_bt, theta), coll_val(_bz, zeta))
 Dgrid = (coll_der(_br, rho_eval), coll_der(_bt, theta), coll_der(_bz, zeta))
 
 # coefficient tensors (interpolatory)
-cR = fit_coeffs(colls_solve, R_grid); cZ = fit_coeffs(colls_solve, Z_grid)
+cR = fit_coeffs(colls_solve, R_grid)
+cZ = fit_coeffs(colls_solve, Z_grid)
 
 # map (still needed as a callable for seq.set_map / seq.load quadrature).
 # Built with the GVEC/standard +sin convention (TOR_SIGN) rather than MRX's
@@ -174,7 +192,8 @@ DFT_B = np.einsum("nij,nj->ni", np.transpose(DF, (0, 2, 1)), B)
 DFinv = np.linalg.inv(DF)
 DFinv_B = np.einsum("nij,nj->ni", DFinv, B)
 J = np.linalg.det(DF)
-rel = lambda a, b: np.linalg.norm(a - b, axis=1).mean() / np.linalg.norm(b, axis=1).mean()
+def rel(a, b):
+    return np.linalg.norm(a - b, axis=1).mean() / np.linalg.norm(b, axis=1).mean()
 print("=== (A) map/parametrization check ===")
 print(f"  DF^T  B vs B_cov     rel={rel(DFT_B, Bco):.4e}")
 print(f"  DF^-1 B vs B_contra  rel={rel(DFinv_B, Bct):.4e}")
@@ -217,7 +236,8 @@ def make_ref_fn(grid):
 print("\n=== (B) project onto V2 ===", flush=True)
 seq = DeRhamSequence(NS, (P,) * 3, 2 * P, TYPES, polar=True,
                      tol=CG_TOL, maxiter=CG_MAXITER, betti_numbers=(1, 1, 0, 0))
-seq.evaluate_1d(); seq.set_map(map_func)
+seq.evaluate_1d()
+seq.set_map(map_func)
 ops = seq.get_operators()
 ops = assemble_mass_surgery_preconditioner(seq, operators=ops, ks=(0, 1, 2))
 ops = assemble_tensor_mass_preconditioner(

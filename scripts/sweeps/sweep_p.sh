@@ -1,39 +1,38 @@
 #!/bin/bash
-# RUN FROM THE REPO ROOT.
+# p-refinement at fixed h on the W1 case.
 #
-# p-refinement at fixed h on the W1 case.  S03 showed p=3 -> p=4 buys 3.4x
-# less helicity lost per unit energy removed while h-refinement buys nothing,
-# because n2_dbc is unchanged by p (2192 at both) so the step scale does not
-# move -- p raises the FIDELITY PER STEP where h only lowers the RATE.
-# These fill in the curve either side.
+# S03 showed p=3 -> p=4 buys 3.4x less helicity lost per unit energy
+# removed while h-refinement buys nothing: n2_dbc is unchanged by p, so p
+# raises the fidelity per step where h only lowers the rate. These fill in
+# the curve either side. p=1 exercises the degree-0 D-spline and polar
+# extraction at the lowest order; p=5 is above the resolution where the
+# k=2 vector mass preconditioner is known to hold on W7-X (k2 <= p4).
 #
-# Two known risks, both worth measuring rather than avoiding:
-#   p=1  the degree-0 / unit-integral D-spline subtleties, and polar
-#        extraction at the lowest order.
-#   p=5  memory records k=2 vector mass breaking down above p=4 on W7-X
-#        (k1 works to p5, k2 <= p4, k2 p5 open).  If it fails, that is a
-#        finding about the preconditioner, not about relaxation.
+# Usage: run from anywhere; MRX_ROOT defaults to the repository containing
+# this file. Site settings come from slurm/site.env or the environment
+# (slurm/README.md). Each arm is one single-GPU job through slurm/run.sh
+# running scripts/relax.py; logs land under outputs/sweep_p/<date>/<time>/,
+# results (relax.json, B.h5) under $OUT/<tag>/.
+#
+# The arms stop on the energy floor (relax.py --floor-tol) or on --steps /
+# --seconds, whichever comes first. relax.py does not render Poincare
+# sections; B.h5 holds the initial and final fields for that.
 set -u
-G="--geometry w7x-fmm002 --ic clebsch --ns 8,16,8"
-PC="--poincare --pc-seeds 40 --pc-periods 150"
-O=/scratch/tblickhan/mrx/out/relax_prelim
-S=slurm/job_relax_prelim.sh
+MRX_ROOT=${MRX_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
+OUT=${OUT:-outputs/sweep_p/results}
 
+# sub <tag> <walltime minutes> <relax.py args...>
 sub () {
-  tag=$1; shift
-  mkdir -p "$O/$tag"
-  # shellcheck disable=SC2086
-  jid=$(sbatch --time=6:00:00 "$S" "$@" --save-b "$O/$tag/B.h5" \
-        --out "$O/$tag/$tag.json" | awk '{print $4}')
-  echo "$tag -> $jid"
-  ln -sfn "/scratch/tblickhan/mrx/logs/relaxprelim_$jid.out" \
-     "$O/logs/live_$tag.out"
+  tag=$1; minutes=$2; shift 2
+  mkdir -p "$MRX_ROOT/$OUT/$tag"
+  SCRIPT=scripts/relax.py JOB_NAME="$tag" OUTSUB="sweep_p" TIMEOUT_MIN="$minutes" \
+    ARGS="$* --out $OUT/$tag" MRX_ROOT="$MRX_ROOT" bash "$MRX_ROOT/slurm/run.sh"
 }
 
-sub P1 $G --p 1 --steps 3000 --helicity-every 250 --seconds-per-arm 12000 \
-    --arms cg $PC
-sub P2 $G --p 2 --steps 3000 --helicity-every 250 --seconds-per-arm 12000 \
-    --arms cg $PC
-sub P5 $G --p 5 --steps 3000 --helicity-every 250 --seconds-per-arm 12000 \
-    --arms cg $PC
-echo submitted
+G="--geometry w7x-fmm002 --ic clebsch --ns 8,16,8 --method cg --steps 3000 --diag-every 250 --seconds 12000"
+
+sub P1 360 $G --p 1
+sub P2 360 $G --p 2
+sub P5 360 $G --p 5
+
+echo "submitted 3 arms"
