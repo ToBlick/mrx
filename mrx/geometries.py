@@ -55,7 +55,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None):
         RuntimeError: if the installed map has a non-positive Jacobian at a
             quadrature point.
     """
-    seq = DeRhamSequence(ns, (p,) * 3, 2 * p, ("clamped", "periodic", "periodic"),
+    seq = DeRhamSequence(ns, (p,) * 3, p + 1, ("clamped", "periodic", "periodic"),
                          polar=True, tol=tol, maxiter=maxiter,
                          betti_numbers=(1, 1, 0, 0))
     seq.evaluate_1d()

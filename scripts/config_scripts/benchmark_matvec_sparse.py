@@ -258,9 +258,9 @@ def time_matvec(fn, x, reps, warmup):
 def run_case(n, p, k, epsilon, quad_order, quad_order_offset, reps, warmup, seed):
     ns = (n, 2 * n, n)
     ps = (p, p, p)
-    q = 2 * p + quad_order_offset if quad_order is None else quad_order
-    if q < 2 * p:
-        raise ValueError(f"quad_order must satisfy q >= 2*p; got q={q}, p={p}")
+    q = p + 1 + quad_order_offset if quad_order is None else quad_order
+    if q < p + 1:
+        raise ValueError(f"quad_order must satisfy q >= p + 1; got q={q}, p={p}")
 
     seq = DeRhamSequence(ns, ps, q, types, polar=True)
     seq.set_map(toroid_map(epsilon=epsilon))

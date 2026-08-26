@@ -201,7 +201,7 @@ def _det_DF(map_func, n=64, seed=0):
 
 def _spline_scalars(axes, R_grid, Z_grid, map_ns, p):
     R_fn, Z_fn = _rgi_fn(axes, R_grid), _rgi_fn(axes, Z_grid)
-    map_seq = DeRhamSequence(map_ns, (p, p, p), 2 * p,
+    map_seq = DeRhamSequence(map_ns, (p, p, p), p + 1,
                              ("clamped", "periodic", "periodic"), polar=False)
     map_seq.evaluate_1d()
     R_h = DiscreteFunction(map_seq.interpolate(R_fn, 0), map_seq.basis_0, map_seq.e0)
