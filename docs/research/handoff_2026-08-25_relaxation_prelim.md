@@ -2305,3 +2305,49 @@ was written.
 
 s32 applies as everywhere: no arm floored, so this is helicity conservation per
 unit energy removed at a fixed step budget, not a floor result.
+
+## 38. ||F|| TRAP, the stronger form: only the FINAL value is a quantity
+
+s2 TRAP 2 says `||F||` is not guaranteed to fall and that a rising residual
+needs no explanation. That is true and it is not the whole rule.
+
+Tobias, 2026-08-25: **"The objective is non-convex, only the FINAL F
+matters."**
+
+The objective being non-convex means the descent can pass THROUGH a
+high-force region on its way to a good minimum. So a mid-run `||F||` is not a
+noisy estimate of where the arm is heading -- it is a measurement of a place
+the arm is passing through and will leave. It is not a quantity to rank on, to
+compare across arms, or to report as progress. Only the value at the state you
+actually stop at says anything, because that is the state you are delivering.
+
+### 38.1 What this retracted, in this session alone
+
+* **"eta=1e-3 is the standout so far, ||F|| 3-5x below every ideal arm"** --
+  read at 40% through. Withdrawn. What survives is the HELICITY half, measured
+  at matched steps: eta is ~1644x worse on `|dH|` per unit energy removed, and
+  that is a cumulative quantity, legitimately comparable mid-run.
+* **"dt=1e-2 is outperforming dt=3e-3 on force"** -- same error, withdrawn.
+* **"another case where ||F|| points the wrong way"** -- the framing is wrong
+  twice over. A mid-run `||F||` does not point the wrong way; it does not
+  point.
+
+### 38.2 What is still legitimate
+
+`F_final` in the results catalogue is exactly that -- final -- and stays. With
+the caveat that P0/s32 apply: no arm floored, so "final" means "where the
+budget stopped it", which characterises the state delivered rather than a
+converged optimum.
+
+ENERGY is the quantity to watch while a run is in flight. It is the only one
+the scheme guarantees to decrease, which is what makes it readable at any
+point. `|dH|` per unit energy removed is also readable mid-run, because
+helicity drift accumulates -- but only at MATCHED step counts: it drifts
+upward within every arm (C2: 5.47e-04 at step 250 to 1.97e-03 at 2000), so
+comparing arms at whatever step they happen to have reached measures progress
+rather than settings.
+
+`scripts/debug/relax_prelim.py` still PRINTS `|F|` per step, which is correct
+-- it is a diagnostic and a NaN there is the first sign of divergence. What is
+wrong is ranking on it. The status tooling no longer shows it for running
+arms.
