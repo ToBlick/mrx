@@ -24,6 +24,16 @@ if _NAME not in ("float32", "float64"):
 
 jax.config.update("jax_enable_x64", _NAME == "float64")
 
+# On Ampere-and-later GPUs JAX runs float32 dot products (matmul, einsum,
+# dot_general) in TF32 by default: a 10-bit mantissa, relative error ~5e-4
+# per term. Every spline derivative in MRX is a cancelling sum of such
+# terms -- the W7-X map's dR/dtheta on the innermost quadrature ring came
+# out 19% wrong and det DF went negative in float32, while the 1-D basis
+# values and the coefficients themselves were accurate to 1e-6 (measured
+# 2026-08-26, scripts/debug/f32_df_bisect.py). Nothing in MRX wants a
+# 10-bit product; float64 is unaffected by this setting.
+jax.config.update("jax_default_matmul_precision", "highest")
+
 #: The working floating-point dtype.
 DTYPE = jnp.dtype(_NAME)
 
