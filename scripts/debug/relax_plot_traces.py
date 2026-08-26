@@ -274,6 +274,29 @@ def main():
          "length.png",
          [("3000 steps (W1)", one("W1")), ("13018 steps (S07)",
                                            one("S07_long"))]),
+        # The mu sweep of s37.  gamma_sweep.png above is the ORIGINAL three
+        # points; this is the resolved ladder that located the minimum, and it
+        # is kept as a separate figure rather than merged into that one --
+        # six arms on four panels is already at the limit of what alpha=0.5
+        # keeps readable.
+        ("hyperregularisation, resolved -- w7x_fmm002 8^3",
+         "mu_sweep.png",
+         [("gamma=0", one("W1")),
+          ("gamma=1 mu=1e-4", one("M1_mu1e4")),
+          ("gamma=1 mu=1e-3", one("M2_mu1e3")),
+          ("gamma=1 mu=1e-2", one("M3_mu1e2")),
+          ("gamma=1 mu=1e-1 (cut 2000)", one("M4_mu1e1")),
+          ("gamma=2 mu=1e-3", one("M5_g2mu3"))]),
+        # s40: the mu ORDERING reverses between 8^3 and 12^3.  Both 12^3 arms
+        # stopped on wall-clock (1760 and 1200 steps), which is why they end
+        # early here; the reversal is read where all four overlap, not at the
+        # right-hand end of the longer curves.
+        ("mu across resolution -- w7x_fmm002, the ordering REVERSES",
+         "mu_h_reversal.png",
+         [("8^3  mu=1e-4", one("M1_mu1e4")),
+          ("8^3  mu=1e-3", one("M2_mu1e3")),
+          ("12^3 mu=4.4e-4 (cut 1760)", one("H1_r12_mu4e4")),
+          ("12^3 mu=1e-3 (cut 1200)", one("H2_r12_mu1e3"))]),
     ]
     made = 0
     for title, fname, runs in groups:
