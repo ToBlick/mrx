@@ -9,7 +9,6 @@ from .projectors import *
 from .quadrature import *
 from .solvers import *
 from .spline_bases import *
-from .utils import *
 
 __version__ = "0.0.1"
 

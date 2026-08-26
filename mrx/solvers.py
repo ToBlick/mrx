@@ -12,7 +12,6 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.sparse.linalg import cg
 
 from mrx.precision import sqrt_eps
 
@@ -674,61 +673,3 @@ def solve_saddle_point_minres(
     return u, sigma, info
 
 
-def get_smallest_ev_pair(A_matvec, mass_matvec, x0, precond_matvec=lambda x: x,
-                         vs=[], shift=1e-9, maxiter=20, tol=None):
-    """Find the smallest generalised eigenpair via shifted inverse iteration.
-
-    ``vs`` are mass-normalised vectors to deflate.  ``tol=None`` is
-    ``mrx.sqrt_eps()``; ``shift`` is an algorithmic choice.
-    """
-    if tol is None:
-        tol = sqrt_eps()
-
-    def inner_product(x, y):
-        return jnp.dot(x, mass_matvec(y))
-
-    def normalize(x):
-        return x / jnp.sqrt(inner_product(x, x))
-
-    # Stacked deflation, as in solve_singular_cg: one mass apply per
-    # projection instead of one per deflated vector inside the loop body.
-    if len(vs) == 0:
-        def project_primal(x):
-            return x
-
-        def project_dual(f):
-            return f
-    else:
-        vs_stacked = jnp.asarray(vs)
-        mass_vs = jax.vmap(mass_matvec)(vs_stacked)
-
-        def project_primal(x):
-            return x - (vs_stacked @ mass_matvec(x)) @ vs_stacked
-
-        def project_dual(f):
-            return f - (vs_stacked @ f) @ mass_vs
-
-    def A_shifted(x):
-        x = project_primal(x)
-        Ax = A_matvec(x) + shift * mass_matvec(x)
-        return project_dual(Ax)
-
-    x0 = normalize(project_primal(x0))
-
-    def cond_fun(val):
-        i, x, x_prev = val
-        diff = jnp.minimum(jnp.linalg.norm(x - x_prev),
-                           jnp.linalg.norm(x + x_prev))
-        return jnp.logical_and(i < maxiter, diff > tol)
-
-    def body_fun(val):
-        i, x, _ = val
-        rhs = project_dual(mass_matvec(x))
-        y, _ = cg(A_shifted, rhs, x0=jnp.zeros_like(x),
-                  M=precond_matvec, tol=tol, maxiter=maxiter)
-        x_next = normalize(project_primal(y))
-        return (i + 1, x_next, x)
-
-    _, v, _ = jax.lax.while_loop(cond_fun, body_fun, (0, x0, jnp.zeros_like(x0)))
-    lmbda = jnp.dot(v, A_matvec(v))
-    return v, lmbda

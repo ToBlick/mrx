@@ -197,7 +197,7 @@ class DeRhamSequence():
     e3_bc = _operator_bundle_field_property('e3_bc')
     e3_bc_T = _operator_bundle_field_property('e3_bc_T')
 
-    def __init__(self, ns, ps, q, types, *legacy_args, polar,
+    def __init__(self, ns, ps, q, types, *, polar,
                  tol=None, maxiter=10_000,
                  r_scale=1.0, knots=None, polar_ring1=None, polar_order=1,
                  n_inner=5, betti_numbers=(1, 1, 0, 0)):
@@ -266,12 +266,6 @@ class DeRhamSequence():
         :meth:`set_map` or :meth:`set_spline_map` explicitly after building
         the sequence.
         """
-        if legacy_args:
-            raise TypeError(
-                "DeRhamSequence no longer accepts a map in the constructor; "
-                "construct the sequence first and then call seq.set_map(...) "
-                "or seq.set_spline_map(...)."
-            )
         self.ns = tuple(ns)
         self.ps = tuple(ps)
         self.polar_order = polar_order

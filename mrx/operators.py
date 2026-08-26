@@ -21,11 +21,6 @@ from mrx.preconditioners import (
     SchurPreconditionerSpec,
     SaddlePointPreconditionerSpec,
     _bulk_tensor_shape,
-    # Re-export, not a local use: two debug scripts import _core_size FROM
-    # mrx.operators (mrx/experimental/k0_core_schur.py did too until it was
-    # deleted with the tensor-Hodge path it was built on). `ruff --fix` will
-    # happily delete this as F401 and break them at import time.
-    _core_size,  # noqa: F401
     _symmetrize,
     default_mass_preconditioner,
     get_mass_jacobi_diaginv,
@@ -686,7 +681,6 @@ def _assemble_1d_fd_eigendecomp(M: jnp.ndarray, K: jnp.ndarray):
     return V, lam
 
 
-# TODO: remove (deprecated no-op shim)
 def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0):
     """Apply ``(L + eps M)^{-1}`` via fast diagonalisation on a 3-tensor ``x``."""
     # Forward transform: y = V^T x (in all three axes).
@@ -1958,18 +1952,9 @@ def assemble_mass_metric_lumping_preconditioner(
     return operators
 
 
-def _resolve_legacy_mass_preconditioner(seq, operators, k: int, preconditioner):
+def _resolve_mass_preconditioner(seq, operators, k: int, preconditioner):
     if isinstance(preconditioner, str) and preconditioner == 'auto':
-        # 'auto' resolves to default_mass_preconditioner() UNCONDITIONALLY --
-        # metric_lumping since 2026-08-22. Always buildable on demand
-        # (_mass_metric_lumping_for),
-        # which is what makes the unconditional resolve safe. The tensor and
-        # jacobi paths remain reachable by explicit spec.
-        #
-        # NOTE: this unconditional resolve is why the mass preconditioner
-        # reached solves through apply_mass_matrix_preconditioner while
-        # _materialize_default_mass_preconditioner's _tensor_available gate
-        # silently disabled it for every k>=1 saddle solve until 2026-08-24.
+        # 'auto' is the production default, always buildable on demand.
         return default_mass_preconditioner()
     return _coerce_mass_preconditioner_spec(preconditioner)
 
@@ -1991,10 +1976,8 @@ def _normalize_mass_preconditioner_spec_for_degree(
 
 def _build_operator_preconditioner_apply(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-    operator_apply, preconditioner, allow_none: bool = True,
-    orthogonal_vectors=None):
-    del orthogonal_vectors  # retained for call-site compatibility
-    spec = _resolve_legacy_mass_preconditioner(seq, operators, k, preconditioner)
+    operator_apply, preconditioner, allow_none: bool = True):
+    spec = _resolve_mass_preconditioner(seq, operators, k, preconditioner)
     spec = _normalize_mass_preconditioner_spec_for_degree(spec, k=k)
     if k == 0:
         _validate_public_k0_mass_preconditioner_spec(spec)
@@ -2733,7 +2716,6 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
             operator_apply=schur_apply,
             preconditioner=outer_spec,
             allow_none=True,
-            orthogonal_vectors=vs_upper if eps == 0.0 else None,
         )
     # Apply 1/eps coarse correction on the harmonic upper-block mode, mirroring
     # the k=0 treatment.  For k>=1 the DBC nullspace is always empty on this
