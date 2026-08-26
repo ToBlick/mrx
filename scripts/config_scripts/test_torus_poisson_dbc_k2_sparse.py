@@ -1,30 +1,89 @@
-"""Convergence study for the k=2 Hodge–Laplacian with DBC on a toroidal domain.
+"""Convergence study for the k=2 Hodge Laplacian with Dirichlet conditions on a torus.
 
-Exact solution:  ω₂ = -(2πε³r sin(2πζ)/R) dr∧dχ
-                 Reference 2-form proxy (slot order χζ, rζ, rχ):
-                   (ω₂)_χζ = 0,  (ω₂)_rζ = 0,  (ω₂)_rχ = -2πε³r sin(2πζ)/R
+Solve ``-Δ₂ ω = f`` on the axisymmetric toroid map with homogeneous
+Dirichlet (normal-trace) conditions, one resolution after another, and
+record the relative metric-weighted L² error, the MINRES iteration count
+and every timing. The manufactured solution and source are
 
-Source:          f₂ = ⋆(df₀),  where f₀ = cos(2πζ)/R²
-                 Reference 2-form proxy components:
-                   (f₂)_χζ = -8π² ε² r cos(2πχ) cos(2πζ) / R²
-                   (f₂)_rζ = -4π ε² sin(2πχ) cos(2πζ) / R²
-                   (f₂)_rχ = -2π ε³ r sin(2πζ) / R³
+    ω₂ = -(2πε³ r sin(2πζ)/R) dr ∧ dχ
+        reference 2-form proxy (slot order χζ, rζ, rχ):
+        (ω₂)_χζ = 0,  (ω₂)_rζ = 0,  (ω₂)_rχ = -2πε³ r sin(2πζ)/R
+    f₂ = ⋆(d f₀),  f₀ = cos(2πζ)/R²
+        (f₂)_χζ = -8π² ε² r cos(2πχ) cos(2πζ) / R²
+        (f₂)_rζ = -4π ε² sin(2πχ) cos(2πζ) / R²
+        (f₂)_rχ = -2π ε³ r sin(2πζ) / R³.
 
-k=2 DBC has a 1-dimensional harmonic nullspace (the Hodge dual of the
-toroidal 1-form, i.e. ⋆dζ ∝ (ε³r/R) dr∧dχ).
+k=2 DBC has a one-dimensional harmonic nullspace, the Hodge dual of the
+toroidal 1-form (``⋆dζ ∝ (ε³r/R) dr ∧ dχ``), which the saddle-point MINRES
+solve deflates. ``load_frame='ref'`` passes ``f₂`` as bare reference 2-form
+components; ``load_frame='phys'`` passes a physical proxy vector and
+``load`` applies ``DFᵀ`` itself.
 
-frame='ref'  — pass f₂ as bare reference 2-form components.
-frame='phys' — pass f₂ as a physical proxy vector; load applies DFᵀ internally.
+Diagnostics logged per resolution:
 
-Diagnostics logged per run:
-  - Relative metric-weighted L² error
-  - MINRES iteration count and convergence flag
-  - Nullspace vector residual  ||L₂ h||₂
-  - ||D₂ h||₂   (curl — should be ≈ 0)
-  - ||D₁ᵀ h||₂  (divergence — should be ≈ 0)
+- relative metric-weighted L² error,
+- MINRES iteration count and convergence flag,
+- nullspace residual ``||L₂ h||₂``,
+- ``||D₂ h||₂`` (curl, expected ≈ 0),
+- ``||D₁ᵀ h||₂`` (divergence, expected ≈ 0).
 
-Usage (from repo root):
-    python scripts/config_scripts/test_torus_poisson_dbc_k2_sparse.py -m p=1,2,3 n=8,12,16,20
+Configuration:
+    Hydra config ``conf/config_poisson_test.yaml``, schema
+    ``mrx.config.PoissonTestConfig``. Override any key as ``key=value``.
+
+    n (list[int] | int): Radial resolutions, run one after another; the
+        grid is ``ns = (n, 2n, n)``. An int runs a single resolution.
+        Default ``[8, 12, 16, 24, 32, 48, 64]``.
+    p (int): Spline degree in every direction. Default 3.
+    epsilon (float): Minor radius of ``toroid_map`` (major radius 1).
+        Default 1/3.
+    quad_order (int | None): Gauss quadrature order per direction. ``None``
+        selects ``2*p + quad_order_offset``. Default ``None``.
+    quad_order_offset (int): Offset on ``2*p``. Dataclass default 4; the
+        yaml sets 0.
+    cg_maxiter (int): Iteration cap of the Laplacian solve. Dataclass
+        default 100000; the yaml sets 50000.
+    solver_tol (float | None): Relative residual tolerance of every
+        iterative solve in the sequence. ``None`` selects ``sqrt(eps)`` of
+        the working precision; the yaml sets 1e-9.
+    precision (str): ``float64`` (default) or ``float32``. Read from argv
+        and exported as ``MRX_DTYPE`` before ``mrx`` is imported.
+    map_batch_size_inner (int): ``mrx.MAP_BATCH_SIZE_INNER``; 0 means
+        ``vmap``. Default 0.
+    map_batch_size_outer (int | None): ``mrx.MAP_BATCH_SIZE_OUTER``;
+        ``None`` means no batching. Default ``None``.
+    load_frame (str): ``'ref'`` passes the reference components of the
+        source, ``'phys'`` the physical field (see ``mrx.projectors.load``).
+        Default ``'ref'``.
+
+Usage:
+    Single run, all listed n in one process::
+
+        python -u scripts/config_scripts/test_torus_poisson_dbc_k2_sparse.py p=3
+        python -u scripts/config_scripts/test_torus_poisson_dbc_k2_sparse.py p=2 n=16 precision=float32
+
+    Single GPU job through ``slurm/run.sh``::
+
+        SCRIPT=scripts/config_scripts/test_torus_poisson_dbc_k2_sparse.py ARGS="p=3 n=16" \
+            JOB_NAME=pois_dbc_k2 MEM_GB=80 TIMEOUT_MIN=120 bash slurm/run.sh
+
+    Multirun, one submitit job per (p, n) pair. Needs ``SLURM_ACCOUNT``,
+    ``SLURM_PARTITION`` and ``MRX_ROOT`` exported; the launcher allots one
+    GPU, 80 GB and 120 min per job::
+
+        python scripts/config_scripts/test_torus_poisson_dbc_k2_sparse.py -m p=2,3 n=8,16
+
+Runtime:
+    One GPU, p=3, ``logs/mergepois_16819379.out`` (2026-08): TOTAL 167 s at
+    n=6, 217 s at n=8, 262 s at n=10 per resolution, JIT included. Memory
+    not measured; the multirun launcher allots 80 GB.
+
+Output:
+    Single run: ``outputs/<date>/<time>/result.json``, a list with one entry
+    per n, rewritten after every n so an OOM at a later n keeps the earlier
+    results. Multirun: ``multirun/<date>/<time>/<job>/result.json``. Through
+    ``slurm/run.sh`` the stdout log is
+    ``outputs/<JOB_NAME>/<date>/<time>/<JOB_NAME>.log``.
 """
 import json
 import os

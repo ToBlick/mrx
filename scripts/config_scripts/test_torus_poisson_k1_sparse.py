@@ -1,26 +1,79 @@
-"""Convergence study for the k=1 Hodge–Laplacian on a toroidal domain.
+"""Convergence study for the k=1 Hodge Laplacian with Dirichlet conditions on a torus.
 
-Solves  -Δ₁ v = f  with homogeneous Dirichlet BCs (DBC), where
-f = d(-Δ₀ u₀) = d(f₀)  and  v = d(u₀),
+Solve ``-Δ₁ v = f`` on the axisymmetric toroid map with homogeneous
+Dirichlet (tangential-trace) conditions, one resolution after another, and
+record the relative error, the iteration count and every timing. The
+manufactured solution is the coboundary of the k=0 case,
 
-with u₀ = 1/4 (r² - r⁴) cos(2πz) the k=0 exact solution (vanishes on ∂Ω).
-Since v = du₀ is an exact 1-form (coboundary) it automatically satisfies
-tangential-trace = 0, i.e. DBC for k=1.  On a solid torus k=1 DBC has no
-nullspace (b₂ = 0), so no deflation is needed.
+    v = d u₀,   f = d(-Δ₀ u₀) = d f₀,   u₀ = 1/4 (r² - r⁴) cos(2πz),
 
-The RHS is assembled as  rhs₁ = D₀ @ (M₀⁻¹ @ load(f₀, 0, dbc=True)),
-i.e. a discrete d applied to the L²-projection of the k=0 source.
-The exact solution for error comparison is obtained the same way from u₀.
+so ``v`` is exact and satisfies the tangential DBC by construction. On a
+solid torus k=1 DBC has no nullspace (b₂ = 0), so nothing is deflated. The
+right-hand side is the discrete ``d`` of the L² projection of the scalar
+source,
 
-Preconditioner: tensor mass for the lower block (k=0), tensor Schur inner,
-pre-probed Jacobi Schur outer (assemble_schur_jacobi_preconditioner).
+    rhs₁ = D₀ M₀⁻¹ load(f₀, 0, dbc=True),
 
-Usage (run from the repo root):
-    # Single run — loops over all n values for the given p
-    python scripts/config_scripts/test_torus_poisson_k1_sparse.py p=3
+and the reference solution is built the same way from ``u₀``. The solve is
+the saddle-point Laplacian solve of the sequence with the tensor mass for
+the lower (k=0) block, the tensor Schur inner and the pre-probed Jacobi
+Schur outer (``assemble_schur_jacobi_preconditioner``). ``quad_order``
+below ``2*p`` raises ``ValueError``.
 
-    # Multirun sweep — one SLURM job per (p, n) pair
-    python scripts/config_scripts/test_torus_poisson_k1_sparse.py -m p=1,2,3,4 n=8,12,16,24,32
+Configuration:
+    Hydra config ``conf/config_poisson_test.yaml``, schema
+    ``mrx.config.PoissonTestConfig``. Override any key as ``key=value``.
+
+    n (list[int] | int): Radial resolutions, run one after another; the
+        grid is ``ns = (n, 2n, n)``. An int runs a single resolution.
+        Default ``[8, 12, 16, 24, 32, 48, 64]``.
+    p (int): Spline degree in every direction. Default 3.
+    epsilon (float): Minor radius of ``toroid_map`` (major radius 1).
+        Default 1/3.
+    quad_order (int | None): Gauss quadrature order per direction. ``None``
+        selects ``2*p + quad_order_offset``. Default ``None``.
+    quad_order_offset (int): Offset on ``2*p``. Dataclass default 4; the
+        yaml sets 0.
+    cg_maxiter (int): Iteration cap of the Laplacian solve. Dataclass
+        default 100000; the yaml sets 50000.
+    solver_tol (float | None): Relative residual tolerance of every
+        iterative solve in the sequence. ``None`` selects ``sqrt(eps)`` of
+        the working precision; the yaml sets 1e-9.
+    precision (str): ``float64`` (default) or ``float32``. Read from argv
+        and exported as ``MRX_DTYPE`` before ``mrx`` is imported.
+    map_batch_size_inner (int): ``mrx.MAP_BATCH_SIZE_INNER``; 0 means
+        ``vmap``. Default 0.
+    map_batch_size_outer (int | None): ``mrx.MAP_BATCH_SIZE_OUTER``;
+        ``None`` means no batching. Default ``None``.
+    load_frame (str): Present in the config, not read by this script.
+
+Usage:
+    Single run, all listed n in one process::
+
+        python -u scripts/config_scripts/test_torus_poisson_k1_sparse.py p=3
+        python -u scripts/config_scripts/test_torus_poisson_k1_sparse.py p=2 n=16 precision=float32
+
+    Single GPU job through ``slurm/run.sh``::
+
+        SCRIPT=scripts/config_scripts/test_torus_poisson_k1_sparse.py ARGS="p=3 n=16" \
+            JOB_NAME=pois_k1 MEM_GB=80 TIMEOUT_MIN=120 bash slurm/run.sh
+
+    Multirun, one submitit job per (p, n) pair. Needs ``SLURM_ACCOUNT``,
+    ``SLURM_PARTITION`` and ``MRX_ROOT`` exported; the launcher allots one
+    GPU, 80 GB and 120 min per job::
+
+        python scripts/config_scripts/test_torus_poisson_k1_sparse.py -m p=2,3 n=8,16
+
+Runtime:
+    Not measured. The multirun launcher allots one GPU, 80 GB and 120 min
+    per job.
+
+Output:
+    Single run: ``outputs/<date>/<time>/result.json``, a list with one entry
+    per n, rewritten after every n so an OOM at a later n keeps the earlier
+    results. Multirun: ``multirun/<date>/<time>/<job>/result.json``. Through
+    ``slurm/run.sh`` the stdout log is
+    ``outputs/<JOB_NAME>/<date>/<time>/<JOB_NAME>.log``.
 """
 import json
 import os

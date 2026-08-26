@@ -1,14 +1,51 @@
 #!/usr/bin/env python3
-"""Evaluate toroidal boundary circulation for a saved harmonic nullspace DOF.
+"""Evaluate the toroidal boundary circulation of a saved harmonic nullspace DOF.
 
-Rebuilds geometry from meta JSON (same as plotting) and reports ``Γ_MRX`` on the
-standard loop ``(ρ=ρ_b, θ=0, ζ∈[0,1))``.
+Rebuild the geometry and the de Rham sequence from the meta JSON that
+accompanies a harmonic nullspace DOF file (the same rebuild the plotting
+scripts use), load the DOF vector, and report ``Γ_MRX`` on the standard
+loop ``(ρ=ρ_b, θ=0, ζ∈[0,1))`` via
+:func:`mrx.circulation.boundary_toroidal_circulation`. The helpers come
+from ``scripts/plotting/harmonic_nullspace_geometry``; the repository root
+is put on ``sys.path`` for that import.
 
-Example::
+Arguments:
+    --dof-npy (Path): Saved nullspace DOF vector. Required.
+    --meta-json (Path): Meta JSON of the run. Default ``None`` selects the
+        sibling ``hodge_k2_nullspace_meta.json`` (k=2) or
+        ``hcurl_nullspace_meta.json`` (k=1) of the DOF file.
+    --k (int): Form degree, 1 or 2. Default ``None`` infers 2 from a
+        ``k2``/``hodge_k2`` filename and 1 otherwise.
+    --n-quad (int): Quadrature points on the loop. Default 256.
+    --rho-boundary (float): Loop radius ``ρ_b``. Default ``None`` selects
+        0.6 for ``native`` and ``1 - 1e-10`` for ``extend_map``.
+    --circulation-map (str): ``native`` or ``extend_map``. Default
+        ``native``.
+    --b-field (str): k=1 only: ``pushforward`` evaluates ``u``, ``curl``
+        evaluates ``curl u``. Default ``pushforward``.
+    -o, --output-json (Path): Write the result JSON here as well. Default
+        ``None``.
 
-    python scripts/harmonic/eval_boundary_circulation.py \\
-        --dof-npy script_outputs/hodge_k2_quasr0009983_ns8_16_8_p3/hodge_k2_dbc_nullspace_dof.npy \\
-        --k 2
+Usage:
+    ::
+
+        python -u scripts/harmonic/eval_boundary_circulation.py \
+            --dof-npy script_outputs/hodge_k2_quasr0009983_ns8_16_8_p3/hodge_k2_dbc_nullspace_dof.npy \
+            --k 2 -o circulation.json
+
+    Single GPU job through ``slurm/run.sh``::
+
+        SCRIPT=scripts/harmonic/eval_boundary_circulation.py \
+            ARGS="--dof-npy <dof.npy> --k 2 -o circulation.json" \
+            JOB_NAME=circ bash slurm/run.sh
+
+Runtime:
+    Not measured.
+
+Output:
+    The result dict (circulation, loop parameters, ``dof_npy``,
+    ``map_mode``, ``nfp_meta``) is printed as JSON to stdout and, with
+    ``-o``, written to that file.
 """
 from __future__ import annotations
 

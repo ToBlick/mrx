@@ -1,33 +1,85 @@
-"""Convergence study for the k=2 Hodge–Laplacian on a toroidal domain.
+"""Convergence study for the k=2 Hodge Laplacian with natural conditions on a torus.
 
-Solves  -Δ₂ ω = f  with natural boundary conditions (NBC), where the exact
-solution is  ω₂ = dα  with  α = r²(1-r²) dζ.  Hence:
+Solve ``-Δ₂ ω = f`` on the axisymmetric toroid map with natural boundary
+conditions (NBC), one resolution after another, and record the relative
+error, the iteration count and every timing. The manufactured solution is
+``ω₂ = dα`` with ``α = r²(1 - r²) dζ``:
 
-    ω₂ = g'(r) dr ∧ dζ,   g'(r) = 2r(1-2r²)
+    ω₂ = g'(r) dr ∧ dζ,   g'(r) = 2r(1 - 2r²).
 
-k=2 NBC on the solid torus has betti number b₂(abs) = 0, so no nullspace.
+k=2 NBC on the solid torus has b₂(abs) = 0, so nothing is deflated. Since
+``δα = 0`` (``α`` has no ζ-dependence and the ∂_ζ metric block is
+ζ-independent) the Hodge Laplacian reduces to a coboundary,
 
-Since δα = 0 (α has no ζ-dependence and the metric ∂_ζ block is
-ζ-independent), the Hodge Laplacian simplifies:
+    -Δ₂(dα) = d(-Δ₁ α) = d(δ dα) = d(f₁),
 
-    -Δ₂(dα) = d(-Δ₁α) = d(δdα) = d(f₁)
+where ``f₁ = δω₂`` has only a dζ component. With the diagonal toroidal
+metric ``g = diag(ε², (2πεr)², (2πR)²)``:
 
-where f₁ = δω₂ is a k=1 form with only a dζ component.  Derivation using
-the diagonal toroidal metric  g = diag(ε², (2πεr)², (2πR)²):
+    ∗(dr ∧ dζ) = -(εr/R) dχ
+    d(∗ω₂)     = -ε ∂_r(r g'/R) dr ∧ dχ
+    δω₂ = ∗d∗ω₂  →  (f₁)_ζ = -4(1 - 4r²) + 2r(1 - 2r²) ε cos(2πχ)/R.
 
-    ∗(dr ∧ dζ) = -(εr/R) dχ          [star of the rζ 2-form]
-    d(∗ω₂)     = -ε ∂_r(rg'/R) dr ∧ dχ
-    δω₂ = ∗d∗ω₂  →  (f₁)_ζ = -4(1-4r²) + 2r(1-2r²) ε cos(2πχ) / R
+The right-hand side is assembled as ``b₂ = D₁ M₁⁻¹ load(f₁, 1, NBC)``,
+exactly parallel to the k=0 → k=1 construction. The solve is the
+saddle-point Laplacian solve of the sequence with the tensor mass for the
+lower (k=1) block, the tensor Schur inner and the pre-probed Jacobi Schur
+outer (``assemble_schur_jacobi_preconditioner``).
 
-RHS construction (coboundary, exactly parallel to k=0→k=1):
-    b₂ = D₁ (M₁⁻¹ load(f₁, 1, NBC))
+Configuration:
+    Hydra config ``conf/config_poisson_test.yaml``, schema
+    ``mrx.config.PoissonTestConfig``. Override any key as ``key=value``.
 
-Usage (run from the repo root):
-    # Single run — loops over all n values for the given p
-    python scripts/config_scripts/test_torus_poisson_k2_sparse.py p=3
+    n (list[int] | int): Radial resolutions, run one after another; the
+        grid is ``ns = (n, 2n, n)``. An int runs a single resolution.
+        Default ``[8, 12, 16, 24, 32, 48, 64]``.
+    p (int): Spline degree in every direction. Default 3.
+    epsilon (float): Minor radius of ``toroid_map`` (major radius 1).
+        Default 1/3.
+    quad_order (int | None): Gauss quadrature order per direction. ``None``
+        selects ``2*p + quad_order_offset``. Default ``None``.
+    quad_order_offset (int): Offset on ``2*p``. Dataclass default 4; the
+        yaml sets 0.
+    cg_maxiter (int): Iteration cap of the Laplacian solve. Dataclass
+        default 100000; the yaml sets 50000.
+    solver_tol (float | None): Relative residual tolerance of every
+        iterative solve in the sequence. ``None`` selects ``sqrt(eps)`` of
+        the working precision; the yaml sets 1e-9.
+    precision (str): ``float64`` (default) or ``float32``. Read from argv
+        and exported as ``MRX_DTYPE`` before ``mrx`` is imported.
+    map_batch_size_inner (int): ``mrx.MAP_BATCH_SIZE_INNER``; 0 means
+        ``vmap``. Default 0.
+    map_batch_size_outer (int | None): ``mrx.MAP_BATCH_SIZE_OUTER``;
+        ``None`` means no batching. Default ``None``.
+    load_frame (str): Present in the config, not read by this script.
 
-    # Multirun sweep — one SLURM job per (p, n) pair
-    python scripts/config_scripts/test_torus_poisson_k2_sparse.py -m p=1,2,3,4 n=8,12,16,24,32
+Usage:
+    Single run, all listed n in one process::
+
+        python -u scripts/config_scripts/test_torus_poisson_k2_sparse.py p=3
+        python -u scripts/config_scripts/test_torus_poisson_k2_sparse.py p=2 n=16 precision=float32
+
+    Single GPU job through ``slurm/run.sh``::
+
+        SCRIPT=scripts/config_scripts/test_torus_poisson_k2_sparse.py ARGS="p=3 n=16" \
+            JOB_NAME=pois_k2 MEM_GB=80 TIMEOUT_MIN=120 bash slurm/run.sh
+
+    Multirun, one submitit job per (p, n) pair. Needs ``SLURM_ACCOUNT``,
+    ``SLURM_PARTITION`` and ``MRX_ROOT`` exported; the launcher allots one
+    GPU, 80 GB and 120 min per job::
+
+        python scripts/config_scripts/test_torus_poisson_k2_sparse.py -m p=2,3 n=8,16
+
+Runtime:
+    Not measured. The multirun launcher allots one GPU, 80 GB and 120 min
+    per job.
+
+Output:
+    Single run: ``outputs/<date>/<time>/result.json``, a list with one entry
+    per n, rewritten after every n so an OOM at a later n keeps the earlier
+    results. Multirun: ``multirun/<date>/<time>/<job>/result.json``. Through
+    ``slurm/run.sh`` the stdout log is
+    ``outputs/<JOB_NAME>/<date>/<time>/<JOB_NAME>.log``.
 """
 import json
 import os

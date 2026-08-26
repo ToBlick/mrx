@@ -1,27 +1,87 @@
-"""Convergence study for the k=1 Hodge–Laplacian with NBC on a toroidal domain.
+"""Convergence study for the k=1 Hodge Laplacian with natural conditions on a torus.
 
-Exact solution:  ω₁ = -2π sin(2πζ) dζ  (reference covariant components (0, 0, -2π sin 2πζ))
-Source:          f₁ = df₀,  where f₀ = cos(2πζ)/R²
-                 Reference covariant components:
-                   (f₁)_r    = -2ε cos(2πχ) cos(2πζ) / R³
-                   (f₁)_χ    = 4π ε r sin(2πχ) cos(2πζ) / R³
-                   (f₁)_ζ    = -2π sin(2πζ) / R²
+Solve ``-Δ₁ ω = f`` on the axisymmetric toroid map with natural boundary
+conditions (NBC), one resolution after another, and record the relative
+physical L² error, the MINRES iteration count and every timing. The
+manufactured solution and source are
 
-k=1 NBC has a 1-dimensional harmonic nullspace spanned by the toroidal 1-form
-(the Hodge dual of the generator of H¹(T²,ℝ)).
+    ω₁ = -2π sin(2πζ) dζ    reference covariant components (0, 0, -2π sin 2πζ)
+    f₁ = d f₀,  f₀ = cos(2πζ)/R²
+        (f₁)_r = -2ε cos(2πχ) cos(2πζ) / R³
+        (f₁)_χ = 4π ε r sin(2πχ) cos(2πζ) / R³
+        (f₁)_ζ = -2π sin(2πζ) / R².
 
-frame='ref'  — pass f₁ as bare reference covariant components (no DF needed).
-frame='phys' — pass f₁ as a physical Cartesian vector; load applies DF⁻¹ internally.
+k=1 NBC has a one-dimensional harmonic nullspace spanned by the toroidal
+1-form (the Hodge dual of the generator of H¹(T², ℝ)), which the
+saddle-point MINRES solve deflates. ``load_frame='ref'`` passes ``f₁`` as
+bare reference covariant components; ``load_frame='phys'`` passes a
+physical Cartesian vector and ``load`` applies ``DF⁻¹`` itself.
 
-Diagnostics logged per run:
-  - Relative physical L² error
-  - MINRES iteration count and convergence flag
-  - Nullspace vector residual  ||L₁ h||₂
-  - ||D₁ h||₂   (curl of harmonic 1-form — should be ≈ 0)
-  - ||D₀ᵀ h||₂  (divergence — should be ≈ 0)
+Diagnostics logged per resolution:
 
-Usage (from repo root):
-    python scripts/config_scripts/test_torus_poisson_nbc_k1_sparse.py -m p=1,2,3 n=8,12,16,20
+- relative physical L² error,
+- MINRES iteration count and convergence flag,
+- nullspace residual ``||L₁ h||₂``,
+- ``||D₁ h||₂`` (curl of the harmonic 1-form, expected ≈ 0),
+- ``||D₀ᵀ h||₂`` (divergence, expected ≈ 0).
+
+Configuration:
+    Hydra config ``conf/config_poisson_test.yaml``, schema
+    ``mrx.config.PoissonTestConfig``. Override any key as ``key=value``.
+
+    n (list[int] | int): Radial resolutions, run one after another; the
+        grid is ``ns = (n, 2n, n)``. An int runs a single resolution.
+        Default ``[8, 12, 16, 24, 32, 48, 64]``.
+    p (int): Spline degree in every direction. Default 3.
+    epsilon (float): Minor radius of ``toroid_map`` (major radius 1).
+        Default 1/3.
+    quad_order (int | None): Gauss quadrature order per direction. ``None``
+        selects ``2*p + quad_order_offset``. Default ``None``.
+    quad_order_offset (int): Offset on ``2*p``. Dataclass default 4; the
+        yaml sets 0.
+    cg_maxiter (int): Iteration cap of the Laplacian solve. Dataclass
+        default 100000; the yaml sets 50000.
+    solver_tol (float | None): Relative residual tolerance of every
+        iterative solve in the sequence. ``None`` selects ``sqrt(eps)`` of
+        the working precision; the yaml sets 1e-9.
+    precision (str): ``float64`` (default) or ``float32``. Read from argv
+        and exported as ``MRX_DTYPE`` before ``mrx`` is imported.
+    map_batch_size_inner (int): ``mrx.MAP_BATCH_SIZE_INNER``; 0 means
+        ``vmap``. Default 0.
+    map_batch_size_outer (int | None): ``mrx.MAP_BATCH_SIZE_OUTER``;
+        ``None`` means no batching. Default ``None``.
+    load_frame (str): ``'ref'`` passes the reference components of the
+        source, ``'phys'`` the physical field (see ``mrx.projectors.load``).
+        Default ``'ref'``.
+
+Usage:
+    Single run, all listed n in one process::
+
+        python -u scripts/config_scripts/test_torus_poisson_nbc_k1_sparse.py p=3
+        python -u scripts/config_scripts/test_torus_poisson_nbc_k1_sparse.py p=2 n=16 precision=float32
+
+    Single GPU job through ``slurm/run.sh``::
+
+        SCRIPT=scripts/config_scripts/test_torus_poisson_nbc_k1_sparse.py ARGS="p=3 n=16" \
+            JOB_NAME=pois_nbc_k1 MEM_GB=80 TIMEOUT_MIN=120 bash slurm/run.sh
+
+    Multirun, one submitit job per (p, n) pair. Needs ``SLURM_ACCOUNT``,
+    ``SLURM_PARTITION`` and ``MRX_ROOT`` exported; the launcher allots one
+    GPU, 80 GB and 120 min per job::
+
+        python scripts/config_scripts/test_torus_poisson_nbc_k1_sparse.py -m p=2,3 n=8,16
+
+Runtime:
+    One GPU, p=3, ``logs/mergepois_16819379.out`` (2026-08): TOTAL 166 s at
+    n=6, 220 s at n=8, 265 s at n=10 per resolution, JIT included. Memory
+    not measured; the multirun launcher allots 80 GB.
+
+Output:
+    Single run: ``outputs/<date>/<time>/result.json``, a list with one entry
+    per n, rewritten after every n so an OOM at a later n keeps the earlier
+    results. Multirun: ``multirun/<date>/<time>/<job>/result.json``. Through
+    ``slurm/run.sh`` the stdout log is
+    ``outputs/<JOB_NAME>/<date>/<time>/<JOB_NAME>.log``.
 """
 import json
 import os

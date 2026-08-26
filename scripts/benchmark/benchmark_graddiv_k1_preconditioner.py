@@ -1,49 +1,158 @@
-"""Diagnostic: additive grad-div subspace preconditioner for the k=1 Hodge Laplacian.
+"""Benchmark upper-block preconditioners for the k=0..3 Hodge Laplacians.
 
-We precondition the statically condensed 1-form operator
+Assemble one de Rham sequence on a chosen map, build the Laplacian of the
+requested form degree and time Krylov solves against a batch of random
+right-hand sides for every preconditioner arm, printing iteration counts,
+residuals and wall-clock per arm. The default path (``--klevel 1``)
+preconditions the statically condensed 1-form operator
 
     A = K_1 + D_0 M_0^{-1} D_0^T
 
-where ``K_1`` is the discrete curl-curl (1-form stiffness) and
-``D_0 M_0^{-1} D_0^T`` is the grad-div penalty obtained by eliminating the
-scalar multiplier from the mixed system. To avoid a Krylov-in-Krylov solve the
-inner ``M_0^{-1}`` is replaced by a single tensor mass-preconditioner apply
-(``apply_laplacian_approx``), giving a linear SPD matvec for ``A``.
+where ``K_1`` is the discrete curl-curl and ``D_0 M_0^{-1} D_0^T`` the
+grad-div penalty of the eliminated scalar multiplier; the inner
+``M_0^{-1}`` is one tensor mass-preconditioner apply, so ``A`` stays a
+linear SPD matvec without a Krylov-in-Krylov solve. The condensed operator
+runs through CG, the full saddle-point system through MINRES. Two upper
+preconditioners are compared:
 
-Two upper-block preconditioners are compared. The script can run either on
-the condensed operator (CG) or on the full saddle-point system (MINRES):
-
-* ``jacobi (diag)`` -- the current production best: the Schur-outer Jacobi
-                    preconditioner assembled with ``schur_diag_mode='metric_lumping_probe'``
-                    (rank-independent ``diag(M_0)^{-1}`` inner probe). A single
-                    stored diagonal multiply. Pairs with the tensor inner that
-                    ``A`` already bakes in, i.e. "jacobi outer + tensor inner".
-* ``jacobi(K) + P_B`` -- additive upper preconditioner combining the Jacobi
-                    inverse on the diagonal of ``K_1`` with the dual-Poisson
-                    potential correction block
+* ``jacobi (diag)``: the Schur-outer Jacobi preconditioner assembled with
+  ``schur_diag_mode='metric_lumping_probe'``; one stored diagonal multiply.
+* ``jacobi(K) + P_B``: the Jacobi inverse of ``diag(K_1)`` plus the
+  dual-Poisson potential correction
 
       P_B = G_0 L_0^{-1} M_0 L_0^{-1} G_0^T
 
-  implemented as the 5-step pipeline below. ``L_0^{-1}`` is the rank-1 tensor
-  k=0 Hodge-Laplacian preconditioner; ``G_0`` / ``G_0^T`` are the incidence
-  (gradient / weak-divergence) operators; ``M_0`` is the scalar mass matrix.
+  with ``L_0^{-1}`` the rank-1 tensor k=0 Laplacian preconditioner and
+  ``G_0``/``G_0^T`` the gradient / weak-divergence incidence operators.
+  ``P_B`` inverts the fourth-order grad-div block on the gradient
+  subspace that ``K_1`` alone leaves badly conditioned.
 
-  Pipeline (input r is a 1-form dual residual):
-      y1 = G_0^T r          # V1* -> V0*
-      y2 = L_0^{-1} y1      # V0* -> V0
-      y3 = M_0 y2           # V0  -> V0*
-      y4 = L_0^{-1} y3      # V0* -> V0
-      u  = G_0 y4           # V0  -> V1
+``--klevel 0``, ``2`` and ``3`` run the k=0 condensed nullspace test, the
+k=2 div-div path and the k=3 auxiliary-space transfer and exit. The
+default geometry is the axisymmetric toroid, ``ns=(6, 12, 4)``, ``p=3``,
+Betti numbers (1, 1, 0, 0); k=1 DBC then has no harmonic forms and k=0
+DBC no constants, so the saddle system is nonsingular.
 
-K_1 alone leaves the gradient subspace (penalised at fourth order by the
-grad-div term) badly conditioned; P_B is the inverse of that fourth-order block
-on the gradient subspace and should sharply cut iteration counts.
+Arguments:
+    Geometry:
 
-Geometry: axisymmetric toroid map, ns=(6, 12, 4), p=3, BETTI=(1, 1, 0, 0).
-Boundary condition: DBC on the 1-form. For BETTI=(1, 1, 0, 0) the k=1 DBC
-harmonic count is b2 = 0 and k=0 DBC has no constants, so the saddle system is
-nonsingular. This makes it a clean test for upper-preconditioner quality while
-keeping the lower block fixed to the rank-1 tensor mass preconditioner.
+    --ns (str): Comma-separated ``n_r,n_theta,n_zeta``. Default ``6,12,4``.
+    --p (int): Spline degree. Default 3.
+    --epsilon (float): Minor radius / inverse aspect ratio. Default 1/3.
+    --kappa (float): Elongation of the toroid / rotating-ellipse map.
+        Default 1.0.
+    --r0 (float): Major radius ``R0`` (cylinder: ``a = epsilon*r0``,
+        ``h = r0``). Default 1.0.
+    --geometry (str): ``toroid``, ``rotating_ellipse``, ``cylinder`` or
+        ``w7x`` (nfp=5, from ``data/W7-X.h5``). Default ``toroid``.
+    --nfp (int): Field periods of the rotating-ellipse map. Default 3.
+
+    Benchmark selection:
+
+    --klevel (int): Form degree 0, 1, 2 or 3; 0, 2, 3 run their dedicated
+        benchmark and exit. Default 1.
+    --system (str): ``condensed`` (CG), ``saddle`` (MINRES) or ``both``.
+        Default ``saddle``.
+    --methods (str): Comma-separated arm names or ``all``. Default ``all``.
+    --k1-both-bc: Run the k=1 saddle benchmark for DBC and free (b1=1
+        harmonic form deflated), jacobi vs tensor, then exit.
+    --leakage-only: Stop after ``P_A`` assembly and leakage diagnostics.
+    --mass-benchmark: Also benchmark k=0 mass inversion by CG, jacobi vs
+        tensor, with the dense surgery coupling precomputed on and off.
+    --jacobi-scale-sweep (str): Comma-separated alphas for
+        ``alpha*jacobi(diag) + P_A + P_B`` through one jitted solve.
+        Default empty.
+    --rhs-kind (str): ``random`` 1-form or pure ``gradient`` trial vector.
+        Default ``random``.
+    --n-rhs (int): Right-hand sides per arm. Default 4.
+    --seed (int): RNG seed. Default 0.
+
+    Solver:
+
+    --cg-tol (float): Relative residual tolerance. Default 1e-10.
+    --cg-maxiter (int): Iteration cap. Default 2000.
+    --report-rel-tol (float): Threshold for fail counting in the summary
+        tables. Default ``None`` uses ``--cg-tol``.
+
+    P_A construction:
+
+    --rank (int): CP rank of the tensor preconditioners in ``block_fd``.
+        Default ``RANK`` (1).
+    --pa-mode (str): ``P_A`` implementation; only ``block_fd``. Default
+        ``block_fd``.
+    --pa-block-inner-schur: Enable the inner bulk Schur coupling.
+    --pa-block-coupled: Per-mode 3x3 exact inverse keeping the C-terms
+        (``k1_coupled_atom`` module).
+    --pa-block-vector-fd: Vector-valued modewise 3x3 FD coupling in the
+        bulk inverse (diagonal-metric model); not with
+        ``--pa-block-inner-schur``.
+    --pa-block-vector-fd-true-basis: Same with modal bases probed from the
+        extracted bulk operator; not with the two flags above.
+    --pa-block-radial-banded: Full radial-mode and cross-component coupling
+        per angular mode; not with the three flags above.
+    --pa-block-vector-fd-regularization-rel (float): Relative spectral
+        floor for near-singular 3x3 vector-FD blocks. Default 1e-2.
+    --pa-block-vector-fd-low-mode-exclude (int): Stronger floor on the
+        first N shared modal indices (true-basis mode). Default 0.
+    --pa-block-vector-fd-report-k (int): Lowest/highest per-mode min-eig
+        entries to print. Default 8.
+    --pa-block-vector-fd-origin-k (int): Flagged 3x3 blocks to print in
+        detail. Default 4.
+    --no-precompute-coupling: Use the matrix-free surgery<->bulk coupling
+        instead of the precomputed dense blocks (on by default).
+    --pa-grad-project: Sandwich ``P_A`` between gradient-complement
+        projectors so ``P_B`` owns the gradient subspace.
+    --true-g: Use the true polar derivative ``G = Gram^{-1} (E^T sp E)`` in
+        the projector / ``P_B`` (k=1 and k=2).
+
+    Diagnostics and output:
+
+    --pa-check-tol (float): Tolerance of the ``P_A`` symmetry / PSD checks.
+        Default 1e-10.
+    --pa-profile: Profile the ``P_A`` apply phases outside Krylov.
+    --compact-output: Print compact summaries instead of full blocks.
+    --assembly-breakdown: Print per-substep assembly timings.
+    --dense-ps-spectrum: Densify ``P^(1/2) S P^(1/2)`` and ``eigh`` it;
+        ``n_upper <= ~6000`` only.
+    --pa-stiffness-spectrum (str): Dense spectrum of ``P_A S``: ``none``,
+        ``all`` or a comma list from ``active,jacobi,pinv``. Default
+        ``none``.
+    --pa-stiffness-spectrum-pinv-rcond (float): Pseudoinverse cutoff of
+        that check. Default 1e-12.
+    --pa-stiffness-spectrum-curl-cutoff (float): Relative ``|eig|`` cutoff
+        separating the gradient nullspace from the curl modes. Default
+        1e-8.
+    --pa-stiffness-spectrum-tail-k (int): Largest-``|eig|`` modes printed
+        with tail-origin diagnostics. Default 4.
+
+    Environment switches read in addition: ``MRX_K1_PB=divdiv`` wires the
+    ``k1_p12_divdiv`` arm, ``MRX_K3_TENSOR=1`` the ``k3_tensor_transfer``
+    route; ``MRX_K1_PA_GREVILLE``, ``MRX_K1_L0INV``, ``MRX_K1_MG_M``,
+    ``MRX_K1_JAC``, ``MRX_K1_MASSPREC``, ``MRX_K3_AXIS0``, ``MRX_K3_CORE``
+    and ``MRX_K3_WALL`` select experimental variants at their call sites.
+    ``scripts/`` and ``scripts/benchmark/`` are put on ``sys.path`` so the
+    companion modules import by bare name.
+
+Usage:
+    ::
+
+        python -u scripts/benchmark/benchmark_graddiv_k1_preconditioner.py --ns 6,12,4 --p 3
+        python -u scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
+            --geometry w7x --ns 8,16,8 --p 3 --klevel 1 --system saddle --compact-output
+
+    Single GPU job through ``slurm/run.sh``::
+
+        SCRIPT=scripts/benchmark/benchmark_graddiv_k1_preconditioner.py \
+            ARGS="--geometry w7x --ns 8,16,8 --p 3 --klevel 1" \
+            JOB_NAME=graddiv_k1 bash slurm/run.sh
+
+Runtime:
+    Not measured.
+
+Output:
+    Tables and diagnostics on stdout only; there is no output-file flag.
+    Through ``slurm/run.sh`` the log is
+    ``outputs/<JOB_NAME>/<date>/<time>/<JOB_NAME>.log``.
 """
 
 from __future__ import annotations
