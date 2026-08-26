@@ -44,6 +44,8 @@ vector and the right-hand side is bounded through the origin.
 """
 from __future__ import annotations
 
+import time
+
 import diffrax as dfx
 import jax
 import jax.numpy as jnp
@@ -547,11 +549,17 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
                    axis_RZ=None, path=None, profile_x=None,
                    profile_xlabel="seed radius $r$", nfp=None, denom_max=15,
                    logical=None, chaotic=None, pressure=None,
-                   split_iota_p=False, cmap=SECTION_CMAP):
+                   split_iota_p=False, cmap=SECTION_CMAP, iota_lim=None):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
     rebuilding the map -- which is the expensive half of producing it.
+
+    ``iota_lim`` pins the colour scale instead of taking it from this figure's
+    own lines.  Two sections drawn on limits fitted separately are not
+    comparable by colour at all -- the same hue means a different transform in
+    each -- so any caller producing a set that is meant to be read side by side
+    (two relaxation states, a plane scan) must pass one shared pair.
 
     ``pressure`` is per-crossing, the same shape as ``R``. It is OPTIONAL
     because the fields this traces are harmonic (vacuum-like) and carry no
@@ -603,7 +611,11 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         chaotic = jnp.zeros_like(keep)
     shown = keep & ~chaotic
     good = iota[shown][jnp.isfinite(iota[shown])] if shown.any() else iota[:0]
-    lo, hi = (float(jnp.min(good)), float(jnp.max(good))) if good.size else (0.0, 1.0)
+    if iota_lim is not None:
+        lo, hi = float(iota_lim[0]), float(iota_lim[1])
+    else:
+        lo, hi = ((float(jnp.min(good)), float(jnp.max(good)))
+                  if good.size else (0.0, 1.0))
     if hi - lo < 1e-9:
         lo, hi = lo - 5e-3, hi + 5e-3
 
@@ -656,7 +668,15 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     if (~keep).any() or (keep & chaotic).any():
         ax.legend(loc="upper right", fontsize=7, markerscale=4)
     if axis_RZ is not None:
-        ax.plot(axis_RZ[0], axis_RZ[1], "k+", ms=5, mew=0.8)
+        # ONE marker at the mean, plus a hairline through the wander. Drawing a
+        # "k+" at every save stacked 401 opaque markers into a black blob ~10%
+        # of the minor radius across, which reads as a failed line at the axis
+        # -- it is neither a line nor a failure, it is the axis doing what a
+        # stellarator axis does.
+        aR, aZ = jnp.asarray(axis_RZ[0]), jnp.asarray(axis_RZ[1])
+        if aR.ndim and aR.size > 1:
+            ax.plot(aR, aZ, "-", color="0.35", lw=0.4, alpha=0.6, zorder=4)
+        ax.plot(jnp.mean(aR), jnp.mean(aZ), "k+", ms=7, mew=1.2, zorder=5)
     cbar = fig.colorbar(sc, ax=ax, label=r"$\iota$", fraction=0.046, pad=0.02)
     if res_ticks:
         # Only the rationals an nfp-periodic field can actually resonate with:
@@ -721,6 +741,10 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
                     ha="right", va="bottom", fontsize=6.5, color="0.4")
     bx.set_xlabel(profile_xlabel)
     bx.set_ylabel(r"$\iota$")
+    if iota_lim is not None:
+        # Same reason as the colour scale: two profiles drawn on separately
+        # fitted y-axes look alike however far the transform actually moved.
+        bx.set_ylim(lo, hi)
     bx.grid(alpha=0.3)
     bx2 = bx.twinx()
     bx2.semilogy(x[shown], jnp.maximum(resid[shown], 1e-16), ".", ms=4,
@@ -804,3 +828,141 @@ def seed_line(n_seeds, r_min=0.03, r_max=0.97, theta=0.0, r_axis=0.01):
     """
     r = jnp.concatenate([jnp.array([r_axis]), jnp.linspace(r_min, r_max, n_seeds)])
     return jnp.stack([r, jnp.full_like(r, theta)], axis=1)
+
+
+# ---------------------------------------------------------------------------
+# Driver glue
+# ---------------------------------------------------------------------------
+#
+# Everything below is shared by the scripts that produce a figure.  They differ
+# only in where the field comes from -- a nullspace solve, a relaxation state,
+# a file -- and nothing past that point should be written twice.
+
+def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
+                       saves_per_period, batch_size=None, drift_periods=64,
+                       drift_seeds=8):
+    """Trace ``seeds``, measure iota, and say which lines have one.
+
+    Seed 0 is the axis probe: it defines the centre, so its own winding is the
+    difference of two identical numbers.  Its orbit is kept -- as ``axis`` --
+    and it is dropped from everything that is reported, exactly as
+    :func:`seed_line` and :func:`seed_from_axis` document.
+
+    ``chaotic`` comes from :func:`iota_convergence` rather than from the
+    angle-fit residual, and is computed here, on the full trace and about the
+    same centre that iota used.  A caller that recomputes it from an archive
+    with the probe already stripped is winding about a different point.
+
+    Returns a dict of numpy arrays plus ``walltime``, ``drift`` and
+    ``saves_per_period``.
+    """
+    t0 = time.perf_counter()
+    ys, ok = trace(field, seeds, n_periods, steps_per_period, saves_per_period,
+                   batch_size=batch_size)
+    ys = jnp.asarray(ys).block_until_ready()
+    walltime = time.perf_counter() - t0
+
+    escaped = escaped_mask(ys)
+    centre = axis_track(ys, saves_per_period)
+    iota, resid = rotational_transform(ys, saves_per_period, nfp, center=centre)
+    chaotic = iota_convergence(ys, saves_per_period, nfp,
+                               center=centre) > CHAOS_TOL
+
+    # The drift check re-traces at h and h/2, so it is priced per seed: a
+    # subsample says the same thing.
+    #
+    # It is measured over the REGULAR lines only, and that is not a cosmetic
+    # choice. Two nearby chaotic trajectories separate exponentially, so on a
+    # stochastic line the h vs h/2 displacement measures the Lyapunov exponent
+    # rather than the integration error -- it saturates at the size of the
+    # stochastic region and does NOT fall under refinement. Which is exactly
+    # the signature that means "the zeta parameterisation is broken" on a
+    # regular line, so a mixed sample reports a healthy trace as a broken one.
+    # The probe is excluded too: a seed at r = 0.01 is the cheapest orbit in
+    # the batch and the least informative about the step the edge needs.
+    #
+    # ``drift`` is NaN when no line is regular. That is not a failed step
+    # check; it is the statement that on this trace the step cannot be checked
+    # this way at all, and a number would be a lie.
+    regular = np.flatnonzero(~np.asarray(chaotic | escaped))
+    regular = regular[regular > 0]
+    idx = regular[:: max(1, len(regular) // drift_seeds)]
+    drift = (step_convergence(field, seeds[idx],
+                              min(n_periods, drift_periods),
+                              steps_per_period, saves_per_period,
+                              batch_size=batch_size)
+             if idx.size else float("nan"))
+
+    return {"ys": np.asarray(ys[1:]), "ok": np.asarray(ok[1:]),
+            "escaped": np.asarray(escaped[1:]), "iota": np.asarray(iota[1:]),
+            "resid": np.asarray(resid[1:]), "chaotic": np.asarray(chaotic[1:]),
+            "seeds": np.asarray(seeds[1:]), "axis": np.asarray(ys[0]),
+            "walltime": walltime, "drift": drift, "drift_lines": int(idx.size),
+            "saves_per_period": saves_per_period}
+
+
+def section_RZ(seq, ys, axis_uv, saves_per_period, plane):
+    """``(R, Z)`` of the crossings, of the magnetic axis, and of ``r = 0``.
+
+    The magnetic axis has no reason to sit on the coordinate axis
+    ``F(0, ., zeta)``: the maps come from equilibria, and a finite-beta one puts
+    ``r = 0`` at its own Shafranov-shifted axis.  Both are returned, so the
+    distance between them is a number the caller can print.  Nothing downstream
+    depends on the two coinciding -- the poloidal angle is measured about the
+    tracked magnetic axis, which is what makes the offset measurable rather
+    than fatal.
+
+    Returns ``(R, Z, axis_R, axis_Z, coord_R, coord_Z, logical_r,
+    logical_theta)``.
+    """
+    off = int(round(plane * saves_per_period))
+    uv = np.asarray(ys)[:, off::saves_per_period, :]
+    R, Z = to_RZ(seq, jnp.asarray(uv), plane)
+    aR, aZ = to_RZ(
+        seq, jnp.asarray(np.asarray(axis_uv)[off::saves_per_period, :]), plane)
+    cR, cZ = to_RZ(seq, jnp.zeros((1, 2)), plane)
+    lr = np.hypot(uv[..., 0], uv[..., 1])
+    lth = np.arctan2(uv[..., 1], uv[..., 0]) / (2.0 * np.pi) % 1.0
+    return (np.asarray(R), np.asarray(Z), np.asarray(aR), np.asarray(aZ),
+            float(cR[0]), float(cZ[0]), lr, lth)
+
+
+#: Choices for :func:`surface_label`, best first.
+SURFACE_LABELS = ("midplane", "mean", "area", "seed")
+
+
+def surface_label(kind, R, Z, axis_R, axis_Z, seed_r):
+    """The x-axis of the iota profile: one physical size per surface.
+
+    Returns ``(values, xlabel)``.  ``seed`` is the fallback that needs no
+    geometry, and is the only one of the four that is not physical.
+    """
+    aR, aZ = float(np.mean(axis_R)), float(np.mean(axis_Z))
+    Rj, Zj = jnp.asarray(R), jnp.asarray(Z)
+    if kind == "midplane":
+        # Monotone BY NESTING: nested curves cross a fixed ray from the axis at
+        # strictly increasing distance, and fixing the ray also removes the
+        # crossing-point sampling weight that makes the mean non-monotone. NaN
+        # where an orbit misses the ray entirely, which is a broken trace saying
+        # so.
+        return (np.asarray(midplane_radius(Rj, Zj, aR, aZ)),
+                "outboard midplane distance to axis  [m]")
+    if kind == "mean":
+        # Physical and comparable across maps, no ordering needed, but averages
+        # over crossings whose angular distribution is set by the dynamics
+        # rather than by the surface.
+        return (np.asarray(mean_axis_distance(Rj, Zj, aR, aZ)),
+                "mean distance to magnetic axis  [m]")
+    if kind == "area":
+        # Physical too, but the shoelace needs the crossings sorted by angle and
+        # assumes star-shapedness about the axis.
+        return (np.asarray(effective_radius(Rj, Zj, aR, aZ)),
+                r"$\sqrt{A/\pi}$  [m]")
+    if kind == "seed":
+        # Monotone BY CONSTRUCTION, so the curve can never double back -- at the
+        # cost of being a logical label, which names a different surface as soon
+        # as the map changes. Fine for reading one plot, useless for comparing
+        # two resolutions.
+        return np.asarray(seed_r), "seed radius $r$  (logical)"
+    raise ValueError(f"surface_label: kind must be one of {SURFACE_LABELS}, "
+                     f"got {kind!r}")

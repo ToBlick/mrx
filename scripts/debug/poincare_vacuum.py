@@ -47,10 +47,9 @@ from mrx.nullspace import (  # noqa: E402
     harmonic_rayleigh,
 )
 from mrx.poincare import (  # noqa: E402
-    effective_radius, escaped_mask, logical_field,
-    mean_axis_distance, midplane_radius, render_section,
-    require_zeta_parameterisation, rotational_transform, seed_from_axis,
-    seed_line, step_convergence, to_RZ, trace,
+    SURFACE_LABELS, logical_field, render_section,
+    require_zeta_parameterisation, section_RZ, seed_from_axis, seed_line,
+    surface_label, trace, trace_and_classify,
 )
 from verify_block_jacobi import build_sequence  # noqa: E402
 
@@ -223,51 +222,10 @@ def run_field(seq, dof, k, dirichlet, nfp, cli):
                                steps_per_period=cli.steps)
     else:
         seeds = seed_line(cli.seeds, r_min=cli.r_min, r_max=cli.r_max)
-
-    t0 = time.perf_counter()
-    ys, ok = trace(field, seeds, cli.periods, cli.steps, cli.saves,
-                   batch_size=cli.batch_size)
-    ys = jnp.asarray(ys).block_until_ready()
-    walltime = time.perf_counter() - t0
-
-    escaped = escaped_mask(ys)
-    iota, resid = rotational_transform(ys, cli.saves, nfp)
-
-    drift = step_convergence(field, seeds[:: max(1, cli.seeds // 8)],
-                             min(cli.periods, cli.drift_periods),
-                             cli.steps, cli.saves)
-
-    # Seed 0 is the axis probe: it defines the centre, so its own winding is
-    # the difference of two identical numbers.  Keep its orbit for the plot,
-    # drop it from everything that is reported.
-    return {"ys": np.asarray(ys[1:]), "ok": np.asarray(ok[1:]),
-            "escaped": np.asarray(escaped[1:]), "iota": np.asarray(iota[1:]),
-            "resid": np.asarray(resid[1:]), "seeds": np.asarray(seeds[1:]),
-            "axis": np.asarray(ys[0]),
-            "walltime": walltime, "drift": drift}
-
-
-def section_RZ(seq, res, plane):
-    """(R, Z) of the crossings, of the magnetic axis, and of the coordinate axis.
-
-    The last one is ``F(r=0, ., zeta)``.  The magnetic axis of the harmonic
-    field has no reason to sit on it -- the maps come from finite-beta
-    equilibria, and the two perturbed files displace it on purpose -- so the
-    distance between them is reported as ``axis_offset``.  Nothing downstream
-    depends on the two coinciding: the poloidal angle is measured about the
-    tracked magnetic axis, which is what makes the offset measurable rather
-    than fatal.
-    """
-    saves = res["saves_per_period"]
-    off = int(round(plane * saves))
-    uv = res["ys"][:, off::saves, :]
-    R, Z = to_RZ(seq, jnp.asarray(uv), plane)
-    aR, aZ = to_RZ(seq, jnp.asarray(res["axis"][off::saves, :]), plane)
-    cR, cZ = to_RZ(seq, jnp.zeros((1, 2)), plane)
-    lr = np.hypot(uv[..., 0], uv[..., 1])
-    lth = np.arctan2(uv[..., 1], uv[..., 0]) / (2.0 * np.pi) % 1.0
-    return (np.asarray(R), np.asarray(Z), np.asarray(aR), np.asarray(aZ),
-            float(cR[0]), float(cZ[0]), lr, lth)
+    return trace_and_classify(
+        field, seeds, nfp, n_periods=cli.periods, steps_per_period=cli.steps,
+        saves_per_period=cli.saves, batch_size=cli.batch_size,
+        drift_periods=cli.drift_periods)
 
 
 def plot(res, geometry, label, plane, nfp, RZ, a_eff, xlabel, path):
@@ -278,11 +236,12 @@ def plot(res, geometry, label, plane, nfp, RZ, a_eff, xlabel, path):
         R, Z, res["iota"], res["resid"], res["seeds"][:, 0], keep,
         title=f"{geometry}  |  {label}  |  $\\zeta = {plane:g}$\n"
               f"{R.shape[1]} crossings/line",
-        subtitle=f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "
+        subtitle=f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e} over "
+                 f"{res['drift_lines']} regular lines   |   "
                  f"axis offset {offset:.2e}",
         axis_RZ=(aR, aZ), path=path, profile_x=a_eff,
         profile_xlabel=xlabel, nfp=nfp,
-        logical=(lr, lth))
+        logical=(lr, lth), chaotic=res["chaotic"])
     return offset
 
 
@@ -311,9 +270,8 @@ def main():
     ap.add_argument("--bench", action="store_true",
                     help="time the prescribed schedule against the adaptive one")
     ap.add_argument("--bench-periods", type=int, default=20)
-    ap.add_argument("--profile-x", default="midplane",
-                    choices=("midplane", "mean", "area", "seed"),
-                    help="surface label on the iota profile: 'midplane' "
+    ap.add_argument("--profile-x", default="midplane", choices=SURFACE_LABELS,
+                    help="surface label on the iota profile: 'midplane'"
                          "distance from the axis on the outboard midplane "
                          "(physical AND monotone by nesting -- the default), "
                          "'mean' distance over all crossings, 'area' "
@@ -386,15 +344,18 @@ def main():
             logical_field(seq, dof, k, dirichlet), name)
 
         res = run_field(seq, dof, k, dirichlet, nfp, cli)
-        res["saves_per_period"] = cli.saves
 
         keep = ~(res["escaped"] | ~res["ok"])
-        iota = res["iota"][keep]
+        # A short trace has no converged winding for ANY line -- the half-vs-
+        # half test needs length -- and an empty reduction here would report
+        # that as a crash instead of as the trace being too short.
+        iota = res["iota"][keep & ~res["chaotic"]]
+        span = (f"iota {float(iota.min()):.4f}..{float(iota.max()):.4f}"
+                if iota.size else "iota: no line converged")
         print(f"[{name}] {label}: {res['walltime']:.1f}s trace, "
               f"{int((~keep).sum())}/{cli.seeds} lost, "
-              f"step drift {res['drift']:.2e}, "
-              f"iota {float(iota.min()):.4f}..{float(iota.max()):.4f}",
-              flush=True)
+              f"{int((keep & res['chaotic']).sum())} chaotic, "
+              f"step drift {res['drift']:.2e}, {span}", flush=True)
 
         # (R, Z) goes into the archive alongside (u, v): re-deriving it needs
         # the map, and rebuilding the map is the expensive half of this script.
@@ -402,39 +363,17 @@ def main():
         for plane in planes:
             path = os.path.join(
                 cli.out, f"poincare_{cli.geometry}_{name}_zeta{plane:g}.png")
-            R, Z, aR, aZ, cR, cZ, lr, lth = section_RZ(seq, res, plane)
+            R, Z, aR, aZ, cR, cZ, lr, lth = section_RZ(
+                seq, res["ys"], res["axis"], cli.saves, plane)
             # a_eff is the map-INDEPENDENT surface label: the seed radius names
             # a different surface as soon as the map changes, which is exactly
             # what a resolution sweep and an interior perturbation both do.
-            # Both labels are archived; the profile is drawn against the mean
-            # distance, which needs no ordering and no star-shape assumption.
-            a_area = np.asarray(effective_radius(
-                jnp.asarray(R), jnp.asarray(Z), aR.mean(), aZ.mean()))
-            a_mean = np.asarray(mean_axis_distance(
-                jnp.asarray(R), jnp.asarray(Z), aR.mean(), aZ.mean()))
-            a_mid = np.asarray(midplane_radius(
-                jnp.asarray(R), jnp.asarray(Z), aR.mean(), aZ.mean()))
-            a_eff, xlabel = {
-                # Monotone BY NESTING: nested curves cross a fixed ray from the
-                # axis at strictly increasing distance, and fixing the ray also
-                # removes the crossing-point sampling weight that makes the mean
-                # non-monotone. NaN where an orbit misses the ray entirely,
-                # which is a broken trace saying so.
-                "midplane": (a_mid,
-                             "outboard midplane distance to axis  [m]"),
-                # Physical and comparable across maps, no ordering needed, but
-                # averages over crossings whose angular distribution is set by
-                # the dynamics rather than by the surface.
-                "mean": (a_mean, "mean distance to magnetic axis  [m]"),
-                # Physical too, but the shoelace needs the crossings sorted by
-                # angle and assumes star-shapedness about the axis.
-                "area": (a_area, r"$\sqrt{A/\pi}$  [m]"),
-                # Monotone BY CONSTRUCTION, so the curve can never double back
-                # -- at the cost of being a logical label, which names a
-                # different surface as soon as the map changes. Fine for
-                # reading one plot, useless for comparing two resolutions.
-                "seed": (res["seeds"][:, 0], "seed radius $r$  (logical)"),
-            }[cli.profile_x]
+            # Two labels are archived beside the chosen one so that a re-render
+            # can change its mind without paying for the map again.
+            seed_r = res["seeds"][:, 0]
+            a_area = surface_label("area", R, Z, aR, aZ, seed_r)[0]
+            a_mid = surface_label("midplane", R, Z, aR, aZ, seed_r)[0]
+            a_eff, xlabel = surface_label(cli.profile_x, R, Z, aR, aZ, seed_r)
             off = plot(res, cli.geometry, label, plane, nfp,
                        (R, Z, aR, aZ, cR, cZ, lr, lth), a_eff, xlabel, path)
             offsets[f"zeta{plane:g}"] = off
@@ -453,10 +392,12 @@ def main():
             os.path.join(cli.out, f"trace_{cli.geometry}_{name}.npz"),
             ys=res["ys"], iota=res["iota"], resid=res["resid"],
             seeds=res["seeds"], escaped=res["escaped"], ok=res["ok"],
-            axis=res["axis"], **sections)
+            axis=res["axis"], chaotic=res["chaotic"], nfp=nfp,
+            saves_per_period=cli.saves, label=label, **sections)
         summary["fields"][name] = {
             "walltime_s": res["walltime"], "step_drift": res["drift"],
             "lost": int((~keep).sum()),
+            "chaotic": int((keep & res["chaotic"]).sum()),
             "iota_min": float(iota.min()), "iota_max": float(iota.max()),
             "resid_max": float(res["resid"][keep].max()),
             "axis_offset_m": offsets, "zeta_component": zeta,
