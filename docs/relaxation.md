@@ -83,6 +83,20 @@ needs `K` of 10-100 to be representable, and since even the finest mode
 diffuses over `1 / (eta λ_max) ~ 1000` such steps, `K <= 100` is physically
 harmless.
 
+Cost and range of the resistive solve, measured on `w7x-fmm002`,
+`(8,16,8)`, `p = 3`, tol `1e-12`, CG, tanh schedule: `eta = 1e-3`
+(`eps ~ 2e-5`) 383 MINRES iterations per step, 0.72 s/step against 0.62
+explicit; `eta = 1e-2` (`eps ~ 1e-3`) 612 mean, 1938 max, 0.82 s/step,
+`||div B|| <= 2e-9` (the MINRES residual at that iteration count, not
+`1e-16`); a fixed `dt = 0.02` at `eta = 1` (`eps = 0.02`) converges in 5000
+iterations per step and stays monotone where the explicit code is NaN in 5
+steps. The upper block is preconditioned by the metric-lumping MASS atom, so
+the count grows with `eps λ_max`, and at `eps ~ 0.2` (`eta = 1e-1` with an
+uncapped `dt ~ 1.7`) the solve hits `maxiter` and the guarantees lapse
+(energy up by `3e-7`, `div B` `6e-6`). The working range is `eta <= 1e-2`
+at the line-search `dt`; see `docs/research/OPEN.md` 3.9 for the separable
+`(M + eps L)` atom that removes the limit.
+
 `M_2` is applied three times per step (`M F`, `M u`, `M dB`) for every
 method. With the line search, `dE/dt <= 0` is a guarantee at every `eta`:
 the ideal step is the line minimiser and the implicit diffusion
