@@ -836,6 +836,10 @@ class _LumpBlock(eqx.Module):
     alpha: jnp.ndarray           # leaf: was a tuple of Python floats
     dscale: jnp.ndarray          # leaf: ALWAYS an array (None was a treedef split)
     shape: tuple = eqx.field(static=True)     # STATIC: reshape target
+    # STATIC: when the block's rows are the contiguous range starting at
+    # ``offset`` with unit weights (a pure selector, e.g. every k=3 block)
+    # the gather and the multiply are a static slice instead.
+    offset: int = eqx.field(static=True)      # -1 when not a selector
 
 
 class _LumpPayload(eqx.Module):
@@ -854,6 +858,24 @@ class _LumpPayload(eqx.Module):
     core_inv: jnp.ndarray        # leaf
     perm: jnp.ndarray            # leaf: output gather, see _output_permutation
     has_core: bool = eqx.field(static=True)   # STATIC: guards a branch
+    identity_perm: bool = eqx.field(static=True)  # STATIC: skip the gather
+
+
+def _block_input(b, x):
+    """``vals * x[rows]`` as the block tensor; a static slice for a selector."""
+    n = int(np.prod(b.shape))
+    if b.offset >= 0:
+        return x[b.offset:b.offset + n].reshape(b.shape)
+    return (b.vals * x[b.rows]).reshape(b.shape)
+
+
+def _block_output(b, sol):
+    return sol.reshape(-1) if b.offset >= 0 else b.vals * sol.reshape(-1)
+
+
+def _place(payload, parts):
+    out = parts[0] if len(parts) == 1 else jnp.concatenate(parts)
+    return out if payload.identity_perm else out[payload.perm]
 
 
 def _apply_lump_payload(payload: _LumpPayload, x):
@@ -862,27 +884,30 @@ def _apply_lump_payload(payload: _LumpPayload, x):
     No scatters: every block gathers its input in tensor order, and the
     per-block results are concatenated and gathered once through ``perm``.
     The previous form wrote one full-length ``out.at[rows].set`` per block
-    plus one for the core -- four scatters per apply.
+    plus one for the core -- four scatters per apply. Selector blocks and an
+    identity output order are static slices / no-ops, so a k=3 apply is the
+    fast-diagonalisation solve and nothing else.
     """
     parts = []
     for b in payload.blocks:
-        buf = (b.vals * x[b.rows]).reshape(b.shape) * b.dscale
+        buf = _block_input(b, x) * b.dscale
         sol = _fd_apply_3d(b.v_r, b.v_t, b.v_z,
                            b.lam_r, b.lam_t, b.lam_z, b.alpha, buf)
-        parts.append(b.vals * (sol * b.dscale).reshape(-1))
+        parts.append(_block_output(b, sol * b.dscale))
     if payload.has_core:
         parts.append(payload.core_inv @ x[payload.core])
-    return jnp.concatenate(parts)[payload.perm]
+    return _place(payload, parts)
 
 
 def _tensor_blocks(seq, k, dirichlet, extra_rings=0, outer_rings=0):
     """Split the extraction into per-component tensor blocks plus the core.
 
     Returns ``(core, bulk, e, polar, inner, outer, blocks)`` where ``blocks``
-    holds, per component, ``None`` or ``(rows, vals, (r0, nr), shape)`` with
-    ``rows``/``vals`` in TENSOR order over the ``(nr, n_t, n_z)`` block. Raises
-    if a component's bulk DOFs are not a full radial slab, since the separable
-    atom does not apply then.
+    holds, per component, ``None`` or ``(rows, vals, (r0, nr), shape, offset)``
+    with ``rows``/``vals`` in TENSOR order over the ``(nr, n_t, n_z)`` block
+    and ``offset >= 0`` when the block is a pure selector (rows contiguous
+    from ``offset``, unit weights). Raises if a component's bulk DOFs are not
+    a full radial slab, since the separable atom does not apply then.
     """
     shapes = [tuple(int(s) for s in sh)
               for sh in getattr(seq, f"basis_{k}").shape]
@@ -913,13 +938,17 @@ def _tensor_blocks(seq, k, dirichlet, extra_rings=0, outer_rings=0):
                 f"k={k} component {c}: the {lidx.size} bulk DOFs are not the "
                 f"tensor block [{r0},{r1}) x {shape[1]} x {shape[2]}; the "
                 "separable atom does not apply")
-        blocks.append((rows_b[sel][order], vals_b[sel][order], (r0, nr),
-                       (nr, shape[1], shape[2])))
+        rows_t, vals_t = rows_b[sel][order], vals_b[sel][order]
+        selector = (np.array_equal(rows_t, rows_t[0] + np.arange(rows_t.size))
+                    and np.all(vals_t == 1.0))
+        blocks.append((rows_t, vals_t, (r0, nr), (nr, shape[1], shape[2]),
+                       int(rows_t[0]) if selector else -1))
     return core, bulk, e, polar, inner, outer, blocks
 
 
 def _output_permutation(block_rows, core, n_ext):
-    """Gather that puts ``concat(block results..., core result)`` into place.
+    """``(perm, identity)``: the gather that puts ``concat(block results...,
+    core result)`` into place, and whether it is the identity.
 
     Every extracted row is owned by exactly one bulk block entry or by the
     core -- checked, since the gather silently mis-places rows otherwise.
@@ -929,7 +958,8 @@ def _output_permutation(block_rows, core, n_ext):
         raise ValueError(
             f"bulk blocks and core cover {owners.size} rows, not every one of "
             f"the {n_ext} extracted rows exactly once")
-    return jnp.asarray(np.argsort(owners))
+    perm = np.argsort(owners)
+    return jnp.asarray(perm), bool(np.array_equal(perm, np.arange(n_ext)))
 
 
 # --------------------------------------------------------------------------- #
@@ -1007,7 +1037,7 @@ class MetricLumpingLaplacian:
             if blk is None:
                 self.blocks.append(None)
                 continue
-            rows_t, vals_t, (r0, nr), shape = blk
+            rows_t, vals_t, (r0, nr), shape, offset = blk
             atom = build_bulk_atom(
                 seq, k, c, window=(r0, nr), ktilde_mode=ktilde_mode,
                 lumped=lumped, dirichlet=dirichlet, bc_scale=bc_scale,
@@ -1028,7 +1058,7 @@ class MetricLumpingLaplacian:
                 dscale = 1.0 / jnp.sqrt(d_full[r0:r0 + nr, :, :])
             self.blocks.append({
                 "rows": rows_t, "vals": vals_t, "shape": shape,
-                "atom": atom, "dscale": dscale})
+                "offset": offset, "atom": atom, "dscale": dscale})
 
         # Probe the whole core (polar ring + any extra/outer rings) and invert
         # it exactly. A separable 2-D ring atom was tried instead and dropped:
@@ -1070,15 +1100,18 @@ class MetricLumpingLaplacian:
                 alpha=jnp.asarray(alpha, dtype=DTYPE),
                 dscale=blk["dscale"],
                 shape=blk["shape"],
+                offset=blk["offset"],
             ))
+        perm, identity = _output_permutation(
+            [b["rows"] for b in self.blocks if b is not None],
+            self.probe_rows, self.n_ext)
         return _LumpPayload(
             blocks=tuple(blocks),
             core=jnp.asarray(self.probe_rows),
             core_inv=self.core_inv,
-            perm=_output_permutation(
-                [b["rows"] for b in self.blocks if b is not None],
-                self.probe_rows, self.n_ext),
+            perm=perm,
             has_core=bool(self.probe_rows.size > 0),
+            identity_perm=identity,
         )
 
     def apply(self, x):
@@ -1097,6 +1130,7 @@ class _MassBlock(eqx.Module):
     inv_z: jnp.ndarray
     lam: jnp.ndarray             # leaf: the diagonal sandwich
     shape: tuple = eqx.field(static=True)     # STATIC: reshape target
+    offset: int = eqx.field(static=True)      # STATIC: see _LumpBlock
 
 
 class _MassPayload(eqx.Module):
@@ -1105,20 +1139,21 @@ class _MassPayload(eqx.Module):
     core_inv: jnp.ndarray
     perm: jnp.ndarray
     has_core: bool = eqx.field(static=True)   # STATIC: guards a branch
+    identity_perm: bool = eqx.field(static=True)
 
 
 def _apply_mass_payload(payload: _MassPayload, x):
     parts = []
     for b in payload.blocks:
-        buf = (b.vals * x[b.rows]).reshape(b.shape) / b.lam
+        buf = _block_input(b, x) / b.lam
         # A mass is a single Kronecker PRODUCT, not a sum, so the bulk inverse
         # is three 1-D solves and no fast diagonalisation is involved.
         for a, inv in enumerate((b.inv_r, b.inv_t, b.inv_z)):
             buf = jnp.moveaxis(jnp.tensordot(inv, buf, axes=([1], [a])), 0, a)
-        parts.append(b.vals * (buf / b.lam).reshape(-1))
+        parts.append(_block_output(b, buf / b.lam))
     if payload.has_core:
         parts.append(payload.core_inv @ x[payload.core])
-    return jnp.concatenate(parts)[payload.perm]
+    return _place(payload, parts)
 
 
 class MetricLumpingMass:
@@ -1162,12 +1197,12 @@ class MetricLumpingMass:
             if blk is None:
                 self.blocks.append(None)
                 continue
-            rows_t, vals_t, (r0, nr), shape = blk
+            rows_t, vals_t, (r0, nr), shape, offset = blk
             inv = [jnp.linalg.inv(m[r0:r0 + nr, r0:r0 + nr] if a == 0 else m)
                    for a, m in enumerate(mass_1d[c])]
             self.blocks.append({
                 "rows": rows_t, "vals": vals_t, "shape": shape, "inv": inv,
-                "lam": lam[c][r0:r0 + nr, :, :]})
+                "offset": offset, "lam": lam[c][r0:r0 + nr, :, :]})
 
         size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
         self.core_inv = _dense_symmetric_inverse(_probe_rows(
@@ -1195,15 +1230,18 @@ class MetricLumpingMass:
                 inv_r=inv_r, inv_t=inv_t, inv_z=inv_z,
                 lam=blk["lam"],
                 shape=blk["shape"],
+                offset=blk["offset"],
             ))
+        perm, identity = _output_permutation(
+            [b["rows"] for b in self.blocks if b is not None],
+            self.core, self.n_ext)
         return _MassPayload(
             blocks=tuple(blocks),
             core=jnp.asarray(self.core),
             core_inv=self.core_inv,
-            perm=_output_permutation(
-                [b["rows"] for b in self.blocks if b is not None],
-                self.core, self.n_ext),
+            perm=perm,
             has_core=bool(self.core.size > 0),
+            identity_perm=identity,
         )
 
     def apply(self, x):

@@ -74,6 +74,8 @@ def main():
     ap.add_argument("--ks", default="0,1,2,3")
     ap.add_argument("--skip-k1", action="store_true",
                     help="skip the k=1 saddle solve (and the nullspaces)")
+    ap.add_argument("--hlo", action="store_true",
+                    help="print op-kind counts of each compiled apply")
     cli = ap.parse_args()
     ns = tuple(int(v) for v in cli.ns.split(","))
     ks = tuple(int(v) for v in cli.ks.split(","))
@@ -119,6 +121,22 @@ def main():
             out["mass_apply_us"][tag] = apply_us(mpre, n, cli.reps, 2)
             out["check"][tag] = checksum(pre, n, 3)
             out["mass_check"][tag] = checksum(mpre, n, 4)
+            if cli.hlo:
+                for name, obj in (("laplacian", pre), ("mass", mpre)):
+                    leaves, jitted = obj._flat
+                    text = jitted.lower(leaves, jnp.zeros(n, mrx.DTYPE)).compile().as_text()
+                    kinds = {}
+                    for line in text.splitlines():
+                        line = line.strip()
+                        if " = " in line and not line.startswith(("ROOT", "ENTRY", "HloModule")):
+                            kind = line.split(" = ", 1)[1].split("(")[0].split()[-1]
+                            kinds[kind] = kinds.get(kind, 0) + 1
+                    payload = obj._build_payload()
+                    flags = (getattr(payload, "identity_perm", None),
+                             [getattr(b, "offset", None) for b in payload.blocks])
+                    top = sorted(kinds.items(), key=lambda kv: -kv[1])[:12]
+                    print(f"[hlo] {tag} {name} leaves={len(leaves)} flags={flags} "
+                          f"ops={top}", flush=True)
             print(f"[apply] {tag} n={n:7d}: laplacian {out['apply_us'][tag]:8.1f} us"
                   f"   mass {out['mass_apply_us'][tag]:8.1f} us   "
                   f"check {out['check'][tag][0]:.17g} / "
