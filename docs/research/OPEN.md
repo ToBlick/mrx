@@ -113,7 +113,7 @@ each `eps` -- or for a small set of `eps` values, since
 The shifted-Jacobi kind exists but its lazy Laplacian-diagonal builder
 converts to numpy at trace time, so it cannot be used inside the jitted step
 as is.
-*Detail:* `docs/relaxation.md` §2; the resistive handoff report.
+*Detail:* `docs/relaxation.md` §2.
 
 ## 4. Where the folding time goes
 
