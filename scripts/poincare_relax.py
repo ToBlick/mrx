@@ -111,7 +111,7 @@ def main():
                 tag = f"{name}_zeta{plane:g}"
                 # The label is a rendering choice, not a trace result: recompute
                 # it so a re-render picks up the current definition.
-                a_eff, xlabel = surface_label("mean", z[f"{tag}_R"], z[f"{tag}_Z"],
+                a_eff, xlabel = surface_label("midplane", z[f"{tag}_R"], z[f"{tag}_Z"],
                                               z[f"{tag}_axisR"], z[f"{tag}_axisZ"],
                                               z[f"{name}_seed_r"])
                 fig = render_section(
@@ -191,7 +191,7 @@ def main():
         for plane in planes:
             R, Z, aR, aZ, cR, cZ, lr, lth = section_RZ(
                 seq, res["ys"], res["axis"], cli.saves, plane)
-            a_eff, xlabel = surface_label("mean", R, Z, aR, aZ, res["seeds"][:, 0])
+            a_eff, xlabel = surface_label("midplane", R, Z, aR, aZ, res["seeds"][:, 0])
             press = physical_pressure(name, lr, lth, plane)
             if press is not None:
                 press = press - p_edge

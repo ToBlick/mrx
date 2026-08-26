@@ -760,9 +760,13 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     # chosen to make the largest span a tenth of the range: only their
     # relative size is the information -- a flux surface's bar is a point, an
     # island's is its width, a chaotic line's is large.
-    order = jnp.argsort(jnp.asarray(x)[shown]) if shown.any() else jnp.arange(0)
-    xo, io, ro = (jnp.asarray(x)[shown][order], iota[shown][order],
-                  jnp.asarray(resid)[shown][order])
+    # A line with no surface label -- an island chain whose lobes the
+    # midplane ray passes between -- is in the section but not in the
+    # profiles: there is no honest abscissa for it.
+    prof = shown & jnp.isfinite(jnp.asarray(x))
+    order = jnp.argsort(jnp.asarray(x)[prof]) if prof.any() else jnp.arange(0)
+    xo, io, ro = (jnp.asarray(x)[prof][order], iota[prof][order],
+                  jnp.asarray(resid)[prof][order])
     scale = 0.1 * (hi - lo) / float(jnp.max(ro)) if ro.size and float(jnp.max(ro)) > 0 else 1.0
     bx.errorbar(xo, io, yerr=scale * ro, fmt="o-", ms=3, lw=0.8, capsize=2,
                 elinewidth=0.8, label=f"angle-fit residual x {scale:.3g}")
@@ -789,9 +793,9 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         xs = jnp.asarray(x)
         p_mean = jnp.mean(pressure_scale * pressure, axis=1)
         p_std = jnp.std(pressure_scale * pressure, axis=1)
-        if shown.any():
-            order = jnp.argsort(xs[shown])
-            xo, mo, so = xs[shown][order], p_mean[shown][order], p_std[shown][order]
+        if prof.any():
+            order = jnp.argsort(xs[prof])
+            xo, mo, so = xs[prof][order], p_mean[prof][order], p_std[prof][order]
             px.fill_between(xo, mo - so, mo + so, color="tab:blue", alpha=0.2,
                             lw=0, label=r"$\pm 1$ std over the line")
             px.plot(xo, mo, "o-", ms=3, lw=0.8, color="tab:blue", label="mean")
@@ -982,10 +986,14 @@ def surface_label(kind, R, Z, axis_R, axis_Z, seed_r):
     """The x-axis of the iota profile: one physical size per surface.
 
     Returns ``(values, xlabel)``.  ``seed`` is the fallback that needs no
-    geometry, and is the only one of the four that is not physical. ``mean``
-    is the one to plot: it is defined for every line, island chains and
-    chaotic lines included, which ``midplane`` (NaN off a nested surface) and
-    ``area`` (needs a star-shaped curve) are not.
+    geometry, and is the only one of the four that is not physical.
+    ``midplane`` is the one to plot: it is NaN for a line that never crosses
+    the outboard midplane ray (an island chain whose lobes the ray passes
+    between), and :func:`render_section` leaves such lines out of the
+    profiles. ``mean`` would place every line, but it averages over the
+    poloidal extent and hides what the profile is for -- on an elongated
+    section it puts an island at the tips three plasma radii out, and the
+    flattening of p across a chain disappears into the scatter.
     """
     aR, aZ = float(np.mean(axis_R)), float(np.mean(axis_Z))
     Rj, Zj = jnp.asarray(R), jnp.asarray(Z)
