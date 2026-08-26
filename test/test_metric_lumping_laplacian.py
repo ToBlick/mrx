@@ -41,7 +41,7 @@ jnp = pytest.importorskip("jax.numpy")
 
 import mrx.operators as op  # noqa: E402
 from mrx.metric_lumping_laplacian import (  # noqa: E402
-    MetricLumpingLaplacian, trace_components,
+    MetricLumpingLaplacian, MetricLumpingMass, trace_components,
 )
 
 # k = 3 is the cheapest vector case (one component); k = 1 is the one
@@ -369,6 +369,37 @@ def test_production_dispatch_wiring(torus_seq):
             "dispatch is not reaching the atom")
     finally:
         setattr(torus_seq, METRIC_LUMPING_CACHE_ATTR, prev)
+
+
+def test_first_apply_inside_a_trace_does_not_poison_the_instance(torus_seq):
+    """The payload is built at CONSTRUCTION, not memoised on the first apply.
+
+    docs/research/OPEN.md 1.1: the flattened payload used to be built lazily
+    on the first ``apply`` and stored on the instance. Instances are
+    long-lived (a dict on ``seq``, session-scoped in this suite), so a first
+    apply inside a ``lax`` body stashed TRACERS on the object and the failure
+    surfaced as an ``UnexpectedTracerError`` in whatever applied it next --
+    an unrelated test. Here the very first apply of two fresh instances is
+    inside a ``lax.scan`` body, and the eager apply afterwards must still
+    work and agree with it.
+    """
+    import jax
+
+    k, dbc = 3, False          # single component: the cheapest pair to build
+    ops = torus_seq.get_operators()
+    lap = MetricLumpingLaplacian(torus_seq, ops, k, dbc)
+    mass = MetricLumpingMass(torus_seq, ops, k, dbc)
+    n = int(getattr(torus_seq, f"n{k}"))
+    v = jnp.asarray(np.random.default_rng(23).standard_normal(n))
+
+    def step(x):
+        return lap.apply(x) + mass.apply(x)
+
+    inside, _ = jax.lax.scan(lambda x, _: (step(x), None), v, None, length=2)
+    outside = step(step(v))            # the eager apply, AFTER the traced one
+    assert np.all(np.isfinite(np.asarray(outside)))
+    assert _rel(np.asarray(outside), np.asarray(inside)) < INERT, (
+        "eager apply after a traced first apply disagrees with the trace")
 
 
 def test_metric_lumping_mass_is_the_default_and_jit_safe(torus_seq):
