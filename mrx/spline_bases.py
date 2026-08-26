@@ -445,7 +445,7 @@ class DerivativeSpline:
             # up to eps can wrap to 1 - eps.  For EVEN p it always crosses
             # the seam.  Every consumer must integrate the PERIODIC extension
             # over it: histopolation_matrix wraps its quadrature points,
-            # projectors._interval_rule feeds a pullback that wraps.
+            # projectors._span_quadrature feeds a pullback that wraps.
             return jnp.stack([points, next_points], axis=1)
         if self.type != 'clamped':
             raise NotImplementedError(
@@ -487,7 +487,7 @@ class DerivativeSpline:
         # is exact only for POLYNOMIALS.  Across a knot the spline has a
         # derivative jump, and a single rule then converges only algebraically:
         # measured on an off-centre knot, 40 points still left 3.6e-07 where
-        # splitting is exact at 2 points.  See _interval_rule in projectors.py,
+        # splitting is exact at 2 points.  See _span_quadrature in projectors.py,
         # which splits identically so H and the moments use the SAME rule.
         knots = jnp.unique(self.T)
 
