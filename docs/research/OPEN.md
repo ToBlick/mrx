@@ -88,6 +88,30 @@ Poincaré verification is reproducible from the repo. Re-run it through
 plumbing; single runs verified. `MRX_ROOT` must be set for a multirun.
 *Detail:* `slurm/README.md`.
 
+**3.9 The resistive solve `(M_2 + eps L_2)` is mass-preconditioned and stops
+converging once `eps * lambda >> 1`.** `mrx/relaxation.py` now does the
+resistive step as backward Euler in defect form, one k=2 MINRES solve per step
+through `apply_inverse_mass_plus_eps_laplace_matrix`, whose upper-block
+preconditioner is the metric-lumping MASS atom (it knows nothing about
+`eps L`). Measured on `w7x-fmm002 (8,16,8) p=3`, tol `1e-12`, linesearch dt:
+`eta = 1e-3` (`eps ~ 2e-5`) 383 iterations/step; `eta = 1e-2` (`eps ~ 1e-3`)
+612 mean, 1938 max, all converged; `eta = 1e-1` with the uncapped
+linesearch (`dt ~ 1.7`, `eps ~ 0.17`) and `eta = 1` hit `maxiter = 10000` on
+8-10 of the first steps, and with the solve unconverged the energy is no
+longer monotone (`+3e-7`) and `div B` reaches `6e-6`. The working range of
+the current preconditioner is `eta <= 1e-2` (the production range is
+`<= 1e-2`, mostly `1e-4`); the `--cfl 0.5` default keeps `dt` near `0.02`
+and so keeps `eps` in range for `eta <= 1e-1` too. *Fix (follow-up task):* a
+SHIFTED metric-lumping atom. The fast-diagonalisation atom's mass (Kronecker
+product of 1-D masses) and stiffness (Kronecker sum) share the generalised
+eigenbasis, so `(M + eps L)^-1` on the atom is the same eigenvectors with
+eigenvalues `1 + eps lambda_i`: a one-line change in the atom's spectral
+inverse plus a shift argument through `apply_inverse_mass_plus_eps_laplace_matrix`.
+The same shifted atom would unpin the harmonic-form polish solve (3.2). The
+shifted-Jacobi kind exists but its lazy Laplacian-diagonal builder converts
+to numpy at trace time, so it cannot be used inside the jitted step as is.
+*Detail:* `docs/relaxation.md` §2; the resistive handoff report.
+
 ## 4. Where the folding time goes
 
 Production logs show XLA constant-folding alarms individually exceeding 2 s

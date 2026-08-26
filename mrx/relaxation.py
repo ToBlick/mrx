@@ -790,27 +790,3 @@ def relaxation_loop(B_dof: jnp.ndarray,
             break
 
     return state, traces
-
-
-# ---------------------------------------------------------------------------
-# Trace dictionary helpers (legacy relaxation loop)
-# ---------------------------------------------------------------------------
-
-default_trace_dict = {
-    "iterations": [],
-    "force_trace": [],
-    "energy_trace": [],
-    "helicity_trace": [],
-    "divergence_trace": [],
-    "picard_iterations": [],
-    "picard_errors": [],
-    "timesteps": [],
-    "velocity_trace": [],
-    "wall_time_trace": [],
-    "B_fields": [],
-    "p_fields": [],
-    "start_time": None,
-    "end_time": None,
-}
-
-
