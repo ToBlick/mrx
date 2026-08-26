@@ -116,7 +116,8 @@ Output (``--out``)::
                  residual ||F||/||grad(B^2/2)||, ||J||/||B||, wall), the
                  initial-condition summary and the stopping reason;
                  rewritten at every diagnostic sample
-    B.h5         B_ic and B_final DoFs with the run parameters as attributes;
+    B.h5         B_ic, B_final and the Leray pressures p_ic, p_final (3-form DoFs)
+                 with the run parameters as attributes;
                  written when the loop ends
 
 The trace records the linesearch identity ``dE_pred = -dt (F,u)_M / 2``
@@ -345,6 +346,7 @@ def main(cli):
                 (Fu / state.dt) ** 0.5 / state.v_norm)
 
     state = initial_state(B0, ts, dt=cli.dt0)
+    p_ic = np.asarray(state.p)
 
     tr = {k: [] for k in ("E", "F", "dt", "dt_star", "cfl", "div", "cos", "gain",
                           "eta", "res_it", "res_delta", "dE_meas", "dE_pred")}
@@ -371,6 +373,8 @@ def main(cli):
             with h5py.File(os.path.join(out, "B.h5"), "w") as fh:
                 fh.create_dataset("B_ic", data=np.asarray(B0))
                 fh.create_dataset("B_final", data=np.asarray(state.B_n))
+                fh.create_dataset("p_ic", data=p_ic)
+                fh.create_dataset("p_final", data=np.asarray(state.p))
                 for k, v in params.items():
                     fh.attrs[k] = "" if v is None else v
 
