@@ -80,7 +80,7 @@ SCRIPT="-m pytest -q test" JOB_NAME=tests_cpu CPUS=4 EXTRA_ENV="JAX_PLATFORMS=cp
 The `gpu` tier is a float64 tier; it is not required to pass in float32.
 Measured 2026-08-26 (H100, tree at the test-audit commit): the CPU tier is
 249 items and passes in both precisions (11 min on the GPU in either
-precision, 7:45 on four CPU cores -- it is compile-bound; the session torus
+precision, 7:25 on four CPU cores -- it is compile-bound; the session torus
 fixture is 50 s of that, the three relaxation-step tests 65 s and the
 two-resolution Poisson order check 30 s); the `gpu` tier is 18 items and
 passed in float64 in 7 min (the W7-X Clebsch fixture is 2.5 min of it).
