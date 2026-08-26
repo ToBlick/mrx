@@ -50,6 +50,26 @@ arms), 16770040 / 16770416 / 16770741 (helicity diagnosis), 16771114 /
   separated ~30x. Normalising by H -- which is what I had been doing --
   destroys the signal, since H spans three orders of magnitude here.
 
+### AND THE ONE MOST LIKELY TO BE MISUSED -- section 41, confirmed on a second geometry
+
+* **`|dH|` predicts the surfaces.  THE FORCE RESIDUAL DOES NOT.  Do not
+  optimise a relaxation on final `||F||`: doing so will destroy the topology
+  and show you a better number while it happens.**  On the converged W7-X case,
+  C11 (`eta=1e-3`) reached the LOWEST final force in the entire campaign
+  (4.50e-04) and removed 21x more energy than any other arm -- and has the
+  worst surfaces in it: islands at every scale, axis offset 18x the best arm's,
+  and an `iota` profile that does not merely degrade but REVERSES, falling
+  1.25 -> 0 where every other arm rises.  Ranking the arms by final force would
+  have selected the single worst physical result available.
+* Force measures the distance to *a* stationary point, not to the *right* one.
+  Only helicity says which basin the descent stayed in.  The controlled version
+  is C10b vs C9 in 41.1: same geometry, same 12^3 mesh, same 3000 steps, only
+  the stepper differs, 126x apart in `|dH|`, and the surfaces follow `|dH|`.
+* **And even the final force is a noisy instrument** (39.2): its scatter over
+  an arm's last 20% is 1.14-1.17x for every fixed-dt arm but **2.0-4.0x for
+  linesearch arms**, so two linesearch arms cannot be told apart on final force
+  below ~4x at all.  That is a limit on the instrument, not a result.
+
 **Sections 12 and 17 are SUPERSEDED.** 12 called the chaos universal and
 fundamental; 17 blamed `beta_max = 13%`. Both are wrong and section 19 says why
 with the numbers.
