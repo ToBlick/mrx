@@ -239,7 +239,7 @@ class PoissonTestConfig(NumericsConfig):
     p: int = 3
     epsilon: float = 1 / 3
     quad_order: Optional[int] = None
-    quad_order_offset: int = 4
+    quad_order_offset: int = 0
     cg_maxiter: int = 100_000
     map_batch_size_inner: int = 0      # 0 corresponds to vmap
     map_batch_size_outer: Optional[int] = None    # None means no batching

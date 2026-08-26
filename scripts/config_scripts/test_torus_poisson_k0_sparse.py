@@ -13,7 +13,7 @@ with source, for minor radius ``a = epsilon`` and ``R = 1 + a r cos(2πχ)``,
 
 The CG solve runs on the k=0 stiffness with the metric-lumping Laplacian
 preconditioner. k=0 DBC has no harmonic forms, so nothing is deflated.
-``quad_order`` below ``2*p`` raises ``ValueError``.
+``quad_order`` below ``p + 1`` raises ``ValueError``.
 
 Configuration:
     Hydra config ``conf/config_poisson_test.yaml``, schema
@@ -26,8 +26,8 @@ Configuration:
     epsilon (float): Minor radius of ``toroid_map`` (major radius 1).
         Default 1/3.
     quad_order (int | None): Gauss quadrature order per direction. ``None``
-        selects ``2*p + quad_order_offset``. Default ``None``.
-    quad_order_offset (int): Offset on ``2*p``. Dataclass default 4; the
+        selects ``p + 1 + quad_order_offset``. Default ``None``.
+    quad_order_offset (int): Offset on ``p + 1``. Dataclass default 4; the
         yaml sets 0.
     cg_maxiter (int): Iteration cap of the Laplacian solve. Dataclass
         default 100000; the yaml sets 50000.
@@ -155,10 +155,10 @@ def compute_error(n: int, p: int, epsilon: float,
     timings = {}
     ns = (n, 2 * n, n)
     ps = (p, p, p)
-    q = 2 * p + quad_order_offset if quad_order is None else quad_order
-    if q < 2 * p:
+    q = p + 1 + quad_order_offset if quad_order is None else quad_order
+    if q < p + 1:
         raise ValueError(
-            f"quad_order must satisfy q >= 2*p; got q={q}, p={p}"
+            f"quad_order must satisfy q >= p + 1; got q={q}, p={p}"
         )
     F = toroid_map(epsilon=epsilon)
     f = make_f(epsilon)
@@ -297,7 +297,7 @@ def main(cfg: DictConfig):
     mrx.MAP_BATCH_SIZE_OUTER = cfg.map_batch_size_outer
     print(f"Running sparse Poisson solve: n={ns}, p={p}")
     if cfg.quad_order is None:
-        print(f"Quadrature order: q = 2*p + {cfg.quad_order_offset}")
+        print(f"Quadrature order: q = p + 1 + {cfg.quad_order_offset}")
     else:
         print(f"Quadrature order: q = {cfg.quad_order}")
     print(f"JAX devices: {jax.devices()}")

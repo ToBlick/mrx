@@ -259,7 +259,7 @@ def identity_seq(request):
     """
     deg = request.param
     seq = DeRhamSequence(
-        (4, 4, 4), (deg,) * 3, 2 * deg, ("clamped", "periodic", "periodic"),
+        (4, 4, 4), (deg,) * 3, deg + 1, ("clamped", "periodic", "periodic"),
         polar=True, tol=1e-10, maxiter=200, betti_numbers=(1, 1, 0, 0),
     )
     seq.evaluate_1d()

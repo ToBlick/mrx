@@ -71,7 +71,7 @@ def torus_seq(torus_map):
 
     # Step 1: reference-domain sequence (identity map).
     seq = DeRhamSequence(
-        ns, ps, 2 * P, TYPES, polar=True,
+        ns, ps, P + 1, TYPES, polar=True,
         tol=1e-12, maxiter=1000,
         betti_numbers=BETTI,
     )
