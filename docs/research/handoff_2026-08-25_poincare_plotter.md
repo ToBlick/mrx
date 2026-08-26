@@ -22,6 +22,8 @@ prior handoffs).
 | Relaxed-state tracer `poincare_relaxed.py` + its four gates | SETTLED (unmerged) |
 | Step drift measured over regular lines only | SETTLED (unmerged) |
 | **A real pressure through this tracer** | **OPEN — §3.2, the load-bearing caveat** |
+| Does the stochastic core survive refinement? | OPEN — §2.1, never tested |
+| Producer of `data/w7x_fmm002_relaxed_100.h5` | OPEN — uncommitted, §5 |
 | `poincare_vacuum.py` re-run after the shared-helper refactor | OPEN |
 | Axis-probe blob at the section centre | OPEN |
 | Crossing density vs the reference figure | OPEN |
@@ -84,6 +86,32 @@ extraction can match the dimension by coincidence.
 `mrx/poincare.py`; `poincare_vacuum.py` calls them and, as a consequence, now
 greys chaotic lines in its own figures. It did not before, so it and
 `poincare_replot.py` disagreed about the same trace.
+
+### 2.1 What the sections measured — `w7x_fmm002_relaxed_100`
+
+The one result here that is **not** recoverable from the code or the commits.
+96 seeds, 1000 periods, four planes per field period, both states.
+`outputs/poincare_relaxed/2026-08-25/12-29-15/` **in the main checkout** —
+`outputs/` is gitignored, so the worktree copy dies with the worktree.
+
+* **The relaxation heals the edge.** The input field carries a 5/4 island chain
+  at the boundary (four lobes, plainest at ζ = 0.5) and a broad stochastic band
+  inside it. In the relaxed state both are replaced by nested surfaces out to
+  the wall, and iota narrows from 1.1518–1.2500 to 1.1739–1.2340.
+* **The core is stochastic in both**, out to logical r ≈ 0.45 — about half the
+  volume, 51 of 96 lines. Not integration error (§4) and not a bad
+  parameterisation: `B^ζ/|B| ≥ 0.140`, worst at logical r = 0.021, i.e. *at the
+  polar axis*, which is a coordinate effect and not a property of the field. At
+  `fem ns = 6,8,8 p=3` with iota ≈ 1.19–1.21 and near-zero shear across the
+  core, a destroyed core is what one would expect — but **whether it survives
+  refinement is not tested**, and that is the obvious next run.
+* **The magnetic axis is far off the coordinate axis**: 6.6e-02 m at ζ = 0 and
+  2.4e-02 m at ζ = 0.5, against a minor radius of ~0.28 m at ζ = 0. That is why
+  `--seed-from axis` is the default in this driver and `coord` in
+  `poincare_vacuum.py`; seeding from `r = 0` here leaves a hole in the middle.
+* The map round-trip residual (max |ΔR| 1.22e-02 m over 120000 points) is the
+  **map fit's own** residual at `ns_map = 8,12,12 p=3`. It is not error
+  introduced by rebuilding, and the gate should not be tightened against it.
 
 ## 3. The two judgements
 
@@ -167,6 +195,18 @@ that iota is stable under refinement.**
   plotter verification (GPU job 16767729) — is **not committed** and must be
   re-created or the script run directly under slurm.
   `slurm/job_poincare_relaxed.sh` **is** committed, via `git add -f`.
+* **`data/w7x_fmm002_relaxed_100.h5` has no committed producer.** Its stored
+  config carries `map.flip_r`, `map.auto_flip_r`, `map.auto_flip_jacobian` and
+  `map.rho0_theta_independent`, and a `grep -rl` across `mrx/`, `scripts/`,
+  `conf/` and every worktree finds **zero** consumers of the first three. On top
+  of that, `relax_from_nfs.py` on every branch calls
+  `DeRhamSequence(..., dirichlet=True)`, which the current constructor rejects
+  with `TypeError`. So the script that wrote this file is uncommitted somewhere,
+  and the file's config is not round-trippable from the repo. This is survivable
+  only because §2's four gates check the rebuilt space against the DOFs rather
+  than trusting the config — the weak-divergence gate in particular. Cheapest
+  next step: whoever ran it commits the script, or confirms the flips are dead
+  keys and drops them from the config schema.
 * **Worktree jobs need `PYTHONPATH=$WT`.** `python scripts/debug/x.py` puts the
   *script's* directory on `sys.path`, never the cwd, so `import mrx` resolves to
   the venv's editable install — the main checkout. `job_poincare_relaxed.sh`
