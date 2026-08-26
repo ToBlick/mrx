@@ -1354,6 +1354,30 @@ class DeRhamSequence():
             self, self._require_operators(), betti_numbers=betti_numbers)
         return self.operators
 
+    def evaluate_at_quadrature(self, dofs, k, dirichlet=True):
+        """Evaluate a 1- or 2-form at the quadrature points.
+
+        Args:
+            dofs: DOF vector of the k-form.
+            k: Form degree, 1 or 2.
+            dirichlet: Use the Dirichlet-constrained extraction.
+
+        Returns:
+            Array of shape ``(n_q, 3)``: the reference components at every
+            quadrature point, in the sequence's flat quadrature order.
+        """
+        from mrx.quadrature import evaluate_at_xq
+        quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
+        match k:
+            case 1:
+                e_T = self.e1_dbc_T if dirichlet else self.e1_T
+            case 2:
+                e_T = self.e2_dbc_T if dirichlet else self.e2_T
+            case _:
+                raise ValueError("k must be 1 or 2")
+        comp_info, comp_shapes = self._form_comp_info(k)
+        return evaluate_at_xq(e_T @ dofs, comp_info, comp_shapes, quad_shape, 3)
+
     def cross_product_load(
         self, w, u, n, m, k,
         dirichlet_n=True,
@@ -1368,7 +1392,10 @@ class DeRhamSequence():
 
         with appropriate metric contractions depending on the form degrees
         ``n``, ``m``, ``k``.  Uses the tensor-product structure for efficient
-        evaluation and integration.
+        evaluation and integration.  This is
+        :meth:`evaluate_at_quadrature` on both inputs followed by
+        :meth:`cross_product_load_values`; call those directly to reuse the
+        quadrature values of an input.
 
         Parameters
         ----------
@@ -1394,51 +1421,37 @@ class DeRhamSequence():
         array
             n-form dual DOF vector (apply ``M_n⁻¹`` to obtain primal DOFs).
         """
-        from mrx.quadrature import evaluate_at_xq, integrate_against
-        quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
+        w_jk = self.evaluate_at_quadrature(w, m, dirichlet_m)
+        u_jk = self.evaluate_at_quadrature(u, k, dirichlet_k)
+        return self.cross_product_load_values(w_jk, u_jk, n, m, k, dirichlet_n)
 
-        # Extraction matrices and comp_info for output form n
+    def cross_product_load_values(self, w_jk, u_jk, n, m, k, dirichlet_n=True):
+        """Integrate ``Λⁿ_i · (w × u)`` from quadrature values of ``w`` and ``u``.
+
+        Args:
+            w_jk: Reference components of the m-form at the quadrature points,
+                shape ``(n_q, 3)`` (see :meth:`evaluate_at_quadrature`).
+            u_jk: The same for the k-form.
+            n: Form degree of the output (1 or 2).
+            m: Form degree of ``w`` (1 or 2).
+            k: Form degree of ``u`` (1 or 2).
+            dirichlet_n: Use the Dirichlet-constrained extraction for the
+                output.
+
+        Returns:
+            The n-form dual DOF vector.
+        """
+        from mrx.quadrature import integrate_against
+        quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
         match n:
             case 1:
                 en = self.e1_dbc if dirichlet_n else self.e1
-                comp_info_n, comp_shapes_n = self._form_comp_info(1)
-                nn = self.basis_1.n
             case 2:
                 en = self.e2_dbc if dirichlet_n else self.e2
-                comp_info_n, comp_shapes_n = self._form_comp_info(2)
-                nn = self.basis_2.n
             case _:
                 raise ValueError("n must be 1 or 2")
+        comp_info_n, comp_shapes_n = self._form_comp_info(n)
 
-        # Extraction matrices and comp_info for input form m
-        match m:
-            case 1:
-                em_T = self.e1_dbc_T if dirichlet_m else self.e1_T
-                comp_info_m, comp_shapes_m = self._form_comp_info(1)
-            case 2:
-                em_T = self.e2_dbc_T if dirichlet_m else self.e2_T
-                comp_info_m, comp_shapes_m = self._form_comp_info(2)
-            case _:
-                raise ValueError("m must be 1 or 2")
-
-        # Extraction matrices and comp_info for input form k
-        match k:
-            case 1:
-                ek_T = self.e1_dbc_T if dirichlet_k else self.e1_T
-                comp_info_k, comp_shapes_k = self._form_comp_info(1)
-            case 2:
-                ek_T = self.e2_dbc_T if dirichlet_k else self.e2_T
-                comp_info_k, comp_shapes_k = self._form_comp_info(2)
-            case _:
-                raise ValueError("k must be 1 or 2")
-
-        # TP evaluation at quadrature points
-        w_jk = evaluate_at_xq(em_T @ w, comp_info_m, comp_shapes_m,
-                              quad_shape, 3)
-        u_jk = evaluate_at_xq(ek_T @ u, comp_info_k, comp_shapes_k,
-                              quad_shape, 3)
-
-        # Nonlinear part (same as original)
         if n == 1 and m == 2 and k == 1:
             Gw_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, w_jk)
             Gw_x_u_jk = jnp.cross(Gw_jk, u_jk, axis=1)
@@ -1469,7 +1482,6 @@ class DeRhamSequence():
         else:
             raise ValueError("Not yet implemented")
 
-        # TP integration
         return en @ integrate_against(
             f_jk, comp_info_n, comp_shapes_n, quad_shape)
 

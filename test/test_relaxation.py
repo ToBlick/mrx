@@ -158,16 +158,35 @@ def test_resistive_step(zpinch_seq, zpinch_B_hat):
     # (M_2 + dt eta L_2) B_{n+1} = M_2 B_ideal.
     eta = 1e-2
     res = step(eqx.tree_at(lambda s: s.eta, state0, eta))
-    assert int(res.resistive_info) < 0, f"resistive MINRES did not converge: {int(res.resistive_info)}"
-    assert jnp.array_equal(res.E, ideal.E) and float(res.dt) == float(ideal.dt)
     eps = float(res.dt) * eta
     lhs = seq.apply_mass_matrix(res.B_nplus1, 2) + eps * seq.apply_laplacian(res.B_nplus1, 2)
     rhs = seq.apply_mass_matrix(B_ideal, 2)
     rel = float(jnp.linalg.norm(lhs - rhs) / jnp.linalg.norm(rhs))
-    print(f"\n  resistive step: MINRES {-int(res.resistive_info)} iterations, "
-          f"equation residual {rel:.2e}, div B {div_norm(res.B_nplus1):.2e}")
+    print(f"\n  resistive step: MINRES {int(res.resistive_info)}, "
+          f"equation residual {rel:.2e}, div B {div_norm(res.B_nplus1):.2e}, "
+          f"dt {float(res.dt):.3e} dt* {float(res.dt_star):.3e} cfl_max {float(res.cfl_max):.3e}")
+    assert int(res.resistive_info) < 0, f"resistive MINRES did not converge: {int(res.resistive_info)}"
+    assert float(jnp.max(jnp.abs(res.E - ideal.E))) <= 1e-12 * float(jnp.max(jnp.abs(ideal.E)))
+    assert abs(float(res.dt) - float(ideal.dt)) <= 1e-12 * float(ideal.dt)
     assert rel < 1e-8
 
     E0, E_ideal, E_res = energy(state0.B_n), energy(ideal.B_nplus1), energy(res.B_nplus1)
     assert E_res < E_ideal < E0, (E0, E_ideal, E_res)
     assert div_norm(res.B_nplus1) < 1e-10 * scale
+
+
+def test_cfl_cap(zpinch_seq, zpinch_B_hat):
+    """cfl = inf takes the linesearch step dt*; a small cfl caps it at cfl / cfl_max."""
+    seq = zpinch_seq
+    free = TimeStepper(seq=seq, cfl=float("inf"))
+    state0 = initial_state(zpinch_B_hat, free, dt=1.0)
+    s_free = jax.jit(lambda s: free.relaxation_step(s, s.key))(state0)
+    assert float(s_free.dt) == float(s_free.dt_star) > 0
+    assert float(s_free.cfl_max) > 0
+    C = 0.1 * float(s_free.dt_star * s_free.cfl_max)
+    capped = TimeStepper(seq=seq, cfl=C)
+    s_cap = jax.jit(lambda s: capped.relaxation_step(s, s.key))(state0)
+    assert abs(float(s_cap.dt) - C / float(s_cap.cfl_max)) <= 1e-12 * float(s_cap.dt)
+    assert float(s_cap.dt) < float(s_cap.dt_star)
+    E0 = float(seq.l2_norm_sq(state0.B_n, 2))
+    assert float(seq.l2_norm_sq(s_cap.B_nplus1, 2)) < E0

@@ -52,6 +52,11 @@ Flags (defaults in brackets)
           div B and energy monotonicity intact. fixed with a small --dt0 is
           the control for that.
       --dt0 DT [1.0]                 the step for --dt-mode fixed
+      --cfl C [0.5]                  cap dt at C / max logical CFL number of
+                                     the velocity (cells crossed per unit
+                                     time, theta not counted in the first
+                                     radial span); inf disables the cap. The
+                                     trace records dt_star (uncapped) and cfl
       --eta-max ETA [0.0]            peak resistivity; eta > 0 lets the field
                                      reconnect, helicity is then not conserved.
                                      The resistive part is backward Euler,
@@ -89,8 +94,8 @@ then ~0.9 s per step (~1.4x with --gamma 1); ~8.6 GB host memory. The archived
 
 Output (``--out``)::
 
-    relax.json   parameters, the per-step trace (E, F, dt, cos, gain, div,
-                 eta, res_it, dE_meas, dE_pred), the sampled diagnostics (helicity,
+    relax.json   parameters, the per-step trace (E, F, dt, dt_star, cfl, cos,
+                 gain, div, eta, res_it, dE_meas, dE_pred), the sampled diagnostics (helicity,
                  residual ||F||/||grad(B^2/2)||, ||J||/||B||, wall), the
                  initial-condition summary and the stopping reason;
                  rewritten at every diagnostic sample
@@ -160,6 +165,7 @@ def parse_args(argv=None):
     ap.add_argument("--mu", type=float, default=0.0)
     ap.add_argument("--dt-mode", default="linesearch", choices=("linesearch", "fixed"))
     ap.add_argument("--dt0", type=float, default=1.0)
+    ap.add_argument("--cfl", type=float, default=0.5)
     ap.add_argument("--eta-max", type=float, default=0.0)
     ap.add_argument("--eta-schedule", default="tanh", choices=("tanh", "constant", "linear"))
     ap.add_argument("--steps", type=int, default=3000)
@@ -298,7 +304,7 @@ def main(cli):
         seq=seq, descent_method=method,
         dt_mode=(TimeStepChoice.ANALYTIC_LINESEARCH if cli.dt_mode == "linesearch"
                  else TimeStepChoice.FIXED),
-        timestep_mode=IntegrationScheme.EXPLICIT,
+        cfl=cli.cfl, timestep_mode=IntegrationScheme.EXPLICIT,
         history_size=cli.history, gamma=cli.gamma, mu=cli.mu)
     apply_M2 = jax.jit(lambda v: seq.apply_mass_matrix(v, 2))
     get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
@@ -321,8 +327,8 @@ def main(cli):
 
     state = initial_state(B0, ts, dt=cli.dt0)
 
-    tr = {k: [] for k in ("E", "F", "dt", "div", "cos", "gain", "eta",
-                          "res_it", "dE_meas", "dE_pred")}
+    tr = {k: [] for k in ("E", "F", "dt", "dt_star", "cfl", "div", "cos", "gain",
+                          "eta", "res_it", "dE_meas", "dE_pred")}
     diag = {k: [] for k in ("it", "helicity", "resid", "gradp", "JoverB", "wall")}
     E_prev = E0
     stop = "steps"
@@ -330,7 +336,7 @@ def main(cli):
     t_diag = 0.0     # time inside the diagnostics; the recorded wall excludes it
     n_done = 0
     print(f"\n=== {cli.method}  m={cli.history} gamma={cli.gamma} mu={cli.mu} "
-          f"dt-mode={cli.dt_mode} eta-max={cli.eta_max}  steps<={cli.steps} "
+          f"dt-mode={cli.dt_mode} cfl={cli.cfl} eta-max={cli.eta_max}  steps<={cli.steps} "
           f"floor-tol={floor_tol:.1e} window={cli.floor_window} ===", flush=True)
 
     def save(final=False):
@@ -358,6 +364,8 @@ def main(cli):
         tr["E"].append(E)
         tr["F"].append(float(state.F_norm))
         tr["dt"].append(float(state.dt))
+        tr["dt_star"].append(float(state.dt_star))
+        tr["cfl"].append(float(state.cfl_max))
         tr["div"].append(div)
         tr["cos"].append(cos)
         tr["gain"].append(gain)
@@ -388,7 +396,8 @@ def main(cli):
             t_diag += time.perf_counter() - td
         elif it <= 5 or it % 20 == 0:
             print(f"  it {it:>5d}  E={E:.8e}  |F|={float(state.F_norm):.4e}  "
-                  f"dt={float(state.dt):+.3e}  cos={cos:+.4f}  gain={gain:.2e}  "
+                  f"dt={float(state.dt):+.3e}  dt*={float(state.dt_star):+.3e}  "
+                  f"cfl={float(state.cfl_max) * float(state.dt):.2f}  cos={cos:+.4f}  gain={gain:.2e}  "
                   f"divB={div:.2e}  dE_meas={tr['dE_meas'][-1]:+.3e}  "
                   f"dE_pred={tr['dE_pred'][-1]:+.3e}  res_it={tr['res_it'][-1]}",
                   flush=True)
@@ -421,6 +430,10 @@ def main(cli):
     h = np.array(diag["helicity"])
     print(f"    helicity {h[0]:+.6e} -> {h[-1]:+.6e}  drift {h[-1] - h[0]:+.3e}"
           f"  relative {(h[-1] - h[0]) / abs(h[0]):+.3e}", flush=True)
+    dts, dt_star = np.array(tr["dt"]), np.array(tr["dt_star"])
+    print(f"    CFL cap (C={cli.cfl}) bound on {int((dts < dt_star).sum())}/{n_done} steps;  "
+          f"dt/dt* min {(dts / dt_star).min():.3f} mean {(dts / dt_star).mean():.3f};  "
+          f"CFL number taken max {(dts * np.array(tr['cfl'])).max():.3f}")
     res_it = np.array(tr["res_it"])
     if cli.eta_max > 0:
         print(f"    resistive solve: MINRES iterations mean {np.abs(res_it).mean():.1f}  "

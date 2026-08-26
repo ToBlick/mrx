@@ -6,6 +6,7 @@ from typing import Callable, Literal, Optional
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 
@@ -80,6 +81,27 @@ def compute_force(
     F, p = seq.apply_leray_projection(JxH, k=2, p_guess=p_guess)
     return F, p, J, H, JxH
 
+def logical_cfl_weights(seq: DeRhamSequence) -> np.ndarray:
+    """Weights ``1 / (J h_i)`` turning 2-form values at the quadrature points into logical CFL numbers.
+
+    A 2-form velocity has reference components ``u_ref^i = J xi_dot^i``, so
+    ``|u_ref^i| / (J h_i)`` is the number of logical cells of width ``h_i``
+    (the knot spacing of direction ``i``) the flow crosses per unit time.
+    The theta weight is zero inside the first radial span: the theta cell
+    degenerates at the polar axis, where the polar space resolves nothing
+    in theta. Returns a constant array of shape ``(n_q, 3)``.
+    """
+    h = []
+    for b in seq.basis_0.bases[0].bases:
+        knots = np.asarray(b.T)
+        interior = knots[b.p:-b.p] if b.type in ('clamped', 'periodic') else knots
+        h.append(np.diff(interior).min())
+    h = np.array(h)
+    weights = 1.0 / (np.asarray(seq.jacobian_j)[:, None] * h[None, :])
+    weights[:, 1] *= np.asarray(seq.quad.x[:, 0]) >= h[0]
+    return weights
+
+
 # %%
 
 
@@ -100,7 +122,12 @@ class State(eqx.Module):
     A : jnp.ndarray (optional)
         The vector potential.
     dt : float
-        The time step.
+        The time step taken, ``min(dt_star, cfl / cfl_max)``.
+    dt_star : float
+        The uncapped step: the linesearch minimiser, or ``dt`` in FIXED mode.
+    cfl_max : float
+        The largest logical CFL number of the velocity, ``max_i max_q
+        |u_ref^i| / (J h_i)`` (see ``logical_cfl_weights``).
     eta : float
         The resistivity. The resistive part of the step is backward Euler
         (see ``TimeStepper._relaxation_step``), so it does not restrict
@@ -158,6 +185,8 @@ class State(eqx.Module):
     My_history: Optional[jnp.ndarray] = None
     A: Optional[jnp.ndarray] = None
     dt: float = 1e-2
+    dt_star: float = 1e-2
+    cfl_max: float = 0.0
     eta: float = 0.0
     resistive_info: int = 0
     picard_iterations: int = 0
@@ -208,6 +237,13 @@ class TimeStepper(eqx.Module):
         GRADIENT, CONJUGATE_GRADIENT, or LBFGS.
     dt_mode : TimeStepChoice
         FIXED, PICARD_ADAPTIVE, or ANALYTIC_LINESEARCH.
+    cfl : float
+        Cap on the step: ``dt = min(dt_star, cfl / cfl_max)`` with
+        ``cfl_max`` the largest logical CFL number of the velocity. The
+        linesearch minimiser cannot raise the energy, but a large step
+        leaves the ideal-induction flow (frozen-in topology violated at
+        O(dt^2)) and diverges when ``||dB||`` collapses. ``inf`` disables
+        the cap and leaves the trajectory untouched.
     timestep_mode : IntegrationScheme
         EXPLICIT or IMPLICIT_MIDPOINT.
     picard_tol : float
@@ -230,6 +266,7 @@ class TimeStepper(eqx.Module):
     mu: float = 0.0
     descent_method: DescentMethod = DescentMethod.GRADIENT
     dt_mode: TimeStepChoice = TimeStepChoice.ANALYTIC_LINESEARCH
+    cfl: float = 0.5
     timestep_mode: IntegrationScheme = IntegrationScheme.EXPLICIT
     picard_tol: float = 1e-9
     picard_k_restart: int = 20
@@ -342,7 +379,7 @@ class TimeStepper(eqx.Module):
                 rhs, 2, self.mu, dirichlet=True, guess=u)
         return u
 
-    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'eta', 'resistive_info', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'lbfgs_sy', 'noise_level', 'key'], value) -> State:  # noqa: E501
+    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'dt_star', 'cfl_max', 'eta', 'resistive_info', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'lbfgs_sy', 'noise_level', 'key'], value) -> State:  # noqa: E501
         return eqx.tree_at(
             lambda s: getattr(s, field_name),
             state,
@@ -430,9 +467,13 @@ class TimeStepper(eqx.Module):
         # M u once: the linesearch numerator, ||u||_M and the stored M s.
         Mu = self.seq.apply_mass_matrix(u, 2)
 
-        E_dual = self.seq.cross_product_load(
-            u, H, 1, 2, 1, True, True, self.dirichlet_H)
+        # u at the quadrature points once: the cross product and the CFL
+        # number both read it.
+        u_jk = self.seq.evaluate_at_quadrature(u, 2, True)
+        H_jk = self.seq.evaluate_at_quadrature(H, 1, self.dirichlet_H)
+        E_dual = self.seq.cross_product_load_values(u_jk, H_jk, 1, 2, 1, True)
         E = self.seq.apply_inverse_mass_matrix(E_dual, 1, guess=state.E)
+        cfl_max = jnp.max(jnp.abs(u_jk) * logical_cfl_weights(self.seq))
 
         # The TOPOLOGICAL curl, not M_2^-1 D_1.  Three reasons, all measured
         # on quasr44970 ns=(8,16,8) p=3:
@@ -455,12 +496,14 @@ class TimeStepper(eqx.Module):
         dB = self.seq.apply_incidence_matrix(
             E, 1, dirichlet_in=True, dirichlet_out=True)
         if self.dt_mode == TimeStepChoice.FIXED or self.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:
-            dt = state.dt
+            dt_star = state.dt
         elif self.dt_mode == TimeStepChoice.ANALYTIC_LINESEARCH:
-            dt = F @ Mu / self.seq.l2_norm_sq(dB, 2)
+            dt_star = F @ Mu / self.seq.l2_norm_sq(dB, 2)
         else:
             raise ValueError(
                 f"Unknown dt_mode: {self.dt_mode}. Supported modes are given by the TimeStepChoice enum.")
+        # The CFL cap.  cfl = inf gives min(dt_star, inf) = dt_star exactly.
+        dt = jnp.minimum(dt_star, self.cfl / cfl_max)
         B_ideal = B_n + dt * dB
 
         # Resistive diffusion, BACKWARD Euler on top of the ideal step:
@@ -502,13 +545,13 @@ class TimeStepper(eqx.Module):
         return eqx.tree_at(
             lambda s: (s.B_nplus1, s.v, s.p, s.p_v, s.H, s.JxH, s.E,
                        s.F_prev, s.MF_prev, s.F_norm, s.v_norm, s.lbfgs_sy,
-                       s.dt, s.resistive_info, s.s_history, s.y_history,
-                       s.Ms_history, s.My_history),
+                       s.dt, s.dt_star, s.cfl_max, s.resistive_info,
+                       s.s_history, s.y_history, s.Ms_history, s.My_history),
             state,
             (B_nplus1, u, p, p_v, H, JxH, E,
              F, MF, jnp.sqrt(F @ MF), jnp.sqrt(u @ Mu), sy,
-             dt, resistive_info, s_history, y_history, Ms_history,
-             My_history))
+             dt, dt_star, cfl_max, resistive_info,
+             s_history, y_history, Ms_history, My_history))
 
     def midpoint_picard_step(self, state: State, key: jax.random.PRNGKey) -> State:
         """
@@ -572,6 +615,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
     return State(
         B_n=B_dof,
         dt=dt,
+        dt_star=dt,
         resistive_info=jnp.int32(0),
         v=jnp.zeros(n),
         p=p0,
