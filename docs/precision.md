@@ -58,5 +58,15 @@ Measured on 2026-08-26, toroid and W7-X, `(8,16,8)`, `p=3`:
   at the axis. The setting fixes it; the Jacobian then matches float64 to
   `1e-5`.
 
-Tests that check an identity at `1e-12` are meaningless in float32; the test
-suite is float64 until those tolerances are expressed through `eps`.
+- Near an equilibrium the energy decrease per step is below the float32
+  resolution: on the W7-X Clebsch initial condition the whole descent removes
+  `2.4e-4` of `E`, and the `--floor-tol` default (`10 * eps()`) stops a float32
+  run at step 111 while float64 continues to step 3000 with the same nested
+  surfaces. Pass `--floor-tol 0` in float32, and expect the solver-noise floor,
+  not the physical one.
+- Resistive increments `eps = dt * eta` of `1e-7` are a few ulps of `B`.
+  Use `--eta-every K` (`K` of 10 to 100 at `eta ~ 1e-4`) so each solve applies
+  a representable increment.
+
+Every test tolerance is expressed through `eps()` or the solver tolerance; the
+`ci` and `gpu` tiers pass in both precisions.

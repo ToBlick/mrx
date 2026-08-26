@@ -322,7 +322,8 @@ def main(cli):
         seq=seq, descent_method=method,
         dt_mode=(TimeStepChoice.ANALYTIC_LINESEARCH if cli.dt_mode == "linesearch"
                  else TimeStepChoice.FIXED),
-        cfl=cli.cfl, eta_every=cli.eta_every, timestep_mode=IntegrationScheme.EXPLICIT,
+        cfl=cli.cfl, eta_every=cli.eta_every, resistive=cli.eta_max > 0,
+        timestep_mode=IntegrationScheme.EXPLICIT,
         history_size=cli.history, gamma=cli.gamma, mu=cli.mu)
     apply_M2 = jax.jit(lambda v: seq.apply_mass_matrix(v, 2))
     get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])

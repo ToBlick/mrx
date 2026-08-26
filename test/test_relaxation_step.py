@@ -42,11 +42,13 @@ def _step(ts):
 
 @pytest.fixture(scope="module")
 def free_stepper(tiny_seq, B0):
-    """``TimeStepper(cfl=inf)``, its compiled step and the initial state at
-    ``B0``. The resistive and the CFL tests both start from exactly this
-    stepper, so it is compiled once rather than once per test (a step
-    compile is ~7 s on four CPU cores, ~12 s on the GPU)."""
-    ts = TimeStepper(seq=tiny_seq, cfl=float("inf"))
+    """``TimeStepper(cfl=inf, resistive=True)``, its compiled step and the
+    initial state at ``B0``. The resistive and the CFL tests both start from
+    exactly this stepper, so it is compiled once rather than once per test
+    (a step compile is ~7 s on four CPU cores, ~12 s on the GPU). The CFL
+    test's other two steppers are ideal-only (``resistive=False``): their
+    steps must agree with this one's ``eta = 0`` branch to round-off."""
+    ts = TimeStepper(seq=tiny_seq, cfl=float("inf"), resistive=True)
     return ts, _step(ts), initial_state(B0, ts, dt=1.0)
 
 
@@ -88,7 +90,7 @@ def test_resistive_step(tiny_seq, B0, free_stepper):
     assert div_res <= 100 * mrx.sqrt_eps() * float(res.resistive_delta) * scale
 
     # eta_every = 2: the first step is not due; it accumulates dt and skips.
-    every2 = TimeStepper(seq=seq, cfl=float("inf"), eta_every=2)
+    every2 = TimeStepper(seq=seq, cfl=float("inf"), eta_every=2, resistive=True)
     s2 = _step(every2)(eqx.tree_at(lambda s: s.eta, state0, eta))
     assert int(s2.resistive_info) == 0 and int(s2.resistive_count) == 1
     assert float(s2.resistive_time) == float(s2.dt)
@@ -155,7 +157,8 @@ def test_relaxation_loop(tiny_seq, B_logical):
     from mrx.relaxation import DescentMethod, relaxation_loop
 
     seq = tiny_seq
-    ts = TimeStepper(seq=seq, descent_method=DescentMethod.CONJUGATE_GRADIENT)
+    ts = TimeStepper(seq=seq, descent_method=DescentMethod.CONJUGATE_GRADIENT,
+                     resistive=True)
     outer, inner, eta = 5, 4, 1e-2
     state, traces = relaxation_loop(
         B_logical, ts, outer, inner,

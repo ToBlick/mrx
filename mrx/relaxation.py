@@ -258,6 +258,10 @@ class TimeStepper(eqx.Module):
         the cap and leaves the trajectory untouched.
     cfl_weights : jnp.ndarray
         ``logical_cfl_weights(seq)``, built by ``__post_init__``.
+    resistive : bool
+        Compile the resistive solve into the step. False (the default)
+        traces the ideal step only: no ``cond``, no MINRES, regardless of
+        ``state.eta``. Set it when the run has ``eta > 0`` anywhere.
     eta_every : int
         Apply the resistive solve every ``eta_every`` steps, diffusing over
         the time accumulated since the last one (operator splitting). In
@@ -290,6 +294,7 @@ class TimeStepper(eqx.Module):
     dt_mode: TimeStepChoice = TimeStepChoice.ANALYTIC_LINESEARCH
     cfl: float = 0.5
     eta_every: int = 1
+    resistive: bool = False
     timestep_mode: IntegrationScheme = IntegrationScheme.EXPLICIT
     picard_tol: float = 1e-9
     picard_k_restart: int = 20
@@ -549,27 +554,34 @@ class TimeStepper(eqx.Module):
         # B_ideal unchanged when the correction is a few ulps (eps ~ 1e-7),
         # whereas the tolerance here is relative to delta in both precisions.
         # eta_every batches the diffusion over several steps for the same
-        # reason.  The cond skips the solve at zero cost when it is not due,
-        # and at eta = 0 the step is the ideal one bit for bit.
+        # reason.  The cond skips the solve at zero cost when it is not due;
+        # a run without resistivity sets ``resistive=False`` and never traces it.
         resistive_time = state.resistive_time + dt
         resistive_count = state.resistive_count + 1
-        due = (state.eta > 0) & (resistive_count >= self.eta_every)
+        if self.resistive:
+            due = (state.eta > 0) & (resistive_count >= self.eta_every)
 
-        def resistive(B):
-            eps = resistive_time * state.eta
-            rhs = -eps * self.seq.apply_laplacian(B, 2, dirichlet=True)
-            delta, info = self.seq.apply_inverse_mass_plus_eps_laplace_matrix(
-                rhs, 2, eps, dirichlet=True, return_info=True)
-            rel = self.seq.l2_norm(delta, 2) / self.seq.l2_norm(B, 2)
-            return B + delta, info.astype(jnp.int32), rel
+            def resistive(B):
+                eps = resistive_time * state.eta
+                rhs = -eps * self.seq.apply_laplacian(B, 2, dirichlet=True)
+                delta, info = self.seq.apply_inverse_mass_plus_eps_laplace_matrix(
+                    rhs, 2, eps, dirichlet=True, return_info=True)
+                rel = self.seq.l2_norm(delta, 2) / self.seq.l2_norm(B, 2)
+                return B + delta, info.astype(jnp.int32), rel
 
-        def skip(B):
-            return B, jnp.int32(0), jnp.zeros((), B.dtype)
+            def skip(B):
+                return B, jnp.int32(0), jnp.zeros((), B.dtype)
 
-        B_nplus1, resistive_info, resistive_delta = jax.lax.cond(
-            due, resistive, skip, B_ideal)
-        resistive_time = jnp.where(due, 0.0, resistive_time)
-        resistive_count = jnp.where(due, 0, resistive_count)
+            B_nplus1, resistive_info, resistive_delta = jax.lax.cond(
+                due, resistive, skip, B_ideal)
+            resistive_time = jnp.where(due, 0.0, resistive_time)
+            resistive_count = jnp.where(due, 0, resistive_count)
+        else:
+            # A non-resistive run: the ideal step is the whole step. Decided in
+            # Python, so the trace contains no solve and no branch.
+            B_nplus1 = B_ideal
+            resistive_info = jnp.int32(0)
+            resistive_delta = jnp.zeros((), B_ideal.dtype)
 
         # --- history bookkeeping, part 2: push the step just taken ----------
         # The descent variable is the VELOCITY u, not B: grad_M E = -F is the
