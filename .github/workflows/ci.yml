@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12']
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install ruff
+      run: |
+        python -m pip install --upgrade pip
+        pip install ruff
+
+    - name: Run ruff
+      run: |
+        ruff check . --ignore F403,F405
+
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12']
+        dtype: ['float64', 'float32']
+    env:
+      MRX_DTYPE: ${{ matrix.dtype }}
+      # The suite is XLA-compile-bound (4 cores run it as fast as 32), so
+      # the persistent compilation cache is the main lever on wall time.
+      JAX_COMPILATION_CACHE_DIR: ${{ github.workspace }}/.jax_cache
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    # The default `jax` wheel is the CPU build. Tests marked `needs_data`
+    # skip here (no data directory); slurm/README.md runs them on a GPU node.
+    - name: Install mrx
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e . pytest
+
+    - name: Restore the XLA compilation cache
+      uses: actions/cache@v4
+      with:
+        path: .jax_cache
+        key: jax-cache-${{ runner.os }}-${{ matrix.dtype }}-${{ github.sha }}
+        restore-keys: |
+          jax-cache-${{ runner.os }}-${{ matrix.dtype }}-
+
+    - name: Run the test suite (${{ matrix.dtype }})
+      run: |
+        pytest
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.12
+
+      - name: Upgrade pip and install mrx
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Install sphinx and its dependencies for building docs
+        run: |
+          pip install -r docs/requirements.txt
+
+      - name: Install doxygen and pandoc
+        run: |
+          sudo apt update
+          sudo apt install -y doxygen pandoc
+
+      - name: Build docs
+        run: |
+          cd docs
+          sphinx-build -b html source build
