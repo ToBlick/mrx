@@ -129,25 +129,24 @@ def benchmark_cell(
 ) -> Row:
     dirichlet = not args.free
 
-    operator_apply = lambda x: apply_mass_matrix(
-        seq, operators, x, k, dirichlet=dirichlet,
-    )
+    def operator_apply(x):
+        return apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet)
 
     if strategy == "tensor":
-        precond_apply = lambda rhs: apply_mass_tensor_preconditioner_ops(
-            seq, operators, rhs, k, dirichlet=dirichlet,
-        )
+        def precond_apply(rhs):
+            return apply_mass_tensor_preconditioner_ops(
+                seq, operators, rhs, k, dirichlet=dirichlet)
     elif strategy == "jacobi":
-        precond_apply = lambda rhs: apply_mass_matrix_preconditioner(
-            seq, operators, rhs, k, dirichlet=dirichlet, kind="jacobi",
-        )
+        def precond_apply(rhs):
+            return apply_mass_matrix_preconditioner(
+                seq, operators, rhs, k, dirichlet=dirichlet, kind="jacobi")
     elif strategy.startswith("cheb"):
         # Build Jacobi smoother explicitly so we can plug it into Chebyshev
         # without going through the public mass preconditioner machinery
         # (which currently restricts the inner smoother to kind='tensor').
-        jacobi_apply = lambda rhs: apply_mass_matrix_preconditioner(
-            seq, operators, rhs, k, dirichlet=dirichlet, kind="jacobi",
-        )
+        def jacobi_apply(rhs):
+            return apply_mass_matrix_preconditioner(
+                seq, operators, rhs, k, dirichlet=dirichlet, kind="jacobi")
         suffix = "_dbc" if dirichlet else ""
         dof = int(getattr(seq, f"n{k}{suffix}"))
         min_eig, max_eig = _estimate_chebyshev_lanczos_bounds_apply(

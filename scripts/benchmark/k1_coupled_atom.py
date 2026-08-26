@@ -39,7 +39,6 @@ from mrx.experimental.tensor_stiffness import (
 from mrx.preconditioners import (
     _arr_shape_k1,
     _theta_bulk_shape_k1,
-    _zeta_bulk_shape_k1,
     _simultaneous_diagonalize_pair,
 )
 
@@ -109,8 +108,7 @@ def build_k1_coupled_bulk_state(seq, dirichlet: bool):
 
     arr_shape = tuple(int(v) for v in _arr_shape_k1(seq, dirichlet))
     th_shape = tuple(int(v) for v in _theta_bulk_shape_k1(seq, dirichlet))
-    ze_shape = tuple(int(v) for v in _zeta_bulk_shape_k1(seq, dirichlet))
-    nrN, nt, nz = th_shape[0], arr_shape[1], arr_shape[2]
+    nrN, _nt, _nz = th_shape[0], arr_shape[1], arr_shape[2]
     nrD = arr_shape[0]
     types = seq.basis_0.types
     g_r = np.asarray(_dense_incidence_1d(seq.basis_0.nr, types[0]))

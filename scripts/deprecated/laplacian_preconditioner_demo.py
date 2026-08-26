@@ -414,7 +414,8 @@ def _mass_preconditioner_diagnostics(seq, operators, *, k: int, dirichlet: bool,
     diagnostics: dict[str, object] = {}
     uses_tensor = preconditioner.kind == "tensor" or preconditioner.surgery_schur
     if preconditioner.kind in ("richardson", "chebyshev"):
-        operator_apply = lambda x: apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet)
+        def operator_apply(x):
+            return apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet)
         smoother_apply, smoother_kind = _mass_iterative_smoother_apply(
             seq,
             operators,
@@ -460,7 +461,8 @@ def _scalar_hodge_preconditioner_diagnostics(seq, operators, *, eps: float, diri
             result = result + eps * apply_mass_matrix(seq, operators, x, 0, dirichlet=dirichlet)
         return result
 
-    smoother_apply = lambda x, inv=shifted_diaginv: inv * x
+    def smoother_apply(x, inv=shifted_diaginv):
+        return inv * x
     return {
         "tuning": _iterative_tuning_diagnostics(
             operator_apply,
@@ -500,13 +502,9 @@ def _saddle_preconditioner_diagnostics(seq, operators, *, k: int, eps: float, di
     if outer_spec.kind not in ("richardson", "chebyshev"):
         return diagnostics or None
 
-    schur_inner = lambda x: apply_mass_tensor_preconditioner_ops(
-        seq,
-        operators,
-        x,
-        k - 1,
-        dirichlet=dirichlet,
-    )
+    def schur_inner(x):
+        return apply_mass_tensor_preconditioner_ops(
+            seq, operators, x, k - 1, dirichlet=dirichlet)
     schur_apply = _build_schur_operator_apply(
         seq,
         operators,

@@ -10,8 +10,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "benchmark"))
 from benchmark_graddiv_k1_preconditioner import build_sequence
 from mrx.geometry import compute_geometry_terms
 from mrx.preconditioners import _bulk_tensor_shape

@@ -33,6 +33,23 @@ preconditioner apply and a free Schur rebuild. Chebyshev needs only lam_max
 
   python scripts/debug/laplacian_mg_k0.py --geometry cylinder --ns 8 16 8 --two-level-check
   python scripts/debug/laplacian_mg_k0.py --geometry toroid --ns 12 24 12 --smoothers jacobi,fd,fdax --csv out.csv
+
+Canonical invocation (one GPU, 128 GB host memory, 240 min; ``--ns`` and
+``--coarsen`` take three space-separated integers)::
+
+    SCRIPT=scripts/debug/laplacian_mg_k0.py JOB_NAME=mg_w7x MEM_GB=128 TIMEOUT_MIN=240 \
+      EXTRA_ENV="W7X_MAP_BATCH=128 XLA_PYTHON_CLIENT_PREALLOCATE=false" \
+      ARGS="--geometry w7x --ns 12 24 24 --p 3 --nfp 5 --levels 2 --coarsen 2 2 2 \
+            --smoothers fdbund --cheb-lo 0.85 --auto-m --schur rebuild --tol 1e-10 \
+            --maxiter 3000 --zeta-diag --two-level-check --csv outputs/mg_w7x/mg_w7x.csv" \
+      bash slurm/run.sh
+
+Per-geometry settings of the retired sweep wrap: ``--nfp 5 --zeta-diag`` for
+w7x, ``--nfp 3 --kappa 1.7 --alpha 0.4`` for cerfon, ``--nfp 2 --kappa 1.5``
+for rotating_ellipse, ``--nfp 3`` otherwise; ``--two-level-check`` on the
+smallest ``--ns`` only; the legacy window is ``--cheb-window 4 --smooth-steps 2``
+in place of ``--cheb-lo 0.85 --auto-m``. Merge CSVs with
+``awk 'FNR==1&&NR!=1{next}1' mg_*.csv > merged.csv``.
 """
 from __future__ import annotations
 
@@ -352,7 +369,7 @@ def fdax_axis_profiles(seq, ring0=0, bundle_j=False, helical_rho=0.0):
     # (0,1) is quadrature-divergent no matter where the bulk window starts.
     xi1 = jnp.asarray(seq.basis_0.Λ[0].T)[p_r + 1 + max(ring0, 0)]
     wx_cut = seq.quad.w_x * (jnp.asarray(seq.quad.x_x) >= xi1)
-    wx, wy, wz = seq.quad.w_x, seq.quad.w_y, seq.quad.w_z
+    _wx, wy, wz = seq.quad.w_x, seq.quad.w_y, seq.quad.w_z
     sy, sz = jnp.sum(wy), jnp.sum(wz)
     sxc = jnp.sum(wx_cut)
     pr = jnp.einsum('qrs,r,s->q', w00, wy, wz) / (sy * sz)

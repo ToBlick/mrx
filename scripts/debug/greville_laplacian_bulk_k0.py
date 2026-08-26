@@ -197,10 +197,12 @@ def main():
     if not args.dirichlet:
         w, V = np.linalg.eigh(A)
         null = V[:, 0]  # smallest-eigenvalue direction
-        project = lambda v, null=null: v - null * (null @ v)
+        def project(v, null=null):
+            return v - null * (null @ v)
 
     diagA = np.diag(A)
-    jac_apply = lambda v: jnp.asarray(np.asarray(v)) / jnp.asarray(diagA)
+    def jac_apply(v):
+        return jnp.asarray(np.asarray(v)) / jnp.asarray(diagA)
 
     print(f"\n{'precond':14} {'cg_iters':>9} {'final_res':>11} {'lam_min':>11} {'lam_max':>11} {'kappa':>10} {'solve_ms':>9}")
     for name, app in (("jacobi", jac_apply), ("greville", grev)):

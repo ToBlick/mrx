@@ -59,11 +59,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "scripts"
-for _p in (ROOT, SCRIPTS, SCRIPTS / "benchmark", SCRIPTS / "debug"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "benchmark"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "debug"))
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import (cylinder_map, one_size_fits_all_map,
@@ -253,9 +252,9 @@ def _build_c_matrix(seq: DeRhamSequence) -> jnp.ndarray:
     n_r = int(lam_r.shape[0])
     n_t = int(lam_t.shape[0])
     n_z = int(lam_z.shape[0])
-    n_dr = int(d_lam_r.shape[0])
-    n_dt = int(d_lam_t.shape[0])
-    n_dz = int(d_lam_z.shape[0])
+    int(d_lam_r.shape[0])
+    int(d_lam_t.shape[0])
+    int(d_lam_z.shape[0])
     n0_full = n_r * n_t * n_z
     n1_1_full = int(seq.basis_1.n1)  # = n_dr * n_t * n_z
     n1_2_full = int(seq.basis_1.n2)  # = n_r * n_dt * n_z
@@ -300,9 +299,9 @@ def _build_c_matrix(seq: DeRhamSequence) -> jnp.ndarray:
 
     # Apply extraction: C_ext = e0 @ C_raw @ e1_T_component
     # Materialize extraction operators via unit-vector probing.
-    n0_ext = int(seq.n0)   # free 0-form channels (AUX0_DIRICHLET=False)
+    int(seq.n0)   # free 0-form channels (AUX0_DIRICHLET=False)
     n1_ext = int(seq.n1_dbc if DIRICHLET else seq.n1)
-    n1_full = int(seq.basis_1.n)
+    int(seq.basis_1.n)
 
     e0_dense = jax.vmap(
         lambda v: seq.e0 @ v, in_axes=1, out_axes=1
@@ -1848,7 +1847,8 @@ def make_apply_routines(
             _n0m = int(seq.n0_dbc if DIRICHLET else seq.n0)
             _L0d = np.asarray(_l0df(_l0_A, _n0m, sequential=True))
             _L0i = jnp.asarray(np.linalg.pinv(0.5 * (_L0d + _L0d.T), rcond=1e-12))
-            l0_inv = lambda x, _M=_L0i: _M @ x
+            def l0_inv(x, _M=_L0i):
+                return _M @ x
             print(f"[diag] L0INV=dense wired (n0={_n0m})", flush=True)
         elif _l0_mode.startswith("mg"):
             # fixed symmetric V-cycles of the k=0 MG (fdbund smoother,
@@ -2371,8 +2371,8 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
         _s_hat1 = _k1_applies["a_matvec"]                       # ~ L_1 : V1 -> V1*
         # Use the FUSED k=1 smoother (2 L_0^{-1} solves instead of 4; algebraically
         # identical) -- halves the nested cheb-L_0 cost per smoother apply.
-        _smoother_raw = (lambda r, _a=_k1_applies:
-                         _a["projected_p_a_plus_p_b_fused_with_state"](_a["p_a_state"], r))
+        def _smoother_raw(r, _a=_k1_applies):
+            return _a["projected_p_a_plus_p_b_fused_with_state"](_a["p_a_state"], r)
         _n1 = int(seq.n1_dbc if DIRICHLET else seq.n1)
 
         _H = jnp.asarray(_nullspace_vectors(ops, 1, DIRICHLET))  # (n_harm, n1), primal
@@ -3540,11 +3540,13 @@ def diagnose_pa_times_stiffness_spectrum(
         if mode == "active":
             results.append(_summarize(f"active:{active_pa_name}", active_pa_apply))
         elif mode == "jacobi":
-            pa_apply = lambda x, d=k_diaginv: d * x
+            def pa_apply(x, d=k_diaginv):
+                return d * x
             results.append(_summarize("jacobi", pa_apply))
         elif mode == "pinv":
             s_pinv = jnp.linalg.pinv(s_dense, rcond=pinv_rcond, hermitian=True)
-            pa_apply = lambda x, p=s_pinv: p @ x
+            def pa_apply(x, p=s_pinv):
+                return p @ x
             results.append(_summarize("dense pinv", pa_apply))
         else:
             raise ValueError(f"Unsupported P_A spectrum mode {mode!r}")
@@ -3601,7 +3603,7 @@ def run_k2_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
     jac = ap_atom_on["jacobi_diag"]       # WHOLE-space diag(L_2) -> overlaps P_B on curls
     jac_s = ap_atom_on["jacobi_stiff"]    # diag(S_2) only -> ZERO on curls, clean split
     p_b_raw = ap_atom_off["p_b"]          # curl-aux, raw block_fd atom (cheaper, no worse)
-    p_a_raw = ap_atom_on["p_a_raw"]       # div-div co-exact block
+    ap_atom_on["p_a_raw"]       # div-div co-exact block
     methods = {}
     # Clean co-exact/curl splits (no double-counting): stiffness-only jacobi on
     # the co-exact part, P_B on curls. The k=2 analog of k=1 jacobi(S)+P_B.

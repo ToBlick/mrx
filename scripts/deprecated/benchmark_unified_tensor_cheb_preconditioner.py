@@ -178,7 +178,8 @@ def _mass_deflation(seq, ops, k, DBC):
     using an inexact L_k^{-1} (which would otherwise amplify the ~0 harmonic)."""
     H = jnp.asarray(_nullspace_vectors(ops, k, DBC))
     if H.shape[0] == 0:
-        ident = lambda x: x
+        def ident(x):
+            return x
         return ident, ident
     MH = jnp.stack([apply_mass_matrix(seq, ops, H[i], k, dirichlet=DBC)
                     for i in range(H.shape[0])], axis=0)

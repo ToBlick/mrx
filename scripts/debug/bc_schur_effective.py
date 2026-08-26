@@ -131,12 +131,13 @@ def main():
             _, _, _, _, _, outer = core_rows(seq, k, False, outer_rings=d)
             R = np.sort(np.asarray(outer))
             if R.size == 0:
-                print(f"  depth {d}: no outer rows"); continue
-            I = np.setdiff1d(np.arange(n), R)
+                print(f"  depth {d}: no outer rows")
+                continue
+            interior = np.setdiff1d(np.arange(n), R)
             B_raw = sym(Ld[np.ix_(R, R)])
             # Schur complement onto R: the exact DtN-augmented boundary operator
-            B_schur = sym(B_raw - Ld[np.ix_(R, I)]
-                          @ np.linalg.solve(Ld[np.ix_(I, I)], Ld[np.ix_(I, R)]))
+            B_schur = sym(B_raw - Ld[np.ix_(R, interior)]
+                          @ np.linalg.solve(Ld[np.ix_(interior, interior)], Ld[np.ix_(interior, R)]))
             dtn = np.trace(B_raw - B_schur) / np.trace(B_raw)
             print(f"\n  --- depth {d}: {R.size} outer rows, "
                   f"DtN removes {dtn*100:.1f}% of tr(L[R,R])", flush=True)

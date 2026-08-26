@@ -35,7 +35,8 @@ from mrx.operators import _k0_stiffness_diagonal_metric_tensors  # noqa: E402
 
 
 def loglog_slope(r, y):
-    r = np.asarray(r, float); y = np.asarray(y, float)
+    r = np.asarray(r, float)
+    y = np.asarray(y, float)
     m = (r > 0) & (y > 0)
     if m.sum() < 2:
         return float("nan")
@@ -67,7 +68,8 @@ def main():
     for name, key in chans:
         a = np.asarray(metric[key], dtype=float)            # (theta, r, zeta)
         rho = a.mean(axis=(0, 2))                            # (r,)
-        amin = a.min(axis=(0, 2)); amax = a.max(axis=(0, 2))
+        amin = a.min(axis=(0, 2))
+        amax = a.max(axis=(0, 2))
         astd = a.std(axis=(0, 2))
         prof[name] = rho
         slope = loglog_slope(r, rho)
@@ -80,12 +82,15 @@ def main():
     print(f"\n{'inter-channel ratios':22}")
     print(f"  {'r':>9} {'rr/thetatheta':>14} {'thetatheta/zetazeta':>20} {'rr/zetazeta':>13}")
     for i in range(len(r)):
-        tt = prof['thetatheta'][i]; zz = prof['zetazeta'][i]; rr = prof['rr'][i]
+        tt = prof['thetatheta'][i]
+        zz = prof['zetazeta'][i]
+        rr = prof['rr'][i]
         print(f"  {r[i]:>9.4f} {rr/tt if tt else float('nan'):>14.3f} "
               f"{tt/zz if zz else float('nan'):>20.3f} {rr/zz if zz else float('nan'):>13.3f}", flush=True)
 
     # Verdict aids: do thetatheta and zetazeta share a radial profile?
-    tt = prof['thetatheta']; zz = prof['zetazeta']
+    tt = prof['thetatheta']
+    zz = prof['zetazeta']
     ratio = tt / np.where(zz != 0, zz, np.nan)
     rel_spread = (np.nanmax(ratio) - np.nanmin(ratio)) / abs(np.nanmean(ratio))
     print(f"\nrho_thetatheta/rho_zetazeta over r: min={np.nanmin(ratio):.3e} max={np.nanmax(ratio):.3e} "

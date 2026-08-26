@@ -78,7 +78,8 @@ def main():
     for k in (1, 2):
         for dirichlet in (True, False):
             bc = "dbc" if dirichlet else "free"
-            o = res.get((False, k, dirichlet)); n = res.get((True, k, dirichlet))
+            o = res.get((False, k, dirichlet))
+            n = res.get((True, k, dirichlet))
             oi = f"{o[0]}" if o and o[0] is not None else f"ERR({o[2] if o else '-'})"
             ni = f"{n[0]}" if n and n[0] is not None else f"ERR({n[2] if n else '-'})"
             print(f"{k:>2} {bc:5} {oi:>7} {str(o[1]) if o else '-':>6} {ni:>7} {str(n[1]) if n else '-':>6}", flush=True)

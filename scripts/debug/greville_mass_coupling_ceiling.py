@@ -21,6 +21,16 @@ assembly. Component index sets come from the preconditioner's own surgery slices
 the split is exactly the one the block preconditioner uses (surgery-aware).
 
   python scripts/debug/greville_mass_coupling_ceiling.py --geometry w7x --ns 12 24 12 --p 3 --nfp 5
+
+Canonical invocation (one GPU, 128 GB host memory, 240 min; ``--ns`` takes
+three space-separated integers; ``--nfp 5`` for w7x, ``3`` otherwise)::
+
+    SCRIPT=scripts/debug/greville_mass_coupling_ceiling.py JOB_NAME=ceil_w7x \
+      MEM_GB=128 TIMEOUT_MIN=240 \
+      EXTRA_ENV="W7X_MAP_BATCH=128 XLA_PYTHON_CLIENT_PREALLOCATE=false" \
+      ARGS="--geometry w7x --ns 12 24 12 --p 3 --nfp 5 --tol 1e-10 --maxiter 5000 \
+            --csv outputs/ceil_w7x/ceiling_w7x.csv" \
+      bash slurm/run.sh
 """
 from __future__ import annotations
 

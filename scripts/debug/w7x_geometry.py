@@ -105,7 +105,8 @@ def _interp_accuracy(info, n=400, seed=0):
     Zh = jax.vmap(lambda x: Z_h(x)[0])(xs)
     Rf = jax.vmap(lambda x: R_fn(x)[0])(xs)
     Zf = jax.vmap(lambda x: Z_fn(x)[0])(xs)
-    eR = np.asarray(jnp.abs(Rh - Rf)); eZ = np.asarray(jnp.abs(Zh - Zf))
+    eR = np.asarray(jnp.abs(Rh - Rf))
+    eZ = np.asarray(jnp.abs(Zh - Zf))
     return dict(R_max=eR.max(), R_rms=np.sqrt((eR**2).mean()),
                Z_max=eZ.max(), Z_rms=np.sqrt((eZ**2).mean()))
 

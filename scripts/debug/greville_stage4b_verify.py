@@ -83,7 +83,8 @@ def main():
 
     # 1. k=0 scalar Laplacian
     for d in (True, False):
-        n = dof(seq, 0, d); key = jax.random.PRNGKey(d * 7)
+        n = dof(seq, 0, d)
+        key = jax.random.PRNGKey(d * 7)
         rhs = apply_hodge_laplacian(seq, ops, jax.random.normal(key, (n,), dtype=jnp.float64), 0, dirichlet=d)
         try:
             x, info = apply_inverse_hodge_laplacian(seq, ops, rhs, 0, dirichlet=d, tol=args.tol,
@@ -98,7 +99,8 @@ def main():
     # 2. mass k=0..3
     for k in (0, 1, 2, 3):
         for d in (True, False):
-            n = dof(seq, k, d); key = jax.random.PRNGKey(100 + k + d)
+            n = dof(seq, k, d)
+            key = jax.random.PRNGKey(100 + k + d)
             rhs = apply_mass_matrix(seq, ops, jax.random.normal(key, (n,), dtype=jnp.float64), k, dirichlet=d)
             try:
                 x, info = apply_inverse_mass_matrix(seq, ops, rhs, k, dirichlet=d, tol=args.tol,
@@ -113,7 +115,8 @@ def main():
     # 3. vector Laplacian k=1,2,3
     for k in (1, 2, 3):
         for d in (True, False):
-            n = dof(seq, k, d); key = jax.random.PRNGKey(200 + k + d)
+            n = dof(seq, k, d)
+            key = jax.random.PRNGKey(200 + k + d)
             rhs = apply_hodge_laplacian(seq, ops, jax.random.normal(key, (n,), dtype=jnp.float64), k, dirichlet=d)
             try:
                 x, info = apply_inverse_hodge_laplacian(seq, ops, rhs, k, dirichlet=d, tol=args.tol,
@@ -128,7 +131,8 @@ def main():
     # 4. stiffness preconditioner apply smoke (CP core)
     for k in (1, 2):
         for d in (True, False):
-            n = dof(seq, k, d); key = jax.random.PRNGKey(300 + k + d)
+            n = dof(seq, k, d)
+            key = jax.random.PRNGKey(300 + k + d)
             v = jax.random.normal(key, (n,), dtype=jnp.float64)
             try:
                 w = apply_stiffness_tensor_preconditioner(seq, ops, v, k, dirichlet=d)

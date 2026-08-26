@@ -206,7 +206,7 @@ def build_matrixfree_mass_apply(seq, k):
         for cr in range(n_comp))
     nseg = tuple(int(np.prod(shapes[c])) for c in range(n_comp))
 
-    shapes_t = tuple(tuple(int(v) for v in s) for s in shapes)
+    tuple(tuple(int(v) for v in s) for s in shapes)
     starts_t = tuple(int(s) for s in starts)
 
     @jax.jit
