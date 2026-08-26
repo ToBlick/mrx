@@ -7,10 +7,12 @@ saddle path apply_inverse_hodge_laplacian(preconditioner='auto'). Confirms the
 greville-backed probe drives convergence for the vector Laplacians.
 """
 from __future__ import annotations
-import argparse, os, sys
+import argparse
+import os
+import sys
 from types import SimpleNamespace
-import jax, jax.numpy as jnp
-jax.config.update("jax_enable_x64", True)
+import jax
+import jax.numpy as jnp
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))

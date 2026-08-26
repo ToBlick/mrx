@@ -25,6 +25,13 @@ import os
 import statistics
 import time
 
+import sys
+# The working precision is chosen before mrx is imported; hydra only hands
+# the config over inside main(), so the override is read from argv here.
+os.environ["MRX_DTYPE"] = next(
+    (a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("precision=")),
+    os.environ.get("MRX_DTYPE", "float64"))
+
 import hydra
 import jax
 import jax.numpy as jnp
@@ -45,7 +52,6 @@ from mrx.local_assembly import (
     evaluate_basis_local,
 )
 
-jax.config.update("jax_enable_x64", True)
 
 types = ("clamped", "periodic", "periodic")
 
@@ -200,7 +206,7 @@ def build_matrixfree_mass_apply(seq, k):
         for cr in range(n_comp))
     nseg = tuple(int(np.prod(shapes[c])) for c in range(n_comp))
 
-    shapes_t = tuple(tuple(int(v) for v in s) for s in shapes)
+    tuple(tuple(int(v) for v in s) for s in shapes)
     starts_t = tuple(int(s) for s in starts)
 
     @jax.jit
@@ -300,7 +306,10 @@ def run_case(n, p, k, epsilon, quad_order, quad_order_offset, reps, warmup, seed
 @hydra.main(config_path="../../conf",
             config_name="config_matvec_benchmark", version_base=None)
 def main(cfg: DictConfig):
-    print(f"x64 enabled: {jax.config.jax_enable_x64}")
+    print(f"precision: {mrx.DTYPE}  solver_tol: {cfg.solver_tol}")
+    if cfg.precision != str(mrx.DTYPE):
+        raise ValueError(f"precision={cfg.precision} but mrx runs in {mrx.DTYPE}; "
+                         "MRX_DTYPE was not set before import")
     print(f"JAX devices: {jax.devices()}")
     p = cfg.p
     ns = list(cfg.n)

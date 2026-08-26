@@ -22,7 +22,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
 
 from mrx.spline_bases import SplineBasis  # noqa: E402
 from mrx.extraction_operators import get_xi, get_xi2  # noqa: E402

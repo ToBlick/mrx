@@ -34,7 +34,6 @@ from mrx.relaxation import (DescentMethod, IntegrationScheme, TimeStepChoice,
                             relaxation_loop)
 from mrx.quadrature import evaluate_at_xq, integrate_against
 
-jax.config.update("jax_enable_x64", True)
 
 # ---------------------------------------------------------------
 # Parameters
@@ -120,7 +119,7 @@ seq.assemble_all_sparse()
 print(f"FEM setup done in {time.time() - t0:.1f}s")
 # %%
 t0 = time.time()
-print(f"Assembly done, computing nullspaces...")
+print("Assembly done, computing nullspaces...")
 seq.compute_nullspaces()
 print(f"Nullspace computation done in {time.time() - t0:.1f}s")
 

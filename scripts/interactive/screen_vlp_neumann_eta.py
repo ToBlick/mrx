@@ -4,7 +4,6 @@ import argparse
 import json
 from dataclasses import asdict, dataclass
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -17,7 +16,6 @@ from mrx.operators import (
 )
 from mrx.preconditioners import _core_size, _select_mass_surgery_factors, _select_mass_tensor_factors
 
-jax.config.update("jax_enable_x64", True)
 
 
 @dataclass(frozen=True)
@@ -241,7 +239,7 @@ def _direct_inverse(matrix: jnp.ndarray) -> tuple[jnp.ndarray, str, float, float
     svals = jnp.linalg.svd(sym_matrix, compute_uv=False)
     smax = float(svals[0])
     smin = float(svals[-1])
-    tiny = np.finfo(np.float64).tiny
+    np.finfo(np.float64).tiny
     if smin > 1e-12 * max(smax, 1.0) and float(jnp.min(eigvals)) > 0.0:
         return jnp.linalg.inv(sym_matrix), "inv", float(jnp.min(eigvals)), float(jnp.max(eigvals))
     return jnp.linalg.pinv(sym_matrix), "pinv", float(jnp.min(eigvals)), float(jnp.max(eigvals))

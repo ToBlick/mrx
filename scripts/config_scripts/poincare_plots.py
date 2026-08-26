@@ -1,23 +1,98 @@
-"""
-Poincaré plot generation script using Hydra for configuration management.
+"""Poincaré sections for every saved iteration of a completed relaxation run.
 
-Loads intermediate states from a completed GVEC relaxation run and generates
-Poincaré section plots for each saved iteration.
+Read a relaxation run directory (the ``.hydra/config.yaml`` it wrote, its
+``<run_name>.h5`` result file and ``intermediate_states.h5``), rebuild the
+stellarator map and the de Rham sequence from that config, trace field
+lines of every stored intermediate field, classify them by rotational
+transform and save one figure per saved iteration and per section plane.
+
+Configuration:
+    Hydra config ``conf/config_poincare.yaml``, schema
+    ``mrx.config.PoincarePlotsConfig``. Override any key as ``key=value``
+    (nested keys as ``group.key=value``). The config sets
+    ``hydra.job.chdir=false`` and ``hydra.run.dir=.``, so the working
+    directory stays put and Hydra only writes ``./.hydra/``. There is no
+    submitit launcher in this config: ``-m`` sweeps run sequentially in
+    the submitting process.
+
+    run_dir (str): Relaxation run directory, relative to the directory the
+        command is started in. Required; default ``None`` raises.
+    fieldline.n_scan (int): Sequential scan batches. Default 1.
+    fieldline.n_vmap (int): Trajectories per batch (``vmap``). Default 32.
+    fieldline.T_factor (int): Integration time ``T_factor * 2π * nfp``.
+        Default 300.
+    fieldline.axis_margin (float): Seed radius range ``[axis_margin, 0.99]``.
+        Default 0.05.
+    poincare.zeta_values (list[float]): Logical toroidal angles of the
+        sections. Default ``[0.33]``.
+    poincare.ks_thresh (int): KS-test threshold of the iota classification.
+        Default 10.
+    plotting.markersize (float): Marker size. Default 0.005.
+    plotting.dpi (int): Figure resolution. Default 150.
+    plotting.denom_max (int): Largest denominator of the rational ticks on
+        the iota colorbar. Default 15.
+    plotting.cmap_iota (str): Colormap of the iota coloring. Default
+        ``nipy_spectral``.
+    plotting.cmap_p (str): Colormap of the pressure coloring. Default
+        ``plasma``.
+    plotting.plot_pressure (bool): Draw the pressure panel. Default true.
+    plotting.Rlim (list[float] | None): R-axis limits; ``None`` is auto.
+    plotting.zlim (list[float] | None): z-axis limits; ``None`` is auto.
+    output.subdir (str): Output directory inside ``run_dir``. Default
+        ``poincare_plots``.
+    output.format (str): Figure format (``pdf``, ``png``, ``svg``). Default
+        ``pdf``.
+    output.verbose (bool): Print per-iteration progress. Default true.
+    precision (str): ``float64`` (default) or ``float32``. Read from argv
+        and exported as ``MRX_DTYPE`` before ``mrx`` is imported.
+    solver_tol (float | None): Printed with the run header; ``None`` means
+        ``sqrt(eps)`` of the working precision. The sequence is rebuilt
+        without an explicit tolerance. Default ``None``.
+
+    The FEM and map resolutions, ``nfp``, ``quad_order`` and ``flip_zeta``
+    come from the relaxation run's own config, not from this one.
 
 Usage:
-    # Single run (run_dir is required)
-    python scripts/config_scripts/poincare_plots.py run_dir=out/relax_from_nfs/20260206_072421
+    ::
 
-    # Override plotting parameters
-    python scripts/config_scripts/poincare_plots.py run_dir=... plotting.dpi=300 fieldline.n_vmap=32
+        python -u scripts/config_scripts/poincare_plots.py run_dir=out/relax_from_nfs/<stamp>
+        python -u scripts/config_scripts/poincare_plots.py run_dir=out/relax_from_nfs/<stamp> \
+            plotting.dpi=300 fieldline.n_vmap=32
 
-    # Override via SLURM
-    sbatch slurm/job_poincare.sh "run_dir=out/relax_from_nfs/20260206_072421"
+    Single GPU job through ``slurm/run.sh``::
+
+        SCRIPT=scripts/config_scripts/poincare_plots.py \
+            ARGS="run_dir=out/relax_from_nfs/<stamp> plotting.dpi=300 fieldline.n_vmap=32" \
+            JOB_NAME=poincare MEM_GB=80 TIMEOUT_MIN=360 bash slurm/run.sh
+
+    Multirun sweeps run in-process (no launcher in ``config_poincare``)::
+
+        python scripts/config_scripts/poincare_plots.py -m run_dir=... plotting.dpi=150,300
+
+Runtime:
+    One H100, ``logs/poincare_*.out`` (2026-02-07): 10 saved iterations at
+    ``n_scan=2``, ``T_factor=500`` take 430-510 s; 100 saved iterations at
+    ``n_vmap=32``, ``T_factor=300`` take 0.5-3.6 h depending on the run
+    (W7-X: 3.0 h). The previous slurm wrap allotted 80 GB and 6 h.
+
+Output:
+    ``<run_dir>/<output.subdir>/poincare_plot_<iteration>[_zeta<z>].<format>``,
+    one file per saved iteration and, with several ``zeta_values``, per
+    plane. Through ``slurm/run.sh`` the stdout log is
+    ``outputs/<JOB_NAME>/<date>/<time>/<JOB_NAME>.log``.
 """
 import time
 from pathlib import Path
 
 import h5py
+import os
+import sys
+# The working precision is chosen before mrx is imported; hydra only hands
+# the config over inside main(), so the override is read from argv here.
+os.environ["MRX_DTYPE"] = next(
+    (a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("precision=")),
+    os.environ.get("MRX_DTYPE", "float64"))
+
 import hydra
 import jax
 import jax.numpy as jnp
@@ -28,10 +103,10 @@ import tqdm
 import yaml
 from omegaconf import DictConfig, OmegaConf
 
+import mrx
 import mrx.config  # noqa: F401  —  register Hydra structured configs
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
-from mrx.io import unique_id
 from mrx.mappings import stellarator_map
 from mrx.plotting import (
     get_iota_log,
@@ -40,7 +115,6 @@ from mrx.plotting import (
     poincare_plot,
 )
 
-jax.config.update("jax_enable_x64", True)
 matplotlib.use("Agg")  # Non-interactive backend for batch jobs
 
 
@@ -76,6 +150,10 @@ def iter_traces(trace_file: Path):
 
 @hydra.main(version_base=None, config_name="config_poincare")
 def main(cfg: DictConfig) -> None:
+    print(f"precision: {mrx.DTYPE}  solver_tol: {cfg.solver_tol}")
+    if cfg.precision != str(mrx.DTYPE):
+        raise ValueError(f"precision={cfg.precision} but mrx runs in {mrx.DTYPE}; "
+                         "MRX_DTYPE was not set before import")
     """
     Main entry point for Poincaré plot generation with Hydra configuration.
     """

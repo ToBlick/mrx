@@ -37,7 +37,6 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-jax.config.update("jax_enable_x64", True)
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.local_assembly import assemble_mass_local, build_matrixfree_mass_apply
@@ -48,7 +47,6 @@ from mrx.operators import (
     apply_mass_matrix,
     apply_stiffness,
     assemble_incidence_operators,
-    mass_core_apply,
 )
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Plot the relaxation traces that relax_prelim.py archives, with no solve.
+"""Plot the relaxation traces that relax.py (formerly relax_prelim.py) archives, with no solve.
 
 Every arm writes its full per-step trace into the run JSON, so the whole
 campaign can be re-plotted from disk in seconds.  matplotlib, numpy and json

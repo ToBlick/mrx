@@ -1,54 +1,38 @@
 #!/bin/bash
-# Second batch.  The first covered W1's own axes; this one covers the
-# COMBINATIONS that matter and the one control the chaotic case still lacks.
+# Second batch around W1: the combinations and the missing control.
+#
+# S13/S14: resolution on the chaotic w7x-ini-clebsch case (discretisation
+# or ideal instability?). S15: does the gamma benefit survive refinement?
+# S16: the longest run on the best-conditioned setting. S17: eta on the
+# chaotic case (reconnection should not make it notably worse).
+#
+# Usage: run from anywhere; MRX_ROOT defaults to the repository containing
+# this file. Site settings come from slurm/site.env or the environment
+# (slurm/README.md). Each arm is one single-GPU job through slurm/run.sh
+# running scripts/relax.py; logs land under outputs/sweep_w1b/<date>/<time>/,
+# results (relax.json, B.h5) under $OUT/<tag>/.
+#
+# The arms stop on the energy floor (relax.py --floor-tol) or on --steps /
+# --seconds, whichever comes first. relax.py does not render Poincare
+# sections; B.h5 holds the initial and final fields for that.
 set -u
-# RUN FROM THE REPO ROOT: the paths below (slurm/job_relax_prelim.sh)
-# are relative to it, not to this file's directory.
-PC="--poincare --pc-seeds 40 --pc-periods 150"
-O=/scratch/tblickhan/mrx/out/relax_prelim
-S=slurm/job_relax_prelim.sh
+MRX_ROOT=${MRX_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
+OUT=${OUT:-outputs/sweep_w1b/results}
 
+# sub <tag> <walltime minutes> <relax.py args...>
 sub () {
-  tag=$1; shift
-  sbatch_args=""
-  while [ "$1" != "--" ]; do sbatch_args="$sbatch_args $1"; shift; done
-  shift
-  mkdir -p "$O/$tag"
-  # shellcheck disable=SC2086
-  jid=$(sbatch $sbatch_args "$S" "$@" --save-b "$O/$tag/B.h5" \
-        --out "$O/$tag/$tag.json" | awk '{print $4}')
-  echo "$tag -> $jid"
-  ln -sfn "/scratch/tblickhan/mrx/logs/relaxprelim_$jid.out" \
-     "$O/logs/live_$tag.out"
+  tag=$1; minutes=$2; shift 2
+  mkdir -p "$MRX_ROOT/$OUT/$tag"
+  SCRIPT=scripts/relax.py JOB_NAME="$tag" OUTSUB="sweep_w1b" TIMEOUT_MIN="$minutes" \
+    ARGS="$* --out $OUT/$tag" MRX_ROOT="$MRX_ROOT" bash "$MRX_ROOT/slurm/run.sh"
 }
 
-# THE MISSING CONTROL.  W4 (gamma) and W5 (small dt) test the numerical
-# explanations for w7x_ini's chaos; RESOLUTION is untested and is gap #1 in
-# the handoff.  If the chaos is discretisation it should ease at 12,24,12;
-# if it is an ideal instability at beta_max 13% it should not.
-sub S13_ini_res12 --time=6:00:00 -- --geometry w7x-ini-clebsch --ic clebsch \
-    --ns 12,24,12 --p 3 --steps 3000 --helicity-every 250 \
-    --seconds-per-arm 12000 --arms cg $PC
+PC="--method cg --p 3 --diag-every 250"
 
-# Same question one step further, if 12,24,12 is ambiguous.
-sub S14_ini_res16 --time=6:00:00 -- --geometry w7x-ini-clebsch --ic clebsch \
-    --ns 16,32,16 --p 3 --steps 1500 --helicity-every 250 \
-    --seconds-per-arm 12000 --arms cg $PC
+sub S13_ini_res12 360 --geometry w7x-ini-clebsch --ic clebsch --ns 12,24,12 --steps 3000 --seconds 12000 $PC
+sub S14_ini_res16 360 --geometry w7x-ini-clebsch --ic clebsch --ns 16,32,16 --steps 1500 --seconds 12000 $PC
+sub S15_res12_g1  360 --geometry w7x-fmm002 --ic clebsch --ns 12,24,12 --steps 3000 --gamma 1 --mu 1e-3 --seconds 12000 $PC
+sub S16_g1_long   240 --geometry w7x-fmm002 --ic clebsch --ns 8,16,8 --steps 12000 --gamma 1 --mu 1e-3 --seconds 11000 --method cg --p 3 --diag-every 500
+sub S17_ini_eta3  240 --geometry w7x-ini-clebsch --ic clebsch --ns 8,16,8 --steps 4000 --eta-max 1e-3 --seconds 9000 $PC
 
-# Does the gamma benefit SURVIVE refinement, or is it a coarse-grid artefact?
-sub S15_res12_g1 --time=6:00:00 -- --geometry w7x-fmm002 --ic clebsch \
-    --ns 12,24,12 --p 3 --steps 3000 --helicity-every 250 \
-    --gamma 1 --mu 1e-3 --seconds-per-arm 12000 --arms cg $PC
-
-# Longest run on the best-conditioned setting: how far does the residual go?
-sub S16_g1_long --time=4:00:00 -- --geometry w7x-fmm002 --ic clebsch \
-    --ns 8,16,8 --p 3 --steps 12000 --helicity-every 500 \
-    --gamma 1 --mu 1e-3 --seconds-per-arm 11000 --arms cg $PC
-
-# eta on the CHAOTIC case: if reconnection is what destroys the surfaces,
-# adding real resistivity should not make it notably worse.
-sub S17_ini_eta3 --time=4:00:00 -- --geometry w7x-ini-clebsch --ic clebsch \
-    --ns 8,16,8 --p 3 --steps 4000 --helicity-every 250 --eta-max 1e-3 \
-    --seconds-per-arm 9000 --arms cg $PC
-
-echo "submitted"
+echo "submitted 5 arms"

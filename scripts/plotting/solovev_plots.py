@@ -1,9 +1,7 @@
-import jax
 from mrx.io import parse_args
 from mrx.plotting import generate_solovev_plots
 
 if __name__ == "__main__":
-    jax.config.update("jax_enable_x64", True)
     
     # Get user input
     params = parse_args()

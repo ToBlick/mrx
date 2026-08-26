@@ -33,16 +33,15 @@ import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.io import project_sampled_field
-from mrx.mappings import SplineMap, toroid_map
+from mrx.mappings import toroid_map
 from mrx.operators import (apply_inverse_shifted_laplacian,
                            apply_mass_matrix, apply_stiffness,
                            operators_from_coeffs)
 from mrx.solvers import backtracking_line_search
-from mrx.geometry import (SequenceGeometry, min_jacobian_from_coeffs,
+from mrx.geometry import (min_jacobian_from_coeffs,
                           spline_map_jacobian_j_at_quad)
 from mrx.quadrature import integrate_against
 
-jax.config.update("jax_enable_x64", True)
 
 types = ("clamped", "periodic", "periodic")
 
