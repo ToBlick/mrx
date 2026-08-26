@@ -107,7 +107,6 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.polynomial import Polynomial as P
 
-jax.config.update("jax_enable_x64", True)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

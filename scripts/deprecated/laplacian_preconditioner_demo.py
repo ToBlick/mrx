@@ -55,7 +55,6 @@ from mrx.preconditioners import (
 )
 from mrx.nullspace import _set_null, get_nullspace
 
-jax.config.update("jax_enable_x64", True)
 
 
 # %% Configuration

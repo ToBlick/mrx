@@ -15,6 +15,13 @@ import json
 import os
 import time
 
+import sys
+# The working precision is chosen before mrx is imported; hydra only hands
+# the config over inside main(), so the override is read from argv here.
+os.environ["MRX_DTYPE"] = next(
+    (a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("precision=")),
+    os.environ.get("MRX_DTYPE", "float64"))
+
 import hydra
 import jax
 import jax.numpy as jnp
@@ -32,7 +39,6 @@ from mrx.operators import (
 )
 from mrx.quadrature import evaluate_at_xq
 
-jax.config.update("jax_enable_x64", True)
 
 # ---------------------------------------------------------------------------
 # Problem setup
@@ -77,7 +83,7 @@ def exact_u_at_quad(seq: DeRhamSequence) -> jnp.ndarray:
 # Core computation
 # ---------------------------------------------------------------------------
 def compute_error(n: int, p: int, epsilon: float,
-                  cg_tol: float, cg_maxiter: int,
+                  solver_tol: float, cg_maxiter: int,
                   quad_order: int | None,
                   quad_order_offset: int):
     """Run the sparse Poisson solve and return (error, timings dict).
@@ -100,7 +106,7 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     seq = DeRhamSequence(
         ns, ps, q, types, polar=True,
-        tol=cg_tol, maxiter=cg_maxiter,
+        tol=solver_tol, maxiter=cg_maxiter,
     )
     seq.set_map(F)
     timings["DeRhamSequence.__init__"] = time.perf_counter() - t0
@@ -217,11 +223,14 @@ def compute_error(n: int, p: int, epsilon: float,
 @hydra.main(config_path="../../conf", config_name="config_poisson_test", version_base=None)
 def main(cfg: DictConfig):
     
-    print(f"x64 enabled: {jax.config.jax_enable_x64}")
+    print(f"precision: {mrx.DTYPE}  solver_tol: {cfg.solver_tol}")
+    if cfg.precision != str(mrx.DTYPE):
+        raise ValueError(f"precision={cfg.precision} but mrx runs in {mrx.DTYPE}; "
+                         "MRX_DTYPE was not set before import")
     print(f"epsilon type: {type(cfg.epsilon).__name__} value: {cfg.epsilon!r}")
     ns = [cfg.n] if isinstance(cfg.n, int) else list(cfg.n)
     print(f"n: {ns!r}")
-    print(f"cg_tol type: {type(cfg.cg_tol).__name__} value: {cfg.cg_tol!r}")
+    print(f"solver_tol type: {type(cfg.solver_tol).__name__} value: {cfg.solver_tol!r}")
 
     p = cfg.p
     mrx.MAP_BATCH_SIZE_INNER = cfg.map_batch_size_inner
@@ -248,7 +257,7 @@ def main(cfg: DictConfig):
             n,
             p,
             cfg.epsilon,
-            cfg.cg_tol,
+            cfg.solver_tol,
             cfg.cg_maxiter,
             cfg.quad_order,
             cfg.quad_order_offset,

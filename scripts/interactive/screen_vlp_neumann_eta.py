@@ -4,7 +4,6 @@ import argparse
 import json
 from dataclasses import asdict, dataclass
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -17,7 +16,6 @@ from mrx.operators import (
 )
 from mrx.preconditioners import _core_size, _select_mass_surgery_factors, _select_mass_tensor_factors
 
-jax.config.update("jax_enable_x64", True)
 
 
 @dataclass(frozen=True)

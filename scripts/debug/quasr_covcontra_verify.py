@@ -27,8 +27,9 @@ Run (GPU):
 import os
 os.environ.setdefault("MPLBACKEND", "Agg")
 import jax
-jax.config.update("jax_enable_x64", True)
-import h5py, jax.numpy as jnp, numpy as np
+import h5py
+import jax.numpy as jnp
+import numpy as np
 import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction

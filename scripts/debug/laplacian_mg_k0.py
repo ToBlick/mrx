@@ -47,7 +47,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))
@@ -77,7 +76,6 @@ from mrx.operators import (  # noqa: E402
     _reshape_quadrature_matrix_field,
     _symmetrize,
 )
-from mrx.preconditioners import _symmetric_pseudoinverse  # noqa: E402
 from mrx.experimental.chebyshev import (  # noqa: E402
     _estimate_chebyshev_lanczos_bounds_apply,
 )

@@ -38,7 +38,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))
@@ -53,7 +52,6 @@ from mrx.operators import (  # noqa: E402
     _assemble_unweighted_1d_mass,
     _assemble_weighted_1d_stiffness,
     _restrict_radial_window,
-    _k0_stiffness_diagonal_metric_tensors,
     _bulk_tensor_shape,
     _fd_apply_3d,
 )

@@ -19,7 +19,6 @@ import sys
 
 import jax
 
-jax.config.update("jax_enable_x64", True)
 
 import h5py  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
@@ -165,7 +164,7 @@ def main():
     print(f"[check 1] g diagonality over {n_q} quad pts: "
           f"||offdiag||/||diag|| mean={ratio.mean():.3e} max={ratio.max():.3e}",
           flush=True)
-    print(f"          mean |g_ij|/||diag|| by pair: "
+    print("          mean |g_ij|/||diag|| by pair: "
           + "  ".join(f"{k}={v:.3e}" for k, v in pair_frac.items()), flush=True)
     print(f"          verdict: {'MOSTLY DIAGONAL' if ratio.mean() < 0.1 else 'NOT diagonal'}",
           flush=True)

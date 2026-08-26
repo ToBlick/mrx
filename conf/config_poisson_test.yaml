@@ -4,7 +4,9 @@ defaults:
   - override hydra/launcher: submitit_slurm
 
 quad_order_offset: 0
-cg_tol: 1.0e-9
+# Explicit: the archived convergence numbers were measured at 1e-9.
+# Delete the line to fall back to sqrt(eps) of the working precision.
+solver_tol: 1.0e-9
 cg_maxiter: 50000
 load_frame: ref
 map_batch_size_inner: 0
@@ -16,10 +18,10 @@ hydra:
     mem_gb: 80
     gpus_per_node: 1
     cpus_per_task: 32
-    partition: gpu-h100
-    account: extremedata
+    partition: ${oc.env:SLURM_PARTITION}
+    account: ${oc.env:SLURM_ACCOUNT}
     setup:
-      - "source /scratch/tblickhan/mrx/.venv/bin/activate"
-      - "export JAX_ENABLE_X64=1"
+      - "source ${oc.env:MRX_VENV,${oc.env:MRX_ROOT}/.venv}/bin/activate"
+      - "export PYTHONPATH=${oc.env:MRX_ROOT} MRX_DTYPE=${oc.env:MRX_DTYPE,float64}"
       - "export XLA_PYTHON_CLIENT_PREALLOCATE=false"
       - "export XLA_PYTHON_CLIENT_ALLOCATOR=cuda_async"

@@ -18,8 +18,6 @@ O(n_polar * n_q^{rt} * n_q^z) with ZERO applies.
 
 This checks the construction against the probe, which is an exact oracle.
 """
-import jax
-jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402

@@ -11,11 +11,9 @@ Two groups of fixtures:
 """
 
 import numpy as np
-import jax
 import jax.numpy as jnp
 import numpy.testing as npt
 
-jax.config.update("jax_enable_x64", True)
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction

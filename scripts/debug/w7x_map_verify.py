@@ -29,7 +29,6 @@ os.environ.setdefault("MPLBACKEND", "Agg")  # headless
 
 import jax  # noqa: E402
 
-jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
@@ -156,7 +155,7 @@ def plot_crosssections(map_func, outdir, n=6):
             ax.plot(R, Z, lw=0.8, color="0.3")
         ax.set_aspect("equal")
         ax.set_title(f"$\\zeta={z:.2f}$ (period)")
-        ax.set_xlabel("R");
+        ax.set_xlabel("R")
         if j == 0:
             ax.set_ylabel("Z")
     fig.suptitle("W7-X poloidal cross-sections (flux surfaces) across one field period")

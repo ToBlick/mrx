@@ -105,12 +105,10 @@ from mrx.preconditioners import (
     _apply_k2_bulk_preconditioner,
     _apply_bulk_to_surgery_coupling,
     _apply_surgery_to_bulk_coupling,
-    _apply_tensor_diagonal_block_preconditioner,
     _symmetrize,
 )
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
 
-jax.config.update("jax_enable_x64", True)
 
 TYPES = ("clamped", "periodic", "periodic")
 BETTI = (1, 1, 0, 0)
@@ -3852,9 +3850,9 @@ def run_k1_both_bc_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
                       f"lam_min_nonnull={float(_nonnull[0]):.4e} lam_max={_wmax:.4e} "
                       f"KAPPA_EFF={_wmax / float(_nonnull[0]):.4e}", flush=True)
                 print(f"[diag]   census (of {_nonnull.size} non-null): {_census}", flush=True)
-                print(f"[diag]   bottom-8: "
+                print("[diag]   bottom-8: "
                       + " ".join(f"{v:.3e}" for v in _nonnull[:8]), flush=True)
-                print(f"[diag]   top-4: "
+                print("[diag]   top-4: "
                       + " ".join(f"{v:.3e}" for v in _wn[-4:])
                       + f"  ({time.perf_counter() - _t0:.1f}s)", flush=True)
         for name, (precond_upper, precond_state) in methods.items():
@@ -4699,11 +4697,13 @@ def main() -> None:
         print(header)
         print("-" * len(header))
         if getattr(args, "dense_ps_spectrum", False):
+            n_upper = int(seq.n1_dbc if DIRICHLET else seq.n1)
+            bc = "dbc" if DIRICHLET else "free"
             if n_upper > 6000:
                 print(f"[diag] dense P*S spectrum SKIPPED (n_upper={n_upper})", flush=True)
             else:
                 from mrx.operators import _assemble_dense_from_apply as _dense_from
-                _pf, _ps = methods[f"P.T P_A P + P_B [{pa_model}]"]
+                _pf, _ps = methods["P.T P_S P + P_B"]
                 _papp = ((lambda r, f=_pf, st=_ps: f(st, r))
                          if _ps is not None else _pf)
                 _t0 = time.perf_counter()
@@ -4726,9 +4726,9 @@ def main() -> None:
                       f"lam_min_nonnull={float(_nonnull[0]):.4e} lam_max={_wmax:.4e} "
                       f"KAPPA_EFF={_wmax / float(_nonnull[0]):.4e}", flush=True)
                 print(f"[diag]   census (of {_nonnull.size} non-null): {_census}", flush=True)
-                print(f"[diag]   bottom-8: "
+                print("[diag]   bottom-8: "
                       + " ".join(f"{v:.3e}" for v in _nonnull[:8]), flush=True)
-                print(f"[diag]   top-4: "
+                print("[diag]   top-4: "
                       + " ".join(f"{v:.3e}" for v in _wn[-4:])
                       + f"  ({time.perf_counter() - _t0:.1f}s)", flush=True)
         for name, (precond_upper, precond_state) in methods.items():

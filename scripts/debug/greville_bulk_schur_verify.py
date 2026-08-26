@@ -6,10 +6,12 @@ Both must compose with the greville per-component sandwich. Solves M_k x = b
 through the production apply_inverse_mass_matrix(preconditioner='tensor').
 """
 from __future__ import annotations
-import argparse, os, sys
+import argparse
+import os
+import sys
 from types import SimpleNamespace
-import jax, jax.numpy as jnp
-jax.config.update("jax_enable_x64", True)
+import jax
+import jax.numpy as jnp
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))

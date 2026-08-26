@@ -25,9 +25,7 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
-import jax
 
-jax.config.update("jax_enable_x64", True)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))

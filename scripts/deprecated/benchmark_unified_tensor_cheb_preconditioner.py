@@ -38,7 +38,6 @@ for _p in (ROOT, SCRIPTS, SCRIPTS / "benchmark", SCRIPTS / "debug"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-jax.config.update("jax_enable_x64", True)
 
 from mrx.operators import (  # noqa: E402
     _nullspace_vectors,
@@ -47,9 +46,6 @@ from mrx.operators import (  # noqa: E402
     apply_mass_matrix,
     apply_mass_matrix_preconditioner,
     apply_stiffness,
-)
-from mrx.experimental.tensor_stiffness import (  # noqa: E402
-    apply_stiffness_tensor_preconditioner,
 )
 import mrx.nullspace as _ns  # noqa: E402
 from mrx.preconditioners import (  # noqa: E402

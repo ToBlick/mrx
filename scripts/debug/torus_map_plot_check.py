@@ -10,9 +10,7 @@ import os
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-import jax  # noqa: E402
 
-jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402

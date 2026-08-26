@@ -18,6 +18,14 @@ import time
 from pathlib import Path
 
 import h5py
+import os
+import sys
+# The working precision is chosen before mrx is imported; hydra only hands
+# the config over inside main(), so the override is read from argv here.
+os.environ["MRX_DTYPE"] = next(
+    (a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("precision=")),
+    os.environ.get("MRX_DTYPE", "float64"))
+
 import hydra
 import jax
 import jax.numpy as jnp
@@ -28,10 +36,10 @@ import tqdm
 import yaml
 from omegaconf import DictConfig, OmegaConf
 
+import mrx
 import mrx.config  # noqa: F401  —  register Hydra structured configs
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
-from mrx.io import unique_id
 from mrx.mappings import stellarator_map
 from mrx.plotting import (
     get_iota_log,
@@ -40,7 +48,6 @@ from mrx.plotting import (
     poincare_plot,
 )
 
-jax.config.update("jax_enable_x64", True)
 matplotlib.use("Agg")  # Non-interactive backend for batch jobs
 
 
@@ -76,6 +83,10 @@ def iter_traces(trace_file: Path):
 
 @hydra.main(version_base=None, config_name="config_poincare")
 def main(cfg: DictConfig) -> None:
+    print(f"precision: {mrx.DTYPE}  solver_tol: {cfg.solver_tol}")
+    if cfg.precision != str(mrx.DTYPE):
+        raise ValueError(f"precision={cfg.precision} but mrx runs in {mrx.DTYPE}; "
+                         "MRX_DTYPE was not set before import")
     """
     Main entry point for Poincaré plot generation with Hydra configuration.
     """

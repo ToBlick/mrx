@@ -42,13 +42,11 @@ from mrx.experimental.chebyshev import (  # noqa: E402
     _build_chebyshev_apply_preconditioner,
     _estimate_chebyshev_lanczos_bounds_apply,
 )
-from mrx.preconditioners import MassPreconditionerSpec
 from mrx.solvers import solve_singular_cg
 from mrx.io import parse_int_list, parse_ns
 from test.random_fields import build_random_besov_rhs_batch
 
 
-jax.config.update("jax_enable_x64", True)
 
 
 TYPES = ("clamped", "periodic", "periodic")

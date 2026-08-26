@@ -6,9 +6,9 @@ DerivativeSpline index convention is ``dLam_i = s(x, i+1)`` -- that factor is
 spurious and the face operator is off by orders of magnitude.
 """
 from __future__ import annotations
-import os, sys
+import os
+import sys
 import jax
-jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

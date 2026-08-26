@@ -52,7 +52,6 @@ from mrx.preconditioners import (
     _apply_surgery_to_bulk_coupling,
     _apply_k1_rt_art_coupling,
     _apply_k1_rt_atr_coupling,
-    _apply_tensor_diagonal_block,
     _apply_tensor_exact_block,
     _assemble_schur_inverse_from_applies,
     _select_mass_surgery_factors,
@@ -62,7 +61,6 @@ from mrx.preconditioners import (
 from mrx.solvers import solve_singular_cg
 from test.random_fields import build_random_besov_rhs_batch
 
-jax.config.update("jax_enable_x64", True)
 
 
 # %% Configuration

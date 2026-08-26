@@ -19,12 +19,11 @@ import jax.numpy as jnp
 import numpy.testing as npt
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.differential_forms import DiscreteFunction
 from mrx.mappings import rotating_ellipse_map
 from mrx.projectors import BoundaryProjector
 import mrx
 
-jax.config.update("jax_enable_x64", True)
 
 
 

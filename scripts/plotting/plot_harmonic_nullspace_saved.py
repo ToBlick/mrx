@@ -35,9 +35,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import jax
 
-jax.config.update("jax_enable_x64", True)
 
 _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
