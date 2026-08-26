@@ -2567,3 +2567,120 @@ Kept as separate figures rather than merged into `gamma_sweep.png`: six arms on
 four panels is the readability limit at alpha=0.5.  Truncated arms carry their
 cut step in the legend (`cut 2000`, `cut 1760`, `cut 1200`) so an arm that
 stopped on wall-clock is never read as one that converged.
+
+## 42. The greville-prod merge, and what validating it caught
+
+Merged `greville-prod` into `relaxation-prelim` on 2026-08-26 (`347a304`).
+60 commits came in, 36 of ours went the other way, and despite that only ONE
+file was touched by both sides: `mrx/operators.py`.  Everything else was
+disjoint -- greville-prod moved library code, docs and ~90 debug scripts; this
+branch moved the relaxation scripts and this document.
+
+### 42.1 The one conflict: both sides were fixing the same defect
+
+The diffusion preconditioner's accept list.  Both branches had noticed that
+`'tensor'` passed validation and then hit the trailing "unsupported" raise --
+an accept-list/dispatch mismatch.  greville-prod fixed it by DROPPING 'tensor',
+leaving `('none', 'jacobi')`.  This branch fixed it by ADDING the production
+kind and implementing dispatch for it (audit item 3.1).
+
+Resolved in favour of this branch's version because it is the superset and its
+dispatch branch survived the merge intact: the list now names three kinds and
+dispatches three kinds.  Both sides agree on the rule -- accept exactly what is
+dispatched -- so this is not a case of overriding someone's decision.  The
+reasoning is recorded in the comment at the resolution site rather than only in
+this document.
+
+### 42.2 What the validation caught that the merge could not
+
+```
+AttributeError: module 'mrx.operators' has no attribute
+'assemble_block_jacobi_laplacian_preconditioner'.
+Did you mean: 'assemble_metric_lumping_laplacian_preconditioner'?
+```
+
+greville-prod renamed that entry point; `relax_prelim.py` still called the old
+name.  **Auto-merge cannot catch this class of break.**  The caller and the
+definition live in files only ONE side touched, so no conflict surfaces, the
+merge reports success, and the failure appears at runtime on the next GPU job.
+Every relaxation run on this branch would have died at setup.
+
+Swept every `op.*` call in the four relaxation scripts against the merged
+module rather than fixing one and resubmitting blind: 74 call sites, exactly 1
+stale.  Followed the rename in the caller instead of adding an alias -- a shim
+would have concealed that the production atom has now been renamed twice in a
+month (raw_kron -> block_jacobi -> metric_lumping).
+
+The lesson generalises past this merge: after any merge that renames library
+symbols, grep the CALLERS.  A green merge and a green conflict resolution say
+nothing about files neither side conflicted in.
+
+### 42.3 A new instance of the PYTHONPATH trap, in hydra
+
+The Poisson studies are driven by hydra with `submitit_slurm` as the launcher.
+`conf/config_poisson_test.yaml`'s `setup:` block activates the venv but does
+NOT export PYTHONPATH, and the venv's editable mrx points at the MAIN checkout.
+A multirun launched from this worktree would therefore have validated the wrong
+tree AND PASSED.  Run in single-run mode from a wrapper that exports
+PYTHONPATH; single-run never instantiates the launcher, so the submitit block
+is inert.
+
+Do NOT "fix" this by forcing `hydra/launcher=basic`: hydra then rejects that
+block's keys (`timeout_min`, `mem_gb`, ...) while COMPOSING the config, and
+every study fails in ~1 s before a solve runs.
+
+### 42.4 Validation results -- all three green
+
+**pytest**, full `test/` suite on a GPU node: **235 passed, 1 skipped, 0
+failed** in 1:19:40.  Note for whoever budgets the next run: `test_projectors`
+dominates, with `test_interpolation_reproduces_its_own_space` alone accounting
+for ~40 minutes across its p/k/BC parametrisations.  A 1 h walltime is NOT
+enough; the first attempt was cancelled at 61% having passed everything it ran.
+
+**Poisson convergence**, reproduced against the numbers recorded in
+`handoff_2026-08-25_poisson_convergence.md` (n = 6/8/10, p = 3):
+
+```
+             post-merge      reference
+k0    n=6   2.072279e-03    2.072e-03
+      n=8   4.771334e-04    4.771e-04
+     n=10   1.736853e-04    1.737e-04
+nbc_k1 n=6  8.564482e-03    8.564e-03
+      n=8   3.244121e-03    3.244e-03
+     n=10   1.575619e-03    1.576e-03
+dbc_k2 n=6  1.700623e-03    1.700623e-03
+      n=8   4.601128e-04    4.601128e-04
+     n=10   1.760652e-04    1.760652e-04
+```
+
+Every value matches to the full precision the reference recorded; dbc_k2 to all
+seven digits.  This is a real regression test rather than a smoke test
+precisely because those numbers were written down.
+
+**Short relaxation**, 250 steps, fmm002 8^3 p=3, and deliberately at
+`gamma=1 mu=1e-3`: the merged operators.py change is in the diffusion
+preconditioner for `M + eps L`, which is ONLY reached when gamma > 0.  A
+gamma=0 validation run would have exercised none of it and passed regardless.
+Config matches M2_mu1e3 exactly, so the pre-merge run is the reference:
+
+```
+step    E post-merge     E pre-merge    rel diff
+   1    0.4999929200    0.4999929200    0.00e+00
+  60    0.4998899990    0.4998899990    0.00e+00
+ 120    0.4998861560    0.4998857480    8.16e-07
+ 250    0.4998835850    0.4998834080    3.54e-07
+```
+
+Bit-identical for 60 steps, then slow separation to ~1e-6 relative in E.  That
+is the signature of a numerically EQUIVALENT code path, and s39.1 is what
+licenses saying so instead of guessing: an eta of 1e-9 -- a perturbation at
+round-off -- was measured there to open a 4.3% spread in dE over this many
+steps.  A genuinely changed operator would differ at step 1, as eta=1e-6 did.
+Gates all clean: energy increases on 0/250 steps, dt<0 on 0/250, ||div B|| =
+1.3e-13, G1 identity median 6.7e-10, and the harmonic amplitude -- an EXACT
+invariant -- drifted -1.11e-16.
+
+The two validation job scripts are `slurm/job_merge_tests.sh` and
+`slurm/job_merge_poisson.sh`.  They are UNTRACKED: `.gitignore` carries
+`slurm/job_*`, and that convention was left alone rather than force-added
+around.
