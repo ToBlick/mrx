@@ -501,7 +501,7 @@ SECTION_CMAP = "gist_rainbow"
 PRESSURE_CMAP = "plasma"
 
 
-def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
+def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
                    axis_RZ=None, path=None, profile_x=None,
                    profile_xlabel="seed radius $r$", nfp=None, denom_max=30,
                    logical=None, pressure=None,
@@ -532,7 +532,7 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     and the labels say so.
 
     Every kept line is drawn and fitted, chaotic ones included: the iota
-    profile carries the angle-fit residual as a ribbon (see the comment
+    profile carries ``iota_err`` as a ribbon (see the comment
     at the plot), so a line without a rotational transform shows as a point
     with a wide ribbon rather than as a separate category.
 
@@ -697,15 +697,14 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
 
     prof = per_line(shown) & jnp.isfinite(xs)
     order = jnp.argsort(xs[prof])
-    xo, io, ro = xs[prof][order], per_line(iota)[prof][order], per_line(resid)[prof][order]
-    # The ribbon is iota +- the angle-fit residual as it is: the RMS departure
-    # of the unwrapped angle from a straight line, in poloidal turns, on the
-    # iota axis. Its absolute size is not a standard error (that would carry
-    # a 1/sqrt(sum (zeta - mean zeta)^2) factor); its relative size is the
-    # information -- a flux surface's ribbon is a hairline, an island's is
-    # its width, a chaotic line's is wide.
-    bx.fill_between(xo, io - ro, io + ro, color="tab:blue", alpha=0.2, lw=0,
-                    label=r"$\iota \pm$ angle-fit residual")
+    xo, io, eo = xs[prof][order], per_line(iota)[prof][order], per_line(iota_err)[prof][order]
+    # The ribbon is iota +- iota_err, the difference between the fits on the
+    # two halves of the trace (iota_convergence): in iota units, ~1/N on a
+    # flux surface, the island width on a chain, the shear scale on a chaotic
+    # line. NOT the angle-fit residual: that is in poloidal turns and grows
+    # with the length of the fit, so it says nothing about iota by itself.
+    bx.fill_between(xo, io - eo, io + eo, color="tab:blue", alpha=0.2, lw=0,
+                    label=r"$\iota \pm |\iota_{1st\,half} - \iota_{2nd\,half}|$")
     bx.plot(xo, io, "o-", ms=3, lw=0.8, color="tab:blue")
     bx.legend(loc="upper left", fontsize=7)
     for value, lab in zip(res_ticks, res_labels):
@@ -851,9 +850,9 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
 
     escaped = escaped_mask(ys)
     centre = axis_track(ys, saves_per_period)
-    iota, resid = rotational_transform(ys, saves_per_period, nfp, center=centre)
-    chaotic = (iota_convergence(ys, saves_per_period, nfp, center=centre)
-               > CHAOS_TOL_PER_PERIOD / n_periods)
+    iota, _ = rotational_transform(ys, saves_per_period, nfp, center=centre)
+    iota_err = iota_convergence(ys, saves_per_period, nfp, center=centre)
+    chaotic = iota_err > CHAOS_TOL_PER_PERIOD / n_periods
 
     # The drift check re-traces at h and h/2, so it is priced per seed: a
     # subsample says the same thing.
@@ -882,7 +881,7 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
 
     return {"ys": np.asarray(ys[1:]), "ok": np.asarray(ok[1:]),
             "escaped": np.asarray(escaped[1:]), "iota": np.asarray(iota[1:]),
-            "resid": np.asarray(resid[1:]), "chaotic": np.asarray(chaotic[1:]),
+            "iota_err": np.asarray(iota_err[1:]), "chaotic": np.asarray(chaotic[1:]),
             "seeds": np.asarray(seeds[1:]), "axis": np.asarray(ys[0]),
             "walltime": walltime, "drift": drift, "drift_lines": int(idx.size),
             "saves_per_period": saves_per_period}

@@ -37,7 +37,7 @@ construction and needs no gauge.)
 
 Output: ``poincare_<field>_zeta<plane>.png`` per field and plane, and
 ``sections.npz`` under ``--out`` with, per field, the crossing coordinates of
-every plane plus ``iota``, ``resid``, ``seed_r``, ``keep``, ``chaotic`` and the
+every plane plus ``iota``, ``iota_err``, ``seed_r``, ``keep``, ``chaotic`` and the
 step drift, so a section can be re-rendered (``--from-npz``) without the
 5-minute sequence build and trace.
 Runtime: ~5 min per field at (8,16,8) p=3 on one H100 (sequence setup
@@ -124,7 +124,7 @@ def main():
                 a_eff, xlabel = surface_label(z[f"{tag}_R"], z[f"{tag}_Z"],
                                               z[f"{tag}_axisR"], z[f"{tag}_axisZ"])
                 fig = render_section(
-                    z[f"{tag}_R"], z[f"{tag}_Z"], z[f"{name}_iota"], z[f"{name}_resid"],
+                    z[f"{tag}_R"], z[f"{tag}_Z"], z[f"{name}_iota"], z[f"{name}_iota_err"],
                     z[f"{name}_seed_r"], z[f"{name}_keep"],
                     title=f"{label} {ns} p={p}  |  {name}  |  $\\zeta = {plane:g}$\n"
                           f"{labels.get(name, name)}, relaxed in {attrs.get('precision')} "
@@ -194,7 +194,7 @@ def main():
             a_eff, xlabel = surface_label(R, Z, aR, aZ)
             press = None if presses[plane] is None else presses[plane] - p_min
             fig = render_section(
-                R, Z, res["iota"], res["resid"], res["seeds"][:, 0], keep,
+                R, Z, res["iota"], res["iota_err"], res["seeds"][:, 0], keep,
                 pressure=press, pressure_label=PRESSURE_LABEL,
                 title=f"{label} {ns} p={p}  |  {name}  |  $\\zeta = {plane:g}$\n"
                       f"{labels.get(name, name)}, relaxed in {attrs.get('precision')} "
@@ -215,7 +215,7 @@ def main():
             if press is not None:
                 sections[f"{tag}_pressure"] = press
             sections[f"{tag}_xlabel"] = np.array(xlabel)
-        for key, arr in (("iota", res["iota"]), ("resid", res["resid"]), ("seed_r", res["seeds"][:, 0]),
+        for key, arr in (("iota", res["iota"]), ("iota_err", res["iota_err"]), ("seed_r", res["seeds"][:, 0]),
                          ("keep", keep), ("chaotic", res["chaotic"]), ("shown", shown),
                          ("drift", np.array(res["drift"]))):
             sections[f"{name}_{key}"] = np.asarray(arr)
