@@ -24,7 +24,6 @@ import jax
 import jax.numpy as jnp
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.io import project_sampled_field
 from mrx.mappings import toroid_map
 from mrx.preconditioners import (
     MassPreconditionerSpec,
@@ -32,7 +31,6 @@ from mrx.preconditioners import (
     SchurPreconditionerSpec,
 )
 
-jax.config.update("jax_enable_x64", True)
 
 
 # %% Configuration

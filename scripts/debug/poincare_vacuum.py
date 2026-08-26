@@ -30,7 +30,6 @@ import warnings
 
 import jax
 
-jax.config.update("jax_enable_x64", True)
 
 import matplotlib  # noqa: E402
 
@@ -63,7 +62,7 @@ NFP = {
     "quasr65530": 4, "quasr65575": 4, "w7x-ini": 5,
     # The 8x16x8 quasr44970 baseline and its two interior perturbations.  The
     # perturbed files declare nfp=2 and their R/Z data says otherwise; see
-    # GVEC_NFP_OVERRIDE in gvec_geometry.py.
+    # GVEC_NFP_OVERRIDE in mrx.gvec.
     "quasr44970-c": 3, "pert-axis": 3, "pert-interior": 3,
 }
 

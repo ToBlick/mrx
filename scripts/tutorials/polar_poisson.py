@@ -27,7 +27,6 @@ from mrx.differential_forms import DiscreteFunction
 from mrx.mappings import polar_map
 
 # Enable 64-bit precision for numerical stability
-jax.config.update("jax_enable_x64", True)
 # Create output directory for figures
 os.makedirs("out", exist_ok=True)
 

@@ -12,29 +12,15 @@ Usage
 ----- 
     python scripts/relax_siesta.py
 """
-import time
 
-import h5py
-import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-from jax.scipy.interpolate import RegularGridInterpolator
 
-import mrx
-from mrx.assembly import (assemble_dense_laplacian,
-                          assemble_dense_mass_matrix)
 from mrx.derham_sequence import DeRhamSequence
-from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.mappings import interpolate_map, rotating_ellipse_map
-from mrx.plotting import get_1d_grids
+from mrx.mappings import rotating_ellipse_map
 from mrx.preconditioners import get_mass_jacobi_diaginv
-from mrx.relaxation import (DescentMethod, IntegrationScheme, TimeStepChoice,
-                            TimeStepper, compute_force,
-                            relaxation_loop)
-from mrx.quadrature import evaluate_at_xq, integrate_against
 
-jax.config.update("jax_enable_x64", True)
 
 NS = [10] * 3
 PS = [3] * 3

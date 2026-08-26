@@ -33,7 +33,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))
@@ -182,7 +181,8 @@ def true_applies(seq, surg, k, dirichlet):
         e = seq.e3_dbc if dirichlet else seq.e3
         e_T = seq.e3_dbc_T if dirichlet else seq.e3_T
         mass_raw = build_matrixfree_mass_apply(seq, 3)
-        app = lambda x: e @ mass_raw(e_T @ x)
+        def app(x):
+            return e @ mass_raw(e_T @ x)
         return {"k3": (app, int(e.shape[0]))}
     out = {}
     if k == 0:
@@ -210,21 +210,26 @@ def true_applies(seq, surg, k, dirichlet):
 # --------------------------------------------------------------------------- #
 def pcg(A_apply, Minv_apply, n, tol=1e-10, maxiter=3000, seed=0):
     rng = np.random.default_rng(seed)
-    b = rng.standard_normal(n); b /= np.linalg.norm(b)
+    b = rng.standard_normal(n)
+    b /= np.linalg.norm(b)
     x = np.zeros(n)
     r = b.copy()
     z = np.asarray(jax.device_get(Minv_apply(jnp.asarray(r))))
-    p = z.copy(); rz = r @ z; last = 1.0
+    p = z.copy()
+    rz = r @ z
+    last = 1.0
     for it in range(1, maxiter + 1):
         Ap = np.asarray(jax.device_get(A_apply(jnp.asarray(p))))
         alpha = rz / (p @ Ap)
-        x += alpha * p; r -= alpha * Ap
+        x += alpha * p
+        r -= alpha * Ap
         last = np.linalg.norm(r)
         if last < tol:
             return it, last
         z = np.asarray(jax.device_get(Minv_apply(jnp.asarray(r))))
         rz_new = r @ z
-        p = z + (rz_new / rz) * p; rz = rz_new
+        p = z + (rz_new / rz) * p
+        rz = rz_new
     return maxiter, last
 
 

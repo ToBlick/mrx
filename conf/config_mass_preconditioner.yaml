@@ -28,8 +28,8 @@ hydra:
     timeout_min: 180
     mem_gb: 80
     gpus_per_node: 1
-    partition: gpu-h100
-    account: extremedata
+    partition: ${oc.env:SLURM_PARTITION}
+    account: ${oc.env:SLURM_ACCOUNT}
     setup:
-      - "source /scratch/tblickhan/mrx/.venv/bin/activate"
-      - "export JAX_ENABLE_X64=1"
+      - "source ${oc.env:MRX_VENV,${oc.env:MRX_ROOT}/.venv}/bin/activate"
+      - "export PYTHONPATH=${oc.env:MRX_ROOT} MRX_DTYPE=${oc.env:MRX_DTYPE,float64}"

@@ -53,7 +53,7 @@ mkdir -p "${OUTDIR}"
 LOG="${OUTDIR}/${JOB_NAME}.log"
 
 CMD="set -euo pipefail; cd ${MRX_ROOT}; source ${VENV}/bin/activate; \
-export PYTHONPATH=${MRX_ROOT} PYTHONUNBUFFERED=1; \
+export MRX_ROOT=${MRX_ROOT} PYTHONPATH=${MRX_ROOT} PYTHONUNBUFFERED=1; \
 ${EXTRA_ENV:+export ${EXTRA_ENV}; } \
 python -c 'import mrx; print(\"mrx from:\", mrx.__file__)'; \
 python -u ${SCRIPT} ${ARGS}"

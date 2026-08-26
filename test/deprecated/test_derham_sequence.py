@@ -2,11 +2,9 @@
 # %%
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import numpy.testing as npt
 import pytest
 
-from mrx.assembly import build_neighbors
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import rotating_ellipse_map, toroid_map
@@ -23,7 +21,6 @@ from mrx.operators import apply_stiffness as apply_stiffness_ops
 from mrx.operators import (assemble_derivative_operators,
                            assemble_hodge_operators, assemble_mass_operators)
 from mrx.solvers import solve_singular_cg
-from mrx.utils import get_smallest_ev_pair
 
 jax.config.update("jax_enable_x64", True)
 

@@ -208,7 +208,7 @@ class DeRhamSequence():
     e3_bc_T = _operator_bundle_field_property('e3_bc_T')
 
     def __init__(self, ns, ps, q, types, *legacy_args, polar,
-                 tol=1e-12, maxiter=10_000,
+                 tol=None, maxiter=10_000,
                  r_scale=1.0, knots=None, polar_ring1=None, polar_order=1,
                  n_inner=5, betti_numbers=(1, 1, 0, 0)):
         """Construct a de Rham sequence.
@@ -228,7 +228,11 @@ class DeRhamSequence():
             If ``True``, apply polar extraction operators that enforce
             regularity at the magnetic axis.
         tol : float, optional
-            Convergence tolerance for iterative solvers.
+            Relative residual tolerance of every iterative solve that goes
+            through the sequence. ``None`` (default) selects
+            :func:`mrx.precision.sqrt_eps` for the working precision
+            (1.5e-8 in float64, 3.5e-4 in float32); an explicit value is used
+            as given.
         maxiter : int, optional
             Maximum iteration count for iterative solvers.
         r_scale : float, optional
@@ -280,7 +284,7 @@ class DeRhamSequence():
         self.ns = tuple(ns)
         self.ps = tuple(ps)
         self.polar_order = polar_order
-        self.tol = tol
+        self.tol = mrx.sqrt_eps() if tol is None else tol
         self.maxiter = maxiter
         self.n_inner = n_inner
         self.geometry = None
@@ -291,7 +295,7 @@ class DeRhamSequence():
             raise ValueError(f"knots must have 3 entries (got {len(Ts)})")
         for ax, T in enumerate(Ts):
             if T is not None:
-                T = jnp.asarray(T, dtype=jnp.float64)
+                T = jnp.asarray(T, dtype=mrx.DTYPE)
                 n_expected = ns[ax] + ps[ax] + 1
                 if types[ax] == "clamped" and T.shape != (n_expected,):
                     raise ValueError(
@@ -315,7 +319,7 @@ class DeRhamSequence():
                 # collapses to ONE polar DOF per ζ-plane, ring 1 stays
                 # free. Largest space of the family (V_C² ⊂ V_C¹ ⊂ V_C⁰),
                 # still H¹-conforming; isolates what pole regularity buys.
-                xi0 = jnp.ones((1, 1, ns[1]), dtype=jnp.float64)
+                xi0 = jnp.ones((1, 1, ns[1]), dtype=mrx.DTYPE)
             elif polar_order == 2:
                 # C² pole regularity for 0-forms: 6 polar functions from
                 # rings 0-2 (collocated C², see get_xi2). k = 1, 2, 3

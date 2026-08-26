@@ -1,23 +1,66 @@
-"""Benchmark production tensor mass preconditioner against Jacobi and Chebyshev.
+"""Benchmark the production tensor mass preconditioner against Jacobi and Chebyshev.
 
-Builds the de Rham sequence and base mass operators **once**, then for each
-``k`` and each preconditioner choice runs ``solve_singular_cg`` against a
-small batch of random RHS and reports avg/max iteration counts and average
-wall-clock per solve.
+Build the de Rham sequence on a rotating-ellipse map and the base mass
+operators once, then for each ``k`` and each preconditioner run
+``solve_singular_cg`` against a small batch of random right-hand sides and
+print average and maximum iteration counts, average wall-clock per solve
+and the average final residual.
 
 Three preconditioners per ``k``:
 
-- ``tensor``    : production rank-1 Kronecker mass preconditioner
-                  (``apply_mass_tensor_preconditioner_ops``).
-- ``jacobi``    : pointwise inverse of the assembled mass diagonal
-                  (``apply_mass_matrix_preconditioner(kind='jacobi')``).
-- ``chebyshev`` : matrix-free Chebyshev polynomial of degree ``--cheb-steps``
-                  in the mass operator with Jacobi as inner smoother. Spectral
-                  bounds are estimated once at build time via a Lanczos sweep
-                  (mrx.experimental.chebyshev -- not a production path).
+- ``tensor``: production Kronecker mass preconditioner
+  (``apply_mass_tensor_preconditioner_ops``) at each rank in ``--ranks``.
+- ``jacobi``: pointwise inverse of the assembled mass diagonal
+  (``apply_mass_matrix_preconditioner(kind='jacobi')``).
+- ``chebyshev``: matrix-free Chebyshev polynomial of degree
+  ``--cheb-steps`` in the mass operator with Jacobi as inner smoother;
+  spectral bounds from one Lanczos sweep at build time
+  (``mrx.experimental.chebyshev``, not a production path).
 
-Run with ``--help`` for knobs. Defaults are sized to match
-``benchmark_richardson_vs_modal.py``.
+Arguments:
+    --ns (str): Comma-separated ``n_r,n_theta,n_zeta``. Default ``6,8,4``.
+    --p (int): Spline degree. Default 3.
+    --ks (str): Comma-separated form degrees in 0..3. Default ``0,1,2,3``.
+    --strategies (str): Comma-separated subset of
+        ``tensor,jacobi,chebyshev``. Default all three.
+    --cheb-steps (int): Polynomial degree of the Chebyshev smoother.
+        Default 4.
+    --rank (int): Single-rank shortcut for ``--ranks`` (deprecated).
+        Default ``None``.
+    --ranks (str): Comma-separated tensor ranks: 1 is a single Kronecker,
+        2 the exact two-Kron Lynch FD, >=3 Lynch FD on the leading two terms
+        with diagonal-truncated remainder. Default ``1``.
+    --n-rhs (int): Right-hand sides per arm. Default 4.
+    --seed (int): RNG seed. Default 0.
+    --tol (float): CG relative tolerance. Default 1e-9.
+    --maxiter (int): CG iteration cap. Default 1000.
+    --free: Solve with free (non-Dirichlet) boundary data.
+    --rotating-eps (float): Rotating-ellipse minor radius. Default 1/7.
+    --rotating-kappa (float): Elongation. Default 1.5.
+    --rotating-r0 (float): Major radius. Default 3.0.
+    --rotating-nfp (int): Field periods. Default 3.
+    --no-inner-schur: Sets ``inner_schur=False`` (block-diagonal bulk
+        smoothing, ~3 einsums instead of ~14). ``set_defaults`` already
+        makes ``False`` the default, so the flag changes nothing.
+
+Usage:
+    ::
+
+        python -u scripts/benchmark/benchmark_mass_preconditioners.py --ns 6,8,4 --p 3
+        python -u scripts/benchmark/benchmark_mass_preconditioners.py --ks 1,2 --ranks 1,2 --free
+
+    Single GPU job through ``slurm/run.sh``::
+
+        SCRIPT=scripts/benchmark/benchmark_mass_preconditioners.py \
+            ARGS="--ns 8,16,8 --p 3 --ks 0,1,2,3" JOB_NAME=massbench bash slurm/run.sh
+
+Runtime:
+    Not measured.
+
+Output:
+    One table on stdout (k, arm, avg iters, max iters, avg ms, avg
+    residual); there is no output-file flag. Through ``slurm/run.sh`` the
+    log is ``outputs/<JOB_NAME>/<date>/<time>/<JOB_NAME>.log``.
 """
 
 from __future__ import annotations
@@ -42,13 +85,11 @@ from mrx.experimental.chebyshev import (  # noqa: E402
     _build_chebyshev_apply_preconditioner,
     _estimate_chebyshev_lanczos_bounds_apply,
 )
-from mrx.preconditioners import MassPreconditionerSpec
 from mrx.solvers import solve_singular_cg
 from mrx.io import parse_int_list, parse_ns
 from test.random_fields import build_random_besov_rhs_batch
 
 
-jax.config.update("jax_enable_x64", True)
 
 
 TYPES = ("clamped", "periodic", "periodic")
@@ -131,25 +172,24 @@ def benchmark_cell(
 ) -> Row:
     dirichlet = not args.free
 
-    operator_apply = lambda x: apply_mass_matrix(
-        seq, operators, x, k, dirichlet=dirichlet,
-    )
+    def operator_apply(x):
+        return apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet)
 
     if strategy == "tensor":
-        precond_apply = lambda rhs: apply_mass_tensor_preconditioner_ops(
-            seq, operators, rhs, k, dirichlet=dirichlet,
-        )
+        def precond_apply(rhs):
+            return apply_mass_tensor_preconditioner_ops(
+                seq, operators, rhs, k, dirichlet=dirichlet)
     elif strategy == "jacobi":
-        precond_apply = lambda rhs: apply_mass_matrix_preconditioner(
-            seq, operators, rhs, k, dirichlet=dirichlet, kind="jacobi",
-        )
+        def precond_apply(rhs):
+            return apply_mass_matrix_preconditioner(
+                seq, operators, rhs, k, dirichlet=dirichlet, kind="jacobi")
     elif strategy.startswith("cheb"):
         # Build Jacobi smoother explicitly so we can plug it into Chebyshev
         # without going through the public mass preconditioner machinery
         # (which currently restricts the inner smoother to kind='tensor').
-        jacobi_apply = lambda rhs: apply_mass_matrix_preconditioner(
-            seq, operators, rhs, k, dirichlet=dirichlet, kind="jacobi",
-        )
+        def jacobi_apply(rhs):
+            return apply_mass_matrix_preconditioner(
+                seq, operators, rhs, k, dirichlet=dirichlet, kind="jacobi")
         suffix = "_dbc" if dirichlet else ""
         dof = int(getattr(seq, f"n{k}{suffix}"))
         min_eig, max_eig = _estimate_chebyshev_lanczos_bounds_apply(

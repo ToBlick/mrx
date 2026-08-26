@@ -1,47 +1,111 @@
-"""Convergence study for the Hodge–Laplacians on a toroidal domain, all BCs.
+"""Convergence study for all eight (k, boundary-condition) Hodge Laplacians on a torus.
 
-A single script that sweeps the eight (k, boundary-condition) Laplace problems
-that share manufactured solutions.  Cases pair up under Hodge duality
-⋆: k ↔ (3-k), NBC ↔ DBC, into four generators:
+Sweep the eight Laplace problems on the axisymmetric toroid map that share
+manufactured solutions, one resolution after another, and record per case
+the relative error, the iteration count, the nullspace diagnostics and the
+``ref``-vs-``phys`` load consistency. Cases pair up under Hodge duality
+``⋆: k ↔ (3-k), NBC ↔ DBC`` into four generators:
 
-  generator        cases                       exact field / source
-  ---------------  --------------------------  --------------------------------------
-  cos(2πζ)         k0 NBC, k3 DBC              u = cos(2πζ),  f₀ = cos(2πζ)/R²
-  cos(πr²/2)       k0 DBC, k3 NBC              u = cos(πr²/2),  f₀ = (2πs + π²r²c)/ε² + πrs cos(2πχ)/(εR)
-    cos(2πζ) dζ      k1 NBC, k2 DBC              ω₁ = cos(2πζ) dζ, ω₂ = ⋆ω₁;  f₁ = grad σ, f₂ = ⋆f₁
-    cos(πr²/2)cos(2πζ) dζ  k1 DBC, k2 NBC        ω = cos(πr²/2)cos(2πζ) dζ;  f₁ = dσ + curl·curl ω
+  generator              cases               exact field / source
+  ---------------------  ------------------  -----------------------------------------------
+  cos(2πζ)               k0 NBC, k3 DBC      u = cos(2πζ),  f₀ = cos(2πζ)/R²
+  cos(πr²/2)             k0 DBC, k3 NBC      u = cos(πr²/2),
+                                             f₀ = (2πs + π²r²c)/ε² + πrs cos(2πχ)/(εR)
+  cos(2πζ) dζ            k1 NBC, k2 DBC      ω₁ = cos(2πζ) dζ, ω₂ = ⋆ω₁;  f₁ = grad σ, f₂ = ⋆f₁
+  cos(πr²/2)cos(2πζ) dζ  k1 DBC, k2 NBC      ω = cos(πr²/2)cos(2πζ) dζ;  f₁ = dσ + curl·curl ω
+
   (s = sin(πr²/2), c = cos(πr²/2))
 
-Harmonic (nullspace) dimensions per case (betti = (1,1,0,0)):
+Harmonic (nullspace) dimensions per case (Betti numbers (1, 1, 0, 0)):
+
   k0 NBC: 1 (constant)         k0 DBC: 0
   k1 NBC: 1 (toroidal 1-form)  k1 DBC: 0
   k2 NBC: 0                    k2 DBC: 1 (toroidal 2-form)
   k3 NBC: 0                    k3 DBC: 1 (constant 3-form)
 
-Currently enabled cases (see CASES below): all eight (k, BC) pairs
-  (k0 NBC, k0 DBC, k1 NBC, k1 DBC, k2 NBC, k2 DBC, k3 NBC, k3 DBC).
+``CASES`` in the module body enables all eight pairs. ``ω₁ = cos(2πζ) dζ``
+is closed (curl-free), so ``f₁ = L₁ω₁ = grad σ`` with ``σ = -div ω₁``, and
+is orthogonal to the harmonic 1-form because ``cos`` has zero mean. The k1
+DBC field ``ω = cos(πr²/2)cos(2πζ) dζ`` is not divergence-free in the
+interior, but its boundary conditions hold and the source probes all three
+covariant slots: ``f₁ = dσ + curl·curl ω``; its tangential trace vanishes
+at the wall (``u×n = 0``) and ``σ = 0`` there (both essential k1 DBC
+conditions), and k1 DBC has no nullspace. ``ω₂ = ⋆ω₁`` is co-closed with
+zero normal trace (the essential k=2 DBC). The Hodge star ``⋆: Ω¹ → Ω²``
+uses the framework's cyclic vector-proxy convention (all-positive in the
+diagonal metric). See ``docs/manufactured_solutions.md``.
 
-ω₁ = cos(2πζ) dζ is closed (curl-free), so f₁ = L₁ω₁ = grad σ with σ = -div ω₁,
-and is orthogonal to the harmonic 1-form because cos has zero mean.  The k1 DBC
-field ω = cos(πr²/2)cos(2πζ) dζ is not divergence-free in the interior, but its
-boundary conditions still hold and the source probes all three covariant slots:
-f₁ = dσ + curl·curl ω;
-its tangential trace vanishes at the wall (u×n = 0) and σ = 0 there (both essential
-k1 DBC conditions), and k1 DBC has no nullspace.  ω₂ = ⋆ω₁ is co-closed with zero
-normal trace (the essential k=2 DBC).  The Hodge star ⋆: Ω¹→Ω² uses the framework's
-cyclic vector-proxy convention (all-positive in the diagonal metric).
-See docs/manufactured_solutions.md.
+All cases share one ``DeRhamSequence`` and one assembly pass. Both
+``frame='ref'`` and ``frame='phys'`` loads are assembled per case and their
+difference is reported (expected ≈ 0). k=0 solves use the metric-lumping
+Laplacian preconditioner; k≥1 solves are the saddle-point solve of the
+sequence.
 
-All enabled cases share one DeRhamSequence and one assembly pass.  Both frame='ref'
-and frame='phys' loads are assembled per case as a consistency check (≈ 0).
-One SLURM job per (n, p) pair, sweeping n=8,12,16,20 and p=1,2,3.
+Configuration:
+    Hydra config ``conf/config_poisson_test.yaml``, schema
+    ``mrx.config.PoissonTestConfig``. Override any key as ``key=value``.
 
-Usage (from repo root):
-    python scripts/config_scripts/test_torus_poisson_all_k_sparse.py -m p=1,2,3 n=8,12,16,20
+    n (list[int] | int): Radial resolutions, run one after another; the
+        grid is ``ns = (n, 2n, n)``. An int runs a single resolution.
+        Default ``[8, 12, 16, 24, 32, 48, 64]``.
+    p (int): Spline degree in every direction. Default 3.
+    epsilon (float): Minor radius of ``toroid_map`` (major radius 1).
+        Default 1/3.
+    quad_order (int | None): Gauss quadrature order per direction. ``None``
+        selects ``2*p + quad_order_offset``. Default ``None``.
+    quad_order_offset (int): Offset on ``2*p``. Dataclass default 4; the
+        yaml sets 0.
+    cg_maxiter (int): Iteration cap of the Laplacian solve. Dataclass
+        default 100000; the yaml sets 50000.
+    solver_tol (float | None): Relative residual tolerance of every
+        iterative solve in the sequence. ``None`` selects ``sqrt(eps)`` of
+        the working precision; the yaml sets 1e-9.
+    precision (str): ``float64`` (default) or ``float32``. Read from argv
+        and exported as ``MRX_DTYPE`` before ``mrx`` is imported.
+    map_batch_size_inner (int): ``mrx.MAP_BATCH_SIZE_INNER``; 0 means
+        ``vmap``. Default 0.
+    map_batch_size_outer (int | None): ``mrx.MAP_BATCH_SIZE_OUTER``;
+        ``None`` means no batching. Default ``None``.
+    load_frame (str): Present in the config, not read by this script.
+
+Usage:
+    Single run, all listed n in one process::
+
+        python -u scripts/config_scripts/test_torus_poisson_all_k_sparse.py p=3
+        python -u scripts/config_scripts/test_torus_poisson_all_k_sparse.py p=2 n=16 precision=float32
+
+    Single GPU job through ``slurm/run.sh``::
+
+        SCRIPT=scripts/config_scripts/test_torus_poisson_all_k_sparse.py ARGS="p=3 n=16" \
+            JOB_NAME=pois_all_k MEM_GB=80 TIMEOUT_MIN=120 bash slurm/run.sh
+
+    Multirun, one submitit job per (p, n) pair. Needs ``SLURM_ACCOUNT``,
+    ``SLURM_PARTITION`` and ``MRX_ROOT`` exported; the launcher allots one
+    GPU, 80 GB and 120 min per job::
+
+        python scripts/config_scripts/test_torus_poisson_all_k_sparse.py -m p=2,3 n=8,16
+
+Runtime:
+    Not measured. The multirun launcher allots one GPU, 80 GB and 120 min
+    per job.
+
+Output:
+    Single run: ``outputs/<date>/<time>/result.json``, a list with one entry
+    per n, rewritten after every n so an OOM at a later n keeps the earlier
+    results. Multirun: ``multirun/<date>/<time>/<job>/result.json``. Through
+    ``slurm/run.sh`` the stdout log is
+    ``outputs/<JOB_NAME>/<date>/<time>/<JOB_NAME>.log``.
 """
 import json
 import os
 import time
+
+import sys
+# The working precision is chosen before mrx is imported; hydra only hands
+# the config over inside main(), so the override is read from argv here.
+os.environ["MRX_DTYPE"] = next(
+    (a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("precision=")),
+    os.environ.get("MRX_DTYPE", "float64"))
 
 import hydra
 import jax
@@ -61,7 +125,6 @@ from mrx.operators import (
 )
 from mrx.quadrature import evaluate_at_xq
 
-jax.config.update("jax_enable_x64", True)
 
 # ---------------------------------------------------------------------------
 # Problem constants
@@ -515,7 +578,7 @@ def _solve_case(seq, k: int, dirichlet: bool, spec, quad_shape, timings,
 # Core computation
 # ---------------------------------------------------------------------------
 def compute_all_k(n: int, p: int, epsilon: float,
-                  cg_tol: float, cg_maxiter: int,
+                  solver_tol: float, cg_maxiter: int,
                   quad_order, quad_order_offset: int):
     timings = {}
     ns = (n, 2 * n, n)
@@ -534,7 +597,7 @@ def compute_all_k(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     seq = DeRhamSequence(
         ns, ps, q, types, polar=True,
-        tol=cg_tol, maxiter=cg_maxiter,
+        tol=solver_tol, maxiter=cg_maxiter,
         betti_numbers=BETTI,
     )
     seq.set_map(F)
@@ -621,7 +684,10 @@ def compute_all_k(n: int, p: int, epsilon: float,
 # ---------------------------------------------------------------------------
 @hydra.main(config_path="../../conf", config_name="config_poisson_test", version_base=None)
 def main(cfg: DictConfig):
-    print(f"x64 enabled: {jax.config.jax_enable_x64}")
+    print(f"precision: {mrx.DTYPE}  solver_tol: {cfg.solver_tol}")
+    if cfg.precision != str(mrx.DTYPE):
+        raise ValueError(f"precision={cfg.precision} but mrx runs in {mrx.DTYPE}; "
+                         "MRX_DTYPE was not set before import")
     ns = [cfg.n] if isinstance(cfg.n, int) else list(cfg.n)
     p = cfg.p
     mrx.MAP_BATCH_SIZE_INNER = cfg.map_batch_size_inner
@@ -638,20 +704,20 @@ def main(cfg: DictConfig):
     for n in ns:
         print(f"\n{'='*68}\n  n={n}, p={p}\n{'='*68}")
         result = compute_all_k(
-            n, p, cfg.epsilon, cfg.cg_tol, cfg.cg_maxiter,
+            n, p, cfg.epsilon, cfg.solver_tol, cfg.cg_maxiter,
             cfg.quad_order, cfg.quad_order_offset,
         )
         all_results.append(result)
 
-        print(f"\n  --- Timings ---")
+        print("\n  --- Timings ---")
         for label, dt in result["timings"].items():
             print(f"  {label:.<40s} {dt:8.3f}s")
 
-        print(f"\n  --- Frame consistency (||b_ref - b_phys||) ---")
+        print("\n  --- Frame consistency (||b_ref - b_phys||) ---")
         for tag in case_tags:
             print(f"  {tag}: {result[tag]['load_frame_diff']:.3e}")
 
-        print(f"\n  --- Nullspace diagnostics ---")
+        print("\n  --- Nullspace diagnostics ---")
         hdr = (f"  {'case':>8s}  {'dim':>3s}  {'iters':>6s}  {'resid':>10s}"
                f"  {'||Lh||':>10s}  {'||curl||':>10s}  {'||div||':>10s}")
         print(hdr)
@@ -661,7 +727,7 @@ def main(cfg: DictConfig):
                   f"  {r['null_final_residual']:10.3e}  {r['null_Lh_norm']:10.3e}"
                   f"  {r['null_curl_norm']:10.3e}  {r['null_div_norm']:10.3e}")
 
-        print(f"\n  --- Convergence ---")
+        print("\n  --- Convergence ---")
         hdr2 = f"  {'case':>8s}  {'error':>12s}  {'iters':>6s}  {'conv':>5s}"
         print(hdr2)
         for tag in case_tags:

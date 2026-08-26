@@ -18,8 +18,6 @@ O(n_polar * n_q^{rt} * n_q^z) with ZERO applies.
 
 This checks the construction against the probe, which is an exact oracle.
 """
-import jax
-jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
@@ -34,19 +32,25 @@ from mrx.operators import (_reshape_quadrature_matrix_field,  # noqa: E402
 NS, P = (6, 8, 6), 3
 seq = DeRhamSequence(NS, (P,) * 3, 2 * P, ("clamped", "periodic", "periodic"),
                      polar=True, tol=1e-12, maxiter=1000, betti_numbers=(1, 1, 0, 0))
-seq.evaluate_1d(); seq.set_map(toroid_map(epsilon=1 / 3, R0=1.0))
-ops = assemble_incidence_operators(seq); seq.set_operators(ops)
+seq.evaluate_1d()
+seq.set_map(toroid_map(epsilon=1 / 3, R0=1.0))
+ops = assemble_incidence_operators(seq)
+seq.set_operators(ops)
 
 e = seq.e0
 n_ext = int(e.shape[0])
-rows = np.asarray(e.rows); cols = np.asarray(e.cols); vals = np.asarray(e.vals)
+rows = np.asarray(e.rows)
+cols = np.asarray(e.cols)
+vals = np.asarray(e.vals)
 counts = np.bincount(rows, minlength=n_ext)
 polar = np.flatnonzero(counts > 1)
 print(f"extracted rows={n_ext}  polar rows={polar.size}\n")
 
 # 1D tables on the quadrature grid, and the derivative of the PRIMAL basis.
 types = seq.basis_0.types
-Rt = np.asarray(seq.basis_r_jk); Tt = np.asarray(seq.basis_t_jk); Zt = np.asarray(seq.basis_z_jk)
+Rt = np.asarray(seq.basis_r_jk)
+Tt = np.asarray(seq.basis_t_jk)
+Zt = np.asarray(seq.basis_z_jk)
 Rd = np.asarray(grad_1d(seq.d_basis_r_jk, types[0]))
 Td = np.asarray(grad_1d(seq.d_basis_t_jk, types[1]))
 Zd = np.asarray(grad_1d(seq.d_basis_z_jk, types[2]))

@@ -44,7 +44,6 @@ import time
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

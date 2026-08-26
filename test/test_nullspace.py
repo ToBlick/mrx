@@ -34,7 +34,6 @@ from mrx.nullspace import (
 )
 from mrx.operators import SequenceOperators
 
-jax.config.update("jax_enable_x64", True)
 
 # ---------------------------------------------------------------------------
 # (k, dirichlet) pairs with non-trivial harmonic dimension on the solid torus

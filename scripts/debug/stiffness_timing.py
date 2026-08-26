@@ -33,17 +33,29 @@ print(f"timing: ns={NS}\n", flush=True)
 
 
 def pcg_timed(A, b, M, tol=1e-10, maxit=4000):
-    x = jnp.zeros_like(b); r = b - A(x); z = M(r); q = z
-    rz = float(r @ z); nb = float(jnp.linalg.norm(b))
-    jax.block_until_ready(z); t0 = time.perf_counter()
+    x = jnp.zeros_like(b)
+    r = b - A(x)
+    z = M(r)
+    q = z
+    rz = float(r @ z)
+    nb = float(jnp.linalg.norm(b))
+    jax.block_until_ready(z)
+    t0 = time.perf_counter()
     for i in range(1, maxit + 1):
-        Aq = A(q); den = float(q @ Aq)
+        Aq = A(q)
+        den = float(q @ Aq)
         if den <= 0:
             return -i, time.perf_counter() - t0
-        al = rz / den; x = x + al * q; r = r - al * Aq
+        al = rz / den
+        x = x + al * q
+        r = r - al * Aq
         if float(jnp.linalg.norm(r)) / nb < tol:
-            jax.block_until_ready(x); return i, time.perf_counter() - t0
-        z = M(r); rzn = float(r @ z); q = z + (rzn / rz) * q; rz = rzn
+            jax.block_until_ready(x)
+            return i, time.perf_counter() - t0
+        z = M(r)
+        rzn = float(r @ z)
+        q = z + (rzn / rz) * q
+        rz = rzn
     return maxit, time.perf_counter() - t0
 
 
@@ -52,9 +64,12 @@ for gname, mk in (("toroid", lambda: toroid_map(epsilon=1 / 3, R0=1.0)),
                       eps=0.33, kappa=1.5, nfp=3))):
     seq = DeRhamSequence(NS, (P,) * 3, 2 * P, TYPES, polar=True, tol=1e-12,
                          maxiter=1000, betti_numbers=(1, 1, 0, 0))
-    seq.evaluate_1d(); seq.set_map(mk())
-    ops = assemble_incidence_operators(seq); seq.set_operators(ops)
-    cs = _core_size(seq); size = int(seq.n0_dbc)
+    seq.evaluate_1d()
+    seq.set_map(mk())
+    ops = assemble_incidence_operators(seq)
+    seq.set_operators(ops)
+    cs = _core_size(seq)
+    size = int(seq.n0_dbc)
 
     def K(x):
         return apply_stiffness(seq, ops, x, 0, dirichlet=True)
@@ -87,10 +102,12 @@ for gname, mk in (("toroid", lambda: toroid_map(epsilon=1 / 3, R0=1.0)),
         return jnp.concatenate([A_cc_inv @ r[:cs], atom(r[cs:])])
 
     def M_cp(r):
-        y = atom(r[cs:]); z = schur_inv @ (r[:cs] - C0.T @ y)
+        y = atom(r[cs:])
+        z = schur_inv @ (r[:cs] - C0.T @ y)
         return jnp.concatenate([z, y - atom(C0 @ z)])
 
-    rng = np.random.default_rng(0); b = jnp.asarray(rng.standard_normal(size))
+    rng = np.random.default_rng(0)
+    b = jnp.asarray(rng.standard_normal(size))
     print(f"  {gname}: Schur assembly = {t_schur_setup:.1f} s "
           f"(block-diag needs none)", flush=True)
     for nm, M in (("block-diag", M_bd), ("Schur+coupling", M_cp)):

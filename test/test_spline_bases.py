@@ -8,7 +8,6 @@ import pytest
 
 from mrx.spline_bases import DerivativeSpline, SplineBasis, TensorBasis
 
-jax.config.update("jax_enable_x64", True)
 
 N, P = 10, 3
 

@@ -37,7 +37,6 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-jax.config.update("jax_enable_x64", True)
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
@@ -48,7 +47,6 @@ from mrx.operators import (
     apply_stiffness,
     assemble_incidence_operators,
     build_matrixfree_mass_apply,
-    mass_core_apply,
 )
 
 # ---------------------------------------------------------------------------

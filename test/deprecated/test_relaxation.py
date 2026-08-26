@@ -10,7 +10,7 @@ import pytest
 from jax.numpy import cos, pi, sin
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.relaxation import (TimeStepper, State, compute_divergence_norm,
+from mrx.relaxation import (TimeStepper, compute_divergence_norm,
                             compute_force, compute_helicity, initial_state,
                             relaxation_loop)
 from mrx.utils import evaluate_at_xq
