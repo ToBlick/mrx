@@ -404,10 +404,14 @@ class TimeStepper(eqx.Module):
         #   * the two curls agree to 1.0e-12, so the swap does not move the
         #     trajectory -- it only removes an error that had no business
         #     being there.
-        # NB DeRhamSequence.apply_incidence_matrix's docstring still says the
-        # mass-projected form should be preferred for exact d.d on extracted
-        # DoFs; mrx/operators.py:2039 is the code that runs, and its Gram
-        # correction at the polar axis is what makes the incidence form exact.
+        # The Gram correction inside `mrx.operators.apply_incidence_matrix`
+        # -- G = Gram_{k+1}^-1 (E_out^T sp E_in) -- is what makes the incidence
+        # form exact at the polar axis. (This comment used to warn that
+        # `DeRhamSequence.apply_incidence_matrix`'s docstring still recommended
+        # the mass-projected form; that docstring was corrected on 2026-08-25,
+        # so the warning described a contradiction that no longer existed. It
+        # also cited a bare line number, which had drifted by three within a
+        # day -- cite the SYMBOL, not the line.)
         dB = self.seq.apply_incidence_matrix(
             E, 1, dirichlet_in=True, dirichlet_out=True)
         if self.dt_mode == TimeStepChoice.FIXED or self.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:

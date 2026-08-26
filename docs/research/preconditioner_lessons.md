@@ -1,4 +1,4 @@
-# Preconditioner lessons — settled findings and dead ends (as of 2026-07-07)
+# Preconditioner lessons — settled findings and dead ends (as of 2026-08-25)
 
 Distilled from session memory so it travels with the repo. Each item is settled
 empirically; don't re-derive or retry without new evidence. Evidence pointers are
@@ -51,7 +51,7 @@ to committed scripts / gitignored `outputs/` on the cluster.
   iterations; `ischur` (inner-block coupling) is never worth it. With bcheb=0
   the tensor mass beats Jacobi on wall even on W7-X.
 - **Lumped-L/U block-SGS for k=1/2 mass coupling regressed** (2026-07-07, see
-  `mass_coupling_preconditioner_handoff.md` for the full table): ~0.1–0.17
+  `preconditioner_lessons.md` for the full table): ~0.1–0.17
   lump error in the off-diagonal blocks makes SGS sweeps ADD error (k=1:
   291–350 it vs 75–80 baseline). Next lever is the support-integrated diagonal
   lump, not coupling.
@@ -71,9 +71,59 @@ to committed scripts / gitignored `outputs/` on the cluster.
   interpolating — `docs/w7x_vacuum_bfield_handoff.md`). Dominant metric
   coupling for preconditioning is ρ-θ (~0.49 normalized), not θ-ζ.
 
-## Active threads (2026-07-07)
+## The 2026-08 arc: what shipped and what died
 
-- k=0 Laplacian geometric MG: `docs/research/laplacian_mg_k0_plan.md` (phase-0 done,
-  transfers near the axis are the blocker).
-- k=1/2 mass coupling: `docs/mass_coupling_preconditioner_handoff.md`
-  (SGS dead; support-integrated diagonal lump next).
+This section replaces sixteen working-log handoffs from 2026-08-13 to 2026-08-25
+(the pivot, the natural-BC sweep, the audit series, the surgery-Schur plan). Their
+conclusions are here; the narrative of how they were reached is not, deliberately.
+
+- **There is now exactly ONE preconditioner besides `none` and `jacobi`:
+  `metric_lumping`.** Small dense core at the polar axis, Kronecker tail elsewhere
+  (`M ~ Lam (A_r x A_t x A_z) Lam`, with the core the part that differs). It is the
+  production mass preconditioner AND, as `schur.outer`, the production k>=1
+  Laplacian preconditioner. Named `block` / `block_jacobi` until 2026-08-25.
+- **`raw_kron` was deleted 2026-08-25**, after the A/B that could only be run once
+  (`result_2026-08-25_schur_probe_ab.md`): six converged cells, five favouring the
+  atom by 2.4-16.6% with the largest gain on W7-X, one at +0.6% inside a MEASURED
+  0.1-0.3% run-to-run noise floor. The old `tensor` (CP/ALS) stack died earlier the
+  same week. Do not reintroduce a second mass kind to "compare against" without
+  reading that note first.
+- **Never soft-substitute a preconditioner.** `_materialize_default_saddle_preconditioner`
+  resolves to the atom when assembled and `'none'` otherwise — never a probed jacobi
+  diagonal. Probe-building a fallback is how the relaxation loop ran its innermost
+  solve on a diagonal for months with nobody noticing: a substituted preconditioner
+  does not fail, it just gets slower, which is invisible. Running unpreconditioned is
+  visible. "You get what you built."
+- **The boundary penalty is settled: ship only `alpha_k = <m_k sqrt(g^rr)> / <m_k/J> / h`
+  with `s = 3`.** The `product` / `halves` / `matrixwise` / `product_bare_h`
+  conventions are gone. A0 @ 0.10 and A5 @ 2.83 are equivalent (+0.8%); rank by TOTAL
+  iterations, not worst case. "Prefer 0.05 at p>=5" was wrong.
+- **The natural-BC coefficient question is closed, and the answer is not the obvious
+  one:** alpha is the best NORM fit to L's boundary block but NOT the best
+  PRECONDITIONER of it. The gap is within-ring angular/cross-component coupling the
+  atom drops. The DtN hypothesis was refuted. A local ring-block match predicts the
+  scale with no solve. Deliverable = the scalar term at the corrected scale, rank-1
+  and free, capturing 66-74% of the available gain.
+- **Geometric MG for the k=0 Laplacian is a research branch, not production.** The
+  production route is the metric-lumped atom swapped into the existing thin-core
+  preconditioner. Deflation, eps-shifts, truncation and fdhel-v1 were all refuted;
+  a raw-atom Schur rebuild floors CG (indefinite).
+- **2-D ring atoms work INNER only.** Outer rings need the dense probe — the DtN
+  behaviour there is nonlocal.
+- **Ranking rule: TOTAL TIME, not iteration count**, and only a TWO-DIGIT percent
+  worsening is worth investigating at all. Run-to-run variation here is 0.1-0.3%.
+
+## Active threads (2026-08-25)
+
+- **Even-p histopolation identity** (`handoff_2026-08-25_histopolation.md`): at odd p
+  the projectors are exact at every k and both BCs (~5e-16); at even p, k>=1 is not a
+  projector (7e-2 to 1.3e-1) and the cause is UNKNOWN. Two mechanisms refuted with
+  evidence — the extraction (k=3 has `E E^T = I` to 0.000 and fails anyway) and
+  quadrature exactness (splitting spans at knots improved accuracy and made the
+  identity slightly worse). Next experiment is cheap and needs no GPU: compare
+  `moments(D_i)` against `H[:, i]` column by column in 1-D at p=2.
+- **k=1/2 mass coupling**: SGS is dead; the support-integrated diagonal lump is the
+  next lever, not coupling.
+- **Deferred follow-ups from the raw_kron deletion**: the `outer='none'` branch still
+  builds a Schur apply it discards; `verify_block_jacobi.py` keeps its old name
+  because 22 scripts import `build_sequence` from it.

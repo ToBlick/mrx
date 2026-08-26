@@ -46,10 +46,10 @@ def main():
         for dbc in (False, True):
             n = int(getattr(seq, f"n{k}_dbc" if dbc else f"n{k}"))
             t = time.perf_counter()
-            ops = op.assemble_block_jacobi_laplacian_preconditioner(
+            ops = op.assemble_metric_lumping_laplacian_preconditioner(
                 seq, ops, ks=(k,), dirichlets=(dbc,))
             jax.block_until_ready(
-                getattr(seq, op.BLOCK_JACOBI_CACHE_ATTR)[(k, dbc)].apply(
+                getattr(seq, op.METRIC_LUMPING_CACHE_ATTR)[(k, dbc)].apply(
                     jax.numpy.ones(n)))
             dt = time.perf_counter() - t
             total += dt

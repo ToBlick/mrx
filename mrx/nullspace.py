@@ -24,7 +24,37 @@ from mrx.preconditioners import (
 
 
 def _n_vectors(betti_numbers, k, dirichlet):
-    """Number of harmonic ``k``-forms for the given Betti numbers."""
+    """Number of harmonic ``k``-forms for the given Betti numbers.
+
+    ``betti_numbers`` are the ABSOLUTE Betti numbers, which is what the free
+    (natural-BC) branch reads directly. The Dirichlet branch needs the RELATIVE
+    ones, and they are not the same list -- they are the reversed one::
+
+        b_k^rel = b_{3-k}^abs
+
+    which is what the ``(0, b2, b1, b0)[k]`` reversal below is. Poincare-Lefschetz
+    duality on a 3-manifold with boundary; nothing in any call signature says so.
+
+    WORKED, because the default matters and the reversal is easy to miss.
+    ``betti_numbers=(1, 1, 0, 0)`` -- the DeRhamSequence default -- gives
+
+        free (absolute)   k=0: 1   k=1: 1   k=2: 0   k=3: 0
+        dbc  (relative)   k=0: 0   k=1: 0   k=2: 1   k=3: 1
+
+    so harmonic forms exist at exactly ``(0, free)``, ``(1, free)``,
+    ``(2, dbc)`` and ``(3, dbc)`` -- and NOT at ``(1, dbc)`` or ``(2, free)``.
+
+    THIS HAS COST TWO PEOPLE ONE DAY (2026-08-25), from opposite directions:
+    once by reading absolute ``(1,1,0,0)`` as "no harmonic 2-forms anywhere"
+    when ``compute_helicity`` works in the Dirichlet complex where there IS
+    one; and once by A/B-ing a preconditioner on ``(1, dbc)`` and ``(2, free)``,
+    where BOTH arms returned the same non-harmonic vector because there was no
+    harmonic form to find -- which reads as reassuring agreement rather than as
+    a measurement of nothing.
+
+    If you are choosing ``(k, dirichlet)`` cells to test, check this function
+    first. A cell with zero harmonic forms still RETURNS a vector.
+    """
     b0, b1, b2, _b3 = betti_numbers
     if dirichlet:
         return (0, b2, b1, b0)[k]
@@ -241,7 +271,7 @@ def _nullspace_shifted_preconditioner(k: int):
     if k == 0:
         # Jacobi on the shifted operator; its diagonal is closed-form since
         # L_0 = S_0. NOT what the main k=0 solve uses any more -- that is the
-        # block-Jacobi atom (kind='block') as of 2026-08-22.
+        # block-Jacobi atom (kind='metric_lumping') as of 2026-08-22.
         return _validate_nullspace_shifted_preconditioner(
             k,
             MassPreconditionerSpec(kind='jacobi'),
@@ -251,28 +281,29 @@ def _nullspace_shifted_preconditioner(k: int):
     # This pins schur.outer='jacobi' -- the per-DoF diagonal whose weak half is
     # itself a Kronecker mass MODEL. It no longer matches the production saddle
     # default: _materialize_default_saddle_preconditioner has used the
-    # block-Jacobi atom ('block') since 2026-08-24, worth 2.5x fewer MINRES
+    # block-Jacobi atom ('metric_lumping') since 2026-08-24, worth 2.5x fewer MINRES
     # iterations over 18 cells, and the harmonic-form investigation
     # (docs/research/handoff_2026-08-24_harmonic_k1_free.md) traced the
     # degraded k=1 free form to exactly this jacobi outer.
     #
     # So `find_nullspace_vectors` does NOT inherit the assembled block atom:
     # this spec overrides it, and _validate_nullspace_shifted_preconditioner
-    # below actively REJECTS kind='block'. Any job comment claiming inverse
+    # below actively REJECTS kind='metric_lumping'. Any job comment claiming inverse
     # iteration "picks up the block atom automatically" is wrong.
     #
     # Changing it means re-running the S5 nullspace gate, so it is left alone
     # until that sweep is scheduled -- the shift is S_k + eps M_k, not L_k, so
     # the atom's fit there wants measuring rather than assuming.
     #
-    # `mass=default_mass_preconditioner()` IS current (block_jacobi); only the
-    # outer is stale. schur.inner stays raw_kron, which needs no eager assembly.
+    # `mass=default_mass_preconditioner()` IS current (metric_lumping); only the
+    # outer is stale. schur.inner is metric_lumping, which needs no eager
+    # assembly (raw_kron deleted 2026-08-25).
     return _validate_nullspace_shifted_preconditioner(
         k,
         SaddlePointPreconditionerSpec(
             mass=default_mass_preconditioner(),
             schur=SchurPreconditionerSpec(
-                inner=MassPreconditionerSpec(kind='raw_kron'),
+                inner=MassPreconditionerSpec(kind='metric_lumping'),
                 outer=MassPreconditionerSpec(kind='jacobi'),
             ),
             coupled=False,
@@ -287,10 +318,10 @@ def _validate_nullspace_shifted_preconditioner(k: int, preconditioner):
     if k == 0:
         if not isinstance(preconditioner, MassPreconditionerSpec):
             raise TypeError('k=0 nullspace inverse iteration expects a MassPreconditionerSpec')
-        if preconditioner.kind not in ('tensor', 'jacobi'):
+        if preconditioner.kind != 'jacobi':
             raise ValueError(
                 f'k=0 nullspace inverse iteration got unsupported preconditioner '
-                f'kind={preconditioner.kind!r}; expected tensor or jacobi'
+                f'kind={preconditioner.kind!r}; expected jacobi'
             )
         return preconditioner
     if not isinstance(preconditioner, SaddlePointPreconditionerSpec):
@@ -300,10 +331,10 @@ def _validate_nullspace_shifted_preconditioner(k: int, preconditioner):
             f'k>=1 nullspace inverse iteration got unsupported schur.outer '
             f'kind={preconditioner.schur.outer.kind!r}; expected jacobi'
         )
-    if preconditioner.schur.inner.kind not in ('raw_kron', 'tensor'):
+    if preconditioner.schur.inner.kind != 'metric_lumping':
         raise ValueError(
-            'k>=1 nullspace inverse iteration requires raw_kron (default) or '
-            f'tensor schur.inner preconditioning; got '
+            'k>=1 nullspace inverse iteration requires metric_lumping '
+            f'schur.inner preconditioning; got '
             f'{preconditioner.schur.inner.kind!r}'
         )
     return preconditioner

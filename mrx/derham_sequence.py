@@ -68,6 +68,32 @@ _EXTRACTION_OPERATOR_NAMES = (
 )
 
 
+def _drop_schur_diaginv(operators):
+    """Clear every stored Schur-Jacobi diagonal and its mode tag.
+
+    These are the one geometry-dependent cache that cannot look after itself.
+    ``seq._metric_lumping_laplacian`` is deleted by ``set_geometry`` and
+    ``seq._mass_metric_lumping_cache`` is keyed on geometry identity, but the
+    Schur diagonals are fields on the ``SequenceOperators`` bundle, which
+    ``set_geometry`` never sees. Reusing a bundle across a geometry change would
+    therefore carry the previous metric's diagonals forward silently.
+
+    Cheap to drop: they are re-probed on demand.
+    """
+    fields, values = [], []
+    for k in (1, 2, 3):
+        for suffix in ('', '_dbc'):
+            fields.append(f'schur_diaginv_k{k}{suffix}')
+            fields.append(f'schur_diaginv_mode_k{k}{suffix}')
+    values = [None] * len(fields)
+    return eqx.tree_at(
+        lambda ops: tuple(getattr(ops, f) for f in fields),
+        operators,
+        tuple(values),
+        is_leaf=lambda x: x is None,
+    )
+
+
 def _operator_bundle_field_property(name: str):
     def getter(self):
         return getattr(self._require_operators(), name)
@@ -473,45 +499,139 @@ class DeRhamSequence():
         factorisation.
         """
         self.geometry = geometry
-        from mrx.operators import BLOCK_JACOBI_CACHE_ATTR  # noqa: PLC0415
-        if hasattr(self, BLOCK_JACOBI_CACHE_ATTR):
-            delattr(self, BLOCK_JACOBI_CACHE_ATTR)
+        from mrx.operators import METRIC_LUMPING_CACHE_ATTR  # noqa: PLC0415
+        if hasattr(self, METRIC_LUMPING_CACHE_ATTR):
+            delattr(self, METRIC_LUMPING_CACHE_ATTR)
 
-    def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3),
-                                    dirichlets=(False, True), operators=None):
-        """Install a map and build every preconditioner that depends on it.
+    def build_preconditioners(self, *, ks=(0, 1, 2, 3),
+                              dirichlets=(False, True), operators=None):
+        """Build every preconditioner that depends on the installed geometry.
 
-        The convenience wrapper over the setup sequence, so that "I did not know
-        I had to build those" is not a way to end up on a worse preconditioner.
-        Equivalent to, and replaceable by, the explicit calls::
+        Requires a geometry; does NOT install one. Building a sequence WITHOUT
+        preconditioners is a first-class path -- for purely geometrical work
+        ``set_map`` alone is the whole setup, and this is a separate, deliberate
+        step rather than something you forgot.
 
-            seq.set_map(map)
+        Call it AGAIN after any geometry change. That is the point of it being
+        a method rather than a stage inside ``set_map``: the g payload moves and
+        every factorisation of the old metric has to go.
+
+        Equivalent to, and replaceable by::
+
             ops = assemble_incidence_operators(seq)
             ops = assemble_mass_jacobi_preconditioner(seq, ops, ks=ks)
-            ops = assemble_block_jacobi_laplacian_preconditioner(
+            ops = assemble_metric_lumping_laplacian_preconditioner(
                 seq, ops, ks=ks, dirichlets=dirichlets)
-            warm_mass_preconditioner_cache(seq, ops)
+            # ... plus warming the mass cache outside any trace
             seq.set_operators(ops)
 
-        Call it again after any geometry change -- :meth:`set_geometry` drops
-        the atoms precisely so that a stale one cannot be used by accident.
+        WHAT A RE-CALL HAS TO UNDO, and why this clears something by hand.
+        Three caches depend on the geometry and only two look after themselves:
+
+        * ``seq._metric_lumping_laplacian`` -- :meth:`set_geometry` deletes it.
+        * ``seq._mass_metric_lumping_cache`` -- keyed on geometry IDENTITY, so
+          it rebuilds itself when the object changes.
+        * ``operators.schur_diaginv_k*`` -- **nothing invalidates these.** They
+          are fields on the ``SequenceOperators`` bundle, which ``set_geometry``
+          cannot reach, so a bundle handed back through ``operators=`` would
+          carry its predecessor's Schur diagonals across a geometry change. The
+          symptom would be a preconditioner for the wrong metric, i.e. slow
+          convergence, i.e. invisible. So they are dropped here unconditionally:
+          this function cannot know whether they are current, and they are
+          re-probed on demand.
+
+        Schur-Jacobi diagonals are NOT assembled. They are consulted only under
+        ``schur.outer='jacobi'``, which is the comparison baseline and not a
+        production path -- ``_materialize_default_saddle_preconditioner``
+        resolves outer to ``'metric_lumping'`` or ``'none'``, never
+        ``'jacobi'`` (``operators.py:738``). Paying
+        an O(n) probe per ``(k, BC)`` at every setup for something production
+        never reads is not worth it; call
+        :func:`~mrx.operators.assemble_schur_jacobi_preconditioner` directly if
+        you need them eagerly.
 
         Returns the operator bundle, which is also installed on the sequence.
         """
         from mrx.operators import (  # noqa: PLC0415
-            assemble_block_jacobi_laplacian_preconditioner,
+            _mass_metric_lumping_for,
             assemble_incidence_operators,
             assemble_mass_jacobi_preconditioner,
-            warm_mass_preconditioner_cache,
+            assemble_metric_lumping_laplacian_preconditioner,
         )
-        self.set_map(map)
-        ops = assemble_incidence_operators(self) if operators is None else operators
+
+        self._require_geometry()
+        ks = tuple(int(v) for v in ks)
+        dirichlets = tuple(bool(v) for v in dirichlets)
+
+        if operators is None:
+            ops = assemble_incidence_operators(self)
+        else:
+            ops = _drop_schur_diaginv(operators)
+
         ops = assemble_mass_jacobi_preconditioner(self, ops, ks=ks)
-        ops = assemble_block_jacobi_laplacian_preconditioner(
+        ops = assemble_metric_lumping_laplacian_preconditioner(
             self, ops, ks=ks, dirichlets=dirichlets)
-        warm_mass_preconditioner_cache(self, ops, ks=ks, dirichlets=dirichlets)
+
+        # Warm the mass cache outside any trace: the BUILD is host-side numpy,
+        # so a cold cache inside a `jax.lax.while_loop` dies with
+        # TracerArrayConversionError.
+        #
+        # This does NOT inherit `warm_mass_preconditioner_cache`'s
+        # `except Exception: pass`. A caller who asked for preconditioners and
+        # got a bundle back is entitled to assume the bundle is complete;
+        # silently skipping a (k, BC) turns a build failure into slow
+        # convergence somewhere else entirely. Every failure is collected and
+        # reported together, so three broken pairs take one run to find rather
+        # than three.
+        #
+        # HOW WELL FOUNDED IS RAISING HERE -- read this before widening the
+        # except. Measured 2026-08-25 (scripts/debug/warm_strictness_probe.py):
+        # all EIGHT (k, BC) pairs build on the toroid AND on W7-X at
+        # ns=(8,16,8) p=3, so the swallow this replaces was catching nothing
+        # where it had been exercised, and raising costs no working path.
+        #
+        # That is good evidence that strictness is safe -- it is NOT a proof
+        # that no pair can ever fail. Cylinder, rot-ellipse, the GVEC exports
+        # and other (ns, p) were not measured. If you are reading this because
+        # a build DID fail, the honest response is to fix the build or to
+        # narrow the request via `ks`/`dirichlets` -- not to restore a silent
+        # skip, which is what made the original failure invisible.
+        failures = []
+        for k in ks:
+            if not 0 <= k <= 3:
+                continue
+            for dirichlet in dirichlets:
+                try:
+                    _mass_metric_lumping_for(self, ops, k, dirichlet)
+                except Exception as exc:              # noqa: BLE001
+                    failures.append(
+                        f"k={k}, dirichlet={dirichlet}: "
+                        f"{type(exc).__name__}: {exc}")
+        if failures:
+            raise RuntimeError(
+                "build_preconditioners could not build the mass preconditioner "
+                f"for {len(failures)} of {len(ks) * len(dirichlets)} (k, BC) "
+                "pairs, so the returned bundle would be silently incomplete:\n  "
+                + "\n  ".join(failures))
+
         self.set_operators(ops)
         return ops
+
+    def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3),
+                                    dirichlets=(False, True), operators=None):
+        """Install a map, then build the preconditioners that depend on it.
+
+        Exactly ``set_map`` followed by :meth:`build_preconditioners`, and
+        nothing else -- one implementation, so this wrapper cannot drift from
+        the thing it wraps. It exists so that "I did not know I had to build
+        those" is not a way to end up on a worse preconditioner.
+
+        For geometry-only work call :meth:`set_map` alone; for a geometry that
+        has already moved call :meth:`build_preconditioners` alone.
+        """
+        self.set_map(map)
+        return self.build_preconditioners(
+            ks=ks, dirichlets=dirichlets, operators=operators)
 
     def _require_geometry(self):
         """Return the attached geometry or raise when none is installed."""
@@ -955,10 +1075,24 @@ class DeRhamSequence():
         Gk has entries in {-1, 0, +1} and is geometry-independent. On DoF
         spaces where the extraction operators are "unitary" (``e @ e^T = I``),
         this equals ``M_{k+1}^{-1} @ apply_derivative_matrix``. For non-unitary
-        extractions (e.g. polar axis gluing) the two differ; in that regime
-        :meth:`apply_strong_grad` / curl / div remain the mass-projected form
-        and should be preferred when exact d∘d = 0 on extracted DoFs is
-        required.
+        extractions (e.g. polar axis gluing) the two differ.
+
+        PREFER THIS FORM. Until 2026-08-25 this docstring said the
+        mass-projected :meth:`apply_strong_grad` / curl / div "should be
+        preferred when exact d∘d = 0 on extracted DoFs is required". That is
+        stale: :func:`~mrx.operators.apply_incidence_matrix` applies the cached
+        coefficient-Gram correction ``G = Gram_{k+1}^{-1} (E_out^T sp E_in)``,
+        which makes this form the true strong derivative on polar sequences
+        too. Measured on quasr44970 ns=(8,16,8) p=3:
+
+            div.curl, mass-projected   1.261e-10
+            div.curl, incidence        8.641e-16   (machine zero)
+            curl agreement between them 1.025e-12   (so the swap is free)
+
+        The mass-projected path also costs a Krylov solve per apply. The stale
+        advice cost a relaxation study a spurious 1e-10 "floor" on div B that
+        was read as a property of the discretisation rather than of the
+        operator choice.
         """
         operators = self._require_operators(operators)
         return apply_incidence_matrix_ops(
@@ -1303,16 +1437,15 @@ class DeRhamSequence():
 
         ``kind`` selects between ``'none'`` (identity), ``'jacobi'`` (per-DoF
         diagonal; for k >= 1 its weak half is a Kronecker mass MODEL),
-        ``'block'`` (the
-        tensor block-Jacobi atom, k = 0..3, free and Dirichlet — the production
-        preconditioner; call
-        :func:`~mrx.operators.assemble_block_jacobi_laplacian_preconditioner`
-        first) and ``'tensor'`` (k = 0 only, retired).
+        and ``'metric_lumping'`` (the metric-lumped block-Jacobi atom, k = 0..3, free
+        and Dirichlet — the production preconditioner; call
+        :func:`~mrx.operators.assemble_metric_lumping_laplacian_preconditioner`
+        first).
 
-        ``'auto'`` (the default) uses ``'block'`` when it has been assembled
+        ``'auto'`` (the default) uses ``'metric_lumping'`` when it has been assembled
         for this ``(k, BC)`` and falls back to ``'jacobi'`` otherwise. It used
         to resolve to ``'jacobi'`` unconditionally while claiming to prefer
-        ``'tensor'`` at k = 0.
+        ``'tensor'`` at k = 0; ``'tensor'`` itself was deleted 2026-08-25.
         """
         operators = self._require_operators(operators)
         return apply_laplacian_preconditioner_ops(

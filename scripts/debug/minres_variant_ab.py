@@ -125,7 +125,7 @@ def main():
 
     for k in [int(v) for v in cli.ks.split(",")]:
         for dbc in (False, True):
-            op.assemble_block_jacobi_laplacian_preconditioner(
+            op.assemble_metric_lumping_laplacian_preconditioner(
                 seq, ops, ks=(k,), dirichlets=(dbc,))
             suffix = "_dbc" if dbc else ""
             n_u = int(getattr(seq, f"n{k}{suffix}"))
@@ -148,7 +148,7 @@ def main():
                 u, s = z[:n_u], z[n_u:]
                 return jnp.concatenate([
                     op.apply_hodge_laplacian_preconditioner(
-                        seq, ops, u, k, dirichlet=dbc, kind='block'),
+                        seq, ops, u, k, dirichlet=dbc, kind='metric_lumping'),
                     op.apply_mass_matrix_preconditioner(
                         seq, ops, s, k - 1, dirichlet=dbc, kind='auto')])
 
@@ -157,10 +157,10 @@ def main():
                 jnp.zeros(n_l)])
 
             # WARM THE LAZY CACHES OUTSIDE THE TRACE. Both the mass factors and
-            # BlockJacobiLaplacian._build_apply memoise on first use; if that
+            # MetricLumpingLaplacian._build_apply memoise on first use; if that
             # first use happens inside jit/while_loop the cached object closes
             # over tracers and leaks (UnexpectedTracerError from
-            # block_jacobi_laplacian.py:_build_apply). Same rule as
+            # metric_lumping_laplacian.py:_build_apply). Same rule as
             # warm_mass_preconditioner_cache, which the docs state for exactly
             # this reason -- it just also applies to the Laplacian atom.
             op.warm_mass_preconditioner_cache(

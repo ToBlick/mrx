@@ -63,24 +63,72 @@ DIRICHLET = True
 # ---------------------------------------------------------------------------
 # Source functions
 # ---------------------------------------------------------------------------
-def make_f2_ref(a: float):
-    """f₂ = ⋆(df₀) in reference 2-form proxy components (slot order χζ, rζ, rχ)."""
+def make_f2_proxy(a: float):
+    """f₂ = ⋆(df₀) as the reference 2-form proxy (slot order χζ, rζ, rχ).
+
+    The physics; not a load. These are the primal components ω, i.e. the ones
+    a DiscreteFunction evaluates, related to the physical field by
+    B_phys = DF ω / J.
+    """
+    # SIGN, fixed 2026-08-25: frzeta was NEGATIVE. Measured against the working
+    # ⋆ in test_torus_poisson_all_k_sparse.py (_hodge_star_1to2_ref, whose
+    # cyclic convention (J/g_rr, J/g_χχ, J/g_ζζ) is all-positive), applied to
+    # the same f₁ this f₂ is the dual of, the ratio f₂_here / ⋆f₁ was
+    # (+ε, −ε, +ε) — exact to 6 decimals at four unrelated points.
+    #
+    # The uniform ε is harmless: ω₂ below carries the same spurious factor, so
+    # it cancels between source and solution, which is why the pair looked
+    # self-consistent and why projecting ω₂ alone converges at order 4.5. The
+    # MIDDLE SLOT'S SIGN does not cancel -- it is the dr∧dζ vs dζ∧dr
+    # orientation -- and a wrong source that does not scale out leaves a fixed,
+    # resolution-independent error. That was the residual flat 1.6796e-01 left
+    # after the load-frame fix (which had taken it from 1.7818).
     def f(x):
         r, chi, z = x
         R = 1.0 + a * r * jnp.cos(2 * π * chi)
         fchizeta = -8.0 * π**2 * a**2 * r * jnp.cos(2 * π * chi) * jnp.cos(2 * π * z) / R**2
-        frzeta   = -4.0 * π * a**2 * jnp.sin(2 * π * chi) * jnp.cos(2 * π * z) / R**2
+        frzeta   =  4.0 * π * a**2 * jnp.sin(2 * π * chi) * jnp.cos(2 * π * z) / R**2
         frchi    = -2.0 * π * a**3 * r * jnp.sin(2 * π * z) / R**3
         return jnp.array([fchizeta, frzeta, frchi])
     return f
 
 
-def make_f2_phys(a: float, F):
-    """f₂_phys = DF⁻ᵀ @ f₂_ref; load applies DFᵀ internally, recovering f₂_ref."""
+# ---------------------------------------------------------------------------
+# Frame adapters.  NEITHER frame takes the bare proxy components.
+#
+# `load` pairs its argument directly against the basis with weight w (no J at
+# k=2), while M₂ = ∫ Λᵀ g Λ / J. So recovering a primal ω from M₂⁻¹·load needs
+# the load integrand to be g·ω/J, not ω.
+#
+# These previously INVERTED load's internal pullback (f₂_phys was DF⁻ᵀf₂_ref,
+# so load's DFᵀ handed the bare components straight back), making both frames
+# agree with each other and both wrong by one factor of the metric. That does
+# not vanish under refinement, so the study reported a FLAT relative L2 error of
+# 1.7818/1.7819/1.7819 at n=6/8/10 with MINRES converged=True. The k=1 NBC study
+# had the same defect with a different factor (G⁻¹ there, g/J here), which is
+# why the two flat constants differed. See
+# scripts/debug/poisson_rhs_frame_probe.py for the k=1 measurement.
+# ---------------------------------------------------------------------------
+def make_f2_ref(a: float, F):
+    """g·f₂/J — what load(frame='ref') pairs against the k=2 basis."""
     DF = jax.jacfwd(F)
-    f2r = make_f2_ref(a)
+    f2p = make_f2_proxy(a)
     def f(x):
-        return jnp.linalg.solve(DF(x).T, f2r(x))
+        dF = DF(x)
+        return (dF.T @ dF) @ f2p(x) / jnp.linalg.det(dF)
+    return f
+
+
+def make_f2_phys(a: float, F):
+    """DF·f₂/J — the true physical proxy of a 2-form (Piola).
+
+    load(frame='phys') then forms DFᵀ·DF f₂/J = g·f₂/J, matching make_f2_ref.
+    """
+    DF = jax.jacfwd(F)
+    f2p = make_f2_proxy(a)
+    def f(x):
+        dF = DF(x)
+        return dF @ f2p(x) / jnp.linalg.det(dF)
     return f
 
 
@@ -110,7 +158,7 @@ def compute_error(n: int, p: int, epsilon: float,
     q = 2 * p + quad_order_offset if quad_order is None else quad_order
 
     F = toroid_map(epsilon=epsilon)
-    f2 = make_f2_ref(epsilon) if load_frame == 'ref' else make_f2_phys(epsilon, F)
+    f2 = make_f2_ref(epsilon, F) if load_frame == 'ref' else make_f2_phys(epsilon, F)
     w2_exact = make_w2_exact_ref(epsilon)
 
     # --- Sequence setup ------------------------------------------------

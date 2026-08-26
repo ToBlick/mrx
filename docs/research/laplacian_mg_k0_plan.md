@@ -7,7 +7,7 @@ is now `docs/dev/handoff_2026-08-13_gpu_cluster.md` (retires the four-addendum
 `handoff_2026-07-09_polar_c2_mg.md`). Everything answerable at 8³ on a laptop
 is settled: the smoother question is CLOSED (jacobi out, off-diagonal lever
 refuted, fd/fdbund + exact core surgery is the sweet spot —
-`docs/dev/k0_massprecond_surgery_findings.md`); `--polar-order {0,1,2}` is
+`preconditioner_lessons.md`); `--polar-order {0,1,2}` is
 wired and **C² reproduces the fat-core R=1 λmax exactly with fewer DOFs + a 3×
 smaller core** (priority-1 done). What remains is SCALE — the cluster
 experiment matrix (W7-X atom decision + λmax≈8.7 check; the fat-core/C²

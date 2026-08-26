@@ -2,7 +2,6 @@ import argparse
 import os
 import random
 import string
-import time
 from typing import Literal
 
 import h5py
@@ -78,22 +77,6 @@ def unique_id(n: int) -> str:
     chars = string.ascii_letters + string.digits  # 64 choices
     id_str = "".join(random.choice(chars) for _ in range(n))
     return id_str
-
-
-def epoch_time(decimals=0) -> int:
-    """
-    Get the current epoch time in seconds.
-
-    Parameters
-    ----------
-    decimals (int): Number of decimal places to round to. Default is 0.
-
-    Returns
-    -------
-    time : int
-        Current epoch time in seconds.
-    """
-    return int(time.time() * (10 ** (decimals)))
 
 
 def load_sweep(

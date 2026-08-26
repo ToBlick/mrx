@@ -111,12 +111,12 @@ def main():
 
         # preconditioner dense inverses (apply to identity)
         grevM0 = densify(lambda v: apply_mass_matrix_preconditioner(
-            seq, ops, v, 0, dirichlet=d, kind="tensor"), n0)
+            seq, ops, v, 0, dirichlet=d, kind="metric_lumping"), n0)
         grevM1 = densify(lambda v: apply_mass_matrix_preconditioner(
-            seq, ops, v, 1, dirichlet=d, kind="tensor"), n1)
+            seq, ops, v, 1, dirichlet=d, kind="metric_lumping"), n1)
         grevK0 = densify(lambda v: apply_hodge_laplacian_preconditioner(
             seq, ops, v, 0, dirichlet=d, kind="auto"), n0)
-        schur1 = np.asarray(_get_schur_diaginv(ops, 1, d, "tensor_probe"))
+        schur1 = np.asarray(_get_schur_diaginv(ops, 1, d, "metric_lumping_probe"))
 
         def dinv(A):
             dd = np.diag(A).copy()

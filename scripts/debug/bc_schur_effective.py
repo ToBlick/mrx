@@ -42,8 +42,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 import mrx.operators as op  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
-from mrx.block_jacobi_laplacian import (  # noqa: E402
-    BlockJacobiLaplacian, core_rows,
+from mrx.metric_lumping_laplacian import (  # noqa: E402
+    MetricLumpingLaplacian, core_rows,
 )
 from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: E402
 
@@ -122,7 +122,7 @@ def main():
         A_of_s = {}
         for s in scales:
             os.environ["MRX_BJ_BC_SCALE"] = str(s)
-            pre = BlockJacobiLaplacian(seq, ops, k, False, ktilde_mode="honest",
+            pre = MetricLumpingLaplacian(seq, ops, k, False, ktilde_mode="honest",
                                        lumped="diag", bc_entry="ibpd",
                                        extra_rings=0, outer_rings=0)
             Pd = sym(dense_from_apply(pre.apply, n))

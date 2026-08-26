@@ -62,7 +62,7 @@ Unmaintained demo scripts: `scripts/deprecated/`.
   EMPIRICAL (a kappa-balance point, not a derived factor); best single value by
   TOTAL iterations, basin flat over `[2, 4]`. The coefficient is degree
   dependent, so one constant is a compromise across k -- see
-  `docs/research/handoff_2026-08-23_bc_alpha_sweep.md`. `MRX_BJ_BC_SCALE`
+  `preconditioner_lessons.md`. `MRX_BJ_BC_SCALE`
   overrides.
 - `MRX_MASS_KIND=raw_kron` reverts the mass swap wholesale.
 - **`frame='ref'` in `load`/`interpolate` is NOT the primal component vector.**
@@ -85,7 +85,7 @@ Unmaintained demo scripts: `scripts/deprecated/`.
 - KNOWN REGRESSION: `build_weak_term_diagonal` is still calibrated for
   raw_kron, so `kind='jacobi'` costs 1-10% more than it used to and
   `test_weak_term_diagonal_matches_exact_rows` skips unless the mass is
-  raw_kron. Top open item in `docs/research/HANDOFF_open_items.md`.
+  raw_kron. Top open item in `preconditioner_lessons.md`.
 - Mass CP fits (retired path): non-negative (NTF) default; `MRX_CP_GREEDY`
   reverts.
 - Solvers: k=0 = deflated CG (condensed); k>=1 = saddle MINRES with
@@ -106,7 +106,7 @@ Unmaintained demo scripts: `scripts/deprecated/`.
   80 free vs 56/87, at equal preconditioner assembly cost (~37s GPU).
 - k>=1 Jacobi is measured-optimal in the relaxation class (l1-Jacobi
   10-30% worse; mass-as-preconditioner 7-11x worse; mass/point smoothed MG
-  refuted; ledger in `docs/research/handoff_2026-08-13_eod.md`).
+  refuted; ledger in `preconditioner_lessons.md`).
 
 ## The research shelf (what would replace Jacobi at k>=1, and when)
 
@@ -123,7 +123,7 @@ production. Details + all other shelf items: `docs/research/`.
 > assessment rests on.
 
 The k>0 option space is closed — full reasoning in
-`docs/research/k_gt0_final_assessment.md`. Summary: any method that beats
+`preconditioner_lessons.md`. Summary: any method that beats
 Jacobi on hard geometry must contain a faithful L0 solve (measured +
 literature-confirmed); everything cheaper is break-even at best. Jacobi
 stays; the coupled+dense-L0 shelf is the only sanctioned opt-in.

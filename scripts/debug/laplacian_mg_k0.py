@@ -1110,7 +1110,7 @@ def main():
         # baseline (production FD tensor-hodge: C^1 layout only)
         if args.baseline and order == 1:
             def base_p(v, d=dirichlet):
-                return apply_laplacian_preconditioner(seq, ops, v, 0, dirichlet=d, kind="tensor")
+                return apply_laplacian_preconditioner(seq, ops, v, 0, dirichlet=d, kind="metric_lumping")
             it, dt, rel = timed_pcg(a_full, m_full, base_p, rhs, vs, args.tol, args.maxiter)
             print(f"[{bc}] baseline(FD tensor-hodge)  it={it:<5d} {dt:.3f}s "
                   f"({1e3 * dt / max(it, 1):.2f} ms/it) rel={rel:.1e}", flush=True)

@@ -52,7 +52,7 @@ def main():
         for k in [int(v) for v in cli.ks.split(",")]:
             for dbc in (True, False):
                 try:
-                    op.assemble_block_jacobi_laplacian_preconditioner(
+                    op.assemble_metric_lumping_laplacian_preconditioner(
                         seq, ops, ks=(k,), dirichlets=(dbc,))
                     tag = "ok"
                 except Exception as exc:                      # noqa: BLE001

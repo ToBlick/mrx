@@ -12,7 +12,7 @@ Arms, all feeding the SAME shifted-Jacobi preconditioner and the same CG:
             term + exact applies on the coupled rows).
   rescale      -- closed, plus the leading-order repair of the INNER Lam split
                   (MRX_LAPLACIAN_DIAG_RESCALE=upper). Free; restores the
-                  raw_kron model's diag(M~) = diag(M) on the upper level.
+                  Kronecker mass model's diag(M~) = diag(M) upper level.
   rescale_both -- also repairs the two split Sig inside the lower mass inverse,
                   resampled onto the upper grid (=both).
   exact   -- ORACLE: the same expansion with the inner scalings kept exact

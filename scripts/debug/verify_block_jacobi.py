@@ -11,7 +11,7 @@ the right-hand side is projected onto ``range(L) = null(L)^perp`` and the
 residual and preconditioned residual are re-projected every iteration, since
 round-off otherwise feeds the kernel back in.
 
-The operator is left alone -- raw_kron is still the weak term's inner inverse --
+The operator is left alone -- the weak term's inner inverse is unchanged --
 so these numbers are directly comparable with the earlier run.
 
 Usage:
@@ -38,11 +38,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mrx  # noqa: E402
 import mrx.operators as op  # noqa: E402
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
-from mrx.experimental.block_jacobi_coarse import (  # noqa: E402
-    CoarseCorrectedBlockJacobi,
+from mrx.experimental.metric_lumping_coarse import (  # noqa: E402
+    CoarseCorrectedMetricLumping,
 )
-from mrx.block_jacobi_laplacian import (  # noqa: E402
-    BlockJacobiLaplacian)
+from mrx.metric_lumping_laplacian import (  # noqa: E402
+    MetricLumpingLaplacian)
 from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: E402
 from mrx.nullspace import compute_nullspaces, get_nullspace  # noqa: E402
 
@@ -64,7 +64,7 @@ def build_sequence(geometry, ns, p, maxiter, inner_tol=1e-12):
         seq.set_map(cylinder_map(a=0.33, h=1.0))
     elif geometry == "rot-ellipse":
         # Same parameters as every other debug script in this directory
-        # (raw_kron_mass_gate, modal_radial_gate, radial_profile_pairs).
+        # (modal_radial_gate, radial_profile_pairs).
         seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.5, nfp=3))
     elif geometry == "w7x":
         from w7x_geometry import build_w7x_map  # noqa: PLC0415
@@ -94,7 +94,7 @@ def build_sequence(geometry, ns, p, maxiter, inner_tol=1e-12):
     ops = op.assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
     # The block-Jacobi atoms, explicitly. compute_nullspaces no longer builds
     # them behind the caller's back, and the k>=1 saddle default REQUIRES them.
-    ops = op.assemble_block_jacobi_laplacian_preconditioner(
+    ops = op.assemble_metric_lumping_laplacian_preconditioner(
         seq, ops, ks=(0, 1, 2, 3), dirichlets=(False, True))
     op.warm_mass_preconditioner_cache(seq, ops)
     seq.set_operators(ops)
@@ -318,12 +318,12 @@ def main():
                             bc_entry=(False if "nobc" in arm else "ibpd"))
                         if fm or fr:
                             # `fm` is EXPERIMENTAL and opt-in: it lives in
-                            # block_jacobi_coarse, NOT on the production
+                            # metric_lumping_coarse, NOT on the production
                             # class. ftD holds V and LV only on a slab D
                             # rings deep; ft9 must reproduce the untruncated
                             # arm exactly.
                             ft = re.search(r"ft(\d+)", arm)
-                            pre = CoarseCorrectedBlockJacobi(
+                            pre = CoarseCorrectedMetricLumping(
                                 seq, ops, k, dbc,
                                 coarse_rings=(int(fr.group(1)) if fr else 1),
                                 coarse_modes=((int(fm.group(1)),) * 2 if fm
@@ -336,7 +336,7 @@ def main():
                                 coarse_trunc=int(ft.group(1)) if ft else 0,
                                 **kwargs)
                         else:
-                            pre = BlockJacobiLaplacian(seq, ops, k, dbc,
+                            pre = MetricLumpingLaplacian(seq, ops, k, dbc,
                                                        **kwargs)
                         minv = pre.apply
                     t_build = time.perf_counter() - t0

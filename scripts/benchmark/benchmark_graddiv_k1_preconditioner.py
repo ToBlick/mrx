@@ -14,7 +14,7 @@ Two upper-block preconditioners are compared. The script can run either on
 the condensed operator (CG) or on the full saddle-point system (MINRES):
 
 * ``jacobi (diag)`` -- the current production best: the Schur-outer Jacobi
-                    preconditioner assembled with ``schur_diag_mode='tensor_probe'``
+                    preconditioner assembled with ``schur_diag_mode='metric_lumping_probe'``
                     (rank-independent ``diag(M_0)^{-1}`` inner probe). A single
                     stored diagonal multiply. Pairs with the tensor inner that
                     ``A`` already bakes in, i.e. "jacobi outer + tensor inner".
@@ -1737,7 +1737,7 @@ def assemble_operators(
                 operators=o,
                 ks=schur_ks,
                 dirichlet_variants=schur_bc,
-                schur_diag_mode='tensor_probe',
+                schur_diag_mode='metric_lumping_probe',
             ),
             ops,
         )
@@ -1812,7 +1812,7 @@ def make_apply_routines(
     def lower_tensor_precond(rhs):
         # Fixed lower block: rank-1 tensor mass preconditioner.
         return apply_mass_matrix_preconditioner(
-            seq, ops, rhs, 0, dirichlet=DIRICHLET, kind="tensor")
+            seq, ops, rhs, 0, dirichlet=DIRICHLET, kind="metric_lumping")
 
     def l0_inv(x):
         # Rank-1 tensor k=0 Hodge-Laplacian preconditioner: V0* -> V0. The
@@ -1821,7 +1821,7 @@ def make_apply_routines(
         # _assemble_k0_tensor_hodge_preconditioner), so no script-local
         # precompute is needed.
         return apply_laplacian_preconditioner(
-            seq, ops, x, 0, dirichlet=DIRICHLET, kind="tensor")
+            seq, ops, x, 0, dirichlet=DIRICHLET, kind="metric_lumping")
 
     # Diagnostic hook: inject an exact (dense) L_0^{-1} so P_B and the gradient
     # projectors use it instead of the tensor atom -- the k=1 analog of the k=2
@@ -1950,7 +1950,7 @@ def make_apply_routines(
 
     # Production baseline: Schur-outer Jacobi diagonal (mode diag), a stored
     # diagonal multiply. The tensor inner is already inside `a_matvec`.
-    schur_diaginv = _get_schur_diaginv(ops, 1, DIRICHLET, 'tensor_probe')
+    schur_diaginv = _get_schur_diaginv(ops, 1, DIRICHLET, 'metric_lumping_probe')
     if schur_diaginv is None:
         raise RuntimeError("Schur jacobi diag preconditioner was not assembled")
 
@@ -2246,12 +2246,12 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
 
     def lower_tensor_precond(rhs):  # M_1^{-1} (tensor) : V1* -> V1
         return apply_mass_matrix_preconditioner(
-            seq, ops, rhs, 1, dirichlet=DIRICHLET, kind="tensor")
+            seq, ops, rhs, 1, dirichlet=DIRICHLET, kind="metric_lumping")
 
     # --- auxiliary inverses ---
     def l0_inv(x):  # k=0 Hodge tensor precond, V0* -> V0 (cheap, near-exact)
         return apply_laplacian_preconditioner(
-            seq, ops, x, 0, dirichlet=DIRICHLET, kind="tensor")
+            seq, ops, x, 0, dirichlet=DIRICHLET, kind="metric_lumping")
 
     def k1_stiff_inv_raw(x):  # raw k=1 curl-curl tensor precond, V1* -> V1
         return apply_stiffness_tensor_preconditioner(
@@ -2345,7 +2345,7 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
 
         def _l0_smoother(b):       # const-deflated k=0 tensor precond ~ L_0^{-1}
             return _defl0_primal(apply_laplacian_preconditioner(
-                seq, ops, _defl0_dual(b), 0, dirichlet=DIRICHLET, kind="tensor"))
+                seq, ops, _defl0_dual(b), 0, dirichlet=DIRICHLET, kind="metric_lumping"))
 
         def _s_hat0(x):            # L_0 = apply_stiffness(.,0): exact, matrix-free
             return apply_stiffness(seq, ops, x, 0, dirichlet=DIRICHLET)
@@ -2537,7 +2537,7 @@ def make_apply_routines_k2(seq: DeRhamSequence, ops, *, grad_project: bool = Tru
     # Production baseline: Schur-outer Jacobi diagonal for k=2 (stored multiply).
     # This is the WHOLE-space diagonal: 1/diag(S_2 + D_1 diag(M_1)^{-1} D_1^T),
     # i.e. it already includes the curl term -> overlaps/double-counts with P_B.
-    schur_diaginv = _get_schur_diaginv(ops, 2, DIRICHLET, 'tensor_probe')
+    schur_diaginv = _get_schur_diaginv(ops, 2, DIRICHLET, 'metric_lumping_probe')
 
     def jacobi_diag(r):
         return schur_diaginv * r
@@ -2634,16 +2634,16 @@ def make_apply_routines_k3(seq: DeRhamSequence, ops):
 
     def lower_tensor_precond(rhs):  # M_2^{-1} (tensor) : V2* -> V2
         return apply_mass_matrix_preconditioner(
-            seq, ops, rhs, 2, dirichlet=k3_dbc, kind="tensor")
+            seq, ops, rhs, 2, dirichlet=k3_dbc, kind="metric_lumping")
 
     # --- transfer preconditioner P_3 = T_{0->3} L_0^{-1} T_{3->0} ---
     def mass3_inv(r):  # M_3^{-1} via tensor mass precond, V3* -> V3 (no-dbc)
         return apply_mass_matrix_preconditioner(
-            seq, ops, r, 3, dirichlet=k3_dbc, kind="tensor")
+            seq, ops, r, 3, dirichlet=k3_dbc, kind="metric_lumping")
 
     def l0_inv(x):  # k=0 Hodge tensor precond, DBC (working), V0* -> V0
         return apply_laplacian_preconditioner(
-            seq, ops, x, 0, dirichlet=aux_dbc, kind="tensor")
+            seq, ops, x, 0, dirichlet=aux_dbc, kind="metric_lumping")
 
     # NOTE: apply_projection_matrix(v, a, b) maps space b -> space a (the pair is
     # (output, input); dirichlet_in is the INPUT-space BC, dirichlet_out the
@@ -2733,7 +2733,7 @@ def make_apply_routines_k3(seq: DeRhamSequence, ops):
               f"n_core={_ncore}", flush=True)
 
     # --- jacobi baseline (whole-space diag(L_3)) ---
-    schur_diaginv = _get_schur_diaginv(ops, 3, k3_dbc, 'tensor_probe')
+    schur_diaginv = _get_schur_diaginv(ops, 3, k3_dbc, 'metric_lumping_probe')
 
     def jacobi_diag(r):
         return schur_diaginv * r
@@ -3922,7 +3922,7 @@ def run_k0_benchmark(seq, ops, args, *, report_rel_tol: float) -> None:
 
         def tensor_precond(v, d=dirichlet):
             return apply_laplacian_preconditioner(
-                seq, ops, v, 0, dirichlet=d, kind="tensor")
+                seq, ops, v, 0, dirichlet=d, kind="metric_lumping")
 
         for kind, precond in (("jacobi", jacobi_precond), ("tensor", tensor_precond)):
             @jax.jit
@@ -4821,13 +4821,13 @@ def main() -> None:
                      seq, ops, rhs, k, dirichlet=DIRICHLET, kind="jacobi")),
                 (f"k={k} tensor (coupling precompute ON)",
                  lambda rhs, k=k: apply_mass_matrix_preconditioner(
-                     seq, ops, rhs, k, dirichlet=DIRICHLET, kind="tensor")),
+                     seq, ops, rhs, k, dirichlet=DIRICHLET, kind="metric_lumping")),
             ]
             if k != 3:
                 methods_k.append(
                     (f"k={k} tensor (coupling precompute OFF)",
                      lambda rhs, k=k: apply_mass_matrix_preconditioner(
-                         seq, ops_mass_off, rhs, k, dirichlet=DIRICHLET, kind="tensor")))
+                         seq, ops_mass_off, rhs, k, dirichlet=DIRICHLET, kind="metric_lumping")))
 
             # b = M_k x_true keeps the RHS well-scaled (M_k is SPD, non-singular).
             mass_keys = jax.random.split(jax.random.PRNGKey(args.seed + k), args.n_rhs)

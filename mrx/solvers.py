@@ -52,51 +52,6 @@ def picard_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm) -> 
     return z_star, norm(fz_star[0] - z_star[0]), iters
 
 
-def newton_solver(f, z_init, tol=1e-12, max_iter=2000, norm=jnp.linalg.norm):
-    """
-    Newton fixed-point solver compatible with picard_solver's (x, aux) state.
-
-    Parameters
-    ----------
-    f : callable
-        Map that takes a state z = (x, aux) and returns (x_new, aux_new).
-        The fixed-point equation is x = f((x, aux))[0].
-    z_init : jnp.ndarray or tuple
-        Initial state (x0, aux0) tuple.
-    tol : float, default=1e-12
-        Tolerance for convergence.
-    max_iter : int, default=1000
-        Maximum number of iterations.
-    norm : callable, default=jnp.linalg.norm
-        Norm function definition.
-
-    Returns
-    -------
-    (z_star, residual, iters)
-        z_star = (x*, aux*) with x* the Newton fixed point.
-        residual = ||f(z_star)[0] - x*||.
-        iters = picard iteration count applied to the Newton map.
-    """
-    def g(z):
-        """One Newton update on x, threaded aux; returns (x_next, aux_next)."""
-        x, aux = z
-
-        # F(x) = f((x, aux))[0] - x  (fixed-point residual on the primary var)
-        def F(x_):
-            return f((x_, aux))[0] - x_
-
-        Fx = F(x)                             # shape like x
-        J = jax.jacrev(F)(x)                  # Jacobian dF/dx at current x
-        dx = jnp.linalg.solve(J, Fx)          # Newton step
-        x_next = x - dx
-        # Update aux consistently
-        _, aux_next = f((x_next, aux))
-        return (x_next, aux_next)
-
-    # Hand off to picard_solver to iterate the Newton map g
-    return picard_solver(g, z_init, tol, max_iter, norm)
-
-
 def backtracking_line_search(
     x,
     direction,
@@ -398,7 +353,11 @@ def minres(A_matvec, b, x0=None, M=None, tol=1e-6, maxiter=None):
 
     Returns:
         x: Solution vector.
-        info: 0 if converged, >0 = number of iterations if not converged.
+        info: ``-k`` if converged after ``k`` iterations, ``+k`` if not.
+            (This docstring said "0 if converged" until 2026-08-25; the code
+            has always returned the signed iteration count -- see the
+            ``jnp.where(converged_final, -k_final, k_final)`` below. The stale
+            version caused a converged solve to be read as a failure.)
     """
     n = b.shape[0]
     if maxiter is None:
@@ -590,7 +549,12 @@ def solve_saddle_point_minres(
     Returns:
         u: Solution k-form vector.
         sigma: Solution (k-1)-form vector.
-        info: 0 if converged, >0 otherwise.
+        info: ``-k`` if converged after ``k`` iterations, ``+k`` if not.
+            Forwarded verbatim from :func:`minres`, which has always returned
+            the SIGNED iteration count. This docstring said "0 if converged"
+            until 2026-08-25 -- the THIRD instance of that claim in this file,
+            after the two corrected on 2026-08-24 and 2026-08-25. Reading it
+            as written turns a converged solve into a failure.
     """
     if vs_upper is None:
         vs_upper = []

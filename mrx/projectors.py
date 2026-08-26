@@ -25,6 +25,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+from scipy import sparse
+from scipy.sparse import csgraph
 
 import mrx
 from mrx.extraction_operators import get_xi
@@ -57,25 +59,79 @@ def _leggauss_rule(order: int) -> tuple[Array, Array]:
     return jnp.asarray(xi), jnp.asarray(w)
 
 
-def _interval_rule(span: Array, order: int) -> tuple[Array, Array]:
+def _interval_rule(span: Array, order: int, knots: Array | None = None
+                   ) -> tuple[Array, Array]:
+    """Gauss rule on ``span``, SPLIT at any knots the span contains.
+
+    Greville spans straddle an interior knot whenever the degree is EVEN --
+    ``g_i = i + (p+1)/2`` in units of the knot spacing, integral for odd p and
+    half-integral for even p -- and Gauss-Legendre is exact only for
+    POLYNOMIALS.  A spline has a derivative jump at each knot, so a single rule
+    spanning one converges algebraically rather than exactly: measured on an
+    off-centre knot, 40 points still left 3.6e-07 where splitting is exact at 2.
+
+    ``SplineBasis.histopolation_matrix`` splits identically, so the matrix and
+    the moments are built with the SAME rule -- which matters independently of
+    exactness, since ``solve(H, m) = c`` needs ``m = H c`` and quadrature is
+    linear.
+    """
     xi_ref, w_ref = _leggauss_rule(order)
     a, b = span
-    center = 0.5 * (a + b)
-    halfwidth = 0.5 * (b - a)
-    return center + halfwidth * xi_ref, halfwidth * w_ref
+    if knots is None:
+        center = 0.5 * (a + b)
+        halfwidth = 0.5 * (b - a)
+        return center + halfwidth * xi_ref, halfwidth * w_ref
+
+    cuts = jnp.clip(jnp.unique(knots), a, b)
+    cuts = jnp.sort(jnp.concatenate([jnp.array([a]), cuts, jnp.array([b])]))
+    lo, hi = cuts[:-1], cuts[1:]
+    centers = 0.5 * (lo + hi)
+    halfwidths = 0.5 * (hi - lo)
+    xs = (centers[:, None] + halfwidths[:, None] * xi_ref[None, :]).reshape(-1)
+    ws = (halfwidths[:, None] * w_ref[None, :]).reshape(-1)
+    return xs, ws
 
 
 def _quadrature_order_from_basis_1d(basis) -> int:
     return max(2, basis.p + 2)
 
 
+#: PERIODIC SPANS CROSS THE SEAM AT EVEN p.  Periodic Greville points sit ON
+#: knots for odd p and HALFWAY between knots for even p, so at even p the last
+#: sorted span is [1 - h/2, 1 + h/2] -- and at odd p a point that is 0 up to
+#: rounding can wrap to 1 - eps and cross it too (n=6, p=3 did).  The moments
+#: below wrap their quadrature points (``_wrap_periodic_point``) and so
+#: integrate the periodic extension; ``SplineBasis.evaluate`` does NOT extend
+#: periodically past x = 1 (the image of basis function p' is missing from the
+#: extended knot vector), so ``histopolation_matrix`` wraps its points too.
+#: Until it did, H and the moments shared the RULE but not the INTEGRAND, and
+#: k >= 1 was not a projector at even p (7e-2 .. 1.3e-1) while passing at odd
+#: p on the power-of-two fixtures -- the loophole in "same rule => m = H c".
+#: See docs/research/handoff_2026-08-25_histopolation.md, section 7.
+#:
 #: Interpolation and histopolation are done on the FULL tensor-product space
-#: and then restricted by a single extraction apply, ``e @ c_full``.  That
-#: composition is the construction of Guclu & Campos Pinto (arXiv:2505.15996),
+#: and then restricted onto the extracted space.  That composition is the
+#: construction of Guclu & Campos Pinto (arXiv:2505.15996),
 #: ``Pi_Z = P_Z . Pi_W``: the tensor-product geometric projector followed by a
 #: local, explicit, matrix-free conforming projection on the coefficients.
-#: Idempotency comes from the coefficient rules being self-consistent, not from
-#: any biorthogonality condition on the extraction.
+#:
+#: RETRACTION.  Commit 1cf9cbd's message, and an earlier version of this
+#: comment, said "idempotency comes from the coefficient rules being
+#: self-consistent, not from any biorthogonality condition on the extraction".
+#: That is TRUE OF THE PAPER'S ``P_Z`` AND FALSE OF MRX'S EXTRACTION -- the
+#: claim was imported across an operator boundary it does not cross.  MRX's
+#: ``E`` is not ``P_Z``: measured, ``||E E^T - I||_max = 1.556`` at k=1 and
+#: ``0.352`` at k=2 (``scripts/debug/extraction_unitarity_probe.py``).  So
+#: ``e @ c_full`` alone is NOT a projector, and the k=0 round-trip duly came
+#: back at 5.29e-01.  Supplying ``(E E^T)^{-1}`` explicitly, as
+#: :func:`_conforming_restriction` does, is therefore the CORRECT CONSTRUCTION
+#: for a non-biorthogonal extraction -- not a fudge factor bolted on to force a
+#: test green.  With it, k=0 round-trips at 2.5e-16.
+#:
+#: The same retracted claim was the stated justification for removing the two
+#: guards below.  Removing them still looks right -- the construction does work
+#: once the extraction is handled properly -- but the REASON recorded at the
+#: time was not sound.  History is not rewritten; this is the retraction.
 #:
 #: Two guards used to sit here and both were stale:
 #:   * a full-tensor-space check, which rejected every nontrivial extraction --
@@ -88,6 +144,52 @@ def _quadrature_order_from_basis_1d(basis) -> int:
 #:
 #: ``test_projectors.py`` pins the property that matters: interpolating a
 #: function that already lives in the target space returns its own DOFs.
+
+
+def _conforming_restriction(e, c_full):
+    """Restrict full tensor-product coefficients onto the extracted space.
+
+    ``a = (E E^T)^{-1} E c_full``.  ``E^T (E E^T)^{-1} E`` is idempotent, so
+    interpolating a function that ALREADY lies in the extracted space returns
+    its own DOFs exactly.  Plain ``e @ c_full`` does not have that property --
+    measured, the k=0 round-trip came back at 5.29e-01 without this.
+
+    ``E`` is a pure SELECTION on every row but the polar ones (the same
+    ``counts > 1`` discriminator ``block_jacobi_laplacian.core_rows`` uses), and
+    the polar surgery acts only in (rho, theta) while the zeta index is carried
+    along untouched.  So ``E E^T`` is the IDENTITY PLUS SMALL DENSE BLOCKS --
+    one per zeta slice per affected component, of size ``n_polar``.  Confirmed
+    against the component sizes: k=1 contributes ``2*nz + 3*dz`` such rows and
+    k=2 contributes ``2*dz``, reproducing the measured 30-of-606 and 12-of-588
+    exactly; k=3 contributes none and is already a pure selection.
+
+    The blocks are inverted DENSELY -- the same separable-bulk-plus-dense-core
+    idiom as ``BlockJacobiMass``, and for the same reason: an ``E+``
+    pseudoinverse is what that analysis rejected.  For a pure selection (k=3,
+    and every non-polar sequence) this returns immediately.
+
+    TODO: cache on the sequence alongside the collocation matrices if it ever
+    shows up in a profile; the blocks depend only on the extraction.
+    """
+    a = e @ c_full
+    rows = np.asarray(e.rows)
+    counts = np.bincount(rows, minlength=int(e.forward_shape[0]))
+    core = counts > 1
+    if not core.any():
+        return a                       # pure selection: E E^T = I already
+
+    E = sparse.csr_matrix(
+        (np.asarray(e.vals), (rows, np.asarray(e.cols))), shape=e.forward_shape)
+    gram = (E @ E.T).tocsr()
+    _, labels = csgraph.connected_components(gram, directed=False)
+
+    out = np.asarray(a).copy()
+    order = np.argsort(labels, kind="stable")
+    bounds = np.searchsorted(labels[order], np.arange(labels.max() + 2))
+    for lab in np.unique(labels[core]):
+        idx = order[bounds[lab]:bounds[lab + 1]]
+        out[idx] = np.linalg.solve(gram[np.ix_(idx, idx)].toarray(), out[idx])
+    return jnp.asarray(out)
 
 
 def _matching_discrete_dofs(f, basis, extraction) -> Array | None:
@@ -326,7 +428,7 @@ def _interpolate_0form(seq, f, dirichlet: bool) -> Array:
     coeffs = _solve_tensor_collocation_axis(coll_r, values, axis=0)
     coeffs = _solve_tensor_collocation_axis(coll_t, coeffs, axis=1)
     coeffs = _solve_tensor_collocation_axis(coll_z, coeffs, axis=2)
-    return e @ coeffs.reshape(-1)
+    return _conforming_restriction(e, coeffs.reshape(-1))
 
 
 def _twoform_pullback(seq, v, frame: str = 'phys'):
@@ -367,21 +469,21 @@ def _full_oneform_histopolation_dofs(seq, v, frame: str = 'phys'):
     pullback = _oneform_pullback(seq, v, frame)
 
     def integrate_component_0(span_r, t_val, z_val):
-        xs_r, ws_r = _interval_rule(span_r, q_r)
+        xs_r, ws_r = _interval_rule(span_r, q_r, d_r.T)
         x = jnp.stack([xs_r, jnp.full(xs_r.shape, t_val),
                         jnp.full(xs_r.shape, z_val)], axis=-1)
         vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 0]
         return jnp.sum(vals * ws_r)
 
     def integrate_component_1(r_val, span_t, z_val):
-        xs_t, ws_t = _interval_rule(span_t, q_t)
+        xs_t, ws_t = _interval_rule(span_t, q_t, d_t.T)
         x = jnp.stack([jnp.full(xs_t.shape, r_val), xs_t,
                         jnp.full(xs_t.shape, z_val)], axis=-1)
         vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 1]
         return jnp.sum(vals * ws_t)
 
     def integrate_component_2(r_val, t_val, span_z):
-        xs_z, ws_z = _interval_rule(span_z, q_z)
+        xs_z, ws_z = _interval_rule(span_z, q_z, d_z.T)
         x = jnp.stack([jnp.full(xs_z.shape, r_val),
                         jnp.full(xs_z.shape, t_val), xs_z], axis=-1)
         vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 2]
@@ -434,7 +536,8 @@ def _histopolate_1form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     c2 = _solve_tensor_collocation_axis(coll_t, c2, axis=1)
     c2 = _solve_tensor_collocation_axis(hist_z, c2, axis=2)
 
-    return e @ jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)])
+    return _conforming_restriction(
+        e, jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)]))
 
 
 def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
@@ -471,8 +574,8 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     def int0(r_val, span_t, span_z):
         q_t = _quadrature_order_from_basis_1d(d_t.s)
         q_z = _quadrature_order_from_basis_1d(d_z.s)
-        xs_t, ws_t = _interval_rule(span_t, q_t)
-        xs_z, ws_z = _interval_rule(span_z, q_z)
+        xs_t, ws_t = _interval_rule(span_t, q_t, d_t.T)
+        xs_z, ws_z = _interval_rule(span_z, q_z, d_z.T)
         tt, zz = jnp.meshgrid(xs_t, xs_z, indexing='ij')
         x = jnp.stack([jnp.full(tt.size, r_val), tt.ravel(), zz.ravel()], axis=-1)
         vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 0]
@@ -481,8 +584,8 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     def int1(span_r, t_val, span_z):
         q_r = _quadrature_order_from_basis_1d(d_r.s)
         q_z = _quadrature_order_from_basis_1d(d_z.s)
-        xs_r, ws_r = _interval_rule(span_r, q_r)
-        xs_z, ws_z = _interval_rule(span_z, q_z)
+        xs_r, ws_r = _interval_rule(span_r, q_r, d_r.T)
+        xs_z, ws_z = _interval_rule(span_z, q_z, d_z.T)
         rr, zz = jnp.meshgrid(xs_r, xs_z, indexing='ij')
         x = jnp.stack([rr.ravel(), jnp.full(rr.size, t_val), zz.ravel()], axis=-1)
         vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 1]
@@ -491,8 +594,8 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     def int2(span_r, span_t, z_val):
         q_r = _quadrature_order_from_basis_1d(d_r.s)
         q_t = _quadrature_order_from_basis_1d(d_t.s)
-        xs_r, ws_r = _interval_rule(span_r, q_r)
-        xs_t, ws_t = _interval_rule(span_t, q_t)
+        xs_r, ws_r = _interval_rule(span_r, q_r, d_r.T)
+        xs_t, ws_t = _interval_rule(span_t, q_t, d_t.T)
         rr, tt = jnp.meshgrid(xs_r, xs_t, indexing='ij')
         x = jnp.stack([rr.ravel(), tt.ravel(), jnp.full(rr.size, z_val)], axis=-1)
         vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 2]
@@ -523,7 +626,8 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     c2 = _solve_tensor_collocation_axis(hist_t, c2, axis=1)
     c2 = _solve_tensor_collocation_axis(coll_z, c2, axis=2)
 
-    return e @ jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)])
+    return _conforming_restriction(
+        e, jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)]))
 
 
 def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
@@ -547,9 +651,9 @@ def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
         q_r = _quadrature_order_from_basis_1d(d_r.s)
         q_t = _quadrature_order_from_basis_1d(d_t.s)
         q_z = _quadrature_order_from_basis_1d(d_z.s)
-        xs_r, ws_r = _interval_rule(span_r, q_r)
-        xs_t, ws_t = _interval_rule(span_t, q_t)
-        xs_z, ws_z = _interval_rule(span_z, q_z)
+        xs_r, ws_r = _interval_rule(span_r, q_r, d_r.T)
+        xs_t, ws_t = _interval_rule(span_t, q_t, d_t.T)
+        xs_z, ws_z = _interval_rule(span_z, q_z, d_z.T)
         rr, tt, zz = jnp.meshgrid(xs_r, xs_t, xs_z, indexing='ij')
         x = jnp.stack([rr.ravel(), tt.ravel(), zz.ravel()], axis=-1)
         values = jax.lax.map(
@@ -567,7 +671,7 @@ def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
     coeffs = _solve_tensor_collocation_axis(hist_r, moments, axis=0)
     coeffs = _solve_tensor_collocation_axis(hist_t, coeffs, axis=1)
     coeffs = _solve_tensor_collocation_axis(hist_z, coeffs, axis=2)
-    return e @ coeffs.reshape(-1)
+    return _conforming_restriction(e, coeffs.reshape(-1))
 
 
 # TODO: requires testing still

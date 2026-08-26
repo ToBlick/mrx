@@ -101,6 +101,36 @@ def test_histopolation_de_rham_clamped():
     )
 
 
+@pytest.mark.parametrize("p", [2, 3, 4])
+def test_histopolation_de_rham_periodic(p):
+    """Greville histopolation and the periodic coboundary commute, at BOTH parities.
+
+    The parity matters: periodic Greville points sit ON knots for odd p and
+    HALFWAY between knots for even p, so at even p the last sorted span is
+    ``[1 - h/2, 1 + h/2]`` and crosses the period seam.  ``SplineBasis.evaluate``
+    does not extend periodically past ``x = 1`` (the image of basis function
+    ``p - 1`` is missing from the extended knot vector), so the matrix has to
+    wrap its quadrature points.  Before it did, the seam row was wrong at even p
+    and ``interpolate`` was not a projector at k >= 1.  The right-hand side
+    below evaluates the spline itself at WRAPPED span endpoints, so it is the
+    periodic ground truth independent of any quadrature.
+    """
+    spl = SplineBasis(N, p, "periodic")
+    dspl = DerivativeSpline(spl)
+    hist = dspl.histopolation_matrix()
+    spans = dspl.greville_spans()
+    coeffs = jnp.cos(2 * jnp.pi * jnp.arange(spl.n) / spl.n) + 0.3
+    # d/dx sum_i c_i B_i = sum_j (c_{j+1} - c_j) D_j  (periodic indexing)
+    d_coeffs = jnp.roll(coeffs, -1) - coeffs
+
+    def s(x):
+        return jnp.sum(jax.vmap(lambda i: spl(jnp.mod(x, 1.0), i))(spl.ns) * coeffs)
+
+    span_integrals = jax.vmap(lambda ab: s(ab[1]) - s(ab[0]))(spans)
+    npt.assert_allclose(hist @ d_coeffs, span_integrals, atol=1e-12)
+    npt.assert_allclose(jnp.linalg.solve(hist, span_integrals), d_coeffs, atol=1e-12)
+
+
 @pytest.mark.parametrize("typ", ["clamped", "periodic"])
 def test_autodiff_agrees_with_derivative_spline(typ):
     """Autodiff derivative of a spline function equals its expansion in the derivative basis.

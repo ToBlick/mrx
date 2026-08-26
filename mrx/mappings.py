@@ -181,53 +181,6 @@ def stellarator_map(R: DiscreteFunction, Z: DiscreteFunction, nfp: int = 3, flip
     return F
 
 
-def approx_inverse_map(y: jnp.ndarray, eps: float, R0: float = 1.0) -> jnp.ndarray:
-    """Approximate inverse of ``toroid_map`` for a circular cross-section.
-
-    Args:
-        y: Cartesian coordinates ``(X, Y, Z)``.
-        eps: Minor radius (same as ``epsilon`` in :func:`toroid_map`).
-        R0: Major radius.
-    """
-    X, Y, Z = y
-    R = jnp.sqrt(X**2 + Y**2)
-    ζ = (jnp.arctan2(-Y, X) / (2 * pi)) % 1.0
-    r = jnp.sqrt(((R - R0) / eps)**2 + (Z / (eps))**2)
-    θ = (jnp.arctan2(Z / (eps * r), (R - R0) / (eps * r)) / (2 * pi)) % 1.0
-    return jnp.array([r, θ, ζ])
-
-
-def invert_map(
-        f: Callable, y_target: jnp.ndarray,
-        x0_fn: Callable, tol: float = 1e-10, max_iter: int = 50) -> jnp.ndarray:
-    """Invert ``f`` at ``y_target`` via Newton's method.
-
-    Args:
-        f: Map to invert.
-        y_target: Target physical coordinates.
-        x0_fn: Returns an initial guess ``x0`` given ``y_target``.
-        tol: Convergence tolerance on the residual norm.
-        max_iter: Maximum Newton iterations.
-    """
-    def cond_fn(state: tuple[jnp.ndarray, float, int]) -> jnp.ndarray:
-        x, err, i = state
-        return jnp.logical_and(err > tol, i < max_iter)
-
-    def body_fn(state: tuple[jnp.ndarray, float, int]) -> tuple[jnp.ndarray, float, int]:
-        x, _, i = state
-        r = f(x) - y_target
-        J = jax.jacobian(f)(x)
-        dx = jnp.linalg.solve(J, -r)
-        x_new = x + dx
-        err = jnp.linalg.norm(r)
-        return (x_new, err, i + 1)
-
-    x0 = x0_fn(y_target)
-    init_state = (x0, jnp.inf, 0)
-    x_final, err_final, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
-    return x_final
-
-
 def extend_map_nfp(Phi, nfp):
     """Extend a single-field-period map to the full ``nfp``-period torus.
 

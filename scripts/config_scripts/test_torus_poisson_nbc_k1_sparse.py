@@ -60,8 +60,8 @@ DIRICHLET = False
 # ---------------------------------------------------------------------------
 # Source functions
 # ---------------------------------------------------------------------------
-def make_f1_ref(a: float):
-    """f₁ = df₀ in reference covariant components (no DF transform needed)."""
+def make_f1_cov(a: float):
+    """f₁ = df₀ in reference COVARIANT components. The physics; not a load."""
     def f(x):
         r, chi, z = x
         R = 1.0 + a * r * jnp.cos(2 * π * chi)
@@ -72,12 +72,42 @@ def make_f1_ref(a: float):
     return f
 
 
-def make_f1_phys(a: float, F):
-    """f₁_phys = DF @ f₁_ref; load applies DF⁻¹, recovering f₁_ref."""
+# ---------------------------------------------------------------------------
+# Frame adapters.  NEITHER frame takes the bare covariant components.
+#
+# `load` pairs its argument directly against the basis with weight w*J, while
+# M₁ = ∫ Λᵀ G⁻¹ Λ J. So recovering a primal covariant ω from M₁⁻¹·load needs
+# the load integrand to be G⁻¹ω, not ω.
+#
+# These two helpers previously INVERTED load's internal pullback (f₁_phys was
+# DF @ f₁_ref, so load's DF⁻¹ handed the bare components straight back). That
+# made both frames agree with each other and both wrong by one factor of the
+# metric -- which does not vanish under refinement, so the study reported a FLAT
+# relative L2 error of 3.7256e+01 at n=6/8/10 with MINRES converged=True.
+# Measured fix: 8.564e-03 at n=6 and 3.244e-03 at n=8, order ~3.4
+# (scripts/debug/poisson_rhs_frame_probe.py, job 16775777). Both corrected
+# frames agree to 7 digits, as they must.
+# ---------------------------------------------------------------------------
+def make_f1_ref(a: float, F):
+    """G⁻¹ f₁_cov — what load(frame='ref') pairs against the k=1 basis."""
     DF = jax.jacfwd(F)
-    f1r = make_f1_ref(a)
+    f1c = make_f1_cov(a)
     def f(x):
-        return DF(x) @ f1r(x)
+        dF = DF(x)
+        return jnp.linalg.solve(dF.T @ dF, f1c(x))
+    return f
+
+
+def make_f1_phys(a: float, F):
+    """DF⁻ᵀ f₁_cov — the true physical proxy of a covariant 1-form.
+
+    load(frame='phys') then forms G⁻¹DFᵀ·DF⁻ᵀf₁_cov = G⁻¹f₁_cov, matching
+    make_f1_ref above.
+    """
+    DF = jax.jacfwd(F)
+    f1c = make_f1_cov(a)
+    def f(x):
+        return jnp.linalg.solve(DF(x).T, f1c(x))
     return f
 
 
@@ -103,7 +133,7 @@ def compute_error(n: int, p: int, epsilon: float,
     q = 2 * p + quad_order_offset if quad_order is None else quad_order
 
     F = toroid_map(epsilon=epsilon)
-    f1 = make_f1_ref(epsilon) if load_frame == 'ref' else make_f1_phys(epsilon, F)
+    f1 = make_f1_ref(epsilon, F) if load_frame == 'ref' else make_f1_phys(epsilon, F)
 
     # --- Sequence setup ------------------------------------------------
     t0 = time.perf_counter()
