@@ -19,7 +19,8 @@ import mrx  # noqa: F401
 from mrx.derham_sequence import DeRhamSequence
 from mrx.extraction_operators import get_xi
 from mrx.local_assembly import (
-    build_extracted_stiffness_diagonal_k0, build_matrixfree_mass_apply,
+    build_codifferential_diagonal, build_extracted_stiffness_diagonal_k0,
+    build_matrixfree_mass_apply, build_stiffness_diagonal,
 )
 from mrx.mappings import toroid_map
 from mrx.operators import (
@@ -80,6 +81,18 @@ def bench_k0_diag(seq):
               f"(n={d.shape[0]})")
 
 
+def bench_diag_builders(seq):
+    for k in (0, 1, 2):
+        build_stiffness_diagonal(seq, k).block_until_ready()
+        t0 = time.perf_counter()
+        build_stiffness_diagonal(seq, k).block_until_ready()
+        print(f"  build_stiffness_diagonal k={k}: {1e3 * (time.perf_counter() - t0):.1f} ms")
+    build_codifferential_diagonal(seq, 3).block_until_ready()
+    t0 = time.perf_counter()
+    build_codifferential_diagonal(seq, 3).block_until_ready()
+    print(f"  build_codifferential_diagonal k=3: {1e3 * (time.perf_counter() - t0):.1f} ms")
+
+
 def bench_diag_probe(seq):
     ops = assemble_incidence_operators(seq)
     for k in (0, 1):
@@ -95,7 +108,7 @@ def bench_diag_probe(seq):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--what", default="all",
-                    choices=("all", "mass", "stencil", "k0diag", "probe"))
+                    choices=("all", "mass", "stencil", "k0diag", "diag", "probe"))
     ap.add_argument("--reps", type=int, default=50)
     ap.add_argument("--cases", default="small,large")
     args = ap.parse_args()
@@ -114,6 +127,9 @@ def main():
         if args.what in ("all", "k0diag"):
             print("k=0 extracted stiffness diagonal:")
             bench_k0_diag(seq)
+        if args.what in ("all", "diag"):
+            print("closed-form diagonal builders:")
+            bench_diag_builders(seq)
         if args.what in ("all", "probe"):
             print("sequential diagonal probe:")
             bench_diag_probe(seq)

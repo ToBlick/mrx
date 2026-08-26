@@ -26,6 +26,7 @@ import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
+import mrx
 from mrx.geometry import grad_1d
 
 __all__ = [
@@ -654,8 +655,6 @@ def _jacobian_gradient(seq, geometry, batch_size=None):
     what the geometry build costs.  Batched, because the unbatched vmap over the
     full quad grid is what OOMs an 80 GB card on W7-X.
     """
-    import mrx  # noqa: PLC0415
-
     if batch_size is None:
         batch_size = mrx.MAP_BATCH_SIZE_INNER
     def jdet(x):
@@ -782,7 +781,7 @@ def build_extracted_stiffness_diagonal_k0(seq, dirichlet: bool):
     vals = np.asarray(e.vals)
     counts = np.bincount(rows, minlength=n_ext)
 
-    diag = np.zeros(n_ext, dtype=np.float64)
+    diag = np.zeros(n_ext, dtype=mrx.DTYPE)
 
     # --- bulk rows: pure selectors, straight from the raw closed form --------
     d_raw = np.asarray(build_stiffness_diagonal(seq, 0))
@@ -812,23 +811,32 @@ def build_extracted_stiffness_diagonal_k0(seq, dirichlet: bool):
     wt = np.asarray(seq.quad.w_y)
     wz = np.asarray(seq.quad.w_z)
 
+    # zeta stays a 1D factor of every polar row, so the zeta contraction of
+    # the weight is done once for every (a, b) and every zeta basis index m:
+    #   F[a][b][m] = sum_s W[..., a, b] wz Y_a[m] Y_b[m]
+    Yz = (Zt, Zt, Zd)
+    F = [[np.einsum('qrs,ms->mqr', W[..., a, b] * wz, Yz[a] * Yz[b])
+          for b in range(3)] for a in range(3)]
+
     nt, nzb = seq.basis_0.nt, seq.basis_0.nz
-    for i in polar:
-        sel = rows == i
-        c, v = cols[sel], vals[sel]
+    # Group the triplets by row once (stable, so each row keeps its original
+    # triplet order) instead of scanning every triplet per polar row.
+    order = np.argsort(rows, kind="stable")
+    lo = np.searchsorted(rows[order], polar, side="left")
+    hi = np.searchsorted(rows[order], polar, side="right")
+    for i, a, b in zip(polar, lo, hi):
+        c, v = cols[order[a:b]], vals[order[a:b]]
         ir, it, iz = c // (nt * nzb), (c // nzb) % nt, c % nzb
         m = int(iz[0])
-        # 2D (r,theta) shape and its partials; zeta stays a 1D factor.
+        # 2D (r,theta) shape and its partials.
         X = (np.einsum('a,aq,ar->qr', v, Rd[ir], Tt[it]),
              np.einsum('a,aq,ar->qr', v, Rt[ir], Td[it]),
              np.einsum('a,aq,ar->qr', v, Rt[ir], Tt[it]))
-        Y = (Zt[m], Zt[m], Zd[m])
         total = 0.0
         for a in range(3):
             for b in range(3):
-                # contract zeta first, then the (r,theta) plane
-                F = np.einsum('qrs,s,s,s->qr', W[..., a, b], wz, Y[a], Y[b])
-                total += float(np.einsum('qr,q,r,qr->', X[a] * X[b], wr, wt, F))
+                total += float(np.einsum('qr,q,r,qr->', X[a] * X[b], wr, wt,
+                                         F[a][b][m]))
         diag[i] = total
     return jnp.asarray(diag)
 

@@ -33,6 +33,7 @@ from mrx.preconditioners import (
     set_mass_jacobi_pair,
 )
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
+import mrx
 def _nullspace_vectors(operators, k: int, dirichlet: bool):
     """Return the stacked nullspace array for ``(k, dirichlet)``."""
     from mrx.nullspace import get_nullspace
@@ -479,14 +480,16 @@ def _restrict_radial_window(raw_matrix: jnp.ndarray, radial_start: int,
 
 
 def _assemble_dense_from_apply(apply, size: int, *, sequential: bool = False) -> jnp.ndarray:
-    basis = jnp.eye(size, dtype=jnp.float64)
+    def column(j):
+        return apply(jnp.zeros(size, dtype=mrx.DTYPE).at[j].set(1.0))
+
     if sequential:
-        # Probe one column at a time. ``vmap`` batches every transient of the
-        # probed apply by ``size``; for a matrix-free (sum-factorized) operator
-        # the per-apply transient is a dense ``(ne, q, q, q)`` tensor, so the
-        # batched peak is ``size``x larger and overflows device memory at high
-        # resolution. ``lax.map`` evaluates the columns sequentially, keeping
-        # the peak to a single apply at the cost of a serial build.
+        # Probe a few columns at a time. ``vmap`` batches every transient of
+        # the probed apply by ``size``; for a matrix-free (sum-factorized)
+        # operator the per-apply transient is a dense ``(ne, q, q, q)`` tensor,
+        # so the fully batched peak is ``size``x larger and overflows device
+        # memory at high resolution. ``lax.map`` with a small batch keeps the
+        # peak to a few applies at the cost of a mostly serial build.
         #
         # One eager warmup call first: ``apply`` may build host-side static
         # state lazily (e.g. the matrix-free mass index plan, which converts
@@ -495,10 +498,10 @@ def _assemble_dense_from_apply(apply, size: int, *, sequential: bool = False) ->
         # ``TracerArrayConversionError``. The eager call builds and caches that
         # state with concrete arrays, after which ``lax.map`` only re-invokes
         # the already-jitted apply.
-        apply(basis[0])
-        cols = jax.lax.map(apply, basis)  # cols[j] = apply(e_j)
+        column(0)
+        cols = jax.lax.map(column, jnp.arange(size), batch_size=16)
         return cols.T
-    return jax.vmap(apply, in_axes=1, out_axes=1)(basis)
+    return jax.vmap(column, out_axes=1)(jnp.arange(size))
 
 
 def _normalize_cp_term_signs(
@@ -543,7 +546,7 @@ def _k0_bundled_axis_profiles(seq):
     pz = jnp.einsum('qrs,q,r->s', w22, wx_cut, wy) / (sxc * sy)
 
     def clip(v):
-        return jnp.maximum(v, 1e-8 * jnp.abs(jnp.median(v)))
+        return jnp.maximum(v, mrx.sqrt_eps(0.67) * jnp.abs(jnp.median(v)))
 
     return clip(pr), clip(pt), clip(pz)
 
@@ -586,8 +589,8 @@ def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool):
         "bulk_shape": bulk_shape,
         "bulk_V_r": V_r, "bulk_V_t": V_t, "bulk_V_z": V_z,
         "bulk_lam_r": lam_r, "bulk_lam_t": lam_t, "bulk_lam_z": lam_z,
-        "bulk_alpha": jnp.ones((3,), dtype=jnp.float64),
-        "bulk_greville_inv_sqrt_D": jnp.ones(bulk_shape, dtype=jnp.float64),
+        "bulk_alpha": jnp.ones((3,), dtype=mrx.DTYPE),
+        "bulk_greville_inv_sqrt_D": jnp.ones(bulk_shape, dtype=mrx.DTYPE),
     }
 
 
@@ -857,7 +860,7 @@ def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0)
         # to the largest entry so we don't amplify it into a huge spurious
         # negative direction.
         denom_max = jnp.max(jnp.abs(denom))
-        null_mask = jnp.abs(denom) < 1e-10 * denom_max
+        null_mask = jnp.abs(denom) < mrx.sqrt_eps(6.7e-3) * denom_max
         safe = jnp.where(null_mask, 1.0, denom)
         y = jnp.where(null_mask, 0.0, y / safe)
     else:
@@ -1495,16 +1498,36 @@ class _StencilTriplets:
 
     def bcsr(self, shape):
         import scipy.sparse as _sps
-        coo = _sps.coo_matrix(
+        csr = _sps.coo_matrix(
             (np.concatenate(self.data),
              (np.concatenate(self.rows).astype(np.int32),
               np.concatenate(self.cols).astype(np.int32))),
-            shape=shape).tocsr().tocoo()
-        bcoo = jsparse.BCOO(
-            (jnp.asarray(coo.data),
-             jnp.asarray(np.stack([coo.row, coo.col], axis=1))),
-            shape=shape)
-        return jsparse.BCSR.from_bcoo(bcoo)
+            shape=shape).tocsr()
+        return _bcsr_from_csr(csr)
+
+
+def _bcsr_from_csr(csr):
+    """Device ``BCSR`` from a canonical (sorted, duplicate-free) scipy CSR.
+
+    Built from the host arrays directly: ``BCSR.from_bcoo`` is a jitted
+    conversion that compiles once per matrix shape, which for the four
+    boundary-condition variants of two stencils is most of the build time.
+    """
+    csr.sum_duplicates()
+    return jsparse.BCSR(
+        (jnp.asarray(csr.data), jnp.asarray(csr.indices.astype(np.int32)),
+         jnp.asarray(csr.indptr.astype(np.int32))),
+        shape=tuple(int(s) for s in csr.shape),
+        indices_sorted=True, unique_indices=True)
+
+
+def _bcsr_transpose(m):
+    """Transpose a host-buildable ``BCSR`` through scipy (no device compile)."""
+    import scipy.sparse as _sps
+    csr = _sps.csr_matrix(
+        (np.asarray(m.data), np.asarray(m.indices), np.asarray(m.indptr)),
+        shape=tuple(int(s) for s in m.shape))
+    return _bcsr_from_csr(csr.T.tocsr())
 
 
 def build_grad_stencil_g0(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
@@ -1826,7 +1849,7 @@ def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = N
                 g0 = build_grad_stencil_g0(seq, xi, din, dout)
                 base = f"g0_grad_{int(din)}{int(dout)}"
                 gfields += [base, base + "_T"]
-                gvals += [g0, jsparse.BCSR.from_bcoo(g0.to_bcoo().T)]
+                gvals += [g0, _bcsr_transpose(g0)]
         operators = eqx.tree_at(
             lambda o: tuple(getattr(o, f) for f in gfields),
             operators, tuple(gvals),
@@ -1846,7 +1869,7 @@ def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = N
                 g1 = build_curl_stencil_g1(seq, xi, din, dout)
                 base = f"g1_curl_{int(din)}{int(dout)}"
                 cfields += [base, base + "_T"]
-                cvals += [g1, jsparse.BCSR.from_bcoo(g1.to_bcoo().T)]
+                cvals += [g1, _bcsr_transpose(g1)]
         operators = eqx.tree_at(
             lambda o: tuple(getattr(o, f) for f in cfields),
             operators, tuple(cvals),
@@ -2561,32 +2584,34 @@ def apply_stiffness(seq, operators: SequenceOperators, v, k: int, dirichlet: boo
 
 
 def _diagonal_from_matvec(operator_apply, size: int):
-    """Probe ``diag(A)`` one column at a time via ``jax.lax.map``.
+    """Probe ``diag(A)`` 16 columns at a time via ``jax.lax.map``.
 
-    DO NOT batch this with ``vmap`` over chunks of canonical basis vectors, the
-    way :func:`mrx.preconditioners.diag_matvec` does. It was tried on 2026-08-17
-    and crashes the CUDA toolchain: the batched kernel fuses into a large
-    transpose that spills registers and ptxas exits with an internal compiler
-    error (``ptxas fatal: Internal compiler error``, 94 test errors, all inside
-    the ``lax.while_loop`` in ``nullspace.find_nullspace_vectors``). The
-    sequential map keeps each kernel small enough to compile.
+    DO NOT batch this with a full ``vmap`` over chunks of canonical basis
+    vectors, the way :func:`mrx.preconditioners.diag_matvec` does. It was
+    tried on 2026-08-17 and crashes the CUDA toolchain: the batched kernel
+    fuses into a large transpose that spills registers and ptxas exits with an
+    internal compiler error (``ptxas fatal: Internal compiler error``, 94 test
+    errors, all inside the ``lax.while_loop`` in
+    ``nullspace.find_nullspace_vectors``). ``batch_size=16`` keeps each kernel
+    small enough to compile (clean on the nullspace tests 2026-08-26) and is
+    1.3-2x faster than the fully sequential map.
     """
     # Eager warmup: operator_apply may lazily build host-side static state
     # (e.g. matrix-free mass index plans that call np.asarray internally).
     # Under lax.map the body is traced as a scan, so those calls would see
     # tracers and raise TracerArrayConversionError.  One concrete call first
     # forces that state to be built and cached before the traced loop runs.
-    operator_apply(jnp.zeros(size, dtype=jnp.float64))
+    operator_apply(jnp.zeros(size, dtype=mrx.DTYPE))
 
     def entry(i):
-        basis = jnp.zeros(size, dtype=jnp.float64).at[i].set(1.0)
+        basis = jnp.zeros(size, dtype=mrx.DTYPE).at[i].set(1.0)
         return operator_apply(basis)[i]
 
-    return jax.lax.map(entry, jnp.arange(size))
+    return jax.lax.map(entry, jnp.arange(size), batch_size=16)
 
 
 def _invert_diagonal(diagonal):
-    diagonal = jnp.asarray(diagonal, dtype=jnp.float64)
+    diagonal = jnp.asarray(diagonal, dtype=mrx.DTYPE)
     return jnp.where(diagonal != 0.0, 1.0 / diagonal, 0.0)
 
 
