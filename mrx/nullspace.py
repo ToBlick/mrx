@@ -11,6 +11,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+import mrx
 from mrx.preconditioners import (
     MassPreconditionerSpec,
     SaddlePointPreconditionerSpec,
@@ -140,7 +141,7 @@ def get_saddle_point_nullspaces(seq, operators, k, dirichlet):
     return vs_upper, vs_lower
 
 
-def get_stiffness_nullspace(seq, operators, k, dirichlet, *, tol=1e-10):
+def get_stiffness_nullspace(seq, operators, k, dirichlet, *, tol=None):
     """Return a mass-orthonormal basis for ``ker(K_k)``.
 
     For the pure stiffness blocks,
@@ -156,7 +157,12 @@ def get_stiffness_nullspace(seq, operators, k, dirichlet, *, tol=1e-10):
 
     This avoids the dense extracted helper matrices, although it still builds
     a small dense Gram matrix on the domain-space side for rank detection.
+    ``tol`` is the relative rank cut on the Gram eigenvalues (and the floor
+    on the norm of a harmonic vector after projection); it defaults to
+    ``mrx.sqrt_eps(1e-2)``.
     """
+    if tol is None:
+        tol = mrx.sqrt_eps(1e-2)
     if k not in (1, 2):
         raise ValueError(
             f"Stiffness nullspace helper only supports k=1 or k=2 (got k={k})"
@@ -181,12 +187,17 @@ def get_stiffness_nullspace(seq, operators, k, dirichlet, *, tol=1e-10):
         return seq.apply_mass_matrix(v, k, dirichlet=dirichlet, operators=operators)
 
     n_prev = _dof_count(seq, k - 1, dirichlet)
-    basis_prev = jnp.eye(n_prev, dtype=jnp.float64)
-    strong = jax.vmap(strong_apply)(basis_prev).T
-    mass_strong = jax.vmap(mass_apply, in_axes=1, out_axes=1)(strong)
+    # Probe the strong derivative on the unit vectors, built on the fly and
+    # in bounded batches: each column is a mass solve, so a full vmap over
+    # all n_prev columns holds n_prev Krylov states at once.
+    strong = jax.lax.map(
+        lambda i: strong_apply(jnp.zeros(n_prev, dtype=mrx.DTYPE).at[i].set(1.0)),
+        jnp.arange(n_prev), batch_size=mrx.MAP_BATCH_SIZE_INNER).T
+    mass_strong = jax.lax.map(
+        mass_apply, strong.T, batch_size=mrx.MAP_BATCH_SIZE_INNER).T
     gram = strong.T @ mass_strong
     if gram.size == 0:
-        exact_basis = jnp.zeros((0, _dof_count(seq, k, dirichlet)), dtype=jnp.float64)
+        exact_basis = jnp.zeros((0, _dof_count(seq, k, dirichlet)), dtype=mrx.DTYPE)
     else:
         eigvals, eigvecs = jnp.linalg.eigh(gram)
         scale = jnp.max(jnp.abs(eigvals)) if eigvals.size > 0 else jnp.asarray(0.0, dtype=strong.dtype)
@@ -549,7 +560,7 @@ def _logical_constant_seed(seq, operators, k, dirichlet, components):
     no ``1/R``, no physical frame, and no sampling of a Cartesian field (so no
     exposure to the zeta = 0 quasi-periodicity seam).
     """
-    comps = jnp.asarray(components, dtype=jnp.float64)
+    comps = jnp.asarray(components, dtype=mrx.DTYPE)
     return seq.apply_inverse_mass_matrix(
         seq.load(lambda x_hat: comps, k, dirichlet=dirichlet, frame='ref'),
         k, dirichlet=dirichlet, operators=operators)
@@ -772,10 +783,18 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             v0 = x0s[idx]
         else:
             v0 = jax.random.normal(jax.random.PRNGKey(idx), (n,))
-        # M-orthogonalise against already-found vectors.
-        for u in found:
-            v0 = v0 - (u @ seq.apply_mass_matrix(
-                v0, k, dirichlet=dirichlet, operators=operators)) * u
+        # M-orthogonalise against already-found vectors: one mass apply for
+        # all of them (they are M-orthonormal, so the projections commute).
+        found_stacked = jnp.stack(found) if found else None
+
+        def project_out(v):
+            if found_stacked is None:
+                return v
+            coeffs = found_stacked @ seq.apply_mass_matrix(
+                v, k, dirichlet=dirichlet, operators=operators)
+            return v - coeffs @ found_stacked
+
+        v0 = project_out(v0)
         v0 = v0 / seq.l2_norm(v0, k, dirichlet=dirichlet)
 
         # Early exit if the initial guess is already harmonic to tolerance,
@@ -837,9 +856,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
                 preconditioner=shifted_preconditioner,
                 tol=inner_tol,
                 use_harmonic_coarse=slot_coarse)
-            for u in found:
-                w = w - (u @ seq.apply_mass_matrix(
-                    w, k, dirichlet=dirichlet, operators=operators)) * u
+            w = project_out(w)
             w = w / seq.l2_norm(w, k, dirichlet=dirichlet)
             Lw = seq.apply_hodge_laplacian(
                 w, k, dirichlet=dirichlet, operators=operators)

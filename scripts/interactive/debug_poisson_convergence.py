@@ -45,7 +45,6 @@ import jax
 import jax.numpy as jnp
 
 import mrx
-from mrx.assembly import assemble_hodge_laplacian as assemble_hodge_laplacian_tp
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import toroid_map
 from mrx.operators import assemble_tensor_mass_preconditioner

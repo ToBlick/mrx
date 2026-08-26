@@ -97,16 +97,7 @@ seq.assemble_all_sparse()
 # %%
 seq.compute_nullspaces()
 
-# lsq_weights = jax.vmap(jacobian_determinant(map))(pts)
-# lambda_interpol = interpolate_scalar_function(pts, lambda_vals, seq, lsq_weights, rcond=None)
-# pressure_interpol = interpolate_scalar_function(pts, p_vals, seq, lsq_weights, rcond=None)
-# phi_interpol = interpolate_scalar_function(pts, phi_vals, seq, lsq_weights, rcond=None)
-# chi_interpol = interpolate_scalar_function(pts, chi_vals, seq, lsq_weights, rcond=None)
 
-# p_h = jax.jit(DiscreteFunction(pressure_interpol["dof"], seq.basis_0, seq.e0))
-# phi_h = jax.jit(DiscreteFunction(phi_interpol["dof"], seq.basis_0, seq.e0))
-# chi_h = jax.jit(DiscreteFunction(chi_interpol["dof"], seq.basis_0, seq.e0))
-# lambda_h = jax.jit(DiscreteFunction(lambda_interpol["dof"], seq.basis_0, seq.e0))
 
 # %%
 m1_dense = seq.e1_dbc.todense() @ seq.m1.todense() @ seq.e1_dbc_T.todense()
