@@ -2079,7 +2079,10 @@ def _build_schur_apply_from_saddle_preconditioner(
     # The weak term B_{k-1} standing in for M_{k-1}^{-1}. Builds on demand, so
     # this cannot fail for want of a prior assemble_*.
     pre = _mass_metric_lumping_for(seq, operators, k - 1, dirichlet)
-    schur_inner = (lambda x, pre=pre: pre.apply(x))
+
+    def schur_inner(x, pre=pre):
+        return pre.apply(x)
+
     return _build_schur_operator_apply(
         seq,
         operators,
@@ -2698,7 +2701,9 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
             # reuse it to avoid repeated probe builds.
             allow_stored_tensor_diaginv=True,
         )
-        precond_upper = lambda x, d=schur_diaginv: d * x
+
+        def precond_upper(x, d=schur_diaginv):
+            return d * x
     else:
         schur_apply = _build_schur_apply_from_saddle_preconditioner(
             seq,
@@ -2732,8 +2737,10 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
         precond_with_coarse = _wrap_shifted_harmonic_coarse_correction(
             seq, operators, precond_upper, eps, k, dirichlet)
         precond_no_coarse = precond_upper
-        precond_upper = lambda x, r=coarse_ready, a=precond_with_coarse, b=precond_no_coarse: (
-            jax.lax.cond(r, a, b, x))
+
+        def precond_upper(x, r=coarse_ready, a=precond_with_coarse,
+                          b=precond_no_coarse):
+            return jax.lax.cond(r, a, b, x)
 
     precond_matvec = (
         _build_coupled_saddle_preconditioner(

@@ -307,7 +307,9 @@ def test_defaults_are_the_production_configuration(torus_seq):
         # ~1e-14), which is also the residual every inertness test above sees.
         twin = MetricLumpingLaplacian(torus_seq, ops, 1, False)
 
-    probe = lambda pre: np.stack([np.asarray(pre.apply(v)) for v in vecs])
+    def probe(pre):
+        return np.stack([np.asarray(pre.apply(v)) for v in vecs])
+
     floor = _rel(probe(twin), probe(bare))
     assert floor < INERT, (
         f"two identical builds differ by {floor:.2e}, above the {INERT:.0e} "

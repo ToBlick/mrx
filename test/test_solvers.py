@@ -40,11 +40,10 @@ _b = jnp.asarray(_RNG.standard_normal(_N))
 _x_exact = jnp.asarray(np.linalg.solve(_A, np.asarray(_b)))
 
 _A_jax = jnp.asarray(_A)
-_A_matvec = lambda x: _A_jax @ x
 
-# Jacobi preconditioner for _A
-_M_inv_diag = jnp.asarray(1.0 / np.diag(_A))
-_M_inv = lambda x: _M_inv_diag * x
+
+def _A_matvec(x):
+    return _A_jax @ x
 
 # ---------------------------------------------------------------------------
 # preconditioned_cg
@@ -107,7 +106,6 @@ def test_minres_symmetric_indefinite():
     n = 20
     A_indef = jnp.asarray(_symmetric_indefinite(n, rng, shift=1.5))
     b = jnp.asarray(rng.standard_normal(n))
-    x_exact = jnp.asarray(np.linalg.solve(np.asarray(A_indef), np.asarray(b)))
     tol = 1e-7
     x, info = minres(lambda v: A_indef @ v, b, tol=tol, maxiter=20 * n)
     res = float(jnp.linalg.norm(A_indef @ x - b))
