@@ -1,3 +1,4 @@
+"""Element assembly kernels, 1D basis tables at quadrature points, and the Leray projection operators."""
 # %%
 import jax.experimental.sparse as jsparse
 import jax.numpy as jnp

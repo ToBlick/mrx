@@ -1,3 +1,4 @@
+"""Energy-descent relaxation of a 2-form magnetic field at fixed helicity: force, time stepper, and diagnostics."""
 # %%
 from enum import Enum
 from typing import Callable, Literal, Optional

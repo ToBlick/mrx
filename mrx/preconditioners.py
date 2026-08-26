@@ -1,3 +1,4 @@
+"""Preconditioner specifications, Jacobi and metric-lumping mass preconditioners, and diagonal extraction."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dataclass_field

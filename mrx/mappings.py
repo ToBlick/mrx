@@ -1,3 +1,4 @@
+"""Analytic logical-to-physical maps and the :class:`SplineMap` wrapper for fitted ones."""
 from typing import Any, Callable, Optional
 
 import equinox as eqx

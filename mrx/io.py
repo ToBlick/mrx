@@ -1,3 +1,4 @@
+"""Command-line parsing, sweep loading, and projection of gridded data onto spline spaces."""
 import argparse
 import os
 import random

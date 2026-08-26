@@ -1,3 +1,4 @@
+"""The :class:`DeRhamSequence`: spline spaces, extraction operators, geometry, and every operator apply and solve."""
 from typing import Any, Callable
 
 import equinox as eqx
