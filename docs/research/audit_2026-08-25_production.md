@@ -1,237 +1,215 @@
-# Production audit — open problems, 2026-08-25
+# Production audit, 2026-08-25 — what shipped, and the shelf of open questions
 
-Read-only audit of `mrx/` at `greville-prod` **14b3671**. Compiled by the production
-cleanup agent, independently spot-verified by the coordinator. **Nothing here was
-changed.** This is a worklist, not a record — delete this file once the items are
-resolved or explicitly declined.
+The audit's worklist is **done**: A1, A2, A3, A4 and all of B are shipped
+(`b58bfaf`, `bcd750b`, `5f4f609`, `13e39e5`, `c6e9343`, `bb7676a`, `4ce889c`,
+`4aec4fc`, `1de98c4`). ~5,900 lines of dead code and stale claims removed, plus
+the eqx payload refactor and `build_preconditioners`. What remains is this
+shelf.
 
-Every claim below was checked against the tree. Where the two of us disagreed, the
-resolution is stated inline.
+**These are experiments, not unknowns.** Each says what it decides, how to
+decide it, and what a null result means — that last line is the one people skip
+and the one that stops a sweep being run twice. **Class A** restores or confirms
+something already half-known; **Class B** opens new territory.
 
----
+**Adding an entry: write the null-result line first.** If the answer changing
+nothing leaves you with nothing to write there, the entry should not exist. Two
+candidates were dropped from this list on that test, and it only bites once you
+are forced to say what the answer would MEAN rather than what it would be.
 
-## A. Needs a decision
+**Gating a change: diff the failures BY NAME. The count is not evidence.**
+Three baselines on 2026-08-25 — 76bf5f3, c57e8c8, fded2d0 — each reported
+exactly **nine** failures, and the three sets are NOT the same nine. Fixes
+landed and new controls appeared in the same merges, and the total happened to
+return to nine every time. "Still nine" would have read as stability on three
+separate occasions and been wrong on all three. A count that keeps matching for
+different reasons is worse than one that moves, because nothing prompts you to
+look. `slurm/job_pytest_baseline.sh` builds a baseline from any ref in a
+throwaway worktree; diff the sorted `FAILED` lines.
 
-These are not typing. Each one is a judgement about what the project wants.
-
-### A1. `mrx/relaxation_deprecated.py` — 832 lines, **zero code**, and two live drivers import from it
-
-    $ grep -vE '^\s*#|^\s*$' mrx/relaxation_deprecated.py | wc -l
-    0
-    $ grep -cE '^(def |class )' mrx/relaxation_deprecated.py
-    0
-
-Importers, all top-level and unguarded:
-
-    scripts/config_scripts/relax_from_nfs.py:31
-    scripts/config_scripts/relax_stell.py:36
-    test/deprecated/integration_tests/test_z_pinch.py:11    (deprecated, fine)
-
-**Neither `config_scripts` driver can import.** That directory is not deprecated, and
-`slurm/job_relax_from_nfs.sh` is tracked with documented multirun usage pointing at
-one of them. `relax_from_nfs.py` is the driver behind `conf/config_relax_from_nfs.yaml`
-— the p=4 config.
-
-**Dated:** commit `9bf888b` "all of the refactors" (2026-06-06) emptied the module and
-left both imports in the *same commit*. Broken ~2.5 months, unnoticed.
-
-**Decision:** delete the module and both scripts, or rewrite them against
-`mrx/relaxation.py`. The relaxation work has since moved to
-`scripts/debug/relax_prelim.py`. Given "scripts are cheap, production stays clean",
-deletion is the default — but these were real drivers once.
-
-### A2. 356 lines of CP/ALS/NTF in `mrx/preconditioners.py`, reachable only from debug scripts
-
-    _mode_unfold_3tensor                         475     2 lines
-    _cp_als_3tensor                              501    68
-    _greedy_cp_terms                             684    54
-    _cp_ntf_3tensor                              740    72
-    _ntf_terms                                   814    19
-    _build_diagonal_tensor_block_factors         963    78
-    _build_mass_referenced_tensor_block_factors 1413    63   (zero refs anywhere)
-
-The chain's only entry point is `_build_diagonal_tensor_block_factors`, imported by
-exactly two files — `scripts/debug/greville_bulk_precond_k0.py` and
-`greville_bulk_speed.py`. **Nothing in `mrx/`, nothing in `test/`.** ~12% of the file.
-
-Carries the `MRX_CP_GREEDY` env knob, whose stated purpose is restoring "the legacy
-unconstrained greedy rank-1 ALS fit for A/B comparison" — structurally the same
-one-meaningful-setting knob as `MRX_MASS_KIND`, retired 2026-08-25.
-
-This is the CP/ALS stack superseded by metric lumping.
-
-**Decision:** do those two greville-bulk scripts still matter?
-
-### A3. `MRX_BJ_BC_SCALE` silently overrides an explicit argument
-
-`mrx/metric_lumping_laplacian.py:364`:
-
-    def _resolve_bc_scale(bc_scale=None):
-        env = os.environ.get("MRX_BJ_BC_SCALE")
-        if env is not None:
-            return float(env)          # wins over the caller's argument
-        return PRODUCTION_BC_SCALE if bc_scale is None else float(bc_scale)
-
-A caller passing `bc_scale=2.0` is silently ignored when the variable is set. The
-documented rationale is genuine — sweep harnesses always set it so recorded arms keep
-their meaning — but **a leftover export in a shell silently changes production
-numerics of the production Laplacian preconditioner**, and nothing reports it. This is
-the hidden-factor class covered by the standing "metric factors must be explicit" rule.
-
-Four debug scripts set it: `block_jacobi_spectrum`, `bench_real_solves`,
-`bc_schur_effective`, `verify_block_jacobi`. Two pass no argument and would be
-unaffected by a change.
-
-**Decision:** flip the precedence so an explicit argument wins, or keep it and log
-loudly when the env path is taken.
-
-### A4. `assemble_mass_metric_lumping_preconditioner` — public API nothing calls
-
-`mrx/operators.py:3031`. Public eager-assembly entry point; zero in-repo callers. A
-user could reasonably call it. Deserves a judgement rather than the dead-code
-treatment.
+Nothing here is launched. Tobias, 2026-08-25: *"We are not launching anything
+more, but we can collect ideas and open questions for future sweeps."*
 
 ---
 
-## B. Mechanical — no decision required
+## 1. Where does the folding time actually go? — **Class B, sharpest open item**
 
-### B1. `mrx/solvers.py:597` — the return-convention trap, THIRD instance
+**Q.** Why does a real relaxation run at res16 emit eight XLA
+`Constant folding an instruction is taking > 2s` alarms when the microbenchmark
+at the same resolution measures 533 ms of compile in total?
 
-    Returns:
-        info: 0 if converged, >0 otherwise.
+**Decides.** What preconditioner setup costs in production. Those two numbers
+differ by a large factor and cannot both describe the same work, so the real
+cost of the constants path is currently unknown — the microbenchmark is a
+**lower bound, not an estimate**, and must not be quoted as one.
 
-This is `solve_saddle_point_minres`, the **production k>=1 saddle solver**. It returns
-`info` verbatim from `minres`, which uses the signed convention
-(`jnp.where(converged_final, -k_final, k_final)`). Lines 217 and 402 of the same file
-were corrected on 2026-08-24 and 08-25, each carrying a note that the stale version
-"caused a converged solve to be read as a failure". Line 597 was missed both times.
+**Experiment.** Instrument a real `relax_prelim` launch at res16 — not a
+microbenchmark — with **item 2 fixed first**. Log `mrx.__file__`, every fd-2
+line, and per-compile wall time. Compare against
+`scripts/debug/precond_const_vs_param_sweep.py` at the same resolution. The
+likely suspects are a different code path, more preconditioners built than the
+one the benchmark builds, or `gamma > 0`.
 
-**Latent, not live** — every consumer was checked (`operators.py:3782`, `:3919`, four
-sites in `benchmark_graddiv`, `bench_real_solves`); none tests `info == 0`. The next
-person to write that gets a silent wrong answer.
+**Cost.** ~1 GPU-hour (estimate); one launch plus analysis.
 
-One docstring line. **Highest cost-of-leaving / cost-of-fixing on the list.**
+**Null result.** If the real run also shows ~533 ms and no alarms, then the
+alarms come from something other than the preconditioner payload and the
+question moves to whatever else that job compiles — still progress, and it
+retires a lead rather than leaving it open.
 
-### B2. `mrx/operators.py:363` — `K0TensorHodgePreconditionerFactors`, dead class
+## 2. Fix the fd-2 capture — **Class A, prerequisite for item 1**
 
-42 lines, zero references in `mrx/`, `test/` or `scripts/`. A survivor of the Stage B
-tensor deletion; its own comments describe an apply that no longer exists.
+**Q.** Why did `capture_fd2` return **0 bytes at every resolution** while the
+same class of message appears in production logs?
 
-### B3. Legacy alias `'hodge_laplacian'`
+**Decides.** Whether the XLA-warning column in any sweep means anything. Until
+this works, that column reads UNKNOWN, never "no".
 
-`mrx/operators.py:359` advertises it; the `match` at 326 and 347 dispatches
-`case "hodge_laplacian" | "laplacian"`. **Exactly one user:** `mrx/assembly.py:618`.
-Repoint it to `'laplacian'` and drop the alias — two lines, textbook no-zombie.
+**Experiment.** No GPU needed. Establish a positive control first: emit a known
+message on fd 2 from C++-level code inside the context and assert it is
+captured. Then check whether absl/XLA writes to fd 2 at all under these settings
+(it may go to a log file, or need `--logtostderr` / `TF_CPP_MIN_LOG_LEVEL`), and
+whether JAX's logging is initialised before the redirect takes effect.
 
-### B4. `mrx/relaxation.py:407` — a comment describing a defect that is fixed
+**Cost.** ~0 GPU-hours; a local iteration.
 
-Warns that `apply_incidence_matrix`'s docstring prefers the mass-projected form. That
-docstring was corrected on 2026-08-25 (`derham_sequence.py` now reads "PREFER THIS
-FORM" and explains the correction). The comment now sends readers chasing a
-contradiction that no longer exists.
+**Null result.** If a control message IS captured and XLA's still is not, then
+XLA is not writing to fd 2 here and the capture approach is wrong rather than
+broken — switch to reading the job's stderr file after the fact.
 
-Its cited line number has also drifted: `apply_incidence_matrix` is at **2036**, not
-2039. **Bare line-number citations in comments rot** — worth a convention of citing
-symbols rather than lines.
+## 3. S1's missing fluke guard: (3, dbc) — **Class A, bounded**
 
-### B5. Leftovers from the Stage C deletion, reported by the agent that made them
+**Q.** Does the metric_lumping atom also beat jacobi on the harmonic form at
+k=3 dbc, the one harmonic-bearing cell the S1 sweep never covered?
 
-* `mrx/preconditioners.py:1550` `_metric_lumping_block_apply` — **zero references**.
-  Its only caller, `apply_mass_raw_kron_preconditioner`, was deleted in Stage C.
-  `ruff --select F` does not flag an unused module-level function.
-* `mrx/preconditioners.py:1559` — `build_mass_metric_lumping_factors` still opens
-  *"Build the raw_kron mass preconditioner factors for `M_k`"*. Function renamed, first
-  line not.
+**Decides.** Whether S1's k>=1 result rests on more than k=1 free and k=2 dbc.
+(1, dbc) and (2, free) were chosen as guards and turned out to have **no
+harmonic form** — `_n_vectors` with betti (1,1,0,0) — so the guard is missing,
+not merely uninformative.
 
-### B6. ~21 zero-live-reference top-level symbols
+**Experiment.** `scripts/debug/nullspace_jacobi_ab.py` already does this; add
+`(3, False)`... `(3, True)` to its `cells` list and run W7-X p=3,4,5. Gate on
+`rayleigh/generic` with the absolute floor, not the ratio.
 
-    88  mrx/assembly.py:511          build_neighbors
-    68  mrx/assembly.py:441          assemble_sparse
-    43  mrx/solvers.py:55            newton_solver
-    29  mrx/mappings.py:200          invert_map
-    21  mrx/operators.py:3031        assemble_mass_metric_lumping_preconditioner  (see A4)
-    16  mrx/operators.py:2949        _build_nested_iterative_preconditioner_apply
-    14  mrx/mappings.py:184          approx_inverse_map
-    14  mrx/io.py:83                 epoch_time
-    12  mrx/operators.py:2934        _normalize_recursive_scalar_leaf_spec
-     8  mrx/assembly.py:611          assemble_dense_hodge_laplacian
-     8  mrx/preconditioners.py:301   set_mass_tensor
-    + 6 smaller in preconditioners.py
+**Cost.** ~1 GPU-hour (estimate).
 
-**Verification note.** A coordinator spot-check found references to `build_neighbors`,
-`assemble_sparse` and `newton_solver` that the sweep reported as zero. On resolution,
-**all are in `test/deprecated/`**, which is gitignored and outside the live suite. The
-zero-live-reference claim stands; deleting these breaks deprecated tests only.
+**Null result.** If (3, dbc) is comparable, the S1 conclusion stands on its two
+cells and no more; it does not weaken them, it just fails to widen them.
+
+## 4. Confirm the k=0 shifted-fit guard removal — **Class A**
+
+**Q.** Does the atom's advantage on `S_0 + eps M_0` hold at p=5 on both
+geometries, as it did at p=3 and p=4?
+
+**Decides.** Whether `operators.py:3232`'s `eps != 0` guard comes off. Its
+stated reason — "how the atom fits the shifted operator is unmeasured" — is
+already refuted 6/6, but the removal has not landed and the highest p is where
+the atom's advantage was narrowest (1.29 vs 1.40 on W7-X p=5).
+
+**Experiment.** Part 2 of `nullspace_jacobi_ab.py` at p=5,6 on toroid and W7-X.
+Measuring around the guard, never through it.
+
+**Cost.** ~1 GPU-hour (estimate).
+
+**Null result.** If the atom loses at p>=5, the guard STAYS and its comment is
+upgraded from "unmeasured" to "measured, and here is why not" — a strictly
+better resting state than today either way.
+
+## 5. What does `outer='none'` waste? — **Class A, cheap**
+
+**Q.** How much setup time is spent building a Schur apply that
+`outer='none'` immediately discards?
+
+**Decides.** Whether to hoist that construction into its consuming branch.
+`31ef58f` did this for `outer='block'` only; the `else` branch still builds and
+throws away, and `'none'` is the production path when the atom is not assembled.
+
+**Experiment.** `scripts/debug/schur_inner_waste.py` already times this shape;
+point it at `outer='none'` across k=1,2,3 and both BCs.
+
+**Cost.** ~0.5 GPU-hours (estimate).
+
+**Null result.** If it is a few ms, close the item — it is a clarity fix worth
+doing only if someone is in that code anyway.
+
+## 6. Re-derive the weak-term diagonal bound for metric_lumping — **Class B**
+
+**Q.** What IS the correct closed-form weak diagonal now that `M^-1` is
+metric_lumping rather than raw_kron?
+
+**Decides.** Whether `kind='jacobi'` at k>=1 is worth keeping as a baseline at
+all. `build_weak_term_raw_diagonal` is calibrated for a preconditioner that no
+longer exists; against metric_lumping its error grows to **22% median / 114%
+max** (k=1 dbc, spline toroid 8,16,8 p=2). The test that pinned this was
+deleted with raw_kron because its gate could never open again.
+
+**Experiment.** Model the new mass rather than widening a bound: derive the
+Kronecker model of the metric_lumping `M^-1`, rebuild the closed form, and
+re-measure against `_probed_laplacian_diaginv`, which is exact and unaffected.
+
+**Cost.** Unbounded — this is derivation, not a sweep. Flagged as Class B for
+that reason.
+
+**Null result.** If no closed form is materially better, then `kind='jacobi'`
+at k>=1 is permanently a rough baseline and should be documented as one rather
+than presented as a modelled diagonal.
+
+## 7. What fraction of an iteration IS the preconditioner apply? — **Class A, and it should have been item 0**
+
+**Q.** In a real k>=1 solve, what share of per-iteration wall time is the
+preconditioner apply versus the operator apply?
+
+**Decides.** The denominator for every future preconditioner comparison. Today's
+entire constants-vs-parameters investigation — four jobs, two retractions — used
+the preconditioner apply as its own baseline and produced break-even figures
+that were arithmetically correct and practically meaningless.
+
+Tobias settled it from knowing his own code: *"the preconditioner apply is not
+the dominating cost, the dominating cost is in fact applying the operator
+itself."* He was right — **and a correct judgement is not the same as a known
+quantity.** There is no number. The next person comparing preconditioners will
+either re-derive his judgement or, far more likely, do exactly what we did and
+use the preconditioner apply as its own denominator without noticing. **Half a
+GPU-hour buys the number that makes that mistake impossible.**
+
+**Experiment.** Time `apply_hodge_laplacian_approx` against the preconditioner
+apply inside one MINRES iteration, k=1,2, W7-X, p=3 and 5. Report the ratio.
+
+**Cost.** ~0.5 GPU-hours (estimate).
+
+**Null result.** If the two are comparable, then preconditioner-apply cost DOES
+matter and the constants-vs-parameters trade should be **reopened** with the
+right denominator — which is exactly the case this measurement exists to detect.
+Note this is the one entry on the shelf that can **overturn a decision already
+taken**, which is worth knowing before deciding it is not urgent.
+
+## 8. `nbc_k1` converges at ~3.3, not 4 — **Class A, carried from `Poisson convergence`**
+
+**Q.** Is the k=1 natural-BC order deficit in the projection rather than the
+solve?
+
+**Decides.** Where to look. Under-integration is already eliminated.
+
+**Experiment.** The projection test on `omega_1` — **no solve required** — the
+same move that settled k=2.
+
+**Cost.** ~0.5 GPU-hours (estimate). Not this agent's thread; carried so it is
+on one shelf.
+
+**Null result.** If the projection is clean at order 4, the deficit is in the
+solve or the BC treatment and the search narrows to those.
 
 ---
 
-## C. Negative results — recorded so nobody re-checks them
+## Not questions — things simply left undone
 
-* **No permanently-skipped tests remain.** One `pytest.skip` in the live suite
-  (`test_sequence.py:137`) and it is structural — "no harmonic forms for this
-  (k, dirichlet)".
-* **No consumer misreads the signed `info` convention** anywhere in `mrx/`, `test/`,
-  or non-deprecated `scripts/`.
-* **Accept-list / dispatch agreement is sound outside preconditioner kinds.** Checked:
-  frames (`io.py:368`, `projectors.py:267,365`), `ktilde_mode`, `rescale`, operator
-  kinds. All dispatch what they accept. The only alias is B3.
-
----
-
-## D. Coverage — stated honestly
-
-This is **a pattern-directed sweep of the whole tree plus a deep read of the
-preconditioner/solver stack. It is not a line-by-line audit of `mrx/`.**
-
-**Read properly:** `solvers.py`, the preconditioner regions of `operators.py` and
-`preconditioners.py`, `metric_lumping_laplacian.py` around the BC scale,
-`relaxation.py` around the incidence swap, `differential_forms.py:418-450`,
-`relaxation_deprecated.py` (entirely — it is all comments).
-
-**Grepped and spot-read only:** `derham_sequence.py`, `nullspace.py`, `projectors.py`,
-`io.py`, `mappings.py`, `assembly.py`.
-
-**Not opened at all:** `extraction_operators.py` (52 KB), `local_assembly.py` (38 KB),
-`plotting.py`, `geometry.py`, `spline_bases.py`, `quadrature.py`, `circulation.py`,
-`io_nfs_map.py`, `config.py`, `poincare.py`, `experimental/*`.
-
-The eight defect classes below were searched everywhere. **Classes nobody has named
-yet would only have been caught in the parts that were read.** The largest unexamined
-surface is `extraction_operators.py`, which is also where the polar Gram correction
-that makes `d.d` exact lives.
-
-### Modules with no direct test import
-
-Transitively exercised, so not "untested" — but nothing targets them:
-`extraction_operators.py`, `local_assembly.py`, `assembly.py`, `poincare.py`,
-`circulation.py`, `io_nfs_map.py`, `plotting.py`, `config.py`, `utils.py`,
-`spline_geometry.py`.
-
----
-
-## E. The defect classes searched for
-
-Each was found by accident during 2026-08-25 and then searched for deliberately.
-
-1. **Stale docstrings contradicting the code.** Three found that day, each cost real
-   work: `minres` claiming "0 if converged"; two preconditioner resolvers justifying
-   `raw_kron` with a reason `C1` had invalidated; `apply_incidence_matrix` preferring
-   the mass-projected form after the Gram correction made the incidence form exact.
-   **Highest-yield category.**
-2. **Accept-lists not matching dispatch**, in either direction.
-3. **Checks that cannot distinguish "condition met" from "check failed."**
-4. **Defensive code over guaranteed-positive quantities.** Note the distinction:
-   keying on `sy > 0` (does a usable pair exist) is structural and fine; keying on
-   `yy > 1e-30` (is this positive thing positive enough) is defensive and is not.
-5. **Zombie code and aliases** kept so old scripts keep working.
-6. **Dead code** — zero callers, unreachable branches, unpassed parameters.
-7. **Coverage in appearance only** — permanently-skipped tests, assertions that
-   cannot fail; and the inverse, production invariants with no test.
-8. **Error and log text naming things that no longer exist.**
-
-## F. Recommendation
-
-The **dead-code AST sweep was the highest-yield single tool** — 21 symbols, including
-two created that same morning, which `ruff` does not flag. It is ~60 lines and could
-run in CI. That is the one item here that would prevent recurrence rather than fix an
-instance.
+* `warm_mass_preconditioner_cache`'s `except Exception: pass` still swallows
+  build failures. Measured harmless today (8/8 pairs build on toroid and W7-X),
+  and `build_preconditioners` declines to inherit it, but the original is
+  untouched. Removing it is a behaviour change, not a measurement.
+* `scripts/debug/verify_block_jacobi.py` keeps its pre-rename name; 22 scripts
+  import `build_sequence` from it.
+* `job_poincare.sh`, `job_laplacian_mg_k0.sh`, `job_mass_coupling_ceiling.sh`
+  set no `PYTHONPATH` — live library-provenance traps. See
+  [[worktree-jobs-need-pythonpath]]; printing `mrx.__file__` at the top of every
+  wrap is the fix, because "does the wrap set PYTHONPATH" is not a sufficient
+  audit question when `python script.py` and `python -m` resolve differently.
