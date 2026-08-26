@@ -6,7 +6,8 @@
    below the ideal step's, keeps div B at solver tolerance, and
    ``eta_every`` defers it.
 2. ``test_cfl_cap`` -- a non-binding cap reproduces the ``cfl = inf`` step
-   exactly; a binding one takes ``cfl / cfl_max`` and still lowers the energy.
+   to round-off; a binding one takes ``cfl / cfl_max`` and still lowers the
+   energy.
 """
 
 import equinox as eqx
@@ -93,11 +94,15 @@ def test_cfl_cap(tiny_seq, B0):
     assert float(s_free.cfl_max) > 0
     taken = float(s_free.dt_star * s_free.cfl_max)
 
-    # A cap above the step taken does not bind and changes nothing.
+    # A cap above the step taken does not bind and changes nothing.  (Two
+    # steppers are two executables; on the GPU those agree to an ulp, not
+    # to the bit -- measured 0.08405602786284262 against ...264.)
     loose = TimeStepper(seq=seq, cfl=2 * taken)
     s_loose = _step(loose)(state0)
-    assert float(s_loose.dt) == float(s_free.dt)
-    assert jnp.array_equal(s_loose.B_nplus1, s_free.B_nplus1)
+    assert float(s_loose.dt) == float(s_loose.dt_star)
+    assert abs(float(s_loose.dt) - float(s_free.dt)) <= 8 * mrx.eps() * float(s_free.dt)
+    scale = float(jnp.max(jnp.abs(s_free.B_nplus1)))
+    assert float(jnp.max(jnp.abs(s_loose.B_nplus1 - s_free.B_nplus1))) <= 8 * mrx.eps() * scale
 
     # A cap below it binds: dt = cfl / cfl_max, and the energy still falls.
     C = 0.1 * taken
