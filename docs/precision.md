@@ -87,4 +87,4 @@ further in float32 needs a float64 state with float32 operators, not a
 tolerance.
 
 Every test tolerance is expressed through `eps()` or the solver tolerance; the
-`ci` and `gpu` tiers pass in both precisions.
+suite passes in both precisions.

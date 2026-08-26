@@ -32,11 +32,10 @@ eps); live ones >= 4.4e-3 in either precision. INERT is therefore 1e4 eps
 float64, one in float32 -- single precision keeps both assertions but loses
 the wide band between them.
 
-The property tests reuse the session `tiny_seq` fixture and a module-scoped
-build cache, so no test here assembles a sequence, computes a nullspace, or
-builds the same preconditioner twice. The two iteration-count tests carry
-bands MEASURED on the production-resolution `torus_seq`, so they stay on it
-and in the `gpu` tier.
+The tests reuse the session `tiny_seq` fixture and a module-scoped build
+cache, so no test here assembles a sequence, computes a nullspace, or builds
+the same preconditioner twice. The iteration-count regression of the
+production k=1 Dirichlet solve is the band in `test/test_poisson.py`.
 """
 import os
 
@@ -108,11 +107,6 @@ def _probe_cache(seq):
 @pytest.fixture(scope="module")
 def bj(tiny_seq):
     return _probe_cache(tiny_seq)
-
-
-@pytest.fixture(scope="module")
-def bj_prod(torus_seq):
-    return _probe_cache(torus_seq)
 
 
 def _rel(a, b):
@@ -191,71 +185,25 @@ def test_preconditioner_is_spd(bj, k, dbc):
     np.linalg.cholesky(0.5 * (dense + dense.T))   # raises if not positive definite
 
 
-@pytest.mark.gpu
-def test_iteration_count_regression(torus_seq, bj_prod):
-    """A cheap end-to-end guard: k=1 Dirichlet, which is NON-SINGULAR, so this
-    needs no nullspace and no deflation.
-
-    The band is deliberately wide. The measured iteration-count noise floor is
-    ~1% (up to 2.4% on the singular free rows); this test exists to catch a
-    change that alters the work by a FACTOR, not to pin a number.
-    """
-    k, dbc = 1, True
-    pre, n, _ = bj_prod(k, dbc)
-    ops = torus_seq.get_operators()
-
-    def A(x):
-        return op.apply_hodge_laplacian_approx(torus_seq, ops, x, k, dirichlet=dbc)
-
-    rng = np.random.default_rng(31)
-    b = jnp.asarray(rng.standard_normal(n))
-    x = jnp.zeros(n)
-    r = b - A(x)
-    z = pre.apply(r)
-    p = z
-    rz, nb = float(r @ z), float(jnp.linalg.norm(b))
-    iters = 0
-    for iters in range(1, 501):
-        Ap = A(p)
-        a = rz / float(p @ Ap)
-        x = x + a * p
-        r = r - a * Ap
-        if float(jnp.linalg.norm(r)) / nb < CG_TOL:
-            break
-        z = pre.apply(r)
-        rz_new = float(r @ z)
-        p = z + (rz_new / rz) * p
-        rz = rz_new
-
-    assert float(jnp.linalg.norm(b - A(x))) / nb < CG_TOL, "PCG did not converge"
-    # Measured 2026-08-22 on the session fixture (8,16,8, p=2, spline toroid).
-    # Point Jacobi needs several times this; a regression to that scale is what
-    # this guards, not a few percent.
-    assert iters < 120, (
-        f"k=1 dbc PCG took {iters} iterations; the block atom should need well "
-        "under 120 here. A jump to jacobi-like counts means the atom or its "
-        "boundary term regressed.")
-
-
-@pytest.mark.gpu
-def test_boundary_term_earns_its_place_at_k3_free(torus_seq, bj_prod):
+def test_boundary_term_earns_its_place_at_k3_free(tiny_seq, bj):
     """The one test that guards the term's MAGNITUDE, not just its presence.
 
     k=3 free is the right case: it is NON-SINGULAR (so no nullspace or
     deflation is needed) and the boundary term is live and large there -- the
-    handoff measures 2.6-3.3x over no term at all across geometries. The other
-    iteration test runs at k=1 Dirichlet, where the term is inert by design, so
-    it cannot catch a term applied at the wrong strength.
+    handoff measures 2.6-3.3x over no term at all across geometries at
+    production resolution. The k=1 Dirichlet band in test_poisson.py runs
+    where the term is inert by design, so it cannot catch a term applied at
+    the wrong strength.
 
     Self-calibrating: the assertion is against the SAME solve with the term
-    switched off, so it does not depend on the mesh, the geometry or the
-    machine.
+    switched off, so it does not depend on the geometry or the machine --
+    only the ratio is resolution-dependent, and it is measured on tiny_seq.
     """
     k, dbc = 3, False
-    ops = torus_seq.get_operators()
+    ops = tiny_seq.get_operators()
 
     def A(x):
-        return op.apply_hodge_laplacian_approx(torus_seq, ops, x, k, dirichlet=dbc)
+        return op.apply_hodge_laplacian_approx(tiny_seq, ops, x, k, dirichlet=dbc)
 
     def solve(pre, n):
         rng = np.random.default_rng(7)
@@ -278,14 +226,19 @@ def test_boundary_term_earns_its_place_at_k3_free(torus_seq, bj_prod):
             rz = rz_new
         return None
 
-    pre_on, n, _ = bj_prod(k, dbc, bc_scale=PROD_SCALE)
-    pre_off, _, _ = bj_prod(k, dbc, bc_entry=False)
+    pre_on, n, _ = bj(k, dbc, bc_scale=PROD_SCALE)
+    pre_off, _, _ = bj(k, dbc, bc_entry=False)
     on, off = solve(pre_on, n), solve(pre_off, n)
+    print(f"\n  k=3 free PCG: {on} iterations with the boundary term, {off} without")
     assert on is not None and off is not None, "PCG did not converge"
-    assert on < 0.75 * off, (
-        f"k=3 free: {on} iterations with the boundary term vs {off} without. "
-        "The term should be worth well over 25% here (2.6-3.3x measured across "
-        "geometries), so this close means it is mis-scaled or not applied.")
+    # Measured 2026-08-26 on tiny_seq ((4, 6, 4) p=2), float64: 24 iterations
+    # with the term against 30 without (see the print) -- 20% at four radial
+    # cells, where most rows ARE boundary rows, against 2.6-3.3x at
+    # production resolution. The band is halfway to "no term": a term that
+    # is not applied gives 30, a mis-scaled one lands in between.
+    assert on <= 0.9 * off, (
+        f"k=3 free: {on} iterations with the boundary term vs {off} without "
+        "(24 vs 30 measured); the term is mis-scaled or not applied.")
 
 
 def test_defaults_are_the_production_configuration(tiny_seq):
@@ -349,13 +302,14 @@ def test_defaults_are_the_production_configuration(tiny_seq):
         f"{d:.2e} (identical-build floor is {floor:.2e})")
 
 
-def test_production_dispatch_wiring(tiny_seq):
+def test_production_dispatch_wiring(tiny_seq, laplacian_jacobi_diag):
     """`kind='metric_lumping'` reaches the atom, and `kind='auto'` prefers it once it is
     assembled -- the Phase 1b wiring.
 
     `'auto'` used to resolve to `'jacobi'` unconditionally while its docstring
     claimed it preferred `'tensor'` at k=0, so this pins the new behaviour on
-    both sides: jacobi before assembly, block after.
+    both sides: jacobi before assembly, block after. The jacobi diagonals
+    come from the session fixture rather than a rebuild here.
     """
     from mrx.operators import (
         METRIC_LUMPING_CACHE_ATTR, assemble_metric_lumping_laplacian_preconditioner,

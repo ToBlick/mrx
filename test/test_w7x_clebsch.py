@@ -1,12 +1,14 @@
-"""The W7-X Clebsch initial condition (gpu tier: reads a data file).
+"""The W7-X Clebsch initial condition (``needs_data``: reads ``MRX_W7X_FILE``).
 
 ``mrx.geometries.build_sequence(<path>, (8, 16, 8), 3)`` fits the finite-beta
-W7-X map from ``w7x_fmm002_clebsch_mrx.h5`` under ``MRX_DATA`` (default
-``data``; the test skips when the file is absent), ``load_clebsch`` reads
-GVEC's ``dPhi_dr``, ``dchi_dr`` and ``lambda`` from the same file and
-``clebsch_form`` rebuilds ``sqrt(g) B^i`` from them. The projected field must
-be divergence-free after ``leray_clean`` and close to force balance: this is
-the equilibrium the converging relaxation references start from.
+W7-X map from the GVEC export named by the environment variable
+``MRX_W7X_FILE`` (``w7x_fmm002_clebsch_mrx.h5``; unset or absent, the test
+skips -- CI has no data; on a GPU node pass it through ``EXTRA_ENV``, see
+slurm/README.md). ``load_clebsch`` reads GVEC's ``dPhi_dr``, ``dchi_dr`` and
+``lambda`` from the same file and ``clebsch_form`` rebuilds ``sqrt(g) B^i``
+from them. The projected field must be divergence-free after ``leray_clean``
+and close to force balance: this is the equilibrium the converging relaxation
+references start from.
 """
 
 import os
@@ -26,25 +28,34 @@ from mrx.initial_conditions import (
 from mrx.nullspace import compute_nullspaces
 from mrx.relaxation import compute_force
 
-GEOMETRY = os.path.join(os.environ.get("MRX_DATA", "data"), "w7x_fmm002_clebsch_mrx.h5")
 NS, P = (8, 16, 8), 3
 
-pytestmark = [pytest.mark.gpu,
-              pytest.mark.skipif(not os.path.isfile(GEOMETRY), reason=f"{GEOMETRY} absent")]
+pytestmark = pytest.mark.needs_data
 
 
 @pytest.fixture(scope="module")
-def w7x_seq():
+def w7x_file():
+    path = os.environ.get("MRX_W7X_FILE")
+    if path is None:
+        pytest.skip("MRX_W7X_FILE is unset; point it at w7x_fmm002_clebsch_mrx.h5")
+    if not os.path.exists(path):
+        pytest.skip(f"MRX_W7X_FILE={path} does not exist")
+    return path
+
+
+@pytest.fixture(scope="module")
+def w7x_seq(w7x_file):
     t0 = time.perf_counter()
-    seq, ops = build_sequence(GEOMETRY, NS, P)
+    seq, ops = build_sequence(w7x_file, NS, P)
     seq.set_operators(compute_nullspaces(seq, ops))
-    print(f"\n  {GEOMETRY} {NS} p={P} build + nullspaces: {time.perf_counter() - t0:.0f} s")
+    print(f"\n  {os.path.basename(w7x_file)} {NS} p={P} build + nullspaces: "
+          f"{time.perf_counter() - t0:.0f} s")
     return seq
 
 
-def test_clebsch_ic_is_divergence_free_and_near_force_balance(w7x_seq):
+def test_clebsch_ic_is_divergence_free_and_near_force_balance(w7x_seq, w7x_file):
     seq = w7x_seq
-    cb = load_clebsch(GEOMETRY, seq.basis_0.types)
+    cb = load_clebsch(w7x_file, seq.basis_0.types)
     assert cb["nfp"] == 5
     assert cb["closed_axes"] == []          # angles sampled half-open in this file
     assert cb["iota_spread"] < 1e-2         # dchi/dPhi is a flux function

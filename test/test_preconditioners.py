@@ -104,8 +104,8 @@ def test_preconditioner_is_spd(tiny_seq, precond_jit, label, k, dbc):
 # its), a few percent on the scalar spaces (k=0: 59->55, k=3: 39->34, whose
 # diagonal is nearly uniform). The few-percent scalar win needs the
 # resolution: on the (4,6,4) tiny fixture k=0 dbc ties or loses (31 vs 33),
-# so the 0-form case runs on the production fixture in the gpu tier and the
-# tiny fixture carries the vector masses and k=3.
+# so k=0 is not tested here (its production Laplacian solve is in
+# test_poisson.py) and the fixture carries the vector masses and k=3.
 def _cg_iterations(seq, label, k, dbc):
     ops = seq.operators
     rng = np.random.default_rng(seed=42 + 13 * k + 100 * int(dbc))
@@ -135,17 +135,6 @@ def test_preconditioner_reduces_cg_iterations(tiny_seq, label, k, dbc):
     none_iters, precond_iters = _cg_iterations(tiny_seq, label, k, dbc)
     assert np.mean(precond_iters) < np.mean(none_iters), (
         f"{label} did not reduce CG iterations for k={k} dbc={dbc}: "
-        f"none={none_iters}, precond={precond_iters}"
-    )
-
-
-@pytest.mark.gpu
-@pytest.mark.parametrize("dbc", _ALL_DBC)
-@pytest.mark.parametrize("label", ["jacobi"])
-def test_preconditioner_reduces_cg_iterations_k0(torus_seq, label, dbc):
-    none_iters, precond_iters = _cg_iterations(torus_seq, label, 0, dbc)
-    assert np.mean(precond_iters) < np.mean(none_iters), (
-        f"{label} did not reduce CG iterations for k=0 dbc={dbc}: "
         f"none={none_iters}, precond={precond_iters}"
     )
 

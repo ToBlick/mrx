@@ -43,13 +43,14 @@ dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
-# Default = the CPU tier (< 10 min on a 4-core runner, float64 and float32,
-# no data files). `pytest -m gpu` runs the production-resolution tier; see
-# slurm/README.md. The slowest tests are reported so suite cost is measured
-# rather than guessed.
-addopts = "-m \"not gpu\" --durations=15"
+# One tier: `pytest` runs everything on the CPU (< 10 min on four cores,
+# float64 and float32, no data files). Tests reading files outside the
+# repository carry `needs_data` and skip when the file is absent; see
+# slurm/README.md for running them. The slowest tests are reported so suite
+# cost is measured rather than guessed.
+addopts = "--durations=15"
 markers = [
-    "gpu: production-resolution, data-dependent or > 30 s on CPU; run with `pytest -m gpu` on a GPU node",
+    "needs_data: reads a file outside the repository (MRX_W7X_FILE, MRX_RELAX_ARCHIVE); skips when it is absent",
 ]
 norecursedirs = ["test/deprecated", "deprecated", "test/experimental"]
 
