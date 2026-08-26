@@ -30,9 +30,10 @@ DoFs, written by ``scripts/relax.py``), the physical pressure ``p / det DF`` is
 evaluated at every crossing and drawn below the axis in the section and as a
 profile; on a flux surface it is constant, so the width of each stripe is the
 diagnostic. The Leray multiplier is defined up to an additive constant, so the
-displayed value is ``p - p_edge`` with ``p_edge`` the mean over the crossings
-of the outermost kept line of that field (all saved sections), and the edge
-reads zero.
+displayed value is ``p - min p``, the minimum taken over the crossings of the
+kept lines of that field on every requested plane: the profile is >= 0 and
+its lowest surface reads zero. (The weak pressure is zero at the wall by
+construction and needs no gauge.)
 
 Output: ``poincare_<field>_zeta<plane>.png`` per field and plane, and
 ``sections.npz`` under ``--out`` with, per field, the crossing coordinates of
@@ -45,9 +46,16 @@ dominates; the trace is ~1 min).
 import argparse
 import os
 import sys
+import numpy as np
 
 #: The Leray multiplier is fixed so that the outermost kept line reads zero.
-PRESSURE_LABEL = r"$p - p_{\mathrm{edge}}$"
+PRESSURE_LABEL = r"$p - \min p$"
+
+
+def pressure_gauge(presses, keep):
+    """``min p`` over the kept lines' crossings on every plane, or None without p."""
+    vals = [pv[keep] for pv in presses.values() if pv is not None]
+    return None if not vals else float(min(np.min(v) for v in vals))
 
 
 def main():
@@ -74,7 +82,6 @@ def main():
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    import numpy as np
     from mrx.differential_forms import DiscreteFunction
     from mrx.geometries import build_sequence, geometry_nfp
     from mrx.geometry import map_jacobian_at
@@ -107,6 +114,9 @@ def main():
         lo = min(float(z[f"{n}_iota"][z[f"{n}_shown"]].min()) for n in which)
         hi = max(float(z[f"{n}_iota"][z[f"{n}_shown"]].max()) for n in which)
         for name in which:
+            presses = {plane: z[f"{name}_zeta{plane:g}_pressure"]
+                       if f"{name}_zeta{plane:g}_pressure" in z else None for plane in planes}
+            p_min = pressure_gauge(presses, z[f"{name}_keep"])
             for plane in planes:
                 tag = f"{name}_zeta{plane:g}"
                 # The label is a rendering choice, not a trace result: recompute
@@ -123,7 +133,7 @@ def main():
                     axis_RZ=(z[f"{tag}_axisR"], z[f"{tag}_axisZ"]), path=None,
                     profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
                     logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]),
-                    pressure=z[f"{tag}_pressure"] if f"{tag}_pressure" in z else None,
+                    pressure=None if presses[plane] is None else presses[plane] - p_min,
                     pressure_label=PRESSURE_LABEL, iota_lim=(lo, hi))
                 path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
                 fig.savefig(path, dpi=200)
@@ -147,19 +157,6 @@ def main():
         det = jnp.linalg.det(map_jacobian_at(seq.map, x))
         return np.asarray(val / det).reshape(lr.shape)
 
-    def pressure_edge(name, res, keep):
-        """Mean p / det DF over the crossings of the outermost kept line.
-
-        The Leray multiplier is defined up to a constant; this fixes it so the
-        edge reads zero. Per field, over every saved section of that line.
-        """
-        seed_r = np.where(keep, res["seeds"][:, 0], -np.inf)
-        uv = np.asarray(res["ys"])[int(np.argmax(seed_r))]
-        lr = np.hypot(uv[:, 0], uv[:, 1])
-        lth = np.arctan2(uv[:, 1], uv[:, 0]) / (2.0 * np.pi) % 1.0
-        zeta = (np.arange(uv.shape[0]) % cli.saves) / cli.saves
-        pv = physical_pressure(name, lr, lth, zeta)
-        return None if pv is None else float(pv.mean())
     traced = {}
     for name in which:
         B = dofs["B_" + name]
@@ -182,18 +179,20 @@ def main():
         print(f"[{name}] {res['walltime']:.1f}s, {int((~keep).sum())}/{keep.size} lost, "
               f"{int((keep & res['chaotic']).sum())} chaotic, drift {res['drift']:.2e}, {span}",
               flush=True)
-        traced[name] = (res, keep, shown, pressure_edge(name, res, keep))
+        traced[name] = (res, keep, shown)
     lo = min(float(t[0]["iota"][t[2]].min()) for t in traced.values() if t[2].any())
     hi = max(float(t[0]["iota"][t[2]].max()) for t in traced.values() if t[2].any())
     sections = {}
-    for name, (res, keep, shown, p_edge) in traced.items():
+    for name, (res, keep, shown) in traced.items():
+        cuts = {plane: section_RZ(seq, res["ys"], res["axis"], cli.saves, plane)
+                for plane in planes}
+        presses = {plane: physical_pressure(name, cuts[plane][6], cuts[plane][7], plane)
+                   for plane in planes}
+        p_min = pressure_gauge(presses, keep)
         for plane in planes:
-            R, Z, aR, aZ, cR, cZ, lr, lth = section_RZ(
-                seq, res["ys"], res["axis"], cli.saves, plane)
+            R, Z, aR, aZ, cR, cZ, lr, lth = cuts[plane]
             a_eff, xlabel = surface_label(R, Z, aR, aZ)
-            press = physical_pressure(name, lr, lth, plane)
-            if press is not None:
-                press = press - p_edge
+            press = None if presses[plane] is None else presses[plane] - p_min
             fig = render_section(
                 R, Z, res["iota"], res["resid"], res["seeds"][:, 0], keep,
                 pressure=press, pressure_label=PRESSURE_LABEL,
