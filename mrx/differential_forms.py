@@ -537,12 +537,3 @@ def l2_product(f: Callable,
     return jnp.einsum("ij,ij,i,i->", f_ij, g_ij, J_i, Q.w)
 
 
-def double_map(f, xs, ys):
-    """Apply ``f(x, y)`` over all ``(xs[i], ys[j])`` via nested ``lax.map``.
-
-    Returns an array of shape ``(len(xs), len(ys), ...)``.
-    """
-    def outer(x):
-        return jax.lax.map(lambda y: f(x, y), ys,
-                           batch_size=mrx.MAP_BATCH_SIZE_INNER)
-    return jax.lax.map(outer, xs, batch_size=mrx.MAP_BATCH_SIZE_OUTER)

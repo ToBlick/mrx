@@ -1,0 +1,131 @@
+"""Poincare sections of a ``scripts/relax.py`` run.
+
+Reads the ``B.h5`` a relaxation wrote (datasets ``B_ic`` and ``B_final``,
+run parameters as root attributes), rebuilds the sequence with
+:func:`mrx.geometries.build_sequence`, traces both fields with
+:mod:`mrx.poincare`, and renders one section per requested plane.
+
+Usage:
+    python -u scripts/poincare_relax.py outputs/run/B.h5 --periods 400 --out outputs/run/poincare
+
+Flags (defaults in brackets):
+    state                  path to B.h5 (positional)
+    --fields F             comma-separated subset of ic,final [ic,final]
+    --seeds N              field lines per field [40]
+    --periods N            toroidal periods per line [400]
+    --steps N              integration steps per period [24]
+    --saves N              sections saved per period [8]
+    --planes LIST          zeta planes in [0,1) as fractions of a period [0]
+    --r-max R              outermost seed radius [0.97]
+    --batch-size N         lines integrated per batch [all]
+    --precision P          tracing precision float64|float32 [float64]
+    --out DIR              output directory [<state dir>/poincare]
+
+Output: ``poincare_<field>_zeta<plane>.png`` per field and plane, and
+``sections.npz`` with the crossing coordinates, under ``--out``.
+Runtime: ~5 min per field at (8,16,8) p=3 on one H100 (sequence setup
+dominates; the trace is ~1 min).
+"""
+import argparse
+import os
+import sys
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("state")
+    ap.add_argument("--fields", default="ic,final")
+    ap.add_argument("--seeds", type=int, default=40)
+    ap.add_argument("--periods", type=int, default=400)
+    ap.add_argument("--steps", type=int, default=24)
+    ap.add_argument("--saves", type=int, default=8)
+    ap.add_argument("--planes", default="0")
+    ap.add_argument("--r-max", type=float, default=0.97)
+    ap.add_argument("--batch-size", type=int, default=None)
+    ap.add_argument("--precision", default="float64", choices=("float64", "float32"))
+    ap.add_argument("--out", default=None)
+    cli = ap.parse_args()
+    os.environ["MRX_DTYPE"] = cli.precision
+
+    import h5py
+    import jax.numpy as jnp
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from mrx.geometries import build_sequence, geometry_nfp
+    from mrx.poincare import (logical_field, render_section, seed_from_axis,
+                              section_RZ, surface_label, trace_and_classify,
+                              require_zeta_parameterisation)
+
+    with h5py.File(cli.state, "r") as fh:
+        attrs = dict(fh.attrs)
+        dofs = {k: np.asarray(fh[k], dtype=np.float64) for k in fh.keys()}
+    geometry = str(attrs["geometry"])
+    ns = tuple(int(v) for v in attrs["ns"])
+    p = int(attrs["p"])
+    nfp = geometry_nfp(geometry)
+    out = cli.out or os.path.join(os.path.dirname(os.path.abspath(cli.state)), "poincare")
+    os.makedirs(out, exist_ok=True)
+    planes = [float(v) for v in cli.planes.split(",")]
+    which = [w.strip() for w in cli.fields.split(",")]
+    print(f"[state] {cli.state}: {geometry} ns={ns} p={p} nfp={nfp} "
+          f"relaxed in {attrs.get('precision')} for {attrs.get('steps')} steps "
+          f"({attrs.get('method')}, eta_max={attrs.get('eta_max')}); tracing in {cli.precision}",
+          flush=True)
+
+    seq, _ = build_sequence(geometry, ns, p, int(attrs.get("maxiter", 10_000)))
+    labels = {"ic": "initial condition (after Leray projection)",
+              "final": "relaxed field"}
+    traced = {}
+    for name in which:
+        B = dofs["B_" + name]
+        assert B.shape == (seq.n2_dbc,), (B.shape, seq.n2_dbc)
+        field = logical_field(seq, jnp.asarray(B), 2, True)
+        info = require_zeta_parameterisation(field, name=name)
+        print(f"[zeta] {name}: B^zeta/|B| in [{info['bz_over_b_min']:+.3e}, "
+              f"{info['bz_over_b_max']:+.3e}]", flush=True)
+        seeds = seed_from_axis(field, cli.seeds, cli.saves, r_edge=cli.r_max,
+                               steps_per_period=cli.steps)
+        res = trace_and_classify(field, seeds, nfp, n_periods=cli.periods,
+                                 steps_per_period=cli.steps,
+                                 saves_per_period=cli.saves,
+                                 batch_size=cli.batch_size)
+        keep = ~(res["escaped"] | ~res["ok"])
+        shown = keep & ~res["chaotic"]
+        span = (f"iota {float(res['iota'][shown].min()):.4f}.."
+                f"{float(res['iota'][shown].max()):.4f}" if shown.any()
+                else "no line converged")
+        print(f"[{name}] {res['walltime']:.1f}s, {int((~keep).sum())}/{cli.seeds} lost, "
+              f"{int((keep & res['chaotic']).sum())} chaotic, drift {res['drift']:.2e}, {span}",
+              flush=True)
+        traced[name] = (res, keep, shown)
+    lo = min(float(t[0]["iota"][t[2]].min()) for t in traced.values() if t[2].any())
+    hi = max(float(t[0]["iota"][t[2]].max()) for t in traced.values() if t[2].any())
+    sections = {}
+    for name, (res, keep, shown) in traced.items():
+        for plane in planes:
+            R, Z, aR, aZ, cR, cZ, lr, lth = section_RZ(
+                seq, res["ys"], res["axis"], cli.saves, plane)
+            a_eff, xlabel = surface_label("midplane", R, Z, aR, aZ, res["seeds"][:, 0])
+            fig = render_section(
+                R, Z, res["iota"], res["resid"], res["seeds"][:, 0], keep,
+                title=f"{geometry} {ns} p={p}  |  {name}  |  $\\zeta = {plane:g}$\n"
+                      f"{labels.get(name, name)}, relaxed in {attrs.get('precision')} "
+                      f"-- {R.shape[1]} crossings/line",
+                subtitle=f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "
+                         f"traced in {cli.precision}",
+                axis_RZ=(aR, aZ), path=None, profile_x=a_eff,
+                profile_xlabel=xlabel, nfp=nfp, logical=(lr, lth),
+                chaotic=res["chaotic"], iota_lim=(lo, hi))
+            path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
+            fig.savefig(path, dpi=200)
+            plt.close(fig)
+            print(f"  -> {path}", flush=True)
+            for key, arr in zip(("R", "Z", "axisR", "axisZ"), (R, Z, aR, aZ)):
+                sections[f"{name}_{key}_zeta{plane:g}"] = arr
+    np.savez_compressed(os.path.join(out, "sections.npz"), **sections)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

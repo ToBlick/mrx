@@ -748,24 +748,6 @@ def diag_schur_complement(apply_DT, diag_inv, n):
 
 
 # --------------------------------------------------------------------------- #
-# Retired surgery / Schur / tensor machinery
-# --------------------------------------------------------------------------- #
-# The surgery/tensor mass preconditioner was retired on 2026-08-17 and DELETED
-# on 2026-08-25 along with mrx/experimental/mass_surgery.py and
-# tensor_stiffness.py. A module __getattr__ here re-exported ~25 of its names so
-# old call sites kept working; nothing calls them now.
-#
-# What it was: a dense surgery Schur complement over the polar core plus a
-# coupling_sb block that is O(N n_z) -- asymptotically O(n^4), larger than the
-# solution vector by a factor of n, an estimated 24 GB at 64x128x64 in a code
-# whose premise is matrix-free.
-#
-# The core/bulk split itself is NOT gone: MetricLumpingLaplacian and
-# MetricLumpingMass do their own in mrx/metric_lumping_laplacian.py (core_rows),
-# taking the polar ring densely and leaving the separable bulk, at O(n_z).
-# Same idea, without the coupling block.
-
-# --------------------------------------------------------------------------- #
 # Closed-form diagonal of the WEAK term of the Hodge Laplacian                 #
 # --------------------------------------------------------------------------- #
 #
