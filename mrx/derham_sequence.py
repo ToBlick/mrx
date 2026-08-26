@@ -1560,19 +1560,29 @@ class DeRhamSequence():
         return e0 @ integrate_against(f_jk, comp_info_0, comp_shapes_0,
                                       quad_shape)
 
-    def apply_leray_projection(self, v, k=2, p_guess=None):
+    def apply_leray_projection(self, v, k=2, p_guess=None, dirichlet_p=False):
         """
         Apply the Leray projection to a 1 or 2-form v.
 
-        When k = 2:
+        When k = 2 (Dirichlet complex, ``v`` in the k=2 space with
+        ``v . n = 0``):
             Solves the system (k=3 Hodge Laplacian):
             div v = div σ
             (σ, ω) = -(p, div ω) ∀ω 2-forms
             -> div(v - σ) = 0 and σ.n = 0 on the boundary.
-        When k = 1:
-            Solves the k=0 Hodge Laplacian:
-            (grad p, grad ω) = (v, grad ω) ∀ω 0-forms
-            -> div(v - grad p) = 0 and p = 0 on the boundary.
+        When k = 1 (``v`` in the natural 1-form space, no boundary
+        condition):
+            Solves the k=0 Laplacian
+            (grad p, grad ω) = (v, grad ω) ∀ω in the scalar space,
+            so ``v - grad p`` is weakly divergence-free. The scalar space
+            fixes the boundary condition of the decomposition:
+            ``dirichlet_p=False``: ``p`` in the natural k=0 space, the
+            constants deflated; ``(v - grad p) . n = 0`` on the boundary,
+            i.e. ``dp/dn = v . n`` (the Neumann problem).
+            ``dirichlet_p=True``: ``p`` in the Dirichlet k=0 space,
+            ``p = 0`` on the boundary; ``v - grad p`` keeps its normal
+            trace (the Dirichlet problem). This is the weak pressure of
+            :func:`mrx.relaxation.weak_pressure`.
 
         Parameters
         ----------
@@ -1582,6 +1592,10 @@ class DeRhamSequence():
             The degree of the vector form
         p_guess : jnp.ndarray 
             Guess for pressure form DoFs
+        dirichlet_p : bool
+            k = 1 only: solve the multiplier in the Dirichlet k=0 space.
+            k = 2 raises: its multiplier is the 3-form of the Dirichlet
+            complex, and there is no natural variant.
 
         Returns
         -------
@@ -1598,8 +1612,12 @@ class DeRhamSequence():
         # equilibrium J x B = grad p this recovers +p, verified against the
         # analytic z-pinch in test/test_relaxation.py). Warm starts arrive in
         # the returned (physical) convention and are negated back on entry.
-        # The gauge of p is solver-defined (a constant offset).
+        # The gauge of p is solver-defined (a constant offset) for the k=2
+        # and the k=1 natural branches; the k=1 Dirichlet branch has none.
         if k == 2:
+            if dirichlet_p:
+                raise ValueError("dirichlet_p selects the k=1 scalar space; "
+                                 "the k=2 multiplier is always the Dirichlet 3-form")
             p_guess = jnp.zeros(self.n3_dbc) if p_guess is None else p_guess
             # Assumes dirichlet == True on all spaces.
             div_v = self.apply_derivative_matrix(
@@ -1609,11 +1627,13 @@ class DeRhamSequence():
             σ = -self.apply_weak_grad(q, True, True)
             return v - σ, -q
         elif k == 1:
-            # Assumes dirichlet == False on all spaces.
-            p_guess = jnp.zeros(self.n0) if p_guess is None else p_guess
+            # v lives in the natural 1-form space; only the scalar space
+            # (test functions AND multiplier) carries the boundary condition.
+            n_p = self.n0_dbc if dirichlet_p else self.n0
+            p_guess = jnp.zeros(n_p) if p_guess is None else p_guess
             div_v = -self.apply_derivative_matrix(
-                v, 0, dirichlet_in=False, dirichlet_out=False, transpose=True)
+                v, 0, dirichlet_in=dirichlet_p, dirichlet_out=False, transpose=True)
             q = self.apply_inverse_hodge_laplacian(
-                div_v, 0, dirichlet=False, guess=-p_guess)
-            σ = -self.apply_strong_grad(q, False, False)
+                div_v, 0, dirichlet=dirichlet_p, guess=-p_guess)
+            σ = -self.apply_strong_grad(q, dirichlet_p, False)
             return v - σ, -q

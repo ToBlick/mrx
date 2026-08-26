@@ -22,23 +22,29 @@ Flags (defaults in brackets):
     --r-max R              outermost seed radius [0.97]
     --batch-size N         lines integrated per batch [all]
     --precision P          tracing precision float64|float32 [float64]
+    --pressure {weak,strong}  which pressure of the state file to draw [weak]
     --out DIR              output directory [<state dir>/poincare]
     --from-npz             re-render from ``<out>/sections.npz`` without tracing
 
-If the state file carries the Leray pressures ``p_ic`` / ``p_final`` (3-form
-DoFs, written by ``scripts/relax.py``), the physical pressure ``p / det DF`` is
-evaluated at every crossing and drawn below the axis in the section and as a
-profile; on a flux surface it is constant, so the width of each stripe is the
-diagnostic. The Leray multiplier is defined up to an additive constant, so the
-displayed value is ``p - p_edge`` with ``p_edge`` the mean over the crossings
-of the outermost kept line of that field (all saved sections), and the edge
-reads zero.
+If the state file carries the pressures ``scripts/relax.py`` writes, the
+selected one is evaluated at every crossing and drawn below the axis in the
+section and as a profile; on a flux surface it is constant, so the width of
+each stripe is the diagnostic. ``--pressure weak`` (the default) reads
+``pw_ic`` / ``pw_final``, the weak pressure: a 0-form, so its physical value
+is the spline evaluation itself (no ``det DF``), and it is zero on the wall by
+construction (Dirichlet 0-form space), so no gauge shift is applied.
+``--pressure strong`` reads ``p_ic`` / ``p_final``, the Leray multiplier of
+the relaxation: a 3-form, evaluated as ``p / det DF``, and defined up to an
+additive constant, so the displayed value is ``p - p_edge`` with ``p_edge``
+the mean over the crossings of the outermost kept line of that field (all
+saved sections), and the edge reads zero. See "Two pressures" in
+docs/relaxation.md.
 
 Output: ``poincare_<field>_zeta<plane>.png`` per field and plane, and
 ``sections.npz`` under ``--out`` with, per field, the crossing coordinates of
-every plane plus ``iota``, ``resid``, ``seed_r``, ``keep``, ``chaotic`` and the
-step drift, so a section can be re-rendered (``--from-npz``) without the
-5-minute sequence build and trace.
+every plane plus ``iota``, ``resid``, ``seed_r``, ``keep``, ``chaotic``, the
+step drift and ``pressure_kind``, so a section can be re-rendered
+(``--from-npz``) without the 5-minute sequence build and trace.
 Runtime: ~5 min per field at (8,16,8) p=3 on one H100 (sequence setup
 dominates; the trace is ~1 min).
 """
@@ -46,8 +52,9 @@ import argparse
 import os
 import sys
 
-#: The Leray multiplier is fixed so that the outermost kept line reads zero.
-PRESSURE_LABEL = r"$p - p_{\mathrm{edge}}$"
+#: Panel labels. The strong (Leray) multiplier is gauged so that the outermost
+#: kept line reads zero; the weak pressure is zero on the wall by construction.
+PRESSURE_LABELS = {"strong": r"$p - p_{\mathrm{edge}}$", "weak": r"$p_w$"}
 
 
 def main():
@@ -63,6 +70,7 @@ def main():
     ap.add_argument("--r-max", type=float, default=0.97)
     ap.add_argument("--batch-size", type=int, default=None)
     ap.add_argument("--precision", default="float64", choices=("float64", "float32"))
+    ap.add_argument("--pressure", default="weak", choices=("weak", "strong"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--from-npz", action="store_true")
     cli = ap.parse_args()
@@ -125,7 +133,7 @@ def main():
                     profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
                     logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]), chaotic=z[f"{name}_chaotic"],
                     pressure=z[f"{tag}_pressure"] if f"{tag}_pressure" in z else None,
-                    pressure_label=PRESSURE_LABEL, iota_lim=(lo, hi))
+                    pressure_label=PRESSURE_LABELS[str(z["pressure_kind"])], iota_lim=(lo, hi))
                 path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
                 fig.savefig(path, dpi=200)
                 plt.close(fig)
@@ -135,25 +143,32 @@ def main():
     seq, _ = build_sequence(geometry, ns, p, int(attrs["maxiter"]), nfp=nfp_override)
 
     def physical_pressure(name, lr, lth, zeta):
-        """p / det DF at logical ``(lr, lth, zeta)``, or None without p."""
-        key = "p_" + name
+        """The selected pressure at logical ``(lr, lth, zeta)``, or None without it.
+
+        Weak: the 0-form's value. Strong: the 3-form's ``p / det DF``.
+        """
+        key = ("pw_" if cli.pressure == "weak" else "p_") + name
         if key not in dofs:
             return None
-        pd = dofs[key]
-        e3 = seq.e3_dbc if pd.shape[0] == int(seq.n3_dbc) else seq.e3
-        p_h = DiscreteFunction(jnp.asarray(pd), seq.basis_3, e3)
+        pd = jnp.asarray(dofs[key])
         x = jnp.stack([jnp.asarray(lr).ravel(), jnp.asarray(lth).ravel(),
                        jnp.broadcast_to(jnp.asarray(zeta), lr.shape).ravel()], axis=1)
-        val = jax.vmap(p_h)(x)[:, 0]
-        det = jnp.linalg.det(map_jacobian_at(seq.map, x))
-        return np.asarray(val / det).reshape(lr.shape)
+        if cli.pressure == "weak":
+            val = jax.vmap(DiscreteFunction(pd, seq.basis_0, seq.e0_dbc))(x)[:, 0]
+        else:
+            e3 = seq.e3_dbc if pd.shape[0] == int(seq.n3_dbc) else seq.e3
+            val = jax.vmap(DiscreteFunction(pd, seq.basis_3, e3))(x)[:, 0]
+            val = val / jnp.linalg.det(map_jacobian_at(seq.map, x))
+        return np.asarray(val).reshape(lr.shape)
 
     def pressure_edge(name, res, keep):
-        """Mean p / det DF over the crossings of the outermost kept line.
-
-        The Leray multiplier is defined up to a constant; this fixes it so the
-        edge reads zero. Per field, over every saved section of that line.
+        """The gauge shift: the mean of the strong pressure over the crossings
+        of the outermost kept line, so the edge reads zero (per field, over
+        every saved section of that line). The weak pressure is zero on the
+        wall by construction and is not shifted.
         """
+        if cli.pressure == "weak":
+            return 0.0
         seed_r = np.where(keep, res["seeds"][:, 0], -np.inf)
         uv = np.asarray(res["ys"])[int(np.argmax(seed_r))]
         lr = np.hypot(uv[:, 0], uv[:, 1])
@@ -197,7 +212,7 @@ def main():
                 press = press - p_edge
             fig = render_section(
                 R, Z, res["iota"], res["resid"], res["seeds"][:, 0], keep,
-                pressure=press, pressure_label=PRESSURE_LABEL,
+                pressure=press, pressure_label=PRESSURE_LABELS[cli.pressure],
                 title=f"{label} {ns} p={p}  |  {name}  |  $\\zeta = {plane:g}$\n"
                       f"{labels.get(name, name)}, relaxed in {attrs.get('precision')} "
                       f"-- {R.shape[1]} crossings/line",
@@ -221,6 +236,7 @@ def main():
                          ("keep", keep), ("chaotic", res["chaotic"]), ("shown", shown),
                          ("drift", np.array(res["drift"]))):
             sections[f"{name}_{key}"] = np.asarray(arr)
+    sections["pressure_kind"] = np.array(cli.pressure)
     np.savez_compressed(os.path.join(out, "sections.npz"), **sections)
 
 
