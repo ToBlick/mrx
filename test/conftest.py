@@ -62,20 +62,32 @@ def build_torus_sequence(ns, torus_map):
     2. ``build_preconditioners`` assembles the incidence operators, the
        Jacobi mass diagonals and the metric-lumping Laplacian atoms for
        every ``(k, dirichlet)`` pair;
-    3. harmonic forms are computed by inverse iteration with
-       ``betti_numbers = (1, 1, 0, 0)``, at the production shift (1e-4).
+    3. harmonic forms are computed by the direct Hodge-decomposition
+       construction (``betti_numbers = (1, 1, 0, 0)``): a fixed pair of
+       production saddle solves per form through ``'auto'``, i.e. the
+       metric-lumping atoms just built. The shift-and-invert route costs
+       an outer iteration per form and pins ``schur.outer='jacobi'``
+       (``nullspace._nullspace_shifted_preconditioner``), which is neither
+       the production solve nor cheap.
 
     The solver tolerance is the sequence default, ``mrx.sqrt_eps()``, so the
     same fixture is meaningful in both precisions.
     """
+    import time
+    t0 = time.perf_counter()
     seq = DeRhamSequence(
         ns, (P, P, P), P + 1, TYPES, polar=True,
         maxiter=1000, betti_numbers=BETTI,
     )
     seq.evaluate_1d()
     seq.set_spline_map(greville_interpolate_map(torus_map, seq))
+    t1 = time.perf_counter()
     seq.build_preconditioners()
-    seq._compute_nullspaces(BETTI)
+    t2 = time.perf_counter()
+    seq._compute_nullspaces(BETTI, direct=True)
+    t3 = time.perf_counter()
+    print(f"\n  torus {ns}: geometry {t1 - t0:.0f} s, preconditioners {t2 - t1:.0f} s, "
+          f"nullspaces {t3 - t2:.0f} s")
     return seq
 
 
@@ -98,6 +110,38 @@ def torus_seq(torus_map):
 def n_dofs(seq, k, dirichlet):
     """Return the DOF count for k-forms with the given boundary condition."""
     return int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
+
+
+@pytest.fixture(scope="session")
+def laplacian_jacobi_diag(tiny_seq):
+    """``diag(E L_k E^T)`` for every ``(k, dirichlet)`` on ``tiny_seq``, built once.
+
+    ``kind='jacobi'`` Laplacian applies build this diagonal lazily and store
+    it nowhere, so every consumer used to rebuild it (the k >= 1 closed form
+    costs a few seconds per pair on the CPU). The inverse diagonals are
+    installed on the session bundle, where ``_laplacian_diaginv`` finds them,
+    so the positivity test, the dispatch test and the probed-reference test
+    share one build. Returns ``{(k, dirichlet): diagonal}`` as numpy arrays.
+    """
+    import numpy as np
+
+    from mrx.local_assembly import build_extracted_stiffness_diagonal_k0
+    from mrx.operators import _invert_diagonal
+    from mrx.preconditioners import build_extracted_laplacian_diagonal
+
+    ops = tiny_seq.operators
+    diags = {}
+    for k in range(4):
+        for dbc in (False, True):
+            if k == 0:
+                diag = build_extracted_stiffness_diagonal_k0(tiny_seq, dbc)
+            else:
+                diag = build_extracted_laplacian_diagonal(
+                    tiny_seq, ops, k, dirichlet=dbc)
+            diags[(k, dbc)] = np.asarray(diag)
+            ops = ops.with_laplacian_diaginv(k, _invert_diagonal(diag), dirichlet=dbc)
+    tiny_seq.set_operators(ops)
+    return diags
 
 
 @pytest.fixture(scope="session")

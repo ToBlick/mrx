@@ -11,17 +11,10 @@ for 2- and 3-forms it is not (the projection already absorbs the geometry).
 
 Mathematical properties checked
 --------------------------------
-* k=0: L2 projection relative error is small.
-* k=0: Greville interpolation relative error is small.
-* k=0: L2 projection error ≤ interpolation error (best-approximation).
-* k=1: L2 projection relative error is small.
-* k=1: Histopolation relative error is small.
-* k=1: L2 projection error ≤ histopolation error (best-approximation).
-* k=2: L2 projection relative error is small.
-* k=3: L2 projection relative error is small.
-
-Tolerances are set to ``< 1.0`` (trivially pass) on first commit.
-Run with ``-s`` to read the actual errors, then tighten them.
+* k=0, 1: the L2 projection and the Greville interpolation / histopolation
+  errors are below MEASURED bands, and the projection is the best
+  approximation (its error ≤ the interpolation's).
+* k=2, 3: the L2 projection error is below a measured band.
 """
 
 import jax
@@ -130,93 +123,52 @@ def _phys_l2_rel_error(seq, dofs, e, k, f_ref):
 
 
 # ---------------------------------------------------------------------------
-# k=0 tests
+# Accuracy at (6, 6, 6) p=2 (gpu tier)
+#
+# Relative physical-L2 errors measured 2026-08-26 in float64 (see the
+# prints): projection 1.217e-2 / 2.809e-1 / 1.743e-1 / 6.095e-2 for
+# k = 0..3, Greville interpolation 1.540e-2 (k=0), histopolation 2.872e-1
+# (k=1); the bands are ~1.25x the measurement. These are approximation
+# errors of the p=2 space, orders above the float32 roundoff, so the bands
+# hold in either precision. A wrong pullback, a wrong extraction row or a
+# missing metric factor moves an error by a factor, not by percent.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.gpu
-def test_k0_l2_projection_error_is_small(proj_seq):
-    dual = proj_seq.load(_f0, 0)
-    dofs = proj_seq.apply_inverse_mass_matrix(dual, 0, dirichlet=False)
-    err = _phys_l2_rel_error(proj_seq, dofs, proj_seq.e0, 0, _f0)
-    print(f"\n  k=0 L2 projection relative error: {err:.3e}")
-    assert err < 1.0, f"k=0 L2 projection error unreasonably large: {err:.3e}"
+PROJ_BAND = {0: 1.6e-2, 1: 3.6e-1, 2: 2.2e-1, 3: 7.7e-2}
+INTERP_BAND = {0: 2.0e-2, 1: 3.6e-1}
+
+_ACCURACY = {0: (_f0, "e0"), 1: (_v1, "e1"), 2: (_v2, "e2"), 3: (_f3, "e3")}
+
+
+def _projection_error(seq, k):
+    f, e_name = _ACCURACY[k]
+    dofs = seq.apply_inverse_mass_matrix(seq.load(f, k), k, dirichlet=False)
+    return _phys_l2_rel_error(seq, dofs, getattr(seq, e_name), k, f)
 
 
 @pytest.mark.gpu
-def test_k0_greville_interpolation_error_is_small(proj_seq):
-    dofs = proj_seq.interpolate(_f0, 0)
-    err = _phys_l2_rel_error(proj_seq, dofs, proj_seq.e0, 0, _f0)
-    print(f"\n  k=0 Greville interpolation relative error: {err:.3e}")
-    assert err < 1.0, f"k=0 Greville interpolation error unreasonably large: {err:.3e}"
-
-
-@pytest.mark.gpu
-def test_k0_l2_projection_leq_interpolation(proj_seq):
-    """L2 projection is best-approximation: its error ≤ interpolation error."""
-    dofs_proj = proj_seq.apply_inverse_mass_matrix(proj_seq.load(_f0, 0), 0, dirichlet=False)
-    dofs_interp = proj_seq.interpolate(_f0, 0)
-    err_proj = _phys_l2_rel_error(proj_seq, dofs_proj, proj_seq.e0, 0, _f0)
-    err_interp = _phys_l2_rel_error(proj_seq, dofs_interp, proj_seq.e0, 0, _f0)
-    print(f"\n  k=0 proj={err_proj:.3e}  interp={err_interp:.3e}")
+@pytest.mark.parametrize("k", [0, 1])
+def test_l2_projection_is_the_best_approximation(proj_seq, k):
+    """Both errors below their measured bands, and projection ≤ interpolation
+    (k=0 Greville collocation, k=1 histopolation)."""
+    f, e_name = _ACCURACY[k]
+    err_proj = _projection_error(proj_seq, k)
+    err_interp = _phys_l2_rel_error(
+        proj_seq, proj_seq.interpolate(f, k), getattr(proj_seq, e_name), k, f)
+    print(f"\n  k={k} L2 projection {err_proj:.3e}  interpolation {err_interp:.3e}")
+    assert err_proj < PROJ_BAND[k]
+    assert err_interp < INTERP_BAND[k]
     assert err_proj <= err_interp + mrx.eps(100), (
         f"L2 projection error {err_proj:.3e} > interpolation error {err_interp:.3e}"
     )
 
 
-# ---------------------------------------------------------------------------
-# k=1 tests
-# ---------------------------------------------------------------------------
-
 @pytest.mark.gpu
-def test_k1_l2_projection_error_is_small(proj_seq):
-    dual = proj_seq.load(_v1, 1)
-    dofs = proj_seq.apply_inverse_mass_matrix(dual, 1, dirichlet=False)
-    err = _phys_l2_rel_error(proj_seq, dofs, proj_seq.e1, 1, _v1)
-    print(f"\n  k=1 L2 projection relative error: {err:.3e}")
-    assert err < 1.0, f"k=1 L2 projection error unreasonably large: {err:.3e}"
-
-
-@pytest.mark.gpu
-def test_k1_histopolation_error_is_small(proj_seq):
-    dofs = proj_seq.interpolate(_v1, 1)
-    err = _phys_l2_rel_error(proj_seq, dofs, proj_seq.e1, 1, _v1)
-    print(f"\n  k=1 histopolation relative error: {err:.3e}")
-    assert err < 1.0, f"k=1 histopolation error unreasonably large: {err:.3e}"
-
-
-@pytest.mark.gpu
-def test_k1_l2_projection_leq_histopolation(proj_seq):
-    """L2 projection is best-approximation: its error ≤ histopolation error."""
-    dofs_proj = proj_seq.apply_inverse_mass_matrix(proj_seq.load(_v1, 1), 1, dirichlet=False)
-    dofs_hist = proj_seq.interpolate(_v1, 1)
-    err_proj = _phys_l2_rel_error(proj_seq, dofs_proj, proj_seq.e1, 1, _v1)
-    err_hist = _phys_l2_rel_error(proj_seq, dofs_hist, proj_seq.e1, 1, _v1)
-    print(f"\n  k=1 proj={err_proj:.3e}  hist={err_hist:.3e}")
-    assert err_proj <= err_hist + mrx.eps(100), (
-        f"L2 projection error {err_proj:.3e} > histopolation error {err_hist:.3e}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# k=2 and k=3 L2 projection
-# ---------------------------------------------------------------------------
-
-@pytest.mark.gpu
-def test_k2_l2_projection_error_is_small(proj_seq):
-    dual = proj_seq.load(_v2, 2)
-    dofs = proj_seq.apply_inverse_mass_matrix(dual, 2, dirichlet=False)
-    err = _phys_l2_rel_error(proj_seq, dofs, proj_seq.e2, 2, _v2)
-    print(f"\n  k=2 L2 projection relative error: {err:.3e}")
-    assert err < 1.0, f"k=2 L2 projection error unreasonably large: {err:.3e}"
-
-
-@pytest.mark.gpu
-def test_k3_l2_projection_error_is_small(proj_seq):
-    dual = proj_seq.load(_f3, 3)
-    dofs = proj_seq.apply_inverse_mass_matrix(dual, 3, dirichlet=False)
-    err = _phys_l2_rel_error(proj_seq, dofs, proj_seq.e3, 3, _f3)
-    print(f"\n  k=3 L2 projection relative error: {err:.3e}")
-    assert err < 1.0, f"k=3 L2 projection error unreasonably large: {err:.3e}"
+@pytest.mark.parametrize("k", [2, 3])
+def test_l2_projection_error(proj_seq, k):
+    err = _projection_error(proj_seq, k)
+    print(f"\n  k={k} L2 projection relative error: {err:.3e}")
+    assert err < PROJ_BAND[k]
 
 
 # ---------------------------------------------------------------------------
@@ -238,8 +190,7 @@ def test_k3_l2_projection_error_is_small(proj_seq):
 # returns the DOFs untouched, which would pass without testing anything.
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="module", params=[2, 3], ids=["p2", "p3"])
-def identity_seq(request):
+def _build_identity_seq(deg):
     """Small polar sequence for the EXACT-IDENTITY tests, at EVEN and ODD p.
 
     The degree is parametrised because it is the discriminating variable for
@@ -276,7 +227,6 @@ def identity_seq(request):
     identity.  Accuracy tests stay on ``proj_seq``, where resolution is the
     point.
     """
-    deg = request.param
     seq = DeRhamSequence(
         (4, 4, 4), (deg,) * 3, deg + 1, ("clamped", "periodic", "periodic"),
         polar=True, maxiter=200, betti_numbers=(1, 1, 0, 0),
@@ -287,22 +237,33 @@ def identity_seq(request):
     return seq
 
 
+@pytest.fixture(scope="module")
+def identity_seq_p2():
+    return _build_identity_seq(2)
+
+
+@pytest.fixture(scope="module")
+def identity_seq_p3():
+    return _build_identity_seq(3)
+
+
+# Every (k, BC) pair at even p; at odd p only k = 1, 2. The parity effect
+# lives in the periodic histopolation seam, which k=0 (pure collocation)
+# never touches, and k=3 (every axis histopolated) exercises no differently
+# from k=1 and k=2 together -- at more than twice their cost.
 _ROUNDTRIP_CASES = [
-    pytest.param(0, False, id="k0-free"),
-    pytest.param(0, True, id="k0-dbc"),
-    pytest.param(1, False, id="k1-free"),
-    pytest.param(1, True, id="k1-dbc"),
-    pytest.param(2, False, id="k2-free"),
-    pytest.param(2, True, id="k2-dbc"),
-    pytest.param(3, False, id="k3-free"),
-    pytest.param(3, True, id="k3-dbc"),
+    pytest.param(2, k, d, id=f"p2-k{k}-{'dbc' if d else 'free'}")
+    for k in (0, 1, 2, 3) for d in (False, True)
+] + [
+    pytest.param(3, k, d, id=f"p3-k{k}-{'dbc' if d else 'free'}")
+    for k in (1, 2) for d in (False, True)
 ]
 
 
-@pytest.mark.parametrize("k, dirichlet", _ROUNDTRIP_CASES)
-def test_interpolation_reproduces_its_own_space(identity_seq, k, dirichlet):
+@pytest.mark.parametrize("p, k, dirichlet", _ROUNDTRIP_CASES)
+def test_interpolation_reproduces_its_own_space(request, p, k, dirichlet):
     """Interpolating a function already in the space returns its own DOFs."""
-    proj_seq = identity_seq
+    proj_seq = request.getfixturevalue(f"identity_seq_p{p}")
     basis = getattr(proj_seq, _BASIS_ATTR[k])
     e = getattr(proj_seq, f"e{k}_dbc" if dirichlet else f"e{k}")
     n = int(getattr(proj_seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
@@ -315,7 +276,7 @@ def test_interpolation_reproduces_its_own_space(identity_seq, k, dirichlet):
         lambda x: discrete(x), k, dirichlet=dirichlet, **kwargs)
 
     err = float(jnp.linalg.norm(got - a) / jnp.linalg.norm(a))
-    print(f"\n  k={k} dirichlet={dirichlet} round-trip relative error: {err:.3e}")
+    print(f"\n  p={p} k={k} dirichlet={dirichlet} round-trip relative error: {err:.3e}")
     assert err < IDENT, (
         f"k={k} dirichlet={dirichlet}: interpolation is not a projector onto "
         f"its own space, relative error {err:.3e}. The extraction is then not "

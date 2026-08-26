@@ -112,3 +112,65 @@ def test_cfl_cap(tiny_seq, B0):
     assert float(s_cap.dt) < float(s_cap.dt_star)
     assert abs(float(s_cap.dt) - C / float(s_cap.cfl_max)) <= 100 * mrx.eps() * float(s_cap.dt)
     assert _energy(seq, s_cap.B_nplus1) < _energy(seq, B0)
+
+
+# ---------------------------------------------------------------------------
+# Twenty production steps through relaxation_loop
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def B_logical(tiny_seq):
+    """The production initial condition on the toroid: logical profiles,
+    projected and Leray-cleaned (test_initial_conditions.logical_ic)."""
+    from test.test_initial_conditions import logical_ic
+    return logical_ic(tiny_seq)
+
+
+# Relative helicity drift over the sixteen ideal (eta = 0) steps: 4.88e-3
+# measured 2026-08-26 on tiny_seq in float64 (see the print) at linesearch
+# steps dt ~ 1, which is what the toroid's flat energy landscape gives. The
+# band is 2x that and an order below the change one resistive step makes
+# (+3.8e-2 -> +1.3e-3).
+HELICITY_DRIFT = 1e-2
+
+
+def test_relaxation_loop(tiny_seq, B_logical):
+    """``relaxation_loop`` with the production stepper (CG descent, analytic
+    linesearch, ``cfl = 0.5``): five blocks of four steps, the last one
+    resistive through ``resistivity_schedule``.
+
+    Every block lowers the energy; ``div B`` stays at the initial condition's
+    (the ideal step adds ``dt curl E``, whose divergence is exactly zero);
+    the helicity drifts by less than ``HELICITY_DRIFT`` while ``eta = 0`` and
+    the resistive solve runs only in the last block; the CFL statistics on
+    the final state satisfy ``dt = min(dt_star, cfl / cfl_max)``.
+    """
+    from mrx.relaxation import DescentMethod, relaxation_loop
+
+    seq = tiny_seq
+    ts = TimeStepper(seq=seq, descent_method=DescentMethod.CONJUGATE_GRADIENT)
+    outer, inner, eta = 5, 4, 1e-2
+    state, traces = relaxation_loop(
+        B_logical, ts, outer, inner,
+        resistivity_schedule=lambda i: eta if i == outer else 0.0)
+
+    E = [float(e) for e in traces["energy"]]
+    H = [float(h) for h in traces["helicity"]]
+    div = [float(d) for d in traces["divergence_B"]]
+    F = [float(f) for f in traces["force_norm"]]
+    res_info = [int(i) for i in traces["resistive_info"]]
+    drift = max(abs(h - H[0]) for h in H[:outer]) / abs(H[0])
+    dt, dt_star, cfl_max = float(state.dt), float(state.dt_star), float(state.cfl_max)
+    print(f"\n  E {E[0]:.6f} -> {E[-1]:.6f}, |F| {F[0]:.3e} -> {F[-1]:.3e}, "
+          f"helicity {H[0]:+.5e} drift {drift:.2e} (ideal) -> {H[-1]:+.5e} (resistive), "
+          f"div B max {max(div):.2e}, resistive MINRES {-res_info[-1]} it, "
+          f"dt {dt:.3e} dt* {dt_star:.3e} cfl_max {cfl_max:.3e} "
+          f"cap {'binds' if dt < dt_star else 'inactive'}")
+    assert len(E) == outer + 1
+    assert all(E[i + 1] < E[i] for i in range(outer)), E
+    assert max(div) <= 10 * seq.tol
+    assert drift < HELICITY_DRIFT
+    assert res_info[:-1] == [0] * outer, res_info
+    assert res_info[-1] < 0, f"resistive MINRES did not converge: {res_info[-1]}"
+    assert cfl_max > 0 and dt_star > 0
+    assert abs(dt - min(dt_star, ts.cfl / cfl_max)) <= 100 * mrx.eps() * dt

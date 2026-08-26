@@ -2,17 +2,18 @@
 
 Two groups of fixtures:
 - Pure-JAX (_QUAD_X, _C_RAW, etc.): no DeRhamSequence needed.
-- Seq-based (_SEQ): (4,8,4) / p=3 / q=6, clamped-periodic-periodic.
-  - ``_F_TOROID``: toroid map used for spline geometry tests.
-  - ``_F_ANALYTIC``: rotating_ellipse_map (nfp=3) used for R/Z tests.
-    Note: Cartesian X, Y of this map are NOT periodic in ζ for nfp>1
-    (one field period spans only [0, 1/nfp] in ζ), so it must not be
-    Greville-interpolated in Cartesian form.
+- ``spline_seq``: (4,6,4) / p=2 / q=3, clamped-periodic-periodic, with
+  ``_F_TOROID`` Greville-interpolated as its spline map (module fixture).
+  ``_F_ANALYTIC`` is rotating_ellipse_map (nfp=3), used for the R/Z tests
+  only: Cartesian X, Y of this map are NOT periodic in ζ for nfp>1 (one
+  field period spans only [0, 1/nfp] in ζ), so it must not be
+  Greville-interpolated in Cartesian form.
 """
 
 import numpy as np
 import jax.numpy as jnp
 import numpy.testing as npt
+import pytest
 
 
 import mrx
@@ -39,23 +40,21 @@ _M1 = jnp.asarray(_rng.standard_normal((_NR, _NQR)))
 _M2 = jnp.asarray(_rng.standard_normal((_NT, _NQT)))
 _M3 = jnp.asarray(_rng.standard_normal((_NZ, _NQZ)))
 
-# ── Seq-based module-level fixtures ──────────────────────────────────────────
+# ── Sequence fixture ─────────────────────────────────────────────────────────
 
 _TYPES = ("clamped", "periodic", "periodic")
-
-_SEQ = DeRhamSequence(
-    (4, 8, 4), (3, 3, 3), 6, _TYPES,
-    polar=False,
-)
-_SEQ.evaluate_1d()
-
 _F_TOROID = toroid_map(epsilon=0.3, kappa=1.2)
-_COEFFS = greville_interpolate_map(_F_TOROID, _SEQ)
-_SEQ.set_spline_map(_COEFFS)
-
-_SPLINE_MAP = _SEQ.build_spline_map(_COEFFS)
-
 _F_ANALYTIC = rotating_ellipse_map(eps=0.3, kappa=1.2, nfp=3)
+
+
+@pytest.fixture(scope="module")
+def spline_seq():
+    """``(seq, spline_map)``: the toroid interpolated at the Greville points."""
+    seq = DeRhamSequence((4, 6, 4), (2, 2, 2), 3, _TYPES, polar=False)
+    seq.evaluate_1d()
+    coeffs = greville_interpolate_map(_F_TOROID, seq)
+    seq.set_spline_map(coeffs)
+    return seq, seq.build_spline_map(coeffs)
 
 # Roundoff identities: 1e3 eps = 2.2e-13 f64 / 1.2e-4 f32, relative to the
 # size of the quantity compared. The sum-factorised spline metric against
@@ -105,28 +104,31 @@ def test_geometry_diagonal_scaling():
 
 # ── Spline-map geometry: two paths agree ─────────────────────────────────────
 
-def test_spline_geometry_matches_jacfwd():
+def test_spline_geometry_matches_jacfwd(spline_seq):
     """Sum-factorized spline metric agrees with jacfwd on the same SplineMap."""
-    metric_ref, _, _ = compute_geometry_terms(_SPLINE_MAP, _SEQ.quad.x)
-    npt.assert_allclose(_SEQ.metric_jkl, metric_ref,
+    seq, spline_map = spline_seq
+    metric_ref, _, _ = compute_geometry_terms(spline_map, seq.quad.x)
+    npt.assert_allclose(seq.metric_jkl, metric_ref,
                         atol=SPLINE * float(jnp.abs(metric_ref).max()))
 
 
-def test_spline_jacobian_positive():
+def test_spline_jacobian_positive(spline_seq):
     """Jacobian determinant is positive at every quadrature point."""
-    assert jnp.all(_SEQ.jacobian_j > 0), (
-        f"Negative Jacobian at {jnp.sum(_SEQ.jacobian_j <= 0)} quadrature point(s)"
+    seq, _ = spline_seq
+    assert jnp.all(seq.jacobian_j > 0), (
+        f"Negative Jacobian at {jnp.sum(seq.jacobian_j <= 0)} quadrature point(s)"
     )
 
 
-def test_spline_metric_symmetric():
+def test_spline_metric_symmetric(spline_seq):
     """Metric tensor g_ij = g_ji at every quadrature point."""
-    g = _SEQ.metric_jkl
+    g = spline_seq[0].metric_jkl
     npt.assert_allclose(g, g.transpose(0, 2, 1), atol=IDENT * float(jnp.abs(g).max()))
 
 
-def test_spline_map_approximates_analytic():
+def test_spline_map_approximates_analytic(spline_seq):
     """Greville-interpolated spline map is close to the analytic map pointwise."""
+    _, spline_map = spline_seq
     test_pts = jnp.array([
         [r, t, z]
         for r in [0.2, 0.5, 0.8]
@@ -134,21 +136,23 @@ def test_spline_map_approximates_analytic():
         for z in [0.15, 0.5, 0.85]
     ])
     for x in test_pts:
-        npt.assert_allclose(_SPLINE_MAP(x), _F_TOROID(x), atol=0.05, rtol=0.05,
+        npt.assert_allclose(spline_map(x), _F_TOROID(x), atol=0.05, rtol=0.05,
                             err_msg=f"map mismatch at x={x}")
 
 
-def test_spline_jacobian_close_to_analytic():
+def test_spline_jacobian_close_to_analytic(spline_seq):
     """Spline-path Jacobian determinant is within 25% of the analytic value."""
-    _, _, jac_analytic = compute_geometry_terms(_F_TOROID, _SEQ.quad.x)
-    npt.assert_allclose(_SEQ.jacobian_j, jac_analytic, rtol=0.25)
+    seq, _ = spline_seq
+    _, _, jac_analytic = compute_geometry_terms(_F_TOROID, seq.quad.x)
+    npt.assert_allclose(seq.jacobian_j, jac_analytic, rtol=0.25)
 
 
-def test_greville_interpolation_R_Z():
+def test_greville_interpolation_R_Z(spline_seq):
     """R and Z of rotating_ellipse_map(nfp=3) are approximated accurately.
 
     R and Z are periodic in both angular directions for any nfp.
     """
+    _SEQ, _ = spline_seq
     def R_fn(x):
         F = _F_ANALYTIC(x)
         return jnp.sqrt(F[0] ** 2 + F[1] ** 2)

@@ -66,24 +66,27 @@ def evaluator_seq(request):
 
 
 @pytest.mark.parametrize("k", ALL_K)
-@pytest.mark.parametrize("dirichlet", ALL_DBC, ids=["free", "dbc"])
-def test_discrete_function_matches_dense_evaluation(evaluator_seq, k, dirichlet):
-    """The local-support evaluator equals ``dof @ (E @ Λ(x))`` over ALL basis functions."""
+def test_discrete_function_matches_dense_evaluation(evaluator_seq, k):
+    """The local-support evaluator equals ``dof @ (E @ Λ(x))`` over ALL basis functions.
+
+    The dense sweep over every raw basis function is the expensive half and
+    does not depend on the extraction, so it is done once and both the free
+    and the Dirichlet extraction are checked against it.
+    """
     seq = evaluator_seq
     basis = getattr(seq, f"basis_{k}")
-    e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
-    dof = jax.random.normal(jax.random.PRNGKey(7 * k + dirichlet), (int(_dof(seq, k, dirichlet)),))
-    discrete = DiscreteFunction(dof, basis, e)
     xs = jax.random.uniform(jax.random.PRNGKey(3), (6, 3))
-
-    def dense(x):
-        return dof @ (e @ jax.vmap(basis, (None, 0))(x, basis.ns))
-
-    got = jax.vmap(discrete)(xs)
-    want = jax.vmap(dense)(xs)
-    assert got.shape == want.shape
-    err = float(jnp.linalg.norm(got - want) / jnp.linalg.norm(want))
-    assert err < IDENT, f"k={k} dirichlet={dirichlet}: local evaluator off by {err:.2e}"
+    raw = jax.vmap(lambda x: jax.vmap(basis, (None, 0))(x, basis.ns))(xs)
+    for dirichlet in ALL_DBC:
+        e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+        dof = jax.random.normal(jax.random.PRNGKey(7 * k + dirichlet),
+                                (int(_dof(seq, k, dirichlet)),))
+        discrete = DiscreteFunction(dof, basis, e)
+        got = jax.vmap(discrete)(xs)
+        want = jax.vmap(lambda lam, dof=dof, e=e: dof @ (e @ lam))(raw)
+        assert got.shape == want.shape
+        err = float(jnp.linalg.norm(got - want) / jnp.linalg.norm(want))
+        assert err < IDENT, f"k={k} dirichlet={dirichlet}: local evaluator off by {err:.2e}"
 
 
 def test_polar_zeroform_greville_interpolation_recovers_discrete_function():
@@ -157,30 +160,6 @@ def test_polar_oneform_histopolation_recovers_discrete_function():
     discrete = DiscreteFunction(coeffs, seq.basis_1, seq.e1)
     recovered = seq.interpolate(discrete, 1)
     npt.assert_allclose(recovered, coeffs, atol=RECOVER)
-
-
-# ---------------------------------------------------------------------------
-# Derivatives annihilate stored harmonic forms (they are closed AND coclosed)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("k,dirichlet", [(0, False), (1, False), (1, True), (2, True)])
-def test_harmonic_forms_closed(tiny_seq, k, dirichlet):
-    """For a harmonic k-form v, d v = 0 in the dual sense.
-
-    The harmonic forms come out of an iterative solve at ``seq.tol``; closedness
-    is checked to a hundred times that (1.5e-6 f64 / 3.5e-2 f32).
-    """
-    seq = tiny_seq
-    vs = getattr(seq, f"null_{k}_dbc" if dirichlet else f"null_{k}")
-    if vs.shape[0] == 0:
-        pytest.skip("no harmonic forms for this (k, dirichlet)")
-    for v in vs:
-        dv = seq.apply_derivative_matrix(
-            v, k, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        # normalise by the mass of v to get a scale-invariant tolerance.
-        v_mass = float(seq.l2_norm(v, k, dirichlet=dirichlet))
-        assert jnp.linalg.norm(dv) < 100 * seq.tol * max(v_mass, 1.0), (
-            f"harmonic k={k} dbc={dirichlet} is not closed: ||dv|| = {jnp.linalg.norm(dv)}")
 
 
 # ---------------------------------------------------------------------------

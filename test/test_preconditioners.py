@@ -32,7 +32,6 @@ from mrx.preconditioners import (
     _extraction_gram_inverse,
     _extraction_projector_kron_terms,
     _raw_block_starts,
-    build_extracted_laplacian_diagonal,
 )
 
 
@@ -243,18 +242,52 @@ def test_extraction_projector_kron_expansion_is_exact(tiny_seq, k, dbc):
         )
 
 
-def test_laplacian_jacobi_diagonal_is_positive(tiny_seq):
+@pytest.mark.parametrize("k", _WEAK_K)
+@pytest.mark.parametrize("dbc", _ALL_DBC)
+def test_laplacian_jacobi_diagonal_is_positive(laplacian_jacobi_diag, k, dbc):
     """``diag(E L_k E^T) > 0`` for every k >= 1 and both boundary conditions.
 
     Jacobi inverts this entrywise, so a non-positive entry is not a quality
-    issue but a broken preconditioner.
+    issue but a broken preconditioner. The diagonals come from the session
+    fixture, built once for the whole suite.
     """
-    ops = tiny_seq.operators
-    for k in _WEAK_K:
-        for dbc in _ALL_DBC:
-            diag = np.asarray(build_extracted_laplacian_diagonal(
-                tiny_seq, ops, k, dirichlet=dbc))
-            assert np.all(diag > 0), (
-                f"Laplacian Jacobi diagonal has a non-positive entry for "
-                f"k={k} dbc={dbc}: min={diag.min():.3e}"
-            )
+    diag = laplacian_jacobi_diag[(k, dbc)]
+    assert np.all(diag > 0), (
+        f"Laplacian Jacobi diagonal has a non-positive entry for "
+        f"k={k} dbc={dbc}: min={diag.min():.3e}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 6. The k=0 Laplacian diagonal is built lazily -- also inside a trace
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("dbc", _ALL_DBC)
+def test_k0_laplacian_jacobi_first_apply_inside_a_trace(tiny_seq, dbc):
+    """``kind='jacobi'`` at k=0 builds ``diag(S_0)`` in closed form on the
+    first apply, and that first apply can sit inside a ``lax`` body: the
+    inverse iteration of ``find_nullspace_vectors`` solves the shifted k=0
+    Laplacian inside a ``while_loop``. The build is host-side numpy over the
+    basis tables, so under a trace it saw tracers and died (found in float32
+    on 2026-08-26); ``_laplacian_diaginv`` now runs it under
+    ``ensure_compile_time_eval``. The stored diagonal is cleared here so the
+    lazy path is what runs, first inside a ``scan`` and then eagerly.
+    """
+    import jax
+
+    from mrx.operators import apply_hodge_laplacian_preconditioner
+
+    ops = tiny_seq.operators.with_laplacian_diaginv(0, None, dirichlet=dbc)
+    assert ops.get_laplacian_diaginv(0, dbc) is None
+    n = n_dofs(tiny_seq, 0, dbc)
+    v = jnp.asarray(np.random.default_rng(29).standard_normal(n))
+
+    def P(x):
+        return apply_hodge_laplacian_preconditioner(
+            tiny_seq, ops, x, 0, dirichlet=dbc, kind='jacobi')
+
+    inside, _ = jax.lax.scan(lambda x, _: (P(x), None), v, None, length=2)
+    outside = P(P(v))
+    assert np.all(np.isfinite(np.asarray(outside)))
+    npt.assert_allclose(np.asarray(inside), np.asarray(outside), rtol=0,
+                        atol=IDENT * float(np.abs(outside).max()))

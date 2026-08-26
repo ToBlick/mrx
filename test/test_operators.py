@@ -1,34 +1,22 @@
 """Matrix-free mass, Laplacian, and de Rham complex tests (``mrx.operators``).
 
-All tests use a small all-periodic (4,8,4) / p=2 / q=4 sequence with two
-geometries:
+Two (4, 6, 4) p=2 module fixtures:
 
-  **Identity map** (first section) — Jacobian is 1 everywhere, providing
-  analytic reference values with no geometry dependence.
+  **Tensor identity map** (``tensor_seq``, ``polar=False``) -- the extraction
+  is a 0/1 selection there, so ``curl(grad f) = 0`` and ``div(curl F) = 0``
+  hold for the raw extracted incidence.
 
-  **Rotating-ellipse map** (second section onwards) — nontrivial metric;
-  also used for the Laplacian and de Rham complex tests.
-
-Module-level objects are precomputed once for each geometry section so the
-heavy JIT cost is paid at import time, not per-test.
-
-**Mass tests (both geometries)**
-  Symmetry, positive definiteness via random probes and dense assembly.
-
-**Hodge Laplacian tests (rotating ellipse)**
-  Dense Laplacians assembled from first principles::
+  **Polar rotating ellipse** (``re_seq``, nfp=3) -- a genuinely 3-D metric
+  and the non-unitary axis gluing. Mass symmetry / positive definiteness by
+  random probes and dense assembly; the true strong derivative restores
+  ``d.d = 0`` on the extracted DoFs; dense Hodge Laplacians assembled from
+  first principles::
 
       L_0 = G_0^T M_1 G_0
       L_k = G_k^T M_{k+1} G_k  +  D_{k-1} M_{k-1}^{-1} D_{k-1}^T   (k=1,2,3)
 
-  Checked: symmetry, PSD, and null-space dimension equal to β_k (free BCs)
-  or β_{d-k} (DBC, relative cohomology), with d=3 and β=(1,1,0,0) for a
-  solid torus (clamped-r).
-
-**de Rham complex (identity map, non-polar)**
-  ``curl(grad f) = 0`` and ``div(curl F) = 0`` via random-probe tests on
-  ``_SEQ`` (``polar=False``). Polar extraction is not a 0/1 selection
-  matrix, so the algebraic identity only holds on the non-polar sequence.
+  are symmetric, PSD, and have null space of dimension β_k (free BCs) or
+  β_{d-k} (DBC, relative cohomology), d=3, β=(1,1,0,0) for the solid torus.
 """
 
 import jax.numpy as jnp
@@ -49,31 +37,10 @@ from mrx.operators import (
 )
 from test.dense import dense_from_apply
 
-# ---------------------------------------------------------------------------
-# Module-level fixtures
-# ---------------------------------------------------------------------------
-
-_NR, _NT, _NZ = 4, 8, 4
+_NS = (4, 6, 4)
 _P = 2
-_Q = 4
+_Q = 3
 _TYPES = ("clamped", "periodic", "periodic")
-
-_SEQ = DeRhamSequence((_NR, _NT, _NZ), (_P, _P, _P), _Q, _TYPES, polar=False)
-_SEQ.evaluate_1d()
-_SEQ.set_map(lambda x: x)
-
-_APPLIES = {k: build_matrixfree_mass_apply(_SEQ, k) for k in (0, 1, 2, 3)}
-
-_N_DOF = {
-    0: int(_SEQ.basis_0.shape[0][0] * _SEQ.basis_0.shape[0][1] * _SEQ.basis_0.shape[0][2]),
-    1: sum(int(s[0] * s[1] * s[2]) for s in _SEQ.basis_1.shape),
-    2: sum(int(s[0] * s[1] * s[2]) for s in _SEQ.basis_2.shape),
-    3: int(_SEQ.basis_3.shape[0][0] * _SEQ.basis_3.shape[0][1] * _SEQ.basis_3.shape[0][2]),
-}
-
-_DENSE = {k: dense_from_apply(_APPLIES[k], _N_DOF[k]) for k in (0, 1, 2, 3)}
-
-_RNG = np.random.default_rng(42)
 _N_PROBES = 6
 
 # Roundoff identities relative to the size of the quantity: 1e3 eps
@@ -90,19 +57,87 @@ BAND = mrx.eps(50)
 ASYM = mrx.sqrt_eps()
 
 
-def _random_vecs(k: int, count: int = _N_PROBES) -> list[np.ndarray]:
-    return list(_RNG.standard_normal((count, _N_DOF[k])))
+def _raw_dofs(seq, k):
+    return sum(int(np.prod(s)) for s in getattr(seq, f"basis_{k}").shape)
+
+
+def _n_ext(seq, k, dbc):
+    return int(getattr(seq, f"n{k}_dbc" if dbc else f"n{k}"))
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# Fixtures
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def tensor_seq():
+    """Identity map, no polar surgery: the extraction is a 0/1 selection."""
+    seq = DeRhamSequence(_NS, (_P, _P, _P), _Q, _TYPES, polar=False)
+    seq.evaluate_1d()
+    seq.set_map(lambda x: x)
+    return seq, assemble_incidence_operators(seq)
+
+
+@pytest.fixture(scope="module")
+def re_seq():
+    """Polar rotating ellipse (nfp=3), with the incidence operators G_0..G_2."""
+    seq = DeRhamSequence(_NS, (_P, _P, _P), _Q, _TYPES, polar=True,
+                         betti_numbers=(1, 1, 0, 0))
+    seq.evaluate_1d()
+    seq.set_map(rotating_ellipse_map(eps=1.0 / 3.0, kappa=1.2, R0=1.0, nfp=3))
+    return seq, assemble_incidence_operators(seq)
+
+
+@pytest.fixture(scope="module")
+def re_mass(re_seq):
+    """Raw-space mass applies and their dense forms on the rotating ellipse."""
+    seq, _ = re_seq
+    applies = {k: build_matrixfree_mass_apply(seq, k) for k in (0, 1, 2, 3)}
+    dense = {k: dense_from_apply(applies[k], _raw_dofs(seq, k)) for k in (0, 1, 2, 3)}
+    return applies, dense
+
+
+def _dense_laplacian(seq, ops, k, dirichlet):
+    n_k = _n_ext(seq, k, dirichlet)
+    K = dense_from_apply(
+        lambda v: apply_stiffness(seq, ops, v, k, dirichlet=dirichlet), n_k)
+    if k == 0:
+        return K
+    D_T = dense_from_apply(
+        lambda v: apply_derivative_matrix(
+            seq, ops, v, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet,
+            transpose=True),
+        n_k,
+    )  # shape (n_{k-1}, n_k)
+    M_km1 = dense_from_apply(
+        lambda v: apply_mass_matrix(seq, ops, v, k - 1, dirichlet=dirichlet),
+        _n_ext(seq, k - 1, dirichlet))
+    return K + D_T.T @ np.linalg.inv(M_km1) @ D_T
+
+
+_LAP_PARAMS = [(k, dbc) for k in (0, 1, 2, 3) for dbc in (False, True)]
+
+
+@pytest.fixture(scope="module")
+def re_laplacians(re_seq):
+    seq, ops = re_seq
+    return {(k, dbc): _dense_laplacian(seq, ops, k, dbc) for k, dbc in _LAP_PARAMS}
+
+
+# ---------------------------------------------------------------------------
+# Masses (rotating ellipse)
+# ---------------------------------------------------------------------------
+
+def _random_vecs(rng, n, count=_N_PROBES):
+    return list(rng.standard_normal((count, n)))
+
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_mass_symmetry_probe(k):
+def test_mass_symmetry_probe(re_seq, re_mass, k):
     """M_k is symmetric: v^T (M u) = u^T (M v) for random pairs."""
-    apply = _APPLIES[k]
-    vecs = _random_vecs(k, count=8)
+    seq, _ = re_seq
+    apply = re_mass[0][k]
+    vecs = _random_vecs(np.random.default_rng(99 + k), _raw_dofs(seq, k), count=8)
     for u, v in zip(vecs[:4], vecs[4:]):
         Mu = np.asarray(apply(jnp.asarray(u)))
         Mv = np.asarray(apply(jnp.asarray(v)))
@@ -115,10 +150,11 @@ def test_mass_symmetry_probe(k):
 
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_mass_positive_definite_probe(k):
+def test_mass_positive_definite_probe(re_seq, re_mass, k):
     """M_k is positive definite: v^T (M v) > 0 for non-zero v."""
-    apply = _APPLIES[k]
-    for v in _random_vecs(k):
+    seq, _ = re_seq
+    apply = re_mass[0][k]
+    for v in _random_vecs(np.random.default_rng(42 + k), _raw_dofs(seq, k)):
         Mv = np.asarray(apply(jnp.asarray(v)))
         qf = float(v @ Mv)
         assert qf > IDENT * np.linalg.norm(v) * np.linalg.norm(Mv), (
@@ -126,9 +162,9 @@ def test_mass_positive_definite_probe(k):
 
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_mass_dense_is_spd(k):
+def test_mass_dense_is_spd(re_mass, k):
     """Densified M_k is symmetric and has all positive eigenvalues."""
-    M = _DENSE[k]
+    M = re_mass[1][k]
     npt.assert_allclose(M, M.T, atol=IDENT * np.abs(M).max(),
                         err_msg=f"k={k}: dense M not symmetric")
     eigvals = np.linalg.eigvalsh(M)
@@ -137,44 +173,32 @@ def test_mass_dense_is_spd(k):
         f"k={k}: dense M not SPD, lambda_min={eigvals.min()}, lambda_max={eigvals.max()}"
     )
 
+
 # ---------------------------------------------------------------------------
 # de Rham complex: curl(grad f) = 0  and  div(curl F) = 0
 #
 # On the non-polar sequence the extraction is a 0/1 selection (E^T E = I), so
 # the raw extracted incidence E^T sp E already satisfies G_{k+1} G_k = 0.  On
-# polar sequences the axis gluing is non-unitary, so apply_incidence_matrix now
-# applies the TRUE strong derivative G = Gram^{-1}(E^T sp E) (cached, mass-free)
-# which restores exact d.d = 0 on extracted DoFs.  We test both: _SEQ
-# (polar=False) below, and a polar sequence in test_polar_complex_is_exact.
+# polar sequences the axis gluing is non-unitary, so apply_incidence_matrix
+# applies the TRUE strong derivative G = Gram^{-1}(E^T sp E) (cached,
+# mass-free), which restores exact d.d = 0 on extracted DoFs.
 # ---------------------------------------------------------------------------
 
-_SEQ_OPS = assemble_incidence_operators(_SEQ)
-
-# DOF counts for the non-polar sequence.
-_N_NP = {
-    (k, dbc): getattr(_SEQ, f"n{k}_dbc" if dbc else f"n{k}")
-    for k in (0, 1, 2, 3)
-    for dbc in (False, True)
-}
-
-_COMPLEX_RNG = np.random.default_rng(7)
 _N_COMPLEX_PROBES = 10
 
 
 @pytest.mark.parametrize("dirichlet", (False, True))
-def test_curl_of_grad_is_zero(dirichlet):
+def test_curl_of_grad_is_zero(tensor_seq, dirichlet):
     """curl(grad f) = 0: G_1^ext (G_0^ext f) = 0 for random 0-forms f."""
-    n0 = _N_NP[(0, dirichlet)]
+    seq, ops = tensor_seq
+    rng = np.random.default_rng(7)
+    n0 = _n_ext(seq, 0, dirichlet)
     for _ in range(_N_COMPLEX_PROBES):
-        f = jnp.asarray(_COMPLEX_RNG.standard_normal(n0))
+        f = jnp.asarray(rng.standard_normal(n0))
         grad_f = apply_incidence_matrix(
-            _SEQ, _SEQ_OPS, f, k=0,
-            dirichlet_in=dirichlet, dirichlet_out=dirichlet,
-        )
+            seq, ops, f, k=0, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         curl_grad_f = apply_incidence_matrix(
-            _SEQ, _SEQ_OPS, grad_f, k=1,
-            dirichlet_in=dirichlet, dirichlet_out=dirichlet,
-        )
+            seq, ops, grad_f, k=1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         norm = float(jnp.linalg.norm(curl_grad_f))
         assert norm < IDENT * float(jnp.linalg.norm(grad_f)), (
             f"dirichlet={dirichlet}: curl(grad f) != 0, ||curl grad f|| = {norm:.3e}"
@@ -182,48 +206,40 @@ def test_curl_of_grad_is_zero(dirichlet):
 
 
 @pytest.mark.parametrize("dirichlet", (False, True))
-def test_div_of_curl_is_zero(dirichlet):
+def test_div_of_curl_is_zero(tensor_seq, dirichlet):
     """div(curl F) = 0: G_2^ext (G_1^ext F) = 0 for random 1-forms F."""
-    n1 = _N_NP[(1, dirichlet)]
+    seq, ops = tensor_seq
+    rng = np.random.default_rng(8)
+    n1 = _n_ext(seq, 1, dirichlet)
     for _ in range(_N_COMPLEX_PROBES):
-        F = jnp.asarray(_COMPLEX_RNG.standard_normal(n1))
+        F = jnp.asarray(rng.standard_normal(n1))
         curl_F = apply_incidence_matrix(
-            _SEQ, _SEQ_OPS, F, k=1,
-            dirichlet_in=dirichlet, dirichlet_out=dirichlet,
-        )
+            seq, ops, F, k=1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         div_curl_F = apply_incidence_matrix(
-            _SEQ, _SEQ_OPS, curl_F, k=2,
-            dirichlet_in=dirichlet, dirichlet_out=dirichlet,
-        )
+            seq, ops, curl_F, k=2, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         norm = float(jnp.linalg.norm(div_curl_F))
         assert norm < IDENT * float(jnp.linalg.norm(curl_F)), (
             f"dirichlet={dirichlet}: div(curl F) != 0, ||div curl F|| = {norm:.3e}"
         )
 
 
-# Polar sequence: the axis extraction is non-unitary, so the raw incidence is
-# NOT nilpotent there.  apply_incidence_matrix now applies the true strong
-# derivative G = Gram^{-1}(E^T sp E), which must restore d.d = 0 on extracted
-# DoFs.  This is the regression guard for the polar de Rham exactness fix.
-_POLAR_SEQ = DeRhamSequence((6, 8, 4), (3, 3, 3), 6, _TYPES, polar=True,
-                            betti_numbers=(1, 1, 0, 0))
-_POLAR_SEQ.evaluate_1d()
-_POLAR_SEQ.set_map(rotating_ellipse_map(eps=1.0 / 3.0, kappa=1.2, R0=1.0, nfp=3))
-_POLAR_OPS = assemble_incidence_operators(_POLAR_SEQ, ks=(0, 1, 2))
-
-
 @pytest.mark.parametrize("dirichlet", (False, True))
 @pytest.mark.parametrize("k,name", ((0, "curl(grad)"), (1, "div(curl)")))
-def test_polar_complex_is_exact(k, name, dirichlet):
-    """G_{k+1} G_k = 0 on the POLAR sequence with the true strong derivative."""
-    n = int(getattr(_POLAR_SEQ, f"n{k}_dbc" if dirichlet else f"n{k}"))
+def test_polar_complex_is_exact(re_seq, k, name, dirichlet):
+    """G_{k+1} G_k = 0 on the POLAR sequence with the true strong derivative.
+
+    The regression guard for the polar de Rham exactness fix: the raw
+    incidence is NOT nilpotent there.
+    """
+    seq, ops = re_seq
+    n = _n_ext(seq, k, dirichlet)
     rng = np.random.default_rng(11)
     worst = 0.0
     for _ in range(4):
         v = jnp.asarray(rng.standard_normal(n))
-        g = apply_incidence_matrix(_POLAR_SEQ, _POLAR_OPS, v, k,
+        g = apply_incidence_matrix(seq, ops, v, k,
                                    dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        gg = apply_incidence_matrix(_POLAR_SEQ, _POLAR_OPS, g, k + 1,
+        gg = apply_incidence_matrix(seq, ops, g, k + 1,
                                     dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         rel = float(jnp.linalg.norm(gg)) / max(float(jnp.linalg.norm(g)), 1e-300)
         worst = max(worst, rel)
@@ -234,129 +250,20 @@ def test_polar_complex_is_exact(k, name, dirichlet):
     )
 
 
-#
-# A fresh sequence is built with polar=True so that axis regularity is
-# enforced correctly.  _APPLIES and _DENSE above captured the identity-map
-# geometry in their closures and are unaffected.
-# ---------------------------------------------------------------------------
-
-_RE_MAP = rotating_ellipse_map(eps=0.33, kappa=1.2, R0=1.0, nfp=3)
-_RE_SEQ = DeRhamSequence((_NR, _NT, _NZ), (_P, _P, _P), _Q, _TYPES, polar=True)
-_RE_SEQ.evaluate_1d()
-_RE_SEQ.set_map(_RE_MAP)
-
-_RE_APPLIES = {k: build_matrixfree_mass_apply(_RE_SEQ, k) for k in (0, 1, 2, 3)}
-
-_RE_DENSE = {k: dense_from_apply(_RE_APPLIES[k], _N_DOF[k]) for k in (0, 1, 2, 3)}
-
-_RE_RNG = np.random.default_rng(99)
-
-
-def _re_random_vecs(k: int, count: int = _N_PROBES) -> list[np.ndarray]:
-    return list(_RE_RNG.standard_normal((count, _N_DOF[k])))
-
-
-@pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_re_mass_symmetry_probe(k):
-    """M_k (rotating ellipse) is symmetric: v^T (M u) = u^T (M v)."""
-    apply = _RE_APPLIES[k]
-    vecs = _re_random_vecs(k, count=8)
-    for u, v in zip(vecs[:4], vecs[4:]):
-        Mu = np.asarray(apply(jnp.asarray(u)))
-        Mv = np.asarray(apply(jnp.asarray(v)))
-        lhs = float(v @ Mu)
-        rhs = float(u @ Mv)
-        scale = max(np.linalg.norm(v) * np.linalg.norm(Mu), 1.0)
-        assert abs(lhs - rhs) < IDENT * scale, (
-            f"k={k}: symmetry failed  v^T M u={lhs}  u^T M v={rhs}"
-        )
-
-
-@pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_re_mass_positive_definite_probe(k):
-    """M_k (rotating ellipse) is positive definite: v^T (M v) > 0."""
-    apply = _RE_APPLIES[k]
-    for v in _re_random_vecs(k):
-        Mv = np.asarray(apply(jnp.asarray(v)))
-        qf = float(v @ Mv)
-        assert qf > IDENT * np.linalg.norm(v) * np.linalg.norm(Mv), (
-            f"k={k}: x^T M x = {qf} is not positive")
-
-
-@pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_re_mass_dense_is_spd(k):
-    """Densified M_k (rotating ellipse) is symmetric and SPD."""
-    M = _RE_DENSE[k]
-    npt.assert_allclose(M, M.T, atol=IDENT * np.abs(M).max(),
-                        err_msg=f"k={k}: dense M not symmetric")
-    eigvals = np.linalg.eigvalsh(M)
-    assert eigvals.min() > mrx.eps(10) * eigvals.max(), (
-        f"k={k}: dense M not SPD, lambda_min={eigvals.min()}, lambda_max={eigvals.max()}"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Hodge Laplacians (rotating ellipse, polar=True)
-#
-# We need incidence operators for the exterior derivative.  Extraction
-# operators are already on _RE_SEQ.get_operators() from __init__; we only
-# need to assemble G_0, G_1, G_2.
 # ---------------------------------------------------------------------------
-
-_OPS = assemble_incidence_operators(_RE_SEQ)
 
 # Betti numbers of a solid torus (clamped-r, free BCs): β=(1,1,0,0)
 _BETTI_FREE = {0: 1, 1: 1, 2: 0, 3: 0}
 # Betti numbers for DBC (relative cohomology): β_{d-k}, d=3
 _BETTI_DBC = {k: _BETTI_FREE[3 - k] for k in range(4)}
 
-# Extracted DOF counts per (k, dirichlet) pair.
-_N = {
-    (k, dbc): getattr(_RE_SEQ, f"n{k}_dbc" if dbc else f"n{k}")
-    for k in (0, 1, 2, 3)
-    for dbc in (False, True)
-}
-
-
-def _dense_mass_extracted(k: int, dirichlet: bool) -> np.ndarray:
-    n = _N[(k, dirichlet)]
-    return dense_from_apply(
-        lambda v: apply_mass_matrix(_RE_SEQ, _OPS, v, k, dirichlet=dirichlet), n
-    )
-
-
-def _dense_laplacian(k: int, dirichlet: bool) -> np.ndarray:
-    n_k = _N[(k, dirichlet)]
-    K = dense_from_apply(
-        lambda v: apply_stiffness(_RE_SEQ, _OPS, v, k, dirichlet=dirichlet), n_k
-    )
-    if k == 0:
-        return K
-    D_T = dense_from_apply(
-        lambda v: apply_derivative_matrix(
-            _RE_SEQ, _OPS, v, k - 1,
-            dirichlet_in=dirichlet, dirichlet_out=dirichlet,
-            transpose=True,
-        ),
-        n_k,
-    )  # shape (n_{k-1}, n_k)
-    M_km1_inv = np.linalg.inv(_dense_mass_extracted(k - 1, dirichlet))
-    return K + D_T.T @ M_km1_inv @ D_T
-
-
-_DENSE_LAP = {
-    (k, dbc): _dense_laplacian(k, dbc)
-    for k in (0, 1, 2, 3)
-    for dbc in (False, True)
-}
-
-_LAP_PARAMS = [(k, dbc) for k in (0, 1, 2, 3) for dbc in (False, True)]
-
 
 @pytest.mark.parametrize("k,dirichlet", _LAP_PARAMS)
-def test_laplacian_symmetry(k, dirichlet):
+def test_laplacian_symmetry(re_laplacians, k, dirichlet):
     """L_k is symmetric, to the accuracy of the dense M_{k-1}^-1 it carries."""
-    L = _DENSE_LAP[(k, dirichlet)]
+    L = re_laplacians[(k, dirichlet)]
     npt.assert_allclose(
         L, L.T, atol=ASYM * np.abs(L).max(),
         err_msg=f"k={k} dirichlet={dirichlet}: Laplacian not symmetric",
@@ -364,9 +271,9 @@ def test_laplacian_symmetry(k, dirichlet):
 
 
 @pytest.mark.parametrize("k,dirichlet", _LAP_PARAMS)
-def test_laplacian_psd(k, dirichlet):
+def test_laplacian_psd(re_laplacians, k, dirichlet):
     """L_k is positive semi-definite: no eigenvalue below the numerical zero."""
-    L = _DENSE_LAP[(k, dirichlet)]
+    L = re_laplacians[(k, dirichlet)]
     eigvals = np.linalg.eigvalsh(L)
     lam_max = float(abs(eigvals).max())
     assert eigvals.min() >= -BAND * lam_max, (
@@ -375,8 +282,8 @@ def test_laplacian_psd(k, dirichlet):
     )
 
 
-@pytest.mark.parametrize("k,dirichlet", [(k, dbc) for k in (0, 1, 2, 3) for dbc in (False, True)])
-def test_laplacian_null_space_dim(k, dirichlet):
+@pytest.mark.parametrize("k,dirichlet", _LAP_PARAMS)
+def test_laplacian_null_space_dim(re_laplacians, k, dirichlet):
     """Null space of L_k has dimension β_k (free BCs) or β_{d-k} (DBC).
 
     The count is the number of eigenvalues below ``BAND * lambda_max``. A
@@ -389,7 +296,7 @@ def test_laplacian_null_space_dim(k, dirichlet):
     >= 1.7e-4 lambda_max = 1.4e3 eps); in float64 the same bound leaves
     nine orders of margin on the far side.
     """
-    L = _DENSE_LAP[(k, dirichlet)]
+    L = re_laplacians[(k, dirichlet)]
     eigvals = np.linalg.eigvalsh(L)
     lam_max = float(abs(eigvals).max())
     band = BAND * lam_max
@@ -407,4 +314,3 @@ def test_laplacian_null_space_dim(k, dirichlet):
         assert abs(float(eigvals[expected - 1])) < band / 10, (
             f"k={k} dirichlet={dirichlet}: no spectral gap below the band -- "
             f"lambda_{expected - 1} = {float(eigvals[expected - 1]):.3e}; " + detail)
-
