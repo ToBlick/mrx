@@ -227,7 +227,7 @@ def main(cli):
     # --- geometry and operators ------------------------------------------
     t0 = time.perf_counter()
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter, tol=cli.tol)
-    ops = seq.assemble_all_sparse(include_preconditioners=False)
+    ops = seq.assemble_all_sparse()
     ops = op.assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
     seq.set_operators(ops)
     ops = op.assemble_metric_lumping_laplacian_preconditioner(

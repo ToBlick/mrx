@@ -367,7 +367,6 @@ def build_sequence_analytic(
     """Build sequence using an analytic toroidal map (no GVEC state)."""
     seq = _make_sequence(ns=ns, p=p, betti=betti, tol=tol, maxiter=maxiter)
     seq.evaluate_1d()
-    seq.assemble_reference_mass_matrix()
 
     map_raw, label = _build_analytic_map_raw(
         map_kind,

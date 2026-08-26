@@ -128,7 +128,7 @@ def build_seq(which, ns, degree, maxiter, a, h, eps, R0):
                 else toroid_map(epsilon=eps, kappa=1.0, R0=R0))
     ops = op.assemble_incidence_operators(seq)
     seq.set_operators(ops)
-    ops = seq.assemble_all_sparse(include_preconditioners=False)
+    ops = seq.assemble_all_sparse()
     ops = op.assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
     seq.set_operators(ops)
     ops = compute_nullspaces(seq, ops)
