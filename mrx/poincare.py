@@ -427,7 +427,7 @@ def enclosed_area(R, Z, centre_R, centre_Z):
     return 0.5 * jnp.abs(jnp.sum(cross, axis=-1))
 
 
-def midplane_radius(R, Z, centre_R, centre_Z):
+def midplane_radius(R, Z, centre_R, centre_Z, max_gap=0.5):
     """Distance from the magnetic axis to each surface on the OUTBOARD midplane.
 
     The surface label to prefer. Nested curves cross any fixed ray from the axis
@@ -461,9 +461,11 @@ def midplane_radius(R, Z, centre_R, centre_Z):
     Concave curvature is not the same as a ray crossing twice, and about the
     magnetic axis these sections are star-shaped either way.
 
-    Returns NaN for a surface whose crossings do not straddle the ray -- that
-    needs the orbit to miss an entire half-plane, so it is a real defect and is
-    left visible rather than patched.
+    Returns NaN for an orbit whose crossings do not straddle the ray within an
+    angular gap of ``max_gap``: a closed curve sampled by hundreds of crossings
+    always does, an island chain (crossings on separate lobes, the ray between
+    two of them) does not and neither does a broken trace. The NaN is the
+    statement that this orbit is not a nested surface with a midplane radius.
     """
     dR, dZ = R - centre_R, Z - centre_Z
     ang = jnp.arctan2(dZ, dR)
@@ -482,6 +484,12 @@ def midplane_radius(R, Z, centre_R, centre_Z):
     r_lo = take(rad, j[..., None], -1)[..., 0]
 
     straddles = (jnp.min(above, axis=-1) < jnp.inf) & (jnp.min(below, axis=-1) < jnp.inf)
+    # The interpolation assumes the two bracketing crossings are NEIGHBOURS on
+    # one curve. On an island chain they are on two different lobes with the
+    # ray passing between them, and the chord between the lobes crosses the
+    # ray anywhere -- measured 0.3-0.5 m for a 5/5 chain on a 0.25 m plasma.
+    # A gap wider than max_gap is not a curve crossing the ray.
+    straddles &= (a_hi - a_lo) <= max_gap
     t = (0.0 - a_lo) / (a_hi - a_lo)
     return jnp.where(straddles, r_lo + t * (r_hi - r_lo), jnp.nan)
 
@@ -556,13 +564,17 @@ def resonant_rationals(iota_min, iota_max, nfp, denom_max=30, min_sep=0.06):
 #: what the eye follows here. turbo's luminance ramp is better for a continuous
 #: field and worse for a stack of discrete curves.
 SECTION_CMAP = "gist_rainbow"
+#: Colormap for pressure. Sequential, because p is a magnitude with a zero,
+#: unlike iota which is read against its rationals.
+PRESSURE_CMAP = "plasma"
 
 
 def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
                    axis_RZ=None, path=None, profile_x=None,
                    profile_xlabel="seed radius $r$", nfp=None, denom_max=30,
                    logical=None, chaotic=None, pressure=None,
-                   pressure_label=r"$p$", cmap=SECTION_CMAP, iota_lim=None):
+                   pressure_label=r"$p$", split_iota_p=None,
+                   cmap=SECTION_CMAP, iota_lim=None):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -585,8 +597,23 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     band width measures how far that line is from ``B . grad p = 0``. Chaotic
     lines are drawn in grey: p is a field value and is well defined on them,
     only iota is not.
+
+    ``split_iota_p`` colours the section by iota ABOVE the magnetic axis and by
+    p BELOW it, in one panel; the default is on whenever ``pressure`` is given.
+    It needs ``axis_RZ`` and raises without it rather than quietly drawing a
+    half-empty panel: 'above' and 'below' are defined against the MAGNETIC
+    axis, not ``Z = 0``, which would cut a Shafranov-shifted plasma off-centre.
     """
     import matplotlib.pyplot as plt  # noqa: PLC0415  (keep the module headless)
+
+    if split_iota_p is None:
+        split_iota_p = pressure is not None
+    if split_iota_p and pressure is None:
+        raise ValueError("split_iota_p=True needs a pressure array: the "
+                         "below-axis half of the section is coloured by p.")
+    if split_iota_p and axis_RZ is None:
+        raise ValueError("split_iota_p=True needs axis_RZ: the split is at the "
+                         "magnetic axis, not at Z = 0.")
 
     has_p = pressure is not None
     if logical is None and not has_p:
@@ -627,10 +654,30 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     size = float(jnp.clip(3000.0 / npts, 0.35, 15.0))
     colour = jnp.broadcast_to(iota[:, None], R.shape)
 
+    # The split is per CROSSING, not per line: a surface straddles the axis, so
+    # the same line is iota-coloured where it is above and p-coloured below.
+    # axis_RZ carries the axis crossing at each save; the dividing line is
+    # their mean (the axis wanders by ~1e-3 of the minor radius over a period).
+    if split_iota_p:
+        z_axis = float(jnp.mean(jnp.asarray(axis_RZ[1])))
+        upper = Z >= z_axis
+    else:
+        z_axis = None
+        upper = jnp.ones_like(R, dtype=bool)
+    # `shown` selects LINES, `upper` selects CROSSINGS.
     shown2 = jnp.broadcast_to(shown[:, None], R.shape)
-    sc = ax.scatter(R[shown2], Z[shown2], c=colour[shown2],
+    sel_iota = shown2 & upper
+    sc = ax.scatter(R[sel_iota], Z[sel_iota], c=colour[sel_iota],
                     s=size, vmin=lo, vmax=hi, cmap=cmap, linewidths=0,
                     rasterized=True)
+    psc = None
+    if split_iota_p:
+        # Chaotic lines keep their grey in BOTH halves: colouring one half of
+        # a line and greying the other reads as two different objects.
+        sel_p = shown2 & ~upper
+        if sel_p.any():
+            psc = ax.scatter(R[sel_p], Z[sel_p], c=pressure[sel_p], s=size,
+                             cmap=PRESSURE_CMAP, linewidths=0, rasterized=True)
     if (keep & chaotic).any():
         m = keep & chaotic
         ax.scatter(R[m], Z[m], c="0.25", s=size, linewidths=0, rasterized=True,
@@ -658,6 +705,10 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         # everything else on the colorbar is a surface no island can open on.
         cbar.set_ticks(res_ticks)
         cbar.set_ticklabels(res_labels)
+    if psc is not None:
+        pbar = fig.colorbar(psc, ax=ax, label=pressure_label, fraction=0.046, pad=0.02)
+        pbar.ax.tick_params(labelsize=7)
+        ax.axhline(z_axis, color="0.35", lw=0.6, ls=":", zorder=1)
 
     # An axisymmetric vacuum field has iota = 0, so every line is a fixed point
     # of the return map and the section collapses onto the midplane.  That is
@@ -932,16 +983,20 @@ def surface_label(kind, R, Z, axis_R, axis_Z, seed_r):
     """The x-axis of the iota profile: one physical size per surface.
 
     Returns ``(values, xlabel)``.  ``seed`` is the fallback that needs no
-    geometry, and is the only one of the four that is not physical.
+    geometry, and is the only one of the four that is not physical. ``mean``
+    is the one to plot: it is defined for every line, island chains and
+    chaotic lines included, which ``midplane`` (NaN off a nested surface) and
+    ``area`` (needs a star-shaped curve) are not.
     """
     aR, aZ = float(np.mean(axis_R)), float(np.mean(axis_Z))
     Rj, Zj = jnp.asarray(R), jnp.asarray(Z)
     if kind == "midplane":
         # Monotone BY NESTING: nested curves cross a fixed ray from the axis at
         # strictly increasing distance, and fixing the ray also removes the
-        # crossing-point sampling weight that makes the mean non-monotone. NaN
-        # where an orbit misses the ray entirely, which is a broken trace saying
-        # so.
+        # crossing-point sampling weight that makes the mean non-monotone.
+        # NaN on an island chain: its crossings sit on lobes the ray passes
+        # between, and it has no midplane radius. Use ``mean`` for a figure
+        # that has to place every line.
         return (np.asarray(midplane_radius(Rj, Zj, aR, aZ)),
                 "outboard midplane distance to axis  [m]")
     if kind == "mean":

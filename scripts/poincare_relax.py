@@ -99,6 +99,11 @@ def main():
         for name in which:
             for plane in planes:
                 tag = f"{name}_zeta{plane:g}"
+                # The label is a rendering choice, not a trace result: recompute
+                # it so a re-render picks up the current definition.
+                a_eff, xlabel = surface_label("mean", z[f"{tag}_R"], z[f"{tag}_Z"],
+                                              z[f"{tag}_axisR"], z[f"{tag}_axisZ"],
+                                              z[f"{name}_seed_r"])
                 fig = render_section(
                     z[f"{tag}_R"], z[f"{tag}_Z"], z[f"{name}_iota"], z[f"{name}_resid"],
                     z[f"{name}_seed_r"], z[f"{name}_keep"],
@@ -107,7 +112,7 @@ def main():
                           f"-- {z[f'{tag}_R'].shape[1]} crossings/line",
                     subtitle=f"nfp = {nfp}   |   h/2 drift {float(z[f'{name}_drift']):.1e}   |   re-rendered from sections.npz",
                     axis_RZ=(z[f"{tag}_axisR"], z[f"{tag}_axisZ"]), path=None,
-                    profile_x=z[f"{tag}_a_eff"], profile_xlabel=str(z[f"{tag}_xlabel"]), nfp=nfp,
+                    profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
                     logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]), chaotic=z[f"{name}_chaotic"],
                     pressure=z[f"{tag}_pressure"] if f"{tag}_pressure" in z else None,
                     iota_lim=(lo, hi))
@@ -162,7 +167,7 @@ def main():
         for plane in planes:
             R, Z, aR, aZ, cR, cZ, lr, lth = section_RZ(
                 seq, res["ys"], res["axis"], cli.saves, plane)
-            a_eff, xlabel = surface_label("midplane", R, Z, aR, aZ, res["seeds"][:, 0])
+            a_eff, xlabel = surface_label("mean", R, Z, aR, aZ, res["seeds"][:, 0])
             press = pressure_at(name, lr, lth, plane)
             fig = render_section(
                 R, Z, res["iota"], res["resid"], res["seeds"][:, 0], keep,
