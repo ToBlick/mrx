@@ -75,8 +75,10 @@ HX transfers, `outer_rings`, the Fourier coarse correction
 Analytic maps are callables. Data maps are fitted by `seq.interpolate(f, 0)`
 on a polar map sequence (`build_gvec_map`, `build_w7x_map` in `mrx/gvec.py`;
 `greville_interpolate_map` in `mrx/geometry.py`). No reference mass matrix.
-Geometry lives on `SequenceGeometry` as `DF_jkl` and `jacobian_j` only; the
-metric, its inverse and every mass weight are formed from those on demand.
+Geometry lives on `SequenceGeometry` as `metric_jkl`, `metric_inv_jkl` and
+`jacobian_j`, built once per map; every mass weight is an elementwise product
+of those, memoised per degree in the element layout. `DF` is not stored --
+`load(frame='phys')` and `load_grid_field` recompute it at load time.
 
 ## Relaxation
 

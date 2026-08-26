@@ -432,10 +432,6 @@ class DeRhamSequence():
         return self._require_geometry().map
 
     @property
-    def DF_jkl(self):
-        return self._require_geometry().DF_jkl
-
-    @property
     def metric_jkl(self):
         return self._require_geometry().metric_jkl
 
@@ -680,16 +676,6 @@ class DeRhamSequence():
             raise ValueError(
                 'Assemble operators first, for example with assemble_all_sparse().')
         return operators
-
-    def set_geometry_terms(self, DF_jkl, jacobian_j):
-        """Replace the geometry tensors used by the operators.
-
-        ``DF_jkl`` (the map Jacobian at each quad point) and ``jacobian_j``
-        are the stored primitives; the metric ``DF^T DF`` and its inverse are
-        recovered on demand.  To inject a precomputed metric, provide the
-        ``DF`` it factors instead.
-        """
-        self.set_geometry(SequenceGeometry(self.map, DF_jkl, jacobian_j))
 
     def set_map(self, map):
         """Update the active logical-to-physical map and derived geometry terms."""

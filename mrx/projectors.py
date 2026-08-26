@@ -30,6 +30,7 @@ from scipy.sparse import csgraph
 
 import mrx
 from mrx.differential_forms import adj33, inv33
+from mrx.geometry import map_jacobian_at
 from mrx.quadrature import integrate_against
 
 if TYPE_CHECKING:
@@ -277,7 +278,11 @@ def load(seq: "DeRhamSequence", f, k: int,
     bc : bool  Use boundary-trace DOFs (takes precedence over dirichlet).
     frame : {'phys', 'ref'}
         ``'phys'`` (default): ``f`` returns components in the physical frame;
-        a DF-based pullback is applied internally.
+        a DF-based pullback is applied internally.  This (with
+        :func:`mrx.io.load_grid_field`) is the only consumer of the raw map
+        Jacobian, which the geometry does not store: ``DF`` is recomputed at
+        the quadrature points with :func:`mrx.geometry.map_jacobian_at`, once
+        per call.
 
         ``'ref'``: ``f`` returns the coefficients of the k-form expanded
         directly in reference coordinates dr, dχ, dζ (and their wedge
@@ -310,11 +315,13 @@ def load(seq: "DeRhamSequence", f, k: int,
 
     elif k == 1:
         if frame == 'phys':
-            # DF^{-1} v = G^{-1} DF^T v  (G = DF^T DF); reuse the precomputed
-            # DF and inverse metric instead of re-running jax.jacfwd on the map.
+            # DF^{-1} v = G^{-1} DF^T v  (G = DF^T DF).  DF is not stored on
+            # the geometry (this pullback and load_grid_field are its only
+            # consumers); it is recomputed here, once per load.
             v_q = jax.lax.map(f, seq.quad.x,
                                batch_size=mrx.MAP_BATCH_SIZE_INNER)
-            DFt_v = jnp.einsum('qji,qj->qi', seq.DF_jkl, v_q)   # DF^T @ v
+            DF_q = map_jacobian_at(seq.map, seq.quad.x)
+            DFt_v = jnp.einsum('qji,qj->qi', DF_q, v_q)         # DF^T @ v
             f_jk = jnp.einsum('qij,qj->qi', seq.metric_inv_jkl, DFt_v)
         else:
             f_jk = jax.lax.map(f, seq.quad.x,
@@ -323,11 +330,11 @@ def load(seq: "DeRhamSequence", f, k: int,
 
     elif k == 2:
         if frame == 'phys':
-            # 2-form pullback DF^T v; reuse the precomputed DF instead of
-            # re-running jax.jacfwd on the map.
+            # 2-form pullback DF^T v, with DF recomputed on demand (see k=1).
             v_q = jax.lax.map(f, seq.quad.x,
                                batch_size=mrx.MAP_BATCH_SIZE_INNER)
-            f_jk = jnp.einsum('qji,qj->qi', seq.DF_jkl, v_q)    # DF^T @ v
+            DF_q = map_jacobian_at(seq.map, seq.quad.x)
+            f_jk = jnp.einsum('qji,qj->qi', DF_q, v_q)          # DF^T @ v
         else:
             f_jk = jax.lax.map(f, seq.quad.x,
                                 batch_size=mrx.MAP_BATCH_SIZE_INNER)
