@@ -18,7 +18,6 @@ from types import SimpleNamespace
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))

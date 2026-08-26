@@ -1,26 +1,49 @@
 """No-mixing coupled k=1 curl-curl atom: per-tensor-mode 3x3 exact inverse.
 
-Keeps the inter-component C-terms. Weight class (the no-mixing policy):
-beta_cc ~ m_c(x_c) -- each channel keeps ONLY its own-axis marginal (with
-magnitude), derivative-axis ladders UNWEIGHTED, nothing mixed across
-channels. Per axis a there is then ONE pencil (M^N_a[m_a], K_a); the
-ladder W = g V^N drags the D-mass and cross factor along exactly
-(W^T M^D W = V^T K V = Lambda -> V^D = W Lambda^{-1/2}, cross -> sqrt(L)).
-The de Rham-compatible bulk windows (radial N-window start 2, D-window
-start 1; banded incidence) make the ladder identity exact even restricted,
-with equal radial N/D mode counts. Periodic axes have one lambda=0 mode
-whose ladder image vanishes; its V^D column slot is REPLACED by the
-M^D-orthonormal complement ("mean" D-mode), which lands exactly where the
-per-mode formula needs it: coupling s=0 decouples the slot and its
-diagonal (the formula never uses the own-axis lambda) is already correct.
+Library module without a CLI. ``benchmark_graddiv_k1_preconditioner.py``
+imports it by bare name (``scripts/benchmark`` is on its ``sys.path``)
+when ``--pa-block-coupled`` is passed.
 
-Per-mode 3x3 (s_a = sqrt(lambda_a)):
-  B = [[l_t+l_z, -s_r s_t, -s_r s_z],
-       [-s_r s_t, l_r+l_z, -s_t s_z],
-       [-s_r s_z, -s_t s_z, l_r+l_t]]
-with analytic null n = (s_r, s_t, s_z) (the mode's gradient), regularised
-by the grad-div surrogate + sigma * nn^T / |n|^2, sigma = l_r+l_t+l_z ->
-SPD, plain batched 3x3 inverse. Physics regularisation, no floors.
+Public functions:
+    build_k1_coupled_bulk_state(seq, dirichlet): Return a pytree dict with
+        the 1-D transform matrices ``VnR, VdR, VnT, VdT, VnZ, VdZ`` and the
+        batched 3x3 inverses ``Binv``. Everything static is baked in at
+        build time; the dict has no int leaves, so it passes through a
+        jitted solve.
+    apply_k1_coupled_bulk(state, rhs_bulk): Apply the atom to a flat bulk
+        1-form dual residual and return the flat bulk primal correction.
+
+Keep the inter-component C-terms. Weight class (the no-mixing policy):
+``beta_cc ~ m_c(x_c)``, each channel keeps only its own-axis marginal
+(with magnitude), derivative-axis ladders unweighted, nothing mixed across
+channels. Per axis ``a`` there is then one pencil ``(M^N_a[m_a], K_a)``;
+the ladder ``W = g V^N`` drags the D-mass and cross factor along exactly
+(``W^T M^D W = V^T K V = Lambda`` -> ``V^D = W Lambda^{-1/2}``, cross ->
+``sqrt(L)``). The de Rham-compatible bulk windows (radial N-window start
+2, D-window start 1; banded incidence) make the ladder identity exact
+even restricted, with equal radial N/D mode counts. Periodic axes have one
+``lambda=0`` mode whose ladder image vanishes; its ``V^D`` column slot is
+replaced by the ``M^D``-orthonormal complement (the mean D-mode), which
+lands where the per-mode formula needs it: coupling ``s=0`` decouples the
+slot and its diagonal (the formula never uses the own-axis lambda) is
+already correct.
+
+Per-mode 3x3 (``s_a = sqrt(lambda_a)``)::
+
+    B = [[l_t+l_z, -s_r s_t, -s_r s_z],
+         [-s_r s_t, l_r+l_z, -s_t s_z],
+         [-s_r s_z, -s_t s_z, l_r+l_t]]
+
+with analytic null ``n = (s_r, s_t, s_z)`` (the mode's gradient),
+regularised by the grad-div surrogate ``+ sigma * nn^T / |n|^2``,
+``sigma = l_r+l_t+l_z`` -> SPD, plain batched 3x3 inverse. Physics
+regularisation, no floors.
+
+Runtime:
+    Not measured.
+
+Output:
+    None; the functions return arrays.
 """
 import numpy as np
 import jax.numpy as jnp
@@ -39,7 +62,6 @@ from mrx.experimental.tensor_stiffness import (
 from mrx.preconditioners import (
     _arr_shape_k1,
     _theta_bulk_shape_k1,
-    _zeta_bulk_shape_k1,
     _simultaneous_diagonalize_pair,
 )
 
@@ -109,8 +131,7 @@ def build_k1_coupled_bulk_state(seq, dirichlet: bool):
 
     arr_shape = tuple(int(v) for v in _arr_shape_k1(seq, dirichlet))
     th_shape = tuple(int(v) for v in _theta_bulk_shape_k1(seq, dirichlet))
-    ze_shape = tuple(int(v) for v in _zeta_bulk_shape_k1(seq, dirichlet))
-    nrN, nt, nz = th_shape[0], arr_shape[1], arr_shape[2]
+    nrN, _nt, _nz = th_shape[0], arr_shape[1], arr_shape[2]
     nrD = arr_shape[0]
     types = seq.basis_0.types
     g_r = np.asarray(_dense_incidence_1d(seq.basis_0.nr, types[0]))

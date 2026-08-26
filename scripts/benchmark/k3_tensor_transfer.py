@@ -1,14 +1,30 @@
-"""k=3 transfer through the UNEXTRACTED tensor V0-dbc: square, full-rank, no surgery.
+"""k=3 transfer through the unextracted tensor V0-dbc: square, full-rank, no surgery.
 
-P_3 = T B0 T^T with:
-- T: V0-tensor(dbc) -> V3(free), Greville-collocated q3 = J * q0:
-  diag(J at the V3 Greville grid) . (E_r (x) E_t (x) E_z), E = 1D collocation
-  of the (windowed) N bases at the (windowed) D-basis Greville points. The
-  dbc radial N-window [1 : nr-1] has EXACTLY the V3 D-count (nr-1 ... after
-  dropping first+last: nr-2 = dr-1? both windows chosen size dr) -- square.
-- B0: exact Lynch inverse of the rank-1-fitted tensor L0 on that window
-  (pencils (M^N, K[p_a]) with fdbund own-axis profiles of g^{aa}J; the
-  unextracted axis modes are STIFF (1/r-weighted), not near-null).
+Library module without a CLI. ``benchmark_graddiv_k1_preconditioner.py``
+imports it by bare name (``scripts/benchmark`` is on its ``sys.path``)
+on the ``--klevel 3`` path when the environment variable
+``MRX_K3_TENSOR=1`` is set.
+
+Public functions:
+    build_k3_tensor_transfer(seq, ops): Return ``p3(r)``, a callable that
+        applies ``P_3 = T B0 T^T`` to a flat V3 dual residual and returns
+        the flat V3 primal correction.
+
+- ``T``: V0-tensor(dbc) -> V3(free), Greville-collocated ``q3 = J * q0``:
+  ``diag(J at the V3 Greville grid) . (E_r (x) E_t (x) E_z)``, ``E`` = 1-D
+  collocation of the (windowed) N bases at the (windowed) D-basis Greville
+  points. The dbc radial N-window ``[1 : nr-1]`` has exactly the V3
+  D-count, so ``T`` is square.
+- ``B0``: exact Lynch inverse of the rank-1-fitted tensor ``L0`` on that
+  window (pencils ``(M^N, K[p_a])`` with fdbund own-axis profiles of
+  ``g^{aa} J``; the unextracted axis modes are stiff, ``1/r``-weighted,
+  not near-null).
+
+Runtime:
+    Not measured.
+
+Output:
+    None; the returned callable produces arrays.
 """
 import numpy as np
 import jax.numpy as jnp

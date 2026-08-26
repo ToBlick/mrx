@@ -2,17 +2,12 @@
 # test_mappings.py
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
-import numpy as np
 import numpy.testing as npt
 import pytest
 
-import mrx
 from mrx.derham_sequence import DeRhamSequence, compute_geometry_terms
-from mrx.differential_forms import DiscreteFunction
 from mrx.io import project_sampled_field
-from mrx.mappings import (one_size_fits_all_map, cylinder_map, helical_map,
-                          interpolate_map, polar_map, rotating_ellipse_map,
+from mrx.mappings import (one_size_fits_all_map, interpolate_map, rotating_ellipse_map,
                           toroid_map)
 from mrx.utils import jacobian_determinant
 

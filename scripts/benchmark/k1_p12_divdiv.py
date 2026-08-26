@@ -1,27 +1,45 @@
-"""P12 div-div gradient machinery for k=1: P = P_A(coupled, raw) + P12 B_div P12^T.
+"""P12 div-div gradient machinery for k=1: ``P = P_A(coupled, raw) + P12 B_div P12^T``.
 
-NO L0 solves, NO projection (live with the overlap). The k=1 weak grad-div
-term is the same physical form int (div u)(div v) computed through the space
-ABOVE: transfer the 1-form proxy to 2-form space (where div is the strong,
-exact operator) and apply a div-div atom there.
+Library module without a CLI. ``benchmark_graddiv_k1_preconditioner.py``
+imports it by bare name (``scripts/benchmark`` is on its ``sys.path``)
+when the environment variable ``MRX_K1_PB=divdiv`` is set.
 
-- P12 here denotes Pi_21: V2 -> V1 primal (prolongation), so the
-  preconditioner term is Pi B Pi^T (dual -> dual -> primal -> primal).
-  Pointwise proxy identification v1 = (g/J) v2, Greville-collocated at each
-  V1 component's (windowed) grid: 9 blocks, each
-  diag((g_ab/J) at grid_a) . (E_r (x) E_t (x) E_z), E = 1D collocation
-  matrices of V2-component-b's windowed bases at V1-component-a's windowed
-  Greville abscissae. Adjoint = transpose.
-- B_div: the k=2 div-div atom by the coupled recipe. Single channel, weight
-  1/J with a full rank-1 mean-field fit m_r m_t m_z (a single channel has
-  no sharing conflicts). Paired ladders per axis (pencil (M^N, K[m_a]),
-  V^D = g V^N Lambda^{-1/2} against M^D[m_a]); per tensor mode the div-div
-  symbol is RANK-1: B = t t^T, t = (s_r, s_t, s_z) -> the capped pinv
-  t (t^T c)/|t|^4 IS the cap (zero on the curls = t-perp; P_A owns them).
-- BC FLIP (Tobias): the aux div-div uses the OPPOSITE BC (aux_dbc = not
-  dirichlet) -- integration by parts swaps essential/natural at the wall.
+Public functions:
+    build_p12_divdiv(seq, ops, dirichlet): Return ``p_div_bulk(r)``, a
+        callable that maps a flat bulk 1-form dual residual to the flat
+        bulk primal correction ``Pi B_div Pi^T r``.
 
-Bulk-only (the polar core is the surgery Schur's job, as for every atom).
+No ``L0`` solves, no projection (live with the overlap). The k=1 weak
+grad-div term is the same physical form ``int (div u)(div v)`` computed
+through the space above: transfer the 1-form proxy to 2-form space (where
+div is the strong, exact operator) and apply a div-div atom there.
+
+- ``P12`` denotes ``Pi_21: V2 -> V1`` primal (prolongation), so the
+  preconditioner term is ``Pi B Pi^T`` (dual -> dual -> primal -> primal).
+  Pointwise proxy identification ``v1 = (g/J) v2``, Greville-collocated at
+  each V1 component's (windowed) grid: 9 blocks, each
+  ``diag((g_ab/J) at grid_a) . (E_r (x) E_t (x) E_z)``, ``E`` = 1-D
+  collocation matrices of V2-component-b's windowed bases at
+  V1-component-a's windowed Greville abscissae. Adjoint = transpose.
+- ``B_div``: the k=2 div-div atom by the coupled recipe. Single channel,
+  weight ``1/J`` with a full rank-1 mean-field fit ``m_r m_t m_z`` (a
+  single channel has no sharing conflicts). Paired ladders per axis
+  (pencil ``(M^N, K[m_a])``, ``V^D = g V^N Lambda^{-1/2}`` against
+  ``M^D[m_a]``); per tensor mode the div-div symbol is rank-1,
+  ``B = t t^T``, ``t = (s_r, s_t, s_z)``, so the capped pinv
+  ``t (t^T c)/|t|^4`` is the cap (zero on the curls = t-perp; ``P_A`` owns
+  them).
+- BC flip: the auxiliary div-div uses the opposite BC
+  (``aux_dbc = not dirichlet``); integration by parts swaps essential and
+  natural at the wall.
+
+Bulk-only: the polar core is the surgery Schur's job, as for every atom.
+
+Runtime:
+    Not measured.
+
+Output:
+    None; the returned callable produces arrays.
 """
 import numpy as np
 import jax.numpy as jnp

@@ -145,7 +145,6 @@ def plot_convergence(rows: list[dict], out_fig: Path) -> dict[tuple[int, int | N
         return (p, -1 if q is None else q)
 
     series_list = sorted(by_series, key=sort_key)
-    ref_offsets = [1.4, 1.6, 1.8, 2.0]
     MARKERS = ["o", "s", "^", "D", "P", "v"]
     LINESTYLES = ["-", "--", "-.", ":", (0, (4, 1.5)), (0, (1, 1))]
     n_series = len(series_list)

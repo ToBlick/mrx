@@ -18,7 +18,6 @@ import pytest
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import toroid_map
-from mrx.utils import inv33
 
 jax.config.update("jax_enable_x64", True)
 

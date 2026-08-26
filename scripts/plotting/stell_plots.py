@@ -17,7 +17,6 @@ from mrx.io import parse_args
 from mrx.mappings import rotating_ellipse_map
 
 if __name__ == "__main__":
-    jax.config.update("jax_enable_x64", True)
 
     # Get user input
     params = parse_args()

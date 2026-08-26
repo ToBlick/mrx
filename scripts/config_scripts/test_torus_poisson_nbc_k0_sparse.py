@@ -1,26 +1,91 @@
-"""Convergence study for the k=0 Hodge–Laplacian with NBC on a toroidal domain.
+"""Convergence study for the k=0 Hodge Laplacian with natural conditions on a torus.
 
-Exact solution:  u₀ = cos(2πζ)
-Source:          f₀ = cos(2πζ) / R²   (= -Δ₀ u₀ on the torus)
+Solve ``-Δ₀ u = f`` on the axisymmetric toroid map with natural boundary
+conditions (NBC), one resolution after another, and record the relative L2
+error, the MINRES iteration count and every timing. The manufactured
+solution and source are
 
-k=0 NBC has a 1-dimensional harmonic nullspace spanned by the constant
-function.  Deflation is applied via the saddle-point MINRES solve.
+    u₀ = cos(2πζ),   f₀ = cos(2πζ)/R²   (= -Δ₀ u₀ on the torus).
 
-Supports both frame='ref' (pass scalar f₀ directly) and frame='phys'
-(identical for k=0 scalars, included for API consistency testing).
+k=0 NBC has a one-dimensional harmonic nullspace, the constants, which the
+saddle-point MINRES solve deflates. Both load frames are supported;
+``frame='ref'`` and ``frame='phys'`` coincide for scalars and are kept for
+API consistency.
 
-Diagnostics logged per run:
-  - Relative L² error of the scalar solution
-  - MINRES iteration count and convergence flag
-  - ||D₀ h||₂  (curl of the nullspace constant — should be ≈ 0)
-  - Nullspace vector residual  ||L₀ h||₂
+Diagnostics logged per resolution:
 
-Usage (from repo root):
-    python scripts/config_scripts/test_torus_poisson_nbc_k0_sparse.py -m p=1,2,3 n=8,12,16,20
+- relative L² error of the scalar solution,
+- MINRES iteration count and convergence flag,
+- ``||D₀ h||₂`` (gradient of the harmonic constant, expected ≈ 0),
+- nullspace residual ``||L₀ h||₂``.
+
+Configuration:
+    Hydra config ``conf/config_poisson_test.yaml``, schema
+    ``mrx.config.PoissonTestConfig``. Override any key as ``key=value``.
+
+    n (list[int] | int): Radial resolutions, run one after another; the
+        grid is ``ns = (n, 2n, n)``. An int runs a single resolution.
+        Default ``[8, 12, 16, 24, 32, 48, 64]``.
+    p (int): Spline degree in every direction. Default 3.
+    epsilon (float): Minor radius of ``toroid_map`` (major radius 1).
+        Default 1/3.
+    quad_order (int | None): Gauss quadrature order per direction. ``None``
+        selects ``2*p + quad_order_offset``. Default ``None``.
+    quad_order_offset (int): Offset on ``2*p``. Dataclass default 4; the
+        yaml sets 0.
+    cg_maxiter (int): Iteration cap of the Laplacian solve. Dataclass
+        default 100000; the yaml sets 50000.
+    solver_tol (float | None): Relative residual tolerance of every
+        iterative solve in the sequence. ``None`` selects ``sqrt(eps)`` of
+        the working precision; the yaml sets 1e-9.
+    precision (str): ``float64`` (default) or ``float32``. Read from argv
+        and exported as ``MRX_DTYPE`` before ``mrx`` is imported.
+    map_batch_size_inner (int): ``mrx.MAP_BATCH_SIZE_INNER``; 0 means
+        ``vmap``. Default 0.
+    map_batch_size_outer (int | None): ``mrx.MAP_BATCH_SIZE_OUTER``;
+        ``None`` means no batching. Default ``None``.
+    load_frame (str): ``'ref'`` passes the reference components of the
+        source, ``'phys'`` the physical field (see ``mrx.projectors.load``).
+        Default ``'ref'``.
+
+Usage:
+    Single run, all listed n in one process::
+
+        python -u scripts/config_scripts/test_torus_poisson_nbc_k0_sparse.py p=3
+        python -u scripts/config_scripts/test_torus_poisson_nbc_k0_sparse.py p=2 n=16 precision=float32
+
+    Single GPU job through ``slurm/run.sh``::
+
+        SCRIPT=scripts/config_scripts/test_torus_poisson_nbc_k0_sparse.py ARGS="p=3 n=16" \
+            JOB_NAME=pois_nbc_k0 MEM_GB=80 TIMEOUT_MIN=120 bash slurm/run.sh
+
+    Multirun, one submitit job per (p, n) pair. Needs ``SLURM_ACCOUNT``,
+    ``SLURM_PARTITION`` and ``MRX_ROOT`` exported; the launcher allots one
+    GPU, 80 GB and 120 min per job::
+
+        python scripts/config_scripts/test_torus_poisson_nbc_k0_sparse.py -m p=2,3 n=8,16
+
+Runtime:
+    Not measured. The multirun launcher allots one GPU, 80 GB and 120 min
+    per job.
+
+Output:
+    Single run: ``outputs/<date>/<time>/result.json``, a list with one entry
+    per n, rewritten after every n so an OOM at a later n keeps the earlier
+    results. Multirun: ``multirun/<date>/<time>/<job>/result.json``. Through
+    ``slurm/run.sh`` the stdout log is
+    ``outputs/<JOB_NAME>/<date>/<time>/<JOB_NAME>.log``.
 """
 import json
 import os
 import time
+
+import sys
+# The working precision is chosen before mrx is imported; hydra only hands
+# the config over inside main(), so the override is read from argv here.
+os.environ["MRX_DTYPE"] = next(
+    (a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("precision=")),
+    os.environ.get("MRX_DTYPE", "float64"))
 
 import hydra
 import jax
@@ -40,7 +105,6 @@ from mrx.operators import (
 )
 from mrx.quadrature import evaluate_at_xq
 
-jax.config.update("jax_enable_x64", True)
 
 # ---------------------------------------------------------------------------
 # Problem constants
@@ -73,7 +137,7 @@ def u0_exact(x):
 # Core computation
 # ---------------------------------------------------------------------------
 def compute_error(n: int, p: int, epsilon: float,
-                  cg_tol: float, cg_maxiter: int,
+                  solver_tol: float, cg_maxiter: int,
                   quad_order, quad_order_offset: int,
                   load_frame: str):
     timings = {}
@@ -88,7 +152,7 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     seq = DeRhamSequence(
         ns, ps, q, types, polar=True,
-        tol=cg_tol, maxiter=cg_maxiter,
+        tol=solver_tol, maxiter=cg_maxiter,
         betti_numbers=BETTI,
     )
     seq.set_map(F)
@@ -190,7 +254,10 @@ def compute_error(n: int, p: int, epsilon: float,
 # ---------------------------------------------------------------------------
 @hydra.main(config_path="../../conf", config_name="config_poisson_test", version_base=None)
 def main(cfg: DictConfig):
-    print(f"x64 enabled: {jax.config.jax_enable_x64}")
+    print(f"precision: {mrx.DTYPE}  solver_tol: {cfg.solver_tol}")
+    if cfg.precision != str(mrx.DTYPE):
+        raise ValueError(f"precision={cfg.precision} but mrx runs in {mrx.DTYPE}; "
+                         "MRX_DTYPE was not set before import")
     ns = [cfg.n] if isinstance(cfg.n, int) else list(cfg.n)
     p, load_frame = cfg.p, cfg.load_frame
     mrx.MAP_BATCH_SIZE_INNER = cfg.map_batch_size_inner
@@ -205,7 +272,7 @@ def main(cfg: DictConfig):
     for n in ns:
         print(f"\n{'='*60}\n  n={n}, p={p}\n{'='*60}")
         result = compute_error(
-            n, p, cfg.epsilon, cfg.cg_tol, cfg.cg_maxiter,
+            n, p, cfg.epsilon, cfg.solver_tol, cfg.cg_maxiter,
             cfg.quad_order, cfg.quad_order_offset, load_frame,
         )
         results.append(result)

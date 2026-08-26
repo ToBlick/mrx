@@ -10,7 +10,6 @@ Two checks per test run (shared module-scoped assembly):
 
 import jax
 import jax.numpy as jnp
-import numpy.testing as npt
 import pytest
 
 from mrx.derham_sequence import DeRhamSequence
@@ -19,7 +18,6 @@ from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import cylinder_map
 from mrx.relaxation import compute_force
 
-jax.config.update("jax_enable_x64", True)
 
 # ---------------------------------------------------------------------------
 # Analytical z-pinch helpers

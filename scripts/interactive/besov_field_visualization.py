@@ -22,7 +22,6 @@ from mrx.differential_forms import Pullback, Pushforward
 from mrx.mappings import rotating_ellipse_map
 from test.random_fields import build_random_besov_function
 
-jax.config.update("jax_enable_x64", True)
 
 
 # %% Configuration

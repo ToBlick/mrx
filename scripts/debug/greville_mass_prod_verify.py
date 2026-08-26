@@ -7,10 +7,12 @@ greville_bulk_precond.py iteration counts (cyl ~8, toroid ~12-14, w7x k0/k3 ~18-
 w7x k1/k2 higher) and converge everywhere with bad_D=0.
 """
 from __future__ import annotations
-import argparse, os, sys
+import argparse
+import os
+import sys
 from types import SimpleNamespace
-import jax, jax.numpy as jnp
-jax.config.update("jax_enable_x64", True)
+import jax
+import jax.numpy as jnp
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))

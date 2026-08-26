@@ -1,68 +1,48 @@
 #!/bin/bash
-# Sweep around the W1 case (w7x-fmm002, Clebsch IC, cg) -- the one that kept
-# its nested surfaces.  Every arm renders Poincare, because "did the surfaces
-# survive" is the question and no scalar invariant answers it (handoff s12).
+# Sweep around the W1 case (w7x-fmm002, Clebsch IC, cg).
 #
-# Budget: each job is one GPU.  The 8,16,8 baseline is ~1 GPU-h for 3000
-# steps + tracing; the resolution arms are the expensive ones.  Total well
-# under the 200 GPU-h ceiling -- estimated ~45.
+# W1 is the arm that kept its nested surfaces. The axes: resolution
+# (S01, S02), degree (S03), hyperregularisation gamma/mu (S04-S06), length
+# (S07), resistivity eta (S08-S10), optimiser (S11) and lambda off (S12:
+# fluxes, iota and helicity must not move; the force and pressure must).
+# Rank arms on |dH| per unit energy removed. ~45 GPU-h in total; the
+# 8,16,8 arms are ~1 GPU-h each, the resolution arms are the expensive ones.
+#
+# Usage: run from anywhere; MRX_ROOT defaults to the repository containing
+# this file. Site settings come from slurm/site.env or the environment
+# (slurm/README.md). Each arm is one single-GPU job through slurm/run.sh
+# running scripts/relax.py; logs land under outputs/sweep_w1/<date>/<time>/,
+# results (relax.json, B.h5) under $OUT/<tag>/.
+#
+# The arms stop on the energy floor (relax.py --floor-tol) or on --steps /
+# --seconds, whichever comes first. relax.py does not render Poincare
+# sections; B.h5 holds the initial and final fields for that.
 set -u
-# RUN FROM THE REPO ROOT: the paths below (slurm/job_relax_prelim.sh)
-# are relative to it, not to this file's directory.
-G="--geometry w7x-fmm002 --ic clebsch"
-PC="--poincare --pc-seeds 40 --pc-periods 150"
-O=/scratch/tblickhan/mrx/out/relax_prelim
-S=slurm/job_relax_prelim.sh
+MRX_ROOT=${MRX_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
+OUT=${OUT:-outputs/sweep_w1/results}
 
-sub () {  # sub <tag> <extra sbatch args> -- <script args>
-  tag=$1; shift
-  sbatch_args=""
-  while [ "$1" != "--" ]; do sbatch_args="$sbatch_args $1"; shift; done
-  shift
-  mkdir -p "$O/$tag"
-  # shellcheck disable=SC2086
-  jid=$(sbatch $sbatch_args "$S" "$@" --save-b "$O/$tag/B.h5" \
-        --out "$O/$tag/$tag.json" | awk '{print $4}')
-  echo "$tag -> $jid"
-  ln -sfn "/scratch/tblickhan/mrx/logs/relaxprelim_$jid.out" \
-     "$O/logs/live_$tag.out"
+# sub <tag> <walltime minutes> <relax.py args...>
+sub () {
+  tag=$1; minutes=$2; shift 2
+  mkdir -p "$MRX_ROOT/$OUT/$tag"
+  SCRIPT=scripts/relax.py JOB_NAME="$tag" OUTSUB="sweep_w1" TIMEOUT_MIN="$minutes" \
+    ARGS="$* --out $OUT/$tag" MRX_ROOT="$MRX_ROOT" bash "$MRX_ROOT/slurm/run.sh"
 }
 
-# --- RESOLUTION: the axis the handoff flags as gap #1 --------------------
-sub S01_res12  --time=6:00:00 -- $G --ns 12,24,12 --p 3 --steps 3000 \
-    --helicity-every 250 --seconds-per-arm 12000 --arms cg $PC
-sub S02_res16  --time=6:00:00 -- $G --ns 16,32,16 --p 3 --steps 2000 \
-    --helicity-every 250 --seconds-per-arm 12000 --arms cg $PC
-sub S03_p4     --time=6:00:00 -- $G --ns 8,16,8 --p 4 --steps 3000 \
-    --helicity-every 250 --seconds-per-arm 12000 --arms cg $PC
+G="--geometry w7x-fmm002 --ic clebsch --method cg"
 
-# --- GAMMA / MU ----------------------------------------------------------
-sub S04_g1mu3  --time=4:00:00 -- $G --ns 8,16,8 --p 3 --steps 3000 \
-    --helicity-every 250 --gamma 1 --mu 1e-3 --seconds-per-arm 9000 --arms cg $PC
-sub S05_g1mu2  --time=4:00:00 -- $G --ns 8,16,8 --p 3 --steps 3000 \
-    --helicity-every 250 --gamma 1 --mu 1e-2 --seconds-per-arm 9000 --arms cg $PC
-sub S06_g2mu3  --time=4:00:00 -- $G --ns 8,16,8 --p 3 --steps 2000 \
-    --helicity-every 250 --gamma 2 --mu 1e-3 --seconds-per-arm 9000 --arms cg $PC
+sub S01_res12 360 $G --ns 12,24,12 --p 3 --steps 3000 --diag-every 250 --seconds 12000
+sub S02_res16 360 $G --ns 16,32,16 --p 3 --steps 2000 --diag-every 250 --seconds 12000
+sub S03_p4    360 $G --ns 8,16,8 --p 4 --steps 3000 --diag-every 250 --seconds 12000
+sub S04_g1mu3 240 $G --ns 8,16,8 --p 3 --steps 3000 --diag-every 250 --gamma 1 --mu 1e-3 --seconds 9000
+sub S05_g1mu2 240 $G --ns 8,16,8 --p 3 --steps 3000 --diag-every 250 --gamma 1 --mu 1e-2 --seconds 9000
+sub S06_g2mu3 240 $G --ns 8,16,8 --p 3 --steps 2000 --diag-every 250 --gamma 2 --mu 1e-3 --seconds 9000
+sub S07_long  240 $G --ns 8,16,8 --p 3 --steps 14000 --diag-every 500 --seconds 11000
+sub S08_eta4  240 $G --ns 8,16,8 --p 3 --steps 4000 --diag-every 250 --eta-max 1e-4 --seconds 9000
+sub S09_eta3  240 $G --ns 8,16,8 --p 3 --steps 4000 --diag-every 250 --eta-max 1e-3 --seconds 9000
+sub S10_eta2  240 $G --ns 8,16,8 --p 3 --steps 4000 --diag-every 250 --eta-max 1e-2 --seconds 9000
+sub S11_grad  240 --geometry w7x-fmm002 --ic clebsch --method gradient --ns 8,16,8 --p 3 --steps 3000 --diag-every 250 --seconds 4500
+sub S11_lbfgs 240 --geometry w7x-fmm002 --ic clebsch --method lbfgs --ns 8,16,8 --p 3 --steps 3000 --diag-every 250 --seconds 4500
+sub S12_nolam 240 $G --ns 8,16,8 --p 3 --steps 3000 --diag-every 250 --no-lambda --seconds 9000
 
-# --- LENGTH: does it converge, or keep grinding? --------------------------
-sub S07_long   --time=4:00:00 -- $G --ns 8,16,8 --p 3 --steps 14000 \
-    --helicity-every 500 --seconds-per-arm 11000 --arms cg $PC
-
-# --- ETA: relax the topological constraint --------------------------------
-sub S08_eta4   --time=4:00:00 -- $G --ns 8,16,8 --p 3 --steps 4000 \
-    --helicity-every 250 --eta-max 1e-4 --seconds-per-arm 9000 --arms cg $PC
-sub S09_eta3   --time=4:00:00 -- $G --ns 8,16,8 --p 3 --steps 4000 \
-    --helicity-every 250 --eta-max 1e-3 --seconds-per-arm 9000 --arms cg $PC
-sub S10_eta2   --time=4:00:00 -- $G --ns 8,16,8 --p 3 --steps 4000 \
-    --helicity-every 250 --eta-max 1e-2 --seconds-per-arm 9000 --arms cg $PC
-
-# --- OPTIMIZER, on a case known to behave --------------------------------
-sub S11_opt    --time=4:00:00 -- $G --ns 8,16,8 --p 3 --steps 3000 \
-    --helicity-every 250 --seconds-per-arm 4500 --arms gradient,lbfgs $PC
-
-# --- STRUCTURE: lambda off.  Fluxes, iota and helicity must NOT move;
-#     the force and the pressure must.  A gate the IC route asserts. --------
-sub S12_nolam  --time=4:00:00 -- $G --ns 8,16,8 --p 3 --steps 3000 \
-    --helicity-every 250 --no-lambda --seconds-per-arm 9000 --arms cg $PC
-
-echo "submitted"
+echo "submitted 13 arms"

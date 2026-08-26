@@ -25,9 +25,7 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
-import jax
 
-jax.config.update("jax_enable_x64", True)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))
@@ -61,8 +59,8 @@ def reduced_weights(seq, ring0=1):
 def line_spread(W, tq, zq, wt, wz, rho):
     """Weighted mean over helical lines (label = theta at zeta=0) of
     std/mean along the line, for pitch rho (theta turns per zeta period)."""
-    tq = np.asarray(tq); zq = np.asarray(zq)
-    n_t = tq.size
+    tq = np.asarray(tq)
+    zq = np.asarray(zq)
     t_ext = np.concatenate([tq - 1.0, tq, tq + 1.0])
     lines = np.empty_like(W)
     for k in range(zq.size):

@@ -1,28 +1,20 @@
 # %%
-from time import time
 
 import h5py
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-import numpy.testing as npt
-import pytest
 from jax.scipy.interpolate import RegularGridInterpolator
 from scipy.ndimage import distance_transform_edt
 
 import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.io import interpolate_scalar_function
-from mrx.mappings import (one_size_fits_all_map, cylinder_map, helical_map,
-                          interpolate_map, polar_map, rotating_ellipse_map,
-                          toroid_map)
-from mrx.solvers import solve_singular_cg
-from mrx.differential_forms import det33, inv33, jacobian_determinant
-from mrx.quadrature import evaluate_at_xq, integrate_against
+from mrx.mappings import (interpolate_map)
+from mrx.differential_forms import inv33, jacobian_determinant
+from mrx.quadrature import integrate_against
 
-jax.config.update("jax_enable_x64", True)
 
 nfs_path = "data/gvec_nfp3_hegna_80cubed_clebsch.h5"
 

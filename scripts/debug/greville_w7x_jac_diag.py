@@ -3,14 +3,15 @@
 Compares J at QUADRATURE points (what CP uses, finite/positive) vs at the bulk
 0-form GREVILLE abscissae (what the Greville collocation diagonal D uses).
 """
-import os, sys
+import os
+import sys
 from types import SimpleNamespace
 import numpy as np
-import jax, jax.numpy as jnp
-jax.config.update("jax_enable_x64", True)
+import jax
+import jax.numpy as jnp
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "benchmark"))
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "benchmark"))
 from benchmark_graddiv_k1_preconditioner import build_sequence
 from mrx.geometry import compute_geometry_terms
 from mrx.preconditioners import _bulk_tensor_shape
