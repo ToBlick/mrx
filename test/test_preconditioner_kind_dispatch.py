@@ -62,8 +62,7 @@ STRUCTURAL_KINDS = {
     "auto",
 }
 
-# Every kind name production code may legitimately construct. raw_kron was
-# deleted 2026-08-25; 'tensor' before it.
+# Every kind name production code may legitimately construct.
 LIVE_KINDS = {"none", "jacobi", "metric_lumping", "auto"}
 
 # Functions whose `kind=` keyword is a preconditioner kind. Named explicitly:

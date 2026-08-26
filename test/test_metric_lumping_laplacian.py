@@ -436,13 +436,7 @@ def test_first_apply_inside_a_trace_does_not_poison_the_instance(tiny_seq):
 def test_metric_lumping_mass_is_the_default_and_jit_safe(tiny_seq):
     """`metric_lumping` IS the production mass preconditioner, and works in a trace.
 
-    This test used to be `..._is_wired_but_not_default` and compared two arms,
-    metric_lumping against raw_kron. raw_kron was deleted on 2026-08-25 after the
-    A/B recorded in docs/research/result_2026-08-25_schur_probe_ab.md, so the
-    comparison is gone and the "not the default" claim is now false -- it is the
-    only mass preconditioner besides jacobi and none.
-
-    What survives is the part that was load-bearing: the build is host-side
+    The load-bearing part: the build is host-side
     numpy, so an apply that touches the host dies with
     TracerArrayConversionError inside `solve_singular_cg`'s `jax.lax.while_loop`
     while working perfectly on a concrete array. That is exactly how an earlier
@@ -464,7 +458,7 @@ def test_metric_lumping_mass_is_the_default_and_jit_safe(tiny_seq):
     rng = np.random.default_rng(5)
     v = jnp.asarray(rng.standard_normal(n))
 
-    spec = MassPreconditionerSpec(kind='metric_lumping', surgery_schur=False)
+    spec = MassPreconditionerSpec(kind='metric_lumping')
     out = _build_operator_preconditioner_apply(
         tiny_seq, ops, k=k, dirichlet=dbc, operator_apply=None,
         preconditioner=spec)(v)
@@ -477,19 +471,14 @@ def test_metric_lumping_mass_is_the_default_and_jit_safe(tiny_seq):
     assert np.all(np.isfinite(np.asarray(jax.jit(fn)(v)))), (
         "metric_lumping is not usable under jit")
 
-    # ... and a nonsensical spec fails loudly rather than quietly doing
-    # something else. Checked at k=1, NOT at the k=3 used above:
-    # `_normalize_mass_preconditioner_spec_for_degree` rewrites specs only at
-    # k=3, where it strips `surgery_schur` and substitutes the smoother, so
-    # these guards are unreachable there.
-    # Both raise before anything is built, so this costs nothing.
-    for bad in (MassPreconditionerSpec(kind='metric_lumping', surgery_schur=True),
-                MassPreconditionerSpec(kind='metric_lumping',
-                                       smoother=MassPreconditionerSpec(kind='jacobi'))):
-        with pytest.raises(ValueError):
+    # ... and a spec naming a kind that does not exist fails loudly rather
+    # than quietly doing something else, at every degree. It raises before
+    # anything is built, so this costs nothing.
+    for bad_k in (0, 1, 2, 3):
+        with pytest.raises(ValueError, match="preconditioner kind"):
             _build_operator_preconditioner_apply(
-                tiny_seq, ops, k=1, dirichlet=dbc, operator_apply=None,
-                preconditioner=bad)
+                tiny_seq, ops, k=bad_k, dirichlet=dbc, operator_apply=None,
+                preconditioner=MassPreconditionerSpec(kind='no_such_kind'))
 
 
 def test_probed_diagonal_is_the_honest_reference(tiny_seq):

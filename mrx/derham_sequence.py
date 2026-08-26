@@ -59,7 +59,7 @@ _EXTRACTION_OPERATOR_NAMES = (
 
 
 def _drop_schur_diaginv(operators):
-    """Clear every stored Schur-Jacobi diagonal and its mode tag.
+    """Clear every stored Schur-Jacobi diagonal.
 
     These are the one geometry-dependent cache that cannot look after itself.
     ``seq._metric_lumping_laplacian`` is deleted by ``set_geometry`` and
@@ -74,7 +74,6 @@ def _drop_schur_diaginv(operators):
     for k in (1, 2, 3):
         for suffix in ('', '_dbc'):
             fields.append(f'schur_diaginv_k{k}{suffix}')
-            fields.append(f'schur_diaginv_mode_k{k}{suffix}')
     values = [None] * len(fields)
     return eqx.tree_at(
         lambda ops: tuple(getattr(ops, f) for f in fields),
