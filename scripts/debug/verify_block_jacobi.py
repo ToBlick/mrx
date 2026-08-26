@@ -36,68 +36,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import mrx  # noqa: E402
 import mrx.operators as op  # noqa: E402
-from mrx.derham_sequence import DeRhamSequence  # noqa: E402
+from mrx.geometries import build_sequence  # noqa: E402, F401  (re-exported: 22 debug scripts import it from here)
 from mrx.experimental.metric_lumping_coarse import (  # noqa: E402
     CoarseCorrectedMetricLumping,
 )
 from mrx.metric_lumping_laplacian import (  # noqa: E402
     MetricLumpingLaplacian)
-from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: E402
 from mrx.nullspace import compute_nullspaces, get_nullspace  # noqa: E402
 
 mrx.MAP_BATCH_SIZE_INNER = int(os.environ.get("W7X_MAP_BATCH", "256"))
-
-
-def build_sequence(geometry, ns, p, maxiter, inner_tol=1e-12):
-    seq = DeRhamSequence(ns, (p,) * 3, 2 * p, ("clamped", "periodic", "periodic"),
-                         polar=True, tol=inner_tol, maxiter=maxiter,
-                         betti_numbers=(1, 1, 0, 0))
-    seq.evaluate_1d()
-    if geometry == "toroid":
-        seq.set_map(toroid_map(epsilon=1 / 3, R0=1.0))
-    elif geometry == "cylinder":
-        # Periodic cylinder F(r,chi,z) = (a r cos2pi chi, a r sin2pi chi, h z).
-        # a = 0.33 keeps the minor radius comparable to the toroid's; h = 1.0.
-        # ZERO angular metric variation -- the least-coupled geometry there is,
-        # and so the zero-coupling end of the s_opt trend (see handoff 17.6).
-        seq.set_map(cylinder_map(a=0.33, h=1.0))
-    elif geometry == "rot-ellipse":
-        # Same parameters as every other debug script in this directory
-        # (modal_radial_gate, radial_profile_pairs).
-        seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.5, nfp=3))
-    elif geometry == "w7x":
-        from w7x_geometry import build_w7x_map  # noqa: PLC0415
-        map_func, _ = build_w7x_map(map_ns=ns, p=p)
-        seq.set_map(map_func)
-        jac = np.asarray(seq.geometry.jacobian_j)
-        if not np.isfinite(jac).all() or jac.min() <= 0:
-            raise RuntimeError("W7-X geometry is degenerate")
-    else:
-        # The GVEC flat-schema exports: quasr (nfp=2,3), a second W7-X source
-        # (nfp=5) and hegna (nfp=3, 80^3). Handedness is measured, not assumed
-        # -- raw GVEC data is mirrored relative to mrx.mappings.stellarator_map
-        # and would otherwise arrive with det DF < 0. See gvec_geometry.py.
-        from gvec_geometry import (  # noqa: PLC0415
-            GVEC_GEOMETRIES, GVEC_NFP_OVERRIDE, build_gvec_map)
-        map_func, info = build_gvec_map(
-            GVEC_GEOMETRIES[geometry], map_ns=ns, p=p,
-            nfp=GVEC_NFP_OVERRIDE.get(geometry))
-        print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
-              f"det DF in [{info['det_range'][0]:.3e}, "
-              f"{info['det_range'][1]:.3e}]", flush=True)
-        seq.set_map(map_func)
-        jac = np.asarray(seq.geometry.jacobian_j)
-        if not np.isfinite(jac).all() or jac.min() <= 0:
-            raise RuntimeError(f"{geometry} geometry is degenerate")
-    ops = op.assemble_incidence_operators(seq)
-    ops = op.assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
-    # The block-Jacobi atoms, explicitly. compute_nullspaces no longer builds
-    # them behind the caller's back, and the k>=1 saddle default REQUIRES them.
-    ops = op.assemble_metric_lumping_laplacian_preconditioner(
-        seq, ops, ks=(0, 1, 2, 3), dirichlets=(False, True))
-    op.warm_mass_preconditioner_cache(seq, ops)
-    seq.set_operators(ops)
-    return seq, ops
 
 
 def make_projector(vecs):

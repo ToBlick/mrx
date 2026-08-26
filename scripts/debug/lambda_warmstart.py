@@ -205,9 +205,9 @@ def main():
         map_fn = toroid_map(epsilon=cli.eps, kappa=1.0, R0=cli.R0)
         nfp = 1
     else:
-        from gvec_geometry import GVEC_GEOMETRIES, build_gvec_map  # noqa: PLC0415
+        from mrx.gvec import build_gvec_map, gvec_path  # noqa: PLC0415
         ns = tuple(int(v) for v in cli.map_ns.split(","))
-        map_fn, info = build_gvec_map(GVEC_GEOMETRIES["hegna"],
+        map_fn, info = build_gvec_map(gvec_path("hegna"),
                                       map_ns=ns, p=cli.map_p)
         nfp = info["nfp"]
         print(f"[geom] hegna nfp={nfp} sign={info['sign']:+.0f}")
@@ -254,13 +254,14 @@ def main():
 
     else:
         import h5py  # noqa: PLC0415
-        with h5py.File(GVEC_GEOMETRIES["hegna"], "r") as h:
+        from mrx.gvec import gvec_path  # noqa: PLC0415
+        with h5py.File(gvec_path("hegna"), "r") as h:
             S = (int(h.attrs["n_rho"]), int(h.attrs["n_theta"]),
                  int(h.attrs["n_zeta"]))
             Lt = np.asarray(h["clebsch"]["dLA_dt"]).reshape(S)
             Lz = np.asarray(h["clebsch"]["dLA_dz"]).reshape(S) / nfp
             rho_d = np.unique(np.asarray(h["eval_points"])[:, 0])
-        # GVEC grid -> MRX normalised lambda derivatives (see gvec_clebsch_ic)
+        # GVEC grid -> MRX normalised lambda derivatives (see mrx.gvec.load_clebsch)
         print("\n[check] general solve vs GVEC's own lambda")
         print("    rho   corr(lam_chi)  rel.resid  |  corr(lam_zeta)  rel.resid")
         out = []

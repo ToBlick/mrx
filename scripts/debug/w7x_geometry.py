@@ -2,10 +2,9 @@
 
 W7-X.h5 provides R(rho,theta,zeta) and Z(rho,theta,zeta) on a 50^3 grid in
 logical coordinates rho in [0,1], theta in [0,2pi), zeta in [0,2pi/nfp) with
-nfp=5. We bridge the grid through a (jax) RegularGridInterpolator to get
-pointwise R_fn/Z_fn, GREVILLE-interpolate each as a scalar 0-form onto a spline
-basis (the recommended path -- see test/test_geometry.py::
-test_greville_interpolation_R_Z), and wrap them in mrx.mappings.stellarator_map.
+nfp=5. The loader is ``mrx.gvec.build_w7x_map`` (linear grid bridge, Greville
+interpolation of R and Z as spline 0-forms, ``mrx.mappings.stellarator_map``);
+this script only runs the checks.
 
 Run directly for sanity checks:
   1) interpolation accuracy of R_h/Z_h vs the data;
@@ -15,82 +14,18 @@ Run directly for sanity checks:
 from __future__ import annotations
 
 import os
-import sys
 
 import jax
 
 
-import h5py  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
-from jax.scipy.interpolate import RegularGridInterpolator  # noqa: E402
 
 import mrx  # noqa: E402
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
-from mrx.differential_forms import DiscreteFunction  # noqa: E402
-from mrx.mappings import stellarator_map  # noqa: E402
+from mrx.gvec import DATA_DIR, NFP_W7X, W7X_FILE, build_w7x_map  # noqa: E402, F401
 
-NFP_W7X = 5
-H5_DEFAULT = "data/W7-X.h5"
-TWO_PI = 2.0 * np.pi
-
-
-def _load_w7x_grids(h5_path=H5_DEFAULT):
-    """Return logical axes (r,theta,zeta in [0,1]) and R,Z grids, periodic-padded."""
-    with h5py.File(h5_path, "r") as f:
-        rho = np.asarray(f["rho"], dtype=np.float64)        # [0,1]
-        theta = np.asarray(f["theta"], dtype=np.float64)    # [0,2pi)
-        zeta = np.asarray(f["zeta"], dtype=np.float64)      # [0,2pi/nfp)
-        R = np.asarray(f["R"], dtype=np.float64)            # (nr,nt,nz)
-        Z = np.asarray(f["Z"], dtype=np.float64)
-
-    # Normalize to logical [0,1]; theta,zeta are periodic -> append wrap point.
-    r_ax = rho
-    t_ax = np.concatenate([theta / TWO_PI, [1.0]])
-    z_ax = np.concatenate([zeta * NFP_W7X / TWO_PI, [1.0]])
-
-    def _pad(grid):
-        grid = np.concatenate([grid, grid[:, :1, :]], axis=1)   # theta wrap
-        grid = np.concatenate([grid, grid[:, :, :1]], axis=2)   # zeta wrap
-        return grid
-
-    return (r_ax, t_ax, z_ax), _pad(R), _pad(Z)
-
-
-def _rgi_fn(axes, grid):
-    """jax RGI bridge; returns f(xi:(3,)) -> (1,) for greville collocation."""
-    pts = (jnp.asarray(axes[0]), jnp.asarray(axes[1]), jnp.asarray(axes[2]))
-    interp = RegularGridInterpolator(
-        pts, jnp.asarray(grid), method="linear",
-        bounds_error=False, fill_value=None)   # fill_value=None -> extrapolate
-
-    def f(xi):
-        return interp(xi.reshape(1, 3))[0:1]   # (1,)
-    return f
-
-
-def build_w7x_map(map_ns=(12, 24, 24), p=3, h5_path=H5_DEFAULT):
-    """Build the W7-X stellarator map plus the R/Z spline functions and bridges."""
-    axes, R_grid, Z_grid = _load_w7x_grids(h5_path)
-    R_fn = _rgi_fn(axes, R_grid)
-    Z_fn = _rgi_fn(axes, Z_grid)
-
-    map_seq = DeRhamSequence(
-        map_ns, (p, p, p), 2 * p, ("clamped", "periodic", "periodic"),
-        polar=False)
-    map_seq.evaluate_1d()
-
-    R_dof = map_seq.interpolate(R_fn, 0)
-    Z_dof = map_seq.interpolate(Z_fn, 0)
-    R_h = DiscreteFunction(R_dof, map_seq.basis_0, map_seq.e0)
-    Z_h = DiscreteFunction(Z_dof, map_seq.basis_0, map_seq.e0)
-
-    map_func = stellarator_map(R_h, Z_h, nfp=NFP_W7X)
-    return map_func, {"R_h": R_h, "Z_h": Z_h, "R_fn": R_fn, "Z_fn": Z_fn,
-                      "axes": axes, "map_seq": map_seq}
+H5_DEFAULT = os.path.join(DATA_DIR, W7X_FILE)
 
 
 def _interp_accuracy(info, n=400, seed=0):

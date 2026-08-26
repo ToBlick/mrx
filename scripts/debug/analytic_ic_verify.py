@@ -1,6 +1,6 @@
 """Verify the logical-profile IC against cases where the answer is known.
 
-Two cases, both built from the same ansatz as ``logical_profile_ic.py`` --
+Two cases, both built from the same ansatz as ``mrx.initial_conditions`` --
 primal reference 2-form components ``omega = (0, Phi'(iota - lam_zeta),
 Phi'(1 + lam_chi))`` -- and both chosen because the truth is available in
 closed form rather than by comparison with another code.
