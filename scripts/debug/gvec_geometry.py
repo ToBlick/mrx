@@ -79,6 +79,13 @@ GVEC_GEOMETRIES = {
     #: eval_points rho runs 0.002041 -> 1.0, so the axis is at rho[0].
     "w7x-ini-clebsch": "data/w7x_ini_00000000_clebsch_mrx.h5",   # beta_mean 5.8%
     "w7x-fmm002": "data/w7x_fmm002_clebsch_mrx.h5",              # beta_mean 1.8%
+    #: CONVERGED W7-X, and the one to prefer over w7x-ini-clebsch.  Both come
+    #: from the same GVEC run: this is State_0000_00020000.dat (20000
+    #: iterations) where w7x-ini-clebsch is _00000000.dat, i.e. GVEC's INITIAL
+    #: GUESS rather than an equilibrium.  That distinction matters for anything
+    #: that compares the relaxed state against the file's own pressure profile,
+    #: because the initial guess has no equilibrium to converge toward.
+    "w7x-ini-conv": "data/w7x_ini_conv_mrx.h5",                  # beta_mean 6.6%
     #: The 8^3-ish quasr44970 baseline and its two interior perturbations.  All
     #: three share one 8x16x8 grid, so they are directly differenceable.
     "quasr44970-c": "data/quasr0044970_gvec_nr8_nt16_nz8.h5",     # nfp=3

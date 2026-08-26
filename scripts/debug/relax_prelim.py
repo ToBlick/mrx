@@ -509,6 +509,12 @@ def main():
                          "differs.")
     ap.add_argument("--no-leray-ic", action="store_true",
                     help="skip the Leray clean-up of the initial condition")
+    ap.add_argument("--beta-from", default=None,
+                    help="path to a B.h5 written by --save-b. Reports beta, "
+                         "the force residual and the harmonic split for EVERY "
+                         "field in it and exits -- so the relaxed state is "
+                         "measured, not just the IC. No relaxation, no "
+                         "tracing; the sequence build is the only cost.")
     ap.add_argument("--poincare-from", default=None,
                     help="path to a B.h5 written by --save-b. Renders a "
                          "Poincare section of EVERY field in it and exits, "
@@ -539,13 +545,64 @@ def main():
     ops = seq.assemble_all_sparse(include_preconditioners=False)
     ops = op.assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
     seq.set_operators(ops)
-    ops = op.assemble_block_jacobi_laplacian_preconditioner(
+    # Renamed on greville-prod (block_jacobi -> metric_lumping) and picked up
+    # in the 2026-08-26 merge; same signature, same object.  The rename is
+    # followed here rather than aliased -- the campaign's numbers were all
+    # produced by this call under its old name, and a shim would hide that the
+    # production atom has been renamed twice in a month.
+    ops = op.assemble_metric_lumping_laplacian_preconditioner(
         seq, ops, ks=(0, 1, 2, 3), dirichlets=(False, True))
     seq.set_operators(ops)
     ops = compute_nullspaces(seq, ops)
     seq.set_operators(ops)
     print(f"[setup] {cli.geometry} ns={ns} p={cli.p}  n2_dbc={seq.n2_dbc}  "
           f"operators+nullspaces {time.perf_counter() - t0:.1f}s", flush=True)
+
+    # --- beta (and friends) from saved fields, then stop -------------------
+    if cli.beta_from:
+        with h5py.File(cli.beta_from, "r") as f:
+            fields = {k: jnp.asarray(f[k][:]) for k in f.keys()}
+            attrs = {k: f.attrs[k] for k in f.attrs}
+        saved = (str(attrs.get("geometry")), list(attrs.get("ns", [])),
+                 int(attrs.get("p", -1)))
+        asked = (cli.geometry, list(ns), cli.p)
+        if saved != asked:
+            raise ValueError(
+                f"saved field is {saved} but this run built {asked}; "
+                f"re-measure with matching --geometry/--ns/--p")
+        print(f"[beta] {cli.beta_from}: {list(fields)}   attrs {attrs}",
+              flush=True)
+
+        p_rhos = np.linspace(0.05, 0.95, 19)
+        prof = jax.jit(make_pressure_profiler(seq, jnp.asarray(p_rhos)))
+        out = {}
+        for tag, dof in fields.items():
+            Fv, pv, _, _, _ = compute_force(dof, seq)
+            pp, bb, vv = prof(pv, dof)
+            beta_prof, beta_vol = beta_from_profiles(
+                np.asarray(pp), np.asarray(bb), np.asarray(vv))
+            # Hodge split: ||B||^2 = ||B_harm||^2 + ||curl A||^2, so the
+            # current-driven fraction is what is left over from the harmonic
+            # part.  That is the quantity that should track beta.
+            _, A_c = compute_helicity(dof, seq, jnp.zeros(seq.n1_dbc))
+            harm = float(seq.l2_norm(dof - seq.apply_incidence_matrix(
+                A_c, 1, dirichlet_in=True, dirichlet_out=True), 2)
+                / seq.l2_norm(dof, 2))
+            cur = float(np.sqrt(max(0.0, 1.0 - harm ** 2)))
+            fnorm = float(seq.l2_norm(Fv, 2))
+            out[tag] = dict(beta_vol=beta_vol,
+                            beta_max=float(np.max(np.abs(beta_prof))),
+                            beta_axis=float(beta_prof[0]),
+                            harmonic=harm, current_driven=cur, F=fnorm,
+                            E=0.5 * float(seq.l2_norm_sq(dof, 2)))
+            print(f"[beta] {tag:16s} beta_vol={beta_vol:+.4e}  "
+                  f"beta_max={out[tag]['beta_max']:.4e}  "
+                  f"beta_axis={out[tag]['beta_axis']:+.4e}  "
+                  f"harmonic={harm:.6f}  current-driven={100 * cur:.2f}%  "
+                  f"||F||={fnorm:.4e}", flush=True)
+        if cli.out:
+            json.dump(out, open(cli.out, "w"), indent=1)
+        return
 
     # --- render from a saved field, then stop ------------------------------
     if cli.poincare_from:
@@ -908,9 +965,20 @@ def main():
                               "gain", "dE_meas", "dE_pred", "helicity",
                               "hel_it", "gradp_mag", "gradp_avg", "resid",
                               "p_scale", "p_resid", "p_spread", "JoverB",
-                              "beta_vol", "beta_max", "beta_axis")}
+                              "beta_vol", "beta_max", "beta_axis", "wall")}
         E_prev = E0
         t_arm = time.perf_counter()
+        # Wall clock is sampled at the helicity iterations, NOT every step: a
+        # per-step timer would need a device sync to mean anything, and that
+        # sync is itself a cost the method does not otherwise pay.
+        #
+        # t_diag accumulates the time spent inside the diagnostic block, and
+        # the recorded wall EXCLUDES it.  The diagnostics are expensive --
+        # helicity alone is a k=1 Hodge solve -- and they are a measurement
+        # apparatus, not part of the method.  Leaving them in would make an
+        # arm look slower purely for having been watched more closely, and
+        # --helicity-every would silently become a performance knob.
+        t_diag = 0.0
         n_done = 0
         print(f"\n=== arm {name}  (method={method.name} m={cli.history} "
               f"gamma={cli.gamma} mu={cli.mu} "
@@ -955,6 +1023,10 @@ def main():
             E_prev = E
             n_done = it
             if it % cli.helicity_every == 0 or it == 1:
+                t_diag0 = time.perf_counter()
+                # Sampled BEFORE the diagnostics run and already net of every
+                # earlier one, so this is solve-only wall clock at this step.
+                tr["wall"].append(t_diag0 - t_arm - t_diag)
                 # The denominator moves as B does, so it is re-measured here
                 # rather than frozen at the IC.
                 # ||J||/||B|| with J = weak_curl(B) = the codifferential.
@@ -988,6 +1060,22 @@ def main():
                 state = eqx.tree_at(lambda s: s.A, state, A_new)
                 tr["helicity"].append(float(h))
                 tr["hel_it"].append(it)
+                # PRINT it, do not merely record it.  Helicity used to appear
+                # only in the end-of-arm summary, which makes a running job
+                # impossible to judge: energy and ||F|| alone cannot tell a
+                # healthy descent from one that is dissolving the topology.
+                # Both forms are shown -- the ABSOLUTE change is what
+                # correlates with surface destruction (handoff s19.2), the
+                # relative one is what is conventionally quoted, and they
+                # disagree badly when H itself is near zero.
+                h0 = tr["helicity"][0]
+                print(f"  it {it:>5d}  E={E:.8e}  |F|={float(state.F_norm):.4e}"
+                      f"  H={float(h):+.6e}  dH={float(h) - h0:+.3e}"
+                      f"  dH/H={(float(h) - h0) / abs(h0):+.3e}"
+                      f"  beta_vol={beta_vol:+.3e}"
+                      f"  [{t_diag0 - t_arm - t_diag:.0f}s solve"
+                      f" +{t_diag:.0f}s diag]", flush=True)
+                t_diag += time.perf_counter() - t_diag0
             if it <= 5 or it % 20 == 0:
                 print(f"  it {it:>5d}  E={E:.8e}  |F|={state.F_norm:.4e}  "
                       f"dt={float(state.dt):+.3e}  cos={cos:+.4f}  "

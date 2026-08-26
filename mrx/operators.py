@@ -770,12 +770,26 @@ def _materialize_default_scalar_hodge_preconditioner(
 def _coerce_diffusion_preconditioner_spec(
         seq, operators: SequenceOperators, *, k: int, preconditioner):
     if preconditioner is None or preconditioner == 'auto':
-        # Jacobi at every k. The timestep solve (M + eps L) is audit item 3.1:
-        # it never got either 2026-08 swap, and the block atom approximates
-        # L_k, not L_k + eps M_k, so it is not a drop-in here. Explicit kinds
-        # still override.
+        # Audit item 3.1, resolved 2026-08-25.  This used to return plain
+        # 'jacobi' -- diag(M)^-1, with eps ignored entirely -- on the grounds
+        # that "the block atom approximates L_k, not L_k + eps M_k, so it is
+        # not a drop-in here".
+        #
+        # That reasoning is correct about the LAPLACIAN atom and incomplete
+        # about the operator.  M + eps L is MASS-DOMINATED in the regime this
+        # solve is actually used: the relaxation's hyperregularisation runs at
+        # mu = 1e-3, where eps * lambda_max(M^-1 L) ~ 0.26 at ns=(8,16,8)
+        # (lambda_max ~ n_theta^2).  The MASS preconditioner approximates the
+        # term that dominates, and it is the production one -- measured 0.70
+        # to 0.83x raw_kron's iterations at k=1,2.  So the right object was
+        # available the whole time; it just was not the one the comment
+        # considered.
+        #
+        # 'jacobi' remains available and is now the correctly SHIFTED diagonal
+        # (see _build_diffusion_preconditioner_apply), which is the robust
+        # choice when eps * lambda_max is not small.
         del seq, operators, k
-        return MassPreconditionerSpec(kind='jacobi')
+        return default_mass_preconditioner()
     if isinstance(preconditioner, MassPreconditionerSpec):
         return preconditioner
     if isinstance(preconditioner, str):
@@ -3187,7 +3201,27 @@ def _build_diffusion_preconditioner_apply(
         preconditioner=preconditioner,
     )
     spec = _normalize_mass_preconditioner_spec_for_degree(spec, k=k)
-    valid_kinds = ('none', 'jacobi')
+    # 'tensor' used to sit in this list while only 'none' and 'jacobi' were
+    # dispatched, so asking for it passed validation and then hit the trailing
+    # raise saying it was unsupported.  Same accept-list/dispatch mismatch that
+    # has produced several instances in this file; the accept list now names
+    # exactly what is implemented.
+    #
+    # MERGE 2026-08-26: greville-prod fixed the same mismatch by DROPPING
+    # 'tensor' and leaving ('none', 'jacobi').  That is the right fix for the
+    # accept list it had; this branch additionally IMPLEMENTED the production
+    # kind below, so the list names three things and dispatches three things.
+    # Both sides agree on the rule -- accept exactly what is dispatched -- and
+    # this is the superset.
+    #
+    # Named through default_mass_preconditioner() rather than spelled out, so
+    # this survives the production atom being renamed -- it has been
+    # 'raw_kron', then 'block_jacobi', then 'metric_lumping' inside a month.
+    # What this branch wants is "whatever the production mass preconditioner
+    # currently is", and saying that literally is both more honest and
+    # rename-proof.
+    production_kind = default_mass_preconditioner().kind
+    valid_kinds = ('none', 'jacobi', production_kind)
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
@@ -3201,8 +3235,62 @@ def _build_diffusion_preconditioner_apply(
             raise ValueError("this preconditioner slot does not allow kind='none'")
         return lambda x: x
     if spec.kind == 'jacobi':
-        diaginv = _mass_diaginv(seq, operators, k, dirichlet)
-        return lambda x, diaginv=diaginv: diaginv * x
+        # THE SHIFTED diagonal, 1 / (diag(M) + eps diag(S)).
+        #
+        # This used to be diag(M)^-1 with eps discarded, which is only a
+        # preconditioner for M and degrades as eps lambda_max(M^-1 L) passes
+        # 1.  Inverses do not superpose -- (M + eps L)^-1 is NOT M^-1 +
+        # eps L^-1 -- but the approximate OPERATORS do, and for a diagonal
+        # approximation adding them is exact and free.  This mirrors
+        # _build_scalar_hodge_preconditioner_apply's jacobi branch, which has
+        # done the same thing for the sibling operator L + eps M all along.
+        mass_diaginv = _mass_diaginv(seq, operators, k, dirichlet)
+        if eps == 0.0:
+            shifted_diaginv = mass_diaginv
+        else:
+            stiffness_diaginv = _hodge_diaginv(seq, operators, k, dirichlet)
+            shifted_diaginv = 1.0 / (
+                1.0 / mass_diaginv + eps / stiffness_diaginv)
+        return lambda x, diaginv=shifted_diaginv: diaginv * x
+    if spec.kind == production_kind:
+        # The production MASS preconditioner.  It approximates M_k and knows
+        # nothing about eps L_k, so it is admissible exactly while the
+        # operator is mass-dominated, i.e. eps * lambda_max(M^-1 L) << 1
+        # (lambda_max ~ h^-2, so ~ n^2 on these grids).  That is the regime
+        # the relaxation's hyperregularisation uses.
+        #
+        # NOT gated on eps here, unlike kind='block' in the scalar Hodge
+        # builder, and the difference is deliberate: 'block' approximates
+        # L_k and becomes WRONG IN THE DOMINANT TERM the moment the operator
+        # is not Laplacian-dominated, whereas this one degrades smoothly
+        # towards "a very good preconditioner for the part of the operator
+        # that still dominates".  If you push eps until it does not, use
+        # kind='jacobi', which stays valid for every eps.
+        #
+        # NOT DONE, BUT AVAILABLE IF THIS EVER NEEDS TO REACH LARGER eps.
+        # Expand the inverse in eps and keep the first order:
+        #
+        #     (M + eps L)^-1 = M^-1 - eps M^-1 L M^-1 + O(eps^2)
+        #     P_1 = P_M - theta eps P_M L P_M      (2 applies + 1 matvec)
+        #
+        # Note the MINUS.  Accuracy is not the issue -- a preconditioner may
+        # truncate freely -- but SPD is: P_1 goes indefinite once
+        # theta eps lambda_max(P_M^1/2 L P_M^1/2) > 1, and MINRES on an
+        # indefinite preconditioner returns noise rather than converging
+        # slowly (see mrx/solvers.py's deliberate refusal to abs() the
+        # initial inner product).  Damping with theta < 1 keeps it SPD
+        # without needing lambda_max.  Judged not worth it at the mu this
+        # is used at: eps lambda_max ~ 0.26 there, so the first-order term
+        # moves the spread ~1.26 -> ~1.07, against block_jacobi's 0.70-0.83x
+        # on iterations outright.
+        return _build_mass_preconditioner_apply(
+            seq,
+            operators,
+            k=k,
+            dirichlet=dirichlet,
+            preconditioner=default_mass_preconditioner(),
+            allow_none=allow_none,
+        )
     raise ValueError(
         f"unsupported diffusion preconditioner kind {spec.kind!r} "
         "(richardson/chebyshev removed 2026-08-14, see mrx/experimental/chebyshev.py)"
