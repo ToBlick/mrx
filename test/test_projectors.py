@@ -509,7 +509,7 @@ def test_load_phys_frame_matches_ref_frame_of_pulled_back_field(proj_seq, k):
     dual_ref = proj_seq.load(_pulled_back(proj_seq, k), k, frame='ref')
     err = float(jnp.linalg.norm(dual_phys - dual_ref) / jnp.linalg.norm(dual_ref))
     print(f"\n  k={k} load phys-vs-ref relative difference: {err:.3e}")
-    assert err < 1e-12, (
+    assert err < mrx.eps(1e4), (
         f"k={k}: load(frame='phys') disagrees with load(frame='ref') of the "
         f"pulled-back field (rel {err:.3e}); the on-demand DF pullback is wrong."
     )
@@ -542,7 +542,7 @@ def test_load_grid_field_phys_frame_matches_pointwise_load(proj_seq, k):
     dual_load = proj_seq.load(v, k, frame='phys')
     err = float(jnp.linalg.norm(dual_grid - dual_load) / jnp.linalg.norm(dual_load))
     print(f"\n  k={k} load_grid_field phys vs load phys relative difference: {err:.3e}")
-    assert err < 1e-10, (
+    assert err < mrx.eps(1e5), (
         f"k={k}: load_grid_field(frame='phys') disagrees with load(frame='phys') "
         f"on a field the fit reproduces exactly (rel {err:.3e})."
     )
