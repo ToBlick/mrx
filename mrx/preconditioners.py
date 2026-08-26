@@ -12,6 +12,19 @@ import jax.numpy as jnp
 import numpy as np
 
 import mrx
+from mrx.precision import DTYPE, eps, sqrt_eps
+
+#: Rank / structure cut-offs, in units of the working-dtype epsilon. The
+#: float64 values are the ones each site was tuned at; the powers of two
+#: reproduce them to within 1.5x (nothing lives near any of them).
+PSEUDOINVERSE_TOL = eps(2.0 ** 25)    # 7.5e-9 in f64, was 1e-8
+PROJECTOR_SVD_TOL = eps(2.0 ** 19)    # 1.2e-10 in f64, was 1e-10
+PROJECTOR_PLANE_TOL = eps(2.0 ** 22)  # 9.3e-10 in f64, was rtol 1e-9 / atol 1e-11
+BLOCK_DIAGONAL_TOL = eps(2.0 ** 12)   # 9.1e-13 in f64, was 1e-12
+
+#: Rows per ``lax.map`` batch when probing an operator diagonal row by row.
+#: See ``operators._diagonal_from_matvec`` for why the batch stays small.
+PROBE_BATCH_SIZE = 8
 
 
 class BoundaryConditionPair(eqx.Module):
@@ -36,82 +49,8 @@ class ExtractedMassApplyData(eqx.Module):
     size: int = eqx.field(static=True)
 
 
-class TensorDiagonalBlockInverseFactors(eqx.Module):
-    shape: tuple[int, int, int] = eqx.field(static=True)
-    cp_relative_error: Optional[float] = None
-    cp_final_delta: Optional[float] = None
-    split_backbone_relative_norm: Optional[float] = None
-    split_correction_relative_norm: Optional[float] = None
-    split_correction_over_backbone: Optional[float] = None
-    split_backbone_residual_relative: Optional[float] = None
-    direct_inv_r: Optional[jnp.ndarray] = None
-    direct_inv_t: Optional[jnp.ndarray] = None
-    direct_inv_z: Optional[jnp.ndarray] = None
-    dense_inverse: Optional[jnp.ndarray] = None
-    split_backbone_inv_r: Optional[jnp.ndarray] = None
-    split_backbone_inv_t: Optional[jnp.ndarray] = None
-    split_backbone_inv_z: Optional[jnp.ndarray] = None
-    # FD-style modal inverse data. When ``fd_V_r`` is non-None the block apply
-    # projects to a per-axis mass-orthonormal basis, multiplies by the stored
-    # modal pseudoinverse denominator ``fd_inv_denom``, then maps back.
-    # The mass-side rank-2 path uses this for the exact ``1 + lam_r lam_t
-    # lam_z`` denominator, while the stiffness-side path reuses the same
-    # storage for mass-referenced modal denominators assembled from additive
-    # directional terms.
-    fd_V_r: Optional[jnp.ndarray] = None
-    fd_V_t: Optional[jnp.ndarray] = None
-    fd_V_z: Optional[jnp.ndarray] = None
-    fd_lam_r: Optional[jnp.ndarray] = None
-    fd_lam_t: Optional[jnp.ndarray] = None
-    fd_lam_z: Optional[jnp.ndarray] = None
-    fd_inv_denom: Optional[jnp.ndarray] = None
-    term_r: tuple[jnp.ndarray, ...] = ()
-    term_t: tuple[jnp.ndarray, ...] = ()
-    term_z: tuple[jnp.ndarray, ...] = ()
-    # Greville-collocation sandwich. When ``greville_inv_sqrt_D`` is non-None the
-    # block inverse is D^{-1/2} (M0_r^{-1} x M0_t^{-1} x M0_z^{-1}) D^{-1/2}, with
-    # UNWEIGHTED 1D mass inverses and D the metric weight collocated at the
-    # component's Greville abscissae (the CP fields above are then all None).
-    greville_inv_r: Optional[jnp.ndarray] = None
-    greville_inv_t: Optional[jnp.ndarray] = None
-    greville_inv_z: Optional[jnp.ndarray] = None
-    greville_inv_sqrt_D: Optional[jnp.ndarray] = None
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-class TensorMassPreconditioner(eqx.Module):
-    ranks: tuple = eqx.field(static=True, default=(3, 3, 3, 3))
-    cp_maxiter: int = eqx.field(static=True, default=100)
-    cp_tol: float = eqx.field(static=True, default=1e-9)
-    cp_ridge: float = eqx.field(static=True, default=1e-12)
-    surgery_schur_pinv_tol: float = eqx.field(static=True, default=1e-8)
-    k0: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    k1: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    k2: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    k3: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-
-
 class MassPreconditioners(eqx.Module):
-    # ``surgery`` is annotated loosely because MassSurgeryPreconditioner now
-    # lives in mrx/experimental/mass_surgery.py, and importing it here at class
-    # definition time would defeat the lazy re-export below (and reintroduce the
-    # import cycle). The slot still holds exactly that type when populated.
     jacobi: Optional[JacobiMassPreconditioner] = None
-    surgery: Optional[eqx.Module] = None
-    tensor: Optional[TensorMassPreconditioner] = None
 
 
 @dataclass(frozen=True)
@@ -200,11 +139,12 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
     one at +0.6% inside measured noise:
     docs/research/result_2026-08-25_schur_probe_ab.md.
 
-    THE BUILD IS NOT JIT-SAFE, AND DOES NOT NEED TO BE. It is host-side numpy
-    (1-D inverses, a dense core probe), so a COLD cache inside a traced loop
-    dies. The apply was made jit-safe in 3bd62aa; the build is warmed OUTSIDE
-    the loop by ``operators.warm_mass_preconditioner_cache``. Any new traced
-    entry point that solves must warm first.
+    THE BUILD IS NOT JIT-SAFE, AND DOES NOT NEED TO BE. Its sparsity
+    bookkeeping is host-side numpy and its core probe runs the matrix-free
+    apply on concrete vectors, so a COLD cache inside a traced loop dies. The
+    apply was made jit-safe in 3bd62aa; the build is warmed OUTSIDE the loop
+    by ``operators.warm_mass_preconditioner_cache``. Any new traced entry
+    point that solves must warm first.
 
     CAVEAT ON THE EVIDENCE: the mass A/B covers h = 8..20 and p = 2..5, but the
     effect on ``L_k`` was measured at n=12, p=3 only. The overnight sweep in
@@ -332,25 +272,30 @@ def _extracted_mass_diagonal(e, d_raw, mass_apply, *, batch_size: int = 16):
     d_raw_np = np.asarray(d_raw)
 
     counts = np.bincount(rows, minlength=n_rows)
-    diag = np.zeros(n_rows, dtype=np.float64)
+    diag = np.zeros(n_rows)
 
     # Bulk rows: one nonzero each, so only the raw diagonal is involved.
     single = counts[rows] == 1
     diag[rows[single]] = (vals[single] ** 2) * d_raw_np[cols[single]]
 
-    # Coupled rows: e_i^T M e_i with e_i the (short) raw row of E.
+    # Coupled rows: e_i^T M e_i with e_i the (short) raw row of E. The
+    # nonzeros of the coupled rows are grouped ONCE, by position among the
+    # coupled rows, rather than by scanning ``rows == r`` per row.
     coupled = np.flatnonzero(counts > 1)
+    pos = np.full(n_rows, -1)
+    pos[coupled] = np.arange(coupled.size)
+    nz = np.flatnonzero(pos[rows] >= 0)
+    t_all, c_all, v_all = pos[rows[nz]], cols[nz], vals[nz]
     for start in range(0, coupled.size, batch_size):
         blk = coupled[start:start + batch_size]
-        probe = np.zeros((blk.size, n_raw), dtype=np.float64)
-        for t, r in enumerate(blk):
-            sel = rows == r
-            probe[t, cols[sel]] = vals[sel]
-        probe_j = jnp.asarray(probe)
+        sel = (t_all >= start) & (t_all < start + blk.size)
+        probe = np.zeros((blk.size, n_raw))
+        probe[t_all[sel] - start, c_all[sel]] = v_all[sel]
+        probe_j = jnp.asarray(probe, dtype=DTYPE)
         images = jax.vmap(mass_apply)(probe_j)
         diag[blk] = np.asarray(jnp.sum(images * probe_j, axis=1))
 
-    return jnp.asarray(diag)
+    return jnp.asarray(diag, dtype=DTYPE)
 
 
 def build_mass_jacobi_pair(seq, mass_apply, k: int) -> BoundaryConditionPair:
@@ -409,119 +354,6 @@ def _k2_diagonal_metric_tensors(seq) -> dict[str, jnp.ndarray]:
     }
 
 
-def _normalize_cp_term_signs(
-    scale: jnp.ndarray,
-    factor_theta: jnp.ndarray,
-    factor_r: jnp.ndarray,
-    factor_z: jnp.ndarray,
-):
-    if jnp.mean(factor_theta) < 0:
-        factor_theta = -factor_theta
-        scale = -scale
-    if jnp.mean(factor_r) < 0:
-        factor_r = -factor_r
-        scale = -scale
-    if jnp.mean(factor_z) < 0:
-        factor_z = -factor_z
-        scale = -scale
-    if scale < 0:
-        factor_r = -factor_r
-        scale = -scale
-    return scale, factor_theta, factor_r, factor_z
-
-
-def _apply_tensor_diagonal_block_preconditioner(
-    factors: TensorDiagonalBlockInverseFactors,
-    rhs: jnp.ndarray,
-) -> jnp.ndarray:
-    nr, nt, nz = factors.shape
-    if factors.greville_inv_sqrt_D is not None:
-        s = factors.greville_inv_sqrt_D
-        f = jnp.asarray(rhs).reshape(nr, nt, nz) * s
-        if factors.greville_inv_r is not None:
-            # Product sandwich (mass / single-term): D^{-1/2}(M0_r^{-1}xM0_t^{-1}xM0_z^{-1})D^{-1/2}.
-            f = jnp.einsum("ij,jkl->ikl", factors.greville_inv_r, f)
-            f = jnp.einsum("ij,kjl->kil", factors.greville_inv_t, f)
-            f = jnp.einsum("ij,klj->kli", factors.greville_inv_z, f)
-        else:
-            # Additive-FD sandwich (greville P_A stiffness): D^{-1/2} V diag(1/denom) V^T D^{-1/2}.
-            f = jnp.einsum("ji,jkl->ikl", factors.fd_V_r, f)
-            f = jnp.einsum("ji,kjl->kil", factors.fd_V_t, f)
-            f = jnp.einsum("ji,klj->kli", factors.fd_V_z, f)
-            f = f * factors.fd_inv_denom
-            f = jnp.einsum("ij,jkl->ikl", factors.fd_V_r, f)
-            f = jnp.einsum("ij,kjl->kil", factors.fd_V_t, f)
-            f = jnp.einsum("ij,klj->kli", factors.fd_V_z, f)
-        f = f * s
-        return f.reshape(-1)
-    if factors.dense_inverse is not None:
-        return factors.dense_inverse @ jnp.asarray(rhs).reshape(-1)
-    if factors.fd_V_r is not None:
-        # Rank-2 fast-diagonalization: exact inverse of the sum of two
-        # Kronecker terms. ``fd_V_*`` are the simultaneous M-orthonormal /
-        # A-diagonalizing eigenvectors per axis.
-        modes = jnp.asarray(rhs).reshape(nr, nt, nz)
-        modes = jnp.einsum("ji,jkl->ikl", factors.fd_V_r, modes)
-        modes = jnp.einsum("ji,kjl->kil", factors.fd_V_t, modes)
-        modes = jnp.einsum("ji,klj->kli", factors.fd_V_z, modes)
-        modes = modes * factors.fd_inv_denom
-        modes = jnp.einsum("ij,jkl->ikl", factors.fd_V_r, modes)
-        modes = jnp.einsum("ij,kjl->kil", factors.fd_V_t, modes)
-        modes = jnp.einsum("ij,klj->kli", factors.fd_V_z, modes)
-        return modes.reshape(-1)
-    if factors.direct_inv_r is None:
-        raise ValueError(
-            "TensorDiagonalBlockInverseFactors is missing both direct_inv_* and fd_V_* "
-            "(rank-1 and rank-2 fast paths). The modal/multirank smoother has been retired."
-        )
-    modes = jnp.asarray(rhs).reshape(nr, nt, nz)
-    modes = jnp.einsum("ij,jkl->ikl", factors.direct_inv_r, modes)
-    modes = jnp.einsum("ij,kjl->kil", factors.direct_inv_t, modes)
-    modes = jnp.einsum("ij,klj->kli", factors.direct_inv_z, modes)
-    return modes.reshape(-1)
-
-
-def _apply_tensor_diagonal_block(
-    factors: TensorDiagonalBlockInverseFactors,
-    rhs: jnp.ndarray,
-    *,
-    true_block_apply=None,
-) -> jnp.ndarray:
-    """Apply the tensor diagonal block inverse.
-
-    (The optional true-block Richardson polish was removed 2026-08-14 with
-    the rest of the relaxation machinery -- see mrx/experimental/chebyshev.py.
-    ``true_block_apply`` is retained in the signature for call-site
-    compatibility but is unused.)
-    """
-    del true_block_apply
-    return _apply_tensor_diagonal_block_preconditioner(factors, rhs)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _apply_extracted_mass_operator(extraction, extraction_t, mass_apply, x: jnp.ndarray) -> jnp.ndarray:
     raw = extraction_t @ x
     return jnp.asarray(extraction @ mass_apply(raw))
@@ -537,7 +369,8 @@ def _apply_extracted_submatrix(data: ExtractedMassApplyData, row_indices: jnp.nd
     return _apply_extracted_mass_operator_data(data, full)[row_indices]
 
 
-def _symmetric_pseudoinverse(matrix: jnp.ndarray, *, relative_tol: float = 1e-8) -> jnp.ndarray:
+def _symmetric_pseudoinverse(matrix: jnp.ndarray, *,
+                             relative_tol: float = PSEUDOINVERSE_TOL) -> jnp.ndarray:
     """PSD (positive-part) pseudoinverse. Both call sites invert Schur
     complements of SPD operators, which are PSD analytically but can dip
     slightly negative when rebuilt through an approximate bulk inverse;
@@ -602,109 +435,6 @@ def _symmetric_pseudoinverse(matrix: jnp.ndarray, *, relative_tol: float = 1e-8)
 
 
 
-def _build_greville_mass_block_factors(
-    seq, *, shape, diff, wkind: str, comp: int,
-) -> TensorDiagonalBlockInverseFactors:
-    """Greville-collocation mass bulk block factors.
-
-    P^{-1} = D^{-1/2} (M0_r^{-1} x M0_t^{-1} x M0_z^{-1}) D^{-1/2}, with UNWEIGHTED
-    1D masses (degree p on primal axes, p-1 on the differentiated axis) and D the
-    metric weight collocated at the component's Greville abscissae. Ports
-    scripts/debug/greville_bulk_precond.py:build_greville_component.
-
-    ``diff`` = (r,t,z) booleans (True => differentiated degree-(p-1) axis);
-    ``wkind`` in {'J','invJ','Jginv','ginvJ'}; ``comp`` = metric diagonal index.
-    """
-    from mrx.geometry import compute_geometry_terms  # noqa: PLC0415
-    from mrx.spline_bases import SplineBasis  # noqa: PLC0415
-
-    nr, ntc, nzc = (int(s) for s in shape)
-    radial_start = 1 if diff[0] else 2
-
-    primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
-    deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
-    bases = tuple(deriv[a] if diff[a] else primal[a] for a in range(3))
-    quad_w = (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
-    M0_r = _restrict_radial_mass(_assemble_weighted_1d_mass(bases[0], quad_w[0]), radial_start, nr)
-    M0_t = _assemble_weighted_1d_mass(bases[1], quad_w[1])
-    M0_z = _assemble_weighted_1d_mass(bases[2], quad_w[2])
-    inv_r = jnp.linalg.inv(M0_r)
-    inv_t = jnp.linalg.inv(M0_t)
-    inv_z = jnp.linalg.inv(M0_z)
-
-    # Greville abscissae per axis: primal degree-p, or fresh degree-(p-1) SplineBasis
-    # on the differentiated axis (dΛ[axis].s inherits parent knots -> spurious double
-    # boundary point). Clamped endpoints nudged inward (a spline map's clamped
-    # evaluate() has a constant branch -> jacfwd det=0 at the exact endpoint).
-    types = seq.basis_0.types
-    eps = 1e-7
-    grev = []
-    for axis in range(3):
-        if diff[axis]:
-            d = seq.basis_0.dΛ[axis]
-            g = SplineBasis(int(d.n), int(d.p), d.type).greville_points()
-        else:
-            g = seq.basis_0.Λ[axis].greville_points()
-        if types[axis] == "clamped":
-            g = jnp.clip(g, eps, 1.0 - eps)
-        grev.append(g)
-    grev_r = grev[0][radial_start:radial_start + nr]
-    rr, tt, zz = jnp.meshgrid(grev_r, grev[1], grev[2], indexing="ij")
-    pts = jnp.stack([rr.ravel(), tt.ravel(), zz.ravel()], axis=-1)
-    metric, minv, jac = compute_geometry_terms(seq.map, pts)
-    if wkind == "J":
-        weight = jac
-    elif wkind == "invJ":
-        weight = 1.0 / jac
-    elif wkind == "Jginv":          # k=1: J g^{ii}
-        weight = jac * minv[:, comp, comp]
-    elif wkind == "ginvJ":          # k=2: g_{ii} / J
-        weight = metric[:, comp, comp] / jac
-    else:
-        raise ValueError(f"unknown greville mass wkind {wkind!r}")
-    D = jnp.asarray(weight).reshape(nr, ntc, nzc)
-    # D MUST be positive (SPD); degenerate collocation points (clamped Greville at a
-    # geometry fold) -> positive median, NOT a tiny floor (which would spike
-    # 1/sqrt(D) into a spurious near-null mode); that region is surgery-corrected.
-    valid = jnp.isfinite(D) & (D > 0)
-    fin = D[valid]
-    scale = jnp.median(fin) if fin.size > 0 else jnp.asarray(1.0, dtype=jnp.float64)
-    D = jnp.where(valid, D, scale)
-    inv_sqrt_D = 1.0 / jnp.sqrt(D)
-
-    return TensorDiagonalBlockInverseFactors(
-        shape=(nr, ntc, nzc),
-        greville_inv_r=inv_r,
-        greville_inv_t=inv_t,
-        greville_inv_z=inv_z,
-        greville_inv_sqrt_D=inv_sqrt_D,
-    )
-
-
-
-
-
-
-def _select_mass_tensor_factors(preconds: Optional[MassPreconditioners], k: int, dirichlet: bool):
-    if preconds is None or preconds.tensor is None:
-        raise ValueError(f"Tensor mass preconditioner k={k} is not assembled")
-    if k == 0:
-        return select_boundary_data(preconds.tensor.k0, dirichlet, "Tensor mass k=0")
-    if k == 1:
-        return select_boundary_data(preconds.tensor.k1, dirichlet, "Tensor mass k=1")
-    if k == 2:
-        return select_boundary_data(preconds.tensor.k2, dirichlet, "Tensor mass k=2")
-    if k == 3:
-        return select_boundary_data(preconds.tensor.k3, dirichlet, "Tensor mass k=3")
-    raise ValueError(f"Tensor mass preconditioner currently only supports k=0, k=1, k=2 and k=3 (got k={k})")
-
-
-
-
-
-
-
-
 def _symmetrize(matrix: jnp.ndarray) -> jnp.ndarray:
     return 0.5 * (matrix + matrix.T)
 
@@ -721,8 +451,8 @@ def _simultaneous_diagonalize_pair(M: jnp.ndarray, A: jnp.ndarray) -> tuple[jnp.
     the diagonal ``1 + lam_r (x) lam_t (x) lam_z`` in the M-orthonormal
     basis. Reusable by the stiffness preconditioner.
     """
-    M_sym = _symmetrize(jnp.asarray(M, dtype=jnp.float64))
-    A_sym = _symmetrize(jnp.asarray(A, dtype=jnp.float64))
+    M_sym = _symmetrize(jnp.asarray(M, dtype=DTYPE))
+    A_sym = _symmetrize(jnp.asarray(A, dtype=DTYPE))
     L = jnp.linalg.cholesky(M_sym)
     Linv_A = jax.scipy.linalg.solve_triangular(L, A_sym, lower=True)
     B = jax.scipy.linalg.solve_triangular(L, Linv_A.T, lower=True).T
@@ -764,43 +494,46 @@ def _extraction_gram_inverse(e):
     so a dense inverse over the ``O(n_z)`` coupled rows reproduces the blocked
     inverse exactly while keeping the construction trivial.
 
-    Returns ``(None, None)`` when there are no coupled rows (k=3), where the
-    pseudoinverse degenerates to ``E^T`` and raw_kron is a plain tensor block.
+    Returns ``(None, None, 0.0)`` when there are no coupled rows (k=3), where
+    the pseudoinverse degenerates to ``E^T`` and the model is a plain tensor
+    block.
 
-    The returned ``cross`` is the largest coupled-bulk overlap found; it must be
-    zero for the block structure to hold, and the caller asserts that rather
-    than trusting the documented invariant.
+    The returned ``cross`` is the largest coupled-bulk overlap found, RELATIVE
+    to the largest Gram entry; it must be zero for the block structure to
+    hold, and the caller asserts that rather than trusting the documented
+    invariant.
+
+    Host-side sparsity bookkeeping; the Gram is inverted on device in the
+    working dtype.
     """
     rows = np.asarray(e.rows)
     cols = np.asarray(e.cols)
     vals = np.asarray(e.vals)
-    n_rows = int(e.forward_shape[0])
+    n_rows, n_raw = (int(s) for s in e.forward_shape)
 
     counts = np.bincount(rows, minlength=n_rows)
     coupled = np.flatnonzero(counts > 1)
     if coupled.size == 0:
         return None, None, 0.0
 
-    pos = -np.ones(n_rows, dtype=np.int64)
+    pos = np.full(n_rows, -1)
     pos[coupled] = np.arange(coupled.size)
+    is_cp = pos[rows] >= 0
 
-    by_col: dict = {}
-    for r, c, v in zip(rows, cols, vals):
-        by_col.setdefault(int(c), []).append((int(r), float(v)))
+    # C = the coupled rows of E over the raw columns they touch; gram = C C^T.
+    ucol, col_id = np.unique(cols[is_cp], return_inverse=True)
+    c_mat = np.zeros((coupled.size, ucol.size))
+    np.add.at(c_mat, (pos[rows[is_cp]], col_id), vals[is_cp])
+    gram = c_mat @ c_mat.T
 
-    m = int(coupled.size)
-    gram = np.zeros((m, m), dtype=np.float64)
-    cross = 0.0
-    for entries in by_col.values():
-        cp = [(pos[r], v) for r, v in entries if pos[r] >= 0]
-        bulk = [v for r, v in entries if pos[r] < 0]
-        if cp and bulk:
-            cross = max(cross, max(abs(v1 * v2) for _, v1 in cp for v2 in bulk))
-        for i, vi in cp:
-            for j, vj in cp:
-                gram[i, j] += vi * vj
+    # Largest |v_coupled v_bulk| over raw columns shared by both kinds of row.
+    mx_cp, mx_bulk = np.zeros(n_raw), np.zeros(n_raw)
+    np.maximum.at(mx_cp, cols[is_cp], np.abs(vals[is_cp]))
+    np.maximum.at(mx_bulk, cols[~is_cp], np.abs(vals[~is_cp]))
+    cross = float((mx_cp * mx_bulk).max() / np.abs(gram).max())
 
-    return jnp.asarray(coupled), jnp.asarray(np.linalg.inv(gram)), cross
+    gram_inv = jnp.linalg.inv(jnp.asarray(gram, dtype=DTYPE))
+    return jnp.asarray(coupled), gram_inv, cross
 
 
 def build_mass_metric_lumping_factors(seq, k: int, *, dirichlet: bool, d_raw=None):
@@ -848,7 +581,7 @@ def build_mass_metric_lumping_factors(seq, k: int, *, dirichlet: bool, d_raw=Non
         starts.append(starts[-1] + int(np.prod(sh)))
 
     coupled, gram_inv, cross = _extraction_gram_inverse(e)
-    if cross > 1e-12:
+    if cross > BLOCK_DIAGONAL_TOL:
         raise ValueError(
             f"metric_lumping k={k} dirichlet={dirichlet}: E E^T is not block diagonal "
             f"(max coupled-bulk overlap {cross:.3e}); the (CC^T, I) split that "
@@ -953,14 +686,6 @@ def _bulk_tensor_shape(seq, dirichlet: bool) -> tuple[int, int, int]:
     return nr_bulk, nt, nz
 
 
-def _split_blocks(matrix: jnp.ndarray, core_size: int):
-    acc = matrix[:core_size, :core_size]
-    acb = matrix[:core_size, core_size:]
-    abc = matrix[core_size:, :core_size]
-    abb = matrix[core_size:, core_size:]
-    return acc, acb, abc, abb
-
-
 def _k3_extracted_shape(seq) -> tuple[int, int, int]:
     return seq.basis_3.dr - 1, seq.basis_3.dt, seq.basis_3.dz
 
@@ -969,7 +694,7 @@ def _k3_extracted_shape(seq) -> tuple[int, int, int]:
 # Diagonal probing utilities (matrix-free, probing-based)
 # ---------------------------------------------------------------------------
 
-def diag_matvec(A_matvec, n, *, dtype=jnp.float64, batch_size=None):
+def diag_matvec(A_matvec, n, *, dtype=DTYPE, batch_size=None):
     """Probe ``diag(A)`` from a forward operator on the extracted space.
 
     The operator is queried on small batches of canonical basis vectors.
@@ -1002,7 +727,7 @@ def diag_EAET(E, A, E_T=None):
             E_T = jsparse.BCOO((E.data, coo_idx), shape=E.shape).T
         else:
             E_T = E.T
-    dtype = getattr(A, "dtype", getattr(E, "dtype", jnp.float64))
+    dtype = getattr(A, "dtype", getattr(E, "dtype", DTYPE))
     return diag_matvec(lambda x: E @ (A @ (E_T @ x)), n, dtype=dtype)
 
 
@@ -1014,7 +739,7 @@ def diag_EAET_matvec(E, A_matvec, n, E_T=None):
             E_T = jsparse.BCOO((E.data, coo_idx), shape=E.shape).T
         else:
             E_T = E.T
-    dtype = getattr(E, "dtype", jnp.float64)
+    dtype = getattr(E, "dtype", DTYPE)
     return diag_matvec(lambda x: E @ A_matvec(E_T @ x), n, dtype=dtype)
 
 
@@ -1103,22 +828,23 @@ def _build_diag_EAET_plan(rows_E, cols_E, vals_E, n_in, a_arr, b_arr,
         empty_i = np.zeros((0,), dtype=np.int64)
         return empty_i, empty_i.copy(), np.zeros((0,), dtype=np.float64)
     order = np.argsort(cols_E, kind="stable")
-    cs = cols_E[order]; rs = rows_E[order]; ws = vals_E[order]
+    cs, rs, ws = cols_E[order], rows_E[order], vals_E[order]
     start = np.zeros(n_in, dtype=np.int64)
     if n_in > 0:
         start[1:] = np.cumsum(counts)[:-1]
     pos = np.arange(cs.shape[0], dtype=np.int64) - start[cs]
     row_pad = np.full((n_in, R), -1, dtype=np.int64)
     w_pad = np.zeros((n_in, R), dtype=np.float64)
-    row_pad[cs, pos] = rs; w_pad[cs, pos] = ws
+    row_pad[cs, pos] = rs
+    w_pad[cs, pos] = ws
     nnz = a_arr.shape[0]
     seg_i_list, seg_m_list, seg_coef_list = [], [], []
     for s in range(0, nnz, chunk):
         e = min(s + chunk, nnz)
-        a = a_arr[s:e]; b = b_arr[s:e]
-        ra = row_pad[a]; wa = w_pad[a]
-        rb = row_pad[b]; wb = w_pad[b]
-        RA = ra[:, :, None]; RB = rb[:, None, :]
+        a, b = a_arr[s:e], b_arr[s:e]
+        ra, wa = row_pad[a], w_pad[a]
+        rb, wb = row_pad[b], w_pad[b]
+        RA, RB = ra[:, :, None], rb[:, None, :]
         match = (RA == RB) & (RA >= 0)
         coef = wa[:, :, None] * wb[:, None, :]
         mp = np.broadcast_to(
@@ -1146,8 +872,8 @@ def diag_EAET_direct(E, A):
     seg_i, seg_m, seg_coef = _build_diag_EAET_plan(
         rows_E, cols_E, vals_E, n_in, a_arr, b_arr)
     if seg_i.shape[0] == 0:
-        return jnp.zeros((n_out,), dtype=jnp.float64)
-    contrib = jnp.asarray(seg_coef) * A.data[jnp.asarray(seg_m)]
+        return jnp.zeros((n_out,), dtype=DTYPE)
+    contrib = jnp.asarray(seg_coef, dtype=DTYPE) * A.data[jnp.asarray(seg_m)]
     return jax.ops.segment_sum(contrib, jnp.asarray(seg_i), num_segments=n_out)
 
 
@@ -1172,8 +898,8 @@ def diag_EGtMGEt_direct(E, G, M):
         np.asarray(Eeff.data, dtype=np.float64),
         n_in, a_arr, b_arr)
     if seg_i.shape[0] == 0:
-        return jnp.zeros((n_out,), dtype=jnp.float64)
-    contrib = jnp.asarray(seg_coef) * M.data[jnp.asarray(seg_m)]
+        return jnp.zeros((n_out,), dtype=DTYPE)
+    contrib = jnp.asarray(seg_coef, dtype=DTYPE) * M.data[jnp.asarray(seg_m)]
     return jax.ops.segment_sum(contrib, jnp.asarray(seg_i), num_segments=n_out)
 
 
@@ -1277,7 +1003,7 @@ def _decode_raw_indices(flat, shapes, starts):
     return comp, loc // (nt * nz), (loc // nz) % nt, loc % nz
 
 
-def _extraction_projector_kron_terms(e, shapes, *, tol=1e-10):
+def _extraction_projector_kron_terms(e, shapes, *, tol=PROJECTOR_SVD_TOL):
     """Exact Kronecker expansion of ``Pi = E^T (E E^T)^{-1} E``.
 
     ``Pi`` is the identity on the bulk raw DOFs, zero on the raw DOFs that
@@ -1297,6 +1023,10 @@ def _extraction_projector_kron_terms(e, shapes, *, tol=1e-10):
     on the near-axis rows, which is exactly where a Jacobi diagonal matters.
 
     Returns a list of ``(src_component, dst_component, (F_r, F_t, F_z))``.
+
+    Host-side sparsity bookkeeping (the SVD is of a ``ring_depth^2 x n_t^2``
+    block of exact rank <= 4); the factors are cast to the working dtype where
+    they meet the device, in :func:`build_weak_term_raw_diagonal`.
     """
     rows = np.asarray(e.rows)
     cols = np.asarray(e.cols)
@@ -1307,6 +1037,12 @@ def _extraction_projector_kron_terms(e, shapes, *, tol=1e-10):
 
     counts = np.bincount(rows, minlength=n_ext)
     coupled_rows = np.flatnonzero(counts > 1)
+    # Nonzeros grouped by row ONCE, so a row's entries are a slice.
+    order = np.argsort(rows, kind="stable")
+    row_ptr = np.searchsorted(rows[order], np.arange(n_ext + 1))
+
+    def entries(i):
+        return order[row_ptr[i]:row_ptr[i + 1]]
     ring_cols = np.unique(cols[np.isin(rows, coupled_rows)])
     touched = np.unique(cols)
     bulk_cols = np.setdiff1d(touched, ring_cols)
@@ -1344,7 +1080,7 @@ def _extraction_projector_kron_terms(e, shapes, *, tol=1e-10):
     _, _, _, ring_iz = _decode_raw_indices(ring_cols, shapes, starts)
     row_zeta = {}
     for i in coupled_rows:
-        _, _, _, iz = _decode_raw_indices(cols[rows == i], shapes, starts)
+        _, _, _, iz = _decode_raw_indices(cols[entries(i)], shapes, starts)
         if len(set(iz.tolist())) != 1:
             raise ValueError(
                 f"extraction projector: coupled row {int(i)} spans more than one "
@@ -1365,7 +1101,7 @@ def _extraction_projector_kron_terms(e, shapes, *, tol=1e-10):
             size += len(radial) * shapes[c][1]
         cmat = np.zeros((len(plane_rows), size))
         for n, i in enumerate(plane_rows):
-            sel = rows == i
+            sel = entries(i)
             comp, ir, it, _ = _decode_raw_indices(cols[sel], shapes, starts)
             for c, r, t, v in zip(comp, ir, it, vals[sel]):
                 radial = ring_radial[int(c)]
@@ -1378,7 +1114,7 @@ def _extraction_projector_kron_terms(e, shapes, *, tol=1e-10):
     block, offsets = plane_block(zetas[0])
     for z0 in zetas[1:]:
         other, _ = plane_block(z0)
-        if not np.allclose(other, block, atol=1e-11, rtol=1e-9):
+        if np.abs(other - block).max() > PROJECTOR_PLANE_TOL * np.abs(block).max():
             raise ValueError(
                 "extraction projector: the polar ring block differs between "
                 "zeta planes, so Pi does not factor as (ring block) x I_z")
@@ -1680,16 +1416,16 @@ def _weak_term_taylor_parts(seq, k: int, *, dirichlet: bool,
     parts = [np.zeros(shape) for shape in shapes_u]
     n_pairs = 0
     for (c_u, dst), group in entries.items():
-        blocks: dict = {}
-        for i, (sign_i, v_i, _, linv_i) in enumerate(group):
-            for j in range(i, len(group)):
-                sign_j, v_j, l_j, _ = group[j]
-                z = [np.einsum('mn,mn->m', linv_i[a], l_j[a]) for a in range(3)]
-                weight = (sign_i * sign_j) * (1.0 if i == j else 2.0)
-                key = (min(v_i, v_j), max(v_i, v_j))
-                block = weight * np.einsum('i,j,l->ijl', *z)
-                blocks[key] = blocks.get(key, 0.0) + block
-                n_pairs += 1
+        signs = np.asarray([g[0] for g in group])
+        vs = np.asarray([g[1] for g in group])
+        z, w = _pair_products(signs, [g[2] for g in group],
+                              [g[3] for g in group])
+        n_pairs += (len(group) * (len(group) + 1)) // 2
+        vmin, vmax = np.minimum.outer(vs, vs), np.maximum.outer(vs, vs)
+        blocks = {}
+        for key in set(zip(vmin.ravel().tolist(), vmax.ravel().tolist())):
+            mask = (vmin == key[0]) & (vmax == key[1])
+            blocks[key] = _pair_sum(z, np.where(mask, w, 0.0))
         total = np.zeros(shapes_u[c_u])
         for (v_i, v_j), block in blocks.items():
             coef = 1.0
@@ -1703,6 +1439,28 @@ def _weak_term_taylor_parts(seq, k: int, *, dirichlet: bool,
         # all -- the same power the split form carries when Lam is constant.
         parts[c_u] += np.asarray(lam_u[c_u]) ** 2 * total
     return parts, lam_u, n_pairs
+
+
+def _pair_products(signs, left, left_inv):
+    """Row-wise dots of every term PAIR, batched over the stacked terms.
+
+    ``left[t][a]`` and ``left_inv[t][a]`` are the ``(m_a, n_a)`` 1-D factors
+    of term ``t``. Returns ``(z, w)`` with ``z[a][t, s, i] =
+    sum_n left_inv[t][a][i, n] left[s][a][i, n]`` and the pair weights
+    ``w[t, s] = sign_t sign_s`` -- the full double sum over ``(t, s)``, which
+    equals the ``t <= s`` sum with off-diagonal pairs counted twice.
+    """
+    z = [np.einsum('tin,sin->tsi', np.stack([li[a] for li in left_inv]),
+                   np.stack([lf[a] for lf in left])) for a in range(3)]
+    return z, np.outer(signs, signs)
+
+
+def _pair_sum(z, w):
+    """``sum_{t,s} w[t,s] z_r[t,s,:] x z_t[t,s,:] x z_z[t,s,:]`` as one einsum
+    over the flattened pair index -- no Python loop over pairs."""
+    p = w.size
+    return np.einsum('pi,pj,pl->ijl', (w[..., None] * z[0]).reshape(p, -1),
+                     z[1].reshape(p, -1), z[2].reshape(p, -1))
 
 
 def _weak_term_exact_parts(seq, k: int, *, dirichlet: bool):
@@ -1784,12 +1542,16 @@ def _greville_transfer_v3_to_v0(seq, geometry, *, bandwidth=None,
     # det(DF) = 0 at the outer knot of a spline map -- so 1/J is infinite there.
     # Quadrature points never land on the boundary, which is exactly why this
     # trap does not show up in any of the assembly paths. Pull the sample points
-    # in by eps; the collocation matrix is evaluated at the SAME points, so the
-    # interpolation stays consistent (and Schoenberg-Whitney still holds).
-    eps = 1e-8
+    # in by a sqrt(eps) fraction of the end knot span (GEOMETRIC, so it stays
+    # inside the end element at every resolution and is resolvable next to
+    # 1.0 in either precision); the collocation matrix is evaluated at the
+    # SAME points, so the interpolation stays consistent (and
+    # Schoenberg-Whitney still holds).
     for a in range(3):
         if lam[a].type != "periodic":
-            pts[a] = np.clip(pts[a], eps, 1.0 - eps)
+            knots = np.unique(np.asarray(lam[a].T))
+            nudge = sqrt_eps() * min(knots[1] - knots[0], knots[-1] - knots[-2])
+            pts[a] = np.clip(pts[a], nudge, 1.0 - nudge)
 
     b_g, a_inv = [], []
     for a in range(3):
@@ -1991,7 +1753,9 @@ def build_transfer_weak_diagonal(seq, k: int, *, dirichlet: bool,
                                     build_mass_diagonal)
     m0 = assemble_m0_local(seq, geometry)
     energy_m = jnp.einsum('ai,ai->i', m0 @ pi_j, pi_j)
-    floor = 1e-300 + jnp.zeros_like(energy_m)
+    # A transferred basis function can lose its whole support to the Dirichlet
+    # rows dropped above, so the mass energy is not guaranteed positive here.
+    floor = eps() * jnp.max(energy_m)
     return jnp.asarray(build_mass_diagonal(seq, 3)) * energy_s / jnp.maximum(
         energy_m, floor)
 
@@ -2127,14 +1891,11 @@ def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
         n_pairs = 0
         for key, entries in groups.items():
             c_u = key[0]
-            block = np.zeros(shapes_u[c_u])
-            for i, (sign_i, _, linv_i) in enumerate(entries):
-                for j in range(i, len(entries)):
-                    sign_j, l_j, _ = entries[j]
-                    z = [np.einsum('mn,mn->m', linv_i[a], l_j[a]) for a in range(3)]
-                    weight = (sign_i * sign_j) * (1.0 if i == j else 2.0)
-                    block += weight * np.einsum('i,j,l->ijl', *z)
-                    n_pairs += 1
+            z, w = _pair_products(np.asarray([s for s, _, _ in entries]),
+                                  [lf for _, lf, _ in entries],
+                                  [li for _, _, li in entries])
+            block = _pair_sum(z, w)
+            n_pairs += (len(entries) * (len(entries) + 1)) // 2
             # Per GROUP, not per term: the group is one diag(X B_g X^T) with
             # B_g SPD, so it is nonnegative and a positive rescale cannot flip
             # it.
@@ -2142,11 +1903,10 @@ def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
         info["term_pairs"] = n_pairs
         info["terms"] = {key: len(v) for key, v in groups.items()}
 
-    raw = np.concatenate([(p * np.asarray(lam_u[c]) ** 2).reshape(-1)
-                          for c, p in enumerate(parts)])
-    if return_info:
-        return jnp.asarray(raw), info
-    return jnp.asarray(raw)
+    raw = jnp.asarray(np.concatenate([(p * np.asarray(lam_u[c]) ** 2).reshape(-1)
+                                      for c, p in enumerate(parts)]),
+                      dtype=DTYPE)
+    return (raw, info) if return_info else raw
 
 
 def _weak_term_rows_by_apply(seq, operators, k: int, *, dirichlet: bool, indices):
@@ -2169,15 +1929,17 @@ def _weak_term_rows_by_apply(seq, operators, k: int, *, dirichlet: bool, indices
             dirichlet_out=dirichlet)
 
     def row(i):
-        return weak_apply(jnp.zeros(size).at[i].set(1.0))[i]
+        return weak_apply(jnp.zeros(size, dtype=DTYPE).at[i].set(1.0))[i]
 
     # Warm the apply on a concrete vector first: the matrix-free mass plan is
     # HOST-built, so building it inside the trace raises
     # TracerArrayConversionError.
-    weak_apply(jnp.zeros(size))
-    # lax.map, never vmap: a batched probe fuses into a transpose kernel that
-    # spills registers and crashes ptxas. See _diagonal_from_matvec.
-    return np.asarray(jax.lax.map(row, jnp.asarray(indices)))
+    weak_apply(jnp.zeros(size, dtype=DTYPE))
+    # lax.map in SMALL batches, never a wide vmap: a batched probe fuses into
+    # a transpose kernel that spills registers and crashes ptxas. See
+    # _diagonal_from_matvec.
+    return np.asarray(jax.lax.map(row, jnp.asarray(indices),
+                                  batch_size=PROBE_BATCH_SIZE))
 
 
 def build_weak_term_diagonal(seq, operators, k: int, *, dirichlet: bool, **kwargs):
@@ -2208,7 +1970,7 @@ def build_weak_term_diagonal(seq, operators, k: int, *, dirichlet: bool, **kwarg
     if coupled.size:
         diag[coupled] = _weak_term_rows_by_apply(
             seq, operators, k, dirichlet=dirichlet, indices=coupled)
-    return jnp.asarray(diag)
+    return jnp.asarray(diag, dtype=DTYPE)
 
 
 def build_extracted_laplacian_diagonal(seq, operators, k: int, *, dirichlet: bool,
@@ -2271,14 +2033,17 @@ def build_extracted_laplacian_diagonal(seq, operators, k: int, *, dirichlet: boo
         size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
 
         def row(i):
-            x = jnp.zeros(size).at[i].set(1.0)
+            x = jnp.zeros(size, dtype=DTYPE).at[i].set(1.0)
             return apply_hodge_laplacian_approx(
                 seq, operators, x, k, dirichlet=dirichlet)[i]
 
         # Warm the apply outside the trace: its matrix-free mass plan is
         # host-built and cannot be constructed on tracers.
         apply_hodge_laplacian_approx(
-            seq, operators, jnp.zeros(size), k, dirichlet=dirichlet)
-        # lax.map, never vmap -- see _diagonal_from_matvec.
-        diag[coupled] = np.asarray(jax.lax.map(row, jnp.asarray(coupled)))
-    return jnp.asarray(diag)
+            seq, operators, jnp.zeros(size, dtype=DTYPE), k,
+            dirichlet=dirichlet)
+        # lax.map in small batches, never a wide vmap -- see
+        # _diagonal_from_matvec.
+        diag[coupled] = np.asarray(jax.lax.map(row, jnp.asarray(coupled),
+                                               batch_size=PROBE_BATCH_SIZE))
+    return jnp.asarray(diag, dtype=DTYPE)
