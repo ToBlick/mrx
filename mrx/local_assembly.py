@@ -26,7 +26,6 @@ import jax.numpy as jnp
 import numpy as np
 
 import mrx
-from mrx.differential_forms import adj33
 from mrx.geometry import grad_1d
 
 __all__ = [
@@ -109,11 +108,14 @@ def _elem_counts(seq):
 def _split_field(field_flat, nx, ny, nz, ne_x, ne_y, ne_z, qx, qy, qz):
     """Reshape a flat quad field (meshgrid 'xy' layout) to per-element blocks.
 
-    Returns shape ``(ne_x, ne_y, ne_z, qx, qy, qz)``.
+    Returns shape ``(ne_x, ne_y, ne_z, qx, qy, qz, *trailing)``; trailing axes
+    (e.g. the ``(3, 3)`` of ``DF``) ride along. One reshape and one transpose,
+    so it fuses into the consumer inside a jit.
     """
-    f = field_flat.reshape(ny, nx, nz).transpose(1, 0, 2)
-    f = f.reshape(ne_x, qx, ne_y, qy, ne_z, qz).transpose(0, 2, 4, 1, 3, 5)
-    return f
+    del nx, ny, nz
+    trailing = tuple(range(6, 6 + field_flat.ndim - 1))
+    f = field_flat.reshape(ne_y, qy, ne_x, qx, ne_z, qz, *field_flat.shape[1:])
+    return f.transpose(2, 0, 4, 3, 1, 5, *trailing)
 
 
 def _element_layout(seq):
@@ -255,22 +257,31 @@ def _form_bases(seq, k):
 def _mass_weight(k, DF, jac):
     """Pointwise ``M_k`` weight from ``DF`` and ``det DF``, per component pair.
 
-    Returns ``{(cr, cc): (N_q,) array}``. Traced inside the jitted apply, so
-    the 3x3 metric algebra fuses into the pointwise stage and nothing but
-    ``DF`` and ``J`` is ever resident.
+    ``DF`` is ``(..., 3, 3)`` and ``jac`` ``(...)`` in any layout; returns
+    ``{(cr, cc): (...) array}``. Written as elementwise formulas on the
+    trailing ``3x3`` (no batched matmul, no per-point ``vmap``) so that,
+    traced inside the jitted apply, the metric algebra fuses into the
+    pointwise stage and nothing but ``DF`` and ``J`` is ever resident.
     """
     if k == 0:
         return {(0, 0): jac}
     if k == 3:
         return {(0, 0): 1.0 / jac}
-    g = jnp.einsum("qki,qkj->qij", DF, DF)                 # DF^T DF
-    if k == 1:
-        w = jax.vmap(adj33)(g) / jac[:, None, None]        # G^-1 J = adj(G) / J
-    elif k == 2:
-        w = g / jac[:, None, None]
-    else:
+    if k not in (1, 2):
         raise ValueError("k must be 0, 1, 2 or 3")
-    return {(cr, cc): w[:, cr, cc] for cr in range(3) for cc in range(3)}
+
+    def g(i, j):                                          # (DF^T DF)_ij
+        return sum(DF[..., m, i] * DF[..., m, j] for m in range(3))
+
+    a, b, c, d, e, f = g(0, 0), g(0, 1), g(0, 2), g(1, 1), g(1, 2), g(2, 2)
+    if k == 2:                                            # G / J
+        w = {(0, 0): a, (0, 1): b, (0, 2): c, (1, 1): d, (1, 2): e, (2, 2): f}
+    else:                                                 # G^-1 J = adj(G) / J
+        w = {(0, 0): d * f - e * e, (0, 1): c * e - b * f, (0, 2): b * e - c * d,
+             (1, 1): a * f - c * c, (1, 2): b * c - a * e, (2, 2): a * d - b * b}
+    for (i, j) in list(w):
+        w[(j, i)] = w[(i, j)]
+    return {pair: v / jac for pair, v in w.items()}
 
 
 def _reference_weight(n_comp):
@@ -661,7 +672,7 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
 
     starts_r = starts(form_r, n_r)
     starts_c = starts(form_c, n_c)
-    pairs = tuple(weight_fn(geometry.DF_jkl[:1], geometry.jacobian_j[:1]))
+    pairs = tuple(weight_fn(jnp.zeros((1, 3, 3), mrx.DTYPE), jnp.ones((1,), mrx.DTYPE)))
 
     # Basis VALUES (for the einsums) are separated from the gather/scatter
     # index plans, which depend only on the mesh topology: flat gather indices
@@ -680,7 +691,10 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
 
     @jax.jit
     def _impl(x, Bvals_r, Bvals_c, DF, jac, gauss, gather_idx, seg_idx):
-        W = {pair: split(w) * gauss for pair, w in weight_fn(DF, jac).items()}
+        # DF and J to element layout once (one transpose each), then the
+        # k-specific weight is elementwise on that layout.
+        W = {pair: w * gauss
+             for pair, w in weight_fn(split(DF), split(jac)).items()}
         u = [_to_quadrature(Bvals_c[c], x[starts_c[c]:starts_c[c + 1]],
                             gather_idx[c]) for c in range(n_c)]
         y_parts = []
