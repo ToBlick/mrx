@@ -2204,12 +2204,8 @@ def _build_diffusion_preconditioner_apply(
         # _build_scalar_hodge_preconditioner_apply's jacobi branch, which has
         # done the same thing for the sibling operator L + eps M all along.
         mass_diaginv = _mass_diaginv(seq, operators, k, dirichlet)
-        if eps == 0.0:
-            shifted_diaginv = mass_diaginv
-        else:
-            stiffness_diaginv = _laplacian_diaginv(seq, operators, k, dirichlet)
-            shifted_diaginv = 1.0 / (
-                1.0 / mass_diaginv + eps / stiffness_diaginv)
+        stiffness_diaginv = _laplacian_diaginv(seq, operators, k, dirichlet)
+        shifted_diaginv = 1.0 / (1.0 / mass_diaginv + eps / stiffness_diaginv)
         return lambda x, diaginv=shifted_diaginv: diaginv * x
     if spec.kind == production_kind:
         # The production MASS preconditioner.  It approximates M_k and knows
@@ -2806,26 +2802,16 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
                                                maxiter: Optional[int] = None,
                                                preconditioner='auto',
                                                return_info: bool = False):
-    """Solve with the inverse of M_k + eps L_k using an explicit operator bundle."""
+    """Solve with the inverse of M_k + eps L_k using an explicit operator bundle.
+
+    ``eps`` may be a traced scalar: the relaxation's resistive step passes
+    ``dt * eta`` from inside a jitted step. Nothing here branches on its
+    value, so ``eps = 0`` runs the diffusion solver on the (then singular)
+    saddle system rather than dispatching to the mass solve -- a caller with
+    ``eps = 0`` wants :func:`apply_inverse_mass_matrix` and should say so.
+    """
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
-
-    if eps < 0.0:
-        raise ValueError("eps must be nonnegative")
-
-    if eps == 0.0:
-        return apply_inverse_mass_matrix(
-            seq,
-            operators,
-            rhs,
-            k,
-            dirichlet=dirichlet,
-            guess=guess,
-            tol=tol,
-            maxiter=maxiter,
-            preconditioner=preconditioner,
-            return_info=return_info,
-        )
 
     if k == 0:
         def operator_apply(x):

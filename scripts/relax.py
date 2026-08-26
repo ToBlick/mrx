@@ -53,7 +53,13 @@ Flags (defaults in brackets)
           the control for that.
       --dt0 DT [1.0]                 the step for --dt-mode fixed
       --eta-max ETA [0.0]            peak resistivity; eta > 0 lets the field
-                                     reconnect, helicity is then not conserved
+                                     reconnect, helicity is then not conserved.
+                                     The resistive part is backward Euler,
+                                     (M2 + dt eta L2) B = M2 B_ideal after the
+                                     ideal step, so no eta is too large for
+                                     the linesearch dt; the cost is one k=2
+                                     MINRES solve per step, its iteration
+                                     count is traced as res_it
       --eta-schedule {tanh,constant,linear} [tanh]
                                      tanh drops eta to ~0 over the middle
                                      third of --steps so the run ends ideal
@@ -84,7 +90,7 @@ then ~0.9 s per step (~1.4x with --gamma 1); ~8.6 GB host memory. The archived
 Output (``--out``)::
 
     relax.json   parameters, the per-step trace (E, F, dt, cos, gain, div,
-                 eta, dE_meas, dE_pred), the sampled diagnostics (helicity,
+                 eta, res_it, dE_meas, dE_pred), the sampled diagnostics (helicity,
                  residual ||F||/||grad(B^2/2)||, ||J||/||B||, wall), the
                  initial-condition summary and the stopping reason;
                  rewritten at every diagnostic sample
@@ -94,7 +100,8 @@ Output (``--out``)::
 The trace records the linesearch identity ``dE_pred = -dt (F,u)_M / 2``
 against the measured decrease: it is an operator identity (curl adjointness,
 the cross-product sign, Leray M-orthogonality) and must hold to round-off
-when eta = 0 and --dt-mode linesearch.
+when eta = 0 and --dt-mode linesearch. With eta > 0 the implicit resistive
+solve removes energy on top of the ideal step, so ``dE_meas <= dE_pred``.
 """
 from __future__ import annotations
 
@@ -315,7 +322,7 @@ def main(cli):
     state = initial_state(B0, ts, dt=cli.dt0)
 
     tr = {k: [] for k in ("E", "F", "dt", "div", "cos", "gain", "eta",
-                          "dE_meas", "dE_pred")}
+                          "res_it", "dE_meas", "dE_pred")}
     diag = {k: [] for k in ("it", "helicity", "resid", "gradp", "JoverB", "wall")}
     E_prev = E0
     stop = "steps"
@@ -355,6 +362,7 @@ def main(cli):
         tr["cos"].append(cos)
         tr["gain"].append(gain)
         tr["eta"].append(float(state.eta))
+        tr["res_it"].append(int(state.resistive_info))
         tr["dE_meas"].append(E - E_prev)
         tr["dE_pred"].append(-0.5 * float(state.dt) * Fu)
         E_prev = E
@@ -382,7 +390,8 @@ def main(cli):
             print(f"  it {it:>5d}  E={E:.8e}  |F|={float(state.F_norm):.4e}  "
                   f"dt={float(state.dt):+.3e}  cos={cos:+.4f}  gain={gain:.2e}  "
                   f"divB={div:.2e}  dE_meas={tr['dE_meas'][-1]:+.3e}  "
-                  f"dE_pred={tr['dE_pred'][-1]:+.3e}", flush=True)
+                  f"dE_pred={tr['dE_pred'][-1]:+.3e}  res_it={tr['res_it'][-1]}",
+                  flush=True)
         if energy_floor_reached(tr["E"], cli.floor_window, floor_tol):
             stop = "floor"
             print(f"  [floor] energy decrease per step below {floor_tol:.1e} "
@@ -412,6 +421,11 @@ def main(cli):
     h = np.array(diag["helicity"])
     print(f"    helicity {h[0]:+.6e} -> {h[-1]:+.6e}  drift {h[-1] - h[0]:+.3e}"
           f"  relative {(h[-1] - h[0]) / abs(h[0]):+.3e}", flush=True)
+    res_it = np.array(tr["res_it"])
+    if cli.eta_max > 0:
+        print(f"    resistive solve: MINRES iterations mean {np.abs(res_it).mean():.1f}  "
+              f"max {np.abs(res_it).max()}  unconverged on {int((res_it > 0).sum())} steps",
+              flush=True)
     save(final=True)
     print(f"wrote {out}/relax.json and {out}/B.h5", flush=True)
 
