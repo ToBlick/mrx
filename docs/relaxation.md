@@ -61,18 +61,32 @@ one step and `relaxation_step` dispatches on `timestep_mode`
    (frozen-in topology violated at `O(dt²)`) and diverges when `||dB||`
    collapses. `state.dt_star` and `state.cfl_max` record the cap's activity.
 8. `B_ideal = B_n + dt · dB`.
-9. Resistivity, backward Euler: `(M_2 + dt · eta · L_2) B_{n+1} = M_2 B_ideal`
-   through `apply_inverse_mass_plus_eps_laplace_matrix` (k=2, Dirichlet, the
-   saddle form under MINRES with the metric-lumping preconditioners, warm
-   start `B_n`), with the same capped `dt` as the ideal step; `eta` is the
-   resistivity carried on the state. A
-   `lax.cond` skips the solve at `eta = 0`, so the step is then the ideal
-   one bit for bit. The signed MINRES count is `state.resistive_info`.
+9. Resistivity, backward Euler in defect form:
+   `(M_2 + eps L_2) delta = -eps L_2 B_ideal`, `B_{n+1} = B_ideal + delta`,
+   with `eps = eta · (time since the last resistive solve)` and initial
+   guess 0, through `apply_inverse_mass_plus_eps_laplace_matrix` (k=2,
+   Dirichlet, the saddle form under MINRES with the metric-lumping
+   preconditioners; `L_2 B_ideal` is one Hodge-Laplacian apply). `eta` is
+   the resistivity carried on the state; the solve runs every
+   `TimeStepper.eta_every` steps (default 1) and a `lax.cond` skips it at
+   zero cost otherwise, so at `eta = 0` the step is the ideal one bit for
+   bit. The state records the signed MINRES count `resistive_info`,
+   `resistive_delta = ||delta||_M / ||B||_M`, and the accumulated
+   `resistive_count` / `resistive_time`.
+
+The defect form is what keeps the solve meaningful in float32: solving for
+`B` itself with a tolerance relative to `||B||` returns `B_ideal` unchanged
+when the correction is a few ulps (`eps = dt · eta ~ 1e-7`), whereas the
+tolerance is now relative to `delta` in both precisions. `eta_every` batches
+the diffusion for the same reason: in float32, `eta ~ 1e-4` at `dt ~ 1e-3`
+needs `K` of 10-100 to be representable, and since even the finest mode
+diffuses over `1 / (eta λ_max) ~ 1000` such steps, `K <= 100` is physically
+harmless.
 
 `M_2` is applied three times per step (`M F`, `M u`, `M dB`) for every
-method, four with `eta > 0`. With the line search, `dE/dt <= 0` is a
-guarantee at every `eta`: the ideal step is the line minimiser and the
-implicit diffusion `(I + dt·eta·M_2^{-1} L_2)^{-1}` is an `M_2`-contraction,
+method. With the line search, `dE/dt <= 0` is a guarantee at every `eta`:
+the ideal step is the line minimiser and the implicit diffusion
+`(I + eps·M_2^{-1} L_2)^{-1}` is an `M_2`-contraction,
 so `E(B_{n+1}) <= E(B_ideal) <= E(B_n)`. It also maps `ker(div)` into itself,
 so `div B` stays at the solver's tolerance rather than at `1e-16`. The
 resistive part used to be explicit (`E - eta · J` inside the curl), which is
@@ -87,7 +101,8 @@ monotone energy intact; a fixed small `--dt0` is the control.
 
 `State` holds `B_n`, the warm-start guesses (`p`, `p_v`, `H`, `JxH`, `E`,
 `A`), `F_prev`, `MF_prev`, the four history arrays, `dt`, `dt_star`,
-`cfl_max`, `eta`, `resistive_info`, `F_norm`, `v_norm`, `lbfgs_sy`. Build it with `initial_state(B_dof, ts, dt)`, which
+`cfl_max`, `eta`, `resistive_info`, `resistive_delta`, `resistive_count`,
+`resistive_time`, `F_norm`, `v_norm`, `lbfgs_sy`. Build it with `initial_state(B_dof, ts, dt)`, which
 runs one `compute_force` so the first secant and CG coefficient see a true
 previous gradient. `relaxation_loop(B_dof, ts, num_iters_outer,
 num_iters_inner, ...)` runs `num_iters_inner` steps in a `jax.lax.scan` per
@@ -169,7 +184,7 @@ method per run. Flags, defaults in brackets:
 | `--method {gradient,cg,lbfgs} [cg]`, `--history M [1]` | descent method and history length |
 | `--gamma G [0]`, `--mu MU [0.0]` | hyperregularisation |
 | `--dt-mode {linesearch,fixed} [linesearch]`, `--dt0 DT [1.0]`, `--cfl C [0.5]` | step choice and its CFL cap |
-| `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]` | resistivity (implicit, any size); `tanh` drops it to zero over the middle third of the run |
+| `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]`, `--eta-every K [1]` | resistivity (implicit, any size); `tanh` drops it to zero over the middle third of the run; the solve runs every `K` steps |
 | `--steps N [3000]`, `--seconds S [none]` | outer guards |
 | `--floor-tol TOL [10*eps]`, `--floor-window W [100]` | stopping criterion |
 | `--diag-every N [250]` | steps between helicity samples (each a k=1 Hodge solve) |
@@ -182,7 +197,7 @@ criterion is replayed on archived traces in `test/test_relax_floor.py`
 without a GPU.
 
 Output: `relax.json` with the parameters, the per-step trace (`E`, `F`,
-`dt`, `dt_star`, `cfl`, `div`, `eta`, `res_it`, `dE_meas`, `dE_pred`), the sampled diagnostics, the
+`dt`, `dt_star`, `cfl`, `div`, `eta`, `res_it`, `res_delta`, `dE_meas`, `dE_pred`), the sampled diagnostics, the
 initial-condition summary, and the stopping reason; and `B.h5` with the
 final field.
 

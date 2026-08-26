@@ -159,6 +159,7 @@ def test_resistive_step(zpinch_seq, zpinch_B_hat):
     eta = 1e-2
     res = step(eqx.tree_at(lambda s: s.eta, state0, eta))
     eps = float(res.dt) * eta
+    assert float(res.resistive_delta) > 0 and int(res.resistive_count) == 0
     lhs = seq.apply_mass_matrix(res.B_nplus1, 2) + eps * seq.apply_laplacian(res.B_nplus1, 2)
     rhs = seq.apply_mass_matrix(B_ideal, 2)
     rel = float(jnp.linalg.norm(lhs - rhs) / jnp.linalg.norm(rhs))
@@ -173,6 +174,14 @@ def test_resistive_step(zpinch_seq, zpinch_B_hat):
     E0, E_ideal, E_res = energy(state0.B_n), energy(ideal.B_nplus1), energy(res.B_nplus1)
     assert E_res < E_ideal < E0, (E0, E_ideal, E_res)
     assert div_norm(res.B_nplus1) < 1e-10 * scale
+
+    # eta_every = 2: the first step is not due, it accumulates dt and skips.
+    every2 = TimeStepper(seq=seq, eta_every=2)
+    s2 = jax.jit(lambda s: every2.relaxation_step(s, s.key))(
+        eqx.tree_at(lambda s: s.eta, state0, eta))
+    assert int(s2.resistive_info) == 0 and int(s2.resistive_count) == 1
+    assert float(s2.resistive_time) == float(s2.dt)
+    assert float(jnp.max(jnp.abs(s2.B_nplus1 - B_ideal))) <= 1e-14 * scale
 
 
 def test_cfl_cap(zpinch_seq, zpinch_B_hat):

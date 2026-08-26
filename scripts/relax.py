@@ -67,12 +67,21 @@ Flags (defaults in brackets)
                                      the CFL number
       --eta-max ETA [0.0]            peak resistivity; eta > 0 lets the field
                                      reconnect, helicity is then not conserved.
-                                     The resistive part is backward Euler,
-                                     (M2 + dt eta L2) B = M2 B_ideal after the
-                                     ideal step, so no eta is too large for
-                                     the linesearch dt; the cost is one k=2
-                                     MINRES solve per step, its iteration
-                                     count is traced as res_it
+                                     The resistive part is backward Euler in
+                                     defect form after the ideal step,
+                                     (M2 + eps L2) delta = -eps L2 B_ideal,
+                                     eps = eta * (time since the last solve),
+                                     so no eta is too large for the linesearch
+                                     dt; the cost is one k=2 MINRES solve, its
+                                     iteration count and ||delta||/||B|| are
+                                     traced as res_it and res_delta
+      --eta-every K [1]              apply the resistive solve every K steps,
+                                     diffusing over the accumulated time. In
+                                     float32 a per-step correction of a few
+                                     ulps is lost, so eta ~ 1e-4 at dt ~ 1e-3
+                                     needs K of 10-100; even the finest mode
+                                     diffuses over ~1/(eta lambda_max) ~ 1000
+                                     such steps, so K <= 100 is harmless
       --eta-schedule {tanh,constant,linear} [tanh]
                                      tanh drops eta to ~0 over the middle
                                      third of --steps so the run ends ideal
@@ -103,7 +112,7 @@ then ~0.9 s per step (~1.4x with --gamma 1); ~8.6 GB host memory. The archived
 Output (``--out``)::
 
     relax.json   parameters, the per-step trace (E, F, dt, dt_star, cfl, cos,
-                 gain, div, eta, res_it, dE_meas, dE_pred), the sampled diagnostics (helicity,
+                 gain, div, eta, res_it, res_delta, dE_meas, dE_pred), the sampled diagnostics (helicity,
                  residual ||F||/||grad(B^2/2)||, ||J||/||B||, wall), the
                  initial-condition summary and the stopping reason;
                  rewritten at every diagnostic sample
@@ -176,6 +185,7 @@ def parse_args(argv=None):
     ap.add_argument("--cfl", type=float, default=0.5)
     ap.add_argument("--eta-max", type=float, default=0.0)
     ap.add_argument("--eta-schedule", default="tanh", choices=("tanh", "constant", "linear"))
+    ap.add_argument("--eta-every", type=int, default=1)
     ap.add_argument("--steps", type=int, default=3000)
     ap.add_argument("--seconds", type=float, default=None)
     ap.add_argument("--floor-tol", type=float, default=None)
@@ -312,7 +322,7 @@ def main(cli):
         seq=seq, descent_method=method,
         dt_mode=(TimeStepChoice.ANALYTIC_LINESEARCH if cli.dt_mode == "linesearch"
                  else TimeStepChoice.FIXED),
-        cfl=cli.cfl, timestep_mode=IntegrationScheme.EXPLICIT,
+        cfl=cli.cfl, eta_every=cli.eta_every, timestep_mode=IntegrationScheme.EXPLICIT,
         history_size=cli.history, gamma=cli.gamma, mu=cli.mu)
     apply_M2 = jax.jit(lambda v: seq.apply_mass_matrix(v, 2))
     get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
@@ -336,7 +346,7 @@ def main(cli):
     state = initial_state(B0, ts, dt=cli.dt0)
 
     tr = {k: [] for k in ("E", "F", "dt", "dt_star", "cfl", "div", "cos", "gain",
-                          "eta", "res_it", "dE_meas", "dE_pred")}
+                          "eta", "res_it", "res_delta", "dE_meas", "dE_pred")}
     diag = {k: [] for k in ("it", "helicity", "resid", "gradp", "JoverB", "wall")}
     E_prev = E0
     stop = "steps"
@@ -344,7 +354,7 @@ def main(cli):
     t_diag = 0.0     # time inside the diagnostics; the recorded wall excludes it
     n_done = 0
     print(f"\n=== {cli.method}  m={cli.history} gamma={cli.gamma} mu={cli.mu} "
-          f"dt-mode={cli.dt_mode} cfl={cli.cfl} eta-max={cli.eta_max}  steps<={cli.steps} "
+          f"dt-mode={cli.dt_mode} cfl={cli.cfl} eta-max={cli.eta_max} eta-every={cli.eta_every}  steps<={cli.steps} "
           f"floor-tol={floor_tol:.1e} window={cli.floor_window} ===", flush=True)
 
     def save(final=False):
@@ -379,6 +389,7 @@ def main(cli):
         tr["gain"].append(gain)
         tr["eta"].append(float(state.eta))
         tr["res_it"].append(int(state.resistive_info))
+        tr["res_delta"].append(float(state.resistive_delta))
         tr["dE_meas"].append(E - E_prev)
         tr["dE_pred"].append(-0.5 * float(state.dt) * Fu)
         E_prev = E
@@ -407,7 +418,8 @@ def main(cli):
                   f"dt={float(state.dt):+.3e}  dt*={float(state.dt_star):+.3e}  "
                   f"cfl={float(state.cfl_max) * float(state.dt):.2f}  cos={cos:+.4f}  gain={gain:.2e}  "
                   f"divB={div:.2e}  dE_meas={tr['dE_meas'][-1]:+.3e}  "
-                  f"dE_pred={tr['dE_pred'][-1]:+.3e}  res_it={tr['res_it'][-1]}",
+                  f"dE_pred={tr['dE_pred'][-1]:+.3e}  res_it={tr['res_it'][-1]}  "
+                  f"res_delta={tr['res_delta'][-1]:.2e}",
                   flush=True)
         if energy_floor_reached(tr["E"], cli.floor_window, floor_tol):
             stop = "floor"
@@ -444,9 +456,12 @@ def main(cli):
           f"CFL number taken max {(dts * np.array(tr['cfl'])).max():.3f}")
     res_it = np.array(tr["res_it"])
     if cli.eta_max > 0:
-        print(f"    resistive solve: MINRES iterations mean {np.abs(res_it).mean():.1f}  "
-              f"max {np.abs(res_it).max()}  unconverged on {int((res_it > 0).sum())} steps",
-              flush=True)
+        solved = res_it != 0
+        rd = np.array(tr["res_delta"])[solved]
+        print(f"    resistive solve on {int(solved.sum())}/{n_done} steps: MINRES iterations "
+              f"mean {np.abs(res_it[solved]).mean():.1f}  max {np.abs(res_it).max()}  "
+              f"unconverged on {int((res_it > 0).sum())};  ||delta||/||B|| "
+              f"mean {rd.mean():.2e}  max {rd.max():.2e}", flush=True)
     save(final=True)
     print(f"wrote {out}/relax.json and {out}/B.h5", flush=True)
 

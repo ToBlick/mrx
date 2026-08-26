@@ -137,7 +137,14 @@ class State(eqx.Module):
     resistive_info : int
         The signed MINRES iteration count of the resistive solve on the last
         step: ``-k`` converged after ``k`` iterations, ``+k`` not; ``0`` when
-        ``eta = 0`` and the solve was skipped.
+        the solve was skipped (``eta = 0``, or not due under ``eta_every``).
+    resistive_delta : float
+        ``||delta||_M / ||B||_M`` of the last resistive solve, 0 when skipped.
+    resistive_count : int
+        Steps since the last resistive solve.
+    resistive_time : float
+        Time (sum of ``dt``) since the last resistive solve; the next solve
+        diffuses over it.
     F_prev : jnp.ndarray (optional)
         The force from the previous time step (for L-BFGS y computation).
     MF_prev : jnp.ndarray (optional)
@@ -191,6 +198,9 @@ class State(eqx.Module):
     cfl_max: float = 0.0
     eta: float = 0.0
     resistive_info: int = 0
+    resistive_delta: float = 0.0
+    resistive_count: int = 0
+    resistive_time: float = 0.0
     picard_iterations: int = 0
     picard_residuum: float = 0.0
     F_norm: float = 0.0
@@ -248,6 +258,14 @@ class TimeStepper(eqx.Module):
         the cap and leaves the trajectory untouched.
     cfl_weights : jnp.ndarray
         ``logical_cfl_weights(seq)``, built by ``__post_init__``.
+    eta_every : int
+        Apply the resistive solve every ``eta_every`` steps, diffusing over
+        the time accumulated since the last one (operator splitting). In
+        float32 a per-step increment of 1-10 ulps of ``B`` is not
+        representable, so ``eta ~ 1e-4`` at ``dt ~ 1e-3`` needs 10-100
+        here; the diffusive time of even the finest mode,
+        ``1 / (eta lambda_max) ~ 1000`` such steps, makes ``<= 100``
+        physically harmless.
     timestep_mode : IntegrationScheme
         EXPLICIT or IMPLICIT_MIDPOINT.
     picard_tol : float
@@ -271,6 +289,7 @@ class TimeStepper(eqx.Module):
     descent_method: DescentMethod = DescentMethod.GRADIENT
     dt_mode: TimeStepChoice = TimeStepChoice.ANALYTIC_LINESEARCH
     cfl: float = 0.5
+    eta_every: int = 1
     timestep_mode: IntegrationScheme = IntegrationScheme.EXPLICIT
     picard_tol: float = 1e-9
     picard_k_restart: int = 20
@@ -385,7 +404,7 @@ class TimeStepper(eqx.Module):
                 rhs, 2, self.mu, dirichlet=True, guess=u)
         return u
 
-    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'dt_star', 'cfl_max', 'eta', 'resistive_info', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'lbfgs_sy', 'noise_level', 'key'], value) -> State:  # noqa: E501
+    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'dt_star', 'cfl_max', 'eta', 'resistive_info', 'resistive_delta', 'resistive_count', 'resistive_time', 'picard_iterations', 'picard_residuum', 'F_norm', 'v_norm', 'lbfgs_sy', 'noise_level', 'key'], value) -> State:  # noqa: E501
         return eqx.tree_at(
             lambda s: getattr(s, field_name),
             state,
@@ -512,26 +531,45 @@ class TimeStepper(eqx.Module):
         dt = jnp.minimum(dt_star, self.cfl / cfl_max)
         B_ideal = B_n + dt * dB
 
-        # Resistive diffusion, BACKWARD Euler on top of the ideal step:
-        #     (M_2 + dt eta L_2) B_{n+1} = M_2 B_ideal.
+        # Resistive diffusion, BACKWARD Euler on top of the ideal step, in
+        # DEFECT form:
+        #     (M_2 + eps L_2) delta = -eps L_2 B_ideal,   B_{n+1} = B_ideal + delta,
+        # eps = eta * (time since the last resistive solve), guess 0.
         # It used to be explicit, E = E_ideal - eta J inside dB, which is
         # stable only for dt eta <~ h^2 -- a limit the linesearch knows
         # nothing about, so eta had to be kept small and scheduled.  The
         # implicit form is unconditionally stable and dissipative:
-        # (I + dt eta M^-1 L)^-1 is an M-contraction, so E(B_{n+1}) <=
+        # (I + eps M^-1 L)^-1 is an M-contraction, so E(B_{n+1}) <=
         # E(B_ideal) <= E(B_n) with the linesearch dt of the IDEAL step.  It
         # also preserves div B in exact arithmetic (M^-1 L maps ker(div) into
-        # itself), so the topological curl's div B = 0 survives to the
-        # solver's tolerance.  At eta = 0 the cond skips the solve at zero
-        # cost and the step is the ideal one bit for bit.
-        def resistive(B):
-            B_new, info = self.seq.apply_inverse_mass_plus_eps_laplace_matrix(
-                self.seq.apply_mass_matrix(B, 2), 2, dt * state.eta,
-                dirichlet=True, guess=B_n, return_info=True)
-            return B_new, info.astype(jnp.int32)
+        # itself; the rhs is in range(D_1) since S_2 B_ideal = 0), so the
+        # topological curl's div B = 0 survives to the solver's tolerance.
+        # The defect form is what makes the solve MEAN something in float32:
+        # solving for B itself with a tolerance relative to ||B|| returns
+        # B_ideal unchanged when the correction is a few ulps (eps ~ 1e-7),
+        # whereas the tolerance here is relative to delta in both precisions.
+        # eta_every batches the diffusion over several steps for the same
+        # reason.  The cond skips the solve at zero cost when it is not due,
+        # and at eta = 0 the step is the ideal one bit for bit.
+        resistive_time = state.resistive_time + dt
+        resistive_count = state.resistive_count + 1
+        due = (state.eta > 0) & (resistive_count >= self.eta_every)
 
-        B_nplus1, resistive_info = jax.lax.cond(
-            state.eta > 0, resistive, lambda B: (B, jnp.int32(0)), B_ideal)
+        def resistive(B):
+            eps = resistive_time * state.eta
+            rhs = -eps * self.seq.apply_laplacian(B, 2, dirichlet=True)
+            delta, info = self.seq.apply_inverse_mass_plus_eps_laplace_matrix(
+                rhs, 2, eps, dirichlet=True, return_info=True)
+            rel = self.seq.l2_norm(delta, 2) / self.seq.l2_norm(B, 2)
+            return B + delta, info.astype(jnp.int32), rel
+
+        def skip(B):
+            return B, jnp.int32(0), jnp.zeros((), B.dtype)
+
+        B_nplus1, resistive_info, resistive_delta = jax.lax.cond(
+            due, resistive, skip, B_ideal)
+        resistive_time = jnp.where(due, 0.0, resistive_time)
+        resistive_count = jnp.where(due, 0, resistive_count)
 
         # --- history bookkeeping, part 2: push the step just taken ----------
         # The descent variable is the VELOCITY u, not B: grad_M E = -F is the
@@ -552,11 +590,13 @@ class TimeStepper(eqx.Module):
             lambda s: (s.B_nplus1, s.v, s.p, s.p_v, s.H, s.JxH, s.E,
                        s.F_prev, s.MF_prev, s.F_norm, s.v_norm, s.lbfgs_sy,
                        s.dt, s.dt_star, s.cfl_max, s.resistive_info,
+                       s.resistive_delta, s.resistive_count, s.resistive_time,
                        s.s_history, s.y_history, s.Ms_history, s.My_history),
             state,
             (B_nplus1, u, p, p_v, H, JxH, E,
              F, MF, jnp.sqrt(F @ MF), jnp.sqrt(u @ Mu), sy,
              dt, dt_star, cfl_max, resistive_info,
+             resistive_delta, resistive_count, resistive_time,
              s_history, y_history, Ms_history, My_history))
 
     def midpoint_picard_step(self, state: State, key: jax.random.PRNGKey) -> State:
@@ -623,6 +663,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
         dt=dt,
         dt_star=dt,
         resistive_info=jnp.int32(0),
+        resistive_count=jnp.int32(0),
         v=jnp.zeros(n),
         p=p0,
         p_v=jnp.zeros(seq.n3_dbc),
