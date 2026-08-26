@@ -1,97 +1,69 @@
 # %%
-import jax
 import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
-import mrx
-from mrx.geometry import grad_1d
 
 
-_INDEX_DTYPE = jnp.int32
+def _offsets(hw, s):
+    """Unique periodic column offsets of a stencil of half-width ``hw`` on ``s`` DOFs."""
+    if 2 * hw + 1 <= s:
+        return np.arange(-hw, hw + 1)
+    return np.arange(-(s // 2), s - s // 2)
 
 
-def _index_arange(stop):
-    return jnp.arange(stop, dtype=_INDEX_DTYPE)
+def _stencil_triplets(pairs, row_shape, col_shape, hw, row_start=0, col_start=0):
+    """COO triplets of one tensor-product block ``Σ_pairs sign ∫ (R T Z)_row W (R T Z)_col``.
 
+    ``pairs`` is a list of ``(W_3d, R_row, T_row, Z_row, R_col, T_col, Z_col,
+    sign)`` with ``W_3d`` of shape ``(n_qt, n_qr, n_qz)`` and the 1D factors
+    of shape ``(s, n_q)``; every pair contributes to the same ``(row, col)``
+    positions, so they are stacked and contracted together. The stencil is
+    batched over the θ and ζ offsets for each radial offset, i.e. one
+    contraction per radial offset with ``(2 hw_t + 1)(2 hw_z + 1) N`` values,
+    and the radial factor is contracted first (smallest quadrature axis).
 
-def _as_index_array(values):
-    return jnp.asarray(values, dtype=_INDEX_DTYPE)
-
-
-def _init_triplet_buffers(total_nnz, data_dtype):
-    """Allocate fixed-size COO triplet buffers.
-
-    Using one final buffer per field avoids keeping every block alive until a
-    terminal ``concatenate``. The buffer sizes are pure shape functions of the
-    tensor-product stencil, so this remains compatible with JIT tracing.
+    Returns ``(vals, rows, cols)``: the values on device, the index arrays as
+    host ``int32`` arrays, in ``(dr, dt, dz, row)`` order.
     """
-    data = jnp.zeros((total_nnz,), dtype=data_dtype)
-    rows = jnp.zeros((total_nnz,), dtype=_INDEX_DTYPE)
-    cols = jnp.zeros((total_nnz,), dtype=_INDEX_DTYPE)
-    return data, rows, cols
+    hw_r, hw_t, hw_z = hw
+    c1, c2, c3 = col_shape
+    offsets_r = _offsets(hw_r, c1)
+    offsets_t = _offsets(hw_t, c2)
+    offsets_z = _offsets(hw_z, c3)
+
+    signs = jnp.asarray([pair[7] for pair in pairs], dtype=pairs[0][0].dtype)
+    W = jnp.stack([pair[0] for pair in pairs]) * signs[:, None, None, None]
+    Rr, Tr, Zr, Rc, Tc, Zc = (jnp.stack([pair[m] for pair in pairs])
+                              for m in range(1, 7))
+
+    s1, s2, s3 = row_shape
+    ct = (np.arange(s2)[None, :] + offsets_t[:, None]) % c2      # (T, s2)
+    cz = (np.arange(s3)[None, :] + offsets_z[:, None]) % c3      # (Z, s3)
+    Pt = Tr[:, None] * Tc[:, ct]                                 # (P, T, s2, n_qt)
+    Pz = Zr[:, None] * Zc[:, cz]                                 # (P, Z, s3, n_qz)
+
+    row_flat = row_start + np.arange(s1 * s2 * s3)
+    col_tz = ct[:, None, None, :, None] * c3 + cz[None, :, None, None, :]
+    vals, cols = [], []
+    for dr in offsets_r:
+        cr = (np.arange(s1) + dr) % c1                           # (s1,)
+        Pr = Rr * Rc[:, cr]                                      # (P, s1, n_qr)
+        A = jnp.einsum('pbac,pia->pbic', W, Pr)                  # (P, n_qt, s1, n_qz)
+        B = jnp.einsum('pbic,pzkc->pbizk', A, Pz)                # (P, n_qt, s1, Z, s3)
+        V = jnp.einsum('pbizk,ptjb->tzijk', B, Pt)               # (T, Z, s1, s2, s3)
+        vals.append(V.ravel())
+        col = col_start + cr[None, None, :, None, None] * (c2 * c3) + col_tz
+        cols.append(np.broadcast_to(col, V.shape).ravel())
+    n_blocks = len(offsets_r) * len(offsets_t) * len(offsets_z)
+    return (jnp.concatenate(vals),
+            np.tile(row_flat, n_blocks).astype(np.int32),
+            np.concatenate(cols).astype(np.int32))
 
 
-def _write_triplet_block(data, rows, cols, offset, vals, row_flat, col_flat):
-    """Write one dense tensor-product block into preallocated COO buffers."""
-    block_nnz = row_flat.shape[0]
-    sl = slice(offset, offset + block_nnz)
-    data = data.at[sl].set(vals.ravel())
-    rows = rows.at[sl].set(_as_index_array(row_flat))
-    cols = cols.at[sl].set(_as_index_array(col_flat))
-    return data, rows, cols
-
-
-def assemble(getter_1, getter_2, W, n1, n2):
-    """
-    Assemble a matrix M[a, b] = Σ_{a,j,k} Λ1[a,j,i] * W[j,i,k] * Λ2[b,j,k]
-
-    Parameters
-    ----------
-    getter_1 : callable
-        Function (a, j, k) -> scalar. kth component of form a evaluated at quadrature point j.
-    getter_2 : callable
-        Function (b, j, k) -> scalar. kth component of form b evaluated at quadrature point j.
-    W : jnp.ndarray, shape (n_q, 3, 3)
-        Weight tensor combining metric, Jacobian, and quadrature weights.
-        (For example: G_inv[q, ...] * J[q] * w[q])
-    n1 : int
-        Number of row basis functions.
-    n2 : int
-        Number of column basis functions.
-
-    Returns
-    -------
-    M : jnp.ndarray, shape (n1, n2)
-        The assembled matrix.
-    """
-
-    n_q, d, _ = W.shape
-
-    get_A_k = jax.vmap(getter_1, in_axes=(None, None, 0))  # over k
-    get_B_k = jax.vmap(getter_2, in_axes=(None, None, 0))  # over k
-
-    def get_A_jk(i, js, ks):
-        return jax.lax.map(lambda j: get_A_k(i, j, ks), js,
-                           batch_size=mrx.MAP_BATCH_SIZE_INNER)
-
-    def get_B_jk(m, js, ks):
-        return jax.lax.map(lambda j: get_B_k(m, j, ks), js,
-                           batch_size=mrx.MAP_BATCH_SIZE_INNER)  # over j (quadrature points)
-
-    def body_fun(i):
-        ΛA_i = get_A_jk(i, jnp.arange(n_q), jnp.arange(d))
-
-        def compute_row(m):
-            ΛB_m = get_B_jk(m, jnp.arange(n_q), jnp.arange(d))
-            return jnp.einsum("jk,jkm,jm->", ΛA_i, W, ΛB_m)
-
-        return jax.lax.map(compute_row, jnp.arange(n2),
-                           batch_size=mrx.MAP_BATCH_SIZE_OUTER)  # over m (basis functions for columns) -- batched
-
-    # over i (rows) sequentially - not batched
-    M = jax.lax.map(body_fun, jnp.arange(n1), batch_size=None)
-    return M
+def _bcoo(vals, rows, cols, shape):
+    indices = jnp.asarray(np.stack([rows, cols], axis=-1), dtype=jnp.int32)
+    return jsparse.BCOO((vals, indices), shape=shape)
 
 
 def assemble_scalar(R_row, T_row, Z_row, R_col, T_col, Z_col,
@@ -122,59 +94,12 @@ def assemble_scalar(R_row, T_row, Z_row, R_col, T_col, Z_col,
     -------
     M : jax.experimental.sparse.BCOO, shape (n_dof, n_dof)
     """
-    s1, s2, s3 = dof_shape
-    n_dof = s1 * s2 * s3
-
-    W_3d = W_flat.reshape(quad_shape)  # (n_qt, n_qr, n_qz)
-
-    # Unique periodic offsets per direction, avoiding mod-s duplicates
-    def _offsets(hw, s):
-        if 2 * hw + 1 <= s:
-            return range(-hw, hw + 1)
-        return range(-(s // 2), s - s // 2)
-
-    offsets_r = _offsets(hw_r, s1)
-    offsets_t = _offsets(hw_t, s2)
-    offsets_z = _offsets(hw_z, s3)
-
-    # Precompute 1D overlap products per offset
-    Pr = {dr: R_row * jnp.roll(R_col, -dr, axis=0) for dr in offsets_r}
-    Pt = {dt: T_row * jnp.roll(T_col, -dt, axis=0) for dt in offsets_t}
-    Pz = {dz: Z_row * jnp.roll(Z_col, -dz, axis=0) for dz in offsets_z}
-
-    # Row DOF grid indices (flat)
-    I1, I2, I3 = jnp.meshgrid(
-        _index_arange(s1), _index_arange(s2), _index_arange(s3), indexing='ij')
-    row_flat = _as_index_array(jnp.ravel_multi_index(
-        (I1, I2, I3), dof_shape, mode='wrap').ravel())
-
-    n_blocks = len(offsets_r) * len(offsets_t) * len(offsets_z)
-    block_nnz = row_flat.shape[0]
-    data, rows, cols = _init_triplet_buffers(
-        n_blocks * block_nnz, W_flat.dtype)
-    offset = 0
-
-    for dr in offsets_r:
-        M1 = (I1 + dr) % s1
-        for dt in offsets_t:
-            M2 = (I2 + dt) % s2
-            for dz in offsets_z:
-                M3 = (I3 + dz) % s3
-
-                # einsum: W[b,a,c] * Pr[i,a] * Pt[j,b] * Pz[k,c] -> M[i,j,k]
-                vals = jnp.einsum('bac,ia,jb,kc->ijk',
-                                  W_3d, Pr[dr], Pt[dt], Pz[dz])
-
-                col_flat = _as_index_array(jnp.ravel_multi_index(
-                    (M1, M2, M3), dof_shape, mode='wrap').ravel())
-
-                data, rows, cols = _write_triplet_block(
-                    data, rows, cols, offset, vals, row_flat, col_flat)
-                offset += block_nnz
-
-    indices = jnp.stack([rows, cols], axis=-1)
-
-    return jsparse.BCOO((data, indices), shape=(n_dof, n_dof))
+    n_dof = int(np.prod(dof_shape))
+    pairs = [(W_flat.reshape(quad_shape), R_row, T_row, Z_row,
+              R_col, T_col, Z_col, 1.0)]
+    vals, rows, cols = _stencil_triplets(
+        pairs, dof_shape, dof_shape, (hw_r, hw_t, hw_z))
+    return _bcoo(vals, rows, cols, (n_dof, n_dof))
 
 
 def assemble_vectorial(row_terms, col_terms, W_flat_3x3,
@@ -236,206 +161,34 @@ def assemble_vectorial(row_terms, col_terms, W_flat_3x3,
                 f"({n_row_comp}, {n_col_comp}, 3)")
         hw_table = hw_arr.tolist()
 
-    # Row sizes and offsets
-    row_sizes = [s[0] * s[1] * s[2] for s in row_comp_shapes]
-    n_row_total = sum(row_sizes)
-    row_starts = []
-    acc = 0
-    for sz in row_sizes:
-        row_starts.append(acc)
-        acc += sz
+    row_starts = np.concatenate(
+        [[0], np.cumsum([int(np.prod(s)) for s in row_comp_shapes])])
+    col_starts = np.concatenate(
+        [[0], np.cumsum([int(np.prod(s)) for s in col_comp_shapes])])
 
-    # Col sizes and offsets
-    col_sizes = [s[0] * s[1] * s[2] for s in col_comp_shapes]
-    n_col_total = sum(col_sizes)
-    col_starts = []
-    acc = 0
-    for sz in col_sizes:
-        col_starts.append(acc)
-        acc += sz
+    W_3d = {(k, l): W_flat_3x3[:, k, l].reshape(quad_shape)
+            for k in range(3) for l in range(3)}
 
-    def _offsets(hw, s):
-        if 2 * hw + 1 <= s:
-            return range(-hw, hw + 1)
-        return range(-(s // 2), s - s // 2)
+    vals, rows, cols = [], [], []
+    for c_row in range(n_row_comp):
+        for c_col in range(n_col_comp):
+            pairs = [
+                (W_3d[(k, l)], Rk, Tk, Zk, Rl, Tl, Zl, sk * sl)
+                for (k, Rk, Tk, Zk, sk) in row_terms[c_row]
+                for (l, Rl, Tl, Zl, sl) in col_terms[c_col]
+            ]
+            v, r, c = _stencil_triplets(
+                pairs, row_comp_shapes[c_row], col_comp_shapes[c_col],
+                hw_table[c_row][c_col],
+                row_start=int(row_starts[c_row]),
+                col_start=int(col_starts[c_col]))
+            vals.append(v)
+            rows.append(r)
+            cols.append(c)
 
-    # Precompute W_{kl} reshaped to 3D
-    W_3d = {}
-    for k in range(3):
-        for l in range(3):
-            W_3d[(k, l)] = W_flat_3x3[:, k, l].reshape(quad_shape)
-
-    n_blocks = 0
-    block_sizes = []
-    for c_row in range(len(row_terms)):
-        s_row = row_comp_shapes[c_row]
-        row_block_nnz = s_row[0] * s_row[1] * s_row[2]
-        for c_col in range(len(col_terms)):
-            s_col = col_comp_shapes[c_col]
-            hw_rt, hw_tt, hw_zt = hw_table[c_row][c_col]
-            offsets_r = _offsets(hw_rt, s_col[0])
-            offsets_t = _offsets(hw_tt, s_col[1])
-            offsets_z = _offsets(hw_zt, s_col[2])
-            count = len(offsets_r) * len(offsets_t) * len(offsets_z)
-            n_blocks += count
-            block_sizes.append(count * row_block_nnz)
-
-    total_nnz = sum(block_sizes)
-    data, rows, cols = _init_triplet_buffers(total_nnz, W_flat_3x3.dtype)
-    offset = 0
-
-    for c_row in range(len(row_terms)):
-        s_row = row_comp_shapes[c_row]
-        I1, I2, I3 = jnp.meshgrid(
-            _index_arange(s_row[0]), _index_arange(s_row[1]),
-            _index_arange(s_row[2]), indexing='ij')
-        row_r = _index_arange(s_row[0])
-        row_t = _index_arange(s_row[1])
-        row_z = _index_arange(s_row[2])
-        row_flat = _as_index_array(row_starts[c_row] + jnp.ravel_multi_index(
-            (I1, I2, I3), s_row, mode='wrap').ravel())
-
-        for c_col in range(len(col_terms)):
-            s_col = col_comp_shapes[c_col]
-            hw_rt, hw_tt, hw_zt = hw_table[c_row][c_col]
-            offsets_r = _offsets(hw_rt, s_col[0])
-            offsets_t = _offsets(hw_tt, s_col[1])
-            offsets_z = _offsets(hw_zt, s_col[2])
-
-            for dr in offsets_r:
-                cidx_r = (row_r + dr) % s_col[0]
-                J1 = (I1 + dr) % s_col[0]
-                for dt in offsets_t:
-                    cidx_t = (row_t + dt) % s_col[1]
-                    J2 = (I2 + dt) % s_col[1]
-                    for dz in offsets_z:
-                        cidx_z = (row_z + dz) % s_col[2]
-                        J3 = (I3 + dz) % s_col[2]
-
-                        vals = jnp.zeros(s_row)
-                        for (k, Rk, Tk, Zk, sk) in row_terms[c_row]:
-                            for (l, Rl, Tl, Zl, sl) in col_terms[c_col]:
-                                vals = vals + sk * sl * jnp.einsum(
-                                    'bac,ia,jb,kc->ijk',
-                                    W_3d[(k, l)],
-                                    Rk * Rl[cidx_r, :],
-                                    Tk * Tl[cidx_t, :],
-                                    Zk * Zl[cidx_z, :])
-
-                        col_flat = _as_index_array(col_starts[c_col] + jnp.ravel_multi_index(
-                            (J1, J2, J3), s_col, mode='wrap').ravel())
-
-                        data, rows, cols = _write_triplet_block(
-                            data, rows, cols, offset, vals, row_flat, col_flat)
-                        offset += row_flat.shape[0]
-
-    indices = jnp.stack([rows, cols], axis=-1)
-
-    return jsparse.BCOO((data, indices), shape=(n_row_total, n_col_total))
-
-
-def assemble_stiffness_scalar(row_basis_1d, col_basis_1d, W_flat_3x3,
-                                 quad_shape, dof_shape, hw_r, hw_t, hw_z):
-    """Tensor-product assembly for stiffness-like matrix with scalar DOFs.
-
-    Computes M_ij = Σ_{a,b} ∫ (dΛ_i)_a · W_{ab} · (dΛ_j)_b dx
-
-    where dΛ is a vector-valued operator (e.g. gradient) applied to scalar
-    basis functions, producing 3 components, each factoring as a product
-    of 1D functions.  All 9 (a,b) blocks contribute to a single scalar
-    DOF matrix.
-
-    Parameters
-    ----------
-    row_basis_1d : list of 3 tuples (R, T, Z)
-        Per-component 1D basis evaluations for the row operator.
-        All arrays share the same DOF dimension per direction.
-    col_basis_1d : list of 3 tuples (R, T, Z)
-        Same, for the column operator.
-    W_flat_3x3 : array, shape (n_q, 3, 3)
-        Weight tensor at each quadrature point.
-    quad_shape : tuple (n_qt, n_qr, n_qz)
-    dof_shape : tuple (s1, s2, s3)
-    hw_r, hw_t, hw_z : int
-        Stencil half-widths per direction.
-
-    Returns
-    -------
-    M : jax.experimental.sparse.BCOO, shape (n_dof, n_dof)
-    """
-    s1, s2, s3 = dof_shape
-    n_dof = s1 * s2 * s3
-
-    def _offsets(hw, s):
-        if 2 * hw + 1 <= s:
-            return range(-hw, hw + 1)
-        return range(-(s // 2), s - s // 2)
-
-    offsets_r = _offsets(hw_r, s1)
-    offsets_t = _offsets(hw_t, s2)
-    offsets_z = _offsets(hw_z, s3)
-
-    # Precompute 1D overlap products for all (a, b) blocks and offsets
-    Pr = {}
-    Pt = {}
-    Pz = {}
-    for a in range(3):
-        R_row, T_row, Z_row = row_basis_1d[a]
-        for b in range(3):
-            R_col, T_col, Z_col = col_basis_1d[b]
-            for dr in offsets_r:
-                Pr[(a, b, dr)] = R_row * jnp.roll(R_col, -dr, axis=0)
-            for dt in offsets_t:
-                Pt[(a, b, dt)] = T_row * jnp.roll(T_col, -dt, axis=0)
-            for dz in offsets_z:
-                Pz[(a, b, dz)] = Z_row * jnp.roll(Z_col, -dz, axis=0)
-
-    # Precompute W_{ab} reshaped to 3D
-    W_ab_3d = {}
-    for a in range(3):
-        for b in range(3):
-            W_ab_3d[(a, b)] = W_flat_3x3[:, a, b].reshape(quad_shape)
-
-    # Row DOF grid
-    I1, I2, I3 = jnp.meshgrid(
-        _index_arange(s1), _index_arange(s2), _index_arange(s3), indexing='ij')
-    row_flat = _as_index_array(jnp.ravel_multi_index(
-        (I1, I2, I3), dof_shape, mode='wrap').ravel())
-
-    n_blocks = len(offsets_r) * len(offsets_t) * len(offsets_z)
-    block_nnz = row_flat.shape[0]
-    data, rows, cols = _init_triplet_buffers(
-        n_blocks * block_nnz, W_flat_3x3.dtype)
-    offset = 0
-
-    for dr in offsets_r:
-        M1 = (I1 + dr) % s1
-        for dt in offsets_t:
-            M2 = (I2 + dt) % s2
-            for dz in offsets_z:
-                M3 = (I3 + dz) % s3
-
-                # Sum contributions from all 9 (a, b) blocks
-                vals = jnp.zeros((s1, s2, s3))
-                for a in range(3):
-                    for b in range(3):
-                        vals = vals + jnp.einsum(
-                            'bac,ia,jb,kc->ijk',
-                            W_ab_3d[(a, b)],
-                            Pr[(a, b, dr)],
-                            Pt[(a, b, dt)],
-                            Pz[(a, b, dz)])
-
-                col_flat = _as_index_array(jnp.ravel_multi_index(
-                    (M1, M2, M3), dof_shape, mode='wrap').ravel())
-
-                data, rows, cols = _write_triplet_block(
-                    data, rows, cols, offset, vals, row_flat, col_flat)
-                offset += block_nnz
-
-    indices = jnp.stack([rows, cols], axis=-1)
-
-    return jsparse.BCOO((data, indices), shape=(n_dof, n_dof))
+    return _bcoo(jnp.concatenate(vals), np.concatenate(rows),
+                 np.concatenate(cols),
+                 (int(row_starts[-1]), int(col_starts[-1])))
 
 
 def assemble_dense_mass_matrix(seq, k, dirichlet=True, operators=None):
@@ -584,191 +337,6 @@ def eval_basis_3_ijk(seq, i, j, k):
         j, (seq.quad.ny, seq.quad.nx, seq.quad.nz))
     _, i1, i2, i3 = seq.basis_3._unravel_index(i)
     return seq.d_basis_r_jk[i1, j1] * seq.d_basis_t_jk[i2, j2] * seq.d_basis_z_jk[i3, j3]
-
-
-# ---------------------------------------------------------------------------
-# Deprecated assembly (element-wise quadrature)
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Tensor-product assembly (current)
-# ---------------------------------------------------------------------------
-
-def assemble_derivative_matrix(seq, k):
-    """Assemble the exterior derivative matrix using tensor-product contraction."""
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
-    types = seq.basis_0.types
-    gr = grad_1d(seq.d_basis_r_jk, types[0])
-    gt = grad_1d(seq.d_basis_t_jk, types[1])
-    gz = grad_1d(seq.d_basis_z_jk, types[2])
-    match k:
-        case 0:
-            W_3x3 = seq.metric_inv_jkl * \
-                (seq.jacobian_j * seq.quad.w)[:, None, None]
-            row_terms = [
-                [(0, seq.d_basis_r_jk, seq.basis_t_jk, seq.basis_z_jk, +1)],
-                [(1, seq.basis_r_jk, seq.d_basis_t_jk, seq.basis_z_jk, +1)],
-                [(2, seq.basis_r_jk, seq.basis_t_jk, seq.d_basis_z_jk, +1)],
-            ]
-            col_terms = [
-                [(0, gr, seq.basis_t_jk, seq.basis_z_jk, +1),
-                 (1, seq.basis_r_jk, gt, seq.basis_z_jk, +1),
-                 (2, seq.basis_r_jk, seq.basis_t_jk, gz, +1)],
-            ]
-            sp = assemble_vectorial(
-                row_terms, col_terms, W_3x3, quad_shape,
-                list(seq.basis_1.shape), seq.basis_1.pr,
-                col_comp_shapes=list(seq.basis_0.shape))
-            seq.d0 = jsparse.BCSR.from_bcoo(sp)
-            seq.d0_T = jsparse.BCSR.from_bcoo(sp.T)
-        case 1:
-            W_3x3 = seq.metric_jkl * \
-                (1 / seq.jacobian_j * seq.quad.w)[:, None, None]
-            dR = seq.d_basis_r_jk
-            dT = seq.d_basis_t_jk
-            dZ = seq.d_basis_z_jk
-            R = seq.basis_r_jk
-            T = seq.basis_t_jk
-            Z = seq.basis_z_jk
-            row_terms = [
-                [(0, R, dT, dZ, +1)],
-                [(1, dR, T, dZ, +1)],
-                [(2, dR, dT, Z, +1)],
-            ]
-            col_terms = [
-                [(1, dR, T, gz, +1),
-                 (2, dR, gt, Z, -1)],
-                [(0, R, dT, gz, -1),
-                 (2, gr, dT, Z, +1)],
-                [(0, R, gt, dZ, +1),
-                 (1, gr, T, dZ, -1)],
-            ]
-            sp = assemble_vectorial(
-                row_terms, col_terms, W_3x3, quad_shape,
-                list(seq.basis_2.shape), seq.basis_2.pr,
-                col_comp_shapes=list(seq.basis_1.shape))
-            seq.d1 = jsparse.BCSR.from_bcoo(sp)
-            seq.d1_T = jsparse.BCSR.from_bcoo(sp.T)
-        case 2:
-            W_scalar = (1 / seq.jacobian_j) * seq.quad.w
-            W_1x1 = W_scalar.reshape(-1, 1, 1)
-            dR = seq.d_basis_r_jk
-            dT = seq.d_basis_t_jk
-            dZ = seq.d_basis_z_jk
-            row_terms = [
-                [(0, dR, dT, dZ, +1)],
-            ]
-            col_terms = [
-                [(0, gr, dT, dZ, +1)],
-                [(0, dR, gt, dZ, +1)],
-                [(0, dR, dT, gz, +1)],
-            ]
-            sp = assemble_vectorial(
-                row_terms, col_terms, W_1x1, quad_shape,
-                list(seq.basis_3.shape), seq.basis_3.pr,
-                col_comp_shapes=list(seq.basis_2.shape))
-            seq.d2 = jsparse.BCSR.from_bcoo(sp)
-            seq.d2_T = jsparse.BCSR.from_bcoo(sp.T)
-        case _:
-            raise ValueError(
-                "Tensor-product derivative assembly supports k=0, 1, 2")
-
-
-def assemble_hodge_laplacian(seq, k):
-    """Assemble the stiffness matrix (δd) using tensor-product contraction."""
-    from mrx.preconditioners import diag_EAET, diag_schur_complement
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
-    types = seq.basis_0.types
-    gr = grad_1d(seq.d_basis_r_jk, types[0])
-    gt = grad_1d(seq.d_basis_t_jk, types[1])
-    gz = grad_1d(seq.d_basis_z_jk, types[2])
-    match k:
-        case 0:
-            W_3x3 = seq.metric_inv_jkl * \
-                (seq.jacobian_j * seq.quad.w)[:, None, None]
-            grad_basis_1d = [
-                (gr, seq.basis_t_jk, seq.basis_z_jk),
-                (seq.basis_r_jk, gt, seq.basis_z_jk),
-                (seq.basis_r_jk, seq.basis_t_jk, gz),
-            ]
-            sp = assemble_stiffness_scalar(
-                grad_basis_1d, grad_basis_1d, W_3x3, quad_shape,
-                seq.basis_0.shape[0],
-                seq.basis_0.pr, seq.basis_0.pt, seq.basis_0.pz)
-            seq.grad_grad = jsparse.BCSR.from_bcoo(sp)
-            seq.dd0_diaginv = 1.0 / \
-                diag_EAET(seq.e0, seq.grad_grad, seq.e0_T)
-            seq.dd0_diaginv_dbc = 1.0 / \
-                diag_EAET(seq.e0_dbc, seq.grad_grad, seq.e0_dbc_T)
-        case 1:
-            W_3x3 = seq.metric_jkl * \
-                (1 / seq.jacobian_j * seq.quad.w)[:, None, None]
-            dR = seq.d_basis_r_jk
-            dT = seq.d_basis_t_jk
-            dZ = seq.d_basis_z_jk
-            R = seq.basis_r_jk
-            T = seq.basis_t_jk
-            Z = seq.basis_z_jk
-            curl_terms = [
-                [(1, dR, T, gz, +1),
-                 (2, dR, gt, Z, -1)],
-                [(0, R, dT, gz, -1),
-                 (2, gr, dT, Z, +1)],
-                [(0, R, gt, dZ, +1),
-                 (1, gr, T, dZ, -1)],
-            ]
-            sp = assemble_vectorial(
-                curl_terms, curl_terms, W_3x3, quad_shape,
-                list(seq.basis_1.shape), seq.basis_1.pr)
-            seq.curl_curl = jsparse.BCSR.from_bcoo(sp)
-            d_stiff = diag_EAET(seq.e1, seq.curl_curl, seq.e1_T)
-            d_schur = diag_schur_complement(
-                lambda v: seq.e0 @ (seq.d0_T @ (seq.e1_T @ v)),
-                seq.m0_diaginv, seq.n1)
-            seq.dd1_diaginv = 1.0 / (d_stiff + d_schur)
-            d_stiff_dbc = diag_EAET(
-                seq.e1_dbc, seq.curl_curl, seq.e1_dbc_T)
-            d_schur_dbc = diag_schur_complement(
-                lambda v: seq.e0_dbc @ (seq.d0_T @
-                                        (seq.e1_dbc_T @ v)),
-                seq.m0_diaginv_dbc, seq.n1_dbc)
-            seq.dd1_diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
-        case 2:
-            W_scalar = (1 / seq.jacobian_j) * seq.quad.w
-            W_3x3 = W_scalar[:, None, None] * jnp.ones((1, 3, 3))
-            div_terms = [
-                [(0, gr, seq.d_basis_t_jk, seq.d_basis_z_jk, +1)],
-                [(1, seq.d_basis_r_jk, gt, seq.d_basis_z_jk, +1)],
-                [(2, seq.d_basis_r_jk, seq.d_basis_t_jk, gz, +1)],
-            ]
-            sp = assemble_vectorial(
-                div_terms, div_terms, W_3x3, quad_shape,
-                list(seq.basis_2.shape), seq.basis_2.pr)
-            seq.div_div = jsparse.BCSR.from_bcoo(sp)
-            d_stiff = diag_EAET(seq.e2, seq.div_div, seq.e2_T)
-            d_schur = diag_schur_complement(
-                lambda v: seq.e1 @ (seq.d1_T @ (seq.e2_T @ v)),
-                seq.m1_diaginv, seq.n2)
-            seq.dd2_diaginv = 1.0 / (d_stiff + d_schur)
-            d_stiff_dbc = diag_EAET(
-                seq.e2_dbc, seq.div_div, seq.e2_dbc_T)
-            d_schur_dbc = diag_schur_complement(
-                lambda v: seq.e1_dbc @ (seq.d1_T @
-                                        (seq.e2_dbc_T @ v)),
-                seq.m1_diaginv_dbc, seq.n2_dbc)
-            seq.dd2_diaginv_dbc = 1.0 / (d_stiff_dbc + d_schur_dbc)
-        case 3:
-            d_schur = diag_schur_complement(
-                lambda v: seq.e2 @ (seq.d2_T @ (seq.e3_T @ v)),
-                seq.m2_diaginv, seq.n3)
-            seq.dd3_diaginv = 1.0 / d_schur
-            d_schur_dbc = diag_schur_complement(
-                lambda v: seq.e2_dbc @ (seq.d2_T @
-                                        (seq.e3_dbc_T @ v)),
-                seq.m2_diaginv_dbc, seq.n3_dbc)
-            seq.dd3_diaginv_dbc = 1.0 / d_schur_dbc
-        case _:
-            raise ValueError("k must be 0, 1, 2, or 3")
 
 
 def assemble_leray_projection(seq):
