@@ -22,6 +22,12 @@ Flags (defaults in brackets):
     --out DIR              output directory [<state dir>/poincare]
     --from-npz             re-render from ``<out>/sections.npz`` without tracing
 
+If the state file carries the Leray pressures ``p_ic`` / ``p_final`` (3-form
+DoFs, written by ``scripts/relax.py``), the physical pressure ``p / det DF`` is
+evaluated at every crossing and drawn below the axis in the section and as a
+profile; on a flux surface it is constant, so the width of each stripe is the
+diagnostic.
+
 Output: ``poincare_<field>_zeta<plane>.png`` per field and plane, and
 ``sections.npz`` under ``--out`` with, per field, the crossing coordinates of
 every plane plus ``iota``, ``resid``, ``seed_r``, ``keep``, ``chaotic`` and the
@@ -53,12 +59,15 @@ def main():
     os.environ["MRX_DTYPE"] = cli.precision
 
     import h5py
+    import jax
     import jax.numpy as jnp
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
+    from mrx.differential_forms import DiscreteFunction
     from mrx.geometries import build_sequence, geometry_nfp
+    from mrx.geometry import map_jacobian_at
     from mrx.poincare import (logical_field, render_section, seed_from_axis,
                               section_RZ, surface_label, trace_and_classify,
                               require_zeta_parameterisation)
@@ -98,12 +107,29 @@ def main():
                     axis_RZ=(z[f"{tag}_axisR"], z[f"{tag}_axisZ"]), path=None,
                     profile_x=z[f"{tag}_a_eff"], profile_xlabel=str(z[f"{tag}_xlabel"]), nfp=nfp,
                     logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]), chaotic=z[f"{name}_chaotic"],
-                    iota_lim=(lo, hi))
+                    pressure=z[f"{tag}_pressure"] if f"{tag}_pressure" in z else None,
+                    split_iota_p=f"{tag}_pressure" in z, iota_lim=(lo, hi))
                 path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
-                fig.savefig(path, dpi=200); plt.close(fig); print(f"  -> {path}", flush=True)
+                fig.savefig(path, dpi=200)
+                plt.close(fig)
+                print(f"  -> {path}", flush=True)
         return
 
     seq, _ = build_sequence(geometry, ns, p, int(attrs.get("maxiter", 10_000)))
+
+    def pressure_at(name, lr, lth, plane):
+        """Physical pressure p / det DF at the crossings, or None without p."""
+        key = "p_" + name
+        if key not in dofs:
+            return None
+        pd = dofs[key]
+        e3 = seq.e3_dbc if pd.shape[0] == int(seq.n3_dbc) else seq.e3
+        p_h = DiscreteFunction(jnp.asarray(pd), seq.basis_3, e3)
+        x = jnp.stack([jnp.asarray(lr).ravel(), jnp.asarray(lth).ravel(),
+                       jnp.full(lr.size, plane)], axis=1)
+        val = jax.vmap(p_h)(x)[:, 0]
+        det = jnp.linalg.det(map_jacobian_at(seq.map, x))
+        return np.asarray(val / det).reshape(lr.shape)
     traced = {}
     for name in which:
         B = dofs["B_" + name]
@@ -135,8 +161,10 @@ def main():
             R, Z, aR, aZ, cR, cZ, lr, lth = section_RZ(
                 seq, res["ys"], res["axis"], cli.saves, plane)
             a_eff, xlabel = surface_label("midplane", R, Z, aR, aZ, res["seeds"][:, 0])
+            press = pressure_at(name, lr, lth, plane)
             fig = render_section(
                 R, Z, res["iota"], res["resid"], res["seeds"][:, 0], keep,
+                pressure=press, split_iota_p=press is not None,
                 title=f"{geometry} {ns} p={p}  |  {name}  |  $\\zeta = {plane:g}$\n"
                       f"{labels.get(name, name)}, relaxed in {attrs.get('precision')} "
                       f"-- {R.shape[1]} crossings/line",
@@ -153,6 +181,8 @@ def main():
             for key, arr in zip(("R", "Z", "axisR", "axisZ", "logr", "logth", "a_eff"),
                                 (R, Z, aR, aZ, lr, lth, a_eff)):
                 sections[f"{tag}_{key}"] = np.asarray(arr)
+            if press is not None:
+                sections[f"{tag}_pressure"] = press
             sections[f"{tag}_xlabel"] = np.array(xlabel)
         for key, arr in (("iota", res["iota"]), ("resid", res["resid"]), ("seed_r", res["seeds"][:, 0]),
                          ("keep", keep), ("chaotic", res["chaotic"]), ("shown", shown),
