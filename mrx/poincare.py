@@ -349,11 +349,17 @@ def rotational_transform(ys, saves_per_period, nfp, center=None):
 # ---------------------------------------------------------------------------
 
 #: Half-split ``|d iota|`` above which a line is treated as chaotic and given
-#: NO iota. Measured over the archived traces: quasi-periodic lines score ~1e-6
-#: (median) with a p90 of ~1e-5, while the chaotic quasr65530 k=1 sea scores
-#: 5.6e-04 median. Three orders of magnitude of separation, so the threshold is
-#: not delicate.
-CHAOS_TOL = 1e-4
+#: NO iota, per traced period: the threshold is ``CHAOS_TOL_PER_PERIOD / N``.
+#: A quasi-periodic line's half-split difference falls like ``1/N`` (it is the
+#: bounded angle oscillation divided by the window), so a fixed threshold
+#: flags island lines on short traces and stops flagging them on long ones. A
+#: chaotic line's difference does not fall with ``N``. Measured 2026-08-26 on
+#: W7-X fmm002 at 400 and 800 periods: converged Clebsch relaxations score
+#: <= 9e-04 / 1.2e-04 on their regular lines (islands included) while the
+#: chaotic logical-profile field scores >= 1.4e-03 / 3.7e-03 on 29 of 40
+#: lines at both lengths. ``0.4 / N`` (1e-03 at 400 periods) separates them
+#: with a decade to spare at both lengths.
+CHAOS_TOL_PER_PERIOD = 0.4
 
 
 def iota_convergence(ys, saves_per_period, nfp, center=None):
@@ -865,8 +871,8 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
     escaped = escaped_mask(ys)
     centre = axis_track(ys, saves_per_period)
     iota, resid = rotational_transform(ys, saves_per_period, nfp, center=centre)
-    chaotic = iota_convergence(ys, saves_per_period, nfp,
-                               center=centre) > CHAOS_TOL
+    chaotic = (iota_convergence(ys, saves_per_period, nfp, center=centre)
+               > CHAOS_TOL_PER_PERIOD / n_periods)
 
     # The drift check re-traces at h and h/2, so it is priced per seed: a
     # subsample says the same thing.
