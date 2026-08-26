@@ -510,7 +510,7 @@ def effective_radius(R, Z, centre_R, centre_Z):
     return jnp.sqrt(enclosed_area(R, Z, centre_R, centre_Z) / jnp.pi)
 
 
-def resonant_rationals(iota_min, iota_max, nfp, denom_max=15):
+def resonant_rationals(iota_min, iota_max, nfp, denom_max=30, min_sep=0.06):
     """Rationals in ``[iota_min, iota_max]`` where an island chain can form.
 
     An island chain needs a resonant perturbation: ``iota = n/m`` with ``n`` the
@@ -520,21 +520,32 @@ def resonant_rationals(iota_min, iota_max, nfp, denom_max=15):
     of ``nfp``. Every other rational surface is resonance-free and closes on
     itself harmlessly.
 
-    Returned lowest-numerator-first and deduplicated by VALUE, so ``5/6`` is
-    kept and ``10/12`` -- the same surface, driven by a weaker harmonic -- is
-    not repeated.
+    Deduplicated by VALUE, so ``5/6`` is kept and ``10/12`` -- the same
+    surface, driven by a weaker harmonic -- is not repeated.
 
-    Ported from the ``denom_max`` ticks in :func:`mrx.plotting.poincare_plot`.
+    Which of them to label is a spacing problem: ``denom_max = 30`` on W7-X
+    puts ~40 resonances in an iota range of 0.2, and labelling all of them
+    overprints, while the two or three lowest orders leave the scale unreadable.
+    So the candidates are ranked by poloidal mode number (an ``n/m`` island is
+    wider the smaller ``m`` is, and that is also how they are read), and each
+    is accepted only if it is at least ``min_sep`` of the range away from every
+    label already placed. Low orders always win their slot; higher orders fill
+    the gaps until the spacing rule stops them.
     """
-    ticks, labels, seen = [], [], set()
+    span = max(iota_max - iota_min, 1e-12)
+    candidates, seen = [], set()
     for j in range(1, max(denom_max // nfp, 1) + 1):
         n_tor = j * nfp
         for m_pol in range(1, denom_max + 1):
             value = n_tor / m_pol
             if iota_min <= value <= iota_max and value not in seen:
-                ticks.append(value)
-                labels.append(f"{n_tor}/{m_pol}")
+                candidates.append((m_pol, n_tor, value))
                 seen.add(value)
+    ticks, labels = [], []
+    for m_pol, n_tor, value in sorted(candidates):
+        if all(abs(value - t) >= min_sep * span for t in ticks):
+            ticks.append(value)
+            labels.append(f"{n_tor}/{m_pol}")
     order = sorted(range(len(ticks)), key=lambda i: ticks[i])
     return [ticks[i] for i in order], [labels[i] for i in order]
 
@@ -546,16 +557,12 @@ def resonant_rationals(iota_min, iota_max, nfp, denom_max=15):
 #: field and worse for a stack of discrete curves.
 SECTION_CMAP = "gist_rainbow"
 
-#: Colormap for pressure. Sequential, because p is a magnitude with a zero,
-#: unlike iota which is read against its rationals.
-PRESSURE_CMAP = "plasma"
-
 
 def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
                    axis_RZ=None, path=None, profile_x=None,
-                   profile_xlabel="seed radius $r$", nfp=None, denom_max=15,
+                   profile_xlabel="seed radius $r$", nfp=None, denom_max=30,
                    logical=None, chaotic=None, pressure=None,
-                   split_iota_p=False, cmap=SECTION_CMAP, iota_lim=None):
+                   pressure_label=r"$p$", cmap=SECTION_CMAP, iota_lim=None):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -570,27 +577,16 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     ``pressure`` is per-crossing, the same shape as ``R``. It is OPTIONAL
     because the fields this traces are harmonic (vacuum-like) and carry no
     pressure at all; a vacuum run leaves it ``None`` and gets exactly the
-    previous figure. When it is given, the third panel becomes the p profile.
-
-    ``split_iota_p`` colours the section by iota ABOVE the magnetic axis and by
-    p BELOW it, in one panel. It needs both ``pressure`` and ``axis_RZ`` and
-    raises without them rather than quietly drawing a half-empty panel: the
-    whole point of the split is the comparison, and a silently one-sided figure
-    reads as a physical statement about the device.
+    previous figure. When it is given, the third panel is the pressure PROFILE:
+    per line, the mean of p over its crossings with a one-standard-deviation
+    band, against the same surface label the iota profile uses (labelled
+    ``pressure_label``). On a flux surface of an equilibrium p is constant and
+    the band collapses; on an island chain or a chaotic line it is not, and the
+    band width measures how far that line is from ``B . grad p = 0``. Chaotic
+    lines are drawn in grey: p is a field value and is well defined on them,
+    only iota is not.
     """
     import matplotlib.pyplot as plt  # noqa: PLC0415  (keep the module headless)
-
-    if split_iota_p and pressure is None:
-        raise ValueError(
-            "split_iota_p=True needs a pressure array: the below-axis half of "
-            "the section is coloured by p. These fields are harmonic and carry "
-            "no pressure, so for a vacuum run leave the split off.")
-    if split_iota_p and axis_RZ is None:
-        raise ValueError(
-            "split_iota_p=True needs axis_RZ: 'above' and 'below' are defined "
-            "against the MAGNETIC axis, not against Z = 0. Splitting on Z = 0 "
-            "would cut a Shafranov-shifted plasma off-centre and the two halves "
-            "would not be the same set of surfaces.")
 
     has_p = pressure is not None
     if logical is None and not has_p:
@@ -631,37 +627,10 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     size = float(jnp.clip(3000.0 / npts, 0.35, 15.0))
     colour = jnp.broadcast_to(iota[:, None], R.shape)
 
-    # The split is per CROSSING, not per line: a surface straddles the axis, so
-    # the same line is iota-coloured where it is above and p-coloured below.
-    if split_iota_p:
-        # axis_RZ carries the axis crossing at each save, not a single point,
-        # so the dividing line is their mean. The axis wanders by ~1e-3 of the
-        # minor radius over a period; taking one sample would tilt the split by
-        # that much for no reason.
-        z_axis = float(jnp.mean(jnp.asarray(axis_RZ[1])))
-        upper = Z >= z_axis
-    else:
-        z_axis = None
-        upper = jnp.ones_like(R, dtype=bool)
-
-    # `shown` selects LINES, `upper` selects CROSSINGS, so the line mask has to
-    # be broadcast onto the crossing grid before they can be combined. With the
-    # split off, `upper` is all-True and this selects exactly what `R[shown]`
-    # used to.
     shown2 = jnp.broadcast_to(shown[:, None], R.shape)
-    sel_iota = shown2 & upper
-    sc = ax.scatter(R[sel_iota], Z[sel_iota], c=colour[sel_iota],
+    sc = ax.scatter(R[shown2], Z[shown2], c=colour[shown2],
                     s=size, vmin=lo, vmax=hi, cmap=cmap, linewidths=0,
                     rasterized=True)
-    psc = None
-    if split_iota_p:
-        # Chaotic lines keep their grey in BOTH halves. p is a field value and
-        # is perfectly well defined on a chaotic line, but colouring one half of
-        # a line and greying the other reads as two different objects.
-        sel_p = shown2 & ~upper
-        if sel_p.any():
-            psc = ax.scatter(R[sel_p], Z[sel_p], c=pressure[sel_p], s=size,
-                             cmap=PRESSURE_CMAP, linewidths=0, rasterized=True)
     if (keep & chaotic).any():
         m = keep & chaotic
         ax.scatter(R[m], Z[m], c="0.25", s=size, linewidths=0, rasterized=True,
@@ -689,10 +658,6 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         # everything else on the colorbar is a surface no island can open on.
         cbar.set_ticks(res_ticks)
         cbar.set_ticklabels(res_labels)
-    if psc is not None:
-        pbar = fig.colorbar(psc, ax=ax, label=r"$p$", fraction=0.046, pad=0.02)
-        pbar.ax.tick_params(labelsize=7)
-        ax.axhline(z_axis, color="0.35", lw=0.6, ls=":", zorder=1)
 
     # An axisymmetric vacuum field has iota = 0, so every line is a fixed point
     # of the return map and the section collapses onto the midplane.  That is
@@ -740,7 +705,10 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         lx.set_title("logical chart", fontsize=10)
 
     x = seed_r if profile_x is None else profile_x
-    bx.plot(x[shown], iota[shown], "o-", ms=3, lw=0.8)
+    # Seeds from several rays interleave in the surface label, so the profile
+    # is sorted by it: in seed order the line would zigzag between rays.
+    order = jnp.argsort(jnp.asarray(x)[shown]) if shown.any() else jnp.arange(0)
+    bx.plot(jnp.asarray(x)[shown][order], iota[shown][order], "o-", ms=3, lw=0.8)
     for value, lab in zip(res_ticks, res_labels):
         bx.axhline(value, color="0.55", lw=0.6, ls="--", zorder=0)
         bx.annotate(lab, (0.995, value), xycoords=("axes fraction", "data"),
@@ -760,17 +728,28 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
 
     if px is not None:
         # p against the same surface label the iota profile uses, so the two
-        # panels read against a common abscissa. One point per crossing rather
-        # than a per-line mean: on an island chain p is not constant along the
-        # line, and averaging would hide exactly that.
-        pv = pressure[shown]
-        xv = jnp.broadcast_to(jnp.asarray(x)[:, None], R.shape)[shown]
-        px.scatter(xv, pv, s=max(size, 1.5), c=pv, cmap=PRESSURE_CMAP,
-                   linewidths=0, rasterized=True)
+        # panels read against a common abscissa. One number per line, the mean
+        # over its crossings, with the spread as a band: a flux surface has a
+        # constant p and no band, an island chain or a chaotic line does not,
+        # and the band width is how far that line is from B . grad p = 0.
+        xs = jnp.asarray(x)
+        p_mean = jnp.mean(pressure, axis=1)
+        p_std = jnp.std(pressure, axis=1)
+        if shown.any():
+            order = jnp.argsort(xs[shown])
+            xo, mo, so = xs[shown][order], p_mean[shown][order], p_std[shown][order]
+            px.fill_between(xo, mo - so, mo + so, color="tab:blue", alpha=0.2,
+                            lw=0, label=r"$\pm 1$ std over the line")
+            px.plot(xo, mo, "o-", ms=3, lw=0.8, color="tab:blue", label="mean")
+        m = keep & chaotic
+        if m.any():
+            px.errorbar(xs[m], p_mean[m], yerr=p_std[m], fmt="o", ms=3,
+                        color="0.35", capsize=2, lw=0.8, label="chaotic")
         px.set_xlabel(profile_xlabel)
-        px.set_ylabel(r"$p$")
+        px.set_ylabel(pressure_label)
         px.grid(alpha=0.3)
-        px.set_title("pressure", fontsize=10)
+        px.legend(loc="best", fontsize=7)
+        px.set_title("pressure profile", fontsize=10)
 
     if path is not None:
         fig.savefig(path, dpi=200)
@@ -786,7 +765,7 @@ def _padded(v, pad=0.06, floor=0.0):
 
 
 def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
-                   r_edge=0.97, theta=0.0, probe_periods=64,
+                   r_edge=0.97, theta=0.0, n_rays=4, probe_periods=64,
                    steps_per_period=24, t_min=0.02):
     """Seeds spaced from the MAGNETIC axis to the edge, not from ``r = 0``.
 
@@ -807,16 +786,28 @@ def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
     chart. Entry 0 is still the ``r_axis`` probe, unmoved: it is the centre
     reference for :func:`axis_track`, and it has to keep a small ORBIT around
     the axis rather than sit on it, or its own angle is rounding noise.
+
+    ``n_rays`` rays are seeded, ``n_seeds`` each. ONE ray misses island
+    chains: a stellarator-symmetric field has X-points on the symmetry line
+    ``theta = 0``, a seed on the separatrix traces the separatrix, and every
+    chain the ray crosses shows as a kink in the iota profile with no lines
+    inside the islands. The extra rays are offset by multiples of the golden
+    angle, ``theta_j = j * 0.618...``, which no low-order chain's X-points can
+    all line up with -- equally spaced rays would, for every chain whose
+    poloidal mode number divides ``n_rays``.
     """
     probe = jnp.array([[r_axis, theta], [r_edge, theta]])
     ys, _ = trace(field, probe, probe_periods, steps_per_period,
                   saves_per_period)
     centre = jnp.mean(ys[0, ::saves_per_period], axis=0)
-    edge = jnp.array([r_edge * jnp.cos(TWO_PI * theta),
-                      r_edge * jnp.sin(TWO_PI * theta)])
+    golden = 0.5 * (jnp.sqrt(5.0) - 1.0)
+    thetas = (theta + golden * jnp.arange(n_rays)) % 1.0
+    edge = r_edge * jnp.stack([jnp.cos(TWO_PI * thetas),
+                               jnp.sin(TWO_PI * thetas)], axis=1)
 
-    t = jnp.linspace(t_min, 1.0, n_seeds)[:, None]
-    uv = centre[None, :] + t * (edge - centre)[None, :]
+    t = jnp.linspace(t_min, 1.0, n_seeds)[None, :, None]
+    uv = (centre[None, None, :]
+          + t * (edge - centre[None, :])[:, None, :]).reshape(-1, 2)
     r = jnp.sqrt(uv[:, 0] ** 2 + uv[:, 1] ** 2)
     th = jnp.arctan2(uv[:, 1], uv[:, 0]) / TWO_PI % 1.0
     seeds = jnp.stack([r, th], axis=1)

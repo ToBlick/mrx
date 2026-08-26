@@ -11,7 +11,8 @@ Usage:
 Flags (defaults in brackets):
     state                  path to B.h5 (positional)
     --fields F             comma-separated subset of ic,final [ic,final]
-    --seeds N              field lines per field [40]
+    --seeds N              field lines per ray and field [40]
+    --rays N               poloidal seed rays, golden-angle spaced [4]
     --periods N            toroidal periods per line [400]
     --steps N              integration steps per period [24]
     --saves N              sections saved per period [8]
@@ -46,6 +47,7 @@ def main():
     ap.add_argument("state")
     ap.add_argument("--fields", default="ic,final")
     ap.add_argument("--seeds", type=int, default=40)
+    ap.add_argument("--rays", type=int, default=4)
     ap.add_argument("--periods", type=int, default=400)
     ap.add_argument("--steps", type=int, default=24)
     ap.add_argument("--saves", type=int, default=8)
@@ -108,7 +110,7 @@ def main():
                     profile_x=z[f"{tag}_a_eff"], profile_xlabel=str(z[f"{tag}_xlabel"]), nfp=nfp,
                     logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]), chaotic=z[f"{name}_chaotic"],
                     pressure=z[f"{tag}_pressure"] if f"{tag}_pressure" in z else None,
-                    split_iota_p=f"{tag}_pressure" in z, iota_lim=(lo, hi))
+                    iota_lim=(lo, hi))
                 path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
                 fig.savefig(path, dpi=200)
                 plt.close(fig)
@@ -138,7 +140,7 @@ def main():
         info = require_zeta_parameterisation(field, name=name)
         print(f"[zeta] {name}: B^zeta/|B| in [{info['bz_over_b_min']:+.3e}, "
               f"{info['bz_over_b_max']:+.3e}]", flush=True)
-        seeds = seed_from_axis(field, cli.seeds, cli.saves, r_edge=cli.r_max,
+        seeds = seed_from_axis(field, cli.seeds, cli.saves, r_edge=cli.r_max, n_rays=cli.rays,
                                steps_per_period=cli.steps)
         res = trace_and_classify(field, seeds, nfp, n_periods=cli.periods,
                                  steps_per_period=cli.steps,
@@ -149,7 +151,7 @@ def main():
         span = (f"iota {float(res['iota'][shown].min()):.4f}.."
                 f"{float(res['iota'][shown].max()):.4f}" if shown.any()
                 else "no line converged")
-        print(f"[{name}] {res['walltime']:.1f}s, {int((~keep).sum())}/{cli.seeds} lost, "
+        print(f"[{name}] {res['walltime']:.1f}s, {int((~keep).sum())}/{keep.size} lost, "
               f"{int((keep & res['chaotic']).sum())} chaotic, drift {res['drift']:.2e}, {span}",
               flush=True)
         traced[name] = (res, keep, shown)
@@ -164,7 +166,7 @@ def main():
             press = pressure_at(name, lr, lth, plane)
             fig = render_section(
                 R, Z, res["iota"], res["resid"], res["seeds"][:, 0], keep,
-                pressure=press, split_iota_p=press is not None,
+                pressure=press,
                 title=f"{geometry} {ns} p={p}  |  {name}  |  $\\zeta = {plane:g}$\n"
                       f"{labels.get(name, name)}, relaxed in {attrs.get('precision')} "
                       f"-- {R.shape[1]} crossings/line",
