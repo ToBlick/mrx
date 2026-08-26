@@ -258,14 +258,16 @@ python -u scripts/poisson_study.py p=2 n=16 precision=float32
 ```
 
 Each run writes `outputs/<date>/<time>/result.json`, a list with one
-entry per `n`, each a dict over the eight cases:
+entry per `n`. An entry holds `n`, `p`, `q`, `timings` (seconds per
+stage, compile and execute separately) and one dict per case tag
+(`k0_nbc`, `k0_dbc`, ..., `k3_dbc`):
 
 | key | meaning |
 |---|---|
 | `error` | relative L2 error against the manufactured solution |
-| `iters`, `converged` | iteration count and convergence flag |
-| `final_rel_residual` | $\|L u - b\| / \|b\|$ after the solve |
-| `timings` | seconds per stage, compile and execute separately |
+| `iters`, `converged` | iteration count and convergence flag of the solve |
+| `load_frame_diff` | $\|b_{\rm ref} - b_{\rm phys}\|$, the two `load` frames on the same source |
+| `null_dim`, `null_iters`, `null_Lh_norm` | harmonic-form count, iterations to find them, and their Laplacian residual |
 
 The file is rewritten after every `n`, so an out-of-memory failure at a
 large `n` keeps the earlier results. The summary table at the end of the
