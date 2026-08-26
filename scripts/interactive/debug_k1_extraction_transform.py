@@ -12,7 +12,6 @@ from mrx.mappings import rotating_ellipse_map
 from mrx.operators import assemble_mass_operators, dense_mass_matrix
 
 
-jax.config.update("jax_enable_x64", True)
 
 
 @dataclass(frozen=True)

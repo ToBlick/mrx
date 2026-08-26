@@ -7,21 +7,14 @@ cheap (a few hundred columns at most) and lets us verify global spectral
 properties with ``scipy.linalg.eigh``.
 """
 
-from test.conftest import build_dense
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import numpy.testing as npt
 import pytest
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
-from mrx.preconditioners import (
-    MassPreconditionerSpec,
-    SaddlePointPreconditionerSpec,
-    SchurPreconditionerSpec,
-)
 
 ALL_K = (0, 1, 2, 3)
 ALL_DBC = (False, True)

@@ -75,7 +75,7 @@ def extract_param_from_config(config_str: str, param_path: str):
         for key in keys:
             value = value[key]
         return value
-    except:
+    except (KeyError, TypeError):
         return None
 
 # %%

@@ -30,7 +30,6 @@ from mrx.operators import (assemble_derivative_operators,
                            assemble_tensor_mass_preconditioner)
 from mrx.plotting import get_2d_grids, set_axes_equal
 
-jax.config.update("jax_enable_x64", True)
 
 
 # %% Configuration

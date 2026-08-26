@@ -16,7 +16,6 @@ Tests
 """
 from __future__ import annotations
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
@@ -35,7 +34,6 @@ from mrx.preconditioners import (
     build_extracted_laplacian_diagonal,
 )
 
-jax.config.update("jax_enable_x64", True)
 
 _ALL_K = (0, 1, 2, 3)
 _ALL_DBC = (False, True)

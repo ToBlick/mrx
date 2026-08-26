@@ -25,7 +25,6 @@ import sys
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
 
 from types import SimpleNamespace  # noqa: E402
 

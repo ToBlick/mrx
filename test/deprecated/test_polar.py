@@ -3,7 +3,6 @@ Tests for the LazyExtractionOperator, including dense and sparse assembly.
 """
 
 import jax
-import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 

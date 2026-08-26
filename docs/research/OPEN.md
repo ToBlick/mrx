@@ -1,4 +1,4 @@
-# Open issues — index, as of 2026-08-26
+# Open issues — index, as of 2026-08-26 (misc cleanup applied)
 
 **One entry point for everything outstanding.** Each item is one line plus a pointer;
 the detail stays where it was written. If you fix something, delete its line here as
@@ -22,16 +22,16 @@ already hoisted above the trace and the build is host-side numpy, so this delete
 lazy path rather than guarding it. *Detail:* `audit_2026-08-25_production.md` item 9.
 **Fixing this makes S1 mergeable as a side effect. It is not an S1 problem.**
 
-**1.2 Three tracked slurm wraps have no `PYTHONPATH`.** `job_poincare.sh`,
-`job_laplacian_mg_k0.sh`, `job_mass_coupling_ceiling.sh`. `mrx` is an editable install
-pinned to the main checkout, so a worktree job without the shim silently tests the
-wrong library. Note `python -m` and `python script.py` resolve differently, so "does
-the wrap set it" is NOT a sufficient audit question — print `mrx.__file__`.
+**1.2 Worktree jobs and `PYTHONPATH`.** `mrx` is an editable install pinned to the main
+checkout, so a job without `PYTHONPATH` silently tests the wrong library; `python -m`
+and `python script.py` resolve differently, so print `mrx.__file__`. `slurm/run.sh`
+exports it and prints `mrx from:` first (see `slurm/README.md`); the five tracked wraps
+are untracked since 2026-08-26 and their invocations live in the scripts' docstrings.
 *Detail:* memory `worktree-jobs-need-pythonpath`.
-**New variant:** hydra's submitit launcher activates the venv but does NOT export
-PYTHONPATH, so a multirun from a worktree validates the MAIN checkout and PASSES.
-Run single-run from a wrapper that exports it. Do NOT force `hydra/launcher=basic` —
-hydra then rejects the submitit keys while composing and every study dies in ~1 s.
+**Hydra:** the submitit launcher does not export PYTHONPATH on its own; the configs
+under `conf/` now add `export PYTHONPATH=${oc.env:MRX_ROOT}` to the launcher setup, so
+`MRX_ROOT` must be set for a multirun. Do NOT force `hydra/launcher=basic` — hydra then
+rejects the submitit keys while composing and every study dies in ~1 s.
 
 **1.4 A green merge tells you nothing; run something real afterwards.**
 greville-prod renamed `assemble_block_jacobi_laplacian_preconditioner`; a caller on
@@ -48,10 +48,6 @@ right RESPONSE once you know; it is not what finds it.
 **1.5 `test_projectors` is ~76% of pytest wall time**, one parametrisation 9.7 min
 alone. A 1 h walltime gets cancelled at 61% and looks like a failure when nothing
 failed. Budget 2 h.
-
-**1.3 Twelve pre-existing F821/F811**, all in three scripts and none in `mrx/`:
-`benchmark_graddiv_k1_preconditioner.py` (7), `debug_poisson_convergence.py` (3),
-`hopf.py` (2). Long-standing, not from today's work.
 
 ## 2. Committed but not merged
 
@@ -73,12 +69,12 @@ reaches ~4.4 at the same `quad_order_offset: 0`). Cheapest next step needs no so
 run the projection test on `omega_1`, which is exactly what settled k=2.
 *Detail:* `handoff_2026-08-25_poisson_convergence.md` §5.
 
-**3.2 Nothing in the relaxation campaign ever floored** — and it could not have.
-`relax_prelim.py` has only `--steps` and `--seconds-per-arm`, both budgets; there is no
-stopping criterion on `-dE/dt`, so every arm stopped somewhere arbitrary. This is a
-CODE gap, not an unrun experiment, and it is a prerequisite for any h-refinement claim.
-Validatable with zero GPU time by replaying an archived trace (S10 is flat to 16 digits
-from step ~500). *Detail:* relaxation handoff §34, item **P0**.
+**3.2 ~~Nothing in the relaxation campaign ever floored~~ — CRITERION LANDED 2026-08-26.**
+`scripts/relax.py` (which replaces `relax_prelim.py`) stops when the windowed relative
+energy decrease per step falls below `--floor-tol` (default `1e3*eps`); replayed on the
+archived traces in `test/test_relax_floor.py` (S10 fires at ~1660, S07/C1 never). No
+arm has been RE-RUN to a floor yet, so the h-refinement claims are still open.
+*Detail:* relaxation handoff §34, item **P0**.
 
 **3.3 The p-refinement result is confounded and withdrawn.** Its p=2 and p=4 arms
 predate the even-p quadrature fix, and they are the two best-looking points in the
@@ -128,9 +124,7 @@ last one.
 
 ## 6. Left undone, not questions
 
-`except Exception: pass` in the cache warmer; `verify_block_jacobi.py` keeps its name
-because 22 scripts import `build_sequence` from it; the `outer='none'` branch still
-builds a Schur apply it discards (~0.2 s/run, a clarity argument not a performance
-one); `debug_poisson_convergence.py` has `_require_valid_resolution` and
-`l2_relative_error` defined 6 times each in 1711 lines, which ruff does not flag
-because F811 fires only on *unused* redefinitions.
+`except Exception: pass` in the cache warmer (`operators.py:3477`); the `outer='none'`
+branch still builds a Schur apply it discards (`operators.py:2871-2885`, ~0.2 s/run, a
+clarity argument not a performance one). `verify_block_jacobi.py` keeps its name and
+re-exports `build_sequence` from `mrx.geometries` because 22 scripts import it there.

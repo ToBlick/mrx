@@ -33,7 +33,6 @@ from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import rotating_ellipse_map
 from mrx.projectors import _oneform_pullback, _twoform_pullback
 
-jax.config.update("jax_enable_x64", True)
 
 # ---------------------------------------------------------------------------
 # Shared module-scoped polar sequence on a rotating-ellipse torus.

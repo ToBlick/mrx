@@ -36,7 +36,6 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 import jax
 
-jax.config.update("jax_enable_x64", True)
 
 import h5py
 import jax.numpy as jnp
@@ -106,7 +105,9 @@ p.add_argument("--gap-check", action="store_true",
 args = p.parse_args()
 
 mrx.MAP_BATCH_SIZE_INNER = int(os.environ.get("W7X_MAP_BATCH", "2048"))
-NS = tuple(args.ns); P = args.p; FIT_P = args.fit_degree
+NS = tuple(args.ns)
+P = args.p
+FIT_P = args.fit_degree
 EVAL_EPS = args.eval_eps
 TYPES = ("clamped", "periodic", "periodic")
 FIT_Q = 1                          # fit_seq quadrature is unused (only its 1D bases/e0)
@@ -124,7 +125,8 @@ def coll_val(b, pts):
 
 def coll_der(b, pts):
     ns = b.ns
-    g = lambda x: jax.vmap(lambda i: jax.grad(lambda xx: b(xx, i))(x))(ns)
+    def g(x):
+        return jax.vmap(lambda i: jax.grad(lambda xx: b(xx, i))(x))(ns)
     return jax.vmap(g)(jnp.asarray(pts))
 
 
@@ -144,13 +146,19 @@ def fit_coeffs(colls_solve, values_grid):
 def map_and_DF_on_grid(cR, cZ, V, Der, zeta_axis, nfp, sign):
     """Analytic F and DF for F = (R cos a, sign*R sin a, Z), a = 2*pi*zeta/nfp,
     on the tensor grid (three 1D contractions; reshape(-1,...) matches ep order)."""
-    Vr, Vt, Vz = V; Dr, Dt, Dz = Der
+    Vr, Vt, Vz = V
+    Dr, Dt, Dz = Der
     R = grid_eval(cR, Vr, Vt, Vz)
-    Rr = grid_eval(cR, Dr, Vt, Vz); Rt = grid_eval(cR, Vr, Dt, Vz); Rz = grid_eval(cR, Vr, Vt, Dz)
-    Zr = grid_eval(cZ, Dr, Vt, Vz); Zt = grid_eval(cZ, Vr, Dt, Vz); Zz = grid_eval(cZ, Vr, Vt, Dz)
+    Rr = grid_eval(cR, Dr, Vt, Vz)
+    Rt = grid_eval(cR, Vr, Dt, Vz)
+    Rz = grid_eval(cR, Vr, Vt, Dz)
+    Zr = grid_eval(cZ, Dr, Vt, Vz)
+    Zt = grid_eval(cZ, Vr, Dt, Vz)
+    Zz = grid_eval(cZ, Vr, Vt, Dz)
     a = 2 * jnp.pi / nfp
     g = a * jnp.asarray(zeta_axis)
-    cos = jnp.cos(g)[None, None, :]; sin = jnp.sin(g)[None, None, :]
+    cos = jnp.cos(g)[None, None, :]
+    sin = jnp.sin(g)[None, None, :]
     DF = jnp.stack([
         jnp.stack([Rr * cos, Rt * cos, Rz * cos - R * a * sin], axis=-1),
         jnp.stack([sign * Rr * sin, sign * Rt * sin, sign * (Rz * sin + R * a * cos)], axis=-1),
@@ -218,7 +226,9 @@ def err_line(tag, B_rec, fld, extra=""):
     """Report error stats (xyz frame) vs a reference field: mean, a set of
     percentiles of the pointwise relative error, and the (rho,theta,zeta) where
     it is maximal.  Stores the full per-point error arrays in B_ERRORS."""
-    B = fld["B"]; bn = fld["bnorm"]; ep = fld["ep"]
+    B = fld["B"]
+    bn = fld["bnorm"]
+    ep = fld["ep"]
     diff = B_rec - B
     e = np.linalg.norm(diff, axis=1)
     rel = e / bn
@@ -274,7 +284,8 @@ colls_solve = (coll_val(_br, rho), coll_val(_bt, theta), coll_val(_bz, zeta))
 Vgrid = (coll_val(_br, rho_eval), coll_val(_bt, theta), coll_val(_bz, zeta))
 Dgrid = (coll_der(_br, rho_eval), coll_der(_bt, theta), coll_der(_bz, zeta))
 
-cR = fit_coeffs(colls_solve, R_grid); cZ = fit_coeffs(colls_solve, Z_grid)
+cR = fit_coeffs(colls_solve, R_grid)
+cZ = fit_coeffs(colls_solve, Z_grid)
 
 # auto-orient: flipping the toroidal sign flips det(DF); pick the sign with J>0.
 J_pos = np.linalg.det(np.asarray(
@@ -307,7 +318,8 @@ def check_RZ(label, fld):
     pts = eval_pts(fld)
     R_rec = np.asarray(batched(R_h, pts))[:, 0] * R0
     Z_rec = np.asarray(batched(Z_h, pts))[:, 0] * R0
-    dR = np.abs(R_rec - fld["R"]); dZ = np.abs(Z_rec - fld["Z"])
+    dR = np.abs(R_rec - fld["R"])
+    dZ = np.abs(Z_rec - fld["Z"])
     fld["dR"], fld["dZ"] = dR, dZ
     span = max(np.ptp(fld["R"]), np.ptp(fld["Z"]))
     print(f"[RZ  ] {label}: |R_rec-R_file| max={dR.max():.3e} mean={dR.mean():.3e} | "

@@ -52,7 +52,6 @@ from mrx.preconditioners import (
     _apply_surgery_to_bulk_coupling,
     _apply_k1_rt_art_coupling,
     _apply_k1_rt_atr_coupling,
-    _apply_tensor_diagonal_block,
     _apply_tensor_exact_block,
     _assemble_schur_inverse_from_applies,
     _select_mass_surgery_factors,
@@ -62,7 +61,6 @@ from mrx.preconditioners import (
 from mrx.solvers import solve_singular_cg
 from test.random_fields import build_random_besov_rhs_batch
 
-jax.config.update("jax_enable_x64", True)
 
 
 # %% Configuration
@@ -660,7 +658,8 @@ def _mass_preconditioner_diagnostics(
                 tuning["min_eig"] = exact_tuning["lambda_min"]
             diagnostics["tuning"] = tuning
         else:
-            operator_apply = lambda x: apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet)
+            def operator_apply(x):
+                return apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet)
             smoother_apply, smoother_kind = _mass_iterative_smoother_apply(
                 seq,
                 operators,
@@ -713,7 +712,8 @@ def _scalar_hodge_preconditioner_diagnostics(
             result = result + eps * apply_mass_matrix(seq, operators, x, 0, dirichlet=dirichlet)
         return result
 
-    smoother_apply = lambda x, inv=shifted_diaginv: inv * x
+    def smoother_apply(x, inv=shifted_diaginv):
+        return inv * x
     return {
         "tuning": _iterative_tuning_diagnostics(
             operator_apply,
@@ -1060,7 +1060,8 @@ def _build_dense_block_chebyshev_apply(
         power_iterations=POWER_ITERATIONS,
         min_eig_fraction=CHEBYSHEV_MIN_EIG_FRACTION,
     )
-    operator_apply = lambda x, matrix=block_matrix: matrix @ x
+    def operator_apply(x, matrix=block_matrix):
+        return matrix @ x
     lambda_min, lambda_max = _estimate_chebyshev_lanczos_bounds_apply(
         operator_apply,
         smoother_apply,
@@ -1128,13 +1129,16 @@ def _build_exact_block_chebyshev_mass_preconditioner_apply(
                 smoother_kind="jacobi",
             )
         else:
-            bulk_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.bulk, rhs)
+            def bulk_apply(rhs):
+                return _apply_tensor_exact_block(None, tensor.bulk, rhs)
             bulk_tuning = _stored_tensor_block_tuning(tensor.bulk)
 
         diagnostics["inner_block_tuning"]["bulk"] = bulk_tuning
         diagnostics["tensor_fit"] = _mass_tensor_fit_diagnostics(operators, k=k, dirichlet=dirichlet)
-        surgery_to_bulk_apply = lambda rhs_s: _apply_surgery_to_bulk_coupling(surgery, rhs_s)
-        bulk_to_surgery_apply = lambda rhs_b: _apply_bulk_to_surgery_coupling(surgery, rhs_b)
+        def surgery_to_bulk_apply(rhs_s):
+            return _apply_surgery_to_bulk_coupling(surgery, rhs_s)
+        def bulk_to_surgery_apply(rhs_b):
+            return _apply_bulk_to_surgery_coupling(surgery, rhs_b)
         schur_inv = _assemble_schur_inverse_from_applies(
             surgery.ass,
             surgery_to_bulk_apply,
@@ -1179,9 +1183,12 @@ def _build_exact_block_chebyshev_mass_preconditioner_apply(
                 smoother_kind="jacobi",
             )
         else:
-            r_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.arr, rhs)
-            theta_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.theta, rhs)
-            zeta_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.zeta, rhs)
+            def r_apply(rhs):
+                return _apply_tensor_exact_block(None, tensor.arr, rhs)
+            def theta_apply(rhs):
+                return _apply_tensor_exact_block(None, tensor.theta, rhs)
+            def zeta_apply(rhs):
+                return _apply_tensor_exact_block(None, tensor.zeta, rhs)
             r_tuning = _stored_tensor_block_tuning(tensor.arr)
             theta_tuning = _stored_tensor_block_tuning(tensor.theta)
             zeta_tuning = _stored_tensor_block_tuning(tensor.zeta)
@@ -1205,8 +1212,10 @@ def _build_exact_block_chebyshev_mass_preconditioner_apply(
             rhs_rt = rhs_bulk[:surgery.bulk_rt_size]
             rhs_zeta = rhs_bulk[surgery.bulk_rt_size:surgery.bulk_rt_size + surgery.bulk_zeta_size]
             return jnp.concatenate([rt_apply(rhs_rt), zeta_apply(rhs_zeta)])
-        surgery_to_bulk_apply = lambda rhs_s: _apply_surgery_to_bulk_coupling(surgery, rhs_s)
-        bulk_to_surgery_apply = lambda rhs_b: _apply_bulk_to_surgery_coupling(surgery, rhs_b)
+        def surgery_to_bulk_apply(rhs_s):
+            return _apply_surgery_to_bulk_coupling(surgery, rhs_s)
+        def bulk_to_surgery_apply(rhs_b):
+            return _apply_bulk_to_surgery_coupling(surgery, rhs_b)
         schur_inv = _assemble_schur_inverse_from_applies(
             surgery.ass,
             surgery_to_bulk_apply,
@@ -1254,9 +1263,12 @@ def _build_exact_block_chebyshev_mass_preconditioner_apply(
                 smoother_kind="jacobi",
             )
         else:
-            r_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.r_bulk, rhs)
-            theta_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.theta, rhs)
-            zeta_apply = lambda rhs: _apply_tensor_exact_block(None, tensor.zeta, rhs)
+            def r_apply(rhs):
+                return _apply_tensor_exact_block(None, tensor.r_bulk, rhs)
+            def theta_apply(rhs):
+                return _apply_tensor_exact_block(None, tensor.theta, rhs)
+            def zeta_apply(rhs):
+                return _apply_tensor_exact_block(None, tensor.zeta, rhs)
             r_tuning = _stored_tensor_block_tuning(tensor.r_bulk)
             theta_tuning = _stored_tensor_block_tuning(tensor.theta)
             zeta_tuning = _stored_tensor_block_tuning(tensor.zeta)
@@ -1273,8 +1285,10 @@ def _build_exact_block_chebyshev_mass_preconditioner_apply(
             rhs_theta = rhs_bulk[surgery.r_bulk_size:surgery.r_bulk_size + surgery.theta_size]
             rhs_zeta = rhs_bulk[surgery.r_bulk_size + surgery.theta_size:surgery.r_bulk_size + surgery.theta_size + surgery.zeta_size]
             return jnp.concatenate([r_apply(rhs_r), theta_apply(rhs_theta), zeta_apply(rhs_zeta)])
-        surgery_to_bulk_apply = lambda rhs_s: _apply_surgery_to_bulk_coupling(surgery, rhs_s)
-        bulk_to_surgery_apply = lambda rhs_b: _apply_bulk_to_surgery_coupling(surgery, rhs_b)
+        def surgery_to_bulk_apply(rhs_s):
+            return _apply_surgery_to_bulk_coupling(surgery, rhs_s)
+        def bulk_to_surgery_apply(rhs_b):
+            return _apply_bulk_to_surgery_coupling(surgery, rhs_b)
         schur_inv = _assemble_schur_inverse_from_applies(
             surgery.ass,
             surgery_to_bulk_apply,
@@ -1639,7 +1653,7 @@ def benchmark_mass_preconditioners(
     n_rhs: int = 8,
     seed: int = 0,
 ) -> list[MassBenchmarkReport]:
-    rhs_size = _mass_rhs_size(seq, k, dirichlet)
+    _mass_rhs_size(seq, k, dirichlet)
     rhs_batch = _build_rhs_batch(seq, k=k, dirichlet=dirichlet, n_rhs=n_rhs, seed=seed)
 
     catalog = _mass_preconditioner_catalog(k)
@@ -2472,7 +2486,6 @@ def plot_mass_spectrum_reports(
         ("condition_number", r"$\kappa(M_k)$", True),
     ]
     x = jnp.arange(4)
-    width = 0.36
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.8), constrained_layout=True)
     for ax, (metric_name, title, log_scale) in zip(axes, metrics, strict=True):

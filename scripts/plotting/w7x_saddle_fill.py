@@ -87,7 +87,9 @@ def main():
         overlay(ax, N, nk)
         fig.tight_layout()
         out = os.path.join(FIGDIR, f"saddle{k}_fill.png")
-        fig.savefig(out, dpi=150); plt.close(fig); print(f"wrote {os.path.abspath(out)}")
+        fig.savefig(out, dpi=150)
+        plt.close(fig)
+        print(f"wrote {os.path.abspath(out)}")
         # log magnitude
         nz = absA[absA > 0]
         floor = np.log10(nz.min()) if nz.size else 0.0
@@ -99,7 +101,9 @@ def main():
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04).set_label("log10 |entry|")
         fig.tight_layout()
         out = os.path.join(FIGDIR, f"saddle{k}_magnitude.png")
-        fig.savefig(out, dpi=150); plt.close(fig); print(f"wrote {os.path.abspath(out)}")
+        fig.savefig(out, dpi=150)
+        plt.close(fig)
+        print(f"wrote {os.path.abspath(out)}")
         del S, D, M, saddle, absA, logmag
 
 
