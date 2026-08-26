@@ -46,6 +46,13 @@ The job activates the virtualenv, exports `PYTHONPATH=$MRX_ROOT`, prints
 `bash slurm/waitjob.sh <JOBID> <log>` blocks until the job leaves the
 queue and prints the head and tail of the log.
 
+The test suite is one such job, `SCRIPT="-m pytest -q test"`. The tests
+marked `needs_data` (the W7-X Clebsch initial condition, the archived
+relaxation traces) skip unless `MRX_W7X_FILE` / `MRX_RELAX_ARCHIVE` name
+the files; pass them through `EXTRA_ENV`. `EXTRA_ENV="JAX_PLATFORMS=cpu"
+CPUS=4` measures the suite as the GitHub runner sees it (see
+`slurm/README.md`).
+
 ## Hydra: single run and multirun
 
 `scripts/poisson_study.py`, the convergence study of the eight Hodge

@@ -163,45 +163,6 @@ def test_polar_oneform_histopolation_recovers_discrete_function():
 
 
 # ---------------------------------------------------------------------------
-# Hodge Laplacian solve: L_k u = f has u as its solution on the non-kernel part
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("k,dirichlet", [(0, True), (3, True)])
-def test_hodge_laplacian_solve_roundtrip(tiny_seq, k, dirichlet):
-    """L_k u = L_k u_0  =>  apply_inverse returns u_0 (up to kernel).
-
-    The solve stops at ``seq.tol``; the round-trip error is bounded by a
-    thousand times that (1.5e-5 f64 / 0.35 f32), the condition number of the
-    Laplacian on this fixture.
-    """
-    seq = tiny_seq
-    n = _dof(seq, k, dirichlet)
-    key = jax.random.PRNGKey(100 + k)
-    u = jax.random.normal(key, (n,))
-    f = seq.apply_hodge_laplacian(u, k, dirichlet=dirichlet)
-    # maxiter above the fixture default: production preconditions the
-    # Laplacians with Jacobi (2026-08-18), which needs more iterations than the
-    # retired tensor path to reach the same residual. The ACCURACY assertion
-    # below is unchanged -- only the iteration budget is.
-    u_hat = seq.apply_inverse_hodge_laplacian(
-        f, k, dirichlet=dirichlet, maxiter=6000)
-
-    # Remove the kernel component (M-orthogonal projection) from both sides.
-    vs = getattr(seq, f"null_{k}_dbc" if dirichlet else f"null_{k}")
-
-    def deflate(x):
-        for w in vs:
-            coeff = w @ seq.apply_mass_matrix(x, k, dirichlet=dirichlet)
-            x = x - coeff * w
-        return x
-    diff = float(seq.l2_norm(
-        deflate(u) - deflate(u_hat), k, dirichlet=dirichlet))
-    u_mass = float(seq.l2_norm(deflate(u), k, dirichlet=dirichlet))
-    assert diff < 1e3 * seq.tol * max(u_mass, 1.0), (
-        f"L_{k} solve round-trip residual {diff} too large (|u|_M = {u_mass})")
-
-
-# ---------------------------------------------------------------------------
 # Fast-diagonalisation Hodge preconditioner (k = 0)
 # ---------------------------------------------------------------------------
 

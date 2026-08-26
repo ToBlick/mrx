@@ -38,7 +38,7 @@ jobs:
         dtype: ['float64', 'float32']
     env:
       MRX_DTYPE: ${{ matrix.dtype }}
-      # The CPU tier is XLA-compile-bound (4 cores run it as fast as 32), so
+      # The suite is XLA-compile-bound (4 cores run it as fast as 32), so
       # the persistent compilation cache is the main lever on wall time.
       JAX_COMPILATION_CACHE_DIR: ${{ github.workspace }}/.jax_cache
     steps:
@@ -49,8 +49,8 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
-    # The default `jax` wheel is the CPU build; the `gpu` tier is deselected
-    # by pyproject's addopts and runs on a GPU node (slurm/README.md).
+    # The default `jax` wheel is the CPU build. Tests marked `needs_data`
+    # skip here (no data directory); slurm/README.md runs them on a GPU node.
     - name: Install mrx
       run: |
         python -m pip install --upgrade pip
@@ -64,7 +64,7 @@ jobs:
         restore-keys: |
           jax-cache-${{ runner.os }}-${{ matrix.dtype }}-
 
-    - name: Run the CPU tier (${{ matrix.dtype }})
+    - name: Run the test suite (${{ matrix.dtype }})
       run: |
         pytest
 

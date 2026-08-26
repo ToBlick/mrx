@@ -37,8 +37,9 @@ SCRIPT="-m pytest -q" JOB_NAME=tests TIMEOUT_MIN=120 bash slurm/run.sh
 environment or from the gitignored `slurm/site.env`, exports
 `PYTHONPATH=$MRX_ROOT`, and prints `mrx from: <path>` as the first log line.
 Read that line before the result. Test conventions: `test/conftest.py` builds
-the shared sequences; `pyproject.toml` sets `testpaths = ["test"]` and
-deselects the `gpu` tier by default (see `slurm/README.md`).
+the shared sequence; `pyproject.toml` sets `testpaths = ["test"]`; tests that
+read files outside the repository carry `needs_data` and skip without them
+(see `slurm/README.md` and `dev/testing_strategy.md`).
 
 ## Production settings
 

@@ -5,7 +5,9 @@ inside ``main``, so this runs on a login node as
 ``python test/test_relax_floor.py`` and under pytest on a GPU node.
 
 The archived traces live outside the repository (``MRX_RELAX_ARCHIVE``,
-default ``/kfs3/scratch/tblickhan/mrx/out/relax_prelim``). S10 (eta=1e-2)
+default ``/kfs3/scratch/tblickhan/mrx/out/relax_prelim``); the two tests
+that read them carry ``needs_data`` and skip when the archive is absent.
+S10 (eta=1e-2)
 reached a stationary energy and is the positive control; S07 (13018 steps)
 and C1 (3000 steps) were still descending at their last step and must not
 trigger the criterion.
@@ -17,8 +19,6 @@ import sys
 
 import numpy as np
 import pytest
-
-pytestmark = pytest.mark.gpu   # reads archived traces outside the repository
 
 ARCHIVE = os.environ.get("MRX_RELAX_ARCHIVE",
                          "/kfs3/scratch/tblickhan/mrx/out/relax_prelim")
@@ -38,7 +38,7 @@ def _relax_module():
 def _energy_trace(tag):
     path = os.path.join(ARCHIVE, tag, f"{tag}.json")
     if not os.path.exists(path):
-        raise FileNotFoundError(path)
+        pytest.skip(f"{path} is absent; set MRX_RELAX_ARCHIVE")
     with open(path) as fh:
         d = json.load(fh)
     return np.asarray(d["arms"]["cg"]["trace"]["E"])
@@ -51,6 +51,7 @@ def _first_floor_step(E, window, tol, floor_reached):
     return None
 
 
+@pytest.mark.needs_data
 def test_floor_fires_on_the_stationary_arm():
     relax = _relax_module()
     E = _energy_trace("S10_eta2")
@@ -61,6 +62,7 @@ def test_floor_fires_on_the_stationary_arm():
     assert relax.energy_floor_reached(E, WINDOW, FLOOR_TOL_F64)
 
 
+@pytest.mark.needs_data
 def test_floor_silent_on_descending_arms():
     relax = _relax_module()
     for tag in ("S07_long", "C1_ls"):

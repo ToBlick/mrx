@@ -1,139 +1,69 @@
-# Testing Strategy
+# Testing strategy
 
-This note records the intended direction for the `mrx` test suite.
+One tier. `pytest` runs the whole suite on the CPU, in float64 and float32,
+in a few minutes on four cores, with no data files. The GitHub workflow runs
+exactly that, once per precision; a GPU node runs the same command through
+`slurm/run.sh` (see `slurm/README.md`).
 
-The goal is not to maximize the raw number of tests. The goal is to build a
-test suite that is fast enough to run routinely and strong enough to catch
-mathematical regressions.
+## Cost model
 
-## 1. Default cost model
+Assembly and compilation dominate, not arithmetic, so the suite shares one
+session fixture and keeps every object small.
 
-These are expensive operators. Tests must stay small.
+- `tiny_seq` (`test/conftest.py`) is the production setup on a (4, 6, 4) p=2
+  spline-interpolated torus: `build_preconditioners` for all eight `(k, BC)`
+  pairs and the harmonic forms. It is built once per session; every
+  solve-based test runs on it.
+- Low-level tests (quadrature, spline bases, the evaluator, projector
+  identities, operator identities on the rotating ellipse) build their own
+  tiny objects, module-scoped.
+- No `pytest-xdist`: the session fixture is shared, and XLA's compile is
+  single-threaded, so four cores run the suite as fast as thirty-two. The
+  persistent compilation cache (`JAX_COMPILATION_CACHE_DIR`) is the lever on
+  wall time.
+- A property that holds at any resolution is checked at tiny resolution.
+  Resolution-bound accuracy claims (approximation error at production
+  resolution, force balance of an equilibrium) belong to the studies under
+  `scripts/`, not to the suite.
 
-- The default test resolution should be `n = (3, 5, 3)`.
-- The default spline degree should be `p = 2` in every direction.
-- A test should only go beyond this if the mathematical check genuinely
-  requires it.
-- If a test can be made cheaper by checking the same identity on a smaller
-  object, do that.
+## What a test asserts
 
-The suite should be designed around the assumption that assembly is costly and
-should not be repeated casually.
+Mathematical statements, phrased so that they fail when the mathematics is
+wrong and not when an implementation detail moves:
 
-## 2. Default geometries
+- exact identities (`d d = 0`, adjointness, projector idempotency, the
+  Dirichlet invariant of a boundary term) to a multiple of `mrx.eps()`;
+- solver-based quantities to a multiple of `seq.tol` (`mrx.sqrt_eps()`), so
+  the same assertion is meaningful in both precisions;
+- measured bands. A relative L2 error or an iteration count is asserted
+  below a band stated next to the measured value and the date. Bands are
+  1.25x a measured error and 2x a measured iteration count: a wrong metric
+  factor or a broken preconditioner moves these by a factor, precision and
+  run-to-run noise by a few percent.
 
-Most tests should use the rotating ellipse.
+Coverage of the production path, by test file:
 
-- The rotating ellipse is genuinely 3D.
-- It is therefore the right default geometry for checking operator identities,
-  metric-dependent assembly, Laplacian structure, projections, and
-  preconditioners.
+- `test_poisson.py`: the eight Hodge Laplacians `(k = 0..3, free / Dirichlet)`
+  solved with the production `'auto'` preconditioner against the
+  manufactured solutions of `test/manufactured.py` (shared with
+  `scripts/poisson_study.py`), and the Leray projection.
+- `test_relaxation.py`: one relaxation run with the most general stepper
+  (CG, linesearch, CFL cap, hyperregularisation, resistivity from the first
+  step): energy descent against the linesearch prediction, `div B`, the CFL
+  invariant, and the helicity rate `dH/dt = -2 eta <J, B>` of the resistive
+  step checked at two step sizes.
+- the remaining files test the module they are named after.
 
-Some tests should use the torus.
+Tests that read files outside the repository (`MRX_W7X_FILE`,
+`MRX_RELAX_ARCHIVE`) carry the `needs_data` marker and skip with the missing
+path in the reason when the file is absent.
 
-- Use the torus when we need an analytical or axisymmetric example.
-- In particular, tests that depend on known exact solutions or known topology
-  should live on the torus.
+## Adding a test
 
-So the default rule is:
-
-- rotating ellipse for general-purpose tests,
-- torus only when the mathematics of the test specifically asks for it.
-
-## 3. Reuse assembled objects
-
-Sequence assembly is expensive, so tests should reuse assembled objects as much
-as possible.
-
-- Shared fixtures should build a small number of canonical sequences once and
-  reuse them across many tests.
-- Prefer session-scoped or module-scoped fixtures for fully assembled test
-  sequences.
-- Keep at least one shared rotating-ellipse fixture and one shared torus
-  fixture.
-- Individual tests should assemble their own sequence only when they need a
-  genuinely different geometry, resolution, boundary condition setup, or other
-  special-case configuration.
-
-This should be the main way we reconcile fast tests with broad mathematical
-coverage.
-
-## 4. Test-file organization
-
-The ideal organization is one test file per source file.
-
-- For a source file `mrx/foo.py`, the default target should be
-  `test/test_foo.py`.
-- The purpose of that file is to test the mathematical contracts owned by that
-  module.
-
-This clashes with the need to reuse assembled sequences, so the intended
-compromise is:
-
-- keep test ownership local, with one primary test file per source file,
-- centralize expensive shared fixtures in `test/conftest.py` or a small number
-  of shared test helpers,
-- keep cross-module or end-to-end properties in a small number of dedicated
-  integration tests.
-
-In other words: distribute assertions by module, not assembly.
-
-## 5. What tests should check
-
-Tests should check mathematical quantities, not generic hygiene conditions.
-
-Good examples include:
-
-- exactness identities such as `d_{k+1} d_k = 0`,
-- symmetry or adjointness relations,
-- positive-definiteness or semidefiniteness where mathematically expected,
-- correct nullspace dimensions and harmonic-space properties,
-- consistency between weak and strong operators,
-- projection identities and commuting-diagram properties,
-- known analytical solutions on geometries where those are available,
-- coarse-resolution convergence checks for manufactured or analytical problems,
-- solver and preconditioner tests phrased in terms of residual reduction,
-  Rayleigh quotients, or spectral behavior.
-
-The suite should prefer tests that fail because the mathematics is wrong, not
-because an incidental implementation detail changed.
-
-## 6. What tests should not focus on
-
-Do not spend effort on tests whose only content is checking for `NaN`, `Inf`,
-or similar generic pathologies.
-
-- Those issues should be caught indirectly by the real mathematical tests.
-- A test that only says "the output is finite" is usually too weak to be worth
-  the runtime cost.
-
-The question for each test should be: what mathematical statement is this test
-proving?
-
-## 7. Practical guidance
-
-When adding a new test, the default checklist should be:
-
-1. Can this be checked on the shared small rotating ellipse?
-2. If not, does it specifically require the torus or another analytical case?
-3. Can it reuse an already assembled fixture?
-4. What mathematical identity, invariant, or quantitative property is being
-   checked?
-5. Is this the right module-local test file, or is it truly an integration
-   test?
-
-If these questions are answered well, the suite should stay both fast and
-useful.
-
-## 8. Intended suite shape
-
-The suite should eventually have three layers.
-
-- Small module-local tests, ideally one file per source file, built around
-  shared assembled fixtures.
-- A small number of geometry-specific analytical tests, mostly on the torus.
-- A small number of integration or regression tests for solver/preconditioner
-  workflows that necessarily span several modules.
-
-That should give us a test suite that is mathematically meaningful without
-turning every run into a full assembly benchmark.
+1. Can it run on `tiny_seq`? If it needs another geometry or parameter, build
+   the smallest object that exhibits the property, module-scoped.
+2. Which mathematical statement does it check, and at which tolerance class
+   (identity, solve, measured band)?
+3. If it introduces a band, state the measured value, the date and the
+   fixture in a comment next to it.
+4. Put it in the file of the module it tests.

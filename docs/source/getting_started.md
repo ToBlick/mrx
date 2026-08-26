@@ -36,17 +36,18 @@ tolerance that depends on roundoff is written as `mrx.eps(c)` or
 
 ## Run the tests
 
-Locally:
+Locally, on the CPU (a few minutes on four cores, in either precision):
 
 ```bash
 pytest
 ```
 
-On a cluster, every run is a GPU job. Submit the suite through
-`slurm/run.sh`:
+Tests that read files outside the repository are marked `needs_data` and
+skip when the file is absent. On a cluster, every run is a GPU job. Submit
+the suite through `slurm/run.sh`:
 
 ```bash
-SCRIPT="-m pytest -q test" JOB_NAME=tests TIMEOUT_MIN=120 bash slurm/run.sh
+SCRIPT="-m pytest -q test" JOB_NAME=tests TIMEOUT_MIN=45 bash slurm/run.sh
 ```
 
 The first line of every log is `mrx from: <path>`. It names the checkout

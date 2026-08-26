@@ -180,9 +180,9 @@ verdicts are in `docs/research/preconditioner_lessons.md`.
   the toroid through the production `'auto'` dispatch, with the nullspace
   iteration counts, the true residuals and the solve iteration counts per
   resolution. `n=[8] p=3` is the smoke run.
-- `test/test_poisson.py` and `test/test_preconditioners.py` pin the
-  iteration counts of the production preconditioners on the tiny and the
-  production-resolution fixtures (the latter in the `gpu` tier).
+- `test/test_poisson.py` pins the iteration counts of the production
+  preconditioners on the session fixture: all eight `(k, BC)` Laplacians
+  against manufactured solutions.
 
 Rank alternatives by total time, not iterations: every arm costs the same per
 iteration, so build cost decides. Iteration counts move by about 1% between

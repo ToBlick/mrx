@@ -1,24 +1,15 @@
 """Shared pytest fixtures for the MRX test suite.
 
-Two tiers, selected by the ``gpu`` marker (``pyproject.toml`` deselects it
-by default, ``pytest -m gpu`` runs it):
-
-* the default tier runs on a 4-core CPU runner in under ten minutes, in
-  float64 and float32, with no data files.  Every property that holds at any
-  resolution (identities, symmetries, ``d.d = 0``, projector idempotency,
-  preconditioner SPD-ness and inertness, solver convergence) is checked here
-  on ``tiny_seq``, a (4, 6, 4) p=2 spline torus built once per session;
-* the ``gpu`` tier holds the production-resolution fixture ``torus_seq``
-  ((8, 16, 8) p=2), the measured iteration-count bands calibrated on it, the
-  convergence-order tests and everything that reads data outside the
-  repository.
-
-Both fixtures are built by the same function, so the two tiers test the same
-production setup (spline map interpolated at the Greville points,
-``build_preconditioners``, harmonic forms by inverse iteration) at two
-resolutions.  Tests that need different parameters (low-level quadrature and
-spline checks, the evaluator, projector identities) build their own tiny
-objects on the fly.
+One tier: ``pytest`` runs everything on the CPU in under ten minutes on
+four cores, in float64 and float32, with no data files. Every property is
+checked on ``tiny_seq``, a (4, 6, 4) p=2 spline torus built once per
+session with the production setup (spline map interpolated at the
+Greville points, ``build_preconditioners``, harmonic forms by the direct
+Hodge construction). Tests that need low-level objects with other
+parameters (quadrature, spline bases, the evaluator, projector identities)
+build their own tiny sequences. Tests that read files outside the
+repository carry the ``needs_data`` marker and skip when the file is
+absent; ``slurm/README.md`` shows how to run them on a GPU node.
 """
 
 import jax
@@ -33,13 +24,9 @@ from mrx.mappings import toroid_map
 # Betti numbers for a solid torus.
 BETTI = (1, 1, 0, 0)
 
-# Resolutions (r, chi, zeta) of the two session fixtures; the periodic
-# directions are finer to resolve the azimuthal variation of the Poisson
-# tests on the production-sized one.
+# Resolution (r, chi, zeta) of the session fixture.
 NS_TINY = (4, 6, 4)
-NS = (8, 16, 8)
-P = 2   # the matvec is O(N p^4); convergence-ORDER tests that depend on p
-        # parametrise it themselves rather than inherit this default.
+P = 2   # the matvec is O(N p^4)
 TYPES = ("clamped", "periodic", "periodic")
 
 # Donut-torus parameters.
@@ -93,14 +80,8 @@ def build_torus_sequence(ns, torus_map):
 
 @pytest.fixture(scope="session")
 def tiny_seq(torus_map):
-    """The (4, 6, 4) p=2 spline torus of the default (CPU) tier."""
+    """The (4, 6, 4) p=2 spline torus every solve-based test runs on."""
     return build_torus_sequence(NS_TINY, torus_map)
-
-
-@pytest.fixture(scope="session")
-def torus_seq(torus_map):
-    """The (8, 16, 8) p=2 spline torus of the ``gpu`` tier."""
-    return build_torus_sequence(NS, torus_map)
 
 
 # ---------------------------------------------------------------------------

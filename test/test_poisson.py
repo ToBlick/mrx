@@ -1,184 +1,40 @@
-"""Hodge-Laplacian solves on the session torus (ci tier).
+"""The eight Hodge-Laplacian solves on the session torus, against manufactured solutions.
 
-1. k=0 Poisson against the analytic donut solutions of
-   ``docs/manufactured_solutions.md`` -- Dirichlet (``u = cos(pi r^2/2)``)
-   and free (``u = cos(2 pi zeta)``, the singular system with the constant
-   deflated) -- with the error below a measured band, and the L2 order
-   between (4, 6, 4) and (8, 12, 8) at p = 2.
-2. the k=1 and k=2 saddle solves (both boundary conditions, so both the
-   singular and the non-singular systems) with the PRODUCTION preconditioner
-   -- ``'auto'`` resolves to the metric-lumping mass and the metric-lumping
-   atom as ``schur.outer``, which the test pins by name and by iteration
-   count against the explicit spec -- reaching ``seq.tol`` under a measured
-   iteration band.
-3. the Leray projection at k=2 (the relaxation's) and k=1: the projected
-   field is divergence-free at solver tolerance, the projection is
-   idempotent and does not increase the energy.
+Every ``(k, dirichlet)`` pair -- the four singular systems (k0 free, k1
+free, k2 dbc, k3 dbc) and the four non-singular ones -- is solved with the
+production ``'auto'`` preconditioner, which the test pins by name: the
+metric-lumping atom at k=0 and, for the saddle solves, the metric-lumping
+mass with the atom as ``schur.outer``. These eight solves are what
+exercises the eight preconditioner pairs ``build_preconditioners``
+assembles on ``tiny_seq``. Each solve must converge to ``seq.tol``, land
+under a measured relative-L2-error band (a wrong metric factor, boundary
+row or extraction moves the error by a factor) and under a measured
+iteration band (a broken preconditioner multiplies the count).
 
-The manufactured solutions are a compact copy of the k=0 generators in
-``scripts/poisson_study.py``, which sets
-``MRX_DTYPE`` and imports hydra on import, so it is not imported here.
+The manufactured solutions are ``test/manufactured.py``, shared with
+``scripts/poisson_study.py``. The Leray projection at k=2 (the
+relaxation's) and k=1 is checked separately: divergence-free at solver
+tolerance, idempotent, non-expansive.
 """
 
-import time
-
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import mrx
-from mrx.derham_sequence import DeRhamSequence
-from mrx.geometry import greville_interpolate_map
-from mrx.nullspace import _set_null
-from mrx.operators import (_coerce_saddle_preconditioner_spec,
-                           assemble_incidence_operators)
+from mrx.operators import (
+    _coerce_saddle_preconditioner_spec,
+    _metric_lumping_available,
+)
 from mrx.preconditioners import (
     MassPreconditionerSpec,
     SaddlePointPreconditionerSpec,
     SchurPreconditionerSpec,
 )
-from mrx.quadrature import evaluate_at_xq
-from test.conftest import BETTI, P, TORUS_EPSILON, TYPES, n_dofs
+from test.conftest import TORUS_EPSILON, n_dofs
+from test.manufactured import CASES, case_specs, case_tag, relative_l2_error
 
-PI = jnp.pi
-A = TORUS_EPSILON          # minor radius of the donut (major radius 1)
-NS_FINE = (8, 12, 8)       # one uniform refinement of NS_TINY
-
-
-# ---------------------------------------------------------------------------
-# k = 0 manufactured solutions on toroid_map(epsilon=A, R0=1)
-# ---------------------------------------------------------------------------
-
-def _R(x):
-    return 1.0 + A * x[0] * jnp.cos(2 * PI * x[1])
-
-
-def u_cos(x):
-    """Free (natural) BC: ``u = cos(2 pi zeta)``, zero mean, so it is orthogonal
-    to the constant that spans the kernel."""
-    return jnp.cos(2 * PI * x[2]) * jnp.ones(1)
-
-
-def f_cos(x):
-    """``-Delta cos(2 pi zeta) = cos(2 pi zeta) / R^2``."""
-    return jnp.cos(2 * PI * x[2]) / _R(x) ** 2 * jnp.ones(1)
-
-
-def u_par(x):
-    """Dirichlet: ``u = cos(pi r^2 / 2)`` vanishes at r = 1 and is smooth at r = 0."""
-    return jnp.cos(0.5 * PI * x[0] ** 2) * jnp.ones(1)
-
-
-def f_par(x):
-    """``-Delta cos(pi r^2/2) = (2 pi s + pi^2 r^2 c) / eps^2 + pi r s cos(2 pi chi) / (eps R)``."""
-    r = x[0]
-    s = jnp.sin(0.5 * PI * r ** 2)
-    c = jnp.cos(0.5 * PI * r ** 2)
-    return ((2 * PI * s + PI ** 2 * r ** 2 * c) / A ** 2
-            + PI * r * s * jnp.cos(2 * PI * x[1]) / (A * _R(x))) * jnp.ones(1)
-
-
-def _scalar_rel_l2_error(seq, u_hat, exact, dirichlet):
-    comp_info, comp_shapes = seq._form_comp_info(0)
-    eT = seq.e0_dbc_T if dirichlet else seq.e0_T
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
-    u_h = evaluate_at_xq(eT @ u_hat, comp_info, comp_shapes, quad_shape, 1)
-    u_ex = jax.vmap(exact)(seq.quad.x)
-    wJ = seq.jacobian_j * seq.quad.w
-    diff = u_h - u_ex
-    num = jnp.einsum("qi,qi,q->", diff, diff, wJ)
-    den = jnp.einsum("qi,qi,q->", u_ex, u_ex, wJ)
-    return float(jnp.sqrt(num / den))
-
-
-def _solve_k0(seq, dirichlet, preconditioner='auto'):
-    exact, source = (u_par, f_par) if dirichlet else (u_cos, f_cos)
-    b = seq.load(source, 0, dirichlet=dirichlet)
-    u, info = seq.apply_inverse_laplacian(
-        b, 0, dirichlet=dirichlet, preconditioner=preconditioner, return_info=True)
-    residual = seq.apply_laplacian(u, 0, dirichlet=dirichlet) - b
-    rel_res = float(jnp.linalg.norm(residual) / jnp.linalg.norm(b))
-    return _scalar_rel_l2_error(seq, u, exact, dirichlet), int(info), rel_res
-
-
-# Measured on the (4, 6, 4) p=2 spline donut, float64, 2026-08-26 (see the
-# print): relative L2 error 6.950e-2 (free) and 4.337e-2 (dbc). The band
-# is 1.25x that, so a wrong metric factor, a wrong boundary row or a
-# stalled solve fails it while the float32 solve (tolerance sqrt(eps) =
-# 3.5e-4, far below the discretisation error) passes.
-K0_ERROR = {False: 8.7e-2, True: 5.4e-2}
-# CG iterations of the production k=0 solve (metric-lumping atom): 8 and
-# 5 measured; the band is twice that, since a count this small moves by
-# one or two with the precision.
-K0_ITERS = {False: 16, True: 10}
-
-
-@pytest.mark.parametrize("dirichlet", (False, True), ids=["free", "dbc"])
-def test_k0_poisson_matches_analytic(tiny_seq, dirichlet):
-    seq = tiny_seq
-    err, info, rel_res = _solve_k0(seq, dirichlet)
-    print(f"\n  k=0 {'dbc' if dirichlet else 'free'}: relative L2 error {err:.3e}, "
-          f"{-info} iterations, residual {rel_res:.2e}")
-    assert info < 0, f"k=0 solve did not converge (info={info})"
-    # The solve stops at seq.tol on its own (preconditioned) residual; the
-    # plain dual residual is within a small factor of that.
-    assert rel_res <= 10 * seq.tol
-    assert err < K0_ERROR[dirichlet]
-    assert -info <= K0_ITERS[dirichlet]
-
-
-@pytest.fixture(scope="module")
-def fine_seq(torus_map):
-    """The same donut at (8, 12, 8) p=2, with only what the k=0 ORDER check
-    needs: the incidence operators and the constant as the free-BC kernel
-    (closed form, no inverse iteration). No atoms -- the solve below runs
-    on the closed-form Jacobi diagonal, since the order of the
-    discretisation error does not depend on the preconditioner and the
-    k=0 atom build was 50 s of the fixture's cost on the GPU."""
-    t0 = time.perf_counter()
-    seq = DeRhamSequence(NS_FINE, (P, P, P), P + 1, TYPES, polar=True,
-                         maxiter=1000, betti_numbers=BETTI)
-    seq.evaluate_1d()
-    seq.set_spline_map(greville_interpolate_map(torus_map, seq))
-    seq.set_operators(assemble_incidence_operators(seq))
-    v0 = jnp.ones(seq.n0)
-    v0 = v0 / seq.l2_norm(v0, 0, dirichlet=False)
-    seq.set_operators(_set_null(seq.operators, 0, False, v0[None, :]))
-    print(f"\n  fine (8,12,8) k=0 build: {time.perf_counter() - t0:.1f} s")
-    return seq
-
-
-@pytest.mark.parametrize("dirichlet", (False, True), ids=["free", "dbc"])
-def test_k0_poisson_converges_at_order_p_plus_1(tiny_seq, fine_seq, dirichlet):
-    """One uniform refinement at p = 2 cuts the L2 error by ~2^3.
-
-    The map is re-interpolated on each mesh, so the geometry error refines
-    with the solution. Measured orders 4.07 (free) and 4.31 (dbc) on
-    2026-08-26 -- above p + 1 = 3, which is the bound: the coarse mesh has
-    four radial cells, so the rate is pre-asymptotic and generous.
-    """
-    err_coarse, _, _ = _solve_k0(tiny_seq, dirichlet)
-    err_fine, info, _ = _solve_k0(fine_seq, dirichlet, preconditioner='jacobi')
-    order = np.log2(err_coarse / err_fine)
-    print(f"\n  k=0 {'dbc' if dirichlet else 'free'}: error {err_coarse:.3e} -> "
-          f"{err_fine:.3e}, order {order:.2f}, {-info} iterations on the fine mesh")
-    assert info < 0
-    assert order > 3.0, f"k=0 {'dbc' if dirichlet else 'free'}: observed order {order:.2f}"
-
-
-# ---------------------------------------------------------------------------
-# k = 1, 2 saddle solves with the production preconditioner
-# ---------------------------------------------------------------------------
-
-_SADDLE_CASES = [
-    pytest.param(1, False, id="k1-free"),   # singular: the toroidal 1-form
-    pytest.param(1, True, id="k1-dbc"),
-    pytest.param(2, False, id="k2-free"),
-    pytest.param(2, True, id="k2-dbc"),     # singular: the toroidal 2-form
-]
-
-# The production default spelled out, so the test can prove 'auto' IS it.
+# The production saddle default spelled out, so the test can prove 'auto' IS it.
 _PRODUCTION = SaddlePointPreconditionerSpec(
     mass=MassPreconditionerSpec(kind='metric_lumping'),
     schur=SchurPreconditionerSpec(
@@ -186,57 +42,63 @@ _PRODUCTION = SaddlePointPreconditionerSpec(
         outer=MassPreconditionerSpec(kind='metric_lumping')),
 )
 
-# MINRES iterations of the production solve on tiny_seq, measured 2026-08-26
-# in float64 (see the print): 99, 56, 105, 95; the band is ~1.25x that. The
-# per-DoF jacobi outer (preconditioner='jacobi') needed 329, 145, 397, 332
-# on the same systems -- 2.6-3.8x, not re-measured here because its Schur
-# diagonal is an O(N)-apply probe.
-SADDLE_ITERS = {(1, False): 125, (1, True): 70, (2, False): 130, (2, True): 120}
+# Relative L2 error of each solve on the (4, 6, 4) p=2 spline donut,
+# measured 2026-08-26 in float64 (see the print); the band is 1.25x that.
+# The float32 solve stops at sqrt(eps) = 3.5e-4, far below these
+# discretisation errors, so the bands hold in either precision.
+ERROR_MEASURED = {
+    (0, False): 6.950e-2, (0, True): 4.337e-2,
+    (1, False): 1.640e-1, (1, True): 1.502e-1,
+    (2, False): 1.621e-1, (2, True): 8.172e-2,
+    (3, False): 1.846e-1, (3, True): 6.558e-2,
+}
+# Iterations of the production solve (CG at k=0, MINRES at k>=1), measured
+# with the errors above; the band is 2x, since a count moves by a few
+# percent between precisions and compilations (~1% noise floor).
+ITERS_MEASURED = {
+    (0, False): 8, (0, True): 5,
+    (1, False): 34, (1, True): 21,
+    (2, False): 54, (2, True): 44,
+    (3, False): 22, (3, True): 22,
+}
 
 
-def _compatible_rhs(seq, k, dbc, seed):
-    """A random dual k-form with its harmonic component removed."""
-    n = n_dofs(seq, k, dbc)
-    rhs = jnp.asarray(np.random.default_rng(seed).standard_normal(n), dtype=mrx.DTYPE)
-    for v in seq._get_nullspace(k, dbc):
-        rhs = rhs - (v @ rhs) * seq.apply_mass_matrix(v, k, dirichlet=dbc)
-    return rhs
+@pytest.fixture(scope="module")
+def specs(torus_map):
+    return case_specs(TORUS_EPSILON, torus_map)
 
 
-@pytest.mark.parametrize("k,dirichlet", _SADDLE_CASES)
-def test_saddle_solve_uses_the_production_preconditioner(tiny_seq, k, dirichlet):
+@pytest.mark.parametrize("k,dirichlet", CASES, ids=[case_tag(*c) for c in CASES])
+def test_manufactured_solution(tiny_seq, specs, k, dirichlet):
     seq = tiny_seq
-    spec = _coerce_saddle_preconditioner_spec(
-        seq, seq.operators, k=k, dirichlet=dirichlet, preconditioner='auto')
-    assert spec == _PRODUCTION, (
-        f"k={k} dbc={dirichlet}: 'auto' resolved to {spec} although the atom "
-        "is assembled")
+    if k == 0:
+        assert _metric_lumping_available(seq, 0, dirichlet), (
+            "the k=0 metric-lumping atom is not assembled, so 'auto' would "
+            "fall back to jacobi")
+    else:
+        spec = _coerce_saddle_preconditioner_spec(
+            seq, seq.operators, k=k, dirichlet=dirichlet, preconditioner='auto')
+        assert spec == _PRODUCTION, (
+            f"k={k} dbc={dirichlet}: 'auto' resolved to {spec} although the "
+            "atom is assembled")
 
-    rhs = _compatible_rhs(seq, k, dirichlet, seed=31 + 7 * k + int(dirichlet))
-    u, info = seq.apply_inverse_laplacian(rhs, k, dirichlet=dirichlet, return_info=True)
-    residual = seq.apply_laplacian(u, k, dirichlet=dirichlet) - rhs
-    rel_res = float(jnp.linalg.norm(residual) / jnp.linalg.norm(rhs))
-    print(f"\n  k={k} dbc={dirichlet}: {-int(info)} MINRES iterations, residual {rel_res:.2e}")
-    assert int(info) < 0, f"production saddle solve did not converge (info={int(info)})"
-    # MINRES stops at seq.tol in its preconditioned norm and L_k u is applied
-    # through an inner mass solve at seq.tol; the plain dual residual came
-    # out at up to 26 tol (measured 3.9e-7 at k=1 free).
+    case = specs[(k, dirichlet)]
+    b = seq.load(case["src_ref"], k, dirichlet=dirichlet, frame='ref')
+    u, info = seq.apply_inverse_laplacian(
+        b, k, dirichlet=dirichlet, preconditioner='auto', return_info=True)
+    residual = seq.apply_laplacian(u, k, dirichlet=dirichlet) - b
+    rel_res = float(jnp.linalg.norm(residual) / jnp.linalg.norm(b))
+    err = relative_l2_error(seq, k, dirichlet, u, case["exact"])
+    print(f"\n  {case_tag(k, dirichlet)}: relative L2 error {err:.3e}, "
+          f"{-int(info)} iterations, residual {rel_res:.2e}")
+    assert int(info) < 0, f"{case_tag(k, dirichlet)} did not converge (info={int(info)})"
+    # The solve stops at seq.tol on its own preconditioned residual; MINRES
+    # applies L_k through an inner mass solve at seq.tol as well, so the
+    # plain dual residual came out at up to 26 tol (k=1 free, 2026-08-26).
     assert rel_res <= 100 * seq.tol
-    assert -int(info) <= SADDLE_ITERS[(k, dirichlet)]
+    assert err < 1.25 * ERROR_MEASURED[(k, dirichlet)]
+    assert -int(info) <= 2 * ITERS_MEASURED[(k, dirichlet)]
 
-    if (k, dirichlet) == (1, False):
-        # The singular system once more with the spec spelled out: the same
-        # count to within the ~1% run-to-run noise of a GPU solve (two
-        # compilations of one jaxpr differed by 2 of ~100 iterations at
-        # k=2). One case only -- every solve here is a fresh compile.
-        _, info_explicit = seq.apply_inverse_laplacian(
-            rhs, k, dirichlet=dirichlet, preconditioner=_PRODUCTION, return_info=True)
-        assert abs(int(info) - int(info_explicit)) <= 0.05 * -int(info)
-
-
-# ---------------------------------------------------------------------------
-# Leray projection
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("k", (2, 1))
 def test_leray_projection(tiny_seq, k):

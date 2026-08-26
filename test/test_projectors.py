@@ -37,8 +37,8 @@ from mrx.projectors import _oneform_pullback, _twoform_pullback
 def proj_seq():
     """(6, 6, 6) p=2 polar rotating ellipse: the ACCURACY fixture.
 
-    Resolution is the point of the error tests, so they belong to the ``gpu``
-    tier; the identity tests below build (4, 4, 4) sequences of their own.
+    Resolution is the point of the error tests; the identity tests below
+    build (4, 4, 4) sequences of their own.
     """
     seq = DeRhamSequence(
         (6, 6, 6), (2, 2, 2), 4, ("clamped", "periodic", "periodic"),
@@ -104,26 +104,42 @@ IDENT = mrx.eps(1e4)
 
 
 def _phys_l2_rel_error(seq, dofs, e, k, f_ref):
-    """Relative physical L2 error for a k-form.
+    """Relative physical L2 error of a k-form.
 
-    Computes sqrt( ∫ |Φ_*(ω_h) - f_ref|² J dξ ) / sqrt( ∫ |f_ref|² J dξ )
-    where Φ_* is the k-form pushforward from logical to physical space.
+    ``sqrt(int |F_* omega_h - f_ref|^2 J) / sqrt(int |f_ref|^2 J)``, with the
+    pushforward ``F_*`` of ``differential_forms.Pushforward`` (k=1
+    ``DF^-T omega``, k=2 ``DF omega / J``, k=3 ``omega / J``) applied at the
+    quadrature points to the tensor-product evaluation of the form --
+    ``DiscreteFunction`` evaluates every basis function per point and cost
+    30 s of CPU per run here for the same number.
     """
-    basis = getattr(seq, _BASIS_ATTR[k])
-    discrete = DiscreteFunction(dofs, basis, e)
-    pushed = Pushforward(discrete, seq.map, k)
-    w = seq.jacobian_j * seq.quad.w
+    from mrx.quadrature import evaluate_at_xq
 
-    diff_vals = jax.lax.map(
-        lambda x: pushed(x) - f_ref(x), seq.quad.x, batch_size=20_000)
-    ref_vals = jax.lax.map(f_ref, seq.quad.x, batch_size=20_000)
+    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    if k in (0, 3):
+        comp_info, comp_shapes = seq._form_comp_info(k)
+        vals = evaluate_at_xq(e.T @ dofs, comp_info, comp_shapes, quad_shape, 1)
+    else:
+        vals = seq.evaluate_at_quadrature(dofs, k, dirichlet=False)
+    J = seq.jacobian_j
+    if k == 1:
+        DF = jax.vmap(jax.jacfwd(seq.map))(seq.quad.x)
+        vals = jnp.linalg.solve(jnp.swapaxes(DF, 1, 2), vals[..., None])[..., 0]
+    elif k == 2:
+        DF = jax.vmap(jax.jacfwd(seq.map))(seq.quad.x)
+        vals = jnp.einsum("qij,qj->qi", DF, vals) / J[:, None]
+    elif k == 3:
+        vals = vals / J[:, None]
+    w = J * seq.quad.w
+    ref_vals = jax.vmap(f_ref)(seq.quad.x)
+    diff_vals = vals - ref_vals
     num = float(jnp.einsum("qi,qi,q->", diff_vals, diff_vals, w))
     den = float(jnp.einsum("qi,qi,q->", ref_vals, ref_vals, w))
-    return (num / max(den, 1e-30)) ** 0.5
+    return (num / den) ** 0.5
 
 
 # ---------------------------------------------------------------------------
-# Accuracy at (6, 6, 6) p=2 (gpu tier)
+# Accuracy at (6, 6, 6) p=2
 #
 # Relative physical-L2 errors measured 2026-08-26 in float64 (see the
 # prints): projection 1.217e-2 / 2.809e-1 / 1.743e-1 / 6.095e-2 for
@@ -146,7 +162,6 @@ def _projection_error(seq, k):
     return _phys_l2_rel_error(seq, dofs, getattr(seq, e_name), k, f)
 
 
-@pytest.mark.gpu
 @pytest.mark.parametrize("k", [0, 1])
 def test_l2_projection_is_the_best_approximation(proj_seq, k):
     """Both errors below their measured bands, and projection ≤ interpolation
@@ -163,7 +178,6 @@ def test_l2_projection_is_the_best_approximation(proj_seq, k):
     )
 
 
-@pytest.mark.gpu
 @pytest.mark.parametrize("k", [2, 3])
 def test_l2_projection_error(proj_seq, k):
     err = _projection_error(proj_seq, k)
@@ -285,7 +299,6 @@ def test_interpolation_reproduces_its_own_space(request, p, k, dirichlet):
     )
 
 
-@pytest.mark.gpu
 def test_k2_histopolation_is_finite(proj_seq):
     """Isolates the polar-axis singularity to the k=1 physical pullback.
 
@@ -317,7 +330,6 @@ def test_k2_histopolation_is_finite(proj_seq):
     )
 
 
-@pytest.mark.gpu
 def test_k0_interpolation_is_finite(proj_seq):
     """Companion to the k=2 finiteness test: k=0 has no pullback at all."""
     dofs = proj_seq.interpolate(_f0, 0)
@@ -326,7 +338,6 @@ def test_k0_interpolation_is_finite(proj_seq):
     assert n_bad == 0
 
 
-@pytest.mark.gpu
 @pytest.mark.parametrize("k", [1, 2])
 def test_phys_pullback_inverts_pushforward(proj_seq, k):
     """interpolate's physical pullback must be the INVERSE of Pushforward.
