@@ -11,6 +11,7 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
+import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.local_assembly import (build_matrixfree_mass_apply,
                                 build_matrixfree_projection_apply)
@@ -25,6 +26,10 @@ _SEQ.evaluate_1d()
 _SEQ.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2, R0=1.0, nfp=3))
 _OPS = assemble_incidence_operators(_SEQ)
 _G = _SEQ.geometry
+
+# Sum factorisation against the brute-force quadrature sum, relative to the
+# largest entry: 1e3 eps = 2.2e-13 f64 / 1.2e-4 f32.
+ATOL = mrx.eps(1e3)
 
 
 def _n_raw(k):
@@ -47,7 +52,7 @@ def test_mass_apply_matches_quadrature_oracle(k):
     """``M_k x`` from the in-kernel ``DF``-built weight equals the brute-force matrix."""
     dense = dense_from_apply(build_matrixfree_mass_apply(_SEQ, k), _n_raw(k))
     oracle = dense_mixed_mass(_SEQ, k, k, _mass_weight(k))
-    npt.assert_allclose(dense, oracle, rtol=0.0, atol=1e-13 * np.abs(oracle).max())
+    npt.assert_allclose(dense, oracle, rtol=0.0, atol=ATOL * np.abs(oracle).max())
 
 
 @pytest.mark.parametrize("pair", sorted(_PROJECTION_SPACES))
@@ -60,7 +65,7 @@ def test_projection_apply_matches_quadrature_oracle(pair):
     ones = np.ones(_G.jacobian_j.shape[0])
     weight = ones if n_comp == 1 else np.broadcast_to(np.eye(3), (ones.shape[0], 3, 3))
     oracle = dense_mixed_mass(_SEQ, k_row, k_col, weight)
-    npt.assert_allclose(dense, oracle, rtol=0.0, atol=1e-13 * np.abs(oracle).max())
+    npt.assert_allclose(dense, oracle, rtol=0.0, atol=ATOL * np.abs(oracle).max())
 
 
 @pytest.mark.parametrize("pair,partner", (((2, 1), (1, 2)), ((0, 3), (3, 0))))
@@ -73,4 +78,4 @@ def test_extracted_projection_pairs_are_transposes(pair, partner, dirichlet):
         return dense_from_apply(
             lambda v: apply_projection_matrix(_SEQ, _OPS, v, *p, dirichlet, dirichlet), n)
     a, b = dense(pair), dense(partner)
-    npt.assert_allclose(a, b.T, rtol=0.0, atol=1e-13 * np.abs(a).max())
+    npt.assert_allclose(a, b.T, rtol=0.0, atol=ATOL * np.abs(a).max())

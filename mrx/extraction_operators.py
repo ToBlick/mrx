@@ -665,9 +665,9 @@ def get_xi2(nt, basis_r, ring1=None, ring2=None):
 
     pairs = [(0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2)]
     xi2 = []
-    for (l, m) in pairs:
-        gl, gm = grad_lam[l], grad_lam[m]
-        if l == m:
+    for (a, m) in pairs:
+        gl, gm = grad_lam[a], grad_lam[m]
+        if a == m:
             q0 = 1.0 / 9.0
             q1 = (2.0 / 3.0) * gl
             Q = jnp.outer(gl, gl)

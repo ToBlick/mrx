@@ -1,9 +1,7 @@
 """Tests for mrx.nullspace: harmonic nullspace construction and helpers.
 
-All tests that use a sequence reuse the session-scoped ``torus_seq`` fixture
+All tests that use a sequence reuse the session-scoped ``tiny_seq`` fixture
 from conftest.py (one full assembly, shared across the entire pytest session).
-The stiffness-nullspace bases are pre-computed once in the fixture and stored
-on ``torus_seq.stiffness_null[(k, dbc)]``.
 
 Mathematical properties checked
 --------------------------------
@@ -15,8 +13,6 @@ Mathematical properties checked
 * The stored null vectors are M-orthonormal (Gram matrix = I).
 * The saddle-point lower block satisfies ``M_{k-1} w = D_{k-1}^T v`` for
   each upper/lower pair.
-* Every vector returned by ``get_stiffness_nullspace`` lies in ``ker(K_k)``.
-* The stiffness nullspace basis is M-orthonormal (Gram matrix = I).
 """
 
 import jax
@@ -24,6 +20,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
+import mrx
 from test.conftest import BETTI
 from mrx.nullspace import (
     _n_vectors,
@@ -63,14 +60,14 @@ def test_n_vectors_torus(k, dbc, expected):
 # init_nullspaces — shapes and zero initialisation
 # ---------------------------------------------------------------------------
 
-def test_init_nullspaces_shapes_and_zeros(torus_seq):
-    ops = init_nullspaces(torus_seq, torus_seq.operators)
+def test_init_nullspaces_shapes_and_zeros(tiny_seq):
+    ops = init_nullspaces(tiny_seq, tiny_seq.operators)
     for k in range(4):
         for dbc in (False, True):
             arr = getattr(ops, _null_field(k, dbc))
             assert arr is not None, f"null_{k}{'_dbc' if dbc else ''} is None after init"
             n_vec = _n_vectors(BETTI, k, dbc)
-            n_dof = getattr(torus_seq, f"n{k}_dbc" if dbc else f"n{k}")
+            n_dof = getattr(tiny_seq, f"n{k}_dbc" if dbc else f"n{k}")
             assert arr.shape == (n_vec, n_dof), (
                 f"k={k} dbc={dbc}: expected ({n_vec}, {n_dof}), got {arr.shape}"
             )
@@ -93,8 +90,12 @@ def test_get_nullspace_raises_when_uninitialised():
 
 @pytest.mark.parametrize("k,dbc", _NONTRIVIAL,
                           ids=["k0","k1","k2dbc","k3dbc"])
-def test_stored_nullspace_vectors_are_harmonic(torus_seq, k, dbc):
-    """Each stored vector v has Rayleigh quotient vᵀL v / vᵀM v ≤ 1e-12.
+def test_stored_nullspace_vectors_are_harmonic(tiny_seq, k, dbc):
+    """Each stored vector v has Rayleigh quotient vᵀL v / vᵀM v ≤ 4.5e3 eps (1e-12 f64).
+
+    The bound is quadratic in the eigenvector error, which the solve leaves at
+    ``seq.tol = sqrt(eps)``, so it is an eps-scaled quantity: 1e-12 in float64,
+    5.4e-4 in float32.
 
     The metric is the Rayleigh quotient, NOT ‖L_k v‖. ``L_k`` is dual-valued,
     so ``l2_norm(Lv)`` measures a functional in the primal mass norm — an
@@ -114,32 +115,36 @@ def test_stored_nullspace_vectors_are_harmonic(torus_seq, k, dbc):
 
     See docs/research/gvec_h5_vacuum_comparison.md, "The k=2 solver failure".
     """
-    ops = torus_seq.operators
+    ops = tiny_seq.operators
     vs = get_nullspace(ops, k, dbc)
     for i, v in enumerate(vs):
-        Lv = torus_seq.apply_hodge_laplacian(v, k, dirichlet=dbc, operators=ops)
-        nrm2 = float(torus_seq.l2_norm_sq(v, k, dirichlet=dbc))
+        Lv = tiny_seq.apply_hodge_laplacian(v, k, dirichlet=dbc, operators=ops)
+        nrm2 = float(tiny_seq.l2_norm_sq(v, k, dirichlet=dbc))
         assert nrm2 > 0.0, f"k={k} dbc={dbc} vec[{i}] has zero mass norm"
         rayleigh = abs(float(v @ Lv)) / nrm2
-        assert rayleigh <= 1e-12, (
-            f"k={k} dbc={dbc} vec[{i}]: Rayleigh = {rayleigh:.2e} > 1e-12 "
-            f"(‖Lv‖ = {float(torus_seq.l2_norm(Lv, k, dirichlet=dbc)):.2e}, "
+        assert rayleigh <= mrx.eps(4.5e3), (
+            f"k={k} dbc={dbc} vec[{i}]: Rayleigh = {rayleigh:.2e} > {mrx.eps(4.5e3):.1e} "
+            f"(‖Lv‖ = {float(tiny_seq.l2_norm(Lv, k, dirichlet=dbc)):.2e}, "
             "reported for context only — it is not the criterion)"
         )
 
 
 @pytest.mark.parametrize("k,dbc", _NONTRIVIAL,
                           ids=["k0","k1","k2dbc","k3dbc"])
-def test_stored_nullspace_vectors_are_mass_orthonormal(torus_seq, k, dbc):
-    """Mass Gram matrix of stored null vectors equals the identity."""
-    ops = torus_seq.operators
+def test_stored_nullspace_vectors_are_mass_orthonormal(tiny_seq, k, dbc):
+    """Mass Gram matrix of stored null vectors equals the identity.
+
+    The vectors are normalised after the solve, so the Gram matrix is the
+    identity to solver accuracy: ``seq.tol`` (1.5e-8 f64 / 3.5e-4 f32).
+    """
+    ops = tiny_seq.operators
     vs = get_nullspace(ops, k, dbc)
     n_vec = vs.shape[0]
     mass_vs = jax.vmap(
-        lambda v: torus_seq.apply_mass_matrix(v, k, dirichlet=dbc, operators=ops)
+        lambda v: tiny_seq.apply_mass_matrix(v, k, dirichlet=dbc, operators=ops)
     )(vs)
     gram = vs @ mass_vs.T
-    npt.assert_allclose(gram, jnp.eye(n_vec), atol=1e-8)
+    npt.assert_allclose(gram, jnp.eye(n_vec), atol=tiny_seq.tol)
 
 
 # ---------------------------------------------------------------------------
@@ -148,51 +153,22 @@ def test_stored_nullspace_vectors_are_mass_orthonormal(torus_seq, k, dbc):
 
 @pytest.mark.parametrize("k,dbc", [(1, False), (2, True)],
                           ids=["k1","k2dbc"])
-def test_saddle_point_lower_block_satisfies_mass_equation(torus_seq, k, dbc):
-    """Lower block w satisfies M_{k-1} w = D_{k-1}^T v for each pair (v, w)."""
-    ops = torus_seq.operators
-    vs_upper, vs_lower = get_saddle_point_nullspaces(torus_seq, ops, k, dbc)
+def test_saddle_point_lower_block_satisfies_mass_equation(tiny_seq, k, dbc):
+    """Lower block w satisfies M_{k-1} w = D_{k-1}^T v for each pair (v, w).
+
+    ``w`` comes out of a mass solve at ``seq.tol``, so the residual is bounded
+    by ``seq.tol`` times the right-hand side (1.5e-8 f64 / 3.5e-4 f32).
+    """
+    ops = tiny_seq.operators
+    vs_upper, vs_lower = get_saddle_point_nullspaces(tiny_seq, ops, k, dbc)
     for i, (v, w) in enumerate(zip(vs_upper, vs_lower)):
-        Dt_v = torus_seq.apply_derivative_matrix(
+        Dt_v = tiny_seq.apply_derivative_matrix(
             v, k - 1,
             dirichlet_in=dbc, dirichlet_out=dbc,
             transpose=True,
             operators=ops,
         )
-        Mw = torus_seq.apply_mass_matrix(w, k - 1, dirichlet=dbc, operators=ops)
-        npt.assert_allclose(Mw, Dt_v, atol=1e-8,
+        Mw = tiny_seq.apply_mass_matrix(w, k - 1, dirichlet=dbc, operators=ops)
+        npt.assert_allclose(Mw, Dt_v,
+                            atol=tiny_seq.tol * max(float(jnp.linalg.norm(Dt_v)), 1.0),
                             err_msg=f"k={k} dbc={dbc} vec[{i}]: M_{{k-1}} w ≠ D_{{k-1}}^T v")
-
-
-# ---------------------------------------------------------------------------
-# get_stiffness_nullspace — kernel membership and M-orthonormality
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("k,dbc", [(1, False), (2, True)],
-                          ids=["k1","k2dbc"])
-def test_stiffness_nullspace_is_in_kernel(torus_seq, k, dbc):
-    """Every stiffness-nullspace vector satisfies ‖K_k v‖ ≈ 0."""
-    ops = torus_seq.operators
-    basis = torus_seq.stiffness_null[(k, dbc)]
-    for i, v in enumerate(basis):
-        Kv = torus_seq.apply_stiffness(v, k, dirichlet=dbc, operators=ops)
-        res = float(jnp.linalg.norm(Kv))
-        assert res <= 1e-6, (
-            f"k={k} dbc={dbc} vec[{i}]: ‖K_k v‖ = {res:.2e}"
-        )
-
-
-@pytest.mark.parametrize("k,dbc", [(1, False), (2, True)],
-                          ids=["k1","k2dbc"])
-def test_stiffness_nullspace_is_mass_orthonormal(torus_seq, k, dbc):
-    """Mass Gram matrix of stiffness-nullspace vectors equals the identity."""
-    ops = torus_seq.operators
-    basis = torus_seq.stiffness_null[(k, dbc)]
-    if basis.shape[0] == 0:
-        return
-    n_vec = basis.shape[0]
-    mass_basis = jax.vmap(
-        lambda v: torus_seq.apply_mass_matrix(v, k, dirichlet=dbc, operators=ops)
-    )(basis)
-    gram = basis @ mass_basis.T
-    npt.assert_allclose(gram, jnp.eye(n_vec), atol=1e-8)

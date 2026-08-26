@@ -16,6 +16,9 @@ import os
 import sys
 
 import numpy as np
+import pytest
+
+pytestmark = pytest.mark.gpu   # reads archived traces outside the repository
 
 ARCHIVE = os.environ.get("MRX_RELAX_ARCHIVE",
                          "/kfs3/scratch/tblickhan/mrx/out/relax_prelim")

@@ -6,7 +6,16 @@ import jax.numpy as jnp
 import numpy.testing as npt
 import pytest
 
+import mrx
 from mrx.spline_bases import DerivativeSpline, SplineBasis, TensorBasis
+
+# Pointwise identities (partition of unity, Bernstein baselines, the tensor
+# factorisation) hold to a few ulp: 100 eps = 2.2e-14 f64 / 1.2e-5 f32.
+# Identities that go through a collocation or histopolation SOLVE, and the
+# autodiff-vs-derivative-basis comparison, carry the condition number of a
+# 10x10 banded system: 1e3 eps = 2.2e-13 f64 / 1.2e-4 f32.
+POINTWISE = mrx.eps(100)
+SOLVED = mrx.eps(1e3)
 
 
 N, P = 10, 3
@@ -30,21 +39,21 @@ _PERIODIC_VALS = _eval_all(_PERIODIC)
 # ── Partition of unity ────────────────────────────────────────────────────────
 
 def test_partition_of_unity_clamped():
-    npt.assert_allclose(jnp.sum(_CLAMPED_VALS, axis=1), 1.0, atol=1e-12)
+    npt.assert_allclose(jnp.sum(_CLAMPED_VALS, axis=1), 1.0, atol=POINTWISE)
 
 
 def test_partition_of_unity_periodic():
-    npt.assert_allclose(jnp.sum(_PERIODIC_VALS, axis=1), 1.0, atol=1e-12)
+    npt.assert_allclose(jnp.sum(_PERIODIC_VALS, axis=1), 1.0, atol=POINTWISE)
 
 
 # ── Positivity ────────────────────────────────────────────────────────────────
 
 def test_positivity_clamped():
-    assert jnp.all(_CLAMPED_VALS >= -1e-14)
+    assert jnp.all(_CLAMPED_VALS >= -POINTWISE)
 
 
 def test_positivity_periodic():
-    assert jnp.all(_PERIODIC_VALS >= -1e-14)
+    assert jnp.all(_PERIODIC_VALS >= -POINTWISE)
 
 
 # ── Analytic baselines ────────────────────────────────────────────────────────
@@ -52,16 +61,16 @@ def test_positivity_periodic():
 def test_degree1_clamped_bernstein():
     """Degree-1 clamped on [0,1] with no interior knot: B_0=1-x, B_1=x."""
     vals = _eval_all(SplineBasis(2, 1, "clamped"))
-    npt.assert_allclose(vals[:, 0], 1.0 - _XS, atol=1e-12)
-    npt.assert_allclose(vals[:, 1], _XS, atol=1e-12)
+    npt.assert_allclose(vals[:, 0], 1.0 - _XS, atol=POINTWISE)
+    npt.assert_allclose(vals[:, 1], _XS, atol=POINTWISE)
 
 
 def test_degree2_clamped_bernstein():
     """Degree-2 clamped on [0,1] with no interior knot: quadratic Bernstein polynomials."""
     vals = _eval_all(SplineBasis(3, 2, "clamped"))
-    npt.assert_allclose(vals[:, 0], (1.0 - _XS) ** 2, atol=1e-12)
-    npt.assert_allclose(vals[:, 1], 2.0 * _XS * (1.0 - _XS), atol=1e-12)
-    npt.assert_allclose(vals[:, 2], _XS ** 2, atol=1e-12)
+    npt.assert_allclose(vals[:, 0], (1.0 - _XS) ** 2, atol=POINTWISE)
+    npt.assert_allclose(vals[:, 1], 2.0 * _XS * (1.0 - _XS), atol=POINTWISE)
+    npt.assert_allclose(vals[:, 2], _XS ** 2, atol=POINTWISE)
 
 
 def test_derivative_basis_of_bernstein_quadratic():
@@ -69,8 +78,8 @@ def test_derivative_basis_of_bernstein_quadratic():
     dspl = DerivativeSpline(SplineBasis(3, 2, "clamped"))
     xs = _XS[:-1]
     vals = jax.vmap(lambda x: jax.vmap(lambda i: dspl(x, i))(dspl.ns))(xs)
-    npt.assert_allclose(vals[:, 0], 2.0 * (1.0 - xs), atol=1e-12)
-    npt.assert_allclose(vals[:, 1], 2.0 * xs, atol=1e-12)
+    npt.assert_allclose(vals[:, 0], 2.0 * (1.0 - xs), atol=POINTWISE)
+    npt.assert_allclose(vals[:, 1], 2.0 * xs, atol=POINTWISE)
 
 
 # ── Greville collocation & de Rham commutation ────────────────────────────────
@@ -81,7 +90,7 @@ def test_greville_collocation_recovers_coefficients(typ):
     spl = SplineBasis(N, P, typ)
     coll = spl.collocation_matrix()
     coeffs = jnp.linspace(-1.0, 1.0, spl.n)
-    npt.assert_allclose(jnp.linalg.solve(coll, coll @ coeffs), coeffs, atol=1e-12)
+    npt.assert_allclose(jnp.linalg.solve(coll, coll @ coeffs), coeffs, atol=SOLVED)
 
 
 def test_histopolation_de_rham_clamped():
@@ -96,7 +105,7 @@ def test_histopolation_de_rham_clamped():
     npt.assert_allclose(
         jnp.linalg.solve(hist, span_integrals),
         coeffs[1:] - coeffs[:-1],
-        atol=1e-12,
+        atol=SOLVED,
     )
 
 
@@ -126,8 +135,8 @@ def test_histopolation_de_rham_periodic(p):
         return jnp.sum(jax.vmap(lambda i: spl(jnp.mod(x, 1.0), i))(spl.ns) * coeffs)
 
     span_integrals = jax.vmap(lambda ab: s(ab[1]) - s(ab[0]))(spans)
-    npt.assert_allclose(hist @ d_coeffs, span_integrals, atol=1e-12)
-    npt.assert_allclose(jnp.linalg.solve(hist, span_integrals), d_coeffs, atol=1e-12)
+    npt.assert_allclose(hist @ d_coeffs, span_integrals, atol=SOLVED)
+    npt.assert_allclose(jnp.linalg.solve(hist, span_integrals), d_coeffs, atol=SOLVED)
 
 
 @pytest.mark.parametrize("typ", ["clamped", "periodic"])
@@ -155,7 +164,7 @@ def test_autodiff_agrees_with_derivative_spline(typ):
     # Interior points only: derivative splines are not required to be evaluable
     # at the clamped boundary (repeated knots cause a genuine kink there).
     xs = _XS[1:-1]
-    npt.assert_allclose(jax.vmap(jax.grad(f))(xs), jax.vmap(f_deriv)(xs), atol=1e-10)
+    npt.assert_allclose(jax.vmap(jax.grad(f))(xs), jax.vmap(f_deriv)(xs), atol=SOLVED)
 
 
 # ── TensorBasis ───────────────────────────────────────────────────────────────
@@ -174,7 +183,7 @@ def test_tensor_basis_factors():
         npt.assert_allclose(
             tb.evaluate(x, lin),
             tb.bases[0](x[0], i) * tb.bases[1](x[1], j) * tb.bases[2](x[2], k),
-            atol=1e-12,
+            atol=POINTWISE,
         )
 
 

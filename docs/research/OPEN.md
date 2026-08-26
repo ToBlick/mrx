@@ -141,9 +141,10 @@ From the phase-1 misc report §F; nothing deleted.
 - `scripts/harmonic/run_harmonic_nullspace.slurm` (hard-coded account);
   delete or rewrite.
 - `scripts/deprecated/*` (4 tensor/Chebyshev demos); delete.
-- `scripts/interactive/*` (12 cell scripts): move `debug_poisson_convergence`
-  to `scripts/debug`, delete the rest. `debug_poisson_convergence.py` and
-  `projection_test.py` are dead against the current API.
+- `scripts/interactive/*` (11 cell scripts): delete. `projection_test.py` is
+  dead against the current API. (`debug_poisson_convergence.py` was deleted
+  2026-08-26: it imported the removed tensor mass preconditioner and called
+  the removed `assemble_hodge_laplacian_tp`, so it could not run.)
 - `scripts/plotting`: `force_multiplot`, `helix_plots`, `iter_plots`,
   `solovev_*`, `stell_plots`, `plot_mass_sweep_results`, `w7x_matrix_fill`,
   `w7x_saddle_fill`, `plot_poisson_{results,sweep}` unreferenced; delete.

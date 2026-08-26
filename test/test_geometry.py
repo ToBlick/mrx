@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import numpy.testing as npt
 
 
+import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.geometry import (
@@ -56,6 +57,13 @@ _SPLINE_MAP = _SEQ.build_spline_map(_COEFFS)
 
 _F_ANALYTIC = rotating_ellipse_map(eps=0.3, kappa=1.2, nfp=3)
 
+# Roundoff identities: 1e3 eps = 2.2e-13 f64 / 1.2e-4 f32, relative to the
+# size of the quantity compared. The sum-factorised spline metric against
+# jacfwd goes through the map's second derivatives and carries more
+# cancellation: 1e4 eps = 2.2e-12 f64 / 1.2e-3 f32.
+IDENT = mrx.eps(1e3)
+SPLINE = mrx.eps(1e4)
+
 
 # ── _tp_evaluate: sum-factorization identity ──────────────────────────────────
 
@@ -63,7 +71,7 @@ def test_tp_evaluate_matches_brute_force():
     """Sum-factorized result equals the full four-index einsum."""
     expected = jnp.einsum("iabc,aI,bJ,cK->iIJK", _C_RAW, _M1, _M2, _M3)
     got = _tp_evaluate(_C_RAW, _M1, _M2, _M3)
-    npt.assert_allclose(got, expected, atol=1e-12)
+    npt.assert_allclose(got, expected, atol=IDENT * float(jnp.abs(expected).max()))
 
 
 # ── _coeffs_to_raw_grid: identity extraction ─────────────────────────────────
@@ -74,7 +82,7 @@ def test_coeffs_to_raw_grid_identity_extraction():
     coefficients = jnp.asarray(_rng.standard_normal((3, n_dof)))
     extraction_T = jnp.eye(n_dof)
     result = _coeffs_to_raw_grid(coefficients, extraction_T, _NR, _NT, _NZ)
-    npt.assert_allclose(result, coefficients.reshape(3, _NR, _NT, _NZ), atol=1e-14)
+    npt.assert_array_equal(result, coefficients.reshape(3, _NR, _NT, _NZ))
 
 
 # ── compute_geometry_terms: known map ────-───────────────────────────────────
@@ -89,10 +97,10 @@ def test_geometry_diagonal_scaling():
     metric, metric_inv, jac = compute_geometry_terms(F, _QUAD_X)
 
     expected_metric = jnp.diag(scale ** 2)
-    npt.assert_allclose(metric, jnp.broadcast_to(expected_metric, (_N_Q, 3, 3)), atol=1e-12)
+    npt.assert_allclose(metric, jnp.broadcast_to(expected_metric, (_N_Q, 3, 3)), atol=25 * IDENT)
     eye_check = jnp.einsum("qij,qjk->qik", metric_inv, metric)
-    npt.assert_allclose(eye_check, jnp.broadcast_to(jnp.eye(3), (_N_Q, 3, 3)), atol=1e-11)
-    npt.assert_allclose(jac, jnp.full(_N_Q, 30.0), atol=1e-11)
+    npt.assert_allclose(eye_check, jnp.broadcast_to(jnp.eye(3), (_N_Q, 3, 3)), atol=IDENT)
+    npt.assert_allclose(jac, jnp.full(_N_Q, 30.0), atol=30 * IDENT)
 
 
 # ── Spline-map geometry: two paths agree ─────────────────────────────────────
@@ -100,7 +108,8 @@ def test_geometry_diagonal_scaling():
 def test_spline_geometry_matches_jacfwd():
     """Sum-factorized spline metric agrees with jacfwd on the same SplineMap."""
     metric_ref, _, _ = compute_geometry_terms(_SPLINE_MAP, _SEQ.quad.x)
-    npt.assert_allclose(_SEQ.metric_jkl, metric_ref, atol=1e-8)
+    npt.assert_allclose(_SEQ.metric_jkl, metric_ref,
+                        atol=SPLINE * float(jnp.abs(metric_ref).max()))
 
 
 def test_spline_jacobian_positive():
@@ -113,7 +122,7 @@ def test_spline_jacobian_positive():
 def test_spline_metric_symmetric():
     """Metric tensor g_ij = g_ji at every quadrature point."""
     g = _SEQ.metric_jkl
-    npt.assert_allclose(g, g.transpose(0, 2, 1), atol=1e-10)
+    npt.assert_allclose(g, g.transpose(0, 2, 1), atol=IDENT * float(jnp.abs(g).max()))
 
 
 def test_spline_map_approximates_analytic():

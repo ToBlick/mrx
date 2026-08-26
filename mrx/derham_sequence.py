@@ -1402,11 +1402,9 @@ class DeRhamSequence():
             case 1:
                 en = self.e1_dbc if dirichlet_n else self.e1
                 comp_info_n, comp_shapes_n = self._form_comp_info(1)
-                nn = self.basis_1.n
             case 2:
                 en = self.e2_dbc if dirichlet_n else self.e2
                 comp_info_n, comp_shapes_n = self._form_comp_info(2)
-                nn = self.basis_2.n
             case _:
                 raise ValueError("n must be 1 or 2")
 
