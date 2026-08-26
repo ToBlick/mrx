@@ -40,6 +40,7 @@ import pytest
 jax.config.update("jax_enable_x64", True)
 
 from mrx.derham_sequence import DeRhamSequence
+from mrx.local_assembly import assemble_mass_local, build_matrixfree_mass_apply
 from mrx.mappings import rotating_ellipse_map
 from mrx.operators import (
     apply_derivative_matrix,
@@ -47,7 +48,6 @@ from mrx.operators import (
     apply_mass_matrix,
     apply_stiffness,
     assemble_incidence_operators,
-    build_matrixfree_mass_apply,
     mass_core_apply,
 )
 
@@ -282,6 +282,14 @@ def test_re_mass_dense_is_spd(k):
     assert eigvals.min() > 1e-12, (
         f"k={k}: dense M not SPD, lambda_min={eigvals.min()}"
     )
+
+
+@pytest.mark.parametrize("k", (0, 1, 2, 3))
+def test_re_mass_matrixfree_matches_assembled(k):
+    """The sum-factorized matvec equals the element-assembled sparse M_k."""
+    M = np.asarray(assemble_mass_local(_RE_SEQ, k).todense())
+    npt.assert_allclose(_RE_DENSE[k], M, rtol=0.0, atol=1e-12 * np.abs(M).max(),
+                        err_msg=f"k={k}: matrix-free M differs from assembled M")
 
 
 # ---------------------------------------------------------------------------
