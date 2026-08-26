@@ -2444,3 +2444,54 @@ This is a sharper version of s38.  There the point was that only the FINAL
 ||F|| is a quantity; here the point is that even the final ||F|| is a NOISY
 quantity whose noise depends on the time-stepping mode, so a resolution has to
 be attached to it before any two arms are ranked.
+
+## 40. The mu optimum does NOT transfer across resolution: the slope reverses sign
+
+Two fmm002 arms at 12^3 finished outside the w7x-ini-conv campaign and were
+missed by the s39 table: H1 (mu=4.4e-4) and H2 (mu=1e-3), both `--gamma 1`,
+linesearch, and both TRUNCATED by their 18000 s budget at 1760 and 1200 steps.
+Everything below is read at steps both reached.
+
+s37 found a SHARP minimum at mu=1e-4 on fmm002 at 8^3.  The 12^3 pair does not
+merely fail to reproduce it -- it runs the other way:
+
+```
+|dH| per dE            step 250    500     750     1000    ratio
+  12^3  mu=4.4e-4     8.419e-3  8.439e-3  8.451e-3  8.454e-3
+  12^3  mu=1e-3       6.704e-3  6.669e-3  6.662e-3  6.669e-3   1.27x for 1e-3
+  ---
+  8^3   mu=1e-4       1.118e-3  2.477e-4  3.122e-4  1.461e-4
+  8^3   mu=1e-3       7.381e-3  6.491e-3  5.977e-3  5.683e-3   3-25x for 1e-4
+```
+
+At 8^3, dropping mu from 1e-3 to 1e-4 improves the metric by up to 39x.  At
+12^3, dropping mu from 1e-3 to 4.4e-4 makes it 1.27x WORSE.  The slope in mu
+has reversed sign between the two resolutions over an overlapping mu range.
+
+The 12^3 ratio is not noise: it is 1.26, 1.27, 1.27, 1.27 at the four samples,
+constant to 1%, in deterministic runs.  These are linesearch arms, so their
+F_final is subject to the 2-4x scatter of s39.2 and is NOT used here; the
+ranking rests on |dH|/dE, which drifts within an arm but drifts TOGETHER for
+the pair, leaving the ratio flat.
+
+What this does and does not establish:
+
+* It REFUTES carrying mu=1e-4 to finer grids.  The one interior optimum this
+  study found is an 8^3 optimum, not a property of the scheme.
+* It does NOT locate the 12^3 optimum.  There is no 12^3 arm at 1e-4 and none
+  above 1e-3, so all that can be said is that the 12^3 slope points UPWARD in
+  mu across the sampled range -- the minimum is at mu >= 1e-3, not below it.
+* It does NOT support "12^3 is worse than 8^3".  Both 12^3 arms have removed
+  ~4x less energy at matched step count, i.e. they are far earlier in their
+  descent, and per s32 these are budget-truncated arms with no floor.  The
+  cross-resolution absolute comparison is confounded; only the within-
+  resolution mu ordering is clean.
+
+This is the h-scaling-of-mu question that was deferred, answered for free and
+only in its negative half.  The positive half needs a 12^3 mu ladder that
+brackets from ABOVE (1e-3, 3e-3, 1e-2) rather than from below, plus an arm at
+12^3 mu=1e-4 to confirm the reversal rather than infer it from two points.
+That is a better-posed sweep than the one the shelf currently carries.
+
+Also truncated and worth flagging for anyone reading the M-series: M4_mu1e1
+stopped at 2000/3000 and S15_res12_g1 at 520/3000, both on wall-clock.
