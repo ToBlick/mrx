@@ -307,7 +307,7 @@ if k == 1:
     ops = assemble_hodge_operators(seq, seq.geometry, ops, ks=(0, 1))
     seq.set_operators(ops)
 elif sparse:
-    seq.assemble_all_sparse(include_preconditioners=True)
+    seq.assemble_all_sparse()
 else:
     ops = assemble_mass_operators(seq, seq.geometry, ks=(0, 1, 2, 3))
     ops = assemble_tensor_mass_preconditioner(seq, operators=ops, ks=(0, 1, 2, 3))
