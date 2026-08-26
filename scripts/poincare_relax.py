@@ -123,7 +123,7 @@ def main():
                     subtitle=f"nfp = {nfp}   |   h/2 drift {float(z[f'{name}_drift']):.1e}   |   re-rendered from sections.npz",
                     axis_RZ=(z[f"{tag}_axisR"], z[f"{tag}_axisZ"]), path=None,
                     profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
-                    logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]), chaotic=z[f"{name}_chaotic"],
+                    logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]),
                     pressure=z[f"{tag}_pressure"] if f"{tag}_pressure" in z else None,
                     pressure_label=PRESSURE_LABEL, iota_lim=(lo, hi))
                 path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
@@ -205,7 +205,7 @@ def main():
                          f"traced in {cli.precision}",
                 axis_RZ=(aR, aZ), path=None, profile_x=a_eff,
                 profile_xlabel=xlabel, nfp=nfp, logical=(lr, lth),
-                chaotic=res["chaotic"], iota_lim=(lo, hi))
+                iota_lim=(lo, hi))
             path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
             fig.savefig(path, dpi=200)
             plt.close(fig)

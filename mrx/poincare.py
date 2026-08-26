@@ -572,8 +572,8 @@ PRESSURE_CMAP = "plasma"
 def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
                    axis_RZ=None, path=None, profile_x=None,
                    profile_xlabel="seed radius $r$", nfp=None, denom_max=30,
-                   logical=None, chaotic=None, pressure=None,
-                   pressure_label=r"$p$", split_iota_p=None,
+                   logical=None, pressure=None,
+                   pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
                    cmap=SECTION_CMAP, iota_lim=None):
     """The section coloured by iota, with the iota profile and optionally p.
 
@@ -594,9 +594,15 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     band, against the same surface label the iota profile uses (labelled
     ``pressure_label``). On a flux surface of an equilibrium p is constant and
     the band collapses; on an island chain or a chaotic line it is not, and the
-    band width measures how far that line is from ``B . grad p = 0``. Chaotic
-    lines are drawn in grey: p is a field value and is well defined on them,
-    only iota is not.
+    band width measures how far that line is from ``B . grad p = 0``.
+
+    ``pressure_scale`` multiplies p wherever it is drawn (colour and profile),
+    and the labels say so.
+
+    Every kept line is drawn and fitted, chaotic ones included: the iota
+    profile carries the angle-fit residual as an error bar (see the comment
+    at the plot), so a line without a rotational transform shows as a point
+    with a large bar rather than as a separate category.
 
     ``split_iota_p`` colours the section by iota ABOVE the magnetic axis and by
     p BELOW it, in one panel; the default is on whenever ``pressure`` is given.
@@ -616,6 +622,9 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
                          "magnetic axis, not at Z = 0.")
 
     has_p = pressure is not None
+    # The pressure is drawn at ``pressure_scale`` times its value (the natural
+    # scale of p in code units is ~1e-2, and 100 p reads in units).
+    p_label = f"{pressure_label} $\\times$ {pressure_scale:g}"
     if logical is None and not has_p:
         fig = plt.figure(figsize=(11.5, 5.0), constrained_layout=True)
         ax, bx = fig.subplots(1, 2, width_ratios=[1.3, 1.0])
@@ -632,13 +641,7 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         ax, lx, bx = fig.subplots(1, 3, width_ratios=[1.15, 1.0, 1.15])
         px = None
 
-    # Chaotic lines are REAL and get plotted -- they are the physics of an
-    # overlapped island region -- but they have no rotational transform, so
-    # they must not be painted on the iota scale or fitted into the profile.
-    # Dark grey, the convention for "iota could not be inferred".
-    if chaotic is None:
-        chaotic = jnp.zeros_like(keep)
-    shown = keep & ~chaotic
+    shown = keep
     good = iota[shown][jnp.isfinite(iota[shown])] if shown.any() else iota[:0]
     if iota_lim is not None:
         lo, hi = float(iota_lim[0]), float(iota_lim[1])
@@ -676,18 +679,13 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         # a line and greying the other reads as two different objects.
         sel_p = shown2 & ~upper
         if sel_p.any():
-            psc = ax.scatter(R[sel_p], Z[sel_p], c=pressure[sel_p], s=size,
+            psc = ax.scatter(R[sel_p], Z[sel_p], c=pressure_scale * pressure[sel_p], s=size,
                              cmap=PRESSURE_CMAP, linewidths=0, rasterized=True)
-    if (keep & chaotic).any():
-        m = keep & chaotic
-        ax.scatter(R[m], Z[m], c="0.25", s=size, linewidths=0, rasterized=True,
-                   label=f"chaotic ({int(m.sum())})")
     res_ticks, res_labels = (resonant_rationals(lo, hi, int(nfp), denom_max)
                              if nfp else ([], []))
     if (~keep).any():
         ax.scatter(R[~keep], Z[~keep], c="0.55", s=size, linewidths=0,
                    rasterized=True, label=f"lost ({int((~keep).sum())})")
-    if (~keep).any() or (keep & chaotic).any():
         ax.legend(loc="upper right", fontsize=7, markerscale=4)
     if axis_RZ is not None:
         # ONE marker at the mean, plus a hairline through the wander. Drawing a
@@ -706,7 +704,7 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         cbar.set_ticks(res_ticks)
         cbar.set_ticklabels(res_labels)
     if psc is not None:
-        pbar = fig.colorbar(psc, ax=ax, label=pressure_label, fraction=0.046, pad=0.02)
+        pbar = fig.colorbar(psc, ax=ax, label=p_label, fraction=0.046, pad=0.02)
         pbar.ax.tick_params(labelsize=7)
         ax.axhline(z_axis, color="0.35", lw=0.6, ls=":", zorder=1)
 
@@ -742,10 +740,6 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         lr, lth = logical
         lx.scatter(lr[shown], lth[shown], c=colour[shown], s=size, vmin=lo,
                    vmax=hi, cmap=cmap, linewidths=0, rasterized=True)
-        if (keep & chaotic).any():
-            m = keep & chaotic
-            lx.scatter(lr[m], lth[m], c="0.25", s=size, linewidths=0,
-                       rasterized=True)
         if (~keep).any():
             lx.scatter(lr[~keep], lth[~keep], c="0.55", s=size, linewidths=0,
                        rasterized=True)
@@ -758,8 +752,21 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
     x = seed_r if profile_x is None else profile_x
     # Seeds from several rays interleave in the surface label, so the profile
     # is sorted by it: in seed order the line would zigzag between rays.
+    # The error bar is the angle-fit residual -- how far the unwrapped angle
+    # departs from a straight line in poloidal turns. The standard error of
+    # the fitted iota is that residual times one constant for the whole trace
+    # (nfp / sqrt(sum (zeta - mean zeta)^2), ~1e-5 for 400 periods), which is
+    # invisible on the iota range, so the bars are drawn at one common scale
+    # chosen to make the largest span a tenth of the range: only their
+    # relative size is the information -- a flux surface's bar is a point, an
+    # island's is its width, a chaotic line's is large.
     order = jnp.argsort(jnp.asarray(x)[shown]) if shown.any() else jnp.arange(0)
-    bx.plot(jnp.asarray(x)[shown][order], iota[shown][order], "o-", ms=3, lw=0.8)
+    xo, io, ro = (jnp.asarray(x)[shown][order], iota[shown][order],
+                  jnp.asarray(resid)[shown][order])
+    scale = 0.1 * (hi - lo) / float(jnp.max(ro)) if ro.size and float(jnp.max(ro)) > 0 else 1.0
+    bx.errorbar(xo, io, yerr=scale * ro, fmt="o-", ms=3, lw=0.8, capsize=2,
+                elinewidth=0.8, label=f"angle-fit residual x {scale:.3g}")
+    bx.legend(loc="upper left", fontsize=7)
     for value, lab in zip(res_ticks, res_labels):
         bx.axhline(value, color="0.55", lw=0.6, ls="--", zorder=0)
         bx.annotate(lab, (0.995, value), xycoords=("axes fraction", "data"),
@@ -771,10 +778,6 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         # fitted y-axes look alike however far the transform actually moved.
         bx.set_ylim(lo, hi)
     bx.grid(alpha=0.3)
-    bx2 = bx.twinx()
-    bx2.semilogy(x[shown], jnp.maximum(resid[shown], 1e-16), ".", ms=4,
-                 color="tab:red", alpha=0.7)
-    bx2.set_ylabel("angle-fit residual [turns]", color="tab:red")
     bx.set_title(subtitle, fontsize=10)
 
     if px is not None:
@@ -784,20 +787,16 @@ def render_section(R, Z, iota, resid, seed_r, keep, *, title, subtitle,
         # constant p and no band, an island chain or a chaotic line does not,
         # and the band width is how far that line is from B . grad p = 0.
         xs = jnp.asarray(x)
-        p_mean = jnp.mean(pressure, axis=1)
-        p_std = jnp.std(pressure, axis=1)
+        p_mean = jnp.mean(pressure_scale * pressure, axis=1)
+        p_std = jnp.std(pressure_scale * pressure, axis=1)
         if shown.any():
             order = jnp.argsort(xs[shown])
             xo, mo, so = xs[shown][order], p_mean[shown][order], p_std[shown][order]
             px.fill_between(xo, mo - so, mo + so, color="tab:blue", alpha=0.2,
                             lw=0, label=r"$\pm 1$ std over the line")
             px.plot(xo, mo, "o-", ms=3, lw=0.8, color="tab:blue", label="mean")
-        m = keep & chaotic
-        if m.any():
-            px.errorbar(xs[m], p_mean[m], yerr=p_std[m], fmt="o", ms=3,
-                        color="0.35", capsize=2, lw=0.8, label="chaotic")
         px.set_xlabel(profile_xlabel)
-        px.set_ylabel(pressure_label)
+        px.set_ylabel(p_label)
         px.grid(alpha=0.3)
         px.legend(loc="best", fontsize=7)
         px.set_title("pressure profile", fontsize=10)
