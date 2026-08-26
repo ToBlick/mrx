@@ -38,13 +38,6 @@ def analytic_omega(iota0=IOTA0, iota1=IOTA1, modes=LAMBDA_MODES):
     return analytic_profile_form(iota, dPhi, make_lambda(modes))
 
 
-def analytic_ic(seq):
-    """The production initial condition: projected, Leray-cleaned, ``||B||_M = 1``."""
-    B, _ = project_reference_two_form(seq, analytic_omega())
-    B, _ = leray_clean(seq, B)
-    return B
-
-
 def test_analytic_ic_projects_and_leray_cleans(tiny_seq):
     """The production route: the L2 projection through ``M_2`` reintroduces a
     small divergence -- measured 2026-08-26 on tiny_seq (see the print):

@@ -85,6 +85,11 @@ CPU cores in float64, 9:15 on the GPU in float64 and 9:01 in float32 (the
 suite is compile-bound; the session torus fixture is 51 s of it, the
 relaxation run 28 s, the projector tests 90 s). The `needs_data` tests
 pass in 2:50 on the GPU (the W7-X fixture is 144 s of it).
+With the synthetic GVEC export (`test/test_synthetic_gvec.py`, which
+carries the relaxation run): 250 items, 7:40 on four CPU cores in
+float64; its module fixture -- `build_sequence` on the file plus the
+harmonic forms -- is 70 s of that, the relaxation run 23 s, and the file
+alone runs in 2:05 (float64) / 2:07 (float32).
 
 Do not add `XLA_FLAGS=--xla_cpu_multi_thread_eigen=false` to the CPU
 recipe: XLA's CPU compiler aborted once and segfaulted once, both while

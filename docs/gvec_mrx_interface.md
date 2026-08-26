@@ -225,3 +225,46 @@ put through them before it is used for anything.
   1.81 TiB, and even matrix-free, evaluating all `n` basis functions per point
   is unusable. Contract the tensor product instead — `O(n1+n2+n3)` per point,
   and it stays differentiable, which §3 requires.
+
+## 7. The synthetic export (what the test suite reads)
+
+`mrx.synthetic_gvec.write_synthetic_gvec` writes a file in this schema from
+closed formulas, so the whole route -- `build_gvec_map`, `load_clebsch`,
+`clebsch_form`, the projection -- can be checked against known answers with
+no data file (`test/test_synthetic_gvec.py`). The layout is that of
+`w7x_fmm002_clebsch_mrx.h5`, measured 2026-08-26:
+
+| item | real file | synthetic |
+| --- | --- | --- |
+| datasets | `eval_points (N,3)`, flat `R`, `Z`, `pressure`, `clebsch/{Phi, chi, dPhi_dr, dchi_dr, LA, dLA_*, grad_*}`, `B`, `beta` | `eval_points`, `R`, `Z`, `pressure`, `clebsch/{Phi, chi, dPhi_dr, dchi_dr, LA}` (what is read, plus the two parents of §3) |
+| attributes | `n_rho`, `n_theta`, `n_zeta`, `nfp` (int64) and provenance | the same four, the formula parameters, and the §4.1 convention strings |
+| order | C order over `(rho, theta, zeta)`, float64 | same |
+| rho | `i/(n-1)`, first point `0.1/(n-1)` (off axis) | same |
+| theta, zeta | half-open `i/n`; zeta spans one field period (the file is stellarator-symmetric on its zeta grid) | same |
+| theta orientation | counter-clockwise in (R, Z) from the outboard midplane; `det DF > 0` then selects `Y = -R sin(2 pi zeta/nfp)` | same |
+| profiles | `Phi = Phi_edge rho^2` (0.332 Wb), `dchi_dr/dPhi_dr = iota` a flux function, -0.915 to -1.07 | `Phi = Phi_edge rho^2`, `iota = iota0 + iota1 rho^2` per turn, `chi = int iota Phi'` closed |
+| lambda | `LA` in radians, derivatives w.r.t. radian angles | `lam_amplitude rho sin(theta_G) (1 + 0.3 cos(nfp zeta_G))` |
+| pressure | 75 kPa on axis, beta 1.8% | `p0 (1 - rho^2)` at the given on-axis `beta` |
+
+The map is the circular torus `R = R0 + a rho cos(theta_G)`,
+`Z = a rho sin(theta_G)`: concentric surfaces with no Shafranov shift, which
+is an equilibrium only at large aspect ratio and low beta. Keep `beta`
+small; the test suite uses 1e-3. Nothing in MRX consumes the pressure.
+
+```python
+from mrx.synthetic_gvec import write_synthetic_gvec
+torus = write_synthetic_gvec("torus_clebsch_mrx.h5", R0=1.0, a=1/3, nfp=5,
+                             n_rho=17, n_theta=24, n_zeta=8, iota=(-0.9, -0.15),
+                             Phi_edge=3.1416 / 9, lam_amplitude=0.05, beta=1e-3)
+```
+
+`torus` holds the formulas (`R`, `Z`, `dPhi_dr`, `dchi_dr`, `iota`, `LA`,
+`pressure`), differentiable with `jax.grad`, so a test can build the §1
+contract from them and compare. `scripts/relax.py --geometry <file>` runs on
+the synthetic file like on any export.
+
+One loader assumption this file exposed: `load_clebsch` used to decide
+whether a periodic axis is closed from `LA` (first and last sample equal),
+which mistakes a lambda without angular variation -- `LA = 0` in
+particular -- for a closed sample. It now decides from the axis coordinates
+(last point 1 or `1 - step`), the rule the map reader always applied.

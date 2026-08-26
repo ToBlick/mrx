@@ -34,7 +34,9 @@ Two traps that the flat schema carries:
   takes an ``nfp`` override for such files.
 
 Every function here takes the file path; nothing is resolved from names or
-from the environment.
+from the environment. :func:`mrx.synthetic_gvec.write_synthetic_gvec` writes
+the flat schema for an analytic circular torus; the test suite reads that
+file through the same functions as a real export.
 """
 from __future__ import annotations
 
@@ -58,6 +60,13 @@ def _take(grid, axis, sl):
     return grid[tuple(idx)]
 
 
+def _axis_is_closed(v):
+    """Whether a periodic sample in [0, 1] is closed (its last point is 1,
+    duplicating the first) rather than half-open (its last point is
+    ``1 - step``). Decided from the coordinates, never from the data."""
+    return abs(v[-1] - 1.0) < 0.5 * (v[1] - v[0])
+
+
 def _periodic_axis(vals, grid, axis, stride=1):
     """Normalise one periodic axis to a half-open [0,1) sample, then wrap-pad.
 
@@ -70,9 +79,8 @@ def _periodic_axis(vals, grid, axis, stride=1):
     v = np.asarray(vals, dtype=np.float64)
     if v.max() > 1.5:                      # radians -> [0,1]
         v = v / (v.max() + (v[1] - v[0]))
-    step = v[1] - v[0]
     layout = "half-open"
-    if abs(v[-1] - 1.0) < 0.5 * step:      # closed: drop the duplicate endpoint
+    if _axis_is_closed(v):                 # drop the duplicate endpoint
         v, grid, layout = v[:-1], _take(grid, axis, slice(0, -1)), "closed"
     v, grid = v[::stride], _take(grid, axis, slice(None, None, stride))
     pad = np.concatenate([grid, _take(grid, axis, slice(0, 1))], axis=axis)
@@ -284,9 +292,11 @@ def load_clebsch(path, types=("clamped", "periodic", "periodic")):
     derivatives: ``div B = 0`` rests on the mixed partials cancelling, which
     holds only when both come from one interpolant. The duplicate endpoint of
     a closed periodic sample is dropped before the fit; whether an axis is
-    closed is decided from the data (a duplicate agrees to round-off, the
-    half-open files differ by ~7e-2), and the decision is returned as
-    ``closed_axes``.
+    closed is decided from its coordinates (the last point is 1, not
+    ``1 - step``), the same rule the map reader applies, and the decision is
+    returned as ``closed_axes``. (It used to be decided from ``LA`` itself,
+    which mistakes any lambda without angular variation -- in particular
+    ``LA = 0`` -- for a closed sample.)
 
     Returns a dict with ``nfp``, ``rho``, ``dPhi``, ``dchi``, ``p`` (surface
     means, arrays on ``rho``), ``iota_spread`` (max angular departure of
@@ -317,14 +327,9 @@ def load_clebsch(path, types=("clamped", "periodic", "periodic")):
         [nr // 4:3 * nr // 4]))
 
     fit_axes, LA_fit, closed = list(axes), LA, []
-    span = float(np.abs(LA).max()) or 1.0
     for a, kind in enumerate(types):
-        if kind != 'periodic':
-            continue
-        gap = float(np.abs(np.take(LA_fit, 0, axis=a)
-                           - np.take(LA_fit, -1, axis=a)).max())
-        if gap <= 1e-8 * span:
-            fit_axes[a] = fit_axes[a][:-1]
+        if kind == 'periodic' and _axis_is_closed(axes[a]):
+            fit_axes[a] = axes[a][:-1]
             LA_fit = np.take(LA_fit, np.arange(len(fit_axes[a])), axis=a)
             closed.append(a)
     lam_h = fit_scalar_spline(fit_axes, LA_fit, types)
