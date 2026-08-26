@@ -279,9 +279,10 @@ def _mass_weight(k, DF, jac):
     else:                                                 # G^-1 J = adj(G) / J
         w = {(0, 0): d * f - e * e, (0, 1): c * e - b * f, (0, 2): b * e - c * d,
              (1, 1): a * f - c * c, (1, 2): b * c - a * e, (2, 2): a * d - b * b}
+    w = {pair: v / jac for pair, v in w.items()}
     for (i, j) in list(w):
-        w[(j, i)] = w[(i, j)]
-    return {pair: v / jac for pair, v in w.items()}
+        w[(j, i)] = w[(i, j)]                             # symmetric: shared array
+    return w
 
 
 def _reference_weight(n_comp):
