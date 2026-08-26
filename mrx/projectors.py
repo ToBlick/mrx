@@ -9,9 +9,9 @@ load(seq, f, k, dirichlet=False, bc=False)
 
 interpolate(seq, f, k, dirichlet=False)
     Compute primal DOFs by Greville interpolation (k=0) or histopolation
-    (k=1,2,3).  Collocation/histopolation matrices are built lazily on each
-    call.  TODO: cache them on the sequence object if profiling shows this
-    is a bottleneck.
+    (k=1,2,3).  The Greville points, spans, collocation/histopolation
+    matrices and span quadrature rules depend on the knot vectors only; they
+    are built once per sequence and cached on it (:func:`_greville_data`).
 
 Both functions are also available as ``seq.load(...)`` and
 ``seq.interpolate(...)`` on :class:`~mrx.derham_sequence.DeRhamSequence`.
@@ -19,7 +19,7 @@ Both functions are also available as ``seq.load(...)`` and
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -29,7 +29,6 @@ from scipy import sparse
 from scipy.sparse import csgraph
 
 import mrx
-from mrx.extraction_operators import get_xi
 from mrx.differential_forms import adj33, inv33
 from mrx.quadrature import integrate_against
 
@@ -54,14 +53,12 @@ def _solve_tensor_collocation_axis(matrix: Array, values: Array, axis: int) -> A
     return jnp.moveaxis(solved.reshape(moved.shape), 0, axis)
 
 
-def _leggauss_rule(order: int) -> tuple[Array, Array]:
-    xi, w = np.polynomial.legendre.leggauss(order)
-    return jnp.asarray(xi), jnp.asarray(w)
+def _quadrature_order_from_basis_1d(basis) -> int:
+    return max(2, basis.p + 2)
 
 
-def _interval_rule(span: Array, order: int, knots: Array | None = None
-                   ) -> tuple[Array, Array]:
-    """Gauss rule on ``span``, SPLIT at any knots the span contains.
+def _span_quadrature(basis, spans: Array) -> tuple[Array, Array]:
+    """Gauss rule on every Greville span, SPLIT at the knots the span contains.
 
     Greville spans straddle an interior knot whenever the degree is EVEN --
     ``g_i = i + (p+1)/2`` in units of the knot spacing, integral for odd p and
@@ -73,27 +70,72 @@ def _interval_rule(span: Array, order: int, knots: Array | None = None
     ``SplineBasis.histopolation_matrix`` splits identically, so the matrix and
     the moments are built with the SAME rule -- which matters independently of
     exactness, since ``solve(H, m) = c`` needs ``m = H c`` and quadrature is
-    linear.
-    """
-    xi_ref, w_ref = _leggauss_rule(order)
-    a, b = span
-    if knots is None:
-        center = 0.5 * (a + b)
-        halfwidth = 0.5 * (b - a)
-        return center + halfwidth * xi_ref, halfwidth * w_ref
+    linear.  (It clips EVERY knot into the span and carries the zero-width
+    pieces; here only the knots strictly inside a span cut it, and the rule is
+    padded to the widest span with zero-width pieces at ``b``.  The nonzero
+    points and weights are the same, so the two rules are identical as
+    functionals -- what differs is that a 3-form cell used to be evaluated at
+    ``((n_knots + 1) q)^3`` points, ~1e5 at n = 6, and is now evaluated at
+    ``((1 + k_max) q)^3``, with ``k_max`` the largest number of interior knots
+    in any span: 0 or 1 on a uniform knot vector.)
 
-    cuts = jnp.clip(jnp.unique(knots), a, b)
-    cuts = jnp.sort(jnp.concatenate([jnp.array([a]), cuts, jnp.array([b])]))
-    lo, hi = cuts[:-1], cuts[1:]
+    Spans and knots are concrete, so the bookkeeping is host-side numpy; it is
+    O(n) scalars per axis and runs once per sequence (see
+    :func:`_greville_data`).
+
+    Returns
+    -------
+    xs, ws : (n_spans, n_pts) quadrature points and weights, row per span.
+    """
+    xi_ref, w_ref = np.polynomial.legendre.leggauss(
+        _quadrature_order_from_basis_1d(basis))
+    spans = np.asarray(spans)
+    knots = np.unique(np.asarray(basis.T))
+    cuts = [np.concatenate([[a], knots[(knots > a) & (knots < b)], [b]])
+            for a, b in spans]
+    width = max(len(c) for c in cuts)
+    cuts = np.stack([np.concatenate([c, np.full(width - len(c), c[-1])])
+                     for c in cuts])
+    lo, hi = cuts[:, :-1], cuts[:, 1:]
     centers = 0.5 * (lo + hi)
     halfwidths = 0.5 * (hi - lo)
-    xs = (centers[:, None] + halfwidths[:, None] * xi_ref[None, :]).reshape(-1)
-    ws = (halfwidths[:, None] * w_ref[None, :]).reshape(-1)
-    return xs, ws
+    xs = (centers[:, :, None] + halfwidths[:, :, None] * xi_ref).reshape(len(spans), -1)
+    ws = (halfwidths[:, :, None] * w_ref).reshape(len(spans), -1)
+    return jnp.asarray(xs), jnp.asarray(ws)
 
 
-def _quadrature_order_from_basis_1d(basis) -> int:
-    return max(2, basis.p + 2)
+class _GrevilleAxis(NamedTuple):
+    """Everything Greville interpolation needs about one logical axis."""
+    coll: Array          # (n, n)   parent-basis collocation matrix at the Greville points
+    hist: Array          # (nd, nd) derivative-basis histopolation matrix on the Greville spans
+    point_rule: tuple    # (pts[:, None], ones): one point per cell, unit weight
+    span_rule: tuple     # (xs, ws) of _span_quadrature: one Gauss rule per cell
+
+
+def _greville_data(seq) -> tuple[_GrevilleAxis, _GrevilleAxis, _GrevilleAxis]:
+    """Per-axis Greville data, built once per sequence and cached on it.
+
+    Points, spans, collocation and histopolation matrices and the span
+    quadrature depend on the 1-D knot vectors only -- NOT on the geometry --
+    so the cache is keyed on the identity of the 1-D bases rather than on
+    ``seq.geometry`` (cf. ``operators._matrixfree_mass_apply_cached``, whose
+    plan does depend on the map).  Until 2026-08-26 every ``interpolate`` call
+    rebuilt all six matrices.
+    """
+    bases = tuple(seq.basis_0.Λ)
+    cache = getattr(seq, '_greville_cache', None)
+    if cache is not None and all(a is b for a, b in zip(cache[0], bases)):
+        return cache[1]
+    axes = []
+    for lam, d in zip(bases, seq.basis_0.dΛ):
+        pts = lam.greville_points()
+        axes.append(_GrevilleAxis(
+            coll=lam.collocation_matrix(pts),
+            hist=d.histopolation_matrix(),
+            point_rule=(pts[:, None], jnp.ones((pts.shape[0], 1), dtype=pts.dtype)),
+            span_rule=_span_quadrature(d, d.greville_spans())))
+    seq._greville_cache = (bases, tuple(axes))
+    return seq._greville_cache[1]
 
 
 #: PERIODIC SPANS CROSS THE SEAM AT EVEN p.  Periodic Greville points sit ON
@@ -312,9 +354,9 @@ def interpolate(seq: "DeRhamSequence", f, k: int, dirichlet: bool = False,
                 frame: str = 'phys'):
     """Compute primal DOFs by Greville interpolation (k=0) or histopolation (k=1,2,3).
 
-    Collocation and histopolation matrices are built lazily on each call.
-    TODO: cache them on the sequence object if profiling shows this is a
-    bottleneck.
+    The Greville points, spans, collocation/histopolation matrices and span
+    quadrature rules are built once per sequence and cached on it
+    (:func:`_greville_data`); each call evaluates ``f`` and solves.
 
     Parameters
     ----------
@@ -408,10 +450,8 @@ def _interpolate_0form(seq, f, dirichlet: bool) -> Array:
     if exact is not None:
         return exact
 
-    bases = seq.basis_0.Λ
-    x_r = bases[0].greville_points()
-    x_t = bases[1].greville_points()
-    x_z = bases[2].greville_points()
+    axes = _greville_data(seq)
+    x_r, x_t, x_z = (ax.point_rule[0][:, 0] for ax in axes)
 
     r, t, z = jnp.meshgrid(x_r, x_t, x_z, indexing='ij')
     pts = jnp.stack([r.ravel(), t.ravel(), z.ravel()], axis=-1)
@@ -420,14 +460,9 @@ def _interpolate_0form(seq, f, dirichlet: bool) -> Array:
         batch_size=mrx.MAP_BATCH_SIZE_INNER,
     ).reshape(len(x_r), len(x_t), len(x_z))
 
-    # TODO: cache these on seq if collocation matrix build time is significant
-    coll_r = bases[0].collocation_matrix(x_r)
-    coll_t = bases[1].collocation_matrix(x_t)
-    coll_z = bases[2].collocation_matrix(x_z)
-
-    coeffs = _solve_tensor_collocation_axis(coll_r, values, axis=0)
-    coeffs = _solve_tensor_collocation_axis(coll_t, coeffs, axis=1)
-    coeffs = _solve_tensor_collocation_axis(coll_z, coeffs, axis=2)
+    coeffs = values
+    for j, ax in enumerate(axes):
+        coeffs = _solve_tensor_collocation_axis(ax.coll, coeffs, axis=j)
     return _conforming_restriction(e, coeffs.reshape(-1))
 
 
@@ -454,54 +489,55 @@ def _twoform_pullback(seq, v, frame: str = 'phys'):
     return pullback
 
 
-def _full_oneform_histopolation_dofs(seq, v, frame: str = 'phys'):
-    lam_r, lam_t, lam_z = seq.basis_0.Λ
-    d_r, d_t, d_z = seq.basis_0.dΛ
-    pts_r = lam_r.greville_points()
-    pts_t = lam_t.greville_points()
-    pts_z = lam_z.greville_points()
-    spans_r = d_r.greville_spans()
-    spans_t = d_t.greville_spans()
-    spans_z = d_z.greville_spans()
-    q_r = _quadrature_order_from_basis_1d(d_r.s)
-    q_t = _quadrature_order_from_basis_1d(d_t.s)
-    q_z = _quadrature_order_from_basis_1d(d_z.s)
-    pullback = _oneform_pullback(seq, v, frame)
+def _greville_moments(seq, fn, rules) -> Array:
+    """Integrate the scalar ``fn`` over every cell of a tensor-product rule.
 
-    def integrate_component_0(span_r, t_val, z_val):
-        xs_r, ws_r = _interval_rule(span_r, q_r, d_r.T)
-        x = jnp.stack([xs_r, jnp.full(xs_r.shape, t_val),
-                        jnp.full(xs_r.shape, z_val)], axis=-1)
-        vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 0]
-        return jnp.sum(vals * ws_r)
+    ``rules`` holds, per logical axis, ``(xs, ws)`` of shape ``(n_j, q_j)``: a
+    point axis has ``q_j = 1`` with unit weight, a histopolated axis carries the
+    split Gauss rule of :func:`_span_quadrature`.  The result has shape
+    ``(n_r, n_t, n_z)``.
 
-    def integrate_component_1(r_val, span_t, z_val):
-        xs_t, ws_t = _interval_rule(span_t, q_t, d_t.T)
-        x = jnp.stack([jnp.full(xs_t.shape, r_val), xs_t,
-                        jnp.full(xs_t.shape, z_val)], axis=-1)
-        vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 1]
-        return jnp.sum(vals * ws_t)
+    One ``lax.map`` over the flattened cell grid, ``batch_size =
+    mrx.MAP_BATCH_SIZE_INNER``, with the ``q_r q_t q_z`` points of a cell
+    vmapped inside it.  This used to be a triple-nested Python comprehension
+    that dispatched one ``lax.map`` per cell -- ``n_r n_t n_z`` separate
+    device programs per component.
+    """
+    sizes = [xs.shape[0] for xs, _ in rules]
+    idx = [i.ravel() for i in jnp.meshgrid(
+        *[jnp.arange(n) for n in sizes], indexing='ij')]
+    cells = tuple((xs[i], ws[i]) for (xs, ws), i in zip(rules, idx))
 
-    def integrate_component_2(r_val, t_val, span_z):
-        xs_z, ws_z = _interval_rule(span_z, q_z, d_z.T)
-        x = jnp.stack([jnp.full(xs_z.shape, r_val),
-                        jnp.full(xs_z.shape, t_val), xs_z], axis=-1)
-        vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 2]
-        return jnp.sum(vals * ws_z)
+    def integrate(cell):
+        (xr, wr), (xt, wt), (xz, wz) = cell
+        rr, tt, zz = jnp.meshgrid(xr, xt, xz, indexing='ij')
+        x = jnp.stack([rr.ravel(), tt.ravel(), zz.ravel()], axis=-1)
+        w = (wr[:, None, None] * wt[None, :, None] * wz[None, None, :]).ravel()
+        return jnp.sum(jax.vmap(fn)(x) * w)
 
-    comp0 = jnp.asarray([
-        [[integrate_component_0(sr, t, z) for z in pts_z] for t in pts_t]
-        for sr in spans_r
-    ])
-    comp1 = jnp.asarray([
-        [[integrate_component_1(r, st, z) for z in pts_z] for st in spans_t]
-        for r in pts_r
-    ])
-    comp2 = jnp.asarray([
-        [[integrate_component_2(r, t, sz) for sz in spans_z] for t in pts_t]
-        for r in pts_r
-    ])
-    return comp0, comp1, comp2
+    return jax.lax.map(
+        integrate, cells, batch_size=mrx.MAP_BATCH_SIZE_INNER).reshape(sizes)
+
+
+def _histopolate_vector(seq, pullback, e, histopolated) -> Array:
+    """Greville histopolation of a vector-valued form, component by component.
+
+    ``histopolated(c, j)`` says whether component ``c`` is histopolated
+    (span rule, histopolation matrix) or collocated (Greville point,
+    collocation matrix) along axis ``j``: for a 1-form the component's own
+    axis, for a 2-form the two others.
+    """
+    axes = _greville_data(seq)
+    coeffs = []
+    for c in range(3):
+        rules = tuple(ax.span_rule if histopolated(c, j) else ax.point_rule
+                      for j, ax in enumerate(axes))
+        m = _greville_moments(seq, lambda x, c=c: pullback(x)[c], rules)
+        for j, ax in enumerate(axes):
+            m = _solve_tensor_collocation_axis(
+                ax.hist if histopolated(c, j) else ax.coll, m, axis=j)
+        coeffs.append(m.reshape(-1))
+    return _conforming_restriction(e, jnp.concatenate(coeffs))
 
 
 def _histopolate_1form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
@@ -510,124 +546,23 @@ def _histopolate_1form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     exact = _matching_discrete_dofs(v, seq.basis_1, e)
     if exact is not None:
         return exact
-
-    lam_r, lam_t, lam_z = seq.basis_0.Λ
-    d_r, d_t, d_z = seq.basis_0.dΛ
-
-    # TODO: cache these on seq if matrix build time is significant
-    coll_r = lam_r.collocation_matrix()
-    coll_t = lam_t.collocation_matrix()
-    coll_z = lam_z.collocation_matrix()
-    hist_r = d_r.histopolation_matrix()
-    hist_t = d_t.histopolation_matrix()
-    hist_z = d_z.histopolation_matrix()
-
-    comp0, comp1, comp2 = _full_oneform_histopolation_dofs(seq, v, frame)
-
-    c0 = _solve_tensor_collocation_axis(hist_r, comp0, axis=0)
-    c0 = _solve_tensor_collocation_axis(coll_t, c0, axis=1)
-    c0 = _solve_tensor_collocation_axis(coll_z, c0, axis=2)
-
-    c1 = _solve_tensor_collocation_axis(coll_r, comp1, axis=0)
-    c1 = _solve_tensor_collocation_axis(hist_t, c1, axis=1)
-    c1 = _solve_tensor_collocation_axis(coll_z, c1, axis=2)
-
-    c2 = _solve_tensor_collocation_axis(coll_r, comp2, axis=0)
-    c2 = _solve_tensor_collocation_axis(coll_t, c2, axis=1)
-    c2 = _solve_tensor_collocation_axis(hist_z, c2, axis=2)
-
-    return _conforming_restriction(
-        e, jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)]))
+    return _histopolate_vector(
+        seq, _oneform_pullback(seq, v, frame), e, lambda c, j: j == c)
 
 
 def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
-    """Greville histopolation for a 2-form."""
+    """Greville histopolation for a 2-form.
+
+    Periodic Greville spans run past 1 (greville_spans wraps the last one by
+    +1), so evaluation points must be folded back before v or the map sees
+    them -- the pullbacks do that via ``_wrap_periodic_point``.
+    """
     e = seq.e2_dbc if dirichlet else seq.e2
     exact = _matching_discrete_dofs(v, seq.basis_2, e)
     if exact is not None:
         return exact
-
-    d_r, d_t, d_z = seq.basis_0.dΛ
-
-    lam_r, lam_t, lam_z = seq.basis_0.Λ
-
-    # TODO: cache these on seq if matrix build time is significant
-    coll_r = lam_r.collocation_matrix()
-    coll_t = lam_t.collocation_matrix()
-    coll_z = lam_z.collocation_matrix()
-    hist_r = d_r.histopolation_matrix()
-    hist_t = d_t.histopolation_matrix()
-    hist_z = d_z.histopolation_matrix()
-
-    pts_r = lam_r.greville_points()
-    pts_t = lam_t.greville_points()
-    pts_z = lam_z.greville_points()
-    spans_r = d_r.greville_spans()
-    spans_t = d_t.greville_spans()
-    spans_z = d_z.greville_spans()
-
-    # Periodic Greville spans run past 1 (greville_spans wraps the last one by
-    # +1), so evaluation points must be folded back before v or the map sees
-    # them -- the 1-form path does the same via _oneform_pullback.
-    pullback = _twoform_pullback(seq, v, frame)
-
-    def int0(r_val, span_t, span_z):
-        q_t = _quadrature_order_from_basis_1d(d_t.s)
-        q_z = _quadrature_order_from_basis_1d(d_z.s)
-        xs_t, ws_t = _interval_rule(span_t, q_t, d_t.T)
-        xs_z, ws_z = _interval_rule(span_z, q_z, d_z.T)
-        tt, zz = jnp.meshgrid(xs_t, xs_z, indexing='ij')
-        x = jnp.stack([jnp.full(tt.size, r_val), tt.ravel(), zz.ravel()], axis=-1)
-        vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 0]
-        return jnp.sum(vals * (ws_t[:, None] * ws_z[None, :]).reshape(-1))
-
-    def int1(span_r, t_val, span_z):
-        q_r = _quadrature_order_from_basis_1d(d_r.s)
-        q_z = _quadrature_order_from_basis_1d(d_z.s)
-        xs_r, ws_r = _interval_rule(span_r, q_r, d_r.T)
-        xs_z, ws_z = _interval_rule(span_z, q_z, d_z.T)
-        rr, zz = jnp.meshgrid(xs_r, xs_z, indexing='ij')
-        x = jnp.stack([rr.ravel(), jnp.full(rr.size, t_val), zz.ravel()], axis=-1)
-        vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 1]
-        return jnp.sum(vals * (ws_r[:, None] * ws_z[None, :]).reshape(-1))
-
-    def int2(span_r, span_t, z_val):
-        q_r = _quadrature_order_from_basis_1d(d_r.s)
-        q_t = _quadrature_order_from_basis_1d(d_t.s)
-        xs_r, ws_r = _interval_rule(span_r, q_r, d_r.T)
-        xs_t, ws_t = _interval_rule(span_t, q_t, d_t.T)
-        rr, tt = jnp.meshgrid(xs_r, xs_t, indexing='ij')
-        x = jnp.stack([rr.ravel(), tt.ravel(), jnp.full(rr.size, z_val)], axis=-1)
-        vals = jax.lax.map(pullback, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)[:, 2]
-        return jnp.sum(vals * (ws_r[:, None] * ws_t[None, :]).reshape(-1))
-
-    comp0 = jnp.asarray([
-        [[int0(r, st, sz) for sz in spans_z] for st in spans_t]
-        for r in pts_r
-    ])
-    comp1 = jnp.asarray([
-        [[int1(sr, t, sz) for sz in spans_z] for t in pts_t]
-        for sr in spans_r
-    ])
-    comp2 = jnp.asarray([
-        [[int2(sr, st, z) for z in pts_z] for st in spans_t]
-        for sr in spans_r
-    ])
-
-    c0 = _solve_tensor_collocation_axis(coll_r, comp0, axis=0)
-    c0 = _solve_tensor_collocation_axis(hist_t, c0, axis=1)
-    c0 = _solve_tensor_collocation_axis(hist_z, c0, axis=2)
-
-    c1 = _solve_tensor_collocation_axis(hist_r, comp1, axis=0)
-    c1 = _solve_tensor_collocation_axis(coll_t, c1, axis=1)
-    c1 = _solve_tensor_collocation_axis(hist_z, c1, axis=2)
-
-    c2 = _solve_tensor_collocation_axis(hist_r, comp2, axis=0)
-    c2 = _solve_tensor_collocation_axis(hist_t, c2, axis=1)
-    c2 = _solve_tensor_collocation_axis(coll_z, c2, axis=2)
-
-    return _conforming_restriction(
-        e, jnp.concatenate([c0.reshape(-1), c1.reshape(-1), c2.reshape(-1)]))
+    return _histopolate_vector(
+        seq, _twoform_pullback(seq, v, frame), e, lambda c, j: j != c)
 
 
 def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
@@ -637,40 +572,13 @@ def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
     if exact is not None:
         return exact
 
-    d_r, d_t, d_z = seq.basis_0.dΛ
-
-    # TODO: cache these on seq if matrix build time is significant
-    hist_r = d_r.histopolation_matrix()
-    hist_t = d_t.histopolation_matrix()
-    hist_z = d_z.histopolation_matrix()
-    spans_r = d_r.greville_spans()
-    spans_t = d_t.greville_spans()
-    spans_z = d_z.greville_spans()
-
-    def integrate_volume(span_r, span_t, span_z):
-        q_r = _quadrature_order_from_basis_1d(d_r.s)
-        q_t = _quadrature_order_from_basis_1d(d_t.s)
-        q_z = _quadrature_order_from_basis_1d(d_z.s)
-        xs_r, ws_r = _interval_rule(span_r, q_r, d_r.T)
-        xs_t, ws_t = _interval_rule(span_t, q_t, d_t.T)
-        xs_z, ws_z = _interval_rule(span_z, q_z, d_z.T)
-        rr, tt, zz = jnp.meshgrid(xs_r, xs_t, xs_z, indexing='ij')
-        x = jnp.stack([rr.ravel(), tt.ravel(), zz.ravel()], axis=-1)
-        values = jax.lax.map(
-            lambda xi: _as_single_component(f(_wrap_periodic_point(seq, xi))), x,
-            batch_size=mrx.MAP_BATCH_SIZE_INNER,
-        ).reshape(len(xs_r), len(xs_t), len(xs_z))
-        weights = ws_r[:, None, None] * ws_t[None, :, None] * ws_z[None, None, :]
-        return jnp.sum(values * weights)
-
-    moments = jnp.asarray([
-        [[integrate_volume(sr, st, sz) for sz in spans_z] for st in spans_t]
-        for sr in spans_r
-    ])
-
-    coeffs = _solve_tensor_collocation_axis(hist_r, moments, axis=0)
-    coeffs = _solve_tensor_collocation_axis(hist_t, coeffs, axis=1)
-    coeffs = _solve_tensor_collocation_axis(hist_z, coeffs, axis=2)
+    axes = _greville_data(seq)
+    moments = _greville_moments(
+        seq, lambda x: _as_single_component(f(_wrap_periodic_point(seq, x)))[0],
+        tuple(ax.span_rule for ax in axes))
+    coeffs = moments
+    for j, ax in enumerate(axes):
+        coeffs = _solve_tensor_collocation_axis(ax.hist, coeffs, axis=j)
     return _conforming_restriction(e, coeffs.reshape(-1))
 
 
@@ -783,7 +691,6 @@ class BoundaryProjector:
     def _project_1form(self, g_jk: Array) -> Array:
         """Transform physical → logical covariant (DF^{-1}) then integrate."""
         seq = self.seq
-        nt, nz = self._nt, self._nz
 
         g_log = jnp.einsum('tzij,tzj->tzi', self._DF_inv_bdy, g_jk)  # (nt, nz, 3)
 
