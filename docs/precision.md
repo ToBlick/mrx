@@ -35,8 +35,9 @@ Hydra configs carry it as `NumericsConfig.solver_tol` (`mrx/config.py`),
 passed as `DeRhamSequence(tol=cfg.solver_tol)`; `None` is the default above.
 `conf/config_poisson_test.yaml` pins `solver_tol: 1.0e-9` because the archived
 convergence numbers were measured there. `scripts/relax.py` takes
-`--precision` and stops on a windowed energy decrease below `--floor-tol`,
-whose default is `10 * eps()` of the working dtype.
+`--precision` (default float32) and stops when the mean over `--floor-steps`
+steps of the relative force residual drops below `--floor-tol` (default
+`1e-3`).
 
 The Hydra entry points set `MRX_DTYPE` from `precision=` before importing
 `mrx` and raise if `cfg.precision` disagrees with `mrx.DTYPE`.
@@ -60,10 +61,11 @@ Measured on 2026-08-26, toroid and W7-X, `(8,16,8)`, `p=3`:
 
 - Near an equilibrium the energy decrease per step is below the float32
   resolution: on the W7-X Clebsch initial condition the whole descent removes
-  `2.4e-4` of `E`, and the `--floor-tol` default (`10 * eps()`) stops a float32
-  run at step 111 while float64 continues to step 3000 with the same nested
-  surfaces. Pass `--floor-tol 0` in float32, and expect the solver-noise floor,
-  not the physical one.
+  `2.4e-4` of `E`. The force residual in float32 floors at the
+  solve-tolerance level, `~2e-3` at tol `1e-5` (the table below), so a
+  `--floor-tol` below that never fires; the run ends on `--steps` or
+  `--seconds`, and the float64 run continues to step 3000 with the same
+  nested surfaces.
 - Resistive increments `eps = dt * eta` of `1e-7` are a few ulps of `B`.
   Use `--eta-every K` (`K` of 10 to 100 at `eta ~ 1e-4`) so each solve applies
   a representable increment.

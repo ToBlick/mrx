@@ -1,29 +1,19 @@
-"""Replay archived relaxation traces through the energy-floor criterion.
+"""The force-residual stopping criterion of ``scripts/relax.py``.
 
 Numpy only: ``scripts/relax.py`` is loaded by path and imports mrx only
-inside ``main``, so this runs on a login node as
-``python test/test_relax_floor.py`` and under pytest on a GPU node.
-
-The archived traces live outside the repository (``MRX_RELAX_ARCHIVE``,
-default ``/kfs3/scratch/tblickhan/mrx/out/relax_prelim``). S10 (eta=1e-2)
-reached a stationary energy and is the positive control; S07 (13018 steps)
-and C1 (3000 steps) were still descending at their last step and must not
-trigger the criterion.
+inside ``main``. The trace is synthetic: a decaying residual with a
+non-monotone oscillation on top, which is what a relaxation produces (the
+scheme guarantees ``dE/dt <= 0``, not a falling force). The criterion is the
+mean over the last ``--floor-steps`` steps, never the last value, so a single
+dip below the tolerance must not stop the run.
 """
 import importlib.util
-import json
 import os
-import sys
 
 import numpy as np
-import pytest
 
-pytestmark = pytest.mark.gpu   # reads archived traces outside the repository
-
-ARCHIVE = os.environ.get("MRX_RELAX_ARCHIVE",
-                         "/kfs3/scratch/tblickhan/mrx/out/relax_prelim")
-FLOOR_TOL_F64 = 1e3 * np.finfo(np.float64).eps
-WINDOW = 100
+STEPS = 100
+TOL = 1e-3
 
 
 def _relax_module():
@@ -35,49 +25,47 @@ def _relax_module():
     return mod
 
 
-def _energy_trace(tag):
-    path = os.path.join(ARCHIVE, tag, f"{tag}.json")
-    if not os.path.exists(path):
-        raise FileNotFoundError(path)
-    with open(path) as fh:
-        d = json.load(fh)
-    return np.asarray(d["arms"]["cg"]["trace"]["E"])
+def _synthetic_residual(n=3000, floor=8e-4, amp=6e-4, decay=600.0):
+    """``floor + 2e-3 exp(-i/decay)`` with a ripple of amplitude ``amp``.
+
+    Non-monotone by construction: consecutive values rise on about half of
+    the steps, and the ripple carries single values below ``TOL`` long before
+    the window mean gets there.
+    """
+    i = np.arange(n)
+    return floor + 2e-3 * np.exp(-i / decay) + amp * np.sin(i / 3.0) ** 2 * np.cos(i / 7.0)
 
 
-def _first_floor_step(E, window, tol, floor_reached):
-    for i in range(1, len(E) + 1):
-        if floor_reached(E[:i], window, tol):
+def _first_floor_step(resid, steps, tol, floor_reached):
+    for i in range(1, len(resid) + 1):
+        if floor_reached(resid[:i], steps, tol):
             return i
     return None
 
 
-def test_floor_fires_on_the_stationary_arm():
-    relax = _relax_module()
-    E = _energy_trace("S10_eta2")
-    step = _first_floor_step(E, WINDOW, FLOOR_TOL_F64, relax.energy_floor_reached)
-    assert step is not None
-    assert 1000 < step < 2500, step
-    # and stays fired: the energy is constant to 16 digits from there on
-    assert relax.energy_floor_reached(E, WINDOW, FLOOR_TOL_F64)
-
-
-def test_floor_silent_on_descending_arms():
-    relax = _relax_module()
-    for tag in ("S07_long", "C1_ls"):
-        E = _energy_trace(tag)
-        assert _first_floor_step(E, WINDOW, FLOOR_TOL_F64,
-                                 relax.energy_floor_reached) is None, tag
-
-
 def test_floor_needs_a_full_window():
     relax = _relax_module()
-    assert not relax.energy_floor_reached([1.0] * WINDOW, WINDOW, 1.0)
-    assert relax.energy_floor_reached([1.0] * (WINDOW + 1), WINDOW, 1.0)
+    assert not relax.force_floor_reached([0.0] * (STEPS - 1), STEPS, TOL)
+    assert relax.force_floor_reached([0.0] * STEPS, STEPS, TOL)
 
 
-if __name__ == "__main__":
-    for name, fn in list(globals().items()):
-        if name.startswith("test_"):
-            fn()
-            print("ok", name)
-    sys.exit(0)
+def test_floor_is_the_window_mean_not_the_last_value():
+    relax = _relax_module()
+    r = _synthetic_residual()
+    assert (np.diff(r) > 0).mean() > 0.3          # the trace is not monotone
+    first_dip = int(np.argmax(r < TOL)) + 1
+    fired = _first_floor_step(r, STEPS, TOL, relax.force_floor_reached)
+    assert fired is not None
+    assert fired > first_dip + STEPS, (fired, first_dip)
+    # the mean over the window at the firing step is what dropped below TOL
+    assert np.mean(r[fired - STEPS:fired]) < TOL
+    assert np.mean(r[fired - STEPS - 1:fired - 1]) >= TOL
+    # and it stays fired on the tail of the trace
+    assert relax.force_floor_reached(r, STEPS, TOL)
+
+
+def test_floor_silent_on_a_residual_that_only_dips():
+    relax = _relax_module()
+    r = _synthetic_residual(floor=1.2e-3, amp=8e-4)
+    assert (r < TOL).any()                        # single values below TOL
+    assert _first_floor_step(r, STEPS, TOL, relax.force_floor_reached) is None

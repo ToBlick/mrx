@@ -22,7 +22,7 @@ variables through `${oc.env:...}`.
 ## One script: `slurm/run.sh`
 
 ```bash
-SCRIPT=scripts/relax.py ARGS="--geometry toroid --steps 50" JOB_NAME=smoke bash slurm/run.sh
+SCRIPT=scripts/relax.py ARGS="--geometry toroid --ic analytic --steps 50" JOB_NAME=smoke bash slurm/run.sh
 SCRIPT="-m pytest -q test/test_solvers.py" JOB_NAME=tests TIMEOUT_MIN=120 bash slurm/run.sh
 ```
 
@@ -93,11 +93,13 @@ A `quad_order` below `p + 1` raises.
 
 ## Worktrees
 
-A git worktree has no `data/` and no `.venv`. Link the data directory or
-set `MRX_DATA`:
+A git worktree has no `data/` and no `.venv`. Geometries are passed by
+path (`--geometry /path/to/mrx/data/w7x_fmm002_clebsch_mrx.h5`), so no link
+is needed; the gpu-tier data test locates its file through `MRX_DATA`
+(default `data`):
 
 ```bash
-ln -s /path/to/mrx/data data
+EXTRA_ENV="MRX_DATA=/path/to/mrx/data" SCRIPT="-m pytest -q test" ARGS="-m gpu" bash slurm/run.sh
 ```
 
 `run.sh` defaults `MRX_ROOT` to the repository containing it, so a

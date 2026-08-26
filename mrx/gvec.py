@@ -8,8 +8,8 @@ Two file schemas are read here:
   and ``nfp``/``n_rho``/``n_theta``/``n_zeta`` in the attributes. Some of
   these files also carry ``clebsch/dPhi_dr``, ``clebsch/dchi_dr``,
   ``clebsch/LA`` and ``pressure``; :func:`load_clebsch` reads those.
-* ``data/W7-X.h5``: 3-D ``R``/``Z`` grids with explicit ``rho``/``theta``/
-  ``zeta`` axes in radians. :func:`build_w7x_map` reads it.
+* The W7-X vacuum grid (``W7-X.h5``): 3-D ``R``/``Z`` grids with explicit
+  ``rho``/``theta``/``zeta`` axes in radians. :func:`build_w7x_map` reads it.
 
 Both routes interpolate the grid with a linear RegularGridInterpolator,
 Greville-interpolate the result as a spline 0-form on a separate map sequence
@@ -26,12 +26,17 @@ Two traps that the flat schema carries:
 * **Open versus closed periodic axes.** The quasr files sample the angles on
   ``[0, 1)`` and need a wrap point; the hegna file samples ``[0, 1]`` closed
   and must not be padded. Both are detected from the spacing.
+* **A wrong ``nfp`` attribute.** nfp enters the map as
+  ``F = (R cos(2 pi zeta/nfp), +-R sin(2 pi zeta/nfp), Z)``, so a wrong value
+  wraps one field period through the wrong angle with a healthy Jacobian to
+  hide it. The perturbed quasr44970 exports (``axis_pert_*.h5``,
+  ``interior_pert_*.h5``) declare ``nfp = 2`` for nfp=3 data; every reader
+  takes an ``nfp`` override for such files.
 
-Data paths are relative to ``MRX_DATA`` (default ``data``).
+Every function here takes the file path; nothing is resolved from names or
+from the environment.
 """
 from __future__ import annotations
-
-import os
 
 import h5py
 import jax
@@ -45,52 +50,6 @@ from mrx.mappings import stellarator_map
 from mrx.projectors import _solve_tensor_collocation_axis
 
 TWO_PI = 2.0 * np.pi
-
-#: Directory the file names below are relative to.
-DATA_DIR = os.environ.get("MRX_DATA", "data")
-
-#: Geometry name -> flat-schema file. Every entry is a genuinely shaped,
-#: non-axisymmetric map.
-GVEC_GEOMETRIES = {
-    "quasr9983": "quasr_0009983.h5",       # nfp=2, 50^3
-    "quasr44970": "quasr_0044970.h5",      # nfp=3, 50^3
-    "quasr65530": "quasr0065530_gvec_mrx_nr50_nt50_nz50.h5",  # nfp=4
-    "quasr65575": "quasr0065575_gvec_mrx_nr50_nt50_nz50.h5",  # nfp=4
-    # A second, independent W7-X vacuum source; a cross-check on the `w7x`
-    # map of build_w7x_map, not a new device.
-    "w7x-gvec": "w7x_vacuum_co_contra.h5",  # nfp=5, 50^3
-    # Finite beta (beta_volume_mean 4.2%). Its `axis_radial_index = 49`
-    # attribute is wrong: the axis is at rho[0], so no radial reversal.
-    "w7x-ini": "w7x_ini_mrx.h5",           # nfp=5, 50^3
-    "hegna": "gvec_nfp3_hegna_80cubed_clebsch.h5",   # nfp=3, 80^3
-    # Finite-beta W7-X exports carrying the clebsch/* ingredients, nfp=5,
-    # 50^3, angles sampled HALF-OPEN (0 .. 0.98). Both carry the same wrong
-    # `axis_radial_index = 49`.
-    "w7x-ini-clebsch": "w7x_ini_00000000_clebsch_mrx.h5",   # beta_mean 5.8%
-    "w7x-fmm002": "w7x_fmm002_clebsch_mrx.h5",              # beta_mean 1.8%
-    # State_0000_00020000.dat of the same GVEC run as w7x-ini-clebsch
-    # (which is the iteration-0 initial guess): the converged equilibrium,
-    # and the one to prefer when comparing against the file's pressure.
-    "w7x-ini-conv": "w7x_ini_conv_mrx.h5",                  # beta_mean 6.6%
-    # The 8x16x8 quasr44970 baseline and its two interior perturbations;
-    # all three share one grid and are directly differenceable.
-    "quasr44970-c": "quasr0044970_gvec_nr8_nt16_nz8.h5",     # nfp=3
-    "pert-axis": "axis_pert_dR5e-05_dZ3.75e-05.h5",
-    "pert-interior": "interior_pert_dR5e-05_dZ3.75e-05.h5",
-}
-
-#: nfp that the file gets WRONG, keyed by geometry name. The two perturbed
-#: files declare ``nfp = 2``; their R/Z data is quasr44970 (nfp=3) shifted by
-#: the amplitudes in their file names. nfp enters the map as
-#: ``F = (R cos(2 pi zeta/nfp), +-R sin(2 pi zeta/nfp), Z)``, so the wrong
-#: value wraps one field period through 180 instead of 120 degrees with a
-#: healthy Jacobian to hide it.
-GVEC_NFP_OVERRIDE = {"pert-axis": 3, "pert-interior": 3}
-
-
-def gvec_path(geometry: str) -> str:
-    """Return the file path of a named flat-schema geometry."""
-    return os.path.join(DATA_DIR, GVEC_GEOMETRIES[geometry])
 
 
 def _take(grid, axis, sl):
@@ -134,7 +93,7 @@ def _radial_axis(vals, grid, axis, stride=1):
 def load_gvec_grids(h5_path, stride=1, nfp=None):
     """Return ``(axes, R_grid, Z_grid, nfp, layout)`` from a flat-schema file.
 
-    ``nfp`` overrides the file's attribute (see :data:`GVEC_NFP_OVERRIDE`).
+    ``nfp`` overrides the file's attribute (see the module docstring).
     ``stride`` subsamples the data grid per axis. Default 1 is the right
     default: the grid is read once and sampled only at the map's Greville
     points (geometry build 88 s at 50^3, 136 s at 80^3, peak RSS ~4 GB), and
@@ -249,12 +208,10 @@ def build_gvec_map(h5_path, map_ns=(12, 24, 12), p=3, sign=None, stride=1,
 # ---------------------------------------------------------------------------
 
 NFP_W7X = 5
-W7X_FILE = "W7-X.h5"
 
 
-def load_w7x_grids(h5_path=None):
+def load_w7x_grids(h5_path):
     """Return logical axes in [0,1] and the periodic-padded R, Z grids."""
-    h5_path = os.path.join(DATA_DIR, W7X_FILE) if h5_path is None else h5_path
     with h5py.File(h5_path, "r") as f:
         rho = np.asarray(f["rho"], dtype=np.float64)        # [0,1]
         theta = np.asarray(f["theta"], dtype=np.float64)    # [0,2pi)
@@ -272,8 +229,8 @@ def load_w7x_grids(h5_path=None):
     return (rho, t_ax, z_ax), _pad(R), _pad(Z)
 
 
-def build_w7x_map(map_ns=(12, 24, 24), p=3, h5_path=None):
-    """Build the W7-X map from ``W7-X.h5``; returns ``(F, info)``."""
+def build_w7x_map(h5_path, map_ns=(12, 24, 24), p=3):
+    """Build the W7-X map from the vacuum grid file; returns ``(F, info)``."""
     axes, R_grid, Z_grid = load_w7x_grids(h5_path)
     R_h, Z_h, R_fn, Z_fn, map_seq = _spline_scalars(axes, R_grid, Z_grid, map_ns, p)
     map_func = stellarator_map(R_h, Z_h, nfp=NFP_W7X)

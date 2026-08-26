@@ -22,11 +22,14 @@ solve is warm-started from the previous step's value.
 
 ## 2. The step
 
-`TimeStepper(seq, gamma, mu, descent_method, dt_mode, timestep_mode,
-history_size, dirichlet_H, ...)` is an `eqx.Module`; `_relaxation_step` does
-one step and `relaxation_step` dispatches on `timestep_mode`
-(`IntegrationScheme.EXPLICIT` or `IMPLICIT_MIDPOINT`, the latter through
-`midpoint_picard_step`).
+`TimeStepper(seq, velocity_smoothing_order, velocity_smoothing_scale,
+descent_method, dt_mode, cfl, resistive, eta_every, history_size,
+dirichlet_H, ...)` is an `eqx.Module`; `relaxation_step(state, key)` does
+one step. The step is operator-split (Lie): ideal transport, then implicit
+resistive diffusion. The ideal half is explicit Euler on the descent
+velocity, `B_ideal = B_n + dt · curl(u × H)`; the resistive half is
+backward Euler on `B_ideal`. The splitting is first order in `dt`;
+resistivity does not act on `B_n`.
 
 1. `compute_force` at `B_n`; `MF = M_2 F` once. It serves `||F||_M`, the CG
    coefficient, and the L-BFGS secant.
@@ -38,8 +41,9 @@ one step and `relaxation_step` dispatches on `timestep_mode`
      the `M_2` inner product. The state stores `M s` and `M y` next to `s`
      and `y`, so the recursion applies `M` zero times. The descent variable
      is the velocity: `s = dt · u`, `y = F_prev - F`.
-3. `apply_regularization(u)`: `gamma` times `u = (M_2 + mu L_2)^{-1} M_2 u`,
-   the hyperregularisation `v = (I - mu Δ)^{-gamma} F`. Off at `gamma = 0`.
+3. `smooth_velocity(u)`: `velocity_smoothing_order` times
+   `u = (M_2 + mu L_2)^{-1} M_2 u` with `mu = velocity_smoothing_scale`, the
+   smoothed direction `v = (I - mu Δ)^{-order} F`. Off at order 0.
 4. `u, p_v = seq.apply_leray_projection(u, k=2)`: the flow is
    incompressible.
 5. `E = M_1^{-1} cross_product_load(u, H, ...)`: the ideal electric
@@ -61,7 +65,8 @@ one step and `relaxation_step` dispatches on `timestep_mode`
    (frozen-in topology violated at `O(dt²)`) and diverges when `||dB||`
    collapses. `state.dt_star` and `state.cfl_max` record the cap's activity.
 8. `B_ideal = B_n + dt · dB`.
-9. Resistivity, backward Euler in defect form:
+9. The second half of the splitting, resistivity as backward Euler in
+   defect form on `B_ideal`:
    `(M_2 + eps L_2) delta = -eps L_2 B_ideal`, `B_{n+1} = B_ideal + delta`,
    with `eps = eta · (time since the last resistive solve)` and initial
    guess 0, through `apply_inverse_mass_plus_eps_laplace_matrix` (k=2,
@@ -83,7 +88,7 @@ needs `K` of 10-100 to be representable, and since even the finest mode
 diffuses over `1 / (eta λ_max) ~ 1000` such steps, `K <= 100` is physically
 harmless.
 
-Cost and range of the resistive solve, measured on `w7x-fmm002`,
+Cost and range of the resistive solve, measured on `w7x_fmm002_clebsch_mrx.h5`,
 `(8,16,8)`, `p = 3`, tol `1e-12`, CG, tanh schedule: `eta = 1e-3`
 (`eps ~ 2e-5`) 383 MINRES iterations per step, 0.72 s/step against 0.62
 explicit; `eta = 1e-2` (`eps ~ 1e-3`) 612 mean, 1938 max, 0.82 s/step,
@@ -107,8 +112,9 @@ resistive part used to be explicit (`E - eta · J` inside the curl), which is
 stable only for `dt · eta <~ h²`, a limit the line search does not see; that
 is why `eta` had to be small and scheduled. It is now unconditionally stable,
 and the schedule is a physics choice (how much helicity to spend), not a
-stability one. The force residual is not monotone and is not used as a
-stopping criterion. Helicity is conserved only at `eta = 0`. Explicit Euler
+stability one. The force residual is not monotone, which is why the stopping
+criterion (section 6) averages it over a window. Helicity is conserved only
+at `eta = 0`. Explicit Euler
 on the ideal part keeps the frozen-in flux to `O(dt²)`, so a large
 line-search step can change the field-line topology with `div B` and
 monotone energy intact; a fixed small `--dt0` is the control.
@@ -151,10 +157,10 @@ energy, not fluxes, `ι`, or helicity.
 |---|---|
 | `make_profiles(iota0, iota1, iota_exp, flux_exp)` | `ι = ι₀ + (ι₁-ι₀) ρ^e`, `Φ' = ρ^q` |
 | `make_lambda(modes)`, `parse_lambda(spec)` | `λ` from `"m,n,amp;..."` |
-| `logical_profile_form(iota, dPhi, dlam)` | the reference 2-form above |
-| `clebsch_form(cb, use_lambda)` | the same from a GVEC file's `dPhi_dr`, `dchi_dr`, `LA` (`load_clebsch` in `mrx/gvec.py`) |
+| `analytic_profile_form(iota, dPhi, dlam)` | the reference 2-form above; `--ic analytic` |
+| `clebsch_form(cb)` | the same from a GVEC file's `dPhi_dr`, `dchi_dr`, `LA` (`load_clebsch(path)` in `mrx/gvec.py`); `--ic clebsch` |
 | `dzeta_form()` | the constant `(0, 0, 1)`; relaxes to the harmonic field |
-| `analytic_helicity(...)` | the closed-form helicity of the logical profiles |
+| `analytic_helicity(...)` | the closed-form helicity of the analytic profiles |
 | `project_reference_two_form(seq, omega_ref)` | pushes forward `B = DF ω / J` and L²-projects onto the Dirichlet k=2 space |
 | `leray_clean(seq, B)`, `divergence_norm(seq, B)` | remove and measure the projection's divergence |
 
@@ -164,23 +170,23 @@ angular derivatives are per radian. See [gvec_mrx_interface.md](gvec_mrx_interfa
 
 ## 5. Geometries
 
-`build_sequence(geometry, ns, p, maxiter, tol)` in `mrx/geometries.py`
+`build_sequence(geometry, ns, p, maxiter, tol, nfp)` in `mrx/geometries.py`
 returns `(seq, ops)` with the map installed and every solver operator built.
-Names: `toroid`, `cylinder`, `rot-ellipse` (analytic, `mrx/mappings.py`),
-`w7x` (`build_w7x_map`, reads `W7-X.h5`), and every key of
-`GVEC_GEOMETRIES` in `mrx/gvec.py` (`build_gvec_map`, flat-schema GVEC
-exports: `quasr44970`, `w7x-fmm002`, `hegna`, ...). Files are read from
-`MRX_DATA` (default `data`). `geometry_nfp(geometry)` returns the field
-periods. `build_gvec_map` measures the handedness of the file and mirrors it
-so that `det DF > 0`, and detects whether the angular samples are half-open
-or closed.
+`geometry` is an analytic name, `toroid`, `cylinder` or `rot-ellipse`
+(`mrx/mappings.py`), or the path of a flat-schema GVEC export
+(`build_gvec_map` in `mrx/gvec.py`; `os.path.isfile` decides, any other
+string raises). `nfp` overrides the file's attribute for a file that
+declares it wrong (the perturbed quasr44970 exports say 2 for nfp=3 data).
+`geometry_nfp(geometry, nfp)` returns the field periods. `build_gvec_map`
+measures the handedness of the file and mirrors it so that `det DF > 0`, and
+detects whether the angular samples are half-open or closed. Nothing is
+resolved from names or from the environment: every reader takes the path.
 
 ## 6. Running `scripts/relax.py`
 
 ```
-SCRIPT=scripts/relax.py JOB_NAME=relax_w1 TIMEOUT_MIN=90 \
-  ARGS="--geometry w7x-fmm002 --ic clebsch --ns 8,16,8 --p 3 --steps 3000" \
-  bash slurm/run.sh
+SCRIPT=scripts/relax.py JOB_NAME=relax_w7x TIMEOUT_MIN=60 \
+  ARGS="--geometry data/w7x_fmm002_clebsch_mrx.h5" bash slurm/run.sh
 ```
 
 Every run is a GPU job through `slurm/run.sh` (see `slurm/README.md`). One
@@ -188,33 +194,42 @@ method per run. Flags, defaults in brackets:
 
 | flag | meaning |
 |---|---|
-| `--geometry NAME [quasr44970]` | a name from section 5 |
-| `--ns R,T,Z [8,16,8]`, `--p P [3]` | resolution (also the map's) and degree |
-| `--maxiter N [10000]`, `--tol TOL [sqrt(eps)]` | budget and tolerance of every inner solve |
-| `--precision {float64,float32} [float64]` | exported as `MRX_DTYPE` before `mrx` is imported |
-| `--ic {logical,clebsch,dzeta} [logical]` | initial condition (section 4) |
-| `--iota I0,I1 [0.4,0.9]`, `--iota-exp E [2.0]`, `--flux-exp Q [1.0]`, `--lam SPEC [""]` | the logical profiles |
-| `--no-lambda`, `--no-leray-ic` | clebsch with `λ = 0`; skip the Leray clean-up |
-| `--method {gradient,cg,lbfgs} [cg]`, `--history M [1]` | descent method and history length |
-| `--gamma G [0]`, `--mu MU [0.0]` | hyperregularisation |
+| `--geometry G` (required) | `toroid`, `cylinder`, `rot-ellipse`, or the path of a GVEC export (section 5) |
+| `--nfp N [file attribute]` | field periods, for a file that declares them wrong |
+| `--ns R,T,Z [8,16,16]`, `--p P [2]` | resolution (also the map's) and degree |
+| `--maxiter N [2000]`, `--tol TOL [sqrt(eps)]` | budget and tolerance of every inner solve |
+| `--precision {float32,float64} [float32]` | exported as `MRX_DTYPE` before `mrx` is imported |
+| `--ic {clebsch,analytic,dzeta} [clebsch]` | initial condition (section 4); `clebsch` needs a file geometry, otherwise the script says `use --ic analytic` |
+| `--iota I0,I1 [0.4,0.9]`, `--iota-exp E [2.0]`, `--flux-exp Q [1.0]`, `--lam SPEC [""]` | analytic IC only: `ι = I0 + (I1 - I0) ρ^E`, `Φ' ~ ρ^Q`, `λ` modes `"m,n,amp;..."`; ignored for `--ic clebsch` |
+| `--method {gradient,cg,lbfgs} [cg]`, `--history M [3]` | descent method and history length |
+| `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.0]` | `v = (I - MU L)^{-G} F` |
 | `--dt-mode {linesearch,fixed} [linesearch]`, `--dt0 DT [1.0]`, `--cfl C [0.5]` | step choice and its CFL cap |
 | `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]`, `--eta-every K [1]` | resistivity (implicit, any size); `tanh` drops it to zero over the middle third of the run; the solve runs every `K` steps |
 | `--steps N [3000]`, `--seconds S [none]` | outer guards |
-| `--floor-tol TOL [10*eps]`, `--floor-window W [100]` | stopping criterion |
-| `--diag-every N [250]` | steps between helicity samples (each a k=1 Hodge solve) |
+| `--floor-tol TOL [1e-3]`, `--floor-steps W [100]` | stopping criterion |
+| `--qoi-every N [250]` | steps between helicity samples (each a k=1 Hodge solve) |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 
-The run stops when the energy decrease over the last `W` steps, relative to
-the energy and per step, `(E[i-W] - E[i]) / (W |E[i]|)`, falls below
-`--floor-tol` (`energy_floor_reached`), or when a budget runs out. The
-criterion is replayed on archived traces in `test/test_relax_floor.py`
-without a GPU.
+The initial condition is always Leray-projected. The run stops when the
+mean over the last `W` steps of the relative force residual
+`||F||_M / ||grad(B²/2)||` falls below `--floor-tol`
+(`force_floor_reached`), or when a budget runs out. The residual is not
+monotone, so the window mean is the quantity, never the last value.
+Calibration: on the W7-X Clebsch run at `(8,16,8)`, `p = 3`, float64, the
+residual reaches `1.7e-3` at step 500 and floors around `1e-3` by step
+1000-3000. In float32 the residual floors at the solve-tolerance level
+(`~2e-3` at tol `1e-5`), so a `--floor-tol` below that never fires.
+`test/test_relax_floor.py` exercises the criterion on a synthetic
+non-monotone trace without a GPU.
 
 Output: `relax.json` with the parameters, the per-step trace (`E`, `F`,
-`dt`, `dt_star`, `cfl`, `div`, `eta`, `res_it`, `res_delta`, `dE_meas`, `dE_pred`), the sampled diagnostics, the
-initial-condition summary, and the stopping reason; and `B.h5` with the
-final field.
+`resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `eta`, `res_it`,
+`res_delta`, `dE_meas`, `dE_pred`), the sampled quantities of interest
+`qoi` (`it`, `helicity`, `JoverB`, `wall`), the initial-condition summary,
+and the stopping reason; and `B.h5` with `B_ic`, `B_final`, the Leray
+pressures `p_ic`, `p_final` and the parameters as attributes (`geometry` as
+given, `geometry_path` resolved).
 
-At the reference resolution (`w7x-fmm002`, `(8,16,8)`, `p = 3`, one H100):
-setup about 330 s, first step about 90 s of compilation, then 0.7-0.9 s
-per step.
+At the reference resolution (`w7x_fmm002_clebsch_mrx.h5`, `(8,16,8)`,
+`p = 3`, float64, one H100): setup about 330 s, first step about 90 s of
+compilation, then 0.7-0.9 s per step.

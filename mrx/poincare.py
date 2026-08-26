@@ -356,7 +356,7 @@ def rotational_transform(ys, saves_per_period, nfp, center=None):
 #: chaotic line's difference does not fall with ``N``. Measured 2026-08-26 on
 #: W7-X fmm002 at 400 and 800 periods: converged Clebsch relaxations score
 #: <= 9e-04 / 1.2e-04 on their regular lines (islands included) while the
-#: chaotic logical-profile field scores >= 1.4e-03 / 3.7e-03 on 29 of 40
+#: chaotic analytic-profile field scores >= 1.4e-03 / 3.7e-03 on 29 of 40
 #: lines at both lengths. ``0.4 / N`` (1e-03 at 400 periods) separates them
 #: with a decade to spare at both lengths.
 CHAOS_TOL_PER_PERIOD = 0.4

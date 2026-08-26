@@ -46,7 +46,7 @@ Configuration:
     ``mrx.config.PoissonTestConfig``. Override any key as ``key=value``.
 
     n (list[int] | int): Radial resolutions, run one after another; the
-        grid is ``ns = (n, 2n, n)``. An int runs a single resolution.
+        grid is ``ns = (n, 2n, 2n)``. An int runs a single resolution.
         Default ``[8, 12, 16, 24, 32, 48, 64]``.
     p (int): Spline degree in every direction. Default 3.
     epsilon (float): Minor radius of ``toroid_map`` (major radius 1).
@@ -580,7 +580,7 @@ def compute_all_k(n: int, p: int, epsilon: float,
                   solver_tol: float, cg_maxiter: int,
                   quad_order, quad_order_offset: int):
     timings = {}
-    ns = (n, 2 * n, n)
+    ns = (n, 2 * n, 2 * n)
     ps = (p, p, p)
     q = p + 1 + quad_order_offset if quad_order is None else quad_order
 
