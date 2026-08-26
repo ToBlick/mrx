@@ -313,9 +313,6 @@ def main(cli):
                 (Fu / state.dt) ** 0.5 / state.v_norm)
 
     state = initial_state(B0, ts, dt=cli.dt0)
-    F0, p0, _, H0f, JxH0 = compute_force(B0, seq, dirichlet_H=ts.dirichlet_H)
-    state = eqx.tree_at(lambda s: (s.F_norm, s.F_prev, s.p, s.H, s.JxH), state,
-                        (seq.l2_norm(F0, 2), F0, p0, H0f, JxH0))
 
     tr = {k: [] for k in ("E", "F", "dt", "div", "cos", "gain", "eta",
                           "dE_meas", "dE_pred")}
