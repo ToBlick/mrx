@@ -21,7 +21,7 @@ from mrx.operators import (
     assemble_projection_operators,
 )
 
-jax.config.update("jax_enable_x64", True)
+import mrx  # noqa: F401, E402  (selects the working precision from MRX_DTYPE)
 
 # Betti numbers for a solid torus.
 BETTI = (1, 1, 0, 0)
