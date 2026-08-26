@@ -483,7 +483,7 @@ class TimeStepper(eqx.Module):
         # day -- cite the SYMBOL, not the line.)
         dB = self.seq.apply_incidence_matrix(
             E, 1, dirichlet_in=True, dirichlet_out=True)
-        if self.dt_mode == TimeStepChoice.FIXED or self.dt_mode == TimeStepChoice.PICARD_ADAPTIVE:
+        if self.dt_mode == TimeStepChoice.FIXED:
             dt_star = state.dt
         elif self.dt_mode == TimeStepChoice.ANALYTIC_LINESEARCH:
             dt_star = F @ Mu / self.seq.l2_norm_sq(dB, 2)
