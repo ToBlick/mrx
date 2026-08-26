@@ -1,0 +1,18 @@
+[sha  ] both arms measured at 7cb753a4a32e72bda4f8ab2b00cb25f6c00e2886
+[note ] raw_kron is deleted after this run; these numbers cannot be regenerated.
+
+[geom ] w7x ns=(12, 24, 12) p=3 tol=1e-10
+[diag ] k=1 free n=   8700  |d_rk - d_atom|/|d_rk| = 1.592e-01  LIVE
+[solve] k=1 free raw_kron  20000 it (conv False)   atom  20000 it (conv False)   |dx|/|x| = 1.380e+00  *** ARMS DISAGREE ***
+[diag ] k=1 dbc  n=   8124  |d_rk - d_atom|/|d_rk| = 4.496e-01  LIVE
+[solve] k=1 dbc  raw_kron   2340 it (conv True)   atom   1952 it (conv True)   |dx|/|x| = 3.128e-10  OK
+[diag ] k=2 free n=   8664  |d_rk - d_atom|/|d_rk| = 2.577e-01  LIVE
+[solve] k=2 free raw_kron   5862 it (conv True)   atom   5896 it (conv True)   |dx|/|x| = 1.079e-09  OK
+[diag ] k=2 dbc  n=   8376  |d_rk - d_atom|/|d_rk| = 2.585e-01  LIVE
+[solve] k=2 dbc  raw_kron  20000 it (conv False)   atom  20000 it (conv False)   |dx|/|x| = 2.197e+01  *** ARMS DISAGREE ***
+[diag ] k=3 free n=   2880  |d_rk - d_atom|/|d_rk| = 2.521e-01  LIVE
+[solve] k=3 free raw_kron   1076 it (conv True)   atom   1050 it (conv True)   |dx|/|x| = 2.257e-10  OK
+[diag ] k=3 dbc  n=   2880  |d_rk - d_atom|/|d_rk| = 2.526e-01  LIVE
+[solve] k=3 dbc  raw_kron  20000 it (conv False)   atom  20000 it (conv False)   |dx|/|x| = 3.859e-01  *** ARMS DISAGREE ***
+
+[done]

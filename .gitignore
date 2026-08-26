@@ -1,0 +1,37 @@
+# Editors / OS
+.DS_Store
+.vscode
+.idea
+.claude
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.ipynb_checkpoints
+
+# Runs and data (never committed)
+data
+outputs
+out
+logs
+*.log
+.hydra
+multirun*
+jax-caches/
+.jax_cache
+
+# Site-specific slurm settings (account, partition, paths)
+slurm/site.env
+
+# Documentation build
+docs/build/
+docs/*.pdf
