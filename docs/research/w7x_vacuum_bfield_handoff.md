@@ -1,3 +1,7 @@
+> **Status:** current; corrected on the simsopt files by gvec_h5_vacuum_comparison.md
+> **Read this for:** the vacuum-field projection recipe and the geometry/frame traps
+> **Do not read for:** the simsopt-file verdict; see gvec_h5_vacuum_comparison.md
+
 # Vacuum B-field: projection & vacuum-field handoff
 
 Script: `scripts/debug/w7x_vacuum_bfield_project.py` (notebook-style `# %%` cells,

@@ -1,3 +1,7 @@
+> **Status:** resolved; outcome in audit_2026-08-25_production.md
+> **Read this for:** what the 2026-08-24 audit found stale
+> **Do not read for:** current kind names; kind='block' and kind='block_jacobi' became 'metric_lumping'
+
 # TODO — preconditioner audit, 2026-08-24
 
 What is actually in production, what was deleted as dead, and what is stale and

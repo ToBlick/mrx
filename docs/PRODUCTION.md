@@ -1,132 +1,97 @@
-# MRX production solver configuration
+# What runs today
 
-**The single authority on what runs in production.** Last revised 2026-08-22
-(preconditioner stack replaced; see "2026-08-22 change" below). Research
-alternatives live in `docs/research/` with reopen conditions.
+One page. Every identifier exists in `mrx/` or `scripts/`. The reasoning is in
+[preconditioning.md](preconditioning.md); the measurements are in
+`docs/research/`.
+
+## Sequence and operators
+
+`build_sequence(geometry, ns, p)` in `mrx/geometries.py` is the production
+build: `DeRhamSequence(ns, (p,)*3, p + 1, ("clamped", "periodic", "periodic"),
+polar=True, betti_numbers=(1, 1, 0, 0))`, `evaluate_1d()`, `set_map`, then
+`assemble_incidence_operators`, `assemble_mass_jacobi_preconditioner`,
+`assemble_metric_lumping_laplacian_preconditioner` for `k = 0..3` and both
+boundary conditions, `warm_mass_preconditioner_cache`, `set_operators`.
+Mass matrices are never stored; every operator is a matrix-free apply
+(`mass_core_apply`, `apply_incidence_matrix`, `apply_derivative_matrix`,
+`apply_stiffness`, `apply_hodge_laplacian`).
 
 ## Preconditioners
 
-| solve | preconditioner | where |
-| --- | --- | --- |
-| Mass matrices, all k (incl. saddle lower blocks) | **`kind='block_jacobi'`** -- separable bulk with the polar core PROBED AND INVERTED DENSELY (no `E+` pseudoinverse) | `mrx/block_jacobi_laplacian.py:BlockJacobiMass` |
-| Laplacians, **k = 0,1,2,3** | **`kind='block'`** -- the tensor block-Jacobi atom: per-component Kronecker sum inverted by fast diagonalisation, dense polar core, plus a rank-one natural-BC boundary penalty at `bc_scale=3.0` | `mrx/block_jacobi_laplacian.py:BlockJacobiLaplacian` |
+| solve | preconditioner | code |
+|---|---|---|
+| mass, all k | `kind='metric_lumping'`: separable Kronecker bulk, polar core probed and inverted densely | `MetricLumpingMass` |
+| Laplacian, k = 0..3, free and Dirichlet | `kind='metric_lumping'`: per-component Kronecker-sum atom by fast diagonalisation, dense polar core, rank-one natural-BC term | `MetricLumpingLaplacian` |
 
-Build the Laplacian one once per `(k, BC)` with
-`assemble_block_jacobi_laplacian_preconditioner(seq, ops)`; then
-`seq.apply_laplacian_preconditioner(v, k, dirichlet)` (`kind='auto'` picks
-`'block'` when assembled, else `'jacobi'`). It takes NO required parameters.
+Kinds: `none`, `jacobi`, `metric_lumping`, `auto`. `auto` resolves to
+`metric_lumping` for the mass, always; for a Laplacian it uses the atom when
+`assemble_metric_lumping_laplacian_preconditioner` has built it for that
+`(k, BC)` and `none` otherwise. It never substitutes `jacobi`.
 
-### 2026-08-22 change: the preconditioner stack was replaced
+Saddle solves (k >= 1): `mass = inner = outer = 'metric_lumping'`,
+`coupled = False`. `outer = 'jacobi'` is the comparison baseline.
 
-The mass went `tensor/CP -> raw_kron (2026-08-17) -> block_jacobi (2026-08-22)`;
-the Laplacian at k>=1 went `Schur-outer Jacobi -> the block atom`. Both are
-measured over four geometries, n = 8..32, p = 2..5:
+`PRODUCTION_BC_SCALE = 3.0` in `mrx/metric_lumping_laplacian.py` multiplies
+the natural-BC coefficient; `MRX_BJ_BC_SCALE` overrides it; an explicit
+`bc_scale` argument beats both. `bc_entry="ibpd"`, `ktilde_mode="honest"`,
+`lumped="diag"` are the defaults and the production configuration; pass
+nothing.
 
-* **Laplacian vs point Jacobi: median 0.31 over 120 cells, 0.25 for n >= 24**,
-  and the ratio IMPROVES with refinement (3-8x at production resolution). The
-  advantage also grows with degree -- Jacobi degrades 7.6-12.2x over p = 2..5
-  where the block arms grow 2.3-2.8x.
-* **Mass vs raw_kron: 0.83x iterations median, 0.70-0.77x at k=1,2**, at equal
-  build cost.
+Not in production: multigrid, Chebyshev or Richardson acceleration, CP fits,
+HX transfers, `outer_rings`, the Fourier coarse correction
+(`mrx/experimental/`).
 
-**This overturns the 2026-08-14 "k>0 policy" below.** That assessment concluded
-the k>0 option space was closed and Jacobi should stay, on the grounds that
-anything beating Jacobi on hard geometry must contain a faithful `L0` solve.
-The block atom does beat it, everywhere, without one. The section is kept for
-its reasoning and its reopen conditions, but its VERDICT is superseded --
-see `docs/research/preconditioner_technical_note_source.md`.
+## Solvers
 
-Explicitly **not** in production: multigrid (any k), Chebyshev acceleration
-(anywhere), CP rank>1 stiffness fits, HX / auxiliary-space transfers, dense
-outer-ring probes (`outer_rings`), and the truncated-Fourier coarse correction
-(`fm`, opt-in only, `mrx/experimental/block_jacobi_coarse.py`).
+- k=0 Laplacian and every mass: `solve_singular_cg`, harmonic mode deflated
+  on the unshifted problem.
+- k >= 1 Laplacian: `solve_saddle_point_minres` on `[[K_k, D], [D^T, -M_{k-1}]]`.
+- Shifted problems do not deflate; free k >= 1 adds the `1/eps` harmonic
+  coarse correction when the vector exists.
+- No Krylov solve inside a Krylov solve: the weak term uses the mass
+  preconditioner as `M^{-1}` (`apply_hodge_laplacian_approx`).
+- Harmonic forms: `compute_nullspaces` (direct, `b2 = 0`) or
+  `compute_nullspaces_iterative`.
 
-Research machinery lives in **`mrx/experimental/`**: `tensor_stiffness.py`
-(the k>=1 block_fd P_A atoms), `chebyshev.py`, and `block_jacobi_coarse.py`
-(`fm`). `block_jacobi_laplacian.py` moved to `mrx/` on 2026-08-22 when it
-became production.
+## Tolerances and precision
 
-Preconditioner kinds. Laplacian: `none` / `jacobi` / **`block`** /
-`probed_jacobi` / `tensor` (k=0, retired). Mass: `none` / `jacobi` /
-**`block_jacobi`** / `raw_kron` / `tensor` (retired).
-`kind='probed_jacobi'` is the exact `diag(L_k)` by probing -- the honest
-REFERENCE for benchmarks, never a candidate (O(N) applies to build).
-`kind='jacobi'` is NOT that at k>=1: its weak half is a Kronecker mass MODEL,
-and it costs up to 21% extra iterations against the exact diagonal.
-Unmaintained demo scripts: `scripts/deprecated/`.
+- `MRX_DTYPE` selects `float64` (default) or `float32`;
+  `jax_default_matmul_precision` is `"highest"`.
+- Solver tolerance `tol=None` is `mrx.sqrt_eps()` (`1.5e-8` in float64)
+  everywhere: `DeRhamSequence(tol=...)`, `NumericsConfig.solver_tol`.
+  `conf/config_poisson_test.yaml` pins `1e-9` for the archived numbers.
+- Cut-offs are multiples of `mrx.eps`: `CORE_TOL`, `PSEUDOINVERSE_TOL`,
+  `PROJECTOR_SVD_TOL`, `PROJECTOR_PLANE_TOL`, `BLOCK_DIAGONAL_TOL`.
+- `maxiter = 10_000` per solve.
 
-## Knobs
+## Quadrature
 
-- `PRODUCTION_BC_SCALE = 3.0` scales the natural-BC term, a penalty on the
-  boundary trace (`u.n`, `w x n`, `omega`) integrated over the r=1 surface.
-  EMPIRICAL (a kappa-balance point, not a derived factor); best single value by
-  TOTAL iterations, basin flat over `[2, 4]`. The coefficient is degree
-  dependent, so one constant is a compromise across k -- see
-  `preconditioner_lessons.md`. `MRX_BJ_BC_SCALE`
-  overrides.
-- `MRX_MASS_KIND=raw_kron` reverts the mass swap wholesale.
-- **`frame='ref'` in `load`/`interpolate` is NOT the primal component vector.**
-  `M_k` carries a `g/J` weight (k=2: `M2_ij = int Lambda_i^T g Lambda_j / J`),
-  so the DOFs from `M_k^{-1} load` are the primal `omega` with
-  `B_phys = DF omega / J` -- what `DiscreteFunction` evaluates and
-  `Pushforward` consumes -- whereas `frame='ref'` pairs its argument straight
-  against the basis and therefore wants `g omega / J`. To build a field from
-  known primal components, push them forward and pass `frame='phys'`; the
-  pullback recovers `g omega / J` on its own. Handing `omega` to `frame='ref'`
-  fails SILENTLY, off by a component- and rho-dependent factor even on a
-  cylinder. `interpolate` gained `frame='ref'` (k=1,2) on 2026-08-25 for
-  symmetry with `load`; it is still gated by `_require_full_tensor_space`, so
-  it rejects `dirichlet=True` and `polar=True`. See
-  `docs/research/relaxation_ic_2026-08-25.md` §10.
-- **Any new traced entry point that solves must first call
-  `operators.warm_mass_preconditioner_cache`.** Mass factors build lazily and
-  the build is host-side numpy, so a cold cache inside a `jax.lax.while_loop`
-  dies. This bit once, in `nullspace.py`.
-- KNOWN REGRESSION: `build_weak_term_diagonal` is still calibrated for
-  raw_kron, so `kind='jacobi'` costs 1-10% more than it used to and
-  `test_weak_term_diagonal_matches_exact_rows` skips unless the mass is
-  raw_kron. Top open item in `preconditioner_lessons.md`.
-- Mass CP fits (retired path): non-negative (NTF) default; `MRX_CP_GREEDY`
-  reverts.
-- Solvers: k=0 = deflated CG (condensed); k>=1 = saddle MINRES with
-  harmonic deflation. No RUNTIME Krylov-in-Krylov anywhere (the k=0
-  core-Schur rebuild runs 3*n_zeta assembly-time CG solves; the result
-  is a fixed dense matrix).
-- The pre-2026-08 collocated k=0 atom (`fdlegacy`) and the `MRX_K0_ATOM`
-  knob were DELETED 2026-08-14: the bundled "fd" atom is the only k=0
-  atom, and the core-Schur rebuild now uses EXACT bulk solves (the
-  collocated atom's last role was the one-sided Schur probe).
+`q = p + 1` Gauss points per knot span, passed by every entry point
+(`build_sequence`, `build_gvec_map`, the Poisson scripts with
+`quad_order_offset: 0`, `test/conftest.py`).
 
-## Verified numbers (2026-08, CG/MINRES iterations to 1e-10)
+## Maps
 
-- k=0 "fd" vs old atom: W7-X (12,24,24) 64->54 dbc / 100->79 free; toroid
-  (16,32,16) 32->24 / 45->30. Vs Jacobi: ~7-10x wall.
-- k=0 exact core-Schur rebuild vs the retired collocated probe
-  (2026-08-14): toroid (8,16,8) 22/25 vs 22/31; W7-X (12,24,24) 53 dbc /
-  80 free vs 56/87, at equal preconditioner assembly cost (~37s GPU).
-- k>=1 Jacobi is measured-optimal in the relaxation class (l1-Jacobi
-  10-30% worse; mass-as-preconditioner 7-11x worse; mass/point smoothed MG
-  refuted; ledger in `preconditioner_lessons.md`).
+Analytic maps are callables. Data maps are fitted by `seq.interpolate(f, 0)`
+on a polar map sequence (`build_gvec_map`, `build_w7x_map` in `mrx/gvec.py`;
+`interpolate_map`, `greville_interpolate_map` in `mrx/geometry.py`). No
+reference mass matrix. Geometry lives on `SequenceGeometry` as `DF_jkl`,
+`metric_inv_jkl`, `jacobian_j`.
 
-## The research shelf (what would replace Jacobi at k>=1, and when)
+## Relaxation
 
-The k=1 coupled-atom + exact-L0 solver is mathematically settled
-(80-172 its geometry-independent, 3-9x Jacobi wall in prototype); reopen =
-one wiring day (jit + dense-L0 Cholesky) when k=1 solves bottleneck
-production. Details + all other shelf items: `docs/research/`.
+`scripts/relax.py`: `--method cg`, `--dt-mode linesearch`, `--ic logical`,
+`--floor-tol 10*eps`, `--floor-window 100`; one method per run; output
+`relax.json` and `B.h5`. Details in [relaxation.md](relaxation.md).
 
-## k>0 policy: final assessment (2026-08-14) — VERDICT SUPERSEDED 2026-08-22
+## Traps
 
-> Kept for the reasoning and the reopen conditions. Its conclusion ("Jacobi
-> stays") is no longer production: the tensor block-Jacobi atom beats Jacobi by
-> 2-8x at k=1,2,3 without a faithful `L0` solve, which is the premise this
-> assessment rests on.
-
-The k>0 option space is closed — full reasoning in
-`preconditioner_lessons.md`. Summary: any method that beats
-Jacobi on hard geometry must contain a faithful L0 solve (measured +
-literature-confirmed); everything cheaper is break-even at best. Jacobi
-stays; the coupled+dense-L0 shelf is the only sanctioned opt-in.
-Production timestep solves are shifted (`M/dt + eta*L`), which collapses
-the pure-Laplacian wall to one-off solves; an optional ~1h Lanczos check
-at the production shift would confirm this.
+- `frame='ref'` in `load` and `interpolate` takes `g ω / J`, not the primal
+  components `ω`. Push forward and use `frame='phys'`.
+- Any new traced entry point that solves must call
+  `warm_mass_preconditioner_cache` first; the mass preconditioner build is
+  host-side.
+- `set_map` drops the Laplacian atoms; rebuild with `build_preconditioners`
+  or use `set_map_and_preconditioners`.
+- Run something real after every merge. A renamed function whose caller lives
+  on the other branch merges green and dies at setup.

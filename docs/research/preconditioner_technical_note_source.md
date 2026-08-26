@@ -1,3 +1,7 @@
+> **Status:** current; the canonical account of the production preconditioner
+> **Read this for:** the construction, the derivation of the natural-BC coefficient, what was refuted and every measurement
+> **Do not read for:** the scale value: it says 0.10, production is PRODUCTION_BC_SCALE = 3.0 (s_scale_2026-08-25.md)
+
 # The MRX tensor block-Jacobi preconditioner — complete source for a technical note
 
 Written 2026-08-22 to be read WITHOUT access to the cluster, the data, or the

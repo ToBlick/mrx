@@ -1,4 +1,6 @@
-> **STATUS: RESEARCH / EXPERIMENTAL — superseded for production by `docs/PRODUCTION.md`.**
+> **Status:** shelved; verdicts in preconditioner_lessons.md
+> **Read this for:** the HX/AMS auxiliary-space experiments at k=1,2,3 and why they did not beat the baseline
+> **Do not read for:** the production preconditioner
 
 # Higher-form Hodge-Laplacian preconditioners (HX/AMS-style)
 

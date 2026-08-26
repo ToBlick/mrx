@@ -12,9 +12,9 @@ Stopping criterion
     the energy and per step, ``(E[i-W] - E[i]) / (W |E[i]|)``, falls below
     ``--floor-tol``. The relaxation guarantees ``dE/dt <= 0`` only, so the
     force residual need not be monotone and is not used to stop. Defaults:
-    ``W = 100`` and ``1e3 * eps`` of the working precision (2.2e-13 in
-    float64). Calibration on the archived eta=1e-2 arm S10 (energy constant
-    to 16 digits from step ~1700): fires at step ~1660; the archived arms
+    ``W = 100`` and ``10 * eps`` of the working precision (2.2e-15 in
+    float64, 1.2e-6 in float32). Calibration on the archived eta=1e-2 arm S10 (energy constant
+    to 16 digits from step ~1700): fires at step 1945; the archived arms
     that never floored (S07 at 13018 steps, C1 at 3000) never trigger it.
     ``test/test_relax_floor.py`` replays those traces.
 
@@ -60,7 +60,7 @@ Flags (defaults in brackets)
     Budgets and output:
       --steps N [3000]               maximum number of steps
       --seconds S [none]             wall-clock budget of the descent loop
-      --floor-tol TOL [1e3*eps]      see "Stopping criterion"
+      --floor-tol TOL [10*eps]       see "Stopping criterion"
       --floor-window W [100]
       --diag-every N [250]           steps between helicity / residual samples
                                      (each is a k=1 Hodge solve)
@@ -216,7 +216,7 @@ def main(cli):
         raise ValueError(f"--precision {cli.precision} but mrx runs in {mrx.DTYPE}")
     print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE}", flush=True)
     ns = tuple(int(v) for v in cli.ns.split(","))
-    floor_tol = 1e3 * mrx.EPS if cli.floor_tol is None else cli.floor_tol
+    floor_tol = 10 * mrx.EPS if cli.floor_tol is None else cli.floor_tol
     out = cli.out or os.path.join("outputs", "relax", time.strftime("%Y-%m-%d"),
                                   time.strftime("%H-%M-%S"))
     os.makedirs(out, exist_ok=True)

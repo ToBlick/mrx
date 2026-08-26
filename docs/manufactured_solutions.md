@@ -58,7 +58,7 @@ with `s = sin(πr²/2)`, `c = cos(πr²/2)`.
 
 The script's `CASES` list enables **all eight (k, BC) pairs**: k0 NBC, k0 DBC,
 k1 NBC, k1 DBC, k2 NBC, k2 DBC, k3 NBC, k3 DBC.  All enabled cases share one `DeRhamSequence` and one assembly pass; the
-Schur-Jacobi preconditioner is probed for `ks=(1,2,3)` × `{NBC, DBC}`, and one
+metric-lumping Laplacian preconditioner is built for `k = 0..3` × `{NBC, DBC}` (`assemble_metric_lumping_laplacian_preconditioner`), and one
 `compute_nullspaces_iterative` call (`betti=(1,1,0,0)`) supplies the harmonic
 projectors for every `(k, dirichlet)` pair (`_n_vectors` yields NBC dims
 `1,1,0,0` and DBC dims `0,0,1,1`).  Per-k error dispatch picks the extraction

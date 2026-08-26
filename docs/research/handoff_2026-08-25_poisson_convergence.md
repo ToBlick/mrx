@@ -1,3 +1,7 @@
+> **Status:** current
+> **Read this for:** the eight Poisson convergence cases, the nbc_k1 order ~3.2 and the refutation of the submitit hypothesis
+> **Do not read for:** running the study; the scripts are scripts/config_scripts/test_torus_poisson_*_sparse.py
+
 # Handoff 2026-08-25 — the Poisson convergence studies
 
 Branch `worktree-poisson-k1`, three commits, none on `greville-prod`:

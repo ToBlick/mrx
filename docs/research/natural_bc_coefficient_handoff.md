@@ -1,3 +1,7 @@
+> **Status:** superseded by preconditioner_technical_note_source.md
+> **Read this for:** the day-by-day record of the natural-BC coefficient, every dead end and why it died (read section 0, then 15-19)
+> **Do not read for:** the current value of the scale; s_scale_2026-08-25.md settles it at 3.0
+
 # Natural-BC coefficient and the k=1/2 free gap — handoff
 
 Started 2026-08-21 (§1-§12), continued 2026-08-22 (§13-§18).

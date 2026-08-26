@@ -1,3 +1,7 @@
+> **Status:** current
+> **Read this for:** the field-line tracer physics, the drift metric and the Lyapunov caveat on chaotic lines
+> **Do not read for:** the plotter and the relaxed-state tracer (handoff_2026-08-25_poincare_plotter.md)
+
 # Handoff — Poincaré tracer and the overnight sweeps, 2026-08-24
 
 Branch `worktree-poincare`, based on `greville-prod` at `7e89525`. **Local only,

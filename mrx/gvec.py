@@ -200,9 +200,18 @@ def _det_DF(map_func, n=64, seed=0):
 
 
 def _spline_scalars(axes, R_grid, Z_grid, map_ns, p):
+    """R and Z as scalar splines on the C1 polar space.
+
+    ``interpolate`` collocates on the full tensor-product space (three
+    square 1-D solves) and restricts onto the polar space with the exact
+    ring-0/ring-1 surgery, so the axis is a single point per zeta and the
+    map is C1 there like the fields it carries.  Against the unrestricted
+    tensor fit only rings 0 and 1 move (W7-X fmm002 (8,16,8) p=3: 4e-5 and
+    3.5e-4 in R; det DF at the innermost quadrature ring 0.1734 vs 0.1731).
+    """
     R_fn, Z_fn = _rgi_fn(axes, R_grid), _rgi_fn(axes, Z_grid)
     map_seq = DeRhamSequence(map_ns, (p, p, p), p + 1,
-                             ("clamped", "periodic", "periodic"), polar=False)
+                             ("clamped", "periodic", "periodic"), polar=True)
     map_seq.evaluate_1d()
     R_h = DiscreteFunction(map_seq.interpolate(R_fn, 0), map_seq.basis_0, map_seq.e0)
     Z_h = DiscreteFunction(map_seq.interpolate(Z_fn, 0), map_seq.basis_0, map_seq.e0)

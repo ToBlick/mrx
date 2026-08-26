@@ -1,3 +1,7 @@
+> **Status:** superseded by handoff_2026-08-25_poisson_convergence.md finding 8 (hypothesis refuted)
+> **Read this for:** the symptom log of the apparent convergence floor
+> **Do not read for:** the cause; the launcher was not it
+
 # Poisson convergence "floor" turned out to be a submitit launcher bug
 
 Bug-hunting log for the apparent stagnation of the torus Poisson convergence

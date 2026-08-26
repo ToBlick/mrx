@@ -1,3 +1,7 @@
+> **Status:** current
+> **Read this for:** the nine-item preconditioner/infrastructure shelf (item 7 first: what fraction of a k>=1 iteration is the preconditioner apply)
+> **Do not read for:** what shipped; its worklist is done and the payload memo it flags as item 9 was fixed on 2026-08-26
+
 # Production audit, 2026-08-25 — what shipped, and the shelf of open questions
 
 The audit's worklist is **done**: A1, A2, A3, A4 and all of B are shipped

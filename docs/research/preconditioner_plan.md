@@ -1,4 +1,6 @@
-> **STATUS: RESEARCH / EXPERIMENTAL — superseded for production by `docs/PRODUCTION.md`.**
+> **Status:** superseded by preconditioner_technical_note_source.md
+> **Read this for:** the original matrix-free tensor-spline mass preconditioner blueprint
+> **Do not read for:** what runs; the CP/tensor route is deleted
 
 # Matrix-Free Preconditioning Strategy for Tensor-Spline Mass Matrices
 ### Algorithmic Blueprint & Implementation Plan
