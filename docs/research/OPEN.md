@@ -28,6 +28,20 @@ pinned to the main checkout, so a worktree job without the shim silently tests t
 wrong library. Note `python -m` and `python script.py` resolve differently, so "does
 the wrap set it" is NOT a sufficient audit question — print `mrx.__file__`.
 *Detail:* memory `worktree-jobs-need-pythonpath`.
+**New variant:** hydra's submitit launcher activates the venv but does NOT export
+PYTHONPATH, so a multirun from a worktree validates the MAIN checkout and PASSES.
+Run single-run from a wrapper that exports it. Do NOT force `hydra/launcher=basic` —
+hydra then rejects the submitit keys while composing and every study dies in ~1 s.
+
+**1.4 A rename can break a caller with no merge conflict.** greville-prod renamed
+`assemble_block_jacobi_laplacian_preconditioner`; a caller on another branch used the
+old name. Caller and definition lived in files only one side touched, so no conflict
+surfaced, the merge reported success, and every run would have died at setup.
+**After any merge that renames library symbols, grep the callers.**
+
+**1.5 `test_projectors` is ~76% of pytest wall time**, one parametrisation 9.7 min
+alone. A 1 h walltime gets cancelled at 61% and looks like a failure when nothing
+failed. Budget 2 h.
 
 **1.3 Twelve pre-existing F821/F811**, all in three scripts and none in `mrx/`:
 `benchmark_graddiv_k1_preconditioner.py` (7), `debug_poisson_convergence.py` (3),
@@ -40,9 +54,8 @@ marked DO NOT MERGE. Numerically correct and verified live (W7-X p=5 k=1 free go
 6.632e-09 -> 4.674e-24 through the production path), but its gate is RED: it triggers
 1.1 above. Blocked on 1.1, not on itself.
 
-**2.2 `relaxation-prelim`, 33 commits.** Campaign complete, needs `greville-prod`
-merged in first — the branch is pinned to 76bf5f3 and predates the even-p fix, the
-`metric_lumping` rename and the eqx payload.
+**2.2 ~~`relaxation-prelim`~~ — MERGED 2026-08-26.** Validated post-merge: full suite
+235 passed / 1 skipped / 0 failed, Poisson reproduces to recorded precision.
 
 **2.3 `worktree-poisson-k1`, 5 commits** — rebased duplicates of already-merged work.
 Deletable.
