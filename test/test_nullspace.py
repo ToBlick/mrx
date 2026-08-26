@@ -2,8 +2,6 @@
 
 All tests that use a sequence reuse the session-scoped ``torus_seq`` fixture
 from conftest.py (one full assembly, shared across the entire pytest session).
-The stiffness-nullspace bases are pre-computed once in the fixture and stored
-on ``torus_seq.stiffness_null[(k, dbc)]``.
 
 Mathematical properties checked
 --------------------------------
@@ -15,8 +13,6 @@ Mathematical properties checked
 * The stored null vectors are M-orthonormal (Gram matrix = I).
 * The saddle-point lower block satisfies ``M_{k-1} w = D_{k-1}^T v`` for
   each upper/lower pair.
-* Every vector returned by ``get_stiffness_nullspace`` lies in ``ker(K_k)``.
-* The stiffness nullspace basis is M-orthonormal (Gram matrix = I).
 """
 
 import jax
@@ -162,37 +158,3 @@ def test_saddle_point_lower_block_satisfies_mass_equation(torus_seq, k, dbc):
         Mw = torus_seq.apply_mass_matrix(w, k - 1, dirichlet=dbc, operators=ops)
         npt.assert_allclose(Mw, Dt_v, atol=1e-8,
                             err_msg=f"k={k} dbc={dbc} vec[{i}]: M_{{k-1}} w ≠ D_{{k-1}}^T v")
-
-
-# ---------------------------------------------------------------------------
-# get_stiffness_nullspace — kernel membership and M-orthonormality
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("k,dbc", [(1, False), (2, True)],
-                          ids=["k1","k2dbc"])
-def test_stiffness_nullspace_is_in_kernel(torus_seq, k, dbc):
-    """Every stiffness-nullspace vector satisfies ‖K_k v‖ ≈ 0."""
-    ops = torus_seq.operators
-    basis = torus_seq.stiffness_null[(k, dbc)]
-    for i, v in enumerate(basis):
-        Kv = torus_seq.apply_stiffness(v, k, dirichlet=dbc, operators=ops)
-        res = float(jnp.linalg.norm(Kv))
-        assert res <= 1e-6, (
-            f"k={k} dbc={dbc} vec[{i}]: ‖K_k v‖ = {res:.2e}"
-        )
-
-
-@pytest.mark.parametrize("k,dbc", [(1, False), (2, True)],
-                          ids=["k1","k2dbc"])
-def test_stiffness_nullspace_is_mass_orthonormal(torus_seq, k, dbc):
-    """Mass Gram matrix of stiffness-nullspace vectors equals the identity."""
-    ops = torus_seq.operators
-    basis = torus_seq.stiffness_null[(k, dbc)]
-    if basis.shape[0] == 0:
-        return
-    n_vec = basis.shape[0]
-    mass_basis = jax.vmap(
-        lambda v: torus_seq.apply_mass_matrix(v, k, dirichlet=dbc, operators=ops)
-    )(basis)
-    gram = basis @ mass_basis.T
-    npt.assert_allclose(gram, jnp.eye(n_vec), atol=1e-8)

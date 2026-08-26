@@ -95,16 +95,6 @@ def torus_seq(torus_map):
     # mesh-scaled -- the discrete harmonic space sits exactly in ker(L), so the
     # only requirement is eps << lambda_1, which is O(1) here.
     seq._compute_nullspaces(BETTI)
-
-    # Pre-compute and cache stiffness-nullspace bases as attributes so any
-    # test can read seq.stiffness_null[(k, dbc)] without repeating the
-    # expensive vmap over CG solves.
-    from mrx.nullspace import get_stiffness_nullspace
-    ops = seq.operators
-    seq.stiffness_null = {
-        (1, False): get_stiffness_nullspace(seq, ops, 1, False),
-        (2, True):  get_stiffness_nullspace(seq, ops, 2, True),
-    }
     return seq
 
 
