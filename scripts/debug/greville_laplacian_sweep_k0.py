@@ -34,7 +34,6 @@ from benchmark_graddiv_k1_preconditioner import build_sequence  # noqa: E402
 from mrx.geometry import compute_geometry_terms  # noqa: E402
 from mrx.operators import (  # noqa: E402
     assemble_incidence_operators,
-    assemble_mass_operators,
     apply_stiffness,
     _dense_incidence_1d,
     _assemble_unweighted_1d_mass,
@@ -151,7 +150,6 @@ def main():
     seq = build_sequence(cfg)
     ops = seq.get_operators()
     ops = assemble_incidence_operators(seq, operators=ops, ks=(0,))
-    ops = assemble_mass_operators(seq, seq.geometry, operators=ops, ks=(1,))
 
     n_ext = int(seq.n0_dbc if args.dirichlet else seq.n0)
     bulk_shape = _bulk_tensor_shape(seq, args.dirichlet)

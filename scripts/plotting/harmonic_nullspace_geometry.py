@@ -17,12 +17,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence, SequenceGeometry
-from mrx.io import project_sampled_field
+from mrx.geometry import greville_interpolate_map
+from mrx.gvec import _spline_scalars, fit_scalar_spline
 from mrx.io_nfs_map import (
-    _project_sampled_scalar_0form_dense_rho0_theta_indep,
     _tensor_axes_and_grids,
-    interpolate_map_from_points,
+    evaluate_map_rz_residual_stats,
+    repair_tensor_eval_points_if_needed,
 )
+from mrx.mappings import stellarator_map
 
 
 
@@ -116,7 +118,6 @@ def _warn_if_large_spline_misfit(
     max_abs_dxyz: Sequence[float],
     *,
     warn_tol: float,
-    rho0_constrained: bool,
 ) -> None:
     """Warn when SplineMap pointwise geometry misfit is large."""
     m = max(float(max_abs_dxyz[0]), float(max_abs_dxyz[1]), float(max_abs_dxyz[2]))
@@ -127,12 +128,6 @@ def _warn_if_large_spline_misfit(
         f"(exceeds map-residual-warn={warn_tol:g}).",
         flush=True,
     )
-    if rho0_constrained:
-        print(
-            "  With map-rho0-theta-independent, the inner-ρ poloidal constant "
-            "constraint may be too strong for X,Y; try omitting that flag.",
-            flush=True,
-        )
 
 
 def _build_analytic_map_raw(
@@ -247,11 +242,16 @@ def build_sequence_h5(
     flip_zeta: bool,
     strict_jacobian: bool,
     pushforward_only: bool = True,
-    map_rho0_theta_independent: bool = False,
     map_residual_warn: float = 1e-2,
     spline_map_geometry: bool = False,
 ) -> tuple[DeRhamSequence, Any, None, Callable[[jnp.ndarray], jnp.ndarray]]:
-    """Build sequence from MRX volume HDF5 via ``stellarator_map`` R,Z interpolation."""
+    """Build sequence from MRX volume HDF5 via ``stellarator_map`` R,Z interpolation.
+
+    Both routes fit an interpolatory spline through the gridded data and
+    Greville-interpolate it into the spline space (the production map route);
+    the L2-projection path and its ``rho=0`` theta-independence constraint
+    were deleted with the reference mass matrix.
+    """
     h5_path = map_geometry_h5.expanduser().resolve()
     nfp_h5, pts, rvals, zvals = load_map_geometry_h5(h5_path)
     nfp_use = int(nfp if nfp is not None else nfp_h5)
@@ -272,7 +272,6 @@ def build_sequence_h5(
     )
 
     if spline_map_geometry:
-        seq.assemble_reference_mass_matrix()
         axes = tuple(jnp.asarray(a) for a in axes_np)
         R_grid = jnp.asarray(R_np)
         Z_grid = jnp.asarray(Z_np)
@@ -283,23 +282,11 @@ def build_sequence_h5(
             nfp=nfp_use,
             flip_zeta=bool(flip_zeta),
         )
-        rho0 = bool(map_rho0_theta_independent)
-        if rho0:
-            seq.assemble_mass_matrix(0)
-
-        def _project_one(grid: jnp.ndarray) -> jnp.ndarray:
-            if rho0:
-                return _project_sampled_scalar_0form_dense_rho0_theta_indep(
-                    axes, grid, seq, dirichlet=False
-                )
-            return project_sampled_field(
-                axes, grid, seq, 0, dirichlet=False, reference_domain=True
-            )
-
-        coeffs = jnp.stack(
-            [_project_one(X_grid), _project_one(Y_grid), _project_one(Z_grid)],
-            axis=0,
-        )
+        types = ("clamped", "periodic", "periodic")
+        fns = [fit_scalar_spline(axes_np, np.asarray(g), types)
+               for g in (X_grid, Y_grid, Z_grid)]
+        coeffs = greville_interpolate_map(
+            lambda x: jnp.stack([f(x) for f in fns]), seq)
         seq.set_geometry(seq.geometry_from_spline_map(coeffs))
         pts_j = jnp.asarray(pts)
         xyz_data = jnp.stack(
@@ -315,28 +302,17 @@ def build_sequence_h5(
             f"|ΔY|={dxyz[1]:.3e}, |ΔZ|={dxyz[2]:.3e}",
             flush=True,
         )
-        _warn_if_large_spline_misfit(
-            dxyz,
-            warn_tol=float(map_residual_warn),
-            rho0_constrained=rho0,
-        )
+        _warn_if_large_spline_misfit(dxyz, warn_tol=float(map_residual_warn))
     else:
         u, v, w = axes_np
         map_ns = (len(u), len(v), len(w))
         map_p = min(2, min(map_ns) - 1)
         map_ps = (map_p, map_p, map_p)
-        map_func, _, _, map_resid = interpolate_map_from_points(
-            pts,
-            rvals,
-            zvals,
-            nfp_use,
-            ns=map_ns,
-            ps=map_ps,
-            quad_order=max(4, 2 * map_p),
-            flip_zeta=bool(flip_zeta),
-            rho0_theta_independent=bool(map_rho0_theta_independent),
-        )
-        map_func = jax.jit(map_func)
+        R_h, Z_h, _, _, _ = _spline_scalars(axes_np, R_np, Z_np, map_ns, map_p)
+        map_func = jax.jit(stellarator_map(R_h, Z_h, nfp=nfp_use, flip_zeta=bool(flip_zeta)))
+        stats = evaluate_map_rz_residual_stats(
+            map_func, repair_tensor_eval_points_if_needed(np.asarray(pts))[0], rvals, zvals)
+        map_resid = (stats["max_R"], stats["max_Z"])
         seq.set_geometry(SequenceGeometry.from_map(map_func, seq.quad.x))
         dr, dz = float(map_resid[0]), float(map_resid[1])
         print(
@@ -347,7 +323,7 @@ def build_sequence_h5(
         if dr > float(map_residual_warn) or dz > float(map_residual_warn):
             print(
                 f"WARNING: stellarator_map R/Z residuals exceed {map_residual_warn:.1e}; "
-                "try spline_map_geometry or map_rho0_theta_independent in meta.",
+                "try spline_map_geometry in meta.",
                 file=sys.stderr,
             )
 
@@ -445,7 +421,6 @@ def rebuild_sequence_from_meta(
         flip_zeta=flip_zeta,
         strict_jacobian=strict_jacobian,
         pushforward_only=pushforward_only,
-        map_rho0_theta_independent=bool(meta.get("map_rho0_theta_independent", False)),
         map_residual_warn=float(meta.get("map_residual_warn", 1e-2)),
         spline_map_geometry=bool(meta.get("spline_map_geometry", False)),
     )

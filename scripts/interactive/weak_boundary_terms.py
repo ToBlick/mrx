@@ -46,7 +46,6 @@ def build_seq(n=4, p=2):
     seq.evaluate_1d()
     seq.assemble_all_sparse()
     seq._compute_nullspaces(BETTI)
-    seq.assemble_projection_matrix(2,1)
     return seq
 
 

@@ -194,7 +194,6 @@ from mrx.operators import (
     assemble_incidence_operators,
     assemble_laplacian_operators,
     assemble_mass_jacobi_preconditioner,
-    assemble_projection_operators,
     assemble_schur_jacobi_preconditioner,
     assemble_tensor_laplacian_preconditioner,
     assemble_tensor_mass_preconditioner,
@@ -1692,7 +1691,6 @@ def build_sequence(args) -> DeRhamSequence:
         betti_numbers=BETTI,
     )
     seq.evaluate_1d()
-    seq.assemble_reference_mass_matrix()
     if args.geometry == "rotating_ellipse":
         seq.set_map(rotating_ellipse_map(
             eps=args.epsilon, kappa=args.kappa, R0=args.r0, nfp=args.nfp))
@@ -1817,13 +1815,6 @@ def assemble_operators(
     # k=3 auxiliary-space transfer needs the V0<->V3 projection (cross-mass)
     # blocks; the k=0 tensor Hodge preconditioner (both BC variants) is already
     # assembled above via tensor_laplacian ks=(0,).
-    if klevel == 3:
-        ops = _timed(
-            "projection_03",
-            lambda o: assemble_projection_operators(
-                seq, operators=o, pairs=((0, 3), (3, 0))),
-            ops,
-        )
     # Production baseline: Schur-outer Jacobi diagonal, rank-independent diag mode.
     # k=3 runs the saddle with free BCs (its dual k=0 is dbc), so its baseline
     # jacobi is the no-dbc Schur diagonal. k=0 is a condensed (non-saddle) solve,

@@ -109,7 +109,6 @@ from mrx.mappings import toroid_map
 from mrx.nullspace import compute_nullspaces_iterative, get_nullspace
 from mrx.operators import (
     assemble_incidence_operators,
-    assemble_projection_operators,
     assemble_metric_lumping_laplacian_preconditioner,
 )
 from mrx.quadrature import evaluate_at_xq
@@ -245,7 +244,6 @@ def compute_error(n: int, p: int, epsilon: float,
     # k=0 for null_1(NBC) iteration inside compute_nullspaces_iterative.
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(2,), dirichlets=(True,))
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)
@@ -254,7 +252,6 @@ def compute_error(n: int, p: int, epsilon: float,
     # --- Assembly (exec pass) ------------------------------------------
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(2,), dirichlets=(True,))
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)

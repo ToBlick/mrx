@@ -22,7 +22,6 @@ def _build_sequence(n: int, p: int) -> DeRhamSequence:
         betti_numbers=(1, 1, 0, 0),
     )
     seq.evaluate_1d()
-    seq.assemble_reference_mass_matrix()
     seq.set_map(rotating_ellipse_map())
     return seq
 

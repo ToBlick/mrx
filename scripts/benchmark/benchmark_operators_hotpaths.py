@@ -65,9 +65,9 @@ def bench_stencil(seq):
         for din in (False, True):
             for dout in (False, True):
                 m = fn(seq, xi, din, dout)
-                jax.block_until_ready(m.data)
+                jax.block_until_ready(m.vals)
         dt = (time.perf_counter() - t0) / 4
-        print(f"  {name}: {1e3 * dt:.1f} ms/build  (nnz={int(m.nse)}, "
+        print(f"  {name}: {1e3 * dt:.1f} ms/build  (nnz={int(m.vals.shape[0])}, "
               f"shape={tuple(int(s) for s in m.shape)})")
 
 

@@ -12,13 +12,12 @@ import jax.numpy as jnp
 import pytest
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.io import project_sampled_field
+from mrx.geometry import greville_interpolate_map
 from mrx.mappings import toroid_map
 from mrx.operators import (
     assemble_derivative_operators,
     assemble_incidence_operators,
     assemble_mass_jacobi_preconditioner,
-    assemble_projection_operators,
 )
 
 import mrx  # noqa: F401, E402  (selects the working precision from MRX_DTYPE)
@@ -48,17 +47,16 @@ def torus_map():
 
 @pytest.fixture(scope="session")
 def torus_seq(torus_map):
-    """One fully-assembled DeRham sequence on a **spline-projected donut torus**.
+    """One fully-assembled DeRham sequence on a **spline-interpolated donut torus**.
 
     Built exactly once per pytest session:
 
-    1. a reference-domain sequence is created and its reference mass matrix
-       assembled;
-    2. the analytical ``toroid_map`` is sampled on a logical grid and
-       projected to spline coefficients via :func:`project_sampled_field`;
-    3. the projected coefficients are installed as the sequence geometry
-       via ``set_spline_map``;
-    4. all sparse operators are assembled on that spline geometry and
+    1. the analytical ``toroid_map`` is interpolated to spline coefficients
+       at the Greville points via :func:`greville_interpolate_map` (the
+       production route);
+    2. the coefficients are installed as the sequence geometry via
+       ``set_spline_map``;
+    3. the incidence operators are assembled on that spline geometry and
        harmonic nullspaces are populated via inverse iteration with
        ``betti_numbers = (1, 1, 0, 0)``.
 
@@ -69,47 +67,20 @@ def torus_seq(torus_map):
     ns = NS
     ps = (P, P, P)
 
-    # Step 1: reference-domain sequence (identity map).
     seq = DeRhamSequence(
         ns, ps, P + 1, TYPES, polar=True,
         tol=1e-12, maxiter=1000,
         betti_numbers=BETTI,
     )
     seq.evaluate_1d()
-    seq.assemble_reference_mass_matrix()
 
-    # Step 2: sample the analytical donut map and project to splines.
-    F_ana = toroid_map(epsilon=TORUS_EPSILON, R0=TORUS_R0)
-    # 16^3 is ample: this fits an ANALYTIC map into a few-thousand-DOF
-    # spline space. 40^3 = 64000 samples was ~4x the cost for no accuracy.
-    n_sample = 16
-    r = jnp.linspace(0.0, 1.0, n_sample)
-    chi = jnp.linspace(0.0, 1.0, n_sample)
-    zeta = jnp.linspace(0.0, 1.0, n_sample)
-    ri, chii, zetai = jnp.meshgrid(r, chi, zeta, indexing="ij")
-    grid_pts = jnp.stack([ri.ravel(), chii.ravel(), zetai.ravel()], axis=1)
-    map_samples = jax.vmap(F_ana)(grid_pts)
-
-    coeffs = jnp.stack([
-        project_sampled_field(
-            (r, chi, zeta), map_samples[:, i], seq,
-            k=0, dirichlet=False, reference_domain=True,
-        )
-        for i in range(3)
-    ], axis=0)
-
-    # Step 3 + 4: install the spline geometry and assemble operators.
-    # We do NOT call assemble_mass_operators: mass_core_apply is entirely
-    # matrix-free (del operators) so BCSR mass matrices are never read.
-    # We do NOT call assemble_hodge_operators: _assemble_hodge_block returns
-    # (None, None, None) — it's a no-op — and its k=0 side-effect of building
-    # the tensor Laplacian preconditioner with default params would conflict
-    # with the explicit rank-1 build below.
-    seq.set_spline_map(coeffs)
+    # Interpolate the analytical donut map at the Greville points and install
+    # it as the spline geometry. Masses and projections are matrix-free from
+    # that geometry; only the incidence operators are assembled.
+    seq.set_spline_map(greville_interpolate_map(torus_map, seq))
     geometry = seq.geometry
     ops = assemble_incidence_operators(seq)           # G0, G1, G2 (matrix-free)
     ops = assemble_derivative_operators(seq, geometry, operators=ops)   # validates G_k
-    ops = assemble_projection_operators(seq, operators=ops)             # P21, P12, P03, P30
     # NO tensor Laplacian / tensor mass preconditioners here any more: both are
     # retired paths (production = raw_kron masses + Jacobi Laplacians) and their
     # CP/NTF fits plus core-Schur build dominated fixture setup. The tests that
@@ -140,12 +111,6 @@ def torus_seq(torus_map):
 # ---------------------------------------------------------------------------
 # Small helpers usable from any test
 # ---------------------------------------------------------------------------
-
-def build_dense(matvec, n):
-    """Build a dense matrix from a matvec by probing with standard unit vectors."""
-    eye = jnp.eye(n)
-    return jax.vmap(matvec, in_axes=1, out_axes=1)(eye)
-
 
 def n_dofs(seq, k, dirichlet):
     """Return the DOF count for k-forms with the given boundary condition."""

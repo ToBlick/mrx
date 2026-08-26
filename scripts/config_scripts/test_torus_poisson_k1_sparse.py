@@ -98,7 +98,6 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import toroid_map
 from mrx.operators import (
     assemble_incidence_operators,
-    assemble_projection_operators,
     assemble_metric_lumping_laplacian_preconditioner,
 )
 from mrx.nullspace import init_nullspaces
@@ -175,7 +174,6 @@ def compute_error(n: int, p: int, epsilon: float,
 
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     # Tensor mass for k=0 (Schur inner) and k=1 (lower block).
     # Pre-probe the Schur diagonal (D M0_tensor^{-1} D^T) for k=1 DBC.
     ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(1,), dirichlets=(True,))
@@ -187,7 +185,6 @@ def compute_error(n: int, p: int, epsilon: float,
 
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(1,), dirichlets=(True,))
     ops = init_nullspaces(seq, ops, BETTI)
     ops = seq.set_operators(ops)

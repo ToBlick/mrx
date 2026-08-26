@@ -120,7 +120,6 @@ from mrx.mappings import toroid_map
 from mrx.nullspace import _n_vectors, compute_nullspaces_iterative, get_nullspace
 from mrx.operators import (
     assemble_incidence_operators,
-    assemble_projection_operators,
     assemble_metric_lumping_laplacian_preconditioner,
 )
 from mrx.quadrature import evaluate_at_xq
@@ -618,7 +617,6 @@ def compute_all_k(n: int, p: int, epsilon: float,
     _log("Assembly: incidence + projection operators...")
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     _log("  Assembling the metric-lumping Laplacian preconditioner (k=0..3)...")
     ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(0, 1, 2, 3), dirichlets=(True, False))
     _log("  schur.outer = the block-Jacobi atom (production default)...")

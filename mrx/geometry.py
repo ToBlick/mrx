@@ -1,22 +1,18 @@
 """Geometry evaluation and map interpolation for mapped de Rham sequences.
 
-Provides two paths for computing the metric tensor and Jacobian determinant
-at quadrature points:
+Provides two paths for evaluating the map Jacobian ``DF`` and its
+determinant at the quadrature points:
 
-- Generic path (``compute_geometry_terms``): works for any differentiable map
-  via ``jax.jacfwd``.
-- Sum-factorized fast path (``compute_geometry_terms_from_spline``): requires
-  the map to be a tensor-product spline.  Avoids the black-box ``jacfwd``
-  pass by exploiting the Kronecker structure of the 1D basis evaluations
-  stored on a :class:`~mrx.derham_sequence.DeRhamSequence`.
+- Generic path (:meth:`SequenceGeometry.from_map`): works for any
+  differentiable map via ``jax.jacfwd``.
+- Sum-factorized fast path (:meth:`SequenceGeometry.from_spline_map`):
+  requires the map to be a tensor-product spline.  Avoids the black-box
+  ``jacfwd`` pass by exploiting the Kronecker structure of the 1D basis
+  evaluations stored on a :class:`~mrx.derham_sequence.DeRhamSequence`.
 
-Both paths return the same three arrays and are consumed by
-:class:`SequenceGeometry`.
-
-Also provides utilities for interpolating analytic or sampled maps onto the
-spline basis of a sequence: :func:`greville_interpolate_map`,
-:func:`greville_interpolate_stellarator_map`, and the deprecated
-:func:`interpolate_map`.
+Also provides utilities for interpolating analytic maps onto the spline basis
+of a sequence: :func:`greville_interpolate_map` and
+:func:`greville_interpolate_stellarator_map`.
 """
 
 from __future__ import annotations
@@ -54,26 +50,18 @@ def grad_1d(d_basis, boundary_type):
 # ---------------------------------------------------------------------------
 
 def _generic_df_geometry(map: Callable, quad_x: jnp.ndarray):
-    """Evaluate ``DF`` and the derived inverse-metric / Jacobian on the grid.
-
-    DF is the primitive quantity; the metric ``DF^T DF`` is recovered by a
-    cheap contraction wherever it is needed (see
-    :attr:`SequenceGeometry.metric_jkl`).
+    """Evaluate ``DF`` and ``det DF`` on the quadrature grid via ``jacfwd``.
 
     Args:
         map: Differentiable logical-to-physical map ``F: R^3 -> R^3``.
         quad_x: Quadrature points, shape ``(N_q, 3)``.
 
     Returns:
-        Tuple ``(DF_jkl, metric_inv_jkl, jacobian_j)`` where
-        ``DF_jkl[q, i, j] = dF_i/dx_j``.
+        Tuple ``(DF_jkl, jacobian_j)`` where ``DF_jkl[q, i, j] = dF_i/dx_j``.
     """
     DF_jkl = jax.lax.map(jax.jacfwd(map), quad_x,
                          batch_size=mrx.MAP_BATCH_SIZE_INNER)
-    metric = jnp.einsum("qki,qkj->qij", DF_jkl, DF_jkl)        # DF^T DF
-    metric_inv_jkl = jax.vmap(inv33)(metric)
-    jacobian_j = jnp.linalg.det(DF_jkl)
-    return DF_jkl, metric_inv_jkl, jacobian_j
+    return DF_jkl, jnp.linalg.det(DF_jkl)
 
 
 def compute_geometry_terms(map: Callable, quad_x: jnp.ndarray):
@@ -91,9 +79,8 @@ def compute_geometry_terms(map: Callable, quad_x: jnp.ndarray):
         - ``metric_inv_jkl``: ``(N_q, 3, 3)`` — inverse metric.
         - ``jacobian_j``: ``(N_q,)`` — Jacobian determinant ``det(DF)``.
     """
-    DF_jkl, metric_inv_jkl, jacobian_j = _generic_df_geometry(map, quad_x)
-    metric_jkl = jnp.einsum("qki,qkj->qij", DF_jkl, DF_jkl)
-    return metric_jkl, metric_inv_jkl, jacobian_j
+    geometry = SequenceGeometry.from_map(map, quad_x)
+    return geometry.metric_jkl, geometry.metric_inv_jkl, geometry.jacobian_j
 
 
 # ---------------------------------------------------------------------------
@@ -104,29 +91,33 @@ class SequenceGeometry(eqx.Module):
     """Geometry data attached to a de Rham sequence.
 
     An ``eqx.Module`` so that the quadrature-grid arrays (``DF_jkl``,
-    ``metric_inv_jkl``, ``jacobian_j``) are dynamic pytree leaves and can flow
-    through ``jit`` / ``grad``. ``map`` is kept as a normal field so that if it
-    is itself a pytree (e.g. a :class:`~mrx.mappings.SplineMap`), its
-    coefficient leaves are tracked; plain ``Callable`` maps are treated as
-    opaque leaves.
+    ``jacobian_j``) are dynamic pytree leaves and can flow through ``jit`` /
+    ``grad``. ``map`` is kept as a normal field so that if it is itself a
+    pytree (e.g. a :class:`~mrx.mappings.SplineMap`), its coefficient leaves
+    are tracked; plain ``Callable`` maps are treated as opaque leaves.
 
-    ``DF_jkl`` (the map Jacobian at each quadrature point) is the single stored
-    geometry primitive; the metric ``metric_jkl = DF^T DF`` is a contraction
-    property computed on demand.  Storing ``DF`` (rather than the metric) lets
-    consumers that need the raw Jacobian — e.g. the physical-frame pullbacks in
-    :func:`mrx.projectors.load` and :func:`mrx.io.project_sampled_field` —
-    reuse it instead of recomputing ``jax.jacfwd(map)`` over the quad grid.
+    ``DF_jkl`` (the map Jacobian at each quadrature point) and its determinant
+    are the only stored geometry; the metric ``DF^T DF`` and its inverse are
+    properties contracted on demand, and the mass applies form their weights
+    from ``DF`` and ``J`` inside the kernel.  Storing ``DF`` lets consumers
+    that need the raw Jacobian — e.g. the physical-frame pullbacks in
+    :func:`mrx.projectors.load` — reuse it instead of recomputing
+    ``jax.jacfwd(map)`` over the quad grid.
     """
 
     map: Any
     DF_jkl: jnp.ndarray = None
-    metric_inv_jkl: jnp.ndarray = None
     jacobian_j: jnp.ndarray = None
 
     @property
     def metric_jkl(self):
         """Metric tensor ``DF^T DF`` at each quad point (contracted on demand)."""
         return jnp.einsum("qki,qkj->qij", self.DF_jkl, self.DF_jkl)
+
+    @property
+    def metric_inv_jkl(self):
+        """Inverse metric at each quad point (computed on demand from ``DF``)."""
+        return jax.vmap(inv33)(self.metric_jkl)
 
     @classmethod
     def from_map(cls, map: Callable, quad_x: jnp.ndarray) -> "SequenceGeometry":
@@ -139,8 +130,8 @@ class SequenceGeometry(eqx.Module):
         Returns:
             A fully populated :class:`SequenceGeometry`.
         """
-        DF_jkl, metric_inv_jkl, jacobian_j = _generic_df_geometry(map, quad_x)
-        return cls(map, DF_jkl, metric_inv_jkl, jacobian_j)
+        DF_jkl, jacobian_j = _generic_df_geometry(map, quad_x)
+        return cls(map, DF_jkl, jacobian_j)
 
     @classmethod
     def from_spline_map(cls, spline_map, seq) -> "SequenceGeometry":
@@ -168,10 +159,9 @@ class SequenceGeometry(eqx.Module):
             raise ValueError(
                 "Call seq.evaluate_1d() before constructing a "
                 "SequenceGeometry from a SplineMap.")
-        DF_jkl, metric_inv_jkl, jacobian_j = \
-            _spline_df_geometry(
-                spline_map.coefficients, spline_map.extraction_T, seq)
-        return cls(spline_map, DF_jkl, metric_inv_jkl, jacobian_j)
+        _, DF_jkl = spline_map_F_DF_at_quad(
+            spline_map.coefficients, spline_map.extraction_T, seq)
+        return cls(spline_map, DF_jkl, jnp.linalg.det(DF_jkl))
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +174,9 @@ def _coeffs_to_raw_grid(coefficients, extraction_T, nr, nt, nz):
     Args:
         coefficients: ``(3, n_dof)`` Cartesian spline coefficients in the
             extracted basis.
-        extraction_T: BCSR matrix of shape ``(n_raw, n_dof)`` — precomputed
-            transpose of the extraction operator ``E`` (usually ``seq.e0_T``).
+        extraction_T: :class:`~mrx.extraction_operators.MatrixFreeExtraction`
+            of shape ``(n_raw, n_dof)`` — the transpose of the extraction
+            operator ``E`` (usually ``seq.e0_T``).
         nr: Raw tensor-product size in the r direction.
         nt: Raw tensor-product size in the t direction.
         nz: Raw tensor-product size in the z direction.
@@ -308,44 +299,6 @@ def min_jacobian_from_coeffs(coefficients, extraction_T, seq):
     return jnp.min(spline_map_jacobian_j_at_quad(coefficients, extraction_T, seq))
 
 
-def _spline_df_geometry(coefficients, extraction_T, seq):
-    """Sum-factorized ``DF`` and derived inverse-metric / Jacobian on the grid.
-
-    Spline analogue of :func:`_generic_df_geometry`: ``DF`` is the primitive,
-    the metric is a contraction recovered on demand.
-
-    Returns:
-        Tuple ``(DF_jkl, metric_inv_jkl, jacobian_j)`` where
-        ``DF_jkl[q, i, j] = dF_i/dx_j``.
-    """
-    _, DF_q = spline_map_F_DF_at_quad(coefficients, extraction_T, seq)
-    metric = jnp.einsum("qki,qkj->qij", DF_q, DF_q)           # DF^T DF
-    metric_inv_jkl = jax.vmap(inv33)(metric)
-    jacobian_j = jnp.linalg.det(DF_q)
-    return DF_q, metric_inv_jkl, jacobian_j
-
-
-def compute_geometry_terms_from_spline(coefficients, extraction_T, seq):
-    """Drop-in replacement for ``compute_geometry_terms`` for spline maps.
-
-    Returns ``(metric_jkl, metric_inv_jkl, jacobian_j)`` with the same
-    semantics as :func:`compute_geometry_terms`.
-
-    Args:
-        coefficients: ``(3, n_dof)`` spline coefficients of the map.
-        extraction_T: Transpose of the extraction operator.
-        seq: :class:`~mrx.derham_sequence.DeRhamSequence` with
-            ``evaluate_1d()`` already called.
-
-    Returns:
-        Tuple ``(metric_jkl, metric_inv_jkl, jacobian_j)``.
-    """
-    DF_q, metric_inv_jkl, jacobian_j = _spline_df_geometry(
-        coefficients, extraction_T, seq)
-    metric_jkl = jnp.einsum("qki,qkj->qij", DF_q, DF_q)        # DF^T DF
-    return metric_jkl, metric_inv_jkl, jacobian_j
-
-
 # ---------------------------------------------------------------------------
 # Map interpolation onto spline DOFs
 # ---------------------------------------------------------------------------
@@ -366,10 +319,9 @@ def greville_interpolate_map(F_analytic: Callable, seq) -> jnp.ndarray:
             ``(r, θ, ζ) ∈ [0, 1]^3`` to physical Cartesian coordinates
             ``(X, Y, Z)``.
         seq: :class:`~mrx.derham_sequence.DeRhamSequence` to interpolate into.
-            Must have ``evaluate_1d()`` called.  Currently requires an
-            all-clamped (non-periodic, non-polar) sequence; periodic or polar
-            sequences raise ``NotImplementedError`` via
-            :meth:`zeroform_interpolation`.
+            Must have ``evaluate_1d()`` called.  Polar and periodic sequences
+            are supported (the polar rows are restricted conformingly, see
+            :func:`mrx.projectors.interpolate`).
 
     Returns:
         Coefficient array of shape ``(3, seq.n0)`` — spline DOF vectors for
@@ -431,42 +383,3 @@ def greville_interpolate_stellarator_map(
     return stellarator_map(R_h, Z_h, nfp=nfp, flip_zeta=flip_zeta)
 
 
-def interpolate_map(axes, R_grid, Z_grid, nfp, seq, flip_zeta=False):
-    """Interpolate a stellarator map from R and Z sampled on a regular grid.
-
-    Uses :func:`~mrx.io.project_sampled_field` (L² projection via
-    ``RegularGridInterpolator`` + tensor-product integration) to obtain
-    FEM coefficients for *R* and *Z*, then wraps them in a
-    :func:`~mrx.mappings.stellarator_map`.
-
-    .. deprecated::
-        Prefer :func:`greville_interpolate_stellarator_map` when an analytic
-        map is available: it requires no reference-domain mass matrix and no
-        sampled grid.
-
-    Args:
-        axes: Tuple of 1-D arrays ``(x1, x2, x3)`` spanning the logical domain.
-        R_grid: R values on the grid, shape ``(n1, n2, n3)``.
-        Z_grid: Z values on the grid, shape ``(n1, n2, n3)``.
-        nfp: Number of field periods.
-        seq: :class:`~mrx.derham_sequence.DeRhamSequence` to use.  Must have
-            ``evaluate_1d()`` and ``assemble_reference_mass_matrix()`` called.
-        flip_zeta: Whether to flip the toroidal angle in the stellarator map.
-
-    Returns:
-        Stellarator map built from the interpolated R and Z.
-    """
-    # Lazy imports to avoid circular dependency.
-    from mrx.mappings import stellarator_map  # noqa: PLC0415
-    from mrx.differential_forms import DiscreteFunction  # noqa: PLC0415
-    from mrx.io import project_sampled_field  # noqa: PLC0415
-
-    R_dof = project_sampled_field(
-        axes, R_grid, seq, k=0, dirichlet=False, reference_domain=True)
-    Z_dof = project_sampled_field(
-        axes, Z_grid, seq, k=0, dirichlet=False, reference_domain=True)
-
-    R_h = DiscreteFunction(R_dof, seq.basis_0, seq.e0)
-    Z_h = DiscreteFunction(Z_dof, seq.basis_0, seq.e0)
-
-    return stellarator_map(R_h, Z_h, nfp=nfp, flip_zeta=flip_zeta)

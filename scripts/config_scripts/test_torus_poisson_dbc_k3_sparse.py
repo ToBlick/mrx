@@ -102,7 +102,6 @@ from mrx.mappings import toroid_map
 from mrx.nullspace import get_nullspace, init_nullspaces, _set_null
 from mrx.operators import (
     assemble_incidence_operators,
-    assemble_projection_operators,
     assemble_metric_lumping_laplacian_preconditioner,
 )
 from mrx.quadrature import evaluate_at_xq
@@ -180,7 +179,6 @@ def compute_error(n: int, p: int, epsilon: float,
     # --- Assembly (compile pass) ----------------------------------------
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(3,), dirichlets=(True,))
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)
@@ -189,7 +187,6 @@ def compute_error(n: int, p: int, epsilon: float,
     # --- Assembly (exec pass) ------------------------------------------
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(3,), dirichlets=(True,))
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)

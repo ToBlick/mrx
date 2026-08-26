@@ -95,7 +95,6 @@ from mrx.mappings import toroid_map
 from mrx.operators import (
     assemble_incidence_operators,
     assemble_metric_lumping_laplacian_preconditioner,
-    assemble_projection_operators,
 )
 from mrx.quadrature import evaluate_at_xq
 
@@ -201,7 +200,6 @@ def compute_error(n: int, p: int, epsilon: float,
     # assembly is decoupled from preconditioner construction.
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     ops = seq.set_operators(
         assemble_metric_lumping_laplacian_preconditioner(
             seq, ops, ks=(0,), dirichlets=(True, False),
@@ -211,7 +209,6 @@ def compute_error(n: int, p: int, epsilon: float,
     timings["build_hodge_preconditioners_0_compile"] = time.perf_counter() - t0
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     ops = seq.set_operators(
         assemble_metric_lumping_laplacian_preconditioner(
             seq, ops, ks=(0,), dirichlets=(True, False),

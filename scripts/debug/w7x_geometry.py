@@ -82,7 +82,6 @@ def main():
         ("clamped", "periodic", "periodic"), polar=True,
         betti_numbers=(1, 1, 0, 0))
     seq.evaluate_1d()
-    seq.assemble_reference_mass_matrix()
     seq.set_map(map_func)
 
     g = np.asarray(seq.metric_jkl)          # (n_q, 3, 3)

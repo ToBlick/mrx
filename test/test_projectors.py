@@ -50,7 +50,7 @@ def proj_seq():
     seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2))
     # projection tests need operators, not preconditioners; skipping the eager payloads avoids the CP/NTF fits
     # and the core-Schur build, which production no longer uses.
-    seq.assemble_all_sparse(include_preconditioners=False)
+    seq.assemble_all_sparse()
     return seq
 
 
@@ -264,7 +264,7 @@ def identity_seq(request):
     )
     seq.evaluate_1d()
     seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2))
-    seq.assemble_all_sparse(include_preconditioners=False)
+    seq.assemble_all_sparse()
     return seq
 
 
@@ -421,7 +421,7 @@ def tensor_seq():
     )
     seq.evaluate_1d()
     seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2))
-    seq.assemble_all_sparse(include_preconditioners=False)
+    seq.assemble_all_sparse()
     return seq
 
 

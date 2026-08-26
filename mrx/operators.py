@@ -5,15 +5,14 @@ import os
 
 import equinox as eqx
 import jax
-import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import jax.scipy as jsp
 
-from mrx.assembly import assemble_vectorial
 from mrx.extraction_operators import MatrixFreeExtraction, get_xi
 import numpy as np
 
-from mrx.local_assembly import assemble_mass_local, build_matrixfree_mass_apply
+from mrx.local_assembly import (build_matrixfree_mass_apply,
+                                build_matrixfree_projection_apply)
 from mrx.preconditioners import (
     BoundaryConditionPair,
     MassPreconditioners,
@@ -29,7 +28,6 @@ from mrx.preconditioners import (
     _symmetrize,
     default_mass_preconditioner,
     get_mass_jacobi_diaginv,
-    select_boundary_data,
     set_mass_jacobi_pair,
 )
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
@@ -87,30 +85,6 @@ def _wrap_shifted_harmonic_coarse_correction(
     return precond
 
 
-class DenseSequenceOperators(eqx.Module):
-    """Optional dense cache for extracted operator matrices."""
-
-    m0: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    m1: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    m2: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    m3: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    d0: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    d1: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    d2: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    s0: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    s1: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    s2: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    s3: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    l0: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    l1: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    l2: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    l3: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    p21: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    p12: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    p03: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    p30: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-
-
 class SequenceOperators(eqx.Module):
     """Dynamic operator bundle for a de Rham sequence.
 
@@ -119,10 +93,6 @@ class SequenceOperators(eqx.Module):
     shell.
     """
 
-    m0: Optional[jsparse.BCSR] = None
-    m1: Optional[jsparse.BCSR] = None
-    m2: Optional[jsparse.BCSR] = None
-    m3: Optional[jsparse.BCSR] = None
     k0_tensor_hodge_precond: Optional[BoundaryConditionPair] = None
     k1_tensor_stiff_model: Optional[K1TensorCurlCurlForwardModel] = None
     k2_tensor_stiff_model: Optional[K2TensorDivDivForwardModel] = None
@@ -153,64 +123,44 @@ class SequenceOperators(eqx.Module):
     e3_bc: Optional[MatrixFreeExtraction] = None
     e3_bc_T: Optional[MatrixFreeExtraction] = None
     mass_preconds: Optional[MassPreconditioners] = None
-    d0: Optional[jsparse.BCSR] = None
-    d0_T: Optional[jsparse.BCSR] = None
-    d1: Optional[jsparse.BCSR] = None
-    d1_T: Optional[jsparse.BCSR] = None
-    d2: Optional[jsparse.BCSR] = None
-    d2_T: Optional[jsparse.BCSR] = None
     # Topological exterior-derivative incidence matrices on the full
     # pre-extraction DoF grid. Entries are in {-1, 0, +1}; they encode the
     # discrete de Rham complex structure and are geometry-independent. The
     # strong derivatives ``apply_strong_{grad,curl,div}`` multiply by these
     # directly (no mass solve). Stored as :class:`_MatrixFreeIncidence`
-    # (difference stencils); no BCSR is ever materialised.
+    # (difference stencils); no matrix is ever materialised.
     g0: Optional[_MatrixFreeIncidence] = None
     g0_T: Optional[_MatrixFreeIncidence] = None
     g1: Optional[_MatrixFreeIncidence] = None
     g1_T: Optional[_MatrixFreeIncidence] = None
     g2: Optional[_MatrixFreeIncidence] = None
     g2_T: Optional[_MatrixFreeIncidence] = None
-    # TRUE polar derivative correction. The directly-built incidence
-    # ``E^T sp E`` is the topological d only when the extraction is unitary
-    # (``E^T E = I``); on the polar axis the gluing is non-unitary, so the true
-    # strong derivative is ``G = M^{-1} D = Gram_{k+1}^{-1} (E^T sp E)`` with the
-    # (mass-free) coefficient Gram ``Gram = E^T E``. ``Gram`` is identity in the
-    # bulk plus a small dense axis block, so its inverse is sparse (identity +
-    # axis block) and is stored here per OUTPUT space and BC. ``None`` means the
-    # extraction is unitary there (e.g. non-polar, or V3) so no correction is
-    # needed and the apply is bit-identical to the raw incidence.
-    inc_gram_inv_1: Optional[jsparse.BCSR] = None
-    inc_gram_inv_1_dbc: Optional[jsparse.BCSR] = None
-    inc_gram_inv_2: Optional[jsparse.BCSR] = None
-    inc_gram_inv_2_dbc: Optional[jsparse.BCSR] = None
-    inc_gram_inv_3: Optional[jsparse.BCSR] = None
-    inc_gram_inv_3_dbc: Optional[jsparse.BCSR] = None
-    # Analytic inverse-free polar grad G_0 (V0->V1), built from the incidence
-    # pattern + polar coefficients xi alone (NO assembly inverse). Stored per
-    # (dirichlet_in, dirichlet_out) BC pair, forward + transpose. ``None`` on
-    # non-polar sequences -> apply falls back to the raw/Gram incidence path.
-    g0_grad_00: Optional[jsparse.BCSR] = None
-    g0_grad_00_T: Optional[jsparse.BCSR] = None
-    g0_grad_01: Optional[jsparse.BCSR] = None
-    g0_grad_01_T: Optional[jsparse.BCSR] = None
-    g0_grad_10: Optional[jsparse.BCSR] = None
-    g0_grad_10_T: Optional[jsparse.BCSR] = None
-    g0_grad_11: Optional[jsparse.BCSR] = None
-    g0_grad_11_T: Optional[jsparse.BCSR] = None
+    # Analytic inverse-free polar grad G_0 (V0->V1) on extracted DoFs, built
+    # from the incidence pattern + polar coefficients xi alone. On the polar
+    # axis the extraction is non-unitary, so the raw ``E_out^T sp E_in`` is not
+    # the topological d; these stencils are its closed-form correction
+    # ``Gram_{k+1}^{-1} (E^T sp E)``. Stored per (dirichlet_in, dirichlet_out)
+    # BC pair, forward + transpose, as indexed gather/scatter operators.
+    # ``None`` on non-polar sequences -> apply uses the raw incidence path.
+    g0_grad_00: Optional[MatrixFreeExtraction] = None
+    g0_grad_00_T: Optional[MatrixFreeExtraction] = None
+    g0_grad_01: Optional[MatrixFreeExtraction] = None
+    g0_grad_01_T: Optional[MatrixFreeExtraction] = None
+    g0_grad_10: Optional[MatrixFreeExtraction] = None
+    g0_grad_10_T: Optional[MatrixFreeExtraction] = None
+    g0_grad_11: Optional[MatrixFreeExtraction] = None
+    g0_grad_11_T: Optional[MatrixFreeExtraction] = None
     # Analytic inverse-free polar curl G_1 (V1->V2), same construction one degree
-    # up. ``None`` on non-polar -> raw incidence fallback.
-    g1_curl_00: Optional[jsparse.BCSR] = None
-    g1_curl_00_T: Optional[jsparse.BCSR] = None
-    g1_curl_01: Optional[jsparse.BCSR] = None
-    g1_curl_01_T: Optional[jsparse.BCSR] = None
-    g1_curl_10: Optional[jsparse.BCSR] = None
-    g1_curl_10_T: Optional[jsparse.BCSR] = None
-    g1_curl_11: Optional[jsparse.BCSR] = None
-    g1_curl_11_T: Optional[jsparse.BCSR] = None
-    grad_grad: Optional[jsparse.BCSR] = None
-    curl_curl: Optional[jsparse.BCSR] = None
-    div_div: Optional[jsparse.BCSR] = None
+    # up. ``None`` on non-polar -> raw incidence fallback. Div (V2->V3) needs
+    # no stencil: the V3 extraction is a 0/1 selection.
+    g1_curl_00: Optional[MatrixFreeExtraction] = None
+    g1_curl_00_T: Optional[MatrixFreeExtraction] = None
+    g1_curl_01: Optional[MatrixFreeExtraction] = None
+    g1_curl_01_T: Optional[MatrixFreeExtraction] = None
+    g1_curl_10: Optional[MatrixFreeExtraction] = None
+    g1_curl_10_T: Optional[MatrixFreeExtraction] = None
+    g1_curl_11: Optional[MatrixFreeExtraction] = None
+    g1_curl_11_T: Optional[MatrixFreeExtraction] = None
     dd0_diaginv: Optional[object] = None
     dd1_diaginv: Optional[object] = None
     dd2_diaginv: Optional[object] = None
@@ -219,10 +169,6 @@ class SequenceOperators(eqx.Module):
     dd1_diaginv_dbc: Optional[object] = None
     dd2_diaginv_dbc: Optional[object] = None
     dd3_diaginv_dbc: Optional[object] = None
-    p21: Optional[jsparse.BCSR] = None
-    p12: Optional[jsparse.BCSR] = None
-    p03: Optional[jsparse.BCSR] = None
-    p30: Optional[jsparse.BCSR] = None
 
     # Pre-probed diagonal inverses of the approximate Schur operator
     # S_k + D_{k-1} M_tensor^{-1}_{k-1} D_{k-1}^T.  Built at assembly time
@@ -254,7 +200,6 @@ class SequenceOperators(eqx.Module):
     null_1_dbc: Optional[jnp.ndarray] = None
     null_2_dbc: Optional[jnp.ndarray] = None
     null_3_dbc: Optional[jnp.ndarray] = None
-    dense: Optional[DenseSequenceOperators] = None
 
     def _laplacian_diaginv_field_name(self, k: int, dirichlet: bool) -> str:
         if k not in (0, 1, 2, 3):
@@ -307,58 +252,6 @@ class SequenceOperators(eqx.Module):
     @property
     def laplacian3_diaginv_dbc(self):
         return self.dd3_diaginv_dbc
-
-    def todense(self, seq, operator: str, k, dirichlet: bool = True,
-                transpose: bool = False):
-        """Return a dense matrix for one assembled operator block."""
-        if self.dense is not None:
-            match operator:
-                case "mass":
-                    pair = getattr(self.dense, f"m{k}")
-                    return select_boundary_data(pair, dirichlet, f"Dense mass k={k}")
-                case "derivative":
-                    pair = getattr(self.dense, f"d{k}")
-                    matrix = select_boundary_data(pair, dirichlet, f"Dense derivative k={k}")
-                    return matrix.T if transpose else matrix
-                case "stiffness":
-                    pair = getattr(self.dense, f"s{k}")
-                    return select_boundary_data(pair, dirichlet, f"Dense stiffness k={k}")
-                case "laplacian":
-                    pair = getattr(self.dense, f"l{k}")
-                    return select_boundary_data(pair, dirichlet, f"Dense Laplacian k={k}")
-                case "projection":
-                    if not isinstance(k, tuple) or len(k) != 2:
-                        raise ValueError(
-                            "Projection dense conversion expects k=(k_in, k_out)")
-                    pair = getattr(self.dense, f"p{k[0]}{k[1]}")
-                    return select_boundary_data(pair, dirichlet, f"Dense projection ({k[0]}, {k[1]})")
-        match operator:
-            case "mass":
-                return dense_mass_matrix(seq, self, k, dirichlet=dirichlet)
-            case "derivative":
-                return dense_derivative_matrix(
-                    seq, self, k,
-                    dirichlet_in=dirichlet,
-                    dirichlet_out=dirichlet,
-                    transpose=transpose,
-                )
-            case "stiffness":
-                return dense_stiffness_matrix(seq, self, k, dirichlet=dirichlet)
-            case "laplacian":
-                return dense_hodge_laplacian(seq, self, k, dirichlet=dirichlet)
-            case "projection":
-                if not isinstance(k, tuple) or len(k) != 2:
-                    raise ValueError(
-                        "Projection dense conversion expects k=(k_in, k_out)")
-                return dense_projection_matrix(
-                    seq, self, k[0], k[1],
-                    dirichlet_in=dirichlet,
-                    dirichlet_out=dirichlet,
-                )
-        raise ValueError(
-            "operator must be one of 'mass', 'derivative', 'stiffness', "
-            "'laplacian' or 'projection'"
-        )
 
 
 _EXTRACTION_OPERATOR_NAMES = (
@@ -594,69 +487,6 @@ def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool):
     }
 
 
-def _assemble_mass_block(seq, geometry, k):
-    if k not in (0, 1, 2, 3):
-        raise ValueError("k must be 0, 1, 2 or 3")
-    sp = assemble_mass_local(seq, k, geometry)
-    return jsparse.BCSR.from_bcoo(sp)
-
-
-# TODO: remove when assembly files are gone (mass apply is matrix-free via build_matrixfree_mass_apply)
-def update_mass_operator(seq, geometry, operators: Optional[SequenceOperators], k: int):
-    """Return an operator bundle with the k-th mass operator updated.
-
-    Only the sparse mass matrix ``m{k}`` is built and stored here. Mass
-    preconditioners (Jacobi, surgery, tensor) are intentionally *not*
-    assembled as a side effect: the Jacobi diagonal is built on demand by
-    :func:`_mass_diaginv` (direct selection), and the surgery/tensor
-    preconditioners have dedicated explicit builders
-    (:func:`assemble_tensor_mass_preconditioner` etc.). This avoids computing
-    Jacobi data that the tensor preconditioner never uses.
-    """
-    del geometry  # geometry is already attached to seq and used inside assembly
-    sp = _assemble_mass_block(seq, seq.geometry, k)
-    operators = _ensure_extraction_operators(seq, operators)
-    match k:
-        case 0:
-            return eqx.tree_at(
-                lambda ops: ops.m0,
-                operators,
-                sp,
-                is_leaf=lambda x: x is None,
-            )
-        case 1:
-            return eqx.tree_at(
-                lambda ops: ops.m1,
-                operators,
-                sp,
-                is_leaf=lambda x: x is None,
-            )
-        case 2:
-            return eqx.tree_at(
-                lambda ops: ops.m2,
-                operators,
-                sp,
-                is_leaf=lambda x: x is None,
-            )
-        case 3:
-            return eqx.tree_at(
-                lambda ops: ops.m3,
-                operators,
-                sp,
-                is_leaf=lambda x: x is None,
-            )
-    raise ValueError("k must be 0, 1, 2 or 3")
-
-
-# TODO: remove when assembly files are gone
-def assemble_mass_operators(seq, geometry, operators: Optional[SequenceOperators] = None,
-                            ks: Sequence[int] = (0, 1, 2, 3)):
-    """Assemble mass operators for the requested form degrees."""
-    for k in ks:
-        operators = update_mass_operator(seq, geometry, operators, k)
-    return operators
-
-
 def assemble_mass_jacobi_preconditioner(
         seq, operators: Optional[SequenceOperators] = None,
         *, ks: Sequence[int] = (0, 1, 2, 3)):
@@ -665,8 +495,8 @@ def assemble_mass_jacobi_preconditioner(
     Probes ``diag(E M_k E^T)`` through the SAME matrix-free extracted mass
     apply the solvers use (via :func:`mrx.preconditioners.build_mass_jacobi_pair`),
     so the stored diagonal is consistent with the runtime operator by
-    construction. The previous sparse-block route (``diag_EAET_direct`` on
-    ``_assemble_mass_block``) produced inconsistent diagonals on the polar
+    construction. The previous sparse-block route (a scatter plan over the
+    assembled mass entries) produced inconsistent diagonals on the polar
     extracted spaces k=0,1,2 (CG with the "preconditioner" stalled at
     maxiter; caught 2026-08-14 when the test suite first exercised it).
     """
@@ -820,11 +650,22 @@ def _coerce_diffusion_preconditioner_spec(
 
 
 def _dense_incidence_1d(n0: int, typ: str) -> jnp.ndarray:
-    """Return the dense 1-D incidence matrix ``G_a`` for axis basis type."""
-    rows, cols, vals, n_out, n_in = _incidence_1d_coo(n0, typ)
-    G = jnp.zeros((n_out, n_in))
-    G = G.at[rows, cols].add(vals)
-    return G
+    """Return the dense 1-D incidence matrix ``G_a`` for axis basis type.
+
+    ``clamped``: ``(G c)_j = c_{j+1} - c_j`` on ``n0 - 1`` rows;
+    ``periodic``: the same with the index wrapped, ``n0`` rows;
+    ``constant``: the zero ``(n0, n0)`` matrix.
+    """
+    if typ == 'clamped':
+        n_out = n0 - 1
+        j = jnp.arange(n_out)
+        return jnp.zeros((n_out, n0)).at[j, j].set(-1.0).at[j, j + 1].set(1.0)
+    if typ == 'periodic':
+        j = jnp.arange(n0)
+        return jnp.zeros((n0, n0)).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
+    if typ == 'constant':
+        return jnp.zeros((n0, n0))
+    raise ValueError(f"Unknown basis type {typ!r}")
 
 
 def _assemble_1d_fd_eigendecomp(M: jnp.ndarray, K: jnp.ndarray):
@@ -872,25 +713,6 @@ def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0)
     return y
 
 
-def _mass_components(operators: SequenceOperators, k: int):
-    try:
-        diaginv = get_mass_jacobi_diaginv(operators.mass_preconds, k, False)
-        diaginv_dbc = get_mass_jacobi_diaginv(operators.mass_preconds, k, True)
-    except ValueError:
-        diaginv = None
-        diaginv_dbc = None
-    match k:
-        case 0:
-            return operators.m0, diaginv, diaginv_dbc
-        case 1:
-            return operators.m1, diaginv, diaginv_dbc
-        case 2:
-            return operators.m2, diaginv, diaginv_dbc
-        case 3:
-            return operators.m3, diaginv, diaginv_dbc
-    raise ValueError("k must be 0, 1, 2 or 3")
-
-
 def mass_core_apply(seq, operators: SequenceOperators, k: int):
     """Return a raw-DOF-space callable ``x -> M_k @ x``.
 
@@ -899,7 +721,7 @@ def mass_core_apply(seq, operators: SequenceOperators, k: int):
     ``M_k``, removing the high-(n, p) storage bottleneck (notably for M1). The
     element plan is built once per geometry and cached on ``seq``.
     """
-    del operators  # mass apply no longer reads the stored BCSR matrix
+    del operators  # the apply is built from the geometry attached to seq
     return _matrixfree_mass_apply_cached(seq, k)
 
 
@@ -926,8 +748,10 @@ def _matrixfree_mass_apply_cached(seq, k: int):
 
 def _mass_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
     del seq
-    _, diaginv, diaginv_dbc = _mass_components(operators, k)
-    selected = diaginv_dbc if dirichlet else diaginv
+    try:
+        selected = get_mass_jacobi_diaginv(operators.mass_preconds, k, dirichlet)
+    except ValueError:
+        selected = None
     if selected is None:
         side = "dbc" if dirichlet else "free"
         raise ValueError(
@@ -937,22 +761,8 @@ def _mass_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
     return selected
 
 
-def _laplacian_components(operators: SequenceOperators, k: int):
-    match k:
-        case 0:
-            return operators.grad_grad, operators.laplacian0_diaginv, operators.laplacian0_diaginv_dbc
-        case 1:
-            return operators.curl_curl, operators.laplacian1_diaginv, operators.laplacian1_diaginv_dbc
-        case 2:
-            return operators.div_div, operators.laplacian2_diaginv, operators.laplacian2_diaginv_dbc
-        case 3:
-            return None, operators.laplacian3_diaginv, operators.laplacian3_diaginv_dbc
-    raise ValueError("k must be 0, 1, 2 or 3")
-
-
 def _laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
-    _, diaginv, diaginv_dbc = _laplacian_components(operators, k)
-    selected = diaginv_dbc if dirichlet else diaginv
+    selected = operators.get_laplacian_diaginv(k, dirichlet)
     if selected is None:
         if k in (0, 1, 2, 3):
             # The Laplacian Jacobi diagonal is not assembled eagerly: with the
@@ -994,52 +804,15 @@ def _laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: boo
     return selected
 
 
-# Backward-compatible aliases during naming transition.
-def _hodge_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
-    return _laplacian_diaginv(seq, operators, k, dirichlet)
-
-
-def _projection_components(operators: SequenceOperators, k_in: int, k_out: int):
-    match (k_in, k_out):
-        case (2, 1):
-            return operators.p21
-        case (1, 2):
-            return operators.p12
-        case (0, 3):
-            return operators.p03
-        case (3, 0):
-            return operators.p30
-    raise ValueError(
-        "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported"
-    )
-
-
-# TODO: remove (no-op validator; will be unneeded once assembly files are gone)
-def _assemble_derivative_block(seq, operators: SequenceOperators, k: int):
-    """Validate that G_k is available; returns (None, None).
-
-    M_{k+1} is applied matrix-free via :func:`mass_core_apply`, which does not
-    read ``operators.m{k+1}``, so no BCSR mass matrix needs to be assembled.
-    """
-    g_sp, _ = _incidence_components(operators, k)
-    if g_sp is None:
-        raise ValueError(
-            f"Incidence operator G{k} is required to apply D{k}")
-    return None, None
-
-
-# TODO: remove (no-op validator path; G_k assembly is the only real work)
 def update_derivative_operator(seq, geometry, operators: Optional[SequenceOperators], k: int):
-    """Ensure the k-th incidence G_k is assembled (D_k is applied lazily)."""
+    """Ensure the k-th incidence ``G_k`` is present (``D_k = M_{k+1} G_k`` is applied lazily)."""
     del geometry  # unused
+    if k not in (0, 1, 2):
+        raise ValueError("k must be 0, 1 or 2")
     operators = _ensure_extraction_operators(seq, operators)
     if _incidence_components(operators, k)[0] is None:
         operators = update_incidence_operator(seq, operators, k)
-    # Validates ``G_k`` and ``M_{k+1}`` are present; returns ``(None, None)``.
-    _assemble_derivative_block(seq, operators, k)
-    if k in (0, 1, 2):
-        return operators
-    raise ValueError("k must be 0, 1 or 2")
+    return operators
 
 
 def assemble_derivative_operators(seq, geometry, operators: Optional[SequenceOperators] = None,
@@ -1064,204 +837,6 @@ def assemble_derivative_operators(seq, geometry, operators: Optional[SequenceOpe
 # Because the incidence is geometry-independent, it does not need to be
 # re-assembled when the spline map changes.
 
-def _incidence_1d_coo(n0: int, typ: str):
-    """Return (rows, cols, vals, n_out, n_in) for the 1-D incidence matrix."""
-    if typ == 'clamped':
-        n_out = n0 - 1
-        j = jnp.arange(n_out)
-        rows = jnp.concatenate([j, j])
-        cols = jnp.concatenate([j, j + 1])
-        vals = jnp.concatenate([-jnp.ones(n_out), jnp.ones(n_out)])
-        return rows, cols, vals, n_out, n0
-    if typ == 'periodic':
-        n_out = n0
-        j = jnp.arange(n_out)
-        rows = jnp.concatenate([j, j])
-        cols = jnp.concatenate([j, (j + 1) % n0])
-        vals = jnp.concatenate([-jnp.ones(n_out), jnp.ones(n_out)])
-        return rows, cols, vals, n_out, n0
-    if typ == 'constant':
-        # Derivative of a constant field is zero; DerivativeSpline has n_d = n0.
-        rows = jnp.zeros((0,), dtype=jnp.int32)
-        cols = jnp.zeros((0,), dtype=jnp.int32)
-        vals = jnp.zeros((0,))
-        return rows, cols, vals, n0, n0
-    raise ValueError(f"Unknown basis type {typ!r}")
-
-
-def _identity_coo(n: int):
-    """Return (rows, cols, vals) for a 1-D identity of size n."""
-    j = jnp.arange(n)
-    return j, j, jnp.ones(n)
-
-
-def _kron3_block(
-    f_r, f_t, f_z,
-    row_shape, col_shape,
-):
-    """Build one rank-1 Kronecker block ``f_r ⊗ f_t ⊗ f_z`` in BCOO.
-
-    ``f_*`` is a triple ``(rows, cols, vals)`` of COO data for each 1-D
-    factor. ``row_shape`` and ``col_shape`` give the 3-D DoF shapes of the
-    factor output/input, used to ravel the multi-indices into flat indices.
-    Returns a ``jsparse.BCOO`` of shape ``(prod(row_shape), prod(col_shape))``.
-    """
-    rr, rc, rv = f_r
-    tr, tc, tv = f_t
-    zr, zc, zv = f_z
-
-    # Cartesian product of the three 1-D nonzero sets.
-    Rr, Tr, Zr = jnp.meshgrid(rr, tr, zr, indexing='ij')
-    Rc, Tc, Zc = jnp.meshgrid(rc, tc, zc, indexing='ij')
-    Rv, Tv, Zv = jnp.meshgrid(rv, tv, zv, indexing='ij')
-
-    row_flat = jnp.ravel_multi_index(
-        (Rr.ravel(), Tr.ravel(), Zr.ravel()),
-        row_shape, mode='clip')
-    col_flat = jnp.ravel_multi_index(
-        (Rc.ravel(), Tc.ravel(), Zc.ravel()),
-        col_shape, mode='clip')
-    vals = (Rv * Tv * Zv).ravel()
-
-    n_rows = int(row_shape[0] * row_shape[1] * row_shape[2])
-    n_cols = int(col_shape[0] * col_shape[1] * col_shape[2])
-    indices = jnp.stack([row_flat, col_flat], axis=-1)
-    return jsparse.BCOO((vals, indices), shape=(n_rows, n_cols))
-
-
-def _bcoo_hstack(blocks, n_rows: int):
-    """Horizontally concatenate BCOO blocks that share the same row count."""
-    datas = []
-    indices = []
-    offset = 0
-    for b in blocks:
-        datas.append(b.data)
-        idx = b.indices.at[:, 1].add(offset)
-        indices.append(idx)
-        offset += b.shape[1]
-    data = jnp.concatenate(datas)
-    idx = jnp.concatenate(indices, axis=0)
-    return jsparse.BCOO((data, idx), shape=(n_rows, offset))
-
-
-def _bcoo_vstack(blocks, n_cols: int):
-    """Vertically concatenate BCOO blocks that share the same column count."""
-    datas = []
-    indices = []
-    offset = 0
-    for b in blocks:
-        datas.append(b.data)
-        idx = b.indices.at[:, 0].add(offset)
-        indices.append(idx)
-        offset += b.shape[0]
-    data = jnp.concatenate(datas)
-    idx = jnp.concatenate(indices, axis=0)
-    return jsparse.BCOO((data, idx), shape=(offset, n_cols))
-
-
-def _incidence_forward_bcoo(k: int, types, s0, s1, s2, s3):
-    """Build the forward topological derivative ``Dk`` as a BCOO matrix.
-
-    The 3-D incidence operators decompose into rank-1 Kronecker blocks:
-    for a derivative in axis ``d``, the block is ``I ⊗ ... ⊗ G_d ⊗ ... ⊗ I``
-    where the non-``d`` identity factors have sizes equal to the *input*
-    component's shape in those axes (which must match the output).
-
-    This is the slow, materialised reference used only for lazy ``to_bcoo`` /
-    ``todense`` on :class:`_MatrixFreeIncidence` (debug + retired diagonal
-    paths). The production solve uses the matrix-free apply instead.
-    """
-    G_1d = {
-        0: _incidence_1d_coo(s0[0], types[0])[:3],
-        1: _incidence_1d_coo(s0[1], types[1])[:3],
-        2: _incidence_1d_coo(s0[2], types[2])[:3],
-    }
-
-    def dblock(axis, in_shape, out_shape):
-        """One-directional derivative block ``∂_axis`` from ``in_shape`` → ``out_shape``.
-
-        The two non-differentiated axes must have matching sizes in/out; the
-        differentiated axis must go from the 0-form size to the derivative
-        size (or stay the same for periodic/constant).
-        """
-        factors = [None, None, None]
-        for a in range(3):
-            if a == axis:
-                factors[a] = G_1d[a]
-            else:
-                assert in_shape[a] == out_shape[a], (
-                    f"axis {a} size mismatch: {in_shape[a]} vs {out_shape[a]}")
-                factors[a] = _identity_coo(in_shape[a])
-        return _kron3_block(factors[0], factors[1], factors[2], out_shape, in_shape)
-
-    def neg(block):
-        return jsparse.BCOO((-block.data, block.indices), shape=block.shape)
-
-    s1_r, s1_t, s1_z = s1
-    s2_r, s2_t, s2_z = s2
-
-    match k:
-        case 0:
-            # D0 v = (∂_r v, ∂_t v, ∂_z v).
-            b_r = dblock(0, s0, s1_r)
-            b_t = dblock(1, s0, s1_t)
-            b_z = dblock(2, s0, s1_z)
-            n_cols = int(s0[0] * s0[1] * s0[2])
-            sp = _bcoo_vstack([b_r, b_t, b_z], n_cols)
-        case 1:
-            # Curl: (v0, v1, v2) ↦
-            #   (∂_t v2 - ∂_z v1,  ∂_z v0 - ∂_r v2,  ∂_r v1 - ∂_t v0).
-            # Row 0 (→ s2_r): [0, -∂_z v1, +∂_t v2]
-            zero_00 = _empty_bcoo(s2_r, s1_r)
-            b_01 = neg(dblock(2, s1_t, s2_r))
-            b_02 = dblock(1, s1_z, s2_r)
-            row0 = _bcoo_hstack(
-                [zero_00, b_01, b_02], int(s2_r[0] * s2_r[1] * s2_r[2]))
-
-            # Row 1 (→ s2_t): [+∂_z v0, 0, -∂_r v2]
-            b_10 = dblock(2, s1_r, s2_t)
-            zero_11 = _empty_bcoo(s2_t, s1_t)
-            b_12 = neg(dblock(0, s1_z, s2_t))
-            row1 = _bcoo_hstack(
-                [b_10, zero_11, b_12], int(s2_t[0] * s2_t[1] * s2_t[2]))
-
-            # Row 2 (→ s2_z): [-∂_t v0, +∂_r v1, 0]
-            b_20 = neg(dblock(1, s1_r, s2_z))
-            b_21 = dblock(0, s1_t, s2_z)
-            zero_22 = _empty_bcoo(s2_z, s1_z)
-            row2 = _bcoo_hstack(
-                [b_20, b_21, zero_22], int(s2_z[0] * s2_z[1] * s2_z[2]))
-
-            n_cols_1form = int(
-                s1_r[0] * s1_r[1] * s1_r[2]
-                + s1_t[0] * s1_t[1] * s1_t[2]
-                + s1_z[0] * s1_z[1] * s1_z[2])
-            sp = _bcoo_vstack([row0, row1, row2], n_cols_1form)
-        case 2:
-            # D2 (v0, v1, v2) = ∂_r v0 + ∂_t v1 + ∂_z v2.
-            b_r = dblock(0, s2_r, s3)
-            b_t = dblock(1, s2_t, s3)
-            b_z = dblock(2, s2_z, s3)
-            n_rows = int(s3[0] * s3[1] * s3[2])
-            sp = _bcoo_hstack([b_r, b_t, b_z], n_rows)
-        case _:
-            raise ValueError("k must be 0, 1 or 2")
-
-    sp = sp.sum_duplicates()
-    sp_T = jsparse.BCSR.from_bcoo(sp.T)
-    sp = jsparse.BCSR.from_bcoo(sp)
-    return sp, sp_T
-
-
-def _empty_bcoo(row_shape, col_shape):
-    """Return a structurally-zero BCOO block of the given 3-D shapes."""
-    n_rows = int(row_shape[0] * row_shape[1] * row_shape[2])
-    n_cols = int(col_shape[0] * col_shape[1] * col_shape[2])
-    data = jnp.zeros((0,))
-    indices = jnp.zeros((0, 2), dtype=jnp.int32)
-    return jsparse.BCOO((data, indices), shape=(n_rows, n_cols))
-
-
 # ---------------------------------------------------------------------------
 # Matrix-free topological incidence (G0/G1/G2 and transposes)
 #
@@ -1269,8 +844,7 @@ def _empty_bcoo(row_shape, col_shape):
 # stored. In non-flattened (tensor) form the apply is just per-axis forward
 # differences (grad/curl/div) or their adjoints, which makes the zero structure
 # explicit. ``_MatrixFreeIncidence`` carries only static shape metadata and
-# applies via reshape + difference; ``to_bcoo``/``todense`` rebuild the sparse
-# matrix lazily for the debug/reporting paths.
+# applies via reshape + difference.
 # ---------------------------------------------------------------------------
 
 def _diff_fwd(V, axis: int, typ: str):
@@ -1376,9 +950,7 @@ class _MatrixFreeIncidence(eqx.Module):
     """Lazy {-1,0,+1} incidence operator applied as a difference stencil.
 
     Carries only static shape metadata (no stored matrix). Supports the matvec
-    protocol (``@`` / ``__call__``) used throughout the solve path, plus lazy
-    ``to_bcoo`` / ``todense`` for the debug/reporting helpers that still want a
-    materialised matrix.
+    protocol (``@`` / ``__call__``) used throughout the solve path.
     """
     k: int = eqx.field(static=True)
     transpose: bool = eqx.field(static=True)
@@ -1404,15 +976,6 @@ class _MatrixFreeIncidence(eqx.Module):
             s0=self.s0, s1=self.s1, s2=self.s2, s3=self.s3,
             shape=(self.shape[1], self.shape[0]),
         )
-
-    def to_bcoo(self):
-        sp, sp_T = _incidence_forward_bcoo(
-            self.k, self.types, self.s0, self.s1, self.s2, self.s3)
-        chosen = sp_T if self.transpose else sp
-        return chosen.to_bcoo()
-
-    def todense(self):
-        return self.to_bcoo().todense()
 
 
 def _incidence_shapes(seq):
@@ -1496,45 +1059,26 @@ class _StencilTriplets:
         self.cols.append(cols[keep])
         self.data.append(data[keep])
 
-    def bcsr(self, shape):
+    def operator(self, shape):
+        """Return the collected triplets as a :class:`MatrixFreeExtraction`.
+
+        Duplicates are summed on the host first so the device arrays hold one
+        entry per nonzero.
+        """
         import scipy.sparse as _sps
-        csr = _sps.coo_matrix(
+        coo = _sps.coo_matrix(
             (np.concatenate(self.data),
              (np.concatenate(self.rows).astype(np.int32),
               np.concatenate(self.cols).astype(np.int32))),
-            shape=shape).tocsr()
-        return _bcsr_from_csr(csr)
-
-
-def _bcsr_from_csr(csr):
-    """Device ``BCSR`` from a canonical (sorted, duplicate-free) scipy CSR.
-
-    Built from the host arrays directly: ``BCSR.from_bcoo`` is a jitted
-    conversion that compiles once per matrix shape, which for the four
-    boundary-condition variants of two stencils is most of the build time.
-    """
-    csr.sum_duplicates()
-    return jsparse.BCSR(
-        (jnp.asarray(csr.data), jnp.asarray(csr.indices.astype(np.int32)),
-         jnp.asarray(csr.indptr.astype(np.int32))),
-        shape=tuple(int(s) for s in csr.shape),
-        indices_sorted=True, unique_indices=True)
-
-
-def _bcsr_transpose(m):
-    """Transpose a host-buildable ``BCSR`` through scipy (no device compile)."""
-    import scipy.sparse as _sps
-    csr = _sps.csr_matrix(
-        (np.asarray(m.data), np.asarray(m.indices), np.asarray(m.indptr)),
-        shape=tuple(int(s) for s in m.shape))
-    return _bcsr_from_csr(csr.T.tocsr())
+            shape=shape).tocsr().tocoo()
+        return MatrixFreeExtraction.from_coo(coo.row, coo.col, coo.data, shape)
 
 
 def build_grad_stencil_g0(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
     """Analytic, INVERSE-FREE polar discrete gradient ``G_0`` (V0 -> V1).
 
-    Builds the true strong gradient on extracted DoFs as an explicit sparse
-    matrix straight from the incidence pattern and the polar mapping coefficients
+    Builds the true strong gradient on extracted DoFs as an indexed operator
+    straight from the incidence pattern and the polar mapping coefficients
     ``xi`` (shape ``(3, 2, nt)``) -- coefficient differences and ``xi`` weights
     only, NO mass and NO matrix inverse. This is the closed form of
     ``Gram_1^{-1} (E_1 sp_0 E_0^T)``; the axis-fusion inverse cancels to clean
@@ -1611,14 +1155,14 @@ def build_grad_stencil_g0(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
 
     n0 = int(seq.n0_dbc if dirichlet_in else seq.n0)
     n1 = int(seq.n1_dbc if dirichlet_out else seq.n1)
-    return out.bcsr((n1, n0))
+    return out.operator((n1, n0))
 
 
 def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
     """Analytic, INVERSE-FREE polar discrete curl ``G_1`` (V1 -> V2).
 
     The degree-1 analog of :func:`build_grad_stencil_g0`: the true strong curl on
-    extracted DoFs as an explicit sparse matrix from the incidence pattern and the
+    extracted DoFs as an indexed operator from the incidence pattern and the
     polar coefficients ``xi`` (shape ``(3, 2, nt)``) -- coefficient differences and
     ``xi`` weights only, NO mass and NO matrix inverse. The closed form of
     ``Gram_2^{-1} (E_2 sp_1 E_1^T)``; the V2 axis-fusion inverse cancels to clean
@@ -1715,54 +1259,7 @@ def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
 
     n1 = int(seq.n1_dbc if dirichlet_in else seq.n1)
     n2 = int(seq.n2_dbc if dirichlet_out else seq.n2)
-    return out.bcsr((n2, n1))
-
-def _build_inc_gram_inv(seq, operators, space: int, dirichlet: bool):
-    """Sparse ``(E_space^T E_space)^{-1}`` for the TRUE polar-derivative fix.
-
-    The true strong derivative on extracted DoFs is
-    ``G = M^{-1} D = Gram_{k+1}^{-1} (E^T sp E)`` with the (mass-free) coefficient
-    Gram ``Gram = E^T E``. ``Gram`` is the identity in the bulk plus a small dense
-    block on the polar-axis fusion DoFs, so its inverse is sparse (identity +
-    that block). Returns ``None`` when the extraction is unitary (``Gram = I``,
-    e.g. non-polar or the top space V3) -- then no correction is needed.
-    """
-    import scipy.sparse as _sps
-    e, e_T = _mass_extraction(operators, space, dirichlet)
-    if e is None or e_T is None:
-        return None
-    n_ext = int(getattr(seq, f"n{space}_dbc" if dirichlet else f"n{space}"))
-    # Build the (ext x full) restriction E as a SPARSE matrix straight from the
-    # extraction's own triplets -- never densify the (ext x full) operator (that
-    # is the "densify an incidence operator" madness). The coefficient Gram
-    # E E^T is (ext x ext) and stays sparse; only the small polar-axis fusion
-    # block is touched densely (to invert), exactly the "small dense ops near the
-    # axis" worst case.
-    bcoo = e.to_bcoo()
-    idx = np.asarray(bcoo.indices)
-    dat = np.asarray(bcoo.data)
-    shp = tuple(int(s) for s in bcoo.shape)
-    E = _sps.coo_matrix((dat, (idx[:, 0], idx[:, 1])), shape=shp).tocsr()
-    if E.shape[0] != n_ext and E.shape[1] == n_ext:
-        E = E.T.tocsr()
-    n = E.shape[0]
-    gram = (E @ E.T).tocsr()                          # (ext, ext) coeff Gram, sparse
-    diff = (gram - _sps.identity(n, format="csr", dtype=gram.dtype)).tocoo()
-    mask = np.abs(diff.data) > 1e-10
-    S = np.unique(diff.row[mask]) if mask.any() else np.array([], dtype=int)
-    if S.size == 0:
-        return None                                  # unitary extraction
-    gram_ss_inv = np.linalg.inv(np.asarray(gram[np.ix_(S, S)].todense()))
-    in_S = np.zeros(n, dtype=bool)
-    in_S[S] = True
-    bulk = np.where(~in_S)[0]
-    II, JJ = np.meshgrid(S, S, indexing="ij")
-    rows = np.concatenate([bulk, II.ravel()]).astype(np.int32)
-    cols = np.concatenate([bulk, JJ.ravel()]).astype(np.int32)
-    data = np.concatenate([np.ones(bulk.size), gram_ss_inv.ravel()])
-    bcoo = jsparse.BCOO((jnp.asarray(data), jnp.asarray(np.stack([rows, cols], axis=1))),
-                        shape=(n, n))
-    return jsparse.BCSR.from_bcoo(bcoo)
+    return out.operator((n2, n1))
 
 
 def _grad_stencil(operators: SequenceOperators, dirichlet_in: bool,
@@ -1783,58 +1280,35 @@ def _curl_stencil(operators: SequenceOperators, dirichlet_in: bool,
     return getattr(operators, name, None)
 
 
-def _inc_gram_inv(operators: SequenceOperators, space: int, dirichlet: bool):
-    """Look up the stored true-derivative Gram^{-1} correction (or None).
-
-    Retained for the k=2 (div) apply path -- V3 is unitary so this is always
-    ``None`` (-> raw incidence = true div). grad/curl use the analytic stencils;
-    the stored Gram inverses are no longer precomputed (see _extraction_is_polar).
-    """
-    if not (1 <= space <= 3):
-        return None
-    name = f"inc_gram_inv_{space}" + ("_dbc" if dirichlet else "")
-    return getattr(operators, name, None)
-
-
 def _extraction_is_polar(operators: SequenceOperators, space: int) -> bool:
     """True iff the extraction of ``space`` is non-unitary (polar axis fusion).
 
-    Gram-free polar signal: tests ``E E^T x != x`` on one probe (E E^T = I on the
-    0/1 non-polar/unitary extractions). Replaces the old "inc_gram_inv non-None"
-    check so the analytic grad/curl stencils can be built without precomputing the
-    Gram inverses at all.
+    Tests ``E E^T x != x`` on one probe (``E E^T = I`` on the 0/1
+    non-polar/unitary extractions).
     """
     e, e_T = _mass_extraction(operators, space, False)
     if e is None or e_T is None:
         return False
     n_ext = int(e.shape[0])
-    x = jax.random.normal(jax.random.PRNGKey(0), (n_ext,), dtype=jnp.float64)
-    return bool(jnp.max(jnp.abs(e @ (e_T @ x) - x)) > 1e-10)
+    x = jax.random.normal(jax.random.PRNGKey(0), (n_ext,), dtype=mrx.DTYPE)
+    return bool(jnp.max(jnp.abs(e @ (e_T @ x) - x)) > mrx.sqrt_eps(1e-2))
 
 
 def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = None,
                                  ks: Sequence[int] = (0, 1, 2)):
     """Assemble topological incidence operators for the requested degrees.
 
-    Also caches the TRUE polar-derivative Gram^{-1} corrections for the output
-    spaces ``{k+1}`` so :func:`apply_incidence_matrix` returns the strong
-    derivative ``M^{-1} D`` (exact ``d.d = 0`` on extracted DoFs) on polar
-    sequences, while staying bit-identical to the raw incidence elsewhere.
+    On polar sequences also builds the analytic grad/curl stencils so
+    :func:`apply_incidence_matrix` returns the true strong derivative (exact
+    ``d.d = 0`` on extracted DoFs); elsewhere the raw incidence is exact.
     """
     for k in ks:
         operators = update_incidence_operator(seq, operators, k)
     operators = _ensure_extraction_operators(seq, operators)
 
-    # The true polar derivative is realized by the analytic inverse-free stencils
-    # below (grad G_0 for k=0, curl G_1 for k=1); div G_2 (output V3) needs no
-    # correction (V3 extraction is unitary). The old per-operator Gram^{-1}
-    # precompute (`_build_inc_gram_inv` -> inc_gram_inv_*) is therefore NOT built;
-    # `_build_inc_gram_inv` is kept only as an independent oracle for the
-    # validation harness, and `_inc_gram_inv` stays None (-> raw div apply).
-
-    # Analytic inverse-free polar grad G_0 (replaces the Gram^{-1} path for k=0),
-    # built when grad is requested (0 in ks) on a polar sequence (V1 extraction
-    # non-unitary). Stored per BC pair, forward + transpose; bit-exact with Gram.
+    # Analytic inverse-free polar grad G_0, built when grad is requested (0 in
+    # ks) on a polar sequence (V1 extraction non-unitary). Stored per BC pair,
+    # forward + transpose.
     polar = _extraction_is_polar(operators, 1)
     # The analytic grad stencil encodes the C¹ polar surgery structure; a
     # polar_order=2 sequence has a different 0-form layout (6 polar
@@ -1849,17 +1323,17 @@ def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = N
                 g0 = build_grad_stencil_g0(seq, xi, din, dout)
                 base = f"g0_grad_{int(din)}{int(dout)}"
                 gfields += [base, base + "_T"]
-                gvals += [g0, _bcsr_transpose(g0)]
+                gvals += [g0, g0.T]
         operators = eqx.tree_at(
             lambda o: tuple(getattr(o, f) for f in gfields),
             operators, tuple(gvals),
             is_leaf=lambda x: x is None,
         )
 
-    # Analytic inverse-free polar curl G_1 (replaces the Gram^{-1} path for k=1),
-    # built when curl is requested (1 in ks) on a polar sequence. Div (k=2, output
-    # V3) needs no stencil: the V3 extraction is a 0/1 selection (Gram_3 = I), so
-    # apply_incidence(.,2) is already the true div.
+    # Analytic inverse-free polar curl G_1, built when curl is requested (1 in
+    # ks) on a polar sequence. Div (k=2, output V3) needs no stencil: the V3
+    # extraction is a 0/1 selection, so apply_incidence(., 2) is already the
+    # true div.
     polar2 = _extraction_is_polar(operators, 2)
     if 1 in ks and polar2 and operators.g1_curl_00 is None:
         xi = get_xi(seq.ns[1])
@@ -1869,7 +1343,7 @@ def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = N
                 g1 = build_curl_stencil_g1(seq, xi, din, dout)
                 base = f"g1_curl_{int(din)}{int(dout)}"
                 cfields += [base, base + "_T"]
-                cvals += [g1, _bcsr_transpose(g1)]
+                cvals += [g1, g1.T]
         operators = eqx.tree_at(
             lambda o: tuple(getattr(o, f) for f in cfields),
             operators, tuple(cvals),
@@ -1895,23 +1369,16 @@ def apply_incidence_matrix(seq, operators: SequenceOperators, v, k: int,
                            transpose: bool = False):
     """Apply the strong exterior-derivative ``G_k`` on extracted DoF spaces.
 
-    The raw extracted incidence is ``E_out^T sp E_in`` (``sp`` has entries in
+    The raw extracted incidence is ``E_out sp E_in^T`` (``sp`` has entries in
     ``{-1, 0, +1}``). On polar sequences the extraction is non-unitary at the
-    axis, so the raw form is NOT the topological derivative and ``d.d != 0``.
-    The true strong derivative is ``G = Gram_{k+1}^{-1} (E_out^T sp E_in)`` with
-    the cached coefficient-Gram inverse (``None`` / identity where the extraction
-    is unitary, e.g. non-polar). The correction is a sparse matvec localised to
-    the polar-axis DoFs, so off-axis the result is bit-identical to the raw
-    incidence and ``d.d = 0`` holds exactly on extracted DoFs everywhere.
+    axis, so the raw form is NOT the topological derivative and ``d.d != 0``;
+    there the analytic polar stencils (grad for k=0, curl for k=1) are applied
+    instead. Div (k=2) needs no correction: the V3 extraction is unitary.
     """
-    # k=0 grad: use the analytic inverse-free polar stencil when available
-    # (built on polar sequences). Bit-exact with the Gram form; on non-polar the
-    # fields are None and we fall through to the raw incidence path below.
     if k == 0:
         g0 = _grad_stencil(operators, dirichlet_in, dirichlet_out, transpose)
         if g0 is not None:
             return g0 @ v
-    # k=1 curl: analytic inverse-free polar stencil when available (polar only).
     if k == 1:
         g1 = _curl_stencil(operators, dirichlet_in, dirichlet_out, transpose)
         if g1 is not None:
@@ -1922,198 +1389,57 @@ def apply_incidence_matrix(seq, operators: SequenceOperators, v, k: int,
         raise ValueError(f"Incidence operator k={k} is not assembled")
     e_in, e_in_T, e_out, e_out_T = _derivative_extraction(
         operators, k, dirichlet_in, dirichlet_out)
-    gram_inv = _inc_gram_inv(operators, k + 1, dirichlet_out)
-
     if transpose:
-        # G^T = (E^T sp E)^T Gram_{k+1}^{-1}  (Gram symmetric -> proper adjoint)
-        w = gram_inv @ v if gram_inv is not None else v
-        return e_in @ (sp_T @ (e_out_T @ w))
-    y = e_out @ (sp @ (e_in_T @ v))
-    return gram_inv @ y if gram_inv is not None else y
+        return e_in @ (sp_T @ (e_out_T @ v))
+    return e_out @ (sp @ (e_in_T @ v))
 
 
-def _assemble_projection_block(seq, k_in: int, k_out: int):
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
-    dR = seq.d_basis_r_jk
-    dT = seq.d_basis_t_jk
-    dZ = seq.d_basis_z_jk
-    R = seq.basis_r_jk
-    T = seq.basis_t_jk
-    Z = seq.basis_z_jk
-
-    match (k_in, k_out):
-        case (2, 1) | (1, 2):
-            W_3x3 = seq.quad.w[:, None, None] * jnp.eye(3)
-            row_terms = [
-                [(0, dR, T, Z, +1)],
-                [(1, R, dT, Z, +1)],
-                [(2, R, T, dZ, +1)],
-            ]
-            col_terms = [
-                [(0, R, dT, dZ, +1)],
-                [(1, dR, T, dZ, +1)],
-                [(2, dR, dT, Z, +1)],
-            ]
-            sp = assemble_vectorial(
-                row_terms, col_terms, W_3x3, quad_shape,
-                list(seq.basis_1.shape), seq.basis_1.pr,
-                col_comp_shapes=list(seq.basis_2.shape))
-            return jsparse.BCSR.from_bcoo(sp if k_in == 2 else sp.T)
-        case (0, 3):
-            W_1x1 = seq.quad.w.reshape(-1, 1, 1)
-            row_terms = [
-                [(0, R, T, Z, +1)],
-            ]
-            col_terms = [
-                [(0, dR, dT, dZ, +1)],
-            ]
-            sp = assemble_vectorial(
-                row_terms, col_terms, W_1x1, quad_shape,
-                list(seq.basis_0.shape), seq.basis_0.pr,
-                col_comp_shapes=list(seq.basis_3.shape))
-            return jsparse.BCSR.from_bcoo(sp)
-        case (3, 0):
-            W_1x1 = seq.quad.w.reshape(-1, 1, 1)
-            row_terms = [
-                [(0, R, T, Z, +1)],
-            ]
-            col_terms = [
-                [(0, dR, dT, dZ, +1)],
-            ]
-            sp = assemble_vectorial(
-                row_terms, col_terms, W_1x1, quad_shape,
-                list(seq.basis_0.shape), seq.basis_0.pr,
-                col_comp_shapes=list(seq.basis_3.shape))
-            return jsparse.BCSR.from_bcoo(sp.T)
-    raise ValueError(
-        "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported"
-    )
+# Row/column spaces of the projection masses ``P_{k_in k_out}``: rows are the
+# space of ``e_out`` and columns the space of ``e_in`` in
+# :func:`_projection_extraction`.
+_PROJECTION_SPACES = {(2, 1): (1, 2), (1, 2): (2, 1), (0, 3): (0, 3), (3, 0): (3, 0)}
 
 
-def update_projection_operator(seq, operators: Optional[SequenceOperators],
-                               k_in: int, k_out: int):
-    """Return an operator bundle with the requested projection updated."""
-    sp = _assemble_projection_block(seq, k_in, k_out)
-    operators = _ensure_extraction_operators(seq, operators)
+def _matrixfree_projection_apply_cached(seq, k_in: int, k_out: int):
+    """Build (and cache on ``seq``) the raw-DOF apply of the projection mass.
 
-    match (k_in, k_out):
-        case (2, 1):
-            return eqx.tree_at(
-                lambda ops: ops.p21,
-                operators,
-                sp,
-                is_leaf=lambda x: x is None,
-            )
-        case (1, 2):
-            return eqx.tree_at(
-                lambda ops: ops.p12,
-                operators,
-                sp,
-                is_leaf=lambda x: x is None,
-            )
-        case (0, 3):
-            return eqx.tree_at(
-                lambda ops: ops.p03,
-                operators,
-                sp,
-                is_leaf=lambda x: x is None,
-            )
-        case (3, 0):
-            return eqx.tree_at(
-                lambda ops: ops.p30,
-                operators,
-                sp,
-                is_leaf=lambda x: x is None,
-            )
-    raise ValueError(
-        "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported"
-    )
-
-
-def assemble_projection_operators(seq, operators: Optional[SequenceOperators] = None,
-                                  pairs: Sequence[tuple[int, int]] = ((2, 1), (1, 2), (0, 3), (3, 0))):
-    """Assemble projection operators for the requested degree pairs."""
-    for k_in, k_out in pairs:
-        operators = update_projection_operator(seq, operators, k_in, k_out)
-    return operators
-
-
-def _assemble_hodge_block(seq, geometry, operators: SequenceOperators, k):
-    # Stiffness matrices satisfy
-    #
-    #     K_k = G_k^T M_{k+1} G_k,
-    #
-    # which follows directly from ``D_k = M_{k+1} G_k``.  We never materialise
-    # ``K_k``: it is applied as a composition of matrix-free incidence and mass
-    # matvecs (see :func:`apply_stiffness` / :func:`apply_hodge_laplacian`).
-    #
-    # The Jacobi diagonal is likewise not assembled here. The incidence ``G_k``
-    # is matrix-free and the mass ``M_{k+1}`` is stored nowhere, so the old
-    # direct entry-scatter selection is unavailable. The Jacobi preconditioner
-    # is only a comparison method (the tensor Hodge model is the production
-    # path), so its diagonal is built lazily on demand by ``_hodge_diaginv``
-    # via a sequential unit-vector probe of the matrix-free Hodge-Laplacian
-    # apply. Both ``sp`` and the Jacobi diagonals are therefore ``None``.
-    del geometry  # unused
-    if k not in (0, 1, 2, 3):
-        raise ValueError("k must be 0, 1, 2, or 3")
-    return None, None, None
+    Same memoisation as :func:`_matrixfree_mass_apply_cached`: keyed by the
+    pair and the geometry object so a re-mapped sequence rebuilds the plan.
+    """
+    try:
+        k_row, k_col = _PROJECTION_SPACES[(k_in, k_out)]
+    except KeyError:
+        raise ValueError(
+            "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported"
+        ) from None
+    geometry = seq.geometry
+    cache = getattr(seq, "_matrixfree_projection_apply_cache", None)
+    if cache is None:
+        cache = {}
+        seq._matrixfree_projection_apply_cache = cache
+    entry = cache.get((k_row, k_col))
+    if entry is not None and entry[0] is geometry:
+        return entry[1]
+    apply = build_matrixfree_projection_apply(seq, k_row, k_col)
+    cache[(k_row, k_col)] = (geometry, apply)
+    return apply
 
 
 def update_hodge_operator(seq, geometry, operators: Optional[SequenceOperators], k: int):
-    """Return an operator bundle with the k-th Hodge/stiffness data updated."""
+    """Ensure the incidence ``G_k`` behind the k-th Laplacian is present.
+
+    Stiffness matrices satisfy ``K_k = G_k^T M_{k+1} G_k`` and are never
+    materialised: :func:`apply_stiffness` / :func:`apply_hodge_laplacian`
+    compose the matrix-free incidence and mass applies. The Jacobi diagonals
+    ``dd{k}_diaginv`` are built lazily by :func:`_laplacian_diaginv`.
+    """
+    del geometry  # unused
+    if k not in (0, 1, 2, 3):
+        raise ValueError("k must be 0, 1, 2, or 3")
     operators = _ensure_extraction_operators(seq, operators)
-    # Stiffness blocks for k=0,1,2 are built from the topological incidence
-    # ``G_k`` and mass ``M_{k+1}``; make sure ``G_k`` is available.
     if k in (0, 1, 2) and _incidence_components(operators, k)[0] is None:
         operators = update_incidence_operator(seq, operators, k)
-    sp, diaginv, diaginv_dbc = _assemble_hodge_block(
-        seq, geometry, operators, k)
-
-    match k:
-        case 0:
-            # The k=0 Hodge-Laplacian carries no materialized stiffness and no
-            # Jacobi diagonal (built lazily on demand). The tensor Laplacian
-            # preconditioner is built explicitly by
-            # ``assemble_tensor_laplacian_preconditioner``; only build it here
-            # as a fallback when it has not already been assembled, so this
-            # operator assembly stays effectively a no-op once it is present.
-            operators = eqx.tree_at(
-                lambda ops: (ops.grad_grad, ops.dd0_diaginv,
-                             ops.dd0_diaginv_dbc),
-                operators,
-                (sp, diaginv, diaginv_dbc),
-                is_leaf=lambda x: x is None,
-            )
-            # Only polar sequences with evaluated 1D bases can build the fd
-            # tensor-Hodge preconditioner (the surgery core is the C^1 polar
-            # core, 3*n_zeta, and the atom needs basis_r_jk). Non-polar or
-            # unevaluated sequences (e.g. small identity-map test sequences)
-            return operators
-        case 1:
-            return eqx.tree_at(
-                lambda ops: (ops.curl_curl, ops.dd1_diaginv,
-                             ops.dd1_diaginv_dbc),
-                operators,
-                (sp, diaginv, diaginv_dbc),
-                is_leaf=lambda x: x is None,
-            )
-        case 2:
-            return eqx.tree_at(
-                lambda ops: (ops.div_div, ops.dd2_diaginv,
-                             ops.dd2_diaginv_dbc),
-                operators,
-                (sp, diaginv, diaginv_dbc),
-                is_leaf=lambda x: x is None,
-            )
-        case 3:
-            return eqx.tree_at(
-                lambda ops: (ops.dd3_diaginv, ops.dd3_diaginv_dbc),
-                operators,
-                (diaginv, diaginv_dbc),
-                is_leaf=lambda x: x is None,
-            )
-    raise ValueError("k must be 0, 1, 2, or 3")
+    return operators
 
 
 def assemble_hodge_operators(seq, geometry, operators: Optional[SequenceOperators] = None,
@@ -2131,158 +1457,19 @@ def assemble_laplacian_operators(seq, geometry, operators: Optional[SequenceOper
 
 
 def assemble_all_operators(seq, geometry,
-                           operators: Optional[SequenceOperators] = None,
-                           include_preconditioners: bool = True):
-    """Assemble all geometry-dependent operators.
+                           operators: Optional[SequenceOperators] = None):
+    """Assemble the incidence operators (and polar stencils) for ``seq``.
 
-    When ``include_preconditioners`` is true, also assemble the eager
-    preconditioner payloads that back the solver-facing convenience paths.
-    Set it to false when only the sparse operators are needed, for example
-    for densification or direct solves.
+    Masses, projections, derivatives and Laplacians are all applied
+    matrix-free from the geometry attached to ``seq``, so the incidence is the
+    only operator data built here.
     """
-    operators = assemble_mass_operators(seq, geometry, operators=operators)
     operators = assemble_incidence_operators(seq, operators=operators)
     operators = assemble_derivative_operators(
         seq, geometry, operators=operators)
     operators = assemble_laplacian_operators(seq, geometry, operators=operators)
-    operators = assemble_projection_operators(seq, operators=operators)
     return operators
 
-
-# TODO: remove — debug/dense path only
-def assemble_all_dense_operators(
-        seq,
-        operators: Optional[SequenceOperators] = None):
-    """Materialize dense extracted operators into ``operators.dense``.
-
-    Requires the corresponding sparse operators to already be assembled.
-    This is intended as a courtesy/debugging path for dense inspection and
-    direct solves, not as the default operator assembly route.
-    """
-    operators = _ensure_extraction_operators(seq, operators)
-    dense = DenseSequenceOperators(
-        m0=BoundaryConditionPair(
-            free=dense_mass_matrix(seq, operators, 0, dirichlet=False),
-            dbc=dense_mass_matrix(seq, operators, 0, dirichlet=True),
-        ),
-        m1=BoundaryConditionPair(
-            free=dense_mass_matrix(seq, operators, 1, dirichlet=False),
-            dbc=dense_mass_matrix(seq, operators, 1, dirichlet=True),
-        ),
-        m2=BoundaryConditionPair(
-            free=dense_mass_matrix(seq, operators, 2, dirichlet=False),
-            dbc=dense_mass_matrix(seq, operators, 2, dirichlet=True),
-        ),
-        m3=BoundaryConditionPair(
-            free=dense_mass_matrix(seq, operators, 3, dirichlet=False),
-            dbc=dense_mass_matrix(seq, operators, 3, dirichlet=True),
-        ),
-        d0=BoundaryConditionPair(
-            free=dense_derivative_matrix(seq, operators, 0, dirichlet_in=False, dirichlet_out=False),
-            dbc=dense_derivative_matrix(seq, operators, 0, dirichlet_in=True, dirichlet_out=True),
-        ),
-        d1=BoundaryConditionPair(
-            free=dense_derivative_matrix(seq, operators, 1, dirichlet_in=False, dirichlet_out=False),
-            dbc=dense_derivative_matrix(seq, operators, 1, dirichlet_in=True, dirichlet_out=True),
-        ),
-        d2=BoundaryConditionPair(
-            free=dense_derivative_matrix(seq, operators, 2, dirichlet_in=False, dirichlet_out=False),
-            dbc=dense_derivative_matrix(seq, operators, 2, dirichlet_in=True, dirichlet_out=True),
-        ),
-        s0=BoundaryConditionPair(
-            free=dense_stiffness_matrix(seq, operators, 0, dirichlet=False),
-            dbc=dense_stiffness_matrix(seq, operators, 0, dirichlet=True),
-        ),
-        s1=BoundaryConditionPair(
-            free=dense_stiffness_matrix(seq, operators, 1, dirichlet=False),
-            dbc=dense_stiffness_matrix(seq, operators, 1, dirichlet=True),
-        ),
-        s2=BoundaryConditionPair(
-            free=dense_stiffness_matrix(seq, operators, 2, dirichlet=False),
-            dbc=dense_stiffness_matrix(seq, operators, 2, dirichlet=True),
-        ),
-        s3=BoundaryConditionPair(
-            free=dense_stiffness_matrix(seq, operators, 3, dirichlet=False),
-            dbc=dense_stiffness_matrix(seq, operators, 3, dirichlet=True),
-        ),
-        l0=BoundaryConditionPair(
-            free=dense_hodge_laplacian(seq, operators, 0, dirichlet=False),
-            dbc=dense_hodge_laplacian(seq, operators, 0, dirichlet=True),
-        ),
-        l1=BoundaryConditionPair(
-            free=dense_hodge_laplacian(seq, operators, 1, dirichlet=False),
-            dbc=dense_hodge_laplacian(seq, operators, 1, dirichlet=True),
-        ),
-        l2=BoundaryConditionPair(
-            free=dense_hodge_laplacian(seq, operators, 2, dirichlet=False),
-            dbc=dense_hodge_laplacian(seq, operators, 2, dirichlet=True),
-        ),
-        l3=BoundaryConditionPair(
-            free=dense_hodge_laplacian(seq, operators, 3, dirichlet=False),
-            dbc=dense_hodge_laplacian(seq, operators, 3, dirichlet=True),
-        ),
-        p21=BoundaryConditionPair(
-            free=dense_projection_matrix(seq, operators, 2, 1, dirichlet_in=False, dirichlet_out=False),
-            dbc=dense_projection_matrix(seq, operators, 2, 1, dirichlet_in=True, dirichlet_out=True),
-        ),
-        p12=BoundaryConditionPair(
-            free=dense_projection_matrix(seq, operators, 1, 2, dirichlet_in=False, dirichlet_out=False),
-            dbc=dense_projection_matrix(seq, operators, 1, 2, dirichlet_in=True, dirichlet_out=True),
-        ),
-        p03=BoundaryConditionPair(
-            free=dense_projection_matrix(seq, operators, 0, 3, dirichlet_in=False, dirichlet_out=False),
-            dbc=dense_projection_matrix(seq, operators, 0, 3, dirichlet_in=True, dirichlet_out=True),
-        ),
-        p30=BoundaryConditionPair(
-            free=dense_projection_matrix(seq, operators, 3, 0, dirichlet_in=False, dirichlet_out=False),
-            dbc=dense_projection_matrix(seq, operators, 3, 0, dirichlet_in=True, dirichlet_out=True),
-        ),
-    )
-    return eqx.tree_at(
-        lambda ops: ops.dense,
-        operators,
-        dense,
-        is_leaf=lambda x: x is None,
-    )
-
-
-def operators_from_coeffs(seq, coeffs,
-                          ks: Sequence[int] = (0,),
-                          kinds: Sequence[str] = ("mass", "derivative", "hodge")):
-    """Build operators from spline-map coefficients.
-
-    Routes ``coeffs`` through :meth:`DeRhamSequence.geometry_from_spline_map`
-    and assembles only the requested operator ``kinds`` for the requested
-    form degrees ``ks``. Useful as a pure function of ``coeffs`` for
-    adjoint / shape-derivative workflows, where assembling the full
-    operator bundle on every gradient call is wasteful.
-
-    Parameters
-    ----------
-    seq : DeRhamSequence
-    coeffs : (3, n_dof) array
-        Cartesian spline coefficients defining the physical map.
-    ks : sequence of int
-        Form degrees to assemble (subset of ``(0, 1, 2, 3)``).
-    kinds : sequence of str
-        Any subset of ``("mass", "derivative", "laplacian")``;
-        legacy ``"hodge"`` is also accepted.
-
-    Returns
-    -------
-    (operators, geometry) : (SequenceOperators, SequenceGeometry)
-    """
-    geometry = seq.geometry_from_spline_map(coeffs)
-    ops: Optional[SequenceOperators] = None
-    if "mass" in kinds:
-        ops = assemble_mass_operators(seq, geometry, operators=ops, ks=ks)
-    if "derivative" in kinds:
-        ops = assemble_incidence_operators(seq, operators=ops, ks=ks)
-        ops = assemble_derivative_operators(
-            seq, geometry, operators=ops, ks=ks)
-    if "laplacian" in kinds or "hodge" in kinds:
-        ops = assemble_hodge_operators(seq, geometry, operators=ops, ks=ks)
-    return ops, geometry
 
 def _mass_extraction(operators: SequenceOperators, k: int, dirichlet: bool):
     match k:
@@ -2347,119 +1534,6 @@ def _projection_extraction(operators: SequenceOperators,
     return e_in, e_in_T, e_out
 
 
-def dense_mass_matrix(seq, operators: SequenceOperators, k: int,
-                      dirichlet: bool = True):
-    """Return the dense extracted mass matrix for degree k."""
-    sp, _, _ = _mass_components(operators, k)
-    if sp is None:
-        raise ValueError(f"Mass operator k={k} is not assembled")
-    e, e_T = _mass_extraction(operators, k, dirichlet)
-    return e.todense() @ sp.todense() @ e_T.todense()
-
-
-def dense_derivative_matrix(seq, operators: SequenceOperators, k: int,
-                            dirichlet_in: bool = True,
-                            dirichlet_out: bool = True,
-                            transpose: bool = False):
-    """Return the dense extracted weak derivative matrix for degree k.
-
-    ``D_k`` is materialised lazily from ``M_{k+1}`` and ``G_k`` via dense
-    matmul; only used for debugging/reporting paths.
-    """
-    g_sp, _ = _incidence_components(operators, k)
-    m_sp, _, _ = _mass_components(operators, k + 1)
-    if g_sp is None:
-        raise ValueError(f"Incidence operator G{k} is required for dense D{k}")
-    if m_sp is None:
-        raise ValueError(f"Mass operator M{k + 1} is required for dense D{k}")
-    d_dense = m_sp.todense() @ g_sp.todense()
-    e_in, e_in_T, e_out, e_out_T = _derivative_extraction(
-        operators, k, dirichlet_in, dirichlet_out)
-    if transpose:
-        return e_in.todense() @ d_dense.T @ e_out_T.todense()
-    return e_out.todense() @ d_dense @ e_in_T.todense()
-
-
-def dense_stiffness_matrix(seq, operators: SequenceOperators, k: int,
-                           dirichlet: bool = True):
-    """Return the dense extracted stiffness matrix for degree k.
-
-    ``K_k = G_k^T M_{k+1} G_k`` is materialised lazily via dense matmul;
-    only used for debugging/reporting paths.
-    """
-    if k == 3:
-        n = seq.n3_dbc if dirichlet else seq.n3
-        return jnp.zeros((n, n))
-    g_sp, _ = _incidence_components(operators, k)
-    m_sp, _, _ = _mass_components(operators, k + 1)
-    if g_sp is None:
-        raise ValueError(f"Incidence operator G{k} is required for dense K{k}")
-    if m_sp is None:
-        raise ValueError(f"Mass operator M{k + 1} is required for dense K{k}")
-    g_dense = g_sp.todense()
-    k_dense = g_dense.T @ m_sp.todense() @ g_dense
-    e, e_T = _mass_extraction(operators, k, dirichlet)
-    return e.todense() @ k_dense @ e_T.todense()
-
-
-def dense_hodge_laplacian(seq, operators: SequenceOperators, k: int,
-                          dirichlet: bool = True):
-    """Return the dense extracted Hodge Laplacian for degree k."""
-    match k:
-        case 0:
-            return dense_stiffness_matrix(seq, operators, 0, dirichlet=dirichlet)
-        case 1:
-            stiffness = dense_stiffness_matrix(
-                seq, operators, 1, dirichlet=dirichlet)
-            derivative = dense_derivative_matrix(
-                seq, operators, 0,
-                dirichlet_in=dirichlet,
-                dirichlet_out=dirichlet,
-            )
-            mass = dense_mass_matrix(seq, operators, 0, dirichlet=dirichlet)
-            return stiffness + derivative @ jnp.linalg.solve(mass, derivative.T)
-        case 2:
-            stiffness = dense_stiffness_matrix(
-                seq, operators, 2, dirichlet=dirichlet)
-            derivative = dense_derivative_matrix(
-                seq, operators, 1,
-                dirichlet_in=dirichlet,
-                dirichlet_out=dirichlet,
-            )
-            mass = dense_mass_matrix(seq, operators, 1, dirichlet=dirichlet)
-            return stiffness + derivative @ jnp.linalg.solve(mass, derivative.T)
-        case 3:
-            derivative = dense_derivative_matrix(
-                seq, operators, 2,
-                dirichlet_in=dirichlet,
-                dirichlet_out=dirichlet,
-            )
-            mass = dense_mass_matrix(seq, operators, 2, dirichlet=dirichlet)
-            return derivative @ jnp.linalg.solve(mass, derivative.T)
-    raise ValueError("k must be 0, 1, 2 or 3")
-
-
-def dense_laplacian(seq, operators: SequenceOperators, k: int,
-                    dirichlet: bool = True):
-    """Alias of dense_hodge_laplacian using Laplacian naming."""
-    return dense_hodge_laplacian(seq, operators, k, dirichlet=dirichlet)
-
-
-def dense_projection_matrix(seq, operators: SequenceOperators, k_in: int, k_out: int,
-                            dirichlet_in: bool = True,
-                            dirichlet_out: bool = True):
-    """Return the dense extracted projection matrix for the requested degrees."""
-    sp = _projection_components(operators, k_in, k_out)
-    if sp is None:
-        raise ValueError(
-            f"Projection operator ({k_in}, {k_out}) is not assembled"
-        )
-
-    e_in, e_in_T, e_out = _projection_extraction(
-        operators, k_in, k_out, dirichlet_in, dirichlet_out)
-    return e_out.todense() @ sp.todense() @ e_in_T.todense()
-
-
 def apply_mass_matrix(seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True):
     """Apply a mass matrix from an explicit operator bundle."""
     core = mass_core_apply(seq, operators, k)
@@ -2471,17 +1545,11 @@ def apply_projection_matrix(seq, operators: SequenceOperators, v,
                             k_in: int, k_out: int,
                             dirichlet_in: bool = True,
                             dirichlet_out: bool = True):
-    """Apply a projection matrix from an explicit operator bundle."""
-    sp = _projection_components(operators, k_in, k_out)
-    if sp is None:
-        raise ValueError(
-            f"Projection operator ({k_in}, {k_out}) is not assembled"
-        )
-
+    """Apply the projection mass ``P_{k_in k_out}`` (matrix-free, memoised on ``seq``)."""
+    core = _matrixfree_projection_apply_cached(seq, k_in, k_out)
     e_in, e_in_T, e_out = _projection_extraction(
         operators, k_in, k_out, dirichlet_in, dirichlet_out)
-
-    return e_out @ (sp @ (e_in_T @ v))
+    return e_out @ core(e_in_T @ v)
 
 
 def apply_derivative_matrix(seq, operators: SequenceOperators, v, k: int,
@@ -3136,7 +2204,7 @@ def _build_diffusion_preconditioner_apply(
         if eps == 0.0:
             shifted_diaginv = mass_diaginv
         else:
-            stiffness_diaginv = _hodge_diaginv(seq, operators, k, dirichlet)
+            stiffness_diaginv = _laplacian_diaginv(seq, operators, k, dirichlet)
             shifted_diaginv = 1.0 / (
                 1.0 / mass_diaginv + eps / stiffness_diaginv)
         return lambda x, diaginv=shifted_diaginv: diaginv * x
@@ -3218,7 +2286,7 @@ def _build_scalar_hodge_preconditioner_apply(
         return lambda x: apply_hodge_laplacian_preconditioner(
             seq, operators, x, k, dirichlet=dirichlet, kind='metric_lumping')
     if spec.kind == 'jacobi':
-        stiffness_diaginv = _hodge_diaginv(seq, operators, k, dirichlet)
+        stiffness_diaginv = _laplacian_diaginv(seq, operators, k, dirichlet)
         if eps == 0.0:
             shifted_diaginv = stiffness_diaginv
         else:
@@ -3410,7 +2478,7 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
     if kind == 'none':
         return v
     if kind == 'jacobi':
-        return _hodge_diaginv(seq, operators, k, dirichlet) * v
+        return _laplacian_diaginv(seq, operators, k, dirichlet) * v
     if kind == 'metric_lumping':
         if not _metric_lumping_available(seq, k, dirichlet):
             raise ValueError(

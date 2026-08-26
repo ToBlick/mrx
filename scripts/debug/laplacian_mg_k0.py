@@ -188,7 +188,6 @@ def build_coarse_sequence(fine_seq, ns_c, p, tol, maxiter, r_scale,
         knots=knots, polar_ring1=ring1, polar_order=polar_order,
         betti_numbers=BETTI)
     cseq.evaluate_1d()
-    cseq.assemble_reference_mass_matrix()
     cseq.set_map(fine_seq.map)
     cops = cseq.get_operators()
     cops = assemble_incidence_operators(cseq, operators=cops, ks=(0,))

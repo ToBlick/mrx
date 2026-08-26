@@ -9,7 +9,6 @@ from mrx.differential_forms import DifferentialForm, DiscreteFunction
 from mrx.geometry import (  # noqa: F401
     greville_interpolate_map,
     greville_interpolate_stellarator_map,
-    interpolate_map,
 )
 
 

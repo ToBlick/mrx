@@ -49,7 +49,8 @@ Approximations, all deliberate:
 5. no bulk<->core coupling.
 
 The natural-BC boundary term IS carried, by default, as a rank-one update to
-the radial stiffness (``bc_entry="exact"``): under a free condition the weak
+the radial stiffness (``bc_entry="ibpd"``; ``"exact"`` is the probed
+alternative): under a free condition the weak
 block's integration by parts leaves ``int_{r=1} w u_r^2``, which for a tensor
 basis is ``alpha (e e^T) (x) M_t (x) M_z`` -- the same shape as the first
 Kronecker term, so it merges into ``K_r`` for free.  It is exactly zero under

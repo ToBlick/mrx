@@ -473,7 +473,7 @@ def test_probed_diagonal_is_the_honest_reference(torus_seq):
     # Not a preconditioner KIND any more -- the kinds are none/jacobi/metric_lumping --
     # but still the reference the jacobi diagonal has to be checked against.
     from mrx.operators import (
-        PROBED_DIAG_CACHE_ATTR, _hodge_diaginv, _probed_laplacian_diaginv,
+        PROBED_DIAG_CACHE_ATTR, _laplacian_diaginv, _probed_laplacian_diaginv,
     )
 
     ops = torus_seq.get_operators()
@@ -485,7 +485,7 @@ def test_probed_diagonal_is_the_honest_reference(torus_seq):
             v = jnp.asarray(rng.standard_normal(n))
             probed = _probed_laplacian_diaginv(
                 torus_seq, ops, k, dbc) * v
-            modelled = np.asarray(_hodge_diaginv(torus_seq, ops, k, dbc)) * np.asarray(v)
+            modelled = np.asarray(_laplacian_diaginv(torus_seq, ops, k, dbc)) * np.asarray(v)
             assert np.all(np.isfinite(np.asarray(probed)))
             d = _rel(np.asarray(probed), modelled)
             if k == 0:

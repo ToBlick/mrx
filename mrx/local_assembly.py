@@ -1,44 +1,40 @@
-"""Element-local, sum-factorized mass-matrix assembly.
+"""Element-local, sum-factorized matrix-free mass applies and exact diagonals.
 
-These assemblers exploit the separable tensor-product structure of the spline
-bases together with the *element-local* support of each basis function. Instead
-of the global ``O(n^6)`` einsum path in :mod:`mrx.assembly`, each element block
-is formed once by sum factorization and scattered into a sparse triplet list,
-giving ``O(n^3 p^6)`` work that is flat in ``n`` on the GPU.
+The spline bases are tensor products with element-local support, so every
+mass-like operator ``M = int Lambda_row . W . Lambda_col`` is applied per
+element by three 1D contractions to the quadrature points, a pointwise
+multiply by the weight, and three 1D contractions back -- no matrix is ever
+stored.  The applies act in the raw (unextracted, periodic) DOF space; the
+polar / boundary extraction ``E (.) E^T`` is applied by the caller.
 
-The matrices produced here are the raw tensor-product mass matrices ``M`` in the
-periodic/unextracted DOF space, identical (to machine precision) to the global
-``assemble_scalar``/``assemble_vectorial`` output. Polar / boundary extraction
-``E M E.T`` is applied afterward exactly as before.
-
-Form weights (matching :func:`mrx.operators._assemble_mass_block`):
+Form weights, formed inside the jitted apply from the stored ``DF`` and
+``det DF`` (the geometry keeps nothing else):
 
 * k=0: ``W = J``                       (scalar)
-* k=1: ``W = G^{-1} J``                (3x3, derivative basis on axis c)
-* k=2: ``W = G (1/J)``                 (3x3, primal basis on axis c)
+* k=1: ``W = G^{-1} J = adj(G) / J``   (3x3, derivative basis on axis c)
+* k=2: ``W = G / J``                   (3x3, primal basis on axis c)
 * k=3: ``W = 1/J``                     (scalar, derivative basis on all axes)
 
-The quadrature weights ``w`` are folded in per axis via the 1D Gauss weights.
+with ``G = DF^T DF`` and ``J = det DF``.  The projection masses between
+different form degrees (``P_21`` etc.) use the same kernel with the
+reference-domain weight ``W = I``.  The quadrature weights are folded in per
+axis via the 1D Gauss weights.
 """
 
 import jax
-import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
 import mrx
+from mrx.differential_forms import adj33
 from mrx.geometry import grad_1d
 
 __all__ = [
-    "assemble_m0_local",
     "build_mass_diagonal",
     "build_stiffness_diagonal",
     "build_extracted_stiffness_diagonal_k0",
-    "assemble_m1_local",
-    "assemble_m2_local",
-    "assemble_m3_local",
-    "assemble_mass_local",
     "build_matrixfree_mass_apply",
+    "build_matrixfree_projection_apply",
 ]
 
 
@@ -120,34 +116,26 @@ def _split_field(field_flat, nx, ny, nz, ne_x, ne_y, ne_z, qx, qy, qz):
     return f
 
 
-# --------------------------------------------------------------------------- #
-# Element block via sum factorization (mixed row/col bases)
-# --------------------------------------------------------------------------- #
-def _elem_block_mixed(Bxr, Bxc, Byr, Byc, Bzr, Bzc, Wf, wx_e, wy_e, wz_e):
-    """One element block for (possibly distinct) row/col bases.
+def _element_layout(seq):
+    """Return ``(split, gauss)``: the flat->element reshape and the Gauss weights.
 
-    Returns ``block[a, b, c, d, e, f]`` with ``a/b`` = x row/col local,
-    ``c/d`` = y row/col local, ``e/f`` = z row/col local.
+    ``split(field_flat)`` is :func:`_split_field` with this sequence's counts
+    bound; ``gauss`` is the ``(ne_x, ne_y, ne_z, qx, qy, qz)`` outer product of
+    the per-axis Gauss weights.
     """
-    W = Wf * wx_e[:, None, None] * wy_e[None, :, None] * wz_e[None, None, :]
-    A = jnp.einsum('qa,qb,qrs->abrs', Bxr, Bxc, W)
-    Bm = jnp.einsum('rc,rd,abrs->abcds', Byr, Byc, A)
-    C = jnp.einsum('se,sf,abcds->abcdef', Bzr, Bzc, Bm)
-    return C
+    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
+    ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
+    wx = seq.quad.w_x.reshape(ne_x, qx)
+    wy = seq.quad.w_y.reshape(ne_y, qy)
+    wz = seq.quad.w_z.reshape(ne_z, qz)
+    gauss = (wx[:, None, None, :, None, None]
+             * wy[None, :, None, None, :, None]
+             * wz[None, None, :, None, None, :])
 
+    def split(field_flat):
+        return _split_field(field_flat, nx, ny, nz, ne_x, ne_y, ne_z, qx, qy, qz)
 
-_elem_block_mixed_vmapped = jax.vmap(jax.vmap(jax.vmap(
-    _elem_block_mixed,
-    in_axes=(None, None, None, None, 0, 0, 0, None, None, 0)),   # ez
-    in_axes=(None, None, 0, 0, None, None, 0, None, 0, None)),   # ey
-    in_axes=(0, 0, None, None, None, None, 0, 0, None, None))    # ex
-
-
-@jax.jit
-def _block_compute(Bxr, Bxc, Byr, Byc, Bzr, Bzc, Wf, wx, wy, wz):
-    """JIT the expensive element-block contraction for one component pair."""
-    return _elem_block_mixed_vmapped(
-        Bxr, Bxc, Byr, Byc, Bzr, Bzc, Wf, wx, wy, wz)
+    return split, gauss
 
 
 # --------------------------------------------------------------------------- #
@@ -168,217 +156,13 @@ def _component_axis_bases_k2(form, c):
 
 
 # --------------------------------------------------------------------------- #
-# Scalar (k=0, k=3) assembler
-# --------------------------------------------------------------------------- #
-def _assemble_scalar_local(seq, bases3, weight_flat, shape3):
-    """Element-local sum-factorized scalar mass assembler (BCOO).
-
-    Parameters
-    ----------
-    bases3 : [bx, by, bz]
-        The three 1D bases (same on rows and cols).
-    weight_flat : (nquad,) array
-        Geometry weight (WITHOUT quadrature weights ``w``).
-    shape3 : (Sx, Sy, Sz)
-        DOF-grid shape for C-order flat indexing.
-    """
-    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
-    ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
-
-    wx = seq.quad.w_x.reshape(ne_x, qx)
-    wy = seq.quad.w_y.reshape(ne_y, qy)
-    wz = seq.quad.w_z.reshape(ne_z, qz)
-
-    Bx, gx = evaluate_basis_local(bases3[0], seq.quad.x_x, qx)
-    By, gy = evaluate_basis_local(bases3[1], seq.quad.x_y, qy)
-    Bz, gz = evaluate_basis_local(bases3[2], seq.quad.x_z, qz)
-
-    Wf = _split_field(weight_flat, nx, ny, nz, ne_x, ne_y, ne_z, qx, qy, qz)
-    blocks = _block_compute(Bx, Bx, By, By, Bz, Bz, Wf, wx, wy, wz)
-
-    Sx, Sy, Sz = shape3
-    nlx, nly, nlz = Bx.shape[-1], By.shape[-1], Bz.shape[-1]
-
-    gx_r = gx.reshape(ne_x, 1, 1, nlx, 1, 1, 1, 1, 1)
-    gy_r = gy.reshape(1, ne_y, 1, 1, 1, nly, 1, 1, 1)
-    gz_r = gz.reshape(1, 1, ne_z, 1, 1, 1, 1, nlz, 1)
-    row = ((gx_r * Sy + gy_r) * Sz + gz_r).astype(jnp.int32)
-
-    gx_c = gx.reshape(ne_x, 1, 1, 1, nlx, 1, 1, 1, 1)
-    gy_c = gy.reshape(1, ne_y, 1, 1, 1, 1, nly, 1, 1)
-    gz_c = gz.reshape(1, 1, ne_z, 1, 1, 1, 1, 1, nlz)
-    col = ((gx_c * Sy + gy_c) * Sz + gz_c).astype(jnp.int32)
-
-    vals = blocks.reshape(-1)
-    rows = jnp.broadcast_to(row, blocks.shape).reshape(-1)
-    cols = jnp.broadcast_to(col, blocks.shape).reshape(-1)
-    n_total = Sx * Sy * Sz
-    indices = jnp.stack([rows, cols], axis=-1)
-    return jsparse.BCOO((vals, indices), shape=(n_total, n_total))
-
-
-# --------------------------------------------------------------------------- #
-# Vectorial (k=1, k=2) assembler
-# --------------------------------------------------------------------------- #
-def _assemble_vectorial_local(seq, form, comp_bases_fn, weight_3x3_flat):
-    """Element-local sum-factorized vectorial mass assembler (BCOO).
-
-    Parameters
-    ----------
-    form : DifferentialForm
-        The k=1 or k=2 form whose basis layout defines the DOF blocks.
-    comp_bases_fn : callable(form, c) -> [bx, by, bz]
-        Returns the three 1D bases used by component ``c``.
-    weight_3x3_flat : (nquad, 3, 3) array
-        Metric weight (WITHOUT the quadrature weights ``w``; folded in via the
-        per-axis Gauss weights).
-    """
-    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
-    ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
-
-    wx = seq.quad.w_x.reshape(ne_x, qx)
-    wy = seq.quad.w_y.reshape(ne_y, qy)
-    wz = seq.quad.w_z.reshape(ne_z, qz)
-
-    shapes = form.shape                       # component DOF-grid shapes
-    starts = [0, form.n1, form.n1 + form.n2]  # flat offsets per component
-    n_total = form.n
-
-    # Cache local basis evaluations (each axis basis evaluated once).
-    eval_cache = {}
-
-    def local_eval(basis, x_q, q):
-        key = id(basis)
-        if key not in eval_cache:
-            eval_cache[key] = evaluate_basis_local(basis, x_q, q)
-        return eval_cache[key]
-
-    all_vals, all_rows, all_cols = [], [], []
-
-    for cr in range(3):
-        br = comp_bases_fn(form, cr)
-        Bxr, gxr = local_eval(br[0], seq.quad.x_x, qx)
-        Byr, gyr = local_eval(br[1], seq.quad.x_y, qy)
-        Bzr, gzr = local_eval(br[2], seq.quad.x_z, qz)
-        _, Syr, Szr = shapes[cr]
-
-        for cc in range(3):
-            bc = comp_bases_fn(form, cc)
-            Bxc, gxc = local_eval(bc[0], seq.quad.x_x, qx)
-            Byc, gyc = local_eval(bc[1], seq.quad.x_y, qy)
-            Bzc, gzc = local_eval(bc[2], seq.quad.x_z, qz)
-            _, Syc, Szc = shapes[cc]
-
-            Wf = _split_field(weight_3x3_flat[:, cr, cc], nx, ny, nz,
-                              ne_x, ne_y, ne_z, qx, qy, qz)
-
-            blocks = _block_compute(
-                Bxr, Bxc, Byr, Byc, Bzr, Bzc, Wf, wx, wy, wz)
-            # blocks: (ne_x, ne_y, ne_z, nxr, nxc, nyr, nyc, nzr, nzc)
-
-            nxr, nxc = Bxr.shape[-1], Bxc.shape[-1]
-            nyr, nyc = Byr.shape[-1], Byc.shape[-1]
-            nzr, nzc = Bzr.shape[-1], Bzc.shape[-1]
-
-            # Row flat index (component cr grid + offset)
-            gxr_b = gxr.reshape(ne_x, 1, 1, nxr, 1, 1, 1, 1, 1)
-            gyr_b = gyr.reshape(1, ne_y, 1, 1, 1, nyr, 1, 1, 1)
-            gzr_b = gzr.reshape(1, 1, ne_z, 1, 1, 1, 1, nzr, 1)
-            row = (starts[cr] + (gxr_b * Syr + gyr_b) * Szr + gzr_b
-                   ).astype(jnp.int32)
-
-            # Col flat index (component cc grid + offset)
-            gxc_b = gxc.reshape(ne_x, 1, 1, 1, nxc, 1, 1, 1, 1)
-            gyc_b = gyc.reshape(1, ne_y, 1, 1, 1, 1, nyc, 1, 1)
-            gzc_b = gzc.reshape(1, 1, ne_z, 1, 1, 1, 1, 1, nzc)
-            col = (starts[cc] + (gxc_b * Syc + gyc_b) * Szc + gzc_b
-                   ).astype(jnp.int32)
-
-            all_vals.append(blocks.reshape(-1))
-            all_rows.append(jnp.broadcast_to(row, blocks.shape).reshape(-1))
-            all_cols.append(jnp.broadcast_to(col, blocks.shape).reshape(-1))
-
-    vals = jnp.concatenate(all_vals)
-    rows = jnp.concatenate(all_rows)
-    cols = jnp.concatenate(all_cols)
-    indices = jnp.stack([rows, cols], axis=-1)
-    return jsparse.BCOO((vals, indices), shape=(n_total, n_total))
-
-
-# --------------------------------------------------------------------------- #
-# Public per-degree entry points
-# --------------------------------------------------------------------------- #
-def assemble_m0_local(seq, geometry=None):
-    """k=0 mass matrix (BCOO): ``M0_ij = integral Λ0_i Λ0_j det DF``."""
-    geometry = seq.geometry if geometry is None else geometry
-    form = seq.basis_0
-    weight = geometry.jacobian_j
-    return _assemble_scalar_local(
-        seq, [form.Λ[0], form.Λ[1], form.Λ[2]], weight, form.shape[0])
-
-
-def assemble_m1_local(seq, geometry=None):
-    """k=1 mass matrix (BCOO): ``M1_ij = integral Λ1_i · G^{-1} Λ1_j det DF``."""
-    geometry = seq.geometry if geometry is None else geometry
-    weight = geometry.metric_inv_jkl * geometry.jacobian_j[:, None, None]
-    return _assemble_vectorial_local(
-        seq, seq.basis_1, _component_axis_bases_k1, weight)
-
-
-def assemble_m2_local(seq, geometry=None):
-    """k=2 mass matrix (BCOO): ``M2_ij = integral Λ2_i · G Λ2_j (det DF)^{-1}``."""
-    geometry = seq.geometry if geometry is None else geometry
-    weight = geometry.metric_jkl * (1.0 / geometry.jacobian_j)[:, None, None]
-    return _assemble_vectorial_local(
-        seq, seq.basis_2, _component_axis_bases_k2, weight)
-
-
-def assemble_m3_local(seq, geometry=None):
-    """k=3 mass matrix (BCOO): ``M3_ij = integral Λ3_i Λ3_j (det DF)^{-1}``."""
-    geometry = seq.geometry if geometry is None else geometry
-    form = seq.basis_3
-    weight = 1.0 / geometry.jacobian_j
-    return _assemble_scalar_local(
-        seq, [form.dΛ[0], form.dΛ[1], form.dΛ[2]], weight, form.shape[0])
-
-
-_LOCAL_ASSEMBLERS = {
-    0: assemble_m0_local,
-    1: assemble_m1_local,
-    2: assemble_m2_local,
-    3: assemble_m3_local,
-}
-
-
-def assemble_mass_local(seq, k, geometry=None):
-    """Dispatch element-local mass assembly for form degree ``k`` (BCOO)."""
-    try:
-        fn = _LOCAL_ASSEMBLERS[k]
-    except KeyError:
-        raise ValueError("k must be 0, 1, 2 or 3") from None
-    return fn(seq, geometry)
-
-
-# --------------------------------------------------------------------------- #
 # Matrix-free (sum-factorized) mass apply
 # --------------------------------------------------------------------------- #
-# The functions below apply ``M_k @ x`` in the raw tensor-product DOF space
-# *without ever materializing* ``M_k``. They reuse the same element-local sum
-# factorization and metric weights as the assemblers above, but fold the
-# contraction against the input vector instead of forming the dense element
-# block. Transient memory is O(n^3 (p+1)^2 q) instead of the O(n^3 (p+1)^6) of
-# the stored matrix, which removes the high-(n, p) storage bottleneck for M1.
-def _quad_gauss_weight(seq):
-    """``(ne_x,ne_y,ne_z,qx,qy,qz)`` outer product of the per-axis Gauss weights."""
-    ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
-    wx = seq.quad.w_x.reshape(ne_x, qx)
-    wy = seq.quad.w_y.reshape(ne_y, qy)
-    wz = seq.quad.w_z.reshape(ne_z, qz)
-    return (wx[:, None, None, :, None, None]
-            * wy[None, :, None, None, :, None]
-            * wz[None, None, :, None, None, :])
-
-
+# The functions below apply ``M @ x`` in the raw tensor-product DOF space
+# *without ever materializing* ``M``: the element-local sum factorization is
+# folded against the input vector instead of forming element blocks.
+# Transient memory is O(n^3 (p+1)^2 q) instead of the O(n^3 (p+1)^6) of a
+# stored matrix.
 def _bases_for_form(seq, form, comp_bases_fn, n_comp):
     """Evaluate the 1D bases (values + global DOF ids) for each component."""
     ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
@@ -442,51 +226,60 @@ def _from_quadrature(Bvals, u):
     return jnp.einsum('zse,xyzacs->xyzace', Bz, s2)
 
 
-def _mass_form_and_weights(seq, k, geometry):
-    """Shared element plan for the ``M_k`` matvec and its exact diagonal.
+def _form_bases(seq, k):
+    """Return ``(form, comp, n_comp)``: the k-form and its per-component 1D tables.
 
-    Returns ``(form, comp, pairs, weight_of, n_comp)``: the form object, the
-    per-component 1D basis tables from :func:`_bases_for_form`, the list of
-    ``(row_comp, col_comp)`` pairs, the quadrature-point metric weight for each
-    pair, and the component count.
-
-    Both :func:`build_matrixfree_mass_apply` and :func:`build_mass_diagonal`
-    go through here so the diagonal is derived from *the same tables the solver
-    applies*. The removed ``diag_EAET_direct`` route recomputed its own tables
-    and drifted from the matvec; that failure mode is structural, not a bug to
-    be fixed once, so the plan is shared rather than mirrored.
+    Both the matvecs and :func:`build_mass_diagonal` go through here so the
+    diagonal is derived from *the same tables the solver applies*. The removed
+    ``diag_EAET_direct`` route recomputed its own tables and drifted from the
+    matvec; that failure mode is structural, so the plan is shared rather than
+    mirrored.
     """
     if k == 0:
         form = seq.basis_0
-        comp = _bases_for_form(seq, form, lambda f, c: [f.Λ[0], f.Λ[1], f.Λ[2]], 1)
-        weight = geometry.jacobian_j  # scalar (nquad,)
-        pairs = [(0, 0)]
-        weight_of = {(0, 0): weight}
-        n_comp = 1
-    elif k == 3:
+        return form, _bases_for_form(
+            seq, form, lambda f, c: [f.Λ[0], f.Λ[1], f.Λ[2]], 1), 1
+    if k == 3:
         form = seq.basis_3
-        comp = _bases_for_form(seq, form, lambda f, c: [f.dΛ[0], f.dΛ[1], f.dΛ[2]], 1)
-        weight = 1.0 / geometry.jacobian_j
-        pairs = [(0, 0)]
-        weight_of = {(0, 0): weight}
-        n_comp = 1
-    elif k == 1:
+        return form, _bases_for_form(
+            seq, form, lambda f, c: [f.dΛ[0], f.dΛ[1], f.dΛ[2]], 1), 1
+    if k == 1:
         form = seq.basis_1
-        comp = _bases_for_form(seq, form, _component_axis_bases_k1, 3)
-        metric = geometry.metric_inv_jkl * geometry.jacobian_j[:, None, None]
-        pairs = [(cr, cc) for cr in range(3) for cc in range(3)]
-        weight_of = {(cr, cc): metric[:, cr, cc] for cr, cc in pairs}
-        n_comp = 3
-    elif k == 2:
+        return form, _bases_for_form(seq, form, _component_axis_bases_k1, 3), 3
+    if k == 2:
         form = seq.basis_2
-        comp = _bases_for_form(seq, form, _component_axis_bases_k2, 3)
-        metric = geometry.metric_jkl * (1.0 / geometry.jacobian_j)[:, None, None]
-        pairs = [(cr, cc) for cr in range(3) for cc in range(3)]
-        weight_of = {(cr, cc): metric[:, cr, cc] for cr, cc in pairs}
-        n_comp = 3
+        return form, _bases_for_form(seq, form, _component_axis_bases_k2, 3), 3
+    raise ValueError("k must be 0, 1, 2 or 3")
+
+
+def _mass_weight(k, DF, jac):
+    """Pointwise ``M_k`` weight from ``DF`` and ``det DF``, per component pair.
+
+    Returns ``{(cr, cc): (N_q,) array}``. Traced inside the jitted apply, so
+    the 3x3 metric algebra fuses into the pointwise stage and nothing but
+    ``DF`` and ``J`` is ever resident.
+    """
+    if k == 0:
+        return {(0, 0): jac}
+    if k == 3:
+        return {(0, 0): 1.0 / jac}
+    g = jnp.einsum("qki,qkj->qij", DF, DF)                 # DF^T DF
+    if k == 1:
+        w = jax.vmap(adj33)(g) / jac[:, None, None]        # G^-1 J = adj(G) / J
+    elif k == 2:
+        w = g / jac[:, None, None]
     else:
         raise ValueError("k must be 0, 1, 2 or 3")
-    return form, comp, pairs, weight_of, n_comp
+    return {(cr, cc): w[:, cr, cc] for cr in range(3) for cc in range(3)}
+
+
+def _reference_weight(n_comp):
+    """Pointwise weight of the reference-domain projection masses (``W = I``)."""
+    def weight(DF, jac):
+        del DF
+        one = jnp.ones_like(jac)
+        return {(c, c): one for c in range(n_comp)}
+    return weight
 
 
 def build_mass_diagonal(seq, k, geometry=None):
@@ -508,17 +301,14 @@ def build_mass_diagonal(seq, k, geometry=None):
     the layout of :func:`build_matrixfree_mass_apply`.
     """
     geometry = seq.geometry if geometry is None else geometry
-    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
-    ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
-    gw = _quad_gauss_weight(seq)
-
-    form, comp, _pairs, weight_of, n_comp = _mass_form_and_weights(seq, k, geometry)
+    split, gauss = _element_layout(seq)
+    form, comp, n_comp = _form_bases(seq, k)
+    weight_of = _mass_weight(k, geometry.DF_jkl, geometry.jacobian_j)
     shapes = form.shape
 
     parts = []
     for c in range(n_comp):
-        Wf = _split_field(weight_of[(c, c)], nx, ny, nz,
-                          ne_x, ne_y, ne_z, qx, qy, qz) * gw
+        Wf = split(weight_of[(c, c)]) * gauss
         Bx, By, Bz = comp[c][0], comp[c][2], comp[c][4]
         # Squared basis tables: the row and column bases coincide on the diagonal.
         t1 = jnp.einsum('xqa,xyzqrs->xyzars', Bx * Bx, Wf)
@@ -841,73 +631,97 @@ def build_extracted_stiffness_diagonal_k0(seq, dirichlet: bool):
     return jnp.asarray(diag)
 
 
-def build_matrixfree_mass_apply(seq, k, geometry=None):
-    """Return a jitted raw-DOF-space ``x -> M_k x`` that never stores ``M_k``.
+def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
+    """Jitted raw-DOF apply of ``int Lambda^{k_row} . W . Lambda^{k_col}``.
 
-    The returned callable acts on a vector in the *raw tensor-product* DOF
-    space (the unextracted, periodic DOF layout that the stored ``M_k`` matrix
-    also acts on). Boundary / polar extraction ``E (.) E^T`` is applied by the
-    caller exactly as for the stored path.
+    ``weight_fn(DF, jac)`` returns the pointwise weight per ``(row_comp,
+    col_comp)`` pair as ``{(cr, cc): (N_q,)}``; pairs it omits are skipped.
 
-    The element plan (basis values, gather indices, scatter segment ids and
-    metric weights) is built once on the host and passed to the jitted kernel
-    as runtime arguments (not captured as constants) to avoid XLA
-    constant-folding of the large integer index tensors.
+    The element plan (basis values, gather indices, scatter segment ids) is
+    built once on the host and passed to the jitted kernel as runtime
+    arguments (not captured as constants) to avoid XLA constant-folding of
+    the large integer index tensors.  ``DF`` and ``J`` are passed the same way
+    and the weight is formed inside the kernel.
 
     The matvec is the sum factorization split at the quadrature points: each
     column component is gathered and pushed to the quadrature points ONCE, the
-    metric ``W[cr, cc]`` (Gauss weights folded in) mixes the components
-    pointwise, and each row component is tested ONCE. That is ``n_comp``
-    column transforms, ``n_comp^2`` pointwise multiply-adds and ``n_comp`` row
-    transforms -- a third of the einsum work of transforming per ``(cr, cc)``
-    pair -- followed by a single ``segment_sum`` into the concatenated output.
+    weight (Gauss weights folded in) mixes the components pointwise, and each
+    row component is tested ONCE, followed by a single ``segment_sum`` into
+    the concatenated output.
     """
-    geometry = seq.geometry if geometry is None else geometry
-    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
-    ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
-    gw = _quad_gauss_weight(seq)
+    split, gauss = _element_layout(seq)
+    form_r, comp_r, n_r = _form_bases(seq, k_row)
+    form_c, comp_c, n_c = _form_bases(seq, k_col)
 
-    form, comp, pairs, weight_of, n_comp = _mass_form_and_weights(seq, k, geometry)
+    def starts(form, n_comp):
+        out = [0]
+        for c in range(n_comp):
+            out.append(out[-1] + int(np.prod(form.shape[c])))
+        return tuple(out)
 
-    shapes = form.shape
-    starts = [0]
-    for c in range(n_comp):
-        Sx, Sy, Sz = shapes[c]
-        starts.append(starts[-1] + Sx * Sy * Sz)
-    starts_t = tuple(int(s) for s in starts)
-
-    # Pre-split + fold Gauss weights into each (cr, cc) metric field.
-    W_split = {}
-    for (cr, cc) in pairs:
-        Wf = _split_field(weight_of[(cr, cc)], nx, ny, nz,
-                          ne_x, ne_y, ne_z, qx, qy, qz)
-        W_split[(cr, cc)] = Wf * gw
+    starts_r = starts(form_r, n_r)
+    starts_c = starts(form_c, n_c)
+    pairs = tuple(weight_fn(geometry.DF_jkl[:1], geometry.jacobian_j[:1]))
 
     # Basis VALUES (for the einsums) are separated from the gather/scatter
     # index plans, which depend only on the mesh topology: flat gather indices
     # per column component and one flat scatter (segment-id) array for the
     # whole output, offset by the component starts.
-    Bvals = tuple((c[0], c[2], c[4]) for c in comp)          # (Bx, By, Bz)
+    Bvals_r = tuple((c[0], c[2], c[4]) for c in comp_r)
+    Bvals_c = tuple((c[0], c[2], c[4]) for c in comp_c)
     gather_idx = tuple(
-        _flat_dof_plan(comp[c][1], comp[c][3], comp[c][5], shapes[c])
-        for c in range(n_comp))
+        _flat_dof_plan(comp_c[c][1], comp_c[c][3], comp_c[c][5], form_c.shape[c])
+        for c in range(n_c))
     seg_idx = jnp.concatenate([
-        gather_idx[c].reshape(-1) + starts_t[c] for c in range(n_comp)])
-    n_out = starts_t[-1]
+        _flat_dof_plan(comp_r[c][1], comp_r[c][3], comp_r[c][5],
+                       form_r.shape[c]).reshape(-1) + starts_r[c]
+        for c in range(n_r)])
+    n_out = starts_r[-1]
 
     @jax.jit
-    def _impl(x, Bvals, W_split, gather_idx, seg_idx):
-        u = [_to_quadrature(Bvals[c], x[starts_t[c]:starts_t[c + 1]],
-                            gather_idx[c]) for c in range(n_comp)]
+    def _impl(x, Bvals_r, Bvals_c, DF, jac, gauss, gather_idx, seg_idx):
+        W = {pair: split(w) * gauss for pair, w in weight_fn(DF, jac).items()}
+        u = [_to_quadrature(Bvals_c[c], x[starts_c[c]:starts_c[c + 1]],
+                            gather_idx[c]) for c in range(n_c)]
         y_parts = []
-        for cr in range(n_comp):
-            v = sum(W_split[(cr, cc)] * u[cc]
-                    for cc in range(n_comp) if (cr, cc) in W_split)
-            y_parts.append(_from_quadrature(Bvals[cr], v).reshape(-1))
+        for cr in range(n_r):
+            v = sum(W[(cr, cc)] * u[cc] for cc in range(n_c) if (cr, cc) in pairs)
+            y_parts.append(_from_quadrature(Bvals_r[cr], v).reshape(-1))
         return jax.ops.segment_sum(jnp.concatenate(y_parts), seg_idx,
                                    num_segments=n_out)
 
+    DF, jac = geometry.DF_jkl, geometry.jacobian_j
+
     def apply(x):
-        return _impl(x, Bvals, W_split, gather_idx, seg_idx)
+        return _impl(x, Bvals_r, Bvals_c, DF, jac, gauss, gather_idx, seg_idx)
 
     return apply
+
+
+def build_matrixfree_mass_apply(seq, k, geometry=None):
+    """Return a jitted raw-DOF-space ``x -> M_k x`` that never stores ``M_k``.
+
+    The returned callable acts on a vector in the *raw tensor-product* DOF
+    space (the unextracted, periodic DOF layout). Boundary / polar extraction
+    ``E (.) E^T`` is applied by the caller. The metric weight is formed from
+    the geometry's ``DF`` and ``det DF`` inside the kernel (see
+    :func:`_mass_weight`).
+    """
+    geometry = seq.geometry if geometry is None else geometry
+    return _build_sumfact_apply(
+        seq, k, k, lambda DF, jac: _mass_weight(k, DF, jac), geometry)
+
+
+def build_matrixfree_projection_apply(seq, k_row, k_col):
+    """Return a jitted raw-DOF apply of the projection mass ``int Lambda^{k_row} . Lambda^{k_col}``.
+
+    The weight is the reference-domain identity (no metric), so only the
+    matching component pairs contribute; the input is a raw ``k_col``-form
+    vector and the output a raw ``k_row``-form vector.
+    """
+    n_comp = 1 if k_row in (0, 3) else 3
+    if n_comp != (1 if k_col in (0, 3) else 3):
+        raise ValueError(
+            f"projection mass needs matching component counts, got k_row={k_row}, k_col={k_col}")
+    return _build_sumfact_apply(
+        seq, k_row, k_col, _reference_weight(n_comp), seq.geometry)

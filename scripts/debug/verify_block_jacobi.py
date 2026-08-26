@@ -219,7 +219,7 @@ def main():
                 t0 = time.perf_counter()
                 try:
                     if arm == "jacobi":
-                        d = jnp.asarray(op._hodge_diaginv(seq, ops, k, dbc))
+                        d = jnp.asarray(op._laplacian_diaginv(seq, ops, k, dbc))
 
                         def minv(v, d=d):
                             return d * v

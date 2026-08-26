@@ -2,12 +2,9 @@ import argparse
 import os
 import random
 import string
-from typing import Literal
-
 import h5py
 import jax.numpy as jnp
 import numpy as np
-from jax.scipy.interpolate import RegularGridInterpolator
 
 
 
@@ -156,112 +153,6 @@ def load_sweep(
                 f"Skipped {fname} (unexpected diffs: {list(unexpected_diffs.keys())})")
 
     return cfgs, forces, iter_counts
-
-
-def project_sampled_field(
-    axes,
-    values,
-    seq,
-    k: Literal[0, 1, 2, 3],
-    dirichlet: bool = True,
-    reference_domain: bool = False,
-):
-    """L2-project a field sampled on a regular grid onto a k-form FEM basis.
-
-    The sampled data is interpolated at the quadrature points in one
-    vectorized call, the coordinate pullback is applied via precomputed
-    quantities on *seq*, and the result is integrated against the TP basis
-    directly — avoiding any point-by-point ``lax.map``.
-
-    Parameters
-    ----------
-    axes : tuple of 1-D arrays
-        Grid axes ``(x1, x2, x3)`` spanning the logical domain, each of
-        shape ``(n1,)``, ``(n2,)``, ``(n3,)``.
-    values : jnp.ndarray
-        Field values on the grid.  For scalar forms (k=0, k=3) the shape
-        must be ``(n1*n2*n3,)`` or ``(n1, n2, n3)``.  For vector forms
-        (k=1, k=2) the shape must be ``(n1*n2*n3, 3)`` or ``(n1, n2, n3, 3)``.
-    seq : DeRhamSequence
-        Pre-built de Rham sequence (must have ``evaluate_1d`` and the
-        relevant mass matrix assembled).
-    k : {0, 1, 2, 3}
-        Degree of the differential form.
-    dirichlet : bool, optional
-        Whether to use Dirichlet boundary conditions (default ``True``).
-    reference_domain : bool, optional
-        For ``k=0``, use the cached reference-domain mass matrix and
-        quadrature weights instead of the active mapped geometry.
-
-    Returns
-    -------
-    dof : jnp.ndarray
-        Coefficient vector in the k-form FEM space.
-    """
-    from mrx.quadrature import integrate_against
-
-    if reference_domain and k != 0:
-        raise ValueError("reference_domain is only supported for k=0")
-
-    x1, x2, x3 = axes
-    n1, n2, n3 = len(x1), len(x2), len(x3)
-    xq = seq.quad.x  # (n_q, 3)
-
-    comp_info, comp_shapes = seq._form_comp_info(k)
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
-
-    if k in (0, 3):
-        # --- scalar field ---
-        grid = values.reshape(n1, n2, n3)
-        interp = RegularGridInterpolator(
-            points=(x1, x2, x3), values=grid, method='linear')
-        f_q = interp(xq)[:, None]                     # (n_q, 1)
-
-        if k == 0:
-            if reference_domain:
-                w_jk = f_q * seq.quad.w[:, None]
-            else:
-                w_jk = f_q * (seq.quad.w * seq.jacobian_j)[:, None]
-        else:  # k == 3
-            w_jk = f_q * seq.quad.w[:, None]
-
-    else:
-        # --- vector field ---
-        grid = values.reshape(n1, n2, n3, 3)
-        v_q = jnp.stack([
-            RegularGridInterpolator(
-                points=(x1, x2, x3), values=grid[..., i],
-                method='linear')(xq)
-            for i in range(3)
-        ], axis=-1)                                    # (n_q, 3)
-
-        if k == 1:
-            # 1-form RHS_i = ∫ Λ^1_i · (DF^{-1} v) J w dξ
-            #               = ∫ Λ^1_i · G^{-1} (DF^T v) w dξ
-            # using DF^{-1} = G^{-1} DF^T  (since G = DF^T DF).
-            DF_q = seq.DF_jkl                            # (n_q, 3, 3), precomputed
-            DFt_v = jnp.einsum('qji,qj->qi', DF_q, v_q)  # DF^T @ v
-            Ginv_DFt_v = jnp.einsum('qij,qj->qi',
-                                    seq.metric_inv_jkl, DFt_v)
-            w_jk = Ginv_DFt_v * (seq.quad.w * seq.jacobian_j)[:, None]
-
-        else:  # k == 2
-            # 2-form pullback: DF^T v,  weighted by w  (no J)
-            DF_q = seq.DF_jkl                            # (n_q, 3, 3), precomputed
-            DFt_v = jnp.einsum('qji,qj->qi', DF_q, v_q)  # DF^T @ v
-            w_jk = DFt_v * seq.quad.w[:, None]
-
-    # Extraction operator
-    match k:
-        case 0: e = seq.e0_dbc if dirichlet else seq.e0
-        case 1: e = seq.e1_dbc if dirichlet else seq.e1
-        case 2: e = seq.e2_dbc if dirichlet else seq.e2
-        case 3: e = seq.e3_dbc if dirichlet else seq.e3
-
-    rhs = e @ integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
-    if reference_domain:
-        return seq.apply_inverse_reference_mass_matrix(rhs, dirichlet=dirichlet)
-    return seq.apply_inverse_mass_matrix(rhs, k=k, dirichlet=dirichlet)
 
 
 def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',

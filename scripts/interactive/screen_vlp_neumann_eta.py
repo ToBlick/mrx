@@ -10,9 +10,9 @@ import numpy as np
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map, toroid_map
 from mrx.operators import (
-    assemble_mass_operators,
     assemble_tensor_mass_preconditioner,
-    dense_mass_matrix,
+    _assemble_dense_from_apply,
+    apply_mass_matrix,
 )
 from mrx.preconditioners import _core_size, _select_mass_surgery_factors, _select_mass_tensor_factors
 
@@ -130,10 +130,9 @@ def _build_case(config: Config):
         betti_numbers=config.betti,
     )
     seq.evaluate_1d()
-    seq.assemble_reference_mass_matrix()
     seq.set_map(_build_map(config))
 
-    operators = assemble_mass_operators(seq, seq.geometry, ks=(0, 1))
+    operators = seq.get_operators()
     operators = assemble_tensor_mass_preconditioner(
         seq,
         operators=operators,
@@ -148,7 +147,7 @@ def _build_case(config: Config):
             "block_chebyshev_steps": 0,
         },
     )
-    operators = seq.set_operators(operators, sync_legacy=False)
+    operators = seq.set_operators(operators)
     return seq, operators
 
 
@@ -339,7 +338,9 @@ def _rt_z_vlp_summary(
 
 
 def _build_m0_summary(seq, operators, config: Config) -> dict[str, object]:
-    matrix = jnp.asarray(dense_mass_matrix(seq, operators, 0, dirichlet=config.dirichlet))
+    matrix = _assemble_dense_from_apply(
+        lambda v: apply_mass_matrix(seq, operators, v, 0, dirichlet=config.dirichlet),
+        int(seq.n0_dbc if config.dirichlet else seq.n0))
     core_size = _core_size(seq)
     bulk_exact = matrix[core_size:, core_size:]
     tensor_factors = _select_mass_tensor_factors(operators.mass_preconds, 0, config.dirichlet)
@@ -363,7 +364,9 @@ def _build_m0_summary(seq, operators, config: Config) -> dict[str, object]:
 
 
 def _build_m1_summary(seq, operators, config: Config) -> dict[str, object]:
-    matrix = jnp.asarray(dense_mass_matrix(seq, operators, 1, dirichlet=config.dirichlet))
+    matrix = _assemble_dense_from_apply(
+        lambda v: apply_mass_matrix(seq, operators, v, 1, dirichlet=config.dirichlet),
+        int(seq.n1_dbc if config.dirichlet else seq.n1))
     surgery = _select_mass_surgery_factors(operators.mass_preconds, 1, config.dirichlet)
     factors = _select_mass_tensor_factors(operators.mass_preconds, 1, config.dirichlet)
     blocks = [

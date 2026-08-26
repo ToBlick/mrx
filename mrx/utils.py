@@ -22,7 +22,5 @@ from mrx.solvers import get_smallest_ev_pair  # noqa: F401
 
 # Diagonal utilities have moved to mrx.preconditioners.
 from mrx.preconditioners import (  # noqa: F401
-    _bcsr_to_coo_indices, _build_diag_EAET_plan, _coo_host, _coo_indices_host,
-    diag_EAET, diag_EAET_direct, diag_EAET_matvec, diag_EGtMGEt_direct,
-    diag_matvec, diag_schur_complement, extract_diag_vector,
+    diag_EAET, diag_EAET_matvec, diag_matvec, diag_schur_complement,
 )

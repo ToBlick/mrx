@@ -26,7 +26,6 @@ from mrx.mappings import extend_map_nfp, rotating_ellipse_map
 from mrx.operators import (assemble_derivative_operators,
                            assemble_laplacian_operators,
                            assemble_incidence_operators,
-                           assemble_mass_operators,
                            assemble_tensor_mass_preconditioner)
 from mrx.plotting import get_2d_grids, set_axes_equal
 
@@ -270,7 +269,6 @@ def build_case(config: Config = CONFIG):
         betti_numbers=config.betti,
     )
     SEQ.evaluate_1d()
-    SEQ.assemble_reference_mass_matrix()
 
     ANALYTIC_MAP = _build_rotating_ellipse_map(config)
     FULL_ANALYTIC_MAP = _extend_to_full_torus(ANALYTIC_MAP, config)
@@ -293,7 +291,7 @@ def build_case(config: Config = CONFIG):
 def assemble_case():
     global OPERATORS
     seq = _require_sequence()
-    operators = assemble_mass_operators(seq, seq.geometry, ks=(0, 1, 2))
+    operators = seq.get_operators()
     operators = assemble_tensor_mass_preconditioner(
         seq,
         operators=operators,

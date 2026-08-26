@@ -78,7 +78,6 @@ from mrx.operators import (
     apply_mass_matrix,
     apply_mass_matrix_preconditioner,
     apply_mass_tensor_preconditioner_ops,
-    assemble_mass_operators,
     assemble_tensor_mass_preconditioner,
 )
 from mrx.experimental.chebyshev import (  # noqa: E402
@@ -127,7 +126,6 @@ def build_sequence(args) -> DeRhamSequence:
         betti_numbers=BETTI,
     )
     seq.evaluate_1d()
-    seq.assemble_reference_mass_matrix()
     seq.set_map(
         rotating_ellipse_map(
             eps=args.rotating_eps,
@@ -294,8 +292,7 @@ def main() -> None:
     print(f"Building sequence ns={args.ns} p={args.p} ...", flush=True)
     seq = build_sequence(args)
 
-    base_operators = assemble_mass_operators(seq, seq.geometry, ks=tuple(args.ks))
-    seq.set_operators(base_operators)
+    base_operators = seq.get_operators()
 
     dirichlet = not args.free
 

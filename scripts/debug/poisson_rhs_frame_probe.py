@@ -65,7 +65,6 @@ from mrx.mappings import toroid_map  # noqa: E402
 from mrx.nullspace import compute_nullspaces_iterative  # noqa: E402
 from mrx.operators import (  # noqa: E402
     assemble_incidence_operators,
-    assemble_projection_operators,
     assemble_schur_jacobi_preconditioner,
 )
 from mrx.quadrature import evaluate_at_xq  # noqa: E402
@@ -103,7 +102,6 @@ def build(n: int, p: int, eps: float, cg_tol: float, cg_maxiter: int, qoff: int)
     seq.set_map(toroid_map(epsilon=eps))
     seq.evaluate_1d()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     ops = assemble_schur_jacobi_preconditioner(
         seq, ops, ks=(1,), dirichlet_variants=(False,))
     seq.set_operators(ops)

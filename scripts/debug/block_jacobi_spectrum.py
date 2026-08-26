@@ -85,7 +85,7 @@ def build_sequence(geometry, ns, p):
 def make_preconditioner(seq, ops, k, dbc, arm):
     """Same arm grammar as verify_block_jacobi.py, so the two are comparable."""
     if arm == "jacobi":
-        d = jnp.asarray(op._hodge_diaginv(seq, ops, k, dbc))
+        d = jnp.asarray(op._laplacian_diaginv(seq, ops, k, dbc))
         return lambda v: d * v, None
     pc = re.search(r"bcp(\d+)", arm)
     sc = re.search(r"bcs(\d+)", arm)

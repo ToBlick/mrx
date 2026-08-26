@@ -247,26 +247,6 @@ class PoissonTestConfig(NumericsConfig):
 
 
 @dataclass
-class MatvecBenchmarkConfig(NumericsConfig):
-    """Application parameters for ``scripts/config_scripts/benchmark_matvec_sparse.py``.
-
-    Benchmarks stored-BCSR vs matrix-free apply for the mass matrices, over the
-    same resolutions used by the Poisson convergence study.
-    """
-    n: list[int] = field(default_factory=lambda: [8, 16, 32])
-    p: int = 3
-    ks: list[int] = field(default_factory=lambda: [0, 1])
-    epsilon: float = 1 / 3
-    quad_order: Optional[int] = None
-    quad_order_offset: int = 0
-    reps: int = 50
-    warmup: int = 3
-    seed: int = 0
-    map_batch_size_inner: int = 0      # 0 corresponds to vmap
-    map_batch_size_outer: Optional[int] = None    # None means no batching
-
-
-@dataclass
 class MCPoissonConfig(NumericsConfig):
     """Schema of ``conf/config_mc_poisson.yaml``; its driver
     ``scripts/dice/mc_poisson.py`` is not in the repository."""
@@ -325,7 +305,6 @@ def _register() -> None:
     cs.store(name="config_poincare",      node=PoincarePlotsConfig)
     cs.store(name="_poisson_test_schema",  node=PoissonTestConfig)
     cs.store(name="_mc_poisson_schema",     node=MCPoissonConfig)
-    cs.store(name="_matvec_benchmark_schema", node=MatvecBenchmarkConfig)
     # Resolution group (usage: ``resolution=low``)
     for name, node in [("low", _low_res), ("medium", _medium_res), ("high", _high_res)]:
         cs.store(group="resolution", name=name, node=node, package="_global_")

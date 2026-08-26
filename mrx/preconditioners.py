@@ -7,12 +7,11 @@ import os
 
 import equinox as eqx
 import jax
-import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
 import mrx
-from mrx.precision import DTYPE, eps, sqrt_eps
+from mrx.precision import DTYPE, eps
 
 #: Rank / structure cut-offs, in units of the working-dtype epsilon. The
 #: float64 values are the ones each site was tuned at; the powers of two
@@ -40,9 +39,8 @@ class JacobiMassPreconditioner(eqx.Module):
 
 
 class ExtractedMassApplyData(eqx.Module):
-    # ``mass_apply`` is a raw-DOF-space matvec callable ``v -> M_k v`` (matrix
-    # free for k=0, a BCSR-wrapped lambda for k=1/k=2). It replaces the former
-    # stored BCSR ``mass_sp`` so no mass matrix needs to be materialised.
+    # ``mass_apply`` is the raw-DOF-space matrix-free matvec ``v -> M_k v``
+    # (see ``mrx.local_assembly.build_matrixfree_mass_apply``).
     mass_apply: object
     extraction: object
     extraction_t: object
@@ -722,11 +720,7 @@ def diag_EAET(E, A, E_T=None):
     """Compute ``diag(E @ A @ E^T)`` via probed matvecs (matrix-free)."""
     n = E.shape[0]
     if E_T is None:
-        if isinstance(E, jsparse.BCSR):
-            coo_idx = _bcsr_to_coo_indices(E)
-            E_T = jsparse.BCOO((E.data, coo_idx), shape=E.shape).T
-        else:
-            E_T = E.T
+        E_T = E.T
     dtype = getattr(A, "dtype", getattr(E, "dtype", DTYPE))
     return diag_matvec(lambda x: E @ (A @ (E_T @ x)), n, dtype=dtype)
 
@@ -734,11 +728,7 @@ def diag_EAET(E, A, E_T=None):
 def diag_EAET_matvec(E, A_matvec, n, E_T=None):
     """Compute ``diag(E @ A @ E^T)`` with ``A`` given as a matvec (matrix-free)."""
     if E_T is None:
-        if isinstance(E, jsparse.BCSR):
-            coo_idx = _bcsr_to_coo_indices(E)
-            E_T = jsparse.BCOO((E.data, coo_idx), shape=E.shape).T
-        else:
-            E_T = E.T
+        E_T = E.T
     dtype = getattr(E, "dtype", DTYPE)
     return diag_matvec(lambda x: E @ A_matvec(E_T @ x), n, dtype=dtype)
 
@@ -754,153 +744,6 @@ def diag_schur_complement(apply_DT, diag_inv, n):
         Dt_ei = apply_DT(e_i)
         return jnp.dot(Dt_ei, diag_inv * Dt_ei)
     return jax.lax.map(entry, jnp.arange(n), batch_size=mrx.MAP_BATCH_SIZE_OUTER)
-
-
-# ---------------------------------------------------------------------------
-# TODO: remove — the functions below access sparse .data arrays directly and
-# are incompatible with the matrix-free paradigm. Jacobi preconditioners
-# should use diag_matvec / diag_EAET probing instead.
-# ---------------------------------------------------------------------------
-
-def _bcsr_to_coo_indices(mat: jsparse.BCSR):
-    """Expand BCSR indptr to COO-style (row, col) index array."""
-    nse = mat.data.shape[0]
-    lengths = mat.indptr[1:] - mat.indptr[:-1]
-    rows = jnp.repeat(jnp.arange(mat.shape[0]), lengths,
-                      total_repeat_length=nse)
-    return jnp.stack([rows, mat.indices], axis=1)
-
-
-def extract_diag_vector(mat) -> jnp.ndarray:
-    """Extract the main diagonal of a sparse matrix as a 1-D array.
-
-    .. deprecated::
-        Reads ``.data`` directly — incompatible with matrix-free paradigm.
-        Use :func:`diag_matvec` instead.
-    """
-    n = mat.shape[0]
-    if isinstance(mat, jsparse.BCSR):
-        indices = _bcsr_to_coo_indices(mat)
-        rows, cols = indices[:, 0], indices[:, 1]
-    else:
-        rows = mat.indices[:, 0]
-        cols = mat.indices[:, 1]
-    is_diag = rows == cols
-    diag_data = jnp.where(is_diag, mat.data, 0.0)
-    return jnp.zeros(n, dtype=mat.dtype).at[rows].add(diag_data)
-
-
-def _coo_indices_host(mat):
-    """Return ``(rows, cols)`` as host int64 numpy arrays.
-
-    .. deprecated:: incompatible with matrix-free paradigm.
-    """
-    if isinstance(mat, jsparse.BCSR):
-        idx = _bcsr_to_coo_indices(mat)
-        rows = np.asarray(idx[:, 0], dtype=np.int64)
-        cols = np.asarray(idx[:, 1], dtype=np.int64)
-    else:
-        rows = np.asarray(mat.indices[:, 0], dtype=np.int64)
-        cols = np.asarray(mat.indices[:, 1], dtype=np.int64)
-    return rows, cols
-
-
-def _coo_host(mat):
-    """Return ``(rows, cols, vals)`` as host numpy arrays.
-
-    .. deprecated:: incompatible with matrix-free paradigm.
-    """
-    rows, cols = _coo_indices_host(mat)
-    vals = np.asarray(mat.data, dtype=np.float64)
-    return rows, cols, vals
-
-
-def _build_diag_EAET_plan(rows_E, cols_E, vals_E, n_in, a_arr, b_arr,
-                           chunk=1_000_000):
-    """Build a static scatter plan for ``diag(E A E^T)``.
-
-    .. deprecated:: incompatible with matrix-free paradigm. Use
-        :func:`diag_EAET` (probing) instead.
-    """
-    counts = np.bincount(cols_E, minlength=n_in)
-    R = int(counts.max()) if counts.size else 0
-    if R == 0:
-        empty_i = np.zeros((0,), dtype=np.int64)
-        return empty_i, empty_i.copy(), np.zeros((0,), dtype=np.float64)
-    order = np.argsort(cols_E, kind="stable")
-    cs, rs, ws = cols_E[order], rows_E[order], vals_E[order]
-    start = np.zeros(n_in, dtype=np.int64)
-    if n_in > 0:
-        start[1:] = np.cumsum(counts)[:-1]
-    pos = np.arange(cs.shape[0], dtype=np.int64) - start[cs]
-    row_pad = np.full((n_in, R), -1, dtype=np.int64)
-    w_pad = np.zeros((n_in, R), dtype=np.float64)
-    row_pad[cs, pos] = rs
-    w_pad[cs, pos] = ws
-    nnz = a_arr.shape[0]
-    seg_i_list, seg_m_list, seg_coef_list = [], [], []
-    for s in range(0, nnz, chunk):
-        e = min(s + chunk, nnz)
-        a, b = a_arr[s:e], b_arr[s:e]
-        ra, wa = row_pad[a], w_pad[a]
-        rb, wb = row_pad[b], w_pad[b]
-        RA, RB = ra[:, :, None], rb[:, None, :]
-        match = (RA == RB) & (RA >= 0)
-        coef = wa[:, :, None] * wb[:, None, :]
-        mp = np.broadcast_to(
-            np.arange(s, e, dtype=np.int64)[:, None, None], match.shape)
-        iidx = np.broadcast_to(RA, match.shape)
-        seg_i_list.append(iidx[match])
-        seg_m_list.append(mp[match])
-        seg_coef_list.append(coef[match])
-    seg_i = np.concatenate(seg_i_list) if seg_i_list else np.zeros((0,), np.int64)
-    seg_m = np.concatenate(seg_m_list) if seg_m_list else np.zeros((0,), np.int64)
-    seg_coef = (np.concatenate(seg_coef_list)
-                if seg_coef_list else np.zeros((0,), np.float64))
-    return seg_i, seg_m, seg_coef
-
-
-def diag_EAET_direct(E, A):
-    """Compute ``diag(E @ A @ E^T)`` via a static scatter plan.
-
-    .. deprecated:: incompatible with matrix-free paradigm. Use
-        :func:`diag_EAET` (probing) instead.
-    """
-    n_out, n_in = E.shape
-    rows_E, cols_E, vals_E = _coo_host(E)
-    a_arr, b_arr = _coo_indices_host(A)
-    seg_i, seg_m, seg_coef = _build_diag_EAET_plan(
-        rows_E, cols_E, vals_E, n_in, a_arr, b_arr)
-    if seg_i.shape[0] == 0:
-        return jnp.zeros((n_out,), dtype=DTYPE)
-    contrib = jnp.asarray(seg_coef, dtype=DTYPE) * A.data[jnp.asarray(seg_m)]
-    return jax.ops.segment_sum(contrib, jnp.asarray(seg_i), num_segments=n_out)
-
-
-def diag_EGtMGEt_direct(E, G, M):
-    """Compute ``diag(E @ G^T @ M @ G @ E^T)`` via a scatter plan.
-
-    .. deprecated:: incompatible with matrix-free paradigm. Uses
-        ``scipy.sparse`` and reads ``.data`` directly.
-    """
-    import scipy.sparse as sps
-    n_out = E.shape[0]
-    re, ce, ve = _coo_host(E)
-    rg, cg_arr, vg = _coo_host(G)
-    E_sp = sps.csr_matrix((ve, (re, ce)), shape=E.shape)
-    G_sp = sps.csr_matrix((vg, (rg, cg_arr)), shape=G.shape)
-    Eeff = (E_sp @ G_sp.transpose()).tocoo()
-    n_in = M.shape[0]
-    a_arr, b_arr = _coo_indices_host(M)
-    seg_i, seg_m, seg_coef = _build_diag_EAET_plan(
-        np.asarray(Eeff.row, dtype=np.int64),
-        np.asarray(Eeff.col, dtype=np.int64),
-        np.asarray(Eeff.data, dtype=np.float64),
-        n_in, a_arr, b_arr)
-    if seg_i.shape[0] == 0:
-        return jnp.zeros((n_out,), dtype=DTYPE)
-    contrib = jnp.asarray(seg_coef, dtype=DTYPE) * M.data[jnp.asarray(seg_m)]
-    return jax.ops.segment_sum(contrib, jnp.asarray(seg_i), num_segments=n_out)
 
 
 # --------------------------------------------------------------------------- #
@@ -1513,253 +1356,6 @@ def _weak_term_exact_parts(seq, k: int, *, dirichlet: bool):
     return parts, lam_u
 
 
-def _greville_transfer_v3_to_v0(seq, geometry, *, bandwidth=None,
-                                metric_free=False):
-    """Sparse-ish transfer ``Pi: V_3 -> V_0`` representing ``star phi_i``.
-
-    ``star`` of the k=3 basis function is the SCALAR ``phi_i / J`` (the k=3 mass
-    weight is ``1/J``, which pins the convention).  Rather than differentiate
-    that -- which needs a derivative of an already-differentiated spline and a
-    ``dJ`` pass over the map -- represent it in ``V_0`` first, where the basis
-    carries no derivative at all, and differentiate THERE.  The gradient is then
-    an ordinary k=0 stiffness energy.
-
-    The representation is Greville collocation: match ``phi_i / J`` at the k=0
-    Greville abscissae, i.e. ``Pi = (x)A_a^-1 . diag(1/J_g) . (x)B_a``, with
-    ``A_a`` the 1-D collocation matrix of the degree-``p`` basis and ``B_a`` the
-    degree-``p-1`` (k=3) basis sampled at the same points.  ``A_a`` is
-    metric-free, so its inverse decays at a rate that depends only on ``p``:
-    ``bandwidth`` truncates it to make ``Pi`` genuinely local, and ``None``
-    keeps it exact, which measures the ceiling before locality costs anything.
-
-    Note ``J`` is needed only at the ``n_0`` Greville points, not on the
-    quadrature grid, and only ``det DF`` -- no second derivatives anywhere.
-    """
-    lam, dlam = seq.basis_0.Λ, seq.basis_0.dΛ
-    pts = [np.asarray(lam[a].greville_points()) for a in range(3)]
-
-    # Greville abscissae of a CLAMPED basis include the endpoints, and
-    # det(DF) = 0 at the outer knot of a spline map -- so 1/J is infinite there.
-    # Quadrature points never land on the boundary, which is exactly why this
-    # trap does not show up in any of the assembly paths. Pull the sample points
-    # in by a sqrt(eps) fraction of the end knot span (GEOMETRIC, so it stays
-    # inside the end element at every resolution and is resolvable next to
-    # 1.0 in either precision); the collocation matrix is evaluated at the
-    # SAME points, so the interpolation stays consistent (and
-    # Schoenberg-Whitney still holds).
-    for a in range(3):
-        if lam[a].type != "periodic":
-            knots = np.unique(np.asarray(lam[a].T))
-            nudge = sqrt_eps() * min(knots[1] - knots[0], knots[-1] - knots[-2])
-            pts[a] = np.clip(pts[a], nudge, 1.0 - nudge)
-
-    b_g, a_inv = [], []
-    for a in range(3):
-        tbl = jax.vmap(lambda x, a=a: jax.vmap(
-            lambda i, x=x, a=a: jnp.sum(dlam[a](x, i)))(dlam[a].ns))(
-                jnp.asarray(pts[a]))
-        b_g.append(np.asarray(tbl))                       # (n_g_a, n_3_a)
-        coll = np.asarray(lam[a].collocation_matrix(jnp.asarray(pts[a])))
-        inv = np.linalg.inv(coll)
-        if bandwidth is not None:
-            n = inv.shape[0]
-            off = np.abs(np.arange(n)[:, None] - np.arange(n)[None, :])
-            if lam[a].type == "periodic":
-                off = np.minimum(off, n - off)
-            inv = np.where(off <= bandwidth, inv, 0.0)
-        a_inv.append(inv)
-
-    if metric_free:
-        # The L2 pairing <u, s> between a 0-form and a 3-form's physical proxy
-        # carries no metric at all: the 1/J in the proxy cancels the J in the
-        # 0-form measure. So interpolating the k=3 COEFFICIENT function is the
-        # metric-free transfer, and dividing by J here -- as the original
-        # version did -- inserts a factor the correct pairing cancels. That
-        # spurious 1/J is what produced the Jacobian-shaped error peaking on
-        # the ring next to the axis, where the cells collapse.
-        #
-        # Without it the whole transfer is a pure Kronecker product of three
-        # 1-D matrices, needs no map evaluation whatsoever, and is banded as
-        # soon as the collocation inverse is truncated.
-        return np.kron(np.kron(a_inv[0] @ b_g[0], a_inv[1] @ b_g[1]),
-                       a_inv[2] @ b_g[2])
-
-    # J at the tensor Greville grid: n_0 map evaluations, against n_q for the
-    # quadrature grid -- and jacfwd only, no second derivative.
-    grid = np.stack(np.meshgrid(*pts, indexing="ij"), axis=-1).reshape(-1, 3)
-    def jdet(x):
-        return jnp.linalg.det(jax.jacfwd(geometry.map)(x))
-    jac_g = np.asarray(jax.lax.map(jdet, jnp.asarray(grid),
-                                   batch_size=mrx.MAP_BATCH_SIZE_INNER or 256))
-    if not np.isfinite(jac_g).all() or np.abs(jac_g).min() == 0.0:
-        raise ValueError(
-            f"det(DF) at the Greville grid is degenerate: finite="
-            f"{np.isfinite(jac_g).all()} min|J|={np.abs(jac_g).min():.3e}. "
-            "The star divides by it, so this has to be caught here rather "
-            "than surface as a NaN diagonal.")
-
-    kron_b = np.kron(np.kron(b_g[0], b_g[1]), b_g[2])     # (n_g, n_3)
-    work = kron_b / jac_g[:, None]
-    shape_g = tuple(len(p_) for p_ in pts)
-    work = work.reshape(*shape_g, -1)
-    for a in range(3):
-        work = np.moveaxis(np.tensordot(a_inv[a], work, axes=([1], [a])), 0, a)
-    return work.reshape(int(np.prod(shape_g)), -1)         # (n_0, n_3)
-
-
-def _metric_free_star_1d(seq, axis):
-    """1-D metric-free, local discrete Hodge star ``V_3 axis -> V_0 axis``.
-
-    The IGA/FEEC construction, on DEGREES OF FREEDOM rather than on function
-    values.  The degree-``p-1`` (k=3) basis is dual to HISTOPOLATION over the
-    Greville spans -- its DOF is the integral over a cell -- and the degree-``p``
-    (k=0) basis is dual to INTERPOLATION at the Greville points -- its DOF is a
-    point value.  So the star between them is "cell integral -> point value",
-    i.e. divide by the cell measure and average the cells meeting at a point::
-
-        d_j = (c_{j-1} + c_j) / (h_{j-1} + h_j)
-
-    with ``h`` the Greville-span widths, one-sided at a clamped end.  Everything
-    here comes from the KNOT VECTOR: the operator is bandwidth-1, exactly local,
-    and carries no geometry at all -- the metric stays in the mass matrices,
-    where FEEC puts it.
-
-    This is the thing the previous two attempts were not.  Both of those tried
-    to represent the k=3 basis FUNCTION in ``V_0`` (pointwise, by collocation),
-    which is an O(1) request: a basis function varies on the scale of one
-    element, so approximating its shape in a different space on the same mesh
-    does not converge in ``h``.  Mapping DOF vectors asks nothing of the shapes
-    and reproduces constants exactly.
-    """
-    lam, dlam = seq.basis_0.Λ[axis], seq.basis_0.dΛ[axis]
-    typ = lam.type
-    grev = np.asarray(lam.greville_points())
-    n0, n3 = int(lam.n), int(dlam.n)
-
-    if typ == "periodic":
-        h = np.diff(np.concatenate([grev, [grev[0] + 1.0]]))
-    else:
-        h = np.diff(grev)
-    h = np.abs(h)
-    if h.shape[0] != n3:
-        raise ValueError(
-            f"axis {axis}: {h.shape[0]} Greville spans but {n3} k=3 DOFs; the "
-            "histopolation duality this star relies on does not hold here")
-
-    star = np.zeros((n0, n3))
-    for j in range(n0):
-        left = (j - 1) % n3 if typ == "periodic" else j - 1
-        right = j % n3 if typ == "periodic" else j
-        cells = [c for c in (left, right) if 0 <= c < n3]
-        denom = sum(h[c] for c in cells)
-        for c in cells:
-            star[j, c] = 1.0 / denom
-    return star
-
-
-def _raw_grad_incidence(seq):
-    """Raw ``G_0: V_0 -> V_1`` as one dense matrix, component-blocked to match
-    the flat layout ``assemble_m1_local`` uses."""
-    from mrx.operators import _dense_incidence_1d  # noqa: PLC0415
-
-    types = seq.basis_0.types
-    shape0 = tuple(int(s) for s in seq.basis_0.shape[0])
-    blocks = []
-    for c in range(3):
-        factors = []
-        for a in range(3):
-            if a == c:
-                factors.append(np.asarray(
-                    _dense_incidence_1d(shape0[a], types[a])))
-            else:
-                factors.append(np.eye(shape0[a]))
-        blocks.append(np.kron(np.kron(factors[0], factors[1]), factors[2]))
-    return np.concatenate(blocks, axis=0)
-
-
-def build_transfer_weak_diagonal(seq, k: int, *, dirichlet: bool,
-                                 bandwidth=None, geometry=None):
-    """``diag(W_3)`` as the k=0 stiffness energy of the transferred basis.
-
-    ``diag(W_k)_i = ||delta_h phi_i||^2``, and at k=3 ``delta = star d star``
-    with ``star phi_i`` a scalar.  Transfer that scalar into ``V_0``
-    (:func:`_greville_transfer_v3_to_v0`) and the remaining ``d`` is the
-    ordinary gradient of a degree-``p`` spline::
-
-        diag(W_3)_i ~ || grad (Pi e_i) ||^2 = (Pi^T G_0^T M_1 G_0 Pi)_ii
-
-    which is exactly what :func:`diag_EGtMGEt_direct` computes.  No derivative
-    of the k=3 basis, no ``dJ``, and every factor is a standard object.
-
-    **BC pairing.** Hodge duality flips essential and natural conditions, so the
-    partner of k=3 DIRICHLET is k=0 FREE and vice versa.  This builds the raw
-    (free) k=0 energy, so it is the k=3 ``dirichlet=True`` case that is clean;
-    the k=3 free case additionally needs the boundary trace that the k=2
-    Dirichlet condition otherwise kills.  Measured directly: on a toroid the
-    outer-ring error of the un-traced form is 0.072 under k=3 dbc against 5.1
-    free -- a factor of 70, entirely from that term.
-
-    Dense at present: ``Pi`` is built as one ``(n_0 x n_3)`` array, so this is
-    an A/B-resolution diagnostic.  Making it production means truncating with
-    ``bandwidth`` (the collocation inverse is metric-free, so its decay depends
-    only on ``p``) and assembling ``Pi`` as sparse.
-    """
-    if k != 3:
-        raise NotImplementedError("transfer diagonal is k=3 only so far")
-    from mrx.local_assembly import assemble_m1_local  # noqa: PLC0415
-
-    geometry = seq.geometry if geometry is None else geometry
-    if bandwidth == "star":
-        t = [_metric_free_star_1d(seq, a) for a in range(3)]
-        pi = np.kron(np.kron(t[0], t[1]), t[2])
-    elif isinstance(bandwidth, tuple):        # ('free', band)
-        pi = _greville_transfer_v3_to_v0(seq, geometry, bandwidth=bandwidth[1],
-                                         metric_free=True)
-    else:
-        pi = _greville_transfer_v3_to_v0(seq, geometry, bandwidth=bandwidth)
-
-    # BC FLIP. Hodge duality swaps essential and natural conditions, so the
-    # partner of k=3 DIRICHLET is the FREE k=0 operator and the partner of k=3
-    # FREE is the k=0 DIRICHLET one. Evaluating the k=0 energy in its extracted
-    # space is what imposes that: embed back through E^T so the quadratic form
-    # is the extracted operator's, not the raw one's.
-    e0 = seq.e0 if dirichlet else seq.e0_dbc
-    e0_mat = np.zeros((int(e0.forward_shape[0]), pi.shape[0]))
-    e0_mat[np.asarray(e0.rows), np.asarray(e0.cols)] = np.asarray(e0.vals)
-    pi = e0_mat.T @ (e0_mat @ pi)
-
-    grad = _raw_grad_incidence(seq)
-    m1 = assemble_m1_local(seq, geometry)
-
-    # diag_EGtMGEt_direct scatters an O(nnz_per_row^2) plan, which suits a
-    # sparse EXTRACTION and blows up (748 GiB) on a transfer whose columns are
-    # dense. The columns are what we want here, so contract them directly:
-    # diag(Pi^T S Pi)_i = <(S Pi)_i, Pi_i>, three matrix products, no plan.
-    pi_j = jnp.asarray(pi)
-    gp = jnp.asarray(grad) @ pi_j
-    energy_s = jnp.einsum('ai,ai->i', jnp.asarray(grad).T @ (m1 @ gp), pi_j)
-
-    # MASS NORMALIZATION. The spectral statement is between the mass-normalized
-    # operators, M_3^-1 W_3 ~ M_0^-1 S_0, so what transfers is the RAYLEIGH
-    # QUOTIENT, not the energy:
-    #
-    #   diag(W_3)_i ~ diag(M_3)_i * (T^T S_0 T)_ii / (T^T M_0 T)_ii
-    #
-    # Both diagonals are exact closed forms already in the code. Note this is
-    # invariant under T -> cT, so however the metric-free star is normalized --
-    # cell measures, averaging weights -- it cannot affect the answer. That
-    # invariance is the reason to trust the form.
-    from mrx.local_assembly import (assemble_m0_local,  # noqa: PLC0415
-                                    build_mass_diagonal)
-    m0 = assemble_m0_local(seq, geometry)
-    energy_m = jnp.einsum('ai,ai->i', m0 @ pi_j, pi_j)
-    # A transferred basis function can lose its whole support to the Dirichlet
-    # rows dropped above, so the mass energy is not guaranteed positive here.
-    floor = eps() * jnp.max(energy_m)
-    return jnp.asarray(build_mass_diagonal(seq, 3)) * energy_s / jnp.maximum(
-        energy_m, floor)
-
-
 def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
                                  split: Optional[str] = None,
                                  rescale: Optional[str] = None,
@@ -1854,23 +1450,6 @@ def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
         rescale = os.environ.get("MRX_LAPLACIAN_DIAG_RESCALE", "none")
 
     info = {"split": split, "rescale": rescale}
-    if split.startswith("transfer"):
-        # Represent star(phi_i) in V_0 and take the gradient THERE: no
-        # derivative of the k=3 basis and no dJ. See
-        # build_transfer_weak_diagonal.
-        if split == "transfer":
-            band = None
-        elif split == "transfer_star":
-            band = "star"          # metric-free, bandwidth-1 DOF star
-        elif split == "transfer_free":
-            band = ("free", None)  # metric-free interpolation, exact inverse
-        elif split.startswith("transfer_free_"):
-            band = ("free", int(split.rsplit("_", 1)[1]))
-        else:
-            band = int(split.split("_")[1])
-        raw = jnp.asarray(build_transfer_weak_diagonal(
-            seq, k, dirichlet=dirichlet, bandwidth=band))
-        return (raw, info) if return_info else raw
     if split == "codiff":
         # Not an expansion at all: diag(W)_i = ||delta phi_i||^2 by quadrature.
         # No mass model, no Sig, no separability assumption -- see

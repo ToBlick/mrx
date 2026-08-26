@@ -43,7 +43,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None):
         geometry: one of the names in the module docstring.
         ns: ``(n_r, n_theta, n_zeta)``; also the map resolution for the
             file-based geometries.
-        p: spline degree, all directions; quadrature order ``2p``.
+        p: spline degree, all directions; ``p + 1`` Gauss points per knot span.
         maxiter: iteration budget of every solve through the sequence.
         tol: solve tolerance; ``None`` is ``sqrt(eps)`` of the working
             precision.

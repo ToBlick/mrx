@@ -77,11 +77,7 @@ RESCALE_ARMS = {"rescale": "upper", "rescale_both": "both"}
 # Arm -> MRX_LAPLACIAN_DIAG_SPLIT. Every other arm uses the geometric rank-1
 # split. 'exact' is the oracle that isolates the split error from the mass-model
 # error; it is dense, so it is A/B-resolution only.
-SPLIT_ARMS = {"exact": "exact", "taylor": "taylor1", "codiff": "codiff",
-              "transfer": "transfer", "transfer_b2": "transfer_2",
-              "transfer_b4": "transfer_4",
-              "star": "transfer_star",
-              "tfree": "transfer_free", "tfree_b2": "transfer_free_2"}
+SPLIT_ARMS = {"exact": "exact", "taylor": "taylor1", "codiff": "codiff"}
 
 
 def build_sequence(geometry, ns, p):
@@ -333,7 +329,7 @@ def main():
                             RESCALE_ARMS.get(arm, "none"))
                         os.environ["MRX_LAPLACIAN_DIAG_SPLIT"] = (
                             SPLIT_ARMS.get(arm, "geometric"))
-                        diag = 1.0 / np.asarray(op._hodge_diaginv(seq, ops, k, dbc))
+                        diag = 1.0 / np.asarray(op._laplacian_diaginv(seq, ops, k, dbc))
                     shifted = jnp.asarray(1.0 / (diag + EPS * mass_jacobi[(k, dbc)]))
 
                 def minv(v, d=shifted):

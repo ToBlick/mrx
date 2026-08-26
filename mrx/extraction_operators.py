@@ -7,7 +7,6 @@ and boundary conditions in finite element computations.
 
 import equinox as eqx
 import jax
-import jax.experimental.sparse as jsparse
 import jax.numpy as jnp
 import numpy as np
 
@@ -15,21 +14,18 @@ import mrx
 
 
 class MatrixFreeExtraction(eqx.Module):
-    """Matrix-free polar/boundary extraction operator.
+    """Indexed linear operator applied as gather + ``segment_sum``.
 
-    Applies ``E`` (forward) and ``E^T`` (transpose) as a cached
-    gather/scatter using a static sparsity pattern instead of a stored BCSR
-    matmul. The forward operator maps a full pre-extraction DoF vector (size
-    ``forward_shape[1]``) to the extracted/constrained vector (size
-    ``forward_shape[0]``); the transpose maps back.
-
-    The index pattern (``rows``, ``cols``) and weights (``vals``) are computed
-    once from the assembled sparse operator. The same pattern is reused by the
-    surgery preconditioner through :meth:`to_bcoo`, so no BCSR needs to be
-    materialised or stored for the matvec path.
+    Holds the COO triplets ``(rows, cols, vals)`` of a sparse matrix and
+    applies it (forward) or its transpose without a sparse-matrix library:
+    the forward apply maps a vector of size ``forward_shape[1]`` to one of
+    size ``forward_shape[0]``. Used for the polar/boundary extraction ``E``
+    and for the analytic polar grad/curl stencils; ``.T`` is free (it only
+    flips the orientation flag).
 
     ``rows``/``cols``/``vals`` are always stored in the *forward* orientation;
-    the :attr:`transposed` flag selects how they are consumed.
+    the :attr:`transposed` flag selects how they are consumed. Duplicate
+    ``(row, col)`` entries are summed by the apply.
     """
 
     rows: jnp.ndarray
@@ -39,15 +35,14 @@ class MatrixFreeExtraction(eqx.Module):
     transposed: bool = eqx.field(static=True)
 
     @classmethod
-    def from_bcoo(cls, bcoo, transposed: bool = False):
-        """Build a matrix-free extraction from an assembled BCOO matrix."""
-        indices = bcoo.indices
+    def from_coo(cls, rows, cols, vals, shape):
+        """Build the operator from host COO triplets and a ``(n_row, n_col)`` shape."""
         return cls(
-            rows=jnp.asarray(indices[:, 0], dtype=jnp.int32),
-            cols=jnp.asarray(indices[:, 1], dtype=jnp.int32),
-            vals=jnp.asarray(bcoo.data, dtype=mrx.DTYPE),
-            forward_shape=(int(bcoo.shape[0]), int(bcoo.shape[1])),
-            transposed=transposed,
+            rows=jnp.asarray(np.asarray(rows, dtype=np.int32)),
+            cols=jnp.asarray(np.asarray(cols, dtype=np.int32)),
+            vals=jnp.asarray(np.asarray(vals), dtype=mrx.DTYPE),
+            forward_shape=(int(shape[0]), int(shape[1])),
+            transposed=False,
         )
 
     @property
@@ -59,18 +54,6 @@ class MatrixFreeExtraction(eqx.Module):
     @property
     def dtype(self):
         return self.vals.dtype
-
-    @property
-    def data(self):
-        """Nonzero values in the current orientation (BCOO-compatible)."""
-        return self.vals
-
-    @property
-    def indices(self):
-        """``(nnz, 2)`` COO indices in the current orientation."""
-        if self.transposed:
-            return jnp.stack([self.cols, self.rows], axis=1)
-        return jnp.stack([self.rows, self.cols], axis=1)
 
     @property
     def T(self):
@@ -103,26 +86,13 @@ class MatrixFreeExtraction(eqx.Module):
     def __call__(self, x):
         return self._apply(x)
 
-    def to_bcoo(self):
-        """Materialise the (orientation-aware) sparse pattern as a BCOO."""
-        if self.transposed:
-            indices = jnp.stack([self.cols, self.rows], axis=1)
-            shape = (self.forward_shape[1], self.forward_shape[0])
-        else:
-            indices = jnp.stack([self.rows, self.cols], axis=1)
-            shape = self.forward_shape
-        return jsparse.BCOO((self.vals, indices), shape=shape)
-
-    def todense(self):
-        return self.to_bcoo().todense()
-
     def restrict_rows(self, row_indices):
         """Return a copy with the row dimension restricted to ``row_indices``.
 
         Works in the current orientation (respects ``transposed``). The result
         keeps only nonzeros whose row (in current orientation) falls in
         ``row_indices``, with rows remapped to a contiguous 0-based range.
-        Returns a new :class:`MatrixFreeExtraction` — no BCOO materialised.
+        Returns a new :class:`MatrixFreeExtraction`.
         """
         row_indices = jnp.asarray(row_indices, dtype=jnp.int32)
         n_new = int(row_indices.shape[0])
@@ -161,7 +131,7 @@ class MatrixFreeExtraction(eqx.Module):
         Works in the current orientation (respects ``transposed``). The result
         keeps only nonzeros whose column (in current orientation) falls in
         ``col_indices``, with columns remapped to a contiguous 0-based range.
-        Returns a new :class:`MatrixFreeExtraction` — no BCOO materialised.
+        Returns a new :class:`MatrixFreeExtraction`.
         """
         col_indices = jnp.asarray(col_indices, dtype=jnp.int32)
         n_new = int(col_indices.shape[0])

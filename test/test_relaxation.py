@@ -63,7 +63,7 @@ def zpinch_seq():
     # Skip the eager payloads (CP/NTF fits, core Schur) that production no
     # longer uses, but the Leray/force solves DO read the Jacobi mass
     # diagonals, so assemble just those.
-    seq.assemble_all_sparse(include_preconditioners=False)
+    seq.assemble_all_sparse()
     seq.set_operators(assemble_mass_jacobi_preconditioner(
         seq, seq.get_operators(), ks=(0, 1, 2, 3)))
     return seq

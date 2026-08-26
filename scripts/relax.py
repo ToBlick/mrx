@@ -23,7 +23,7 @@ Flags (defaults in brackets)
       --geometry NAME [quasr44970]   toroid, cylinder, rot-ellipse, w7x or a
                                      name in mrx.gvec.GVEC_GEOMETRIES
       --ns R,T,Z [8,16,8]            spline resolution (also the map's)
-      --p P [3]                      spline degree; quadrature 2p
+      --p P [3]                      spline degree; p+1 Gauss points per span
       --maxiter N [10000]            iteration budget of every inner solve
       --tol TOL [sqrt(eps)]          inner solve tolerance; the 2026-08
                                      campaign used 1e-12

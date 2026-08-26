@@ -3,7 +3,7 @@
 Removed from mrx.preconditioners on 2026-08-14: the production decision is
 NO Chebyshev (or Richardson) acceleration anywhere -- see
 ``docs/PRODUCTION.md``. Production preconditioner kinds are
-none/jacobi/tensor. This
+none/jacobi/metric_lumping/auto. This
 module keeps the generic spectral-estimation and polynomial-apply builders
 for research scripts.
 

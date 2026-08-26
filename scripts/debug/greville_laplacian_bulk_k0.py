@@ -46,8 +46,8 @@ from benchmark_graddiv_k1_preconditioner import build_sequence  # noqa: E402
 from mrx.geometry import compute_geometry_terms  # noqa: E402
 from mrx.operators import (  # noqa: E402
     assemble_incidence_operators,
-    assemble_mass_operators,
-    dense_stiffness_matrix,
+    _assemble_dense_from_apply,
+    apply_stiffness,
     _dense_incidence_1d,
     _assemble_unweighted_1d_mass,
     _assemble_weighted_1d_stiffness,
@@ -175,9 +175,10 @@ def main():
     seq = build_sequence(cfg)
     ops = seq.get_operators()
     ops = assemble_incidence_operators(seq, operators=ops, ks=(0,))
-    ops = assemble_mass_operators(seq, seq.geometry, operators=ops, ks=(1,))
 
-    A_full = np.asarray(jax.device_get(dense_stiffness_matrix(seq, ops, 0, dirichlet=args.dirichlet)))
+    n_ext = int(seq.n0_dbc if args.dirichlet else seq.n0)
+    A_full = np.asarray(jax.device_get(_assemble_dense_from_apply(
+        lambda v: apply_stiffness(seq, ops, v, 0, dirichlet=args.dirichlet), n_ext)))
     A_full = 0.5 * (A_full + A_full.T)
     bulk_shape = _bulk_tensor_shape(seq, args.dirichlet)
     nb = int(np.prod(bulk_shape))

@@ -20,5 +20,5 @@ map_batch_size_outer: null
 # n >= 6. The block-Jacobi atom cannot build at n=4, p=3: component_factors
 # solves a 1-D system with four DOFs for a cubic basis and it goes non-finite.
 # The retired tensor stack this study used to run tolerated it. See
-# assemble_block_jacobi_laplacian_preconditioner's docstring.
+# assemble_metric_lumping_laplacian_preconditioner's docstring.
 n: [6, 8, 10]

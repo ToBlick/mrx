@@ -51,7 +51,6 @@ from mrx.derham_sequence import DeRhamSequence  # noqa: E402
 from mrx.mappings import toroid_map  # noqa: E402
 from mrx.operators import (  # noqa: E402
     assemble_incidence_operators,
-    assemble_projection_operators,
 )
 from mrx.quadrature import evaluate_at_xq  # noqa: E402
 
@@ -79,7 +78,6 @@ def build(n, p, eps, cg_tol, cg_maxiter, qoff):
     seq.set_map(toroid_map(epsilon=eps))
     seq.evaluate_1d()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     seq.set_operators(ops)
     return seq
 

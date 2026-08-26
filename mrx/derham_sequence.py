@@ -1,14 +1,8 @@
-from typing import Any, Callable
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 
 import mrx
-from mrx.assembly import (assemble_leray_projection, eval_basis_0_ijk,
-                          eval_basis_1_ijk, eval_basis_2_ijk, eval_basis_3_ijk,
-                          eval_d_basis_0_ijk, eval_d_basis_1_ijk,
-                          eval_d_basis_2_ijk)
 from mrx.differential_forms import DifferentialForm
 from mrx.extraction_operators import (BoundaryOperator,
                                       MatrixFreeExtraction,
@@ -43,18 +37,13 @@ from mrx.operators import \
     apply_projection_matrix as apply_projection_matrix_ops
 from mrx.operators import apply_stiffness as apply_stiffness_ops
 from mrx.operators import (SequenceOperators,
-                           assemble_all_dense_operators,
                            assemble_all_operators,
                            assemble_derivative_operators,
                            assemble_hodge_operators,
-                           assemble_incidence_operators,
-                           assemble_mass_operators,
-                           assemble_projection_operators)
+                           assemble_incidence_operators)
 from mrx.projectors import load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
-from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
-from mrx.geometry import SequenceGeometry, compute_geometry_terms, grad_1d
-from mrx.preconditioners import extract_diag_vector
+from mrx.geometry import SequenceGeometry, grad_1d
 
 
 
@@ -257,9 +246,10 @@ class DeRhamSequence():
             across ζ-planes).
         polar_order : int, optional
             Pole regularity order for 0-forms: 1 (default, C¹ — 3 polar
-            functions from rings 0-1) or 2 (C² — 6 polar functions from
+            functions from rings 0-1), 2 (C² — 6 polar functions from
             rings 0-2, :func:`get_xi2`; k >= 1 spaces stay C¹, so only the
-            k=0 pipeline is supported at order 2).
+            k=0 pipeline is supported at order 2) or 0 (C⁰ — one polar DOF
+            per ζ-plane, ring 1 free; k >= 1 spaces stay C¹).
         n_inner : int, optional
             Number of inner CG iterations used by block preconditioners.
         betti_numbers : tuple of 4 ints, optional
@@ -333,7 +323,7 @@ class DeRhamSequence():
                         "ring-2 map data; not wired yet")
                 xi0 = get_xi2(ns[1], self.basis_0.Λ[0])
             elif polar_order != 1:
-                raise ValueError(f"polar_order must be 1 or 2, got {polar_order}")
+                raise ValueError(f"polar_order must be 0, 1 or 2, got {polar_order}")
             e0 = PolarExtractionOperator(self.basis_0, xi0, False)
             e0_dbc = PolarExtractionOperator(self.basis_0, xi0, True)
             e1, e2, e3 = [
@@ -646,25 +636,12 @@ class DeRhamSequence():
                 'or seq.set_spline_map(...).')
         return geometry
 
-    def _sync_operators(self):
-        """Mirror bundled operators onto legacy fields during the transition."""
-        if not hasattr(self, 'operators') or self.operators is None:
-            return
-        for k in range(4):
-            setattr(self, f'm{k}', getattr(self.operators, f'm{k}'))
-        for k in range(3):
-            setattr(self, f'd{k}', getattr(self.operators, f'd{k}'))
-            setattr(self, f'd{k}_T', getattr(self.operators, f'd{k}_T'))
-        self.grad_grad = self.operators.grad_grad
-        self.curl_curl = self.operators.curl_curl
-        self.div_div = self.operators.div_div
-
     def get_operators(self):
         """Return the cached operator bundle, if one is attached."""
         return getattr(self, 'operators', None)
 
-    def set_operators(self, operators, sync_legacy=True):
-        """Attach an operator bundle to the sequence and optionally mirror legacy fields.
+    def set_operators(self, operators):
+        """Attach an operator bundle to the sequence.
 
         If ``operators`` has no nullspace arrays yet, they are initialised to
         zeros with shapes derived from ``self.betti_numbers``.
@@ -687,8 +664,6 @@ class DeRhamSequence():
             operators = init_nullspaces(self, operators,
                                         betti_numbers=self.betti_numbers)
         self.operators = operators
-        if sync_legacy and operators is not None:
-            self._sync_operators()
         return operators
 
     def _resolve_operators(self, operators=None):
@@ -705,15 +680,15 @@ class DeRhamSequence():
                 'Assemble operators first, for example with assemble_all_sparse().')
         return operators
 
-    def set_geometry_terms(self, DF_jkl, metric_inv_jkl, jacobian_j):
-        """Replace the geometry tensors used by mapped assembly and operators.
+    def set_geometry_terms(self, DF_jkl, jacobian_j):
+        """Replace the geometry tensors used by the operators.
 
-        ``DF_jkl`` (the map Jacobian at each quad point) is now the stored
-        primitive; the metric ``DF^T DF`` is recovered on demand.  To inject a
-        precomputed metric directly, provide the ``DF`` it factors instead.
+        ``DF_jkl`` (the map Jacobian at each quad point) and ``jacobian_j``
+        are the stored primitives; the metric ``DF^T DF`` and its inverse are
+        recovered on demand.  To inject a precomputed metric, provide the
+        ``DF`` it factors instead.
         """
-        self.set_geometry(SequenceGeometry(
-            self.map, DF_jkl, metric_inv_jkl, jacobian_j))
+        self.set_geometry(SequenceGeometry(self.map, DF_jkl, jacobian_j))
 
     def set_map(self, map):
         """Update the active logical-to-physical map and derived geometry terms."""
@@ -752,59 +727,6 @@ class DeRhamSequence():
         """Update the sequence geometry from spline map coefficients."""
         self.set_geometry(self.geometry_from_spline_map(
             coefficients, extraction=extraction))
-
-    def _require_reference_mass_matrix(self):
-        """Raise if the reference-domain mass matrix has not been assembled."""
-        if not hasattr(self, 'reference_m0'):
-            raise ValueError(
-                'Call assemble_reference_mass_matrix() before using reference 0-form operators.')
-
-    def _apply_reference_mass_matrix(self, v, dirichlet=True):
-        """Apply the reference-domain 0-form mass matrix to ``v``."""
-        self._require_reference_mass_matrix()
-        e = self.e0_dbc if dirichlet else self.e0
-        e_T = self.e0_dbc_T if dirichlet else self.e0_T
-        return e @ (self.reference_m0 @ (e_T @ v))
-
-    def _apply_reference_mass_matrix_preconditioner(self, v, dirichlet=True):
-        """Apply the diagonal (Jacobi) preconditioner for the reference mass matrix."""
-        self._require_reference_mass_matrix()
-        if dirichlet:
-            return self.reference_m0_diaginv_dbc * v
-        return self.reference_m0_diaginv * v
-
-    def assemble_reference_mass_matrix(self):
-        """Assemble and cache the 0-form mass matrix on the reference domain."""
-        from mrx.assembly import assemble_scalar
-        from mrx.preconditioners import diag_EAET
-
-        quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
-        sp = assemble_scalar(
-            self.basis_r_jk, self.basis_t_jk, self.basis_z_jk,
-            self.basis_r_jk, self.basis_t_jk, self.basis_z_jk,
-            self.quad.w, quad_shape, self.basis_0.shape[0],
-            self.basis_0.pr, self.basis_0.pt, self.basis_0.pz)
-        self.reference_m0 = MatrixFreeExtraction.from_bcoo(sp)
-        self.reference_m0_diaginv = 1.0 / diag_EAET(
-            self.e0, self.reference_m0, self.e0_T)
-        self.reference_m0_diaginv_dbc = 1.0 / diag_EAET(
-            self.e0_dbc, self.reference_m0, self.e0_dbc_T)
-
-    def apply_inverse_reference_mass_matrix(self, rhs, dirichlet=True, guess=None,
-                                            tol=None, maxiter=None):
-        """Apply the inverse of the cached reference-domain 0-form mass matrix."""
-        self._require_reference_mass_matrix()
-        return solve_singular_cg(
-            lambda x: self._apply_reference_mass_matrix(
-                x, dirichlet=dirichlet),
-            rhs,
-            mass_matvec=lambda x: self._apply_reference_mass_matrix(
-                x, dirichlet=dirichlet),
-            precond_matvec=lambda x: self._apply_reference_mass_matrix_preconditioner(
-                x, dirichlet=dirichlet),
-            x0=guess,
-            tol=self.tol if tol is None else tol,
-            maxiter=self.maxiter if maxiter is None else maxiter)[0]
 
     def bc_lift(self, g: jnp.ndarray, k: int) -> jnp.ndarray:
         """Embed boundary DOF values into the full spline basis space.
@@ -918,34 +840,6 @@ class DeRhamSequence():
             case _:
                 raise ValueError("k must be 0, 1, 2, or 3")
 
-    def eval_basis_0_ijk(self, i, j, k):
-        """Evaluate the (i, j, k)-th 0-form basis function at all quadrature points."""
-        return eval_basis_0_ijk(self, i, j, k)
-
-    def eval_d_basis_0_ijk(self, i, j, k):
-        """Evaluate the gradient of the (i, j, k)-th 0-form basis at all quadrature points."""
-        return eval_d_basis_0_ijk(self, i, j, k)
-
-    def eval_basis_1_ijk(self, i, j, k):
-        """Evaluate the (i, j, k)-th 1-form basis function at all quadrature points."""
-        return eval_basis_1_ijk(self, i, j, k)
-
-    def eval_d_basis_1_ijk(self, i, j, k):
-        """Evaluate the curl of the (i, j, k)-th 1-form basis at all quadrature points."""
-        return eval_d_basis_1_ijk(self, i, j, k)
-
-    def eval_basis_2_ijk(self, i, j, k):
-        """Evaluate the (i, j, k)-th 2-form basis function at all quadrature points."""
-        return eval_basis_2_ijk(self, i, j, k)
-
-    def eval_d_basis_2_ijk(self, i, j, k):
-        """Evaluate the divergence of the (i, j, k)-th 2-form basis at all quadrature points."""
-        return eval_d_basis_2_ijk(self, i, j, k)
-
-    def eval_basis_3_ijk(self, i, j, k):
-        """Evaluate the (i, j, k)-th 3-form basis function at all quadrature points."""
-        return eval_basis_3_ijk(self, i, j, k)
-
     def l2_norm_sq(self, v, k, dirichlet=True):
         """Return the squared L² norm of a k-form DOF vector ``v``."""
         return v @ self.apply_mass_matrix(v, k, dirichlet=dirichlet)
@@ -954,67 +848,18 @@ class DeRhamSequence():
         """Return the L² norm of a k-form DOF vector ``v``."""
         return jnp.sqrt(self.l2_norm_sq(v, k, dirichlet=dirichlet))
 
-    def assemble_all_sparse(self, include_preconditioners: bool = True):
-        """Assemble and cache all sparse operator matrices.
+    def assemble_all_sparse(self):
+        """Assemble and cache the operator bundle (incidence + polar stencils).
 
-        Builds mass matrices, derivative matrices, stiffness matrices, and
-        Hodge-Laplacian operators for all form degrees, storing the result in
-        ``self.operators`` and mirroring legacy fields. When
-        ``include_preconditioners`` is true, also assemble the eager
-        preconditioner payloads used by solver-facing convenience methods.
-        Returns the operator bundle.
+        Masses, projections, derivatives and Laplacians are applied
+        matrix-free from the attached geometry, so this builds only the
+        topological incidence operators. Returns the operator bundle.
         """
         geometry = self._require_geometry()
         operators = assemble_all_operators(
-            self,
-            geometry,
-            operators=self.get_operators(),
-            include_preconditioners=include_preconditioners,
-        )
+            self, geometry, operators=self.get_operators())
         self.set_operators(operators)
         return operators
-
-    def assemble_all_dense(self):
-        """Assemble sparse operators without preconditioners, then cache dense matrices.
-
-        This is a courtesy path for debugging, densification, and direct-solve
-        workflows. Dense operators are stored under ``self.get_operators().dense``.
-        """
-        operators = self.assemble_all_sparse(include_preconditioners=False)
-        operators = assemble_all_dense_operators(self, operators=operators)
-        self.set_operators(operators)
-        return operators
-
-    def assemble_mass_matrix(self, k):
-        """Assemble and cache the mass matrix for k-forms.
-
-        Parameters
-        ----------
-        k : int
-            Form degree (0, 1, 2, or 3).
-        """
-        geometry = self._require_geometry()
-        return self.set_operators(assemble_mass_operators(
-            self, geometry,
-            operators=self.get_operators(),
-            ks=(k,),
-        ))
-
-    def assemble_projection_matrix(self, k_from, k_to):
-        """Assemble and cache the L²-projection matrix from k_from-forms to k_to-forms.
-
-        Parameters
-        ----------
-        k_from : int
-            Source form degree.
-        k_to : int
-            Target form degree.
-        """
-        return self.set_operators(assemble_projection_operators(
-            self,
-            operators=self.get_operators(),
-            pairs=((k_from, k_to),),
-        ))
 
     def assemble_derivative_matrix(self, k):
         """Assemble and cache the weak derivative matrix mapping k-forms to (k+1)-forms.
@@ -1053,10 +898,6 @@ class DeRhamSequence():
     def assemble_hodge_laplacian(self, k):
         """Backward-compatible alias for assemble_laplacian."""
         return self.assemble_laplacian(k)
-
-    def assemble_leray_projection(self):
-        """Assemble the auxiliary operators required by :meth:`apply_leray_projection`."""
-        assemble_leray_projection(self)
 
     def assemble_incidence_matrix(self, k):
         """Assemble and cache the topological incidence matrix Gk.
@@ -1205,7 +1046,7 @@ class DeRhamSequence():
                                   preconditioner='auto',
                                   return_info=False):
         """
-        Apply the inverse of the sparse mass matrix Mk⁻¹ for k-forms to a right-hand side,
+        Apply the inverse mass matrix Mk⁻¹ for k-forms to a right-hand side,
         solved via CG with a structured mass preconditioner. An optional initial
         guess can be provided to warm-start the solver.
         """
@@ -1220,7 +1061,7 @@ class DeRhamSequence():
 
     def apply_mass_matrix(self, v, k, dirichlet=True, operators=None):
         """
-        Apply the sparse mass matrix Mk for k-forms to a vector v:
+        Apply the (matrix-free) mass matrix Mk for k-forms to a vector v:
             k=0: M0_ij = ∫ Λ0_i Λ0_j det DF dx
             k=1: M1_ij = ∫ Λ1_i · G⁻¹ Λ1_j det DF dx
             k=2: M2_ij = ∫ Λ2_i · G Λ2_j (det DF)⁻¹ dx
@@ -1233,7 +1074,7 @@ class DeRhamSequence():
     def apply_projection_matrix(self, v, k_in, k_out, dirichlet_in=True, dirichlet_out=True,
                                 operators=None):
         """
-        Apply the sparse projection matrix Pk_in_k_out to a vector v.
+        Apply the (matrix-free) projection mass Pk_in_k_out to a vector v.
         """
         operators = self._require_operators(operators)
         return apply_projection_matrix_ops(
@@ -1308,9 +1149,9 @@ class DeRhamSequence():
         """
         Apply the stiffness matrix S_k to a k-form vector v.
 
-            k=0: grad_grad
-            k=1: curl_curl
-            k=2: div_div
+            k=0: grad-grad
+            k=1: curl-curl
+            k=2: div-div
             k=3: 0 (no stiffness)
         """
         operators = self._require_operators(operators)
@@ -1423,7 +1264,8 @@ class DeRhamSequence():
 
         The system is nonsingular (no nullspace) since M_k + eps*L_k is SPD.
         Out-of-the-box diffusion preconditioners currently use the same mass-side
-        defaults as the other inverse paths: Jacobi and tensor.
+        defaults as the other inverse paths (``'auto'`` resolves to the
+        production metric-lumping kind, ``'jacobi'`` is the fallback).
         """
         operators = self._require_operators(operators)
         return apply_inverse_mass_plus_eps_laplace_matrix_ops(

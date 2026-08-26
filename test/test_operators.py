@@ -31,7 +31,6 @@ heavy JIT cost is paid at import time, not per-test.
   matrix, so the algebraic identity only holds on the non-polar sequence.
 """
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
@@ -39,7 +38,7 @@ import pytest
 
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.local_assembly import assemble_mass_local, build_matrixfree_mass_apply
+from mrx.local_assembly import build_matrixfree_mass_apply
 from mrx.mappings import rotating_ellipse_map
 from mrx.operators import (
     apply_derivative_matrix,
@@ -48,6 +47,7 @@ from mrx.operators import (
     apply_stiffness,
     assemble_incidence_operators,
 )
+from test.dense import dense_from_apply
 
 # ---------------------------------------------------------------------------
 # Module-level fixtures
@@ -71,10 +71,7 @@ _N_DOF = {
     3: int(_SEQ.basis_3.shape[0][0] * _SEQ.basis_3.shape[0][1] * _SEQ.basis_3.shape[0][2]),
 }
 
-_DENSE = {
-    k: np.asarray(jax.vmap(_APPLIES[k], in_axes=1, out_axes=1)(jnp.eye(_N_DOF[k], dtype=jnp.float64)))
-    for k in (0, 1, 2, 3)
-}
+_DENSE = {k: dense_from_apply(_APPLIES[k], _N_DOF[k]) for k in (0, 1, 2, 3)}
 
 _RNG = np.random.default_rng(42)
 _N_PROBES = 6
@@ -195,7 +192,6 @@ def test_div_of_curl_is_zero(dirichlet):
 _POLAR_SEQ = DeRhamSequence((6, 8, 4), (3, 3, 3), 6, _TYPES, polar=True,
                             betti_numbers=(1, 1, 0, 0))
 _POLAR_SEQ.evaluate_1d()
-_POLAR_SEQ.assemble_reference_mass_matrix()
 _POLAR_SEQ.set_map(rotating_ellipse_map(eps=1.0 / 3.0, kappa=1.2, R0=1.0, nfp=3))
 _POLAR_OPS = assemble_incidence_operators(_POLAR_SEQ, ks=(0, 1, 2))
 
@@ -233,10 +229,7 @@ _RE_SEQ.set_map(_RE_MAP)
 
 _RE_APPLIES = {k: build_matrixfree_mass_apply(_RE_SEQ, k) for k in (0, 1, 2, 3)}
 
-_RE_DENSE = {
-    k: np.asarray(jax.vmap(_RE_APPLIES[k], in_axes=1, out_axes=1)(jnp.eye(_N_DOF[k], dtype=jnp.float64)))
-    for k in (0, 1, 2, 3)
-}
+_RE_DENSE = {k: dense_from_apply(_RE_APPLIES[k], _N_DOF[k]) for k in (0, 1, 2, 3)}
 
 _RE_RNG = np.random.default_rng(99)
 
@@ -282,14 +275,6 @@ def test_re_mass_dense_is_spd(k):
     )
 
 
-@pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_re_mass_matrixfree_matches_assembled(k):
-    """The sum-factorized matvec equals the element-assembled sparse M_k."""
-    M = np.asarray(assemble_mass_local(_RE_SEQ, k).todense())
-    npt.assert_allclose(_RE_DENSE[k], M, rtol=0.0, atol=1e-12 * np.abs(M).max(),
-                        err_msg=f"k={k}: matrix-free M differs from assembled M")
-
-
 # ---------------------------------------------------------------------------
 # Hodge Laplacians (rotating ellipse, polar=True)
 #
@@ -313,29 +298,21 @@ _N = {
 }
 
 
-def _dense_op(apply, n: int) -> np.ndarray:
-    """Densify a linear map R^n -> R^? by scanning unit vectors."""
-    return np.asarray(
-        jax.vmap(apply, in_axes=1, out_axes=1)(jnp.eye(n, dtype=jnp.float64))
-    )
-
-
 def _dense_mass_extracted(k: int, dirichlet: bool) -> np.ndarray:
     n = _N[(k, dirichlet)]
-    return _dense_op(
+    return dense_from_apply(
         lambda v: apply_mass_matrix(_RE_SEQ, _OPS, v, k, dirichlet=dirichlet), n
     )
 
 
 def _dense_laplacian(k: int, dirichlet: bool) -> np.ndarray:
     n_k = _N[(k, dirichlet)]
-    K = _dense_op(
+    K = dense_from_apply(
         lambda v: apply_stiffness(_RE_SEQ, _OPS, v, k, dirichlet=dirichlet), n_k
     )
     if k == 0:
         return K
-    n_km1 = _N[(k - 1, dirichlet)]
-    D_T = _dense_op(
+    D_T = dense_from_apply(
         lambda v: apply_derivative_matrix(
             _RE_SEQ, _OPS, v, k - 1,
             dirichlet_in=dirichlet, dirichlet_out=dirichlet,

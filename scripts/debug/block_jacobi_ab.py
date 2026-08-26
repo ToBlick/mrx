@@ -127,7 +127,7 @@ def main():
             t0 = time.perf_counter()
             try:
                 if arm == "jacobi":
-                    d = 1.0 / np.asarray(op._hodge_diaginv(seq, ops, k, dbc))
+                    d = 1.0 / np.asarray(op._laplacian_diaginv(seq, ops, k, dbc))
                     inv = jnp.asarray(1.0 / d)
 
                     def minv(v, inv=inv):

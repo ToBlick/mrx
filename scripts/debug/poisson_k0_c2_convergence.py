@@ -89,7 +89,6 @@ def run_case(n, p, polar_order, u_fn, tol, maxiter):
     seq = DeRhamSequence(ns, (p, p, p), 2 * p, TYPES, polar=True,
                          tol=tol, maxiter=maxiter, polar_order=polar_order)
     seq.evaluate_1d()
-    seq.assemble_reference_mass_matrix()
     seq.set_map(F)
     # NOTE: assemble_laplacian_operators is NOT called -- it eagerly warms
     # the production k=0 FD preconditioner, which hardcodes the C^1 polar

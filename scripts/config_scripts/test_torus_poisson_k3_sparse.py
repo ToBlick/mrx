@@ -93,7 +93,6 @@ from mrx.mappings import toroid_map
 from mrx.nullspace import init_nullspaces
 from mrx.operators import (
     assemble_incidence_operators,
-    assemble_projection_operators,
     assemble_metric_lumping_laplacian_preconditioner,
 )
 from mrx.quadrature import evaluate_at_xq
@@ -169,7 +168,6 @@ def compute_error(n: int, p: int, epsilon: float,
 
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     # Tensor mass for k=2 (Schur inner) and k=3 (lower block).
     # Pre-probe the Schur diagonal (D M2_tensor^{-1} D^T) for k=3 NBC.
     ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(3,), dirichlets=(False,))
@@ -181,7 +179,6 @@ def compute_error(n: int, p: int, epsilon: float,
 
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
-    ops = assemble_projection_operators(seq, operators=ops)
     ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(3,), dirichlets=(False,))
     ops = init_nullspaces(seq, ops, BETTI)
     ops = seq.set_operators(ops)

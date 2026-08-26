@@ -9,7 +9,8 @@ import matplotlib.pyplot as plt
 from mrx.derham_sequence import DeRhamSequence
 from mrx.extraction_operators import get_xi
 from mrx.mappings import rotating_ellipse_map
-from mrx.operators import assemble_mass_operators, dense_mass_matrix
+from mrx.operators import (_assemble_dense_from_apply, apply_mass_matrix,
+                           mass_core_apply)
 
 
 
@@ -43,7 +44,6 @@ def build_case(config: ExperimentConfig = CONFIG):
         betti_numbers=config.betti,
     )
     seq.evaluate_1d()
-    seq.assemble_reference_mass_matrix()
     seq.set_map(
         rotating_ellipse_map(
             eps=config.rotating_eps,
@@ -52,8 +52,7 @@ def build_case(config: ExperimentConfig = CONFIG):
             nfp=config.rotating_nfp,
         )
     )
-    operators = assemble_mass_operators(seq, seq.geometry, ks=(1,))
-    return seq, operators
+    return seq, seq.get_operators()
 
 
 def _k1_layout_sizes(seq, dirichlet: bool):
@@ -99,15 +98,17 @@ def _raw_component_slices_k1(seq):
 
 def dense_extraction_k1(seq, *, dirichlet: bool) -> jnp.ndarray:
     extraction = seq.e1_dbc if dirichlet else seq.e1
-    return jnp.asarray(extraction.todense())
+    return _assemble_dense_from_apply(extraction, int(extraction.shape[1]))
 
 
-def dense_raw_mass_k1(operators) -> jnp.ndarray:
-    return jnp.asarray(operators.m1.todense())
+def dense_raw_mass_k1(seq, operators) -> jnp.ndarray:
+    return _assemble_dense_from_apply(mass_core_apply(seq, operators, 1), int(seq.basis_1.n))
 
 
 def dense_extracted_mass_k1(seq, operators, *, dirichlet: bool) -> jnp.ndarray:
-    return jnp.asarray(dense_mass_matrix(seq, operators, 1, dirichlet=dirichlet))
+    return _assemble_dense_from_apply(
+        lambda v: apply_mass_matrix(seq, operators, v, 1, dirichlet=dirichlet),
+        int(seq.n1_dbc if dirichlet else seq.n1))
 
 
 def current_surgery_rows(extraction: jnp.ndarray, seq, *, dirichlet: bool) -> jnp.ndarray:
