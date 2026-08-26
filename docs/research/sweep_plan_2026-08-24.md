@@ -1,3 +1,7 @@
+> **Status:** resolved; executed, results in preconditioner_technical_note_source.md section 9
+> **Read this for:** why every measurement before 2026-08-24 was superseded
+> **Do not read for:** the results
+
 # Sweep plan — regenerating the paper's numbers
 
 Everything measured before 2026-08-24 is superseded. Two independent reasons,

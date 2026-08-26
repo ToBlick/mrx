@@ -1,3 +1,7 @@
+> **Status:** current; irreproducible evidence, cited from mrx/preconditioners.py
+> **Read this for:** the measurement behind switching the Schur-Jacobi probe to the metric-lumped atom
+> **Do not read for:** anything else; raw_kron is deleted
+
 # raw_kron vs the metric-lumped atom as the Schur-Jacobi probe
 
 **These numbers cannot be regenerated.** raw_kron is deleted immediately after

@@ -1,3 +1,7 @@
+> **Status:** current; its fix (S1, commit ec0c4f7) is unmerged, see OPEN.md 2.1
+> **Read this for:** why the k=1 free harmonic form failed at p>=3 and how the saddle outer preconditioner caused it
+> **Do not read for:** the inverse-iteration polish decision, which is gated on relL2_direct
+
 # Handoff 2026-08-24 — the k=1 free harmonic form, and the k>=1 saddle preconditioner
 
 Found while validating the A5 swap on the quasr geometries. **It is not a

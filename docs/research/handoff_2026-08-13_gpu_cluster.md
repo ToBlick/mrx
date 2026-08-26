@@ -1,4 +1,6 @@
-> **STATUS: RESEARCH / EXPERIMENTAL — superseded for production by `docs/PRODUCTION.md`.**
+> **Status:** superseded by preconditioner_technical_note_source.md (the 2026-08-22 stack)
+> **Read this for:** the k=0 multigrid line, the fdbund swap and the relaxation-class ledger as measured in 2026-08
+> **Do not read for:** the production preconditioner; multigrid is not in production
 
 # Handoff — 2026-08-13: k=0 MG preconditioner moves to GPU / cluster
 

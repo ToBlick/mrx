@@ -1,3 +1,7 @@
+> **Status:** resolved; outcome in audit_2026-08-25_production.md
+> **Read this for:** how the atom went into production and what was deleted
+> **Do not read for:** current names; BlockJacobi* became MetricLumping* on 2026-08-25
+
 # Moving the block-Jacobi Laplacian into production — a simplification plan
 
 2026-08-22. Goal, in Tobias's words: **one production method with minimal free

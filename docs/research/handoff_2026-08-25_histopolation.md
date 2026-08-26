@@ -1,3 +1,7 @@
+> **Status:** resolved; leftovers in OPEN.md 3.5
+> **Read this for:** why interpolation/histopolation never ran on polar or DBC spaces and how the parity fix works
+> **Do not read for:** the spline boundary-evaluation defect of section 10; the local-support evaluator of 2026-08-26 removed it
+
 # Interpolation and histopolation for all k — 2026-08-25
 
 Task: continue the histopolation diagnosis from `fd39a81`, and provide working

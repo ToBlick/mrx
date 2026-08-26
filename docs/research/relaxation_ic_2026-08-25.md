@@ -1,3 +1,7 @@
+> **Status:** current; the canonical IC note
+> **Read this for:** building a relaxation IC from logical profiles or GVEC scalars, helicity in closed form, the two silent traps of section 10
+> **Do not read for:** the relaxation loop itself (docs/relaxation.md)
+
 # Relaxation initial conditions from logical profiles — 2026-08-25
 
 How to build a relaxation IC without interpolating `B` from GVEC. The short

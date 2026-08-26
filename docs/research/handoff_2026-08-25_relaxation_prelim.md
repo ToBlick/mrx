@@ -1,3 +1,7 @@
+> **Status:** superseded by docs/relaxation.md (driver) and relaxation_ic_2026-08-25.md (ICs)
+> **Read this for:** the relaxation campaign narrative and the sweep shelf of section 34
+> **Do not read for:** how to run a relaxation; relax_prelim.py was replaced by scripts/relax.py on 2026-08-26
+
 # Relaxation preliminary: logical-profile IC, min-B^2 descent, and what is wrong with L-BFGS
 
 2026-08-25. Branch `relaxation-prelim` off `greville-prod` @ 76bf5f3.

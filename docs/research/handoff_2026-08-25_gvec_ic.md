@@ -1,3 +1,7 @@
+> **Status:** superseded by docs/gvec_mrx_interface.md and relaxation_ic_2026-08-25.md
+> **Read this for:** the session record behind the GVEC export contract and the hegna-trust measurements
+> **Do not read for:** how to build an IC today; use mrx/gvec.py and mrx/initial_conditions.py
+
 # Handoff 2026-08-25 — GVEC interface, relaxation ICs, hegna trust
 
 Written for redistribution. Companion to `relaxation_ic_2026-08-25.md` §13 (the

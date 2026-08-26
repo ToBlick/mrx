@@ -1,4 +1,6 @@
-> **STATUS: RESEARCH / EXPERIMENTAL — superseded for production by `docs/PRODUCTION.md`.**
+> **Status:** shelved; superseded by preconditioner_technical_note_source.md
+> **Read this for:** the k=0 multigrid theory and running log
+> **Do not read for:** the production k=0 preconditioner; multigrid is not in production
 
 # Geometric Multigrid Preconditioner for the k=0 Laplacian (prototype)
 

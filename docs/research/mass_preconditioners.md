@@ -1,4 +1,6 @@
-> **Reference doc.** What actually runs in production: `docs/PRODUCTION.md`.
+> **Status:** superseded by preconditioner_technical_note_source.md
+> **Read this for:** the tensor/CP mass preconditioner era and its sweep protocol
+> **Do not read for:** the production mass preconditioner; kind='tensor' and the CP fits are deleted
 
 # Mass Preconditioners
 

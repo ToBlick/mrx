@@ -1,7 +1,6 @@
-> **PARTLY OUTDATED 2026-08-22.** Its "Production is unchanged (raw_kron
-> masses, closed-form Jacobi Laplacians)" is no longer true -- both were
-> replaced. The design reasoning is still current;
-> `preconditioner_technical_note_source.md` is the consolidated version.
+> **Status:** superseded by preconditioner_technical_note_source.md
+> **Read this for:** the design reasoning of the tensor atom
+> **Do not read for:** what runs; its 'production is unchanged' statement is false
 
 # Tensor preconditioners for the mass and Hodge Laplacian
 

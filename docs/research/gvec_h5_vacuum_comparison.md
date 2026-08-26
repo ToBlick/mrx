@@ -1,3 +1,7 @@
+> **Status:** current
+> **Read this for:** comparing an MRX vacuum field against a GVEC h5 export, and why the simsopt files are recoverable
+> **Do not read for:** the projection recipe (w7x_vacuum_bfield_handoff.md) or the Clebsch IC route (relaxation_ic_2026-08-25.md)
+
 # Comparing MRX vacuum fields to GVEC (h5-only)
 
 Status: 2026-08-17. Script: `scripts/debug/w7x_vacuum_bfield_project.py`.

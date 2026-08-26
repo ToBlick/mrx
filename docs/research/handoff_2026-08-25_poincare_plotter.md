@@ -1,3 +1,7 @@
+> **Status:** current
+> **Read this for:** the Poincare plotter, the relaxed-state tracer and the synthetic-pressure caveat
+> **Do not read for:** tracer physics (handoff_2026-08-24_poincare.md)
+
 # Handoff — Poincaré plotter and relaxed-state tracer, 2026-08-25
 
 Supersedes the two separate 2026-08-25 Poincaré handoffs. Continues

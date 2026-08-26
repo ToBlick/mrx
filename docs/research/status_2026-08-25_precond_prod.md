@@ -1,3 +1,7 @@
+> **Status:** superseded by audit_2026-08-25_production.md
+> **Read this for:** the state of the precond-prod branch on 2026-08-25
+> **Do not read for:** anything current; the branch is merged
+
 # Status for redistribution — `precond-prod`, 2026-08-25
 
 Agent working in `.claude/worktrees/poincare`, branch **`precond-prod`**

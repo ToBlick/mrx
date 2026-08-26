@@ -1,0 +1,190 @@
+# Solvers and preconditioners
+
+Every inverse in MRX is a Krylov solve on callable matvecs with a callable
+preconditioner. No matrix is factorised; nothing larger than a dense polar
+core is stored. This page says which solver and which preconditioner each
+operator uses, and what the production preconditioner `metric_lumping` is.
+The measurements behind the choices are in
+`docs/research/preconditioner_technical_note_source.md`.
+
+## 1. Which solver for which operator
+
+Solvers are in `mrx/solvers.py`; the wiring is in `mrx/operators.py`.
+
+| solve | entry point | solver | preconditioner |
+|---|---|---|---|
+| `M_k u = f` | `apply_inverse_mass_matrix` | `solve_singular_cg` | mass, `metric_lumping` |
+| `L_0 u = f` | `apply_inverse_hodge_laplacian`, k=0 | `solve_singular_cg`, harmonic mode deflated | Laplacian atom |
+| `L_k u = f`, k=1,2,3 | `apply_inverse_hodge_laplacian` | `solve_saddle_point_minres` | lower: mass `metric_lumping` of degree k-1; upper: Laplacian atom |
+| `(L_k + eps M_k) u = f` | `apply_inverse_shifted_hodge_laplacian` | as above; nothing deflated | as above, plus a `1/eps` harmonic coarse correction when the harmonic vector exists |
+| `(M_k + eps L_k) u = f` | `apply_inverse_mass_plus_eps_laplace_matrix` | CG for k=0, saddle MINRES otherwise | mass `metric_lumping` on both blocks |
+
+The saddle system for k >= 1 is
+
+```
+| K_k + eps M_k    D_{k-1}  | | u |   | f |
+| D_{k-1}^T       -M_{k-1}  | | s | = | 0 |
+```
+
+whose Schur complement is `L_k` itself. MINRES needs an SPD preconditioner
+on each block; `solve_saddle_point_minres` takes `precond_upper` and
+`precond_lower` as callables. Every solver takes `tol=None`, which is
+`mrx.sqrt_eps()`, and reports `info = -k` after `k` iterations on convergence
+and `+k` on failure.
+
+There is no Krylov solve inside a Krylov solve. The weak term
+`D_{k-1} M_{k-1}^{-1} D_{k-1}^T` of `L_k` is applied with the mass
+*preconditioner* in place of `M_{k-1}^{-1}` (`apply_hodge_laplacian_approx`).
+The mass preconditioner is therefore part of the operator at k >= 1, not
+only part of the solve, and changing it changes `L_k`.
+
+## 2. Kinds
+
+`MassPreconditionerSpec(kind=...)` in `mrx/preconditioners.py` names a
+preconditioner. The live kinds are:
+
+| kind | mass | Laplacian |
+|---|---|---|
+| `'none'` | identity | identity |
+| `'jacobi'` | `diag(E M_k E^T)^{-1}`, built by `assemble_mass_jacobi_preconditioner` | `diag(E L_k E^T)^{-1}`, closed form for the bulk rows, probed on the polar rows (`build_extracted_laplacian_diagonal`) |
+| `'metric_lumping'` | `MetricLumpingMass` | `MetricLumpingLaplacian` |
+| `'auto'` | resolves to `'metric_lumping'`, always | the atom when it has been built for this `(k, BC)`, otherwise `'none'` |
+
+`'auto'` never substitutes. The mass kind is always buildable on demand
+(`_mass_metric_lumping_for` builds and memoises it on the sequence, keyed on
+the geometry), so `'auto'` resolves to it unconditionally. The Laplacian atom
+is not built implicitly: `_materialize_default_saddle_preconditioner` and
+`_materialize_default_scalar_hodge_preconditioner` pick the atom when
+`_metric_lumping_available(seq, k, dirichlet)` and `'none'` otherwise, so an
+unbuilt preconditioner fails at the first solve instead of running on a
+different, slower one. The one exception is
+`apply_hodge_laplacian_preconditioner(kind='auto')`, a bare apply, which
+falls back to `'jacobi'`.
+
+A saddle solve is specified by `SaddlePointPreconditionerSpec(mass, schur,
+coupled)` with `schur = SchurPreconditionerSpec(inner, outer)`: `mass` is the
+lower block, `inner` stands in for `M_{k-1}^{-1}` inside the weak term, and
+`outer` preconditions `L_k`. Production is `mass = inner = 'metric_lumping'`,
+`outer = 'metric_lumping'`, `coupled = False`. `outer = 'jacobi'` uses the
+probed Schur diagonal of `assemble_schur_jacobi_preconditioner`; it is the
+comparison baseline, not a production path. `outer = 'none'` is the default
+of the spec object so that a missing build fails visibly.
+
+## 3. The Laplacian atom: `MetricLumpingLaplacian`
+
+`mrx/metric_lumping_laplacian.py`. One instance per `(k, dirichlet)`, built by
+`assemble_metric_lumping_laplacian_preconditioner(seq, ops)` and stored in
+the dict `seq._metric_lumping_laplacian`. `MetricLumpingLaplacian.apply(x)`
+is one jitted call on a flattened pytree payload.
+
+Block Jacobi with two kinds of block:
+
+**Bulk.** For each vector component `c` of `V^k`, the diagonal block of `L_k`
+on the tensor-product rows is approximated by a three-term Kronecker sum
+
+```
+A_c = K_r ⊗ M_t ⊗ M_z + M_r ⊗ K_t ⊗ M_z + M_r ⊗ M_t ⊗ K_z
+```
+
+with unweighted 1D masses `M_a` and 1D stiffnesses `K_a` that carry the
+metric weight averaged over the other two axes (`component_factors`). On a
+derivative axis the stiffness is `Ktilde`, the 1D stiffness of the derivative
+splines (`ktilde_mode="honest"`). The component factor `m_k / J` is pulled out
+as a diagonal similarity `D^{1/2} A_c D^{1/2}` (`lumped="diag"`,
+`component_diagonal`). `A_c` is inverted exactly by fast diagonalisation:
+three 1D generalised eigenproblems at build time
+(`_simultaneous_diagonalize_pair`), then three small dense products and a
+pointwise divide per apply (`_fd_apply_3d`). Cost per apply is
+`O(N (n_r + n_t + n_z))`; storage is `O(n^2)` per axis.
+
+**Core.** The polar rows, where the extraction fuses a ring of raw functions,
+are not tensor-product functions. `core_rows` lists them; `probe_core_block`
+forms `L_k` on those rows by one operator apply per row;
+`_dense_symmetric_inverse` inverts the block on device by `eigh`, dropping
+eigenvalues below `CORE_TOL` relative to the largest. Bulk and core are
+applied independently; they are not coupled through a Schur complement.
+
+**Natural boundary term.** Under a free condition at `r = 1` the weak block's
+integration by parts leaves a surface term `alpha (e e^T) ⊗ M_t ⊗ M_z` with
+`e` the one-hot derivative-spline trace, the shape of the first Kronecker
+term. It merges into `K_r` as a rank-one update at no cost, on the components
+whose radial axis is a derivative axis (`trace_components`: none at k=0, `r`
+at k=1, `theta, zeta` at k=2, the single component at k=3). The coefficient
+`alpha` is derived (`bc_entry="ibpd"`); it is multiplied by
+`PRODUCTION_BC_SCALE = 3.0`, a measured balance point, not a derived factor.
+Precedence: the `bc_scale` argument, then the environment variable
+`MRX_BJ_BC_SCALE`, then the constant. Under Dirichlet the term is zero.
+
+Requirement: `n_r >= p + 2`; a one-element radial mesh has no separable atom.
+
+## 4. The mass preconditioner: `MetricLumpingMass`
+
+Same file, same shape, simpler algebra: a mass is a single Kronecker product,
+so the bulk inverse is three 1D dense solves with no fast diagonalisation
+(`_kron_mass_model_1d`, `_apply_mass_payload`). The polar core is probed
+with `apply_mass_matrix` and inverted densely; there is no pseudoinverse of
+the extraction anywhere. Built lazily on first use and memoised on
+`seq._mass_metric_lumping_cache`, keyed on geometry identity. The build is
+host-side and not jit-safe; `warm_mass_preconditioner_cache(seq, ops)` builds
+every `(k, BC)` before a traced loop. `assemble_mass_metric_lumping_preconditioner`
+builds them eagerly.
+
+## 5. Building and invalidation
+
+```python
+seq.set_map(F)                  # drops seq._metric_lumping_laplacian
+seq.build_preconditioners()     # incidence, mass Jacobi, atoms for every (k, BC), mass cache
+```
+
+`seq.set_map_and_preconditioners(F)` is the two calls in one.
+`build_preconditioners` raises `RuntimeError` listing every `(k, BC)` that
+failed to build. `set_geometry` drops the Laplacian atoms because they
+factorise `L_k` for the old metric; the mass cache re-keys itself. The Schur
+diagonals `operators.schur_diaginv_k{1,2,3}` are dropped on every rebuild
+because nothing else invalidates them.
+
+The atom payloads are `eqx.Module` pytrees (`_LumpPayload`, `_MassPayload`)
+built eagerly at construction, with one jitted apply per tree structure, so
+a rebuild for a new geometry of the same discretisation reuses the compiled
+program.
+
+## 6. Cut-offs
+
+All rank and structure cut-offs are multiples of the working-precision
+epsilon (`mrx.eps`), so they scale with `MRX_DTYPE` (see
+[precision.md](precision.md)).
+
+| constant | value | gates |
+|---|---|---|
+| `CORE_TOL` | `eps(4096)` | eigenvalues of the probed core treated as zero |
+| `PSEUDOINVERSE_TOL` | `eps(2^25)` | singular-value floor in `_symmetric_pseudoinverse` |
+| `PROJECTOR_SVD_TOL` | `eps(2^19)` | rank cut of the extraction projector |
+| `PROJECTOR_PLANE_TOL` | `eps(2^22)` | per-zeta-plane block equality |
+| `BLOCK_DIAGONAL_TOL` | `eps(2^12)` | block-diagonality of the Gram matrix |
+
+Endpoint nudges away from a clamped knot are `sqrt_eps() * h`.
+`PROBE_BATCH_SIZE = 8` rows per `lax.map` batch when probing a diagonal.
+
+## 7. Not in production
+
+`mrx/experimental/` holds research code that no production path imports:
+`chebyshev.py` (polynomial acceleration), `metric_lumping_coarse.py` (the
+truncated-Fourier coarse correction `CoarseCorrectedMetricLumping`), `modal_radial.py`.
+Multigrid, HX auxiliary-space transfers, CP rank fits, dense outer-ring probes
+(`outer_rings`), and the Schur-outer Jacobi are measured and not used; the
+verdicts are in `docs/research/preconditioner_lessons.md`.
+
+## 8. Measuring
+
+- `scripts/benchmark/precond_build_apply.py`: build time, apply time, a
+  full-precision checksum of one apply, and the iteration counts of every
+  mass solve, the k=0 Poisson solve and the k=1 Hodge solve through the
+  production `'auto'` dispatch. Flags `--ns`, `--p`, `--tol`, `--reps`,
+  `--ks`, `--hlo`.
+- `scripts/debug/verify_default_preconditioners.py`: all eight `(k, BC)`
+  unshifted solves with nullspaces, true residuals and kernel leakage.
+  Flags `--geometry {toroid,w7x}`, `--ns`, `--p`, `--nrhs`, `--tol`.
+
+Rank alternatives by total time, not iterations: every arm costs the same per
+iteration, so build cost decides. Iteration counts move by about 1% between
+runs; only a two-digit percentage is a result.

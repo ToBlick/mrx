@@ -1,3 +1,7 @@
+> **Status:** current
+> **Read this for:** settled findings, dead ends and traps of the preconditioner campaign, in priority order
+> **Do not read for:** the construction; that is preconditioner_technical_note_source.md
+
 # Preconditioner lessons — settled findings and dead ends (as of 2026-08-25)
 
 Distilled from session memory so it travels with the repo. Each item is settled
