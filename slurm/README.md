@@ -79,7 +79,12 @@ SCRIPT="-m pytest -q test" JOB_NAME=tests_cpu CPUS=4 EXTRA_ENV="JAX_PLATFORMS=cp
 ```
 
 `EXTRA_ENV="MRX_DTYPE=float32"` selects single precision for any of these.
-Measured 2026-08-26 (H100, tree at the single-tier commit): TIMINGS.
+Measured 2026-08-26 (H100, tree at the single-tier commit): 248 items,
+247 pass and the W7-X test skips without `MRX_W7X_FILE`; 6:09 on four
+CPU cores in float64, 9:15 on the GPU in float64 and 9:01 in float32 (the
+suite is compile-bound; the session torus fixture is 51 s of it, the
+relaxation run 28 s, the projector tests 90 s). The `needs_data` tests
+pass in 2:50 on the GPU (the W7-X fixture is 144 s of it).
 
 Do not add `XLA_FLAGS=--xla_cpu_multi_thread_eigen=false` to the CPU
 recipe: XLA's CPU compiler aborted once and segfaulted once, both while

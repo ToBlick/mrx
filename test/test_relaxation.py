@@ -116,7 +116,11 @@ def test_relaxation(tiny_seq):
     # eta = 0: the ideal step alone, the solve skipped.
     ideal = step(eqx.tree_at(lambda s: s.eta, pre, 0.0))
     assert int(ideal.resistive_info) == 0 and float(ideal.resistive_delta) == 0.0
-    assert float(jnp.max(jnp.abs(ideal.B_n - check_B_ideal))) <= 32 * mrx.eps() * scale
+    # Two executables (the step and the probe) apply the incidence operator
+    # -- a dense polar-core Gram solve inside -- in different fusion orders:
+    # measured 2.4e-14 absolute at max |B| = 3.6e-2 on the H100 (3e3 eps),
+    # below 32 eps on the CPU.
+    assert float(jnp.max(jnp.abs(ideal.B_n - check_B_ideal))) <= mrx.eps(1e4) * scale
     # eta > 0: (M_2 + eps L_2) B_{n+1} = M_2 B_ideal.
     B1 = check_state.B_n
     eps = float(check_state.dt) * ETA
