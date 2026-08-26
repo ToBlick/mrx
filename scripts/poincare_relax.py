@@ -20,9 +20,13 @@ Flags (defaults in brackets):
     --batch-size N         lines integrated per batch [all]
     --precision P          tracing precision float64|float32 [float64]
     --out DIR              output directory [<state dir>/poincare]
+    --from-npz             re-render from ``<out>/sections.npz`` without tracing
 
 Output: ``poincare_<field>_zeta<plane>.png`` per field and plane, and
-``sections.npz`` with the crossing coordinates, under ``--out``.
+``sections.npz`` under ``--out`` with, per field, the crossing coordinates of
+every plane plus ``iota``, ``resid``, ``seed_r``, ``keep``, ``chaotic`` and the
+step drift, so a section can be re-rendered (``--from-npz``) without the
+5-minute sequence build and trace.
 Runtime: ~5 min per field at (8,16,8) p=3 on one H100 (sequence setup
 dominates; the trace is ~1 min).
 """
@@ -44,6 +48,7 @@ def main():
     ap.add_argument("--batch-size", type=int, default=None)
     ap.add_argument("--precision", default="float64", choices=("float64", "float32"))
     ap.add_argument("--out", default=None)
+    ap.add_argument("--from-npz", action="store_true")
     cli = ap.parse_args()
     os.environ["MRX_DTYPE"] = cli.precision
 
@@ -74,9 +79,31 @@ def main():
           f"({attrs.get('method')}, eta_max={attrs.get('eta_max')}); tracing in {cli.precision}",
           flush=True)
 
-    seq, _ = build_sequence(geometry, ns, p, int(attrs.get("maxiter", 10_000)))
     labels = {"ic": "initial condition (after Leray projection)",
               "final": "relaxed field"}
+    if cli.from_npz:
+        z = np.load(os.path.join(out, "sections.npz"))
+        lo = min(float(z[f"{n}_iota"][z[f"{n}_shown"]].min()) for n in which)
+        hi = max(float(z[f"{n}_iota"][z[f"{n}_shown"]].max()) for n in which)
+        for name in which:
+            for plane in planes:
+                tag = f"{name}_zeta{plane:g}"
+                fig = render_section(
+                    z[f"{tag}_R"], z[f"{tag}_Z"], z[f"{name}_iota"], z[f"{name}_resid"],
+                    z[f"{name}_seed_r"], z[f"{name}_keep"],
+                    title=f"{geometry} {ns} p={p}  |  {name}  |  $\\zeta = {plane:g}$\n"
+                          f"{labels.get(name, name)}, relaxed in {attrs.get('precision')} "
+                          f"-- {z[f'{tag}_R'].shape[1]} crossings/line",
+                    subtitle=f"nfp = {nfp}   |   h/2 drift {float(z[f'{name}_drift']):.1e}   |   re-rendered from sections.npz",
+                    axis_RZ=(z[f"{tag}_axisR"], z[f"{tag}_axisZ"]), path=None,
+                    profile_x=z[f"{tag}_a_eff"], profile_xlabel=str(z[f"{tag}_xlabel"]), nfp=nfp,
+                    logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]), chaotic=z[f"{name}_chaotic"],
+                    iota_lim=(lo, hi))
+                path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
+                fig.savefig(path, dpi=200); plt.close(fig); print(f"  -> {path}", flush=True)
+        return
+
+    seq, _ = build_sequence(geometry, ns, p, int(attrs.get("maxiter", 10_000)))
     traced = {}
     for name in which:
         B = dofs["B_" + name]
@@ -122,8 +149,15 @@ def main():
             fig.savefig(path, dpi=200)
             plt.close(fig)
             print(f"  -> {path}", flush=True)
-            for key, arr in zip(("R", "Z", "axisR", "axisZ"), (R, Z, aR, aZ)):
-                sections[f"{name}_{key}_zeta{plane:g}"] = arr
+            tag = f"{name}_zeta{plane:g}"
+            for key, arr in zip(("R", "Z", "axisR", "axisZ", "logr", "logth", "a_eff"),
+                                (R, Z, aR, aZ, lr, lth, a_eff)):
+                sections[f"{tag}_{key}"] = np.asarray(arr)
+            sections[f"{tag}_xlabel"] = np.array(xlabel)
+        for key, arr in (("iota", res["iota"]), ("resid", res["resid"]), ("seed_r", res["seeds"][:, 0]),
+                         ("keep", keep), ("chaotic", res["chaotic"]), ("shown", shown),
+                         ("drift", np.array(res["drift"]))):
+            sections[f"{name}_{key}"] = np.asarray(arr)
     np.savez_compressed(os.path.join(out, "sections.npz"), **sections)
 
 

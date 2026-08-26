@@ -39,7 +39,7 @@ nothing.
 
 Not in production: multigrid, Chebyshev or Richardson acceleration, CP fits,
 HX transfers, `outer_rings`, the Fourier coarse correction
-(`mrx/experimental/`).
+(`mrx/experimental/` on branch `greville-prod`).
 
 ## Solvers
 

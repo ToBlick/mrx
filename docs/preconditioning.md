@@ -167,7 +167,7 @@ Endpoint nudges away from a clamped knot are `sqrt_eps() * h`.
 
 ## 7. Not in production
 
-`mrx/experimental/` holds research code that no production path imports:
+Research code (Chebyshev smoothers, the modal-radial atom, the coarse correction) lives on branch `greville-prod` under `mrx/experimental/`, not here:
 `chebyshev.py` (polynomial acceleration), `metric_lumping_coarse.py` (the
 truncated-Fourier coarse correction `CoarseCorrectedMetricLumping`), `modal_radial.py`.
 Multigrid, HX auxiliary-space transfers, CP rank fits, dense outer-ring probes

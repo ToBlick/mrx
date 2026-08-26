@@ -442,3 +442,18 @@ Schur-kept atom swap), `laplace_atom_test.py` (averaging rules + exact modal
 denominator, bulk), `laplace_full_test.py` (full grid, sandwich),
 `laplace_D_test.py` (per-DOF metric collapse), `pow_sweep_laplace.py` (pow0/1/2
 + Tikhonov sweep).
+
+
+## Addendum (2026-08-26): the modal-radial k=0 bulk atom
+
+Measurement kept from the docstring of `mrx/experimental/modal_radial.py` (greville-prod 53a71ed), the per-mode radial pencil atom; CG iterations to 1e-10 on the bulk block, p=3, `fd -> modal` per (dbc/free):
+
+```
+Measured 2026-08-17/18, CG to 1e-10, bulk block, p=3, fd -> per-k:
+
+    toroid        8x16x16  24/22 -> 13/13     12x24x24  36/32 -> 14/13
+    rot-ellipse   8x16x16  59/48 -> 45/36     12x24x24  83/71 -> 49/42
+    W7-X          8x16x16  61/45 -> 47/34     12x24x24  83/66 -> 50/40
+
+```
+Not in production; the candidate replacement was gated on the full-grid comparison, which was never run.
