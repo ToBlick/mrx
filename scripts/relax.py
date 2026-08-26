@@ -52,11 +52,19 @@ Flags (defaults in brackets)
           div B and energy monotonicity intact. fixed with a small --dt0 is
           the control for that.
       --dt0 DT [1.0]                 the step for --dt-mode fixed
-      --cfl C [0.5]                  cap dt at C / max logical CFL number of
-                                     the velocity (cells crossed per unit
-                                     time, theta not counted in the first
-                                     radial span); inf disables the cap. The
-                                     trace records dt_star (uncapped) and cfl
+      --cfl C [0.5]                  clip the linesearch step at C / max
+                                     logical CFL number of the velocity,
+                                     max |u_ref^i| / (J h_i) (logical cells
+                                     crossed per unit time; theta not counted
+                                     in the first radial span). The exact
+                                     minimiser cannot raise the energy, but a
+                                     large dt* leaves the ideal-induction flow
+                                     (frozen-in topology violated at O(dt^2)
+                                     per step) and diverges when ||dB||
+                                     collapses. inf disables the clip and
+                                     reproduces the unclipped trajectory bit
+                                     for bit. The trace records dt_star and
+                                     the CFL number
       --eta-max ETA [0.0]            peak resistivity; eta > 0 lets the field
                                      reconnect, helicity is then not conserved.
                                      The resistive part is backward Euler,

@@ -81,7 +81,7 @@ def compute_force(
     F, p = seq.apply_leray_projection(JxH, k=2, p_guess=p_guess)
     return F, p, J, H, JxH
 
-def logical_cfl_weights(seq: DeRhamSequence) -> np.ndarray:
+def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
     """Weights ``1 / (J h_i)`` turning 2-form values at the quadrature points into logical CFL numbers.
 
     A 2-form velocity has reference components ``u_ref^i = J xi_dot^i``, so
@@ -89,7 +89,9 @@ def logical_cfl_weights(seq: DeRhamSequence) -> np.ndarray:
     (the knot spacing of direction ``i``) the flow crosses per unit time.
     The theta weight is zero inside the first radial span: the theta cell
     degenerates at the polar axis, where the polar space resolves nothing
-    in theta. Returns a constant array of shape ``(n_q, 3)``.
+    in theta. Returns an array of shape ``(n_q, 3)``; ``TimeStepper`` builds
+    it once at construction (everything it reads is fixed by the sequence),
+    so it is never traced.
     """
     h = []
     for b in seq.basis_0.bases[0].bases:
@@ -99,7 +101,7 @@ def logical_cfl_weights(seq: DeRhamSequence) -> np.ndarray:
     h = np.array(h)
     weights = 1.0 / (np.asarray(seq.jacobian_j)[:, None] * h[None, :])
     weights[:, 1] *= np.asarray(seq.quad.x[:, 0]) >= h[0]
-    return weights
+    return jnp.asarray(weights)
 
 
 # %%
@@ -244,6 +246,8 @@ class TimeStepper(eqx.Module):
         leaves the ideal-induction flow (frozen-in topology violated at
         O(dt^2)) and diverges when ``||dB||`` collapses. ``inf`` disables
         the cap and leaves the trajectory untouched.
+    cfl_weights : jnp.ndarray
+        ``logical_cfl_weights(seq)``, built by ``__post_init__``.
     timestep_mode : IntegrationScheme
         EXPLICIT or IMPLICIT_MIDPOINT.
     picard_tol : float
@@ -275,11 +279,13 @@ class TimeStepper(eqx.Module):
     stochastic: bool = False
     history_size: int = 1
     dirichlet_H: bool = False
+    cfl_weights: jnp.ndarray = None
 
     def __post_init__(self):
         if self.descent_method in (DescentMethod.CONJUGATE_GRADIENT, DescentMethod.LBFGS) and self.history_size < 1:
             raise ValueError(
                 "history_size must be at least 1 when using CG or L-BFGS.")
+        self.cfl_weights = logical_cfl_weights(self.seq)
 
     def _lbfgs_direction(self, F: jnp.ndarray, s: jnp.ndarray, y: jnp.ndarray,
                          Ms: jnp.ndarray, My: jnp.ndarray
@@ -473,7 +479,7 @@ class TimeStepper(eqx.Module):
         H_jk = self.seq.evaluate_at_quadrature(H, 1, self.dirichlet_H)
         E_dual = self.seq.cross_product_load_values(u_jk, H_jk, 1, 2, 1, True)
         E = self.seq.apply_inverse_mass_matrix(E_dual, 1, guess=state.E)
-        cfl_max = jnp.max(jnp.abs(u_jk) * logical_cfl_weights(self.seq))
+        cfl_max = jnp.max(jnp.abs(u_jk) * self.cfl_weights)
 
         # The TOPOLOGICAL curl, not M_2^-1 D_1.  Three reasons, all measured
         # on quasr44970 ns=(8,16,8) p=3:
