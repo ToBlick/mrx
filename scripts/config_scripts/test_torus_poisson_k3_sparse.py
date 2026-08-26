@@ -11,8 +11,8 @@ k=0 DBC, so the source and the solution proxy reuse the k=0 scalars,
 with ``a = epsilon`` and ``R = 1 + a r cos(2πχ)``. With Betti numbers
 (1, 1, 0, 0) the k=3 NBC problem has no nullspace (b₃ = 0), so nothing is
 deflated. The solve is the saddle-point Laplacian solve of the sequence
-with the tensor mass for the lower (k=2) block, the tensor Schur inner and
-the pre-probed Jacobi Schur outer (``assemble_schur_jacobi_preconditioner``).
+with the tensor mass for the lower (k=2) block and the production
+metric-lumping outer (``assemble_metric_lumping_laplacian_preconditioner``).
 
 Configuration:
     Hydra config ``conf/config_poisson_test.yaml``, schema
@@ -94,7 +94,7 @@ from mrx.nullspace import init_nullspaces
 from mrx.operators import (
     assemble_incidence_operators,
     assemble_projection_operators,
-    assemble_schur_jacobi_preconditioner,
+    assemble_metric_lumping_laplacian_preconditioner,
 )
 from mrx.quadrature import evaluate_at_xq
 
@@ -172,7 +172,7 @@ def compute_error(n: int, p: int, epsilon: float,
     ops = assemble_projection_operators(seq, operators=ops)
     # Tensor mass for k=2 (Schur inner) and k=3 (lower block).
     # Pre-probe the Schur diagonal (D M2_tensor^{-1} D^T) for k=3 NBC.
-    ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(3,), dirichlet_variants=(False,))
+    ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(3,), dirichlets=(False,))
     # No nullspace: b₃=0 for k=3 NBC on the solid torus.
     ops = init_nullspaces(seq, ops, BETTI)
     ops = seq.set_operators(ops)
@@ -182,7 +182,7 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
-    ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(3,), dirichlet_variants=(False,))
+    ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(3,), dirichlets=(False,))
     ops = init_nullspaces(seq, ops, BETTI)
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)

@@ -23,8 +23,8 @@ metric ``g = diag(ε², (2πεr)², (2πR)²)``:
 The right-hand side is assembled as ``b₂ = D₁ M₁⁻¹ load(f₁, 1, NBC)``,
 exactly parallel to the k=0 → k=1 construction. The solve is the
 saddle-point Laplacian solve of the sequence with the tensor mass for the
-lower (k=1) block, the tensor Schur inner and the pre-probed Jacobi Schur
-outer (``assemble_schur_jacobi_preconditioner``).
+lower (k=1) block and the production metric-lumping outer
+(``assemble_metric_lumping_laplacian_preconditioner``).
 
 Configuration:
     Hydra config ``conf/config_poisson_test.yaml``, schema
@@ -106,7 +106,7 @@ from mrx.nullspace import init_nullspaces
 from mrx.operators import (
     assemble_incidence_operators,
     assemble_projection_operators,
-    assemble_schur_jacobi_preconditioner,
+    assemble_metric_lumping_laplacian_preconditioner,
 )
 from mrx.quadrature import evaluate_at_xq
 
@@ -185,7 +185,7 @@ def compute_error(n: int, p: int, epsilon: float,
     ops = assemble_projection_operators(seq, operators=ops)
     # Tensor mass for k=1 (Schur inner) and k=2 (lower block).
     # Pre-probe the Schur diagonal (D₁ M₁_tensor⁻¹ D₁ᵀ) for k=2 NBC.
-    ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(2,), dirichlet_variants=(False,))
+    ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(2,), dirichlets=(False,))
     # No nullspace: b₂(abs)=0 for k=2 NBC on the solid torus.
     ops = init_nullspaces(seq, ops, BETTI)
     ops = seq.set_operators(ops)
@@ -195,7 +195,7 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
-    ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(2,), dirichlet_variants=(False,))
+    ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(2,), dirichlets=(False,))
     ops = init_nullspaces(seq, ops, BETTI)
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)

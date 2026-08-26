@@ -108,7 +108,7 @@ from mrx.nullspace import compute_nullspaces_iterative, get_nullspace
 from mrx.operators import (
     assemble_incidence_operators,
     assemble_projection_operators,
-    assemble_schur_jacobi_preconditioner,
+    assemble_metric_lumping_laplacian_preconditioner,
 )
 from mrx.quadrature import evaluate_at_xq
 
@@ -221,7 +221,7 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
-    ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(1,), dirichlet_variants=(False,))
+    ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(1,), dirichlets=(False,))
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)
     timings["assembly_compile"] = time.perf_counter() - t0
@@ -230,7 +230,7 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
-    ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(1,), dirichlet_variants=(False,))
+    ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(1,), dirichlets=(False,))
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)
     timings["assembly_exec"] = time.perf_counter() - t0

@@ -16,8 +16,8 @@ source,
 
 and the reference solution is built the same way from ``u₀``. The solve is
 the saddle-point Laplacian solve of the sequence with the tensor mass for
-the lower (k=0) block, the tensor Schur inner and the pre-probed Jacobi
-Schur outer (``assemble_schur_jacobi_preconditioner``). ``quad_order``
+the lower (k=0) block and the production metric-lumping outer
+(``assemble_metric_lumping_laplacian_preconditioner``). ``quad_order``
 below ``2*p`` raises ``ValueError``.
 
 Configuration:
@@ -99,7 +99,7 @@ from mrx.mappings import toroid_map
 from mrx.operators import (
     assemble_incidence_operators,
     assemble_projection_operators,
-    assemble_schur_jacobi_preconditioner,
+    assemble_metric_lumping_laplacian_preconditioner,
 )
 from mrx.nullspace import init_nullspaces
 from mrx.quadrature import evaluate_at_xq
@@ -178,7 +178,7 @@ def compute_error(n: int, p: int, epsilon: float,
     ops = assemble_projection_operators(seq, operators=ops)
     # Tensor mass for k=0 (Schur inner) and k=1 (lower block).
     # Pre-probe the Schur diagonal (D M0_tensor^{-1} D^T) for k=1 DBC.
-    ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(1,), dirichlet_variants=(True,))
+    ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(1,), dirichlets=(True,))
     # Zero-initialize nullspaces (b₂=0, so k=1 DBC has no harmonic forms).
     ops = init_nullspaces(seq, ops, BETTI)
     ops = seq.set_operators(ops)
@@ -188,7 +188,7 @@ def compute_error(n: int, p: int, epsilon: float,
     t0 = time.perf_counter()
     ops = assemble_incidence_operators(seq)
     ops = assemble_projection_operators(seq, operators=ops)
-    ops = assemble_schur_jacobi_preconditioner(seq, ops, ks=(1,), dirichlet_variants=(True,))
+    ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(1,), dirichlets=(True,))
     ops = init_nullspaces(seq, ops, BETTI)
     ops = seq.set_operators(ops)
     jax.block_until_ready(ops)
