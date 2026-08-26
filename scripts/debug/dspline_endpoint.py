@@ -5,10 +5,7 @@ trace u_r(1) = sum_i c_i dLam_i(1) is ONE dof (so evicting the last row imposes
 it) or several (so it is a rank-one CONSTRAINT and row removal is the wrong
 operation).
 """
-import sys
 
-import jax
-jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 

@@ -1,16 +1,27 @@
-"""
-Hydra configuration dataclasses for MRX.
+"""Hydra configuration dataclasses for MRX.
 
-All configuration is defined here as dataclasses registered with Hydra's
-ConfigStore.  Scripts use ``@hydra.main(config_name=..., version_base=None)``
-with *no* ``config_path`` — defaults are picked up from the store.
+Every configuration is a dataclass registered with Hydra's ConfigStore. This
+module imports no JAX, so importing it never creates an array.
+
+Every top-level config inherits :class:`NumericsConfig`, which carries the two
+numerics knobs shared by all entry points:
+
+``precision``
+    ``float64`` (default) or ``float32``. The entry point exports it as
+    ``MRX_DTYPE`` before ``import mrx``; the switch itself lives in
+    :mod:`mrx.precision`, and this field is its record in the run config.
+``solver_tol``
+    Relative residual tolerance of every iterative solve that goes through
+    :class:`~mrx.derham_sequence.DeRhamSequence`. ``None`` selects
+    ``sqrt(eps)`` of the working precision. This is the single tolerance
+    knob; the former ``PoissonTestConfig.cg_tol`` is this field.
 
 Usage from CLI::
 
-    python scripts/config_scripts/relax_from_nfs.py              # defaults
-    python scripts/config_scripts/relax_from_nfs.py fem.ns_r=16
-    python scripts/config_scripts/relax_from_nfs.py resolution=high
-    python scripts/config_scripts/relax_from_nfs.py -m fem.ns_r=8,12,16
+    python scripts/config_scripts/test_torus_poisson_k0_sparse.py p=3
+    python scripts/config_scripts/test_torus_poisson_k0_sparse.py p=3 precision=float32
+    python scripts/config_scripts/test_torus_poisson_k0_sparse.py -m p=2,3 n=8,16
+    python scripts/config_scripts/poincare_plots.py run_dir=out/relax_from_nfs/<stamp>
 
 Resolution group overrides:  ``resolution=low`` / ``medium`` / ``high``
 """
@@ -23,6 +34,20 @@ from hydra.core.config_store import ConfigStore
 # ---------------------------------------------------------------------------
 #  Shared sub-configs
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class NumericsConfig:
+    """Working precision and solver tolerance; base of every top-level config.
+
+    ``precision`` is ``float64`` or ``float32`` and must match ``MRX_DTYPE``
+    at import time (the entry point sets it from the ``precision=`` override
+    before importing mrx). ``solver_tol`` is passed as
+    ``DeRhamSequence(tol=cfg.solver_tol)``; ``None`` means ``sqrt(eps)`` of
+    the working precision.
+    """
+    precision: str = "float64"
+    solver_tol: Optional[float] = None
 
 
 @dataclass
@@ -159,7 +184,7 @@ class PoincareOutputConfig:
 # ---------------------------------------------------------------------------
 
 @dataclass
-class RelaxFromNFSConfig:
+class RelaxFromNFSConfig(NumericsConfig):
     """Config for ``relax_from_nfs.py``.
 
     By default the ``resolution: low`` preset is composed in (overrides
@@ -187,7 +212,7 @@ class RelaxFromNFSConfig:
 
 
 @dataclass
-class RelaxStellConfig:
+class RelaxStellConfig(NumericsConfig):
     """Config for ``relax_stell.py``."""
     run_name: Optional[str] = None
 
@@ -208,14 +233,13 @@ class RelaxStellConfig:
 
 
 @dataclass
-class PoissonTestConfig:
+class PoissonTestConfig(NumericsConfig):
     """Application parameters for ``test_torus_poisson_sparse.py``."""
     n: Any = field(default_factory=lambda: [8, 12, 16, 24, 32, 48, 64])
     p: int = 3
     epsilon: float = 1 / 3
     quad_order: Optional[int] = None
     quad_order_offset: int = 4
-    cg_tol: float = 1e-9
     cg_maxiter: int = 100_000
     map_batch_size_inner: int = 0      # 0 corresponds to vmap
     map_batch_size_outer: Optional[int] = None    # None means no batching
@@ -223,7 +247,7 @@ class PoissonTestConfig:
 
 
 @dataclass
-class MatvecBenchmarkConfig:
+class MatvecBenchmarkConfig(NumericsConfig):
     """Application parameters for ``scripts/config_scripts/benchmark_matvec_sparse.py``.
 
     Benchmarks stored-BCSR vs matrix-free apply for the mass matrices, over the
@@ -243,8 +267,9 @@ class MatvecBenchmarkConfig:
 
 
 @dataclass
-class MCPoissonConfig:
-    """Application parameters for ``scripts/dice/mc_poisson.py``."""
+class MCPoissonConfig(NumericsConfig):
+    """Schema of ``conf/config_mc_poisson.yaml``; its driver
+    ``scripts/dice/mc_poisson.py`` is not in the repository."""
     n: int = 10
     p: int = 3
     N: list[int] = field(default_factory=lambda: [
@@ -256,7 +281,7 @@ class MCPoissonConfig:
 
 
 @dataclass
-class PoincarePlotsConfig:
+class PoincarePlotsConfig(NumericsConfig):
     """Config for ``poincare_plots.py``.
 
     Tip: pass ``hydra.job.chdir=false hydra.run.dir=.`` on the CLI to

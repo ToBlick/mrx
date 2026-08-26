@@ -41,16 +41,13 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import jax.scipy.linalg as jsl
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "scripts"
-for _p in (ROOT, SCRIPTS, SCRIPTS / "benchmark", SCRIPTS / "debug"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "benchmark"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "debug"))
 
-jax.config.update("jax_enable_x64", True)
 
 from mrx.operators import (
     apply_derivative_matrix,

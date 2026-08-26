@@ -23,7 +23,6 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
 
 from mrx.derham_sequence import DeRhamSequence  # noqa: E402
 from mrx.mappings import toroid_map  # noqa: E402

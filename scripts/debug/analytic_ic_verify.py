@@ -1,6 +1,6 @@
 """Verify the logical-profile IC against cases where the answer is known.
 
-Two cases, both built from the same ansatz as ``logical_profile_ic.py`` --
+Two cases, both built from the same ansatz as ``mrx.initial_conditions`` --
 primal reference 2-form components ``omega = (0, Phi'(iota - lam_zeta),
 Phi'(1 + lam_chi))`` -- and both chosen because the truth is available in
 closed form rather than by comparison with another code.
@@ -107,7 +107,6 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.polynomial import Polynomial as P
 
-jax.config.update("jax_enable_x64", True)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

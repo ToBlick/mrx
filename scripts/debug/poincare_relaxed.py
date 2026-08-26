@@ -1,41 +1,99 @@
-"""Poincaré sections of a RELAXED field, straight from a relaxation state file.
+"""Poincaré sections of a relaxed field, straight from a relaxation state file.
 
-``poincare_vacuum.py`` traces harmonic nullspace fields, which it computes.
-This traces the field a relaxation *produced*, which it reads: the state file
-written by ``relax_from_nfs.py`` carries the 2-form DOFs ``B_dof_final`` and
-``B_dof_initial``, the map DOFs ``R_dof``/``Z_dof``, and the run's own config in
-a root attribute.  Everything needed to rebuild the discrete field is therefore
-in one file, and nothing here solves anything.
+Trace the field a relaxation produced instead of computing one. The state
+file written by ``relax_from_nfs.py`` carries the 2-form DOFs
+``B_dof_initial`` and ``B_dof_final``, the map DOFs ``R_dof``/``Z_dof``
+and the run's own config in a root attribute, so the discrete field is
+rebuilt from that one file and nothing is solved. Both fields are traced
+by default and rendered on shared iota axes: ``initial`` is the
+interpolated input field after the Leray projection, ``final`` is what the
+relaxation made of it. The pair shows whether surfaces survived, islands
+opened or the transform moved; a single section of ``final`` cannot.
 
-Both fields are traced by default, and that pair is the point.  ``initial`` is
-the interpolated input field after the Leray projection; ``final`` is what the
-relaxation made of it.  Rendered on shared axes they answer the question the
-run was asked -- did the surfaces survive, did islands open, did the transform
-move -- and a single section of ``final`` alone cannot.
+Four gates run before any line is traced, because each one fails as a
+plausible picture rather than as an error:
 
-Four gates run before any line is traced, because each one fails as a plausible
-picture rather than as an error:
+1. The map round-trips. The state file names the point cloud it was
+   fitted to (``nfs_file``); when that file is present, ``F(rho, theta,
+   zeta)`` is compared against the sampled ``(R, Z)``. A map rebuilt with
+   the wrong ``nfp``, degree or zeta flip still plots, as a differently
+   shaped device.
+2. The Jacobian keeps one sign, for the same reason the relaxation asserts
+   it.
+3. The DOF vector fits the space. ``len(B_dof)`` is checked against
+   ``seq.n2_dbc``; a mismatch means the FEM resolution in the config is not
+   the one the field was computed on, and a silently reshaped vector is
+   noise with the right norm.
+4. The field is still discretely divergence-free. ``D2 B`` sits at the
+   Leray projection's own solve tolerance, and the relaxation preserves
+   that exactly because every update is a curl. This is the one gate that
+   tests which space the DOFs live in rather than how many there are: a
+   different radial grading or pole extraction has the same dimension and
+   scores O(1) here.
 
-1. **The map round-trips.**  The state file names the point cloud it was fitted
-   to (``nfs_file``); when that file is present, ``F(rho, theta, zeta)`` is
-   compared against the sampled ``(R, Z)``.  A map rebuilt with the wrong
-   ``nfp``, degree or zeta flip still plots -- as a differently-shaped device.
-2. **The Jacobian keeps one sign.**  Same reason the relaxation asserts it.
-3. **The DOF vector fits the space.**  ``len(B_dof)`` against ``seq.n2_dbc``:
-   a mismatch means the FEM resolution in the config is not the one the field
-   was computed on, and a silently reshaped vector is noise with the right norm.
-4. **The field is still discretely divergence-free.**  ``D2 B`` sits at the
-   Leray projection's own solve tolerance, and the relaxation preserves that
-   exactly because every update is a curl.  It is the one gate that tests
-   which space the DOFs actually live in rather than just how many there are:
-   a different radial grading or pole extraction can have the same dimension
-   and scores O(1) here.
+:func:`mrx.poincare.require_zeta_parameterisation` then gates the tracer's
+change of variables; tracing and rendering are :mod:`mrx.poincare`
+throughout.
 
-Then :func:`mrx.poincare.require_zeta_parameterisation` gates the tracer's
-change of variables, and tracing is :mod:`mrx.poincare` throughout.
+Arguments:
+    state: Relaxation state HDF5 (positional, required).
+    --fields (str): Comma-separated subset of ``initial,final``. Default
+        ``initial,final``.
+    --seeds (int): Seed lines per field. Default 40.
+    --r-min (float): Innermost seed radius for ``--seed-from coord``.
+        Default 0.03.
+    --r-max (float): Outermost seed radius. Default 0.97.
+    --periods (int): Field periods traced per line. Default 200.
+    --steps (int): Prescribed integration steps per field period. Default
+        24.
+    --saves (int): Samples kept per period; must divide ``--steps``.
+        Default 8.
+    --planes (str): Logical zeta of each section, comma-separated. Default
+        ``None`` (one plane at zeta 0). Mutually exclusive with
+        ``--n-planes``.
+    --n-planes (int): Number of evenly spaced sections over one field
+        period, ``zeta = k/N``. Default ``None``.
+    --batch-size (int): Lines traced per batch; ``None`` traces all at
+        once. Default ``None``.
+    --drift-periods (int): Periods of the h-vs-h/2 step-drift check.
+        Default 64.
+    --profile-x (str): Surface label on the iota profile, one of
+        ``midplane, mean, area, seed``. Default ``midplane``.
+    --seed-from (str): ``axis`` walks out from the magnetic axis, ``coord``
+        from logical r=0. A relaxed finite-beta state moves its axis away
+        from r=0, which leaves a hole in a ``coord`` section. Default
+        ``axis``.
+    --formats (str): Comma-separated figure formats. Markers are
+        rasterised, so a pdf stays small. Default ``png``.
+    --root (str): Directory the config's ``nfs_file`` path is relative to.
+        Default ``.``.
+    --out (str): Output directory. Default ``outputs/poincare_relaxed``.
 
-    python scripts/debug/poincare_relaxed.py data/w7x_fmm002_relaxed_100.h5 \
-        --n-planes 4 --periods 200 --seeds 48
+Usage:
+    ::
+
+        python -u scripts/debug/poincare_relaxed.py data/w7x_fmm002_relaxed_100.h5 \
+            --out outputs/poincare_relaxed/<stamp> --seeds 64 --periods 600 --n-planes 4
+
+    Single GPU job through ``slurm/run.sh``::
+
+        SCRIPT=scripts/debug/poincare_relaxed.py \
+            ARGS="data/w7x_fmm002_relaxed_100.h5 --out outputs/poincare_relaxed/<stamp> \
+                  --seeds 64 --periods 600 --n-planes 4" \
+            JOB_NAME=poincrelax MEM_GB=64 TIMEOUT_MIN=90 bash slurm/run.sh
+
+Runtime:
+    W7-X ``w7x_fmm002_relaxed_100.h5`` on one H100 (2026-08-25 runs): the
+    trace itself takes 13-18 s per field at 64-96 seeds and 600-1000
+    periods; the gates, JIT and rendering come on top. The previous slurm
+    wrap allotted 64 GB and 90 min.
+
+Output:
+    In ``--out``: ``poincare_<state-stem>_<field>_zeta<z>.<format>`` figures,
+    ``trace_<state-stem>_<field>.npz`` with the traced orbits, iota,
+    residuals, seeds, classification and per-plane section arrays, and
+    ``summary_<state-stem>.json`` with the gate results, walltimes, drift,
+    lost and chaotic counts and iota range per field.
 """
 from __future__ import annotations
 
@@ -46,7 +104,6 @@ import os
 import h5py
 import jax
 
-jax.config.update("jax_enable_x64", True)
 
 import matplotlib  # noqa: E402
 

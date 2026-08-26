@@ -331,18 +331,25 @@ def build(map_fn):
 
 def pcg(A, b, Minv, tol, maxit):
     x = jnp.zeros_like(b)
-    r = b - A(x); z = Minv(r); q = z
-    rz = float(r @ z); nb = float(jnp.linalg.norm(b))
+    r = b - A(x)
+    z = Minv(r)
+    q = z
+    rz = float(r @ z)
+    nb = float(jnp.linalg.norm(b))
     for i in range(1, maxit + 1):
-        Aq = A(q); den = float(q @ Aq)
+        Aq = A(q)
+        den = float(q @ Aq)
         if den <= 0.0:
             return -i
         al = rz / den
-        x = x + al * q; r = r - al * Aq
+        x = x + al * q
+        r = r - al * Aq
         if float(jnp.linalg.norm(r)) / nb < tol:
             return i
-        z = Minv(r); rz_n = float(r @ z)
-        q = z + (rz_n / rz) * q; rz = rz_n
+        z = Minv(r)
+        rz_n = float(r @ z)
+        q = z + (rz_n / rz) * q
+        rz = rz_n
     return maxit
 
 
