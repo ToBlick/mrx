@@ -276,16 +276,19 @@ def load(seq: "DeRhamSequence", f, k: int,
     dirichlet : bool  Use Dirichlet-constrained DOFs.
     bc : bool  Use boundary-trace DOFs (takes precedence over dirichlet).
     frame : {'phys', 'ref'}
-        'phys' (default): f returns components in the physical frame.
-            A DF-based pullback is applied internally.
-        'ref': f returns the coefficients of the k-form expanded directly in
-            reference coordinates dr, dχ, dζ (and their wedge products).
-            No pullback is applied.  Concretely:
-              k=0: scalar  u(ξ)
-              k=1: covariant ref components  (u_r, u_χ, u_ζ)
-              k=2: ref 2-form proxy  (u_χζ, u_rζ, u_rχ)  (same slot order as
-                   _form_comp_info(2))
-              k=3: scalar coefficient A(ξ) in  A dr∧dχ∧dζ  (i.e. A = f_phys·J)
+        ``'phys'`` (default): ``f`` returns components in the physical frame;
+        a DF-based pullback is applied internally.
+
+        ``'ref'``: ``f`` returns the coefficients of the k-form expanded
+        directly in reference coordinates dr, dχ, dζ (and their wedge
+        products); no pullback is applied. Concretely:
+
+        - k=0: scalar ``u(ξ)``
+        - k=1: covariant ref components ``(u_r, u_χ, u_ζ)``
+        - k=2: ref 2-form proxy ``(u_χζ, u_rζ, u_rχ)`` (same slot order as
+          ``_form_comp_info(2)``)
+        - k=3: scalar coefficient ``A(ξ)`` in ``A dr∧dχ∧dζ`` (i.e.
+          ``A = f_phys·J``)
 
     Returns
     -------

@@ -1780,7 +1780,7 @@ def assemble_schur_jacobi_preconditioner(
     schur_diag_mode: str = 'metric_lumping_probe') -> SequenceOperators:
     """Probe and store the approximate Schur diagonal at assembly time.
 
-    For each (k, dirichlet) pair, builds the approximate Schur operator
+    For each (k, dirichlet) pair, builds the approximate Schur operator::
 
         A_k(x) = S_k x + D_{k-1} B_{k-1} D_{k-1}^T x
 
@@ -1788,6 +1788,12 @@ def assemble_schur_jacobi_preconditioner(
     resulting ``1/diag(A_k)`` is stored on the operator bundle so that
     the saddle-point Schur-outer Jacobi preconditioner is a cheap
     multiply at solve time rather than an O(n_k) probing scan.
+
+    ``B_{k-1}`` is selected by ``schur_diag_mode``. There is exactly ONE
+    mode, ``'metric_lumping_probe'`` -- the metric_lumping schur.inner inverse,
+    which needs no prior assembly. It was raw_kron-backed until 2026-08-25; the
+    switch was forced by that deletion and measured first, see
+    docs/research/result_2026-08-25_schur_probe_ab.md.
 
     Parameters
     ----------
@@ -1799,12 +1805,8 @@ def assemble_schur_jacobi_preconditioner(
         Boundary condition variants to assemble.  Defaults to (True, False).
     eps : float
         Shift for the stiffness term; 0 gives the unshifted Schur.
-
-    where ``B_{k-1}`` is selected by ``schur_diag_mode``. There is exactly ONE
-    mode, ``'metric_lumping_probe'`` -- the metric_lumping schur.inner inverse,
-    which needs no prior assembly. It was raw_kron-backed until 2026-08-25; the
-    switch was forced by that deletion and measured first, see
-    docs/research/result_2026-08-25_schur_probe_ab.md.
+    schur_diag_mode : str
+        ``'metric_lumping_probe'`` (the only mode).
 
     This docstring used to advertise four (``'tensor_probe'``, ``'exact_probe'``
     and ``'diag'`` as well) against a guard that accepted two, so two of them

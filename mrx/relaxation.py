@@ -87,7 +87,8 @@ class State(eqx.Module):
     """
     A class to store the state (variables and parameters) of the MRX relaxation.
 
-    Attributes:
+    Attributes
+    ----------
     B_n : jnp.ndarray
         The magnetic field at the current time step.
     B_nplus1 : jnp.ndarray

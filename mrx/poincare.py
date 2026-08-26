@@ -348,8 +348,8 @@ def rotational_transform(ys, saves_per_period, nfp, center=None):
 # Physical coordinates
 # ---------------------------------------------------------------------------
 
-#: Half-split |d iota| above which a line is treated as chaotic and given NO
-#: iota. Measured over the archived traces: quasi-periodic lines score ~1e-6
+#: Half-split ``|d iota|`` above which a line is treated as chaotic and given
+#: NO iota. Measured over the archived traces: quasi-periodic lines score ~1e-6
 #: (median) with a p90 of ~1e-5, while the chaotic quasr65530 k=1 sea scores
 #: 5.6e-04 median. Three orders of magnitude of separation, so the threshold is
 #: not delicate.

@@ -69,22 +69,26 @@ bases.
 
 ## 3. The metric weights
 
-`_mass_form_and_weights(seq, k, geometry)` picks the form, the component
-bases and the weight field for every `(cr, cc)` pair:
+`_form_bases(seq, k)` picks the form and the component bases;
+`_mass_weight(k, DF, jac)` forms the weight field for every `(cr, cc)` pair
+*inside the jitted apply*, elementwise from `DF` and `J = det DF`:
 
-| k | weight at a quadrature point | from `SequenceGeometry` |
+| k | weight at a quadrature point | formed from |
 |---|---|---|
-| 0 | `J` | `jacobian_j` |
-| 1 | `J g^{-1}` | `metric_inv_jkl * jacobian_j[:, None, None]` |
-| 2 | `g / J` | `metric_jkl * (1 / jacobian_j)[:, None, None]` |
-| 3 | `1 / J` | `1 / jacobian_j` |
+| 0 | `J` | `jac` |
+| 1 | `J g^{-1} = adj(g) / J` | cofactors of `g = DF^T DF`, one division by `J` |
+| 2 | `g / J` | `g = DF^T DF` |
+| 3 | `1 / J` | `1 / jac` |
 
-`SequenceGeometry` (`mrx/geometry.py`) stores `DF_jkl`, `metric_inv_jkl`,
-and `jacobian_j`; the metric `g = DF^T DF` is a property. `DF` comes from
+`SequenceGeometry` (`mrx/geometry.py`) stores only `DF_jkl` and
+`jacobian_j`; `metric_jkl` and `metric_inv_jkl` are properties for the
+consumers that want them (load, the lumped preconditioners). `DF` comes from
 `jax.jacfwd(map)` at every quadrature point (`SequenceGeometry.from_map`), or
 from the spline coefficients by sum factorisation
-(`SequenceGeometry.from_spline_map`). Geometry enters the kernel only through
-`W_split`; a new map means new weights and the same compiled kernel.
+(`SequenceGeometry.from_spline_map`). Geometry enters the kernel as two
+runtime arguments; a new map means the same compiled kernel. The projection
+masses between degrees (`build_matrixfree_projection_apply`) use the same
+kernel with the reference weight `W = I`.
 
 The quadrature points are flattened theta-major, `(theta, r, zeta)`,
 because `QuadratureRule` builds them with `jnp.meshgrid` in its default
@@ -111,9 +115,10 @@ diagonal and the operator agree by construction.
 
 ## 5. Memory
 
-Resident per quadrature point: `DF_jkl` (9), `metric_inv_jkl` (9),
-`jacobian_j` (1), 19 scalars. Recomputing `DF` on every apply was rejected;
-the geometry stays resident. A W7-X run at `(12, 24, 24)`, `p = 3` has
+Resident per quadrature point: `DF_jkl` (9) and `jacobian_j` (1), 10
+scalars, and nothing per form degree (the weights are transients of the
+apply). Recomputing `DF` on every apply was rejected; the geometry stays
+resident. A W7-X run at `(12, 24, 24)`, `p = 3` has
 `N_q = (n_r - p) · n_t · n_z · q^3 = 9 · 24 · 24 · 64 ≈ 3.3e5` points.
 
 Per apply, the largest transient is one element field at quadrature,
@@ -121,8 +126,10 @@ Per apply, the largest transient is one element field at quadrature,
 arrays. A stored matrix would be `O(n^3 (p+1)^6)`: `M_1` at `n = 32`,
 `p = 4` is about 83 GB, which is why it is not stored.
 
-Measured on a toroid, `p = 3`, H100: the `M_1` apply is 0.11 ms at
-`(8, 16, 8)` and 0.47 ms at `(16, 32, 16)`.
+Measured on a toroid, `p = 3`, H100: the `M_1` apply is 0.13 ms at
+`(8, 16, 8)` and 0.7 ms at `(16, 32, 16)` (0.11 / 0.47 with the weights
+precomputed per degree, the 20 extra resident scalars per quadrature point
+that were traded for it).
 
 ## 6. Quadrature: `q = p + 1`
 
@@ -141,9 +148,9 @@ adds to `p + 1`), and `test/conftest.py`.
 
 ## 7. What remains assembled
 
-`mrx/assembly.py` keeps `assemble_vectorial` for the inter-degree projection
-blocks `p21, p12, p03, p30` (`assemble_projection_operators`), which the
-helicity diagnostic applies. It emits index/value triplets through
-`_stencil_triplets`, batched over the angular offsets per radial offset, and
-the triplets are applied by gather and segment sum. Nothing else is
-assembled.
+Nothing. The inter-degree projection blocks `p21, p12, p03, p30` (the
+helicity diagnostic) are the same sum-factorised apply with the reference
+weight. The only stored operators are index/value triplets: the extraction
+operators and the analytic polar grad/curl stencils, both
+`MatrixFreeExtraction` objects applied by gather and segment sum, with a
+free transpose.

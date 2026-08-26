@@ -1086,12 +1086,13 @@ class DeRhamSequence():
 
     def apply_derivative_matrix(self, v, k, dirichlet_in=True, dirichlet_out=True,
                                 transpose=False, operators=None):
-        """
-        Apply the derivative matrix Dk (mapping k-forms to (k+1)-forms) to a vector v:
+        """Apply the weak derivative ``D_k`` (k-forms to (k+1)-forms) to ``v``::
+
             k=0: D0_ij = ∫ Λ1_i · G⁻¹ grad Λ0_j det DF dx  (grad)
             k=1: D1_ij = ∫ Λ2_i · G curl Λ1_j (det DF)⁻¹ dx  (curl)
             k=2: D2_ij = ∫ Λ3_i div Λ2_j (det DF)⁻¹ dx  (div)
-        If transpose=True, apply Dk.T instead (mapping (k+1)-forms to k-forms).
+
+        If ``transpose=True``, apply ``D_k^T`` instead ((k+1)-forms to k-forms).
         """
         operators = self._require_operators(operators)
         return apply_derivative_matrix_ops(

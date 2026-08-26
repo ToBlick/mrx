@@ -172,7 +172,8 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     Preconditioned Conjugate Gradient with M-norm convergence check.
 
     Solves A x = b where A is SPD, with optional SPD preconditioner M ≈ A^{-1}.
-    Convergence is measured in the preconditioner norm:
+    Convergence is measured in the preconditioner norm::
+
         ||r_k||_{M} = sqrt(r_k^T M r_k) < tol * ||b||_{M}
 
     Uses jax.lax.while_loop for JIT compatibility.
@@ -538,7 +539,7 @@ def solve_saddle_point_minres(
         x0_upper=None, x0_lower=None,
         tol=None, maxiter=None):
     """
-    Solve the saddle-point system using preconditioned MINRES:
+    Solve the saddle-point system using preconditioned MINRES::
 
         | S    D   | | u |   | f |
         | D^T  -M  | | σ | = | 0 |

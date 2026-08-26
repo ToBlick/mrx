@@ -177,9 +177,10 @@ constructor argument. Extra arguments: `polar_order` (0, 1, or 2; see
 ### Dynamic: `SequenceGeometry`
 
 `SequenceGeometry` in `mrx/geometry.py` is an `eqx.Module` with the map and
-three arrays on the quadrature grid: `DF_jkl` of shape `(N_q, 3, 3)`,
-`metric_inv_jkl` of shape `(N_q, 3, 3)`, and `jacobian_j` of shape `(N_q,)`.
-The metric `metric_jkl = DF^T DF` is a property contracted on demand. Build
+two arrays on the quadrature grid: `DF_jkl` of shape `(N_q, 3, 3)` and
+`jacobian_j` of shape `(N_q,)`. The metric `metric_jkl = DF^T DF` and its
+inverse `metric_inv_jkl` are properties contracted on demand; the mass
+applies form their weights from `DF` and `J` inside the kernel. Build
 it with `SequenceGeometry.from_map(F, seq.quad.x)` (autodiff of `F` under
 `jax.lax.map`) or `SequenceGeometry.from_spline_map(spline_map, seq)` (sum
 factorisation of the spline coefficients). `seq.set_map(F)` and
@@ -190,10 +191,10 @@ Maps enter by interpolation. An analytic map is a callable `F(x)`; a map from
 data is fitted as three scalar 0-form splines on a map sequence and wrapped as
 a `SplineMap` (`mrx/mappings.py`) or a `stellarator_map`. The fit is
 `seq.interpolate(f, 0)`: 1D collocation solves on the tensor space followed by
-the polar restriction. `mrx/geometry.py` has `greville_interpolate_map`,
-`greville_interpolate_stellarator_map`, and `interpolate_map` for gridded
-`R, Z`; `mrx/gvec.py` has `build_gvec_map` and `build_w7x_map` for GVEC and
-W7-X files. There is no reference mass matrix.
+the polar restriction. `mrx/geometry.py` has `greville_interpolate_map` and
+`greville_interpolate_stellarator_map`; `mrx/gvec.py` has `build_gvec_map`
+and `build_w7x_map` for GVEC and W7-X files (gridded `R, Z` go through
+`fit_scalar_spline`). There is no reference mass matrix.
 
 ### Dynamic: `SequenceOperators`
 
@@ -241,10 +242,10 @@ seq.set_operators(ops)
 5. Laplacian preconditioners:
    `assemble_metric_lumping_laplacian_preconditioner`. Needs the mass
    preconditioners, because the weak term of `L_k` is applied through them.
-6. Projections: `assemble_projection_operators`, only when a projection is
-   needed (the helicity diagnostic).
-7. Harmonic forms: `compute_nullspaces` or `compute_nullspaces_iterative`,
-   after everything above.
+6. Harmonic forms: `compute_nullspaces` or `compute_nullspaces_iterative`,
+   after everything above. The projection masses `P_21, P_12, P_03, P_30`
+   (helicity diagnostic) need no step: they are matrix-free applies built on
+   first use and memoised on the geometry, like the masses.
 
 `seq.build_preconditioners()` runs steps 3 to 5 and verifies every `(k, BC)`
 built; `seq.set_map_and_preconditioners(F)` runs steps 2 to 5.
