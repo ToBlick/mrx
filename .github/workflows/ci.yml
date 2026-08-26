@@ -1,10 +1,10 @@
 name: CI
 
 on:
-  # push:
-  #   branches: [ main, master, docs ]
+  push:
+    branches: [ main ]
   pull_request:
-    branches: [ main, master, docs ]
+    branches: [ main ]
 
 jobs:
   lint:
@@ -14,92 +14,51 @@ jobs:
         python-version: ['3.12']
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
-    
-    - name: Install dependencies
+
+    - name: Install ruff
       run: |
         python -m pip install --upgrade pip
-        pip install ruff jax jaxlib numpy pytest
-        
+        pip install ruff
+
     - name: Run ruff
       run: |
         ruff check . --ignore F403,F405
-        
+
   test:
     needs: lint
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ['3.12']
-        
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
-        
-    - name: Install dependencies
+
+    # The default `jax` wheel is the CPU build; the `gpu` tier is deselected
+    # by pyproject's addopts and runs on a GPU node (slurm/README.md).
+    - name: Install mrx
       run: |
         python -m pip install --upgrade pip
-        pip install jax jaxlib numpy pytest matplotlib plotly optax diffrax h5py xarray h5netcdf
-        
-    - name: Run tests
+        pip install -e . pytest
+
+    - name: Run the CPU tier (float64)
       run: |
-        pytest test
-        
-  script-test:
-    needs: test
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.12']  # Avoid excessive runtime by only testing with Python 3.12
-        script: [
-          'scripts/interactive/test_gvec_stellarator.py',
-          'scripts/interactive/test_gvec_tokamak.py',
-          'scripts/interactive/cylinder_vector_poisson.py',
-          'scripts/interactive/toroid_cavity.py',
-          'scripts/interactive/toroid_poisson.py',
-          'scripts/interactive/cylinder_cavity.py',
-          'scripts/interactive/cylinder_vector_poisson.py',
-          'scripts/interactive/drumshape.py',
-          'scripts/tutorials/polar_poisson.py',
-          'scripts/tutorials/toroid_poisson.py',
-          'scripts/tutorials/mixed_polar_poisson.py',
-          'scripts/config_scripts/iter_islands.py',
-          'scripts/config_scripts/stell.py',
-          'scripts/config_scripts/solovev.py',
-        ]
-        
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-        
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install jax jaxlib numpy matplotlib optax diffrax h5py xarray h5netcdf
-        
-    - name: Install mrx package
-      run: |
-        pip install -e .
-        
-    - name: Run script
+        pytest
+
+    - name: Run the CPU tier (float32)
       env:
-        MPLBACKEND: Agg
-      timeout-minutes: 10
+        MRX_DTYPE: float32
       run: |
-        # Try with maxit=10 for config scripts, fallback to default args, then no args
-        python ${{ matrix.script }} maxit=10 run_name=ci_test || python ${{ matrix.script }} 8 3 || python ${{ matrix.script }} run_name=ci_test || python ${{ matrix.script }}
+        pytest
 
   build:
     runs-on: ubuntu-latest

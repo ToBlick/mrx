@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import numpy.testing as npt
 
-
+import mrx
 from mrx.solvers import (
     minres,
     picard_solver,
@@ -20,6 +20,11 @@ from mrx.solvers import (
 
 _RNG = np.random.default_rng(17)
 _N = 24   # small enough that exact solves via np.linalg.solve are cheap
+
+# Every solve stops at the residual an iterative method can reach in the
+# working dtype (1.5e-8 in float64, 3.5e-4 in float32) and every assertion is
+# a multiple of that tolerance.
+TOL = mrx.sqrt_eps()
 
 
 def _spd_matrix(n, rng, cond=10.0):
@@ -51,7 +56,7 @@ def _A_matvec(x):
 
 def test_pcg_converges_spd():
     """CG converges on an SPD system; residual below tolerance."""
-    tol = 1e-8
+    tol = TOL
     x, info = preconditioned_cg(_A_matvec, _b, tol=tol, maxiter=10 * _N)
     res = float(jnp.linalg.norm(_A_jax @ x - _b))
     bnorm = float(jnp.linalg.norm(_b))
@@ -79,12 +84,13 @@ def test_singular_cg_spsd_with_nullspace():
 
     A_jax = jnp.asarray(A)
     x, info = solve_singular_cg(
-        lambda x: A_jax @ x, b_proj, vs=[v0], tol=1e-8, maxiter=500)
+        lambda x: A_jax @ x, b_proj, vs=[v0], tol=TOL, maxiter=500)
     res = float(jnp.linalg.norm(A_jax @ x - b_proj))
-    assert res < 1e-5, f"singular CG residual {res:.3e}"
+    bnorm = float(jnp.linalg.norm(b_proj))
+    assert res < 100 * TOL * bnorm, f"singular CG residual {res:.3e}"
     # Solution should have no nullspace component
     null_component = float(jnp.abs(jnp.dot(v0, x)))
-    assert null_component < 1e-6, f"nullspace component {null_component:.3e}"
+    assert null_component < 100 * TOL, f"nullspace component {null_component:.3e}"
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +99,7 @@ def test_singular_cg_spsd_with_nullspace():
 
 def test_minres_converges_spd():
     """MINRES converges on an SPD system."""
-    tol = 1e-8
+    tol = TOL
     x, info = minres(_A_matvec, _b, tol=tol, maxiter=10 * _N)
     res = float(jnp.linalg.norm(_A_jax @ x - _b))
     bnorm = float(jnp.linalg.norm(_b))
@@ -106,7 +112,7 @@ def test_minres_symmetric_indefinite():
     n = 20
     A_indef = jnp.asarray(_symmetric_indefinite(n, rng, shift=1.5))
     b = jnp.asarray(rng.standard_normal(n))
-    tol = 1e-7
+    tol = 10 * TOL
     x, info = minres(lambda v: A_indef @ v, b, tol=tol, maxiter=20 * n)
     res = float(jnp.linalg.norm(A_indef @ x - b))
     bnorm = float(jnp.linalg.norm(b))
@@ -157,13 +163,13 @@ def test_saddle_point_minres_converges():
         n_upper=nu,
         n_lower=ns,
         precond_lower=lambda v: M_inv_diag * v,
-        tol=1e-8,
+        tol=TOL,
         maxiter=500,
     )
 
-    npt.assert_allclose(np.asarray(u), u_exact, atol=1e-5,
+    npt.assert_allclose(np.asarray(u), u_exact, atol=1e3 * TOL,
                         err_msg="saddle-point u solution mismatch")
-    npt.assert_allclose(np.asarray(s), s_exact, atol=1e-5,
+    npt.assert_allclose(np.asarray(s), s_exact, atol=1e3 * TOL,
                         err_msg="saddle-point s solution mismatch")
 
 
@@ -180,6 +186,7 @@ def test_picard_scalar_contraction():
         return (0.5 * x + c, aux)
 
     z0 = (jnp.asarray(0.0), jnp.asarray(0.0))
-    (x_star, _), res, iters = picard_solver(f, z0, tol=1e-10, max_iter=200)
-    assert abs(float(x_star) - 6.0) < 1e-8, f"fixed point {float(x_star):.6f} != 6.0"
-    assert res < 1e-9, f"residual {res:.3e}"
+    tol = 1e-2 * TOL
+    (x_star, _), res, iters = picard_solver(f, z0, tol=tol, max_iter=200)
+    assert abs(float(x_star) - 6.0) < 100 * tol, f"fixed point {float(x_star):.6f} != 6.0"
+    assert res < 10 * tol, f"residual {res:.3e}"

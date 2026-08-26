@@ -28,6 +28,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.mappings import rotating_ellipse_map
@@ -41,9 +42,14 @@ from mrx.projectors import _oneform_pullback, _twoform_pullback
 
 @pytest.fixture(scope="module")
 def proj_seq():
+    """(6, 6, 6) p=2 polar rotating ellipse: the ACCURACY fixture.
+
+    Resolution is the point of the error tests, so they belong to the ``gpu``
+    tier; the identity tests below build (4, 4, 4) sequences of their own.
+    """
     seq = DeRhamSequence(
         (6, 6, 6), (2, 2, 2), 4, ("clamped", "periodic", "periodic"),
-        polar=True, tol=1e-10, maxiter=200,
+        polar=True, maxiter=200,
         betti_numbers=(1, 1, 0, 0),
     )
     seq.evaluate_1d()
@@ -98,6 +104,11 @@ def _f3(xi):
 
 _BASIS_ATTR = {0: "basis_0", 1: "basis_1", 2: "basis_2", 3: "basis_3"}
 
+# Exact identities (a projector applied to its own range, the pullback
+# inverting the pushforward) hold to the roundoff of the collocation and
+# histopolation solves: 1e4 eps = 2.2e-12 f64 / 1.2e-3 f32.
+IDENT = mrx.eps(1e4)
+
 
 def _phys_l2_rel_error(seq, dofs, e, k, f_ref):
     """Relative physical L2 error for a k-form.
@@ -122,6 +133,7 @@ def _phys_l2_rel_error(seq, dofs, e, k, f_ref):
 # k=0 tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
 def test_k0_l2_projection_error_is_small(proj_seq):
     dual = proj_seq.load(_f0, 0)
     dofs = proj_seq.apply_inverse_mass_matrix(dual, 0, dirichlet=False)
@@ -130,6 +142,7 @@ def test_k0_l2_projection_error_is_small(proj_seq):
     assert err < 1.0, f"k=0 L2 projection error unreasonably large: {err:.3e}"
 
 
+@pytest.mark.gpu
 def test_k0_greville_interpolation_error_is_small(proj_seq):
     dofs = proj_seq.interpolate(_f0, 0)
     err = _phys_l2_rel_error(proj_seq, dofs, proj_seq.e0, 0, _f0)
@@ -137,6 +150,7 @@ def test_k0_greville_interpolation_error_is_small(proj_seq):
     assert err < 1.0, f"k=0 Greville interpolation error unreasonably large: {err:.3e}"
 
 
+@pytest.mark.gpu
 def test_k0_l2_projection_leq_interpolation(proj_seq):
     """L2 projection is best-approximation: its error ≤ interpolation error."""
     dofs_proj = proj_seq.apply_inverse_mass_matrix(proj_seq.load(_f0, 0), 0, dirichlet=False)
@@ -144,7 +158,7 @@ def test_k0_l2_projection_leq_interpolation(proj_seq):
     err_proj = _phys_l2_rel_error(proj_seq, dofs_proj, proj_seq.e0, 0, _f0)
     err_interp = _phys_l2_rel_error(proj_seq, dofs_interp, proj_seq.e0, 0, _f0)
     print(f"\n  k=0 proj={err_proj:.3e}  interp={err_interp:.3e}")
-    assert err_proj <= err_interp + 1e-14, (
+    assert err_proj <= err_interp + mrx.eps(100), (
         f"L2 projection error {err_proj:.3e} > interpolation error {err_interp:.3e}"
     )
 
@@ -153,6 +167,7 @@ def test_k0_l2_projection_leq_interpolation(proj_seq):
 # k=1 tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
 def test_k1_l2_projection_error_is_small(proj_seq):
     dual = proj_seq.load(_v1, 1)
     dofs = proj_seq.apply_inverse_mass_matrix(dual, 1, dirichlet=False)
@@ -161,6 +176,7 @@ def test_k1_l2_projection_error_is_small(proj_seq):
     assert err < 1.0, f"k=1 L2 projection error unreasonably large: {err:.3e}"
 
 
+@pytest.mark.gpu
 def test_k1_histopolation_error_is_small(proj_seq):
     dofs = proj_seq.interpolate(_v1, 1)
     err = _phys_l2_rel_error(proj_seq, dofs, proj_seq.e1, 1, _v1)
@@ -168,6 +184,7 @@ def test_k1_histopolation_error_is_small(proj_seq):
     assert err < 1.0, f"k=1 histopolation error unreasonably large: {err:.3e}"
 
 
+@pytest.mark.gpu
 def test_k1_l2_projection_leq_histopolation(proj_seq):
     """L2 projection is best-approximation: its error ≤ histopolation error."""
     dofs_proj = proj_seq.apply_inverse_mass_matrix(proj_seq.load(_v1, 1), 1, dirichlet=False)
@@ -175,7 +192,7 @@ def test_k1_l2_projection_leq_histopolation(proj_seq):
     err_proj = _phys_l2_rel_error(proj_seq, dofs_proj, proj_seq.e1, 1, _v1)
     err_hist = _phys_l2_rel_error(proj_seq, dofs_hist, proj_seq.e1, 1, _v1)
     print(f"\n  k=1 proj={err_proj:.3e}  hist={err_hist:.3e}")
-    assert err_proj <= err_hist + 1e-14, (
+    assert err_proj <= err_hist + mrx.eps(100), (
         f"L2 projection error {err_proj:.3e} > histopolation error {err_hist:.3e}"
     )
 
@@ -184,6 +201,7 @@ def test_k1_l2_projection_leq_histopolation(proj_seq):
 # k=2 and k=3 L2 projection
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
 def test_k2_l2_projection_error_is_small(proj_seq):
     dual = proj_seq.load(_v2, 2)
     dofs = proj_seq.apply_inverse_mass_matrix(dual, 2, dirichlet=False)
@@ -192,6 +210,7 @@ def test_k2_l2_projection_error_is_small(proj_seq):
     assert err < 1.0, f"k=2 L2 projection error unreasonably large: {err:.3e}"
 
 
+@pytest.mark.gpu
 def test_k3_l2_projection_error_is_small(proj_seq):
     dual = proj_seq.load(_f3, 3)
     dofs = proj_seq.apply_inverse_mass_matrix(dual, 3, dirichlet=False)
@@ -260,7 +279,7 @@ def identity_seq(request):
     deg = request.param
     seq = DeRhamSequence(
         (4, 4, 4), (deg,) * 3, deg + 1, ("clamped", "periodic", "periodic"),
-        polar=True, tol=1e-10, maxiter=200, betti_numbers=(1, 1, 0, 0),
+        polar=True, maxiter=200, betti_numbers=(1, 1, 0, 0),
     )
     seq.evaluate_1d()
     seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2))
@@ -297,7 +316,7 @@ def test_interpolation_reproduces_its_own_space(identity_seq, k, dirichlet):
 
     err = float(jnp.linalg.norm(got - a) / jnp.linalg.norm(a))
     print(f"\n  k={k} dirichlet={dirichlet} round-trip relative error: {err:.3e}")
-    assert err < 1e-10, (
+    assert err < IDENT, (
         f"k={k} dirichlet={dirichlet}: interpolation is not a projector onto "
         f"its own space, relative error {err:.3e}. The extraction is then not "
         f"the conforming projection P_Z and needs the explicit local rules of "
@@ -305,6 +324,7 @@ def test_interpolation_reproduces_its_own_space(identity_seq, k, dirichlet):
     )
 
 
+@pytest.mark.gpu
 def test_k2_histopolation_is_finite(proj_seq):
     """Isolates the polar-axis singularity to the k=1 physical pullback.
 
@@ -336,6 +356,7 @@ def test_k2_histopolation_is_finite(proj_seq):
     )
 
 
+@pytest.mark.gpu
 def test_k0_interpolation_is_finite(proj_seq):
     """Companion to the k=2 finiteness test: k=0 has no pullback at all."""
     dofs = proj_seq.interpolate(_f0, 0)
@@ -344,6 +365,7 @@ def test_k0_interpolation_is_finite(proj_seq):
     assert n_bad == 0
 
 
+@pytest.mark.gpu
 @pytest.mark.parametrize("k", [1, 2])
 def test_phys_pullback_inverts_pushforward(proj_seq, k):
     """interpolate's physical pullback must be the INVERSE of Pushforward.
@@ -383,7 +405,7 @@ def test_phys_pullback_inverts_pushforward(proj_seq, k):
     want = jax.vmap(omega)(pts)
     err = float(jnp.linalg.norm(got - want) / jnp.linalg.norm(want))
     print(f"\n  k={k} phys pullback vs Pushforward inverse: {err:.3e}")
-    assert err < 1e-10, (
+    assert err < IDENT, (
         f"k={k} physical pullback does not invert Pushforward (rel {err:.3e}). "
         f"Expected omega = {'DF^T v' if k == 1 else 'adj(DF) v'}."
     )
@@ -417,7 +439,7 @@ def tensor_seq():
     """Full tensor-product sequence: no polar surgery, no Dirichlet rows."""
     seq = DeRhamSequence(
         (4, 4, 4), (2, 2, 2), 4, ("clamped", "periodic", "periodic"),
-        polar=False, tol=1e-10, maxiter=200, betti_numbers=(1, 1, 0, 0),
+        polar=False, maxiter=200, betti_numbers=(1, 1, 0, 0),
     )
     seq.evaluate_1d()
     seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2))
@@ -444,7 +466,7 @@ def test_pi_full_is_idempotent(tensor_seq, k):
 
     err = float(jnp.linalg.norm(got - a) / jnp.linalg.norm(a))
     print(f"\n  k={k} Pi_full idempotency relative error: {err:.3e}")
-    assert err < 1e-10, (
+    assert err < IDENT, (
         f"k={k}: Pi_full is not idempotent (rel {err:.3e}) on the FULL tensor "
         f"space, with no extraction involved. No restriction can repair this."
     )

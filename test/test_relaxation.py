@@ -19,6 +19,10 @@ from mrx.mappings import cylinder_map
 from mrx.relaxation import compute_force
 
 
+# The two assertions are spline-approximation errors at (6,6,1) p=3 (measured
+# 3.4e-2 for the pressure), so the resolution is the point: gpu tier.
+pytestmark = pytest.mark.gpu
+
 # ---------------------------------------------------------------------------
 # Analytical z-pinch helpers
 # ---------------------------------------------------------------------------

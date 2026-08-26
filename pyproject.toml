@@ -46,8 +46,14 @@ dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
-# Report the slowest tests so suite cost is measured rather than guessed.
-addopts = "--durations=15"
+# Default = the CPU tier (< 10 min on a 4-core runner, float64 and float32,
+# no data files). `pytest -m gpu` runs the production-resolution tier; see
+# slurm/README.md. The slowest tests are reported so suite cost is measured
+# rather than guessed.
+addopts = "-m \"not gpu\" --durations=15"
+markers = [
+    "gpu: production-resolution, data-dependent or > 30 s on CPU; run with `pytest -m gpu` on a GPU node",
+]
 norecursedirs = ["test/deprecated", "deprecated", "test/experimental"]
 
 [tool.ruff]

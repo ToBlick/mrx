@@ -21,16 +21,22 @@ or would have caught -- a real bug:
 **Every inertness test carries a POSITIVE CONTROL** -- the same comparison in
 the configuration where the term IS live, asserted to differ by a large factor.
 Without it these would pass just as happily against a preconditioner that had
-lost the boundary term entirely. The inertness tolerance is 1e-8 relative and
-the control asserts >1e-2, so the two are separated by six orders of magnitude.
-The residual is BUILD NOISE, not the term leaking: two builds of the IDENTICAL
-configuration differ by the same ~1e-14 on the same ~1.7% of rows (the dense
-polar core), which `test_defaults_are_the_production_configuration` measures
-explicitly rather than assuming.
+lost the boundary term entirely. The residual of an inert comparison is BUILD
+NOISE, not the term leaking: two builds of the IDENTICAL configuration differ
+on the dense polar-core rows, which
+`test_defaults_are_the_production_configuration` measures explicitly rather
+than assuming. Measured on the (4,6,4) tiny fixture, 2026-08-26: inert
+comparisons <= 1.6e-13 in float64 (700 eps) and <= 2.2e-5 in float32 (180
+eps); live ones >= 4.4e-3 in either precision. INERT is therefore 1e4 eps
+(2.2e-12 / 1.2e-3) and LIVE a fixed 1e-4: eight orders of separation in
+float64, one in float32 -- single precision keeps both assertions but loses
+the wide band between them.
 
-Everything reuses the session `torus_seq` fixture and a module-scoped build
-cache, so no test here assembles a sequence, computes a nullspace, or builds
-the same preconditioner twice.
+The property tests reuse the session `tiny_seq` fixture and a module-scoped
+build cache, so no test here assembles a sequence, computes a nullspace, or
+builds the same preconditioner twice. The two iteration-count tests carry
+bands MEASURED on the production-resolution `torus_seq`, so they stay on it
+and in the `gpu` tier.
 """
 import os
 
@@ -39,6 +45,7 @@ import pytest
 
 jnp = pytest.importorskip("jax.numpy")
 
+import mrx  # noqa: E402
 import mrx.operators as op  # noqa: E402
 from mrx.metric_lumping_laplacian import (  # noqa: E402
     MetricLumpingLaplacian, MetricLumpingMass, trace_components,
@@ -50,24 +57,26 @@ from mrx.metric_lumping_laplacian import (  # noqa: E402
 KS = (1, 3)
 PROD_SCALE = 3.0
 # Thresholds are set from the MEASURED separation, not chosen round numbers.
-# On the session fixture the two populations are eight orders apart:
-#   inert (Dirichlet, bc_scale 0 vs 100)   ~1e-11  -- pure build noise: the
-#       dense polar-core block is not reproducible to the last bit between
-#       builds, and it is ~1.7% of the rows. Measured, not assumed, in
+#   inert (Dirichlet, bc_scale 0 vs 100)  <= 1.6e-13 f64 / 2.2e-5 f32 -- pure
+#       build noise: the dense polar-core block is not reproducible to the
+#       last bit between builds. Measured, not assumed, in
 #       test_defaults_are_the_production_configuration.
-#   live  (free, bc_scale 0 vs 3.0 or 100) 2.5e-3 to 3.2e-3 at k=1, the
-#       WEAKEST case (the term touches one radial row of one component in
-#       three, and P's response saturates -- cf. min eig(P) = 1/(1+r s), so
-#       3.0 and 100 move it by nearly the same amount).
-# 1e-8 sits three orders above the noise; 1e-4 sits 25x below the weakest real
-# effect and four orders above the inert bound.
-INERT = 1e-8      # two builds that must agree
-LIVE = 1e-4       # ... and, for the control, must NOT
+#   live  (free, bc_scale 0 vs 3.0 or 100)  >= 4.4e-3 at k=1, the WEAKEST
+#       case (the term touches one radial row of one component in three, and
+#       P's response saturates -- cf. min eig(P) = 1/(1+r s), so 3.0 and 100
+#       move it by nearly the same amount).
+# The noise is a few hundred eps in either precision, so INERT is eps-scaled:
+# 1e4 eps = 2.2e-12 f64 / 1.2e-3 f32, a decade above the noise. LIVE is a
+# measured physical effect, 40x below the weakest one, and does not scale.
+INERT = mrx.eps(1e4)   # two builds that must agree
+LIVE = 1e-4            # ... and, for the control, must NOT
+# The hand-written PCG loops below stop at the residual an iterative solve
+# can reach in the working dtype.
+CG_TOL = mrx.sqrt_eps()
 
 
-@pytest.fixture(scope="module")
-def bj(torus_seq):
-    """Memoised preconditioner probes: one build per distinct configuration."""
+def _probe_cache(seq):
+    """Memoised preconditioner probes on ``seq``: one build per configuration."""
     cache = {}
 
     def get(k, dbc, *, bc_entry="ibpd", bc_scale=PROD_SCALE, nvec=4):
@@ -77,7 +86,7 @@ def bj(torus_seq):
             os.environ["MRX_BJ_BC_SCALE"] = str(bc_scale)
             try:
                 pre = MetricLumpingLaplacian(
-                    torus_seq, torus_seq.get_operators(), k, dbc,
+                    seq, seq.get_operators(), k, dbc,
                     ktilde_mode="honest", lumped="diag", bc_entry=bc_entry,
                     extra_rings=0, outer_rings=0)
             finally:
@@ -85,7 +94,7 @@ def bj(torus_seq):
                     os.environ.pop("MRX_BJ_BC_SCALE", None)
                 else:
                     os.environ["MRX_BJ_BC_SCALE"] = prev
-            n = int(getattr(torus_seq, f"n{k}_dbc" if dbc else f"n{k}"))
+            n = int(getattr(seq, f"n{k}_dbc" if dbc else f"n{k}"))
             rng = np.random.default_rng(0)
             probe = np.stack([
                 np.asarray(pre.apply(jnp.asarray(rng.standard_normal(n))))
@@ -94,6 +103,16 @@ def bj(torus_seq):
         return cache[key]
 
     return get
+
+
+@pytest.fixture(scope="module")
+def bj(tiny_seq):
+    return _probe_cache(tiny_seq)
+
+
+@pytest.fixture(scope="module")
+def bj_prod(torus_seq):
+    return _probe_cache(torus_seq)
 
 
 def _rel(a, b):
@@ -107,6 +126,7 @@ def test_boundary_term_vanishes_under_dirichlet(bj, k):
     lo = bj(k, True, bc_scale=0.0)[2]
     hi = bj(k, True, bc_scale=100.0)[2]
     d_dbc = _rel(hi, lo)
+    print(f"\n  k={k} dbc inert d={d_dbc:.2e}")
     assert d_dbc < INERT, (
         f"k={k} dbc: a 100x change in bc_scale moved the preconditioner by "
         f"{d_dbc:.2e}; the boundary term must vanish under Dirichlet")
@@ -115,6 +135,7 @@ def test_boundary_term_vanishes_under_dirichlet(bj, k):
     # this, the assertion above would also pass if the term were never
     # assembled at all.
     d_free = _rel(bj(k, False, bc_scale=100.0)[2], bj(k, False, bc_scale=0.0)[2])
+    print(f"  k={k} free live d={d_free:.2e}")
     assert d_free > LIVE, (
         f"k={k} FREE: bc_scale did not move the preconditioner either "
         f"({d_free:.2e}) -- the boundary term is not being assembled, so the "
@@ -128,6 +149,7 @@ def test_k0_carries_no_boundary_trace(bj):
     assert trace_components(0) == ()
     assert trace_components(1) == (0,)          # control: k=1 does carry one
     d = _rel(bj(0, False, bc_scale=100.0)[2], bj(0, False, bc_scale=0.0)[2])
+    print(f"\n  k=0 free inert d={d:.2e}")
     assert d < INERT, (
         f"k=0 free: bc_scale moved the preconditioner by {d:.2e}, but k=0 has "
         "no boundary trace to scale")
@@ -139,11 +161,13 @@ def test_scale_zero_reproduces_no_boundary_term(bj, k):
     off = bj(k, False, bc_entry=False)[2]
     zero = bj(k, False, bc_entry="ibpd", bc_scale=0.0)[2]
     d = _rel(zero, off)
+    print(f"\n  k={k} scale-zero inert d={d:.2e}")
     assert d < INERT, (
         f"k={k} free: bc_scale=0 differs from bc_entry=False by {d:.2e}")
 
     # POSITIVE CONTROL: the production scale must NOT match "no term".
     d_live = _rel(bj(k, False, bc_scale=PROD_SCALE)[2], off)
+    print(f"  k={k} prod-scale live d={d_live:.2e}")
     assert d_live > LIVE, (
         f"k={k} free: bc_scale={PROD_SCALE} is indistinguishable from no "
         f"boundary term at all ({d_live:.2e})")
@@ -161,11 +185,14 @@ def test_preconditioner_is_spd(bj, k, dbc):
     dense = np.stack([np.asarray(pre.apply(jnp.zeros(n).at[i].set(1.0)))
                       for i in range(n)], axis=1)
     asym = np.abs(dense - dense.T).max() / np.abs(dense).max()
-    assert asym < 1e-10, f"k={k} dbc={dbc}: P is not symmetric ({asym:.2e})"
+    print(f"\n  k={k} dbc={dbc} asym={asym:.2e}")
+    # a roundoff identity through the dense polar-core solve
+    assert asym < INERT, f"k={k} dbc={dbc}: P is not symmetric ({asym:.2e})"
     np.linalg.cholesky(0.5 * (dense + dense.T))   # raises if not positive definite
 
 
-def test_iteration_count_regression(torus_seq, bj):
+@pytest.mark.gpu
+def test_iteration_count_regression(torus_seq, bj_prod):
     """A cheap end-to-end guard: k=1 Dirichlet, which is NON-SINGULAR, so this
     needs no nullspace and no deflation.
 
@@ -174,7 +201,7 @@ def test_iteration_count_regression(torus_seq, bj):
     change that alters the work by a FACTOR, not to pin a number.
     """
     k, dbc = 1, True
-    pre, n, _ = bj(k, dbc)
+    pre, n, _ = bj_prod(k, dbc)
     ops = torus_seq.get_operators()
 
     def A(x):
@@ -193,14 +220,14 @@ def test_iteration_count_regression(torus_seq, bj):
         a = rz / float(p @ Ap)
         x = x + a * p
         r = r - a * Ap
-        if float(jnp.linalg.norm(r)) / nb < 1e-8:
+        if float(jnp.linalg.norm(r)) / nb < CG_TOL:
             break
         z = pre.apply(r)
         rz_new = float(r @ z)
         p = z + (rz_new / rz) * p
         rz = rz_new
 
-    assert float(jnp.linalg.norm(b - A(x))) / nb < 1e-8, "PCG did not converge"
+    assert float(jnp.linalg.norm(b - A(x))) / nb < CG_TOL, "PCG did not converge"
     # Measured 2026-08-22 on the session fixture (8,16,8, p=2, spline toroid).
     # Point Jacobi needs several times this; a regression to that scale is what
     # this guards, not a few percent.
@@ -210,7 +237,8 @@ def test_iteration_count_regression(torus_seq, bj):
         "boundary term regressed.")
 
 
-def test_boundary_term_earns_its_place_at_k3_free(torus_seq, bj):
+@pytest.mark.gpu
+def test_boundary_term_earns_its_place_at_k3_free(torus_seq, bj_prod):
     """The one test that guards the term's MAGNITUDE, not just its presence.
 
     k=3 free is the right case: it is NON-SINGULAR (so no nullspace or
@@ -242,7 +270,7 @@ def test_boundary_term_earns_its_place_at_k3_free(torus_seq, bj):
             a = rz / float(p @ Ap)
             x = x + a * p
             r = r - a * Ap
-            if float(jnp.linalg.norm(r)) / nb < 1e-8:
+            if float(jnp.linalg.norm(r)) / nb < CG_TOL:
                 return it
             z = pre.apply(r)
             rz_new = float(r @ z)
@@ -250,8 +278,8 @@ def test_boundary_term_earns_its_place_at_k3_free(torus_seq, bj):
             rz = rz_new
         return None
 
-    pre_on, n, _ = bj(k, dbc, bc_scale=PROD_SCALE)
-    pre_off, _, _ = bj(k, dbc, bc_entry=False)
+    pre_on, n, _ = bj_prod(k, dbc, bc_scale=PROD_SCALE)
+    pre_off, _, _ = bj_prod(k, dbc, bc_entry=False)
     on, off = solve(pre_on, n), solve(pre_off, n)
     assert on is not None and off is not None, "PCG did not converge"
     assert on < 0.75 * off, (
@@ -260,7 +288,7 @@ def test_boundary_term_earns_its_place_at_k3_free(torus_seq, bj):
         "geometries), so this close means it is mis-scaled or not applied.")
 
 
-def test_defaults_are_the_production_configuration(torus_seq):
+def test_defaults_are_the_production_configuration(tiny_seq):
     """Calling with NO keyword arguments must BE the production configuration.
 
     That is the whole point of Phase 1 of the production plan: one method, no
@@ -288,13 +316,13 @@ def test_defaults_are_the_production_configuration(torus_seq):
     # And behaviourally: bare defaults == the explicit production config.
     prev = os.environ.pop("MRX_BJ_BC_SCALE", None)
     try:
-        n = int(getattr(torus_seq, "n1"))
+        n = int(getattr(tiny_seq, "n1"))
         rng = np.random.default_rng(3)
         vecs = [jnp.asarray(rng.standard_normal(n)) for _ in range(2)]
-        ops = torus_seq.get_operators()
-        bare = MetricLumpingLaplacian(torus_seq, ops, 1, False)
+        ops = tiny_seq.get_operators()
+        bare = MetricLumpingLaplacian(tiny_seq, ops, 1, False)
         spelled = MetricLumpingLaplacian(
-            torus_seq, ops, 1, False, ktilde_mode="honest", lumped="diag",
+            tiny_seq, ops, 1, False, ktilde_mode="honest", lumped="diag",
             bc_entry="ibpd", bc_scale=bjl.PRODUCTION_BC_SCALE,
             extra_rings=0, outer_rings=0)
     finally:
@@ -305,12 +333,13 @@ def test_defaults_are_the_production_configuration(torus_seq):
         # measured number rather than a guessed tolerance. The dense polar-core
         # block is not bit-reproducible between builds (~1.7% of rows move by
         # ~1e-14), which is also the residual every inertness test above sees.
-        twin = MetricLumpingLaplacian(torus_seq, ops, 1, False)
+        twin = MetricLumpingLaplacian(tiny_seq, ops, 1, False)
 
     def probe(pre):
         return np.stack([np.asarray(pre.apply(v)) for v in vecs])
 
     floor = _rel(probe(twin), probe(bare))
+    print(f"\n  identical-build floor={floor:.2e}")
     assert floor < INERT, (
         f"two identical builds differ by {floor:.2e}, above the {INERT:.0e} "
         "tolerance every inertness test in this file relies on")
@@ -320,7 +349,7 @@ def test_defaults_are_the_production_configuration(torus_seq):
         f"{d:.2e} (identical-build floor is {floor:.2e})")
 
 
-def test_production_dispatch_wiring(torus_seq):
+def test_production_dispatch_wiring(tiny_seq):
     """`kind='metric_lumping'` reaches the atom, and `kind='auto'` prefers it once it is
     assembled -- the Phase 1b wiring.
 
@@ -333,19 +362,19 @@ def test_production_dispatch_wiring(torus_seq):
     )
 
     k, dbc = 3, False          # non-singular, single component: the cheap case
-    n = int(getattr(torus_seq, f"n{k}"))
+    n = int(getattr(tiny_seq, f"n{k}"))
     rng = np.random.default_rng(11)
     v = jnp.asarray(rng.standard_normal(n))
-    ops = torus_seq.get_operators()
+    ops = tiny_seq.get_operators()
 
-    prev = getattr(torus_seq, METRIC_LUMPING_CACHE_ATTR, None)
+    prev = getattr(tiny_seq, METRIC_LUMPING_CACHE_ATTR, None)
     try:
         # Before assembly: 'auto' must fall back, and 'metric_lumping' must say so
         # clearly rather than silently doing something else.
-        setattr(torus_seq, METRIC_LUMPING_CACHE_ATTR, None)
-        auto_before = torus_seq.apply_laplacian_preconditioner(
+        setattr(tiny_seq, METRIC_LUMPING_CACHE_ATTR, None)
+        auto_before = tiny_seq.apply_laplacian_preconditioner(
             v, k, dirichlet=dbc, kind='auto')
-        jac = torus_seq.apply_laplacian_preconditioner(
+        jac = tiny_seq.apply_laplacian_preconditioner(
             v, k, dirichlet=dbc, kind='jacobi')
         # `_rel`, not exact equality: two calls down the SAME path differ by
         # ~1 ULP (jax re-tracing), which is the third time in this file that
@@ -354,15 +383,15 @@ def test_production_dispatch_wiring(torus_seq):
         assert _rel(np.asarray(auto_before), np.asarray(jac)) < INERT, (
             "kind='auto' did not fall back to jacobi before assembly")
         with pytest.raises(ValueError, match="not assembled"):
-            torus_seq.apply_laplacian_preconditioner(
+            tiny_seq.apply_laplacian_preconditioner(
                 v, k, dirichlet=dbc, kind='metric_lumping')
 
         # After assembly: 'metric_lumping' is the atom, and 'auto' now picks it.
         assemble_metric_lumping_laplacian_preconditioner(
-            torus_seq, ops, ks=(k,), dirichlets=(dbc,))
-        blk = torus_seq.apply_laplacian_preconditioner(
+            tiny_seq, ops, ks=(k,), dirichlets=(dbc,))
+        blk = tiny_seq.apply_laplacian_preconditioner(
             v, k, dirichlet=dbc, kind='metric_lumping')
-        auto_after = torus_seq.apply_laplacian_preconditioner(
+        auto_after = tiny_seq.apply_laplacian_preconditioner(
             v, k, dirichlet=dbc, kind='auto')
         assert _rel(np.asarray(auto_after), np.asarray(blk)) < INERT, (
             "kind='auto' did not prefer the block atom after assembly")
@@ -370,10 +399,10 @@ def test_production_dispatch_wiring(torus_seq):
             "kind='metric_lumping' returned essentially the jacobi diagonal; the "
             "dispatch is not reaching the atom")
     finally:
-        setattr(torus_seq, METRIC_LUMPING_CACHE_ATTR, prev)
+        setattr(tiny_seq, METRIC_LUMPING_CACHE_ATTR, prev)
 
 
-def test_first_apply_inside_a_trace_does_not_poison_the_instance(torus_seq):
+def test_first_apply_inside_a_trace_does_not_poison_the_instance(tiny_seq):
     """The payload is built at CONSTRUCTION, not memoised on the first apply.
 
     docs/research/OPEN.md 1.1: the flattened payload used to be built lazily
@@ -388,10 +417,10 @@ def test_first_apply_inside_a_trace_does_not_poison_the_instance(torus_seq):
     import jax
 
     k, dbc = 3, False          # single component: the cheapest pair to build
-    ops = torus_seq.get_operators()
-    lap = MetricLumpingLaplacian(torus_seq, ops, k, dbc)
-    mass = MetricLumpingMass(torus_seq, ops, k, dbc)
-    n = int(getattr(torus_seq, f"n{k}"))
+    ops = tiny_seq.get_operators()
+    lap = MetricLumpingLaplacian(tiny_seq, ops, k, dbc)
+    mass = MetricLumpingMass(tiny_seq, ops, k, dbc)
+    n = int(getattr(tiny_seq, f"n{k}"))
     v = jnp.asarray(np.random.default_rng(23).standard_normal(n))
 
     def step(x):
@@ -404,7 +433,7 @@ def test_first_apply_inside_a_trace_does_not_poison_the_instance(torus_seq):
         "eager apply after a traced first apply disagrees with the trace")
 
 
-def test_metric_lumping_mass_is_the_default_and_jit_safe(torus_seq):
+def test_metric_lumping_mass_is_the_default_and_jit_safe(tiny_seq):
     """`metric_lumping` IS the production mass preconditioner, and works in a trace.
 
     This test used to be `..._is_wired_but_not_default` and compared two arms,
@@ -430,20 +459,20 @@ def test_metric_lumping_mass_is_the_default_and_jit_safe(torus_seq):
     assert default_mass_preconditioner().kind == 'metric_lumping'
 
     k, dbc = 3, False       # single component: the cheapest mass to build
-    n = int(getattr(torus_seq, f"n{k}"))
-    ops = torus_seq.get_operators()
+    n = int(getattr(tiny_seq, f"n{k}"))
+    ops = tiny_seq.get_operators()
     rng = np.random.default_rng(5)
     v = jnp.asarray(rng.standard_normal(n))
 
     spec = MassPreconditionerSpec(kind='metric_lumping', surgery_schur=False)
     out = _build_operator_preconditioner_apply(
-        torus_seq, ops, k=k, dirichlet=dbc, operator_apply=None,
+        tiny_seq, ops, k=k, dirichlet=dbc, operator_apply=None,
         preconditioner=spec)(v)
     assert np.all(np.isfinite(np.asarray(out)))
 
     # THE CHECK THAT MATTERS: usable under jit, not merely callable.
     fn = _build_operator_preconditioner_apply(
-        torus_seq, ops, k=k, dirichlet=dbc, operator_apply=None,
+        tiny_seq, ops, k=k, dirichlet=dbc, operator_apply=None,
         preconditioner=spec)
     assert np.all(np.isfinite(np.asarray(jax.jit(fn)(v)))), (
         "metric_lumping is not usable under jit")
@@ -459,11 +488,11 @@ def test_metric_lumping_mass_is_the_default_and_jit_safe(torus_seq):
                                        smoother=MassPreconditionerSpec(kind='jacobi'))):
         with pytest.raises(ValueError):
             _build_operator_preconditioner_apply(
-                torus_seq, ops, k=1, dirichlet=dbc, operator_apply=None,
+                tiny_seq, ops, k=1, dirichlet=dbc, operator_apply=None,
                 preconditioner=bad)
 
 
-def test_probed_diagonal_is_the_honest_reference(torus_seq):
+def test_probed_diagonal_is_the_honest_reference(tiny_seq):
     """`_probed_laplacian_diaginv` is the exact diagonal of `L_k` as applied.
 
     `kind='jacobi'` is NOT that for k >= 1: its weak half is a closed form
@@ -478,22 +507,24 @@ def test_probed_diagonal_is_the_honest_reference(torus_seq):
         PROBED_DIAG_CACHE_ATTR, _laplacian_diaginv, _probed_laplacian_diaginv,
     )
 
-    ops = torus_seq.get_operators()
-    prev = getattr(torus_seq, PROBED_DIAG_CACHE_ATTR, None)
+    ops = tiny_seq.get_operators()
+    prev = getattr(tiny_seq, PROBED_DIAG_CACHE_ATTR, None)
     try:
         for k, dbc in ((3, False), (0, False)):
-            n = int(getattr(torus_seq, f"n{k}"))
+            n = int(getattr(tiny_seq, f"n{k}"))
             rng = np.random.default_rng(17)
             v = jnp.asarray(rng.standard_normal(n))
             probed = _probed_laplacian_diaginv(
-                torus_seq, ops, k, dbc) * v
-            modelled = np.asarray(_laplacian_diaginv(torus_seq, ops, k, dbc)) * np.asarray(v)
+                tiny_seq, ops, k, dbc) * v
+            modelled = np.asarray(_laplacian_diaginv(tiny_seq, ops, k, dbc)) * np.asarray(v)
             assert np.all(np.isfinite(np.asarray(probed)))
             d = _rel(np.asarray(probed), modelled)
+            print(f"\n  k={k} probed-vs-closed-form d={d:.2e}")
             if k == 0:
                 # L_0 = S_0 has NO weak term, so there is no mass model to be
-                # wrong: the closed form is exact and the two must agree.
-                assert d < 1e-8, (
+                # wrong: the closed form is exact and the two must agree --
+                # to the roundoff of an O(N)-apply probe.
+                assert d < INERT, (
                     f"k=0: probed and closed-form diagonals differ by {d:.2e}, "
                     "but L_0 has no weak term for the model to approximate")
             else:
@@ -504,4 +535,4 @@ def test_probed_diagonal_is_the_honest_reference(torus_seq):
                     f"k={k}: probed vs modelled diagonal differ by {d:.2e}; "
                     "one of them is not diag(L_k)")
     finally:
-        setattr(torus_seq, PROBED_DIAG_CACHE_ATTR, prev)
+        setattr(tiny_seq, PROBED_DIAG_CACHE_ATTR, prev)
