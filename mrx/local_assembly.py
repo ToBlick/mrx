@@ -646,13 +646,18 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
     """Jitted raw-DOF apply of ``int Lambda^{k_row} . W . Lambda^{k_col}``.
 
     ``weight_fn(DF, jac)`` returns the pointwise weight per ``(row_comp,
-    col_comp)`` pair as ``{(cr, cc): (N_q,)}``; pairs it omits are skipped.
+    col_comp)`` pair as ``{(cr, cc): (N_q,)}``; pairs it omits are skipped and
+    pairs that share one array (a symmetric weight) are formed once.
 
     The element plan (basis values, gather indices, scatter segment ids) is
     built once on the host and passed to the jitted kernel as runtime
     arguments (not captured as constants) to avoid XLA constant-folding of
     the large integer index tensors.  ``DF`` and ``J`` are passed the same way
-    and the weight is formed inside the kernel.
+    and the weight is formed inside the kernel, in the flat quadrature layout
+    (where the Gauss weight is just ``quad.w``), then moved to the element
+    layout by ONE transpose of the stacked unique entries. Measured on one
+    H100 against precomputed element-layout weights: +15-20% on the k=1/2
+    apply, for 20 fewer resident scalars per quadrature point and degree.
 
     The matvec is the sum factorization split at the quadrature points: each
     column component is gathered and pushed to the quadrature points ONCE, the
@@ -660,7 +665,7 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
     row component is tested ONCE, followed by a single ``segment_sum`` into
     the concatenated output.
     """
-    split, gauss = _element_layout(seq)
+    split, _ = _element_layout(seq)
     form_r, comp_r, n_r = _form_bases(seq, k_row)
     form_c, comp_c, n_c = _form_bases(seq, k_col)
 
@@ -672,7 +677,15 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
 
     starts_r = starts(form_r, n_r)
     starts_c = starts(form_c, n_c)
-    pairs = tuple(weight_fn(jnp.zeros((1, 3, 3), mrx.DTYPE), jnp.ones((1,), mrx.DTYPE)))
+    # Static plan of the weight: which pairs exist and which share an array.
+    probe = weight_fn(jnp.zeros((1, 3, 3), mrx.DTYPE), jnp.ones((1,), mrx.DTYPE))
+    pairs = tuple(probe)
+    unique_ids, column = [], {}
+    for pair, w in probe.items():
+        if id(w) not in unique_ids:
+            unique_ids.append(id(w))
+        column[pair] = unique_ids.index(id(w))
+    n_unique = len(unique_ids)
 
     # Basis VALUES (for the einsums) are separated from the gather/scatter
     # index plans, which depend only on the mesh topology: flat gather indices
@@ -690,14 +703,13 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
     n_out = starts_r[-1]
 
     @jax.jit
-    def _impl(x, Bvals_r, Bvals_c, DF, jac, gauss, gather_idx, seg_idx):
-        # DF and J to element layout once (one transpose each), then the
-        # k-specific weight is elementwise on that layout. The barrier makes
-        # XLA materialise the weight ONCE: without it the cheap elementwise
-        # producer is duplicated into every consumer below and DF is re-read
-        # n_comp^2 times (measured +50% on the k=1/2 apply).
-        W = jax.lax.optimization_barrier(
-            {pair: w * gauss for pair, w in weight_fn(split(DF), split(jac)).items()})
+    def _impl(x, Bvals_r, Bvals_c, DF, jac, wq, gather_idx, seg_idx):
+        wf = weight_fn(DF, jac)
+        uniq = [None] * n_unique
+        for pair, w in wf.items():
+            uniq[column[pair]] = w
+        Ws = split(jnp.stack([w * wq for w in uniq], axis=-1))
+        W = {pair: Ws[..., column[pair]] for pair in pairs}
         u = [_to_quadrature(Bvals_c[c], x[starts_c[c]:starts_c[c + 1]],
                             gather_idx[c]) for c in range(n_c)]
         y_parts = []
@@ -707,10 +719,10 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
         return jax.ops.segment_sum(jnp.concatenate(y_parts), seg_idx,
                                    num_segments=n_out)
 
-    DF, jac = geometry.DF_jkl, geometry.jacobian_j
+    DF, jac, wq = geometry.DF_jkl, geometry.jacobian_j, seq.quad.w
 
     def apply(x):
-        return _impl(x, Bvals_r, Bvals_c, DF, jac, gauss, gather_idx, seg_idx)
+        return _impl(x, Bvals_r, Bvals_c, DF, jac, wq, gather_idx, seg_idx)
 
     return apply
 
