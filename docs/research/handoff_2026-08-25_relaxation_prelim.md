@@ -2351,3 +2351,96 @@ rather than settings.
 -- it is a diagnostic and a NaN there is the first sign of divergence. What is
 wrong is ranking on it. The status tooling no longer shows it for running
 arms.
+
+## 39. The w7x-ini-conv campaign, complete -- and two things that change how the table reads
+
+Fifteen arms on the CONVERGED W7-X equilibrium (`w7x_ini_conv_mrx.h5`,
+GVEC State_0000_00020000.dat).  All p=3, clebsch IC, 3000 steps unless noted.
+`|dH|/dE` is absolute helicity drift per unit energy removed.
+
+```
+arm               state    config                       step        dE         F_final     dH          rel dH     |dH|/dE
+C10b_r12_dt1e3    done     12^3 dt=1e-3              3000/3000   4.262e-05  9.411e-04  -5.520e-08  1.364e-06  1.295e-03
+C8_mu1e4_dt3e3    done     8^3  dt=3e-3 mu=1e-4      3000/3000   3.282e-04  2.050e-03  -6.698e-07  1.660e-05  2.041e-03
+C2_dt3e3          done     8^3  dt=3e-3              3000/3000   3.310e-04  1.951e-03  -7.653e-07  1.896e-05  2.312e-03
+C12_dt3e3_long    done     8^3  dt=3e-3 10000st     10000/10000  3.686e-04  9.818e-04  -1.840e-06  4.560e-05  4.991e-03
+C7_mu1e2          TRUNC    8^3  ls mu=1e-2           1700/3000   3.791e-04  1.310e-03  -3.196e-06  7.920e-05  8.430e-03
+C3_dt1e2          done     8^3  dt=1e-2              3000/3000   4.016e-04  5.190e-04  -5.647e-06  1.399e-04  1.406e-02
+C6_mu1e3          done     8^3  ls mu=1e-3           3000/3000   4.176e-04  1.379e-03  -8.767e-06  2.173e-04  2.100e-02
+C5_mu1e4          done     8^3  ls mu=1e-4           3000/3000   4.393e-04  6.626e-04  -1.085e-05  2.689e-04  2.470e-02
+C9_r12_ls         done     12^3 ls                   3000/3000   6.680e-05  2.399e-03  -6.975e-06  1.724e-04  1.044e-01
+C1_ls             done     8^3  ls  (eta=0 control)  3000/3000   6.564e-04  1.746e-03  -1.944e-04  4.840e-03  2.962e-01
+E2_eta9           done     8^3  ls eta=1e-9          3000/3000   6.554e-04  2.595e-03  -2.007e-04  4.998e-03  3.062e-01
+E1_eta6           done     8^3  ls eta=1e-6          3000/3000   6.736e-04  2.088e-03  -2.252e-04  5.612e-03  3.343e-01
+C11_eta3          done     8^3  ls eta=1e-3          3000/3000   7.149e-03  4.498e-04  -1.801e-02  8.082e-01  2.519e+00
+C4_dt3e2          DIVERGED 8^3  dt=3e-2                 5/3000  -1.009e+09  7.051e+01
+C10_r12_dt3e3     DIVERGED 12^3 dt=3e-3                 5/3000  -3.007e-03  1.285e-01
+```
+
+C7 stopped at 1700/3000 on its `--seconds-per-arm` budget, not at 3000; it is
+not comparable to the rest at matched steps.  C10 diverging at 12^3 under the
+same dt that is stable at 8^3 was a DESIGN ERROR of mine (one fixed dt across
+resolutions); C10b at dt=1e-3 is its replacement.
+
+### 39.1 eta <= 1e-6 is indistinguishable from ideal.  The step is between 1e-6 and 1e-3
+
+The ladder C1_ls (eta=0) -> E2 (1e-9) -> E1 (1e-6) -> C11 (1e-3) is four arms
+identical in every argument but `--eta-max`.  The low three agree on every
+endpoint metric to within their own scatter: dE spans 6.554-6.736e-4 (2.8%),
+`|dH|/dE` spans 0.296-0.334 (13%), and F_final is NON-MONOTONE in eta
+(1.75e-3, 2.60e-3, 2.09e-3 for 0, 1e-9, 1e-6) -- which a real physical trend
+could not be.
+
+The energy traces say why directly.  eta=1e-9 is IDENTICAL to eta=0 to nine
+digits for the first five steps (0.499925029 both at step 1), then separates --
+and separates in the wrong direction, sitting ABOVE the eta=0 arm at step 40.
+A resistivity of 1e-9 cannot reverse the ordering of the energy; what the
+separation measures is roundoff amplified along the trajectory, not physics.
+eta=1e-6 does perturb step 1 genuinely (5.4e-8) but never grows into a
+different outcome.  The three-arm spread peaks at 4.3% of dE near step 1750 and
+then SHRINKS back to 2.8% by 3000: they re-converge, which is what trajectories
+into the same basin do.
+
+So resistivity below 1e-6 buys nothing and costs nothing.  Everything C11
+showed -- 21x the energy removed, the lowest force in the campaign, and 81% of
+the helicity gone -- turns on somewhere in the three decades between 1e-6 and
+1e-3, which no arm has sampled.  That gap is the experiment worth running, and
+it is a bracket of the TRANSITION, not of the effect.
+
+### 39.2 F_final has an intra-arm scatter that voids fine comparisons -- but only for linesearch arms
+
+F_final is one sample of a quantity that oscillates from sample to sample.
+Measured over the last 20% of each arm (34 samples), max/min:
+
+```
+  linesearch, weak or no damping      fixed dt or strong damping
+  C5_mu1e4     3.97                    C11_eta3        1.63
+  C6_mu1e3     3.36                    C10b_r12_dt1e3  1.17
+  E1_eta6      2.73                    C8_mu1e4_dt3e3  1.15
+  C1_ls        2.16                    C3_dt1e2        1.15
+  C9_r12_ls    2.01                    C7_mu1e2        1.15
+  E2_eta9      1.99                    C2_dt3e3        1.15
+                                       C12_dt3e3_long  1.14
+```
+
+The split is clean and it is not about the geometry or the resolution: EVERY
+fixed-dt arm sits at 1.14-1.17, and every scattered arm is a linesearch arm
+with weak or absent smoothing.  Strong damping closes it from the other side --
+linesearch at mu=1e-2 (C7) is 1.15 and at eta=1e-3 (C11) is 1.63.  The
+linesearch produces an oscillating endpoint force unless something damps it.
+
+Consequences, applied honestly to claims in this document:
+
+* Two FIXED-DT arms can be compared on F_final down to ~15%.  C2 vs C3 is
+  3.76x (1.951e-3 vs 5.190e-4), far outside that -- the dt=1e-2 force
+  advantage in s39 SURVIVES.
+* Two LINESEARCH arms cannot be compared on F_final below a factor of ~4.  The
+  eta-ladder's low three span 1.49x, entirely inside their own scatter, which
+  is the quantitative form of 39.1's conclusion.
+* C11's F_final (4.50e-4) beats the low arms by 4-6x against its own 1.63
+  scatter.  Marginal, and it survives -- but it is bought with 81% of H.
+
+This is a sharper version of s38.  There the point was that only the FINAL
+||F|| is a quantity; here the point is that even the final ||F|| is a NOISY
+quantity whose noise depends on the time-stepping mode, so a resolution has to
+be attached to it before any two arms are ranked.
