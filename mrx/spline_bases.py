@@ -1,3 +1,4 @@
+"""1D B-spline bases (clamped, periodic, constant), their derivative bases, and local evaluation."""
 from typing import Callable, Optional
 
 import jax

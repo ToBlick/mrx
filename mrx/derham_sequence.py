@@ -1,3 +1,4 @@
+"""The :class:`DeRhamSequence`: spline spaces, extraction operators, geometry, and every operator apply and solve."""
 import equinox as eqx
 import jax
 import jax.numpy as jnp
