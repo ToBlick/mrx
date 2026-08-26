@@ -62,9 +62,33 @@ Flags, defaults in brackets:
       --floor-steps W [100]        number of steps over which the force
                                    residual is averaged before it is compared
                                    with --floor-tol
-      --qoi-every N [250]          steps between helicity samples (each a k=1
-                                   Hodge solve)
+      --qoi-every N [250]          steps between the quantity-of-interest
+                                   samples (helicity, the two pressures,
+                                   beta; see "Two pressures")
       --out DIR [outputs/relax/<date>/<time>]
+
+Two pressures:
+    The strong pressure ``p`` is the Leray multiplier of ``compute_force``:
+    a 3-form, the multiplier of the constrained energy principle, with
+    ``dp/dn = 0`` on the wall by construction (``J x H`` is projected onto the
+    Dirichlet 2-form space first, which discards ``(J x H) . n``). The weak
+    pressure ``p_w`` (``mrx.relaxation.weak_pressure``) projects ``J x H``
+    onto the natural 1-form space and Helmholtz-decomposes it there with
+    ``p_w`` in the Dirichlet 0-form space, ``p_w = 0`` on the wall; it sees
+    the wall force. At every qoi sample the script records
+    ``gradp_cmp = ||Pi_2 grad p_w - grad_w p||_{M2} / ||Pi_2 grad p_w||_{M2}``
+    (gauge-free; ``grad_w p`` is the 3-form's weak gradient in the Dirichlet
+    2-form space, ``Pi_2`` projects the exact ``grad p_w`` onto the same space
+    so both lose the same normal trace), ``p_cmp``, the L2 distance of the
+    two pressures as functions with their means removed, relative to
+    ``p_w``'s, ``weak_resid = ||J x H - grad p_w|| / ||J x H||`` in the
+    natural 1-form space,
+    ``dpdn_wall = max |dp_w/dn| / max |grad p_w|`` and
+    ``JxBn_wall = max |(J x H) . n| / max |grad p_w|`` on the wall,
+    ``beta_vol = int p_w dV / int B^2/2 dV`` and ``beta_axis``, the same
+    ratio on the coordinate axis (logical r = 0: the innermost radial
+    quadrature layer, averaged over theta and zeta). Code units:
+    the magnetic pressure is ``B^2/2``.
 
 Stopping criterion:
     The relative force residual ``|F|_M / ||grad(B^2/2)||`` is recorded at
@@ -81,10 +105,15 @@ Output (``--out``):
     relax.json   parameters; the per-step trace (E, F, resid, dt, dt_star,
                  cfl, cos, gain, div, eta, res_it, res_delta, dE_meas,
                  dE_pred); the sampled quantities of interest ``qoi``
-                 (helicity, ||J||/||B||, wall); the initial-condition summary
-                 and the stopping reason. Rewritten at every qoi sample.
-    B.h5         B_ic, B_final and the Leray pressures p_ic, p_final (3-form
-                 DoFs) with the run parameters as attributes; ``geometry``
+                 (helicity, ||J||/||B||, wall, and the pressure diagnostics
+                 gradp_cmp, p_cmp, weak_resid, dpdn_wall, JxBn_wall,
+                 beta_vol, beta_axis); the initial-condition summary ``ic`` and the
+                 ``summary`` with the stopping reason, both carrying the
+                 same pressure diagnostics. Rewritten at every qoi sample.
+    B.h5         B_ic, B_final, the strong pressures p_ic, p_final (3-form
+                 DoFs) and the weak pressures pw_ic, pw_final (Dirichlet
+                 0-form DoFs), all evaluated at the field stored next to
+                 them, with the run parameters as attributes; ``geometry``
                  as given and ``geometry_path`` resolved. Written when the
                  loop ends.
 
@@ -171,7 +200,8 @@ def parse_args(argv=None):
                     help="number of steps over which the force residual is averaged "
                          "before it is compared with --floor-tol")
     ap.add_argument("--qoi-every", type=int, default=250,
-                    help="steps between helicity samples (each a k=1 Hodge solve)")
+                    help="steps between the qoi samples: helicity (a k=1 Hodge solve), "
+                         "the two pressures and beta (a force evaluation and a k=0 solve)")
     ap.add_argument("--out", default=None)
     cli = ap.parse_args(argv)
     if cli.ic == "clebsch" and not os.path.isfile(cli.geometry):
@@ -223,7 +253,8 @@ def main(cli):
                                         project_reference_two_form)
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation import (DescentMethod, TimeStepChoice, TimeStepper,
-                                compute_force, compute_helicity, initial_state)
+                                compute_force, compute_helicity, initial_state,
+                                pressure_diagnostics, weak_pressure)
     import jax.numpy as jnp
 
     if cli.precision != str(mrx.DTYPE):
@@ -283,7 +314,32 @@ def main(cli):
     E0 = 0.5 * float(seq.l2_norm_sq(B0, 2))
     normaliser = jax.jit(make_force_normaliser(seq))
     gradp0 = float(normaliser(B0))
-    F0, p0, _, _, _ = compute_force(B0, seq)
+
+    @jax.jit
+    def force_probe(B, p_guess, H_guess, JxH_guess):
+        return compute_force(B, seq, p_guess=p_guess, H_guess=H_guess, JxH_guess=JxH_guess)
+
+    def pressure_probe_eager(B, p, J, H, pw_guess):
+        """The weak pressure of ``compute_force``'s ``(p, J, H)`` at ``B``,
+        ||J||/||B||, and the strong/weak comparison (see "Two pressures")."""
+        p_w, F_w, v = weak_pressure(J, H, seq, p_guess=pw_guess)
+        JoverB = seq.l2_norm(J, 1) / seq.l2_norm(B, 2)
+        return p_w, JoverB, pressure_diagnostics(B, p, p_w, F_w, v, seq)
+
+    # The IC call below runs eagerly and builds every lazily-cached core the
+    # probe touches (the 1->2 projection is host-side numpy on first use, and
+    # nothing before this point applies it); the loop uses the compiled one.
+    pressure_probe = jax.jit(pressure_probe_eager)
+
+    def pressure_line(d):
+        return (f"beta_vol={d['beta_vol']:.3e}  beta_axis={d['beta_axis']:.3e}  "
+                f"|grad pw - grad p|/|grad pw|={d['gradp_cmp']:.3e}  |pw - p|/|pw|={d['p_cmp']:.3e}  "
+                f"weak_resid={d['weak_resid']:.3e}  "
+                f"wall dpw/dn={d['dpdn_wall']:.3e}  (JxB).n={d['JxBn_wall']:.3e}")
+
+    F0, p0, J0, Hf0, JxH0 = compute_force(B0, seq)
+    pw0, JoverB0, diag0 = pressure_probe_eager(B0, p0, J0, Hf0, jnp.zeros(seq.n0_dbc))
+    diag0 = {k: float(v) for k, v in diag0.items()}
     F0n = float(seq.l2_norm(F0, 2))
     resid0 = F0n / gradp0
     print(f"[ic] {cli.ic} IC in {time.perf_counter() - t1:.1f}s  ||B||_M raw "
@@ -291,9 +347,11 @@ def main(cli):
           f"{resid0:.4e}  H={float(H0):+.6e}"
           + (f"  H eq.(1) {H_analytic:+.6e}" if cli.ic == "analytic" else ""),
           flush=True)
+    print(f"[ic] {pressure_line(diag0)}", flush=True)
     results["ic"] = dict(B_norm_raw=B_norm, div_raw=div_raw, div=div0,
                          leray_moved=moved, E=E0, F=F0n, gradp=gradp0,
-                         resid=resid0, H=float(H0), H_analytic=H_analytic)
+                         resid=resid0, H=float(H0), H_analytic=H_analytic,
+                         JoverB=float(JoverB0), **diag0)
 
     # --- the descent -------------------------------------------------------
     method = {"gradient": DescentMethod.GRADIENT,
@@ -329,10 +387,14 @@ def main(cli):
 
     state = initial_state(B0, ts, dt=cli.dt0)
     p_ic = np.asarray(state.p)
+    pw_ic = np.asarray(pw0)
+    pw_guess = pw0
+    latest = {"p": p_ic, "pw": pw_ic, "diag": diag0}
 
     tr = {k: [] for k in ("E", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
                           "gain", "eta", "res_it", "res_delta", "dE_meas", "dE_pred")}
-    qoi = {k: [] for k in ("it", "helicity", "JoverB", "wall")}
+    qoi = {k: [] for k in ("it", "helicity", "JoverB", "wall", "gradp_cmp", "p_cmp",
+                           "weak_resid", "dpdn_wall", "JxBn_wall", "beta_vol", "beta_axis")}
     E_prev = E0
     stop = "steps"
     t_arm = time.perf_counter()
@@ -353,7 +415,8 @@ def main(cli):
             E_final=tr["E"][-1] if tr["E"] else E0,
             F_final=tr["F"][-1] if tr["F"] else F0n,
             resid_final=tr["resid"][-1] if tr["resid"] else resid0,
-            resid_window_mean=float(np.mean(window)) if window else resid0)
+            resid_window_mean=float(np.mean(window)) if window else resid0,
+            **latest["diag"])
         with open(os.path.join(out, "relax.json"), "w") as fh:
             json.dump(results, fh, indent=1)
         if final:
@@ -361,7 +424,9 @@ def main(cli):
                 fh.create_dataset("B_ic", data=np.asarray(B0))
                 fh.create_dataset("B_final", data=np.asarray(state.B_n))
                 fh.create_dataset("p_ic", data=p_ic)
-                fh.create_dataset("p_final", data=np.asarray(state.p))
+                fh.create_dataset("p_final", data=latest["p"])
+                fh.create_dataset("pw_ic", data=pw_ic)
+                fh.create_dataset("pw_final", data=latest["pw"])
                 for k, v in params.items():
                     fh.attrs[k] = "" if v is None else v
 
@@ -391,8 +456,17 @@ def main(cli):
             tq = time.perf_counter()
             qoi["it"].append(it)
             qoi["wall"].append(tq - t_arm - t_qoi)
-            qoi["JoverB"].append(float(seq.l2_norm(seq.apply_weak_curl(state.B_n), 1)
-                                       / seq.l2_norm(state.B_n, 2)))
+            # The force at the CURRENT field (state.p, H, JxH are the step's
+            # values at the previous one; they warm-start it and are
+            # refreshed from it). J serves ||J||/||B|| and the weak pressure.
+            _, p, J, H, JxH = force_probe(state.B_n, state.p, state.H, state.JxH)
+            pw_guess, JoverB, diag = pressure_probe(state.B_n, p, J, H, pw_guess)
+            state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH), state, (p, H, JxH))
+            diag = {k: float(v) for k, v in diag.items()}
+            latest = {"p": np.asarray(p), "pw": np.asarray(pw_guess), "diag": diag}
+            qoi["JoverB"].append(float(JoverB))
+            for k, v in diag.items():
+                qoi[k].append(v)
             h, A_new = get_helicity(state.B_n, seq, state.A)
             state = eqx.tree_at(lambda s: s.A, state, A_new)
             qoi["helicity"].append(float(h))
@@ -400,7 +474,7 @@ def main(cli):
             print(f"  it {it:>5d}  E={E:.8e}  |F|={float(state.F_norm):.4e}  "
                   f"resid={resid:.3e}  H={float(h):+.6e}  "
                   f"dH={float(h) - h0:+.3e}  [{tq - t_arm - t_qoi:.0f}s solve "
-                  f"+{t_qoi:.0f}s qoi]", flush=True)
+                  f"+{t_qoi:.0f}s qoi]\n           {pressure_line(diag)}", flush=True)
             save()
             t_qoi += time.perf_counter() - tq
         elif it <= 5 or it % 20 == 0:
@@ -423,6 +497,12 @@ def main(cli):
             break
 
     wall = time.perf_counter() - t_arm - t_qoi
+    if qoi["it"][-1] != n_done:
+        # The pressures stored next to B_final are evaluated AT B_final.
+        _, p, J, H, JxH = force_probe(state.B_n, state.p, state.H, state.JxH)
+        p_w, _, diag = pressure_probe(state.B_n, p, J, H, pw_guess)
+        latest = {"p": np.asarray(p), "pw": np.asarray(p_w),
+                  "diag": {k: float(v) for k, v in diag.items()}}
     dEm, dEp = np.array(tr["dE_meas"]), np.array(tr["dE_pred"])
     ident = np.abs(dEm - dEp) / E0
     resid_tr = np.array(tr["resid"])
@@ -444,6 +524,8 @@ def main(cli):
     h = np.array(qoi["helicity"])
     print(f"    helicity {h[0]:+.6e} -> {h[-1]:+.6e}  drift {h[-1] - h[0]:+.3e}"
           f"  relative {(h[-1] - h[0]) / abs(h[0]):+.3e}", flush=True)
+    print(f"    pressures at the IC:  {pressure_line(diag0)}")
+    print(f"    pressures at the end: {pressure_line(latest['diag'])}", flush=True)
     dts, dt_star = np.array(tr["dt"]), np.array(tr["dt_star"])
     print(f"    CFL cap (C={cli.cfl}) bound on {int((dts < dt_star).sum())}/{n_done} steps;  "
           f"dt/dt* min {(dts / dt_star).min():.3f} mean {(dts / dt_star).mean():.3f};  "

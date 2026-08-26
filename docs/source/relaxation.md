@@ -97,7 +97,7 @@ Flags, defaults in brackets:
 | `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]`, `--eta-every K [1]` | resistivity; `tanh` drops it to zero over the middle third of the run; the solve runs every `K` steps |
 | `--steps N [3000]`, `--seconds S [none]` | outer budgets |
 | `--floor-tol TOL [1e-3]`, `--floor-steps W [100]` | stopping criterion |
-| `--qoi-every N [250]` | steps between helicity samples; each is a k=1 Hodge solve |
+| `--qoi-every N [250]` | steps between the qoi samples: helicity, the two pressures and beta (below) |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 
 `python scripts/relax.py --help` prints the same list.
@@ -125,8 +125,8 @@ solve-tolerance level ($\sim 2 \times 10^{-3}$ at tol $10^{-5}$), so a
 
 | file | content |
 |---|---|
-| `relax.json` | `params`; `trace` with per-step `E`, `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `eta`, `res_it`, `res_delta`, `dE_meas`, `dE_pred`; `qoi` with `it`, `helicity`, `JoverB`, `wall`; the `ic` summary and the `summary` with the stopping reason |
-| `B.h5` | datasets `B_ic`, `B_final` (Dirichlet k=2 DoFs), `p_ic`, `p_final` (the Leray pressures, 3-form DoFs) with the run parameters as attributes; `geometry` as given and `geometry_path` resolved |
+| `relax.json` | `params`; `trace` with per-step `E`, `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `eta`, `res_it`, `res_delta`, `dE_meas`, `dE_pred`; `qoi` with `it`, `helicity`, `JoverB`, `wall` and the pressure diagnostics `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis`; the `ic` summary and the `summary` with the stopping reason, both with the same pressure diagnostics |
+| `B.h5` | datasets `B_ic`, `B_final` (Dirichlet k=2 DoFs), `p_ic`, `p_final` (the strong pressures, 3-form DoFs), `pw_ic`, `pw_final` (the weak pressures, Dirichlet 0-form DoFs) with the run parameters as attributes; `geometry` as given and `geometry_path` resolved |
 
 `relax.json` is rewritten at every qoi sample, so a run that runs out of
 time still leaves its trace.
@@ -152,6 +152,36 @@ Three checks of a healthy ideal run (`--eta-max 0`, `--dt-mode linesearch`):
 
 `resid` is the force residual relative to the magnetic pressure gradient.
 Judge a refinement by the floor it reaches, not by the rate.
+
+## Two pressures
+
+A run carries two pressures.
+
+| | strong `p` | weak `p_w` |
+|---|---|---|
+| where | `compute_force`, the Leray multiplier of the descent | `weak_pressure`, from the same `J` and `H` |
+| space | 3-form, Dirichlet complex | 0-form, zero on the wall |
+| boundary | $\partial p / \partial n = 0$ by construction: $J \times H$ is projected onto the Dirichlet 2-form space first, which discards $(J \times H) \cdot n$ | $p_w = 0$; $J \times H$ is projected onto the natural 1-form space, which keeps $(J \times H) \cdot n$, and $\partial p_w / \partial n$ is the wall force once the remainder $F_w$ vanishes |
+| gauge | a constant | none |
+| read it for | the force residual of the constrained principle | the pressure profile, the wall force, beta |
+
+The decomposition is $v = F_w + \nabla p_w$ with $(\nabla \phi, \nabla p_w) =
+(\nabla \phi, v)$ for every $\phi$ vanishing on the wall
+(`seq.apply_leray_projection(v, k=1, dirichlet_p=True)`, one Dirichlet
+k=0 solve). Every qoi sample records, and `ic` / `summary` repeat:
+
+| key | meaning |
+|---|---|
+| `gradp_cmp` | $\|\Pi_2 \nabla p_w - \nabla_w p\|_{M_2} / \|\Pi_2 \nabla p_w\|_{M_2}$, gauge-free: $\nabla_w p$ is the weak gradient of the 3-form in the Dirichlet 2-form space and $\Pi_2$ projects the exact $\nabla p_w$ onto the same space, so both lose the same normal trace |
+| `p_cmp` | the $L^2$ distance of the two pressures as functions with their means removed, relative to $p_w$'s |
+| `weak_resid` | $\|F_w\|_{M_1} / \|v\|_{M_1}$ |
+| `dpdn_wall`, `JxBn_wall` | $\max \lvert \partial p_w / \partial n \rvert$ and $\max \lvert (J \times H) \cdot n \rvert$ on the wall, both relative to $\max \lvert \nabla p_w \rvert$ |
+| `beta_vol` | $\int p_w \, dV / \int B^2/2 \, dV$; code units, the magnetic pressure is $B^2/2$ |
+| `beta_axis` | the same ratio on the coordinate axis (logical $r = 0$: the innermost radial quadrature layer, averaged over $\theta$ and $\zeta$) |
+
+`scripts/poincare_relax.py --pressure weak|strong` (default `weak`) draws
+either pressure on the sections. The details are in
+[Relaxation](concepts/relaxation.md), section 3.
 
 To rebuild the field and evaluate it, load the DoFs and the same
 geometry:

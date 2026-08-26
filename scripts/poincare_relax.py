@@ -22,24 +22,29 @@ Flags (defaults in brackets):
     --r-max R              outermost seed radius [0.97]
     --batch-size N         lines integrated per batch [all]
     --precision P          tracing precision float64|float32 [float64]
+    --pressure {weak,strong}  which pressure of the state file to draw [weak]
     --out DIR              output directory [<state dir>/poincare]
     --from-npz             re-render from ``<out>/sections.npz`` without tracing
 
-If the state file carries the Leray pressures ``p_ic`` / ``p_final`` (3-form
-DoFs, written by ``scripts/relax.py``), the physical pressure ``p / det DF`` is
-evaluated at every crossing and drawn below the axis in the section and as a
-profile; on a flux surface it is constant, so the width of each stripe is the
-diagnostic. The Leray multiplier is defined up to an additive constant, so the
-displayed value is ``p - min p``, the minimum taken over the crossings of the
-kept lines of that field on every requested plane: the profile is >= 0 and
-its lowest surface reads zero. (The weak pressure is zero at the wall by
-construction and needs no gauge.)
+If the state file carries the pressures ``scripts/relax.py`` writes, the
+selected one is evaluated at every crossing and drawn below the axis in the
+section and as a profile; on a flux surface it is constant, so the width of
+each stripe is the diagnostic. ``--pressure weak`` (the default) reads
+``pw_ic`` / ``pw_final``, the weak pressure: a 0-form, so its physical value
+is the spline evaluation itself (no ``det DF``), and it is zero on the wall by
+construction (Dirichlet 0-form space), so no gauge shift is applied.
+``--pressure strong`` reads ``p_ic`` / ``p_final``, the Leray multiplier of
+the relaxation: a 3-form, evaluated as ``p / det DF``, and defined up to an
+additive constant, so the displayed value is ``p - min p``, the minimum taken
+over the crossings of the kept lines of that field on every requested plane:
+the profile is >= 0 and its lowest surface reads zero. See "Two pressures" in
+docs/relaxation.md.
 
 Output: ``poincare_<field>_zeta<plane>.png`` per field and plane, and
 ``sections.npz`` under ``--out`` with, per field, the crossing coordinates of
-every plane plus ``iota``, ``iota_err``, ``seed_r``, ``keep``, ``chaotic`` and the
-step drift, so a section can be re-rendered (``--from-npz``) without the
-5-minute sequence build and trace.
+every plane plus ``iota``, ``iota_err``, ``seed_r``, ``keep``, ``chaotic``, the
+step drift and ``pressure_kind``, so a section can be re-rendered
+(``--from-npz``) without the 5-minute sequence build and trace.
 Runtime: ~5 min per field at (8,16,8) p=3 on one H100 (sequence setup
 dominates; the trace is ~1 min).
 """
@@ -48,14 +53,19 @@ import os
 import sys
 import numpy as np
 
-#: The Leray multiplier is fixed so that the outermost kept line reads zero.
-PRESSURE_LABEL = r"$p - \min p$"
+#: Panel labels. The strong (Leray) multiplier is gauged so that its lowest
+#: kept line reads zero; the weak pressure is zero on the wall by construction.
+PRESSURE_LABELS = {"strong": r"$p - \min p$", "weak": r"$p_w$"}
 
 
-def pressure_gauge(presses, keep):
-    """``min p`` over the kept lines' crossings on every plane, or None without p."""
+def pressure_gauge(kind, presses, keep):
+    """The shift subtracted from the drawn pressure: ``min p`` over the kept
+    lines' crossings on every plane for the strong pressure, 0 for the weak
+    one; None without a pressure."""
     vals = [pv[keep] for pv in presses.values() if pv is not None]
-    return None if not vals else float(min(np.min(v) for v in vals))
+    if not vals:
+        return None
+    return 0.0 if kind == "weak" else float(min(np.min(v) for v in vals))
 
 
 def main():
@@ -71,6 +81,7 @@ def main():
     ap.add_argument("--r-max", type=float, default=0.97)
     ap.add_argument("--batch-size", type=int, default=None)
     ap.add_argument("--precision", default="float64", choices=("float64", "float32"))
+    ap.add_argument("--pressure", default="weak", choices=("weak", "strong"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--from-npz", action="store_true")
     cli = ap.parse_args()
@@ -116,7 +127,7 @@ def main():
         for name in which:
             presses = {plane: z[f"{name}_zeta{plane:g}_pressure"]
                        if f"{name}_zeta{plane:g}_pressure" in z else None for plane in planes}
-            p_min = pressure_gauge(presses, z[f"{name}_keep"])
+            p_min = pressure_gauge(str(z["pressure_kind"]), presses, z[f"{name}_keep"])
             for plane in planes:
                 tag = f"{name}_zeta{plane:g}"
                 # The label is a rendering choice, not a trace result: recompute
@@ -134,7 +145,7 @@ def main():
                     profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
                     logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]),
                     pressure=None if presses[plane] is None else presses[plane] - p_min,
-                    pressure_label=PRESSURE_LABEL, iota_lim=(lo, hi))
+                    pressure_label=PRESSURE_LABELS[str(z["pressure_kind"])], iota_lim=(lo, hi))
                 path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
                 fig.savefig(path, dpi=200)
                 plt.close(fig)
@@ -144,18 +155,23 @@ def main():
     seq, _ = build_sequence(geometry, ns, p, int(attrs["maxiter"]), nfp=nfp_override)
 
     def physical_pressure(name, lr, lth, zeta):
-        """p / det DF at logical ``(lr, lth, zeta)``, or None without p."""
-        key = "p_" + name
+        """The selected pressure at logical ``(lr, lth, zeta)``, or None without it.
+
+        Weak: the 0-form's value. Strong: the 3-form's ``p / det DF``.
+        """
+        key = ("pw_" if cli.pressure == "weak" else "p_") + name
         if key not in dofs:
             return None
-        pd = dofs[key]
-        e3 = seq.e3_dbc if pd.shape[0] == int(seq.n3_dbc) else seq.e3
-        p_h = DiscreteFunction(jnp.asarray(pd), seq.basis_3, e3)
+        pd = jnp.asarray(dofs[key])
         x = jnp.stack([jnp.asarray(lr).ravel(), jnp.asarray(lth).ravel(),
                        jnp.broadcast_to(jnp.asarray(zeta), lr.shape).ravel()], axis=1)
-        val = jax.vmap(p_h)(x)[:, 0]
-        det = jnp.linalg.det(map_jacobian_at(seq.map, x))
-        return np.asarray(val / det).reshape(lr.shape)
+        if cli.pressure == "weak":
+            val = jax.vmap(DiscreteFunction(pd, seq.basis_0, seq.e0_dbc))(x)[:, 0]
+        else:
+            e3 = seq.e3_dbc if pd.shape[0] == int(seq.n3_dbc) else seq.e3
+            val = jax.vmap(DiscreteFunction(pd, seq.basis_3, e3))(x)[:, 0]
+            val = val / jnp.linalg.det(map_jacobian_at(seq.map, x))
+        return np.asarray(val).reshape(lr.shape)
 
     traced = {}
     for name in which:
@@ -188,14 +204,14 @@ def main():
                 for plane in planes}
         presses = {plane: physical_pressure(name, cuts[plane][6], cuts[plane][7], plane)
                    for plane in planes}
-        p_min = pressure_gauge(presses, keep)
+        p_min = pressure_gauge(cli.pressure, presses, keep)
         for plane in planes:
             R, Z, aR, aZ, cR, cZ, lr, lth = cuts[plane]
             a_eff, xlabel = surface_label(R, Z, aR, aZ)
             press = None if presses[plane] is None else presses[plane] - p_min
             fig = render_section(
                 R, Z, res["iota"], res["iota_err"], res["seeds"][:, 0], keep,
-                pressure=press, pressure_label=PRESSURE_LABEL,
+                pressure=press, pressure_label=PRESSURE_LABELS[cli.pressure],
                 title=f"{label} {ns} p={p}  |  {name}  |  $\\zeta = {plane:g}$\n"
                       f"{labels.get(name, name)}, relaxed in {attrs.get('precision')} "
                       f"-- {R.shape[1]} crossings/line",
@@ -219,6 +235,7 @@ def main():
                          ("keep", keep), ("chaotic", res["chaotic"]), ("shown", shown),
                          ("drift", np.array(res["drift"]))):
             sections[f"{name}_{key}"] = np.asarray(arr)
+    sections["pressure_kind"] = np.array(cli.pressure)
     np.savez_compressed(os.path.join(out, "sections.npz"), **sections)
 
 

@@ -139,6 +139,61 @@ step size.
 - `compute_divergence_norm(B, seq)`: `||G_2 B||` through the incidence
   operator, so it measures the field and not a solver residual.
 - The energy is `0.5 * seq.l2_norm_sq(B, 2)`.
+- `weak_pressure(J, H, seq, dirichlet_H, p_guess)` and
+  `pressure_diagnostics(B, p, p_w, F_w, v, seq)`: the second pressure and
+  the plasma beta, below.
+
+### Two pressures
+
+The relaxation has two pressures. They agree at a fixed point whose
+pressure is constant on the wall and differ everywhere else, in a way
+that is itself a diagnostic.
+
+**Strong** (`p`, from `compute_force`): the Leray multiplier of the
+constrained energy principle. `J × H` is projected onto the Dirichlet
+2-form space first, which discards its normal component `(J × H) · n`,
+and the k=3 Hodge solve of `apply_leray_projection(k=2)` removes the
+gradient part with `σ · n = 0` built in. So `p` satisfies `dp/dn = 0` on
+the wall by construction and is defined up to a constant. It is the
+right multiplier for the descent: `F = J × H - ∇p` is exactly the force
+the constrained flow (`u · n = 0`) can see. It is blind to the wall
+force.
+
+**Weak** (`p_w`, from `weak_pressure`): `J × H` is projected onto the
+NATURAL 1-form space, `v = M_1^{-1} load(J × H)` (no boundary condition,
+so `v · n` is `(J × H) · n`), and Helmholtz-decomposed there,
+`v = F_w + ∇p_w`, with `p_w` in the Dirichlet 0-form space:
+`(∇φ, ∇p_w) = (∇φ, v)` for every `φ` with `φ = 0` on the wall
+(`apply_leray_projection(v, k=1, dirichlet_p=True)`, one k=0 Dirichlet
+Laplacian solve, CG with the metric-lumping atom). `p_w = 0` on the wall
+by construction, so it has no gauge; `F_w` is divergence-free in the
+interior and keeps its normal trace, and on the wall
+`(J × H) · n = dp_w/dn + F_w · n`. At a fixed point `J × H` is a
+gradient, `F_w` vanishes, and `dp_w/dn` is the wall force. `J` and `H`
+come from `compute_force`, so the current is computed once.
+
+Read `p` for the descent and the force residual; read `p_w` for the
+pressure profile, the wall force and beta. `scripts/relax.py` records at
+every qoi sample, in `qoi`, `ic` and `summary` of `relax.json`:
+
+| key | definition |
+|---|---|
+| `gradp_cmp` | `‖Π_2 ∇p_w - ∇_w p‖_{M_2} / ‖Π_2 ∇p_w‖_{M_2}`, gauge-free. `∇_w p` is the weak gradient of the 3-form in the Dirichlet 2-form space (the `σ` the Leray step subtracts): the L2 projection of the true gradient onto that space, so its normal trace is zero whatever `dp/dn` is. `∇p_w` is the exact strong gradient of the 0-form (incidence matrix, natural 1-form space), projected onto the same space, `Π_2 = M_2^{-1} P_{12}`, so both sides lose the same normal trace and the ratio compares the pressures, not the projection: against the unprojected `∇p_w` it reads 0.6 for identical pressures on the (4,6,4) test torus, the wall layer |
+| `p_cmp` | `‖(p/J - ⟨p/J⟩) - (p_w - ⟨p_w⟩)‖_{L2} / ‖p_w - ⟨p_w⟩‖_{L2}` at the quadrature points, `⟨·⟩` the volume mean: the two pressures as functions, the strong one's gauge removed |
+| `weak_resid` | `‖F_w‖_{M_1} / ‖v‖_{M_1}`: the part of `J × H` that is not the gradient of a function vanishing on the wall |
+| `dpdn_wall` | `max |dp_w/dn|` over the wall (`r = 1` at the angular quadrature points) relative to `max |∇p_w|` over the quadrature points; `p_w = 0` on the wall, so its gradient there is normal |
+| `JxBn_wall` | `max |(J × H) · n|` on the same wall points, from `v`, relative to the same `max |∇p_w|`: the wall force the strong pressure cannot see |
+| `beta_vol` | `⟨p_w, 1⟩_{M_0} / E` with `E = ½ B^T M_2 B = ∫ B²/2 dV`. Code units: the magnetic pressure is `B²/2`, so `β = ∫ p dV / ∫ B²/2 dV` |
+| `beta_axis` | `⟨p_w⟩ / ⟨|B|²/2⟩` on the COORDINATE axis, logical `r = 0`: both averaged (quadrature weights) over the innermost radial quadrature layer, `r = x_r[0]`, a few percent of the first knot span, all `θ` and `ζ`. The 2-form's magnitude `B_ref^T G B_ref / J²` is 0/0 on the polar axis itself, and the polar 2-form space does not pin `B_ref(0)` to zero, so a limit `r → 0` reads the solver's residual there (measured: 50% off at `r = sqrt(eps)`) |
+
+`B.h5` stores `pw_ic` and `pw_final` (Dirichlet 0-form DoFs) next to
+`p_ic` and `p_final`, every pressure evaluated at the field it sits next
+to. `scripts/poincare_relax.py --pressure weak|strong` (default `weak`)
+draws either one: `p_w` is a 0-form, its value is the spline evaluation
+and it is not shifted; `p` is a 3-form, `p / det DF`, shifted so the
+outermost kept line reads zero. `test/test_weak_pressure.py` checks the
+decomposition (`v = ∇q` returns `p_w = q`) and the closed-form beta of
+`1 - r²` against `e_φ / R` on the analytic torus.
 
 ## 4. Initial conditions
 
@@ -207,7 +262,7 @@ method per run. Flags, defaults in brackets:
 | `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]`, `--eta-every K [1]` | resistivity (implicit, any size); `tanh` drops it to zero over the middle third of the run; the solve runs every `K` steps |
 | `--steps N [3000]`, `--seconds S [none]` | outer guards |
 | `--floor-tol TOL [1e-3]`, `--floor-steps W [100]` | stopping criterion |
-| `--qoi-every N [250]` | steps between helicity samples (each a k=1 Hodge solve) |
+| `--qoi-every N [250]` | steps between the qoi samples: helicity (a k=1 Hodge solve), the two pressures and beta (a force evaluation and a k=0 solve; section 3) |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 
 The initial condition is always Leray-projected. The run stops when the
@@ -225,10 +280,14 @@ non-monotone trace without a GPU.
 Output: `relax.json` with the parameters, the per-step trace (`E`, `F`,
 `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `eta`, `res_it`,
 `res_delta`, `dE_meas`, `dE_pred`), the sampled quantities of interest
-`qoi` (`it`, `helicity`, `JoverB`, `wall`), the initial-condition summary,
-and the stopping reason; and `B.h5` with `B_ic`, `B_final`, the Leray
-pressures `p_ic`, `p_final` and the parameters as attributes (`geometry` as
-given, `geometry_path` resolved).
+`qoi` (`it`, `helicity`, `JoverB`, `wall`, and the pressure diagnostics of
+section 3: `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`,
+`beta_vol`, `beta_axis`), the initial-condition summary and the `summary`
+with the stopping reason, both carrying the same pressure diagnostics; and
+`B.h5` with `B_ic`, `B_final`, the strong pressures `p_ic`, `p_final`
+(3-form DoFs), the weak pressures `pw_ic`, `pw_final` (Dirichlet 0-form
+DoFs) and the parameters as attributes (`geometry` as given,
+`geometry_path` resolved).
 
 At the reference resolution (`w7x_fmm002_clebsch_mrx.h5`, `(8,16,8)`,
 `p = 3`, float64, one H100): setup about 330 s, first step about 90 s of

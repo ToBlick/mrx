@@ -81,6 +81,150 @@ def compute_force(
     F, p = seq.apply_leray_projection(JxH, k=2, p_guess=p_guess)
     return F, p, J, H, JxH
 
+
+def weak_pressure(
+    J: jnp.ndarray,
+    H: jnp.ndarray,
+    seq: DeRhamSequence,
+    dirichlet_H: bool = False,
+    p_guess: jnp.ndarray | None = None,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """The weak pressure ``p_w`` of ``J x H`` and the weak force residual.
+
+    ``compute_force`` projects ``J x H`` onto the Dirichlet 2-form space,
+    which discards the wall-normal force ``(J x H) . n``, and its Leray
+    multiplier ``p`` inherits ``dp/dn = 0`` on the wall. The weak pressure
+    keeps that component: ``v = M_1^{-1} load(J x H)`` in the NATURAL
+    1-form space (no boundary condition), then the Helmholtz decomposition
+    ``v = F_w + grad p_w`` with ``p_w`` in the Dirichlet 0-form space,
+    ``p_w = 0`` on the wall (``apply_leray_projection(k=1,
+    dirichlet_p=True)``: one k=0 Dirichlet Laplacian solve). ``F_w`` is
+    weakly divergence-free in the interior and keeps its normal trace, so
+    on the wall ``(J x H) . n = dp_w/dn + F_w . n``; at a fixed point of the
+    relaxation, where ``J x H`` is a gradient, ``F_w`` vanishes and
+    ``dp_w/dn`` is the wall force.
+
+    ``J`` and ``H`` are ``compute_force``'s (``J`` a Dirichlet 1-form, ``H``
+    a 1-form with ``dirichlet_H``), so the current is not recomputed.
+    Costs two natural k=1 mass solves and the k=0 solve.
+
+    Returns:
+        ``(p_w, F_w, v)``: the Dirichlet 0-form DoFs of the weak pressure,
+        the weak force residual and the natural 1-form projection of
+        ``J x H``, both in the natural 1-form space.
+    """
+    v_dual = seq.cross_product_load(J, H, 1, 1, 1, False, True, dirichlet_H)
+    v = seq.apply_inverse_mass_matrix(v_dual, 1, dirichlet=False)
+    F_w, p_w = seq.apply_leray_projection(v, k=1, p_guess=p_guess, dirichlet_p=True)
+    return p_w, F_w, v
+
+
+def _wall_normal_component(a_w: jnp.ndarray, G_inv: jnp.ndarray) -> jnp.ndarray:
+    """``a . n`` of covariant components ``a_w`` at wall points with inverse metric ``G_inv``.
+
+    The unit normal of the surface ``r = const`` is ``n^i = g^{ir} / sqrt(g^{rr})``.
+    """
+    return jnp.einsum('qij,qj->qi', G_inv, a_w)[:, 0] / jnp.sqrt(G_inv[:, 0, 0])
+
+
+def pressure_diagnostics(
+    B: jnp.ndarray,
+    p: jnp.ndarray,
+    p_w: jnp.ndarray,
+    F_w: jnp.ndarray,
+    v: jnp.ndarray,
+    seq: DeRhamSequence,
+) -> dict[str, jnp.ndarray]:
+    """Scalars comparing the strong pressure ``p`` with the weak one ``p_w``, and the plasma beta.
+
+    ``p`` is ``compute_force``'s 3-form multiplier, ``(p_w, F_w, v)`` are
+    :func:`weak_pressure`'s. Every entry is a scalar:
+
+    - ``gradp_cmp``: ``||Pi_2 grad p_w - grad_w p||_{M_2} / ||Pi_2 grad p_w||_{M_2}``,
+      gauge-free. ``grad_w p`` is the weak gradient of the 3-form in the
+      Dirichlet 2-form space, the ``sigma`` the Leray step subtracts: the
+      L2 projection of the true gradient onto that space, so its normal
+      trace is zero whatever ``dp/dn`` is. ``grad p_w`` is the exact strong
+      gradient of the 0-form (incidence matrix, natural 1-form space),
+      projected onto the same space, ``Pi_2 = M_2^{-1} P_{12}``, so that both
+      sides lose the same normal trace and the ratio compares the pressures,
+      not the projection. (Comparing against ``grad p_w`` unprojected reads
+      0.6 for IDENTICAL pressures on the (4,6,4) torus: the wall layer.)
+    - ``p_cmp``: ``||(p/J - <p/J>) - (p_w - <p_w>)||_{L2} / ||p_w - <p_w>||_{L2}``
+      at the quadrature points, ``<.>`` the volume mean: the pressures as
+      functions, the strong one's gauge removed.
+    - ``weak_resid``: ``||F_w||_{M_1} / ||v||_{M_1}``, the part of ``J x H``
+      that is not a gradient of a function vanishing on the wall.
+    - ``dpdn_wall``: ``max |dp_w/dn|`` over the wall, sampled at the angular
+      quadrature points of ``r = 1``, relative to ``max |grad p_w|`` over
+      the quadrature points. ``p_w = 0`` on the wall, so its gradient there
+      is purely normal.
+    - ``JxBn_wall``: ``max |(J x H) . n|`` on the same wall points, from
+      ``v``, relative to the same ``max |grad p_w|``: the wall force.
+      ``(J x H) . n = dp_w/dn + F_w . n`` pointwise.
+    - ``beta_vol``: ``<p_w, 1>_{M_0} / E`` with ``E = B^T M_2 B / 2 = int B^2/2 dV``,
+      the magnetic energy; code units, magnetic pressure ``B^2/2``, so
+      ``beta = int p dV / int B^2/2 dV``.
+    - ``beta_axis``: ``<p_w> / <|B|^2/2>`` on the COORDINATE axis, logical
+      ``r = 0``: both averaged over the innermost radial quadrature layer
+      (``r = x_r[0]``, a few percent of the first knot span, all theta and
+      zeta), where the mass matrix reads the field. The 2-form's magnitude
+      ``B_ref^T G B_ref / J^2`` is 0/0 on the polar axis itself, and the
+      polar 2-form space does not pin ``B_ref(0)`` to zero, so a limit
+      ``r -> 0`` reads the solver's residual there.
+    """
+    from mrx.differential_forms import DiscreteFunction
+    from mrx.geometry import map_jacobian_at
+    from mrx.quadrature import evaluate_at_xq
+
+    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    wJ = seq.quad.w * seq.jacobian_j
+
+    # (a) the gauge-free comparisons: gradients in the Dirichlet 2-form
+    # space, and the functions at the quadrature points with the means removed.
+    gpw = seq.apply_incidence_matrix(p_w, 0, dirichlet_in=True, dirichlet_out=False)
+    gpw2 = seq.apply_inverse_mass_matrix(
+        seq.apply_projection_matrix(gpw, 1, 2, dirichlet_in=False, dirichlet_out=True), 2)
+    gp = seq.apply_weak_grad(p, True, True)
+    gradp_cmp = seq.l2_norm(gpw2 - gp, 2) / seq.l2_norm(gpw2, 2)
+    ci0, cs0 = seq._form_comp_info(0)
+    ci3, cs3 = seq._form_comp_info(3)
+    pw_q = evaluate_at_xq(seq.e0_dbc_T @ p_w, ci0, cs0, quad_shape, 1)[:, 0]
+    p_q = evaluate_at_xq(seq.e3_dbc_T @ p, ci3, cs3, quad_shape, 1)[:, 0] / seq.jacobian_j
+    pw_c = pw_q - jnp.sum(wJ * pw_q) / jnp.sum(wJ)
+    p_c = p_q - jnp.sum(wJ * p_q) / jnp.sum(wJ)
+    p_cmp = jnp.sqrt(jnp.sum(wJ * (p_c - pw_c) ** 2) / jnp.sum(wJ * pw_c ** 2))
+    weak_resid = seq.l2_norm(F_w, 1, dirichlet=False) / seq.l2_norm(v, 1, dirichlet=False)
+
+    # (b) the wall: |grad p_w| over the quadrature points, the normal
+    # components at r = 1 over the angular quadrature points.
+    gpw_q = seq.evaluate_at_quadrature(gpw, 1, False)
+    grad_max = jnp.sqrt(jnp.max(jnp.einsum('qi,qij,qj->q', gpw_q, seq.metric_inv_jkl, gpw_q)))
+    th, ze = jnp.meshgrid(seq.quad.x_y, seq.quad.x_z, indexing='ij')
+    x_wall = jnp.stack([jnp.ones_like(th).ravel(), th.ravel(), ze.ravel()], axis=1)
+    DF_w = map_jacobian_at(seq.map, x_wall)
+    G_inv_w = jnp.linalg.inv(jnp.einsum('qki,qkj->qij', DF_w, DF_w))
+    gpw_w = jax.vmap(DiscreteFunction(gpw, seq.basis_1, seq.e1))(x_wall)
+    v_w = jax.vmap(DiscreteFunction(v, seq.basis_1, seq.e1))(x_wall)
+    dpdn_wall = jnp.max(jnp.abs(_wall_normal_component(gpw_w, G_inv_w))) / grad_max
+    JxBn_wall = jnp.max(jnp.abs(_wall_normal_component(v_w, G_inv_w))) / grad_max
+
+    # (c) beta_vol: <p_w, 1>_{M_0} is the quadrature sum of p_w J.
+    energy = 0.5 * seq.l2_norm_sq(B, 2)
+    beta_vol = jnp.sum(wJ * pw_q) / energy
+
+    # (d) beta_axis: the innermost radial quadrature layer, theta- and
+    # zeta-averaged with the quadrature weights (the layer's own measure).
+    B_q = seq.evaluate_at_quadrature(B, 2, True)
+    Bsq_q = jnp.einsum('qi,qij,qj->q', B_q, seq.metric_jkl, B_q) / seq.jacobian_j ** 2
+    axis = seq.quad.x[:, 0] == seq.quad.x_x[0]
+    w_axis = jnp.where(axis, wJ, 0.0)
+    beta_axis = jnp.sum(w_axis * pw_q) / jnp.sum(w_axis * 0.5 * Bsq_q)
+
+    return dict(gradp_cmp=gradp_cmp, p_cmp=p_cmp, weak_resid=weak_resid, dpdn_wall=dpdn_wall,
+                JxBn_wall=JxBn_wall, beta_vol=beta_vol, beta_axis=beta_axis)
+
+
 def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
     """Weights ``1 / (J h_i)`` turning 2-form values at the quadrature points into logical CFL numbers.
 
