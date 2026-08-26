@@ -1,7 +1,7 @@
 API reference
 =============
 
-One page per module of ``mrx``. ``mrx.experimental`` is not documented.
+One page per module of ``mrx``.
 
 .. toctree::
    :maxdepth: 1
