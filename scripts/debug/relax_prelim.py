@@ -545,7 +545,12 @@ def main():
     ops = seq.assemble_all_sparse(include_preconditioners=False)
     ops = op.assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
     seq.set_operators(ops)
-    ops = op.assemble_block_jacobi_laplacian_preconditioner(
+    # Renamed on greville-prod (block_jacobi -> metric_lumping) and picked up
+    # in the 2026-08-26 merge; same signature, same object.  The rename is
+    # followed here rather than aliased -- the campaign's numbers were all
+    # produced by this call under its old name, and a shim would hide that the
+    # production atom has been renamed twice in a month.
+    ops = op.assemble_metric_lumping_laplacian_preconditioner(
         seq, ops, ks=(0, 1, 2, 3), dirichlets=(False, True))
     seq.set_operators(ops)
     ops = compute_nullspaces(seq, ops)
