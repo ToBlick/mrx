@@ -33,11 +33,17 @@ PYTHONPATH, so a multirun from a worktree validates the MAIN checkout and PASSES
 Run single-run from a wrapper that exports it. Do NOT force `hydra/launcher=basic` —
 hydra then rejects the submitit keys while composing and every study dies in ~1 s.
 
-**1.4 A rename can break a caller with no merge conflict.** greville-prod renamed
-`assemble_block_jacobi_laplacian_preconditioner`; a caller on another branch used the
-old name. Caller and definition lived in files only one side touched, so no conflict
-surfaced, the merge reported success, and every run would have died at setup.
-**After any merge that renames library symbols, grep the callers.**
+**1.4 A green merge tells you nothing; run something real afterwards.**
+greville-prod renamed `assemble_block_jacobi_laplacian_preconditioner`; a caller on
+another branch used the old name. Caller and definition lived in files only one side
+touched, so NO CONFLICT SURFACED, the merge reported success, the conflict resolution
+was also green, and every run would have died at setup. Git's conflict detection is
+textual; this defect is semantic.
+It was found by a validation run launched for an unrelated reason dying at setup —
+**not** by knowing to check. So the rule is not "grep the callers after a rename",
+which is the after-the-fact tidy version: it is **run something real after any merge,
+because both green signals are silent on this class.** Grepping the call sites is the
+right RESPONSE once you know; it is not what finds it.
 
 **1.5 `test_projectors` is ~76% of pytest wall time**, one parametrisation 9.7 min
 alone. A 1 h walltime gets cancelled at 61% and looks like a failure when nothing
