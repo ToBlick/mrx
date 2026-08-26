@@ -40,11 +40,19 @@ def _step(ts):
     return jax.jit(lambda s: ts.relaxation_step(s, s.key))
 
 
-def test_resistive_step(tiny_seq, B0):
+@pytest.fixture(scope="module")
+def free_stepper(tiny_seq, B0):
+    """``TimeStepper(cfl=inf)``, its compiled step and the initial state at
+    ``B0``. The resistive and the CFL tests both start from exactly this
+    stepper, so it is compiled once rather than once per test (a step
+    compile is ~7 s on four CPU cores, ~12 s on the GPU)."""
+    ts = TimeStepper(seq=tiny_seq, cfl=float("inf"))
+    return ts, _step(ts), initial_state(B0, ts, dt=1.0)
+
+
+def test_resistive_step(tiny_seq, B0, free_stepper):
     seq = tiny_seq
-    ts = TimeStepper(seq=seq, cfl=float("inf"))
-    step = _step(ts)
-    state0 = initial_state(B0, ts, dt=1.0)
+    ts, step, state0 = free_stepper
     E0 = _energy(seq, B0)
     scale = float(jnp.max(jnp.abs(B0)))
 
@@ -87,11 +95,10 @@ def test_resistive_step(tiny_seq, B0):
     assert float(jnp.max(jnp.abs(s2.B_nplus1 - ideal.B_nplus1))) <= 32 * mrx.eps() * scale
 
 
-def test_cfl_cap(tiny_seq, B0):
+def test_cfl_cap(tiny_seq, B0, free_stepper):
     seq = tiny_seq
-    free = TimeStepper(seq=seq, cfl=float("inf"))
-    state0 = initial_state(B0, free, dt=1.0)
-    s_free = _step(free)(state0)
+    _, step_free, state0 = free_stepper
+    s_free = step_free(state0)
     assert float(s_free.dt) == float(s_free.dt_star) > 0
     assert float(s_free.cfl_max) > 0
     taken = float(s_free.dt_star * s_free.cfl_max)

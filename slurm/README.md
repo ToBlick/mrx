@@ -78,10 +78,18 @@ SCRIPT="-m pytest -q test" JOB_NAME=tests_cpu CPUS=4 EXTRA_ENV="JAX_PLATFORMS=cp
 
 `EXTRA_ENV="MRX_DTYPE=float32"` selects single precision for any of these.
 The `gpu` tier is a float64 tier; it is not required to pass in float32.
-Measured 2026-08-26 (H100, tree at the two-tier commit): the CPU tier is
-243 items and passes in both precisions (~9 min on the GPU, ~6 min on four
-CPU cores -- it is compile-bound); the `gpu` tier is 21 items and passed in
-both precisions as well (~6.5 min), so there are no known float32 failures.
+Measured 2026-08-26 (H100, tree at the test-audit commit): the CPU tier is
+249 items and passes in both precisions (11 min on the GPU in either
+precision, 7:45 on four CPU cores -- it is compile-bound; the session torus
+fixture is 50 s of that, the three relaxation-step tests 65 s and the
+two-resolution Poisson order check 30 s); the `gpu` tier is 18 items and
+passed in float64 in 7 min (the W7-X Clebsch fixture is 2.5 min of it).
+
+Do not add `XLA_FLAGS=--xla_cpu_multi_thread_eigen=false` to the CPU
+recipe: XLA's CPU compiler aborted once and segfaulted once, both while
+compiling the relaxation scan of `test_relaxation_loop` (2026-08-26). The
+GitHub workflow does not set it, and four cores without it run the tier
+as fast as 32 (the compile is single-threaded either way).
 
 ## Wait for a job
 
