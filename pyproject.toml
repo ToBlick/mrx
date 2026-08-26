@@ -57,6 +57,10 @@ norecursedirs = ["test/deprecated", "deprecated", "test/experimental"]
 target-version = "py311"
 extend-exclude = ["*.ipynb"]
 
+[tool.ruff.lint.per-file-ignores]
+# The package namespace is assembled from star imports on purpose.
+"mrx/__init__.py" = ["F403"]
+
 [tool.setuptools.packages.find]
 include = ["mrx*"]
 
