@@ -1,7 +1,7 @@
 """Block-Jacobi Hodge-Laplacian preconditioner: separable bulk + dense core.
 
-NOT production. The production k>=1 Laplacian preconditioner is the shifted
-Jacobi with the closed-form diagonal (``mrx.preconditioners``).
+THE PRODUCTION Laplacian and mass preconditioner for k = 0..3, free and
+Dirichlet (``docs/PRODUCTION.md``; ``kind='metric_lumping'``).
 
 The shape is the same at every ``k``:
 
@@ -78,8 +78,12 @@ from mrx.operators import (
     _reshape_quadrature_matrix_field,
     _reshape_quadrature_scalar_field,
 )
+from mrx.precision import DTYPE, eps, sqrt_eps
 from mrx.preconditioners import _simultaneous_diagonalize_pair
 
+#: Relative cut-off below which an eigenvalue of the probed dense core is
+#: treated as exactly zero. ~1e-12 in float64 (the value it was tuned at).
+CORE_TOL = eps(4096.0)
 
 # --------------------------------------------------------------------------- #
 # Bundled axis profiles                                                        #
@@ -112,11 +116,7 @@ def bundled_axis_profiles(seq, field):
     pr = jnp.einsum('qrs,r,s->q', field, wy, wz) / (sy * sz)
     pt = jnp.einsum('qrs,q,s->r', field, wx, wz) / (sx * sz)
     pz = jnp.einsum('qrs,q,r->s', field, wx, wy) / (sx * sy)
-
-    def clip(v):
-        return jnp.maximum(v, 1e-8 * jnp.abs(jnp.median(v)))
-
-    return clip(pr), clip(pt), clip(pz)
+    return pr, pt, pz
 
 
 def weight_fields(seq):
@@ -184,9 +184,9 @@ def _ktilde_1d(seq, axis, mass_deriv, profile_primal, window=None):
     """
     primal, _, quad_w = _axis_bases(seq)
     types = seq.basis_0.types
-    a_primal = np.asarray(_assemble_weighted_1d_mass(
-        primal[axis], quad_w[axis] * profile_primal))
-    g = np.asarray(_dense_incidence_1d(int(a_primal.shape[0]), types[axis]))
+    a_primal = _assemble_weighted_1d_mass(
+        primal[axis], quad_w[axis] * profile_primal)
+    g = _dense_incidence_1d(int(a_primal.shape[0]), types[axis])
     # Restrict only the V_k (row) side: the round trip still passes through the
     # FULL primal space, which is what keeps A invertible.
     if window is not None:
@@ -195,9 +195,9 @@ def _ktilde_1d(seq, axis, mass_deriv, profile_primal, window=None):
         raise ValueError(
             f"axis {axis}: incidence gives {g.shape[0]} rows after the window "
             f"but the derivative mass is {mass_deriv.shape[0]}")
-    inner = np.linalg.solve(a_primal, g.T)                  # A^-1 G^T
-    k = np.asarray(mass_deriv) @ (g @ inner) @ np.asarray(mass_deriv)
-    return jnp.asarray(0.5 * (k + k.T))
+    inner = jnp.linalg.solve(a_primal, g.T)                  # A^-1 G^T
+    k = mass_deriv @ (g @ inner) @ mass_deriv
+    return 0.5 * (k + k.T)
 
 
 def _fd_stiffness_degree0(seq, axis, profile):
@@ -222,6 +222,9 @@ def _fd_stiffness_degree0(seq, axis, profile):
 
     Assembled in the D-spline COEFFICIENT basis, which is not the value basis --
     see the ``diag(1/h)`` conjugation below.
+
+    Host numpy: this is knot-vector bookkeeping at p = 1 only, cast to the
+    working dtype once at the end.
     """
     lam = seq.basis_0.Λ[axis]
     nodes = np.asarray((seq.quad.x_x, seq.quad.x_y, seq.quad.x_z)[axis])
@@ -246,7 +249,6 @@ def _fd_stiffness_degree0(seq, axis, profile):
     else:
         pairs = [(i, i + 1) for i in range(n_cell - 1)]
         dist = np.diff(centre)
-    dist = np.maximum(dist, 1e-14)
 
     d = np.zeros((len(pairs), n_cell))
     trans = np.zeros(len(pairs))
@@ -272,14 +274,28 @@ def _fd_stiffness_degree0(seq, axis, profile):
     # because the damage grows with resolution. The two diagnostic knobs that
     # once selected between the forms are gone; the fix is landed.
     k = k / np.outer(h, h)
-    return jnp.asarray(0.5 * (k + k.T))
+    return jnp.asarray(0.5 * (k + k.T), dtype=DTYPE)
 
 
 def _h_last(seq):
     """Width of the last radial element, from the knot vector."""
-    t = np.asarray(seq.basis_0.Λ[0].T)
-    uniq = np.unique(np.round(t, 12))
+    uniq = np.unique(np.asarray(seq.basis_0.Λ[0].T))
     return float(uniq[-1] - uniq[-2])
+
+
+def _boundary_point(seq):
+    """Where the outer face ``r = 1`` is sampled: just inside the last element.
+
+    A clamped spline evaluated AT ``x = 1`` exactly hits the half-open last
+    piece and returns the wrong branch (memory: "spline map DF singular at
+    r=1"), so the face is sampled at ``1 - delta``. The nudge is GEOMETRIC --
+    a fraction of the last knot span ``h``, so it stays inside that element at
+    every resolution -- and the fraction is ``sqrt(eps)`` of the working
+    dtype: resolvable next to 1.0 in float32 (where ``1 - 1e-8 == 1``) while
+    the O(delta / h) change it makes to the basis value stays at roundoff
+    level in either precision.
+    """
+    return 1.0 - sqrt_eps() * _h_last(seq)
 
 
 def _face_alpha(seq, k, c, lumped):
@@ -312,8 +328,7 @@ def _face_alpha(seq, k, c, lumped):
     norm = jnp.sum(wy) * jnp.sum(wz)
 
     def fm(field):
-        return float(jnp.einsum('rs,r,s->', jnp.asarray(field)[-1], wy, wz)
-                     / norm)
+        return jnp.einsum('rs,r,s->', field[-1], wy, wz) / norm
 
     m_k = {0: jac, 1: ginv[c] * jac, 2: met[c] / jac, 3: 1.0 / jac}[k]
     div = fm(m_k / jac) if lumped == "diag" else 1.0
@@ -323,8 +338,8 @@ def _face_alpha(seq, k, c, lumped):
 def _edge_vector(seq, axis, window):
     """``e = dLam_axis(1)``, windowed -- the shape every boundary update uses."""
     dlam = seq.basis_0.dΛ[axis]
-    end = 1.0 - 1e-8 if dlam.type != "periodic" else 0.0
-    e = np.asarray(jax.vmap(lambda i: jnp.sum(dlam(end, i)))(dlam.ns))
+    end = _boundary_point(seq) if dlam.type != "periodic" else 0.0
+    e = jax.vmap(lambda i: jnp.sum(dlam(end, i)))(dlam.ns)
     if window is not None and axis == 0:
         e = e[window[0]:window[0] + window[1]]
     return e
@@ -415,13 +430,12 @@ def _boundary_entry_direct(seq, axis, weight_field, window, dirichlet,
     if dirichlet:
         return None
     if scalar is not None:
-        alpha = float(scalar)
+        alpha = scalar
     else:
         wy, wz = seq.quad.w_y, seq.quad.w_z
         # <w> over theta,zeta on the last radial quadrature slice.
-        alpha = float(jnp.einsum('rs,r,s->',
-                                 jnp.asarray(weight_field)[-1], wy, wz)
-                      / (jnp.sum(wy) * jnp.sum(wz)))
+        alpha = (jnp.einsum('rs,r,s->', weight_field[-1], wy, wz)
+                 / (jnp.sum(wy) * jnp.sum(wz)))
 
     # Penalty STRENGTH. The natural condition here is u.n = 0 -- an essential
     # condition on the normal trace, which the free-BC weak block enforces by a
@@ -431,7 +445,7 @@ def _boundary_entry_direct(seq, axis, weight_field, window, dirichlet,
     alpha *= _resolve_bc_scale(bc_scale)
 
     e = _edge_vector(seq, axis, window)
-    return alpha * np.outer(e, e)
+    return alpha * jnp.outer(e, e)
 def component_factors(seq, k, c, window=None, ktilde_mode="honest",
                       lumped="diag", bc_entry="ibpd", dirichlet=False,
                       bc_scale=None):
@@ -533,14 +547,16 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
         # factor does not disappear -- it contributes a SCALE. Dropping it
         # mis-weights the two halves of the Kronecker sum by ~g^{cc} per axis
         # (81x on an epsilon=1/3 toroid), which is enough to wreck the atom.
-        # c = mean eig(A^-1 M), exact when the two weight profiles are
-        # proportional.
-        a_full = _assemble_weighted_1d_mass(primal[a], quad_w[a] * primal_prof[a])
-        if a in deriv_axes:
+        # c = mean eig(A^-1 M) = tr(A^-1 M) / n, exact when the two weight
+        # profiles are proportional. Only the round-trip form uses it; the
+        # honest stiffness carries its own weight (alpha is all ones below).
+        if a in deriv_axes or ktilde_mode == "honest":
             ratios.append(1.0)
         else:
-            ratios.append(float(np.mean(np.real(np.linalg.eigvals(
-                np.linalg.solve(np.asarray(cut(a_full, a)), np.asarray(m)))))))
+            a_full = _assemble_weighted_1d_mass(
+                primal[a], quad_w[a] * primal_prof[a])
+            ratios.append(float(jnp.trace(jnp.linalg.solve(cut(a_full, a), m))
+                                / m.shape[0]))
         if a in deriv_axes and ktilde_mode == "honest":
             # The honest thing: the 1-D stiffness OF the derivative splines.
             # With their derivative values tabulated, that is just a weighted
@@ -584,7 +600,7 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
                     seq, a, w_face, window, dirichlet, scalar=scalar,
                     bc_scale=bc_scale)
                 if corr is not None:
-                    kt = kt + jnp.asarray(corr * amp)
+                    kt = kt + corr * amp
             stiffs.append(kt)
         elif a in deriv_axes:
             stiffs.append(_ktilde_1d(seq, a, m, primal_prof[a],
@@ -592,12 +608,9 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
         else:
             k_full = _assemble_weighted_1d_stiffness(
                 primal[a], deriv[a], quad_w[a] * stiff_prof[a],
-                jnp.asarray(_dense_incidence_1d(int(m_full.shape[0])
-                                                if a != 0 or window is None
-                                                else int(m_full.shape[0]),
-                                                seq.basis_0.types[a])))
-            kc = cut(k_full, a)
-            stiffs.append(kc)
+                _dense_incidence_1d(int(m_full.shape[0]),
+                                    seq.basis_0.types[a]))
+            stiffs.append(cut(k_full, a))
 
     # One alpha per Kronecker term: the weak-half terms carry the scale of the
     # OTHER axes' round trips, the stiffness-half terms carry none.
@@ -630,7 +643,7 @@ def component_diagonal(seq, k, c, shape):
     primal, deriv, quad_w = _axis_bases(seq)
     deriv_axes = {0: (), 1: (c,), 3: (0, 1, 2)}.get(
         k, tuple(a for a in range(3) if a != c))
-    tabs = [np.asarray(deriv[a] if a in deriv_axes else primal[a]) ** 2
+    tabs = [(deriv[a] if a in deriv_axes else primal[a]) ** 2
             for a in range(3)]
     wq = rs(seq.quad.w)
 
@@ -642,7 +655,7 @@ def component_diagonal(seq, k, c, shape):
 
     num = contract(w_comp * jac)
     den = contract(jac)
-    return np.asarray(num / den).reshape(shape)
+    return (num / den).reshape(shape)
 
 
 def build_bulk_atom(seq, k, c, window=None, ktilde_mode="honest",
@@ -743,24 +756,44 @@ def core_rows(seq, k, dirichlet, extra_rings=0, outer_rings=0):
 
 
 
+def _probe_rows(apply, size, rows):
+    """Dense ``A`` restricted to ``rows``, by one apply per row, on device.
+
+    A Python loop of ASYNCHRONOUS dispatches: nothing here touches the host
+    until the block is used, whereas the previous form copied every column
+    back (one sync per row). ``lax.map`` over the rows was measured instead
+    on 2026-08-26 and rejected: it compiles a fresh scan per ``(k, BC)`` and
+    tripled the k = 0..2 build times at (8,16,8), against a loop whose cost
+    is a few hundred dispatches of an already-compiled apply.
+    """
+    if rows.size == 0:
+        return jnp.zeros((0, 0), dtype=DTYPE)
+    rows_j = jnp.asarray(rows)
+    block = jnp.stack(
+        [apply(jnp.zeros(size, dtype=DTYPE).at[int(i)].set(1.0))[rows_j]
+         for i in rows], axis=1)
+    return 0.5 * (block + block.T)
+
+
+def _dense_symmetric_inverse(block, tol):
+    """Pseudoinverse of a symmetric ``block`` dropping ``|w| <= tol max|w|``."""
+    if block.size == 0:
+        return block
+    w, v = jnp.linalg.eigh(block)
+    keep = jnp.abs(w) > tol * jnp.max(jnp.abs(w))
+    inv_w = jnp.where(keep, 1.0 / jnp.where(keep, w, 1.0), 0.0)
+    return (v * inv_w) @ v.T
+
+
 def probe_core_block(seq, operators, k, dirichlet, rows):
     """Dense ``L_k`` restricted to the core rows, by one apply per row."""
     from mrx.operators import apply_hodge_laplacian_approx  # noqa: PLC0415
 
     size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
-    if rows.size == 0:
-        return np.zeros((0, 0))
-    # Warm the apply outside any trace: the matrix-free mass plan is host-built.
-    apply_hodge_laplacian_approx(seq, operators, jnp.zeros(size), k,
-                                 dirichlet=dirichlet)
-    cols = []
-    for i in rows:
-        e_i = jnp.zeros(size).at[int(i)].set(1.0)
-        col = apply_hodge_laplacian_approx(seq, operators, e_i, k,
-                                           dirichlet=dirichlet)
-        cols.append(np.asarray(col)[rows])
-    block = np.stack(cols, axis=1)
-    return 0.5 * (block + block.T)
+    return _probe_rows(
+        lambda x: apply_hodge_laplacian_approx(seq, operators, x, k,
+                                               dirichlet=dirichlet),
+        size, rows)
 # --------------------------------------------------------------------------- #
 # The applied payload, as a pytree                                             #
 # --------------------------------------------------------------------------- #
@@ -785,11 +818,15 @@ def probe_core_block(seq, operators, k, dirichlet, rows):
 
 
 class _LumpBlock(eqx.Module):
-    """One component's separable atom. Arrays are leaves; the shape is static."""
+    """One component's separable atom. Arrays are leaves; the shape is static.
 
-    rows: jnp.ndarray            # leaf: scatter/gather indices
-    vals: jnp.ndarray            # leaf: extraction weights
-    flat: jnp.ndarray            # leaf: flat index plan
+    ``rows`` and ``vals`` are in TENSOR order -- entry ``j`` is the extracted
+    row that owns flat DOF ``j`` of the ``shape`` block -- so the input is one
+    gather and no index plan is needed.
+    """
+
+    rows: jnp.ndarray            # leaf: gather indices, tensor order
+    vals: jnp.ndarray            # leaf: extraction weights, tensor order
     v_r: jnp.ndarray             # leaf: per-axis eigenvectors
     v_t: jnp.ndarray
     v_z: jnp.ndarray
@@ -799,6 +836,10 @@ class _LumpBlock(eqx.Module):
     alpha: jnp.ndarray           # leaf: was a tuple of Python floats
     dscale: jnp.ndarray          # leaf: ALWAYS an array (None was a treedef split)
     shape: tuple = eqx.field(static=True)     # STATIC: reshape target
+    # STATIC: when the block's rows are the contiguous range starting at
+    # ``offset`` with unit weights (a pure selector, e.g. every k=3 block)
+    # the gather and the multiply are a static slice instead.
+    offset: int = eqx.field(static=True)      # -1 when not a selector
 
 
 class _LumpPayload(eqx.Module):
@@ -815,23 +856,110 @@ class _LumpPayload(eqx.Module):
     blocks: tuple                # leaves, one _LumpBlock per component
     core: jnp.ndarray            # leaf
     core_inv: jnp.ndarray        # leaf
+    perm: jnp.ndarray            # leaf: output gather, see _output_permutation
     has_core: bool = eqx.field(static=True)   # STATIC: guards a branch
+    identity_perm: bool = eqx.field(static=True)  # STATIC: skip the gather
+
+
+def _block_input(b, x):
+    """``vals * x[rows]`` as the block tensor; a static slice for a selector."""
+    n = int(np.prod(b.shape))
+    if b.offset >= 0:
+        return x[b.offset:b.offset + n].reshape(b.shape)
+    return (b.vals * x[b.rows]).reshape(b.shape)
+
+
+def _block_output(b, sol):
+    return sol.reshape(-1) if b.offset >= 0 else b.vals * sol.reshape(-1)
+
+
+def _place(payload, parts):
+    out = parts[0] if len(parts) == 1 else jnp.concatenate(parts)
+    return out if payload.identity_perm else out[payload.perm]
 
 
 def _apply_lump_payload(payload: _LumpPayload, x):
-    """The apply, with the payload as an ARGUMENT rather than a closure."""
-    out = jnp.zeros_like(x)
+    """The apply, with the payload as an ARGUMENT rather than a closure.
+
+    No scatters: every block gathers its input in tensor order, and the
+    per-block results are concatenated and gathered once through ``perm``.
+    The previous form wrote one full-length ``out.at[rows].set`` per block
+    plus one for the core -- four scatters per apply. Selector blocks and an
+    identity output order are static slices / no-ops, so a k=3 apply is the
+    fast-diagonalisation solve and nothing else.
+    """
+    parts = []
     for b in payload.blocks:
-        n = int(np.prod(b.shape))
-        buf = jnp.zeros(n).at[b.flat].set(b.vals * x[b.rows]).reshape(b.shape)
-        buf = buf * b.dscale
+        buf = _block_input(b, x) * b.dscale
         sol = _fd_apply_3d(b.v_r, b.v_t, b.v_z,
                            b.lam_r, b.lam_t, b.lam_z, b.alpha, buf)
-        sol = sol * b.dscale
-        out = out.at[b.rows].set(b.vals * sol.reshape(-1)[b.flat])
+        parts.append(_block_output(b, sol * b.dscale))
     if payload.has_core:
-        out = out.at[payload.core].set(payload.core_inv @ x[payload.core])
-    return out
+        parts.append(payload.core_inv @ x[payload.core])
+    return _place(payload, parts)
+
+
+def _tensor_blocks(seq, k, dirichlet, extra_rings=0, outer_rings=0):
+    """Split the extraction into per-component tensor blocks plus the core.
+
+    Returns ``(core, bulk, e, polar, inner, outer, blocks)`` where ``blocks``
+    holds, per component, ``None`` or ``(rows, vals, (r0, nr), shape, offset)``
+    with ``rows``/``vals`` in TENSOR order over the ``(nr, n_t, n_z)`` block
+    and ``offset >= 0`` when the block is a pure selector (rows contiguous
+    from ``offset``, unit weights). Raises if a component's bulk DOFs are not
+    a full radial slab, since the separable atom does not apply then.
+    """
+    shapes = [tuple(int(s) for s in sh)
+              for sh in getattr(seq, f"basis_{k}").shape]
+    starts = np.cumsum([0] + [int(np.prod(s)) for s in shapes])
+    core, bulk, e, polar, inner, outer = core_rows(
+        seq, k, dirichlet, extra_rings=extra_rings, outer_rings=outer_rings)
+    rows, cols, vals = (np.asarray(e.rows), np.asarray(e.cols),
+                        np.asarray(e.vals))
+    keep = np.isin(rows, bulk)
+    rows_b, cols_b, vals_b = rows[keep], cols[keep], vals[keep]
+    comp = np.searchsorted(starts[1:], cols_b, side="right")
+    loc = cols_b - starts[comp]
+
+    blocks = []
+    for c, shape in enumerate(shapes):
+        sel = comp == c
+        if not sel.any():
+            blocks.append(None)
+            continue
+        lidx = loc[sel]
+        i_r = lidx // (shape[1] * shape[2])
+        r0, r1 = int(i_r.min()), int(i_r.max()) + 1
+        nr = r1 - r0
+        flat = lidx - r0 * shape[1] * shape[2]
+        order = np.argsort(flat)
+        if not np.array_equal(flat[order], np.arange(nr * shape[1] * shape[2])):
+            raise ValueError(
+                f"k={k} component {c}: the {lidx.size} bulk DOFs are not the "
+                f"tensor block [{r0},{r1}) x {shape[1]} x {shape[2]}; the "
+                "separable atom does not apply")
+        rows_t, vals_t = rows_b[sel][order], vals_b[sel][order]
+        selector = (np.array_equal(rows_t, rows_t[0] + np.arange(rows_t.size))
+                    and np.all(vals_t == 1.0))
+        blocks.append((rows_t, vals_t, (r0, nr), (nr, shape[1], shape[2]),
+                       int(rows_t[0]) if selector else -1))
+    return core, bulk, e, polar, inner, outer, blocks
+
+
+def _output_permutation(block_rows, core, n_ext):
+    """``(perm, identity)``: the gather that puts ``concat(block results...,
+    core result)`` into place, and whether it is the identity.
+
+    Every extracted row is owned by exactly one bulk block entry or by the
+    core -- checked, since the gather silently mis-places rows otherwise.
+    """
+    owners = np.concatenate(list(block_rows) + [core])
+    if not np.array_equal(np.sort(owners), np.arange(n_ext)):
+        raise ValueError(
+            f"bulk blocks and core cover {owners.size} rows, not every one of "
+            f"the {n_ext} extracted rows exactly once")
+    perm = np.argsort(owners)
+    return jnp.asarray(perm), bool(np.array_equal(perm, np.arange(n_ext)))
 
 
 # --------------------------------------------------------------------------- #
@@ -889,7 +1017,7 @@ class MetricLumpingLaplacian:
     building the wrong operator.
     """
 
-    def __init__(self, seq, operators, k, dirichlet, *, core_tol=1e-12,
+    def __init__(self, seq, operators, k, dirichlet, *, core_tol=CORE_TOL,
                  ktilde_mode="honest", lumped="diag", extra_rings=0,
                  outer_rings=0, bc_entry="ibpd", bc_scale=None):
         self.k, self.dirichlet = k, dirichlet
@@ -897,39 +1025,19 @@ class MetricLumpingLaplacian:
         self.bc_scale = bc_scale
         self.shapes = [tuple(int(s) for s in sh)
                        for sh in getattr(seq, f"basis_{k}").shape]
-        starts = np.cumsum([0] + [int(np.prod(s)) for s in self.shapes])
 
-        core, bulk, e, polar, inner_rings, outer_ring_rows = core_rows(
+        core, bulk, e, _, _, _, tensor_blocks = _tensor_blocks(
             seq, k, dirichlet, extra_rings=extra_rings,
             outer_rings=outer_rings)
         self.core, self.bulk = core, bulk
         self.n_ext = int(e.forward_shape[0])
-        rows, cols, vals = (np.asarray(e.rows), np.asarray(e.cols),
-                            np.asarray(e.vals))
-        keep = np.isin(rows, bulk)
-        rows_b, cols_b, vals_b = rows[keep], cols[keep], vals[keep]
-
-        comp = np.searchsorted(starts[1:], cols_b, side="right")
-        loc = cols_b - starts[comp]
 
         self.blocks = []
-        for c, shape in enumerate(self.shapes):
-            sel = comp == c
-            if not sel.any():
+        for c, blk in enumerate(tensor_blocks):
+            if blk is None:
                 self.blocks.append(None)
                 continue
-            lidx = loc[sel]
-            i_r = lidx // (shape[1] * shape[2])
-            i_t = (lidx // shape[2]) % shape[1]
-            i_z = lidx % shape[2]
-            r0, r1 = int(i_r.min()), int(i_r.max()) + 1
-            nr = r1 - r0
-            expected = nr * shape[1] * shape[2]
-            if lidx.size != expected or len(set(map(int, i_r))) != nr:
-                raise ValueError(
-                    f"k={k} component {c}: the {lidx.size} bulk DOFs are not the "
-                    f"tensor block [{r0},{r1}) x {shape[1]} x {shape[2]} "
-                    f"({expected} entries); the separable atom does not apply")
+            rows_t, vals_t, (r0, nr), shape, offset = blk
             atom = build_bulk_atom(
                 seq, k, c, window=(r0, nr), ktilde_mode=ktilde_mode,
                 lumped=lumped, dirichlet=dirichlet, bc_scale=bc_scale,
@@ -943,15 +1051,14 @@ class MetricLumpingLaplacian:
             # Equivalently: wherever the component's RADIAL axis is a derivative
             # axis, which is where delta acts. Building it on w_r at k=2 adds a
             # term the operator does not have.
-            dscale = None
+            dscale = jnp.ones(shape, dtype=DTYPE)
             if lumped == "diag":
-                d_full = component_diagonal(seq, k, c, shape)
-                dscale = 1.0 / np.sqrt(np.maximum(
-                    d_full[r0:r0 + nr, :, :], 1e-300))
+                # D_i is a ratio of two positive integrals; no floor.
+                d_full = component_diagonal(seq, k, c, self.shapes[c])
+                dscale = 1.0 / jnp.sqrt(d_full[r0:r0 + nr, :, :])
             self.blocks.append({
-                "rows": rows_b[sel], "vals": vals_b[sel],
-                "idx": (i_r - r0, i_t, i_z), "shape": (nr, shape[1], shape[2]),
-                "atom": atom, "dscale": dscale})
+                "rows": rows_t, "vals": vals_t, "shape": shape,
+                "offset": offset, "atom": atom, "dscale": dscale})
 
         # Probe the whole core (polar ring + any extra/outer rings) and invert
         # it exactly. A separable 2-D ring atom was tried instead and dropped:
@@ -960,100 +1067,93 @@ class MetricLumpingLaplacian:
         # W7-X k=2 free 616 vs 198), because the outer ring earns its keep
         # through radial coupling a separable ring cannot carry -- the
         # Steklov/DtN operator is nonlocal.
-        probe_rows = core
-        self.probe_rows = probe_rows
-
-        block = probe_core_block(seq, operators, k, dirichlet, probe_rows)
-        if block.size:
-            w, v = np.linalg.eigh(block)
-            keep_w = np.abs(w) > core_tol * np.abs(w).max()
-            self.core_inv = (v[:, keep_w] / w[keep_w]) @ v[:, keep_w].T
-        else:
-            self.core_inv = np.zeros((0, 0))
-
+        self.probe_rows = core
+        self.core_inv = _dense_symmetric_inverse(
+            probe_core_block(seq, operators, k, dirichlet, core), core_tol)
+        self._flat = _flatten_payload(self._build_payload())
 
     def _build_payload(self):
-        """Pack the host-built factors into the :class:`_LumpPayload` pytree.
+        """Pack the factors into the :class:`_LumpPayload` pytree.
 
-        Build-time work (eigendecompositions, the dense core inverse, the face
-        operator) is host-side numpy and stays there -- it happens once. What
-        changed on 2026-08-25 is that the result is now a PYTREE handed to a
-        module-level jitted apply as an argument, rather than closed over by a
-        per-instance `jax.jit`. Two payloads with the same shapes share a
-        treedef, so rebuilding one reuses the compiled apply instead of paying
-        ~287 ms to compile an identical program again.
+        Built EAGERLY, at construction. It used to be memoised on the first
+        ``apply``; construction is hoisted above every trace but a first apply
+        inside a ``lax`` body stashed tracers on this long-lived object, and
+        the failure surfaced as an ``UnexpectedTracerError`` in whatever ran
+        next (docs/research/OPEN.md 1.1).
+
+        The result is a PYTREE handed to a module-level jitted apply as an
+        argument, rather than closed over by a per-instance `jax.jit`. Two
+        payloads with the same shapes share a treedef, so rebuilding one
+        reuses the compiled apply instead of paying ~287 ms to compile an
+        identical program again.
         """
         blocks = []
         for blk in self.blocks:
             if blk is None:
                 continue
-            nr, nt, nz = blk["shape"]
-            ir, it, iz = blk["idx"]
             (v_r, v_t, v_z), (l_r, l_t, l_z), alpha = blk["atom"]
-            shape = (nr, nt, nz)
             blocks.append(_LumpBlock(
                 rows=jnp.asarray(blk["rows"]),
-                vals=jnp.asarray(blk["vals"]),
-                flat=jnp.asarray((ir * nt + it) * nz + iz),
-                v_r=jnp.asarray(v_r), v_t=jnp.asarray(v_t),
-                v_z=jnp.asarray(v_z),
-                lam_r=jnp.asarray(l_r), lam_t=jnp.asarray(l_t),
-                lam_z=jnp.asarray(l_z),
-                alpha=jnp.asarray([float(a) for a in alpha]),
-                dscale=(jnp.ones(shape) if blk["dscale"] is None
-                        else jnp.asarray(blk["dscale"])),
-                shape=shape,
+                vals=jnp.asarray(blk["vals"], dtype=DTYPE),
+                v_r=v_r, v_t=v_t, v_z=v_z,
+                lam_r=l_r, lam_t=l_t, lam_z=l_z,
+                alpha=jnp.asarray(alpha, dtype=DTYPE),
+                dscale=blk["dscale"],
+                shape=blk["shape"],
+                offset=blk["offset"],
             ))
+        perm, identity = _output_permutation(
+            [b["rows"] for b in self.blocks if b is not None],
+            self.probe_rows, self.n_ext)
         return _LumpPayload(
             blocks=tuple(blocks),
             core=jnp.asarray(self.probe_rows),
-            core_inv=jnp.asarray(self.core_inv),
-            has_core=bool(np.asarray(self.probe_rows).size > 0),
+            core_inv=self.core_inv,
+            perm=perm,
+            has_core=bool(self.probe_rows.size > 0),
+            identity_perm=identity,
         )
 
     def apply(self, x):
         """Apply the preconditioner to an extracted-space vector."""
-        if getattr(self, "_flat", None) is None:
-            self._flat = _flatten_payload(self._build_payload())
         leaves, jitted = self._flat
         return jitted(leaves, jnp.asarray(x))
 
 
 class _MassBlock(eqx.Module):
-    """One component of the separable mass inverse."""
+    """One component of the separable mass inverse. Tensor-ordered rows."""
 
     rows: jnp.ndarray            # leaf
     vals: jnp.ndarray            # leaf
-    flat: jnp.ndarray            # leaf
     inv_r: jnp.ndarray           # leaf: the three 1-D inverses
     inv_t: jnp.ndarray
     inv_z: jnp.ndarray
     lam: jnp.ndarray             # leaf: the diagonal sandwich
     shape: tuple = eqx.field(static=True)     # STATIC: reshape target
+    offset: int = eqx.field(static=True)      # STATIC: see _LumpBlock
 
 
 class _MassPayload(eqx.Module):
     blocks: tuple
     core: jnp.ndarray
     core_inv: jnp.ndarray
+    perm: jnp.ndarray
     has_core: bool = eqx.field(static=True)   # STATIC: guards a branch
+    identity_perm: bool = eqx.field(static=True)
 
 
 def _apply_mass_payload(payload: _MassPayload, x):
-    out = jnp.zeros_like(x)
+    parts = []
     for b in payload.blocks:
-        n = int(np.prod(b.shape))
-        buf = jnp.zeros(n).at[b.flat].set(b.vals * x[b.rows]).reshape(b.shape)
-        buf = buf / b.lam
+        buf = _block_input(b, x) / b.lam
         # A mass is a single Kronecker PRODUCT, not a sum, so the bulk inverse
         # is three 1-D solves and no fast diagonalisation is involved.
         for a, inv in enumerate((b.inv_r, b.inv_t, b.inv_z)):
             buf = jnp.moveaxis(jnp.tensordot(inv, buf, axes=([1], [a])), 0, a)
-        buf = buf / b.lam
-        out = out.at[b.rows].set(b.vals * buf.reshape(-1)[b.flat])
+        parts.append(_block_output(b, buf / b.lam))
     if payload.has_core:
-        out = out.at[payload.core].set(payload.core_inv @ x[payload.core])
-    return out
+        parts.append(payload.core_inv @ x[payload.core])
+    return _place(payload, parts)
 
 
 class MetricLumpingMass:
@@ -1079,160 +1179,72 @@ class MetricLumpingMass:
     """
 
     def __init__(self, seq, operators, k, dirichlet, *, extra_rings=0,
-                 core_tol=1e-12):
+                 core_tol=CORE_TOL):
+        from mrx.operators import apply_mass_matrix  # noqa: PLC0415
         from mrx.preconditioners import _kron_mass_model_1d  # noqa: PLC0415
 
         self.k, self.dirichlet = k, dirichlet
         shapes, mass_1d, lam = _kron_mass_model_1d(seq, k)
         self.shapes = [tuple(int(v) for v in sh) for sh in shapes]
-        starts = np.cumsum([0] + [int(np.prod(s)) for s in self.shapes])
 
-        core, bulk, e = core_rows(seq, k, dirichlet,
-                                 extra_rings=extra_rings)[:3]
+        core, bulk, e, _, _, _, tensor_blocks = _tensor_blocks(
+            seq, k, dirichlet, extra_rings=extra_rings)
         self.core, self.bulk = core, bulk
-        rows, cols, vals = (np.asarray(e.rows), np.asarray(e.cols),
-                            np.asarray(e.vals))
-        keep = np.isin(rows, bulk)
-        rows_b, cols_b, vals_b = rows[keep], cols[keep], vals[keep]
-        comp = np.searchsorted(starts[1:], cols_b, side="right")
-        loc = cols_b - starts[comp]
+        self.n_ext = int(e.forward_shape[0])
 
         self.blocks = []
-        for c, shape in enumerate(self.shapes):
-            sel = comp == c
-            if not sel.any():
+        for c, blk in enumerate(tensor_blocks):
+            if blk is None:
                 self.blocks.append(None)
                 continue
-            lidx = loc[sel]
-            i_r = lidx // (shape[1] * shape[2])
-            i_t = (lidx // shape[2]) % shape[1]
-            i_z = lidx % shape[2]
-            r0, nr = int(i_r.min()), int(i_r.max()) - int(i_r.min()) + 1
-            if lidx.size != nr * shape[1] * shape[2]:
-                raise ValueError(
-                    f"mass k={k} component {c}: bulk DOFs are not a tensor "
-                    f"block [{r0},{r0 + nr}) x {shape[1]} x {shape[2]}")
-            inv = []
-            for a in range(3):
-                m = np.asarray(mass_1d[c][a])
-                if a == 0:
-                    m = m[r0:r0 + nr, r0:r0 + nr]
-                inv.append(np.linalg.inv(m))
+            rows_t, vals_t, (r0, nr), shape, offset = blk
+            inv = [jnp.linalg.inv(m[r0:r0 + nr, r0:r0 + nr] if a == 0 else m)
+                   for a, m in enumerate(mass_1d[c])]
             self.blocks.append({
-                "rows": rows_b[sel], "vals": vals_b[sel],
-                "idx": (i_r - r0, i_t, i_z), "shape": (nr, shape[1], shape[2]),
-                "inv": inv,
-                "lam": np.asarray(lam[c])[r0:r0 + nr, :, :]})
+                "rows": rows_t, "vals": vals_t, "shape": shape, "inv": inv,
+                "offset": offset, "lam": lam[c][r0:r0 + nr, :, :]})
 
-        self.core_inv = np.zeros((0, 0))
-        if core.size:
-            block = self._probe_core(seq, operators, core)
-            w, v = np.linalg.eigh(block)
-            keep_w = np.abs(w) > core_tol * np.abs(w).max()
-            self.core_inv = (v[:, keep_w] / w[keep_w]) @ v[:, keep_w].T
-
-    def _probe_core(self, seq, operators, rows):
-        from mrx.operators import apply_mass_matrix  # noqa: PLC0415
-
-        size = int(getattr(seq, f"n{self.k}_dbc" if self.dirichlet
-                           else f"n{self.k}"))
-        apply_mass_matrix(seq, operators, jnp.zeros(size), self.k,
-                          dirichlet=self.dirichlet)
-        cols = [np.asarray(apply_mass_matrix(
-            seq, operators, jnp.zeros(size).at[int(i)].set(1.0), self.k,
-            dirichlet=self.dirichlet))[rows] for i in rows]
-        b = np.stack(cols, axis=1)
-        return 0.5 * (b + b.T)
+        size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
+        self.core_inv = _dense_symmetric_inverse(_probe_rows(
+            lambda x: apply_mass_matrix(seq, operators, x, k,
+                                        dirichlet=dirichlet),
+            size, core), core_tol)
+        self._flat = _flatten_payload(self._build_payload())
 
     def _build_payload(self):
-        """Pack the host-built factors into the :class:`_MassPayload` pytree.
+        """Pack the factors into the :class:`_MassPayload` pytree.
 
-        This has to be on-device and jitted, not host-side numpy: the mass
-        preconditioner is applied INSIDE ``solve_singular_cg``'s
-        ``jax.lax.while_loop``, so an ``np.asarray(x)`` on the input raises
-        TracerArrayConversionError there while working fine when called with a
-        concrete array. Build-time work (the 1-D inverses, the dense core) is
-        host-side numpy and belongs there -- it happens once.
+        Eager, at construction, for the reason given at
+        :meth:`MetricLumpingLaplacian._build_payload`. The apply is jitted
+        and device-only because the mass preconditioner runs INSIDE
+        ``solve_singular_cg``'s ``jax.lax.while_loop``.
         """
         blocks = []
         for blk in self.blocks:
             if blk is None:
                 continue
-            ir, it, iz = blk["idx"]
-            nr, nt, nz = blk["shape"]
-            shape = (nr, nt, nz)
-            inv_r, inv_t, inv_z = (jnp.asarray(m) for m in blk["inv"])
+            inv_r, inv_t, inv_z = blk["inv"]
             blocks.append(_MassBlock(
                 rows=jnp.asarray(blk["rows"]),
-                vals=jnp.asarray(blk["vals"]),
-                flat=jnp.asarray((ir * nt + it) * nz + iz),
+                vals=jnp.asarray(blk["vals"], dtype=DTYPE),
                 inv_r=inv_r, inv_t=inv_t, inv_z=inv_z,
-                lam=jnp.asarray(blk["lam"]),
-                shape=shape,
+                lam=blk["lam"],
+                shape=blk["shape"],
+                offset=blk["offset"],
             ))
+        perm, identity = _output_permutation(
+            [b["rows"] for b in self.blocks if b is not None],
+            self.core, self.n_ext)
         return _MassPayload(
             blocks=tuple(blocks),
             core=jnp.asarray(self.core),
-            core_inv=jnp.asarray(self.core_inv),
-            has_core=bool(np.asarray(self.core).size > 0),
+            core_inv=self.core_inv,
+            perm=perm,
+            has_core=bool(self.core.size > 0),
+            identity_perm=identity,
         )
 
     def apply(self, x):
         """Apply the preconditioner to an extracted-space vector."""
-        if getattr(self, "_flat", None) is None:
-            self._flat = _flatten_payload(self._build_payload())
         leaves, jitted = self._flat
         return jitted(leaves, jnp.asarray(x))
-
-
-# --------------------------------------------------------------------------- #
-# Natural BC by capacitance (Woodbury) -- no operator probes                    #
-# --------------------------------------------------------------------------- #
-
-def face_operator(seq, k, c, window):
-    """The natural-BC face operator ``B`` on the outer radial ring.
-
-    The boundary term is a surface integral on ``r = 1``, so it is assembled by
-    2-D QUADRATURE over the face -- no operator applies at all, which is the
-    whole point next to probing the ring.  It keeps the full angular dependence
-    of ``w(1, theta, zeta)``: nothing is lumped to a scalar.
-
-    Returned in the physical ``(theta, zeta)`` face basis, shape
-    ``(n_t n_z, n_t n_z)``, already carrying the radial basis value at the
-    boundary so that ``E B E^T`` is the term as it acts on the full grid.
-    """
-    fields = weight_fields(seq)
-    ginv, met, jac = fields["ginv_aa"], fields["met_aa"], fields["jac"]
-    mass_weight = {0: jac, 1: ginv[c] * jac, 2: met[c] / jac, 3: 1.0 / jac}[k]
-    # The same integrand as the scalar route, `m_k sqrt(g^rr)` (see
-    # _face_alpha), but NOT collapsed to a number: this is the only object that
-    # carries the theta,zeta dependence the scalar average drops, which is what
-    # it exists to measure.
-    w_face = np.asarray(mass_weight * jnp.sqrt(ginv[0]))[-1]
-
-    # The ANGULAR factors must be the component's own bases, not always the
-    # primal ones: at k=2 one angular axis is a derivative axis (w_t has zeta
-    # differentiated, w_z has theta) and at k=3 both are. A derivative basis is
-    # O(1/h) larger, so each wrong axis costs (1/h)^2 -- measured as 41x, 174x
-    # and 7100x against the k=1 reference, with 41 * 174 = 7134 confirming that
-    # k=3 is just the two single-axis errors compounding.
-    primal, deriv, _ = _axis_bases(seq)
-    deriv_axes = {0: (), 1: (c,), 3: (0, 1, 2)}.get(
-        k, tuple(a for a in range(3) if a != c))
-    t_tab = np.asarray(deriv[1] if 1 in deriv_axes else primal[1])
-    z_tab = np.asarray(deriv[2] if 2 in deriv_axes else primal[2])
-    wy, wz = np.asarray(seq.quad.w_y), np.asarray(seq.quad.w_z)
-
-    # sum-factorised: theta mass per zeta quad point, then contract zeta
-    b_t = np.einsum('t,tz,jt,Jt->jJz', wy, w_face, t_tab, t_tab)
-    b4 = np.einsum('jJz,z,kz,Kz->jkJK', b_t, wz, z_tab, z_tab)
-    n_t, n_z = t_tab.shape[0], z_tab.shape[0]
-    b = b4.reshape(n_t * n_z, n_t * n_z)
-
-    dlam = seq.basis_0.dΛ[0]
-    end = 1.0 - 1e-8 if dlam.type != "periodic" else 0.0
-    e_r = np.asarray(jax.vmap(lambda i: jnp.sum(dlam(end, i)))(dlam.ns))
-    if window is not None:
-        e_r = e_r[window[0]:window[0] + window[1]]
-    return (0.5 * (b + b.T) * float(e_r[-1]) ** 2
-            / _h_last(seq))
