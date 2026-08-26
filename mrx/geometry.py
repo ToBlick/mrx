@@ -1,7 +1,8 @@
 """Geometry evaluation and map interpolation for mapped de Rham sequences.
 
-Provides two paths for evaluating the map Jacobian ``DF`` and its
-determinant at the quadrature points:
+Provides two paths for evaluating the map Jacobian ``DF`` at the quadrature
+points and reducing it to the stored geometry (metric, inverse metric,
+determinant):
 
 - Generic path (:meth:`SequenceGeometry.from_map`): works for any
   differentiable map via ``jax.jacfwd``.
@@ -49,19 +50,23 @@ def grad_1d(d_basis, boundary_type):
 # Generic (jacfwd) path
 # ---------------------------------------------------------------------------
 
-def _generic_df_geometry(map: Callable, quad_x: jnp.ndarray):
-    """Evaluate ``DF`` and ``det DF`` on the quadrature grid via ``jacfwd``.
+def map_jacobian_at(map: Callable, x: jnp.ndarray) -> jnp.ndarray:
+    """``DF`` of ``map`` at every point of ``x`` via batched ``jacfwd``.
+
+    This is the only place the raw Jacobian is materialised on a point set.
+    :meth:`SequenceGeometry.from_map` reduces it to the stored geometry at
+    once; the physical-frame pullbacks (:func:`mrx.projectors.load` with
+    ``frame='phys'``, :func:`mrx.io.load_grid_field`) call it on demand at
+    load time, since ``DF`` itself is not kept on the sequence.
 
     Args:
         map: Differentiable logical-to-physical map ``F: R^3 -> R^3``.
-        quad_x: Quadrature points, shape ``(N_q, 3)``.
+        x: Points, shape ``(N, 3)``.
 
     Returns:
-        Tuple ``(DF_jkl, jacobian_j)`` where ``DF_jkl[q, i, j] = dF_i/dx_j``.
+        ``(N, 3, 3)`` with ``DF[q, i, j] = dF_i/dx_j``.
     """
-    DF_jkl = jax.lax.map(jax.jacfwd(map), quad_x,
-                         batch_size=mrx.MAP_BATCH_SIZE_INNER)
-    return DF_jkl, jnp.linalg.det(DF_jkl)
+    return jax.lax.map(jax.jacfwd(map), x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
 
 
 def compute_geometry_terms(map: Callable, quad_x: jnp.ndarray):
@@ -90,34 +95,43 @@ def compute_geometry_terms(map: Callable, quad_x: jnp.ndarray):
 class SequenceGeometry(eqx.Module):
     """Geometry data attached to a de Rham sequence.
 
-    An ``eqx.Module`` so that the quadrature-grid arrays (``DF_jkl``,
-    ``jacobian_j``) are dynamic pytree leaves and can flow through ``jit`` /
-    ``grad``. ``map`` is kept as a normal field so that if it is itself a
-    pytree (e.g. a :class:`~mrx.mappings.SplineMap`), its coefficient leaves
-    are tracked; plain ``Callable`` maps are treated as opaque leaves.
+    An ``eqx.Module`` so that the quadrature-grid arrays are dynamic pytree
+    leaves and can flow through ``jit`` / ``grad``. ``map`` is kept as a
+    normal field so that if it is itself a pytree (e.g. a
+    :class:`~mrx.mappings.SplineMap`), its coefficient leaves are tracked;
+    plain ``Callable`` maps are treated as opaque leaves.
 
-    ``DF_jkl`` (the map Jacobian at each quadrature point) and its determinant
-    are the only stored geometry; the metric ``DF^T DF`` and its inverse are
-    properties contracted on demand, and the mass applies form their weights
-    from ``DF`` and ``J`` inside the kernel.  Storing ``DF`` lets consumers
-    that need the raw Jacobian — e.g. the physical-frame pullbacks in
-    :func:`mrx.projectors.load` — reuse it instead of recomputing
-    ``jax.jacfwd(map)`` over the quad grid.
+    Stored per quadrature point, built ONCE from ``DF`` by the constructors
+    and never recomputed: the metric ``metric_jkl = DF^T DF`` ``(N_q, 3, 3)``,
+    its inverse ``metric_inv_jkl`` ``(N_q, 3, 3)`` and the determinant
+    ``jacobian_j = det DF`` ``(N_q,)``.  These are what every hot path wants
+    -- the mass weights ``J``, ``J G^-1``, ``G/J``, ``1/J`` are elementwise
+    products of them, ``cross_product_load`` contracts against ``G`` and
+    ``G^-1`` on every force step, and the lumped preconditioners read them in
+    the quadrature tensor layout.  ``DF`` itself is discarded: its only
+    consumers are the physical-frame pullbacks at load time, which recompute
+    it with :func:`map_jacobian_at`.
     """
 
     map: Any
-    DF_jkl: jnp.ndarray = None
+    metric_jkl: jnp.ndarray = None
+    metric_inv_jkl: jnp.ndarray = None
     jacobian_j: jnp.ndarray = None
 
-    @property
-    def metric_jkl(self):
-        """Metric tensor ``DF^T DF`` at each quad point (contracted on demand)."""
-        return jnp.einsum("qki,qkj->qij", self.DF_jkl, self.DF_jkl)
+    @classmethod
+    def from_DF(cls, map, DF_jkl: jnp.ndarray) -> "SequenceGeometry":
+        """Reduce the Jacobian on the quadrature grid to the stored geometry.
 
-    @property
-    def metric_inv_jkl(self):
-        """Inverse metric at each quad point (computed on demand from ``DF``)."""
-        return jax.vmap(inv33)(self.metric_jkl)
+        Args:
+            map: The map ``DF_jkl`` was evaluated from.
+            DF_jkl: ``(N_q, 3, 3)`` with ``DF[q, i, j] = dF_i/dx_j``.
+
+        Returns:
+            A fully populated :class:`SequenceGeometry`.
+        """
+        metric_jkl = jnp.einsum("qki,qkj->qij", DF_jkl, DF_jkl)
+        return cls(map, metric_jkl, jax.vmap(inv33)(metric_jkl),
+                   jnp.linalg.det(DF_jkl))
 
     @classmethod
     def from_map(cls, map: Callable, quad_x: jnp.ndarray) -> "SequenceGeometry":
@@ -130,8 +144,7 @@ class SequenceGeometry(eqx.Module):
         Returns:
             A fully populated :class:`SequenceGeometry`.
         """
-        DF_jkl, jacobian_j = _generic_df_geometry(map, quad_x)
-        return cls(map, DF_jkl, jacobian_j)
+        return cls.from_DF(map, map_jacobian_at(map, quad_x))
 
     @classmethod
     def from_spline_map(cls, spline_map, seq) -> "SequenceGeometry":
@@ -161,7 +174,7 @@ class SequenceGeometry(eqx.Module):
                 "SequenceGeometry from a SplineMap.")
         _, DF_jkl = spline_map_F_DF_at_quad(
             spline_map.coefficients, spline_map.extraction_T, seq)
-        return cls(spline_map, DF_jkl, jnp.linalg.det(DF_jkl))
+        return cls.from_DF(spline_map, DF_jkl)
 
 
 # ---------------------------------------------------------------------------

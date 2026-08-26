@@ -7,15 +7,15 @@ multiply by the weight, and three 1D contractions back -- no matrix is ever
 stored.  The applies act in the raw (unextracted, periodic) DOF space; the
 polar / boundary extraction ``E (.) E^T`` is applied by the caller.
 
-Form weights, formed inside the jitted apply from the stored ``DF`` and
-``det DF`` (the geometry keeps nothing else):
+Form weights, elementwise products of the stored geometry (``G = DF^T DF``,
+``G^{-1}`` and ``J = det DF`` per quadrature point), formed once per
+geometry and memoised in the element layout:
 
-* k=0: ``W = J``                       (scalar)
-* k=1: ``W = G^{-1} J = adj(G) / J``   (3x3, derivative basis on axis c)
-* k=2: ``W = G / J``                   (3x3, primal basis on axis c)
-* k=3: ``W = 1/J``                     (scalar, derivative basis on all axes)
-
-with ``G = DF^T DF`` and ``J = det DF``.  The projection masses between
+* k=0: ``W = J``          (scalar)
+* k=1: ``W = G^{-1} J``   (3x3, derivative basis on axis c)
+* k=2: ``W = G / J``      (3x3, primal basis on axis c)
+* k=3: ``W = 1/J``        (scalar, derivative basis on all axes)
+  The projection masses between
 different form degrees (``P_21`` etc.) use the same kernel with the
 reference-domain weight ``W = I``.  The quadrature weights are folded in per
 axis via the 1D Gauss weights.
@@ -109,7 +109,7 @@ def _split_field(field_flat, nx, ny, nz, ne_x, ne_y, ne_z, qx, qy, qz):
     """Reshape a flat quad field (meshgrid 'xy' layout) to per-element blocks.
 
     Returns shape ``(ne_x, ne_y, ne_z, qx, qy, qz, *trailing)``; trailing axes
-    (e.g. the ``(3, 3)`` of ``DF``) ride along. One reshape and one transpose,
+    (e.g. the ``(3, 3)`` of the metric) ride along. One reshape and one transpose,
     so it fuses into the consumer inside a jit.
     """
     del nx, ny, nz
@@ -254,14 +254,21 @@ def _form_bases(seq, k):
     raise ValueError("k must be 0, 1, 2 or 3")
 
 
-def _mass_weight(k, DF, jac):
-    """Pointwise ``M_k`` weight from ``DF`` and ``det DF``, per component pair.
+def _mass_weight(k, metric, metric_inv, jac):
+    """Pointwise ``M_k`` weight per component pair, from the stored geometry.
 
-    ``DF`` is ``(..., 3, 3)`` and ``jac`` ``(...)`` in any layout; returns
-    ``{(cr, cc): (...) array}``. Written as elementwise formulas on the
-    trailing ``3x3`` (no batched matmul, no per-point ``vmap``) so that,
-    traced inside the jitted apply, the metric algebra fuses into the
-    pointwise stage and nothing but ``DF`` and ``J`` is ever resident.
+    ``metric`` / ``metric_inv`` are ``(..., 3, 3)`` and ``jac`` ``(...)`` in
+    any layout; returns ``{(cr, cc): (...) array}``.  Every entry is ONE
+    elementwise product (or quotient) of stored arrays -- no adjugate, no
+    3x3 algebra:
+
+    * k=0: ``J``
+    * k=1: ``J g^{-1}``
+    * k=2: ``g / J``
+    * k=3: ``1 / J``
+
+    The symmetric pairs of k=1, 2 share one array, which the apply relies on
+    to form six weights instead of nine.
     """
     if k == 0:
         return {(0, 0): jac}
@@ -269,26 +276,19 @@ def _mass_weight(k, DF, jac):
         return {(0, 0): 1.0 / jac}
     if k not in (1, 2):
         raise ValueError("k must be 0, 1, 2 or 3")
-
-    def g(i, j):                                          # (DF^T DF)_ij
-        return sum(DF[..., m, i] * DF[..., m, j] for m in range(3))
-
-    a, b, c, d, e, f = g(0, 0), g(0, 1), g(0, 2), g(1, 1), g(1, 2), g(2, 2)
-    if k == 2:                                            # G / J
-        w = {(0, 0): a, (0, 1): b, (0, 2): c, (1, 1): d, (1, 2): e, (2, 2): f}
-    else:                                                 # G^-1 J = adj(G) / J
-        w = {(0, 0): d * f - e * e, (0, 1): c * e - b * f, (0, 2): b * e - c * d,
-             (1, 1): a * f - c * c, (1, 2): b * c - a * e, (2, 2): a * d - b * b}
-    w = {pair: v / jac for pair, v in w.items()}
-    for (i, j) in list(w):
-        w[(j, i)] = w[(i, j)]                             # symmetric: shared array
+    w = {}
+    for i in range(3):
+        for j in range(i, 3):
+            w[(i, j)] = (metric_inv[..., i, j] * jac if k == 1
+                         else metric[..., i, j] / jac)
+            w[(j, i)] = w[(i, j)]                         # symmetric: shared array
     return w
 
 
 def _reference_weight(n_comp):
     """Pointwise weight of the reference-domain projection masses (``W = I``)."""
-    def weight(DF, jac):
-        del DF
+    def weight(metric, metric_inv, jac):
+        del metric, metric_inv
         one = jnp.ones_like(jac)
         return {(c, c): one for c in range(n_comp)}
     return weight
@@ -315,7 +315,8 @@ def build_mass_diagonal(seq, k, geometry=None):
     geometry = seq.geometry if geometry is None else geometry
     split, gauss = _element_layout(seq)
     form, comp, n_comp = _form_bases(seq, k)
-    weight_of = _mass_weight(k, geometry.DF_jkl, geometry.jacobian_j)
+    weight_of = _mass_weight(k, geometry.metric_jkl, geometry.metric_inv_jkl,
+                             geometry.jacobian_j)
     shapes = form.shape
 
     parts = []
@@ -452,9 +453,9 @@ def _second_derivative_tables(seq):
 def _jacobian_gradient(seq, geometry, batch_size=None):
     """``dJ/dxi_a`` at every quadrature point, by autodiff of the map.
 
-    One order past what ``SequenceGeometry`` stores (it keeps ``DF``, i.e. the
-    first derivative), so this is a second pass over the map and costs about
-    what the geometry build costs.  Batched, because the unbatched vmap over the
+    One order past what ``SequenceGeometry`` stores (metric and determinant
+    are first-derivative data), so this is a second pass over the map and
+    costs about what the geometry build costs.  Batched, because the unbatched vmap over the
     full quad grid is what OOMs an 80 GB card on W7-X.
     """
     if batch_size is None:
@@ -646,27 +647,30 @@ def build_extracted_stiffness_diagonal_k0(seq, dirichlet: bool):
 def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
     """Jitted raw-DOF apply of ``int Lambda^{k_row} . W . Lambda^{k_col}``.
 
-    ``weight_fn(DF, jac)`` returns the pointwise weight per ``(row_comp,
-    col_comp)`` pair as ``{(cr, cc): (N_q,)}``; pairs it omits are skipped and
-    pairs that share one array (a symmetric weight) are formed once.
+    ``weight_fn(metric, metric_inv, jac)`` returns the pointwise weight per
+    ``(row_comp, col_comp)`` pair as ``{(cr, cc): (N_q,)}``; pairs it omits
+    are skipped and pairs that share one array (a symmetric weight) are formed
+    once.
 
-    The element plan (basis values, gather indices, scatter segment ids) is
-    built once on the host and passed to the jitted kernel as runtime
-    arguments (not captured as constants) to avoid XLA constant-folding of
-    the large integer index tensors.  ``DF`` and ``J`` are passed the same way
-    and the weight is formed inside the kernel, in the flat quadrature layout
-    (where the Gauss weight is just ``quad.w``), then moved to the element
-    layout by ONE transpose of the stacked unique entries. Measured on one
-    H100 against precomputed element-layout weights: +15-20% on the k=1/2
-    apply, for 20 fewer resident scalars per quadrature point and degree.
+    The element plan (basis values, gather indices, scatter segment ids) and
+    the weight -- the unique entries, moved to the element layout with the
+    Gauss weights folded in -- are built once here and passed to the jitted
+    kernel as runtime arguments (not captured as constants) to avoid XLA
+    constant-folding of the large integer index tensors.  Memoising the
+    weight is a measured choice: forming it inside the kernel from the stored
+    metric, even as bare elementwise products with one stacked transpose,
+    costs +18% on the k=1/2 apply at (16,32,16) (0.353 vs 0.297 ms) -- the
+    cost is the per-apply pass over the geometry, not the algebra.  The price
+    is six element-layout fields per vector degree resident on the sequence
+    (14 scalars per quadrature point over k=0..3), rebuilt with the plan when
+    the geometry changes.
 
     The matvec is the sum factorization split at the quadrature points: each
     column component is gathered and pushed to the quadrature points ONCE, the
-    weight (Gauss weights folded in) mixes the components pointwise, and each
-    row component is tested ONCE, followed by a single ``segment_sum`` into
-    the concatenated output.
+    weight mixes the components pointwise, and each row component is tested
+    ONCE, followed by a single ``segment_sum`` into the concatenated output.
     """
-    split, _ = _element_layout(seq)
+    split, gauss = _element_layout(seq)
     form_r, comp_r, n_r = _form_bases(seq, k_row)
     form_c, comp_c, n_c = _form_bases(seq, k_col)
 
@@ -678,15 +682,20 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
 
     starts_r = starts(form_r, n_r)
     starts_c = starts(form_c, n_c)
-    # Static plan of the weight: which pairs exist and which share an array.
-    probe = weight_fn(jnp.zeros((1, 3, 3), mrx.DTYPE), jnp.ones((1,), mrx.DTYPE))
-    pairs = tuple(probe)
+    # The weight: which pairs exist, which share an array, and the unique
+    # arrays themselves in the element layout with the Gauss weights folded in.
+    weight_of = weight_fn(geometry.metric_jkl, geometry.metric_inv_jkl,
+                          geometry.jacobian_j)
+    pairs = tuple(weight_of)
     unique_ids, column = [], {}
-    for pair, w in probe.items():
+    for pair, w in weight_of.items():
         if id(w) not in unique_ids:
             unique_ids.append(id(w))
         column[pair] = unique_ids.index(id(w))
-    n_unique = len(unique_ids)
+    Ws = [None] * len(unique_ids)
+    for pair, w in weight_of.items():
+        Ws[column[pair]] = split(w) * gauss
+    Ws = tuple(Ws)
 
     # Basis VALUES (for the einsums) are separated from the gather/scatter
     # index plans, which depend only on the mesh topology: flat gather indices
@@ -704,13 +713,8 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
     n_out = starts_r[-1]
 
     @jax.jit
-    def _impl(x, Bvals_r, Bvals_c, DF, jac, wq, gather_idx, seg_idx):
-        wf = weight_fn(DF, jac)
-        uniq = [None] * n_unique
-        for pair, w in wf.items():
-            uniq[column[pair]] = w
-        Ws = split(jnp.stack([w * wq for w in uniq], axis=-1))
-        W = {pair: Ws[..., column[pair]] for pair in pairs}
+    def _impl(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx):
+        W = {pair: Ws[column[pair]] for pair in pairs}
         u = [_to_quadrature(Bvals_c[c], x[starts_c[c]:starts_c[c + 1]],
                             gather_idx[c]) for c in range(n_c)]
         y_parts = []
@@ -720,10 +724,8 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
         return jax.ops.segment_sum(jnp.concatenate(y_parts), seg_idx,
                                    num_segments=n_out)
 
-    DF, jac, wq = geometry.DF_jkl, geometry.jacobian_j, seq.quad.w
-
     def apply(x):
-        return _impl(x, Bvals_r, Bvals_c, DF, jac, wq, gather_idx, seg_idx)
+        return _impl(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx)
 
     return apply
 
@@ -733,13 +735,15 @@ def build_matrixfree_mass_apply(seq, k, geometry=None):
 
     The returned callable acts on a vector in the *raw tensor-product* DOF
     space (the unextracted, periodic DOF layout). Boundary / polar extraction
-    ``E (.) E^T`` is applied by the caller. The metric weight is formed from
-    the geometry's ``DF`` and ``det DF`` inside the kernel (see
-    :func:`_mass_weight`).
+    ``E (.) E^T`` is applied by the caller. The metric weight is formed once
+    from the geometry's stored metric, inverse metric and ``det DF`` (see
+    :func:`_mass_weight`) and memoised in the element layout.
     """
     geometry = seq.geometry if geometry is None else geometry
     return _build_sumfact_apply(
-        seq, k, k, lambda DF, jac: _mass_weight(k, DF, jac), geometry)
+        seq, k, k,
+        lambda metric, metric_inv, jac: _mass_weight(k, metric, metric_inv, jac),
+        geometry)
 
 
 def build_matrixfree_projection_apply(seq, k_row, k_col):

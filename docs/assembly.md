@@ -70,25 +70,31 @@ bases.
 ## 3. The metric weights
 
 `_form_bases(seq, k)` picks the form and the component bases;
-`_mass_weight(k, DF, jac)` forms the weight field for every `(cr, cc)` pair
-*inside the jitted apply*, elementwise from `DF` and `J = det DF`:
+`_mass_weight(k, metric, metric_inv, jac)` forms the weight field for every
+`(cr, cc)` pair as one elementwise product of stored arrays per unique entry
+(six for k=1, 2; the symmetric pairs alias):
 
 | k | weight at a quadrature point | formed from |
 |---|---|---|
 | 0 | `J` | `jac` |
-| 1 | `J g^{-1} = adj(g) / J` | cofactors of `g = DF^T DF`, one division by `J` |
-| 2 | `g / J` | `g = DF^T DF` |
+| 1 | `J g^{-1}` | `metric_inv[..., i, j] * jac` |
+| 2 | `g / J` | `metric[..., i, j] / jac` |
 | 3 | `1 / J` | `1 / jac` |
 
-`SequenceGeometry` (`mrx/geometry.py`) stores only `DF_jkl` and
-`jacobian_j`; `metric_jkl` and `metric_inv_jkl` are properties for the
-consumers that want them (load, the lumped preconditioners). `DF` comes from
-`jax.jacfwd(map)` at every quadrature point (`SequenceGeometry.from_map`), or
+`SequenceGeometry` (`mrx/geometry.py`) stores `metric_jkl = DF^T DF`,
+`metric_inv_jkl` and `jacobian_j`, built once from `DF` -- which comes from
+`jax.jacfwd(map)` at every quadrature point (`SequenceGeometry.from_map`) or
 from the spline coefficients by sum factorisation
-(`SequenceGeometry.from_spline_map`). Geometry enters the kernel as two
-runtime arguments; a new map means the same compiled kernel. The projection
-masses between degrees (`build_matrixfree_projection_apply`) use the same
-kernel with the reference weight `W = I`.
+(`SequenceGeometry.from_spline_map`) -- and then discarded. No adjugate and
+no 3x3 product is formed anywhere in the apply path. `_build_sumfact_apply`
+forms the unique weight entries once per geometry, moves them to the element
+layout with the Gauss weights folded in, and passes them to the kernel as
+runtime arguments; a new map means the same compiled kernel with a new
+weight. Forming the weight inside the kernel instead was measured at +18% on
+the k=1/2 apply at (16,32,16) even as bare elementwise products, so the
+memo stays. The projection masses between degrees
+(`build_matrixfree_projection_apply`) use the same kernel with the reference
+weight `W = I`.
 
 The quadrature points are flattened theta-major, `(theta, r, zeta)`,
 because `QuadratureRule` builds them with `jnp.meshgrid` in its default
@@ -115,10 +121,14 @@ diagonal and the operator agree by construction.
 
 ## 5. Memory
 
-Resident per quadrature point: `DF_jkl` (9) and `jacobian_j` (1), 10
-scalars, and nothing per form degree (the weights are transients of the
-apply). Recomputing `DF` on every apply was rejected; the geometry stays
-resident. A W7-X run at `(12, 24, 24)`, `p = 3` has
+Resident per quadrature point: `metric_jkl` (9), `metric_inv_jkl` (9) and
+`jacobian_j` (1), 19 scalars, plus the memoised mass weights -- the unique
+entries only: 1 + 6 + 6 + 1 = 14 scalars over k=0..3 (the projection masses
+add one field of ones per component). At `(16, 32, 16)`, `p = 3`, `q = 4`
+that is 61.75 MiB of geometry and 45.5 MiB of weights. Recomputing the
+geometry on every apply was rejected; it stays resident. Storing `DF` (10
+scalars) and forming the metric algebra in the kernel was measured at
++15-21% on the k=1/2 apply and is not done. A W7-X run at `(12, 24, 24)`, `p = 3` has
 `N_q = (n_r - p) · n_t · n_z · q^3 = 9 · 24 · 24 · 64 ≈ 3.3e5` points.
 
 Per apply, the largest transient is one element field at quadrature,
