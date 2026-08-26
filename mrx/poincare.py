@@ -51,6 +51,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from mrx.differential_forms import DiscreteFunction
+
 TWO_PI = 2.0 * jnp.pi
 
 #: Field lines are frozen once they reach this logical radius.  The spline maps
@@ -79,19 +81,17 @@ def logical_field(seq, dof, k, dirichlet):
         raise ValueError(f"logical_field: k must be 1 or 2, got {k}")
     basis = seq.basis_2 if k == 2 else seq.basis_1
     extraction = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
-    # dof @ (E @ V) == (E^T dof) @ V: fold the extraction into the coefficients
-    # once instead of applying it at every one of the millions of evaluations.
-    weights = extraction.T @ jnp.asarray(dof)
-    ns = basis.ns
+    # DiscreteFunction folds the extraction into the coefficients once and
+    # evaluates only the basis functions that are nonzero at x.
+    discrete = DiscreteFunction(jnp.asarray(dof), basis, extraction)
 
     if k == 2:
         def field(x):
-            return weights @ jax.vmap(basis, (None, 0))(x, ns)
+            return discrete(x)
     else:
         def field(x):
-            a = weights @ jax.vmap(basis, (None, 0))(x, ns)
             df = jax.jacfwd(seq.map)(x)
-            return jnp.linalg.solve(df.T @ df, a)
+            return jnp.linalg.solve(df.T @ df, discrete(x))
     return field
 
 

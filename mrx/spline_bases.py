@@ -5,6 +5,47 @@ import jax.numpy as jnp
 import numpy as np
 
 
+def _nonzero_bsplines(T, p, x):
+    """Values at ``x`` of the ``p + 1`` degree-``p`` B-splines on knots ``T`` that
+    can be nonzero there, and the raw index of the first of them.
+
+    One de Boor pass over the knot span ``T[s] <= x < T[s + 1]``.  The span is
+    clipped to the nonempty ones, so at the right end of a clamped knot vector
+    the last polynomial piece is evaluated -- the value at ``x = 1`` is the
+    left limit, and so is every derivative autodiff takes through it.
+    """
+    s = jnp.clip(jnp.searchsorted(T, x, side='right') - 1, p, T.shape[0] - p - 2)
+    N = [jnp.ones_like(x)]
+    if p == 0:
+        return jnp.stack(N), s
+    # knots T[s-p+1 .. s+p]: t[m] = T[s - p + 1 + m]
+    t = jax.lax.dynamic_slice(T, (s - p + 1,), (2 * p,))
+    for j in range(1, p + 1):
+        left = [x - t[p - 1 - m] for m in range(j)]    # x - T[s - m]
+        right = [t[p + m] - x for m in range(j)]       # T[s + m + 1] - x
+        saved = 0.0
+        new = []
+        for r in range(j):
+            temp = N[r] / (right[r] + left[j - 1 - r])
+            new.append(saved + right[r] * temp)
+            saved = left[j - 1 - r] * temp
+        new.append(saved)
+        N = new
+    return jnp.stack(N), s - p
+
+
+def contract_local(coefficients, local):
+    """Contract a coefficient tensor with local 1-D basis values.
+
+    ``local`` is a triple of ``(values, indices)`` pairs, one per axis, as
+    returned by ``evaluate_local``; only the ``prod(p_d + 1)`` coefficients in
+    the window are touched.  Leading axes of ``coefficients`` are batched.
+    """
+    (vr, ir), (vt, it), (vz, iz) = local
+    window = coefficients[..., ir[:, None, None], it[None, :, None], iz[None, None, :]]
+    return jnp.einsum('i,j,k,...ijk->...', vr, vt, vz, window)
+
+
 class SplineBasis:
     """A class representing a basis of spline functions.
 
@@ -114,6 +155,23 @@ class SplineBasis:
         elif self.type == 'constant':
             return 1.0
 
+    def evaluate_local(self, x: float) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Return ``(values, indices)`` of the ``p + 1`` basis functions that can
+        be nonzero at ``x``; all others vanish there.
+
+        Periodic bases fold the raw indices modulo ``n`` (the same folding
+        :meth:`evaluate` applies) and read ``x`` modulo the unit period.
+        """
+        if self.type == 'constant':
+            return jnp.ones(1), jnp.zeros(1, dtype=jnp.int32)
+        if self.type == 'periodic':
+            x = jnp.mod(x, 1.0)
+        values, first = _nonzero_bsplines(self.T, self.p, x)
+        indices = first + jnp.arange(self.p + 1)
+        if self.type == 'periodic':
+            indices = indices % self.n
+        return values, indices
+
     def greville_points(self) -> jnp.ndarray:
         """Return the Greville abscissae for this one-dimensional spline basis.
 
@@ -164,20 +222,23 @@ class SplineBasis:
             0)
 
     def _safe_divide(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
-        """Divide x by y, returning 0 wherever y is zero.
+        """Divide x by the knot-interval length y, returning 0 on a repeated knot.
 
-        Uses a dummy denominator of 1 in the zero branch so that ``x / safe_y``
-        is always finite — avoiding ``0 * NaN`` NaN-poisoning in JAX autodiff.
+        Repeated knots are the structural ones of a clamped knot vector and are
+        bit-identical, so the test is exact.  Uses a dummy denominator of 1 in
+        the empty branch so that ``x / safe_y`` is always finite — avoiding
+        ``0 * NaN`` NaN-poisoning in JAX autodiff.
 
         Args:
             x: The numerator
-            y: The denominator
+            y: The denominator, a difference of two knots
 
         Returns:
             ``x / y`` where ``y != 0``, ``0`` elsewhere.
         """
-        safe_y = jnp.where(jnp.isclose(y, 0.0), jnp.ones_like(y), y)
-        return jnp.where(jnp.isclose(y, 0.0), jnp.zeros_like(x), x / safe_y)
+        empty = y == 0
+        safe_y = jnp.where(empty, jnp.ones_like(y), y)
+        return jnp.where(empty, jnp.zeros_like(x), x / safe_y)
 
     def _const_spline(self, x: float, t: jnp.ndarray) -> jnp.ndarray:
         """Evaluate a constant (degree 0) spline.
@@ -190,7 +251,7 @@ class SplineBasis:
             1.0 if t[0] ≤ x < t[1], 0.0 otherwise
         """
         # If knots coincide, value is 0
-        return jnp.where(jnp.isclose(t[0], t[1]),
+        return jnp.where(t[0] == t[1],
                          jnp.zeros_like(x),
                          jnp.where(jnp.logical_and(t[0] <= x, x < t[1]),
                                    jnp.ones_like(x),
@@ -273,6 +334,15 @@ class TensorBasis:
         """Return ``lambda x: self(x, i)``."""
         return lambda x: self.evaluate(x, i)
 
+    def evaluate_local(self, x: jnp.ndarray) -> tuple:
+        """Per-axis ``(values, indices)`` of the 1-D basis functions nonzero at ``x``."""
+        return tuple(b.evaluate_local(xi) for b, xi in zip(self.bases, x))
+
+    def contract(self, coefficients: jnp.ndarray, x: jnp.ndarray) -> jnp.ndarray:
+        """``sum_ijk c[..., i, j, k] B_i(x_0) B_j(x_1) B_k(x_2)`` from the
+        ``prod(p_d + 1)`` terms that are nonzero at ``x``."""
+        return contract_local(coefficients, self.evaluate_local(x))
+
 
 class DerivativeSpline:
     """A class representing the derivative of a spline basis.
@@ -298,7 +368,9 @@ class DerivativeSpline:
         self.n = s.n - 1 if s.type == 'clamped' else s.n
         self.p = s.p if s.type == 'constant' else s.p - 1
         self.type = s.type
-        self.T = s.T[1:-1] if s.type == 'periodic' else s.T
+        # The derivative of a degree-p spline on knots T is a degree-(p-1)
+        # spline on T[1:-1]: the outermost knot on each side drops out.
+        self.T = s.T if s.type == 'constant' else s.T[1:-1]
         self.parent = s
         self.s = SplineBasis(self.n, self.p, self.type, self.T)
         self.ns = jnp.arange(self.n)
@@ -311,15 +383,17 @@ class DerivativeSpline:
         """Return ``lambda x: self(x, i)``."""
         return lambda x: self.evaluate(x, i)
 
-    def evaluate(self, x: float, i: int) -> jnp.ndarray:
-        """Evaluate the derivative of the ith spline at point x.
+    def _scale(self, i):
+        """``D_i = (p + 1) / (T[i + p + 1] - T[i]) * B_i``: the unit-integral normalisation."""
+        p = self.p
+        return (p + 1) / (self.T[i + p + 1] - self.T[i])
 
-        Computes the derivative based on the spline type:
-        - For clamped splines: Uses a forward difference formula with appropriate scaling
-        - For periodic splines: Handles wrapping of indices for periodic continuity
-        - For constant splines: Returns 1.0 (derivative of constant function)
-        
-        Derivative splines cannot be evaluated at a clamped boundary.
+    def evaluate(self, x: float, i: int) -> jnp.ndarray:
+        """Evaluate the ith derivative basis function at point x.
+
+        For clamped and periodic splines this is the degree-(p-1) B-spline on
+        the trimmed knot vector, scaled to unit integral; for constant splines
+        it is 1.0 (derivative of a constant function).
 
         Args:
             x: The point at which to evaluate the derivative
@@ -328,15 +402,17 @@ class DerivativeSpline:
         Returns:
             The value of the derivative at x
         """
-        p = self.p
-        n = self.n
-        if self.type == 'clamped':
-            return self.s(x, i+1) * (p+1) / (self.s.T[i+p+2] - self.s.T[i+1])
-        elif self.type == 'periodic':
-            j = jnp.mod(i + n, n)
-            return self.s(x, j) * (p+1) / (self.s.T[j+p+1] - self.s.T[j])
-        else:
+        if self.type == 'constant':
             return 1.0
+        return self.s(x, i) * self._scale(i)
+
+    def evaluate_local(self, x: float) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Return ``(values, indices)`` of the ``p + 1`` derivative basis
+        functions that can be nonzero at ``x``; see :meth:`SplineBasis.evaluate_local`."""
+        values, indices = self.s.evaluate_local(x)
+        if self.type == 'constant':
+            return values, indices
+        return values * self._scale(indices), indices
 
     def greville_spans(self) -> jnp.ndarray:
         """Return the consecutive Greville intervals of the parent spline basis.

@@ -7,21 +7,14 @@ cheap (a few hundred columns at most) and lets us verify global spectral
 properties with ``scipy.linalg.eigh``.
 """
 
-from test.conftest import build_dense
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import numpy.testing as npt
 import pytest
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
-from mrx.preconditioners import (
-    MassPreconditionerSpec,
-    SaddlePointPreconditionerSpec,
-    SchurPreconditionerSpec,
-)
 
 ALL_K = (0, 1, 2, 3)
 ALL_DBC = (False, True)
@@ -46,6 +39,45 @@ def test_zeroform_greville_interpolation_recovers_discrete_function():
     discrete = DiscreteFunction(coeffs, seq.basis_0, seq.e0)
     recovered = seq.interpolate(discrete, 0)
     npt.assert_allclose(recovered, coeffs, atol=1e-12)
+
+
+@pytest.fixture(scope="module", params=[False, True], ids=["tensor", "polar"])
+def tiny_seq(request):
+    """(4,4,4) sequence with a clamped and a periodic axis at both parities of p."""
+    seq = DeRhamSequence(
+        (4, 4, 4),
+        (3, 2, 3) if not request.param else (2, 2, 2),
+        4,
+        ("clamped", "periodic", "clamped") if not request.param
+        else ("clamped", "periodic", "periodic"),
+        polar=request.param,
+        tol=1e-12,
+        maxiter=200,
+        betti_numbers=(1, 1, 0, 0),
+    )
+    seq.set_map(lambda x: x)
+    return seq
+
+
+@pytest.mark.parametrize("k", ALL_K)
+@pytest.mark.parametrize("dirichlet", ALL_DBC, ids=["free", "dbc"])
+def test_discrete_function_matches_dense_evaluation(tiny_seq, k, dirichlet):
+    """The local-support evaluator equals ``dof @ (E @ Λ(x))`` over ALL basis functions."""
+    seq = tiny_seq
+    basis = getattr(seq, f"basis_{k}")
+    e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+    dof = jax.random.normal(jax.random.PRNGKey(7 * k + dirichlet), (int(_dof(seq, k, dirichlet)),))
+    discrete = DiscreteFunction(dof, basis, e)
+    xs = jax.random.uniform(jax.random.PRNGKey(3), (6, 3))
+
+    def dense(x):
+        return dof @ (e @ jax.vmap(basis, (None, 0))(x, basis.ns))
+
+    got = jax.vmap(discrete)(xs)
+    want = jax.vmap(dense)(xs)
+    assert got.shape == want.shape
+    err = float(jnp.linalg.norm(got - want) / jnp.linalg.norm(want))
+    assert err < 1e-12, f"k={k} dirichlet={dirichlet}: local evaluator off by {err:.2e}"
 
 
 def test_polar_zeroform_greville_interpolation_recovers_discrete_function():

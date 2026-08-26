@@ -4,13 +4,19 @@ Provides :class:`DifferentialForm` (basis), :class:`DiscreteFunction`
 (DOF vector + basis), :class:`Pushforward`, and :class:`Pullback`.
 """
 
+import math
 from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
 
 import mrx
-from mrx.spline_bases import DerivativeSpline, SplineBasis, TensorBasis
+from mrx.spline_bases import (
+    DerivativeSpline,
+    SplineBasis,
+    TensorBasis,
+    contract_local,
+)
 
 
 class DifferentialForm:
@@ -277,25 +283,59 @@ class DifferentialForm:
             )
             return e * val
 
+    def raw_blocks(self, raw):
+        """Split a raw (pre-extraction) coefficient vector into one tensor per
+        component, shaped as :attr:`shape` -- the layout :meth:`_unravel_index`
+        decodes: components in order, each raveled in C order."""
+        blocks, start = [], 0
+        for shape in self.shape:
+            size = math.prod(shape)
+            blocks.append(raw[start:start + size].reshape(shape))
+            start += size
+        return tuple(blocks)
+
+    def contract(self, blocks, x):
+        """Value at logical point ``x`` of the form with raw coefficient
+        ``blocks`` (from :meth:`raw_blocks`): shape ``(1,)`` for ``k = 0, 3``,
+        ``(3,)`` otherwise.
+
+        Each 1-D basis (``Λ[d]`` or ``dΛ[d]``) is evaluated once at ``x[d]``
+        on its ``p + 1`` nonzero functions, and each component contracts its
+        own ``prod(p_d + 1)`` coefficient window -- ``O(p^3)`` per point.
+        """
+        local = {}
+        for basis in self.bases:
+            for b, xi in zip(basis.bases, x):
+                if id(b) not in local:
+                    local[id(b)] = b.evaluate_local(xi)
+        return jnp.stack([
+            contract_local(block, tuple(local[id(b)] for b in basis.bases))
+            for block, basis in zip(blocks, self.bases)
+        ])
+
 
 class DiscreteFunction:
-    """A discrete function as a linear combination of k-form basis functions."""
+    """A discrete function as a linear combination of k-form basis functions.
+
+    The extraction is folded into the coefficients once at construction
+    (``raw = E^T dof``); evaluation then touches only the basis functions
+    that are nonzero at the point.
+    """
 
     def __init__(self, dof, Λ, E=None):
         """Args:
             dof: Coefficient vector (DOFs).
             Λ: Underlying :class:`DifferentialForm`.
-            E: Extraction matrix; defaults to the identity.
+            E: Extraction matrix; ``None`` is the identity.
         """
         self.dof = dof
         self.Λ = Λ
-        self.n = Λ.n
-        self.ns = jnp.arange(self.n)
-        self.E = E if E is not None else jnp.eye(self.n)
+        self.E = E
+        self.raw = Λ.raw_blocks(dof if E is None else E.T @ dof)
 
     def __call__(self, x):
         """Evaluate at logical point ``x``."""
-        return self.dof @ (self.E @ jax.vmap(self.Λ, (None, 0))(x, self.ns))
+        return self.Λ.contract(self.raw, x)
 
 
 class Pushforward:

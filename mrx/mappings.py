@@ -16,16 +16,30 @@ from mrx.geometry import (  # noqa: F401
 class SplineMap(eqx.Module):
     """A logical-to-physical map represented in the scalar spline basis.
 
-    ``coefficients``, ``extraction`` and ``extraction_T`` are dynamic
+    ``coefficients``, ``extraction``, ``extraction_T`` and ``raw`` are dynamic
     pytree children, so ``SplineMap`` can be passed through ``jit`` /
     ``grad`` / ``vmap`` and its coefficients can be differentiated.
     ``basis_0`` is a static topology object and rides along as aux data.
+
+    ``raw`` is ``E^T`` applied to the three Cartesian coefficient vectors,
+    reshaped to the tensor-product grid, ``(3, n_r, n_t, n_z)``; it is what
+    :meth:`__call__` evaluates, on the ``prod(p_d + 1)`` basis functions
+    that are nonzero at the point.
     """
 
     coefficients: jnp.ndarray
     extraction: Any
-    extraction_T: Optional[Any] = None
-    basis_0: DifferentialForm = eqx.field(static=True, default=None)
+    extraction_T: Optional[Any]
+    basis_0: DifferentialForm = eqx.field(static=True)
+    raw: jnp.ndarray
+
+    def __init__(self, coefficients, extraction, extraction_T=None, basis_0=None):
+        self.coefficients = coefficients
+        self.extraction = extraction
+        self.extraction_T = extraction_T
+        self.basis_0 = basis_0
+        coeffs = coefficients.reshape(3, -1)
+        self.raw = (extraction.T @ coeffs.T).T.reshape((3,) + basis_0.shape[0])
 
     def with_coefficients(self, coefficients):
         """Return a new spline map with updated coefficients."""
@@ -37,15 +51,7 @@ class SplineMap(eqx.Module):
         )
 
     def __call__(self, x):
-        ns = jnp.arange(self.basis_0.n)
-        basis_vals = self.extraction @ jax.vmap(self.basis_0, (None, 0))(x, ns)
-        basis_vals = jnp.ravel(basis_vals)
-
-        coeffs = self.coefficients
-        if coeffs.ndim == 1:
-            n_coeff = basis_vals.shape[0]
-            coeffs = coeffs.reshape(3, n_coeff)
-        return coeffs @ basis_vals
+        return self.basis_0.bases[0].contract(self.raw, x)
 
 
 def one_size_fits_all_map(epsilon: float = 0.33, kappa: float = 1.2, alpha: float = 0.0, R0: float = 1.0) -> Callable:
@@ -175,8 +181,9 @@ def stellarator_map(R: DiscreteFunction, Z: DiscreteFunction, nfp: int = 3, flip
         _, _, ζ = x
         if flip_zeta:
             ζ = 1.0 - ζ
-        return jnp.array([R(x)[0] * jnp.cos(π_nfp * ζ),
-                          -R(x)[0] * jnp.sin(π_nfp * ζ),
+        R_x = R(x)[0]
+        return jnp.array([R_x * jnp.cos(π_nfp * ζ),
+                          -R_x * jnp.sin(π_nfp * ζ),
                           Z(x)[0]])
     return F
 
@@ -195,8 +202,8 @@ def extend_map_nfp(Phi, nfp):
         ξ = ζ * nfp  # in [0, nfp]
         ζ_loc = ξ - jnp.floor(ξ)  # in [0, 1)
         x_loc = jnp.array([r, θ, ζ_loc])
-        R = (Phi(x_loc)[0]**2 + Phi(x_loc)[1]**2)**0.5
-        Z = Phi(x_loc)[2]
+        X, Y, Z = Phi(x_loc)
+        R = (X**2 + Y**2)**0.5
         φ_wedge = π_nfp * ζ_loc  # 0 → 2π/nfp
         φ_shift = 2 * jnp.pi * jnp.floor(ξ) / nfp
         φ = φ_wedge + φ_shift  # total toroidal angle
