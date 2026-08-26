@@ -167,22 +167,17 @@ class SequenceOperators(eqx.Module):
     dd3_diaginv_dbc: Optional[object] = None
 
     # Pre-probed diagonal inverses of the approximate Schur operator
-    # S_k + D_{k-1} M_tensor^{-1}_{k-1} D_{k-1}^T.  Built at assembly time
-    # by assemble_schur_jacobi_preconditioner; used as a cheap multiply in
-    # the saddle-point Schur-outer Jacobi preconditioner instead of probing
-    # at solve time.
+    # S_k + D_{k-1} B_{k-1} D_{k-1}^T, with B the metric_lumping mass
+    # preconditioner.  Built at assembly time by
+    # assemble_schur_jacobi_preconditioner; used as a cheap multiply in the
+    # saddle-point Schur-outer Jacobi preconditioner instead of probing at
+    # solve time.
     schur_diaginv_k1: Optional[jnp.ndarray] = None
     schur_diaginv_k1_dbc: Optional[jnp.ndarray] = None
     schur_diaginv_k2: Optional[jnp.ndarray] = None
     schur_diaginv_k2_dbc: Optional[jnp.ndarray] = None
     schur_diaginv_k3: Optional[jnp.ndarray] = None
     schur_diaginv_k3_dbc: Optional[jnp.ndarray] = None
-    schur_diaginv_mode_k1: Optional[str] = None
-    schur_diaginv_mode_k1_dbc: Optional[str] = None
-    schur_diaginv_mode_k2: Optional[str] = None
-    schur_diaginv_mode_k2_dbc: Optional[str] = None
-    schur_diaginv_mode_k3: Optional[str] = None
-    schur_diaginv_mode_k3_dbc: Optional[str] = None
 
     # Harmonic nullspaces of the k-form Laplacians. Each field, when set, holds
     # a stacked array of shape ``(n_vectors, n_k)`` with one nullspace basis
@@ -557,12 +552,8 @@ def _materialize_default_saddle_preconditioner(
     ``set_geometry`` drops the atoms, so "assembled" always means "assembled for
     the geometry now installed".
 
-    ``schur.inner`` is metric_lumping. It was raw_kron until 2026-08-25,
-    justified here by "the Schur operator is still built before the branch, so
-    the factors are needed" -- which stopped being true at 31ef58f, when the
-    Schur apply was moved into the only branch that consumes it. Under
-    ``outer='metric_lumping'`` the atom IS the upper-block inverse and the inner slot
-    does no work at all.
+    ``schur.inner`` is metric_lumping. Under ``outer='metric_lumping'`` the
+    atom IS the upper-block inverse and the inner slot does no work at all.
     """
     outer = ('metric_lumping' if _metric_lumping_available(seq, k, dirichlet) else 'none')
     return SaddlePointPreconditionerSpec(
@@ -609,10 +600,9 @@ def _coerce_diffusion_preconditioner_spec(
         # solve is actually used: the relaxation's hyperregularisation runs at
         # mu = 1e-3, where eps * lambda_max(M^-1 L) ~ 0.26 at ns=(8,16,8)
         # (lambda_max ~ n_theta^2).  The MASS preconditioner approximates the
-        # term that dominates, and it is the production one -- measured 0.70
-        # to 0.83x raw_kron's iterations at k=1,2.  So the right object was
-        # available the whole time; it just was not the one the comment
-        # considered.
+        # term that dominates, and it is the production one.  So the right
+        # object was available the whole time; it just was not the one the
+        # comment considered.
         #
         # 'jacobi' remains available and is now the correctly SHIFTED diagonal
         # (see _build_diffusion_preconditioner_apply), which is the robust
@@ -1590,8 +1580,7 @@ def apply_mass_matrix_preconditioner(seq, operators: SequenceOperators, v, k: in
     Parameters
     ----------
     kind : {'auto', 'jacobi', 'metric_lumping'}
-        Which preconditioner to use. The retired ``'tensor'`` and
-        ``'raw_kron'`` kinds were deleted on 2026-08-25.
+        Which preconditioner to use.
     """
     apply = _build_mass_preconditioner_apply(
         seq,
@@ -1690,86 +1679,39 @@ def _invert_diagonal(diagonal):
     return jnp.where(diagonal != 0.0, 1.0 / diagonal, 0.0)
 
 
-def _get_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool, mode: str):
-    """Return stored Schur diaginv for ``(k, dirichlet, mode)``, or ``None``."""
+def _get_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool):
+    """Return the stored Schur diaginv for ``(k, dirichlet)``, or ``None``."""
     suffix = '_dbc' if dirichlet else ''
-    diaginv = getattr(operators, f'schur_diaginv_k{k}{suffix}', None)
-    mode_stored = getattr(operators, f'schur_diaginv_mode_k{k}{suffix}', None)
-    if diaginv is None:
-        return None
-    if mode_stored == mode:
-        return diaginv
-    return None
+    return getattr(operators, f'schur_diaginv_k{k}{suffix}', None)
 
 
-def _set_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool, diaginv, mode: str):
-    """Return operators with Schur diaginv + mode tag for ``(k, dirichlet)`` updated."""
+def _set_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool, diaginv):
+    """Return operators with the Schur diaginv for ``(k, dirichlet)`` updated."""
     suffix = '_dbc' if dirichlet else ''
     field = f'schur_diaginv_k{k}{suffix}'
-    mode_field = f'schur_diaginv_mode_k{k}{suffix}'
     return eqx.tree_at(
-        lambda ops: (getattr(ops, field), getattr(ops, mode_field)),
+        lambda ops: getattr(ops, field),
         operators,
-        (diaginv, mode),
+        diaginv,
         is_leaf=lambda x: x is None,
-    )
-
-
-_SCHUR_DIAG_MODES = ('metric_lumping_probe',)
-
-
-def _coerce_schur_diag_mode(spec: MassPreconditionerSpec, *, context: str) -> str:
-    mode = spec.schur_diag_mode
-    if mode not in _SCHUR_DIAG_MODES:
-        raise ValueError(
-            f"{context} schur_diag_mode must be one of {_SCHUR_DIAG_MODES} "
-            f"(got {mode!r})"
-        )
-    return mode
-
-
-def _build_schur_probe_apply(
-        seq, operators: SequenceOperators, *,
-        k: int, dirichlet: bool, eps: float,
-        mode: str,
-        saddle_preconditioner: SaddlePointPreconditionerSpec):
-    if mode not in _SCHUR_DIAG_MODES:
-        raise ValueError(
-            f"Unsupported Schur diagonal probe mode {mode!r}; "
-            f"expected one of {_SCHUR_DIAG_MODES}"
-        )
-    return _build_schur_apply_from_saddle_preconditioner(
-        seq,
-        operators,
-        k=k,
-        dirichlet=dirichlet,
-        eps=eps,
-        saddle_preconditioner=saddle_preconditioner,
     )
 
 
 def _build_schur_outer_jacobi_diaginv(
         seq, operators: SequenceOperators, *,
         k: int, dirichlet: bool, eps: float,
-        outer_spec: MassPreconditionerSpec,
-        saddle_preconditioner: SaddlePointPreconditionerSpec,
-        allow_stored_tensor_diaginv: bool):
-    mode = _coerce_schur_diag_mode(
-        outer_spec,
-        context=f"schur.outer kind={outer_spec.kind!r}",
-    )
-    if allow_stored_tensor_diaginv:
-        stored_diaginv = _get_schur_diaginv(operators, k, dirichlet, mode)
-        if stored_diaginv is not None:
-            return stored_diaginv
+        saddle_preconditioner: SaddlePointPreconditionerSpec):
+    """``1/diag`` of the approximate Schur operator, preassembled or probed now."""
+    stored_diaginv = _get_schur_diaginv(operators, k, dirichlet)
+    if stored_diaginv is not None:
+        return stored_diaginv
 
-    probe_apply = _build_schur_probe_apply(
+    probe_apply = _build_schur_apply_from_saddle_preconditioner(
         seq,
         operators,
         k=k,
         dirichlet=dirichlet,
         eps=eps,
-        mode=mode,
         saddle_preconditioner=saddle_preconditioner,
     )
     suffix = '_dbc' if dirichlet else ''
@@ -1782,23 +1724,19 @@ def assemble_schur_jacobi_preconditioner(
         seq, operators: Optional[SequenceOperators] = None,
         *, ks: Sequence[int] = (1, 2, 3),
         dirichlet_variants: Optional[Sequence[bool]] = None,
-    eps: float = 0.0,
-    schur_diag_mode: str = 'metric_lumping_probe') -> SequenceOperators:
+    eps: float = 0.0) -> SequenceOperators:
     """Probe and store the approximate Schur diagonal at assembly time.
 
     For each (k, dirichlet) pair, builds the approximate Schur operator::
 
         A_k(x) = S_k x + D_{k-1} B_{k-1} D_{k-1}^T x
 
-    and probes its diagonal by O(n_k) matrix-vector products.  The
-    resulting ``1/diag(A_k)`` is stored on the operator bundle so that
-    the saddle-point Schur-outer Jacobi preconditioner is a cheap
-    multiply at solve time rather than an O(n_k) probing scan.
-
-    ``B_{k-1}`` is selected by ``schur_diag_mode``. There is exactly ONE
-    mode, ``'metric_lumping_probe'`` -- the metric_lumping schur.inner inverse,
-    which needs no prior assembly. It was raw_kron-backed until 2026-08-25; the
-    switch was forced by that deletion and measured first, see
+    with ``B_{k-1}`` the metric_lumping mass preconditioner (built on demand,
+    no prior assembly needed), and probes its diagonal by O(n_k)
+    matrix-vector products.  The resulting ``1/diag(A_k)`` is stored on the
+    operator bundle so that the saddle-point Schur-outer Jacobi
+    preconditioner is a cheap multiply at solve time rather than an O(n_k)
+    probing scan. Measured in
     docs/research/result_2026-08-25_schur_probe_ab.md.
 
     Parameters
@@ -1811,26 +1749,10 @@ def assemble_schur_jacobi_preconditioner(
         Boundary condition variants to assemble.  Defaults to (True, False).
     eps : float
         Shift for the stiffness term; 0 gives the unshifted Schur.
-    schur_diag_mode : str
-        ``'metric_lumping_probe'`` (the only mode).
-
-    This docstring used to advertise four (``'tensor_probe'``, ``'exact_probe'``
-    and ``'diag'`` as well) against a guard that accepted two, so two of them
-    were rejected by this function's own ValueError and a third pointed at the
-    tensor path deleted on 2026-08-25. Callers still passing ``'tensor_probe'``
-    (six sites across scripts/benchmark and scripts/debug) therefore raise; what
-    they should point at instead is a MEASUREMENT decision, not a repoint, and
-    is open -- benchmark_overnight_sweep.py builds its cross-k baseline on that
-    mode and switching it silently redefines what the baseline is.
     """
     if dirichlet_variants is None:
         dirichlet_variants = (True, False)
     operators = _ensure_extraction_operators(seq, operators)
-    if schur_diag_mode not in _SCHUR_DIAG_MODES:
-        raise ValueError(
-            "assemble_schur_jacobi_preconditioner schur_diag_mode must be one "
-            f"of {_SCHUR_DIAG_MODES} (got {schur_diag_mode!r})"
-        )
     dummy_spec = SaddlePointPreconditionerSpec(
         mass=MassPreconditionerSpec(kind='metric_lumping'),
         schur=SchurPreconditionerSpec(
@@ -1843,26 +1765,19 @@ def assemble_schur_jacobi_preconditioner(
             raise ValueError(
                 f"assemble_schur_jacobi_preconditioner: k must be 1, 2, or 3 (got {k})")
         for dirichlet in dirichlet_variants:
-            schur_apply = _build_schur_probe_apply(
+            schur_apply = _build_schur_apply_from_saddle_preconditioner(
                 seq,
                 operators,
                 k=k,
                 dirichlet=dirichlet,
                 eps=eps,
-                mode=schur_diag_mode,
                 saddle_preconditioner=dummy_spec,
             )
             suffix = '_dbc' if dirichlet else ''
             n = getattr(seq, f'n{k}{suffix}')
             diagonal = _diagonal_from_matvec(schur_apply, n)
             diaginv = _invert_diagonal(diagonal)
-            operators = _set_schur_diaginv(
-                operators,
-                k,
-                dirichlet,
-                diaginv,
-                mode=schur_diag_mode,
-            )
+            operators = _set_schur_diaginv(operators, k, dirichlet, diaginv)
     return operators
 
 
@@ -1875,31 +1790,6 @@ def _coerce_mass_preconditioner_spec(preconditioner):
         return MassPreconditionerSpec(kind=preconditioner)
     raise TypeError(
         "mass preconditioner must be a kind string or MassPreconditionerSpec")
-
-
-def _validate_public_mass_preconditioner_spec(spec: MassPreconditionerSpec):
-    """The whole of the public mass-spec contract, now that it is small.
-
-    Was three per-degree validators built entirely around ``surgery_schur`` and
-    ``kind='tensor'``: which combinations took an inner smoother, which were
-    legacy aliases, which were disabled. Both are gone, so what is left is that
-    the terminal kinds take no smoother.
-    """
-    if spec.smoother is not None:
-        raise ValueError(
-            f"kind={spec.kind!r} does not accept an inner smoother")
-
-
-def _validate_public_k0_mass_preconditioner_spec(spec: MassPreconditionerSpec):
-    _validate_public_mass_preconditioner_spec(spec)
-
-
-def _validate_public_k1_mass_preconditioner_spec(spec: MassPreconditionerSpec):
-    _validate_public_mass_preconditioner_spec(spec)
-
-
-def _validate_public_k2_mass_preconditioner_spec(spec: MassPreconditionerSpec):
-    _validate_public_mass_preconditioner_spec(spec)
 
 
 def _mass_metric_lumping_for(seq, operators, k: int, dirichlet: bool, **kwargs):
@@ -1959,32 +1849,10 @@ def _resolve_mass_preconditioner(seq, operators, k: int, preconditioner):
     return _coerce_mass_preconditioner_spec(preconditioner)
 
 
-def _normalize_mass_preconditioner_spec_for_degree(
-        spec: MassPreconditionerSpec, *, k: int):
-    if k != 3:
-        return spec
-
-    inner_spec = spec.smoother
-    if inner_spec is not None:
-        return _normalize_mass_preconditioner_spec_for_degree(inner_spec, k=k)
-
-    if not spec.surgery_schur:
-        return spec
-
-    return MassPreconditionerSpec(kind=spec.kind)
-
-
 def _build_operator_preconditioner_apply(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
     operator_apply, preconditioner, allow_none: bool = True):
     spec = _resolve_mass_preconditioner(seq, operators, k, preconditioner)
-    spec = _normalize_mass_preconditioner_spec_for_degree(spec, k=k)
-    if k == 0:
-        _validate_public_k0_mass_preconditioner_spec(spec)
-    if k == 1:
-        _validate_public_k1_mass_preconditioner_spec(spec)
-    if k == 2:
-        _validate_public_k2_mass_preconditioner_spec(spec)
     valid_kinds = ('none', 'jacobi', 'metric_lumping')
     if spec.kind not in valid_kinds:
         raise ValueError(
@@ -1993,12 +1861,6 @@ def _build_operator_preconditioner_apply(
     if spec.kind == 'metric_lumping':
         # Separable Kronecker bulk plus a sandwich, with the polar CORE probed
         # and inverted densely. Never splits the space.
-        if spec.surgery_schur:
-            raise ValueError(
-                "kind='metric_lumping' does not split the space, so "
-                "surgery_schur=True is meaningless; drop it")
-        if spec.smoother is not None:
-            raise ValueError("kind='metric_lumping' does not support a smoother")
         pre = _mass_metric_lumping_for(seq, operators, k, dirichlet)
         return lambda x, pre=pre: pre.apply(x)
     if spec.kind == 'none':
@@ -2066,10 +1928,6 @@ def _build_schur_apply_from_saddle_preconditioner(
             "schur.inner supports kind='metric_lumping' only "
             f"(got {schur_inner_spec.kind!r})"
         )
-    if schur_inner_spec.surgery_schur or schur_inner_spec.smoother is not None:
-        raise ValueError(
-            "schur.inner must be a terminal preconditioner"
-        )
 
     # The weak term B_{k-1} standing in for M_{k-1}^{-1}. Builds on demand, so
     # this cannot fail for want of a prior assemble_*.
@@ -2122,10 +1980,6 @@ def _coerce_saddle_preconditioner_spec(
                 "schur.outer kind must be one of "
                 f"{valid_outer_kinds} (got {preconditioner.schur.outer.kind!r})"
             )
-        _coerce_schur_diag_mode(
-            preconditioner.schur.outer,
-            context=f"schur.outer kind={preconditioner.schur.outer.kind!r}",
-        )
         return preconditioner
     if isinstance(preconditioner, str):
         lower_kind = 'jacobi'
@@ -2157,36 +2011,16 @@ def _build_diffusion_preconditioner_apply(
         k=k,
         preconditioner=preconditioner,
     )
-    spec = _normalize_mass_preconditioner_spec_for_degree(spec, k=k)
-    # 'tensor' used to sit in this list while only 'none' and 'jacobi' were
-    # dispatched, so asking for it passed validation and then hit the trailing
-    # raise saying it was unsupported.  Same accept-list/dispatch mismatch that
-    # has produced several instances in this file; the accept list now names
-    # exactly what is implemented.
-    #
-    # MERGE 2026-08-26: greville-prod fixed the same mismatch by DROPPING
-    # 'tensor' and leaving ('none', 'jacobi').  That is the right fix for the
-    # accept list it had; this branch additionally IMPLEMENTED the production
-    # kind below, so the list names three things and dispatches three things.
-    # Both sides agree on the rule -- accept exactly what is dispatched -- and
-    # this is the superset.
-    #
-    # Named through default_mass_preconditioner() rather than spelled out, so
-    # this survives the production atom being renamed -- it has been
-    # 'raw_kron', then 'block_jacobi', then 'metric_lumping' inside a month.
-    # What this branch wants is "whatever the production mass preconditioner
-    # currently is", and saying that literally is both more honest and
-    # rename-proof.
+    # The accept list names exactly what is dispatched below.  The production
+    # kind is named through default_mass_preconditioner() rather than spelled
+    # out: what this branch wants is "whatever the production mass
+    # preconditioner currently is", and saying that literally is rename-proof.
     production_kind = default_mass_preconditioner().kind
     valid_kinds = ('none', 'jacobi', production_kind)
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
             f"{valid_kinds} (got {spec.kind!r})")
-    if spec.surgery_schur:
-        raise ValueError(
-            "diffusion upper-block preconditioners do not support surgery_schur"
-        )
     if spec.kind == 'none':
         if not allow_none:
             raise ValueError("this preconditioner slot does not allow kind='none'")
@@ -2245,9 +2079,7 @@ def _build_diffusion_preconditioner_apply(
             allow_none=allow_none,
         )
     raise ValueError(
-        f"unsupported diffusion preconditioner kind {spec.kind!r} "
-        "(richardson/chebyshev removed 2026-08-14, see mrx/experimental/chebyshev.py)"
-    )
+        f"unsupported diffusion preconditioner kind {spec.kind!r}")
 
 
 def _build_scalar_hodge_preconditioner_apply(
@@ -2291,9 +2123,7 @@ def _build_scalar_hodge_preconditioner_apply(
             shifted_diaginv = 1.0 / (1.0 / stiffness_diaginv + eps / mass_diaginv_k)
         return lambda x, diaginv=shifted_diaginv: diaginv * x
     raise ValueError(
-        f"unsupported scalar Hodge preconditioner kind {spec.kind!r} "
-        "(richardson/chebyshev removed 2026-08-14, see mrx/experimental/chebyshev.py)"
-    )
+        f"unsupported scalar Hodge preconditioner kind {spec.kind!r}")
 
 
 def _build_coupled_saddle_preconditioner(
@@ -2459,12 +2289,6 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
       Requires :func:`assemble_metric_lumping_laplacian_preconditioner` first.
     * ``'auto'`` — ``'metric_lumping'`` when it has been assembled for this ``(k, BC)``,
       otherwise ``'jacobi'``.
-
-    (``'auto'`` previously resolved to ``'jacobi'`` unconditionally while this
-    docstring claimed it preferred ``'tensor'`` at k = 0. It did not. The
-    ``'tensor'`` kind itself -- the surgery-plus-Schur k = 0 model -- was
-    accepted here until 2026-08-25 with no dispatch branch of its own, so it
-    fell through to the ``unreachable`` assertion below.)
     """
     if kind not in ('auto', 'none', 'jacobi', 'metric_lumping'):
         raise ValueError(
@@ -2665,7 +2489,7 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
     # schur.inner construction -- the whole atom build -- on every
     # production solve, and then discarded it, because `outer='metric_lumping'` uses the
     # atom as the upper-block inverse directly and `outer='jacobi'` builds its
-    # own through _build_schur_probe_apply.
+    # own through _build_schur_outer_jacobi_diaginv.
     outer_spec = saddle_preconditioner.schur.outer
     if outer_spec.kind == 'metric_lumping':
         # The atom approximates L_k directly, so it needs neither the
@@ -2679,18 +2503,14 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
         def precond_upper(x, _k=k, _d=dirichlet):
             return apply_hodge_laplacian_preconditioner(
                 seq, operators, x, _k, dirichlet=_d, kind='metric_lumping')
-    elif outer_spec.kind == 'jacobi' and outer_spec.smoother is None:
+    elif outer_spec.kind == 'jacobi':
         schur_diaginv = _build_schur_outer_jacobi_diaginv(
             seq,
             operators,
             k=k,
             dirichlet=dirichlet,
             eps=eps,
-            outer_spec=outer_spec,
             saddle_preconditioner=saddle_preconditioner,
-            # If a mode-matched Schur Jacobi diagonal was preassembled,
-            # reuse it to avoid repeated probe builds.
-            allow_stored_tensor_diaginv=True,
         )
 
         def precond_upper(x, d=schur_diaginv):

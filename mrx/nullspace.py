@@ -219,7 +219,7 @@ def _nullspace_shifted_preconditioner(k: int):
     #
     # `mass=default_mass_preconditioner()` IS current (metric_lumping); only the
     # outer is stale. schur.inner is metric_lumping, which needs no eager
-    # assembly (raw_kron deleted 2026-08-25).
+    # assembly.
     return _validate_nullspace_shifted_preconditioner(
         k,
         SaddlePointPreconditionerSpec(
@@ -234,9 +234,6 @@ def _nullspace_shifted_preconditioner(k: int):
 
 
 def _validate_nullspace_shifted_preconditioner(k: int, preconditioner):
-    # chebyshev/richardson kinds were removed from production 2026-08-14
-    # (see mrx/experimental/chebyshev.py), so the old contains-chebyshev
-    # walker is gone; unknown kinds are rejected below.
     if k == 0:
         if not isinstance(preconditioner, MassPreconditionerSpec):
             raise TypeError('k=0 nullspace inverse iteration expects a MassPreconditionerSpec')

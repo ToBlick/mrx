@@ -54,46 +54,29 @@ class MassPreconditioners(eqx.Module):
 
 @dataclass(frozen=True)
 class MassPreconditionerSpec:
-    # kinds: none | jacobi | metric_lumping
-    #   metric_lumping = separable Kronecker bulk with the polar core probed and
-    #     inverted DENSELY, scaled by the metric-lumped diagonal. THE PRODUCTION
-    #     preconditioner, and now the field default too -- it used to be
-    #     'raw_kron' here while default_mass_preconditioner() returned something
-    #     else, so every bare MassPreconditionerSpec() silently carried a kind
-    #     the production resolver never chose.
-    #   (raw_kron deleted 2026-08-25 after the A/B in
-    #    docs/research/result_2026-08-25_schur_probe_ab.md; tensor retired
-    #    2026-08-17; richardson/chebyshev removed 2026-08-14)
+    """A mass preconditioner, named by ``kind``.
+
+    ``'none'`` is the identity, ``'jacobi'`` the diagonal, and
+    ``'metric_lumping'`` the production one: a separable Kronecker bulk with
+    the polar core probed and inverted DENSELY, scaled by the metric-lumped
+    diagonal. The field default is the production kind so that a bare spec
+    and :func:`default_mass_preconditioner` agree.
+    """
     kind: str = 'metric_lumping'
-    surgery_schur: bool = False
-    schur_diag_mode: str = 'metric_lumping_probe'
-    smoother: Optional[MassPreconditionerSpec] = None
 
 
 @dataclass(frozen=True)
 class SchurPreconditionerSpec:
     inner: MassPreconditionerSpec = dataclass_field(
         default_factory=MassPreconditionerSpec)
-    #: ``'none'`` since 2026-08-25, was ``'jacobi'``.
-    #:
-    #: A bare spec must not silently mean SOME preconditioner. 'jacobi' here
-    #: was the same silent-substitution failure this stack has spent a week
-    #: purging -- structurally identical to the ``MassPreconditionerSpec.kind
-    #: = 'raw_kron'`` field default that disagreed with
-    #: ``default_mass_preconditioner()`` and quietly gave every bare spec a
-    #: kind the production resolver never chose.
-    #:
-    #: 'none' rather than 'metric_lumping' on purpose: 'none' fails VISIBLY at
-    #: the first solve, where 'metric_lumping' would quietly work with
-    #: something the caller never asked for. The authoritative answer is
+    #: A bare spec must not silently mean SOME preconditioner. 'none' rather
+    #: than 'metric_lumping' on purpose: 'none' fails VISIBLY at the first
+    #: solve, where 'metric_lumping' would quietly work with something the
+    #: caller never asked for. The authoritative answer is
     #: ``operators._materialize_default_saddle_preconditioner``, which needs a
-    #: sequence and so cannot live in a field default at all.
-    #:
-    #: Blast radius when changed: ZERO. Every one of the 20 construction sites
-    #: in mrx/, test/ and non-deprecated scripts/ passes ``outer=``
-    #: explicitly, and there is no bare ``SchurPreconditionerSpec()`` or
-    #: ``SaddlePointPreconditionerSpec()`` anywhere. This closes a trap for the
-    #: next bare construction at the one moment it costs nothing.
+    #: sequence and so cannot live in a field default at all. Every
+    #: construction site in mrx/, test/ and scripts/ passes ``outer=``
+    #: explicitly.
     outer: MassPreconditionerSpec = dataclass_field(
         default_factory=lambda: MassPreconditionerSpec(kind='none'))
 
@@ -111,15 +94,14 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
     """The production mass preconditioner: metric_lumping.
 
     A separable Kronecker bulk with the polar core rows PROBED AND INVERTED
-    DENSELY, scaled by the metric-lumped diagonal. It replaced raw_kron as the
-    production default on 2026-08-22 and raw_kron itself was deleted on
-    2026-08-25, so this is now the only mass preconditioner besides 'jacobi'
-    and 'none'.
+    DENSELY, scaled by the metric-lumped diagonal. The only mass preconditioner
+    besides 'jacobi' and 'none'.
 
-    MEASURED against raw_kron (docs/research/production_simplification_plan.md
-    §10), 224 cells over four geometries, n = 8..20, p = 2..5:
+    MEASURED against its predecessor, the plain Kronecker model
+    (docs/research/production_simplification_plan.md §10), 224 cells over
+    four geometries, n = 8..20, p = 2..5:
 
-    * the mass solve itself: median **0.83x** raw_kron's iterations, and
+    * the mass solve itself: median **0.83x** the iterations, and
       **0.70-0.77x** at k=1,2 where the cost is. The advantage HOLDS OR GROWS
       with h and is flat in p. Build time was equal (2.0 vs 2.2 s median).
     * the effect on ``L_k`` -- the mass preconditioner is the weak term's inner
@@ -133,10 +115,9 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
     Only regression anywhere was ~5% at k=0, on mass solves that take 7-17
     iterations either way.
 
-    As the Schur-Jacobi probe backing it was measured separately on the day
-    raw_kron was deleted -- six converged cells, five favouring it by 2.4-16.6%,
-    one at +0.6% inside measured noise:
-    docs/research/result_2026-08-25_schur_probe_ab.md.
+    As the Schur-Jacobi probe backing it was measured separately -- six
+    converged cells, five favouring it by 2.4-16.6%, one at +0.6% inside
+    measured noise: docs/research/result_2026-08-25_schur_probe_ab.md.
 
     THE BUILD IS NOT JIT-SAFE, AND DOES NOT NEED TO BE. Its sparsity
     bookkeeping is host-side numpy and its core probe runs the matrix-free
@@ -148,12 +129,8 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
     CAVEAT ON THE EVIDENCE: the mass A/B covers h = 8..20 and p = 2..5, but the
     effect on ``L_k`` was measured at n=12, p=3 only. The overnight sweep in
     ``outputs/diag_newstack/`` extends that to n = 8..32 and p = 2..5.
-
-    (The MRX_MASS_KIND environment override lived here until 2026-08-25. Its
-    only purpose was flipping between raw_kron and this one for an honest A/B;
-    with one arm left it was a knob with a single setting.)
     """
-    return MassPreconditionerSpec(kind='metric_lumping', surgery_schur=False)
+    return MassPreconditionerSpec(kind='metric_lumping')
 
 
 def default_saddle_preconditioner() -> SaddlePointPreconditionerSpec:
@@ -173,12 +150,7 @@ def default_saddle_preconditioner() -> SaddlePointPreconditionerSpec:
     came to run its innermost solve on the diagonal unnoticed. A stale docstring
     naming jacobi as THE fallback is that same failure in prose.
 
-    ``schur.inner`` is metric_lumping, matching the real default. It was
-    raw_kron until 2026-08-25, justified here by "the Schur operator is built
-    before the outer branch is taken even when the atom ends up serving the
-    apply" -- which stopped being true at 31ef58f, when the Schur apply was
-    moved into the only branch that consumes it. The justification outlived the
-    behaviour it described by a day.
+    ``schur.inner`` is metric_lumping, matching the real default.
     """
     return SaddlePointPreconditionerSpec(
         mass=default_mass_preconditioner(),
@@ -485,7 +457,7 @@ def _metric_lumping_diff_flags(k: int, c: int) -> tuple:
 
 
 def _extraction_gram_inverse(e):
-    """``(E E^T)^{-1}`` for raw_kron, as ``(coupled_rows, inverse)``.
+    """``(E E^T)^{-1}`` for the Kronecker mass model, as ``(coupled_rows, inverse)``.
 
     ``E E^T = diag(C C^T, I)``: bulk rows of ``E`` are orthonormal selectors, and
     the coupled/bulk cross block is exactly zero, so the Gram restricted to the
@@ -561,13 +533,10 @@ def build_mass_metric_lumping_factors(seq, k: int, *, dirichlet: bool, d_raw=Non
     dropping it entirely (pow0) costs 2.3x the iterations at k=1 and drifts
     upward under refinement, because the mis-scaled subspace has dimension
     ``O(n_z)`` and grows; applying it once (pow1) recovers about half of that.
-    ``raw_kron`` is the pow2 arm, i.e. the correction on both sides.
+    These factors are the pow2 arm, i.e. the correction on both sides.
 
-    Returns :class:`MetricLumpingMassFactors`; use
-    These are the separable Kronecker factors the metric_lumping atom's weak
-    term is built on. The raw_kron apply and its jitted wrapper that used to
-    consume them were deleted on 2026-08-25; the factors themselves are shared
-    plumbing and survive under this name.
+    Returns :class:`MetricLumpingMassFactors`: the separable Kronecker factors
+    the metric_lumping atom's weak term is built on.
     """
     e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
     shapes, mass_1d, lam = _kron_mass_model_1d(seq, k, d_raw=d_raw)
@@ -649,7 +618,7 @@ def _kron_mass_model_1d(seq, k: int, d_raw=None):
 
 
 class MetricLumpingMassFactors(eqx.Module):
-    """Precomputed raw_kron factors for one ``(k, dirichlet)`` pair.
+    """Precomputed Kronecker mass-model factors for one ``(k, dirichlet)`` pair.
 
     Storage is ``O(n_z)``: the 1D inverses are tiny dense blocks and
     ``gram_inv`` covers only the coupled rows. Nothing here depends on the
@@ -753,7 +722,7 @@ def diag_schur_complement(apply_DT, diag_inv, n):
 #
 #   L_k = S_k + W_k ,   W_k = D_{k-1} B_{k-1} D_{k-1}^T ,   D_l = E_k M_k G_l E_l^T
 #
-# with ``B`` the raw_kron mass preconditioner standing in for ``M_{k-1}^{-1}``.
+# with ``B`` the Kronecker mass model standing in for ``M_{k-1}^{-1}``.
 # ``diag(S_k)`` is already closed form (:func:`mrx.local_assembly.
 # build_stiffness_diagonal`); this is the other half, and it is what forced
 # k>=1 Jacobi to probe the Laplacian at O(N) applies.
@@ -768,16 +737,13 @@ def diag_schur_complement(apply_DT, diag_inv, n):
 # collapses to a handful of small 1-D matrix chains plus one outer product per
 # term pair -- O(N), against the O(N) full applies a probe needs.
 #
-#   M_k, M_{k-1}  ->  the raw_kron model ``Lam (x)_a A_a Lam`` of
-#            :func:`_kron_mass_model_1d`, in all three places -- so
-#            ``M_{k-1}^{-1}`` here is literally the production mass
-#            preconditioner, not a second model built alongside it.
+#   M_k, M_{k-1}  ->  the Kronecker model ``Lam (x)_a A_a Lam`` of
+#            :func:`_kron_mass_model_1d`, in all three places.
 #   G_l  ->  exact, one Kronecker term per (out component, in component) pair.
 #   Pi   ->  exact, see :func:`_extraction_projector_kron_terms`.
 #
 # Note ``K = Sig (x)_a Cinv_a Sig`` with ``Sig = Lam_l^-1`` is EXACTLY the
-# inverse of the raw_kron model of ``M_{k-1}``, so "raw_kron preconditioner" and
-# "Kronecker model of the mass, inverted" are the same object here.
+# inverse of the Kronecker model of ``M_{k-1}``.
 #
 # The one wrinkle is that ``Lam (x)_a A_a Lam`` is a Kronecker product SANDWICHED
 # by a non-separable diagonal, and a diagonal does not push through a Kronecker
@@ -1346,8 +1312,8 @@ def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
     """Raw-DOF-space diagonal of the weak term, closed form and O(N).
 
     ``diag(W)`` for ``W = M_k G Pi M_{k-1}^{-1} Pi G^T M_k`` with every mass
-    replaced by the raw_kron Kronecker model -- so ``M_{k-1}^{-1}`` here is
-    literally the production mass preconditioner.  Each term of the expansion is
+    replaced by the Kronecker model of :func:`_kron_mass_model_1d`.  Each
+    term of the expansion is
     then a pure Kronecker product, whose diagonal is the OUTER PRODUCT of its
     three 1-D diagonals::
 
@@ -1387,7 +1353,7 @@ def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
     ``Lam_i / lam_i``.  Two copies, so:
 
     * ``'upper'`` multiplies each group by ``(Lam / lam)^2`` on the upper grid.
-      That ratio IS ``diag(M_k) / diag(M^_k)``: the split breaks the raw_kron
+      That ratio IS ``diag(M_k) / diag(M^_k)``: the split breaks the Kronecker
       model's defining property that it reproduces the exact mass diagonal, and
       this restores it.  Note the exponent -- the handoff note said
       ``(diag(M)/diag(M^))^2``, which double counts; there are two inner
@@ -1407,8 +1373,8 @@ def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
     
     KNOWN, MEASURED, UNFIXED -- this closed form is calibrated for a mass
     preconditioner that no longer exists. It models ``D M^-1 D^T`` under the
-    Kronecker mass model and was tuned when ``M^-1`` was raw_kron. Against
-    metric_lumping the model's error versus the exact operator grows from
+    plain Kronecker mass model, which used to be the production ``M^-1``.
+    Against metric_lumping the model's error versus the exact operator grows from
     ~2-4% median / ~30% max to **22% median / 114% max** (k=1 dbc, spline
     toroid 8,16,8 p=2). The right fix is to model the new mass, not to widen a
     bound.
@@ -1419,11 +1385,10 @@ def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
     ``kind='metric_lumping'`` gets ~9% better. ``_probed_laplacian_diaginv``
     is exact and unaffected.
 
-    `test_weak_term_diagonal_matches_exact_rows` used to pin this, gated on
-    the mass kind being raw_kron. With raw_kron deleted on 2026-08-25 that gate
-    could never open again, so the test was a permanent skip -- coverage in
-    appearance only -- and was removed. The measurement it carried lives here
-    instead, and re-deriving the bound for metric_lumping is open work.
+    No test pins this bound any more: the one that did was gated on the
+    plain Kronecker model being the mass kind, so it became a permanent skip
+    and was removed. The measurement it carried lives here instead, and
+    re-deriving the bound for metric_lumping is open work.
 """
     if k not in (1, 2, 3):
         raise ValueError("the weak term exists only for k = 1, 2, 3")
