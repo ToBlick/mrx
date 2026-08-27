@@ -143,23 +143,23 @@ def _phys_l2_rel_error(seq, dofs, e, k, f_ref):
 PROJ_BAND = {0: 6.3e-2, 1: 5.7e-1, 2: 5.3e-1, 3: 1.95e-1}
 INTERP_BAND = {0: 8.9e-2, 1: 5.8e-1}
 
-_ACCURACY = {0: (_f0, "e0"), 1: (_v1, "e1"), 2: (_v2, "e2"), 3: (_f3, "e3")}
+_ACCURACY = {0: _f0, 1: _v1, 2: _v2, 3: _f3}
 
 
 def _projection_error(seq, k):
-    f, e_name = _ACCURACY[k]
+    f = _ACCURACY[k]
     dofs = seq.apply_inverse_mass_matrix(seq.load(f, k), k, dirichlet=False)
-    return _phys_l2_rel_error(seq, dofs, getattr(seq, e_name), k, f)
+    return _phys_l2_rel_error(seq, dofs, seq.E(k), k, f)
 
 
 @pytest.mark.parametrize("k", [0, 1])
 def test_l2_projection_is_the_best_approximation(proj_seq, k):
     """Both errors below their measured bands, and projection ≤ interpolation
     (k=0 Greville collocation, k=1 histopolation)."""
-    f, e_name = _ACCURACY[k]
+    f = _ACCURACY[k]
     err_proj = _projection_error(proj_seq, k)
     err_interp = _phys_l2_rel_error(
-        proj_seq, proj_seq.interpolate(f, k), getattr(proj_seq, e_name), k, f)
+        proj_seq, proj_seq.interpolate(f, k), proj_seq.E(k), k, f)
     print(f"\n  k={k} L2 projection {err_proj:.3e}  interpolation {err_interp:.3e}")
     assert err_proj < PROJ_BAND[k]
     assert err_interp < INTERP_BAND[k]

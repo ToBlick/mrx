@@ -269,7 +269,7 @@ def test_defaults_are_the_production_configuration(tiny_seq):
     # And behaviourally: bare defaults == the explicit production config.
     prev = os.environ.pop("MRX_BJ_BC_SCALE", None)
     try:
-        n = int(getattr(tiny_seq, "n1"))
+        n = int(tiny_seq.n(1))
         rng = np.random.default_rng(3)
         vecs = [jnp.asarray(rng.standard_normal(n)) for _ in range(2)]
         ops = tiny_seq.get_operators()

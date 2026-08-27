@@ -1304,13 +1304,15 @@ def _build_scalar_hodge_preconditioner_apply(
         if not allow_none:
             raise ValueError("this preconditioner slot does not allow kind='none'")
         return lambda x: x
-    if not _metric_lumping_available(operators, k, dirichlet):
-        raise ValueError(
-            f"scalar preconditioner kind='metric_lumping' needs the metric_lumping "
-            f"Laplacian atom for k={k}, dirichlet={dirichlet}; "
-            "seq.build_preconditioners() builds it")
-    return lambda x: apply_laplacian_preconditioner(
-        seq, operators, x, k, dirichlet=dirichlet, kind='metric_lumping')
+    if spec.kind == 'metric_lumping':
+        if not _metric_lumping_available(operators, k, dirichlet):
+            raise ValueError(
+                f"scalar preconditioner kind='metric_lumping' needs the metric_lumping "
+                f"Laplacian atom for k={k}, dirichlet={dirichlet}; "
+                "seq.build_preconditioners() builds it")
+        return lambda x: apply_laplacian_preconditioner(
+            seq, operators, x, k, dirichlet=dirichlet, kind='metric_lumping')
+    raise ValueError(f"unsupported scalar preconditioner kind {spec.kind!r}")
 
 
 def _build_coupled_saddle_preconditioner(
