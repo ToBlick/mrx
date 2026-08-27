@@ -5,12 +5,11 @@ Provides :class:`DifferentialForm` (basis), :class:`DiscreteFunction`
 """
 
 import math
-from typing import Any, Callable
+from typing import Callable
 
 import jax
 import jax.numpy as jnp
 
-import mrx
 from mrx.spline_bases import (
     DerivativeSpline,
     SplineBasis,
@@ -349,7 +348,7 @@ class Pushforward:
 
         k= 0   F_* ω = ω
         k= 1   F_* ω = (DFᵀ)⁻¹ · ω
-        k= 2   F_* ω = DF · ω / J           (Piola)
+        k= 2   F_* ω = DF · ω / J           
         k= 3   F_* ω = ω / J
         k=−1   F_* v = DF · v               (vector field)
     """
@@ -368,21 +367,15 @@ class Pushforward:
         """Evaluate the pushed-forward form at logical point ``x``."""
         if self.k == 0:
             return self.f(x)
-        elif self.k == 1:
-            return inv33(jax.jacfwd(self.F)(x)).T @ self.f(x)
+        DF = jax.jacfwd(self.F)(x)
+        if self.k == 1:
+            return inv33(DF).T @ self.f(x)
         elif self.k == 2:
-            return (
-                jax.jacfwd(self.F)(x)
-                @ self.f(x)
-                / jnp.linalg.det(jax.jacfwd(self.F)(x))
-            )
+            return DF @ self.f(x) / det33(DF)
         elif self.k == 3:
-            return self.f(x) / jnp.linalg.det(jax.jacfwd(self.F)(x))
+            return self.f(x) / det33(DF)
         elif self.k == -1:
-            return (
-                jax.jacfwd(self.F)(x)
-                @ self.f(x)
-            )
+            return DF @ self.f(x)
 
 
 class Pullback:
@@ -392,7 +385,7 @@ class Pullback:
 
         k= 0   F* ω = ω∘F
         k= 1   F* ω = DFᵀ · (ω∘F)
-        k= 2   F* ω = J · DF⁻¹ · (ω∘F)     (Piola)
+        k= 2   F* ω = J · DF⁻¹ · (ω∘F)
         k= 3   F* ω = J · (ω∘F)
         k=−1   F* v = DF⁻¹ · (v∘F)         (vector field)
     """
@@ -412,20 +405,15 @@ class Pullback:
         y = self.F(x)
         if self.k == 0:
             return self.f(y)
-        elif self.k == 1:
-            return jax.jacfwd(self.F)(x).T @ self.f(y)
+        DF = jax.jacfwd(self.F)(x)
+        if self.k == 1:
+            return DF.T @ self.f(y)
         elif self.k == 2:
-            return (
-                inv33(jax.jacfwd(self.F)(x))
-                @ self.f(y)
-                * jnp.linalg.det(jax.jacfwd(self.F)(x))
-            )
+            return adj33(DF) @ self.f(y)      # J DF^-1 = adj(DF), finite at det DF = 0
         elif self.k == 3:
-            return self.f(y) * jnp.linalg.det(jax.jacfwd(self.F)(x))
+            return self.f(y) * det33(DF)
         elif self.k == -1:
-            return (
-                inv33(jax.jacfwd(self.F)(x)) @ self.f(y)
-            )
+            return inv33(DF) @ self.f(y)
 
 
 # ---------------------------------------------------------------------------
@@ -471,27 +459,9 @@ def inv33(mat: jnp.ndarray) -> jnp.ndarray:
     return adj33(mat) / det
 
 
-# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
-def safe_inv33(mat: jnp.ndarray, *, tol: float = 1e-10) -> jnp.ndarray:
-    """Return ``inv33(mat)`` when well-conditioned, else the zero matrix.
-
-    This is the singular-safe variant for modal block solves and other places
-    where nullspace modes should be deflated instead of inverted.
-    """
-    det = det33(mat)
-
-    def _singular(_):
-        return jnp.zeros((3, 3), dtype=mat.dtype)
-
-    def _nonsingular(_):
-        return inv33(mat)
-
-    return jax.lax.cond(jnp.abs(det) < tol, _singular, _nonsingular, operand=None)
-
-
 def jacobian_determinant(f: Callable) -> Callable:
     """Return a function that computes ``det(jacfwd(f))`` at a point."""
-    return lambda x: jnp.linalg.det(jax.jacfwd(f)(x))
+    return lambda x: det33(jax.jacfwd(f)(x))
 
 
 def div(F: Callable) -> Callable:
@@ -518,28 +488,5 @@ def grad(F: Callable) -> Callable:
         DF = jax.jacfwd(F)(x)
         return jnp.ravel(DF)
     return grad_F
-
-
-# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
-def l2_product(f: Callable,
-               g: Callable,
-               Q: Any,
-               F: Callable = lambda x: x) -> jnp.ndarray:
-    """L2 inner product ``<f, g>`` over the domain defined by quadrature ``Q``.
-
-    Args:
-        f: First integrand ``ξ -> array``.
-        g: Second integrand ``ξ -> array``.
-        Q: Quadrature rule with ``Q.x`` (points) and ``Q.w`` (weights).
-        F: Optional coordinate map; Jacobian determinant is included.
-
-    Returns:
-        Scalar inner product value.
-    """
-    J_i = jax.lax.map(jacobian_determinant(F), Q.x,
-                      batch_size=mrx.MAP_BATCH_SIZE_INNER)
-    f_ij = jax.lax.map(f, Q.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
-    g_ij = jax.lax.map(g, Q.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
-    return jnp.einsum("ij,ij,i,i->", f_ij, g_ij, J_i, Q.w)
 
 
