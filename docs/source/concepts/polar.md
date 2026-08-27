@@ -63,10 +63,9 @@ polar sequence for k = 0, 1, 2 and `E_3 E_3^T = I`.
 ## 3. The strong derivative on the polar complex
 
 On coefficients the exterior derivative is the topological incidence `G_k`
-with entries in `{-1, 0, +1}`. On a non-polar sequence the extraction is a
-0/1 selection, so `E_{k+1} G_k E_k^T` is the discrete derivative and
-`d ∘ d = 0` holds. On a polar sequence the fused rows make the true
-derivative
+with entries in `{-1, 0, +1}`. Where the extraction is a 0/1 selection
+(the V3 space) `E_{k+1} G_k E_k^T` is the discrete derivative and
+`d ∘ d = 0` holds. The fused polar rows make the true derivative
 
 ```
 G_k = (E_{k+1} E_{k+1}^T)^{-1} E_{k+1} G_k^raw E_k^T

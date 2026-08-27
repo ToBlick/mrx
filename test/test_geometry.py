@@ -50,7 +50,7 @@ _F_ANALYTIC = rotating_ellipse_map(eps=0.3, kappa=1.2, nfp=3)
 @pytest.fixture(scope="module")
 def spline_seq():
     """``(seq, spline_map)``: the toroid interpolated at the Greville points."""
-    seq = DeRhamSequence((4, 6, 4), (2, 2, 2), 3, _TYPES, polar=False)
+    seq = DeRhamSequence((4, 6, 4), (2, 2, 2), 3, _TYPES, polar=True)
     coeffs = greville_interpolate_map(_F_TOROID, seq)
     seq.set_spline_map(coeffs)
     return seq, seq.build_spline_map(coeffs)

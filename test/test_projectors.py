@@ -350,65 +350,6 @@ def test_phys_pullback_inverts_pushforward(proj_seq, k):
 
 
 # ---------------------------------------------------------------------------
-# Pi_full in ISOLATION.
-#
-# The restriction (E E^T)^-1 E makes the round-trip exact BY CONSTRUCTION -- but
-# only if Pi_full, the tensor-product projector it composes with, is itself
-# idempotent.  That is a separate claim and deserves a separate test.
-#
-# A NON-POLAR, NON-DIRICHLET sequence has BoundaryOperator(('none',)*3), so its
-# extraction is the identity and `interpolate` IS Pi_full with nothing else in
-# the loop.  If these fail while the polar round-trips pass, the fault is the
-# tensor-product projector; if they pass while polar fails, it is the extraction.
-#
-# The degrees exercise different axes, so a failure localises:
-#   k=0  coll_r, coll_t, coll_z              pure collocation, no histopolation
-#   k=1  hist_r / hist_t / hist_z            one histopolated axis per component
-#   k=2  two histopolated axes per component
-#   k=3  hist_r, hist_t, hist_z              all three
-# theta and zeta are PERIODIC here, so k>=1 exercises periodic histopolation --
-# which `interpolate` only reaches at all because a clamped-only guard was
-# removed on the grounds that greville_spans supports periodic spans.  Producing
-# spans is a weaker claim than the resulting DOFs being unisolvent.
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def tensor_seq():
-    """Full tensor-product sequence: no polar surgery, no Dirichlet rows."""
-    seq = DeRhamSequence(
-        (4, 4, 4), (2, 2, 2), 4, ("clamped", "periodic", "periodic"),
-        polar=False, maxiter=200, betti_numbers=(1, 1, 0, 0),
-    )
-    seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2))
-    return seq
-
-
-@pytest.mark.parametrize("k", [0, 1, 2, 3])
-def test_pi_full_is_idempotent(tensor_seq, k):
-    """Pi_full must reproduce a function already in the full tensor space."""
-    basis = getattr(tensor_seq, _BASIS_ATTR[k])
-    e = tensor_seq.E(k)
-    n = int(tensor_seq.n(k))
-    assert n == int(basis.n), (
-        f"k={k}: expected an identity extraction on a non-polar free sequence, "
-        f"got {n} extracted of {int(basis.n)} raw -- this test no longer "
-        f"isolates Pi_full"
-    )
-
-    a = jax.random.normal(jax.random.PRNGKey(23 * k + 5), (n,))
-    discrete = DiscreteFunction(a, basis, e)
-    kwargs = {} if k in (0, 3) else {"frame": "ref"}
-    got = tensor_seq.interpolate(lambda x: discrete(x), k, **kwargs)
-
-    err = float(jnp.linalg.norm(got - a) / jnp.linalg.norm(a))
-    print(f"\n  k={k} Pi_full idempotency relative error: {err:.3e}")
-    assert err < IDENT, (
-        f"k={k}: Pi_full is not idempotent (rel {err:.3e}) on the FULL tensor "
-        f"space, with no extraction involved. No restriction can repair this."
-    )
-
-
-# ---------------------------------------------------------------------------
 # Physical-frame loads.
 #
 # ``load(frame='phys')`` and ``io.load_grid_field(frame='phys')`` are the only

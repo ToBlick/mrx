@@ -5,7 +5,7 @@ The interpolation round trips that used to live here handed a
 returns its DOFs through ``projectors._matching_discrete_dofs`` without
 interpolating anything; the identity they meant is
 ``test_projectors.test_interpolation_reproduces_its_own_space`` (polar, both
-parities of p) and ``test_pi_full_is_idempotent`` (full tensor space).
+parities of p).
 """
 
 
@@ -28,16 +28,15 @@ def _dof(seq, k, dirichlet):
     return seq.n(k, dirichlet)
 
 
-@pytest.fixture(scope="module", params=[False, True], ids=["tensor", "polar"])
-def evaluator_seq(request):
-    """(4,4,4) sequence with a clamped and a periodic axis at both parities of p."""
+@pytest.fixture(scope="module")
+def evaluator_seq():
+    """(4,4,4) p=2 polar sequence on the identity map."""
     seq = DeRhamSequence(
         (4, 4, 4),
-        (3, 2, 3) if not request.param else (2, 2, 2),
+        (2, 2, 2),
         4,
-        ("clamped", "periodic", "clamped") if not request.param
-        else ("clamped", "periodic", "periodic"),
-        polar=request.param,
+        ("clamped", "periodic", "periodic"),
+        polar=True,
         maxiter=200,
         betti_numbers=(1, 1, 0, 0),
     )

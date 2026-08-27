@@ -37,8 +37,7 @@ import jax.numpy as jnp
 
 import mrx
 from mrx.differential_forms import DifferentialForm
-from mrx.extraction_operators import (BoundaryOperator,
-                                      PolarExtractionOperator,
+from mrx.extraction_operators import (PolarExtractionOperator,
                                       bc_extraction_op, get_xi)
 from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
                            get_nullspace)
@@ -75,9 +74,8 @@ class DeRhamSequence():
         Tensor-product Gauss quadrature rule used for assembly.
     geometry : SequenceGeometry
         Metric and Jacobian data derived from the logical-to-physical map.
-    xi : jnp.ndarray or None
-        Polar extraction weights ``(3, 2, n_θ)`` (:func:`~mrx.extraction_operators.get_xi`);
-        ``None`` on a non-polar sequence.
+    xi : jnp.ndarray
+        Polar extraction weights ``(3, 2, n_θ)`` (:func:`~mrx.extraction_operators.get_xi`).
     extraction : dict
         ``E(k, dirichlet)`` -- the extraction operators mapping constrained
         DoF vectors to the full spline basis, free and with homogeneous
@@ -87,9 +85,9 @@ class DeRhamSequence():
     g0, g1, g2 : _MatrixFreeIncidence
         Raw {-1, 0, +1} incidence stencils (grad, curl, div) and their
         transposes ``g*_T``.
-    g0_grad, g1_curl : dict or None
+    g0_grad, g1_curl : dict
         Analytic polar grad/curl stencils on extracted DoFs, keyed
-        ``(dirichlet_in, dirichlet_out)``; ``None`` on a non-polar sequence.
+        ``(dirichlet_in, dirichlet_out)``.
     geometry : SequenceGeometry or None
         Metric and Jacobian data of the installed map (:meth:`set_map`).
     mass_apply, projection_apply : dict or None
@@ -144,8 +142,9 @@ class DeRhamSequence():
             Boundary-condition type string per direction, e.g.
             ``['periodic', 'periodic', 'periodic']``.
         polar : bool
-            If ``True``, apply polar extraction operators that enforce
-            regularity at the magnetic axis.
+            Must be ``True``: the sequence is built for a geometry with a
+            polar axis at ``r = 0`` (C¹ polar extraction there). A
+            non-polar tensor-product sequence is not supported.
         tol : float, optional
             Relative residual tolerance of every iterative solve that goes
             through the sequence. ``None`` (default) selects
@@ -182,9 +181,14 @@ class DeRhamSequence():
         :meth:`set_map` or :meth:`set_spline_map`, the preconditioners by
         :meth:`build_preconditioners`.
         """
+        if not polar:
+            raise ValueError(
+                "polar=False is not supported: every MRX geometry has a polar axis "
+                "at r = 0 and the extraction, incidence and preconditioners are "
+                "built for it. A tensor-product (non-polar) sequence would need "
+                "its own selection extraction; nothing in the code base uses one.")
         self.ns = tuple(ns)
         self.ps = tuple(ps)
-        self.polar = bool(polar)
         self.tol = mrx.sqrt_eps() if tol is None else tol
         self.maxiter = maxiter
         self.n_inner = n_inner
@@ -216,14 +220,9 @@ class DeRhamSequence():
         self.quad = QuadratureRule(self.basis_0, q)
 
         bases = (self.basis_0, self.basis_1, self.basis_2, self.basis_3)
-        self.xi = get_xi(ns[1]) if polar else None
-        if polar:
-            raw = [PolarExtractionOperator(L, self.xi, False) for L in bases]
-            raw_dbc = [PolarExtractionOperator(L, self.xi, True) for L in bases]
-        else:
-            # Dirichlet conditions are supported in r only.
-            raw = [BoundaryOperator(L, ('none', 'none', 'none')) for L in bases]
-            raw_dbc = [BoundaryOperator(L, ('dirichlet', 'none', 'none')) for L in bases]
+        self.xi = get_xi(ns[1])
+        raw = [PolarExtractionOperator(L, self.xi, False) for L in bases]
+        raw_dbc = [PolarExtractionOperator(L, self.xi, True) for L in bases]
         self.extraction, self.boundary_extraction = {}, {}
         self.n_dofs, self.n_boundary = {}, {}
         for k in range(4):
@@ -245,18 +244,16 @@ class DeRhamSequence():
         self.dd_basis_jk = _second_derivative_tables(self)
         self.greville = greville_axes(self)
 
-        # Topological incidence: the raw stencils and, on polar sequences, the
-        # analytic grad/curl corrections that make d.d = 0 exact on extracted
-        # DoFs (div needs none: the V3 extraction is a 0/1 selection).
+        # Topological incidence: the raw stencils and the analytic polar
+        # grad/curl corrections that make d.d = 0 exact on extracted DoFs
+        # (div needs none: the V3 extraction is a 0/1 selection).
         for k in range(3):
             g, g_T = op.build_matrixfree_incidence(self, k)
             setattr(self, f"g{k}", g)
             setattr(self, f"g{k}_T", g_T)
-        self.g0_grad = self.g1_curl = None
-        if polar:
-            pairs = [(din, dout) for din in (False, True) for dout in (False, True)]
-            self.g0_grad = {pr: op.build_grad_stencil_g0(self, self.xi, *pr) for pr in pairs}
-            self.g1_curl = {pr: op.build_curl_stencil_g1(self, self.xi, *pr) for pr in pairs}
+        pairs = [(din, dout) for din in (False, True) for dout in (False, True)]
+        self.g0_grad = {pr: op.build_grad_stencil_g0(self, self.xi, *pr) for pr in pairs}
+        self.g1_curl = {pr: op.build_curl_stencil_g1(self, self.xi, *pr) for pr in pairs}
 
     def load(self, f, k: int, dirichlet: bool = False, bc: bool = False,
              frame: str = 'phys'):
@@ -528,10 +525,10 @@ class DeRhamSequence():
                                transpose=False):
         """The exterior derivative on coefficients: ``G_k`` (k-forms to (k+1)-forms).
 
-        A {-1, 0, +1} difference stencil on tensor-product sequences; on
-        polar sequences the analytic grad/curl stencils that make it the
-        exact strong derivative on extracted DoFs (``d.d = 0`` to round-off).
-        No geometry and no solve. ``transpose=True`` applies ``G_k^T``.
+        For grad and curl the analytic polar stencils, the exact strong
+        derivative on extracted DoFs (``d.d = 0`` to round-off); for div the
+        {-1, 0, +1} difference stencil through the (0/1) V3 extraction. No
+        geometry and no solve. ``transpose=True`` applies ``G_k^T``.
         """
         return op.apply_incidence_matrix(
             self, v, k,

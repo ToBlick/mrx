@@ -199,8 +199,8 @@ def _conforming_restriction(e, c_full):
 
     The blocks are inverted DENSELY -- the same separable-bulk-plus-dense-core
     idiom as ``BlockJacobiMass``, and for the same reason: an ``E+``
-    pseudoinverse is what that analysis rejected.  For a pure selection (k=3,
-    and every non-polar sequence) this returns immediately.
+    pseudoinverse is what that analysis rejected.  For a pure selection (k=3)
+    this returns immediately.
 
     TODO: cache on the sequence alongside the collocation matrices if it ever
     shows up in a profile; the blocks depend only on the extraction.

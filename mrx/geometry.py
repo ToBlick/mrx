@@ -357,7 +357,7 @@ def greville_interpolate_stellarator_map(
         seq: :class:`~mrx.derham_sequence.DeRhamSequence` to use for
             interpolation.  Typically
             built with ``('clamped', 'periodic', 'periodic')`` boundary
-            conditions and ``polar=False``.
+            conditions.
         nfp: Number of field periods.
         flip_zeta: Passed through to
             :func:`~mrx.mappings.stellarator_map`.

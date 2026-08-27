@@ -17,11 +17,10 @@ class MatrixFreeExtraction(eqx.Module):
     """Indexed linear operator applied as gather + ``segment_sum``.
 
     Holds the COO triplets ``(rows, cols, vals)`` of a sparse matrix and
-    applies it (forward) or its transpose without a sparse-matrix library:
-    the forward apply maps a vector of size ``forward_shape[1]`` to one of
-    size ``forward_shape[0]``. Used for the polar/boundary extraction ``E``
-    and for the analytic polar grad/curl stencils; ``.T`` is free (it only
-    flips the orientation flag).
+    applies it (forward) or its transpose: the forward apply maps a vector 
+    of size ``forward_shape[1]`` to one of size ``forward_shape[0]``. 
+    Used for the polar/boundary extraction ``E``and for the analytic polar 
+    grad/curl stencils.
 
     ``rows``/``cols``/``vals`` are always stored in the *forward* orientation;
     the :attr:`transposed` flag selects how they are consumed. Duplicate
@@ -85,85 +84,6 @@ class MatrixFreeExtraction(eqx.Module):
 
     def __call__(self, x):
         return self._apply(x)
-
-    def restrict_rows(self, row_indices):
-        """Return a copy with the row dimension restricted to ``row_indices``.
-
-        Works in the current orientation (respects ``transposed``). The result
-        keeps only nonzeros whose row (in current orientation) falls in
-        ``row_indices``, with rows remapped to a contiguous 0-based range.
-        Returns a new :class:`MatrixFreeExtraction`.
-        """
-        row_indices = jnp.asarray(row_indices, dtype=jnp.int32)
-        n_new = int(row_indices.shape[0])
-        # "Row in current orientation" lives in self.cols if transposed, else self.rows.
-        if self.transposed:
-            src = self.cols
-            n_old = self.forward_shape[1]
-        else:
-            src = self.rows
-            n_old = self.forward_shape[0]
-        remap = jnp.full((n_old,), -1, dtype=jnp.int32)
-        remap = remap.at[row_indices].set(jnp.arange(n_new, dtype=jnp.int32))
-        new_src = remap[src]
-        mask = new_src >= 0
-        new_vals = self.vals[mask]
-        if self.transposed:
-            return MatrixFreeExtraction(
-                rows=self.rows[mask],
-                cols=new_src[mask],
-                vals=new_vals,
-                forward_shape=(self.forward_shape[0], n_new),
-                transposed=True,
-            )
-        else:
-            return MatrixFreeExtraction(
-                rows=new_src[mask],
-                cols=self.cols[mask],
-                vals=new_vals,
-                forward_shape=(n_new, self.forward_shape[1]),
-                transposed=False,
-            )
-
-    def restrict_cols(self, col_indices):
-        """Return a copy with the column dimension restricted to ``col_indices``.
-
-        Works in the current orientation (respects ``transposed``). The result
-        keeps only nonzeros whose column (in current orientation) falls in
-        ``col_indices``, with columns remapped to a contiguous 0-based range.
-        Returns a new :class:`MatrixFreeExtraction`.
-        """
-        col_indices = jnp.asarray(col_indices, dtype=jnp.int32)
-        n_new = int(col_indices.shape[0])
-        # "Col in current orientation" lives in self.rows if transposed, else self.cols.
-        if self.transposed:
-            src = self.rows
-            n_old = self.forward_shape[0]
-        else:
-            src = self.cols
-            n_old = self.forward_shape[1]
-        remap = jnp.full((n_old,), -1, dtype=jnp.int32)
-        remap = remap.at[col_indices].set(jnp.arange(n_new, dtype=jnp.int32))
-        new_src = remap[src]
-        mask = new_src >= 0
-        new_vals = self.vals[mask]
-        if self.transposed:
-            return MatrixFreeExtraction(
-                rows=new_src[mask],
-                cols=self.cols[mask],
-                vals=new_vals,
-                forward_shape=(n_new, self.forward_shape[1]),
-                transposed=True,
-            )
-        else:
-            return MatrixFreeExtraction(
-                rows=self.rows[mask],
-                cols=new_src[mask],
-                vals=new_vals,
-                forward_shape=(self.forward_shape[0], n_new),
-                transposed=False,
-            )
-
 
 class PolarExtractionOperator:
     """
@@ -570,126 +490,6 @@ def get_xi(nt):
 
 
 # Boundary extraction operator for cube-like domains
-class BoundaryOperator:
-    """
-    A lazy boundary operator for handling boundary conditions in differential forms.
-
-    This class implements boundary condition operators for differential forms
-    on cube-like domains. It supports different types of boundary conditions
-    and form degrees.
-
-    Attributes:
-        k (int): Degree of the differential form (0, 1, 2, or 3)
-        Lambda_0 (DifferentialForm)
-        types (tuple): Tuple of boundary condition types for each direction.
-        nr (int): Number of points in r-direction after boundary conditions
-        nt (int): Number of points in θ-direction after boundary conditions
-        nz (int): Number of points in ζ-direction after boundary conditions
-        dr (int): Number of points in r-direction
-        dt (int): Number of points in θ-direction
-        dz (int): Number of points in ζ-direction
-        n1 (int): Size of first component
-        n2 (int): Size of second component
-        n3 (int): Size of third component
-        n (int): Total size of the operator
-        M: Assembled operator matrix
-    """
-
-    def __init__(self, Λ, types):
-        """
-        Initialize the boundary operator.
-
-        Args:
-            Λ (DifferentialForm)
-            types (tuple): Tuple of boundary condition types for each direction.
-                          Can be 'dirichlet' (zero at boundaries), 'half' (zero only at x=1)
-                          or other types (no boundary conditions).
-        """
-        self.k = Λ.k
-        self.Lambda = Λ
-
-        def get_dim(original_dim, bc_type):
-            if bc_type == "dirichlet":
-                return original_dim - 2
-            elif bc_type == "right":
-                return original_dim - 1
-            elif bc_type == "left":
-                return original_dim - 1
-            else:
-                return original_dim
-
-        self.nr, self.nt, self.nz = get_dim(self.Lambda.nr, types[0]), get_dim(
-            self.Lambda.nt, types[1]), get_dim(self.Lambda.nz, types[2])
-        self.dr, self.dt, self.dz = self.Lambda.dr, self.Lambda.dt, self.Lambda.dz
-        self.types = types
-
-        if self.k == 0:
-            self.n1 = self.nr * self.nt * self.nz
-            self.n2 = 0
-            self.n3 = 0
-        if self.k == 1:
-            self.n1 = self.dr * self.nt * self.nz
-            self.n2 = self.nr * self.dt * self.nz
-            self.n3 = self.nr * self.nt * self.dz
-        elif self.k == 2:
-            self.n1 = self.nr * self.dt * self.dz
-            self.n2 = self.dr * self.nt * self.dz
-            self.n3 = self.dr * self.dt * self.nz
-        elif self.k == 3:
-            self.n1 = self.dr * self.dt * self.dz
-            self.n2 = 0
-            self.n3 = 0
-        elif self.k == -1:
-            self.n1 = self.nr * self.nt * self.nz
-            self.n2 = self.nr * self.nt * self.nz
-            self.n3 = self.nr * self.nt * self.nz
-        self.n = self.n1 + self.n2 + self.n3
-
-    def build_extraction(self):
-        """Build the MatrixFreeExtraction of this selection matrix.
-
-        Every extracted row keeps exactly one raw DOF: the one whose index on
-        a constrained axis is shifted by one for ``'dirichlet'`` / ``'left'``
-        (the first raw DOF is dropped) and unshifted otherwise (``'right'``
-        drops the last raw DOF by the smaller row count alone). The axis that
-        carries the derivative basis of a component is never constrained.
-        """
-        L = self.Lambda
-        shift = tuple(int(t in ("dirichlet", "left")) for t in self.types)
-        n, d = (self.nr, self.nt, self.nz), (self.dr, self.dt, self.dz)
-        if self.k == 0:
-            row_shapes, constrained = [n], [(1, 1, 1)]
-        elif self.k == 1:
-            row_shapes = [(d[0], n[1], n[2]), (n[0], d[1], n[2]), (n[0], n[1], d[2])]
-            constrained = [(0, 1, 1), (1, 0, 1), (1, 1, 0)]
-        elif self.k == 2:
-            row_shapes = [(n[0], d[1], d[2]), (d[0], n[1], d[2]), (d[0], d[1], n[2])]
-            constrained = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]
-        elif self.k == 3:
-            row_shapes, constrained = [d], [(0, 0, 0)]
-        else:
-            row_shapes, constrained = [n] * 3, [(1, 1, 1)] * 3
-
-        rows, cols = [], []
-        row_start = col_start = 0
-        for row_shape, col_shape, axes in zip(row_shapes, L.shape, constrained):
-            idx = [ax.ravel() for ax in np.indices(row_shape)]
-            src = tuple(idx[a] + shift[a] * axes[a] for a in range(3))
-            rows.append(row_start + np.arange(idx[0].shape[0]))
-            cols.append(col_start + np.ravel_multi_index(src, col_shape))
-            row_start += int(np.prod(row_shape))
-            col_start += int(np.prod(col_shape))
-        rows = np.concatenate(rows)
-        cols = np.concatenate(cols)
-        return MatrixFreeExtraction(
-            rows=jnp.asarray(rows, dtype=jnp.int32),
-            cols=jnp.asarray(cols, dtype=jnp.int32),
-            vals=jnp.ones(rows.shape[0], dtype=mrx.DTYPE),
-            forward_shape=(self.n, L.n),
-            transposed=False,
-        )
-
-
 def bc_extraction_op(
     e,
     e_dbc,
@@ -700,9 +500,6 @@ def bc_extraction_op(
     Returns a :class:`MatrixFreeExtraction` of shape ``(n_bc, n_full)`` that
     selects the DOFs present in ``e`` (unrestricted) but absent from ``e_dbc``
     (DBC), i.e. the DOFs that are set to zero by the homogeneous Dirichlet BC.
-
-    Uses the identity: columns present in e but not e_dbc satisfy
-        (e.T @ 1  -  e_dbc.T @ 1)[i] == 1
     """
     indicator = np.array(
         e.T @ jnp.ones(e.shape[0])

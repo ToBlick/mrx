@@ -1,10 +1,6 @@
 """Matrix-free mass, Laplacian, and de Rham complex tests (``mrx.operators``).
 
-Two (4, 6, 4) p=2 module fixtures:
-
-  **Tensor identity map** (``tensor_seq``, ``polar=False``) -- the extraction
-  is a 0/1 selection there, so ``curl(grad f) = 0`` and ``div(curl F) = 0``
-  hold for the raw extracted incidence.
+One (4, 6, 4) p=2 module fixture:
 
   **Polar rotating ellipse** (``re_seq``, nfp=3) -- a genuinely 3-D metric
   and the non-unitary axis gluing. Mass symmetry / positive definiteness by
@@ -68,14 +64,6 @@ def _n_ext(seq, k, dbc):
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def tensor_seq():
-    """Identity map, no polar surgery: the extraction is a 0/1 selection."""
-    seq = DeRhamSequence(_NS, (_P, _P, _P), _Q, _TYPES, polar=False)
-    seq.set_map(lambda x: x)
-    return seq, new_operators(seq)
-
 
 @pytest.fixture(scope="module")
 def re_seq():
@@ -183,42 +171,6 @@ def test_mass_dense_is_spd(re_mass, k):
 # ---------------------------------------------------------------------------
 
 _N_COMPLEX_PROBES = 10
-
-
-@pytest.mark.parametrize("dirichlet", (False, True))
-def test_curl_of_grad_is_zero(tensor_seq, dirichlet):
-    """curl(grad f) = 0: G_1^ext (G_0^ext f) = 0 for random 0-forms f."""
-    seq, ops = tensor_seq
-    rng = np.random.default_rng(7)
-    n0 = _n_ext(seq, 0, dirichlet)
-    for _ in range(_N_COMPLEX_PROBES):
-        f = jnp.asarray(rng.standard_normal(n0))
-        grad_f = apply_incidence_matrix(
-            seq, f, k=0, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        curl_grad_f = apply_incidence_matrix(
-            seq, grad_f, k=1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        norm = float(jnp.linalg.norm(curl_grad_f))
-        assert norm < IDENT * float(jnp.linalg.norm(grad_f)), (
-            f"dirichlet={dirichlet}: curl(grad f) != 0, ||curl grad f|| = {norm:.3e}"
-        )
-
-
-@pytest.mark.parametrize("dirichlet", (False, True))
-def test_div_of_curl_is_zero(tensor_seq, dirichlet):
-    """div(curl F) = 0: G_2^ext (G_1^ext F) = 0 for random 1-forms F."""
-    seq, ops = tensor_seq
-    rng = np.random.default_rng(8)
-    n1 = _n_ext(seq, 1, dirichlet)
-    for _ in range(_N_COMPLEX_PROBES):
-        F = jnp.asarray(rng.standard_normal(n1))
-        curl_F = apply_incidence_matrix(
-            seq, F, k=1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        div_curl_F = apply_incidence_matrix(
-            seq, curl_F, k=2, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        norm = float(jnp.linalg.norm(div_curl_F))
-        assert norm < IDENT * float(jnp.linalg.norm(curl_F)), (
-            f"dirichlet={dirichlet}: div(curl F) != 0, ||div curl F|| = {norm:.3e}"
-        )
 
 
 @pytest.mark.parametrize("dirichlet", (False, True))

@@ -107,10 +107,8 @@ operator `E_k` of shape `(n_k, n_k_raw)` maps it onto the conforming space:
 
 `MatrixFreeExtraction` in `mrx/extraction_operators.py` stores the nonzeros
 as `(rows, cols, vals)` and applies `E` and `E^T` as one gather and one
-segment sum. Two builders produce it:
+segment sum. Its builder:
 
-- `BoundaryOperator(Λ, types)`: per-axis `'dirichlet'` (drop the boundary
-  functions), `'left'`, `'right'`, or `'none'`. Used when `polar=False`.
 - `PolarExtractionOperator(Λ, xi, zero_bc)`: fuses the ring-0 and ring-1
   radial functions of every `zeta` slice into three axis functions with the
   weights `xi` from `get_xi`. Used when `polar=True`. Dirichlet at `r = 1`

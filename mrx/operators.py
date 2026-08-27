@@ -818,17 +818,13 @@ def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
 
 
 def _grad_stencil(seq, dirichlet_in: bool, dirichlet_out: bool, transpose: bool):
-    """The analytic inverse-free polar grad ``G_0`` of ``seq``, or None on non-polar."""
-    if seq.g0_grad is None:
-        return None
+    """The analytic inverse-free polar grad ``G_0`` of ``seq``."""
     g = seq.g0_grad[(bool(dirichlet_in), bool(dirichlet_out))]
     return g.T if transpose else g
 
 
 def _curl_stencil(seq, dirichlet_in: bool, dirichlet_out: bool, transpose: bool):
-    """The analytic inverse-free polar curl ``G_1`` of ``seq``, or None on non-polar."""
-    if seq.g1_curl is None:
-        return None
+    """The analytic inverse-free polar curl ``G_1`` of ``seq``."""
     g = seq.g1_curl[(bool(dirichlet_in), bool(dirichlet_out))]
     return g.T if transpose else g
 
@@ -853,14 +849,11 @@ def apply_incidence_matrix(seq, v, k: int,
     instead. Div (k=2) needs no correction: the V3 extraction is unitary.
     """
     if k == 0:
-        g0 = _grad_stencil(seq, dirichlet_in, dirichlet_out, transpose)
-        if g0 is not None:
-            return g0 @ v
+        return _grad_stencil(seq, dirichlet_in, dirichlet_out, transpose) @ v
     if k == 1:
-        g1 = _curl_stencil(seq, dirichlet_in, dirichlet_out, transpose)
-        if g1 is not None:
-            return g1 @ v
-
+        return _curl_stencil(seq, dirichlet_in, dirichlet_out, transpose) @ v
+    # Div: the V3 extraction is a 0/1 selection, so the raw incidence through
+    # the extractions is already the exact strong derivative.
     sp, sp_T = _incidence_components(seq, k)
     e_in, e_in_T, e_out, e_out_T = _derivative_extraction(
         seq, k, dirichlet_in, dirichlet_out)
