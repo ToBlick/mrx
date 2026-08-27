@@ -7,10 +7,6 @@ import jax.numpy as jnp
 from jax.numpy import cos, pi, sin
 
 from mrx.differential_forms import DifferentialForm, DiscreteFunction
-from mrx.geometry import (  # noqa: F401
-    greville_interpolate_map,
-    greville_interpolate_stellarator_map,
-)
 
 
 class SplineMap(eqx.Module):

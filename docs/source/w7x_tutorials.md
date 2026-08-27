@@ -30,7 +30,7 @@ route interpolates twice on the way to the mesh and its initial force
 residual is set by that, not by the mesh.
 
 ```python
-from mrx.geometries import build_sequence
+from mrx.geometry import build_sequence
 seq, ops = build_sequence("data/GVEC_State_final.dat", (12, 24, 24), 3)
 ```
 

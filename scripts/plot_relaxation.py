@@ -46,7 +46,7 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from mrx.differential_forms import DiscreteFunction
-    from mrx.geometries import build_sequence
+    from mrx.geometry import build_sequence
     from mrx.plotting import (get_2d_grids, plot_crossections_separate, plot_torus,
                               plot_twin_axis)
 

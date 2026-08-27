@@ -1,12 +1,15 @@
 """GVEC state files (``GVEC_State_*.dat``): read, evaluate, export.
 
-A state file is GVEC's own representation of an equilibrium: the radial
-B-spline basis (degree ``deg`` on the element grid ``sp``), the Fourier mode
-table ``(m, n)`` -- ``n`` already multiplied by ``nfp`` -- and, per mode, the
-radial coefficients of ``X1 = R`` (cosine series), ``X2 = Z`` and
-``LA = lambda`` (sine series), followed by the profiles ``Phi``, ``chi``,
-``iota``, ``p`` at the radial interpolation points of the ``X1`` basis. Its
-angles are GVEC's ``theta`` and ``zeta`` in radians with the series
+A state file is GVEC's own representation of an equilibrium: 
+    the radial B-spline basis (degree ``deg`` on the element grid ``sp``), 
+    the Fourier mode table ``(m, n)`` with ``n`` already multiplied by ``nfp`` 
+    and, per mode, 
+        the radial coefficients of ``X1 = R`` (cosine series), 
+        ``X2 = Z`` and
+        ``LA = lambda`` (sine series), 
+    followed by the profiles ``Phi``, ``chi``, ``iota``, ``p`` at the 
+    radial interpolation points of the ``X1`` basis. 
+Its angles are GVEC's ``theta`` and ``zeta`` in radians with the series
 ``sum f_mn(s) trig(m theta - n zeta)``; ``s`` is the radial label the
 flat-schema exports call ``rho`` (``Phi = Phi_edge s^2``).
 

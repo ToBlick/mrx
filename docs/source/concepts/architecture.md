@@ -218,7 +218,7 @@ recompile.
 ## 6. Assembly order
 
 Each builder reads the previous one. `build_sequence(geometry, ns, p)` in
-`mrx/geometries.py` is the production recipe:
+`mrx/geometry.py` is the production recipe:
 
 ```python
 seq = DeRhamSequence(ns, (p,) * 3, p + 1, ("clamped", "periodic", "periodic"),

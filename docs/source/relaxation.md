@@ -8,11 +8,11 @@ runs the script, and reads its output. The algorithm is in
 
 ## Geometry
 
-`mrx.geometries.build_sequence` turns a geometry into a polar sequence
+`mrx.geometry.build_sequence` turns a geometry into a polar sequence
 with the map installed and every solver operator built:
 
 ```python
-from mrx.geometries import build_sequence
+from mrx.geometry import build_sequence
 
 seq, ops = build_sequence("toroid", ns=(8, 16, 8), p=3)
 seq, ops = build_sequence("data/w7x_fmm002_clebsch_mrx.h5", ns=(8, 16, 16), p=2)

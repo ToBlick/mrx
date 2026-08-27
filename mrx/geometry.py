@@ -18,9 +18,11 @@ of a sequence: :func:`greville_interpolate_map` and
 
 from __future__ import annotations
 
+import os
 from typing import Any, Callable
 
 import equinox as eqx
+import h5py
 import jax
 import jax.numpy as jnp
 
@@ -270,40 +272,7 @@ def spline_map_F_DF_at_quad(coefficients, extraction_T, seq):
     return F_q, DF_q
 
 
-def spline_map_jacobian_j_at_quad(coefficients, extraction_T, seq):
-    """Return only ``det(DF)`` at the quadrature grid (skips the metric).
-
-    Args:
-        coefficients: ``(3, n_dof)`` spline coefficients of the map.
-        extraction_T: Transpose of the extraction operator.
-        seq: :class:`~mrx.derham_sequence.DeRhamSequence` with.
-
-    Returns:
-        ``(N_q,)`` array of Jacobian determinants.
-    """
-    _, DF_q = spline_map_F_DF_at_quad(coefficients, extraction_T, seq)
-    return jnp.linalg.det(DF_q)
-
-
 # ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
-def min_jacobian_from_coeffs(coefficients, extraction_T, seq):
-    """Minimum of ``det(DF)`` over the quadrature grid.
-
-    Cheap mesh-folding diagnostic for a tensor-product spline map with
-    the given ``coefficients``; evaluates only ``det(DF)`` and no metric
-    or operator data.
-
-    Args:
-        coefficients: ``(3, n_dof)`` spline coefficients of the map.
-        extraction_T: Transpose of the extraction operator.
-        seq: :class:`~mrx.derham_sequence.DeRhamSequence` with.
-
-    Returns:
-        Scalar minimum Jacobian determinant over all quadrature points.
-    """
-    return jnp.min(spline_map_jacobian_j_at_quad(coefficients, extraction_T, seq))
-
-
 # ---------------------------------------------------------------------------
 # Map interpolation onto spline DOFs
 # ---------------------------------------------------------------------------
@@ -315,8 +284,6 @@ def greville_interpolate_map(F_analytic: Callable, seq) -> jnp.ndarray:
     tensor-product Greville points and solves the resulting 1-D collocation
     systems, returning a coefficient array suitable for
     :meth:`~mrx.derham_sequence.DeRhamSequence.set_spline_map`.
-
-    No mass matrix is required.
 
     Args:
         F_analytic: Analytic map ``F: R^3 -> R^3`` mapping logical coordinates
@@ -348,8 +315,6 @@ def greville_interpolate_stellarator_map(
     coordinate ``Z`` from ``F_analytic``, interpolates each as a scalar
     0-form via Greville collocation, and wraps the result in
     :func:`~mrx.mappings.stellarator_map`.
-
-    No mass matrix is required.
 
     Args:
         F_analytic: Analytic map ``F: R^3 -> R^3`` returning Cartesian
@@ -386,3 +351,92 @@ def greville_interpolate_stellarator_map(
     return stellarator_map(R_h, Z_h, nfp=nfp, flip_zeta=flip_zeta)
 
 
+# ---------------------------------------------------------------------------
+# Solve geometries for the driver scripts, by analytic name or by file path
+# ---------------------------------------------------------------------------
+#
+# A geometry is either an analytic name (``toroid``, ``cylinder``,
+# ``rot-ellipse``) or the path of a GVEC export (``.h5``) or state file
+# (``.dat``, read in closed form by :mod:`mrx.gvec_state`); ``os.path.isfile``
+# decides. :func:`build_sequence` turns it into a polar sequence with the map
+# installed and the preconditioners built; nullspaces are left to the caller.
+
+#: Field periods spanned by logical zeta in [0, 1] for the analytic maps.
+ANALYTIC_NFP = {"toroid": 1, "cylinder": 1, "rot-ellipse": 3}
+
+
+def _unknown(geometry):
+    return ValueError(
+        f"geometry {geometry!r} is neither an analytic name "
+        f"({', '.join(ANALYTIC_NFP)}) nor an existing file")
+
+
+def geometry_nfp(geometry, nfp=None):
+    """Field periods of a geometry.
+
+    Args:
+        geometry: an analytic name or the path of a GVEC export.
+        nfp: overrides the file's ``nfp`` attribute; ignored for the analytic
+            names.
+
+    Returns:
+        The number of field periods spanned by logical zeta in [0, 1].
+    """
+    if os.path.isfile(geometry):
+        if nfp is not None:
+            return int(nfp)
+        if geometry.endswith(".dat"):
+            from mrx.gvec_state import read_state
+            return read_state(geometry)["nfp"]
+        with h5py.File(geometry, "r") as h:
+            return int(h.attrs["nfp"])
+    if geometry in ANALYTIC_NFP:
+        return ANALYTIC_NFP[geometry]
+    raise _unknown(geometry)
+
+
+def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
+    """Build the sequence for a geometry and assemble its solver operators.
+
+    Args:
+        geometry: 
+            an analytic name (``toroid``, ``cylinder``, ``rot-ellipse``),
+            the path of a flat-schema GVEC export, 
+            or a GVEC state file (read in closed form, ``mrx.gvec_state``).
+        ns: ``(n_r, n_theta, n_zeta)``; also the map resolution for a file.
+        p: spline degree, all directions; ``p + 1`` Gauss points per knot span.
+        maxiter: iteration budget of every solve through the sequence.
+        tol: solve tolerance; ``None`` is ``sqrt(eps)`` of working precision.
+        nfp: overrides the file's ``nfp`` attribute (see ``mrx.gvec``);
+            ignored for the analytic names.
+
+    Returns:
+        ``(seq, ops)``: the sequence with its geometry installed and every
+        preconditioner built (``seq.operators is ops``).
+
+    Raises:
+        ValueError: if ``geometry`` is neither an analytic name nor a file,
+            or (from ``set_geometry``) if the map folds.
+    """
+    from mrx.derham_sequence import DeRhamSequence  # noqa: PLC0415  (imports this module)
+    from mrx.gvec import build_gvec_map  # noqa: PLC0415
+    from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: PLC0415
+
+    seq = DeRhamSequence(ns, (p,) * 3, p + 1, ("clamped", "periodic", "periodic"),
+                         polar=True, tol=tol, maxiter=maxiter,
+                         betti_numbers=(1, 1, 0, 0))
+    if os.path.isfile(geometry):
+        map_func, info = build_gvec_map(geometry, map_ns=ns, p=p, nfp=nfp)
+        print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
+              f"det DF in [{info['det_range'][0]:.3e}, "
+              f"{info['det_range'][1]:.3e}]", flush=True)
+        seq.set_map(map_func)
+    elif geometry == "toroid":
+        seq.set_map(toroid_map(epsilon=1/3, R0=1.0))
+    elif geometry == "cylinder":
+        seq.set_map(cylinder_map(a=1/3, h=1.0))
+    elif geometry == "rot-ellipse":
+        seq.set_map(rotating_ellipse_map(eps=1/3, kappa=1.3, nfp=3))
+    else:
+        raise _unknown(geometry)
+    return seq, seq.build_preconditioners()

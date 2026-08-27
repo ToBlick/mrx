@@ -46,7 +46,7 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
-    from mrx.geometries import build_sequence
+    from mrx.geometry import build_sequence
     from mrx.gvec import fit_scalar_spline
     from mrx.plotting import get_2d_grids, plot_crossections_separate, plot_torus
 

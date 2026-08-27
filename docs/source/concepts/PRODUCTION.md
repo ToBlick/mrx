@@ -6,7 +6,7 @@ One page. Every identifier exists in `mrx/` or `scripts/`. The reasoning is in
 
 ## Sequence and operators
 
-`build_sequence(geometry, ns, p)` in `mrx/geometries.py` is the production
+`build_sequence(geometry, ns, p)` in `mrx/geometry.py` is the production
 build (`geometry` is `toroid`, `cylinder`, `rot-ellipse`, or the path of a
 GVEC export): `DeRhamSequence(ns, (p,)*3, p + 1, ("clamped", "periodic", "periodic"),
 polar=True, betti_numbers=(1, 1, 0, 0))`, `set_map`, then

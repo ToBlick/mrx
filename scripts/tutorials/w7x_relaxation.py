@@ -43,7 +43,7 @@ def main():
     import matplotlib.pyplot as plt
     import numpy as np
     from mrx.differential_forms import DiscreteFunction
-    from mrx.geometries import build_sequence, geometry_nfp
+    from mrx.geometry import build_sequence, geometry_nfp
     from mrx.gvec import load_clebsch
     from mrx.initial_conditions import clebsch_potential_form, divergence_norm, potential_two_form
     from mrx.nullspace import compute_nullspaces

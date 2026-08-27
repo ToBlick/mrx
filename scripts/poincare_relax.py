@@ -2,7 +2,7 @@
 
 Reads the ``B.h5`` a relaxation wrote (datasets ``B_ic`` and ``B_final``,
 run parameters as root attributes), rebuilds the sequence with
-:func:`mrx.geometries.build_sequence` from the ``geometry_path`` attribute
+:func:`mrx.geometry.build_sequence` from the ``geometry_path`` attribute
 (the resolved path of the GVEC export, or the analytic name) and the ``nfp``
 override the run used, traces both fields with :mod:`mrx.poincare`, and
 renders one section per requested plane.
@@ -103,7 +103,7 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from mrx.differential_forms import DiscreteFunction
-    from mrx.geometries import build_sequence, geometry_nfp
+    from mrx.geometry import build_sequence, geometry_nfp
     from mrx.geometry import map_jacobian_at
     from mrx.poincare import (logical_field, render_section, seed_from_axis,
                               section_RZ, surface_label, trace_and_classify,

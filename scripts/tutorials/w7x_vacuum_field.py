@@ -42,7 +42,7 @@ def main():
     import matplotlib.pyplot as plt
     import numpy as np
     from mrx.differential_forms import DiscreteFunction, Pushforward
-    from mrx.geometries import build_sequence, geometry_nfp
+    from mrx.geometry import build_sequence, geometry_nfp
     from mrx.initial_conditions import divergence_norm
     from mrx.nullspace import compute_nullspaces, get_nullspace, harmonic_rayleigh
     from mrx.plotting import get_2d_grids, plot_crossections_separate, plot_torus

@@ -9,7 +9,6 @@ One page per module of ``mrx``.
    derham_sequence
    differential_forms
    extraction_operators
-   geometries
    geometry
    gvec
    gvec_state

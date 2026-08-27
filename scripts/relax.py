@@ -263,7 +263,7 @@ def main(cli):
     import jax
 
     import mrx
-    from mrx.geometries import build_sequence
+    from mrx.geometry import build_sequence
     from mrx.gvec import load_clebsch
     from mrx.initial_conditions import (analytic_helicity, analytic_profile_form,
                                         clebsch_potential_form, divergence_norm,

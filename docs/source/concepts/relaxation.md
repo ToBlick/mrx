@@ -233,7 +233,7 @@ angular derivatives are per radian. See [gvec_mrx_interface.md](gvec_mrx_interfa
 
 ## 5. Geometries
 
-`build_sequence(geometry, ns, p, maxiter, tol, nfp)` in `mrx/geometries.py`
+`build_sequence(geometry, ns, p, maxiter, tol, nfp)` in `mrx/geometry.py`
 returns `(seq, ops)` with the map installed and every solver operator built.
 `geometry` is an analytic name, `toroid`, `cylinder` or `rot-ellipse`
 (`mrx/mappings.py`), or the path of a flat-schema GVEC export

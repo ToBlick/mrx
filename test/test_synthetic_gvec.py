@@ -61,7 +61,7 @@ import numpy as np
 import pytest
 
 import mrx
-from mrx.geometries import build_sequence
+from mrx.geometry import build_sequence
 from mrx.gvec import load_clebsch
 from mrx.initial_conditions import (
     clebsch_form,

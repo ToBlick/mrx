@@ -1,6 +1,6 @@
 """The W7-X Clebsch initial condition (``needs_data``: reads ``MRX_W7X_FILE``).
 
-``mrx.geometries.build_sequence(<path>, (8, 16, 8), 3)`` fits the finite-beta
+``mrx.geometry.build_sequence(<path>, (8, 16, 8), 3)`` fits the finite-beta
 W7-X map from the GVEC export named by the environment variable
 ``MRX_W7X_FILE`` (``w7x_fmm002_clebsch_mrx.h5``; unset or absent, the test
 skips -- CI has no data; on a GPU node pass it through ``EXTRA_ENV``, see
@@ -17,7 +17,7 @@ import time
 import jax.numpy as jnp
 import pytest
 
-from mrx.geometries import build_sequence
+from mrx.geometry import build_sequence
 from mrx.gvec import load_clebsch
 from mrx.initial_conditions import (
     clebsch_form,

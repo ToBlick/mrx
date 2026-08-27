@@ -34,6 +34,7 @@ The ``apply_*`` methods are forwarders to the free functions in
 :mod:`mrx.operators` with ``self`` and ``self.operators`` filled in.
 """
 import jax.numpy as jnp
+import numpy as np
 
 import mrx
 from mrx.differential_forms import DifferentialForm
@@ -325,11 +326,17 @@ class DeRhamSequence():
     def set_geometry(self, geometry: SequenceGeometry):
         """Install a geometry and build the matrix-free mass and projection applies from it.
 
-        Drops the operator bundle: every preconditioner and harmonic form on
+        Refuses a folded map (``det DF <= 0`` or non-finite at any quadrature
+        point). Drops the operator bundle: every preconditioner and harmonic form on
         it was built for the previous metric, and a stale one would
         precondition the wrong operator silently (slow convergence, nothing
         else). Call :meth:`build_preconditioners` again.
         """
+        jac = np.asarray(geometry.jacobian_j)
+        if not np.isfinite(jac).all() or jac.min() <= 0.0:
+            raise ValueError(
+                f"the map folds: det DF at the quadrature points spans "
+                f"[{jac.min():.3e}, {jac.max():.3e}] and must be positive")
         self.geometry = geometry
         self.mass_apply = {k: build_matrixfree_mass_apply(self, k, geometry)
                            for k in range(4)}
