@@ -44,7 +44,7 @@ Two traps that the flat schema carries:
   hide it; every reader takes an ``nfp`` override.
 
 Every function takes the file path; ``os.path`` extension decides the route.
-:func:`mrx.synthetic_gvec.write_synthetic_gvec` writes the flat schema for an
+``test/synthetic_gvec.py`` writes the flat schema for an
 analytic circular torus; the test suite reads that file through the same
 functions as a real export.
 """

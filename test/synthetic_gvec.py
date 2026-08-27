@@ -157,7 +157,7 @@ def write_synthetic_gvec(path, *, R0, a, nfp, n_rho, n_theta, n_zeta, iota,
     with h5py.File(path, "w") as h:
         h.attrs["n_rho"], h.attrs["n_theta"], h.attrs["n_zeta"] = n_rho, n_theta, n_zeta
         h.attrs["nfp"] = int(nfp)
-        h.attrs["synthetic"] = "mrx.synthetic_gvec.write_synthetic_gvec"
+        h.attrs["synthetic"] = "test/synthetic_gvec.py write_synthetic_gvec"
         for name in ("R0", "a", "Phi_edge", "iota0", "iota1", "lam_amplitude", "beta"):
             h.attrs[name] = getattr(torus, name)
         h.attrs["angle_units"] = "radians"

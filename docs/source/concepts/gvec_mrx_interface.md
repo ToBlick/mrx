@@ -228,7 +228,7 @@ put through them before it is used for anything.
 
 ## 7. The synthetic export (what the test suite reads)
 
-`mrx.synthetic_gvec.write_synthetic_gvec` writes a file in this schema from
+`test/synthetic_gvec.py` (`write_synthetic_gvec`) writes a file in this schema from
 closed formulas, so the whole route -- `build_gvec_map`, `load_clebsch`,
 `clebsch_form`, the projection -- can be checked against known answers with
 no data file (`test/test_synthetic_gvec.py`). The layout is that of
@@ -254,7 +254,7 @@ is an equilibrium only at large aspect ratio and low beta. Keep `beta`
 small; the test suite uses 1e-3. Nothing in MRX consumes the pressure.
 
 ```python
-from mrx.synthetic_gvec import write_synthetic_gvec
+from test.synthetic_gvec import write_synthetic_gvec
 torus = write_synthetic_gvec("torus_clebsch_mrx.h5", R0=1.0, a=1/3, nfp=5,
                              n_rho=17, n_theta=24, n_zeta=8, iota=(-0.9, -0.15),
                              Phi_edge=3.1416 / 9, lam_amplitude=0.05, beta=1e-3)

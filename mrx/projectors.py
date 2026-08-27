@@ -842,13 +842,11 @@ class BoundaryProjector:
 # Gridded data
 # ---------------------------------------------------------------------------
 #
-# KEPT FOR GRID-ONLY SOURCES. Since 2026-08-27 the production route from a
-# GVEC equilibrium is the closed-form state file (mrx.gvec: StateField
-# collocated at the Greville points, lambda histopolated from the series),
-# which makes an interpolatory fit of gridded samples unnecessary and
-# measurably worse (the grid IC carries a force floor the closed form does
-# not; docs/research/coarse_gvec_export_2026-08-26.md section 5). This is
-# the projector for data that only exists on a grid.
+# The production route from a GVEC equilibrium is the closed-form state file 
+# (mrx.gvec: StateField collocated at the Greville points, lambda histopolated 
+# from the series), which makes an interpolatory fit of gridded samples unnecessary 
+# and measurably worse. 
+# This is the projector for data that only exists on a grid.
 
 def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',
                     degree=3):

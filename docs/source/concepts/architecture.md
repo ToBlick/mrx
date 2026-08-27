@@ -9,7 +9,7 @@ V0 --grad--> V1 --curl--> V2 --div--> V3
 with tensor-product B-splines on the logical cube `[0,1]^3` in coordinates
 `(r, theta, zeta)`, mapped to the physical domain by `F`. This page names the
 objects and the order in which they are built. Assembly detail is in
-[assembly.md](assembly.md), solvers and preconditioners in
+[mass.md](mass.md), solvers and preconditioners in
 [preconditioning.md](preconditioning.md), the polar axis in [polar.md](polar.md).
 
 ## 1. Spaces
@@ -52,7 +52,7 @@ the field at a point with one `(p+1)^3` window per component.
 `QuadratureRule(form, q)` in `mrx/quadrature.py` is the tensor product of
 composite Gauss rules with `q` points per knot span (`composite_quad`). `q` is a
 required argument of `DeRhamSequence`; every production entry point passes
-`q = p + 1`. See [assembly.md](assembly.md) for why.
+`q = p + 1`. See [mass.md](mass.md) for why.
 
 ## 2. Operators from the tensor structure
 
@@ -77,7 +77,7 @@ The mass matrices are the only operators that need quadrature and they are
 never stored. `mass_core_apply(seq, k)` in `mrx/operators.py` returns the
 matrix-free apply on the raw tensor-product space (`seq.mass_apply[k]`,
 built by `set_geometry`); it is the sum-factorised kernel of
-`mrx/local_assembly.py`.
+`mrx/mass.py`.
 
 ### Incidence, derivative, and stiffness
 

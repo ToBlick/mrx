@@ -1,6 +1,6 @@
 """The GVEC route end to end on a synthetic export, and THE relaxation run.
 
-``mrx.synthetic_gvec.write_synthetic_gvec`` writes a file in the layout of
+``test/synthetic_gvec.py`` writes a file in the layout of
 ``w7x_fmm002_clebsch_mrx.h5`` (same datasets, attributes, dtypes and grid
 conventions) from closed formulas on a circular torus: nfp = 5, a W7-X-like
 transform ``iota = -0.9 - 0.15 rho^2`` per turn, a small
@@ -80,7 +80,7 @@ from mrx.relaxation import (
     initial_state,
     resistive_step,
 )
-from mrx.synthetic_gvec import TWO_PI, write_synthetic_gvec
+from test.synthetic_gvec import TWO_PI, write_synthetic_gvec
 from test.manufactured import relative_l2_error
 
 # The torus of the session fixture (R0 = 1, a = 1/3) with W7-X's nfp and a

@@ -51,7 +51,7 @@ Coverage of the production path, by test file:
   `scripts/poisson_study.py`), and the Leray projection.
 - `test_synthetic_gvec.py`: the GVEC route (`build_sequence` on a file,
   `load_clebsch`, `clebsch_form`, the projection) on a synthetic export
-  written by `mrx.synthetic_gvec` -- the layout of the W7-X file, filled
+  written by `test/synthetic_gvec.py` -- the layout of the W7-X file, filled
   from closed formulas on a circular torus, so map, field, transform and
   lambda handling are checked against the formulas -- and, on that
   sequence's Clebsch initial condition, the one relaxation run of the

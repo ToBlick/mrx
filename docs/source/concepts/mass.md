@@ -1,4 +1,4 @@
-# Matrix-free assembly
+# Mass operators
 
 No mass matrix is stored. Every operator that needs quadrature is applied
 element by element from the 1D basis tables and the metric weight at the
@@ -14,7 +14,7 @@ function is a product of three 1D functions and a degree-`p` spline touches
 input vector into the contraction.
 
 `build_matrixfree_mass_apply(seq, k, geometry=None)` in
-`mrx/local_assembly.py` returns a jitted `x -> M_k x` on the raw
+`mrx/mass.py` returns a jitted `x -> M_k x` on the raw
 tensor-product space. `mass_core_apply` in `mrx/operators.py` wraps it; the
 extraction `E (·) E^T` is applied by the caller, so `apply_mass_matrix` is
 `E M_k E^T`. The weak derivatives, stiffness blocks, and Laplacians of

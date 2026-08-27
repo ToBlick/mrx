@@ -38,7 +38,7 @@ cluster
 
 concepts
 concepts/architecture
-concepts/assembly
+concepts/mass
 concepts/polar
 concepts/preconditioning
 concepts/precision

@@ -22,7 +22,7 @@ import pytest
 
 import mrx
 from mrx.derham_sequence import DeRhamSequence
-from mrx.local_assembly import build_matrixfree_mass_apply
+from mrx.mass import build_matrixfree_mass_apply
 from mrx.mappings import rotating_ellipse_map
 from mrx.operators import (
     apply_derivative_matrix,

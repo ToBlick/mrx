@@ -548,3 +548,101 @@ class DerivativeSpline:
         return _histopolation(T, jnp.asarray(spans), jnp.asarray(xi_ref),
                               jnp.asarray(w_ref), jnp.unique(self.T),
                               key=key, periodic=self.type == 'periodic')
+
+
+# --------------------------------------------------------------------------- #
+# Basis tables at quadrature points (jitted, keyed on the basis shape)
+# --------------------------------------------------------------------------- #
+#
+# Every table below is a vmap over a spline evaluation. Run eagerly, a vmap
+# executes the batched trace one primitive at a time, each primitive compiled
+# and dispatched on its own (~4000 compilations per (4,8,4) sequence build,
+# measured 2026-08-27: 0.6 s per table). Under jit the whole table is one
+# executable, keyed on the basis SHAPE (:func:`basis_key`),
+# so every basis of a shape shares it.
+
+def basis_table(basis, x):
+    """``basis(x_q, i)`` for every ``i`` in ``basis.ns`` and every point in ``x``, ``(n, n_q)``."""
+    key, T = basis_key(basis)
+    return _basis_table(T, x, key=key)
+
+
+@functools.partial(jax.jit, static_argnames=("key",))
+def _basis_table(T, x, *, key):
+    basis = rebuild_basis(key, T)
+    return jax.vmap(jax.vmap(basis, (0, None)), (None, 0))(x, basis.ns)
+
+
+def basis_derivative_table(basis, x):
+    """``d/dx basis(x_q, i)`` by autodiff, ``(n, n_q)``."""
+    key, T = basis_key(basis)
+    return _basis_derivative_table(T, x, key=key)
+
+
+@functools.partial(jax.jit, static_argnames=("key",))
+def _basis_derivative_table(T, x, *, key):
+    basis = rebuild_basis(key, T)
+
+    def value(x, i):
+        return jnp.sum(basis(x, i))
+    return jax.vmap(jax.vmap(jax.grad(value, argnums=0), (0, None)), (None, 0))(x, basis.ns)
+
+
+@functools.partial(jax.jit, static_argnames=("key",))
+def _evaluate_basis_local(T, x_local, gdof, *, key):
+    basis = rebuild_basis(key, T)
+
+    def eval_e(x_e, dof_e):
+        return jax.vmap(
+            lambda x: jax.vmap(lambda i: basis(x, i))(dof_e)
+        )(x_e)
+    return jax.vmap(eval_e, in_axes=(0, 0))(x_local, gdof)
+
+
+def evaluate_basis_local(basis, x_q_flat, q_per_elem):
+    """Evaluate a 1D spline basis on each element at its local quad points.
+
+    Works for both primal (``SplineBasis``) and derivative
+    (``DerivativeSpline``) bases: the derivative basis simply reports a smaller
+    degree, hence ``p`` locals per element instead of ``p+1``.
+
+    Parameters
+    ----------
+    basis : SplineBasis or DerivativeSpline
+        1D basis with ``.p``, ``.n`` and ``.type`` attributes and a callable
+        ``basis(x, i)`` interface.
+    x_q_flat : (n_elem * q,) array
+        Composite Gauss quadrature points, ordered element-by-element.
+    q_per_elem : int
+        Number of Gauss points per knot interval.
+
+    Returns
+    -------
+    B_loc : (n_elem, q_per_elem, p+1) array
+        Values of the locally-active bases at the local quad points.
+    gdof : (n_elem, p+1) int array
+        Global DOF index of each local basis on each element.
+    """
+    p = basis.p
+    n = basis.n
+    n_local = p + 1
+    if basis.type == "periodic":
+        n_elem = n
+        elems = jnp.arange(n_elem)
+        ks = jnp.arange(n_local)
+        gdof = (elems[:, None] + ks[None, :]) % n
+    elif basis.type == "clamped":
+        n_elem = n - p
+        elems = jnp.arange(n_elem)
+        ks = jnp.arange(n_local)
+        gdof = elems[:, None] + ks[None, :]
+    elif basis.type == "constant":
+        # Single element, single DOF (p=0, n=1).
+        n_elem = 1
+        gdof = jnp.zeros((1, 1), dtype=jnp.int32)
+    else:
+        raise NotImplementedError(basis.type)
+
+    x_local = x_q_flat.reshape(n_elem, q_per_elem)
+    key, T = basis_key(basis)
+    return _evaluate_basis_local(T, x_local, gdof, key=key), gdof

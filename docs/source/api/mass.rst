@@ -1,6 +1,6 @@
-mrx.local_assembly
+mrx.mass
 ==================
 
-.. automodule:: mrx.local_assembly
+.. automodule:: mrx.mass
    :members:
    :show-inheritance:

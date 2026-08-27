@@ -1,24 +1,30 @@
-"""Element-local, sum-factorized matrix-free mass applies and exact diagonals.
+"""The mass and projection operators as sum-factorised applies, and their closed-form diagonals.
 
-The spline bases are tensor products with element-local support, so every
-mass-like operator ``M = int Lambda_row . W . Lambda_col`` is applied per
-element by three 1D contractions to the quadrature points, a pointwise
-multiply by the weight, and three 1D contractions back -- no matrix is ever
-stored.  The applies act in the raw (unextracted, periodic) DOF space; the
-polar / boundary extraction ``E (.) E^T`` is applied by the caller.
+No mass matrix is stored. Every mass-like operator ``M = int Lambda_row . W
+. Lambda_col`` is applied per element by three 1-D contractions to the
+quadrature points, a pointwise multiply by the weight, and three 1-D
+contractions back (:func:`_sumfact_kernel`, one compiled executable per
+operator shape). The applies act in the raw (unextracted, periodic) DoF
+space; the polar extraction ``E (.) E^T`` is applied by the caller
+(:mod:`mrx.operators`), and ``DeRhamSequence.set_geometry`` builds them.
 
-Form weights, elementwise products of the stored geometry (``G = DF^T DF``,
-``G^{-1}`` and ``J = det DF`` per quadrature point), formed once per
-geometry and memoised in the element layout:
+The weights are elementwise products of the stored geometry (``G = DF^T DF``,
+``G^{-1}`` and ``J = det DF`` per quadrature point), formed once per geometry
+and memoised in the element layout:
 
 * k=0: ``W = J``          (scalar)
 * k=1: ``W = G^{-1} J``   (3x3, derivative basis on axis c)
 * k=2: ``W = G / J``      (3x3, primal basis on axis c)
 * k=3: ``W = 1/J``        (scalar, derivative basis on all axes)
-  The projection masses between
-different form degrees (``P_21`` etc.) use the same kernel with the
-reference-domain weight ``W = I``.  The quadrature weights are folded in per
-axis via the 1D Gauss weights.
+
+The projection masses between different form degrees (``P_21`` etc.) use the
+same kernel with the reference-domain weight ``W = I``. The quadrature
+weights are folded in per axis via the 1-D Gauss weights.
+
+The closed-form diagonals ``diag(M_k)``, ``diag(S_k)`` and the k=3
+codifferential term (:func:`build_mass_diagonal`,
+:func:`build_stiffness_diagonal`, :func:`build_codifferential_diagonal`)
+are what the metric-lumping preconditioners lump.
 """
 
 import functools
@@ -29,7 +35,7 @@ import numpy as np
 
 import mrx
 from mrx.geometry import grad_1d
-from mrx.spline_bases import basis_key, rebuild_basis
+from mrx.spline_bases import evaluate_basis_local
 
 __all__ = [
     "build_mass_diagonal",
@@ -37,104 +43,6 @@ __all__ = [
     "build_matrixfree_mass_apply",
     "build_matrixfree_projection_apply",
 ]
-
-
-# --------------------------------------------------------------------------- #
-# Element-local 1D basis evaluation
-# --------------------------------------------------------------------------- #
-#
-# Every table below is a vmap over a spline evaluation. Run eagerly, a vmap
-# executes the batched trace one primitive at a time, each primitive compiled
-# and dispatched on its own (~4000 compilations per (4,8,4) sequence build,
-# measured 2026-08-27: 0.6 s per table). Under jit the whole table is one
-# executable, keyed on the basis SHAPE (:func:`mrx.spline_bases.basis_key`),
-# so every basis of a shape shares it.
-
-def basis_table(basis, x):
-    """``basis(x_q, i)`` for every ``i`` in ``basis.ns`` and every point in ``x``, ``(n, n_q)``."""
-    key, T = basis_key(basis)
-    return _basis_table(T, x, key=key)
-
-
-@functools.partial(jax.jit, static_argnames=("key",))
-def _basis_table(T, x, *, key):
-    basis = rebuild_basis(key, T)
-    return jax.vmap(jax.vmap(basis, (0, None)), (None, 0))(x, basis.ns)
-
-
-def basis_derivative_table(basis, x):
-    """``d/dx basis(x_q, i)`` by autodiff, ``(n, n_q)``."""
-    key, T = basis_key(basis)
-    return _basis_derivative_table(T, x, key=key)
-
-
-@functools.partial(jax.jit, static_argnames=("key",))
-def _basis_derivative_table(T, x, *, key):
-    basis = rebuild_basis(key, T)
-
-    def value(x, i):
-        return jnp.sum(basis(x, i))
-    return jax.vmap(jax.vmap(jax.grad(value, argnums=0), (0, None)), (None, 0))(x, basis.ns)
-
-
-@functools.partial(jax.jit, static_argnames=("key",))
-def _evaluate_basis_local(T, x_local, gdof, *, key):
-    basis = rebuild_basis(key, T)
-
-    def eval_e(x_e, dof_e):
-        return jax.vmap(
-            lambda x: jax.vmap(lambda i: basis(x, i))(dof_e)
-        )(x_e)
-    return jax.vmap(eval_e, in_axes=(0, 0))(x_local, gdof)
-
-
-def evaluate_basis_local(basis, x_q_flat, q_per_elem):
-    """Evaluate a 1D spline basis on each element at its local quad points.
-
-    Works for both primal (``SplineBasis``) and derivative
-    (``DerivativeSpline``) bases: the derivative basis simply reports a smaller
-    degree, hence ``p`` locals per element instead of ``p+1``.
-
-    Parameters
-    ----------
-    basis : SplineBasis or DerivativeSpline
-        1D basis with ``.p``, ``.n`` and ``.type`` attributes and a callable
-        ``basis(x, i)`` interface.
-    x_q_flat : (n_elem * q,) array
-        Composite Gauss quadrature points, ordered element-by-element.
-    q_per_elem : int
-        Number of Gauss points per knot interval.
-
-    Returns
-    -------
-    B_loc : (n_elem, q_per_elem, p+1) array
-        Values of the locally-active bases at the local quad points.
-    gdof : (n_elem, p+1) int array
-        Global DOF index of each local basis on each element.
-    """
-    p = basis.p
-    n = basis.n
-    n_local = p + 1
-    if basis.type == "periodic":
-        n_elem = n
-        elems = jnp.arange(n_elem)
-        ks = jnp.arange(n_local)
-        gdof = (elems[:, None] + ks[None, :]) % n
-    elif basis.type == "clamped":
-        n_elem = n - p
-        elems = jnp.arange(n_elem)
-        ks = jnp.arange(n_local)
-        gdof = elems[:, None] + ks[None, :]
-    elif basis.type == "constant":
-        # Single element, single DOF (p=0, n=1).
-        n_elem = 1
-        gdof = jnp.zeros((1, 1), dtype=jnp.int32)
-    else:
-        raise NotImplementedError(basis.type)
-
-    x_local = x_q_flat.reshape(n_elem, q_per_elem)
-    key, T = basis_key(basis)
-    return _evaluate_basis_local(T, x_local, gdof, key=key), gdof
 
 
 def _elem_counts(seq):
@@ -469,22 +377,6 @@ def build_stiffness_diagonal(seq, k, geometry=None):
     return jnp.concatenate(parts)
 
 
-def _second_derivative_tables(seq):
-    """``d/dxi`` of the DERIVATIVE-spline 1-D tables at the quadrature nodes.
-
-    :func:`build_stiffness_diagonal` never needs these: it differentiates the
-    PRIMAL basis, and ``grad_1d`` lifts the cached derivative tables for that.
-    The codifferential of a 3-form differentiates the k=3 basis itself, which is
-    already a derivative spline, so it is one order deeper than anything the
-    sequence caches.  Taken by autodiff rather than by another knot-index
-    recursion -- ``SplineBasis._safe_divide`` guards its denominator before
-    dividing, so the ``x``-gradient is clean.
-    """
-    dlam = seq.basis_0.dΛ
-    nodes = (seq.quad.x_x, seq.quad.x_y, seq.quad.x_z)
-    return tuple(basis_derivative_table(dlam[a], nodes[a]) for a in range(3))
-
-
 def _jacobian_gradient(seq, geometry, batch_size=None):
     """``dJ/dxi_a`` at every quadrature point, by autodiff of the map.
 
@@ -557,7 +449,7 @@ def build_codifferential_diagonal(seq, k, geometry=None):
         return jnp.asarray(field).reshape(ny, nx, nz).transpose(1, 0, 2)
 
     b_val = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
-    b_der = _second_derivative_tables(seq)
+    b_der = seq.dd_basis_jk
 
     jac = rs(geometry.jacobian_j)
     d_jac = _jacobian_gradient(seq, geometry)

@@ -28,7 +28,7 @@ PROBE_BATCH_SIZE = 8
 
 class ExtractedMassApplyData(eqx.Module):
     # ``mass_apply`` is the raw-DOF-space matrix-free matvec ``v -> M_k v``
-    # (see ``mrx.local_assembly.build_matrixfree_mass_apply``).
+    # (see ``mrx.mass.build_matrixfree_mass_apply``).
     mass_apply: object
     extraction: object
     extraction_t: object
@@ -165,7 +165,7 @@ def _assemble_weighted_1d_mass(B: jnp.ndarray, weights: jnp.ndarray) -> jnp.ndar
 def _metric_lumping_diff_flags(k: int, c: int) -> tuple:
     """Differentiated-axis flags for component ``c`` of a k-form.
 
-    Mirrors ``_component_axis_bases_k0/k1/k2/k3`` in :mod:`mrx.local_assembly`:
+    Mirrors ``_component_axis_bases_k0/k1/k2/k3`` in :mod:`mrx.mass`:
     k=0 differentiates nothing, k=3 everything, k=1 only axis ``c``, and k=2
     every axis *except* ``c``.
     """
@@ -309,7 +309,7 @@ def _kron_mass_model_1d(seq, k: int, d_raw=None):
     Returns ``(shapes, mass_1d, lam)``: the raw block shapes, the three 1-D
     masses per component, and the 3-D scaling per component.
     """
-    from mrx.local_assembly import build_mass_diagonal  # noqa: PLC0415
+    from mrx.mass import build_mass_diagonal  # noqa: PLC0415
 
     form = getattr(seq, f"basis_{k}")
     shapes = [tuple(int(s) for s in sh) for sh in form.shape]
@@ -377,7 +377,7 @@ def _bulk_tensor_shape(seq, dirichlet: bool) -> tuple[int, int, int]:
 #   L_k = S_k + W_k ,   W_k = D_{k-1} B_{k-1} D_{k-1}^T ,   D_l = E_k M_k G_l E_l^T
 #
 # with ``B`` the Kronecker mass model standing in for ``M_{k-1}^{-1}``.
-# ``diag(S_k)`` is already closed form (:func:`mrx.local_assembly.
+# ``diag(S_k)`` is already closed form (:func:`mrx.mass.
 # build_stiffness_diagonal`); this is the other half, and it is what forced
 # k>=1 Jacobi to probe the Laplacian at O(N) applies.
 #
@@ -993,7 +993,7 @@ def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
       :func:`_weak_term_exact_parts`.
     * ``'codiff'`` -- abandons the expansion entirely for the codifferential
       energy ``||delta phi_i||^2``, by quadrature; k=3 only so far.  See
-      :func:`mrx.local_assembly.build_codifferential_diagonal`.
+      :func:`mrx.mass.build_codifferential_diagonal`.
 
     **rescale** -- leading-order repair of the inner splits, off by default and
     settable globally with ``MRX_LAPLACIAN_DIAG_RESCALE``.  Write the model as
@@ -1049,8 +1049,8 @@ def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
     if split == "codiff":
         # Not an expansion at all: diag(W)_i = ||delta phi_i||^2 by quadrature.
         # No mass model, no Sig, no separability assumption -- see
-        # mrx.local_assembly.build_codifferential_diagonal.
-        from mrx.local_assembly import (  # noqa: PLC0415
+        # mrx.mass.build_codifferential_diagonal.
+        from mrx.mass import (  # noqa: PLC0415
             build_codifferential_diagonal)
         raw = jnp.asarray(build_codifferential_diagonal(seq, k))
         return (raw, info) if return_info else raw

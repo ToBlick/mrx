@@ -1,6 +1,6 @@
 """Matrix-free mass and projection applies against a quadrature oracle.
 
-``mrx.local_assembly`` applies every mass-like operator by sum factorisation
+``mrx.mass`` applies every mass-like operator by sum factorisation
 with the metric weight formed from ``DF`` and ``det DF`` inside the kernel.
 Here the same matrices are built by brute force from the 1-D basis tables at
 the quadrature points (``test.dense.dense_mixed_mass``) on a tiny polar
@@ -13,7 +13,7 @@ import pytest
 
 import mrx
 from mrx.derham_sequence import DeRhamSequence
-from mrx.local_assembly import (build_matrixfree_mass_apply,
+from mrx.mass import (build_matrixfree_mass_apply,
                                 build_matrixfree_projection_apply)
 from mrx.mappings import rotating_ellipse_map
 from mrx.operators import (_PROJECTION_SPACES, apply_projection_matrix,

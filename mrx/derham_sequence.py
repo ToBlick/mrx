@@ -43,11 +43,10 @@ from mrx.extraction_operators import (PolarExtractionOperator,
 from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
                            get_nullspace)
 import mrx.operators as op
-from mrx.local_assembly import (_second_derivative_tables, basis_table,
-                                build_matrixfree_mass_apply,
-                                build_matrixfree_projection_apply)
+from mrx.mass import build_matrixfree_mass_apply, build_matrixfree_projection_apply
 from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
+from mrx.spline_bases import basis_derivative_table, basis_table
 from mrx.geometry import SequenceGeometry
 
 
@@ -242,7 +241,10 @@ class DeRhamSequence():
                                ("d_basis_z_jk", self.basis_0.dΛ, self.quad.x_z)):
             f = funcs[("r", "t", "z").index(name.split("_")[-2][-1])]
             setattr(self, name, basis_table(f, x))
-        self.dd_basis_jk = _second_derivative_tables(self)
+        # d/dx of the DERIVATIVE-basis tables (the metric-lumping stiffness
+        # profiles): one order deeper than anything else the sequence tabulates.
+        self.dd_basis_jk = tuple(basis_derivative_table(self.basis_0.dΛ[a], x)
+                                 for a, x in enumerate((self.quad.x_x, self.quad.x_y, self.quad.x_z)))
         self.greville = greville_axes(self)
 
         # Topological incidence: the raw stencils and the analytic polar

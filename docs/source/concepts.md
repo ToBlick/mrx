@@ -40,7 +40,7 @@ callable matvec built from 1D basis tables and the metric weight at the
 quadrature points. `DeRhamSequence.apply_*` methods apply them;
 `DeRhamSequence.apply_inverse_*` methods solve with them.
 
-Read [Matrix-free assembly](concepts/assembly.md) for the kernel, the
+Read [Mass operators](concepts/mass.md) for the kernel, the
 weights, the memory, and the quadrature rule.
 
 ## Solvers and preconditioners
