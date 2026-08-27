@@ -1,63 +1,64 @@
-"""Block-Jacobi Hodge-Laplacian preconditioner: separable bulk + dense core.
+"""The metric-lumping preconditioners: ``M_k^-1`` and ``L_k^-1`` as a separable bulk plus a dense polar core.
 
-THE PRODUCTION Laplacian and mass preconditioner for k = 0..3, free and
-Dirichlet (``docs/source/concepts/PRODUCTION.md``; ``kind='metric_lumping'``).
+``kind='metric_lumping'`` (``docs/source/concepts/preconditioning.md``): one
+atom per ``(k, dirichlet)``, :class:`MetricLumpingMass` for the mass and
+:class:`MetricLumpingLaplacian` for the Hodge Laplacian, built by
+``DeRhamSequence.build_preconditioners`` onto the operator bundle.
 
-The shape is the same at every ``k``:
+The shape is the same at every ``k``, block Jacobi over two blocks that are
+NOT coupled (no Schur complement is formed):
 
-* **bulk** -- one separable atom per component, a three-term Kronecker sum
-  ``K_r (x) M_t (x) M_z + M_r (x) K_t (x) M_z + M_r (x) M_t (x) K_z``, inverted
-  by fast diagonalisation (:func:`mrx.operators._fd_apply_3d`);
-* **core** -- the polar rows, probed and inverted densely;
-* the two blocks are NOT coupled: block Jacobi, not a Schur complement.
+* **bulk** -- the tensor-product DoFs. For the mass, one Kronecker product
+  ``M_r (x) M_t (x) M_z`` per component, inverted by three 1-D solves. For
+  the Laplacian, one Kronecker SUM per component,
+  ``K_r (x) M_t (x) M_z + M_r (x) K_t (x) M_z + M_r (x) M_t (x) K_z``,
+  inverted by fast diagonalisation (:func:`mrx.operators._fd_apply_3d`);
+* **core** -- the polar rows (the extraction's fused rows; ``extra_rings`` /
+  ``outer_rings`` can add radial rings), probed through the operator itself
+  and inverted densely.
 
-The one construction that is not obvious is where the third Kronecker term
-comes from at ``k = 1`` and ``k = 2``.  Take the ``r`` component of a 1-form,
-``dLam_r (x) Lam_t (x) Lam_z``.  Curl-curl differentiates along ``t`` and ``z``,
-where the factors are primal splines, so those give honest 1-D stiffnesses.
-Div-div acts along ``r``, where the factor is ALREADY a derivative spline --
-and it does not differentiate it.  ``delta`` steps BACKWARDS through the
-incidence to ``V_0``, applies the inverse mass there, and comes back::
+**Metric lumping**, which names the module: the 3-D weight of each 1-D
+factor is a *bundled* axis mean of the metric field, ``<g^{aa} J>`` taken as
+one product over the other two directions (:func:`bundled_axis_profiles`;
+``g^{tt} J ~ 1/r`` is integrable where ``g^{tt}`` alone is not), with the
+component's own factor ``g^{cc}`` kept exactly as a diagonal sandwich
+``D_c^{-1/2} (.) D_c^{-1/2}`` around the separable inverse
+(``lumped="diag"``; the scalar and unlumped variants are the measured-and-lost
+alternatives). The 1-D masses are unweighted: the metric goes into the
+stiffness profiles only.
 
-    W_1^{rr} ~ (x)_a [ M_a G_a A_a^-1 G_a^T M_a ] ,  G_r = incidence, G_t = G_z = I
+The Laplacian's 1-D stiffness on each axis depends on whether the
+component's basis is a derivative spline there (:func:`component_factors`):
+on the primal axes it is the ordinary weighted stiffness of the primal
+splines; on the derivative axes -- where ``L_k``'s weak half
+``D M^{-1} D^T`` acts -- it is the stiffness OF the derivative splines
+themselves, from their tabulated derivatives (``seq.dd_basis_jk``;
+``ktilde_mode="honest"``). The ``"roundtrip"`` alternative rebuilds that term
+as ``M G A^{-1} G^T M`` through ``V_0`` and needs the ``M A^{-1} M -> c M``
+scale on the other axes; it is kept for comparison only. Conditioning works
+out the right way round: the curl-curl stiffnesses are singular (constants),
+the derivative-axis term is SPD, and the sum is nonsingular -- which is why
+the two halves form ONE atom.
 
-so every axis makes the round trip ``V_1 -> V_0 -> V_1``; only the axis being
-differentiated carries the incidence.  The ``r`` factor
+Approximations, all deliberate: off-diagonal component blocks dropped (metric
+off-diagonals and the cross-component derivative couplings); each bundled
+3-D weight collapsed to a product of axis profiles; no bulk<->core coupling.
 
-    Ktilde_r = M_r^(d) G_r A_r^-1 G_r^T M_r^(d)
+The natural-BC boundary term IS carried, on the components whose radial
+axis is a derivative axis, as a rank-one update to the radial stiffness:
+under a free condition the weak block's integration by parts leaves
+``int_{r=1} w u_r^2``, which for a tensor basis is
+``alpha (e e^T) (x) M_t (x) M_z`` -- the shape of the first Kronecker term,
+so it merges into ``K_r`` (``bc_entry="ibpd"``; ``False`` switches it off). ``alpha`` is the face average of the weight
+(:func:`_face_alpha`) times ``PRODUCTION_BC_SCALE = 3.0``, a measured fit
+(``docs/research/natural_bc_coefficient_handoff.md``): folding the term into
+the sum forces the face weight to a scalar, which is worth 1.5x -> 3.3x on a
+toroid and 1.26x -> 1.56x on W7-X, where the face weight varies too much for
+one number. It vanishes under Dirichlet and at k=0.
 
-is symmetric PSD, built from the derivative-spline mass, the metric-free
-incidence and the PRIMAL mass inverse -- no second derivatives and nothing
-outside the complex.  ``k = 2`` is the mirror image: div-div gives an honest
-stiffness on the component's own (primal) axis, and the curl-curl weak half
-gives ``Ktilde`` on the other two.
-
-Conditioning works out the right way round: the curl-curl stiffnesses are
-singular (constants), ``Ktilde`` is SPD, and the SUM is nonsingular -- which is
-why the two halves are combined into one atom rather than inverted separately
-and added.
-
-Approximations, all deliberate:
-
-1. off-diagonal component blocks dropped (metric off-diagonals and the
-   cross-component derivative couplings);
-2. each bundled 3-D metric weight collapsed to a product of axis profiles;
-3. ``M_0`` inside the weak term taken as a pure Kronecker product, which drops
-   its ``Lam`` diagonal;
-4. ``M A^-1 M -> M`` on the undifferentiated axes, so one mass per axis serves
-   all three terms (needed for a shared eigenbasis);
-5. no bulk<->core coupling.
-
-The natural-BC boundary term IS carried, by default, as a rank-one update to
-the radial stiffness (``bc_entry="ibpd"``; ``"exact"`` is the probed
-alternative): under a free condition the weak
-block's integration by parts leaves ``int_{r=1} w u_r^2``, which for a tensor
-basis is ``alpha (e e^T) (x) M_t (x) M_z`` -- the same shape as the first
-Kronecker term, so it merges into ``K_r`` for free.  It is exactly zero under
-Dirichlet and at k=0 (no weak block).  Its limit is that folding it into the
-sum forces the face weight ``w(1,theta,zeta)`` down to a SCALAR: worth 1.5x ->
-3.3x on a toroid, only 1.26x -> 1.56x on W7-X, where the face weight varies too
-much for a scalar. Carrying that variation needs an exact outer ring.
+Every atom is a pytree payload with one jitted apply per tree structure, built
+at construction (never on the first apply), so a rebuild for a new geometry
+does not recompile.
 """
 
 from __future__ import annotations
@@ -474,6 +475,10 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
     # The space's own mass weight, and the weight of the stiffness half.
     if ktilde_mode not in ("roundtrip", "honest"):
         raise ValueError(f"unknown ktilde_mode {ktilde_mode!r}")
+    if bc_entry not in ("ibpd", False):
+        raise ValueError(
+            f"bc_entry must be 'ibpd' (the rank-one natural-BC face term) or False "
+            f"(no term), got {bc_entry!r}")
     degree0 = int(seq.basis_0.Λ[0].p) < 2
 
     # ONE formula for every degree:
