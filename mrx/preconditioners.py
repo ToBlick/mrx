@@ -113,55 +113,6 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
     return MassPreconditionerSpec(kind='metric_lumping')
 
 
-def _extracted_mass_diagonal(e, d_raw, mass_apply, *, batch_size: int = 16):
-    """``diag(E M E^T)`` from the raw diagonal, probing only the coupled rows.
-
-    ``E`` has exactly two kinds of row (verified for k=0,1,2 x both BCs at
-    every resolution):
-
-    * **bulk** -- a single nonzero, so ``(E M E^T)_ii = v^2 M_aa`` and the
-      closed-form raw diagonal supplies it outright, with no operator apply;
-    * **coupled** -- the polar rows, which mix several raw DOFs and therefore
-      pick up *off-diagonal* entries of ``M`` that no diagonal can supply.
-
-    Only the coupled rows are probed. There are ``3 n_z / 5 n_z / 2 n_z / 0``
-    of them for k=0/1/2/3, so the apply count drops from ``O(N)`` to
-    ``O(n_z)`` while the result stays exact -- this is not an approximation of
-    the probed diagonal, it agrees with it to floating point.
-    """
-    rows = np.asarray(e.rows)
-    cols = np.asarray(e.cols)
-    vals = np.asarray(e.vals)
-    n_rows, n_raw = (int(s) for s in e.forward_shape)
-    d_raw_np = np.asarray(d_raw)
-
-    counts = np.bincount(rows, minlength=n_rows)
-    diag = np.zeros(n_rows)
-
-    # Bulk rows: one nonzero each, so only the raw diagonal is involved.
-    single = counts[rows] == 1
-    diag[rows[single]] = (vals[single] ** 2) * d_raw_np[cols[single]]
-
-    # Coupled rows: e_i^T M e_i with e_i the (short) raw row of E. The
-    # nonzeros of the coupled rows are grouped ONCE, by position among the
-    # coupled rows, rather than by scanning ``rows == r`` per row.
-    coupled = np.flatnonzero(counts > 1)
-    pos = np.full(n_rows, -1)
-    pos[coupled] = np.arange(coupled.size)
-    nz = np.flatnonzero(pos[rows] >= 0)
-    t_all, c_all, v_all = pos[rows[nz]], cols[nz], vals[nz]
-    for start in range(0, coupled.size, batch_size):
-        blk = coupled[start:start + batch_size]
-        sel = (t_all >= start) & (t_all < start + blk.size)
-        probe = np.zeros((blk.size, n_raw))
-        probe[t_all[sel] - start, c_all[sel]] = v_all[sel]
-        probe_j = jnp.asarray(probe, dtype=DTYPE)
-        images = jax.vmap(mass_apply)(probe_j)
-        diag[blk] = np.asarray(jnp.sum(images * probe_j, axis=1))
-
-    return jnp.asarray(diag, dtype=DTYPE)
-
-
 def _quadrature_tensor_shape(seq) -> tuple[int, int, int]:
     return seq.quad.ny, seq.quad.nx, seq.quad.nz
 
@@ -178,10 +129,6 @@ def _reshape_quadrature_matrix_field(seq, values: jnp.ndarray) -> jnp.ndarray:
 def _apply_extracted_mass_operator(extraction, extraction_t, mass_apply, x: jnp.ndarray) -> jnp.ndarray:
     raw = extraction_t @ x
     return jnp.asarray(extraction @ mass_apply(raw))
-
-
-def _apply_extracted_mass_operator_data(data: ExtractedMassApplyData, x: jnp.ndarray) -> jnp.ndarray:
-    return _apply_extracted_mass_operator(data.extraction, data.extraction_t, data.mass_apply, x)
 
 
 def _symmetrize(matrix: jnp.ndarray) -> jnp.ndarray:
