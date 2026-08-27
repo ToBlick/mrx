@@ -246,10 +246,10 @@ def make_force_normaliser(seq):
     ci2, cs2 = seq._form_comp_info(2)
 
     def normaliser(B_dof):
-        B_jk = evaluate_at_xq(seq.e2_dbc.T @ B_dof, ci2, cs2, quad_shape, 3)
+        B_jk = evaluate_at_xq(seq.E(2, True).T @ B_dof, ci2, cs2, quad_shape, 3)
         bsq = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk)
         f_jk = (0.5 * bsq * seq.quad.w / seq.jacobian_j)[:, None]
-        q = seq.e0 @ integrate_against(f_jk, ci0, cs0, quad_shape)
+        q = seq.E(0) @ integrate_against(f_jk, ci0, cs0, quad_shape)
         w0 = seq.apply_inverse_mass_matrix(q, 0, dirichlet=False)
         g1 = seq.apply_strong_grad(w0, dirichlet_in=False, dirichlet_out=False)
         return seq.l2_norm(g1, 1, dirichlet=False)
@@ -296,7 +296,7 @@ def main(cli):
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter, tol=cli.tol, nfp=cli.nfp)
     ops = seq.set_operators(compute_nullspaces(seq, ops))
     print(f"[setup] {cli.geometry} ns={ns} p={cli.p} tol={seq.tol:.1e}  "
-          f"n2_dbc={seq.n2_dbc}  operators+nullspaces "
+          f"n2_dbc={seq.n(2, True)}  operators+nullspaces "
           f"{time.perf_counter() - t0:.1f}s", flush=True)
 
     # --- initial condition -----------------------------------------------
@@ -366,7 +366,7 @@ def main(cli):
             print(f"[presmooth] step {k + 1}: ||J||/||B|| {jb:.4e} before, eps {cli.presmooth_eps:g}, "
                   f"MINRES {rec['it']} it, moved {rec['moved']:.3e}, E={rec['E']:.6e}, "
                   f"||div B||={rec['div']:.2e}", flush=True)
-    H0, _ = compute_helicity(B0, seq, jnp.zeros(seq.n1_dbc))
+    H0, _ = compute_helicity(B0, seq, jnp.zeros(seq.n(1, True)))
     E0 = 0.5 * float(seq.l2_norm_sq(B0, 2))
     normaliser = jax.jit(make_force_normaliser(seq))
     gradp0 = float(normaliser(B0))
@@ -394,7 +394,7 @@ def main(cli):
                 f"wall dpw/dn={d['dpdn_wall']:.3e}  (JxB).n={d['JxBn_wall']:.3e}")
 
     F0, p0, J0, Hf0, JxH0 = compute_force(B0, seq)
-    pw0, JoverB0, diag0 = pressure_probe_eager(B0, p0, J0, Hf0, jnp.zeros(seq.n0_dbc))
+    pw0, JoverB0, diag0 = pressure_probe_eager(B0, p0, J0, Hf0, jnp.zeros(seq.n(0, True)))
     diag0 = {k: float(v) for k, v in diag0.items()}
     F0n = float(seq.l2_norm(F0, 2))
     resid0 = F0n / gradp0

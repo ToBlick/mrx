@@ -195,7 +195,7 @@ with h5py.File("outputs/relax/<date>/<time>/B.h5") as fh:
     B = fh["B_final"][...]
     geometry, ns, p = str(fh.attrs["geometry_path"]), tuple(fh.attrs["ns"]), int(fh.attrs["p"])
 seq, ops = build_sequence(geometry, ns=ns, p=p)
-B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.e2_dbc), seq.map, 2)
+B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 2)
 ```
 
 ## Poincaré sections

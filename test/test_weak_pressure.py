@@ -22,7 +22,7 @@ from test.conftest import TORUS_EPSILON, TORUS_R0
 
 def test_dirichlet_leray_recovers_gradient(tiny_seq):
     seq = tiny_seq
-    q = jnp.asarray(np.random.default_rng(11).standard_normal(seq.n0_dbc), dtype=mrx.DTYPE)
+    q = jnp.asarray(np.random.default_rng(11).standard_normal(seq.n(0, True)), dtype=mrx.DTYPE)
     q = q / seq.l2_norm(q, 0)
     # The exact strong gradient into the natural 1-form space: v is a
     # gradient to round-off, so the decomposition must return it whole.
@@ -37,7 +37,7 @@ def test_dirichlet_leray_recovers_gradient(tiny_seq):
     # F_w = v - M_1^-1 D_0 p_w adds one mass solve's residual.
     assert err <= 100 * seq.tol
     assert rem <= 100 * seq.tol
-    assert int(p_w.shape[0]) == int(seq.n0_dbc)
+    assert int(p_w.shape[0]) == int(seq.n(0, True))
 
 
 def test_pressure_diagnostics_analytic(tiny_seq):

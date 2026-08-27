@@ -62,7 +62,7 @@ def main():
           f"Rayleigh quotient of the Hodge Laplacian = {float(harmonic_rayleigh(seq, B, 2)):.2e}")
 
     # --- |B| on the torus -----------------------------------------------------
-    B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.e2_dbc), seq.map, 2)
+    B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 2)
 
     def B_mag(x):
         return jnp.linalg.norm(B_phys(x))

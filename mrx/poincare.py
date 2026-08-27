@@ -80,7 +80,7 @@ def logical_field(seq, dof, k, dirichlet):
     if k not in (1, 2):
         raise ValueError(f"logical_field: k must be 1 or 2, got {k}")
     basis = seq.basis_2 if k == 2 else seq.basis_1
-    extraction = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+    extraction = seq.E(k, dirichlet)
     # DiscreteFunction folds the extraction into the coefficients once and
     # evaluates only the basis functions that are nonzero at x.
     discrete = DiscreteFunction(jnp.asarray(dof), basis, extraction)

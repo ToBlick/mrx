@@ -93,7 +93,7 @@ def _probe_cache(seq):
                     os.environ.pop("MRX_BJ_BC_SCALE", None)
                 else:
                     os.environ["MRX_BJ_BC_SCALE"] = prev
-            n = int(getattr(seq, f"n{k}_dbc" if dbc else f"n{k}"))
+            n = int(seq.n(k, dbc))
             rng = np.random.default_rng(0)
             probe = np.stack([
                 np.asarray(pre.apply(jnp.asarray(rng.standard_normal(n))))
@@ -308,7 +308,7 @@ def test_auto_is_the_atom_or_a_warned_identity(tiny_seq):
     import equinox as eqx
 
     k, dbc = 3, False          # non-singular, single component: the cheap case
-    n = int(getattr(tiny_seq, f"n{k}"))
+    n = int(tiny_seq.n(k))
     rng = np.random.default_rng(11)
     v = jnp.asarray(rng.standard_normal(n))
     ops = tiny_seq.operators
@@ -351,7 +351,7 @@ def test_first_apply_inside_a_trace_does_not_poison_the_instance(tiny_seq):
     ops = tiny_seq.get_operators()
     lap = MetricLumpingLaplacian(tiny_seq, ops, k, dbc)
     mass = MetricLumpingMass(tiny_seq, ops, k, dbc)
-    n = int(getattr(tiny_seq, f"n{k}"))
+    n = int(tiny_seq.n(k))
     v = jnp.asarray(np.random.default_rng(23).standard_normal(n))
 
     def step(x):
@@ -384,7 +384,7 @@ def test_metric_lumping_mass_is_the_default_and_jit_safe(tiny_seq):
     assert default_mass_preconditioner().kind == 'metric_lumping'
 
     k, dbc = 3, False       # single component: the cheapest mass to build
-    n = int(getattr(tiny_seq, f"n{k}"))
+    n = int(tiny_seq.n(k))
     ops = tiny_seq.get_operators()
     rng = np.random.default_rng(5)
     v = jnp.asarray(rng.standard_normal(n))

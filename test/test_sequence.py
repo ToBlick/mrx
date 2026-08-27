@@ -25,7 +25,7 @@ IDENT = mrx.eps(1e3)
 
 
 def _dof(seq, k, dirichlet):
-    return getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}")
+    return seq.n(k, dirichlet)
 
 
 @pytest.fixture(scope="module", params=[False, True], ids=["tensor", "polar"])
@@ -58,7 +58,7 @@ def test_discrete_function_matches_dense_evaluation(evaluator_seq, k):
     xs = jax.random.uniform(jax.random.PRNGKey(3), (6, 3))
     raw = jax.vmap(lambda x: jax.vmap(basis, (None, 0))(x, basis.ns))(xs)
     for dirichlet in ALL_DBC:
-        e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+        e = seq.E(k, dirichlet)
         dof = jax.random.normal(jax.random.PRNGKey(7 * k + dirichlet),
                                 (int(_dof(seq, k, dirichlet)),))
         discrete = DiscreteFunction(dof, basis, e)

@@ -41,15 +41,14 @@ from mrx.extraction_operators import (BoundaryOperator,
                                       PolarExtractionOperator,
                                       bc_extraction_op, get_xi)
 from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
-                           find_nullspace_vectors, get_nullspace,
-                           get_saddle_point_nullspaces, init_nullspaces)
+                           get_nullspace)
 import mrx.operators as op
 from mrx.local_assembly import (_second_derivative_tables, basis_table,
                                 build_matrixfree_mass_apply,
                                 build_matrixfree_projection_apply)
 from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
-from mrx.geometry import SequenceGeometry, grad_1d
+from mrx.geometry import SequenceGeometry
 
 
 
@@ -79,15 +78,12 @@ class DeRhamSequence():
     xi : jnp.ndarray or None
         Polar extraction weights ``(3, 2, n_θ)`` (:func:`~mrx.extraction_operators.get_xi`);
         ``None`` on a non-polar sequence.
-    e0, e1, e2, e3 : MatrixFreeExtraction
-        Extraction operators mapping constrained DOF vectors to the full
-        spline basis for each form degree (no Dirichlet BCs). ``.T`` is the
-        transpose.
-    e0_dbc, e1_dbc, e2_dbc, e3_dbc : MatrixFreeExtraction
-        Extraction operators with homogeneous Dirichlet BCs applied at
-        the radial boundary (or axis in polar coordinates).
-    e0_bc, e1_bc, e2_bc, e3_bc : MatrixFreeExtraction
-        Extraction of the boundary DOFs (those in ``e_k`` but not ``e_k_dbc``).
+    extraction : dict
+        ``E(k, dirichlet)`` -- the extraction operators mapping constrained
+        DoF vectors to the full spline basis, free and with homogeneous
+        Dirichlet conditions at the radial boundary (``.T`` is the
+        transpose); ``E_bc(k)`` the extraction of the boundary DoFs;
+        ``n(k, dirichlet)`` / ``n_bc(k)`` the DoF counts.
     g0, g1, g2 : _MatrixFreeIncidence
         Raw {-1, 0, +1} incidence stencils (grad, curl, div) and their
         transposes ``g*_T``.
@@ -228,17 +224,14 @@ class DeRhamSequence():
             # Dirichlet conditions are supported in r only.
             raw = [BoundaryOperator(L, ('none', 'none', 'none')) for L in bases]
             raw_dbc = [BoundaryOperator(L, ('dirichlet', 'none', 'none')) for L in bases]
+        self.extraction, self.boundary_extraction = {}, {}
+        self.n_dofs, self.n_boundary = {}, {}
         for k in range(4):
             e, e_dbc = raw[k].build_extraction(), raw_dbc[k].build_extraction()
-            setattr(self, f"e{k}", e)
-            setattr(self, f"e{k}_dbc", e_dbc)
-            setattr(self, f"e{k}_bc", bc_extraction_op(e, e_dbc, bases[k].n))
-            setattr(self, f"n{k}", raw[k].n)
-            setattr(self, f"n{k}_dbc", raw_dbc[k].n)
-            setattr(self, f"n{k}_bc", raw[k].n - raw_dbc[k].n)
-            for c in (1, 2, 3):
-                setattr(self, f"n{k}_{c}", getattr(raw[k], f"n{c}"))
-                setattr(self, f"n{k}_{c}_dbc", getattr(raw_dbc[k], f"n{c}"))
+            self.extraction[(k, False)], self.extraction[(k, True)] = e, e_dbc
+            self.boundary_extraction[k] = bc_extraction_op(e, e_dbc, bases[k].n)
+            self.n_dofs[(k, False)], self.n_dofs[(k, True)] = raw[k].n, raw_dbc[k].n
+            self.n_boundary[k] = raw[k].n - raw_dbc[k].n
 
         # 1-D basis tables at the quadrature points, and the Greville data.
         for name, funcs, x in (("basis_r_jk", self.basis_0.Λ, self.quad.x_x),
@@ -311,6 +304,22 @@ class DeRhamSequence():
     def jacobian_j(self):
         """``det DF`` at the quadrature points, ``(n_q,)``."""
         return self._require_geometry().jacobian_j
+
+    def E(self, k, dirichlet=False):
+        """The extraction of the free (default) or Dirichlet ``k``-form space; ``.T`` is its transpose."""
+        return self.extraction[(int(k), bool(dirichlet))]
+
+    def E_bc(self, k):
+        """The extraction of the boundary DoFs of the ``k``-form space (in ``E(k)``, not in ``E(k, True)``)."""
+        return self.boundary_extraction[int(k)]
+
+    def n(self, k, dirichlet=False):
+        """Number of DoFs of the free (default) or Dirichlet ``k``-form space."""
+        return self.n_dofs[(int(k), bool(dirichlet))]
+
+    def n_bc(self, k):
+        """Number of boundary DoFs of the ``k``-form space."""
+        return self.n_boundary[int(k)]
 
     def nullspace(self, k, dirichlet=False):
         """Harmonic ``k``-forms of the free or Dirichlet space, ``(n_vectors, n_k)``."""
@@ -400,39 +409,24 @@ class DeRhamSequence():
         """Update the active logical-to-physical map and derived geometry terms."""
         self.set_geometry(SequenceGeometry.from_map(map, self.quad.x))
 
-    def build_spline_map(self, coefficients, extraction=None):
-        """Build a spline map using the sequence's scalar spline basis."""
+    def build_spline_map(self, coefficients):
+        """A :class:`~mrx.mappings.SplineMap` in the sequence's scalar spline basis."""
         from mrx.mappings import SplineMap
 
-        if extraction is None:
-            extraction = self.e0
-            extraction_T = self.e0.T
-        else:
-            extraction_T = None
         return SplineMap(
             coefficients=coefficients,
-            extraction=extraction,
-            extraction_T=extraction_T,
+            extraction=self.E(0),
+            extraction_T=self.E(0).T,
             basis_0=self.basis_0,
         )
 
-    def geometry_from_spline_map(self, coefficients, extraction=None):
-        """Construct geometry data from spline map coefficients.
+    def geometry_from_spline_map(self, coefficients):
+        """Geometry data from spline map coefficients, by the sum-factorised path."""
+        return SequenceGeometry.from_spline_map(self.build_spline_map(coefficients), self)
 
-        Uses the sum-factorized path when the extraction operator is the
-        sequence's own ``e0`` (so we have a precomputed transpose and 1D
-        basis evaluations); otherwise falls back to the generic
-        ``SequenceGeometry.from_map``.
-        """
-        spline_map = self.build_spline_map(coefficients, extraction=extraction)
-        if spline_map.extraction_T is not None and hasattr(self, "basis_r_jk"):
-            return SequenceGeometry.from_spline_map(spline_map, self)
-        return SequenceGeometry.from_map(spline_map, self.quad.x)
-
-    def set_spline_map(self, coefficients, extraction=None):
-        """Update the sequence geometry from spline map coefficients."""
-        self.set_geometry(self.geometry_from_spline_map(
-            coefficients, extraction=extraction))
+    def set_spline_map(self, coefficients):
+        """Install the geometry of a spline map given by its coefficients."""
+        self.set_geometry(self.geometry_from_spline_map(coefficients))
 
     def bc_lift(self, g: jnp.ndarray, k: int) -> jnp.ndarray:
         """Embed boundary DOF values into the full spline basis space.
@@ -451,7 +445,7 @@ class DeRhamSequence():
             zeros everywhere else.  Multiply any full-spline-space
             operator by this vector to compute the BC contribution.
         """
-        e_bc_T = getattr(self, f'e{k}_bc_T')
+        e_bc_T = self.E_bc(k).T
         return e_bc_T @ g
 
     def apply_bc_mass_correction(self, g: jnp.ndarray, k: int) -> jnp.ndarray:
@@ -478,8 +472,8 @@ class DeRhamSequence():
         array of shape (n_k_dbc,)
         """
         m_sp = getattr(self, f'm{k}')
-        e_dbc = getattr(self, f'e{k}_dbc')
-        e_bc_T = getattr(self, f'e{k}_bc_T')
+        e_dbc = self.E(k, True)
+        e_bc_T = self.E_bc(k).T
         return e_dbc @ (m_sp @ (e_bc_T @ g))
 
     def _form_comp_info(self, k):
@@ -532,29 +526,12 @@ class DeRhamSequence():
 
     def apply_incidence_matrix(self, v, k, dirichlet_in=True, dirichlet_out=True,
                                transpose=False):
-        """Apply the topological exterior-derivative incidence Gk to ``v``.
+        """The exterior derivative on coefficients: ``G_k`` (k-forms to (k+1)-forms).
 
-        Gk has entries in {-1, 0, +1} and is geometry-independent. On DoF
-        spaces where the extraction operators are "unitary" (``e @ e^T = I``),
-        this equals ``M_{k+1}^{-1} @ apply_derivative_matrix``. For non-unitary
-        extractions (e.g. polar axis gluing) the two differ.
-
-        PREFER THIS FORM. Until 2026-08-25 this docstring said the
-        mass-projected :meth:`apply_strong_grad` / curl / div "should be
-        preferred when exact d∘d = 0 on extracted DoFs is required". That is
-        stale: :func:`~mrx.operators.apply_incidence_matrix` applies the cached
-        coefficient-Gram correction ``G = Gram_{k+1}^{-1} (E_out^T sp E_in)``,
-        which makes this form the true strong derivative on polar sequences
-        too. Measured on quasr44970 ns=(8,16,8) p=3:
-
-            div.curl, mass-projected   1.261e-10
-            div.curl, incidence        8.641e-16   (machine zero)
-            curl agreement between them 1.025e-12   (so the swap is free)
-
-        The mass-projected path also costs a Krylov solve per apply. The stale
-        advice cost a relaxation study a spurious 1e-10 "floor" on div B that
-        was read as a property of the discretisation rather than of the
-        operator choice.
+        A {-1, 0, +1} difference stencil on tensor-product sequences; on
+        polar sequences the analytic grad/curl stencils that make it the
+        exact strong derivative on extracted DoFs (``d.d = 0`` to round-off).
+        No geometry and no solve. ``transpose=True`` applies ``G_k^T``.
         """
         return op.apply_incidence_matrix(
             self, v, k,
@@ -563,89 +540,37 @@ class DeRhamSequence():
             transpose=transpose,
         )
 
-    # TODO: Cache the extracted strong derivatives S_k = M_ext^{-1} D_ext as a
-    # sparse-plus-low-rank operator and use it here instead of running CG on
-    # every call. Decomposition (exact, no thresholding):
-    #
-    #     S_k = G_ext  +  C_tilde @ P_K^T,
-    #
-    # where G_ext = E_{k+1} G^k E_k^T is the topological ±1 incidence on the
-    # extracted DoFs (sparse), P_K picks the K polar-fused output DoFs (small,
-    # ~3 n_z), and C_tilde ∈ R^{n_{k+1} × K} is dense and built once via K CG
-    # solves against M_{k+1,ext} on the residual columns
-    # R = D_ext - M_{k+1,ext} G_ext (which has only K nonzero columns by
-    # construction, since (I - E^T E) vanishes off the polar fusion set).
-    # Apply cost then drops from one CG solve per call to one sparse + one
-    # K-wide dense matvec. Requires exposing the polar-fused DoF indices from
-    # PolarExtractionOperator.
     def apply_strong_grad(self, v, dirichlet_in=True, dirichlet_out=True):
-        """Apply the strong gradient M1⁻¹ D0 to a 0-form DOF vector ``v``."""
-        dv_dual = self.apply_derivative_matrix(
-            v, 0, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out)
-        return self.apply_inverse_mass_matrix(dv_dual, 1, dirichlet=dirichlet_out)
+        """The strong gradient of a 0-form: the incidence ``G_0``, exact, no solve."""
+        return self.apply_incidence_matrix(v, 0, dirichlet_in=dirichlet_in,
+                                           dirichlet_out=dirichlet_out)
 
     def apply_strong_curl(self, v, dirichlet_in=True, dirichlet_out=True):
-        """Apply the strong curl M2⁻¹ D1 to a 1-form DOF vector ``v``."""
-        dv_dual = self.apply_derivative_matrix(
-            v, 1, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out)
-        return self.apply_inverse_mass_matrix(dv_dual, 2, dirichlet=dirichlet_out)
+        """The strong curl of a 1-form: the incidence ``G_1``, exact, no solve."""
+        return self.apply_incidence_matrix(v, 1, dirichlet_in=dirichlet_in,
+                                           dirichlet_out=dirichlet_out)
 
     def apply_strong_div(self, v, dirichlet_in=True, dirichlet_out=True):
-        """Apply the strong divergence M3⁻¹ D2 to a 2-form DOF vector ``v``."""
-        dv_dual = self.apply_derivative_matrix(
-            v, 2, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out)
-        return self.apply_inverse_mass_matrix(dv_dual, 3, dirichlet=dirichlet_out)
+        """The strong divergence of a 2-form: the incidence ``G_2``, exact, no solve."""
+        return self.apply_incidence_matrix(v, 2, dirichlet_in=dirichlet_in,
+                                           dirichlet_out=dirichlet_out)
 
-    def _add_boundary_dual(self, dv_dual, boundary_dual, operator_name):
-        """Add a prescribed boundary functional in the operator's dual target space."""
-        if boundary_dual is None:
-            return dv_dual
-        if boundary_dual.shape != dv_dual.shape:
-            raise ValueError(
-                f"{operator_name}: boundary_dual shape {boundary_dual.shape} does not match dual shape {dv_dual.shape}"
-            )
-        return dv_dual + boundary_dual
-
-    def apply_weak_grad(self, v, dirichlet_in=True, dirichlet_out=True, boundary_dual=None):
-        """
-        Apply the weak gradient operator to a vector v.
-
-        This returns ``M2^{-1} (-D2.T v + boundary_dual)`` where
-        ``boundary_dual`` is an optional prescribed boundary functional in the
-        dual 2-form space.
-        """
+    def apply_weak_grad(self, v, dirichlet_in=True, dirichlet_out=True):
+        """The weak gradient of a 3-form: ``-M_2^{-1} D_2^T v`` (the codifferential; one mass solve)."""
         dv_dual = -self.apply_derivative_matrix(
             v, 2, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out, transpose=True)
-        dv_dual = self._add_boundary_dual(
-            dv_dual, boundary_dual, "apply_weak_grad")
         return self.apply_inverse_mass_matrix(dv_dual, 2, dirichlet=dirichlet_out)
 
-    def apply_weak_curl(self, v, dirichlet_in=True, dirichlet_out=True, boundary_dual=None):
-        """
-        Apply the weak curl operator to a vector v.
-
-        This returns ``M1^{-1} (D1.T v + boundary_dual)`` where
-        ``boundary_dual`` is an optional prescribed boundary functional in the
-        dual 1-form space.
-        """
+    def apply_weak_curl(self, v, dirichlet_in=True, dirichlet_out=True):
+        """The weak curl of a 2-form: ``M_1^{-1} D_1^T v`` (the codifferential; one mass solve)."""
         dv_dual = self.apply_derivative_matrix(
             v, 1, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out, transpose=True)
-        dv_dual = self._add_boundary_dual(
-            dv_dual, boundary_dual, "apply_weak_curl")
         return self.apply_inverse_mass_matrix(dv_dual, 1, dirichlet=dirichlet_out)
 
-    def apply_weak_div(self, v, dirichlet_in=True, dirichlet_out=True, boundary_dual=None):
-        """
-        Apply the weak divergence operator to a vector v.
-
-        This returns ``M0^{-1} (-D0.T v + boundary_dual)`` where
-        ``boundary_dual`` is an optional prescribed boundary functional in the
-        dual 0-form space.
-        """
+    def apply_weak_div(self, v, dirichlet_in=True, dirichlet_out=True):
+        """The weak divergence of a 1-form: ``-M_0^{-1} D_0^T v`` (the codifferential; one mass solve)."""
         dv_dual = -self.apply_derivative_matrix(
             v, 0, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out, transpose=True)
-        dv_dual = self._add_boundary_dual(
-            dv_dual, boundary_dual, "apply_weak_div")
         return self.apply_inverse_mass_matrix(dv_dual, 0, dirichlet=dirichlet_out)
 
     def apply_mass_matrix_preconditioner(self, v, k, dirichlet=True,
@@ -698,13 +623,18 @@ class DeRhamSequence():
 
     def apply_derivative_matrix(self, v, k, dirichlet_in=True, dirichlet_out=True,
                                 transpose=False):
-        """Apply the weak derivative ``D_k`` (k-forms to (k+1)-forms) to ``v``::
+        """The dual derivative ``D_k = M_{k+1} G_k`` (k-forms to dual (k+1)-forms).
+
+        The incidence followed by the mass, i.e. the exterior derivative
+        tested against the (k+1)-form basis::
 
             k=0: D0_ij = ∫ Λ1_i · G⁻¹ grad Λ0_j det DF dx  (grad)
             k=1: D1_ij = ∫ Λ2_i · G curl Λ1_j (det DF)⁻¹ dx  (curl)
             k=2: D2_ij = ∫ Λ3_i div Λ2_j (det DF)⁻¹ dx  (div)
 
-        If ``transpose=True``, apply ``D_k^T`` instead ((k+1)-forms to k-forms).
+        No solve. ``transpose=True`` applies ``D_k^T = G_k^T M_{k+1}`` (dual
+        (k+1)-forms to dual k-forms), the building block of the weak
+        derivatives and of the Laplacian.
         """
         return op.apply_derivative_matrix(
             self, v, k,
@@ -732,12 +662,12 @@ class DeRhamSequence():
             tol=self.tol, maxiter=self.maxiter)
 
     def apply_laplacian_approx(self, v, k, dirichlet=True, operators=None):
-        """Linear approximate Laplacian apply.
+        """The linear approximation of ``L_k`` with ``M_{k-1}^{-1}`` replaced by one mass-preconditioner apply.
 
-        Replaces ``M_{k-1}^{-1}`` in the Schur term with a single configured
-        mass-preconditioner apply. Linear, SPD, safe to nest inside Krylov
-        solvers and to use as a preconditioner.  Not exact unless the metric
-        is tensor-separable on the reference domain.
+        Linear and SPD, so it can sit inside a Krylov solve: it is the
+        operator the metric-lumped Laplacian atoms probe their polar core
+        from (:class:`~mrx.metric_lumping_laplacian.MetricLumpingLaplacian`).
+        Not ``L_k`` itself unless the metric is tensor-separable.
         """
         operators = self._require_operators(operators)
         return op.apply_laplacian_approx(
@@ -762,20 +692,28 @@ class DeRhamSequence():
         return op.apply_stiffness(
             self, v, k, dirichlet=dirichlet)
 
-    def _get_nullspace(self, k, dirichlet):
-        """Return the nullspace basis for the k-form Laplacian."""
-        return get_nullspace(self._require_operators(), k, dirichlet)
-
-    def _get_saddle_point_nullspaces(self, k, dirichlet):
-        """Return the pair of nullspace bases for the k-th saddle-point system."""
-        return get_saddle_point_nullspaces(
-            self, self._require_operators(), k, dirichlet)
-
     def apply_inverse_laplacian(self, rhs, k, dirichlet=True, guess=None,
                                 operators=None, tol=None, maxiter=None,
                                 preconditioner='auto',
                                 return_info=False):
-        """Apply the inverse of the k-form Laplacian to a right-hand side."""
+        """Solve ``L_k x = rhs`` for the k-form ``x``.
+
+        ``k = 0``: ``L_0 = S_0`` is SPD up to its harmonic forms; deflated
+        CG (:func:`~mrx.solvers.solve_singular_cg`), the harmonic forms of
+        the bundle projected out, the metric-lumped k=0 atom as
+        preconditioner.
+
+        ``k >= 1``: the symmetric saddle system in ``(x, sigma)``::
+
+            | S_k        D_{k-1} | | x     |   | rhs |
+            | D_{k-1}^T  -M_{k-1} | | sigma | = | 0   |
+
+        whose Schur complement is ``L_k``, by MINRES
+        (:func:`~mrx.solvers.solve_saddle_point_minres`) with the block
+        preconditioner ``'auto'``: the metric-lumped Laplacian atom on the
+        upper block and the metric-lumped mass atom on the lower one,
+        harmonic forms deflated. No Krylov solve nests inside another.
+        """
         operators = self._require_operators(operators)
         return op.apply_inverse_laplacian(
             self, operators, rhs, k,
@@ -793,12 +731,15 @@ class DeRhamSequence():
         """
         Solve (L_k + eps * M_k) x = rhs for the k-form x.
 
-        For eps=0 this reduces to the Hodge Laplacian solve; the system may be
-        singular and nullspace deflation is applied automatically.
-        For eps > 0 the system is nonsingular (shift-invert for L_k u = λ M_k u).
-        The shifted solve itself does not require precomputed nullspace data;
-        any harmonic coarse correction is optional and should stay disabled
-        while inverse iteration is still constructing those vectors.
+        This is the operator of the shift-and-invert inverse iteration that
+        :func:`~mrx.nullspace.find_nullspace_vectors` /
+        :func:`~mrx.nullspace.compute_nullspaces_iterative` run to find the
+        harmonic forms: for ``eps > 0`` the system is nonsingular, so it
+        needs no nullspace data, and the same solvers and preconditioners as
+        :meth:`apply_inverse_laplacian` apply (the metric-lumped atoms, on
+        the shifted operator). ``eps = 0`` is the Laplacian solve with
+        deflation. The optional harmonic coarse correction stays off while
+        the vectors are still being constructed.
 
         For k=0: solved with CG on ``(S_0 + eps M_0) u = rhs``.
         For k>=1: MINRES on the symmetric saddle-point form of L_k + eps M_k:
@@ -858,87 +799,47 @@ class DeRhamSequence():
         return op.apply_laplacian_preconditioner(
             self, operators, v, k, dirichlet=dirichlet, kind=kind)
 
-    def _compute_nullspaces(self, betti_numbers=None, eps=None, direct=False,
-                            **kwargs):
-        """Compute harmonic forms and store them on ``self.operators``.
+    def compute_nullspaces(self, betti_numbers=None, *, direct=True, **kwargs):
+        """Compute the harmonic forms and store them on ``self.operators``.
 
+        ``direct=True`` (the default) is the Hodge-decomposition construction
+        (:func:`~mrx.nullspace.compute_nullspaces`): a fixed pair of
+        production solves per form, no shift and no outer iteration; it is
+        self-sufficient when ``b2 == 0``, i.e. on the solid torus, and raises
+        otherwise. ``direct=False`` is shift-and-invert inverse iteration
+        (:func:`~mrx.nullspace.compute_nullspaces_iterative`, ``kwargs`` such
+        as ``eps``, ``abs_tol``, ``inner_tol``, ``maxiter``), which works for
+        any Betti numbers and returns its per-vector iteration counts.
         ``betti_numbers`` defaults to ``self.betti_numbers``.
-
-        ``direct=True`` selects the Hodge-decomposition construction
-        (:func:`~mrx.nullspace.compute_nullspaces`): a fixed pair of Hodge
-        solves per form, with no shift, no outer iteration and no spectral-gap
-        assumption.  It is only self-sufficient when ``b2 == 0`` -- which
-        covers the toroidal geometries we actually run -- and raises with an
-        explanation otherwise, because at ``b2 > 0`` the two constructions
-        each need the other's kernel for deflation.  ``eps`` is unused in that
-        mode.
-
-        ``direct=False`` (default) uses shift-and-invert inverse iteration
-        (:func:`~mrx.nullspace.compute_nullspaces_iterative`), which works for
-        any topology because the shift removes the singularity.
-
-        Returns the info dict for the iterative route, or ``None`` for the
-        direct one (which has no per-vector iteration counts to report).
         """
         if direct:
             self.operators = compute_nullspaces(
                 self, self._require_operators(), betti_numbers=betti_numbers)
             return None
-        if eps is not None:
-            kwargs["eps"] = eps
         operators, info = compute_nullspaces_iterative(
-            self, self._require_operators(),
-            betti_numbers=betti_numbers, **kwargs)
+            self, self._require_operators(), betti_numbers=betti_numbers, **kwargs)
         self.operators = operators
         return info
 
-    def _find_nullspace_vectors(self, k, n_vectors, eps, dirichlet=True):
-        """Find ``n_vectors`` nullspace vectors of the k-form Laplacian via inverse iteration."""
-        return find_nullspace_vectors(
-            self, self._require_operators(), k, n_vectors, eps, dirichlet)
-
-    def compute_nullspaces(self, betti_numbers=None):
-        """Cache the harmonic forms via the direct Hodge-decomposition route.
-
-        Thin wrapper over :meth:`_compute_nullspaces` with ``direct=True``;
-        raises on topologies where that route is circular (``b2 > 0``).
-        """
-        self.operators = compute_nullspaces(
-            self, self._require_operators(), betti_numbers=betti_numbers)
-        return self.operators
-
-    def init_nullspaces(self, betti_numbers=None):
-        """Initialise zero-valued nullspace arrays on ``self.operators``.
-
-        Shapes are derived from ``betti_numbers`` (or ``self.betti_numbers``).
-        """
-        self.operators = init_nullspaces(
-            self, self._require_operators(), betti_numbers=betti_numbers)
-        return self.operators
-
     def evaluate_at_quadrature(self, dofs, k, dirichlet=True):
-        """Evaluate a 1- or 2-form at the quadrature points.
+        """Evaluate a k-form at the quadrature points.
 
         Args:
             dofs: DOF vector of the k-form.
-            k: Form degree, 1 or 2.
+            k: Form degree, 0..3.
             dirichlet: Use the Dirichlet-constrained extraction.
 
         Returns:
-            Array of shape ``(n_q, 3)``: the reference components at every
-            quadrature point, in the sequence's flat quadrature order.
+            Array of shape ``(n_q, 3)`` for k = 1, 2 and ``(n_q, 1)`` for
+            k = 0, 3: the reference components at every quadrature point,
+            in the sequence's flat quadrature order.
         """
         from mrx.quadrature import evaluate_at_xq
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
-        match k:
-            case 1:
-                e_T = self.e1_dbc.T if dirichlet else self.e1.T
-            case 2:
-                e_T = self.e2_dbc.T if dirichlet else self.e2.T
-            case _:
-                raise ValueError("k must be 1 or 2")
         comp_info, comp_shapes = self._form_comp_info(k)
-        return evaluate_at_xq(e_T @ dofs, comp_info, comp_shapes, quad_shape, 3)
+        ncomp = 3 if k in (1, 2) else 1
+        return evaluate_at_xq(self.E(k, dirichlet).T @ dofs, comp_info, comp_shapes,
+                              quad_shape, ncomp)
 
     def cross_product_load(
         self, w, u, n, m, k,
@@ -1005,13 +906,9 @@ class DeRhamSequence():
         """
         from mrx.quadrature import integrate_against
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
-        match n:
-            case 1:
-                en = self.e1_dbc if dirichlet_n else self.e1
-            case 2:
-                en = self.e2_dbc if dirichlet_n else self.e2
-            case _:
-                raise ValueError("n must be 1 or 2")
+        if n not in (1, 2):
+            raise ValueError("n must be 1 or 2")
+        en = self.E(n, dirichlet_n)
         comp_info_n, comp_shapes_n = self._form_comp_info(n)
 
         if n == 1 and m == 2 and k == 1:
@@ -1047,87 +944,20 @@ class DeRhamSequence():
         return en @ integrate_against(
             f_jk, comp_info_n, comp_shapes_n, quad_shape)
 
-    def pressure_load(
-        self, p, u, gamma,
-        dirichlet_p=True,
-        dirichlet_u=True,
-    ):
-        """Evaluate the pressure projection -(grad p · u + γ p div u).
+    def magnitude_squared_load(self, B, dirichlet=True):
+        """The 0-form dual vector of ``|B|^2`` for a 2-form ``B``: ``v_i = ∫ Λ⁰_i |B|² det DF dx``.
 
-        Computes the 0-form dual DOF vector:
-
-            q_i = ∫ Λ⁰_i (−∇p · u − γ p div u) w dx
-
-        The 0-form mass matrix weight J cancels with the 1/J from the
-        wedge product (1-form · 2-form) and from div = (1/J) div_logical,
-        so the integrand has no metric or Jacobian — only quad weights.
-
-        Parameters
-        ----------
-        p : array  –  0-form DOFs
-        u : array  –  2-form DOFs
-        gamma : float  –  adiabatic exponent
-        dirichlet_p : bool  –  Dirichlet BCs on p
-        dirichlet_u : bool  –  Dirichlet BCs on u
-
-        Returns
-        -------
-        q_dual : array  –  0-form dual DOFs (apply M0⁻¹ to get primal DOFs)
+        ``|B|^2 = B^T G B / J^2`` for the 2-form proxy, so the integrand is
+        ``Λ⁰_i B^T G B / J``. ``M_0^{-1} v`` is the L2 projection of the
+        energy density ``|B|^2`` onto the 0-forms (free space).
         """
-        from mrx.quadrature import evaluate_at_xq, integrate_against
+        from mrx.quadrature import integrate_against
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
-
-        types = self.basis_0.types
-        grad_r = grad_1d(self.d_basis_r_jk, types[0])
-        grad_t = grad_1d(self.d_basis_t_jk, types[1])
-        grad_z = grad_1d(self.d_basis_z_jk, types[2])
-
-        # --- evaluate p at quad points (0-form, 1 component) ---
-        ep_T = self.e0_dbc.T if dirichlet_p else self.e0.T
-        comp_info_0, comp_shapes_0 = self._form_comp_info(0)
-        p_jk = evaluate_at_xq(ep_T @ p, comp_info_0, comp_shapes_0,
-                              quad_shape, 1)  # (n_q, 1)
-
-        # --- evaluate grad(p) at quad points (3 components) ---
-        s0 = list(self.basis_0.shape)[0]
-        d0_comp_info = [
-            (0, grad_r, self.basis_t_jk, self.basis_z_jk),
-            (1, self.basis_r_jk, grad_t, self.basis_z_jk),
-            (2, self.basis_r_jk, self.basis_t_jk, grad_z),
-        ]
-        d0_comp_shapes = [s0, s0, s0]
-        grad_p_jk = evaluate_at_xq(
-            jnp.tile(ep_T @ p, 3), d0_comp_info, d0_comp_shapes,
-            quad_shape, 3)  # (n_q, 3)
-
-        # --- evaluate u at quad points (2-form, 3 components) ---
-        eu_T = self.e2_dbc.T if dirichlet_u else self.e2.T
-        comp_info_2, comp_shapes_2 = self._form_comp_info(2)
-        u_jk = evaluate_at_xq(eu_T @ u, comp_info_2, comp_shapes_2,
-                              quad_shape, 3)  # (n_q, 3)
-
-        # --- evaluate div_logical(u) at quad points (scalar) ---
-        s2 = list(self.basis_2.shape)
-        div_comp_info = [
-            (0, grad_r, self.d_basis_t_jk, self.d_basis_z_jk),
-            (0, self.d_basis_r_jk, grad_t, self.d_basis_z_jk),
-            (0, self.d_basis_r_jk, self.d_basis_t_jk, grad_z),
-        ]
-        div_comp_shapes = [s2[0], s2[1], s2[2]]
-        div_u_jk = evaluate_at_xq(eu_T @ u, div_comp_info, div_comp_shapes,
-                                  quad_shape, 1)  # (n_q, 1)
-
-        # --- combine: q = -(grad_p · u) - γ p div_logical(u) ---
-        grad_p_dot_u = jnp.sum(grad_p_jk * u_jk, axis=1, keepdims=True)
-        q_jk = -(grad_p_dot_u + gamma * p_jk * div_u_jk)  # (n_q, 1)
-
-        # Weight by quadrature weights only (J from M0 cancels 1/J in formula)
-        f_jk = q_jk * self.quad.w[:, None]
-
-        # Integrate against 0-form basis
-        e0 = self.e0_dbc if dirichlet_p else self.e0
-        return e0 @ integrate_against(f_jk, comp_info_0, comp_shapes_0,
-                                      quad_shape)
+        B_jk = self.evaluate_at_quadrature(B, 2, dirichlet)
+        GB_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, B_jk)
+        f_jk = (jnp.sum(B_jk * GB_jk, axis=1) * self.quad.w / self.jacobian_j)[:, None]
+        comp_info, comp_shapes = self._form_comp_info(0)
+        return self.E(0) @ integrate_against(f_jk, comp_info, comp_shapes, quad_shape)
 
     def apply_leray_projection(self, v, k=2, p_guess=None, dirichlet_p=False):
         """
@@ -1187,7 +1017,7 @@ class DeRhamSequence():
             if dirichlet_p:
                 raise ValueError("dirichlet_p selects the k=1 scalar space; "
                                  "the k=2 multiplier is always the Dirichlet 3-form")
-            p_guess = jnp.zeros(self.n3_dbc) if p_guess is None else p_guess
+            p_guess = jnp.zeros(self.n(3, True)) if p_guess is None else p_guess
             # Assumes dirichlet == True on all spaces.
             div_v = self.apply_derivative_matrix(
                 v, 2, dirichlet_in=True, dirichlet_out=True)
@@ -1198,7 +1028,7 @@ class DeRhamSequence():
         elif k == 1:
             # v lives in the natural 1-form space; only the scalar space
             # (test functions AND multiplier) carries the boundary condition.
-            n_p = self.n0_dbc if dirichlet_p else self.n0
+            n_p = self.n(0, True) if dirichlet_p else self.n(0)
             p_guess = jnp.zeros(n_p) if p_guess is None else p_guess
             div_v = -self.apply_derivative_matrix(
                 v, 0, dirichlet_in=dirichlet_p, dirichlet_out=False, transpose=True)

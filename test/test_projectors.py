@@ -278,8 +278,8 @@ def test_interpolation_reproduces_its_own_space(request, p, k, dirichlet):
     """Interpolating a function already in the space returns its own DOFs."""
     proj_seq = request.getfixturevalue(f"identity_seq_p{p}")
     basis = getattr(proj_seq, _BASIS_ATTR[k])
-    e = getattr(proj_seq, f"e{k}_dbc" if dirichlet else f"e{k}")
-    n = int(getattr(proj_seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
+    e = proj_seq.E(k, dirichlet)
+    n = int(proj_seq.n(k, dirichlet))
 
     a = jax.random.normal(jax.random.PRNGKey(11 * k + dirichlet), (n,))
     discrete = DiscreteFunction(a, basis, e)
@@ -327,8 +327,8 @@ def test_phys_pullback_inverts_pushforward(proj_seq, k):
     rho = 0 where det DF -> 0.
     """
     basis = getattr(proj_seq, _BASIS_ATTR[k])
-    e = getattr(proj_seq, f"e{k}")
-    n = int(getattr(proj_seq, f"n{k}"))
+    e = proj_seq.E(k)
+    n = int(proj_seq.n(k))
     a = jax.random.normal(jax.random.PRNGKey(7 * k), (n,))
     omega = DiscreteFunction(a, basis, e)
     pushed = Pushforward(omega, proj_seq.map, k)
@@ -387,8 +387,8 @@ def tensor_seq():
 def test_pi_full_is_idempotent(tensor_seq, k):
     """Pi_full must reproduce a function already in the full tensor space."""
     basis = getattr(tensor_seq, _BASIS_ATTR[k])
-    e = getattr(tensor_seq, f"e{k}")
-    n = int(getattr(tensor_seq, f"n{k}"))
+    e = tensor_seq.E(k)
+    n = int(tensor_seq.n(k))
     assert n == int(basis.n), (
         f"k={k}: expected an identity extraction on a non-polar free sequence, "
         f"got {n} extracted of {int(basis.n)} raw -- this test no longer "

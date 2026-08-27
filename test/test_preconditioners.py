@@ -192,7 +192,7 @@ def test_extraction_projector_kron_expansion_is_exact(tiny_seq, k, dbc):
     block truncates nothing. Getting this wrong is a ~90% error on the
     near-axis rows, so it is checked rather than assumed.
     """
-    e = getattr(tiny_seq, f"e{k}_dbc" if dbc else f"e{k}")
+    e = tiny_seq.E(k, dbc)
     shapes = [tuple(int(s) for s in sh) for sh in getattr(tiny_seq, f"basis_{k}").shape]
     terms = _extraction_projector_kron_terms(e, shapes)
 

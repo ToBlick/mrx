@@ -77,7 +77,7 @@ def main():
         key = "pw_" + name
         if key not in dofs:
             raise SystemExit(f"{cli.state} has no {key}; run scripts/relax.py first")
-        pw = DiscreteFunction(jnp.asarray(dofs[key]), seq.basis_0, seq.e0_dbc)
+        pw = DiscreteFunction(jnp.asarray(dofs[key]), seq.basis_0, seq.E(0, True))
 
         def p_h(x, pw=pw):
             return pw(x)[0]

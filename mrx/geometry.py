@@ -165,7 +165,7 @@ class SequenceGeometry(eqx.Module):
             raise ValueError(
                 "SplineMap.extraction_T must be set for the sum-factorized "
                 "geometry path; construct the map via "
-                "seq.build_spline_map(coefficients) or pass seq.e0.T.")
+                "seq.build_spline_map(coefficients) or pass seq.E(0).T.")
         _, DF_jkl = spline_map_F_DF_at_quad(
             spline_map.coefficients, spline_map.extraction_T, seq)
         return cls.from_DF(spline_map, DF_jkl)
@@ -183,7 +183,7 @@ def _coeffs_to_raw_grid(coefficients, extraction_T, nr, nt, nz):
             extracted basis.
         extraction_T: :class:`~mrx.extraction_operators.MatrixFreeExtraction`
             of shape ``(n_raw, n_dof)`` — the transpose of the extraction
-            operator ``E`` (usually ``seq.e0.T``).
+            operator ``E`` (usually ``seq.E(0).T``).
         nr: Raw tensor-product size in the r direction.
         nt: Raw tensor-product size in the t direction.
         nz: Raw tensor-product size in the z direction.
@@ -327,7 +327,7 @@ def greville_interpolate_map(F_analytic: Callable, seq) -> jnp.ndarray:
             :func:`mrx.projectors.interpolate`).
 
     Returns:
-        Coefficient array of shape ``(3, seq.n0)`` — spline DOF vectors for
+        Coefficient array of shape ``(3, seq.n(0))`` — spline DOF vectors for
         the three Cartesian components stacked along axis 0.  Pass directly
         to ``seq.set_spline_map(coefficients)``.
     """
@@ -379,8 +379,8 @@ def greville_interpolate_stellarator_map(
     R_dof = seq.interpolate(R_fn, 0)
     Z_dof = seq.interpolate(Z_fn, 0)
 
-    R_h = DiscreteFunction(R_dof, seq.basis_0, seq.e0)
-    Z_h = DiscreteFunction(Z_dof, seq.basis_0, seq.e0)
+    R_h = DiscreteFunction(R_dof, seq.basis_0, seq.E(0))
+    Z_h = DiscreteFunction(Z_dof, seq.basis_0, seq.E(0))
 
     return stellarator_map(R_h, Z_h, nfp=nfp, flip_zeta=flip_zeta)
 

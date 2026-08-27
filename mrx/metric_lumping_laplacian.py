@@ -713,7 +713,7 @@ def core_rows(seq, k, dirichlet, extra_rings=0, outer_rings=0):
     probe apply per row added, i.e. ``rings * n_theta * n_zeta``, and a larger
     dense inverse.
     """
-    e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+    e = seq.E(k, dirichlet)
     rows, cols = np.asarray(e.rows), np.asarray(e.cols)
     n_ext = int(e.forward_shape[0])
     counts = np.bincount(rows, minlength=n_ext)
@@ -786,7 +786,7 @@ def probe_core_block(seq, operators, k, dirichlet, rows):
     """Dense ``L_k`` restricted to the core rows, by one apply per row."""
     from mrx.operators import apply_laplacian_approx  # noqa: PLC0415
 
-    size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
+    size = int(seq.n(k, dirichlet))
     return _probe_rows(
         lambda x: apply_laplacian_approx(seq, operators, x, k,
                                                dirichlet=dirichlet),
@@ -1200,7 +1200,7 @@ class MetricLumpingMass:
                 "rows": rows_t, "vals": vals_t, "shape": shape, "inv": inv,
                 "offset": offset, "lam": lam[c][r0:r0 + nr, :, :]})
 
-        size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
+        size = int(seq.n(k, dirichlet))
         self.core_inv = _dense_symmetric_inverse(_probe_rows(
             lambda x: apply_mass_matrix(seq, x, k,
                                         dirichlet=dirichlet),

@@ -161,8 +161,8 @@ def test_greville_interpolation_R_Z(spline_seq):
 
     R_dof = _SEQ.interpolate(R_fn, 0)
     Z_dof = _SEQ.interpolate(Z_fn, 0)
-    R_h = DiscreteFunction(R_dof, _SEQ.basis_0, _SEQ.e0)
-    Z_h = DiscreteFunction(Z_dof, _SEQ.basis_0, _SEQ.e0)
+    R_h = DiscreteFunction(R_dof, _SEQ.basis_0, _SEQ.E(0))
+    Z_h = DiscreteFunction(Z_dof, _SEQ.basis_0, _SEQ.E(0))
 
     test_pts = jnp.array([
         [r, t, z]

@@ -62,7 +62,7 @@ $-\Delta u = 1 - \rho^2$ with $u = 0$ on the wall, in 0-forms:
 ```python
 rhs = seq.load(f, 0, dirichlet=True)                      # int f v dV
 u_hat, info = seq.apply_inverse_laplacian(rhs, 0, dirichlet=True, return_info=True)
-u_h = DiscreteFunction(u_hat, seq.basis_0, seq.e0_dbc)
+u_h = DiscreteFunction(u_hat, seq.basis_0, seq.E(0, True))
 ```
 
 `load` integrates the source against the basis with the map's volume

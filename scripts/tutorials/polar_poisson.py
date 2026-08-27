@@ -51,7 +51,7 @@ def solve(n, p):
     seq.set_map_and_preconditioners(disk_map, ks=(0,), dirichlets=(True,))
     rhs = seq.load(f, 0, dirichlet=True)
     u_hat, info = seq.apply_inverse_laplacian(rhs, 0, dirichlet=True, return_info=True)
-    u_h = DiscreteFunction(u_hat, seq.basis_0, seq.e0_dbc)
+    u_h = DiscreteFunction(u_hat, seq.basis_0, seq.E(0, True))
     return relative_l2_error(seq, u_h, u), abs(int(info))
 
 

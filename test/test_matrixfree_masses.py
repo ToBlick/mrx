@@ -81,7 +81,7 @@ def test_extracted_projection_pairs_are_transposes(mf_seq, pair, partner, dirich
 
     def dense(p):
         k_in = {(2, 1): 2, (1, 2): 1, (0, 3): 3, (3, 0): 0}[p]
-        n = int(getattr(seq, f"n{k_in}_dbc" if dirichlet else f"n{k_in}"))
+        n = int(seq.n(k_in, dirichlet))
         return dense_from_apply(
             lambda v: apply_projection_matrix(seq, v, *p, dirichlet, dirichlet), n)
     a, b = dense(pair), dense(partner)

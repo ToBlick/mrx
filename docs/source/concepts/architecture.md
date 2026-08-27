@@ -116,11 +116,11 @@ segment sum. Two builders produce it:
   weights `xi` from `get_xi`. Used when `polar=True`. Dirichlet at `r = 1`
   is `zero_bc=True`.
 
-A `DeRhamSequence` holds three extractions per degree, each with its
-transpose: `e{k}` (periodic and polar only), `e{k}_dbc` (also drops the
-`r = 1` functions), and `e{k}_bc` (the functions `e{k}_dbc` dropped, from
-`bc_extraction_op`). Sizes are `n{k}`, `n{k}_dbc`, `n{k}_bc`. Every apply and
-solve takes `dirichlet=True|False` and picks the pair.
+A `DeRhamSequence` holds three extractions per degree: `E(k)` (periodic
+and polar only), `E(k, True)` (also drops the `r = 1` functions), and
+`E_bc(k)` (the functions `E(k, True)` dropped, from `bc_extraction_op`);
+`.T` is the transpose. Sizes are `n(k)`, `n(k, True)`, `n_bc(k)`. Every
+apply and solve takes `dirichlet=True|False` and picks the pair.
 
 ## 4. k-form Laplacians
 
@@ -208,9 +208,8 @@ and `build_w7x_map` for GVEC and W7-X files (gridded `R, Z` go through
 `SequenceOperators` in `mrx/operators.py` is an `eqx.Module` holding the
 assembled data, every field optional:
 
-- extraction operators `e{k}`, `e{k}_dbc`, `e{k}_bc` and transposes,
-- incidence `g0, g1, g2` and transposes; the polar stencils
-  `g0_grad_*`, `g1_curl_*`,
+- the metric-lumped mass and Laplacian atoms (`mass_lumping`,
+  `laplacian_lumping`, keyed `(k, dirichlet)`),
 - the mass Jacobi diagonals in `mass_preconds`,
 - the Laplacian preconditioner diagonals `dd{k}_diaginv`, `dd{k}_diaginv_dbc`
   and the Schur diagonals `schur_diaginv_k{k}`,

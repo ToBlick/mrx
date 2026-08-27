@@ -95,8 +95,8 @@ def main():
     # --- 2. the sequence on the file's geometry -----------------------------
     seq, _ = build_sequence(cli.geometry, ns, cli.p)
     jac = np.asarray(seq.geometry.jacobian_j)
-    print(f"[seq] ns = {ns}, p = {cli.p}: {seq.n0} 0-form, {seq.n1} 1-form, {seq.n2} 2-form, "
-          f"{seq.n3} 3-form DoFs (free spaces); det DF at the quadrature points in "
+    print(f"[seq] ns = {ns}, p = {cli.p}: {seq.n(0)} 0-form, {seq.n(1)} 1-form, {seq.n(2)} 2-form, "
+          f"{seq.n(3)} 3-form DoFs (free spaces); det DF at the quadrature points in "
           f"[{jac.min():.3e}, {jac.max():.3e}]")
     x = jnp.array([0.5, 0.25, 0.0])
     print(f"[seq] the map at logical {np.asarray(x)}: physical {np.asarray(seq.map(x)).round(4)} m")

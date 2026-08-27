@@ -189,8 +189,8 @@ def pressure_diagnostics(
     gradp_cmp = seq.l2_norm(gpw2 - gp, 2) / seq.l2_norm(gpw2, 2)
     ci0, cs0 = seq._form_comp_info(0)
     ci3, cs3 = seq._form_comp_info(3)
-    pw_q = evaluate_at_xq(seq.e0_dbc.T @ p_w, ci0, cs0, quad_shape, 1)[:, 0]
-    p_q = evaluate_at_xq(seq.e3_dbc.T @ p, ci3, cs3, quad_shape, 1)[:, 0] / seq.jacobian_j
+    pw_q = evaluate_at_xq(seq.E(0, True).T @ p_w, ci0, cs0, quad_shape, 1)[:, 0]
+    p_q = evaluate_at_xq(seq.E(3, True).T @ p, ci3, cs3, quad_shape, 1)[:, 0] / seq.jacobian_j
     pw_c = pw_q - jnp.sum(wJ * pw_q) / jnp.sum(wJ)
     p_c = p_q - jnp.sum(wJ * p_q) / jnp.sum(wJ)
     p_cmp = jnp.sqrt(jnp.sum(wJ * (p_c - pw_c) ** 2) / jnp.sum(wJ * pw_c ** 2))
@@ -204,8 +204,8 @@ def pressure_diagnostics(
     x_wall = jnp.stack([jnp.ones_like(th).ravel(), th.ravel(), ze.ravel()], axis=1)
     DF_w = map_jacobian_at(seq.map, x_wall)
     G_inv_w = jnp.linalg.inv(jnp.einsum('qki,qkj->qij', DF_w, DF_w))
-    gpw_w = jax.vmap(DiscreteFunction(gpw, seq.basis_1, seq.e1))(x_wall)
-    v_w = jax.vmap(DiscreteFunction(v, seq.basis_1, seq.e1))(x_wall)
+    gpw_w = jax.vmap(DiscreteFunction(gpw, seq.basis_1, seq.E(1)))(x_wall)
+    v_w = jax.vmap(DiscreteFunction(v, seq.basis_1, seq.E(1)))(x_wall)
     dpdn_wall = jnp.max(jnp.abs(_wall_normal_component(gpw_w, G_inv_w))) / grad_max
     JxBn_wall = jnp.max(jnp.abs(_wall_normal_component(v_w, G_inv_w))) / grad_max
 
@@ -735,7 +735,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
     have seeded ``MF_prev``, which did not exist).
     """
     seq = ts.seq
-    n = seq.n2_dbc
+    n = seq.n(2, True)
     m = ts.history_size
     F0, p0, _, H0, JxH0 = compute_force(B_dof, seq, dirichlet_H=ts.dirichlet_H)
     MF0 = seq.apply_mass_matrix(F0, 2)
@@ -747,11 +747,11 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
         resistive_count=jnp.int32(0),
         v=jnp.zeros(n),
         p=p0,
-        p_v=jnp.zeros(seq.n3_dbc),
+        p_v=jnp.zeros(seq.n(3, True)),
         H=H0,
         JxH=JxH0,
-        E=jnp.zeros(seq.n1_dbc),
-        A=jnp.zeros(seq.n1_dbc),
+        E=jnp.zeros(seq.n(1, True)),
+        A=jnp.zeros(seq.n(1, True)),
         F_prev=F0,
         MF_prev=MF0,
         F_norm=jnp.sqrt(F0 @ MF0),

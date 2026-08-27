@@ -311,7 +311,7 @@ def test_relaxation(synthetic_seq, potential_ic):
     get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
 
     state = eqx.tree_at(lambda s: s.eta, initial_state(B0, ts), ETA)
-    A = jnp.zeros(seq.n1_dbc)
+    A = jnp.zeros(seq.n(1, True))
     E0 = float(energy(B0))
     H0, A = get_helicity(B0, seq, A)
     E_prev, F_prev = E0, float(state.F_norm)

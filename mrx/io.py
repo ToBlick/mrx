@@ -244,7 +244,7 @@ def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',
     # 4. integrate against the k-form basis + extraction
     comp_info, comp_shapes = seq._form_comp_info(k)
     quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
-    e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+    e = seq.E(k, dirichlet)
     return e @ integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
 
 

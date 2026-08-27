@@ -62,7 +62,7 @@ metric-lumping Laplacian preconditioner is built for `k = 0..3` × `{NBC, DBC}` 
 `compute_nullspaces_iterative` call (`betti=(1,1,0,0)`) supplies the harmonic
 projectors for every `(k, dirichlet)` pair (`_n_vectors` yields NBC dims
 `1,1,0,0` and DBC dims `0,0,1,1`).  Per-k error dispatch picks the extraction
-transpose `e{k}_dbc_T` (DBC) or `e{k}_T` (NBC).
+`E(k, True).T` (DBC) or `E(k).T` (NBC).
 
 | field | formula |
 |---|---|

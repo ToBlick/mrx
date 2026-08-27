@@ -99,7 +99,7 @@ def test_computed_helicity_is_pinned(tiny_seq):
     the 2026-08-25 primal/dual rhs bug moved it by 85x.
     """
     seq = tiny_seq
-    A0 = jnp.zeros(seq.n1_dbc)
+    A0 = jnp.zeros(seq.n(1, True))
     for tag, (i0, i1) in {"flat": (0.6, 0.6), "sheared": (IOTA0, IOTA1)}.items():
         B, norm = project_reference_two_form(seq, analytic_omega(i0, i1, modes=[]))
         H, _ = compute_helicity(B, seq, A0)

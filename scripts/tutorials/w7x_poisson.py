@@ -50,7 +50,7 @@ def main():
     u_hat, info = seq.apply_inverse_laplacian(rhs, 0, dirichlet=True, return_info=True)
     resid = float(jnp.linalg.norm(seq.apply_laplacian(u_hat, 0, dirichlet=True) - rhs)
                   / jnp.linalg.norm(rhs))
-    u_h = DiscreteFunction(u_hat, seq.basis_0, seq.e0_dbc)
+    u_h = DiscreteFunction(u_hat, seq.basis_0, seq.E(0, True))
 
     # The energy identity int |grad u|^2 = int f u, both sides from the
     # discrete operators, and the value on the axis.

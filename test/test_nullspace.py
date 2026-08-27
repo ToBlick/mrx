@@ -66,7 +66,7 @@ def test_init_nullspaces_shapes_and_zeros(tiny_seq):
             arr = ops.nullspaces[(k, dbc)]
             assert arr is not None, f"null_{k}{'_dbc' if dbc else ''} is None after init"
             n_vec = _n_vectors(BETTI, k, dbc)
-            n_dof = getattr(tiny_seq, f"n{k}_dbc" if dbc else f"n{k}")
+            n_dof = tiny_seq.n(k, dbc)
             assert arr.shape == (n_vec, n_dof), (
                 f"k={k} dbc={dbc}: expected ({n_vec}, {n_dof}), got {arr.shape}"
             )

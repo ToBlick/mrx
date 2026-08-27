@@ -45,8 +45,8 @@ def test_get_2d_grids_shapes_and_map(tiny_seq, cuts):
 
 def test_plot_torus_and_crossections(tiny_seq, cuts):
     zetas, grids_pol, surface = cuts
-    dofs = jnp.arange(tiny_seq.n0, dtype=float) / tiny_seq.n0
-    f = DiscreteFunction(dofs, tiny_seq.basis_0, tiny_seq.e0)
+    dofs = jnp.arange(tiny_seq.n(0), dtype=float) / tiny_seq.n(0)
+    f = DiscreteFunction(dofs, tiny_seq.basis_0, tiny_seq.E(0))
 
     def p_h(x):
         return f(x)[0]

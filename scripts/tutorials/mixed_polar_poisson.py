@@ -60,7 +60,7 @@ def solve(n, p):
     rhs = seq.load(f, 3)
     u_hat, info = seq.apply_inverse_laplacian(rhs, 3, dirichlet=False, return_info=True)
     # The pushforward of a 3-form divides by det DF.
-    u_h = Pushforward(DiscreteFunction(u_hat, seq.basis_3, seq.e3), disk_map, 3)
+    u_h = Pushforward(DiscreteFunction(u_hat, seq.basis_3, seq.E(3)), disk_map, 3)
     return relative_l2_error(seq, u_h, u), abs(int(info))
 
 

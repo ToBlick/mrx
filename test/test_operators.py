@@ -62,7 +62,7 @@ def _raw_dofs(seq, k):
 
 
 def _n_ext(seq, k, dbc):
-    return int(getattr(seq, f"n{k}_dbc" if dbc else f"n{k}"))
+    return int(seq.n(k, dbc))
 
 
 # ---------------------------------------------------------------------------

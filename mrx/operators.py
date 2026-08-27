@@ -37,7 +37,7 @@ def _saddle_nullspaces(seq, operators, k: int, dirichlet: bool):
 def _shifted_harmonic_coarse_vector(
         seq, operators: SequenceOperators, k: int, dirichlet: bool):
     """Return the stored M_k-normalised coarse vector for shifted solves."""
-    n_dof = getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}")
+    n_dof = seq.n(k, dirichlet)
     vs = _nullspace_vectors(operators, k, dirichlet)
     if vs.shape[0] == 0:
         return jnp.zeros(n_dof)
@@ -708,8 +708,8 @@ def build_grad_stencil_g0(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
     expand(r, i + 2, j, (k + 1) % nz, 1.0)
     expand(r, i + 2, j, k, -1.0)
 
-    n0 = int(seq.n0_dbc if dirichlet_in else seq.n0)
-    n1 = int(seq.n1_dbc if dirichlet_out else seq.n1)
+    n0 = int(seq.n(0, True) if dirichlet_in else seq.n(0))
+    n1 = int(seq.n(1, True) if dirichlet_out else seq.n(1))
     return out.operator((n1, n0))
 
 
@@ -812,8 +812,8 @@ def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
     expand_v1(r, 1, i + 2, j, k, 1.0)
     expand_v1(r, 1, i + 1, j, k, -1.0)
 
-    n1 = int(seq.n1_dbc if dirichlet_in else seq.n1)
-    n2 = int(seq.n2_dbc if dirichlet_out else seq.n2)
+    n1 = int(seq.n(1, True) if dirichlet_in else seq.n(1))
+    n2 = int(seq.n(2, True) if dirichlet_out else seq.n(2))
     return out.operator((n2, n1))
 
 
@@ -890,9 +890,7 @@ def projection_core_apply(seq, k_in: int, k_out: int):
 
 def extraction(seq, k: int, dirichlet: bool):
     """The extraction ``E`` of the free (``dirichlet=False``) or Dirichlet ``k``-form space of ``seq``."""
-    if k not in (0, 1, 2, 3):
-        raise ValueError("k must be 0, 1, 2 or 3")
-    return getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+    return seq.E(k, dirichlet)
 
 
 def _mass_extraction(seq, k: int, dirichlet: bool):
@@ -1318,8 +1316,7 @@ def _build_scalar_hodge_preconditioner_apply(
 def _build_coupled_saddle_preconditioner(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         upper_preconditioner, lower_preconditioner):
-    suffix = "_dbc" if dirichlet else ""
-    n_upper = getattr(seq, f"n{k}{suffix}")
+    n_upper = seq.n(k, dirichlet)
 
     def apply(x):
         u = x[:n_upper]
@@ -1540,9 +1537,8 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
     vs_upper, vs_lower = _saddle_nullspaces(
         seq, operators, k, dirichlet) if eps == 0 else (
             jnp.zeros((0, rhs.shape[0])), jnp.zeros((0, 0)))
-    suffix = "_dbc" if dirichlet else ""
-    n_upper = getattr(seq, f"n{k}{suffix}")
-    n_lower = getattr(seq, f"n{k-1}{suffix}")
+    n_upper = seq.n(k, dirichlet)
+    n_lower = seq.n(k-1, dirichlet)
     saddle_preconditioner = _coerce_saddle_preconditioner_spec(
         seq, operators, k=k, dirichlet=dirichlet, preconditioner=preconditioner)
 
@@ -1689,9 +1685,8 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
         )
         return (x, info) if return_info else x
 
-    suffix = "_dbc" if dirichlet else ""
-    n_upper = getattr(seq, f"n{k}{suffix}")
-    n_lower = getattr(seq, f"n{k-1}{suffix}")
+    n_upper = seq.n(k, dirichlet)
+    n_lower = seq.n(k-1, dirichlet)
 
     def upper_operator_apply(x):
         return apply_mass_matrix(

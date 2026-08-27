@@ -67,7 +67,7 @@ def build_torus_sequence(ns, torus_map):
     t1 = time.perf_counter()
     seq.build_preconditioners()
     t2 = time.perf_counter()
-    seq._compute_nullspaces(BETTI, direct=True)
+    seq.compute_nullspaces(BETTI)
     t3 = time.perf_counter()
     print(f"\n  torus {ns}: geometry {t1 - t0:.0f} s, preconditioners {t2 - t1:.0f} s, "
           f"nullspaces {t3 - t2:.0f} s")
@@ -86,7 +86,7 @@ def tiny_seq(torus_map):
 
 def n_dofs(seq, k, dirichlet):
     """Return the DOF count for k-forms with the given boundary condition."""
-    return int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
+    return int(seq.n(k, dirichlet))
 
 
 @pytest.fixture(scope="session")

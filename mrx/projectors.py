@@ -243,11 +243,11 @@ def _matching_discrete_dofs(f, basis, extraction) -> Array | None:
 def _extraction(seq, k: int, dirichlet: bool, bc: bool):
     """Pick the right extraction matrix for degree k."""
     if bc:
-        return getattr(seq, f'e{k}_bc')
+        return seq.E_bc(k)
     elif dirichlet:
-        return getattr(seq, f'e{k}_dbc')
+        return seq.E(k, True)
     else:
-        return getattr(seq, f'e{k}')
+        return seq.E(k)
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +446,7 @@ def _oneform_pullback(seq, v, frame: str = 'phys'):
 
 def _interpolate_0form(seq, f, dirichlet: bool) -> Array:
     """Greville collocation for a scalar 0-form."""
-    e = seq.e0_dbc if dirichlet else seq.e0
+    e = seq.E(0, True) if dirichlet else seq.E(0)
     exact = _matching_discrete_dofs(f, seq.basis_0, e)
     if exact is not None:
         return exact
@@ -543,7 +543,7 @@ def _histopolate_vector(seq, pullback, e, histopolated) -> Array:
 
 def _histopolate_1form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     """Greville histopolation for a 1-form."""
-    e = seq.e1_dbc if dirichlet else seq.e1
+    e = seq.E(1, True) if dirichlet else seq.E(1)
     exact = _matching_discrete_dofs(v, seq.basis_1, e)
     if exact is not None:
         return exact
@@ -558,7 +558,7 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     +1), so evaluation points must be folded back before v or the map sees
     them -- the pullbacks do that via ``_wrap_periodic_point``.
     """
-    e = seq.e2_dbc if dirichlet else seq.e2
+    e = seq.E(2, True) if dirichlet else seq.E(2)
     exact = _matching_discrete_dofs(v, seq.basis_2, e)
     if exact is not None:
         return exact
@@ -568,7 +568,7 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
 
 def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
     """Greville histopolation for a scalar 3-form."""
-    e = seq.e3_dbc if dirichlet else seq.e3
+    e = seq.E(3, True) if dirichlet else seq.E(3)
     exact = _matching_discrete_dofs(f, seq.basis_3, e)
     if exact is not None:
         return exact
@@ -687,7 +687,7 @@ class BoundaryProjector:
                           wg, seq.basis_t_jk, seq.basis_z_jk)      # (n_t, n_z)
         b_full = jnp.einsum('a,bc->abc',
                             self._basis_r_1, part).ravel()
-        return seq.e0_bc @ b_full
+        return seq.E_bc(0) @ b_full
 
     def _project_1form(self, g_jk: Array) -> Array:
         """Transform physical → logical covariant (DF^{-1}) then integrate."""
@@ -713,7 +713,7 @@ class BoundaryProjector:
                             seq.basis_t_jk, seq.d_basis_z_jk)
         b_z = jnp.einsum('a,bc->abc', self._basis_r_1, part_z).ravel()
 
-        return seq.e1_bc @ jnp.concatenate([b_r, b_t, b_z])
+        return seq.E_bc(1) @ jnp.concatenate([b_r, b_t, b_z])
 
     def _project_2form(self, g_jk: Array) -> Array:
         """Pull back g to logical covariant 2-form (DF^T g / J) and integrate
@@ -741,7 +741,7 @@ class BoundaryProjector:
                             seq.basis_z_jk, seq.d_basis_t_jk)
         b_z = jnp.einsum('a,bc->abc', self._d_basis_r_1, part_z).ravel()
 
-        return seq.e2_bc @ jnp.concatenate([b_r, b_t, b_z])
+        return seq.E_bc(2) @ jnp.concatenate([b_r, b_t, b_z])
 
     def evaluate_trace(self, u: Array) -> Array:
         """Evaluate the trace of a discrete k-form at the boundary quad points.

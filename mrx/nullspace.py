@@ -63,7 +63,7 @@ def _n_vectors(betti_numbers, k, dirichlet):
 
 
 def _dof_count(seq, k, dirichlet):
-    return getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}")
+    return seq.n(k, dirichlet)
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +338,7 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
     if _n_vectors(betti_numbers, 3, True):
         # k = 3, Dirichlet: lift the constant 1-vector via M^{-1}.
         v3 = seq.apply_inverse_mass_matrix(
-            jnp.ones(seq.n3_dbc), 3, dirichlet=True, operators=operators)
+            jnp.ones(seq.n(3, True)), 3, dirichlet=True, operators=operators)
         v3 = v3 / seq.l2_norm(v3, 3, dirichlet=True)
         operators = _commit(seq, _set_null(operators, 3, True, v3[None, :]))
 
@@ -359,7 +359,7 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
 
     if _n_vectors(betti_numbers, 0, False):
         # k = 0, no Dirichlet BC: the constant function.
-        v0 = jnp.ones(seq.n0)
+        v0 = jnp.ones(seq.n(0))
         v0 = v0 / seq.l2_norm(v0, 0, dirichlet=False)
         operators = _commit(seq, _set_null(operators, 0, False, v0[None, :]))
 
@@ -426,10 +426,10 @@ def _initial_guesses(seq, operators, k, dirichlet, n_vec):
         return []
     guesses = [None] * n_vec
     if k == 0 and not dirichlet:
-        guesses[0] = jnp.ones(seq.n0)
+        guesses[0] = jnp.ones(seq.n(0))
     elif k == 3 and dirichlet:
         guesses[0] = seq.apply_inverse_mass_matrix(
-            jnp.ones(seq.n3_dbc), 3, dirichlet=True, operators=operators)
+            jnp.ones(seq.n(3, True)), 3, dirichlet=True, operators=operators)
     elif k == 1 and not dirichlet:
         guesses[0] = _logical_constant_seed(
             seq, operators, 1, False, (0.0, 0.0, 1.0))

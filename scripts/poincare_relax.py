@@ -192,9 +192,9 @@ def main():
         x = jnp.stack([jnp.asarray(lr).ravel(), jnp.asarray(lth).ravel(),
                        jnp.broadcast_to(jnp.asarray(zeta), lr.shape).ravel()], axis=1)
         if cli.pressure == "weak":
-            val = jax.vmap(DiscreteFunction(pd, seq.basis_0, seq.e0_dbc))(x)[:, 0]
+            val = jax.vmap(DiscreteFunction(pd, seq.basis_0, seq.E(0, True)))(x)[:, 0]
         else:
-            e3 = seq.e3_dbc if pd.shape[0] == int(seq.n3_dbc) else seq.e3
+            e3 = seq.E(3, True) if pd.shape[0] == int(seq.n(3, True)) else seq.E(3)
             val = jax.vmap(DiscreteFunction(pd, seq.basis_3, e3))(x)[:, 0]
             val = val / jnp.linalg.det(map_jacobian_at(seq.map, x))
         return np.asarray(val).reshape(lr.shape)
@@ -202,7 +202,7 @@ def main():
     traced = {}
     for name in which:
         B = dofs["B_" + name]
-        assert B.shape == (seq.n2_dbc,), (B.shape, seq.n2_dbc)
+        assert B.shape == (seq.n(2, True),), (B.shape, seq.n(2, True))
         field = logical_field(seq, jnp.asarray(B), 2, True)
         info = require_zeta_parameterisation(field, name=name)
         print(f"[zeta] {name}: B^zeta/|B| in [{info['bz_over_b_min']:+.3e}, "

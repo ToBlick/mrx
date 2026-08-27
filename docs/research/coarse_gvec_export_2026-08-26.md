@@ -309,8 +309,17 @@ chain, no stochastic outer band, p_w a surface function -- where the grid
 route's (16,32,32) run had 5/5 + 25/24 + 20/19 slivers and a weakly
 stochastic outer 15% after 3000 steps; at (12,24,24) 0 chaotic at t = 0
 and 2 marginal lines at the end. The edge structure of every h5-based run
-was the bridges' noise. `dat_16x32x32_long` (4000 steps, floor-tol 1e-5)
-follows the force below the 300-step floor.
+was the bridges' noise. `dat_16x32x32_long` (4000 steps, floor-tol 1e-5, 3.2 h)
+followed the force below the 300-step floor: ||F|| 7.45e-4 -> 2.8e-5 (last
+50; minimum 1.6e-5 near step 1700, then flat), i.e. 26x below the IC and
+4.5x below the 300-step floor of 1.26e-4, reached after ~1500 steps
+(t = 1.8); E_0 - E 5.27e-8 (300 steps: 4.99e-8), Delta H -1.8e-10, beta_vol
+1.112e-2, J/B 0.0554 -> 0.0525. The sections at 4000 steps are nested to
+the wall at both planes, 0 lines lost, iota smooth from 0.915 on axis to
+1.05 at the wall, crossing 5/5 with no visible chain, p_w a flux function
+(`dat_16x32x32_long/poincare/`, `traces_dat_long_*.png`). The floor is
+where the descent direction stops being resolved (line-search cosine
+0.02), not a change of topology.
 Consequences: the example file for the repository is the `.dat`; the
 grid-sampling study of sections 1-3 (Nyquist rule, 20^3 vs 33^3 vs 50^3,
 presmoothing) applies only to exports that have no state file behind

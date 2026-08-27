@@ -88,7 +88,7 @@ def main():
     # --- the weak pressure of the relaxed field ------------------------------
     _, _, J, Hf, _ = compute_force(B, seq)
     p_w, _, _ = weak_pressure(J, Hf, seq)
-    pw = DiscreteFunction(p_w, seq.basis_0, seq.e0_dbc)
+    pw = DiscreteFunction(p_w, seq.basis_0, seq.E(0, True))
 
     def p_h(x):
         return pw(x)[0]

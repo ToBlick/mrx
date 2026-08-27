@@ -214,8 +214,8 @@ def compute_all_k(n: int, p: int, epsilon: float, solver_tol: float, cg_maxiter:
     )
     seq.set_map(F)
     timings["init"] = time.perf_counter() - t0
-    _log(f"  DeRhamSequence built: n0={seq.n0} n1={seq.n1} n2={seq.n2} n3={seq.n3}"
-         f"  n0_dbc={seq.n0_dbc} n1_dbc={seq.n1_dbc} n2_dbc={seq.n2_dbc} n3_dbc={seq.n3_dbc}"
+    _log(f"  DeRhamSequence built: n0={seq.n(0)} n1={seq.n(1)} n2={seq.n(2)} n3={seq.n(3)}"
+         f"  n0_dbc={seq.n(0, True)} n1_dbc={seq.n(1, True)} n2_dbc={seq.n(2, True)} n3_dbc={seq.n(3, True)}"
          f"  ({timings['init']:.2f}s)")
 
     # --- Preconditioners -----------------------------------------------

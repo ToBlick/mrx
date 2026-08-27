@@ -29,6 +29,7 @@ import numpy as np
 
 import mrx
 from mrx.geometry import grad_1d
+from mrx.spline_bases import basis_key, rebuild_basis
 
 __all__ = [
     "build_mass_diagonal",
@@ -46,25 +47,40 @@ __all__ = [
 # executes the batched trace one primitive at a time, each primitive compiled
 # and dispatched on its own (~4000 compilations per (4,8,4) sequence build,
 # measured 2026-08-27: 0.6 s per table). Under jit the whole table is one
-# executable. The basis object is a STATIC argument, so each basis compiles
-# its tables once per shape and every later build reuses them.
+# executable, keyed on the basis SHAPE (:func:`mrx.spline_bases.basis_key`),
+# so every basis of a shape shares it.
 
-@functools.partial(jax.jit, static_argnames=("basis",))
 def basis_table(basis, x):
     """``basis(x_q, i)`` for every ``i`` in ``basis.ns`` and every point in ``x``, ``(n, n_q)``."""
+    key, T = basis_key(basis)
+    return _basis_table(T, x, key=key)
+
+
+@functools.partial(jax.jit, static_argnames=("key",))
+def _basis_table(T, x, *, key):
+    basis = rebuild_basis(key, T)
     return jax.vmap(jax.vmap(basis, (0, None)), (None, 0))(x, basis.ns)
 
 
-@functools.partial(jax.jit, static_argnames=("basis",))
 def basis_derivative_table(basis, x):
     """``d/dx basis(x_q, i)`` by autodiff, ``(n, n_q)``."""
+    key, T = basis_key(basis)
+    return _basis_derivative_table(T, x, key=key)
+
+
+@functools.partial(jax.jit, static_argnames=("key",))
+def _basis_derivative_table(T, x, *, key):
+    basis = rebuild_basis(key, T)
+
     def value(x, i):
         return jnp.sum(basis(x, i))
     return jax.vmap(jax.vmap(jax.grad(value, argnums=0), (0, None)), (None, 0))(x, basis.ns)
 
 
-@functools.partial(jax.jit, static_argnames=("basis",))
-def _evaluate_basis_local(basis, x_local, gdof):
+@functools.partial(jax.jit, static_argnames=("key",))
+def _evaluate_basis_local(T, x_local, gdof, *, key):
+    basis = rebuild_basis(key, T)
+
     def eval_e(x_e, dof_e):
         return jax.vmap(
             lambda x: jax.vmap(lambda i: basis(x, i))(dof_e)
@@ -117,7 +133,8 @@ def evaluate_basis_local(basis, x_q_flat, q_per_elem):
         raise NotImplementedError(basis.type)
 
     x_local = x_q_flat.reshape(n_elem, q_per_elem)
-    return _evaluate_basis_local(basis, x_local, gdof), gdof
+    key, T = basis_key(basis)
+    return _evaluate_basis_local(T, x_local, gdof, key=key), gdof
 
 
 def _elem_counts(seq):
@@ -589,7 +606,8 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
     cost is the per-apply pass over the geometry, not the algebra.  The price
     is six element-layout fields per vector degree resident on the sequence
     (14 scalars per quadrature point over k=0..3), rebuilt with the plan when
-    the geometry changes.
+    the geometry changes; the compiled kernel is shared (see
+    :func:`_sumfact_kernel`).
 
     The matvec is the sum factorization split at the quadrature points: each
     column component is gathered and pushed to the quadrature points ONCE, the
@@ -637,23 +655,37 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
                        form_r.shape[c]).reshape(-1) + starts_r[c]
         for c in range(n_r)])
     n_out = starts_r[-1]
-
-    @jax.jit
-    def _impl(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx):
-        W = {pair: Ws[column[pair]] for pair in pairs}
-        u = [_to_quadrature(Bvals_c[c], x[starts_c[c]:starts_c[c + 1]],
-                            gather_idx[c]) for c in range(n_c)]
-        y_parts = []
-        for cr in range(n_r):
-            v = sum(W[(cr, cc)] * u[cc] for cc in range(n_c) if (cr, cc) in pairs)
-            y_parts.append(_from_quadrature(Bvals_r[cr], v).reshape(-1))
-        return jax.ops.segment_sum(jnp.concatenate(y_parts), seg_idx,
-                                   num_segments=n_out)
+    cols = tuple(column[pair] for pair in pairs)
 
     def apply(x):
-        return _impl(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx)
+        return _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx,
+                               pairs=pairs, cols=cols, starts_c=starts_c,
+                               n_out=n_out)
 
     return apply
+
+
+@functools.partial(jax.jit, static_argnames=("pairs", "cols", "starts_c", "n_out"))
+def _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx, *,
+                    pairs, cols, starts_c, n_out):
+    """The sum-factorised matvec, ONE executable per operator shape.
+
+    Module-level and keyed on the static plan (which component pairs exist,
+    which weight array each uses, the component offsets, the output size),
+    so a new geometry -- new ``Ws`` of the same shapes -- reuses the compiled
+    kernel; a kernel defined inside the builder was a new function object per
+    build and recompiled on every ``set_geometry``.
+    """
+    W = {pair: Ws[c] for pair, c in zip(pairs, cols)}
+    n_c, n_r = len(Bvals_c), len(Bvals_r)
+    u = [_to_quadrature(Bvals_c[c], x[starts_c[c]:starts_c[c + 1]],
+                        gather_idx[c]) for c in range(n_c)]
+    y_parts = []
+    for cr in range(n_r):
+        v = sum(W[(cr, cc)] * u[cc] for cc in range(n_c) if (cr, cc) in pairs)
+        y_parts.append(_from_quadrature(Bvals_r[cr], v).reshape(-1))
+    return jax.ops.segment_sum(jnp.concatenate(y_parts), seg_idx,
+                               num_segments=n_out)
 
 
 def build_matrixfree_mass_apply(seq, k, geometry=None):

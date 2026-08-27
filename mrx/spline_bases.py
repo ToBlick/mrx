@@ -48,17 +48,61 @@ def contract_local(coefficients, local):
     return jnp.einsum('i,j,k,...ijk->...', vr, vt, vz, window)
 
 
-@functools.partial(jax.jit, static_argnames=("basis",))
-def _collocation(basis, points):
-    """``basis(points[k], i)`` as a ``(len(points), n)`` matrix, one executable per basis."""
+# --------------------------------------------------------------------------- #
+# Jitted tables, keyed on the basis SHAPE, not the basis object                #
+# --------------------------------------------------------------------------- #
+#
+# A basis evaluation run eagerly under vmap executes one primitive at a time,
+# each compiled on its own (~450 compilations per axis, measured 2026-08-27).
+# The jitted forms below take the knot vector as an ARRAY and ``(kind, n, p,
+# type)`` as the static key, and rebuild the basis inside the trace: one
+# executable per shape, shared by every basis of that shape and every
+# sequence, and no basis object held as a jit-cache key (keying on object
+# identity accumulated executables across a session and crashed the XLA CPU
+# compiler in the full test suite).
+
+def basis_key(basis):
+    """``(static_key, knots)`` of a :class:`SplineBasis` or :class:`DerivativeSpline`."""
+    if isinstance(basis, DerivativeSpline):
+        par = basis.parent
+        return ("d", par.n, par.p, par.type), par.T
+    return ("s", basis.n, basis.p, basis.type), basis.T
+
+
+def rebuild_basis(key, T):
+    """The basis of :func:`basis_key` from its static key and (possibly traced) knots."""
+    kind, n, p, typ = key
+    base = SplineBasis(n, p, typ, T=T)
+    return DerivativeSpline(base) if kind == "d" else base
+
+
+@functools.partial(jax.jit, static_argnames=("key",))
+def _collocation(T, points, *, key):
+    """``basis(points[k], i)`` as a ``(len(points), n)`` matrix."""
+    basis = rebuild_basis(key, T)
     return jax.vmap(lambda x: jax.vmap(lambda i: basis(x, i))(basis.ns))(points)
 
 
-@functools.partial(jax.jit, static_argnames=("fn", "basis"))
-def _vmap_jit(fn, basis, xs):
-    """``jax.vmap(fn)(xs)`` as one executable, keyed on ``basis`` (``fn`` closes over it)."""
-    del basis
-    return jax.vmap(fn)(xs)
+@functools.partial(jax.jit, static_argnames=("key", "periodic"))
+def _histopolation(T, spans, xi_ref, w_ref, knots, *, key, periodic):
+    """Integrals of every basis function over every span, ``(n_spans, n)``."""
+    basis = rebuild_basis(key, T)
+
+    def integrate_span(span):
+        a, b = span
+        cuts = jnp.clip(knots, a, b)
+        cuts = jnp.sort(jnp.concatenate([jnp.array([a]), cuts, jnp.array([b])]))
+        lo, hi = cuts[:-1], cuts[1:]
+        centers = 0.5 * (lo + hi)
+        halfwidths = 0.5 * (hi - lo)
+        xs = centers[:, None] + halfwidths[:, None] * xi_ref[None, :]
+        if periodic:
+            xs = jnp.mod(xs, 1.0)
+        values = jax.vmap(jax.vmap(
+            lambda x: jax.vmap(lambda i: basis(x, i))(basis.ns)))(xs)
+        return jnp.einsum('s,q,sqi->i', halfwidths, w_ref, values)
+
+    return jax.vmap(integrate_span)(spans)
 
 
 class SplineBasis:
@@ -218,7 +262,8 @@ class SplineBasis:
         """
         if points is None:
             points = self.greville_points()
-        return _collocation(self, jnp.asarray(points))
+        key, T = basis_key(self)
+        return _collocation(T, jnp.asarray(points), key=key)
 
     def _evaluate(self, x: float, i: int) -> jnp.ndarray:
         """Evaluate the ith spline at x using the appropriate degree-specific method.
@@ -492,56 +537,14 @@ class DerivativeSpline:
             quadrature_order = max(2, self.p + 2)
 
         xi_ref, w_ref = np.polynomial.legendre.leggauss(quadrature_order)
-        xi_ref = jnp.asarray(xi_ref)
-        w_ref = jnp.asarray(w_ref)
-
-        # Sub-interval endpoints: split every span at the knots it contains.
-        # A Greville span straddles an interior knot whenever p is EVEN (the
-        # Greville point is the mean of p knots, i + (p+1)/2 in units of the
-        # spacing -- integral for odd p, half-integral for even p), and Gauss
-        # is exact only for POLYNOMIALS.  Across a knot the spline has a
-        # derivative jump, and a single rule then converges only algebraically:
-        # measured on an off-centre knot, 40 points still left 3.6e-07 where
-        # splitting is exact at 2 points.  See _span_quadrature in projectors.py,
-        # which splits identically so H and the moments use the SAME rule.
-        knots = jnp.unique(self.T)
-
-        def integrate_span(span):
-            a, b = span
-            # Clip the knots into [a, b]; duplicates give zero-width pieces
-            # that contribute nothing, so this stays a fixed-size computation.
-            cuts = jnp.clip(knots, a, b)
-            cuts = jnp.concatenate([jnp.array([a]), cuts, jnp.array([b])])
-            cuts = jnp.sort(cuts)
-            lo, hi = cuts[:-1], cuts[1:]
-            centers = 0.5 * (lo + hi)
-            halfwidths = 0.5 * (hi - lo)
-            xs = centers[:, None] + halfwidths[:, None] * xi_ref[None, :]
-            if self.type == 'periodic':
-                # The last sorted span CROSSES THE PERIOD SEAM whenever the
-                # parent Greville points sit at half-knots, i.e. for EVEN p:
-                # it is [1 - h/2, 1 + h/2].  Odd p puts them ON knots, so the
-                # spans stay inside [0, 1] -- but only up to ROUNDING: at
-                # n=6, p=3 the point that should be 0 came out as 1 - eps,
-                # wrapped to 0.99999.., and the last span crossed the seam
-                # anyway (unwrapped H then off by 8.3e-02).  Exactness at odd
-                # p on the n=4 fixtures was a rounding accident.  The
-                # basis has to be evaluated on its PERIODIC extension there,
-                # and evaluate() does NOT do that: it folds only the p' raw
-                # functions n..n+p'-1 that exist in the extended knot vector,
-                # so the image of basis function p' -- which is nonzero on
-                # (1, 1 + h/2] -- was evaluated as ZERO.  The moments wrap
-                # their points (projectors._wrap_periodic_point), so H and the
-                # moments shared the RULE but not the INTEGRAND, which is the
-                # loophole in "same rule => m = H c".  Measured at p=2, n=4:
-                # H @ dc - (s(b) - s(a)) was 1.250e-01 on the seam row -- which
-                # is exactly the integral of the dropped D_1 over (1, 1 + h/2]
-                # -- and ~1e-16 with the wrap.
-                xs = jnp.mod(xs, 1.0)
-            values = jax.vmap(jax.vmap(
-                lambda x: jax.vmap(lambda i: self(x, i))(self.ns)))(xs)
-            return jnp.einsum('s,q,sqi->i', halfwidths, w_ref, values)
-
-        # Jitted with the basis static: eagerly, the vmap compiled and
-        # dispatched every primitive on its own (~450 compilations per axis).
-        return _vmap_jit(integrate_span, self, spans)
+        # Every span is split at the knots it contains: a Greville span
+        # straddles an interior knot whenever p is EVEN, and Gauss is exact
+        # only for polynomials; across a knot the spline has a derivative
+        # jump. _span_quadrature in projectors.py splits identically so H
+        # and the moments use the SAME rule. Periodic spans can cross the
+        # seam (even p, and odd p up to rounding), so their points are
+        # wrapped: the basis is evaluated on its periodic extension.
+        key, T = basis_key(self)
+        return _histopolation(T, jnp.asarray(spans), jnp.asarray(xi_ref),
+                              jnp.asarray(w_ref), jnp.unique(self.T),
+                              key=key, periodic=self.type == 'periodic')

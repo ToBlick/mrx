@@ -316,7 +316,7 @@ def build_mass_metric_lumping_factors(seq, k: int, *, dirichlet: bool, d_raw=Non
     Returns :class:`MetricLumpingMassFactors`: the separable Kronecker factors
     the metric_lumping atom's weak term is built on.
     """
-    e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
+    e = seq.E(k, dirichlet)
     shapes, mass_1d, lam = _kron_mass_model_1d(seq, k, d_raw=d_raw)
 
     inv_1d = [tuple(jnp.linalg.inv(m) for m in mass_1d[c])
@@ -764,7 +764,7 @@ def _weak_term_kron_terms_raw(seq, k: int, *, dirichlet: bool):
     shapes_l = [tuple(int(s) for s in sh) for sh in factors.shapes]
     inv_l = [tuple(np.asarray(m) for m in factors.inv_1d[c])
              for c in range(len(shapes_l))]
-    e_lower = getattr(seq, f"e{lower}_dbc" if dirichlet else f"e{lower}")
+    e_lower = seq.E(lower, dirichlet)
     pi_terms = _extraction_projector_kron_terms(e_lower, shapes_l)
     types = seq.basis_0.types
 

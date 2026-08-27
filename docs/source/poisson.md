@@ -66,7 +66,7 @@ seq = DeRhamSequence((n, n, 1), (p, p, 0), p + 1,
 
 Dirichlet conditions are not a property of the sequence. Every operator
 takes `dirichlet=True` or `False` and picks the matching extraction
-operator (`seq.e0_dbc` or `seq.e0` for 0-forms). See
+operator (`seq.E(0, True)` or `seq.E(0)` for 0-forms). See
 [Architecture](concepts/architecture.md) section 3.
 
 ## The map and the preconditioners
@@ -96,7 +96,7 @@ from mrx.differential_forms import DiscreteFunction
 
 rhs = seq.load(f, 0, dirichlet=True)
 u_hat, info = seq.apply_inverse_laplacian(rhs, 0, dirichlet=True, return_info=True)
-u_h = DiscreteFunction(u_hat, seq.basis_0, seq.e0_dbc)
+u_h = DiscreteFunction(u_hat, seq.basis_0, seq.E(0, True))
 ```
 
 `info` is `-k` after `k` iterations if the solve converged and `+k` if it
@@ -189,7 +189,7 @@ seq.set_operators(init_nullspaces(seq, seq.get_operators()))
 
 rhs = seq.load(f, 3)
 u_hat, info = seq.apply_inverse_laplacian(rhs, 3, dirichlet=False, return_info=True)
-u_h = Pushforward(DiscreteFunction(u_hat, seq.basis_3, seq.e3), disk_map, 3)
+u_h = Pushforward(DiscreteFunction(u_hat, seq.basis_3, seq.E(3)), disk_map, 3)
 ```
 
 A 3-form load carries no Jacobian:
