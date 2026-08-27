@@ -5,18 +5,14 @@ is divergence-free for any ``lambda`` because the mixed partials cancel.
 The production route (L2 projection through ``M_2``, then ``leray_clean``)
 carries a small discrete divergence before the cleaning -- the projection
 does not commute with ``d`` -- which is measured and bounded, and none
-after it. The helicity closed form of ``analytic_helicity`` is checked
-against a quadrature of eq. (1) it claims to integrate, and the production
-helicity diagnostic is pinned on the same field.
+after it, and the helicity diagnostic ``compute_helicity`` is pinned on the
+same field.
 """
 
 import jax.numpy as jnp
-import numpy as np
-import pytest
 
 import mrx
 from mrx.initial_conditions import (
-    analytic_helicity,
     divergence_norm,
     leray_clean,
     analytic_profile_form,
@@ -59,50 +55,22 @@ def test_analytic_ic_projects_and_leray_cleans(tiny_seq):
     assert moved < 1e-3
 
 
-@pytest.mark.parametrize("params", [(0.4, 0.9, 2.0, 1.0), (0.3, 1.2, 1.0, 2.0),
-                                    (0.5, 0.5, 2.0, 1.0), (1.0, 0.2, 3.0, 1.0)])
-def test_analytic_helicity_closes_eq1(params):
-    """``analytic_helicity`` equals ``int_0^1 Phi^2 (X / Phi)' drho`` with
-    ``Phi = int dPhi``, ``X' = iota Phi'`` -- by Gauss quadrature, exact for
-    these polynomial profiles (numpy float64, independent of MRX_DTYPE)."""
-    iota0, iota1, e, q = params
-    x, w = np.polynomial.legendre.leggauss(64)
-    r = 0.5 * (x + 1.0)
-    w = 0.5 * w
-    Phi = r ** (q + 1) / (q + 1)
-    # X = int_0^r iota Phi' = iota0 Phi + (iota1 - iota0) r^(q+e+1) / (q+e+1)
-    X = iota0 * Phi + (iota1 - iota0) * r ** (q + e + 1) / (q + e + 1)
-    dPhi = r ** q
-    dX = (iota0 + (iota1 - iota0) * r ** e) * dPhi
-    integrand = Phi ** 2 * (dX * Phi - X * dPhi) / Phi ** 2
-    H_quad = float(np.sum(w * integrand))
-    H_closed = analytic_helicity(iota0, iota1, e, q)
-    assert abs(H_quad - H_closed) <= 1e-13 * max(abs(H_closed), 1.0)
-    if iota0 == iota1:
-        assert H_closed == 0.0
-
-
 # compute_helicity on the projected analytic IC, measured 2026-08-26 on
 # tiny_seq in float64: flat iota 0.6 -> +3.2069e-2, sheared 0.4 -> 0.9 ->
-# +3.8762e-2 (eq. (1) gives 0 and +4.4046e-3 for the same fields).
+# +3.8762e-2.
 HELICITY_MEASURED = {"flat": 3.2069e-2, "sheared": 3.8762e-2}
 
 
 def test_computed_helicity_is_pinned(tiny_seq):
-    """``compute_helicity`` on the projected analytic IC.
-
-    On a torus the diagnostic and eq. (1) are gauge-related by the harmonic
-    1-form (``A`` is solved in the Dirichlet space, the natural gauge
-    ``Phi dchi - X dzeta`` is not in it), so they do not agree in value:
-    the diagnostic carries a harmonic term of ~3.2e-2 at either shear. What
-    the test pins is the diagnostic itself, to 5% of the measured values --
-    the 2026-08-25 primal/dual rhs bug moved it by 85x.
+    """``compute_helicity`` (``<A, B + B_harm>``, ``A`` in the Dirichlet
+    space) on the projected analytic IC, pinned to 5% of the measured values
+    -- the 2026-08-25 primal/dual rhs bug moved it by 85x. The flat-iota
+    field has a nonzero helicity: the harmonic (toroidal-flux) part.
     """
     seq = tiny_seq
     A0 = jnp.zeros(seq.n(1, True))
     for tag, (i0, i1) in {"flat": (0.6, 0.6), "sheared": (IOTA0, IOTA1)}.items():
         B, norm = project_reference_two_form(seq, analytic_omega(i0, i1, modes=[]))
         H, _ = compute_helicity(B, seq, A0)
-        H_eq1 = analytic_helicity(i0, i1, IOTA_EXP, FLUX_EXP) / norm ** 2
-        print(f"\n  {tag}: computed H {float(H):+.4e}, eq.(1) H {H_eq1:+.4e}")
+        print(f"\n  {tag}: computed H {float(H):+.4e}")
         assert abs(float(H) - HELICITY_MEASURED[tag]) <= 0.05 * HELICITY_MEASURED[tag]

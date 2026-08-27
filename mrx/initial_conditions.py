@@ -15,15 +15,13 @@ Three properties hold for any ``lambda`` and any geometry before a solve:
 the field within a surface: the fluxes, iota and the helicity do not depend on
 it; the force and the energy do.
 
-Helicity is metric-free. With ``A = Phi dchi - X dzeta`` and ``X' = iota Phi'``,
-
-    H = int_0^1 Phi^2 (X/Phi)' drho,                                       (1)
-
-zero for constant iota, and for the power-law profiles of
-:func:`make_profiles` it closes as :func:`analytic_helicity`. On a torus the
-helicity is gauge-ambiguous by the harmonic 1-form, so (1) and
-:func:`mrx.relaxation.compute_helicity` do not have to agree; the difference is
-the harmonic contribution.
+The helicity is the one the relaxation conserves,
+:func:`mrx.relaxation.compute_helicity`: ``H = <A, B + B_harm>`` with ``A``
+the vector potential solved in the Dirichlet 1-form space (``curl A = B -
+B_harm``, ``B_harm`` the harmonic remainder that carries the toroidal flux).
+On a torus a helicity is defined only with the harmonic part fixed this
+way; the profile integral ``int Phi^2 (X/Phi)' drho`` of the natural gauge
+``A = Phi dchi - X dzeta`` is a different gauge and a different number.
 
 Three sources of the profiles:
 
@@ -97,15 +95,6 @@ def make_lambda(modes):
         return d_chi, d_zeta
 
     return dlam
-
-
-def analytic_helicity(iota0, iota1, iota_exp, flux_exp):
-    """Eq. (1) for the power-law profiles, un-normalised field, natural gauge.
-
-    Linear in the shear ``iota1 - iota0`` and zero without it.
-    """
-    q, e = flux_exp, iota_exp
-    return (iota1 - iota0) * e / ((q + 1) * (q + e + 1) * (2 * q + e + 2))
 
 
 # This function can be used to compute lambda from the other parameters. 
@@ -303,7 +292,7 @@ def potential_two_form(seq, A_ref):
 def dzeta_form():
     """The constant reference 2-form ``(0, 0, 1)``.
 
-    Zero shear, hence zero helicity by eq. (1); minimising the energy at fixed
+    Zero shear; minimising the energy at fixed
     toroidal flux lands on the harmonic 2-form of the Dirichlet complex, which
     is curl-free, so the target field, J = 0 and a flat pressure are all known
     in advance.

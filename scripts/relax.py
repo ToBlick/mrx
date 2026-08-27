@@ -265,7 +265,7 @@ def main(cli):
     import mrx
     from mrx.geometry import build_sequence
     from mrx.gvec import load_clebsch
-    from mrx.initial_conditions import (analytic_helicity, analytic_profile_form,
+    from mrx.initial_conditions import (analytic_profile_form,
                                         clebsch_potential_form, divergence_norm,
                                         potential_two_form, lambda_dirichlet_energy,
                                         resonant_rho,
@@ -301,7 +301,6 @@ def main(cli):
 
     # --- initial condition -----------------------------------------------
     iota0, iota1 = (float(v) for v in cli.iota.split(","))
-    H_analytic = float("nan")
     if cli.ic == "clebsch":
         cb = load_clebsch(cli.geometry, seq.basis_0.types)
         lam_norm, lam_energy = lambda_dirichlet_energy(cb["lam_h"], seq)
@@ -343,8 +342,6 @@ def main(cli):
         div0 = divergence_norm(seq, B0)
         print(f"[ic] Leray-projected: ||div B|| {div_raw:.3e} -> {div0:.3e}  "
               f"(moved the field by {moved:.3e})")
-    if cli.ic == "analytic":
-        H_analytic = analytic_helicity(iota0, iota1, cli.iota_exp, cli.flux_exp) / B_norm ** 2
     # --- optional resistive pre-smoothing of the IC -------------------------
     # Backward-Euler diffusion with the force switched off: a few steps take
     # the grid-scale current out of a coarsely sampled IC (||J||/||B|| is
@@ -400,13 +397,12 @@ def main(cli):
     resid0 = F0n / gradp0
     print(f"[ic] {cli.ic} IC in {time.perf_counter() - t1:.1f}s  ||B||_M raw "
           f"{B_norm:.6e}  E={E0:.6e}  ||F||={F0n:.4e}  resid "
-          f"{resid0:.4e}  H={float(H0):+.6e}"
-          + (f"  H eq.(1) {H_analytic:+.6e}" if cli.ic == "analytic" else ""),
+          f"{resid0:.4e}  H={float(H0):+.6e}",
           flush=True)
     print(f"[ic] {pressure_line(diag0)}", flush=True)
     results["ic"] = dict(B_norm_raw=B_norm, div_raw=div_raw, div=div0,
                          leray_moved=moved, E=E0, F=F0n, gradp=gradp0,
-                         resid=resid0, H=float(H0), H_analytic=H_analytic,
+                         resid=resid0, H=float(H0),
                          JoverB=float(JoverB0), **diag0)
 
     # --- the descent -------------------------------------------------------

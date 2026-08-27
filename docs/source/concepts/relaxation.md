@@ -223,7 +223,6 @@ energy, not fluxes, `ι`, or helicity.
 | `clebsch_form(cb)` | the same pointwise 2-form from a GVEC file's `dPhi_dr`, `dchi_dr`, `LA` (`load_clebsch(path)` in `mrx/gvec.py`) -- the reference the tests check the potential route against; not the production IC |
 | `clebsch_potential_form(cb)`, `potential_two_form(seq, A_ref)` | the reference 1-form `A' = (-LA dPhi_dr, 2π Φ, -(2π/nfp) χ)` (the GVEC potential with the gauge term `d(Φ LA)` dropped; `Φ`, `χ` integrated from the profiles) histopolated on the FREE 1-form space -- its wall trace `2π Φ_edge` is the toroidal flux, the Dirichlet harmonic content -- and `B = dA'` by the exact incidence curl into the Dirichlet 2-form space: `div B = 0` to round-off, no Leray step, and no derivative of the sampled `LA` is ever taken (the discrete `d` differentiates), so a coarse export cannot inject grid-scale current through its interpolant; `--ic clebsch` |
 | `dzeta_form()` | the constant `(0, 0, 1)`; relaxes to the harmonic field |
-| `analytic_helicity(...)` | the closed-form helicity of the analytic profiles |
 | `project_reference_two_form(seq, omega_ref)` | pushes forward `B = DF ω / J` and L²-projects onto the Dirichlet k=2 space |
 | `leray_clean(seq, B)`, `divergence_norm(seq, B)` | remove and measure the projection's divergence |
 
