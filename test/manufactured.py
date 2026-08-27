@@ -218,7 +218,7 @@ def relative_l2_error(seq, k, dirichlet, u_hat, exact):
     never ``DF``.
     """
     comp_info, comp_shapes = seq._form_comp_info(k)
-    eT = getattr(seq, f"e{k}_dbc_T" if dirichlet else f"e{k}_T")
+    eT = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}").T
     quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
     ncomp = 1 if k in (0, 3) else 3
     u_h = evaluate_at_xq(eT @ u_hat, comp_info, comp_shapes, quad_shape, ncomp)

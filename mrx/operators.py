@@ -1215,11 +1215,16 @@ def _derivative_extraction(seq, k: int, dirichlet_in: bool, dirichlet_out: bool)
 
 def _projection_extraction(seq, k_in: int, k_out: int,
                            dirichlet_in: bool, dirichlet_out: bool):
-    if (k_in, k_out) not in _PROJECTION_SPACES:
+    try:
+        k_row, k_col = _PROJECTION_SPACES[(k_in, k_out)]
+    except KeyError:
         raise ValueError(
-            "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
-    e_in = extraction(seq, k_in, dirichlet_in)
-    e_out = extraction(seq, k_out, dirichlet_out)
+            "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported"
+        ) from None
+    # Rows of P_{k_in k_out} live in the space of ``e_out`` (``k_row``) and
+    # its columns in the space of ``e_in`` (``k_col``).
+    e_in = extraction(seq, k_col, dirichlet_in)
+    e_out = extraction(seq, k_row, dirichlet_out)
     return e_in, e_in.T, e_out
 
 

@@ -253,21 +253,18 @@ def test_laplacian_jacobi_diagonal_is_positive(laplacian_jacobi_diag, k, dbc):
 
 @pytest.mark.parametrize("dbc", _ALL_DBC)
 def test_k0_laplacian_jacobi_first_apply_inside_a_trace(tiny_seq, dbc):
-    """``kind='jacobi'`` at k=0 builds ``diag(S_0)`` in closed form on the
-    first apply, and that first apply can sit inside a ``lax`` body: the
-    inverse iteration of ``find_nullspace_vectors`` solves the shifted k=0
-    Laplacian inside a ``while_loop``. The build is host-side numpy over the
-    basis tables, so under a trace it saw tracers and died (found in float32
-    on 2026-08-26); ``_laplacian_diaginv`` now runs it under
-    ``ensure_compile_time_eval``. The stored diagonal is cleared here so the
-    lazy path is what runs, first inside a ``scan`` and then eagerly.
+    """``kind='jacobi'`` at k=0 applies the stored ``1/diag(S_0)`` of the
+    bundle, inside a ``lax`` body (the inverse iteration of
+    ``find_nullspace_vectors`` solves the shifted k=0 Laplacian inside a
+    ``while_loop``) exactly as eagerly. Nothing is built on the first apply:
+    a bundle without the diagonal raises instead.
     """
     import jax
 
     from mrx.operators import apply_laplacian_preconditioner
 
-    ops = tiny_seq.operators.with_laplacian_diaginv(0, None, dirichlet=dbc)
-    assert ops.get_laplacian_diaginv(0, dbc) is None
+    ops = tiny_seq.operators
+    assert ops.get_laplacian_diaginv(0, dbc) is not None
     n = n_dofs(tiny_seq, 0, dbc)
     v = jnp.asarray(np.random.default_rng(29).standard_normal(n))
 

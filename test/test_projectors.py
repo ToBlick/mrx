@@ -232,11 +232,19 @@ def _build_identity_seq(deg):
     by ~3.4x, hence the wall time by ~11x, while testing the identical
     identity.
     """
+    import mrx.operators as op
+
     seq = DeRhamSequence(
         (4, 4, 4), (deg,) * 3, deg + 1, ("clamped", "periodic", "periodic"),
         polar=True, maxiter=200, betti_numbers=(1, 1, 0, 0),
     )
     seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2))
+    # The mass inverses need the mass preconditioners only (the Laplacian
+    # atoms need n >= p + 2, which (4, 4, 4) at p = 3 is not).
+    ops = op.new_operators(seq)
+    ops = op.assemble_mass_jacobi_preconditioner(seq, ops)
+    ops = op.assemble_mass_metric_lumping_preconditioner(seq, ops)
+    seq.set_operators(ops)
     return seq
 
 
