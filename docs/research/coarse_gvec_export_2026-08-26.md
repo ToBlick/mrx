@@ -318,3 +318,44 @@ them; every W7-X number in this note obtained through the h5 carries the
 bridge's floor (||F||_0 ~ 4e-3 to 7e-3) that the closed form does not.
 `--presmooth` and `trim_gvec_export.py` stay for grid-only sources.
 
+
+## 6. The high-beta export `w7x_ini_conv_mrx.h5` (2026-08-27)
+
+A different animal from fmm002 and not in the run overview (h5 route,
+50^3 grid, no state file): GVEC's beta_vol 3.5%, beta_axis 10%, and an
+IC current ||J||/||B||_0 = 1.16 -- twenty times fmm002's 0.055 at the
+same (16,32,32) p=3 mesh. `w7xini_16x32x32_g0` (gamma = 0, float64,
+2200 steps, 165 min; the first attempt at 3400 steps timed out at step
+2780 -- 4.5 s/step, not 2.9, and its traces are in
+`w7xini_16x32x32_g0_timedout/`):
+
+| | F_0 | F (last 50) | t | mean dt | E_0 - E | H_0 | Delta H (abs) | beta_vol | beta_axis | J/B end |
+|---|---|---|---|---|---|---|---|---|---|---|
+| fmm002 (16,32,32), 3000 steps | 7.1e-3 | 1.8e-4 | 3.58 | 1.2e-3 | 1.7e-5 | +6.3e-6 | -2.0e-8 | 1.12e-2 | 3.39e-2 | 0.055 |
+| ini_conv (16,32,32), 2200 steps | 8.2e-3 | 3.8e-3 | 0.99 | 4.0e-4 | 3.6e-5 | +4.0e-2 | -4.0e-7 | 3.65e-2 | 1.03e-1 | 1.10 |
+
+The force falls by a factor 2 only, the line-search dt is a third of
+fmm002's, the released energy is twice as large and still rising, and
+the weak-pressure diagnostics stay far from balance (weak residual 0.36
+-> 0.29, |p_w - p|/|p_w| 0.58 -> 0.25, wall (JxB).n 0.61 -> 0.21). The
+run is not near an equilibrium of the discrete system.
+
+Sections (`w7xini_16x32x32_g0/poincare/`, 160 lines x 400 periods, both
+planes, IC and final). At t = 0 every line is regular: iota 0.856 in the
+core, rising through 10/11, 15/16, 20/21, 25/26 to 0.975 at the wall,
+p_w peaked (0.77%) but not yet a surface function (large spread along
+each line). After 2200 steps the core (iota <~ 0.87, the inner ~60% by
+radius) is nested with p_w a clean flux function, and the whole outer
+shear region where iota sweeps the low-order rationals 10/11 .. 25/26
+has broken into a chaotic sea threaded by island chains at every one of
+them, with 1 line lost at the wall; the pressure profile there is the
+noisy part. Same at zeta = 0.5. This is the large-shear, high-beta
+counterpart of the fmm002 result: there the 5/5 chain was the only
+resonance in the domain and stayed tearing-stable; here the edge
+crosses five low-order rationals inside a current density the mesh does
+not resolve (J/B > 1 means the current has grid-scale structure), and it
+opens all of them. Whether that is the physics of this equilibrium or
+the mesh is a resolution question this run cannot answer -- (16,32,32)
+was chosen for the wall-time budget; the IC's J/B says the current is
+unresolved. Figures: `traces_w7xini_{time,step,wall,runtime}.png`
+(fmm002 (16,32,32) as the reference).
