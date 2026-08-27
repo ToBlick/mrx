@@ -33,7 +33,6 @@ of it -> the bundle; depends on the bases only -> the sequence.
 The ``apply_*`` methods are forwarders to the free functions in
 :mod:`mrx.operators` with ``self`` and ``self.operators`` filled in.
 """
-import jax
 import jax.numpy as jnp
 
 import mrx
@@ -45,7 +44,7 @@ from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
                            find_nullspace_vectors, get_nullspace,
                            get_saddle_point_nullspaces, init_nullspaces)
 import mrx.operators as op
-from mrx.local_assembly import (_second_derivative_tables,
+from mrx.local_assembly import (_second_derivative_tables, basis_table,
                                 build_matrixfree_mass_apply,
                                 build_matrixfree_projection_apply)
 from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
@@ -249,7 +248,7 @@ class DeRhamSequence():
                                ("d_basis_t_jk", self.basis_0.dΛ, self.quad.x_y),
                                ("d_basis_z_jk", self.basis_0.dΛ, self.quad.x_z)):
             f = funcs[("r", "t", "z").index(name.split("_")[-2][-1])]
-            setattr(self, name, jax.vmap(jax.vmap(f, (0, None)), (None, 0))(x, f.ns))
+            setattr(self, name, basis_table(f, x))
         self.dd_basis_jk = _second_derivative_tables(self)
         self.greville = greville_axes(self)
 

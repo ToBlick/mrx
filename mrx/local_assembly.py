@@ -21,6 +21,8 @@ reference-domain weight ``W = I``.  The quadrature weights are folded in per
 axis via the 1D Gauss weights.
 """
 
+import functools
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -40,6 +42,37 @@ __all__ = [
 # --------------------------------------------------------------------------- #
 # Element-local 1D basis evaluation
 # --------------------------------------------------------------------------- #
+#
+# Every table below is a vmap over a spline evaluation. Run eagerly, a vmap
+# executes the batched trace one primitive at a time, each primitive compiled
+# and dispatched on its own (~4000 compilations per (4,8,4) sequence build,
+# measured 2026-08-27: 0.6 s per table). Under jit the whole table is one
+# executable. The basis object is a STATIC argument, so each basis compiles
+# its tables once per shape and every later build reuses them.
+
+@functools.partial(jax.jit, static_argnames=("basis",))
+def basis_table(basis, x):
+    """``basis(x_q, i)`` for every ``i`` in ``basis.ns`` and every point in ``x``, ``(n, n_q)``."""
+    return jax.vmap(jax.vmap(basis, (0, None)), (None, 0))(x, basis.ns)
+
+
+@functools.partial(jax.jit, static_argnames=("basis",))
+def basis_derivative_table(basis, x):
+    """``d/dx basis(x_q, i)`` by autodiff, ``(n, n_q)``."""
+    def value(x, i):
+        return jnp.sum(basis(x, i))
+    return jax.vmap(jax.vmap(jax.grad(value, argnums=0), (0, None)), (None, 0))(x, basis.ns)
+
+
+@functools.partial(jax.jit, static_argnames=("basis",))
+def _evaluate_basis_local(basis, x_local, gdof):
+    def eval_e(x_e, dof_e):
+        return jax.vmap(
+            lambda x: jax.vmap(lambda i: basis(x, i))(dof_e)
+        )(x_e)
+    return jax.vmap(eval_e, in_axes=(0, 0))(x_local, gdof)
+
+
 def evaluate_basis_local(basis, x_q_flat, q_per_elem):
     """Evaluate a 1D spline basis on each element at its local quad points.
 
@@ -85,14 +118,7 @@ def evaluate_basis_local(basis, x_q_flat, q_per_elem):
         raise NotImplementedError(basis.type)
 
     x_local = x_q_flat.reshape(n_elem, q_per_elem)
-
-    def eval_e(x_e, dof_e):
-        return jax.vmap(
-            lambda x: jax.vmap(lambda i: basis(x, i))(dof_e)
-        )(x_e)
-
-    B_loc = jax.vmap(eval_e, in_axes=(0, 0))(x_local, gdof)
-    return B_loc, gdof
+    return _evaluate_basis_local(basis, x_local, gdof), gdof
 
 
 def _elem_counts(seq):
@@ -440,14 +466,7 @@ def _second_derivative_tables(seq):
     """
     dlam = seq.basis_0.dΛ
     nodes = (seq.quad.x_x, seq.quad.x_y, seq.quad.x_z)
-    tables = []
-    for a in range(3):
-        def value(x, i, a=a):
-            return jnp.sum(dlam[a](x, i))
-        grad = jax.grad(value, argnums=0)
-        tables.append(jax.vmap(jax.vmap(grad, (0, None)), (None, 0))(
-            nodes[a], dlam[a].ns))
-    return tuple(tables)
+    return tuple(basis_derivative_table(dlam[a], nodes[a]) for a in range(3))
 
 
 def _jacobian_gradient(seq, geometry, batch_size=None):
