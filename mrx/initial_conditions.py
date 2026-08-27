@@ -108,7 +108,8 @@ def analytic_helicity(iota0, iota1, iota_exp, flux_exp):
     return (iota1 - iota0) * e / ((q + 1) * (q + e + 1) * (2 * q + e + 2))
 
 
-# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
+# This function can be used to compute lambda from the other parameters. 
+# Currently not pursued.
 def metric_coefficients(seq, rhos, n_ang):
     """Surface averages ``a = <g_cc/J>``, ``b = <g_cz/J>``, ``c = <g_zz/J>``,
     ``V' = <J>`` on ``rhos``.
@@ -345,9 +346,9 @@ def leray_clean(seq, B):
 
     The evolution ``dB = curl E`` preserves ``div B`` exactly, so whatever
     divergence the initial condition carries it carries for the whole run;
-    this removes it once, up front. Returns ``(B, moved)`` with ``moved`` the
+    this removes it once, up front. Returns ``(B, diff_B)`` with ``diff_B`` the
     M-norm of the removed part.
     """
     B_leray, _ = seq.apply_leray_projection(B, k=2)
-    moved = float(seq.l2_norm(B_leray - B, 2))
-    return B_leray / float(seq.l2_norm(B_leray, 2)), moved
+    diff_B = float(seq.l2_norm(B_leray - B, 2))
+    return B_leray / float(seq.l2_norm(B_leray, 2)), diff_B

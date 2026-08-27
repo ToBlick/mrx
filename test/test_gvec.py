@@ -1,4 +1,4 @@
-"""``mrx.gvec_state``: the radial basis, and (``needs_data``) the evaluation
+"""``mrx.gvec`` state files: the radial basis, and (``needs_data``) the evaluation
 of a GVEC state against the pyGVEC export of the same equilibrium --
 ``MRX_GVEC_STATE`` and ``MRX_W7X_FILE`` name the two files."""
 import os
@@ -6,7 +6,7 @@ import os
 import numpy as np
 import pytest
 
-from mrx.gvec_state import StateField, evaluate, profile_spline, radial_design, read_state
+from mrx.gvec import StateField, evaluate, profile_spline, radial_design, read_state
 
 
 def test_radial_basis_is_a_clamped_partition_of_unity():

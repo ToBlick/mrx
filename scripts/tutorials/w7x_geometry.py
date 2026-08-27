@@ -55,7 +55,7 @@ def main():
         # GVEC's own state: R, Z, lambda as radial B-splines x Fourier series,
         # the profiles at the radial interpolation points. Closed form: MRX
         # evaluates it wherever it needs a value.
-        from mrx.gvec_state import profile_spline, read_state
+        from mrx.gvec import profile_spline, read_state
         st = read_state(cli.geometry)
         nfp = st["nfp"]
         X1 = st["X1"]

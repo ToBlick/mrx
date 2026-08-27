@@ -274,7 +274,7 @@ particular -- for a closed sample. It now decides from the axis coordinates
 ## From a GVEC state file
 
 MRX also takes GVEC's own ``GVEC_State_*.dat``, and takes it in closed
-form. `mrx.gvec_state` parses the radial B-spline x Fourier representation
+form. `mrx.gvec` parses the radial B-spline x Fourier representation
 of `X1 = R`, `X2 = Z` and `LA = lambda` (series `sum f_mn(s) trig(m theta -
 n zeta)` with `n` a multiple of `nfp`, degree-5 clamped B-splines on GVEC's
 element grid) and the profiles `Phi`, `iota`, `p` at the radial
@@ -286,5 +286,5 @@ and `load_clebsch` hands the initial condition `lambda` in closed form. Every
 `--geometry` and `build_sequence` argument accepts the `.dat`. Against the
 pyGVEC export of W7-X FMM002 the series reproduce `R`, `Z`, `lambda` and
 `Phi'` to round-off and `chi'`, `p` to `1e-5` (the interpolation floor of
-the 15 profile samples). `python -m mrx.gvec_state state.dat out.h5 --n-rho
-N ...` writes the flat schema for the tools that want a grid.
+the 15 profile samples). There is no state-to-grid exporter: the grid
+route below is for equilibria that come without a state file.

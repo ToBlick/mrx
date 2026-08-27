@@ -11,7 +11,6 @@ One page per module of ``mrx``.
    extraction_operators
    geometry
    gvec
-   gvec_state
    initial_conditions
    io
    local_assembly

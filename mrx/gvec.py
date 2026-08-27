@@ -1,42 +1,52 @@
-"""Stellarator spline maps and Clebsch data from GVEC-derived HDF5 files.
+"""GVEC equilibria: state files read in closed form, and the flat-schema exports.
 
-Two file schemas are read here:
+The production route is the **state file** (``GVEC_State_*.dat``), GVEC's
+own representation of an equilibrium:
+    the radial B-spline basis (degree ``deg`` on the element grid ``sp``),
+    the Fourier mode table ``(m, n)`` with ``n`` already multiplied by ``nfp``
+    and, per mode, the radial coefficients of ``X1 = R`` (cosine series),
+    ``X2 = Z`` and ``LA = lambda`` (sine series),
+    followed by the profiles ``Phi``, ``chi``, ``iota``, ``p`` at the
+    radial interpolation points of the ``X1`` basis.
+Its angles are GVEC's ``theta`` and ``zeta`` in radians with the series
+``sum f_mn(s) trig(m theta - n zeta)``; ``s`` is the radial label the
+flat-schema exports call ``rho`` (``Phi = Phi_edge s^2``). :class:`StateField`
+evaluates one of the three fields at a logical point in JAX -- the radial
+basis through :class:`mrx.spline_bases.SplineBasis` on GVEC's own knots, the
+angles as ``2 pi (m theta - n zeta / nfp)`` -- so :func:`build_gvec_map`
+collocates ``R`` and ``Z`` at the map's Greville points and
+:func:`load_clebsch` histopolates ``lambda`` at the quadrature points from
+the closed form, with no intermediate grid. Validated against the pyGVEC
+export of W7-X FMM002 to round-off (``test/test_gvec.py``).
 
-* The GVEC flat schema (``quasr_*.h5``, ``w7x_*_mrx.h5``, the hegna export):
-  flat ``R``/``Z`` of length ``n_rho*n_theta*n_zeta``, ``eval_points`` of
-  shape ``(N, 3)`` in ``(rho, theta, zeta)`` already normalised to ``[0, 1]``,
-  and ``nfp``/``n_rho``/``n_theta``/``n_zeta`` in the attributes. Some of
-  these files also carry ``clebsch/dPhi_dr``, ``clebsch/dchi_dr``,
-  ``clebsch/LA`` and ``pressure``; :func:`load_clebsch` reads those.
-* The W7-X vacuum grid (``W7-X.h5``): 3-D ``R``/``Z`` grids with explicit
-  ``rho``/``theta``/``zeta`` axes in radians. :func:`build_w7x_map` reads it.
-
-Both routes interpolate the grid with a linear RegularGridInterpolator,
-Greville-interpolate the result as a spline 0-form on a separate map sequence
-and wrap the two scalars in a cylindrical map. The linear bridge has a known
-non-converging ~3.4% bias against a data-node collocation spline; that matters
-for projecting fields and not for a map to precondition on.
+The **flat-schema export** (``quasr_*.h5``, ``w7x_*_mrx.h5``) is the
+fallback for equilibria that have no state file: flat ``R``/``Z`` of length
+``n_rho*n_theta*n_zeta``, ``eval_points`` of shape ``(N, 3)`` in
+``(rho, theta, zeta)`` normalised to ``[0, 1]``, ``nfp``/``n_rho``/
+``n_theta``/``n_zeta`` in the attributes, and optionally
+``clebsch/{dPhi_dr, dchi_dr, LA}`` and ``pressure``. The grid is bridged to
+the Greville points by a linear RegularGridInterpolator, whose ~3.4% bias
+does not converge; every W7-X number obtained through it carries a force
+floor the closed form does not (``docs/research/coarse_gvec_export_2026-08-26.md``).
 
 Two traps that the flat schema carries:
 
 * **Handedness.** ``mrx.mappings.stellarator_map`` uses
-  ``Y = -R sin(2 pi zeta/nfp)``, which matches ``W7-X.h5`` and mirrors raw GVEC
-  data (``det DF < 0``). :func:`build_gvec_map` measures the sign instead of
+  ``Y = -R sin(2 pi zeta/nfp)``, which mirrors raw GVEC data
+  (``det DF < 0``). :func:`build_gvec_map` measures the sign instead of
   assuming it.
 * **Open versus closed periodic axes.** The quasr files sample the angles on
-  ``[0, 1)`` and need a wrap point; the hegna file samples ``[0, 1]`` closed
+  ``[0, 1)`` and need a wrap point; other exports sample ``[0, 1]`` closed
   and must not be padded. Both are detected from the spacing.
 * **A wrong ``nfp`` attribute.** nfp enters the map as
   ``F = (R cos(2 pi zeta/nfp), +-R sin(2 pi zeta/nfp), Z)``, so a wrong value
   wraps one field period through the wrong angle with a healthy Jacobian to
-  hide it. The perturbed quasr44970 exports (``axis_pert_*.h5``,
-  ``interior_pert_*.h5``) declare ``nfp = 2`` for nfp=3 data; every reader
-  takes an ``nfp`` override for such files.
+  hide it; every reader takes an ``nfp`` override.
 
-Every function here takes the file path; nothing is resolved from names or
-from the environment. :func:`mrx.synthetic_gvec.write_synthetic_gvec` writes
-the flat schema for an analytic circular torus; the test suite reads that
-file through the same functions as a real export.
+Every function takes the file path; ``os.path`` extension decides the route.
+:func:`mrx.synthetic_gvec.write_synthetic_gvec` writes the flat schema for an
+analytic circular torus; the test suite reads that file through the same
+functions as a real export.
 """
 from __future__ import annotations
 
@@ -45,14 +55,275 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import BSpline
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DifferentialForm, DiscreteFunction
-from mrx.mappings import stellarator_map
 from mrx.projectors import _solve_tensor_collocation_axis
+from mrx.spline_bases import SplineBasis
 
 TWO_PI = 2.0 * np.pi
 
+
+# ---------------------------------------------------------------------------
+# 1. The state file
+# ---------------------------------------------------------------------------
+
+def _numbers(line):
+    return [float(v) for v in line.replace(",", " ").split()]
+
+
+def read_state(path):
+    """Parse a state file into a dict: ``nfp``, ``sp``, ``deg``, the three
+    field blocks ``X1``, ``X2``, ``LA`` (``m``, ``n``, ``coef`` of shape
+    ``(n_modes, n_base)``, ``sin_cos`` 1 = sine, 2 = cosine), ``profiles``
+    (``s``, ``phi``, ``chi``, ``iota``, ``pressure`` at the interpolation
+    points) and ``a_minor``, ``r_major``, ``volume``."""
+    with open(path) as fh:
+        lines = [ln.rstrip("\n") for ln in fh]
+    heads = [i for i, ln in enumerate(lines) if ln.startswith("##")]
+    blocks = []                                     # (header text, data lines)
+    for j, i in enumerate(heads):
+        end = heads[j + 1] if j + 1 < len(heads) else len(lines)
+        blocks.append((lines[i][2:].strip(" #"), [ln for ln in lines[i + 1:end] if ln.strip()]))
+
+    def block(prefix):
+        for head, data in blocks:
+            if head.startswith(prefix):
+                return data
+        raise ValueError(f"{path}: no '## {prefix}' block")
+
+    st = {}
+    n_elems = int(_numbers(block("grid: nElems")[0])[0])
+    st["sp"] = np.array(_numbers(block("grid: sp")[0]))[: n_elems + 1]
+    nfp, _, _, _, hmap = _numbers(block("global")[0])
+    st["nfp"], st["hmap"] = int(nfp), int(hmap)
+    for name in ("X1", "X2", "LA"):
+        n_base, deg, _, n_modes, sin_cos, _ = (int(v) for v in _numbers(block(f"{name}_base")[0]))
+        rows = np.array([_numbers(ln) for ln in block(f"{name}:")])
+        if rows.shape != (n_modes, 2 + n_base):
+            raise ValueError(f"{path}: {name} block is {rows.shape}, expected {(n_modes, 2 + n_base)}")
+        st[name] = dict(m=rows[:, 0].astype(int), n=rows[:, 1].astype(int),
+                        coef=rows[:, 2:], sin_cos=sin_cos, deg=deg)
+    st["deg"] = st["X1"]["deg"]
+    prof = np.array([_numbers(ln) for ln in block("at X1_base IP point positions")])
+    st["profiles"] = dict(zip(("s", "phi", "chi", "iota", "pressure"), prof.T))
+    st["a_minor"], st["r_major"], st["volume"] = _numbers(block("a_minor,r_major,volume")[0])
+    return st
+
+
+def knots(sp, deg):
+    """Clamped knot vector of the degree-``deg`` B-splines on the element grid."""
+    return np.concatenate([np.full(deg, sp[0]), sp, np.full(deg, sp[-1])])
+
+
+def radial_design(sp, deg, s):
+    """``(len(s), n_base)`` values of the radial basis at ``s``."""
+    return BSpline.design_matrix(np.asarray(s, dtype=np.float64), knots(sp, deg), deg).toarray()
+
+
+def evaluate(block, sp, s, theta, zeta):
+    """A field block on the tensor grid ``s x theta x zeta`` (angles in
+    radians, ``zeta`` the physical toroidal angle)."""
+    A = radial_design(sp, block["deg"], s) @ block["coef"].T             # (n_s, n_modes)
+    arg = (np.outer(block["m"], theta)[:, :, None]
+           - np.outer(block["n"], zeta)[:, None, :])                      # (n_modes, n_t, n_z)
+    F = np.cos(arg) if block["sin_cos"] == 2 else np.sin(arg)
+    return np.einsum("sk,ktz->stz", A, F)
+
+
+def profile_spline(st, name):
+    """The radial spline through a profile's interpolation-point values."""
+    prof, sp, deg = st["profiles"], st["sp"], st["deg"]
+    c = np.linalg.solve(radial_design(sp, deg, prof["s"]), prof[name])
+    return BSpline(knots(sp, deg), c, deg)
+
+
+class StateField:
+    """A state's ``X1``, ``X2`` or ``LA`` as a JAX function of the logical
+    point ``(rho, theta, zeta)`` (angles on ``[0, 1)``, ``zeta`` per field
+    period). ``vector=True`` returns a ``(1,)`` array, the convention of the
+    map fit's scalar callables; otherwise a scalar."""
+
+    def __init__(self, block, sp, nfp, vector=False):
+        self.basis = SplineBasis(block["coef"].shape[1], block["deg"], "clamped",
+                                 T=jnp.asarray(knots(sp, block["deg"])))
+        self.C = jnp.asarray(block["coef"])                              # (n_modes, n_base)
+        self.m = jnp.asarray(block["m"], dtype=jnp.float64)
+        self.n_per = jnp.asarray(block["n"], dtype=jnp.float64) / nfp    # per field period
+        self.cos = block["sin_cos"] == 2
+        self.vector = vector
+
+    def __call__(self, x):
+        vals, idx = self.basis.evaluate_local(jnp.clip(x[0], 0.0, 1.0))
+        radial = self.C[:, idx] @ vals                                    # (n_modes,)
+        arg = 2.0 * jnp.pi * (self.m * x[1] - self.n_per * x[2])
+        f = (jnp.cos(arg) if self.cos else jnp.sin(arg)) @ radial
+        return jnp.array([f]) if self.vector else f
+
+
+# ---------------------------------------------------------------------------
+# 2. Map and Clebsch initial condition
+# ---------------------------------------------------------------------------
+
+def _map_with_sign(R_h, Z_h, nfp, sign):
+    a = TWO_PI / nfp
+
+    def F(x):
+        ang = a * x[2]
+        r = R_h(x)[0]
+        return jnp.array([r * jnp.cos(ang), sign * r * jnp.sin(ang), Z_h(x)[0]])
+    return F
+
+
+def _det_DF(map_func, n=64, seed=0):
+    """Sample det(DF) away from the axis and from the r=1 knot, where a
+    spline map has det DF = 0 exactly."""
+    rng = np.random.default_rng(seed)
+    xs = jnp.asarray(np.column_stack([
+        rng.uniform(0.15, 0.95, n), rng.uniform(0.0, 1.0, n),
+        rng.uniform(0.0, 1.0, n)]))
+    dets = jax.vmap(lambda x: jnp.linalg.det(jax.jacfwd(map_func)(x)))(xs)
+    return np.asarray(dets)
+
+
+def _spline_scalars(R_fn, Z_fn, map_ns, p):
+    """R and Z as scalar splines on the C1 polar space, collocated from the
+    callables ``R_fn, Z_fn: (3,) -> (1,)`` at the space's Greville points.
+
+    ``interpolate`` collocates on the full tensor-product space (three
+    square 1-D solves) and restricts onto the polar space with the exact
+    ring-0/ring-1 surgery, so the axis is a single point per zeta and the
+    map is C1 there like the fields it carries.  Against the unrestricted
+    tensor fit only rings 0 and 1 move (W7-X fmm002 (8,16,8) p=3: 4e-5 and
+    3.5e-4 in R; det DF at the innermost quadrature ring 0.1734 vs 0.1731).
+    """
+    map_seq = DeRhamSequence(map_ns, (p, p, p), p + 1,
+                             ("clamped", "periodic", "periodic"), polar=True)
+    R_h = DiscreteFunction(map_seq.interpolate(R_fn, 0), map_seq.basis_0, map_seq.E(0))
+    Z_h = DiscreteFunction(map_seq.interpolate(Z_fn, 0), map_seq.basis_0, map_seq.E(0))
+    return R_h, Z_h, map_seq
+
+
+def build_gvec_map(h5_path, map_ns=(12, 24, 12), p=3, sign=None, stride=1,
+                   nfp=None):
+    """Build the stellarator map of one flat-schema file or GVEC state.
+
+    A ``.h5`` export supplies ``R`` and ``Z`` on its grid, bridged to the
+    Greville points by linear interpolation (``_rgi_fn``); a ``.dat`` state
+    supplies them in closed form (:class:`StateField`), so
+    the fit is the map space's own approximation and nothing else.
+    Returns ``(F, info)``. ``sign`` is the toroidal handedness
+    ``Y = sign * R sin(2 pi zeta/nfp)``; left ``None`` it is measured, and a
+    file that is degenerate under both signs raises.
+    """
+    if h5_path.endswith(".dat"):
+        st = read_state(h5_path)
+        nfp = st["nfp"] if nfp is None else int(nfp)
+        R_fn = StateField(st["X1"], st["sp"], st["nfp"], vector=True)
+        Z_fn = StateField(st["X2"], st["sp"], st["nfp"], vector=True)
+        axes, layout, grid = None, None, "closed form"
+    else:
+        axes, R_grid, Z_grid, nfp, layout = load_gvec_grids(
+            h5_path, stride=stride, nfp=nfp)
+        R_fn, Z_fn, grid = _rgi_fn(axes, R_grid), _rgi_fn(axes, Z_grid), R_grid.shape
+    R_h, Z_h, map_seq = _spline_scalars(R_fn, Z_fn, map_ns, p)
+
+    tried = {}
+    for s in ((sign,) if sign is not None else (1.0, -1.0)):
+        F = _map_with_sign(R_h, Z_h, nfp, s)
+        d = _det_DF(F)
+        tried[s] = (float(d.min()), float(d.max()))
+        if np.isfinite(d).all() and d.min() > 0:
+            return F, {"R_h": R_h, "Z_h": Z_h, "R_fn": R_fn, "Z_fn": Z_fn,
+                       "axes": axes, "map_seq": map_seq, "nfp": nfp,
+                       "sign": s, "layout": layout, "det_range": tried[s],
+                       "grid": grid, "stride": stride}
+    raise RuntimeError(f"{h5_path}: no handedness gives det DF > 0; "
+                       f"sampled ranges {tried}")
+
+
+def load_state_clebsch(path, n_rho=401):
+    """The ``load_clebsch`` dict of a state file: profiles on ``n_rho``
+    uniform radii from the profile splines (``chi' = iota Phi'``) and
+    ``lam_h`` the closed-form :class:`StateField` of ``LA``."""
+    st = read_state(path)
+    rho = np.linspace(0.0, 1.0, n_rho)
+    dPhi = profile_spline(st, "phi").derivative()(rho)
+    return dict(nfp=st["nfp"], rho=rho, dPhi=dPhi,
+                dchi=profile_spline(st, "iota")(rho) * dPhi,
+                p=profile_spline(st, "pressure")(rho), iota_spread=0.0,
+                lam_h=StateField(st["LA"], st["sp"], st["nfp"]), closed_axes=[])
+
+
+def load_clebsch(path, types=("clamped", "periodic", "periodic")):
+    """Read the radial profiles, a lambda callable and p(rho) from a file.
+
+    The reference 2-form components of ``mrx.initial_conditions`` are exactly
+    GVEC's ``sqrt(g) B^i``, verified against the file's own B:
+    ``sqrt(g) B^theta = dchi_dr - dPhi_dr dLA_dz`` and
+    ``sqrt(g) B^zeta = dPhi_dr (1 + dLA_dt)``, in GVEC's units (derivatives
+    with respect to radian angles). The caller converts with
+    ``Phi' = 2 pi dPhi_dr``, ``iota = dchi_dr / (nfp dPhi_dr)`` and
+    ``lambda = LA / 2 pi``.
+
+    lambda is fitted as the scalar and differentiated, never read as two
+    derivatives: ``div B = 0`` rests on the mixed partials cancelling, which
+    holds only when both come from one interpolant. The duplicate endpoint of
+    a closed periodic sample is dropped before the fit; whether an axis is
+    closed is decided from its coordinates (the last point is 1, not
+    ``1 - step``), the same rule the map reader applies, and the decision is
+    returned as ``closed_axes``. (It used to be decided from ``LA`` itself,
+    which mistakes any lambda without angular variation -- in particular
+    ``LA = 0`` -- for a closed sample.)
+
+    Returns a dict with ``nfp``, ``rho``, ``dPhi``, ``dchi``, ``p`` (surface
+    means, arrays on ``rho``), ``iota_spread`` (max angular departure of
+    dchi/dPhi from a flux function at mid-radius) and ``lam_h``. A GVEC
+    state file (``.dat``) returns the same dict with ``lam_h`` in closed
+    form (:func:`load_state_clebsch`).
+    """
+    if path.endswith(".dat"):
+        return load_state_clebsch(path)
+    with h5py.File(path, "r") as h:
+        shape = (int(h.attrs["n_rho"]), int(h.attrs["n_theta"]),
+                 int(h.attrs["n_zeta"]))
+        c = h["clebsch"]
+        dPhi = np.asarray(c["dPhi_dr"]).reshape(shape)
+        dchi = np.asarray(c["dchi_dr"]).reshape(shape)
+        LA = np.asarray(c["LA"]).reshape(shape)
+        pres = np.asarray(h["pressure"]).reshape(shape)
+        ep = np.asarray(h["eval_points"])
+        nfp = int(h.attrs["nfp"])
+
+    axes = [np.unique(ep[:, i]) for i in range(3)]
+    if not all(len(a) == n for a, n in zip(axes, shape)):
+        raise RuntimeError(f"eval_points axes {[len(a) for a in axes]} do not "
+                           f"match declared shape {shape}")
+
+    nr = shape[0]
+    prof_dPhi = dPhi.mean(axis=(1, 2))
+    prof_dchi = dchi.mean(axis=(1, 2))
+    prof_p = pres.mean(axis=(1, 2))
+    spread = float(np.nanmax(
+        np.abs(dchi / dPhi - (prof_dchi / prof_dPhi)[:, None, None])
+        [nr // 4:3 * nr // 4]))
+
+    fit_axes, LA_fit, closed = list(axes), LA, []
+    for a, kind in enumerate(types):
+        if kind == 'periodic' and _axis_is_closed(axes[a]):
+            fit_axes[a] = axes[a][:-1]
+            LA_fit = np.take(LA_fit, np.arange(len(fit_axes[a])), axis=a)
+            closed.append(a)
+    lam_h = fit_scalar_spline(fit_axes, LA_fit, types)
+
+    return dict(nfp=nfp, rho=axes[0], dPhi=prof_dPhi, dchi=prof_dchi,
+                p=prof_p, iota_spread=spread, lam_h=lam_h, closed_axes=closed)
+
+
+# ---------------------------------------------------------------------------
+# 3. The flat-schema export (grid fallback)
+# ---------------------------------------------------------------------------
 
 def _take(grid, axis, sl):
     idx = [slice(None)] * grid.ndim
@@ -145,123 +416,6 @@ def _rgi_fn(axes, grid):
     return f
 
 
-def _map_with_sign(R_h, Z_h, nfp, sign):
-    a = TWO_PI / nfp
-
-    def F(x):
-        ang = a * x[2]
-        r = R_h(x)[0]
-        return jnp.array([r * jnp.cos(ang), sign * r * jnp.sin(ang), Z_h(x)[0]])
-    return F
-
-
-def _det_DF(map_func, n=64, seed=0):
-    """Sample det(DF) away from the axis and from the r=1 knot, where a
-    spline map has det DF = 0 exactly."""
-    rng = np.random.default_rng(seed)
-    xs = jnp.asarray(np.column_stack([
-        rng.uniform(0.15, 0.95, n), rng.uniform(0.0, 1.0, n),
-        rng.uniform(0.0, 1.0, n)]))
-    dets = jax.vmap(lambda x: jnp.linalg.det(jax.jacfwd(map_func)(x)))(xs)
-    return np.asarray(dets)
-
-
-def _spline_scalars(R_fn, Z_fn, map_ns, p):
-    """R and Z as scalar splines on the C1 polar space, collocated from the
-    callables ``R_fn, Z_fn: (3,) -> (1,)`` at the space's Greville points.
-
-    ``interpolate`` collocates on the full tensor-product space (three
-    square 1-D solves) and restricts onto the polar space with the exact
-    ring-0/ring-1 surgery, so the axis is a single point per zeta and the
-    map is C1 there like the fields it carries.  Against the unrestricted
-    tensor fit only rings 0 and 1 move (W7-X fmm002 (8,16,8) p=3: 4e-5 and
-    3.5e-4 in R; det DF at the innermost quadrature ring 0.1734 vs 0.1731).
-    """
-    map_seq = DeRhamSequence(map_ns, (p, p, p), p + 1,
-                             ("clamped", "periodic", "periodic"), polar=True)
-    R_h = DiscreteFunction(map_seq.interpolate(R_fn, 0), map_seq.basis_0, map_seq.E(0))
-    Z_h = DiscreteFunction(map_seq.interpolate(Z_fn, 0), map_seq.basis_0, map_seq.E(0))
-    return R_h, Z_h, map_seq
-
-
-def build_gvec_map(h5_path, map_ns=(12, 24, 12), p=3, sign=None, stride=1,
-                   nfp=None):
-    """Build the stellarator map of one flat-schema file or GVEC state.
-
-    A ``.h5`` export supplies ``R`` and ``Z`` on its grid, bridged to the
-    Greville points by linear interpolation (``_rgi_fn``); a ``.dat`` state
-    supplies them in closed form (:class:`mrx.gvec_state.StateField`), so
-    the fit is the map space's own approximation and nothing else.
-    Returns ``(F, info)``. ``sign`` is the toroidal handedness
-    ``Y = sign * R sin(2 pi zeta/nfp)``; left ``None`` it is measured, and a
-    file that is degenerate under both signs raises.
-    """
-    if h5_path.endswith(".dat"):
-        from mrx.gvec_state import StateField, read_state
-        st = read_state(h5_path)
-        nfp = st["nfp"] if nfp is None else int(nfp)
-        R_fn = StateField(st["X1"], st["sp"], st["nfp"], vector=True)
-        Z_fn = StateField(st["X2"], st["sp"], st["nfp"], vector=True)
-        axes, layout, grid = None, None, "closed form"
-    else:
-        axes, R_grid, Z_grid, nfp, layout = load_gvec_grids(
-            h5_path, stride=stride, nfp=nfp)
-        R_fn, Z_fn, grid = _rgi_fn(axes, R_grid), _rgi_fn(axes, Z_grid), R_grid.shape
-    R_h, Z_h, map_seq = _spline_scalars(R_fn, Z_fn, map_ns, p)
-
-    tried = {}
-    for s in ((sign,) if sign is not None else (1.0, -1.0)):
-        F = _map_with_sign(R_h, Z_h, nfp, s)
-        d = _det_DF(F)
-        tried[s] = (float(d.min()), float(d.max()))
-        if np.isfinite(d).all() and d.min() > 0:
-            return F, {"R_h": R_h, "Z_h": Z_h, "R_fn": R_fn, "Z_fn": Z_fn,
-                       "axes": axes, "map_seq": map_seq, "nfp": nfp,
-                       "sign": s, "layout": layout, "det_range": tried[s],
-                       "grid": grid, "stride": stride}
-    raise RuntimeError(f"{h5_path}: no handedness gives det DF > 0; "
-                       f"sampled ranges {tried}")
-
-
-# ---------------------------------------------------------------------------
-# W7-X.h5: 3-D grids with radian axes
-# ---------------------------------------------------------------------------
-
-NFP_W7X = 5
-
-
-def load_w7x_grids(h5_path):
-    """Return logical axes in [0,1] and the periodic-padded R, Z grids."""
-    with h5py.File(h5_path, "r") as f:
-        rho = np.asarray(f["rho"], dtype=np.float64)        # [0,1]
-        theta = np.asarray(f["theta"], dtype=np.float64)    # [0,2pi)
-        zeta = np.asarray(f["zeta"], dtype=np.float64)      # [0,2pi/nfp)
-        R = np.asarray(f["R"], dtype=np.float64)            # (nr,nt,nz)
-        Z = np.asarray(f["Z"], dtype=np.float64)
-    t_ax = np.concatenate([theta / TWO_PI, [1.0]])
-    z_ax = np.concatenate([zeta * NFP_W7X / TWO_PI, [1.0]])
-
-    def _pad(grid):
-        grid = np.concatenate([grid, grid[:, :1, :]], axis=1)   # theta wrap
-        grid = np.concatenate([grid, grid[:, :, :1]], axis=2)   # zeta wrap
-        return grid
-
-    return (rho, t_ax, z_ax), _pad(R), _pad(Z)
-
-
-def build_w7x_map(h5_path, map_ns=(12, 24, 24), p=3):
-    """Build the W7-X map from the vacuum grid file; returns ``(F, info)``."""
-    axes, R_grid, Z_grid = load_w7x_grids(h5_path)
-    R_h, Z_h, R_fn, Z_fn, map_seq = _spline_scalars(axes, R_grid, Z_grid, map_ns, p)
-    map_func = stellarator_map(R_h, Z_h, nfp=NFP_W7X)
-    return map_func, {"R_h": R_h, "Z_h": Z_h, "R_fn": R_fn, "Z_fn": Z_fn,
-                      "axes": axes, "map_seq": map_seq, "nfp": NFP_W7X}
-
-
-# ---------------------------------------------------------------------------
-# Clebsch ingredients: the equilibrium field as three scalars
-# ---------------------------------------------------------------------------
-
 def knots_at_data(x, p, kind):
     """Knot vector on which the degree-``p`` interpolant through the sample
     ``x`` is well posed for ANY monotone sample (Schoenberg-Whitney).
@@ -321,69 +475,3 @@ def fit_scalar_spline(axes, values, types, degree=3):
         return jnp.einsum('ijk,i,j,k->', C, vr, vt, vz)
 
     return evaluate
-
-
-def load_clebsch(path, types=("clamped", "periodic", "periodic")):
-    """Read the radial profiles, a lambda callable and p(rho) from a file.
-
-    The reference 2-form components of ``mrx.initial_conditions`` are exactly
-    GVEC's ``sqrt(g) B^i``, verified against the file's own B:
-    ``sqrt(g) B^theta = dchi_dr - dPhi_dr dLA_dz`` and
-    ``sqrt(g) B^zeta = dPhi_dr (1 + dLA_dt)``, in GVEC's units (derivatives
-    with respect to radian angles). The caller converts with
-    ``Phi' = 2 pi dPhi_dr``, ``iota = dchi_dr / (nfp dPhi_dr)`` and
-    ``lambda = LA / 2 pi``.
-
-    lambda is fitted as the scalar and differentiated, never read as two
-    derivatives: ``div B = 0`` rests on the mixed partials cancelling, which
-    holds only when both come from one interpolant. The duplicate endpoint of
-    a closed periodic sample is dropped before the fit; whether an axis is
-    closed is decided from its coordinates (the last point is 1, not
-    ``1 - step``), the same rule the map reader applies, and the decision is
-    returned as ``closed_axes``. (It used to be decided from ``LA`` itself,
-    which mistakes any lambda without angular variation -- in particular
-    ``LA = 0`` -- for a closed sample.)
-
-    Returns a dict with ``nfp``, ``rho``, ``dPhi``, ``dchi``, ``p`` (surface
-    means, arrays on ``rho``), ``iota_spread`` (max angular departure of
-    dchi/dPhi from a flux function at mid-radius) and ``lam_h``. A GVEC
-    state file (``.dat``) returns the same dict with ``lam_h`` in closed
-    form (:func:`mrx.gvec_state.load_state_clebsch`).
-    """
-    if path.endswith(".dat"):
-        from mrx.gvec_state import load_state_clebsch
-        return load_state_clebsch(path)
-    with h5py.File(path, "r") as h:
-        shape = (int(h.attrs["n_rho"]), int(h.attrs["n_theta"]),
-                 int(h.attrs["n_zeta"]))
-        c = h["clebsch"]
-        dPhi = np.asarray(c["dPhi_dr"]).reshape(shape)
-        dchi = np.asarray(c["dchi_dr"]).reshape(shape)
-        LA = np.asarray(c["LA"]).reshape(shape)
-        pres = np.asarray(h["pressure"]).reshape(shape)
-        ep = np.asarray(h["eval_points"])
-        nfp = int(h.attrs["nfp"])
-
-    axes = [np.unique(ep[:, i]) for i in range(3)]
-    if not all(len(a) == n for a, n in zip(axes, shape)):
-        raise RuntimeError(f"eval_points axes {[len(a) for a in axes]} do not "
-                           f"match declared shape {shape}")
-
-    nr = shape[0]
-    prof_dPhi = dPhi.mean(axis=(1, 2))
-    prof_dchi = dchi.mean(axis=(1, 2))
-    prof_p = pres.mean(axis=(1, 2))
-    spread = float(np.nanmax(
-        np.abs(dchi / dPhi - (prof_dchi / prof_dPhi)[:, None, None])
-        [nr // 4:3 * nr // 4]))
-
-    fit_axes, LA_fit, closed = list(axes), LA, []
-    for a, kind in enumerate(types):
-        if kind == 'periodic' and _axis_is_closed(axes[a]):
-            fit_axes[a] = axes[a][:-1]
-            LA_fit = np.take(LA_fit, np.arange(len(fit_axes[a])), axis=a)
-            closed.append(a)
-    lam_h = fit_scalar_spline(fit_axes, LA_fit, types)
-
-    return dict(nfp=nfp, rho=axes[0], dPhi=prof_dPhi, dchi=prof_dchi,
-                p=prof_p, iota_spread=spread, lam_h=lam_h, closed_axes=closed)

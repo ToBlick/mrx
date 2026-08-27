@@ -357,7 +357,7 @@ def greville_interpolate_stellarator_map(
 #
 # A geometry is either an analytic name (``toroid``, ``cylinder``,
 # ``rot-ellipse``) or the path of a GVEC export (``.h5``) or state file
-# (``.dat``, read in closed form by :mod:`mrx.gvec_state`); ``os.path.isfile``
+# (``.dat``, read in closed form by :mod:`mrx.gvec`); ``os.path.isfile``
 # decides. :func:`build_sequence` turns it into a polar sequence with the map
 # installed and the preconditioners built; nullspaces are left to the caller.
 
@@ -386,7 +386,7 @@ def geometry_nfp(geometry, nfp=None):
         if nfp is not None:
             return int(nfp)
         if geometry.endswith(".dat"):
-            from mrx.gvec_state import read_state
+            from mrx.gvec import read_state  # noqa: PLC0415  (imports this module)
             return read_state(geometry)["nfp"]
         with h5py.File(geometry, "r") as h:
             return int(h.attrs["nfp"])
@@ -402,7 +402,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
         geometry: 
             an analytic name (``toroid``, ``cylinder``, ``rot-ellipse``),
             the path of a flat-schema GVEC export, 
-            or a GVEC state file (read in closed form, ``mrx.gvec_state``).
+            or a GVEC state file (read in closed form, ``mrx.gvec``).
         ns: ``(n_r, n_theta, n_zeta)``; also the map resolution for a file.
         p: spline degree, all directions; ``p + 1`` Gauss points per knot span.
         maxiter: iteration budget of every solve through the sequence.

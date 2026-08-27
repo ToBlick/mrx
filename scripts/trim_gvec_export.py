@@ -51,8 +51,8 @@ def main():
     cli = ap.parse_args()
 
     if cli.src.endswith(".dat"):
-        raise SystemExit(f"{cli.src} is a GVEC state; the solvers read it directly, and "
-                         f"`python -m mrx.gvec_state {cli.src} out.h5 --n-rho N ...` writes a grid")
+        raise SystemExit(f"{cli.src} is a GVEC state file; the solvers read it directly "
+                         "(closed form, mrx.gvec), nothing to trim")
     with h5py.File(cli.src, "r") as f:
         shape = tuple(int(f.attrs[k]) for k in ("n_rho", "n_theta", "n_zeta"))
         nfp = int(f.attrs["nfp"])
