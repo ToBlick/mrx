@@ -451,7 +451,7 @@ def fit_scalar_spline(axes, values, types, degree=3):
 
     ``n_basis = n_data`` per axis on the knots :func:`knots_at_data` places
     from the sample itself, one square collocation solve each (the fit
-    ``mrx.io.load_grid_field`` step 1 does), kept as a function so its
+    ``mrx.projectors.load_grid_field`` step 1 does), kept as a function so its
     derivatives can be taken exactly. The axes only need to form a monotone
     tensor grid; refining the radial sample toward the edge is fine.
     Evaluation is three 1-D contractions: the hegna fit has ~5e5 basis

@@ -12,7 +12,6 @@ One page per module of ``mrx``.
    geometry
    gvec
    initial_conditions
-   io
    local_assembly
    mappings
    metric_lumping_laplacian

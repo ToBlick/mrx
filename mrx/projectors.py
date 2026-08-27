@@ -29,8 +29,8 @@ from scipy import sparse
 from scipy.sparse import csgraph
 
 import mrx
-from mrx.differential_forms import adj33, inv33
-from mrx.geometry import map_jacobian_at
+from mrx.differential_forms import DifferentialForm, adj33, inv33
+from mrx.geometry import _tp_evaluate, map_jacobian_at
 from mrx.quadrature import integrate_against
 
 if TYPE_CHECKING:
@@ -270,7 +270,7 @@ def load(seq: "DeRhamSequence", f, k: int,
     frame : {'phys', 'ref'}
         ``'phys'`` (default): ``f`` returns components in the physical frame;
         a DF-based pullback is applied internally.  This (with
-        :func:`mrx.io.load_grid_field`) is the only consumer of the raw map
+        :func:`load_grid_field`) is the only consumer of the raw map
         Jacobian, which the geometry does not store: ``DF`` is recomputed at
         the quadrature points with :func:`mrx.geometry.map_jacobian_at`, once
         per call.
@@ -836,3 +836,103 @@ class BoundaryProjector:
         # B_log_r = Σ u_r[a,b,c] Λ_r^a(1) dΛ_t^b dΛ_z^c
         return jnp.einsum('abc,a,bt,cz->tz', u_r,
                           self._basis_r_1, seq.d_basis_t_jk, seq.d_basis_z_jk)
+
+
+# ---------------------------------------------------------------------------
+# Gridded data
+# ---------------------------------------------------------------------------
+#
+# KEPT FOR GRID-ONLY SOURCES. Since 2026-08-27 the production route from a
+# GVEC equilibrium is the closed-form state file (mrx.gvec: StateField
+# collocated at the Greville points, lambda histopolated from the series),
+# which makes an interpolatory fit of gridded samples unnecessary and
+# measurably worse (the grid IC carries a force floor the closed form does
+# not; docs/research/coarse_gvec_export_2026-08-26.md section 5). This is
+# the projector for data that only exists on a grid.
+
+def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',
+                    degree=3):
+    """Factorized dual load of a field sampled on a regular logical grid.
+
+    Interpolatory-spline analogue of the pointwise ``seq.load(callable)`` for
+    grid-sampled data.  Steps, all sum-factorized (no pointwise ``lax.map`` and
+    no per-quad-point basis sweep):
+
+    1. fit an interpolatory tensor-product B-spline to ``values`` — one square
+       collocation solve per axis (``n_basis = n_data``);
+    2. evaluate it at ``seq``'s quadrature grid via :func:`_tp_evaluate` — three
+       1D contractions, ``O(N_q (n1+n2+n3))`` instead of ``O(N_q·n1·n2·n3)``;
+    3. apply the k-form frame pullback and quadrature weight (mirrors
+       :func:`mrx.projectors.load`; ``frame='phys'`` recomputes ``DF`` at the
+       quadrature points with :func:`mrx.geometry.map_jacobian_at` -- this
+       and ``load`` are the only consumers of ``DF``, which the geometry does
+       not store);
+    4. integrate against the k-form basis and extract.
+
+    Returns the **dual load vector** (same as ``seq.load``); pass it to
+    ``seq.apply_inverse_mass_matrix`` for the projected DOFs.
+
+    Parameters
+    ----------
+    axes : tuple of 1-D arrays ``(x1, x2, x3)``  logical grid nodes per axis.
+    values : array  ``(n1,n2,n3)`` for k=0,3;  ``(n1,n2,n3,3)`` for k=1,2
+        (flattened variants accepted).
+    seq : DeRhamSequence  target sequence.
+    k : {0,1,2,3}  form degree.
+    dirichlet : bool  use Dirichlet-constrained DOFs.
+    frame : {'ref','phys'}  interpretation of ``values`` (see
+        :func:`mrx.projectors.load`).
+    degree : int  spline degree of the interpolatory fit.
+    """
+
+    if frame not in ('ref', 'phys'):
+        raise ValueError(f"frame must be 'ref' or 'phys', got {frame!r}")
+
+    x1, x2, x3 = (jnp.asarray(a) for a in axes)
+    n1, n2, n3 = len(x1), len(x2), len(x3)
+    ncomp = 1 if k in (0, 3) else 3
+    C = jnp.asarray(values).reshape(n1, n2, n3) if ncomp == 1 \
+        else jnp.asarray(values).reshape(n1, n2, n3, 3).transpose(3, 0, 1, 2)
+    C = C.reshape(ncomp, n1, n2, n3)
+
+    # 1. interpolatory fit basis (n_basis = n_data per axis, seq's BC types)
+    fit = DifferentialForm(0, (n1, n2, n3), (degree,) * 3, seq.basis_0.types)
+    br, bt, bz = fit.Λ
+    solve = (br.collocation_matrix(x1), bt.collocation_matrix(x2),
+             bz.collocation_matrix(x3))
+    for a in range(3):
+        C = _solve_tensor_collocation_axis(solve[a], C, axis=a + 1)  # comp is axis 0
+
+    # 2. factorized evaluation at seq's quadrature grid.  M_axis = fit basis at
+    #    seq's per-axis 1D quad points (r<->x_x, t<->x_y, z<->x_z).
+    Mr = br.collocation_matrix(seq.quad.x_x).T          # (n1, nqr)
+    Mt = bt.collocation_matrix(seq.quad.x_y).T          # (n2, nqt)
+    Mz = bz.collocation_matrix(seq.quad.x_z).T          # (n3, nqz)
+    f = _tp_evaluate(C, Mr, Mt, Mz)                     # (ncomp, nqr, nqt, nqz)
+    # flatten with the same (0,2,1,3) transpose the geometry path uses, so the
+    # per-quad-point order matches seq.quad.x / seq.quad.w (meshgrid 'xy': t,r,z).
+    f_q = f.transpose(0, 2, 1, 3).reshape(ncomp, -1).T  # (n_q, ncomp)
+
+    # 3. frame pullback + quadrature weight (mirrors mrx.projectors.load)
+    w = seq.quad.w
+    if k == 0:
+        w_jk = f_q * (w * seq.jacobian_j)[:, None]
+    elif k == 1:
+        if frame == 'phys':                             # DF^-1 f = G^-1 DF^T f
+            DF_q = map_jacobian_at(seq.map, seq.quad.x)
+            DFt = jnp.einsum('qji,qj->qi', DF_q, f_q)
+            f_q = jnp.einsum('qij,qj->qi', seq.metric_inv_jkl, DFt)
+        w_jk = f_q * (w * seq.jacobian_j)[:, None]
+    elif k == 2:
+        if frame == 'phys':                             # DF^T f
+            DF_q = map_jacobian_at(seq.map, seq.quad.x)
+            f_q = jnp.einsum('qji,qj->qi', DF_q, f_q)
+        w_jk = f_q * w[:, None]
+    else:  # k == 3
+        w_jk = f_q * (w if frame == 'phys' else w / seq.jacobian_j)[:, None]
+
+    # 4. integrate against the k-form basis + extraction
+    comp_info, comp_shapes = seq._form_comp_info(k)
+    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    e = seq.E(k, dirichlet)
+    return e @ integrate_against(w_jk, comp_info, comp_shapes, quad_shape)

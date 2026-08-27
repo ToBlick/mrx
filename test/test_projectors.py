@@ -402,7 +402,7 @@ def test_load_grid_field_phys_frame_matches_pointwise_load(proj_seq, k):
     quadrature points, exactly as ``load`` does it.
     """
     from mrx.differential_forms import DifferentialForm
-    from mrx.io import load_grid_field
+    from mrx.projectors import load_grid_field
 
     def v(xi):
         return jnp.array([0.3 + xi[0] ** 2, 0.1 * xi[0], 0.5 - xi[0] ** 3])

@@ -58,7 +58,7 @@ def map_jacobian_at(map: Callable, x: jnp.ndarray) -> jnp.ndarray:
     This is the only place the raw Jacobian is materialised on a point set.
     :meth:`SequenceGeometry.from_map` reduces it to the stored geometry at
     once; the physical-frame pullbacks (:func:`mrx.projectors.load` with
-    ``frame='phys'``, :func:`mrx.io.load_grid_field`) call it on demand at
+    ``frame='phys'``, :func:`mrx.projectors.load_grid_field`) call it on demand at
     load time, since ``DF`` itself is not kept on the sequence.
 
     Args:
