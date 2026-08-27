@@ -62,14 +62,14 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
     """Build the sequence for a geometry and assemble its solver operators.
 
     Args:
-        geometry: an analytic name (``toroid``, ``cylinder``, ``rot-ellipse``),
-            the path of a flat-schema GVEC export, or a GVEC state file
-            (read in closed form, ``mrx.gvec_state``).
+        geometry: 
+            an analytic name (``toroid``, ``cylinder``, ``rot-ellipse``),
+            the path of a flat-schema GVEC export, 
+            or a GVEC state file (read in closed form, ``mrx.gvec_state``).
         ns: ``(n_r, n_theta, n_zeta)``; also the map resolution for a file.
         p: spline degree, all directions; ``p + 1`` Gauss points per knot span.
         maxiter: iteration budget of every solve through the sequence.
-        tol: solve tolerance; ``None`` is ``sqrt(eps)`` of the working
-            precision.
+        tol: solve tolerance; ``None`` is ``sqrt(eps)`` of working precision.
         nfp: overrides the file's ``nfp`` attribute (see ``mrx.gvec``);
             ignored for the analytic names.
 
@@ -95,13 +95,11 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
         if not np.isfinite(jac).all() or jac.min() <= 0:
             raise RuntimeError(f"{geometry} geometry is degenerate")
     elif geometry == "toroid":
-        seq.set_map(toroid_map(epsilon=1 / 3, R0=1.0))
+        seq.set_map(toroid_map(epsilon=1/3, R0=1.0))
     elif geometry == "cylinder":
-        # a = 0.33 keeps the minor radius comparable to the toroid's. Zero
-        # angular metric variation: the least-coupled geometry there is.
-        seq.set_map(cylinder_map(a=0.33, h=1.0))
+        seq.set_map(cylinder_map(a=1/3, h=1.0))
     elif geometry == "rot-ellipse":
-        seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.5, nfp=3))
+        seq.set_map(rotating_ellipse_map(eps=1/3, kappa=1.3, nfp=3))
     else:
         raise _unknown(geometry)
     return seq, seq.build_preconditioners()

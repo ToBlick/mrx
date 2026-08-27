@@ -21,15 +21,10 @@ from mrx.spline_bases import (
 class DifferentialForm:
     """Discrete k-form on a 3-D tensor-product spline space.
 
-    ``k=0`` — scalar; 
-    ``k=1`` — 1-form (edge); 
-    ``k=2`` — 2-form (face);
-    ``k=3`` — volume form; 
-    ``k=-1`` — vector field (3 copies of the
-    0-form space).  
-    **Note:** ``k=-1`` is incompatible with polar setups
-    because the polar extraction operator reduces the 0-form DOF count
-    asymmetrically across the three components.
+    ``k=0`` scalar (nodes); ``k=1`` 1-form (edges); ``k=2`` 2-form (faces);
+    ``k=3`` volume form (cells). The three components of a 1- or 2-form are
+    tensor products of the primal basis ``Λ`` and the derivative basis
+    ``dΛ`` in the pattern of the de Rham complex.
     """
     d: int
     k: int
@@ -44,7 +39,7 @@ class DifferentialForm:
 
     def __init__(self, k, ns, ps, types, Ts=None):
         """Args:
-            k: Form degree (0, 1, 2, 3, or -1 for a vector field).
+            k: Form degree (0, 1, 2 or 3).
             ns: Number of DOFs in each direction.
             ps: Polynomial degrees in each direction.
             types: Boundary condition types (``'clamped'``, ``'periodic'``,
@@ -118,23 +113,8 @@ class DifferentialForm:
             self.n1 = self.dr * self.dt * self.dz
             self.n2 = 0
             self.n3 = 0
-        elif k == -1:
-            self.bases = (
-                TensorBasis([self.Λ[0], self.Λ[1], self.Λ[2]]),
-                TensorBasis([self.Λ[0], self.Λ[1], self.Λ[2]]),
-                TensorBasis([self.Λ[0], self.Λ[1], self.Λ[2]]),
-            )
-            self.shape = (
-                (self.nr, self.nt, self.nz),
-                (self.nr, self.nt, self.nz),
-                (self.nr, self.nt, self.nz),
-            )
-            self.n1 = self.nr * self.nt * self.nz
-            self.n2 = self.nr * self.nt * self.nz
-            self.n3 = self.nr * self.nt * self.nz
         else:
-            raise ValueError(
-                "Degree k must be 0, 1, 2, 3, or -1 (vector field)")
+            raise ValueError("Degree k must be 0, 1, 2 or 3")
         self.n = self.n1 + self.n2 + self.n3
         self.ns = jnp.arange(self.n)
 
@@ -142,7 +122,7 @@ class DifferentialForm:
         """Return ``(component, local_index)`` for a global DOF index."""
         if self.k == 0 or self.k == 3:
             return jnp.int32(0), idx
-        elif self.k == 1 or self.k == 2 or self.k == -1:
+        elif self.k == 1 or self.k == 2:
             n1, n2 = self.n1, self.n2
             category = jnp.int32(idx >= n1) + jnp.int32(idx >= n1 + n2)
             index = jnp.int32(idx - n1 * (idx >= n1) - n2 * (idx >= n1 + n2))
@@ -198,20 +178,6 @@ class DifferentialForm:
             rav = jnp.ravel_multi_index(
                 (i, j, k), (self.dr, self.dt, self.dz), mode="clip"
             )
-        elif self.k == -1:
-            n1, n2 = self.n1, self.n2
-            _rav = jnp.ravel_multi_index(
-                (i, j, k), (self.nr, self.nt, self.nz), mode="clip"
-            )
-            rav = jnp.where(
-                c == 0,
-                _rav,
-                jnp.where(
-                    c == 1,
-                    n1 + _rav,
-                    n1 + n2 + _rav,
-                ),
-            )
         return jnp.int32(rav)
 
     def _unravel_index(self, idx):
@@ -248,11 +214,6 @@ class DifferentialForm:
             return c, i, j, k
         elif self.k == 3:
             return jnp.int32(0), *jnp.unravel_index(idx, (self.dr, self.dt, self.dz))
-        elif self.k == -1:
-            c, ijk = self._vector_index(idx)
-            i, j, k = jnp.array(jnp.unravel_index(
-                ijk, (self.nr, self.nt, self.nz)))
-            return c, i, j, k
 
     def __call__(self, x, i):
         """Alias for :meth:`evaluate`."""
@@ -274,7 +235,7 @@ class DifferentialForm:
         category, index = self._vector_index(i)
         if self.k == 0 or self.k == 3:
             return jnp.ones(1) * self.bases[0](x, index)
-        elif self.k == 1 or self.k == 2 or self.k == -1:
+        elif self.k == 1 or self.k == 2:
             e = jnp.zeros(3).at[category].set(1)
             val = jnp.where(
                 category == 0,
@@ -350,7 +311,6 @@ class Pushforward:
         k= 1   F_* ω = (DFᵀ)⁻¹ · ω
         k= 2   F_* ω = DF · ω / J           
         k= 3   F_* ω = ω / J
-        k=−1   F_* v = DF · v               (vector field)
     """
 
     def __init__(self, f, F, k):
@@ -374,8 +334,7 @@ class Pushforward:
             return DF @ self.f(x) / det33(DF)
         elif self.k == 3:
             return self.f(x) / det33(DF)
-        elif self.k == -1:
-            return DF @ self.f(x)
+        raise ValueError("k must be 0, 1, 2 or 3")
 
 
 class Pullback:
@@ -387,7 +346,6 @@ class Pullback:
         k= 1   F* ω = DFᵀ · (ω∘F)
         k= 2   F* ω = J · DF⁻¹ · (ω∘F)
         k= 3   F* ω = J · (ω∘F)
-        k=−1   F* v = DF⁻¹ · (v∘F)         (vector field)
     """
 
     def __init__(self, f, F, k):
@@ -412,8 +370,7 @@ class Pullback:
             return adj33(DF) @ self.f(y)      # J DF^-1 = adj(DF), finite at det DF = 0
         elif self.k == 3:
             return self.f(y) * det33(DF)
-        elif self.k == -1:
-            return inv33(DF) @ self.f(y)
+        raise ValueError("k must be 0, 1, 2 or 3")
 
 
 # ---------------------------------------------------------------------------

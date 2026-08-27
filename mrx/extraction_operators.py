@@ -145,10 +145,6 @@ class PolarExtractionOperator:
             self.n1 = (self.dr - 1) * self.dt * self.dz
             self.n2 = 0
             self.n3 = 0
-        if self.k == -1:
-            n_comp = ((self.nr - self.ring_depth - self.o) * self.nt
-                      + self.n_polar) * self.nz
-            self.n1 = self.n2 = self.n3 = n_comp
         self.n = self.n1 + self.n2 + self.n3
 
     def _k1_row_slices(self):
@@ -225,17 +221,6 @@ class PolarExtractionOperator:
                 (self.Lambda.dr, self.Lambda.dt, self.Lambda.dz),
                 mode="clip",
             )
-        if self.k == -1:
-            base = np.ravel_multi_index(
-                (i, j, k),
-                (self.Lambda.nr, self.Lambda.nt, self.Lambda.nz),
-                mode="clip",
-            )
-            if component == 0:
-                return base
-            if component == 1:
-                return self.Lambda.n1 + base
-            return self.Lambda.n1 + self.Lambda.n2 + base
         raise ValueError(f"Unsupported form degree k={self.k}")
 
     def _append_bulk_selector(self, rows, cols, data, *, row_offset, row_shape,
