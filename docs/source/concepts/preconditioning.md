@@ -46,28 +46,25 @@ preconditioner. The live kinds are:
 | kind | mass | Laplacian |
 |---|---|---|
 | `'none'` | identity | identity |
-| `'jacobi'` | `diag(E M_k E^T)^{-1}`, built by `assemble_mass_jacobi_preconditioner` | `diag(E L_k E^T)^{-1}`, closed form for the bulk rows, probed on the polar rows (`build_extracted_laplacian_diagonal`) |
 | `'metric_lumping'` | `MetricLumpingMass` | `MetricLumpingLaplacian` |
-| `'auto'` | resolves to `'metric_lumping'`, always | the atom when it has been built for this `(k, BC)`, otherwise `'none'` |
+| `'auto'` | `'metric_lumping'` | the atom when the bundle has it for this `(k, BC)`, otherwise `'none'` |
 
-`'auto'` never substitutes. The mass kind is always buildable on demand
-(`_mass_metric_lumping_for` builds and memoises it on the sequence, keyed on
-the geometry), so `'auto'` resolves to it unconditionally. The Laplacian atom
-is not built implicitly: `_materialize_default_saddle_preconditioner` and
-`_materialize_default_scalar_hodge_preconditioner` pick the atom when
-`_metric_lumping_available(seq, k, dirichlet)` and `'none'` otherwise, so an
-unbuilt preconditioner fails at the first solve instead of running on a
-different, slower one. The one exception is
-`apply_laplacian_preconditioner(kind='auto')`, a bare apply, which
-falls back to `'jacobi'`.
+`'auto'` never substitutes. Nothing is built on demand: `build_preconditioners`
+builds both atoms for every requested `(k, BC)` onto the bundle, a missing
+mass atom raises at the solve, and a missing Laplacian atom makes the
+default specs (`_materialize_default_saddle_preconditioner`,
+`_materialize_default_scalar_hodge_preconditioner`) pick `'none'`, so an
+unbuilt preconditioner runs unpreconditioned -- visibly slow -- instead of
+on a different one. `apply_laplacian_preconditioner(kind='auto')`, the bare
+apply, warns and applies the identity in that case. The per-DoF Jacobi
+diagonals and the probed Schur diagonal that used to be the comparison
+baseline are gone (2026-08-27): production never read them.
 
 A saddle solve is specified by `SaddlePointPreconditionerSpec(mass, schur,
 coupled)` with `schur = SchurPreconditionerSpec(inner, outer)`: `mass` is the
 lower block, `inner` stands in for `M_{k-1}^{-1}` inside the weak term, and
 `outer` preconditions `L_k`. Production is `mass = inner = 'metric_lumping'`,
-`outer = 'metric_lumping'`, `coupled = False`. `outer = 'jacobi'` uses the
-probed Schur diagonal of `assemble_schur_jacobi_preconditioner`; it is the
-comparison baseline, not a production path. `outer = 'none'` is the default
+`outer = 'metric_lumping'`, `coupled = False`. `outer = 'none'` is the default
 of the spec object so that a missing build fails visibly.
 
 ## 3. The Laplacian atom: `MetricLumpingLaplacian`
@@ -130,16 +127,14 @@ keyed `(k, dirichlet)`; nothing builds one on first use.
 ## 5. Building and invalidation
 
 ```python
-seq.set_map(F)                  # drops seq._metric_lumping_laplacian
-seq.build_preconditioners()     # incidence, mass Jacobi, atoms for every (k, BC), mass cache
+seq.set_map(F)                  # installs the geometry, drops seq.operators
+seq.build_preconditioners()     # a fresh bundle: both atoms for every (k, BC)
 ```
 
-`seq.set_map_and_preconditioners(F)` is the two calls in one.
-`build_preconditioners` raises `RuntimeError` listing every `(k, BC)` that
-failed to build. `set_geometry` drops the Laplacian atoms because they
-factorise `L_k` for the old metric; the mass cache re-keys itself. The Schur
-diagonals `operators.schur_diaginv_k{1,2,3}` are dropped on every rebuild
-because nothing else invalidates them.
+`seq.set_map_and_preconditioners(F)` is the two calls in one. `set_geometry`
+drops the whole bundle because everything on it factorises the old metric;
+there is no cache to invalidate, and the harmonic forms (also on the bundle)
+are recomputed with `compute_nullspaces`.
 
 The atom payloads are `eqx.Module` pytrees (`_LumpPayload`, `_MassPayload`)
 built eagerly at construction, with one jitted apply per tree structure, so
@@ -169,7 +164,7 @@ Research code (Chebyshev smoothers, the modal-radial atom, the coarse correction
 `chebyshev.py` (polynomial acceleration), `metric_lumping_coarse.py` (the
 truncated-Fourier coarse correction `CoarseCorrectedMetricLumping`), `modal_radial.py`.
 Multigrid, HX auxiliary-space transfers, CP rank fits, dense outer-ring probes
-(`outer_rings`), and the Schur-outer Jacobi are measured and not used; the
+(`outer_rings`), and the per-DoF Jacobi baselines are measured and not used; the
 verdicts are in `docs/research/preconditioner_lessons.md`.
 
 ## 8. Measuring

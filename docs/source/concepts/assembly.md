@@ -110,14 +110,7 @@ The same tables give exact diagonals with no operator apply:
   `(c, c)` weight blocks contribute; one `segment_sum` per component.
 - `build_stiffness_diagonal(seq, k)`: `diag(G_k^T M_{k+1} G_k)` from the
   derivative tables lifted by `grad_1d`.
-- `build_extracted_stiffness_diagonal_k0(seq, dirichlet)`: `diag(E K_0 E^T)`
-  including the polar rows, which factor as a 2D `(r, theta)` shape times a
-  1D `zeta` table because a k=0 polar row sits at one `zeta` index.
 - `build_codifferential_diagonal(seq, k)`: the weak-term diagonal at k=3.
-
-`assemble_mass_jacobi_preconditioner` probes the polar rows of
-`diag(E M_k E^T)` through the same apply the solver uses, so the Jacobi
-diagonal and the operator agree by construction.
 
 ## 5. Memory
 
@@ -157,9 +150,9 @@ point passes `p + 1`:
 
 ## 7. What remains assembled
 
-Nothing. The inter-degree projection blocks `p21, p12, p03, p30` (the
-helicity diagnostic) are the same sum-factorised apply with the reference
-weight. The only stored operators are index/value triplets: the extraction
+Nothing. The inter-degree projection masses `P_21, P_12, P_03, P_30` (the
+helicity diagnostic; `seq.projection_apply`) are the same sum-factorised
+apply with the reference weight. The only stored operators are index/value triplets: the extraction
 operators and the analytic polar grad/curl stencils, both
 `MatrixFreeExtraction` objects applied by gather and segment sum, with a
 free transpose.

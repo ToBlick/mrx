@@ -150,9 +150,9 @@ sequence's own `operators`, `tol`, and `maxiter`. Every solve takes a
 
 `L_k` has a kernel of dimension given by the Betti numbers passed to
 `DeRhamSequence(betti_numbers=...)`; `(1, 1, 0, 0)` is the solid torus. The
-kernel vectors live on `SequenceOperators.null_{k}` and `null_{k}_dbc` as
+kernel vectors live on `SequenceOperators.nullspaces[(k, dirichlet)]` as
 arrays of fixed shape `(n_vectors, n_k)`, zero until computed, so a solve on a
-fresh sequence deflates nothing. `mrx/nullspace.py` fills them:
+fresh bundle deflates nothing. `mrx/nullspace.py` fills them:
 `compute_nullspaces` by a direct Hodge decomposition (needs `b2 = 0`),
 `compute_nullspaces_iterative` by shifted inverse iteration for any topology.
 Both need mass, incidence, and Laplacian preconditioners assembled first.
@@ -205,20 +205,17 @@ and `build_w7x_map` for GVEC and W7-X files (gridded `R, Z` go through
 
 ### Dynamic: `SequenceOperators`
 
-`SequenceOperators` in `mrx/operators.py` is an `eqx.Module` holding the
-assembled data, every field optional:
+`SequenceOperators` in `mrx/operators.py` is an `eqx.Module` holding
+everything built from a geometry, three dicts keyed `(k, dirichlet)`:
 
-- the metric-lumped mass and Laplacian atoms (`mass_lumping`,
-  `laplacian_lumping`, keyed `(k, dirichlet)`),
-- the mass Jacobi diagonals in `mass_preconds`,
-- the Laplacian preconditioner diagonals `dd{k}_diaginv`, `dd{k}_diaginv_dbc`
-  and the Schur diagonals `schur_diaginv_k{k}`,
-- projections `p21, p12, p03, p30`,
-- harmonic forms `null_{k}`, `null_{k}_dbc`.
+- the metric-lumped mass atoms, `mass_lumping`,
+- the metric-lumped Laplacian atoms, `laplacian_lumping`,
+- the harmonic forms, `nullspaces`, arrays `(n_vectors, n_k)`.
 
-`seq.set_operators(ops)` attaches a bundle; every `apply_*` on the sequence
-uses it. The metric-lumping preconditioner payloads are pytrees keyed on the
-geometry and stored on the sequence, so a rebuild does not recompile.
+`build_preconditioners` creates it and installs it as `seq.operators`; the
+solves on the sequence read it. The atom payloads are pytrees with one jitted
+apply per tree structure, so a rebuild for a new geometry does not
+recompile.
 
 ## 6. Assembly order
 
@@ -242,11 +239,8 @@ ops = seq.set_operators(compute_nullspaces(seq, ops))
    `assemble_mass_metric_lumping_preconditioner`, then
    `assemble_metric_lumping_laplacian_preconditioner` (the Laplacian atoms
    need the mass preconditioners, because the weak term of `L_k` is applied
-   through them). These are what `kind='auto'` applies everywhere. With
-   `jacobi=True` the Jacobi baselines are added -- probed mass diagonals,
-   closed-form Laplacian diagonals, probed Schur diagonals -- which only
-   `kind='jacobi'` / `schur.outer='jacobi'` and the shift-and-invert
-   nullspace route read.
+   through them). These are what `kind='auto'` applies everywhere, the
+   shift-and-invert nullspace route included.
 4. Harmonic forms: `compute_nullspaces` or `compute_nullspaces_iterative`,
    after everything above; they live on the bundle.
 

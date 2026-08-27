@@ -23,13 +23,13 @@ bundle. Mass matrices are never stored; every operator is a matrix-free apply
 | mass, all k | `kind='metric_lumping'`: separable Kronecker bulk, polar core probed and inverted densely | `MetricLumpingMass` |
 | Laplacian, k = 0..3, free and Dirichlet | `kind='metric_lumping'`: per-component Kronecker-sum atom by fast diagonalisation, dense polar core, rank-one natural-BC term | `MetricLumpingLaplacian` |
 
-Kinds: `none`, `jacobi`, `metric_lumping`, `auto`. `auto` resolves to
+Kinds: `none`, `metric_lumping`, `auto`. `auto` resolves to
 `metric_lumping` for the mass, always; for a Laplacian it uses the atom when
-`assemble_metric_lumping_laplacian_preconditioner` has built it for that
-`(k, BC)` and `none` otherwise. It never substitutes `jacobi`.
+`build_preconditioners` has built it for that `(k, BC)` and `none` otherwise.
+There is no other kind.
 
 Saddle solves (k >= 1): `mass = inner = outer = 'metric_lumping'`,
-`coupled = False`. `outer = 'jacobi'` is the comparison baseline.
+`coupled = False`.
 
 `PRODUCTION_BC_SCALE = 3.0` in `mrx/metric_lumping_laplacian.py` multiplies
 the natural-BC coefficient; `MRX_BJ_BC_SCALE` overrides it; an explicit
