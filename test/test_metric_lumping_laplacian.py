@@ -430,7 +430,7 @@ def test_metric_lumping_mass_is_the_default_and_jit_safe(tiny_seq):
                 preconditioner=MassPreconditionerSpec(kind='no_such_kind'))
 
 
-def test_probed_diagonal_is_the_honest_reference(tiny_seq):
+def test_probed_diagonal_is_the_honest_reference(tiny_seq, laplacian_jacobi_diag):
     """`_probed_laplacian_diaginv` is the exact diagonal of `L_k` as applied.
 
     `kind='jacobi'` is NOT that for k >= 1: its weak half is a closed form

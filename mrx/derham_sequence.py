@@ -374,12 +374,16 @@ class DeRhamSequence():
 
         A fresh :class:`~mrx.operators.SequenceOperators` with, for each
         ``k`` in ``ks`` and each BC in ``dirichlets``: the Jacobi mass
-        diagonal, the metric-lumped mass atom, the Jacobi Laplacian diagonal
-        and the metric-lumped Laplacian atom (the production preconditioners
-        of every solve through the sequence). ``schur_jacobi=True`` also
-        probes the Schur diagonals that ``schur.outer='jacobi'`` needs (the
-        comparison baseline and the shift-and-invert nullspace route; O(n_k)
-        applies per pair, so off by default).
+        diagonal, the metric-lumped mass atom and the metric-lumped Laplacian
+        atom (the production preconditioners of every solve through the
+        sequence), plus the closed-form ``k = 0`` Jacobi Laplacian diagonal
+        (O(N); the shifted scalar solve of the nullspace iteration uses it).
+        ``schur_jacobi=True`` also probes the Schur diagonals that
+        ``schur.outer='jacobi'`` needs (the comparison baseline and the
+        shift-and-invert nullspace route; O(n_k) applies per pair, so off by
+        default). The ``k >= 1`` Jacobi Laplacian diagonals are a comparison
+        baseline production never applies; build them with
+        :func:`~mrx.operators.assemble_laplacian_jacobi_preconditioner`.
 
         Nothing on the bundle is built anywhere else, and nothing on it
         survives a geometry change: after :meth:`set_map` call this again, and
@@ -401,7 +405,7 @@ class DeRhamSequence():
         ops = op.assemble_mass_metric_lumping_preconditioner(
             self, ops, ks=ks, dirichlet_variants=dirichlets)
         ops = op.assemble_laplacian_jacobi_preconditioner(
-            self, ops, ks=ks, dirichlets=dirichlets)
+            self, ops, ks=tuple(k for k in ks if k == 0), dirichlets=dirichlets)
         ops = op.assemble_metric_lumping_laplacian_preconditioner(
             self, ops, ks=ks, dirichlets=dirichlets)
         if schur_jacobi:

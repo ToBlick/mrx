@@ -94,15 +94,23 @@ def n_dofs(seq, k, dirichlet):
 
 @pytest.fixture(scope="session")
 def laplacian_jacobi_diag(tiny_seq):
-    """``diag(E L_k E^T)`` for every ``(k, dirichlet)`` on ``tiny_seq``.
+    """``diag(E L_k E^T)`` for every ``(k, dirichlet)`` on ``tiny_seq``, built once.
 
-    ``build_preconditioners`` stores the INVERSE diagonal on the bundle
-    (``_invert_diagonal`` maps zero entries to zero); this returns the
-    diagonal itself, ``{(k, dirichlet): diagonal}`` as numpy arrays.
+    ``build_preconditioners`` builds the ``k = 0`` Jacobi diagonal only; the
+    ``k >= 1`` ones are a comparison baseline (the k >= 1 closed form costs
+    seconds per pair on the CPU), built here and installed on the session
+    bundle, where ``_laplacian_diaginv`` finds them, so the positivity test,
+    the dispatch test and the probed-reference test share one build. The
+    bundle stores the INVERSE diagonal (``_invert_diagonal`` maps zero
+    entries to zero); this returns the diagonal itself,
+    ``{(k, dirichlet): diagonal}`` as numpy arrays.
     """
     import numpy as np
 
-    ops = tiny_seq.operators
+    from mrx.operators import assemble_laplacian_jacobi_preconditioner
+
+    ops = assemble_laplacian_jacobi_preconditioner(tiny_seq, tiny_seq.operators, ks=(1, 2, 3))
+    tiny_seq.set_operators(ops)
     diags = {}
     for k in range(4):
         for dbc in (False, True):

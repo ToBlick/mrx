@@ -242,7 +242,9 @@ ops = seq.set_operators(compute_nullspaces(seq, ops))
 3. Preconditioners: `build_preconditioners`, one call, in order
    `assemble_mass_jacobi_preconditioner`,
    `assemble_mass_metric_lumping_preconditioner`,
-   `assemble_laplacian_jacobi_preconditioner`,
+   `assemble_laplacian_jacobi_preconditioner` for `k = 0` only (the closed
+   form the shifted scalar solve of the nullspace iteration uses; the
+   `k >= 1` diagonals are a comparison baseline, built on request),
    `assemble_metric_lumping_laplacian_preconditioner` (each Laplacian step
    needs the mass preconditioners, because the weak term of `L_k` is applied
    through them), and with `schur_jacobi=True` the probed Schur diagonals
