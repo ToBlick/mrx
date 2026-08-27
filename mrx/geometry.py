@@ -285,6 +285,7 @@ def spline_map_jacobian_j_at_quad(coefficients, extraction_T, seq):
     return jnp.linalg.det(DF_q)
 
 
+# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
 def min_jacobian_from_coeffs(coefficients, extraction_T, seq):
     """Minimum of ``det(DF)`` over the quadrature grid.
 

@@ -108,6 +108,7 @@ def analytic_helicity(iota0, iota1, iota_exp, flux_exp):
     return (iota1 - iota0) * e / ((q + 1) * (q + e + 1) * (2 * q + e + 2))
 
 
+# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
 def metric_coefficients(seq, rhos, n_ang):
     """Surface averages ``a = <g_cc/J>``, ``b = <g_cz/J>``, ``c = <g_zz/J>``,
     ``V' = <J>`` on ``rhos``.

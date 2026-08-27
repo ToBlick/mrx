@@ -471,6 +471,7 @@ def inv33(mat: jnp.ndarray) -> jnp.ndarray:
     return adj33(mat) / det
 
 
+# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
 def safe_inv33(mat: jnp.ndarray, *, tol: float = 1e-10) -> jnp.ndarray:
     """Return ``inv33(mat)`` when well-conditioned, else the zero matrix.
 
@@ -519,6 +520,7 @@ def grad(F: Callable) -> Callable:
     return grad_F
 
 
+# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
 def l2_product(f: Callable,
                g: Callable,
                Q: Any,

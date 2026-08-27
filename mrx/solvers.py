@@ -16,6 +16,7 @@ import jax.numpy as jnp
 from mrx.precision import sqrt_eps
 
 
+# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
 def backtracking_line_search(
     x,
     direction,

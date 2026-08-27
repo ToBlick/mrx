@@ -54,6 +54,7 @@ def parse_int_list(text: str) -> tuple[int, ...]:
     return tuple(int(s.strip()) for s in text.split(",") if s.strip())
 
 
+# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
 def parse_ns(text: str) -> tuple[int, int, int]:
     """Parse a resolution triple ``'nr,nt,nz'`` into a 3-tuple of ints."""
     parts = parse_int_list(text)
@@ -62,6 +63,7 @@ def parse_ns(text: str) -> tuple[int, int, int]:
     return parts  # type: ignore[return-value]
 
 
+# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
 def unique_id(n: int) -> str:
     """
     Create a unique alphanumeric ID with low collision probability.
@@ -76,6 +78,7 @@ def unique_id(n: int) -> str:
     return id_str
 
 
+# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
 def load_sweep(
     path,
     reference_file,

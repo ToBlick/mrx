@@ -54,6 +54,7 @@ class SplineMap(eqx.Module):
         return self.basis_0.bases[0].contract(self.raw, x)
 
 
+# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
 def one_size_fits_all_map(epsilon: float = 0.33, kappa: float = 1.2, alpha: float = 0.0, R0: float = 1.0) -> Callable:
     """Cerfon et al. "One Size Fits All" map (arXiv:1004.3481).
 
@@ -188,6 +189,7 @@ def stellarator_map(R: DiscreteFunction, Z: DiscreteFunction, nfp: int = 3, flip
     return F
 
 
+# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
 def extend_map_nfp(Phi, nfp):
     """Extend a single-field-period map to the full ``nfp``-period torus.
 
