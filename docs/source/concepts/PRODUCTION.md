@@ -23,10 +23,11 @@ bundle. Mass matrices are never stored; every operator is a matrix-free apply
 | mass, all k | `kind='metric_lumping'`: separable Kronecker bulk, polar core probed and inverted densely | `MetricLumpingMass` |
 | Laplacian, k = 0..3, free and Dirichlet | `kind='metric_lumping'`: per-component Kronecker-sum atom by fast diagonalisation, dense polar core, rank-one natural-BC term | `MetricLumpingLaplacian` |
 
-Kinds: `none`, `metric_lumping`, `auto`. `auto` resolves to
+Kinds: `none`, `jacobi`, `metric_lumping`, `auto`. `auto` resolves to
 `metric_lumping` for the mass, always; for a Laplacian it uses the atom when
 `build_preconditioners` has built it for that `(k, BC)` and `none` otherwise.
-There is no other kind.
+`jacobi` is the probed diagonal, built only by
+`build_preconditioners(jacobi=True)`; it is never substituted.
 
 Saddle solves (k >= 1): `mass = inner = outer = 'metric_lumping'`,
 `coupled = False`.

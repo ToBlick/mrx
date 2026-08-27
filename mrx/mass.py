@@ -21,10 +21,8 @@ The projection masses between different form degrees (``P_21`` etc.) use the
 same kernel with the reference-domain weight ``W = I``. The quadrature
 weights are folded in per axis via the 1-D Gauss weights.
 
-The closed-form diagonals ``diag(M_k)``, ``diag(S_k)`` and the k=3
-codifferential term (:func:`build_mass_diagonal`,
-:func:`build_stiffness_diagonal`, :func:`build_codifferential_diagonal`)
-are what the metric-lumping preconditioners lump.
+:func:`build_mass_diagonal`, the closed-form ``diag(M_k)`` by the same sum
+factorisation, is the diagonal the metric-lumping mass atom is scaled by.
 """
 
 import functools
@@ -33,13 +31,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import mrx
-from mrx.geometry import grad_1d
 from mrx.spline_bases import evaluate_basis_local
 
 __all__ = [
     "build_mass_diagonal",
-    "build_stiffness_diagonal",
     "build_matrixfree_mass_apply",
     "build_matrixfree_projection_apply",
 ]
@@ -282,201 +277,6 @@ def build_mass_diagonal(seq, k, geometry=None):
         parts.append(jax.ops.segment_sum(
             d_local.reshape(-1), seg, num_segments=int(np.prod(shapes[c]))))
     return jnp.concatenate(parts)
-
-
-# For k=1 (curl) and k=2 (div): which (k+1)-form component each k-form
-# component feeds, with what sign, by differentiating along which axis.
-# Read off _apply_incidence_mf:
-#     curl: P = -d_z b + d_t c ,  Q = +d_z a - d_r c ,  R = -d_t a + d_r b
-#     div : d_r P + d_t Q + d_z R
-# Note the differentiated axis is never the component's own derivative axis, so
-# the axis being differentiated always carries a PRIMAL table and its derivative
-# is grad_1d of the degree-(p-1) table.
-_CURL_CONTRIB = {0: ((1, +1.0, 2), (2, -1.0, 1)),
-                 1: ((0, -1.0, 2), (2, +1.0, 0)),
-                 2: ((0, +1.0, 1), (1, -1.0, 0))}
-_DIV_CONTRIB = {0: ((0, +1.0, 0),), 1: ((0, +1.0, 1),), 2: ((0, +1.0, 2),)}
-
-
-def build_stiffness_diagonal(seq, k, geometry=None):
-    """Return ``diag(S_k)`` in raw DOF space, exactly and probe-free.
-
-    ``S_k = G_k^T M_{k+1} G_k``, so the diagonal is the ``M_{k+1}``-energy of
-    the DERIVATIVE of each basis function::
-
-        diag(S_k)_a = || d phi_a ||^2_{M_{k+1}}
-                    = sum_{i,j} sum_q (d phi_a)_i W_ij (d phi_a)_j
-
-    Every component of ``d phi_a`` is still a tensor product of 1D tables --
-    the incidence differentiates one axis at a time -- so this is the same sum
-    factorization as the mass diagonal, with one term per pair of
-    ``(k+1)``-form components that ``phi_a`` feeds.
-
-    * k=0: 3 components (grad), ``W = g^ij J`` (the 1-form weight)
-    * k=1: 2 components per 1-form component (curl), ``W = g_ij / J``
-    * k=2: 1 component (div), ``W = 1/J`` (scalar 3-form weight)
-    * k=3: ``S_3 = 0`` -- there is nothing above V3.
-    """
-    geometry = seq.geometry if geometry is None else geometry
-    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
-    types = seq.basis_0.types
-
-    primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
-    deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
-    grad = tuple(grad_1d(deriv[a], types[a]) for a in range(3))
-
-    def rs(field):
-        return jnp.asarray(field).reshape(ny, nx, nz).transpose(1, 0, 2)
-
-    if k == 3:
-        form = seq.basis_3
-        return jnp.zeros(int(np.prod(form.shape[0])))
-
-    if k == 0:
-        form = seq.basis_0
-        comps = [((primal[0], primal[1], primal[2]), (0, 0, 0))]
-        contrib = {0: ((0, +1.0, 0), (1, +1.0, 1), (2, +1.0, 2))}
-        Wq = rs(geometry.jacobian_j)[..., None, None] * jnp.transpose(
-            geometry.metric_inv_jkl.reshape(ny, nx, nz, 3, 3), (1, 0, 2, 3, 4))
-        n_tgt = 3
-    elif k == 1:
-        form = seq.basis_1
-        comps = [tuple(deriv[a] if a == c else primal[a] for a in range(3))
-                 for c in range(3)]
-        contrib = _CURL_CONTRIB
-        Wq = jnp.transpose(geometry.metric_jkl.reshape(ny, nx, nz, 3, 3),
-                           (1, 0, 2, 3, 4)) / rs(geometry.jacobian_j)[..., None, None]
-        n_tgt = 3
-    elif k == 2:
-        form = seq.basis_2
-        comps = [tuple(primal[a] if a == c else deriv[a] for a in range(3))
-                 for c in range(3)]
-        contrib = _DIV_CONTRIB
-        Wq = (1.0 / rs(geometry.jacobian_j))[..., None, None]
-        n_tgt = 1
-    else:
-        raise ValueError("k must be 0, 1, 2 or 3")
-
-    wq = rs(seq.quad.w)
-    parts = []
-    for c, base in enumerate(comps if k != 0 else [comps[0][0]]):
-        base = base if k != 0 else comps[0][0]
-        terms = contrib[c if k != 0 else 0]
-        total = None
-        for (tgt_p, sgn_p, ax_p) in terms:
-            for (tgt_q, sgn_q, ax_q) in terms:
-                Wf = wq * Wq[..., tgt_p if n_tgt > 1 else 0,
-                             tgt_q if n_tgt > 1 else 0]
-                tp = [grad[a] if a == ax_p else base[a] for a in range(3)]
-                tq = [grad[a] if a == ax_q else base[a] for a in range(3)]
-                t1 = jnp.einsum('ax,xyz->ayz', tp[0] * tq[0], Wf)
-                t2 = jnp.einsum('by,ayz->abz', tp[1] * tq[1], t1)
-                blk = sgn_p * sgn_q * jnp.einsum('cz,abz->abc', tp[2] * tq[2], t2)
-                total = blk if total is None else total + blk
-        parts.append(total.reshape(-1))
-    return jnp.concatenate(parts)
-
-
-def _jacobian_gradient(seq, geometry, batch_size=None):
-    """``dJ/dxi_a`` at every quadrature point, by autodiff of the map.
-
-    One order past what ``SequenceGeometry`` stores (metric and determinant
-    are first-derivative data), so this is a second pass over the map and
-    costs about what the geometry build costs.  Batched, because the unbatched vmap over the
-    full quad grid is what OOMs an 80 GB card on W7-X.
-    """
-    if batch_size is None:
-        batch_size = mrx.MAP_BATCH_SIZE_INNER
-    def jdet(x):
-        return jnp.linalg.det(jax.jacfwd(geometry.map)(x))
-    return jax.lax.map(jax.jacfwd(jdet), seq.quad.x, batch_size=batch_size)
-
-
-def build_codifferential_diagonal(seq, k, geometry=None):
-    """``diag(W_k)`` as the energy of the CODIFFERENTIAL of each basis function.
-
-    ``W_k = M_k D M_{k-1}^{-1} D^T M_k`` is the ``d delta`` half of the Hodge
-    Laplacian, and for a basis function that diagonal is exactly
-
-        diag(W_k)_i = <d delta phi_i, phi_i> = || delta_h phi_i ||^2
-
-    with ``delta_h`` the DISCRETE codifferential (``<delta_h w, t> = <w, dt>``
-    for all ``t`` in ``V_{k-1}``).  Since ``delta_h = P_{V_{k-1}} . delta``,
-    dropping the projection gives a computable surrogate::
-
-        diag(W_k)_i ~ || delta phi_i ||^2
-
-    which for k=3 (``delta = star d star``, and ``star phi_i = phi_i / J`` is a
-    SCALAR) is a k=0 stiffness integrand::
-
-        diag(W_3)_i ~ integral g^{ab} d_a(phi_i/J) d_b(phi_i/J) J
-
-    **We never differentiate the 3-form.** ``d`` on a 3-form in 3D is zero --
-    that is why ``S_3 = 0``.  What is differentiated is ``star phi_i``, a
-    0-form; the ``star`` is what makes the gradient legal, and it is also what
-    puts ``1/J`` (and hence ``dJ``) in the integrand and takes the result out of
-    the spline space.
-
-    Properties, against the rank-1-split closed form it competes with:
-
-    * No mass model and no ``Sig``: both measured error sources are absent by
-      construction.
-    * The error is ``||(I-P) delta phi_i||^2`` -- an APPROXIMATION defect that
-      shrinks with the mesh, not a SEPARABILITY defect, which was measured to
-      plateau.  It vanishes identically when ``delta phi_i`` lands in
-      ``V_{k-1}`` (trivial or affine metric).
-    * It is an UPPER bound (``||P u|| <= ||u||``), so the Jacobi entries err
-      toward under-relaxation -- the safe direction.  The current failure is
-      entries 9-12x too LARGE.
-    * Cost is one ``build_stiffness_diagonal``: same sum factorization, 36
-      einsum triples instead of 9, plus one extra pass over the map for ``dJ``.
-
-    Two caveats that are real and are NOT modelled here: the integration by
-    parts carries a boundary trace, so free-BC rows touching the boundary are
-    approximate for a second reason; and ``star`` divides by ``J``, which
-    degenerates on the polar ring and at the outer knot.  Both are the rows the
-    caller already takes by exact applies.
-    """
-    if k != 3:
-        raise NotImplementedError(
-            "codifferential diagonal is implemented for k=3 only; k=1 gives a "
-            "div^2 integrand and k=2 a curl^2 one, same machinery, different "
-            "metric factors")
-    geometry = seq.geometry if geometry is None else geometry
-    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
-
-    def rs(field):
-        return jnp.asarray(field).reshape(ny, nx, nz).transpose(1, 0, 2)
-
-    b_val = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
-    b_der = seq.dd_basis_jk
-
-    jac = rs(geometry.jacobian_j)
-    d_jac = _jacobian_gradient(seq, geometry)
-    d_jac = jnp.stack([rs(d_jac[:, a]) for a in range(3)], axis=-1)
-    ginv = jnp.transpose(geometry.metric_inv_jkl.reshape(ny, nx, nz, 3, 3),
-                         (1, 0, 2, 3, 4))
-    wq = rs(seq.quad.w)
-
-    # d_a(phi/J) = (d_a phi)/J - phi (d_a J)/J^2: two separable pieces per axis,
-    # each a 1-D table triple times its own quadrature weight field.
-    def pieces(a):
-        return [([b_der[c] if c == a else b_val[c] for c in range(3)],
-                 1.0 / jac),
-                ([b_val[c] for c in range(3)],
-                 -d_jac[..., a] / jac ** 2)]
-
-    total = None
-    for a in range(3):
-        for b in range(3):
-            for (tp, wp) in pieces(a):
-                for (tq, wt) in pieces(b):
-                    weight = wq * jac * ginv[..., a, b] * wp * wt
-                    t1 = jnp.einsum('ax,xyz->ayz', tp[0] * tq[0], weight)
-                    t2 = jnp.einsum('by,ayz->abz', tp[1] * tq[1], t1)
-                    blk = jnp.einsum('cz,abz->abc', tp[2] * tq[2], t2)
-                    total = blk if total is None else total + blk
-    return total.reshape(-1)
 
 
 def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):

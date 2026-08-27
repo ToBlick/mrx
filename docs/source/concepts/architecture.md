@@ -238,7 +238,8 @@ ops = seq.set_operators(compute_nullspaces(seq, ops))
    `assemble_metric_lumping_laplacian_preconditioner` (the Laplacian atoms
    need the mass preconditioners, because the weak term of `L_k` is applied
    through them). These are what `kind='auto'` applies everywhere, the
-   shift-and-invert nullspace route included.
+   shift-and-invert nullspace route included. `jacobi=True` adds the probed
+   Jacobi diagonals (mass, Laplacian, Schur) for `kind='jacobi'`.
 4. Harmonic forms: `compute_nullspaces` or `compute_nullspaces_iterative`,
    after everything above; they live on the bundle.
 

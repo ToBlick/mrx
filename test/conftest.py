@@ -46,8 +46,9 @@ def build_torus_sequence(ns, torus_map):
     1. the analytical ``toroid_map`` is interpolated to spline coefficients
        at the Greville points via :func:`greville_interpolate_map` and
        installed with ``set_spline_map``;
-    2. ``build_preconditioners`` builds the metric-lumping mass and
-       Laplacian atoms for every ``(k, dirichlet)`` pair;
+    2. ``build_preconditioners(jacobi=True)`` builds the metric-lumping mass
+       and Laplacian atoms for every ``(k, dirichlet)`` pair and probes the
+       Jacobi diagonals the preconditioner tests compare against;
     3. harmonic forms are computed by the direct Hodge-decomposition
        construction (``betti_numbers = (1, 1, 0, 0)``): a fixed pair of
        production saddle solves per form through ``'auto'``, i.e. the
@@ -65,7 +66,7 @@ def build_torus_sequence(ns, torus_map):
     )
     seq.set_spline_map(greville_interpolate_map(torus_map, seq))
     t1 = time.perf_counter()
-    seq.build_preconditioners()
+    seq.build_preconditioners(jacobi=True)
     t2 = time.perf_counter()
     seq.compute_nullspaces(BETTI)
     t3 = time.perf_counter()
@@ -93,20 +94,21 @@ def n_dofs(seq, k, dirichlet):
 def precond_jit(tiny_seq):
     """JIT-compiled and warmed-up mass preconditioner applies on ``tiny_seq``.
 
-    Keyed by ``(label, k, dbc)``; the metric-lumping applies for every
+    Keyed by ``(label, k, dbc)``; the applies of both kinds for every
     ``(k, dirichlet)`` pair are compiled once per session so the probe tests
     do not re-JIT.
     """
     from mrx.operators import apply_mass_matrix_preconditioner
     ops = tiny_seq.operators
     jit_dict = {}
-    for k in range(4):
-        for dbc in (False, True):
-            jit_dict[("metric_lumping", k, dbc)] = jax.jit(
-                lambda v, k=k, dbc=dbc: apply_mass_matrix_preconditioner(
-                    tiny_seq, ops, v, k, dirichlet=dbc, kind="metric_lumping",
+    for label in ("jacobi", "metric_lumping"):
+        for k in range(4):
+            for dbc in (False, True):
+                jit_dict[(label, k, dbc)] = jax.jit(
+                    lambda v, k=k, dbc=dbc, label=label: apply_mass_matrix_preconditioner(
+                        tiny_seq, ops, v, k, dirichlet=dbc, kind=label,
+                    )
                 )
-            )
     for (_, k, dbc), fn in jit_dict.items():
         dummy = jnp.zeros(n_dofs(tiny_seq, k, dbc), dtype=mrx.DTYPE)
         jax.block_until_ready(fn(dummy))

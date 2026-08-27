@@ -63,7 +63,7 @@ STRUCTURAL_KINDS = {
 }
 
 # Every kind name production code may legitimately construct.
-LIVE_KINDS = {"none", "metric_lumping", "auto"}
+LIVE_KINDS = {"none", "jacobi", "metric_lumping", "auto"}
 
 # Functions whose `kind=` keyword is a preconditioner kind. Named explicitly:
 # `kind=` is a common keyword elsewhere (np.argsort(kind="stable")), and a
@@ -230,7 +230,7 @@ def test_no_script_asks_for_a_kind_nothing_accepts():
     and that gap let ~32 stale `kind="tensor"` sites survive the tensor
     deletion across 10 live scripts -- every one of which raised, because
     `apply_laplacian_preconditioner` accepts only
-    ('auto', 'none', 'metric_lumping').
+    ('auto', 'none', 'jacobi', 'metric_lumping').
 
     THIS TEST WAS BORN xfail(strict=True) AND RETIRED ITS OWN MARKER. It went
     green the moment the last stale site was resolved on 2026-08-25 -- 6 leaf

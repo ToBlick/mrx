@@ -346,7 +346,8 @@ class DeRhamSequence():
                                  for pair in ((1, 2), (2, 1), (0, 3), (3, 0))}
         self.operators = None
 
-    def build_preconditioners(self, *, ks=(0, 1, 2, 3), dirichlets=(False, True)):
+    def build_preconditioners(self, *, ks=(0, 1, 2, 3), dirichlets=(False, True),
+                              jacobi=False):
         """Build the preconditioners of the installed geometry; install and return the bundle.
 
         A fresh :class:`~mrx.operators.SequenceOperators` with, for each
@@ -354,7 +355,11 @@ class DeRhamSequence():
         atom and the metric-lumped Laplacian atom -- the preconditioners of
         every solve through the sequence (``kind='auto'`` resolves to them
         everywhere: mass, Laplacian, saddle, diffusion and the shifted solves
-        of the nullspace iteration) -- and zero nullspaces.
+        of the nullspace iteration) -- and zero nullspaces. ``jacobi=True``
+        also probes the Jacobi option onto the bundle -- ``1/diag`` of
+        ``E M_k E^T``, of ``L_k`` and of the saddle solves' approximate Schur
+        operator, ``O(n_k)`` applies each -- for ``kind='jacobi'`` and
+        ``schur.outer='jacobi'``.
 
         Nothing on the bundle is built anywhere else, and nothing on it
         survives a geometry change: after :meth:`set_map` call this again, and
@@ -376,13 +381,16 @@ class DeRhamSequence():
             self, ops, ks=ks, dirichlet_variants=dirichlets)
         ops = op.assemble_metric_lumping_laplacian_preconditioner(
             self, ops, ks=ks, dirichlets=dirichlets)
+        if jacobi:
+            ops = op.assemble_jacobi_preconditioners(self, ops, ks=ks, dirichlets=dirichlets)
         self.operators = ops
         return ops
 
-    def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3), dirichlets=(False, True)):
+    def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3), dirichlets=(False, True),
+                                    jacobi=False):
         """:meth:`set_map` followed by :meth:`build_preconditioners`, nothing else."""
         self.set_map(map)
-        return self.build_preconditioners(ks=ks, dirichlets=dirichlets)
+        return self.build_preconditioners(ks=ks, dirichlets=dirichlets, jacobi=jacobi)
 
     def _require_geometry(self):
         """Return the attached geometry or raise when none is installed."""

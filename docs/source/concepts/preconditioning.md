@@ -46,6 +46,7 @@ preconditioner. The live kinds are:
 | kind | mass | Laplacian |
 |---|---|---|
 | `'none'` | identity | identity |
+| `'jacobi'` | `1/diag(E M_k E^T)`, probed | `1/diag(L_k)`, probed through `apply_laplacian_approx` |
 | `'metric_lumping'` | `MetricLumpingMass` | `MetricLumpingLaplacian` |
 | `'auto'` | `'metric_lumping'` | the atom when the bundle has it for this `(k, BC)`, otherwise `'none'` |
 
@@ -56,16 +57,20 @@ default specs (`_materialize_default_saddle_preconditioner`,
 `_materialize_default_scalar_hodge_preconditioner`) pick `'none'`, so an
 unbuilt preconditioner runs unpreconditioned -- visibly slow -- instead of
 on a different one. `apply_laplacian_preconditioner(kind='auto')`, the bare
-apply, warns and applies the identity in that case. The per-DoF Jacobi
-diagonals and the probed Schur diagonal that used to be the comparison
-baseline are gone (2026-08-27): production never read them.
+apply, warns and applies the identity in that case. The Jacobi option is
+built only on request, `build_preconditioners(jacobi=True)`: one-hot probes
+of the applies themselves -- `O(n_k)` applies per `(k, BC)` -- store
+`1/diag(E M_k E^T)`, `1/diag(L_k)` and, for the saddle solves, `1/diag` of
+the approximate Schur operator `S_k + D B D^T` on the bundle
+(`operators.mass_jacobi`, `laplacian_jacobi`, `schur_jacobi`).
 
 A saddle solve is specified by `SaddlePointPreconditionerSpec(mass, schur,
 coupled)` with `schur = SchurPreconditionerSpec(inner, outer)`: `mass` is the
 lower block, `inner` stands in for `M_{k-1}^{-1}` inside the weak term, and
 `outer` preconditions `L_k`. Production is `mass = inner = 'metric_lumping'`,
-`outer = 'metric_lumping'`, `coupled = False`. `outer = 'none'` is the default
-of the spec object so that a missing build fails visibly.
+`outer = 'metric_lumping'`, `coupled = False`. `outer = 'jacobi'` applies the
+probed Schur diagonal; `outer = 'none'` is the default of the spec object so
+that a missing build fails visibly.
 
 ## 3. The Laplacian atom: `MetricLumpingLaplacian`
 
