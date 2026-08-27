@@ -346,11 +346,13 @@ def test_relaxation(synthetic_seq, potential_ic):
     # eta = 0: the ideal step alone, the solve skipped.
     ideal = step(eqx.tree_at(lambda s: s.eta, pre, 0.0))
     assert int(ideal.resistive_info) == 0 and float(ideal.resistive_delta) == 0.0
-    # Two executables (the step and the probe) apply the incidence operator
-    # -- a dense polar-core Gram solve inside -- in different fusion orders:
-    # measured 2.4e-14 absolute at max |B| = 3.6e-2 on the H100 (3e3 eps),
-    # below 32 eps on the CPU.
-    assert float(jnp.max(jnp.abs(ideal.B_n - check_B_ideal))) <= mrx.eps(1e4) * scale
+    # Two executables (the step and the probe) reach B_ideal from the same
+    # pre-step state. On the GPU the scatter-adds of the extraction and mass
+    # applies are not deterministic, and the descent solves amplify that
+    # round-off: measured 1.7e-12 .. 1.6e-11 absolute at max |B| = 3.6e-2
+    # across four runs on two commits (2026-08-27; one earlier run gave
+    # 2.4e-14). On the CPU the difference is below 32 eps.
+    assert float(jnp.max(jnp.abs(ideal.B_n - check_B_ideal))) <= mrx.eps(1e7) * scale
     # eta > 0: (M_2 + eps L_2) B_{n+1} = M_2 B_ideal.
     B1 = check_state.B_n
     eps = float(check_state.dt) * ETA

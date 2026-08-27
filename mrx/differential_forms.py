@@ -22,9 +22,13 @@ from mrx.spline_bases import (
 class DifferentialForm:
     """Discrete k-form on a 3-D tensor-product spline space.
 
-    ``k=0`` — scalar; ``k=1`` — 1-form (edge); ``k=2`` — 2-form (face);
-    ``k=3`` — volume form; ``k=-1`` — vector field (3 copies of the
-    0-form space).  **Note:** ``k=-1`` is incompatible with polar setups
+    ``k=0`` — scalar; 
+    ``k=1`` — 1-form (edge); 
+    ``k=2`` — 2-form (face);
+    ``k=3`` — volume form; 
+    ``k=-1`` — vector field (3 copies of the
+    0-form space).  
+    **Note:** ``k=-1`` is incompatible with polar setups
     because the polar extraction operator reduces the 0-form DOF count
     asymmetrically across the three components.
     """

@@ -277,3 +277,6 @@ def test_k0_laplacian_jacobi_first_apply_inside_a_trace(tiny_seq, dbc):
     assert np.all(np.isfinite(np.asarray(outside)))
     npt.assert_allclose(np.asarray(inside), np.asarray(outside), rtol=0,
                         atol=IDENT * float(np.abs(outside).max()))
+    bare = ops.with_laplacian_diaginv(0, None, dirichlet=dbc)
+    with pytest.raises(ValueError, match="not built"):
+        apply_laplacian_preconditioner(tiny_seq, bare, v, 0, dirichlet=dbc, kind='jacobi')
