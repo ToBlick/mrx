@@ -1,4 +1,5 @@
 """1D B-spline bases (clamped, periodic, constant), their derivative bases, and local evaluation."""
+import functools
 from typing import Callable, Optional
 
 import jax
@@ -45,6 +46,19 @@ def contract_local(coefficients, local):
     (vr, ir), (vt, it), (vz, iz) = local
     window = coefficients[..., ir[:, None, None], it[None, :, None], iz[None, None, :]]
     return jnp.einsum('i,j,k,...ijk->...', vr, vt, vz, window)
+
+
+@functools.partial(jax.jit, static_argnames=("basis",))
+def _collocation(basis, points):
+    """``basis(points[k], i)`` as a ``(len(points), n)`` matrix, one executable per basis."""
+    return jax.vmap(lambda x: jax.vmap(lambda i: basis(x, i))(basis.ns))(points)
+
+
+@functools.partial(jax.jit, static_argnames=("fn", "basis"))
+def _vmap_jit(fn, basis, xs):
+    """``jax.vmap(fn)(xs)`` as one executable, keyed on ``basis`` (``fn`` closes over it)."""
+    del basis
+    return jax.vmap(fn)(xs)
 
 
 class SplineBasis:
@@ -204,7 +218,7 @@ class SplineBasis:
         """
         if points is None:
             points = self.greville_points()
-        return jax.vmap(lambda x: jax.vmap(lambda i: self(x, i))(self.ns))(points)
+        return _collocation(self, jnp.asarray(points))
 
     def _evaluate(self, x: float, i: int) -> jnp.ndarray:
         """Evaluate the ith spline at x using the appropriate degree-specific method.
@@ -528,4 +542,6 @@ class DerivativeSpline:
                 lambda x: jax.vmap(lambda i: self(x, i))(self.ns)))(xs)
             return jnp.einsum('s,q,sqi->i', halfwidths, w_ref, values)
 
-        return jax.vmap(integrate_span)(spans)
+        # Jitted with the basis static: eagerly, the vmap compiled and
+        # dispatched every primitive on its own (~450 compilations per axis).
+        return _vmap_jit(integrate_span, self, spans)
