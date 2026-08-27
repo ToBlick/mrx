@@ -132,7 +132,6 @@ def get_saddle_point_nullspaces(seq, operators, k, dirichlet):
             v, k - 1,
             dirichlet_in=dirichlet, dirichlet_out=dirichlet,
             transpose=True,
-            operators=operators,
         )
         return seq.apply_inverse_mass_matrix(
             Dt_v, k - 1, dirichlet=dirichlet, operators=operators)
@@ -178,7 +177,7 @@ def _bootstrap_nullspace_guesses(seq, operators, k, dirichlet, guesses):
         work = guess
         for u in stored:
             work = work - (u @ seq.apply_mass_matrix(
-                work, k, dirichlet=dirichlet, operators=operators)) * u
+                work, k, dirichlet=dirichlet)) * u
         norm = seq.l2_norm(work, k, dirichlet=dirichlet)
         if float(norm) <= 0.0:
             continue
@@ -331,7 +330,7 @@ def harmonic_rayleigh(seq, v, k, dirichlet=True, operators=None):
     """
     lv = seq.apply_laplacian(v, k, dirichlet=dirichlet,
                                    operators=operators)
-    mv = seq.apply_mass_matrix(v, k, dirichlet=dirichlet, operators=operators)
+    mv = seq.apply_mass_matrix(v, k, dirichlet=dirichlet)
     return float(jnp.dot(v, lv) / jnp.dot(v, mv))
 
 
@@ -421,8 +420,7 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
         seed2 = _logical_constant_seed(seq, operators, 2, True, (0.0, 0.0, 1.0))
         v, _ = seq.apply_leray_projection(seed2, k=2)
         curl_v_dual = seq.apply_derivative_matrix(
-            v, 1, dirichlet_in=True, dirichlet_out=True, transpose=True,
-            operators=operators)
+            v, 1, dirichlet_in=True, dirichlet_out=True, transpose=True)
         a = seq.apply_inverse_laplacian(
             curl_v_dual, 1, dirichlet=True, operators=operators)
         curl_a = seq.apply_strong_curl(a, True, True)
@@ -442,7 +440,7 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
         seed1 = _logical_constant_seed(seq, operators, 1, False, (0.0, 0.0, 1.0))
         v, _ = seq.apply_leray_projection(seed1, k=1)
         curl_v_dual = seq.apply_derivative_matrix(
-            v, 1, dirichlet_in=False, dirichlet_out=False, operators=operators)
+            v, 1, dirichlet_in=False, dirichlet_out=False)
         a = seq.apply_inverse_laplacian(
             curl_v_dual, 2, dirichlet=False, operators=operators)
         curl_a = seq.apply_weak_curl(a, False, False)
@@ -699,7 +697,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             if found_stacked is None:
                 return v
             coeffs = found_stacked @ seq.apply_mass_matrix(
-                v, k, dirichlet=dirichlet, operators=operators)
+                v, k, dirichlet=dirichlet)
             return v - coeffs @ found_stacked
 
         v0 = project_out(v0)
@@ -749,7 +747,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         def body_fn(state, solve_ops=solve_ops, slot_coarse=slot_coarse):
             v, rq, _rq_prev, i = state
             Mv = seq.apply_mass_matrix(
-                v, k, dirichlet=dirichlet, operators=operators)
+                v, k, dirichlet=dirichlet)
             w = seq.apply_inverse_shifted_laplacian(
                 Mv, k, eps, dirichlet=dirichlet, guess=v,
                 operators=solve_ops,

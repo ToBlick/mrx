@@ -141,7 +141,7 @@ def test_stored_nullspace_vectors_are_mass_orthonormal(tiny_seq, k, dbc):
     vs = get_nullspace(ops, k, dbc)
     n_vec = vs.shape[0]
     mass_vs = jax.vmap(
-        lambda v: tiny_seq.apply_mass_matrix(v, k, dirichlet=dbc, operators=ops)
+        lambda v: tiny_seq.apply_mass_matrix(v, k, dirichlet=dbc)
     )(vs)
     gram = vs @ mass_vs.T
     npt.assert_allclose(gram, jnp.eye(n_vec), atol=tiny_seq.tol)
@@ -166,9 +166,8 @@ def test_saddle_point_lower_block_satisfies_mass_equation(tiny_seq, k, dbc):
             v, k - 1,
             dirichlet_in=dbc, dirichlet_out=dbc,
             transpose=True,
-            operators=ops,
         )
-        Mw = tiny_seq.apply_mass_matrix(w, k - 1, dirichlet=dbc, operators=ops)
+        Mw = tiny_seq.apply_mass_matrix(w, k - 1, dirichlet=dbc)
         npt.assert_allclose(Mw, Dt_v,
                             atol=tiny_seq.tol * max(float(jnp.linalg.norm(Dt_v)), 1.0),
                             err_msg=f"k={k} dbc={dbc} vec[{i}]: M_{{k-1}} w ≠ D_{{k-1}}^T v")
