@@ -3,17 +3,16 @@
 ## Install
 
 MRX needs Python 3.11 or newer. Clone the repository and install it in
-editable mode with the cluster extras:
+editable mode:
 
 ```bash
 git clone https://github.com/ToBlick/mrx.git
 cd mrx
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[SLURM]"
+pip install -e .
 ```
 
-The `SLURM` extra adds Hydra, its submitit launcher, and HDF5 support. On a
-GPU machine, install the CUDA build of JAX as well:
+On a GPU machine, install the CUDA build of JAX as well:
 
 ```bash
 pip install "jax[cuda12]"

@@ -118,7 +118,7 @@ def test_stored_nullspace_vectors_are_harmonic(tiny_seq, k, dbc):
     ops = tiny_seq.operators
     vs = get_nullspace(ops, k, dbc)
     for i, v in enumerate(vs):
-        Lv = tiny_seq.apply_hodge_laplacian(v, k, dirichlet=dbc, operators=ops)
+        Lv = tiny_seq.apply_laplacian(v, k, dirichlet=dbc, operators=ops)
         nrm2 = float(tiny_seq.l2_norm_sq(v, k, dirichlet=dbc))
         assert nrm2 > 0.0, f"k={k} dbc={dbc} vec[{i}] has zero mass norm"
         rayleigh = abs(float(v @ Lv)) / nrm2

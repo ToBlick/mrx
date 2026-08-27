@@ -70,7 +70,7 @@ LIVE_KINDS = {"none", "jacobi", "metric_lumping", "auto"}
 # check that cries wolf gets disabled rather than fixed.
 KIND_TAKING_CALLS = {
     "apply_laplacian_preconditioner",
-    "apply_hodge_laplacian_preconditioner",
+    "apply_laplacian_preconditioner",
     "apply_mass_matrix_preconditioner",
 }
 
@@ -229,7 +229,7 @@ def test_no_script_asks_for_a_kind_nothing_accepts():
     `test_no_production_code_constructs_a_kind_nothing_accepts` scans mrx/ only,
     and that gap let ~32 stale `kind="tensor"` sites survive the tensor
     deletion across 10 live scripts -- every one of which raised, because
-    `apply_hodge_laplacian_preconditioner` accepts only
+    `apply_laplacian_preconditioner` accepts only
     ('auto', 'none', 'jacobi', 'metric_lumping').
 
     THIS TEST WAS BORN xfail(strict=True) AND RETIRED ITS OWN MARKER. It went

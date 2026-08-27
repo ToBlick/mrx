@@ -6,7 +6,6 @@ One page per module of ``mrx``.
 .. toctree::
    :maxdepth: 1
 
-   config
    derham_sequence
    differential_forms
    extraction_operators

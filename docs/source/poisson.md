@@ -248,16 +248,14 @@ docstring, which is not the primal coefficient vector for 2-forms.
 
 `scripts/poisson_study.py` is the convergence study on the toroid: all
 eight `(k, boundary condition)` cases in one process, sharing one
-sequence and one assembly pass per resolution. Its config is
-`conf/config_poisson_test.yaml` with schema `mrx.config.PoissonTestConfig`.
-Override any key on the command line:
+sequence and one assembly pass per resolution:
 
 ```bash
-python -u scripts/poisson_study.py p=3 n=[8,16]
-python -u scripts/poisson_study.py p=2 n=16 precision=float32
+python -u scripts/poisson_study.py --p 3 --n 8 16
+python -u scripts/poisson_study.py --p 2 --n 16 --precision float32
 ```
 
-Each run writes `outputs/<date>/<time>/result.json`, a list with one
+Each run writes `<out>/result.json` (default `outputs/poisson_study`), a list with one
 entry per `n`. An entry holds `n`, `p`, `q`, `timings` (seconds per
 stage, compile and execute separately) and one dict per case tag
 (`k0_nbc`, `k0_dbc`, ..., `k3_dbc`):

@@ -264,7 +264,7 @@ def test_k0_laplacian_jacobi_first_apply_inside_a_trace(tiny_seq, dbc):
     """
     import jax
 
-    from mrx.operators import apply_hodge_laplacian_preconditioner
+    from mrx.operators import apply_laplacian_preconditioner
 
     ops = tiny_seq.operators.with_laplacian_diaginv(0, None, dirichlet=dbc)
     assert ops.get_laplacian_diaginv(0, dbc) is None
@@ -272,7 +272,7 @@ def test_k0_laplacian_jacobi_first_apply_inside_a_trace(tiny_seq, dbc):
     v = jnp.asarray(np.random.default_rng(29).standard_normal(n))
 
     def P(x):
-        return apply_hodge_laplacian_preconditioner(
+        return apply_laplacian_preconditioner(
             tiny_seq, ops, x, 0, dirichlet=dbc, kind='jacobi')
 
     inside, _ = jax.lax.scan(lambda x, _: (P(x), None), v, None, length=2)

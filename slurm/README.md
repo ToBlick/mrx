@@ -31,8 +31,7 @@ export SLURM_EXCLUDE=<node,node>      # optional
 ```
 
 Put them in `slurm/site.env`, which is gitignored and sourced by `run.sh`, or
-export them in the shell. `conf/config_poisson_test.yaml` reads the same
-variables through `${oc.env:...}` for its submitit launcher.
+export them in the shell.
 
 `MRX_ROOT` is the checkout to run; it defaults to the repository containing
 `run.sh`, so a worktree runs itself. `MRX_VENV` is the virtualenv; it defaults
@@ -44,12 +43,6 @@ The first line of every log is `mrx from: <path>`. `mrx` is an editable
 install pinned to the main checkout, so a job without `PYTHONPATH` imports the
 main checkout's library while running a worktree's script, and reports the
 result as a test of the worktree. Read that line before reading the result.
-
-Hydra's submitit launcher does not export `PYTHONPATH` on its own.
-`conf/config_poisson_test.yaml` adds `export PYTHONPATH=${oc.env:MRX_ROOT}` to
-the launcher `setup` list, so `MRX_ROOT` must be set in the submitting shell
-for a multirun of `scripts/poisson_study.py`; a single run through `run.sh`
-needs nothing else.
 
 ## Run the suite on a GPU node
 

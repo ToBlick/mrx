@@ -1,8 +1,8 @@
 """Manufactured solutions of the eight Hodge Laplacians on the toroid.
 
 One source of truth for ``test/test_poisson.py`` and
-``scripts/poisson_study.py``: the study sets ``MRX_DTYPE`` and imports hydra
-on import, so the generators live here and the study imports them.
+``scripts/poisson_study.py``: the study sets ``MRX_DTYPE`` on import, so the
+generators live here and the study imports them.
 
 The map is ``toroid_map(epsilon=a, R0=1)``; ``R = 1 + a r cos(2 pi chi)``.
 Cases pair up under the Hodge star ``k <-> 3-k, free <-> Dirichlet`` into

@@ -1,8 +1,7 @@
 # Running on a cluster
 
-Every MRX run, including the test suite and smoke tests, is a GPU job.
-Two launchers exist: `slurm/run.sh` for one script, and Hydra's submitit
-launcher for a multirun of the Poisson study.
+Every MRX run, including the test suite and smoke tests, is a GPU job
+submitted through `slurm/run.sh`.
 
 ## Site settings
 
@@ -16,8 +15,7 @@ export SLURM_EXCLUDE=<node,node>      # optional
 ```
 
 Put them in `slurm/site.env`, which is gitignored and sourced by
-`run.sh`, or export them in the shell. The Hydra configs read the same
-variables through `${oc.env:...}`.
+`run.sh`, or export them in the shell.
 
 ## One script: `slurm/run.sh`
 
@@ -53,50 +51,20 @@ the files; pass them through `EXTRA_ENV`. `EXTRA_ENV="JAX_PLATFORMS=cpu"
 CPUS=4` measures the suite as the GitHub runner sees it (see
 `slurm/README.md`).
 
-## Hydra: single run and multirun
+## The Poisson convergence study
 
-`scripts/poisson_study.py`, the convergence study of the eight Hodge
-Laplacians on the toroid, is a Hydra entry point. Its config is
-`conf/config_poisson_test.yaml`, its schema the dataclass
-`mrx.config.PoissonTestConfig`. Override any key as `key=value`.
-
-A single run executes in the current process, sweeps every listed `n`
-one after another, and writes to `outputs/<date>/<time>/`. Submit it as
-one GPU job through `run.sh`:
+`scripts/poisson_study.py` sweeps the eight Hodge Laplacians on the toroid
+over the resolutions in `--n`, one after another in one process, and writes
+`<out>/result.json` after every resolution. One GPU job:
 
 ```bash
-SCRIPT=scripts/poisson_study.py ARGS="p=3 n=16" \
-  JOB_NAME=poisson MEM_GB=80 TIMEOUT_MIN=120 bash slurm/run.sh
+SCRIPT=scripts/poisson_study.py ARGS="--p 3 --n 8 16 32" \
+  JOB_NAME=poisson MEM_GB=80 TIMEOUT_MIN=240 bash slurm/run.sh
 ```
 
-A multirun (`-m`) submits one job per combination through the submitit
-launcher configured in the yaml file, and writes to
-`multirun/<date>/<time>/<job>/`:
-
-```bash
-export MRX_ROOT=$PWD
-python scripts/poisson_study.py -m p=2,3 n=8,16
-```
-
-The launcher does not export `PYTHONPATH` on its own. The config adds
-`export PYTHONPATH=${oc.env:MRX_ROOT}` to its `setup` list, so `MRX_ROOT`
-must be set in the submitting shell. `conf/config_poisson_test.yaml`
-allots one GPU, 80 GB, and 120 minutes per job.
-
-## Config schemas
-
-`PoissonTestConfig` inherits `NumericsConfig`:
-
-| key | meaning | default |
-|---|---|---|
-| `precision` | `float64` or `float32`; the entry point exports it as `MRX_DTYPE` before importing `mrx` | `float64` |
-| `solver_tol` | relative residual tolerance of every iterative solve in the sequence; `None` is `sqrt(eps)` of the working precision | `None` (the Poisson yaml pins `1e-9`) |
-
-`PoissonTestConfig` adds `n` (a list or an int), `p`, `epsilon`,
-`quad_order` (`None` selects `p + 1 + quad_order_offset`),
-`quad_order_offset`, `cg_maxiter`, and the map batch sizes. The module
-docstring of `scripts/poisson_study.py` lists every key with its default.
-A `quad_order` below `p + 1` raises.
+A sweep over degrees is one job per `--p`. `--tol` (default `1e-9`, the
+tolerance of the archived numbers) and `--precision` are the only numerics
+knobs; `python scripts/poisson_study.py --help` lists the rest.
 
 ## Worktrees
 

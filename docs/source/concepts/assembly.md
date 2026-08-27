@@ -153,8 +153,7 @@ approximation error. `2p` points, the previous default, cost a factor
 `(2p / (p + 1))^3` per apply for no gain in order. Every production entry
 point passes `p + 1`:
 `build_sequence` in `mrx/geometries.py`, `build_gvec_map` in `mrx/gvec.py`,
-the Poisson scripts (`quad_order_offset: 0` in `conf/config_poisson_test.yaml`
-adds to `p + 1`), and `test/conftest.py`.
+`scripts/poisson_study.py`, and `test/conftest.py`.
 
 ## 7. What remains assembled
 

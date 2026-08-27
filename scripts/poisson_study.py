@@ -42,88 +42,51 @@ difference is reported (expected ≈ 0). k=0 solves use the metric-lumping
 Laplacian preconditioner; k≥1 solves are the saddle-point solve of the
 sequence.
 
-Configuration:
-    Hydra config ``conf/config_poisson_test.yaml``, schema
-    ``mrx.config.PoissonTestConfig``. Override any key as ``key=value``.
+Usage::
 
-    n (list[int] | int): Radial resolutions, run one after another; the
-        grid is ``ns = (n, 2n, 2n)``. An int runs a single resolution.
-        Default ``[8, 12, 16, 24, 32, 48, 64]``.
-    p (int): Spline degree in every direction. Default 3.
-    epsilon (float): Minor radius of ``toroid_map`` (major radius 1).
-        Default 1/3.
-    quad_order (int | None): Gauss quadrature order per direction. ``None``
-        selects ``p + 1 + quad_order_offset``. Default ``None``.
-    quad_order_offset (int): Offset on ``p + 1``. Dataclass default 4; the
-        yaml sets 0.
-    cg_maxiter (int): Iteration cap of the Laplacian solve. Dataclass
-        default 100000; the yaml sets 50000.
-    solver_tol (float | None): Relative residual tolerance of every
-        iterative solve in the sequence. ``None`` selects ``sqrt(eps)`` of
-        the working precision; the yaml sets 1e-9.
-    precision (str): ``float64`` (default) or ``float32``. Read from argv
-        and exported as ``MRX_DTYPE`` before ``mrx`` is imported.
-    map_batch_size_inner (int): ``mrx.MAP_BATCH_SIZE_INNER``; 0 means
-        ``vmap``. Default 0.
-    map_batch_size_outer (int | None): ``mrx.MAP_BATCH_SIZE_OUTER``;
-        ``None`` means no batching. Default ``None``.
-    load_frame (str): Present in the config, not read by this script.
+    python -u scripts/poisson_study.py --p 3
+    python -u scripts/poisson_study.py --p 2 --n 16 --precision float32
+    SCRIPT=scripts/poisson_study.py ARGS="--p 3 --n 16" \
+        JOB_NAME=pois_all_k MEM_GB=80 TIMEOUT_MIN=120 bash slurm/run.sh
 
-Usage:
-    Single run, all listed n in one process::
+``--n`` takes one or more radial resolutions, run one after another in one
+process; the grid is ``ns = (n, 2n, 2n)``. ``--tol`` is the relative residual
+tolerance of every iterative solve (the archived convergence numbers were
+measured at ``1e-9``). ``--precision`` is exported as ``MRX_DTYPE`` before
+``mrx`` is imported.
 
-        python -u scripts/poisson_study.py p=3
-        python -u scripts/poisson_study.py p=2 n=16 precision=float32
-
-    Single GPU job through ``slurm/run.sh``::
-
-        SCRIPT=scripts/poisson_study.py ARGS="p=3 n=16" \
-            JOB_NAME=pois_all_k MEM_GB=80 TIMEOUT_MIN=120 bash slurm/run.sh
-
-    Multirun, one submitit job per (p, n) pair. Needs ``SLURM_ACCOUNT``,
-    ``SLURM_PARTITION`` and ``MRX_ROOT`` exported; the launcher allots one
-    GPU, 80 GB and 120 min per job::
-
-        python scripts/poisson_study.py -m p=2,3 n=8,16
-
-Runtime:
-    Not measured. The multirun launcher allots one GPU, 80 GB and 120 min
-    per job.
-
-Output:
-    Single run: ``outputs/<date>/<time>/result.json``, a list with one entry
-    per n, rewritten after every n so an OOM at a later n keeps the earlier
-    results. Multirun: ``multirun/<date>/<time>/<job>/result.json``. Through
-    ``slurm/run.sh`` the stdout log is
-    ``outputs/<JOB_NAME>/<date>/<time>/<JOB_NAME>.log``.
+Output: ``<out>/result.json``, a list with one entry per n, rewritten after
+every n so an OOM at a later n keeps the earlier results.
 """
+import argparse
 import json
 import os
+import sys
 import time
 
-import sys
-# The working precision is chosen before mrx is imported; hydra only hands
-# the config over inside main(), so the override is read from argv here.
-os.environ["MRX_DTYPE"] = next(
-    (a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("precision=")),
-    os.environ.get("MRX_DTYPE", "float64"))
+# The working precision is chosen before mrx is imported.
+_ap = argparse.ArgumentParser(description="Hodge-Laplacian convergence study on the toroid")
+_ap.add_argument("--n", type=int, nargs="+", default=[8, 12, 16, 24, 32, 48, 64],
+                 help="radial resolutions; the grid is (n, 2n, 2n)")
+_ap.add_argument("--p", type=int, default=3, help="spline degree in every direction")
+_ap.add_argument("--epsilon", type=float, default=1 / 3, help="minor radius of toroid_map (R0 = 1)")
+_ap.add_argument("--quad-order", type=int, default=None, help="Gauss order per direction (default p + 1)")
+_ap.add_argument("--tol", type=float, default=1e-9, help="relative residual tolerance of every solve")
+_ap.add_argument("--maxiter", type=int, default=50_000, help="iteration cap of the Laplacian solves")
+_ap.add_argument("--precision", default=os.environ.get("MRX_DTYPE", "float64"),
+                 choices=("float32", "float64"))
+_ap.add_argument("--out", default="outputs/poisson_study")
+cli = _ap.parse_args()
+os.environ["MRX_DTYPE"] = cli.precision
 
-import hydra
-import jax
-import jax.numpy as jnp
-from hydra.core.hydra_config import HydraConfig
-from omegaconf import DictConfig
+import jax  # noqa: E402
+import jax.numpy as jnp  # noqa: E402
 
-import mrx
-import mrx.config  # noqa: F401 — register structured configs in ConfigStore
-from mrx.derham_sequence import DeRhamSequence
-from mrx.mappings import toroid_map
-from mrx.nullspace import _n_vectors, compute_nullspaces_iterative, get_nullspace
-from mrx.operators import (
-    assemble_incidence_operators,
-    assemble_metric_lumping_laplacian_preconditioner,
-)
-from test.manufactured import CASES, case_specs, case_tag, relative_l2_error
+import mrx  # noqa: E402
+from mrx.derham_sequence import DeRhamSequence  # noqa: E402
+from mrx.mappings import toroid_map  # noqa: E402
+from mrx.nullspace import _n_vectors, compute_nullspaces_iterative, get_nullspace  # noqa: E402
+from test.manufactured import CASES, case_specs, case_tag, relative_l2_error  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +101,6 @@ BETTI = (1, 1, 0, 0)
 # ---------------------------------------------------------------------------
 def _log(msg: str):
     """Print with a timestamp and flush immediately."""
-    import sys
     ts = time.strftime("%H:%M:%S")
     print(f"  [{ts}] {msg}", flush=True)
     sys.stdout.flush()
@@ -230,19 +192,16 @@ def _solve_case(seq, k: int, dirichlet: bool, spec, timings,
 # ---------------------------------------------------------------------------
 # Core computation
 # ---------------------------------------------------------------------------
-def compute_all_k(n: int, p: int, epsilon: float,
-                  solver_tol: float, cg_maxiter: int,
-                  quad_order, quad_order_offset: int):
+def compute_all_k(n: int, p: int, epsilon: float, solver_tol: float, cg_maxiter: int,
+                  quad_order):
     timings = {}
     ns = (n, 2 * n, 2 * n)
     ps = (p, p, p)
-    q = p + 1 + quad_order_offset if quad_order is None else quad_order
+    q = p + 1 if quad_order is None else quad_order
 
     F = toroid_map(epsilon=epsilon)
-    # The production default: block_jacobi mass, the block-Jacobi atom as
-    # schur.outer. This was a hand-written spec naming the tensor stack retired
-    # on 2026-08-17 and replaced again on 2026-08-22, so the convergence study
-    # was not solving what production solves (audit item 3.3).
+    # The production default preconditioners, so the study solves what
+    # production solves.
     saddle_preconditioner = 'auto'
 
     # --- Sequence setup ------------------------------------------------
@@ -265,17 +224,13 @@ def compute_all_k(n: int, p: int, epsilon: float,
     timings["evaluate_1d"] = time.perf_counter() - t0
     _log(f"  evaluate_1d done ({timings['evaluate_1d']:.2f}s)")
 
-    # --- Assembly -------------------------------------------------------
-    _log("Assembly: incidence + projection operators...")
+    # --- Preconditioners -----------------------------------------------
+    _log("Building the incidence operators and every preconditioner...")
     t0 = time.perf_counter()
-    ops = assemble_incidence_operators(seq)
-    _log("  Assembling the metric-lumping Laplacian preconditioner (k=0..3)...")
-    ops = assemble_metric_lumping_laplacian_preconditioner(seq, ops, ks=(0, 1, 2, 3), dirichlets=(True, False))
-    _log("  schur.outer = the block-Jacobi atom (production default)...")
-    ops = seq.set_operators(ops)
+    ops = seq.build_preconditioners()
     jax.block_until_ready(ops)
     timings["assembly"] = time.perf_counter() - t0
-    _log(f"  Assembly done ({timings['assembly']:.2f}s)")
+    _log(f"  Preconditioners built ({timings['assembly']:.2f}s)")
 
     # --- Nullspace (iterative for all 4 non-trivial pairs) ---------------
     _log("Computing nullspaces iteratively (k=0 NBC, k=1 NBC, k=2 DBC, k=3 DBC)...")
@@ -329,33 +284,23 @@ def compute_all_k(n: int, p: int, epsilon: float,
 
 
 # ---------------------------------------------------------------------------
-# Hydra entry point
+# Entry point
 # ---------------------------------------------------------------------------
-@hydra.main(config_path="../conf", config_name="config_poisson_test", version_base=None)
-def main(cfg: DictConfig):
-    print(f"precision: {mrx.DTYPE}  solver_tol: {cfg.solver_tol}")
-    if cfg.precision != str(mrx.DTYPE):
-        raise ValueError(f"precision={cfg.precision} but mrx runs in {mrx.DTYPE}; "
-                         "MRX_DTYPE was not set before import")
-    ns = [cfg.n] if isinstance(cfg.n, int) else list(cfg.n)
-    p = cfg.p
-    mrx.MAP_BATCH_SIZE_INNER = cfg.map_batch_size_inner
-    mrx.MAP_BATCH_SIZE_OUTER = cfg.map_batch_size_outer
+def main():
+    print(f"precision: {mrx.DTYPE}  tol: {cli.tol}")
+    ns, p = cli.n, cli.p
     case_tags = [case_tag(k, d) for k, d in CASES]
-    print(f"Hodge–Laplacian convergence | n={ns} p={p} ε={cfg.epsilon}")
+    print(f"Hodge–Laplacian convergence | n={ns} p={p} ε={cli.epsilon}")
     print(f"Cases: {', '.join(case_tags)}")
     print(f"JAX devices: {jax.devices()}")
 
-    output_dir = HydraConfig.get().runtime.output_dir
-    outfile = os.path.join(output_dir, "result.json")
+    os.makedirs(cli.out, exist_ok=True)
+    outfile = os.path.join(cli.out, "result.json")
 
     all_results = []
     for n in ns:
         print(f"\n{'='*68}\n  n={n}, p={p}\n{'='*68}")
-        result = compute_all_k(
-            n, p, cfg.epsilon, cfg.solver_tol, cfg.cg_maxiter,
-            cfg.quad_order, cfg.quad_order_offset,
-        )
+        result = compute_all_k(n, p, cli.epsilon, cli.tol, cli.maxiter, cli.quad_order)
         all_results.append(result)
 
         print("\n  --- Timings ---")
@@ -397,4 +342,3 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
     main()
-

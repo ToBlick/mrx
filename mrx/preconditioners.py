@@ -11,7 +11,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import mrx
 from mrx.precision import DTYPE, eps
 
 #: Rank / structure cut-offs, in units of the working-dtype epsilon. The
@@ -662,18 +661,12 @@ def _k3_extracted_shape(seq) -> tuple[int, int, int]:
 # Diagonal probing utilities (matrix-free, probing-based)
 # ---------------------------------------------------------------------------
 
-def diag_matvec(A_matvec, n, *, dtype=DTYPE, batch_size=None):
+def diag_matvec(A_matvec, n, *, dtype=DTYPE, batch_size=16):
     """Probe ``diag(A)`` from a forward operator on the extracted space.
 
-    The operator is queried on small batches of canonical basis vectors.
-    This is the matrix-free-compatible way to extract a diagonal.
+    The operator is queried on batches of ``batch_size`` canonical basis
+    vectors. This is the matrix-free-compatible way to extract a diagonal.
     """
-    if batch_size is None:
-        configured_batch_size = mrx.MAP_BATCH_SIZE_OUTER
-        if configured_batch_size is None:
-            batch_size = 16
-        else:
-            batch_size = max(1, min(int(configured_batch_size), 16))
     if n == 0:
         return jnp.zeros((0,), dtype=dtype)
     diag_chunks = []
@@ -713,7 +706,7 @@ def diag_schur_complement(apply_DT, diag_inv, n):
         e_i = jnp.zeros(n).at[i].set(1.0)
         Dt_ei = apply_DT(e_i)
         return jnp.dot(Dt_ei, diag_inv * Dt_ei)
-    return jax.lax.map(entry, jnp.arange(n), batch_size=mrx.MAP_BATCH_SIZE_OUTER)
+    return jax.lax.map(entry, jnp.arange(n), batch_size=16)
 
 
 # --------------------------------------------------------------------------- #
@@ -1515,7 +1508,7 @@ def build_extracted_laplacian_diagonal(seq, operators, k: int, *, dirichlet: boo
     :func:`mrx.local_assembly.build_extracted_stiffness_diagonal_k0`.
     """
     from mrx.local_assembly import build_stiffness_diagonal  # noqa: PLC0415
-    from mrx.operators import apply_hodge_laplacian_approx  # noqa: PLC0415
+    from mrx.operators import apply_laplacian_approx  # noqa: PLC0415
 
     if k not in (1, 2, 3):
         raise ValueError("use build_extracted_stiffness_diagonal_k0 for k=0")
@@ -1561,12 +1554,12 @@ def build_extracted_laplacian_diagonal(seq, operators, k: int, *, dirichlet: boo
 
         def row(i):
             x = jnp.zeros(size, dtype=DTYPE).at[i].set(1.0)
-            return apply_hodge_laplacian_approx(
+            return apply_laplacian_approx(
                 seq, operators, x, k, dirichlet=dirichlet)[i]
 
         # Warm the apply outside the trace: its matrix-free mass plan is
         # host-built and cannot be constructed on tracers.
-        apply_hodge_laplacian_approx(
+        apply_laplacian_approx(
             seq, operators, jnp.zeros(size, dtype=DTYPE), k,
             dirichlet=dirichlet)
         # lax.map in small batches, never a wide vmap -- see

@@ -129,16 +129,16 @@ The Hodge Laplacian of degree `k` is
 L_k = K_k + D_{k-1} M_{k-1}^{-1} D_{k-1}^T
 ```
 
-with `K_3 = 0` and `D_{-1} = 0`. `apply_hodge_laplacian` applies it; the
+with `K_3 = 0` and `D_{-1} = 0`. `apply_laplacian` applies it; the
 inverse mass in the second term is a solve. The solves in `mrx/operators.py`
 are:
 
-| k | `apply_inverse_hodge_laplacian` | solver in `mrx/solvers.py` |
+| k | `apply_inverse_laplacian` | solver in `mrx/solvers.py` |
 |---|---|---|
 | 0 | CG on `K_0`, harmonic mode deflated | `solve_singular_cg` |
 | 1, 2, 3 | MINRES on the saddle system `[[K_k, D_{k-1}], [D_{k-1}^T, -M_{k-1}]]` | `solve_saddle_point_minres` |
 
-`apply_inverse_shifted_hodge_laplacian` solves `L_k + eps M_k` the same way
+`apply_inverse_shifted_laplacian` solves `L_k + eps M_k` the same way
 and `apply_inverse_mass_plus_eps_laplace_matrix` solves `M_k + eps L_k`. The
 `DeRhamSequence` methods of the same names forward to these with the
 sequence's own `operators`, `tol`, and `maxiter`. Every solve takes a

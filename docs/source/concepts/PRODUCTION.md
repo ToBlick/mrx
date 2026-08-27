@@ -15,7 +15,7 @@ polar=True, betti_numbers=(1, 1, 0, 0))`, `evaluate_1d()`, `set_map`, then
 boundary conditions, `warm_mass_preconditioner_cache`, `set_operators`.
 Mass matrices are never stored; every operator is a matrix-free apply
 (`mass_core_apply`, `apply_incidence_matrix`, `apply_derivative_matrix`,
-`apply_stiffness`, `apply_hodge_laplacian`).
+`apply_stiffness`, `apply_laplacian`).
 
 ## Preconditioners
 
@@ -50,7 +50,7 @@ HX transfers, `outer_rings`, the Fourier coarse correction
 - Shifted problems do not deflate; free k >= 1 adds the `1/eps` harmonic
   coarse correction when the vector exists.
 - No Krylov solve inside a Krylov solve: the weak term uses the mass
-  preconditioner as `M^{-1}` (`apply_hodge_laplacian_approx`).
+  preconditioner as `M^{-1}` (`apply_laplacian_approx`).
 - Harmonic forms: `compute_nullspaces` (direct, `b2 = 0`) or
   `compute_nullspaces_iterative`.
 
@@ -59,8 +59,8 @@ HX transfers, `outer_rings`, the Fourier coarse correction
 - `MRX_DTYPE` selects `float64` (default) or `float32`;
   `jax_default_matmul_precision` is `"highest"`.
 - Solver tolerance `tol=None` is `mrx.sqrt_eps()` (`1.5e-8` in float64)
-  everywhere: `DeRhamSequence(tol=...)`, `NumericsConfig.solver_tol`.
-  `conf/config_poisson_test.yaml` pins `1e-9` for the archived numbers.
+  everywhere (`DeRhamSequence(tol=...)`); `scripts/poisson_study.py --tol`
+  defaults to `1e-9`, the tolerance of the archived convergence numbers.
 - Cut-offs are multiples of `mrx.eps`: `CORE_TOL`, `PSEUDOINVERSE_TOL`,
   `PROJECTOR_SVD_TOL`, `PROJECTOR_PLANE_TOL`, `BLOCK_DIAGONAL_TOL`.
 - `maxiter = 10_000` per solve.
@@ -68,8 +68,8 @@ HX transfers, `outer_rings`, the Fourier coarse correction
 ## Quadrature
 
 `q = p + 1` Gauss points per knot span, passed by every entry point
-(`build_sequence`, `build_gvec_map`, the Poisson scripts with
-`quad_order_offset: 0`, `test/conftest.py`).
+(`build_sequence`, `build_gvec_map`, `scripts/poisson_study.py`,
+`test/conftest.py`).
 
 ## Maps
 

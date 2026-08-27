@@ -14,9 +14,9 @@ Solvers are in `mrx/solvers.py`; the wiring is in `mrx/operators.py`.
 | solve | entry point | solver | preconditioner |
 |---|---|---|---|
 | `M_k u = f` | `apply_inverse_mass_matrix` | `solve_singular_cg` | mass, `metric_lumping` |
-| `L_0 u = f` | `apply_inverse_hodge_laplacian`, k=0 | `solve_singular_cg`, harmonic mode deflated | Laplacian atom |
-| `L_k u = f`, k=1,2,3 | `apply_inverse_hodge_laplacian` | `solve_saddle_point_minres` | lower: mass `metric_lumping` of degree k-1; upper: Laplacian atom |
-| `(L_k + eps M_k) u = f` | `apply_inverse_shifted_hodge_laplacian` | as above; nothing deflated | as above, plus a `1/eps` harmonic coarse correction when the harmonic vector exists |
+| `L_0 u = f` | `apply_inverse_laplacian`, k=0 | `solve_singular_cg`, harmonic mode deflated | Laplacian atom |
+| `L_k u = f`, k=1,2,3 | `apply_inverse_laplacian` | `solve_saddle_point_minres` | lower: mass `metric_lumping` of degree k-1; upper: Laplacian atom |
+| `(L_k + eps M_k) u = f` | `apply_inverse_shifted_laplacian` | as above; nothing deflated | as above, plus a `1/eps` harmonic coarse correction when the harmonic vector exists |
 | `(M_k + eps L_k) u = f` | `apply_inverse_mass_plus_eps_laplace_matrix` | CG for k=0, saddle MINRES otherwise | mass `metric_lumping` on both blocks |
 
 The saddle system for k >= 1 is
@@ -34,7 +34,7 @@ and `+k` on failure.
 
 There is no Krylov solve inside a Krylov solve. The weak term
 `D_{k-1} M_{k-1}^{-1} D_{k-1}^T` of `L_k` is applied with the mass
-*preconditioner* in place of `M_{k-1}^{-1}` (`apply_hodge_laplacian_approx`).
+*preconditioner* in place of `M_{k-1}^{-1}` (`apply_laplacian_approx`).
 The mass preconditioner is therefore part of the operator at k >= 1, not
 only part of the solve, and changing it changes `L_k`.
 
@@ -58,7 +58,7 @@ is not built implicitly: `_materialize_default_saddle_preconditioner` and
 `_metric_lumping_available(seq, k, dirichlet)` and `'none'` otherwise, so an
 unbuilt preconditioner fails at the first solve instead of running on a
 different, slower one. The one exception is
-`apply_hodge_laplacian_preconditioner(kind='auto')`, a bare apply, which
+`apply_laplacian_preconditioner(kind='auto')`, a bare apply, which
 falls back to `'jacobi'`.
 
 A saddle solve is specified by `SaddlePointPreconditionerSpec(mass, schur,

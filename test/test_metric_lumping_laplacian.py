@@ -203,7 +203,7 @@ def test_boundary_term_earns_its_place_at_k3_free(tiny_seq, bj):
     ops = tiny_seq.get_operators()
 
     def A(x):
-        return op.apply_hodge_laplacian_approx(tiny_seq, ops, x, k, dirichlet=dbc)
+        return op.apply_laplacian_approx(tiny_seq, ops, x, k, dirichlet=dbc)
 
     def solve(pre, n):
         rng = np.random.default_rng(7)

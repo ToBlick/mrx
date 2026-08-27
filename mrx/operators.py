@@ -786,7 +786,7 @@ def _build_laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichle
         suffix = "_dbc" if dirichlet else ""
         size = int(getattr(seq, f"n{k}{suffix}"))
         diag = _diagonal_from_matvec(
-            lambda x: apply_hodge_laplacian_approx(
+            lambda x: apply_laplacian_approx(
                 seq, operators, x, k, dirichlet=dirichlet),
             size,
         )
@@ -1426,7 +1426,7 @@ def update_hodge_operator(seq, geometry, operators: Optional[SequenceOperators],
     """Ensure the incidence ``G_k`` behind the k-th Laplacian is present.
 
     Stiffness matrices satisfy ``K_k = G_k^T M_{k+1} G_k`` and are never
-    materialised: :func:`apply_stiffness` / :func:`apply_hodge_laplacian`
+    materialised: :func:`apply_stiffness` / :func:`apply_laplacian`
     compose the matrix-free incidence and mass applies. The Jacobi diagonals
     ``dd{k}_diaginv`` are built lazily by :func:`_laplacian_diaginv`.
     """
@@ -2112,7 +2112,7 @@ def _build_scalar_hodge_preconditioner_apply(
                 f"scalar preconditioner kind='metric_lumping' needs the metric_lumping "
                 f"Laplacian assembled for k={k}, dirichlet={dirichlet}; call "
                 "assemble_metric_lumping_laplacian_preconditioner first")
-        return lambda x: apply_hodge_laplacian_preconditioner(
+        return lambda x: apply_laplacian_preconditioner(
             seq, operators, x, k, dirichlet=dirichlet, kind='metric_lumping')
     if spec.kind == 'jacobi':
         stiffness_diaginv = _laplacian_diaginv(seq, operators, k, dirichlet)
@@ -2208,7 +2208,7 @@ def _probed_laplacian_diaginv(seq, operators: SequenceOperators, k: int,
     :func:`~mrx.preconditioners.build_extracted_laplacian_diagonal`, whose weak
     half is a closed form under the KRONECKER MASS MODEL -- a model of
     ``D M^-1 D^T``, not the thing the operator actually applies. This probes
-    ``apply_hodge_laplacian_approx`` itself, which uses the production mass
+    ``apply_laplacian_approx`` itself, which uses the production mass
     preconditioner as the inner inverse, so it is the exact diagonal of the
     operator as it is really applied.
 
@@ -2231,7 +2231,7 @@ def _probed_laplacian_diaginv(seq, operators: SequenceOperators, k: int,
     if key not in cache['diag']:
         size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
         cache['diag'][key] = _invert_diagonal(_diagonal_from_matvec(
-            lambda x: apply_hodge_laplacian_approx(
+            lambda x: apply_laplacian_approx(
                 seq, operators, x, k, dirichlet=dirichlet),
             size))
     return cache['diag'][key]
@@ -2274,7 +2274,7 @@ def _metric_lumping_available(seq, k: int, dirichlet: bool) -> bool:
     return bool(cache) and (int(k), bool(dirichlet)) in cache
 
 
-def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
+def apply_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
                                          dirichlet: bool = True,
                                          kind: str = 'auto'):
     """Apply the Hodge-Laplacian preconditioner from an operator bundle.
@@ -2311,15 +2311,7 @@ def apply_hodge_laplacian_preconditioner(seq, operators: SequenceOperators, v, k
     raise AssertionError("unreachable")
 
 
-def apply_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
-                                   dirichlet: bool = True,
-                                   kind: str = 'auto'):
-    """Alias of apply_hodge_laplacian_preconditioner using Laplacian naming."""
-    return apply_hodge_laplacian_preconditioner(
-        seq, operators, v, k, dirichlet=dirichlet, kind=kind)
-
-
-def apply_inverse_hodge_laplacian(seq, operators: SequenceOperators, rhs, k: int,
+def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
                                   dirichlet: bool = True, guess=None,
                                   tol: Optional[float] = None,
                                   maxiter: Optional[int] = None,
@@ -2368,7 +2360,7 @@ def apply_inverse_hodge_laplacian(seq, operators: SequenceOperators, rhs, k: int
         )
         return (u, info) if return_info else u
 
-    return apply_inverse_shifted_hodge_laplacian(
+    return apply_inverse_shifted_laplacian(
         seq,
         operators,
         rhs,
@@ -2384,28 +2376,7 @@ def apply_inverse_hodge_laplacian(seq, operators: SequenceOperators, rhs, k: int
     )
 
 
-def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
-                            dirichlet: bool = True, guess=None,
-                            tol: Optional[float] = None,
-                            maxiter: Optional[int] = None,
-                            preconditioner='auto',
-                            return_info: bool = False):
-    """Alias of apply_inverse_hodge_laplacian using Laplacian naming."""
-    return apply_inverse_hodge_laplacian(
-        seq,
-        operators,
-        rhs,
-        k,
-        dirichlet=dirichlet,
-        guess=guess,
-        tol=tol,
-        maxiter=maxiter,
-        preconditioner=preconditioner,
-        return_info=return_info,
-    )
-
-
-def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs, k: int,
+def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: int,
                                           eps: float, dirichlet: bool = True, guess=None,
                                           tol: Optional[float] = None,
                                           maxiter: Optional[int] = None,
@@ -2501,7 +2472,7 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
                 "assemble_metric_lumping_laplacian_preconditioner first")
 
         def precond_upper(x, _k=k, _d=dirichlet):
-            return apply_hodge_laplacian_preconditioner(
+            return apply_laplacian_preconditioner(
                 seq, operators, x, _k, dirichlet=_d, kind='metric_lumping')
     elif outer_spec.kind == 'jacobi':
         schur_diaginv = _build_schur_outer_jacobi_diaginv(
@@ -2591,30 +2562,6 @@ def apply_inverse_shifted_hodge_laplacian(seq, operators: SequenceOperators, rhs
         maxiter=maxiter,
     )
     return (u, info) if return_info else u
-
-
-def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: int,
-                                    eps: float, dirichlet: bool = True, guess=None,
-                                    tol: Optional[float] = None,
-                                    maxiter: Optional[int] = None,
-                                    preconditioner='auto',
-                                    use_harmonic_coarse: Optional[bool] = None,
-                                    return_info: bool = False):
-    """Alias of apply_inverse_shifted_hodge_laplacian using Laplacian naming."""
-    return apply_inverse_shifted_hodge_laplacian(
-        seq,
-        operators,
-        rhs,
-        k,
-        eps,
-        dirichlet=dirichlet,
-        guess=guess,
-        tol=tol,
-        maxiter=maxiter,
-        preconditioner=preconditioner,
-        use_harmonic_coarse=use_harmonic_coarse,
-        return_info=return_info,
-    )
 
 
 def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators, rhs, k: int,
@@ -2713,7 +2660,7 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
     return (u, info) if return_info else u
 
 
-def apply_hodge_laplacian(seq, operators: SequenceOperators, v, k: int,
+def apply_laplacian(seq, operators: SequenceOperators, v, k: int,
                           dirichlet: bool = True, guess=None,
                           tol: Optional[float] = None,
                           maxiter: Optional[int] = None):
@@ -2760,24 +2707,7 @@ def apply_hodge_laplacian(seq, operators: SequenceOperators, v, k: int,
             raise ValueError("k must be 0, 1, 2 or 3")
 
 
-def apply_laplacian(seq, operators: SequenceOperators, v, k: int,
-                    dirichlet: bool = True, guess=None,
-                    tol: Optional[float] = None,
-                    maxiter: Optional[int] = None):
-    """Alias of apply_hodge_laplacian using Laplacian naming."""
-    return apply_hodge_laplacian(
-        seq,
-        operators,
-        v,
-        k,
-        dirichlet=dirichlet,
-        guess=guess,
-        tol=tol,
-        maxiter=maxiter,
-    )
-
-
-def apply_hodge_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
+def apply_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
                                  dirichlet: bool = True):
     """Linear approximation of the Hodge Laplacian apply.
 
@@ -2821,18 +2751,6 @@ def apply_hodge_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         case _:
             raise ValueError("k must be 0, 1, 2 or 3")
-
-
-def apply_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
-                           dirichlet: bool = True):
-    """Alias of apply_hodge_laplacian_approx using Laplacian naming."""
-    return apply_hodge_laplacian_approx(
-        seq,
-        operators,
-        v,
-        k,
-        dirichlet=dirichlet,
-    )
 
 
 # ---------------------------------------------------------------------------

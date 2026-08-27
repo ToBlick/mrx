@@ -14,7 +14,7 @@ from mrx.derham_sequence import DeRhamSequence
 def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) -> tuple[float, jnp.ndarray]:
     # The rhs must be the DUAL 1-form D_1^T B, not the primal weak curl.
     #
-    # apply_inverse_hodge_laplacian solves the saddle form
+    # apply_inverse_laplacian solves the saddle form
     #     | S   D   | | A |   | f |
     #     | D^T -M  | | s | = | 0 |
     # in which f is a dual k-form; apply_leray_projection, solving the same
@@ -37,7 +37,7 @@ def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) 
     # 85x is not a fraction of anything.  0.974 is, and it is the right size:
     # the IC is dominated by net toroidal flux, which IS the harmonic mode.
     # See docs/research/handoff_2026-08-25_relaxation_prelim.md.
-    A = seq.apply_inverse_hodge_laplacian(
+    A = seq.apply_inverse_laplacian(
         seq.apply_derivative_matrix(
             B, 1, dirichlet_in=True, dirichlet_out=True, transpose=True),
         1, guess=A_guess)

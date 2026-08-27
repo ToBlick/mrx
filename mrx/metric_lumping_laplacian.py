@@ -788,11 +788,11 @@ def _dense_symmetric_inverse(block, tol):
 
 def probe_core_block(seq, operators, k, dirichlet, rows):
     """Dense ``L_k`` restricted to the core rows, by one apply per row."""
-    from mrx.operators import apply_hodge_laplacian_approx  # noqa: PLC0415
+    from mrx.operators import apply_laplacian_approx  # noqa: PLC0415
 
     size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
     return _probe_rows(
-        lambda x: apply_hodge_laplacian_approx(seq, operators, x, k,
+        lambda x: apply_laplacian_approx(seq, operators, x, k,
                                                dirichlet=dirichlet),
         size, rows)
 # --------------------------------------------------------------------------- #
@@ -1173,7 +1173,7 @@ class MetricLumpingMass:
     product rather than a sum, so the bulk inverse is three 1-D solves and no
     fast diagonalisation is involved.
 
-    NOTE this is not only a preconditioner. ``apply_hodge_laplacian_approx``
+    NOTE this is not only a preconditioner. ``apply_laplacian_approx``
     uses the mass preconditioner as the inner inverse of the weak term, so
     swapping it changes the OPERATOR ``L_k`` at k>=1, not just the solve.
     """

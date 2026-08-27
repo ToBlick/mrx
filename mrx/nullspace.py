@@ -329,7 +329,7 @@ def harmonic_rayleigh(seq, v, k, dirichlet=True, operators=None):
     dimensionless, so a raw value carries the units of the geometry and means
     nothing on its own.
     """
-    lv = seq.apply_hodge_laplacian(v, k, dirichlet=dirichlet,
+    lv = seq.apply_laplacian(v, k, dirichlet=dirichlet,
                                    operators=operators)
     mv = seq.apply_mass_matrix(v, k, dirichlet=dirichlet, operators=operators)
     return float(jnp.dot(v, lv) / jnp.dot(v, mv))
@@ -423,7 +423,7 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
         curl_v_dual = seq.apply_derivative_matrix(
             v, 1, dirichlet_in=True, dirichlet_out=True, transpose=True,
             operators=operators)
-        a = seq.apply_inverse_hodge_laplacian(
+        a = seq.apply_inverse_laplacian(
             curl_v_dual, 1, dirichlet=True, operators=operators)
         curl_a = seq.apply_strong_curl(a, True, True)
         v2 = v - curl_a
@@ -443,7 +443,7 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
         v, _ = seq.apply_leray_projection(seed1, k=1)
         curl_v_dual = seq.apply_derivative_matrix(
             v, 1, dirichlet_in=False, dirichlet_out=False, operators=operators)
-        a = seq.apply_inverse_hodge_laplacian(
+        a = seq.apply_inverse_laplacian(
             curl_v_dual, 2, dirichlet=False, operators=operators)
         curl_a = seq.apply_weak_curl(a, False, False)
         v1 = v - curl_a
@@ -710,7 +710,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         # full L (not of the stiffness block alone -- at k = 3 that block is
         # zero and v^T S v would read 0 for any vector). v0 is M-normalised
         # just above, so v0 @ Lv0 is the quotient.
-        Lv0 = seq.apply_hodge_laplacian(
+        Lv0 = seq.apply_laplacian(
             v0, k, dirichlet=dirichlet, operators=operators)
         res_init = float(seq.l2_norm(Lv0, k, dirichlet=dirichlet))
         rq_init = float(v0 @ Lv0)
@@ -730,7 +730,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         # This is NOT circular.  A preconditioner changes the Krylov path, not
         # the solution, so the fixed point of the inverse iteration is
         # untouched; and at eps > 0 the shifted solve does no nullspace
-        # deflation at all (see apply_inverse_shifted_hodge_laplacian, where
+        # deflation at all (see apply_inverse_shifted_laplacian, where
         # vs_upper is empty unless eps == 0), so the stored vector can only
         # ever reach the preconditioner.  A poor coarse vector costs
         # convergence rate, never correctness.
@@ -758,7 +758,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             v, rq, _rq_prev, i = state
             Mv = seq.apply_mass_matrix(
                 v, k, dirichlet=dirichlet, operators=operators)
-            w = seq.apply_inverse_shifted_hodge_laplacian(
+            w = seq.apply_inverse_shifted_laplacian(
                 Mv, k, eps, dirichlet=dirichlet, guess=v,
                 operators=solve_ops,
                 preconditioner=shifted_preconditioner,
@@ -766,7 +766,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
                 use_harmonic_coarse=slot_coarse)
             w = project_out(w)
             w = w / seq.l2_norm(w, k, dirichlet=dirichlet)
-            Lw = seq.apply_hodge_laplacian(
+            Lw = seq.apply_laplacian(
                 w, k, dirichlet=dirichlet, operators=operators)
             # w is M-normalised on the line above, so w @ Lw IS the Rayleigh
             # quotient w^T L w / w^T M w.
@@ -792,7 +792,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             cond_fn, body_fn, init_state)
         found.append(v_final)
         res_final = float(seq.l2_norm(
-            seq.apply_hodge_laplacian(
+            seq.apply_laplacian(
                 v_final, k, dirichlet=dirichlet, operators=operators),
             k, dirichlet=dirichlet))
         iters.append((int(n_iters), res_final, float(rq_final)))

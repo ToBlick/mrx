@@ -1,4 +1,39 @@
-"""The :class:`DeRhamSequence`: spline spaces, extraction operators, geometry, and every operator apply and solve."""
+"""The :class:`DeRhamSequence`: spline spaces, extraction, geometry, and every operator apply and solve.
+
+Design
+------
+The sequence separates what never changes from what a map changes.
+
+**Static (on the sequence, built once in** ``__init__`` **and** ``evaluate_1d``
+**):** the 1-D spline bases and their quadrature tables, the DoF counts, the
+polar weights ``xi``, the extraction operators ``e0 .. e3`` (free, Dirichlet
+and boundary flavours), and the topological incidence stencils (``g0``,
+``g1``, ``g2`` and the polar grad/curl corrections). All of this depends on
+``(ns, ps, types, polar)`` only. The sequence is a plain Python object; the
+solvers close over it, and ``jax.jit(..., static_argnames=["seq"])`` hashes
+it by identity.
+
+**Geometry (on** ``seq.geometry`` **, installed by** ``set_map`` **):** the
+metric, its inverse and the Jacobian at the quadrature points, plus the
+matrix-free mass and projection applies built from them. Masses,
+derivatives, stiffness and Laplacian applies need nothing else.
+
+**Preconditioners and harmonic forms (on** ``seq.operators`` **, a**
+:class:`~mrx.operators.SequenceOperators` **pytree, built by**
+:meth:`~DeRhamSequence.build_preconditioners` **):** every factorisation of
+the installed metric -- mass and Laplacian atoms, Jacobi diagonals, probed
+Schur diagonals -- and the nullspace vectors. Nothing on the bundle is built
+on first use: it is built by that one call, against the geometry installed
+at that moment, and a new geometry means calling it again. That is the
+contract for an outer loop over geometries (stellarator optimisation:
+relaxation inside, the map outside).
+
+The rule for where a new thing belongs: changes with the map, or is a solve
+of it -> the bundle; depends on the bases only -> the sequence.
+
+The ``apply_*`` methods are forwarders to the free functions in
+:mod:`mrx.operators` with ``self`` and ``self.operators`` filled in.
+"""
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -12,36 +47,8 @@ from mrx.extraction_operators import (BoundaryOperator,
 from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
                            find_nullspace_vectors, get_nullspace,
                            get_saddle_point_nullspaces, init_nullspaces)
-from mrx.operators import \
-    apply_derivative_matrix as apply_derivative_matrix_ops
-from mrx.operators import apply_laplacian as apply_laplacian_ops
-from mrx.operators import \
-    apply_laplacian_approx as apply_laplacian_approx_ops
-from mrx.operators import \
-    apply_laplacian_preconditioner as \
-    apply_laplacian_preconditioner_ops
-from mrx.operators import apply_incidence_matrix as apply_incidence_matrix_ops
-from mrx.operators import \
-    apply_inverse_mass_plus_eps_laplace_matrix as \
-    apply_inverse_mass_plus_eps_laplace_matrix_ops
-from mrx.operators import \
-    apply_inverse_laplacian as apply_inverse_laplacian_ops
-from mrx.operators import \
-    apply_inverse_mass_matrix as apply_inverse_mass_matrix_ops
-from mrx.operators import \
-    apply_inverse_shifted_laplacian as \
-    apply_inverse_shifted_laplacian_ops
-from mrx.operators import apply_mass_matrix as apply_mass_matrix_ops
-from mrx.operators import \
-    apply_mass_matrix_preconditioner as apply_mass_matrix_preconditioner_ops
-from mrx.operators import \
-    apply_projection_matrix as apply_projection_matrix_ops
-from mrx.operators import apply_stiffness as apply_stiffness_ops
-from mrx.operators import (SequenceOperators,
-                           assemble_all_operators,
-                           assemble_derivative_operators,
-                           assemble_hodge_operators,
-                           assemble_incidence_operators)
+import mrx.operators as op
+from mrx.operators import SequenceOperators
 from mrx.projectors import load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
 from mrx.geometry import SequenceGeometry, grad_1d
@@ -422,50 +429,62 @@ class DeRhamSequence():
 
     @property
     def map(self):
+        """The logical-to-physical map ``F`` of the installed geometry."""
         return self._require_geometry().map
 
     @property
     def metric_jkl(self):
+        """Metric ``G = DF^T DF`` at the quadrature points, ``(n_q, 3, 3)``."""
         return self._require_geometry().metric_jkl
 
     @property
     def metric_inv_jkl(self):
+        """Inverse metric at the quadrature points, ``(n_q, 3, 3)``."""
         return self._require_geometry().metric_inv_jkl
 
     @property
     def jacobian_j(self):
+        """``det DF`` at the quadrature points, ``(n_q,)``."""
         return self._require_geometry().jacobian_j
 
     @property
     def null_0(self):
+        """Harmonic 0-forms of the free space, ``(n_vectors, n0)``."""
         return get_nullspace(self._require_operators(), 0, False)
 
     @property
     def null_1(self):
+        """Harmonic 1-forms of the free space, ``(n_vectors, n1)``."""
         return get_nullspace(self._require_operators(), 1, False)
 
     @property
     def null_2(self):
+        """Harmonic 2-forms of the free space, ``(n_vectors, n2)``."""
         return get_nullspace(self._require_operators(), 2, False)
 
     @property
     def null_3(self):
+        """Harmonic 3-forms of the free space, ``(n_vectors, n3)``."""
         return get_nullspace(self._require_operators(), 3, False)
 
     @property
     def null_0_dbc(self):
+        """Harmonic 0-forms of the Dirichlet space, ``(n_vectors, n0_dbc)``."""
         return get_nullspace(self._require_operators(), 0, True)
 
     @property
     def null_1_dbc(self):
+        """Harmonic 1-forms of the Dirichlet space, ``(n_vectors, n1_dbc)``."""
         return get_nullspace(self._require_operators(), 1, True)
 
     @property
     def null_2_dbc(self):
+        """Harmonic 2-forms of the Dirichlet space, ``(n_vectors, n2_dbc)``."""
         return get_nullspace(self._require_operators(), 2, True)
 
     @property
     def null_3_dbc(self):
+        """Harmonic 3-forms of the Dirichlet space, ``(n_vectors, n3_dbc)``."""
         return get_nullspace(self._require_operators(), 3, True)
 
     def set_geometry(self, geometry: SequenceGeometry):
@@ -502,7 +521,7 @@ class DeRhamSequence():
 
         Equivalent to, and replaceable by::
 
-            ops = assemble_incidence_operators(seq)
+            ops = op.assemble_incidence_operators(seq)
             ops = assemble_mass_jacobi_preconditioner(seq, ops, ks=ks)
             ops = assemble_metric_lumping_laplacian_preconditioner(
                 seq, ops, ks=ks, dirichlets=dirichlets)
@@ -538,7 +557,6 @@ class DeRhamSequence():
         """
         from mrx.operators import (  # noqa: PLC0415
             _mass_metric_lumping_for,
-            assemble_incidence_operators,
             assemble_mass_jacobi_preconditioner,
             assemble_metric_lumping_laplacian_preconditioner,
         )
@@ -548,7 +566,7 @@ class DeRhamSequence():
         dirichlets = tuple(bool(v) for v in dirichlets)
 
         if operators is None:
-            ops = assemble_incidence_operators(self)
+            ops = op.assemble_incidence_operators(self)
         else:
             ops = _drop_schur_diaginv(operators)
 
@@ -836,7 +854,7 @@ class DeRhamSequence():
         topological incidence operators. Returns the operator bundle.
         """
         geometry = self._require_geometry()
-        operators = assemble_all_operators(
+        operators = op.assemble_all_operators(
             self, geometry, operators=self.get_operators())
         self.set_operators(operators)
         return operators
@@ -850,7 +868,7 @@ class DeRhamSequence():
             Form degree of the *input* form (0, 1, or 2).
         """
         geometry = self._require_geometry()
-        return self.set_operators(assemble_derivative_operators(
+        return self.set_operators(op.assemble_derivative_operators(
             self, geometry,
             operators=self.get_operators(),
             ks=(k,),
@@ -869,15 +887,11 @@ class DeRhamSequence():
             Form degree (0, 1, 2, or 3).
         """
         geometry = self._require_geometry()
-        return self.set_operators(assemble_hodge_operators(
+        return self.set_operators(op.assemble_hodge_operators(
             self, geometry,
             operators=self.get_operators(),
             ks=(k,),
         ))
-
-    def assemble_hodge_laplacian(self, k):
-        """Backward-compatible alias for assemble_laplacian."""
-        return self.assemble_laplacian(k)
 
     def assemble_incidence_matrix(self, k):
         """Assemble and cache the topological incidence matrix Gk.
@@ -887,7 +901,7 @@ class DeRhamSequence():
         k : int
             Form degree of the *input* form (0, 1, or 2).
         """
-        return self.set_operators(assemble_incidence_operators(
+        return self.set_operators(op.assemble_incidence_operators(
             self,
             operators=self.get_operators(),
             ks=(k,),
@@ -920,7 +934,7 @@ class DeRhamSequence():
         operator choice.
         """
         operators = self._require_operators(operators)
-        return apply_incidence_matrix_ops(
+        return op.apply_incidence_matrix(
             self, operators, v, k,
             dirichlet_in=dirichlet_in,
             dirichlet_out=dirichlet_out,
@@ -1018,7 +1032,7 @@ class DeRhamSequence():
         Apply a configured mass-matrix preconditioner for Mk to a vector v.
         """
         operators = self._require_operators(operators)
-        return apply_mass_matrix_preconditioner_ops(
+        return op.apply_mass_matrix_preconditioner(
             self, operators, v, k, dirichlet=dirichlet, kind=kind)
 
     def apply_inverse_mass_matrix(self, rhs, k, dirichlet=True, guess=None,
@@ -1031,7 +1045,7 @@ class DeRhamSequence():
         guess can be provided to warm-start the solver.
         """
         operators = self._require_operators(operators)
-        return apply_inverse_mass_matrix_ops(
+        return op.apply_inverse_mass_matrix(
             self, operators, rhs, k,
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
@@ -1048,7 +1062,7 @@ class DeRhamSequence():
             k=3: M3_ij = ∫ Λ3_i Λ3_j (det DF)⁻¹ dx
         """
         operators = self._require_operators(operators)
-        return apply_mass_matrix_ops(
+        return op.apply_mass_matrix(
             self, operators, v, k, dirichlet=dirichlet)
 
     def apply_projection_matrix(self, v, k_in, k_out, dirichlet_in=True, dirichlet_out=True,
@@ -1057,7 +1071,7 @@ class DeRhamSequence():
         Apply the (matrix-free) projection mass Pk_in_k_out to a vector v.
         """
         operators = self._require_operators(operators)
-        return apply_projection_matrix_ops(
+        return op.apply_projection_matrix(
             self, operators, v, k_in, k_out,
             dirichlet_in=dirichlet_in,
             dirichlet_out=dirichlet_out,
@@ -1074,7 +1088,7 @@ class DeRhamSequence():
         If ``transpose=True``, apply ``D_k^T`` instead ((k+1)-forms to k-forms).
         """
         operators = self._require_operators(operators)
-        return apply_derivative_matrix_ops(
+        return op.apply_derivative_matrix(
             self, operators, v, k,
             dirichlet_in=dirichlet_in,
             dirichlet_out=dirichlet_out,
@@ -1095,13 +1109,9 @@ class DeRhamSequence():
         ``L_0 = S_0``.
         """
         operators = self._require_operators(operators)
-        return apply_laplacian_ops(
+        return op.apply_laplacian(
             self, operators, v, k, dirichlet=dirichlet,
             tol=self.tol, maxiter=self.maxiter)
-
-    def apply_hodge_laplacian(self, v, k, dirichlet=True, operators=None):
-        """Backward-compatible alias for apply_laplacian."""
-        return self.apply_laplacian(v, k, dirichlet=dirichlet, operators=operators)
 
     def apply_laplacian_approx(self, v, k, dirichlet=True, operators=None):
         """Linear approximate Laplacian apply.
@@ -1112,12 +1122,8 @@ class DeRhamSequence():
         is tensor-separable on the reference domain.
         """
         operators = self._require_operators(operators)
-        return apply_laplacian_approx_ops(
+        return op.apply_laplacian_approx(
             self, operators, v, k, dirichlet=dirichlet)
-
-    def apply_hodge_laplacian_approx(self, v, k, dirichlet=True, operators=None):
-        """Backward-compatible alias for apply_laplacian_approx."""
-        return self.apply_laplacian_approx(v, k, dirichlet=dirichlet, operators=operators)
 
     def apply_mass_plus_eps_laplace_matrix(self, v, k, eps, dirichlet=True, operators=None):
         """Apply ``(M_k + eps * L_k)`` to a k-form vector."""
@@ -1136,7 +1142,7 @@ class DeRhamSequence():
             k=3: 0 (no stiffness)
         """
         operators = self._require_operators(operators)
-        return apply_stiffness_ops(
+        return op.apply_stiffness(
             self, operators, v, k, dirichlet=dirichlet)
 
     def _get_nullspace(self, k, dirichlet):
@@ -1154,30 +1160,13 @@ class DeRhamSequence():
                                 return_info=False):
         """Apply the inverse of the k-form Laplacian to a right-hand side."""
         operators = self._require_operators(operators)
-        return apply_inverse_laplacian_ops(
+        return op.apply_inverse_laplacian(
             self, operators, rhs, k,
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
             maxiter=self.maxiter if maxiter is None else maxiter,
             preconditioner=preconditioner,
             return_info=return_info)
-
-    def apply_inverse_hodge_laplacian(self, rhs, k, dirichlet=True, guess=None,
-                                      operators=None, tol=None, maxiter=None,
-                                      preconditioner='auto',
-                                      return_info=False):
-        """Backward-compatible alias for apply_inverse_laplacian."""
-        return self.apply_inverse_laplacian(
-            rhs,
-            k,
-            dirichlet=dirichlet,
-            guess=guess,
-            operators=operators,
-            tol=tol,
-            maxiter=maxiter,
-            preconditioner=preconditioner,
-            return_info=return_info,
-        )
 
     def apply_inverse_shifted_laplacian(self, rhs, k, eps, dirichlet=True, guess=None,
                                         operators=None, tol=None, maxiter=None,
@@ -1201,7 +1190,7 @@ class DeRhamSequence():
             | D_{k-1}^T       -M_{k-1}   | | σ | = | 0 |
         """
         operators = self._require_operators(operators)
-        return apply_inverse_shifted_laplacian_ops(
+        return op.apply_inverse_shifted_laplacian(
             self, operators, rhs, k, eps,
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
@@ -1209,26 +1198,6 @@ class DeRhamSequence():
             preconditioner=preconditioner,
             use_harmonic_coarse=use_harmonic_coarse,
             return_info=return_info)
-
-    def apply_inverse_shifted_hodge_laplacian(self, rhs, k, eps, dirichlet=True, guess=None,
-                                              operators=None, tol=None, maxiter=None,
-                                              preconditioner='auto',
-                                              use_harmonic_coarse=None,
-                                              return_info=False):
-        """Backward-compatible alias for apply_inverse_shifted_laplacian."""
-        return self.apply_inverse_shifted_laplacian(
-            rhs,
-            k,
-            eps,
-            dirichlet=dirichlet,
-            guess=guess,
-            operators=operators,
-            tol=tol,
-            maxiter=maxiter,
-            preconditioner=preconditioner,
-            use_harmonic_coarse=use_harmonic_coarse,
-            return_info=return_info,
-        )
 
     def apply_inverse_mass_plus_eps_laplace_matrix(self, rhs, k, eps, dirichlet=True, guess=None,
                                                    operators=None, tol=None, maxiter=None,
@@ -1249,7 +1218,7 @@ class DeRhamSequence():
         production metric-lumping kind, ``'jacobi'`` is the fallback).
         """
         operators = self._require_operators(operators)
-        return apply_inverse_mass_plus_eps_laplace_matrix_ops(
+        return op.apply_inverse_mass_plus_eps_laplace_matrix(
             self, operators, rhs, k, eps,
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
@@ -1275,19 +1244,8 @@ class DeRhamSequence():
         ``'tensor'`` at k = 0; ``'tensor'`` itself was deleted 2026-08-25.
         """
         operators = self._require_operators(operators)
-        return apply_laplacian_preconditioner_ops(
+        return op.apply_laplacian_preconditioner(
             self, operators, v, k, dirichlet=dirichlet, kind=kind)
-
-    def apply_hodge_laplacian_preconditioner(self, v, k, dirichlet=True,
-                                             operators=None, kind='auto'):
-        """Backward-compatible alias for apply_laplacian_preconditioner."""
-        return self.apply_laplacian_preconditioner(
-            v,
-            k,
-            dirichlet=dirichlet,
-            operators=operators,
-            kind=kind,
-        )
 
     def _compute_nullspaces(self, betti_numbers=None, eps=None, direct=False,
                             **kwargs):
@@ -1622,7 +1580,7 @@ class DeRhamSequence():
             # Assumes dirichlet == True on all spaces.
             div_v = self.apply_derivative_matrix(
                 v, 2, dirichlet_in=True, dirichlet_out=True)
-            q = self.apply_inverse_hodge_laplacian(
+            q = self.apply_inverse_laplacian(
                 div_v, 3, dirichlet=True, guess=-p_guess)
             σ = -self.apply_weak_grad(q, True, True)
             return v - σ, -q
@@ -1633,7 +1591,7 @@ class DeRhamSequence():
             p_guess = jnp.zeros(n_p) if p_guess is None else p_guess
             div_v = -self.apply_derivative_matrix(
                 v, 0, dirichlet_in=dirichlet_p, dirichlet_out=False, transpose=True)
-            q = self.apply_inverse_hodge_laplacian(
+            q = self.apply_inverse_laplacian(
                 div_v, 0, dirichlet=dirichlet_p, guess=-p_guess)
             σ = -self.apply_strong_grad(q, dirichlet_p, False)
             return v - σ, -q

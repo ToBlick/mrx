@@ -30,17 +30,14 @@ controller, a shift) stay ordinary parameters.
 
 `DeRhamSequence(tol=None)` and every solver in `mrx/solvers.py` default to
 `sqrt_eps()`: `1.5e-8` in float64, `3.5e-4` in float32. That is the
-relative residual a solve can reach when the matvec itself is rounded. The
-Hydra configs carry it as `NumericsConfig.solver_tol` (`mrx/config.py`),
-passed as `DeRhamSequence(tol=cfg.solver_tol)`; `None` is the default above.
-`conf/config_poisson_test.yaml` pins `solver_tol: 1.0e-9` because the archived
+relative residual a solve can reach when the matvec itself is rounded.
+`scripts/poisson_study.py --tol` defaults to `1e-9` because the archived
 convergence numbers were measured there. `scripts/relax.py` takes
 `--precision` (default float32) and stops when the mean over `--floor-steps`
 steps of the relative force residual drops below `--floor-tol` (default
 `1e-3`).
 
-The Hydra entry points set `MRX_DTYPE` from `precision=` before importing
-`mrx` and raise if `cfg.precision` disagrees with `mrx.DTYPE`.
+The scripts set `MRX_DTYPE` from `--precision` before importing `mrx`.
 
 ## What float32 does
 
