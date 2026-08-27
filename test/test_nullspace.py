@@ -24,7 +24,6 @@ import mrx
 from test.conftest import BETTI
 from mrx.nullspace import (
     _n_vectors,
-    _null_field,
     get_nullspace,
     get_saddle_point_nullspaces,
     init_nullspaces,
@@ -64,7 +63,7 @@ def test_init_nullspaces_shapes_and_zeros(tiny_seq):
     ops = init_nullspaces(tiny_seq, tiny_seq.operators)
     for k in range(4):
         for dbc in (False, True):
-            arr = getattr(ops, _null_field(k, dbc))
+            arr = ops.nullspaces[(k, dbc)]
             assert arr is not None, f"null_{k}{'_dbc' if dbc else ''} is None after init"
             n_vec = _n_vectors(BETTI, k, dbc)
             n_dof = getattr(tiny_seq, f"n{k}_dbc" if dbc else f"n{k}")

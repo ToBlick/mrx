@@ -242,7 +242,6 @@ def _build_identity_seq(deg):
     # The mass inverses need the mass preconditioners only (the Laplacian
     # atoms need n >= p + 2, which (4, 4, 4) at p = 3 is not).
     ops = op.new_operators(seq)
-    ops = op.assemble_mass_jacobi_preconditioner(seq, ops)
     ops = op.assemble_mass_metric_lumping_preconditioner(seq, ops)
     seq.set_operators(ops)
     return seq

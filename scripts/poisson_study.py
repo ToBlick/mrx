@@ -221,7 +221,7 @@ def compute_all_k(n: int, p: int, epsilon: float, solver_tol: float, cg_maxiter:
     # --- Preconditioners -----------------------------------------------
     _log("Building the incidence operators and every preconditioner...")
     t0 = time.perf_counter()
-    ops = seq.build_preconditioners(schur_jacobi=True)   # the iterative nullspaces pin schur.outer='jacobi'
+    ops = seq.build_preconditioners()
     jax.block_until_ready(ops)
     timings["assembly"] = time.perf_counter() - t0
     _log(f"  Preconditioners built ({timings['assembly']:.2f}s)")

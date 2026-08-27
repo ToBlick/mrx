@@ -239,16 +239,15 @@ ops = seq.set_operators(compute_nullspaces(seq, ops))
 2. Geometry: `set_map` or `set_spline_map`. Installs the metric and builds
    the matrix-free mass and projection applies from it. Drops the operator
    bundle.
-3. Preconditioners: `build_preconditioners`, one call, in order
-   `assemble_mass_jacobi_preconditioner`,
-   `assemble_mass_metric_lumping_preconditioner`,
-   `assemble_laplacian_jacobi_preconditioner` for `k = 0` only (the closed
-   form the shifted scalar solve of the nullspace iteration uses; the
-   `k >= 1` diagonals are a comparison baseline, built on request),
-   `assemble_metric_lumping_laplacian_preconditioner` (each Laplacian step
-   needs the mass preconditioners, because the weak term of `L_k` is applied
-   through them), and with `schur_jacobi=True` the probed Schur diagonals
-   that `schur.outer='jacobi'` needs.
+3. Preconditioners: `build_preconditioners`, one call:
+   `assemble_mass_metric_lumping_preconditioner`, then
+   `assemble_metric_lumping_laplacian_preconditioner` (the Laplacian atoms
+   need the mass preconditioners, because the weak term of `L_k` is applied
+   through them). These are what `kind='auto'` applies everywhere. With
+   `jacobi=True` the Jacobi baselines are added -- probed mass diagonals,
+   closed-form Laplacian diagonals, probed Schur diagonals -- which only
+   `kind='jacobi'` / `schur.outer='jacobi'` and the shift-and-invert
+   nullspace route read.
 4. Harmonic forms: `compute_nullspaces` or `compute_nullspaces_iterative`,
    after everything above; they live on the bundle.
 

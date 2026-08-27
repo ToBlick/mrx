@@ -76,12 +76,12 @@ def test_discrete_function_matches_dense_evaluation(evaluator_seq, k):
 @pytest.mark.parametrize(
     ("k", "preconditioner"),
     [
-        (0, 'jacobi'),
+        (0, 'auto'),
     ],
 )
 def test_diffusion_solver_default_preconditioners_converge(
         tiny_seq, k, preconditioner):
-    """Diffusion solve accepts Jacobi out of the box."""
+    """The diffusion solve converges with its default preconditioner."""
     seq = tiny_seq
     dirichlet = False
     eps = 1e-2

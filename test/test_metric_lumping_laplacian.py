@@ -302,15 +302,9 @@ def test_defaults_are_the_production_configuration(tiny_seq):
         f"{d:.2e} (identical-build floor is {floor:.2e})")
 
 
-def test_production_dispatch_wiring(tiny_seq, laplacian_jacobi_diag):
-    """`kind='metric_lumping'` reaches the atom, and `kind='auto'` prefers it once it is
-    assembled -- the Phase 1b wiring.
-
-    `'auto'` used to resolve to `'jacobi'` unconditionally while its docstring
-    claimed it preferred `'tensor'` at k=0, so this pins the new behaviour on
-    both sides: jacobi before assembly, block after. The jacobi diagonals
-    come from the session fixture rather than a rebuild here.
-    """
+def test_auto_is_the_atom_or_a_warned_identity(tiny_seq):
+    """`kind='auto'` applies the atom when the bundle has it, and without it
+    warns and applies the identity -- never a silent substitute."""
     import equinox as eqx
 
     k, dbc = 3, False          # non-singular, single component: the cheap case
@@ -318,37 +312,25 @@ def test_production_dispatch_wiring(tiny_seq, laplacian_jacobi_diag):
     rng = np.random.default_rng(11)
     v = jnp.asarray(rng.standard_normal(n))
     ops = tiny_seq.operators
-    # The same bundle without the Laplacian atoms.
     bare = eqx.tree_at(lambda o: o.laplacian_lumping, ops, {},
                        is_leaf=lambda x: isinstance(x, dict))
 
-    # Without the atom: 'auto' must fall back, and 'metric_lumping' must say so
-    # clearly rather than silently doing something else.
-    auto_before = tiny_seq.apply_laplacian_preconditioner(
-        v, k, dirichlet=dbc, kind='auto', operators=bare)
-    jac = tiny_seq.apply_laplacian_preconditioner(
-        v, k, dirichlet=dbc, kind='jacobi', operators=bare)
-    # `_rel`, not exact equality: two calls down the SAME path differ by
-    # ~1 ULP (jax re-tracing), which is the third time in this file that
-    # bit-identity turned out to be the wrong assertion. INERT is four
-    # orders below the LIVE separation asserted at the end of this test.
-    assert _rel(np.asarray(auto_before), np.asarray(jac)) < INERT, (
-        "kind='auto' did not fall back to jacobi without the atom")
+    with pytest.warns(UserWarning, match="unpreconditioned"):
+        auto_bare = tiny_seq.apply_laplacian_preconditioner(
+            v, k, dirichlet=dbc, kind='auto', operators=bare)
+    assert _rel(np.asarray(auto_bare), np.asarray(v)) < INERT
     with pytest.raises(ValueError, match="not assembled"):
         tiny_seq.apply_laplacian_preconditioner(
             v, k, dirichlet=dbc, kind='metric_lumping', operators=bare)
 
-    # With the atom (the session bundle): 'metric_lumping' is the atom, and
-    # 'auto' picks it.
     blk = tiny_seq.apply_laplacian_preconditioner(
         v, k, dirichlet=dbc, kind='metric_lumping')
-    auto_after = tiny_seq.apply_laplacian_preconditioner(
-        v, k, dirichlet=dbc, kind='auto')
-    assert _rel(np.asarray(auto_after), np.asarray(blk)) < INERT, (
-        "kind='auto' did not prefer the block atom once built")
-    assert _rel(np.asarray(blk), np.asarray(jac)) > LIVE, (
-        "kind='metric_lumping' returned essentially the jacobi diagonal; the "
-        "dispatch is not reaching the atom")
+    auto = tiny_seq.apply_laplacian_preconditioner(v, k, dirichlet=dbc, kind='auto')
+    assert _rel(np.asarray(auto), np.asarray(blk)) < INERT, (
+        "kind='auto' did not apply the atom on the bundle")
+    assert _rel(np.asarray(blk), np.asarray(v)) > LIVE, (
+        "kind='metric_lumping' returned essentially the identity; the dispatch "
+        "is not reaching the atom")
 
 
 def test_first_apply_inside_a_trace_does_not_poison_the_instance(tiny_seq):
@@ -430,42 +412,3 @@ def test_metric_lumping_mass_is_the_default_and_jit_safe(tiny_seq):
                 preconditioner=MassPreconditionerSpec(kind='no_such_kind'))
 
 
-def test_probed_diagonal_is_the_honest_reference(tiny_seq, laplacian_jacobi_diag):
-    """`_probed_laplacian_diaginv` is the exact diagonal of `L_k` as applied.
-
-    `kind='jacobi'` is NOT that for k >= 1: its weak half is a closed form
-    under the Kronecker mass model, i.e. a model of `D M^-1 D^T` rather than
-    the operator's own. Any gap between the two is the mass model's error, and
-    a preconditioner measured against `jacobi` inherits it. This pins the
-    distinction so the reference cannot silently drift back to the model.
-    """
-    # Not a preconditioner KIND any more -- the kinds are none/jacobi/metric_lumping --
-    # but still the reference the jacobi diagonal has to be checked against.
-    from mrx.operators import _laplacian_diaginv, _probed_laplacian_diaginv
-
-    ops = tiny_seq.get_operators()
-    if True:
-        for k, dbc in ((3, False), (0, False)):
-            n = int(getattr(tiny_seq, f"n{k}"))
-            rng = np.random.default_rng(17)
-            v = jnp.asarray(rng.standard_normal(n))
-            probed = _probed_laplacian_diaginv(
-                tiny_seq, ops, k, dbc) * v
-            modelled = np.asarray(_laplacian_diaginv(tiny_seq, ops, k, dbc)) * np.asarray(v)
-            assert np.all(np.isfinite(np.asarray(probed)))
-            d = _rel(np.asarray(probed), modelled)
-            print(f"\n  k={k} probed-vs-closed-form d={d:.2e}")
-            if k == 0:
-                # L_0 = S_0 has NO weak term, so there is no mass model to be
-                # wrong: the closed form is exact and the two must agree --
-                # to the roundoff of an O(N)-apply probe.
-                assert d < INERT, (
-                    f"k=0: probed and closed-form diagonals differ by {d:.2e}, "
-                    "but L_0 has no weak term for the model to approximate")
-            else:
-                # k >= 1: they may differ (that IS the mass model's error), but
-                # both must be genuine diagonals of the same operator, so they
-                # cannot disagree wildly.
-                assert d < 1.0, (
-                    f"k={k}: probed vs modelled diagonal differ by {d:.2e}; "
-                    "one of them is not diag(L_k)")

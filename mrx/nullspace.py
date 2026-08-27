@@ -66,53 +66,35 @@ def _dof_count(seq, k, dirichlet):
     return getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}")
 
 
-def _null_field(k, dirichlet):
-    return f"null_{k}_dbc" if dirichlet else f"null_{k}"
-
-
 # ---------------------------------------------------------------------------
 # Initialisation and accessors
 # ---------------------------------------------------------------------------
 
 def init_nullspaces(seq, operators, betti_numbers=None):
-    """Return ``operators`` with all eight nullspace arrays set to zeros.
+    """Return ``operators`` with every nullspace set to zeros.
 
-    Shapes are derived from ``betti_numbers`` (or ``seq.betti_numbers`` when
-    that argument is ``None``) and from the sequence's DoF counts. The DoFs
-    are set to zero so that until the vectors are filled in, deflation is a
-    no-op (projecting against a zero vector does nothing).
+    ``operators.nullspaces[(k, dirichlet)]`` is ``(n_vectors, n_k)`` with the
+    vector count from ``betti_numbers`` (or ``seq.betti_numbers``). Zeros mean
+    deflation is a no-op until the vectors are computed.
     """
     if betti_numbers is None:
         betti_numbers = seq.betti_numbers
-
-    replacements = {}
-    for k in range(4):
-        for dirichlet in (False, True):
-            n_vec = _n_vectors(betti_numbers, k, dirichlet)
-            n_dof = _dof_count(seq, k, dirichlet)
-            replacements[_null_field(k, dirichlet)] = jnp.zeros((n_vec, n_dof))
-
-    return eqx.tree_at(
-        lambda ops: tuple(getattr(ops, name) for name in replacements),
-        operators,
-        tuple(replacements.values()),
-        is_leaf=lambda x: x is None,
-    )
+    spaces = {(k, dirichlet): jnp.zeros((_n_vectors(betti_numbers, k, dirichlet),
+                                         _dof_count(seq, k, dirichlet)))
+              for k in range(4) for dirichlet in (False, True)}
+    return eqx.tree_at(lambda ops: ops.nullspaces, operators, spaces,
+                       is_leaf=lambda x: x is None or isinstance(x, dict))
 
 
 def get_nullspace(operators, k, dirichlet):
-    """Return the stacked nullspace array for the k-th Hodge Laplacian.
-
-    Returns an array of shape ``(n_vectors, n_k)``. Iterating over it yields
-    the individual nullspace vectors.
-    """
-    vs = getattr(operators, _null_field(k, dirichlet))
-    if vs is None:
+    """The stacked nullspace array ``(n_vectors, n_k)`` of the k-th Hodge Laplacian."""
+    try:
+        return operators.nullspaces[(int(k), bool(dirichlet))]
+    except (KeyError, TypeError):
         raise ValueError(
-            f"Nullspace for k={k}, dirichlet={dirichlet} is not initialised. "
-            "Call init_nullspaces(seq, operators) or one of the "
-            "compute_nullspaces* functions first.")
-    return vs
+            f"nullspace for k={k}, dirichlet={dirichlet} is not initialised; "
+            "seq.build_preconditioners() creates the bundle with zero "
+            "nullspaces, compute_nullspaces fills them") from None
 
 
 def get_saddle_point_nullspaces(seq, operators, k, dirichlet):
@@ -141,14 +123,11 @@ def get_saddle_point_nullspaces(seq, operators, k, dirichlet):
 
 
 def _set_null(operators, k, dirichlet, values):
-    """Return ``operators`` with a single nullspace field replaced."""
-    name = _null_field(k, dirichlet)
-    return eqx.tree_at(
-        lambda ops: getattr(ops, name),
-        operators,
-        values,
-        is_leaf=lambda x: x is None,
-    )
+    """Return ``operators`` with the nullspace of ``(k, dirichlet)`` replaced."""
+    spaces = dict(operators.nullspaces)
+    spaces[(int(k), bool(dirichlet))] = values
+    return eqx.tree_at(lambda ops: ops.nullspaces, operators, spaces,
+                       is_leaf=lambda x: isinstance(x, dict))
 
 
 def _commit(seq, operators):
@@ -189,73 +168,23 @@ def _bootstrap_nullspace_guesses(seq, operators, k, dirichlet, guesses):
 
 
 def _nullspace_shifted_preconditioner(k: int):
+    """The preconditioner of the shifted solves of inverse iteration.
+
+    The metric-lumped atoms throughout: for ``k = 0`` the scalar atom on
+    ``S_0 + eps M_0`` (measured in its favour against the diagonal on the
+    shifted operator), for ``k >= 1`` the production saddle default with the
+    atom as the Schur outer block.
+    """
     if k == 0:
-        # Jacobi on the shifted operator; its diagonal is closed-form since
-        # L_0 = S_0. NOT what the main k=0 solve uses any more -- that is the
-        # block-Jacobi atom (kind='metric_lumping') as of 2026-08-22.
-        return _validate_nullspace_shifted_preconditioner(
-            k,
-            MassPreconditionerSpec(kind='jacobi'),
-        )
-    # STALE, FLAGGED 2026-08-24, deliberately not changed here.
-    #
-    # This pins schur.outer='jacobi' -- the per-DoF diagonal whose weak half is
-    # itself a Kronecker mass MODEL. It no longer matches the production saddle
-    # default: _materialize_default_saddle_preconditioner has used the
-    # block-Jacobi atom ('metric_lumping') since 2026-08-24, worth 2.5x fewer MINRES
-    # iterations over 18 cells, and the harmonic-form investigation
-    # (docs/research/handoff_2026-08-24_harmonic_k1_free.md) traced the
-    # degraded k=1 free form to exactly this jacobi outer.
-    #
-    # So `find_nullspace_vectors` does NOT inherit the assembled block atom:
-    # this spec overrides it, and _validate_nullspace_shifted_preconditioner
-    # below actively REJECTS kind='metric_lumping'. Any job comment claiming inverse
-    # iteration "picks up the block atom automatically" is wrong.
-    #
-    # Changing it means re-running the S5 nullspace gate, so it is left alone
-    # until that sweep is scheduled -- the shift is S_k + eps M_k, not L_k, so
-    # the atom's fit there wants measuring rather than assuming.
-    #
-    # `mass=default_mass_preconditioner()` IS current (metric_lumping); only the
-    # outer is stale. schur.inner is metric_lumping, which needs no eager
-    # assembly.
-    return _validate_nullspace_shifted_preconditioner(
-        k,
-        SaddlePointPreconditionerSpec(
-            mass=default_mass_preconditioner(),
-            schur=SchurPreconditionerSpec(
-                inner=MassPreconditionerSpec(kind='metric_lumping'),
-                outer=MassPreconditionerSpec(kind='jacobi'),
-            ),
-            coupled=False,
+        return MassPreconditionerSpec(kind='metric_lumping')
+    return SaddlePointPreconditionerSpec(
+        mass=default_mass_preconditioner(),
+        schur=SchurPreconditionerSpec(
+            inner=MassPreconditionerSpec(kind='metric_lumping'),
+            outer=MassPreconditionerSpec(kind='metric_lumping'),
         ),
+        coupled=False,
     )
-
-
-def _validate_nullspace_shifted_preconditioner(k: int, preconditioner):
-    if k == 0:
-        if not isinstance(preconditioner, MassPreconditionerSpec):
-            raise TypeError('k=0 nullspace inverse iteration expects a MassPreconditionerSpec')
-        if preconditioner.kind != 'jacobi':
-            raise ValueError(
-                f'k=0 nullspace inverse iteration got unsupported preconditioner '
-                f'kind={preconditioner.kind!r}; expected jacobi'
-            )
-        return preconditioner
-    if not isinstance(preconditioner, SaddlePointPreconditionerSpec):
-        raise TypeError('k>=1 nullspace inverse iteration expects a SaddlePointPreconditionerSpec')
-    if preconditioner.schur.outer.kind != 'jacobi':
-        raise ValueError(
-            f'k>=1 nullspace inverse iteration got unsupported schur.outer '
-            f'kind={preconditioner.schur.outer.kind!r}; expected jacobi'
-        )
-    if preconditioner.schur.inner.kind != 'metric_lumping':
-        raise ValueError(
-            'k>=1 nullspace inverse iteration requires metric_lumping '
-            f'schur.inner preconditioning; got '
-            f'{preconditioner.schur.inner.kind!r}'
-        )
-    return preconditioner
 
 
 # ---------------------------------------------------------------------------

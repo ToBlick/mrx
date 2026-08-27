@@ -46,16 +46,13 @@ def build_torus_sequence(ns, torus_map):
     1. the analytical ``toroid_map`` is interpolated to spline coefficients
        at the Greville points via :func:`greville_interpolate_map` and
        installed with ``set_spline_map``;
-    2. ``build_preconditioners`` assembles the incidence operators, the
-       Jacobi mass diagonals and the metric-lumping Laplacian atoms for
-       every ``(k, dirichlet)`` pair;
+    2. ``build_preconditioners`` builds the metric-lumping mass and
+       Laplacian atoms for every ``(k, dirichlet)`` pair;
     3. harmonic forms are computed by the direct Hodge-decomposition
        construction (``betti_numbers = (1, 1, 0, 0)``): a fixed pair of
        production saddle solves per form through ``'auto'``, i.e. the
        metric-lumping atoms just built. The shift-and-invert route costs
-       an outer iteration per form and pins ``schur.outer='jacobi'``
-       (``nullspace._nullspace_shifted_preconditioner``), which is neither
-       the production solve nor cheap.
+       an outer iteration per form on top.
 
     The solver tolerance is the sequence default, ``mrx.sqrt_eps()``, so the
     same fixture is meaningful in both precisions.
@@ -93,37 +90,10 @@ def n_dofs(seq, k, dirichlet):
 
 
 @pytest.fixture(scope="session")
-def laplacian_jacobi_diag(tiny_seq):
-    """``diag(E L_k E^T)`` for every ``(k, dirichlet)`` on ``tiny_seq``, built once.
-
-    ``build_preconditioners`` builds the ``k = 0`` Jacobi diagonal only; the
-    ``k >= 1`` ones are a comparison baseline (the k >= 1 closed form costs
-    seconds per pair on the CPU), built here and installed on the session
-    bundle, where ``_laplacian_diaginv`` finds them, so the positivity test,
-    the dispatch test and the probed-reference test share one build. The
-    bundle stores the INVERSE diagonal (``_invert_diagonal`` maps zero
-    entries to zero); this returns the diagonal itself,
-    ``{(k, dirichlet): diagonal}`` as numpy arrays.
-    """
-    import numpy as np
-
-    from mrx.operators import assemble_laplacian_jacobi_preconditioner
-
-    ops = assemble_laplacian_jacobi_preconditioner(tiny_seq, tiny_seq.operators, ks=(1, 2, 3))
-    tiny_seq.set_operators(ops)
-    diags = {}
-    for k in range(4):
-        for dbc in (False, True):
-            inv = np.asarray(ops.get_laplacian_diaginv(k, dirichlet=dbc))
-            diags[(k, dbc)] = np.where(inv != 0.0, 1.0 / np.where(inv != 0.0, inv, 1.0), 0.0)
-    return diags
-
-
-@pytest.fixture(scope="session")
 def precond_jit(tiny_seq):
     """JIT-compiled and warmed-up mass preconditioner applies on ``tiny_seq``.
 
-    Keyed by ``(label, k, dbc)``; the jacobi applies for every
+    Keyed by ``(label, k, dbc)``; the metric-lumping applies for every
     ``(k, dirichlet)`` pair are compiled once per session so the probe tests
     do not re-JIT.
     """
@@ -132,9 +102,9 @@ def precond_jit(tiny_seq):
     jit_dict = {}
     for k in range(4):
         for dbc in (False, True):
-            jit_dict[("jacobi", k, dbc)] = jax.jit(
+            jit_dict[("metric_lumping", k, dbc)] = jax.jit(
                 lambda v, k=k, dbc=dbc: apply_mass_matrix_preconditioner(
-                    tiny_seq, ops, v, k, dirichlet=dbc, kind="jacobi",
+                    tiny_seq, ops, v, k, dirichlet=dbc, kind="metric_lumping",
                 )
             )
     for (_, k, dbc), fn in jit_dict.items():

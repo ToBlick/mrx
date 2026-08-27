@@ -33,7 +33,6 @@ from mrx.geometry import grad_1d
 __all__ = [
     "build_mass_diagonal",
     "build_stiffness_diagonal",
-    "build_extracted_stiffness_diagonal_k0",
     "build_matrixfree_mass_apply",
     "build_matrixfree_projection_apply",
 ]
@@ -569,97 +568,6 @@ def build_codifferential_diagonal(seq, k, geometry=None):
                     blk = jnp.einsum('cz,abz->abc', tp[2] * tq[2], t2)
                     total = blk if total is None else total + blk
     return total.reshape(-1)
-
-
-def build_extracted_stiffness_diagonal_k0(seq, dirichlet: bool):
-    """``diag(E S_0 E^T)`` with no operator applies at all.
-
-    At k=0 there is no lower term (``L_0 = S_0``), so this is the whole
-    Laplacian Jacobi diagonal.
-
-    The extracted diagonal is an ENERGY, not a sum of raw matrix entries::
-
-        (E S E^T)_ii = int <grad psi_i, W grad psi_i>,   psi_i = sum_a E_ia phi_a
-
-    so it never needs off-diagonal entries of ``S`` and never needs a probe.
-
-    * **bulk rows** -- ``E`` is a pure selector there, so ``psi_i = phi_a`` and
-      the raw closed-form diagonal supplies them directly.
-    * **polar rows** -- ``psi`` mixes a ring, but a k=0 polar row sits at a
-      SINGLE zeta index, so it factors as a 2D ``(r,theta)`` shape times a 1D
-      zeta table. Only ``n_polar`` distinct 2D shapes exist and they do not
-      depend on the zeta index, so the cost is
-      ``O(n_polar * n_q^{r,theta} * n_q^z)``.
-
-    Verified against the probe to 3.3e-16 on the polar rows.
-    """
-    from mrx.geometry import grad_1d  # noqa: PLC0415
-
-    e = getattr(seq, "e0_dbc" if dirichlet else "e0")
-    n_ext = int(e.shape[0])
-    rows = np.asarray(e.rows)
-    cols = np.asarray(e.cols)
-    vals = np.asarray(e.vals)
-    counts = np.bincount(rows, minlength=n_ext)
-
-    diag = np.zeros(n_ext, dtype=mrx.DTYPE)
-
-    # --- bulk rows: pure selectors, straight from the raw closed form --------
-    d_raw = np.asarray(build_stiffness_diagonal(seq, 0))
-    single = counts[rows] == 1
-    diag[rows[single]] = (vals[single] ** 2) * d_raw[cols[single]]
-
-    polar = np.flatnonzero(counts > 1)
-    if polar.size == 0:
-        return jnp.asarray(diag)
-
-    # --- polar rows: energy of the extracted basis function ------------------
-    types = seq.basis_0.types
-    Rt, Tt, Zt = (np.asarray(t) for t in
-                  (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk))
-    Rd = np.asarray(grad_1d(seq.d_basis_r_jk, types[0]))
-    Td = np.asarray(grad_1d(seq.d_basis_t_jk, types[1]))
-    Zd = np.asarray(grad_1d(seq.d_basis_z_jk, types[2]))
-
-    minv = np.asarray(jnp.transpose(
-        seq.geometry.metric_inv_jkl.reshape(
-            seq.quad.ny, seq.quad.nx, seq.quad.nz, 3, 3), (1, 0, 2, 3, 4)))
-    jq = np.asarray(jnp.transpose(
-        seq.geometry.jacobian_j.reshape(
-            seq.quad.ny, seq.quad.nx, seq.quad.nz), (1, 0, 2)))
-    W = minv * jq[..., None, None]
-    wr = np.asarray(seq.quad.w_x)
-    wt = np.asarray(seq.quad.w_y)
-    wz = np.asarray(seq.quad.w_z)
-
-    # zeta stays a 1D factor of every polar row, so the zeta contraction of
-    # the weight is done once for every (a, b) and every zeta basis index m:
-    #   F[a][b][m] = sum_s W[..., a, b] wz Y_a[m] Y_b[m]
-    Yz = (Zt, Zt, Zd)
-    F = [[np.einsum('qrs,ms->mqr', W[..., a, b] * wz, Yz[a] * Yz[b])
-          for b in range(3)] for a in range(3)]
-
-    nt, nzb = seq.basis_0.nt, seq.basis_0.nz
-    # Group the triplets by row once (stable, so each row keeps its original
-    # triplet order) instead of scanning every triplet per polar row.
-    order = np.argsort(rows, kind="stable")
-    lo = np.searchsorted(rows[order], polar, side="left")
-    hi = np.searchsorted(rows[order], polar, side="right")
-    for i, a, b in zip(polar, lo, hi):
-        c, v = cols[order[a:b]], vals[order[a:b]]
-        ir, it, iz = c // (nt * nzb), (c // nzb) % nt, c % nzb
-        m = int(iz[0])
-        # 2D (r,theta) shape and its partials.
-        X = (np.einsum('a,aq,ar->qr', v, Rd[ir], Tt[it]),
-             np.einsum('a,aq,ar->qr', v, Rt[ir], Td[it]),
-             np.einsum('a,aq,ar->qr', v, Rt[ir], Tt[it]))
-        total = 0.0
-        for a in range(3):
-            for b in range(3):
-                total += float(np.einsum('qr,q,r,qr->', X[a] * X[b], wr, wt,
-                                         F[a][b][m]))
-        diag[i] = total
-    return jnp.asarray(diag)
 
 
 def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):

@@ -74,7 +74,7 @@ def test_manufactured_solution(tiny_seq, specs, k, dirichlet):
     if k == 0:
         assert _metric_lumping_available(seq.operators, 0, dirichlet), (
             "the k=0 metric-lumping atom is not assembled, so 'auto' would "
-            "fall back to jacobi")
+            "warn and solve unpreconditioned")
     else:
         spec = _coerce_saddle_preconditioner_spec(
             seq, seq.operators, k=k, dirichlet=dirichlet, preconditioner='auto')

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Optional, Sequence
-import os
+import warnings
 
 import equinox as eqx
 import jax
@@ -12,18 +12,13 @@ import jax.scipy as jsp
 from mrx.extraction_operators import MatrixFreeExtraction
 import numpy as np
 
-from mrx.local_assembly import (build_matrixfree_mass_apply)
 from mrx.preconditioners import (
-    BoundaryConditionPair,
-    MassPreconditioners,
     MassPreconditionerSpec,
     SchurPreconditionerSpec,
     SaddlePointPreconditionerSpec,
     _bulk_tensor_shape,
     _symmetrize,
     default_mass_preconditioner,
-    get_mass_jacobi_diaginv,
-    set_mass_jacobi_pair,
 )
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
 import mrx
@@ -93,12 +88,6 @@ class SequenceOperators(eqx.Module):
     preconditioners).
     """
 
-    k0_tensor_hodge_precond: Optional[BoundaryConditionPair] = None
-    k1_tensor_stiff_model: Optional[K1TensorCurlCurlForwardModel] = None
-    k2_tensor_stiff_model: Optional[K2TensorDivDivForwardModel] = None
-    k1_tensor_stiff_precond: Optional[BoundaryConditionPair] = None
-    k2_tensor_stiff_precond: Optional[BoundaryConditionPair] = None
-    mass_preconds: Optional[MassPreconditioners] = None
     # Metric-lumped mass and Laplacian atoms, keyed ``(k, dirichlet)``. Plain
     # Python objects (each holds a payload pytree and a jitted apply); the
     # bundle is closed over by the solvers, never passed through a JAX
@@ -107,98 +96,17 @@ class SequenceOperators(eqx.Module):
     # :func:`assemble_metric_lumping_laplacian_preconditioner`.
     mass_lumping: Optional[dict] = None
     laplacian_lumping: Optional[dict] = None
-    dd0_diaginv: Optional[object] = None
-    dd1_diaginv: Optional[object] = None
-    dd2_diaginv: Optional[object] = None
-    dd3_diaginv: Optional[object] = None
-    dd0_diaginv_dbc: Optional[object] = None
-    dd1_diaginv_dbc: Optional[object] = None
-    dd2_diaginv_dbc: Optional[object] = None
-    dd3_diaginv_dbc: Optional[object] = None
-
-    # Pre-probed diagonal inverses of the approximate Schur operator
-    # S_k + D_{k-1} B_{k-1} D_{k-1}^T, with B the metric_lumping mass
-    # preconditioner.  Built at assembly time by
-    # assemble_schur_jacobi_preconditioner; used as a cheap multiply in the
-    # saddle-point Schur-outer Jacobi preconditioner instead of probing at
-    # solve time.
-    schur_diaginv_k1: Optional[jnp.ndarray] = None
-    schur_diaginv_k1_dbc: Optional[jnp.ndarray] = None
-    schur_diaginv_k2: Optional[jnp.ndarray] = None
-    schur_diaginv_k2_dbc: Optional[jnp.ndarray] = None
-    schur_diaginv_k3: Optional[jnp.ndarray] = None
-    schur_diaginv_k3_dbc: Optional[jnp.ndarray] = None
-
-    # Harmonic nullspaces of the k-form Laplacians. Each field, when set, holds
-    # a stacked array of shape ``(n_vectors, n_k)`` with one nullspace basis
-    # vector per row. Shapes are topology-determined (from the Betti numbers);
-    # the DoFs are dynamic and may be overwritten when the geometry changes.
-    null_0: Optional[jnp.ndarray] = None
-    null_1: Optional[jnp.ndarray] = None
-    null_2: Optional[jnp.ndarray] = None
-    null_3: Optional[jnp.ndarray] = None
-    null_0_dbc: Optional[jnp.ndarray] = None
-    null_1_dbc: Optional[jnp.ndarray] = None
-    null_2_dbc: Optional[jnp.ndarray] = None
-    null_3_dbc: Optional[jnp.ndarray] = None
-
-    def _laplacian_diaginv_field_name(self, k: int, dirichlet: bool) -> str:
-        if k not in (0, 1, 2, 3):
-            raise ValueError("k must be 0, 1, 2, or 3")
-        suffix = "_dbc" if dirichlet else ""
-        return f"dd{k}_diaginv{suffix}"
-
-    def get_laplacian_diaginv(self, k: int, dirichlet: bool = True):
-        """Return the stored Jacobi inverse diagonal for ``L_k`` if available."""
-        return getattr(self, self._laplacian_diaginv_field_name(k, dirichlet))
-
-    def with_laplacian_diaginv(self, k: int, value, dirichlet: bool = True):
-        """Return a copy with updated stored Jacobi inverse diagonal for ``L_k``."""
-        field_name = self._laplacian_diaginv_field_name(k, dirichlet)
-        return eqx.tree_at(
-            lambda ops: getattr(ops, field_name),
-            self,
-            value,
-            is_leaf=lambda x: x is None,
-        )
-
-    @property
-    def laplacian0_diaginv(self):
-        return self.dd0_diaginv
-
-    @property
-    def laplacian1_diaginv(self):
-        return self.dd1_diaginv
-
-    @property
-    def laplacian2_diaginv(self):
-        return self.dd2_diaginv
-
-    @property
-    def laplacian3_diaginv(self):
-        return self.dd3_diaginv
-
-    @property
-    def laplacian0_diaginv_dbc(self):
-        return self.dd0_diaginv_dbc
-
-    @property
-    def laplacian1_diaginv_dbc(self):
-        return self.dd1_diaginv_dbc
-
-    @property
-    def laplacian2_diaginv_dbc(self):
-        return self.dd2_diaginv_dbc
-
-    @property
-    def laplacian3_diaginv_dbc(self):
-        return self.dd3_diaginv_dbc
+    # Harmonic forms of the k-form Laplacians, keyed ``(k, dirichlet)``: an
+    # array ``(n_vectors, n_k)``, one nullspace vector per row. The shapes are
+    # topological (Betti numbers); the values belong to the geometry. Zero
+    # until computed, so deflation is a no-op.
+    nullspaces: Optional[dict] = None
 
 
 def new_operators(seq) -> SequenceOperators:
     """The empty bundle for ``seq``: zero nullspaces, no preconditioners."""
     from mrx.nullspace import init_nullspaces  # noqa: PLC0415
-    return init_nullspaces(seq, SequenceOperators(mass_lumping={}, laplacian_lumping={}))
+    return init_nullspaces(seq, SequenceOperators(mass_lumping={}, laplacian_lumping={}, nullspaces={}))
 
 
 def _require_bundle(operators):
@@ -220,49 +128,6 @@ def _reshape_quadrature_matrix_field(seq, values: jnp.ndarray) -> jnp.ndarray:
     # NOTE: (ny, nx, nz, ...) = (theta, r, zeta, ...); see note above.
     field = jnp.asarray(values)
     return field.reshape(seq.quad.ny, seq.quad.nx, seq.quad.nz, *field.shape[1:])
-
-
-class K2TensorDivDivForwardModel(eqx.Module):
-    r_shape: tuple[int, int, int] = eqx.field(static=True)
-    theta_shape: tuple[int, int, int] = eqx.field(static=True)
-    zeta_shape: tuple[int, int, int] = eqx.field(static=True)
-    scalar_shape: tuple[int, int, int] = eqx.field(static=True)
-    rank: int = eqx.field(static=True)
-    g_r: jnp.ndarray
-    g_t: jnp.ndarray
-    g_z: jnp.ndarray
-    mass_r_terms: tuple[jnp.ndarray, ...] = ()
-    mass_t_terms: tuple[jnp.ndarray, ...] = ()
-    mass_z_terms: tuple[jnp.ndarray, ...] = ()
-    component_mass_r_terms: tuple[jnp.ndarray, ...] = ()
-    component_mass_t_terms: tuple[jnp.ndarray, ...] = ()
-    component_mass_z_terms: tuple[jnp.ndarray, ...] = ()
-    cp_relative_error: Optional[float] = None
-    cp_final_delta: Optional[float] = None
-
-
-class K1TensorCurlCurlForwardModel(eqx.Module):
-    r_shape: tuple[int, int, int] = eqx.field(static=True)
-    theta_shape: tuple[int, int, int] = eqx.field(static=True)
-    zeta_shape: tuple[int, int, int] = eqx.field(static=True)
-    curl_r_shape: tuple[int, int, int] = eqx.field(static=True)
-    curl_theta_shape: tuple[int, int, int] = eqx.field(static=True)
-    curl_zeta_shape: tuple[int, int, int] = eqx.field(static=True)
-    rank: int = eqx.field(static=True)
-    g_r: jnp.ndarray
-    g_t: jnp.ndarray
-    g_z: jnp.ndarray
-    rr_mass_r_terms: tuple[jnp.ndarray, ...] = ()
-    rr_mass_t_terms: tuple[jnp.ndarray, ...] = ()
-    rr_mass_z_terms: tuple[jnp.ndarray, ...] = ()
-    tt_mass_r_terms: tuple[jnp.ndarray, ...] = ()
-    tt_mass_t_terms: tuple[jnp.ndarray, ...] = ()
-    tt_mass_z_terms: tuple[jnp.ndarray, ...] = ()
-    zz_mass_r_terms: tuple[jnp.ndarray, ...] = ()
-    zz_mass_t_terms: tuple[jnp.ndarray, ...] = ()
-    zz_mass_z_terms: tuple[jnp.ndarray, ...] = ()
-    cp_relative_error: Optional[float] = None
-    cp_final_delta: Optional[float] = None
 
 
 def _assemble_weighted_1d_mass(B: jnp.ndarray, weights: jnp.ndarray) -> jnp.ndarray:
@@ -287,51 +152,6 @@ def _restrict_radial_window(raw_matrix: jnp.ndarray, radial_start: int,
                             nr: int) -> jnp.ndarray:
     radial_stop = radial_start + nr
     return raw_matrix[radial_start:radial_stop, radial_start:radial_stop]
-
-
-def _assemble_dense_from_apply(apply, size: int, *, sequential: bool = False) -> jnp.ndarray:
-    def column(j):
-        return apply(jnp.zeros(size, dtype=mrx.DTYPE).at[j].set(1.0))
-
-    if sequential:
-        # Probe a few columns at a time. ``vmap`` batches every transient of
-        # the probed apply by ``size``; for a matrix-free (sum-factorized)
-        # operator the per-apply transient is a dense ``(ne, q, q, q)`` tensor,
-        # so the fully batched peak is ``size``x larger and overflows device
-        # memory at high resolution. ``lax.map`` with a small batch keeps the
-        # peak to a few applies at the cost of a mostly serial build.
-        #
-        # One eager warmup call first: ``apply`` may build host-side static
-        # state lazily (e.g. the matrix-free mass index plan, which converts
-        # basis arrays via ``np.asarray``). Under ``lax.map`` the body is traced
-        # as a ``scan``, so any such build would see tracers and raise
-        # ``TracerArrayConversionError``. The eager call builds and caches that
-        # state with concrete arrays, after which ``lax.map`` only re-invokes
-        # the already-jitted apply.
-        column(0)
-        cols = jax.lax.map(column, jnp.arange(size), batch_size=16)
-        return cols.T
-    return jax.vmap(column, out_axes=1)(jnp.arange(size))
-
-
-def _normalize_cp_term_signs(
-        scale: jnp.ndarray,
-        factor_theta: jnp.ndarray,
-        factor_r: jnp.ndarray,
-        factor_z: jnp.ndarray):
-    if jnp.mean(factor_theta) < 0:
-        factor_theta = -factor_theta
-        scale = -scale
-    if jnp.mean(factor_r) < 0:
-        factor_r = -factor_r
-        scale = -scale
-    if jnp.mean(factor_z) < 0:
-        factor_z = -factor_z
-        scale = -scale
-    if scale < 0:
-        factor_r = -factor_r
-        scale = -scale
-    return scale, factor_theta, factor_r, factor_z
 
 
 def _k0_bundled_axis_profiles(seq):
@@ -402,40 +222,6 @@ def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool):
         "bulk_alpha": jnp.ones((3,), dtype=mrx.DTYPE),
         "bulk_greville_inv_sqrt_D": jnp.ones(bulk_shape, dtype=mrx.DTYPE),
     }
-
-
-def assemble_mass_jacobi_preconditioner(
-        seq, operators: Optional[SequenceOperators] = None,
-        *, ks: Sequence[int] = (0, 1, 2, 3)):
-    """Assemble/store Jacobi mass diagonals eagerly for requested degrees.
-
-    Probes ``diag(E M_k E^T)`` through the SAME matrix-free extracted mass
-    apply the solvers use (via :func:`mrx.preconditioners.build_mass_jacobi_pair`),
-    so the stored diagonal is consistent with the runtime operator by
-    construction. The previous sparse-block route (a scatter plan over the
-    assembled mass entries) produced inconsistent diagonals on the polar
-    extracted spaces k=0,1,2 (CG with the "preconditioner" stalled at
-    maxiter; caught 2026-08-14 when the test suite first exercised it).
-    """
-    from mrx.preconditioners import build_mass_jacobi_pair  # noqa: PLC0415
-
-    operators = _require_bundle(operators)
-    preconds = operators.mass_preconds
-
-    for k in ks:
-        if k not in (0, 1, 2, 3):
-            raise ValueError("Mass Jacobi assembly only supports k=0,1,2,3")
-
-        mass_apply = build_matrixfree_mass_apply(seq, k)
-        pair = build_mass_jacobi_pair(seq, mass_apply, k)
-        preconds = set_mass_jacobi_pair(preconds, k, pair)
-
-    return eqx.tree_at(
-        lambda ops: ops.mass_preconds,
-        operators,
-        preconds,
-        is_leaf=lambda x: x is None,
-    )
 
 
 def _materialize_default_mass_preconditioner(
@@ -515,23 +301,10 @@ def _materialize_default_scalar_hodge_preconditioner(
 def _coerce_diffusion_preconditioner_spec(
         seq, operators: SequenceOperators, *, k: int, preconditioner):
     if preconditioner is None or preconditioner == 'auto':
-        # Audit item 3.1, resolved 2026-08-25.  This used to return plain
-        # 'jacobi' -- diag(M)^-1, with eps ignored entirely -- on the grounds
-        # that "the block atom approximates L_k, not L_k + eps M_k, so it is
-        # not a drop-in here".
-        #
-        # That reasoning is correct about the LAPLACIAN atom and incomplete
-        # about the operator.  M + eps L is MASS-DOMINATED in the regime this
-        # solve is actually used: the relaxation's hyperregularisation runs at
-        # mu = 1e-3, where eps * lambda_max(M^-1 L) ~ 0.26 at ns=(8,16,8)
-        # (lambda_max ~ n_theta^2).  The MASS preconditioner approximates the
-        # term that dominates, and it is the production one.  So the right
-        # object was available the whole time; it just was not the one the
-        # comment considered.
-        #
-        # 'jacobi' remains available and is now the correctly SHIFTED diagonal
-        # (see _build_diffusion_preconditioner_apply), which is the robust
-        # choice when eps * lambda_max is not small.
+        # M + eps L is MASS-DOMINATED in the regime this solve is used in
+        # (the relaxation's velocity smoothing: eps * lambda_max(M^-1 L) ~ 0.26
+        # at ns=(8,16,8)), so the production MASS preconditioner is the right
+        # object.
         del seq, operators, k
         return default_mass_preconditioner()
     if isinstance(preconditioner, MassPreconditionerSpec):
@@ -634,84 +407,6 @@ def mass_core_apply(seq, k: int):
         raise ValueError("no geometry installed: call seq.set_map first")
     return seq.mass_apply[k]
 
-
-def _mass_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
-    del seq
-    try:
-        selected = get_mass_jacobi_diaginv(operators.mass_preconds, k, dirichlet)
-    except ValueError:
-        selected = None
-    if selected is None:
-        side = "dbc" if dirichlet else "free"
-        raise ValueError(
-            f"Jacobi mass diagonal for k={k} ({side}) is not assembled. "
-            "Call assemble_mass_jacobi_preconditioner(...) during operator assembly."
-        )
-    return selected
-
-
-def _laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
-    """``1/diag(E L_k E^T)`` from the bundle (built by :func:`assemble_laplacian_jacobi_preconditioner`)."""
-    del seq
-    selected = _require_bundle(operators).get_laplacian_diaginv(k, dirichlet)
-    if selected is None:
-        raise ValueError(
-            f"Jacobi Laplacian diagonal for k={k}, dirichlet={dirichlet} is not "
-            "built; seq.build_preconditioners() builds it for the installed geometry")
-    return selected
-
-
-def assemble_laplacian_jacobi_preconditioner(
-        seq, operators: SequenceOperators, *, ks: Sequence[int] = (0, 1, 2, 3),
-        dirichlets: Sequence[bool] = (False, True)) -> SequenceOperators:
-    """Build ``1/diag(E L_k E^T)`` in closed form for the given degrees.
-
-    ``k = 0`` is the energy of the extracted basis functions; ``k >= 1`` adds
-    the weak term under the Kronecker mass model, with only the polar-coupled
-    rows probed (:func:`~mrx.preconditioners.build_extracted_laplacian_diagonal`).
-    Needs the mass preconditioners of the bundle.
-    """
-    operators = _require_bundle(operators)
-    for k in ks:
-        if k not in (0, 1, 2, 3):
-            raise ValueError("k must be 0, 1, 2 or 3")
-        for dirichlet in dirichlets:
-            operators = operators.with_laplacian_diaginv(
-                k, _build_laplacian_diaginv(seq, operators, k, bool(dirichlet)),
-                dirichlet=bool(dirichlet))
-    return operators
-
-
-def _build_laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
-    """Closed-form inverse diagonal of the extracted Laplacian ``E L_k E^T``."""
-    if k == 0:
-        # L_0 = S_0 (no lower term), and diag(E S_0 E^T) is the energy
-        # of the extracted basis functions -- closed form, O(N), no
-        # applies at all. Verified against this probe to <1e-15.
-        from mrx.local_assembly import (  # noqa: PLC0415
-            build_extracted_stiffness_diagonal_k0)
-        return _invert_diagonal(
-            build_extracted_stiffness_diagonal_k0(seq, dirichlet))
-    if os.environ.get("MRX_LAPLACIAN_DIAG_PROBE", "0") == "1":
-        # A/B escape hatch: the exact but O(N)-applies probe that the
-        # closed form below replaced.
-        suffix = "_dbc" if dirichlet else ""
-        size = int(getattr(seq, f"n{k}{suffix}"))
-        diag = _diagonal_from_matvec(
-            lambda x: apply_laplacian_approx(
-                seq, operators, x, k, dirichlet=dirichlet),
-            size,
-        )
-        return _invert_diagonal(diag)
-    # k>=1 also carries the weak term D B D^T. Both halves are
-    # closed form in the raw DOF space and only the O(n_polar n_z)
-    # coupled rows need an apply -- see
-    # ``build_extracted_laplacian_diagonal``.
-    from mrx.preconditioners import (  # noqa: PLC0415
-        build_extracted_laplacian_diagonal)
-    return _invert_diagonal(
-        build_extracted_laplacian_diagonal(
-            seq, operators, k, dirichlet=dirichlet))
 
 # ---------------------------------------------------------------------------
 # Topological incidence matrices (geometry-independent strong derivatives)
@@ -1298,9 +993,7 @@ def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
 
     ``preconditioner`` accepts a kind string or a
     :class:`MassPreconditionerSpec`. When omitted (``'auto'``) it resolves to
-    :func:`~mrx.preconditioners.default_mass_preconditioner`, i.e. block_jacobi
-    since 2026-08-22. (It read "tensor when assembled and Jacobi otherwise"
-    until 2026-08-24; that has not been true since the 2026-08-17 pivot.)
+    :func:`~mrx.preconditioners.default_mass_preconditioner` (metric_lumping).
     """
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
@@ -1340,137 +1033,6 @@ def apply_stiffness(seq, v, k: int, dirichlet: bool = True):
 
     e, e_T = _mass_extraction(seq, k, dirichlet)
     return e @ (g_sp_T @ m_apply(g_sp @ (e_T @ v)))
-
-
-def _diagonal_from_matvec(operator_apply, size: int):
-    """Probe ``diag(A)`` 16 columns at a time via ``jax.lax.map``.
-
-    DO NOT batch this with a full ``vmap`` over chunks of canonical basis
-    vectors, the way :func:`mrx.preconditioners.diag_matvec` does. It was
-    tried on 2026-08-17 and crashes the CUDA toolchain: the batched kernel
-    fuses into a large transpose that spills registers and ptxas exits with an
-    internal compiler error (``ptxas fatal: Internal compiler error``, 94 test
-    errors, all inside the ``lax.while_loop`` in
-    ``nullspace.find_nullspace_vectors``). ``batch_size=16`` keeps each kernel
-    small enough to compile (clean on the nullspace tests 2026-08-26) and is
-    1.3-2x faster than the fully sequential map.
-    """
-    # Eager warmup: operator_apply may lazily build host-side static state
-    # (e.g. matrix-free mass index plans that call np.asarray internally).
-    # Under lax.map the body is traced as a scan, so those calls would see
-    # tracers and raise TracerArrayConversionError.  One concrete call first
-    # forces that state to be built and cached before the traced loop runs.
-    operator_apply(jnp.zeros(size, dtype=mrx.DTYPE))
-
-    def entry(i):
-        basis = jnp.zeros(size, dtype=mrx.DTYPE).at[i].set(1.0)
-        return operator_apply(basis)[i]
-
-    return jax.lax.map(entry, jnp.arange(size), batch_size=16)
-
-
-def _invert_diagonal(diagonal):
-    diagonal = jnp.asarray(diagonal, dtype=mrx.DTYPE)
-    return jnp.where(diagonal != 0.0, 1.0 / diagonal, 0.0)
-
-
-def _get_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool):
-    """Return the stored Schur diaginv for ``(k, dirichlet)``, or ``None``."""
-    suffix = '_dbc' if dirichlet else ''
-    return getattr(operators, f'schur_diaginv_k{k}{suffix}', None)
-
-
-def _set_schur_diaginv(operators: SequenceOperators, k: int, dirichlet: bool, diaginv):
-    """Return operators with the Schur diaginv for ``(k, dirichlet)`` updated."""
-    suffix = '_dbc' if dirichlet else ''
-    field = f'schur_diaginv_k{k}{suffix}'
-    return eqx.tree_at(
-        lambda ops: getattr(ops, field),
-        operators,
-        diaginv,
-        is_leaf=lambda x: x is None,
-    )
-
-
-def _build_schur_outer_jacobi_diaginv(
-        seq, operators: SequenceOperators, *,
-        k: int, dirichlet: bool, eps: float,
-        saddle_preconditioner: SaddlePointPreconditionerSpec):
-    """``1/diag`` of the approximate Schur operator, from the bundle.
-
-    Probed by :func:`assemble_schur_jacobi_preconditioner` (``build_preconditioners
-    (schur_jacobi=True)``), at ``eps = 0``; the stored diagonal serves every
-    shift. Never probed here: that is O(n_k) applies inside a solve.
-    """
-    del eps, saddle_preconditioner
-    stored_diaginv = _get_schur_diaginv(_require_bundle(operators), k, dirichlet)
-    if stored_diaginv is None:
-        raise ValueError(
-            f"schur.outer='jacobi' needs the probed Schur diagonal for k={k}, "
-            f"dirichlet={dirichlet}; build it with "
-            "seq.build_preconditioners(schur_jacobi=True)")
-    return stored_diaginv
-
-
-def assemble_schur_jacobi_preconditioner(
-        seq, operators: Optional[SequenceOperators] = None,
-        *, ks: Sequence[int] = (1, 2, 3),
-        dirichlet_variants: Optional[Sequence[bool]] = None,
-    eps: float = 0.0) -> SequenceOperators:
-    """Probe and store the approximate Schur diagonal at assembly time.
-
-    For each (k, dirichlet) pair, builds the approximate Schur operator::
-
-        A_k(x) = S_k x + D_{k-1} B_{k-1} D_{k-1}^T x
-
-    with ``B_{k-1}`` the metric_lumping mass preconditioner of the bundle,
-    and probes its diagonal by O(n_k)
-    matrix-vector products.  The resulting ``1/diag(A_k)`` is stored on the
-    operator bundle so that the saddle-point Schur-outer Jacobi
-    preconditioner is a cheap multiply at solve time rather than an O(n_k)
-    probing scan. Measured in
-    docs/research/result_2026-08-25_schur_probe_ab.md.
-
-    Parameters
-    ----------
-    seq : DeRhamSequence
-    operators : SequenceOperators, optional
-    ks : sequence of int
-        Form degrees to assemble (must be in 1, 2, 3).
-    dirichlet_variants : sequence of bool, optional
-        Boundary condition variants to assemble.  Defaults to (True, False).
-    eps : float
-        Shift for the stiffness term; 0 gives the unshifted Schur.
-    """
-    if dirichlet_variants is None:
-        dirichlet_variants = (True, False)
-    operators = _require_bundle(operators)
-    dummy_spec = SaddlePointPreconditionerSpec(
-        mass=MassPreconditionerSpec(kind='metric_lumping'),
-        schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='metric_lumping'),
-            outer=MassPreconditionerSpec(kind='none'),
-        ),
-    )
-    for k in ks:
-        if k not in (1, 2, 3):
-            raise ValueError(
-                f"assemble_schur_jacobi_preconditioner: k must be 1, 2, or 3 (got {k})")
-        for dirichlet in dirichlet_variants:
-            schur_apply = _build_schur_apply_from_saddle_preconditioner(
-                seq,
-                operators,
-                k=k,
-                dirichlet=dirichlet,
-                eps=eps,
-                saddle_preconditioner=dummy_spec,
-            )
-            suffix = '_dbc' if dirichlet else ''
-            n = getattr(seq, f'n{k}{suffix}')
-            diagonal = _diagonal_from_matvec(schur_apply, n)
-            diaginv = _invert_diagonal(diagonal)
-            operators = _set_schur_diaginv(operators, k, dirichlet, diaginv)
-    return operators
 
 
 def _coerce_mass_preconditioner_spec(preconditioner):
@@ -1541,7 +1103,7 @@ def _build_operator_preconditioner_apply(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
     operator_apply, preconditioner, allow_none: bool = True):
     spec = _resolve_mass_preconditioner(preconditioner)
-    valid_kinds = ('none', 'jacobi', 'metric_lumping')
+    valid_kinds = ('none', 'metric_lumping')
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
@@ -1555,9 +1117,6 @@ def _build_operator_preconditioner_apply(
         if not allow_none:
             raise ValueError("this preconditioner slot does not allow kind='none'")
         return lambda x: x
-    if spec.kind == 'jacobi':
-        diaginv = _mass_diaginv(seq, operators, k, dirichlet)
-        return lambda x, diaginv=diaginv: diaginv * x
     raise ValueError(f"unsupported mass preconditioner kind {spec.kind!r}")
 
 
@@ -1658,7 +1217,7 @@ def _coerce_saddle_preconditioner_spec(
         # preconditioner SPD, which the atom is (test_preconditioner_is_spd).
         # Until now the only outer option was the per-DoF diagonal, whose weak
         # half is itself a Kronecker mass MODEL, i.e. doubly approximate.
-        valid_outer_kinds = ('none', 'jacobi', 'metric_lumping')
+        valid_outer_kinds = ('none', 'metric_lumping')
         if preconditioner.schur.outer.kind not in valid_outer_kinds:
             raise ValueError(
                 "schur.outer kind must be one of "
@@ -1666,14 +1225,13 @@ def _coerce_saddle_preconditioner_spec(
             )
         return preconditioner
     if isinstance(preconditioner, str):
-        lower_kind = 'jacobi'
-        valid_outer_kinds = ('none', 'jacobi', 'metric_lumping')
+        valid_outer_kinds = ('none', 'metric_lumping')
         if preconditioner not in valid_outer_kinds:
             raise ValueError(
                 "saddle outer kind must be one of "
                 f"{valid_outer_kinds} (got {preconditioner!r})"
             )
-        lower = MassPreconditionerSpec(kind=lower_kind)
+        lower = default_mass_preconditioner()
         return SaddlePointPreconditionerSpec(
             mass=lower,
             schur=SchurPreconditionerSpec(
@@ -1700,7 +1258,7 @@ def _build_diffusion_preconditioner_apply(
     # out: what this branch wants is "whatever the production mass
     # preconditioner currently is", and saying that literally is rename-proof.
     production_kind = default_mass_preconditioner().kind
-    valid_kinds = ('none', 'jacobi', production_kind)
+    valid_kinds = ('none', production_kind)
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
@@ -1709,20 +1267,6 @@ def _build_diffusion_preconditioner_apply(
         if not allow_none:
             raise ValueError("this preconditioner slot does not allow kind='none'")
         return lambda x: x
-    if spec.kind == 'jacobi':
-        # THE SHIFTED diagonal, 1 / (diag(M) + eps diag(S)).
-        #
-        # This used to be diag(M)^-1 with eps discarded, which is only a
-        # preconditioner for M and degrades as eps lambda_max(M^-1 L) passes
-        # 1.  Inverses do not superpose -- (M + eps L)^-1 is NOT M^-1 +
-        # eps L^-1 -- but the approximate OPERATORS do, and for a diagonal
-        # approximation adding them is exact and free.  This mirrors
-        # _build_scalar_hodge_preconditioner_apply's jacobi branch, which has
-        # done the same thing for the sibling operator L + eps M all along.
-        mass_diaginv = _mass_diaginv(seq, operators, k, dirichlet)
-        stiffness_diaginv = _laplacian_diaginv(seq, operators, k, dirichlet)
-        shifted_diaginv = 1.0 / (1.0 / mass_diaginv + eps / stiffness_diaginv)
-        return lambda x, diaginv=shifted_diaginv: diaginv * x
     if spec.kind == production_kind:
         # The production MASS preconditioner.  It approximates M_k and knows
         # nothing about eps L_k, so it is admissible exactly while the
@@ -1730,30 +1274,12 @@ def _build_diffusion_preconditioner_apply(
         # (lambda_max ~ h^-2, so ~ n^2 on these grids).  That is the regime
         # the relaxation's hyperregularisation uses.
         #
-        # NOT gated on eps here, unlike kind='block' in the scalar Hodge
-        # builder, and the difference is deliberate: 'block' approximates
-        # L_k and becomes WRONG IN THE DOMINANT TERM the moment the operator
-        # is not Laplacian-dominated, whereas this one degrades smoothly
-        # towards "a very good preconditioner for the part of the operator
-        # that still dominates".  If you push eps until it does not, use
-        # kind='jacobi', which stays valid for every eps.
-        #
-        # NOT DONE, BUT AVAILABLE IF THIS EVER NEEDS TO REACH LARGER eps.
-        # Expand the inverse in eps and keep the first order:
-        #
-        #     (M + eps L)^-1 = M^-1 - eps M^-1 L M^-1 + O(eps^2)
-        #     P_1 = P_M - theta eps P_M L P_M      (2 applies + 1 matvec)
-        #
-        # Note the MINUS.  Accuracy is not the issue -- a preconditioner may
-        # truncate freely -- but SPD is: P_1 goes indefinite once
-        # theta eps lambda_max(P_M^1/2 L P_M^1/2) > 1, and MINRES on an
-        # indefinite preconditioner returns noise rather than converging
-        # slowly (see mrx/solvers.py's deliberate refusal to abs() the
-        # initial inner product).  Damping with theta < 1 keeps it SPD
-        # without needing lambda_max.  Judged not worth it at the mu this
-        # is used at: eps lambda_max ~ 0.26 there, so the first-order term
-        # moves the spread ~1.26 -> ~1.07, against block_jacobi's 0.70-0.83x
-        # on iterations outright.
+        # The mass atom approximates M_k and knows nothing about eps L_k: it
+        # is admissible while the operator is mass-dominated, i.e.
+        # eps * lambda_max(M^-1 L) << 1 (lambda_max ~ h^-2), which is the
+        # regime the relaxation's velocity smoothing uses. A first-order
+        # correction P_M - theta eps P_M L P_M exists (2 applies + 1 matvec,
+        # SPD only with damping) and was judged not worth it at that eps.
         return _build_mass_preconditioner_apply(
             seq,
             operators,
@@ -1770,7 +1296,8 @@ def _build_scalar_hodge_preconditioner_apply(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
         eps: float, preconditioner, allow_none: bool = True):
     spec = _coerce_mass_preconditioner_spec(preconditioner)
-    valid_kinds = ('none', 'jacobi', 'metric_lumping')
+    del eps  # the atom approximates L_k; on L_k + eps M_k it was measured 6/6 in its favour
+    valid_kinds = ('none', 'metric_lumping')
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
@@ -1779,35 +1306,13 @@ def _build_scalar_hodge_preconditioner_apply(
         if not allow_none:
             raise ValueError("this preconditioner slot does not allow kind='none'")
         return lambda x: x
-    if spec.kind == 'metric_lumping':
-        # The block-Jacobi atom, i.e. the same production Laplacian
-        # preconditioner k >= 1 gets through schur.outer. It approximates
-        # L_k, so it is admissible only for the UNSHIFTED operator; there is
-        # no fallback here on purpose, because a shifted solve quietly
-        # dropping to the diagonal is the exact failure this stack has already
-        # shipped twice.
-        if eps != 0.0:
-            raise ValueError(
-                "scalar preconditioner kind='metric_lumping' approximates L_k, not "
-                f"L_k + eps M_k (got eps={eps!r}); how the atom fits the "
-                "shifted operator is unmeasured -- see audit item 3.2")
-        if not _metric_lumping_available(operators, k, dirichlet):
-            raise ValueError(
-                f"scalar preconditioner kind='metric_lumping' needs the metric_lumping "
-                f"Laplacian assembled for k={k}, dirichlet={dirichlet}; call "
-                "assemble_metric_lumping_laplacian_preconditioner first")
-        return lambda x: apply_laplacian_preconditioner(
-            seq, operators, x, k, dirichlet=dirichlet, kind='metric_lumping')
-    if spec.kind == 'jacobi':
-        stiffness_diaginv = _laplacian_diaginv(seq, operators, k, dirichlet)
-        if eps == 0.0:
-            shifted_diaginv = stiffness_diaginv
-        else:
-            mass_diaginv_k = _mass_diaginv(seq, operators, k, dirichlet)
-            shifted_diaginv = 1.0 / (1.0 / stiffness_diaginv + eps / mass_diaginv_k)
-        return lambda x, diaginv=shifted_diaginv: diaginv * x
-    raise ValueError(
-        f"unsupported scalar Hodge preconditioner kind {spec.kind!r}")
+    if not _metric_lumping_available(operators, k, dirichlet):
+        raise ValueError(
+            f"scalar preconditioner kind='metric_lumping' needs the metric_lumping "
+            f"Laplacian atom for k={k}, dirichlet={dirichlet}; "
+            "seq.build_preconditioners() builds it")
+    return lambda x: apply_laplacian_preconditioner(
+        seq, operators, x, k, dirichlet=dirichlet, kind='metric_lumping')
 
 
 def _build_coupled_saddle_preconditioner(
@@ -1838,9 +1343,8 @@ def assemble_metric_lumping_laplacian_preconditioner(
         dirichlets=(False, True), **kwargs):
     """Build the tensor block-Jacobi Laplacian preconditioner for ``L_k``.
 
-    This is the production Laplacian preconditioner for k = 0..3. It replaces
-    the per-DoF ``'jacobi'`` diagonal, which is what ``k >= 1`` silently fell
-    back to; see ``docs/research/production_simplification_plan.md``.
+    This is the production Laplacian preconditioner for k = 0..3; see
+    ``docs/research/production_simplification_plan.md``.
 
     Build ONCE per (k, BC) -- the atom is a factorisation, not a per-apply
     computation. It is stored on ``operators.laplacian_lumping``.
@@ -1872,33 +1376,6 @@ def assemble_metric_lumping_laplacian_preconditioner(
                        is_leaf=lambda x: x is None or isinstance(x, dict))
 
 
-def _probed_laplacian_diaginv(seq, operators: SequenceOperators, k: int,
-                              dirichlet: bool):
-    """``1 / diag(L_k)`` taken EXACTLY, by one apply per DOF. The REFERENCE.
-
-    ``kind='jacobi'`` is not this. For k >= 1 it uses
-    :func:`~mrx.preconditioners.build_extracted_laplacian_diagonal`, whose weak
-    half is a closed form under the KRONECKER MASS MODEL -- a model of
-    ``D M^-1 D^T``, not the thing the operator actually applies. This probes
-    ``apply_laplacian_approx`` itself, which uses the production mass
-    preconditioner as the inner inverse, so it is the exact diagonal of the
-    operator as it is really applied.
-
-    That makes it the honest baseline to measure a preconditioner against, and
-    the reason to prefer it over ``'jacobi'``: any gap between the two is the
-    mass model's error, which has nothing to do with the preconditioner under
-    test.
-
-    O(N) applies: a REFERENCE, not a production candidate, computed afresh
-    on every call.
-    """
-    size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
-    return _invert_diagonal(_diagonal_from_matvec(
-        lambda x: apply_laplacian_approx(
-            seq, operators, x, k, dirichlet=dirichlet),
-        size))
-
-
 def _metric_lumping_available(operators, k: int, dirichlet: bool) -> bool:
     """True iff the metric-lumped Laplacian atom for ``(k, dirichlet)`` is on the bundle."""
     atoms = operators.laplacian_lumping if operators is not None else None
@@ -1906,39 +1383,34 @@ def _metric_lumping_available(operators, k: int, dirichlet: bool) -> bool:
 
 
 def apply_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
-                                         dirichlet: bool = True,
-                                         kind: str = 'auto'):
-    """Apply the Hodge-Laplacian preconditioner from an operator bundle.
+                                   dirichlet: bool = True,
+                                   kind: str = 'auto'):
+    """Apply the Laplacian preconditioner of the bundle to ``v``.
 
-    ``kind`` options:
-
-    * ``'none'`` — identity (no preconditioning).
-    * ``'jacobi'`` — per-DoF diagonal of ``L_k``, always available, but for
-      k >= 1 the weak half is a MODEL (the Kronecker mass model), not the
-      operator's own ``D M^-1 D^T``.
-    * ``'metric_lumping'`` — the metric-lumped atom, k = 0..3, free and Dirichlet.
-      Requires :func:`assemble_metric_lumping_laplacian_preconditioner` first.
-    * ``'auto'`` — ``'metric_lumping'`` when it has been assembled for this ``(k, BC)``,
-      otherwise ``'jacobi'``.
+    ``kind``: ``'metric_lumping'`` (the metric-lumped atom, k = 0..3, free and
+    Dirichlet -- the production preconditioner), ``'none'`` (identity), or
+    ``'auto'``: the atom when it is on the bundle for this ``(k, BC)``,
+    otherwise a warning and the identity.
     """
-    if kind not in ('auto', 'none', 'jacobi', 'metric_lumping'):
+    del seq
+    if kind not in ('auto', 'none', 'metric_lumping'):
         raise ValueError(
-            "kind must be 'auto', 'none', 'jacobi' or 'metric_lumping' "
-            f"(got {kind!r})")
+            f"kind must be 'auto', 'none' or 'metric_lumping' (got {kind!r})")
+    available = _metric_lumping_available(operators, k, dirichlet)
     if kind == 'auto':
-        kind = 'metric_lumping' if _metric_lumping_available(operators, k, dirichlet) else 'jacobi'
+        if not available:
+            warnings.warn(
+                f"no metric_lumping Laplacian atom for k={k}, dirichlet={dirichlet} "
+                "on the bundle; solving unpreconditioned", stacklevel=2)
+            return v
+        kind = 'metric_lumping'
     if kind == 'none':
         return v
-    if kind == 'jacobi':
-        return _laplacian_diaginv(seq, operators, k, dirichlet) * v
-    if kind == 'metric_lumping':
-        if not _metric_lumping_available(operators, k, dirichlet):
-            raise ValueError(
-                f"metric_lumping Laplacian preconditioner not assembled for "
-                f"k={k}, dirichlet={dirichlet}; call "
-                "assemble_metric_lumping_laplacian_preconditioner first")
-        return operators.laplacian_lumping[(int(k), bool(dirichlet))].apply(v)
-    raise AssertionError("unreachable")
+    if not available:
+        raise ValueError(
+            f"metric_lumping Laplacian preconditioner not assembled for "
+            f"k={k}, dirichlet={dirichlet}; seq.build_preconditioners() builds it")
+    return operators.laplacian_lumping[(int(k), bool(dirichlet))].apply(v)
 
 
 def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
@@ -2084,37 +1556,20 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
         preconditioner=saddle_preconditioner.mass,
         allow_none=True,
     )
-    # NOTE the Schur apply is built inside the `else` branch below, not here.
-    # It is the ONLY consumer. Building it up front cost a full
-    # schur.inner construction -- the whole atom build -- on every
-    # production solve, and then discarded it, because `outer='metric_lumping'` uses the
-    # atom as the upper-block inverse directly and `outer='jacobi'` builds its
-    # own through _build_schur_outer_jacobi_diaginv.
+    # The Schur apply is built only in the `else` branch (outer='none'): with
+    # outer='metric_lumping' the atom IS the upper-block inverse and needs
+    # neither the Schur operator nor schur.inner.
     outer_spec = saddle_preconditioner.schur.outer
     if outer_spec.kind == 'metric_lumping':
-        # The atom approximates L_k directly, so it needs neither the
-        # Schur probe nor schur.inner -- it IS the upper-block inverse.
         if not _metric_lumping_available(operators, k, dirichlet):
             raise ValueError(
-                "schur.outer kind='metric_lumping' needs the block-Jacobi Laplacian "
-                f"assembled for k={k}, dirichlet={dirichlet}; call "
-                "assemble_metric_lumping_laplacian_preconditioner first")
+                "schur.outer kind='metric_lumping' needs the metric_lumping Laplacian "
+                f"atom for k={k}, dirichlet={dirichlet}; seq.build_preconditioners() "
+                "builds it")
 
         def precond_upper(x, _k=k, _d=dirichlet):
             return apply_laplacian_preconditioner(
                 seq, operators, x, _k, dirichlet=_d, kind='metric_lumping')
-    elif outer_spec.kind == 'jacobi':
-        schur_diaginv = _build_schur_outer_jacobi_diaginv(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            eps=eps,
-            saddle_preconditioner=saddle_preconditioner,
-        )
-
-        def precond_upper(x, d=schur_diaginv):
-            return d * x
     else:
         schur_apply = _build_schur_apply_from_saddle_preconditioner(
             seq,
@@ -2141,8 +1596,7 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
     if use_harmonic_coarse and eps > 0:
         # _shifted_harmonic_coarse_ready may return a traced bool when this
         # function is called inside a jax.lax.while_loop body.  Use
-        # jax.lax.cond so the selection is JAX-traceable, mirroring the
-        # tensor/jacobi fallback in the k=0 path.
+        # jax.lax.cond so the selection is JAX-traceable.
         coarse_ready = _shifted_harmonic_coarse_ready(seq, operators, k, dirichlet)
         precond_with_coarse = _wrap_shifted_harmonic_coarse_correction(
             seq, operators, precond_upper, eps, k, dirichlet)

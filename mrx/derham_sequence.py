@@ -312,45 +312,9 @@ class DeRhamSequence():
         """``det DF`` at the quadrature points, ``(n_q,)``."""
         return self._require_geometry().jacobian_j
 
-    @property
-    def null_0(self):
-        """Harmonic 0-forms of the free space, ``(n_vectors, n0)``."""
-        return get_nullspace(self._require_operators(), 0, False)
-
-    @property
-    def null_1(self):
-        """Harmonic 1-forms of the free space, ``(n_vectors, n1)``."""
-        return get_nullspace(self._require_operators(), 1, False)
-
-    @property
-    def null_2(self):
-        """Harmonic 2-forms of the free space, ``(n_vectors, n2)``."""
-        return get_nullspace(self._require_operators(), 2, False)
-
-    @property
-    def null_3(self):
-        """Harmonic 3-forms of the free space, ``(n_vectors, n3)``."""
-        return get_nullspace(self._require_operators(), 3, False)
-
-    @property
-    def null_0_dbc(self):
-        """Harmonic 0-forms of the Dirichlet space, ``(n_vectors, n0_dbc)``."""
-        return get_nullspace(self._require_operators(), 0, True)
-
-    @property
-    def null_1_dbc(self):
-        """Harmonic 1-forms of the Dirichlet space, ``(n_vectors, n1_dbc)``."""
-        return get_nullspace(self._require_operators(), 1, True)
-
-    @property
-    def null_2_dbc(self):
-        """Harmonic 2-forms of the Dirichlet space, ``(n_vectors, n2_dbc)``."""
-        return get_nullspace(self._require_operators(), 2, True)
-
-    @property
-    def null_3_dbc(self):
-        """Harmonic 3-forms of the Dirichlet space, ``(n_vectors, n3_dbc)``."""
-        return get_nullspace(self._require_operators(), 3, True)
+    def nullspace(self, k, dirichlet=False):
+        """Harmonic ``k``-forms of the free or Dirichlet space, ``(n_vectors, n_k)``."""
+        return get_nullspace(self._require_operators(), k, dirichlet)
 
     def set_geometry(self, geometry: SequenceGeometry):
         """Install a geometry and build the matrix-free mass and projection applies from it.
@@ -367,22 +331,15 @@ class DeRhamSequence():
                                  for pair in ((1, 2), (2, 1), (0, 3), (3, 0))}
         self.operators = None
 
-    def build_preconditioners(self, *, ks=(0, 1, 2, 3), dirichlets=(False, True),
-                              schur_jacobi=False):
-        """Build every preconditioner of the installed geometry; install and return the bundle.
+    def build_preconditioners(self, *, ks=(0, 1, 2, 3), dirichlets=(False, True)):
+        """Build the preconditioners of the installed geometry; install and return the bundle.
 
         A fresh :class:`~mrx.operators.SequenceOperators` with, for each
-        ``k`` in ``ks`` and each BC in ``dirichlets``: the Jacobi mass
-        diagonal, the metric-lumped mass atom and the metric-lumped Laplacian
-        atom (the production preconditioners of every solve through the
-        sequence), plus the closed-form ``k = 0`` Jacobi Laplacian diagonal
-        (O(N); the shifted scalar solve of the nullspace iteration uses it).
-        ``schur_jacobi=True`` also probes the Schur diagonals that
-        ``schur.outer='jacobi'`` needs (the comparison baseline and the
-        shift-and-invert nullspace route; O(n_k) applies per pair, so off by
-        default). The ``k >= 1`` Jacobi Laplacian diagonals are a comparison
-        baseline production never applies; build them with
-        :func:`~mrx.operators.assemble_laplacian_jacobi_preconditioner`.
+        ``k`` in ``ks`` and each BC in ``dirichlets``, the metric-lumped mass
+        atom and the metric-lumped Laplacian atom -- the preconditioners of
+        every solve through the sequence (``kind='auto'`` resolves to them
+        everywhere: mass, Laplacian, saddle, diffusion and the shifted solves
+        of the nullspace iteration) -- and zero nullspaces.
 
         Nothing on the bundle is built anywhere else, and nothing on it
         survives a geometry change: after :meth:`set_map` call this again, and
@@ -400,26 +357,17 @@ class DeRhamSequence():
         ks = tuple(int(v) for v in ks)
         dirichlets = tuple(bool(v) for v in dirichlets)
         ops = op.new_operators(self)
-        ops = op.assemble_mass_jacobi_preconditioner(self, ops, ks=ks)
         ops = op.assemble_mass_metric_lumping_preconditioner(
             self, ops, ks=ks, dirichlet_variants=dirichlets)
-        ops = op.assemble_laplacian_jacobi_preconditioner(
-            self, ops, ks=tuple(k for k in ks if k == 0), dirichlets=dirichlets)
         ops = op.assemble_metric_lumping_laplacian_preconditioner(
             self, ops, ks=ks, dirichlets=dirichlets)
-        if schur_jacobi:
-            ops = op.assemble_schur_jacobi_preconditioner(
-                self, ops, ks=tuple(k for k in ks if k >= 1),
-                dirichlet_variants=dirichlets)
         self.operators = ops
         return ops
 
-    def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3),
-                                    dirichlets=(False, True), schur_jacobi=False):
+    def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3), dirichlets=(False, True)):
         """:meth:`set_map` followed by :meth:`build_preconditioners`, nothing else."""
         self.set_map(map)
-        return self.build_preconditioners(ks=ks, dirichlets=dirichlets,
-                                          schur_jacobi=schur_jacobi)
+        return self.build_preconditioners(ks=ks, dirichlets=dirichlets)
 
     def _require_geometry(self):
         """Return the attached geometry or raise when none is installed."""
@@ -882,9 +830,9 @@ class DeRhamSequence():
             | eps*D_{k-1}^T   -eps*M_{k-1}   | | σ | = | 0 |
 
         The system is nonsingular (no nullspace) since M_k + eps*L_k is SPD.
-        Out-of-the-box diffusion preconditioners currently use the same mass-side
-        defaults as the other inverse paths (``'auto'`` resolves to the
-        production metric-lumping kind, ``'jacobi'`` is the fallback).
+        ``'auto'`` resolves to the metric-lumped mass atom, which
+        preconditions the dominant (mass) term in the regime this solve is
+        used in (``eps * lambda_max(M^-1 L) << 1``).
         """
         operators = self._require_operators(operators)
         return op.apply_inverse_mass_plus_eps_laplace_matrix(
@@ -900,17 +848,11 @@ class DeRhamSequence():
         """
         Apply a preconditioner for the k-form Laplacian to a vector ``v``.
 
-        ``kind`` selects between ``'none'`` (identity), ``'jacobi'`` (per-DoF
-        diagonal; for k >= 1 its weak half is a Kronecker mass MODEL),
-        and ``'metric_lumping'`` (the metric-lumped block-Jacobi atom, k = 0..3, free
-        and Dirichlet — the production preconditioner; call
-        :func:`~mrx.operators.assemble_metric_lumping_laplacian_preconditioner`
-        first).
-
-        ``'auto'`` (the default) uses ``'metric_lumping'`` when it has been assembled
-        for this ``(k, BC)`` and falls back to ``'jacobi'`` otherwise. It used
-        to resolve to ``'jacobi'`` unconditionally while claiming to prefer
-        ``'tensor'`` at k = 0; ``'tensor'`` itself was deleted 2026-08-25.
+        ``kind``: ``'metric_lumping'`` (the metric-lumped atom, k = 0..3, free
+        and Dirichlet -- the production preconditioner, built by
+        :meth:`build_preconditioners`), ``'none'`` (identity), or ``'auto'``
+        (the default): the atom when the bundle has it for this ``(k, BC)``,
+        otherwise a warning and the identity.
         """
         operators = self._require_operators(operators)
         return op.apply_laplacian_preconditioner(

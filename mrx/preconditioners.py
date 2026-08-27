@@ -26,18 +26,6 @@ BLOCK_DIAGONAL_TOL = eps(2.0 ** 12)   # 9.1e-13 in f64, was 1e-12
 PROBE_BATCH_SIZE = 8
 
 
-class BoundaryConditionPair(eqx.Module):
-    free: Optional[object] = None
-    dbc: Optional[object] = None
-
-
-class JacobiMassPreconditioner(eqx.Module):
-    k0: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    k1: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    k2: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-    k3: BoundaryConditionPair = eqx.field(default_factory=BoundaryConditionPair)
-
-
 class ExtractedMassApplyData(eqx.Module):
     # ``mass_apply`` is the raw-DOF-space matrix-free matvec ``v -> M_k v``
     # (see ``mrx.local_assembly.build_matrixfree_mass_apply``).
@@ -47,16 +35,11 @@ class ExtractedMassApplyData(eqx.Module):
     size: int = eqx.field(static=True)
 
 
-class MassPreconditioners(eqx.Module):
-    jacobi: Optional[JacobiMassPreconditioner] = None
-
-
 @dataclass(frozen=True)
 class MassPreconditionerSpec:
     """A mass preconditioner, named by ``kind``.
 
-    ``'none'`` is the identity, ``'jacobi'`` the diagonal, and
-    ``'metric_lumping'`` the production one: a separable Kronecker bulk with
+    ``'none'`` is the identity and ``'metric_lumping'`` the production one: a separable Kronecker bulk with
     the polar core probed and inverted DENSELY, scaled by the metric-lumped
     diagonal. The field default is the production kind so that a bare spec
     and :func:`default_mass_preconditioner` agree.
@@ -94,7 +77,7 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
 
     A separable Kronecker bulk with the polar core rows PROBED AND INVERTED
     DENSELY, scaled by the metric-lumped diagonal. The only mass preconditioner
-    besides 'jacobi' and 'none'.
+    besides 'none'.
 
     MEASURED against its predecessor, the plain Kronecker model
     (docs/research/production_simplification_plan.md §10), 224 cells over
@@ -128,93 +111,6 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
     ``outputs/diag_newstack/`` extends that to n = 8..32 and p = 2..5.
     """
     return MassPreconditionerSpec(kind='metric_lumping')
-
-
-def default_saddle_preconditioner() -> SaddlePointPreconditionerSpec:
-    """The k>=1 saddle default, as far as a no-argument function can state it.
-
-    NOT AUTHORITATIVE, and it cannot be: the real outer block depends on whether
-    the atom has been assembled for a given ``(k, BC)``, which needs a sequence.
-    The authoritative resolver is
-    ``operators._materialize_default_saddle_preconditioner``.
-
-    ``outer`` is stated as ``'none'`` here because that is what the real
-    resolver actually falls back to when the atom is absent -- it returns
-    ``'metric_lumping'`` when assembled and ``'none'`` otherwise, and NEVER ``'jacobi'``.
-    This docstring claimed jacobi was the fallback until 2026-08-25, which
-    contradicted the very invariant the resolver exists to enforce: substituting
-    a jacobi diagonal for a missing preconditioner is how the relaxation loop
-    came to run its innermost solve on the diagonal unnoticed. A stale docstring
-    naming jacobi as THE fallback is that same failure in prose.
-
-    ``schur.inner`` is metric_lumping, matching the real default.
-    """
-    return SaddlePointPreconditionerSpec(
-        mass=default_mass_preconditioner(),
-        schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='metric_lumping'),
-            outer=MassPreconditionerSpec(kind='none'),
-        ),
-    )
-
-
-def select_boundary_data(pair: BoundaryConditionPair, dirichlet: bool, label: str):
-    data = pair.dbc if dirichlet else pair.free
-    if data is None:
-        side = "dbc" if dirichlet else "free"
-        raise ValueError(f"{label} preconditioner is not assembled for {side} BCs")
-    return data
-
-
-def _mass_jacobi_pair(preconds: Optional[MassPreconditioners], k: int) -> Optional[BoundaryConditionPair]:
-    if preconds is None or preconds.jacobi is None:
-        return None
-    match k:
-        case 0:
-            return preconds.jacobi.k0
-        case 1:
-            return preconds.jacobi.k1
-        case 2:
-            return preconds.jacobi.k2
-        case 3:
-            return preconds.jacobi.k3
-    raise ValueError("k must be 0, 1, 2 or 3")
-
-
-def get_mass_jacobi_diaginv(preconds: Optional[MassPreconditioners], k: int, dirichlet: bool):
-    pair = _mass_jacobi_pair(preconds, k)
-    if pair is None:
-        raise ValueError(f"Jacobi mass preconditioner k={k} is not assembled")
-    return select_boundary_data(pair, dirichlet, f"Jacobi mass k={k}")
-
-
-def set_mass_jacobi_pair(preconds: Optional[MassPreconditioners], k: int, pair: BoundaryConditionPair):
-    if preconds is None:
-        preconds = MassPreconditioners()
-    jacobi = preconds.jacobi if preconds.jacobi is not None else JacobiMassPreconditioner()
-    match k:
-        case 0:
-            jacobi = eqx.tree_at(lambda data: data.k0, jacobi, pair)
-        case 1:
-            jacobi = eqx.tree_at(lambda data: data.k1, jacobi, pair)
-        case 2:
-            jacobi = eqx.tree_at(lambda data: data.k2, jacobi, pair)
-        case 3:
-            jacobi = eqx.tree_at(lambda data: data.k3, jacobi, pair)
-        case _:
-            raise ValueError("k must be 0, 1, 2 or 3")
-    return eqx.tree_at(
-        lambda data: data.jacobi,
-        preconds,
-        jacobi,
-        is_leaf=lambda x: x is None,
-    )
-
-
-
-
-
-
 
 
 def _extracted_mass_diagonal(e, d_raw, mass_apply, *, batch_size: int = 16):
@@ -266,29 +162,6 @@ def _extracted_mass_diagonal(e, d_raw, mass_apply, *, batch_size: int = 16):
     return jnp.asarray(diag, dtype=DTYPE)
 
 
-def build_mass_jacobi_pair(seq, mass_apply, k: int) -> BoundaryConditionPair:
-    """Build a Jacobi (diagonal-inverse) pair for the k-form mass matrix.
-
-    ``mass_apply`` is the raw-DOF-space matvec ``v -> M_k v`` returned by
-    :func:`mrx.operators.build_matrixfree_mass_apply`.
-
-    ``diag(E M_k E^T)`` comes from the **closed-form** raw mass diagonal
-    (:func:`mrx.local_assembly.build_mass_diagonal` -- one sum-factorized
-    contraction against squared basis tables) rather than from ``O(N)``
-    canonical-basis probes. Only the ``O(n_z)`` coupled polar rows still need
-    an apply. The result is exact, not an estimate.
-    """
-    from mrx.local_assembly import build_mass_diagonal  # noqa: PLC0415
-
-    d_raw = build_mass_diagonal(seq, k)
-    e = getattr(seq, f"e{k}")
-    e_dbc = getattr(seq, f"e{k}_dbc")
-    return BoundaryConditionPair(
-        free=1.0 / _extracted_mass_diagonal(e, d_raw, mass_apply),
-        dbc=1.0 / _extracted_mass_diagonal(e_dbc, d_raw, mass_apply),
-    )
-
-
 def _quadrature_tensor_shape(seq) -> tuple[int, int, int]:
     return seq.quad.ny, seq.quad.nx, seq.quad.nz
 
@@ -302,26 +175,6 @@ def _reshape_quadrature_matrix_field(seq, values: jnp.ndarray) -> jnp.ndarray:
     return field.reshape(*_quadrature_tensor_shape(seq), *field.shape[1:])
 
 
-def _k1_diagonal_metric_tensors(seq) -> dict[str, jnp.ndarray]:
-    jacobian = _reshape_quadrature_scalar_field(seq, seq.geometry.jacobian_j)
-    metric_inv = _reshape_quadrature_matrix_field(seq, seq.geometry.metric_inv_jkl)
-    return {
-        "alpha_rr": jacobian * metric_inv[..., 0, 0],
-        "alpha_thetatheta": jacobian * metric_inv[..., 1, 1],
-        "alpha_zetazeta": jacobian * metric_inv[..., 2, 2],
-    }
-
-
-def _k2_diagonal_metric_tensors(seq) -> dict[str, jnp.ndarray]:
-    jacobian = _reshape_quadrature_scalar_field(seq, seq.geometry.jacobian_j)
-    metric = _reshape_quadrature_matrix_field(seq, seq.geometry.metric_jkl)
-    return {
-        "beta_rr": metric[..., 0, 0] / jacobian,
-        "beta_thetatheta": metric[..., 1, 1] / jacobian,
-        "beta_zetazeta": metric[..., 2, 2] / jacobian,
-    }
-
-
 def _apply_extracted_mass_operator(extraction, extraction_t, mass_apply, x: jnp.ndarray) -> jnp.ndarray:
     raw = extraction_t @ x
     return jnp.asarray(extraction @ mass_apply(raw))
@@ -329,78 +182,6 @@ def _apply_extracted_mass_operator(extraction, extraction_t, mass_apply, x: jnp.
 
 def _apply_extracted_mass_operator_data(data: ExtractedMassApplyData, x: jnp.ndarray) -> jnp.ndarray:
     return _apply_extracted_mass_operator(data.extraction, data.extraction_t, data.mass_apply, x)
-
-
-def _apply_extracted_submatrix(data: ExtractedMassApplyData, row_indices: jnp.ndarray, col_indices: jnp.ndarray, x: jnp.ndarray) -> jnp.ndarray:
-    full = jnp.zeros((data.size,), dtype=x.dtype)
-    full = full.at[col_indices].set(x)
-    return _apply_extracted_mass_operator_data(data, full)[row_indices]
-
-
-def _symmetric_pseudoinverse(matrix: jnp.ndarray, *,
-                             relative_tol: float = PSEUDOINVERSE_TOL) -> jnp.ndarray:
-    """PSD (positive-part) pseudoinverse. Both call sites invert Schur
-    complements of SPD operators, which are PSD analytically but can dip
-    slightly negative when rebuilt through an approximate bulk inverse;
-    inverting a near-null eigenvalue by magnitude WITH its roundoff sign
-    injects a huge negative Rayleigh direction and stalls CG (observed as
-    ~1e-2 residual floors in the 2026-08-13 single-level campaign). Negative
-    and sub-cutoff eigenvalues are dropped instead."""
-    matrix = _symmetrize(matrix)
-    eigvals, eigvecs = jnp.linalg.eigh(matrix)
-    scale = jnp.max(jnp.abs(eigvals))
-    safe_scale = jnp.where(scale > 0, scale, 1.0)
-    cutoff = relative_tol * safe_scale
-    inv_eigvals = jnp.where(eigvals > cutoff, 1.0 / eigvals, 0.0)
-    return _symmetrize((eigvecs * inv_eigvals[jnp.newaxis, :]) @ eigvecs.T)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _symmetrize(matrix: jnp.ndarray) -> jnp.ndarray:
@@ -631,19 +412,6 @@ class MetricLumpingMassFactors(eqx.Module):
     starts: tuple = eqx.field(static=True)
 
 
-def _restrict_radial_mass(matrix: jnp.ndarray, radial_start: int, nr: int) -> jnp.ndarray:
-    radial_stop = radial_start + nr
-    if radial_start < 0 or nr < 0 or radial_stop > matrix.shape[0] or radial_stop > matrix.shape[1]:
-        raise ValueError(
-            f"Invalid radial restriction start={radial_start}, nr={nr} for matrix shape {matrix.shape}"
-        )
-    return matrix[radial_start:radial_stop, radial_start:radial_stop]
-
-
-def _core_size(seq) -> int:
-    return 3 * seq.basis_0.nz
-
-
 def _bulk_tensor_shape(seq, dirichlet: bool) -> tuple[int, int, int]:
     nr_bulk = seq.basis_0.nr - 2 - int(dirichlet)
     nt = seq.basis_0.nt
@@ -651,61 +419,9 @@ def _bulk_tensor_shape(seq, dirichlet: bool) -> tuple[int, int, int]:
     return nr_bulk, nt, nz
 
 
-def _k3_extracted_shape(seq) -> tuple[int, int, int]:
-    return seq.basis_3.dr - 1, seq.basis_3.dt, seq.basis_3.dz
-
-
 # ---------------------------------------------------------------------------
 # Diagonal probing utilities (matrix-free, probing-based)
 # ---------------------------------------------------------------------------
-
-def diag_matvec(A_matvec, n, *, dtype=DTYPE, batch_size=16):
-    """Probe ``diag(A)`` from a forward operator on the extracted space.
-
-    The operator is queried on batches of ``batch_size`` canonical basis
-    vectors. This is the matrix-free-compatible way to extract a diagonal.
-    """
-    if n == 0:
-        return jnp.zeros((0,), dtype=dtype)
-    diag_chunks = []
-    for start in range(0, n, batch_size):
-        stop = min(start + batch_size, n)
-        idx = jnp.arange(start, stop)
-        basis = jax.nn.one_hot(idx, n, dtype=dtype)
-        images = jax.vmap(A_matvec)(basis)
-        diag_chunks.append(images[jnp.arange(stop - start), idx])
-    return jnp.concatenate(diag_chunks)
-
-
-def diag_EAET(E, A, E_T=None):
-    """Compute ``diag(E @ A @ E^T)`` via probed matvecs (matrix-free)."""
-    n = E.shape[0]
-    if E_T is None:
-        E_T = E.T
-    dtype = getattr(A, "dtype", getattr(E, "dtype", DTYPE))
-    return diag_matvec(lambda x: E @ (A @ (E_T @ x)), n, dtype=dtype)
-
-
-def diag_EAET_matvec(E, A_matvec, n, E_T=None):
-    """Compute ``diag(E @ A @ E^T)`` with ``A`` given as a matvec (matrix-free)."""
-    if E_T is None:
-        E_T = E.T
-    dtype = getattr(E, "dtype", DTYPE)
-    return diag_matvec(lambda x: E @ A_matvec(E_T @ x), n, dtype=dtype)
-
-
-def diag_schur_complement(apply_DT, diag_inv, n):
-    """Compute ``diag(D @ diag(diag_inv) @ D^T)`` via probed matvecs (matrix-free).
-
-    For each row ``i``: ``e_i^T D diag(diag_inv) D^T e_i =
-    ||diag_inv^{1/2} D^T e_i||^2``.
-    """
-    def entry(i):
-        e_i = jnp.zeros(n).at[i].set(1.0)
-        Dt_ei = apply_DT(e_i)
-        return jnp.dot(Dt_ei, diag_inv * Dt_ei)
-    return jax.lax.map(entry, jnp.arange(n), batch_size=16)
-
 
 # --------------------------------------------------------------------------- #
 # Closed-form diagonal of the WEAK term of the Hodge Laplacian                 #
@@ -1370,12 +1086,6 @@ def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
     toroid 8,16,8 p=2). The right fix is to model the new mass, not to widen a
     bound.
 
-    Practical cost, measured in ``outputs/diag_masslap`` before the swap:
-    ``kind='jacobi'`` iteration counts move by 1-10% (cylinder k=1 free
-    262 -> 287, W7-X k=1 free 1658 -> 1668), while the production
-    ``kind='metric_lumping'`` gets ~9% better. ``_probed_laplacian_diaginv``
-    is exact and unaffected.
-
     No test pins this bound any more: the one that did was gated on the
     plain Kronecker model being the mass kind, so it became a permanent skip
     and was removed. The measurement it carried lives here instead, and
@@ -1427,141 +1137,3 @@ def build_weak_term_raw_diagonal(seq, k: int, *, dirichlet: bool,
     return (raw, info) if return_info else raw
 
 
-def _weak_term_rows_by_apply(seq, operators, k: int, *, dirichlet: bool, indices):
-    """Exact ``diag(W)`` at a handful of extracted rows, by operator applies."""
-    from mrx.operators import (apply_derivative_matrix,  # noqa: PLC0415
-                               apply_mass_matrix_preconditioner)
-
-    lower = k - 1
-    suffix = "_dbc" if dirichlet else ""
-    size = int(getattr(seq, f"n{k}{suffix}"))
-
-    def weak_apply(x):
-        d_t_x = apply_derivative_matrix(
-            seq, x, lower, dirichlet_in=dirichlet,
-            dirichlet_out=dirichlet, transpose=True)
-        inner = apply_mass_matrix_preconditioner(
-            seq, operators, d_t_x, lower, dirichlet=dirichlet, kind='auto')
-        return apply_derivative_matrix(
-            seq, inner, lower, dirichlet_in=dirichlet,
-            dirichlet_out=dirichlet)
-
-    def row(i):
-        return weak_apply(jnp.zeros(size, dtype=DTYPE).at[i].set(1.0))[i]
-
-    # Warm the apply on a concrete vector first: the matrix-free mass plan is
-    # HOST-built, so building it inside the trace raises
-    # TracerArrayConversionError.
-    weak_apply(jnp.zeros(size, dtype=DTYPE))
-    # lax.map in SMALL batches, never a wide vmap: a batched probe fuses into
-    # a transpose kernel that spills registers and crashes ptxas. See
-    # _diagonal_from_matvec.
-    return np.asarray(jax.lax.map(row, jnp.asarray(indices),
-                                  batch_size=PROBE_BATCH_SIZE))
-
-
-def build_weak_term_diagonal(seq, operators, k: int, *, dirichlet: bool, **kwargs):
-    """``diag(E_k W_k E_k^T)``, the weak half of the k>=1 Jacobi Laplacian.
-
-    Bulk extracted rows are pure selectors, so the closed-form raw diagonal
-    supplies them directly.  The ``n_polar * n_zeta`` coupled rows would need
-    off-diagonal raw entries of ``W``; they are taken EXACTLY instead, by one
-    operator apply each.  That is a handful of applies against the probe's one
-    per extracted row -- and it puts the exact value on the near-axis rows,
-    which is where the Kronecker mass model is least accurate.
-    """
-    raw = np.asarray(build_weak_term_raw_diagonal(
-        seq, k, dirichlet=dirichlet, **kwargs))
-
-    e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
-    rows = np.asarray(e.rows)
-    cols = np.asarray(e.cols)
-    vals = np.asarray(e.vals)
-    n_ext = int(e.forward_shape[0])
-    counts = np.bincount(rows, minlength=n_ext)
-
-    diag = np.zeros(n_ext)
-    single = counts[rows] == 1
-    diag[rows[single]] = (vals[single] ** 2) * raw[cols[single]]
-
-    coupled = np.flatnonzero(counts > 1)
-    if coupled.size:
-        diag[coupled] = _weak_term_rows_by_apply(
-            seq, operators, k, dirichlet=dirichlet, indices=coupled)
-    return jnp.asarray(diag, dtype=DTYPE)
-
-
-def build_extracted_laplacian_diagonal(seq, operators, k: int, *, dirichlet: bool,
-                                       **kwargs):
-    """``diag(E_k L_k E_k^T)`` for ``k >= 1``, with no O(N) probe.
-
-    ``L_k = S_k + W_k``.  Both halves are closed form in the raw DOF space --
-    :func:`mrx.local_assembly.build_stiffness_diagonal` exactly, and
-    :func:`build_weak_term_raw_diagonal` under the Kronecker mass model -- and
-    the bulk rows of ``E`` are pure selectors, so the raw diagonal transfers
-    straight through.  The ``n_polar * n_zeta`` coupled rows are taken exactly,
-    by one apply of ``L_k`` each.
-
-    ``L_0 = S_0`` has no weak term at all and is handled by
-    :func:`mrx.local_assembly.build_extracted_stiffness_diagonal_k0`.
-    """
-    from mrx.local_assembly import build_stiffness_diagonal  # noqa: PLC0415
-    from mrx.operators import apply_laplacian_approx  # noqa: PLC0415
-
-    if k not in (1, 2, 3):
-        raise ValueError("use build_extracted_stiffness_diagonal_k0 for k=0")
-
-    raw = (np.asarray(build_stiffness_diagonal(seq, k))
-           + np.asarray(build_weak_term_raw_diagonal(
-               seq, k, dirichlet=dirichlet, **kwargs)))
-
-    e = getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
-    rows = np.asarray(e.rows)
-    cols = np.asarray(e.cols)
-    vals = np.asarray(e.vals)
-    n_ext = int(e.forward_shape[0])
-    counts = np.bincount(rows, minlength=n_ext)
-
-    diag = np.zeros(n_ext)
-    single = counts[rows] == 1
-    diag[rows[single]] = (vals[single] ** 2) * raw[cols[single]]
-
-    coupled = np.flatnonzero(counts > 1)
-
-    # MRX_LAPLACIAN_DIAG_EXACT_RINGS=n also takes the n innermost radial rings
-    # exactly. Every closed-form and transfer model measured so far degrades
-    # sharply on the ring next to the polar block -- the transfer routes by
-    # 20-50x, because V_3's extraction is unitary while V_0's folds that ring
-    # into polar rows -- and it is a thin set, O(n_theta n_zeta) applies, the
-    # same mechanism the coupled rows already use.
-    n_rings = int(os.environ.get("MRX_LAPLACIAN_DIAG_EXACT_RINGS", "0"))
-    if n_rings > 0:
-        shapes_k = [tuple(int(v) for v in sh)
-                    for sh in getattr(seq, f"basis_{k}").shape]
-        starts_k = np.cumsum([0] + [int(np.prod(sh)) for sh in shapes_k])
-        single_rows, single_cols = rows[single], cols[single]
-        comp = np.searchsorted(starts_k[1:], single_cols, side="right")
-        loc = single_cols - starts_k[comp]
-        nt = np.array([sh[1] for sh in shapes_k])[comp]
-        nz = np.array([sh[2] for sh in shapes_k])[comp]
-        i_r = loc // (nt * nz)
-        coupled = np.union1d(coupled, single_rows[i_r < n_rings])
-
-    if coupled.size:
-        size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
-
-        def row(i):
-            x = jnp.zeros(size, dtype=DTYPE).at[i].set(1.0)
-            return apply_laplacian_approx(
-                seq, operators, x, k, dirichlet=dirichlet)[i]
-
-        # Warm the apply outside the trace: its matrix-free mass plan is
-        # host-built and cannot be constructed on tracers.
-        apply_laplacian_approx(
-            seq, operators, jnp.zeros(size, dtype=DTYPE), k,
-            dirichlet=dirichlet)
-        # lax.map in small batches, never a wide vmap -- see
-        # _diagonal_from_matvec.
-        diag[coupled] = np.asarray(jax.lax.map(row, jnp.asarray(coupled),
-                                               batch_size=PROBE_BATCH_SIZE))
-    return jnp.asarray(diag, dtype=DTYPE)
