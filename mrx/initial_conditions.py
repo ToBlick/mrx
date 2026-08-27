@@ -19,9 +19,19 @@ The helicity is the one the relaxation conserves,
 :func:`mrx.relaxation.compute_helicity`: ``H = <A, B + B_harm>`` with ``A``
 the vector potential solved in the Dirichlet 1-form space (``curl A = B -
 B_harm``, ``B_harm`` the harmonic remainder that carries the toroidal flux).
-On a torus a helicity is defined only with the harmonic part fixed this
-way; the profile integral ``int Phi^2 (X/Phi)' drho`` of the natural gauge
-``A = Phi dchi - X dzeta`` is a different gauge and a different number.
+This is the Berger-Field relative helicity with the vacuum field
+``B_harm`` as the reference: splitting the natural-gauge potential
+``A_nat = Phi dchi - X dzeta`` as ``A_D + A_h`` (``curl A_h = B_harm``,
+``A_h`` carrying the wall trace) and integrating by parts once,
+
+    int A_nat ^ B  =  H + <A_h, B_harm>,
+
+so the profile integral ``int Phi^2 (X/Phi)' drho`` of the natural gauge
+differs from ``H`` by the self-helicity of the harmonic part in that gauge
+-- the gauge-dependent piece (it shifts by ``c Phi_edge`` under
+``A -> A + c dzeta``). ``H`` is gauge-invariant and is what the flow
+conserves: ``dH/dt = <E, B + B_harm> + <curl A_D, E> = 2 <v x B, B> = 0``,
+the ``+ B_harm`` being what cancels the harmonic terms.
 
 Three sources of the profiles:
 
