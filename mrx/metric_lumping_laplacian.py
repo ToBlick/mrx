@@ -564,10 +564,6 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
             # mass of the table -- no incidence, no A^-1, and so nothing to
             # mis-scale (the M A^-1 M factor exists only because the round trip
             # drags M_0^-1 in).
-            if not degree0 and not hasattr(seq, "_bj_dd_tables"):
-                from mrx.local_assembly import (  # noqa: PLC0415
-                    _second_derivative_tables)
-                seq._bj_dd_tables = _second_derivative_tables(seq)
             prof = stiff_prof[a]
             if degree0:
                 # p = 1: the DG-0 jump stand-in, in the same (value-scaled)
@@ -577,7 +573,7 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
                 kt = cut(_fd_stiffness_degree0(seq, a, prof), a)
             else:
                 kt = cut(_assemble_weighted_1d_mass(
-                    seq._bj_dd_tables[a], quad_w[a] * prof), a)
+                    seq.dd_basis_jk[a], quad_w[a] * prof), a)
             # a is a derivative axis here; the trace only lives on the
             # RADIAL one (a == 0), the boundary face being r = 1.
             if bc_entry == "ibpd" and a == 0:
@@ -1206,7 +1202,7 @@ class MetricLumpingMass:
 
         size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
         self.core_inv = _dense_symmetric_inverse(_probe_rows(
-            lambda x: apply_mass_matrix(seq, operators, x, k,
+            lambda x: apply_mass_matrix(seq, x, k,
                                         dirichlet=dirichlet),
             size, core), core_tol)
         self._flat = _flatten_payload(self._build_payload())

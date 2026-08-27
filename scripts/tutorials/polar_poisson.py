@@ -48,7 +48,6 @@ def solve(n, p):
     """Return the relative L2 error and the CG iteration count."""
     seq = DeRhamSequence((n, n, 1), (p, p, 0), p + 1,
                          ("clamped", "periodic", "constant"), polar=True)
-    seq.evaluate_1d()
     seq.set_map_and_preconditioners(disk_map, ks=(0,), dirichlets=(True,))
     rhs = seq.load(f, 0, dirichlet=True)
     u_hat, info = seq.apply_inverse_laplacian(rhs, 0, dirichlet=True, return_info=True)

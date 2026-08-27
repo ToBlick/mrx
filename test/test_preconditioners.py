@@ -166,7 +166,7 @@ def test_inverse_mass_roundtrip(tiny_seq, label, k, dbc):
         f"{label} k={k} dbc={dbc} did not converge: info={int(info)}"
     )
     residual = np.asarray(
-        apply_mass_matrix(tiny_seq, ops, x, k, dirichlet=dbc)
+        apply_mass_matrix(tiny_seq, x, k, dirichlet=dbc)
     ) - np.asarray(rhs)
     npt.assert_allclose(
         residual, np.zeros_like(residual), atol=10 * tol * float(jnp.linalg.norm(rhs)),

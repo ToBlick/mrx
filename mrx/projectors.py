@@ -113,30 +113,21 @@ class _GrevilleAxis(NamedTuple):
     span_rule: tuple     # (xs, ws) of _span_quadrature: one Gauss rule per cell
 
 
-def _greville_data(seq) -> tuple[_GrevilleAxis, _GrevilleAxis, _GrevilleAxis]:
-    """Per-axis Greville data, built once per sequence and cached on it.
-
-    Points, spans, collocation and histopolation matrices and the span
-    quadrature depend on the 1-D knot vectors only -- NOT on the geometry --
-    so the cache is keyed on the identity of the 1-D bases rather than on
-    ``seq.geometry`` (cf. ``operators._matrixfree_mass_apply_cached``, whose
-    plan does depend on the map).  Until 2026-08-26 every ``interpolate`` call
-    rebuilt all six matrices.
+def greville_axes(seq) -> tuple[_GrevilleAxis, _GrevilleAxis, _GrevilleAxis]:
+    """Per-axis Greville data of ``seq``: points, spans, collocation and
+    histopolation matrices and the span quadrature. They depend on the 1-D
+    knot vectors only, so the sequence builds them once in ``__init__``
+    (``seq.greville``).
     """
-    bases = tuple(seq.basis_0.Λ)
-    cache = getattr(seq, '_greville_cache', None)
-    if cache is not None and all(a is b for a, b in zip(cache[0], bases)):
-        return cache[1]
     axes = []
-    for lam, d in zip(bases, seq.basis_0.dΛ):
+    for lam, d in zip(seq.basis_0.Λ, seq.basis_0.dΛ):
         pts = lam.greville_points()
         axes.append(_GrevilleAxis(
             coll=lam.collocation_matrix(pts),
             hist=d.histopolation_matrix(),
             point_rule=(pts[:, None], jnp.ones((pts.shape[0], 1), dtype=pts.dtype)),
             span_rule=_span_quadrature(d, d.greville_spans())))
-    seq._greville_cache = (bases, tuple(axes))
-    return seq._greville_cache[1]
+    return tuple(axes)
 
 
 #: PERIODIC SPANS CROSS THE SEAM AT EVEN p.  Periodic Greville points sit ON
@@ -460,7 +451,7 @@ def _interpolate_0form(seq, f, dirichlet: bool) -> Array:
     if exact is not None:
         return exact
 
-    axes = _greville_data(seq)
+    axes = seq.greville
     x_r, x_t, x_z = (ax.point_rule[0][:, 0] for ax in axes)
 
     r, t, z = jnp.meshgrid(x_r, x_t, x_z, indexing='ij')
@@ -537,7 +528,7 @@ def _histopolate_vector(seq, pullback, e, histopolated) -> Array:
     collocation matrix) along axis ``j``: for a 1-form the component's own
     axis, for a 2-form the two others.
     """
-    axes = _greville_data(seq)
+    axes = seq.greville
     coeffs = []
     for c in range(3):
         rules = tuple(ax.span_rule if histopolated(c, j) else ax.point_rule
@@ -582,7 +573,7 @@ def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
     if exact is not None:
         return exact
 
-    axes = _greville_data(seq)
+    axes = seq.greville
     moments = _greville_moments(
         seq, lambda x: _as_single_component(f(_wrap_periodic_point(seq, x)))[0],
         tuple(ax.span_rule for ax in axes))

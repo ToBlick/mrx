@@ -150,15 +150,13 @@ class SequenceGeometry(eqx.Module):
     def from_spline_map(cls, spline_map, seq) -> "SequenceGeometry":
         """Sum-factorized geometry builder for tensor-product spline maps.
 
-        Requires that ``seq.evaluate_1d()`` has already been called (so
-        ``seq.basis_{r,t,z}_jk`` / ``seq.d_basis_{r,t,z}_jk`` are
-        populated) and that ``spline_map.extraction_T`` is set.
+        Uses ``seq.basis_{r,t,z}_jk`` / ``seq.d_basis_{r,t,z}_jk`` and needs
+        ``spline_map.extraction_T`` set.
 
         Args:
             spline_map: A :class:`~mrx.mappings.SplineMap` with
                 ``coefficients`` and ``extraction_T`` populated.
-            seq: A :class:`~mrx.derham_sequence.DeRhamSequence` with
-                ``evaluate_1d()`` already called.
+            seq: A :class:`~mrx.derham_sequence.DeRhamSequence` with.
 
         Returns:
             A fully populated :class:`SequenceGeometry`.
@@ -167,11 +165,7 @@ class SequenceGeometry(eqx.Module):
             raise ValueError(
                 "SplineMap.extraction_T must be set for the sum-factorized "
                 "geometry path; construct the map via "
-                "seq.build_spline_map(coefficients) or pass seq.e0_T.")
-        if not hasattr(seq, "basis_r_jk"):
-            raise ValueError(
-                "Call seq.evaluate_1d() before constructing a "
-                "SequenceGeometry from a SplineMap.")
+                "seq.build_spline_map(coefficients) or pass seq.e0.T.")
         _, DF_jkl = spline_map_F_DF_at_quad(
             spline_map.coefficients, spline_map.extraction_T, seq)
         return cls.from_DF(spline_map, DF_jkl)
@@ -189,7 +183,7 @@ def _coeffs_to_raw_grid(coefficients, extraction_T, nr, nt, nz):
             extracted basis.
         extraction_T: :class:`~mrx.extraction_operators.MatrixFreeExtraction`
             of shape ``(n_raw, n_dof)`` — the transpose of the extraction
-            operator ``E`` (usually ``seq.e0_T``).
+            operator ``E`` (usually ``seq.e0.T``).
         nr: Raw tensor-product size in the r direction.
         nt: Raw tensor-product size in the t direction.
         nz: Raw tensor-product size in the z direction.
@@ -227,15 +221,14 @@ def spline_map_F_DF_at_quad(coefficients, extraction_T, seq):
     """Evaluate ``F`` and ``DF`` at the sequence's quadrature grid.
 
     Uses the precomputed 1D basis / derivative values
-    ``seq.basis_{r,t,z}_jk`` and ``seq.d_basis_{r,t,z}_jk`` (populated
-    by ``seq.evaluate_1d()``).
+    ``seq.basis_{r,t,z}_jk`` and ``seq.d_basis_{r,t,z}_jk`` (built by the
+    sequence).
 
     Args:
         coefficients: ``(3, n_dof)`` spline coefficients of the map.
         extraction_T: Transpose of the extraction operator, shape
             ``(n_raw, n_dof)``.
-        seq: :class:`~mrx.derham_sequence.DeRhamSequence` with
-            ``evaluate_1d()`` already called.
+        seq: :class:`~mrx.derham_sequence.DeRhamSequence` with.
 
     Returns:
         Tuple ``(F_q, DF_q)``:
@@ -283,8 +276,7 @@ def spline_map_jacobian_j_at_quad(coefficients, extraction_T, seq):
     Args:
         coefficients: ``(3, n_dof)`` spline coefficients of the map.
         extraction_T: Transpose of the extraction operator.
-        seq: :class:`~mrx.derham_sequence.DeRhamSequence` with
-            ``evaluate_1d()`` already called.
+        seq: :class:`~mrx.derham_sequence.DeRhamSequence` with.
 
     Returns:
         ``(N_q,)`` array of Jacobian determinants.
@@ -303,8 +295,7 @@ def min_jacobian_from_coeffs(coefficients, extraction_T, seq):
     Args:
         coefficients: ``(3, n_dof)`` spline coefficients of the map.
         extraction_T: Transpose of the extraction operator.
-        seq: :class:`~mrx.derham_sequence.DeRhamSequence` with
-            ``evaluate_1d()`` already called.
+        seq: :class:`~mrx.derham_sequence.DeRhamSequence` with.
 
     Returns:
         Scalar minimum Jacobian determinant over all quadrature points.
@@ -324,15 +315,14 @@ def greville_interpolate_map(F_analytic: Callable, seq) -> jnp.ndarray:
     systems, returning a coefficient array suitable for
     :meth:`~mrx.derham_sequence.DeRhamSequence.set_spline_map`.
 
-    No mass matrix is required; the only prerequisite is
-    :meth:`~mrx.derham_sequence.DeRhamSequence.evaluate_1d`.
+    No mass matrix is required.
 
     Args:
         F_analytic: Analytic map ``F: R^3 -> R^3`` mapping logical coordinates
             ``(r, θ, ζ) ∈ [0, 1]^3`` to physical Cartesian coordinates
             ``(X, Y, Z)``.
         seq: :class:`~mrx.derham_sequence.DeRhamSequence` to interpolate into.
-            Must have ``evaluate_1d()`` called.  Polar and periodic sequences
+            Polar and periodic sequences
             are supported (the polar rows are restricted conformingly, see
             :func:`mrx.projectors.interpolate`).
 
@@ -358,14 +348,13 @@ def greville_interpolate_stellarator_map(
     0-form via Greville collocation, and wraps the result in
     :func:`~mrx.mappings.stellarator_map`.
 
-    No mass matrix is required; the only prerequisite is
-    :meth:`~mrx.derham_sequence.DeRhamSequence.evaluate_1d`.
+    No mass matrix is required.
 
     Args:
         F_analytic: Analytic map ``F: R^3 -> R^3`` returning Cartesian
             ``(X, Y, Z)``.
         seq: :class:`~mrx.derham_sequence.DeRhamSequence` to use for
-            interpolation.  Must have ``evaluate_1d()`` called.  Typically
+            interpolation.  Typically
             built with ``('clamped', 'periodic', 'periodic')`` boundary
             conditions and ``polar=False``.
         nfp: Number of field periods.

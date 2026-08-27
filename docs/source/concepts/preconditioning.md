@@ -123,11 +123,9 @@ Same file, same shape, simpler algebra: a mass is a single Kronecker product,
 so the bulk inverse is three 1D dense solves with no fast diagonalisation
 (`_kron_mass_model_1d`, `_apply_mass_payload`). The polar core is probed
 with `apply_mass_matrix` and inverted densely; there is no pseudoinverse of
-the extraction anywhere. Built lazily on first use and memoised on
-`seq._mass_metric_lumping_cache`, keyed on geometry identity. The build is
-host-side and not jit-safe; `warm_mass_preconditioner_cache(seq, ops)` builds
-every `(k, BC)` before a traced loop. `assemble_mass_metric_lumping_preconditioner`
-builds them eagerly.
+the extraction anywhere. Built by `assemble_mass_metric_lumping_preconditioner`
+(inside `build_preconditioners`) and stored on `operators.mass_lumping`,
+keyed `(k, dirichlet)`; nothing builds one on first use.
 
 ## 5. Building and invalidation
 

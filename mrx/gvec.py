@@ -179,7 +179,6 @@ def _spline_scalars(R_fn, Z_fn, map_ns, p):
     """
     map_seq = DeRhamSequence(map_ns, (p, p, p), p + 1,
                              ("clamped", "periodic", "periodic"), polar=True)
-    map_seq.evaluate_1d()
     R_h = DiscreteFunction(map_seq.interpolate(R_fn, 0), map_seq.basis_0, map_seq.e0)
     Z_h = DiscreteFunction(map_seq.interpolate(Z_fn, 0), map_seq.basis_0, map_seq.e0)
     return R_h, Z_h, map_seq

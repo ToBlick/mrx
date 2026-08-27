@@ -4,8 +4,7 @@ Design
 ------
 The sequence separates what never changes from what a map changes.
 
-**Static (on the sequence, built once in** ``__init__`` **and** ``evaluate_1d``
-**):** the 1-D spline bases and their quadrature tables, the DoF counts, the
+**Static (on the sequence, built once in** ``__init__`` **):** the 1-D spline bases and their quadrature tables, the DoF counts, the
 polar weights ``xi``, the extraction operators ``e0 .. e3`` (free, Dirichlet
 and boundary flavours), and the topological incidence stencils (``g0``,
 ``g1``, ``g2`` and the polar grad/curl corrections). All of this depends on
@@ -34,22 +33,22 @@ of it -> the bundle; depends on the bases only -> the sequence.
 The ``apply_*`` methods are forwarders to the free functions in
 :mod:`mrx.operators` with ``self`` and ``self.operators`` filled in.
 """
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 
 import mrx
 from mrx.differential_forms import DifferentialForm
 from mrx.extraction_operators import (BoundaryOperator,
-                                      MatrixFreeExtraction,
                                       PolarExtractionOperator,
-                                      bc_extraction_op, get_xi, get_xi2)
+                                      bc_extraction_op, get_xi)
 from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
                            find_nullspace_vectors, get_nullspace,
                            get_saddle_point_nullspaces, init_nullspaces)
 import mrx.operators as op
-from mrx.operators import SequenceOperators
-from mrx.projectors import load as _load, interpolate as _interpolate
+from mrx.local_assembly import (_second_derivative_tables,
+                                build_matrixfree_mass_apply,
+                                build_matrixfree_projection_apply)
+from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
 from mrx.geometry import SequenceGeometry, grad_1d
 
@@ -57,66 +56,14 @@ from mrx.geometry import SequenceGeometry, grad_1d
 
 
 
-_EXTRACTION_OPERATOR_NAMES = (
-    'e0', 'e0_T', 'e0_dbc', 'e0_dbc_T', 'e0_bc', 'e0_bc_T',
-    'e1', 'e1_T', 'e1_dbc', 'e1_dbc_T', 'e1_bc', 'e1_bc_T',
-    'e2', 'e2_T', 'e2_dbc', 'e2_dbc_T', 'e2_bc', 'e2_bc_T',
-    'e3', 'e3_T', 'e3_dbc', 'e3_dbc_T', 'e3_bc', 'e3_bc_T',
-)
-
-
-def _drop_schur_diaginv(operators):
-    """Clear every stored Schur-Jacobi diagonal.
-
-    These are the one geometry-dependent cache that cannot look after itself.
-    ``seq._metric_lumping_laplacian`` is deleted by ``set_geometry`` and
-    ``seq._mass_metric_lumping_cache`` is keyed on geometry identity, but the
-    Schur diagonals are fields on the ``SequenceOperators`` bundle, which
-    ``set_geometry`` never sees. Reusing a bundle across a geometry change would
-    therefore carry the previous metric's diagonals forward silently.
-
-    Cheap to drop: they are re-probed on demand.
-    """
-    fields, values = [], []
-    for k in (1, 2, 3):
-        for suffix in ('', '_dbc'):
-            fields.append(f'schur_diaginv_k{k}{suffix}')
-    values = [None] * len(fields)
-    return eqx.tree_at(
-        lambda ops: tuple(getattr(ops, f) for f in fields),
-        operators,
-        tuple(values),
-        is_leaf=lambda x: x is None,
-    )
-
-
-def _operator_bundle_field_property(name: str):
-    def getter(self):
-        return getattr(self._require_operators(), name)
-
-    def setter(self, value):
-        operators = self.get_operators()
-        if operators is None:
-            operators = SequenceOperators()
-        operators = eqx.tree_at(
-            lambda ops: getattr(ops, name),
-            operators,
-            value,
-            is_leaf=lambda x: x is None,
-        )
-        self.operators = operators
-
-    return property(getter, setter)
-
-
 class DeRhamSequence():
     """Discrete de Rham sequence on a mapped 3-D domain.
 
     Holds four ``DifferentialForm`` objects (``basis_0`` … ``basis_3``),
-    a ``QuadratureRule``, a ``SequenceGeometry``, and extraction/boundary
-    operators for each form degree.  After calling :meth:`assemble_all_sparse`
-    (or the individual ``assemble_*`` methods), operator application methods
-    become available.
+    a ``QuadratureRule``, the extraction and incidence operators of every
+    form degree (all static), the ``SequenceGeometry`` installed by
+    :meth:`set_map`, and the :class:`~mrx.operators.SequenceOperators`
+    bundle built by :meth:`build_preconditioners`.
 
     Attributes
     ----------
@@ -130,30 +77,44 @@ class DeRhamSequence():
         Tensor-product Gauss quadrature rule used for assembly.
     geometry : SequenceGeometry
         Metric and Jacobian data derived from the logical-to-physical map.
+    xi : jnp.ndarray or None
+        Polar extraction weights ``(3, 2, n_θ)`` (:func:`~mrx.extraction_operators.get_xi`);
+        ``None`` on a non-polar sequence.
     e0, e1, e2, e3 : MatrixFreeExtraction
         Extraction operators mapping constrained DOF vectors to the full
-        spline basis for each form degree (no Dirichlet BCs).
+        spline basis for each form degree (no Dirichlet BCs). ``.T`` is the
+        transpose.
     e0_dbc, e1_dbc, e2_dbc, e3_dbc : MatrixFreeExtraction
         Extraction operators with homogeneous Dirichlet BCs applied at
         the radial boundary (or axis in polar coordinates).
-    basis_r_jk : jnp.ndarray
-        Radial 0-form basis splines evaluated at radial quadrature points.
-        Shape ``(n_qr, n_r)``.  Populated by :meth:`evaluate_1d`.
-    basis_t_jk : jnp.ndarray
-        Poloidal 0-form basis splines evaluated at poloidal quadrature
-        points.  Shape ``(n_qθ, n_θ)``.  Populated by :meth:`evaluate_1d`.
-    basis_z_jk : jnp.ndarray
-        Toroidal 0-form basis splines evaluated at toroidal quadrature
-        points.  Shape ``(n_qζ, n_ζ)``.  Populated by :meth:`evaluate_1d`.
-    d_basis_r_jk : jnp.ndarray
-        Radial derivative splines evaluated at radial quadrature points.
-        Shape ``(n_qr, n_r)``.  Populated by :meth:`evaluate_1d`.
-    d_basis_t_jk : jnp.ndarray
-        Poloidal derivative splines evaluated at poloidal quadrature
-        points.  Shape ``(n_qθ, n_θ)``.  Populated by :meth:`evaluate_1d`.
-    d_basis_z_jk : jnp.ndarray
-        Toroidal derivative splines evaluated at toroidal quadrature
-        points.  Shape ``(n_qζ, n_ζ)``.  Populated by :meth:`evaluate_1d`.
+    e0_bc, e1_bc, e2_bc, e3_bc : MatrixFreeExtraction
+        Extraction of the boundary DOFs (those in ``e_k`` but not ``e_k_dbc``).
+    g0, g1, g2 : _MatrixFreeIncidence
+        Raw {-1, 0, +1} incidence stencils (grad, curl, div) and their
+        transposes ``g*_T``.
+    g0_grad, g1_curl : dict or None
+        Analytic polar grad/curl stencils on extracted DoFs, keyed
+        ``(dirichlet_in, dirichlet_out)``; ``None`` on a non-polar sequence.
+    geometry : SequenceGeometry or None
+        Metric and Jacobian data of the installed map (:meth:`set_map`).
+    mass_apply, projection_apply : dict or None
+        Matrix-free raw-DOF applies of ``M_k`` and ``P_{k_in k_out}``, built
+        with the geometry.
+    operators : SequenceOperators or None
+        Preconditioners and harmonic forms of the installed geometry
+        (:meth:`build_preconditioners`).
+    basis_r_jk, basis_t_jk, basis_z_jk : jnp.ndarray
+        0-form basis splines at the quadrature points of each direction,
+        ``(n_q, n)``.
+    d_basis_r_jk, d_basis_t_jk, d_basis_z_jk : jnp.ndarray
+        Derivative-basis splines at the quadrature points, ``(n_q, n)``.
+    dd_basis_jk : tuple of jnp.ndarray
+        Second derivatives of the derivative-basis splines at the
+        quadrature points, per direction (the metric-lumping stiffness
+        tables).
+    greville : tuple of _GrevilleAxis
+        Greville points, collocation/histopolation matrices and span
+        quadrature per direction (:func:`mrx.projectors.greville_axes`).
     """
     ns: tuple[int, int, int]
     ps: tuple[int, int, int]
@@ -163,14 +124,6 @@ class DeRhamSequence():
     basis_3: DifferentialForm
     quad: QuadratureRule
     geometry: SequenceGeometry
-    e0: MatrixFreeExtraction
-    e1: MatrixFreeExtraction
-    e2: MatrixFreeExtraction
-    e3: MatrixFreeExtraction
-    e0_dbc: MatrixFreeExtraction
-    e1_dbc: MatrixFreeExtraction
-    e2_dbc: MatrixFreeExtraction
-    e3_dbc: MatrixFreeExtraction
     basis_r_jk: jnp.ndarray
     basis_t_jk: jnp.ndarray
     basis_z_jk: jnp.ndarray
@@ -178,34 +131,9 @@ class DeRhamSequence():
     d_basis_t_jk: jnp.ndarray
     d_basis_z_jk: jnp.ndarray
 
-    e0 = _operator_bundle_field_property('e0')
-    e0_T = _operator_bundle_field_property('e0_T')
-    e0_dbc = _operator_bundle_field_property('e0_dbc')
-    e0_dbc_T = _operator_bundle_field_property('e0_dbc_T')
-    e0_bc = _operator_bundle_field_property('e0_bc')
-    e0_bc_T = _operator_bundle_field_property('e0_bc_T')
-    e1 = _operator_bundle_field_property('e1')
-    e1_T = _operator_bundle_field_property('e1_T')
-    e1_dbc = _operator_bundle_field_property('e1_dbc')
-    e1_dbc_T = _operator_bundle_field_property('e1_dbc_T')
-    e1_bc = _operator_bundle_field_property('e1_bc')
-    e1_bc_T = _operator_bundle_field_property('e1_bc_T')
-    e2 = _operator_bundle_field_property('e2')
-    e2_T = _operator_bundle_field_property('e2_T')
-    e2_dbc = _operator_bundle_field_property('e2_dbc')
-    e2_dbc_T = _operator_bundle_field_property('e2_dbc_T')
-    e2_bc = _operator_bundle_field_property('e2_bc')
-    e2_bc_T = _operator_bundle_field_property('e2_bc_T')
-    e3 = _operator_bundle_field_property('e3')
-    e3_T = _operator_bundle_field_property('e3_T')
-    e3_dbc = _operator_bundle_field_property('e3_dbc')
-    e3_dbc_T = _operator_bundle_field_property('e3_dbc_T')
-    e3_bc = _operator_bundle_field_property('e3_bc')
-    e3_bc_T = _operator_bundle_field_property('e3_bc_T')
-
     def __init__(self, ns, ps, q, types, *, polar,
                  tol=None, maxiter=10_000,
-                 r_scale=1.0, knots=None, polar_ring1=None, polar_order=1,
+                 r_scale=1.0, knots=None,
                  n_inner=5, betti_numbers=(1, 1, 0, 0)):
         """Construct a de Rham sequence.
 
@@ -244,19 +172,6 @@ class DeRhamSequence():
             ``T_r = [0]*p + breakpoints + [1]*p``. Lets multigrid coarse
             levels ANCHOR the first radial breakpoint (identical polar-core
             footprint across levels) instead of re-grading.
-        polar_ring1 : array_like, optional
-            ``(2, ns[1])`` first-ring control-point offsets
-            ``(ΔR_j, ΔY_j)`` from the pole, forwarded to :func:`get_xi`
-            for map-adapted polar extraction weights. ``None`` keeps the
-            unit-circle specialization (exact whenever ``∂F/∂r`` at the
-            axis is pure ``m=±1``). Axisymmetric maps only (ξ is shared
-            across ζ-planes).
-        polar_order : int, optional
-            Pole regularity order for 0-forms: 1 (default, C¹ — 3 polar
-            functions from rings 0-1), 2 (C² — 6 polar functions from
-            rings 0-2, :func:`get_xi2`; k >= 1 spaces stay C¹, so only the
-            k=0 pipeline is supported at order 2) or 0 (C⁰ — one polar DOF
-            per ζ-plane, ring 1 free; k >= 1 spaces stay C¹).
         n_inner : int, optional
             Number of inner CG iterations used by block preconditioners.
         betti_numbers : tuple of 4 ints, optional
@@ -268,17 +183,20 @@ class DeRhamSequence():
 
         Notes
         -----
-        Geometry is no longer installed during construction. Call
-        :meth:`set_map` or :meth:`set_spline_map` explicitly after building
-        the sequence.
+        Everything static is built here. The geometry is installed by
+        :meth:`set_map` or :meth:`set_spline_map`, the preconditioners by
+        :meth:`build_preconditioners`.
         """
         self.ns = tuple(ns)
         self.ps = tuple(ps)
-        self.polar_order = polar_order
+        self.polar = bool(polar)
         self.tol = mrx.sqrt_eps() if tol is None else tol
         self.maxiter = maxiter
         self.n_inner = n_inner
         self.geometry = None
+        self.mass_apply = None
+        self.projection_apply = None
+        self.operators = None
         assert len(betti_numbers) == 4, "betti_numbers must have length 4"
         self.betti_numbers = tuple(betti_numbers)
         Ts = list(knots) if knots is not None else [None] * 3
@@ -302,103 +220,51 @@ class DeRhamSequence():
         ]
         self.quad = QuadratureRule(self.basis_0, q)
 
+        bases = (self.basis_0, self.basis_1, self.basis_2, self.basis_3)
+        self.xi = get_xi(ns[1]) if polar else None
         if polar:
-            xi = get_xi(ns[1], ring1=polar_ring1)
-            xi0 = xi
-            if polar_order == 0:
-                # C⁰ pole regularity: single-valuedness only — ring 0
-                # collapses to ONE polar DOF per ζ-plane, ring 1 stays
-                # free. Largest space of the family (V_C² ⊂ V_C¹ ⊂ V_C⁰),
-                # still H¹-conforming; isolates what pole regularity buys.
-                xi0 = jnp.ones((1, 1, ns[1]), dtype=mrx.DTYPE)
-            elif polar_order == 2:
-                # C² pole regularity for 0-forms: 6 polar functions from
-                # rings 0-2 (collocated C², see get_xi2). k = 1, 2, 3
-                # extractions stay C¹ — the k=0 stiffness/mass/load paths
-                # touch only e0 (tensor incidence + tensor mass sandwich),
-                # so the Poisson k=0 pipeline is fully C²-consistent; the
-                # C² de Rham rework for k >= 1 is deferred.
-                if polar_ring1 is not None:
-                    raise NotImplementedError(
-                        "polar_order=2 with map-adapted polar_ring1 needs "
-                        "ring-2 map data; not wired yet")
-                xi0 = get_xi2(ns[1], self.basis_0.Λ[0])
-            elif polar_order != 1:
-                raise ValueError(f"polar_order must be 0, 1 or 2, got {polar_order}")
-            e0 = PolarExtractionOperator(self.basis_0, xi0, False)
-            e0_dbc = PolarExtractionOperator(self.basis_0, xi0, True)
-            e1, e2, e3 = [
-                PolarExtractionOperator(Λ, xi, False)
-                for Λ in [self.basis_1, self.basis_2, self.basis_3]
-            ]
-            e1_dbc, e2_dbc, e3_dbc = [
-                PolarExtractionOperator(Λ, xi, True)
-                for Λ in [self.basis_1, self.basis_2, self.basis_3]
-            ]
-
+            raw = [PolarExtractionOperator(L, self.xi, False) for L in bases]
+            raw_dbc = [PolarExtractionOperator(L, self.xi, True) for L in bases]
         else:
-            # TODO: right now, we only support dirichlet BCs in r
-            e0, e1, e2, e3 = [
-                BoundaryOperator(
-                    Λ, ('none', 'none', 'none'))
-                for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
-            ]
-            e0_dbc, e1_dbc, e2_dbc, e3_dbc = [
-                BoundaryOperator(
-                    Λ, ('dirichlet', 'none', 'none'))
-                for Λ in [self.basis_0, self.basis_1, self.basis_2, self.basis_3]
-            ]
+            # Dirichlet conditions are supported in r only.
+            raw = [BoundaryOperator(L, ('none', 'none', 'none')) for L in bases]
+            raw_dbc = [BoundaryOperator(L, ('dirichlet', 'none', 'none')) for L in bases]
+        for k in range(4):
+            e, e_dbc = raw[k].build_extraction(), raw_dbc[k].build_extraction()
+            setattr(self, f"e{k}", e)
+            setattr(self, f"e{k}_dbc", e_dbc)
+            setattr(self, f"e{k}_bc", bc_extraction_op(e, e_dbc, bases[k].n))
+            setattr(self, f"n{k}", raw[k].n)
+            setattr(self, f"n{k}_dbc", raw_dbc[k].n)
+            setattr(self, f"n{k}_bc", raw[k].n - raw_dbc[k].n)
+            for c in (1, 2, 3):
+                setattr(self, f"n{k}_{c}", getattr(raw[k], f"n{c}"))
+                setattr(self, f"n{k}_{c}_dbc", getattr(raw_dbc[k], f"n{c}"))
 
-        def _mf_pair(mf):
-            return mf, mf.T
+        # 1-D basis tables at the quadrature points, and the Greville data.
+        for name, funcs, x in (("basis_r_jk", self.basis_0.Λ, self.quad.x_x),
+                               ("basis_t_jk", self.basis_0.Λ, self.quad.x_y),
+                               ("basis_z_jk", self.basis_0.Λ, self.quad.x_z),
+                               ("d_basis_r_jk", self.basis_0.dΛ, self.quad.x_x),
+                               ("d_basis_t_jk", self.basis_0.dΛ, self.quad.x_y),
+                               ("d_basis_z_jk", self.basis_0.dΛ, self.quad.x_z)):
+            f = funcs[("r", "t", "z").index(name.split("_")[-2][-1])]
+            setattr(self, name, jax.vmap(jax.vmap(f, (0, None)), (None, 0))(x, f.ns))
+        self.dd_basis_jk = _second_derivative_tables(self)
+        self.greville = greville_axes(self)
 
-        e0_mf = e0.build_extraction()
-        e0_dbc_mf = e0_dbc.build_extraction()
-        self.e0, self.e0_T = _mf_pair(e0_mf)
-        self.e0_dbc, self.e0_dbc_T = _mf_pair(e0_dbc_mf)
-        self.e0_bc, self.e0_bc_T = _mf_pair(
-            bc_extraction_op(e0_mf, e0_dbc_mf, self.basis_0.n))
-        self.n0 = e0.n
-        self.n0_dbc = e0_dbc.n
-        self.n0_bc = e0.n - e0_dbc.n
-        self.n0_1, self.n0_2, self.n0_3 = e0.n, 0, 0
-        self.n0_1_dbc, self.n0_2_dbc, self.n0_3_dbc = e0_dbc.n, 0, 0
-
-        e1_mf = e1.build_extraction()
-        e1_dbc_mf = e1_dbc.build_extraction()
-        self.e1, self.e1_T = _mf_pair(e1_mf)
-        self.e1_dbc, self.e1_dbc_T = _mf_pair(e1_dbc_mf)
-        self.e1_bc, self.e1_bc_T = _mf_pair(
-            bc_extraction_op(e1_mf, e1_dbc_mf, self.basis_1.n))
-        self.n1 = e1.n
-        self.n1_dbc = e1_dbc.n
-        self.n1_bc = e1.n - e1_dbc.n
-        self.n1_1, self.n1_2, self.n1_3 = e1.n1, e1.n2, e1.n3
-        self.n1_1_dbc, self.n1_2_dbc, self.n1_3_dbc = e1_dbc.n1, e1_dbc.n2, e1_dbc.n3
-
-        e2_mf = e2.build_extraction()
-        e2_dbc_mf = e2_dbc.build_extraction()
-        self.e2, self.e2_T = _mf_pair(e2_mf)
-        self.e2_dbc, self.e2_dbc_T = _mf_pair(e2_dbc_mf)
-        self.e2_bc, self.e2_bc_T = _mf_pair(
-            bc_extraction_op(e2_mf, e2_dbc_mf, self.basis_2.n))
-        self.n2 = e2.n
-        self.n2_dbc = e2_dbc.n
-        self.n2_bc = e2.n - e2_dbc.n
-        self.n2_1, self.n2_2, self.n2_3 = e2.n1, e2.n2, e2.n3
-        self.n2_1_dbc, self.n2_2_dbc, self.n2_3_dbc = e2_dbc.n1, e2_dbc.n2, e2_dbc.n3
-
-        e3_mf = e3.build_extraction()
-        e3_dbc_mf = e3_dbc.build_extraction()
-        self.e3, self.e3_T = _mf_pair(e3_mf)
-        self.e3_dbc, self.e3_dbc_T = _mf_pair(e3_dbc_mf)
-        self.e3_bc, self.e3_bc_T = _mf_pair(
-            bc_extraction_op(e3_mf, e3_dbc_mf, self.basis_3.n))
-        self.n3 = e3.n
-        self.n3_dbc = e3_dbc.n
-        self.n3_bc = e3.n - e3_dbc.n
-        self.n3_1, self.n3_2, self.n3_3 = e3.n1, e3.n2, e3.n3
-        self.n3_1_dbc, self.n3_2_dbc, self.n3_3_dbc = e3_dbc.n1, e3_dbc.n2, e3_dbc.n3
+        # Topological incidence: the raw stencils and, on polar sequences, the
+        # analytic grad/curl corrections that make d.d = 0 exact on extracted
+        # DoFs (div needs none: the V3 extraction is a 0/1 selection).
+        for k in range(3):
+            g, g_T = op.build_matrixfree_incidence(self, k)
+            setattr(self, f"g{k}", g)
+            setattr(self, f"g{k}_T", g_T)
+        self.g0_grad = self.g1_curl = None
+        if polar:
+            pairs = [(din, dout) for din in (False, True) for dout in (False, True)]
+            self.g0_grad = {pr: op.build_grad_stencil_g0(self, self.xi, *pr) for pr in pairs}
+            self.g1_curl = {pr: op.build_curl_stencil_g1(self, self.xi, *pr) for pr in pairs}
 
     def load(self, f, k: int, dirichlet: bool = False, bc: bool = False,
              frame: str = 'phys'):
@@ -488,152 +354,69 @@ class DeRhamSequence():
         return get_nullspace(self._require_operators(), 3, True)
 
     def set_geometry(self, geometry: SequenceGeometry):
-        """Replace the geometry attached to this sequence.
+        """Install a geometry and build the matrix-free mass and projection applies from it.
 
-        Drops any block-Jacobi Laplacian atoms with it. They are factorisations
-        of ``L_k`` for the OLD metric, so keeping them would precondition the
-        wrong operator -- silently, as slow convergence. (The mass block-Jacobi
-        cache already keys on geometry identity and rebuilds itself; this cache
-        is keyed on ``(k, BC)`` alone and cannot.)
-
-        Rebuilding is the caller's job, not this method's: see
-        :meth:`set_map_and_preconditioners`. Dropping here only makes the next
-        solve fail loudly instead of quietly using the previous geometry's
-        factorisation.
+        Drops the operator bundle: every preconditioner and harmonic form on
+        it was built for the previous metric, and a stale one would
+        precondition the wrong operator silently (slow convergence, nothing
+        else). Call :meth:`build_preconditioners` again.
         """
         self.geometry = geometry
-        from mrx.operators import METRIC_LUMPING_CACHE_ATTR  # noqa: PLC0415
-        if hasattr(self, METRIC_LUMPING_CACHE_ATTR):
-            delattr(self, METRIC_LUMPING_CACHE_ATTR)
+        self.mass_apply = {k: build_matrixfree_mass_apply(self, k, geometry)
+                           for k in range(4)}
+        self.projection_apply = {pair: build_matrixfree_projection_apply(self, *pair)
+                                 for pair in ((1, 2), (2, 1), (0, 3), (3, 0))}
+        self.operators = None
 
-    def build_preconditioners(self, *, ks=(0, 1, 2, 3),
-                              dirichlets=(False, True), operators=None):
-        """Build every preconditioner that depends on the installed geometry.
+    def build_preconditioners(self, *, ks=(0, 1, 2, 3), dirichlets=(False, True),
+                              schur_jacobi=False):
+        """Build every preconditioner of the installed geometry; install and return the bundle.
 
-        Requires a geometry; does NOT install one. Building a sequence WITHOUT
-        preconditioners is a first-class path -- for purely geometrical work
-        ``set_map`` alone is the whole setup, and this is a separate, deliberate
-        step rather than something you forgot.
+        A fresh :class:`~mrx.operators.SequenceOperators` with, for each
+        ``k`` in ``ks`` and each BC in ``dirichlets``: the Jacobi mass
+        diagonal, the metric-lumped mass atom, the Jacobi Laplacian diagonal
+        and the metric-lumped Laplacian atom (the production preconditioners
+        of every solve through the sequence). ``schur_jacobi=True`` also
+        probes the Schur diagonals that ``schur.outer='jacobi'`` needs (the
+        comparison baseline and the shift-and-invert nullspace route; O(n_k)
+        applies per pair, so off by default).
 
-        Call it AGAIN after any geometry change. That is the point of it being
-        a method rather than a stage inside ``set_map``: the g payload moves and
-        every factorisation of the old metric has to go.
+        Nothing on the bundle is built anywhere else, and nothing on it
+        survives a geometry change: after :meth:`set_map` call this again, and
+        recompute the harmonic forms (:meth:`compute_nullspaces`), which live
+        on the bundle too. That is the contract for an outer loop over
+        geometries.
 
-        Equivalent to, and replaceable by::
+        Building a sequence WITHOUT preconditioners is a first-class path:
+        for purely geometrical work ``set_map`` alone is the whole setup.
 
-            ops = op.assemble_incidence_operators(seq)
-            ops = assemble_mass_jacobi_preconditioner(seq, ops, ks=ks)
-            ops = assemble_metric_lumping_laplacian_preconditioner(
-                seq, ops, ks=ks, dirichlets=dirichlets)
-            # ... plus warming the mass cache outside any trace
-            seq.set_operators(ops)
-
-        WHAT A RE-CALL HAS TO UNDO, and why this clears something by hand.
-        Three caches depend on the geometry and only two look after themselves:
-
-        * ``seq._metric_lumping_laplacian`` -- :meth:`set_geometry` deletes it.
-        * ``seq._mass_metric_lumping_cache`` -- keyed on geometry IDENTITY, so
-          it rebuilds itself when the object changes.
-        * ``operators.schur_diaginv_k*`` -- **nothing invalidates these.** They
-          are fields on the ``SequenceOperators`` bundle, which ``set_geometry``
-          cannot reach, so a bundle handed back through ``operators=`` would
-          carry its predecessor's Schur diagonals across a geometry change. The
-          symptom would be a preconditioner for the wrong metric, i.e. slow
-          convergence, i.e. invisible. So they are dropped here unconditionally:
-          this function cannot know whether they are current, and they are
-          re-probed on demand.
-
-        Schur-Jacobi diagonals are NOT assembled. They are consulted only under
-        ``schur.outer='jacobi'``, which is the comparison baseline and not a
-        production path -- ``_materialize_default_saddle_preconditioner``
-        resolves outer to ``'metric_lumping'`` or ``'none'``, never
-        ``'jacobi'`` (``operators.py:738``). Paying
-        an O(n) probe per ``(k, BC)`` at every setup for something production
-        never reads is not worth it; call
-        :func:`~mrx.operators.assemble_schur_jacobi_preconditioner` directly if
-        you need them eagerly.
-
-        Returns the operator bundle, which is also installed on the sequence.
+        NEEDS ``n >= p + 2`` for the Laplacian atoms (see
+        :func:`~mrx.operators.assemble_metric_lumping_laplacian_preconditioner`).
         """
-        from mrx.operators import (  # noqa: PLC0415
-            _mass_metric_lumping_for,
-            assemble_mass_jacobi_preconditioner,
-            assemble_metric_lumping_laplacian_preconditioner,
-        )
-
         self._require_geometry()
         ks = tuple(int(v) for v in ks)
         dirichlets = tuple(bool(v) for v in dirichlets)
-
-        if operators is None:
-            ops = op.assemble_incidence_operators(self)
-        else:
-            ops = _drop_schur_diaginv(operators)
-
-        ops = assemble_mass_jacobi_preconditioner(self, ops, ks=ks)
-        ops = assemble_metric_lumping_laplacian_preconditioner(
+        ops = op.new_operators(self)
+        ops = op.assemble_mass_jacobi_preconditioner(self, ops, ks=ks)
+        ops = op.assemble_mass_metric_lumping_preconditioner(
+            self, ops, ks=ks, dirichlet_variants=dirichlets)
+        ops = op.assemble_laplacian_jacobi_preconditioner(
             self, ops, ks=ks, dirichlets=dirichlets)
-
-        # Warm the mass cache outside any trace: the BUILD is host-side numpy,
-        # so a cold cache inside a `jax.lax.while_loop` dies with
-        # TracerArrayConversionError.
-        #
-        # This does NOT inherit `warm_mass_preconditioner_cache`'s
-        # `except Exception: pass`. A caller who asked for preconditioners and
-        # got a bundle back is entitled to assume the bundle is complete;
-        # silently skipping a (k, BC) turns a build failure into slow
-        # convergence somewhere else entirely. Every failure is collected and
-        # reported together, so three broken pairs take one run to find rather
-        # than three.
-        #
-        # HOW WELL FOUNDED IS RAISING HERE -- read this before widening the
-        # except. Measured 2026-08-25:
-        # all EIGHT (k, BC) pairs build on the toroid AND on W7-X at
-        # ns=(8,16,8) p=3, so the swallow this replaces was catching nothing
-        # where it had been exercised, and raising costs no working path.
-        #
-        # That is good evidence that strictness is safe -- it is NOT a proof
-        # that no pair can ever fail. Cylinder, rot-ellipse, the GVEC exports
-        # and other (ns, p) were not measured. If you are reading this because
-        # a build DID fail, the honest response is to fix the build or to
-        # narrow the request via `ks`/`dirichlets` -- not to restore a silent
-        # skip, which is what made the original failure invisible.
-        failures = []
-        for k in ks:
-            if not 0 <= k <= 3:
-                continue
-            for dirichlet in dirichlets:
-                try:
-                    _mass_metric_lumping_for(self, ops, k, dirichlet)
-                except Exception as exc:              # noqa: BLE001
-                    failures.append(
-                        f"k={k}, dirichlet={dirichlet}: "
-                        f"{type(exc).__name__}: {exc}")
-        if failures:
-            raise RuntimeError(
-                "build_preconditioners could not build the mass preconditioner "
-                f"for {len(failures)} of {len(ks) * len(dirichlets)} (k, BC) "
-                "pairs, so the returned bundle would be silently incomplete:\n  "
-                + "\n  ".join(failures))
-
-        self.set_operators(ops)
+        ops = op.assemble_metric_lumping_laplacian_preconditioner(
+            self, ops, ks=ks, dirichlets=dirichlets)
+        if schur_jacobi:
+            ops = op.assemble_schur_jacobi_preconditioner(
+                self, ops, ks=tuple(k for k in ks if k >= 1),
+                dirichlet_variants=dirichlets)
+        self.operators = ops
         return ops
 
     def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3),
-                                    dirichlets=(False, True), operators=None):
-        """Install a map, then build the preconditioners that depend on it.
-
-        Exactly ``set_map`` followed by :meth:`build_preconditioners`, and
-        nothing else -- one implementation, so this wrapper cannot drift from
-        the thing it wraps. It exists so that "I did not know I had to build
-        those" is not a way to end up on a worse preconditioner.
-
-        For geometry-only work call :meth:`set_map` alone; for a geometry that
-        has already moved call :meth:`build_preconditioners` alone.
-        """
+                                    dirichlets=(False, True), schur_jacobi=False):
+        """:meth:`set_map` followed by :meth:`build_preconditioners`, nothing else."""
         self.set_map(map)
-        return self.build_preconditioners(
-            ks=ks, dirichlets=dirichlets, operators=operators)
+        return self.build_preconditioners(ks=ks, dirichlets=dirichlets,
+                                          schur_jacobi=schur_jacobi)
 
     def _require_geometry(self):
         """Return the attached geometry or raise when none is installed."""
@@ -645,48 +428,22 @@ class DeRhamSequence():
         return geometry
 
     def get_operators(self):
-        """Return the cached operator bundle, if one is attached."""
-        return getattr(self, 'operators', None)
+        """The installed operator bundle, or ``None``."""
+        return self.operators
 
     def set_operators(self, operators):
-        """Attach an operator bundle to the sequence.
-
-        If ``operators`` has no nullspace arrays yet, they are initialised to
-        zeros with shapes derived from ``self.betti_numbers``.
-        """
-        current = self.get_operators()
-        if operators is not None and current is not None:
-            replacements = {
-                name: getattr(current, name)
-                for name in _EXTRACTION_OPERATOR_NAMES
-                if getattr(operators, name, None) is None and getattr(current, name, None) is not None
-            }
-            if replacements:
-                operators = eqx.tree_at(
-                    lambda ops: tuple(getattr(ops, name) for name in replacements),
-                    operators,
-                    tuple(replacements.values()),
-                    is_leaf=lambda x: x is None,
-                )
-        if operators is not None and getattr(operators, 'null_0', None) is None:
-            operators = init_nullspaces(self, operators,
-                                        betti_numbers=self.betti_numbers)
+        """Install an operator bundle (for example one with nullspaces computed on it)."""
         self.operators = operators
         return operators
 
-    def _resolve_operators(self, operators=None):
-        """Use an explicit operator bundle when provided, else fall back to the cache."""
+    def _require_operators(self, operators=None):
+        """``operators`` if given, else the installed bundle; raises when there is none."""
         if operators is not None:
             return operators
-        return self.get_operators()
-
-    def _require_operators(self, operators=None):
-        """Return an explicit operator bundle or raise when none is available."""
-        operators = self._resolve_operators(operators)
-        if operators is None:
+        if self.operators is None:
             raise ValueError(
-                'Assemble operators first, for example with assemble_all_sparse().')
-        return operators
+                'no operator bundle: call seq.build_preconditioners() after set_map')
+        return self.operators
 
     def set_map(self, map):
         """Update the active logical-to-physical map and derived geometry terms."""
@@ -698,7 +455,7 @@ class DeRhamSequence():
 
         if extraction is None:
             extraction = self.e0
-            extraction_T = self.e0_T
+            extraction_T = self.e0.T
         else:
             extraction_T = None
         return SplineMap(
@@ -757,7 +514,7 @@ class DeRhamSequence():
         The correction is  E_dbc @ M_full @ E_bc^T @ g, i.e. the
         DBC-space projection of the mass matrix applied to the BC lift.
 
-        Requires ``assemble_all_sparse()`` (or the relevant
+        Requires the sequence's extraction operators (or the relevant
         ``assemble_M{k}`` call) to have been called first.
 
         Parameters
@@ -773,30 +530,6 @@ class DeRhamSequence():
         e_dbc = getattr(self, f'e{k}_dbc')
         e_bc_T = getattr(self, f'e{k}_bc_T')
         return e_dbc @ (m_sp @ (e_bc_T @ g))
-
-    def evaluate_1d(self):
-        """Precompute 1-D spline and derivative values at quadrature points.
-
-        Populates ``basis_{r,t,z}_jk`` and ``d_basis_{r,t,z}_jk`` on
-        ``self``.  These arrays drive the sum-factorized assembly and
-        evaluation routines, and are required by
-        :meth:`geometry_from_spline_map` when using the fast spline-geometry
-        path.
-        """
-        # TODO: This should really be fine as double vmap since it is all 1D.
-        # Consider replacing with jax.lax.map if we ever run into memory issues.
-        self.basis_r_jk = jax.vmap(jax.vmap(self.basis_0.Λ[0], (0, None)),
-                                   (None, 0))(self.quad.x_x, self.basis_0.Λ[0].ns)
-        self.basis_t_jk = jax.vmap(jax.vmap(self.basis_0.Λ[1], (0, None)),
-                                   (None, 0))(self.quad.x_y, self.basis_0.Λ[1].ns)
-        self.basis_z_jk = jax.vmap(jax.vmap(self.basis_0.Λ[2], (0, None)),
-                                   (None, 0))(self.quad.x_z, self.basis_0.Λ[2].ns)
-        self.d_basis_r_jk = jax.vmap(jax.vmap(self.basis_0.dΛ[0], (0, None)),
-                                     (None, 0))(self.quad.x_x, self.basis_0.dΛ[0].ns)
-        self.d_basis_t_jk = jax.vmap(jax.vmap(self.basis_0.dΛ[1], (0, None)),
-                                     (None, 0))(self.quad.x_y, self.basis_0.dΛ[1].ns)
-        self.d_basis_z_jk = jax.vmap(jax.vmap(self.basis_0.dΛ[2], (0, None)),
-                                     (None, 0))(self.quad.x_z, self.basis_0.dΛ[2].ns)
 
     def _form_comp_info(self, k):
         """Return component metadata for tensor-product evaluation of the k-th form.
@@ -846,69 +579,8 @@ class DeRhamSequence():
         """Return the L² norm of a k-form DOF vector ``v``."""
         return jnp.sqrt(self.l2_norm_sq(v, k, dirichlet=dirichlet))
 
-    def assemble_all_sparse(self):
-        """Assemble and cache the operator bundle (incidence + polar stencils).
-
-        Masses, projections, derivatives and Laplacians are applied
-        matrix-free from the attached geometry, so this builds only the
-        topological incidence operators. Returns the operator bundle.
-        """
-        geometry = self._require_geometry()
-        operators = op.assemble_all_operators(
-            self, geometry, operators=self.get_operators())
-        self.set_operators(operators)
-        return operators
-
-    def assemble_derivative_matrix(self, k):
-        """Assemble and cache the weak derivative matrix mapping k-forms to (k+1)-forms.
-
-        Parameters
-        ----------
-        k : int
-            Form degree of the *input* form (0, 1, or 2).
-        """
-        geometry = self._require_geometry()
-        return self.set_operators(op.assemble_derivative_operators(
-            self, geometry,
-            operators=self.get_operators(),
-            ks=(k,),
-        ))
-
-    def _grad_1d(self, d_basis, boundary_type):
-        """Return the 1-D gradient matrix for the given derivative basis and BC type."""
-        return grad_1d(d_basis, boundary_type)
-
-    def assemble_laplacian(self, k):
-        """Assemble and cache the Laplacian stiffness data for k-forms.
-
-        Parameters
-        ----------
-        k : int
-            Form degree (0, 1, 2, or 3).
-        """
-        geometry = self._require_geometry()
-        return self.set_operators(op.assemble_hodge_operators(
-            self, geometry,
-            operators=self.get_operators(),
-            ks=(k,),
-        ))
-
-    def assemble_incidence_matrix(self, k):
-        """Assemble and cache the topological incidence matrix Gk.
-
-        Parameters
-        ----------
-        k : int
-            Form degree of the *input* form (0, 1, or 2).
-        """
-        return self.set_operators(op.assemble_incidence_operators(
-            self,
-            operators=self.get_operators(),
-            ks=(k,),
-        ))
-
     def apply_incidence_matrix(self, v, k, dirichlet_in=True, dirichlet_out=True,
-                               transpose=False, operators=None):
+                               transpose=False):
         """Apply the topological exterior-derivative incidence Gk to ``v``.
 
         Gk has entries in {-1, 0, +1} and is geometry-independent. On DoF
@@ -933,9 +605,8 @@ class DeRhamSequence():
         was read as a property of the discretisation rather than of the
         operator choice.
         """
-        operators = self._require_operators(operators)
         return op.apply_incidence_matrix(
-            self, operators, v, k,
+            self, v, k,
             dirichlet_in=dirichlet_in,
             dirichlet_out=dirichlet_out,
             transpose=transpose,
@@ -1053,7 +724,7 @@ class DeRhamSequence():
             preconditioner=preconditioner,
             return_info=return_info)
 
-    def apply_mass_matrix(self, v, k, dirichlet=True, operators=None):
+    def apply_mass_matrix(self, v, k, dirichlet=True):
         """
         Apply the (matrix-free) mass matrix Mk for k-forms to a vector v:
             k=0: M0_ij = ∫ Λ0_i Λ0_j det DF dx
@@ -1061,24 +732,21 @@ class DeRhamSequence():
             k=2: M2_ij = ∫ Λ2_i · G Λ2_j (det DF)⁻¹ dx
             k=3: M3_ij = ∫ Λ3_i Λ3_j (det DF)⁻¹ dx
         """
-        operators = self._require_operators(operators)
         return op.apply_mass_matrix(
-            self, operators, v, k, dirichlet=dirichlet)
+            self, v, k, dirichlet=dirichlet)
 
-    def apply_projection_matrix(self, v, k_in, k_out, dirichlet_in=True, dirichlet_out=True,
-                                operators=None):
+    def apply_projection_matrix(self, v, k_in, k_out, dirichlet_in=True, dirichlet_out=True):
         """
         Apply the (matrix-free) projection mass Pk_in_k_out to a vector v.
         """
-        operators = self._require_operators(operators)
         return op.apply_projection_matrix(
-            self, operators, v, k_in, k_out,
+            self, v, k_in, k_out,
             dirichlet_in=dirichlet_in,
             dirichlet_out=dirichlet_out,
         )
 
     def apply_derivative_matrix(self, v, k, dirichlet_in=True, dirichlet_out=True,
-                                transpose=False, operators=None):
+                                transpose=False):
         """Apply the weak derivative ``D_k`` (k-forms to (k+1)-forms) to ``v``::
 
             k=0: D0_ij = ∫ Λ1_i · G⁻¹ grad Λ0_j det DF dx  (grad)
@@ -1087,9 +755,8 @@ class DeRhamSequence():
 
         If ``transpose=True``, apply ``D_k^T`` instead ((k+1)-forms to k-forms).
         """
-        operators = self._require_operators(operators)
         return op.apply_derivative_matrix(
-            self, operators, v, k,
+            self, v, k,
             dirichlet_in=dirichlet_in,
             dirichlet_out=dirichlet_out,
             transpose=transpose,
@@ -1128,11 +795,11 @@ class DeRhamSequence():
     def apply_mass_plus_eps_laplace_matrix(self, v, k, eps, dirichlet=True, operators=None):
         """Apply ``(M_k + eps * L_k)`` to a k-form vector."""
         return self.apply_mass_matrix(
-            v, k, dirichlet=dirichlet, operators=operators) \
+            v, k, dirichlet=dirichlet) \
             + eps * self.apply_laplacian(
                 v, k, dirichlet=dirichlet, operators=operators)
 
-    def apply_stiffness(self, v, k, dirichlet=True, operators=None):
+    def apply_stiffness(self, v, k, dirichlet=True):
         """
         Apply the stiffness matrix S_k to a k-form vector v.
 
@@ -1141,9 +808,8 @@ class DeRhamSequence():
             k=2: div-div
             k=3: 0 (no stiffness)
         """
-        operators = self._require_operators(operators)
         return op.apply_stiffness(
-            self, operators, v, k, dirichlet=dirichlet)
+            self, v, k, dirichlet=dirichlet)
 
     def _get_nullspace(self, k, dirichlet):
         """Return the nullspace basis for the k-form Laplacian."""
@@ -1321,9 +987,9 @@ class DeRhamSequence():
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
         match k:
             case 1:
-                e_T = self.e1_dbc_T if dirichlet else self.e1_T
+                e_T = self.e1_dbc.T if dirichlet else self.e1.T
             case 2:
-                e_T = self.e2_dbc_T if dirichlet else self.e2_T
+                e_T = self.e2_dbc.T if dirichlet else self.e2.T
             case _:
                 raise ValueError("k must be 1 or 2")
         comp_info, comp_shapes = self._form_comp_info(k)
@@ -1467,12 +1133,12 @@ class DeRhamSequence():
         quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
 
         types = self.basis_0.types
-        grad_r = self._grad_1d(self.d_basis_r_jk, types[0])
-        grad_t = self._grad_1d(self.d_basis_t_jk, types[1])
-        grad_z = self._grad_1d(self.d_basis_z_jk, types[2])
+        grad_r = grad_1d(self.d_basis_r_jk, types[0])
+        grad_t = grad_1d(self.d_basis_t_jk, types[1])
+        grad_z = grad_1d(self.d_basis_z_jk, types[2])
 
         # --- evaluate p at quad points (0-form, 1 component) ---
-        ep_T = self.e0_dbc_T if dirichlet_p else self.e0_T
+        ep_T = self.e0_dbc.T if dirichlet_p else self.e0.T
         comp_info_0, comp_shapes_0 = self._form_comp_info(0)
         p_jk = evaluate_at_xq(ep_T @ p, comp_info_0, comp_shapes_0,
                               quad_shape, 1)  # (n_q, 1)
@@ -1490,7 +1156,7 @@ class DeRhamSequence():
             quad_shape, 3)  # (n_q, 3)
 
         # --- evaluate u at quad points (2-form, 3 components) ---
-        eu_T = self.e2_dbc_T if dirichlet_u else self.e2_T
+        eu_T = self.e2_dbc.T if dirichlet_u else self.e2.T
         comp_info_2, comp_shapes_2 = self._form_comp_info(2)
         u_jk = evaluate_at_xq(eu_T @ u, comp_info_2, comp_shapes_2,
                               quad_shape, 3)  # (n_q, 3)

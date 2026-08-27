@@ -9,11 +9,10 @@ One page. Every identifier exists in `mrx/` or `scripts/`. The reasoning is in
 `build_sequence(geometry, ns, p)` in `mrx/geometries.py` is the production
 build (`geometry` is `toroid`, `cylinder`, `rot-ellipse`, or the path of a
 GVEC export): `DeRhamSequence(ns, (p,)*3, p + 1, ("clamped", "periodic", "periodic"),
-polar=True, betti_numbers=(1, 1, 0, 0))`, `evaluate_1d()`, `set_map`, then
-`assemble_incidence_operators`, `assemble_mass_jacobi_preconditioner`,
-`assemble_metric_lumping_laplacian_preconditioner` for `k = 0..3` and both
-boundary conditions, `warm_mass_preconditioner_cache`, `set_operators`.
-Mass matrices are never stored; every operator is a matrix-free apply
+polar=True, betti_numbers=(1, 1, 0, 0))`, `set_map`, then
+`build_preconditioners()`: the Jacobi and metric-lumped mass and Laplacian
+preconditioners for `k = 0..3` and both boundary conditions, on a fresh
+bundle. Mass matrices are never stored; every operator is a matrix-free apply
 (`mass_core_apply`, `apply_incidence_matrix`, `apply_derivative_matrix`,
 `apply_stiffness`, `apply_laplacian`).
 
@@ -95,10 +94,8 @@ diffusion. Details in [relaxation.md](relaxation.md).
 
 - `frame='ref'` in `load` and `interpolate` takes `g ω / J`, not the primal
   components `ω`. Push forward and use `frame='phys'`.
-- Any new traced entry point that solves must call
-  `warm_mass_preconditioner_cache` first; the mass preconditioner build is
-  host-side.
-- `set_map` drops the Laplacian atoms; rebuild with `build_preconditioners`
-  or use `set_map_and_preconditioners`.
+- Nothing is built on first use. `set_map` drops the operator bundle;
+  rebuild with `build_preconditioners` (or `set_map_and_preconditioners`)
+  and recompute the harmonic forms.
 - Run something real after every merge. A renamed function whose caller lives
   on the other branch merges green and dies at setup.

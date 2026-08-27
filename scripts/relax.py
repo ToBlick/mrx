@@ -246,7 +246,7 @@ def make_force_normaliser(seq):
     ci2, cs2 = seq._form_comp_info(2)
 
     def normaliser(B_dof):
-        B_jk = evaluate_at_xq(seq.e2_dbc_T @ B_dof, ci2, cs2, quad_shape, 3)
+        B_jk = evaluate_at_xq(seq.e2_dbc.T @ B_dof, ci2, cs2, quad_shape, 3)
         bsq = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk)
         f_jk = (0.5 * bsq * seq.quad.w / seq.jacobian_j)[:, None]
         q = seq.e0 @ integrate_against(f_jk, ci0, cs0, quad_shape)
@@ -263,7 +263,6 @@ def main(cli):
     import jax
 
     import mrx
-    import mrx.operators as op
     from mrx.geometries import build_sequence
     from mrx.gvec import load_clebsch
     from mrx.initial_conditions import (analytic_helicity, analytic_profile_form,
@@ -295,14 +294,7 @@ def main(cli):
     # --- geometry and operators ------------------------------------------
     t0 = time.perf_counter()
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter, tol=cli.tol, nfp=cli.nfp)
-    ops = seq.assemble_all_sparse()
-    ops = op.assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
-    seq.set_operators(ops)
-    ops = op.assemble_metric_lumping_laplacian_preconditioner(
-        seq, ops, ks=(0, 1, 2, 3), dirichlets=(False, True))
-    seq.set_operators(ops)
-    ops = compute_nullspaces(seq, ops)
-    seq.set_operators(ops)
+    ops = seq.set_operators(compute_nullspaces(seq, ops))
     print(f"[setup] {cli.geometry} ns={ns} p={cli.p} tol={seq.tol:.1e}  "
           f"n2_dbc={seq.n2_dbc}  operators+nullspaces "
           f"{time.perf_counter() - t0:.1f}s", flush=True)

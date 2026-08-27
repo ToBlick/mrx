@@ -9,11 +9,10 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 
-from mrx.extraction_operators import MatrixFreeExtraction, get_xi
+from mrx.extraction_operators import MatrixFreeExtraction
 import numpy as np
 
-from mrx.local_assembly import (build_matrixfree_mass_apply,
-                                build_matrixfree_projection_apply)
+from mrx.local_assembly import (build_matrixfree_mass_apply)
 from mrx.preconditioners import (
     BoundaryConditionPair,
     MassPreconditioners,
@@ -68,25 +67,30 @@ def _wrap_shifted_harmonic_coarse_correction(
         k: int, dirichlet: bool):
     """Add an exact ``1/eps`` coarse correction on the stored harmonic mode."""
     z = _shifted_harmonic_coarse_vector(seq, operators, k, dirichlet)
-    mz = apply_mass_matrix(seq, operators, z, k, dirichlet=dirichlet)
+    mz = apply_mass_matrix(seq, z, k, dirichlet=dirichlet)
 
     def precond(x):
         alpha = z @ x
         x_perp = x - alpha * mz
         y_perp = base_precond(x_perp)
         beta = z @ apply_mass_matrix(
-            seq, operators, y_perp, k, dirichlet=dirichlet)
+            seq, y_perp, k, dirichlet=dirichlet)
         return y_perp - beta * z + (alpha / eps) * z
 
     return precond
 
 
 class SequenceOperators(eqx.Module):
-    """Dynamic operator bundle for a de Rham sequence.
+    """Everything built FROM a geometry: preconditioners and harmonic forms.
 
-    Stores geometry-dependent operator data explicitly so it can be carried
-    through JAX transforms while the sequence object remains a static topology
-    shell.
+    The sequence itself is static (bases, extraction, incidence); this bundle
+    holds every factorisation of the installed metric -- Jacobi diagonals,
+    metric-lumped mass and Laplacian atoms, probed Schur diagonals -- and the
+    nullspace vectors. Nothing here is built on first use:
+    ``DeRhamSequence.build_preconditioners`` builds it against the geometry
+    installed at that moment, and a new geometry means calling it again.
+    :func:`new_operators` is the empty bundle (zero nullspaces, no
+    preconditioners).
     """
 
     k0_tensor_hodge_precond: Optional[BoundaryConditionPair] = None
@@ -94,69 +98,15 @@ class SequenceOperators(eqx.Module):
     k2_tensor_stiff_model: Optional[K2TensorDivDivForwardModel] = None
     k1_tensor_stiff_precond: Optional[BoundaryConditionPair] = None
     k2_tensor_stiff_precond: Optional[BoundaryConditionPair] = None
-    e0: Optional[MatrixFreeExtraction] = None
-    e0_T: Optional[MatrixFreeExtraction] = None
-    e0_dbc: Optional[MatrixFreeExtraction] = None
-    e0_dbc_T: Optional[MatrixFreeExtraction] = None
-    e0_bc: Optional[MatrixFreeExtraction] = None
-    e0_bc_T: Optional[MatrixFreeExtraction] = None
-    e1: Optional[MatrixFreeExtraction] = None
-    e1_T: Optional[MatrixFreeExtraction] = None
-    e1_dbc: Optional[MatrixFreeExtraction] = None
-    e1_dbc_T: Optional[MatrixFreeExtraction] = None
-    e1_bc: Optional[MatrixFreeExtraction] = None
-    e1_bc_T: Optional[MatrixFreeExtraction] = None
-    e2: Optional[MatrixFreeExtraction] = None
-    e2_T: Optional[MatrixFreeExtraction] = None
-    e2_dbc: Optional[MatrixFreeExtraction] = None
-    e2_dbc_T: Optional[MatrixFreeExtraction] = None
-    e2_bc: Optional[MatrixFreeExtraction] = None
-    e2_bc_T: Optional[MatrixFreeExtraction] = None
-    e3: Optional[MatrixFreeExtraction] = None
-    e3_T: Optional[MatrixFreeExtraction] = None
-    e3_dbc: Optional[MatrixFreeExtraction] = None
-    e3_dbc_T: Optional[MatrixFreeExtraction] = None
-    e3_bc: Optional[MatrixFreeExtraction] = None
-    e3_bc_T: Optional[MatrixFreeExtraction] = None
     mass_preconds: Optional[MassPreconditioners] = None
-    # Topological exterior-derivative incidence matrices on the full
-    # pre-extraction DoF grid. Entries are in {-1, 0, +1}; they encode the
-    # discrete de Rham complex structure and are geometry-independent. The
-    # strong derivatives ``apply_strong_{grad,curl,div}`` multiply by these
-    # directly (no mass solve). Stored as :class:`_MatrixFreeIncidence`
-    # (difference stencils); no matrix is ever materialised.
-    g0: Optional[_MatrixFreeIncidence] = None
-    g0_T: Optional[_MatrixFreeIncidence] = None
-    g1: Optional[_MatrixFreeIncidence] = None
-    g1_T: Optional[_MatrixFreeIncidence] = None
-    g2: Optional[_MatrixFreeIncidence] = None
-    g2_T: Optional[_MatrixFreeIncidence] = None
-    # Analytic inverse-free polar grad G_0 (V0->V1) on extracted DoFs, built
-    # from the incidence pattern + polar coefficients xi alone. On the polar
-    # axis the extraction is non-unitary, so the raw ``E_out^T sp E_in`` is not
-    # the topological d; these stencils are its closed-form correction
-    # ``Gram_{k+1}^{-1} (E^T sp E)``. Stored per (dirichlet_in, dirichlet_out)
-    # BC pair, forward + transpose, as indexed gather/scatter operators.
-    # ``None`` on non-polar sequences -> apply uses the raw incidence path.
-    g0_grad_00: Optional[MatrixFreeExtraction] = None
-    g0_grad_00_T: Optional[MatrixFreeExtraction] = None
-    g0_grad_01: Optional[MatrixFreeExtraction] = None
-    g0_grad_01_T: Optional[MatrixFreeExtraction] = None
-    g0_grad_10: Optional[MatrixFreeExtraction] = None
-    g0_grad_10_T: Optional[MatrixFreeExtraction] = None
-    g0_grad_11: Optional[MatrixFreeExtraction] = None
-    g0_grad_11_T: Optional[MatrixFreeExtraction] = None
-    # Analytic inverse-free polar curl G_1 (V1->V2), same construction one degree
-    # up. ``None`` on non-polar -> raw incidence fallback. Div (V2->V3) needs
-    # no stencil: the V3 extraction is a 0/1 selection.
-    g1_curl_00: Optional[MatrixFreeExtraction] = None
-    g1_curl_00_T: Optional[MatrixFreeExtraction] = None
-    g1_curl_01: Optional[MatrixFreeExtraction] = None
-    g1_curl_01_T: Optional[MatrixFreeExtraction] = None
-    g1_curl_10: Optional[MatrixFreeExtraction] = None
-    g1_curl_10_T: Optional[MatrixFreeExtraction] = None
-    g1_curl_11: Optional[MatrixFreeExtraction] = None
-    g1_curl_11_T: Optional[MatrixFreeExtraction] = None
+    # Metric-lumped mass and Laplacian atoms, keyed ``(k, dirichlet)``. Plain
+    # Python objects (each holds a payload pytree and a jitted apply); the
+    # bundle is closed over by the solvers, never passed through a JAX
+    # transform, so that is fine. Built by
+    # :func:`assemble_mass_metric_lumping_preconditioner` and
+    # :func:`assemble_metric_lumping_laplacian_preconditioner`.
+    mass_lumping: Optional[dict] = None
+    laplacian_lumping: Optional[dict] = None
     dd0_diaginv: Optional[object] = None
     dd1_diaginv: Optional[object] = None
     dd2_diaginv: Optional[object] = None
@@ -245,40 +195,16 @@ class SequenceOperators(eqx.Module):
         return self.dd3_diaginv_dbc
 
 
-_EXTRACTION_OPERATOR_NAMES = (
-    'e0', 'e0_T', 'e0_dbc', 'e0_dbc_T', 'e0_bc', 'e0_bc_T',
-    'e1', 'e1_T', 'e1_dbc', 'e1_dbc_T', 'e1_bc', 'e1_bc_T',
-    'e2', 'e2_T', 'e2_dbc', 'e2_dbc_T', 'e2_bc', 'e2_bc_T',
-    'e3', 'e3_T', 'e3_dbc', 'e3_dbc_T', 'e3_bc', 'e3_bc_T',
-)
+def new_operators(seq) -> SequenceOperators:
+    """The empty bundle for ``seq``: zero nullspaces, no preconditioners."""
+    from mrx.nullspace import init_nullspaces  # noqa: PLC0415
+    return init_nullspaces(seq, SequenceOperators(mass_lumping={}, laplacian_lumping={}))
 
 
-def _ensure_extraction_operators(seq, operators: Optional[SequenceOperators]):
+def _require_bundle(operators):
     if operators is None:
-        operators = SequenceOperators()
-    current = seq.get_operators() if hasattr(seq, 'get_operators') else None
-    if current is not None:
-        replacements = {
-            name: getattr(current, name)
-            for name in _EXTRACTION_OPERATOR_NAMES
-            if getattr(operators, name, None) is None and getattr(current, name, None) is not None
-        }
-        if replacements:
-            operators = eqx.tree_at(
-                lambda ops: tuple(getattr(ops, name) for name in replacements),
-                operators,
-                tuple(replacements.values()),
-                is_leaf=lambda x: x is None,
-            )
-
-    if getattr(operators, 'null_0', None) is None:
-        from mrx.nullspace import init_nullspaces
-        operators = init_nullspaces(
-            seq,
-            operators,
-            betti_numbers=getattr(seq, 'betti_numbers', None),
-        )
-
+        raise ValueError(
+            "no operator bundle: call seq.build_preconditioners() after set_map")
     return operators
 
 
@@ -493,7 +419,7 @@ def assemble_mass_jacobi_preconditioner(
     """
     from mrx.preconditioners import build_mass_jacobi_pair  # noqa: PLC0415
 
-    operators = _ensure_extraction_operators(seq, operators)
+    operators = _require_bundle(operators)
     preconds = operators.mass_preconds
 
     for k in ks:
@@ -555,7 +481,7 @@ def _materialize_default_saddle_preconditioner(
     ``schur.inner`` is metric_lumping. Under ``outer='metric_lumping'`` the
     atom IS the upper-block inverse and the inner slot does no work at all.
     """
-    outer = ('metric_lumping' if _metric_lumping_available(seq, k, dirichlet) else 'none')
+    outer = ('metric_lumping' if _metric_lumping_available(operators, k, dirichlet) else 'none')
     return SaddlePointPreconditionerSpec(
         mass=_materialize_default_mass_preconditioner(seq, operators, k=k - 1),
         schur=SchurPreconditionerSpec(
@@ -579,10 +505,9 @@ def _materialize_default_scalar_hodge_preconditioner(
     ``L_k + eps M_k``, and its fit to the shifted operator is unmeasured (audit
     item 3.2). Pass an explicit kind there if you want one.
     """
-    del operators
     if eps != 0.0:
         return MassPreconditionerSpec(kind='none')
-    if _metric_lumping_available(seq, k, dirichlet):
+    if _metric_lumping_available(operators, k, dirichlet):
         return MassPreconditionerSpec(kind='metric_lumping')
     return MassPreconditionerSpec(kind='none')
 
@@ -698,37 +623,16 @@ def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0)
     return y
 
 
-def mass_core_apply(seq, operators: SequenceOperators, k: int):
-    """Return a raw-DOF-space callable ``x -> M_k @ x``.
+def mass_core_apply(seq, k: int):
+    """The raw-DOF-space callable ``x -> M_k @ x`` of the installed geometry.
 
-    The returned callable acts in the unextracted tensor-product DOF space and
-    is evaluated matrix-free: the sum-factorized kernel never materializes
-    ``M_k``, removing the high-(n, p) storage bottleneck (notably for M1). The
-    element plan is built once per geometry and cached on ``seq``.
+    Acts in the unextracted tensor-product DOF space, matrix-free (the
+    sum-factorised kernel never materialises ``M_k``). Built by
+    ``DeRhamSequence.set_geometry``.
     """
-    del operators  # the apply is built from the geometry attached to seq
-    return _matrixfree_mass_apply_cached(seq, k)
-
-
-def _matrixfree_mass_apply_cached(seq, k: int):
-    """Build (and cache on ``seq``) the matrix-free ``M_k`` apply.
-
-    The element plan inside :func:`build_matrixfree_mass_apply` is host-built
-    and reused across matvecs, so it must be constructed once rather than per
-    apply. The cache is keyed by the current geometry object so that re-mapping
-    the sequence (``set_map``) transparently rebuilds the plan.
-    """
-    geometry = seq.geometry
-    cache = getattr(seq, "_matrixfree_mass_apply_cache", None)
-    if cache is None:
-        cache = {}
-        seq._matrixfree_mass_apply_cache = cache
-    entry = cache.get(k)
-    if entry is not None and entry[0] is geometry:
-        return entry[1]
-    apply = build_matrixfree_mass_apply(seq, k, geometry)
-    cache[k] = (geometry, apply)
-    return apply
+    if seq.mass_apply is None:
+        raise ValueError("no geometry installed: call seq.set_map first")
+    return seq.mass_apply[k]
 
 
 def _mass_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
@@ -747,27 +651,35 @@ def _mass_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
 
 
 def _laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
-    selected = operators.get_laplacian_diaginv(k, dirichlet)
+    """``1/diag(E L_k E^T)`` from the bundle (built by :func:`assemble_laplacian_jacobi_preconditioner`)."""
+    del seq
+    selected = _require_bundle(operators).get_laplacian_diaginv(k, dirichlet)
     if selected is None:
-        if k in (0, 1, 2, 3):
-            # The Laplacian Jacobi diagonal is not assembled eagerly: with the
-            # incidence ``G_k`` matrix-free and the mass ``M_{k+1}`` stored
-            # nowhere, the direct entry-scatter form is unavailable. It is
-            # built here in closed form instead -- no probe at any k. Returns
-            # the inverse diagonal.
-            #
-            # The closed forms are host-side numpy over the (concrete) basis
-            # tables and geometry, and the first call can sit inside a traced
-            # loop body (the inverse iteration of ``find_nullspace_vectors``
-            # solves the shifted k=0 Laplacian with this diagonal). Under a
-            # trace every jnp op is staged, so the ``np.asarray`` in the
-            # builder would see a tracer; ``ensure_compile_time_eval`` runs
-            # the build eagerly on the concrete inputs instead.
-            with jax.ensure_compile_time_eval():
-                selected = _build_laplacian_diaginv(seq, operators, k, dirichlet)
-        else:
-            raise ValueError("k must be 0, 1, 2 or 3")
+        raise ValueError(
+            f"Jacobi Laplacian diagonal for k={k}, dirichlet={dirichlet} is not "
+            "built; seq.build_preconditioners() builds it for the installed geometry")
     return selected
+
+
+def assemble_laplacian_jacobi_preconditioner(
+        seq, operators: SequenceOperators, *, ks: Sequence[int] = (0, 1, 2, 3),
+        dirichlets: Sequence[bool] = (False, True)) -> SequenceOperators:
+    """Build ``1/diag(E L_k E^T)`` in closed form for the given degrees.
+
+    ``k = 0`` is the energy of the extracted basis functions; ``k >= 1`` adds
+    the weak term under the Kronecker mass model, with only the polar-coupled
+    rows probed (:func:`~mrx.preconditioners.build_extracted_laplacian_diagonal`).
+    Needs the mass preconditioners of the bundle.
+    """
+    operators = _require_bundle(operators)
+    for k in ks:
+        if k not in (0, 1, 2, 3):
+            raise ValueError("k must be 0, 1, 2 or 3")
+        for dirichlet in dirichlets:
+            operators = operators.with_laplacian_diaginv(
+                k, _build_laplacian_diaginv(seq, operators, k, bool(dirichlet)),
+                dirichlet=bool(dirichlet))
+    return operators
 
 
 def _build_laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichlet: bool):
@@ -800,25 +712,6 @@ def _build_laplacian_diaginv(seq, operators: SequenceOperators, k: int, dirichle
     return _invert_diagonal(
         build_extracted_laplacian_diagonal(
             seq, operators, k, dirichlet=dirichlet))
-
-def update_derivative_operator(seq, geometry, operators: Optional[SequenceOperators], k: int):
-    """Ensure the k-th incidence ``G_k`` is present (``D_k = M_{k+1} G_k`` is applied lazily)."""
-    del geometry  # unused
-    if k not in (0, 1, 2):
-        raise ValueError("k must be 0, 1 or 2")
-    operators = _ensure_extraction_operators(seq, operators)
-    if _incidence_components(operators, k)[0] is None:
-        operators = update_incidence_operator(seq, operators, k)
-    return operators
-
-
-def assemble_derivative_operators(seq, geometry, operators: Optional[SequenceOperators] = None,
-                                  ks: Sequence[int] = (0, 1, 2)):
-    """Assemble weak derivative operators for the requested form degrees."""
-    for k in ks:
-        operators = update_derivative_operator(seq, geometry, operators, k)
-    return operators
-
 
 # ---------------------------------------------------------------------------
 # Topological incidence matrices (geometry-independent strong derivatives)
@@ -984,7 +877,7 @@ def _incidence_shapes(seq):
     return s0, s1, s2, s3
 
 
-def _build_matrixfree_incidence(seq, k: int):
+def build_matrixfree_incidence(seq, k: int):
     """Return ``(Gk, Gk_T)`` as matrix-free incidence operators."""
     types = tuple(seq.basis_0.types)
     s0, s1, s2, s3 = _incidence_shapes(seq)
@@ -1003,36 +896,6 @@ def _build_matrixfree_incidence(seq, k: int):
     g = _MatrixFreeIncidence(transpose=False, shape=(n_out, n_in), **common)
     g_T = _MatrixFreeIncidence(transpose=True, shape=(n_in, n_out), **common)
     return g, g_T
-
-
-def update_incidence_operator(seq, operators: Optional[SequenceOperators], k: int):
-    """Return an operator bundle with the k-th topological incidence updated."""
-    sp, sp_T = _build_matrixfree_incidence(seq, k)
-    operators = _ensure_extraction_operators(seq, operators)
-
-    match k:
-        case 0:
-            return eqx.tree_at(
-                lambda ops: (ops.g0, ops.g0_T),
-                operators,
-                (sp, sp_T),
-                is_leaf=lambda x: x is None,
-            )
-        case 1:
-            return eqx.tree_at(
-                lambda ops: (ops.g1, ops.g1_T),
-                operators,
-                (sp, sp_T),
-                is_leaf=lambda x: x is None,
-            )
-        case 2:
-            return eqx.tree_at(
-                lambda ops: (ops.g2, ops.g2_T),
-                operators,
-                (sp, sp_T),
-                is_leaf=lambda x: x is None,
-            )
-    raise ValueError("k must be 0, 1 or 2")
 
 
 def _stencil_grid(*dims):
@@ -1259,108 +1122,30 @@ def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
     return out.operator((n2, n1))
 
 
-def _grad_stencil(operators: SequenceOperators, dirichlet_in: bool,
-                  dirichlet_out: bool, transpose: bool):
-    """Look up the analytic inverse-free polar grad ``G_0`` (or None on non-polar)."""
-    name = f"g0_grad_{int(dirichlet_in)}{int(dirichlet_out)}"
-    if transpose:
-        name += "_T"
-    return getattr(operators, name, None)
+def _grad_stencil(seq, dirichlet_in: bool, dirichlet_out: bool, transpose: bool):
+    """The analytic inverse-free polar grad ``G_0`` of ``seq``, or None on non-polar."""
+    if seq.g0_grad is None:
+        return None
+    g = seq.g0_grad[(bool(dirichlet_in), bool(dirichlet_out))]
+    return g.T if transpose else g
 
 
-def _curl_stencil(operators: SequenceOperators, dirichlet_in: bool,
-                  dirichlet_out: bool, transpose: bool):
-    """Look up the analytic inverse-free polar curl ``G_1`` (or None on non-polar)."""
-    name = f"g1_curl_{int(dirichlet_in)}{int(dirichlet_out)}"
-    if transpose:
-        name += "_T"
-    return getattr(operators, name, None)
+def _curl_stencil(seq, dirichlet_in: bool, dirichlet_out: bool, transpose: bool):
+    """The analytic inverse-free polar curl ``G_1`` of ``seq``, or None on non-polar."""
+    if seq.g1_curl is None:
+        return None
+    g = seq.g1_curl[(bool(dirichlet_in), bool(dirichlet_out))]
+    return g.T if transpose else g
 
 
-def _extraction_is_polar(operators: SequenceOperators, space: int) -> bool:
-    """True iff the extraction of ``space`` is non-unitary (polar axis fusion).
-
-    Tests ``E E^T x != x`` on one probe (``E E^T = I`` on the 0/1
-    non-polar/unitary extractions).
-    """
-    e, e_T = _mass_extraction(operators, space, False)
-    if e is None or e_T is None:
-        return False
-    n_ext = int(e.shape[0])
-    x = jax.random.normal(jax.random.PRNGKey(0), (n_ext,), dtype=mrx.DTYPE)
-    return bool(jnp.max(jnp.abs(e @ (e_T @ x) - x)) > mrx.sqrt_eps(1e-2))
+def _incidence_components(seq, k: int):
+    """``(G_k, G_k^T)`` of ``seq``: the raw {-1, 0, +1} incidence stencils."""
+    if k not in (0, 1, 2):
+        raise ValueError("k must be 0, 1 or 2")
+    return getattr(seq, f"g{k}"), getattr(seq, f"g{k}_T")
 
 
-def assemble_incidence_operators(seq, operators: Optional[SequenceOperators] = None,
-                                 ks: Sequence[int] = (0, 1, 2)):
-    """Assemble topological incidence operators for the requested degrees.
-
-    On polar sequences also builds the analytic grad/curl stencils so
-    :func:`apply_incidence_matrix` returns the true strong derivative (exact
-    ``d.d = 0`` on extracted DoFs); elsewhere the raw incidence is exact.
-    """
-    for k in ks:
-        operators = update_incidence_operator(seq, operators, k)
-    operators = _ensure_extraction_operators(seq, operators)
-
-    # Analytic inverse-free polar grad G_0, built when grad is requested (0 in
-    # ks) on a polar sequence (V1 extraction non-unitary). Stored per BC pair,
-    # forward + transpose.
-    polar = _extraction_is_polar(operators, 1)
-    # The analytic grad stencil encodes the C¹ polar surgery structure; a
-    # polar_order=2 sequence has a different 0-form layout (6 polar
-    # functions, rings 0-2) and its weak-form k=0 pipeline never uses the
-    # stencil (apply_stiffness sandwiches the TENSOR incidence) — skip.
-    if (getattr(seq, "polar_order", 1) == 1
-            and 0 in ks and polar and operators.g0_grad_00 is None):
-        xi = get_xi(seq.ns[1])
-        gfields, gvals = [], []
-        for din in (False, True):
-            for dout in (False, True):
-                g0 = build_grad_stencil_g0(seq, xi, din, dout)
-                base = f"g0_grad_{int(din)}{int(dout)}"
-                gfields += [base, base + "_T"]
-                gvals += [g0, g0.T]
-        operators = eqx.tree_at(
-            lambda o: tuple(getattr(o, f) for f in gfields),
-            operators, tuple(gvals),
-            is_leaf=lambda x: x is None,
-        )
-
-    # Analytic inverse-free polar curl G_1, built when curl is requested (1 in
-    # ks) on a polar sequence. Div (k=2, output V3) needs no stencil: the V3
-    # extraction is a 0/1 selection, so apply_incidence(., 2) is already the
-    # true div.
-    polar2 = _extraction_is_polar(operators, 2)
-    if 1 in ks and polar2 and operators.g1_curl_00 is None:
-        xi = get_xi(seq.ns[1])
-        cfields, cvals = [], []
-        for din in (False, True):
-            for dout in (False, True):
-                g1 = build_curl_stencil_g1(seq, xi, din, dout)
-                base = f"g1_curl_{int(din)}{int(dout)}"
-                cfields += [base, base + "_T"]
-                cvals += [g1, g1.T]
-        operators = eqx.tree_at(
-            lambda o: tuple(getattr(o, f) for f in cfields),
-            operators, tuple(cvals),
-            is_leaf=lambda x: x is None,
-        )
-    return operators
-
-
-def _incidence_components(operators: SequenceOperators, k: int):
-    match k:
-        case 0:
-            return operators.g0, operators.g0_T
-        case 1:
-            return operators.g1, operators.g1_T
-        case 2:
-            return operators.g2, operators.g2_T
-    raise ValueError("k must be 0, 1 or 2")
-
-
-def apply_incidence_matrix(seq, operators: SequenceOperators, v, k: int,
+def apply_incidence_matrix(seq, v, k: int,
                            dirichlet_in: bool = True,
                            dirichlet_out: bool = True,
                            transpose: bool = False):
@@ -1373,19 +1158,17 @@ def apply_incidence_matrix(seq, operators: SequenceOperators, v, k: int,
     instead. Div (k=2) needs no correction: the V3 extraction is unitary.
     """
     if k == 0:
-        g0 = _grad_stencil(operators, dirichlet_in, dirichlet_out, transpose)
+        g0 = _grad_stencil(seq, dirichlet_in, dirichlet_out, transpose)
         if g0 is not None:
             return g0 @ v
     if k == 1:
-        g1 = _curl_stencil(operators, dirichlet_in, dirichlet_out, transpose)
+        g1 = _curl_stencil(seq, dirichlet_in, dirichlet_out, transpose)
         if g1 is not None:
             return g1 @ v
 
-    sp, sp_T = _incidence_components(operators, k)
-    if sp is None or sp_T is None:
-        raise ValueError(f"Incidence operator k={k} is not assembled")
+    sp, sp_T = _incidence_components(seq, k)
     e_in, e_in_T, e_out, e_out_T = _derivative_extraction(
-        operators, k, dirichlet_in, dirichlet_out)
+        seq, k, dirichlet_in, dirichlet_out)
     if transpose:
         return e_in @ (sp_T @ (e_out_T @ v))
     return e_out @ (sp @ (e_in_T @ v))
@@ -1397,159 +1180,67 @@ def apply_incidence_matrix(seq, operators: SequenceOperators, v, k: int,
 _PROJECTION_SPACES = {(2, 1): (1, 2), (1, 2): (2, 1), (0, 3): (0, 3), (3, 0): (3, 0)}
 
 
-def _matrixfree_projection_apply_cached(seq, k_in: int, k_out: int):
-    """Build (and cache on ``seq``) the raw-DOF apply of the projection mass.
-
-    Same memoisation as :func:`_matrixfree_mass_apply_cached`: keyed by the
-    pair and the geometry object so a re-mapped sequence rebuilds the plan.
-    """
+def projection_core_apply(seq, k_in: int, k_out: int):
+    """The raw-DOF apply of the projection mass ``P_{k_in k_out}`` (built by ``set_geometry``)."""
     try:
         k_row, k_col = _PROJECTION_SPACES[(k_in, k_out)]
     except KeyError:
         raise ValueError(
             "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported"
         ) from None
-    geometry = seq.geometry
-    cache = getattr(seq, "_matrixfree_projection_apply_cache", None)
-    if cache is None:
-        cache = {}
-        seq._matrixfree_projection_apply_cache = cache
-    entry = cache.get((k_row, k_col))
-    if entry is not None and entry[0] is geometry:
-        return entry[1]
-    apply = build_matrixfree_projection_apply(seq, k_row, k_col)
-    cache[(k_row, k_col)] = (geometry, apply)
-    return apply
+    if seq.projection_apply is None:
+        raise ValueError("no geometry installed: call seq.set_map first")
+    return seq.projection_apply[(k_row, k_col)]
 
 
-def update_hodge_operator(seq, geometry, operators: Optional[SequenceOperators], k: int):
-    """Ensure the incidence ``G_k`` behind the k-th Laplacian is present.
-
-    Stiffness matrices satisfy ``K_k = G_k^T M_{k+1} G_k`` and are never
-    materialised: :func:`apply_stiffness` / :func:`apply_laplacian`
-    compose the matrix-free incidence and mass applies. The Jacobi diagonals
-    ``dd{k}_diaginv`` are built lazily by :func:`_laplacian_diaginv`.
-    """
-    del geometry  # unused
+def extraction(seq, k: int, dirichlet: bool):
+    """The extraction ``E`` of the free (``dirichlet=False``) or Dirichlet ``k``-form space of ``seq``."""
     if k not in (0, 1, 2, 3):
-        raise ValueError("k must be 0, 1, 2, or 3")
-    operators = _ensure_extraction_operators(seq, operators)
-    if k in (0, 1, 2) and _incidence_components(operators, k)[0] is None:
-        operators = update_incidence_operator(seq, operators, k)
-    return operators
+        raise ValueError("k must be 0, 1, 2 or 3")
+    return getattr(seq, f"e{k}_dbc" if dirichlet else f"e{k}")
 
 
-def assemble_hodge_operators(seq, geometry, operators: Optional[SequenceOperators] = None,
-                             ks: Sequence[int] = (0, 1, 2, 3)):
-    """Assemble Hodge/stiffness operators for the requested form degrees."""
-    for k in ks:
-        operators = update_hodge_operator(seq, geometry, operators, k)
-    return operators
+def _mass_extraction(seq, k: int, dirichlet: bool):
+    e = extraction(seq, k, dirichlet)
+    return e, e.T
 
 
-def assemble_laplacian_operators(seq, geometry, operators: Optional[SequenceOperators] = None,
-                                 ks: Sequence[int] = (0, 1, 2, 3)):
-    """Alias of assemble_hodge_operators using Laplacian naming."""
-    return assemble_hodge_operators(seq, geometry, operators=operators, ks=ks)
+def _derivative_extraction(seq, k: int, dirichlet_in: bool, dirichlet_out: bool):
+    if k not in (0, 1, 2):
+        raise ValueError("k must be 0, 1 or 2")
+    e_in = extraction(seq, k, dirichlet_in)
+    e_out = extraction(seq, k + 1, dirichlet_out)
+    return e_in, e_in.T, e_out, e_out.T
 
 
-def assemble_all_operators(seq, geometry,
-                           operators: Optional[SequenceOperators] = None):
-    """Assemble the incidence operators (and polar stencils) for ``seq``.
-
-    Masses, projections, derivatives and Laplacians are all applied
-    matrix-free from the geometry attached to ``seq``, so the incidence is the
-    only operator data built here.
-    """
-    operators = assemble_incidence_operators(seq, operators=operators)
-    operators = assemble_derivative_operators(
-        seq, geometry, operators=operators)
-    operators = assemble_laplacian_operators(seq, geometry, operators=operators)
-    return operators
-
-
-def _mass_extraction(operators: SequenceOperators, k: int, dirichlet: bool):
-    match k:
-        case 0:
-            return (operators.e0_dbc, operators.e0_dbc_T) if dirichlet else (operators.e0, operators.e0_T)
-        case 1:
-            return (operators.e1_dbc, operators.e1_dbc_T) if dirichlet else (operators.e1, operators.e1_T)
-        case 2:
-            return (operators.e2_dbc, operators.e2_dbc_T) if dirichlet else (operators.e2, operators.e2_T)
-        case 3:
-            return (operators.e3_dbc, operators.e3_dbc_T) if dirichlet else (operators.e3, operators.e3_T)
-    raise ValueError("k must be 0, 1, 2 or 3")
-
-
-def _derivative_extraction(operators: SequenceOperators, k: int,
+def _projection_extraction(seq, k_in: int, k_out: int,
                            dirichlet_in: bool, dirichlet_out: bool):
-    match k:
-        case 0:
-            e_in = operators.e0_dbc if dirichlet_in else operators.e0
-            e_in_T = operators.e0_dbc_T if dirichlet_in else operators.e0_T
-            e_out = operators.e1_dbc if dirichlet_out else operators.e1
-            e_out_T = operators.e1_dbc_T if dirichlet_out else operators.e1_T
-        case 1:
-            e_in = operators.e1_dbc if dirichlet_in else operators.e1
-            e_in_T = operators.e1_dbc_T if dirichlet_in else operators.e1_T
-            e_out = operators.e2_dbc if dirichlet_out else operators.e2
-            e_out_T = operators.e2_dbc_T if dirichlet_out else operators.e2_T
-        case 2:
-            e_in = operators.e2_dbc if dirichlet_in else operators.e2
-            e_in_T = operators.e2_dbc_T if dirichlet_in else operators.e2_T
-            e_out = operators.e3_dbc if dirichlet_out else operators.e3
-            e_out_T = operators.e3_dbc_T if dirichlet_out else operators.e3_T
-        case _:
-            raise ValueError("k must be 0, 1 or 2")
-    return e_in, e_in_T, e_out, e_out_T
+    if (k_in, k_out) not in _PROJECTION_SPACES:
+        raise ValueError(
+            "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
+    e_in = extraction(seq, k_in, dirichlet_in)
+    e_out = extraction(seq, k_out, dirichlet_out)
+    return e_in, e_in.T, e_out
 
 
-def _projection_extraction(operators: SequenceOperators,
-                           k_in: int, k_out: int,
-                           dirichlet_in: bool, dirichlet_out: bool):
-    match (k_in, k_out):
-        case (2, 1):
-            e_in = operators.e2_dbc if dirichlet_in else operators.e2
-            e_in_T = operators.e2_dbc_T if dirichlet_in else operators.e2_T
-            e_out = operators.e1_dbc if dirichlet_out else operators.e1
-        case (1, 2):
-            e_in = operators.e1_dbc if dirichlet_in else operators.e1
-            e_in_T = operators.e1_dbc_T if dirichlet_in else operators.e1_T
-            e_out = operators.e2_dbc if dirichlet_out else operators.e2
-        case (0, 3):
-            e_in = operators.e3_dbc if dirichlet_in else operators.e3
-            e_in_T = operators.e3_dbc_T if dirichlet_in else operators.e3_T
-            e_out = operators.e0_dbc if dirichlet_out else operators.e0
-        case (3, 0):
-            e_in = operators.e0_dbc if dirichlet_in else operators.e0
-            e_in_T = operators.e0_dbc_T if dirichlet_in else operators.e0_T
-            e_out = operators.e3_dbc if dirichlet_out else operators.e3
-        case _:
-            raise ValueError(
-                "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported"
-            )
-    return e_in, e_in_T, e_out
-
-
-def apply_mass_matrix(seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True):
+def apply_mass_matrix(seq, v, k: int, dirichlet: bool = True):
     """Apply a mass matrix from an explicit operator bundle."""
-    core = mass_core_apply(seq, operators, k)
-    e, e_T = _mass_extraction(operators, k, dirichlet)
+    core = mass_core_apply(seq, k)
+    e, e_T = _mass_extraction(seq, k, dirichlet)
     return e @ core(e_T @ v)
 
 
-def apply_projection_matrix(seq, operators: SequenceOperators, v,
+def apply_projection_matrix(seq, v,
                             k_in: int, k_out: int,
                             dirichlet_in: bool = True,
                             dirichlet_out: bool = True):
     """Apply the projection mass ``P_{k_in k_out}`` (matrix-free, memoised on ``seq``)."""
-    core = _matrixfree_projection_apply_cached(seq, k_in, k_out)
-    e_in, e_in_T, e_out = _projection_extraction(
-        operators, k_in, k_out, dirichlet_in, dirichlet_out)
+    core = projection_core_apply(seq, k_in, k_out)
+    e_in, e_in_T, e_out = _projection_extraction(seq, k_in, k_out, dirichlet_in, dirichlet_out)
     return e_out @ core(e_in_T @ v)
 
 
-def apply_derivative_matrix(seq, operators: SequenceOperators, v, k: int,
+def apply_derivative_matrix(seq, v, k: int,
                             dirichlet_in: bool = True,
                             dirichlet_out: bool = True,
                             transpose: bool = False):
@@ -1558,13 +1249,12 @@ def apply_derivative_matrix(seq, operators: SequenceOperators, v, k: int,
     ``D_k = M_{k+1} G_k`` is applied as a composition of matrix-free applies;
     the full ``D_k`` is never materialised.
     """
-    g_sp, g_sp_T = _incidence_components(operators, k)
+    g_sp, g_sp_T = _incidence_components(seq, k)
     if g_sp is None or g_sp_T is None:
         raise ValueError(f"Incidence operator G{k} is required to apply D{k}")
-    m_apply = mass_core_apply(seq, operators, k + 1)
+    m_apply = mass_core_apply(seq, k + 1)
 
-    e_in, e_in_T, e_out, e_out_T = _derivative_extraction(
-        operators, k, dirichlet_in, dirichlet_out)
+    e_in, e_in_T, e_out, e_out_T = _derivative_extraction(seq, k, dirichlet_in, dirichlet_out)
 
     if transpose:
         # D^T v = G^T M^T v = G^T (M v) (M is symmetric)
@@ -1618,10 +1308,10 @@ def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
         allow_none=True,
     )
     x, info = solve_singular_cg(
-        lambda x: apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet),
+        lambda x: apply_mass_matrix(seq, x, k, dirichlet=dirichlet),
         rhs,
         mass_matvec=lambda x: apply_mass_matrix(
-            seq, operators, x, k, dirichlet=dirichlet),
+            seq, x, k, dirichlet=dirichlet),
         precond_matvec=precond_apply,
         x0=guess,
         tol=tol,
@@ -1630,7 +1320,7 @@ def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
     return (x, info) if return_info else x
 
 
-def apply_stiffness(seq, operators: SequenceOperators, v, k: int, dirichlet: bool = True):
+def apply_stiffness(seq, v, k: int, dirichlet: bool = True):
     """Apply a stiffness matrix from an explicit operator bundle.
 
     ``K_k = G_k^T M_{k+1} G_k`` is applied as a composition of matrix-free
@@ -1638,12 +1328,12 @@ def apply_stiffness(seq, operators: SequenceOperators, v, k: int, dirichlet: boo
     """
     if k == 3:
         return jnp.zeros_like(v)
-    g_sp, g_sp_T = _incidence_components(operators, k)
+    g_sp, g_sp_T = _incidence_components(seq, k)
     if g_sp is None or g_sp_T is None:
         raise ValueError(f"Incidence operator G{k} is required to apply K{k}")
-    m_apply = mass_core_apply(seq, operators, k + 1)
+    m_apply = mass_core_apply(seq, k + 1)
 
-    e, e_T = _mass_extraction(operators, k, dirichlet)
+    e, e_T = _mass_extraction(seq, k, dirichlet)
     return e @ (g_sp_T @ m_apply(g_sp @ (e_T @ v)))
 
 
@@ -1701,23 +1391,20 @@ def _build_schur_outer_jacobi_diaginv(
         seq, operators: SequenceOperators, *,
         k: int, dirichlet: bool, eps: float,
         saddle_preconditioner: SaddlePointPreconditionerSpec):
-    """``1/diag`` of the approximate Schur operator, preassembled or probed now."""
-    stored_diaginv = _get_schur_diaginv(operators, k, dirichlet)
-    if stored_diaginv is not None:
-        return stored_diaginv
+    """``1/diag`` of the approximate Schur operator, from the bundle.
 
-    probe_apply = _build_schur_apply_from_saddle_preconditioner(
-        seq,
-        operators,
-        k=k,
-        dirichlet=dirichlet,
-        eps=eps,
-        saddle_preconditioner=saddle_preconditioner,
-    )
-    suffix = '_dbc' if dirichlet else ''
-    size = getattr(seq, f'n{k}{suffix}')
-    diagonal = _diagonal_from_matvec(probe_apply, size)
-    return _invert_diagonal(diagonal)
+    Probed by :func:`assemble_schur_jacobi_preconditioner` (``build_preconditioners
+    (schur_jacobi=True)``), at ``eps = 0``; the stored diagonal serves every
+    shift. Never probed here: that is O(n_k) applies inside a solve.
+    """
+    del eps, saddle_preconditioner
+    stored_diaginv = _get_schur_diaginv(_require_bundle(operators), k, dirichlet)
+    if stored_diaginv is None:
+        raise ValueError(
+            f"schur.outer='jacobi' needs the probed Schur diagonal for k={k}, "
+            f"dirichlet={dirichlet}; build it with "
+            "seq.build_preconditioners(schur_jacobi=True)")
+    return stored_diaginv
 
 
 def assemble_schur_jacobi_preconditioner(
@@ -1731,8 +1418,8 @@ def assemble_schur_jacobi_preconditioner(
 
         A_k(x) = S_k x + D_{k-1} B_{k-1} D_{k-1}^T x
 
-    with ``B_{k-1}`` the metric_lumping mass preconditioner (built on demand,
-    no prior assembly needed), and probes its diagonal by O(n_k)
+    with ``B_{k-1}`` the metric_lumping mass preconditioner of the bundle,
+    and probes its diagonal by O(n_k)
     matrix-vector products.  The resulting ``1/diag(A_k)`` is stored on the
     operator bundle so that the saddle-point Schur-outer Jacobi
     preconditioner is a cheap multiply at solve time rather than an O(n_k)
@@ -1752,7 +1439,7 @@ def assemble_schur_jacobi_preconditioner(
     """
     if dirichlet_variants is None:
         dirichlet_variants = (True, False)
-    operators = _ensure_extraction_operators(seq, operators)
+    operators = _require_bundle(operators)
     dummy_spec = SaddlePointPreconditionerSpec(
         mass=MassPreconditionerSpec(kind='metric_lumping'),
         schur=SchurPreconditionerSpec(
@@ -1792,57 +1479,53 @@ def _coerce_mass_preconditioner_spec(preconditioner):
         "mass preconditioner must be a kind string or MassPreconditionerSpec")
 
 
-def _mass_metric_lumping_for(seq, operators, k: int, dirichlet: bool, **kwargs):
-    """Return the block-Jacobi MASS preconditioner for ``(k, dirichlet)``.
+def _mass_metric_lumping_for(seq, operators, k: int, dirichlet: bool):
+    """The metric-lumped MASS preconditioner for ``(k, dirichlet)`` from the bundle.
 
-    Lazily built and memoised
-    on the sequence, keyed on GEOMETRY IDENTITY so ``set_map`` /
-    ``set_spline_map`` invalidate it. That is what lets a kind be the *default*
-    without every call site having to assemble it first.
-
-    THIS IS THE DEFAULT, since 2026-08-22 -- see
-    :func:`~mrx.preconditioners.default_mass_preconditioner`. (This line read
-    "NOT YET THE DEFAULT" until 2026-08-24; the swap had already happened.)
+    This is the default mass preconditioner (:func:`~mrx.preconditioners.
+    default_mass_preconditioner`). It is never built here: a missing atom is
+    a missing :meth:`~mrx.derham_sequence.DeRhamSequence.build_preconditioners`.
     """
-    from mrx.metric_lumping_laplacian import (  # noqa: PLC0415
-        MetricLumpingMass,
-    )
-    geometry = seq.geometry
-    cache = getattr(seq, '_mass_metric_lumping_cache', None)
-    if cache is None or cache.get('geometry') is not geometry:
-        cache = {'geometry': geometry, 'factors': {}}
-        seq._mass_metric_lumping_cache = cache
-    key = (int(k), bool(dirichlet))
-    if key not in cache['factors']:
-        cache['factors'][key] = MetricLumpingMass(
-            seq, operators, int(k), bool(dirichlet), **kwargs)
-    return cache['factors'][key]
+    del seq
+    atoms = _require_bundle(operators).mass_lumping or {}
+    try:
+        return atoms[(int(k), bool(dirichlet))]
+    except KeyError:
+        raise ValueError(
+            f"metric_lumping mass preconditioner for k={k}, dirichlet={dirichlet} is "
+            "not built; seq.build_preconditioners() builds it for the installed "
+            "geometry") from None
 
 
 def assemble_mass_metric_lumping_preconditioner(
-        seq, operators: Optional[SequenceOperators] = None,
+        seq, operators: SequenceOperators,
         *, ks: Sequence[int] = (0, 1, 2, 3),
         dirichlet_variants: Optional[Sequence[bool]] = None,
         **kwargs) -> SequenceOperators:
-    """Eagerly build the block-Jacobi mass preconditioner for the given degrees.
+    """Build the metric-lumped mass preconditioner for the given degrees.
 
-    Optional -- :func:`_mass_metric_lumping_for` builds on demand -- but a
-    MetricLumpingMass build probes a dense core, so it is far from free and is
-    usually worth doing up front rather than inside the first solve.
+    A :class:`~mrx.metric_lumping_laplacian.MetricLumpingMass` per
+    ``(k, dirichlet)``, stored on ``operators.mass_lumping``. The build probes
+    a dense polar core, so it is not free; it is done here, once, against the
+    installed geometry, and nowhere else.
     """
-    operators = _ensure_extraction_operators(seq, operators)
+    from mrx.metric_lumping_laplacian import MetricLumpingMass  # noqa: PLC0415
+    operators = _require_bundle(operators)
     if dirichlet_variants is None:
         dirichlet_variants = (True, False)
+    atoms = dict(operators.mass_lumping or {})
     for k in ks:
         if k not in (0, 1, 2, 3):
             raise ValueError(
                 "metric_lumping mass preconditioner supports k=0..3")
         for dirichlet in dirichlet_variants:
-            _mass_metric_lumping_for(seq, operators, k, dirichlet, **kwargs)
-    return operators
+            atoms[(int(k), bool(dirichlet))] = MetricLumpingMass(
+                seq, operators, int(k), bool(dirichlet), **kwargs)
+    return eqx.tree_at(lambda ops: ops.mass_lumping, operators, atoms,
+                       is_leaf=lambda x: x is None or isinstance(x, dict))
 
 
-def _resolve_mass_preconditioner(seq, operators, k: int, preconditioner):
+def _resolve_mass_preconditioner(preconditioner):
     if isinstance(preconditioner, str) and preconditioner == 'auto':
         # 'auto' is the production default, always buildable on demand.
         return default_mass_preconditioner()
@@ -1852,7 +1535,7 @@ def _resolve_mass_preconditioner(seq, operators, k: int, preconditioner):
 def _build_operator_preconditioner_apply(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
     operator_apply, preconditioner, allow_none: bool = True):
-    spec = _resolve_mass_preconditioner(seq, operators, k, preconditioner)
+    spec = _resolve_mass_preconditioner(preconditioner)
     valid_kinds = ('none', 'jacobi', 'metric_lumping')
     if spec.kind not in valid_kinds:
         raise ValueError(
@@ -1877,7 +1560,7 @@ def _build_mass_preconditioner_apply(
         seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
     preconditioner, allow_none: bool = True):
     def operator_apply(x):
-        return apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet)
+        return apply_mass_matrix(seq, x, k, dirichlet=dirichlet)
 
     return _build_operator_preconditioner_apply(
         seq,
@@ -1895,9 +1578,7 @@ def _build_schur_operator_apply(
         eps: float, inner_preconditioner_apply):
     def apply(x):
         d_t_x = apply_derivative_matrix(
-            seq,
-            operators,
-            x,
+            seq, x,
             k - 1,
             dirichlet_in=dirichlet,
             dirichlet_out=dirichlet,
@@ -1905,15 +1586,13 @@ def _build_schur_operator_apply(
         )
         inner_d_t_x = inner_preconditioner_apply(d_t_x)
         schur = apply_derivative_matrix(
-            seq,
-            operators,
-            inner_d_t_x,
+            seq, inner_d_t_x,
             k - 1,
             dirichlet_in=dirichlet,
             dirichlet_out=dirichlet,
         )
-        return apply_stiffness(seq, operators, x, k, dirichlet=dirichlet) \
-            + eps * apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet) \
+        return apply_stiffness(seq, x, k, dirichlet=dirichlet) \
+            + eps * apply_mass_matrix(seq, x, k, dirichlet=dirichlet) \
             + schur
 
     return apply
@@ -2107,7 +1786,7 @@ def _build_scalar_hodge_preconditioner_apply(
                 "scalar preconditioner kind='metric_lumping' approximates L_k, not "
                 f"L_k + eps M_k (got eps={eps!r}); how the atom fits the "
                 "shifted operator is unmeasured -- see audit item 3.2")
-        if not _metric_lumping_available(seq, k, dirichlet):
+        if not _metric_lumping_available(operators, k, dirichlet):
             raise ValueError(
                 f"scalar preconditioner kind='metric_lumping' needs the metric_lumping "
                 f"Laplacian assembled for k={k}, dirichlet={dirichlet}; call "
@@ -2137,19 +1816,16 @@ def _build_coupled_saddle_preconditioner(
         s = x[n_upper:]
         m_inv_s = lower_preconditioner(s)
         w_u = u + apply_derivative_matrix(
-            seq, operators, m_inv_s, k - 1,
+            seq, m_inv_s, k - 1,
             dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         y_u = upper_preconditioner(w_u)
         d_t_y_u = apply_derivative_matrix(
-            seq, operators, y_u, k - 1,
+            seq, y_u, k - 1,
             dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
         z_s = m_inv_s + lower_preconditioner(d_t_y_u)
         return jnp.concatenate([y_u, z_s])
 
     return apply
-
-
-METRIC_LUMPING_CACHE_ATTR = "_metric_lumping_laplacian"
 
 
 def assemble_metric_lumping_laplacian_preconditioner(
@@ -2162,10 +1838,7 @@ def assemble_metric_lumping_laplacian_preconditioner(
     back to; see ``docs/research/production_simplification_plan.md``.
 
     Build ONCE per (k, BC) -- the atom is a factorisation, not a per-apply
-    computation, so it is cached on ``seq`` rather than rebuilt in the apply.
-    It is deliberately NOT stored on ``operators``: that is an ``eqx.Module``,
-    and a dict of preconditioner objects is neither a sensible pytree leaf nor
-    a hashable static field, so parking it there would risk ``filter_jit``.
+    computation. It is stored on ``operators.laplacian_lumping``.
 
     ``kwargs`` go to :class:`MetricLumpingLaplacian`. The defaults are already the
     production configuration -- pass nothing.
@@ -2181,23 +1854,17 @@ def assemble_metric_lumping_laplacian_preconditioner(
     at ``n = 4``. The geometry is healthy throughout, so this is the 1-D
     factorisation, not the map.
 
-    Returns ``operators`` unchanged, for symmetry with the other assemble_*
-    helpers.
+    Returns the bundle with the atoms installed.
     """
-    # Deferred: the experimental module imports back from mrx.operators.
-    from mrx.metric_lumping_laplacian import (  # noqa: PLC0415
-        MetricLumpingLaplacian,
-    )
-    cache = dict(getattr(seq, METRIC_LUMPING_CACHE_ATTR, None) or {})
+    from mrx.metric_lumping_laplacian import MetricLumpingLaplacian  # noqa: PLC0415
+    operators = _require_bundle(operators)
+    atoms = dict(operators.laplacian_lumping or {})
     for k in ks:
         for dbc in dirichlets:
-            cache[(int(k), bool(dbc))] = MetricLumpingLaplacian(
+            atoms[(int(k), bool(dbc))] = MetricLumpingLaplacian(
                 seq, operators, int(k), bool(dbc), **kwargs)
-    setattr(seq, METRIC_LUMPING_CACHE_ATTR, cache)
-    return operators
-
-
-PROBED_DIAG_CACHE_ATTR = "_probed_laplacian_diag"
+    return eqx.tree_at(lambda ops: ops.laplacian_lumping, operators, atoms,
+                       is_leaf=lambda x: x is None or isinstance(x, dict))
 
 
 def _probed_laplacian_diaginv(seq, operators: SequenceOperators, k: int,
@@ -2217,61 +1884,20 @@ def _probed_laplacian_diaginv(seq, operators: SequenceOperators, k: int,
     mass model's error, which has nothing to do with the preconditioner under
     test.
 
-    O(N) applies, so it is cached on the sequence and keyed on geometry
-    identity (``set_map`` invalidates it). Far too expensive to rebuild per
-    apply, and expensive enough that it is a REFERENCE, not a production
-    candidate.
+    O(N) applies: a REFERENCE, not a production candidate, computed afresh
+    on every call.
     """
-    geometry = seq.geometry
-    cache = getattr(seq, PROBED_DIAG_CACHE_ATTR, None)
-    if cache is None or cache.get('geometry') is not geometry:
-        cache = {'geometry': geometry, 'diag': {}}
-        setattr(seq, PROBED_DIAG_CACHE_ATTR, cache)
-    key = (int(k), bool(dirichlet))
-    if key not in cache['diag']:
-        size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
-        cache['diag'][key] = _invert_diagonal(_diagonal_from_matvec(
-            lambda x: apply_laplacian_approx(
-                seq, operators, x, k, dirichlet=dirichlet),
-            size))
-    return cache['diag'][key]
+    size = int(getattr(seq, f"n{k}_dbc" if dirichlet else f"n{k}"))
+    return _invert_diagonal(_diagonal_from_matvec(
+        lambda x: apply_laplacian_approx(
+            seq, operators, x, k, dirichlet=dirichlet),
+        size))
 
 
-def warm_mass_preconditioner_cache(seq, operators: SequenceOperators,
-                                   ks=(0, 1, 2, 3), dirichlets=(False, True)):
-    """Build every lazily-cached mass preconditioner OUTSIDE any trace.
-
-    The mass factors are built on first use and memoised on the sequence. That
-    is fine as long as the first use is not inside a ``jax.lax.while_loop`` --
-    the BUILD is host-side numpy (mass diagonals, 1-D inverses, and for
-    block_jacobi a dense core probe), so a cold cache inside a traced body dies
-    with TracerArrayConversionError.
-
-    It used to be warm by luck: the main mass preconditioner and ``schur.inner``
-    were the same kind, so the main path populated the cache before any solve
-    entered its loop. Since 2026-08-25 there is only one mass kind, so this
-    warms it for every ``(k, BC)`` before the loop. Cheap and idempotent --
-    the builder memoises.
-    """
-    for k in [int(v) for v in ks if 0 <= int(v) <= 3]:
-        for dirichlet in dirichlets:
-            try:
-                _mass_metric_lumping_for(seq, operators, k, dirichlet)
-            except Exception:                # noqa: BLE001
-                # A degree/BC this kind does not support is not an error here
-                # -- the real call site will raise with context.
-                # FOLLOW-UP: with one kind left this swallow hides genuine
-                # build failures, which is the failure mode the no-defensive-
-                # code rule exists to prevent. Removing it would turn an
-                # unsupported (k, BC) into a hard failure during WARMING
-                # rather than at the real call site, so it is a behaviour
-                # change and is flagged rather than folded into this commit.
-                pass
-
-
-def _metric_lumping_available(seq, k: int, dirichlet: bool) -> bool:
-    cache = getattr(seq, METRIC_LUMPING_CACHE_ATTR, None)
-    return bool(cache) and (int(k), bool(dirichlet)) in cache
+def _metric_lumping_available(operators, k: int, dirichlet: bool) -> bool:
+    """True iff the metric-lumped Laplacian atom for ``(k, dirichlet)`` is on the bundle."""
+    atoms = operators.laplacian_lumping if operators is not None else None
+    return bool(atoms) and (int(k), bool(dirichlet)) in atoms
 
 
 def apply_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
@@ -2295,19 +1921,18 @@ def apply_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
             "kind must be 'auto', 'none', 'jacobi' or 'metric_lumping' "
             f"(got {kind!r})")
     if kind == 'auto':
-        kind = 'metric_lumping' if _metric_lumping_available(seq, k, dirichlet) else 'jacobi'
+        kind = 'metric_lumping' if _metric_lumping_available(operators, k, dirichlet) else 'jacobi'
     if kind == 'none':
         return v
     if kind == 'jacobi':
         return _laplacian_diaginv(seq, operators, k, dirichlet) * v
     if kind == 'metric_lumping':
-        if not _metric_lumping_available(seq, k, dirichlet):
+        if not _metric_lumping_available(operators, k, dirichlet):
             raise ValueError(
                 f"metric_lumping Laplacian preconditioner not assembled for "
                 f"k={k}, dirichlet={dirichlet}; call "
                 "assemble_metric_lumping_laplacian_preconditioner first")
-        cache = getattr(seq, METRIC_LUMPING_CACHE_ATTR)
-        return cache[(int(k), bool(dirichlet))].apply(v)
+        return operators.laplacian_lumping[(int(k), bool(dirichlet))].apply(v)
     raise AssertionError("unreachable")
 
 
@@ -2324,7 +1949,7 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
     For ``k >= 1`` the saddle-point implementation remains shared with the
     shifted solve because the only difference is the absent mass shift.
     """
-    operators = _ensure_extraction_operators(seq, operators)
+    operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
 
@@ -2348,10 +1973,10 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
         vs = _nullspace_vectors(operators, 0, dirichlet)
         u, info = solve_singular_cg(
             lambda x: apply_stiffness(
-                seq, operators, x, 0, dirichlet=dirichlet),
+                seq, x, 0, dirichlet=dirichlet),
             rhs,
             mass_matvec=lambda x: apply_mass_matrix(
-                seq, operators, x, 0, dirichlet=dirichlet),
+                seq, x, 0, dirichlet=dirichlet),
             precond_matvec=precond_upper,
             x0=guess,
             vs=vs,
@@ -2390,7 +2015,7 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
     mass inverse, a Schur-outer preconditioner, and an optional coupled
     completion. Kind strings are accepted as convenience shorthands.
     """
-    operators = _ensure_extraction_operators(seq, operators)
+    operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
 
@@ -2420,13 +2045,12 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
             operators, 0, dirichlet) if eps == 0 else jnp.zeros((0, rhs.shape[0]))
         u, info = solve_singular_cg(
             lambda x: apply_stiffness(
-                seq, operators, x, 0, dirichlet=dirichlet)
-            + eps * apply_mass_matrix(seq, operators,
-                                      x, 0, dirichlet=dirichlet),
+                seq, x, 0, dirichlet=dirichlet)
+            + eps * apply_mass_matrix(seq, x, 0, dirichlet=dirichlet),
             rhs,
             mass_matvec=(
                 lambda x: apply_mass_matrix(
-                    seq, operators, x, 0, dirichlet=dirichlet)
+                    seq, x, 0, dirichlet=dirichlet)
             ) if eps == 0 else None,
             precond_matvec=precond_upper,
             x0=guess,
@@ -2465,7 +2089,7 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
     if outer_spec.kind == 'metric_lumping':
         # The atom approximates L_k directly, so it needs neither the
         # Schur probe nor schur.inner -- it IS the upper-block inverse.
-        if not _metric_lumping_available(seq, k, dirichlet):
+        if not _metric_lumping_available(operators, k, dirichlet):
             raise ValueError(
                 "schur.outer kind='metric_lumping' needs the block-Jacobi Laplacian "
                 f"assembled for k={k}, dirichlet={dirichlet}; call "
@@ -2538,15 +2162,15 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
 
     u, sigma, info = solve_saddle_point_minres(
         stiffness_matvec=lambda x: apply_stiffness(
-            seq, operators, x, k, dirichlet=dirichlet)
-        + eps * apply_mass_matrix(seq, operators, x, k, dirichlet=dirichlet),
+            seq, x, k, dirichlet=dirichlet)
+        + eps * apply_mass_matrix(seq, x, k, dirichlet=dirichlet),
         derivative_matvec=lambda s: apply_derivative_matrix(
-            seq, operators, s, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
+            seq, s, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
         derivative_T_matvec=lambda u: apply_derivative_matrix(
-            seq, operators, u, k - 1, dirichlet_in=dirichlet,
+            seq, u, k - 1, dirichlet_in=dirichlet,
             dirichlet_out=dirichlet, transpose=True),
         mass_lower_matvec=lambda s: apply_mass_matrix(
-            seq, operators, s, k - 1, dirichlet=dirichlet),
+            seq, s, k - 1, dirichlet=dirichlet),
         b_upper=rhs,
         n_upper=n_upper,
         n_lower=n_lower,
@@ -2554,7 +2178,7 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
         precond_upper=precond_upper,
         precond_lower=precond_lower,
         mass_upper_matvec=lambda x: apply_mass_matrix(
-            seq, operators, x, k, dirichlet=dirichlet),
+            seq, x, k, dirichlet=dirichlet),
         vs_upper=vs_upper,
         vs_lower=vs_lower,
         x0_upper=guess,
@@ -2584,8 +2208,8 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
     if k == 0:
         def operator_apply(x):
             return apply_mass_matrix(
-                seq, operators, x, 0, dirichlet=dirichlet) + eps * apply_stiffness(
-                    seq, operators, x, 0, dirichlet=dirichlet)
+                seq, x, 0, dirichlet=dirichlet) + eps * apply_stiffness(
+                    seq, x, 0, dirichlet=dirichlet)
 
         precond_apply = _build_diffusion_preconditioner_apply(
             seq,
@@ -2612,8 +2236,8 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
 
     def upper_operator_apply(x):
         return apply_mass_matrix(
-            seq, operators, x, k, dirichlet=dirichlet) + eps * apply_stiffness(
-                seq, operators, x, k, dirichlet=dirichlet)
+            seq, x, k, dirichlet=dirichlet) + eps * apply_stiffness(
+                seq, x, k, dirichlet=dirichlet)
 
     upper_preconditioner = _build_diffusion_preconditioner_apply(
         seq,
@@ -2642,12 +2266,12 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
     u, sigma, info = solve_saddle_point_minres(
         stiffness_matvec=upper_operator_apply,
         derivative_matvec=lambda s: eps * apply_derivative_matrix(
-            seq, operators, s, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
+            seq, s, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
         derivative_T_matvec=lambda u: eps * apply_derivative_matrix(
-            seq, operators, u, k - 1, dirichlet_in=dirichlet,
+            seq, u, k - 1, dirichlet_in=dirichlet,
             dirichlet_out=dirichlet, transpose=True),
         mass_lower_matvec=lambda s: eps * apply_mass_matrix(
-            seq, operators, s, k - 1, dirichlet=dirichlet),
+            seq, s, k - 1, dirichlet=dirichlet),
         b_upper=rhs,
         n_upper=n_upper,
         n_lower=n_lower,
@@ -2670,39 +2294,33 @@ def apply_laplacian(seq, operators: SequenceOperators, v, k: int,
     """
     match k:
         case 0:
-            return apply_stiffness(seq, operators, v, 0, dirichlet=dirichlet)
+            return apply_stiffness(seq, v, 0, dirichlet=dirichlet)
         case 1:
             Dt_v = apply_derivative_matrix(
-                seq, operators,
-                v, 0, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
+                seq, v, 0, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
             Minv_Dt_v = apply_inverse_mass_matrix(
                 seq, operators, Dt_v, 0, dirichlet=dirichlet,
                 guess=guess, tol=tol, maxiter=maxiter)
-            return apply_stiffness(seq, operators, v, 1, dirichlet=dirichlet) + \
+            return apply_stiffness(seq, v, 1, dirichlet=dirichlet) + \
                 apply_derivative_matrix(
-                    seq, operators,
-                    Minv_Dt_v, 0, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+                    seq, Minv_Dt_v, 0, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         case 2:
             Dt_v = apply_derivative_matrix(
-                seq, operators,
-                v, 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
+                seq, v, 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
             Minv_Dt_v = apply_inverse_mass_matrix(
                 seq, operators, Dt_v, 1, dirichlet=dirichlet,
                 guess=guess, tol=tol, maxiter=maxiter)
-            return apply_stiffness(seq, operators, v, 2, dirichlet=dirichlet) + \
+            return apply_stiffness(seq, v, 2, dirichlet=dirichlet) + \
                 apply_derivative_matrix(
-                    seq, operators,
-                    Minv_Dt_v, 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+                    seq, Minv_Dt_v, 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         case 3:
             Dt_v = apply_derivative_matrix(
-                seq, operators,
-                v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
+                seq, v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
             Minv_Dt_v = apply_inverse_mass_matrix(
                 seq, operators, Dt_v, 2, dirichlet=dirichlet,
                 guess=guess, tol=tol, maxiter=maxiter)
             return apply_derivative_matrix(
-                seq, operators,
-                Minv_Dt_v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+                seq, Minv_Dt_v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         case _:
             raise ValueError("k must be 0, 1, 2 or 3")
 
@@ -2719,35 +2337,35 @@ def apply_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
     """
     match k:
         case 0:
-            return apply_stiffness(seq, operators, v, 0, dirichlet=dirichlet)
+            return apply_stiffness(seq, v, 0, dirichlet=dirichlet)
         case 1:
             Dt_v = apply_derivative_matrix(
-                seq, operators, v, 0,
+                seq, v, 0,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
             Minv_Dt_v = apply_mass_matrix_preconditioner(
                 seq, operators, Dt_v, 0, dirichlet=dirichlet, kind='auto')
-            return apply_stiffness(seq, operators, v, 1, dirichlet=dirichlet) + \
+            return apply_stiffness(seq, v, 1, dirichlet=dirichlet) + \
                 apply_derivative_matrix(
-                    seq, operators, Minv_Dt_v, 0,
+                    seq, Minv_Dt_v, 0,
                     dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         case 2:
             Dt_v = apply_derivative_matrix(
-                seq, operators, v, 1,
+                seq, v, 1,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
             Minv_Dt_v = apply_mass_matrix_preconditioner(
                 seq, operators, Dt_v, 1, dirichlet=dirichlet, kind='auto')
-            return apply_stiffness(seq, operators, v, 2, dirichlet=dirichlet) + \
+            return apply_stiffness(seq, v, 2, dirichlet=dirichlet) + \
                 apply_derivative_matrix(
-                    seq, operators, Minv_Dt_v, 1,
+                    seq, Minv_Dt_v, 1,
                     dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         case 3:
             Dt_v = apply_derivative_matrix(
-                seq, operators, v, 2,
+                seq, v, 2,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
             Minv_Dt_v = apply_mass_matrix_preconditioner(
                 seq, operators, Dt_v, 2, dirichlet=dirichlet, kind='auto')
             return apply_derivative_matrix(
-                seq, operators, Minv_Dt_v, 2,
+                seq, Minv_Dt_v, 2,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         case _:
             raise ValueError("k must be 0, 1, 2 or 3")

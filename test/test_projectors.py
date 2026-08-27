@@ -236,9 +236,7 @@ def _build_identity_seq(deg):
         (4, 4, 4), (deg,) * 3, deg + 1, ("clamped", "periodic", "periodic"),
         polar=True, maxiter=200, betti_numbers=(1, 1, 0, 0),
     )
-    seq.evaluate_1d()
     seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2))
-    seq.assemble_all_sparse()
     return seq
 
 
@@ -374,9 +372,7 @@ def tensor_seq():
         (4, 4, 4), (2, 2, 2), 4, ("clamped", "periodic", "periodic"),
         polar=False, maxiter=200, betti_numbers=(1, 1, 0, 0),
     )
-    seq.evaluate_1d()
     seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2))
-    seq.assemble_all_sparse()
     return seq
 
 

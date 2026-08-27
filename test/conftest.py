@@ -66,7 +66,6 @@ def build_torus_sequence(ns, torus_map):
         ns, (P, P, P), P + 1, TYPES, polar=True,
         maxiter=1000, betti_numbers=BETTI,
     )
-    seq.evaluate_1d()
     seq.set_spline_map(greville_interpolate_map(torus_map, seq))
     t1 = time.perf_counter()
     seq.build_preconditioners()
@@ -95,33 +94,20 @@ def n_dofs(seq, k, dirichlet):
 
 @pytest.fixture(scope="session")
 def laplacian_jacobi_diag(tiny_seq):
-    """``diag(E L_k E^T)`` for every ``(k, dirichlet)`` on ``tiny_seq``, built once.
+    """``diag(E L_k E^T)`` for every ``(k, dirichlet)`` on ``tiny_seq``.
 
-    ``kind='jacobi'`` Laplacian applies build this diagonal lazily and store
-    it nowhere, so every consumer used to rebuild it (the k >= 1 closed form
-    costs a few seconds per pair on the CPU). The inverse diagonals are
-    installed on the session bundle, where ``_laplacian_diaginv`` finds them,
-    so the positivity test, the dispatch test and the probed-reference test
-    share one build. Returns ``{(k, dirichlet): diagonal}`` as numpy arrays.
+    ``build_preconditioners`` stores the INVERSE diagonal on the bundle
+    (``_invert_diagonal`` maps zero entries to zero); this returns the
+    diagonal itself, ``{(k, dirichlet): diagonal}`` as numpy arrays.
     """
     import numpy as np
-
-    from mrx.local_assembly import build_extracted_stiffness_diagonal_k0
-    from mrx.operators import _invert_diagonal
-    from mrx.preconditioners import build_extracted_laplacian_diagonal
 
     ops = tiny_seq.operators
     diags = {}
     for k in range(4):
         for dbc in (False, True):
-            if k == 0:
-                diag = build_extracted_stiffness_diagonal_k0(tiny_seq, dbc)
-            else:
-                diag = build_extracted_laplacian_diagonal(
-                    tiny_seq, ops, k, dirichlet=dbc)
-            diags[(k, dbc)] = np.asarray(diag)
-            ops = ops.with_laplacian_diaginv(k, _invert_diagonal(diag), dirichlet=dbc)
-    tiny_seq.set_operators(ops)
+            inv = np.asarray(ops.get_laplacian_diaginv(k, dirichlet=dbc))
+            diags[(k, dbc)] = np.where(inv != 0.0, 1.0 / np.where(inv != 0.0, inv, 1.0), 0.0)
     return diags
 
 

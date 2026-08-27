@@ -53,7 +53,6 @@ from mrx.derham_sequence import DeRhamSequence
 n, p = 8, 3
 seq = DeRhamSequence((n, n, 1), (p, p, 0), p + 1,
                      ("clamped", "periodic", "constant"), polar=True)
-seq.evaluate_1d()
 ```
 
 - `ns` is the number of basis functions and `ps` the degree per direction.
@@ -61,8 +60,9 @@ seq.evaluate_1d()
 - `types` is `clamped`, `periodic`, or `constant` per direction.
 - `polar=True` fuses the innermost rings so that fields are smooth at
   $r = 0$. See [The polar axis](concepts/polar.md).
-- `evaluate_1d` tabulates the 1D bases at the quadrature points. Every
-  assembly reads these tables.
+- The constructor tabulates the 1D bases at the quadrature points and
+  builds the extraction and incidence operators; nothing static is built
+  later.
 
 Dirichlet conditions are not a property of the sequence. Every operator
 takes `dirichlet=True` or `False` and picks the matching extraction
@@ -131,7 +131,6 @@ from mrx.mappings import toroid_map
 
 seq = DeRhamSequence((n, 2 * n, n), (p, p, p), p + 1,
                      ("clamped", "periodic", "periodic"), polar=True)
-seq.evaluate_1d()
 seq.set_map_and_preconditioners(toroid_map(epsilon=1 / 3), ks=(0,), dirichlets=(True,))
 ```
 
@@ -185,7 +184,6 @@ from mrx.nullspace import init_nullspaces
 seq = DeRhamSequence((n, n, 1), (p, p, 0), p + 1,
                      ("clamped", "periodic", "constant"), polar=True,
                      betti_numbers=(1, 0, 0, 0))
-seq.evaluate_1d()
 seq.set_map_and_preconditioners(disk_map, ks=(2, 3), dirichlets=(False,))
 seq.set_operators(init_nullspaces(seq, seq.get_operators()))
 
@@ -225,7 +223,6 @@ from mrx.nullspace import compute_nullspaces
 seq = DeRhamSequence((n, 2 * n, n), (p, p, p), p + 1,
                      ("clamped", "periodic", "periodic"), polar=True,
                      betti_numbers=(1, 1, 0, 0))
-seq.evaluate_1d()
 seq.set_map_and_preconditioners(toroid_map(epsilon=1 / 3))
 seq.set_operators(compute_nullspaces(seq, seq.get_operators()))
 ```

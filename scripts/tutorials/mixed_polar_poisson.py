@@ -52,7 +52,6 @@ def solve(n, p):
     seq = DeRhamSequence((n, n, 1), (p, p, 0), p + 1,
                          ("clamped", "periodic", "constant"), polar=True,
                          betti_numbers=(1, 0, 0, 0))
-    seq.evaluate_1d()
     # The k=3 solve is a saddle-point solve with M₂⁻¹ inside: build the
     # k=2 mass and the k=3 Laplacian preconditioners for the free space.
     seq.set_map_and_preconditioners(disk_map, ks=(2, 3), dirichlets=(False,))

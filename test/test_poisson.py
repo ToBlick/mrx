@@ -72,7 +72,7 @@ def specs(torus_map):
 def test_manufactured_solution(tiny_seq, specs, k, dirichlet):
     seq = tiny_seq
     if k == 0:
-        assert _metric_lumping_available(seq, 0, dirichlet), (
+        assert _metric_lumping_available(seq.operators, 0, dirichlet), (
             "the k=0 metric-lumping atom is not assembled, so 'auto' would "
             "fall back to jacobi")
     else:

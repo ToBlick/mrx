@@ -218,16 +218,10 @@ def compute_all_k(n: int, p: int, epsilon: float, solver_tol: float, cg_maxiter:
          f"  n0_dbc={seq.n0_dbc} n1_dbc={seq.n1_dbc} n2_dbc={seq.n2_dbc} n3_dbc={seq.n3_dbc}"
          f"  ({timings['init']:.2f}s)")
 
-    _log("Evaluating 1D basis functions and geometry...")
-    t0 = time.perf_counter()
-    seq.evaluate_1d()
-    timings["evaluate_1d"] = time.perf_counter() - t0
-    _log(f"  evaluate_1d done ({timings['evaluate_1d']:.2f}s)")
-
     # --- Preconditioners -----------------------------------------------
     _log("Building the incidence operators and every preconditioner...")
     t0 = time.perf_counter()
-    ops = seq.build_preconditioners()
+    ops = seq.build_preconditioners(schur_jacobi=True)   # the iterative nullspaces pin schur.outer='jacobi'
     jax.block_until_ready(ops)
     timings["assembly"] = time.perf_counter() - t0
     _log(f"  Preconditioners built ({timings['assembly']:.2f}s)")

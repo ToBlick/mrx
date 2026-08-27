@@ -17,7 +17,7 @@ from mrx.local_assembly import (build_matrixfree_mass_apply,
                                 build_matrixfree_projection_apply)
 from mrx.mappings import rotating_ellipse_map
 from mrx.operators import (_PROJECTION_SPACES, apply_projection_matrix,
-                           assemble_incidence_operators)
+                           new_operators)
 from test.dense import dense_from_apply, dense_mixed_mass
 
 # Sum factorisation against the brute-force quadrature sum, relative to the
@@ -30,9 +30,8 @@ def mf_seq():
     """(4, 6, 4) p=2 polar rotating ellipse with its incidence operators."""
     seq = DeRhamSequence((4, 6, 4), (2, 2, 2), 3, ("clamped", "periodic", "periodic"),
                          polar=True)
-    seq.evaluate_1d()
     seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2, R0=1.0, nfp=3))
-    return seq, assemble_incidence_operators(seq)
+    return seq, new_operators(seq)
 
 
 def _n_raw(seq, k):
@@ -84,6 +83,6 @@ def test_extracted_projection_pairs_are_transposes(mf_seq, pair, partner, dirich
         k_in = {(2, 1): 2, (1, 2): 1, (0, 3): 3, (3, 0): 0}[p]
         n = int(getattr(seq, f"n{k_in}_dbc" if dirichlet else f"n{k_in}"))
         return dense_from_apply(
-            lambda v: apply_projection_matrix(seq, ops, v, *p, dirichlet, dirichlet), n)
+            lambda v: apply_projection_matrix(seq, v, *p, dirichlet, dirichlet), n)
     a, b = dense(pair), dense(partner)
     npt.assert_allclose(a, b.T, rtol=0.0, atol=ATOL * np.abs(a).max())

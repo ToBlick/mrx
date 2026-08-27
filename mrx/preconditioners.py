@@ -120,10 +120,8 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
 
     THE BUILD IS NOT JIT-SAFE, AND DOES NOT NEED TO BE. Its sparsity
     bookkeeping is host-side numpy and its core probe runs the matrix-free
-    apply on concrete vectors, so a COLD cache inside a traced loop dies. The
-    apply was made jit-safe in 3bd62aa; the build is warmed OUTSIDE the loop
-    by ``operators.warm_mass_preconditioner_cache``. Any new traced entry
-    point that solves must warm first.
+    apply on concrete vectors. It runs once, in ``build_preconditioners``,
+    outside every trace; only the apply is jit-safe.
 
     CAVEAT ON THE EVIDENCE: the mass A/B covers h = 8..20 and p = 2..5, but the
     effect on ``L_k`` was measured at n=12, p=3 only. The overnight sweep in
@@ -1440,12 +1438,12 @@ def _weak_term_rows_by_apply(seq, operators, k: int, *, dirichlet: bool, indices
 
     def weak_apply(x):
         d_t_x = apply_derivative_matrix(
-            seq, operators, x, lower, dirichlet_in=dirichlet,
+            seq, x, lower, dirichlet_in=dirichlet,
             dirichlet_out=dirichlet, transpose=True)
         inner = apply_mass_matrix_preconditioner(
             seq, operators, d_t_x, lower, dirichlet=dirichlet, kind='auto')
         return apply_derivative_matrix(
-            seq, operators, inner, lower, dirichlet_in=dirichlet,
+            seq, inner, lower, dirichlet_in=dirichlet,
             dirichlet_out=dirichlet)
 
     def row(i):

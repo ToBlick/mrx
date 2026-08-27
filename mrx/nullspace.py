@@ -746,14 +746,6 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         if slot_coarse:
             solve_ops = _set_null(operators, k, dirichlet, v0[None, :])
 
-        # The body below is traced. Any lazily-built preconditioner factor that
-        # is still cold when the trace reaches it would be BUILT under the
-        # tracer, and those builds are host-side numpy. Warm them here, outside
-        # the loop. See operators.warm_mass_preconditioner_cache.
-        from mrx.operators import warm_mass_preconditioner_cache  # noqa: PLC0415
-        warm_mass_preconditioner_cache(seq, solve_ops, ks=(k - 1, k, k + 1),
-                                       dirichlets=(dirichlet,))
-
         def body_fn(state, solve_ops=solve_ops, slot_coarse=slot_coarse):
             v, rq, _rq_prev, i = state
             Mv = seq.apply_mass_matrix(

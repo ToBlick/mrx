@@ -20,7 +20,6 @@ import os
 import h5py
 import numpy as np
 
-import mrx.operators as op
 from mrx.derham_sequence import DeRhamSequence
 from mrx.gvec import build_gvec_map
 from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map
@@ -75,7 +74,8 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
             ignored for the analytic names.
 
     Returns:
-        ``(seq, ops)`` with ``seq.set_operators(ops)`` already called.
+        ``(seq, ops)``: the sequence with its geometry installed and every
+        preconditioner built (``seq.operators is ops``).
 
     Raises:
         ValueError: if ``geometry`` is neither an analytic name nor a file.
@@ -85,7 +85,6 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
     seq = DeRhamSequence(ns, (p,) * 3, p + 1, ("clamped", "periodic", "periodic"),
                          polar=True, tol=tol, maxiter=maxiter,
                          betti_numbers=(1, 1, 0, 0))
-    seq.evaluate_1d()
     if os.path.isfile(geometry):
         map_func, info = build_gvec_map(geometry, map_ns=ns, p=p, nfp=nfp)
         print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
@@ -105,12 +104,4 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
         seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.5, nfp=3))
     else:
         raise _unknown(geometry)
-    ops = op.assemble_incidence_operators(seq)
-    ops = op.assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
-    # The k>=1 saddle default requires the metric-lumping atoms; nothing
-    # builds them implicitly.
-    ops = op.assemble_metric_lumping_laplacian_preconditioner(
-        seq, ops, ks=(0, 1, 2, 3), dirichlets=(False, True))
-    op.warm_mass_preconditioner_cache(seq, ops)
-    seq.set_operators(ops)
-    return seq, ops
+    return seq, seq.build_preconditioners()

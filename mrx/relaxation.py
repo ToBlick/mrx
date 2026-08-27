@@ -189,8 +189,8 @@ def pressure_diagnostics(
     gradp_cmp = seq.l2_norm(gpw2 - gp, 2) / seq.l2_norm(gpw2, 2)
     ci0, cs0 = seq._form_comp_info(0)
     ci3, cs3 = seq._form_comp_info(3)
-    pw_q = evaluate_at_xq(seq.e0_dbc_T @ p_w, ci0, cs0, quad_shape, 1)[:, 0]
-    p_q = evaluate_at_xq(seq.e3_dbc_T @ p, ci3, cs3, quad_shape, 1)[:, 0] / seq.jacobian_j
+    pw_q = evaluate_at_xq(seq.e0_dbc.T @ p_w, ci0, cs0, quad_shape, 1)[:, 0]
+    p_q = evaluate_at_xq(seq.e3_dbc.T @ p, ci3, cs3, quad_shape, 1)[:, 0] / seq.jacobian_j
     pw_c = pw_q - jnp.sum(wJ * pw_q) / jnp.sum(wJ)
     p_c = p_q - jnp.sum(wJ * p_q) / jnp.sum(wJ)
     p_cmp = jnp.sqrt(jnp.sum(wJ * (p_c - pw_c) ** 2) / jnp.sum(wJ * pw_c ** 2))

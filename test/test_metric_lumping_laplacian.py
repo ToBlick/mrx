@@ -311,49 +311,44 @@ def test_production_dispatch_wiring(tiny_seq, laplacian_jacobi_diag):
     both sides: jacobi before assembly, block after. The jacobi diagonals
     come from the session fixture rather than a rebuild here.
     """
-    from mrx.operators import (
-        METRIC_LUMPING_CACHE_ATTR, assemble_metric_lumping_laplacian_preconditioner,
-    )
+    import equinox as eqx
 
     k, dbc = 3, False          # non-singular, single component: the cheap case
     n = int(getattr(tiny_seq, f"n{k}"))
     rng = np.random.default_rng(11)
     v = jnp.asarray(rng.standard_normal(n))
-    ops = tiny_seq.get_operators()
+    ops = tiny_seq.operators
+    # The same bundle without the Laplacian atoms.
+    bare = eqx.tree_at(lambda o: o.laplacian_lumping, ops, {},
+                       is_leaf=lambda x: isinstance(x, dict))
 
-    prev = getattr(tiny_seq, METRIC_LUMPING_CACHE_ATTR, None)
-    try:
-        # Before assembly: 'auto' must fall back, and 'metric_lumping' must say so
-        # clearly rather than silently doing something else.
-        setattr(tiny_seq, METRIC_LUMPING_CACHE_ATTR, None)
-        auto_before = tiny_seq.apply_laplacian_preconditioner(
-            v, k, dirichlet=dbc, kind='auto')
-        jac = tiny_seq.apply_laplacian_preconditioner(
-            v, k, dirichlet=dbc, kind='jacobi')
-        # `_rel`, not exact equality: two calls down the SAME path differ by
-        # ~1 ULP (jax re-tracing), which is the third time in this file that
-        # bit-identity turned out to be the wrong assertion. INERT is four
-        # orders below the LIVE separation asserted at the end of this test.
-        assert _rel(np.asarray(auto_before), np.asarray(jac)) < INERT, (
-            "kind='auto' did not fall back to jacobi before assembly")
-        with pytest.raises(ValueError, match="not assembled"):
-            tiny_seq.apply_laplacian_preconditioner(
-                v, k, dirichlet=dbc, kind='metric_lumping')
+    # Without the atom: 'auto' must fall back, and 'metric_lumping' must say so
+    # clearly rather than silently doing something else.
+    auto_before = tiny_seq.apply_laplacian_preconditioner(
+        v, k, dirichlet=dbc, kind='auto', operators=bare)
+    jac = tiny_seq.apply_laplacian_preconditioner(
+        v, k, dirichlet=dbc, kind='jacobi', operators=bare)
+    # `_rel`, not exact equality: two calls down the SAME path differ by
+    # ~1 ULP (jax re-tracing), which is the third time in this file that
+    # bit-identity turned out to be the wrong assertion. INERT is four
+    # orders below the LIVE separation asserted at the end of this test.
+    assert _rel(np.asarray(auto_before), np.asarray(jac)) < INERT, (
+        "kind='auto' did not fall back to jacobi without the atom")
+    with pytest.raises(ValueError, match="not assembled"):
+        tiny_seq.apply_laplacian_preconditioner(
+            v, k, dirichlet=dbc, kind='metric_lumping', operators=bare)
 
-        # After assembly: 'metric_lumping' is the atom, and 'auto' now picks it.
-        assemble_metric_lumping_laplacian_preconditioner(
-            tiny_seq, ops, ks=(k,), dirichlets=(dbc,))
-        blk = tiny_seq.apply_laplacian_preconditioner(
-            v, k, dirichlet=dbc, kind='metric_lumping')
-        auto_after = tiny_seq.apply_laplacian_preconditioner(
-            v, k, dirichlet=dbc, kind='auto')
-        assert _rel(np.asarray(auto_after), np.asarray(blk)) < INERT, (
-            "kind='auto' did not prefer the block atom after assembly")
-        assert _rel(np.asarray(blk), np.asarray(jac)) > LIVE, (
-            "kind='metric_lumping' returned essentially the jacobi diagonal; the "
-            "dispatch is not reaching the atom")
-    finally:
-        setattr(tiny_seq, METRIC_LUMPING_CACHE_ATTR, prev)
+    # With the atom (the session bundle): 'metric_lumping' is the atom, and
+    # 'auto' picks it.
+    blk = tiny_seq.apply_laplacian_preconditioner(
+        v, k, dirichlet=dbc, kind='metric_lumping')
+    auto_after = tiny_seq.apply_laplacian_preconditioner(
+        v, k, dirichlet=dbc, kind='auto')
+    assert _rel(np.asarray(auto_after), np.asarray(blk)) < INERT, (
+        "kind='auto' did not prefer the block atom once built")
+    assert _rel(np.asarray(blk), np.asarray(jac)) > LIVE, (
+        "kind='metric_lumping' returned essentially the jacobi diagonal; the "
+        "dispatch is not reaching the atom")
 
 
 def test_first_apply_inside_a_trace_does_not_poison_the_instance(tiny_seq):
@@ -446,13 +441,10 @@ def test_probed_diagonal_is_the_honest_reference(tiny_seq):
     """
     # Not a preconditioner KIND any more -- the kinds are none/jacobi/metric_lumping --
     # but still the reference the jacobi diagonal has to be checked against.
-    from mrx.operators import (
-        PROBED_DIAG_CACHE_ATTR, _laplacian_diaginv, _probed_laplacian_diaginv,
-    )
+    from mrx.operators import _laplacian_diaginv, _probed_laplacian_diaginv
 
     ops = tiny_seq.get_operators()
-    prev = getattr(tiny_seq, PROBED_DIAG_CACHE_ATTR, None)
-    try:
+    if True:
         for k, dbc in ((3, False), (0, False)):
             n = int(getattr(tiny_seq, f"n{k}"))
             rng = np.random.default_rng(17)
@@ -477,5 +469,3 @@ def test_probed_diagonal_is_the_honest_reference(tiny_seq):
                 assert d < 1.0, (
                     f"k={k}: probed vs modelled diagonal differ by {d:.2e}; "
                     "one of them is not diag(L_k)")
-    finally:
-        setattr(tiny_seq, PROBED_DIAG_CACHE_ATTR, prev)

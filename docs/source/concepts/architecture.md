@@ -74,17 +74,18 @@ with the metric weight built from the map Jacobian `DF` and `J = det DF`:
 | 3 | `1 / J` |
 
 The mass matrices are the only operators that need quadrature and they are
-never stored. `mass_core_apply(seq, operators, k)` in `mrx/operators.py`
-returns the matrix-free apply on the raw tensor-product space; it is the
-sum-factorised kernel of `mrx/local_assembly.py`.
+never stored. `mass_core_apply(seq, k)` in `mrx/operators.py` returns the
+matrix-free apply on the raw tensor-product space (`seq.mass_apply[k]`,
+built by `set_geometry`); it is the sum-factorised kernel of
+`mrx/local_assembly.py`.
 
 ### Incidence, derivative, and stiffness
 
 The exterior derivative on coefficients is the topological incidence
 `G_k` with entries in `{-1, 0, +1}`: coefficient differences along one axis.
 `_MatrixFreeIncidence` in `mrx/operators.py` applies it as a difference
-stencil; `assemble_incidence_operators(seq)` builds `g0`, `g1`, `g2` and their
-transposes. No geometry enters.
+stencil; the sequence builds `g0`, `g1`, `g2` and their transposes in its
+constructor. No geometry enters.
 
 Everything else is a composition of applies and is never materialised:
 
@@ -166,13 +167,14 @@ object captured by closure; what may change is a pytree.
 
 `DeRhamSequence(ns, ps, q, types, *, polar, tol=None, maxiter=10_000, ...)`
 in `mrx/derham_sequence.py` owns the topology: the four `DifferentialForm`
-objects `basis_0..basis_3`, the `quad` rule, the extraction operators, the
-1D basis tables at quadrature points (`basis_r_jk`, `d_basis_r_jk`, ...,
-filled by `evaluate_1d()`), and the solve defaults `tol` (default
-`mrx.sqrt_eps()`) and `maxiter`. `polar` is keyword-only; the map is not a
-constructor argument. Extra arguments: `polar_order` (0, 1, or 2; see
-[polar.md](polar.md)), `polar_ring1` (map-adapted axis weights),
-`betti_numbers`, `knots`, `r_scale`.
+objects `basis_0..basis_3`, the `quad` rule, the polar weights `xi`, the
+extraction operators `e0..e3` (free, Dirichlet, boundary), the incidence
+stencils `g0..g2` with the polar grad/curl corrections, the 1D basis tables
+at the quadrature points (`basis_r_jk`, `d_basis_r_jk`, ...), the Greville
+data, and the solve defaults `tol` (default `mrx.sqrt_eps()`) and `maxiter`.
+All of it is built in the constructor. `polar` is keyword-only; the map is
+not a constructor argument. Extra arguments: `betti_numbers`, `knots`,
+`r_scale`.
 
 ### Dynamic: `SequenceGeometry`
 
@@ -227,33 +229,28 @@ Each builder reads the previous one. `build_sequence(geometry, ns, p)` in
 ```python
 seq = DeRhamSequence(ns, (p,) * 3, p + 1, ("clamped", "periodic", "periodic"),
                      polar=True, betti_numbers=(1, 1, 0, 0))
-seq.evaluate_1d()
 seq.set_map(toroid_map(epsilon=1 / 3, R0=1.0))
-ops = op.assemble_incidence_operators(seq)
-ops = op.assemble_mass_jacobi_preconditioner(seq, ops, ks=(0, 1, 2, 3))
-ops = op.assemble_metric_lumping_laplacian_preconditioner(
-    seq, ops, ks=(0, 1, 2, 3), dirichlets=(False, True))
-op.warm_mass_preconditioner_cache(seq, ops)
-seq.set_operators(ops)
+ops = seq.build_preconditioners()
+ops = seq.set_operators(compute_nullspaces(seq, ops))
 ```
 
-1. Topology: `DeRhamSequence`, then `evaluate_1d()`.
-2. Geometry: `set_map` or `set_spline_map`.
-3. Incidence: `assemble_incidence_operators`; builds the polar grad and curl
-   stencils when the sequence is polar.
-4. Mass preconditioners: `assemble_mass_jacobi_preconditioner`; the
-   metric-lumping mass preconditioner builds on first use and
-   `warm_mass_preconditioner_cache` forces it before any traced loop.
-5. Laplacian preconditioners:
-   `assemble_metric_lumping_laplacian_preconditioner`. Needs the mass
-   preconditioners, because the weak term of `L_k` is applied through them.
-6. Harmonic forms: `compute_nullspaces` or `compute_nullspaces_iterative`,
-   after everything above. The projection masses `P_21, P_12, P_03, P_30`
-   (helicity diagnostic) need no step: they are matrix-free applies built on
-   first use and memoised on the geometry, like the masses.
+1. Topology: `DeRhamSequence`. Bases, extraction, incidence (with the polar
+   grad and curl stencils), 1D tables, Greville data: everything static.
+2. Geometry: `set_map` or `set_spline_map`. Installs the metric and builds
+   the matrix-free mass and projection applies from it. Drops the operator
+   bundle.
+3. Preconditioners: `build_preconditioners`, one call, in order
+   `assemble_mass_jacobi_preconditioner`,
+   `assemble_mass_metric_lumping_preconditioner`,
+   `assemble_laplacian_jacobi_preconditioner`,
+   `assemble_metric_lumping_laplacian_preconditioner` (each Laplacian step
+   needs the mass preconditioners, because the weak term of `L_k` is applied
+   through them), and with `schur_jacobi=True` the probed Schur diagonals
+   that `schur.outer='jacobi'` needs.
+4. Harmonic forms: `compute_nullspaces` or `compute_nullspaces_iterative`,
+   after everything above; they live on the bundle.
 
-`seq.build_preconditioners()` runs steps 3 to 5 and verifies every `(k, BC)`
-built; `seq.set_map_and_preconditioners(F)` runs steps 2 to 5.
-`assemble_all_operators(seq, geometry)` is the same chain plus projections,
-and `operators_from_coeffs(seq, coeffs, ks, kinds)` rebuilds geometry and
-operators from `SplineMap` coefficients in one differentiable call.
+Nothing on the bundle is built on first use, and nothing on it survives a
+geometry change: after a new `set_map`, run steps 3 and 4 again. That is the
+contract for an outer loop over geometries (relaxation inside, the map
+outside). `seq.set_map_and_preconditioners(F)` is steps 2 and 3.

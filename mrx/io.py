@@ -183,7 +183,7 @@ def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',
     axes : tuple of 1-D arrays ``(x1, x2, x3)``  logical grid nodes per axis.
     values : array  ``(n1,n2,n3)`` for k=0,3;  ``(n1,n2,n3,3)`` for k=1,2
         (flattened variants accepted).
-    seq : DeRhamSequence  target sequence (``evaluate_1d`` already called).
+    seq : DeRhamSequence  target sequence.
     k : {0,1,2,3}  form degree.
     dirichlet : bool  use Dirichlet-constrained DOFs.
     frame : {'ref','phys'}  interpretation of ``values`` (see
@@ -214,7 +214,7 @@ def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',
         C = _solve_tensor_collocation_axis(solve[a], C, axis=a + 1)  # comp is axis 0
 
     # 2. factorized evaluation at seq's quadrature grid.  M_axis = fit basis at
-    #    seq's per-axis 1D quad points (r<->x_x, t<->x_y, z<->x_z, per evaluate_1d).
+    #    seq's per-axis 1D quad points (r<->x_x, t<->x_y, z<->x_z).
     Mr = br.collocation_matrix(seq.quad.x_x).T          # (n1, nqr)
     Mt = bt.collocation_matrix(seq.quad.x_y).T          # (n2, nqt)
     Mz = bz.collocation_matrix(seq.quad.x_z).T          # (n3, nqz)

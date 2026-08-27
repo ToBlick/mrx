@@ -201,18 +201,8 @@ class PolarExtractionOperator:
         self.k = Lambda.k
         self.Lambda = Lambda
         self.ξ = xi
-        # xi shape (n_polar, ring_depth, nt): (3, 2, nt) = C¹ (rings 0-1 ->
-        # 3 polar functions), (6, 3, nt) = C² (rings 0-2 -> 6). The C²
-        # generalization currently covers 0-forms and vector fields only;
-        # the k = 1, 2, 3 surgery blocks encode the C¹ gradient/curl
-        # structure and would need the (deferred) C² de Rham rework.
-        self.n_polar = int(xi.shape[0])
-        self.ring_depth = int(xi.shape[1])
-        if self.k in (1, 2, 3) and (self.n_polar, self.ring_depth) != (3, 2):
-            raise ValueError(
-                f"C^{self.ring_depth - 1} polar extraction (xi shape "
-                f"{tuple(xi.shape)}) is only implemented for k in (0, -1); "
-                f"k={self.k} requires the C¹ xi (3, 2, nt)")
+        # xi is (3, 2, nt): C¹ at the pole, rings 0-1 -> 3 polar functions.
+        self.n_polar, self.ring_depth = 3, 2
         self.nr, self.nt, self.nz = Lambda.nr, Lambda.nt, Lambda.nz
         self.dr, self.dt, self.dz = Lambda.dr, Lambda.dt, Lambda.dz
         self.o = 1 if zero_bc else 0  # offset for boundary conditions
@@ -543,45 +533,29 @@ class PolarExtractionOperator:
         )
 
 
-def get_xi(nt, ring1=None):
+def get_xi(nt):
     """Polar extraction weights ξ^ℓ_{ij}: barycentric coordinates of the
     first two control rings with respect to the equilateral control
     triangle (Toshniwal et al. CMAME 2017; Holderied thesis Eqs. 5.7–5.9).
 
     Ring 0 sits at the pole (triangle centroid) → weights 1/3. Ring 1 gets
-    the barycentric coordinates of the first-ring control points
-    ``(ΔR_j, ΔY_j)`` w.r.t. the triangle with vertices
-    ``v₁ = (τ, 0), v₂ = (−τ/2, √3τ/2), v₃ = (−τ/2, −√3τ/2)`` (relative to
-    the pole), with the triangle size τ (Eq. 5.9) chosen as the smallest
-    value enclosing the whole ring → all weights in [0, 1], partition of
-    unity by construction.
+    the barycentric coordinates of the unit-circle points
+    ``(cos θ_j, sin θ_j)``: the logical-disk specialisation, which is exact
+    whenever ``∂F/∂r`` at the axis is a pure ``m = ±1`` mode. A constant of
+    ``nt``; the sequence builds it once.
 
     Parameters
     ----------
     nt : int
         Number of points in poloidal θ-direction.
-    ring1 : array_like, optional
-        ``(2, nt)`` first-ring control-point offsets ``(ΔR_j, ΔY_j)`` from
-        the pole (poloidal-plane coordinates). ``None`` uses the unit
-        circle ``(cos θ_j, sin θ_j)`` — the map-independent logical-disk
-        specialization, exact whenever ``∂F/∂r`` at the axis is pure
-        ``m = ±1`` (circular/elliptic cross sections); shaped cross
-        sections (triangularity, stellarators) should pass the actual
-        ring-1 control points, cf. :func:`ring1_control_points`.
 
     Returns
     -------
     ξ : jnp.ndarray
         Polar extraction weights, shape ``(3, 2, nθ)`` indexed ``(ℓ, i, j)``.
     """
-    if ring1 is None:
-        theta_js = (jnp.arange(nt) / nt) * 2 * jnp.pi
-        dR, dY = jnp.cos(theta_js), jnp.sin(theta_js)
-    else:
-        ring1 = jnp.asarray(ring1, dtype=mrx.DTYPE)
-        if ring1.shape != (2, nt):
-            raise ValueError(f"ring1 must have shape (2, {nt}), got {ring1.shape}")
-        dR, dY = ring1[0], ring1[1]
+    theta_js = (jnp.arange(nt) / nt) * 2 * jnp.pi
+    dR, dY = jnp.cos(theta_js), jnp.sin(theta_js)
 
     s3 = jnp.sqrt(3.0)
     tau = jnp.max(jnp.array([jnp.max(-2.0 * dR),
@@ -593,127 +567,6 @@ def get_xi(nt, ring1=None):
     ξ0 = jnp.full((3, nt), 1.0 / 3.0)
     # (3, 2, nθ) -> l, i, j
     return jnp.stack([ξ0, ξ1], axis=1)
-
-
-def get_xi2(nt, basis_r, ring1=None, ring2=None):
-    """C²-at-the-pole polar extraction weights: 6 polar functions per
-    ζ-plane built from the first THREE radial rings.
-
-    Derivation (jet matching against the spline map's axis Taylor; map
-    x_h(s,χ) = Σ_i P_i(χ) N_i(s), ring 0 at the pole). A spline
-    f = Σ c_i(χ) N_i(s) matches the 2-jet of a quadratic polynomial
-    q(x) = q₀ + q₁·x + xᵀQx composed with the map, ∂ᵐ_s f(0,χ) = ∂ᵐ_s
-    (q∘x_h)(0,χ) for m = 0,1,2, iff::
-
-        c₀(χ) = q₀
-        c₁(χ) = q₀ + q₁·ΔP₁(χ)                            (the C¹ condition)
-        c₂(χ) = q₀ + q₁·ΔP₂(χ) + ρ · ΔP₁(χ)ᵀ Q ΔP₁(χ),
-        ρ = 2 N₁'(0)² / N₂''(0).
-
-    The affine terms are exactly representable at the control level; the
-    quadratic term is a product of splines (degree 2p in χ), NOT in the
-    degree-p space — exact C² w.r.t. the discrete map is impossible in the
-    fixed tensor space. Following the same sampled-coefficient philosophy
-    as the C¹ construction (whose pole jets are spline-sampled trig, not
-    exact trig), the quadratic term enters by its VALUES at the Greville
-    angles: c_{2j} = q₀ + q₁·ΔP_{2j} + ρ ΔP₁ⱼᵀQΔP₁ⱼ — collocated C², with
-    the residual pole-jet mismatch of the same O(h^{p+1}) sampling class
-    as C¹'s.
-
-    The 6 basis jets are the quadratic Bernstein polynomials B_α(λ) on the
-    C¹ control triangle (λ_l = the affine barycentric functions of
-    :func:`get_xi`): partition of unity is exact on every ring (Σ_α B_α = 1
-    ⇒ Σ q₀ = 1, Σ q₁ = 0, Σ Q = 0), and the affine (Q = 0) subspace
-    reproduces the C¹ rings-0/1 structure, so the C² space is a genuine
-    subspace of the C¹ space.
-
-    Parameters
-    ----------
-    nt : int
-        Number of poloidal points.
-    basis_r : SplineBasis
-        Clamped radial basis; supplies N₁'(0), N₂''(0) (any knot grading)
-        and the default ring radii (Greville abscissae 1, 2).
-    ring1, ring2 : array_like, optional
-        ``(2, nt)`` control-point offsets of rings 1 and 2 from the pole.
-        ``None`` = logical circles of radius greville₁ / greville₂.
-
-    Returns
-    -------
-    ξ² : jnp.ndarray, shape ``(6, 3, nθ)`` indexed ``(ℓ, i, j)``.
-    """
-    grev = basis_r.greville_points()
-    theta_js = (jnp.arange(nt) / nt) * 2 * jnp.pi
-    circ = jnp.stack([jnp.cos(theta_js), jnp.sin(theta_js)])
-    dP1 = jnp.asarray(ring1, dtype=mrx.DTYPE) if ring1 is not None else grev[1] * circ
-    dP2 = jnp.asarray(ring2, dtype=mrx.DTYPE) if ring2 is not None else grev[2] * circ
-    for name, arr in (("ring1", dP1), ("ring2", dP2)):
-        if arr.shape != (2, nt):
-            raise ValueError(f"{name} must have shape (2, {nt}), got {arr.shape}")
-
-    # radial end-derivatives (one-sided, first element) via AD of the basis
-    n1p = jax.grad(lambda x: basis_r.evaluate(x, 1))(0.0)
-    n2pp = jax.grad(jax.grad(lambda x: basis_r.evaluate(x, 2)))(0.0)
-    rho = 2.0 * n1p ** 2 / n2pp
-
-    # control triangle from ring 1 (Eq. 5.9); affine barycentric gradients
-    s3 = jnp.sqrt(3.0)
-    tau = jnp.max(jnp.array([jnp.max(-2.0 * dP1[0]),
-                             jnp.max(dP1[0] - s3 * dP1[1]),
-                             jnp.max(dP1[0] + s3 * dP1[1])]))
-    grad_lam = jnp.array([[2.0, 0.0], [-1.0, s3], [-1.0, -s3]]) / (3.0 * tau)
-
-    pairs = [(0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2)]
-    xi2 = []
-    for (a, m) in pairs:
-        gl, gm = grad_lam[a], grad_lam[m]
-        if a == m:
-            q0 = 1.0 / 9.0
-            q1 = (2.0 / 3.0) * gl
-            Q = jnp.outer(gl, gl)
-        else:
-            q0 = 2.0 / 9.0
-            q1 = (2.0 / 3.0) * (gl + gm)
-            Q = jnp.outer(gl, gm) + jnp.outer(gm, gl)
-        row0 = jnp.full((nt,), q0)
-        row1 = q0 + q1 @ dP1
-        row2 = q0 + q1 @ dP2 + rho * jnp.einsum('aj,ab,bj->j', dP1, Q, dP1)
-        xi2.append(jnp.stack([row0, row1, row2]))
-    return jnp.stack(xi2)  # (6, 3, nθ)
-
-
-def ring1_control_points(pol_map, basis_r, basis_t):
-    """First-ring control-point offsets of the Greville interpolant of an
-    (axisymmetric) poloidal map, for :func:`get_xi`.
-
-    Parameters
-    ----------
-    pol_map : callable
-        ``(r, θ) → (R, Y)`` poloidal-plane coordinates (vectorized over
-        leading axes is not required).
-    basis_r, basis_t : SplineBasis
-        Radial (clamped) and poloidal (periodic) 1D bases of the 0-form
-        space.
-
-    Returns
-    -------
-    ring1 : jnp.ndarray
-        ``(2, nt)`` offsets ``(ΔR_j, ΔY_j)`` of the ring-1 control points
-        from the pole.
-    """
-    gr = basis_r.greville_points()
-    gt = basis_t.greville_points()
-    pol = jax.vmap(jax.vmap(lambda r, t: jnp.asarray(pol_map(r, t)),
-                            in_axes=(None, 0)), in_axes=(0, None))
-    vals = pol(gr, gt)                                          # (nr, nt, 2)
-    C_r = basis_r.collocation_matrix(gr)
-    C_t = basis_t.collocation_matrix(gt)
-    # tensor-product collocation solve: coeffs = C_r^{-1} vals C_t^{-T}
-    coeffs = jnp.linalg.solve(C_r, vals.reshape(gr.shape[0], -1))
-    coeffs = coeffs.reshape(gr.shape[0], gt.shape[0], 2)
-    coeffs = jnp.linalg.solve(C_t, coeffs.transpose(1, 0, 2).reshape(
-        gt.shape[0], -1)).reshape(gt.shape[0], gr.shape[0], 2).transpose(1, 0, 2)
-    return (coeffs[1] - coeffs[0]).T  # (2, nt); ring 0 = pole exactly
 
 
 # Boundary extraction operator for cube-like domains

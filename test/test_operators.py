@@ -33,7 +33,7 @@ from mrx.operators import (
     apply_incidence_matrix,
     apply_mass_matrix,
     apply_stiffness,
-    assemble_incidence_operators,
+    new_operators,
 )
 from test.dense import dense_from_apply
 
@@ -73,9 +73,8 @@ def _n_ext(seq, k, dbc):
 def tensor_seq():
     """Identity map, no polar surgery: the extraction is a 0/1 selection."""
     seq = DeRhamSequence(_NS, (_P, _P, _P), _Q, _TYPES, polar=False)
-    seq.evaluate_1d()
     seq.set_map(lambda x: x)
-    return seq, assemble_incidence_operators(seq)
+    return seq, new_operators(seq)
 
 
 @pytest.fixture(scope="module")
@@ -83,9 +82,8 @@ def re_seq():
     """Polar rotating ellipse (nfp=3), with the incidence operators G_0..G_2."""
     seq = DeRhamSequence(_NS, (_P, _P, _P), _Q, _TYPES, polar=True,
                          betti_numbers=(1, 1, 0, 0))
-    seq.evaluate_1d()
     seq.set_map(rotating_ellipse_map(eps=1.0 / 3.0, kappa=1.2, R0=1.0, nfp=3))
-    return seq, assemble_incidence_operators(seq)
+    return seq, new_operators(seq)
 
 
 @pytest.fixture(scope="module")
@@ -100,17 +98,17 @@ def re_mass(re_seq):
 def _dense_laplacian(seq, ops, k, dirichlet):
     n_k = _n_ext(seq, k, dirichlet)
     K = dense_from_apply(
-        lambda v: apply_stiffness(seq, ops, v, k, dirichlet=dirichlet), n_k)
+        lambda v: apply_stiffness(seq, v, k, dirichlet=dirichlet), n_k)
     if k == 0:
         return K
     D_T = dense_from_apply(
         lambda v: apply_derivative_matrix(
-            seq, ops, v, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet,
+            seq, v, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet,
             transpose=True),
         n_k,
     )  # shape (n_{k-1}, n_k)
     M_km1 = dense_from_apply(
-        lambda v: apply_mass_matrix(seq, ops, v, k - 1, dirichlet=dirichlet),
+        lambda v: apply_mass_matrix(seq, v, k - 1, dirichlet=dirichlet),
         _n_ext(seq, k - 1, dirichlet))
     return K + D_T.T @ np.linalg.inv(M_km1) @ D_T
 
@@ -196,9 +194,9 @@ def test_curl_of_grad_is_zero(tensor_seq, dirichlet):
     for _ in range(_N_COMPLEX_PROBES):
         f = jnp.asarray(rng.standard_normal(n0))
         grad_f = apply_incidence_matrix(
-            seq, ops, f, k=0, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+            seq, f, k=0, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         curl_grad_f = apply_incidence_matrix(
-            seq, ops, grad_f, k=1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+            seq, grad_f, k=1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         norm = float(jnp.linalg.norm(curl_grad_f))
         assert norm < IDENT * float(jnp.linalg.norm(grad_f)), (
             f"dirichlet={dirichlet}: curl(grad f) != 0, ||curl grad f|| = {norm:.3e}"
@@ -214,9 +212,9 @@ def test_div_of_curl_is_zero(tensor_seq, dirichlet):
     for _ in range(_N_COMPLEX_PROBES):
         F = jnp.asarray(rng.standard_normal(n1))
         curl_F = apply_incidence_matrix(
-            seq, ops, F, k=1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+            seq, F, k=1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         div_curl_F = apply_incidence_matrix(
-            seq, ops, curl_F, k=2, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+            seq, curl_F, k=2, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         norm = float(jnp.linalg.norm(div_curl_F))
         assert norm < IDENT * float(jnp.linalg.norm(curl_F)), (
             f"dirichlet={dirichlet}: div(curl F) != 0, ||div curl F|| = {norm:.3e}"
@@ -237,9 +235,9 @@ def test_polar_complex_is_exact(re_seq, k, name, dirichlet):
     worst = 0.0
     for _ in range(4):
         v = jnp.asarray(rng.standard_normal(n))
-        g = apply_incidence_matrix(seq, ops, v, k,
+        g = apply_incidence_matrix(seq, v, k,
                                    dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        gg = apply_incidence_matrix(seq, ops, g, k + 1,
+        gg = apply_incidence_matrix(seq, g, k + 1,
                                     dirichlet_in=dirichlet, dirichlet_out=dirichlet)
         rel = float(jnp.linalg.norm(gg)) / max(float(jnp.linalg.norm(g)), 1e-300)
         worst = max(worst, rel)
