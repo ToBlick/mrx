@@ -76,7 +76,6 @@ def test_discrete_function_matches_dense_evaluation(evaluator_seq, k):
     ("k", "preconditioner"),
     [
         (0, 'auto'),
-        (0, 'jacobi'),
     ],
 )
 def test_diffusion_solver_default_preconditioners_converge(

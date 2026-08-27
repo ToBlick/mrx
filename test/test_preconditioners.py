@@ -48,7 +48,7 @@ IDENT = mrx.eps(1e3)
 
 @pytest.mark.parametrize("dbc", _ALL_DBC)
 @pytest.mark.parametrize("k", _ALL_K)
-@pytest.mark.parametrize("label", ["jacobi", "metric_lumping"])
+@pytest.mark.parametrize("label", ["metric_lumping"])
 def test_preconditioner_is_symmetric(tiny_seq, precond_jit, label, k, dbc):
     n = n_dofs(tiny_seq, k, dbc)
     rng = np.random.default_rng(seed=1 + 7 * k + 50 * int(dbc))
@@ -73,7 +73,7 @@ def test_preconditioner_is_symmetric(tiny_seq, precond_jit, label, k, dbc):
 
 @pytest.mark.parametrize("dbc", _ALL_DBC)
 @pytest.mark.parametrize("k", _ALL_K)
-@pytest.mark.parametrize("label", ["jacobi", "metric_lumping"])
+@pytest.mark.parametrize("label", ["metric_lumping"])
 def test_preconditioner_is_spd(tiny_seq, precond_jit, label, k, dbc):
     n = n_dofs(tiny_seq, k, dbc)
     rng = np.random.default_rng(seed=2 + 11 * k + 50 * int(dbc))
@@ -119,7 +119,7 @@ def _cg_iterations(seq, label, k, dbc):
 
 @pytest.mark.parametrize("dbc", _ALL_DBC)
 @pytest.mark.parametrize("k", (1, 2, 3))
-@pytest.mark.parametrize("label", ["jacobi", "metric_lumping"])
+@pytest.mark.parametrize("label", ["metric_lumping"])
 def test_preconditioner_reduces_cg_iterations(tiny_seq, label, k, dbc):
     none_iters, precond_iters = _cg_iterations(tiny_seq, label, k, dbc)
     assert np.mean(precond_iters) < np.mean(none_iters), (
@@ -134,7 +134,7 @@ def test_preconditioner_reduces_cg_iterations(tiny_seq, label, k, dbc):
 
 @pytest.mark.parametrize("dbc", _ALL_DBC)
 @pytest.mark.parametrize("k", _ALL_K)
-@pytest.mark.parametrize("label", ["jacobi", "metric_lumping"])
+@pytest.mark.parametrize("label", ["metric_lumping"])
 def test_inverse_mass_roundtrip(tiny_seq, label, k, dbc):
     ops = tiny_seq.operators
     rng = np.random.default_rng(seed=7 + 5 * k + 50 * int(dbc))

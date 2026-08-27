@@ -1072,10 +1072,13 @@ def _diagonal_from_matvec(operator_apply, size: int):
     2026-08-17); ``batch_size=16`` keeps each kernel small and is 1.3-2x
     faster than the fully sequential map.
     """
-    def entry(i):
-        basis = jnp.zeros(size, dtype=mrx.DTYPE).at[i].set(1.0)
-        return operator_apply(basis)[i]
-    return jax.lax.map(entry, jnp.arange(size), batch_size=16)
+    batched = jax.jit(jax.vmap(operator_apply))
+    out = []
+    for start in range(0, size, 16):
+        idx = jnp.arange(start, min(start + 16, size))
+        basis = jax.nn.one_hot(idx, size, dtype=mrx.DTYPE)
+        out.append(batched(basis)[jnp.arange(idx.shape[0]), idx])
+    return jnp.concatenate(out)
 
 
 def _invert_diagonal(diagonal):

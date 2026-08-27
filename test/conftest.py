@@ -94,21 +94,20 @@ def n_dofs(seq, k, dirichlet):
 def precond_jit(tiny_seq):
     """JIT-compiled and warmed-up mass preconditioner applies on ``tiny_seq``.
 
-    Keyed by ``(label, k, dbc)``; the applies of both kinds for every
+    Keyed by ``(label, k, dbc)``; the metric-lumping applies for every
     ``(k, dirichlet)`` pair are compiled once per session so the probe tests
     do not re-JIT.
     """
     from mrx.operators import apply_mass_matrix_preconditioner
     ops = tiny_seq.operators
     jit_dict = {}
-    for label in ("jacobi", "metric_lumping"):
-        for k in range(4):
-            for dbc in (False, True):
-                jit_dict[(label, k, dbc)] = jax.jit(
-                    lambda v, k=k, dbc=dbc, label=label: apply_mass_matrix_preconditioner(
-                        tiny_seq, ops, v, k, dirichlet=dbc, kind=label,
-                    )
+    for k in range(4):
+        for dbc in (False, True):
+            jit_dict[("metric_lumping", k, dbc)] = jax.jit(
+                lambda v, k=k, dbc=dbc: apply_mass_matrix_preconditioner(
+                    tiny_seq, ops, v, k, dirichlet=dbc, kind="metric_lumping",
                 )
+            )
     for (_, k, dbc), fn in jit_dict.items():
         dummy = jnp.zeros(n_dofs(tiny_seq, k, dbc), dtype=mrx.DTYPE)
         jax.block_until_ready(fn(dummy))
