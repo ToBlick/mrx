@@ -112,3 +112,24 @@ a decision. Line numbers are as of `2be817c`.
 1–7 (pure deletions, ~700 lines), 8–9 (relaxation slimming — decision on
 L-BFGS), 11 (lumping knobs + last env var), 13, 15 (the big one, as its own
 project), 16–18.
+
+## Decisions and status (2026-08-28)
+
+Decided by Tobias, executed on `static-dynamic-refactor` (commits `5e3b3ee`
+items 1-5, `c25657c` items 7-12):
+
+| # | decision | done |
+|---|---|---|
+| 1 | remove `BoundaryProjector`; `load(bc=True)`/`E_bc` (lifting) stays the non-homogeneous-BC route | yes |
+| 2 | `Pullback` (and `jacobian_determinant`) stay | -- |
+| 3 | remove `_assemble_k0_greville_bulk_factors` (+ the five helpers only it used) | yes |
+| 4 | `harmonic_rayleigh` and `estimate_spectral_gap` stay; `generic_rayleigh` removed; `compute_nullspaces` now prints, per form, the Rayleigh quotient and (k=1 free, k=2 dbc) `lambda_1` from 5 sweeps of inverse iteration deflated against the stored forms. `exact_derivative_residual` not decided -- still there | yes |
+| 5 | `seed_line` removed; the logical chart is a fourth panel of the relaxation figure (subagent on branch `poincare-panels` polishing it) | yes |
+| 6 | `test/random_fields.py` stays (preconditioner benchmarks) | -- |
+| 7 | `one_size_fits_all_map`, `metric_coefficients`, `backtracking_line_search` removed; `extend_map_nfp` stays, REWRITTEN (it recomputed the toroidal angle from zeta -- wrong for any map whose angle is not exactly linear in zeta -- now rotates the period map's own output; seam test added); `greville_interpolate_stellarator_map` pending Tobias's call | yes |
+| 8 | noise arm removed (`stochastic`, `apply_noise`, `State.noise_level/key`, `noise_schedule`, the PRNG threading) | yes |
+| 9 | L-BFGS stays; the four secant arrays are now `(0, n)` and untouched under cg/gradient (they were `(m, n)` and rolled every step whatever the method) | yes |
+| 10 | `flip_zeta` stays | -- |
+| 11 | `ktilde_mode`, `lumped`, `extra_rings`, `outer_rings`, `MRX_BJ_BC_SCALE` removed; `bc_scale` stays explicit, default `PRODUCTION_BC_SCALE`, exposed as `build_preconditioners(bc_scale=...)` | yes |
+| 12 | `_coerce_scalar_hodge_preconditioner` now delegates to `_coerce_mass_preconditioner_spec` | yes |
+| 13-22 | not yet decided | -- |
