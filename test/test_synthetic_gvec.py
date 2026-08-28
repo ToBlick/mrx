@@ -386,14 +386,16 @@ def test_relaxation(synthetic_seq, potential_ic):
 
     # The helicity rate, at eps and eps/2.
     half = step(eqx.tree_at(lambda s: s.eta, pre, 0.5 * ETA))
-    # The same executable on the same state: dt differs only by the GPU's
-    # scatter-add reduction order, amplified through the descent solves.
-    # Measured on the H100 at dt = 0.0211 (2026-08-28, five runs on four
-    # commits): 3.3e-12, 4.3e-12, 5.5e-12 and 1.05e-11 absolute, i.e.
-    # 1.6e-10 .. 5.0e-10 relative or 1e6 .. 2e6 eps; an earlier run gave
-    # 3.6e-13 at dt = 1.17. On the CPU the difference is below 32 eps.
-    # Bound: 1e7 eps relative.
-    assert abs(float(half.dt) - float(check_state.dt)) <= mrx.eps(1e7) * float(check_state.dt)
+    # The same executable on the same state. The line-search dt is a ratio
+    # of quantities that pass through Krylov solves stopped at seq.tol, and
+    # two runs whose scatter-add reduction order differs (the GPU) land
+    # anywhere within that tolerance, so the band is tol-scaled, not
+    # eps-scaled (and so meaningful in float32): the 10 sqrt_eps of the
+    # resistive-solve check below. Measured on the H100 2026-08-28 across
+    # five runs, three commits, CG and L-BFGS: 1.6e-10 .. 3.4e-9 relative
+    # (3.3e-12 .. 1.05e-11 absolute at dt = 0.0211, 4.96e-8 at dt = 14.56);
+    # on the CPU the difference is below 32 eps.
+    assert abs(float(half.dt) - float(check_state.dt)) <= 10 * mrx.sqrt_eps() * float(check_state.dt)
     H_ideal, A = get_helicity(check_B_ideal, seq, A)
     results = {}
     for label, B_new, e in (("eps", B1, eps), ("eps/2", half.B_n, 0.5 * eps)):
