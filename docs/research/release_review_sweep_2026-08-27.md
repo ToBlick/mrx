@@ -136,7 +136,7 @@ items 1-5, `c25657c` items 7-12):
 | 12 | `_coerce_scalar_hodge_preconditioner` now delegates to `_coerce_mass_preconditioner_spec` | yes |
 | 13 | `solve_singular_cg(A, b, vs)` takes the stored `(m, n)` kernel array, no default (be3767a) | yes |
 | 14 | solvers docstring names the three entry points (c25657c) | yes |
-| 15 | quadrature `indexing='xy'` -> `'ij'` migration + docstrings: subagent on branch `quad-ij`, with an independent base-vs-migrated equivalence check | agent |
+| 15 | DONE (3247311 + 0765c39, from branch `quad-ij`): flat quad order is (r, theta, zeta), every compensation removed, docstrings rewritten; suite clean, base-vs-migrated equivalence at round-off on geometry, M_k, L_k, harmonic forms, preconditioners, load/interpolate | yes |
 | 16 | warm starts: theory says they help (residual ratio ~ per-step change of B, criterion relative to b); measurement arm `descent_cg_nowarm` running | pending |
 | 17 | postponed until the poincare subagent is done | -- |
 | 18 | per-basis-function evaluators deleted (be3767a); QuadratureRule docstring with item 15 | yes |
