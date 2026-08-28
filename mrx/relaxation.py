@@ -328,10 +328,6 @@ class State(eqx.Module):
         actually used by the two-loop recursion.  Reported, never clamped: a
         negative value means the stored pair is not a descent pair and the
         approximate inverse Hessian it builds is indefinite.
-    noise_level : float
-        The noise level.
-    key : jax.random.PRNGKey
-        The random key for noise generation.
     """
     B_n: jnp.ndarray
     B_nplus1: Optional[jnp.ndarray] = None
@@ -359,8 +355,6 @@ class State(eqx.Module):
     F_norm: float = 0.0
     v_norm: float = 0.0
     lbfgs_sy: float = 0.0
-    noise_level: float = 0.0
-    key: jax.Array = eqx.field(default_factory=lambda: jax.random.PRNGKey(67))
 
     def __post_init__(self):
         if self.B_nplus1 is None:
@@ -415,8 +409,9 @@ class TimeStepper(eqx.Module):
             here; the diffusive time of even the finest mode,
             ``1 / (eta lambda_max) ~ 1000`` such steps, makes ``<= 100``
             physically harmless.
-        stochastic: Whether to add noise to the velocity.
-        history_size: Number of stored pairs for CG / L-BFGS.
+        history_size: Number of stored secant pairs for L-BFGS. The
+            history arrays exist only under L-BFGS; the other methods
+            carry none (CG keeps ``F_prev``/``MF_prev`` and ``v`` only).
         dirichlet_H: Dirichlet BC on H.
     """
     seq: DeRhamSequence
@@ -427,15 +422,13 @@ class TimeStepper(eqx.Module):
     cfl: float = 0.5
     eta_every: int = 1
     resistive: bool = False
-    stochastic: bool = False
     history_size: int = 1
     dirichlet_H: bool = False
     cfl_weights: jnp.ndarray = None
 
     def __post_init__(self):
-        if self.descent_method in (DescentMethod.CONJUGATE_GRADIENT, DescentMethod.LBFGS) and self.history_size < 1:
-            raise ValueError(
-                "history_size must be at least 1 when using CG or L-BFGS.")
+        if self.descent_method == DescentMethod.LBFGS and self.history_size < 1:
+            raise ValueError("history_size must be at least 1 for L-BFGS.")
         self.cfl_weights = logical_cfl_weights(self.seq)
 
     def _lbfgs_direction(self, F: jnp.ndarray, s: jnp.ndarray, y: jnp.ndarray,
@@ -537,22 +530,14 @@ class TimeStepper(eqx.Module):
                 rhs, 2, self.velocity_smoothing_scale, dirichlet=True, guess=u)
         return u
 
-    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'dt_star', 'cfl_max', 'eta', 'resistive_info', 'resistive_delta', 'resistive_count', 'resistive_time', 'F_norm', 'v_norm', 'lbfgs_sy', 'noise_level', 'key'], value) -> State:  # noqa: E501
+    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'dt_star', 'cfl_max', 'eta', 'resistive_info', 'resistive_delta', 'resistive_count', 'resistive_time', 'F_norm', 'v_norm', 'lbfgs_sy'], value) -> State:  # noqa: E501
         return eqx.tree_at(
             lambda s: getattr(s, field_name),
             state,
             value
         )
 
-    def apply_noise(self, v: jnp.ndarray, key: jax.random.PRNGKey, strength: float) -> jnp.ndarray:
-        """
-        Apply noise to the velocity field.
-        """
-        noise = self.seq.apply_inverse_mass_matrix(
-            jax.random.normal(key, v.shape), 2)
-        return v + strength * self.seq.apply_leray_projection(noise, k=2)[0]
-
-    def relaxation_step(self, state: State, key: jax.random.PRNGKey) -> State:
+    def relaxation_step(self, state: State) -> State:
         """Advance ``state.B_n`` by one step into ``state.B_nplus1``.
 
         Operator-split (Lie): ideal transport, then implicit resistive
@@ -571,22 +556,24 @@ class TimeStepper(eqx.Module):
         # apply it 4m + 6 times.
         MF = self.seq.apply_mass_matrix(F, 2)
 
-        # --- history bookkeeping, part 1: push y BEFORE the direction -------
-        # y_{k-1} = grad_M E_k - grad_M E_{k-1} = F_prev - F is a difference
-        # over the step that ALREADY happened, so it pairs with s_{k-1}, which
-        # the end of the previous step put in s_history[0].  Pushing it HERE,
-        # rather than next to the brand-new s_k at the end of this step, is
-        # what keeps (s_i, y_i) aligned.  Pushing it at the end instead leaves
-        # y lagging its paired s by exactly one step.
-        y_new = state.F_prev - F
-        My_new = state.MF_prev - MF
-        s_hist = state.s_history
-        Ms_hist = state.Ms_history
-        y_hist = jnp.roll(state.y_history, 1, axis=0).at[0].set(y_new)
-        My_hist = jnp.roll(state.My_history, 1, axis=0).at[0].set(My_new)
+        # The secant history exists only under L-BFGS (a static branch: the
+        # other methods carry (0, n) arrays and never touch them).
+        lbfgs = self.descent_method == DescentMethod.LBFGS
+        s_hist, Ms_hist = state.s_history, state.Ms_history
+        y_hist, My_hist = state.y_history, state.My_history
+        if lbfgs:
+            # --- history bookkeeping, part 1: push y BEFORE the direction ---
+            # y_{k-1} = grad_M E_k - grad_M E_{k-1} = F_prev - F is a
+            # difference over the step that ALREADY happened, so it pairs with
+            # s_{k-1}, which the end of the previous step put in s_history[0].
+            # Pushing it HERE, rather than next to the brand-new s_k at the end
+            # of this step, is what keeps (s_i, y_i) aligned.  Pushing it at
+            # the end instead leaves y lagging its paired s by exactly one step.
+            y_hist = jnp.roll(y_hist, 1, axis=0).at[0].set(state.F_prev - F)
+            My_hist = jnp.roll(My_hist, 1, axis=0).at[0].set(state.MF_prev - MF)
 
         sy = jnp.array(0.0)
-        if self.descent_method == DescentMethod.LBFGS:
+        if lbfgs:
             u, sy = self._lbfgs_direction(F, s_hist, y_hist, Ms_hist, My_hist)
         elif self.descent_method == DescentMethod.CONJUGATE_GRADIENT:
             u = F
@@ -606,9 +593,6 @@ class TimeStepper(eqx.Module):
         else:
             raise ValueError(
                 f"Unknown descent_method: {self.descent_method}. Supported methods are given by the DescentMethod enum.")
-        if self.stochastic:
-            u = self.apply_noise(
-                u, key, state.noise_level * self.seq.l2_norm(u, 2))
         u = self.smooth_velocity(u)
         u, p_v = self.seq.apply_leray_projection(u, k=2, p_guess=state.p_v)
         # M u once: the linesearch numerator, ||u||_M and the stored M s.
@@ -705,11 +689,9 @@ class TimeStepper(eqx.Module):
         # it with a y that is a secant of a different map entirely, and the
         # curvature <s, y>_M goes negative on a third to a half of all steps.
         # See docs/research/handoff_2026-08-25_relaxation_prelim.md.
-        s_new = dt * u
-        s_history = jnp.roll(s_hist, 1, axis=0).at[0].set(s_new)
-        Ms_history = jnp.roll(Ms_hist, 1, axis=0).at[0].set(dt * Mu)
-        y_history = y_hist
-        My_history = My_hist
+        if lbfgs:
+            s_hist = jnp.roll(s_hist, 1, axis=0).at[0].set(dt * u)
+            Ms_hist = jnp.roll(Ms_hist, 1, axis=0).at[0].set(dt * Mu)
 
         return eqx.tree_at(
             lambda s: (s.B_nplus1, s.v, s.p, s.p_v, s.H, s.JxH, s.E,
@@ -722,7 +704,7 @@ class TimeStepper(eqx.Module):
              F, MF, jnp.sqrt(F @ MF), jnp.sqrt(u @ Mu), sy,
              dt, dt_star, cfl_max, resistive_info,
              resistive_delta, resistive_count, resistive_time,
-             s_history, y_history, Ms_history, My_history))
+             s_hist, y_hist, Ms_hist, My_hist))
 
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State:
@@ -736,7 +718,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
     """
     seq = ts.seq
     n = seq.n(2, True)
-    m = ts.history_size
+    m = ts.history_size if ts.descent_method == DescentMethod.LBFGS else 0
     F0, p0, _, H0, JxH0 = compute_force(B_dof, seq, dirichlet_H=ts.dirichlet_H)
     MF0 = seq.apply_mass_matrix(F0, 2)
     return State(
@@ -768,8 +750,6 @@ def relaxation_loop(B_dof: jnp.ndarray,
                     num_iters_inner: int = 100,
                     dt0: float = 1.0,
                     force_tolerance: float = 1e-6,
-                    key: jax.random.PRNGKey = jax.random.PRNGKey(67),
-                    noise_schedule: Optional[Callable[[int], float]] = None,
                     resistivity_schedule: Optional[Callable[[
                         int], float]] = None,
                     callback: Optional[Callable[[State, int], State]] = None,
@@ -789,14 +769,14 @@ def relaxation_loop(B_dof: jnp.ndarray,
     seq = ts.seq
     state = initial_state(B_dof, ts, dt0)
 
-    def body_fn(state, key):
-        state = ts.relaxation_step(state, key)
+    def body_fn(state, _):
+        state = ts.relaxation_step(state)
         state = eqx.tree_at(lambda s: s.B_n, state, state.B_nplus1)
         return state, None
 
     @jax.jit
-    def _run_scan(state, keys):
-        return jax.lax.scan(body_fn, state, keys)
+    def _run_scan(state):
+        return jax.lax.scan(body_fn, state, None, length=num_iters_inner)
 
     get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
     get_energy = jax.jit(lambda B: 0.5 * seq.l2_norm_sq(B, 2))
@@ -825,15 +805,11 @@ def relaxation_loop(B_dof: jnp.ndarray,
           f"E={traces['energy'][-1]:.2e}")
 
     for i in range(1, num_iters_outer + 1):
-        key, subkey = jax.random.split(key)
-        if noise_schedule is not None:
-            state = eqx.tree_at(lambda s: s.noise_level,
-                                state, noise_schedule(i))
         if resistivity_schedule is not None:
             state = eqx.tree_at(lambda s: s.eta, state,
                                 resistivity_schedule(i))
 
-        state, _ = _run_scan(state, jax.random.split(subkey, num_iters_inner))
+        state, _ = _run_scan(state)
 
         state = record(state, i * num_iters_inner)
         if callback is not None:

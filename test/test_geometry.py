@@ -175,3 +175,34 @@ def test_greville_interpolation_R_Z(spline_seq):
                             err_msg=f"R mismatch at x={x}")
         npt.assert_allclose(float(Z_h(x)[0]), float(Z_fn(x)), atol=1e-2,
                             err_msg=f"Z mismatch at x={x}")
+
+
+def test_extend_map_nfp_is_the_period_map_rotated():
+    """``extend_map_nfp`` agrees with the one-period map on the first period,
+    is its z-rotation by ``-2 pi j / nfp`` on period ``j`` (the ``(R cos,
+    -R sin)`` convention), and is continuous across the period seams --
+    which the previous form, recomputing the toroidal angle from ``zeta``
+    instead of rotating the map's own output, was not for a general map.
+    """
+    from mrx.mappings import extend_map_nfp
+
+    nfp = 3
+    Phi = rotating_ellipse_map(eps=1 / 3, kappa=1.3, nfp=nfp)
+    full = extend_map_nfp(Phi, nfp)
+    pts = np.array([[0.3, 0.1, 0.2], [0.8, 0.7, 0.9], [0.5, 0.45, 0.0]])
+    for r, th, z in pts:
+        npt.assert_allclose(full(jnp.array([r, th, z / nfp])),
+                            Phi(jnp.array([r, th, z])), rtol=0, atol=1e-6)
+        for j in (1, 2):
+            a = -2 * np.pi * j / nfp
+            X, Y, Z = np.asarray(Phi(jnp.array([r, th, z])))
+            expect = np.array([np.cos(a) * X - np.sin(a) * Y,
+                               np.sin(a) * X + np.cos(a) * Y, Z])
+            npt.assert_allclose(full(jnp.array([r, th, (z + j) / nfp])),
+                                expect, rtol=0, atol=1e-6)
+    # Seam: the periods join continuously.
+    d = 1e-6
+    for j in (1, 2):
+        lo = full(jnp.array([0.6, 0.3, j / nfp - d]))
+        hi = full(jnp.array([0.6, 0.3, j / nfp + d]))
+        npt.assert_allclose(lo, hi, rtol=0, atol=1e-4)

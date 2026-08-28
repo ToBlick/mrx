@@ -39,7 +39,7 @@ Flags, defaults in brackets:
       --lam SPEC [""]              lambda modes "m,n,amp;..."
     Descent:
       --method {gradient,cg,lbfgs} [cg]
-      --history M [3]              CG / L-BFGS history length
+      --history M [3]              L-BFGS history length (unused by cg/gradient)
       --velocity-smoothing-order G [0], --velocity-smoothing-scale MU [0.0]
                                    descent direction v = (I - MU L)^-G F
       --dt-mode {linesearch,fixed} [linesearch]
@@ -423,7 +423,7 @@ def main(cli):
 
     @jax.jit
     def step(state):
-        state = ts.relaxation_step(state, state.key)
+        state = ts.relaxation_step(state)
         return eqx.tree_at(lambda s: s.B_n, state, state.B_nplus1)
 
     @jax.jit

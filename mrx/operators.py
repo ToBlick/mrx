@@ -1183,16 +1183,12 @@ def _build_schur_apply_from_saddle_preconditioner(
 def _coerce_scalar_hodge_preconditioner(
         seq, operators: SequenceOperators, *, k: int, preconditioner,
         dirichlet: bool = True, eps: float = 0.0):
+    """The k=0 Laplacian slot: ``None``/``'auto'`` is the eps-aware default,
+    anything else goes through :func:`_coerce_mass_preconditioner_spec`."""
     if preconditioner is None or preconditioner == 'auto':
         return _materialize_default_scalar_hodge_preconditioner(
             seq, operators, k=k, dirichlet=dirichlet, eps=eps)
-    if isinstance(preconditioner, MassPreconditionerSpec):
-        return preconditioner
-    if isinstance(preconditioner, str):
-        return preconditioner
-    raise TypeError(
-        'scalar Hodge preconditioner must be a kind string or '
-        'MassPreconditionerSpec')
+    return _coerce_mass_preconditioner_spec(preconditioner)
 
 
 def _coerce_saddle_preconditioner_spec(

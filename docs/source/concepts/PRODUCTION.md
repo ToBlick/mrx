@@ -33,13 +33,12 @@ Saddle solves (k >= 1): `mass = inner = outer = 'metric_lumping'`,
 `coupled = False`.
 
 `PRODUCTION_BC_SCALE = 3.0` in `mrx/metric_lumping_laplacian.py` multiplies
-the natural-BC coefficient; `MRX_BJ_BC_SCALE` overrides it; an explicit
-`bc_scale` argument beats both. `bc_entry="ibpd"`, `ktilde_mode="honest"`,
-`lumped="diag"` are the defaults and the production configuration; pass
-nothing.
+the natural-BC coefficient; `build_preconditioners(bc_scale=...)` is the only
+override (no environment variable). `bc_entry="ibpd"` is the default and the
+production configuration; pass nothing.
 
 Not in production: multigrid, Chebyshev or Richardson acceleration, CP fits,
-HX transfers, `outer_rings`, the Fourier coarse correction
+HX transfers, dense outer-ring probes, the Fourier coarse correction
 (`mrx/experimental/` on branch `greville-prod`).
 
 ## Solvers

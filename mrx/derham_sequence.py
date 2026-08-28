@@ -347,7 +347,7 @@ class DeRhamSequence():
         self.operators = None
 
     def build_preconditioners(self, *, ks=(0, 1, 2, 3), dirichlets=(False, True),
-                              jacobi=False):
+                              jacobi=False, bc_scale=None):
         """Build the preconditioners of the installed geometry; install and return the bundle.
 
         A fresh :class:`~mrx.operators.SequenceOperators` with, for each
@@ -367,6 +367,10 @@ class DeRhamSequence():
         on the bundle too. That is the contract for an outer loop over
         geometries.
 
+        ``bc_scale`` overrides the natural-BC penalty scale of the Laplacian
+        atoms (``metric_lumping_laplacian.PRODUCTION_BC_SCALE = 3.0``, a
+        measured balance point); ``None`` keeps it.
+
         Building a sequence WITHOUT preconditioners is a first-class path:
         for purely geometrical work ``set_map`` alone is the whole setup.
 
@@ -380,7 +384,8 @@ class DeRhamSequence():
         ops = op.assemble_mass_metric_lumping_preconditioner(
             self, ops, ks=ks, dirichlet_variants=dirichlets)
         ops = op.assemble_metric_lumping_laplacian_preconditioner(
-            self, ops, ks=ks, dirichlets=dirichlets)
+            self, ops, ks=ks, dirichlets=dirichlets,
+            **({} if bc_scale is None else {"bc_scale": bc_scale}))
         if jacobi:
             ops = op.assemble_jacobi_preconditioners(self, ops, ks=ks, dirichlets=dirichlets)
         self.operators = ops

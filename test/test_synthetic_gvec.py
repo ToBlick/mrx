@@ -283,7 +283,7 @@ def test_relaxation(synthetic_seq, potential_ic):
 
     @jax.jit
     def step(state):
-        s = ts.relaxation_step(state, state.key)
+        s = ts.relaxation_step(state)
         return eqx.tree_at(lambda t: t.B_n, s, s.B_nplus1)
 
     def energy(B):

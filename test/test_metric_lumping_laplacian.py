@@ -37,8 +37,6 @@ cache, so no test here assembles a sequence, computes a nullspace, or builds
 the same preconditioner twice. The iteration-count regression of the
 production k=1 Dirichlet solve is the band in `test/test_poisson.py`.
 """
-import os
-
 import numpy as np
 import pytest
 
@@ -81,18 +79,9 @@ def _probe_cache(seq):
     def get(k, dbc, *, bc_entry="ibpd", bc_scale=PROD_SCALE, nvec=4):
         key = (k, dbc, bc_entry, bc_scale)
         if key not in cache:
-            prev = os.environ.get("MRX_BJ_BC_SCALE")
-            os.environ["MRX_BJ_BC_SCALE"] = str(bc_scale)
-            try:
-                pre = MetricLumpingLaplacian(
-                    seq, seq.get_operators(), k, dbc,
-                    ktilde_mode="honest", lumped="diag", bc_entry=bc_entry,
-                    extra_rings=0, outer_rings=0)
-            finally:
-                if prev is None:
-                    os.environ.pop("MRX_BJ_BC_SCALE", None)
-                else:
-                    os.environ["MRX_BJ_BC_SCALE"] = prev
+            pre = MetricLumpingLaplacian(
+                seq, seq.get_operators(), k, dbc,
+                bc_entry=bc_entry, bc_scale=bc_scale)
             n = int(seq.n(k, dbc))
             rng = np.random.default_rng(0)
             probe = np.stack([
@@ -246,9 +235,11 @@ def test_defaults_are_the_production_configuration(tiny_seq):
 
     That is the whole point of Phase 1 of the production plan: one method, no
     required parameters. If a default drifts, every caller that relies on it
-    silently changes -- which is exactly how `ktilde_mode="roundtrip"` survived
-    as the default while being 3-10x worse than `"honest"` on all 28 A/B rows
-    (docs/research/production_simplification_plan.md §1).
+    silently changes -- which is exactly how the round-trip Ktilde survived
+    as the default while being 3-10x worse than the honest one on all 28 A/B
+    rows (docs/research/production_simplification_plan.md §1). The research
+    knobs are gone since 2026-08-28; what is left to pin is the boundary term
+    and its scale.
     """
     import inspect
 
@@ -260,33 +251,23 @@ def test_defaults_are_the_production_configuration(tiny_seq):
     for fn in (bjl.MetricLumpingLaplacian.__init__, bjl.component_factors,
                bjl.build_bulk_atom):
         params = inspect.signature(fn).parameters
-        assert params["ktilde_mode"].default == "honest", (
-            f"{fn.__qualname__}: ktilde_mode default is "
-            f"{params['ktilde_mode'].default!r}; 'roundtrip' loses every A/B row")
-        assert params["lumped"].default == "diag", fn.__qualname__
         assert params["bc_entry"].default == "ibpd", fn.__qualname__
+        assert params["bc_scale"].default == PROD_SCALE, fn.__qualname__
 
     # And behaviourally: bare defaults == the explicit production config.
-    prev = os.environ.pop("MRX_BJ_BC_SCALE", None)
-    try:
-        n = int(tiny_seq.n(1))
-        rng = np.random.default_rng(3)
-        vecs = [jnp.asarray(rng.standard_normal(n)) for _ in range(2)]
-        ops = tiny_seq.get_operators()
-        bare = MetricLumpingLaplacian(tiny_seq, ops, 1, False)
-        spelled = MetricLumpingLaplacian(
-            tiny_seq, ops, 1, False, ktilde_mode="honest", lumped="diag",
-            bc_entry="ibpd", bc_scale=bjl.PRODUCTION_BC_SCALE,
-            extra_rings=0, outer_rings=0)
-    finally:
-        if prev is not None:
-            os.environ["MRX_BJ_BC_SCALE"] = prev
-        # CONTROL: two builds of the IDENTICAL configuration. Establishes the
-        # reproducibility floor, so the comparison below is read against a
-        # measured number rather than a guessed tolerance. The dense polar-core
-        # block is not bit-reproducible between builds (~1.7% of rows move by
-        # ~1e-14), which is also the residual every inertness test above sees.
-        twin = MetricLumpingLaplacian(tiny_seq, ops, 1, False)
+    n = int(tiny_seq.n(1))
+    rng = np.random.default_rng(3)
+    vecs = [jnp.asarray(rng.standard_normal(n)) for _ in range(2)]
+    ops = tiny_seq.get_operators()
+    bare = MetricLumpingLaplacian(tiny_seq, ops, 1, False)
+    spelled = MetricLumpingLaplacian(
+        tiny_seq, ops, 1, False, bc_entry="ibpd", bc_scale=bjl.PRODUCTION_BC_SCALE)
+    # CONTROL: two builds of the IDENTICAL configuration. Establishes the
+    # reproducibility floor, so the comparison below is read against a
+    # measured number rather than a guessed tolerance. The dense polar-core
+    # block is not bit-reproducible between builds (~1.7% of rows move by
+    # ~1e-14), which is also the residual every inertness test above sees.
+    twin = MetricLumpingLaplacian(tiny_seq, ops, 1, False)
 
     def probe(pre):
         return np.stack([np.asarray(pre.apply(v)) for v in vecs])

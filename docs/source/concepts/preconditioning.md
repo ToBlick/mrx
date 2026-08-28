@@ -91,9 +91,8 @@ A_c = K_r ⊗ M_t ⊗ M_z + M_r ⊗ K_t ⊗ M_z + M_r ⊗ M_t ⊗ K_z
 with unweighted 1D masses `M_a` and 1D stiffnesses `K_a` that carry the
 metric weight averaged over the other two axes (`component_factors`). On a
 derivative axis the stiffness is `Ktilde`, the 1D stiffness of the derivative
-splines (`ktilde_mode="honest"`). The component factor `m_k / J` is pulled out
-as a diagonal similarity `D^{1/2} A_c D^{1/2}` (`lumped="diag"`,
-`component_diagonal`). `A_c` is inverted exactly by fast diagonalisation:
+splines. The component factor `m_k / J` is pulled out as a diagonal
+similarity `D^{1/2} A_c D^{1/2}` (`component_diagonal`). `A_c` is inverted exactly by fast diagonalisation:
 three 1D generalised eigenproblems at build time
 (`_simultaneous_diagonalize_pair`), then three small dense products and a
 pointwise divide per apply (`_fd_apply_3d`). Cost per apply is
@@ -114,8 +113,8 @@ whose radial axis is a derivative axis (`trace_components`: none at k=0, `r`
 at k=1, `theta, zeta` at k=2, the single component at k=3). The coefficient
 `alpha` is derived (`bc_entry="ibpd"`); it is multiplied by
 `PRODUCTION_BC_SCALE = 3.0`, a measured balance point, not a derived factor.
-Precedence: the `bc_scale` argument, then the environment variable
-`MRX_BJ_BC_SCALE`, then the constant. Under Dirichlet the term is zero.
+`build_preconditioners(bc_scale=...)` overrides the constant; there is no
+environment variable. Under Dirichlet the term is zero.
 
 Requirement: `n_r >= p + 2`; a one-element radial mesh has no separable atom.
 
@@ -168,8 +167,8 @@ Endpoint nudges away from a clamped knot are `sqrt_eps() * h`.
 Research code (Chebyshev smoothers, the modal-radial atom, the coarse correction) lives on branch `greville-prod` under `mrx/experimental/`, not here:
 `chebyshev.py` (polynomial acceleration), `metric_lumping_coarse.py` (the
 truncated-Fourier coarse correction `CoarseCorrectedMetricLumping`), `modal_radial.py`.
-Multigrid, HX auxiliary-space transfers, CP rank fits, dense outer-ring probes
-(`outer_rings`), and the per-DoF Jacobi baselines are measured and not used; the
+Multigrid, HX auxiliary-space transfers, CP rank fits, dense outer-ring probes,
+and the per-DoF Jacobi baselines are measured and not used; the
 verdicts are in `docs/research/preconditioner_lessons.md`.
 
 ## 8. Measuring

@@ -97,38 +97,6 @@ def make_lambda(modes):
     return dlam
 
 
-# This function can be used to compute lambda from the other parameters. 
-# Currently not pursued.
-def metric_coefficients(seq, rhos, n_ang):
-    """Surface averages ``a = <g_cc/J>``, ``b = <g_cz/J>``, ``c = <g_zz/J>``,
-    ``V' = <J>`` on ``rhos``.
-
-    The surface-averaged energy density of the field is
-    ``u = f_zeta^2 (a iota^2 + 2 b iota + c) / (2 V')``, a quadratic in iota
-    with the energy-minimising transform ``-b/a``; ``b`` is zero on the
-    cylinder and is the 3-D term. chi and zeta are periodic on [0, 1), so a
-    uniform grid mean is the surface integral for smooth integrands.
-    """
-    DF = jax.jacfwd(seq.map)
-
-    def coeffs_at(x):
-        dF = DF(x)
-        g = dF.T @ dF
-        jac = jnp.linalg.det(dF)
-        return jnp.array([g[1, 1] / jac, g[1, 2] / jac, g[2, 2] / jac, jac])
-
-    ang = (jnp.arange(n_ang) + 0.5) / n_ang
-    cc, zz = jnp.meshgrid(ang, ang, indexing='ij')
-
-    def surface(rho):
-        pts = jnp.stack([jnp.full(cc.size, rho), cc.ravel(), zz.ravel()],
-                        axis=-1)
-        return jnp.mean(jax.vmap(coeffs_at)(pts), axis=0)
-
-    out = np.asarray(jax.vmap(surface)(jnp.asarray(rhos)))
-    return out[:, 0], out[:, 1], out[:, 2], out[:, 3]
-
-
 # ---------------------------------------------------------------------------
 # Reference 2-forms
 # ---------------------------------------------------------------------------

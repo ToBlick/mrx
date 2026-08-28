@@ -13,18 +13,17 @@ NOT coupled (no Schur complement is formed):
   the Laplacian, one Kronecker SUM per component,
   ``K_r (x) M_t (x) M_z + M_r (x) K_t (x) M_z + M_r (x) M_t (x) K_z``,
   inverted by fast diagonalisation (:func:`mrx.operators._fd_apply_3d`);
-* **core** -- the polar rows (the extraction's fused rows; ``extra_rings`` /
-  ``outer_rings`` can add radial rings), probed through the operator itself
-  and inverted densely.
+* **core** -- the polar rows (the extraction's fused rows), probed through
+  the operator itself and inverted densely.
 
 **Metric lumping**, which names the module: the 3-D weight of each 1-D
 factor is a *bundled* axis mean of the metric field, ``<g^{aa} J>`` taken as
 one product over the other two directions (:func:`bundled_axis_profiles`;
 ``g^{tt} J ~ 1/r`` is integrable where ``g^{tt}`` alone is not), with the
 component's own factor ``g^{cc}`` kept exactly as a diagonal sandwich
-``D_c^{-1/2} (.) D_c^{-1/2}`` around the separable inverse
-(``lumped="diag"``; the scalar and unlumped variants are the measured-and-lost
-alternatives). The 1-D masses are unweighted: the metric goes into the
+``D_c^{-1/2} (.) D_c^{-1/2}`` around the separable inverse (the scalar and
+unlumped variants were measured and lost). The 1-D masses are unweighted:
+the metric goes into the
 stiffness profiles only.
 
 The Laplacian's 1-D stiffness on each axis depends on whether the
@@ -32,10 +31,9 @@ component's basis is a derivative spline there (:func:`component_factors`):
 on the primal axes it is the ordinary weighted stiffness of the primal
 splines; on the derivative axes -- where ``L_k``'s weak half
 ``D M^{-1} D^T`` acts -- it is the stiffness OF the derivative splines
-themselves, from their tabulated derivatives (``seq.dd_basis_jk``;
-``ktilde_mode="honest"``). The ``"roundtrip"`` alternative rebuilds that term
-as ``M G A^{-1} G^T M`` through ``V_0`` and needs the ``M A^{-1} M -> c M``
-scale on the other axes; it is kept for comparison only. Conditioning works
+themselves, from their tabulated derivatives (``seq.dd_basis_jk``). The
+round-trip alternative, ``M G A^{-1} G^T M`` through ``V_0``, lost every A/B
+row and is gone. Conditioning works
 out the right way round: the curl-curl stiffnesses are singular (constants),
 the derivative-axis term is SPD, and the sum is nonsingular -- which is why
 the two halves form ONE atom.
@@ -50,7 +48,8 @@ under a free condition the weak block's integration by parts leaves
 ``int_{r=1} w u_r^2``, which for a tensor basis is
 ``alpha (e e^T) (x) M_t (x) M_z`` -- the shape of the first Kronecker term,
 so it merges into ``K_r`` (``bc_entry="ibpd"``; ``False`` switches it off). ``alpha`` is the face average of the weight
-(:func:`_face_alpha`) times ``PRODUCTION_BC_SCALE = 3.0``, a measured fit
+(:func:`_face_alpha`) times ``bc_scale``, default ``PRODUCTION_BC_SCALE = 3.0``
+(``DeRhamSequence.build_preconditioners(bc_scale=...)`` changes it), a measured fit
 (``docs/research/natural_bc_coefficient_handoff.md``): folding the term into
 the sum forces the face weight to a scalar, which is worth 1.5x -> 3.3x on a
 toroid and 1.26x -> 1.56x on W7-X, where the face weight varies too much for
@@ -64,7 +63,6 @@ does not recompile.
 from __future__ import annotations
 
 import functools
-import os
 
 import numpy as np
 
@@ -176,32 +174,6 @@ def _axis_bases(seq):
     deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
     quad_w = (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
     return primal, deriv, quad_w
-def _ktilde_1d(seq, axis, mass_deriv, profile_primal, window=None):
-    """``Ktilde = M^(d) G A^-1 G^T M^(d)`` -- the weak half's 1-D factor.
-
-    This is what replaces "the stiffness of the derivative spline", which does
-    not exist: the basis on this axis is already differentiated, so ``delta``
-    goes back through the incidence to the primal space, inverts the mass
-    there, and returns.  Symmetric PSD by construction.
-    """
-    primal, _, quad_w = _axis_bases(seq)
-    types = seq.basis_0.types
-    a_primal = _assemble_weighted_1d_mass(
-        primal[axis], quad_w[axis] * profile_primal)
-    g = _dense_incidence_1d(int(a_primal.shape[0]), types[axis])
-    # Restrict only the V_k (row) side: the round trip still passes through the
-    # FULL primal space, which is what keeps A invertible.
-    if window is not None:
-        g = g[window[0]:window[0] + window[1], :]
-    if g.shape[0] != mass_deriv.shape[0]:
-        raise ValueError(
-            f"axis {axis}: incidence gives {g.shape[0]} rows after the window "
-            f"but the derivative mass is {mass_deriv.shape[0]}")
-    inner = jnp.linalg.solve(a_primal, g.T)                  # A^-1 G^T
-    k = mass_deriv @ (g @ inner) @ mass_deriv
-    return 0.5 * (k + k.T)
-
-
 def _fd_stiffness_degree0(seq, axis, profile):
     """Self-contained p=1 stand-in for the honest derivative-spline stiffness.
 
@@ -300,7 +272,7 @@ def _boundary_point(seq):
     return 1.0 - sqrt_eps() * _h_last(seq)
 
 
-def _face_alpha(seq, k, c, lumped):
+def _face_alpha(seq, k, c):
     r"""``(scalar, amplification)`` for the natural-BC face term.
 
     The boundary term is a penalty on the trace of the form at ``r = 1``:
@@ -317,9 +289,8 @@ def _face_alpha(seq, k, c, lumped):
     ``theta, zeta``, and the amplification is a bare ``1/h`` on the last
     radial element.
 
-    Under ``lumped="diag"`` the component factor ``w_comp = m_k/J`` is carried
-    outside as the ``D`` sandwich, so it has to come back out here or it is
-    counted twice.  That division is also what makes the coefficient
+    The component factor ``w_comp = m_k/J`` is carried outside as the ``D``
+    sandwich, so it has to come back out here or it is counted twice.  That division is also what makes the coefficient
     ``(k,c)``-dependent -- ``m_k`` survives as a WEIGHT on the average rather
     than cancelling -- which is why the scale is degree-dependent and why it is
     exact on a face where ``J`` is constant.  See the paper, natural-BC section.
@@ -333,8 +304,7 @@ def _face_alpha(seq, k, c, lumped):
         return jnp.einsum('rs,r,s->', field[-1], wy, wz) / norm
 
     m_k = {0: jac, 1: ginv[c] * jac, 2: met[c] / jac, 3: 1.0 / jac}[k]
-    div = fm(m_k / jac) if lumped == "diag" else 1.0
-    return fm(m_k * jnp.sqrt(ginv[0])) / div, 1.0 / _h_last(seq)
+    return fm(m_k * jnp.sqrt(ginv[0])) / fm(m_k / jac), 1.0 / _h_last(seq)
 
 
 def _edge_vector(seq, axis, window):
@@ -377,42 +347,17 @@ def _edge_vector(seq, axis, window):
 #: 578), which is the one place `penalty` at a fixed scale loses to `product`.
 #: Including them moves the head-to-head from +0.8% to +1.7%. Shipped with that
 #: known and accepted; extending that grid is 2 jobs if it ever looks relevant.
+#: Multiplies the natural-BC face coefficient ``alpha`` (a measured balance
+#: point, see the module docstring). Every builder takes ``bc_scale`` with this
+#: default; ``DeRhamSequence.build_preconditioners(bc_scale=...)`` is the
+#: production knob. An explicit argument is the only override -- the
+#: ``MRX_BJ_BC_SCALE`` environment variable was removed 2026-08-28 (a hidden
+#: factor over an explicit one is what the no-implicit-weights rule forbids).
 PRODUCTION_BC_SCALE = 3.0
 
 
-def _resolve_bc_scale(bc_scale=None):
-    """Resolve the natural-BC penalty scale.
-
-    Precedence, highest first: the explicit ``bc_scale`` argument, then
-    ``MRX_BJ_BC_SCALE``, then :data:`PRODUCTION_BC_SCALE`. **An explicit
-    argument always wins.**
-
-    The ordering was the other way round until 2026-08-25 -- the environment
-    variable overrode the argument -- on the reasoning that the sweep harnesses
-    always set the variable, so every recorded arm kept its meaning. The cost
-    was that a caller passing ``bc_scale=2.0`` was silently ignored whenever
-    the variable happened to be set, including by a leftover export in a shell,
-    and nothing reported it. A hidden factor that overrides an explicit one is
-    exactly the failure the no-implicit-weights rule exists to prevent.
-
-    The flip changes NO existing caller. Checked repo-wide: nothing sets the
-    variable AND passes the argument. The four sweep harnesses
-    (``verify_block_jacobi``, ``block_jacobi_spectrum``, ``bench_real_solves``,
-    ``bc_schur_effective``) set the variable and pass no argument, so the env
-    still supplies their default; ``test_metric_lumping_laplacian``'s fixture
-    does the same, and its defaults test pops the variable before passing an
-    argument. Recorded arms keep meaning what they meant.
-    """
-    if bc_scale is not None:
-        return float(bc_scale)
-    env = os.environ.get("MRX_BJ_BC_SCALE")
-    if env is not None:
-        return float(env)
-    return PRODUCTION_BC_SCALE
-
-
 def _boundary_entry_direct(seq, axis, weight_field, window, dirichlet,
-                           scalar=None, bc_scale=None):
+                           scalar=None, bc_scale=PRODUCTION_BC_SCALE):
     """The natural-BC boundary term, straight from the surface integral.
 
     Under a natural (free) condition the weak block's integration by parts
@@ -444,13 +389,12 @@ def _boundary_entry_direct(seq, axis, weight_field, window, dirichlet,
     # mesh-dependent penalty rather than by removing a DOF. alpha as assembled
     # is the exact surface integral; this knob asks whether the atom wants the
     # exact penalty or the hard u_r = 0 limit it approximates.
-    alpha *= _resolve_bc_scale(bc_scale)
+    alpha *= bc_scale
 
     e = _edge_vector(seq, axis, window)
     return alpha * jnp.outer(e, e)
-def component_factors(seq, k, c, window=None, ktilde_mode="honest",
-                      lumped="diag", bc_entry="ibpd", dirichlet=False,
-                      bc_scale=None):
+def component_factors(seq, k, c, window=None, bc_entry="ibpd",
+                      dirichlet=False, bc_scale=PRODUCTION_BC_SCALE):
     """``(masses, stiffnesses)`` per axis for component ``c`` of ``L_k``.
 
     The component's basis is a derivative spline on the axes it is
@@ -472,9 +416,6 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
     primal, deriv, quad_w = _axis_bases(seq)
     fields = weight_fields(seq)
 
-    # The space's own mass weight, and the weight of the stiffness half.
-    if ktilde_mode not in ("roundtrip", "honest"):
-        raise ValueError(f"unknown ktilde_mode {ktilde_mode!r}")
     if bc_entry not in ("ibpd", False):
         raise ValueError(
             f"bc_entry must be 'ibpd' (the rank-one natural-BC face term) or False "
@@ -504,30 +445,17 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
                    2: met[c] / jac, 3: 1.0 / jac}[k]
     deriv_axes = {0: (), 1: (c,), 3: (0, 1, 2)}.get(
         k, tuple(a for a in range(3) if a != c))
-    if lumped == "diag":
-        # DIAGONAL lumping. w(c,a) = g^{cc} * (g^{aa}J) factors into a
-        # component part and an axis part, so assemble the 1-D factors with the
-        # k=0 weights ONLY -- shared by every component and every degree -- and
-        # carry g^{cc} as a diagonal sandwich instead of inside the averages:
-        #
-        #     P_c = D_c^{-1/2} FD^{-1} D_c^{-1/2}
-        #
-        # Unlike scalar lumping (below, measured 2-8x worse) this keeps the
-        # FIELD exactly and gives up only its correlation with the axis
-        # averages. Same shape as raw_kron's Lam (A x A x A) Lam sandwich.
-        stiff_prof = [bundled_axis_profiles(seq, ginv[a] * jac)[a]
-                      for a in range(3)]
-    elif lumped:
-        # Separate the per-component factor from the k=0 profile as a SCALAR:
-        # component-independent factors, but the bundling principle is broken.
-        scalar = float(jnp.mean(mass_weight / jac))
-        stiff_prof = [scalar * bundled_axis_profiles(seq, ginv[a] * jac)[a]
-                      for a in range(3)]
-    else:
-        stiff_prof = [bundled_axis_profiles(seq, mass_weight * ginv[a])[a]
-                      for a in range(3)]
-
-    primal_prof = bundled_axis_profiles(seq, fields["jac"])
+    # DIAGONAL lumping. w(c,a) = g^{cc} * (g^{aa}J) factors into a component
+    # part and an axis part, so assemble the 1-D factors with the k=0 weights
+    # ONLY -- shared by every component and every degree -- and carry g^{cc}
+    # as a diagonal sandwich instead of inside the averages:
+    #
+    #     P_c = D_c^{-1/2} FD^{-1} D_c^{-1/2}
+    #
+    # Unlike scalar lumping (measured 2-8x worse, deleted) this keeps the
+    # FIELD exactly and gives up only its correlation with the axis averages.
+    stiff_prof = [bundled_axis_profiles(seq, ginv[a] * jac)[a]
+                  for a in range(3)]
 
     def cut(mat, axis):
         """Radial window: the bulk atom lives on the bulk DOFs only."""
@@ -536,7 +464,7 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
         lo, n = window
         return mat[lo:lo + n, lo:lo + n]
 
-    masses, stiffs, ratios = [], [], []
+    masses, stiffs = [], []
     for a in range(3):
         basis = deriv[a] if a in deriv_axes else primal[a]
         # UNWEIGHTED mass, per the validated k=0 fd/fdbund recipe (adopted
@@ -546,29 +474,13 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
         # folded into K_r by averaging over exactly those directions, so
         # weighting the masses as well double counts it.
         m_full = _assemble_weighted_1d_mass(basis, quad_w[a])
-        m = cut(m_full, a)
-        masses.append(m)
-        # M A^-1 M ~ c M on the axes the weak half does NOT differentiate. The
-        # incidence is the identity there, but M_0^-1 is a 3-D inverse, so the
-        # factor does not disappear -- it contributes a SCALE. Dropping it
-        # mis-weights the two halves of the Kronecker sum by ~g^{cc} per axis
-        # (81x on an epsilon=1/3 toroid), which is enough to wreck the atom.
-        # c = mean eig(A^-1 M) = tr(A^-1 M) / n, exact when the two weight
-        # profiles are proportional. Only the round-trip form uses it; the
-        # honest stiffness carries its own weight (alpha is all ones below).
-        if a in deriv_axes or ktilde_mode == "honest":
-            ratios.append(1.0)
-        else:
-            a_full = _assemble_weighted_1d_mass(
-                primal[a], quad_w[a] * primal_prof[a])
-            ratios.append(float(jnp.trace(jnp.linalg.solve(cut(a_full, a), m))
-                                / m.shape[0]))
-        if a in deriv_axes and ktilde_mode == "honest":
+        masses.append(cut(m_full, a))
+        if a in deriv_axes:
             # The honest thing: the 1-D stiffness OF the derivative splines.
             # With their derivative values tabulated, that is just a weighted
             # mass of the table -- no incidence, no A^-1, and so nothing to
-            # mis-scale (the M A^-1 M factor exists only because the round trip
-            # drags M_0^-1 in).
+            # mis-scale (the M A^-1 M factor of the deleted round-trip form
+            # existed only because that form dragged M_0^-1 in).
             prof = stiff_prof[a]
             if degree0:
                 # p = 1: the DG-0 jump stand-in, in the same (value-scaled)
@@ -596,7 +508,7 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
                 # §14.3. Do not re-add them: the exact 2-D face shape and the
                 # cross-term corrections (one of which is INDEFINITE) are both
                 # refuted.
-                scalar, amp = _face_alpha(seq, k, c, lumped)
+                scalar, amp = _face_alpha(seq, k, c)
                 w_face = mass_weight * ginv[a]
                 corr = _boundary_entry_direct(
                     seq, a, w_face, window, dirichlet, scalar=scalar,
@@ -604,9 +516,6 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
                 if corr is not None:
                     kt = kt + corr * amp
             stiffs.append(kt)
-        elif a in deriv_axes:
-            stiffs.append(_ktilde_1d(seq, a, m, primal_prof[a],
-                                     window=window if a == 0 else None))
         else:
             k_full = _assemble_weighted_1d_stiffness(
                 primal[a], deriv[a], quad_w[a] * stiff_prof[a],
@@ -614,14 +523,9 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
                                     seq.basis_0.types[a]))
             stiffs.append(cut(k_full, a))
 
-    # One alpha per Kronecker term: the weak-half terms carry the scale of the
-    # OTHER axes' round trips, the stiffness-half terms carry none.
-    # The honest stiffness carries its own weight, so there is no round-trip
-    # scale to restore: alpha is all ones.
-    alpha = tuple(1.0 for _ in range(3)) if ktilde_mode == "honest" else tuple(
-        float(np.prod([ratios[b] for b in range(3) if b != a]))
-        if a in deriv_axes else 1.0
-        for a in range(3))
+    # One alpha per Kronecker term. The honest stiffness carries its own
+    # weight, so there is no round-trip scale to restore: all ones.
+    alpha = (1.0, 1.0, 1.0)
     return tuple(masses), tuple(stiffs), alpha
 
 
@@ -660,18 +564,16 @@ def component_diagonal(seq, k, c, shape):
     return (num / den).reshape(shape)
 
 
-def build_bulk_atom(seq, k, c, window=None, ktilde_mode="honest",
-                    lumped="diag", bc_entry="ibpd", dirichlet=False,
-                    bc_scale=None):
+def build_bulk_atom(seq, k, c, window=None, bc_entry="ibpd", dirichlet=False,
+                    bc_scale=PRODUCTION_BC_SCALE):
     """Fast-diagonalisation factors for component ``c`` of ``L_k``.
 
     Returns ``(V_r, V_t, V_z, lam_r, lam_t, lam_z)`` ready for
     :func:`mrx.operators._fd_apply_3d` with ``alpha = (1, 1, 1)``.
     """
     masses, stiffs, alpha = component_factors(seq, k, c, window=window,
-                                             bc_scale=bc_scale,
-                                              ktilde_mode=ktilde_mode,
-                                              lumped=lumped, bc_entry=bc_entry,
+                                              bc_scale=bc_scale,
+                                              bc_entry=bc_entry,
                                               dirichlet=dirichlet)
     vs, lams = [], []
     for a in range(3):
@@ -704,58 +606,22 @@ def trace_components(k):
     return {0: (), 1: (0,), 2: (1, 2), 3: (0, 1, 2)}[k]
 
 
-def core_rows(seq, k, dirichlet, extra_rings=0, outer_rings=0):
-    """Extracted rows handled by the dense core block.
+def core_rows(seq, k, dirichlet):
+    """``(core, bulk, e)``: the extracted rows handled by the dense core block
+    (the polar ring, where the extraction fuses raw DOFs -- the rows
+    ``wx_cut`` removes from the bulk averages), the rest, and the extraction.
 
-    Always the non-selector rows (the polar ring, which mixes raw DOFs and which
-    ``wx_cut`` removes from the bulk averages).  ``extra_rings`` FATTENS the
-    core by also taking the first ``n`` radial rings exactly -- they are the ones
-    where the axis-averaged profiles are worst, because the innermost element is
-    where ``g^{tt}J ~ 1/r`` varies fastest.  ``outer_rings`` does the same at
-    the OUTER radial boundary, where ``det(DF) = 0`` at the last knot -- a
-    Dirichlet condition drops those rows, which is exactly why free-BC solves lag
-    dbc ones by 4-6x at every degree while dbc is uniformly strong.  Cost is one
-    probe apply per row added, i.e. ``rings * n_theta * n_zeta``, and a larger
-    dense inverse.
+    Fattening the core with the innermost or outermost radial rings was
+    measured (dense outer-ring probes) and lost; the core is the polar ring
+    only.
     """
     e = seq.E(k, dirichlet)
-    rows, cols = np.asarray(e.rows), np.asarray(e.cols)
+    rows = np.asarray(e.rows)
     n_ext = int(e.forward_shape[0])
     counts = np.bincount(rows, minlength=n_ext)
     core = np.flatnonzero(counts > 1)
-    inner_rows = outer_rows = np.array([], dtype=int)
-
-    if extra_rings > 0 or outer_rings > 0:
-        shapes = [tuple(int(v) for v in sh)
-                  for sh in getattr(seq, f"basis_{k}").shape]
-        starts = np.cumsum([0] + [int(np.prod(sh)) for sh in shapes])
-        single = counts[rows] == 1
-        r_s, c_s = rows[single], cols[single]
-        comp = np.searchsorted(starts[1:], c_s, side="right")
-        loc = c_s - starts[comp]
-        nt = np.array([sh[1] for sh in shapes])[comp]
-        nz = np.array([sh[2] for sh in shapes])[comp]
-        nr = np.array([sh[0] for sh in shapes])[comp]
-        i_r = loc // (nt * nz)
-        if extra_rings > 0:
-            inner_rows = r_s[i_r < extra_rings]
-            core = np.union1d(core, inner_rows)
-        take = np.zeros(i_r.shape, dtype=bool)
-        if outer_rings > 0:
-            take |= i_r >= nr - outer_rings
-        if take.any():
-            outer_rows = r_s[take]
-            core = np.union1d(core, outer_rows)
-
-    polar = np.flatnonzero(counts > 1)
-    inner = np.setdiff1d(inner_rows, polar)
-    outer = np.setdiff1d(outer_rows, polar)
     bulk = np.setdiff1d(np.arange(n_ext), core)
-    return core, bulk, e, polar, inner, outer
-
-
-
-
+    return core, bulk, e
 
 
 def _probe_rows(apply, size, rows):
@@ -900,10 +766,10 @@ def _apply_lump_payload(payload: _LumpPayload, x):
     return _place(payload, parts)
 
 
-def _tensor_blocks(seq, k, dirichlet, extra_rings=0, outer_rings=0):
+def _tensor_blocks(seq, k, dirichlet):
     """Split the extraction into per-component tensor blocks plus the core.
 
-    Returns ``(core, bulk, e, polar, inner, outer, blocks)`` where ``blocks``
+    Returns ``(core, bulk, e, blocks)`` where ``blocks``
     holds, per component, ``None`` or ``(rows, vals, (r0, nr), shape, offset)``
     with ``rows``/``vals`` in TENSOR order over the ``(nr, n_t, n_z)`` block
     and ``offset >= 0`` when the block is a pure selector (rows contiguous
@@ -913,8 +779,7 @@ def _tensor_blocks(seq, k, dirichlet, extra_rings=0, outer_rings=0):
     shapes = [tuple(int(s) for s in sh)
               for sh in getattr(seq, f"basis_{k}").shape]
     starts = np.cumsum([0] + [int(np.prod(s)) for s in shapes])
-    core, bulk, e, polar, inner, outer = core_rows(
-        seq, k, dirichlet, extra_rings=extra_rings, outer_rings=outer_rings)
+    core, bulk, e = core_rows(seq, k, dirichlet)
     rows, cols, vals = (np.asarray(e.rows), np.asarray(e.cols),
                         np.asarray(e.vals))
     keep = np.isin(rows, bulk)
@@ -944,7 +809,7 @@ def _tensor_blocks(seq, k, dirichlet, extra_rings=0, outer_rings=0):
                     and np.all(vals_t == 1.0))
         blocks.append((rows_t, vals_t, (r0, nr), (nr, shape[1], shape[2]),
                        int(rows_t[0]) if selector else -1))
-    return core, bulk, e, polar, inner, outer, blocks
+    return core, bulk, e, blocks
 
 
 def _output_permutation(block_rows, core, n_ext):
@@ -1019,17 +884,13 @@ class MetricLumpingLaplacian:
     """
 
     def __init__(self, seq, operators, k, dirichlet, *, core_tol=CORE_TOL,
-                 ktilde_mode="honest", lumped="diag", extra_rings=0,
-                 outer_rings=0, bc_entry="ibpd", bc_scale=None):
+                 bc_entry="ibpd", bc_scale=PRODUCTION_BC_SCALE):
         self.k, self.dirichlet = k, dirichlet
-        self.ktilde_mode, self.lumped = ktilde_mode, lumped
         self.bc_scale = bc_scale
         self.shapes = [tuple(int(s) for s in sh)
                        for sh in getattr(seq, f"basis_{k}").shape]
 
-        core, bulk, e, _, _, _, tensor_blocks = _tensor_blocks(
-            seq, k, dirichlet, extra_rings=extra_rings,
-            outer_rings=outer_rings)
+        core, bulk, e, tensor_blocks = _tensor_blocks(seq, k, dirichlet)
         self.core, self.bulk = core, bulk
         self.n_ext = int(e.forward_shape[0])
 
@@ -1040,9 +901,8 @@ class MetricLumpingLaplacian:
                 continue
             rows_t, vals_t, (r0, nr), shape, offset = blk
             atom = build_bulk_atom(
-                seq, k, c, window=(r0, nr), ktilde_mode=ktilde_mode,
-                lumped=lumped, dirichlet=dirichlet, bc_scale=bc_scale,
-                bc_entry=bc_entry)
+                seq, k, c, window=(r0, nr), dirichlet=dirichlet,
+                bc_scale=bc_scale, bc_entry=bc_entry)
             # The natural-BC trace exists only on the components the
             # integration by parts actually touches:
             #   k=1  <u, grad tau>   -> +int (u.n) tau        -> NORMAL, c = r
@@ -1052,11 +912,9 @@ class MetricLumpingLaplacian:
             # Equivalently: wherever the component's RADIAL axis is a derivative
             # axis, which is where delta acts. Building it on w_r at k=2 adds a
             # term the operator does not have.
-            dscale = jnp.ones(shape, dtype=DTYPE)
-            if lumped == "diag":
-                # D_i is a ratio of two positive integrals; no floor.
-                d_full = component_diagonal(seq, k, c, self.shapes[c])
-                dscale = 1.0 / jnp.sqrt(d_full[r0:r0 + nr, :, :])
+            # D_i is a ratio of two positive integrals; no floor.
+            d_full = component_diagonal(seq, k, c, self.shapes[c])
+            dscale = 1.0 / jnp.sqrt(d_full[r0:r0 + nr, :, :])
             self.blocks.append({
                 "rows": rows_t, "vals": vals_t, "shape": shape,
                 "offset": offset, "atom": atom, "dscale": dscale})
@@ -1167,8 +1025,7 @@ class MetricLumpingMass:
     ``(EE^T)^-1``" requirement its own docstring calls the single easiest thing
     to get wrong (the pow0/pow1/pow2 ablation cost 2.3x at k=1).  Here the core
     rows are probed and inverted densely instead, so there is no pseudoinverse
-    anywhere, and ``extra_rings`` can widen the exact region exactly as it does
-    for the Laplacians.
+    anywhere.
 
     A mass is structurally easier than a Laplacian: it is a single Kronecker
     product rather than a sum, so the bulk inverse is three 1-D solves and no
@@ -1179,8 +1036,7 @@ class MetricLumpingMass:
     swapping it changes the OPERATOR ``L_k`` at k>=1, not just the solve.
     """
 
-    def __init__(self, seq, operators, k, dirichlet, *, extra_rings=0,
-                 core_tol=CORE_TOL):
+    def __init__(self, seq, operators, k, dirichlet, *, core_tol=CORE_TOL):
         from mrx.operators import apply_mass_matrix  # noqa: PLC0415
         from mrx.preconditioners import _kron_mass_model_1d  # noqa: PLC0415
 
@@ -1188,8 +1044,7 @@ class MetricLumpingMass:
         shapes, mass_1d, lam = _kron_mass_model_1d(seq, k)
         self.shapes = [tuple(int(v) for v in sh) for sh in shapes]
 
-        core, bulk, e, _, _, _, tensor_blocks = _tensor_blocks(
-            seq, k, dirichlet, extra_rings=extra_rings)
+        core, bulk, e, tensor_blocks = _tensor_blocks(seq, k, dirichlet)
         self.core, self.bulk = core, bulk
         self.n_ext = int(e.forward_shape[0])
 

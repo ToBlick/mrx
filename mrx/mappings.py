@@ -2,7 +2,6 @@
 from typing import Any, Callable, Optional
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 from jax.numpy import cos, pi, sin
 
@@ -48,44 +47,6 @@ class SplineMap(eqx.Module):
 
     def __call__(self, x):
         return self.basis_0.bases[0].contract(self.raw, x)
-
-
-# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
-def one_size_fits_all_map(epsilon: float = 0.33, kappa: float = 1.2, alpha: float = 0.0, R0: float = 1.0) -> Callable:
-    """Cerfon et al. "One Size Fits All" map (arXiv:1004.3481).
-
-    Args:
-        epsilon: Inverse aspect ratio.
-        kappa: Elongation.
-        alpha: Poloidal tilt angle.
-        R0: Major radius.
-    """
-    π = jnp.pi
-
-    def x_t(t):
-        return 1 + epsilon * jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t))
-
-    def y_t(t):
-        return epsilon * kappa * jnp.sin(2 * π * t)
-
-    def _s_from_t(t):
-        return jnp.arctan2(kappa * jnp.sin(2 * π * t),
-                           jnp.cos(2 * π * t + alpha * jnp.sin(2 * π * t)))
-
-    def s_from_t(t):
-        return jnp.where(t > 0.5, _s_from_t(t) + 2 * π, _s_from_t(t))
-
-    def a_from_t(t):
-        return jnp.sqrt((x_t(t) - 1)**2 + y_t(t)**2)
-
-    @jax.jit
-    def F(x):
-        r, χ, z = x
-        return jnp.ravel(jnp.array(
-            [(R0 + a_from_t(χ) * r * jnp.cos(s_from_t(χ))) * jnp.cos(2 * π * z),
-             -(R0 + a_from_t(χ) * r * jnp.cos(s_from_t(χ))) * jnp.sin(2 * π * z),
-             a_from_t(χ) * r * jnp.sin(s_from_t(χ))]))
-    return F
 
 
 def rotating_ellipse_map(eps: float = 0.33, kappa: float = 1.2, R0: float = 1.0, nfp: int = 3) -> Callable:
@@ -185,26 +146,31 @@ def stellarator_map(R: DiscreteFunction, Z: DiscreteFunction, nfp: int = 3, flip
     return F
 
 
-# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
-def extend_map_nfp(Phi, nfp):
-    """Extend a single-field-period map to the full ``nfp``-period torus.
+def extend_map_nfp(Phi, nfp, sign=-1.0):
+    """Extend a one-field-period map to the full ``nfp``-period torus.
 
-    Args:
-        Phi: Map covering one field period, ``(r,θ,ζ) -> (x,y,z)`` with
-            ``ζ ∈ [0, 1/nfp]``.
-        nfp: Number of field periods.
+    ``Phi(r, theta, zeta)`` covers one period with ``zeta in [0, 1]``; the
+    returned map takes ``zeta in [0, 1]`` over the WHOLE device, evaluates
+    ``Phi`` on the local period and rotates its output about the z axis by
+    ``sign * 2 pi j / nfp`` for period ``j``. It agrees with ``Phi`` exactly on
+    the first period -- the toroidal angle is the map's own, not recomputed
+    from ``zeta`` (the previous form did that, and was wrong for any map whose
+    ``atan2(Y, X)`` is not exactly linear in ``zeta``, e.g. a Cartesian spline
+    map).
+
+    ``sign`` is the direction of the toroidal angle with ``zeta``: ``-1`` for
+    the ``(R cos, -R sin)`` convention of :func:`stellarator_map` and the GVEC
+    maps with ``sign = -1`` (the codebase default), ``+1`` for a map whose
+    angle increases with ``zeta``. Made for plotting whole stellarators; the
+    solvers never see more than one period.
     """
     def Phi_full_fp(x):
-        r, θ, ζ = x  # now ζ ∈ [0, 1] should cover the FULL device
-        π_nfp = 2 * jnp.pi / nfp
-        ξ = ζ * nfp  # in [0, nfp]
-        ζ_loc = ξ - jnp.floor(ξ)  # in [0, 1)
-        x_loc = jnp.array([r, θ, ζ_loc])
-        X, Y, Z = Phi(x_loc)
-        R = (X**2 + Y**2)**0.5
-        φ_wedge = π_nfp * ζ_loc  # 0 → 2π/nfp
-        φ_shift = 2 * jnp.pi * jnp.floor(ξ) / nfp
-        φ = φ_wedge + φ_shift  # total toroidal angle
-        return jnp.array([R * jnp.cos(φ), -R * jnp.sin(φ), Z])
+        r, θ, ζ = x
+        ξ = ζ * nfp
+        j = jnp.floor(ξ)
+        X, Y, Z = Phi(jnp.array([r, θ, ξ - j]))
+        α = sign * 2 * jnp.pi * j / nfp
+        c, s = jnp.cos(α), jnp.sin(α)
+        return jnp.array([c * X - s * Y, s * X + c * Y, Z])
 
     return Phi_full_fp
