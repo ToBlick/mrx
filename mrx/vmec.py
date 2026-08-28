@@ -110,9 +110,10 @@ def _fit_block(rho, samples, sin_cos, m, n, deg):
     qa_vacuum_convergence_2026-08-28.md; the parity condition alone took
     the (24,48,24) QA residual from 3.97e-4 to 2.34e-4 and ||J|| from 0.375
     to 0.163). Each mode is fit with its own conditions against as many
-    phantom nodes inside the first interval, then expressed EXACTLY on the
-    shared knot vector of all phantoms (the union space contains every
-    mode's space; collocation at its Greville points is the identity there).
+    phantom nodes inside the first interval -- its knot vector is the shared
+    one with the surplus innermost interior knots removed, so its space is
+    CONTAINED in the shared space and the Greville collocation that expresses
+    it there is exact.
     The GVEC state pins its axis coefficients the same way.
     """
     m = np.asarray(m)
@@ -122,16 +123,19 @@ def _fit_block(rho, samples, sin_cos, m, n, deg):
     k_max = max(len(o) for o in groups)
     phantoms = rho[0] + (rho[1] - rho[0]) * (np.arange(1, k_max + 1) / (k_max + 1))
 
-    def knots_with(k):
-        nodes = np.sort(np.concatenate([rho, phantoms[:k]]))
-        return np.asarray(knots_at_data(nodes, deg, "clamped")), len(nodes)
-
-    T, n_base = knots_with(k_max)
+    nodes = np.sort(np.concatenate([rho, phantoms]))
+    T = np.asarray(knots_at_data(nodes, deg, "clamped"))
+    n_base = len(nodes)
     greville = np.array([T[j + 1:j + deg + 1].mean() for j in range(n_base)])
     A_union = BSpline.design_matrix(greville, T, deg).toarray()
     coef = np.empty((n_base, samples.shape[1]))
     for orders, cols in groups.items():
-        T_m, n_m = knots_with(len(orders))
+        # A mode with fewer conditions lives on T with the first
+        # (k_max - k) interior knots REMOVED -- a subset of T, so its space
+        # is contained in the shared one and the collocation below is exact.
+        drop = k_max - len(orders)
+        T_m = np.delete(T, np.arange(deg + 1, deg + 1 + drop))
+        n_m = n_base - drop
         eye = np.eye(n_m)
         rows = [BSpline.design_matrix(rho, T_m, deg).toarray()]
         rows += [np.array([BSpline(T_m, eye[j], deg).derivative(o)(0.0)

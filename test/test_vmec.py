@@ -132,7 +132,10 @@ def test_li383_reads_and_reproduces_the_file():
     from mrx.geometry import geometry_nfp
     assert geometry_nfp(LI383) == 3
     # blocks: coefficient layout and knot squareness
-    for name, n_base in (("X1", 19), ("X2", 19), ("LA", 20)):   # nodes + 3 axis phantoms; LA: half mesh + axis + edge
+    from mrx.vmec import _axis_orders
+    k_max = max(len(_axis_orders(int(mm), st["deg"])) for mm in st["X1"]["m"])
+    # nodes + the axis phantoms; LA: half mesh + axis + edge
+    for name, n_base in (("X1", 16 + k_max), ("X2", 16 + k_max), ("LA", 17 + k_max)):
         blk = st[name]
         assert blk["coef"].shape == (25, n_base)
         assert len(blk["T"]) == n_base + blk["deg"] + 1
