@@ -4,7 +4,7 @@
 # One slurm GPU job per arm through slurm/run.sh, every arm writing B
 # snapshots every 100 steps. Usage:
 #
-#   bash scripts/li383_sweep.sh wave1          # launch the first wave
+#   bash scripts/li383_sweep.sh wave1          # launch the first wave (wave2: the second)
 #   bash scripts/li383_sweep.sh arm NAME "RELAX ARGS" TIMEOUT_MIN
 #   bash scripts/li383_sweep.sh sections NAME [TIMEOUT_MIN]   # ic,final at 0,0.25,0.5
 #   bash scripts/li383_sweep.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
@@ -59,8 +59,17 @@ wave1() {
     arm r12_p3_g0_f64 "--ns 12,24,12 --p 3 --steps 6000 --precision float64 --seconds 12000" 300
 }
 
+wave2() {
+    # decided from the wave-1 costs (r24 p=3: 1.9 s/step; gamma=1 ~2x; p=4 ~1.6x)
+    arm r24_p3_g1     "--ns 24,48,24 --p 3 --steps 6000 --velocity-smoothing-order 1 --velocity-smoothing-scale 1.1e-4 --seconds 30000" 1200
+    arm r16_p4_g0     "--ns 16,32,16 --p 4 --steps 6000 --seconds 14000"                   360
+    arm r12_p4_g1     "--ns 12,24,12 --p 4 --steps 6000 --velocity-smoothing-order 1 --velocity-smoothing-scale 4.4e-4 --seconds 16000" 480
+    arm r16_p2_g0     "--ns 16,32,16 --p 2 --steps 6000 --seconds 8000"                    180
+}
+
 case ${1:-} in
     wave1) wave1 ;;
+    wave2) wave2 ;;
     arm) arm "$2" "$3" "$4" ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
