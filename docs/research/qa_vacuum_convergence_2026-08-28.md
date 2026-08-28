@@ -151,3 +151,27 @@ removes VMEC's axis current that the projection preserves.
 - A p-study with angular cells scaled with p (e.g. (n_el + p, 4 n_el, 2 n_el)).
 - (32,64,32) reference to un-bias the last `E` pair (est. 30-60 min; not needed for the
   conclusions above).
+
+## Follow-up (2026-08-28, later the same day): the axis residual was the reader
+
+The Open item above was tested in three steps on `static-dynamic-refactor`
+(commits cb65d2c, 3406d38/c7cc252, c532378/8ab03e8), each rerun through this
+script at (12,24,12) and (24,48,24), float64:
+
+| reader / map state | (12,24,12) D | (24,48,24) D | ‖F‖_M(B_w) | ‖J‖(B_w) |
+|---|---|---|---|---|
+| this note: sampled map, half-mesh lambda extrapolated over the axis | 5.67e-4 | 3.92e-4 | 1.98e-3 | 0.374 |
+| lambda pinned at the axis and the edge (`_lambda_nodes`) | 5.67e-4 | 3.98e-4 | 2.00e-3 | 0.379 |
+| map L2-projected from the series (branch `analytic-map`) | 3.73e-4 | 3.97e-4 | 1.98e-3 | 0.375 |
+| + axis parity of every mode (`c'(0) = 0` even m, `c''(0) = 0` odd m) | 3.73e-4 | 2.34e-4 | 1.14e-3 | 0.163 |
+| + full axis behaviour: every derivative of order < m or wrong parity, up to the degree (`_axis_orders`) | 3.82e-4 | **8.4e-5** | **6.7e-4** | **0.056** |
+
+(i) the lambda extrapolation was NOT it; (ii) the map projection helps the
+coarse rung only (map error); (iii) the axis residual is the radial refit of
+`rmnc`/`zmns`/`lmns` leaving the `rho^m` structure of each mode unenforced --
+the cone `docs/research/analytic_map_2026-08-28.md` measured. With the full
+axis behaviour enforced, ‖J‖ at (24,48,24) is at the coarse-rung level (no
+longer growing) and D continues the O(h^3) trend across the ladder. The
+p-sweep and the (16,32,16)/(8,16,8) rungs of the table above were measured
+with the OLD reader; `convergence_axis.png` (below) is the ladder on the final
+reader.
