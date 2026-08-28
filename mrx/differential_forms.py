@@ -215,6 +215,33 @@ class DifferentialForm:
         elif self.k == 3:
             return jnp.int32(0), *jnp.unravel_index(idx, (self.dr, self.dt, self.dz))
 
+    def __call__(self, x, i):
+        """Alias for :meth:`evaluate` (so the form can be ``vmap``-ed)."""
+        return self.evaluate(x, i)
+
+    def evaluate(self, x, i):
+        """Value of basis function ``i`` at logical point ``x`` -- the DENSE
+        per-basis-function evaluator, ``O(n)`` per point.
+
+        Kept as the reference the local-support evaluator
+        (:class:`DiscreteFunction`, :func:`~mrx.spline_bases.contract_local`)
+        is tested against (``test_sequence``); nothing in production calls it.
+        """
+        category, index = self._vector_index(i)
+        if self.k == 0 or self.k == 3:
+            return jnp.ones(1) * self.bases[0](x, index)
+        elif self.k == 1 or self.k == 2:
+            e = jnp.zeros(3).at[category].set(1)
+            val = jnp.where(
+                category == 0,
+                self.bases[0](x, index),
+                jnp.where(
+                    category == 1, self.bases[1](
+                        x, index), self.bases[2](x, index)
+                ),
+            )
+            return e * val
+
     def raw_blocks(self, raw):
         """Split a raw (pre-extraction) coefficient vector into one tensor per
         component, shaped as :attr:`shape` -- the layout :meth:`_unravel_index`

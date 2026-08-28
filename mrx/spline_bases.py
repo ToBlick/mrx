@@ -336,11 +336,12 @@ class SplineBasis:
 class TensorBasis:
     """Tensor product of three 1-D spline bases, ``B_i(x) B_j(y) B_k(z)``.
 
-    Evaluation is span-local only: :meth:`evaluate_local` returns, per axis,
-    the ``p + 1`` nonzero 1-D values and their indices at a point, and
+    Production evaluation is span-local: :meth:`evaluate_local` returns, per
+    axis, the ``p + 1`` nonzero 1-D values and their indices at a point, and
     :meth:`contract` sums a coefficient tensor against them
-    (:func:`contract_local`). There is no per-basis-function evaluator; the
-    sequence tabulates the 1-D bases at the quadrature points once instead.
+    (:func:`contract_local`); the sequence tabulates the 1-D bases at the
+    quadrature points once. :meth:`evaluate` is the dense per-function
+    reference the tests check that path against.
 
     Attributes:
         bases: the three :class:`SplineBasis`.
@@ -366,6 +367,17 @@ class TensorBasis:
         self.shape = jnp.array([b.n for b in bases])
         self.n = bases[0].n * bases[1].n * bases[2].n
         self.ns = jnp.arange(self.n)
+
+    def evaluate(self, x: jnp.ndarray, i: int) -> jnp.ndarray:
+        """The ``i``-th tensor-product basis function at ``x`` -- the dense
+        per-function evaluator behind :meth:`DifferentialForm.evaluate`, the
+        reference the local-support path is tested against. Not production."""
+        ijk = jnp.unravel_index(i, self.shape)
+        return self.bases[0](x[0], ijk[0]) * self.bases[1](x[1], ijk[1]) * self.bases[2](x[2], ijk[2])
+
+    def __call__(self, x: jnp.ndarray, i: int) -> jnp.ndarray:
+        """Alias for :meth:`evaluate`."""
+        return self.evaluate(x, i)
 
     def evaluate_local(self, x: jnp.ndarray) -> tuple:
         """Per-axis ``(values, indices)`` of the 1-D basis functions nonzero at ``x``."""
