@@ -83,7 +83,7 @@ def test_singular_cg_spsd_with_nullspace():
 
     A_jax = jnp.asarray(A)
     x, info = solve_singular_cg(
-        lambda x: A_jax @ x, b_proj, vs=[v0], tol=TOL, maxiter=500)
+        lambda x: A_jax @ x, b_proj, v0[None, :], tol=TOL, maxiter=500)
     res = float(jnp.linalg.norm(A_jax @ x - b_proj))
     bnorm = float(jnp.linalg.norm(b_proj))
     assert res < 100 * TOL * bnorm, f"singular CG residual {res:.3e}"

@@ -124,7 +124,7 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     return x_final, info
 
 
-def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x, x0=None, vs=(), maxiter=None, tol=None):
+def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x: x, x0=None, maxiter=None, tol=None):
     """
     Solve the singular SPSD system for the minimum norm solution using CG.
 
@@ -133,19 +133,18 @@ def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x,
         mass_matvec: Callable representing mass matrix.
         b: The right-hand side vector (Dual vector).
         x0: Optional initial guess (Primal vector).
-        vs: List of mass-normalized zero eigenvectors (Primal vectors).
+        vs: ``(m, n)`` array of M-orthonormal kernel vectors (primal), ``m``
+            possibly 0 -- the shape the sequence stores its harmonic forms in
+            (:func:`mrx.nullspace.get_nullspace`).
         maxiter: Maximum number of CG iterations.
         tol: CG tolerance; ``None`` is ``mrx.sqrt_eps()``.
     """
     if mass_matvec is None:
         def mass_matvec(x): return x
 
-    if isinstance(vs, (list, tuple)) and len(vs) == 0:
-        vs_stacked = jnp.zeros((0, b.shape[0]), dtype=b.dtype)
-    else:
-        vs_stacked = jnp.asarray(vs, dtype=b.dtype)
-        if vs_stacked.ndim == 1:
-            vs_stacked = vs_stacked[None, :]
+    vs_stacked = jnp.asarray(vs, dtype=b.dtype)
+    if vs_stacked.ndim != 2:
+        raise ValueError(f"vs must be an (m, n) array, got shape {vs_stacked.shape}")
 
     def inner_product(x, y):
         return jnp.dot(x, mass_matvec(y))

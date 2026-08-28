@@ -908,6 +908,7 @@ def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
     x, info = solve_singular_cg(
         lambda x: apply_mass_matrix(seq, x, k, dirichlet=dirichlet),
         rhs,
+        jnp.zeros((0, rhs.shape[0]), dtype=rhs.dtype),
         mass_matvec=lambda x: apply_mass_matrix(
             seq, x, k, dirichlet=dirichlet),
         precond_matvec=precond_apply,
@@ -1692,6 +1693,7 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
         x, info = solve_singular_cg(
             operator_apply,
             rhs,
+            jnp.zeros((0, rhs.shape[0]), dtype=rhs.dtype),
             precond_matvec=precond_apply,
             x0=guess,
             tol=tol,

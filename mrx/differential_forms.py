@@ -215,38 +215,6 @@ class DifferentialForm:
         elif self.k == 3:
             return jnp.int32(0), *jnp.unravel_index(idx, (self.dr, self.dt, self.dz))
 
-    def __call__(self, x, i):
-        """Alias for :meth:`evaluate`."""
-        return self.evaluate(x, i)
-
-    def __getitem__(self, i):
-        """Return ``lambda x: self(x, i)``."""
-        return lambda x: self.evaluate(x, i)
-
-    def __iter__(self):
-        for i in range(self.n):
-            yield self[i]
-
-    def __len__(self):
-        return self.n
-
-    def evaluate(self, x, i):
-        """Evaluate basis function ``i`` at logical point ``x``."""
-        category, index = self._vector_index(i)
-        if self.k == 0 or self.k == 3:
-            return jnp.ones(1) * self.bases[0](x, index)
-        elif self.k == 1 or self.k == 2:
-            e = jnp.zeros(3).at[category].set(1)
-            val = jnp.where(
-                category == 0,
-                self.bases[0](x, index),
-                jnp.where(
-                    category == 1, self.bases[1](
-                        x, index), self.bases[2](x, index)
-                ),
-            )
-            return e * val
-
     def raw_blocks(self, raw):
         """Split a raw (pre-extraction) coefficient vector into one tensor per
         component, shaped as :attr:`shape` -- the layout :meth:`_unravel_index`

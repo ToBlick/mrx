@@ -1,6 +1,6 @@
 """1D B-spline bases (clamped, periodic, constant), their derivative bases, and local evaluation."""
 import functools
-from typing import Callable, Optional
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -153,10 +153,6 @@ class SplineBasis:
     def __call__(self, x: float, i: int) -> jnp.ndarray:
         """Alias for :meth:`evaluate`."""
         return self.evaluate(x, i)
-
-    def __getitem__(self, i: int) -> Callable[[float], jnp.ndarray]:
-        """Return ``lambda x: self(x, i)``."""
-        return lambda x: self.evaluate(x, i)
 
     def _init_knots(self) -> jnp.ndarray:
         """Initialize the knot vector based on the spline type.
@@ -338,17 +334,18 @@ class SplineBasis:
 
 
 class TensorBasis:
-    """A class representing a tensor product of spline bases.
+    """Tensor product of three 1-D spline bases, ``B_i(x) B_j(y) B_k(z)``.
 
-    This class implements a multidimensional basis formed by taking tensor products
-    of one-dimensional spline bases. It is particularly useful for constructing
-    basis functions in higher dimensions (2D or 3D) from one-dimensional splines.
+    Evaluation is span-local only: :meth:`evaluate_local` returns, per axis,
+    the ``p + 1`` nonzero 1-D values and their indices at a point, and
+    :meth:`contract` sums a coefficient tensor against them
+    (:func:`contract_local`). There is no per-basis-function evaluator; the
+    sequence tabulates the 1-D bases at the quadrature points once instead.
 
     Attributes:
-        bases (list[SplineBasis]): List of one-dimensional spline bases
-        shape (jnp.ndarray): Array containing the number of basis functions in each dimension
-        n (int): Total number of basis functions (product of individual dimensions)
-        ns (jnp.ndarray): Array of indices for all basis functions
+        bases: the three :class:`SplineBasis`.
+        shape: ``(n_x, n_y, n_z)``.
+        n: ``prod(shape)``; ``ns`` its ``arange``.
     """
 
     def __init__(self, bases: list[SplineBasis]) -> None:
@@ -369,30 +366,6 @@ class TensorBasis:
         self.shape = jnp.array([b.n for b in bases])
         self.n = bases[0].n * bases[1].n * bases[2].n
         self.ns = jnp.arange(self.n)
-
-    def evaluate(self, x: jnp.ndarray, i: int) -> jnp.ndarray:
-        """Evaluate the i-th tensor product basis function at point x.
-
-        Computes the value by taking the product of the appropriate one-dimensional
-        basis functions in each coordinate direction.
-
-        Args:
-            x: Point at which to evaluate the basis function (array of coordinates)
-            i: Index of the tensor product basis function to evaluate
-
-        Returns:
-            Value of the i-th tensor product basis function at x
-        """
-        ijk = jnp.unravel_index(i, self.shape)
-        return self.bases[0](x[0], ijk[0]) * self.bases[1](x[1], ijk[1]) * self.bases[2](x[2], ijk[2])
-
-    def __call__(self, x: jnp.ndarray, i: int) -> jnp.ndarray:
-        """Alias for :meth:`evaluate`."""
-        return self.evaluate(x, i)
-
-    def __getitem__(self, i: int) -> Callable[[jnp.ndarray], jnp.ndarray]:
-        """Return ``lambda x: self(x, i)``."""
-        return lambda x: self.evaluate(x, i)
 
     def evaluate_local(self, x: jnp.ndarray) -> tuple:
         """Per-axis ``(values, indices)`` of the 1-D basis functions nonzero at ``x``."""
@@ -438,10 +411,6 @@ class DerivativeSpline:
     def __call__(self, x: float, i: int) -> jnp.ndarray:
         """Alias for :meth:`evaluate`."""
         return self.evaluate(x, i)
-
-    def __getitem__(self, i: int) -> Callable[[float], jnp.ndarray]:
-        """Return ``lambda x: self(x, i)``."""
-        return lambda x: self.evaluate(x, i)
 
     def _scale(self, i):
         """``D_i = (p + 1) / (T[i + p + 1] - T[i]) * B_i``: the unit-integral normalisation."""

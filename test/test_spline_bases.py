@@ -170,7 +170,10 @@ def test_autodiff_agrees_with_derivative_spline(typ):
 # ── TensorBasis ───────────────────────────────────────────────────────────────
 
 def test_tensor_basis_factors():
-    """TensorBasis evaluation equals the product of 1-D factor evaluations."""
+    """``contract`` of a one-hot coefficient tensor equals the product of the
+    1-D factor evaluations -- the tensor basis function, without a
+    per-function evaluator (deleted 2026-08-28; ``evaluate_local``/``contract``
+    are the only evaluators)."""
     tb = TensorBasis([
         SplineBasis(5, 2, "clamped"),
         SplineBasis(4, 2, "periodic"),
@@ -180,8 +183,9 @@ def test_tensor_basis_factors():
     x = jnp.array([0.5, 0.5, 0.5])
     for lin in (0, 7, 23, tb.n - 1):
         i, j, k = jnp.unravel_index(lin, tb.shape)
+        one_hot = jnp.zeros(tb.shape).at[i, j, k].set(1.0)
         npt.assert_allclose(
-            tb.evaluate(x, lin),
+            tb.contract(one_hot, x),
             tb.bases[0](x[0], i) * tb.bases[1](x[1], j) * tb.bases[2](x[2], k),
             atol=POINTWISE,
         )
