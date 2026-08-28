@@ -437,17 +437,19 @@ def test_relaxation(synthetic_seq, potential_ic):
     # ran from 1.8 at step 1 to 4.7e3 at step 12 at eta = 1e-2), so only its
     # lower bound is a statement.
     assert max(divs) <= 10 * seq.tol
-    # Measured 2026-08-28 in float64 at eps = 2.113e-4 (dt = 3.31e-2, see
-    # the print): dH = +5.325938e-4; the polarised form is off by 2.1e-11
-    # (3.8e-8 relative, the helicity solves); -2 eps <J, B> at B_{n+1} by
-    # +1.27e-7 and at B_n by -9.64e-6 (ratio 0.0132), and at eps/2 by
-    # +3.2e-8 and -2.45e-6: both 0.25x, the O(eps^2) quartering. So the
-    # backward-Euler step makes the rate at B_{n+1} the accurate one (78x
-    # smaller constant; the torus IC measured 175x), and the exact
-    # statement is the polarised one. Bands: 1.25x on the 0.0129 ratio,
-    # 1.4x on the quartering. The 1e2 tol |dH| terms are the helicity
-    # solves' resolution of dH (2.8e-6 measured in float32, where they
-    # carry the B_{n+1} assertion).
+    # Measured 2026-08-28 in float64 at eps = 5.674e-3 (dt = 5.67 at step
+    # CHECK under L-BFGS, see the print): dH = +8.001525e-3; the polarised
+    # form is off by 7.8e-12 (1e-9 relative, the helicity solves);
+    # -2 eps <J, B> at B_{n+1} by +1.20e-5 and at B_n by -2.85e-3 (ratio
+    # 0.0042), and at eps/2 by +4.3e-6 and -8.47e-4: 0.36x and 0.30x, the
+    # O(eps^2) quartering plus its O(eps) correction (at eps = 2.1e-4 on
+    # the CG trajectory both were 0.25x to two digits). So the
+    # backward-Euler step makes the rate at B_{n+1} the accurate one (240x
+    # smaller constant), and the exact statement is the polarised one.
+    # Bands: 0.016 on the B_{n+1}/B_n ratio (0.0129 measured at small eps),
+    # 0.35 on the quartering of the B_n error. The 1e2 tol |dH| terms are
+    # the helicity solves' resolution of dH (2.8e-6 measured in float32,
+    # where they carry the B_{n+1} assertion).
     floor = 1e2 * seq.tol * abs(dH)
     assert abs(dH - pm) <= floor
     assert abs(dH - pn1) <= 0.016 * abs(dH - pn) + floor
