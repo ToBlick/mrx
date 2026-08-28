@@ -7,7 +7,6 @@ import warnings
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax.scipy as jsp
 
 from mrx.extraction_operators import MatrixFreeExtraction
 import numpy as np
@@ -16,7 +15,6 @@ from mrx.preconditioners import (
     MassPreconditionerSpec,
     SchurPreconditionerSpec,
     SaddlePointPreconditionerSpec,
-    _bulk_tensor_shape,
     _symmetrize,
     default_mass_preconditioner,
 )
@@ -143,10 +141,6 @@ def _assemble_weighted_1d_mass(B: jnp.ndarray, weights: jnp.ndarray) -> jnp.ndar
     return (B * weights[None, :]) @ B.T
 
 
-def _assemble_unweighted_1d_mass(B: jnp.ndarray, weights: jnp.ndarray) -> jnp.ndarray:
-    return _symmetrize(_assemble_weighted_1d_mass(B, weights))
-
-
 def _assemble_weighted_1d_stiffness(
         primal_basis: jnp.ndarray,
         derivative_basis: jnp.ndarray,
@@ -155,82 +149,6 @@ def _assemble_weighted_1d_stiffness(
     mass_d = _assemble_weighted_1d_mass(derivative_basis, weights)
     stiffness = incidence.T @ (mass_d @ incidence)
     return _symmetrize(stiffness)
-
-
-def _restrict_radial_window(raw_matrix: jnp.ndarray, radial_start: int,
-                            nr: int) -> jnp.ndarray:
-    radial_stop = radial_start + nr
-    return raw_matrix[radial_start:radial_stop, radial_start:radial_stop]
-
-
-def _k0_bundled_axis_profiles(seq):
-    """Per-axis quad-point profiles of the BUNDLED weight g^{aa} J: the
-    quad-weighted mean over the other two axes. Bundling keeps the g-J
-    correlation inside the average (g^tt J ~ 1/r instead of the divergent
-    bare g^tt ~ 1/r^2), so the radial integration of the angular means only
-    needs to skip the polar-surgery element [0, xi_1] (core DOFs are handled
-    exactly by the Schur envelope)."""
-    minv = jnp.transpose(
-        _reshape_quadrature_matrix_field(seq, seq.geometry.metric_inv_jkl),
-        (1, 0, 2, 3, 4))
-    jacq = jnp.transpose(
-        _reshape_quadrature_scalar_field(seq, seq.geometry.jacobian_j), (1, 0, 2))
-    w00, w11, w22 = (minv[..., a, a] * jacq for a in range(3))
-    xi1 = jnp.asarray(seq.basis_0.Λ[0].T)[seq.ps[0] + 1]
-    wx_cut = seq.quad.w_x * (jnp.asarray(seq.quad.x_x) >= xi1)
-    wy, wz = seq.quad.w_y, seq.quad.w_z
-    sy, sz, sxc = jnp.sum(wy), jnp.sum(wz), jnp.sum(wx_cut)
-    pr = jnp.einsum('qrs,r,s->q', w00, wy, wz) / (sy * sz)
-    pt = jnp.einsum('qrs,q,s->r', w11, wx_cut, wz) / (sxc * sz)
-    pz = jnp.einsum('qrs,q,r->s', w22, wx_cut, wy) / (sxc * sy)
-
-    def clip(v):
-        return jnp.maximum(v, mrx.sqrt_eps(0.67) * jnp.abs(jnp.median(v)))
-
-    return clip(pr), clip(pt), clip(pz)
-
-
-def _assemble_k0_greville_bulk_factors(seq, *, dirichlet: bool):
-    """k=0 stiffness bulk factors: the "fd" atom (exact additive FD inverse).
-
-    Per-axis 1D stiffnesses WEIGHTED by the bundled profiles <g^{aa} J> of
-    the other two axes, D = 1, alpha = 1 (adopted 2026-08-13, see
-    docs/research/handoff_2026-08-13_gpu_cluster.md). Keeping the g-J
-    correlation inside the per-axis averages beat the pre-2026-08
-    collocated variant on every geometry tested (W7-X 16,32,32: dbc
-    80->62, free 117->85 CG its at equal ms/it). The collocated atom was
-    DELETED 2026-08-14 when the core-Schur rebuild switched to exact bulk
-    solves -- its last remaining role was the one-sided Schur probe (see
-    _assemble_k0_tensor_hodge_preconditioner).
-    """
-    bulk_shape = _bulk_tensor_shape(seq, dirichlet)
-    nr_bulk, nt, nz = (int(s) for s in bulk_shape)
-    types = seq.basis_0.types
-    g_r = _dense_incidence_1d(seq.basis_0.nr, types[0])
-    g_t = _dense_incidence_1d(seq.basis_0.nt, types[1])
-    g_z = _dense_incidence_1d(seq.basis_0.nz, types[2])
-
-    pr, pt, pz = _k0_bundled_axis_profiles(seq)
-    kw_x, kw_y, kw_z = seq.quad.w_x * pr, seq.quad.w_y * pt, seq.quad.w_z * pz
-
-    M0_r = _restrict_radial_window(_assemble_unweighted_1d_mass(seq.basis_r_jk, seq.quad.w_x), 2, nr_bulk)
-    M0_t = _assemble_unweighted_1d_mass(seq.basis_t_jk, seq.quad.w_y)
-    M0_z = _assemble_unweighted_1d_mass(seq.basis_z_jk, seq.quad.w_z)
-    K0_r = _restrict_radial_window(_assemble_weighted_1d_stiffness(seq.basis_r_jk, seq.d_basis_r_jk, kw_x, g_r), 2, nr_bulk)
-    K0_t = _assemble_weighted_1d_stiffness(seq.basis_t_jk, seq.d_basis_t_jk, kw_y, g_t)
-    K0_z = _assemble_weighted_1d_stiffness(seq.basis_z_jk, seq.d_basis_z_jk, kw_z, g_z)
-    V_r, lam_r = _assemble_1d_fd_eigendecomp(M0_r, K0_r)
-    V_t, lam_t = _assemble_1d_fd_eigendecomp(M0_t, K0_t)
-    V_z, lam_z = _assemble_1d_fd_eigendecomp(M0_z, K0_z)
-
-    # J lives inside the bundled 1D weights; no collocated diagonal.
-    return {
-        "bulk_shape": bulk_shape,
-        "bulk_V_r": V_r, "bulk_V_t": V_t, "bulk_V_z": V_z,
-        "bulk_lam_r": lam_r, "bulk_lam_t": lam_t, "bulk_lam_z": lam_z,
-        "bulk_alpha": jnp.ones((3,), dtype=mrx.DTYPE),
-        "bulk_greville_inv_sqrt_D": jnp.ones(bulk_shape, dtype=mrx.DTYPE),
-    }
 
 
 def _materialize_default_mass_preconditioner(
@@ -359,24 +277,6 @@ def _dense_incidence_1d(n0: int, typ: str) -> jnp.ndarray:
     if typ == 'constant':
         return jnp.zeros((n0, n0))
     raise ValueError(f"Unknown basis type {typ!r}")
-
-
-def _assemble_1d_fd_eigendecomp(M: jnp.ndarray, K: jnp.ndarray):
-    """Reduce ``K v = λ M v`` to a standard eigenproblem via Cholesky.
-
-    Returns ``(V, lam)`` where ``V`` columns are ``M``-orthonormal
-    eigenvectors and ``lam`` the eigenvalues.
-    """
-    L = jnp.linalg.cholesky(M)
-    # K_tilde = L^{-1} K L^{-T}
-    Y = jsp.linalg.solve_triangular(L, K, lower=True)
-    K_tilde = jsp.linalg.solve_triangular(L, Y.T, lower=True).T
-    K_tilde = 0.5 * (K_tilde + K_tilde.T)
-    lam, W = jnp.linalg.eigh(K_tilde)
-    # V = L^{-T} W satisfies V^T M V = I and K V = M V diag(lam).
-    V = jsp.linalg.solve_triangular(L.T, W, lower=False)
-    return V, lam
-
 
 def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0):
     """Apply ``(L + eps M)^{-1}`` via fast diagonalisation on a 3-tensor ``x``."""

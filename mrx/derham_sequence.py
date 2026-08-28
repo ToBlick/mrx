@@ -817,10 +817,12 @@ class DeRhamSequence():
         """Compute the harmonic forms and store them on ``self.operators``.
 
         ``direct=True`` (the default) is the Hodge-decomposition construction
-        (:func:`~mrx.nullspace.compute_nullspaces`): a fixed pair of
-        production solves per form, no shift and no outer iteration; it is
-        self-sufficient when ``b2 == 0``, i.e. on the solid torus, and raises
-        otherwise. ``direct=False`` is shift-and-invert inverse iteration
+        (:func:`~mrx.nullspace.compute_nullspaces`, ``kwargs`` such as
+        ``gap_sweeps`` and ``verbose``): a fixed pair of production solves
+        per form, no shift and no outer iteration; it is self-sufficient when
+        ``b2 == 0``, i.e. on the solid torus, and raises otherwise. Every
+        form is reported with its Rayleigh quotient against ``lambda_1``.
+        ``direct=False`` is shift-and-invert inverse iteration
         (:func:`~mrx.nullspace.compute_nullspaces_iterative`, ``kwargs`` such
         as ``eps``, ``abs_tol``, ``inner_tol``, ``maxiter``), which works for
         any Betti numbers and returns its per-vector iteration counts.
@@ -828,7 +830,8 @@ class DeRhamSequence():
         """
         if direct:
             self.operators = compute_nullspaces(
-                self, self._require_operators(), betti_numbers=betti_numbers)
+                self, self._require_operators(), betti_numbers=betti_numbers,
+                **kwargs)
             return None
         operators, info = compute_nullspaces_iterative(
             self, self._require_operators(), betti_numbers=betti_numbers, **kwargs)

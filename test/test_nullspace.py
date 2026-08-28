@@ -24,7 +24,9 @@ import mrx
 from test.conftest import BETTI
 from mrx.nullspace import (
     _n_vectors,
+    estimate_spectral_gap,
     get_nullspace,
+    harmonic_rayleigh,
     get_saddle_point_nullspaces,
     init_nullspaces,
 )
@@ -170,3 +172,23 @@ def test_saddle_point_lower_block_satisfies_mass_equation(tiny_seq, k, dbc):
         npt.assert_allclose(Mw, Dt_v,
                             atol=tiny_seq.tol * max(float(jnp.linalg.norm(Dt_v)), 1.0),
                             err_msg=f"k={k} dbc={dbc} vec[{i}]: M_{{k-1}} w ≠ D_{{k-1}}^T v")
+
+
+@pytest.mark.parametrize("k,dbc", [(1, False), (2, True)], ids=["k1", "k2dbc"])
+def test_spectral_gap_dominates_the_harmonic_quotient(tiny_seq, k, dbc):
+    """``lambda_1`` from a handful of inverse-iteration sweeps is O(1) and
+    the stored form's Rayleigh quotient is negligible against it.
+
+    This is the ratio :func:`compute_nullspaces` prints for every form; the
+    test pins the two facts that make the line readable: the estimate is a
+    genuine non-harmonic eigenvalue (positive, not the shift ``eps``, not a
+    mass-norm artefact) and the ratio separates a harmonic form from a solve
+    that stopped early by many orders.
+    """
+    ops = tiny_seq.operators
+    lam, sweeps = estimate_spectral_gap(tiny_seq, ops, k, dbc, maxiter=5)
+    assert 0 < sweeps <= 5
+    assert 1e-2 < lam < 1e3, f"lambda_1 = {lam:.2e} is not O(1)"
+    v = get_nullspace(ops, k, dbc)[0]
+    rq = harmonic_rayleigh(tiny_seq, v, k, dbc, ops)
+    assert abs(rq) / lam < mrx.eps(4.5e3), f"ratio {abs(rq) / lam:.2e}"

@@ -215,10 +215,3 @@ def _kron_mass_model_1d(seq, k: int, d_raw=None):
     return shapes, tuple(mass_1d), tuple(lam)
 
 
-def _bulk_tensor_shape(seq, dirichlet: bool) -> tuple[int, int, int]:
-    nr_bulk = seq.basis_0.nr - 2 - int(dirichlet)
-    nt = seq.basis_0.nt
-    nz = seq.basis_0.nz
-    return nr_bulk, nt, nz
-
-

@@ -561,21 +561,25 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     # The pressure is drawn at ``pressure_scale`` times its value (the natural
     # scale of p in code units is ~1e-2, and 100 p reads in units).
     p_label = f"{pressure_label} $\\times$ {pressure_scale:g}"
-    if logical is None and not has_p:
-        fig = plt.figure(figsize=(11.5, 5.0), constrained_layout=True)
-        ax, bx = fig.subplots(1, 2, width_ratios=[1.3, 1.0])
-        lx = px = None
-    elif has_p:
-        # The three panels Tobias asked for: the section, the iota profile
-        # unchanged, and p. The logical chart is dropped here rather than made
-        # a fourth -- it is a diagnostic, and this is the presentation figure.
-        fig = plt.figure(figsize=(15.5, 4.8), constrained_layout=True)
-        ax, bx, px = fig.subplots(1, 3, width_ratios=[1.3, 1.0, 1.0])
-        lx = None
-    else:
-        fig = plt.figure(figsize=(15.5, 4.8), constrained_layout=True)
-        ax, lx, bx = fig.subplots(1, 3, width_ratios=[1.15, 1.0, 1.15])
-        px = None
+    # Panels, left to right: the section, the logical chart (when the
+    # crossings' logical coordinates are given), the iota profile, and the
+    # pressure profile (when p is given). The logical chart is where an
+    # island chain or an off-centre axis is seen at a glance -- nested
+    # surfaces are horizontal bands there -- so it stays in the relaxation
+    # figures too (restored 2026-08-28).
+    panels = [("ax", 1.3)]
+    if logical is not None:
+        panels.append(("lx", 0.95))
+    panels.append(("bx", 1.0))
+    if has_p:
+        panels.append(("px", 1.0))
+    width = {2: 11.5, 3: 15.5, 4: 19.5}[len(panels)]
+    fig = plt.figure(figsize=(width, 4.8), constrained_layout=True)
+    axes = dict(zip((name for name, _ in panels),
+                    fig.subplots(1, len(panels),
+                                 width_ratios=[w for _, w in panels])))
+    ax, bx = axes["ax"], axes["bx"]
+    lx, px = axes.get("lx"), axes.get("px")
 
     shown = keep
     good = iota[shown][jnp.isfinite(iota[shown])] if shown.any() else iota[:0]
@@ -774,9 +778,9 @@ def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
                    steps_per_period=24, t_min=0.02):
     """Seeds spaced from the MAGNETIC axis to the edge, not from ``r = 0``.
 
-    :func:`seed_line` walks out along constant *logical* radius, i.e. from the
-    coordinate axis. That is fine only while the two axes coincide. They do not
-    have to: the maps come from equilibria, and a finite-beta one puts ``r = 0``
+    Seeding along a ray of constant *logical* angle from ``r = 0`` starts at
+    the coordinate axis. That is fine only while the two axes coincide. They
+    do not have to: the maps come from equilibria, and a finite-beta one puts ``r = 0``
     at its own Shafranov-shifted axis, which is not where the vacuum field's
     axis is. Measured on ``w7x-ini`` (beta 4.2%): 4.9 cm apart, against 0.6 mm
     on vacuum W7-X.
@@ -837,19 +841,6 @@ def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
     return jnp.concatenate([probe2[:1], seeds], axis=0)
 
 
-def seed_line(n_seeds, r_min=0.03, r_max=0.97, theta=0.0, r_axis=0.01):
-    """Seeds along a logical radial ray at ``zeta = 0``, axis probe first.
-
-    Entry 0 is a dedicated probe at ``r_axis`` whose only job is to supply the
-    centre for :func:`axis_track`.  It has to be a separate seed: the angle of
-    the reference orbit *about itself* is the difference of two identical
-    floats, so its own winding is pure rounding noise and any iota reported for
-    it is meaningless.  Callers should drop entry 0 from anything they plot.
-    """
-    r = jnp.concatenate([jnp.array([r_axis]), jnp.linspace(r_min, r_max, n_seeds)])
-    return jnp.stack([r, jnp.full_like(r, theta)], axis=1)
-
-
 # ---------------------------------------------------------------------------
 # Driver glue
 # ---------------------------------------------------------------------------
@@ -866,7 +857,7 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
     Seed 0 is the axis probe: it defines the centre, so its own winding is the
     difference of two identical numbers.  Its orbit is kept -- as ``axis`` --
     and it is dropped from everything that is reported, exactly as
-    :func:`seed_line` and :func:`seed_from_axis` document.
+    :func:`seed_from_axis` documents.
 
     ``chaotic`` comes from :func:`iota_convergence` rather than from the
     angle-fit residual, and is computed here, on the full trace and about the

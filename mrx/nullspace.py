@@ -253,22 +253,15 @@ def harmonic_rayleigh(seq, v, k, dirichlet=True, operators=None):
     a Krylov solve; a diagnostic evaluated once per vector is the one place it
     is legitimate.
 
-    Quote it against :func:`generic_rayleigh` -- the quotient is not
-    dimensionless, so a raw value carries the units of the geometry and means
-    nothing on its own.
+    Quote it against ``lambda_1`` from :func:`estimate_spectral_gap` -- the
+    quotient is not dimensionless, so a raw value carries the units of the
+    geometry and means nothing on its own; the ratio is the eigenvector error
+    squared.  :func:`compute_nullspaces` prints both for every form it builds.
     """
     lv = seq.apply_laplacian(v, k, dirichlet=dirichlet,
                                    operators=operators)
     mv = seq.apply_mass_matrix(v, k, dirichlet=dirichlet)
     return float(jnp.dot(v, lv) / jnp.dot(v, mv))
-
-
-def generic_rayleigh(seq, k, dirichlet=True, operators=None, seed=0):
-    """The same quotient for a random vector: the scale to read against."""
-    n = _dof_count(seq, k, dirichlet)
-    v = jax.random.normal(jax.random.PRNGKey(seed), (n,))
-    return harmonic_rayleigh(seq, v, k, dirichlet=dirichlet,
-                             operators=operators)
 
 
 def exact_derivative_residual(seq, v, k, dirichlet=True):
@@ -287,7 +280,8 @@ def exact_derivative_residual(seq, v, k, dirichlet=True):
                  / seq.l2_norm(v, k, dirichlet=dirichlet))
 
 
-def compute_nullspaces(seq, operators=None, betti_numbers=None):
+def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
+                       gap_sweeps=5, verbose=True):
     """Harmonic forms by direct Hodge decomposition (no inverse iteration).
 
     Each form is built by removing the exact and coexact parts of a seed, so
@@ -302,6 +296,16 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
     slots, and the code then wrote one row into each.  What it actually
     computes is the ``b1``-driven pair, so the Betti numbers must come from
     the sequence.)
+
+    The construction has no gate of its own -- a Hodge solve that runs out of
+    iterations returns a non-harmonic vector and nothing downstream says a
+    word -- so every form is reported (``verbose``) with its Rayleigh
+    quotient :func:`harmonic_rayleigh` and, for the two forms that are built
+    by solves (k = 1 free, k = 2 Dirichlet), the first non-harmonic eigenvalue
+    ``lambda_1`` from :func:`estimate_spectral_gap` in ``gap_sweeps`` sweeps
+    of inverse iteration (``0`` skips it). The ratio of the two is the
+    squared relative error of the form; ``1e-6`` and below is a harmonic
+    form, ``1e-1`` is a solve that stopped early.
 
     Returns the updated ``SequenceOperators`` bundle.
     """
@@ -376,6 +380,19 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None):
         v1 = v - curl_a
         v1 = v1 / seq.l2_norm(v1, 1, dirichlet=False)
         operators = _commit(seq, _set_null(operators, 1, False, v1[None, :]))
+
+    if verbose:
+        for k, dirichlet in ((3, True), (2, True), (0, False), (1, False)):
+            for i, v in enumerate(get_nullspace(operators, k, dirichlet)):
+                rq = harmonic_rayleigh(seq, v, k, dirichlet, operators)
+                line = (f"[nullspace] k={k} {'dbc' if dirichlet else 'free'} "
+                        f"form {i}: v^T L v / v^T M v = {rq:.2e}")
+                if gap_sweeps and k in (1, 2):
+                    lam, sweeps = estimate_spectral_gap(
+                        seq, operators, k, dirichlet, maxiter=gap_sweeps)
+                    line += (f",  lambda_1 ~ {lam:.2e} ({sweeps} sweeps)"
+                             f"  ->  ratio {rq / lam:.1e}")
+                print(line, flush=True)
 
     return operators
 
@@ -539,7 +556,7 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
 def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
                            x0s=None, abs_tol=None, inner_tol=1e-6,
                            maxiter=100, stall_ratio=0.9,
-                           use_coarse=False):
+                           use_coarse=False, known=None):
     """Find ``n_vectors`` harmonic ``k``-forms via inverse iteration.
 
     Each vector is found by repeatedly applying ``(S_k + eps M_k)^{-1} M_k``
@@ -548,6 +565,10 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
 
     Parameters
     ----------
+    known : array ``(m, n_k)``, optional
+        M-orthonormal vectors that are already known and only DEFLATED
+        against, never re-solved or returned -- the stored harmonic forms
+        when :func:`estimate_spectral_gap` aims a slot outside the kernel.
     x0s : list of optional arrays, length ``n_vectors``
         Per-vector initial guesses. Entries that are ``None`` fall back to
         a deterministic random initialisation.
@@ -608,7 +629,8 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
     if n_vectors == 0:
         return jnp.zeros((0, n)), []
 
-    found = []
+    found = [] if known is None else [jnp.asarray(v) for v in known]
+    n_known = len(found)
     iters = []
     shifted_preconditioner = _nullspace_shifted_preconditioner(k)
 
@@ -716,37 +738,41 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             k, dirichlet=dirichlet))
         iters.append((int(n_iters), res_final, float(rq_final)))
 
-    return jnp.stack(found), iters
+    return jnp.stack(found[n_known:]), iters
 
 
-def estimate_spectral_gap(seq, operators, k, dirichlet, eps, *,
-                          n_harmonic=None, x0s=None, maxiter=40, **kwargs):
+def estimate_spectral_gap(seq, operators, k, dirichlet, eps=1e-4, *,
+                          maxiter=5, **kwargs):
     """Estimate the first non-harmonic eigenvalue ``lambda_1`` of ``L_k``.
 
-    Inverse iteration is run for one slot *more* than the harmonic dimension.
-    The extra slot is M-orthogonalised against the harmonic vectors, so it
-    converges to the lowest eigenvector outside the kernel and its Rayleigh
-    quotient converges to ``lambda_1`` -- from above, and quadratically, since
-    the problem is symmetric.  It never reaches ``abs_tol``, so it exits on the
-    stall guard.
+    One slot of inverse iteration, M-orthogonalised against the harmonic
+    forms stored on ``operators``, so it converges to the lowest eigenvector
+    outside the kernel and its Rayleigh quotient to ``lambda_1`` -- from
+    above, since the problem is symmetric, and it never reaches ``abs_tol``,
+    so it exits on ``maxiter`` or the stall guard.  A handful of sweeps is
+    the point: after ``n`` sweeps from a random start the quotient is a
+    weighted mean of the lowest few eigenvalues with weights
+    ``(lambda_1 / lambda_j)^{2n}``, i.e. the right order of magnitude after
+    the first sweep and within the lowest cluster after five, which is all
+    that reading a harmonic form's quotient against it needs.  Convergence
+    to the digit is slow when the spectrum is dense (``lambda_2 / lambda_1``
+    near 1) and not worth a solve per digit.
 
-    The point of the number is to certify the shift: inverse iteration on
-    ``(S_k + eps M_k)^{-1} M_k`` reduces non-harmonic content by
-    ``eps / (lambda_1 + eps)`` per sweep, and the residual-to-error conversion
-    for the harmonic vectors themselves is also governed by ``lambda_1``.
-    Both statements are assumptions about a quantity nothing else measures.
+    Each sweep is one shifted saddle solve at ``inner_tol`` (``kwargs`` go
+    to :func:`find_nullspace_vectors`).
 
-    Returns
-    -------
-    vs : jnp.ndarray  the harmonic vectors (the extra slot is dropped).
-    iters : list      per-slot ``(n_iters, residual, rayleigh)``.
-    lambda_1 : float  Rayleigh quotient of the extra slot.
+    The number certifies the shift of the iterative route: inverse iteration
+    on ``(S_k + eps M_k)^{-1} M_k`` reduces non-harmonic content by
+    ``eps / (lambda_1 + eps)`` per sweep, and the residual-to-error
+    conversion for the harmonic vectors themselves is also governed by
+    ``lambda_1``.  Both are assumptions about a quantity nothing else
+    measures.
+
+    Returns ``(lambda_1, n_sweeps)``.
     """
-    if n_harmonic is None:
-        n_harmonic = _n_vectors(seq.betti_numbers, k, dirichlet)
-    if x0s is None:
-        x0s = _initial_guesses(seq, operators, k, dirichlet, n_harmonic)
-    vs, iters = find_nullspace_vectors(
-        seq, operators, k, n_harmonic + 1, eps, dirichlet=dirichlet,
-        x0s=list(x0s) + [None], maxiter=maxiter, **kwargs)
-    return vs[:n_harmonic], iters, iters[-1][2]
+    known = get_nullspace(operators, k, dirichlet)
+    _, iters = find_nullspace_vectors(
+        seq, operators, k, 1, eps, dirichlet=dirichlet, x0s=[None],
+        maxiter=maxiter, known=known, **kwargs)
+    n_sweeps, _, lam = iters[0]
+    return lam, n_sweeps

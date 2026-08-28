@@ -204,7 +204,7 @@ B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 
 angle as the independent variable, so every crossing of a section plane is
 an integration time and nothing is interpolated. The building blocks are
 `logical_field(seq, dof, 2, dirichlet=True)` for the field,
-`seed_line` or `seed_from_axis` for the seeds, `trace` for the
+`seed_from_axis` for the seeds, `trace` for the
 integration, and `rotational_transform` and `to_RZ` for the section.
 `step_convergence` justifies the fixed step count by refinement. The module
 docstring explains the three design choices. `scripts/poincare_relax.py`

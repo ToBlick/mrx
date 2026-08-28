@@ -95,8 +95,8 @@ def _polar_cut_weight(seq):
     """Radial quad weight with the polar-surgery element removed.
 
     The core DOFs are handled by their own dense block, so they must not
-    contribute to the bulk averages -- this is the ``wx_cut`` convention from
-    :func:`mrx.operators._k0_bundled_axis_profiles`, carried over unchanged.
+    contribute to the bulk averages: the ``wx_cut`` convention of the k=0
+    "fdbund" atom (2026-08-13), which this module replaced.
     """
     xi1 = jnp.asarray(seq.basis_0.Λ[0].T)[seq.ps[0] + 1]
     return seq.quad.w_x * (jnp.asarray(seq.quad.x_x) >= xi1)
@@ -169,8 +169,8 @@ def _axis_bases(seq):
     elements contribute to an AVERAGE. Assembling the 1-D matrices against a cut
     weight instead makes the radial primal mass singular (the basis functions
     living only in the cut element get zero rows). The core is excluded from the
-    bulk atom by RESTRICTING THE RADIAL WINDOW, exactly as the k=0 path does
-    with ``_restrict_radial_window``, not by zeroing quadrature weights.
+    bulk atom by RESTRICTING THE RADIAL WINDOW (``cut`` below), not by
+    zeroing quadrature weights.
     """
     primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
     deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
@@ -539,8 +539,8 @@ def component_factors(seq, k, c, window=None, ktilde_mode="honest",
     masses, stiffs, ratios = [], [], []
     for a in range(3):
         basis = deriv[a] if a in deriv_axes else primal[a]
-        # UNWEIGHTED mass, per the validated k=0 fd/fdbund recipe
-        # (_assemble_k0_greville_bulk_factors): the bundled metric goes into the
+        # UNWEIGHTED mass, per the validated k=0 fd/fdbund recipe (adopted
+        # 2026-08-13, since folded into this atom): the bundled metric goes into the
         # STIFFNESS profiles only. In K_r (x) M_t (x) M_z the M's are just
         # "int phi phi in the other directions" -- g^{aa}J has already been
         # folded into K_r by averaging over exactly those directions, so
