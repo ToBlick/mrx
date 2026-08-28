@@ -92,9 +92,13 @@ PHI_EDGE = np.pi * A ** 2
 LAM_AMPLITUDE, BETA = 0.05, 1e-3
 NS, P = (4, 8, 4), 2
 
-# eta = 1e-2 puts eps = eta dt at ~3e-4 (dt* is ~3e-2 on this field), where
-# the helicity solves resolve dH in float32 as well.
-ETA, MU, CFL = 1e-2, 1e-2, 0.5
+# The L-BFGS line search takes dt from 3e-2 at step 1 to ~14 at step CHECK
+# on this field (|F| falls from 3e-1 to 1e-5 in STEPS steps); eta = 1e-3
+# puts eps = eta dt at ~1.4e-2 there, inside the O(eps^2) regime of the
+# helicity-rate check, with dH large enough for the helicity solves to
+# resolve it in float32 as well. (At eta = 1e-2, eps = 0.14, the single-time
+# error at B_n was 7x dH and the eps/2 refinement gave 0.45x, not 0.25x.)
+ETA, MU, CFL = 1e-3, 1e-2, 0.5
 STEPS = 12
 CHECK = 6           # the step at which the resistive identities are measured
 
@@ -214,11 +218,12 @@ def test_map_reproduces_the_torus(synthetic, synthetic_seq):
     # The toroidal angle is exact: the map applies cos/sin to 2 pi zeta/nfp
     # itself, so only round-off (1e2 eps) separates it from the formula.
     assert err_phi <= mrx.eps(1e2)
-    # Measured 2026-08-28 at NS (4, 8, 4) p=2 on the closed form (see the
-    # print): 4.04e-3 of a in both R and Z (the gridded route's linear
-    # bridge on 24 theta points gave 1.08e-2); bands at 1.25x.
-    assert err_R <= 1.25 * 4.04e-3, err_R
-    assert err_Z <= 1.25 * 4.04e-3, err_Z
+    # Measured 2026-08-28 at NS (4, 8, 4) p=2 (see the print): 3.17e-3 of a
+    # in both R and Z for the L2 projection of the series (the Greville
+    # interpolant of the series gave 4.04e-3, the gridded route's linear
+    # bridge on 24 theta points 1.08e-2); bands at 1.25x.
+    assert err_R <= 1.25 * 3.17e-3, err_R
+    assert err_Z <= 1.25 * 3.17e-3, err_Z
 
 
 def test_clebsch_field_matches_the_contract(synthetic, synthetic_seq, clebsch_ic):
@@ -356,6 +361,14 @@ def test_relaxation(synthetic_seq, potential_ic):
         assert abs(dt - min(dt_star, CFL / cfl_max)) <= 100 * mrx.eps() * dt
         ratios_ideal.append((E_ideal - E_prev) / dE_pred)
         ratios_full.append((E_new - E_prev) / dE_pred)
+        # |dE_meas - dE_pred| <= tol-relative (the mass solves behind F, u,
+        # E) + eps * E0 (E is a quadratic of B evaluated at round-off; near
+        # the fixed point dE itself is 1e-11 and the relative ratio is
+        # meaningless -- measured 4.6e-5 off at |F| = 6e-6 for a 5e-16
+        # absolute deviation).
+        slack = 1e3 * seq.tol * abs(dE_pred) + 1e2 * mrx.eps() * E0
+        assert abs((E_ideal - E_prev) - dE_pred) <= slack, (n, E_prev, E_ideal, dE_pred)
+        assert (E_new - E_prev) - dE_pred <= slack, (n, E_prev, E_new, dE_pred)
         divs.append(div)
         if n == CHECK:
             check_state, check_B_ideal = state, B_ideal
@@ -417,13 +430,12 @@ def test_relaxation(synthetic_seq, potential_ic):
 
     # The ideal step's energy is a quadratic polynomial in dt, so the
     # prediction is exact up to the mass solves behind F, u and E at
-    # seq.tol: measured 2026-08-26 (see the print) 1 +- 1e-6 in float64,
-    # 1 +- 3e-3 in float32. The full step adds the resistive drop
-    # -eps ||J||^2 on top, which does not shrink with |F|: the full ratio
-    # ran from 1.49 (step 1) to 38.6 (step 12) at eta = 1e-2, so only its
+    # seq.tol (asserted per step above): measured 2026-08-28 (see the
+    # print) 1 +- 1e-7 in float64 while dE is resolved, 1 +- 5e-5 at the
+    # end where dE ~ 1e-11. The full step adds the resistive drop
+    # -eps ||J||^2 on top, which does not shrink with |F| (the full ratio
+    # ran from 1.8 at step 1 to 4.7e3 at step 12 at eta = 1e-2), so only its
     # lower bound is a statement.
-    assert all(abs(r - 1.0) <= 1e3 * seq.tol for r in ratios_ideal), ratios_ideal
-    assert all(r >= 1.0 - 1e3 * seq.tol for r in ratios_full), ratios_full
     assert max(divs) <= 10 * seq.tol
     # Measured 2026-08-28 in float64 at eps = 2.113e-4 (dt = 3.31e-2, see
     # the print): dH = +5.325938e-4; the polarised form is off by 2.1e-11
@@ -476,7 +488,10 @@ def test_potential_route_matches_the_projection(synthetic, synthetic_seq, clebsc
     print(f"\n  potential route: ||dA'|| {norm:.4e}, div {div:.2e}, wall part {wall:.2e}, "
           f"||B_pot - B_proj||_M {diff:.3e}")
     assert div <= 10 * seq.tol, div
-    assert wall <= 1e2 * mrx.eps(), wall
+    # wall = sqrt(|n_full^2 - norm^2|) / norm: the square root of a
+    # round-off difference of two equal norms (measured 0 and 1.96e-8, i.e.
+    # sqrt(eps), depending on the summation order), so the band is sqrt(eps).
+    assert wall <= 10 * mrx.sqrt_eps(), wall
     assert abs(float(seq.l2_norm(B_pot, 2)) - 1.0) <= mrx.eps(1e2)
     assert diff <= 5e-2, diff
 

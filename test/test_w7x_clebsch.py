@@ -61,6 +61,8 @@ def test_clebsch_ic_is_divergence_free_and_near_force_balance(w7x_seq):
     assert div <= 10 * seq.tol
     assert wall <= 1e2 * seq.tol
     # Measured 2026-08-28 at (8, 16, 8) p=3 on the state (see the print):
-    # ||div B|| 2.9e-16, wall part 0, ||F||_M 1.624e-2 (the gridded export
-    # gave 1.888e-2 through the projection route); band at ~1.6x.
-    assert F_norm < 2.6e-2
+    # ||div B|| 3.0e-16, wall part 0, ||F||_M 3.255e-2 with the map's
+    # coefficients L2-projected from the series (the Greville interpolant of
+    # the series gave 1.624e-2 on this smoke mesh, the gridded export
+    # 1.888e-2 through the projection route); band at ~1.6x.
+    assert F_norm < 5.2e-2
