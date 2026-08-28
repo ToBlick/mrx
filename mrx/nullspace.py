@@ -264,22 +264,6 @@ def harmonic_rayleigh(seq, v, k, dirichlet=True, operators=None):
     return float(jnp.dot(v, lv) / jnp.dot(v, mv))
 
 
-def exact_derivative_residual(seq, v, k, dirichlet=True):
-    """``|d v| / |v|`` in L2 -- the ``d v = 0`` half of "harmonic".
-
-    Cheaper and more localised than the Rayleigh quotient: it says *which* half
-    of the harmonic condition broke, where the quotient only says one did.
-    """
-    if k == 2:
-        dv, out_k = seq.apply_strong_div(v, dirichlet, dirichlet), 3
-    elif k == 1:
-        dv, out_k = seq.apply_strong_curl(v, dirichlet, dirichlet), 2
-    else:
-        raise ValueError(f"exact_derivative_residual: k must be 1 or 2, got {k}")
-    return float(seq.l2_norm(dv, out_k, dirichlet=dirichlet)
-                 / seq.l2_norm(v, k, dirichlet=dirichlet))
-
-
 def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
                        gap_sweeps=5, verbose=True):
     """Harmonic forms by direct Hodge decomposition (no inverse iteration).

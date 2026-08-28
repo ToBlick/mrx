@@ -123,7 +123,7 @@ items 1-5, `c25657c` items 7-12):
 | 1 | remove `BoundaryProjector`; `load(bc=True)`/`E_bc` (lifting) stays the non-homogeneous-BC route | yes |
 | 2 | `Pullback` (and `jacobian_determinant`) stay | -- |
 | 3 | remove `_assemble_k0_greville_bulk_factors` (+ the five helpers only it used) | yes |
-| 4 | `harmonic_rayleigh` and `estimate_spectral_gap` stay; `generic_rayleigh` removed; `compute_nullspaces` now prints, per form, the Rayleigh quotient and (k=1 free, k=2 dbc) `lambda_1` from 5 sweeps of inverse iteration deflated against the stored forms. `exact_derivative_residual` not decided -- still there | yes |
+| 4 | `harmonic_rayleigh` and `estimate_spectral_gap` stay; `generic_rayleigh` and `exact_derivative_residual` removed; `compute_nullspaces` now prints, per form, the Rayleigh quotient and (k=1 free, k=2 dbc) `lambda_1` from 5 sweeps of inverse iteration deflated against the stored forms | yes |
 | 5 | `seed_line` removed; the logical chart is a fourth panel of the relaxation figure (subagent on branch `poincare-panels` polishing it) | yes |
 | 6 | `test/random_fields.py` stays (preconditioner benchmarks) | -- |
 | 7 | `one_size_fits_all_map`, `metric_coefficients`, `backtracking_line_search` removed; `extend_map_nfp` stays, REWRITTEN (it recomputed the toroidal angle from zeta -- wrong for any map whose angle is not exactly linear in zeta -- now rotates the period map's own output; seam test added); `greville_interpolate_stellarator_map` pending Tobias's call | yes |
