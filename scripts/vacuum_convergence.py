@@ -172,8 +172,7 @@ def run_rung(cli):
     from mrx.gvec import load_clebsch
     from mrx.initial_conditions import (clebsch_potential_form, divergence_norm,
                                         potential_two_form)
-    from mrx.nullspace import (compute_nullspaces, estimate_spectral_gap,
-                               exact_derivative_residual, harmonic_rayleigh)
+    from mrx.nullspace import compute_nullspaces, estimate_spectral_gap, harmonic_rayleigh
     from mrx.relaxation import compute_force
     from mrx.vmec import read_wout
 
@@ -198,7 +197,10 @@ def run_rung(cli):
     rq = harmonic_rayleigh(seq, h, 2, True, ops)
     lam1, sweeps = estimate_spectral_gap(seq, ops, 2, True, maxiter=5)
     ratio = rq / lam1
-    div_h = exact_derivative_residual(seq, h, 2, True)
+    # |div h| / |h| in L2 -- the d h = 0 half of harmonic (the deleted
+    # nullspace.exact_derivative_residual, inlined).
+    div_h = float(seq.l2_norm(seq.apply_strong_div(h, True, True), 3, dirichlet=True)
+                  / seq.l2_norm(h, 2, dirichlet=True))
     res.update(n2=int(seq.n(2, True)), tol=float(seq.tol), t_build=t1 - t0, t_nullspace=t2 - t1,
                harmonic=dict(rayleigh=rq, lambda_1=float(lam1), gap_sweeps=int(sweeps),
                              ratio=ratio, div_over_norm=div_h,
