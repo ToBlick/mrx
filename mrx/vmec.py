@@ -237,5 +237,5 @@ def load_wout_clebsch(path, n_rho=401):
     dPhi = profile_spline(st, "phi").derivative()(rho)
     return dict(nfp=st["nfp"], rho=rho, dPhi=dPhi,
                 dchi=profile_spline(st, "iota")(rho) * dPhi,
-                p=profile_spline(st, "pressure")(rho), iota_spread=0.0,
-                lam_h=StateField(st["LA"], None, st["nfp"]), closed_axes=[])
+                p=profile_spline(st, "pressure")(rho),
+                lam_h=StateField(st["LA"], None, st["nfp"]))

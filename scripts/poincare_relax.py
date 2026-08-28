@@ -106,7 +106,8 @@ def main():
     from mrx.differential_forms import DiscreteFunction
     from mrx.geometry import build_sequence, geometry_nfp
     from mrx.geometry import map_jacobian_at
-    from mrx.poincare import (logical_field, render_section, seed_from_axis,
+    from mrx.plotting import render_section
+    from mrx.poincare import (logical_field, seed_from_axis,
                               section_RZ, surface_label, trace_and_classify,
                               require_zeta_parameterisation)
 

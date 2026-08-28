@@ -151,9 +151,8 @@ def test_li383_reads_and_reproduces_the_file():
 @_needs(LI383)
 def test_li383_clebsch_dict_matches_the_state_route_contract():
     cb = load_wout_clebsch(LI383)
-    assert set(cb) == {"nfp", "rho", "dPhi", "dchi", "p", "iota_spread",
-                       "lam_h", "closed_axes"}
-    assert cb["nfp"] == 3 and cb["closed_axes"] == [] and cb["iota_spread"] == 0.0
+    assert set(cb) == {"nfp", "rho", "dPhi", "dchi", "p", "lam_h"}
+    assert cb["nfp"] == 3
     # dPhi is the exact quadratic flux derivative in GVEC units
     st = read_wout(LI383)
     phi_edge = st["profiles"]["phi"][-1]      # already / 2 pi

@@ -346,8 +346,8 @@ def load_state_clebsch(path, n_rho=401):
     dPhi = profile_spline(st, "phi").derivative()(rho)
     return dict(nfp=st["nfp"], rho=rho, dPhi=dPhi,
                 dchi=profile_spline(st, "iota")(rho) * dPhi,
-                p=profile_spline(st, "pressure")(rho), iota_spread=0.0,
-                lam_h=StateField(st["LA"], st["sp"], st["nfp"]), closed_axes=[])
+                p=profile_spline(st, "pressure")(rho),
+                lam_h=StateField(st["LA"], st["sp"], st["nfp"]))
 
 
 def load_clebsch(path):
@@ -366,8 +366,8 @@ def load_clebsch(path):
     holds only when both come from one function.
 
     Returns a dict with ``nfp``, ``rho``, ``dPhi``, ``dchi``, ``p`` (arrays
-    on ``rho``), ``iota_spread``, ``lam_h`` (the closed-form
-    :class:`StateField` of ``LA``) and ``closed_axes``: a GVEC state
+    on ``rho``) and ``lam_h`` (the closed-form :class:`StateField` of
+    ``LA``): a GVEC state
     (``.dat``) through :func:`load_state_clebsch`, a VMEC wout (``.nc``)
     through :func:`mrx.vmec.load_wout_clebsch`; anything else raises.
     """

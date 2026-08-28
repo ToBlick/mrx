@@ -9,7 +9,8 @@
   y axes -- the standard figure for a force residual next to an energy or a
   helicity.
 
-Poincaré sections live in :mod:`mrx.poincare`; ``scripts/plot_relaxation.py``
+Poincaré sections are traced in :mod:`mrx.poincare` and drawn by
+:func:`render_section` here; ``scripts/plot_relaxation.py``
 makes the figures here from a ``scripts/relax.py`` run.
 """
 
@@ -304,3 +305,345 @@ def plot_twin_axis(
     if ax is None:
         fig.tight_layout()
     return fig, (ax1, ax2)
+
+
+# ---------------------------------------------------------------------------
+# Poincaré section figure (moved from mrx.poincare 2026-08-28: the tracer
+# stays headless, the figure lives with the other matplotlib code)
+# ---------------------------------------------------------------------------
+
+def resonant_rationals(iota_min, iota_max, nfp, denom_max=30, min_sep=0.06):
+    """Rationals in ``[iota_min, iota_max]`` where an island chain can form.
+
+    An island chain needs a resonant perturbation: ``iota = n/m`` with ``n`` the
+    toroidal and ``m`` the poloidal mode number. A field with ``nfp`` field
+    periods carries only toroidal harmonics ``n = 0 (mod nfp)``, so the only
+    rationals that can open an island are those whose NUMERATOR is a multiple
+    of ``nfp``. Every other rational surface is resonance-free and closes on
+    itself harmlessly.
+
+    Deduplicated by VALUE, so ``5/6`` is kept and ``10/12`` -- the same
+    surface, driven by a weaker harmonic -- is not repeated.
+
+    Which of them to label is a spacing problem: ``denom_max = 30`` on W7-X
+    puts ~40 resonances in an iota range of 0.2, and labelling all of them
+    overprints, while the two or three lowest orders leave the scale unreadable.
+    So the candidates are ranked by poloidal mode number (an ``n/m`` island is
+    wider the smaller ``m`` is, and that is also how they are read), and each
+    is accepted only if it is at least ``min_sep`` of the range away from every
+    label already placed. Low orders always win their slot; higher orders fill
+    the gaps until the spacing rule stops them.
+    """
+    span = max(iota_max - iota_min, 1e-12)
+    candidates, seen = [], set()
+    for j in range(1, max(denom_max // nfp, 1) + 1):
+        n_tor = j * nfp
+        for m_pol in range(1, denom_max + 1):
+            value = n_tor / m_pol
+            if iota_min <= value <= iota_max and value not in seen:
+                candidates.append((m_pol, n_tor, value))
+                seen.add(value)
+    ticks, labels = [], []
+    for m_pol, n_tor, value in sorted(candidates):
+        if all(abs(value - t) >= min_sep * span for t in ticks):
+            ticks.append(value)
+            labels.append(f"{n_tor}/{m_pol}")
+    order = sorted(range(len(ticks)), key=lambda i: ticks[i])
+    return [ticks[i] for i in order], [labels[i] for i in order]
+
+
+#: Colormap for the iota scale. ``gist_rainbow`` rather than ``turbo`` to match
+#: the reference figure (data/poincare_plot_pretty_w7x.pdf): with one colour per
+#: nested surface, a rainbow's hue cycle separates ADJACENT surfaces, which is
+#: what the eye follows here. turbo's luminance ramp is better for a continuous
+#: field and worse for a stack of discrete curves.
+SECTION_CMAP = "gist_rainbow"
+#: Colormap for pressure. Sequential, because p is a magnitude with a zero,
+#: unlike iota which is read against its rationals.
+PRESSURE_CMAP = "plasma"
+
+
+def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
+                   axis_RZ=None, path=None, profile_x=None,
+                   profile_xlabel="seed radius $r$", nfp=None, denom_max=30,
+                   logical=None, pressure=None,
+                   pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
+                   cmap=SECTION_CMAP, iota_lim=None, limits=None):
+    """The section coloured by iota, with the iota profile and optionally p.
+
+    Pure arrays in, so a run can be re-rendered from its archive without
+    rebuilding the map -- which is the expensive half of producing it.
+
+    ``limits`` pins everything else a movie must hold fixed between frames:
+    a dict with any of ``RZ`` (``((R0, R1), (Z0, Z1))`` of the section
+    panel), ``z_split`` (the split line), ``x`` (the profiles' abscissa) and
+    ``p`` (the pressure panel's ordinate, in drawn units).
+    ``iota_lim`` pins the colour scale instead of taking it from this figure's
+    own lines.  Two sections drawn on limits fitted separately are not
+    comparable by colour at all -- the same hue means a different transform in
+    each -- so any caller producing a set that is meant to be read side by side
+    (two relaxation states, a plane scan) must pass one shared pair.
+
+    ``pressure`` is per-crossing, the same shape as ``R``. It is OPTIONAL
+    because the fields this traces are harmonic (vacuum-like) and carry no
+    pressure at all; a vacuum run leaves it ``None`` and gets exactly the
+    previous figure. When it is given, the pressure PROFILE joins the iota
+    profile on the right axis of the same panel (:func:`mrx.plotting.plot_twin_axis`,
+    the house twin-axis style): per line, the mean of p over its crossings
+    with a one-standard-deviation band, against the same surface label
+    (labelled ``pressure_label``). On a flux surface of an equilibrium p is
+    constant and the band collapses; on an island chain or a chaotic line it
+    is not, and the band width measures how far that line is from
+    ``B . grad p = 0``.
+
+    ``pressure_scale`` multiplies p wherever it is drawn (colour and profile),
+    and the labels say so.
+
+    Every kept line is drawn and fitted, chaotic ones included: the iota
+    profile carries ``iota_err`` as a ribbon (the fit uncertainty, see
+    :func:`trace_and_classify`), so a line without a rotational transform
+    shows as a point with a wide ribbon rather than as a separate category.
+
+    ``split_iota_p`` colours the section by iota ABOVE the magnetic axis and by
+    p BELOW it, in one panel; the default is on whenever ``pressure`` is given.
+    It needs ``axis_RZ`` and raises without it rather than quietly drawing a
+    half-empty panel: 'above' and 'below' are defined against the MAGNETIC
+    axis, not ``Z = 0``, which would cut a Shafranov-shifted plasma off-centre.
+    """
+
+    if split_iota_p is None:
+        split_iota_p = pressure is not None
+    if split_iota_p and pressure is None:
+        raise ValueError("split_iota_p=True needs a pressure array: the "
+                         "below-axis half of the section is coloured by p.")
+    if split_iota_p and axis_RZ is None:
+        raise ValueError("split_iota_p=True needs axis_RZ: the split is at the "
+                         "magnetic axis, not at Z = 0.")
+
+    has_p = pressure is not None
+    # The pressure is drawn at ``pressure_scale`` times its value (the natural
+    # scale of p in code units is ~1e-2, and 100 p reads in units).
+    p_label = f"{pressure_label} $\\times$ {pressure_scale:g}"
+    # Panels, left to right: the section (with its colourbars), the logical
+    # chart (when the crossings' logical coordinates are given), and the
+    # profiles -- iota on the left axis and, when p is given, p on the right
+    # axis of the same panel. The logical chart is where an island chain or
+    # an off-centre axis is seen at a glance -- nested surfaces are
+    # horizontal bands there -- so it stays in the relaxation figures too
+    # (restored 2026-08-28).
+    panels = [("ax", 1.45)]
+    if logical is not None:
+        panels.append(("lx", 0.9))
+    panels.append(("bx", 1.15))
+    width = {2: 12.0, 3: 16.5}[len(panels)]
+    fig = plt.figure(figsize=(width, 4.8), constrained_layout=True)
+    axes = dict(zip((name for name, _ in panels),
+                    fig.subplots(1, len(panels),
+                                 width_ratios=[w for _, w in panels])))
+    ax, bx = axes["ax"], axes["bx"]
+    lx = axes.get("lx")
+
+    shown = keep
+    good = iota[shown][jnp.isfinite(iota[shown])] if shown.any() else iota[:0]
+    if iota_lim is not None:
+        lo, hi = float(iota_lim[0]), float(iota_lim[1])
+    else:
+        lo, hi = ((float(jnp.min(good)), float(jnp.max(good)))
+                  if good.size else (0.0, 1.0))
+    if hi - lo < 1e-9:
+        lo, hi = lo - 5e-3, hi + 5e-3
+
+    # One marker per crossing: ~10^4 points want a hairline to show the surface
+    # texture, ~10^2 want something you can actually see.
+    npts = max(int(keep.sum()) * R.shape[1], 1)
+    size = float(jnp.clip(3000.0 / npts, 0.35, 15.0))
+    colour = jnp.broadcast_to(iota[:, None], R.shape)
+
+    # The split is per CROSSING, not per line: a surface straddles the axis, so
+    # the same line is iota-coloured where it is above and p-coloured below.
+    # axis_RZ carries the axis crossing at each save; the dividing line is
+    # their mean (the axis wanders by ~1e-3 of the minor radius over a period).
+    if split_iota_p:
+        z_axis = float(jnp.mean(jnp.asarray(axis_RZ[1])))
+        if limits and "z_split" in limits:
+            z_axis = float(limits["z_split"])
+        upper = Z >= z_axis
+    else:
+        z_axis = None
+        upper = jnp.ones_like(R, dtype=bool)
+    # `shown` selects LINES, `upper` selects CROSSINGS.
+    shown2 = jnp.broadcast_to(shown[:, None], R.shape)
+    sel_iota = shown2 & upper
+    sc = ax.scatter(R[sel_iota], Z[sel_iota], c=colour[sel_iota],
+                    s=size, vmin=lo, vmax=hi, cmap=cmap, linewidths=0,
+                    rasterized=True)
+    psc = None
+    if split_iota_p:
+        # Chaotic lines keep their grey in BOTH halves: colouring one half of
+        # a line and greying the other reads as two different objects.
+        sel_p = shown2 & ~upper
+        if sel_p.any():
+            p_range = ({"vmin": limits["p"][0], "vmax": limits["p"][1]}
+                       if limits and "p" in limits else {})     # pinned in a movie
+            psc = ax.scatter(R[sel_p], Z[sel_p], c=pressure_scale * pressure[sel_p], s=size,
+                             cmap=PRESSURE_CMAP, linewidths=0, rasterized=True, **p_range)
+    res_ticks, res_labels = (resonant_rationals(lo, hi, int(nfp), denom_max)
+                             if nfp else ([], []))
+    if (~keep).any():
+        ax.scatter(R[~keep], Z[~keep], c="0.55", s=size, linewidths=0,
+                   rasterized=True, label=f"lost ({int((~keep).sum())})")
+        ax.legend(loc="upper right", fontsize=7, markerscale=4)
+    if axis_RZ is not None:
+        # ONE marker at the mean, plus a hairline through the wander. Drawing a
+        # "k+" at every save stacked 401 opaque markers into a black blob ~10%
+        # of the minor radius across, which reads as a failed line at the axis
+        # -- it is neither a line nor a failure, it is the axis doing what a
+        # stellarator axis does.
+        aR, aZ = jnp.asarray(axis_RZ[0]), jnp.asarray(axis_RZ[1])
+        if aR.ndim and aR.size > 1:
+            ax.plot(aR, aZ, "-", color="0.35", lw=0.4, alpha=0.6, zorder=4)
+        ax.plot(jnp.mean(aR), jnp.mean(aZ), "k+", ms=7, mew=1.2, zorder=5)
+    cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.02)
+    # The label sits BELOW the bar: the Farey tick labels are wide, so a
+    # side label was squeezed against the next panel, and above the bar the
+    # section's title runs into it whenever the section is narrower than
+    # its panel (a bean-shaped cut at equal aspect).
+    cbar.ax.set_xlabel(r"$\iota$", fontsize=10)
+    if res_ticks:
+        # Only the rationals an nfp-periodic field can actually resonate with:
+        # everything else on the colorbar is a surface no island can open on.
+        cbar.set_ticks(res_ticks)
+        cbar.set_ticklabels(res_labels)
+    if psc is not None:
+        pbar = fig.colorbar(psc, ax=ax, label=p_label, fraction=0.046, pad=0.02)
+        pbar.ax.tick_params(labelsize=7)
+        ax.axhline(z_axis, color="0.35", lw=0.6, ls=":", zorder=1)
+
+    # An axisymmetric vacuum field has iota = 0, so every line is a fixed point
+    # of the return map and the section collapses onto the midplane.  That is
+    # the right answer, but equal aspect renders it as a hairline, so the aspect
+    # is only held when the two spans are within a factor of 20.
+    xlim = _padded(R[keep])
+    # The floor has to be RELATIVE to the other axis: an absolute one is
+    # meaningless against whatever units R happens to be in, and leaves a 1e-16
+    # Z-range labelled in units of 1e-16.
+    ylim = _padded(Z[keep], floor=0.04 * (xlim[1] - xlim[0]))
+    if limits and "RZ" in limits:
+        xlim, ylim = (tuple(float(v) for v in lim) for lim in limits["RZ"])
+    spans = (xlim[1] - xlim[0], ylim[1] - ylim[0])
+    to_scale = max(spans) / max(min(spans), 1e-30) < 20.0
+    ax.set_aspect("equal" if to_scale else "auto")
+    if np.ptp(Z[keep]) < 1e-6 * (xlim[1] - xlim[0]):
+        ax.text(0.5, 0.86, "iota = 0: every line is a fixed point of the\n"
+                           "return map, so each surface is a single dot",
+                transform=ax.transAxes, ha="center", fontsize=8, color="0.35")
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    ax.set_xlabel("R")
+    ax.set_ylabel("Z")
+    ax.set_title(title + ("" if to_scale else "\nAXES NOT TO SCALE"),
+                 fontsize=10)
+
+    if lx is not None:
+        # The SAME crossings in the logical chart: r against theta, both in
+        # [0,1]. Nested surfaces are horizontal bands here, and anything that
+        # is not -- a chain of islands, or surfaces sitting off-centre in r
+        # because the magnetic axis is not at r=0 -- shows up immediately,
+        # where the physical panel hides it behind the shaping.
+        lr, lth = logical
+        lx.scatter(lr[shown], lth[shown], c=colour[shown], s=size, vmin=lo,
+                   vmax=hi, cmap=cmap, linewidths=0, rasterized=True)
+        if (~keep).any():
+            lx.scatter(lr[~keep], lth[~keep], c="0.55", s=size, linewidths=0,
+                       rasterized=True)
+        lx.set_xlim(0.0, 1.0)
+        lx.set_ylim(0.0, 1.0)
+        lx.set_xlabel(r"logical $r$")
+        lx.set_ylabel(r"logical $\theta$")
+        lx.set_title("logical chart", fontsize=10)
+
+    x = seed_r if profile_x is None else profile_x
+    # The abscissa may carry several crossings per line (both midplane
+    # crossings, see midplane_crossings): per-line quantities are tiled to
+    # match, and a NaN crossing drops that entry -- an island chain whose
+    # lobes the ray passes between is in the section but has no honest place
+    # in the profile on that side. Sorted by abscissa, the curve runs
+    # inboard -> axis -> outboard as a slice of the section panel.
+    X = jnp.asarray(x)
+    X = X[:, None] if X.ndim == 1 else X
+    xs = X.ravel()
+
+    def per_line(a):
+        return jnp.broadcast_to(jnp.asarray(a)[:, None], X.shape).ravel()
+
+    prof = per_line(shown) & jnp.isfinite(xs)
+    order = jnp.argsort(xs[prof])
+    xo, io, eo = xs[prof][order], per_line(iota)[prof][order], per_line(iota_err)[prof][order]
+    # The ribbon is iota +- iota_err, the uncertainty of the fitted slope:
+    # the RMS deviation of the unwrapped angle from the fitted line over the
+    # length of the fit (trace_and_classify). ~1/N on a flux surface, the
+    # island width over N on a chain, and not falling with N on a chaotic
+    # line. NOT the bare angle-fit residual, which is in poloidal turns and
+    # says nothing about iota by itself.
+    left = dict(color="black", marker="s", linestyle="-", markersize=3)
+    right = dict(color="teal", marker="d", linestyle="--", markersize=3)
+    if has_p:
+        # p against the same surface label the iota profile uses, on the
+        # right axis of the same panel, so the two read against one
+        # abscissa. One number per line, the mean over its crossings, with
+        # the spread as a band: a flux surface has a constant p and no band,
+        # an island chain or a chaotic line does not, and the band width is
+        # how far that line is from B . grad p = 0.
+        p_mean = per_line(jnp.mean(pressure_scale * pressure, axis=1))
+        p_std = per_line(jnp.std(pressure_scale * pressure, axis=1))
+        mo, so = p_mean[prof][order], p_std[prof][order]
+        _, (bx, px) = plot_twin_axis(
+            io, mo, x_left=xo, x_right=xo, left_label=r"$\iota$",
+            right_label=p_label, left_log=False, right_log=False,
+            x_label=profile_xlabel, grid=False, ax=bx,
+            left_plot_kwargs=dict(left, lw=0.8),
+            right_plot_kwargs=dict(right, lw=0.8))
+        px.fill_between(xo, mo - so, mo + so, color=right["color"], alpha=0.2, lw=0,
+                        label=r"$p \pm 1$ std over the line")
+        if limits and "p" in limits:
+            px.set_ylim(*limits["p"])
+    else:
+        px = None
+        bx.plot(xo, io, lw=0.8, **left)
+        bx.set_xlabel(profile_xlabel)
+        bx.set_ylabel(r"$\iota$")
+    bx.fill_between(xo, io - eo, io + eo, color=left["color"], alpha=0.15, lw=0,
+                    label=r"$\iota \pm$ fit RMS / $N$")
+    for value, lab in zip(res_ticks, res_labels):
+        bx.axhline(value, color="0.55", lw=0.6, ls="--", zorder=0)
+        bx.annotate(lab, (0.995, value), xycoords=("axes fraction", "data"),
+                    ha="right", va="bottom", fontsize=6.5, color="0.4")
+    if iota_lim is not None:
+        # Same reason as the colour scale: two profiles drawn on separately
+        # fitted y-axes look alike however far the transform actually moved.
+        bx.set_ylim(lo, hi)
+    bx.grid(alpha=0.3)
+    if limits and "x" in limits:
+        bx.set_xlim(*limits["x"])
+    # The curves need no legend entry: the y labels carry their colours
+    # (the twin-axis style). Only the ribbons are explained, and there is
+    # no free corner -- iota rises at both ends, p peaks in the middle -- so
+    # the legend goes wherever it covers least.
+    handles, labels_ = bx.get_legend_handles_labels()
+    if px is not None:
+        h2, l2 = px.get_legend_handles_labels()
+        handles, labels_ = handles + h2, labels_ + l2
+    bx.legend(handles, labels_, loc="best", fontsize=7, framealpha=0.85)
+    bx.set_title(subtitle, fontsize=10)
+
+    if path is not None:
+        fig.savefig(path, dpi=200)
+        plt.close(fig)
+    return fig
+
+
+def _padded(v, pad=0.06, floor=0.0):
+    lo, hi = float(jnp.nanmin(v)), float(jnp.nanmax(v))
+    span = max(hi - lo, floor)
+    mid = 0.5 * (lo + hi)
+    return mid - 0.5 * span - pad * span, mid + 0.5 * span + pad * span
