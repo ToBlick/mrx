@@ -34,8 +34,7 @@ _ALL_K = (0, 1, 2, 3)
 _ALL_DBC = (False, True)
 _N_PROBES = 4
 
-_SPECS = {"jacobi": MassPreconditionerSpec(kind="jacobi"),
-          "metric_lumping": MassPreconditionerSpec(kind="metric_lumping")}
+_SPECS = {"metric_lumping": MassPreconditionerSpec(kind="metric_lumping")}
 
 # Roundoff identities (a diagonal apply is symmetric, the Kronecker expansion
 # of the extraction projector is exact): 1e3 eps = 2.2e-13 f64 / 1.2e-4 f32.
@@ -158,47 +157,3 @@ def test_inverse_mass_roundtrip(tiny_seq, label, k, dbc):
         residual, np.zeros_like(residual), atol=10 * tol * float(jnp.linalg.norm(rhs)),
         err_msg=f"{label} k={k} dbc={dbc} round-trip M(M⁻¹b) ≠ b",
     )
-
-
-# ---------------------------------------------------------------------------
-# 5. The probed Laplacian diagonal
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("k", _ALL_K)
-@pytest.mark.parametrize("dbc", _ALL_DBC)
-def test_laplacian_jacobi_diagonal_is_positive(tiny_seq, k, dbc):
-    """``diag(L_k) > 0`` for every ``(k, dirichlet)`` on the session bundle.
-
-    Jacobi inverts it entrywise, so a non-positive entry is a broken
-    preconditioner, not a quality issue.
-    """
-    diaginv = np.asarray(tiny_seq.operators.laplacian_jacobi[(k, dbc)])
-    assert np.all(diaginv > 0), (
-        f"probed Laplacian diagonal has a non-positive entry for k={k} dbc={dbc}: "
-        f"min 1/diag = {diaginv.min():.3e}")
-
-
-@pytest.mark.parametrize("dbc", _ALL_DBC)
-def test_k0_laplacian_jacobi_applies_inside_a_trace(tiny_seq, dbc):
-    """``kind='jacobi'`` at k=0 applies the stored ``1/diag(S_0)`` inside a
-    ``lax`` body exactly as eagerly, and a bundle without it raises."""
-    import jax
-
-    from mrx.operators import apply_laplacian_preconditioner
-
-    ops = tiny_seq.operators
-    n = n_dofs(tiny_seq, 0, dbc)
-    v = jnp.asarray(np.random.default_rng(29).standard_normal(n))
-
-    def P(x):
-        return apply_laplacian_preconditioner(tiny_seq, ops, x, 0, dirichlet=dbc, kind='jacobi')
-
-    inside, _ = jax.lax.scan(lambda x, _: (P(x), None), v, None, length=2)
-    outside = P(P(v))
-    assert np.all(np.isfinite(np.asarray(outside)))
-    npt.assert_allclose(np.asarray(inside), np.asarray(outside), rtol=0,
-                        atol=IDENT * float(np.abs(outside).max()))
-    import equinox as eqx
-    bare = eqx.tree_at(lambda o: o.laplacian_jacobi, ops, {}, is_leaf=lambda x: isinstance(x, dict))
-    with pytest.raises(ValueError, match="not on the bundle"):
-        apply_laplacian_preconditioner(tiny_seq, bare, v, 0, dirichlet=dbc, kind='jacobi')

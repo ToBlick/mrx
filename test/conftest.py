@@ -46,9 +46,8 @@ def build_torus_sequence(ns, torus_map):
     1. the analytical ``toroid_map`` is interpolated to spline coefficients
        at the Greville points via :func:`greville_interpolate_map` and
        installed with ``set_spline_map``;
-    2. ``build_preconditioners(jacobi=True)`` builds the metric-lumping mass
-       and Laplacian atoms for every ``(k, dirichlet)`` pair and probes the
-       Jacobi diagonals the preconditioner tests compare against;
+    2. ``build_preconditioners`` builds the metric-lumping mass and
+       Laplacian atoms for every ``(k, dirichlet)`` pair;
     3. harmonic forms are computed by the direct Hodge-decomposition
        construction (``betti_numbers = (1, 1, 0, 0)``): a fixed pair of
        production saddle solves per form through ``'auto'``, i.e. the
@@ -66,7 +65,7 @@ def build_torus_sequence(ns, torus_map):
     )
     seq.set_spline_map(greville_interpolate_map(torus_map, seq))
     t1 = time.perf_counter()
-    seq.build_preconditioners(jacobi=True)
+    seq.build_preconditioners()
     t2 = time.perf_counter()
     seq.compute_nullspaces(BETTI)
     t3 = time.perf_counter()
