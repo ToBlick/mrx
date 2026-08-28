@@ -18,7 +18,7 @@ import sys
 
 def sacct(jid):
     out = subprocess.run(["sacct", "-j", jid, "-X", "-n", "-P", "-o", "State,ElapsedRaw"],
-                         capture_output=True, text=True).stdout.strip().splitlines()
+                         stdout=subprocess.PIPE, universal_newlines=True).stdout.strip().splitlines()
     if not out:
         return "?", 0.0
     state, el = out[0].split("|")[:2]
