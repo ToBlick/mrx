@@ -77,3 +77,10 @@ def test_plot_twin_axis():
     assert ax2.get_lines()[0].get_color() == "red"
     assert ax2.yaxis.label.get_color() == "red"
     plt.close(fig)
+
+    # Into an existing panel: the pair lands on that axes and its figure.
+    fig, (_, panel) = plt.subplots(1, 2)
+    fig2, (ax1, ax2) = plot_twin_axis(F, E, x_left=F, x_right=E, left_log=False, ax=panel)
+    assert fig2 is fig and ax1 is panel and ax2.figure is fig
+    assert len(fig.axes) == 3 and ax1.get_yscale() == "linear"
+    plt.close(fig)

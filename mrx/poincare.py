@@ -525,20 +525,22 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     ``pressure`` is per-crossing, the same shape as ``R``. It is OPTIONAL
     because the fields this traces are harmonic (vacuum-like) and carry no
     pressure at all; a vacuum run leaves it ``None`` and gets exactly the
-    previous figure. When it is given, the third panel is the pressure PROFILE:
-    per line, the mean of p over its crossings with a one-standard-deviation
-    band, against the same surface label the iota profile uses (labelled
-    ``pressure_label``). On a flux surface of an equilibrium p is constant and
-    the band collapses; on an island chain or a chaotic line it is not, and the
-    band width measures how far that line is from ``B . grad p = 0``.
+    previous figure. When it is given, the pressure PROFILE joins the iota
+    profile on the right axis of the same panel (:func:`mrx.plotting.plot_twin_axis`,
+    the house twin-axis style): per line, the mean of p over its crossings
+    with a one-standard-deviation band, against the same surface label
+    (labelled ``pressure_label``). On a flux surface of an equilibrium p is
+    constant and the band collapses; on an island chain or a chaotic line it
+    is not, and the band width measures how far that line is from
+    ``B . grad p = 0``.
 
     ``pressure_scale`` multiplies p wherever it is drawn (colour and profile),
     and the labels say so.
 
     Every kept line is drawn and fitted, chaotic ones included: the iota
-    profile carries ``iota_err`` as a ribbon (see the comment
-    at the plot), so a line without a rotational transform shows as a point
-    with a wide ribbon rather than as a separate category.
+    profile carries ``iota_err`` as a ribbon (the fit uncertainty, see
+    :func:`trace_and_classify`), so a line without a rotational transform
+    shows as a point with a wide ribbon rather than as a separate category.
 
     ``split_iota_p`` colours the section by iota ABOVE the magnetic axis and by
     p BELOW it, in one panel; the default is on whenever ``pressure`` is given.
@@ -547,6 +549,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     axis, not ``Z = 0``, which would cut a Shafranov-shifted plasma off-centre.
     """
     import matplotlib.pyplot as plt  # noqa: PLC0415  (keep the module headless)
+    from mrx.plotting import plot_twin_axis  # noqa: PLC0415
 
     if split_iota_p is None:
         split_iota_p = pressure is not None
@@ -561,25 +564,24 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     # The pressure is drawn at ``pressure_scale`` times its value (the natural
     # scale of p in code units is ~1e-2, and 100 p reads in units).
     p_label = f"{pressure_label} $\\times$ {pressure_scale:g}"
-    # Panels, left to right: the section, the logical chart (when the
-    # crossings' logical coordinates are given), the iota profile, and the
-    # pressure profile (when p is given). The logical chart is where an
-    # island chain or an off-centre axis is seen at a glance -- nested
-    # surfaces are horizontal bands there -- so it stays in the relaxation
-    # figures too (restored 2026-08-28).
-    panels = [("ax", 1.3)]
+    # Panels, left to right: the section (with its colourbars), the logical
+    # chart (when the crossings' logical coordinates are given), and the
+    # profiles -- iota on the left axis and, when p is given, p on the right
+    # axis of the same panel. The logical chart is where an island chain or
+    # an off-centre axis is seen at a glance -- nested surfaces are
+    # horizontal bands there -- so it stays in the relaxation figures too
+    # (restored 2026-08-28).
+    panels = [("ax", 1.45)]
     if logical is not None:
-        panels.append(("lx", 0.95))
-    panels.append(("bx", 1.0))
-    if has_p:
-        panels.append(("px", 1.0))
-    width = {2: 11.5, 3: 15.5, 4: 19.5}[len(panels)]
+        panels.append(("lx", 0.9))
+    panels.append(("bx", 1.15))
+    width = {2: 12.0, 3: 16.5}[len(panels)]
     fig = plt.figure(figsize=(width, 4.8), constrained_layout=True)
     axes = dict(zip((name for name, _ in panels),
                     fig.subplots(1, len(panels),
                                  width_ratios=[w for _, w in panels])))
     ax, bx = axes["ax"], axes["bx"]
-    lx, px = axes.get("lx"), axes.get("px")
+    lx = axes.get("lx")
 
     shown = keep
     good = iota[shown][jnp.isfinite(iota[shown])] if shown.any() else iota[:0]
@@ -641,7 +643,12 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         if aR.ndim and aR.size > 1:
             ax.plot(aR, aZ, "-", color="0.35", lw=0.4, alpha=0.6, zorder=4)
         ax.plot(jnp.mean(aR), jnp.mean(aZ), "k+", ms=7, mew=1.2, zorder=5)
-    cbar = fig.colorbar(sc, ax=ax, label=r"$\iota$", fraction=0.046, pad=0.02)
+    cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.02)
+    # The label sits BELOW the bar: the Farey tick labels are wide, so a
+    # side label was squeezed against the next panel, and above the bar the
+    # section's title runs into it whenever the section is narrower than
+    # its panel (a bean-shaped cut at equal aspect).
+    cbar.ax.set_xlabel(r"$\iota$", fontsize=10)
     if res_ticks:
         # Only the rationals an nfp-periodic field can actually resonate with:
         # everything else on the colorbar is a surface no island can open on.
@@ -712,21 +719,45 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     prof = per_line(shown) & jnp.isfinite(xs)
     order = jnp.argsort(xs[prof])
     xo, io, eo = xs[prof][order], per_line(iota)[prof][order], per_line(iota_err)[prof][order]
-    # The ribbon is iota +- iota_err, the difference between the fits on the
-    # two halves of the trace (iota_convergence): in iota units, ~1/N on a
-    # flux surface, the island width on a chain, the shear scale on a chaotic
-    # line. NOT the angle-fit residual: that is in poloidal turns and grows
-    # with the length of the fit, so it says nothing about iota by itself.
-    bx.fill_between(xo, io - eo, io + eo, color="tab:blue", alpha=0.2, lw=0,
-                    label=r"$\iota \pm |\iota_{1st\,half} - \iota_{2nd\,half}|$")
-    bx.plot(xo, io, "o-", ms=3, lw=0.8, color="tab:blue")
-    bx.legend(loc="upper left", fontsize=7)
+    # The ribbon is iota +- iota_err, the uncertainty of the fitted slope:
+    # the RMS deviation of the unwrapped angle from the fitted line over the
+    # length of the fit (trace_and_classify). ~1/N on a flux surface, the
+    # island width over N on a chain, and not falling with N on a chaotic
+    # line. NOT the bare angle-fit residual, which is in poloidal turns and
+    # says nothing about iota by itself.
+    left = dict(color="black", marker="s", linestyle="-", markersize=3)
+    right = dict(color="teal", marker="d", linestyle="--", markersize=3)
+    if has_p:
+        # p against the same surface label the iota profile uses, on the
+        # right axis of the same panel, so the two read against one
+        # abscissa. One number per line, the mean over its crossings, with
+        # the spread as a band: a flux surface has a constant p and no band,
+        # an island chain or a chaotic line does not, and the band width is
+        # how far that line is from B . grad p = 0.
+        p_mean = per_line(jnp.mean(pressure_scale * pressure, axis=1))
+        p_std = per_line(jnp.std(pressure_scale * pressure, axis=1))
+        mo, so = p_mean[prof][order], p_std[prof][order]
+        _, (bx, px) = plot_twin_axis(
+            io, mo, x_left=xo, x_right=xo, left_label=r"$\iota$",
+            right_label=p_label, left_log=False, right_log=False,
+            x_label=profile_xlabel, grid=False, ax=bx,
+            left_plot_kwargs=dict(left, lw=0.8),
+            right_plot_kwargs=dict(right, lw=0.8))
+        px.fill_between(xo, mo - so, mo + so, color=right["color"], alpha=0.2, lw=0,
+                        label=r"$p \pm 1$ std over the line")
+        if limits and "p" in limits:
+            px.set_ylim(*limits["p"])
+    else:
+        px = None
+        bx.plot(xo, io, lw=0.8, **left)
+        bx.set_xlabel(profile_xlabel)
+        bx.set_ylabel(r"$\iota$")
+    bx.fill_between(xo, io - eo, io + eo, color=left["color"], alpha=0.15, lw=0,
+                    label=r"$\iota \pm$ fit RMS / $N$")
     for value, lab in zip(res_ticks, res_labels):
         bx.axhline(value, color="0.55", lw=0.6, ls="--", zorder=0)
         bx.annotate(lab, (0.995, value), xycoords=("axes fraction", "data"),
                     ha="right", va="bottom", fontsize=6.5, color="0.4")
-    bx.set_xlabel(profile_xlabel)
-    bx.set_ylabel(r"$\iota$")
     if iota_lim is not None:
         # Same reason as the colour scale: two profiles drawn on separately
         # fitted y-axes look alike however far the transform actually moved.
@@ -734,31 +765,16 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     bx.grid(alpha=0.3)
     if limits and "x" in limits:
         bx.set_xlim(*limits["x"])
-    bx.set_title(subtitle, fontsize=10)
-
+    # The curves need no legend entry: the y labels carry their colours
+    # (the twin-axis style). Only the ribbons are explained, and there is
+    # no free corner -- iota rises at both ends, p peaks in the middle -- so
+    # the legend goes wherever it covers least.
+    handles, labels_ = bx.get_legend_handles_labels()
     if px is not None:
-        # p against the same surface label the iota profile uses, so the two
-        # panels read against a common abscissa. One number per line, the mean
-        # over its crossings, with the spread as a band: a flux surface has a
-        # constant p and no band, an island chain or a chaotic line does not,
-        # and the band width is how far that line is from B . grad p = 0.
-        p_mean = per_line(jnp.mean(pressure_scale * pressure, axis=1))
-        p_std = per_line(jnp.std(pressure_scale * pressure, axis=1))
-        if prof.any():
-            order = jnp.argsort(xs[prof])
-            xo, mo, so = xs[prof][order], p_mean[prof][order], p_std[prof][order]
-            px.fill_between(xo, mo - so, mo + so, color="tab:blue", alpha=0.2,
-                            lw=0, label=r"$\pm 1$ std over the line")
-            px.plot(xo, mo, "o-", ms=3, lw=0.8, color="tab:blue", label="mean")
-        px.set_xlabel(profile_xlabel)
-        px.set_ylabel(p_label)
-        px.grid(alpha=0.3)
-        px.legend(loc="best", fontsize=7)
-        if limits and "x" in limits:
-            px.set_xlim(*limits["x"])
-        if limits and "p" in limits:
-            px.set_ylim(*limits["p"])
-        px.set_title("pressure profile", fontsize=10)
+        h2, l2 = px.get_legend_handles_labels()
+        handles, labels_ = handles + h2, labels_ + l2
+    bx.legend(handles, labels_, loc="best", fontsize=7, framealpha=0.85)
+    bx.set_title(subtitle, fontsize=10)
 
     if path is not None:
         fig.savefig(path, dpi=200)
@@ -864,6 +880,19 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
     same centre that iota used.  A caller that recomputes it from an archive
     with the probe already stripped is winding about a different point.
 
+    ``iota_err`` is the uncertainty of the fitted iota: the RMS deviation of
+    the unwrapped angle from the fitted line (:func:`rotational_transform`'s
+    residual, in poloidal turns) divided by the window it was fitted over,
+    ``n_periods / nfp`` toroidal turns. A least-squares slope through a
+    bounded oscillation of that size over that window is uncertain by about
+    that much, and it falls like ``1/N`` on a regular line, as the estimate
+    does. It is NOT the half-split difference: that one is a single sample
+    of the slope error -- two windows caught at two arbitrary phases of the
+    oscillation -- so neighbouring surfaces got ribbons differing by an
+    order of magnitude for no physical reason. The half-split stays the
+    chaos test, where its virtue (it does not fall with ``N`` on a chaotic
+    line) is what is needed.
+
     Returns a dict of numpy arrays plus ``walltime``, ``drift`` and
     ``saves_per_period``.
     """
@@ -875,9 +904,10 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
 
     escaped = escaped_mask(ys)
     centre = axis_track(ys, saves_per_period)
-    iota, _ = rotational_transform(ys, saves_per_period, nfp, center=centre)
-    iota_err = iota_convergence(ys, saves_per_period, nfp, center=centre)
-    chaotic = iota_err > CHAOS_TOL_PER_PERIOD / n_periods
+    iota, resid = rotational_transform(ys, saves_per_period, nfp, center=centre)
+    iota_err = nfp * resid / n_periods
+    chaotic = (iota_convergence(ys, saves_per_period, nfp, center=centre)
+               > CHAOS_TOL_PER_PERIOD / n_periods)
 
     # The drift check re-traces at h and h/2, so it is priced per seed: a
     # subsample says the same thing.
