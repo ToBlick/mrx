@@ -270,8 +270,19 @@ is for.
 **Wall.** `det DF` at `rho = 1.0` exactly versus `1 - 1e-9`: spline maps
 16.32 / 16.32 (W7-X), 0.4279 / 0.4279 (QA) -- no wall artefact through
 `evaluate_local`; the series 8.16 / 16.33 and 0.2141 / 0.4282 -- exactly
-half, the `jnp.clip` tie gradient. The clip is removed (commit after
-a758617); `test_state_field_wall_derivative_is_the_left_limit`.
+half, the `jnp.clip` tie gradient. The clip is removed (cfe082f): the
+series then gives 0.4282 / 0.4282 (QA re-run, `study_final_QA_12_p3.log`);
+`test_state_field_wall_derivative_is_the_left_limit`.
+
+**Final code path.** With the interpolant deleted the QA (12,24,12) p3
+re-run reproduces the L2 rows above exactly (`||F||_M` 1.0593e-2,
+harmonic distance 3.7296e-4, `|dX|` max 2.316e-4), and
+`test/test_vmec.py` gates pass under `MRX_WOUT_GATES=1`.
+`test/test_synthetic_gvec.py::test_relaxation` fails its GPU-determinism
+band (`|half.dt - check.dt| <= 1e4 eps dt`, measured 1.5e-12 .. 2.8e-11
+at `dt = 0.021`) on this branch AND on the base commit d2bd6a5 in a
+detached worktree (`base_relax_test.log`): pre-existing, unrelated to the
+map; the band was calibrated at `dt = 1.17`.
 
 **Exactness rung.** GVEC state at `(15, 24, 24) p = 5`: the map's radial
 knots are GVEC's (`[0]*5 + linspace(0, 1, 11) + [1]*5`), so the radial
