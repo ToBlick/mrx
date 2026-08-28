@@ -33,8 +33,8 @@ Flags (defaults in brackets):
 
 If the state file carries the pressures ``scripts/relax.py`` writes, the
 selected one is evaluated at every crossing and drawn below the axis in the
-section and as a profile; on a flux surface it is constant, so the width of
-each stripe is the diagnostic. ``--pressure weak`` (the default) reads
+section and as a profile on the right axis of the iota-profile panel; on a
+flux surface it is constant, so the width of each stripe is the diagnostic. ``--pressure weak`` (the default) reads
 ``pw_ic`` / ``pw_final``, the weak pressure: a 0-form, so its physical value
 is the spline evaluation itself (no ``det DF``), and it is zero on the wall by
 construction (Dirichlet 0-form space), so no gauge shift is applied.
@@ -47,8 +47,9 @@ docs/source/concepts/relaxation.md.
 
 Output: ``poincare_<field>_zeta<plane>.png`` per field and plane, and
 ``sections.npz`` under ``--out`` with, per field, the crossing coordinates of
-every plane plus ``iota``, ``iota_err``, ``seed_r``, ``keep``, ``chaotic``, the
-step drift and ``pressure_kind``, so a section can be re-rendered
+every plane plus ``iota``, ``iota_err`` (the fit uncertainty drawn as the
+profile's ribbon, see ``trace_and_classify``), ``seed_r``, ``keep``,
+``chaotic``, the step drift and ``pressure_kind``, so a section can be re-rendered
 (``--from-npz``) without the 5-minute sequence build and trace.
 Runtime: ~5 min per field at (8,16,8) p=3 on one H100 (sequence setup
 dominates; the trace is ~1 min).

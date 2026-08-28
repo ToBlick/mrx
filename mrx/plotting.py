@@ -267,6 +267,7 @@ def plot_twin_axis(
     grid_linewidth: float = 0.5,
     left_plot_kwargs: Optional[dict] = None,
     right_plot_kwargs: Optional[dict] = None,
+    ax=None,
 ):
     """Two traces against a shared x with separate y axes (``twinx``).
 
@@ -274,9 +275,14 @@ def plot_twin_axis(
     ticks take the series colour. Without ``x_*`` the abscissa is
     ``arange(len(y)) * num_iters_inner``. The explicit style arguments are
     defaults that ``left_plot_kwargs``/``right_plot_kwargs`` override.
-    Returns ``(fig, (ax_left, ax_right))``.
+    With ``ax`` the pair is drawn into that existing axes (a panel of a
+    larger figure, whose layout is then the caller's), otherwise into a new
+    ``figsize`` figure. Returns ``(fig, (ax_left, ax_right))``.
     """
-    fig, ax1 = plt.subplots(figsize=figsize)
+    if ax is None:
+        fig, ax1 = plt.subplots(figsize=figsize)
+    else:
+        fig, ax1 = ax.figure, ax
     ax2 = ax1.twinx()
     sides = (
         (ax1, left_y, x_left, left_log, left_label,
@@ -295,5 +301,6 @@ def plot_twin_axis(
     ax1.set_xlabel(x_label)
     if grid:
         ax1.grid(True, which="both", linestyle=grid_linestyle, linewidth=grid_linewidth)
-    fig.tight_layout()
+    if ax is None:
+        fig.tight_layout()
     return fig, (ax1, ax2)
