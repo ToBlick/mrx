@@ -158,18 +158,156 @@ study for the record.
 
 ## 3. Implementation
 
-`mrx.gvec.series_spline_dofs(block, sp, nfp, seq, l2)` builds the polar
-DoFs from a block; `build_gvec_map(path, seq, ...)` takes the sequence the
-map lives on (no second sequence). Study script:
-`scripts/map_projection_study.py`. Tests: `test/test_gvec.py` (closed
-form == sampled interpolant at even and odd `p`, including a mode beyond
-Nyquist; radial exactness on the state's knots; the L2 symbol solves the
-normal equations assembled by an independent quadrature).
+`mrx.gvec.series_tensor_coefficients(block, sp, nfp, seq)` builds the
+tensor coefficients of the L2 projection from a block,
+`series_spline_dofs` restricts them onto the polar space;
+`build_gvec_map(path, seq, ...)` takes the sequence the map lives on (no
+second sequence). The measurement below was made with both routes in the
+library (commit a758617); the interpolant was then deleted. Study script:
+`scripts/map_projection_study.py` (now: the sampled fit versus the
+projection versus the series). Tests: `test/test_gvec.py` (the tensor
+coefficients satisfy the 3-D normal equations assembled by an independent
+Gauss rule, at even and odd `p`, cosine and sine, with modes beyond
+Nyquist; radial exactness on the state's knots; the angular symbol solves
+the 1-D normal equations; the wall derivative of the series is the left
+limit).
 
 ## 4. Measurements
 
-MEASUREMENTS_PLACEHOLDER
+All runs `scripts/map_projection_study.py` (commit a758617, the version
+with both routes), float64, one H100 each, logs under
+`outputs/analytic_map/2026-08-28/13-1*/study_*.log`. W7-X = the beta = 5%
+wout (200 modes, `m <= 9`, `|n/nfp| <= 10`, `ns = 201`), QA = the
+Landreman-Paul 2021 QA wout (128 modes, `m <= 7`, `|n/nfp| <= 8`,
+vacuum), GVEC = W7-X FMM002 state (288 modes, `m <= 11`, `|n/nfp| <= 12`).
+"sampled" is the 2026-08-27 route; "interp" its per-mode closed form;
+"L2" the per-mode projection.
+
+**(a) confirmed.** `max |dof sampled - dof interp| / max |dof|`: 5e-15
+(W7-X 12 p3), 6e-15 (QA), 1e-14 (W7-X 16 p3), 5e-14 (GVEC 15 p5): the
+closed form IS the sampled fit. Coefficients: sampled 2.4-3.3 s, interp
+0.03-0.12 s, L2 0.6-2.3 s (the 1-D angular mass assembly; irrelevant next
+to the 16-27 s the second `DeRhamSequence` used to cost, now gone).
+
+**Map against the series** on 4000 random points, `rho` in [0.05, 0.95]
+(`|dX|` in metres; `|dDF|/|DF|` Frobenius, relative to the rms of the
+series' `DF`):
+
+| case | route | max dX | rms dX | max dDF | rms dDF | det/det_ref |
+|---|---|---|---|---|---|---|
+| W7-X (12,24,12) p3 | interp | 9.67e-4 | 1.75e-4 | 4.28e-3 | 1.02e-3 | [0.982, 1.024] |
+| | L2 | 5.75e-4 | 1.27e-4 | 4.09e-3 | 9.52e-4 | [0.984, 1.023] |
+| W7-X (12,24,12) p4 | interp | 4.88e-4 | 8.84e-5 | 2.62e-3 | 5.06e-4 | [0.978, 1.029] |
+| | L2 | 3.78e-4 | 7.35e-5 | 2.12e-3 | 4.82e-4 | [0.983, 1.023] |
+| W7-X (16,32,32) p3 | interp | 1.52e-4 | 1.34e-5 | 6.78e-4 | 1.02e-4 | [0.983, 1.020] |
+| | L2 | 1.53e-4 | 1.16e-5 | 5.49e-4 | 9.67e-5 | [0.983, 1.020] |
+| QA (12,24,12) p3 | interp | 3.92e-4 | 1.06e-4 | 3.89e-3 | 1.22e-3 | [0.986, 1.020] |
+| | L2 | 2.32e-4 | 7.81e-5 | 3.65e-3 | 1.17e-3 | [0.985, 1.021] |
+| QA (12,24,12) p4 | interp | 1.45e-4 | 3.68e-5 | 1.88e-3 | 4.37e-4 | [0.988, 1.016] |
+| | L2 | 1.16e-4 | 3.23e-5 | 1.65e-3 | 4.25e-4 | [0.986, 1.019] |
+| QA (16,32,32) p3 | interp | 2.12e-5 | 1.91e-6 | 1.88e-4 | 4.72e-5 | [0.993, 1.010] |
+| | L2 | 2.18e-5 | 1.47e-6 | 1.91e-4 | 4.70e-5 | [0.993, 1.011] |
+| GVEC (15,24,24) p5 | interp | 7.90e-4 | 9.40e-5 | 7.09e-3 | 9.54e-4 | [0.993, 1.008] |
+| | L2 | 6.55e-4 | 8.44e-5 | 5.87e-3 | 8.92e-4 | [0.994, 1.007] |
+
+L2 is better or equal on every map gauge: max `|dX|` -40% at
+(12,24,12) p3, -20..-25% at p4, rms `|dX|` -15..-30%, `|dDF|` -5..-20%; at
+(16,32,32) the two coincide within 3% (no mode beyond Nyquist there, and
+the within-Nyquist interpolant is already close to the projection). The
+`det DF` ranges at the quadrature points are identical to three digits
+(e.g. W7-X 12 p3: [9.13e-2, 1.737e1] vs [9.12e-2, 1.738e1]); no route
+comes near folding, `set_geometry` and `build_preconditioners` take both.
+
+**Pipeline** (`set_map`, `build_preconditioners`, `compute_nullspaces`,
+Clebsch potential IC, `||F||_M` at `||B||_M = 1`; QA also
+`||B_hat -+ h_hat||_M` against the k=2 Dirichlet harmonic form):
+
+| case | route | ||F||_M | QA harmonic dist. | nullspace solve |
+|---|---|---|---|---|
+| W7-X (12,24,12) p3 | interp | 2.579e-3 | | 50 s |
+| | L2 | 3.004e-3 (+16%) | | 34 s |
+| W7-X (12,24,12) p4 | interp | 3.988e-3 | | 79 s |
+| | L2 | 3.174e-3 (-20%) | | 62 s |
+| W7-X (16,32,32) p3 | interp | 4.737e-4 | | 127 s |
+| | L2 | 4.994e-4 (+5%) | | 110 s |
+| QA (12,24,12) p3 | interp | 1.057e-2 | 5.67e-4 | 55 s |
+| | L2 | 1.059e-2 (0%) | 3.73e-4 (-34%) | 38 s |
+| QA (12,24,12) p4 | interp | 9.574e-3 | 5.10e-4 | 82 s |
+| | L2 | 8.238e-3 (-14%) | 3.43e-4 (-33%) | 64 s |
+| QA (16,32,32) p3 | interp | 1.227e-3 | 2.26e-4 | 133 s |
+| | L2 | 1.190e-3 (-3%) | 2.18e-4 (-4%) | 116 s |
+
+The interp values reproduce the 2026-08-27 gate numbers exactly (W7-X
+2.579e-3, QA 1.057e-2 and 5.67e-4), as they must. The IC force is NOT a
+map gauge: it moves both ways by up to 20% (W7-X p3 +16%, p4 -20%), and
+under interpolation it does not even improve from p3 to p4 at fixed `ns`
+(2.58e-3 -> 3.99e-3) while under L2 it is flat (3.00e-3 -> 3.17e-3); at
+the finer rung the two agree within 5%. The vacuum distance to the
+harmonic form -- the one clean gauge of the map plus IC together --
+favours L2 by a third at (12,24,12) and by 4% at (16,32,32). `div B` is
+1e-15 on every row. The nullspace-solve times are dominated by JIT
+caching (the second route of each job reuses the first's executables),
+not by the route; the iteration counts in the reports are the same to
+within one.
+
+**Axis.** `det DF / rho` over 64 theta at `rho = 1e-5` (min, max):
+
+| case | series | spline map (interp) | spline map (L2) |
+|---|---|---|---|
+| W7-X wout | (11.574, 13.801) | (12.7592, 12.7596) | (12.7607, 12.7611) |
+| QA wout | (0.5077, 0.5342) | (0.5174, 0.5174) | (0.5174, 0.5174) |
+| GVEC state | (13.0021, 13.0022) | (13.0045, 13.0046) | (13.0050, 13.0051) |
+
+The GVEC series is C1 at the axis as analysed (theta-spread 1e-5); both
+wout series carry a cone (+-9% for W7-X, +-2.5% for QA: the `m >= 2` slope
+the refit does not pin, and VMEC's own near-axis `m >= 2` data). Both
+spline routes are C1 (spread 3e-5) -- the ring-1 surgery does that
+regardless of the route, and the axis value of `det DF / rho` sits at the
+series' theta-mean. This is the polar-space behaviour the brief flagged as
+the risk; it is the same for every route and it is what the spline map
+is for.
+
+**Wall.** `det DF` at `rho = 1.0` exactly versus `1 - 1e-9`: spline maps
+16.32 / 16.32 (W7-X), 0.4279 / 0.4279 (QA) -- no wall artefact through
+`evaluate_local`; the series 8.16 / 16.33 and 0.2141 / 0.4282 -- exactly
+half, the `jnp.clip` tie gradient. The clip is removed (commit after
+a758617); `test_state_field_wall_derivative_is_the_left_limit`.
+
+**Exactness rung.** GVEC state at `(15, 24, 24) p = 5`: the map's radial
+knots are GVEC's (`[0]*5 + linspace(0, 1, 11) + [1]*5`), so the radial
+direction is exact (`test_radial_coefficients_are_exact_on_the_states_knots`
+for the mechanism) and the 7e-4 m map error is the angular projection
+alone (`m` up to 11 on 24 points, `|n/nfp|` up to 12 = Nyquist on 24).
+`||F||_M` 2.97e-3 (interp), nullspace 167 s.
 
 ## 5. Recommendation
 
-RECOMMENDATION_PLACEHOLDER
+**Keep the L2 projection; the interpolant is deleted.** Both are closed
+forms built from the coefficients with no grid; the projection is the
+one that is optimal in a norm, damps what the mesh cannot carry instead
+of aliasing it, and is better or equal on every direct gauge (map and
+`DF` against the series, the vacuum harmonic distance). The only gauge
+that moved against it is one IC-force number (+16% at W7-X (12,24,12)
+p3) that moves -20% the other way at p4 and +5% at the finer rung: not a
+map gauge, and within what a force at t = 0 is worth. Cost is a second
+per map. The documented 2026-08-27 W7-X/QA gate numbers shift
+accordingly (W7-X (12,24,12) p3 IC force 2.58e-3 -> 3.00e-3, QA 1.057e-2
+-> 1.059e-2, QA harmonic distance 5.67e-4 -> 3.73e-4); the gates
+(`< 0.1`) are untouched.
+
+What stays as it was: the map is a C1 polar spline with autodiff `DF`;
+the polar restriction is the one every 0-form interpolation applies; the
+flat-schema `.h5` route still bridges its grid linearly to the Greville
+points and fits (`seq.interpolate`) -- it has no coefficients to project,
+and it remains the documented fallback with its 3.4% linear-bridge floor.
+`build_gvec_map(path, seq, ...)` now takes the sequence the map serves;
+the second `DeRhamSequence` is gone.
+
+Open: the L2 projection is onto the tensor space, then restricted; the
+projection onto the polar space itself (`E M E^T`, a 3-D solve touching
+rings 0 and 1 only) would be the consistent object. Rings 0 and 1 differ
+between the two by `O(h^(p+1))` (the ring-0 content of the `m > 0` modes
+the surgery removes); not measured separately. And a wout's `m >= 2`
+axis slope (the cone in the series, absent from the GVEC state) could be
+pinned in the refit (`mrx/vmec.py`) the way GVEC pins it -- a separate,
+small change to the reader, not to the map.

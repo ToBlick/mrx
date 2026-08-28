@@ -78,13 +78,12 @@ def test_state_reproduces_the_export():
 # the map: spline coefficients from the series coefficients, no grid
 # ---------------------------------------------------------------------------
 
-def _made_up_block(rng, sp, deg, sin_cos, n_modes_beyond_nyquist=True):
-    """A state block whose modes include one beyond the Nyquist frequency of
-    the small test sequences (m = 5, n/nfp = 3) so aliasing is exercised."""
+def _made_up_block(rng, sp, deg, sin_cos):
+    """A state block whose modes include ones beyond the Nyquist frequency
+    of the small test sequences (m = 5, n/nfp = 3) so the damping of an
+    unresolved mode is exercised."""
     m = np.array([0, 1, 2, 1, 5, 2])
     n = np.array([0, 0, 5, -5, 10, 15])
-    if not n_modes_beyond_nyquist:
-        m, n = m[:4], n[:4]
     coef = rng.normal(size=(len(m), len(sp) - 1 + deg))
     coef[m > 0, 0] = 0.0                                  # the axis rows of a state
     return dict(m=m, n=n, coef=coef, sin_cos=sin_cos, deg=deg)
@@ -97,29 +96,48 @@ def odd_p_seq():
                           polar=True, betti_numbers=(1, 1, 0, 0))
 
 
+def _gauss_on(breakpoints, n):
+    xi, wi = np.polynomial.legendre.leggauss(n)
+    lo, hi = breakpoints[:-1], breakpoints[1:]
+    pts = (0.5 * (lo + hi)[:, None] + 0.5 * (hi - lo)[:, None] * xi[None, :]).ravel()
+    return pts, (0.5 * (hi - lo)[:, None] * wi[None, :]).ravel()
+
+
 @pytest.mark.parametrize("which", ["tiny_seq", "odd_p_seq"])
 @pytest.mark.parametrize("sin_cos", [2, 1])
-def test_series_spline_dofs_is_the_sampled_greville_interpolant(request, which, sin_cos):
-    """The per-mode closed form (radial Greville interpolant of ``c_mn`` x
-    angular samples over the circulant symbol) reproduces sampling the
-    series at the Greville points and solving, to round-off -- including
-    the aliased mode beyond Nyquist, and at both Greville layouts (on the
-    knots at odd p, between them at even p)."""
-    from mrx.gvec import series_spline_dofs
+def test_series_tensor_coefficients_are_the_l2_projection(request, which, sin_cos):
+    """The per-mode closed form satisfies the tensor-product normal
+    equations ``(M_r x M_t x M_z) C = int Lambda_ijk f`` with the mass
+    matrices and the moments of the series assembled by an independent
+    Gauss rule (12 points per element, radially on the union of the
+    state's and the map's knots) -- including the mode beyond Nyquist, at
+    both Greville layouts (on the knots at odd p, between them at even p)."""
+    import jax
+    import jax.numpy as jnp
+    from mrx.gvec import block_knots, series_tensor_coefficients
     seq = request.getfixturevalue(which)
     rng = np.random.default_rng(11)
     sp = np.linspace(0.0, 1.0, 5)
     block = _made_up_block(rng, sp, 3, sin_cos)
-    direct = series_spline_dofs(block, sp, 5, seq, l2=False)
-    sampled = seq.interpolate(StateField(block, sp, 5, vector=True), 0)
-    scale = float(np.abs(np.asarray(sampled)).max())
-    assert np.abs(np.asarray(direct - sampled)).max() < 1e-11 * scale
+    C = series_tensor_coefficients(block, sp, 5, seq)
+    br, bt, bz = seq.basis_0.Λ
+    bp_r = np.unique(np.concatenate([block_knots(block, sp), np.asarray(br.T)]))
+    rules = [_gauss_on(bp_r, 12)] + [_gauss_on(np.linspace(0.0, 1.0, b.n + 1), 12) for b in (bt, bz)]
+    B = [np.asarray(b.collocation_matrix(jnp.asarray(r[0])), dtype=np.float64)
+         for b, r in zip((br, bt, bz), rules)]
+    M = [Bi.T @ (r[1][:, None] * Bi) for Bi, r in zip(B, rules)]
+    grid = np.stack(np.meshgrid(*(r[0] for r in rules), indexing="ij"), axis=-1).reshape(-1, 3)
+    f = np.asarray(jax.vmap(StateField(block, sp, 5))(jnp.asarray(grid))).reshape(
+        tuple(len(r[0]) for r in rules))
+    wf = np.einsum("q,r,s,qrs->qrs", rules[0][1], rules[1][1], rules[2][1], f)
+    b = np.einsum("qi,rj,sk,qrs->ijk", B[0], B[1], B[2], wf)
+    MC = np.einsum("ai,bj,ck,ijk->abc", M[0], M[1], M[2], C)
+    assert np.abs(MC - b).max() < 1e-11 * np.abs(b).max()
 
 
 def test_radial_coefficients_are_exact_on_the_states_knots(odd_p_seq):
     """When the map's radial space contains the state's (same degree, same
-    knots) both the interpolant and the L2 projection return the state's
-    coefficients themselves."""
+    knots) the projection returns the state's coefficients themselves."""
     from mrx.gvec import _radial_coefficients
     seq = odd_p_seq
     br = seq.basis_0.Λ[0]
@@ -127,9 +145,8 @@ def test_radial_coefficients_are_exact_on_the_states_knots(odd_p_seq):
     rng = np.random.default_rng(2)
     block = dict(m=np.array([0, 1]), n=np.array([0, 5]),
                  coef=rng.normal(size=(2, br.n)), sin_cos=2, deg=br.p, T=T)
-    for l2 in (False, True):
-        c = _radial_coefficients(block, None, br, seq.greville[0].coll, l2)
-        assert np.abs(c - block["coef"].T).max() < 1e-12
+    c = _radial_coefficients(block, None, br)
+    assert np.abs(c - block["coef"].T).max() < 1e-12
 
 
 @pytest.mark.parametrize("which", ["tiny_seq", "odd_p_seq"])
@@ -151,13 +168,22 @@ def test_angular_l2_symbol_solves_the_normal_equations(request, which):
     M = B.T @ (w[:, None] * B)
     x = np.asarray(bt.greville_points(), dtype=np.float64)
     freqs = np.array([0, 1, 2, N // 2, N // 2 + 1, N + 1])
-    gamma = _angular_symbol(bt, freqs, l2=True)
+    gamma = _angular_symbol(bt, freqs)
     for m, g in zip(freqs, gamma):
         b = B.T @ (w * np.cos(2 * np.pi * m * pts))
         c = g * np.cos(2 * np.pi * m * x)
         assert np.abs(M @ c - b).max() < 1e-13
-    # interpolation: the same coefficients collocate at the Greville points
-    gamma = _angular_symbol(bt, freqs, l2=False)
-    A = np.asarray(bt.collocation_matrix(), dtype=np.float64)
-    for m, g in zip(freqs, gamma):
-        assert np.abs(A @ (g * np.cos(2 * np.pi * m * x)) - np.cos(2 * np.pi * m * x)).max() < 1e-13
+
+
+def test_state_field_wall_derivative_is_the_left_limit():
+    """No clip on rho: at rho = 1 exactly the autodiff radial derivative of
+    the series is the polynomial's own (the clip halved it)."""
+    import jax
+    import jax.numpy as jnp
+    rng = np.random.default_rng(5)
+    sp = np.linspace(0.0, 1.0, 5)
+    f = StateField(_made_up_block(rng, sp, 3, 2), sp, 5)
+    d = jax.grad(f)
+    x1, x0 = jnp.array([1.0, 0.3, 0.2]), jnp.array([1.0 - 1e-9, 0.3, 0.2])
+    assert abs(float(f(x1)) - float(f(x0))) < 1e-7
+    assert abs(float(d(x1)[0]) - float(d(x0)[0])) < 1e-6 * abs(float(d(x0)[0]))

@@ -14,10 +14,10 @@ flat-schema exports call ``rho`` (``Phi = Phi_edge s^2``). :class:`StateField`
 evaluates one of the three fields at a logical point in JAX -- the radial
 basis through :class:`mrx.spline_bases.SplineBasis` on GVEC's own knots, the
 angles as ``2 pi (m theta - n zeta / nfp)`` -- and :func:`build_gvec_map`
-builds the map's polar spline coefficients of ``R`` and ``Z`` from the
-series coefficients mode by mode (:func:`series_spline_dofs`: the radial
-splines projected onto the map's radial basis, the angular modes in closed
-form), while :func:`load_clebsch` histopolates ``lambda`` at the quadrature
+builds the map's polar spline coefficients of ``R`` and ``Z`` as the L2
+projection of the series, mode by mode (:func:`series_spline_dofs`: the
+radial splines projected onto the map's radial basis, the angular modes
+through the periodic B-spline's Fourier transform), while :func:`load_clebsch` histopolates ``lambda`` at the quadrature
 points from the closed form. Nothing is evaluated on a grid
 (``docs/research/analytic_map_2026-08-28.md``). Validated against the pyGVEC
 export of W7-X FMM002 to round-off (``test/test_gvec.py``).
@@ -154,9 +154,14 @@ class StateField:
     point ``(rho, theta, zeta)`` (angles on ``[0, 1)``, ``zeta`` per field
     period). ``vector=True`` returns a ``(1,)`` array, the convention of the
     scalar callables :func:`_map_with_sign` takes (the series map itself,
-    the reference the spline map is measured against); otherwise a scalar. A block that carries its
-    own knot vector ``T`` (the wout route, ``mrx.vmec``) overrides the
-    element grid ``sp``, which may then be ``None``."""
+    the reference the spline map is measured against); otherwise a scalar.
+    A block that carries its own knot vector ``T`` (the wout route,
+    ``mrx.vmec``) overrides the element grid ``sp``, which may then be
+    ``None``. ``rho`` is not clipped to ``[0, 1]``: the local evaluator
+    continues the end polynomial pieces outside, and a clip halves the
+    autodiff radial derivative at ``rho = 1`` exactly (JAX splits the
+    gradient of a tie), which halved the series map's ``det DF`` at the
+    wall (measured 2026-08-28)."""
 
     def __init__(self, block, sp, nfp, vector=False):
         self.basis = SplineBasis(block["coef"].shape[1], block["deg"], "clamped",
@@ -168,7 +173,7 @@ class StateField:
         self.vector = vector
 
     def __call__(self, x):
-        vals, idx = self.basis.evaluate_local(jnp.clip(x[0], 0.0, 1.0))
+        vals, idx = self.basis.evaluate_local(x[0])
         radial = self.C[:, idx] @ vals                                    # (n_modes,)
         arg = 2.0 * jnp.pi * (self.m * x[1] - self.n_per * x[2])
         f = (jnp.cos(arg) if self.cos else jnp.sin(arg)) @ radial
@@ -212,30 +217,24 @@ def _periodic_symbol(row, freqs):
     return sym.real
 
 
-def _angular_symbol(basis, freqs, l2):
+def _angular_symbol(basis, freqs):
     """Per-mode coefficient factor ``gamma(m)`` of the uniform periodic
     basis: the degree-``p`` spline with coefficients ``gamma(m) exp(2 pi i m
     x_j)`` (``x_j`` the Greville points, the centres of the basis functions)
-    is the interpolant (``l2=False``) or the L2 projection (``l2=True``) of
-    ``exp(2 pi i m theta)``.
+    is the L2 projection of ``exp(2 pi i m theta)``.
 
-    Interpolation: the collocation matrix is circulant, so the interpolant
-    of a Fourier mode is the mode's samples over the symbol
-    ``sigma(m) = sum_l B_0(x_l) exp(-2 pi i m l / N)``. ``sigma`` is
-    ``N``-periodic in ``m``: a mode beyond the Nyquist frequency ``N/2`` is
-    interpolated as its alias, with the alias's gain.
-
-    L2 projection: the moments are the B-spline's Fourier transform,
+    The moments are the B-spline's Fourier transform,
     ``int B_j(theta) exp(2 pi i m theta) dtheta = h sinc(m h)^(p+1)
     exp(2 pi i m x_j)`` with ``h = 1/N`` and ``sinc(x) = sin(pi x)/(pi x)``,
-    and the mass matrix is circulant with symbol ``mu(m)``; a mode beyond
-    Nyquist is damped by ``sinc^(p+1)`` instead of aliased.
+    and the mass matrix is circulant with the symbol ``mu(m) = sum_l M_l0
+    exp(-2 pi i m l / N)``, so ``gamma(m) = h sinc(m h)^(p+1) / mu(m)``. A
+    mode beyond the Nyquist frequency ``N/2`` is damped by ``sinc^(p+1)``
+    where an interpolant would alias it with gain up to ``1/sigma(N/2) = 3``
+    at ``p = 3``. The mass matrix is assembled by Gauss quadrature, exact
+    for the spline product.
     """
     N, p = basis.n, basis.p
     freqs = np.asarray(freqs, dtype=np.float64)
-    if not l2:
-        A = np.asarray(basis.collocation_matrix(), dtype=np.float64)
-        return 1.0 / _periodic_symbol(A[:, 0], freqs)
     xi, wi = np.polynomial.legendre.leggauss(p + 1)
     pts = ((np.arange(N)[:, None] + 0.5 * (xi[None, :] + 1.0)) / N).ravel()
     w = np.tile(0.5 * wi / N, N)
@@ -245,19 +244,16 @@ def _angular_symbol(basis, freqs, l2):
     return moment / _periodic_symbol(M[:, 0], freqs)
 
 
-def _radial_coefficients(block, sp, basis_r, coll_r, l2):
+def _radial_coefficients(block, sp, basis_r):
     """``(n_r, n_modes)`` coefficients on the map's clamped radial basis of
-    every mode's radial function ``c_mn(rho)`` (a spline on the state's
-    knots): its Greville interpolant (``l2=False``) or its L2 projection
-    (``l2=True``, Gauss quadrature on the union of the two knot sets, exact
-    for the spline product). Either is exact when the map's radial space
-    contains the state's."""
+    the L2 projection of every mode's radial function ``c_mn(rho)``, a
+    spline on the state's knots: the moments by Gauss quadrature on the
+    union of the two knot sets (exact for the spline product) and one
+    ``n_r x n_r`` mass solve shared by all modes. Exact when the map's
+    radial space contains the state's (GVEC's degree-5 basis on 10 uniform
+    elements at ``p = 5``, ``n_r = 15``)."""
     T_s, deg_s, C = block_knots(block, sp), block["deg"], block["coef"]
     T_r, p_r = np.asarray(basis_r.T, dtype=np.float64), basis_r.p
-    if not l2:
-        x_r = np.asarray(basis_r.greville_points(), dtype=np.float64)
-        samples = BSpline.design_matrix(x_r, T_s, deg_s).toarray() @ C.T
-        return np.linalg.solve(np.asarray(coll_r, dtype=np.float64), samples)
     bp = np.unique(np.concatenate([T_s, T_r]))
     xi, wi = np.polynomial.legendre.leggauss((deg_s + p_r) // 2 + 1)
     lo, hi = bp[:-1], bp[1:]
@@ -269,49 +265,55 @@ def _radial_coefficients(block, sp, basis_r, coll_r, l2):
     return np.linalg.solve(M, Br.T @ (w[:, None] * (Bs @ C.T)))
 
 
-def series_spline_dofs(block, sp, nfp, seq, l2=False):
-    """The polar 0-form DoFs on ``seq.basis_0`` of a state field, built from
-    its coefficients alone: no evaluation grid, no collocation solve.
+def series_tensor_coefficients(block, sp, nfp, seq):
+    """``(n_r, n_t, n_z)`` coefficients on the tensor-product 0-form space
+    of ``seq`` of the L2 projection of a state field, built from its
+    coefficients alone: no evaluation grid, no collocation solve.
 
     The field is ``sum_mn c_mn(rho) trig(2 pi (m theta - n zeta / nfp))``
-    and both the Greville interpolation and the L2 projection onto the
-    tensor-product spline space are linear and tensor-product, so the
-    coefficients are the sum over modes of (radial coefficients of
-    ``c_mn``) x (angular coefficients of the trig mode), the latter in
-    closed form (:func:`_angular_symbol`):
+    and the L2 projection onto a tensor-product spline space is linear and
+    tensor-product, so the coefficients are the sum over modes of (radial
+    coefficients of ``c_mn``, :func:`_radial_coefficients`) x (angular
+    coefficients of the trig mode, in closed form, :func:`_angular_symbol`):
 
         C[i, j, k] = sum_mn c_mn[i] gamma_t(m) gamma_z(n) trig(2 pi (m x_j - n y_k))
 
-    with ``x_j``, ``y_k`` the angular Greville points. ``l2=False`` is the
-    Greville interpolant, identical to sampling the series at the Greville
-    points and solving (``seq.interpolate(f, 0)``) to round-off; ``l2=True``
-    the L2 projection. The tensor coefficients are then restricted onto the
-    polar space with the ring-0/ring-1 surgery of every 0-form
-    interpolation (:func:`mrx.projectors._conforming_restriction`).
+    with ``x_j``, ``y_k`` the angular Greville points.
     """
     br, bt, bz = seq.basis_0.Λ
     m, n_per = block["m"].astype(np.float64), block["n"] / nfp
     if np.abs(n_per - np.round(n_per)).max() > 0:
         raise ValueError("toroidal mode numbers are not multiples of nfp")
-    c_r = _radial_coefficients(block, sp, br, seq.greville[0].coll, l2)   # (n_r, n_modes)
-    gamma = _angular_symbol(bt, m, l2) * _angular_symbol(bz, n_per, l2)   # (n_modes,)
+    c_r = _radial_coefficients(block, sp, br)                            # (n_r, n_modes)
+    gamma = _angular_symbol(bt, m) * _angular_symbol(bz, n_per)          # (n_modes,)
     x_t = np.asarray(bt.greville_points(), dtype=np.float64)
     y_z = np.asarray(bz.greville_points(), dtype=np.float64)
     arg = TWO_PI * (m[:, None, None] * x_t[None, :, None]
                     - n_per[:, None, None] * y_z[None, None, :])          # (n_modes, n_t, n_z)
     trig = np.cos(arg) if block["sin_cos"] == 2 else np.sin(arg)
-    C_full = np.einsum("ik,k,kjl->ijl", c_r, gamma, trig)
+    return np.einsum("ik,k,kjl->ijl", c_r, gamma, trig)
+
+
+def series_spline_dofs(block, sp, nfp, seq):
+    """The polar 0-form DoFs on ``seq.basis_0`` of a state field: the tensor
+    coefficients of :func:`series_tensor_coefficients` restricted onto the
+    polar space with the ring-0/ring-1 surgery of every 0-form
+    interpolation (:func:`mrx.projectors._conforming_restriction`). The
+    Greville interpolant of the series -- identical to sampling it at the
+    Greville points and solving -- was measured against this projection
+    and dropped (``docs/research/analytic_map_2026-08-28.md``)."""
+    C_full = series_tensor_coefficients(block, sp, nfp, seq)
     return _conforming_restriction(seq.E(0), jnp.asarray(C_full.reshape(-1)))
 
 
-def build_gvec_map(h5_path, seq, sign=None, stride=1, nfp=None, l2=False):
+def build_gvec_map(h5_path, seq, sign=None, stride=1, nfp=None):
     """Build the stellarator map of a GVEC state, a VMEC wout or a
     flat-schema export as a C1 polar spline map on ``seq.basis_0``.
 
     A ``.dat`` state or a ``.nc`` wout (refit into the same blocks by
     :mod:`mrx.vmec`) supplies ``R`` and ``Z`` as radial-spline x Fourier
-    series, and the map's spline coefficients are built from the series
-    coefficients directly (:func:`series_spline_dofs`) -- nothing is
+    series, and the map's spline coefficients are the L2 projection built
+    from the series coefficients (:func:`series_spline_dofs`) -- nothing is
     evaluated on a grid. A ``.h5`` export supplies ``R`` and ``Z`` on its
     grid, bridged to the Greville points by linear interpolation
     (``_rgi_fn``) and collocated (``seq.interpolate``).
@@ -328,8 +330,8 @@ def build_gvec_map(h5_path, seq, sign=None, stride=1, nfp=None, l2=False):
         nfp = st["nfp"] if nfp is None else int(nfp)
         R_fn = StateField(st["X1"], st.get("sp"), st["nfp"], vector=True)
         Z_fn = StateField(st["X2"], st.get("sp"), st["nfp"], vector=True)
-        R_dof = series_spline_dofs(st["X1"], st.get("sp"), st["nfp"], seq, l2)
-        Z_dof = series_spline_dofs(st["X2"], st.get("sp"), st["nfp"], seq, l2)
+        R_dof = series_spline_dofs(st["X1"], st.get("sp"), st["nfp"], seq)
+        Z_dof = series_spline_dofs(st["X2"], st.get("sp"), st["nfp"], seq)
         axes, layout, grid = None, None, "closed form"
     else:
         axes, R_grid, Z_grid, nfp, layout = load_gvec_grids(

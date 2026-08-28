@@ -1,17 +1,18 @@
 """Measure the direct series-to-spline map constructions against the series.
 
 For one equilibrium file (GVEC state ``.dat`` or VMEC wout ``.nc``) and one
-mesh ``(ns, p)`` this builds the polar spline map of ``R`` and ``Z`` three
+mesh ``(ns, p)`` this builds the polar spline map of ``R`` and ``Z`` two
 ways -- sampling the series at the Greville points and solving (the
-2026-08-27 route, ``seq.interpolate``), the per-mode closed-form Greville
-interpolant and the per-mode closed-form L2 projection
-(:func:`mrx.gvec.series_spline_dofs`) -- and reports, against the series
-itself: the coefficient differences, the map and Jacobian errors on random
-points, the axis behaviour of ``det DF / rho``, and for the routes named in
-``--routes`` the full pipeline (geometry, preconditioners, harmonic forms,
-Clebsch initial condition, force residual, and for a vacuum file the
-distance to the harmonic form). ``docs/research/analytic_map_2026-08-28.md``
-records the results.
+2026-08-27 route, ``seq.interpolate``; its per-mode closed form, measured
+identical to round-off, was deleted with the study) and the per-mode
+closed-form L2 projection production uses (:func:`mrx.gvec.series_spline_dofs`)
+-- and reports, against the series itself: the coefficient differences,
+the map and Jacobian errors on random points, the axis behaviour of
+``det DF / rho``, and for the routes named in ``--routes`` the full
+pipeline (geometry, preconditioners, harmonic forms, Clebsch initial
+condition, force residual, and for a vacuum file the distance to the
+harmonic form). ``docs/research/analytic_map_2026-08-28.md`` records the
+results, including the interpolant's.
 """
 import argparse
 import os
@@ -65,8 +66,8 @@ def main():
     ap.add_argument("--geometry", required=True)
     ap.add_argument("--ns", type=int, nargs=3, default=(12, 24, 12))
     ap.add_argument("--p", type=int, default=3)
-    ap.add_argument("--routes", default="interp,l2",
-                    help="routes that run the full pipeline (comma list of interp, l2, sampled; '' for none)")
+    ap.add_argument("--routes", default="sampled,l2",
+                    help="routes that run the full pipeline (comma list of sampled, l2; '' for none)")
     ap.add_argument("--n-pts", type=int, default=4000)
     args = ap.parse_args()
     ns, p, path = tuple(args.ns), args.p, args.geometry
@@ -92,16 +93,14 @@ def main():
     t0 = time.time()
     dofs["sampled"] = (seq.interpolate(R_fn, 0), seq.interpolate(Z_fn, 0))
     times["sampled"] = time.time() - t0
-    for route, l2 in (("interp", False), ("l2", True)):
-        t0 = time.time()
-        dofs[route] = (series_spline_dofs(st["X1"], sp, nfp, seq, l2),
-                       series_spline_dofs(st["X2"], sp, nfp, seq, l2))
-        times[route] = time.time() - t0
+    t0 = time.time()
+    dofs["l2"] = (series_spline_dofs(st["X1"], sp, nfp, seq),
+                  series_spline_dofs(st["X2"], sp, nfp, seq))
+    times["l2"] = time.time() - t0
     scale = float(jnp.abs(dofs["sampled"][0]).max())
-    for a, b in (("sampled", "interp"), ("interp", "l2")):
-        dR = float(jnp.abs(dofs[a][0] - dofs[b][0]).max()) / scale
-        dZ = float(jnp.abs(dofs[a][1] - dofs[b][1]).max()) / scale
-        print(f"[study] max |dof {a} - dof {b}| / max|R dof|: R {dR:.2e}, Z {dZ:.2e}", flush=True)
+    dR = float(jnp.abs(dofs["sampled"][0] - dofs["l2"][0]).max()) / scale
+    dZ = float(jnp.abs(dofs["sampled"][1] - dofs["l2"][1]).max()) / scale
+    print(f"[study] max |dof sampled - dof l2| / max|R dof|: R {dR:.2e}, Z {dZ:.2e}", flush=True)
     for route in dofs:
         print(f"[study] {route}: coefficients in {times[route]:.2f} s", flush=True)
 
@@ -111,7 +110,7 @@ def main():
         Z_h = DiscreteFunction(Z_dof, seq.basis_0, seq.E(0))
         sign = _sign_of(R_h, Z_h, nfp)
         maps[route] = (_map_with_sign(R_h, Z_h, nfp, sign), sign)
-    sign = maps["interp"][1]
+    sign = maps["l2"][1]
     F_ref = _map_with_sign(R_fn, Z_fn, nfp, sign)
     rng = np.random.default_rng(0)
     pts = jnp.asarray(np.column_stack([rng.uniform(0.05, 0.95, args.n_pts),
