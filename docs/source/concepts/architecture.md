@@ -181,9 +181,8 @@ three arrays on the quadrature grid: the metric `metric_jkl = DF^T DF` of
 shape `(N_q, 3, 3)`, its inverse `metric_inv_jkl` `(N_q, 3, 3)` and
 `jacobian_j = det DF` `(N_q,)`. They are built once from `DF` by the
 constructors and never recomputed; `DF` itself is not kept, because its only
-consumers are the physical-frame pullbacks at load time (`load(frame='phys')`,
-`io.load_grid_field(frame='phys')`), which recompute it with
-`map_jacobian_at(seq.map, seq.quad.x)`. Everything on the hot path -- the mass
+consumer is the physical-frame pullback at load time (`load(frame='phys')`),
+which recomputes it with `map_jacobian_at(seq.map, seq.quad.x)`. Everything on the hot path -- the mass
 weights `J`, `J G^-1`, `G/J`, `1/J`, the force step's `cross_product_load`,
 the lumped preconditioner builds -- reads the stored arrays. Build the
 geometry with `SequenceGeometry.from_map(F, seq.quad.x)` (autodiff of `F`
@@ -193,15 +192,14 @@ under `jax.lax.map`) or `SequenceGeometry.from_spline_map(spline_map, seq)`
 Laplacian preconditioner built for the previous geometry.
 
 Maps enter by interpolation. An analytic map is a callable `F(x)`; a map from
-data becomes scalar 0-form splines on the sequence's own space, wrapped as
-a `SplineMap` (`mrx/mappings.py`) or a stellarator map. An analytic map is
-fitted by `seq.interpolate(f, 0)`: 1D collocation solves on the tensor space
-followed by the polar restriction (`greville_interpolate_map` in
-`mrx/geometry.py`). A GVEC state or VMEC wout is not sampled at all:
-`build_gvec_map` in `mrx/gvec.py` builds the polar coefficients of `R`, `Z`
-from the series coefficients mode by mode (`series_spline_dofs`); a gridded
-export is bridged linearly to the Greville points and fitted the same way as
-an analytic map. There is no reference mass matrix.
+an equilibrium file becomes scalar 0-form splines on the sequence's own
+space, wrapped as a `SplineMap` (`mrx/mappings.py`) or a stellarator map. An
+analytic map is fitted by `seq.interpolate(f, 0)`: 1D collocation solves on
+the tensor space followed by the polar restriction
+(`greville_interpolate_map` in `mrx/geometry.py`). A GVEC state or VMEC
+wout is not sampled at all: `build_gvec_map` in `mrx/gvec.py` builds the
+polar coefficients of `R`, `Z` from the series coefficients mode by mode
+(`series_spline_dofs`). There is no reference mass matrix.
 
 ### Dynamic: `SequenceOperators`
 

@@ -29,8 +29,8 @@ from scipy import sparse
 from scipy.sparse import csgraph
 
 import mrx
-from mrx.differential_forms import DifferentialForm, adj33
-from mrx.geometry import _tp_evaluate, map_jacobian_at
+from mrx.differential_forms import adj33
+from mrx.geometry import map_jacobian_at
 from mrx.quadrature import integrate_against
 
 if TYPE_CHECKING:
@@ -269,11 +269,10 @@ def load(seq: "DeRhamSequence", f, k: int,
     bc : bool  Use boundary-trace DOFs (takes precedence over dirichlet).
     frame : {'phys', 'ref'}
         ``'phys'`` (default): ``f`` returns components in the physical frame;
-        a DF-based pullback is applied internally.  This (with
-        :func:`load_grid_field`) is the only consumer of the raw map
-        Jacobian, which the geometry does not store: ``DF`` is recomputed at
-        the quadrature points with :func:`mrx.geometry.map_jacobian_at`, once
-        per call.
+        a DF-based pullback is applied internally.  This is the only
+        consumer of the raw map Jacobian, which the geometry does not
+        store: ``DF`` is recomputed at the quadrature points with
+        :func:`mrx.geometry.map_jacobian_at`, once per call.
 
         ``'ref'``: ``f`` returns the coefficients of the k-form expanded
         directly in reference coordinates dr, dχ, dζ (and their wedge
@@ -306,8 +305,8 @@ def load(seq: "DeRhamSequence", f, k: int,
     elif k == 1:
         if frame == 'phys':
             # DF^{-1} v = G^{-1} DF^T v  (G = DF^T DF).  DF is not stored on
-            # the geometry (this pullback and load_grid_field are its only
-            # consumers); it is recomputed here, once per load.
+            # the geometry (this pullback is its only consumer); it is
+            # recomputed here, once per load.
             v_q = jax.lax.map(f, seq.quad.x,
                                batch_size=mrx.MAP_BATCH_SIZE_INNER)
             DF_q = map_jacobian_at(seq.map, seq.quad.x)
@@ -580,98 +579,3 @@ def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
     for j, ax in enumerate(axes):
         coeffs = _solve_tensor_collocation_axis(ax.hist, coeffs, axis=j)
     return _conforming_restriction(e, coeffs.reshape(-1))
-
-
-# ---------------------------------------------------------------------------
-# Gridded data
-# ---------------------------------------------------------------------------
-#
-# The production route from a GVEC equilibrium is the closed-form state file 
-# (mrx.gvec: StateField collocated at the Greville points, lambda histopolated 
-# from the series), which makes an interpolatory fit of gridded samples unnecessary 
-# and measurably worse. 
-# This is the projector for data that only exists on a grid.
-
-def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',
-                    degree=3):
-    """Factorized dual load of a field sampled on a regular logical grid.
-
-    Interpolatory-spline analogue of the pointwise ``seq.load(callable)`` for
-    grid-sampled data.  Steps, all sum-factorized (no pointwise ``lax.map`` and
-    no per-quad-point basis sweep):
-
-    1. fit an interpolatory tensor-product B-spline to ``values`` — one square
-       collocation solve per axis (``n_basis = n_data``);
-    2. evaluate it at ``seq``'s quadrature grid via :func:`_tp_evaluate` — three
-       1D contractions, ``O(N_q (n1+n2+n3))`` instead of ``O(N_q·n1·n2·n3)``;
-    3. apply the k-form frame pullback and quadrature weight (mirrors
-       :func:`mrx.projectors.load`; ``frame='phys'`` recomputes ``DF`` at the
-       quadrature points with :func:`mrx.geometry.map_jacobian_at` -- this
-       and ``load`` are the only consumers of ``DF``, which the geometry does
-       not store);
-    4. integrate against the k-form basis and extract.
-
-    Returns the **dual load vector** (same as ``seq.load``); pass it to
-    ``seq.apply_inverse_mass_matrix`` for the projected DOFs.
-
-    Parameters
-    ----------
-    axes : tuple of 1-D arrays ``(x1, x2, x3)``  logical grid nodes per axis.
-    values : array  ``(n1,n2,n3)`` for k=0,3;  ``(n1,n2,n3,3)`` for k=1,2
-        (flattened variants accepted).
-    seq : DeRhamSequence  target sequence.
-    k : {0,1,2,3}  form degree.
-    dirichlet : bool  use Dirichlet-constrained DOFs.
-    frame : {'ref','phys'}  interpretation of ``values`` (see
-        :func:`mrx.projectors.load`).
-    degree : int  spline degree of the interpolatory fit.
-    """
-
-    if frame not in ('ref', 'phys'):
-        raise ValueError(f"frame must be 'ref' or 'phys', got {frame!r}")
-
-    x1, x2, x3 = (jnp.asarray(a) for a in axes)
-    n1, n2, n3 = len(x1), len(x2), len(x3)
-    ncomp = 1 if k in (0, 3) else 3
-    C = jnp.asarray(values).reshape(n1, n2, n3) if ncomp == 1 \
-        else jnp.asarray(values).reshape(n1, n2, n3, 3).transpose(3, 0, 1, 2)
-    C = C.reshape(ncomp, n1, n2, n3)
-
-    # 1. interpolatory fit basis (n_basis = n_data per axis, seq's BC types)
-    fit = DifferentialForm(0, (n1, n2, n3), (degree,) * 3, seq.basis_0.types)
-    br, bt, bz = fit.Λ
-    solve = (br.collocation_matrix(x1), bt.collocation_matrix(x2),
-             bz.collocation_matrix(x3))
-    for a in range(3):
-        C = _solve_tensor_collocation_axis(solve[a], C, axis=a + 1)  # comp is axis 0
-
-    # 2. factorized evaluation at seq's quadrature grid.  M_axis = fit basis at
-    #    seq's per-axis 1D quad points (r<->x_x, t<->x_y, z<->x_z).
-    Mr = br.collocation_matrix(seq.quad.x_x).T          # (n1, nqr)
-    Mt = bt.collocation_matrix(seq.quad.x_y).T          # (n2, nqt)
-    Mz = bz.collocation_matrix(seq.quad.x_z).T          # (n3, nqz)
-    f = _tp_evaluate(C, Mr, Mt, Mz)                     # (ncomp, nqr, nqt, nqz)
-    f_q = f.reshape(ncomp, -1).T                        # (n_q, ncomp), seq.quad order
-
-    # 3. frame pullback + quadrature weight (mirrors mrx.projectors.load)
-    w = seq.quad.w
-    if k == 0:
-        w_jk = f_q * (w * seq.jacobian_j)[:, None]
-    elif k == 1:
-        if frame == 'phys':                             # DF^-1 f = G^-1 DF^T f
-            DF_q = map_jacobian_at(seq.map, seq.quad.x)
-            DFt = jnp.einsum('qji,qj->qi', DF_q, f_q)
-            f_q = jnp.einsum('qij,qj->qi', seq.metric_inv_jkl, DFt)
-        w_jk = f_q * (w * seq.jacobian_j)[:, None]
-    elif k == 2:
-        if frame == 'phys':                             # DF^T f
-            DF_q = map_jacobian_at(seq.map, seq.quad.x)
-            f_q = jnp.einsum('qji,qj->qi', DF_q, f_q)
-        w_jk = f_q * w[:, None]
-    else:  # k == 3
-        w_jk = f_q * (w if frame == 'phys' else w / seq.jacobian_j)[:, None]
-
-    # 4. integrate against the k-form basis + extraction
-    comp_info, comp_shapes = seq._form_comp_info(k)
-    e = seq.E(k, dirichlet)
-    return e @ integrate_against(w_jk, comp_info, comp_shapes, seq.quad.shape)

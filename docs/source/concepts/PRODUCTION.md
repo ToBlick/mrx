@@ -75,18 +75,18 @@ HX transfers, dense outer-ring probes, the Fourier coarse correction
 Analytic maps are callables. A GVEC state or VMEC wout becomes a polar
 spline map on the sequence's own 0-form space with the coefficients built
 from the series coefficients, mode by mode, no evaluation grid
-(`series_spline_dofs`, `build_gvec_map` in `mrx/gvec.py`); a grid export is
-fitted by `seq.interpolate(f, 0)` on the same space (`build_gvec_map`;
-`greville_interpolate_map` in `mrx/geometry.py` for analytic maps). No
+(`series_spline_dofs`, `build_gvec_map` in `mrx/gvec.py`); an analytic map
+is fitted by `seq.interpolate(f, 0)` on the same space
+(`greville_interpolate_map` in `mrx/geometry.py`). No
 reference mass matrix.
 Geometry lives on `SequenceGeometry` as `metric_jkl`, `metric_inv_jkl` and
 `jacobian_j`, built once per map; every mass weight is an elementwise product
 of those, memoised per degree in the element layout. `DF` is not stored --
-`load(frame='phys')` and `load_grid_field` recompute it at load time.
+`load(frame='phys')` recomputes it at load time.
 
 ## Relaxation
 
-`scripts/relax.py --geometry <GVEC export>`: `--ns 8,16,16`, `--p 2`,
+`scripts/relax.py --geometry <GVEC state or VMEC wout>`: `--ns 8,16,16`, `--p 2`,
 `--maxiter 2000`, `--precision float32`, `--ic clebsch`, `--method lbfgs --history 1`,
 `--history 3`, `--dt-mode linesearch`, `--cfl 0.5`; stops when the mean of
 the relative force residual over `--floor-steps 100` steps is below

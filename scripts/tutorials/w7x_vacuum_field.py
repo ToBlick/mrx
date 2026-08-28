@@ -25,7 +25,7 @@ import os
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--geometry", default="data/GVEC_State_final.dat",
-                    help="a GVEC state file or a flat-schema export (.h5)")
+                    help="a GVEC state file (.dat) or a VMEC wout (.nc)")
     ap.add_argument("--ns", default="12,24,24")
     ap.add_argument("--p", type=int, default=3)
     ap.add_argument("--cuts", type=int, default=6)

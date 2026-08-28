@@ -1,6 +1,6 @@
-"""Tutorial 4: a short relaxation run on the W7-X export.
+"""Tutorial 4: a short relaxation run on the W7-X equilibrium.
 
-The initial condition is the export's own equilibrium field, ``B = dA'``
+The initial condition is the state's own equilibrium field, ``B = dA'``
 from the histopolated Clebsch potential (exactly divergence-free, tangential
 to the wall, nested surfaces). The relaxation is the energy descent of
 ``mrx.relaxation`` with the defaults of ``scripts/relax.py``: conjugate-
@@ -25,7 +25,7 @@ import os
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--geometry", default="data/GVEC_State_final.dat",
-                    help="a GVEC state file or a flat-schema export (.h5)")
+                    help="a GVEC state file (.dat) or a VMEC wout (.nc)")
     ap.add_argument("--ns", default="12,24,24")
     ap.add_argument("--p", type=int, default=3)
     ap.add_argument("--outer", type=int, default=10, help="outer (recorded) iterations")
@@ -56,8 +56,8 @@ def main():
     seq, ops = build_sequence(cli.geometry, ns, cli.p)
     seq.set_operators(compute_nullspaces(seq, ops))
 
-    # --- the initial condition: the export's field as B = dA' -------------------
-    cb = load_clebsch(cli.geometry, seq.basis_0.types)
+    # --- the initial condition: the equilibrium field as B = dA' -------------------
+    cb = load_clebsch(cli.geometry)
     B0, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
     print(f"[ic] ||B||_M before normalisation {norm:.4e}, ||div B|| {divergence_norm(seq, B0):.2e}, "
           f"wall-normal part {wall:.1e}")

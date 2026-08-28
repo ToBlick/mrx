@@ -11,15 +11,15 @@ relaxed state is a finite-beta equilibrium, not a force-free field.
 
 Canonical invocation (one GPU; see slurm/README.md)::
 
-    python -u scripts/relax.py --geometry data/w7x_fmm002_clebsch_mrx.h5
+    python -u scripts/relax.py --geometry data/GVEC_State_final.dat
 
 Flags, defaults in brackets:
     Geometry and discretisation:
       --geometry G (required)      toroid, cylinder, rot-ellipse, or an
-                                   equilibrium file: GVEC export (.h5), GVEC
-                                   state (.dat), VMEC wout (.nc)
-      --nfp N [file attribute]     field periods of a file that declares
-                                   them wrong (the perturbed exports need 3)
+                                   equilibrium file: GVEC state (.dat),
+                                   VMEC wout (.nc)
+      --nfp N [file value]         field periods of a file that declares
+                                   them wrong
       --ns R,T,Z [8,16,16]         spline resolution (also the map's)
       --p P [2]                    spline degree; p+1 Gauss points per span
       --maxiter N [2000]           iteration budget of every inner solve
@@ -303,16 +303,14 @@ def main(cli):
     # --- initial condition -----------------------------------------------
     iota0, iota1 = (float(v) for v in cli.iota.split(","))
     if cli.ic == "clebsch":
-        cb = load_clebsch(cli.geometry, seq.basis_0.types)
+        cb = load_clebsch(cli.geometry)
         lam_norm, lam_energy = lambda_dirichlet_energy(cb["lam_h"], seq)
         results["lambda"] = dict(norm_sq=lam_norm, dirichlet_energy=lam_energy)
         print(f"[ic] lambda: ||lam||^2 {lam_norm:.4e}  <lam, L0 lam> {lam_energy:.4e}  "
               f"ratio {lam_energy / lam_norm:.4e}", flush=True)
-        print(f"[ic] clebsch from {geometry_path}  nfp={cb['nfp']}  closed axes "
-              f"{cb['closed_axes']}  iota (full turn) "
+        print(f"[ic] clebsch from {geometry_path}  nfp={cb['nfp']}  iota (full turn) "
               f"{cb['dchi'][1] / cb['dPhi'][1]:+.5f} -> "
-              f"{cb['dchi'][-1] / cb['dPhi'][-1]:+.5f}  flux-function departure "
-              f"{cb['iota_spread']:.2e}")
+              f"{cb['dchi'][-1] / cb['dPhi'][-1]:+.5f}")
     elif cli.ic == "dzeta":
         omega_ref = dzeta_form()
     else:

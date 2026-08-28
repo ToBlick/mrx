@@ -55,13 +55,13 @@ SCRIPT="-m pytest -q test" JOB_NAME=tests TIMEOUT_MIN=45 bash slurm/run.sh
 ```
 
 Tests that read files outside the repository (the W7-X Clebsch initial
-condition from `MRX_W7X_FILE`, the archived relaxation traces from
-`MRX_RELAX_ARCHIVE`) carry the `needs_data` marker and skip when the
-variable is unset or the file is absent. To run them, name the files:
+condition from `data/GVEC_State_final.dat`, the `data/wout_*.nc`
+references, the archived relaxation traces from `MRX_RELAX_ARCHIVE`) carry
+the `needs_data` marker and skip when the file is absent; `data/` is
+resolved relative to the checkout, so a worktree needs the symlink.
 
 ```
-SCRIPT="-m pytest -q test -m needs_data" JOB_NAME=tests_data TIMEOUT_MIN=30 \
-    EXTRA_ENV="MRX_W7X_FILE=/path/to/w7x_fmm002_clebsch_mrx.h5" bash slurm/run.sh
+SCRIPT="-m pytest -q test -m needs_data" JOB_NAME=tests_data TIMEOUT_MIN=30 bash slurm/run.sh
 ```
 
 To measure the suite as a runner sees it, run it inside a GPU job with the
@@ -73,7 +73,7 @@ SCRIPT="-m pytest -q test" JOB_NAME=tests_cpu CPUS=4 EXTRA_ENV="JAX_PLATFORMS=cp
 
 `EXTRA_ENV="MRX_DTYPE=float32"` selects single precision for any of these.
 Measured 2026-08-26 (H100, tree at the single-tier commit): 248 items,
-247 pass and the W7-X test skips without `MRX_W7X_FILE`; 6:09 on four
+247 pass and the W7-X test skips without its data file; 6:09 on four
 CPU cores in float64, 9:15 on the GPU in float64 and 9:01 in float32 (the
 suite is compile-bound; the session torus fixture is 51 s of it, the
 relaxation run 28 s, the projector tests 90 s). The `needs_data` tests

@@ -77,8 +77,8 @@ default.
 
 ## Also
 
-- [GVEC → MRX interface](concepts/gvec_mrx_interface.md): what MRX needs
-  from a GVEC export.
+- [GVEC → MRX interface](concepts/gvec_mrx_interface.md): what MRX reads
+  from a GVEC state or VMEC wout, and in which units.
 - [Manufactured solutions](concepts/manufactured_solutions.md): the exact
   solutions behind the Poisson convergence studies.
 - `docs/research/` in the repository is the campaign record. Its

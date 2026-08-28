@@ -352,12 +352,12 @@ def test_phys_pullback_inverts_pushforward(proj_seq, k):
 # ---------------------------------------------------------------------------
 # Physical-frame loads.
 #
-# ``load(frame='phys')`` and ``io.load_grid_field(frame='phys')`` are the only
-# consumers of the raw map Jacobian, which the geometry does not store; both
-# recompute ``DF`` at the quadrature points on demand.  These tests pin the two
-# entry points against the reference-frame path, which never touches ``DF``:
-# the dual pullbacks are ``DF^-1 v`` at k=1 and ``DF^T v`` at k=2, so loading
-# the pulled-back field with ``frame='ref'`` must give the same dual vector.
+# ``load(frame='phys')`` is the only consumer of the raw map Jacobian, which
+# the geometry does not store; it recomputes ``DF`` at the quadrature points
+# on demand.  This test pins it against the reference-frame path, which never
+# touches ``DF``: the dual pullbacks are ``DF^-1 v`` at k=1 and ``DF^T v`` at
+# k=2, so loading the pulled-back field with ``frame='ref'`` must give the
+# same dual vector.
 # ---------------------------------------------------------------------------
 
 def _v_phys(xi):
@@ -389,37 +389,4 @@ def test_load_phys_frame_matches_ref_frame_of_pulled_back_field(proj_seq, k):
     assert err < mrx.eps(1e4), (
         f"k={k}: load(frame='phys') disagrees with load(frame='ref') of the "
         f"pulled-back field (rel {err:.3e}); the on-demand DF pullback is wrong."
-    )
-
-
-@pytest.mark.parametrize("k", [1, 2])
-def test_load_grid_field_phys_frame_matches_pointwise_load(proj_seq, k):
-    """Grid-sampled physical data must load like the analytic field.
-
-    The sampled field is a cubic in r and constant in the angles, which the
-    degree-3 interpolatory fit reproduces exactly, so the only thing left to
-    differ is the pullback -- done by ``load_grid_field`` from ``DF`` at the
-    quadrature points, exactly as ``load`` does it.
-    """
-    from mrx.differential_forms import DifferentialForm
-    from mrx.projectors import load_grid_field
-
-    def v(xi):
-        return jnp.array([0.3 + xi[0] ** 2, 0.1 * xi[0], 0.5 - xi[0] ** 3])
-
-    n = (8, 6, 6)
-    fit = DifferentialForm(0, n, (3, 3, 3), proj_seq.basis_0.types)
-    axes = (fit.Λ[0].greville_points(),
-            jnp.linspace(0.0, 1.0, n[1], endpoint=False),
-            jnp.linspace(0.0, 1.0, n[2], endpoint=False))
-    grid = jnp.stack(jnp.meshgrid(*axes, indexing='ij'), axis=-1)   # (n1,n2,n3,3)
-    values = jax.vmap(v)(grid.reshape(-1, 3)).reshape(*n, 3)
-
-    dual_grid = load_grid_field(axes, values, proj_seq, k, frame='phys')
-    dual_load = proj_seq.load(v, k, frame='phys')
-    err = float(jnp.linalg.norm(dual_grid - dual_load) / jnp.linalg.norm(dual_load))
-    print(f"\n  k={k} load_grid_field phys vs load phys relative difference: {err:.3e}")
-    assert err < mrx.eps(1e5), (
-        f"k={k}: load_grid_field(frame='phys') disagrees with load(frame='phys') "
-        f"on a field the fit reproduces exactly (rel {err:.3e})."
     )

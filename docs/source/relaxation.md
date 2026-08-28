@@ -15,20 +15,20 @@ with the map installed and every solver operator built:
 from mrx.geometry import build_sequence
 
 seq, ops = build_sequence("toroid", ns=(8, 16, 8), p=3)
-seq, ops = build_sequence("data/w7x_fmm002_clebsch_mrx.h5", ns=(8, 16, 16), p=2)
+seq, ops = build_sequence("data/GVEC_State_final.dat", ns=(8, 16, 16), p=2)
 ```
 
 | geometry | map |
 |---|---|
 | `toroid`, `cylinder`, `rot-ellipse` | analytic, from `mrx.mappings` |
-| the path of a GVEC export (`.h5`) | fitted from the file; `os.path.isfile` decides |
+| the path of a GVEC state (`.dat`) or a VMEC wout (`.nc`) | spline coefficients built from the file's series; `os.path.isfile` decides |
 
-Any other string raises. A GVEC state or VMEC wout becomes two scalar
-splines `R`, `Z` on the sequence's own spline space, built from the series
-coefficients (a grid export is fitted there), so `ns` and `p` are also the
-map resolution. `build_gvec_map` checks that $\det D\Phi > 0$ everywhere and
-raises otherwise. `nfp=` overrides the file's attribute for a file that
-declares it wrong. What a GVEC export must contain is in
+Any other string raises, and so does a file of any other kind. A GVEC
+state or VMEC wout becomes two scalar splines `R`, `Z` on the sequence's
+own spline space, built from the series coefficients, so `ns` and `p` are
+also the map resolution. `build_gvec_map` checks that $\det D\Phi > 0$
+everywhere and raises otherwise. `nfp=` overrides the file's value for a
+file that declares it wrong. What MRX reads from the file is in
 [GVEC → MRX interface](concepts/gvec_mrx_interface.md).
 
 ## Initial condition
@@ -74,7 +74,7 @@ Every run is a GPU job through `slurm/run.sh`:
 
 ```bash
 SCRIPT=scripts/relax.py JOB_NAME=relax_w7x TIMEOUT_MIN=60 \
-  ARGS="--geometry data/w7x_fmm002_clebsch_mrx.h5" bash slurm/run.sh
+  ARGS="--geometry data/GVEC_State_final.dat" bash slurm/run.sh
 
 SCRIPT=scripts/relax.py JOB_NAME=relax_smoke TIMEOUT_MIN=30 \
   ARGS="--geometry toroid --ic analytic --ns 6,12,6 --steps 50 --qoi-every 25" \

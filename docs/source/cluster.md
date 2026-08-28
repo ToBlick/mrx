@@ -45,9 +45,10 @@ The job activates the virtualenv, exports `PYTHONPATH=$MRX_ROOT`, prints
 queue and prints the head and tail of the log.
 
 The test suite is one such job, `SCRIPT="-m pytest -q test"`. The tests
-marked `needs_data` (the W7-X Clebsch initial condition, the archived
-relaxation traces) skip unless `MRX_W7X_FILE` / `MRX_RELAX_ARCHIVE` name
-the files; pass them through `EXTRA_ENV`. `EXTRA_ENV="JAX_PLATFORMS=cpu"
+marked `needs_data` (the W7-X Clebsch initial condition from
+`data/GVEC_State_final.dat`, the `data/wout_*.nc` references, the archived
+relaxation traces named by `MRX_RELAX_ARCHIVE`) skip when the file is
+absent. `EXTRA_ENV="JAX_PLATFORMS=cpu"
 CPUS=4` measures the suite as the GitHub runner sees it (see
 `slurm/README.md`).
 
@@ -69,13 +70,10 @@ knobs; `python scripts/poisson_study.py --help` lists the rest.
 ## Worktrees
 
 A git worktree has no `data/` and no `.venv`. Geometries are passed by
-path (`--geometry /path/to/mrx/data/w7x_fmm002_clebsch_mrx.h5`), so no link
-is needed; the gpu-tier data test locates its file through `MRX_DATA`
-(default `data`):
-
-```bash
-EXTRA_ENV="MRX_DATA=/path/to/mrx/data" SCRIPT="-m pytest -q test" ARGS="-m gpu" bash slurm/run.sh
-```
+path (`--geometry /path/to/mrx/data/GVEC_State_final.dat`), so no link is
+needed for a run; the `needs_data` tests look for `data/` relative to the
+checkout, so symlink it (`ln -s /path/to/mrx/data data`) to run them from
+a worktree.
 
 `run.sh` defaults `MRX_ROOT` to the repository containing it, so a
 worktree runs itself, and it exports `PYTHONPATH=$MRX_ROOT` so that the

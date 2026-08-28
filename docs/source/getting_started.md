@@ -56,12 +56,13 @@ pinned to another checkout shadows the one you meant to test. See
 
 ## Data files
 
-Geometry files are passed by path: `--geometry /path/to/w7x_fmm002_clebsch_mrx.h5`
-to the scripts, `build_sequence("/path/to/file.h5", ns, p)` in code. Both take
-the flat-schema GVEC export (`.h5`) or GVEC's own state file
-(`GVEC_State_*.dat`), read in closed form -- see the
-[GVEC interface](concepts/gvec_mrx_interface.md). Only the gpu-tier
-data test reads a directory name, `MRX_DATA` (default `data/`).
+Equilibrium files are passed by path: `--geometry /path/to/GVEC_State_final.dat`
+to the scripts, `build_sequence("/path/to/file.dat", ns, p)` in code. Both take
+GVEC's own state file (`GVEC_State_*.dat`) or a VMEC `wout_*.nc`, read in
+closed form -- see the [GVEC interface](concepts/gvec_mrx_interface.md).
+The `needs_data` tests read `data/GVEC_State_final.dat` and the
+`data/wout_*.nc` references relative to the checkout and skip when they
+are absent.
 
 ## Next steps
 

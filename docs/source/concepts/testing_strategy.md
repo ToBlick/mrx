@@ -49,23 +49,25 @@ Coverage of the production path, by test file:
   solved with the production `'auto'` preconditioner against the
   manufactured solutions of `test/manufactured.py` (shared with
   `scripts/poisson_study.py`), and the Leray projection.
-- `test_synthetic_gvec.py`: the GVEC route (`build_sequence` on a file,
-  `load_clebsch`, `clebsch_form`, the projection) on a synthetic export
-  written by `test/synthetic_gvec.py` -- the layout of the W7-X file, filled
-  from closed formulas on a circular torus, so map, field, transform and
-  lambda handling are checked against the formulas -- and, on that
+- `test_synthetic_gvec.py`: the GVEC route (`read_state`, `build_sequence`
+  on a file, `load_clebsch`, `clebsch_form`, the projection) on a synthetic
+  state file written by `test/synthetic_gvec.py` -- the `GVEC_State_*.dat`
+  layout, filled from closed formulas on a circular torus, so parser, map,
+  field, transform and lambda handling are checked against the formulas --
+  and, on that
   sequence's Clebsch initial condition, the one relaxation run of the
   suite with the most general stepper (CG, linesearch, CFL cap,
   hyperregularisation, resistivity from the first step): energy descent
   against the linesearch prediction, `div B`, the CFL invariant, and the
   helicity rate `dH/dt = -2 eta <J, B>` of the resistive step checked at
-  two step sizes. `docs/source/concepts/gvec_mrx_interface.md` section 7 describes the
-  synthetic file.
+  two step sizes. `docs/source/concepts/gvec_mrx_interface.md` describes the
+  synthetic state.
 - the remaining files test the module they are named after.
 
-Tests that read files outside the repository (`MRX_W7X_FILE`,
-`MRX_RELAX_ARCHIVE`) carry the `needs_data` marker and skip with the missing
-path in the reason when the file is absent.
+Tests that read files outside the repository (`data/GVEC_State_final.dat`,
+the `data/wout_*.nc` references, `MRX_RELAX_ARCHIVE`) carry the
+`needs_data` marker and skip with the missing path in the reason when the
+file is absent.
 
 ## Adding a test
 

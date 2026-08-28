@@ -1,10 +1,10 @@
-"""A GVEC-style export of an analytic circular torus, for tests.
+"""A GVEC state file of an analytic circular torus, for tests.
 
-:func:`write_synthetic_gvec` writes the flat schema that
-:func:`mrx.gvec.build_gvec_map` and :func:`mrx.gvec.load_clebsch` read (the
-layout of ``w7x_fmm002_clebsch_mrx.h5``, measured 2026-08-26 and mirrored
-here dataset by dataset), but filled from closed formulas: the map is the
-circular torus
+:func:`write_synthetic_state` writes the ``GVEC_State_*.dat`` layout that
+:func:`mrx.gvec.read_state` parses (the inverse of that parser, block for
+block: element grid, mode tables, radial B-spline coefficients per mode,
+profiles at the radial interpolation points), filled from closed formulas:
+the map is the circular torus
 
     R = R0 + a rho cos(theta_G),   Z = a rho sin(theta_G)
 
@@ -17,42 +17,37 @@ and the Clebsch scalars are
     p(rho)    = p0 (1 - rho^2),  p0 = beta B0^2 / (2 mu0),  B0 = Phi_edge / (pi a^2)
 
 in GVEC's units: ``theta_G = 2 pi theta`` and ``zeta_G = 2 pi zeta / nfp``
-are the radian angles, the stored derivatives are with respect to ``rho``
-and to the radian angles, and the evaluation grid is the normalised
-``(rho, theta, zeta)`` in [0, 1]. ``lambda`` is stellarator-symmetric (odd
-under ``(theta, zeta) -> (-theta, -zeta)``), ``rho^1`` for its ``m = 1``
-regularity at the axis, and carries one ``n = nfp`` modulation so both
-angular derivatives are exercised.
+are the radian angles of the series ``sum f_mn(s) trig(m theta_G - n
+zeta_G)`` with ``n`` a multiple of ``nfp``, and ``s = rho`` is GVEC's radial
+label. ``lambda`` is stellarator-symmetric (odd under ``(theta, zeta) ->
+(-theta, -zeta)``), ``rho^1`` for its ``m = 1`` regularity at the axis, and
+carries one ``n = nfp`` modulation so both angular derivatives are
+exercised: ``sin(theta_G) cos(nfp zeta_G)`` is the pair of modes
+``(m, n) = (1, +-nfp)`` at half the amplitude each.
 
-Grid conventions copied from the real exports:
+Every radial function of the map and of lambda is ``1`` or ``rho``, which
+any clamped B-spline basis represents exactly (the coefficients of ``rho``
+are the Greville abscissae); the profiles are stored as values at the
+Greville points, GVEC's interpolation points, through which the degree-5
+profile splines reproduce ``rho^2`` and ``rho^4`` exactly. So a reader that
+parses the file correctly reproduces the formulas to round-off.
 
-* ``eval_points`` is ``(N, 3)`` in C order over ``(rho, theta, zeta)``, the
-  scalars are flat of length ``N``, ``n_rho``/``n_theta``/``n_zeta``/``nfp``
-  are root attributes;
-* theta and zeta are sampled half-open, ``i / n`` for ``i < n``; zeta spans
-  ONE field period (the real file is stellarator-symmetric under
-  ``(theta, zeta) -> (-theta, -zeta)`` on its zeta grid, which only a full
-  period admits);
-* rho is ``i / (n_rho - 1)`` except the first point, which is
-  ``0.1 / (n_rho - 1)``: GVEC does not evaluate on the axis, and every
-  export (quasr, W7-X) carries this off-axis first point;
-* theta runs counter-clockwise in the ``(R, Z)`` plane from the outboard
-  midplane. With ``det DF > 0`` this forces ``Y = -R sin(2 pi zeta / nfp)``,
-  the handedness of ``mrx.mappings.toroid_map``, which
-  :func:`mrx.gvec.build_gvec_map` measures rather than assumes.
+Conventions that match GVEC's: theta runs counter-clockwise in the
+``(R, Z)`` plane from the outboard midplane, so with ``det DF > 0`` the map
+is ``Y = -R sin(2 pi zeta / nfp)``, the handedness of
+``mrx.mappings.toroid_map``, which :func:`mrx.gvec.build_gvec_map` measures
+rather than assumes.
 
 The field on concentric circular surfaces is an equilibrium only in the
 large-aspect-ratio, low-beta limit (the analytic map has no Shafranov
 shift), so keep ``beta`` small and read the force residual of the projected
 field as a property of the choice, not of the code. The pressure is stored
-for the schema (``load_clebsch`` returns its surface mean); no solver in
-MRX consumes it.
+for the format (``load_clebsch`` returns it); no solver in MRX consumes it.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-import h5py
 import jax.numpy as jnp
 import numpy as np
 
@@ -65,7 +60,7 @@ TWO_PI = 2.0 * np.pi
 
 @dataclass(frozen=True)
 class SyntheticTorus:
-    """The closed formulas behind one synthetic export, in normalised
+    """The closed formulas behind one synthetic state, in normalised
     coordinates ``(rho, theta, zeta)`` in [0, 1] (zeta per field period).
 
     Every method accepts scalars or arrays and is differentiable with
@@ -118,55 +113,65 @@ class SyntheticTorus:
         return p0 * (1.0 - rho ** 2)
 
 
-def synthetic_grid(n_rho, n_theta, n_zeta):
-    """The export's axes: off-axis clamped rho, half-open theta and zeta."""
-    rho = np.arange(n_rho, dtype=np.float64) / (n_rho - 1)
-    rho[0] = 0.1 / (n_rho - 1)
-    theta = np.arange(n_theta, dtype=np.float64) / n_theta
-    zeta = np.arange(n_zeta, dtype=np.float64) / n_zeta
-    return rho, theta, zeta
+def greville(sp, deg):
+    """Greville abscissae of the clamped degree-``deg`` basis on the element
+    grid ``sp``: GVEC's radial interpolation points, and the B-spline
+    coefficients of the function ``s`` itself."""
+    T = np.concatenate([np.full(deg, sp[0]), sp, np.full(deg, sp[-1])])
+    n_base = len(sp) - 1 + deg
+    return np.array([T[i + 1:i + deg + 1].mean() for i in range(n_base)])
 
 
-def write_synthetic_gvec(path, *, R0, a, nfp, n_rho, n_theta, n_zeta, iota,
-                         Phi_edge, lam_amplitude, beta):
-    """Write the synthetic export to ``path``; returns its :class:`SyntheticTorus`.
+def _row(values):
+    return ", ".join(f"{float(v): .15E}" for v in values)
+
+
+def write_synthetic_state(path, *, R0, a, nfp, iota, Phi_edge, lam_amplitude,
+                          beta, n_elems=10, deg=5):
+    """Write the synthetic state to ``path``; returns its :class:`SyntheticTorus`.
 
     Args:
         path: output file (overwritten).
         R0, a: major and minor radius of the circular torus.
         nfp: field periods; zeta spans one of them.
-        n_rho, n_theta, n_zeta: grid sizes (see :func:`synthetic_grid`).
         iota: ``(iota0, iota1)`` of ``iota(rho) = iota0 + iota1 rho^2`` per
             full toroidal turn; negative on W7-X.
         Phi_edge: toroidal flux at ``rho = 1``; ``Phi = Phi_edge rho^2``.
         lam_amplitude: amplitude of ``LA`` (radians); zero switches lambda off.
         beta: on-axis ``2 mu0 p0 / B0^2`` of the stored pressure profile.
+        n_elems, deg: the radial element grid (uniform) and B-spline degree;
+            GVEC's defaults for W7-X.
     """
     iota0, iota1 = (float(v) for v in iota)
     torus = SyntheticTorus(float(R0), float(a), int(nfp), float(Phi_edge),
                            iota0, iota1, float(lam_amplitude), float(beta))
-    rho, theta, zeta = synthetic_grid(n_rho, n_theta, n_zeta)
-    RHO, TH, ZE = np.meshgrid(rho, theta, zeta, indexing="ij")
-    flat = {
-        "R": torus.R(RHO, TH), "Z": torus.Z(RHO, TH),
-        "pressure": torus.pressure(RHO),
-        "clebsch/Phi": torus.Phi(RHO), "clebsch/chi": torus.chi(RHO),
-        "clebsch/dPhi_dr": torus.dPhi_dr(RHO), "clebsch/dchi_dr": torus.dchi_dr(RHO),
-        "clebsch/LA": torus.LA(RHO, TH, ZE),
+    sp = np.linspace(0.0, 1.0, n_elems + 1)
+    g = greville(sp, deg)                       # coefficients of s; IP points
+    one = np.ones_like(g)
+    half = 0.5 * LA_ZETA_MODULATION * lam_amplitude
+    blocks = {                                  # name: (sin_cos, [(m, n, coef)])
+        "X1": (2, [(0, 0, R0 * one), (1, 0, a * g)]),
+        "X2": (1, [(1, 0, a * g)]),
+        "LA": (1, [(1, 0, lam_amplitude * g), (1, nfp, half * g), (1, -nfp, half * g)]),
     }
-    with h5py.File(path, "w") as h:
-        h.attrs["n_rho"], h.attrs["n_theta"], h.attrs["n_zeta"] = n_rho, n_theta, n_zeta
-        h.attrs["nfp"] = int(nfp)
-        h.attrs["synthetic"] = "test/synthetic_gvec.py write_synthetic_gvec"
-        for name in ("R0", "a", "Phi_edge", "iota0", "iota1", "lam_amplitude", "beta"):
-            h.attrs[name] = getattr(torus, name)
-        h.attrs["angle_units"] = "radians"
-        h.attrs["zeta_convention"] = "per_field_period"
-        h.attrs["radial_label"] = "rho = sqrt(s)"
-        h.attrs["clebsch_contract"] = ("sqrt(g) B^rho = 0; sqrt(g) B^theta = dchi_dr "
-                                       "- dPhi_dr * dLA_dz; sqrt(g) B^zeta = dPhi_dr "
-                                       "* (1 + dLA_dt)")
-        h["eval_points"] = np.stack([RHO.ravel(), TH.ravel(), ZE.ravel()], axis=1)
-        for name, values in flat.items():
-            h[name] = np.ascontiguousarray(np.asarray(values, dtype=np.float64).ravel())
+    rule = "#" * 60
+    lines = ["## MHD3D Solution... outputLevel and fileID:", "0001,00000000",
+             f"## grid: nElems, gridType {rule}", f"{n_elems:8d},{0:8d}",
+             "## grid: sp(0:nElems)", _row(sp),
+             f"## global: nfp,degGP,mn_nyq(2),hmap {rule}",
+             f"{nfp:8d},{deg + 2:8d},{4:8d},{4:8d},{1:8d}"]
+    for name, (sin_cos, modes) in blocks.items():
+        lines.append(f"## {name}_base: s%nbase,s%deg,s%continuity,f%modes,f%sin_cos,f%excl_mn_zero {rule}")
+        lines.append(f"{len(g):8d},{deg:8d},{deg - 1:8d},{len(modes):8d},{sin_cos:8d},{0:8d}")
+    for name, (_, modes) in blocks.items():
+        lines.append(f"## {name}: m,n,{name}(1:nbase,iMode) {rule}")
+        for m, n, coef in modes:
+            lines.append(f"{m:8d},{n:8d}, " + _row(coef))
+    lines.append(f"## at X1_base IP point positions (size nBase): spos,phi,chi,iota,pressure  {rule}")
+    for s in g:
+        lines.append(_row([s, torus.Phi(s), torus.chi(s), torus.iota(s), torus.pressure(s)]))
+    lines.append(f"## a_minor,r_major,volume  {rule}")
+    lines.append(_row([a, R0, 2.0 * np.pi ** 2 * R0 * a ** 2]))
+    with open(path, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
     return torus

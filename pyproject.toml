@@ -51,7 +51,7 @@ testpaths = ["test"]
 # cost is measured rather than guessed.
 addopts = "--durations=15"
 markers = [
-    "needs_data: reads a file outside the repository (MRX_W7X_FILE, MRX_GVEC_STATE, MRX_RELAX_ARCHIVE, the data/wout_* references; the wout IC gates additionally want MRX_WOUT_GATES=1 on a GPU); skips when it is absent",
+    "needs_data: reads a file outside the repository (data/GVEC_State_final.dat, the data/wout_* references, MRX_RELAX_ARCHIVE; the wout IC gates additionally want MRX_WOUT_GATES=1 on a GPU); skips when it is absent",
 ]
 norecursedirs = ["test/deprecated", "deprecated", "test/experimental"]
 

@@ -1,14 +1,13 @@
-"""The GVEC route end to end on a synthetic export, and THE relaxation run.
+"""The GVEC route end to end on a synthetic state file, and THE relaxation run.
 
-``test/synthetic_gvec.py`` writes a file in the layout of
-``w7x_fmm002_clebsch_mrx.h5`` (same datasets, attributes, dtypes and grid
-conventions) from closed formulas on a circular torus: nfp = 5, a W7-X-like
-transform ``iota = -0.9 - 0.15 rho^2`` per turn, a small
-stellarator-symmetric lambda and a beta = 1e-3 pressure profile. Everything
-that a real export goes through -- ``build_sequence`` (the linear grid
-bridge, the Greville map fit, the handedness measurement),
-``load_clebsch`` (the closed/half-open decision, the lambda spline fit),
-``clebsch_form`` (the radian-to-normalised unit conversions) and the
+``test/synthetic_gvec.py`` writes a ``GVEC_State_*.dat`` in the layout
+``mrx.gvec.read_state`` parses, from closed formulas on a circular torus:
+nfp = 5, a W7-X-like transform ``iota = -0.9 - 0.15 rho^2`` per turn, a
+small stellarator-symmetric lambda and a beta = 1e-3 pressure profile.
+Everything that a real state goes through -- ``read_state`` (the parser),
+``build_sequence`` (the map's spline coefficients from the series
+coefficients, the handedness measurement), ``load_clebsch`` (the profile splines, lambda in closed
+form), ``clebsch_form`` (the radian-to-normalised unit conversions) and the
 projection -- is then checked against the formulas the file was written
 from, which no data file allows. The module fixture is a (4, 8, 4) p=2
 sequence on that file, with the production operators and the harmonic
@@ -18,6 +17,8 @@ the production geometry route.
 
 Tests:
 
+* the parsed state reproduces the formulas (``R``, ``Z``, ``LA`` and the
+  profiles to round-off: the writer is the inverse of the parser);
 * the installed map reproduces the analytic torus to the map fit's error
   (stated band), and ``det DF > 0`` selected ``Y = -R sin(2 pi zeta/nfp)``;
 * the projected Clebsch field matches the contract
@@ -62,7 +63,7 @@ import pytest
 
 import mrx
 from mrx.geometry import build_sequence
-from mrx.gvec import load_clebsch
+from mrx.gvec import evaluate, load_clebsch, profile_spline, read_state
 from mrx.initial_conditions import (
     clebsch_form,
     clebsch_potential_form,
@@ -80,7 +81,7 @@ from mrx.relaxation import (
     initial_state,
     resistive_step,
 )
-from test.synthetic_gvec import TWO_PI, write_synthetic_gvec
+from test.synthetic_gvec import TWO_PI, write_synthetic_state
 from test.manufactured import relative_l2_error
 
 # The torus of the session fixture (R0 = 1, a = 1/3) with W7-X's nfp and a
@@ -89,7 +90,6 @@ R0, A, NFP = 1.0, 1.0 / 3.0, 5
 IOTA = (-0.9, -0.15)
 PHI_EDGE = np.pi * A ** 2
 LAM_AMPLITUDE, BETA = 0.05, 1e-3
-GRID = dict(n_rho=17, n_theta=24, n_zeta=8)
 NS, P = (4, 8, 4), 2
 
 # eta = 1e-2 puts eps = eta dt at ~3e-4 (dt* is ~3e-2 on this field), where
@@ -100,17 +100,17 @@ CHECK = 6           # the step at which the resistive identities are measured
 
 
 def _write(path, lam_amplitude):
-    return write_synthetic_gvec(path, R0=R0, a=A, nfp=NFP, iota=IOTA,
-                                Phi_edge=PHI_EDGE, lam_amplitude=lam_amplitude,
-                                beta=BETA, **GRID)
+    return write_synthetic_state(path, R0=R0, a=A, nfp=NFP, iota=IOTA,
+                                 Phi_edge=PHI_EDGE, lam_amplitude=lam_amplitude,
+                                 beta=BETA)
 
 
 @pytest.fixture(scope="module")
 def synthetic(tmp_path_factory):
-    """``(path, torus)`` of the export with lambda and of the one without."""
+    """``(path, torus)`` of the state with lambda and of the one without."""
     d = tmp_path_factory.mktemp("synthetic_gvec")
-    path = str(d / "torus_clebsch_mrx.h5")
-    path0 = str(d / "torus_clebsch_nolambda_mrx.h5")
+    path = str(d / "GVEC_State_torus.dat")
+    path0 = str(d / "GVEC_State_torus_nolambda.dat")
     return (path, _write(path, LAM_AMPLITUDE)), (path0, _write(path0, 0.0))
 
 
@@ -150,7 +150,7 @@ def clebsch_ic(synthetic, synthetic_seq):
     Leray-cleaned, unit-norm version -- the relaxation's initial condition."""
     (path, _), _ = synthetic
     seq = synthetic_seq
-    cb = load_clebsch(path, seq.basis_0.types)
+    cb = load_clebsch(path)
     B_raw, norm = project_reference_two_form(seq, clebsch_form(cb))
     B, moved = leray_clean(seq, B_raw)
     return B_raw, norm, B, moved
@@ -162,17 +162,44 @@ def potential_ic(synthetic, synthetic_seq):
     production initial condition (``scripts/relax.py --ic clebsch``)."""
     (path, _), _ = synthetic
     seq = synthetic_seq
-    cb = load_clebsch(path, seq.basis_0.types)
+    cb = load_clebsch(path)
     B, _, _ = potential_two_form(seq, clebsch_potential_form(cb))
     return B
+
+
+def test_state_file_reproduces_the_formulas(synthetic):
+    """``read_state`` on the written file gives back the torus: the series
+    of ``X1``, ``X2``, ``LA`` on a tensor grid and the profile splines at
+    arbitrary radii agree with the formulas to round-off (the writer is the
+    parser's inverse, and every radial function is in the spline space)."""
+    (path, torus), _ = synthetic
+    st = read_state(path)
+    assert st["nfp"] == NFP and st["deg"] == 5 and st["X1"]["sin_cos"] == 2
+    assert st["X2"]["sin_cos"] == 1 and st["LA"]["sin_cos"] == 1
+    assert abs(st["a_minor"] - A) <= 1e-15 and st["r_major"] == R0
+    rho = np.array([0.0, 0.13, 0.5, 0.87, 1.0])
+    th, ze = np.array([0.0, 0.2, 0.45, 0.7]), np.array([0.0, 0.3, 0.8])
+    RHO, TH, ZE = np.meshgrid(rho, th, ze, indexing="ij")
+    for blk, want in (("X1", torus.R(RHO, TH)), ("X2", torus.Z(RHO, TH)),
+                      ("LA", torus.LA(RHO, TH, ZE))):
+        got = evaluate(st[blk], st["sp"], rho, TWO_PI * th, TWO_PI * ze / NFP)
+        assert np.abs(got - np.asarray(want)).max() <= 1e-13, blk
+    r = np.linspace(0.0, 1.0, 37)
+    for name, want in (("phi", torus.Phi(r)), ("chi", torus.chi(r)),
+                       ("iota", torus.iota(r)), ("pressure", torus.pressure(r))):
+        got = profile_spline(st, name)(r)
+        assert np.abs(got - np.asarray(want)).max() <= 1e-12 * max(1.0, np.abs(want).max()), name
+    dPhi = profile_spline(st, "phi").derivative()(r)
+    assert np.abs(dPhi - np.asarray(torus.dPhi_dr(r))).max() <= 1e-12
 
 
 def test_map_reproduces_the_torus(synthetic, synthetic_seq):
     """``build_sequence`` on the file installs ``F = (R cos phi, -R sin phi, Z)``
     with ``phi = 2 pi zeta / nfp`` (the sign ``det DF > 0`` selects for a
     theta running counter-clockwise in the (R, Z) plane) and R, Z within
-    the map fit's error of the circle: the linear grid bridge on 24 theta
-    points then the Greville fit on 8 periodic p=2 splines."""
+    the map fit's error of the circle: the L2 projection of the series onto
+    8 periodic p=2 splines in theta (the radial dependence is linear and
+    exact)."""
     (_, torus), _ = synthetic
     seq = synthetic_seq
     x = seq.quad.x
@@ -187,26 +214,22 @@ def test_map_reproduces_the_torus(synthetic, synthetic_seq):
     # The toroidal angle is exact: the map applies cos/sin to 2 pi zeta/nfp
     # itself, so only round-off (1e2 eps) separates it from the formula.
     assert err_phi <= mrx.eps(1e2)
-    # Measured 2026-08-26 at GRID (17, 24, 8), NS (4, 8, 4) p=2 (see the
-    # print): 1.08e-2 of a in both R and Z; bands at 1.25x.
+    # Measured 2026-08-28 at NS (4, 8, 4) p=2 on the closed form (see the
+    # print): MEASURE of a in both R and Z; bands at 1.25x.
     assert err_R <= 1.25 * 1.08e-2, err_R
     assert err_Z <= 1.25 * 1.08e-2, err_Z
 
 
 def test_clebsch_field_matches_the_contract(synthetic, synthetic_seq, clebsch_ic):
     """``load_clebsch`` + ``clebsch_form`` + the projection reproduce the
-    contract's ``sqrt(g) B^i`` from the file's ``dPhi_dr``, ``dchi_dr`` and
-    ``LA`` to the projection error of the (4, 8, 4) p=2 space, and
-    ``leray_clean`` takes the projection's divergence to solver tolerance."""
+    contract's ``sqrt(g) B^i`` from the state's profiles and ``LA`` to the
+    projection error of the (4, 8, 4) p=2 space, and ``leray_clean`` takes
+    the projection's divergence to solver tolerance."""
     (path, torus), _ = synthetic
     seq = synthetic_seq
     B_raw, norm, B, moved = clebsch_ic
-    cb = load_clebsch(path, seq.basis_0.types)
+    cb = load_clebsch(path)
     assert cb["nfp"] == NFP
-    assert cb["closed_axes"] == []          # half-open angles, like the real file
-    # dchi/dPhi is a flux function by construction: the spread is round-off
-    # of the loader's float64 surface means.
-    assert cb["iota_spread"] <= 1e2 * np.finfo(np.float64).eps
 
     omega = contract_two_form(torus)
     err_raw = relative_l2_error(seq, 2, True, B_raw * norm, omega)
@@ -219,9 +242,10 @@ def test_clebsch_field_matches_the_contract(synthetic, synthetic_seq, clebsch_ic
     assert jnp.isfinite(B).all()
     assert abs(float(seq.l2_norm(B, 2)) - 1.0) <= mrx.eps(1e2)
     assert div <= 10 * seq.tol
-    # Measured 2026-08-26 in float64 (see the print): 3.263e-3 raw and
-    # cleaned (the divergence the projection carries is 2.6e-4, and the
-    # cleaning moves the field by 2.2e-5); bands at 1.25x on the errors.
+    # Measured 2026-08-28 in float64 on the closed form (see the print):
+    # MEASURE raw and cleaned (the divergence the projection carries is
+    # MEASURE, and the cleaning moves the field by MEASURE); bands at 1.25x
+    # on the errors.
     # The moved norm is what the Leray solve resolves: its band is the
     # measured value plus the solve tolerance.
     assert err_raw <= 1.25 * 3.27e-3, err_raw
@@ -231,16 +255,15 @@ def test_clebsch_field_matches_the_contract(synthetic, synthetic_seq, clebsch_ic
 
 def test_rotational_transform_and_lambda_invariance(synthetic, synthetic_seq):
     """Without lambda the field is ``(0, dchi_dr / nfp, dPhi_dr)``, so
-    ``B^theta / B^zeta = iota(rho) / nfp`` pointwise: exactly at the file's
-    rho nodes (the profiles are read there) and to the linear-interpolation
-    error of the cubic ``dchi_dr`` between them. With lambda the surface
-    means of both components are unchanged."""
+    ``B^theta / B^zeta = iota(rho) / nfp`` pointwise: exactly at the radii
+    where ``load_clebsch`` tabulates the profile splines (401 uniform
+    points) and to the linear-interpolation error of the cubic ``dchi_dr``
+    between them. With lambda the surface means of both components are
+    unchanged."""
     (path, torus), (path0, torus0) = synthetic
-    types = synthetic_seq.basis_0.types
-    cb0 = load_clebsch(path0, types)
-    assert cb0["closed_axes"] == []         # LA = 0 must not read as a closed sample
+    cb0 = load_clebsch(path0)
     omega0 = jax.jit(jax.vmap(clebsch_form(cb0)))
-    rho_nodes = jnp.asarray(cb0["rho"])
+    rho_nodes = jnp.asarray(cb0["rho"])[1:]          # both fluxes vanish on the axis
     rho_mid = 0.5 * (rho_nodes[1:] + rho_nodes[:-1])
     ang = jnp.array([0.3, 0.7])
     for label, rho, band in (("nodes", rho_nodes, mrx.eps(1e2)),
@@ -252,11 +275,11 @@ def test_rotational_transform_and_lambda_invariance(synthetic, synthetic_seq):
         err = float(jnp.max(jnp.abs(ratio - torus0.iota(rho) / NFP)
                             / jnp.abs(torus0.iota(rho) / NFP)))
         print(f"\n  iota / nfp at the {label}: max relative error {err:.2e}")
-        # Nodes: round-off (6e-16 measured). Midpoints: 4.88e-4 measured
-        # 2026-08-26 at n_rho = 17 (see the print), band 1.25x.
+        # Nodes: round-off. Midpoints: MEASURE measured 2026-08-28 on the
+        # 401-point tabulation (see the print), band 1.25x.
         assert err <= band, (label, err)
 
-    cb = load_clebsch(path, types)
+    cb = load_clebsch(path)
     omega = jax.jit(jax.vmap(clebsch_form(cb)))
     n = 48
     t, z = jnp.meshgrid((jnp.arange(n) + 0.5) / n, (jnp.arange(n) + 0.5) / n,
@@ -411,63 +434,6 @@ def test_relaxation(synthetic_seq, potential_ic):
     assert abs(dHh - pnh) <= 0.35 * abs(dH - pn) + floor
 
 
-def test_lambda_fit_on_an_edge_refined_radial_sample():
-    """``fit_scalar_spline`` places its knots from the sample, so a radial
-    grid refined toward the edge is interpolated as well as a uniform one:
-    exact at the nodes, and off the nodes to the spline's own accuracy.
-    (On uniform knots the refined sample violates Schoenberg-Whitney and the
-    collocation solve is singular or nearly so.)"""
-    from mrx.gvec import fit_scalar_spline, knots_at_data
-
-    n_rho, n_theta, n_zeta = 17, 24, 16
-    u = np.arange(n_rho, dtype=np.float64) / (n_rho - 1)
-    rho_ref = 1.0 - (1.0 - u) ** 2                 # spacing shrinks toward rho = 1
-    rho_ref[0] = 0.1 / (n_rho - 1)
-    rho_uni = u.copy()
-    rho_uni[0] = rho_ref[0]
-    theta = np.arange(n_theta, dtype=np.float64) / n_theta
-    zeta = np.arange(n_zeta, dtype=np.float64) / n_zeta
-    types = ("clamped", "periodic", "periodic")
-
-    def f(x):
-        return jnp.exp(2.0 * x[0]) * jnp.sin(TWO_PI * x[1]) * (1.0 + 0.3 * jnp.cos(TWO_PI * x[2]))
-
-    rng = np.random.default_rng(3)
-    probe = jnp.asarray(np.column_stack([rng.uniform(0.02, 0.98, 400),
-                                         rng.uniform(0.0, 1.0, 400),
-                                         rng.uniform(0.0, 1.0, 400)]))
-    ref = jax.vmap(f)(probe)
-    dref = jax.vmap(jax.grad(f))(probe)
-    errs = {}
-    for label, rho in (("uniform", rho_uni), ("refined", rho_ref)):
-        T = knots_at_data(rho, 3, "clamped")
-        assert T.shape == (n_rho + 4,) and float(T[0]) == 0.0 and float(T[-1]) == 1.0
-        assert bool(jnp.all(jnp.diff(T) >= 0))
-        axes = (rho, theta, zeta)
-        RHO, TH, ZE = np.meshgrid(*axes, indexing="ij")
-        nodes = jnp.asarray(np.column_stack([RHO.ravel(), TH.ravel(), ZE.ravel()]))
-        vals = jax.vmap(f)(nodes)
-        fit = fit_scalar_spline(axes, vals, types)
-        at_nodes = jax.vmap(fit)(nodes)
-        scale = float(jnp.max(jnp.abs(vals)))
-        assert float(jnp.max(jnp.abs(at_nodes - vals))) <= mrx.eps(1e3) * scale
-        err = float(jnp.max(jnp.abs(jax.vmap(fit)(probe) - ref))) / scale
-        derr = float(jnp.max(jnp.abs(jax.vmap(jax.grad(fit))(probe) - dref))
-                     / jnp.max(jnp.abs(dref)))
-        errs[label] = (err, derr)
-        print(f"\n  {label} rho sample: off-node value error {err:.2e}, "
-              f"gradient error {derr:.2e}")
-    # Both samples interpolate the same smooth function with a cubic spline,
-    # O(h^4) in the value and O(h^3) in the gradient; the refined sample's
-    # largest radial cell (at the axis) is ~1.9x the uniform one. Measured
-    # 2026-08-26 (see the print): uniform 1.51e-5 / 1.22e-4, refined
-    # 1.75e-5 / 1.22e-4 -- the gradient error is the angular directions'.
-    h = float(np.max(np.diff(rho_ref)) / np.max(np.diff(rho_uni)))
-    assert errs["refined"][0] <= 1.25 * h ** 4 * errs["uniform"][0] + mrx.eps(1e3), errs
-    assert errs["refined"][1] <= 1.25 * h ** 3 * errs["uniform"][1] + mrx.eps(1e3), errs
-    assert errs["uniform"][0] <= 1e-2 and errs["uniform"][1] <= 5e-2, errs
-
-
 def test_resistive_step_diffuses_the_field(synthetic_seq, potential_ic):
     """One backward-Euler step of ``dB/dt = -curl curl B`` lowers the energy,
     keeps the field divergence-free, and satisfies its own defect equation
@@ -494,7 +460,7 @@ def test_potential_route_matches_the_projection(synthetic, synthetic_seq, clebsc
     discretisation error."""
     (path, _), _ = synthetic
     seq = synthetic_seq
-    cb = load_clebsch(path, seq.basis_0.types)
+    cb = load_clebsch(path)
     B_pot, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
     _, _, B_proj, _ = clebsch_ic
     div = divergence_norm(seq, B_pot)
@@ -513,7 +479,7 @@ def test_seed_is_resonant_and_wall_tangential(synthetic, synthetic_seq):
     ``resonant_rho`` finds, and it vanishes on the wall."""
     import jax
     (path, _), _ = synthetic
-    cb = load_clebsch(path, synthetic_seq.basis_0.types)
+    cb = load_clebsch(path)
     m, n = 5, 1                       # |iota| = nfp n / m = 1 at rho = sqrt(2/3) of iota = -0.9 - 0.15 rho^2
     rho0 = resonant_rho(cb, m, n)
     assert rho0 == pytest.approx((2.0 / 3.0) ** 0.5, abs=2e-3), rho0
@@ -528,7 +494,7 @@ def test_seed_is_resonant_and_wall_tangential(synthetic, synthetic_seq):
     # amplitude: eps * |Phi'| / m, and d_theta of it is eps |B^zeta| = eps 2 pi |Phi'|
     b = jax.vmap(jax.grad(dA_zeta))(pts)[:, 1] / jax.vmap(jax.grad(lambda x: A0(x)[1]))(pts)[:, 0]
     # the amplitude reads Phi' from the profile's linear interpolant, the
-    # denominator differentiates the tabulated antiderivative: 1e-4-level agreement
+    # denominator differentiates the tabulated antiderivative
     assert float(jnp.max(jnp.abs(b))) == pytest.approx(eps, rel=1e-3)
     # resonance: the phase 2 pi (m theta - s n zeta) is constant along dtheta/dzeta = iota / nfp
     iota = jnp.asarray(cb["dchi"]) / jnp.asarray(cb["dPhi"])

@@ -1,12 +1,13 @@
-"""``mrx.gvec`` state files: the radial basis, and (``needs_data``) the evaluation
-of a GVEC state against the pyGVEC export of the same equilibrium --
-``MRX_GVEC_STATE`` and ``MRX_W7X_FILE`` name the two files."""
-import os
-
+"""``mrx.gvec``: the radial basis, the JAX evaluator against the numpy
+series, the map's spline coefficients from the series coefficients, and
+the data-placed knots of ``mrx.vmec``'s refit. The parser is checked
+against a written state in ``test_synthetic_gvec.py``; the W7-X state in
+``data/`` is read by ``test_w7x_clebsch.py``."""
 import numpy as np
 import pytest
+from scipy.interpolate import BSpline
 
-from mrx.gvec import StateField, evaluate, profile_spline, radial_design, read_state
+from mrx.gvec import StateField, evaluate, knots_at_data, radial_design
 
 
 def test_radial_basis_is_a_clamped_partition_of_unity():
@@ -37,41 +38,6 @@ def test_state_field_matches_the_numpy_series():
     grid = evaluate(block, sp, s_, 2 * np.pi * th, 2 * np.pi * ze / 5)
     mine = np.asarray(jax.vmap(StateField(block, sp, 5))(pts)).reshape(grid.shape)
     assert np.abs(mine - grid).max() < 1e-12
-
-
-@pytest.mark.needs_data
-def test_state_reproduces_the_export():
-    state, export = os.environ.get("MRX_GVEC_STATE"), os.environ.get("MRX_W7X_FILE")
-    if not (state and export and os.path.isfile(state) and os.path.isfile(export)):
-        pytest.skip("set MRX_GVEC_STATE and MRX_W7X_FILE to the state and its export")
-    import h5py
-    st = read_state(state)
-    with h5py.File(export, "r") as f:
-        n = tuple(int(f.attrs[k]) for k in ("n_rho", "n_theta", "n_zeta"))
-        assert int(f.attrs["nfp"]) == st["nfp"]
-        ep = np.asarray(f["eval_points"])
-        ref = {k: np.asarray(f[k]).reshape(n) for k in
-               ("R", "Z", "pressure", "clebsch/dPhi_dr", "clebsch/dchi_dr", "clebsch/LA")}
-    rho, th, ze = (np.unique(ep[:, i]) for i in range(3))
-    theta, zeta = 2 * np.pi * th, 2 * np.pi * ze / st["nfp"]
-    for blk, key in (("X1", "R"), ("X2", "Z"), ("LA", "clebsch/LA")):
-        assert np.abs(evaluate(st[blk], st["sp"], rho, theta, zeta) - ref[key]).max() < 1e-10
-    dphi = profile_spline(st, "phi").derivative()(rho)
-    assert np.abs(dphi - ref["clebsch/dPhi_dr"][:, 0, 0]).max() < 1e-10
-    dchi = profile_spline(st, "iota")(rho) * dphi
-    scale = np.abs(ref["clebsch/dchi_dr"]).max()
-    assert np.abs(dchi - ref["clebsch/dchi_dr"][:, 0, 0]).max() < 1e-4 * scale
-    p = profile_spline(st, "pressure")(rho)
-    assert np.abs(p - ref["pressure"][:, 0, 0]).max() < 1e-4 * ref["pressure"].max()
-    # the closed-form lambda the initial condition uses, at the export's points
-    import jax
-    import jax.numpy as jnp
-    from mrx.gvec import load_clebsch
-    cb = load_clebsch(state)
-    pts = jnp.array([[rho[i], th[j], ze[k]] for i in (1, 20, 49) for j in (0, 7) for k in (0, 31)])
-    mine = np.asarray(jax.vmap(cb["lam_h"])(pts))
-    want = np.array([ref["clebsch/LA"][i, j, k] for i in (1, 20, 49) for j in (0, 7) for k in (0, 31)])
-    assert np.abs(mine - want).max() < 1e-10
 
 
 # ---------------------------------------------------------------------------
@@ -187,3 +153,43 @@ def test_state_field_wall_derivative_is_the_left_limit():
     x1, x0 = jnp.array([1.0, 0.3, 0.2]), jnp.array([1.0 - 1e-9, 0.3, 0.2])
     assert abs(float(f(x1)) - float(f(x0))) < 1e-7
     assert abs(float(d(x1)[0]) - float(d(x0)[0])) < 1e-6 * abs(float(d(x0)[0]))
+
+
+def test_knots_at_data_make_the_refined_sample_interpolable():
+    """``knots_at_data`` places the knots from the sample, so an interpolant
+    through a radial grid refined toward the edge is as well posed as one
+    through a uniform grid: the collocation matrix is square and far from
+    singular, the fit is exact at the nodes and off the nodes to the cubic
+    spline's own accuracy. (On uniform knots the refined sample violates
+    Schoenberg-Whitney and the collocation solve is singular or nearly so.)"""
+    n, p = 17, 3
+    u = np.arange(n, dtype=np.float64) / (n - 1)
+    samples = {"uniform": u, "refined": 1.0 - (1.0 - u) ** 2}
+    probe = np.linspace(0.02, 0.98, 400)
+
+    def f(x):
+        return np.exp(2.0 * x) * np.sin(3.0 * x)
+
+    conds, errs = {}, {}
+    for label, x in samples.items():
+        T = np.asarray(knots_at_data(x, p, "clamped"))
+        assert T.shape == (n + p + 1,) and T[0] == 0.0 and T[-1] == 1.0
+        assert np.all(np.diff(T) >= 0)
+        A = BSpline.design_matrix(x, T, p).toarray()
+        conds[label] = np.linalg.cond(A)
+        fit = BSpline(T, np.linalg.solve(A, f(x)), p)
+        assert np.abs(fit(x) - f(x)).max() <= 1e-12 * np.abs(f(x)).max()
+        errs[label] = np.abs(fit(probe) - f(probe)).max() / np.abs(f(probe)).max()
+    print(f"\n  collocation condition numbers {conds}, off-node errors {errs}")
+    assert max(conds.values()) < 1e2
+    # Both interpolate the same smooth function with a cubic spline, O(h^4)
+    # in the largest cell; the refined sample's largest cell (at the axis)
+    # is ~1.9x the uniform one.
+    h = np.max(np.diff(samples["refined"])) / np.max(np.diff(samples["uniform"]))
+    assert errs["refined"] <= 1.25 * h ** 4 * errs["uniform"] + 1e-12
+    assert errs["uniform"] <= 1e-3
+    # uniform knots on the refined sample: the collocation matrix is singular
+    # or nearly so
+    T_uni = np.concatenate([np.zeros(p + 1), np.linspace(0, 1, n - p + 1)[1:-1], np.ones(p + 1)])
+    A_uni = BSpline.design_matrix(samples["refined"], T_uni, p).toarray()
+    assert np.linalg.cond(A_uni) > 1e3 * max(conds.values())

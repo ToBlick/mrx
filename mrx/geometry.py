@@ -21,7 +21,6 @@ import os
 from typing import Any, Callable
 
 import equinox as eqx
-import h5py
 import jax
 import jax.numpy as jnp
 
@@ -56,9 +55,9 @@ def map_jacobian_at(map: Callable, x: jnp.ndarray) -> jnp.ndarray:
 
     This is the only place the raw Jacobian is materialised on a point set.
     :meth:`SequenceGeometry.from_map` reduces it to the stored geometry at
-    once; the physical-frame pullbacks (:func:`mrx.projectors.load` with
-    ``frame='phys'``, :func:`mrx.projectors.load_grid_field`) call it on demand at
-    load time, since ``DF`` itself is not kept on the sequence.
+    once; the physical-frame pullback (:func:`mrx.projectors.load` with
+    ``frame='phys'``) calls it on demand at load time, since ``DF`` itself
+    is not kept on the sequence.
 
     Args:
         map: Differentiable logical-to-physical map ``F: R^3 -> R^3``.
@@ -303,9 +302,9 @@ def greville_interpolate_map(F_analytic: Callable, seq) -> jnp.ndarray:
 # ---------------------------------------------------------------------------
 #
 # A geometry is either an analytic name (``toroid``, ``cylinder``,
-# ``rot-ellipse``) or the path of a GVEC export (``.h5``) or state file
-# (``.dat``, read in closed form by :mod:`mrx.gvec`); ``os.path.isfile``
-# decides. :func:`build_sequence` turns it into a polar sequence with the map
+# ``rot-ellipse``) or the path of an equilibrium file -- a GVEC state
+# (``.dat``, :mod:`mrx.gvec`) or a VMEC wout (``.nc``, :mod:`mrx.vmec`), both
+# read in closed form; ``os.path.isfile`` decides. :func:`build_sequence` turns it into a polar sequence with the map
 # installed and the preconditioners built; nullspaces are left to the caller.
 
 #: Field periods spanned by logical zeta in [0, 1] for the analytic maps.
@@ -322,9 +321,8 @@ def geometry_nfp(geometry, nfp=None):
     """Field periods of a geometry.
 
     Args:
-        geometry: an analytic name or the path of a GVEC export.
-        nfp: overrides the file's ``nfp`` attribute; ignored for the analytic
-            names.
+        geometry: an analytic name or the path of an equilibrium file.
+        nfp: overrides the file's ``nfp``; ignored for the analytic names.
 
     Returns:
         The number of field periods spanned by logical zeta in [0, 1].
@@ -338,8 +336,8 @@ def geometry_nfp(geometry, nfp=None):
         if geometry.endswith(".nc"):
             from mrx.vmec import read_nfp  # noqa: PLC0415  (imports this module)
             return read_nfp(geometry)
-        with h5py.File(geometry, "r") as h:
-            return int(h.attrs["nfp"])
+        raise ValueError(f"{geometry}: not an equilibrium file; MRX reads GVEC "
+                         "state files (.dat) and VMEC wout files (.nc)")
     if geometry in ANALYTIC_NFP:
         return ANALYTIC_NFP[geometry]
     raise _unknown(geometry)
@@ -351,15 +349,14 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
     Args:
         geometry:
             an analytic name (``toroid``, ``cylinder``, ``rot-ellipse``),
-            the path of a flat-schema GVEC export,
-            a GVEC state file (read in closed form, ``mrx.gvec``),
+            a GVEC state file (``.dat``, read in closed form, ``mrx.gvec``),
             or a VMEC wout file (``.nc``, refit in closed form, ``mrx.vmec``).
         ns: ``(n_r, n_theta, n_zeta)``; also the map resolution for a file.
         p: spline degree, all directions; ``p + 1`` Gauss points per knot span.
         maxiter: iteration budget of every solve through the sequence.
         tol: solve tolerance; ``None`` is ``sqrt(eps)`` of working precision.
-        nfp: overrides the file's ``nfp`` attribute (see ``mrx.gvec``);
-            ignored for the analytic names.
+        nfp: overrides the file's ``nfp`` (see ``mrx.gvec``); ignored for
+            the analytic names.
 
     Returns:
         ``(seq, ops)``: the sequence with its geometry installed and every
@@ -367,7 +364,8 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
 
     Raises:
         ValueError: if ``geometry`` is neither an analytic name nor a file,
-            or (from ``set_geometry``) if the map folds.
+            if the file is neither a ``.dat`` nor a ``.nc``, or (from
+            ``set_geometry``) if the map folds.
     """
     from mrx.derham_sequence import DeRhamSequence  # noqa: PLC0415  (imports this module)
     from mrx.gvec import build_gvec_map  # noqa: PLC0415

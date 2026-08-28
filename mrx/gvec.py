@@ -1,7 +1,7 @@
-"""GVEC equilibria: state files read in closed form, and the flat-schema exports.
+"""GVEC equilibria: state files read in closed form.
 
-The production route is the **state file** (``GVEC_State_*.dat``), GVEC's
-own representation of an equilibrium:
+The input is the **state file** (``GVEC_State_*.dat``), GVEC's own
+representation of an equilibrium:
     the radial B-spline basis (degree ``deg`` on the element grid ``sp``),
     the Fourier mode table ``(m, n)`` with ``n`` already multiplied by ``nfp``
     and, per mode, the radial coefficients of ``X1 = R`` (cosine series),
@@ -9,8 +9,8 @@ own representation of an equilibrium:
     followed by the profiles ``Phi``, ``chi``, ``iota``, ``p`` at the
     radial interpolation points of the ``X1`` basis.
 Its angles are GVEC's ``theta`` and ``zeta`` in radians with the series
-``sum f_mn(s) trig(m theta - n zeta)``; ``s`` is the radial label the
-flat-schema exports call ``rho`` (``Phi = Phi_edge s^2``). :class:`StateField`
+``sum f_mn(s) trig(m theta - n zeta)``; ``s`` is the radial label we call
+``rho`` (``Phi = Phi_edge s^2``). :class:`StateField`
 evaluates one of the three fields at a logical point in JAX -- the radial
 basis through :class:`mrx.spline_bases.SplineBasis` on GVEC's own knots, the
 angles as ``2 pi (m theta - n zeta / nfp)`` -- and :func:`build_gvec_map`
@@ -20,50 +20,34 @@ radial splines projected onto the map's radial basis, the angular modes
 through the periodic B-spline's Fourier transform), while :func:`load_clebsch` histopolates ``lambda`` at the quadrature
 points from the closed form. Nothing is evaluated on a grid
 (``docs/research/analytic_map_2026-08-28.md``). Validated against the pyGVEC
-export of W7-X FMM002 to round-off (``test/test_gvec.py``).
+export of W7-X FMM002 to round-off (2026-08-27).
 
-The **flat-schema export** (``quasr_*.h5``, ``w7x_*_mrx.h5``) is the
-fallback for equilibria that have no state file: flat ``R``/``Z`` of length
-``n_rho*n_theta*n_zeta``, ``eval_points`` of shape ``(N, 3)`` in
-``(rho, theta, zeta)`` normalised to ``[0, 1]``, ``nfp``/``n_rho``/
-``n_theta``/``n_zeta`` in the attributes, and optionally
-``clebsch/{dPhi_dr, dchi_dr, LA}`` and ``pressure``. The grid is bridged to
-the Greville points by a linear RegularGridInterpolator, whose ~3.4% bias
-does not converge; every W7-X number obtained through it carries a force
-floor the closed form does not (``docs/research/coarse_gvec_export_2026-08-26.md``).
-
-Two traps that the flat schema carries:
+Two conventions the state carries:
 
 * **Handedness.** ``mrx.mappings.stellarator_map`` uses
   ``Y = -R sin(2 pi zeta/nfp)``, which mirrors raw GVEC data
   (``det DF < 0``). :func:`build_gvec_map` measures the sign instead of
   assuming it.
-* **Open versus closed periodic axes.** The quasr files sample the angles on
-  ``[0, 1)`` and need a wrap point; other exports sample ``[0, 1]`` closed
-  and must not be padded. Both are detected from the spacing.
-* **A wrong ``nfp`` attribute.** nfp enters the map as
+* **nfp.** It enters the map as
   ``F = (R cos(2 pi zeta/nfp), +-R sin(2 pi zeta/nfp), Z)``, so a wrong value
   wraps one field period through the wrong angle with a healthy Jacobian to
   hide it; every reader takes an ``nfp`` override.
 
 Every function takes the file path; the extension decides the route --
 ``.dat`` the GVEC state, ``.nc`` a VMEC wout refit into the same blocks by
-``mrx.vmec``, anything else the flat schema.
-``test/synthetic_gvec.py`` writes the flat schema for an
-analytic circular torus; the test suite reads that file through the same
-functions as a real export.
+``mrx.vmec``; anything else raises. ``test/synthetic_gvec.py`` writes a
+state file for an analytic circular torus; the test suite reads it through
+the same functions as a real one.
 """
 from __future__ import annotations
 
-import h5py
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.scipy.interpolate import RegularGridInterpolator
 from scipy.interpolate import BSpline
 
-from mrx.differential_forms import DifferentialForm, DiscreteFunction
-from mrx.projectors import _conforming_restriction, _solve_tensor_collocation_axis
+from mrx.differential_forms import DiscreteFunction
+from mrx.projectors import _conforming_restriction
 from mrx.spline_bases import SplineBasis
 
 TWO_PI = 2.0 * np.pi
@@ -306,38 +290,38 @@ def series_spline_dofs(block, sp, nfp, seq):
     return _conforming_restriction(seq.E(0), jnp.asarray(C_full.reshape(-1)))
 
 
-def build_gvec_map(h5_path, seq, sign=None, stride=1, nfp=None):
-    """Build the stellarator map of a GVEC state, a VMEC wout or a
-    flat-schema export as a C1 polar spline map on ``seq.basis_0``.
+def read_equilibrium(path):
+    """The state dict of a GVEC state (``.dat``) or a VMEC wout (``.nc``,
+    refit into the same blocks by :func:`mrx.vmec.read_wout`); any other
+    extension raises."""
+    if path.endswith(".dat"):
+        return read_state(path)
+    if path.endswith(".nc"):
+        from mrx.vmec import read_wout  # noqa: PLC0415  (imports this module)
+        return read_wout(path)
+    raise ValueError(f"{path}: not an equilibrium file; MRX reads GVEC state "
+                     "files (.dat) and VMEC wout files (.nc)")
+
+
+def build_gvec_map(path, seq, sign=None, nfp=None):
+    """Build the stellarator map of a GVEC state or a VMEC wout as a C1
+    polar spline map on ``seq.basis_0``.
 
     A ``.dat`` state or a ``.nc`` wout (refit into the same blocks by
     :mod:`mrx.vmec`) supplies ``R`` and ``Z`` as radial-spline x Fourier
     series, and the map's spline coefficients are the L2 projection built
     from the series coefficients (:func:`series_spline_dofs`) -- nothing is
-    evaluated on a grid. A ``.h5`` export supplies ``R`` and ``Z`` on its
-    grid, bridged to the Greville points by linear interpolation
-    (``_rgi_fn``) and collocated (``seq.interpolate``).
+    evaluated on a grid; any other file raises.
     Returns ``(F, info)``. ``sign`` is the toroidal handedness
     ``Y = sign * R sin(2 pi zeta/nfp)``; left ``None`` it is measured, and a
     file that is degenerate under both signs raises.
     """
-    if h5_path.endswith((".dat", ".nc")):
-        if h5_path.endswith(".nc"):
-            from mrx.vmec import read_wout  # noqa: PLC0415  (imports this module)
-            st = read_wout(h5_path)
-        else:
-            st = read_state(h5_path)
-        nfp = st["nfp"] if nfp is None else int(nfp)
-        R_fn = StateField(st["X1"], st.get("sp"), st["nfp"], vector=True)
-        Z_fn = StateField(st["X2"], st.get("sp"), st["nfp"], vector=True)
-        R_dof = series_spline_dofs(st["X1"], st.get("sp"), st["nfp"], seq)
-        Z_dof = series_spline_dofs(st["X2"], st.get("sp"), st["nfp"], seq)
-        axes, layout, grid = None, None, "closed form"
-    else:
-        axes, R_grid, Z_grid, nfp, layout = load_gvec_grids(
-            h5_path, stride=stride, nfp=nfp)
-        R_fn, Z_fn, grid = _rgi_fn(axes, R_grid), _rgi_fn(axes, Z_grid), R_grid.shape
-        R_dof, Z_dof = seq.interpolate(R_fn, 0), seq.interpolate(Z_fn, 0)
+    st = read_equilibrium(path)
+    nfp = st["nfp"] if nfp is None else int(nfp)
+    R_fn = StateField(st["X1"], st.get("sp"), st["nfp"], vector=True)
+    Z_fn = StateField(st["X2"], st.get("sp"), st["nfp"], vector=True)
+    R_dof = series_spline_dofs(st["X1"], st.get("sp"), st["nfp"], seq)
+    Z_dof = series_spline_dofs(st["X2"], st.get("sp"), st["nfp"], seq)
     R_h = DiscreteFunction(R_dof, seq.basis_0, seq.E(0))
     Z_h = DiscreteFunction(Z_dof, seq.basis_0, seq.E(0))
 
@@ -348,10 +332,8 @@ def build_gvec_map(h5_path, seq, sign=None, stride=1, nfp=None):
         tried[s] = (float(d.min()), float(d.max()))
         if np.isfinite(d).all() and d.min() > 0:
             return F, {"R_h": R_h, "Z_h": Z_h, "R_fn": R_fn, "Z_fn": Z_fn,
-                       "axes": axes, "nfp": nfp,
-                       "sign": s, "layout": layout, "det_range": tried[s],
-                       "grid": grid, "stride": stride}
-    raise RuntimeError(f"{h5_path}: no handedness gives det DF > 0; "
+                       "nfp": nfp, "sign": s, "det_range": tried[s]}
+    raise RuntimeError(f"{path}: no handedness gives det DF > 0; "
                        f"sampled ranges {tried}")
 
 
@@ -368,169 +350,39 @@ def load_state_clebsch(path, n_rho=401):
                 lam_h=StateField(st["LA"], st["sp"], st["nfp"]), closed_axes=[])
 
 
-def load_clebsch(path, types=("clamped", "periodic", "periodic")):
+def load_clebsch(path):
     """Read the radial profiles, a lambda callable and p(rho) from a file.
 
     The reference 2-form components of ``mrx.initial_conditions`` are exactly
-    GVEC's ``sqrt(g) B^i``, verified against the file's own B:
+    GVEC's ``sqrt(g) B^i``, verified against the pyGVEC export's own B:
     ``sqrt(g) B^theta = dchi_dr - dPhi_dr dLA_dz`` and
     ``sqrt(g) B^zeta = dPhi_dr (1 + dLA_dt)``, in GVEC's units (derivatives
     with respect to radian angles). The caller converts with
     ``Phi' = 2 pi dPhi_dr``, ``iota = dchi_dr / (nfp dPhi_dr)`` and
     ``lambda = LA / 2 pi``.
 
-    lambda is fitted as the scalar and differentiated, never read as two
+    lambda is handed over as the scalar and differentiated, never as two
     derivatives: ``div B = 0`` rests on the mixed partials cancelling, which
-    holds only when both come from one interpolant. The duplicate endpoint of
-    a closed periodic sample is dropped before the fit; whether an axis is
-    closed is decided from its coordinates (the last point is 1, not
-    ``1 - step``), the same rule the map reader applies, and the decision is
-    returned as ``closed_axes``. (It used to be decided from ``LA`` itself,
-    which mistakes any lambda without angular variation -- in particular
-    ``LA = 0`` -- for a closed sample.)
+    holds only when both come from one function.
 
-    Returns a dict with ``nfp``, ``rho``, ``dPhi``, ``dchi``, ``p`` (surface
-    means, arrays on ``rho``), ``iota_spread`` (max angular departure of
-    dchi/dPhi from a flux function at mid-radius) and ``lam_h``. A GVEC
-    state file (``.dat``) returns the same dict with ``lam_h`` in closed
-    form (:func:`load_state_clebsch`); a VMEC wout (``.nc``) likewise
-    through :func:`mrx.vmec.load_wout_clebsch`.
+    Returns a dict with ``nfp``, ``rho``, ``dPhi``, ``dchi``, ``p`` (arrays
+    on ``rho``), ``iota_spread``, ``lam_h`` (the closed-form
+    :class:`StateField` of ``LA``) and ``closed_axes``: a GVEC state
+    (``.dat``) through :func:`load_state_clebsch`, a VMEC wout (``.nc``)
+    through :func:`mrx.vmec.load_wout_clebsch`; anything else raises.
     """
     if path.endswith(".dat"):
         return load_state_clebsch(path)
     if path.endswith(".nc"):
         from mrx.vmec import load_wout_clebsch  # noqa: PLC0415  (imports this module)
         return load_wout_clebsch(path)
-    with h5py.File(path, "r") as h:
-        shape = (int(h.attrs["n_rho"]), int(h.attrs["n_theta"]),
-                 int(h.attrs["n_zeta"]))
-        c = h["clebsch"]
-        dPhi = np.asarray(c["dPhi_dr"]).reshape(shape)
-        dchi = np.asarray(c["dchi_dr"]).reshape(shape)
-        LA = np.asarray(c["LA"]).reshape(shape)
-        pres = np.asarray(h["pressure"]).reshape(shape)
-        ep = np.asarray(h["eval_points"])
-        nfp = int(h.attrs["nfp"])
-
-    axes = [np.unique(ep[:, i]) for i in range(3)]
-    if not all(len(a) == n for a, n in zip(axes, shape)):
-        raise RuntimeError(f"eval_points axes {[len(a) for a in axes]} do not "
-                           f"match declared shape {shape}")
-
-    nr = shape[0]
-    prof_dPhi = dPhi.mean(axis=(1, 2))
-    prof_dchi = dchi.mean(axis=(1, 2))
-    prof_p = pres.mean(axis=(1, 2))
-    spread = float(np.nanmax(
-        np.abs(dchi / dPhi - (prof_dchi / prof_dPhi)[:, None, None])
-        [nr // 4:3 * nr // 4]))
-
-    fit_axes, LA_fit, closed = list(axes), LA, []
-    for a, kind in enumerate(types):
-        if kind == 'periodic' and _axis_is_closed(axes[a]):
-            fit_axes[a] = axes[a][:-1]
-            LA_fit = np.take(LA_fit, np.arange(len(fit_axes[a])), axis=a)
-            closed.append(a)
-    lam_h = fit_scalar_spline(fit_axes, LA_fit, types)
-
-    return dict(nfp=nfp, rho=axes[0], dPhi=prof_dPhi, dchi=prof_dchi,
-                p=prof_p, iota_spread=spread, lam_h=lam_h, closed_axes=closed)
+    raise ValueError(f"{path}: not an equilibrium file; MRX reads GVEC state "
+                     "files (.dat) and VMEC wout files (.nc)")
 
 
 # ---------------------------------------------------------------------------
-# 3. The flat-schema export (grid fallback)
+# 3. Knots for sampled radial data (the wout refit, mrx.vmec)
 # ---------------------------------------------------------------------------
-
-def _take(grid, axis, sl):
-    idx = [slice(None)] * grid.ndim
-    idx[axis] = sl
-    return grid[tuple(idx)]
-
-
-def _axis_is_closed(v):
-    """Whether a periodic sample in [0, 1] is closed (its last point is 1,
-    duplicating the first) rather than half-open (its last point is
-    ``1 - step``). Decided from the coordinates, never from the data."""
-    return abs(v[-1] - 1.0) < 0.5 * (v[1] - v[0])
-
-
-def _periodic_axis(vals, grid, axis, stride=1):
-    """Normalise one periodic axis to a half-open [0,1) sample, then wrap-pad.
-
-    quasr samples half-open (0, 1/n, ..., (n-1)/n); hegna samples closed
-    (0, ..., 1) with the endpoint duplicating the first point. Normalising to
-    half-open first and padding unconditionally makes both paths identical and
-    makes ``stride`` safe on the closed layout (79 is prime, so every stride
-    would otherwise leave a short final cell).
-    """
-    v = np.asarray(vals, dtype=np.float64)
-    if v.max() > 1.5:                      # radians -> [0,1]
-        v = v / (v.max() + (v[1] - v[0]))
-    layout = "half-open"
-    if _axis_is_closed(v):                 # drop the duplicate endpoint
-        v, grid, layout = v[:-1], _take(grid, axis, slice(0, -1)), "closed"
-    v, grid = v[::stride], _take(grid, axis, slice(None, None, stride))
-    pad = np.concatenate([grid, _take(grid, axis, slice(0, 1))], axis=axis)
-    return np.concatenate([v, [1.0]]), pad, layout
-
-
-def _radial_axis(vals, grid, axis, stride=1):
-    """Subsample the clamped radial axis, always keeping the last point.
-
-    Dropping rho=1 would turn every near-boundary evaluation into an
-    extrapolation, which is where the natural-BC term lives.
-    """
-    v = np.asarray(vals, dtype=np.float64)
-    keep = np.unique(np.r_[np.arange(0, len(v), stride), len(v) - 1])
-    return v[keep], _take(grid, axis, keep)
-
-
-def load_gvec_grids(h5_path, stride=1, nfp=None):
-    """Return ``(axes, R_grid, Z_grid, nfp, layout)`` from a flat-schema file.
-
-    ``nfp`` overrides the file's attribute (see the module docstring).
-    ``stride`` subsamples the data grid per axis. Default 1 is the right
-    default: the grid is read once and sampled only at the map's Greville
-    points (geometry build 88 s at 50^3, 136 s at 80^3, peak RSS ~4 GB), and
-    stride 2 roughly quadruples the O(h^2) fit error. The knob exists for
-    smoke tests.
-    """
-    with h5py.File(h5_path, "r") as f:
-        ep = np.asarray(f["eval_points"], dtype=np.float64)
-        # Newer exports carry only `precomputed_*`; older ones carry both.
-        nr, nt, nz = (int(f.attrs[k] if k in f.attrs else f.attrs[alt])
-                      for k, alt in (("n_rho", "precomputed_nr"),
-                                     ("n_theta", "precomputed_ntheta"),
-                                     ("n_zeta", "precomputed_nzeta")))
-        file_nfp = int(f.attrs["nfp"])
-        R = np.asarray(f["R"], dtype=np.float64).reshape(nr, nt, nz)
-        Z = np.asarray(f["Z"], dtype=np.float64).reshape(nr, nt, nz)
-    nfp = file_nfp if nfp is None else int(nfp)
-
-    r_raw = ep[:, 0].reshape(nr, nt, nz)[:, 0, 0]
-    t_raw = ep[:, 1].reshape(nr, nt, nz)[0, :, 0]
-    z_raw = ep[:, 2].reshape(nr, nt, nz)[0, 0, :]
-
-    r_ax, R = _radial_axis(r_raw, R, 0, stride)
-    _, Z = _radial_axis(r_raw, Z, 0, stride)
-    t_ax, R, lay_t = _periodic_axis(t_raw, R, 1, stride)
-    _, Z, _ = _periodic_axis(t_raw, Z, 1, stride)
-    z_ax, R, lay_z = _periodic_axis(z_raw, R, 2, stride)
-    _, Z, _ = _periodic_axis(z_raw, Z, 2, stride)
-    return (r_ax, t_ax, z_ax), R, Z, nfp, (lay_t, lay_z)
-
-
-def _rgi_fn(axes, grid):
-    """Linear grid bridge; returns ``f(xi:(3,)) -> (1,)`` for Greville collocation."""
-    pts = tuple(jnp.asarray(a) for a in axes)
-    interp = RegularGridInterpolator(
-        pts, jnp.asarray(grid), method="linear",
-        bounds_error=False, fill_value=None)   # extrapolate (rho < rho[0])
-
-    def f(xi):
-        return interp(xi.reshape(1, 3))[0:1]
-    return f
-
 
 def knots_at_data(x, p, kind):
     """Knot vector on which the degree-``p`` interpolant through the sample
@@ -560,34 +412,3 @@ def knots_at_data(x, p, kind):
         raise ValueError(f"clamped sample must lie in [0, 1], got [{x[0]}, {x[-1]}]")
     interior = np.array([x[j:j + p].mean() for j in range(1, n - p)])
     return jnp.asarray(np.concatenate([np.zeros(p + 1), interior, np.ones(p + 1)]))
-
-
-def fit_scalar_spline(axes, values, types, degree=3):
-    """Interpolatory tensor-product spline through grid data, as a callable.
-
-    ``n_basis = n_data`` per axis on the knots :func:`knots_at_data` places
-    from the sample itself, one square collocation solve each (the fit
-    ``mrx.projectors.load_grid_field`` step 1 does), kept as a function so its
-    derivatives can be taken exactly. The axes only need to form a monotone
-    tensor grid; refining the radial sample toward the edge is fine.
-    Evaluation is three 1-D contractions: the hegna fit has ~5e5 basis
-    functions, and a ``DiscreteFunction`` would evaluate all of them per
-    point.
-    """
-    n = tuple(len(a) for a in axes)
-    Ts = [knots_at_data(x, degree, kind) for x, kind in zip(axes, types)]
-    fit = DifferentialForm(0, n, (degree,) * 3, types, Ts=Ts)
-    C = jnp.asarray(values).reshape(n)
-    for a, (basis, x) in enumerate(zip(fit.Λ, axes)):
-        C = _solve_tensor_collocation_axis(
-            basis.collocation_matrix(jnp.asarray(x)), C, axis=a)
-
-    br, bt, bz = fit.Λ
-
-    def evaluate(x):
-        vr = jax.vmap(lambda i: br(x[0], i))(br.ns)
-        vt = jax.vmap(lambda i: bt(x[1], i))(bt.ns)
-        vz = jax.vmap(lambda i: bz(x[2], i))(bz.ns)
-        return jnp.einsum('ijk,i,j,k->', C, vr, vt, vz)
-
-    return evaluate

@@ -89,7 +89,7 @@ needs `K` of 10-100 to be representable, and since even the finest mode
 diffuses over `1 / (eta λ_max) ~ 1000` such steps, `K <= 100` is physically
 harmless.
 
-Cost and range of the resistive solve, measured on `w7x_fmm002_clebsch_mrx.h5`,
+Cost and range of the resistive solve, measured on W7-X FMM002 (2026-08-25, through the former gridded export),
 `(8,16,8)`, `p = 3`, tol `1e-12`, CG, tanh schedule: `eta = 1e-3`
 (`eps ~ 2e-5`) 383 MINRES iterations per step, 0.72 s/step against 0.62
 explicit; `eta = 1e-2` (`eps ~ 1e-3`) 612 mean, 1938 max, 0.82 s/step,
@@ -221,7 +221,7 @@ energy, not fluxes, `ι`, or helicity.
 | `make_profiles(iota0, iota1, iota_exp, flux_exp)` | `ι = ι₀ + (ι₁-ι₀) ρ^e`, `Φ' = ρ^q` |
 | `make_lambda(modes)`, `parse_lambda(spec)` | `λ` from `"m,n,amp;..."` |
 | `analytic_profile_form(iota, dPhi, dlam)` | the reference 2-form above; `--ic analytic` |
-| `clebsch_form(cb)` | the same pointwise 2-form from a GVEC file's `dPhi_dr`, `dchi_dr`, `LA` (`load_clebsch(path)` in `mrx/gvec.py`) -- the reference the tests check the potential route against; not the production IC |
+| `clebsch_form(cb)` | the same pointwise 2-form from an equilibrium file's `dPhi_dr`, `dchi_dr`, `LA` (`load_clebsch(path)` in `mrx/gvec.py`: a GVEC state or a VMEC wout, profiles and lambda in closed form) -- the reference the tests check the potential route against; not the production IC |
 | `clebsch_potential_form(cb)`, `potential_two_form(seq, A_ref)` | the reference 1-form `A' = (-LA dPhi_dr, 2π Φ, -(2π/nfp) χ)` (the GVEC potential with the gauge term `d(Φ LA)` dropped; `Φ`, `χ` integrated from the profiles) histopolated on the FREE 1-form space -- its wall trace `2π Φ_edge` is the toroidal flux, the Dirichlet harmonic content -- and `B = dA'` by the exact incidence curl into the Dirichlet 2-form space: `div B = 0` to round-off, no Leray step, and no derivative of the sampled `LA` is ever taken (the discrete `d` differentiates), so a coarse export cannot inject grid-scale current through its interpolant; `--ic clebsch` |
 | `dzeta_form()` | the constant `(0, 0, 1)`; relaxes to the harmonic field |
 | `project_reference_two_form(seq, omega_ref)` | pushes forward `B = DF ω / J` and L²-projects onto the Dirichlet k=2 space |
@@ -236,20 +236,20 @@ angular derivatives are per radian. See [gvec_mrx_interface.md](gvec_mrx_interfa
 `build_sequence(geometry, ns, p, maxiter, tol, nfp)` in `mrx/geometry.py`
 returns `(seq, ops)` with the map installed and every solver operator built.
 `geometry` is an analytic name, `toroid`, `cylinder` or `rot-ellipse`
-(`mrx/mappings.py`), or the path of a flat-schema GVEC export
-(`build_gvec_map` in `mrx/gvec.py`; `os.path.isfile` decides, any other
-string raises). `nfp` overrides the file's attribute for a file that
-declares it wrong (the perturbed quasr44970 exports say 2 for nfp=3 data).
+(`mrx/mappings.py`), or the path of a GVEC state (`.dat`) or a VMEC wout
+(`.nc`) (`build_gvec_map` in `mrx/gvec.py`; `os.path.isfile` decides, any
+other string raises, and so does a file of any other kind). `nfp` overrides
+the file's value for a file that declares it wrong.
 `geometry_nfp(geometry, nfp)` returns the field periods. `build_gvec_map`
-measures the handedness of the file and mirrors it so that `det DF > 0`, and
-detects whether the angular samples are half-open or closed. Nothing is
-resolved from names or from the environment: every reader takes the path.
+measures the handedness of the file and mirrors it so that `det DF > 0`.
+Nothing is resolved from names or from the environment: every reader takes
+the path.
 
 ## 6. Running `scripts/relax.py`
 
 ```
 SCRIPT=scripts/relax.py JOB_NAME=relax_w7x TIMEOUT_MIN=60 \
-  ARGS="--geometry data/w7x_fmm002_clebsch_mrx.h5" bash slurm/run.sh
+  ARGS="--geometry data/GVEC_State_final.dat" bash slurm/run.sh
 ```
 
 Every run is a GPU job through `slurm/run.sh` (see `slurm/README.md`). One
@@ -257,8 +257,8 @@ method per run. Flags, defaults in brackets:
 
 | flag | meaning |
 |---|---|
-| `--geometry G` (required) | `toroid`, `cylinder`, `rot-ellipse`, or the path of a GVEC export (section 5) |
-| `--nfp N [file attribute]` | field periods, for a file that declares them wrong |
+| `--geometry G` (required) | `toroid`, `cylinder`, `rot-ellipse`, or the path of a GVEC state / VMEC wout (section 5) |
+| `--nfp N [file value]` | field periods, for a file that declares them wrong |
 | `--ns R,T,Z [8,16,16]`, `--p P [2]` | resolution (also the map's) and degree |
 | `--maxiter N [2000]`, `--tol TOL [sqrt(eps)]` | budget and tolerance of every inner solve |
 | `--precision {float32,float64} [float32]` | exported as `MRX_DTYPE` before `mrx` is imported |
@@ -300,6 +300,6 @@ with the stopping reason, both carrying the same pressure diagnostics; and
 DoFs) and the parameters as attributes (`geometry` as given,
 `geometry_path` resolved).
 
-At the reference resolution (`w7x_fmm002_clebsch_mrx.h5`, `(8,16,8)`,
+At the reference resolution (W7-X FMM002, `(8,16,8)`,
 `p = 3`, float64, one H100): setup about 330 s, first step about 90 s of
 compilation, then 0.7-0.9 s per step.

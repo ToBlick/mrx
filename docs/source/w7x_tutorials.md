@@ -1,14 +1,12 @@
 # W7-X tutorials
 
-Four scripts in `scripts/tutorials/` take a GVEC export of W7-X from the
-file to a relaxed equilibrium. They all default to GVEC's own state file
-`data/GVEC_State_final.dat` (330 KB; a flat-schema export such as
-`data/w7x_example.h5` works the same way, see the
-[interface](concepts/gvec_mrx_interface.md)),
+Four scripts in `scripts/tutorials/` take a GVEC equilibrium of W7-X from
+the file to a relaxed equilibrium. They all default to GVEC's own state
+file `data/GVEC_State_final.dat` (330 KB; a VMEC `wout_*.nc` works the
+same way, see the [interface](concepts/gvec_mrx_interface.md)),
 `--ns 12,24,24 --p 3` and write their figures to `outputs/tutorials/<name>/`;
-each takes a few minutes on a GPU (the sequence build on the 50³ export is
-about a minute of it) and correspondingly longer on a CPU. On a cluster
-run them through `slurm/run.sh` like every other MRX script:
+each takes a few minutes on a GPU and correspondingly longer on a CPU. On
+a cluster run them through `slurm/run.sh` like every other MRX script:
 
 ```bash
 SCRIPT=scripts/tutorials/w7x_geometry.py JOB_NAME=w7x_geometry bash slurm/run.sh
@@ -16,18 +14,15 @@ SCRIPT=scripts/tutorials/w7x_geometry.py JOB_NAME=w7x_geometry bash slurm/run.sh
 
 ## 1. Load the geometry (`w7x_geometry.py`)
 
-Two file kinds carry a GVEC equilibrium. The *state file* `GVEC_State_*.dat`
-is GVEC's own representation: $R$, $Z$ and $\lambda$ as radial B-splines
-times Fourier series in $(\theta, \zeta)$, plus the profiles $\Phi$, $\iota$,
-$p$ at the radial interpolation points -- closed form, evaluated wherever
-MRX needs a value. The *flat-schema export* (`data/w7x_example.h5`,
-[interface](concepts/gvec_mrx_interface.md)) is the same equilibrium
-evaluated on a tensor grid `eval_points` of logical
-$(\rho, \theta, \zeta) \in [0, 1]^3$ -- $\zeta$ spans **one field period**,
-`nfp` completes the torus -- with `R`, `Z`, `pressure` and the three Clebsch
-scalars `clebsch/{dPhi_dr, dchi_dr, LA}`. Prefer the state file: the grid
-route interpolates twice on the way to the mesh and its initial force
-residual is set by that, not by the mesh.
+The state file `GVEC_State_*.dat` is GVEC's own representation of the
+equilibrium: $R$, $Z$ and $\lambda$ as radial B-splines times Fourier
+series in $(\theta, \zeta)$ -- $\zeta$ spans **one field period**, `nfp`
+completes the torus -- plus the profiles $\Phi$, $\chi$, $\iota$, $p$ at
+the radial interpolation points. It is closed form: MRX evaluates the
+series wherever it needs a value (`mrx.gvec.StateField`), there is no
+grid in between, and the map error is the map space's own. A VMEC
+`wout_*.nc` is refit into the same blocks by `mrx.vmec` (each Fourier
+mode a clamped spline in $\rho = \sqrt{s}$).
 
 ```python
 from mrx.geometry import build_sequence
@@ -36,10 +31,11 @@ seq, ops = build_sequence("data/GVEC_State_final.dat", (12, 24, 24), 3)
 
 `build_sequence` is the import. It
 
-- collocates $R$ and $Z$ on the map's own spline space -- resolution `ns`,
-  degree `p`, polar at the axis (the first radial ring of coefficients is
-  $C^1$ across $\rho = 0$), periodic in both angles -- from the series (state
-  file) or through a linear grid interpolant (export);
+- builds the spline coefficients of $R$ and $Z$ on the map's own spline
+  space -- resolution `ns`, degree `p`, polar at the axis (the first radial
+  ring of coefficients is $C^1$ across $\rho = 0$), periodic in both
+  angles -- from the series coefficients, mode by mode (the L2 projection,
+  no evaluation grid);
 - measures the toroidal handedness so that $\det DF > 0$ and installs
   $F(\rho, \theta, \zeta) = (R \cos\varphi, \pm R \sin\varphi, Z)$ with
   $\varphi = 2\pi\zeta/n_{fp}$ (the `[geom]` line prints the sign and the
@@ -47,13 +43,12 @@ seq, ops = build_sequence("data/GVEC_State_final.dat", (12, 24, 24), 3)
 - assembles the incidence operators, the mass and Laplacian preconditioners
   of all four form degrees on that metric.
 
-The script prints what the file holds (basis, modes and profiles of a
-state; grid and ranges of an export), the DoF counts, and draws the
-pressure with `mrx.plotting.plot_torus` (the wall as a wireframe,
-poloidal cuts coloured by the scalar) and `plot_crossections_separate`.
-For an export the pressure is evaluated through the data-node spline fit
-(`mrx.gvec.fit_scalar_spline`, knots at the sample points) that the grid
-route's initial condition uses for $\lambda$.
+The script prints what the file holds (basis, modes and profiles), the
+DoF counts, and draws the pressure with `mrx.plotting.plot_torus` (the
+wall as a wireframe, poloidal cuts coloured by the scalar) and
+`plot_crossections_separate`. The pressure comes from `load_clebsch`,
+which tabulates the state's profile splines on 401 uniform radii -- the
+same dict that feeds the relaxation's initial condition in tutorial 4.
 
 ## 2. A Poisson problem (`w7x_poisson.py`)
 
@@ -95,18 +90,18 @@ at round-off, the divergence at the Leray solve's tolerance), draws
 $|B|$ on the torus (`Pushforward(..., k=2)` is the Piola map
 $B = DF\,\hat B/\det DF$), and traces a Poincaré section with the
 rotational transform profile through `mrx.poincare.section_figure`. This
-is the vacuum field *of the bounded domain*: the wall is the export's last
-closed flux surface, so it differs from the coil field outside it.
+is the vacuum field *of the bounded domain*: the wall is the equilibrium's
+last closed flux surface, so it differs from the coil field outside it.
 `scripts/relax.py --ic dzeta` relaxes onto this field.
 
 ## 4. A short relaxation (`w7x_relaxation.py`)
 
-The initial condition is the export's equilibrium field as $B = dA'$ from
+The initial condition is the state's equilibrium field as $B = dA'$ from
 the histopolated Clebsch potential (exactly divergence-free, tangential to
 the wall, nested surfaces -- see [Relaxation](relaxation.md), section 4):
 
 ```python
-cb = load_clebsch(path, seq.basis_0.types)
+cb = load_clebsch(path)
 B0, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
 ```
 
