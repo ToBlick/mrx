@@ -87,37 +87,59 @@ def _raw(path):
         f.close()
 
 
+def _axis_orders(m, deg):
+    """Derivative orders ``1..deg`` of mode ``m`` that vanish at the axis: a
+    smooth field's mode is ``rho^m`` times an even function of ``rho``, so
+    every order below ``m`` and every order of the wrong parity is zero."""
+    return tuple(j for j in range(1, deg + 1) if j < m or (j - m) % 2 == 1)
+
+
 def _fit_block(rho, samples, sin_cos, m, n, deg):
     """A :class:`mrx.gvec.StateField` block from per-surface Fourier rows:
     the clamped B-spline through ``samples`` (``(len(rho), n_modes)``) at
-    the nodes ``rho`` (``rho[0] = 0``), on data-placed knots carried as
-    ``T``, with the AXIS PARITY of each mode enforced.
+    the nodes ``rho`` (``rho[0] = 0``) with the AXIS BEHAVIOUR of each mode
+    enforced, on one shared data-placed knot vector ``T``.
 
     A mode ``m`` of a smooth field is ``rho^m`` times an even function of
-    ``rho`` (``s = rho^2`` analytic): even ``m`` are even in ``rho``, odd
-    ``m`` odd. Interpolation through the nodes alone leaves the slope at
-    the axis free -- measured 2026-08-28 as a cone of +-2.5% (QA) / +-9%
-    (W7-X) in ``det DF / rho`` and a non-harmonic residual of the vacuum
-    field that GROWS with resolution (docs/research/analytic_map_2026-08-28.md,
-    qa_vacuum_convergence_2026-08-28.md) -- so one condition per mode is
-    added, ``c'(0) = 0`` for even ``m`` and ``c''(0) = 0`` for odd ``m``,
-    against one extra basis function (a phantom node between the first two
-    samples). The GVEC state pins its axis coefficients the same way.
+    ``rho`` (``s = rho^2`` analytic), so its derivatives of every order
+    below ``m`` and of the wrong parity vanish at the axis
+    (:func:`_axis_orders`). Interpolation through the nodes alone leaves
+    them free -- measured 2026-08-28 as a cone of +-2.5% (QA) / +-9% (W7-X)
+    in ``det DF / rho`` and a non-harmonic residual of the vacuum field that
+    GREW with resolution (docs/research/analytic_map_2026-08-28.md,
+    qa_vacuum_convergence_2026-08-28.md; the parity condition alone took
+    the (24,48,24) QA residual from 3.97e-4 to 2.34e-4 and ||J|| from 0.375
+    to 0.163). Each mode is fit with its own conditions against as many
+    phantom nodes inside the first interval, then expressed EXACTLY on the
+    shared knot vector of all phantoms (the union space contains every
+    mode's space; collocation at its Greville points is the identity there).
+    The GVEC state pins its axis coefficients the same way.
     """
-    nodes = np.concatenate([[rho[0], 0.5 * (rho[0] + rho[1])], rho[1:]])
-    T = np.asarray(knots_at_data(nodes, deg, "clamped"))
-    n_base = len(nodes)
-    A = BSpline.design_matrix(rho, T, deg).toarray()      # (n_data, n_base)
-    eye = np.eye(n_base)
-    d1 = np.array([BSpline(T, eye[j], deg).derivative(1)(0.0) for j in range(n_base)])
-    d2 = np.array([BSpline(T, eye[j], deg).derivative(2)(0.0) for j in range(n_base)])
+    m = np.asarray(m)
+    groups = {}
+    for i, mi in enumerate(m):
+        groups.setdefault(_axis_orders(int(mi), deg), []).append(i)
+    k_max = max(len(o) for o in groups)
+    phantoms = rho[0] + (rho[1] - rho[0]) * (np.arange(1, k_max + 1) / (k_max + 1))
+
+    def knots_with(k):
+        nodes = np.sort(np.concatenate([rho, phantoms[:k]]))
+        return np.asarray(knots_at_data(nodes, deg, "clamped")), len(nodes)
+
+    T, n_base = knots_with(k_max)
+    greville = np.array([T[j + 1:j + deg + 1].mean() for j in range(n_base)])
+    A_union = BSpline.design_matrix(greville, T, deg).toarray()
     coef = np.empty((n_base, samples.shape[1]))
-    for parity, row in ((0, d1), (1, d2)):
-        cols = (np.asarray(m) % 2) == parity
-        if cols.any():
-            coef[:, cols] = np.linalg.solve(
-                np.vstack([A, row[None, :]]),
-                np.vstack([samples[:, cols], np.zeros((1, int(cols.sum())))]))
+    for orders, cols in groups.items():
+        T_m, n_m = knots_with(len(orders))
+        eye = np.eye(n_m)
+        rows = [BSpline.design_matrix(rho, T_m, deg).toarray()]
+        rows += [np.array([BSpline(T_m, eye[j], deg).derivative(o)(0.0)
+                           for j in range(n_m)])[None, :] for o in orders]
+        rhs = np.vstack([samples[:, cols], np.zeros((len(orders), len(cols)))])
+        c_m = np.linalg.solve(np.vstack(rows), rhs)                 # (n_m, len(cols))
+        values = BSpline.design_matrix(greville, T_m, deg).toarray() @ c_m
+        coef[:, cols] = np.linalg.solve(A_union, values)
     return dict(m=m, n=n, coef=coef.T, sin_cos=sin_cos, deg=deg, T=T)
 
 
