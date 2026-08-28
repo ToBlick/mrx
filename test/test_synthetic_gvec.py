@@ -215,9 +215,10 @@ def test_map_reproduces_the_torus(synthetic, synthetic_seq):
     # itself, so only round-off (1e2 eps) separates it from the formula.
     assert err_phi <= mrx.eps(1e2)
     # Measured 2026-08-28 at NS (4, 8, 4) p=2 on the closed form (see the
-    # print): MEASURE of a in both R and Z; bands at 1.25x.
-    assert err_R <= 1.25 * 1.08e-2, err_R
-    assert err_Z <= 1.25 * 1.08e-2, err_Z
+    # print): 4.04e-3 of a in both R and Z (the gridded route's linear
+    # bridge on 24 theta points gave 1.08e-2); bands at 1.25x.
+    assert err_R <= 1.25 * 4.04e-3, err_R
+    assert err_Z <= 1.25 * 4.04e-3, err_Z
 
 
 def test_clebsch_field_matches_the_contract(synthetic, synthetic_seq, clebsch_ic):
@@ -243,14 +244,14 @@ def test_clebsch_field_matches_the_contract(synthetic, synthetic_seq, clebsch_ic
     assert abs(float(seq.l2_norm(B, 2)) - 1.0) <= mrx.eps(1e2)
     assert div <= 10 * seq.tol
     # Measured 2026-08-28 in float64 on the closed form (see the print):
-    # MEASURE raw and cleaned (the divergence the projection carries is
-    # MEASURE, and the cleaning moves the field by MEASURE); bands at 1.25x
+    # 3.274e-3 raw and cleaned (the divergence the projection carries is
+    # 2.5e-4, and the cleaning moves the field by 2.0e-5); bands at 1.25x
     # on the errors.
     # The moved norm is what the Leray solve resolves: its band is the
     # measured value plus the solve tolerance.
-    assert err_raw <= 1.25 * 3.27e-3, err_raw
-    assert err <= 1.25 * 3.27e-3, err
-    assert moved <= 2 * 2.2e-5 + 10 * seq.tol, moved
+    assert err_raw <= 1.25 * 3.28e-3, err_raw
+    assert err <= 1.25 * 3.28e-3, err
+    assert moved <= 2 * 2.0e-5 + 10 * seq.tol, moved
 
 
 def test_rotational_transform_and_lambda_invariance(synthetic, synthetic_seq):
@@ -267,7 +268,7 @@ def test_rotational_transform_and_lambda_invariance(synthetic, synthetic_seq):
     rho_mid = 0.5 * (rho_nodes[1:] + rho_nodes[:-1])
     ang = jnp.array([0.3, 0.7])
     for label, rho, band in (("nodes", rho_nodes, mrx.eps(1e2)),
-                             ("midpoints", rho_mid, 1.25 * 4.9e-4)):
+                             ("midpoints", rho_mid, 1.25 * 7.9e-7)):
         w = omega0(jnp.column_stack([rho, jnp.full_like(rho, ang[0]),
                                      jnp.full_like(rho, ang[1])]))
         assert float(jnp.max(jnp.abs(w[:, 0]))) == 0.0
@@ -275,8 +276,8 @@ def test_rotational_transform_and_lambda_invariance(synthetic, synthetic_seq):
         err = float(jnp.max(jnp.abs(ratio - torus0.iota(rho) / NFP)
                             / jnp.abs(torus0.iota(rho) / NFP)))
         print(f"\n  iota / nfp at the {label}: max relative error {err:.2e}")
-        # Nodes: round-off. Midpoints: MEASURE measured 2026-08-28 on the
-        # 401-point tabulation (see the print), band 1.25x.
+        # Nodes: round-off (6.8e-16 measured). Midpoints: 7.81e-7 measured
+        # 2026-08-28 on the 401-point tabulation (see the print), band 1.25x.
         assert err <= band, (label, err)
 
     cb = load_clebsch(path)
@@ -424,11 +425,11 @@ def test_relaxation(synthetic_seq, potential_ic):
     assert all(abs(r - 1.0) <= 1e3 * seq.tol for r in ratios_ideal), ratios_ideal
     assert all(r >= 1.0 - 1e3 * seq.tol for r in ratios_full), ratios_full
     assert max(divs) <= 10 * seq.tol
-    # Measured 2026-08-26 in float64 at eps = 2.096e-4 (dt = 3.30e-2, see
-    # the print): dH = +5.273274e-4; the polarised form is off by 8.1e-12
-    # (1.5e-8 relative, the helicity solves); -2 eps <J, B> at B_{n+1} by
-    # +1.24e-7 and at B_n by -9.62e-6 (ratio 0.0129), and at eps/2 by
-    # +3.1e-8 and -2.45e-6: both 0.25x, the O(eps^2) quartering. So the
+    # Measured 2026-08-28 in float64 at eps = 2.113e-4 (dt = 3.31e-2, see
+    # the print): dH = +5.325938e-4; the polarised form is off by 2.1e-11
+    # (3.8e-8 relative, the helicity solves); -2 eps <J, B> at B_{n+1} by
+    # +1.27e-7 and at B_n by -9.64e-6 (ratio 0.0132), and at eps/2 by
+    # +3.2e-8 and -2.45e-6: both 0.25x, the O(eps^2) quartering. So the
     # backward-Euler step makes the rate at B_{n+1} the accurate one (78x
     # smaller constant; the torus IC measured 175x), and the exact
     # statement is the polarised one. Bands: 1.25x on the 0.0129 ratio,
