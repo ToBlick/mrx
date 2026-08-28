@@ -132,7 +132,7 @@ def test_li383_reads_and_reproduces_the_file():
     from mrx.geometry import geometry_nfp
     assert geometry_nfp(LI383) == 3
     # blocks: coefficient layout and knot squareness
-    for name, n_base in (("X1", 16), ("X2", 16), ("LA", 15)):
+    for name, n_base in (("X1", 16), ("X2", 16), ("LA", 17)):   # LA: half mesh + axis + edge
         blk = st[name]
         assert blk["coef"].shape == (25, n_base)
         assert len(blk["T"]) == n_base + blk["deg"] + 1

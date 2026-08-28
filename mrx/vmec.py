@@ -17,7 +17,17 @@ and nowhere else:
   ``s = Phi / Phi_edge``, our ``rho^2``. ``rmnc``/``zmns`` live on the full
   mesh ``s_j = j / (ns - 1)``; ``lmns`` lives on the half mesh
   ``s_{j-1/2} = (j - 1/2) / (ns - 1)`` with the first row junk by VMEC
-  convention (always dropped). Each mode is refit as a clamped
+  convention (always dropped). The half mesh stops short of both ends
+  (``rho_1/2 = sqrt(0.5/(ns-1))``, 0.082 at ns = 75), and a spline fit
+  through it alone EXTRAPOLATES its end pieces over the axis and the
+  edge -- measured 2026-08-28 as the residual of the QA vacuum field
+  against the harmonic form concentrating at the axis and GROWING with
+  resolution (docs/research/qa_vacuum_convergence_2026-08-28.md). So the
+  lambda nodes are augmented with the axis and the edge: ``lambda_mn(0) =
+  0`` for ``m > 0`` (the ``rho^m`` behaviour), the ``m = 0`` modes at
+  ``rho = 0`` and every mode at ``rho = 1`` extrapolated linearly in ``s``
+  from the two nearest half-mesh rows (:func:`_lambda_nodes`). Each mode
+  is refit as a clamped
   interpolatory B-spline **in rho = sqrt(s)** through the nodes
   ``rho_j = sqrt(s_j)``: the odd-m ``s^(m/2)`` axis behaviour becomes
   analytic ``rho^m``, so no divide-by-sqrt(s) trick is needed (the DESC
@@ -88,6 +98,21 @@ def _fit_block(rho, samples, sin_cos, m, n, deg):
     return dict(m=m, n=n, coef=coef.T, sin_cos=sin_cos, deg=deg, T=T)
 
 
+def _lambda_nodes(rho_half, lmns, m):
+    """``(rho, samples)`` for the lambda fit: the half mesh with the axis and
+    the edge added -- ``lambda_mn(0) = 0`` for ``m > 0``, the ``m = 0`` rows at
+    the axis and all rows at the edge extrapolated linearly in ``s = rho^2``
+    from the two nearest half-mesh rows -- so the spline's domain is [0, 1]
+    and nothing is evaluated on an extrapolated end piece."""
+    s = rho_half ** 2
+    axis = lmns[0] + (lmns[1] - lmns[0]) * (0.0 - s[0]) / (s[1] - s[0])
+    axis = np.where(m > 0, 0.0, axis)
+    edge = lmns[-1] + (lmns[-1] - lmns[-2]) * (1.0 - s[-1]) / (s[-1] - s[-2])
+    rho = np.concatenate([[0.0], rho_half, [1.0]])
+    samples = np.vstack([axis[None, :], lmns, edge[None, :]])
+    return rho, samples
+
+
 def _state_from_raw(raw, path="wout"):
     """The :func:`mrx.gvec.read_state`-shaped dict of the raw wout arrays."""
     version = float(raw["version_"])
@@ -116,7 +141,7 @@ def _state_from_raw(raw, path="wout"):
         signgs=int(raw["signgs"]), version=version,
         X1=_fit_block(rho_full, rmnc, 2, m, n, deg),
         X2=_fit_block(rho_full, zmns, 1, m, n, deg),
-        LA=_fit_block(rho_half, raw["lmns"][1:], 1, m, n, deg),
+        LA=_fit_block(*_lambda_nodes(rho_half, raw["lmns"][1:], m), 1, m, n, deg),
         profiles=dict(rho=rho_full, phi=raw["phi"] / TWO_PI,
                       iota=raw["iotaf"], pressure=raw["presf"]))
 
