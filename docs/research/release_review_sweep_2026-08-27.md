@@ -128,8 +128,16 @@ items 1-5, `c25657c` items 7-12):
 | 6 | `test/random_fields.py` stays (preconditioner benchmarks) | -- |
 | 7 | `one_size_fits_all_map`, `metric_coefficients`, `backtracking_line_search` removed; `extend_map_nfp` stays, REWRITTEN (it recomputed the toroidal angle from zeta -- wrong for any map whose angle is not exactly linear in zeta -- now rotates the period map's own output; seam test added); `greville_interpolate_stellarator_map` pending Tobias's call | yes |
 | 8 | noise arm removed (`stochastic`, `apply_noise`, `State.noise_level/key`, `noise_schedule`, the PRNG threading) | yes |
-| 9 | L-BFGS stays; the four secant arrays are now `(0, n)` and untouched under cg/gradient (they were `(m, n)` and rolled every step whatever the method) | yes |
+| 9 | UNIFIED (51d011b): CG arm deleted, `DescentMethod = {GRADIENT, LBFGS}`, default L-BFGS m=1 (= PR-CG under the exact line search; measured: floored at 704 vs CG not by 1000 on W7-X); `<s,y> <= 0` pairs skipped = PR+ restart | yes |
 | 10 | `flip_zeta` stays | -- |
 | 11 | `ktilde_mode`, `lumped`, `extra_rings`, `outer_rings`, `MRX_BJ_BC_SCALE` removed; `bc_scale` stays explicit, default `PRODUCTION_BC_SCALE`, exposed as `build_preconditioners(bc_scale=...)` | yes |
 | 12 | `_coerce_scalar_hodge_preconditioner` now delegates to `_coerce_mass_preconditioner_spec` | yes |
-| 13-22 | not yet decided | -- |
+| 13 | `solve_singular_cg(A, b, vs)` takes the stored `(m, n)` kernel array, no default (be3767a) | yes |
+| 14 | solvers docstring names the three entry points (c25657c) | yes |
+| 15 | quadrature `indexing='xy'` -> `'ij'` migration + docstrings: subagent on branch `quad-ij`, with an independent base-vs-migrated equivalence check | agent |
+| 16 | warm starts: theory says they help (residual ratio ~ per-step change of B, criterion relative to b); measurement arm `descent_cg_nowarm` running | pending |
+| 17 | postponed until the poincare subagent is done | -- |
+| 18 | per-basis-function evaluators deleted (be3767a); QuadratureRule docstring with item 15 | yes |
+| 19+21 | CUT the gridded .h5 route: subagent on branch `drop-h5` (.dat and .nc only; synthetic-h5 tests ported to a synthetic .dat state) | agent |
+| 20 | explained (one isolated outlier costs one Krylov iteration; the 1/eps coarse solve over-amplifies an inexact coarse vector); recommendation: delete `use_coarse` + the `_shifted_harmonic_coarse_*` machinery | awaiting go |
+| 22 | docs last | -- |
