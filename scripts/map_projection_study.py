@@ -149,7 +149,7 @@ def main():
         seq.set_operators(compute_nullspaces(seq, ops))
         t3 = time.time()
         print(f"[study] compute_nullspaces {t3 - t2:.1f} s", flush=True)
-        cb = load_clebsch(path, seq.basis_0.types)
+        cb = load_clebsch(path)
         B, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
         div = divergence_norm(seq, B)
         Fv, _, _, _, _ = compute_force(B, seq)

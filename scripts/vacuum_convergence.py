@@ -211,7 +211,7 @@ def run_rung(cli):
 
     # --- the wout field in V_2^h --------------------------------------------
     t3 = time.perf_counter()
-    cb = load_clebsch(cli.geometry, seq.basis_0.types)
+    cb = load_clebsch(cli.geometry)
     Bw_hat, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
     div_w = divergence_norm(seq, Bw_hat)
     Bw = Bw_hat * norm                                           # Tesla, one field period

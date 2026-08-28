@@ -210,7 +210,7 @@ def _ic_report(path, ns, p):
 
     seq, ops = build_sequence(path, ns, p)
     seq.set_operators(compute_nullspaces(seq, ops))
-    cb = load_clebsch(path, seq.basis_0.types)
+    cb = load_clebsch(path)
     B, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
     div = divergence_norm(seq, B)
     F, _, _, _, _ = compute_force(B, seq)
