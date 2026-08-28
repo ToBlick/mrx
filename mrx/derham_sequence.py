@@ -745,7 +745,6 @@ class DeRhamSequence():
     def apply_inverse_shifted_laplacian(self, rhs, k, eps, dirichlet=True, guess=None,
                                         operators=None, tol=None, maxiter=None,
                                         preconditioner='auto',
-                                        use_harmonic_coarse=None,
                                         return_info=False):
         """
         Solve (L_k + eps * M_k) x = rhs for the k-form x.
@@ -757,8 +756,11 @@ class DeRhamSequence():
         needs no nullspace data, and the same solvers and preconditioners as
         :meth:`apply_inverse_laplacian` apply (the metric-lumped atoms, on
         the shifted operator). ``eps = 0`` is the Laplacian solve with
-        deflation. The optional harmonic coarse correction stays off while
-        the vectors are still being constructed.
+        deflation. The shifted operator's one eigenvalue ``eps`` along the
+        harmonic direction is a single isolated outlier of the preconditioned
+        spectrum, which the Krylov method deflates by itself in one
+        iteration; the rank-1 "coarse correction" that used to remove it
+        was measured not to pay and was deleted 2026-08-28.
 
         For k=0: solved with CG on ``(S_0 + eps M_0) u = rhs``.
         For k>=1: MINRES on the symmetric saddle-point form of L_k + eps M_k:
@@ -773,7 +775,6 @@ class DeRhamSequence():
             tol=self.tol if tol is None else tol,
             maxiter=self.maxiter if maxiter is None else maxiter,
             preconditioner=preconditioner,
-            use_harmonic_coarse=use_harmonic_coarse,
             return_info=return_info)
 
     def apply_inverse_mass_plus_eps_laplace_matrix(self, rhs, k, eps, dirichlet=True, guess=None,

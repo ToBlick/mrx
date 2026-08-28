@@ -32,47 +32,6 @@ def _saddle_nullspaces(seq, operators, k: int, dirichlet: bool):
     return get_saddle_point_nullspaces(seq, operators, k, dirichlet)
 
 
-def _shifted_harmonic_coarse_vector(
-        seq, operators: SequenceOperators, k: int, dirichlet: bool):
-    """Return the stored M_k-normalised coarse vector for shifted solves."""
-    n_dof = seq.n(k, dirichlet)
-    vs = _nullspace_vectors(operators, k, dirichlet)
-    if vs.shape[0] == 0:
-        return jnp.zeros(n_dof)
-    stored = vs[0]
-    stored_norm = seq.l2_norm(stored, k, dirichlet=dirichlet)
-    return stored / jnp.where(stored_norm > 0, stored_norm, 1.0)
-
-
-def _shifted_harmonic_coarse_ready(
-        seq, operators: SequenceOperators, k: int, dirichlet: bool) -> bool:
-    """True iff a nonzero stored harmonic coarse vector is available."""
-    vs = _nullspace_vectors(operators, k, dirichlet)
-    if vs.shape[0] == 0:
-        return jnp.asarray(False)
-    stored = vs[0]
-    stored_norm = seq.l2_norm(stored, k, dirichlet=dirichlet)
-    return stored_norm > 0
-
-
-def _wrap_shifted_harmonic_coarse_correction(
-        seq, operators: SequenceOperators, base_precond, eps: float,
-        k: int, dirichlet: bool):
-    """Add an exact ``1/eps`` coarse correction on the stored harmonic mode."""
-    z = _shifted_harmonic_coarse_vector(seq, operators, k, dirichlet)
-    mz = apply_mass_matrix(seq, z, k, dirichlet=dirichlet)
-
-    def precond(x):
-        alpha = z @ x
-        x_perp = x - alpha * mz
-        y_perp = base_precond(x_perp)
-        beta = z @ apply_mass_matrix(
-            seq, y_perp, k, dirichlet=dirichlet)
-        return y_perp - beta * z + (alpha / eps) * z
-
-    return precond
-
-
 class SequenceOperators(eqx.Module):
     """Everything built FROM a geometry: preconditioners and harmonic forms.
 
@@ -1479,7 +1438,6 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
         tol=tol,
         maxiter=maxiter,
         preconditioner=preconditioner,
-        use_harmonic_coarse=None,
         return_info=return_info,
     )
 
@@ -1489,7 +1447,6 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
                                           tol: Optional[float] = None,
                                           maxiter: Optional[int] = None,
                                           preconditioner='auto',
-                                          use_harmonic_coarse: Optional[bool] = None,
                                           return_info: bool = False):
     """Solve with the inverse of the shifted Hodge Laplacian ``L_k + eps M_k``.
 
@@ -1503,9 +1460,6 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
     maxiter = seq.maxiter if maxiter is None else maxiter
 
     if k == 0:
-        if use_harmonic_coarse is None:
-            use_harmonic_coarse = eps > 0 and not dirichlet
-
         selected_preconditioner = _coerce_scalar_hodge_preconditioner(
             seq, operators, k=k, preconditioner=preconditioner,
             dirichlet=dirichlet, eps=eps)
@@ -1519,10 +1473,6 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
             preconditioner=selected_preconditioner,
             allow_none=True,
         )
-
-        if use_harmonic_coarse:
-            precond_upper = _wrap_shifted_harmonic_coarse_correction(
-                seq, operators, precond_upper, eps, k, dirichlet)
 
         vs = _nullspace_vectors(
             operators, 0, dirichlet) if eps == 0 else jnp.zeros((0, rhs.shape[0]))
@@ -1599,24 +1549,6 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
             preconditioner=outer_spec,
             allow_none=True,
         )
-    # Apply 1/eps coarse correction on the harmonic upper-block mode, mirroring
-    # the k=0 treatment.  For k>=1 the DBC nullspace is always empty on this
-    # topology, so only the NBC case is relevant.
-    if use_harmonic_coarse is None:
-        use_harmonic_coarse = eps > 0 and not dirichlet
-    if use_harmonic_coarse and eps > 0:
-        # _shifted_harmonic_coarse_ready may return a traced bool when this
-        # function is called inside a jax.lax.while_loop body.  Use
-        # jax.lax.cond so the selection is JAX-traceable.
-        coarse_ready = _shifted_harmonic_coarse_ready(seq, operators, k, dirichlet)
-        precond_with_coarse = _wrap_shifted_harmonic_coarse_correction(
-            seq, operators, precond_upper, eps, k, dirichlet)
-        precond_no_coarse = precond_upper
-
-        def precond_upper(x, r=coarse_ready, a=precond_with_coarse,
-                          b=precond_no_coarse):
-            return jax.lax.cond(r, a, b, x)
-
     precond_matvec = (
         _build_coupled_saddle_preconditioner(
             seq,
