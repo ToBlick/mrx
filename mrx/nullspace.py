@@ -303,9 +303,11 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
     quotient :func:`harmonic_rayleigh` and, for the two forms that are built
     by solves (k = 1 free, k = 2 Dirichlet), the first non-harmonic eigenvalue
     ``lambda_1`` from :func:`estimate_spectral_gap` in ``gap_sweeps`` sweeps
-    of inverse iteration (``0`` skips it). The ratio of the two is the
-    squared relative error of the form; ``1e-6`` and below is a harmonic
-    form, ``1e-1`` is a solve that stopped early.
+    of inverse iteration (``0`` skips it; ~17 s at W7-X (12,24,12) p=3).
+    The ratio of the two is the squared relative error of the form, i.e.
+    ``O(seq.tol^2)`` when the solves converged -- measured 2e-4 / 4e-5 in
+    float32 (tol 3.5e-4) on W7-X, 1e-14-ish in float64; ``1e-1`` is a solve
+    that stopped early.
 
     Returns the updated ``SequenceOperators`` bundle.
     """
