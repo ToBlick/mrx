@@ -72,3 +72,92 @@ def test_state_reproduces_the_export():
     mine = np.asarray(jax.vmap(cb["lam_h"])(pts))
     want = np.array([ref["clebsch/LA"][i, j, k] for i in (1, 20, 49) for j in (0, 7) for k in (0, 31)])
     assert np.abs(mine - want).max() < 1e-10
+
+
+# ---------------------------------------------------------------------------
+# the map: spline coefficients from the series coefficients, no grid
+# ---------------------------------------------------------------------------
+
+def _made_up_block(rng, sp, deg, sin_cos, n_modes_beyond_nyquist=True):
+    """A state block whose modes include one beyond the Nyquist frequency of
+    the small test sequences (m = 5, n/nfp = 3) so aliasing is exercised."""
+    m = np.array([0, 1, 2, 1, 5, 2])
+    n = np.array([0, 0, 5, -5, 10, 15])
+    if not n_modes_beyond_nyquist:
+        m, n = m[:4], n[:4]
+    coef = rng.normal(size=(len(m), len(sp) - 1 + deg))
+    coef[m > 0, 0] = 0.0                                  # the axis rows of a state
+    return dict(m=m, n=n, coef=coef, sin_cos=sin_cos, deg=deg)
+
+
+@pytest.fixture(scope="module")
+def odd_p_seq():
+    from mrx.derham_sequence import DeRhamSequence
+    return DeRhamSequence((5, 8, 4), (3, 3, 3), 4, ("clamped", "periodic", "periodic"),
+                          polar=True, betti_numbers=(1, 1, 0, 0))
+
+
+@pytest.mark.parametrize("which", ["tiny_seq", "odd_p_seq"])
+@pytest.mark.parametrize("sin_cos", [2, 1])
+def test_series_spline_dofs_is_the_sampled_greville_interpolant(request, which, sin_cos):
+    """The per-mode closed form (radial Greville interpolant of ``c_mn`` x
+    angular samples over the circulant symbol) reproduces sampling the
+    series at the Greville points and solving, to round-off -- including
+    the aliased mode beyond Nyquist, and at both Greville layouts (on the
+    knots at odd p, between them at even p)."""
+    from mrx.gvec import series_spline_dofs
+    seq = request.getfixturevalue(which)
+    rng = np.random.default_rng(11)
+    sp = np.linspace(0.0, 1.0, 5)
+    block = _made_up_block(rng, sp, 3, sin_cos)
+    direct = series_spline_dofs(block, sp, 5, seq, l2=False)
+    sampled = seq.interpolate(StateField(block, sp, 5, vector=True), 0)
+    scale = float(np.abs(np.asarray(sampled)).max())
+    assert np.abs(np.asarray(direct - sampled)).max() < 1e-11 * scale
+
+
+def test_radial_coefficients_are_exact_on_the_states_knots(odd_p_seq):
+    """When the map's radial space contains the state's (same degree, same
+    knots) both the interpolant and the L2 projection return the state's
+    coefficients themselves."""
+    from mrx.gvec import _radial_coefficients
+    seq = odd_p_seq
+    br = seq.basis_0.Λ[0]
+    T = np.asarray(br.T)
+    rng = np.random.default_rng(2)
+    block = dict(m=np.array([0, 1]), n=np.array([0, 5]),
+                 coef=rng.normal(size=(2, br.n)), sin_cos=2, deg=br.p, T=T)
+    for l2 in (False, True):
+        c = _radial_coefficients(block, None, br, seq.greville[0].coll, l2)
+        assert np.abs(c - block["coef"].T).max() < 1e-12
+
+
+@pytest.mark.parametrize("which", ["tiny_seq", "odd_p_seq"])
+def test_angular_l2_symbol_solves_the_normal_equations(request, which):
+    """``gamma(m) cos(2 pi m x_j)`` is the L2 projection of ``cos(2 pi m
+    theta)`` onto the periodic basis: it satisfies ``M c = b`` with the mass
+    matrix and the moments assembled by an independent quadrature -- so the
+    closed-form moment ``h sinc(m h)^(p+1)`` and the circulant symbol are
+    right, at every frequency including beyond Nyquist."""
+    import jax.numpy as jnp
+    from mrx.gvec import _angular_symbol
+    seq = request.getfixturevalue(which)
+    bt = seq.basis_0.Λ[1]
+    N, p = bt.n, bt.p
+    xi, wi = np.polynomial.legendre.leggauss(3 * p + 4)          # a different rule
+    pts = ((np.arange(N)[:, None] + 0.5 * (xi[None, :] + 1.0)) / N).ravel()
+    w = np.tile(0.5 * wi / N, N)
+    B = np.asarray(bt.collocation_matrix(jnp.asarray(pts)), dtype=np.float64)
+    M = B.T @ (w[:, None] * B)
+    x = np.asarray(bt.greville_points(), dtype=np.float64)
+    freqs = np.array([0, 1, 2, N // 2, N // 2 + 1, N + 1])
+    gamma = _angular_symbol(bt, freqs, l2=True)
+    for m, g in zip(freqs, gamma):
+        b = B.T @ (w * np.cos(2 * np.pi * m * pts))
+        c = g * np.cos(2 * np.pi * m * x)
+        assert np.abs(M @ c - b).max() < 1e-13
+    # interpolation: the same coefficients collocate at the Greville points
+    gamma = _angular_symbol(bt, freqs, l2=False)
+    A = np.asarray(bt.collocation_matrix(), dtype=np.float64)
+    for m, g in zip(freqs, gamma):
+        assert np.abs(A @ (g * np.cos(2 * np.pi * m * x)) - np.cos(2 * np.pi * m * x)).max() < 1e-13

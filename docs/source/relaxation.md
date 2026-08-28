@@ -23,9 +23,10 @@ seq, ops = build_sequence("data/w7x_fmm002_clebsch_mrx.h5", ns=(8, 16, 16), p=2)
 | `toroid`, `cylinder`, `rot-ellipse` | analytic, from `mrx.mappings` |
 | the path of a GVEC export (`.h5`) | fitted from the file; `os.path.isfile` decides |
 
-Any other string raises. A GVEC file is fitted as three scalar splines on
-the sequence's own spline space, so `ns` and `p` are also the map
-resolution. `build_gvec_map` checks that $\det D\Phi > 0$ everywhere and
+Any other string raises. A GVEC state or VMEC wout becomes two scalar
+splines `R`, `Z` on the sequence's own spline space, built from the series
+coefficients (a grid export is fitted there), so `ns` and `p` are also the
+map resolution. `build_gvec_map` checks that $\det D\Phi > 0$ everywhere and
 raises otherwise. `nfp=` overrides the file's attribute for a file that
 declares it wrong. What a GVEC export must contain is in
 [GVEC → MRX interface](concepts/gvec_mrx_interface.md).

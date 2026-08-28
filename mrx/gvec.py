@@ -13,10 +13,13 @@ Its angles are GVEC's ``theta`` and ``zeta`` in radians with the series
 flat-schema exports call ``rho`` (``Phi = Phi_edge s^2``). :class:`StateField`
 evaluates one of the three fields at a logical point in JAX -- the radial
 basis through :class:`mrx.spline_bases.SplineBasis` on GVEC's own knots, the
-angles as ``2 pi (m theta - n zeta / nfp)`` -- so :func:`build_gvec_map`
-collocates ``R`` and ``Z`` at the map's Greville points and
-:func:`load_clebsch` histopolates ``lambda`` at the quadrature points from
-the closed form, with no intermediate grid. Validated against the pyGVEC
+angles as ``2 pi (m theta - n zeta / nfp)`` -- and :func:`build_gvec_map`
+builds the map's polar spline coefficients of ``R`` and ``Z`` from the
+series coefficients mode by mode (:func:`series_spline_dofs`: the radial
+splines projected onto the map's radial basis, the angular modes in closed
+form), while :func:`load_clebsch` histopolates ``lambda`` at the quadrature
+points from the closed form. Nothing is evaluated on a grid
+(``docs/research/analytic_map_2026-08-28.md``). Validated against the pyGVEC
 export of W7-X FMM002 to round-off (``test/test_gvec.py``).
 
 The **flat-schema export** (``quasr_*.h5``, ``w7x_*_mrx.h5``) is the
@@ -59,9 +62,8 @@ import numpy as np
 from jax.scipy.interpolate import RegularGridInterpolator
 from scipy.interpolate import BSpline
 
-from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DifferentialForm, DiscreteFunction
-from mrx.projectors import _solve_tensor_collocation_axis
+from mrx.projectors import _conforming_restriction, _solve_tensor_collocation_axis
 from mrx.spline_bases import SplineBasis
 
 TWO_PI = 2.0 * np.pi
@@ -119,6 +121,12 @@ def knots(sp, deg):
     return np.concatenate([np.full(deg, sp[0]), sp, np.full(deg, sp[-1])])
 
 
+def block_knots(block, sp):
+    """The radial knot vector of a field block: its own ``T`` (the wout
+    route) or the clamped vector on the element grid ``sp``."""
+    return np.asarray(block["T"] if "T" in block else knots(sp, block["deg"]))
+
+
 def radial_design(sp, deg, s):
     """``(len(s), n_base)`` values of the radial basis at ``s``."""
     return BSpline.design_matrix(np.asarray(s, dtype=np.float64), knots(sp, deg), deg).toarray()
@@ -145,14 +153,14 @@ class StateField:
     """A state's ``X1``, ``X2`` or ``LA`` as a JAX function of the logical
     point ``(rho, theta, zeta)`` (angles on ``[0, 1)``, ``zeta`` per field
     period). ``vector=True`` returns a ``(1,)`` array, the convention of the
-    map fit's scalar callables; otherwise a scalar. A block that carries its
+    scalar callables :func:`_map_with_sign` takes (the series map itself,
+    the reference the spline map is measured against); otherwise a scalar. A block that carries its
     own knot vector ``T`` (the wout route, ``mrx.vmec``) overrides the
     element grid ``sp``, which may then be ``None``."""
 
     def __init__(self, block, sp, nfp, vector=False):
-        T = block["T"] if "T" in block else knots(sp, block["deg"])
         self.basis = SplineBasis(block["coef"].shape[1], block["deg"], "clamped",
-                                 T=jnp.asarray(T))
+                                 T=jnp.asarray(block_knots(block, sp)))
         self.C = jnp.asarray(block["coef"])                              # (n_modes, n_base)
         self.m = jnp.asarray(block["m"], dtype=jnp.float64)
         self.n_per = jnp.asarray(block["n"], dtype=jnp.float64) / nfp    # per field period
@@ -192,33 +200,121 @@ def _det_DF(map_func, n=64, seed=0):
     return np.asarray(dets)
 
 
-def _spline_scalars(R_fn, Z_fn, map_ns, p):
-    """R and Z as scalar splines on the C1 polar space, collocated from the
-    callables ``R_fn, Z_fn: (3,) -> (1,)`` at the space's Greville points.
+def _periodic_symbol(row, freqs):
+    """``sum_l row[l] exp(-2 pi i m l / N)`` for every ``m`` in ``freqs``: the
+    eigenvalue of the circulant matrix with first column ``row`` on the
+    Fourier mode ``m``. Real for the symmetric rows of a uniform periodic
+    B-spline basis (the imaginary part is checked to be round-off)."""
+    N = len(row)
+    sym = np.exp(-2j * np.pi * np.outer(freqs, np.arange(N)) / N) @ row
+    if np.abs(sym.imag).max() > 1e-12 * np.abs(sym).max():
+        raise ValueError("periodic collocation/mass row is not symmetric")
+    return sym.real
 
-    ``interpolate`` collocates on the full tensor-product space (three
-    square 1-D solves) and restricts onto the polar space with the exact
-    ring-0/ring-1 surgery, so the axis is a single point per zeta and the
-    map is C1 there like the fields it carries.  Against the unrestricted
-    tensor fit only rings 0 and 1 move (W7-X fmm002 (8,16,8) p=3: 4e-5 and
-    3.5e-4 in R; det DF at the innermost quadrature ring 0.1734 vs 0.1731).
+
+def _angular_symbol(basis, freqs, l2):
+    """Per-mode coefficient factor ``gamma(m)`` of the uniform periodic
+    basis: the degree-``p`` spline with coefficients ``gamma(m) exp(2 pi i m
+    x_j)`` (``x_j`` the Greville points, the centres of the basis functions)
+    is the interpolant (``l2=False``) or the L2 projection (``l2=True``) of
+    ``exp(2 pi i m theta)``.
+
+    Interpolation: the collocation matrix is circulant, so the interpolant
+    of a Fourier mode is the mode's samples over the symbol
+    ``sigma(m) = sum_l B_0(x_l) exp(-2 pi i m l / N)``. ``sigma`` is
+    ``N``-periodic in ``m``: a mode beyond the Nyquist frequency ``N/2`` is
+    interpolated as its alias, with the alias's gain.
+
+    L2 projection: the moments are the B-spline's Fourier transform,
+    ``int B_j(theta) exp(2 pi i m theta) dtheta = h sinc(m h)^(p+1)
+    exp(2 pi i m x_j)`` with ``h = 1/N`` and ``sinc(x) = sin(pi x)/(pi x)``,
+    and the mass matrix is circulant with symbol ``mu(m)``; a mode beyond
+    Nyquist is damped by ``sinc^(p+1)`` instead of aliased.
     """
-    map_seq = DeRhamSequence(map_ns, (p, p, p), p + 1,
-                             ("clamped", "periodic", "periodic"), polar=True)
-    R_h = DiscreteFunction(map_seq.interpolate(R_fn, 0), map_seq.basis_0, map_seq.E(0))
-    Z_h = DiscreteFunction(map_seq.interpolate(Z_fn, 0), map_seq.basis_0, map_seq.E(0))
-    return R_h, Z_h, map_seq
+    N, p = basis.n, basis.p
+    freqs = np.asarray(freqs, dtype=np.float64)
+    if not l2:
+        A = np.asarray(basis.collocation_matrix(), dtype=np.float64)
+        return 1.0 / _periodic_symbol(A[:, 0], freqs)
+    xi, wi = np.polynomial.legendre.leggauss(p + 1)
+    pts = ((np.arange(N)[:, None] + 0.5 * (xi[None, :] + 1.0)) / N).ravel()
+    w = np.tile(0.5 * wi / N, N)
+    B = np.asarray(basis.collocation_matrix(jnp.asarray(pts)), dtype=np.float64)
+    M = B.T @ (w[:, None] * B)
+    moment = np.sinc(freqs / N) ** (p + 1) / N
+    return moment / _periodic_symbol(M[:, 0], freqs)
 
 
-def build_gvec_map(h5_path, map_ns=(12, 24, 12), p=3, sign=None, stride=1,
-                   nfp=None):
-    """Build the stellarator map of one flat-schema file or GVEC state.
+def _radial_coefficients(block, sp, basis_r, coll_r, l2):
+    """``(n_r, n_modes)`` coefficients on the map's clamped radial basis of
+    every mode's radial function ``c_mn(rho)`` (a spline on the state's
+    knots): its Greville interpolant (``l2=False``) or its L2 projection
+    (``l2=True``, Gauss quadrature on the union of the two knot sets, exact
+    for the spline product). Either is exact when the map's radial space
+    contains the state's."""
+    T_s, deg_s, C = block_knots(block, sp), block["deg"], block["coef"]
+    T_r, p_r = np.asarray(basis_r.T, dtype=np.float64), basis_r.p
+    if not l2:
+        x_r = np.asarray(basis_r.greville_points(), dtype=np.float64)
+        samples = BSpline.design_matrix(x_r, T_s, deg_s).toarray() @ C.T
+        return np.linalg.solve(np.asarray(coll_r, dtype=np.float64), samples)
+    bp = np.unique(np.concatenate([T_s, T_r]))
+    xi, wi = np.polynomial.legendre.leggauss((deg_s + p_r) // 2 + 1)
+    lo, hi = bp[:-1], bp[1:]
+    pts = (0.5 * (lo + hi)[:, None] + 0.5 * (hi - lo)[:, None] * xi[None, :]).ravel()
+    w = (0.5 * (hi - lo)[:, None] * wi[None, :]).ravel()
+    Br = BSpline.design_matrix(pts, T_r, p_r).toarray()
+    Bs = BSpline.design_matrix(pts, T_s, deg_s).toarray()
+    M = Br.T @ (w[:, None] * Br)
+    return np.linalg.solve(M, Br.T @ (w[:, None] * (Bs @ C.T)))
 
-    A ``.h5`` export supplies ``R`` and ``Z`` on its grid, bridged to the
-    Greville points by linear interpolation (``_rgi_fn``); a ``.dat`` state
-    or a VMEC wout (``.nc``, refit into the same blocks by ``mrx.vmec``)
-    supplies them in closed form (:class:`StateField`), so
-    the fit is the map space's own approximation and nothing else.
+
+def series_spline_dofs(block, sp, nfp, seq, l2=False):
+    """The polar 0-form DoFs on ``seq.basis_0`` of a state field, built from
+    its coefficients alone: no evaluation grid, no collocation solve.
+
+    The field is ``sum_mn c_mn(rho) trig(2 pi (m theta - n zeta / nfp))``
+    and both the Greville interpolation and the L2 projection onto the
+    tensor-product spline space are linear and tensor-product, so the
+    coefficients are the sum over modes of (radial coefficients of
+    ``c_mn``) x (angular coefficients of the trig mode), the latter in
+    closed form (:func:`_angular_symbol`):
+
+        C[i, j, k] = sum_mn c_mn[i] gamma_t(m) gamma_z(n) trig(2 pi (m x_j - n y_k))
+
+    with ``x_j``, ``y_k`` the angular Greville points. ``l2=False`` is the
+    Greville interpolant, identical to sampling the series at the Greville
+    points and solving (``seq.interpolate(f, 0)``) to round-off; ``l2=True``
+    the L2 projection. The tensor coefficients are then restricted onto the
+    polar space with the ring-0/ring-1 surgery of every 0-form
+    interpolation (:func:`mrx.projectors._conforming_restriction`).
+    """
+    br, bt, bz = seq.basis_0.Λ
+    m, n_per = block["m"].astype(np.float64), block["n"] / nfp
+    if np.abs(n_per - np.round(n_per)).max() > 0:
+        raise ValueError("toroidal mode numbers are not multiples of nfp")
+    c_r = _radial_coefficients(block, sp, br, seq.greville[0].coll, l2)   # (n_r, n_modes)
+    gamma = _angular_symbol(bt, m, l2) * _angular_symbol(bz, n_per, l2)   # (n_modes,)
+    x_t = np.asarray(bt.greville_points(), dtype=np.float64)
+    y_z = np.asarray(bz.greville_points(), dtype=np.float64)
+    arg = TWO_PI * (m[:, None, None] * x_t[None, :, None]
+                    - n_per[:, None, None] * y_z[None, None, :])          # (n_modes, n_t, n_z)
+    trig = np.cos(arg) if block["sin_cos"] == 2 else np.sin(arg)
+    C_full = np.einsum("ik,k,kjl->ijl", c_r, gamma, trig)
+    return _conforming_restriction(seq.E(0), jnp.asarray(C_full.reshape(-1)))
+
+
+def build_gvec_map(h5_path, seq, sign=None, stride=1, nfp=None, l2=False):
+    """Build the stellarator map of a GVEC state, a VMEC wout or a
+    flat-schema export as a C1 polar spline map on ``seq.basis_0``.
+
+    A ``.dat`` state or a ``.nc`` wout (refit into the same blocks by
+    :mod:`mrx.vmec`) supplies ``R`` and ``Z`` as radial-spline x Fourier
+    series, and the map's spline coefficients are built from the series
+    coefficients directly (:func:`series_spline_dofs`) -- nothing is
+    evaluated on a grid. A ``.h5`` export supplies ``R`` and ``Z`` on its
+    grid, bridged to the Greville points by linear interpolation
+    (``_rgi_fn``) and collocated (``seq.interpolate``).
     Returns ``(F, info)``. ``sign`` is the toroidal handedness
     ``Y = sign * R sin(2 pi zeta/nfp)``; left ``None`` it is measured, and a
     file that is degenerate under both signs raises.
@@ -232,12 +328,16 @@ def build_gvec_map(h5_path, map_ns=(12, 24, 12), p=3, sign=None, stride=1,
         nfp = st["nfp"] if nfp is None else int(nfp)
         R_fn = StateField(st["X1"], st.get("sp"), st["nfp"], vector=True)
         Z_fn = StateField(st["X2"], st.get("sp"), st["nfp"], vector=True)
+        R_dof = series_spline_dofs(st["X1"], st.get("sp"), st["nfp"], seq, l2)
+        Z_dof = series_spline_dofs(st["X2"], st.get("sp"), st["nfp"], seq, l2)
         axes, layout, grid = None, None, "closed form"
     else:
         axes, R_grid, Z_grid, nfp, layout = load_gvec_grids(
             h5_path, stride=stride, nfp=nfp)
         R_fn, Z_fn, grid = _rgi_fn(axes, R_grid), _rgi_fn(axes, Z_grid), R_grid.shape
-    R_h, Z_h, map_seq = _spline_scalars(R_fn, Z_fn, map_ns, p)
+        R_dof, Z_dof = seq.interpolate(R_fn, 0), seq.interpolate(Z_fn, 0)
+    R_h = DiscreteFunction(R_dof, seq.basis_0, seq.E(0))
+    Z_h = DiscreteFunction(Z_dof, seq.basis_0, seq.E(0))
 
     tried = {}
     for s in ((sign,) if sign is not None else (1.0, -1.0)):
@@ -246,7 +346,7 @@ def build_gvec_map(h5_path, map_ns=(12, 24, 12), p=3, sign=None, stride=1,
         tried[s] = (float(d.min()), float(d.max()))
         if np.isfinite(d).all() and d.min() > 0:
             return F, {"R_h": R_h, "Z_h": Z_h, "R_fn": R_fn, "Z_fn": Z_fn,
-                       "axes": axes, "map_seq": map_seq, "nfp": nfp,
+                       "axes": axes, "nfp": nfp,
                        "sign": s, "layout": layout, "det_range": tried[s],
                        "grid": grid, "stride": stride}
     raise RuntimeError(f"{h5_path}: no handedness gives det DF > 0; "

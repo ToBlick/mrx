@@ -72,9 +72,13 @@ HX transfers, dense outer-ring probes, the Fourier coarse correction
 
 ## Maps
 
-Analytic maps are callables. Data maps are fitted by `seq.interpolate(f, 0)`
-on a polar map sequence (`build_gvec_map`, `build_w7x_map` in `mrx/gvec.py`;
-`greville_interpolate_map` in `mrx/geometry.py`). No reference mass matrix.
+Analytic maps are callables. A GVEC state or VMEC wout becomes a polar
+spline map on the sequence's own 0-form space with the coefficients built
+from the series coefficients, mode by mode, no evaluation grid
+(`series_spline_dofs`, `build_gvec_map` in `mrx/gvec.py`); a grid export is
+fitted by `seq.interpolate(f, 0)` on the same space (`build_gvec_map`;
+`greville_interpolate_map` in `mrx/geometry.py` for analytic maps). No
+reference mass matrix.
 Geometry lives on `SequenceGeometry` as `metric_jkl`, `metric_inv_jkl` and
 `jacobian_j`, built once per map; every mass weight is an elementwise product
 of those, memoised per degree in the element layout. `DF` is not stored --

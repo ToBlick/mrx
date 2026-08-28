@@ -377,7 +377,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
                          polar=True, tol=tol, maxiter=maxiter,
                          betti_numbers=(1, 1, 0, 0))
     if os.path.isfile(geometry):
-        map_func, info = build_gvec_map(geometry, map_ns=ns, p=p, nfp=nfp)
+        map_func, info = build_gvec_map(geometry, seq, nfp=nfp)
         print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
               f"det DF in [{info['det_range'][0]:.3e}, "
               f"{info['det_range'][1]:.3e}]", flush=True)

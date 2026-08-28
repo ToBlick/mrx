@@ -193,13 +193,15 @@ under `jax.lax.map`) or `SequenceGeometry.from_spline_map(spline_map, seq)`
 Laplacian preconditioner built for the previous geometry.
 
 Maps enter by interpolation. An analytic map is a callable `F(x)`; a map from
-data is fitted as three scalar 0-form splines on a map sequence and wrapped as
-a `SplineMap` (`mrx/mappings.py`) or a `stellarator_map`. The fit is
-`seq.interpolate(f, 0)`: 1D collocation solves on the tensor space followed by
-the polar restriction. `mrx/geometry.py` has `greville_interpolate_map`;
-`mrx/gvec.py` has `build_gvec_map`
-and `build_w7x_map` for GVEC and W7-X files (gridded `R, Z` go through
-`fit_scalar_spline`). There is no reference mass matrix.
+data becomes scalar 0-form splines on the sequence's own space, wrapped as
+a `SplineMap` (`mrx/mappings.py`) or a stellarator map. An analytic map is
+fitted by `seq.interpolate(f, 0)`: 1D collocation solves on the tensor space
+followed by the polar restriction (`greville_interpolate_map` in
+`mrx/geometry.py`). A GVEC state or VMEC wout is not sampled at all:
+`build_gvec_map` in `mrx/gvec.py` builds the polar coefficients of `R`, `Z`
+from the series coefficients mode by mode (`series_spline_dofs`); a gridded
+export is bridged linearly to the Greville points and fitted the same way as
+an analytic map. There is no reference mass matrix.
 
 ### Dynamic: `SequenceOperators`
 

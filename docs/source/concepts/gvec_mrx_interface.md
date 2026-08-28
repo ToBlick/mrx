@@ -278,11 +278,15 @@ form. `mrx.gvec` parses the radial B-spline x Fourier representation
 of `X1 = R`, `X2 = Z` and `LA = lambda` (series `sum f_mn(s) trig(m theta -
 n zeta)` with `n` a multiple of `nfp`, degree-5 clamped B-splines on GVEC's
 element grid) and the profiles `Phi`, `iota`, `p` at the radial
-interpolation points (`chi' = iota Phi'`). `StateField` evaluates a field
-at any logical point in JAX, so `build_gvec_map` collocates `R` and `Z` at
-the map's Greville points from the series -- no 50^3 grid and no linear
-interpolation bridge in between, the map error is the map space's own --
-and `load_clebsch` hands the initial condition `lambda` in closed form. Every
+interpolation points (`chi' = iota Phi'`). `build_gvec_map` builds the
+map's polar spline coefficients of `R` and `Z` from the series
+coefficients mode by mode (`series_spline_dofs`: the radial splines
+projected onto the map's radial basis, the angular modes in closed form
+through the periodic B-spline's Fourier symbol) -- no 50^3 grid, no
+linear interpolation bridge and no evaluation grid at all, the map error
+is the map space's own (`docs/research/analytic_map_2026-08-28.md`) --
+`StateField` evaluates a field at any logical point in JAX, and
+`load_clebsch` hands the initial condition `lambda` in closed form. Every
 `--geometry` and `build_sequence` argument accepts the `.dat`. Against the
 pyGVEC export of W7-X FMM002 the series reproduce `R`, `Z`, `lambda` and
 `Phi'` to round-off and `chi'`, `p` to `1e-5` (the interpolation floor of
