@@ -1,0 +1,478 @@
+"""Convergence of a VMEC vacuum equilibrium against MRX's discrete harmonic field.
+
+A vacuum equilibrium (``presf == 0``) is the harmonic k=2 Dirichlet form of
+its own boundary: curl-free, divergence-free, ``B . n = 0``, carrying the
+toroidal flux. This script compares, at one resolution ``(ns, p)``,
+
+* ``B_w``: the wout field pushed into ``V_2^h`` by the production IC route
+  (``load_clebsch`` -> ``clebsch_potential_form`` -> ``potential_two_form``,
+  i.e. the commuting projection ``Pi_2 B_VMEC``: exactly divergence-free,
+  toroidal flux ``phi_edge`` exactly, Tesla per field period), and
+* ``h``: the discrete harmonic form ``seq.nullspace(2, True)[0]`` of the
+  direct Hodge construction (``mrx.nullspace.compute_nullspaces``),
+  M-normalised, sign arbitrary.
+
+Same-space comparison (no transfer): the L2(M)-optimal scale
+``c = <B_w, h>_M / <h, h>_M`` and ``D = ||B_w - c h||_M / ||B_w||_M``, the sine
+of the M-angle between the two fields. ``D`` falls like ``h^p`` while the
+discretisation dominates and floors at VMEC's own distance from the vacuum
+field of its boundary (Fourier truncation, radial mesh, the lambda refit).
+The flux-matched scale ``c_flux = Phi(B_w) / Phi(h)`` is the cross-check:
+``c_flux / c - 1`` vanishes iff VMEC's field is harmonic.
+
+Cross-resolution comparison: the spaces are not nested (clamped radial knots
+have ``n_r - p`` uniform elements; the map is refit at every rung), so both
+fields are pushed forward to Cartesian components on a fixed logical grid
+(``--grid``: Gauss nodes in rho on (0, 1), midpoints in the angles) and
+stored; ``--plot`` compares every rung with the finest one,
+``E = ||B_h - B_ref|| / ||B_ref||`` in the grid's physical L2 norm, with the
+map difference ``|F_h - F_ref|`` reported alongside (one order higher). The
+element size is ``h = 1 / (n_r - p)``.
+
+Gates per rung (float64): ``||div B||`` of the IC, the wall-normal part it
+discards, and the harmonic form's Rayleigh quotient against ``lambda_1``
+(``ratio <= 1e-10``; the construction has no gate of its own and an
+unconverged Hodge solve returns a non-harmonic vector silently).
+
+Usage (one process = one rung; always a GPU job through ``slurm/run.sh``)::
+
+    python -u scripts/vacuum_convergence.py --geometry data/wout_X.nc \
+        --ns 16,32,16 --p 3 --out outputs/qa_vacuum [--trace] [--h5 run/B.h5]
+    python -u scripts/vacuum_convergence.py --plot outputs/qa_vacuum
+
+``--precision`` is exported as ``MRX_DTYPE`` before ``mrx`` is imported.
+Output per rung: ``<out>/rung_<nr>x<nt>x<nz>_p<p>/result.json`` and
+``fields.npz`` (the DoFs of both fields and their Cartesian values, the
+positions and ``det DF`` on the common grid). ``--plot`` writes
+``<out>/convergence.json``, ``<out>/convergence.png`` (log-log error vs h,
+slopes annotated) and ``<out>/residual_zeta0.png`` (``|B_w - c h|`` on the
+zeta = 0 section of the finest rung).
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import sys
+import time
+
+
+def parse_args(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--geometry", default="data/wout_LandremanPaul2021_QA_lowres.nc")
+    ap.add_argument("--ns", default=None, help="n_r,n_theta,n_zeta of the rung")
+    ap.add_argument("--p", type=int, default=3)
+    ap.add_argument("--maxiter", type=int, default=10_000)
+    ap.add_argument("--tol", type=float, default=None)
+    ap.add_argument("--precision", default="float64", choices=("float32", "float64"))
+    ap.add_argument("--grid", default="48,96,48",
+                    help="common evaluation grid: Gauss nodes in rho, midpoints in theta, zeta")
+    ap.add_argument("--h5", default=None,
+                    help="a relax.py B.h5 at this rung: check B_ic against B_w, report B_final")
+    ap.add_argument("--trace", action="store_true",
+                    help="field-line iota of B_w and h against the file's iotaf")
+    ap.add_argument("--trace-seeds", type=int, default=40)
+    ap.add_argument("--trace-periods", type=int, default=200)
+    ap.add_argument("--out", default="outputs/qa_vacuum")
+    ap.add_argument("--plot", default=None, help="merge the rungs under this directory and plot")
+    return ap.parse_args(argv)
+
+
+def _log(msg):
+    print(f"  [{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# One rung
+# ---------------------------------------------------------------------------
+
+def common_grid(shape):
+    """Logical points ``(N, 3)`` and weights ``(N,)`` of the fixed evaluation
+    grid: Gauss-Legendre nodes in rho on (0, 1) (never rho = 1, where the
+    spline map's ``det DF`` is an autodiff zero), midpoint rules in the
+    periodic angles. ``sum w J f`` is the volume integral over one field
+    period, the same domain as the M-norm."""
+    import numpy as np
+    nr, nt, nz = shape
+    xg, wg = np.polynomial.legendre.leggauss(nr)
+    rho, w_r = 0.5 * (xg + 1.0), 0.5 * wg
+    th = (np.arange(nt) + 0.5) / nt
+    ze = (np.arange(nz) + 0.5) / nz
+    R, T, Z = np.meshgrid(rho, th, ze, indexing="ij")
+    W = np.broadcast_to(w_r[:, None, None] / (nt * nz), R.shape)
+    pts = np.stack([R.ravel(), T.ravel(), Z.ravel()], axis=1)
+    return pts, W.ravel().copy(), dict(rho=rho, theta=th, zeta=ze)
+
+
+def pushforward_on_grid(seq, dof, pts, batch=4096):
+    """Cartesian components of the Dirichlet 2-form ``dof`` at the logical
+    points ``pts`` (Piola: ``B = DF B_hat / J``), with ``F(pts)`` and ``J``."""
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+    from mrx.differential_forms import DiscreteFunction, det33
+
+    f = DiscreteFunction(jnp.asarray(dof), seq.basis_2, seq.E(2, True))
+    F = seq.map
+
+    @jax.jit
+    def one(x):
+        DF = jax.jacfwd(F)(x)
+        J = det33(DF)
+        return DF @ f(x) / J, F(x), J
+
+    many = jax.jit(jax.vmap(one))
+    B, X, J = [], [], []
+    for i in range(0, len(pts), batch):
+        b, x, j = many(jnp.asarray(pts[i:i + batch]))
+        B.append(np.asarray(b))
+        X.append(np.asarray(x))
+        J.append(np.asarray(j))
+    return np.concatenate(B), np.concatenate(X), np.concatenate(J)
+
+
+def toroidal_flux(seq, dof):
+    """``Phi = sum_q w_q B_hat^zeta(q)``: the flux through a zeta = const
+    section (zeta-independent for a div-free field with ``B . n = 0``, so
+    the volume sum over one field period of logical zeta in [0, 1) is it)."""
+    import jax.numpy as jnp
+    vals = seq.evaluate_at_quadrature(dof, 2, True)
+    return float(jnp.sum(seq.quad.w * vals[:, 2]))
+
+
+def trace_iota(seq, dof, nfp, n_seeds, n_periods, tag):
+    """Field-line iota per seed radius, via :func:`mrx.poincare.section_figure`."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from mrx.poincare import section_figure
+
+    t0 = time.perf_counter()
+    fig, res = section_figure(seq, dof, nfp, plane=0.0, n_seeds=n_seeds,
+                              n_periods=n_periods, title=tag)
+    plt.close(fig)
+    keep = res["ok"] & ~res["escaped"] & ~res["chaotic"]
+    _log(f"trace {tag}: {time.perf_counter() - t0:.1f}s, {int(keep.sum())}/{len(keep)} regular, "
+         f"drift {res['drift']:.1e}, iota {res['iota'][keep].min():.5f}..{res['iota'][keep].max():.5f}")
+    return dict(seed_r=np.asarray(res["seeds"][:, 0]).tolist(),
+                iota=np.asarray(res["iota"]).tolist(),
+                iota_err=np.asarray(res["iota_err"]).tolist(),
+                keep=np.asarray(keep).tolist(), drift=float(res["drift"]))
+
+
+def run_rung(cli):
+    import h5py
+    import jax.numpy as jnp
+    import numpy as np
+
+    import mrx
+    from mrx.geometry import build_sequence, geometry_nfp
+    from mrx.gvec import load_clebsch
+    from mrx.initial_conditions import (clebsch_potential_form, divergence_norm,
+                                        potential_two_form)
+    from mrx.nullspace import (compute_nullspaces, estimate_spectral_gap,
+                               exact_derivative_residual, harmonic_rayleigh)
+    from mrx.relaxation import compute_force
+    from mrx.vmec import read_wout
+
+    ns = tuple(int(v) for v in cli.ns.split(","))
+    p = cli.p
+    tag = f"rung_{ns[0]}x{ns[1]}x{ns[2]}_p{p}"
+    out = os.path.join(cli.out, tag)
+    os.makedirs(out, exist_ok=True)
+    print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE}", flush=True)
+    res = dict(geometry=os.path.abspath(cli.geometry), ns=list(ns), p=p,
+               h=1.0 / (ns[0] - p), n_elements=[ns[0] - p, ns[1], ns[2]],
+               precision=str(mrx.DTYPE), grid=[int(v) for v in cli.grid.split(",")])
+
+    # --- geometry, operators, harmonic form -------------------------------
+    t0 = time.perf_counter()
+    seq, ops = build_sequence(cli.geometry, ns, p, cli.maxiter, tol=cli.tol)
+    t1 = time.perf_counter()
+    ops = seq.set_operators(compute_nullspaces(seq, ops))
+    t2 = time.perf_counter()
+    h = seq.nullspace(2, True)[0]
+    h = h / seq.l2_norm(h, 2)
+    rq = harmonic_rayleigh(seq, h, 2, True, ops)
+    lam1, sweeps = estimate_spectral_gap(seq, ops, 2, True, maxiter=5)
+    ratio = rq / lam1
+    div_h = exact_derivative_residual(seq, h, 2, True)
+    res.update(n2=int(seq.n(2, True)), tol=float(seq.tol), t_build=t1 - t0, t_nullspace=t2 - t1,
+               harmonic=dict(rayleigh=rq, lambda_1=float(lam1), gap_sweeps=int(sweeps),
+                             ratio=ratio, div_over_norm=div_h,
+                             gate_1e_10=bool(ratio <= 1e-10)))
+    _log(f"{tag}: n2={seq.n(2, True)} tol={seq.tol:.1e} build {t1 - t0:.1f}s nullspace {t2 - t1:.1f}s; "
+         f"harmonic rq {rq:.3e} lambda_1 {lam1:.3e} ratio {ratio:.1e} "
+         f"({'PASS' if ratio <= 1e-10 else 'FAIL'} <= 1e-10), |div h|/|h| {div_h:.1e}")
+
+    # --- the wout field in V_2^h --------------------------------------------
+    t3 = time.perf_counter()
+    cb = load_clebsch(cli.geometry, seq.basis_0.types)
+    Bw_hat, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
+    div_w = divergence_norm(seq, Bw_hat)
+    Bw = Bw_hat * norm                                           # Tesla, one field period
+    t4 = time.perf_counter()
+    res.update(t_ic=t4 - t3, B_norm=norm, div_B_w=div_w, wall_discarded=wall)
+    _log(f"B_w: ||B||_M {norm:.6e} T, ||div B|| {div_w:.2e}, wall-normal discarded {wall:.2e}, {t4 - t3:.1f}s")
+
+    # --- same-space comparison ----------------------------------------------
+    Mh = seq.apply_mass_matrix(h, 2, True)
+    c = float(Bw @ Mh) / float(h @ Mh)
+    D = float(seq.l2_norm(Bw - c * h, 2)) / norm
+    cos_theta = c / norm                                         # <B_w, h> / (|B_w| |h|)
+    D_from_angle = float(np.sqrt(max(0.0, 1.0 - cos_theta ** 2)))
+    Phi_w, Phi_h = toroidal_flux(seq, Bw), toroidal_flux(seq, h)
+    c_flux = Phi_w / Phi_h
+    D_flux = float(seq.l2_norm(Bw - c_flux * h, 2)) / norm
+    st = read_wout(cli.geometry)
+    phi_edge = float(st["profiles"]["phi"][-1]) * 2.0 * np.pi   # Wb (the file's phi)
+    res.update(c=c, D=D, D_from_angle=D_from_angle, c_flux=c_flux, D_flux=D_flux,
+               c_flux_over_c_minus_1=c_flux / c - 1.0, Phi_w=Phi_w, Phi_h=Phi_h,
+               phi_edge_file=phi_edge, Phi_w_over_phi_edge_minus_1=Phi_w / phi_edge - 1.0)
+    _log(f"scale c {c:.6e} (c_flux {c_flux:.6e}, c_flux/c - 1 = {c_flux / c - 1:+.3e}); "
+         f"D = ||B_w - c h||/||B_w|| = {D:.4e} (sin theta {D_from_angle:.4e}); D_flux {D_flux:.4e}; "
+         f"Phi_w {Phi_w:.6e} vs file {phi_edge:.6e} ({Phi_w / phi_edge - 1:+.1e})")
+
+    # --- forces at unit M-norm -------------------------------------------------
+    t5 = time.perf_counter()
+    F_w, _, J_w, _, _ = compute_force(Bw_hat, seq)
+    F_h, _, J_h, _, _ = compute_force(h, seq)
+    nF_w, nF_h = float(seq.l2_norm(F_w, 2)), float(seq.l2_norm(F_h, 2))
+    nJ_w, nJ_h = float(seq.l2_norm(J_w, 1)), float(seq.l2_norm(J_h, 1))
+    res.update(F_w=nF_w, F_h=nF_h, J_w=nJ_w, J_h=nJ_h, t_force=time.perf_counter() - t5)
+    _log(f"||F||_M at ||B||_M = 1: B_w {nF_w:.4e}, h {nF_h:.4e}; ||J||_M: B_w {nJ_w:.4e}, h {nJ_h:.4e}")
+
+    # --- common grid -----------------------------------------------------------
+    t6 = time.perf_counter()
+    pts, w, axes = common_grid(res["grid"])
+    B_w_xyz, X, J = pushforward_on_grid(seq, Bw, pts)
+    B_h_xyz, _, _ = pushforward_on_grid(seq, c * h, pts)
+    vol = float(np.sum(w * J))
+    nBw = np.sqrt(np.sum(w * J * np.sum(B_w_xyz ** 2, 1)))
+    D_grid = float(np.sqrt(np.sum(w * J * np.sum((B_w_xyz - B_h_xyz) ** 2, 1))) / nBw)
+    ax_pts = np.stack([np.full(16, 0.01), (np.arange(16) + 0.5) / 16, np.zeros(16)], 1)
+    B_ax, _, _ = pushforward_on_grid(seq, Bw, ax_pts)
+    B_axis = float(np.mean(np.linalg.norm(B_ax, axis=1)))
+    res.update(volume_grid=vol, B_norm_grid=float(nBw), D_grid=D_grid, B_axis_w=B_axis,
+               B_norm_grid_over_M=float(nBw) / norm, t_grid=time.perf_counter() - t6)
+    _log(f"grid {res['grid']}: volume {vol:.6e}, ||B_w|| {nBw:.6e} (M-norm {norm:.6e}), "
+         f"D_grid {D_grid:.4e}, |B| near axis {B_axis:.4f} T, {time.perf_counter() - t6:.1f}s")
+    np.savez_compressed(os.path.join(out, "fields.npz"), B_w_dof=np.asarray(Bw), h_dof=np.asarray(h),
+                        c=c, B_w=B_w_xyz, B_h=B_h_xyz, x=X, J=J, w=w, pts=pts, **axes)
+
+    # --- the relaxation run's fields at this rung ---------------------------
+    if cli.h5:
+        with h5py.File(cli.h5, "r") as f:
+            B_ic, B_fin = jnp.asarray(f["B_ic"][()]), jnp.asarray(f["B_final"][()])
+        if B_ic.shape[0] != seq.n(2, True):
+            raise ValueError(f"{cli.h5}: {B_ic.shape[0]} DoFs, this rung has {seq.n(2, True)}")
+        d_ic = float(seq.l2_norm(B_ic - Bw_hat, 2))
+        F_fin, _, _, _, _ = compute_force(B_fin, seq)
+        c_fin = float(B_fin @ Mh) / float(h @ Mh)
+        D_fin = float(seq.l2_norm(B_fin - c_fin * h, 2)) / float(seq.l2_norm(B_fin, 2))
+        res["h5"] = dict(path=os.path.abspath(cli.h5), ic_minus_B_w=d_ic,
+                         final_D=D_fin, final_F=float(seq.l2_norm(F_fin, 2)),
+                         final_norm=float(seq.l2_norm(B_fin, 2)))
+        _log(f"h5: ||B_ic - B_w_hat||_M {d_ic:.2e}; B_final: D {D_fin:.4e}, ||F||_M {res['h5']['final_F']:.4e}")
+
+    # --- iota by tracing --------------------------------------------------------
+    if cli.trace:
+        from scipy.interpolate import interp1d
+        nfp = geometry_nfp(cli.geometry)
+        iotaf = interp1d(st["profiles"]["rho"], st["profiles"]["iota"], kind="cubic")
+        tr = {}
+        for name, dof in (("B_w", Bw_hat), ("h", h)):
+            t = trace_iota(seq, dof, nfp, cli.trace_seeds, cli.trace_periods, f"{tag} {name}")
+            r = np.asarray(t["seed_r"])
+            keep = np.asarray(t["keep"])
+            d = np.abs(np.asarray(t["iota"]) - iotaf(np.clip(r, 0, 1)))[keep]
+            t["max_abs_diota_vs_iotaf"] = float(d.max()) if d.size else float("nan")
+            t["rms_diota_vs_iotaf"] = float(np.sqrt(np.mean(d ** 2))) if d.size else float("nan")
+            tr[name] = t
+            _log(f"iota {name} vs iotaf: max {t['max_abs_diota_vs_iotaf']:.2e} rms {t['rms_diota_vs_iotaf']:.2e}")
+        res["trace"] = tr
+
+    res["t_total"] = time.perf_counter() - t0
+    with open(os.path.join(out, "result.json"), "w") as f:
+        json.dump(res, f, indent=1)
+    print(f"wrote {out}/result.json and fields.npz  ({res['t_total']:.0f}s)", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Merge and plot
+# ---------------------------------------------------------------------------
+
+def _rate(e0, h0, e1, h1):
+    import numpy as np
+    return float(np.log(e0 / e1) / np.log(h0 / h1))
+
+
+def _slope(hs, es):
+    """Least-squares slope of log e against log h."""
+    import numpy as np
+    if len(hs) < 2:
+        return float("nan")
+    return float(np.polyfit(np.log(hs), np.log(es), 1)[0])
+
+
+def plot(cli):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    root = cli.plot
+    rungs = []
+    for path in sorted(glob.glob(os.path.join(root, "rung_*", "result.json"))):
+        with open(path) as f:
+            r = json.load(f)
+        r["dir"] = os.path.dirname(path)
+        rungs.append(r)
+    if not rungs:
+        sys.exit(f"no rung_*/result.json under {root}")
+    grids = {tuple(r["grid"]) for r in rungs}
+    if len(grids) != 1:
+        sys.exit(f"rungs were evaluated on different grids: {grids}")
+
+    # Reference: the finest p=3 rung (largest radial element count); at p=3
+    # every rung's map is the production one, so E measures MRX's own rate.
+    p_main = 3
+    main = sorted((r for r in rungs if r["p"] == p_main), key=lambda r: r["n_elements"][0])
+    ref = main[-1] if main else sorted(rungs, key=lambda r: r["n_elements"][0])[-1]
+    fr = np.load(os.path.join(ref["dir"], "fields.npz"))
+    wJ = fr["w"] * fr["J"]
+    nB = np.sqrt(np.sum(wJ * np.sum(fr["B_w"] ** 2, 1)))
+    nH = np.sqrt(np.sum(wJ * np.sum(fr["B_h"] ** 2, 1)))
+    Lref = np.max(np.linalg.norm(fr["x"], axis=1))
+
+    rows = []
+    for r in rungs:
+        fz = np.load(os.path.join(r["dir"], "fields.npz"))
+        is_ref = r["dir"] == ref["dir"]
+        E_h = float(np.sqrt(np.sum(wJ * np.sum((fz["B_h"] - fr["B_h"]) ** 2, 1))) / nH)
+        E_w = float(np.sqrt(np.sum(wJ * np.sum((fz["B_w"] - fr["B_w"]) ** 2, 1))) / nB)
+        dx = np.linalg.norm(fz["x"] - fr["x"], axis=1)
+        E_map = float(np.sqrt(np.sum(wJ * dx ** 2) / np.sum(wJ)) / Lref)
+        E_map_max = float(dx.max() / Lref)
+        rows.append(dict(tag=os.path.basename(r["dir"]), ns=r["ns"], p=r["p"], h=r["h"],
+                         n2=r["n2"], harmonic_ratio=r["harmonic"]["ratio"],
+                         gate=r["harmonic"]["gate_1e_10"], D=r["D"], D_grid=r["D_grid"],
+                         c=r["c"], c_flux=r["c_flux"], c_flux_over_c_minus_1=r["c_flux_over_c_minus_1"],
+                         F_w=r["F_w"], F_h=r["F_h"], J_w=r["J_w"], div_B_w=r["div_B_w"],
+                         E_h=E_h, E_w=E_w, E_map=E_map, E_map_max=E_map_max, is_reference=is_ref,
+                         B_axis_w=r["B_axis_w"], t_total=r["t_total"],
+                         iota_w_vs_iotaf=r.get("trace", {}).get("B_w", {}).get("max_abs_diota_vs_iotaf"),
+                         iota_h_vs_iotaf=r.get("trace", {}).get("h", {}).get("max_abs_diota_vs_iotaf"),
+                         h5=r.get("h5")))
+
+    # rates along the p=3 ladder
+    ladder = sorted((x for x in rows if x["p"] == p_main), key=lambda x: -x["h"])
+    for i, x in enumerate(ladder):
+        x["rate_D"] = _rate(ladder[i - 1]["D"], ladder[i - 1]["h"], x["D"], x["h"]) if i else None
+        x["rate_F_w"] = _rate(ladder[i - 1]["F_w"], ladder[i - 1]["h"], x["F_w"], x["h"]) if i else None
+        x["rate_E_h"] = (_rate(ladder[i - 1]["E_h"], ladder[i - 1]["h"], x["E_h"], x["h"])
+                         if i and not x["is_reference"] else None)
+        x["rate_E_w"] = (_rate(ladder[i - 1]["E_w"], ladder[i - 1]["h"], x["E_w"], x["h"])
+                         if i and not x["is_reference"] else None)
+    below = [x for x in ladder if not x["is_reference"]]
+    slopes = dict(
+        D_all=_slope([x["h"] for x in ladder], [x["D"] for x in ladder]),
+        F_w_all=_slope([x["h"] for x in ladder], [x["F_w"] for x in ladder]),
+        E_h_below_ref=_slope([x["h"] for x in below], [x["E_h"] for x in below]),
+        E_w_below_ref=_slope([x["h"] for x in below], [x["E_w"] for x in below]),
+        E_map_below_ref=_slope([x["h"] for x in below], [x["E_map"] for x in below]),
+        E_h_below_ref_excluding_last=_slope([x["h"] for x in below[:-1]], [x["E_h"] for x in below[:-1]]),
+    )
+    summary = dict(reference=os.path.basename(ref["dir"]), grid=ref["grid"], rows=rows, slopes=slopes)
+    with open(os.path.join(root, "convergence.json"), "w") as f:
+        json.dump(summary, f, indent=1)
+
+    # --- table to stdout -------------------------------------------------------
+    print(f"reference rung: {summary['reference']}; grid {ref['grid']}")
+    hdr = f"{'rung':>18} {'h':>7} {'ratio':>8} {'D':>10} {'rate':>6} {'F_w':>10} {'rate':>6} {'E_h':>10} {'rate':>6} {'E_w':>10} {'E_map':>10} {'c_fl/c-1':>9}"
+    print(hdr)
+    for x in sorted(rows, key=lambda x: (x["p"], -x["h"])):
+        def fmt(v, w=6):
+            return f"{v:>{w}.2f}" if isinstance(v, float) else f"{'--':>{w}}"
+        print(f"{x['tag']:>18} {x['h']:7.4f} {x['harmonic_ratio']:8.1e} {x['D']:10.3e} {fmt(x.get('rate_D'))} "
+              f"{x['F_w']:10.3e} {fmt(x.get('rate_F_w'))} {x['E_h']:10.3e} {fmt(x.get('rate_E_h'))} "
+              f"{x['E_w']:10.3e} {x['E_map']:10.3e} {x['c_flux_over_c_minus_1']:+9.1e}")
+    print("slopes: " + "  ".join(f"{k} {v:.2f}" for k, v in slopes.items()))
+
+    # --- figure ----------------------------------------------------------------
+    C = dict(D="#0072B2", F="#E69F00", Eh="#009E73", Ew="#CC79A7", map="#56B4E9", psweep="#D55E00")
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.6))
+    hs = np.array([x["h"] for x in ladder])
+    ax = axes[0]
+    ax.loglog(hs, [x["D"] for x in ladder], "o-", color=C["D"], lw=1.5, ms=6,
+              label=r"$D=\|B_w - c\,h\|_M/\|B_w\|_M$")
+    ax.loglog(hs, [x["F_w"] for x in ladder], "s-", color=C["F"], lw=1.5, ms=6,
+              label=r"$\|F\|_M(B_w)$ at $\|B\|_M=1$")
+    ax.loglog(hs, [x["F_h"] for x in ladder], "s:", color=C["F"], lw=1, ms=4, alpha=0.6,
+              label=r"$\|F\|_M(h)$ (solver floor)")
+    ax.set_title("same space: VMEC field vs harmonic form (p = 3)")
+    ax = axes[1]
+    hb = np.array([x["h"] for x in below])
+    ax.loglog(hb, [x["E_h"] for x in below], "o-", color=C["Eh"], lw=1.5, ms=6,
+              label=r"$E_h$: $h$ vs finest")
+    ax.loglog(hb, [x["E_w"] for x in below], "^-", color=C["Ew"], lw=1.5, ms=6,
+              label=r"$E_w$: $B_w$ vs finest")
+    ax.loglog(hb, [x["E_map"] for x in below], "d-", color=C["map"], lw=1.2, ms=5,
+              label=r"map: rms $|F_h-F_{ref}|/L$")
+    ax.set_title(f"vs the finest rung ({summary['reference'].replace('rung_', '')})")
+    ps = sorted({x["p"] for x in rows} - {p_main})
+    for x in rows:
+        if x["p"] != p_main:
+            axes[0].loglog([x["h"]], [x["D"]], "o", color=C["psweep"], ms=7, mfc="none")
+            axes[0].annotate(f"p={x['p']}", (x["h"], x["D"]), textcoords="offset points",
+                             xytext=(6, -10), fontsize=8, color=C["psweep"])
+            axes[1].loglog([x["h"]], [x["E_h"]], "o", color=C["psweep"], ms=7, mfc="none")
+            axes[1].annotate(f"p={x['p']}", (x["h"], x["E_h"]), textcoords="offset points",
+                             xytext=(6, -10), fontsize=8, color=C["psweep"])
+    if ps:
+        axes[0].plot([], [], "o", color=C["psweep"], mfc="none", label="p-sweep, 9 radial elements")
+    for ax, (s_name, s_val), anchor in ((axes[0], ("D", slopes["D_all"]), ladder[0]["D"]),
+                                        (axes[1], ("E_h", slopes["E_h_below_ref"]), below[0]["E_h"] if below else 1.0)):
+        hh = np.array([hs.min(), hs.max()])
+        for q, ls in ((p_main, "--"), (p_main + 1, ":")):
+            ax.loglog(hh, anchor * 1.6 * (hh / hs.max()) ** q, ls, color="0.6", lw=1, label=rf"$h^{q}$")
+        ax.text(0.03, 0.97, f"LS slope {s_name}: {s_val:.2f}", transform=ax.transAxes, va="top", fontsize=9)
+        ax.set_xlabel(r"$h = 1/(n_r - p)$")
+        ax.set_ylabel("relative error")
+        ax.grid(True, which="both", color="0.9", lw=0.6)
+        ax.legend(fontsize=8, loc="lower right")
+    fig.suptitle(f"QA vacuum: {os.path.basename(rungs[0]['geometry'])}", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(os.path.join(root, "convergence.png"), dpi=150)
+    plt.close(fig)
+
+    # --- residual on the zeta = 0 section of the reference -----------------
+    nr, nt, nz = ref["grid"]
+    d = np.linalg.norm(fr["B_w"] - fr["B_h"], axis=1).reshape(nr, nt, nz)[:, :, 0]
+    bmax = np.linalg.norm(fr["B_w"], axis=1).max()
+    x = fr["x"].reshape(nr, nt, nz, 3)[:, :, 0]
+    R, Z = np.hypot(x[..., 0], x[..., 1]), x[..., 2]
+    fig, ax = plt.subplots(figsize=(5.2, 5))
+    sc = ax.scatter(R.ravel(), Z.ravel(), c=(d / bmax).ravel(), s=6, cmap="Blues", lw=0)
+    fig.colorbar(sc, ax=ax, label=r"$|B_w - c\,h| / \max|B_w|$")
+    ax.set_aspect("equal")
+    ax.set_xlabel("R")
+    ax.set_ylabel("Z")
+    ax.set_title(f"{summary['reference']}: residual at zeta = 0, max {d.max() / bmax:.2e}", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(os.path.join(root, "residual_zeta0.png"), dpi=150)
+    plt.close(fig)
+    print(f"wrote {root}/convergence.json, convergence.png, residual_zeta0.png", flush=True)
+
+
+if __name__ == "__main__":
+    cli = parse_args()
+    os.environ["MRX_DTYPE"] = cli.precision
+    if cli.plot:
+        plot(cli)
+    elif cli.ns:
+        run_rung(cli)
+    else:
+        sys.exit("give --ns (one rung) or --plot DIR")
