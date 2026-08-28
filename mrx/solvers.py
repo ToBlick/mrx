@@ -124,7 +124,7 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     return x_final, info
 
 
-def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x, x0=None, vs=[], maxiter=None, tol=None):
+def solve_singular_cg(A_matvec, b, mass_matvec=None, precond_matvec=lambda x: x, x0=None, vs=(), maxiter=None, tol=None):
     """
     Solve the singular SPSD system for the minimum norm solution using CG.
 
