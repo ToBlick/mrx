@@ -387,8 +387,13 @@ def test_relaxation(synthetic_seq, potential_ic):
     # The helicity rate, at eps and eps/2.
     half = step(eqx.tree_at(lambda s: s.eta, pre, 0.5 * ETA))
     # The same executable on the same state: dt differs only by the GPU's
-    # reduction order (measured 3.6e-13 at dt = 1.17 on the H100, 1.4e3 eps).
-    assert abs(float(half.dt) - float(check_state.dt)) <= mrx.eps(1e4) * float(check_state.dt)
+    # scatter-add reduction order, amplified through the descent solves.
+    # Measured on the H100 at dt = 0.0211 (2026-08-28, five runs on four
+    # commits): 3.3e-12, 4.3e-12, 5.5e-12 and 1.05e-11 absolute, i.e.
+    # 1.6e-10 .. 5.0e-10 relative or 1e6 .. 2e6 eps; an earlier run gave
+    # 3.6e-13 at dt = 1.17. On the CPU the difference is below 32 eps.
+    # Bound: 1e7 eps relative.
+    assert abs(float(half.dt) - float(check_state.dt)) <= mrx.eps(1e7) * float(check_state.dt)
     H_ideal, A = get_helicity(check_B_ideal, seq, A)
     results = {}
     for label, B_new, e in (("eps", B1, eps), ("eps/2", half.B_n, 0.5 * eps)):
