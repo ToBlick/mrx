@@ -1,6 +1,6 @@
 """Summary table of the li383 sweep (outputs/li383_sweep/<arm>/relax.json).
 
-Bookkeeping only (json + sacct), bookkeeping only, run with the venv python on the login node:
+Bookkeeping only (json + sacct); run with the venv python on the login node:
 
     .venv/bin/python scripts/li383_summary.py [SWEEP_DIR]
 
