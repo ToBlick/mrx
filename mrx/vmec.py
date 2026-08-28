@@ -189,13 +189,16 @@ def read_nfp(path):
 
 def profile_spline(st, name):
     """The radial spline through a wout profile's full-mesh values, in
-    ``rho = sqrt(s)`` (mirror of :func:`mrx.gvec.profile_spline`). ``phi``
-    is linear in ``s`` by construction, so its spline is the exact
-    quadratic ``Phi_edge rho^2 / 2 pi`` and its derivative vanishes at the
-    axis."""
-    prof, T, deg = st["profiles"], st["X1"]["T"], st["deg"]
-    A = BSpline.design_matrix(prof["rho"], T, deg).toarray()
-    return BSpline(T, np.linalg.solve(A, prof[name]), deg)
+    ``rho = sqrt(s)`` (mirror of :func:`mrx.gvec.profile_spline`), even in
+    ``rho`` at the axis. ``phi`` is linear in ``s`` by construction, so its
+    spline is the exact quadratic ``Phi_edge rho^2 / 2 pi`` and its
+    derivative vanishes at the axis."""
+    prof, deg = st["profiles"], st["deg"]
+    # A profile is a function of s = rho^2, i.e. even in rho: the m = 0
+    # parity fit of _fit_block (c'(0) = 0), on its own knots.
+    blk = _fit_block(prof["rho"], np.asarray(prof[name], dtype=np.float64)[:, None],
+                     2, np.zeros(1, dtype=int), np.zeros(1, dtype=int), deg)
+    return BSpline(blk["T"], blk["coef"][0], deg)
 
 
 def load_wout_clebsch(path, n_rho=401):
