@@ -139,12 +139,7 @@ def _commit(seq, operators):
 
 
 def _bootstrap_nullspace_guesses(seq, operators, k, dirichlet, guesses):
-    """Store normalised bootstrap guesses in the nullspace field for ``(k, dirichlet)``.
-
-    This lets shifted preconditioners read a stable coarse vector from the
-    operator bundle while inverse iteration is still constructing the true
-    nullspace.
-    """
+    """Store normalised bootstrap guesses in the nullspace field for ``(k, dirichlet)``."""
     n_vec = len(guesses)
     n_dof = _dof_count(seq, k, dirichlet)
     values = jnp.zeros((n_vec, n_dof))
@@ -541,8 +536,7 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
 
 def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
                            x0s=None, abs_tol=None, inner_tol=1e-6,
-                           maxiter=100, stall_ratio=0.9,
-                           use_coarse=False, known=None):
+                           maxiter=100, stall_ratio=0.9, known=None):
     """Find ``n_vectors`` harmonic ``k``-forms via inverse iteration.
 
     Each vector is found by repeatedly applying ``(S_k + eps M_k)^{-1} M_k``
@@ -584,16 +578,6 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         ``maxiter`` saddle solves.  With it, an ``inner_tol`` that is too loose
         turns a slow grind into an early wrong answer, so the two must be set
         together.
-    use_coarse : bool
-        Feed the current iterate to the shifted solve as a rank-1 coarse
-        space (see the note on circularity below).  Default OFF: it is sound
-        but measured NOT to pay.  On W7-X (32^3 h5, ns=(8,16,16)) it cost 1-2
-        extra outer sweeps and left a residual 5 orders larger, for a vector
-        identical to 5 significant figures in the reconstructed field.  The
-        likely mechanism is that scaling the preconditioner by 1/eps along one
-        direction skews the inner MINRES stopping test toward that direction,
-        so the solve exits with the remaining components less converged.
-
     Returns
     -------
     vs : jnp.ndarray
@@ -654,43 +638,15 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             iters.append((0, res_init, rq_init))
             continue
 
-        # Rank-1 coarse space for the shifted solve.  ``S_k + eps M_k`` is
-        # near-singular exactly along the harmonic direction, and the
-        # production preconditioner knows nothing about it, so that direction
-        # survives as a lone ~1/eps outlier in the preconditioned spectrum.
-        # Handing the current iterate over as a coarse vector lets
-        # _wrap_shifted_harmonic_coarse_correction invert that mode exactly
-        # and removes the outlier.
-        #
-        # This is NOT circular.  A preconditioner changes the Krylov path, not
-        # the solution, so the fixed point of the inverse iteration is
-        # untouched; and at eps > 0 the shifted solve does no nullspace
-        # deflation at all (see apply_inverse_shifted_laplacian, where
-        # vs_upper is empty unless eps == 0), so the stored vector can only
-        # ever reach the preconditioner.  A poor coarse vector costs
-        # convergence rate, never correctness.
-        #
-        # Gated on ``seeded`` because the correction inverts the coarse mode
-        # as 1/eps, which is right only if that mode really is (near) the
-        # kernel.  An unseeded slot is either a random start or -- as in
-        # estimate_spectral_gap -- deliberately aimed *outside* the kernel,
-        # where the true eigenvalue is lambda_1 >> eps and a 1/eps coarse
-        # solve would over-amplify by lambda_1/eps.
-        slot_coarse = bool(use_coarse and seeded)
-        solve_ops = operators
-        if slot_coarse:
-            solve_ops = _set_null(operators, k, dirichlet, v0[None, :])
-
-        def body_fn(state, solve_ops=solve_ops, slot_coarse=slot_coarse):
+        def body_fn(state):
             v, rq, _rq_prev, i = state
             Mv = seq.apply_mass_matrix(
                 v, k, dirichlet=dirichlet)
             w = seq.apply_inverse_shifted_laplacian(
                 Mv, k, eps, dirichlet=dirichlet, guess=v,
-                operators=solve_ops,
+                operators=operators,
                 preconditioner=shifted_preconditioner,
-                tol=inner_tol,
-                use_harmonic_coarse=slot_coarse)
+                tol=inner_tol)
             w = project_out(w)
             w = w / seq.l2_norm(w, k, dirichlet=dirichlet)
             Lw = seq.apply_laplacian(
