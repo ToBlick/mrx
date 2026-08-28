@@ -196,8 +196,8 @@ Maps enter by interpolation. An analytic map is a callable `F(x)`; a map from
 data is fitted as three scalar 0-form splines on a map sequence and wrapped as
 a `SplineMap` (`mrx/mappings.py`) or a `stellarator_map`. The fit is
 `seq.interpolate(f, 0)`: 1D collocation solves on the tensor space followed by
-the polar restriction. `mrx/geometry.py` has `greville_interpolate_map` and
-`greville_interpolate_stellarator_map`; `mrx/gvec.py` has `build_gvec_map`
+the polar restriction. `mrx/geometry.py` has `greville_interpolate_map`;
+`mrx/gvec.py` has `build_gvec_map`
 and `build_w7x_map` for GVEC and W7-X files (gridded `R, Z` go through
 `fit_scalar_spline`). There is no reference mass matrix.
 

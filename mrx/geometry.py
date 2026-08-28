@@ -11,9 +11,8 @@ determinant):
   ``jacfwd`` pass by exploiting the Kronecker structure of the 1D basis
   evaluations stored on a :class:`~mrx.derham_sequence.DeRhamSequence`.
 
-Also provides utilities for interpolating analytic maps onto the spline basis
-of a sequence: :func:`greville_interpolate_map` and
-:func:`greville_interpolate_stellarator_map`.
+Also provides :func:`greville_interpolate_map`, which interpolates an analytic
+map onto the spline basis of a sequence.
 """
 
 from __future__ import annotations
@@ -272,7 +271,6 @@ def spline_map_F_DF_at_quad(coefficients, extraction_T, seq):
     return F_q, DF_q
 
 
-# ORPHAN (zero-reference sweep 2026-08-27): nothing in mrx/, scripts/ or test/ calls this.
 # ---------------------------------------------------------------------------
 # Map interpolation onto spline DOFs
 # ---------------------------------------------------------------------------
@@ -304,51 +302,6 @@ def greville_interpolate_map(F_analytic: Callable, seq) -> jnp.ndarray:
         for i in range(3)
     ]
     return jnp.stack(component_dofs, axis=0)
-
-
-def greville_interpolate_stellarator_map(
-        F_analytic: Callable, seq, nfp: int,
-        flip_zeta: bool = False) -> Callable:
-    """Build a stellarator map by Greville-interpolating R and Z.
-
-    Extracts the cylindrical radius ``R = sqrt(X² + Y²)`` and vertical
-    coordinate ``Z`` from ``F_analytic``, interpolates each as a scalar
-    0-form via Greville collocation, and wraps the result in
-    :func:`~mrx.mappings.stellarator_map`.
-
-    Args:
-        F_analytic: Analytic map ``F: R^3 -> R^3`` returning Cartesian
-            ``(X, Y, Z)``.
-        seq: :class:`~mrx.derham_sequence.DeRhamSequence` to use for
-            interpolation.  Typically
-            built with ``('clamped', 'periodic', 'periodic')`` boundary
-            conditions.
-        nfp: Number of field periods.
-        flip_zeta: Passed through to
-            :func:`~mrx.mappings.stellarator_map`.
-
-    Returns:
-        Stellarator map ``Phi(r, θ, ζ) -> (X, Y, Z)`` built from the
-        interpolated spline representations of R and Z.
-    """
-    # Lazy import to avoid circular dependency (mappings -> geometry -> mappings).
-    from mrx.mappings import stellarator_map  # noqa: PLC0415
-    from mrx.differential_forms import DiscreteFunction  # noqa: PLC0415
-
-    def R_fn(x):
-        Fxyz = F_analytic(x)
-        return jnp.sqrt(Fxyz[0] ** 2 + Fxyz[1] ** 2)
-
-    def Z_fn(x):
-        return F_analytic(x)[2]
-
-    R_dof = seq.interpolate(R_fn, 0)
-    Z_dof = seq.interpolate(Z_fn, 0)
-
-    R_h = DiscreteFunction(R_dof, seq.basis_0, seq.E(0))
-    Z_h = DiscreteFunction(Z_dof, seq.basis_0, seq.E(0))
-
-    return stellarator_map(R_h, Z_h, nfp=nfp, flip_zeta=flip_zeta)
 
 
 # ---------------------------------------------------------------------------
