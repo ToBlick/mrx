@@ -45,7 +45,7 @@ Output per rung: ``<out>/rung_<nr>x<nt>x<nz>_p<p>/result.json`` and
 ``fields.npz`` (the DoFs of both fields and their Cartesian values, the
 positions and ``det DF`` on the common grid). ``--plot`` writes
 ``<out>/convergence.json``, ``<out>/convergence.png`` (log-log error vs h,
-slopes annotated) and ``<out>/residual_zeta0.png`` (``|B_w - c h|`` on the
+slopes annotated; ``||F||_M(h)`` is tabled only, it sits at the solver floor) and ``<out>/residual_zeta0.png`` (``|B_w - c h|`` on the
 zeta = 0 section of the finest rung).
 """
 from __future__ import annotations
@@ -304,6 +304,10 @@ def run_rung(cli):
 # Merge and plot
 # ---------------------------------------------------------------------------
 
+#: Logical radius separating the axis region from the bulk in the merge.
+RHO_BULK = 0.1
+
+
 def _rate(e0, h0, e1, h1):
     import numpy as np
     return float(np.log(e0 / e1) / np.log(h0 / h1))
@@ -353,6 +357,18 @@ def plot(cli):
         is_ref = r["dir"] == ref["dir"]
         E_h = float(np.sqrt(np.sum(wJ * np.sum((fz["B_h"] - fr["B_h"]) ** 2, 1))) / nH)
         E_w = float(np.sqrt(np.sum(wJ * np.sum((fz["B_w"] - fr["B_w"]) ** 2, 1))) / nB)
+        # bulk / axis split: the residual of a wout field concentrates at the
+        # axis (the half-mesh lambda has no data inside its first node), so
+        # the bulk numbers are reported separately.
+        wJz = fz["w"] * fz["J"]
+        bulk = fr["pts"][:, 0] >= RHO_BULK
+        dBw = np.sum((fz["B_w"] - fz["B_h"]) ** 2, 1)
+        nBw2 = np.sum(fz["B_w"] ** 2, 1)
+        D_bulk = float(np.sqrt(np.sum(wJz[bulk] * dBw[bulk]) / np.sum(wJz[bulk] * nBw2[bulk])))
+        D_axis = float(np.sqrt(np.sum(wJz[~bulk] * dBw[~bulk]) / np.sum(wJz[~bulk] * nBw2[~bulk])))
+        dH = np.sum((fz["B_h"] - fr["B_h"]) ** 2, 1)
+        nH2 = np.sum(fr["B_h"] ** 2, 1)
+        E_h_bulk = float(np.sqrt(np.sum(wJ[bulk] * dH[bulk]) / np.sum(wJ[bulk] * nH2[bulk])))
         dx = np.linalg.norm(fz["x"] - fr["x"], axis=1)
         E_map = float(np.sqrt(np.sum(wJ * dx ** 2) / np.sum(wJ)) / Lref)
         E_map_max = float(dx.max() / Lref)
@@ -362,6 +378,7 @@ def plot(cli):
                          c=r["c"], c_flux=r["c_flux"], c_flux_over_c_minus_1=r["c_flux_over_c_minus_1"],
                          F_w=r["F_w"], F_h=r["F_h"], J_w=r["J_w"], div_B_w=r["div_B_w"],
                          E_h=E_h, E_w=E_w, E_map=E_map, E_map_max=E_map_max, is_reference=is_ref,
+                         D_bulk=D_bulk, D_axis=D_axis, E_h_bulk=E_h_bulk, rho_bulk=RHO_BULK,
                          B_axis_w=r["B_axis_w"], t_total=r["t_total"],
                          iota_w_vs_iotaf=r.get("trace", {}).get("B_w", {}).get("max_abs_diota_vs_iotaf"),
                          iota_h_vs_iotaf=r.get("trace", {}).get("h", {}).get("max_abs_diota_vs_iotaf"),
@@ -371,6 +388,7 @@ def plot(cli):
     ladder = sorted((x for x in rows if x["p"] == p_main), key=lambda x: -x["h"])
     for i, x in enumerate(ladder):
         x["rate_D"] = _rate(ladder[i - 1]["D"], ladder[i - 1]["h"], x["D"], x["h"]) if i else None
+        x["rate_D_bulk"] = _rate(ladder[i - 1]["D_bulk"], ladder[i - 1]["h"], x["D_bulk"], x["h"]) if i else None
         x["rate_F_w"] = _rate(ladder[i - 1]["F_w"], ladder[i - 1]["h"], x["F_w"], x["h"]) if i else None
         x["rate_E_h"] = (_rate(ladder[i - 1]["E_h"], ladder[i - 1]["h"], x["E_h"], x["h"])
                          if i and not x["is_reference"] else None)
@@ -379,6 +397,7 @@ def plot(cli):
     below = [x for x in ladder if not x["is_reference"]]
     slopes = dict(
         D_all=_slope([x["h"] for x in ladder], [x["D"] for x in ladder]),
+        D_bulk_all=_slope([x["h"] for x in ladder], [x["D_bulk"] for x in ladder]),
         F_w_all=_slope([x["h"] for x in ladder], [x["F_w"] for x in ladder]),
         E_h_below_ref=_slope([x["h"] for x in below], [x["E_h"] for x in below]),
         E_w_below_ref=_slope([x["h"] for x in below], [x["E_w"] for x in below]),
@@ -391,12 +410,14 @@ def plot(cli):
 
     # --- table to stdout -------------------------------------------------------
     print(f"reference rung: {summary['reference']}; grid {ref['grid']}")
-    hdr = f"{'rung':>18} {'h':>7} {'ratio':>8} {'D':>10} {'rate':>6} {'F_w':>10} {'rate':>6} {'E_h':>10} {'rate':>6} {'E_w':>10} {'E_map':>10} {'c_fl/c-1':>9}"
+    hdr = (f"{'rung':>18} {'h':>7} {'ratio':>8} {'D':>10} {'rate':>6} {'D_bulk':>10} {'rate':>6} {'D_axis':>10} "
+           f"{'F_w':>10} {'rate':>6} {'E_h':>10} {'rate':>6} {'E_w':>10} {'E_map':>10} {'c_fl/c-1':>9}")
     print(hdr)
     for x in sorted(rows, key=lambda x: (x["p"], -x["h"])):
         def fmt(v, w=6):
             return f"{v:>{w}.2f}" if isinstance(v, float) else f"{'--':>{w}}"
         print(f"{x['tag']:>18} {x['h']:7.4f} {x['harmonic_ratio']:8.1e} {x['D']:10.3e} {fmt(x.get('rate_D'))} "
+              f"{x['D_bulk']:10.3e} {fmt(x.get('rate_D_bulk'))} {x['D_axis']:10.3e} "
               f"{x['F_w']:10.3e} {fmt(x.get('rate_F_w'))} {x['E_h']:10.3e} {fmt(x.get('rate_E_h'))} "
               f"{x['E_w']:10.3e} {x['E_map']:10.3e} {x['c_flux_over_c_minus_1']:+9.1e}")
     print("slopes: " + "  ".join(f"{k} {v:.2f}" for k, v in slopes.items()))
@@ -408,10 +429,10 @@ def plot(cli):
     ax = axes[0]
     ax.loglog(hs, [x["D"] for x in ladder], "o-", color=C["D"], lw=1.5, ms=6,
               label=r"$D=\|B_w - c\,h\|_M/\|B_w\|_M$")
+    ax.loglog(hs, [x["D_bulk"] for x in ladder], "o--", color=C["D"], lw=1.2, ms=5, mfc="none",
+              label=rf"$D$ on $\rho \geq {RHO_BULK}$ (bulk)")
     ax.loglog(hs, [x["F_w"] for x in ladder], "s-", color=C["F"], lw=1.5, ms=6,
               label=r"$\|F\|_M(B_w)$ at $\|B\|_M=1$")
-    ax.loglog(hs, [x["F_h"] for x in ladder], "s:", color=C["F"], lw=1, ms=4, alpha=0.6,
-              label=r"$\|F\|_M(h)$ (solver floor)")
     ax.set_title("same space: VMEC field vs harmonic form (p = 3)")
     ax = axes[1]
     hb = np.array([x["h"] for x in below])
@@ -425,15 +446,16 @@ def plot(cli):
     ps = sorted({x["p"] for x in rows} - {p_main})
     for x in rows:
         if x["p"] != p_main:
+            dy = 6 if x["p"] < p_main else -12          # p=2 above, p=4 below the marker
             axes[0].loglog([x["h"]], [x["D"]], "o", color=C["psweep"], ms=7, mfc="none")
             axes[0].annotate(f"p={x['p']}", (x["h"], x["D"]), textcoords="offset points",
-                             xytext=(6, -10), fontsize=8, color=C["psweep"])
+                             xytext=(7, dy), fontsize=8, color=C["psweep"])
             axes[1].loglog([x["h"]], [x["E_h"]], "o", color=C["psweep"], ms=7, mfc="none")
             axes[1].annotate(f"p={x['p']}", (x["h"], x["E_h"]), textcoords="offset points",
-                             xytext=(6, -10), fontsize=8, color=C["psweep"])
+                             xytext=(7, dy), fontsize=8, color=C["psweep"])
     if ps:
         axes[0].plot([], [], "o", color=C["psweep"], mfc="none", label="p-sweep, 9 radial elements")
-    for ax, (s_name, s_val), anchor in ((axes[0], ("D", slopes["D_all"]), ladder[0]["D"]),
+    for ax, (s_name, s_val), anchor in ((axes[0], ("D bulk", slopes["D_bulk_all"]), ladder[0]["D"]),
                                         (axes[1], ("E_h", slopes["E_h_below_ref"]), below[0]["E_h"] if below else 1.0)):
         hh = np.array([hs.min(), hs.max()])
         for q, ls in ((p_main, "--"), (p_main + 1, ":")):
@@ -455,7 +477,7 @@ def plot(cli):
     x = fr["x"].reshape(nr, nt, nz, 3)[:, :, 0]
     R, Z = np.hypot(x[..., 0], x[..., 1]), x[..., 2]
     fig, ax = plt.subplots(figsize=(5.2, 5))
-    sc = ax.scatter(R.ravel(), Z.ravel(), c=(d / bmax).ravel(), s=6, cmap="Blues", lw=0)
+    sc = ax.scatter(R.ravel(), Z.ravel(), c=(d / bmax).ravel(), s=12, cmap="Blues", lw=0)
     fig.colorbar(sc, ax=ax, label=r"$|B_w - c\,h| / \max|B_w|$")
     ax.set_aspect("equal")
     ax.set_xlabel("R")
