@@ -175,3 +175,10 @@ longer growing) and D continues the O(h^3) trend across the ladder. The
 p-sweep and the (16,32,16)/(8,16,8) rungs of the table above were measured
 with the OLD reader; `convergence_axis.png` (below) is the ladder on the final
 reader.
+
+Ladder on the final reader (`convergence_axis.png`, `convergence_axis.json`;
+`residual_zeta0_axis.png` the (24,48,24) residual map): D = 2.24e-3 /
+3.82e-4 / 1.30e-4 / 8.36e-5 at h = 0.200 / 0.111 / 0.077 / 0.048, LS slope of
+the global D 2.36 (bulk 2.64) with no axis floor; ‖F‖_M(B_w) 9.15e-2 /
+9.38e-3 / 2.10e-3 / 6.68e-4, slope 3.49; the harmonic form's self-convergence
+2.77 (map 3.65) as before.
