@@ -26,3 +26,4 @@ One page per module of ``mrx``.
    relaxation
    solvers
    spline_bases
+   vmec

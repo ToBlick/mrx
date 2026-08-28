@@ -43,7 +43,9 @@ Two traps that the flat schema carries:
   wraps one field period through the wrong angle with a healthy Jacobian to
   hide it; every reader takes an ``nfp`` override.
 
-Every function takes the file path; ``os.path`` extension decides the route.
+Every function takes the file path; the extension decides the route --
+``.dat`` the GVEC state, ``.nc`` a VMEC wout refit into the same blocks by
+``mrx.vmec``, anything else the flat schema.
 ``test/synthetic_gvec.py`` writes the flat schema for an
 analytic circular torus; the test suite reads that file through the same
 functions as a real export.
@@ -143,11 +145,14 @@ class StateField:
     """A state's ``X1``, ``X2`` or ``LA`` as a JAX function of the logical
     point ``(rho, theta, zeta)`` (angles on ``[0, 1)``, ``zeta`` per field
     period). ``vector=True`` returns a ``(1,)`` array, the convention of the
-    map fit's scalar callables; otherwise a scalar."""
+    map fit's scalar callables; otherwise a scalar. A block that carries its
+    own knot vector ``T`` (the wout route, ``mrx.vmec``) overrides the
+    element grid ``sp``, which may then be ``None``."""
 
     def __init__(self, block, sp, nfp, vector=False):
+        T = block["T"] if "T" in block else knots(sp, block["deg"])
         self.basis = SplineBasis(block["coef"].shape[1], block["deg"], "clamped",
-                                 T=jnp.asarray(knots(sp, block["deg"])))
+                                 T=jnp.asarray(T))
         self.C = jnp.asarray(block["coef"])                              # (n_modes, n_base)
         self.m = jnp.asarray(block["m"], dtype=jnp.float64)
         self.n_per = jnp.asarray(block["n"], dtype=jnp.float64) / nfp    # per field period
@@ -211,17 +216,22 @@ def build_gvec_map(h5_path, map_ns=(12, 24, 12), p=3, sign=None, stride=1,
 
     A ``.h5`` export supplies ``R`` and ``Z`` on its grid, bridged to the
     Greville points by linear interpolation (``_rgi_fn``); a ``.dat`` state
+    or a VMEC wout (``.nc``, refit into the same blocks by ``mrx.vmec``)
     supplies them in closed form (:class:`StateField`), so
     the fit is the map space's own approximation and nothing else.
     Returns ``(F, info)``. ``sign`` is the toroidal handedness
     ``Y = sign * R sin(2 pi zeta/nfp)``; left ``None`` it is measured, and a
     file that is degenerate under both signs raises.
     """
-    if h5_path.endswith(".dat"):
-        st = read_state(h5_path)
+    if h5_path.endswith((".dat", ".nc")):
+        if h5_path.endswith(".nc"):
+            from mrx.vmec import read_wout  # noqa: PLC0415  (imports this module)
+            st = read_wout(h5_path)
+        else:
+            st = read_state(h5_path)
         nfp = st["nfp"] if nfp is None else int(nfp)
-        R_fn = StateField(st["X1"], st["sp"], st["nfp"], vector=True)
-        Z_fn = StateField(st["X2"], st["sp"], st["nfp"], vector=True)
+        R_fn = StateField(st["X1"], st.get("sp"), st["nfp"], vector=True)
+        Z_fn = StateField(st["X2"], st.get("sp"), st["nfp"], vector=True)
         axes, layout, grid = None, None, "closed form"
     else:
         axes, R_grid, Z_grid, nfp, layout = load_gvec_grids(
@@ -281,10 +291,14 @@ def load_clebsch(path, types=("clamped", "periodic", "periodic")):
     means, arrays on ``rho``), ``iota_spread`` (max angular departure of
     dchi/dPhi from a flux function at mid-radius) and ``lam_h``. A GVEC
     state file (``.dat``) returns the same dict with ``lam_h`` in closed
-    form (:func:`load_state_clebsch`).
+    form (:func:`load_state_clebsch`); a VMEC wout (``.nc``) likewise
+    through :func:`mrx.vmec.load_wout_clebsch`.
     """
     if path.endswith(".dat"):
         return load_state_clebsch(path)
+    if path.endswith(".nc"):
+        from mrx.vmec import load_wout_clebsch  # noqa: PLC0415  (imports this module)
+        return load_wout_clebsch(path)
     with h5py.File(path, "r") as h:
         shape = (int(h.attrs["n_rho"]), int(h.attrs["n_theta"]),
                  int(h.attrs["n_zeta"]))

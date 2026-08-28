@@ -15,8 +15,9 @@ Canonical invocation (one GPU; see slurm/README.md)::
 
 Flags, defaults in brackets:
     Geometry and discretisation:
-      --geometry G (required)      toroid, cylinder, rot-ellipse, or the path
-                                   of a GVEC export (.h5)
+      --geometry G (required)      toroid, cylinder, rot-ellipse, or an
+                                   equilibrium file: GVEC export (.h5), GVEC
+                                   state (.dat), VMEC wout (.nc)
       --nfp N [file attribute]     field periods of a file that declares
                                    them wrong (the perturbed exports need 3)
       --ns R,T,Z [8,16,16]         spline resolution (also the map's)
@@ -27,8 +28,8 @@ Flags, defaults in brackets:
                                    mrx is imported
     Initial condition (always Leray-projected):
       --ic {clebsch,analytic,dzeta} [clebsch]
-          clebsch:  GVEC's dPhi_dr, dchi_dr and lambda from the geometry
-                    file (needs a file geometry)
+          clebsch:  Phi', chi' and lambda from the geometry file
+                    (needs a file geometry; GVEC or VMEC)
           analytic: prescribed profiles on the logical grid, no data
           dzeta:    the constant 2-form (0,0,1); relaxes to the harmonic field
       analytic IC only (ignored for --ic clebsch):
