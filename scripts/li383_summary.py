@@ -1,8 +1,8 @@
 """Summary table of the li383 sweep (outputs/li383_sweep/<arm>/relax.json).
 
-Bookkeeping only (json + sacct), runs on the login node with python3:
+Bookkeeping only (json + sacct), bookkeeping only, run with the venv python on the login node:
 
-    python3 scripts/li383_summary.py [SWEEP_DIR]
+    .venv/bin/python scripts/li383_summary.py [SWEEP_DIR]
 
 Prints a markdown table per arm: |F| start/end, the windowed residual,
 steps and stop reason, s/step (descent loop only, setup excluded), the
@@ -18,7 +18,7 @@ import sys
 
 def sacct(jid):
     out = subprocess.run(["sacct", "-j", jid, "-X", "-n", "-P", "-o", "State,ElapsedRaw"],
-                         stdout=subprocess.PIPE, universal_newlines=True).stdout.strip().splitlines()
+                         capture_output=True, text=True).stdout.strip().splitlines()
     if not out:
         return "?", 0.0
     state, el = out[0].split("|")[:2]
