@@ -83,7 +83,7 @@ of those, memoised per degree in the element layout. `DF` is not stored --
 ## Relaxation
 
 `scripts/relax.py --geometry <GVEC export>`: `--ns 8,16,16`, `--p 2`,
-`--maxiter 2000`, `--precision float32`, `--ic clebsch`, `--method cg`,
+`--maxiter 2000`, `--precision float32`, `--ic clebsch`, `--method lbfgs --history 1`,
 `--history 3`, `--dt-mode linesearch`, `--cfl 0.5`; stops when the mean of
 the relative force residual over `--floor-steps 100` steps is below
 `--floor-tol 1e-3`; one method per run; output `relax.json` and `B.h5`.

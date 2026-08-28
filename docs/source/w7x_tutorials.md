@@ -116,7 +116,7 @@ The descent is `mrx.relaxation` with the defaults of `scripts/relax.py`
 `relaxation_loop` (a Python loop of compiled `lax.scan` chunks):
 
 ```python
-ts = TimeStepper(seq=seq, descent_method=DescentMethod.CONJUGATE_GRADIENT,
+ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
                  dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5, ...)
 state, traces = relaxation_loop(B0, ts, num_iters_outer=10, num_iters_inner=30)
 ```

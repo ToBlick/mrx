@@ -369,9 +369,15 @@ class TimeStepChoice(Enum):
 
 
 class DescentMethod(Enum):
+    """``GRADIENT`` is steepest descent, ``u = F``. ``LBFGS`` with
+    ``history_size = 1`` (the default) is memoryless BFGS, which under the
+    exact line search IS Polak-Ribiere CG (same direction; the classical
+    identity, and one trajectory to 2e-8 in energy on W7-X, see
+    docs/research/descent_method_2026-08-26.md) -- the separate CG arm was
+    removed 2026-08-28. Larger ``history_size`` was measured to add nothing.
+    """
     GRADIENT = 0
-    CONJUGATE_GRADIENT = 1
-    LBFGS = 2
+    LBFGS = 1
 
 
 class TimeStepper(eqx.Module):
@@ -389,7 +395,7 @@ class TimeStepper(eqx.Module):
             0 (the default) leaves the direction as it is.
         velocity_smoothing_scale: Length scale of the smoothing,
             the ``mu`` in ``(M_2 + mu L_2)^-1 M_2``.
-        descent_method: GRADIENT, CONJUGATE_GRADIENT, or LBFGS.
+        descent_method: GRADIENT or LBFGS (see :class:`DescentMethod`).
         dt_mode: FIXED or ANALYTIC_LINESEARCH.
         cfl: Cap on the step: ``dt = min(dt_star, cfl / cfl_max)`` with
             ``cfl_max`` the largest logical CFL number of the velocity. The
@@ -409,15 +415,15 @@ class TimeStepper(eqx.Module):
             here; the diffusive time of even the finest mode,
             ``1 / (eta lambda_max) ~ 1000`` such steps, makes ``<= 100``
             physically harmless.
-        history_size: Number of stored secant pairs for L-BFGS. The
-            history arrays exist only under L-BFGS; the other methods
-            carry none (CG keeps ``F_prev``/``MF_prev`` and ``v`` only).
+        history_size: Number of stored secant pairs for L-BFGS (1 = the
+            CG-equivalent default). The history arrays exist only under
+            L-BFGS; GRADIENT carries none.
         dirichlet_H: Dirichlet BC on H.
     """
     seq: DeRhamSequence
     velocity_smoothing_order: int = 0
     velocity_smoothing_scale: float = 0.0
-    descent_method: DescentMethod = DescentMethod.GRADIENT
+    descent_method: DescentMethod = DescentMethod.LBFGS
     dt_mode: TimeStepChoice = TimeStepChoice.ANALYTIC_LINESEARCH
     cfl: float = 0.5
     eta_every: int = 1
@@ -474,12 +480,14 @@ class TimeStepper(eqx.Module):
         # zero, as the history is before it fills -- has sy_i = 0 exactly and
         # contributes nothing to either loop; rho_i = 0 states that.  (The
         # old ``1 / (sy + 1e-30)`` gave the same result only because
-        # 1e30 * 0 happens to be 0.)  A NEGATIVE sy_i is a non-descent pair;
-        # it is used as stored and reported through ``sy`` below, not
-        # repaired here.
+        # 1e30 * 0 happens to be 0.)  A NEGATIVE sy_i is a non-descent pair:
+        # it is SKIPPED (rho_i = 0, so it contributes nothing and the
+        # direction falls back towards F) and reported through ``sy`` below.
+        # This is the curvature guard of BFGS and, at m = 1, exactly the
+        # Polak-Ribiere+ restart ``beta = max(beta, 0)`` the CG arm had.
         sy_all = jnp.einsum('in,in->i', s, My)
-        filled = jnp.any(s != 0, axis=1)
-        rho = jnp.where(filled, 1.0 / jnp.where(filled, sy_all, 1.0), 0.0)
+        usable = sy_all > 0
+        rho = jnp.where(usable, 1.0 / jnp.where(usable, sy_all, 1.0), 0.0)
 
         # --- two-loop recursion ---
         # first loop: newest (i=0) to oldest (i=m-1)
@@ -550,7 +558,7 @@ class TimeStepper(eqx.Module):
         F, p, _, H, JxH = compute_force(
             B_n, self.seq, dirichlet_H=self.dirichlet_H,
             p_guess=state.p, H_guess=state.H, JxH_guess=state.JxH)
-        # M F ONCE.  It serves ||F||_M, the CG beta and the L-BFGS secant
+        # M F ONCE.  It serves ||F||_M and the L-BFGS secant
         # M y = M F_prev - M F; the step applies M_2 three times in total
         # (M F, M u, M dB) whichever method is running -- L-BFGS used to
         # apply it 4m + 6 times.
@@ -575,19 +583,6 @@ class TimeStepper(eqx.Module):
         sy = jnp.array(0.0)
         if lbfgs:
             u, sy = self._lbfgs_direction(F, s_hist, y_hist, Ms_hist, My_hist)
-        elif self.descent_method == DescentMethod.CONJUGATE_GRADIENT:
-            u = F
-            # Polak-Ribiere.  The previous GRADIENT is -F_prev, which is why
-            # F_prev and not the previous search DIRECTION v belongs here;
-            # the two coincide only on the first step, where beta is 0 anyway.
-            # <F, F - F_prev>_M = F^T M F - F^T (M F_prev) by symmetry of M.
-            g_prev_norm_sq = state.F_prev @ state.MF_prev
-            beta = jnp.where(
-                g_prev_norm_sq > 0,
-                jnp.maximum(
-                    (F @ MF - F @ state.MF_prev) / g_prev_norm_sq, 0.0),
-                0.0)
-            u = u + beta * state.v
         elif self.descent_method == DescentMethod.GRADIENT:
             u = F
         else:
@@ -712,7 +707,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
 
     ``F_prev``, ``MF_prev``, ``F_norm`` and the warm-start guesses ``p``,
     ``H``, ``JxH`` are seeded from one ``compute_force`` here, so the first
-    step's secant ``y = F_prev - F`` and CG beta see the true previous
+    step's secant ``y = F_prev - F`` sees the true previous
     gradient.  Callers used to repeat this seeding by hand (and could not
     have seeded ``MF_prev``, which did not exist).
     """

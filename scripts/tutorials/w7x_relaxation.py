@@ -63,7 +63,7 @@ def main():
           f"wall-normal part {wall:.1e}")
 
     # --- the descent with scripts/relax.py's defaults ---------------------------
-    ts = TimeStepper(seq=seq, descent_method=DescentMethod.CONJUGATE_GRADIENT,
+    ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
                      dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
                      eta_every=1, resistive=False, history_size=3,
                      velocity_smoothing_order=0, velocity_smoothing_scale=0.0)

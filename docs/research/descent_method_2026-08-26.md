@@ -27,3 +27,17 @@ whose metric changes with `B`.
 Verdict: CG is the default. L-BFGS remains available (`--method lbfgs
 --history m`) and its cost no longer grows with `m`; do not expect it to
 converge faster on this problem.
+
+## 2026-08-28: CG arm removed
+
+W7-X wout (12,24,12) p=3, float32, 1000 steps, identical settings
+(`static-dynamic-refactor` c25657c): CG |F| 2.593e-3 -> 1.911e-4 without
+reaching the 1e-3 residual floor by step 1000, E(1000) = 4.99998927e-1,
+0.36 s/step; L-BFGS m=1 floored at step 704, |F| -> 1.495e-4,
+E(704) = 4.99998868e-1, 0.39 s/step (the extra is the per-20-step diagnostic
+print of that branch). Analytically, with the exact line search
+``<s, g_k>_M = 0`` kills every ``<s, g>`` term of the memoryless BFGS update
+and leaves ``u = F + beta u_{k-1}`` with the Hestenes-Stiefel beta, which
+equals Polak-Ribiere under the same orthogonality. The CG arm was deleted;
+`DescentMethod = {GRADIENT, LBFGS}`, default L-BFGS with `history_size = 1`,
+and a pair with ``<s, y>_M <= 0`` is skipped (rho = 0), the PR+ restart.

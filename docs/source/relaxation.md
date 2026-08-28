@@ -92,7 +92,7 @@ Flags, defaults in brackets:
 | `--ic {clebsch,analytic,dzeta} [clebsch]` | initial condition; `clebsch` with an analytic geometry stops with `use --ic analytic` |
 | `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | clebsch IC only: a resonant `cos(2π(mθ − s nζ))` term in `A'_ζ` at `rho0` (`EPS` = `|δB^ρ|/|B^ζ|` there) that opens an island of width ~`sqrt(EPS)` at the `|iota| = nfp n/m` surface -- a tearing-stability probe |
 | `--iota I0,I1 [0.4,0.9]`, `--iota-exp E [2.0]`, `--flux-exp Q [1.0]`, `--lam SPEC [""]` | analytic IC only: the profiles above and $\lambda$ modes `"m,n,amp;..."`; ignored for `--ic clebsch` |
-| `--method {gradient,cg,lbfgs} [cg]`, `--history M [3]` | descent method and history length |
+| `--method {gradient,lbfgs} [lbfgs]`, `--history M [1]` | descent method and secant pairs (1 = CG) |
 | `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.0]` | smoothed direction $v = (I - \mu L)^{-G} F$ |
 | `--dt-mode {linesearch,fixed} [linesearch]`, `--dt0 DT [1.0]`, `--cfl C [0.5]` | exact energy-minimising step or a fixed one, and the CFL cap |
 | `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]`, `--eta-every K [1]` | resistivity; `tanh` drops it to zero over the middle third of the run; the solve runs every `K` steps |

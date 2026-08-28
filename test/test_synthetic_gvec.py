@@ -277,7 +277,7 @@ def test_rotational_transform_and_lambda_invariance(synthetic, synthetic_seq):
 def test_relaxation(synthetic_seq, potential_ic):
     seq = synthetic_seq
     B0 = potential_ic
-    ts = TimeStepper(seq=seq, descent_method=DescentMethod.CONJUGATE_GRADIENT,
+    ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
                      resistive=True, velocity_smoothing_order=1,
                      velocity_smoothing_scale=MU, cfl=CFL)
 

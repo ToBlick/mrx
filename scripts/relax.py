@@ -38,8 +38,8 @@ Flags, defaults in brackets:
       --flux-exp Q [1.0]           Phi'(rho) ~ rho^Q
       --lam SPEC [""]              lambda modes "m,n,amp;..."
     Descent:
-      --method {gradient,cg,lbfgs} [cg]
-      --history M [3]              L-BFGS history length (unused by cg/gradient)
+      --method {gradient,lbfgs} [lbfgs]
+      --history M [1]              L-BFGS secant pairs (1 = memoryless = CG)
       --velocity-smoothing-order G [0], --velocity-smoothing-scale MU [0.0]
                                    descent direction v = (I - MU L)^-G F
       --dt-mode {linesearch,fixed} [linesearch]
@@ -188,8 +188,8 @@ def parse_args(argv=None):
     analytic.add_argument("--iota-exp", type=float, default=2.0, help="exponent of the iota profile")
     analytic.add_argument("--flux-exp", type=float, default=1.0, help="exponent of the flux profile")
     analytic.add_argument("--lam", default="", help='lambda modes "m,n,amp;..."')
-    ap.add_argument("--method", default="cg", choices=("gradient", "cg", "lbfgs"))
-    ap.add_argument("--history", type=int, default=3)
+    ap.add_argument("--method", default="lbfgs", choices=("gradient", "lbfgs"))
+    ap.add_argument("--history", type=int, default=1)
     ap.add_argument("--velocity-smoothing-order", type=int, default=0,
                     help="descent direction v = (I - scale L)^-order F; 0 is off")
     ap.add_argument("--velocity-smoothing-scale", type=float, default=0.0,
@@ -408,7 +408,6 @@ def main(cli):
 
     # --- the descent -------------------------------------------------------
     method = {"gradient": DescentMethod.GRADIENT,
-              "cg": DescentMethod.CONJUGATE_GRADIENT,
               "lbfgs": DescentMethod.LBFGS}[cli.method]
     ts = TimeStepper(
         seq=seq, descent_method=method,

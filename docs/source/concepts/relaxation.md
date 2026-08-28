@@ -31,14 +31,15 @@ velocity, `B_ideal = B_n + dt · curl(u × H)`; the resistive half is
 backward Euler on `B_ideal`. The splitting is first order in `dt`;
 resistivity does not act on `B_n`.
 
-1. `compute_force` at `B_n`; `MF = M_2 F` once. It serves `||F||_M`, the CG
-   coefficient, and the L-BFGS secant.
+1. `compute_force` at `B_n`; `MF = M_2 F` once. It serves `||F||_M` and the
+   L-BFGS secant.
 2. Direction `u` by `descent_method`:
    - `DescentMethod.GRADIENT`: `u = F`.
-   - `CONJUGATE_GRADIENT`: Polak-Ribière, `u = F + β v` with
-     `β = max((F·MF - F·MF_prev) / (F_prev·MF_prev), 0)`.
-   - `LBFGS`: `_lbfgs_direction(F, s, y, Ms, My)`, the two-loop recursion in
-     the `M_2` inner product. The state stores `M s` and `M y` next to `s`
+   - `LBFGS` (default, `history_size = 1`): `_lbfgs_direction(F, s, y, Ms, My)`,
+     the two-loop recursion in the `M_2` inner product. With one pair and the
+     exact line search this is Polak-Ribière CG (the classical memoryless-BFGS
+     identity; measured identical on W7-X), and a pair with `<s, y>_M <= 0` is
+     skipped -- the PR+ restart. Longer histories add nothing measurable. The state stores `M s` and `M y` next to `s`
      and `y`, so the recursion applies `M` zero times. The descent variable
      is the velocity: `s = dt · u`, `y = F_prev - F`.
 3. `smooth_velocity(u)`: `velocity_smoothing_order` times
@@ -263,7 +264,7 @@ method per run. Flags, defaults in brackets:
 | `--precision {float32,float64} [float32]` | exported as `MRX_DTYPE` before `mrx` is imported |
 | `--ic {clebsch,analytic,dzeta} [clebsch]` | initial condition (section 4); `clebsch` (the potential route) needs a file geometry, otherwise the script says `use --ic analytic` |
 | `--iota I0,I1 [0.4,0.9]`, `--iota-exp E [2.0]`, `--flux-exp Q [1.0]`, `--lam SPEC [""]` | analytic IC only: `ι = I0 + (I1 - I0) ρ^E`, `Φ' ~ ρ^Q`, `λ` modes `"m,n,amp;..."`; ignored for `--ic clebsch` |
-| `--method {gradient,cg,lbfgs} [cg]`, `--history M [3]` | descent method and history length |
+| `--method {gradient,lbfgs} [lbfgs]`, `--history M [1]` | descent method and secant pairs (1 = CG) |
 | `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.0]` | `v = (I - MU L)^{-G} F` |
 | `--dt-mode {linesearch,fixed} [linesearch]`, `--dt0 DT [1.0]`, `--cfl C [0.5]` | step choice and its CFL cap |
 | `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]`, `--eta-every K [1]` | resistivity (implicit, any size); `tanh` drops it to zero over the middle third of the run; the solve runs every `K` steps |
