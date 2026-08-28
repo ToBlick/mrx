@@ -89,12 +89,35 @@ def _raw(path):
 
 def _fit_block(rho, samples, sin_cos, m, n, deg):
     """A :class:`mrx.gvec.StateField` block from per-surface Fourier rows:
-    the clamped interpolatory B-spline through ``samples`` (``(len(rho),
-    n_modes)``) at the nodes ``rho``, on data-placed knots carried as
-    ``T``."""
-    T = np.asarray(knots_at_data(rho, deg, "clamped"))
-    A = BSpline.design_matrix(rho, T, deg).toarray()
-    coef = np.linalg.solve(A, samples)                    # (n_base, n_modes)
+    the clamped B-spline through ``samples`` (``(len(rho), n_modes)``) at
+    the nodes ``rho`` (``rho[0] = 0``), on data-placed knots carried as
+    ``T``, with the AXIS PARITY of each mode enforced.
+
+    A mode ``m`` of a smooth field is ``rho^m`` times an even function of
+    ``rho`` (``s = rho^2`` analytic): even ``m`` are even in ``rho``, odd
+    ``m`` odd. Interpolation through the nodes alone leaves the slope at
+    the axis free -- measured 2026-08-28 as a cone of +-2.5% (QA) / +-9%
+    (W7-X) in ``det DF / rho`` and a non-harmonic residual of the vacuum
+    field that GROWS with resolution (docs/research/analytic_map_2026-08-28.md,
+    qa_vacuum_convergence_2026-08-28.md) -- so one condition per mode is
+    added, ``c'(0) = 0`` for even ``m`` and ``c''(0) = 0`` for odd ``m``,
+    against one extra basis function (a phantom node between the first two
+    samples). The GVEC state pins its axis coefficients the same way.
+    """
+    nodes = np.concatenate([[rho[0], 0.5 * (rho[0] + rho[1])], rho[1:]])
+    T = np.asarray(knots_at_data(nodes, deg, "clamped"))
+    n_base = len(nodes)
+    A = BSpline.design_matrix(rho, T, deg).toarray()      # (n_data, n_base)
+    eye = np.eye(n_base)
+    d1 = np.array([BSpline(T, eye[j], deg).derivative(1)(0.0) for j in range(n_base)])
+    d2 = np.array([BSpline(T, eye[j], deg).derivative(2)(0.0) for j in range(n_base)])
+    coef = np.empty((n_base, samples.shape[1]))
+    for parity, row in ((0, d1), (1, d2)):
+        cols = (np.asarray(m) % 2) == parity
+        if cols.any():
+            coef[:, cols] = np.linalg.solve(
+                np.vstack([A, row[None, :]]),
+                np.vstack([samples[:, cols], np.zeros((1, int(cols.sum())))]))
     return dict(m=m, n=n, coef=coef.T, sin_cos=sin_cos, deg=deg, T=T)
 
 

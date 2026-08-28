@@ -132,7 +132,7 @@ def test_li383_reads_and_reproduces_the_file():
     from mrx.geometry import geometry_nfp
     assert geometry_nfp(LI383) == 3
     # blocks: coefficient layout and knot squareness
-    for name, n_base in (("X1", 16), ("X2", 16), ("LA", 17)):   # LA: half mesh + axis + edge
+    for name, n_base in (("X1", 17), ("X2", 17), ("LA", 18)):   # nodes + the axis-parity phantom; LA: half mesh + axis + edge
         blk = st[name]
         assert blk["coef"].shape == (25, n_base)
         assert len(blk["T"]) == n_base + blk["deg"] + 1
@@ -248,3 +248,18 @@ def test_qa_vacuum_wout_ic_is_the_harmonic_field():
           f"||F||_M {F_norm:.3e}")
     assert jnp.isfinite(err)
     assert err < 0.1
+
+
+def test_fit_enforces_the_axis_parity():
+    """Even-m modes have zero slope at the axis, odd-m modes zero curvature:
+    ``c_mn(rho) = rho^m * (even function)``. Checked on the fitted blocks
+    with scipy alone."""
+    raw = _synthetic_raw()
+    st = _state_from_raw(raw)
+    for name in ("X1", "X2", "LA"):
+        blk = st[name]
+        scale = np.abs(blk["coef"]).max() + 1e-300
+        for row, mode in zip(blk["coef"], raw["xm"]):
+            spl = BSpline(blk["T"], row, blk["deg"])
+            d = spl.derivative(1)(0.0) if mode % 2 == 0 else spl.derivative(2)(0.0)
+            assert abs(d) <= 1e-9 * scale, f"{name} m={mode}: axis derivative {d:.2e}"
