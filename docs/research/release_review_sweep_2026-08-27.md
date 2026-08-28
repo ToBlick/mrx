@@ -137,9 +137,9 @@ items 1-5, `c25657c` items 7-12):
 | 13 | `solve_singular_cg(A, b, vs)` takes the stored `(m, n)` kernel array, no default (be3767a) | yes |
 | 14 | solvers docstring names the three entry points (c25657c) | yes |
 | 15 | DONE (3247311 + 0765c39, from branch `quad-ij`): flat quad order is (r, theta, zeta), every compensation removed, docstrings rewritten; suite clean, base-vs-migrated equivalence at round-off on geometry, M_k, L_k, harmonic forms, preconditioners, load/interpolate | yes |
-| 16 | warm starts: theory says they help (residual ratio ~ per-step change of B, criterion relative to b); measurement arm `descent_cg_nowarm` running | pending |
+| 16 | warm starts KEPT: measured 14% per step (0.36 vs 0.41 s/step on W7-X (12,24,12)); the helicity trace is cleaner cold (correlated solver error) -- a tighter tolerance on the diagnostic A solve is the follow-up | decided by measurement |
 | 17 | postponed until the poincare subagent is done | -- |
 | 18 | per-basis-function evaluators deleted (be3767a); QuadratureRule docstring with item 15 | yes |
-| 19+21 | CUT the gridded .h5 route: subagent on branch `drop-h5` (.dat and .nc only; synthetic-h5 tests ported to a synthetic .dat state) | agent |
+| 19+21 | DONE (branch `drop-h5`, merged): the gridded .h5 route is gone -- `load_gvec_grids`, `_rgi_fn`, `fit_scalar_spline`, `stride=`, `load_grid_field`, `scripts/trim_gvec_export.py`, the h5-gated tests; `read_equilibrium(path)` dispatches .dat/.nc and refuses anything else; the synthetic-h5 tests run on a synthetic GVEC .dat state (`write_synthetic_state`); the flaky same-executable dt band is now tol-scaled (10 sqrt_eps) | yes |
 | 20 | DELETED: `use_coarse`, `use_harmonic_coarse`, the `_shifted_harmonic_coarse_*` helpers (one isolated outlier costs one Krylov iteration; the 1/eps coarse solve over-amplifies an inexact coarse vector) | yes |
 | 22 | docs last | -- |
