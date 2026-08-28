@@ -82,20 +82,6 @@ def _require_bundle(operators):
     return operators
 
 
-def _reshape_quadrature_scalar_field(seq, values: jnp.ndarray) -> jnp.ndarray:
-    # NOTE: returns (ny, nx, nz) = (theta, r, zeta) -- theta-major, NOT
-    # (r, theta, zeta). The flat quad ordering comes from QuadratureRule's
-    # meshgrid with default indexing='xy' (axis swap); see the TODO in
-    # mrx/quadrature.py. Transpose (1, 0, 2) for (r, theta, zeta) fields.
-    return jnp.asarray(values).reshape(seq.quad.ny, seq.quad.nx, seq.quad.nz)
-
-
-def _reshape_quadrature_matrix_field(seq, values: jnp.ndarray) -> jnp.ndarray:
-    # NOTE: (ny, nx, nz, ...) = (theta, r, zeta, ...); see note above.
-    field = jnp.asarray(values)
-    return field.reshape(seq.quad.ny, seq.quad.nx, seq.quad.nz, *field.shape[1:])
-
-
 def _assemble_weighted_1d_mass(B: jnp.ndarray, weights: jnp.ndarray) -> jnp.ndarray:
     return (B * weights[None, :]) @ B.T
 

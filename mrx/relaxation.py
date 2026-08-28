@@ -177,7 +177,7 @@ def pressure_diagnostics(
     from mrx.geometry import map_jacobian_at
     from mrx.quadrature import evaluate_at_xq
 
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    quad_shape = seq.quad.shape
     wJ = seq.quad.w * seq.jacobian_j
 
     # (a) the gauge-free comparisons: gradients in the Dirichlet 2-form

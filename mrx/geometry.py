@@ -256,16 +256,10 @@ def spline_map_F_DF_at_quad(coefficients, extraction_T, seq):
     dF_dx2 = _tp_evaluate(C_raw, Br, Dt, Bz)
     dF_dx3 = _tp_evaluate(C_raw, Br, Bt, Dz)
 
-    # seq.quad.x is built via jnp.meshgrid(x_x, x_y, x_z) with the default
-    # 'xy' indexing, which yields a flat order (iy, ix, iz) -- axis 0 is
-    # x_y.  We therefore transpose (nqr, nqt, nqz) -> (nqt, nqr, nqz)
-    # before flattening so the per-quad-point arrays align with seq.quad.x.
-    def _flatten(X):
-        return X.transpose(0, 2, 1, 3).reshape(3, -1)
-
-    F_q = _flatten(F).T                                    # (N_q, 3)
+    # (3, nqr, nqt, nqz) flattens straight into the r-major seq.quad.x order.
+    F_q = F.reshape(3, -1).T                               # (N_q, 3)
     DF_q = jnp.stack(
-        [_flatten(dF_dx1), _flatten(dF_dx2), _flatten(dF_dx3)],
+        [dF_dx1.reshape(3, -1), dF_dx2.reshape(3, -1), dF_dx3.reshape(3, -1)],
         axis=-1,
     ).transpose(1, 0, 2)                                   # (N_q, 3, 3)
     return F_q, DF_q

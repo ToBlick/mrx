@@ -72,7 +72,9 @@ a decision. Line numbers are as of `2be817c`.
     reshape+transpose to compensate (`_reshape_quadrature_*`, the element
     layout, the CP factor order). The TODO itself says it is a coordinated
     migration; it is *the* remaining structural wart of the package. Also the
-    class docstring is the old auto-generated style.
+    class docstring is the old auto-generated style. **Done 2026-08-28**
+    (branch `quad-ij`): `indexing='ij'`, `seq.quad.shape`, every
+    compensation removed.
 16. **`relaxation.State`** — 25 fields incl. `p`, `p_v`, `A`, and the giant
     `Literal[...]` in `update_field`; with L-BFGS and noise gone it shrinks
     by ~8 fields, and `update_field`'s Literal could be dropped for a plain

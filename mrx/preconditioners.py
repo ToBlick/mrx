@@ -101,19 +101,6 @@ def default_mass_preconditioner() -> MassPreconditionerSpec:
     return MassPreconditionerSpec(kind='metric_lumping')
 
 
-def _quadrature_tensor_shape(seq) -> tuple[int, int, int]:
-    return seq.quad.ny, seq.quad.nx, seq.quad.nz
-
-
-def _reshape_quadrature_scalar_field(seq, values: jnp.ndarray) -> jnp.ndarray:
-    return jnp.asarray(values).reshape(_quadrature_tensor_shape(seq))
-
-
-def _reshape_quadrature_matrix_field(seq, values: jnp.ndarray) -> jnp.ndarray:
-    field = jnp.asarray(values)
-    return field.reshape(*_quadrature_tensor_shape(seq), *field.shape[1:])
-
-
 def _symmetrize(matrix: jnp.ndarray) -> jnp.ndarray:
     return 0.5 * (matrix + matrix.T)
 

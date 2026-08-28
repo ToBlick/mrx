@@ -858,11 +858,10 @@ class DeRhamSequence():
             in the sequence's flat quadrature order.
         """
         from mrx.quadrature import evaluate_at_xq
-        quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
         comp_info, comp_shapes = self._form_comp_info(k)
         ncomp = 3 if k in (1, 2) else 1
         return evaluate_at_xq(self.E(k, dirichlet).T @ dofs, comp_info, comp_shapes,
-                              quad_shape, ncomp)
+                              self.quad.shape, ncomp)
 
     def cross_product_load(
         self, w, u, n, m, k,
@@ -928,7 +927,6 @@ class DeRhamSequence():
             The n-form dual DOF vector.
         """
         from mrx.quadrature import integrate_against
-        quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
         if n not in (1, 2):
             raise ValueError("n must be 1 or 2")
         en = self.E(n, dirichlet_n)
@@ -965,7 +963,7 @@ class DeRhamSequence():
             raise ValueError("Not yet implemented")
 
         return en @ integrate_against(
-            f_jk, comp_info_n, comp_shapes_n, quad_shape)
+            f_jk, comp_info_n, comp_shapes_n, self.quad.shape)
 
     def magnitude_squared_load(self, B, dirichlet=True):
         """The 0-form dual vector of ``|B|^2`` for a 2-form ``B``: ``v_i = ∫ Λ⁰_i |B|² det DF dx``.
@@ -975,12 +973,11 @@ class DeRhamSequence():
         energy density ``|B|^2`` onto the 0-forms (free space).
         """
         from mrx.quadrature import integrate_against
-        quad_shape = (self.quad.ny, self.quad.nx, self.quad.nz)
         B_jk = self.evaluate_at_quadrature(B, 2, dirichlet)
         GB_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, B_jk)
         f_jk = (jnp.sum(B_jk * GB_jk, axis=1) * self.quad.w / self.jacobian_j)[:, None]
         comp_info, comp_shapes = self._form_comp_info(0)
-        return self.E(0) @ integrate_against(f_jk, comp_info, comp_shapes, quad_shape)
+        return self.E(0) @ integrate_against(f_jk, comp_info, comp_shapes, self.quad.shape)
 
     def apply_leray_projection(self, v, k=2, p_guess=None, dirichlet_p=False):
         """

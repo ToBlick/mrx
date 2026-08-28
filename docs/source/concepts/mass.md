@@ -96,11 +96,10 @@ memo stays. The projection masses between degrees
 (`build_matrixfree_projection_apply`) use the same kernel with the reference
 weight `W = I`.
 
-The quadrature points are flattened theta-major, `(theta, r, zeta)`,
-because `QuadratureRule` builds them with `jnp.meshgrid` in its default
-`'xy'` indexing. `_split_field` undoes that when it reshapes a weight to
-elements. Any code that reshapes a quadrature field must use the same
-convention.
+The quadrature points are flattened r-major, `(r, theta, zeta)`: a flat
+quadrature field is the `(nx, ny, nz)` array `field.reshape(seq.quad.shape)`,
+and `_split_field` splits each axis into `(elements, Gauss points)` from
+there.
 
 ## 4. Diagonals without probing
 

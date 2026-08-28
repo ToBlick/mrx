@@ -242,7 +242,7 @@ def make_force_normaliser(seq):
     import jax.numpy as jnp
     from mrx.quadrature import evaluate_at_xq, integrate_against
 
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    quad_shape = seq.quad.shape
     ci0, cs0 = seq._form_comp_info(0)
     ci2, cs2 = seq._form_comp_info(2)
 

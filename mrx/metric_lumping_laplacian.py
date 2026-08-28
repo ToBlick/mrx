@@ -75,8 +75,6 @@ from mrx.operators import (
     _fd_apply_3d,
     _assemble_weighted_1d_stiffness,
     _dense_incidence_1d,
-    _reshape_quadrature_matrix_field,
-    _reshape_quadrature_scalar_field,
 )
 from mrx.precision import DTYPE, eps, sqrt_eps
 from mrx.preconditioners import _simultaneous_diagonalize_pair
@@ -133,14 +131,10 @@ def weight_fields(seq):
     ``invjac``  3-form mass          ``1 / J``
     ==========  ===================  ==================================
     """
-    jac = jnp.transpose(
-        _reshape_quadrature_scalar_field(seq, seq.geometry.jacobian_j), (1, 0, 2))
-    ginv = jnp.transpose(
-        _reshape_quadrature_matrix_field(seq, seq.geometry.metric_inv_jkl),
-        (1, 0, 2, 3, 4))
-    met = jnp.transpose(
-        _reshape_quadrature_matrix_field(seq, seq.geometry.metric_jkl),
-        (1, 0, 2, 3, 4))
+    shape = seq.quad.shape
+    jac = jnp.asarray(seq.geometry.jacobian_j).reshape(shape)
+    ginv = jnp.asarray(seq.geometry.metric_inv_jkl).reshape(*shape, 3, 3)
+    met = jnp.asarray(seq.geometry.metric_jkl).reshape(*shape, 3, 3)
     return {
         "jac": jac,
         "invjac": 1.0 / jac,
@@ -537,11 +531,6 @@ def component_diagonal(seq, k, c, shape):
     weight, so the ratio is the component factor averaged over each basis
     function's own support. Exact, no fit.
     """
-    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
-
-    def rs(field):
-        return jnp.asarray(field).reshape(ny, nx, nz).transpose(1, 0, 2)
-
     fields = weight_fields(seq)
     jac = fields["jac"]
     w_comp = {0: jnp.ones_like(jac), 1: fields["ginv_aa"][c],
@@ -551,7 +540,7 @@ def component_diagonal(seq, k, c, shape):
         k, tuple(a for a in range(3) if a != c))
     tabs = [(deriv[a] if a in deriv_axes else primal[a]) ** 2
             for a in range(3)]
-    wq = rs(seq.quad.w)
+    wq = seq.quad.w.reshape(seq.quad.shape)
 
     def contract(field):
         f = wq * field

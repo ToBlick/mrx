@@ -105,7 +105,7 @@ def _phys_l2_rel_error(seq, dofs, e, k, f_ref):
     """
     from mrx.quadrature import evaluate_at_xq
 
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    quad_shape = seq.quad.shape
     if k in (0, 3):
         comp_info, comp_shapes = seq._form_comp_info(k)
         vals = evaluate_at_xq(e.T @ dofs, comp_info, comp_shapes, quad_shape, 1)

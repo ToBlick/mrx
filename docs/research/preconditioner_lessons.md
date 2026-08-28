@@ -65,10 +65,10 @@ to committed scripts / gitignored `outputs/` on the cluster.
 - **Spline-map DF is singular at ρ=1** (det(DF)=0 at the outer knot):
   pushforward/metric evaluation AT ρ=1 gives inf; quad-point-only checks never
   see it. Evaluate at 1−ε (the greville scripts clip to `1e-7`).
-- **Flat quad-point ordering is (θ, r, ζ), theta-major** — meshgrid
-  `indexing='xy'` swap; see the NOTE/TODO comments at
-  `mrx/operators.py:_reshape_quadrature_scalar_field` and `mrx/quadrature.py`.
-  Reshape to `(ny, nx, nz)` then transpose `(1, 0, 2)` for (r, θ, ζ) fields.
+- **Flat quad-point ordering is (r, θ, ζ), r-major** since 2026-08-28
+  (`QuadratureRule` uses `indexing='ij'`): `field.reshape(seq.quad.shape)` is
+  the `(r, θ, ζ)` array, no transpose. Before that it was θ-major and every
+  consumer carried a `(ny, nx, nz)` reshape plus a `(1, 0, 2)` transpose.
 - **W7-X (cluster only):** build via greville+RGI bridge, nfp=5; set
   `XLA_PYTHON_CLIENT_PREALLOCATE=false W7X_MAP_BATCH=128` or the map fit OOMs;
   Cartesian B components are ζ-quasiperiodic (de-rotate per field period before

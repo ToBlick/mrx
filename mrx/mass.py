@@ -50,17 +50,16 @@ def _elem_counts(seq):
     return ne_x, ne_y, ne_z, nx // ne_x, ny // ne_y, nz // ne_z
 
 
-def _split_field(field_flat, nx, ny, nz, ne_x, ne_y, ne_z, qx, qy, qz):
-    """Reshape a flat quad field (meshgrid 'xy' layout) to per-element blocks.
+def _split_field(field_flat, ne_x, ne_y, ne_z, qx, qy, qz):
+    """Reshape a flat (r-major) quad field to per-element blocks.
 
     Returns shape ``(ne_x, ne_y, ne_z, qx, qy, qz, *trailing)``; trailing axes
     (e.g. the ``(3, 3)`` of the metric) ride along. One reshape and one transpose,
     so it fuses into the consumer inside a jit.
     """
-    del nx, ny, nz
     trailing = tuple(range(6, 6 + field_flat.ndim - 1))
-    f = field_flat.reshape(ne_y, qy, ne_x, qx, ne_z, qz, *field_flat.shape[1:])
-    return f.transpose(2, 0, 4, 3, 1, 5, *trailing)
+    f = field_flat.reshape(ne_x, qx, ne_y, qy, ne_z, qz, *field_flat.shape[1:])
+    return f.transpose(0, 2, 4, 1, 3, 5, *trailing)
 
 
 def _element_layout(seq):
@@ -70,7 +69,6 @@ def _element_layout(seq):
     bound; ``gauss`` is the ``(ne_x, ne_y, ne_z, qx, qy, qz)`` outer product of
     the per-axis Gauss weights.
     """
-    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
     ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
     wx = seq.quad.w_x.reshape(ne_x, qx)
     wy = seq.quad.w_y.reshape(ne_y, qy)
@@ -80,7 +78,7 @@ def _element_layout(seq):
              * wz[None, None, :, None, None, :])
 
     def split(field_flat):
-        return _split_field(field_flat, nx, ny, nz, ne_x, ne_y, ne_z, qx, qy, qz)
+        return _split_field(field_flat, ne_x, ne_y, ne_z, qx, qy, qz)
 
     return split, gauss
 

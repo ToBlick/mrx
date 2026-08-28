@@ -32,13 +32,13 @@ def basis_at_quadrature(seq, k):
 
     Result: list over components ``c`` of ``(n_c, N_q)`` arrays, the value of
     component ``c`` of each raw basis function at every quadrature point of
-    ``seq``, in the ``seq.quad.x`` ordering (meshgrid 'xy': theta, r, zeta).
+    ``seq``, in the ``seq.quad.x`` ordering (r-major: r, theta, zeta).
     """
     comp_info, _ = seq._form_comp_info(k)
     out = []
     for _, R, T, Z in comp_info:
-        tab = jnp.einsum("ai,bj,ck->abcjik", R, T, Z)
-        out.append(np.asarray(tab.reshape(-1, seq.quad.ny * seq.quad.nx * seq.quad.nz)))
+        tab = jnp.einsum("ai,bj,ck->abcijk", R, T, Z)
+        out.append(np.asarray(tab.reshape(-1, seq.quad.n)))
     return out
 
 

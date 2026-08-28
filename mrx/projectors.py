@@ -294,7 +294,6 @@ def load(seq: "DeRhamSequence", f, k: int,
         raise ValueError(f"frame must be 'phys' or 'ref', got {frame!r}")
 
     e = _extraction(seq, k, dirichlet, bc)
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
     comp_info, comp_shapes = seq._form_comp_info(k)
 
     if k == 0:
@@ -344,7 +343,7 @@ def load(seq: "DeRhamSequence", f, k: int,
     else:
         raise ValueError(f"k must be 0, 1, 2 or 3, got {k}")
 
-    return e @ integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
+    return e @ integrate_against(w_jk, comp_info, comp_shapes, seq.quad.shape)
 
 
 # ---------------------------------------------------------------------------
@@ -652,9 +651,7 @@ def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',
     Mt = bt.collocation_matrix(seq.quad.x_y).T          # (n2, nqt)
     Mz = bz.collocation_matrix(seq.quad.x_z).T          # (n3, nqz)
     f = _tp_evaluate(C, Mr, Mt, Mz)                     # (ncomp, nqr, nqt, nqz)
-    # flatten with the same (0,2,1,3) transpose the geometry path uses, so the
-    # per-quad-point order matches seq.quad.x / seq.quad.w (meshgrid 'xy': t,r,z).
-    f_q = f.transpose(0, 2, 1, 3).reshape(ncomp, -1).T  # (n_q, ncomp)
+    f_q = f.reshape(ncomp, -1).T                        # (n_q, ncomp), seq.quad order
 
     # 3. frame pullback + quadrature weight (mirrors mrx.projectors.load)
     w = seq.quad.w
@@ -676,6 +673,5 @@ def load_grid_field(axes, values, seq, k, *, dirichlet=False, frame='ref',
 
     # 4. integrate against the k-form basis + extraction
     comp_info, comp_shapes = seq._form_comp_info(k)
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
     e = seq.E(k, dirichlet)
-    return e @ integrate_against(w_jk, comp_info, comp_shapes, quad_shape)
+    return e @ integrate_against(w_jk, comp_info, comp_shapes, seq.quad.shape)

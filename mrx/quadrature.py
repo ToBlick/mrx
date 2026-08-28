@@ -1,9 +1,9 @@
-"""
-Quadrature rules for numerical integration in finite element analysis.
+"""Gauss quadrature on the logical cube, and the tensor-product evaluate / integrate pair.
 
-This module provides:
-- Composite Gauss quadrature for clamped and periodic bases
-- Spectral quadrature for constant bases
+Composite Gauss rules per axis (one Gauss point for a constant basis),
+their tensor product in :class:`QuadratureRule`, and the sum-factorised
+:func:`evaluate_at_xq` / :func:`integrate_against` adjoint pair that every
+load, cross product and quadrature-point evaluation in the package goes through.
 """
 
 import numpy as np
@@ -12,69 +12,46 @@ import jax.numpy as jnp
 
 
 class QuadratureRule:
-    """
-    A class for handling quadrature rules in finite element analysis.
+    """Tensor-product Gauss quadrature on the logical cube of a 0-form basis.
 
-    This class implements various quadrature rules for numerical integration
-    in three-dimensional space. It supports different types of basis functions
-    and provides efficient computation of quadrature points and weights.
+    One 1-D rule per axis, chosen by :func:`select_quadrature` from the axis
+    basis: composite ``p``-point Gauss on the knot spans of a clamped or
+    periodic spline basis, a single Gauss point for a constant basis. The
+    3-D rule is their tensor product, flattened **r-major** -- the flat index
+    runs fastest over ``zeta``, then ``theta``, then ``r``, so a flat
+    quadrature field is the ``(nx, ny, nz)`` array ``field.reshape(shape)``
+    with axes ``(r, theta, zeta)``; that is what :func:`evaluate_at_xq`,
+    :func:`integrate_against` and every element-layout reshape rely on.
 
     Attributes:
-        x_x (array): Quadrature points in x-direction
-        x_y (array): Quadrature points in y-direction
-        x_z (array): Quadrature points in z-direction
-        w_x (array): Quadrature weights in x-direction
-        w_y (array): Quadrature weights in y-direction
-        w_z (array): Quadrature weights in z-direction
-        x (array): Combined quadrature points in 3D space
-        w (array): Combined quadrature weights
+        x_x, x_y, x_z: 1-D quadrature points per axis.
+        w_x, w_y, w_z: 1-D quadrature weights per axis.
+        x: ``(n, 3)`` tensor-product points in the flat order above.
+        w: ``(n,)`` tensor-product weights, the product of the axis weights.
+        nx, ny, nz: points per axis; ``shape = (nx, ny, nz)``; ``n`` their product.
+        ns: ``arange(n)``, the flat point index.
     """
 
     def __init__(self, form, p):
-        """
-        Initialize the quadrature rule.
+        """Build the rule for the axis bases of ``form`` with ``p`` Gauss points per span.
 
         Args:
-            form: The differential form defining the basis functions
-            p (int): Number of quadrature points per direction
+            form: A :class:`~mrx.differential_forms.DifferentialForm` whose
+                first component's axis bases select the 1-D rules.
+            p: Number of Gauss points per knot span.
         """
-        # Select appropriate quadrature rules for each direction
         (x_x, w_x), (x_y, w_y), (x_z, w_z) = [
             select_quadrature(b, p) for b in form.bases[0].bases]
-
-        # Combine quadrature points and weights in 3D
-        x_s = [x_x, x_y, x_z]
-        w_s = [w_x, w_y, w_z]
-        d = 3
         n = w_x.size * w_y.size * w_z.size
+        x_q = jnp.stack(jnp.meshgrid(x_x, x_y, x_z, indexing='ij'), axis=-1)
+        w_q = w_x[:, None, None] * w_y[None, :, None] * w_z[None, None, :]
 
-        # Create 3D grid of quadrature points and weights
-        # TODO: meshgrid defaults to indexing='xy', which SWAPS the first two
-        # axes -- the flat quad-point ordering is therefore (y, x, z) =
-        # (theta, r, zeta), theta-major, NOT the expected (r, theta, zeta).
-        # Everything downstream depends on this (the (ny, nx, nz) reshape
-        # helpers in operators.py, the (theta, r, z) CP factor order in
-        # preconditioners.py), so switching to indexing='ij' is a coordinated
-        # migration, not a local fix. Until then: any code consuming flat
-        # quad-point fields must reshape to (ny, nx, nz) and transpose.
-        x_q = jnp.array(jnp.meshgrid(*x_s))  # shape d, n1, n2, n3, ...
-        x_q = x_q.transpose(*range(1, d+1), 0).reshape(n, d)
-        w_q = jnp.array(
-            jnp.meshgrid(*w_s)).transpose(*range(1, d+1), 0).reshape(n, d)
-        w_q = jnp.prod(w_q, 1)
-
-        # Store quadrature points and weights
-        self.x_x = x_x
-        self.x_y = x_y
-        self.x_z = x_z
-        self.w_x = w_x
-        self.w_y = w_y
-        self.w_z = w_z
-        self.x = x_q
-        self.w = w_q
-        self.nx = x_x.size
-        self.ny = x_y.size
-        self.nz = x_z.size
+        self.x_x, self.x_y, self.x_z = x_x, x_y, x_z
+        self.w_x, self.w_y, self.w_z = w_x, w_y, w_z
+        self.x = x_q.reshape(n, 3)
+        self.w = w_q.reshape(n)
+        self.nx, self.ny, self.nz = x_x.size, x_y.size, x_z.size
+        self.shape = (self.nx, self.ny, self.nz)
         self.n = n
         self.ns = jnp.arange(n)
 
@@ -146,7 +123,8 @@ def evaluate_at_xq(dofs, comp_info, comp_shapes, quad_shape, d):
         ``Z`` (shape ``(s3_c, nq_z)``).
     comp_shapes : list of tuples ``(s1_c, s2_c, s3_c)``
         DOF grid shape per component.
-    quad_shape : tuple ``(nq_t, nq_r, nq_z)``
+    quad_shape : tuple ``(nq_r, nq_t, nq_z)``
+        ``seq.quad.shape``.
     d : int
         Number of output dimensions.
 
@@ -160,8 +138,7 @@ def evaluate_at_xq(dofs, comp_info, comp_shapes, quad_shape, d):
         s = comp_shapes[c]
         n_c = s[0] * s[1] * s[2]
         V = dofs[offset:offset + n_c].reshape(s)
-        # V[i,j,k], R[i,a], T[j,b], Z[k,c] -> f[b,a,c]  (quad_shape = nq_t, nq_r, nq_z)
-        val = jnp.einsum('ijk,ia,jb,kc->bac', V, R, T, Z)
+        val = jnp.einsum('ijk,ia,jb,kc->abc', V, R, T, Z)
         f = f.at[out_dim].add(val)
         offset += n_c
     return f.transpose(1, 2, 3, 0).reshape(-1, d)
@@ -179,17 +156,17 @@ def integrate_against(f_jk, comp_info, comp_shapes, quad_shape):
     comp_info : list of ``(input_dim, R, T, Z)``
         Per-component input dimension and 1D basis arrays.
     comp_shapes : list of tuples ``(s1_c, s2_c, s3_c)``
-    quad_shape : tuple ``(nq_t, nq_r, nq_z)``
+    quad_shape : tuple ``(nq_r, nq_t, nq_z)``
+        ``seq.quad.shape``.
 
     Returns
     -------
     result : array, shape ``(n_total,)``
     """
     d = f_jk.shape[1]
-    # Reshape to (d, nq_t, nq_r, nq_z)
     f = f_jk.reshape(quad_shape + (d,)).transpose(3, 0, 1, 2)
     parts = []
     for c, (in_dim, R, T, Z) in enumerate(comp_info):
-        val = jnp.einsum('ia,jb,kc,bac->ijk', R, T, Z, f[in_dim])
+        val = jnp.einsum('ia,jb,kc,abc->ijk', R, T, Z, f[in_dim])
         parts.append(val.ravel())
     return jnp.concatenate(parts)

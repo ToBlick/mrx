@@ -219,7 +219,7 @@ def relative_l2_error(seq, k, dirichlet, u_hat, exact):
     """
     comp_info, comp_shapes = seq._form_comp_info(k)
     eT = seq.E(k, dirichlet).T
-    quad_shape = (seq.quad.ny, seq.quad.nx, seq.quad.nz)
+    quad_shape = seq.quad.shape
     ncomp = 1 if k in (0, 3) else 3
     u_h = evaluate_at_xq(eT @ u_hat, comp_info, comp_shapes, quad_shape, ncomp)
     u_ex = jax.vmap(exact)(seq.quad.x)
