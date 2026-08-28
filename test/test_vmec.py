@@ -190,14 +190,17 @@ def test_w7x_wout_reads():
 # ---------------------------------------------------------------------------
 
 def _ic_report(path, ns, p):
+    """The production IC route of ``relax.py --ic clebsch``: B = dA' from the
+    histopolated potential -- exactly divergence-free in the complex, no
+    Leray cleaning (which would carry the interpolant's derivatives into the
+    current)."""
     import jax.numpy as jnp
     from mrx.geometry import build_sequence
     from mrx.gvec import load_clebsch
     from mrx.initial_conditions import (
-        clebsch_form,
+        clebsch_potential_form,
         divergence_norm,
-        leray_clean,
-        project_reference_two_form,
+        potential_two_form,
     )
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation import compute_force
@@ -205,14 +208,12 @@ def _ic_report(path, ns, p):
     seq, ops = build_sequence(path, ns, p)
     seq.set_operators(compute_nullspaces(seq, ops))
     cb = load_clebsch(path, seq.basis_0.types)
-    B_raw, norm = project_reference_two_form(seq, clebsch_form(cb))
-    div_raw = divergence_norm(seq, B_raw)
-    B, moved = leray_clean(seq, B_raw)
+    B, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
     div = divergence_norm(seq, B)
     F, _, _, _, _ = compute_force(B, seq)
     F_norm = float(seq.l2_norm(F, 2))
     print(f"\n  {os.path.basename(path)} {ns} p={p}: ||B||_M raw {norm:.4e}, "
-          f"||div B|| {div_raw:.2e} -> {div:.2e}, moved {moved:.2e}, "
+          f"||div B|| {div:.2e}, wall-normal discarded {wall:.2e}, "
           f"||F||_M {F_norm:.3e} at ||B||_M = 1")
     assert jnp.isfinite(B).all()
     assert div <= 10 * seq.tol
