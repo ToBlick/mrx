@@ -139,5 +139,5 @@ items 1-5, `c25657c` items 7-12):
 | 17 | postponed until the poincare subagent is done | -- |
 | 18 | per-basis-function evaluators deleted (be3767a); QuadratureRule docstring with item 15 | yes |
 | 19+21 | CUT the gridded .h5 route: subagent on branch `drop-h5` (.dat and .nc only; synthetic-h5 tests ported to a synthetic .dat state) | agent |
-| 20 | explained (one isolated outlier costs one Krylov iteration; the 1/eps coarse solve over-amplifies an inexact coarse vector); recommendation: delete `use_coarse` + the `_shifted_harmonic_coarse_*` machinery | awaiting go |
+| 20 | DELETED: `use_coarse`, `use_harmonic_coarse`, the `_shifted_harmonic_coarse_*` helpers (one isolated outlier costs one Krylov iteration; the 1/eps coarse solve over-amplifies an inexact coarse vector) | yes |
 | 22 | docs last | -- |
