@@ -182,3 +182,132 @@ Ladder on the final reader (`convergence_axis.png`, `convergence_axis.json`;
 the global D 2.36 (bulk 2.64) with no axis floor; ‖F‖_M(B_w) 9.15e-2 /
 9.38e-3 / 2.10e-3 / 6.68e-4, slope 3.49; the harmonic form's self-convergence
 2.77 (map 3.65) as before.
+
+## Extension (2026-08-29): the (32,64,32) reference, p = 1..4, and the dual harmonic field
+
+Branch `qa-extend` (from `static-dynamic-refactor` c9e6b8e: L2-projected map, the
+wout axis fixes, the `_periodic_symbol` fix). The whole ladder was **rerun on this
+reader** -- the numbers below supersede every table above (those mixed the OLD and
+axis readers); read this section for the current state. Three additions to
+`scripts/vacuum_convergence.py`:
+
+1. **(32,64,32) p=3** as the reference, so `E` is measured against a rung finer than
+   the top of the study instead of against (24,48,24) itself.
+2. **p = 1, 2, 4** at 9 radial elements ((10,24,12) p1, (11,24,12) p2, (13,24,12)
+   p4), alongside the existing (12,24,12) p3, so the abscissa `h = 1/(n_r - p) = 1/9`
+   is shared.
+3. **`h1 = seq.nullspace(1, False)[0]`**, the k=1 free (no-BC) harmonic 1-form. On
+   the solid torus `b1 = 1`, so `h1` and `h2 = nullspace(2, True)[0]` are both
+   1-dimensional and Poincare dual: the SAME vacuum toroidal field in two form
+   degrees. `h1`'s own gate mirrors `h2`'s with `|curl h1|/|h1|` (the `d h1 = 0`
+   half) in place of `|div h2|`. Both are pushed to lab-frame `(3,)`-vectors at the
+   quadrature points (covariant rule `(DF^T)^{-1} h1_hat` for the 1-form, Piola
+   `DF h2_hat / J` for the 2-form; `DF`, `J` explicit), fit by one physical-L2 scale,
+   and compared.
+
+### The completed p=3 ladder (reference (32,64,32))
+
+Grid 48x96x48. `h = 1/(n_r - p)`. Rates against the previous rung.
+
+| rung | h | n2 | D | rate | D bulk | rate | D axis | ‖F‖_M(B_w) | E_h | rate | map |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| (8,16,8) p3 | 0.200 | 2 192 | 2.239e-3 | -- | 2.240e-3 | -- | 2.18e-3 | 9.15e-2 | 6.44e-3 | -- | 4.4e-4 |
+| (12,24,12) p3 | 0.111 | 8 376 | 3.816e-4 | 3.01 | 3.703e-4 | 3.06 | 9.47e-4 | 9.38e-3 | 1.33e-3 | 2.68 | 6.0e-5 |
+| (16,32,16) p3 | 0.077 | 21 024 | 1.297e-4 | 2.94 | 8.974e-5 | 3.85 | 8.88e-4 | 2.10e-3 | 4.11e-4 | 3.19 | 1.3e-5 |
+| (24,48,24) p3 | 0.048 | 74 928 | 8.361e-5 | 0.91 | 5.877e-5 | 0.88 | 5.65e-4 | 6.68e-4 | 1.37e-4 | 2.29 | 1.2e-6 |
+| **(32,64,32) p3** | 0.034 | 182 336 | 8.219e-5 | 0.05 | 6.275e-5 | -0.20 | 5.01e-4 | 6.34e-4 | ref | | ref |
+
+LS slopes over the ladder: `D` 1.91, `D bulk` 2.11, `‖F‖_M(B_w)` **2.94**, `E_h`
+**2.72** (2.86 without the finite-reference pair), `E_w` 2.71, map **4.06**. Wall
+132 / 164 / 297 / 580 / **1044** s (the (32,64,32) rung is 17 min on one H100, well
+inside its budget -- no OOM at MEM_GB 128).
+
+- **The (32,64,32) rung shows the global `D` and the bulk `D` have BOTTOMED, not
+  merely slowed.** `D` 8.36e-5 -> 8.22e-5 and `D bulk` 5.88e-5 -> 6.28e-5 across the
+  last pair (the bulk even ticks up inside the noise): the reconstructed VMEC vacuum
+  field sits at a **physics floor of ~8e-5 global, ~6e-5 in the bulk**, and the
+  earlier note's "still falling, an upper bound" is now resolved to a floor. `‖F‖_M`
+  floors with it (6.68e-4 -> 6.34e-4). The extra rung was worth it: it converts the
+  open "the bulk `D` has no floor down to 5e-5" into a measured floor.
+- **`E_h` is a clean O(h^3)** (slope 2.72, or 2.86 dropping the reference-adjacent
+  pair) and the **map is O(h^{p+1}) = O(h^4)** (slope 4.06), both now un-biased by a
+  finite reference. `E_w` tracks `E_h` (2.71): `h` and `B_w` converge to the finest
+  rung at the same rate, as the projection of one smooth field should.
+
+### p-scan at 9 radial elements (h = 1/9), (24,12) angular
+
+| p | rung | D | D bulk | ‖F‖_M(B_w) | E_h | harmonic ratio |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | (10,24,12) | 7.44e-2 | 7.46e-2 | 5.05e-1 | 1.39e-1 | 2.0e-13 |
+| 2 | (11,24,12) | 3.949e-4 | 3.79e-4 | 9.57e-3 | 5.57e-3 | 4.5e-13 |
+| 3 | (12,24,12) | 3.816e-4 | 3.70e-4 | 9.38e-3 | 1.33e-3 | 8.4e-13 |
+| 4 | (13,24,12) | 3.599e-4 | 3.37e-4 | 7.52e-3 | 9.40e-4 | 1.9e-12 |
+
+- **p=1 builds and passes its harmonic gate (ratio 2e-13) but the FIELD is
+  worthless**: `D` 7.4e-2, `‖B‖` near the axis 4e-4 T (should be ~1 T), `D axis`
+  ~800. A degree-1 2-form cannot represent the axis field of this geometry; the gate
+  certifies `h` is harmonic, not that it resolves `B_w`. Reported and kept as the
+  low end, not dropped.
+- **p=2..4 is angular-limited, not a p-rate**, exactly as before: `D` 3.95e-4 ->
+  3.82e-4 -> 3.60e-4 barely moves (the (24,12) cells and ntor=8 modes are the wall),
+  while `E_h`, which is not axis-dominated, does improve with p (5.57e-3 -> 1.33e-3
+  -> 9.40e-4). A p-study needs the angular cells scaled with p.
+
+### The dual harmonic field: h1 (1-form) vs h2 (2-form)
+
+`convergence_h1.png`; per-rung in `convergence_extend.json`
+(`harmonic1`, `rep_independence`, `D_grid_h1`).
+
+| rung | h | ratio h1 | \|curl h1\|/\|h1\| | E_h1 | resid ‖v1−s v2‖/‖v1‖ (bulk) | M-cos(h1,h2) | cos(B_w,h1) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| (8,16,8) p3 | 0.200 | 6.2e-14 | 4.3e-7 | 2.36e-3 | 5.71e-3 | 0.99998376 | 0.99998126 |
+| (12,24,12) p3 | 0.111 | 1.7e-13 | 7.4e-7 | 4.23e-4 | 1.29e-3 | 0.99999917 | 0.99999910 |
+| (16,32,16) p3 | 0.077 | 3.1e-13 | 9.7e-7 | 1.52e-4 | 4.06e-4 | 0.99999992 | 0.99999991 |
+| (24,48,24) p3 | 0.048 | **6.6e-8** | 4.8e-4 | 1.09e-4 | 9.98e-5 | 0.99999999 | 0.99999999 |
+| (32,64,32) p3 | 0.034 | **1.8e-5** | 8.0e-3 | ref | 1.16e-4 | 0.99999999 | 0.99999999 |
+| (11,24,12) p2 | 0.111 | 1.2e-13 | 6.0e-7 | 1.83e-3 | 6.56e-3 | 0.99997841 | 0.99997833 |
+| (13,24,12) p4 | 0.111 | 2.9e-13 | 9.6e-7 | 3.53e-4 | 9.82e-4 | 0.99999952 | 0.99999945 |
+
+**The headline: the two representations are the same physical vacuum field, and they
+converge to each other at O(h^p).** The scale-fitted residual between the lab-frame
+vectors falls 5.71e-3 -> 1.29e-3 -> 4.06e-4 -> ~1e-4 along the p=3 ladder (LS slope
+**2.82**), the M-cosine reaches **+0.99999999** (nine 9s), and `cos(B_w, h1)` -- the
+production VMEC field against the k=1 harmonic form, two entirely separate
+constructions -- reaches the same. The discrete vacuum solution does not depend on
+the form degree it is carried in. The p-sweep shows the same p-improvement (resid
+6.56e-3 / 1.29e-3 / 9.82e-4 for p=2/3/4).
+
+**One caveat, and it is a real one about the k=1 solve, not the physics.** The k=1
+free harmonic FORM is less robust than the k=2 Dirichlet one at the fixed `seq.tol`:
+its Rayleigh ratio is `O(tol^2)` (6e-14 .. 3e-13) on the coarse three rungs but
+**floors and then grows with n** -- 6.6e-8 at (24,48,24), 1.8e-5 at (32,64,32) --
+**failing the 1e-10 gate at the two finest rungs**, with `|curl h1|/|h1|` rising in
+step (4.8e-4, 8.0e-3). h2's ratio stays ~1e-12 throughout. So the k=1 construction
+leaves a small coexact ripple on `h1` that finer meshes make worse, not better, at
+this tol. Two consequences: (i) **`h1`'s own self-convergence `E_h1` floors** (slope
+**2.21** vs `E_h` 2.72) because the (32,64,32) reference `h1` is itself contaminated;
+(ii) despite that, the **field-level agreement with `h2` is unharmed to ~1e-4** --
+the ripple is a small-amplitude, high-curl coexact mode that barely moves the L2 of
+the field, so `resid_h1_vs_h2` and the cosines stay on the O(h^p) trend. If `h1`
+itself is ever wanted to spectral accuracy at high resolution the k=1 free Hodge
+solve needs a tighter tol or a better-conditioned construction; for the vacuum field
+it represents, it is already right.
+
+### What the extension adds
+
+1. The bulk `D` **floors at ~6e-5** (global ~8e-5) -- the open "(32,64,32) reference"
+   item is closed and the floor is now a number, not an upper bound.
+2. The 2-form field is **O(h^3)** and the map **O(h^4)** with the finite-reference
+   bias removed (`E_h` 2.72/2.86, map 4.06).
+3. p=1 is unusable (axis field lost) though it passes the harmonic gate; p=2..4 is
+   angular-limited at 9 radial elements.
+4. **The k=1 free and k=2 Dirichlet harmonic fields are one physical vacuum field**
+   (M-cosine nine 9s, residual O(h^3) to ~1e-4) -- representation independence of the
+   discrete solution -- with the one caveat that the k=1 form's harmonic RATIO
+   degrades with resolution at fixed tol (gate fails at the two finest rungs) while
+   the field it carries does not.
+
+Figures: `convergence_extend.png` (same-space `D`/`F` and vs-finest `E`/map ladders
+with the p-sweep overlaid), `convergence_h1.png` (`h1` self-convergence and the
+`h1`-vs-`h2` representation residual), `residual_zeta0_extend.png` (the (32,64,32)
+residual at zeta=0, max 7.9e-4, still axis-localised). JSON: `convergence_extend.json`.

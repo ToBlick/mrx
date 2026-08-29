@@ -105,22 +105,28 @@ def common_grid(shape):
     return pts, W.ravel().copy(), dict(rho=rho, theta=th, zeta=ze)
 
 
-def pushforward_on_grid(seq, dof, pts, batch=4096):
-    """Cartesian components of the Dirichlet 2-form ``dof`` at the logical
-    points ``pts`` (Piola: ``B = DF B_hat / J``), with ``F(pts)`` and ``J``."""
+def pushforward_on_grid(seq, dof, pts, batch=4096, k=2, dirichlet=True):
+    """Cartesian components of the ``k``-form ``dof`` at the logical points
+    ``pts``, with ``F(pts)`` and ``J = det DF``.
+
+    Piola for the 2-form (``B = DF B_hat / J``) and the covariant rule for the
+    1-form (``a = (DF^T)^{-1} a_hat``); the metric factor is explicit in both.
+    """
     import jax
     import jax.numpy as jnp
     import numpy as np
-    from mrx.differential_forms import DiscreteFunction, det33
+    from mrx.differential_forms import DiscreteFunction, det33, inv33
 
-    f = DiscreteFunction(jnp.asarray(dof), seq.basis_2, seq.E(2, True))
+    basis = {1: seq.basis_1, 2: seq.basis_2}[k]
+    f = DiscreteFunction(jnp.asarray(dof), basis, seq.E(k, dirichlet))
     F = seq.map
 
     @jax.jit
     def one(x):
         DF = jax.jacfwd(F)(x)
         J = det33(DF)
-        return DF @ f(x) / J, F(x), J
+        v = DF @ f(x) / J if k == 2 else inv33(DF).T @ f(x)
+        return v, F(x), J
 
     many = jax.jit(jax.vmap(one))
     B, X, J = [], [], []
@@ -209,6 +215,25 @@ def run_rung(cli):
          f"harmonic rq {rq:.3e} lambda_1 {lam1:.3e} ratio {ratio:.1e} "
          f"({'PASS' if ratio <= 1e-10 else 'FAIL'} <= 1e-10), |div h|/|h| {div_h:.1e}")
 
+    # --- the dual harmonic field: the k=1 free (no-BC) harmonic 1-form -------
+    # On the solid torus b1 = 1, so nullspace(1, False) is 1-dimensional and
+    # Poincare dual to nullspace(2, True): the SAME vacuum toroidal field in a
+    # different form degree. Its own gate mirrors h2's, with the d h1 = 0 half
+    # being |curl h1| (k=1 -> k=2, free) instead of |div h2|.
+    h1 = seq.nullspace(1, False)[0]
+    h1 = h1 / seq.l2_norm(h1, 1, dirichlet=False)
+    rq1 = harmonic_rayleigh(seq, h1, 1, False, ops)
+    lam1_1, sweeps1 = estimate_spectral_gap(seq, ops, 1, False, maxiter=5)
+    ratio1 = rq1 / lam1_1
+    curl_h1 = float(seq.l2_norm(seq.apply_strong_curl(h1, False, False), 2, dirichlet=False)
+                    / seq.l2_norm(h1, 1, dirichlet=False))
+    res["harmonic1"] = dict(rayleigh=rq1, lambda_1=float(lam1_1), gap_sweeps=int(sweeps1),
+                            ratio=ratio1, curl_over_norm=curl_h1, n1=int(seq.n(1, False)),
+                            gate_1e_10=bool(ratio1 <= 1e-10))
+    _log(f"{tag} h1: n1={seq.n(1, False)} harmonic rq {rq1:.3e} lambda_1 {lam1_1:.3e} "
+         f"ratio {ratio1:.1e} ({'PASS' if ratio1 <= 1e-10 else 'FAIL'} <= 1e-10), "
+         f"|curl h1|/|h1| {curl_h1:.1e}")
+
     # --- the wout field in V_2^h --------------------------------------------
     t3 = time.perf_counter()
     cb = load_clebsch(cli.geometry)
@@ -218,6 +243,51 @@ def run_rung(cli):
     t4 = time.perf_counter()
     res.update(t_ic=t4 - t3, B_norm=norm, div_B_w=div_w, wall_discarded=wall)
     _log(f"B_w: ||B||_M {norm:.6e} T, ||div B|| {div_w:.2e}, wall-normal discarded {wall:.2e}, {t4 - t3:.1f}s")
+
+    # --- representation independence: h1 (1-form) vs h2 (2-form) as the SAME
+    # physical vector field --------------------------------------------------
+    # Push both to lab-frame (3,)-vectors at the quadrature points (covariant
+    # rule for h1, Piola for h2 and B_w; metric factors DF, J explicit), fit
+    # one scale by physical L2 (measure w*J), and compare. If they agree to
+    # O(tol) in the bulk the discrete vacuum solution is representation-free.
+    from mrx.geometry import map_jacobian_at
+    t_rep = time.perf_counter()
+    DF_q = np.asarray(map_jacobian_at(seq.map, seq.quad.x))          # (Nq,3,3)
+    DFinv_q = np.linalg.inv(DF_q)
+    Jq = np.asarray(seq.jacobian_j)                                  # (Nq,)
+    wq = np.asarray(seq.quad.w)
+    wJ_q = wq * Jq
+    rho_q = np.asarray(seq.quad.x)[:, 0]
+    h1_ref = np.asarray(seq.evaluate_at_quadrature(h1, 1, False))     # covariant comps
+    h2_ref = np.asarray(seq.evaluate_at_quadrature(h, 2, True))       # 2-form comps
+    Bw_ref = np.asarray(seq.evaluate_at_quadrature(Bw_hat, 2, True))
+    v1 = np.einsum("qki,qk->qi", DFinv_q, h1_ref)                     # (DF^-T) h1_hat
+    v2 = np.einsum("qik,qk->qi", DF_q, h2_ref) / Jq[:, None]          # DF h2_hat / J
+    vBw = np.einsum("qik,qk->qi", DF_q, Bw_ref) / Jq[:, None]
+
+    def _ip(a, b, mask=None):
+        w = wJ_q if mask is None else wJ_q * mask
+        return float(np.sum(w * np.sum(a * b, axis=1)))
+
+    def _rep(a, b, mask=None):
+        s = _ip(a, b, mask) / _ip(b, b, mask)                        # fit a ~ s b
+        resid = float(np.sqrt(_ip(a - s * b, a - s * b, mask) / _ip(a, a, mask)))
+        cos = _ip(a, b, mask) / float(np.sqrt(_ip(a, a, mask) * _ip(b, b, mask)))
+        return s, resid, cos
+
+    bulk_q = (rho_q >= RHO_BULK).astype(float)
+    s12, resid12, cos12 = _rep(v1, v2)
+    s12_b, resid12_b, cos12_b = _rep(v1, v2, bulk_q)
+    _, _, cosBw1 = _rep(vBw, v1)
+    _, _, cosBw1_b = _rep(vBw, v1, bulk_q)
+    res["rep_independence"] = dict(
+        scale_h1_over_h2=s12, resid_h1_vs_h2=resid12, cos_h1_h2=cos12,
+        resid_h1_vs_h2_bulk=resid12_b, cos_h1_h2_bulk=cos12_b,
+        cos_Bw_h1=cosBw1, cos_Bw_h1_bulk=cosBw1_b, rho_bulk=RHO_BULK,
+        t_rep=time.perf_counter() - t_rep)
+    _log(f"rep-indep h1 vs h2 (phys vectors, quad pts): resid {resid12:.3e} "
+         f"(bulk {resid12_b:.3e}), M-cos {cos12:+.9f} (bulk {cos12_b:+.9f}); "
+         f"cos(B_w, h1) {cosBw1:+.9f} (bulk {cosBw1_b:+.9f})")
 
     # --- same-space comparison ----------------------------------------------
     Mh = seq.apply_mass_matrix(h, 2, True)
@@ -251,9 +321,19 @@ def run_rung(cli):
     pts, w, axes = common_grid(res["grid"])
     B_w_xyz, X, J = pushforward_on_grid(seq, Bw, pts)
     B_h_xyz, _, _ = pushforward_on_grid(seq, c * h, pts)
+    # h1 as a lab-frame vector on the same grid, calibrated to B_w by physical
+    # L2 (its scale and sign are free), so E_h1 across rungs mirrors E_h.
+    B_h1_raw, _, _ = pushforward_on_grid(seq, h1, pts, k=1, dirichlet=False)
+    wJg = w * J
+    c1 = (float(np.sum(wJg * np.sum(B_w_xyz * B_h1_raw, 1)))
+          / float(np.sum(wJg * np.sum(B_h1_raw ** 2, 1))))
+    B_h1_xyz = c1 * B_h1_raw
     vol = float(np.sum(w * J))
     nBw = np.sqrt(np.sum(w * J * np.sum(B_w_xyz ** 2, 1)))
     D_grid = float(np.sqrt(np.sum(w * J * np.sum((B_w_xyz - B_h_xyz) ** 2, 1))) / nBw)
+    D_grid_h1 = float(np.sqrt(np.sum(w * J * np.sum((B_w_xyz - B_h1_xyz) ** 2, 1))) / nBw)
+    res["c1_grid"] = c1
+    res["D_grid_h1"] = D_grid_h1
     ax_pts = np.stack([np.full(16, 0.01), (np.arange(16) + 0.5) / 16, np.zeros(16)], 1)
     B_ax, _, _ = pushforward_on_grid(seq, Bw, ax_pts)
     B_axis = float(np.mean(np.linalg.norm(B_ax, axis=1)))
@@ -261,8 +341,10 @@ def run_rung(cli):
                B_norm_grid_over_M=float(nBw) / norm, t_grid=time.perf_counter() - t6)
     _log(f"grid {res['grid']}: volume {vol:.6e}, ||B_w|| {nBw:.6e} (M-norm {norm:.6e}), "
          f"D_grid {D_grid:.4e}, |B| near axis {B_axis:.4f} T, {time.perf_counter() - t6:.1f}s")
+    _log(f"grid: D_grid(h1) {D_grid_h1:.4e} (c1 {c1:.6e})")
     np.savez_compressed(os.path.join(out, "fields.npz"), B_w_dof=np.asarray(Bw), h_dof=np.asarray(h),
-                        c=c, B_w=B_w_xyz, B_h=B_h_xyz, x=X, J=J, w=w, pts=pts, **axes)
+                        h1_dof=np.asarray(h1), c=c, c1=c1, B_w=B_w_xyz, B_h=B_h_xyz, B_h1=B_h1_xyz,
+                        x=X, J=J, w=w, pts=pts, **axes)
 
     # --- the relaxation run's fields at this rung ---------------------------
     if cli.h5:
@@ -351,6 +433,7 @@ def plot(cli):
     wJ = fr["w"] * fr["J"]
     nB = np.sqrt(np.sum(wJ * np.sum(fr["B_w"] ** 2, 1)))
     nH = np.sqrt(np.sum(wJ * np.sum(fr["B_h"] ** 2, 1)))
+    nH1 = np.sqrt(np.sum(wJ * np.sum(fr["B_h1"] ** 2, 1)))
     Lref = np.max(np.linalg.norm(fr["x"], axis=1))
 
     rows = []
@@ -359,6 +442,7 @@ def plot(cli):
         is_ref = r["dir"] == ref["dir"]
         E_h = float(np.sqrt(np.sum(wJ * np.sum((fz["B_h"] - fr["B_h"]) ** 2, 1))) / nH)
         E_w = float(np.sqrt(np.sum(wJ * np.sum((fz["B_w"] - fr["B_w"]) ** 2, 1))) / nB)
+        E_h1 = float(np.sqrt(np.sum(wJ * np.sum((fz["B_h1"] - fr["B_h1"]) ** 2, 1))) / nH1)
         # bulk / axis split: the residual of a wout field concentrates at the
         # axis (the half-mesh lambda has no data inside its first node), so
         # the bulk numbers are reported separately.
@@ -379,7 +463,14 @@ def plot(cli):
                          gate=r["harmonic"]["gate_1e_10"], D=r["D"], D_grid=r["D_grid"],
                          c=r["c"], c_flux=r["c_flux"], c_flux_over_c_minus_1=r["c_flux_over_c_minus_1"],
                          F_w=r["F_w"], F_h=r["F_h"], J_w=r["J_w"], div_B_w=r["div_B_w"],
-                         E_h=E_h, E_w=E_w, E_map=E_map, E_map_max=E_map_max, is_reference=is_ref,
+                         E_h=E_h, E_w=E_w, E_h1=E_h1, E_map=E_map, E_map_max=E_map_max, is_reference=is_ref,
+                         harmonic1_ratio=r.get("harmonic1", {}).get("ratio"),
+                         curl_h1=r.get("harmonic1", {}).get("curl_over_norm"),
+                         D_grid_h1=r.get("D_grid_h1"),
+                         resid_h1_vs_h2=r.get("rep_independence", {}).get("resid_h1_vs_h2"),
+                         resid_h1_vs_h2_bulk=r.get("rep_independence", {}).get("resid_h1_vs_h2_bulk"),
+                         cos_h1_h2=r.get("rep_independence", {}).get("cos_h1_h2"),
+                         cos_Bw_h1=r.get("rep_independence", {}).get("cos_Bw_h1"),
                          D_bulk=D_bulk, D_axis=D_axis, E_h_bulk=E_h_bulk, rho_bulk=RHO_BULK,
                          B_axis_w=r["B_axis_w"], t_total=r["t_total"],
                          iota_w_vs_iotaf=r.get("trace", {}).get("B_w", {}).get("max_abs_diota_vs_iotaf"),
@@ -396,6 +487,8 @@ def plot(cli):
                          if i and not x["is_reference"] else None)
         x["rate_E_w"] = (_rate(ladder[i - 1]["E_w"], ladder[i - 1]["h"], x["E_w"], x["h"])
                          if i and not x["is_reference"] else None)
+        x["rate_E_h1"] = (_rate(ladder[i - 1]["E_h1"], ladder[i - 1]["h"], x["E_h1"], x["h"])
+                          if i and not x["is_reference"] else None)
     below = [x for x in ladder if not x["is_reference"]]
     slopes = dict(
         D_all=_slope([x["h"] for x in ladder], [x["D"] for x in ladder]),
@@ -403,6 +496,10 @@ def plot(cli):
         F_w_all=_slope([x["h"] for x in ladder], [x["F_w"] for x in ladder]),
         E_h_below_ref=_slope([x["h"] for x in below], [x["E_h"] for x in below]),
         E_w_below_ref=_slope([x["h"] for x in below], [x["E_w"] for x in below]),
+        E_h1_below_ref=_slope([x["h"] for x in below], [x["E_h1"] for x in below]),
+        resid_h1_vs_h2_below=_slope([x["h"] for x in below],
+                                    [x["resid_h1_vs_h2"] for x in below])
+        if below and all(x["resid_h1_vs_h2"] for x in below) else float("nan"),
         E_map_below_ref=_slope([x["h"] for x in below], [x["E_map"] for x in below]),
         E_h_below_ref_excluding_last=_slope([x["h"] for x in below[:-1]], [x["E_h"] for x in below[:-1]]),
     )
@@ -423,6 +520,20 @@ def plot(cli):
               f"{x['F_w']:10.3e} {fmt(x.get('rate_F_w'))} {x['E_h']:10.3e} {fmt(x.get('rate_E_h'))} "
               f"{x['E_w']:10.3e} {x['E_map']:10.3e} {x['c_flux_over_c_minus_1']:+9.1e}")
     print("slopes: " + "  ".join(f"{k} {v:.2f}" for k, v in slopes.items()))
+
+    # --- dual harmonic field (h1) table ---------------------------------------
+    print("\ndual harmonic field: k=1 free 1-form h1 vs k=2 dbc 2-form h2 (same vacuum B)")
+    h1hdr = (f"{'rung':>18} {'h':>7} {'ratio1':>9} {'|curl h1|':>10} {'E_h1':>10} {'rate':>6} "
+             f"{'resid h1|h2':>11} {'bulk':>10} {'M-cos':>13} {'cos(Bw,h1)':>13}")
+    print(h1hdr)
+    for x in sorted(rows, key=lambda x: (x["p"], -x["h"])):
+        def fmt(v, w=6):
+            return f"{v:>{w}.2f}" if isinstance(v, float) else f"{'--':>{w}}"
+        print(f"{x['tag']:>18} {x['h']:7.4f} {x['harmonic1_ratio']:9.1e} {x['curl_h1']:10.1e} "
+              f"{x['E_h1']:10.3e} {fmt(x.get('rate_E_h1'))} {x['resid_h1_vs_h2']:11.3e} "
+              f"{x['resid_h1_vs_h2_bulk']:10.3e} {x['cos_h1_h2']:+13.10f} {x['cos_Bw_h1']:+13.10f}")
+    print(f"slopes(h1): E_h1 {slopes['E_h1_below_ref']:.2f}  "
+          f"resid_h1_vs_h2 {slopes['resid_h1_vs_h2_below']:.2f}")
 
     # --- figure ----------------------------------------------------------------
     C = dict(D="#0072B2", F="#E69F00", Eh="#009E73", Ew="#CC79A7", map="#56B4E9", psweep="#D55E00")
@@ -472,6 +583,54 @@ def plot(cli):
     fig.savefig(os.path.join(root, "convergence.png"), dpi=150)
     plt.close(fig)
 
+    # --- dual harmonic field figure -------------------------------------------
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.6))
+    ax = axes[0]
+    ax.loglog(hb, [x["E_h1"] for x in below], "o-", color=C["Eh"], lw=1.5, ms=6,
+              label=r"$E_{h_1}$: 1-form $h_1$ vs finest")
+    ax.loglog(hb, [x["E_h"] for x in below], "^--", color=C["Ew"], lw=1.2, ms=5, mfc="none",
+              label=r"$E_h$: 2-form $h_2$ vs finest")
+    for x in rows:
+        if x["p"] != p_main:
+            dy = 6 if x["p"] < p_main else -12
+            ax.loglog([x["h"]], [x["E_h1"]], "o", color=C["psweep"], ms=7, mfc="none")
+            ax.annotate(f"p={x['p']}", (x["h"], x["E_h1"]), textcoords="offset points",
+                        xytext=(7, dy), fontsize=8, color=C["psweep"])
+    anchor = below[0]["E_h1"] if below else 1.0
+    hh = np.array([hs.min(), hs.max()])
+    for q, ls in ((p_main, "--"), (p_main + 1, ":")):
+        ax.loglog(hh, anchor * 1.6 * (hh / hs.max()) ** q, ls, color="0.6", lw=1, label=rf"$h^{q}$")
+    ax.text(0.03, 0.97, f"LS slope $E_{{h_1}}$: {slopes['E_h1_below_ref']:.2f}",
+            transform=ax.transAxes, va="top", fontsize=9)
+    ax.set_title("dual harmonic field: self-convergence of $h_1$ (p = 3)")
+    ax = axes[1]
+    hL = np.array([x["h"] for x in ladder])
+    ax.loglog(hL, [x["resid_h1_vs_h2"] for x in ladder], "o-", color=C["D"], lw=1.5, ms=6,
+              label=r"$\|v_1 - s\,v_2\|/\|v_1\|$ (all $\rho$)")
+    ax.loglog(hL, [x["resid_h1_vs_h2_bulk"] for x in ladder], "o--", color=C["D"], lw=1.2, ms=5,
+              mfc="none", label=rf"same, bulk $\rho \geq {RHO_BULK}$")
+    for x in rows:
+        if x["p"] != p_main:
+            dy = 6 if x["p"] < p_main else -12
+            ax.loglog([x["h"]], [x["resid_h1_vs_h2"]], "o", color=C["psweep"], ms=7, mfc="none")
+            ax.annotate(f"p={x['p']}", (x["h"], x["resid_h1_vs_h2"]), textcoords="offset points",
+                        xytext=(7, dy), fontsize=8, color=C["psweep"])
+    anchor = ladder[0]["resid_h1_vs_h2_bulk"]
+    for q, ls in ((p_main, "--"), (p_main + 1, ":")):
+        ax.loglog(hh, anchor * 1.6 * (hh / hs.max()) ** q, ls, color="0.6", lw=1, label=rf"$h^{q}$")
+    ax.text(0.03, 0.97, f"LS slope (bulk): {slopes['resid_h1_vs_h2_below']:.2f}",
+            transform=ax.transAxes, va="top", fontsize=9)
+    ax.set_title("representation independence: $h_1$ (1-form) vs $h_2$ (2-form)")
+    for ax in axes:
+        ax.set_xlabel(r"$h = 1/(n_r - p)$")
+        ax.set_ylabel("relative error")
+        ax.grid(True, which="both", color="0.9", lw=0.6)
+        ax.legend(fontsize=8, loc="lower right")
+    fig.suptitle(f"QA vacuum, dual harmonic field: {os.path.basename(rungs[0]['geometry'])}", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(os.path.join(root, "convergence_h1.png"), dpi=150)
+    plt.close(fig)
+
     # --- residual on the zeta = 0 section of the reference -----------------
     nr, nt, nz = ref["grid"]
     d = np.linalg.norm(fr["B_w"] - fr["B_h"], axis=1).reshape(nr, nt, nz)[:, :, 0]
@@ -488,7 +647,7 @@ def plot(cli):
     fig.tight_layout()
     fig.savefig(os.path.join(root, "residual_zeta0.png"), dpi=150)
     plt.close(fig)
-    print(f"wrote {root}/convergence.json, convergence.png, residual_zeta0.png", flush=True)
+    print(f"wrote {root}/convergence.json, convergence.png, convergence_h1.png, residual_zeta0.png", flush=True)
 
 
 if __name__ == "__main__":
