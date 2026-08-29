@@ -202,11 +202,18 @@ def _periodic_symbol(row, freqs):
     on ``m`` (small ``freqs`` on one file, large on another) -- so enforce the
     known structure by symmetrising ``row`` and take the real cosine
     transform, after checking the input departed from symmetry only at
-    round-off. A genuinely non-uniform basis is not circulant and raises."""
+    round-off. A genuinely non-uniform basis is not circulant and raises.
+
+    ``collocation_matrix`` runs at the WORKING precision, so a float32
+    relaxation (every relaxation; the convergence study is float64) assembles
+    this row with ~1e-7 round-off and its raw asymmetry reaches ~3e-8 --
+    symmetrising removes exactly that antisymmetric noise. The guard admits
+    round-off to ``1e-4`` (well above float32's ~1e-7, well below the ~1e-2
+    asymmetry a genuinely non-uniform basis would show)."""
     N = len(row)
     row = np.asarray(row, dtype=np.float64)
     sym_row = 0.5 * (row + np.concatenate([row[:1], row[1:][::-1]]))
-    if np.abs(row - sym_row).max() > 1e-9 * np.abs(row).max():
+    if np.abs(row - sym_row).max() > 1e-4 * np.abs(row).max():
         raise ValueError("periodic collocation/mass row is not symmetric")
     return np.cos(2 * np.pi * np.outer(freqs, np.arange(N)) / N) @ sym_row
 

@@ -211,13 +211,16 @@ def test_periodic_symbol_symmetrises_roundoff_and_rejects_a_nonuniform_row():
     row[1] = row[-1] = 0.3
     row[2] = row[-2] = 0.05
     rng = np.random.default_rng(0)
-    noisy = row + 1e-13 * rng.standard_normal(n)          # round-off asymmetry
+    noisy = row + 3e-8 * rng.standard_normal(n)           # float32-scale round-off
     for freqs in ([-3, -2, -1, 0, 1, 2, 3], [8], list(range(-n // 2, n // 2))):
         sym = _periodic_symbol(noisy, np.asarray(freqs, float))
         assert np.isreal(sym).all() and np.isfinite(sym).all()
     # a symmetric row's symbol is the exact real cosine transform
     exact = np.cos(2 * np.pi * np.outer([1, 2], np.arange(n)) / n) @ row
     assert np.allclose(_periodic_symbol(row, [1, 2]), exact, atol=1e-14)
+    # float32 round-off is accepted (the li383 float32 relaxation regression:
+    # the float32 collocation makes the raw asymmetry ~3e-8)
+    assert np.isfinite(_periodic_symbol(row + 3e-8 * rng.standard_normal(n), [1, 2])).all()
     # a genuinely non-uniform (non-circulant) row is rejected
     bad = row.copy()
     bad[1] += 0.2
