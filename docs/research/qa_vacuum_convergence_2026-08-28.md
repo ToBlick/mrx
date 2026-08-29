@@ -311,3 +311,92 @@ Figures: `convergence_extend.png` (same-space `D`/`F` and vs-finest `E`/map ladd
 with the p-sweep overlaid), `convergence_h1.png` (`h1` self-convergence and the
 `h1`-vs-`h2` representation residual), `residual_zeta0_extend.png` (the (32,64,32)
 residual at zeta=0, max 7.9e-4, still axis-localised). JSON: `convergence_extend.json`.
+
+## Full p x resolution grid (2026-08-29, later the same day)
+
+Follow-up (Tobias): fill in the grid so every p has a full ladder, not one point.
+The angular cells are fixed per column to the p=3 ladder's value, so degree is the
+only thing that changes at a given `h`:
+`n_elements -> (n_theta, n_zeta) = 5->(16,8), 9->(24,12), 13->(32,16), 21->(48,24),
+29->(64,32)` and `n_r = n_elements + p`. 12 rungs added ((6,16,8)..(30,64,32) p1,
+(7,16,8)..(31,64,32) p2, (9,16,8)..(33,64,32) p4); ~1.8 GPU-h on one H100 each,
+float64. All merge into the same `outputs/qa_vacuum/`; figures regenerated.
+
+### D on the full grid
+
+`D = ||B_w - c h||_M / ||B_w||_M` at `h = 1/n_elements = 0.200 / 0.111 / 0.077 /
+0.048 / 0.034` (n_elements 5 / 9 / 13 / 21 / 29). `convergence_grid.png`.
+
+| p | n_el 5 | n_el 9 | n_el 13 | n_el 21 | n_el 29 | LS slope (full) | LS slope (pre-floor) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1.260e-1 | 7.442e-2 | 5.232e-2 | 3.269e-2 | 2.375e-2 | 0.95 | **0.92** |
+| 2 | 1.885e-3 | 3.949e-4 | 1.425e-4 | 8.091e-5 | 8.170e-5 | 1.84 | **2.70** |
+| 3 | 2.239e-3 | 3.816e-4 | 1.297e-4 | 8.361e-5 | 8.219e-5 | 1.91 | **2.98** |
+| 4 | 1.314e-3 | 3.599e-4 | 9.290e-5 | 7.970e-5 | 8.233e-5 | 1.65 | **2.72** |
+
+- **p=1 is not flat -- it converges at O(h^1)**, the degree rate (slope 0.92), and the
+  task-1 note's "flat at ~7e-2" was an artefact of reading a single point. The FIELD is
+  still unusable: global `D` only reaches 2.4e-2 (2.4 %) at 29 elements, and `|B|` on
+  the axis is ~4e-4 T against ~1 T (the degree-1 2-form cannot carry the axis field).
+  But the RATE is the correct O(h^p). In the bulk it is even better -- `D_bulk` 1.26e-1
+  -> 2.78e-3, slope ~2.2 -- so the p=1 defect is entirely the axis (`D_axis` 27..800):
+  bulk p=1 is a real O(h^2) field, the axis is where degree 1 fails.
+- **Every p >= 2 bottoms at the same ~8e-5 physics floor** (the reconstructed VMEC
+  field's own distance from the harmonic field of its boundary, section above), and the
+  **higher p reaches it at a coarser mesh**: p=4 is on the floor by n_el=13, p=2 and p=3
+  by n_el=21. That is the O(h^p) signature -- the steeper rate meets the floor sooner.
+- **The full-ladder LS slope hides this and even inverts it** (p=4 scores 1.65, the
+  LOWEST, because it floors earliest and spends three of five rungs on the plateau). The
+  meaningful number is the **pre-floor slope** over the three coarsest rungs, which
+  steepens cleanly with degree: **0.92 / 2.70 / 2.98 / 2.72** for p = 1 / 2 / 3 / 4 (p=4
+  is slightly compressed because its third rung, n_el=13, already touches the floor, so
+  only two of its rungs are truly pre-floor). Read the grid figure by the descent rate
+  before the plateau, not the LS fit through it.
+
+### The dual harmonic field across the grid
+
+`h1` (k=1 free) vs `h2` (k=2 dbc), the representation-independence residual
+`||v1 - s v2|| / ||v1||` of the lab-frame vectors and the M-cosine, on every rung
+(`convergence_h1.png`, right panel):
+
+- **The two representations agree on the whole grid, converging O(h^p) to ~1e-4**
+  (resid slope 2.82 along the p=3 ladder; M-cosine reaches +0.99999999 at p=3/p=4 fine,
+  and +0.9988 even for the broken p=1 field). Representation independence holds at every
+  degree; the number of nines tracks the field quality (three for p=1, eight for p>=3).
+- **The k=1 caveat sharpens: the k=1 free harmonic-FORM gate now fails on the finest
+  one-to-two rungs of every p >= 2, and worse at higher p.** `h1`'s Rayleigh ratio (PASS
+  `<= 1e-10`) degrades to 4.2e-8 (p2, n_el=29), 1.8e-5 (p3, n_el=29) and **6.4e-4** (p4,
+  n_el=29), with `|curl h1|/|h1|` rising to 4.7e-2 there. The k=2 form stays ~1e-12
+  throughout. So the k=1 free Hodge construction floors at the fixed `seq.tol` and the
+  floor grows with BOTH resolution and degree. Consequence unchanged from task 1: it
+  contaminates `h1` itself (its self-convergence `E_h1` floors, slope 2.21) but not the
+  vacuum field it carries (`resid_h1_vs_h2` at (33,64,32) p4 is still 7.2e-4, M-cosine
+  +0.99999974). If `h1` is ever needed to spectral accuracy at high p or resolution the
+  k=1 free solve needs a tighter tol or a better-conditioned construction.
+
+### A GPU-memory note (the reader/script, not the physics)
+
+The (33,64,32) p=4 rung OOMed the H100 on the first attempt -- a ~10 GiB coefficient-
+window gather in the map/projection evaluation, materialised over the whole quadrature
+grid at once (`MAP_BATCH_SIZE_INNER = 0`). Fixed by batching that evaluation: the script
+now honours `MRX_MAP_BATCH_SIZE_INNER` (exported per job) and the rung completes in
+30 min at batch 262 144. Only that one rung needs it; the default is unchanged.
+
+### What the grid adds
+
+1. p=1 converges at O(h^1) (correcting "flat/broken" -> "right rate, wrong field: the
+   axis is lost, the bulk is O(h^2)").
+2. The O(h^p) rate steepens with p in the pre-floor region (0.92 / 2.70 / 2.98 / 2.72);
+   all p >= 2 share the ~8e-5 physics floor and higher p reaches it at coarser mesh.
+   The full LS slope is not the rate -- the plateau drags it toward 2 and inverts the
+   p-ordering.
+3. Representation independence (h1 == h2) holds across the whole grid; the k=1 form's
+   own harmonic gate fails on the finest rungs of every p >= 2 (worse at higher p) while
+   the field it carries does not.
+
+Figures (regenerated on the full grid): `convergence_grid.png` (D vs h, one ladder per
+p, h^p guides, the ~8e-5 floor line -- the headline), `convergence_extend.png`
+(same-space p=3 with the faint off-p D ladders + vs-finest E/map), `convergence_h1.png`
+(h1 self-convergence and the representation residual, one ladder per p),
+`residual_zeta0_extend.png`. JSON: `convergence_extend.json` (`slopes.D_by_p`,
+`slopes.D_by_p_prefloor`, `slopes.D_floor`, per-rung `harmonic1` / `rep_independence`).

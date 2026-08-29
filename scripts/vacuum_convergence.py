@@ -174,6 +174,13 @@ def run_rung(cli):
     import numpy as np
 
     import mrx
+    # Batch the per-quadrature-point map/projection evaluation to cap peak GPU
+    # memory: the coefficient-window gather is materialised over the whole quad
+    # grid at once by default (MAP_BATCH_SIZE_INNER = 0), which OOMs the biggest
+    # p=4 rungs (a ~10 GiB window at (33,64,32)). A positive batch chunks it.
+    _mbs = os.environ.get("MRX_MAP_BATCH_SIZE_INNER")
+    if _mbs:
+        mrx.MAP_BATCH_SIZE_INNER = int(_mbs)
     from mrx.geometry import build_sequence, geometry_nfp
     from mrx.gvec import load_clebsch
     from mrx.initial_conditions import (clebsch_potential_form, divergence_norm,
@@ -503,6 +510,31 @@ def plot(cli):
         E_map_below_ref=_slope([x["h"] for x in below], [x["E_map"] for x in below]),
         E_h_below_ref_excluding_last=_slope([x["h"] for x in below[:-1]], [x["E_h"] for x in below[:-1]]),
     )
+    # The full p x resolution grid: one D ladder per p, its own LS slope. The
+    # angular cells are fixed to the p=3 ladder's value per n_elements column,
+    # so degree is the only thing that changes at a given h.
+    ps_all = sorted({x["p"] for x in rows})
+    grid_by_p = {}
+    for pv in ps_all:
+        lad = sorted((x for x in rows if x["p"] == pv), key=lambda x: -x["h"])
+        for i, x in enumerate(lad):
+            x["rate_D_p"] = _rate(lad[i - 1]["D"], lad[i - 1]["h"], x["D"], x["h"]) if i else None
+        grid_by_p[pv] = lad
+    slopes["D_by_p"] = {pv: _slope([x["h"] for x in grid_by_p[pv]], [x["D"] for x in grid_by_p[pv]])
+                        for pv in ps_all}
+    # The same-space D of every p >= 2 bottoms at the reconstructed VMEC field's
+    # own distance from the harmonic field of its boundary (~8e-5); the full LS
+    # slope is dragged toward 2 by that plateau, so it hides the O(h^p) rate and
+    # the higher p (which reaches the floor at a coarser mesh) even scores lower.
+    # The pre-floor slope, over the rungs a decade above the finest D, is the
+    # rate that steepens with p.
+    D_floor = min(x["D"] for x in rows)
+    # pre-floor rate = LS slope over the three coarsest rungs (largest h), which
+    # for every p sit above the ~8e-5 plateau; grid_by_p is sorted by -h.
+    slopes["D_by_p_prefloor"] = {
+        pv: _slope([x["h"] for x in grid_by_p[pv][:3]], [x["D"] for x in grid_by_p[pv][:3]])
+        for pv in ps_all}
+    slopes["D_floor"] = float(D_floor)
     summary = dict(reference=os.path.basename(ref["dir"]), grid=ref["grid"], rows=rows, slopes=slopes)
     with open(os.path.join(root, "convergence.json"), "w") as f:
         json.dump(summary, f, indent=1)
@@ -519,7 +551,13 @@ def plot(cli):
               f"{x['D_bulk']:10.3e} {fmt(x.get('rate_D_bulk'))} {x['D_axis']:10.3e} "
               f"{x['F_w']:10.3e} {fmt(x.get('rate_F_w'))} {x['E_h']:10.3e} {fmt(x.get('rate_E_h'))} "
               f"{x['E_w']:10.3e} {x['E_map']:10.3e} {x['c_flux_over_c_minus_1']:+9.1e}")
-    print("slopes: " + "  ".join(f"{k} {v:.2f}" for k, v in slopes.items()))
+    print("slopes: " + "  ".join(f"{k} {v:.2f}" for k, v in slopes.items()
+                                  if isinstance(v, float) and k != "D_floor"))
+    print("D LS slope per p (full grid): "
+          + "  ".join(f"p{pv} {slopes['D_by_p'][pv]:.2f}" for pv in ps_all)
+          + f"  [floor {slopes['D_floor']:.1e}]")
+    print("D pre-floor slope per p: "
+          + "  ".join(f"p{pv} {slopes['D_by_p_prefloor'][pv]:.2f}" for pv in ps_all))
 
     # --- dual harmonic field (h1) table ---------------------------------------
     print("\ndual harmonic field: k=1 free 1-form h1 vs k=2 dbc 2-form h2 (same vacuum B)")
@@ -556,18 +594,13 @@ def plot(cli):
     ax.loglog(hb, [x["E_map"] for x in below], "d-", color=C["map"], lw=1.2, ms=5,
               label=r"map: rms $|F_h-F_{ref}|/L$")
     ax.set_title(f"vs the finest rung ({summary['reference'].replace('rung_', '')})")
-    ps = sorted({x["p"] for x in rows} - {p_main})
-    for x in rows:
-        if x["p"] != p_main:
-            dy = 6 if x["p"] < p_main else -12          # p=2 above, p=4 below the marker
-            axes[0].loglog([x["h"]], [x["D"]], "o", color=C["psweep"], ms=7, mfc="none")
-            axes[0].annotate(f"p={x['p']}", (x["h"], x["D"]), textcoords="offset points",
-                             xytext=(7, dy), fontsize=8, color=C["psweep"])
-            axes[1].loglog([x["h"]], [x["E_h"]], "o", color=C["psweep"], ms=7, mfc="none")
-            axes[1].annotate(f"p={x['p']}", (x["h"], x["E_h"]), textcoords="offset points",
-                             xytext=(7, dy), fontsize=8, color=C["psweep"])
-    if ps:
-        axes[0].plot([], [], "o", color=C["psweep"], mfc="none", label="p-sweep, 9 radial elements")
+    # the other p ladders of D, faint, for context (the dedicated grid is
+    # convergence_grid.png)
+    PCOL = {1: "#D55E00", 2: "#E69F00", 3: "#0072B2", 4: "#009E73"}
+    for pv in sorted({x["p"] for x in rows} - {p_main}):
+        lad = grid_by_p[pv]
+        axes[0].loglog([x["h"] for x in lad], [x["D"] for x in lad], "o:", color=PCOL.get(pv, "0.5"),
+                       lw=1.0, ms=4, mfc="none", alpha=0.9, label=f"$D$, p = {pv}")
     for ax, (s_name, s_val), anchor in ((axes[0], ("D bulk", slopes["D_bulk_all"]), ladder[0]["D"]),
                                         (axes[1], ("E_h", slopes["E_h_below_ref"]), below[0]["E_h"] if below else 1.0)):
         hh = np.array([hs.min(), hs.max()])
@@ -583,6 +616,37 @@ def plot(cli):
     fig.savefig(os.path.join(root, "convergence.png"), dpi=150)
     plt.close(fig)
 
+    # --- full p x resolution grid: D vs h, one ladder per p -------------------
+    figg, axg = plt.subplots(figsize=(6.6, 5.4))
+    hmin = min(x["h"] for x in rows)
+    for pv in ps_all:
+        lad = grid_by_p[pv]
+        axg.loglog([x["h"] for x in lad], [x["D"] for x in lad], "o-", color=PCOL.get(pv, "0.3"),
+                   lw=1.7, ms=6,
+                   label=f"p = {pv}  (pre-floor slope {slopes['D_by_p_prefloor'][pv]:.2f})")
+    axg.axhline(slopes["D_floor"], ls="-", color="0.5", lw=1.0, alpha=0.7)
+    axg.text(0.02, slopes["D_floor"] * 1.15, rf"physics floor $\approx${slopes['D_floor']:.1e}",
+             transform=axg.get_yaxis_transform(), fontsize=8, color="0.4", va="bottom")
+    # h^p guide anchored to each ladder's coarsest rung; p=1 is degree-limited
+    # (flat) so it gets no guide.
+    for pv in ps_all:
+        if pv == 1:
+            continue
+        lad = grid_by_p[pv]
+        ah = max(x["h"] for x in lad)
+        aD = next(x["D"] for x in lad if x["h"] == ah)
+        gh = np.array([hmin, ah])
+        axg.loglog(gh, aD * (gh / ah) ** pv, ":", color=PCOL.get(pv, "0.6"), lw=1.0)
+    axg.set_xlabel(r"$h = 1/(n_r - p) = 1/n_{\mathrm{elements}}$")
+    axg.set_ylabel(r"$D = \|B_w - c\,h\|_M / \|B_w\|_M$")
+    axg.set_title("QA vacuum: $D$ vs $h$ on the full $p \\times$ resolution grid\n"
+                  "(dotted = $h^p$ guide; angular cells fixed per column)", fontsize=10)
+    axg.grid(True, which="both", color="0.9", lw=0.6)
+    axg.legend(fontsize=9, loc="lower right")
+    figg.tight_layout()
+    figg.savefig(os.path.join(root, "convergence_grid.png"), dpi=150)
+    plt.close(figg)
+
     # --- dual harmonic field figure -------------------------------------------
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.6))
     ax = axes[0]
@@ -590,12 +654,10 @@ def plot(cli):
               label=r"$E_{h_1}$: 1-form $h_1$ vs finest")
     ax.loglog(hb, [x["E_h"] for x in below], "^--", color=C["Ew"], lw=1.2, ms=5, mfc="none",
               label=r"$E_h$: 2-form $h_2$ vs finest")
-    for x in rows:
-        if x["p"] != p_main:
-            dy = 6 if x["p"] < p_main else -12
-            ax.loglog([x["h"]], [x["E_h1"]], "o", color=C["psweep"], ms=7, mfc="none")
-            ax.annotate(f"p={x['p']}", (x["h"], x["E_h1"]), textcoords="offset points",
-                        xytext=(7, dy), fontsize=8, color=C["psweep"])
+    for pv in sorted({x["p"] for x in rows} - {p_main}):
+        lad = grid_by_p[pv]
+        ax.loglog([x["h"] for x in lad], [x["E_h1"] for x in lad], "o:", color=PCOL.get(pv, "0.5"),
+                  lw=1.0, ms=4, mfc="none", alpha=0.9, label=f"$E_{{h_1}}$, p = {pv}")
     anchor = below[0]["E_h1"] if below else 1.0
     hh = np.array([hs.min(), hs.max()])
     for q, ls in ((p_main, "--"), (p_main + 1, ":")):
@@ -609,12 +671,11 @@ def plot(cli):
               label=r"$\|v_1 - s\,v_2\|/\|v_1\|$ (all $\rho$)")
     ax.loglog(hL, [x["resid_h1_vs_h2_bulk"] for x in ladder], "o--", color=C["D"], lw=1.2, ms=5,
               mfc="none", label=rf"same, bulk $\rho \geq {RHO_BULK}$")
-    for x in rows:
-        if x["p"] != p_main:
-            dy = 6 if x["p"] < p_main else -12
-            ax.loglog([x["h"]], [x["resid_h1_vs_h2"]], "o", color=C["psweep"], ms=7, mfc="none")
-            ax.annotate(f"p={x['p']}", (x["h"], x["resid_h1_vs_h2"]), textcoords="offset points",
-                        xytext=(7, dy), fontsize=8, color=C["psweep"])
+    for pv in sorted({x["p"] for x in rows} - {p_main}):
+        lad = grid_by_p[pv]
+        ax.loglog([x["h"] for x in lad], [x["resid_h1_vs_h2"] for x in lad], "o:",
+                  color=PCOL.get(pv, "0.5"), lw=1.0, ms=4, mfc="none", alpha=0.9,
+                  label=f"resid, p = {pv}")
     anchor = ladder[0]["resid_h1_vs_h2_bulk"]
     for q, ls in ((p_main, "--"), (p_main + 1, ":")):
         ax.loglog(hh, anchor * 1.6 * (hh / hs.max()) ** q, ls, color="0.6", lw=1, label=rf"$h^{q}$")
@@ -647,7 +708,7 @@ def plot(cli):
     fig.tight_layout()
     fig.savefig(os.path.join(root, "residual_zeta0.png"), dpi=150)
     plt.close(fig)
-    print(f"wrote {root}/convergence.json, convergence.png, convergence_h1.png, residual_zeta0.png", flush=True)
+    print(f"wrote {root}/convergence.json, convergence.png, convergence_grid.png, convergence_h1.png, residual_zeta0.png", flush=True)
 
 
 if __name__ == "__main__":
