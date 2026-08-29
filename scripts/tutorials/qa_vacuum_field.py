@@ -1,20 +1,27 @@
-"""Tutorial 3: the vacuum field of the W7-X domain.
+"""Tutorial 3: the vacuum field of the QA domain -- its own equilibrium.
 
 Inside a perfectly conducting wall the current-free, divergence-free field
 with ``B . n = 0`` and one unit of toroidal flux is the harmonic 2-form of
 the Dirichlet de Rham complex: ``curl B = 0``, ``div B = 0``, tangential to
-the wall. MRX builds it by a direct Hodge decomposition of a seed field
+the wall. QA (``LandremanPaul2021_QA``) is a **vacuum** equilibrium -- its
+pressure is zero and its current vanishes -- so this harmonic 2-form *is*
+the equilibrium field of the loaded state, reconstructed here from the
+bounded geometry alone, with no reference to the field the file stored.
+
+MRX builds it by a direct Hodge decomposition of a seed field
 (``mrx.nullspace.compute_nullspaces``) -- two Hodge solves, no eigenvalue
 iteration -- and stores it on the sequence's operators, where the Leray
 projection and the helicity of the relaxation are deflated against it.
 
-This script builds it, verifies ``div``, ``curl`` and the Rayleigh quotient
-of the Hodge Laplacian, draws ``|B|`` on the torus (the 2-form pushed
-forward by Piola), and traces a Poincare section with its rotational
-transform. The relaxation runs of ``scripts/relax.py --ic dzeta`` land on
-this field.
+The harmonic-form ratio ``||curl B|| / ||B||`` and the Rayleigh quotient of
+the Hodge Laplacian must reach round-off (~1e-10), which needs float64: run
+this script with ``MRX_DTYPE=float64`` (the package default), never float32.
 
-    python -u scripts/tutorials/w7x_vacuum_field.py
+This script builds the field, verifies ``div``, ``curl`` and the Rayleigh
+quotient, draws ``|B|`` on the torus (the 2-form pushed forward by Piola),
+and traces a Poincare section with its rotational transform.
+
+    MRX_DTYPE=float64 python -u scripts/tutorials/qa_vacuum_field.py
 """
 from __future__ import annotations
 
@@ -24,14 +31,14 @@ import os
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--geometry", default="data/GVEC_State_final.dat",
-                    help="a GVEC state file (.dat) or a VMEC wout (.nc)")
-    ap.add_argument("--ns", default="12,24,24")
+    ap.add_argument("--geometry", default="data/wout_LandremanPaul2021_QA_lowres.nc",
+                    help="a VMEC wout (.nc) or a GVEC state file (.dat)")
+    ap.add_argument("--ns", default="12,24,12")
     ap.add_argument("--p", type=int, default=3)
     ap.add_argument("--cuts", type=int, default=6)
     ap.add_argument("--periods", type=int, default=200, help="field periods per traced line")
     ap.add_argument("--seeds", type=int, default=24)
-    ap.add_argument("--out", default="outputs/tutorials/w7x_vacuum_field")
+    ap.add_argument("--out", default="outputs/tutorials/qa_vacuum_field")
     cli = ap.parse_args()
     ns = tuple(int(v) for v in cli.ns.split(","))
     os.makedirs(cli.out, exist_ok=True)
@@ -57,9 +64,14 @@ def main():
     B = get_nullspace(seq.get_operators(), 2, True)[0]
     B = B / float(seq.l2_norm(B, 2))
     _, _, J, _, _ = compute_force(B, seq)
+    ratio = float(seq.l2_norm(J, 1))
+    rayleigh = float(harmonic_rayleigh(seq, B, 2))
     print(f"[vacuum] ||div B|| = {divergence_norm(seq, B):.2e}, "
-          f"||curl B|| / ||B|| = {float(seq.l2_norm(J, 1)):.2e}, "
-          f"Rayleigh quotient of the Hodge Laplacian = {float(harmonic_rayleigh(seq, B, 2)):.2e}")
+          f"||curl B|| / ||B|| = {ratio:.2e}, "
+          f"Rayleigh quotient of the Hodge Laplacian = {rayleigh:.2e}")
+    if ratio > 1e-8 or rayleigh > 1e-8:
+        print("[vacuum] WARNING: harmonic-form residual is not at round-off -- "
+              "run in float64 (MRX_DTYPE=float64)")
 
     # --- |B| on the torus -----------------------------------------------------
     B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 2)

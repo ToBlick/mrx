@@ -26,7 +26,7 @@ If MRX is useful for your work, cite the
 :caption: Guides
 
 getting_started
-w7x_tutorials
+tutorials
 poisson
 relaxation
 cluster

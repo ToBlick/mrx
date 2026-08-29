@@ -1,13 +1,16 @@
-"""Tutorial 2: a Poisson problem on the W7-X domain.
+"""Tutorial 2: a scalar Poisson problem on the QA domain.
 
 Solve ``-Delta u = f`` with ``u = 0`` on the wall (the last closed flux
-surface of the equilibrium) and the heat source ``f = 1 - rho^2`` in the logical
-radius, using 0-forms. On a mapped domain the Laplacian carries the metric
-of the map: ``-Delta u = f`` in the physical volume is the weak form
+surface of the QA equilibrium) and the source ``f = 1 - rho^2`` in the
+logical radius, using 0-forms. On a mapped domain the Laplacian carries the
+metric of the map: ``-Delta u = f`` in the physical volume is the weak form
 ``int grad u . grad v dV = int f v dV`` assembled with the spline metric,
-and the solve is the preconditioned CG of ``seq.apply_inverse_laplacian``.
+and the solve is the preconditioned CG behind
+``seq.apply_inverse_laplacian``. This is the same discrete Laplacian the
+vacuum field and the relaxation lean on, exercised here on its simplest
+scalar problem.
 
-    python -u scripts/tutorials/w7x_poisson.py
+    python -u scripts/tutorials/qa_poisson.py
 """
 from __future__ import annotations
 
@@ -17,12 +20,12 @@ import os
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--geometry", default="data/GVEC_State_final.dat",
-                    help="a GVEC state file (.dat) or a VMEC wout (.nc)")
-    ap.add_argument("--ns", default="12,24,24")
+    ap.add_argument("--geometry", default="data/wout_LandremanPaul2021_QA_lowres.nc",
+                    help="a VMEC wout (.nc) or a GVEC state file (.dat)")
+    ap.add_argument("--ns", default="12,24,12")
     ap.add_argument("--p", type=int, default=3)
     ap.add_argument("--cuts", type=int, default=6)
-    ap.add_argument("--out", default="outputs/tutorials/w7x_poisson")
+    ap.add_argument("--out", default="outputs/tutorials/qa_poisson")
     cli = ap.parse_args()
     ns = tuple(int(v) for v in cli.ns.split(","))
     os.makedirs(cli.out, exist_ok=True)
