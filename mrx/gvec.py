@@ -190,15 +190,25 @@ def _det_DF(map_func, n=64, seed=0):
 
 
 def _periodic_symbol(row, freqs):
-    """``sum_l row[l] exp(-2 pi i m l / N)`` for every ``m`` in ``freqs``: the
-    eigenvalue of the circulant matrix with first column ``row`` on the
-    Fourier mode ``m``. Real for the symmetric rows of a uniform periodic
-    B-spline basis (the imaginary part is checked to be round-off)."""
+    """Real Fourier symbol ``sum_l row[l] cos(2 pi m l / N)`` of the circulant
+    matrix with first column ``row``, evaluated at each mode ``m`` in ``freqs``.
+
+    ``row`` is the first column of ``M = B^T W B`` for a uniform periodic
+    B-spline basis, which is symmetric (``M = M^T``) AND circulant (the basis
+    is shift invariant), so ``row[l] = row[N - l]`` exactly and every
+    eigenvalue is real. The Gauss-quadrature assembly leaves that symmetry
+    exact only to round-off, and a raw complex transform of the round-off-
+    asymmetric row then carries a spurious imaginary part whose size depends
+    on ``m`` (small ``freqs`` on one file, large on another) -- so enforce the
+    known structure by symmetrising ``row`` and take the real cosine
+    transform, after checking the input departed from symmetry only at
+    round-off. A genuinely non-uniform basis is not circulant and raises."""
     N = len(row)
-    sym = np.exp(-2j * np.pi * np.outer(freqs, np.arange(N)) / N) @ row
-    if np.abs(sym.imag).max() > 1e-12 * np.abs(sym).max():
+    row = np.asarray(row, dtype=np.float64)
+    sym_row = 0.5 * (row + np.concatenate([row[:1], row[1:][::-1]]))
+    if np.abs(row - sym_row).max() > 1e-9 * np.abs(row).max():
         raise ValueError("periodic collocation/mass row is not symmetric")
-    return sym.real
+    return np.cos(2 * np.pi * np.outer(freqs, np.arange(N)) / N) @ sym_row
 
 
 def _angular_symbol(basis, freqs):

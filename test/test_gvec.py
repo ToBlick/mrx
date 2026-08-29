@@ -194,3 +194,32 @@ def test_knots_at_data_make_the_refined_sample_interpolable():
     T_uni = np.concatenate([np.zeros(p + 1), np.linspace(0, 1, n - p + 1)[1:-1], np.ones(p + 1)])
     A_uni = BSpline.design_matrix(samples["refined"], T_uni, p).toarray()
     assert np.linalg.cond(A_uni) > 1e3 * max(conds.values())
+
+
+def test_periodic_symbol_symmetrises_roundoff_and_rejects_a_nonuniform_row():
+    """The mass row of a uniform periodic B-spline is symmetric-circulant, so
+    its Fourier symbol is real; the assembly leaves the symmetry exact only to
+    round-off. `_periodic_symbol` must accept the round-off-asymmetric row for
+    ANY frequency (the li383 nfp=3 (16,32,16) regression: integer per-period
+    modes in [-3, 3] tripped the old exp+imag check that QA's larger modes on
+    the identical row did not) and reject a genuinely non-circulant row."""
+    import numpy as np
+    from mrx.gvec import _periodic_symbol
+    n = 16
+    row = np.zeros(n)
+    row[0] = 1.0
+    row[1] = row[-1] = 0.3
+    row[2] = row[-2] = 0.05
+    rng = np.random.default_rng(0)
+    noisy = row + 1e-13 * rng.standard_normal(n)          # round-off asymmetry
+    for freqs in ([-3, -2, -1, 0, 1, 2, 3], [8], list(range(-n // 2, n // 2))):
+        sym = _periodic_symbol(noisy, np.asarray(freqs, float))
+        assert np.isreal(sym).all() and np.isfinite(sym).all()
+    # a symmetric row's symbol is the exact real cosine transform
+    exact = np.cos(2 * np.pi * np.outer([1, 2], np.arange(n)) / n) @ row
+    assert np.allclose(_periodic_symbol(row, [1, 2]), exact, atol=1e-14)
+    # a genuinely non-uniform (non-circulant) row is rejected
+    bad = row.copy()
+    bad[1] += 0.2
+    with pytest.raises(ValueError, match="not symmetric"):
+        _periodic_symbol(bad, [1])
