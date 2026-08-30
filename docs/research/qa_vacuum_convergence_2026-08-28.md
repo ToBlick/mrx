@@ -400,3 +400,131 @@ p, h^p guides, the ~8e-5 floor line -- the headline), `convergence_extend.png`
 (h1 self-convergence and the representation residual, one ladder per p),
 `residual_zeta0_extend.png`. JSON: `convergence_extend.json` (`slopes.D_by_p`,
 `slopes.D_by_p_prefloor`, `slopes.D_floor`, per-rung `harmonic1` / `rep_independence`).
+
+## Densified grid + the common-grid resolution fix (2026-08-30)
+
+Follow-up (Tobias): the ladder (n_el 5,9,13,21,29) was too sparse to read the slope
+or the elbow onto the ~8e-5 floor. Densified to **n_el = 5, 7, 9, 11, 13, 17, 21, 25,
+29, 37, 45** for p = 2, 3, 4 (p=1 skipped -- its O(h) line and broken field are already
+clear), angular fixed per column `(n_theta, n_zeta) = (2(n_el+3), n_el+3)`, `n_r = n_el+p`.
+18 new rungs, ~9 GPU-h (the (49,96,48) p4 rung alone is 112 min: a 59-min k=1 Hodge solve
+plus the batch-slowed post-processing). Batching env `MRX_MAP_BATCH_SIZE_INNER` as before.
+
+### The common evaluation grid had to be raised (it was under-resolving the fine end)
+
+The cross-resolution `E` comparisons sample every rung on the fixed common grid; that
+grid must OUT-resolve the finest rung or the finest field is under-sampled and `E` is
+corrupted at the fine end. With the finest rungs now ~(49,96,48), the old default
+`(48,96,48)` does not out-resolve them. Added a `--regrid` mode to
+`vacuum_convergence.py` (rebuilds only the geometry + bases, re-pushes the STORED DoFs
+onto a new `--grid`, no Hodge solve -- cheap) and re-evaluated **all 38 rungs on
+`--grid 192,288,144`** (radial 192 Gauss = 4x the finest 48 DoFs; angular 288/144 = 3x,
+still spectrally exact for the mpol=ntor=8 field). Regrid is exact: `D_grid` reproduces
+the same-space `D` to all digits at every rung.
+
+**Grid-independence check** (E_h of three p=3 rungs vs the p=3 finest, at the grid and
+finer), the number Tobias asked for:
+
+| test rung | E_h @128,192,96 | @192,288,144 | @256,384,192 |
+|---|---|---|---|
+| (8,16,8) coarse | 6.434e-3 | 6.433e-3 (0.00%) | -- |
+| (20,40,20) mid | 1.885e-4 | 1.884e-4 (0.01%) | -- |
+| (40,80,40) finest pair | 2.605e-5 | 2.459e-5 (−5.6%) | 2.423e-5 (−1.4%) |
+
+Coarse and mid pairs are grid-independent to <0.01% at any of these grids. Only the
+finest PAIR (n_el 37 vs the n_el 45 reference) -- where the difference field is ~2e-5
+relative and hardest to sample -- is grid-sensitive: `(48,96,48)` was ~7% high there,
+`192,288,144` is within ~1.5% of the 2x grid. **We therefore report on `192,288,144`**;
+the self-convergence slopes below shift by at most ~0.1 (p2 1.79->1.67 on the coarser
+grid) and are stable on it. **Caveat on the earlier sections of this note:** they used
+`(48,96,48)` with a `(32,64,32)` finest -- only 1.5x radial margin -- so their
+finest-PAIR `E` values (the `(24,48,24)->(32,64,32)` pair, already flagged there as
+"biased low") carry the same ~5-7% grid caveat; their SLOPES, dominated by the
+grid-independent coarser pairs, stand.
+
+### The dense D grid
+
+`D = ||B_w - c h||_M / ||B_w||_M`, grid-independent (same-space). `convergence_grid.png`.
+
+| p | n_el 5 | 7 | 9 | 11 | 13 | 17 | 21 | 25 | 29 | 37 | 45 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2 | 1.89e-3 | 8.67e-4 | 3.95e-4 | 1.87e-4 | 1.42e-4 | 1.04e-4 | 8.09e-5 | 8.03e-5 | 8.17e-5 | 8.35e-5 | 8.40e-5 |
+| 3 | 2.24e-3 | 1.02e-3 | 3.82e-4 | 1.97e-4 | 1.30e-4 | 8.28e-5 | 8.36e-5 | 8.03e-5 | 8.22e-5 | 8.37e-5 | 8.41e-5 |
+| 4 | 1.31e-3 | 9.11e-4 | 3.60e-4 | 1.25e-4 | 9.29e-5 | 9.69e-5 | 7.97e-5 | 8.35e-5 | 8.23e-5 | 8.39e-5 | 8.42e-5 |
+
+(h = 1/n_el = 0.200 down to 0.0222.) Pre-elbow slope (fit over rungs with D > 2x the
+floor 8.0e-5) and the elbow (first on-floor n_el):
+
+| p | pre-elbow slope | fit window (n_el) | elbow at n_el |
+|---|---|---|---|
+| 1 | 0.95 | 5–29 (never elbows) | — |
+| 2 | **2.91** | 5–11 | 13 |
+| 3 | **3.13** | 5–11 | 13 |
+| 4 | 2.14 | 5–9 | 11 |
+
+- **The elbow onto the ~8e-5 floor is now resolved per p, and it moves to COARSER mesh
+  as p rises** (p2/p3 elbow at n_el 13, p4 already at n_el 11). The pre-elbow descent
+  steepens with degree (p2 2.91, p3 3.13).
+- **p=4 reaches the floor so fast there is no clean pre-elbow window** (only n_el 5,7,9
+  sit above 2x the floor, and n_el 9 is already ~4.5x it), so its D-fit slope (2.14) is
+  compressed -- not a real O(h^4) failure. The self-convergence below measures p=4
+  cleanly instead.
+
+### Per-p self-convergence (each p vs its OWN finest, n_el = 45)
+
+`B_w` on the common grid against that p's own finest rung; free of the single-global-
+reference bias. `convergence_selfconv.png`. This is the clean O(h^p) statement:
+
+| p | self-conv slope (E_w) | tracks |
+|---|---|---|
+| 1 | 0.89 | h^1 |
+| 2 | 1.67 | ~h^2 |
+| 3 | 2.83 | h^3 |
+| 4 | 3.46 | ~h^4 |
+
+The rate steepens cleanly and monotonically with degree, each ladder hugging its `h^p`
+guide over the whole window (p2 1.6e-2->5.9e-4, p3 6.8e-3->2.5e-5, p4 4.4e-3->5.0e-6
+across n_el 5->37). The slopes sit a little below the integer p only because the finite
+n_el=45 reference biases the last pair -- exactly the effect the grid-resolution fix
+minimised. **This is the figure to read for the convergence order; the D grid shows the
+approach to the physics floor.**
+
+### The dual harmonic field: the k=1 caveat is now the dominant fine-end effect
+
+The denser ladder and the finer reference expose what the coarse sweep could not: the
+k=1 free harmonic-FORM solve does not merely fail the gate on the last rung -- it makes
+`h1` NON-convergent, and the representation residual TURNS UP. Along the p=3 ladder:
+
+| n_el | 5 | 9 | 13 | 17 | 21 | 25 | 29 | 37 | 45 |
+|---|---|---|---|---|---|---|---|---|---|
+| ratio h1 | 6e-14 | 2e-13 | 3e-13 | 1e-10 | 7e-8 | 2e-6 | 2e-5 | 4e-4 | 3e-3 |
+| resid h1↔h2 | 5.7e-3 | 1.3e-3 | 4.1e-4 | 1.9e-4 | 1.0e-4 | **7.4e-5** | 1.2e-4 | 5.6e-4 | 1.7e-3 |
+
+- The two representations agree BEST at n_el ≈ 25 (residual 7.4e-5, M-cosine
+  +0.999999997, nine 9s) and then DIVERGE at finer meshes, because the k=1 form's
+  Rayleigh ratio climbs past the 1e-10 gate at n_el ≈ 17 and reaches 3e-3 (|curl h1|/|h1|
+  = 0.1) at n_el = 45. `h1` itself no longer converges (`E_h1` slope ~0.25, flat). The
+  earlier note's "same field to eight nines, resid O(h^3)" was the LEFT side of this
+  minimum (its finest was n_el 29); it is right there but is not the whole story.
+- `h2` (k=2 dbc) stays at ratio ~1e-12 throughout, and `B_w` self-converges cleanly
+  (above), so this is purely the k=1 free Hodge construction at fixed `seq.tol`, not the
+  physics. Anyone using `h1` at n_el ≳ 20 needs a tighter k=1 solve; for the vacuum field
+  itself use `h2` or `B_w`.
+
+### What the densification adds
+
+1. The D elbow onto the ~8e-5 floor is resolved and moves to coarser mesh with p; the
+   pre-elbow slope steepens (p2 2.91, p3 3.13); p4 floors too fast to fit in D.
+2. Clean per-p self-convergence of `B_w`: **0.89 / 1.67 / 2.83 / 3.46** for p = 1..4 --
+   textbook O(h^p) steepening, now that the reference is n_el=45 and the common grid
+   (192,288,144) out-resolves it.
+3. The common eval grid had to be raised from (48,96,48) to (192,288,144); grid-
+   independence verified (<0.01% coarse/mid, ~1.5% at the finest pair). Earlier sections'
+   finest-pair E values carry a ~5-7% caveat; their slopes stand.
+4. The k=1 free harmonic form's representation residual has a MINIMUM at n_el≈25 and
+   rises after -- the k=1 solve, not the physics, is the fine-end limit for `h1`.
+
+Figures (on the 192,288,144 grid): `convergence_grid.png` (dense D vs h, per-p pre-elbow
+slope fits + floor line -- the elbow figure), `convergence_selfconv.png` (per-p
+self-convergence of `B_w`, the clean O(h^p)), `convergence_h1.png` (the h1 turnaround),
+`convergence_extend.png`, `residual_zeta0_extend.png`. JSON: `convergence_extend.json`.

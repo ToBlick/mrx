@@ -76,6 +76,10 @@ def parse_args(argv=None):
     ap.add_argument("--trace-periods", type=int, default=200)
     ap.add_argument("--out", default="outputs/qa_vacuum")
     ap.add_argument("--plot", default=None, help="merge the rungs under this directory and plot")
+    ap.add_argument("--regrid", default=None,
+                    help="rung dir: re-evaluate its stored DoFs on --grid and rewrite "
+                         "fields.npz (rebuilds only the geometry, no nullspace solve). Use "
+                         "when --grid must be raised to out-resolve the finest rung.")
     return ap.parse_args(argv)
 
 
@@ -392,6 +396,63 @@ def run_rung(cli):
 
 
 # ---------------------------------------------------------------------------
+# Re-evaluate one rung's stored DoFs on a new common grid
+# ---------------------------------------------------------------------------
+
+def regrid_rung(cli):
+    """Re-push a rung's stored 2-form/1-form DoFs onto ``--grid`` and rewrite
+    ``fields.npz`` in place, without recomputing the harmonic forms.
+
+    The cross-resolution ``E`` comparisons sample every rung on the fixed
+    common grid, so that grid must OUT-resolve the finest rung or the fine end
+    is under-sampled. Raising ``--grid`` then means re-evaluating every rung on
+    it. Only the geometry (map + bases) is rebuilt here -- the expensive Hodge
+    solve is skipped; the DoFs (``B_w_dof``, ``h_dof``, ``h1_dof`` and the
+    scales ``c``, ``c1``) are read back from the rung's own ``fields.npz``.
+    """
+    import time as _t
+    import numpy as np
+
+    import mrx
+    _mbs = os.environ.get("MRX_MAP_BATCH_SIZE_INNER")
+    if _mbs:
+        mrx.MAP_BATCH_SIZE_INNER = int(_mbs)
+    from mrx.geometry import build_sequence
+
+    d = cli.regrid
+    with open(os.path.join(d, "result.json")) as f:
+        res = json.load(f)
+    ns, p = tuple(res["ns"]), res["p"]
+    npz = dict(np.load(os.path.join(d, "fields.npz")))
+    c, c1 = float(npz["c"]), float(npz["c1"])
+    t0 = _t.perf_counter()
+    seq, _ = build_sequence(res["geometry"], ns, p, cli.maxiter, tol=cli.tol)
+    grid = [int(v) for v in cli.grid.split(",")]
+    pts, w, axes = common_grid(grid)
+    B_w_xyz, X, J = pushforward_on_grid(seq, npz["B_w_dof"], pts, k=2, dirichlet=True)
+    B_h_xyz, _, _ = pushforward_on_grid(seq, c * npz["h_dof"], pts, k=2, dirichlet=True)
+    B_h1_xyz, _, _ = pushforward_on_grid(seq, c1 * npz["h1_dof"], pts, k=1, dirichlet=False)
+    wJ = w * J
+    nBw = float(np.sqrt(np.sum(wJ * np.sum(B_w_xyz ** 2, 1))))
+    D_grid = float(np.sqrt(np.sum(wJ * np.sum((B_w_xyz - B_h_xyz) ** 2, 1))) / nBw)
+    D_grid_h1 = float(np.sqrt(np.sum(wJ * np.sum((B_w_xyz - B_h1_xyz) ** 2, 1))) / nBw)
+    ax_pts = np.stack([np.full(16, 0.01), (np.arange(16) + 0.5) / 16, np.zeros(16)], 1)
+    B_ax, _, _ = pushforward_on_grid(seq, npz["B_w_dof"], ax_pts, k=2, dirichlet=True)
+    res.update(grid=grid, D_grid=D_grid, D_grid_h1=D_grid_h1,
+               B_axis_w=float(np.mean(np.linalg.norm(B_ax, axis=1))),
+               volume_grid=float(np.sum(wJ)), B_norm_grid=nBw,
+               regridded_from=res.get("grid"))
+    np.savez_compressed(os.path.join(d, "fields.npz"),
+                        B_w_dof=npz["B_w_dof"], h_dof=npz["h_dof"], h1_dof=npz["h1_dof"],
+                        c=c, c1=c1, B_w=B_w_xyz, B_h=B_h_xyz, B_h1=B_h1_xyz,
+                        x=X, J=J, w=w, pts=pts, **axes)
+    with open(os.path.join(d, "result.json"), "w") as f:
+        json.dump(res, f, indent=1)
+    print(f"regridded {os.path.basename(d)} to {grid}: D_grid {D_grid:.4e} "
+          f"(D {res['D']:.4e}), {len(pts)} pts, {_t.perf_counter() - t0:.0f}s", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # Merge and plot
 # ---------------------------------------------------------------------------
 
@@ -465,7 +526,7 @@ def plot(cli):
         dx = np.linalg.norm(fz["x"] - fr["x"], axis=1)
         E_map = float(np.sqrt(np.sum(wJ * dx ** 2) / np.sum(wJ)) / Lref)
         E_map_max = float(dx.max() / Lref)
-        rows.append(dict(tag=os.path.basename(r["dir"]), ns=r["ns"], p=r["p"], h=r["h"],
+        rows.append(dict(tag=os.path.basename(r["dir"]), dir=r["dir"], ns=r["ns"], p=r["p"], h=r["h"],
                          n2=r["n2"], harmonic_ratio=r["harmonic"]["ratio"],
                          gate=r["harmonic"]["gate_1e_10"], D=r["D"], D_grid=r["D_grid"],
                          c=r["c"], c_flux=r["c_flux"], c_flux_over_c_minus_1=r["c_flux_over_c_minus_1"],
@@ -528,13 +589,57 @@ def plot(cli):
     # the higher p (which reaches the floor at a coarser mesh) even scores lower.
     # The pre-floor slope, over the rungs a decade above the finest D, is the
     # rate that steepens with p.
+    # --- elbow detection: the same-space D of every p bottoms at the shared
+    # ~8e-5 physics floor. Fit each p's convergence slope over ONLY the
+    # pre-elbow rungs (D above ELBOW_FACTOR x the floor) and record the fitted
+    # n_elements window and where the elbow (first on-floor rung) sits.
     D_floor = min(x["D"] for x in rows)
-    # pre-floor rate = LS slope over the three coarsest rungs (largest h), which
-    # for every p sit above the ~8e-5 plateau; grid_by_p is sorted by -h.
-    slopes["D_by_p_prefloor"] = {
-        pv: _slope([x["h"] for x in grid_by_p[pv][:3]], [x["D"] for x in grid_by_p[pv][:3]])
-        for pv in ps_all}
+    ELBOW_FACTOR = 2.0
     slopes["D_floor"] = float(D_floor)
+    slopes["elbow_factor"] = ELBOW_FACTOR
+    slopes["D_by_p_preelbow"] = {}
+    slopes["preelbow_window"] = {}
+    slopes["elbow_nel"] = {}
+    for pv in ps_all:
+        lad = grid_by_p[pv]
+        pre = [x for x in lad if x["D"] > ELBOW_FACTOR * D_floor] or lad[:2]
+        slopes["D_by_p_preelbow"][pv] = _slope([x["h"] for x in pre], [x["D"] for x in pre])
+        nel = sorted(x["ns"][0] - pv for x in pre)
+        slopes["preelbow_window"][pv] = [nel[0], nel[-1]]
+        onfloor = [x["ns"][0] - pv for x in lad if x["D"] <= ELBOW_FACTOR * D_floor]
+        slopes["elbow_nel"][pv] = min(onfloor) if onfloor else None
+    slopes["D_by_p_prefloor"] = slopes["D_by_p_preelbow"]     # alias for the note
+
+    # --- per-p self-convergence: each p's field against its OWN finest rung
+    # (now n_el up to 45), so the fine end is no longer pinned to one global
+    # reference. E on the common 48x96x48 grid, that p's finest as reference.
+    slopes["selfconv_Ew_by_p"] = {}
+    slopes["selfconv_Eh_by_p"] = {}
+    slopes["selfconv_ref_nel"] = {}
+    for pv in ps_all:
+        lad = grid_by_p[pv]
+        rp = lad[-1]                                          # finest rung of this p
+        fp = np.load(os.path.join(rp["dir"], "fields.npz"))
+        wJp = fp["w"] * fp["J"]
+        nBp = np.sqrt(np.sum(wJp * np.sum(fp["B_w"] ** 2, 1)))
+        nHp = np.sqrt(np.sum(wJp * np.sum(fp["B_h"] ** 2, 1)))
+        below_p = []
+        for x in lad:
+            if x["dir"] == rp["dir"]:
+                x["E_w_ownp"], x["E_h_ownp"], x["is_ref_ownp"] = 0.0, 0.0, True
+                continue
+            fx = np.load(os.path.join(x["dir"], "fields.npz"))
+            x["E_w_ownp"] = float(np.sqrt(np.sum(wJp * np.sum((fx["B_w"] - fp["B_w"]) ** 2, 1))) / nBp)
+            x["E_h_ownp"] = float(np.sqrt(np.sum(wJp * np.sum((fx["B_h"] - fp["B_h"]) ** 2, 1))) / nHp)
+            x["is_ref_ownp"] = False
+            below_p.append(x)
+        for i, x in enumerate(sorted(below_p, key=lambda z: -z["h"])):
+            prev = sorted(below_p, key=lambda z: -z["h"])[i - 1] if i else None
+            x["rate_E_w_ownp"] = _rate(prev["E_w_ownp"], prev["h"], x["E_w_ownp"], x["h"]) if prev else None
+        hh_p = [x["h"] for x in below_p]
+        slopes["selfconv_Ew_by_p"][pv] = _slope(hh_p, [x["E_w_ownp"] for x in below_p]) if len(below_p) > 1 else float("nan")
+        slopes["selfconv_Eh_by_p"][pv] = _slope(hh_p, [x["E_h_ownp"] for x in below_p]) if len(below_p) > 1 else float("nan")
+        slopes["selfconv_ref_nel"][pv] = rp["ns"][0] - pv
     summary = dict(reference=os.path.basename(ref["dir"]), grid=ref["grid"], rows=rows, slopes=slopes)
     with open(os.path.join(root, "convergence.json"), "w") as f:
         json.dump(summary, f, indent=1)
@@ -556,8 +661,16 @@ def plot(cli):
     print("D LS slope per p (full grid): "
           + "  ".join(f"p{pv} {slopes['D_by_p'][pv]:.2f}" for pv in ps_all)
           + f"  [floor {slopes['D_floor']:.1e}]")
-    print("D pre-floor slope per p: "
-          + "  ".join(f"p{pv} {slopes['D_by_p_prefloor'][pv]:.2f}" for pv in ps_all))
+    print(f"D pre-elbow slope per p (D > {slopes['elbow_factor']:.0f}x floor {slopes['D_floor']:.1e}):")
+    for pv in ps_all:
+        w = slopes["preelbow_window"][pv]
+        print(f"  p{pv}: slope {slopes['D_by_p_preelbow'][pv]:.2f}  fit n_el {w[0]}..{w[1]}  "
+              f"elbow at n_el {slopes['elbow_nel'][pv]}")
+    print("per-p self-convergence (each p vs its own finest):")
+    for pv in ps_all:
+        print(f"  p{pv}: ref n_el {slopes['selfconv_ref_nel'][pv]}  "
+              f"E_w slope {slopes['selfconv_Ew_by_p'][pv]:.2f}  "
+              f"E_h slope {slopes['selfconv_Eh_by_p'][pv]:.2f}")
 
     # --- dual harmonic field (h1) table ---------------------------------------
     print("\ndual harmonic field: k=1 free 1-form h1 vs k=2 dbc 2-form h2 (same vacuum B)")
@@ -617,18 +730,25 @@ def plot(cli):
     plt.close(fig)
 
     # --- full p x resolution grid: D vs h, one ladder per p -------------------
-    figg, axg = plt.subplots(figsize=(6.6, 5.4))
+    figg, axg = plt.subplots(figsize=(6.8, 5.6))
     hmin = min(x["h"] for x in rows)
     for pv in ps_all:
         lad = grid_by_p[pv]
         axg.loglog([x["h"] for x in lad], [x["D"] for x in lad], "o-", color=PCOL.get(pv, "0.3"),
-                   lw=1.7, ms=6,
-                   label=f"p = {pv}  (pre-floor slope {slopes['D_by_p_prefloor'][pv]:.2f})")
+                   lw=1.7, ms=5,
+                   label=f"p = {pv}: slope {slopes['D_by_p_preelbow'][pv]:.2f} "
+                         f"(n_el {slopes['preelbow_window'][pv][0]}–{slopes['preelbow_window'][pv][1]})")
+        # the fitted pre-elbow slope line, drawn over its own window only
+        pre = [x for x in lad if x["D"] > slopes["elbow_factor"] * D_floor] or lad[:2]
+        hpre = np.array([min(x["h"] for x in pre), max(x["h"] for x in pre)])
+        aD = max(pre, key=lambda z: z["h"])["D"]
+        aH = max(x["h"] for x in pre)
+        s = slopes["D_by_p_preelbow"][pv]
+        axg.loglog(hpre, aD * (hpre / aH) ** s, "-", color=PCOL.get(pv, "0.6"), lw=3.2, alpha=0.25)
     axg.axhline(slopes["D_floor"], ls="-", color="0.5", lw=1.0, alpha=0.7)
     axg.text(0.02, slopes["D_floor"] * 1.15, rf"physics floor $\approx${slopes['D_floor']:.1e}",
              transform=axg.get_yaxis_transform(), fontsize=8, color="0.4", va="bottom")
-    # h^p guide anchored to each ladder's coarsest rung; p=1 is degree-limited
-    # (flat) so it gets no guide.
+    # h^p guide slopes for reference (p=1 is degree-limited, no guide)
     for pv in ps_all:
         if pv == 1:
             continue
@@ -639,13 +759,42 @@ def plot(cli):
         axg.loglog(gh, aD * (gh / ah) ** pv, ":", color=PCOL.get(pv, "0.6"), lw=1.0)
     axg.set_xlabel(r"$h = 1/(n_r - p) = 1/n_{\mathrm{elements}}$")
     axg.set_ylabel(r"$D = \|B_w - c\,h\|_M / \|B_w\|_M$")
-    axg.set_title("QA vacuum: $D$ vs $h$ on the full $p \\times$ resolution grid\n"
-                  "(dotted = $h^p$ guide; angular cells fixed per column)", fontsize=10)
+    axg.set_title("QA vacuum: $D$ vs $h$, full $p \\times$ resolution grid\n"
+                  "(thick = pre-elbow slope fit; dotted = $h^p$ guide)", fontsize=10)
     axg.grid(True, which="both", color="0.9", lw=0.6)
-    axg.legend(fontsize=9, loc="lower right")
+    axg.legend(fontsize=8.5, loc="lower right")
     figg.tight_layout()
     figg.savefig(os.path.join(root, "convergence_grid.png"), dpi=150)
     plt.close(figg)
+
+    # --- per-p self-convergence: each p vs its own finest rung ----------------
+    figs, axs = plt.subplots(figsize=(6.8, 5.6))
+    hmax_all = max(x["h"] for x in rows)
+    for pv in ps_all:
+        below_p = sorted((x for x in grid_by_p[pv] if not x.get("is_ref_ownp", False)),
+                         key=lambda z: -z["h"])
+        if not below_p:
+            continue
+        axs.loglog([x["h"] for x in below_p], [x["E_w_ownp"] for x in below_p], "o-",
+                   color=PCOL.get(pv, "0.3"), lw=1.7, ms=5,
+                   label=f"p = {pv}: slope {slopes['selfconv_Ew_by_p'][pv]:.2f} "
+                         f"(ref n_el {slopes['selfconv_ref_nel'][pv]})")
+    for pv in ps_all:
+        below_p = [x for x in grid_by_p[pv] if not x.get("is_ref_ownp", False)]
+        if len(below_p) < 1:
+            continue
+        aD = max(below_p, key=lambda z: z["h"])["E_w_ownp"]
+        gh = np.array([hmin, hmax_all])
+        axs.loglog(gh, aD * (gh / hmax_all) ** pv, ":", color=PCOL.get(pv, "0.6"), lw=1.0)
+    axs.set_xlabel(r"$h = 1/(n_r - p) = 1/n_{\mathrm{elements}}$")
+    axs.set_ylabel(r"$E_w = \|B_w(h) - B_w(h_{\min})\| / \|B_w(h_{\min})\|$")
+    axs.set_title("QA vacuum: per-$p$ self-convergence of $B_w$\n"
+                  "(each $p$ vs its own finest rung; dotted = $h^p$ guide)", fontsize=10)
+    axs.grid(True, which="both", color="0.9", lw=0.6)
+    axs.legend(fontsize=8.5, loc="lower right")
+    figs.tight_layout()
+    figs.savefig(os.path.join(root, "convergence_selfconv.png"), dpi=150)
+    plt.close(figs)
 
     # --- dual harmonic field figure -------------------------------------------
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.6))
@@ -708,7 +857,7 @@ def plot(cli):
     fig.tight_layout()
     fig.savefig(os.path.join(root, "residual_zeta0.png"), dpi=150)
     plt.close(fig)
-    print(f"wrote {root}/convergence.json, convergence.png, convergence_grid.png, convergence_h1.png, residual_zeta0.png", flush=True)
+    print(f"wrote {root}/convergence.json, convergence.png, convergence_grid.png, convergence_selfconv.png, convergence_h1.png, residual_zeta0.png", flush=True)
 
 
 if __name__ == "__main__":
@@ -716,7 +865,9 @@ if __name__ == "__main__":
     os.environ["MRX_DTYPE"] = cli.precision
     if cli.plot:
         plot(cli)
+    elif cli.regrid:
+        regrid_rung(cli)
     elif cli.ns:
         run_rung(cli)
     else:
-        sys.exit("give --ns (one rung) or --plot DIR")
+        sys.exit("give --ns (one rung), --regrid DIR, or --plot DIR")
