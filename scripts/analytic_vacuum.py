@@ -47,7 +47,9 @@ def parse_args(argv=None):
     ap.add_argument("--geometry", default="data/wout_LandremanPaul2021_QA_lowres.nc",
                     help="equilibrium file or analytic name; domain only (its "
                          "field is ignored, B* is analytic).")
-    ap.add_argument("--field", default="polynomial", choices=("polynomial", "toroidal"))
+    ap.add_argument("--field", default="coil", choices=("coil", "polynomial", "toroidal"))
+    ap.add_argument("--lam", type=float, default=1.0,
+                    help="ripple amplitude for --field coil: B* = e_phi/R + lam grad(R^2 cos 2phi).")
     ap.add_argument("--ns", default="6,12,6:8,16,8:10,20,10:12,24,12",
                     help="colon-separated n_r,n_theta,n_zeta rungs (colon is "
                          "shell-safe inside slurm/run.sh's wrapped command).")
@@ -63,17 +65,31 @@ def _log(msg):
     print(msg, flush=True)
 
 
-def b_star_phys(seq, field):
+def b_star_phys(seq, field, lam=1.0):
     """The analytic vacuum field as a lab-frame ``(3,)`` vector at the logical
-    point ``xi`` (via the map). Both choices are curl-free and div-free."""
+    point ``xi`` (via the map). Every choice is curl-free and div-free.
+
+    * ``toroidal``:   ``e_phi / R = grad(phi_geo)``     (1-form-exact; degenerate for A)
+    * ``polynomial``: ``grad Psi``, ``Psi = (x^3-3xy^2) + z(x^2-y^2)``
+    * ``coil``:       ``e_phi/R + lam grad(R^2 cos 2phi)`` -- TF flux + n=2 ripple.
+    """
     import jax
     import jax.numpy as jnp
 
+    def tf(X):  # 1/R e_phi = grad(phi_geo), the secular / flux part
+        return jnp.array([-X[1], X[0], 0.0]) / (X[0] ** 2 + X[1] ** 2)
+
     if field == "toroidal":
         def f(xi):
+            return tf(seq.map(xi))
+        return f
+
+    if field == "coil":
+        grad_ripple = jax.grad(lambda X: X[0] ** 2 - X[1] ** 2)  # grad(R^2 cos 2phi)
+
+        def f(xi):
             X = seq.map(xi)
-            R2 = X[0] ** 2 + X[1] ** 2
-            return jnp.array([-X[1], X[0], 0.0]) / R2
+            return tf(X) + lam * grad_ripple(X)
         return f
 
     def psi(X):  # two harmonic polynomials: fully 3-D, single-valued
@@ -96,12 +112,12 @@ def analytic_norm_sq(seq, Bphys):
     return float(np.sum(w * J * np.sum(Bq ** 2, axis=1)))
 
 
-def run_rung(seq, ops, routes, field, tag):
+def run_rung(seq, ops, routes, field, lam, tag):
     import numpy as np
     from mrx.nullspace import estimate_spectral_gap, harmonic_rayleigh
 
     res = dict(tag=tag)
-    Bphys = b_star_phys(seq, field)
+    Bphys = b_star_phys(seq, field, lam)
     bstar_sq = analytic_norm_sq(seq, Bphys)
     res["bstar_norm"] = float(np.sqrt(bstar_sq))
     out = {}
@@ -135,13 +151,18 @@ def run_rung(seq, ops, routes, field, tag):
         # --- Route C: 3-form scalar potential, B = delta f in V2 -------------
         t0 = time.perf_counter()
         load2 = seq.load(Bphys, 2, dirichlet=False)                 # int L2 . B*
-        b2 = seq.interpolate(Bphys, 2, dirichlet=False)             # commuting interp (no mass solve)
+        b2 = seq.apply_inverse_mass_matrix(load2, 2, dirichlet=False, operators=ops)  # L2 proj (free V2)
         rhs = -seq.apply_derivative_matrix(b2, 2, dirichlet_in=False,
-                                           dirichlet_out=True)      # -D2 b2*
+                                           dirichlet_out=True)      # -D2 b2*  (free V2 -> V3 dbc)
         f3 = seq.apply_inverse_laplacian(rhs, 3, dirichlet=True, operators=ops)
         r = seq.apply_laplacian(f3, 3, dirichlet=True, operators=ops) - rhs
         solve_res = float(np.linalg.norm(r) / (np.linalg.norm(rhs) + 1e-300))
-        Bgrad = seq.apply_weak_grad(f3, dirichlet_in=True, dirichlet_out=False)  # delta f
+        # delta f = -M2^{-1} D2^T f3, output 2-form in the FREE space (non-tangent),
+        # input 3-form in f3's DBC space. apply_weak_grad only supports symmetric
+        # flags (they name spaces on the forward operator), so build delta by hand.
+        dv = -seq.apply_derivative_matrix(f3, 2, dirichlet_in=False,
+                                          dirichlet_out=True, transpose=True)  # -D2^T f3: free V2
+        Bgrad = seq.apply_inverse_mass_matrix(dv, 2, dirichlet=False, operators=ops)  # delta f
         h2 = seq.nullspace(2, True)[0]
         Mh2 = seq.apply_mass_matrix(h2, 2, True)
         a2 = float(load2 @ h2) / float(h2 @ Mh2)                    # <B*,h2>/<h2,h2>
@@ -179,14 +200,14 @@ def main(cli):
         t0 = time.perf_counter()
         seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter, tol=cli.tol)
         ops = seq.set_operators(compute_nullspaces(seq, ops))
-        rec = run_rung(seq, ops, routes, cli.field, tag)
+        rec = run_rung(seq, ops, routes, cli.field, cli.lam, tag)
         rec.update(ns=list(ns), p=cli.p, h=1.0 / (ns[0] - cli.p),
                    n_elements=ns[0] - cli.p, tol=float(seq.tol),
                    t_total=time.perf_counter() - t0)
         records.append(rec)
         with open(os.path.join(cli.out, "analytic_vacuum.json"), "w") as fh:
             json.dump(dict(geometry=os.path.abspath(cli.geometry), field=cli.field,
-                           p=cli.p, records=records), fh, indent=2)
+                           lam=cli.lam, p=cli.p, records=records), fh, indent=2)
 
     print("\n=== convergence (relerr vs h = 1/n_el) ===", flush=True)
     for r in routes:
