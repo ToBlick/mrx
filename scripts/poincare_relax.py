@@ -162,14 +162,14 @@ def main():
                 # it so a re-render picks up the current definition.
                 a_eff, xlabel = surface_label(z[f"{tag}_R"], z[f"{tag}_Z"],
                                               z[f"{tag}_axisR"], z[f"{tag}_axisZ"])
-                fig = render_section(
+                fig, _ = render_section(
                     z[f"{tag}_R"], z[f"{tag}_Z"], z[f"{name}_iota"], z[f"{name}_iota_err"],
                     z[f"{name}_seed_r"], z[f"{name}_keep"],
                     title=f"{label} {ns} p={p}  |  {name}  |  $\\zeta = {plane:g}$\n"
                           f"{labels.get(name, name)}, relaxed in {attrs.get('precision')} "
                           f"-- {z[f'{tag}_R'].shape[1]} crossings/line",
                     subtitle=f"nfp = {nfp}   |   h/2 drift {float(z[f'{name}_drift']):.1e}   |   re-rendered from sections.npz",
-                    axis_RZ=(z[f"{tag}_axisR"], z[f"{tag}_axisZ"]), path=None,
+                    axis_RZ=(z[f"{tag}_axisR"], z[f"{tag}_axisZ"]),
                     profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
                     logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]),
                     pressure=None if presses[plane] is None else presses[plane] - p_min,
@@ -263,7 +263,7 @@ def main():
             R, Z, aR, aZ, cR, cZ, lr, lth = cuts[plane]
             a_eff, xlabel = surface_label(R, Z, aR, aZ)
             press = None if presses[plane] is None else presses[plane] - p_min
-            fig = render_section(
+            fig, _ = render_section(
                 R, Z, res["iota"], res["iota_err"], res["seeds"][:, 0], keep,
                 pressure=press, pressure_label=PRESSURE_LABELS[cli.pressure],
                 title=f"{label} {ns} p={p}  |  {name}  |  $\\zeta = {plane:g}$\n"
@@ -271,7 +271,7 @@ def main():
                       f"-- {R.shape[1]} crossings/line",
                 subtitle=f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "
                          f"traced in {cli.precision}",
-                axis_RZ=(aR, aZ), path=None, profile_x=a_eff,
+                axis_RZ=(aR, aZ), profile_x=a_eff,
                 profile_xlabel=xlabel, nfp=nfp, logical=(lr, lth),
                 iota_lim=(lo, hi), limits=limits.get(plane))
             path = os.path.join(out, (f"frame_zeta{plane:g}_{frame:04d}.png" if movie
