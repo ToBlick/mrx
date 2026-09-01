@@ -83,6 +83,34 @@ def wrap(inner, route, meta):
                        r"\end{table}"]))
 
 
+def preamble(meta):
+    lam = meta.get("lam")
+    return (
+        r"\paragraph{Convergence against an analytic vacuum field.} "
+        r"We verify the FEEC discretisation against a vacuum magnetic field known "
+        r"in closed form on the (non-axisymmetric) quasi-axisymmetric stellarator "
+        r"boundary. The reference is a model coil field, "
+        r"\[ B^\ast = \frac{e_\phi}{R} + \lambda\,\nabla\!\left(R^2\cos 2\phi\right), "
+        fr"\qquad \lambda = {lam}, \] "
+        r"the axisymmetric toroidal-field part $e_\phi/R$ (the net current linking "
+        r"the torus) plus an $n{=}2$ shaping ripple matching the two field periods; "
+        r"both terms are curl- and divergence-free, so $B^\ast$ is an exact vacuum "
+        r"field and the error carries no truncation floor. A vacuum field is "
+        r"curl-free (a gradient) and divergence-free (a curl), so it can be "
+        r"reconstructed at either end of the de~Rham complex. \emph{Route~A} takes "
+        r"the $H$-field as a $1$-form with a scalar potential, "
+        r"$H = \nabla f + \alpha\, h_1$ (a $k{=}0$ Laplace solve; the harmonic "
+        r"amplitude $\alpha$ fixes the toroidal circulation $\oint B^\ast\cdot d\ell "
+        r"= 2\pi/n_{\mathrm{fp}}$). \emph{Route~C} takes the $B$-field as a $2$-form "
+        r"with a vector potential, $B = \operatorname{curl} A$ (a $k{=}1$ "
+        r"curl--curl solve; the solid torus has no free harmonic $2$-form, so the "
+        r"flux is carried by $A$'s boundary circulation and no harmonic term is "
+        r"needed). Tables~\ref{tab:analytic-vacuum-A} and~\ref{tab:analytic-vacuum-C} "
+        r"report the relative $M$-norm error $\|B_h - B^\ast\|_M / \|B^\ast\|_M$ "
+        r"against mesh size $h = 1/n_{\mathrm{el}}$ for spline degrees "
+        r"$p = 1,\dots,4$; both routes converge at the optimal rate $O(h^p)$.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("root")
@@ -96,6 +124,7 @@ def main():
     blocks = [wrap(table(data, r, ps, nels), r, meta) for r in routes]
     out = ("% analytic_vacuum convergence tables -- needs \\usepackage{booktabs}\n"
            "% regenerate: python scripts/analytic_vacuum_tex.py " + cli.root + "\n\n"
+           + preamble(meta) + "\n\n"
            + "\n\n".join(blocks) + "\n")
 
     print(out)
