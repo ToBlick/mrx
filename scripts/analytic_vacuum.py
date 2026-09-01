@@ -19,15 +19,17 @@ Two constructions of the potential, at the two ends of the de Rham complex,
 both reusing the existing preconditioned solvers (no mixed saddle, no new
 preconditioner):
 
-  Route A (0-form potential):  H = grad f + a h1,   f in V0,  H in V1 (free).
-      G0^T M1 G0 f = G0^T load1(B*)          -- k=0 stiffness, deflated CG.
-  Route C (3-form potential):  B = delta f + a h2, f in V3,  B in V2.
-      L3 f = -D2 b2*                          -- k=3 Hodge-Laplacian, MINRES;
-      b2* the commuting interpolant of B* (no free-space mass solve),
-      delta = weak grad = -M2^{-1} D2^T,  B = delta f.
-
-The harmonic amplitude ``a = <B*, h>_M / <h, h>_M`` is the M-projection (the
-VMEC-study c-fit); for the pure-gradient polynomial it comes out ~ 0.
+  Route A (scalar potential):  H = grad f + a h1,   f in V0,  H in V1 (free).
+      Curl-free H-field: G0^T M1 G0 f = G0^T load1(B*)  -- k=0 stiffness,
+      deflated CG. a = <B*, h1>_M / <h1, h1>_M pins the flux (the VMEC-study
+      c-fit); for 1/R it is degenerate (grad of a coordinate is exact in V1).
+  Route C (vector potential):  B = curl A,          A in V1,  B in V2 (free).
+      Div-free B-field: <curl A, curl W> = <B*, curl W>  =>  L1 A = C^T load2,
+      the preconditioned k=1 Hodge-Laplacian saddle (well conditioned; NO k=2
+      Laplacian inverse). On the solid torus b2 = 0 so B* = curl A fully, flux
+      included -- no harmonic term. The weak-grad-of-a-3-form route is WRONG
+      here: it yields co-exact (compressible) 2-forms, of which a solenoidal
+      field has none.
 
 Error vs the ANALYTIC field:
   ||B_h - B*||_M^2 = <B_h, B_h>_M - 2 (B_h . load) + int |B*|^2 dV,
@@ -113,9 +115,7 @@ def analytic_norm_sq(seq, Bphys):
 
 
 def run_rung(seq, ops, routes, field, lam, tag):
-    import jax
     import numpy as np
-    from mrx.geometry import map_jacobian_at
     from mrx.nullspace import estimate_spectral_gap, harmonic_rayleigh
 
     res = dict(tag=tag)
@@ -150,51 +150,34 @@ def run_rung(seq, ops, routes, field, lam, tag):
              f"harm {rq / lam1:.1e}  n1 {seq.n(1, False)}  {out['A']['t']:.1f}s")
 
     if "C" in routes:
-        # --- Route C: 3-form scalar potential, B = delta f in V2 -------------
+        # --- Route C: vector potential, B = curl A in V2 (free) --------------
+        # A vacuum field is div-free, hence EXACT (curl of a 1-form), NOT
+        # co-exact -- so the 2-form route is the vector potential, not the weak
+        # grad of a 3-form (that lands in the co-exact/compressible part, which a
+        # solenoidal field has none of). On the solid torus b2 = 0, so a closed
+        # free 2-form is fully exact: B* = curl A, the toroidal flux carried by
+        # A's boundary circulation -- no separate harmonic term.
+        #   curl-curl:  <curl A, curl W> = <B*, curl W>  =>  L1 A = C^T load2.
+        # C^T load2 is orthogonal to gradients and to the harmonic 1-forms
+        # (curl(grad)=0, curl h1=0), so it sits in the co-exact subspace where L1
+        # acts as curl-curl; solved by the preconditioned k=1 Hodge-Laplacian
+        # saddle (well conditioned -- and no k=2 Laplacian inverse anywhere).
         t0 = time.perf_counter()
-        load2 = seq.load(Bphys, 2, dirichlet=False)                 # int L2 . B*
-        b2 = seq.apply_inverse_mass_matrix(load2, 2, dirichlet=False, operators=ops)  # L2 proj (free V2)
-        rhs = -seq.apply_derivative_matrix(b2, 2, dirichlet_in=False,
-                                           dirichlet_out=True)      # -D2 b2*  (free V2 -> V3 dbc)
-        # k=3 Hodge-Laplacian saddle: S_3 = 0, so the upper-block preconditioner
-        # is degenerate and MINRES is slow -- give it a tight tol and a large
-        # iteration budget (cheap per-iter on these meshes).
-        f3, info = seq.apply_inverse_laplacian(rhs, 3, dirichlet=True, operators=ops,
-                                               tol=1e-9, maxiter=30000, return_info=True)
-        r = seq.apply_laplacian(f3, 3, dirichlet=True, operators=ops) - rhs
-        solve_res = float(np.linalg.norm(r) / (np.linalg.norm(rhs) + 1e-300))
-        _log(f"{tag} C: k=3 solve info {info}")
-        Bgrad = seq.apply_weak_grad(f3, dirichlet=False)           # delta f, free V2 (one-flag API)
-        h2 = seq.nullspace(2, True)[0]                             # dbc harmonic 2-form
-        # Bgrad (free V2) and h2 (dbc V2) live in different coefficient spaces --
-        # the solid torus has no free harmonic 2-form (H^2(Omega)=0), the flux
-        # generator is the relative/dbc one -- so pair them, and the analytic B*,
-        # as physical vectors at the quadrature points (Piola pushforward, w*J
-        # measure = the M inner product; metric factors explicit).
-        DF_q = np.asarray(map_jacobian_at(seq.map, seq.quad.x))    # (Nq,3,3)
-        Jq = np.asarray(seq.jacobian_j)
-        wJ = np.asarray(seq.quad.w) * Jq
-
-        def piola(dof, dirichlet):
-            bhat = np.asarray(seq.evaluate_at_quadrature(dof, 2, dirichlet))
-            return np.einsum("qik,qk->qi", DF_q, bhat) / Jq[:, None]
-
-        def ip(a, b):
-            return float(np.sum(wJ * np.sum(a * b, axis=1)))
-
-        Bgrad_q = piola(Bgrad, False)
-        h2_q = piola(h2, True)
-        Bstar_q = np.asarray(jax.vmap(Bphys)(seq.quad.x))
-        a2 = ip(Bstar_q, h2_q) / ip(h2_q, h2_q)                    # <B*,h2>/<h2,h2>
-        Bh_q = Bgrad_q + a2 * h2_q
-        relerr = float(np.sqrt(ip(Bh_q - Bstar_q, Bh_q - Bstar_q) / ip(Bstar_q, Bstar_q)))
-        rq = harmonic_rayleigh(seq, h2, 2, True, ops)
-        lam1, _ = estimate_spectral_gap(seq, ops, 2, True, maxiter=5)
-        out["C"] = dict(relerr=relerr, alpha=a2, solve_res=solve_res,
-                        harm_ratio=float(rq / lam1), n=int(seq.n(2, False)),
+        load2 = seq.load(Bphys, 2, dirichlet=False)                # M2-load of B*
+        rhs1 = seq.apply_incidence_matrix(load2, 1, dirichlet_in=False,
+                                          dirichlet_out=False, transpose=True)  # C^T load2
+        A, info = seq.apply_inverse_laplacian(rhs1, 1, dirichlet=False,
+                                              operators=ops, return_info=True)
+        Bh = seq.apply_strong_curl(A, dirichlet_in=False, dirichlet_out=False)  # curl A, free V2
+        MBh = seq.apply_mass_matrix(Bh, 2, False)
+        r1 = seq.apply_laplacian(A, 1, dirichlet=False, operators=ops) - rhs1
+        solve_res = float(np.linalg.norm(r1) / (np.linalg.norm(rhs1) + 1e-300))
+        err_sq = float(Bh @ MBh) - 2.0 * float(Bh @ load2) + bstar_sq
+        relerr = float(np.sqrt(max(err_sq, 0.0)) / np.sqrt(bstar_sq))
+        out["C"] = dict(relerr=relerr, solve_res=solve_res, n=int(seq.n(2, False)),
                         t=time.perf_counter() - t0)
-        _log(f"{tag} C: relerr {relerr:.4e}  alpha {a2:+.4e}  solve_res {solve_res:.1e}  "
-             f"harm {rq / lam1:.1e}  n2 {seq.n(2, False)}  {out['C']['t']:.1f}s")
+        _log(f"{tag} C: relerr {relerr:.4e}  solve_res {solve_res:.1e}  "
+             f"n2 {seq.n(2, False)}  info {info}  {out['C']['t']:.1f}s")
 
     res["routes"] = out
     return res
