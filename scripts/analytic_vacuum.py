@@ -216,6 +216,13 @@ def main(cli):
     import numpy as np
 
     import mrx
+    # Cap the peak map/projection window on the big rungs: the per-quad-point
+    # coefficient gather is materialised over the whole grid by default
+    # (MAP_BATCH_SIZE_INNER = 0), which can OOM the largest p=4 meshes. A
+    # positive MRX_MAP_BATCH_SIZE_INNER chunks jax.lax.map.
+    _mbs = os.environ.get("MRX_MAP_BATCH_SIZE_INNER")
+    if _mbs:
+        mrx.MAP_BATCH_SIZE_INNER = int(_mbs)
     from mrx.geometry import build_sequence
     from mrx.nullspace import compute_nullspaces
 
