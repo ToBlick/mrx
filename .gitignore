@@ -18,7 +18,7 @@ venv/
 .coverage
 .ipynb_checkpoints
 
-# Runs and data (never committed)
+# Runs and data
 data
 outputs
 out
@@ -28,6 +28,7 @@ logs
 multirun*
 jax-caches/
 .jax_cache
+slurm/job_*
 
 # Site-specific slurm settings (account, partition, paths)
 slurm/site.env
