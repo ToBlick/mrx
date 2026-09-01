@@ -156,9 +156,14 @@ def run_rung(seq, ops, routes, field, lam, tag):
         b2 = seq.apply_inverse_mass_matrix(load2, 2, dirichlet=False, operators=ops)  # L2 proj (free V2)
         rhs = -seq.apply_derivative_matrix(b2, 2, dirichlet_in=False,
                                            dirichlet_out=True)      # -D2 b2*  (free V2 -> V3 dbc)
-        f3 = seq.apply_inverse_laplacian(rhs, 3, dirichlet=True, operators=ops)
+        # k=3 Hodge-Laplacian saddle: S_3 = 0, so the upper-block preconditioner
+        # is degenerate and MINRES is slow -- give it a tight tol and a large
+        # iteration budget (cheap per-iter on these meshes).
+        f3, info = seq.apply_inverse_laplacian(rhs, 3, dirichlet=True, operators=ops,
+                                               tol=1e-9, maxiter=30000, return_info=True)
         r = seq.apply_laplacian(f3, 3, dirichlet=True, operators=ops) - rhs
         solve_res = float(np.linalg.norm(r) / (np.linalg.norm(rhs) + 1e-300))
+        _log(f"{tag} C: k=3 solve info {info}")
         Bgrad = seq.apply_weak_grad(f3, dirichlet=False)           # delta f, free V2 (one-flag API)
         h2 = seq.nullspace(2, True)[0]                             # dbc harmonic 2-form
         # Bgrad (free V2) and h2 (dbc V2) live in different coefficient spaces --
