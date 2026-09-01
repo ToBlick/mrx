@@ -111,10 +111,61 @@ def preamble(meta):
         r"$p = 1,\dots,4$; both routes converge at the optimal rate $O(h^p)$.")
 
 
+def vmec_preamble(mj):
+    floor = mj.get("slopes", {}).get("D_floor")
+    fs = sci(floor).replace("$", "") if floor else r"8\times10^{-5}"
+    return (
+        r"\paragraph{Convergence to the VMEC equilibrium field.} "
+        r"The same discrete harmonic $2$-form is compared against the vacuum field "
+        r"$B_w$ of a VMEC equilibrium (the low-resolution Landreman--Paul QA "
+        r"reference), the \emph{confined} (wall-tangent) field of the bounded "
+        r"domain rather than a driven one. The equilibrium field's scale is not "
+        r"set a priori, so we fit a single amplitude $c$ by $M$-projection and "
+        r"report $D = \|B_w - c\,h\|_M / \|B_w\|_M$. Unlike the analytic case there "
+        r"is no exact target: $D$ falls at the pre-floor rates below and then "
+        fr"saturates at a floor $D \approx {fs}$, set by the truncation of the "
+        r"low-resolution VMEC reference itself and not by the MRX discretisation. "
+        r"Table~\ref{tab:vmec-vacuum} reports $D$ against mesh size for "
+        r"$p = 1,\dots,4$; the fitted pre-floor order per $p$ is given in the last "
+        r"row.")
+
+
+def vmec_table(mj):
+    data = {(r["p"], r["ns"][0] - r["p"]): r["D"] for r in mj["rows"]}
+    ps = sorted({p for p, _ in data})
+    nels = sorted({ne for _, ne in data})
+    pre = mj.get("slopes", {}).get("D_by_p_prefloor", {})
+    L = [r"\begin{tabular}{rr" + "c" * len(ps) + "}", r"\toprule",
+         r"$n_{\mathrm{el}}$ & $h$ & "
+         + " & ".join(fr"$p{{=}}{p}$" for p in ps) + r" \\", r"\midrule"]
+    for ne in nels:
+        cells = [sci(data.get((p, ne))) for p in ps]
+        L.append(f"{ne} & {1.0 / ne:.4f} & " + " & ".join(cells) + r" \\")
+    L.append(r"\midrule")
+    L.append(r"pre-floor order & & "
+             + " & ".join(f"{pre[str(p)]:.2f}" if str(p) in pre else r"\textemdash"
+                          for p in ps) + r" \\")
+    L += [r"\bottomrule", r"\end{tabular}"]
+    return "\n".join(L)
+
+
+def vmec_block(mj):
+    cap = (r"Convergence of the discrete harmonic $2$-form to the VMEC vacuum "
+           r"field $B_w$ (Landreman--Paul QA, low resolution): $D = "
+           r"\|B_w - c\,h\|_M/\|B_w\|_M$ vs.\ mesh size, with the pre-floor order "
+           r"per $p$. $D$ saturates at the reference's truncation floor.")
+    return "\n".join([r"\begin{table}[t]", r"\centering", vmec_table(mj),
+                      fr"\caption{{{cap}}}", r"\label{tab:vmec-vacuum}",
+                      r"\end{table}"])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("root")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--vmec", default=None,
+                    help="qa_vacuum_convergence_merged.json -- append the "
+                         "VMEC-convergence (D) paragraph and table")
     cli = ap.parse_args()
 
     data, meta = collect(cli.root)
@@ -122,10 +173,15 @@ def main():
     nels = sorted({ne for _, _, ne in data})
     routes = [r for r in ("A", "C") if any(k[0] == r for k in data)]
     blocks = [wrap(table(data, r, ps, nels), r, meta) for r in routes]
+    parts = [preamble(meta)] + blocks
+    if cli.vmec:
+        with open(cli.vmec) as fh:
+            mj = json.load(fh)
+        parts += [vmec_preamble(mj), vmec_block(mj)]
     out = ("% analytic_vacuum convergence tables -- needs \\usepackage{booktabs}\n"
-           "% regenerate: python scripts/analytic_vacuum_tex.py " + cli.root + "\n\n"
-           + preamble(meta) + "\n\n"
-           + "\n\n".join(blocks) + "\n")
+           "% regenerate: python scripts/analytic_vacuum_tex.py " + cli.root
+           + (" --vmec " + cli.vmec if cli.vmec else "") + "\n\n"
+           + "\n\n".join(parts) + "\n")
 
     print(out)
     if cli.out:
