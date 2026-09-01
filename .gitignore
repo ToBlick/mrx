@@ -19,7 +19,9 @@ venv/
 .ipynb_checkpoints
 
 # Runs and data
-data
+data/*
+!data/wout_li383_low_res_reference.nc
+!data/wout_LandremanPaul2021_QA_lowres.nc
 outputs
 out
 logs
