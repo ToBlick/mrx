@@ -114,6 +114,33 @@ def analytic_norm_sq(seq, Bphys):
     return float(np.sum(w * J * np.sum(Bq ** 2, axis=1)))
 
 
+def circulation_alpha(seq, h1, Bphys, rho0=0.5, nt=16, nz=64):
+    """Fix the harmonic amplitude by the toroidal circulation instead of the M
+    projection: ``a = (loop B* . dl) / (loop h1 . dl)``. A line integral of a
+    1-form along the logical toroidal loop (fixed rho, zeta: 0 -> 1) is the
+    integral of its zeta-covariant component; both are homology invariants
+    (B* curl-free, h1 discretely closed), so the loop is arbitrary -- averaged
+    over ``nt`` poloidal offsets at ``rho0`` to damp discretisation noise. No
+    circular magnetic axis needed; the analytic target ``2 pi / nfp`` is the
+    constant zeta-component of ``grad phi_geo`` (the periodic ripple integrates
+    to zero around the closed loop). Returns ``(a, circ_target, circ_h1)``."""
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+    from mrx.differential_forms import DiscreteFunction
+    from mrx.geometry import map_jacobian_at
+    th = (np.arange(nt) + 0.5) / nt
+    ze = (np.arange(nz) + 0.5) / nz
+    T, Z = np.meshgrid(th, ze, indexing="ij")
+    pts = jnp.asarray(np.stack([np.full(T.size, rho0), T.ravel(), Z.ravel()], 1))
+    h1_fn = DiscreteFunction(jnp.asarray(h1), seq.basis_1, seq.E(1, False))
+    circ_h = float(np.mean(np.asarray(jax.vmap(h1_fn)(pts))[:, 2]))     # int h1_zeta
+    DFz = np.asarray(map_jacobian_at(seq.map, pts))[:, :, 2]            # dF/dzeta
+    Bq = np.asarray(jax.vmap(Bphys)(pts))
+    circ_t = float(np.mean(np.sum(Bq * DFz, axis=1)))                   # int (B* . dF/dzeta)
+    return circ_t / circ_h, circ_t, circ_h
+
+
 def run_rung(seq, ops, routes, field, lam, tag):
     import numpy as np
     from mrx.nullspace import estimate_spectral_gap, harmonic_rayleigh
@@ -136,18 +163,20 @@ def run_rung(seq, ops, routes, field, lam, tag):
         Hgrad = seq.apply_strong_grad(f, dirichlet_in=False, dirichlet_out=False)
         h1 = seq.nullspace(1, False)[0]
         Mh1 = seq.apply_mass_matrix(h1, 1, False)
-        a1 = float(load1 @ h1) / float(h1 @ Mh1)                    # <B*,h1>/<h1,h1>
-        Hh = Hgrad + a1 * h1
+        a1_proj = float(load1 @ h1) / float(h1 @ Mh1)              # M-projection (L2-optimal)
+        a1, circ_t, circ_h = circulation_alpha(seq, h1, Bphys)    # circulation (physical)
+        Hh = Hgrad + a1 * h1                                       # fix the scale by circulation
         MHh = seq.apply_mass_matrix(Hh, 1, False)
         err_sq = float(Hh @ MHh) - 2.0 * float(Hh @ load1) + bstar_sq
         relerr = float(np.sqrt(max(err_sq, 0.0)) / np.sqrt(bstar_sq))
         rq = harmonic_rayleigh(seq, h1, 1, False, ops)
         lam1, _ = estimate_spectral_gap(seq, ops, 1, False, maxiter=5)
-        out["A"] = dict(relerr=relerr, alpha=a1, solve_res=solve_res,
-                        harm_ratio=float(rq / lam1), n=int(seq.n(1, False)),
-                        t=time.perf_counter() - t0)
-        _log(f"{tag} A: relerr {relerr:.4e}  alpha {a1:+.4e}  solve_res {solve_res:.1e}  "
-             f"harm {rq / lam1:.1e}  n1 {seq.n(1, False)}  {out['A']['t']:.1f}s")
+        out["A"] = dict(relerr=relerr, alpha=a1, alpha_proj=a1_proj, circ_target=circ_t,
+                        circ_h1=circ_h, solve_res=solve_res, harm_ratio=float(rq / lam1),
+                        n=int(seq.n(1, False)), t=time.perf_counter() - t0)
+        _log(f"{tag} A: relerr {relerr:.4e}  alpha_circ {a1:+.4e} (proj {a1_proj:+.4e})  "
+             f"circ_target {circ_t:+.4e}  solve_res {solve_res:.1e}  n1 {seq.n(1, False)}  "
+             f"{out['A']['t']:.1f}s")
 
     if "C" in routes:
         # --- Route C: vector potential, B = curl A in V2 (free) --------------
