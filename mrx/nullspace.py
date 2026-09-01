@@ -357,7 +357,7 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
             v, 1, dirichlet_in=False, dirichlet_out=False)
         a = seq.apply_inverse_laplacian(
             curl_v_dual, 2, dirichlet=False, operators=operators)
-        curl_a = seq.apply_weak_curl(a, False, False)
+        curl_a = seq.apply_weak_curl(a, False)
         v1 = v - curl_a
         v1 = v1 / seq.l2_norm(v1, 1, dirichlet=False)
         operators = _commit(seq, _set_null(operators, 1, False, v1[None, :]))

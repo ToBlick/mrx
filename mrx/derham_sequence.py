@@ -574,23 +574,28 @@ class DeRhamSequence():
         return self.apply_incidence_matrix(v, 2, dirichlet_in=dirichlet_in,
                                            dirichlet_out=dirichlet_out)
 
-    def apply_weak_grad(self, v, dirichlet_in=True, dirichlet_out=True):
-        """The weak gradient of a 3-form: ``-M_2^{-1} D_2^T v`` (the codifferential; one mass solve)."""
+    def apply_weak_grad(self, v, dirichlet=True):
+        """The weak gradient of a 3-form: ``-M_2^{-1} D_2^T v`` (the codifferential;
+        one mass solve). A codifferential stays within one complex, so it carries a
+        single BC class ``dirichlet`` -- used for both the derivative's spaces and
+        the mass inverse (mixed classes are not a well-defined codifferential)."""
         dv_dual = -self.apply_derivative_matrix(
-            v, 2, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out, transpose=True)
-        return self.apply_inverse_mass_matrix(dv_dual, 2, dirichlet=dirichlet_out)
+            v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
+        return self.apply_inverse_mass_matrix(dv_dual, 2, dirichlet=dirichlet)
 
-    def apply_weak_curl(self, v, dirichlet_in=True, dirichlet_out=True):
-        """The weak curl of a 2-form: ``M_1^{-1} D_1^T v`` (the codifferential; one mass solve)."""
+    def apply_weak_curl(self, v, dirichlet=True):
+        """The weak curl of a 2-form: ``M_1^{-1} D_1^T v`` (the codifferential; one
+        mass solve). ``dirichlet`` is the single BC class of the operator."""
         dv_dual = self.apply_derivative_matrix(
-            v, 1, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out, transpose=True)
-        return self.apply_inverse_mass_matrix(dv_dual, 1, dirichlet=dirichlet_out)
+            v, 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
+        return self.apply_inverse_mass_matrix(dv_dual, 1, dirichlet=dirichlet)
 
-    def apply_weak_div(self, v, dirichlet_in=True, dirichlet_out=True):
-        """The weak divergence of a 1-form: ``-M_0^{-1} D_0^T v`` (the codifferential; one mass solve)."""
+    def apply_weak_div(self, v, dirichlet=True):
+        """The weak divergence of a 1-form: ``-M_0^{-1} D_0^T v`` (the codifferential;
+        one mass solve). ``dirichlet`` is the single BC class of the operator."""
         dv_dual = -self.apply_derivative_matrix(
-            v, 0, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out, transpose=True)
-        return self.apply_inverse_mass_matrix(dv_dual, 0, dirichlet=dirichlet_out)
+            v, 0, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
+        return self.apply_inverse_mass_matrix(dv_dual, 0, dirichlet=dirichlet)
 
     def apply_mass_matrix_preconditioner(self, v, k, dirichlet=True,
                                          operators=None, kind='auto'):
@@ -1043,7 +1048,7 @@ class DeRhamSequence():
                 v, 2, dirichlet_in=True, dirichlet_out=True)
             q = self.apply_inverse_laplacian(
                 div_v, 3, dirichlet=True, guess=-p_guess)
-            σ = -self.apply_weak_grad(q, True, True)
+            σ = -self.apply_weak_grad(q, True)
             return v - σ, -q
         elif k == 1:
             # v lives in the natural 1-form space; only the scalar space

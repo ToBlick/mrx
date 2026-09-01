@@ -113,7 +113,9 @@ def analytic_norm_sq(seq, Bphys):
 
 
 def run_rung(seq, ops, routes, field, lam, tag):
+    import jax
     import numpy as np
+    from mrx.geometry import map_jacobian_at
     from mrx.nullspace import estimate_spectral_gap, harmonic_rayleigh
 
     res = dict(tag=tag)
@@ -157,19 +159,30 @@ def run_rung(seq, ops, routes, field, lam, tag):
         f3 = seq.apply_inverse_laplacian(rhs, 3, dirichlet=True, operators=ops)
         r = seq.apply_laplacian(f3, 3, dirichlet=True, operators=ops) - rhs
         solve_res = float(np.linalg.norm(r) / (np.linalg.norm(rhs) + 1e-300))
-        # delta f = -M2^{-1} D2^T f3, output 2-form in the FREE space (non-tangent),
-        # input 3-form in f3's DBC space. apply_weak_grad only supports symmetric
-        # flags (they name spaces on the forward operator), so build delta by hand.
-        dv = -seq.apply_derivative_matrix(f3, 2, dirichlet_in=False,
-                                          dirichlet_out=True, transpose=True)  # -D2^T f3: free V2
-        Bgrad = seq.apply_inverse_mass_matrix(dv, 2, dirichlet=False, operators=ops)  # delta f
-        h2 = seq.nullspace(2, True)[0]
-        Mh2 = seq.apply_mass_matrix(h2, 2, True)
-        a2 = float(load2 @ h2) / float(h2 @ Mh2)                    # <B*,h2>/<h2,h2>
-        Bh = Bgrad + a2 * h2
-        MBh = seq.apply_mass_matrix(Bh, 2, False)
-        err_sq = float(Bh @ MBh) - 2.0 * float(Bh @ load2) + bstar_sq
-        relerr = float(np.sqrt(max(err_sq, 0.0)) / np.sqrt(bstar_sq))
+        Bgrad = seq.apply_weak_grad(f3, dirichlet=False)           # delta f, free V2 (one-flag API)
+        h2 = seq.nullspace(2, True)[0]                             # dbc harmonic 2-form
+        # Bgrad (free V2) and h2 (dbc V2) live in different coefficient spaces --
+        # the solid torus has no free harmonic 2-form (H^2(Omega)=0), the flux
+        # generator is the relative/dbc one -- so pair them, and the analytic B*,
+        # as physical vectors at the quadrature points (Piola pushforward, w*J
+        # measure = the M inner product; metric factors explicit).
+        DF_q = np.asarray(map_jacobian_at(seq.map, seq.quad.x))    # (Nq,3,3)
+        Jq = np.asarray(seq.jacobian_j)
+        wJ = np.asarray(seq.quad.w) * Jq
+
+        def piola(dof, dirichlet):
+            bhat = np.asarray(seq.evaluate_at_quadrature(dof, 2, dirichlet))
+            return np.einsum("qik,qk->qi", DF_q, bhat) / Jq[:, None]
+
+        def ip(a, b):
+            return float(np.sum(wJ * np.sum(a * b, axis=1)))
+
+        Bgrad_q = piola(Bgrad, False)
+        h2_q = piola(h2, True)
+        Bstar_q = np.asarray(jax.vmap(Bphys)(seq.quad.x))
+        a2 = ip(Bstar_q, h2_q) / ip(h2_q, h2_q)                    # <B*,h2>/<h2,h2>
+        Bh_q = Bgrad_q + a2 * h2_q
+        relerr = float(np.sqrt(ip(Bh_q - Bstar_q, Bh_q - Bstar_q) / ip(Bstar_q, Bstar_q)))
         rq = harmonic_rayleigh(seq, h2, 2, True, ops)
         lam1, _ = estimate_spectral_gap(seq, ops, 2, True, maxiter=5)
         out["C"] = dict(relerr=relerr, alpha=a2, solve_res=solve_res,
