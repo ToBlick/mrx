@@ -116,6 +116,46 @@ at k=1, `theta, zeta` at k=2, the single component at k=3). The coefficient
 `build_preconditioners(bc_scale=...)` overrides the constant; there is no
 environment variable. Under Dirichlet the term is zero.
 
+**Why the free 1D ends are the right natural conditions on curved maps.**
+The free Hodge Laplacian at k=1 imposes `u.n = 0` and `curl u x n = 0` at
+`r = 1`. On a flat map these collapse onto the 1D factors: `u.n = 0` pins
+`u_r` on the face, so its tangential derivatives vanish there, and
+`curl u x n = (d_r u_t - d_t u_r, d_r u_z - d_z u_r) = 0` reduces to
+`d_r u_t = d_r u_z = 0` -- exactly the natural conditions of the free-end 1D
+stiffnesses on the primal-axis components. The collapse survives curvature,
+for two metric-independent reasons and one approximation:
+
+1. *The curl half is metric-free.* In the logical covariant components the
+   discretization stores, curl is the exterior derivative:
+   `(du)_{rt} = d_r u_t - d_t u_r`, plain antisymmetrized partials with no
+   metric factors and no Christoffel symbols, on any map.
+2. *Positive weights do not change a natural condition.* The curved
+   conditions carry metric factors, e.g.
+   `g^rr g^tt J (d_r u_t - d_t u_r) = 0` on the face, but
+   `w(1) u'(1) = 0 <=> u'(1) = 0` for `w > 0`: the weighted 1D operators
+   impose the same condition. Only the *strength* of the penalized trace
+   depends on the weight, which is what `_face_alpha` averages.
+3. *The metric enters only through face orthogonality.* `u.n = 0` means
+   `u^r = g^rr u_r + g^rt u_t + g^rz u_z = 0`, which is the logical
+   statement `u_r = 0` -- the trace the rank-one term penalizes -- exactly
+   when `g^rt = g^rz = 0` at the face. Exact on the cylinder and toroid; on
+   W7-X it is the same orthogonal-metric approximation the bulk atom makes
+   everywhere (`component_factors`), so the boundary adds nothing new.
+
+At k=0 there is nothing to penalize at all: the codifferential of a 0-form
+is zero, so `L_0 = D_0^T M_1 D_0` has no weak half, no integration by parts
+and no surface term; the Neumann condition is genuinely natural for
+free-end splines. At k=2 the same collapse runs with the roles swapped (the
+penalized trace is `w x n` on the two derivative components, the primal
+component keeps its free end); k=3 penalizes the full trace. See
+`trace_components` in `mrx/metric_lumping_laplacian.py`.
+
+One caveat: the collapse uses `u_r = 0` *pointwise* on the face, but the
+free discrete problem enforces `u.n = 0` by a penalty, not by removing a
+DOF. The residual `d_t u_r` contamination of the tangential conditions is
+part of why the exact surface integral is not the kappa-best scale and the
+measured `PRODUCTION_BC_SCALE` pushes toward the hard `u_r = 0` limit.
+
 Requirement: `n_r >= p + 2`; a one-element radial mesh has no separable atom.
 
 ## 4. The mass preconditioner: `MetricLumpingMass`
