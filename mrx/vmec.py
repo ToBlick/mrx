@@ -47,8 +47,14 @@ and nowhere else:
 Guards at read time: files older than VMEC 8 store lambda on the full mesh
 and are refused; non-stellarator-symmetric files (``lasym = 1``, which add
 the cosine partners ``rmns``/``zmnc``/``lmnc``) are not implemented;
-``chipf = iotaf * phipf`` is checked against the file's own arrays, which
-catches a half/full-mesh or row-0 mistake. The Nyquist-mesh variables
+``chipf = iotaf * phipf`` is checked against the file's own arrays on the
+strict interior, which catches a half/full-mesh or row-0 mistake (a swap
+breaks every interior node by O(1), not just the ends). The two endpoints
+are extrapolated boundary values of the full-mesh profiles and different
+VMEC writers extrapolate ``chipf`` and ``iotaf`` there independently -- the
+axis entry is often a dummy ``chipf[0] = 0`` and the edge can drift a
+fraction of a percent -- so both ends are skipped; ``chipf`` feeds nothing
+but this check. The Nyquist-mesh variables
 (``gmnc``, ``bmnc``, ``bsup*``, on the *separate* table ``xm_nyq/xn_nyq``)
 are not read -- the Clebsch route rebuilds B from the fluxes and lambda.
 
@@ -172,7 +178,7 @@ def _state_from_raw(raw, path="wout"):
         raise NotImplementedError(f"{path}: lasym = 1 (non-stellarator-"
                                   "symmetric) needs the cosine partners")
     chi_want = raw["iotaf"] * raw["phipf"]
-    err = float(np.abs(raw["chipf"] - chi_want).max())
+    err = float(np.abs(raw["chipf"][1:-1] - chi_want[1:-1]).max())
     if err > 1e-8 * max(float(np.abs(chi_want).max()), 1e-300):
         raise ValueError(f"{path}: chipf != iotaf * phipf (max err {err:.3e});"
                          " half/full mesh or row-0 confusion")
