@@ -41,9 +41,8 @@ Locally, on the CPU (a few minutes on four cores, in either precision):
 pytest
 ```
 
-Tests that read files outside the repository are marked `needs_data` and
-skip when the file is absent. On a cluster, every run is a GPU job. Submit
-the suite through `slurm/run.sh`:
+Every file the suite reads is in the repository. On a cluster, every run
+is a GPU job. Submit the suite through `slurm/run.sh`:
 
 ```bash
 SCRIPT="-m pytest -q test" JOB_NAME=tests TIMEOUT_MIN=45 bash slurm/run.sh
@@ -60,9 +59,7 @@ Equilibrium files are passed by path: `--geometry /path/to/GVEC_State_final.dat`
 to the scripts, `build_sequence("/path/to/file.dat", ns, p)` in code. Both take
 GVEC's own state file (`GVEC_State_*.dat`) or a VMEC `wout_*.nc`, read in
 closed form -- see the [GVEC interface](concepts/gvec_mrx_interface.md).
-The `needs_data` tests read `data/GVEC_State_final.dat` and the
-`data/wout_*.nc` references relative to the checkout and skip when they
-are absent.
+The suite runs on the tracked `data/wout_li383_low_res_reference.nc`.
 
 ## Next steps
 

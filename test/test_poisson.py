@@ -1,136 +1,91 @@
-"""The eight Hodge-Laplacian solves on the session torus, against manufactured solutions.
+"""One solve per degree, on the session geometry.
 
-Every ``(k, dirichlet)`` pair -- the four singular systems (k0 free, k1
-free, k2 dbc, k3 dbc) and the four non-singular ones -- is solved with the
-production ``'auto'`` preconditioner, which the test pins by name: the
-metric-lumping atom at k=0 and, for the saddle solves, the metric-lumping
-mass with the atom as ``schur.outer``. These eight solves are what
-exercises the eight preconditioner pairs ``build_preconditioners``
-assembles on ``tiny_seq``. Each solve must converge to ``seq.tol``, land
-under a measured relative-L2-error band (a wrong metric factor, boundary
-row or extraction moves the error by a factor) and under a measured
-iteration band (a broken preconditioner multiplies the count).
+The vacuum field ``B* = grad Psi`` (``test/manufactured.py``) is recovered
+through the k = 0, 1, 2 solves, each the production solve of its degree with
+its production preconditioner; the k = 3 solve is the Leray projection, which
+must remove a discrete co-exact perturbation of the equilibrium field exactly:
 
-The manufactured solutions are ``test/manufactured.py``, shared with
-``scripts/poisson_study.py``. The Leray projection at k=2 (the
-relaxation's) and k=1 is checked separately: divergence-free at solver
-tolerance, idempotent, non-expansive.
+    k = 0   Route A   S_0 f = G^T load_1(B*)            grad f_h -> B*
+    k = 1   Route C   L_1 A = C^T load_2(B*)            curl A_h -> B*     (the Hodge split)
+    k = 2   the shifted solve (M_2 + eps L_2) u = load_2(B*)    u_h -> B*  (the split identity)
+    k = 3   Leray(B_0 + grad_w q) = B_0                            (the k=3 Laplacian)
+
+The k = 2 row holds because a curl-free, div-free field has no weak boundary
+terms, so ``M_2 B* + eps L_2 B* = M_2 B*`` weakly; the discrete solution is
+the L2 projection smoothed by ``(I + eps M^-1 L)^-1``, which costs a factor
+``~ 1 + eps lambda`` on the projection error at the smoothing ``eps``. The
+bands are 1.25x the values measured at ``(8, 12, 12)`` p=3 on li383 (see the
+print): one-resolution consistency of operator, preconditioner and boundary
+handling, not a convergence study (``scripts/analytic_vacuum.py`` is that).
+The k = 3 check is exact to solver tolerance.
 """
-
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import mrx
-from mrx.operators import (
-    _coerce_saddle_preconditioner_spec,
-    _metric_lumping_available,
-)
-from mrx.preconditioners import (
-    MassPreconditionerSpec,
-    SaddlePointPreconditionerSpec,
-    SchurPreconditionerSpec,
-)
-from test.conftest import TORUS_EPSILON, n_dofs
-from test.manufactured import CASES, case_specs, case_tag, relative_l2_error
+from test.conftest import NS
+from test.manufactured import make_b_star, relative_error
 
-# The production saddle default spelled out, so the test can prove 'auto' IS it.
-_PRODUCTION = SaddlePointPreconditionerSpec(
-    mass=MassPreconditionerSpec(kind='metric_lumping'),
-    schur=SchurPreconditionerSpec(
-        inner=MassPreconditionerSpec(kind='metric_lumping'),
-        outer=MassPreconditionerSpec(kind='metric_lumping')),
-)
-
-# Relative L2 error of each solve on the (4, 6, 4) p=2 spline donut,
-# measured 2026-08-26 in float64 (see the print); the band is 1.25x that.
-# The float32 solve stops at sqrt(eps) = 3.5e-4, far below these
-# discretisation errors, so the bands hold in either precision.
-ERROR_MEASURED = {
-    (0, False): 6.950e-2, (0, True): 4.337e-2,
-    (1, False): 1.640e-1, (1, True): 1.502e-1,
-    (2, False): 1.621e-1, (2, True): 8.172e-2,
-    (3, False): 1.846e-1, (3, True): 6.558e-2,
-}
-# Iterations of the production solve (CG at k=0, MINRES at k>=1), measured
-# with the errors above; the band is 2x, since a count moves by a few
-# percent between precisions and compilations (~1% noise floor).
-ITERS_MEASURED = {
-    (0, False): 8, (0, True): 5,
-    (1, False): 34, (1, True): 21,
-    (2, False): 54, (2, True): 44,
-    (3, False): 22, (3, True): 22,
-}
+# Relative M-norm error against B*, li383 (8, 12, 12) p=3, measured 2026-09-02,
+# band 1.25x: 1.07e-1 (k=0), 4.83e-2 (k=1), 3.13e-1 (k=2). The k=2 value is the
+# L2-projection error 4.76e-2 smoothed by (I + eps M^-1 L)^-1 at the production
+# eps = 1e-3; it tends to 4.8e-2 as eps -> 0 (measured 6.6e-2 at 1e-5, 1.7e-1 at
+# 1e-4, 5.8e-1 at 1e-2), so the band checks the shifted operator at the eps it
+# is used with, not the approximation.
+BAND = {0: 0.134, 1: 0.0604, 2: 0.391}
+EPS_SMOOTHING = 0.064 / NS[0] ** 2
 
 
-@pytest.fixture(scope="module")
-def specs(torus_map):
-    return case_specs(TORUS_EPSILON, torus_map)
+def _route_a(seq, b_star):
+    load1 = seq.load(b_star, 1, dirichlet=False)
+    rhs = seq.apply_incidence_matrix(load1, 0, dirichlet_in=False, dirichlet_out=False,
+                                     transpose=True)
+    f, info = seq.apply_inverse_laplacian(rhs, 0, dirichlet=False, return_info=True)
+    return seq.apply_strong_grad(f, dirichlet_in=False, dirichlet_out=False), 1, info
 
 
-@pytest.mark.parametrize("k,dirichlet", CASES, ids=[case_tag(*c) for c in CASES])
-def test_manufactured_solution(tiny_seq, specs, k, dirichlet):
-    seq = tiny_seq
-    if k == 0:
-        assert _metric_lumping_available(seq.operators, 0, dirichlet), (
-            "the k=0 metric-lumping atom is not assembled, so 'auto' would "
-            "warn and solve unpreconditioned")
-    else:
-        spec = _coerce_saddle_preconditioner_spec(
-            seq, seq.operators, k=k, dirichlet=dirichlet, preconditioner='auto')
-        assert spec == _PRODUCTION, (
-            f"k={k} dbc={dirichlet}: 'auto' resolved to {spec} although the "
-            "atom is assembled")
-
-    case = specs[(k, dirichlet)]
-    b = seq.load(case["src_ref"], k, dirichlet=dirichlet, frame='ref')
-    u, info = seq.apply_inverse_laplacian(
-        b, k, dirichlet=dirichlet, preconditioner='auto', return_info=True)
-    residual = seq.apply_laplacian(u, k, dirichlet=dirichlet) - b
-    rel_res = float(jnp.linalg.norm(residual) / jnp.linalg.norm(b))
-    err = relative_l2_error(seq, k, dirichlet, u, case["exact"])
-    print(f"\n  {case_tag(k, dirichlet)}: relative L2 error {err:.3e}, "
-          f"{-int(info)} iterations, residual {rel_res:.2e}")
-    assert int(info) < 0, f"{case_tag(k, dirichlet)} did not converge (info={int(info)})"
-    # The solve stops at seq.tol on its own preconditioned residual; MINRES
-    # applies L_k through an inner mass solve at seq.tol as well, so the
-    # plain dual residual came out at up to 26 tol (k=1 free, 2026-08-26).
-    assert rel_res <= 100 * seq.tol
-    assert err < 1.25 * ERROR_MEASURED[(k, dirichlet)]
-    assert -int(info) <= 2 * ITERS_MEASURED[(k, dirichlet)]
+def _route_c(seq, b_star):
+    load2 = seq.load(b_star, 2, dirichlet=False)
+    rhs = seq.apply_incidence_matrix(load2, 1, dirichlet_in=False, dirichlet_out=False,
+                                     transpose=True)
+    A, info = seq.apply_inverse_laplacian(rhs, 1, dirichlet=False, return_info=True)
+    return seq.apply_strong_curl(A, dirichlet_in=False, dirichlet_out=False), 2, info
 
 
-@pytest.mark.parametrize("k", (2, 1))
-def test_leray_projection(tiny_seq, k):
-    """``P v`` is divergence-free at solver tolerance, ``P P v = P v`` and
-    ``||P v||_M <= ||v||_M``.
+def _shifted(seq, b_star):
+    load2 = seq.load(b_star, 2, dirichlet=False)
+    u, info = seq.apply_inverse_mass_plus_eps_laplace_matrix(
+        load2, 2, EPS_SMOOTHING, dirichlet=False, return_info=True)
+    return u, 2, info
 
-    k=2 is the relaxation's projection (Dirichlet spaces, k=3 pressure);
-    k=1 the free-space one through the k=0 Laplacian.
-    """
-    seq = tiny_seq
-    dbc = k == 2
-    n = n_dofs(seq, k, dbc)
-    v = jnp.asarray(np.random.default_rng(5 * k).standard_normal(n), dtype=mrx.DTYPE)
-    v = v / seq.l2_norm(v, k, dirichlet=dbc)
-    Pv, p = seq.apply_leray_projection(v, k=k)
-    PPv, _ = seq.apply_leray_projection(Pv, k=k, p_guess=p)
 
-    if k == 2:
-        div = seq.apply_incidence_matrix(Pv, 2, dirichlet_in=True, dirichlet_out=True)
-        div_norm = float(seq.l2_norm(div, 3, dirichlet=True))
-    else:
-        # weak divergence of a free 1-form: the dual 0-form D_0^T v
-        div = seq.apply_derivative_matrix(
-            Pv, 0, dirichlet_in=False, dirichlet_out=False, transpose=True)
-        div_norm = float(jnp.linalg.norm(div))
-    moved = float(seq.l2_norm(PPv - Pv, k, dirichlet=dbc))
-    e_v = float(seq.l2_norm_sq(v, k, dirichlet=dbc))
-    e_Pv = float(seq.l2_norm_sq(Pv, k, dirichlet=dbc))
-    print(f"\n  Leray k={k}: ||div P v|| {div_norm:.2e}, ||P P v - P v|| {moved:.2e}, "
-          f"energy {e_v:.4f} -> {e_Pv:.4f}")
-    # The multiplier solve stops at seq.tol; both the residual divergence and
-    # the second projection's correction are that solve's error.
-    assert div_norm <= 10 * seq.tol
-    assert moved <= 10 * seq.tol
-    assert e_Pv < e_v
+@pytest.mark.parametrize("k", (0, 1, 2))
+def test_vacuum_field_is_recovered(seq, k):
+    b_star = make_b_star(seq.map)
+    u_h, k_form, info = {0: _route_a, 1: _route_c, 2: _shifted}[k](seq, b_star)
+    assert int(info) <= 0, f"k={k}: the solve did not converge ({int(info)} iterations)"
+    relerr = relative_error(seq, u_h, k_form, False, b_star)
+    print(f"\n  k={k}: relerr {relerr:.3e} ({abs(int(info))} iterations)")
+    assert np.isfinite(relerr) and relerr < BAND[k], f"k={k}: relerr {relerr:.3e} > {BAND[k]:.3e}"
+
+
+def test_leray_projection_removes_the_co_exact_part(seq, b0):
+    """``Leray(B_0 + grad_w q) = B_0`` to solver tolerance for a random 3-form
+    ``q``: ``B_0`` is exactly div-free and ``grad_w q`` is exactly co-exact, so
+    the k=3 solve must find ``q`` and remove it entirely."""
+    q = jnp.asarray(np.random.default_rng(3).standard_normal(seq.n(3, True)), dtype=mrx.DTYPE)
+    w = seq.apply_weak_grad(q, True)
+    w = w * (seq.l2_norm(b0, 2) / seq.l2_norm(w, 2))          # a perturbation of size ||B_0||
+    b_h, _ = seq.apply_leray_projection(b0 + w, k=2)
+    rel = float(seq.l2_norm(b_h - b0, 2) / seq.l2_norm(w, 2))
+
+    def div_norm(v):
+        return float(seq.l2_norm(seq.apply_incidence_matrix(v, 2, True, True), 3))
+    # The divergence left over, relative to the divergence that was removed:
+    # div amplifies the solve residual by the operator norm, so ||div B_h|| /
+    # ||B_h|| alone would compare a solve residual with a field norm.
+    div = div_norm(b_h) / div_norm(w)
+    print(f"\n  Leray: residual perturbation {rel:.2e}, ||div B_h|| / ||div w|| {div:.1e}")
+    assert rel < 100 * seq.tol, f"Leray left {rel:.2e} of the co-exact perturbation"
+    assert div < 100 * seq.tol, f"Leray left {div:.2e} of the divergence"

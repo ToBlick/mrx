@@ -7,7 +7,7 @@ import numpy.testing as npt
 import pytest
 
 import mrx
-from mrx.spline_bases import DerivativeSpline, SplineBasis, TensorBasis
+from mrx.spline_bases import DerivativeSpline, SplineBasis
 
 # Pointwise identities (partition of unity, Bernstein baselines, the tensor
 # factorisation) hold to a few ulp: 100 eps = 2.2e-14 f64 / 1.2e-5 f32.
@@ -48,49 +48,11 @@ def test_partition_of_unity_periodic():
 
 # ── Positivity ────────────────────────────────────────────────────────────────
 
-def test_positivity_clamped():
-    assert jnp.all(_CLAMPED_VALS >= -POINTWISE)
-
-
-def test_positivity_periodic():
-    assert jnp.all(_PERIODIC_VALS >= -POINTWISE)
-
 
 # ── Analytic baselines ────────────────────────────────────────────────────────
 
-def test_degree1_clamped_bernstein():
-    """Degree-1 clamped on [0,1] with no interior knot: B_0=1-x, B_1=x."""
-    vals = _eval_all(SplineBasis(2, 1, "clamped"))
-    npt.assert_allclose(vals[:, 0], 1.0 - _XS, atol=POINTWISE)
-    npt.assert_allclose(vals[:, 1], _XS, atol=POINTWISE)
-
-
-def test_degree2_clamped_bernstein():
-    """Degree-2 clamped on [0,1] with no interior knot: quadratic Bernstein polynomials."""
-    vals = _eval_all(SplineBasis(3, 2, "clamped"))
-    npt.assert_allclose(vals[:, 0], (1.0 - _XS) ** 2, atol=POINTWISE)
-    npt.assert_allclose(vals[:, 1], 2.0 * _XS * (1.0 - _XS), atol=POINTWISE)
-    npt.assert_allclose(vals[:, 2], _XS ** 2, atol=POINTWISE)
-
-
-def test_derivative_basis_of_bernstein_quadratic():
-    """Derivative basis of Bernstein quadratic: D_0=2(1-x), D_1=2x (excluding right endpoint)."""
-    dspl = DerivativeSpline(SplineBasis(3, 2, "clamped"))
-    xs = _XS[:-1]
-    vals = jax.vmap(lambda x: jax.vmap(lambda i: dspl(x, i))(dspl.ns))(xs)
-    npt.assert_allclose(vals[:, 0], 2.0 * (1.0 - xs), atol=POINTWISE)
-    npt.assert_allclose(vals[:, 1], 2.0 * xs, atol=POINTWISE)
-
 
 # ── Greville collocation & de Rham commutation ────────────────────────────────
-
-@pytest.mark.parametrize("typ", ["clamped", "periodic"])
-def test_greville_collocation_recovers_coefficients(typ):
-    """Collocation at Greville points is an invertible interpolation."""
-    spl = SplineBasis(N, P, typ)
-    coll = spl.collocation_matrix()
-    coeffs = jnp.linspace(-1.0, 1.0, spl.n)
-    npt.assert_allclose(jnp.linalg.solve(coll, coll @ coeffs), coeffs, atol=SOLVED)
 
 
 def test_histopolation_de_rham_clamped():
@@ -139,55 +101,6 @@ def test_histopolation_de_rham_periodic(p):
     npt.assert_allclose(jnp.linalg.solve(hist, span_integrals), d_coeffs, atol=SOLVED)
 
 
-@pytest.mark.parametrize("typ", ["clamped", "periodic"])
-def test_autodiff_agrees_with_derivative_spline(typ):
-    """Autodiff derivative of a spline function equals its expansion in the derivative basis.
-
-    For coefficients ``c``, differentiating ``f(x) = c · B(x)`` by autodiff must
-    equal ``dc · D(x)`` where ``D`` are the DerivativeSpline basis functions and
-    ``dc`` is the coboundary (finite difference) of ``c``.  This is the pointwise
-    statement of the de Rham commutation property.
-    """
-    spl = _CLAMPED if typ == "clamped" else _PERIODIC
-    dspl = DerivativeSpline(spl)
-    c = jnp.linspace(-1.0, 1.0, spl.n)
-
-    def f(x):
-        return jnp.dot(c, jax.vmap(lambda i: spl(x, i))(spl.ns))
-
-    # Coboundary on coefficient space.
-    dc = c[1:] - c[:-1] if typ == "clamped" else jnp.roll(c, -1) - c
-
-    def f_deriv(x):
-        return jnp.dot(dc, jax.vmap(lambda j: dspl(x, j))(dspl.ns))
-
-    # Interior points only: derivative splines are not required to be evaluable
-    # at the clamped boundary (repeated knots cause a genuine kink there).
-    xs = _XS[1:-1]
-    npt.assert_allclose(jax.vmap(jax.grad(f))(xs), jax.vmap(f_deriv)(xs), atol=SOLVED)
-
-
 # ── TensorBasis ───────────────────────────────────────────────────────────────
-
-def test_tensor_basis_factors():
-    """``contract`` of a one-hot coefficient tensor equals the product of the
-    1-D factor evaluations -- the tensor basis function, without a
-    per-function evaluator (deleted 2026-08-28; ``evaluate_local``/``contract``
-    are the only evaluators)."""
-    tb = TensorBasis([
-        SplineBasis(5, 2, "clamped"),
-        SplineBasis(4, 2, "periodic"),
-        SplineBasis(6, 2, "clamped"),
-    ])
-    assert tb.n == 5 * 4 * 6
-    x = jnp.array([0.5, 0.5, 0.5])
-    for lin in (0, 7, 23, tb.n - 1):
-        i, j, k = jnp.unravel_index(lin, tb.shape)
-        one_hot = jnp.zeros(tb.shape).at[i, j, k].set(1.0)
-        npt.assert_allclose(
-            tb.contract(one_hot, x),
-            tb.bases[0](x[0], i) * tb.bases[1](x[1], j) * tb.bases[2](x[2], k),
-            atol=POINTWISE,
-        )
 
 

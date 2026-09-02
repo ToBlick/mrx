@@ -44,15 +44,13 @@ dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
-# One tier: `pytest` runs everything on the CPU (< 10 min on four cores,
-# float64 and float32, no data files). Tests reading files outside the
-# repository carry `needs_data` and skip when the file is absent; see
-# slurm/README.md for running them. The slowest tests are reported so suite
-# cost is measured rather than guessed.
-addopts = "--durations=15"
-markers = [
-    "needs_data: reads a file outside the repository (data/GVEC_State_final.dat, the data/wout_* references, MRX_RELAX_ARCHIVE; the wout IC gates additionally want MRX_WOUT_GATES=1 on a GPU); skips when it is absent",
-]
+# One lean tier (test/conftest.py): one session sequence on the tracked li383
+# wout, assembly / exactness / harmonic forms / four vacuum solves / one
+# relaxation, plus a few millisecond checks. Every file it reads is in the
+# repository. The slowest tests are reported so suite cost is measured rather
+# than guessed; a new test is the production configuration plus at most one
+# contrasting case.
+addopts = "--durations=10"
 norecursedirs = ["test/deprecated", "deprecated", "test/experimental"]
 
 [tool.ruff]
