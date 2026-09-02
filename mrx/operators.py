@@ -173,10 +173,11 @@ def _materialize_default_scalar_hodge_preconditioner(
 def _coerce_diffusion_preconditioner_spec(
         seq, operators: SequenceOperators, *, k: int, preconditioner):
     if preconditioner is None or preconditioner == 'auto':
-        # M + eps L is MASS-DOMINATED in the regime this solve is used in
-        # (the relaxation's velocity smoothing: eps * lambda_max(M^-1 L) ~ 0.26
-        # at ns=(8,16,8)), so the production MASS preconditioner is the right
-        # object.
+        # 'auto' is the mass atom. Each split system of
+        # apply_inverse_mass_plus_eps_laplace_matrix is M_j + eps S_j, which
+        # IS M_j on the closed forms (the kernel of S_j); on the coexact part
+        # the atom leaves kappa ~ 1 + eps lambda_max(M^-1 S). The joint
+        # (M + eps S) atom of OPEN 3.9 is the object that would remove that.
         del seq, operators, k
         return default_mass_preconditioner()
     if isinstance(preconditioner, MassPreconditionerSpec):
@@ -1207,18 +1208,11 @@ def _build_diffusion_preconditioner_apply(
         shifted = 1.0 / (1.0 / mass_diaginv + eps / stiffness_diaginv)
         return lambda x, d=shifted: d * x
     if spec.kind == production_kind:
-        # The production MASS preconditioner.  It approximates M_k and knows
-        # nothing about eps L_k, so it is admissible exactly while the
-        # operator is mass-dominated, i.e. eps * lambda_max(M^-1 L) << 1
-        # (lambda_max ~ h^-2, so ~ n^2 on these grids).  That is the regime
-        # the relaxation's hyperregularisation uses.
-        #
-        # The mass atom approximates M_k and knows nothing about eps L_k: it
-        # is admissible while the operator is mass-dominated, i.e.
-        # eps * lambda_max(M^-1 L) << 1 (lambda_max ~ h^-2), which is the
-        # regime the relaxation's velocity smoothing uses. A first-order
-        # correction P_M - theta eps P_M L P_M exists (2 applies + 1 matvec,
-        # SPD only with damping) and was judged not worth it at that eps.
+        # The production MASS preconditioner: exact on the closed forms of
+        # M_k + eps S_k, and what the coexact part gets until the joint
+        # (M + eps S) atom (OPEN 3.9) exists. A first-order correction
+        # P_M - theta eps P_M S P_M is SPD only with damping and was judged
+        # not worth it.
         return _build_mass_preconditioner_apply(
             seq,
             operators,
@@ -1582,94 +1576,74 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
                                                maxiter: Optional[int] = None,
                                                preconditioner='auto',
                                                return_info: bool = False):
-    """Solve with the inverse of M_k + eps L_k using an explicit operator bundle.
+    """Solve ``(M_k + eps L_k) x = rhs`` as two SPD solves.
+
+    With ``S_k = D_k^T M_{k+1} D_k`` the strong stiffness and
+    ``L_k = S_k + M_k D_{k-1} M_{k-1}^{-1} D_{k-1}^T M_k`` the Hodge
+    Laplacian, ``D_k D_{k-1} = 0`` gives, exactly,
+
+        (M_k + eps L_k)^{-1} = (M_k + eps S_k)^{-1}
+                               - eps D_{k-1} (M_{k-1} + eps S_{k-1})^{-1} D_{k-1}^T
+
+    (multiply out: ``(M_k + eps S_k) D_{k-1} = M_k D_{k-1}``, and the cross
+    terms cancel through ``(M_{k-1} + eps S_{k-1}) M_{k-1}^{-1} = I + eps
+    S_{k-1} M_{k-1}^{-1}``). Each system is a mass plus a semidefinite
+    stiffness -- SPD, matrix-free, PCG with the mass atom -- so there is no
+    saddle system, no inner mass solve and nothing to deflate. ``k = 0`` is
+    the first solve alone; ``k = 3`` has ``S_3 = 0``.
+
+    Measured on li383 p=3 at the velocity-smoothing ``eps = 0.064 / n_r^2``,
+    both solves together: 330 / 772 / 1326 iterations at (8,16,8) /
+    (12,24,12) / (16,32,16), against 2134 / 8478 / 20362 for the saddle
+    MINRES this replaced with the same atom and tolerance; the solutions
+    agree to ``3 tol`` in the mass norm
+    (``docs/research/shifted_split_2026-09-02.md``). What remains is the
+    mass atom's ``kappa ~ 1 + eps lambda_max(M^-1 S)`` on the coexact part
+    of each solve (OPEN 3.9).
 
     ``eps`` may be a traced scalar: the relaxation's resistive step passes
     ``dt * eta`` from inside a jitted step. Nothing here branches on its
-    value, so ``eps = 0`` runs the diffusion solver on the (then singular)
-    saddle system rather than dispatching to the mass solve -- a caller with
-    ``eps = 0`` wants :func:`apply_inverse_mass_matrix` and should say so.
+    value, so ``eps = 0`` runs two mass solves rather than dispatching to
+    :func:`apply_inverse_mass_matrix` -- a caller with ``eps = 0`` wants
+    that function and should say so. ``info`` is the summed signed
+    iteration count of the two solves, negative when both converged.
     """
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
 
-    if k == 0:
-        def operator_apply(x):
-            return apply_mass_matrix(
-                seq, x, 0, dirichlet=dirichlet) + eps * apply_stiffness(
-                    seq, x, 0, dirichlet=dirichlet)
-
+    def shifted_solve(j, b, x0):
         precond_apply = _build_diffusion_preconditioner_apply(
             seq,
             operators,
-            k=0,
+            k=j,
             dirichlet=dirichlet,
             eps=eps,
             preconditioner=preconditioner,
             allow_none=True,
         )
-        x, info = solve_singular_cg(
-            operator_apply,
-            rhs,
-            jnp.zeros((0, rhs.shape[0]), dtype=rhs.dtype),
+        return solve_singular_cg(
+            lambda x: apply_mass_matrix(seq, x, j, dirichlet=dirichlet)
+            + eps * apply_stiffness(seq, x, j, dirichlet=dirichlet),
+            b,
+            jnp.zeros((0, b.shape[0]), dtype=b.dtype),
             precond_matvec=precond_apply,
-            x0=guess,
+            x0=x0,
             tol=tol,
             maxiter=maxiter,
         )
+
+    x, info = shifted_solve(k, rhs, guess)
+    if k == 0:
         return (x, info) if return_info else x
 
-    n_upper = seq.n(k, dirichlet)
-    n_lower = seq.n(k-1, dirichlet)
-
-    def upper_operator_apply(x):
-        return apply_mass_matrix(
-            seq, x, k, dirichlet=dirichlet) + eps * apply_stiffness(
-                seq, x, k, dirichlet=dirichlet)
-
-    upper_preconditioner = _build_diffusion_preconditioner_apply(
-        seq,
-        operators,
-        k=k,
-        dirichlet=dirichlet,
-        eps=eps,
-        preconditioner=preconditioner,
-        allow_none=True,
-    )
-    lower_preconditioner_apply = _build_mass_preconditioner_apply(
-        seq,
-        operators,
-        k=k - 1,
-        dirichlet=dirichlet,
-        preconditioner=preconditioner,
-        allow_none=True,
-    )
-
-    def precond_lower(x):
-        return (1.0 / eps) * lower_preconditioner_apply(x)
-
-    def precond_upper(x):
-        return upper_preconditioner(x)
-
-    u, sigma, info = solve_saddle_point_minres(
-        stiffness_matvec=upper_operator_apply,
-        derivative_matvec=lambda s: eps * apply_derivative_matrix(
-            seq, s, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
-        derivative_T_matvec=lambda u: eps * apply_derivative_matrix(
-            seq, u, k - 1, dirichlet_in=dirichlet,
-            dirichlet_out=dirichlet, transpose=True),
-        mass_lower_matvec=lambda s: eps * apply_mass_matrix(
-            seq, s, k - 1, dirichlet=dirichlet),
-        b_upper=rhs,
-        n_upper=n_upper,
-        n_lower=n_lower,
-        precond_upper=precond_upper,
-        precond_lower=precond_lower,
-        x0_upper=guess,
-        tol=tol,
-        maxiter=maxiter,
-    )
-    return (u, info) if return_info else u
+    z, info_lower = shifted_solve(
+        k - 1,
+        apply_incidence_matrix(seq, rhs, k - 1, dirichlet, dirichlet, transpose=True),
+        None)
+    x = x - eps * apply_incidence_matrix(seq, z, k - 1, dirichlet, dirichlet)
+    total = jnp.abs(info) + jnp.abs(info_lower)
+    info = jnp.where((info <= 0) & (info_lower <= 0), -total, total)
+    return (x, info) if return_info else x
 
 
 def apply_laplacian(seq, operators: SequenceOperators, v, k: int,

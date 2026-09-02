@@ -114,6 +114,14 @@ The shifted-Jacobi kind exists but its lazy Laplacian-diagonal builder
 converts to numpy at trace time, so it cannot be used inside the jitted step
 as is.
 *Detail:* `docs/source/concepts/relaxation.md` §2.
+*Update 2026-09-02:* the saddle MINRES is gone. `D_k D_{k-1} = 0` gives the
+exact split `(M_k + eps L_k)^-1 = (M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1}
++ eps S_{k-1})^-1 D_{k-1}^T`: two SPD matrix-free PCG solves with the mass
+atom, no inner mass solve. li383 p=3 at the smoothing eps: 330 / 772 / 1326
+iterations at (8,16,8) / (12,24,12) / (16,32,16) against 2134 / 8478 /
+20362 for the MINRES (`docs/research/shifted_split_2026-09-02.md`). The
+joint `(M + eps S)` atom stays open and is now a drop-in for each split
+system; the count still grows like `n_r^2`.
 
 ### 3.10 RESOLVED 2026-08-26: the iota = 1 core at (8,16,8) is a mesh artefact
 

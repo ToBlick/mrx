@@ -17,7 +17,7 @@ Solvers are in `mrx/solvers.py`; the wiring is in `mrx/operators.py`.
 | `L_0 u = f` | `apply_inverse_laplacian`, k=0 | `solve_singular_cg`, harmonic mode deflated | Laplacian atom |
 | `L_k u = f`, k=1,2,3 | `apply_inverse_laplacian` | `solve_saddle_point_minres` | lower: mass `metric_lumping` of degree k-1; upper: Laplacian atom |
 | `(L_k + eps M_k) u = f` | `apply_inverse_shifted_laplacian` | as above; nothing deflated | as above, plus a `1/eps` harmonic coarse correction when the harmonic vector exists |
-| `(M_k + eps L_k) u = f` | `apply_inverse_mass_plus_eps_laplace_matrix` | CG for k=0, saddle MINRES otherwise | mass `metric_lumping` on both blocks |
+| `(M_k + eps L_k) u = f` | `apply_inverse_mass_plus_eps_laplace_matrix` | two SPD CG solves, `M_k + eps S_k` and `M_{k-1} + eps S_{k-1}`, through the split identity `(M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1} + eps S_{k-1})^-1 D_{k-1}^T` (exact, from `D_k D_{k-1} = 0`) | mass `metric_lumping` on both solves |
 
 The saddle system for k >= 1 is
 
