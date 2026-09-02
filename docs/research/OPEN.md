@@ -113,6 +113,18 @@ each `eps` -- or for a small set of `eps` values, since
 The shifted-Jacobi kind exists but its lazy Laplacian-diagonal builder
 converts to numpy at trace time, so it cannot be used inside the jitted step
 as is.
+*Partially addressed 2026-09-02 (PR #19, issue #18):* the sibling **velocity
+smoothing** solve has the same symptom for the same reason and was measured
+rather than assumed. `eps * lambda_max(M^-1 L_hodge)` is 91.5 at `(8,16,8)`
+and 360.3 at `(12,24,12)`, not the ~0.26 the code claimed, so that solve is
+Laplacian-dominated too and refining makes it more so. Preconditioning the
+upper block with the LAPLACIAN atom as `(1/eps) P_L` instead of the MASS atom
+takes it from 2130/8493 iterations to 1655/3636 and the whole relaxation step
+from 13.02 s to 8.05 s on a v5e. That is a `laplacian` kind on the existing
+atoms, not the separable atom proposed here: growth per refinement improves
+from 4.0x to 2.2x but is still not flat, the crossover where the MASS atom
+would be right sits at `eps ~ 1e-4`, and the resistive solve above spans both
+sides of it. The separable atom remains the fix.
 *Detail:* `docs/source/concepts/relaxation.md` §2.
 
 ### 3.10 RESOLVED 2026-08-26: the iota = 1 core at (8,16,8) is a mesh artefact
