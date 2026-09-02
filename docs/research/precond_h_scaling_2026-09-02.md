@@ -157,11 +157,17 @@ atom's derivative-axis term as the 1-D round trip `M^D G W_1d G^T M^D`
 `I - G (G^T G)^-1 G^T` (Kronecker sum, fast-diagonalisable, polar rows as
 a dense core).
 
-Other arms, all dominated: sandwich `(I-Pi) P_1 (I-Pi^T) + G L_0^-1 M_0
-L_0^-1 G^T` in MINRES with Chebyshev inner (m=32: 275 / 409 its, 4-5x the
-wall time of the atom at n=24 dbc) or PCG inner (fine to 1e-4, stalls at
-1e-2); CG on `L_1` with an inner mass PCG (Simoncini-Szyld) --
-`gradsw_qa_ss.log`; any-W on the full `b` (306 / 1465 = the split).
+Other arms, all dominated (`gradsw_qa_*.log`):
+
+- Sandwich `(I-Pi) P_1 (I-Pi^T) + G L_0^-1 M_0 L_0^-1 G^T` in MINRES,
+  Chebyshev inner (m=32: 275 / 409 its at n=16; 4-5x the atom's wall time
+  at n=24 dbc) or PCG inner (n=24: dbc 319-374 its at 41-94 s vs 1550 at
+  7 s; free 330-730 at 150-220 s vs 5701 at 37 s; inner tol 1e-2 stalls).
+- CG on the true `L_1` with an inner mass PCG (Simoncini-Szyld): dbc n=16
+  353-428 outer, 2500-5800 inner, 146-184 s (relaxed schedule 391 / 3000 /
+  residual 1.6e-8, so inexact matvecs work in principle); free n=16 FAILS
+  (6000 outer, residual 3.0, 96k inner, 46 min).
+- any-W on the full `b` (306 / 1465 = the split).
 
 ## 5. h-scaling of the atom (`hscale_*.log`, `lanczos_*.log`, `coefpat_*.log`)
 
