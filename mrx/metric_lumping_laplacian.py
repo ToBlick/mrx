@@ -118,18 +118,13 @@ def bundled_axis_profiles(seq, field):
 
 
 def weight_fields(seq):
-    """The metric weight families the atoms need, at quadrature points.
+    """The metric weight fields the atoms reduce to axis profiles, at quadrature points.
 
-    Three distinct families, one per mass appearing in ``L_k``:
-
-    ==========  ===================  ==================================
-    symbol      space                weight
-    ==========  ===================  ==================================
-    ``jac``     0-form mass          ``J``
-    ``ginvJ``   1-form mass          ``g^{aa} J``
-    ``gJinv``   2-form mass          ``g_{aa} / J``
-    ``invjac``  3-form mass          ``1 / J``
-    ==========  ===================  ==================================
+    ``jac`` = ``J``, ``ginv_aa`` = ``(g^{rr}, g^{tt}, g^{zz})``, ``met_aa`` =
+    ``(g_{rr}, g_{tt}, g_{zz})``.  Products such as ``g^{aa} J`` are formed by
+    the consumer on the fly and reduced immediately; this used to return them
+    too (``invjac``, ``ginvJ``, ``ginv2J``, ``gJinv``), ten more full-size
+    arrays nobody read -- 6 GB at ``(68, 136, 68)`` p=4, where it OOMed.
     """
     shape = seq.quad.shape
     jac = jnp.asarray(seq.geometry.jacobian_j).reshape(shape)
@@ -137,16 +132,8 @@ def weight_fields(seq):
     met = jnp.asarray(seq.geometry.metric_jkl).reshape(*shape, 3, 3)
     return {
         "jac": jac,
-        "invjac": 1.0 / jac,
         "ginv_aa": tuple(ginv[..., a, a] for a in range(3)),
         "met_aa": tuple(met[..., a, a] for a in range(3)),
-        "ginvJ": tuple(ginv[..., a, a] * jac for a in range(3)),
-        # (g^{aa})^2 J -- the weight of the div-div energy when it is written
-        # directly as a stiffness of the derivative splines rather than routed
-        # through M_0^-1: ||delta u||^2 = int [d_r(J g^rr u_r)]^2 / J
-        #                              ~= int (d_r u_r)^2 (g^rr)^2 J.
-        "ginv2J": tuple(ginv[..., a, a] ** 2 * jac for a in range(3)),
-        "gJinv": tuple(met[..., a, a] / jac for a in range(3)),
     }
 
 
