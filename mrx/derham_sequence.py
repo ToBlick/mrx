@@ -727,16 +727,19 @@ class DeRhamSequence():
         the bundle projected out, the metric-lumped k=0 atom as
         preconditioner.
 
-        ``k >= 1``: the symmetric saddle system in ``(x, sigma)``::
+        ``k = 1, 2``: the Hodge-split solve
+        (:func:`~mrx.operators.apply_inverse_laplacian_hodge`): the exact
+        part of ``x`` from a ``(k-1)``-level solve, the rest by PCG on the
+        SPD ``S_k + M_k D W D^T M_k`` (``W`` the mass atom) with the
+        metric-lumped atom, one more ``(k-1)``-level solve to close.  No
+        saddle system, no mass inverse, no Krylov solve inside another.
 
-            | S_k        D_{k-1} | | x     |   | rhs |
-            | D_{k-1}^T  -M_{k-1} | | sigma | = | 0   |
-
-        whose Schur complement is ``L_k``, by MINRES
+        ``k = 3``: the symmetric saddle system in ``(x, sigma)`` by MINRES
         (:func:`~mrx.solvers.solve_saddle_point_minres`) with the block
-        preconditioner ``'auto'``: the metric-lumped Laplacian atom on the
-        upper block and the metric-lumped mass atom on the lower one,
-        harmonic forms deflated. No Krylov solve nests inside another.
+        preconditioner ``'auto'`` (metric-lumped atoms, harmonic forms
+        deflated) -- ``S_3 = 0`` leaves nothing to split.  The same MINRES
+        is the solver of the SHIFTED Laplacian at every ``k``
+        (:meth:`apply_inverse_shifted_laplacian`).
         """
         operators = self._require_operators(operators)
         return op.apply_inverse_laplacian(

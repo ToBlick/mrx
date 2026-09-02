@@ -1364,6 +1364,136 @@ def apply_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
     return operators.laplacian_lumping[(int(k), bool(dirichlet))].apply(v)
 
 
+def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter,
+               guess=None):
+    """PCG on ``L^_k = S_k + M_k D_{k-1} W D_{k-1}^T M_k``, ``W`` the mass atom.
+
+    The strong stiffness ``S_k`` is singular on the exact forms, and PCG on
+    it is NOT viable: the right-hand sides of the Hodge split are consistent
+    only to the tolerance of the solve that produced them, that kernel
+    component is invisible to ``S_k``, and the atom amplifies it on every
+    iteration (5-13x at k=1 Dirichlet -> a residual floor of 1e-6; 100-500x
+    on the free and k>=2 kernels -> exponential blow-up, measured 2026-09-02).
+
+    ``L^_k`` is SPD for ANY SPD ``W``: the kernel component now has a positive
+    eigenvalue and is damped instead of fed back.  The solution's exact part
+    depends on ``W`` (it is wrong), its exact-orthogonal part does not (see
+    :func:`apply_inverse_laplacian_hodge`, which uses only that part or
+    corrects the rest in closed form).  ``W`` = the metric-lumped mass atom of
+    level ``k-1`` puts the exact-form eigenvalues at the same ``h^-2`` scale
+    as ``S_k`` on its range, which is what the componentwise-Laplacian atom
+    expects; those modes are barely excited by a right-hand side of the
+    split anyway.  Harmonic forms deflated.
+    """
+    for kk in (k, k - 1):
+        if not _metric_lumping_available(operators, kk, dirichlet):
+            raise ValueError(
+                "apply_inverse_laplacian: the Hodge-split solve needs the "
+                f"metric_lumping atoms for k={kk}, dirichlet={dirichlet}; "
+                "seq.build_preconditioners() builds them")
+
+    def D(v):
+        return apply_incidence_matrix(seq, v, k - 1, dirichlet_in=dirichlet,
+                                      dirichlet_out=dirichlet)
+
+    def DT(v):
+        return apply_incidence_matrix(seq, v, k - 1, dirichlet_in=dirichlet,
+                                      dirichlet_out=dirichlet, transpose=True)
+
+    def M(v):
+        return apply_mass_matrix(seq, v, k, dirichlet=dirichlet)
+
+    def W(v):
+        return apply_mass_matrix_preconditioner(seq, operators, v, k - 1,
+                                                dirichlet=dirichlet, kind='metric_lumping')
+
+    def L_hat(x):
+        return apply_stiffness(seq, x, k, dirichlet=dirichlet) + M(D(W(DT(M(x)))))
+
+    return solve_singular_cg(
+        L_hat, b,
+        mass_matvec=M,
+        precond_matvec=lambda x: apply_laplacian_preconditioner(
+            seq, operators, x, k, dirichlet=dirichlet, kind='metric_lumping'),
+        x0=guess,
+        vs=_nullspace_vectors(operators, k, dirichlet),
+        tol=tol,
+        maxiter=maxiter,
+    )
+
+
+def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int,
+                                  dirichlet: bool = True, guess=None,
+                                  tol: Optional[float] = None,
+                                  maxiter: Optional[int] = None,
+                                  return_info: bool = False):
+    """``L_k^{-1} rhs`` for ``k >= 1`` by Hodge splitting (TB, 2026-09-02).
+
+    ``L_k = S_k + M_k D_{k-1} M_{k-1}^{-1} D_{k-1}^T M_k`` and
+    ``D_{k-1}^T S_k = 0``, so projecting ``L_k x = b`` onto the exact forms
+    ``x = D_{k-1} a + x_perp`` gives the exact part in closed form:
+
+        S_{k-1} g = D_{k-1}^T b          (g := M_{k-1}^{-1} S_{k-1} a; consistent,
+                                          D_{k-2}^T D_{k-1}^T = 0)
+        S_k x_perp = b - M_k D_{k-1} g   (consistent: D_{k-1}^T of it is 0)
+        S_{k-1} a = M_{k-1} g - D_{k-1}^T M_k x_perp
+        x = x_perp + D_{k-1} a
+
+    Every solve is a PCG on a strong stiffness with its own atom -- no saddle
+    system, no MINRES, no mass inverse anywhere, and the weak half
+    ``D M^{-1} D^T`` never appears: the atom's model of it, the part that was
+    measured to cost 4-35x in iterations, only ever acts on exact forms.
+
+    The strong stiffnesses are singular on the exact forms and are NOT solved
+    as such (:func:`_hat_solve`): each solve is on the SPD
+    ``L^_j = S_j + M_j D W D^T M_j`` instead, whose exact-orthogonal solution
+    is the one wanted for any SPD ``W``.  The exact part of each intermediate
+    is wrong and irrelevant -- ``g`` and ``a`` are only ever used through
+    ``D_{k-1}`` or paired against ``x_perp``, and the exact part of ``x_perp``
+    itself is removed by the closing ``S_{k-1}`` solve, which at ``k = 1`` is
+    the explicitly deflated scalar solve (:func:`apply_inverse_laplacian`,
+    ``k = 0``).
+
+    ``k = 3`` is NOT split (``S_3 = 0``: it would be two ``L^_2`` solves in
+    series, measured at 771 iterations against 694 saddle MINRES on QA n=16,
+    with the exact residual 40x worse because the split stops on the
+    ``L^_2`` residual and the exact one carries ``M_2^{-1}`` amplification --
+    which the Leray projection, its consumer, needs); it stays on the saddle
+    MINRES.  ``guess`` warm-starts the ``L^_k`` solve; ``return_info`` reports
+    its signed count.  Harmonic forms of every level are deflated; the
+    solution is harmonic-orthogonal in ``M_k``.
+    """
+    if k not in (1, 2):
+        raise ValueError(f"apply_inverse_laplacian_hodge: k must be 1 or 2, got {k}")
+    operators = _require_bundle(operators)
+    tol = seq.tol if tol is None else tol
+    maxiter = seq.maxiter if maxiter is None else maxiter
+    d = dirichlet
+
+    def D(v, j):
+        return apply_incidence_matrix(seq, v, j, dirichlet_in=d, dirichlet_out=d)
+
+    def DT(v, j):
+        return apply_incidence_matrix(seq, v, j, dirichlet_in=d, dirichlet_out=d,
+                                      transpose=True)
+
+    def M(v, j):
+        return apply_mass_matrix(seq, v, j, dirichlet=d)
+
+    def solve(b, j, guess=None):
+        if j == 0:
+            return apply_inverse_laplacian(seq, operators, b, 0, dirichlet=d,
+                                           guess=guess, tol=tol, maxiter=maxiter,
+                                           return_info=True)
+        return _hat_solve(seq, operators, b, j, d, tol=tol, maxiter=maxiter, guess=guess)
+
+    g, _ = solve(DT(rhs, k - 1), k - 1)
+    x_perp, info = solve(rhs - M(D(g, k - 1), k), k, guess=guess)
+    a, _ = solve(M(g, k - 1) - DT(M(x_perp, k), k - 1), k - 1)
+    x = x_perp + D(a, k - 1)
+    return (x, info) if return_info else x
+
+
 def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
                                   dirichlet: bool = True, guess=None,
                                   tol: Optional[float] = None,
@@ -1372,10 +1502,14 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
                                   return_info: bool = False):
     """Solve with the inverse of the unshifted Hodge Laplacian ``L_k``.
 
-    For ``k = 0`` this uses the dedicated singular scalar-Laplacian solve
-    directly rather than routing through the shifted ``eps = 0`` path.
-    For ``k >= 1`` the saddle-point implementation remains shared with the
-    shifted solve because the only difference is the absent mass shift.
+    ``k = 0``: the deflated scalar PCG below.  ``k = 1, 2``: the Hodge-split
+    solve :func:`apply_inverse_laplacian_hodge` -- SPD PCGs on the strong
+    stiffnesses, no saddle system.  ``k = 3``: the saddle-point MINRES
+    (``S_3 = 0``, nothing to split; see the split's docstring), which is
+    also the solver of the SHIFTED Laplacian at every k
+    (:func:`apply_inverse_shifted_laplacian`).  ``preconditioner`` selects
+    the k=0 atom and the k=3 saddle preconditioner; the Hodge split always
+    uses the metric-lumped atoms.
     """
     operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
@@ -1413,19 +1547,14 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
         )
         return (u, info) if return_info else u
 
-    return apply_inverse_shifted_laplacian(
-        seq,
-        operators,
-        rhs,
-        k,
-        0.0,
-        dirichlet=dirichlet,
-        guess=guess,
-        tol=tol,
-        maxiter=maxiter,
-        preconditioner=preconditioner,
-        return_info=return_info,
-    )
+    if k == 3:
+        return apply_inverse_shifted_laplacian(
+            seq, operators, rhs, 3, 0.0, dirichlet=dirichlet, guess=guess,
+            tol=tol, maxiter=maxiter, preconditioner=preconditioner,
+            return_info=return_info)
+    return apply_inverse_laplacian_hodge(
+        seq, operators, rhs, k, dirichlet=dirichlet, guess=guess,
+        tol=tol, maxiter=maxiter, return_info=return_info)
 
 
 def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: int,
