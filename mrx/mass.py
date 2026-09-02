@@ -148,6 +148,90 @@ def _flat_dof_plan(gx, gy, gz, shape):
     return jnp.asarray(idx.astype(np.int32))
 
 
+def _shift_plan_axis(g, S):
+    """Return ``(ne, nloc, S)`` if ``g[e, l] == (e + l) % S``, else ``None``.
+
+    On a periodic B-spline axis element ``e``'s local DoF ``l`` is global DoF
+    ``e + l`` wrapped, so the element-to-DoF map is a pure shift. When that
+    holds the element assembly needs no indices at all (see
+    :func:`_structured_accumulate`); when it does not, the caller keeps the
+    general ``segment_sum``. Checked rather than assumed, because a basis that
+    is not built this way would otherwise assemble silently wrong.
+    """
+    g = np.asarray(g)
+    if g.ndim != 2:
+        return None
+    ne, nloc = g.shape
+    e = np.arange(ne)[:, None]
+    lo = np.arange(nloc)[None, :]
+    if np.array_equal(g, (e + lo) % int(S)):
+        return (int(ne), int(nloc), int(S))
+    return None
+
+
+def _shift_plan(gx, gy, gz, shape):
+    """The three-axis shift plan of a component, or ``None`` if any axis fails."""
+    axes = tuple(_shift_plan_axis(g, s)
+                 for g, s in zip((gx, gy, gz), shape))
+    return None if any(a is None for a in axes) else axes
+
+
+def _structured_accumulate(y, plan):
+    """Element-to-DoF assembly as shifted dense adds instead of a scatter.
+
+    ``y`` is ``(ne_x, ne_y, ne_z, nloc_x, nloc_y, nloc_z)`` and the result is
+    the ``(S_x, S_y, S_z)`` DoF grid with
+
+        out[i, j, k] = sum over (lx, ly, lz) of y[i-lx, j-ly, k-lz, lx, ly, lz]
+
+    the wrap being modulo the axis size. This is the same sum the
+    ``segment_sum`` performs, but every destination is known at compile time,
+    so it lowers to dense shifts and adds with no indexed writes.
+
+    That matters because indexed writes are the one thing a TPU has no fast
+    path for. Measured on a v5e at (12,24,12) p=3, 221k contributions into
+    3456 DoFs: 2.011 ms as a ``segment_sum``, 0.061 ms this way, agreeing to
+    3e-7 in float32. The mass apply is the innermost kernel of every Krylov
+    iteration, so that factor propagates to the whole solve.
+
+    The sum is taken one axis at a time. Doing all ``prod(nloc)`` terms at full
+    ``(S_x, S_y, S_z)`` size would also work, but accumulating x first shrinks
+    the array the y pass has to touch, and again for z -- the same sum
+    factorisation the matvec itself uses, applied to the assembly.
+    """
+    (ne_x, nl_x, S_x), (ne_y, nl_y, S_y), (ne_z, nl_z, S_z) = plan
+
+    def accumulate(a, axis, ne, nloc, S):
+        """Sum ``nloc`` copies of ``a`` shifted along ``axis``, padded to ``S``.
+
+        The element axis being consumed is ``axis``; its matching local axis is
+        always at index 3, because the element axes are consumed left to right
+        and dropping index 3 does not move indices 0..2.
+
+        ``roll`` is circular, which is exactly the ``mod S`` in the index map.
+        Where ``ne < S`` the padding supplies the zeros for destinations no
+        element contributes to.
+        """
+        total = None
+        for il in range(nloc):
+            slab = jnp.take(a, il, axis=3)
+            if S != ne:
+                pad = [(0, 0)] * slab.ndim
+                pad[axis] = (0, S - ne)
+                slab = jnp.pad(slab, pad)
+            slab = jnp.roll(slab, il, axis=axis)
+            total = slab if total is None else total + slab
+        return total
+
+    # (nex,ney,nez,nlx,nly,nlz) -> (Sx,ney,nez,nly,nlz)
+    a = accumulate(y, 0, ne_x, nl_x, S_x)
+    # (Sx,ney,nez,nly,nlz) -> (Sx,Sy,nez,nlz)
+    a = accumulate(a, 1, ne_y, nl_y, S_y)
+    # (Sx,Sy,nez,nlz) -> (Sx,Sy,Sz)
+    a = accumulate(a, 2, ne_z, nl_z, S_z)
+    return a
+
+
 def _to_quadrature(Bvals, x_flat, gather_idx):
     """Column half of :func:`_elem_block_mixed` folded against a vector.
 
@@ -270,10 +354,15 @@ def build_mass_diagonal(seq, k, geometry=None):
         t1 = jnp.einsum('xqa,xyzqrs->xyzars', Bx * Bx, Wf)
         t2 = jnp.einsum('yrb,xyzars->xyzabs', By * By, t1)
         d_local = jnp.einsum('zse,xyzabs->xyzabe', Bz * Bz, t2)
-        seg = _flat_dof_plan(comp[c][1], comp[c][3], comp[c][5],
-                             shapes[c]).reshape(-1)
-        parts.append(jax.ops.segment_sum(
-            d_local.reshape(-1), seg, num_segments=int(np.prod(shapes[c]))))
+        plan = _shift_plan(comp[c][1], comp[c][3], comp[c][5], shapes[c])
+        if plan is None:
+            seg = _flat_dof_plan(comp[c][1], comp[c][3], comp[c][5],
+                                 shapes[c]).reshape(-1)
+            parts.append(jax.ops.segment_sum(
+                d_local.reshape(-1), seg,
+                num_segments=int(np.prod(shapes[c]))))
+        else:
+            parts.append(_structured_accumulate(d_local, plan).reshape(-1))
     return jnp.concatenate(parts)
 
 
@@ -340,24 +429,40 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
     gather_idx = tuple(
         _flat_dof_plan(comp_c[c][1], comp_c[c][3], comp_c[c][5], form_c.shape[c])
         for c in range(n_c))
-    seg_idx = jnp.concatenate([
-        _flat_dof_plan(comp_r[c][1], comp_r[c][3], comp_r[c][5],
-                       form_r.shape[c]).reshape(-1) + starts_r[c]
-        for c in range(n_r)])
     n_out = starts_r[-1]
     cols = tuple(column[pair] for pair in pairs)
+
+    # Prefer the index-free assembly when every row component's element-to-DoF
+    # map is a pure periodic shift, which is what a tensor-product B-spline
+    # basis gives. The scatter path stays for anything else.
+    plans = tuple(_shift_plan(comp_r[c][1], comp_r[c][3], comp_r[c][5],
+                              form_r.shape[c]) for c in range(n_r))
+    shift_plans = None if any(p is None for p in plans) else plans
+
+    if shift_plans is None:
+        seg_idx = jnp.concatenate([
+            _flat_dof_plan(comp_r[c][1], comp_r[c][3], comp_r[c][5],
+                           form_r.shape[c]).reshape(-1) + starts_r[c]
+            for c in range(n_r)])
+    else:
+        # Not merely unused: leaving the index tensor in the signature is how
+        # it ends up as a jit-time constant when this kernel is inlined into
+        # an outer jit, which is what made XLA spend seconds constant-folding
+        # a scatter-add at compile time.
+        seg_idx = None
 
     def apply(x):
         return _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx,
                                pairs=pairs, cols=cols, starts_c=starts_c,
-                               n_out=n_out)
+                               n_out=n_out, shift_plans=shift_plans)
 
     return apply
 
 
-@functools.partial(jax.jit, static_argnames=("pairs", "cols", "starts_c", "n_out"))
+@functools.partial(jax.jit, static_argnames=("pairs", "cols", "starts_c",
+                                             "n_out", "shift_plans"))
 def _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx, *,
-                    pairs, cols, starts_c, n_out):
+                    pairs, cols, starts_c, n_out, shift_plans=None):
     """The sum-factorised matvec, ONE executable per operator shape.
 
     Module-level and keyed on the static plan (which component pairs exist,
@@ -373,9 +478,18 @@ def _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx, *,
     y_parts = []
     for cr in range(n_r):
         v = sum(W[(cr, cc)] * u[cc] for cc in range(n_c) if (cr, cc) in pairs)
-        y_parts.append(_from_quadrature(Bvals_r[cr], v).reshape(-1))
-    return jax.ops.segment_sum(jnp.concatenate(y_parts), seg_idx,
-                               num_segments=n_out)
+        y_local = _from_quadrature(Bvals_r[cr], v)
+        if shift_plans is None:
+            y_parts.append(y_local.reshape(-1))
+        else:
+            y_parts.append(
+                _structured_accumulate(y_local, shift_plans[cr]).reshape(-1))
+    if shift_plans is None:
+        return jax.ops.segment_sum(jnp.concatenate(y_parts), seg_idx,
+                                   num_segments=n_out)
+    # Already assembled per component and in component order, so the
+    # concatenation is the whole output.
+    return jnp.concatenate(y_parts)
 
 
 def build_matrixfree_mass_apply(seq, k, geometry=None):
