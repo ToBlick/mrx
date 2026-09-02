@@ -1,6 +1,6 @@
 # li383 (NCSX) relaxation: sweep results and seeded islands -- 2026-09-02
 
-Status: reruns and seeded arms running (section 4, 5 filled as they land).
+Status: reruns and seeded arms running (sections 4, 5 filled as they land). Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce.
 Read it for: every li383 relaxation number that exists, which arms back which figure, the seeded-island result.
 Do not read it for: the solver internals (`shifted_split_2026-09-02.md`) or the wout reader (`docs/source/concepts/`).
 
@@ -13,6 +13,7 @@ Do not read it for: the solver internals (`shifted_split_2026-09-02.md`) or the 
 - gamma = 1: `v = (I - mu L)^{-1} F` with mu = 0.064 / n_r^2 (4.4e-4 on 12 radial cells, 2.5e-4 on 16, 1.1e-4 on 24).
 - Seed (`--seed m,n,rho0,width --seed-eps eps`): resonant term `eps |Phi'(rho0)| / m  g(rho) cos 2 pi (m theta - n zeta)` in `A'_zeta`, `g` Gaussian of the given width tapered to zero at the wall; eps = `|dB^rho| / |B^zeta|` at rho0; the chain sits at |iota| = nfp n / m; island full width about `1.6 sqrt(eps nfp / (m |iota'|))` in rho. Under ideal descent the topology is frozen, so a seeded island that grows to an eps-independent width marks a tearing-unstable surface, one that shrinks back a stable one.
 - Poincaré: 160 lines, 400 crossings per line, traced in float64, three planes zeta = 0, 0.25, 0.5; iota from the fit, chaotic lines flagged by the h/2 drift.
+- Mesh: the 2026-08 sweep and its reruns use (n, 2n, n); since 2026-09-02 the default is (n, 2n, 2n) (`resolution-rule-n-2n-2n`), which the seeded arms use.
 - Runs: `scripts/li383_sweep.sh` (2026-08 sweep, branch li383-sweep, merged into static-dynamic-refactor 2e93424; its `--method cg` no longer parses) and `scripts/li383_pub.sh` (this note's reruns and seeds, run against e815a86). Ledgers `outputs/li383_sweep/jobs.tsv`, `outputs/li383_pub/jobs.tsv`.
 
 ## 2. The 2026-08 sweep (pre axis-fix reader)
@@ -56,30 +57,49 @@ Arms behind the figures of section 6, rerun against e815a86 with the settings of
 
 | arm | ns | p | g | prec | reference | steps | stop | s/step | `||F||` 0 -> end | dH/H_0 | beta_vol | chaotic | GPU-h |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| r12_p1_g0 | 12,24,12 | 1 | 0 | f32 | ns 16 | | | | | | | | |
-| r12_p2_g0 | 12,24,12 | 2 | 0 | f32 | ns 16 | | | | | | | | |
-| r12_p3_g0 | 12,24,12 | 3 | 0 | f32 | ns 16 | | | | | | | | |
-| r12_p4_g0 | 12,24,12 | 4 | 0 | f32 | ns 16 | | | | | | | | |
-| r12_p3_g0_f64 | 12,24,12 | 3 | 0 | f64 | ns 16 | | | | | | | | |
-| r12_p3_g1 | 12,24,12 | 3 | 1 | f32 | ns 16 | | | | | | | | |
-| r16_p3_g1 | 16,32,16 | 3 | 1 | f32 | ns 16 | | | | | | | | |
-| hi_r12_p3_g0 | 12,24,12 | 3 | 0 | f32 | ns 49 | | | | | | | | |
+| r12_p1_g0 | 12,24,12 | 1 | 0 | f32 | ns 16 | 6000 | steps | 0.10 | 1.34e-01 -> 2.72e-03 | -3.8e-03 | 0.0209 | -- | 0.16 |
+| r12_p2_g0 | 12,24,12 | 2 | 0 | f32 | ns 16 | 3147 | floor | 0.21 | 5.35e-02 -> 7.79e-04 | 5.9e-05 | 0.0422 | 10 | 0.18 |
+| r12_p3_g0 | 12,24,12 | 3 | 0 | f32 | ns 16 | 5445 | floor | 0.36 | 5.54e-02 -> 8.08e-04 | 2.3e-05 | 0.0425 | 4 | 0.54 |
+| r12_p4_g0 | 12,24,12 | 4 | 0 | f32 | ns 16 | 5000 | steps | 0.57 | 5.59e-02 -> 2.62e-03 | 3.4e-05 | 0.0428 | -- | 0.80 |
+| r12_p3_g0_f64 | 12,24,12 | 3 | 0 | f64 | ns 16 | 2500 | steps | 1.14 | 5.54e-02 -> 3.13e-03 | 1.9e-05 | 0.0426 | -- | 0.79 |
+| r12_p3_g1 | 12,24,12 | 3 | 1 | f32 | ns 16 | 5376 | floor | 0.39 | 5.54e-02 -> 8.56e-04 | 6.7e-05 | 0.0416 | 1 | 0.59 |
+| r16_p3_g1 | 16,32,16 | 3 | 1 | f32 | ns 16 | 4000 | steps | 0.75 | 5.58e-02 -> 1.33e-03 | -2.1e-05 | 0.0410 | -- | 0.84 |
+| hi_r12_p3_g0 | 12,24,12 | 3 | 0 | f32 | ns 49 | 1654 | floor | 0.39 | 1.34e-02 -> 8.05e-04 | -6.2e-06 | 0.0427 | 3 | 0.18 |
 
 (`r16_p3_g0` and `r24_p3_g0` on the current reader: `outputs/li383_axisfix/`, section 2.)
 
 ## 5. Seeded islands (2026-09-02, `outputs/li383_pub/`)
 
-All (12,24,12) p = 3 unless marked, ns = 16 reference, seed width 0.1. (6, 1) is the iota = 1/2 surface at rho 0.551, (5, 1) the 3/5 surface at rho 0.798. Predicted seed island widths (rho): (6, 1) 0.06 / 0.10 / 0.19 at eps 1e-3 / 3e-3 / 1e-2 (iota' 0.35); (5, 1) 0.13 at 3e-3 (iota' 0.28). Budget 10 GPU-h.
+New arms, so they follow the 2026-09-02 mesh rule (n, 2n, 2n) (`resolution-ratio-study-2026-09.md`: the toroidal count was the only under-resolved direction) and use the ns = 49 reference (IC residual 0.013 instead of the ns = 16 file's own 0.054). (12,24,24) p = 3 unless marked, seed width 0.1, mu as in section 1 (n_r unchanged). (6, 1) is the iota = 1/2 surface at rho 0.544, (5, 1) the 3/5 surface at rho 0.794. Predicted seed island widths (rho): (6, 1) 0.06 / 0.10 / 0.19 at eps 1e-3 / 3e-3 / 1e-2 (iota' 0.36); (5, 1) 0.13 at 3e-3 (iota' 0.28). `hi_r12x24_p3_g0` is the unseeded control. A first launch of these arms on the ns = 16 file at (12,24,12) was cancelled after 15 min (1.7 GPU-h) when the rule arrived. Budget 10 GPU-h.
 
-| arm | seed (m, n) | eps | g | ns | steps | stop | s/step | `||F||` 0 -> end | dH/H_0 | island width final (rho) | chaotic | GPU-h |
+The island width is measured from `poincare/sections.npz` (`scripts/li383_pub_figures.py`): "plateau" = extent of the seed radii whose fitted iota sits within 2e-3 of nfp n / m, "excursion" = the largest peak-to-peak logical r over one plane's crossings among those lines (a line inside the island near its separatrix spans the full width). Chaotic lines are excluded from both.
+
+| arm | seed (m, n) | eps | g | ns | steps | stop | s/step | `||F||` 0 -> end | dH/H_0 | width plateau / excursion (rho) | chaotic | GPU-h |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| s61_e1e-3_g0 | (6, 1) | 1e-3 | 0 | 12,24,12 | | | | | | | | |
-| s61_e3e-3_g0 | (6, 1) | 3e-3 | 0 | 12,24,12 | | | | | | | | |
-| s61_e1e-2_g0 | (6, 1) | 1e-2 | 0 | 12,24,12 | | | | | | | | |
-| s61_e3e-3_g1 | (6, 1) | 3e-3 | 1 | 12,24,12 | | | | | | | | |
-| s51_e3e-3_g0 | (5, 1) | 3e-3 | 0 | 12,24,12 | | | | | | | | |
-| s51_e3e-3_g1 | (5, 1) | 3e-3 | 1 | 12,24,12 | | | | | | | | |
-| r16_s61_e3e-3_g1 | (6, 1) | 3e-3 | 1 | 16,32,16 | | | | | | | | |
+| hi_r12x24_p3_g0 | 12,24,24 | 3 | 0 | f32 | ns 49 | 1426 | floor | 0.55 | 1.53e-02 -> 7.06e-04 | 1.3e-06 | 0.0427 | 0 | 0.22 |
+| s61_e1e-3_g0 | (6, 1) | 1e-03 | 0 | 12,24,24 | 1444 | floor | 0.55 | 1.53e-02 -> 6.18e-04 | -6.1e-06 | 0.031 / 0.060 | 2 | 0.22 |
+| s61_e3e-3_g0 | (6, 1) | 3e-03 | 0 | 12,24,24 | 1699 | floor | 0.54 | 1.53e-02 -> 6.28e-04 | -9.3e-07 | 0.079 / 0.098 | 2 | 0.25 |
+| s61_e1e-2_g0 | (6, 1) | 1e-02 | 0 | 12,24,24 | 1593 | floor | 0.54 | 1.53e-02 -> 6.84e-04 | -4.6e-06 | 0.153 / 0.167 | 6 | 0.24 |
+| s61_e3e-3_g1 | (6, 1) | 3e-03 | 1 | 12,24,24 | 991 | floor | 0.67 | 1.53e-02 -> 9.16e-04 | -1.2e-05 | 0.083 / 0.096 | 4 | 0.18 |
+| s51_e3e-3_g0 | (5, 1) | 3e-03 | 0 | 12,24,24 | 1516 | floor | 0.55 | 1.53e-02 -> 6.93e-04 | -2.5e-06 | 0.080 / 0.088 | 1 | 0.23 |
+| s51_e3e-3_g1 | (5, 1) | 3e-03 | 1 | 12,24,24 | 930 | floor | 0.67 | 1.53e-02 -> 9.12e-04 | -2.8e-05 | 0.081 / 0.084 | 1 | 0.17 |
+| r16_s61_e3e-3_g1 | (6, 1) | 3e-03 | 1 | 16,32,32 | 681 | floor | 1.49 | 1.51e-02 -> 8.40e-04 | -1.1e-05 | -- | -- | 0.28 |
+
+IC widths (plateau / excursion, rho): (6, 1) 0.025 / 0.028 at eps 1e-3, 0.074 / 0.093 at 3e-3, 0.147 / 0.164 at 1e-2; (5, 1) 0.074 / 0.084 at 3e-3. The tracer spacing is 0.006.
+
+- Every seeded island ends within one tracer spacing of its seed width, at both surfaces, at gamma = 0 and 1, and at both meshes: the (6, 1) chain at iota = 1/2 and the (5, 1) chain at 3/5 are tearing-stable at eps <= 1e-2 on li383. Width scales as sqrt(eps) (excursion 0.060 / 0.098 / 0.167 vs the seed formula 0.06 / 0.10 / 0.19), so no eps-independent saturated width appears.
+- The seed does not change the descent: seeded and unseeded arms floor in 1.4 .. 1.7 k steps at gamma = 0 and 0.7 .. 1.0 k at gamma = 1, all from 1.53e-2 (`figures/seeded.png`, left).
+- Sections: `s61_e1e-2_g0/poincare/poincare_final_zeta0.5.png` is the figure (six O-points at logical r 0.55, nested elsewhere, p_w a flux function); the eps ladder is `figures/seeded.png` (right).
+
+### 5b. Past the 1e-3 floor (`--floor-tol 1e-4`, launched 2026-09-02 17:00)
+
+Same arms as above, run on to the step / wall cap.
+
+| arm | seed (m, n) | eps | g | ns | steps | stop | s/step | `||F||` 0 -> end | dH/H_0 | width plateau / excursion (rho) | chaotic | GPU-h |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| hi_r12x24_p3_g0_f4 | -- | 0 | 0 | 12,24,24 | | | | | | | | |
+| s61_e3e-3_g0_f4 | (6, 1) | 3e-3 | 0 | 12,24,24 | | | | | | | | |
+| s61_e3e-3_g1_f4 | (6, 1) | 3e-3 | 1 | 12,24,24 | | | | | | | | |
 
 ## 6. Figures for the paper
 
@@ -96,6 +116,7 @@ Not shown: `r24_p3_g0` (not floored in the step budget), `r16_p4_g0` (worst floo
 
 ## 7. Open
 
+- Floor: every 2026-09-02 arm that "floored" stopped at the 1e-3 criterion (7 .. 9e-4 reached), so the tables do not show where the residual bottoms out. Rule since 2026-09-02: `--floor-tol 1e-4` and let the step / wall cap end the run (`scripts/li383_pub.sh deep`: the ns = 49 control and the (6, 1) eps 3e-3 arms at gamma 0 / 1, section 5b).
 - `r24_p3_g1` exists only on the old reader (8.3 GPU-h); rerun if the r24 rung goes in.
 - The 2026-08-28 baseline `outputs/vmec_sections/li383_relaxed` is gone; `r12_p3_g0` of section 4 replaces it.
 - Island width from the sections: measured by hand from the logical chart so far; a width extractor over `sections.npz` (O-point to X-point separation at fixed theta) would make the eps ladder quantitative.

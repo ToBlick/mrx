@@ -206,6 +206,7 @@ def main():
             "r12_p3_g1",
             "r16_p3_g1",
             "hi_r12_p3_g0",
+            "hi_r12x24_p3_g0",
             "s61_e1e-3_g0",
             "s61_e3e-3_g0",
             "s61_e1e-2_g0",
@@ -213,6 +214,9 @@ def main():
             "s51_e3e-3_g0",
             "s51_e3e-3_g1",
             "r16_s61_e3e-3_g1",
+            "hi_r12x24_p3_g0_f4",
+            "s61_e3e-3_g0_f4",
+            "s61_e3e-3_g1_f4",
         ]
     }
     fix = {a: load(root, "li383_axisfix", a) for a in ["r16_p3_g0", "r24_p3_g0"]}
@@ -292,7 +296,7 @@ def main():
     fig, ax = plt.subplots(1, 2, figsize=(12, 4.6), constrained_layout=True)
     plot_lines(
         ax[0],
-        [(pub["r12_p3_g0"], "no seed", "-")]
+        [(pub["hi_r12x24_p3_g0"], "no seed", "-")]
         + [
             (pub[a], a, "--" if a.endswith("g1") else "-")
             for a in [
@@ -303,6 +307,9 @@ def main():
                 "s51_e3e-3_g0",
                 "s51_e3e-3_g1",
                 "r16_s61_e3e-3_g1",
+                "hi_r12x24_p3_g0_f4",
+                "s61_e3e-3_g0_f4",
+                "s61_e3e-3_g1_f4",
             ]
         ],
     )
@@ -321,7 +328,7 @@ def main():
         e = np.asarray(eps)
         ax[1].loglog(e, w_pl, "o-", label="iota plateau extent")
         ax[1].loglog(e, w_sp, "s-", label="max radial excursion")
-        iota_p = 0.35
+        iota_p = 0.36
         ax[1].loglog(
             e,
             1.6 * np.sqrt(e * NFP / (6 * iota_p)),
@@ -346,6 +353,7 @@ def main():
             "r12_p3_g1",
             "r16_p3_g1",
             "hi_r12_p3_g0",
+            "hi_r12x24_p3_g0",
         ]
         if pub[a] is not None
     ]
@@ -359,6 +367,9 @@ def main():
             "s51_e3e-3_g0",
             "s51_e3e-3_g1",
             "r16_s61_e3e-3_g1",
+            "hi_r12x24_p3_g0_f4",
+            "s61_e3e-3_g0_f4",
+            "s61_e3e-3_g1_f4",
         ]
         if pub[a] is not None
     ]

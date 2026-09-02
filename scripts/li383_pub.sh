@@ -19,7 +19,9 @@ LEDGER=$PUB/jobs.tsv
 
 GEOM=$ROOT/data/wout_li383_low_res_reference.nc
 GEOM_HI=$ROOT/data/wout_li383_1.4m.nc
-COMMON="--ic clebsch --floor-tol 1e-3 --save-every 100 --steps 6000"
+# floor 1e-4 since 2026-09-02 (the arms of that day ran at 1e-3 and all stopped
+# there): let --steps / --seconds end the run and show whether it bottoms out.
+COMMON="--ic clebsch --floor-tol 1e-4 --save-every 100 --steps 6000"
 G1_12="--velocity-smoothing-order 1 --velocity-smoothing-scale 4.4e-4"   # mu = 0.064 / n_r^2
 G1_16="--velocity-smoothing-order 1 --velocity-smoothing-scale 2.5e-4"
 
@@ -51,16 +53,28 @@ reader() {
 }
 
 seeded() {
-    # (m, n) = (6, 1): the iota = 1/2 surface (rho 0.55); (5, 1): iota = 3/5 (rho 0.80).
+    # New arms follow the 2026-09-02 mesh rule (n, 2n, 2n) and use the ns = 49
+    # reference (IC residual 0.013 instead of the ns = 16 file's own 0.054).
+    # (m, n) = (6, 1): the iota = 1/2 surface (rho 0.544); (5, 1): iota = 3/5 (rho 0.794).
     # eps = |dB^rho| / |B^zeta| at the surface; island width ~ 1.6 sqrt(eps nfp / (m iota')).
-    local s61="--seed 6,1,0.551,0.1" s51="--seed 5,1,0.798,0.1"
-    arm s61_e1e-3_g0  "$GEOM" "--ns 12,24,12 --p 3 $s61 --seed-eps 1e-3"          150
-    arm s61_e3e-3_g0  "$GEOM" "--ns 12,24,12 --p 3 $s61 --seed-eps 3e-3"          150
-    arm s61_e1e-2_g0  "$GEOM" "--ns 12,24,12 --p 3 $s61 --seed-eps 1e-2"          150
-    arm s61_e3e-3_g1  "$GEOM" "--ns 12,24,12 --p 3 $s61 --seed-eps 3e-3 $G1_12 --seconds 9000" 300
-    arm s51_e3e-3_g0  "$GEOM" "--ns 12,24,12 --p 3 $s51 --seed-eps 3e-3"          150
-    arm s51_e3e-3_g1  "$GEOM" "--ns 12,24,12 --p 3 $s51 --seed-eps 3e-3 $G1_12 --seconds 9000" 300
-    arm r16_s61_e3e-3_g1 "$GEOM" "--ns 16,32,16 --p 3 $s61 --seed-eps 3e-3 $G1_16 --seconds 10800" 480
+    local s61="--seed 6,1,0.544,0.1" s51="--seed 5,1,0.794,0.1"
+    arm hi_r12x24_p3_g0  "$GEOM_HI" "--ns 12,24,24 --p 3 --seconds 5400"                       180
+    arm s61_e1e-3_g0     "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 1e-3 --seconds 5400"  180
+    arm s61_e3e-3_g0     "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 --seconds 5400"  180
+    arm s61_e1e-2_g0     "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 1e-2 --seconds 5400"  180
+    arm s61_e3e-3_g1     "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 $G1_12 --seconds 9000" 300
+    arm s51_e3e-3_g0     "$GEOM_HI" "--ns 12,24,24 --p 3 $s51 --seed-eps 3e-3 --seconds 5400"  180
+    arm s51_e3e-3_g1     "$GEOM_HI" "--ns 12,24,24 --p 3 $s51 --seed-eps 3e-3 $G1_12 --seconds 9000" 300
+    arm r16_s61_e3e-3_g1 "$GEOM_HI" "--ns 16,32,32 --p 3 $s61 --seed-eps 3e-3 $G1_16 --seconds 12000" 480
+}
+
+deep() {
+    # The 2026-09-02 arms all stopped at the 1e-3 floor; these three run on to
+    # the step / wall cap (floor 1e-4) to show where the residual bottoms out.
+    local s61="--seed 6,1,0.544,0.1"
+    arm hi_r12x24_p3_g0_f4 "$GEOM_HI" "--ns 12,24,24 --p 3 --seconds 5400"                            180
+    arm s61_e3e-3_g0_f4    "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 --seconds 5400"       180
+    arm s61_e3e-3_g1_f4    "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 $G1_12 --seconds 7200" 240
 }
 
 sections() {  # sections NAME [TIMEOUT_MIN]
@@ -76,6 +90,7 @@ movie() {  # movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
 case ${1:-} in
     reader) reader ;;
     seeded) seeded ;;
+    deep) deep ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
     *) echo "usage: $0 reader | seeded | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
