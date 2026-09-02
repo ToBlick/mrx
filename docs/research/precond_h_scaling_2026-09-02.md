@@ -150,6 +150,101 @@ size. Candidates are local changes inside the atom (section 5).
   energy profile in 10 bins axis -> wall and the dominant `(m, n)` angular
   modes at rho = 0.5 (which coupling, where).
 
+## 4b. Results of the section-4 probes (2026-09-02, all p=3)
+
+**`bc_scale` (`outputs/hscale/2026-09-02/10-54-4*/bcscale_*.log`).** QA
+k=1 free vs `s in {0, 0.3, 1, 3, 10, 30}`: n=12: 3365/2831/2607/**2515**/
+2696/3604; n=16: 4736/3914/3650/**3578**/4018/5564; n=24: 7109/5792/
+**5605**/5709/6816/9760 (dbc: 733/1020/1546). Optimum at s = 1-3 at every
+n -> the factorisation `s / h <g^rr J>` holds (no drift) and the amplitude
+is right, but the whole s-dependence is worth ~25% and the best s still
+leaves free at 3.4-3.7x dbc. On the toroid s ~ 10 brings free to dbc
+(k=1: 149 vs 118; k=2: 142 vs 154). Closed: `s` is not the lever.
+
+**Lanczos on `(L_k, P)`** (`lanczos_{tor,qa,cyl}*.log`), 60-80 steps,
+n=16 -> 24 (cylinder to 32):
+
+| | toroid k=0 | cylinder k=0 | QA k=0 | QA k=1 dbc | QA k=1 free | QA k=2 free |
+| --- | --- | --- | --- | --- | --- | --- |
+| lambda_max | 5.07 -> 7.26 | 4.68 -> 6.69 -> 8.55 | 9.94 -> 14.6 | 64 -> 83 | 503 -> 863 | 522 -> 894 |
+| lambda_min | 0.28 -> 0.25 | 0.28 -> 0.19 -> 0.15 | 0.12 -> 0.09 | 0.03 -> 0.04 | 0.11 -> 0.16 | 0.18 -> 0.24 |
+| MAX mode | axis (97%) | axis (99%) | axis (80-97%) | bulk, single comp | **wall** | **wall** |
+| MIN mode | mid-radius | **axis** (m=0) | mid-radius | global (0,±3) | global (0,±2) | wall-ish |
+
+Three mechanisms, each with a location:
+
+1. **k=0: the axis, both ends.** `lambda_max ~ n / log n` (predicted from
+   the r-averaged `g^tt J ~ 1/r`: 5.8 / 7.5 / 9.2 for n = 16 / 24 / 32,
+   measured on the cylinder 4.7 / 6.7 / 8.6, mode 68-99% in the first
+   radial bin). On the cylinder -- where 1/r is the ONLY non-constant
+   weight -- lambda_min ALSO falls, ~ n^-0.85, with an m=0 mode 53-95% in
+   the first two bins. So kappa(k=0) ~ n^1.7 there, all of it the axis
+   region: high-m modes under-stiffened (1/r averaged away), smooth m=0
+   modes over-stiffened (the r-profiles of the other terms + the uncoupled
+   core). Confirmed: the core problem IS the r-average.
+2. **k>=1 Dirichlet: gradients (k=1) / curls (k=2) in the bulk.** The MAX
+   Ritz vectors are single-component with 85-100% of their L-energy in the
+   WEAK half `M_k D M_{k-1}^-1 D^T M_k`; k=1 `u_r` (a gradient), k=2
+   `u_theta` (a curl). The atom under-rates them 18x on the toroid, 64x on
+   QA, growing ~n^0.65 on QA. Single-pattern families
+   (`coefpat_*.log`) reach rho = 5 (toroid) / 13 (QA: `u_theta`, smooth r,
+   m=4 -- an angular gradient); the eigenvector is a combination. NOT the
+   theta-zeta coupling on high angular frequencies (the modes are angularly
+   smooth) and NOT a wrong weight power (the a=c weight is `(g^cc)^2 J` as
+   intended).
+3. **k>=1 free, QA only: smooth gradients at the wall.** rho = 100-115 on
+   the SMOOTHEST patterns (`u_r` or `u_theta`, radially smooth, angularly
+   constant, weak share 1.0), lambda_max 500-900 growing ~n^1.3. The
+   toroid has the same in miniature (rho 10.6, s ~ 10 would fix it); on QA
+   a scalar face weight cannot represent it.
+
+Every lambda_max mechanism at k=1 is an exact form. Hence:
+
+## 4c. The gradient sandwich (TB's proposal, 2026-09-02)
+
+`L_1 G = G L_0`, so on `x = G f` only the weak half acts and equals
+`M_1 G M_0^-1 L_0 f`. Therefore
+
+    Q = G L_0^-1 M_0 L_0^-1 G^T      satisfies    Q L_1 (G f) = G f,
+
+exact on gradients with two scalar solves (note the `M_0` in the middle).
+It must be a SANDWICH, not a sum: the atom's defect on these modes is
+lambda_max (it over-applies), so it has to be kept off the gradient
+subspace:
+
+    P_1 = (I - Pi) P_atom (I - Pi^T) + G L_0^-1 M_0 L_0^-1 G^T,
+    Pi  = G L_0^-1 G^T M_1   (the M_1-orthogonal projector onto gradients).
+
+This is the k=1 "inner grad-complement sandwich" of
+`k2-laplacian-preconditioner` and plausibly why the additive `P_A + P_B`
+arms of 2026-08-13 stalled on W7-X (additive, and a nonlinear inner solve
+inside MINRES -- next point).
+
+**Krylov-in-Krylov.** Flexible MINRES does not exist in a usable form (the
+short recurrence needs one fixed SPD preconditioner; variable ones
+stagnate). FGMRES is the fallback (long recurrence). The clean route keeps
+MINRES: replace `L_0^-1` by a FIXED-degree Chebyshev polynomial in
+`P_0 L_0` (the k=0 atom as inner preconditioner) -- linear and symmetric,
+so `Q = G C M_0 C G^T` is SPSD by construction and there is no Krylov
+inside. NOT "m steps of PCG" (rhs-dependent coefficients = nonlinear =
+MINRES stall). Chebyshev needs the spectral bounds of `P_0 L_0`, a few
+Lanczos steps at build time (QA k=0: [0.12, 9.9] at n=16; lambda_max ~
+n/log n so per resolution). sqrt(kappa) ~ 10-13 -> ~x0.83 per degree ->
+degree ~15 for preconditioner quality. Cost per `P_1` apply: four scalar
+solves (two in the sandwich, two in `Q`) ~ 60 k=0 atom applies + 60 `S_0`
+matvecs; per-iteration cost x10-20, so k=1 must drop from 2000-8000 to
+below ~200-400 on QA to win. What the sandwich leaves: the k=0 axis
+behaviour, inherited by the inner solve (Chebyshev degree ~ n^0.85 for
+fixed quality -- a cost drift, removed independently by the per-mode
+dense-radial k=0 fix), and the non-gradient (`S_1`-equivalent) part of the
+atom, unmeasured so far. k=2's mirror needs `L_1^-1` -- one level at a
+time.
+
+Prototype as a probe (no production change): `solve_saddle_point_minres`
+takes `precond_upper` as a callable; `G`, `G^T`, `M_0`, `S_0`, the k=0
+atom and the Lanczos bounds all exist. Measure QA k=1 dbc/free at n=16, 24
+against 1019/3583 and 1547/5705.
+
 ## 5. What would follow
 
 Decided by section 4, not before:
