@@ -263,9 +263,11 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
                        gap_sweeps=5, verbose=True):
     """Harmonic forms by direct Hodge decomposition (no inverse iteration).
 
-    Each form is built by removing the exact and coexact parts of a seed, so
-    the cost is a fixed pair of Hodge solves per form -- no shift, no outer
-    loop, and no dependence on a spectral gap.  Requires ``b2 == 0``; see
+    Each form is built by removing the exact and coexact parts of a seed --
+    a fixed number of Hodge solves per form (two for the k = 2 Dirichlet
+    form, one for the k = 1 free form, whose seed ``d zeta`` is already
+    closed) -- no shift, no outer loop, and no dependence on a spectral
+    gap.  Requires ``b2 == 0``; see
     :func:`direct_construction_unsupported_reason`.  For anything else use
     :func:`compute_nullspaces_iterative`.
 
@@ -304,8 +306,8 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
         )
 
     # The construction below is a chain of Hodge-Laplacian solves -- L_1 DBC
-    # for the k=2 form, L_2 FREE for the k=1 form, L_3 DBC inside the Leray
-    # projection, and L_0 FREE inside the k=1 Leray -- and every one of them
+    # for the k=2 form, L_3 DBC inside its Leray projection, and L_0 FREE
+    # inside the k=1 Leray (the whole k=1 construction) -- and every one of them
     # takes the block-Jacobi atom, which is now REQUIRED rather than consulted.
     #
     # This function does NOT build it. It used to, and that was a setup step
@@ -349,16 +351,33 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
         operators = _commit(seq, _set_null(operators, 0, False, v0[None, :]))
 
     if _n_vectors(betti_numbers, 1, False):
-        # k = 1, no BC: Leray-project (removes grad via L_0 NBC, deflated by
-        # the constants just stored), then subtract the coexact part via L_2.
-        seed1 = _logical_constant_seed(seq, operators, 1, False, (0.0, 0.0, 1.0))
-        v, _ = seq.apply_leray_projection(seed1, k=1)
-        curl_v_dual = seq.apply_derivative_matrix(
-            v, 1, dirichlet_in=False, dirichlet_out=False)
-        a = seq.apply_inverse_laplacian(
-            curl_v_dual, 2, dirichlet=False, operators=operators)
-        curl_a = seq.apply_weak_curl(a, False)
-        v1 = v - curl_a
+        # k = 1, no BC: the seed is d zeta itself -- covariant (0, 0, 1), which
+        # V^1 contains exactly; histopolated (a direct collocation solve), so
+        # its incidence curl is zero to round-off.  A closed seed has no
+        # coexact part, so the Leray projection (one L_0 NBC solve, deflated
+        # by the constants just stored) IS the harmonic form: curl-free by
+        # C G = 0, weakly divergence-free by the solve.  No L_2 solve.
+        #
+        # It used to seed with M_1^{-1} of the (0, 0, 1) dual load, i.e. the
+        # form with CONTRAVARIANT (0, 0, 1) -- |curl|/|v| ~ 2 on QA -- and
+        # remove that curl with an L_2 free solve.  At p = 4, n >= 24 that
+        # solve exhausts its budget and the leftover curl (4e-3 -> 4e-2 from
+        # n = 24 to 32) was the whole Route-A convergence stall of
+        # scripts/analytic_vacuum.py.  The k = 2 Dirichlet form above cannot
+        # take this shortcut: it is the Hodge star of d zeta, metric-weighted,
+        # never in V^2, so its L_1 solve is doing real work.
+        dzeta = jnp.asarray((0.0, 0.0, 1.0), dtype=mrx.DTYPE)
+        seed1 = seq.interpolate(lambda x_hat: dzeta, 1, dirichlet=False, frame='ref')
+        curl_seed = seq.apply_incidence_matrix(
+            seed1, 1, dirichlet_in=False, dirichlet_out=False)
+        closed = float(seq.l2_norm(curl_seed, 2, dirichlet=False)
+                       / seq.l2_norm(seed1, 1, dirichlet=False))
+        if closed > seq.tol:
+            raise RuntimeError(
+                "compute_nullspaces: the d zeta seed is not closed "
+                f"(|C seed| / |seed| = {closed:.2e} > tol {seq.tol:.1e}); the "
+                "k=1 free harmonic form would carry that curl unremoved")
+        v1, _ = seq.apply_leray_projection(seed1, k=1)
         v1 = v1 / seq.l2_norm(v1, 1, dirichlet=False)
         operators = _commit(seq, _set_null(operators, 1, False, v1[None, :]))
 
@@ -383,15 +402,20 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
 # ---------------------------------------------------------------------------
 
 def _logical_constant_seed(seq, operators, k, dirichlet, components):
-    """L2-project a constant *reference-frame* k-form onto V_k.
+    """``M_k^{-1}`` of the dual load with constant reference *integrand*.
 
-    ``components`` are the coefficients of the form in the reference basis
-    (``dr, dchi, dzeta`` for k=1; ``dchi^dzeta, dr^dzeta, dr^dchi`` for k=2),
-    so the seed is purely topological -- the geometry enters only through the
-    ``M_k^{-1}`` that turns the dual load back into DoFs.  That is what makes
-    these guesses valid on an arbitrary stellarator and not just on a toroid:
-    no ``1/R``, no physical frame, and no sampling of a Cartesian field (so no
-    exposure to the zeta = 0 quasi-periodicity seam).
+    ``components`` go straight into :func:`load` with ``frame='ref'``, i.e.
+    they are the vector the basis is paired against, not the primal
+    coefficients of a form: for k=1 the result is the form with
+    CONTRAVARIANT components ``components`` (covariant ``g . components``),
+    for k=2 the one with primal proxy ``J g^{-1} . components``.  Both are
+    metric-weighted and neither is closed nor co-closed -- on QA the k=1
+    seed has ``|curl| / |v| ~ 2``.  That is fine for what this is: a
+    topologically right *guess* for the solves that follow (the k=2 Dirichlet
+    form's ``dr^dchi`` flux, inverse-iteration starts), built without ``1/R``,
+    a physical frame, or a Cartesian sample (so no zeta = 0 seam exposure).
+    It is NOT an exact representative; the k=1 free form uses the histopolated
+    ``d zeta`` instead, see :func:`compute_nullspaces`.
     """
     comps = jnp.asarray(components, dtype=mrx.DTYPE)
     return seq.apply_inverse_mass_matrix(
