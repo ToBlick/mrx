@@ -98,8 +98,6 @@ quota_bucket_for() {
     esac
 }
 
-zone_to_region() { echo "${1%-*}"; }
-
 # Build CANDIDATES from the defaults, honouring the env overrides.
 #   GENERATIONS=v5e,v5p     restrict to these generations
 #   ZONES=us-east5-b,...    restrict to these zones
@@ -126,6 +124,48 @@ build_candidates() {
     done
 }
 
+# Cloud TPU API nodes are a different resource type and are not returned by
+# `compute instances list`. Their zone is embedded in the resource name and
+# their healthy state is READY, not RUNNING.
+# Find a READY Cloud TPU API node, returning its zone.
+#
+# Two traps here, both of which cost a live TPU once. `tpu-vm list` without a
+# zone errors out rather than returning nothing, and with --zone=- it prints
+# the *short* name, so there is no path to parse a zone out of. Describing each
+# candidate zone directly avoids both. The node also spends a minute or two in
+# CREATING after the create call returns, so poll rather than check once --
+# checking once is what made the daemon walk away from a TPU it had just won.
+#
+# Lives here rather than in the daemon because run_on_tpu.sh needs it too: its
+# zone lookup used to ask `compute instances list` only, so it could not find a
+# v5e at all.
+tpu_running_zone() {
+    local name="${1:-${VM_NAME}}" tries="${2:-1}"
+    local entry gen mt zone model api state i zones seen
+
+    zones=""
+    for entry in "${CANDIDATES[@]}"; do
+        IFS=':' read -r gen mt zone model api <<<"${entry}"
+        [[ "${api}" == "tpuapi" ]] || continue
+        case " ${seen:-} " in *" ${zone} "*) continue ;; esac
+        seen="${seen:-} ${zone}"
+        zones="${zones} ${zone}"
+    done
+
+    for (( i = 0; i < tries; i++ )); do
+        for zone in ${zones}; do
+            state="$(gcloud compute tpus tpu-vm describe "${name}" \
+                --zone="${zone}" --format="value(state)" 2>/dev/null)"
+            case "${state}" in
+                READY)    echo "${zone}"; return 0 ;;
+                CREATING) ;;   # keep polling
+            esac
+        done
+        (( i + 1 < tries )) && sleep 20
+    done
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # Failure classification
 # ---------------------------------------------------------------------------
@@ -136,6 +176,10 @@ build_candidates() {
 #   POLICY     an org policy forbids the location outright
 #   PERMISSION IAM or API enablement
 #   UNSUPPORTED the machine type or image genuinely is not offered here
+#   NOT_ALLOWLISTED  the machine type exists and quota exists, but this project
+#              is not permitted to reach it by this API (v5e via GCE)
+#   DISK_INCOMPATIBLE  the machine type refuses the data disk's type; worth
+#              retrying without it (v5p rejects hyperdisk-balanced)
 #   TRANSIENT  a Google-side internal error, worth one retry
 #   OTHER      unrecognised
 #

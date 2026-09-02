@@ -69,14 +69,24 @@ build_args() {
 # formats, mounts and builds the environment. Deliberately done only after a
 # win -- pre-seeding disks across a sweep that usually finds nothing once left
 # six 100 GB volumes billing in six zones.
+#
+# With force=1 the disk already exists but was refused at create time, which is
+# what DISK_INCOMPATIBLE means: v5p rejects hyperdisk-balanced as a boot-time
+# attachment. Skip the existence short-circuit and try a hot attach, which is a
+# separate code path and may be accepted where the create-time one was not. If
+# it is not, the warning is the point: that node has no persistent environment.
 attach_disk_after_create() {
-    local zone="$1"
-    data_disk_exists "${zone}" && return 0
+    local zone="$1" force="${2:-0}"
+    (( ! force )) && data_disk_exists "${zone}" && return 0
 
-    echo "  no ${DATA_DISK} in ${zone}; creating and attaching it now..."
-    if ! ensure_data_disk "${zone}"; then
-        echo "  WARNING: could not create ${DATA_DISK}; environment will not persist" >&2
-        return 1
+    if data_disk_exists "${zone}"; then
+        echo "  ${DATA_DISK} was refused at create time; trying a hot attach..."
+    else
+        echo "  no ${DATA_DISK} in ${zone}; creating and attaching it now..."
+        if ! ensure_data_disk "${zone}"; then
+            echo "  WARNING: could not create ${DATA_DISK}; environment will not persist" >&2
+            return 1
+        fi
     fi
     gcloud compute instances attach-disk "${VM_NAME}" \
         --zone="${zone}" --disk="${DATA_DISK}" \
@@ -235,6 +245,12 @@ for entry in "${CANDIDATES[@]}"; do
 
         if try_create "${mt}" "${zone}" "${model}" "${api}" "${log}"; then
             echo "SUCCESS (retry)"
+            # The retry needs the same disk handling as the first attempt, and
+            # more of it: a DISK_INCOMPATIBLE retry deliberately created without
+            # the disk, so without this the node comes up with no persistent
+            # environment and nothing says so.
+            [[ "${api}" == "gce" ]] && \
+                attach_disk_after_create "${zone}" "${NO_DISK}"
             announce_success "${gen}" "${mt}" "${zone}" "${model}" "${api}"
             exit 0
         fi

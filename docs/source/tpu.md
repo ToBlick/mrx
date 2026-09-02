@@ -36,7 +36,9 @@ SCRIPT=scripts/tutorials/li383_relaxation.py \
   VM_NAME=mrx-tpu ZONE=<zone> RUN_TIMEOUT=7200 \
   ./run_on_tpu.sh --ns 12,24,12 --p 3
 
-gcloud compute tpus tpu-vm delete mrx-tpu --zone=<zone>   # nothing else will
+# Nothing else will. v5e is a TPU API node, v5p/v6e are GCE instances.
+gcloud compute tpus tpu-vm delete mrx-tpu --zone=<zone>
+gcloud compute instances delete mrx-tpu --zone=<zone>
 ```
 
 | variable | meaning | default |

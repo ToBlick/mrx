@@ -30,8 +30,11 @@ VM_NAME=mrx-tpu ./acquire_tpu.sh --acquire-only
 # 3. Run the Poisson example (builds the environment on first use)
 VM_NAME=mrx-tpu ZONE=<zone from step 2> ./run_on_tpu.sh --n 6 8 --p 2
 
-# 4. DELETE IT. Cloud TPU API nodes bill until you do.
+# 4. DELETE IT. Whichever path won, it bills until you do. A v5e is a Cloud
+#    TPU API node; v5p and v6e are GCE instances. Run both, one will say
+#    "not found", and that is the cheap outcome.
 gcloud compute tpus tpu-vm delete mrx-tpu --zone=<zone>
+gcloud compute instances delete mrx-tpu --zone=<zone>
 ```
 
 Results land in `script_outputs/`.
@@ -65,7 +68,7 @@ separately, because that is what separates XLA compiling from the device
 computing. Getting this backwards is what made the relaxation solver look
 unusable on a v5e for a while; see section 6.1 of the guide.
 
-## Four things that will save you a day
+## Five things that will save you a day
 
 1. **Quota is not the same as permission.** v5e has 512 chips of quota on this
    project and still returns `403 ... not allowed to use the machine type`
@@ -74,7 +77,8 @@ unusable on a v5e for a while; see section 6.1 of the guide.
 2. **A hanging `gcloud compute instances create` is not hung.** `FLEX_START`
    queues the request for up to `--request-valid-for-duration`. Use `0` to fail
    fast; these scripts do.
-3. **Nothing deletes a Cloud TPU API node for you.** Audit after every session:
+3. **Nothing deletes a Cloud TPU API node for you.** Audit after every
+   session, on both surfaces, because a v5e is not a GCE instance:
 
    ```bash
    gcloud compute instances list
@@ -127,3 +131,4 @@ each should look like, which is what you actually need to check yours against.
 | `tpu_bench_mrx.py` | Phase/primitive benchmark; splits compile from execute |
 | `profile_top_ops.py` | Reduces a `jax.profiler` trace to a top-N op table |
 | `gcs_cache_smoke.py` | Proves a `gs://` compilation cache path before you rely on it |
+| `make_kit.sh` | Builds `tpu_access_kit.zip`, the standalone copy of this directory |

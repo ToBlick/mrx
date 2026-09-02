@@ -26,6 +26,10 @@
 set -uo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
+# For tpu_running_zone: a v5e is a Cloud TPU API node, which is invisible to
+# `compute instances list`, so the zone lookup below needs both surfaces.
+# shellcheck source=zones.sh
+source ./zones.sh
 
 VM_NAME="${VM_NAME:-my-tpu-vm}"
 ZONE="${ZONE:-}"
@@ -73,8 +77,15 @@ if [[ -z "${ZONE}" ]]; then
     ZONE="$(gcloud compute instances list \
         --filter="name=${VM_NAME}" \
         --format="value(zone.basename())" 2>/dev/null | head -n 1)"
+    # A v5e is not a GCE instance, so the list above cannot see it. Ask the
+    # Cloud TPU API before giving up, or this errors out on a live node.
     if [[ -z "${ZONE}" ]]; then
-        echo "ERROR: could not find an instance named ${VM_NAME}." >&2
+        build_candidates
+        ZONE="$(tpu_running_zone "${VM_NAME}")"
+    fi
+    if [[ -z "${ZONE}" ]]; then
+        echo "ERROR: could not find ${VM_NAME} as a GCE instance or as a" >&2
+        echo "Cloud TPU API node in any candidate zone." >&2
         echo "Set ZONE explicitly, or launch one with ./launch_tpu.sh" >&2
         exit 1
     fi
@@ -441,7 +452,14 @@ print_remaining
 
 if (( RUN_STATUS != 0 )); then
     echo ""
-    echo "The run exited ${RUN_STATUS}. A non-zero exit here usually means the"
-    echo "TPU results deviated from the CPU float32 reference; check summary.md."
+    if [[ -n "${SCRIPT}" ]]; then
+        # No CPU reference is computed in this mode, so do not send the reader
+        # looking for a summary.md that was never written.
+        echo "The run exited ${RUN_STATUS}. That is ${SCRIPT}'s own exit code;"
+        echo "the pulled-back ${OUTDIR:-output} and the log above are the evidence."
+    else
+        echo "The run exited ${RUN_STATUS}. A non-zero exit here usually means the"
+        echo "TPU results deviated from the CPU float32 reference; check summary.md."
+    fi
 fi
 exit "${RUN_STATUS}"

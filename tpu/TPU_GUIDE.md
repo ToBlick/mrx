@@ -15,7 +15,9 @@ from an actual run rather than from documentation.
 ./check_quota.sh                 # read-only preflight, ~40 s
 ./acquire_tpu.sh --acquire-only  # keeps trying until hardware lands
 ZONE=<zone> ./run_on_tpu.sh      # builds the env, runs MRX, pulls results
-gcloud compute tpus tpu-vm delete mrx-tpu --zone=<zone>   # ALWAYS
+# ALWAYS. v5e is a TPU API node, v5p/v6e are GCE instances; run both.
+gcloud compute tpus tpu-vm delete mrx-tpu --zone=<zone>
+gcloud compute instances delete mrx-tpu --zone=<zone>
 ```
 
 Two things to take away before anything else:
@@ -485,6 +487,24 @@ PUSH_FILES=tpu_bench_mrx.py SCRIPT=tpu_bench_mrx.py OUTDIR=outputs/bench \
 python tpu_bench_mrx.py --compare script_outputs/bench/{tpu,cpu}.json
 ```
 
+When the benchmark says a phase is slow but not which operation inside it is,
+`--profile` writes a `jax.profiler` trace and `profile_top_ops.py` reduces that
+trace to the only table worth reading, XLA ops ranked by self time. That names
+the bottleneck instead of inferring it from wall-clock phase times.
+
+```bash
+PUSH_FILES=tpu_bench_mrx.py SCRIPT=tpu_bench_mrx.py OUTDIR=outputs/bench \
+  VM_NAME=my-tpu-vm ZONE=<zone> RUN_PLATFORM=tpu \
+  ./run_on_tpu.sh --skip-relax --profile outputs/bench/trace
+
+python profile_top_ops.py script_outputs/bench/trace --top 20
+```
+
+The trace converter is in `tensorboard-plugin-profile`, not in JAX, and its
+module path moves between releases; the script tries several and exits 2 with a
+`pip install` line rather than failing obscurely. A missing plugin costs you
+this table, not the benchmark.
+
 ### Finite-beta stellarator equilibria
 
 Two steps. Relax on the TPU, then trace on the host CPU.
@@ -723,10 +743,37 @@ what the solve achieves.
 - `profile_top_ops.py` - reduces a `jax.profiler` trace to a top-N op table
 - `gcs_cache_smoke.py` - proves a `gs://` compilation cache path in ~10 s,
   because JAX does not fail on one it cannot reach
+- `make_kit.sh` - builds `tpu_access_kit.zip`, the standalone copy of this
+  directory
 
-Environment overrides worth knowing: `GENERATIONS`, `ZONES`, `MACHINE_TYPE`,
-`MODELS`, `APIS`, `VM_NAME`, `RUN_TIMEOUT`, `MAX_RUN_DURATION`, `KEEP_LOGS`,
-`SYNC_LOCAL_MRX`, `LOCAL_MRX`, `PUSH_FILES`, `JAX_CACHE_DIR`.
+### Environment overrides
+
+Which script reads what. Anything not listed is internal.
+
+| Variable | Read by | Default | What it does |
+|---|---|---|---|
+| `VM_NAME` | all | `my-tpu-vm` | the node's name; the examples here use `mrx-tpu` |
+| `ZONE` | `run_on_tpu.sh` | auto-detected | skips the GCE-then-TPU-API lookup |
+| `GENERATIONS`, `ZONES`, `MACHINE_TYPE`, `MODELS`, `APIS` | `zones.sh` | unset | restrict the candidate ladder |
+| `MAX_RUN_DURATION` | `zones.sh` | `4h` | GCE self-termination; must exceed `RUN_TIMEOUT` |
+| `DATA_DISK`, `DATA_SNAPSHOT` | `zones.sh` | `my-data-disk`, `my-data-snapshot` | the persistent environment |
+| `MAX_DATA_DISKS` | `zones.sh` | 2 | refuses to create more, after a sweep once left five |
+| `IMAGE_PROJECT`, `IMAGE_FAMILY`, `TPU_RUNTIME` | `zones.sh` | see file | boot image per API path |
+| `RUN_TIMEOUT` | `run_on_tpu.sh` | 7200 | bounds the remote command |
+| `SETUP_TIMEOUT` | `run_on_tpu.sh` | 2400 | bounds the first-boot environment build |
+| `POLL_SECONDS`, `RUN_POLL` | `run_on_tpu.sh` | 20 | how often setup and the run are checked |
+| `RUN_PLATFORM` | `run_on_tpu.sh` | unset | `cpu` forces the host CPU, for float64 stages |
+| `RUN_DTYPE` | `run_on_tpu.sh` | `float32` | sets `MRX_DTYPE` remotely |
+| `TPU_API` | `run_on_tpu.sh` | `auto` | 1 for a Cloud TPU API node, 0 for a GCE instance |
+| `JAX_CACHE_DIR` | `run_on_tpu.sh` | `/mnt/data/jax_cache` | persistent XLA cache; a `gs://` path works |
+| `SCRIPT`, `OUTDIR`, `PUSH_FILES` | `run_on_tpu.sh` | unset | run something other than the Poisson report |
+| `SYNC_LOCAL_MRX`, `LOCAL_MRX` | `run_on_tpu.sh` | 0 | overlay an uncommitted working tree |
+| `SWEEP_INTERVAL`, `MAX_HOURS`, `MAX_SESSIONS` | `acquire_tpu.sh` | 180, 12, 3 | daemon pacing and stopping conditions |
+| `LOCK_FILE`, `ACQUIRE_LOG` | `acquire_tpu.sh` | `.acquire.lock`, `acquire.log` | single-instance guard and log |
+| `MAX_PARALLEL` | `probe_capacity.sh` | 6 | concurrent probes |
+| `KEEP_LOGS` | `probe_capacity.sh` | 0 | keeps the per-probe logs the trap would delete |
+| `CACHE_FILE`, `CACHE_TTL` | `check_quota.sh` | see file | caches the quota read |
+| `PROJECT` | `zones.sh` | `gcloud config` | the project every call is scoped to |
 
 ### Iterating on mrx itself
 
