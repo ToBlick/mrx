@@ -574,23 +574,28 @@ class DeRhamSequence():
         return self.apply_incidence_matrix(v, 2, dirichlet_in=dirichlet_in,
                                            dirichlet_out=dirichlet_out)
 
-    def apply_weak_grad(self, v, dirichlet_in=True, dirichlet_out=True):
-        """The weak gradient of a 3-form: ``-M_2^{-1} D_2^T v`` (the codifferential; one mass solve)."""
+    def apply_weak_grad(self, v, dirichlet=True):
+        """The weak gradient of a 3-form: ``-M_2^{-1} D_2^T v`` (the codifferential;
+        one mass solve). A codifferential stays within one complex, so it carries a
+        single BC class ``dirichlet`` -- used for both the derivative's spaces and
+        the mass inverse (mixed classes are not a well-defined codifferential)."""
         dv_dual = -self.apply_derivative_matrix(
-            v, 2, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out, transpose=True)
-        return self.apply_inverse_mass_matrix(dv_dual, 2, dirichlet=dirichlet_out)
+            v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
+        return self.apply_inverse_mass_matrix(dv_dual, 2, dirichlet=dirichlet)
 
-    def apply_weak_curl(self, v, dirichlet_in=True, dirichlet_out=True):
-        """The weak curl of a 2-form: ``M_1^{-1} D_1^T v`` (the codifferential; one mass solve)."""
+    def apply_weak_curl(self, v, dirichlet=True):
+        """The weak curl of a 2-form: ``M_1^{-1} D_1^T v`` (the codifferential; one
+        mass solve). ``dirichlet`` is the single BC class of the operator."""
         dv_dual = self.apply_derivative_matrix(
-            v, 1, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out, transpose=True)
-        return self.apply_inverse_mass_matrix(dv_dual, 1, dirichlet=dirichlet_out)
+            v, 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
+        return self.apply_inverse_mass_matrix(dv_dual, 1, dirichlet=dirichlet)
 
-    def apply_weak_div(self, v, dirichlet_in=True, dirichlet_out=True):
-        """The weak divergence of a 1-form: ``-M_0^{-1} D_0^T v`` (the codifferential; one mass solve)."""
+    def apply_weak_div(self, v, dirichlet=True):
+        """The weak divergence of a 1-form: ``-M_0^{-1} D_0^T v`` (the codifferential;
+        one mass solve). ``dirichlet`` is the single BC class of the operator."""
         dv_dual = -self.apply_derivative_matrix(
-            v, 0, dirichlet_in=dirichlet_in, dirichlet_out=dirichlet_out, transpose=True)
-        return self.apply_inverse_mass_matrix(dv_dual, 0, dirichlet=dirichlet_out)
+            v, 0, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
+        return self.apply_inverse_mass_matrix(dv_dual, 0, dirichlet=dirichlet)
 
     def apply_mass_matrix_preconditioner(self, v, k, dirichlet=True,
                                          operators=None, kind='auto'):
@@ -722,16 +727,19 @@ class DeRhamSequence():
         the bundle projected out, the metric-lumped k=0 atom as
         preconditioner.
 
-        ``k >= 1``: the symmetric saddle system in ``(x, sigma)``::
+        ``k = 1, 2``: the Hodge-split solve
+        (:func:`~mrx.operators.apply_inverse_laplacian_hodge`): the exact
+        part of ``x`` from a ``(k-1)``-level solve, the rest by PCG on the
+        SPD ``S_k + M_k D W D^T M_k`` (``W`` the mass atom) with the
+        metric-lumped atom, one more ``(k-1)``-level solve to close.  No
+        saddle system, no mass inverse, no Krylov solve inside another.
 
-            | S_k        D_{k-1} | | x     |   | rhs |
-            | D_{k-1}^T  -M_{k-1} | | sigma | = | 0   |
-
-        whose Schur complement is ``L_k``, by MINRES
+        ``k = 3``: the symmetric saddle system in ``(x, sigma)`` by MINRES
         (:func:`~mrx.solvers.solve_saddle_point_minres`) with the block
-        preconditioner ``'auto'``: the metric-lumped Laplacian atom on the
-        upper block and the metric-lumped mass atom on the lower one,
-        harmonic forms deflated. No Krylov solve nests inside another.
+        preconditioner ``'auto'`` (metric-lumped atoms, harmonic forms
+        deflated) -- ``S_3 = 0`` leaves nothing to split.  The same MINRES
+        is the solver of the SHIFTED Laplacian at every ``k``
+        (:meth:`apply_inverse_shifted_laplacian`).
         """
         operators = self._require_operators(operators)
         return op.apply_inverse_laplacian(
@@ -1040,7 +1048,7 @@ class DeRhamSequence():
                 v, 2, dirichlet_in=True, dirichlet_out=True)
             q = self.apply_inverse_laplacian(
                 div_v, 3, dirichlet=True, guess=-p_guess)
-            σ = -self.apply_weak_grad(q, True, True)
+            σ = -self.apply_weak_grad(q, True)
             return v - σ, -q
         elif k == 1:
             # v lives in the natural 1-form space; only the scalar space

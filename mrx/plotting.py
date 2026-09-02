@@ -24,9 +24,15 @@ import matplotlib.ticker as mticker
 import numpy as np
 
 import mrx
+from mrx.plotstyle import (FIELD_CMAP, FS, LEFT, PRESSURE_CMAP, RIGHT,
+                           SECTION_CMAP, SectionLimits, house_style)
 
-#: Colour map of every scalar-field figure in this module.
-FIELD_CMAP = "plasma"
+# FIELD_CMAP, SECTION_CMAP, PRESSURE_CMAP, FS, LEFT/RIGHT and house_style live in
+# mrx.plotstyle now (re-exported here for callers that import them from plotting).
+__all__ = ["get_2d_grids", "plot_torus", "plot_crossections_separate",
+           "plot_twin_axis", "render_section", "resonant_rationals",
+           "set_axes_equal", "FIELD_CMAP", "SECTION_CMAP", "PRESSURE_CMAP",
+           "SectionLimits"]
 
 
 def get_2d_grids(
@@ -99,13 +105,14 @@ def _values_on_cuts(p_h, grids_pol):
         for grid in grids_pol])
 
 
+@house_style()
 def plot_torus(
     p_h: Callable,
     grids_pol: list,
     grid_surface: tuple,
     figsize: tuple = (12, 8),
-    labelsize: int = 20,
-    ticksize: int = 16,
+    labelsize: float = FS.big,
+    ticksize: float = FS.tick,
     gridlinewidth: float = 0.01,
     cstride: int = 4,
     elev: float = 30,
@@ -174,12 +181,13 @@ def set_axes_equal(ax: plt.Axes):
     ax.set_zlim3d([mids[2] - half, mids[2] + half])
 
 
+@house_style()
 def plot_crossections_separate(
     p_h: Callable,
     grids_pol: list,
     zeta_vals: list,
-    textsize: int = 16,
-    ticksize: int = 16,
+    textsize: float = FS.label,
+    ticksize: float = FS.tick,
     plot_centerline: bool = False,
 ):
     """The poloidal cuts of :func:`plot_torus` side by side in the ``(R, z)`` plane.
@@ -243,6 +251,7 @@ def plot_crossections_separate(
     return fig, axes
 
 
+@house_style()
 def plot_twin_axis(
     left_y,
     right_y,
@@ -252,14 +261,14 @@ def plot_twin_axis(
     right_label: str = "",
     left_log: bool = True,
     right_log: bool = False,
-    left_color: str = "black",
-    right_color: str = "teal",
-    left_marker: str = "s",
-    right_marker: str = "d",
-    left_linestyle: str = "-",
-    right_linestyle: str = "--",
-    left_markersize: int = 4,
-    right_markersize: int = 4,
+    left_color: str = LEFT["color"],
+    right_color: str = RIGHT["color"],
+    left_marker: str = LEFT["marker"],
+    right_marker: str = RIGHT["marker"],
+    left_linestyle: str = LEFT["linestyle"],
+    right_linestyle: str = RIGHT["linestyle"],
+    left_markersize: int = LEFT["markersize"],
+    right_markersize: int = RIGHT["markersize"],
     num_iters_inner: int = 1,
     x_label: str = "iteration",
     figsize: tuple = (8, 3),
@@ -352,19 +361,9 @@ def resonant_rationals(iota_min, iota_max, nfp, denom_max=30, min_sep=0.06):
     return [ticks[i] for i in order], [labels[i] for i in order]
 
 
-#: Colormap for the iota scale. ``gist_rainbow`` rather than ``turbo`` to match
-#: the reference figure (data/poincare_plot_pretty_w7x.pdf): with one colour per
-#: nested surface, a rainbow's hue cycle separates ADJACENT surfaces, which is
-#: what the eye follows here. turbo's luminance ramp is better for a continuous
-#: field and worse for a stack of discrete curves.
-SECTION_CMAP = "gist_rainbow"
-#: Colormap for pressure. Sequential, because p is a magnitude with a zero,
-#: unlike iota which is read against its rationals.
-PRESSURE_CMAP = "plasma"
-
-
+@house_style()
 def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
-                   axis_RZ=None, path=None, profile_x=None,
+                   axis_RZ=None, profile_x=None,
                    profile_xlabel="seed radius $r$", nfp=None, denom_max=30,
                    logical=None, pressure=None,
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
@@ -420,6 +419,9 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         raise ValueError("split_iota_p=True needs axis_RZ: the split is at the "
                          "magnetic axis, not at Z = 0.")
 
+    # Movie/side-by-side pinning: one object, whether the caller passed a
+    # SectionLimits, the legacy dict, or a bare iota_lim (all coerced here).
+    lim = SectionLimits.coerce(limits, iota_lim)
     has_p = pressure is not None
     # The pressure is drawn at ``pressure_scale`` times its value (the natural
     # scale of p in code units is ~1e-2, and 100 p reads in units).
@@ -445,8 +447,8 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
 
     shown = keep
     good = iota[shown][jnp.isfinite(iota[shown])] if shown.any() else iota[:0]
-    if iota_lim is not None:
-        lo, hi = float(iota_lim[0]), float(iota_lim[1])
+    if lim.iota is not None:
+        lo, hi = float(lim.iota[0]), float(lim.iota[1])
     else:
         lo, hi = ((float(jnp.min(good)), float(jnp.max(good)))
                   if good.size else (0.0, 1.0))
@@ -465,8 +467,8 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     # their mean (the axis wanders by ~1e-3 of the minor radius over a period).
     if split_iota_p:
         z_axis = float(jnp.mean(jnp.asarray(axis_RZ[1])))
-        if limits and "z_split" in limits:
-            z_axis = float(limits["z_split"])
+        if lim.z_split is not None:
+            z_axis = float(lim.z_split)
         upper = Z >= z_axis
     else:
         z_axis = None
@@ -483,8 +485,8 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         # a line and greying the other reads as two different objects.
         sel_p = shown2 & ~upper
         if sel_p.any():
-            p_range = ({"vmin": limits["p"][0], "vmax": limits["p"][1]}
-                       if limits and "p" in limits else {})     # pinned in a movie
+            p_range = ({"vmin": lim.p[0], "vmax": lim.p[1]}
+                       if lim.p is not None else {})            # pinned in a movie
             psc = ax.scatter(R[sel_p], Z[sel_p], c=pressure_scale * pressure[sel_p], s=size,
                              cmap=PRESSURE_CMAP, linewidths=0, rasterized=True, **p_range)
     res_ticks, res_labels = (resonant_rationals(lo, hi, int(nfp), denom_max)
@@ -492,7 +494,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     if (~keep).any():
         ax.scatter(R[~keep], Z[~keep], c="0.55", s=size, linewidths=0,
                    rasterized=True, label=f"lost ({int((~keep).sum())})")
-        ax.legend(loc="upper right", fontsize=7, markerscale=4)
+        ax.legend(loc="upper right", fontsize=FS.annot, markerscale=4)
     if axis_RZ is not None:
         # ONE marker at the mean, plus a hairline through the wander. Drawing a
         # "k+" at every save stacked 401 opaque markers into a black blob ~10%
@@ -508,7 +510,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     # side label was squeezed against the next panel, and above the bar the
     # section's title runs into it whenever the section is narrower than
     # its panel (a bean-shaped cut at equal aspect).
-    cbar.ax.set_xlabel(r"$\iota$", fontsize=10)
+    cbar.ax.set_xlabel(r"$\iota$", fontsize=FS.title)
     if res_ticks:
         # Only the rationals an nfp-periodic field can actually resonate with:
         # everything else on the colorbar is a surface no island can open on.
@@ -516,7 +518,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         cbar.set_ticklabels(res_labels)
     if psc is not None:
         pbar = fig.colorbar(psc, ax=ax, label=p_label, fraction=0.046, pad=0.02)
-        pbar.ax.tick_params(labelsize=7)
+        pbar.ax.tick_params(labelsize=FS.annot)
         ax.axhline(z_axis, color="0.35", lw=0.6, ls=":", zorder=1)
 
     # An axisymmetric vacuum field has iota = 0, so every line is a fixed point
@@ -528,21 +530,21 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     # meaningless against whatever units R happens to be in, and leaves a 1e-16
     # Z-range labelled in units of 1e-16.
     ylim = _padded(Z[keep], floor=0.04 * (xlim[1] - xlim[0]))
-    if limits and "RZ" in limits:
-        xlim, ylim = (tuple(float(v) for v in lim) for lim in limits["RZ"])
+    if lim.RZ is not None:
+        xlim, ylim = (tuple(float(v) for v in pair) for pair in lim.RZ)
     spans = (xlim[1] - xlim[0], ylim[1] - ylim[0])
     to_scale = max(spans) / max(min(spans), 1e-30) < 20.0
     ax.set_aspect("equal" if to_scale else "auto")
     if np.ptp(Z[keep]) < 1e-6 * (xlim[1] - xlim[0]):
         ax.text(0.5, 0.86, "iota = 0: every line is a fixed point of the\n"
                            "return map, so each surface is a single dot",
-                transform=ax.transAxes, ha="center", fontsize=8, color="0.35")
+                transform=ax.transAxes, ha="center", fontsize=FS.annot, color="0.35")
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.set_xlabel("R")
     ax.set_ylabel("Z")
     ax.set_title(title + ("" if to_scale else "\nAXES NOT TO SCALE"),
-                 fontsize=10)
+                 fontsize=FS.title)
 
     if lx is not None:
         # The SAME crossings in the logical chart: r against theta, both in
@@ -560,7 +562,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         lx.set_ylim(0.0, 1.0)
         lx.set_xlabel(r"logical $r$")
         lx.set_ylabel(r"logical $\theta$")
-        lx.set_title("logical chart", fontsize=10)
+        lx.set_title("logical chart", fontsize=FS.title)
 
     x = seed_r if profile_x is None else profile_x
     # The abscissa may carry several crossings per line (both midplane
@@ -605,8 +607,8 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
             right_plot_kwargs=dict(right, lw=0.8))
         px.fill_between(xo, mo - so, mo + so, color=right["color"], alpha=0.2, lw=0,
                         label=r"$p \pm 1$ std over the line")
-        if limits and "p" in limits:
-            px.set_ylim(*limits["p"])
+        if lim.p is not None:
+            px.set_ylim(*lim.p)
     else:
         px = None
         bx.plot(xo, io, lw=0.8, **left)
@@ -617,14 +619,14 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     for value, lab in zip(res_ticks, res_labels):
         bx.axhline(value, color="0.55", lw=0.6, ls="--", zorder=0)
         bx.annotate(lab, (0.995, value), xycoords=("axes fraction", "data"),
-                    ha="right", va="bottom", fontsize=6.5, color="0.4")
-    if iota_lim is not None:
+                    ha="right", va="bottom", fontsize=FS.annot, color="0.4")
+    if lim.iota is not None:
         # Same reason as the colour scale: two profiles drawn on separately
         # fitted y-axes look alike however far the transform actually moved.
         bx.set_ylim(lo, hi)
     bx.grid(alpha=0.3)
-    if limits and "x" in limits:
-        bx.set_xlim(*limits["x"])
+    if lim.x is not None:
+        bx.set_xlim(*lim.x)
     # The curves need no legend entry: the y labels carry their colours
     # (the twin-axis style). Only the ribbons are explained, and there is
     # no free corner -- iota rises at both ends, p peaks in the middle -- so
@@ -633,13 +635,12 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     if px is not None:
         h2, l2 = px.get_legend_handles_labels()
         handles, labels_ = handles + h2, labels_ + l2
-    bx.legend(handles, labels_, loc="best", fontsize=7, framealpha=0.85)
-    bx.set_title(subtitle, fontsize=10)
+    bx.legend(handles, labels_, loc="best")
+    bx.set_title(subtitle)
 
-    if path is not None:
-        fig.savefig(path, dpi=200)
-        plt.close(fig)
-    return fig
+    # Saving is the caller's: render_section is pure, so a run re-renders from
+    # its archive and the caller owns the path (and the movie's frame naming).
+    return fig, axes
 
 
 def _padded(v, pad=0.06, floor=0.0):

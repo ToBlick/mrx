@@ -334,7 +334,7 @@ def test_relaxation(synthetic_seq, potential_ic):
     def current_pairing(B_J, B):
         """``<J, B>`` with ``J = curl B_J``: the L2 pairing of the Dirichlet
         1-form with the 2-form through the mixed mass."""
-        J = seq.apply_weak_curl(B_J, dirichlet_in=True, dirichlet_out=True)
+        J = seq.apply_weak_curl(B_J, dirichlet=True)
         return J @ seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
 
     get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])

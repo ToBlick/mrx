@@ -172,6 +172,28 @@ so a second vector-potential gauge as a diagnostic check. Theory needs
 gamma = 1 (well-posedness is proved for it only); the numbers are in
 `coarse_gvec_export_2026-08-26.md` §3b, `outputs/trim/traces_all_HF_*.png`.
 
+**3.12 The metric-lumped atom is not h-independent, and on QA the k>=1
+atoms lose spectral equivalence with resolution** (2026-09-02). Toroid:
+every `(k, BC)` grows x1.9-2.6 for h/4 (kappa ~ 1/h, the uncoupled
+bulk/polar-core split). QA: k=0 the same at 3x; k=1 grows ~n, k=2 ~n^1.45,
+k=2 free hits `maxiter = 10000` from n=16 at p=4 and n=24 at p=3. Free costs
+3.5x dbc on QA (1.4x on the toroid) and the ratio drifts up with n. The
+Localised: k=0 is the axis at both ends (r-averaged 1/r), k>=1 Dirichlet
+is exact forms in the bulk, k>=1 free on QA is smooth gradients at the
+wall; `bc_scale` is not the lever (optimum s=1-3 at every n, worth 25%).
+The k=1,2 solves are now the Hodge split (676f315: 2-7x fewer iterations,
+1-4x wall time), which makes the k>=1 mechanisms irrelevant; the k=0 axis
+mechanism and the split-vs-singular gap (2.5-12x) remain open. *Detail:*
+`precond_h_scaling_2026-09-02.md`.
+
+**3.13 Recheck 3.1 (`nbc_k1` at ~3.2) after commit 0c3aa4d.** The k=1 free
+harmonic form used to be built from a non-closed seed through a k=2 FREE
+solve that ran out of budget at fine meshes, leaving a ~1e-3 non-harmonic
+contamination that the analytic vacuum study (`scripts/analytic_vacuum.py`,
+Route A) measured as an order-3.2 stall -- the same symptom. A k=1 free
+solve deflates against that vector. Not verified on `nbc_k1` itself.
+*Detail:* `precond_h_scaling_2026-09-02.md` §1.
+
 ## 4. Where the folding time goes
 
 Production logs show XLA constant-folding alarms individually exceeding 2 s

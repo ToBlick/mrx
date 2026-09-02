@@ -274,14 +274,18 @@ def load(seq: "DeRhamSequence", f, k: int,
         store: ``DF`` is recomputed at the quadrature points with
         :func:`mrx.geometry.map_jacobian_at`, once per call.
 
-        ``'ref'``: ``f`` returns the coefficients of the k-form expanded
-        directly in reference coordinates dr, dχ, dζ (and their wedge
-        products); no pullback is applied. Concretely:
+        ``'ref'``: ``f`` returns the reference-frame INTEGRAND that the
+        ``'phys'`` branch would have produced by pullback -- the vector the
+        basis is paired against, NOT the primal coefficients of the form;
+        no pullback is applied. Concretely:
 
         - k=0: scalar ``u(ξ)``
-        - k=1: covariant ref components ``(u_r, u_χ, u_ζ)``
-        - k=2: ref 2-form proxy ``(u_χζ, u_rζ, u_rχ)`` (same slot order as
-          ``_form_comp_info(2)``)
+        - k=1: ``g^{-1} u`` for covariant ``u = (u_r, u_χ, u_ζ)`` (the
+          contravariant components; ``M_1`` carries ``g^{-1} J``, so
+          ``M_1^{-1} load`` returns the covariant ``u``).  Handing it ``u``
+          itself projects the form with CONTRAVARIANT ``u``, silently.
+        - k=2: ``g u / J`` for the primal proxy ``u = (u_χζ, u_rζ, u_rχ)``
+          (same slot order as ``_form_comp_info(2)``)
         - k=3: scalar coefficient ``A(ξ)`` in ``A dr∧dχ∧dζ`` (i.e.
           ``A = f_phys·J``)
 

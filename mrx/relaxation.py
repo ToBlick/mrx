@@ -74,7 +74,7 @@ def compute_force(
         H_dual, 1, dirichlet=dirichlet_H, guess=H_guess)
     # J = seq.apply_strong_curl(H, dirichlet_in=dirichlet_H, dirichlet_out=True)
     # JxH_dual = seq.cross_product_load(J, H, 2, 2, 1, True, True, dirichlet_H)
-    J = seq.apply_weak_curl(B, dirichlet_in=True, dirichlet_out=True)
+    J = seq.apply_weak_curl(B, dirichlet=True)
     JxH_dual = seq.cross_product_load(
         J, H, 2, 1, 1, True, True, dirichlet_H)
     JxH = seq.apply_inverse_mass_matrix(JxH_dual, 2, guess=JxH_guess)
@@ -185,7 +185,7 @@ def pressure_diagnostics(
     gpw = seq.apply_incidence_matrix(p_w, 0, dirichlet_in=True, dirichlet_out=False)
     gpw2 = seq.apply_inverse_mass_matrix(
         seq.apply_projection_matrix(gpw, 1, 2, dirichlet_in=False, dirichlet_out=True), 2)
-    gp = seq.apply_weak_grad(p, True, True)
+    gp = seq.apply_weak_grad(p, True)
     gradp_cmp = seq.l2_norm(gpw2 - gp, 2) / seq.l2_norm(gpw2, 2)
     ci0, cs0 = seq._form_comp_info(0)
     ci3, cs3 = seq._form_comp_info(3)
