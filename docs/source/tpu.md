@@ -128,13 +128,21 @@ and 5x slower than the VM's own CPU; on the structured forms it is 2.8x and
 5x faster. Identical work, identical answers. If a kernel is slow on this
 hardware, look for an index tensor first.
 
-What is left is not compilation. `relaxation_loop` is already `@jax.jit`
-around a `lax.scan`. The remaining gap to a GPU is that one li383 step is a
-long chain of small dependent kernels, the largest now half a millisecond on
-arrays of order 10^4 floats. Widening the per-step work is the only route to
-using the chip properly, either at much higher resolution or by solving many
-equilibria at once with `vmap`, and that is a design change rather than a
-flag. A `v5litepod-4` is four chips and MRX uses one.
+What is left is not compilation either. `relaxation_loop` is already
+`@jax.jit` around a `lax.scan`, so the 13 s per step is pure device execution.
+From the primitives above it ought to be 350 ms. The per-apply arithmetic is
+right and the apply *count* is not: **one step is 37 478 operator applies**,
+which at 0.35 ms each is exactly the 13 s. Three MINRES solves are 99.5% of
+them, and the velocity smoothing solve alone takes 3 497 iterations and is
+75% of the step; the inverse-mass CG solves usually blamed for the cost take
+20-27 iterations and are 0.5%. The count grows linearly with the DoFs while
+the system becomes more mass-dominated, which points at the preconditioner.
+
+That is not a TPU property -- the same counts hold on CPU and GPU, where each
+apply is ~30x cheaper -- but a TPU makes it visible, and it is the largest
+speedup available to MRX on any backend. A `v5litepod-4` is also four chips
+and MRX uses one; a parameter sweep can take all four with `jax.pmap` over a
+stacked batch of initial states, with no library change.
 
 float32 on the MXU is not a numerical concern: inverse-mass CG at the same
 tolerance takes the same iteration count on both backends (20 at k=1, 24 at
@@ -147,7 +155,7 @@ computing:
 ```bash
 PUSH_FILES=tpu_bench_mrx.py SCRIPT=tpu_bench_mrx.py OUTDIR=outputs/bench \
   VM_NAME=mrx-tpu ZONE=<zone> RUN_PLATFORM=tpu \
-  ./run_on_tpu.sh --gap-sweeps 0 --skip-relax --out outputs/bench/tpu.json
+  ./run_on_tpu.sh --skip-relax --out outputs/bench/tpu.json
 # again with RUN_PLATFORM=cpu, then
 python tpu_bench_mrx.py --compare script_outputs/bench/{tpu,cpu}.json
 ```

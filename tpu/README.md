@@ -55,7 +55,7 @@ host CPU in double precision.
 ```bash
 PUSH_FILES=tpu_bench_mrx.py SCRIPT=tpu_bench_mrx.py OUTDIR=outputs/bench \
   VM_NAME=mrx-tpu ZONE=<zone> RUN_PLATFORM=tpu \
-  ./run_on_tpu.sh --gap-sweeps 0 --skip-relax --out outputs/bench/tpu.json
+  ./run_on_tpu.sh --skip-relax --out outputs/bench/tpu.json
 # same again with RUN_PLATFORM=cpu, then:
 python tpu_bench_mrx.py --compare script_outputs/bench/{tpu,cpu}.json
 ```
@@ -99,11 +99,16 @@ against a known-good run before trusting your own:
 
 | File | What it is |
 |---|---|
+| `benchmark_v5e_vs_cpu.md` | v5e against the same node's host CPU, phase by phase, and the fixes that were tried and refuted |
 | `poisson_summary.md`, `poisson_results.json` | Toroidal Poisson on v5e vs the CPU float32 reference |
-| `trace.png` | `\|\|F\|\|` and energy over 100 relaxation steps on li383 |
-| `torus_pw.png` | Weak pressure on the torus |
-| `poincare_ic_zeta0.png` | Poincare section of the initial field |
-| `poincare_final_zeta{0,0.25,0.5}.png` | Poincare sections of the relaxed field |
+
+The figures from that session ship in the standalone kit but are not committed
+to the mrx repository, so `results/` here may or may not contain them. Either
+way you generate your own: the 100-step li383 run writes `trace.png` (force and
+energy) and `torus_pw.png` (weak pressure on the torus), and
+`poincare_relax.py` writes `poincare_ic_zeta0.png` and
+`poincare_final_zeta{0,0.25,0.5}.png`. Section 9 of the guide describes what
+each should look like, which is what you actually need to check yours against.
 
 ## Files
 

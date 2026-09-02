@@ -32,6 +32,11 @@ Two things to take away before anything else:
    dense shifted reads and adds turned this hardware from 5-23x slower than the
    VM's own CPU into 3-5x faster on the same operation. A v5e is still about
    32x behind one H100 on a single li383 equilibrium.
+3. **The remaining 13 s per step is 37 478 operator applies, not slow
+   hardware.** Three MINRES solves are 99.5% of them and one is 75% on its own.
+   That is a preconditioning problem, it is identical on a CPU and a GPU, and
+   it is the largest speedup available to MRX anywhere. Section 6.1 has the
+   per-solve counts.
 
 ---
 
@@ -417,18 +422,44 @@ rather than argued about, which is the only reason we know:
 
 **What is still 32x off an H100, and why.** `relaxation_loop` is already
 `@jax.jit` around a `lax.scan`, so the 13 s per step is genuine compiled device
-execution with no compilation left in it. The remaining gap is that one li383
-step is a long chain of small dependent kernels: the largest single apply is
-now half a millisecond on arrays of ~10^4 floats, which uses a rounding error
-of a v5e's width. There is no fix for that at one equilibrium. The hardware
-pays off only when the arrays get bigger or when many equilibria are solved at
-once (`vmap` over an ensemble), and that is a real design change, not a flag.
-A `v5litepod-4` is also four chips of which MRX uses one, so there is a further
-4x behind a sharded or ensembled solve.
+execution with no compilation left in it. The tempting explanation is that a
+li383 step is a chain of kernels too small to fill the chip. That is wrong, and
+it is worth knowing why, because it changes what you would fix.
 
-One flag-sized item does remain: wrapping `apply_laplacian` in `jax.jit`
-measured 4.5 ms against 75 ms eager, a 17x. It was not taken here because it
-changes how the library is called rather than what it computes.
+From the numbers above a step ought to cost about 350 ms: ~350 mass-core
+applies at 0.5 ms plus ~700 extraction applies at 0.18 ms. It costs 13.03 s.
+The per-apply arithmetic is right; the apply *count* is wrong by two orders of
+magnitude. **One step is 37 478 operator applies**, which at 0.35 ms each is
+exactly the 13 s. Nobody had counted, because the step is a jitted scan and
+every solver's `info` is discarded inside it.
+
+Run one step eagerly, where `info` is concrete, and three MINRES solves turn
+out to be 99.5% of the work. The velocity smoothing solve alone,
+`(M_2 + eps L_2) x = M_2 u` at k=2, takes **3 497 iterations** and is 75% of
+the step. The six inverse-mass CG solves everyone assumes are the cost take
+20-27 iterations and are 0.5%. The count scales linearly with the DoFs (951
+iterations at `(8,16,8)`, 3 497 at `(12,24,12)`) even though `eps ~ 1/n_r^2`
+makes the system more mass-dominated as you refine, which points at the
+preconditioner rather than at float32 or at stagnation -- every solve converges.
+
+None of that is a TPU property. The same counts hold on a CPU and have always
+held on the GPU, where each apply is ~30x cheaper and so nobody noticed. The
+biggest available speedup for MRX on any backend is in that solve, and it is a
+preconditioning question, not a TPU one. See `results/benchmark_v5e_vs_cpu.md`
+for the full per-solve table.
+
+**Four chips instead of one.** A `v5litepod-4` is four chips and MRX uses one.
+For a parameter sweep that needs no library change: the scan is a pure function
+of an equinox `State`, so `jax.pmap` over a stacked batch of initial states
+runs one equilibrium per chip. Checked on four forced host devices
+(`XLA_FLAGS=--xla_force_host_platform_device_count=4`), where four initial
+fields 1% apart reproduced their sequential answers bit for bit. Untested on
+real chips, so no script here does it yet.
+
+One flag-sized item also remains: wrapping `apply_laplacian` in `jax.jit`
+measured 4.5 ms against 75 ms eager, a 17x. It is not in the relaxation's hot
+path, and it changes how the library is called rather than what it computes, so
+it was not taken.
 
 **Precision is not a concern.** Inverse-mass CG at the same tolerance took the
 same iteration count on both backends (20 at k=1, 24 at k=2), so float32 on the
@@ -445,11 +476,11 @@ paying for the node.
 # the whole diagnosis, ~12 min, on a node you already hold
 PUSH_FILES=tpu_bench_mrx.py SCRIPT=tpu_bench_mrx.py OUTDIR=outputs/bench \
   VM_NAME=my-tpu-vm ZONE=<zone> RUN_PLATFORM=tpu \
-  ./run_on_tpu.sh --gap-sweeps 0 --skip-relax --out outputs/bench/tpu.json
+  ./run_on_tpu.sh --skip-relax --out outputs/bench/tpu.json
 
 PUSH_FILES=tpu_bench_mrx.py SCRIPT=tpu_bench_mrx.py OUTDIR=outputs/bench \
   VM_NAME=my-tpu-vm ZONE=<zone> RUN_PLATFORM=cpu \
-  ./run_on_tpu.sh --gap-sweeps 0 --skip-relax --out outputs/bench/cpu.json
+  ./run_on_tpu.sh --skip-relax --out outputs/bench/cpu.json
 
 python tpu_bench_mrx.py --compare script_outputs/bench/{tpu,cpu}.json
 ```
@@ -464,9 +495,9 @@ faster than this VM's CPU. Field-line tracing integrates for hundreds of
 toroidal periods and accumulates error, so it wants float64, which a TPU does
 not have; it is also cheap, 7 s per field, so there is nothing to gain.
 
-`--gap-sweeps 0` skips the `lambda_1` diagnostic. It reports a number, it is
-not part of the construction, and it cost 6.8 of 9 setup minutes when it was
-on by default.
+Neither script runs the `lambda_1` diagnostic any more. It reports a number,
+it is not part of the construction, and it cost 6.8 of the 9 setup minutes
+when it was on by default.
 
 ```bash
 OUT=outputs/tutorials/li383_relaxation
@@ -476,7 +507,7 @@ OUT=outputs/tutorials/li383_relaxation
 SCRIPT=scripts/tutorials/li383_relaxation.py OUTDIR=$OUT \
   VM_NAME=mrx-tpu ZONE=<zone> RUN_PLATFORM=tpu RUN_DTYPE=float32 RUN_TIMEOUT=7200 \
   ./run_on_tpu.sh --ns 12,24,12 --p 3 --precision float32 \
-                  --outer 10 --inner 10 --gap-sweeps 0 --out $OUT
+                  --outer 10 --inner 10 --out $OUT
 
 # 2. trace in float64 on the host CPU -> poincare_*.png, sections.npz  (~2 min)
 SCRIPT=scripts/poincare_relax.py OUTDIR=$OUT \
@@ -629,7 +660,7 @@ Python 3.12. The host is 112 vCPU / 188 GB.
 | 2 | 8 | 3.5617e-03 | 3.5617e-03 | 0.00% | 7 |
 
 **li383 finite-beta relaxation** (`--ns 12,24,12 --p 3 --precision float32`,
-100 steps as `--outer 10 --inner 10 --gap-sweeps 0`), **on the v5e** with the
+100 steps as `--outer 10 --inner 10`), **on the v5e** with the
 section 6.1 fixes:
 
 - Geometry: nfp=3, `det DF` in [2.976e-01, 2.124e+00]
@@ -709,7 +740,7 @@ measurement is attributable to a known tree.
 ```bash
 SYNC_LOCAL_MRX=1 LOCAL_MRX=~/mrx \
   SCRIPT=scripts/tutorials/li383_relaxation.py OUTDIR=outputs/tutorials/li383_relaxation \
-  VM_NAME=my-tpu-vm ZONE=<zone> ./run_on_tpu.sh --outer 10 --inner 10 --gap-sweeps 0
+  VM_NAME=my-tpu-vm ZONE=<zone> ./run_on_tpu.sh --outer 10 --inner 10
 ```
 
 `PUSH_FILES` copies extra local files into the repo directory, which is how

@@ -152,45 +152,102 @@ Measured, not argued about:
 The sorted-indices hint is genuinely useful on GPUs, where a scatter lowers to
 hardware atomics. It does nothing on this hardware.
 
-## What is left, and what would actually help
+## What is left: the step is 37 478 operator applies
 
 `relaxation_loop` is already `@jax.jit` around a `lax.scan`, so the 13 s per
-step contains no compilation. What remains is that one li383 step is a long
-chain of small dependent kernels: the largest single apply now takes half a
-millisecond on arrays of about 10^4 floats, which is a rounding error of a
-v5e's width.
+step contains no compilation. It is worth asking what the arithmetic *should*
+cost. From the primitives above, a step ought to be roughly 350 ms: about 350
+mass-core applies at 0.5 ms and 700 extraction applies at 0.18 ms. That is 37x
+off the measured 13.03 s, and for a while the assumed explanation was that a
+li383 step is a chain of kernels too small to fill the chip.
 
-Two things follow, and both are design changes rather than flags. Widening the
-per-step work is the only route to using the chip properly, either at much
-higher resolution or by solving many equilibria at once with `vmap`. And a
-`v5litepod-4` is four chips of which MRX uses one, so there is a further 4x
-sitting idle behind a sharded or ensembled solve.
+That was wrong. The per-apply arithmetic was right; the apply *count* was
+wrong, by two orders of magnitude. Because the step is a jitted scan, every
+solver's `info` is discarded before anything can read it, so the iteration
+counts had never been looked at. Running one step eagerly on a host, where
+`info` is concrete, gives this (li383, `(12,24,12)` p=3, float32,
+`tol = sqrt_eps = 3.45e-04`, `maxiter = 10000`):
 
-The remaining eager `lax.while_loop`s are worth revisiting too: wrapping
-`apply_laplacian` in `jax.jit` measured 4.5 ms against 75 ms eager, a 17x that
-this work did not take because it changes the library's call structure.
+| # | solver | n | iterations | converged | applies |
+|---|---|---|---|---|---|
+| 0 | CG, inverse mass | 8700 | 0 | yes | 0 |
+| 1 | CG, inverse mass k=1 | 8124 | 25 | yes | 50 |
+| 2 | CG, inverse mass | 8376 | 0 | yes | 0 |
+| 3 | MINRES, Leray k=3 | 2880 | 221 | yes | 3 536 |
+| 4 | CG, inverse mass k=2 | 8376 | 27 | yes | 54 |
+| 5 | **MINRES, velocity smoothing k=2** | 8376 | **3 497** | yes | **27 976** |
+| 6 | MINRES, Leray k=3 | 2880 | 361 | yes | 5 776 |
+| 7 | CG, inverse mass k=2 | 8376 | 22 | yes | 44 |
+| 8 | CG, inverse mass k=1 | 8124 | 21 | yes | 42 |
+
+**37 478 operator applies in one step.** At 13.03 s that is 0.35 ms each,
+which is exactly the measured cost of a mass-core apply. The chip was never the
+problem and the kernels are not too small: the step really does ask for 37 478
+of them.
+
+Three MINRES solves are 99.5% of the work, and one of them, the velocity
+smoothing solve `(M_2 + eps L_2) x = M_2 u`, is 75% on its own. The six CG
+solves everybody assumes are the cost are 190 applies, 0.5%.
+
+The iteration count scales with the problem. At `(8,16,8)`, `n(2) = 2192`, the
+same solve took 951 iterations; at `(12,24,12)`, `n(2) = 8376`, it takes 3 497.
+DoFs up 3.8x, iterations up 3.7x -- linear, which is the signature of a
+preconditioner that is not controlling the condition number. It is not
+stagnation and not a float32 artefact: every solve converges, and `eps` shrinks
+as `0.064 / n_r^2`, so the system becomes *more* mass-dominated with resolution
+while the iteration count rises anyway.
+
+None of this is a TPU property. The same counts appear on a CPU, and the same
+counts have always been there on the GPU, where each apply is simply ~30x
+cheaper. It is recorded here because a TPU makes it visible: when a single
+apply costs a third of a millisecond, 37 478 of them is the whole run.
+
+**This is the highest-value remaining item and it is not a TPU change.** It
+belongs to the preconditioner, not to this branch. Reproduce with the counter
+in the tutorial (run one step eagerly and read each solver's signed `info`).
+
+### The rest, in order of what they would buy
+
+- **Four chips instead of one.** A `v5litepod-4` is four chips and MRX uses
+  one. For a parameter sweep this needs no library change: the scan is already
+  a pure function of an equinox `State`, so `jax.pmap` over a stacked batch of
+  initial states runs one equilibrium per chip. Verified on four forced host
+  devices, where four 1%-apart initial fields reproduced their sequential
+  answers bit for bit. Untested on real chips, so it is not shipped here.
+- **`apply_laplacian` under `jax.jit`**: 4.5 ms against 75 ms eager, a 17x. Not
+  in the relaxation's hot path -- it appears only in resistive steps and in the
+  per-outer-iteration helicity -- and it changes the library's call structure,
+  so it was not taken.
+- **A structured extraction operator.** `E` can be reformulated as a
+  contiguous copy plus a small dense block: only 36/60/24 of the extracted rows
+  actually mix for k=0/1/2, k=3 is pure selection, and over 99% of rows are
+  single value-1.0 pass-throughs. It is the natural mirror of what fixes 2 and
+  3 did to the mass kernel. **It was not done, and should not be**: at 700
+  extraction applies of 37 478, making `E` free saves under 1% of a step.
+  Recorded so the idea is not re-derived; it becomes worth doing only once the
+  MINRES iteration counts come down.
 
 ## Reproducing this
 
 ```bash
 PUSH_FILES=tpu_bench_mrx.py SCRIPT=tpu_bench_mrx.py OUTDIR=outputs/bench \
   VM_NAME=my-tpu-vm ZONE=<zone> RUN_PLATFORM=tpu \
-  ./run_on_tpu.sh --gap-sweeps 0 --skip-relax --out outputs/bench/tpu.json
+  ./run_on_tpu.sh --skip-relax --out outputs/bench/tpu.json
 
 PUSH_FILES=tpu_bench_mrx.py SCRIPT=tpu_bench_mrx.py OUTDIR=outputs/bench \
   VM_NAME=my-tpu-vm ZONE=<zone> RUN_PLATFORM=cpu \
-  ./run_on_tpu.sh --gap-sweeps 0 --skip-relax --out outputs/bench/cpu.json
+  ./run_on_tpu.sh --skip-relax --out outputs/bench/cpu.json
 
 python tpu_bench_mrx.py --compare script_outputs/bench/{tpu,cpu}.json
 ```
 
 Drop `--skip-relax` to include the relaxation timing, which adds about 4
-minutes on a TPU and 9 on the CPU. `--gap-sweeps 5` adds the `lambda_1`
-diagnostic, which is not part of the construction and cost 6.8 of 9 setup
-minutes when it was on by default.
+minutes on a TPU and 9 on the CPU. The `lambda_1` diagnostic is no longer
+run: it is not part of the construction and cost 6.8 of the 9 setup minutes
+when it was on by default.
 
-The figures in this directory are from the 100-step li383 run of the previous
-session (41.3 s/step, before fixes 2-4), with `||F||` falling 5.540e-02 ->
-1.004e-02 and helicity conserved to 5.6e-07 relative. The physics is unchanged
-by this work: every fix is a data-movement rewrite verified to agree exactly
-or to float32 round-off.
+The 100-step li383 run of the previous session (41.3 s/step, before fixes 2-4)
+had `||F||` falling 5.540e-02 -> 1.004e-02 with helicity conserved to 5.6e-07
+relative; its figures are not kept here, only described in section 9 of the
+guide. The physics is unchanged by this work: every fix is a data-movement
+rewrite verified to agree exactly or to float32 round-off.
