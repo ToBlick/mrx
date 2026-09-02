@@ -21,7 +21,8 @@ code, so the comparison is not confounded by the fixes below. Reproduce with
 | `E` apply k=1 | 1.999 ms | **0.181 ms** | 0.102 ms | - |
 | `apply_derivative_matrix` k=1 | 7.15 ms | **2.74 ms** | 6.28 ms | - |
 | `apply_laplacian` k=1 (nested CG) | 10 020 ms | **76.4 ms** | 108 ms | - |
-| relaxation, per step | 100.3 s | **13.03 s** | 45.7 s | 0.41 s |
+| relaxation, per step (mass precond) | 100.3 s | **13.03 s** | 45.7 s | 0.41 s |
+| relaxation, per step (laplacian precond) | -- | **8.05 s** | -- | -- |
 
 The v5e went from 1.7x slower than the VM's own CPU to **3.5x faster**, and
 setup from about 7 minutes to under a minute. It is now about 32x behind one
@@ -202,18 +203,89 @@ counts have always been there on the GPU, where each apply is simply ~30x
 cheaper. It is recorded here because a TPU makes it visible: when a single
 apply costs a third of a millisecond, 37 478 of them is the whole run.
 
-**This is the highest-value remaining item and it is not a TPU change.** It
-belongs to the preconditioner, not to this branch. Reproduce with the counter
-in the tutorial (run one step eagerly and read each solver's signed `info`).
+**This was the highest-value remaining item, and it was not a TPU change.**
+
+### It was a preconditioner chosen for the wrong term
+
+`_coerce_diffusion_preconditioner_spec` justified the mass atom with a comment
+claiming `eps * lambda_max(M^-1 L) ~ 0.26` at `(8,16,8)`, i.e. that
+`M + eps L` is mass-dominated there. Power iteration on `M^-1 L_hodge` -- the
+operator the saddle system actually reduces to, so including the `d d^T` half
+that `apply_stiffness` alone omits -- says otherwise:
+
+| ns | eps | lambda_max(M^-1 L) | eps*lambda_max | claimed |
+|---|---|---|---|---|
+| (8,16,8) | 1.000e-03 | 9.153e+04 | **91.5** | ~0.26 |
+| (12,24,12) | 4.444e-04 | 8.107e+05 | **360.3** | ~0.26 |
+
+Wrong by 350x, and not resolution-flat either. The flatness argument was that
+`eps ~ n_r^-2` cancels `lambda_max ~ n_r^2`; measured, `lambda_max` grows 8.9x
+across those two while `eps` falls only 2.25x, so refining moves *further* from
+mass dominance. The residual history shows steady convergence with no plateau
+throughout, so this was an ill-conditioned system being solved honestly.
+
+The fix is the metric-lumped **Laplacian** atom as `(1/eps) P_L`, a
+`'laplacian'` kind that `TimeStepper.smooth_velocity` now selects. MINRES
+iterations to `sqrt_eps` on li383 k=2, float64, lower is better:
+
+| eps | mass | laplacian |
+|---|---|---|
+| 1e-06 | **498** | 3682 |
+| 1e-04 | **750** | 2919 |
+| 1e-03 (the smoothing eps at n_r=8) | 2130 | **1655** |
+| 1e-02 | 5774 | **950** |
+
+At `(12,24,12)`, eps=4.44e-04: **8493 vs 3636**. The scaling improves as well
+as the level -- mass goes 2130 to 8493 (4.0x), the new kind 1655 to 3636 (2.2x)
+-- so the crossover moves the right way with refinement. `'auto'` stays mass,
+because below eps ~ 1e-4 mass is much better, and that is where the resistive
+step's `dt * eta` lives.
+
+**On this v5e, same node and session, `(12,24,12)` p=3 float32:**
+
+| velocity-smoothing preconditioner | 5 steps, steady | per step |
+|---|---|---|
+| `auto`, the mass atom | 65.11 s | 13.02 s |
+| `laplacian` | 40.25 s | **8.05 s** |
+
+**1.62x on the whole relaxation.** The `auto` figure reproduces the 13.03 s of
+the earlier session to three significant figures, which is what makes this an
+apples-to-apples comparison rather than two measurements of different machines.
+The trajectory is unchanged: six li383 steps agree to 4.3e-09 relative against
+a solver tolerance of 1.49e-08. mrx PR #19.
+
+Three alternatives were measured and rejected. `'jacobi'`, the shifted diagonal
+that *does* know about `eps L`, is far worse (14372 iterations at `(8,16,8)`,
+no convergence at `(12,24,12)`). Unpreconditioned does not converge.
+Preconditioned CG on the reduced SPD operator cuts outer iterations 18x -- 462
+against 8493 -- and pays every bit of it back in the inner mass solve needed to
+apply `d d^T`, 54264 inner CG iterations, landing at wall-clock parity. Worth
+recording that an inexact inner solve costs only 3% more outer iterations, so
+flexible CG is not the obstacle; the inner solve simply is not cheap.
+
+The condition number is still resolution-dependent, so this is a large constant
+rather than a cure. The principled object is a separable `(M + eps L)` atom,
+right at every eps, which `docs/research/OPEN.md` section 3.9 already proposes.
 
 ### The rest, in order of what they would buy
 
-- **Four chips instead of one.** A `v5litepod-4` is four chips and MRX uses
-  one. For a parameter sweep this needs no library change: the scan is already
-  a pure function of an equinox `State`, so `jax.pmap` over a stacked batch of
-  initial states runs one equilibrium per chip. Verified on four forced host
-  devices, where four 1%-apart initial fields reproduced their sequential
-  answers bit for bit. Untested on real chips, so it is not shipped here.
+- **Four chips instead of one, measured at 3.99x.** A `v5litepod-4` is four
+  chips and MRX uses one. For a parameter sweep this needs no library change:
+  the scan is already a pure function of an equinox `State`, so `jax.pmap` over
+  a stacked batch of initial states runs one equilibrium per chip. On real
+  chips, four equilibria 1% apart at `(8,16,8)` p=3 float32, 4 steps each:
+  **5.8 s pmapped against 23.1 s one at a time**, i.e. four chips do four
+  problems in the time one chip does one. Each reproduced its own sequential
+  answer to 5.0e-05 in float32 against a 3.5e-02 bar, and the members differ
+  from one another by the 1-3% they were built to, which is what distinguishes
+  four problems from four copies of one. `pmap_sweep.py`.
+
+  The scaling is only visible if compilation is timed separately. Both forms
+  compile once, but the serial loop amortises that over four calls while the
+  `pmap` pays it on its only call, so comparing single shots reads 2.77x, and
+  an earlier attempt that also had a cold XLA cache read 1.56x. Both figures
+  measure the compiler. The script now runs each form twice and reports the
+  second, which is what a sweep of any real length would see.
 - **`apply_laplacian` under `jax.jit`**: 4.5 ms against 75 ms eager, a 17x. Not
   in the relaxation's hot path -- it appears only in resistive steps and in the
   per-outer-iteration helicity -- and it changes the library's call structure,

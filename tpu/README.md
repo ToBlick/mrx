@@ -130,5 +130,6 @@ each should look like, which is what you actually need to check yours against.
 | `mrx_tpu_report.py` | Poisson driver that checks TPU vs CPU reference |
 | `tpu_bench_mrx.py` | Phase/primitive benchmark; splits compile from execute |
 | `profile_top_ops.py` | Reduces a `jax.profiler` trace to a top-N op table |
+| `pmap_sweep.py` | Runs one equilibrium per chip, and checks it really is one per chip |
 | `gcs_cache_smoke.py` | Proves a `gs://` compilation cache path before you rely on it |
 | `make_kit.sh` | Builds `tpu_access_kit.zip`, the standalone copy of this directory |

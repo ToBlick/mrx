@@ -329,7 +329,11 @@ done
 if [[ "${SYNC_LOCAL_MRX}" == "1" ]]; then
     echo ""
     echo "Syncing ${LOCAL_MRX} -> ${MRX_DIR} (tracked files only)..."
-    if [[ ! -d "${LOCAL_MRX}/.git" ]]; then
+    # `-d .git` rejects a git worktree, where .git is a FILE pointing at the
+    # real directory. Worktrees are the natural way to measure a second branch
+    # without disturbing the first, which is exactly what this flag is for, so
+    # ask git rather than the filesystem.
+    if ! git -C "${LOCAL_MRX}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "ERROR: ${LOCAL_MRX} is not a git checkout." >&2
         exit 1
     fi

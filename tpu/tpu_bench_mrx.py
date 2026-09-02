@@ -55,6 +55,12 @@ def parse_args():
                     help="read result JSONs and print the comparison table")
     ap.add_argument("--skip-phases", action="store_true",
                     help="primitives only; skips the multi-minute phase timings")
+    ap.add_argument("--smoothing-precond", default=None,
+                    help="velocity-smoothing preconditioner kind for the "
+                         "relaxation phase. Omit to take TimeStepper's own "
+                         "default; pass 'auto' to time the mass atom that "
+                         "shipped before the laplacian kind, which is the "
+                         "A/B the guide's section 6.1 reports")
     ap.add_argument("--skip-relax", action="store_true",
                     help="skip the relaxation phase (the slowest item)")
     ap.add_argument("--profile", default=None,
@@ -543,11 +549,17 @@ def bench_relaxation(bench, seq, args, dtype):
     cb = load_clebsch(args.geometry)
     B0, _, _ = potential_two_form(seq, clebsch_potential_form(cb))
 
+    # Only passed when asked for, so this still runs against a tree that
+    # predates the field rather than failing on an unexpected keyword.
+    extra = ({} if args.smoothing_precond is None
+             else {"velocity_smoothing_preconditioner": args.smoothing_precond})
     ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
                      dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
                      eta_every=1, resistive=False, history_size=1,
                      velocity_smoothing_order=1,
-                     velocity_smoothing_scale=0.064 / ns[0] ** 2)
+                     velocity_smoothing_scale=0.064 / ns[0] ** 2, **extra)
+    print(f"[phase] velocity smoothing preconditioner: "
+          f"{args.smoothing_precond or 'TimeStepper default'}", flush=True)
 
     inner = 5
     # Two identical calls. The first compiles the scanned step; the second does

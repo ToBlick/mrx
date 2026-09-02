@@ -34,11 +34,17 @@ Two things to take away before anything else:
    dense shifted reads and adds turned this hardware from 5-23x slower than the
    VM's own CPU into 3-5x faster on the same operation. A v5e is still about
    32x behind one H100 on a single li383 equilibrium.
-3. **The remaining 13 s per step is 37 478 operator applies, not slow
-   hardware.** Three MINRES solves are 99.5% of them and one is 75% on its own.
-   That is a preconditioning problem, it is identical on a CPU and a GPU, and
-   it is the largest speedup available to MRX anywhere. Section 6.1 has the
-   per-solve counts.
+3. **The 13 s per step was 37 478 operator applies, not slow hardware.**
+   Three MINRES solves were 99.5% of them and one was 75% on its own. That
+   turned out to be a preconditioner chosen for the wrong term -- the operator
+   is Laplacian-dominated where a comment claimed it was mass-dominated -- and
+   fixing it takes the step to **8.05 s, a 1.62x**, measured here against the
+   old preconditioner on the same node. It is identical on a CPU and a GPU, so
+   this is not a TPU fix. Section 6.1 has the numbers; mrx PR #19 has the
+   change.
+4. **A `v5litepod-4` is four chips and one equilibrium uses one of them.** A
+   parameter sweep can have all four for the cost of a `jax.pmap`: measured
+   **3.99x on real chips**, `pmap_sweep.py`.
 
 ---
 
@@ -320,7 +326,8 @@ only the backend differs. Both columns run the same fixed code.
 | `apply_laplacian` k=1 (nested CG) | 10 020 ms | **76.4 ms** | 108 ms | - |
 | `mass_core_apply` k=1 | 6.60 ms | **0.505 ms** | 3.79 ms | - |
 | `E` apply k=1 | 1.999 ms | **0.181 ms** | 0.102 ms | - |
-| relaxation, per step | 100.3 s | **13.03 s** | 45.7 s | 0.41 s |
+| relaxation, per step (mass precond) | 100.3 s | **13.03 s** | 45.7 s | 0.41 s |
+| relaxation, per step (laplacian precond) | -- | **8.05 s** | -- | -- |
 
 So the TPU went from 1.7x *slower* than the VM's own CPU to **3.5x faster**, a
 7.7x end-to-end gain, and setup dropped from 7 minutes to under one. It is now
@@ -445,18 +452,58 @@ makes the system more mass-dominated as you refine, which points at the
 preconditioner rather than at float32 or at stagnation -- every solve converges.
 
 None of that is a TPU property. The same counts hold on a CPU and have always
-held on the GPU, where each apply is ~30x cheaper and so nobody noticed. The
-biggest available speedup for MRX on any backend is in that solve, and it is a
-preconditioning question, not a TPU one. See `results/benchmark_v5e_vs_cpu.md`
-for the full per-solve table.
+held on the GPU, where each apply is ~30x cheaper and so nobody noticed. See
+`results/benchmark_v5e_vs_cpu.md` for the full per-solve table.
 
-**Four chips instead of one.** A `v5litepod-4` is four chips and MRX uses one.
-For a parameter sweep that needs no library change: the scan is a pure function
-of an equinox `State`, so `jax.pmap` over a stacked batch of initial states
-runs one equilibrium per chip. Checked on four forced host devices
-(`XLA_FLAGS=--xla_force_host_platform_device_count=4`), where four initial
-fields 1% apart reproduced their sequential answers bit for bit. Untested on
-real chips, so no script here does it yet.
+**That solve has since been fixed, and it was a preconditioner.** The mass
+preconditioner was chosen on the strength of a comment asserting
+`eps * lambda_max(M^-1 L) ~ 0.26` at `(8,16,8)`, i.e. that `M + eps L` is
+mass-dominated there. Power iteration says **91.5**, and 360.3 at
+`(12,24,12)`: `lambda_max` grows 8.9x between those two resolutions while
+`eps` falls only 2.25x, so refining moves *further* from mass dominance. The
+operator is Laplacian-dominated by two orders of magnitude and was being
+preconditioned for the wrong term.
+
+Using the metric-lumped Laplacian atom instead, as `(1/eps) P_L`, is a
+selectable kind (`'laplacian'`) and is what `TimeStepper.smooth_velocity` now
+asks for. Measured on this v5e, same node, same session, `(12,24,12)` p=3
+float32, 5 steps steady-state:
+
+| velocity-smoothing preconditioner | per step |
+|---|---|
+| `auto`, the mass atom | 13.02 s |
+| `laplacian` | **8.05 s** |
+
+**1.62x on the whole relaxation**, from one preconditioner argument. The
+`auto` figure reproduces the 13.03 s measured in the earlier session to three
+significant figures, which is what makes the comparison trustworthy. The
+trajectory is unchanged: six steps agree to 4.3e-09 relative against a solver
+tolerance of 1.49e-08. See mrx PR #19; the underlying condition number is
+still resolution-dependent, so this is a large constant rather than a cure.
+
+**Four chips instead of one, measured at 3.99x.** A `v5litepod-4` is four chips
+and MRX uses one. For a parameter sweep that needs no library change: the scan
+is a pure function of an equinox `State`, so `jax.pmap` over a stacked batch of
+initial states runs one equilibrium per chip. `pmap_sweep.py` does exactly
+that, and on a real `v5litepod-4` four equilibria 1% apart at `(8,16,8)` p=3
+float32 took **5.8 s on four chips against 23.1 s one at a time**. Each
+reproduced its own sequential answer to 5.0e-05 in float32, well inside the
+3.5e-02 bar, and the members differ from each other by the 1-3% they were built
+to differ by, which is the check that this is four problems and not four copies
+of one.
+
+Time the compilation separately or you will measure the compiler. Both forms
+compile once; the serial loop then amortises it over four calls and the `pmap`
+pays it on its only call, so a single-shot comparison of the two reads 2.77x,
+and a first attempt that also ran with a cold XLA cache read 1.56x. Neither is
+a property of the hardware. The script runs each form twice and reports the
+second, which is what a real sweep of any length gets.
+
+```bash
+PUSH_FILES=pmap_sweep.py SCRIPT=pmap_sweep.py OUTDIR=outputs/pmap \
+  VM_NAME=mrx-tpu ./run_on_tpu.sh --ns 8,16,8 --p 3 --steps 4 \
+  --out outputs/pmap/pmap_sweep.json
+```
 
 One flag-sized item also remains: wrapping `apply_laplacian` in `jax.jit`
 measured 4.5 ms against 75 ms eager, a 17x. It is not in the relaxation's hot
@@ -741,6 +788,8 @@ what the solve achieves.
 - `tpu_bench_mrx.py` - phase and primitive benchmark; separates compile time
   from execute time, and has a `--compare` mode for the TPU/CPU table
 - `profile_top_ops.py` - reduces a `jax.profiler` trace to a top-N op table
+- `pmap_sweep.py` - runs one equilibrium per chip and checks that they are
+  four problems rather than four copies of one
 - `gcs_cache_smoke.py` - proves a `gs://` compilation cache path in ~10 s,
   because JAX does not fail on one it cannot reach
 - `make_kit.sh` - builds `tpu_access_kit.zip`, the standalone copy of this

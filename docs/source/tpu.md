@@ -113,7 +113,8 @@ backend differs:
 | `compute_nullspaces` | 222 s | 17.5 s | 55.1 s | - |
 | `mass_core_apply` k=1 | 6.60 ms | 0.505 ms | 3.79 ms | - |
 | `apply_laplacian` k=1 | 10 020 ms | 76.4 ms | 108 ms | - |
-| relaxation, per step | 100.3 s | 13.03 s | 45.7 s | 0.41 s |
+| relaxation, per step (mass precond) | 100.3 s | 13.03 s | 45.7 s | 0.41 s |
+| relaxation, per step (laplacian precond) | - | 8.05 s | - | - |
 
 Two things account for that. The compilation cache above, and removing every
 index tensor from the mass kernel: the gather and the scatter at its two
@@ -130,21 +131,30 @@ and 5x slower than the VM's own CPU; on the structured forms it is 2.8x and
 5x faster. Identical work, identical answers. If a kernel is slow on this
 hardware, look for an index tensor first.
 
-What is left is not compilation either. `relaxation_loop` is already
-`@jax.jit` around a `lax.scan`, so the 13 s per step is pure device execution.
-From the primitives above it ought to be 350 ms. The per-apply arithmetic is
-right and the apply *count* is not: **one step is 37 478 operator applies**,
-which at 0.35 ms each is exactly the 13 s. Three MINRES solves are 99.5% of
-them, and the velocity smoothing solve alone takes 3 497 iterations and is
-75% of the step; the inverse-mass CG solves usually blamed for the cost take
-20-27 iterations and are 0.5%. The count grows linearly with the DoFs while
-the system becomes more mass-dominated, which points at the preconditioner.
+What was left was not compilation either. `relaxation_loop` is already
+`@jax.jit` around a `lax.scan`, so the 13 s per step was pure device
+execution. From the primitives above it ought to have been 350 ms. The
+per-apply arithmetic was right and the apply *count* was not: **one step is
+37 478 operator applies**, which at 0.35 ms each is exactly the 13 s. Three
+MINRES solves are 99.5% of them, and the velocity smoothing solve alone took
+3 497 iterations and was 75% of the step; the inverse-mass CG solves usually
+blamed for the cost take 20-27 iterations and are 0.5%.
 
-That is not a TPU property -- the same counts hold on CPU and GPU, where each
-apply is ~30x cheaper -- but a TPU makes it visible, and it is the largest
-speedup available to MRX on any backend. A `v5litepod-4` is also four chips
-and MRX uses one; a parameter sweep can take all four with `jax.pmap` over a
-stacked batch of initial states, with no library change.
+That solve was preconditioned by the mass atom, on the strength of a claim
+that `eps * lambda_max(M^-1 L) ~ 0.26` at `(8,16,8)`. Power iteration says
+91.5, and 360.3 at `(12,24,12)`: `lambda_max` grows 8.9x between the two
+while `eps` falls only 2.25x, so the operator is Laplacian-dominated and
+refining makes it more so. Preconditioning with the metric-lumped Laplacian
+atom instead, as `(1/eps) P_L`, takes the step from **13.02 s to 8.05 s** on
+the same node, a 1.62x, with the trajectory unchanged to 4.3e-09 against a
+solver tolerance of 1.49e-08.
+
+None of that is a TPU property -- the same counts hold on CPU and GPU, where
+each apply is ~30x cheaper -- but a TPU makes it visible. A `v5litepod-4` is
+also four chips and MRX uses one; a parameter sweep takes all four with
+`jax.pmap` over a stacked batch of initial states and no library change,
+measured at 3.99x on real chips once compilation is timed separately from
+execution.
 
 float32 on the MXU is not a numerical concern: inverse-mass CG at the same
 tolerance takes the same iteration count on both backends (20 at k=1, 24 at
